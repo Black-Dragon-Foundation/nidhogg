@@ -16,6 +16,22 @@ You can narrow news to a specific version by calling 'view-emacs-news'
 with a prefix argument or by typing 'C-u C-h C-n'.
 
 
+* Changes in Specialized Modes and Packages in Emacs 31.2
+
+** Tramp
+
+*** Stricter limitations for Tramp user and host names (CVE-2026-79992).
+Several shell meta characters are excluded from Tramp user names for
+security reasons, see 'tramp-user-regexp'.  On MS-Windows systems, an
+environment-like pattern "%NAME%" is also excluded from Tramp user and
+host names.
+
+If a Tramp backend uses the percent sign "%" as field separator in Tramp
+user or host names, it can bind the new variable
+'tramp-allow-double-percent' to a non-nil value.  See the Tramp manual
+entry "(tramp) File name syntax" for more details.
+
+
 * Installation Changes in Emacs 31.1
 
 ** Unexec dumper removed.
@@ -3292,7 +3308,7 @@ or obsolete.
 *** Syntax of Perl up to version 5.42 is supported.
 CPerl mode creates Imenu entries for ":writer" generated accessors and
 recognizes the new builtin functions "all" and "any".
-See https://perldoc.perl.org/5.42.0/perldelta for details.
+See <https://perldoc.perl.org/5.42.0/perldelta> for details.
 
 ** Zone
 
