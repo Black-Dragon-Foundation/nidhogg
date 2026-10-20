@@ -564,6 +564,8 @@ OPTION_DEFAULT_ON([lcms2],[don't compile with Little CMS support])
 OPTION_DEFAULT_ON([libsystemd],[don't compile with libsystemd support])
 OPTION_DEFAULT_ON([cairo],[don't compile with Cairo drawing])
 OPTION_DEFAULT_OFF([cairo-xcb], [use XCB surfaces for Cairo support])
+dnl Nidhogg: Glitnir (the compositor), a Rust static library (nidhogg/glitnir)
+OPTION_DEFAULT_OFF([glitnir],[build Glitnir (the compositor, Rust); needs cargo and rustc 1.93 or newer])
 OPTION_DEFAULT_ON([xml2],[don't compile with XML parsing support])
 OPTION_DEFAULT_OFF([imagemagick],[compile with ImageMagick image support])
 OPTION_DEFAULT_ON([native-image-api], [don't use native image APIs (GDI+ on Windows)])
@@ -3924,6 +3926,51 @@ if test "$window_system" = "pgtk"; then
 fi
 AC_SUBST([PGTK_OBJ])
 AC_SUBST([PGTK_LIBS])
+
+dnl Nidhogg: Glitnir (the compositor).  Only under --with-glitnir does configure look for Rust.  GLITNIR_LIBS is the
+dnl crate's static library plus the native libraries rustc says it needs; they are captured with the CARGO_HOME and
+dnl target directory that src/Makefile uses, so the same build is probed and linked (the macOS link depends on it).
+HAVE_GLITNIR=no
+GLITNIR_OBJ=
+GLITNIR_LIBS=
+GLITNIR_SRCDIR=
+GLITNIR_ENV=
+if test "${with_glitnir}" = yes; then
+  AC_PATH_PROG([GLITNIR_CARGO], [cargo])
+  AC_PATH_PROG([GLITNIR_RUSTC], [rustc])
+  glitnir_rustc_ok=no
+  if test -n "$GLITNIR_CARGO" && test -n "$GLITNIR_RUSTC"; then
+    glitnir_rustc_ver=`"$GLITNIR_RUSTC" --version 2>/dev/null | sed -n 's/^rustc \([[0-9]][[0-9.]]*\).*/\1/p'`
+    AC_MSG_CHECKING([whether rustc is 1.93 or newer])
+    AS_VERSION_COMPARE([$glitnir_rustc_ver], [1.93],
+      [AC_MSG_RESULT([no ($glitnir_rustc_ver)])], [glitnir_rustc_ok=yes; AC_MSG_RESULT([yes ($glitnir_rustc_ver)])],
+      [glitnir_rustc_ok=yes; AC_MSG_RESULT([yes ($glitnir_rustc_ver)])])
+  fi
+  test "$glitnir_rustc_ok" = yes ||
+    AC_MSG_ERROR([--with-glitnir needs cargo and rustc 1.93 or newer (packages: nidhogg/deps/*.build)])
+  GLITNIR_SRCDIR=`cd "$srcdir/nidhogg/glitnir" && pwd` ||
+    AC_MSG_ERROR([nidhogg/glitnir is missing])
+  glitnir_home=`pwd`/src/glitnir-cargo-home
+  glitnir_target=`pwd`/src/glitnir-target
+  test -z "$MACOSX_DEPLOYMENT_TARGET" || GLITNIR_ENV="MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET"
+  AC_MSG_CHECKING([the native libraries Glitnir links])
+  rm -rf "$glitnir_target"
+  glitnir_native=`cd "$GLITNIR_SRCDIR" && env CARGO_HOME="$glitnir_home" $GLITNIR_ENV "$GLITNIR_CARGO" rustc --release --offline --locked --target-dir "$glitnir_target" -- --print native-static-libs 2>&1 | sed -n 's/.*native-static-libs: *//p' | tail -n 1`
+  if test ! -f "$glitnir_target/release/libglitnir.a" || test -z "$glitnir_native"; then
+    AC_MSG_RESULT([failed])
+    AC_MSG_ERROR([cannot build nidhogg/glitnir with cargo (see $glitnir_target)])
+  fi
+  AC_MSG_RESULT([$glitnir_native])
+  HAVE_GLITNIR=yes
+  GLITNIR_OBJ="nidhogg-glitnir.o"
+  GLITNIR_LIBS="glitnir-target/release/libglitnir.a $glitnir_native"
+  AC_DEFINE([HAVE_GLITNIR], [1], [Define to 1 to build Glitnir (the compositor, Rust).])
+fi
+AC_SUBST([HAVE_GLITNIR])
+AC_SUBST([GLITNIR_OBJ])
+AC_SUBST([GLITNIR_LIBS])
+AC_SUBST([GLITNIR_SRCDIR])
+AC_SUBST([GLITNIR_ENV])
 
 AC_CHECK_FUNCS([malloc_trim])
 
@@ -7728,6 +7775,7 @@ AS_ECHO(["  Does Emacs use -lXaw3d?                                 ${HAVE_XAW3D
   Does Emacs use -lxft?                                   ${HAVE_XFT}
   Does Emacs use -lsystemd?                               ${HAVE_LIBSYSTEMD}
   Does Emacs use -ltree-sitter?                           ${HAVE_TREE_SITTER}
+  Does Nidhogg use Glitnir (the compositor)?              ${HAVE_GLITNIR}
   Does Emacs use the GMP library?                         ${HAVE_GMP}
   Does Emacs directly use zlib?                           ${HAVE_ZLIB}
   Does Emacs have dynamic modules support?                ${HAVE_MODULES}

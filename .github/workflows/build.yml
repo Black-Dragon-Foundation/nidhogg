@@ -177,6 +177,19 @@ jobs:
           path: ${{ runner.temp }}/build/*.log
           if-no-files-found: ignore
 
+  # Glitnir (the compositor) is behind --with-glitnir: the tree still configures and compiles without it, with no
+  # Rust installed (build.sh leaves cargo and rust out of the package list under --without-glitnir).
+  compile-noglitnir:
+    name: Compile without Glitnir (fedora-44)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build
+        run: bash nidhogg/build.sh --container fedora-44 --without-glitnir --stage build --memory 12g --jobs 4 --build-dir "$RUNNER_TEMP/build"
+
   macos:
     name: macOS (NS app)
     runs-on: xcode-27

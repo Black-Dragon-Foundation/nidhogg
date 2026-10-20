@@ -24,14 +24,14 @@ DISTROS="fedora-44 fedora-45 ubuntu-26.04"
 usage() {
   cat >&2 <<USAGE
 usage: nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memory SIZE]
-                        [--build-dir DIR] [--check FILE] [--out FILE] [--stage build|check|pack] [--dry-run]
+                        [--build-dir DIR] [--check FILE] [--out FILE] [--stage build|check|pack] [--without-glitnir] [--dry-run]
   DISTRO: $DISTROS
 USAGE
   exit 2
 }
 die() { echo "build.sh: $*" >&2; exit 1; }
 
-MODE="" DISTRO="" PREFIX="" JOBS="" MEMORY="" BUILD_DIR="" CHECK="" OUT="" DRY=0 STAGE=all
+MODE="" DISTRO="" PREFIX="" JOBS="" MEMORY="" BUILD_DIR="" CHECK="" OUT="" DRY=0 STAGE=all GLITNIR=--with-glitnir
 while [ $# -gt 0 ]; do
   case $1 in
     --container) [ $# -ge 2 ] || usage; MODE=container; DISTRO=$2; shift 2 ;;
@@ -43,6 +43,7 @@ while [ $# -gt 0 ]; do
     --check) [ $# -ge 2 ] || usage; CHECK=$2; shift 2 ;;
     --out) [ $# -ge 2 ] || usage; OUT=$2; shift 2 ;;
     --stage) [ $# -ge 2 ] || usage; STAGE=$2; shift 2; case $STAGE in all|build|check|pack) ;; *) usage ;; esac ;;
+    --without-glitnir) GLITNIR=""; shift ;;
     --dry-run) DRY=1; shift ;;
     *) echo "unknown option: $1" >&2; usage ;;
   esac
@@ -123,6 +124,10 @@ if [ "$MODE" = host ] && [ "$UNAME" = Darwin ]; then
 else
   CONF="--with-native-compilation=aot --with-tree-sitter --with-pgtk"
 fi
+# Glitnir (the compositor, Rust) is on by default on pgtk and NS; --without-glitnir drops it and the Rust packages
+CONF="$CONF${GLITNIR:+ $GLITNIR}"
+PKGS="\$(sed \"s/#.*//\" \$S/nidhogg/deps/$DISTRO.build"
+if [ -n "$GLITNIR" ]; then PKGS="$PKGS)"; else PKGS="$PKGS | grep -vxE 'cargo|rust|rustc')"; fi
 
 TEMP_BUILD=0
 if [ -z "$BUILD_DIR" ]; then
@@ -189,8 +194,8 @@ script() {
       ubuntu-*)
         [ -z "${NIDHOGG_BUILD_PKG_CACHE:-}" ] || echo 'rm -f /etc/apt/apt.conf.d/docker-clean; echo "Binary::apt::APT::Keep-Downloaded-Packages \"true\";" > /etc/apt/apt.conf.d/keep'
         echo "apt-get update"
-        echo "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \$(sed \"s/#.*//\" \$S/nidhogg/deps/$DISTRO.build)${NIDHOGG_BUILD_CCACHE:+ ccache}" ;;
-      *) echo "dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install \$(sed \"s/#.*//\" \$S/nidhogg/deps/$DISTRO.build)${NIDHOGG_BUILD_CCACHE:+ ccache}" ;;
+        echo "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $PKGS${NIDHOGG_BUILD_CCACHE:+ ccache}" ;;
+      *) echo "dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install $PKGS${NIDHOGG_BUILD_CCACHE:+ ccache}" ;;
     esac
     [ -z "${NIDHOGG_BUILD_CCACHE:-}" ] || echo 'export CCACHE_DIR=/ccache CCACHE_COMPILERCHECK=content CCACHE_MAXSIZE=500M CC="ccache gcc"; ccache -z >/dev/null'
   fi

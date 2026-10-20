@@ -20,6 +20,12 @@ run NIDHOGG_BUILD_NPROC=16 NIDHOGG_BUILD_MEMORY_KB=$((16*1024*1024)) -- --dry-ru
 rcis 0; has "--memory 6g --memory-swap 6g"; has "make -j4"; has "registry.fedoraproject.org/fedora:44"
 has "--prefix=\"\$P\""; has "P=/opt/x"; has "--with-pgtk"; has "--with-native-compilation=aot"; has "--with-tree-sitter"
 has "nidhogg/deps/fedora-44.build"; hasnt "docker"
+# Glitnir (the compositor): --with-glitnir by default on pgtk and NS, --without-glitnir turns it off (and installs no Rust)
+has "--with-glitnir"; hasnt "grep -vxE"
+run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n
+rcis 0; has "--with-glitnir"; hasnt "grep -vxE"
+run -- --dry-run --container fedora-44 --without-glitnir
+rcis 0; hasnt "--with-glitnir"; has "grep -vxE 'cargo|rust|rustc'"
 # low-memory-shrinks-or-refuses
 run NIDHOGG_BUILD_NPROC=16 NIDHOGG_BUILD_MEMORY_KB=$((5*1024*1024)) -- --dry-run --container fedora-45
 rcis 0; has "--memory 4g --memory-swap 4g"; has "make -j2"; has "/opt/nidhogg/31.1-nidhogg.1"
@@ -146,6 +152,10 @@ grep -q '^stop ' "$T/pm.log" && grep -q '^rm -f nidhogg-build-' "$T/pm.log" || f
 for d in fedora-44 fedora-45 ubuntu-26.04 macos; do
   { test -s nidhogg/deps/$d.build && test -s nidhogg/deps/$d.runtime; } || fail "deps lists missing for $d"
 done
+# the Rust toolchain for Glitnir is in every build list (Homebrew: rust)
+for d in fedora-44 fedora-45; do grep -qx cargo nidhogg/deps/$d.build && grep -qx rust nidhogg/deps/$d.build || fail "$d.build lacks cargo/rust"; done
+grep -qx cargo nidhogg/deps/ubuntu-26.04.build && grep -qx rustc nidhogg/deps/ubuntu-26.04.build || fail "ubuntu-26.04.build lacks cargo/rustc"
+grep -qx rust nidhogg/deps/macos.build || fail "macos.build lacks rust"
 if grep -nE 'declare -A|mapfile|readarray|\$\{[a-zA-Z_]+(,,|\^\^)\}|;&|\|&' nidhogg/build.sh; then fail "bash 4 construct in build.sh"; fi
 if command -v shellcheck >/dev/null; then shellcheck --severity=warning nidhogg/build.sh nidhogg/test/*.sh || fail shellcheck; fi
 exit "$fails"

@@ -36,4 +36,10 @@ grep -qF 'bash nidhogg/glitnir/check.sh' <<<"$tj"                 || fail "the t
 grep -qF 'cargo deny check advisories' <<<"$tj"                   || fail "the tree job does not run cargo deny check advisories"
 grep -qF 'libpixman-1-dev' <<<"$tj"                               || fail "the tree job does not install libpixman-1-dev"
 grep -qE 'sha256sum -c' <<<"$tj"                                  || fail "the tree job does not check cargo-deny's sha256"
+# the build without Glitnir (no Rust installed) still compiles
+nj=$(awk '/^  compile-noglitnir:/,/^  macos:/' "$wf")
+[ -n "$nj" ]                                                      || fail "no job compile-noglitnir"
+grep -qF -- '--without-glitnir' <<<"$nj"                          || fail "compile-noglitnir does not pass --without-glitnir"
+grep -qF -- '--stage build' <<<"$nj"                              || fail "compile-noglitnir does not stop after the build stage"
+grep -qF 'fedora-44' <<<"$nj"                                     || fail "compile-noglitnir is not on fedora-44"
 exit $rc
