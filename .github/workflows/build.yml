@@ -34,6 +34,8 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install -y unifdef
+      - run: TREE_TEST_SELF=1 bash nidhogg/test/tree-test.sh
       - run: bash nidhogg/test/tree-test.sh
       - run: bash nidhogg/test/ci-test.sh
       # Glitnir (the compositor): the crate's checks (fmt, clippy, tests, licences, vendor drift) and the advisories.

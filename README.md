@@ -31,7 +31,12 @@ for upstreaming.
 - Every commit on `emacs-31.1..nidhogg-31` has a subject starting `nidhogg: `.
 - Files only Nidhogg owns live under `nidhogg/`, `.github/` and `README.md`, so rebases do not conflict.
 - C patches sit behind `--with-nidhogg-<feature>` configure flags. The identity patch is unconditional.
-- `bash nidhogg/test/tree-test.sh [BASE]` checks these rules.
+- Glitnir (the compositor) commits have subjects starting `nidhogg: glitnir:` and form one group at the top of the
+  series. `GLITNIR_BASE` (overridable) is the parent of the oldest such commit on HEAD; with none, the rule is
+  skipped. With `HAVE_GLITNIR` undefined, every C file under `src/` the group touched must equal its `GLITNIR_BASE` version
+  (`unifdef -UHAVE_GLITNIR`); a changed `lisp/` file is new or `lisp/loadup.el` with a one-line `(featurep 'glitnir)`
+  diff; a non-glitnir commit touching `src/` above the base must go below the group. Needs `unifdef`.
+- `bash nidhogg/test/tree-test.sh [BASE]` checks these rules; `TREE_TEST_SELF=1` runs the Glitnir rule on fixtures.
 
 ## Rebasing onto a new upstream release
 
