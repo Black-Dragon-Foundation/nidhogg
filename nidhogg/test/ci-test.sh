@@ -42,4 +42,8 @@ nj=$(awk '/^  compile-noglitnir:/,/^  macos:/' "$wf")
 grep -qF -- '--without-glitnir' <<<"$nj"                          || fail "compile-noglitnir does not pass --without-glitnir"
 grep -qF -- '--stage build' <<<"$nj"                              || fail "compile-noglitnir does not stop after the build stage"
 grep -qF 'fedora-44' <<<"$nj"                                     || fail "compile-noglitnir is not on fedora-44"
+# macOS runs the crate's tests with the host's cargo (Homebrew rust), before the build: the aarch64 NEON baseline
+mj=$(awk '/^  macos:/,/^  drgnx-linux:/' "$wf")
+grep -qF 'bash nidhogg/glitnir/check.sh' <<<"$mj"                 || fail "macos runs the glitnir checks"
+[ "$(grep -n 'glitnir/check.sh' <<<"$mj" | head -1 | cut -d: -f1)" -lt "$(grep -n 'id: build' <<<"$mj" | head -1 | cut -d: -f1)" ] 2>/dev/null || fail "macos runs the glitnir checks after the build"
 exit $rc

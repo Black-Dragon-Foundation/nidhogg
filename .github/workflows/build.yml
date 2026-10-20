@@ -238,6 +238,14 @@ jobs:
         with:
           path: ${{ steps.brewdir.outputs.dir }}
           key: brew-macos-${{ runner.arch }}-${{ hashFiles('nidhogg/deps/macos.build') }}
+      # Glitnir (the compositor): the crate's tests with Homebrew's rust (cargo, clippy, rustfmt; no pixman, the oracle is
+      # Linux only; no cargo-deny, check.sh skips the licence check without it), so the aarch64 NEON baseline kernels are
+      # tested somewhere.  Skipped with the build when the tarball for this tree is cached (it was built after these passed).
+      - name: Glitnir's checks
+        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        env:
+          CARGO_HOME: ${{ runner.temp }}/cargo-home
+        run: bash nidhogg/glitnir/check.sh
       # compiled Lisp: also keyed by the installed gcc and libgccjit versions and the build path (.eln names embed it)
       - name: Toolchain versions
         id: tc
