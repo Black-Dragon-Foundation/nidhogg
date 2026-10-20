@@ -634,6 +634,9 @@ ifndef NO_BIN_LINK
 	rm -f "$(DESTDIR)${bindir}/$(EMACS)"
 	cd "$(DESTDIR)${bindir}" && $(LN_S_FILEONLY) "$(EMACSFULL)" "$(EMACS)"
 endif
+	rm -f "$(DESTDIR)${bindir}/nidhogg" "$(DESTDIR)${bindir}/nidhoggclient"
+	cd "$(DESTDIR)${bindir}" && $(LN_S_FILEONLY) "$(EMACSFULL)" nidhogg
+	cd "$(DESTDIR)${bindir}" && $(LN_S_FILEONLY) "`echo emacsclient | sed '$(TRANSFORM)'`${EXEEXT}" nidhoggclient
 else
 ifeq (${DUMPING},pdumper)
 	${INSTALL_DATA} src/emacs.pdmp "$(DESTDIR)${libexecdir}/Emacs.pdmp"
@@ -962,6 +965,7 @@ uninstall: uninstall-$(NTDIR) uninstall-doc uninstall-gsettings-schemas
 	     rm -f "$(DESTDIR)${man1dir}"/`echo "$${page}" | sed -e 's/\.1$$//' -e '$(TRANSFORM)'`.1$$ext; done; \
 	 fi)
 	rm -f "$(DESTDIR)${bindir}/$(EMACS)" "$(DESTDIR)${bindir}/$(EMACSFULL)"
+	rm -f "$(DESTDIR)${bindir}/nidhogg" "$(DESTDIR)${bindir}/nidhoggclient"
 	(if cd "$(DESTDIR)${icondir}"; then \
 	   rm -f hicolor/*x*/apps/"${EMACS_NAME}.png" \
 	     "hicolor/scalable/apps/${EMACS_NAME}.svg" \

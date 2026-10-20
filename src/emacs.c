@@ -3611,6 +3611,12 @@ component .BUILD is present.  This is now stored separately in
 `emacs-build-number'.  */);
   Vemacs_version = build_string (emacs_version);
 
+  DEFVAR_LISP ("nidhogg-version", Vnidhogg_version,
+	       doc: /* Nidhogg's version: GNU Emacs's version, "-nidhogg.", and the Nidhogg release.
+For example "31.1-nidhogg.1".  `emacs-version' stays GNU Emacs's own,
+so that packages that compare it keep working.  */);
+  Vnidhogg_version = build_string (NIDHOGG_VERSION);
+
   DEFVAR_LISP ("report-emacs-bug-address", Vreport_emacs_bug_address,
 	       doc: /* Address of mailing list for GNU Emacs bugs.  */);
   Vreport_emacs_bug_address = build_string (emacs_bugreport);

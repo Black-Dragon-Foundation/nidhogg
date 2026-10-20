@@ -108,7 +108,8 @@ Don't use this function in programs to choose actions according
 to the system configuration; look at `system-configuration' instead."
   (interactive "P")
   (let ((version-string
-         (format "GNU Emacs %s (build %s, %s%s%s%s)%s"
+         (concat
+          (format "GNU Emacs %s (build %s, %s%s%s%s)%s"
                  emacs-version
                  emacs-build-number
 		 system-configuration
@@ -137,12 +138,16 @@ to the system configuration; look at `system-configuration' instead."
 					      "" "\n")
 					  " of %Y-%m-%d")
 					 emacs-build-time)
-		   ""))))
+		   ""))
+          (format " (Nidhogg %s)" nidhogg-version))))
     (if here
         (insert version-string)
       (if (called-interactively-p 'interactive)
           (message "%s" version-string)
         version-string))))
+
+;; Nidhogg: drgnx's own Emacs build.
+(provide 'nidhogg)
 
 ;; We hope that this alias is easier for people to find.
 (defalias 'version 'emacs-version)

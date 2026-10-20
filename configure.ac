@@ -61,6 +61,12 @@ dnl Add some environment variables, if they were passed via the environment
 dnl rather than on the command-line.
 emacs_config_options=
 optsep=
+dnl Nidhogg: its version comes from nidhogg/version (the single source).
+if test -f "$srcdir/nidhogg/version"; then
+  NIDHOGG_VERSION=`head -n 1 "$srcdir/nidhogg/version"`
+else
+  AC_MSG_ERROR([nidhogg/version is missing])
+fi
 dnl This is the documented way to record the args passed to configure,
 dnl rather than $ac_configure_args.
 for opt in "$@" CFLAGS CPPFLAGS LDFLAGS; do
@@ -93,6 +99,11 @@ for opt in "$@" CFLAGS CPPFLAGS LDFLAGS; do
   AS_VAR_APPEND([emacs_config_options], ["$optsep$opt"])
   optsep=' '
 done
+dnl Nidhogg: record the version in the configuration options, unless already there.
+case " $emacs_config_options " in
+  *" --with-nidhogg="*) ;;
+  *) AS_VAR_APPEND([emacs_config_options], ["$optsep--with-nidhogg=$NIDHOGG_VERSION"]) ;;
+esac
 
 AC_CONFIG_HEADERS([src/config.h:src/config.in])
 AC_CONFIG_SRCDIR([src/lisp.h])
@@ -7674,8 +7685,12 @@ for opt in ACL BE_APP CAIRO DBUS FREETYPE GCONF GIF GLIB GMP GNUTLS GPM GSETTING
     AS_VAR_APPEND([emacs_config_features], ["$optsep$opt"])
     optsep=' '
 done
+dnl Nidhogg is always on.
+AS_VAR_APPEND([emacs_config_features], ["${optsep}NIDHOGG"])
 AC_DEFINE_UNQUOTED([EMACS_CONFIG_FEATURES], ["${emacs_config_features}"],
   [Summary of some of the main features enabled by configure.])
+AC_DEFINE_UNQUOTED([NIDHOGG_VERSION], ["$NIDHOGG_VERSION"], [Nidhogg's version.])
+AC_SUBST([NIDHOGG_VERSION])
 
 # This is just a printable representation of the shared user ID.
 android_shared_user=
