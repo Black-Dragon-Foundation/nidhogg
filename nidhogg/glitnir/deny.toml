@@ -12,6 +12,8 @@ allow = [
     "Unlicense",
     "CC0-1.0",
 ]
+# the list is for dependencies: glitnir itself (publish = false) is GPL-3.0-or-later, Nidhogg's own licence
+private = { ignore = true }
 
 [bans]
 multiple-versions = "warn"
