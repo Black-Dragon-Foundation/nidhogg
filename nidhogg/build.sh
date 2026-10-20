@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Build Nidhogg in a capped podman container or on the host.  See README.md ("Building").
 #   nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memory SIZE]
-#                    [--build-dir DIR] [--check FILE] [--dry-run]
+#                    [--build-dir DIR] [--check FILE] [--out FILE] [--dry-run]
 # Exit: 0 ok, 1 build/check failed or not enough memory, 2 usage.
-# Test overrides: NIDHOGG_BUILD_UNAME, NIDHOGG_BUILD_NPROC, NIDHOGG_BUILD_MEMORY_KB, NIDHOGG_BUILD_PODMAN.
+# Test overrides: NIDHOGG_BUILD_UNAME, NIDHOGG_BUILD_NPROC, NIDHOGG_BUILD_MEMORY_KB, NIDHOGG_BUILD_PODMAN,
+# NIDHOGG_BUILD_VMSTAT (a vm_stat stand-in), NIDHOGG_BUILD_HEARTBEAT (seconds between "still running" lines, default 300).
+# NIDHOGG_BUILD_PKG_CACHE=DIR keeps the container's downloaded packages (dnf, apt) in DIR between builds.
 # bash 3.2-safe (macOS): none of the bash 4 features.
 set -euo pipefail
 
@@ -14,14 +16,14 @@ DISTROS="fedora-44 fedora-45 ubuntu-26.04"
 usage() {
   cat >&2 <<USAGE
 usage: nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memory SIZE]
-                        [--build-dir DIR] [--check FILE] [--dry-run]
+                        [--build-dir DIR] [--check FILE] [--out FILE] [--dry-run]
   DISTRO: $DISTROS
 USAGE
   exit 2
 }
 die() { echo "build.sh: $*" >&2; exit 1; }
 
-MODE="" DISTRO="" PREFIX="" JOBS="" MEMORY="" BUILD_DIR="" CHECK="" DRY=0
+MODE="" DISTRO="" PREFIX="" JOBS="" MEMORY="" BUILD_DIR="" CHECK="" OUT="" DRY=0
 while [ $# -gt 0 ]; do
   case $1 in
     --container) [ $# -ge 2 ] || usage; MODE=container; DISTRO=$2; shift 2 ;;
@@ -31,6 +33,7 @@ while [ $# -gt 0 ]; do
     --memory) [ $# -ge 2 ] || usage; MEMORY=$2; shift 2 ;;
     --build-dir) [ $# -ge 2 ] || usage; BUILD_DIR=$2; shift 2 ;;
     --check) [ $# -ge 2 ] || usage; CHECK=$2; shift 2 ;;
+    --out) [ $# -ge 2 ] || usage; OUT=$2; shift 2 ;;
     --dry-run) DRY=1; shift ;;
     *) echo "unknown option: $1" >&2; usage ;;
   esac
@@ -58,33 +61,46 @@ else
 fi
 
 [ -n "$PREFIX" ] || PREFIX=/opt/nidhogg/$VERSION
+# the prefix is bind-mounted (and relabelled with :Z) in a container: refuse anything that is not a plain, absolute directory
+case $PREFIX in /*) ;; *) die "--prefix must be an absolute path: $PREFIX" ;; esac
+case /$PREFIX/ in */../*|*/./*) die "--prefix must not contain '.' or '..' components: $PREFIX" ;; esac
+P_NORM=$(printf '%s' "$PREFIX" | sed 's|//*|/|g; s|/$||')
+[ -n "$P_NORM" ] && [ "$P_NORM" != "${HOME%/}" ] || die "--prefix must not be / or your home directory: $PREFIX"
+PREFIX=$P_NORM
 if [ -n "$CHECK" ] && [ ! -f "$CHECK" ] && [ "$DRY" = 0 ]; then die "--check file not found: $CHECK"; fi
 
 mem_available_kb() {
   if [ -n "${NIDHOGG_BUILD_MEMORY_KB:-}" ]; then echo "$NIDHOGG_BUILD_MEMORY_KB"
-  elif [ -r /proc/meminfo ]; then awk '/^MemAvailable:/ {print $2}' /proc/meminfo
-  else # macOS: free + inactive pages
-    vm_stat | awk '/page size of/ {ps=$8} /Pages (free|inactive)/ {n+=$NF} END {printf "%d", n*ps/1024}'
+  elif [ "$UNAME" = Darwin ] && command -v "${NIDHOGG_BUILD_VMSTAT:-vm_stat}" >/dev/null 2>&1; then
+    # macOS reclaims inactive, speculative and purgeable pages on demand, so they count as available
+    "${NIDHOGG_BUILD_VMSTAT:-vm_stat}" |
+      awk '/page size of/ {ps=$8} /^Pages (free|inactive|speculative|purgeable):/ {n+=$NF} END {printf "%d", n*ps/1024}'
+  else awk '/^MemAvailable:/ {print $2}' /proc/meminfo
   fi
 }
 AVAIL_KB=$(mem_available_kb)
-AVAIL_GIB=$((AVAIL_KB / 1024 / 1024))
+AVAIL_MIB=$((AVAIL_KB / 1024))
 
-# container cap: min(6, available - 1) GiB, refused below 3 GiB; an explicit --memory is taken as given
-if [ "$MODE" = container ]; then
-  if [ -z "$MEMORY" ]; then
-    CAP=$((AVAIL_GIB - 1))
-    [ "$CAP" -le 6 ] || CAP=6
-    if [ "$CAP" -lt 3 ]; then
-      echo "build.sh: a Nidhogg build needs 3 GiB of free memory for its container; only ${AVAIL_GIB} GiB are available" >&2
-      exit 1
-    fi
-    MEMORY=${CAP}g
+# memory floor, container and host alike: refused below 3 GiB (3072 MiB) available; the cap, and the jobs from it,
+# are max(2, min(6, available - 1)) GiB.  An explicit --memory for a container is taken as given; on a host build an
+# explicit --memory or --jobs means the caller takes responsibility: a warning, not a refusal.
+CAP=$(((AVAIL_MIB - 1024) / 1024))
+[ "$CAP" -le 6 ] || CAP=6
+[ "$CAP" -ge 2 ] || CAP=2
+if [ "$AVAIL_MIB" -lt 3072 ]; then
+  if [ "$MODE" = host ] && { [ -n "$MEMORY" ] || [ -n "$JOBS" ]; }; then
+    echo "build.sh: warning: a Nidhogg build needs 3072 MiB of free memory; only ${AVAIL_MIB} MiB are available (building anyway: --memory/--jobs given)" >&2
+  elif [ "$MODE" = host ] || [ -z "$MEMORY" ]; then
+    echo "build.sh: a Nidhogg build needs 3072 MiB (3 GiB) of free memory; only ${AVAIL_MIB} MiB are available" >&2
+    exit 1
   fi
+fi
+if [ "$MODE" = container ]; then
+  [ -n "$MEMORY" ] || MEMORY=${CAP}g
   case $MEMORY in *g) CAP=${MEMORY%g} ;; *) echo "--memory takes whole GiB, e.g. 6g" >&2; exit 2 ;; esac
   JOBS_FROM=$CAP
 else
-  JOBS_FROM=$AVAIL_GIB
+  JOBS_FROM=$CAP
 fi
 if [ -z "$JOBS" ]; then
   JOBS=$((JOBS_FROM * 10 / 15))   # one job per 1.5 GiB
@@ -109,50 +125,129 @@ fi
 
 if [ "$MODE" = container ]; then S=/src B=/build; else S=$ROOT B=$BUILD_DIR; fi
 
+# the tarball: nidhogg-<version>-<distro>-<arch>.tar.xz (+ .sha256); OUT is its path, its basename is only a hint
+UPSTREAM_VERSION=${VERSION%%-nidhogg.*}
+COMMIT=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)
+ARCH=$(uname -m)
+DISTRO_TAG=$DISTRO
+if [ "$MODE" = host ] && [ "$UNAME" = Linux ] && [ -r /etc/os-release ]; then
+  DISTRO_TAG=$(. /etc/os-release; echo "${ID}-${VERSION_ID}")
+fi
+if [ -n "$OUT" ]; then
+  OUT_DIR=$(dirname "$OUT")
+  [ "$DRY" = 1 ] || { mkdir -p "$OUT_DIR"; OUT_DIR=$(cd "$OUT_DIR" && pwd); }
+  OUT_BASE=$(basename "$OUT")
+  if [ "$MODE" = container ]; then OUT_IN=/out/$OUT_BASE; else OUT_IN=$OUT_DIR/$OUT_BASE; fi
+fi
+
+# the install into a staging tree and the tarball
+out_steps() {
+  printf 'OUTF=%q DISTRO_TAG=%q ARCH=%q COMMIT=%q J=%q CONF=%q\n' "$OUT_IN" "$DISTRO_TAG" "$ARCH" "$COMMIT" "$JOBS" "$CONF"
+  if [ "$MODE" = host ] && [ "$UNAME" = Darwin ]; then
+    echo 'phase install'
+    echo 'logged "$B/install.log" make install'
+    echo 'pk=$B/pkg/nidhogg-$V; rm -rf "$B/pkg"; mkdir -p "$pk"; mv nextstep/Emacs.app "$pk/Nidhogg.app"; info=$pk/BUILDINFO; rt=$pk/deps.runtime'
+  else
+    echo 'phase install'
+    echo 'rm -rf "$B/stage"'
+    echo "logged \"\$B/install.log\" make install DESTDIR=$B/stage"
+    echo 'pk=$B/pkg/nidhogg-$V; rm -rf "$B/pkg"; mkdir -p "$B/pkg"; cp -a "$B/stage$P" "$pk"; dumplinks "$pk"; mkdir -p "$pk/share/nidhogg"; info=$pk/share/nidhogg/BUILDINFO; rt=$pk/share/nidhogg/deps.runtime'
+    echo 'cp "$S/nidhogg/env.sh" "$pk/share/nidhogg/env.sh"'
+  fi
+  cat <<'BODY'
+cp "$S/nidhogg/deps/$DISTRO_TAG.runtime" "$rt"
+printf 'version=%s\ncommit=%s\ndistro=%s\narch=%s\nprefix=%s\nconfigure=%s\ndate=%s\n' \
+  "$V" "$COMMIT" "$DISTRO_TAG" "$ARCH" "$P" "$CONF" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$info"
+phase tarball
+tar -C "$B/pkg" -cJf "$OUTF" "nidhogg-$V"
+(cd "$(dirname "$OUTF")" && { sha256sum "$(basename "$OUTF")" 2>/dev/null || shasum -a 256 "$(basename "$OUTF")"; } > "$OUTF.sha256")
+BODY
+}
+
 # --- the build script: the same steps in a container and on the host --------------------------------------
 script() {
-  printf 'S=%q B=%q P=%q\n' "$S" "$B" "$PREFIX"
+  printf 'S=%q B=%q P=%q V=%q UPV=%q HB=%q\n' "$S" "$B" "$PREFIX" "$VERSION" "$UPSTREAM_VERSION" "${NIDHOGG_BUILD_HEARTBEAT:-300}"
   if [ "$MODE" = container ]; then
     case $DISTRO in
       ubuntu-*)
+        [ -z "${NIDHOGG_BUILD_PKG_CACHE:-}" ] || echo 'rm -f /etc/apt/apt.conf.d/docker-clean; echo "Binary::apt::APT::Keep-Downloaded-Packages \"true\";" > /etc/apt/apt.conf.d/keep'
         echo "apt-get update"
         echo "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \$(sed \"s/#.*//\" \$S/nidhogg/deps/$DISTRO.build)" ;;
-      *) echo "dnf -y install \$(sed \"s/#.*//\" \$S/nidhogg/deps/$DISTRO.build)" ;;
+      *) echo "dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install \$(sed \"s/#.*//\" \$S/nidhogg/deps/$DISTRO.build)" ;;
     esac
   fi
   cat <<'BODY'
-logged() { log=$1; shift; "$@" >> "$log" 2>&1 || { echo "FAILED: $* (log: $log)" >&2; exit 1; }; }
+# relative links so that a relocated binary finds its dump beside itself
+dumplinks() {
+  root=$1
+  set -- "$root"/libexec/emacs/*/*/emacs-*.pdmp
+  [ -e "$1" ] || return 0
+  rel=${1#"$root"/}
+  for n in nidhogg emacs "emacs-$UPV"; do ln -sf "../$rel" "$root/bin/$n.pdmp"; done
+}
+phase() { PHASE=$1; echo "== $*"; }
+# run a logged step; a heartbeat line every HB seconds while it runs; on failure the last 100 lines of its log
+logged() {
+  log=$1; shift
+  "$@" >> "$log" 2>&1 & cmd=$!
+  t=0
+  while kill -0 "$cmd" 2>/dev/null; do
+    sleep 1; t=$((t + 1))
+    if [ $((t % HB)) -eq 0 ]; then echo "... $PHASE still running, $((t / 60)) min"; fi
+  done
+  rc=0; wait "$cmd" || rc=$?
+  if [ "$rc" != 0 ]; then
+    echo "FAILED: $* (log: $log); last 100 lines:" >&2
+    tail -n 100 "$log" >&2
+    exit 1
+  fi
+}
 mkdir -p "$B/src" "$B/obj"
 rm -f "$B"/*.log
 # GNU cp's -u (copy only newer) keeps an incremental build dir's mtimes; BSD cp (macOS) has no -u: copy everything
 if cp -u /dev/null "$B/.cp-u-probe" 2>/dev/null; then CP_UPDATE="cp -a -u"; else CP_UPDATE="cp -pR"; fi; rm -f "$B/.cp-u-probe"
 for e in "$S"/* "$S"/.[!.]*; do [ -e "$e" ] || continue; [ "${e##*/}" = .git ] || $CP_UPDATE "$e" "$B/src/"; done
 cd "$B/src"
+phase autogen
 logged "$B/autogen.log" ./autogen.sh
 cd "$B/obj"
 BODY
+  echo "phase configure"
   echo "logged \"\$B/configure.log\" \"\$B/src/configure\" --prefix=\"\$P\" $CONF || { echo \"configure failed; the build packages are listed in nidhogg/deps/$DISTRO.build\" >&2; exit 1; }"
   cat <<'BODY'
 grep -Eq 'native lisp compiler\? +yes' "$B/configure.log" || { echo "configure found no native compilation (libgccjit); see $B/configure.log" >&2; exit 1; }
 BODY
+  echo "phase make -j$JOBS"
   echo "logged \"\$B/make.log\" make -j$JOBS"
   if [ -n "$CHECK" ]; then
     for t in $(sed "s/#.*//" "$CHECK" 2>/dev/null || echo "<targets of $CHECK>"); do
+      echo "phase check $t"
       echo "logged \"\$B/check.log\" make -C test $t"
     done
   fi
-  if [ "$MODE" = host ] && [ "$UNAME" = Darwin ]; then
+  if [ -n "$OUT" ]; then
+    out_steps
+  elif [ "$MODE" = host ] && [ "$UNAME" = Darwin ]; then
+    echo "phase install"
     echo "logged \"\$B/install.log\" make install"
     echo "rm -rf \"\$P/Nidhogg.app\" && mkdir -p \"\$P\" && mv nextstep/Emacs.app \"\$P/Nidhogg.app\""
   else
+    echo "phase install"
     echo "logged \"\$B/install.log\" make install"
+    echo 'dumplinks "$P"'
   fi
 }
 
 # --- run --------------------------------------------------------------------------------------------------
 if [ "$MODE" = container ]; then
-  mkdir -p "$PREFIX" 2>/dev/null || true
-  CMD_HEAD="$PODMAN run --rm --memory $MEMORY --memory-swap $MEMORY -v $ROOT:/src:ro,Z -v $BUILD_DIR:/build:Z -v $PREFIX:$PREFIX:Z $IMAGE"
+  if [ -n "$OUT" ]; then MOUNT="$OUT_DIR:/out:Z"; else MOUNT="$PREFIX:$PREFIX:Z"; [ "$DRY" = 1 ] || mkdir -p "$PREFIX"; fi
+  NAME=nidhogg-build-$$
+  CACHE_ARGS=""
+  if [ -n "${NIDHOGG_BUILD_PKG_CACHE:-}" ]; then
+    case $DISTRO in ubuntu-*) CACHE_ARGS="-v $NIDHOGG_BUILD_PKG_CACHE/apt:/var/cache/apt/archives:Z" ;;
+      *) CACHE_ARGS="-v $NIDHOGG_BUILD_PKG_CACHE/dnf:/var/cache/libdnf5:Z" ;; esac
+  fi
+  CMD_HEAD="$PODMAN run --rm --name $NAME --memory $MEMORY --memory-swap $MEMORY -v $ROOT:/src:ro,Z -v $BUILD_DIR:/build:Z -v $MOUNT $CACHE_ARGS $IMAGE"
   if [ "$DRY" = 1 ]; then
     echo "$CMD_HEAD bash -euo pipefail -c '"
     script
@@ -161,9 +256,24 @@ if [ "$MODE" = container ]; then
   fi
   command -v "$PODMAN" >/dev/null 2>&1 || die "podman not found (podman only; no docker)"
   echo "+ $CMD_HEAD bash -euo pipefail -c <script>"
-  if "$PODMAN" run --rm --memory "$MEMORY" --memory-swap "$MEMORY" \
-       -v "$ROOT:/src:ro,Z" -v "$BUILD_DIR:/build:Z" -v "$PREFIX:$PREFIX:Z" "$IMAGE" \
-       bash -euo pipefail -c "$(script)"; then
+  [ -z "$CACHE_ARGS" ] || mkdir -p "$NIDHOGG_BUILD_PKG_CACHE/apt" "$NIDHOGG_BUILD_PKG_CACHE/dnf"
+  # stop and remove our own container (and only it) however we end
+  cleanup() {
+    [ -z "${RUN_PID:-}" ] || kill "$RUN_PID" 2>/dev/null || true
+    "$PODMAN" stop -t 10 "$NAME" >/dev/null 2>&1 || true
+    "$PODMAN" rm -f "$NAME" >/dev/null 2>&1 || true
+  }
+  trap cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  # in the background so that a signal reaches the trap at once
+  # shellcheck disable=SC2086
+  "$PODMAN" run --rm --name "$NAME" --memory "$MEMORY" --memory-swap "$MEMORY" \
+    -v "$ROOT:/src:ro,Z" -v "$BUILD_DIR:/build:Z" ${MOUNT:+-v} ${MOUNT:+"$MOUNT"} $CACHE_ARGS "$IMAGE" \
+    bash -euo pipefail -c "$(script)" &
+  RUN_PID=$!
+  if wait "$RUN_PID"; then
+    RUN_PID=""
     [ "$TEMP_BUILD" = 0 ] || rm -rf "$BUILD_DIR"
   else
     echo "build.sh: the build failed; logs are in $BUILD_DIR" >&2

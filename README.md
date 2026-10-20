@@ -53,3 +53,21 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   rebuilds; by default a temporary directory is used and removed on success. A failed build names its log.
 - `--check FILE` runs the `make -C test` targets listed in FILE (`nidhogg/check-subset.txt` is what CI runs).
 - `bash nidhogg/test/build-test.sh` checks the dry-run output.
+
+## Release tarballs
+
+`nidhogg/build.sh ... --out FILE` installs into a staging tree and writes `nidhogg-<version>-<distro>-<arch>.tar.xz`
+(distro `fedora-44`, `fedora-45`, `ubuntu-26.04` or `macos`; arch is `uname -m`) and `FILE.sha256`.
+
+- One top directory `nidhogg-<version>/` holding the prefix's contents (macOS: `Nidhogg.app`).
+- `share/nidhogg/BUILDINFO` (`key=value`: `version commit distro arch prefix configure date`),
+  `share/nidhogg/deps.runtime` (the distro's runtime packages) and `share/nidhogg/env.sh`. On macOS, `BUILDINFO` and
+  `deps.runtime` sit beside the app, which relocates by itself.
+- `bin/nidhogg.pdmp`, `bin/emacs.pdmp`, `bin/emacs-<upstream>.pdmp` are relative links to the dump, so a relocated binary
+  finds it beside itself.
+- At the `prefix` in `BUILDINFO` the tree runs as is. Anywhere else, source `env.sh` first:
+  `NIDHOGG_ROOT=DIR . DIR/share/nidhogg/env.sh`.
+- Limit: a relocated tree natively compiles non-preloaded libraries into the user's cache.
+- `bash nidhogg/test/tarball-test.sh TARBALL DISTRO` unpacks at the prefix and elsewhere (a `--memory 2g` container on
+  Linux) and runs the checks on each. On Linux they start with `ldd` on every program in `bin/` and `libexec/`: a
+  library not found fails the test, all of them named at once (their packages belong in `deps/<distro>.runtime`).

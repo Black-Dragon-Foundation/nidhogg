@@ -1,2 +1,3 @@
 # upstream ignores deps/
 !/deps/
+/dist/
