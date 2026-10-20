@@ -30,4 +30,10 @@ grep -A8 'id: tb' "$wf" | grep -q "startsWith(github.ref, 'refs/tags/')" || fail
 ! grep -A12 'id: lc' "$wf" | grep -q restore-keys                 || fail "the compiled-Lisp cache has restore-keys"
 # every cache save comes after its build and only when the build succeeded
 [ "$(grep -c "steps.build.outcome == 'success'" "$wf")" -ge 6 ]  || fail "a cache save not gated on the build step"
+# the tree job runs Glitnir's checks and cargo-deny's advisories, with pixman's headers installed
+tj=$(awk '/^  tree:/,/^  linux:/' "$wf")
+grep -qF 'bash nidhogg/glitnir/check.sh' <<<"$tj"                 || fail "the tree job does not run glitnir/check.sh"
+grep -qF 'cargo deny check advisories' <<<"$tj"                   || fail "the tree job does not run cargo deny check advisories"
+grep -qF 'libpixman-1-dev' <<<"$tj"                               || fail "the tree job does not install libpixman-1-dev"
+grep -qE 'sha256sum -c' <<<"$tj"                                  || fail "the tree job does not check cargo-deny's sha256"
 exit $rc

@@ -36,6 +36,17 @@ jobs:
           persist-credentials: false
       - run: bash nidhogg/test/tree-test.sh
       - run: bash nidhogg/test/ci-test.sh
+      # Glitnir (the compositor): the crate's checks (fmt, clippy, tests, licences, vendor drift) and the advisories.
+      - name: Glitnir's checks
+        run: |
+          sudo apt-get update && sudo apt-get install -y libpixman-1-dev
+          d="cargo-deny-0.20.2-x86_64-unknown-linux-musl"
+          curl -sSfL -o "$RUNNER_TEMP/cd.tgz" "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/$d.tar.gz"
+          echo "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f  $RUNNER_TEMP/cd.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin" && tar -xzf "$RUNNER_TEMP/cd.tgz" -C "$RUNNER_TEMP/bin" --strip-components=1 "$d/cargo-deny"
+          export PATH="$RUNNER_TEMP/bin:$PATH"
+          bash nidhogg/glitnir/check.sh
+          cd nidhogg/glitnir && cargo deny check advisories
 
   linux:
     name: Linux (${{ matrix.distro }})
