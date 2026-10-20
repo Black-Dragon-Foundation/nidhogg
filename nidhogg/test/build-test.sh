@@ -74,6 +74,27 @@ run NIDHOGG_BUILD_MEMORY_KB= NIDHOGG_BUILD_UNAME=Darwin NIDHOGG_BUILD_VMSTAT="$T
 rcis 0; has "make -j"
 run NIDHOGG_BUILD_MEMORY_KB= NIDHOGG_BUILD_UNAME=Darwin NIDHOGG_BUILD_VMSTAT="$T/vm_stat" INACT=262144 -- --dry-run --host --prefix /tmp/n
 rcis 0; has "make -j2"
+# ccache: opt-in, the cache directory mounted, ccache installed, the compiler checked by content
+run NIDHOGG_BUILD_CCACHE=/var/tmp/cc -- --dry-run --container fedora-45
+rcis 0; has "-v /var/tmp/cc:/ccache:Z"; has "CCACHE_COMPILERCHECK=content"; has 'CC="ccache gcc"'; has " ccache"
+run NIDHOGG_BUILD_CCACHE=/var/tmp/cc -- --dry-run --container ubuntu-26.04
+rcis 0; has "--no-install-recommends \$(sed"; has "ccache -s"
+run -- --dry-run --container fedora-45
+rcis 0; hasnt "ccache"
+# compiled-Lisp cache: opt-in, mounted, restored before autogen, saved after make, only for the same compiler
+run NIDHOGG_BUILD_LISP_CACHE=/var/tmp/lc -- --dry-run --container fedora-45
+rcis 0; has "-v /var/tmp/lc:/lispcache:Z"; has "phase restore compiled Lisp"; has "phase save compiled Lisp"; has 'cc_id'
+run -- --dry-run --container fedora-45
+rcis 0; hasnt "lispcache"; hasnt "compiled Lisp"
+# stages: build = make only, check = the check targets in the built tree, pack = install and tarball; no prefix mount unless packing
+run -- --dry-run --container fedora-44 --stage build --check nidhogg/check-subset.txt --out dist/x.tar.xz
+rcis 0; has "phase make -j"; hasnt "phase check"; hasnt "phase tarball"; hasnt ":/out:Z"
+run -- --dry-run --container fedora-44 --stage check --check nidhogg/check-subset.txt --out dist/x.tar.xz
+rcis 0; has "phase check src/emacs-tests"; hasnt "phase make -j"; hasnt "phase autogen"; hasnt "phase tarball"; has 'cd "$B/obj"'
+run -- --dry-run --container fedora-44 --stage pack --check nidhogg/check-subset.txt --out dist/x.tar.xz
+rcis 0; has "phase tarball"; hasnt "phase make -j"; hasnt "phase check"; has ":/out:Z"
+run -- --dry-run --container fedora-44 --stage bogus
+rcis 2
 # one progress line per phase
 run -- --dry-run --container fedora-44 --check nidhogg/check-subset.txt --out dist/x.tar.xz
 for ph in "phase autogen" "phase configure" "phase make -j" "phase check src/nidhogg-tests" "phase install" "phase tarball"; do has "$ph"; done

@@ -1,0 +1,365 @@
+# Nidhogg CI.  Every build goes through nidhogg/build.sh (podman containers on Linux, the host on macOS).  drgnx's unit
+# suite runs against the built tarballs and gates the release job.  README.md, "CI and releases".
+name: Nidhogg
+
+on:
+  push:
+    branches: [nidhogg-31]
+    tags: ["v*-nidhogg.*"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      drgnx_ref:
+        description: "drgnx branch, tag or commit whose unit suite runs against the build"
+        default: main
+
+permissions:
+  contents: read
+
+env:
+  DRGNX_REF: ${{ inputs.drgnx_ref || 'main' }}
+
+concurrency:
+  group: nidhogg-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  tree:
+    name: Patch series rules
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - run: bash nidhogg/test/tree-test.sh
+      - run: bash nidhogg/test/ci-test.sh
+
+  linux:
+    name: Linux (${{ matrix.distro }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [fedora-44, fedora-45, ubuntu-26.04]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Caches are restored before the build and saved right after it (actions/cache/save), not at the end of the job: a
+      # later failing step (the tarball test) keeps what the build produced.  Every key is identical on every branch, so a
+      # run on macos-ci or a pull request restores what nidhogg-31 (the default branch) saved.  README.md, "CI and releases".
+      - name: Source tree hash, compiled-Lisp inputs, file times
+        id: tree
+        run: |
+          echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+          echo "lisp=$(bash nidhogg/ci/lisp-key.sh)" >> "$GITHUB_OUTPUT"
+          bash nidhogg/ci/set-mtimes.sh
+      # The built tarball, keyed by the exact source tree (git's tree hash of HEAD), the distro and build.sh: an
+      # unchanged tree reuses its tarball (saved only after the build and Emacs's checks passed) and the tarball test, the
+      # artifact upload and drgnx's suite still run.  Never for a release tag: a release is built fresh, so its BUILDINFO
+      # names the tagged commit.
+      - name: Built tarball (same tree, same build.sh)
+        id: tb
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: dist
+          key: tarball-${{ matrix.distro }}-${{ steps.tree.outputs.tree }}-${{ hashFiles('nidhogg/build.sh') }}
+      - name: The cached tarball is intact
+        if: ${{ steps.tb.outputs.cache-hit == 'true' }}
+        run: cd dist && sha256sum -c -- *.sha256
+      # ccache for the C compile.  ccache hashes the preprocessed source and checks the compiler by content (build.sh), so
+      # a restored entry can only be a correct one; the key carries the distro, the compiler's package set (gcc, from the
+      # build dependency list) and the series commit, the fallback everything but the commit.
+      - name: ccache (C objects)
+        id: cc
+        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-${{ matrix.distro }}-gcc-${{ hashFiles(format('nidhogg/deps/{0}.build', matrix.distro)) }}-${{ github.sha }}
+          restore-keys: ccache-${{ matrix.distro }}-gcc-${{ hashFiles(format('nidhogg/deps/{0}.build', matrix.distro)) }}-
+      - name: Package download cache (dnf, apt)
+        id: pk
+        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/pkg-cache
+          key: pkgs-${{ matrix.distro }}-${{ hashFiles(format('nidhogg/deps/{0}.build', matrix.distro)) }}
+          restore-keys: pkgs-${{ matrix.distro }}-
+      # The build's compiled Lisp (generated files under lisp/, .elc, .eln): exact key only.  The Lisp compile is the
+      # dominant cost, the ccache above does not touch it, and a partly stale set would not be rebuilt correctly.  Keyed
+      # by the Lisp and C-side inputs (nidhogg/ci/lisp-key.sh: .eln files embed the Emacs build's ABI hash, which the C
+      # side determines), build.sh (the configure flags) and the distro; build.sh also refuses an entry made by another gcc.
+      - name: Compiled Lisp (same Lisp and C sources)
+        id: lc
+        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/lisp-cache
+          key: lisp-${{ matrix.distro }}-${{ hashFiles(format('nidhogg/deps/{0}.build', matrix.distro)) }}-${{ steps.tree.outputs.lisp }}-${{ hashFiles('nidhogg/build.sh') }}
+      - name: Build
+        id: build
+        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        env:
+          NIDHOGG_BUILD_PKG_CACHE: ${{ runner.temp }}/pkg-cache
+          NIDHOGG_BUILD_CCACHE: ${{ runner.temp }}/ccache
+          NIDHOGG_BUILD_LISP_CACHE: ${{ runner.temp }}/lisp-cache
+        run: |
+          bash nidhogg/build.sh --container "${{ matrix.distro }}" --stage build --memory 12g --jobs 4 --build-dir "$RUNNER_TEMP/build"
+      # saved right after the build, before Emacs's checks and the tarball (a build that failed saves nothing); an entry whose key was found is not saved again
+      - name: Save ccache
+        if: ${{ always() && steps.build.outcome == 'success' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-${{ matrix.distro }}-gcc-${{ hashFiles(format('nidhogg/deps/{0}.build', matrix.distro)) }}-${{ github.sha }}
+      - name: Save package downloads
+        if: ${{ always() && steps.build.outcome == 'success' && steps.pk.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/pkg-cache
+          key: pkgs-${{ matrix.distro }}-${{ hashFiles(format('nidhogg/deps/{0}.build', matrix.distro)) }}
+      - name: Save compiled Lisp
+        if: ${{ always() && steps.build.outcome == 'success' && steps.lc.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/lisp-cache
+          key: lisp-${{ matrix.distro }}-${{ hashFiles(format('nidhogg/deps/{0}.build', matrix.distro)) }}-${{ steps.tree.outputs.lisp }}-${{ hashFiles('nidhogg/build.sh') }}
+      - name: Emacs's checks (nidhogg/check-subset.txt)
+        id: check
+        if: ${{ steps.build.outcome == 'success' }}
+        env:
+          NIDHOGG_BUILD_PKG_CACHE: ${{ runner.temp }}/pkg-cache
+        run: bash nidhogg/build.sh --container "${{ matrix.distro }}" --stage check --memory 12g --jobs 4 --build-dir "$RUNNER_TEMP/build" --check nidhogg/check-subset.txt
+      - name: Write the tarball
+        id: pack
+        if: ${{ steps.check.outcome == 'success' }}
+        env:
+          NIDHOGG_BUILD_PKG_CACHE: ${{ runner.temp }}/pkg-cache
+        run: |
+          V=$(head -n 1 nidhogg/version)
+          bash nidhogg/build.sh --container "${{ matrix.distro }}" --stage pack --memory 12g --jobs 4 --build-dir "$RUNNER_TEMP/build" \
+            --out "dist/nidhogg-$V-${{ matrix.distro }}-$(uname -m).tar.xz"
+      - name: Save built tarball
+        if: ${{ always() && steps.pack.outcome == 'success' && !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: dist
+          key: tarball-${{ matrix.distro }}-${{ steps.tree.outputs.tree }}-${{ hashFiles('nidhogg/build.sh') }}
+      - name: The tarball runs at its prefix and elsewhere
+        run: bash nidhogg/test/tarball-test.sh dist/*.tar.xz "${{ matrix.distro }}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tarball-${{ matrix.distro }}
+          path: dist/
+          if-no-files-found: error
+      - name: Build logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-logs-${{ matrix.distro }}
+          path: ${{ runner.temp }}/build/*.log
+          if-no-files-found: ignore
+
+  macos:
+    name: macOS (NS app)
+    runs-on: xcode-27
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # the same caches and keys as the Linux jobs (see there), saved right after the step that produced them
+      - name: Source tree hash, compiled-Lisp inputs, file times
+        id: tree
+        run: |
+          echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+          echo "lisp=$(bash nidhogg/ci/lisp-key.sh)" >> "$GITHUB_OUTPUT"
+          bash nidhogg/ci/set-mtimes.sh
+      - name: Built tarball (same tree, same build.sh)
+        id: tb
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: dist
+          key: tarball-macos-${{ runner.arch }}-${{ steps.tree.outputs.tree }}-${{ hashFiles('nidhogg/build.sh') }}
+      - name: The cached tarball is intact
+        if: ${{ steps.tb.outputs.cache-hit == 'true' }}
+        run: shasum -a 256 -c dist/*.sha256
+      # Homebrew's downloads (bottles), which brew checks against their checksums
+      - name: Homebrew cache path
+        id: brewdir
+        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        run: echo "dir=$(brew --cache)/downloads" >> "$GITHUB_OUTPUT"
+      - name: Homebrew downloads
+        id: bd
+        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.brewdir.outputs.dir }}
+          key: brew-macos-${{ runner.arch }}-${{ hashFiles('nidhogg/deps/macos.build') }}
+          restore-keys: brew-macos-${{ runner.arch }}-
+      - name: Build dependencies (Homebrew)
+        id: brew
+        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        run: sed 's/#.*//' nidhogg/deps/macos.build | xargs brew install
+      - name: Save Homebrew downloads
+        if: ${{ always() && steps.brew.outcome == 'success' && steps.bd.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.brewdir.outputs.dir }}
+          key: brew-macos-${{ runner.arch }}-${{ hashFiles('nidhogg/deps/macos.build') }}
+      # compiled Lisp: also keyed by the installed gcc and libgccjit versions and the build path (.eln names embed it)
+      - name: Toolchain versions
+        id: tc
+        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        run: echo "v=$(brew list --versions gcc libgccjit | tr ' \n' '--')" >> "$GITHUB_OUTPUT"
+      - name: Compiled Lisp (same Lisp and C sources)
+        id: lc
+        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/lisp-cache
+          key: lisp-macos-${{ runner.arch }}-${{ steps.tc.outputs.v }}-${{ runner.temp }}-${{ steps.tree.outputs.lisp }}-${{ hashFiles('nidhogg/build.sh') }}
+      - name: Build
+        id: build
+        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        env:
+          NIDHOGG_BUILD_LISP_CACHE: ${{ runner.temp }}/lisp-cache
+        run: /bin/bash nidhogg/build.sh --host --stage build --jobs 3 --build-dir "$RUNNER_TEMP/build"
+      - name: Save compiled Lisp
+        if: ${{ always() && steps.build.outcome == 'success' && steps.lc.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/lisp-cache
+          key: lisp-macos-${{ runner.arch }}-${{ steps.tc.outputs.v }}-${{ runner.temp }}-${{ steps.tree.outputs.lisp }}-${{ hashFiles('nidhogg/build.sh') }}
+      - name: Write the tarball
+        id: pack
+        if: ${{ steps.build.outcome == 'success' }}
+        run: |
+          V=$(head -n 1 nidhogg/version)
+          /bin/bash nidhogg/build.sh --host --stage pack --jobs 3 --build-dir "$RUNNER_TEMP/build" --out "dist/nidhogg-$V-macos-$(uname -m).tar.xz"
+      - name: Save built tarball
+        if: ${{ always() && steps.pack.outcome == 'success' && !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: dist
+          key: tarball-macos-${{ runner.arch }}-${{ steps.tree.outputs.tree }}-${{ hashFiles('nidhogg/build.sh') }}
+      - name: The tarball runs unpacked
+        run: bash nidhogg/test/tarball-test.sh dist/*.tar.xz macos
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tarball-macos
+          path: dist/
+          if-no-files-found: error
+      - name: Build logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-logs-macos
+          path: ${{ runner.temp }}/build/*.log
+          if-no-files-found: ignore
+
+  drgnx-linux:
+    name: drgnx suite (Linux, fedora-45 build)
+    # runs once the Linux builds are done, whatever the other distros did: it needs only the fedora-45 tarball (the
+    # download fails by itself when that build failed)
+    needs: linux
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    outputs:
+      drgnx_commit: ${{ steps.drgnx.outputs.commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Black-Dragon-Foundation/drgnx
+          ref: ${{ env.DRGNX_REF }}
+          path: drgnx
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        id: dl
+        continue-on-error: true
+        with:
+          name: tarball-fedora-45
+          path: dist
+      - name: The fedora-45 build made a tarball
+        if: ${{ steps.dl.outcome == 'failure' }}
+        run: |
+          echo "::error::no tarball: the fedora-45 build job failed (see the Linux fedora-45 job), so there is nothing to test"
+          exit 1
+      - name: Record the drgnx commit
+        id: drgnx
+        run: echo "commit=$(git -C drgnx rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: drgnx's unit suite on the built Nidhogg
+        run: bash nidhogg/ci/drgnx-suite.sh dist/*.tar.xz fedora-45 drgnx
+
+  drgnx-macos:
+    name: drgnx suite (macOS)
+    needs: macos
+    runs-on: xcode-27
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Black-Dragon-Foundation/drgnx
+          ref: ${{ env.DRGNX_REF }}
+          path: drgnx
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        id: dl
+        continue-on-error: true
+        with:
+          name: tarball-macos
+          path: dist
+      - name: The macOS build made a tarball
+        if: ${{ steps.dl.outcome == 'failure' }}
+        run: |
+          echo "::error::no tarball: the macOS build job failed (see the macOS job), so there is nothing to test"
+          exit 1
+      - name: drgnx's unit suite on the built Nidhogg
+        run: bash nidhogg/ci/drgnx-suite.sh dist/*.tar.xz macos drgnx
+
+  release:
+    name: Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [tree, linux, macos, drgnx-linux, drgnx-macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: tarball-*
+          path: dist
+          merge-multiple: true
+      - name: The tag is v<nidhogg/version>
+        run: test "$GITHUB_REF_NAME" = "v$(head -n 1 nidhogg/version)"
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRGNX_COMMIT: ${{ needs.drgnx-linux.outputs.drgnx_commit }}
+        run: |
+          V=$(head -n 1 nidhogg/version)
+          cd dist
+          sha256sum -- *.tar.xz > SHA256SUMS
+          commit=$(tar -xJOf "$(ls -- *fedora-45*.tar.xz)" "nidhogg-$V/share/nidhogg/BUILDINFO" | sed -n 's/^commit=//p')
+          printf 'Nidhogg %s, built from commit %s.\n\ndrgnx unit suite passed on Linux and macOS against drgnx commit %s.\n' \
+            "$V" "$commit" "$DRGNX_COMMIT" > ../notes.md
+          cd ..
+          gh release create "$GITHUB_REF_NAME" dist/* --title "Nidhogg $V" --notes-file notes.md

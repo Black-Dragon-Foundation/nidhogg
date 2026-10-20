@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
 # Build Nidhogg in a capped podman container or on the host.  See README.md ("Building").
 #   nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memory SIZE]
-#                    [--build-dir DIR] [--check FILE] [--out FILE] [--dry-run]
+#                    [--build-dir DIR] [--check FILE] [--out FILE] [--stage STAGE] [--dry-run]
+# --stage build|check|pack runs one part on an existing --build-dir (default: all three in one run): build = configure and make
+# (and the compiled-Lisp cache), check = the --check targets in the built tree, pack = install and the tarball (--out).
 # Exit: 0 ok, 1 build/check failed or not enough memory, 2 usage.
 # Test overrides: NIDHOGG_BUILD_UNAME, NIDHOGG_BUILD_NPROC, NIDHOGG_BUILD_MEMORY_KB, NIDHOGG_BUILD_PODMAN,
 # NIDHOGG_BUILD_VMSTAT (a vm_stat stand-in), NIDHOGG_BUILD_HEARTBEAT (seconds between "still running" lines, default 300).
 # NIDHOGG_BUILD_PKG_CACHE=DIR keeps the container's downloaded packages (dnf, apt) in DIR between builds.
+# NIDHOGG_BUILD_CCACHE=DIR (container builds) compiles the C code through ccache with its cache in DIR (ccache is installed
+# in the container; the compiler is checked by content, so a changed gcc never hits).
+# NIDHOGG_BUILD_LISP_CACHE=DIR keeps the build's compiled Lisp (the generated files under lisp/ and leim/: .elc, loaddefs, ...,
+# and obj/native-lisp: the .eln files) in DIR: written after `make`, restored (made newer than every source) before it.  The
+# caller keys DIR on everything that determines the output (the Lisp and C sources, build.sh, the distro, the compiler): an
+# entry is only ever reused for the exact same inputs.
 # bash 3.2-safe (macOS): none of the bash 4 features.
 set -euo pipefail
 
@@ -16,14 +24,14 @@ DISTROS="fedora-44 fedora-45 ubuntu-26.04"
 usage() {
   cat >&2 <<USAGE
 usage: nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memory SIZE]
-                        [--build-dir DIR] [--check FILE] [--out FILE] [--dry-run]
+                        [--build-dir DIR] [--check FILE] [--out FILE] [--stage build|check|pack] [--dry-run]
   DISTRO: $DISTROS
 USAGE
   exit 2
 }
 die() { echo "build.sh: $*" >&2; exit 1; }
 
-MODE="" DISTRO="" PREFIX="" JOBS="" MEMORY="" BUILD_DIR="" CHECK="" OUT="" DRY=0
+MODE="" DISTRO="" PREFIX="" JOBS="" MEMORY="" BUILD_DIR="" CHECK="" OUT="" DRY=0 STAGE=all
 while [ $# -gt 0 ]; do
   case $1 in
     --container) [ $# -ge 2 ] || usage; MODE=container; DISTRO=$2; shift 2 ;;
@@ -34,11 +42,13 @@ while [ $# -gt 0 ]; do
     --build-dir) [ $# -ge 2 ] || usage; BUILD_DIR=$2; shift 2 ;;
     --check) [ $# -ge 2 ] || usage; CHECK=$2; shift 2 ;;
     --out) [ $# -ge 2 ] || usage; OUT=$2; shift 2 ;;
+    --stage) [ $# -ge 2 ] || usage; STAGE=$2; shift 2; case $STAGE in all|build|check|pack) ;; *) usage ;; esac ;;
     --dry-run) DRY=1; shift ;;
     *) echo "unknown option: $1" >&2; usage ;;
   esac
 done
 [ -n "$MODE" ] || usage
+LISP_CACHE=${NIDHOGG_BUILD_LISP_CACHE:-} LC=""
 
 UNAME=${NIDHOGG_BUILD_UNAME:-$(uname -s)}
 PODMAN=${NIDHOGG_BUILD_PODMAN:-podman}
@@ -124,6 +134,12 @@ elif [ "$DRY" = 0 ]; then
 fi
 
 if [ "$MODE" = container ]; then S=/src B=/build; else S=$ROOT B=$BUILD_DIR; fi
+if [ -n "$LISP_CACHE" ]; then
+  if [ "$MODE" = container ]; then LC=/lispcache
+  elif [ "$DRY" = 1 ]; then LC=$LISP_CACHE
+  else mkdir -p "$LISP_CACHE"; LC=$(cd "$LISP_CACHE" && pwd); fi
+  [ "$MODE" = host ] || { [ "$DRY" = 1 ] || { mkdir -p "$LISP_CACHE"; LISP_CACHE=$(cd "$LISP_CACHE" && pwd); }; }
+fi
 
 # the tarball: nidhogg-<version>-<distro>-<arch>.tar.xz (+ .sha256); OUT is its path, its basename is only a hint
 UPSTREAM_VERSION=${VERSION%%-nidhogg.*}
@@ -167,14 +183,16 @@ BODY
 # --- the build script: the same steps in a container and on the host --------------------------------------
 script() {
   printf 'S=%q B=%q P=%q V=%q UPV=%q HB=%q\n' "$S" "$B" "$PREFIX" "$VERSION" "$UPSTREAM_VERSION" "${NIDHOGG_BUILD_HEARTBEAT:-300}"
+  [ -z "$LISP_CACHE" ] || printf 'LC=%q\n' "$LC"
   if [ "$MODE" = container ]; then
     case $DISTRO in
       ubuntu-*)
         [ -z "${NIDHOGG_BUILD_PKG_CACHE:-}" ] || echo 'rm -f /etc/apt/apt.conf.d/docker-clean; echo "Binary::apt::APT::Keep-Downloaded-Packages \"true\";" > /etc/apt/apt.conf.d/keep'
         echo "apt-get update"
-        echo "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \$(sed \"s/#.*//\" \$S/nidhogg/deps/$DISTRO.build)" ;;
-      *) echo "dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install \$(sed \"s/#.*//\" \$S/nidhogg/deps/$DISTRO.build)" ;;
+        echo "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \$(sed \"s/#.*//\" \$S/nidhogg/deps/$DISTRO.build)${NIDHOGG_BUILD_CCACHE:+ ccache}" ;;
+      *) echo "dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install \$(sed \"s/#.*//\" \$S/nidhogg/deps/$DISTRO.build)${NIDHOGG_BUILD_CCACHE:+ ccache}" ;;
     esac
+    [ -z "${NIDHOGG_BUILD_CCACHE:-}" ] || echo 'export CCACHE_DIR=/ccache CCACHE_COMPILERCHECK=content CCACHE_MAXSIZE=500M CC="ccache gcc"; ccache -z >/dev/null'
   fi
   cat <<'BODY'
 # relative links so that a relocated binary finds its dump beside itself
@@ -203,11 +221,29 @@ logged() {
   fi
 }
 mkdir -p "$B/src" "$B/obj"
+BODY
+  case $STAGE in all|build) ;; *) echo 'cd "$B/obj"' ;; esac
+  if [ "$STAGE" = all ] || [ "$STAGE" = build ]; then cat <<'BODY'
 rm -f "$B"/*.log
 # GNU cp's -u (copy only newer) keeps an incremental build dir's mtimes; BSD cp (macOS) has no -u: copy everything
 if cp -u /dev/null "$B/.cp-u-probe" 2>/dev/null; then CP_UPDATE="cp -a -u"; else CP_UPDATE="cp -pR"; fi; rm -f "$B/.cp-u-probe"
 for e in "$S"/* "$S"/.[!.]*; do [ -e "$e" ] || continue; [ "${e##*/}" = .git ] || $CP_UPDATE "$e" "$B/src/"; done
 cd "$B/src"
+BODY
+  if [ -n "$LISP_CACHE" ]; then cat <<'BODY'
+# the compiled-Lisp cache (used only when made by the same compiler and architecture): restored files all get one timestamp, newer than every source (and equal among themselves, so
+# no .eln is older than its .elc), so that make sees them as up to date
+cc_id() { printf '%s %s\n' "$(gcc --version | head -n 1)" "$(uname -m)"; }
+if [ -f "$LC/stamp" ] && [ "$(cat "$LC/stamp")" = "$(cc_id)" ]; then
+  phase restore compiled Lisp
+  tar -C "$LC" -cf - src obj | tar -C "$B" -xf -
+  touch "$B/.restored"
+  (cd "$LC/src" && find . -type f) | while IFS= read -r f; do touch -r "$B/.restored" "$B/src/$f"; done
+  (cd "$LC/obj" && find . -type f) | while IFS= read -r f; do touch -r "$B/.restored" "$B/obj/$f"; done
+fi
+BODY
+  fi
+  cat <<'BODY'
 phase autogen
 logged "$B/autogen.log" ./autogen.sh
 cd "$B/obj"
@@ -219,13 +255,26 @@ grep -Eq 'native lisp compiler\? +yes' "$B/configure.log" || { echo "configure f
 BODY
   echo "phase make -j$JOBS"
   echo "logged \"\$B/make.log\" make -j$JOBS"
-  if [ -n "$CHECK" ]; then
+  if [ -n "$LISP_CACHE" ]; then cat <<'BODY'
+phase save compiled Lisp
+rm -rf "$LC/stamp" "$LC/src" "$LC/obj"
+mkdir -p "$LC/src" "$LC/obj"
+# the files make generated under lisp/ and leim/ (those the sources do not have), and the .eln files
+(cd "$B/src" && find lisp leim -type f | while IFS= read -r f; do [ -e "$S/$f" ] || echo "$f"; done > "$B/lisp-cache.list" && tar -cf - -T "$B/lisp-cache.list") | tar -C "$LC/src" -xf -
+[ ! -d "$B/obj/native-lisp" ] || tar -C "$B/obj" -cf - native-lisp | tar -C "$LC/obj" -xf -
+cc_id > "$LC/stamp"
+BODY
+  fi
+  fi
+  if [ "$MODE" = container ] && [ -n "${NIDHOGG_BUILD_CCACHE:-}" ] && [ "$STAGE" != pack ]; then echo 'ccache -s || true'; fi
+  if [ -n "$CHECK" ] && { [ "$STAGE" = all ] || [ "$STAGE" = check ]; }; then
     for t in $(sed "s/#.*//" "$CHECK" 2>/dev/null || echo "<targets of $CHECK>"); do
       echo "phase check $t"
       echo "logged \"\$B/check.log\" make -C test $t"
     done
   fi
-  if [ -n "$OUT" ]; then
+  if [ "$STAGE" = build ] || [ "$STAGE" = check ]; then :
+  elif [ -n "$OUT" ]; then
     out_steps
   elif [ "$MODE" = host ] && [ "$UNAME" = Darwin ]; then
     echo "phase install"
@@ -240,14 +289,17 @@ BODY
 
 # --- run --------------------------------------------------------------------------------------------------
 if [ "$MODE" = container ]; then
-  if [ -n "$OUT" ]; then MOUNT="$OUT_DIR:/out:Z"; else MOUNT="$PREFIX:$PREFIX:Z"; [ "$DRY" = 1 ] || mkdir -p "$PREFIX"; fi
+  if [ "$STAGE" = build ] || [ "$STAGE" = check ]; then MOUNT=""
+  elif [ -n "$OUT" ]; then MOUNT="$OUT_DIR:/out:Z"; else MOUNT="$PREFIX:$PREFIX:Z"; [ "$DRY" = 1 ] || mkdir -p "$PREFIX"; fi
   NAME=nidhogg-build-$$
   CACHE_ARGS=""
   if [ -n "${NIDHOGG_BUILD_PKG_CACHE:-}" ]; then
     case $DISTRO in ubuntu-*) CACHE_ARGS="-v $NIDHOGG_BUILD_PKG_CACHE/apt:/var/cache/apt/archives:Z" ;;
       *) CACHE_ARGS="-v $NIDHOGG_BUILD_PKG_CACHE/dnf:/var/cache/libdnf5:Z" ;; esac
   fi
-  CMD_HEAD="$PODMAN run --rm --name $NAME --memory $MEMORY --memory-swap $MEMORY -v $ROOT:/src:ro,Z -v $BUILD_DIR:/build:Z -v $MOUNT $CACHE_ARGS $IMAGE"
+  [ -z "${NIDHOGG_BUILD_CCACHE:-}" ] || CACHE_ARGS="$CACHE_ARGS -v $NIDHOGG_BUILD_CCACHE:/ccache:Z"
+  [ -z "$LISP_CACHE" ] || CACHE_ARGS="$CACHE_ARGS -v $LISP_CACHE:/lispcache:Z"
+  CMD_HEAD="$PODMAN run --rm --name $NAME --memory $MEMORY --memory-swap $MEMORY -v $ROOT:/src:ro,Z -v $BUILD_DIR:/build:Z ${MOUNT:+-v $MOUNT} $CACHE_ARGS $IMAGE"
   if [ "$DRY" = 1 ]; then
     echo "$CMD_HEAD bash -euo pipefail -c '"
     script
@@ -256,7 +308,9 @@ if [ "$MODE" = container ]; then
   fi
   command -v "$PODMAN" >/dev/null 2>&1 || die "podman not found (podman only; no docker)"
   echo "+ $CMD_HEAD bash -euo pipefail -c <script>"
-  [ -z "$CACHE_ARGS" ] || mkdir -p "$NIDHOGG_BUILD_PKG_CACHE/apt" "$NIDHOGG_BUILD_PKG_CACHE/dnf"
+  [ -z "${NIDHOGG_BUILD_CCACHE:-}" ] || mkdir -p "$NIDHOGG_BUILD_CCACHE"
+  [ -z "$LISP_CACHE" ] || mkdir -p "$LISP_CACHE"
+  [ -z "${NIDHOGG_BUILD_PKG_CACHE:-}" ] || mkdir -p "$NIDHOGG_BUILD_PKG_CACHE/apt" "$NIDHOGG_BUILD_PKG_CACHE/dnf"
   # stop and remove our own container (and only it) however we end
   cleanup() {
     [ -z "${RUN_PID:-}" ] || kill "$RUN_PID" 2>/dev/null || true

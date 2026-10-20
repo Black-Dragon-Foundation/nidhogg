@@ -67,6 +67,8 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   `... make still running, N min` line every 5 minutes (`NIDHOGG_BUILD_HEARTBEAT` seconds), and on failure the last 100
   lines of the failing log. The container is named `nidhogg-build-<pid>` and stopped and removed on exit, INT or TERM.
   `NIDHOGG_BUILD_PKG_CACHE=DIR` keeps the container's downloaded packages (dnf, apt) in DIR between builds (CI caches it).
+  `NIDHOGG_BUILD_CCACHE=DIR` (containers) compiles the C code through ccache (installed in the container, compiler checked
+  by content) with its cache in DIR; the `.eln` files from native compilation do not go through ccache.
 - `--check FILE` runs the `make -C test` targets listed in FILE (`nidhogg/check-subset.txt` is what CI runs).
 - `bash nidhogg/test/build-test.sh` checks the dry-run output.
 
@@ -87,6 +89,46 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
 - `bash nidhogg/test/tarball-test.sh TARBALL DISTRO` unpacks at the prefix and elsewhere (a `--memory 2g` container on
   Linux) and runs the checks on each. On Linux they start with `ldd` on every program in `bin/` and `libexec/`: a
   library not found fails the test, all of them named at once (their packages belong in `deps/<distro>.runtime`).
+
+## CI and releases
+
+`.github/workflows/build.yml` runs on pushes to `nidhogg-31`, `v*-nidhogg.*` tags, pull requests and by hand
+(`drgnx_ref` input: the drgnx branch, tag or commit under test, default `main`).
+
+- `tree`: `tree-test.sh` and `ci-test.sh` (full history and tags).
+- `linux` (fedora-44, fedora-45, ubuntu-26.04): `build.sh --container D --stage build`, the cache saves, then `--stage check
+  --check nidhogg/check-subset.txt`, then `--stage pack --out ...` (so a failing check keeps the build's caches), then
+  `tarball-test.sh`. `macos`: Homebrew `deps/macos.build`, `build.sh --host` (`--stage build`, then `--stage pack`),
+  `tarball-test.sh macos`. Each uploads its tarball and `.sha256`.
+- `drgnx-linux` (fedora-45 tarball) and `drgnx-macos`: `nidhogg/ci/drgnx-suite.sh TARBALL DISTRO DRGNX_DIR` runs drgnx's
+  unit suite with `DRGNX_EMACS` set to the built Nidhogg (the `:timing` tests in a second run). Locally, a narrowed run:
+  `DRGNX_TEST_SELECTOR='drgnx-doctor/' bash nidhogg/ci/drgnx-suite.sh TARBALL fedora-44 ../drgnx`.
+- `release` (tags only) needs all five jobs, fails unless the tag is `v$(cat nidhogg/version)`, and publishes the
+  tarballs, their `.sha256` files and `SHA256SUMS`; the notes name the built commit and the drgnx commit tested.
+- Caches (`actions/cache/restore` before the build, `actions/cache/save` right after the step that produced them, so a
+  later failing step, e.g. the tarball test, loses nothing; a save is skipped when its key was already found, and a build
+  that failed saves nothing). A key is immutable: change its inputs and the key changes; to force a rebuild, edit
+  `build.sh` or delete the entry in the repository's Actions caches. Linux (`D` = distro, `G` = hash of `deps/D.build`):
+  - built tarball: `tarball-D-<git tree hash of HEAD>-<hash of build.sh>`, exact. A hit skips the build and Emacs's
+    checks; the tarball test, the upload and drgnx's suite still run. Never used or saved for a release tag: a release is
+    built fresh.
+  - compiled Lisp: `lisp-D-G-<nidhogg/ci/lisp-key.sh>-<hash of build.sh>`, exact (no fallback: a partly stale set is not
+    rebuilt correctly). The AOT native compilation of the Lisp (`.elc`, `.eln`) is the dominant build cost and ccache does
+    not touch it. `lisp-key.sh` hashes the git trees of `lisp`, `leim`, `src` (the C side: `.eln` files embed the Emacs
+    build's ABI hash, which the primitives determine), `lib`, `lib-src`, `etc`, the generators and configure inputs; docs,
+    tests, `nidhogg/` and CI files are left out, so a change to those still hits. `build.sh` (`NIDHOGG_BUILD_LISP_CACHE`)
+    saves the generated files of `lisp/` and `leim/` plus `native-lisp/` after `make`, and restores them with one
+    timestamp newer than every source (CI first sets every tracked file's mtime to the commit time,
+    `nidhogg/ci/set-mtimes.sh`), so `make` sees them up to date; an entry made by another gcc is ignored.
+  - ccache for the C objects: `ccache-D-gcc-G-<commit>`, restored from the same without the commit (ccache hashes the
+    preprocessed source and checks gcc by content). Downloaded packages (dnf, apt): `pkgs-D-G`.
+  - macOS: the tarball (`tarball-macos-<arch>-...`), Homebrew's downloads (`brew-macos-<arch>-<hash of deps/macos.build>`,
+    Homebrew verifies checksums) and compiled Lisp (`lisp-macos-<arch>-<gcc and libgccjit versions>-<runner temp>-...`).
+  - Scoping: a run restores caches of its own branch or the default branch (`nidhogg-31`), and a pull request those of its
+    base; never those of sibling branches or other tags. Keys are identical on every branch, so a run on `macos-ci` or a
+    pull request reuses what `nidhogg-31` saved. Unused caches are evicted after 7 days and the oldest go first above 10 GB
+    ([GitHub: dependency caching](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)).
+- Actions are pinned to commit SHAs. `bash nidhogg/test/ci-test.sh` checks these rules.
 
 ## Reporting issues
 

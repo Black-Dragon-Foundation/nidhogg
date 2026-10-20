@@ -24,6 +24,7 @@
 !.clangd
 !.dir-locals.el
 !.gitattributes
+!/.github/
 !.gitignore
 !.gitlab-ci.yml
 !.mailmap

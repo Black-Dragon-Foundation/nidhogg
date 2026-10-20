@@ -1,0 +1,2 @@
+self-hosted-runner:
+  labels: [xcode-27]   # GitHub's macOS 27 image, named after its Xcode (as drgnx's workflows)
