@@ -1,0 +1,26 @@
+# Packages a Nidhogg tarball needs at run time on Fedora 44.  gcc and libgccjit: native compilation runs them.
+gcc
+libgccjit
+gtk3
+harfbuzz
+cairo
+gnutls
+libtree-sitter0.25
+libxml2
+sqlite-libs
+giflib
+libtiff
+libwebp
+lcms2
+gmp
+librsvg2
+libjpeg-turbo
+libpng
+dbus-libs
+systemd-libs
+libselinux
+fontconfig
+freetype
+libacl
+zlib-ng-compat
+ncurses-libs

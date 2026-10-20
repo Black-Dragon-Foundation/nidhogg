@@ -1,0 +1,11 @@
+# Homebrew packages a Nidhogg macOS tarball needs at run time (native compilation runs gcc/libgccjit).
+gcc
+libgccjit
+gnutls
+tree-sitter
+librsvg
+sqlite
+gmp
+webp
+little-cms2
+libxml2

@@ -1,0 +1,16 @@
+# Homebrew packages the macOS (NS) build needs.
+autoconf
+automake
+texinfo
+pkgconf
+gnu-sed
+gnutls
+tree-sitter
+libgccjit
+gcc
+librsvg
+sqlite
+gmp
+webp
+little-cms2
+libxml2

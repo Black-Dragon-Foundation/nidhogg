@@ -34,3 +34,22 @@ git rebase --onto emacs-31.2 emacs-31.1 nidhogg-31
 echo 31.2-nidhogg.1 > nidhogg/version                    # amend into the tree commit
 bash nidhogg/test/tree-test.sh emacs-31.2
 ```
+
+## Building
+
+```bash
+nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memory SIZE]
+                 [--build-dir DIR] [--check FILE] [--dry-run]
+```
+
+- `--container DISTRO` (`fedora-44`, `fedora-45`, `ubuntu-26.04`) builds in a memory-capped podman container (podman only,
+  never docker). `--host` builds on this machine (NS app on macOS; on Linux the packages in `nidhogg/deps/<distro>.build`
+  must be installed).
+- Configure flags: `--with-native-compilation=aot --with-tree-sitter --with-pgtk` (Linux), `--with-ns ...` (macOS).
+- Memory rule: the container cap is min(6 GiB, free memory - 1 GiB), and the build is refused below 3 GiB. `make -j` is
+  min(CPUs, cap / 1.5 GiB). `--memory` and `--jobs` override.
+- `--prefix` defaults to `/opt/nidhogg/<version>` (macOS: where `Nidhogg.app` goes).
+- `--build-dir` keeps the tree and logs (`autogen.log configure.log make.log check.log install.log`) for incremental
+  rebuilds; by default a temporary directory is used and removed on success. A failed build names its log.
+- `--check FILE` runs the `make -C test` targets listed in FILE (`nidhogg/check-subset.txt` is what CI runs).
+- `bash nidhogg/test/build-test.sh` checks the dry-run output.
