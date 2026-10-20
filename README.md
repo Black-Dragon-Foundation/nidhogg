@@ -43,6 +43,20 @@ echo 31.2-nidhogg.1 > nidhogg/version                    # amend into the tree c
 bash nidhogg/test/tree-test.sh emacs-31.2
 ```
 
+`AGENTS.md` is Nidhogg's own (it replaces upstream's, so no agent ever sends anything to GNU), `CLAUDE.md` is
+`@AGENTS.md`, and `README.md` is Nidhogg's README (upstream ships only `README`; if it ever adds a `README.md`, ours
+wins). If the rebase stops, and `git diff --name-only --diff-filter=U` lists only `AGENTS.md`, `CLAUDE.md` and/or
+`README.md`, keep Nidhogg's version and continue (during a rebase "theirs" is the commit being replayed, i.e. Nidhogg's):
+
+```bash
+git checkout --theirs -- AGENTS.md CLAUDE.md README.md && git add AGENTS.md CLAUDE.md README.md && git rebase --continue
+```
+
+(Name only the files that conflict.) Any other conflict stops for a human. An upstream edit to `CLAUDE.md` that applies
+without a conflict is caught by `tree-test.sh`: restore it with `printf '@AGENTS.md\n' > CLAUDE.md` and amend the agents
+commit. `bash nidhogg/test/agents-test.sh` checks these commands on a throwaway repo, including upstream adding
+`README.md`.
+
 ## Building
 
 ```bash
@@ -103,7 +117,7 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
 - `drgnx-linux` (fedora-45 tarball) and `drgnx-macos`: `nidhogg/ci/drgnx-suite.sh TARBALL DISTRO DRGNX_DIR` runs drgnx's
   unit suite with `DRGNX_EMACS` set to the built Nidhogg (the `:timing` tests in a second run). Locally, a narrowed run:
   `DRGNX_TEST_SELECTOR='drgnx-doctor/' bash nidhogg/ci/drgnx-suite.sh TARBALL fedora-44 ../drgnx`.
-- `release` (tags only) needs all five jobs, fails unless the tag is `v$(cat nidhogg/version)`, and publishes the
+- `release` (a pushed `v*` tag only, never a manual run or a pull request) needs all five jobs, fails unless the tag is `v$(cat nidhogg/version)`, and publishes the
   tarballs, their `.sha256` files and `SHA256SUMS`; the notes name the built commit and the drgnx commit tested.
 - Caches (`actions/cache/restore` before the build, `actions/cache/save` right after the step that produced them, so a
   later failing step, e.g. the tarball test, loses nothing; a save is skipped when its key was already found, and a build
@@ -133,4 +147,6 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
 ## Reporting issues
 
 - Problems specific to Nidhogg (its patches, build, or `nidhogg-version`) go to this repository's issue tracker.
-- If a bug also reproduces in GNU Emacs, report it upstream with `M-x report-emacs-bug`.
+- Nidhogg's maintainers never forward reports to GNU, and nothing in Nidhogg sends anything upstream. If you reproduce
+  a bug in a stock GNU Emacs build (not Nidhogg), you may report it to GNU yourself, in your own words, following
+  GNU's own guidelines.

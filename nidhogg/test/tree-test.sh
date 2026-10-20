@@ -31,9 +31,16 @@ else
   done < <(git log --format=%s "$base..HEAD")
 fi
 
-# local artifacts: upstream itself tracks AGENTS.md and CLAUDE.md, so the series may only leave those untouched
-# and may not add any other agent/plan file
-bad=$(git ls-files | grep -E '^(AGENTS\.md|CLAUDE\.md|\.claude/|\.superpowers/|docs/plans/)' |
+# agent rules: upstream tracks AGENTS.md and CLAUDE.md; Nidhogg replaces them with its own (never send anything to GNU)
+grep -qxF '# AGENTS.md — Nidhogg — agent rules' AGENTS.md 2>/dev/null ||
+  fail "AGENTS.md is not Nidhogg's version (marker line '# AGENTS.md — Nidhogg — agent rules' is missing)"
+[ "$(cat CLAUDE.md 2>/dev/null)" = "@AGENTS.md" ] || fail "CLAUDE.md is not Nidhogg's version (it must be '@AGENTS.md')"
+
+# README.md is Nidhogg's (upstream ships only README; a rebase keeps ours if upstream ever adds README.md)
+[ "$(head -n 1 README.md 2>/dev/null)" = "# Nidhogg" ] || fail "README.md is not Nidhogg's version (first line must be '# Nidhogg')"
+
+# local artifacts: the series may not add any other agent/plan file
+bad=$(git ls-files | grep -E '^(\.claude/|\.superpowers/|docs/plans/)' |
   while IFS= read -r f; do
     if [ -n "${base:-}" ] && git cat-file -e "$base:$f" 2>/dev/null; then
       git diff --quiet "$base" -- "$f" || echo "$f"
