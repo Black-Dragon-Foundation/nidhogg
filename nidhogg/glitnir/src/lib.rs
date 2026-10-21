@@ -5,6 +5,9 @@
 use std::sync::Mutex;
 
 pub mod ffi;
+pub mod geom;
+pub mod region;
+pub mod rng;
 pub mod stats;
 
 /// All of the library's global state, behind one lock.
