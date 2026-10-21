@@ -557,6 +557,7 @@ directory got moved.  This is set to be a pair in the form of:
   ;; Set up the mechanism to allow inhibiting native-comp via
   ;; file-local variables.
   (defvar comp--no-native-compile (make-hash-table :test #'equal)))
+(if (featurep 'nidhogg-watchdog) (load "nidhogg-watchdog"))
 
 
 ;; Avoid error if user loads some more libraries now.
