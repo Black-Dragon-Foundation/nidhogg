@@ -10,14 +10,16 @@ on:
   workflow_dispatch:
     inputs:
       drgnx_ref:
-        description: "drgnx branch, tag or commit whose unit suite runs against the build"
-        default: main
+        description: "drgnx branch, tag or commit whose unit suite runs against the build (empty: the pinned commit)"
+        default: ""
 
 permissions:
   contents: read
 
+# The drgnx commit under test is pinned, so a drgnx push never turns Nidhogg red: bump it by hand to a drgnx main
+# commit whose own CI is green (README.md, "CI and releases").
 env:
-  DRGNX_REF: ${{ inputs.drgnx_ref || 'main' }}
+  DRGNX_REF: ${{ inputs.drgnx_ref || 'f2314a35681a579ccafc7a0d88a812bd03493679' }}
 
 concurrency:
   group: nidhogg-${{ github.ref }}
