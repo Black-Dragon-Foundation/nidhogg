@@ -1177,7 +1177,9 @@ add_env (char **env, char **new_env, char *string)
       char *p = *ep, *q = string;
       while (ok)
 	{
-	  if (*p && *q != *p)
+	  /* At the end of EP's string (a bare name) only a '=' in the new
+	     string can still match; never read past that NUL.  */
+	  if (*p == 0 ? *q != '=' : *q != *p)
 	    break;
 	  if (*q == 0)
 	    /* The string is a lone variable name; keep it for now, we
