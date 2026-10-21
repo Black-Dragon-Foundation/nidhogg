@@ -332,6 +332,7 @@ extern void nh_wd_unwind_phases (struct handler *catch);
 /* The GLib poll wrapper and the dialog depth (pgtk only).
    [Task 12, nidhogg-watchdog-gtk.c]  */
 extern void nh_wd_gtk_install (void);
+extern void nh_wd_gtk_syms (void);
 extern int nh_wd_dialog_depth;
 
 #endif /* HAVE_NIDHOGG_WATCHDOG */

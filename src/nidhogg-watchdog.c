@@ -639,6 +639,9 @@ syms_of_nidhogg_watchdog (void)
   nh_wd_monitor_syms ();
 
   nh_wd_syms_of_sample ();
+#ifdef HAVE_PGTK
+  nh_wd_gtk_syms ();
+#endif
 
   Fprovide (intern_c_string ("nidhogg-watchdog"), Qnil);
 }
