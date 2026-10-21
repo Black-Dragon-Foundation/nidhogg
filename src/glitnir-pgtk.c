@@ -275,8 +275,8 @@ glitnir_pgtk_failed (const char *what, int32_t rc)
 	{
 	  /* The stock draw, in this very draw.  */
 	  cairo_surface_t *src = FRAME_X_OUTPUT (f)->cr_surface_visible_bell;
-	  if (src == NULL && FRAME_CR_ACTIVE_CONTEXT (f) != NULL)
-	    src = cairo_get_target (FRAME_CR_ACTIVE_CONTEXT (f));
+	  if (src == NULL && f->output_data.pgtk->cr_active != NULL)
+	    src = cairo_get_target (f->output_data.pgtk->cr_active);
 	  if (src != NULL)
 	    {
 	      cairo_set_source_surface (r->draw_cr, src, 0, 0);
