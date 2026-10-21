@@ -21,11 +21,13 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #ifdef HAVE_GLITNIR
 
+#include <math.h>
 #include <string.h>
 #include <time.h>
 
 #include "lisp.h"
 #include "frame.h"
+#include "window.h"
 #include "pgtkterm.h"
 #include "process.h"
 #include "glitnir-pgtk.h"
@@ -33,13 +35,25 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 uintmax_t glitnir_pgtk_calls;
 uintmax_t glitnir_pgtk_snapshot_copies;
 
-/* What the glue keeps per root frame (FRAME_X_OUTPUT (f)->glitnir).  The
-   stock path's whole picture is the widget's; the record is made by the
+/* Damage rectangles a frame batches before one glitnir_damage_add_n.  */
+enum { GLITNIR_PGTK_BATCH = 32 };
+
+/* What the glue keeps per frame (FRAME_X_OUTPUT (f)->glitnir): the damage
+   of every recorded frame and, for a root frame, its frame-time record.
+   The stock path's whole picture is the widget's; the record is made by the
    toplevel frame clock's after-paint handler, one entry per paint.  */
 struct glitnir_root
 {
   uint64_t id;
   struct frame *frame;
+
+  /* Damage in device pixels not yet handed to Glitnir, the scale of the
+     frame's own surface when last seen, and what Glitnir holds: anything
+     (PENDING), the whole frame (ALL), an entry to forget (KNOWN).  */
+  GlitnirRect batch[GLITNIR_PGTK_BATCH];
+  int nbatch;
+  double sx, sy;
+  bool image, pending, all, known;
 
   /* Monotonic ns of the last redisplay start, commit and draw (0: none since
      the last record).  */
@@ -84,13 +98,12 @@ glitnir_root_of (struct frame *f)
   return f;
 }
 
-/* The state of F's root, allocated on first use; NULL for a frame that is
-   not a pgtk window.  */
+/* The state of F, allocated on first use; NULL for a frame that is not a
+   pgtk window.  */
 static struct glitnir_root *
-root_state (struct frame *f)
+frame_state (struct frame *f)
 {
   static uint64_t last_id;
-  f = glitnir_root_of (f);
   if (!FRAME_PGTK_P (f) || f->output_data.pgtk == NULL)
     return NULL;
   struct glitnir_root *r = FRAME_X_OUTPUT (f)->glitnir;
@@ -99,9 +112,279 @@ root_state (struct frame *f)
       r = xzalloc (sizeof *r);
       r->id = ++last_id;
       r->frame = f;
+      r->sx = r->sy = 1;
       FRAME_X_OUTPUT (f)->glitnir = r;
     }
   return r;
+}
+
+/* The state of F's root.  */
+static struct glitnir_root *
+root_state (struct frame *f)
+{
+  return frame_state (glitnir_root_of (f));
+}
+
+/* F's state when Glitnir records F's damage, else NULL: `glitnir-enable',
+   a pgtk frame that is not a tooltip, whose cairo context is its own and
+   draws on an ARGB32 image surface (as GDK's Wayland surfaces are).
+   x-export-frames swaps in an RGB24 image or a vector surface: nothing is
+   recorded meanwhile.  Between a resize and the next draw F has no
+   context; it is recorded if its last one was an image.  */
+static struct glitnir_root *
+recording (struct frame *f)
+{
+  if (!glitnir_enable || !FRAME_PGTK_P (f) || f->output_data.pgtk == NULL
+      || FRAME_TOOLTIP_P (f))
+    return NULL;
+  cairo_t *cr = f->output_data.pgtk->cr_context;
+  if (cr == NULL)
+    {
+      struct glitnir_root *r = FRAME_X_OUTPUT (f)->glitnir;
+      return r && r->image ? r : NULL;
+    }
+  cairo_surface_t *s = cairo_get_target (cr);
+  if (cairo_surface_get_type (s) != CAIRO_SURFACE_TYPE_IMAGE
+      || cairo_image_surface_get_format (s) != CAIRO_FORMAT_ARGB32)
+    return NULL;
+  struct glitnir_root *r = frame_state (f);
+  cairo_surface_get_device_scale (s, &r->sx, &r->sy);
+  r->image = true;
+  return r;
+}
+
+bool
+glitnir_pgtk_active_p (struct frame *f)
+{
+  return recording (f) != NULL;
+}
+
+/* The state changes before each call: the unblock_input that ends a call
+   may run an atimer (the visible bell's) that records damage itself.  */
+
+/* Hand F's batched rectangles to Glitnir.  */
+static void
+flush_damage (struct glitnir_root *r)
+{
+  int n = r->nbatch;
+  if (n == 0)
+    return;
+  r->nbatch = 0;
+  r->pending = r->known = true;
+  GLITNIR_CALL (glitnir_damage_add_n (r->id, r->batch, n));
+}
+
+static void
+damage_all (struct glitnir_root *r)
+{
+  if (r->all)
+    return;
+  r->nbatch = 0;		/* the whole frame holds them */
+  r->pending = r->all = r->known = true;
+  GLITNIR_CALL (glitnir_damage_all (r->id));
+}
+
+/* The device-pixel rectangle of F's logical X, Y, W, H: clipped to F,
+   scaled by F's surface and rounded outward.  Empty when nothing is left.  */
+static GlitnirRect
+device_rect (struct frame *f, struct glitnir_root *r, int x, int y, int w,
+	     int h)
+{
+  int x0 = max (x, 0), y0 = max (y, 0);
+  int x1 = min (x + w, FRAME_PIXEL_WIDTH (f));
+  int y1 = min (y + h, FRAME_PIXEL_HEIGHT (f));
+  if (x1 <= x0 || y1 <= y0)
+    return (GlitnirRect) { 0, 0, 0, 0 };
+  int dx0 = floor (x0 * r->sx), dy0 = floor (y0 * r->sy);
+  int dx1 = ceil (x1 * r->sx), dy1 = ceil (y1 * r->sy);
+  return (GlitnirRect) { dx0, dy0, dx1 - dx0, dy1 - dy0 };
+}
+
+void
+glitnir_pgtk_damage (struct frame *f, int x, int y, int w, int h)
+{
+  struct glitnir_root *r = recording (f);
+  if (r == NULL || r->all)
+    return;
+  /* No surface yet: its first picture is all new.  */
+  if (f->output_data.pgtk->cr_context == NULL)
+    {
+      damage_all (r);
+      return;
+    }
+  GlitnirRect d = device_rect (f, r, x, y, w, h);
+  if (d.w <= 0 || d.h <= 0)
+    return;
+  if (r->nbatch > 0)
+    {
+      /* A run of glyph strings on one row grows the last rectangle.  */
+      GlitnirRect *l = &r->batch[r->nbatch - 1];
+      if (l->y == d.y && l->h == d.h && d.x <= l->x + l->w
+	  && d.x + d.w >= l->x)
+	{
+	  int right = max (l->x + l->w, d.x + d.w);
+	  l->x = min (l->x, d.x);
+	  l->w = right - l->x;
+	  return;
+	}
+    }
+  if (r->nbatch == GLITNIR_PGTK_BATCH)
+    flush_damage (r);
+  r->batch[r->nbatch++] = d;
+}
+
+void
+glitnir_pgtk_damage_all (struct frame *f)
+{
+  struct glitnir_root *r = recording (f);
+  if (r)
+    damage_all (r);
+}
+
+/* pgtk_scroll_run copied W's rows FROM_Y..FROM_Y+HEIGHT to TO_Y (logical
+   pixels, X and WIDTH the window's box).  */
+void
+glitnir_pgtk_scroll (struct frame *f, struct window *w, int x, int from_y,
+		     int to_y, int width, int height)
+{
+  struct glitnir_root *r = recording (f);
+  if (r == NULL || r->all)
+    return;
+  if (f->output_data.pgtk->cr_context == NULL)
+    {
+      damage_all (r);
+      return;
+    }
+  int top = min (from_y, to_y), bottom = max (from_y, to_y) + height;
+  GlitnirRect area = device_rect (f, r, x, top, width, bottom - top);
+  /* The rows the copy uncovered.  */
+  GlitnirRect exposed = (to_y < from_y
+			 ? device_rect (f, r, x, to_y + height, width,
+					from_y - to_y)
+			 : device_rect (f, r, x, from_y, width,
+					to_y - from_y));
+  r->pending = r->known = true;
+  GLITNIR_CALL (glitnir_scroll (r->id, w->sequence_number, area,
+				lround ((to_y - from_y) * r->sy), exposed));
+}
+
+/* A glyph string covers its row's clipping rectangle vertically and its
+   glyphs, their overhangs and the backgrounds it draws for its successors
+   horizontally (pgtk_draw_glyph_string).  */
+void
+glitnir_pgtk_damage_glyphs (struct glyph_string *s)
+{
+  if (!glitnir_enable)
+    return;
+  NativeRectangle clip;
+  get_glyph_string_clip_rect (s, &clip);
+  int x0 = s->x - max (s->left_overhang, 0);
+  int x1 = (s->x + max (s->width, s->background_width)
+	    + max (s->right_overhang, 0));
+  if (s->next && s->right_overhang && !s->for_overlaps)
+    {
+      int width = 0;
+      for (struct glyph_string *next = s->next;
+	   next && width < s->right_overhang;
+	   width += next->width, next = next->next)
+	if (next->first_glyph->type != IMAGE_GLYPH)
+	  x1 = max (x1, next->x + next->background_width);
+    }
+  if (s->extends_to_end_of_line_p)
+    x1 = max (x1, clip.x + (int) clip.width);
+  glitnir_pgtk_damage (s->f, x0, clip.y, x1 - x0, clip.height);
+}
+
+/* A hollow, bar or hbar cursor (a box cursor is a glyph string): at most
+   the cursor glyph, clipped to its row.  */
+void
+glitnir_pgtk_damage_cursor (struct window *w, struct glyph_row *row,
+			    bool on_p)
+{
+  if (!on_p || !glitnir_enable)
+    return;
+  struct glyph *g = get_phys_cursor_glyph (w);
+  if (g == NULL)
+    return;
+  glitnir_pgtk_damage (XFRAME (w->frame),
+		       WINDOW_TEXT_TO_FRAME_PIXEL_X (w, w->phys_cursor.x),
+		       WINDOW_TO_FRAME_PIXEL_Y (w, max (0, row->y)),
+		       max (g->pixel_width, w->phys_cursor_width) + 1,
+		       row->visible_height);
+}
+
+void
+glitnir_pgtk_damage_fringe (struct window *w,
+			    struct draw_fringe_bitmap_params *p)
+{
+  struct frame *f = XFRAME (WINDOW_FRAME (w));
+  if (p->bx >= 0 && !p->overlay_p)
+    glitnir_pgtk_damage (f, p->bx, p->by, p->nx, p->ny);
+  if (p->which)
+    glitnir_pgtk_damage (f, p->x, p->y, p->wd, p->h);
+}
+
+/* The four strips pgtk_clear_under_internal_border fills.  */
+void
+glitnir_pgtk_damage_internal_border (struct frame *f)
+{
+  int border = FRAME_INTERNAL_BORDER_WIDTH (f);
+  int width = FRAME_PIXEL_WIDTH (f), height = FRAME_PIXEL_HEIGHT (f);
+  int margin = FRAME_TOP_MARGIN_HEIGHT (f);
+  int bottom_margin = FRAME_BOTTOM_MARGIN_HEIGHT (f);
+  glitnir_pgtk_damage (f, 0, margin, width, border);
+  glitnir_pgtk_damage (f, 0, 0, border, height);
+  glitnir_pgtk_damage (f, width - border, 0, border, height);
+  glitnir_pgtk_damage (f, 0, height - bottom_margin - border, width, border);
+}
+
+ptrdiff_t
+glitnir_pgtk_damage_take (struct frame *f, GlitnirRect *out, ptrdiff_t nmax)
+{
+  struct glitnir_root *r = recording (f);
+  if (r == NULL)
+    return 0;
+  flush_damage (r);
+  if (!r->pending)
+    return 0;
+  const GlitnirRect *p = NULL;
+  size_t n = 0;
+  r->pending = r->all = false;
+  if (GLITNIR_CALL (glitnir_damage_pending (r->id, &p, &n)) != GLITNIR_OK)
+    n = 0;
+  int64_t fw = ceil (FRAME_PIXEL_WIDTH (f) * r->sx);
+  int64_t fh = ceil (FRAME_PIXEL_HEIGHT (f) * r->sy);
+  ptrdiff_t k = 0;
+  for (size_t i = 0; i < n && k < nmax; i++)
+    {
+      /* Whole-frame damage is {0, 0, INT32_MAX, INT32_MAX}.  */
+      int64_t x0 = max (p[i].x, 0), y0 = max (p[i].y, 0);
+      int64_t x1 = min ((int64_t) p[i].x + p[i].w, fw);
+      int64_t y1 = min ((int64_t) p[i].y + p[i].h, fh);
+      if (x1 > x0 && y1 > y0)
+	out[k++] = (GlitnirRect) { x0, y0, x1 - x0, y1 - y0 };
+    }
+  return k;
+}
+
+/* F's damage lasts until its next update begins, unless `glitnir-debug'
+   is `damage-hold'.  */
+static void
+drop_damage (struct frame *f)
+{
+  if (EQ (Vglitnir_debug, Qdamage_hold))
+    return;
+  struct glitnir_root *r = recording (f);
+  if (r == NULL)
+    return;
+  r->nbatch = 0;
+  if (r->pending)
+    {
+      const GlitnirRect *p;
+      size_t n;
+      r->pending = r->all = false;
+      GLITNIR_CALL (glitnir_damage_pending (r->id, &p, &n));
+    }
 }
 
 uint64_t
@@ -114,6 +397,7 @@ glitnir_pgtk_frame_id (struct frame *f)
 void
 glitnir_pgtk_update_begin (struct frame *f)
 {
+  drop_damage (f);
   struct glitnir_root *r = root_state (f);
   if (r && r->t_update == 0)
     r->t_update = now_ns ();
@@ -327,6 +611,8 @@ glitnir_pgtk_free_frame (struct frame *f)
   if (r->snapshot)
     cairo_surface_destroy (r->snapshot);
   GLITNIR_CALL_UNCOUNTED (glitnir_stats_forget (r->id));
+  if (r->known)
+    GLITNIR_CALL (glitnir_damage_forget (r->id));
   FRAME_X_OUTPUT (f)->glitnir = NULL;
   xfree (r);
 }

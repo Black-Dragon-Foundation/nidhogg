@@ -32,18 +32,42 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 DEFUN ("glitnir-active-p", Fglitnir_active_p, Sglitnir_active_p, 0, 1, 0,
        doc: /* Return non-nil if Glitnir (the compositor) draws FRAME.
 FRAME defaults to the selected frame.  Only graphical frames of the pgtk
-build can be drawn by Glitnir; batch and terminal frames never are.  */)
+build that draw on an image surface can be drawn by Glitnir, and only
+while `glitnir-enable' is non-nil; batch, terminal and tooltip frames
+never are.  */)
   (Lisp_Object frame)
 {
   struct frame *f = decode_live_frame (frame);
 #ifdef HAVE_PGTK
-  if (!FRAME_PGTK_P (f))
-    return Qnil;
+  return glitnir_pgtk_active_p (f) ? Qt : Qnil;
 #else
   (void) f;
-#endif
-  /* Not drawn yet: the compositor takes over a root in a later change.  */
   return Qnil;
+#endif
+}
+
+DEFUN ("glitnir--damage", Fglitnir__damage, Sglitnir__damage, 0, 1, 0,
+       doc: /* Take FRAME's pending damage and return it.
+The value is a list of rectangles (X Y WIDTH HEIGHT) in device pixels,
+what pgtk drew on FRAME since its damage was last taken; FRAME then has
+none.  Without `glitnir-debug' `damage-hold', a frame's damage lasts only
+until its next redisplay begins.  FRAME defaults to the selected frame;
+the value is nil when Glitnir does not draw FRAME.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+#ifdef HAVE_PGTK
+  GlitnirRect rects[64];
+  ptrdiff_t n = glitnir_pgtk_damage_take (f, rects, ARRAYELTS (rects));
+  Lisp_Object list = Qnil;
+  while (n-- > 0)
+    list = Fcons (list4i (rects[n].x, rects[n].y, rects[n].w, rects[n].h),
+		  list);
+  return list;
+#else
+  (void) f;
+  return Qnil;
+#endif
 }
 
 #ifdef HAVE_PGTK
@@ -215,6 +239,7 @@ void
 syms_of_nidhogg_glitnir (void)
 {
   defsubr (&Sglitnir_active_p);
+  defsubr (&Sglitnir__damage);
   defsubr (&Sglitnir_stats);
   defsubr (&Sglitnir_snapshot);
   defsubr (&Sglitnir__calls);
@@ -224,6 +249,13 @@ syms_of_nidhogg_glitnir (void)
 	       doc: /* Non-nil means Glitnir (the compositor) may draw graphical frames.
 Setting it to nil makes Glitnir hand every frame back to the stock drawing.  */);
   glitnir_enable = true;
+
+  DEFSYM (Qdamage_hold, "damage-hold");
+  DEFVAR_LISP ("glitnir-debug", Vglitnir_debug,
+	       doc: /* Glitnir's debug mode, for tests: nil (the default) or a symbol.
+`damage-hold' keeps each frame's damage until `glitnir--damage' takes it,
+instead of dropping it when the frame's next redisplay begins.  */);
+  Vglitnir_debug = Qnil;
 
   Fprovide (intern_c_string ("glitnir"), Qnil);
 }

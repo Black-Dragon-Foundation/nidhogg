@@ -45,3 +45,11 @@ kernels with pixman; `check.sh` runs it on Linux.
 `cargo deny check licenses bans sources` (when `cargo-deny` is installed) and a vendor-drift check (it vendors a copy
 of the crate and compares; the source tree is never written). Without `--container` it uses the host's cargo; with
 `--container fedora-44` it runs in a podman container capped at 2 GiB.
+
+## Damage
+
+`damage.rs` keeps each frame's pending damage (device pixels; at most 32 rectangles, `region.rs`):
+`glitnir_damage_add_n` adds rectangles, `glitnir_damage_all` the whole frame, `glitnir_scroll` a scroll's area and the
+strip it left stale. A rectangle the damage already contains adds nothing, and a new one drops those it contains.
+`glitnir_damage_pending` takes the damage (the frame then has none); the rectangles stay valid until that frame's next
+take. Whole-frame damage reads back as `{0, 0, INT32_MAX, INT32_MAX}`, which the host clips to the frame.

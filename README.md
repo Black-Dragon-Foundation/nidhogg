@@ -96,6 +96,12 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   newer`. `make` builds the crate offline and locked, with its cargo home and target directory under `src/` of the build
   tree (never `~/.cargo`), and links it into `temacs`. With the flag the feature `glitnir` is provided, `glitnir-enable`
   (default `t`) and `glitnir-active-p` exist; without it none of them do. Release tarballs need no Rust.
+  `glitnir-active-p` is non-nil for a pgtk frame (not a tooltip) that draws on an ARGB32 image surface (GDK's Wayland
+  surfaces) while `glitnir-enable` is non-nil. For such a frame pgtk's drawing primitives record **damage** (device
+  pixels, rounded outward; a scroll as one operation; the visible bell, resizes and scale changes as the whole frame;
+  nothing while `x-export-frames` draws); an inactive frame makes no call into Glitnir. `(glitnir--damage &optional
+  FRAME)` takes a frame's pending damage as `((X Y W H) …)`; it lasts until the frame's next redisplay begins, or until
+  read when `glitnir-debug` is `damage-hold`.
 - **Dev build** (`--dev` or `NIDHOGG_BUILD_DEV=1`, for agents' task builds): configures `--with-native-compilation=yes`
   instead of `aot`, so only the preloaded Lisp is native-compiled and the other ~1,400 files stay bytecode (minutes instead
   of the better part of an hour). A `lisp/site-init.el` written into the build copy sets `native-comp-jit-compilation` to

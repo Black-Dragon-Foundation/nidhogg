@@ -278,6 +278,9 @@ flip_cr_context (struct frame *f)
   block_input ();
   if (cr != FRAME_CR_CONTEXT (f))
     {
+#ifdef HAVE_GLITNIR
+      glitnir_pgtk_damage_all (f);
+#endif
       cairo_destroy (cr);
 
       FRAME_CR_ACTIVE_CONTEXT (f)
@@ -2547,6 +2550,9 @@ pgtk_draw_glyph_string (struct glyph_string *s)
 {
   bool relief_drawn_p = false;
 
+#ifdef HAVE_GLITNIR
+  glitnir_pgtk_damage_glyphs (s);
+#endif
   /* If S draws into the background of its successors, draw the
      background of the successors first so that S can draw into it.
      This makes S->next use XDrawString instead of XDrawImageString.  */
@@ -3095,6 +3101,9 @@ pgtk_draw_window_cursor (struct window *w, struct glyph_row *glyph_row, int x,
 	}
     }
 
+#ifdef HAVE_GLITNIR
+  glitnir_pgtk_damage_cursor (w, glyph_row, on_p);
+#endif
 }
 
 static void
@@ -3256,6 +3265,9 @@ pgtk_scroll_run (struct window *w, struct run *run)
   /* Cursor off.  Will be switched on again in x_update_window_end.  */
   gui_clear_cursor (w);
 
+#ifdef HAVE_GLITNIR
+  glitnir_pgtk_scroll (f, w, x, from_y, to_y, width, height);
+#endif
   {
     cairo_rectangle_t src_rect = { x, from_y, width, height };
     cairo_rectangle_t dst_rect = { x, to_y, width, height };
@@ -3381,6 +3393,9 @@ pgtk_draw_vertical_window_border (struct window *w, int x, int y0, int y1)
   cairo_t *cr;
 
   cr = pgtk_begin_cr_clip (f);
+#ifdef HAVE_GLITNIR
+  glitnir_pgtk_damage (f, x, y0, 1, y1 - y0);
+#endif
 
   face = FACE_FROM_ID_OR_NULL (f, VERTICAL_BORDER_FACE_ID);
   if (face)
@@ -3411,6 +3426,9 @@ pgtk_draw_window_divider (struct window *w, int x0, int x1, int y0, int y1)
 			      ? face_last->foreground
 			      : FRAME_FOREGROUND_PIXEL (f));
   cairo_t *cr = pgtk_begin_cr_clip (f);
+#ifdef HAVE_GLITNIR
+  glitnir_pgtk_damage (f, x0, y0, x1 - x0, y1 - y0);
+#endif
 
   if (y1 - y0 > x1 - x0 && x1 - x0 > 2)
     /* Vertical.  */
@@ -3669,6 +3687,9 @@ pgtk_draw_fringe_bitmap (struct window *w, struct glyph_row *row,
   struct face *face = p->face;
 
   cairo_t *cr = pgtk_begin_cr_clip (f);
+#ifdef HAVE_GLITNIR
+  glitnir_pgtk_damage_fringe (w, p);
+#endif
 
   /* Must clip because of partially visible lines.  */
   pgtk_clip_to_row (w, row, ANY_AREA, cr);
@@ -3821,6 +3842,9 @@ recover_from_visible_bell (struct atimer *timer)
 
   if (FRAME_X_OUTPUT (f)->cr_surface_visible_bell != NULL)
     {
+#ifdef HAVE_GLITNIR
+      glitnir_pgtk_damage_all (f);
+#endif
       cairo_surface_destroy (FRAME_X_OUTPUT (f)->cr_surface_visible_bell);
       FRAME_X_OUTPUT (f)->cr_surface_visible_bell = NULL;
     }
@@ -3904,6 +3928,9 @@ pgtk_flash (struct frame *f)
   if (FRAME_X_OUTPUT (f)->cr_surface_visible_bell)
     cairo_surface_destroy (FRAME_X_OUTPUT (f)->cr_surface_visible_bell);
   FRAME_X_OUTPUT (f)->cr_surface_visible_bell = surface;
+#ifdef HAVE_GLITNIR
+  glitnir_pgtk_damage_all (f);
+#endif
 
   delay = make_timespec (0, 50 * 1000 * 1000);
 
@@ -5084,6 +5111,9 @@ pgtk_clear_under_internal_border (struct frame *f)
       struct face *face = FACE_FROM_ID_OR_NULL (f, face_id);
 
       block_input ();
+#ifdef HAVE_GLITNIR
+      glitnir_pgtk_damage_internal_border (f);
+#endif
 
       if (face)
 	{
@@ -7488,6 +7518,9 @@ pgtk_clear_area (struct frame *f, int x, int y, int width, int height)
   eassert (width > 0 && height > 0);
 
   cr = pgtk_begin_cr_clip (f);
+#ifdef HAVE_GLITNIR
+  glitnir_pgtk_damage (f, x, y, width, height);
+#endif
   pgtk_set_cr_source_with_color (f, FRAME_X_OUTPUT (f)->background_color,
 				 true);
   cairo_rectangle (cr, x, y, width, height);
@@ -7606,6 +7639,9 @@ pgtk_cr_update_surface_desired_size (struct frame *f, int width, int height, boo
       FRAME_CR_SURFACE_DESIRED_WIDTH (f) = width;
       FRAME_CR_SURFACE_DESIRED_HEIGHT (f) = height;
       SET_FRAME_GARBAGED (f);
+#ifdef HAVE_GLITNIR
+      glitnir_pgtk_damage_all (f);
+#endif
     }
 }
 

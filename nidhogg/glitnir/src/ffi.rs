@@ -1,5 +1,6 @@
 //! The C ABI: status codes, the panic guard and the exported functions.
 
+use crate::geom::Rect;
 use crate::stats::{StatsEntry, Summary};
 use std::panic::{UnwindSafe, catch_unwind};
 
@@ -16,7 +17,12 @@ const ABI_VERSION: u32 = 1;
 /// Every exported C symbol; a test checks this list against `include/glitnir.h`.
 pub const EXPORTS: &[&str] = &[
     "glitnir_abi_version",
+    "glitnir_damage_add_n",
+    "glitnir_damage_all",
+    "glitnir_damage_forget",
+    "glitnir_damage_pending",
     "glitnir_debug_panic",
+    "glitnir_scroll",
     "glitnir_stats_forget",
     "glitnir_stats_record",
     "glitnir_stats_summary",
@@ -90,6 +96,85 @@ pub extern "C" fn glitnir_stats_forget(root: u64) -> i32 {
     })
 }
 
+/// Add N rectangles (device pixels) to FRAME's pending damage.
+///
+/// # Safety
+/// `rects` must point to `n` readable rectangles, or be null when `n` is 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn glitnir_damage_add_n(frame: u64, rects: *const Rect, n: usize) -> i32 {
+    ffi_guard(|| {
+        if n == 0 {
+            return GLITNIR_OK;
+        }
+        if rects.is_null() {
+            return GLITNIR_E_ARG;
+        }
+        // SAFETY: non-null, and the caller promises N readable rectangles.
+        let rs = unsafe { std::slice::from_raw_parts(rects, n) };
+        crate::damage::with(frame, |d| rs.iter().for_each(|r| d.add(*r)));
+        GLITNIR_OK
+    })
+}
+
+/// Damage the whole of FRAME.
+#[unsafe(no_mangle)]
+pub extern "C" fn glitnir_damage_all(frame: u64) -> i32 {
+    ffi_guard(|| {
+        crate::damage::with(frame, |d| d.add(crate::damage::ALL));
+        GLITNIR_OK
+    })
+}
+
+/// WINDOW's pixels in AREA moved by DY on FRAME; EXPOSED is what the move left stale.
+#[unsafe(no_mangle)]
+pub extern "C" fn glitnir_scroll(
+    frame: u64,
+    window: u64,
+    area: Rect,
+    dy: i32,
+    exposed: Rect,
+) -> i32 {
+    // The window and the distance are for the scene's scroll operation; damage needs only the rectangles.
+    let _ = (window, dy);
+    ffi_guard(|| {
+        crate::damage::with(frame, |d| d.scroll(area, exposed));
+        GLITNIR_OK
+    })
+}
+
+/// Take FRAME's pending damage: `*out` points to `*n` rectangles, valid until FRAME's next take or forget.
+///
+/// # Safety
+/// `out` and `n` must be null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn glitnir_damage_pending(
+    frame: u64,
+    out: *mut *const Rect,
+    n: *mut usize,
+) -> i32 {
+    ffi_guard(|| {
+        if out.is_null() || n.is_null() {
+            return GLITNIR_E_ARG;
+        }
+        let (p, len) = crate::damage::take(frame);
+        // SAFETY: both non-null, and the caller promises they are writable.
+        unsafe {
+            out.write(p);
+            n.write(len);
+        }
+        GLITNIR_OK
+    })
+}
+
+/// Drop FRAME's damage (the frame is gone).
+#[unsafe(no_mangle)]
+pub extern "C" fn glitnir_damage_forget(frame: u64) -> i32 {
+    ffi_guard(|| {
+        crate::damage::forget(frame);
+        GLITNIR_OK
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,6 +209,77 @@ mod tests {
             unsafe { glitnir_abi_version(std::ptr::null_mut()) },
             GLITNIR_E_ARG
         );
+    }
+
+    fn pending(frame: u64) -> Vec<Rect> {
+        let (mut p, mut n) = (std::ptr::null::<Rect>(), 0usize);
+        assert_eq!(
+            unsafe { glitnir_damage_pending(frame, &mut p, &mut n) },
+            GLITNIR_OK
+        );
+        if n == 0 {
+            return Vec::new();
+        }
+        // SAFETY: the library keeps N rectangles at P until FRAME's next take.
+        unsafe { std::slice::from_raw_parts(p, n) }.to_vec()
+    }
+
+    #[test]
+    fn damage_round_trips_through_the_abi() {
+        let f = 8001;
+        assert!(pending(f).is_empty());
+        let rects = [
+            Rect::new(0, 0, 10, 2),
+            Rect::new(0, 0, 4, 1),
+            Rect::new(50, 50, 0, 3),
+        ];
+        assert_eq!(
+            unsafe { glitnir_damage_add_n(f, rects.as_ptr(), rects.len()) },
+            GLITNIR_OK
+        );
+        assert_eq!(pending(f), vec![Rect::new(0, 0, 10, 2)]);
+        assert!(pending(f).is_empty());
+        let area = Rect::new(0, 100, 300, 200);
+        assert_eq!(
+            glitnir_scroll(f, 3, area, -40, Rect::new(0, 260, 300, 40)),
+            GLITNIR_OK
+        );
+        assert_eq!(pending(f), vec![area]);
+        assert_eq!(glitnir_damage_all(f), GLITNIR_OK);
+        assert_eq!(
+            unsafe { glitnir_damage_add_n(f, rects.as_ptr(), 1) },
+            GLITNIR_OK
+        );
+        assert_eq!(pending(f), vec![Rect::new(0, 0, i32::MAX, i32::MAX)]);
+        assert_eq!(glitnir_damage_forget(f), GLITNIR_OK);
+        assert!(pending(f).is_empty());
+    }
+
+    #[test]
+    fn damage_rejects_null_arguments() {
+        let (mut p, mut n) = (std::ptr::null::<Rect>(), 0usize);
+        assert_eq!(
+            unsafe { glitnir_damage_add_n(1, std::ptr::null(), 2) },
+            GLITNIR_E_ARG
+        );
+        assert_eq!(
+            unsafe { glitnir_damage_add_n(1, std::ptr::null(), 0) },
+            GLITNIR_OK
+        );
+        assert_eq!(
+            unsafe { glitnir_damage_pending(1, std::ptr::null_mut(), &mut n) },
+            GLITNIR_E_ARG
+        );
+        assert_eq!(
+            unsafe { glitnir_damage_pending(1, &mut p, std::ptr::null_mut()) },
+            GLITNIR_E_ARG
+        );
+    }
+
+    #[test]
+    fn rect_has_the_layout_of_glitnir_rect() {
+        assert_eq!(std::mem::size_of::<Rect>(), 16);
+        assert_eq!(std::mem::align_of::<Rect>(), 4);
     }
 
     #[test]
