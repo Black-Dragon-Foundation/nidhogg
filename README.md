@@ -180,7 +180,16 @@ turns the finished spans into JSON Lines records, names function, file and packa
   Every span ≥ the threshold becomes a record (`nidhogg-watchdog--take`; a ring of 32, the oldest dropped and counted),
   with or without samples; every span goes into the histograms of `nidhogg-watchdog--stats` by its non-GC time.
   `nidhogg-watchdog--test-clock` and `nidhogg-watchdog--test-idle-wait` drive the span rows on a virtual clock.
-<!-- wd: Task 8 -->
+- **The monitor** (`-monitor.c`): a thread named `nh-watchdog`, created with every signal blocked; it takes only its own
+  mutex. While Emacs waits it is parked on a condition variable and wakes for nothing; the main thread signals it when a
+  busy span starts. It sleeps to half the threshold of the span; if the span is still busy, it notes the main thread's
+  CPU clock and its own lateness, then every `max (threshold/10, 1 ms)` (1 ms in deep mode) raises a request and sends
+  the main thread the watchdog signal (`pthread_kill`, never `kill`); a request the handler has not taken after two
+  periods counts as missed. The park protocol (`-park.h`) is a Dekker pair of seq_cst stores and loads
+  (`NH_WD_PARK_ORDER`), so no busy span is missed: `watchdog/no-lost-wakeup` runs its steps through every interleaving
+  with store buffers modelled, and `nidhogg/test/watchdog-park-test.sh` runs them on real threads (ThreadSanitizer and a
+  10⁷-cycle stress run; it needs gcc and libtsan, nothing from a build). While `nidhogg-watchdog--test-clock` is set the
+  monitor never arms.
 <!-- wd: Task 9 -->
 <!-- wd: Task 10 -->
 <!-- wd: Task 11 -->

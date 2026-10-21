@@ -161,8 +161,9 @@ struct nh_wd_cur
      raised with a CAS, cleared by the handler and by publish_waiting),
      mode (0 sample, 1 names), cpu_armed_ns, late_ns and armed_span (the
      span they belong to; a reader ignores them on a mismatch),
-     monitor_wakeups, monitor_cpu_ns, requests;
-   handler: stride, samples_taken, missed, stale;
+     monitor_wakeups, monitor_cpu_ns, requests, missed (a request the
+     handler has not cleared after two periods);
+   handler: stride, samples_taken, stale;
    the GC end hook, on whichever Lisp thread holds the global lock
      (serialised by the lock): gc_ns_total, gc_count, gc_dropped;
    Lisp (`--deep') sets deep_left; the main thread's finalise of a deep
@@ -293,6 +294,7 @@ extern void nh_wd_publish_busy (uint64_t now);
 extern int nh_wd_monitor_start (void);
 extern void nh_wd_monitor_stop (void);
 extern void nh_wd_monitor_span_close (struct nh_wd_stall *);
+extern void nh_wd_monitor_syms (void);
 
 /* The handler, the raw ring and `--take'.
    [Task 9, nidhogg-watchdog-sample.c]  */

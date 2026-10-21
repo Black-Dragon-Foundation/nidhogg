@@ -643,6 +643,7 @@ syms_of_nidhogg_watchdog (void)
   defsubr (&Snidhogg_watchdog__stats);
   defsubr (&Snidhogg_watchdog__test_clock);
   defsubr (&Snidhogg_watchdog__test_idle_wait);
+  nh_wd_monitor_syms ();
 
   Fprovide (intern_c_string ("nidhogg-watchdog"), Qnil);
 }
