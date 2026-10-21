@@ -123,6 +123,9 @@ static struct rlimit nofile_limit;
 #include "android.h"
 #include "androidterm.h"
 #endif
+#ifdef HAVE_NIDHOGG_WATCHDOG
+#include "nidhogg-watchdog.h"
+#endif
 
 #ifdef HAVE_WINDOW_SYSTEM
 #include TERM_HEADER
@@ -5782,9 +5785,15 @@ wait_reading_process_output (intmax_t time_limit, int nsecs, int read_kbd,
 	     android.c to poll for events.  */
 #if defined HAVE_ANDROID && !defined ANDROID_STUBIFY
 #ifndef THREADS_ENABLED
+#ifdef HAVE_NIDHOGG_WATCHDOG
+	  nh_wd_wait_enter (current_thread, &timeout);
+#endif
 	  nfds = android_select (max_desc + 1,
 				 &Available, (check_write ? &Writeok : 0),
 				 NULL, &timeout);
+#ifdef HAVE_NIDHOGG_WATCHDOG
+	  nh_wd_wait_leave (current_thread);
+#endif
 #else /* THREADS_ENABLED */
 	  nfds = thread_select (android_select_wrapper,
 				max_desc + 1,

@@ -220,6 +220,11 @@ struct nh_wd_input
   uint32_t felt;
   uint64_t arrival_ns;
   uint32_t queued;
+  /* Commands started (command_loop_1, before command-execute): Task 11
+     adds 1 per command on the main thread; never reset.  The edges
+     (Task 7) take the delta per span for `commands' and `kind' and the
+     span's histogram.  */
+  uint64_t commands;
 };
 
 extern struct nh_wd_shared nh_wd;
@@ -258,6 +263,28 @@ extern void nh_wd_wait_enter_modal (const struct timespec *timeout);
 extern void nh_wd_wait_leave (struct thread_state *self);
 extern void nh_wd_suspend (bool);
 extern uint64_t nh_wd_now_ns (void);
+
+/* The histograms of `--stats' (design §6.4), one count per bucket of
+   NH_WD_BUCKETS.  Any thread may add (relaxed atomics): the edges add
+   every span by its non-GC time, Task 10 each collection's pause,
+   Task 11 each typing command.  [Task 7]  */
+enum nh_wd_hist
+{
+  NH_WD_H_COMMAND,
+  NH_WD_H_OTHER,
+  NH_WD_H_TYPING,
+  NH_WD_H_COLLECTIONS,
+  NH_WD_H_N
+};
+extern void nh_wd_hist_add (enum nh_wd_hist, uint64_t ns);
+
+/* True while `--test-clock' holds a virtual time; the monitor never
+   arms then (Task 8).  [Task 7]  */
+extern bool nh_wd_test_clock_p (void);
+
+/* `--start''s HANG-FILE, encoded, or NULL.  Set before the monitor
+   starts, freed after it stopped (Task 18 reads it).  [Task 7]  */
+extern char *nh_wd_hang_file;
 
 /* The monitor and the park protocol, both sides.
    [Task 8, nidhogg-watchdog-monitor.c]  */

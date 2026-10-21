@@ -172,7 +172,14 @@ turns the finished spans into JSON Lines records, names function, file and packa
   protocol's steps); Lisp in `lisp/nidhogg-watchdog*.el` (preloaded; the feature is `nidhogg-watchdog`).
 - Tests: `watchdog/…` in `test/src/nidhogg-tests/watchdog-*-tests.el`, GUI rows `watchdog-gui/…` in `*-gui-tests.el`.
 
-<!-- wd: Task 7 -->
+- **Spans and records** (`nidhogg-watchdog.c`): the main thread times every busy span at the two edges of the select in
+  `really_call_select` (`thread.c`; also Android's non-threaded `android_select` and the tty `C-z` in `sys_suspend`).
+  A wait ends a span only when it is responsive: the main thread's own select (never a Lisp thread's), inside
+  `wait_reading_process_output` with `waiting_for_user_input_p` set, `inhibit-redisplay` nil and a non-zero timeout.
+  `sleep-for`, `accept-process-output` inside a command, waits under `inhibit-redisplay` and lock contention stay busy.
+  Every span ≥ the threshold becomes a record (`nidhogg-watchdog--take`; a ring of 32, the oldest dropped and counted),
+  with or without samples; every span goes into the histograms of `nidhogg-watchdog--stats` by its non-GC time.
+  `nidhogg-watchdog--test-clock` and `nidhogg-watchdog--test-idle-wait` drive the span rows on a virtual clock.
 <!-- wd: Task 8 -->
 <!-- wd: Task 9 -->
 <!-- wd: Task 10 -->
