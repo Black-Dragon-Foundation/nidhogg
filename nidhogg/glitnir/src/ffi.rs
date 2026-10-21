@@ -1,5 +1,6 @@
 //! The C ABI: status codes, the panic guard and the exported functions.
 
+use crate::stats::{StatsEntry, Summary};
 use std::panic::{UnwindSafe, catch_unwind};
 
 pub const GLITNIR_OK: i32 = 0;
@@ -13,7 +14,13 @@ pub const GLITNIR_E_STATE: i32 = -3;
 const ABI_VERSION: u32 = 1;
 
 /// Every exported C symbol; a test checks this list against `include/glitnir.h`.
-pub const EXPORTS: &[&str] = &["glitnir_abi_version", "glitnir_debug_panic"];
+pub const EXPORTS: &[&str] = &[
+    "glitnir_abi_version",
+    "glitnir_debug_panic",
+    "glitnir_stats_forget",
+    "glitnir_stats_record",
+    "glitnir_stats_summary",
+];
 
 /// Run an export's body; a panic becomes `GLITNIR_E_PANIC` instead of unwinding into C.
 pub(crate) fn ffi_guard<F: FnOnce() -> i32 + UnwindSafe>(f: F) -> i32 {
@@ -40,6 +47,47 @@ pub unsafe extern "C" fn glitnir_abi_version(out: *mut u32) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn glitnir_debug_panic() -> i32 {
     ffi_guard(|| panic!("glitnir_debug_panic"))
+}
+
+/// Append one paint's record to ROOT's ring.
+///
+/// # Safety
+/// `entry` must be null or point to a readable `StatsEntry`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn glitnir_stats_record(root: u64, entry: *const StatsEntry) -> i32 {
+    ffi_guard(|| {
+        if entry.is_null() {
+            return GLITNIR_E_ARG;
+        }
+        // SAFETY: non-null, and the caller promises it is readable.
+        crate::stats::record(root, unsafe { entry.read() });
+        GLITNIR_OK
+    })
+}
+
+/// Write ROOT's summary to `out`, then empty its ring when `reset` is non-zero.
+///
+/// # Safety
+/// `out` must be null or point to a writable `Summary`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn glitnir_stats_summary(root: u64, reset: i32, out: *mut Summary) -> i32 {
+    ffi_guard(|| {
+        if out.is_null() {
+            return GLITNIR_E_ARG;
+        }
+        // SAFETY: non-null, and the caller promises it is writable.
+        unsafe { out.write(crate::stats::summary(root, reset != 0)) };
+        GLITNIR_OK
+    })
+}
+
+/// Drop ROOT's ring (the root is gone).
+#[unsafe(no_mangle)]
+pub extern "C" fn glitnir_stats_forget(root: u64) -> i32 {
+    ffi_guard(|| {
+        crate::stats::forget(root);
+        GLITNIR_OK
+    })
 }
 
 #[cfg(test)]
