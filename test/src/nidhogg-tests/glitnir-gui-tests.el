@@ -132,6 +132,16 @@
   (let ((end (+ (float-time) s)))
     (while (< (float-time) end))))
 
+(defun glitnir-gui--settle ()
+  "Wait (5 s at most) for a 0.1 s span in which the selected frame takes no whole-frame damage; non-nil if it came.
+Right after the session starts the frame is still redrawn whole for a while, and Emacs defers a mouse highlight
+until that redisplay is done."
+  (let ((glitnir-debug 'damage-hold) (n 0))
+    (redisplay t) (glitnir--damage)
+    (while (and (< n 50) (progn (sit-for 0.1) (member (glitnir-gui--frame-rect) (glitnir--damage))))
+      (cl-incf n))
+    (< n 50)))
+
 (defun glitnir-gui--frame-px ()
   (round (* (frame-pixel-width) (frame-pixel-height) (expt (frame-scale-factor) 2))))
 
@@ -311,6 +321,7 @@
           (switch-to-buffer buf)
           (insert "\n\n  " (propertize "HOVERHOVERHOVERHOVER" 'mouse-face glitnir-gui--magenta) "\n")
           (redisplay t) (sit-for 0.1)
+          (should (glitnir-gui--settle))  ; first in a session, the motions would come while the frame settles
           (should (= (glitnir-gui--samples 255 0 255) 0))
           (pcase-let ((`(,x . ,y) (posn-x-y (posn-at-point (+ (point-min) 6))))
                       (`(,left ,top . ,_) (window-inside-pixel-edges)))
