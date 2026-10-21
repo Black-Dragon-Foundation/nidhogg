@@ -190,7 +190,16 @@ turns the finished spans into JSON Lines records, names function, file and packa
   with store buffers modelled, and `nidhogg/test/watchdog-park-test.sh` runs them on real threads (ThreadSanitizer and a
   10⁷-cycle stress run; it needs gcc and libtsan, nothing from a build). While `nidhogg-watchdog--test-clock` is set the
   monitor never arms.
-<!-- wd: Task 9 -->
+- Samples (`src/nidhogg-watchdog-sample.c`): the signal handler is installed with `sigaction` and `SA_RESTART`
+  (interactive Emacs otherwise installs handlers without it), refuses to take a signal another library already handles,
+  and answers only a request for the current busy span on the main thread; any other signal (a stray `kill`, a late
+  request that lands in the idle wait) is counted as `:stale`. It calls nothing but `clock_gettime`, allocates nothing
+  and takes no lock. It copies raw specpdl words (24 innermost frames and 8 outermost, 56 + 8 in deep mode) and a hook
+  runner's hook name, and copies nothing while the specpdl is being reallocated (`grow_specpdl_allocation` brackets the
+  realloc) or while a Lisp thread holds the global lock. A stall keeps at most 64 samples (32 deep): the handler thins
+  them to every other one and doubles its stride. The words are never GC roots; `--take` turns a word into a function
+  object only when `valid_lisp_object_p` calls it a live symbol, closure or subr (a non-heap subr only when it is a
+  builtin's address), else into the symbol `nidhogg-watchdog--gone`.
 - GC (`-gc.c`, one call at the end of `garbage_collect` in `alloc.c`, one flag set in `garbage-collect`): while the
   watchdog is on, every collection's pause is added to its span (a stall's `:gc-ms` and `:gcs`; `:nongc-ms` = wall −
   GC, which is what the 100 ms goal judges) and written to a 64-entry GC ring, taken with the stalls by

@@ -52,6 +52,15 @@ nh_wd_phase_pop_to (int depth)
   (void) depth;
 }
 
+/* The top of the stack, for the signal handler (Task 9 reads it): plain
+   loads only, no call.  */
+INLINE void
+nh_wd_phase_top (uint8_t *phase, uint8_t *reason)
+{
+  *phase = NH_WD_PH_LISP;
+  *reason = NH_WD_RS_NONE;
+}
+
 #endif /* HAVE_NIDHOGG_WATCHDOG */
 
 #endif /* NIDHOGG_WATCHDOG_PHASE_H */
