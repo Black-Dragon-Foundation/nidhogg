@@ -4,6 +4,14 @@
 #                    [--build-dir DIR] [--check FILE] [--out FILE] [--stage STAGE] [--dry-run]
 # --stage build|check|pack runs one part on an existing --build-dir (default: all three in one run): build = configure and make
 # (and the compiled-Lisp cache), check = the --check targets in the built tree, pack = install and the tarball (--out).
+# --dev (or NIDHOGG_BUILD_DEV=1) is the DEV BUILD, for agents' task builds and functional/GUI tests: it configures
+# --with-native-compilation=yes instead of aot, so only the preloaded Lisp (the files dumped into emacs) is native-compiled and the
+# other ~1,400 files stay bytecode; the build takes minutes where the AOT build takes the better part of an hour.  Skipped:
+# the .eln of every non-preloaded library.  Also baked in: lisp/site-init.el (in the build copy, dumped into the image) sets
+# native-comp-jit-compilation to nil, so no background compiles start while tests run.  Fine on a dev build: GUI and functional
+# tests.  Needs the AOT build: performance runs (Gate A, budgets, A/B) and releases.  A dev build can never be mistaken for a
+# release: --dev refuses --out and --stage pack (no tarball is made), and its compiled-Lisp cache stamp says "dev", so dev and
+# AOT entries never mix (use a fresh --build-dir when switching modes).
 # Exit: 0 ok, 1 build/check failed or not enough memory, 2 usage.
 # Test overrides: NIDHOGG_BUILD_UNAME, NIDHOGG_BUILD_NPROC, NIDHOGG_BUILD_MEMORY_KB, NIDHOGG_BUILD_PODMAN,
 # NIDHOGG_BUILD_VMSTAT (a vm_stat stand-in), NIDHOGG_BUILD_HEARTBEAT (seconds between "still running" lines, default 300).
@@ -24,7 +32,7 @@ DISTROS="fedora-44 fedora-45 ubuntu-26.04"
 usage() {
   cat >&2 <<USAGE
 usage: nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memory SIZE]
-                        [--build-dir DIR] [--check FILE] [--out FILE] [--stage build|check|pack] [--dry-run]
+                        [--build-dir DIR] [--check FILE] [--out FILE] [--stage build|check|pack] [--dev] [--dry-run]
   DISTRO: $DISTROS
 USAGE
   exit 2
@@ -32,6 +40,7 @@ USAGE
 die() { echo "build.sh: $*" >&2; exit 1; }
 
 MODE="" DISTRO="" PREFIX="" JOBS="" MEMORY="" BUILD_DIR="" CHECK="" OUT="" DRY=0 STAGE=all
+DEV=0; [ "${NIDHOGG_BUILD_DEV:-}" != 1 ] || DEV=1
 while [ $# -gt 0 ]; do
   case $1 in
     --container) [ $# -ge 2 ] || usage; MODE=container; DISTRO=$2; shift 2 ;;
@@ -43,11 +52,16 @@ while [ $# -gt 0 ]; do
     --check) [ $# -ge 2 ] || usage; CHECK=$2; shift 2 ;;
     --out) [ $# -ge 2 ] || usage; OUT=$2; shift 2 ;;
     --stage) [ $# -ge 2 ] || usage; STAGE=$2; shift 2; case $STAGE in all|build|check|pack) ;; *) usage ;; esac ;;
+    --dev) DEV=1; shift ;;
     --dry-run) DRY=1; shift ;;
     *) echo "unknown option: $1" >&2; usage ;;
   esac
 done
 [ -n "$MODE" ] || usage
+if [ "$DEV" = 1 ] && { [ -n "$OUT" ] || [ "$STAGE" = pack ]; }; then
+  die "--dev builds are never packed (no --out, no --stage pack): a dev build is not a release; build without --dev"
+fi
+NATIVE=aot; [ "$DEV" = 0 ] || NATIVE=yes
 LISP_CACHE=${NIDHOGG_BUILD_LISP_CACHE:-} LC=""
 
 UNAME=${NIDHOGG_BUILD_UNAME:-$(uname -s)}
@@ -119,9 +133,9 @@ if [ -z "$JOBS" ]; then
 fi
 
 if [ "$MODE" = host ] && [ "$UNAME" = Darwin ]; then
-  CONF="--with-ns --with-native-compilation=aot --with-tree-sitter"
+  CONF="--with-ns --with-native-compilation=$NATIVE --with-tree-sitter"
 else
-  CONF="--with-native-compilation=aot --with-tree-sitter --with-pgtk"
+  CONF="--with-native-compilation=$NATIVE --with-tree-sitter --with-pgtk"
 fi
 
 TEMP_BUILD=0
@@ -184,6 +198,7 @@ BODY
 script() {
   printf 'S=%q B=%q P=%q V=%q UPV=%q HB=%q\n' "$S" "$B" "$PREFIX" "$VERSION" "$UPSTREAM_VERSION" "${NIDHOGG_BUILD_HEARTBEAT:-300}"
   [ -z "$LISP_CACHE" ] || printf 'LC=%q\n' "$LC"
+  printf 'MODE_ID=%q\n' "$NATIVE"
   if [ "$MODE" = container ]; then
     case $DISTRO in
       ubuntu-*)
@@ -233,7 +248,7 @@ BODY
   if [ -n "$LISP_CACHE" ]; then cat <<'BODY'
 # the compiled-Lisp cache (used only when made by the same compiler and architecture): restored files all get one timestamp, newer than every source (and equal among themselves, so
 # no .eln is older than its .elc), so that make sees them as up to date
-cc_id() { printf '%s %s\n' "$(gcc --version | head -n 1)" "$(uname -m)"; }
+cc_id() { printf '%s %s %s\n' "$(gcc --version | head -n 1)" "$(uname -m)" "$MODE_ID"; }
 if [ -f "$LC/stamp" ] && [ "$(cat "$LC/stamp")" = "$(cc_id)" ]; then
   phase restore compiled Lisp
   tar -C "$LC" -cf - src obj | tar -C "$B" -xf -
@@ -248,6 +263,10 @@ phase autogen
 logged "$B/autogen.log" ./autogen.sh
 cd "$B/obj"
 BODY
+  if [ "$DEV" = 1 ]; then
+    # loadup.el loads lisp/site-init.el when present, and the dump keeps what it sets (the build copy only, never the source tree)
+    echo "printf '%s\\n' ';;; dev build (nidhogg/build.sh --dev): no background native compilation' '(setq native-comp-jit-compilation nil)' > \"\$B/src/lisp/site-init.el\""
+  fi
   echo "phase configure"
   echo "logged \"\$B/configure.log\" \"\$B/src/configure\" --prefix=\"\$P\" $CONF || { echo \"configure failed; the build packages are listed in nidhogg/deps/$DISTRO.build\" >&2; exit 1; }"
   cat <<'BODY'
