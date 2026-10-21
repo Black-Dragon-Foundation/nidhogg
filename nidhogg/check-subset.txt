@@ -1,6 +1,16 @@
 # The `make -C test` targets CI runs: the C areas V2 patches (processes, threads, JSON, tree-sitter, redisplay,
 # input, native compilation) plus core Lisp.
 src/nidhogg-tests/identity-tests
+src/nidhogg-tests/watchdog-tests
+src/nidhogg-tests/watchdog-monitor-tests
+src/nidhogg-tests/watchdog-sample-tests
+src/nidhogg-tests/watchdog-gc-tests
+src/nidhogg-tests/watchdog-phase-tests
+src/nidhogg-tests/watchdog-lisp-tests
+src/nidhogg-tests/watchdog-resolve-tests
+src/nidhogg-tests/watchdog-gcrow-tests
+src/nidhogg-tests/watchdog-report-tests
+src/nidhogg-tests/watchdog-hang-tests
 src/emacs-tests
 src/fns-tests
 src/process-tests

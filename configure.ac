@@ -104,6 +104,15 @@ case " $emacs_config_options " in
   *" --with-nidhogg="*) ;;
   *) AS_VAR_APPEND([emacs_config_options], ["$optsep--with-nidhogg=$NIDHOGG_VERSION"]) ;;
 esac
+dnl Nidhogg: the stall watchdog (a C monitor thread; see README.md, "Stall watchdog").
+AC_ARG_WITH([nidhogg-watchdog],
+  [AS_HELP_STRING([--with-nidhogg-watchdog],
+    [build the stall watchdog (a monitor thread that samples long stalls)])],
+  [], [with_nidhogg_watchdog=no])
+AC_ARG_WITH([nidhogg-watchdog-signal],
+  [AS_HELP_STRING([--with-nidhogg-watchdog-signal=NAME],
+    [the signal the watchdog's monitor sends the main thread (default SIGURG)])],
+  [], [with_nidhogg_watchdog_signal=SIGURG])
 
 AC_CONFIG_HEADERS([src/config.h:src/config.in])
 AC_CONFIG_SRCDIR([src/lisp.h])
@@ -7691,6 +7700,24 @@ AC_DEFINE_UNQUOTED([EMACS_CONFIG_FEATURES], ["${emacs_config_features}"],
   [Summary of some of the main features enabled by configure.])
 AC_DEFINE_UNQUOTED([NIDHOGG_VERSION], ["$NIDHOGG_VERSION"], [Nidhogg's version.])
 AC_SUBST([NIDHOGG_VERSION])
+
+dnl Nidhogg: the stall watchdog.  Every .c file is compiled with the flag; each body is under HAVE_NIDHOGG_WATCHDOG.
+NIDHOGG_WATCHDOG_OBJ=
+case $with_nidhogg_watchdog in
+  yes)
+    case $with_nidhogg_watchdog_signal in
+      SIG[[A-Z0-9]]*) ;;
+      *) AC_MSG_ERROR([--with-nidhogg-watchdog-signal takes a signal name such as SIGURG, not '$with_nidhogg_watchdog_signal']) ;;
+    esac
+    NIDHOGG_WATCHDOG_OBJ="nidhogg-watchdog.o nidhogg-watchdog-monitor.o nidhogg-watchdog-sample.o nidhogg-watchdog-gc.o nidhogg-watchdog-input.o nidhogg-watchdog-gtk.o"
+    AC_DEFINE([HAVE_NIDHOGG_WATCHDOG], [1], [Define to 1 to build the stall watchdog.])
+    AC_DEFINE_UNQUOTED([NIDHOGG_WATCHDOG_SIGNAL], [$with_nidhogg_watchdog_signal],
+      [The signal the stall watchdog's monitor sends the main thread.])
+    ;;
+  no) ;;
+  *) AC_MSG_ERROR([--with-nidhogg-watchdog takes yes or no]) ;;
+esac
+AC_SUBST([NIDHOGG_WATCHDOG_OBJ])
 
 # This is just a printable representation of the shared user ID.
 android_shared_user=

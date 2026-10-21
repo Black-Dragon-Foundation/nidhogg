@@ -51,6 +51,13 @@ run -- --dry-run --container fedora-44 --out dist/x.tar.xz
 rcis 0; has "DESTDIR=/build/stage"; has "BUILDINFO"; has "/out:Z"
 run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --out dist/x.tar.xz
 rcis 0; has "Nidhogg.app"; has "BUILDINFO"
+# the stall watchdog is built in on every target unless --without-nidhogg-watchdog
+run -- --dry-run --container fedora-45
+rcis 0; has "--with-nidhogg-watchdog"
+run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n
+rcis 0; has "--with-nidhogg-watchdog"
+run -- --dry-run --container fedora-45 --without-nidhogg-watchdog
+rcis 0; hasnt "--with-nidhogg-watchdog"
 # --dev: native-compilation=yes, no JIT in the image, never packed, cache stamp carries the mode
 run -- --dry-run --container fedora-44 --dev
 rcis 0; has "--with-native-compilation=yes"; hasnt "--with-native-compilation=aot"; has "site-init.el"; has "MODE_ID=yes"; has "--with-tree-sitter"
