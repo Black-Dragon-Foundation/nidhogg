@@ -6,8 +6,12 @@ use std::sync::Mutex;
 
 pub mod ffi;
 pub mod geom;
+pub mod kernels;
+#[cfg(all(test, feature = "pixman-oracle"))]
+mod oracle;
 pub mod region;
 pub mod rng;
+pub mod shadow;
 pub mod stats;
 
 /// All of the library's global state, behind one lock.
