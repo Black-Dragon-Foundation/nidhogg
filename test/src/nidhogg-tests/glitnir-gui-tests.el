@@ -314,9 +314,14 @@
           (should (= (glitnir-gui--samples 255 0 255) 0))
           (pcase-let ((`(,x . ,y) (posn-x-y (posn-at-point (+ (point-min) 6))))
                       (`(,left ,top . ,_) (window-inside-pixel-edges)))
-            (should (glitnir--motion nil (+ left x 4) (+ top y 4))))
-          ;; no redisplay: GLib dispatches the motion while Emacs waits; the handler draws the highlight
-          (sleep-for 0.2)
+            ;; Synthetic motions take effect one motion late (the stock path too: GDK holds the newest queued motion
+            ;; back until another event follows it): a motion elsewhere, then two over the text, each dispatched
+            ;; while Emacs waits (no redisplay).  The handler draws the highlight; the stock path would show it only
+            ;; at the next redisplay.
+            (dolist (xy (list (cons (+ left 2) (+ top 2)) (cons (+ left x 4) (+ top y 4))
+                              (cons (+ left x 6) (+ top y 5))))
+              (should (glitnir--motion nil (car xy) (cdr xy)))
+              (sleep-for 0.15)))
           (should (> (glitnir-gui--samples 255 0 255) 0)))
       (kill-buffer buf))))
 
