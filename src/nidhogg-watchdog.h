@@ -297,11 +297,22 @@ extern void nh_wd_monitor_span_close (struct nh_wd_stall *);
 extern void nh_wd_monitor_syms (void);
 
 /* The handler, the raw ring and `--take'.
-   [Task 9, nidhogg-watchdog-sample.c]  */
+   [Task 9, nidhogg-watchdog-sample.c]
+   A sample's T_NS is nanoseconds since the span's busy start; WORDS
+   holds N_INNER words innermost first, then N_OUTER words of the
+   bottom of the stack, also innermost first; SKIPPED counts the frames
+   between them; HOOK_FRAME indexes WORDS; THREAD_NAME holds the raw
+   `struct thread_state *' of the Lisp thread that held the lock (its
+   name is read at `--take').  In a stall, SAMPLES is the number of
+   samples kept (S[0..SAMPLES) in time order once closed), THINNED the
+   number thinning dropped, STRIDE the final stride.
+   nh_wd_handler_install returns 0, or -1 off the main thread, when
+   another handler owns the signal, or when sigaction fails.  */
 extern int nh_wd_handler_install (void);
 extern void nh_wd_handler_uninstall (void);
 extern void nh_wd_sample_close (struct nh_wd_stall *out);
 extern Lisp_Object nh_wd_sample_to_lisp (const struct nh_wd_sample *);
+extern void nh_wd_syms_of_sample (void);
 
 /* The GC end hook and the GC ring.  [Task 10, nidhogg-watchdog-gc.c]
    nh_wd_gc_pending is `--pending''s count of collections; each pause
