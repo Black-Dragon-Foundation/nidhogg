@@ -303,9 +303,14 @@ extern void nh_wd_handler_uninstall (void);
 extern void nh_wd_sample_close (struct nh_wd_stall *out);
 extern Lisp_Object nh_wd_sample_to_lisp (const struct nh_wd_sample *);
 
-/* The GC end hook and the GC ring.  [Task 10, nidhogg-watchdog-gc.c]  */
+/* The GC end hook and the GC ring.  [Task 10, nidhogg-watchdog-gc.c]
+   nh_wd_gc_pending is `--pending''s count of collections; each pause
+   goes into the NH_WD_H_COLLECTIONS histogram;
+   syms_of_nidhogg_watchdog calls syms_of_nidhogg_watchdog_gc.  */
 extern void nh_wd_gc_done (struct timespec start);
 extern Lisp_Object nh_wd_gc_take (void);
+extern uint32_t nh_wd_gc_pending (void);
+extern void syms_of_nidhogg_watchdog_gc (void);
 
 /* Phases, felt input, typing.  [Task 11, nidhogg-watchdog-input.c]
    The inline phase push/pop are in nidhogg-watchdog-phase.h.  */

@@ -191,7 +191,15 @@ turns the finished spans into JSON Lines records, names function, file and packa
   10⁷-cycle stress run; it needs gcc and libtsan, nothing from a build). While `nidhogg-watchdog--test-clock` is set the
   monitor never arms.
 <!-- wd: Task 9 -->
-<!-- wd: Task 10 -->
+- GC (`-gc.c`, one call at the end of `garbage_collect` in `alloc.c`, one flag set in `garbage-collect`): while the
+  watchdog is on, every collection's pause is added to its span (a stall's `:gc-ms` and `:gcs`; `:nongc-ms` = wall −
+  GC, which is what the 100 ms goal judges) and written to a 64-entry GC ring, taken with the stalls by
+  `nidhogg-watchdog--take` as `(:gc ID :gcs-done N :start SECONDS :pause-ms F :span N :explicit BOOL :lisp-thread
+  BOOL)`; a full ring drops its oldest entry and counts `:gc-dropped`. The pause runs from `garbage_collect`'s start
+  to after `gcs_done` is incremented: it includes `run_finalizers` (Lisp finalizers) and
+  `image_prune_animation_caches`, but not `post-gc-hook`. `:gcs-done` is the `gcs-done` a `post-gc-hook` function
+  sees for the same collection, the key the Lisp GC row (and drgnx's GC census lines, `gcs_done`) joins on; never join
+  by order. `:explicit` is a `garbage-collect` call (other C callers, such as `garbage-collect-maybe`, are automatic).
 <!-- wd: Task 11 -->
 <!-- wd: Task 12 -->
 <!-- wd: Task 13 -->

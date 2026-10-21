@@ -80,7 +80,6 @@ static bool wd_monitor_started;
 static struct nh_wd_stall *wd_ring;
 static unsigned wd_ring_head, wd_ring_n;
 static uint64_t wd_next_id;
-static uint64_t wd_gc_count_taken; /* gc_count at the last `--take' */
 
 /* The histograms, by enum nh_wd_hist; relaxed atomics.  */
 static uint64_t wd_hist[NH_WD_H_N][NH_WD_BUCKETS];
@@ -352,7 +351,6 @@ usage: (nidhogg-watchdog--start THRESHOLD-MS HANG-MS HANG-FILE &rest FLAGS)  */)
   __atomic_store_n (&nh_wd.request, 0, __ATOMIC_RELAXED);
   __atomic_store_n (&nh_wd.mode, 0, __ATOMIC_RELAXED);
   memset (wd_hist, 0, sizeof wd_hist);
-  wd_gc_count_taken = __atomic_load_n (&nh_wd.gc_count, __ATOMIC_RELAXED);
   nh_wd.main_id = pthread_self ();
   wd_wait_depth = -1;
   nh_wd_phase_pop_to (0);
@@ -405,15 +403,10 @@ Unfinished and untaken records are dropped.  Safe when it is off.  */)
 
 DEFUN ("nidhogg-watchdog--pending", Fnidhogg_watchdog__pending,
        Snidhogg_watchdog__pending, 0, 0, 0,
-       doc: /* Return how many stalls and collections wait to be taken.
-The drain's fast path: a collection count is an upper bound.  */)
+       doc: /* Return how many stalls and collections wait to be taken.  */)
   (void)
 {
-  uint64_t gcs = (__atomic_load_n (&nh_wd.gc_count, __ATOMIC_RELAXED)
-		  - wd_gc_count_taken);
-  if (gcs > NH_WD_GC_RING)
-    gcs = NH_WD_GC_RING;
-  return make_uint ((nh_wd_on ? wd_ring_n : 0) + gcs);
+  return make_uint ((nh_wd_on ? wd_ring_n : 0) + nh_wd_gc_pending ());
 }
 
 static Lisp_Object
@@ -478,7 +471,6 @@ Return (STALLS . COLLECTIONS), oldest first: STALLS a list of plists
 :samples), COLLECTIONS as the GC ring gives them.  */)
   (void)
 {
-  wd_gc_count_taken = __atomic_load_n (&nh_wd.gc_count, __ATOMIC_RELAXED);
   Lisp_Object collections = nh_wd_gc_take ();
   Lisp_Object stalls = Qnil;
   if (nh_wd_on && wd_ring_n > 0)
@@ -594,6 +586,7 @@ Return nil.  */)
 void
 syms_of_nidhogg_watchdog (void)
 {
+  syms_of_nidhogg_watchdog_gc ();
   DEFSYM (QCno_monitor, ":no-monitor");
   DEFSYM (QCid, ":id");
   DEFSYM (QCspan, ":span");
