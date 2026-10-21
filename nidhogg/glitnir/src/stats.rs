@@ -257,7 +257,7 @@ mod tests {
     fn summary_percentiles_match_a_sorted_list() {
         let root = 9002;
         let mut rng = Rng(seed());
-        let n = 200 + (rng.next() % 900) as usize;
+        let n = 200 + (rng.next() % (RING - 200) as u64) as usize; // the ring keeps them all
         let all: Vec<StatsEntry> = (0..n).map(|_| random_entry(&mut rng)).collect();
         for e in &all {
             record(root, *e);
