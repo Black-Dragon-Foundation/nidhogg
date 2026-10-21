@@ -14,15 +14,17 @@
 ;; Stats and snapshot of the stock present path (Task 5).
 
 (ert-deftest glitnir-gui/stats-record-the-stock-paint ()
-  (glitnir-stats nil t)
-  (with-temp-buffer
-    (switch-to-buffer (current-buffer))
-    (dotimes (_ 5) (insert "x") (redisplay t) (sit-for 0.05))
-    (let ((s (glitnir-stats)))
-      (should (>= (plist-get s :count) 5))
-      (should (= (plist-get s :painted-px)      ; stock paints the whole widget
-                 (round (* (frame-pixel-width) (frame-pixel-height)
-                           (expt (frame-scale-factor) 2))))))))
+  (let ((glitnir-enable nil))                   ; the stock path (Glitnir paints only the damage)
+    (redisplay t)
+    (glitnir-stats nil t)
+    (with-temp-buffer
+      (switch-to-buffer (current-buffer))
+      (dotimes (_ 5) (insert "x") (redisplay t) (sit-for 0.05))
+      (let ((s (glitnir-stats)))
+        (should (>= (plist-get s :count) 5))
+        (should (= (plist-get s :painted-px)    ; stock paints the whole widget
+                   (round (* (frame-pixel-width) (frame-pixel-height)
+                             (expt (frame-scale-factor) 2)))))))))
 
 (ert-deftest glitnir-gui/snapshot-has-the-frame-size ()
   (pcase-let ((`(,w ,h ,bytes) (glitnir-snapshot nil 'raw)))
@@ -121,5 +123,233 @@
       (let ((calls (glitnir--calls)))
         (dotimes (_ 20) (insert "z") (redisplay t))
         (should (= calls (glitnir--calls)))))))
+
+;; Consistency points, the root freeze and damage-only present (Task 21).
+
+(defconst glitnir-gui--magenta '(:background "#ff00ff" :foreground "#ff00ff"))
+
+(defun glitnir-gui--busy (s)
+  (let ((end (+ (float-time) s)))
+    (while (< (float-time) end))))
+
+(defun glitnir-gui--frame-px ()
+  (round (* (frame-pixel-width) (frame-pixel-height) (expt (frame-scale-factor) 2))))
+
+(defun glitnir-gui--samples (r g b)
+  "Samples (every 4th device pixel) of a snapshot of the selected frame's root that have the colour R G B."
+  (pcase-let ((`(,w ,h ,bytes) (glitnir-snapshot nil 'raw)) (n 0))
+    ;; ARGB32 in the machine's (little-endian) byte order: B G R A
+    (cl-loop for y from 0 below h by 4 do
+             (cl-loop for x from 0 below w by 4 do
+                      (let ((i (* 4 (+ x (* y w)))))
+                        (when (and (= (aref bytes i) b) (= (aref bytes (+ i 1)) g)
+                                   (= (aref bytes (+ i 2)) r))
+                          (cl-incf n)))))
+    n))
+
+(defvar glitnir-gui--jit-hook nil "A function the jit-lock function calls after `input-pending-p'.")
+
+(defun glitnir-gui--jit (beg end)
+  "A jit-lock function that takes 2 ms a chunk and calls `input-pending-p', as a slow mode would."
+  (glitnir-gui--busy 0.002)
+  (input-pending-p)
+  (when glitnir-gui--jit-hook (funcall glitnir-gui--jit-hook))
+  (put-text-property beg end 'face (if (cl-evenp (/ beg 1000)) 'bold 'italic))
+  `(jit-lock-bounds ,beg . ,end))
+
+(defun glitnir-gui--text-buffer (name lines)
+  (let ((b (get-buffer-create name)))
+    (with-current-buffer b
+      (erase-buffer)
+      (dotimes (i lines)
+        (insert (format "%5d %s\n" i (make-string 70 (+ ?a (% i 26))))))
+      (goto-char (point-min)))
+    b))
+
+(defun glitnir-gui--jit-buffer (name)
+  (let ((b (glitnir-gui--text-buffer name 2000)))
+    (with-current-buffer b
+      (setq-local jit-lock-chunk-size 400)
+      (jit-lock-register #'glitnir-gui--jit))
+    b))
+
+(defun glitnir-gui--child (buffer visible &optional background)
+  (let* ((root (selected-frame))
+         (f (make-frame `((parent-frame . ,root) (minibuffer . nil) (left . 200) (top . 200)
+                          (width . 50) (height . 12) (background-color . ,(or background "#00ffff"))
+                          (visibility . nil) (no-accept-focus . t) (no-other-frame . t)
+                          (undecorated . t) (internal-border-width . 1)))))
+    (select-frame root)
+    (set-window-buffer (frame-root-window f) buffer)
+    (when visible (make-frame-visible f))
+    f))
+
+(defun glitnir-gui--scroll (buffers steps lines)
+  "STEPS back-to-back redisplays; each moves every window of BUFFERS LINES further, all text unfontified."
+  (dotimes (i steps)
+    (dolist (b buffers)
+      (with-current-buffer b
+        (with-silent-modifications
+          (put-text-property (point-min) (point-max) 'fontified nil)))
+      (let ((start (with-current-buffer b
+                     (save-excursion (goto-char (point-min)) (forward-line (* (% i 90) lines)) (point)))))
+        (dolist (w (get-buffer-window-list b nil t))
+          (set-window-start w start))))
+    (redisplay t)))
+
+(ert-deftest glitnir-gui/typing-paints-only-damage ()
+  (should (glitnir-active-p))
+  (with-temp-buffer
+    (switch-to-buffer (current-buffer))
+    (insert "hello")
+    (redisplay t) (sit-for 0.1)
+    (glitnir-stats nil t)
+    (dotimes (_ 20) (insert "x") (redisplay t) (sit-for 0.02))
+    (let ((s (glitnir-stats)))
+      (should (>= (plist-get s :count) 5))
+      (should (< (plist-get s :painted-px) (/ (glitnir-gui--frame-px) 10))))))
+
+(ert-deftest glitnir-gui/no-draw-while-frozen ()
+  ;; The child frame is newer, so redisplay draws it first: its damage freezes the root before the root's jit-lock
+  ;; runs.  The jit-lock function then moves the child (GTK invalidates the root on its next layout) and lets GLib
+  ;; dispatch for 30 ms through `input-pending-p': the root must not paint until the consistency point.
+  (let* ((a (glitnir-gui--jit-buffer "*glitnir-a*"))
+         (b (glitnir-gui--text-buffer "*glitnir-b*" 30))
+         (c (glitnir-gui--child b t))
+         (deltas nil) (n 0))
+    (unwind-protect
+        (progn
+          (switch-to-buffer a)
+          (redisplay t) (sit-for 0.1)
+          (setq glitnir-gui--jit-hook
+                (lambda ()
+                  (when (and (< n 10) (glitnir--frozen-p))
+                    (let ((before (glitnir--draw-count)))
+                      (cl-incf n)
+                      (set-frame-position c (+ 100 (* 10 (% n 20))) 150)
+                      (dotimes (_ 3) (glitnir-gui--busy 0.01) (input-pending-p))
+                      (push (- (glitnir--draw-count) before) deltas)))))
+          (dotimes (_ 20)
+            (with-current-buffer b (goto-char (point-min)) (insert "x"))
+            (glitnir-gui--scroll (list a) 1 20))
+          (setq glitnir-gui--jit-hook nil)
+          (let ((draws (glitnir--draw-count)))
+            (redisplay t) (sit-for 0.1)
+            (should (> (glitnir--draw-count) draws))))
+      (setq glitnir-gui--jit-hook nil)
+      (delete-frame c)
+      (kill-buffer a) (kill-buffer b))
+    (should (>= (length deltas) 5))
+    (should (cl-every #'zerop deltas))
+    (should-not (glitnir--frozen-p))))
+
+(ert-deftest glitnir-gui/error-in-redisplay-thaws ()
+  (let ((buf (generate-new-buffer "*glitnir-err*")))
+    (unwind-protect
+        (progn
+          (switch-to-buffer buf)
+          ;; a mode-line :eval that signals (redisplay catches it) ...
+          (setq-local mode-line-format '("%b " (:eval (error "Glitnir test error"))))
+          (dotimes (_ 5) (insert "e") (force-mode-line-update) (redisplay t))
+          ;; ... and one that throws: a non-local exit through unwind_redisplay after the window was drawn
+          (setq-local mode-line-format '("%b " (:eval (throw 'glitnir-gui-out 'thrown))))
+          (insert "t") (force-mode-line-update)
+          (should (eq (catch 'glitnir-gui-out (redisplay t) nil) 'thrown))
+          (kill-local-variable 'mode-line-format)
+          (insert (propertize "MMMMMMMM" 'face glitnir-gui--magenta))
+          (redisplay t)
+          (should-not (glitnir--frozen-p))
+          (should (> (glitnir-gui--samples 255 0 255) 0)))
+      (kill-buffer buf))))
+
+(ert-deftest glitnir-gui/nested-map-wait-consistent ()
+  (let* ((cb (glitnir-gui--text-buffer "*glitnir-c*" 10))
+         (c (glitnir-gui--child cb nil))
+         (buf (generate-new-buffer "*glitnir-map*")))
+    (unwind-protect
+        (progn
+          (switch-to-buffer buf)
+          (dotimes (_ 5)
+            (make-frame-invisible c)
+            (insert "a") (redisplay t)
+            (make-frame-visible c)      ; the map wait's nested loop, inside this command
+            (insert (propertize "MM" 'face glitnir-gui--magenta))
+            (redisplay t))
+          ;; the child, already shown, changes: its damage reaches the root's commit
+          (with-current-buffer cb
+            (goto-char (point-min))
+            (insert (propertize "YYYYYYYY" 'face '(:background "#ffff00" :foreground "#ffff00"))))
+          (redisplay t)
+          (should-not (glitnir--frozen-p))
+          (should (> (glitnir-gui--samples 255 0 255) 0))  ; the typed text
+          (should (> (glitnir-gui--samples 0 255 255) 0))  ; the child
+          (should (> (glitnir-gui--samples 255 255 0) 0))) ; the child's new text
+      (delete-frame c)
+      (kill-buffer cb) (kill-buffer buf))))
+
+(ert-deftest glitnir-gui/enable-nil-is-stock ()
+  (with-temp-buffer
+    (switch-to-buffer (current-buffer))
+    (redisplay t) (sit-for 0.05)
+    (let ((glitnir-enable nil))
+      (should-not (glitnir-active-p))
+      (redisplay t) (sit-for 0.1)
+      (glitnir-stats nil t)
+      (let ((calls (glitnir--calls)) (draws (glitnir--draw-count)))
+        (dotimes (_ 20)
+          (insert "z") (redisplay t)
+          (should-not (glitnir--frozen-p))
+          (sit-for 0.02))
+        (should (= calls (glitnir--calls)))
+        (should (> (glitnir--draw-count) draws))
+        (should (= (plist-get (glitnir-stats) :painted-px) (glitnir-gui--frame-px)))))))
+
+(ert-deftest glitnir-gui/mouse-highlight-commits ()
+  (let ((buf (generate-new-buffer "*glitnir-mouse*")))
+    (unwind-protect
+        (progn
+          (switch-to-buffer buf)
+          (insert "\n\n  " (propertize "HOVERHOVERHOVERHOVER" 'mouse-face glitnir-gui--magenta) "\n")
+          (redisplay t) (sit-for 0.1)
+          (should (= (glitnir-gui--samples 255 0 255) 0))
+          (pcase-let ((`(,x . ,y) (posn-x-y (posn-at-point (+ (point-min) 6))))
+                      (`(,left ,top . ,_) (window-inside-pixel-edges)))
+            (should (glitnir--motion nil (+ left x 4) (+ top y 4))))
+          ;; no redisplay: GLib dispatches the motion while Emacs waits; the handler draws the highlight
+          (sleep-for 0.2)
+          (should (> (glitnir-gui--samples 255 0 255) 0)))
+      (kill-buffer buf))))
+
+(ert-deftest glitnir-gui/no-starvation-while-redisplaying ()
+  ;; R7's scenario S3-1: GLib dispatch happens inside redisplay (jit-lock's `input-pending-p') and finds the root
+  ;; frozen; each consistency point paints, so the display keeps up.
+  (let* ((a (glitnir-gui--jit-buffer "*glitnir-a*"))
+         (b (glitnir-gui--jit-buffer "*glitnir-b*"))
+         (c (glitnir-gui--child b t)))
+    (unwind-protect
+        (progn
+          (switch-to-buffer a)
+          (redisplay t) (sit-for 0.1)
+          (glitnir--max-paint-gap-ms nil t)
+          (glitnir-gui--scroll (list a b) 100 20)
+          (let ((gap (glitnir--max-paint-gap-ms)))
+            (princ (format "longest paint gap: %.1f ms\n" gap) #'external-debugging-output)
+            (should (< gap 500))))
+      (delete-frame c)
+      (kill-buffer a) (kill-buffer b))))
+
+(ert-deftest glitnir-gui/latency-recorded-on-and-off ()
+  (with-temp-buffer
+    (switch-to-buffer (current-buffer))
+    (dolist (on '(t nil))
+      (let ((glitnir-enable on))
+        (redisplay t) (sit-for 0.1)
+        (glitnir-stats nil t)
+        (dotimes (_ 20) (insert "l") (redisplay t) (sit-for 0.03))
+        (let ((s (glitnir-stats)) (last (glitnir--last-paint)))
+          (should (> (plist-get s :count) 0))
+          (should (> (plist-get (plist-get s :latency-ms) :p50) 0))
+          (should (null (plist-get s :backfill-rate)))
+          (should (<= (plist-get last :commit-ns) (plist-get last :paint-ns) (glitnir--now-ns))))))))
 
 ;;; glitnir-gui-tests.el ends here

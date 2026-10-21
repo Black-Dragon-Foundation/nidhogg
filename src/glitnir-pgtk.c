@@ -55,17 +55,30 @@ struct glitnir_root
   double sx, sy;
   bool image, pending, all, known;
 
-  /* Monotonic ns of the last redisplay start, commit and draw (0: none since
-     the last record).  */
-  uint64_t t_update, t_commit, t_draw_start, t_draw_end;
+  /* A root's consistency points: damage on any of its frames since the
+     last point (DIRTY), a scene change to commit (SCENE_PENDING), the GDK
+     impl window frozen until the next point (FROZEN, referenced while
+     frozen), and the idle point queued for damage made outside redisplay
+     (IDLE_ID).  */
+  bool dirty, scene_pending;
+  GdkWindow *frozen;
+  guint idle_id;
+
+  /* Monotonic ns of the first redisplay start, freeze and commit, and of
+     the last draw, since the last record (0: none).  */
+  uint64_t t_update, t_freeze, t_commit, t_draw_start, t_draw_end;
   bool drawn;			/* a draw ran since the last record */
 
-  /* What the last draw saw.  */
-  uint64_t damage_px, painted_px;
-  uint8_t backfill, scale_mismatch;
-  const unsigned char *last_data;	/* compared, never dereferenced */
-  int last_width, last_height;
-  bool have_last;
+  /* What the last draw saw; the device pixels committed since the last
+     record.  */
+  uint64_t damage_px, painted_px, commit_px;
+  uint8_t scale_mismatch;
+
+  /* For tests: the root's draws, its latest recorded paint, and the
+     longest time between two of its draws since GAP_FROM.  */
+  uintmax_t draws;
+  uint64_t last_commit, last_paint;
+  uint64_t gap_from, max_gap;
 
   /* The widget's rectangle in the target, in device pixels.  */
   int crop_x, crop_y, crop_w, crop_h;
@@ -159,6 +172,63 @@ glitnir_pgtk_active_p (struct frame *f)
   return recording (f) != NULL;
 }
 
+/* Freeze ROOT's GDK impl window (every client-side child window shares
+   it): GTK paints nothing of the root until the next consistency point
+   thaws it (MP-22), so a paint never shows a half-drawn picture.  */
+static void
+freeze (struct glitnir_root *root)
+{
+  if (root->frozen)
+    return;
+  GtkWidget *w = FRAME_GTK_WIDGET (root->frame);
+  GdkWindow *win = w ? gtk_widget_get_window (w) : NULL;
+  if (win == NULL)
+    return;
+  root->frozen = g_object_ref (gdk_window_get_toplevel (win));
+  if (root->t_freeze == 0)
+    root->t_freeze = now_ns ();
+  gdk_window_freeze_updates (root->frozen);
+}
+
+static void
+thaw (struct glitnir_root *root)
+{
+  if (root->frozen == NULL)
+    return;
+  GdkWindow *win = root->frozen;
+  root->frozen = NULL;
+  gdk_window_thaw_updates (win);
+  g_object_unref (win);
+}
+
+static gboolean
+idle_point (gpointer data)
+{
+  struct glitnir_root *root = data;
+  root->idle_id = 0;
+  glitnir_pgtk_consistency_point (root->frame, 4);
+  return G_SOURCE_REMOVE;
+}
+
+/* F recorded damage: its root has something to commit, and stays frozen
+   until it does.  Drawing outside redisplay (an atimer, a timer, a GTK
+   handler without a point of its own) gets a point when GLib next
+   dispatches: a missed point costs latency, never a stuck display.  */
+static void
+mark_dirty (struct frame *f)
+{
+  struct glitnir_root *root = root_state (f);
+  if (root == NULL)
+    return;
+  if (!root->dirty)
+    {
+      root->dirty = true;
+      freeze (root);
+    }
+  if (root->idle_id == 0 && !redisplaying_p && !buffer_flipping_blocked_p ())
+    root->idle_id = g_idle_add (idle_point, root);
+}
+
 /* The state changes before each call: the unblock_input that ends a call
    may run an atimer (the visible bell's) that records damage itself.  */
 
@@ -177,6 +247,7 @@ flush_damage (struct glitnir_root *r)
 static void
 damage_all (struct glitnir_root *r)
 {
+  mark_dirty (r->frame);
   if (r->all)
     return;
   r->nbatch = 0;		/* the whole frame holds them */
@@ -200,21 +271,10 @@ device_rect (struct frame *f, struct glitnir_root *r, int x, int y, int w,
   return (GlitnirRect) { dx0, dy0, dx1 - dx0, dy1 - dy0 };
 }
 
-void
-glitnir_pgtk_damage (struct frame *f, int x, int y, int w, int h)
+/* Add the device rectangle D to R's batch.  */
+static void
+batch_add (struct glitnir_root *r, GlitnirRect d)
 {
-  struct glitnir_root *r = recording (f);
-  if (r == NULL || r->all)
-    return;
-  /* No surface yet: its first picture is all new.  */
-  if (f->output_data.pgtk->cr_context == NULL)
-    {
-      damage_all (r);
-      return;
-    }
-  GlitnirRect d = device_rect (f, r, x, y, w, h);
-  if (d.w <= 0 || d.h <= 0)
-    return;
   if (r->nbatch > 0)
     {
       /* A run of glyph strings on one row grows the last rectangle.  */
@@ -234,6 +294,25 @@ glitnir_pgtk_damage (struct frame *f, int x, int y, int w, int h)
 }
 
 void
+glitnir_pgtk_damage (struct frame *f, int x, int y, int w, int h)
+{
+  struct glitnir_root *r = recording (f);
+  if (r == NULL)
+    return;
+  /* No surface yet: its first picture is all new.  */
+  if (r->all || f->output_data.pgtk->cr_context == NULL)
+    {
+      damage_all (r);
+      return;
+    }
+  GlitnirRect d = device_rect (f, r, x, y, w, h);
+  if (d.w <= 0 || d.h <= 0)
+    return;
+  mark_dirty (f);
+  batch_add (r, d);
+}
+
+void
 glitnir_pgtk_damage_all (struct frame *f)
 {
   struct glitnir_root *r = recording (f);
@@ -248,13 +327,14 @@ glitnir_pgtk_scroll (struct frame *f, struct window *w, int x, int from_y,
 		     int to_y, int width, int height)
 {
   struct glitnir_root *r = recording (f);
-  if (r == NULL || r->all)
+  if (r == NULL)
     return;
-  if (f->output_data.pgtk->cr_context == NULL)
+  if (r->all || f->output_data.pgtk->cr_context == NULL)
     {
       damage_all (r);
       return;
     }
+  mark_dirty (f);
   int top = min (from_y, to_y), bottom = max (from_y, to_y) + height;
   GlitnirRect area = device_rect (f, r, x, top, width, bottom - top);
   /* The rows the copy uncovered.  */
@@ -367,26 +447,6 @@ glitnir_pgtk_damage_take (struct frame *f, GlitnirRect *out, ptrdiff_t nmax)
   return k;
 }
 
-/* F's damage lasts until its next update begins, unless `glitnir-debug'
-   is `damage-hold'.  */
-static void
-drop_damage (struct frame *f)
-{
-  if (EQ (Vglitnir_debug, Qdamage_hold))
-    return;
-  struct glitnir_root *r = recording (f);
-  if (r == NULL)
-    return;
-  r->nbatch = 0;
-  if (r->pending)
-    {
-      const GlitnirRect *p;
-      size_t n;
-      r->pending = r->all = false;
-      GLITNIR_CALL (glitnir_damage_pending (r->id, &p, &n));
-    }
-}
-
 uint64_t
 glitnir_pgtk_frame_id (struct frame *f)
 {
@@ -397,18 +457,185 @@ glitnir_pgtk_frame_id (struct frame *f)
 void
 glitnir_pgtk_update_begin (struct frame *f)
 {
-  drop_damage (f);
   struct glitnir_root *r = root_state (f);
   if (r && r->t_update == 0)
     r->t_update = now_ns ();
 }
 
-void
-glitnir_pgtk_commit (struct frame *f)
+/* Move the damage of ROOT's child frames into ROOT's batch, in ROOT's
+   device pixels (each child where GTK has placed its widget).  */
+static void
+gather_children (struct glitnir_root *root)
 {
-  struct glitnir_root *r = root_state (f);
-  if (r)
-    r->t_commit = now_ns ();
+  GtkWidget *rw = FRAME_GTK_WIDGET (root->frame);
+  Lisp_Object tail, frame;
+  FOR_EACH_FRAME (tail, frame)
+    {
+      struct frame *c = XFRAME (frame);
+      if (c == root->frame || !FRAME_PGTK_P (c) || c->output_data.pgtk == NULL)
+	continue;
+      struct glitnir_root *s = FRAME_X_OUTPUT (c)->glitnir;
+      if (s == NULL || (!s->pending && s->nbatch == 0)
+	  || glitnir_root_of (c) != root->frame)
+	continue;
+      flush_damage (s);
+      const GlitnirRect *p = NULL;
+      size_t n = 0;
+      s->pending = s->all = false;
+      if (GLITNIR_CALL (glitnir_damage_pending (s->id, &p, &n)) != GLITNIR_OK)
+	n = 0;
+      GtkWidget *cw = FRAME_GTK_WIDGET (c);
+      if (n == 0 || cw == NULL || rw == NULL || !gtk_widget_get_mapped (cw))
+	continue;		/* nothing shown */
+      int x, y;
+      if (!gtk_widget_translate_coordinates (cw, rw, 0, 0, &x, &y))
+	{
+	  damage_all (root);
+	  continue;
+	}
+      int64_t cw_px = ceil (FRAME_PIXEL_WIDTH (c) * s->sx);
+      int64_t ch_px = ceil (FRAME_PIXEL_HEIGHT (c) * s->sy);
+      int64_t dx = lround (x * root->sx), dy = lround (y * root->sy);
+      for (size_t i = 0; i < n && !root->all; i++)
+	{
+	  int64_t x0 = max (p[i].x, 0), y0 = max (p[i].y, 0);
+	  int64_t x1 = min ((int64_t) p[i].x + p[i].w, cw_px);
+	  int64_t y1 = min ((int64_t) p[i].y + p[i].h, ch_px);
+	  if (x1 > x0 && y1 > y0)
+	    batch_add (root, (GlitnirRect) { x0 + dx, y0 + dy,
+					     x1 - x0, y1 - y0 });
+	}
+    }
+}
+
+/* Hand ROOT's damage to Glitnir and invalidate what it gives back on
+   the root widget, in logical pixels rounded outward.  Return true if
+   anything was invalidated.  */
+static bool
+present (struct glitnir_root *root)
+{
+  struct frame *f = root->frame;
+  GtkWidget *w = FRAME_GTK_WIDGET (f);
+  if (w == NULL)
+    return false;
+  int64_t fw = ceil (FRAME_PIXEL_WIDTH (f) * root->sx);
+  int64_t fh = ceil (FRAME_PIXEL_HEIGHT (f) * root->sy);
+  if (EQ (Vglitnir_debug, Qdamage_hold))
+    {
+      /* The damage stays for glitnir--damage: present the whole root.  */
+      gtk_widget_queue_draw (w);
+      root->commit_px += fw * fh;
+      return true;
+    }
+  gather_children (root);
+  flush_damage (root);
+  if (!root->pending)
+    return false;
+  root->pending = root->all = false;
+  GlitnirCommitOut out = { NULL, 0 };
+  if (GLITNIR_CALL (glitnir_commit (root->id, &out)) != GLITNIR_OK)
+    {
+      gtk_widget_queue_draw (w);	/* until Task 23's fallback */
+      root->commit_px += fw * fh;
+      return true;
+    }
+  bool any = false;
+  for (size_t i = 0; i < out.n; i++)
+    {
+      /* Whole-frame damage is {0, 0, INT32_MAX, INT32_MAX}.  */
+      int64_t x0 = max (out.rects[i].x, 0), y0 = max (out.rects[i].y, 0);
+      int64_t x1 = min ((int64_t) out.rects[i].x + out.rects[i].w, fw);
+      int64_t y1 = min ((int64_t) out.rects[i].y + out.rects[i].h, fh);
+      if (x1 <= x0 || y1 <= y0)
+	continue;
+      int lx0 = floor (x0 / root->sx), ly0 = floor (y0 / root->sy);
+      int lx1 = ceil (x1 / root->sx), ly1 = ceil (y1 / root->sy);
+      gtk_widget_queue_draw_area (w, lx0, ly0, lx1 - lx0, ly1 - ly0);
+      root->commit_px += (x1 - x0) * (y1 - y0);
+      any = true;
+    }
+  return any;
+}
+
+/* Paint ROOT now (the amended MP-22): the paint lands inside the point
+   instead of waiting for a frame-clock paint that would fall into the
+   next frozen span.  The commit to the compositor still goes out at
+   GDK's after-paint.  */
+static void
+paint_now (struct glitnir_root *root)
+{
+  GtkWidget *w = FRAME_GTK_WIDGET (root->frame);
+  GdkWindow *win = w ? gtk_widget_get_window (w) : NULL;
+  if (win == NULL)
+    return;
+  G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+  gdk_window_process_updates (gdk_window_get_toplevel (win), TRUE);
+  G_GNUC_END_IGNORE_DEPRECATIONS
+}
+
+bool
+glitnir_pgtk_consistency_point (struct frame *f, int which)
+{
+  if (which >= 3 && (redisplaying_p || buffer_flipping_blocked_p ()))
+    return false;
+  if (f == NULL || !FRAME_PGTK_P (f) || f->output_data.pgtk == NULL)
+    return false;
+  struct frame *rf = glitnir_root_of (f);
+  struct glitnir_root *root = frame_state (rf);
+  if (root == NULL)
+    return false;
+  if (recording (rf) == NULL)
+    {
+      /* The stock present: pgtk invalidates the whole widget at points 1
+	 and 2.  A root frozen before Glitnir was turned off thaws and
+	 shows everything once.  No call into Glitnir.  */
+      if (root->dirty && FRAME_GTK_WIDGET (rf))
+	gtk_widget_queue_draw (FRAME_GTK_WIDGET (rf));
+      root->dirty = root->scene_pending = false;
+      thaw (root);
+      if (which <= 2 && root->t_commit == 0)
+	root->t_commit = now_ns ();
+      return false;
+    }
+  if (!root->dirty && !root->scene_pending)
+    return true;
+  root->dirty = root->scene_pending = false;
+  uint64_t now = now_ns ();
+  bool painted = present (root);
+  if (painted && root->t_commit == 0)
+    root->t_commit = now;
+  thaw (root);
+  if (painted)
+    paint_now (root);
+  return true;
+}
+
+void
+glitnir_pgtk_consistency_points (int which)
+{
+  if (redisplaying_p || buffer_flipping_blocked_p ())
+    return;
+  Lisp_Object tail, frame;
+  FOR_EACH_FRAME (tail, frame)
+    {
+      struct frame *f = XFRAME (frame);
+      if (!FRAME_PGTK_P (f) || f->output_data.pgtk == NULL
+	  || FRAME_PARENT_FRAME (f))
+	continue;
+      struct glitnir_root *r = FRAME_X_OUTPUT (f)->glitnir;
+      if (r && (r->dirty || r->scene_pending))
+	glitnir_pgtk_consistency_point (f, which);
+    }
+}
+
+void
+glitnir_pgtk_scene_changed (struct frame *f)
+{
+  struct glitnir_root *root = root_state (f);
+  if (root == NULL)
+    return;
+  root->scene_pending = true;
+  glitnir_pgtk_consistency_point (f, 4);
 }
 
 /* Copy the widget's rectangle of TARGET into a new ARGB32 surface.  */
@@ -494,15 +721,21 @@ after_paint (GdkFrameClock *clock, gpointer data)
   memset (&e, 0, sizeof e);
   e.t_update_ns = r->t_update;
   e.t_commit_ns = r->t_commit;
+  e.t_freeze_ns = r->t_freeze;
   e.t_draw_start_ns = r->t_draw_start;
   e.t_draw_end_ns = r->t_draw_end;
   e.clock_frame_us = gdk_frame_clock_get_frame_time (clock);
   e.presented_us = -1;
   e.damage_px = r->damage_px;
   e.painted_px = r->painted_px;
-  e.backfill = r->backfill;
+  /* GDK draws into a staging surface that persists across buffer swaps:
+     a back-fill cannot be seen from here (R3, DP-9).  */
+  e.backfill = 2;
   e.scale_mismatch = r->scale_mismatch;
-  r->t_update = r->t_commit = 0;
+  r->last_commit = r->t_commit;
+  r->last_paint = r->t_draw_end;
+  r->t_update = r->t_freeze = r->t_commit = 0;
+  r->commit_px = 0;
   GLITNIR_CALL_UNCOUNTED (glitnir_stats_record (r->id, &e));
 }
 
@@ -526,31 +759,35 @@ glitnir_pgtk_draw_begin (struct frame *f, GtkWidget *widget, cairo_t *cr)
   gtk_widget_get_allocation (widget, &alloc);
   double scale_frame = gtk_widget_get_scale_factor (widget);
   r->scale_mismatch = sx != scale_frame;
+  r->draws++;
 
-  /* Stock paints the whole widget; the damage is what GDK asked for.  */
-  r->painted_px = (uint64_t) ((double) alloc.width * sx)
-		  * (uint64_t) ((double) alloc.height * sy);
-  double x1, y1, x2, y2;
-  cairo_clip_extents (cr, &x1, &y1, &x2, &y2);
-  r->damage_px = (x2 > x1 && y2 > y1)
-    ? (uint64_t) ((x2 - x1) * sx) * (uint64_t) ((y2 - y1) * sy) : 0;
-
-  /* GDK switched buffers when the target's data, width or height changed.  */
-  if (cairo_surface_get_type (target) == CAIRO_SURFACE_TYPE_IMAGE)
+  if (recording (f))
     {
-      const unsigned char *data = cairo_image_surface_get_data (target);
-      int w = cairo_image_surface_get_width (target);
-      int h = cairo_image_surface_get_height (target);
-      r->backfill = (r->have_last
-		     && (data != r->last_data || w != r->last_width
-			 || h != r->last_height));
-      r->last_data = data;
-      r->last_width = w;
-      r->last_height = h;
-      r->have_last = true;
+      /* Damage-only present: the paint covers GDK's clip, the damage
+	 the points committed.  */
+      uint64_t px = 0;
+      cairo_rectangle_list_t *l = cairo_copy_clip_rectangle_list (cr);
+      if (l->status == CAIRO_STATUS_SUCCESS)
+	for (int i = 0; i < l->num_rectangles; i++)
+	  px += ((uint64_t) (l->rectangles[i].width * sx + 0.5)
+		 * (uint64_t) (l->rectangles[i].height * sy + 0.5));
+      else
+	px = (uint64_t) ((double) alloc.width * sx)
+	     * (uint64_t) ((double) alloc.height * sy);
+      cairo_rectangle_list_destroy (l);
+      r->painted_px = px;
+      r->damage_px = r->commit_px;
     }
   else
-    r->backfill = 2;
+    {
+      /* Stock paints the whole widget; the damage is what GDK asked for.  */
+      r->painted_px = (uint64_t) ((double) alloc.width * sx)
+		      * (uint64_t) ((double) alloc.height * sy);
+      double x1, y1, x2, y2;
+      cairo_clip_extents (cr, &x1, &y1, &x2, &y2);
+      r->damage_px = (x2 > x1 && y2 > y1)
+	? (uint64_t) ((x2 - x1) * sx) * (uint64_t) ((y2 - y1) * sy) : 0;
+    }
 
   if (r->armed)
     {
@@ -586,8 +823,12 @@ glitnir_pgtk_draw_end (struct frame *f)
   struct glitnir_root *r = root_state (f);
   if (r)
     {
-      r->t_draw_end = now_ns ();
+      uint64_t now = now_ns ();
+      r->t_draw_end = now;
       r->drawn = true;
+      if (r->gap_from)
+	r->max_gap = max (r->max_gap, now - r->gap_from);
+      r->gap_from = now;
     }
   unblock_input ();
 }
@@ -610,6 +851,9 @@ glitnir_pgtk_free_frame (struct frame *f)
     cairo_surface_destroy (r->target);
   if (r->snapshot)
     cairo_surface_destroy (r->snapshot);
+  if (r->idle_id)
+    g_source_remove (r->idle_id);
+  thaw (r);
   GLITNIR_CALL_UNCOUNTED (glitnir_stats_forget (r->id));
   if (r->known)
     GLITNIR_CALL (glitnir_damage_forget (r->id));
@@ -633,6 +877,9 @@ glitnir_pgtk_snapshot (struct frame *f, const char **err)
       return NULL;
     }
 
+  /* Present what was drawn first (a root frozen with damage would not
+     paint).  */
+  glitnir_pgtk_consistency_point (r->frame, 4);
   if (r->snapshot)
     cairo_surface_destroy (r->snapshot);
   r->snapshot = NULL;
@@ -664,6 +911,77 @@ glitnir_pgtk_snapshot (struct frame *f, const char **err)
     *err = r->snapshot_error ? r->snapshot_error
 			     : "glitnir-snapshot: no paint within 1 s";
   return s;
+}
+
+/* For tests.  None of these calls into Glitnir.  */
+
+uint64_t
+glitnir_pgtk_now_ns (void)
+{
+  return now_ns ();
+}
+
+uintmax_t
+glitnir_pgtk_draw_count (struct frame *f)
+{
+  struct glitnir_root *r = root_state (f);
+  return r ? r->draws : 0;
+}
+
+bool
+glitnir_pgtk_frozen_p (struct frame *f)
+{
+  struct glitnir_root *r = root_state (f);
+  return r && r->frozen;
+}
+
+void
+glitnir_pgtk_last_paint (struct frame *f, uint64_t *commit, uint64_t *paint)
+{
+  struct glitnir_root *r = root_state (f);
+  *commit = r ? r->last_commit : 0;
+  *paint = r ? r->last_paint : 0;
+}
+
+double
+glitnir_pgtk_max_paint_gap_ms (struct frame *f, bool reset)
+{
+  struct glitnir_root *r = root_state (f);
+  if (r == NULL)
+    return 0;
+  uint64_t now = now_ns ();
+  uint64_t gap = max (r->max_gap, r->gap_from ? now - r->gap_from : 0);
+  if (reset)
+    {
+      r->max_gap = 0;
+      r->gap_from = now;
+    }
+  return gap / 1e6;
+}
+
+/* Put a synthetic pointer motion to logical X, Y of F's widget on GDK's
+   queue; whichever loop runs GLib next dispatches it.  */
+bool
+glitnir_pgtk_motion (struct frame *f, int x, int y)
+{
+  GtkWidget *w = FRAME_PGTK_P (f) ? FRAME_GTK_WIDGET (f) : NULL;
+  GdkWindow *win = w ? gtk_widget_get_window (w) : NULL;
+  if (win == NULL)
+    return false;
+  GdkSeat *seat = gdk_display_get_default_seat (gdk_window_get_display (win));
+  GdkDevice *dev = seat ? gdk_seat_get_pointer (seat) : NULL;
+  if (dev == NULL)
+    return false;
+  GdkEvent *ev = gdk_event_new (GDK_MOTION_NOTIFY);
+  ev->motion.window = g_object_ref (win);
+  ev->motion.send_event = TRUE;
+  ev->motion.time = GDK_CURRENT_TIME;
+  ev->motion.x = ev->motion.x_root = x;
+  ev->motion.y = ev->motion.y_root = y;
+  gdk_event_set_device (ev, dev);
+  gdk_event_put (ev);
+  gdk_event_free (ev);
+  return true;
 }
 
 #endif /* HAVE_GLITNIR */

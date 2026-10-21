@@ -100,8 +100,21 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   surfaces) while `glitnir-enable` is non-nil. For such a frame pgtk's drawing primitives record **damage** (device
   pixels, rounded outward; a scroll as one operation; the visible bell, resizes and scale changes as the whole frame;
   nothing while `x-export-frames` draws); an inactive frame makes no call into Glitnir. `(glitnir--damage &optional
-  FRAME)` takes a frame's pending damage as `((X Y W H) …)`; it lasts until the frame's next redisplay begins, or until
-  read when `glitnir-debug` is `damage-hold`.
+  FRAME)` takes a frame's pending damage as `((X Y W H) …)`; the next consistency point takes it otherwise, unless
+  `glitnir-debug` is `damage-hold` (the damage then stays until read and the points present whole frames).
+  **Damage-only present.** The first damage on a root frame or its child frames freezes the root's GDK window
+  (`gdk_window_freeze_updates`), so GTK never paints a half-drawn picture. At a **consistency point** (redisplay's buffer
+  flips unblocked, also after an error or a throw out of redisplay; a frame up to date outside a flip block;
+  `flush_display` and the end of the pgtk handlers that draw — mouse highlight, focus, the visible bell — and of
+  `pgtk_read_socket`, these only outside redisplay; an idle callback for any other drawing outside redisplay) the root's
+  damage, its children's included, is committed and invalidated rectangle by rectangle on the root widget, in place of
+  pgtk's whole-widget invalidation, and the root thaws and paints at once (`gdk_window_process_updates`; without it,
+  GLib dispatch inside redisplay would find the root frozen and starve the display). With `glitnir-enable` nil the
+  stock path runs: whole-widget paints, no call into Glitnir but the frame-time record, and a frozen root thaws at its
+  next point. `glitnir-stats` records the commit time on both paths (`:latency-ms`), the freeze (`:freeze-ms`), the
+  committed and the painted pixels; `:backfill-rate` is nil (GDK's staging surface hides back-fills). Test primitives:
+  `glitnir--draw-count`, `glitnir--frozen-p`, `glitnir--last-paint`, `glitnir--now-ns`, `glitnir--max-paint-gap-ms`,
+  `glitnir--motion` (a synthetic pointer motion).
 - **Dev build** (`--dev` or `NIDHOGG_BUILD_DEV=1`, for agents' task builds): configures `--with-native-compilation=yes`
   instead of `aot`, so only the preloaded Lisp is native-compiled and the other ~1,400 files stay bytecode (minutes instead
   of the better part of an hour). A `lisp/site-init.el` written into the build copy sets `native-comp-jit-compilation` to

@@ -50,9 +50,10 @@ DEFUN ("glitnir--damage", Fglitnir__damage, Sglitnir__damage, 0, 1, 0,
        doc: /* Take FRAME's pending damage and return it.
 The value is a list of rectangles (X Y WIDTH HEIGHT) in device pixels,
 what pgtk drew on FRAME since its damage was last taken; FRAME then has
-none.  Without `glitnir-debug' `damage-hold', a frame's damage lasts only
-until its next redisplay begins.  FRAME defaults to the selected frame;
-the value is nil when Glitnir does not draw FRAME.  */)
+none.  Without `glitnir-debug' `damage-hold', the next consistency point
+takes a frame's damage to present it, so this sees only what was drawn
+since.  FRAME defaults to the selected frame; the value is nil when
+Glitnir does not draw FRAME.  */)
   (Lisp_Object frame)
 {
   struct frame *f = decode_live_frame (frame);
@@ -91,7 +92,9 @@ It is a plist (:count N :compose-ms (:p50 :p95 :max) :draw-ms (...)
 :backfill-rate F :ticks N :late-ticks N :violations N :scale-mismatch N);
 :damage-px and :painted-px are medians in device pixels.  Times are in
 milliseconds; :latency-ms is the time from the commit of a redisplay to the
-end of the paint that shows it.  FRAME defaults to the selected frame; it
+end of the paint that shows it, :freeze-ms the time the root was frozen
+before that commit.  :backfill-rate is nil: GDK's back-fills cannot be
+seen from the draw handler.  FRAME defaults to the selected frame; it
 returns nil for a frame that is not a graphical pgtk frame.  Non-nil RESET
 empties the record after reading it.  */)
   (Lisp_Object frame, Lisp_Object reset)
@@ -118,7 +121,8 @@ empties the record after reading it.  */)
 			intern_c_string (":painted-px"),
 			make_uint (s.painted_px_p50),
 			intern_c_string (":backfill-rate"),
-			make_float (s.backfill_rate),
+			(s.backfill_rate < 0 ? Qnil
+			 : make_float (s.backfill_rate)),
 			intern_c_string (":ticks"), make_uint (s.ticks),
 			intern_c_string (":late-ticks"),
 			make_uint (s.late_ticks),
@@ -235,6 +239,107 @@ DEFUN ("glitnir--snapshot-copies", Fglitnir__snapshot_copies,
 #endif
 }
 
+/* The consistency points' debug primitives (for tests).  None of them
+   calls into Glitnir.  */
+
+DEFUN ("glitnir--now-ns", Fglitnir__now_ns, Sglitnir__now_ns, 0, 0, 0,
+       doc: /* Return the monotonic clock in nanoseconds, the clock of `glitnir--last-paint'.  */)
+  (void)
+{
+#ifdef HAVE_PGTK
+  return make_uint (glitnir_pgtk_now_ns ());
+#else
+  return make_fixnum (0);
+#endif
+}
+
+DEFUN ("glitnir--draw-count", Fglitnir__draw_count, Sglitnir__draw_count,
+       0, 1, 0,
+       doc: /* Return the number of times GTK drew FRAME's root frame since start.
+FRAME defaults to the selected frame.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+#ifdef HAVE_PGTK
+  return make_uint (glitnir_pgtk_draw_count (f));
+#else
+  (void) f;
+  return make_fixnum (0);
+#endif
+}
+
+DEFUN ("glitnir--frozen-p", Fglitnir__frozen_p, Sglitnir__frozen_p, 0, 1, 0,
+       doc: /* Return non-nil if FRAME's root frame is frozen.
+A root is frozen from the first damage on it or its child frames until the
+next consistency point: GTK paints nothing of it meanwhile.  FRAME
+defaults to the selected frame.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+#ifdef HAVE_PGTK
+  return glitnir_pgtk_frozen_p (f) ? Qt : Qnil;
+#else
+  (void) f;
+  return Qnil;
+#endif
+}
+
+DEFUN ("glitnir--last-paint", Fglitnir__last_paint, Sglitnir__last_paint,
+       0, 1, 0,
+       doc: /* Return the times of the latest recorded paint of FRAME's root frame.
+The value is (:commit-ns N :paint-ns N): the commit that paint showed (0
+if none) and the end of its draw, on the clock of `glitnir--now-ns'.
+FRAME defaults to the selected frame.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+  uint64_t commit = 0, paint = 0;
+#ifdef HAVE_PGTK
+  glitnir_pgtk_last_paint (f, &commit, &paint);
+#else
+  (void) f;
+#endif
+  return list4 (intern_c_string (":commit-ns"), make_uint (commit),
+		intern_c_string (":paint-ns"), make_uint (paint));
+}
+
+DEFUN ("glitnir--max-paint-gap-ms", Fglitnir__max_paint_gap_ms,
+       Sglitnir__max_paint_gap_ms, 0, 2, 0,
+       doc: /* Return the longest time in ms between two paints of FRAME's root frame.
+It covers the time since the last reset, the time since the latest paint
+included.  Non-nil RESET starts a new span after reading.  FRAME defaults
+to the selected frame.  */)
+  (Lisp_Object frame, Lisp_Object reset)
+{
+  struct frame *f = decode_live_frame (frame);
+#ifdef HAVE_PGTK
+  return make_float (glitnir_pgtk_max_paint_gap_ms (f, !NILP (reset)));
+#else
+  (void) f;
+  (void) reset;
+  return make_float (0);
+#endif
+}
+
+DEFUN ("glitnir--motion", Fglitnir__motion, Sglitnir__motion, 3, 3, 0,
+       doc: /* Queue a synthetic pointer motion to X, Y (logical pixels) of FRAME.
+GTK dispatches it when Emacs next reads events.  Return non-nil if it was
+queued.  */)
+  (Lisp_Object frame, Lisp_Object x, Lisp_Object y)
+{
+  struct frame *f = decode_live_frame (frame);
+  int ix = check_integer_range (x, INT_MIN, INT_MAX);
+  int iy = check_integer_range (y, INT_MIN, INT_MAX);
+#ifdef HAVE_PGTK
+  return glitnir_pgtk_motion (f, ix, iy) ? Qt : Qnil;
+#else
+  (void) f;
+  (void) ix;
+  (void) iy;
+  return Qnil;
+#endif
+}
+
 void
 syms_of_nidhogg_glitnir (void)
 {
@@ -244,6 +349,12 @@ syms_of_nidhogg_glitnir (void)
   defsubr (&Sglitnir_snapshot);
   defsubr (&Sglitnir__calls);
   defsubr (&Sglitnir__snapshot_copies);
+  defsubr (&Sglitnir__now_ns);
+  defsubr (&Sglitnir__draw_count);
+  defsubr (&Sglitnir__frozen_p);
+  defsubr (&Sglitnir__last_paint);
+  defsubr (&Sglitnir__max_paint_gap_ms);
+  defsubr (&Sglitnir__motion);
 
   DEFVAR_BOOL ("glitnir-enable", glitnir_enable,
 	       doc: /* Non-nil means Glitnir (the compositor) may draw graphical frames.
@@ -254,7 +365,8 @@ Setting it to nil makes Glitnir hand every frame back to the stock drawing.  */)
   DEFVAR_LISP ("glitnir-debug", Vglitnir_debug,
 	       doc: /* Glitnir's debug mode, for tests: nil (the default) or a symbol.
 `damage-hold' keeps each frame's damage until `glitnir--damage' takes it,
-instead of dropping it when the frame's next redisplay begins.  */);
+instead of handing it to the next consistency point; the points then
+present whole frames.  */);
   Vglitnir_debug = Qnil;
 
   Fprovide (intern_c_string ("glitnir"), Qnil);

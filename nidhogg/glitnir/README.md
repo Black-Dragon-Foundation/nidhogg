@@ -53,3 +53,9 @@ of the crate and compares; the source tree is never written). Without `--contain
 strip it left stale. A rectangle the damage already contains adds nothing, and a new one drops those it contains.
 `glitnir_damage_pending` takes the damage (the frame then has none); the rectangles stay valid until that frame's next
 take. Whole-frame damage reads back as `{0, 0, INT32_MAX, INT32_MAX}`, which the host clips to the frame.
+
+`glitnir_commit` runs at the host's consistency points (no drawing in progress on a root or its children): it takes
+the root's pending damage, into which the host has first moved its child frames' damage (in root coordinates), and
+hands it back for invalidation; the rectangles stay valid until the root's next commit, apart from any debug take.
+
+The frame-time record's `backfill_rate` is -1 when no entry knows whether its paint back-filled (`backfill` 2).

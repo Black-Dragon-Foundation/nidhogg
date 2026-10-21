@@ -45,7 +45,7 @@ typedef struct
   uint64_t count;
   GlitnirPercentiles compose_ms, draw_ms, latency_ms, freeze_ms;
   uint64_t damage_px_p50, painted_px_p50;
-  double backfill_rate;
+  double backfill_rate;		/* -1: no entry knows (backfill 2 everywhere) */
   uint64_t ticks, late_ticks, violations, scale_mismatch;
 } GlitnirStatsSummary;
 
@@ -81,6 +81,18 @@ int32_t glitnir_damage_pending (uint64_t frame, const GlitnirRect **out, size_t 
 
 /* Drop FRAME's damage (the frame is gone).  */
 int32_t glitnir_damage_forget (uint64_t frame);
+
+/* What a commit hands back.  */
+typedef struct
+{
+  const GlitnirRect *rects;
+  size_t n;
+} GlitnirCommitOut;
+
+/* Commit ROOT at a consistency point (no drawing in progress on ROOT or its children): OUT->rects points to OUT->n
+   rectangles, ROOT's damage in ROOT's device pixels (the host moves its child frames' damage into ROOT first), valid
+   until ROOT's next commit or glitnir_damage_forget; ROOT then has no damage.  GLITNIR_E_ARG if OUT is NULL.  */
+int32_t glitnir_commit (uint64_t root, GlitnirCommitOut *out);
 
 #ifdef __cplusplus
 }
