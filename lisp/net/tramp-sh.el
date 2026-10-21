@@ -3247,8 +3247,57 @@ will be used."
 			   t))
 			;; Now do it.
 			(if command
-			    ;; Send the command.
-			    (tramp-send-command v command nil t) ; nooutput
+			    ;; Send the command.  The shell echoes
+			    ;; MARKER first; once it has arrived, the
+			    ;; shell has read the whole command line,
+			    ;; so input sent to the process reaches
+			    ;; PROGRAM, not the shell.  Output and a
+			    ;; status change arriving meanwhile are
+			    ;; passed on after we have returned.
+			    (let ((marker
+				   (md5 (concat tramp-end-of-output "exec")))
+				  (timeout
+				   (tramp-get-method-parameter
+				    v 'tramp-connection-timeout
+				    tramp-connection-timeout))
+				  (sentinel0 (process-sentinel p))
+				  event found output)
+			      (set-process-sentinel
+			       p (lambda (_p e) (setq event e)))
+			      (tramp-send-command
+			       v (format "echo %s; %s" marker command)
+			       nil t) ; nooutput
+			      (with-tramp-timeout
+				  (timeout
+				   (delete-process p)
+				   (tramp-error
+				    v 'remote-file-error
+				    "Process `%s' not started in %d secs"
+				    name timeout))
+				(while (and (not (setq found
+						       (progn
+							 (goto-char (point-min))
+							 (search-forward-regexp
+							  (rx bol (literal marker)
+							      (? "\r") "\n")
+							  nil t))))
+					    (process-live-p p))
+				  (sit-for 0 'nodisp)
+				  (tramp-accept-process-output p)))
+			      (set-process-sentinel p sentinel0)
+			      (when found (delete-region (point-min) found))
+			      (setq output (delete-and-extract-region
+					    (point-min) (point-max)))
+			      (when (or event (not (string-empty-p output)))
+				(run-at-time
+				 0 nil
+				 (lambda ()
+				   (when (and (not (string-empty-p output))
+					      (functionp (process-filter p)))
+				     (funcall (process-filter p) p output))
+				   (when (and event
+					      (functionp (process-sentinel p)))
+				     (funcall (process-sentinel p) p event))))))
 			  ;; Check, whether a pty is associated.
 			  (unless (process-get p 'remote-tty)
 			    (tramp-error

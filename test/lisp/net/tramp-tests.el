@@ -6180,6 +6180,39 @@ If UNSTABLE is non-nil, the test is tagged as `:unstable'."
 
 (tramp--test-deftest-direct-async-process tramp-test30-make-process)
 
+(ert-deftest tramp-test30-make-process-input-at-once ()
+  "Check that input sent right after `make-process' reaches the program.
+The remote shell must have read its `exec' line when `make-process'
+returns.  A slow shell is emulated by a terminal which delivers input
+to a pipe process only in chunks of 255 bytes, or after 0.5s."
+  :tags '(:tramp-asynchronous-processes)
+  (skip-unless (tramp--test-enabled))
+  (skip-unless (tramp--test-sh-p))
+
+  (let ((default-directory ert-remote-temporary-file-directory)
+	(tramp-pipe-stty-settings "-icanon min 255 time 5")
+	proc)
+    (skip-unless (not (tramp-direct-async-process-p)))
+    (dolist (connection-type '(pipe pty))
+      (unwind-protect
+	  (with-temp-buffer
+	    (setq proc
+		  (make-process
+		   :name (format "test-%s" connection-type)
+		   :buffer (current-buffer) :command '("cat")
+		   :connection-type connection-type :file-handler t))
+	    (should (equal (process-status proc) 'run))
+	    (process-send-string proc "foo\n")
+	    (with-timeout (5 (tramp--test-timeout-handler))
+	      (while (not (string-match-p "foo" (buffer-string)))
+		(while (accept-process-output proc 0 nil t))))
+	    ;; Nothing but the program's output.
+	    (should
+	     (string-match-p (rx bos "foo" (? "\r") "\n" eos) (buffer-string))))
+
+	;; Cleanup.
+	(ignore-errors (delete-process proc))))))
+
 (ert-deftest tramp-test31-interrupt-process ()
   "Check `interrupt-process'."
   ;; The final `process-live-p' check does not run sufficiently.
