@@ -37,6 +37,15 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
 uintmax_t glitnir_pgtk_calls;
 uintmax_t glitnir_pgtk_snapshot_copies;
+bool glitnir_pgtk_dead;
+
+/* glitnir--debug-panic: the next call at this point panics.  */
+enum { PANIC_NONE, PANIC_COMMIT, PANIC_DRAW };
+static int panic_armed;
+
+/* The message of the fallback, shown once the main loop is idle (never from
+   inside a redisplay or a draw).  */
+static char *failed_message;
 
 /* Damage rectangles a frame batches before one glitnir_damage_add_n.  */
 enum { GLITNIR_PGTK_BATCH = 32 };
@@ -165,8 +174,8 @@ root_state (struct frame *f)
 static struct glitnir_root *
 recording (struct frame *f)
 {
-  if (!glitnir_enable || !FRAME_PGTK_P (f) || f->output_data.pgtk == NULL
-      || FRAME_TOOLTIP_P (f))
+  if (glitnir_pgtk_dead || !glitnir_enable || !FRAME_PGTK_P (f)
+      || f->output_data.pgtk == NULL || FRAME_TOOLTIP_P (f))
     return NULL;
   cairo_t *cr = f->output_data.pgtk->cr_context;
   if (cr == NULL)
@@ -218,6 +227,81 @@ thaw (struct glitnir_root *root)
   root->frozen = NULL;
   gdk_window_thaw_updates (win);
   g_object_unref (win);
+}
+
+static void verify_drop (struct glitnir_root *r);
+
+static gboolean
+failed_message_show (gpointer data)
+{
+  char *text = failed_message;
+  failed_message = NULL;
+  if (text)
+    {
+      CALLN (Fmessage, build_string ("%s"), build_string (text));
+      xfree (text);
+    }
+  return G_SOURCE_REMOVE;
+}
+
+/* A call into Glitnir failed (MP-21).  Nothing of Glitnir is trusted any
+   more: every frozen root thaws; a draw that was running paints the stock
+   picture before it ends, so GDK's buffer is never left half composed; both
+   whole-widget invalidations come back and every frame is redrawn; and
+   Glitnir is off for the session (no further glitnir_* call).  */
+void
+glitnir_pgtk_failed (const char *what, int32_t rc)
+{
+  if (glitnir_pgtk_dead)
+    return;
+  glitnir_pgtk_dead = true;
+  panic_armed = PANIC_NONE;
+  (void) rc;
+  Lisp_Object tail, frame;
+  FOR_EACH_FRAME (tail, frame)
+    {
+      struct frame *f = XFRAME (frame);
+      if (!FRAME_PGTK_P (f) || f->output_data.pgtk == NULL)
+	continue;
+      struct glitnir_root *r = FRAME_X_OUTPUT (f)->glitnir;
+      if (r == NULL)
+	continue;
+      thaw (r);
+      r->dirty = r->scene_pending = false;
+      r->nbatch = 0;
+      r->pending = r->all = false;
+      r->known = false;
+      if (r->draw_cr)
+	{
+	  /* The stock draw, in this very draw.  */
+	  cairo_surface_t *src = FRAME_X_OUTPUT (f)->cr_surface_visible_bell;
+	  if (src == NULL && f->output_data.pgtk->cr_active != NULL)
+	    src = cairo_get_target (f->output_data.pgtk->cr_active);
+	  if (src != NULL)
+	    {
+	      cairo_set_source_surface (r->draw_cr, src, 0, 0);
+	      cairo_paint (r->draw_cr);
+	    }
+	  r->draw_cr = NULL;
+	}
+      if (r->nflash)
+	{
+	  r->nflash = 0;
+	  if (r->flash_id)
+	    g_source_remove (r->flash_id);
+	  r->flash_id = 0;
+	}
+      verify_drop (r);
+      GtkWidget *w = FRAME_GTK_WIDGET (f);
+      if (w)
+	gtk_widget_queue_draw (w);
+    }
+  xfree (failed_message);
+  failed_message = xmalloc (strlen (what) + 200);
+  sprintf (failed_message, "Glitnir (the compositor) stopped after an internal "
+	   "error (%s); Nidhogg draws the stock way for the rest of the session",
+	   what);
+  g_idle_add (failed_message_show, NULL);
 }
 
 static gboolean
@@ -765,12 +849,20 @@ present (struct glitnir_root *root)
     }
   root->pending = root->all = false;
   GlitnirCommitOut out = { NULL, 0 };
-  if (GLITNIR_CALL (glitnir_commit (root->id, &out)) != GLITNIR_OK)
+  int32_t rc;
+  if (panic_armed == PANIC_COMMIT)
     {
+      panic_armed = PANIC_NONE;
+      rc = GLITNIR_CALL (glitnir_debug_panic ());
+    }
+  else
+    rc = GLITNIR_CALL (glitnir_commit (root->id, &out));
+  if (rc != GLITNIR_OK)
+    {
+      /* glitnir_pgtk_failed has switched Glitnir off and queued the
+	 whole-widget draw: the stock way presents.  */
       verify_drop (root);
-      gtk_widget_queue_draw (w);	/* until Task 23's fallback */
-      root->commit_px += fw * fh;
-      return true;
+      return false;
     }
   if (verifying ())
     verify_frame (root, out.rects, out.n);
@@ -870,6 +962,8 @@ glitnir_pgtk_consistency_point (struct frame *f, int which)
     fprintf (stderr, "glitnir verify: %"PRIu64" frozen for %d ms\n",
 	     root->id, (int) ((now - root->freeze_at) / 1000000));
   bool painted = present (root);
+  if (glitnir_pgtk_dead)
+    return false;		/* pgtk invalidates the whole widget */
   if (painted && root->t_commit == 0)
     root->t_commit = now;
   thaw (root);
@@ -1032,7 +1126,21 @@ glitnir_pgtk_draw_begin (struct frame *f, GtkWidget *widget, cairo_t *cr)
   r->draws++;
   r->draw_cr = cr;
 
-  if (recording (f))
+  bool rec = recording (f) != NULL;
+  if (rec && panic_armed == PANIC_DRAW)
+    {
+      panic_armed = PANIC_NONE;
+      GLITNIR_CALL (glitnir_debug_panic ());
+      if (glitnir_pgtk_dead)
+	{
+	  /* The failure painted the stock picture into CR; the draw ends
+	     here, outside Glitnir.  */
+	  r->draw_cr = NULL;
+	  unblock_input ();
+	  return false;
+	}
+    }
+  if (rec)
     {
       if (verifying () && (r->dirty || r->scene_pending))
 	{
@@ -1193,6 +1301,32 @@ glitnir_pgtk_snapshot (struct frame *f, const char **err)
     *err = r->snapshot_error ? r->snapshot_error
 			     : "glitnir-snapshot: no paint within 1 s";
   return s;
+}
+
+/* Arm (WHERE 1 or 2) or disarm (0) the next panic; WHERE 3 turns Glitnir
+   back on after one (every root's damage starts from the whole frame).  */
+void
+glitnir_pgtk_debug_panic (int where)
+{
+  if (where != 3)
+    {
+      panic_armed = where;
+      return;
+    }
+  panic_armed = PANIC_NONE;
+  if (!glitnir_pgtk_dead)
+    return;
+  glitnir_pgtk_dead = false;
+  Lisp_Object tail, frame;
+  FOR_EACH_FRAME (tail, frame)
+    {
+      struct frame *f = XFRAME (frame);
+      if (!FRAME_PGTK_P (f) || f->output_data.pgtk == NULL)
+	continue;
+      struct glitnir_root *r = FRAME_X_OUTPUT (f)->glitnir;
+      if (r && recording (f))
+	damage_all (r);
+    }
 }
 
 /* For tests.  None of these calls into Glitnir.  */
