@@ -57,6 +57,17 @@ run -- --dry-run --container fedora-44 --out dist/x.tar.xz
 rcis 0; has "DESTDIR=/build/stage"; has "BUILDINFO"; has "/out:Z"
 run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --out dist/x.tar.xz
 rcis 0; has "Nidhogg.app"; has "BUILDINFO"
+# --dev: native-compilation=yes, no JIT in the image, never packed, cache stamp carries the mode
+run -- --dry-run --container fedora-44 --dev
+rcis 0; has "--with-native-compilation=yes"; hasnt "--with-native-compilation=aot"; has "site-init.el"; has "MODE_ID=yes"; has "--with-tree-sitter"
+run NIDHOGG_BUILD_DEV=1 -- --dry-run --container fedora-44
+rcis 0; has "--with-native-compilation=yes"
+run -- --dry-run --container fedora-44 --dev --out dist/x.tar.xz
+rcis 1; has "never packed"
+run -- --dry-run --container fedora-44 --dev --stage pack
+rcis 1; has "never packed"
+run -- --dry-run --container fedora-44
+rcis 0; hasnt "site-init.el"; has "MODE_ID=aot"
 # macOS counts free + inactive + speculative + purgeable pages (a fake vm_stat: 16 KiB pages, 262144 each = 4 GiB each)
 T=$(mktemp -d "${TMPDIR:-/tmp}/nidhogg-build-test.XXXXXX")
 trap 'rm -rf "$T"' EXIT

@@ -66,7 +66,7 @@ commit. `bash nidhogg/test/agents-test.sh` checks these commands on a throwaway 
 
 ```bash
 nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memory SIZE]
-                 [--build-dir DIR] [--check FILE] [--dry-run]
+                 [--build-dir DIR] [--check FILE] [--dev] [--dry-run]
 ```
 
 - Targets today: Linux (pgtk) in a container or on the host. macOS (NS app, `Nidhogg.app`) is planned: `--host` has the
@@ -96,6 +96,13 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   newer`. `make` builds the crate offline and locked, with its cargo home and target directory under `src/` of the build
   tree (never `~/.cargo`), and links it into `temacs`. With the flag the feature `glitnir` is provided, `glitnir-enable`
   (default `t`) and `glitnir-active-p` exist; without it none of them do. Release tarballs need no Rust.
+- **Dev build** (`--dev` or `NIDHOGG_BUILD_DEV=1`, for agents' task builds): configures `--with-native-compilation=yes`
+  instead of `aot`, so only the preloaded Lisp is native-compiled and the other ~1,400 files stay bytecode (minutes instead
+  of the better part of an hour). A `lisp/site-init.el` written into the build copy sets `native-comp-jit-compilation` to
+  nil in the dumped image, so no background compiles run during tests (`nidhogg/test/gui.sh` and drgnx's harness need no
+  change). GUI and functional tests are fine on it; performance runs (Gate A, budgets, A/B) and releases need the AOT
+  build. It can't pass for a release: `--dev` refuses `--out` and `--stage pack`, and its compiled-Lisp cache stamp
+  carries the mode, so dev and AOT entries never mix. Use a fresh `--build-dir` when switching modes.
 - `--check FILE` runs the `make -C test` targets listed in FILE (`nidhogg/check-subset.txt` is what CI runs).
 - `bash nidhogg/test/build-test.sh` checks the dry-run output.
 
