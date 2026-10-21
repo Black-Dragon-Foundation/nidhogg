@@ -4,6 +4,7 @@
 
 use std::sync::Mutex;
 
+pub mod damage;
 pub mod ffi;
 pub mod geom;
 pub mod kernels;
@@ -18,8 +19,10 @@ pub mod stats;
 #[derive(Debug, Default)]
 pub(crate) struct State {
     pub(crate) rings: stats::Rings,
+    pub(crate) damage: damage::Frames,
 }
 
 pub(crate) static STATE: Mutex<State> = Mutex::new(State {
     rings: stats::Rings::new(),
+    damage: damage::Frames::new(),
 });

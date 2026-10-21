@@ -6,6 +6,7 @@
 #ifndef GLITNIR_H
 #define GLITNIR_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -56,6 +57,30 @@ int32_t glitnir_stats_summary (uint64_t root, int32_t reset, GlitnirStatsSummary
 
 /* Drop ROOT's ring.  */
 int32_t glitnir_stats_forget (uint64_t root);
+
+/* A rectangle in device pixels; empty when w <= 0 or h <= 0.  */
+typedef struct { int32_t x, y, w, h; } GlitnirRect;
+
+/* Damage: what changed on a frame since its damage was last taken.  A rectangle already contained in the damage adds
+   nothing.  Whole-frame damage reads back as one rectangle {0, 0, INT32_MAX, INT32_MAX}: the reader clips it to the
+   frame.  */
+
+/* Add the N rectangles at RECTS to FRAME's damage.  GLITNIR_E_ARG if RECTS is NULL and N is not 0.  */
+int32_t glitnir_damage_add_n (uint64_t frame, const GlitnirRect *rects, size_t n);
+
+/* Damage the whole of FRAME.  */
+int32_t glitnir_damage_all (uint64_t frame);
+
+/* WINDOW's pixels in AREA moved vertically by DY on FRAME (the host copied them); EXPOSED is the part of AREA the move
+   left stale.  Both rectangles are damaged.  */
+int32_t glitnir_scroll (uint64_t frame, uint64_t window, GlitnirRect area, int32_t dy, GlitnirRect exposed);
+
+/* Take FRAME's damage: *OUT points to *N rectangles, valid until FRAME's next glitnir_damage_pending or
+   glitnir_damage_forget; FRAME then has no damage.  GLITNIR_E_ARG if OUT or N is NULL.  */
+int32_t glitnir_damage_pending (uint64_t frame, const GlitnirRect **out, size_t *n);
+
+/* Drop FRAME's damage (the frame is gone).  */
+int32_t glitnir_damage_forget (uint64_t frame);
 
 #ifdef __cplusplus
 }

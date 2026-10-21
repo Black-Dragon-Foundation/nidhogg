@@ -59,6 +59,30 @@ extern bool glitnir_pgtk_draw_begin (struct frame *f, GtkWidget *widget,
 extern void glitnir_pgtk_draw_end (struct frame *f);
 extern void glitnir_pgtk_free_frame (struct frame *f);
 
+/* Non-nil when Glitnir records F: `glitnir-enable', a pgtk frame that is
+   not a tooltip, drawn on an ARGB32 image surface.  */
+extern bool glitnir_pgtk_active_p (struct frame *f);
+
+/* Damage, recorded by pgtk's drawing primitives.  Rectangles are in
+   logical (frame) pixels; the glue turns them into device pixels with the
+   scale of F's own surface, rounded outward, and batches them.  Nothing is
+   recorded while F's cairo context is not its own (x-export-frames).  */
+extern void glitnir_pgtk_damage (struct frame *f, int x, int y, int w, int h);
+extern void glitnir_pgtk_damage_all (struct frame *f);
+extern void glitnir_pgtk_scroll (struct frame *f, struct window *w, int x,
+				 int from_y, int to_y, int width, int height);
+extern void glitnir_pgtk_damage_glyphs (struct glyph_string *s);
+extern void glitnir_pgtk_damage_cursor (struct window *w,
+					struct glyph_row *row, bool on_p);
+extern void glitnir_pgtk_damage_fringe (struct window *w,
+					struct draw_fringe_bitmap_params *p);
+extern void glitnir_pgtk_damage_internal_border (struct frame *f);
+
+/* Take F's pending damage into OUT (at most NMAX rectangles, device pixels,
+   clipped to F); return their number.  */
+extern ptrdiff_t glitnir_pgtk_damage_take (struct frame *f, GlitnirRect *out,
+					   ptrdiff_t nmax);
+
 /* A new ARGB32 image surface with F's root frame as GTK last painted it
    (device pixels), made by arming the after-paint handler and waiting up to
    a second for a paint.  NULL with *ERR set to the error message.  */
