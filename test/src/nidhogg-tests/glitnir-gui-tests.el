@@ -101,10 +101,15 @@
     (should (equal (glitnir--damage) (list (glitnir-gui--frame-rect))))))
 
 (ert-deftest glitnir-gui/export-records-nothing ()
+  ;; x-export-frames first redisplays the frame for real (that may redraw the cursors), then clears and draws the
+  ;; whole frame into its own surface: recorded, that would be the whole frame.
   (let ((glitnir-debug 'damage-hold))
     (redisplay t) (glitnir--damage)
     (should (stringp (x-export-frames nil 'png)))
-    (should-not (glitnir--damage))))
+    (let ((rects (glitnir--damage)) (frame (glitnir-gui--frame-rect)))
+      (should-not (member frame rects))
+      (should (< (apply #'+ (mapcar (lambda (r) (* (nth 2 r) (nth 3 r))) rects))
+                 (/ (* (nth 2 frame) (nth 3 frame)) 100))))))
 
 (ert-deftest glitnir-gui/inactive-makes-no-calls ()
   (should (glitnir-active-p))
