@@ -325,14 +325,12 @@ until that redisplay is done."
           (should (= (glitnir-gui--samples 255 0 255) 0))
           (pcase-let ((`(,x . ,y) (posn-x-y (posn-at-point (+ (point-min) 6))))
                       (`(,left ,top . ,_) (window-inside-pixel-edges)))
-            ;; Synthetic motions take effect one motion late (the stock path too: GDK holds the newest queued motion
-            ;; back until another event follows it): a motion elsewhere, then two over the text, each dispatched
-            ;; while Emacs waits (no redisplay).  The handler draws the highlight; the stock path would show it only
-            ;; at the next redisplay.
-            (dolist (xy (list (cons (+ left 2) (+ top 2)) (cons (+ left x 4) (+ top y 4))
-                              (cons (+ left x 6) (+ top y 5))))
-              (should (glitnir--motion nil (car xy) (cdr xy)))
-              (sleep-for 0.15)))
+            ;; `glitnir--motion' hands the motion straight to GTK's handler (no GDK queue, which holds the newest
+            ;; motion back until another event follows it, and no wait): a motion elsewhere, then one over the
+            ;; text, no redisplay between.  The handler draws the highlight; the stock path would show it only at
+            ;; the next redisplay.
+            (dolist (xy (list (cons (+ left 2) (+ top 2)) (cons (+ left x 4) (+ top y 4))))
+              (should (glitnir--motion nil (car xy) (cdr xy)))))
           (should (> (glitnir-gui--samples 255 0 255) 0)))
       (kill-buffer buf))))
 
@@ -367,5 +365,72 @@ until that redisplay is done."
           (should (> (plist-get (plist-get s :latency-ms) :p50) 0))
           (should (null (plist-get s :backfill-rate)))
           (should (<= (plist-get last :commit-ns) (plist-get last :paint-ns) (glitnir--now-ns))))))))
+
+;; Debug modes (Task 22).
+
+(defun glitnir-gui--violations ()
+  (plist-get (glitnir-stats) :violations))
+
+(ert-deftest glitnir-gui/verify-catches-a-missed-rect ()
+  (with-temp-buffer
+    (switch-to-buffer (current-buffer))
+    (should (glitnir-gui--settle))
+    (let ((glitnir-debug 'verify))
+      (insert "a") (redisplay t) (sit-for 0.1) ; this commit keeps the copy the next one is compared with
+      (glitnir-stats nil t)
+      (should (glitnir--draw-undamaged))
+      (insert "b") (redisplay t) (sit-for 0.1)
+      (should (>= (glitnir-gui--violations) 1))
+      ;; the rectangle is in the copy now: the next commit is clean
+      (glitnir-stats nil t)
+      (insert "c") (redisplay t) (sit-for 0.1)
+      (should (= (glitnir-gui--violations) 0)))
+    (redraw-frame)))
+
+(ert-deftest glitnir-gui/verify-quiet-on-typing ()
+  (with-temp-buffer
+    (switch-to-buffer (current-buffer))
+    (should (glitnir-gui--settle))
+    (dotimes (i 3000) (insert (format "line %d\n" i)))
+    (goto-char (point-min))
+    (let ((glitnir-debug 'verify))
+      (redisplay t) (sit-for 0.2)
+      (glitnir-stats nil t)
+      (dotimes (_ 200) (insert "k") (redisplay t))
+      (dotimes (_ 5) (scroll-up-command) (redisplay t))
+      (dotimes (_ 5) (scroll-down-command) (redisplay t))
+      (let ((w (frame-pixel-width)) (h (frame-pixel-height)))
+        (set-frame-size nil (+ w 40) h t) (redisplay t) (sit-for 0.3)
+        (set-frame-size nil w h t) (redisplay t) (sit-for 0.3))
+      (dotimes (_ 20) (insert "k") (redisplay t))
+      (sit-for 0.3)
+      (should (= (glitnir-gui--violations) 0)))))
+
+(ert-deftest glitnir-gui/verify-catches-compose-with-pending ()
+  (with-temp-buffer
+    (switch-to-buffer (current-buffer))
+    (should (glitnir-gui--settle))
+    (let ((glitnir-debug 'verify))
+      (redisplay t) (sit-for 0.2)
+      (glitnir-stats nil t)
+      (should (glitnir--compose-with-pending))
+      (should (= (glitnir-gui--violations) 1))
+      (should-not (glitnir--frozen-p))
+      ;; an ordinary commit afterwards is clean
+      (glitnir-stats nil t)
+      (insert "x") (redisplay t) (sit-for 0.1)
+      (should (= (glitnir-gui--violations) 0)))))
+
+(ert-deftest glitnir-gui/full-paints-everything ()
+  (with-temp-buffer
+    (switch-to-buffer (current-buffer))
+    (should (glitnir-gui--settle))
+    (let ((glitnir-debug 'full))
+      (redisplay t) (sit-for 0.2)
+      (glitnir-stats nil t)
+      (dotimes (_ 10) (insert "f") (redisplay t) (sit-for 0.05))
+      (let ((s (glitnir-stats)))
+        (should (>= (plist-get s :count) 5))
+        (should (= (plist-get s :painted-px) (glitnir-gui--frame-px)))))))
 
 ;;; glitnir-gui-tests.el ends here

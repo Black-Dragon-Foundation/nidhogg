@@ -21,7 +21,10 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #ifdef HAVE_GLITNIR
 
+#include <inttypes.h>
+#include <limits.h>
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 
@@ -79,6 +82,21 @@ struct glitnir_root
   uintmax_t draws;
   uint64_t last_commit, last_paint;
   uint64_t gap_from, max_gap;
+
+  /* Debug modes.  `verify': the frame's surface at its previous commit
+     (VCOPY, VW x VH pixels of VSTRIDE bytes), and the violations found since
+     the last record.  `damage': the rectangles flashed (FLASH, device
+     pixels, in the colour FLASH_RGB) until the timeout FLASH_ID removes
+     them; the draw handler's context while it runs (DRAW_CR).  FREEZE_AT:
+     when the root froze (0: not frozen).  */
+  unsigned char *vcopy;
+  int vw, vh, vstride;
+  uint64_t violations, freeze_at;
+  GlitnirRect flash[GLITNIR_PGTK_BATCH];
+  int nflash;
+  double flash_rgb[3];
+  guint flash_id;
+  cairo_t *draw_cr;
 
   /* The widget's rectangle in the target, in device pixels.  */
   int crop_x, crop_y, crop_w, crop_h;
@@ -185,8 +203,9 @@ freeze (struct glitnir_root *root)
   if (win == NULL)
     return;
   root->frozen = g_object_ref (gdk_window_get_toplevel (win));
+  root->freeze_at = now_ns ();
   if (root->t_freeze == 0)
-    root->t_freeze = now_ns ();
+    root->t_freeze = root->freeze_at;
   gdk_window_freeze_updates (root->frozen);
 }
 
@@ -293,12 +312,16 @@ batch_add (struct glitnir_root *r, GlitnirRect d)
   r->batch[r->nbatch++] = d;
 }
 
+/* The drawing primitive that recorded damage last, for the `verify' log.  */
+static const char *last_prim = "none";
+
 void
 glitnir_pgtk_damage (struct frame *f, int x, int y, int w, int h)
 {
   struct glitnir_root *r = recording (f);
   if (r == NULL)
     return;
+  last_prim = "pgtk_clear_area";
   /* No surface yet: its first picture is all new.  */
   if (r->all || f->output_data.pgtk->cr_context == NULL)
     {
@@ -317,7 +340,10 @@ glitnir_pgtk_damage_all (struct frame *f)
 {
   struct glitnir_root *r = recording (f);
   if (r)
-    damage_all (r);
+    {
+      last_prim = "damage_all";
+      damage_all (r);
+    }
 }
 
 /* pgtk_scroll_run copied W's rows FROM_Y..FROM_Y+HEIGHT to TO_Y (logical
@@ -329,6 +355,7 @@ glitnir_pgtk_scroll (struct frame *f, struct window *w, int x, int from_y,
   struct glitnir_root *r = recording (f);
   if (r == NULL)
     return;
+  last_prim = "pgtk_scroll_run";
   if (r->all || f->output_data.pgtk->cr_context == NULL)
     {
       damage_all (r);
@@ -373,6 +400,7 @@ glitnir_pgtk_damage_glyphs (struct glyph_string *s)
   if (s->extends_to_end_of_line_p)
     x1 = max (x1, clip.x + (int) clip.width);
   glitnir_pgtk_damage (s->f, x0, clip.y, x1 - x0, clip.height);
+  last_prim = "pgtk_draw_glyph_string";
 }
 
 /* A hollow, bar or hbar cursor (a box cursor is a glyph string): at most
@@ -391,6 +419,7 @@ glitnir_pgtk_damage_cursor (struct window *w, struct glyph_row *row,
 		       WINDOW_TO_FRAME_PIXEL_Y (w, max (0, row->y)),
 		       max (g->pixel_width, w->phys_cursor_width) + 1,
 		       row->visible_height);
+  last_prim = "pgtk_draw_window_cursor";
 }
 
 void
@@ -402,6 +431,7 @@ glitnir_pgtk_damage_fringe (struct window *w,
     glitnir_pgtk_damage (f, p->bx, p->by, p->nx, p->ny);
   if (p->which)
     glitnir_pgtk_damage (f, p->x, p->y, p->wd, p->h);
+  last_prim = "pgtk_draw_fringe_bitmap";
 }
 
 /* The four strips pgtk_clear_under_internal_border fills.  */
@@ -416,6 +446,7 @@ glitnir_pgtk_damage_internal_border (struct frame *f)
   glitnir_pgtk_damage (f, 0, 0, border, height);
   glitnir_pgtk_damage (f, width - border, 0, border, height);
   glitnir_pgtk_damage (f, 0, height - bottom_margin - border, width, border);
+  last_prim = "pgtk_clear_under_internal_border";
 }
 
 ptrdiff_t
@@ -462,6 +493,180 @@ glitnir_pgtk_update_begin (struct frame *f)
     r->t_update = now_ns ();
 }
 
+/* The debug mode `verify': at each commit, the pixels of R's frame surface
+   that changed since the previous commit and lie outside the committed
+   rectangles are a missed rectangle.  */
+
+/* Whether `glitnir-debug' is the symbol NAME (by name: a DEFSYM of a name
+   another file defines too, such as "full", is a different symbol).  */
+static bool
+debug_is (const char *name)
+{
+  return (SYMBOLP (Vglitnir_debug)
+	  && strcmp (SSDATA (SYMBOL_NAME (Vglitnir_debug)), name) == 0);
+}
+
+static bool
+verifying (void)
+{
+  return debug_is ("verify");
+}
+
+static void
+verify_drop (struct glitnir_root *r)
+{
+  if (r->vcopy)
+    {
+      xfree (r->vcopy);
+      r->vcopy = NULL;
+    }
+}
+
+static bool
+covered (const GlitnirRect *rects, size_t n, int x, int y)
+{
+  for (size_t i = 0; i < n; i++)
+    if (x >= rects[i].x && y >= rects[i].y
+	&& (int64_t) x < (int64_t) rects[i].x + rects[i].w
+	&& (int64_t) y < (int64_t) rects[i].y + rects[i].h)
+      return true;
+  return false;
+}
+
+/* Compare R's frame surface with its copy at the previous commit; RECTS,
+   N are what this commit reports (device pixels).  Log and count one
+   violation if pixels changed outside them, then keep a new copy.  */
+static void
+verify_frame (struct glitnir_root *r, const GlitnirRect *rects, size_t n)
+{
+  struct frame *f = r->frame;
+  cairo_t *cr = (FRAME_PGTK_P (f) && f->output_data.pgtk)
+		? f->output_data.pgtk->cr_context : NULL;
+  cairo_surface_t *s = cr ? cairo_get_target (cr) : NULL;
+  if (s == NULL || cairo_surface_get_type (s) != CAIRO_SURFACE_TYPE_IMAGE
+      || cairo_image_surface_get_format (s) != CAIRO_FORMAT_ARGB32)
+    {
+      verify_drop (r);
+      return;
+    }
+  cairo_surface_flush (s);
+  int w = cairo_image_surface_get_width (s);
+  int h = cairo_image_surface_get_height (s);
+  int stride = cairo_image_surface_get_stride (s);
+  const unsigned char *cur = cairo_image_surface_get_data (s);
+  size_t bytes = (size_t) stride * h;
+  if (r->vcopy == NULL || r->vw != w || r->vh != h || r->vstride != stride)
+    {
+      /* A new surface: all of it is new, nothing to compare.  */
+      verify_drop (r);
+      r->vcopy = xmalloc (bytes);
+      memcpy (r->vcopy, cur, bytes);
+      r->vw = w;
+      r->vh = h;
+      r->vstride = stride;
+      return;
+    }
+  int bx0 = INT_MAX, by0 = INT_MAX, bx1 = -1, by1 = -1;
+  for (int y = 0; y < h; y++)
+    {
+      const unsigned char *a = cur + (size_t) y * stride;
+      const unsigned char *b = r->vcopy + (size_t) y * stride;
+      if (memcmp (a, b, (size_t) w * 4) == 0)
+	continue;
+      for (int x = 0; x < w; x++)
+	if (memcmp (a + (size_t) x * 4, b + (size_t) x * 4, 4) != 0
+	    && !covered (rects, n, x, y))
+	  {
+	    bx0 = min (bx0, x);
+	    by0 = min (by0, y);
+	    bx1 = max (bx1, x);
+	    by1 = max (by1, y);
+	  }
+    }
+  memcpy (r->vcopy, cur, bytes);
+  if (bx1 >= 0)
+    {
+      r->violations++;
+      fprintf (stderr, "glitnir verify: %"PRIu64" %d %d %d %d after %s\n",
+	       r->id, bx0, by0, bx1 - bx0 + 1, by1 - by0 + 1, last_prim);
+    }
+}
+
+/* The debug mode `damage': each commit's rectangles are painted over the
+   frame in the background of the `glitnir-debug-damage' face for 100 ms
+   (by the draw handler: the frame's surface never holds them).  */
+
+static void
+flash_color (struct glitnir_root *r)
+{
+  struct frame *f = r->frame;
+  unsigned long pixel = 0xff0000;
+  if (FRAME_FACE_CACHE (f))
+    {
+      int id = lookup_named_face (NULL, f, Qglitnir_debug_damage, false);
+      struct face *face = FACE_FROM_ID_OR_NULL (f, id);
+      if (face)
+	pixel = face->background;
+    }
+  Emacs_Color c;
+  c.pixel = pixel;
+  pgtk_query_color (f, &c);
+  r->flash_rgb[0] = c.red / 65535.0;
+  r->flash_rgb[1] = c.green / 65535.0;
+  r->flash_rgb[2] = c.blue / 65535.0;
+}
+
+/* Invalidate N of the rectangles RECTS (device pixels) on R's widget.  */
+static void
+queue_rects (struct glitnir_root *r, const GlitnirRect *rects, int n)
+{
+  GtkWidget *w = FRAME_GTK_WIDGET (r->frame);
+  if (w == NULL)
+    return;
+  for (int i = 0; i < n; i++)
+    gtk_widget_queue_draw_area (w, floor (rects[i].x / r->sx),
+				floor (rects[i].y / r->sy),
+				ceil (rects[i].w / r->sx) + 1,
+				ceil (rects[i].h / r->sy) + 1);
+}
+
+static gboolean
+flash_expire (gpointer data)
+{
+  struct glitnir_root *r = data;
+  GlitnirRect old[GLITNIR_PGTK_BATCH];
+  int n = r->nflash;
+  memcpy (old, r->flash, sizeof old);
+  r->nflash = 0;
+  r->flash_id = 0;
+  queue_rects (r, old, n);
+  return G_SOURCE_REMOVE;
+}
+
+/* ROOT's flash is now ROOT->flash; the rectangles OLD (NOLD of them) of
+   the previous one are repainted without it.  */
+static void
+flash_start (struct glitnir_root *r, const GlitnirRect *old, int nold)
+{
+  if (r->flash_id)
+    g_source_remove (r->flash_id);
+  r->flash_id = r->nflash ? g_timeout_add (100, flash_expire, r) : 0;
+  queue_rects (r, old, nold);
+}
+
+static void
+paint_flash (struct glitnir_root *r, cairo_t *cr)
+{
+  cairo_save (cr);
+  cairo_set_source_rgba (cr, r->flash_rgb[0], r->flash_rgb[1],
+			 r->flash_rgb[2], 0.5);
+  for (int i = 0; i < r->nflash; i++)
+    cairo_rectangle (cr, r->flash[i].x / r->sx, r->flash[i].y / r->sy,
+		     r->flash[i].w / r->sx, r->flash[i].h / r->sy);
+  cairo_fill (cr);
+  cairo_restore (cr);
+}
+
 /* Move the damage of ROOT's child frames into ROOT's batch, in ROOT's
    device pixels (each child where GTK has placed its widget).  */
 static void
@@ -475,15 +680,27 @@ gather_children (struct glitnir_root *root)
       if (c == root->frame || !FRAME_PGTK_P (c) || c->output_data.pgtk == NULL)
 	continue;
       struct glitnir_root *s = FRAME_X_OUTPUT (c)->glitnir;
-      if (s == NULL || (!s->pending && s->nbatch == 0)
-	  || glitnir_root_of (c) != root->frame)
+      if (s == NULL || glitnir_root_of (c) != root->frame)
 	continue;
+      if (!s->pending && s->nbatch == 0)
+	{
+	  /* Nothing recorded: verify finds anything drawn all the same.  */
+	  if (verifying ())
+	    verify_frame (s, NULL, 0);
+	  else
+	    verify_drop (s);
+	  continue;
+	}
       flush_damage (s);
       const GlitnirRect *p = NULL;
       size_t n = 0;
       s->pending = s->all = false;
       if (GLITNIR_CALL (glitnir_damage_pending (s->id, &p, &n)) != GLITNIR_OK)
 	n = 0;
+      if (verifying ())
+	verify_frame (s, p, n);
+      else
+	verify_drop (s);
       GtkWidget *cw = FRAME_GTK_WIDGET (c);
       if (n == 0 || cw == NULL || rw == NULL || !gtk_widget_get_mapped (cw))
 	continue;		/* nothing shown */
@@ -523,21 +740,50 @@ present (struct glitnir_root *root)
   if (EQ (Vglitnir_debug, Qdamage_hold))
     {
       /* The damage stays for glitnir--damage: present the whole root.  */
+      verify_drop (root);
       gtk_widget_queue_draw (w);
       root->commit_px += fw * fh;
       return true;
     }
   gather_children (root);
+  if (debug_is ("full"))
+    {
+      /* Every commit damages everything (not through damage_all: the
+	 root is committing, it must not become dirty again).  */
+      root->nbatch = 0;
+      root->pending = root->all = root->known = true;
+      GLITNIR_CALL (glitnir_damage_all (root->id));
+    }
   flush_damage (root);
   if (!root->pending)
-    return false;
+    {
+      if (verifying ())
+	verify_frame (root, NULL, 0);
+      else
+	verify_drop (root);
+      return false;
+    }
   root->pending = root->all = false;
   GlitnirCommitOut out = { NULL, 0 };
   if (GLITNIR_CALL (glitnir_commit (root->id, &out)) != GLITNIR_OK)
     {
+      verify_drop (root);
       gtk_widget_queue_draw (w);	/* until Task 23's fallback */
       root->commit_px += fw * fh;
       return true;
+    }
+  if (verifying ())
+    verify_frame (root, out.rects, out.n);
+  else
+    verify_drop (root);
+  bool flash = debug_is ("damage");
+  GlitnirRect old[GLITNIR_PGTK_BATCH];
+  int nold = root->nflash;
+  if (flash)
+    {
+      memcpy (old, root->flash, sizeof old);
+      root->nflash = 0;
+      flash_color (root);
     }
   bool any = false;
   for (size_t i = 0; i < out.n; i++)
@@ -553,7 +799,26 @@ present (struct glitnir_root *root)
       gtk_widget_queue_draw_area (w, lx0, ly0, lx1 - lx0, ly1 - ly0);
       root->commit_px += (x1 - x0) * (y1 - y0);
       any = true;
+      if (flash)
+	{
+	  GlitnirRect fr = { x0, y0, x1 - x0, y1 - y0 };
+	  if (root->nflash < GLITNIR_PGTK_BATCH)
+	    root->flash[root->nflash++] = fr;
+	  else
+	    {
+	      /* Too many to keep: flash their bounding box.  */
+	      GlitnirRect *l = &root->flash[GLITNIR_PGTK_BATCH - 1];
+	      int rx = max (l->x + l->w, fr.x + fr.w);
+	      int ry = max (l->y + l->h, fr.y + fr.h);
+	      l->x = min (l->x, fr.x);
+	      l->y = min (l->y, fr.y);
+	      l->w = rx - l->x;
+	      l->h = ry - l->y;
+	    }
+	}
     }
+  if (flash)
+    flash_start (root, old, nold);
   return any;
 }
 
@@ -601,6 +866,9 @@ glitnir_pgtk_consistency_point (struct frame *f, int which)
     return true;
   root->dirty = root->scene_pending = false;
   uint64_t now = now_ns ();
+  if (verifying () && root->frozen && now - root->freeze_at > 1000000000u)
+    fprintf (stderr, "glitnir verify: %"PRIu64" frozen for %d ms\n",
+	     root->id, (int) ((now - root->freeze_at) / 1000000));
   bool painted = present (root);
   if (painted && root->t_commit == 0)
     root->t_commit = now;
@@ -732,6 +1000,8 @@ after_paint (GdkFrameClock *clock, gpointer data)
      a back-fill cannot be seen from here (R3, DP-9).  */
   e.backfill = 2;
   e.scale_mismatch = r->scale_mismatch;
+  e.violations = r->violations;
+  r->violations = 0;
   r->last_commit = r->t_commit;
   r->last_paint = r->t_draw_end;
   r->t_update = r->t_freeze = r->t_commit = 0;
@@ -760,9 +1030,15 @@ glitnir_pgtk_draw_begin (struct frame *f, GtkWidget *widget, cairo_t *cr)
   double scale_frame = gtk_widget_get_scale_factor (widget);
   r->scale_mismatch = sx != scale_frame;
   r->draws++;
+  r->draw_cr = cr;
 
   if (recording (f))
     {
+      if (verifying () && (r->dirty || r->scene_pending))
+	{
+	  fprintf (stderr, "glitnir verify: compose with pending damage\n");
+	  r->violations++;
+	}
       /* Damage-only present: the paint covers GDK's clip, the damage
 	 the points committed.  */
       uint64_t px = 0;
@@ -823,6 +1099,9 @@ glitnir_pgtk_draw_end (struct frame *f)
   struct glitnir_root *r = root_state (f);
   if (r)
     {
+      if (r->nflash && r->draw_cr)
+	paint_flash (r, r->draw_cr);
+      r->draw_cr = NULL;
       uint64_t now = now_ns ();
       r->t_draw_end = now;
       r->drawn = true;
@@ -853,6 +1132,9 @@ glitnir_pgtk_free_frame (struct frame *f)
     cairo_surface_destroy (r->snapshot);
   if (r->idle_id)
     g_source_remove (r->idle_id);
+  if (r->flash_id)
+    g_source_remove (r->flash_id);
+  verify_drop (r);
   thaw (r);
   GLITNIR_CALL_UNCOUNTED (glitnir_stats_forget (r->id));
   if (r->known)
@@ -959,8 +1241,64 @@ glitnir_pgtk_max_paint_gap_ms (struct frame *f, bool reset)
   return gap / 1e6;
 }
 
-/* Put a synthetic pointer motion to logical X, Y of F's widget on GDK's
-   queue; whichever loop runs GLib next dispatches it.  */
+uint64_t
+glitnir_pgtk_violations (struct frame *f, bool reset)
+{
+  struct glitnir_root *r = root_state (f);
+  if (r == NULL)
+    return 0;
+  uint64_t n = r->violations;
+  if (reset)
+    r->violations = 0;
+  return n;
+}
+
+/* Paint a rectangle on F's surface without recording it.  */
+bool
+glitnir_pgtk_draw_undamaged (struct frame *f)
+{
+  struct glitnir_root *r = recording (f);
+  if (r == NULL)
+    return false;
+  cairo_t *cr = f->output_data.pgtk->cr_context;
+  if (cr == NULL)
+    return false;
+  cairo_save (cr);
+  cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
+  cairo_set_source_rgb (cr, 0.2, 0.4, 0.6);
+  cairo_rectangle (cr, FRAME_PIXEL_WIDTH (f) / 2, FRAME_PIXEL_HEIGHT (f) / 2,
+		   40, 20);
+  cairo_fill (cr);
+  cairo_restore (cr);
+  return true;
+}
+
+/* Make GTK draw F's root while it has uncommitted damage.  */
+bool
+glitnir_pgtk_compose_with_pending (struct frame *f)
+{
+  struct glitnir_root *root = root_state (f);
+  if (root == NULL || recording (root->frame) == NULL)
+    return false;
+  GtkWidget *w = FRAME_GTK_WIDGET (root->frame);
+  if (w == NULL || gtk_widget_get_window (w) == NULL)
+    return false;
+  glitnir_pgtk_damage (root->frame, 0, 0, 1, 1);
+  if (root->frozen == NULL)
+    return false;
+  GdkWindow *top = g_object_ref (root->frozen);
+  gdk_window_thaw_updates (top);
+  gtk_widget_queue_draw (w);
+  paint_now (root);
+  gdk_window_freeze_updates (top);
+  g_object_unref (top);
+  glitnir_pgtk_consistency_point (root->frame, 4);
+  return true;
+}
+
+/* Dispatch a synthetic pointer motion to logical X, Y of F's widget at
+   once, as GTK would on receiving it (not through GDK's queue, which holds
+   the newest motion back until another event follows).  */
 bool
 glitnir_pgtk_motion (struct frame *f, int x, int y)
 {
@@ -979,7 +1317,7 @@ glitnir_pgtk_motion (struct frame *f, int x, int y)
   ev->motion.x = ev->motion.x_root = x;
   ev->motion.y = ev->motion.y_root = y;
   gdk_event_set_device (ev, dev);
-  gdk_event_put (ev);
+  gtk_main_do_event (ev);
   gdk_event_free (ev);
   return true;
 }

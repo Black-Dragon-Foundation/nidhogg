@@ -109,6 +109,8 @@ empties the record after reading it.  */)
 					!NILP (reset), &s));
   if (rc != GLITNIR_OK)
     return Qnil;
+  /* Violations not yet in an entry (the next paint records them).  */
+  s.violations += glitnir_pgtk_violations (f, !NILP (reset));
   Lisp_Object plist
     = list2 (intern_c_string (":count"), make_uint (s.count));
   plist = nconc2 (plist, pctl (":compose-ms", &s.compose_ms));
@@ -322,9 +324,9 @@ to the selected frame.  */)
 }
 
 DEFUN ("glitnir--motion", Fglitnir__motion, Sglitnir__motion, 3, 3, 0,
-       doc: /* Queue a synthetic pointer motion to X, Y (logical pixels) of FRAME.
-GTK dispatches it when Emacs next reads events.  Return non-nil if it was
-queued.  */)
+       doc: /* Send a synthetic pointer motion to X, Y (logical pixels) of FRAME.
+GTK handles it at once, as if the pointer had moved there.  Return non-nil
+if it was sent.  */)
   (Lisp_Object frame, Lisp_Object x, Lisp_Object y)
 {
   struct frame *f = decode_live_frame (frame);
@@ -340,9 +342,45 @@ queued.  */)
 #endif
 }
 
+DEFUN ("glitnir--draw-undamaged", Fglitnir__draw_undamaged,
+       Sglitnir__draw_undamaged, 0, 1, 0,
+       doc: /* Paint a rectangle on FRAME without recording its damage (for tests).
+The mode `verify' reports it at FRAME's next commit.  FRAME defaults to the
+selected frame.  Return non-nil if it was painted.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+#ifdef HAVE_PGTK
+  return glitnir_pgtk_draw_undamaged (f) ? Qt : Qnil;
+#else
+  (void) f;
+  return Qnil;
+#endif
+}
+
+DEFUN ("glitnir--compose-with-pending", Fglitnir__compose_with_pending,
+       Sglitnir__compose_with_pending, 0, 1, 0,
+       doc: /* Make GTK draw FRAME's root while it has uncommitted damage (for tests).
+The root gets a pending rectangle, is thawed for one draw and frozen
+again, and then reaches a consistency point.  The mode `verify' counts
+the draw.  FRAME defaults to the selected frame.  Return non-nil if the
+draw was forced.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+#ifdef HAVE_PGTK
+  return glitnir_pgtk_compose_with_pending (f) ? Qt : Qnil;
+#else
+  (void) f;
+  return Qnil;
+#endif
+}
+
 void
 syms_of_nidhogg_glitnir (void)
 {
+  defsubr (&Sglitnir__draw_undamaged);
+  defsubr (&Sglitnir__compose_with_pending);
   defsubr (&Sglitnir_active_p);
   defsubr (&Sglitnir__damage);
   defsubr (&Sglitnir_stats);
@@ -362,11 +400,19 @@ Setting it to nil makes Glitnir hand every frame back to the stock drawing.  */)
   glitnir_enable = true;
 
   DEFSYM (Qdamage_hold, "damage-hold");
+  DEFSYM (Qglitnir_debug_damage, "glitnir-debug-damage");
   DEFVAR_LISP ("glitnir-debug", Vglitnir_debug,
-	       doc: /* Glitnir's debug mode, for tests: nil (the default) or a symbol.
-`damage-hold' keeps each frame's damage until `glitnir--damage' takes it,
-instead of handing it to the next consistency point; the points then
-present whole frames.  */);
+	       doc: /* Glitnir's debug mode: nil (the default) or a symbol.
+`damage' flashes every committed rectangle for 100 ms in the background of
+the `glitnir-debug-damage' face.  `verify' keeps a copy of each frame's
+surface as of the previous commit; at each commit, pixels that changed
+outside the reported damage are logged once to stderr ("glitnir verify:
+FRAME X Y W H after PRIMITIVE") and counted in the `:violations' of
+`glitnir-stats', as is a paint while the root has uncommitted damage and
+a freeze that lasts over a second.  `full' makes every commit damage the
+whole frame.  `damage-hold' (for tests) keeps each frame's damage until
+`glitnir--damage' takes it, instead of handing it to the next consistency
+point; the points then present whole frames.  */);
   Vglitnir_debug = Qnil;
 
   Fprovide (intern_c_string ("glitnir"), Qnil);

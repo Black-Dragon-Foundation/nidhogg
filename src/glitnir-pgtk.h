@@ -111,6 +111,13 @@ extern void glitnir_pgtk_last_paint (struct frame *f, uint64_t *commit,
 extern double glitnir_pgtk_max_paint_gap_ms (struct frame *f, bool reset);
 extern bool glitnir_pgtk_motion (struct frame *f, int x, int y);
 
+/* The debug modes `verify' (violations not yet in a frame-time entry, which
+   RESET zeroes), and the test primitives behind glitnir--draw-undamaged and
+   glitnir--compose-with-pending.  */
+extern uint64_t glitnir_pgtk_violations (struct frame *f, bool reset);
+extern bool glitnir_pgtk_draw_undamaged (struct frame *f);
+extern bool glitnir_pgtk_compose_with_pending (struct frame *f);
+
 /* A new ARGB32 image surface with F's root frame as GTK last painted it
    (device pixels), made by arming the after-paint handler and waiting up to
    a second for a paint.  NULL with *ERR set to the error message.  */

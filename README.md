@@ -114,7 +114,20 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   next point. `glitnir-stats` records the commit time on both paths (`:latency-ms`), the freeze (`:freeze-ms`), the
   committed and the painted pixels; `:backfill-rate` is nil (GDK's staging surface hides back-fills). Test primitives:
   `glitnir--draw-count`, `glitnir--frozen-p`, `glitnir--last-paint`, `glitnir--now-ns`, `glitnir--max-paint-gap-ms`,
-  `glitnir--motion` (a synthetic pointer motion).
+  `glitnir--motion` (a synthetic pointer motion, handled by GTK at once), `glitnir--draw-undamaged` and
+  `glitnir--compose-with-pending` (see *Debug modes*).
+  **Debug modes** (`glitnir-debug`; nil in normal use):
+  - `damage`: every committed rectangle is painted over the frame for 100 ms in the background of the
+    `glitnir-debug-damage` face (half transparent; the frame's surface never holds it).
+  - `verify`: a copy of each frame's surface (a child frame's too) is kept as of the previous commit. At each commit,
+    pixels that changed outside the committed damage are logged once to stderr, `glitnir verify: FRAME X Y W H after
+    PRIMITIVE` (the bounding box in device pixels, the drawing primitive that recorded damage last), and counted in
+    `:violations` of `glitnir-stats`. A GTK paint of a root that still has uncommitted damage logs `glitnir verify:
+    compose with pending damage` and counts; a freeze that lasts over a second logs when it ends. It costs a full
+    surface compare per commit: for tests and hunting, not daily use. `(glitnir--draw-undamaged)` paints a rectangle
+    without recording it (the next commit reports it); `(glitnir--compose-with-pending)` forces one paint of the root
+    while damage is pending.
+  - `full`: every commit damages the whole frame (the paint that Glitnir would otherwise have saved).
 - **Dev build** (`--dev` or `NIDHOGG_BUILD_DEV=1`, for agents' task builds): configures `--with-native-compilation=yes`
   instead of `aot`, so only the preloaded Lisp is native-compiled and the other ~1,400 files stay bytecode (minutes instead
   of the better part of an hour). A `lisp/site-init.el` written into the build copy sets `native-comp-jit-compilation` to
