@@ -210,7 +210,9 @@ turns the finished spans into JSON Lines records, names function, file and packa
   sees for the same collection, the key the Lisp GC row (and drgnx's GC census lines, `gcs_done`) joins on; never join
   by order. `:explicit` is a `garbage-collect` call (other C callers, such as `garbage-collect-maybe`, are automatic).
 <!-- wd: Task 11 -->
-<!-- wd: Task 12 -->
+An open popup menu or dialog counts as the user waiting, not as a stall: on pgtk a wrapper around GLib's poll
+function (`src/nidhogg-watchdog-gtk.c`) marks the wait. A Lisp timer that runs inside a menu or dialog is still
+busy time and is reported.
 <!-- wd: Task 13 -->
 <!-- wd: Task 14 -->
 <!-- wd: Task 15 -->
