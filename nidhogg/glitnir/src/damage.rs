@@ -40,12 +40,29 @@ impl Damage {
                 .filter(|x| !contains(&r, x))
                 .copied()
                 .collect();
-            self.region = Region::new();
-            for k in keep {
-                self.region.add(k);
-            }
+            self.rebuild(keep);
         }
+        let full = self.region.iter().count() >= crate::region::MAX_RECTS;
         self.region.add(r);
+        if full {
+            // The region merged two rectangles into their bounding box, which may hold others.
+            let mut keep: Vec<Rect> = Vec::new();
+            for a in self.region.iter() {
+                if keep.iter().any(|k| contains(k, a)) {
+                    continue;
+                }
+                keep.retain(|k| !contains(a, k));
+                keep.push(*a);
+            }
+            self.rebuild(keep);
+        }
+    }
+
+    fn rebuild(&mut self, rects: Vec<Rect>) {
+        self.region = Region::new();
+        for k in rects {
+            self.region.add(k);
+        }
     }
 
     /// A scroll of `area`'s pixels; `exposed` is the part the scroll left stale.  Without a scene to move, the
