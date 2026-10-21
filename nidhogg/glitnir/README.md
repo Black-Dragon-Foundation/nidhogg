@@ -59,3 +59,16 @@ the root's pending damage, into which the host has first moved its child frames'
 hands it back for invalidation; the rectangles stay valid until the root's next commit, apart from any debug take.
 
 The frame-time record's `backfill_rate` is -1 when no entry knows whether its paint back-filled (`backfill` 2).
+
+## Limits
+
+A panic inside the library is caught at the boundary (`GLITNIR_E_PANIC`), and so is any other error a call returns:
+the glue then thaws every frozen root, finishes a running draw with the stock picture, restores pgtk's whole-widget
+invalidations, redraws every frame and switches Glitnir off for the session (no further `glitnir_*` call;
+`glitnir-active-p` and `glitnir-stats` are nil, `glitnir-snapshot` still works). It shows one message.
+`glitnir--debug-panic` (only with `glitnir-debug` set; WHERE `commit` or `draw`) makes the next such call panic, and
+`revive` turns Glitnir back on for the tests that follow.
+
+Three failures the fallback cannot catch still abort the process: an allocation failure, a second panic while one is
+being handled, and a stack overflow. To keep the first rare, the frame-time rings are preallocated and the caches
+bounded.

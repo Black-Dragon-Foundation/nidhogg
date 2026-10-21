@@ -37,16 +37,45 @@ extern uintmax_t glitnir_pgtk_calls;
 /* Number of times a root's picture was copied for glitnir-snapshot.  */
 extern uintmax_t glitnir_pgtk_snapshot_copies;
 
+/* True once a call into Glitnir failed (a panic, MP-21): Glitnir is off for
+   the rest of the session and no further glitnir_* call is made.  */
+extern bool glitnir_pgtk_dead;
+
+/* A call WHAT returned the error RC: switch Glitnir off and make Nidhogg
+   draw the stock way (see glitnir-pgtk.c).  */
+extern void glitnir_pgtk_failed (const char *what, int32_t rc);
+
 /* Every C->Rust call goes through this: input blocked around it (a draw may run
-   atimers that would otherwise re-enter Emacs between two calls).  */
+   atimers that would otherwise re-enter Emacs between two calls).  An error
+   switches Glitnir off; once off, no call is made (GLITNIR_E_STATE).  */
 #define GLITNIR_CALL(expr)						\
-  ({ glitnir_pgtk_calls++; GLITNIR_CALL_UNCOUNTED (expr); })
+  ({ int32_t glitnir_rc_ = GLITNIR_E_STATE;				\
+     if (!glitnir_pgtk_dead)						\
+       {								\
+	 glitnir_pgtk_calls++;						\
+	 block_input (); glitnir_rc_ = (expr); unblock_input ();	\
+	 if (glitnir_rc_ != GLITNIR_OK)					\
+	   glitnir_pgtk_failed (#expr, glitnir_rc_);			\
+       }								\
+     glitnir_rc_; })
 
 /* The same for the frame-time record, which the call counter leaves out (the
-   record is made on every paint, also when Glitnir draws nothing).  */
+   record is made on every paint, also when Glitnir draws nothing).  Only a
+   panic switches Glitnir off.  */
 #define GLITNIR_CALL_UNCOUNTED(expr)					\
-  ({ block_input (); int32_t glitnir_rc_ = (expr); unblock_input ();	\
+  ({ int32_t glitnir_rc_ = GLITNIR_E_STATE;				\
+     if (!glitnir_pgtk_dead)						\
+       {								\
+	 block_input (); glitnir_rc_ = (expr); unblock_input ();	\
+	 if (glitnir_rc_ == GLITNIR_E_PANIC)				\
+	   glitnir_pgtk_failed (#expr, glitnir_rc_);			\
+       }								\
      glitnir_rc_; })
+
+/* Test primitive behind glitnir--debug-panic: the next call at WHERE (1 =
+   commit, 2 = draw) panics; 0 disarms.  WHERE 3 turns Glitnir back on after
+   a panic.  */
+extern void glitnir_pgtk_debug_panic (int where);
 
 /* The id of F's root frame: monotonic, given at the first use.  */
 extern uint64_t glitnir_pgtk_frame_id (struct frame *f);

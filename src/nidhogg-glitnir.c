@@ -101,7 +101,7 @@ empties the record after reading it.  */)
 {
   struct frame *f = decode_live_frame (frame);
 #ifdef HAVE_PGTK
-  if (!FRAME_PGTK_P (f))
+  if (!FRAME_PGTK_P (f) || glitnir_pgtk_dead)
     return Qnil;
   GlitnirStatsSummary s;
   int32_t rc = GLITNIR_CALL_UNCOUNTED (glitnir_stats_summary
@@ -376,9 +376,40 @@ draw was forced.  */)
 #endif
 }
 
+DEFUN ("glitnir--debug-panic", Fglitnir__debug_panic, Sglitnir__debug_panic,
+       0, 1, 0,
+       doc: /* Make the next call into Glitnir at WHERE panic (for tests).
+WHERE is `commit' (the default; the next commit at a consistency point) or
+`draw' (the next draw of a root frame).  The panic is caught at the library's
+boundary and switches Glitnir off for the session: Nidhogg then draws the
+stock way.  WHERE `revive' turns Glitnir back on after a panic, and nil
+disarms.  Refused unless `glitnir-debug' is non-nil.  Return non-nil.  */)
+  (Lisp_Object where)
+{
+  if (NILP (Vglitnir_debug))
+    error ("glitnir--debug-panic: `glitnir-debug' is nil");
+#ifdef HAVE_PGTK
+  int w;
+  if (NILP (where) || EQ (where, intern_c_string ("commit")))
+    w = 1;
+  else if (EQ (where, intern_c_string ("draw")))
+    w = 2;
+  else if (EQ (where, intern_c_string ("revive")))
+    w = 3;
+  else
+    error ("glitnir--debug-panic: WHERE must be `commit' or `draw'");
+  glitnir_pgtk_debug_panic (w);
+  return Qt;
+#else
+  (void) where;
+  return Qnil;
+#endif
+}
+
 void
 syms_of_nidhogg_glitnir (void)
 {
+  defsubr (&Sglitnir__debug_panic);
   defsubr (&Sglitnir__draw_undamaged);
   defsubr (&Sglitnir__compose_with_pending);
   defsubr (&Sglitnir_active_p);

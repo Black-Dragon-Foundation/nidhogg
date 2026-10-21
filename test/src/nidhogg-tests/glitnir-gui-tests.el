@@ -433,4 +433,51 @@ until that redisplay is done."
         (should (>= (plist-get s :count) 5))
         (should (= (plist-get s :painted-px) (glitnir-gui--frame-px)))))))
 
+;; The panic fallback (Task 23).
+
+(defun glitnir-gui--panics (where)
+  "Make the next call at WHERE panic, and check what the fallback leaves.
+Glitnir is turned back on after (`revive'), for the tests that follow."
+  (with-temp-buffer
+    (switch-to-buffer (current-buffer))
+    (should (glitnir-gui--settle))
+    (let ((glitnir-debug 'verify) (kept nil))
+      (unwind-protect
+          (progn
+            (insert (propertize "YYYYYYYY" 'face '(:background "#ffff00" :foreground "#ffff00")))
+            (redisplay t) (sit-for 0.1)
+            (should (glitnir-active-p))
+            (glitnir--debug-panic where)
+            (insert (propertize "MM" 'face glitnir-gui--magenta))
+            (redisplay t) (sit-for 0.3)
+            (should-not (glitnir-active-p))
+            (should-not (glitnir-stats))
+            (should-not (glitnir--frozen-p))
+            (let ((calls (glitnir--calls)) (draws (glitnir--draw-count)))
+              ;; a typed key shows, in a whole-frame paint, with the rest of the picture
+              (insert (propertize "KKKK" 'face '(:background "#00ff00" :foreground "#00ff00")))
+              (redisplay t) (sit-for 0.3)
+              (redraw-frame) (redisplay t) (sit-for 0.3)
+              (should (> (glitnir--draw-count) draws))
+              (should-not (glitnir--frozen-p))
+              (should (> (glitnir-gui--samples 0 255 0) 0))
+              (should (> (glitnir-gui--samples 255 0 255) 0))
+              (should (> (glitnir-gui--samples 255 255 0) 0))
+              (pcase-let ((`(,w ,h ,_) (glitnir-snapshot nil 'raw)))
+                (should (= (* w h) (glitnir-gui--frame-px))))
+              (should-not (glitnir-active-p))
+              (should-not (glitnir-stats))
+              (should (= calls (glitnir--calls))))
+            (setq kept t))
+        (glitnir--debug-panic 'revive)
+        (redraw-frame) (redisplay t) (sit-for 0.2))
+      (should kept)
+      (should (glitnir-active-p)))))
+
+(ert-deftest glitnir-gui/panic-in-commit-falls-back ()
+  (glitnir-gui--panics 'commit))
+
+(ert-deftest glitnir-gui/panic-in-draw-paints-stock ()
+  (glitnir-gui--panics 'draw))
+
 ;;; glitnir-gui-tests.el ends here
