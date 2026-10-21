@@ -3490,10 +3490,10 @@ pgtk_frame_up_to_date (struct frame *f)
   FRAME_MOUSE_UPDATE (f);
   if (!buffer_flipping_blocked_p ())
     {
-#ifdef HAVE_GLITNIR
-      glitnir_pgtk_commit (f);
-#endif
       flip_cr_context (f);
+#ifdef HAVE_GLITNIR
+      if (!glitnir_pgtk_consistency_point (f, 2))
+#endif
       gtk_widget_queue_draw (FRAME_GTK_WIDGET (f));
     }
   unblock_input ();
@@ -3787,6 +3787,9 @@ pgtk_hide_hourglass (struct frame *f)
 static void
 pgtk_flush_display (struct frame *f)
 {
+#ifdef HAVE_GLITNIR
+  glitnir_pgtk_consistency_point (f, 3);
+#endif
 }
 
 extern frame_parm_handler pgtk_frame_parm_handlers[];
@@ -3946,6 +3949,9 @@ pgtk_flash (struct frame *f)
 
   cairo_destroy (cr);
   unblock_input ();
+#ifdef HAVE_GLITNIR
+  glitnir_pgtk_consistency_point (f, 4);
+#endif
 }
 
 /* Make audible bell.  */
@@ -3983,6 +3989,9 @@ pgtk_read_socket (struct terminal *terminal, struct input_event *hold_quit)
   count = evq_flush (hold_quit);
   if (count > 0)
     {
+#ifdef HAVE_GLITNIR
+      glitnir_pgtk_consistency_points (4);
+#endif
       return count;
     }
 
@@ -4003,6 +4012,9 @@ pgtk_read_socket (struct terminal *terminal, struct input_event *hold_quit)
 
   if (context_acquired)
     g_main_context_release (context);
+#ifdef HAVE_GLITNIR
+  glitnir_pgtk_consistency_points (4);
+#endif
 
   count = evq_flush (hold_quit);
   if (count > 0)
@@ -4906,6 +4918,9 @@ pgtk_buffer_flipping_unblocked_hook (struct frame *f)
 {
   block_input ();
   flip_cr_context (f);
+#ifdef HAVE_GLITNIR
+  if (!glitnir_pgtk_consistency_point (f, 1))
+#endif
   gtk_widget_queue_draw (FRAME_GTK_WIDGET (f));
   unblock_input ();
 }
@@ -5898,6 +5913,9 @@ leave_notify_event (GtkWidget *widget, GdkEvent *event,
 
   if (inev.ie.kind != NO_EVENT)
     evq_enqueue (&inev);
+#ifdef HAVE_GLITNIR
+  glitnir_pgtk_consistency_point (frame, 4);
+#endif
   return TRUE;
 }
 
@@ -5921,6 +5939,9 @@ focus_in_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
     evq_enqueue (&inev);
 
   pgtk_im_focus_in (frame);
+#ifdef HAVE_GLITNIR
+  glitnir_pgtk_consistency_point (frame, 4);
+#endif
 
   return TRUE;
 }
@@ -5945,6 +5966,9 @@ focus_out_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
     evq_enqueue (&inev);
 
   pgtk_im_focus_out (frame);
+#ifdef HAVE_GLITNIR
+  glitnir_pgtk_consistency_point (frame, 4);
+#endif
 
   return TRUE;
 }
@@ -6119,6 +6143,9 @@ motion_notify_event (GtkWidget *widget, GdkEvent *event,
 		      help_echo_object, help_echo_pos);
     }
 
+#ifdef HAVE_GLITNIR
+  glitnir_pgtk_consistency_point (frame, 4);
+#endif
   return TRUE;
 }
 

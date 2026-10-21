@@ -12,11 +12,13 @@ use std::collections::BTreeMap;
 /// Whole-frame damage: contains every rectangle a frame can have.
 pub const ALL: Rect = Rect::new(0, 0, i32::MAX, i32::MAX);
 
-/// The pending damage of one frame, and the last damage taken (borrowed by the caller until the next take).
+/// The pending damage of one frame, the last damage taken and the last committed (each borrowed by the caller until
+/// the next take, or the next commit).
 #[derive(Debug, Default)]
 pub struct Damage {
     region: Region,
     taken: Vec<Rect>,
+    committed: Vec<Rect>,
 }
 
 fn contains(outer: &Rect, inner: &Rect) -> bool {
@@ -80,6 +82,14 @@ impl Damage {
         &self.taken
     }
 
+    /// Commit: move the pending damage into the committed list (the frame then has none) and return it.
+    pub fn commit(&mut self) -> &[Rect] {
+        self.committed.clear();
+        self.committed.extend(self.region.iter().copied());
+        self.region = Region::new();
+        &self.committed
+    }
+
     pub fn is_empty(&self) -> bool {
         self.region.is_empty()
     }
@@ -102,6 +112,19 @@ pub fn take(frame: u64) -> (*const Rect, usize) {
         Some(d) => {
             let t = d.take();
             (t.as_ptr(), t.len())
+        }
+        None => (std::ptr::null(), 0),
+    }
+}
+
+/// Commit ROOT at a consistency point: its pending damage (the host has moved its children's damage into it), valid
+/// until ROOT's next commit or forget.  An unknown root has none (null, 0).
+pub fn commit(root: u64) -> (*const Rect, usize) {
+    let mut st = crate::STATE.lock().unwrap_or_else(|p| p.into_inner());
+    match st.damage.get_mut(&root) {
+        Some(d) => {
+            let c = d.commit();
+            (c.as_ptr(), c.len())
         }
         None => (std::ptr::null(), 0),
     }
@@ -207,6 +230,29 @@ mod tests {
             out.iter()
                 .any(|o| o.contains(0, 319) && o.contains(399, 300))
         );
+    }
+
+    #[test]
+    fn commit_takes_the_damage_and_keeps_it_until_the_next_commit() {
+        let f = 7101;
+        with(f, |d| d.add(Rect::new(0, 0, 8, 2)));
+        let (p, n) = commit(f);
+        assert_eq!(n, 1);
+        // a debug take between two commits leaves the committed rectangles alone
+        with(f, |d| d.add(Rect::new(40, 40, 1, 1)));
+        assert_eq!(take(f).1, 1);
+        // SAFETY: valid until F's next commit or forget.
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(p, n) },
+            &[Rect::new(0, 0, 8, 2)]
+        );
+        assert_eq!(commit(f).1, 0);
+        forget(f);
+    }
+
+    #[test]
+    fn commit_of_an_unknown_frame_is_empty() {
+        assert_eq!(commit(7102), (std::ptr::null(), 0));
     }
 
     #[test]

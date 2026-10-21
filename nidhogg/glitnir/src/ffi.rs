@@ -17,6 +17,7 @@ const ABI_VERSION: u32 = 1;
 /// Every exported C symbol; a test checks this list against `include/glitnir.h`.
 pub const EXPORTS: &[&str] = &[
     "glitnir_abi_version",
+    "glitnir_commit",
     "glitnir_damage_add_n",
     "glitnir_damage_all",
     "glitnir_damage_forget",
@@ -166,6 +167,31 @@ pub unsafe extern "C" fn glitnir_damage_pending(
     })
 }
 
+/// What a commit hands back: ROOT's damage, valid until ROOT's next commit.  Mirrors `GlitnirCommitOut`.
+#[repr(C)]
+#[derive(Debug)]
+pub struct CommitOut {
+    pub rects: *const Rect,
+    pub n: usize,
+}
+
+/// Commit ROOT at a consistency point: `out` gets its damage, valid until ROOT's next commit or forget.
+///
+/// # Safety
+/// `out` must be null or point to a writable `CommitOut`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn glitnir_commit(root: u64, out: *mut CommitOut) -> i32 {
+    ffi_guard(|| {
+        if out.is_null() {
+            return GLITNIR_E_ARG;
+        }
+        let (rects, n) = crate::damage::commit(root);
+        // SAFETY: non-null, and the caller promises it is writable.
+        unsafe { out.write(CommitOut { rects, n }) };
+        GLITNIR_OK
+    })
+}
+
 /// Drop FRAME's damage (the frame is gone).
 #[unsafe(no_mangle)]
 pub extern "C" fn glitnir_damage_forget(frame: u64) -> i32 {
@@ -253,6 +279,33 @@ mod tests {
         assert_eq!(pending(f), vec![Rect::new(0, 0, i32::MAX, i32::MAX)]);
         assert_eq!(glitnir_damage_forget(f), GLITNIR_OK);
         assert!(pending(f).is_empty());
+    }
+
+    #[test]
+    fn commit_round_trips_through_the_abi() {
+        let f = 8002;
+        let mut out = CommitOut {
+            rects: std::ptr::null(),
+            n: 7,
+        };
+        assert_eq!(unsafe { glitnir_commit(f, &mut out) }, GLITNIR_OK);
+        assert_eq!(out.n, 0);
+        let rects = [Rect::new(3, 4, 5, 6), Rect::new(100, 0, 2, 2)];
+        assert_eq!(
+            unsafe { glitnir_damage_add_n(f, rects.as_ptr(), rects.len()) },
+            GLITNIR_OK
+        );
+        assert_eq!(unsafe { glitnir_commit(f, &mut out) }, GLITNIR_OK);
+        // SAFETY: the library keeps OUT.N rectangles at OUT.RECTS until F's next commit.
+        let mut got = unsafe { std::slice::from_raw_parts(out.rects, out.n) }.to_vec();
+        got.sort_by_key(|r| (r.x, r.y));
+        assert_eq!(got, rects.to_vec());
+        assert!(pending(f).is_empty());
+        assert_eq!(
+            unsafe { glitnir_commit(f, std::ptr::null_mut()) },
+            GLITNIR_E_ARG
+        );
+        assert_eq!(glitnir_damage_forget(f), GLITNIR_OK);
     }
 
     #[test]

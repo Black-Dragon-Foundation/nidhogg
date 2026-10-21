@@ -53,7 +53,6 @@ extern uint64_t glitnir_pgtk_frame_id (struct frame *f);
 
 /* Hooks called by pgtkterm.c.  */
 extern void glitnir_pgtk_update_begin (struct frame *f);
-extern void glitnir_pgtk_commit (struct frame *f);
 extern bool glitnir_pgtk_draw_begin (struct frame *f, GtkWidget *widget,
 				     cairo_t *cr);
 extern void glitnir_pgtk_draw_end (struct frame *f);
@@ -82,6 +81,35 @@ extern void glitnir_pgtk_damage_internal_border (struct frame *f);
    clipped to F); return their number.  */
 extern ptrdiff_t glitnir_pgtk_damage_take (struct frame *f, GlitnirRect *out,
 					   ptrdiff_t nmax);
+
+/* Consistency point WHICH (1-4) of F's root: no Emacs drawing is in
+   progress on the root or its child frames.  1 = buffer flips unblocked
+   (redisplay done, also after a non-local exit), 2 = frame up to date
+   outside a flip block, 3 = flush_display, 4 = the end of a pgtk handler
+   that drew, of pgtk_read_socket, or a scene change; 3 and 4 only outside
+   redisplay and flip blocks.  When Glitnir draws the root, the root's
+   damage (its child frames' included) is committed and invalidated on the
+   root widget, the root (frozen since its first damage) thaws and paints
+   at once; the value is then true, and the caller skips pgtk's
+   whole-widget invalidation.  Otherwise false: the stock present.  */
+extern bool glitnir_pgtk_consistency_point (struct frame *f, int which);
+
+/* Point WHICH for every root with something to commit.  */
+extern void glitnir_pgtk_consistency_points (int which);
+
+/* A pgtk hook changed F's scene outside Emacs drawing (move, resize, map,
+   unmap, ...): F's root commits at the next point, at once outside
+   redisplay.  */
+extern void glitnir_pgtk_scene_changed (struct frame *f);
+
+/* For tests; none calls into Glitnir.  */
+extern uint64_t glitnir_pgtk_now_ns (void);
+extern uintmax_t glitnir_pgtk_draw_count (struct frame *f);
+extern bool glitnir_pgtk_frozen_p (struct frame *f);
+extern void glitnir_pgtk_last_paint (struct frame *f, uint64_t *commit,
+				     uint64_t *paint);
+extern double glitnir_pgtk_max_paint_gap_ms (struct frame *f, bool reset);
+extern bool glitnir_pgtk_motion (struct frame *f, int x, int y);
 
 /* A new ARGB32 image surface with F's root frame as GTK last painted it
    (device pixels), made by arming the after-paint handler and waiting up to
