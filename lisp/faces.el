@@ -2932,13 +2932,6 @@ This face is used to customize the appearance of the margin areas."
   :group 'frames
   :group 'basic-faces)
 
-(defface glitnir-debug-damage
-  '((t :background "red"))
-  "Face whose background flashes the rectangles Glitnir committed.
-Used when `glitnir-debug' is `damage'."
-  :version "31.1"
-  :group 'basic-faces)
-
 (defface scroll-bar '((t nil))
   "Basic face for the scroll bar colors under X."
   :version "21.1"
