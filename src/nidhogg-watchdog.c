@@ -199,7 +199,10 @@ span_close (uint64_t now)
       if (wall >= __atomic_load_n (&nh_wd.threshold_ns, __ATOMIC_RELAXED))
 	finalise (now, wall, gc, gcs, cmds);
       else
-	nh_wd_publish_waiting (now);
+	{
+	  nh_wd_publish_waiting (now);
+	  nh_wd_input_span_close (NULL, now);
+	}
       wd_waiting = true;
     }
   nh_wd_phase_pop_to (0);
@@ -639,6 +642,7 @@ syms_of_nidhogg_watchdog (void)
   nh_wd_monitor_syms ();
 
   nh_wd_syms_of_sample ();
+  nh_wd_input_syms ();
 #ifdef HAVE_PGTK
   nh_wd_gtk_syms ();
 #endif

@@ -585,7 +585,7 @@ nh_wd_hook_symbol (uintptr_t w)
   return BASE_EQ (sym, Qunbound) ? Qnidhogg_watchdog__gone : sym;
 }
 
-static const char *const nh_wd_phase_names[NH_WD_PH_N] = {
+const char *const nh_wd_phase_names[NH_WD_PH_N] = {
   "lisp", "redisplay", "filter", "sentinel", "process-wait",
   "call-process", "json", "regex", "compose", "deliver", "treesit",
   "treesit-wait", "image", "worker-wait"

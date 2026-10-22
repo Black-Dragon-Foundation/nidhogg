@@ -125,6 +125,7 @@ static struct rlimit nofile_limit;
 #endif
 #ifdef HAVE_NIDHOGG_WATCHDOG
 #include "nidhogg-watchdog.h"
+#include "nidhogg-watchdog-phase.h"
 #endif
 
 #ifdef HAVE_WINDOW_SYSTEM
@@ -6573,6 +6574,9 @@ read_and_dispose_of_process_output (struct Lisp_Process *p, char *chars,
 
       read_process_output_set_last_coding_system (p, coding);
 
+#ifdef HAVE_NIDHOGG_WATCHDOG
+      int nh_wd_d = nh_wd_phase_push (NH_WD_PH_FILTER);
+#endif
       if (SBYTES (text) > 0)
 	/* FIXME: It's wrong to wrap or not based on debug-on-error, and
 	   sometimes it's simply wrong to wrap (e.g. when called from
@@ -6581,6 +6585,9 @@ read_and_dispose_of_process_output (struct Lisp_Process *p, char *chars,
 				   list3 (outstream, make_lisp_proc (p), text),
 				   !NILP (Vdebug_on_error) ? Qnil : Qerror,
 				   read_process_output_error_handler);
+#ifdef HAVE_NIDHOGG_WATCHDOG
+      nh_wd_phase_pop_to (nh_wd_d);
+#endif
 
     }
 
@@ -7851,10 +7858,16 @@ exec_sentinel (Lisp_Object proc, Lisp_Object reason)
      save the match data in a special nonrecursive fashion.  */
   running_asynch_code = 1;
 
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  int nh_wd_d = nh_wd_phase_push (NH_WD_PH_SENTINEL);
+#endif
   internal_condition_case_1 (read_process_output_call,
 			     list3 (sentinel, proc, reason),
 			     !NILP (Vdebug_on_error) ? Qnil : Qerror,
 			     exec_sentinel_error_handler);
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  nh_wd_phase_pop_to (nh_wd_d);
+#endif
 
   /* If we saved the match data nonrecursively, restore it now.  */
   restore_search_regs ();
