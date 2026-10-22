@@ -250,7 +250,6 @@ nh_wd_monitor_main (void *arg)
   (void) arg;
 
   nh_wd_mon_tid = syscall (SYS_gettid);
-  pthread_setname_np (pthread_self (), "nh-watchdog");
 
   pthread_mutex_lock (&nh_wd.m);
   while (!nh_wd_mon_stop)
@@ -325,6 +324,9 @@ nh_wd_monitor_start (void)
   pthread_sigmask (SIG_SETMASK, &old, NULL);
   if (err)
     return err;
+  /* Named here, not by the thread itself, so the name is there when
+     this returns.  */
+  pthread_setname_np (nh_wd_mon_thread, "nh-watchdog");
   nh_wd_mon_running = true;
   return 0;
 }
