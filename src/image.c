@@ -51,6 +51,10 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "coding.h"
 #include "termhooks.h"
 #include "font.h"
+#ifdef HAVE_NIDHOGG_WORKERS
+
+# include "nidhogg-workers.h"
+#endif
 
 #ifdef HAVE_SYS_STAT_H
 #include <sys/stat.h>
@@ -1667,6 +1671,13 @@ calling this function.  */)
 {
   Lisp_Object size;
 
+#ifdef HAVE_NIDHOGG_WORKERS
+  bool answered;
+  size = nh_img_size (spec, frame, !NILP (pixels), &answered);
+  if (answered)
+    return size;
+
+#endif
   size = Qnil;
   if (valid_image_p (spec))
     {
@@ -1720,6 +1731,13 @@ or omitted means use the selected frame.  */)
 {
   Lisp_Object ext;
 
+#ifdef HAVE_NIDHOGG_WORKERS
+  bool answered;
+  ext = nh_img_metadata (spec, frame, &answered);
+  if (answered)
+    return ext;
+
+#endif
   ext = Qnil;
   if (valid_image_p (spec))
     {
@@ -3513,6 +3531,124 @@ image_set_transform (struct frame *f, struct image *img)
 }
 
 #endif /* HAVE_IMAGEMAGICK || HAVE_NATIVE_TRANSFORMS */
+#ifdef HAVE_NIDHOGG_WORKERS
+
+/* What nidhogg-image-bg.c needs of this file to answer `image-size' and
+   `image-metadata' from an image's header, without loading it.  */
+
+/* The format of the image SPEC asks for, if the header parsers know
+   it and this build's loader is the C one.  */
+
+int
+nh_img_spec_format (Lisp_Object spec)
+{
+#ifndef HAVE_NATIVE_IMAGE_API
+  Lisp_Object type = image_spec_value (spec, QCtype, NULL);
+# ifdef HAVE_PNG
+  if (EQ (type, Qpng))
+    return NH_IMG_F_PNG;
+# endif
+# ifdef HAVE_JPEG
+  if (EQ (type, Qjpeg))
+    return NH_IMG_F_JPEG;
+# endif
+# ifdef HAVE_GIF
+  if (EQ (type, Qgif))
+    return NH_IMG_F_GIF;
+# endif
+# ifdef HAVE_WEBP
+  if (EQ (type, Qwebp))
+    return NH_IMG_F_WEBP;
+# endif
+#endif
+  return NH_IMG_F_NONE;
+}
+
+/* The loaders' size limit (`max-image-size') on a native size.  */
+
+bool
+nh_img_size_ok (struct frame *f, int width, int height)
+{
+  return check_image_size (f, width, height);
+}
+
+/* The size lookup_image would give an image of native size NATIVE_W x
+   NATIVE_H that loads, with its margins: the transform
+   `image_set_transform' computes (:width, :height, :max-width,
+   :max-height, :scale, :rotation) and `lookup_image's :margin and
+   :relief.  F is NULL only in tests, where the face's sizes are 0.
+   False when a spec value would make the loader report an error.  */
+
+bool
+nh_img_displayed_size (struct frame *f, Lisp_Object spec, int native_w,
+		       int native_h, int *width, int *height)
+{
+  int w = native_w, h = native_h;
+#ifdef HAVE_NATIVE_TRANSFORMS
+  struct image tmp;
+  memset (&tmp, 0, sizeof tmp);
+  tmp.spec = spec;
+  tmp.dependencies = tmp.lisp_data = Qnil;
+  if (f)
+    {
+      if (FRAME_FACE_CACHE (f) == NULL)
+	init_frame_faces (f);
+      if (FRAME_FACE_CACHE (f)->used == 0)
+	recompute_basic_faces (f);
+      struct face *face = FACE_FROM_ID (f, DEFAULT_FACE_ID);
+      tmp.face_font_size = face->font->pixel_size;
+      tmp.face_font_height = face->font->height;
+      tmp.face_font_width = face->font->average_width;
+    }
+  /* `:scale default' reads the frame and `image-scaling-factor'.  */
+  if (EQ (image_spec_value (spec, QCscale, NULL), Qdefault)
+      && (!f
+	  || !(EQ (Vimage_scaling_factor, Qauto)
+	       || NUMBERP (Vimage_scaling_factor))))
+    return false;
+  bool rot_found;
+  Lisp_Object rot = image_spec_value (spec, QCrotation, &rot_found);
+  double rotation = 0.0;
+  if (rot_found)
+    {
+      if (!NUMBERP (rot))
+	return false;
+      compute_image_rotation (&tmp, &rotation);
+      if (rotation != 0 && rotation != 90 && rotation != 180
+	  && rotation != 270)
+	return false;
+    }
+  compute_image_size (f, native_w, native_h, &tmp, &w, &h);
+  if (rotation == 90 || rotation == 270)
+    {
+      int t = w;
+      w = h;
+      h = t;
+    }
+#endif
+  int hmargin = 0, vmargin = 0;
+  Lisp_Object margin = image_spec_value (spec, QCmargin, NULL);
+  if (FIXNUMP (margin))
+    vmargin = hmargin = XFIXNUM (margin);
+  else if (CONSP (margin))
+    {
+      hmargin = XFIXNUM (XCAR (margin));
+      vmargin = XFIXNUM (XCDR (margin));
+    }
+  Lisp_Object relief = image_spec_value (spec, QCrelief, NULL);
+  int relief_bound = INT_MAX - max (hmargin, vmargin);
+  if (RANGED_FIXNUMP (- relief_bound, relief, relief_bound))
+    {
+      hmargin += eabs (XFIXNUM (relief));
+      vmargin += eabs (XFIXNUM (relief));
+    }
+  *width = w + 2 * hmargin;
+  *height = h + 2 * vmargin;
+  return true;
+}
+
+
+#endif /* HAVE_NIDHOGG_WORKERS */
 
 /* Return the id of image with Lisp specification SPEC on frame F.
    SPEC must be a valid Lisp image specification (see valid_image_p).  */
