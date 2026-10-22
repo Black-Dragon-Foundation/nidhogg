@@ -26,6 +26,15 @@
 (ert-deftest watchdog/in-the-configuration ()
   (should (string-search "--with-nidhogg-watchdog" system-configuration-options)))
 
+(ert-deftest watchdog/lisp-preloaded-compiled ()
+  ;; The dump loads the watchdog's Lisp compiled, like the rest of the
+  ;; preloaded Lisp, not from source.
+  (dolist (feature '(nidhogg-watchdog-lisp nidhogg-watchdog-resolve
+                     nidhogg-watchdog-gc nidhogg-watchdog-report))
+    (let ((file (feature-file feature)))
+      (should file)
+      (should-not (string-suffix-p ".el" file)))))
+
 (ert-deftest watchdog/no-frames-when-off ()
   ;; Flag on, mode off: no thread, no handler, no stats.
   (let ((tasks (length (directory-files "/proc/self/task" nil "\\`[0-9]"))))
