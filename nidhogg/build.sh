@@ -21,7 +21,8 @@
 # NIDHOGG_BUILD_LISP_CACHE=DIR keeps the build's compiled Lisp (the generated files under lisp/ and leim/: .elc, loaddefs, ...,
 # and obj/native-lisp: the .eln files) in DIR: written after `make`, restored (made newer than every source) before it.  The
 # caller keys DIR on everything that determines the output (the Lisp and C sources, build.sh, the distro, the compiler): an
-# entry is only ever reused for the exact same inputs.
+# entry is only ever reused for the exact same inputs.  Builds of one key may share DIR at once: a restore holds DIR/.lock
+# shared and a save holds it exclusive (with flock; without it, as before).
 # bash 3.2-safe (macOS): none of the bash 4 features.
 set -euo pipefail
 
@@ -254,6 +255,10 @@ BODY
 # the compiled-Lisp cache (used only when made by the same compiler and architecture): restored files all get one timestamp, newer than every source (and equal among themselves, so
 # no .eln is older than its .elc), so that make sees them as up to date
 cc_id() { printf '%s %s %s\n' "$(gcc --version | head -n 1)" "$(uname -m)" "$MODE_ID"; }
+# builds of the same key share DIR: a restore holds DIR/.lock shared, a save exclusive (where flock exists)
+lc_lock() { if command -v flock >/dev/null; then exec 9>"$LC/.lock"; flock "$1" 9; fi; }
+lc_unlock() { if command -v flock >/dev/null; then flock -u 9; exec 9>&-; fi; }
+lc_lock -s
 if [ -f "$LC/stamp" ] && [ "$(cat "$LC/stamp")" = "$(cc_id)" ]; then
   phase restore compiled Lisp
   tar -C "$LC" -cf - src obj | tar -C "$B" -xf -
@@ -261,6 +266,7 @@ if [ -f "$LC/stamp" ] && [ "$(cat "$LC/stamp")" = "$(cc_id)" ]; then
   (cd "$LC/src" && find . -type f) | while IFS= read -r f; do touch -r "$B/.restored" "$B/src/$f"; done
   (cd "$LC/obj" && find . -type f) | while IFS= read -r f; do touch -r "$B/.restored" "$B/obj/$f"; done
 fi
+lc_unlock
 BODY
   fi
   cat <<'BODY'
@@ -281,12 +287,14 @@ BODY
   echo "logged \"\$B/make.log\" make -j$JOBS"
   if [ -n "$LISP_CACHE" ]; then cat <<'BODY'
 phase save compiled Lisp
+lc_lock -x
 rm -rf "$LC/stamp" "$LC/src" "$LC/obj"
 mkdir -p "$LC/src" "$LC/obj"
 # the files make generated under lisp/ and leim/ (those the sources do not have), and the .eln files
 (cd "$B/src" && find lisp leim -type f | while IFS= read -r f; do [ -e "$S/$f" ] || echo "$f"; done > "$B/lisp-cache.list" && tar -cf - -T "$B/lisp-cache.list") | tar -C "$LC/src" -xf -
 [ ! -d "$B/obj/native-lisp" ] || tar -C "$B/obj" -cf - native-lisp | tar -C "$LC/obj" -xf -
 cc_id > "$LC/stamp"
+lc_unlock
 BODY
   fi
   fi
@@ -317,12 +325,14 @@ if [ "$MODE" = container ]; then
   elif [ -n "$OUT" ]; then MOUNT="$OUT_DIR:/out:Z"; else MOUNT="$PREFIX:$PREFIX:Z"; [ "$DRY" = 1 ] || mkdir -p "$PREFIX"; fi
   NAME=nidhogg-build-$$
   CACHE_ARGS=""
+  # the caches are shared by builds running at once: :z (a shared label), since :Z relabels a directory for one container
+  # and a second build's :Z locks the first one out of it mid-build
   if [ -n "${NIDHOGG_BUILD_PKG_CACHE:-}" ]; then
-    case $DISTRO in ubuntu-*) CACHE_ARGS="-v $NIDHOGG_BUILD_PKG_CACHE/apt:/var/cache/apt/archives:Z" ;;
-      *) CACHE_ARGS="-v $NIDHOGG_BUILD_PKG_CACHE/dnf:/var/cache/libdnf5:Z" ;; esac
+    case $DISTRO in ubuntu-*) CACHE_ARGS="-v $NIDHOGG_BUILD_PKG_CACHE/apt:/var/cache/apt/archives:z" ;;
+      *) CACHE_ARGS="-v $NIDHOGG_BUILD_PKG_CACHE/dnf:/var/cache/libdnf5:z" ;; esac
   fi
-  [ -z "${NIDHOGG_BUILD_CCACHE:-}" ] || CACHE_ARGS="$CACHE_ARGS -v $NIDHOGG_BUILD_CCACHE:/ccache:Z"
-  [ -z "$LISP_CACHE" ] || CACHE_ARGS="$CACHE_ARGS -v $LISP_CACHE:/lispcache:Z"
+  [ -z "${NIDHOGG_BUILD_CCACHE:-}" ] || CACHE_ARGS="$CACHE_ARGS -v $NIDHOGG_BUILD_CCACHE:/ccache:z"
+  [ -z "$LISP_CACHE" ] || CACHE_ARGS="$CACHE_ARGS -v $LISP_CACHE:/lispcache:z"
   CMD_HEAD="$PODMAN run --rm --name $NAME --memory $MEMORY --memory-swap $MEMORY -v $ROOT:/src:ro,Z -v $BUILD_DIR:/build:Z ${MOUNT:+-v $MOUNT} $CACHE_ARGS $IMAGE"
   if [ "$DRY" = 1 ]; then
     echo "$CMD_HEAD bash -euo pipefail -c '"
