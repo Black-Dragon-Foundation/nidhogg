@@ -33,4 +33,11 @@
 (ert-deftest glitnir/in-the-configuration ()
   (should (string-search "--with-glitnir" system-configuration-options)))
 
+(ert-deftest glitnir/lisp-preloaded-compiled ()
+  ;; The dump loads glitnir.el compiled, like the rest of the preloaded
+  ;; Lisp, not from source.
+  (let ((file (feature-file 'glitnir-lisp)))
+    (should file)
+    (should-not (string-suffix-p ".el" file))))
+
 ;;; glitnir-tests.el ends here
