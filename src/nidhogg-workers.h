@@ -195,6 +195,49 @@ extern bool nh_json_materialize (struct nh_mat *, int64_t budget_ns);
 extern bool nh_img_lookup (struct frame *, struct image *, ptrdiff_t id);
 extern bool nh_img_sync_load (struct frame *, struct image *, int fmt);
 
+/* The header parsers and frame-count scans (Task 27), Lisp-free.  The
+   formats are the loaders' four.  A parser answers 1 when it parsed,
+   0 when the bytes are not a (complete enough) file of that format and
+   -1 when it ran out of the bytes it was given (a longer prefix may
+   do).  Sizes are the native size in pixels, never zero.  */
+enum nh_img_format
+{
+  NH_IMG_F_NONE,
+  NH_IMG_F_PNG,
+  NH_IMG_F_JPEG,
+  NH_IMG_F_GIF,
+  NH_IMG_F_WEBP
+};
+
+/* One extension block of a GIF frame, as giflib's DGifSlurp keeps it.  */
+struct nh_img_gif_ext
+{
+  int function, len;
+  uint8_t bytes[255];
+};
+
+#define NH_IMG_GIF_EXT_MAX 64
+
+/* What nh_img_gif_scan and nh_img_webp_scan found for frame IDX of
+   the file: the screen (canvas) size, the number of frames and, for
+   GIF, frame IDX's extension blocks (EXTS, at most NH_IMG_GIF_EXT_MAX,
+   else the scan fails) and, for WebP, whether it is animated and frame
+   IDX's duration in milliseconds.  */
+struct nh_img_scan
+{
+  int width, height, frames, nexts;
+  bool animated;
+  int duration_ms;
+  struct nh_img_gif_ext exts[NH_IMG_GIF_EXT_MAX];
+};
+
+extern int nh_img_parse_header (int fmt, const uint8_t *, size_t,
+				int *width, int *height);
+extern int nh_img_gif_scan (const uint8_t *, size_t, int idx,
+			    struct nh_img_scan *);
+extern int nh_img_webp_scan (const uint8_t *, size_t, int idx,
+			     struct nh_img_scan *);
+
 /* Auto-save and name lookups, nidhogg-blk.c [34, 35].  */
 extern bool nh_save_auto_save_1 (struct buffer *);
 extern bool nh_save_keyboard_triggered;
@@ -207,6 +250,14 @@ extern bool nh_ts_publish (Lisp_Object parser);
 extern void nh_ts_maybe_start (Lisp_Object parser, int start_point);
 extern Lisp_Object nh_img_size (Lisp_Object spec, Lisp_Object frame,
 				bool pixels, bool *answered);
+extern Lisp_Object nh_img_metadata (Lisp_Object spec, Lisp_Object frame,
+				    bool *answered);
+/* The hooks in image.c the header answers use.  */
+extern int nh_img_spec_format (Lisp_Object spec);
+extern bool nh_img_size_ok (struct frame *, int width, int height);
+extern bool nh_img_displayed_size (struct frame *, Lisp_Object spec,
+				   int native_w, int native_h,
+				   int *width, int *height);
 extern bool nh_save_name_in_flight (Lisp_Object name);
 
 /* The `syms_of' part of each file, called from syms_of_nidhogg_workers.  */
