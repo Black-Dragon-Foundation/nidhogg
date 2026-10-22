@@ -226,7 +226,14 @@ An open popup menu or dialog counts as the user waiting, not as a stall: on pgtk
 function (`src/nidhogg-watchdog-gtk.c`) marks the wait. A Lisp timer that runs inside a menu or dialog is still
 busy time and is reported.
 <!-- wd: Task 13 -->
-<!-- wd: Task 14 -->
+`M-x nidhogg-watchdog-mode` (global, off by default) starts the monitor with `nidhogg-watchdog-threshold` (100 ms)
+and `nidhogg-watchdog-hang-ms` (2000) and one repeating 1 s idle timer. The timer's drain returns at once (no
+allocation) when nothing is pending; otherwise it takes the rings at once and resolves records within 2 ms, the rest
+waiting for the next idle period (`nidhogg-watchdog-drain-now` drains everything). Each stall is one JSON line (schema
+`v` 1) in `YYYY-MM-DD.jsonl` under `nidhogg-watchdog-log-directory` (default `~/.emacs.d/watchdog/`); `nidhogg-watchdog-record-functions` sees each
+resolved record. At most 5,000 stall lines are written per day (the rest are only counted), day files older than 14
+days are deleted, and a `summary` line (histogram deltas, counters, monitor CPU, drain p95; `nidhogg-watchdog-stats`
+adds the drain's histogram) is appended at most every 10 minutes and when the mode is turned off or Emacs exits.
 <!-- wd: Task 15 -->
 <!-- wd: Task 16 -->
 <!-- wd: Task 17 -->
