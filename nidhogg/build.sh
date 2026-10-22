@@ -216,10 +216,12 @@ script() {
     [ -z "${NIDHOGG_BUILD_CCACHE:-}" ] || echo 'export CCACHE_DIR=/ccache CCACHE_COMPILERCHECK=content CCACHE_MAXSIZE=500M CC="ccache gcc"; ccache -z >/dev/null'
   fi
   cat <<'BODY'
-# relative links so that a relocated binary finds its dump beside itself
+# relative links so that a relocated binary finds its dump beside itself; the dump named by the installed binary's
+# fingerprint (a reused prefix keeps the dumps of earlier builds)
 dumplinks() {
   root=$1
-  set -- "$root"/libexec/emacs/*/*/emacs-*.pdmp
+  fp=$("$root/bin/emacs-$UPV" --fingerprint 2>/dev/null) || return 0
+  set -- "$root"/libexec/emacs/*/*/"emacs-$fp.pdmp"
   [ -e "$1" ] || return 0
   rel=${1#"$root"/}
   for n in nidhogg emacs "emacs-$UPV"; do ln -sf "../$rel" "$root/bin/$n.pdmp"; done
