@@ -158,6 +158,9 @@ extern char etext;
 #ifdef HAVE_NIDHOGG_WATCHDOG
 #include "nidhogg-watchdog.h"
 #endif
+#ifdef HAVE_NIDHOGG_WORKERS
+#include "nidhogg-workers.h"
+#endif
 
 static const char emacs_version[] = PACKAGE_VERSION;
 static const char emacs_copyright[] = COPYRIGHT;
@@ -2494,6 +2497,9 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
       syms_of_profiler ();
 #ifdef HAVE_NIDHOGG_WATCHDOG
       syms_of_nidhogg_watchdog ();
+#endif
+#ifdef HAVE_NIDHOGG_WORKERS
+      syms_of_nidhogg_workers ();
 #endif
       syms_of_pdumper ();
       syms_of_json ();
