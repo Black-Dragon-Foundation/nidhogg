@@ -33,7 +33,7 @@ DISTROS="fedora-44 fedora-45 ubuntu-26.04"
 usage() {
   cat >&2 <<USAGE
 usage: nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memory SIZE]
-                        [--build-dir DIR] [--check FILE] [--out FILE] [--stage build|check|pack] [--dev] [--without-nidhogg-watchdog] [--dry-run]
+                        [--build-dir DIR] [--check FILE] [--out FILE] [--stage build|check|pack] [--dev] [--without-nidhogg-watchdog] [--without-nidhogg-workers] [--dry-run]
   DISTRO: $DISTROS
 USAGE
   exit 2
@@ -43,6 +43,7 @@ die() { echo "build.sh: $*" >&2; exit 1; }
 MODE="" DISTRO="" PREFIX="" JOBS="" MEMORY="" BUILD_DIR="" CHECK="" OUT="" DRY=0 STAGE=all
 DEV=0; [ "${NIDHOGG_BUILD_DEV:-}" != 1 ] || DEV=1
 WATCHDOG=1   # the stall watchdog is built in unless --without-nidhogg-watchdog
+WORKERS=1    # the worker threads are built in unless --without-nidhogg-workers
 while [ $# -gt 0 ]; do
   case $1 in
     --container) [ $# -ge 2 ] || usage; MODE=container; DISTRO=$2; shift 2 ;;
@@ -56,6 +57,7 @@ while [ $# -gt 0 ]; do
     --stage) [ $# -ge 2 ] || usage; STAGE=$2; shift 2; case $STAGE in all|build|check|pack) ;; *) usage ;; esac ;;
     --dev) DEV=1; shift ;;
     --without-nidhogg-watchdog) WATCHDOG=0; shift ;;
+    --without-nidhogg-workers) WORKERS=0; shift ;;
     --dry-run) DRY=1; shift ;;
     *) echo "unknown option: $1" >&2; usage ;;
   esac
@@ -141,6 +143,7 @@ else
   CONF="--with-native-compilation=$NATIVE --with-tree-sitter --with-pgtk"
 fi
 [ "$WATCHDOG" = 0 ] || CONF="$CONF --with-nidhogg-watchdog"
+[ "$WORKERS" = 0 ] || CONF="$CONF --with-nidhogg-workers"
 
 TEMP_BUILD=0
 if [ -z "$BUILD_DIR" ]; then
