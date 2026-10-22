@@ -221,6 +221,9 @@ XGSELOBJ=@XGSELOBJ@
 # Nidhogg's stall watchdog objects (--with-nidhogg-watchdog), else empty
 NIDHOGG_WATCHDOG_OBJ=@NIDHOGG_WATCHDOG_OBJ@
 
+# Nidhogg's worker thread objects (--with-nidhogg-workers), else empty
+NIDHOGG_WORKERS_OBJ=@NIDHOGG_WORKERS_OBJ@
+
 TOOLKIT_LIBW=@TOOLKIT_LIBW@
 
 ## Only used if HAVE_X11, in LIBX_OTHER.
@@ -450,7 +453,7 @@ ALL_CXX_CFLAGS = $(EMACS_CFLAGS) \
 .cc.o:
 	$(AM_V_CXX)$(CXX) -c $(CPPFLAGS) $(ALL_CXX_CFLAGS) $(PROFILING_CFLAGS) $<
 
-base_obj = $(NIDHOGG_WATCHDOG_OBJ) dispnew.o frame.o scroll.o xdisp.o menu.o $(XMENU_OBJ) window.o     \
+base_obj = $(NIDHOGG_WATCHDOG_OBJ) $(NIDHOGG_WORKERS_OBJ) dispnew.o frame.o scroll.o xdisp.o menu.o $(XMENU_OBJ) window.o     \
 	charset.o coding.o category.o ccl.o character.o chartab.o bidi.o       \
 	$(CM_OBJ) term.o terminal.o xfaces.o $(XOBJ) $(GTK_OBJ) $(DBUS_OBJ)    \
 	emacs.o keyboard.o macros.o keymap.o sysdep.o 			       \
@@ -570,6 +573,10 @@ shortlisp := $(filter-out ${shortlisp_filter},${shortlisp})
 ## native-compiled with the preloaded Lisp.
 ifneq (${NIDHOGG_WATCHDOG_OBJ},)
 shortlisp += $(patsubst ${lispsource}/%.el,%.elc,$(wildcard ${lispsource}/nidhogg-watchdog*.el))
+endif
+## Nidhogg: the same for the workers' lisp/nidhogg-workers.el (its jsonrpc and treesit parts load later, with those).
+ifneq (${NIDHOGG_WORKERS_OBJ},)
+shortlisp += nidhogg-workers.elc
 endif
 ## Place loaddefs.el first, so it gets generated first, since it is on
 ## the critical path (relevant in parallel compilations).

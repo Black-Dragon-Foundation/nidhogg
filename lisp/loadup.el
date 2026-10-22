@@ -558,6 +558,7 @@ directory got moved.  This is set to be a pair in the form of:
   ;; file-local variables.
   (defvar comp--no-native-compile (make-hash-table :test #'equal)))
 (if (featurep 'nidhogg-watchdog) (mapc #'load '("nidhogg-watchdog-resolve" "nidhogg-watchdog-gc" "nidhogg-watchdog-report" "nidhogg-watchdog")))
+(if (featurep 'nidhogg-workers) (load "nidhogg-workers"))
 
 
 ;; Avoid error if user loads some more libraries now.
