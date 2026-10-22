@@ -324,7 +324,9 @@ extern uint32_t nh_wd_gc_pending (void);
 extern void syms_of_nidhogg_watchdog_gc (void);
 
 /* Phases, felt input, typing.  [Task 11, nidhogg-watchdog-input.c]
-   The inline phase push/pop are in nidhogg-watchdog-phase.h.  */
+   The inline phase push/pop are in nidhogg-watchdog-phase.h.
+   nh_wd_input_span_close runs at every span's end: ST is the stall to
+   fill, or NULL for a span below the threshold.  */
 extern void nh_wd_input_span_open (uint64_t now);
 extern void nh_wd_input_span_close (struct nh_wd_stall *, uint64_t now);
 extern void nh_wd_unwind_phases (struct handler *catch);

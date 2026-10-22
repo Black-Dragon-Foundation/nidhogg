@@ -209,7 +209,19 @@ turns the finished spans into JSON Lines records, names function, file and packa
   `image_prune_animation_caches`, but not `post-gc-hook`. `:gcs-done` is the `gcs-done` a `post-gc-hook` function
   sees for the same collection, the key the Lisp GC row (and drgnx's GC census lines, `gcs_done`) joins on; never join
   by order. `:explicit` is a `garbage-collect` call (other C callers, such as `garbage-collect-maybe`, are automatic).
-<!-- wd: Task 11 -->
+- Phases, felt input, typing (`-input.c`, `nidhogg-watchdog-phase.h`): a sample names the C phase on top of a small
+  phase stack, set by one-line hooks: `redisplay` (`redisplay_internal`), `filter` and `sentinel` (process.c),
+  `call-process`, `json` (parse, serialize, insert), `regex` (`re-search-*`, `looking-at`, `string-match`) and
+  `process-wait` (a wait that is not responsive: `accept-process-output` or `sleep-for` inside a command, a wait under
+  `inhibit-redisplay`); `lisp` when none is set. A responsive wait empties the stack, and a non-local exit
+  (`unwind_to_catch`) pops every phase pushed inside its catch target, so a `condition-case` around a failing
+  `json-parse-string` does not label the rest of the span `json`. Nothing goes on the specpdl. A stall is `:felt`
+  when a keyboard, button or wheel event was stored during it (a key pressed while Emacs was busy) or when it ran a
+  command; `:input-wait-ms` runs from that input's arrival (a pgtk event's own timestamp when it reads as
+  `CLOCK_MONOTONIC` within the last 2 s, else the time it was stored) to the stall's end. `:commands` counts the
+  commands in the span, and `:input-queued` says a second one ran in it (keys queued behind each other). The
+  commands named by `nidhogg-watchdog--set-typing-commands` (16 at most) are timed one by one, from their key's
+  arrival to the next key taken or the next wait, into the `:typing` histogram of `nidhogg-watchdog--stats`.
 An open popup menu or dialog counts as the user waiting, not as a stall: on pgtk a wrapper around GLib's poll
 function (`src/nidhogg-watchdog-gtk.c`) marks the wait. A Lisp timer that runs inside a menu or dialog is still
 busy time and is reported.

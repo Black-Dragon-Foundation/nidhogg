@@ -32,6 +32,7 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "atimer.h"
 #ifdef HAVE_NIDHOGG_WATCHDOG
 #include "nidhogg-watchdog.h"
+#include "nidhogg-watchdog-phase.h"
 #endif
 
 /* Non-nil means record all fset's and provide's, to be undone
@@ -1430,6 +1431,10 @@ unwind_to_catch (struct handler *catch, enum nonlocal_exit type,
 
   eassert (catch->next);
 
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  nh_wd_unwind_phases (catch);
+
+#endif
   /* Save the value in the tag.  */
   catch->nonlocal_exit = type;
   catch->val = value;
