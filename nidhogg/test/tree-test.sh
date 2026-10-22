@@ -13,7 +13,7 @@ command -v unifdef >/dev/null || { echo "TREE FAIL: unifdef is not installed (th
 # FLAG_GROUPS (overridable) = name:define:feature, space separated.  ${NAME}_BASE (upper case; GLITNIR_BASE keeps
 # working, overridable) defaults to the parent of the oldest commit on HEAD whose subject starts 'nidhogg: <name>:'.
 # Order-independent: either group may be on top.
-FLAG_GROUPS_DEFAULT='glitnir:HAVE_GLITNIR:glitnir watchdog:HAVE_NIDHOGG_WATCHDOG:nidhogg-watchdog'
+FLAG_GROUPS_DEFAULT='glitnir:HAVE_GLITNIR:glitnir watchdog:HAVE_NIDHOGG_WATCHDOG:nidhogg-watchdog workers:HAVE_NIDHOGG_WORKERS:nidhogg-workers'
 flag_rule() {
   local g name def ft b var first f sha body i j c n matched feat lowest
   local -a gname=() gdef=() gfeat=() gbase=() flags=() feats=()
@@ -71,7 +71,7 @@ if [ "${TREE_TEST_SELF:-}" = 1 ]; then
   command -v unifdef >/dev/null || { echo "tree self-test: unifdef is not installed"; exit 1; }
   self=$(mktemp -d) || exit 1
   trap 'rm -rf "$self"' EXIT
-  GLITNIR_BASE= WATCHDOG_BASE=
+  GLITNIR_BASE= WATCHDOG_BASE= WORKERS_BASE=
   fixture() {   # a fresh repo with one upstream commit
     rm -rf "$self/r" && mkdir "$self/r" && cd "$self/r" || exit 1
     git init -q . && git config user.email t@t && git config user.name t && git config commit.gpgsign false
@@ -116,7 +116,27 @@ if [ "${TREE_TEST_SELF:-}" = 1 ]; then
   expect "loadup.el with both lines" ""
   fixture; put "nidhogg: watchdog: w" "$wd"; put "nidhogg: glitnir: g" "$both"; put "nidhogg: pgtk: p" "/* p */\n$both"
   expect "a pgtk commit above both groups" "belongs to no flag group; it goes below the groups"
-  echo "tree self-test: 12 cases ok"
+  wk='int a;\n#ifdef HAVE_NIDHOGG_WORKERS\nint k;\n#endif\n'
+  wdwk='int a;\n#ifdef HAVE_NIDHOGG_WATCHDOG\nint w;\n#endif\n#ifdef HAVE_NIDHOGG_WORKERS\nint k;\n#endif\n'
+  all3='int a;\n#ifdef HAVE_NIDHOGG_WATCHDOG\nint w;\n#endif\n#ifdef HAVE_NIDHOGG_WORKERS\nint k;\n#endif\n#ifdef HAVE_GLITNIR\nint g;\n#endif\n'
+  fixture; put "nidhogg: workers: k" "${wk}int out;\n"
+  expect "a workers line outside the flag" "src/a.c changes code outside HAVE_NIDHOGG_WORKERS"
+  fixture; put "nidhogg: workers: k" "$wk"
+  expect "a workers line inside the flag" ""
+  fixture; put "nidhogg: watchdog: w" "$wd"; put "nidhogg: workers: k" "$wdwk"; put "nidhogg: glitnir: g" "$all3"
+  expect "watchdog, workers, glitnir stacked, one file, each inside its define" ""
+  fixture; putf "nidhogg: glitnir: g" src/b.c '#ifdef HAVE_GLITNIR\nint g;\n#endif\n'; put "nidhogg: workers: k" "$wk"
+  expect "workers above glitnir" ""
+  loadup; putf "nidhogg: watchdog: w" lisp/loadup.el "(a)\n(featurep 'nidhogg-watchdog)\n"
+  putf "nidhogg: workers: k" lisp/loadup.el "(a)\n(featurep 'nidhogg-watchdog)\n(featurep 'nidhogg-workers)\n"
+  putf "nidhogg: glitnir: g" lisp/loadup.el "(a)\n(featurep 'nidhogg-watchdog)\n(featurep 'nidhogg-workers)\n(featurep 'glitnir)\n"
+  expect "loadup.el with three lines" ""
+  fixture; putf "nidhogg: workers: k" src/w.c '#ifdef HAVE_NIDHOGG_WORKERS\nint k;\n#endif\n'
+  putf "nidhogg: glitnir: g" src/w.c '#ifdef HAVE_NIDHOGG_WORKERS\nint k;\n#endif\n#ifdef HAVE_GLITNIR\nint g;\n#endif\n'
+  expect "a glitnir commit editing a file a workers commit created" ""
+  fixture; putf "upstream jsonrpc" lisp/jsonrpc.el '(a)\n'; putf "nidhogg: workers: k" lisp/jsonrpc.el '(a)\n(b)\n'
+  expect "a changed upstream jsonrpc.el in a workers commit" "lisp/jsonrpc.el changed outside the groups' own files"
+  echo "tree self-test: 19 cases ok"
   exit 0
 fi
 
