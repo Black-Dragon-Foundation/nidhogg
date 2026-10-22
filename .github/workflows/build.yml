@@ -19,7 +19,7 @@ permissions:
 # The drgnx commit under test is pinned, so a drgnx push never turns Nidhogg red: bump it by hand to a drgnx main
 # commit whose own CI is green (README.md, "CI and releases").
 env:
-  DRGNX_REF: ${{ inputs.drgnx_ref || 'f2314a35681a579ccafc7a0d88a812bd03493679' }}
+  DRGNX_REF: ${{ inputs.drgnx_ref || '9b1c6b2b5345cadad979b80931fec80c69102981' }}
 
 concurrency:
   group: nidhogg-${{ github.ref }}
