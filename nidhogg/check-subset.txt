@@ -12,6 +12,17 @@ src/nidhogg-tests/watchdog-resolve-tests
 src/nidhogg-tests/watchdog-gcrow-tests
 src/nidhogg-tests/watchdog-report-tests
 src/nidhogg-tests/watchdog-hang-tests
+src/nidhogg-tests/workers-tests
+src/nidhogg-tests/workers-fatal-tests
+src/nidhogg-tests/workers-ts-tests
+src/nidhogg-tests/workers-io-tests
+src/nidhogg-tests/workers-decode-tests
+src/nidhogg-tests/workers-tls-tests
+src/nidhogg-tests/workers-json-tests
+src/nidhogg-tests/workers-framing-tests
+src/nidhogg-tests/workers-image-tests
+src/nidhogg-tests/workers-blk-tests
+src/nidhogg-tests/workers-autosave-tests
 src/emacs-tests
 src/fns-tests
 src/process-tests
