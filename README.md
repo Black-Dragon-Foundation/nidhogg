@@ -232,6 +232,66 @@ busy time and is reported.
 <!-- wd: Task 17 -->
 <!-- wd: Task 18 -->
 
+## Work off the main thread
+
+Nidhogg can move work that blocks the main thread onto worker threads: reading process output, parsing with
+tree-sitter, decoding images, directory reads, file blocks, auto-save and host-name lookups. The main thread keeps
+every Lisp object; a worker only reads bytes and files and hands a result back for the main thread to land.
+
+- Build flag: `--with-nidhogg-workers` (defines `HAVE_NIDHOGG_WORKERS`; `build.sh` passes it on every target unless given
+  `--without-nidhogg-workers`). Without it the build equals upstream's for every file the workers touch.
+- Switches (customization group `nidhogg-workers`): `nidhogg-workers-process-reader` (on) with
+  `nidhogg-workers-reader-pipes`, `-reader-sockets` and `-reader-ptys`; `nidhogg-workers-framing`,
+  `nidhogg-workers-treesit`, `nidhogg-treesit-defer`, `nidhogg-workers-images`, `nidhogg-image-defer`,
+  `nidhogg-workers-autosave`, `nidhogg-workers-dns`. Each is off until the default-on commit of its step.
+  `nidhogg-redisplay-wait-budget` (8) is how many milliseconds a redisplay may wait for a worker.
+- The environment variable `NIDHOGG_WORKERS`, read at startup: `default` (or unset), `on`, `off`, `inline`, or a list
+  such as `+nidhogg-workers-treesit-nidhogg-workers-dns`. `nidhogg-workers-set-all` and `nidhogg-workers-apply` do the
+  same at run time.
+- No worker thread exists until the first job is submitted.
+- Files: `src/nidhogg-workers.h` (the shared layout and every cross-file prototype), `src/nidhogg-workers-phase.h`,
+  `src/nidhogg-{workers,treesit-bg,io,decode,json-tape,image-bg,blk}.c`; Lisp in `lisp/nidhogg-workers*.el`
+  (preloaded; the feature is `nidhogg-workers`, the Lisp part `nidhogg-workers-lisp`; the tree-sitter and jsonrpc
+  files load with their packages).
+- Tests: `workers/…` in `test/src/nidhogg-tests/workers-*-tests.el`, GUI rows `workers-gui/…` in `*-gui-tests.el`;
+  `nidhogg/test/workers-harness.sh` compiles the C files without Lisp.
+<!-- wk: Task 3 -->
+<!-- wk: Task 4 -->
+<!-- wk: Task 5 -->
+<!-- wk: Task 6 -->
+<!-- wk: Task 7 -->
+<!-- wk: Task 8 -->
+<!-- wk: Task 9 -->
+<!-- wk: Task 10 -->
+<!-- wk: Task 11 -->
+<!-- wk: Task 12 -->
+<!-- wk: Task 13 -->
+<!-- wk: Task 14 -->
+<!-- wk: Task 15 -->
+<!-- wk: Task 16 -->
+<!-- wk: Task 17 -->
+<!-- wk: Task 18 -->
+<!-- wk: Task 19 -->
+<!-- wk: Task 20 -->
+<!-- wk: Task 21 -->
+<!-- wk: Task 22 -->
+<!-- wk: Task 23 -->
+<!-- wk: Task 24 -->
+<!-- wk: Task 25 -->
+<!-- wk: Task 26 -->
+<!-- wk: Task 27 -->
+<!-- wk: Task 28 -->
+<!-- wk: Task 29 -->
+<!-- wk: Task 30 -->
+<!-- wk: Task 31 -->
+<!-- wk: Task 32 -->
+<!-- wk: Task 33 -->
+<!-- wk: Task 34 -->
+<!-- wk: Task 35 -->
+<!-- wk: Task 36 -->
+<!-- wk: Task 37 -->
+<!-- wk: Task 38 -->
+
 ## Reporting issues
 
 - Problems specific to Nidhogg (its patches, build, or `nidhogg-version`) go to this repository's issue tracker.
