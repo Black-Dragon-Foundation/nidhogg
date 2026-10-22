@@ -565,6 +565,12 @@ $(abs_top_builddir)/src/lisp.mk: $(lispsource)/loadup.el
 -include $(abs_top_builddir)/src/lisp.mk
 shortlisp_filter = leim/leim-list.el site-load.elc site-init.elc
 shortlisp := $(filter-out ${shortlisp_filter},${shortlisp})
+## Nidhogg: the stall watchdog's Lisp is loaded by a featurep-guarded line in loadup.el (which the sed above does not
+## see) and by the files that one requires.  It is preloaded like the rest: compiled before the dump, dumped again
+## when it changes, and native-compiled with the preloaded Lisp.
+ifneq (${NIDHOGG_WATCHDOG_OBJ},)
+shortlisp += $(patsubst ${lispsource}/%.el,%.elc,$(wildcard ${lispsource}/nidhogg-watchdog*.el))
+endif
 ## Place loaddefs.el first, so it gets generated first, since it is on
 ## the critical path (relevant in parallel compilations).
 ## We don't really need to sort, but may as well use it to remove duplicates.
