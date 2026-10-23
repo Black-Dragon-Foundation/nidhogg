@@ -51,7 +51,8 @@ if [ "${1:-}" = --fuzz ]; then
   fi
   TARGETS=${*:-$(cd "$FZ" && ls *.c | grep -v '^driver\.c$' | grep -v '^tsan-' | sed 's/\.c$//')}
   for t in $TARGETS; do
-    DEFS=; LIBS=
+    # this target's result (fail is the whole run's: an earlier target's failure must not mark this one)
+    DEFS=; LIBS=; bad=0
     case $t in header) SRCS="nidhogg-image-bg" ;; json) SRCS="" ;;
       # Task 18: the stateless decoders
       decode) SRCS="nidhogg-decode" ;;
@@ -63,12 +64,12 @@ if [ "${1:-}" = --fuzz ]; then
     seeds=("$ROOT"/test/src/nidhogg-tests/fixtures/images/*)
     if echo 'int main(void){return 0;}' | "$CC" -fsanitize=fuzzer -x c - -o "$OUT/probe" 2>/dev/null; then
       "$CC" -std=gnu11 -g -O1 $SAN -fsanitize=fuzzer $DEFS -DHAVE_NIDHOGG_WORKERS -DNH_WK_HARNESS -I"$ROOT/src" \
-        "$FZ/$t.c" "${srcs[@]}" $LIBS -o "$OUT/$t" && "$OUT/$t" -max_total_time="$SECS" -seed=1 "${seeds[@]}" || fail=1
+        "$FZ/$t.c" "${srcs[@]}" $LIBS -o "$OUT/$t" && "$OUT/$t" -max_total_time="$SECS" -seed=1 "${seeds[@]}" || bad=1
     else
       "$CC" -std=gnu11 -g -O1 $SAN $DEFS -DHAVE_NIDHOGG_WORKERS -DNH_WK_HARNESS -I"$ROOT/src" \
-        "$FZ/$t.c" "$FZ/driver.c" "${srcs[@]}" $LIBS -o "$OUT/$t" && "$OUT/$t" "$SECS" "${seeds[@]}" || fail=1
+        "$FZ/$t.c" "$FZ/driver.c" "${srcs[@]}" $LIBS -o "$OUT/$t" && "$OUT/$t" "$SECS" "${seeds[@]}" || bad=1
     fi
-    [ $fail = 0 ] && echo "ok   fuzz $t" || echo "FAIL fuzz $t"
+    if [ $bad = 0 ]; then echo "ok   fuzz $t"; else echo "FAIL fuzz $t"; fail=1; fi
   done
   rm -r "$OUT"
   exit $fail
