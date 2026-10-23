@@ -216,6 +216,14 @@ seconds.  The plist: `:status' and `:code' (`process-status' and
                     (nidhogg-workers--test-job w 0 :pause 'before-done))
                   (unless (nidhogg-workers--test-await-paused 'before-done 5000 5)
                     (kill-emacs 3))
+                  ;; Task 29: an image decode job, parked before it decodes.
+                  (when (fboundp 'nidhogg-workers--test-image-job)
+                    (nidhogg-workers--pause-at 'after-header)
+                    (nidhogg-workers--test-image-job
+                     '(image :type png :data "\211PNG\r\n\032\n") 1)
+                    (unless (nidhogg-workers--test-await-paused
+                             'after-header 5000 1)
+                      (kill-emacs 4)))
                   (princ "nh-wk: ready\n")
                   (run-at-time 0 nil #'kill-emacs)
                   (while t

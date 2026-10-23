@@ -328,7 +328,17 @@ extern struct nh_tape *nh_json_tokenize (const unsigned char *, size_t,
 extern bool nh_json_materialize (struct nh_mat *, int64_t budget_ns);
 
 /* Images, nidhogg-image-bg.c [27, 28, 29].  */
-extern bool nh_img_lookup (struct frame *, struct image *, ptrdiff_t id);
+/* Task 29: the image cache's hooks (image.c, xdisp.c).  lookup_image on
+   a miss: true when the entry was handled here (decoded within the
+   redisplay's budget, or made pending), false to load it as before.  On
+   a hit (a Lisp caller may need the pixels of a pending entry), in
+   prepare_image_for_display (true: a pending entry, not to be loaded),
+   in free_image, and at the top of redisplay_internal (the landing).  */
+extern bool nh_img_lookup (struct frame *, struct image *);
+extern void nh_img_hit (struct frame *, struct image *);
+extern bool nh_img_pending_p (struct frame *, struct image *);
+extern void nh_img_freed (struct frame *, struct image *);
+extern void nh_img_redisplay_begin (void);
 /* The synchronous loaders' entry (image.c): true when it handled the load,
    with the loader's result in *OK; false: run the loader as before.  */
 extern bool nh_img_sync_load (struct frame *, struct image *, int fmt,
@@ -429,6 +439,26 @@ extern bool nh_img_size_ok (struct frame *, int width, int height);
 extern bool nh_img_displayed_size (struct frame *, Lisp_Object spec,
 				   int native_w, int native_h,
 				   int *width, int *height);
+/* Task 29.  The iterator's lookup_image calls (xdisp.c): with
+   redisplaying_p, a miss may defer.  */
+extern ptrdiff_t nh_img_redisplay_lookup (struct frame *, Lisp_Object spec,
+					  int face_id);
+/* What image.c does for the pending entries (Cairo only; elsewhere
+   nh_img_job_inputs refuses).  FMT is an enum nh_img_fmt.  */
+struct nh_img_params;
+struct nh_img_out;
+extern bool nh_img_job_inputs (struct frame *, struct image *, int fmt,
+			       struct nh_img_params *, uint8_t **data,
+			       size_t *len, char **file);
+extern bool nh_img_load_result (struct frame *, struct image *, int fmt,
+				struct nh_img_out *, int rc);
+extern void nh_img_land (struct frame *, struct image *, int fmt,
+			 struct nh_img_out *, int rc);
+extern bool nh_img_prepare (struct frame *, struct image *);
+/* The watchdog's `image' phase around a synchronous decode (and its ns,
+   PD-3): the depth to hand to nh_img_phase_end.  */
+extern int nh_img_phase_begin (int64_t *t0);
+extern void nh_img_phase_end (int depth, int64_t t0);
 extern bool nh_save_name_in_flight (Lisp_Object name);
 /* process.c, for nidhogg-set-process-reader: hand PROC back for good
    (ON false), or let the reader take it again if it is being read.  */
