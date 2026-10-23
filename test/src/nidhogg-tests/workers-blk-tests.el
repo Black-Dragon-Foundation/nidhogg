@@ -200,4 +200,121 @@ Like a remote one, it answers `expand-file-name', which
     (should-error (nidhogg-directory-files-async "/nhmock/x/tmp" #'ignore)
                   :type 'nidhogg-not-local)))
 
+;;; File blocks (Task 33)
+
+(defun workers-blk-tests--read (file &rest props)
+  "Read FILE with `nidhogg-read-file-async'; return (BLOCK ERROR)."
+  (let (res (called-now nil))
+    (should (apply #'nidhogg-read-file-async file
+                   (lambda (block err) (setq res (list block err)))
+                   props))
+    (setq called-now res)
+    (should-not called-now)
+    (let ((i 0))
+      (while (and (not res) (< i 500))
+        (accept-process-output nil 0.02)
+        (setq i (1+ i))))
+    (should res)
+    res))
+
+(defun workers-blk-tests--state (inserter)
+  (with-temp-buffer
+    (let* ((ret (funcall inserter)))
+      (list (buffer-string) enable-multibyte-characters (point)
+            last-coding-system-used ret))))
+
+(defun workers-blk-tests--compare (bytes &optional name beg end)
+  "Compare inserting BYTES from a file via a block and `insert-file-contents'.
+Return the insertion path of the block."
+  (let ((file (make-temp-file "wkblk" nil (or name ".txt"))))
+    (unwind-protect
+        (progn
+          (let ((coding-system-for-write 'no-conversion))
+            (with-temp-file file
+              (set-buffer-multibyte nil)
+              (insert bytes)))
+          (let* ((ref (workers-blk-tests--state
+                       (lambda () (insert-file-contents file nil beg end))))
+                 (blk (car (apply #'workers-blk-tests--read file
+                                  (append (and beg (list :beg beg))
+                                          (and end (list :end end))))))
+                 (got (workers-blk-tests--state
+                       (lambda () (nidhogg-insert-file-block blk)))))
+            (should (user-ptrp blk))
+            (should (equal ref got))
+            nidhogg-blk--insert-path))
+      (delete-file file))))
+
+(ert-deftest workers/file-block ()
+  (let ((utf8-first (eq (coding-system-get
+                         (car (coding-system-priority-list)) :coding-type)
+                        'utf-8)))
+    ;; ASCII, with and without a line feed
+    (should (eq (workers-blk-tests--compare "hello\nworld\n") 'fast))
+    (should (eq (workers-blk-tests--compare "hello") 'fast))
+    (should (eq (workers-blk-tests--compare "") 'decode))
+    ;; UTF-8
+    (let ((p (workers-blk-tests--compare
+              (encode-coding-string "héllo 世界 \U0001F600\n" 'utf-8))))
+      (when utf8-first (should (eq p 'fast))))
+    (should (eq (workers-blk-tests--compare
+                 (encode-coding-string "café" 'utf-8))
+                (if utf8-first 'fast 'decode)))
+    ;; CRLF and CR
+    (should (eq (workers-blk-tests--compare "a\r\nb\r\n") 'decode))
+    (should (eq (workers-blk-tests--compare "a\rb\r") 'decode))
+    (should (eq (workers-blk-tests--compare
+                 (encode-coding-string "é\r\nè\r\n" 'utf-8))
+                'decode))
+    ;; Latin-1, UTF-16 with a BOM, binary
+    (workers-blk-tests--compare "caf\351 na\357ve\n")
+    (workers-blk-tests--compare
+     (encode-coding-string "﻿héllo\n" 'utf-16le-with-signature))
+    (workers-blk-tests--compare (unibyte-string 0 1 2 255 254 0 10 13))
+    (workers-blk-tests--compare (unibyte-string #xEF #xBB #xBF ?a ?\n))
+    (workers-blk-tests--compare "esc \e[0m x\n")
+    ;; coding cookies
+    (workers-blk-tests--compare ";; -*- coding: latin-1 -*-\ncaf\351\n")
+    (should (eq (workers-blk-tests--compare
+                 (encode-coding-string
+                  ";; -*- coding: latin-1 -*-\ncafé\n" 'utf-8))
+                'decode))
+    (should (eq (workers-blk-tests--compare
+                 (encode-coding-string
+                  ";; -*- coding: utf-8 -*-\ncafé\n" 'utf-8))
+                'decode))
+    (workers-blk-tests--compare
+     (encode-coding-string
+      (concat "café\n" (make-string 5000 ?x)
+              "\n;; Local Var" "iables:\n;; coding: latin-1\n;; End:\n")
+      'utf-8))
+    (workers-blk-tests--compare
+     (concat (make-string 6000 ?a) "\n"
+             "\n;; Local Var" "iables:\n;; coding: iso-8859-5\n;; End:\n"))
+    ;; file-coding-system-alist
+    (let ((file-coding-system-alist
+           (cons '("\\.wkalist\\'" . iso-8859-2) file-coding-system-alist)))
+      (workers-blk-tests--compare "abc\n" ".wkalist")
+      (workers-blk-tests--compare
+       (encode-coding-string "café\n" 'utf-8) ".wkalist"))
+    ;; coding-system-for-read bound
+    (let ((coding-system-for-read 'latin-1))
+      (workers-blk-tests--compare
+       (encode-coding-string "café\n" 'utf-8)))
+    (let ((coding-system-for-read 'utf-8-dos))
+      (workers-blk-tests--compare "a\r\nb\n"))
+    ;; a range
+    (workers-blk-tests--compare "0123456789\nabcdef\n" ".txt" 3 14)
+    ;; errors
+    (let ((missing (expand-file-name "no-such-file" temporary-file-directory)))
+      (let ((got (cadr (workers-blk-tests--read missing)))
+            (ref (condition-case e (insert-file-contents missing)
+                   (error e))))
+        (should (equal got ref))))
+    (let ((err (cadr (workers-blk-tests--read temporary-file-directory))))
+      (should (eq (car err) 'file-error)))
+    (should-error (nidhogg-insert-file-block 42) :type 'wrong-type-argument)
+    (should-error (nidhogg-read-file-async "/ssh:nowhere:/etc/passwd" #'ignore)
+                  :type 'nidhogg-not-local)))
+
 ;;; workers-blk-tests.el ends here

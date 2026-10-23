@@ -347,7 +347,13 @@ Test primitives: `nidhogg-workers--test-image-decode`, `--test-image-decode-fini
   `readlink`, cached `getpwuid_r`/`getgrgid_r`) and calls `(CALLBACK BATCH DONE ERROR)` from the main loop with
   `(NAME . ATTRIBUTES)` lists exactly as `directory-files-and-attributes` returns them. Sorted results arrive in one
   batch, `:nosort` ones in batches of 1000. A name with a file name handler signals `nidhogg-not-local`.
-<!-- wk: Task 33 -->
+- File blocks (`src/nidhogg-blk.c`, `src/nidhogg-decode.c`): `(nidhogg-read-file-async FILE CALLBACK &key beg end)`
+  reads a byte range of a regular file on `nh-blk` and scans it (ASCII only; strictly valid UTF-8 with its character
+  count; line-ending kind; null byte, ESC, BOM); `CALLBACK` gets `(BLOCK ERROR)`, BLOCK a `user-ptr` that owns the
+  bytes. `(nidhogg-insert-file-block BLOCK)` chooses the coding on the main thread as `insert-file-contents` does and
+  inserts with the worker's counts only for `undecided` with UTF-8 first and valid UTF-8 (no null, ESC, CR, BOM), or
+  ASCII-only text under an ASCII-compatible coding; everything else goes through `decode_coding_gap`.
+  `nidhogg-blk--insert-path` (`fast` or `decode`) is the test hook.
 <!-- wk: Task 34 -->
 <!-- wk: Task 35 -->
 <!-- wk: Task 36 -->
