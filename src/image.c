@@ -8593,7 +8593,8 @@ DEFUN ("nidhogg-workers--test-image-pixels", Fnidhogg_workers__test_image_pixels
 The image cache is emptied first, unless CACHED is non-nil: then SPEC's
 entry in the cache is read as it is (a pending one waits).  Value: a plist
 with :width, :height, :pixels (32-bit words, little endian), :mask,
-:lisp-data, :corners and :failed.  */)
+:lisp-data, :corners and :failed.  A cached entry that has been displayed
+with a mask reads :pixels and :mask nil (Cairo holds them premultiplied).  */)
   (Lisp_Object spec, Lisp_Object frame, Lisp_Object cached)
 {
   if (!valid_image_p (spec))
@@ -8605,14 +8606,38 @@ with :width, :height, :pixels (32-bit words, little endian), :mask,
   struct image *img = IMAGE_FROM_ID (f, id);
   Lisp_Object pixels = Qnil, mask = Qnil;
   int w = img->width, h = img->height;
-  if (img->pixmap && img->pixmap->data && w > 0 && h > 0)
+  /* A displayed entry has handed its pixel buffer to its Cairo pattern
+     (cr_put_image_to_cr_data): read it there.  Without a mask that
+     surface wraps the loader's buffer untouched; with one it holds
+     premultiplied pixels and the mask is gone, so those read as nil.  */
+  unsigned char *data = NULL;
+  ptrdiff_t stride = 0;
+  if (img->pixmap && img->pixmap->data)
+    {
+      data = (unsigned char *) img->pixmap->data;
+      stride = img->pixmap->bytes_per_line;
+    }
+  else if (img->pixmap && !img->mask && img->cr_data
+	   && cairo_pattern_get_type (img->cr_data) == CAIRO_PATTERN_TYPE_SURFACE)
+    {
+      cairo_surface_t *s;
+      if (cairo_pattern_get_surface (img->cr_data, &s) == CAIRO_STATUS_SUCCESS
+	  && cairo_surface_get_type (s) == CAIRO_SURFACE_TYPE_IMAGE
+	  && cairo_image_surface_get_width (s) == w
+	  && cairo_image_surface_get_height (s) == h)
+	{
+	  cairo_surface_flush (s);
+	  data = cairo_image_surface_get_data (s);
+	  stride = cairo_image_surface_get_stride (s);
+	}
+    }
+  if (data && w > 0 && h > 0)
     {
       pixels = make_uninit_string ((ptrdiff_t) w * h * 4);
       STRING_SET_UNIBYTE (pixels);
       for (int y = 0; y < h; y++)
 	memcpy (SDATA (pixels) + (ptrdiff_t) y * w * 4,
-		(char *) img->pixmap->data + (ptrdiff_t) y * img->pixmap->bytes_per_line,
-		(size_t) w * 4);
+		data + (ptrdiff_t) y * stride, (size_t) w * 4);
     }
   if (img->mask && img->mask->data && w > 0 && h > 0)
     {
