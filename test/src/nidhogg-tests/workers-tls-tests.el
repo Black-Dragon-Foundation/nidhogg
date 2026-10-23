@@ -118,7 +118,7 @@
   '(progn
      ;; WTLS_PROTO: `smtp' or `imap' (STARTTLS, then a relay to this
      ;; Emacs's own gnutls-serv), or `alert' (SMTP; after STARTTLS the
-     ;; line "GO" makes it send a TLS alert record, nothing else).
+     ;; line "GO" makes it send a TLS alert record and close its side).
      (defvar wtls-proto (intern (getenv "WTLS_PROTO")))
      (defvar wtls-serv nil)
      (defvar wtls-tls-port nil)
@@ -165,6 +165,12 @@
              rest
            (process-put conn 'done t)
            (process-send-string conn wtls-alert)
+           ;; After a fatal alert the server closes its side, as TLS
+           ;; servers do: a handshake that lost the alert reads EOF and
+           ;; fails at once, never waits for bytes that cannot come.
+           ;; A half-close: a full close could answer the ClientHello
+           ;; with a reset that races the alert.
+           (process-send-eof conn)
            nil))
         ((string-match-p "STARTTLS" line)
          (process-send-string conn (if (eq wtls-proto 'imap)
@@ -352,8 +358,9 @@ PULLED PULL)."
   ;; `gnutls-boot' ran reach GnuTLS through the pull function, never the
   ;; filter: the result is the reader-off run's.  (A real server sends
   ;; nothing between its STARTTLS reply and the ClientHello, so the
-  ;; queued record here is a fatal alert: both runs fail the handshake
-  ;; on it, and only GnuTLS ever sees it.)  Also an implicit-TLS stream
+  ;; queued record here is a fatal alert, after which the server closes
+  ;; its side: both runs fail the handshake on it, and only GnuTLS ever
+  ;; sees it; a run that lost it reads EOF, fails otherwise, at once.)  Also an implicit-TLS stream
   ;; with `:tls-parameters' and `:nowait', never handed over.
   (workers-tls-tests--skip)
   (dolist (proto '(smtp imap))
