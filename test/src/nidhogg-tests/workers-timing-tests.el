@@ -21,4 +21,24 @@
 
 (require 'ert)
 
+(ert-deftest workers/wait-deadline ()
+  ;; Review Focus 1, the deadline variant: a wait on a job that never
+  ;; finishes, under a storm of SIGURG and SIGCHLD, returns 0 at its
+  ;; 100 ms deadline (not before; within 1 s, a wide margin).
+  (let ((nidhogg-workers--mode 'threads))
+    (unwind-protect
+        (progn
+          (nidhogg-workers--pause-at 'before-done)
+          (let ((j (nidhogg-workers--test-job 'nh-blk 0 :class 'file
+                                              :pause 'before-done)))
+            (should (nidhogg-workers--test-await-paused 'before-done 5000))
+            (nidhogg-workers--test-signal-storm 300 nil)
+            (let* ((t0 (float-time))
+                   (r (nidhogg-workers--test-wait j 100))
+                   (dt (- (float-time) t0)))
+              (should (eql r 0))
+              (should (>= dt 0.1))
+              (should (< dt 1.0)))))
+      (nidhogg-workers--release))))
+
 ;;; workers-timing-tests.el ends here

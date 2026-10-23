@@ -127,10 +127,6 @@ looked up afterwards."
     (when env
       (nidhogg-workers-apply env))))
 
-(defun nidhogg-workers-stats (&optional _reset)
-  "Return the workers' counters, or nil (stub until the runtime lands)."
-  nil)
-
 ;; Read at startup, after the dump is loaded, never at preload time.
 (add-hook 'before-init-hook #'nidhogg-workers--init)
 
