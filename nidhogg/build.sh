@@ -21,7 +21,8 @@
 # NIDHOGG_BUILD_LISP_CACHE=DIR keeps the build's compiled Lisp (the generated files under lisp/ and leim/: .elc, loaddefs, ...,
 # and obj/native-lisp: the .eln files) in DIR: written after `make`, restored (made newer than every source) before it.  The
 # caller keys DIR on everything that determines the output (the Lisp and C sources, build.sh, the distro, the compiler): an
-# entry is only ever reused for the exact same inputs.  Builds of one key may share DIR at once: a restore holds DIR/.lock
+# entry is only ever reused for the exact same inputs; build.sh itself restores only an entry made by the same compiler,
+# architecture and configure line (--prefix included: it is part of the .eln files' ABI hash).  Builds of one key may share DIR at once: a restore holds DIR/.lock
 # shared and a save holds it exclusive (with flock; without it, as before).
 # bash 3.2-safe (macOS): none of the bash 4 features.
 set -euo pipefail
@@ -203,6 +204,7 @@ script() {
   printf 'S=%q B=%q P=%q V=%q UPV=%q HB=%q\n' "$S" "$B" "$PREFIX" "$VERSION" "$UPSTREAM_VERSION" "${NIDHOGG_BUILD_HEARTBEAT:-300}"
   [ -z "$LISP_CACHE" ] || printf 'LC=%q\n' "$LC"
   printf 'MODE_ID=%q\n' "$NATIVE"
+  printf 'CONF_ID=%q\n' "--prefix=$PREFIX $CONF"
   if [ "$MODE" = container ]; then
     case $DISTRO in
       ubuntu-*)
@@ -253,9 +255,11 @@ for e in "$S"/* "$S"/.[!.]*; do [ -e "$e" ] || continue; [ "${e##*/}" = .git ] |
 cd "$B/src"
 BODY
   if [ -n "$LISP_CACHE" ]; then cat <<'BODY'
-# the compiled-Lisp cache (used only when made by the same compiler and architecture): restored files all get one timestamp, newer than every source (and equal among themselves, so
+# the compiled-Lisp cache (used only when made by the same compiler, architecture and configure line: the .eln files sit
+# under native-lisp/VERSION-HASH/, a hash of the primitives and the configure options, --prefix included, so another
+# configuration's .eln are never loaded): restored files all get one timestamp, newer than every source (and equal among themselves, so
 # no .eln is older than its .elc), so that make sees them as up to date
-cc_id() { printf '%s %s %s\n' "$(gcc --version | head -n 1)" "$(uname -m)" "$MODE_ID"; }
+cc_id() { printf '%s %s %s %s\n' "$(gcc --version | head -n 1)" "$(uname -m)" "$MODE_ID" "$CONF_ID"; }
 # builds of the same key share DIR: a restore holds DIR/.lock shared, a save exclusive (where flock exists)
 lc_lock() { if command -v flock >/dev/null; then exec 9>"$LC/.lock"; flock "$1" 9; fi; }
 lc_unlock() { if command -v flock >/dev/null; then flock -u 9; exec 9>&-; fi; }
