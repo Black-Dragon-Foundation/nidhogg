@@ -1,11 +1,39 @@
 #!/usr/bin/env bash
-# The Lisp-free harness for the workers' C files (PD-16).  Stub (Task 2): it compiles each
-# nidhogg-*.c of the workers with -DNH_WK_HARNESS, which leaves out everything that needs Lisp,
-# so the runtime, the queues and the wake protocol can be driven alone.  Task 3 adds the
-# ThreadSanitizer driver (`--tsan queue wake'), Tasks 6, 10, 16, 18, 22, 24, 27-29 and 32 the fuzz targets.
+# The Lisp-free harness for the workers' C files (PD-16).
+#   workers-harness.sh                    compile each nidhogg-*.c of the workers with -DNH_WK_HARNESS, which
+#                                         leaves out everything that needs Lisp
+#   workers-harness.sh --tsan MODULE...   build and run test/src/nidhogg-tests/fuzz/tsan-MODULE.c under
+#                                         ThreadSanitizer; exit 0 = every driver passed with no race report
+# Modules: queue (two producers, one consumer, 10^6 jobs through the runtime), wake (the completion channel's
+# clear/re-check protocol, 10^6 races).  Tasks 6, 10, 16, 18, 22, 24, 27-29 and 32 add drivers and fuzz targets.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 CC=${CC:-cc}
+FLAGS=(-std=gnu11 -Wall -Werror -DHAVE_NIDHOGG_WORKERS -DNH_WK_HARNESS -I"$ROOT/src")
+
+if [ "${1:-}" = --tsan ]; then
+  shift
+  [ $# -gt 0 ] || { echo "workers-harness: --tsan needs a module" >&2; exit 2; }
+  out=$(mktemp -d)
+  trap 'rm -r "$out"' EXIT
+  fail=0
+  for m in "$@"; do
+    src="$ROOT/test/src/nidhogg-tests/fuzz/tsan-$m.c"
+    if [ ! -f "$src" ]; then
+      echo "FAIL no $m module"; fail=1; continue
+    fi
+    if ! "$CC" "${FLAGS[@]}" -fsanitize=thread -g -O1 -pthread "$src" -o "$out/$m"; then
+      echo "FAIL $m (build)"; fail=1; continue
+    fi
+    if TSAN_OPTIONS="halt_on_error=1 exitcode=66 ${TSAN_OPTIONS:-}" "$out/$m"; then
+      echo "ok   $m"
+    else
+      echo "FAIL $m"; fail=1
+    fi
+  done
+  exit $fail
+fi
+
 FILES="nidhogg-workers nidhogg-treesit-bg nidhogg-io nidhogg-decode nidhogg-json-tape nidhogg-image-bg nidhogg-blk"
 fail=0
 if [ "${1:-}" = --fuzz ]; then
@@ -37,8 +65,7 @@ if [ "${1:-}" = --fuzz ]; then
   exit $fail
 fi
 for f in $FILES; do
-  if "$CC" -std=gnu11 -Wall -Werror -DHAVE_NIDHOGG_WORKERS -DNH_WK_HARNESS -I"$ROOT/src" \
-       -c "$ROOT/src/$f.c" -o /dev/null; then
+  if "$CC" "${FLAGS[@]}" -c "$ROOT/src/$f.c" -o /dev/null; then
     echo "ok   $f.c"
   else
     echo "FAIL $f.c"; fail=1
