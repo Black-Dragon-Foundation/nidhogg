@@ -293,7 +293,10 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   signal context, where submit, wait and cancel refuse at once and a worker mutex taken anyway aborts the process
   rather than deadlock. `kill-emacs` with jobs in flight exits without waiting for them. Test primitives:
   `nidhogg-workers--test-crash`, `--test-fatal-under-lock`, `--test-signal-under-locks`.
-<!-- wk: Task 5 -->
+- Waits and the redisplay budget: a main-thread wait on a worker pushes the watchdog's `worker-wait` (or `treesit-wait`)
+  phase and counts its time in `:phase-ms`; it never enters `select`, so the watchdog's span runs through it. Every
+  `redisplay_internal` call starts a wait budget of `nidhogg-redisplay-wait-budget` milliseconds (default 8), shared by
+  all tree-sitter and image waits in that redisplay; once spent, a wait is granted nothing.
 <!-- wk: Task 6 -->
 <!-- wk: Task 7 -->
 <!-- wk: Task 8 -->
