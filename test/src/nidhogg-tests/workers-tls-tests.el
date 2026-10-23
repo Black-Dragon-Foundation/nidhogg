@@ -33,6 +33,7 @@
 
 (require 'ert)
 (require 'cl-lib)
+(defvar nsm-settings-file)
 
 (defconst workers-tls-tests--resources
   (expand-file-name "../../lisp/net/network-stream-resources/"
@@ -48,10 +49,15 @@
            (nidhogg-workers-reader-pipes t)
            (nidhogg-workers-reader-sockets t)
            (nidhogg-workers-reader-ptys t)
-           (network-security-level 'low))
+           (network-security-level 'low)
+           ;; A STARTTLS stream saves the server's fingerprint: never in ~.
+           (nsm-settings-file (expand-file-name
+                               "network-security.eld"
+                               (make-temp-file "wtls-nsm" t))))
        (ert-info ((format "mode %s" mode) :prefix "")
          (unwind-protect
              (progn ,@body)
+           (delete-directory (file-name-directory nsm-settings-file) t)
            (nidhogg-workers--test-release-on-wait nil)
            (nidhogg-workers--release)
            (nidhogg-workers--test-io-log nil)
@@ -89,7 +95,7 @@
              (out "")
              (proc (make-process
                     :name "wtls-serv" :noquery t :connection-type 'pty
-                    :command (list "gnutls-serv"
+                    :command (list "gnutls-serv" "--echo" "--crlf"
                                    "--x509keyfile"
                                    (expand-file-name "key.pem"
                                                      workers-tls-tests--resources)
@@ -125,6 +131,7 @@
            (let* ((port (+ 20000 (random 45535)))
                   (out "")
                   (proc (start-process "gnutls-serv" nil "gnutls-serv"
+                                       "--echo" "--crlf"
                                        "--x509keyfile" (getenv "WTLS_KEY")
                                        "--x509certfile" (getenv "WTLS_CERT")
                                        "--port" (number-to-string port))))
@@ -297,7 +304,7 @@ PROTO is `smtp', `imap' or `alert' (see `workers-tls-tests--mock-program')."
            (lambda () (string-suffix-p "250 STARTTLS\r\n" (funcall seen)))))
   (process-send-string proc "STARTTLS\r\n")
   (should (workers-tls-tests--until
-           (lambda () (string-suffix-p "TLS\r\n" (funcall seen)))))
+           (lambda () (string-suffix-p "Ready to start TLS\r\n" (funcall seen)))))
   (should (equal (funcall seen) workers-tls-tests--smtp-plaintext)))
 
 (defun workers-tls-tests--boot (proc)
