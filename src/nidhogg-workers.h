@@ -296,8 +296,35 @@ extern bool nh_save_keyboard_triggered;
 extern bool nh_dns_start (struct Lisp_Process *, const char *host,
 			  const char *service, const struct addrinfo *hints);
 
+/* File blocks, nidhogg-decode.c and nidhogg-blk.c [33].  The scan is
+   Lisp-free: what a worker learns about the bytes it read, so the main
+   thread can skip its own scans when it inserts them.  EOL is
+   NH_DEC_EOL_NONE with no CR or LF, _LF with LFs only, _CRLF when every
+   LF follows a CR and every CR precedes an LF, _CR with CRs only, else
+   _MIXED.  UTF8 means strictly valid UTF-8 (no surrogates, no overlong
+   forms, at most U+10FFFF; ASCII is valid), NCHARS then its character
+   count.  BOM: starts with EF BB BF.  */
+enum nh_dec_eol
+{
+  NH_DEC_EOL_NONE,
+  NH_DEC_EOL_LF,
+  NH_DEC_EOL_CRLF,
+  NH_DEC_EOL_CR,
+  NH_DEC_EOL_MIXED
+};
+
+struct nh_dec_scan
+{
+  bool ascii, utf8, has_null, has_esc, bom;
+  int eol;			/* enum nh_dec_eol */
+  size_t nchars;
+};
+
+extern void nh_dec_scan (const unsigned char *, size_t, struct nh_dec_scan *);
+
 #ifndef NH_WK_HARNESS
 
+extern void nh_blk_file_syms (void);
 extern bool nh_ts_publish (Lisp_Object parser);
 extern void nh_ts_maybe_start (Lisp_Object parser, int start_point);
 extern Lisp_Object nh_img_size (Lisp_Object spec, Lisp_Object frame,
