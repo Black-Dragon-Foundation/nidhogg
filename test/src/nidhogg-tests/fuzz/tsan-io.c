@@ -24,6 +24,7 @@ You should have received a copy of the GNU General Public License
 along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include "nidhogg-workers.c"
+#include "nidhogg-decode.c"
 #include "nidhogg-io.c"
 
 enum { ROUNDS = 200, PIPES = 2, TOTAL = 256 * 1024, READMAX = 4096 };
