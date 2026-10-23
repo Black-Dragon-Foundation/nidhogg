@@ -321,7 +321,13 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   writes one malloc block (a tape of 16-byte entries, a string arena and a table with each distinct object key once),
   with no Lisp, so a worker can run it; the main thread materializes the tape into the objects `json-parse-string`
   and `json-parse-buffer` build. Test primitive: `(nidhogg-workers--test-tokenize STRING MODE &rest OPTIONS)`.
-<!-- wk: Task 23 -->
+- JSON materializer slices: the main thread builds a message in slices (it looks at the clock every 4,096 entries and
+  yields once the slice's budget is spent), in the watchdog phase `json`. Between slices the partial result, every open
+  container's collected elements and the key cache live in a Lisp vector on a `staticpro`'d list, so GC may run;
+  nothing is visible to Lisp until the message is complete. A slice left by a signal (`memory-full`) drops its state
+  and the message becomes an error (`json-out-of-memory`). Each distinct key is interned once per message. Test
+  primitives: `nidhogg-workers--test-json-start`, `-test-json-step`, `-test-json-in-flight`, and the variables
+  `nidhogg-workers--test-slice-entries`, `-test-intern-count`, `-test-json-fail-at`.
 <!-- wk: Task 24 -->
 <!-- wk: Task 25 -->
 <!-- wk: Task 26 -->
