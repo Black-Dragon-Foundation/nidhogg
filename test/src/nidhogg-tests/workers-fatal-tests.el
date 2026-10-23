@@ -140,6 +140,25 @@ seconds.  The plist: `:status' and `:code' (`process-status' and
                             (file-exists-p (expand-file-name "78/xterm" d))))
             '("/usr/share/terminfo" "/lib/terminfo" "/etc/terminfo")))
 
+(defun workers-fatal-tests--escape-answers ()
+  "The `:answers' of a tty child taken through SIGINT's emergency escape.
+C-g twice, then \"y\" to \"Auto-save?\" and to \"Abort (and dump core)?\".
+On macOS one more newline after \"Auto-save done\": there a C-g that
+flushes the tty also raises SIGIO (XNU's ttyinput -> ttyflush ->
+ttwakeup), so `pending_signals' is set when the escape starts.  The
+escape's auto-save clears `quit-flag' (src/fileio.c:6401), and its
+first `maybe_quit' (find-file-name-handler, src/fileio.c:431, from
+src/fileio.c:6411) then processes the pending signals
+(src/eval.c:1900-1901): `gobble_input' reads the newline of \"y\\n\"
+into the keyboard buffer, and the escape's loop waiting for that
+newline (src/keyboard.c:12725-12726) waits for another one, as it
+would for a user at the terminal."
+  `(("nh-wk: holding" . "\C-g")
+    ("nh-wk: quit" . "\C-g")
+    (,(regexp-quote "Auto-save? (y or n)") . "y\n")
+    ,@(and (eq system-type 'darwin) '(("Auto-save done" . "\n")))
+    (,(regexp-quote "Abort (and dump core)? (y or n)") . "y\n")))
+
 (ert-deftest workers/fatal-under-lock ()
   ;; §17.3 B4.  The main thread holds nh-blk's queue mutex with a job in
   ;; flight (parked at before-done) when it crashes: the fatal path
@@ -183,10 +202,7 @@ seconds.  The plist: `:status' and `:code' (`process-status' and
                               (kill-emacs 3)))))))
                :pty t :env '("TERM=xterm")
                :mark "nh-wk: holding"
-               :answers `(("nh-wk: holding" . "\C-g")
-                          ("nh-wk: quit" . "\C-g")
-                          (,(regexp-quote "Auto-save? (y or n)") . "y\n")
-                          (,(regexp-quote "Abort (and dump core)? (y or n)") . "y\n")))))
+               :answers (workers-fatal-tests--escape-answers))))
       (ert-info ((format "%S" (plist-put (copy-sequence r) :out nil))
                  :prefix "child: ")
         (should (string-search "Auto-save done" (plist-get r :out)))
@@ -247,10 +263,7 @@ seconds.  The plist: `:status' and `:code' (`process-status' and
                               (nidhogg-workers--test-keyboard-auto-save t)))))))
                :pty t :env '("TERM=xterm")
                :mark "nh-wk: holding"
-               :answers `(("nh-wk: holding" . "\C-g")
-                          ("nh-wk: quit" . "\C-g")
-                          (,(regexp-quote "Auto-save? (y or n)") . "y\n")
-                          (,(regexp-quote "Abort (and dump core)? (y or n)") . "y\n")))))
+               :answers (workers-fatal-tests--escape-answers))))
       (ert-info ((format "%S" (plist-put (copy-sequence r) :out nil))
                  :prefix "child: ")
         (should (string-search "Auto-save done" (plist-get r :out)))
