@@ -518,9 +518,13 @@ load_gccjit_if_necessary (bool mandatory)
 #endif
 #define SETJMP_NAME SETJMP
 
-/* Max number function importable by native-compiled code.
-   Nidhogg: raised from 1600; its workers and Glitnir primitives pass it.  */
+/* Max number function importable by native-compiled code.  */
+#ifdef HAVE_NIDHOGG_WORKERS
+/* Nidhogg: raised from 1600; its workers and Glitnir primitives pass it.  */
 #define F_RELOC_MAX_SIZE 2048
+#else
+#define F_RELOC_MAX_SIZE 1600
+#endif
 
 typedef struct {
   void *link_table[F_RELOC_MAX_SIZE];
