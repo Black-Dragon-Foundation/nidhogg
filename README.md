@@ -394,7 +394,29 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   and the message becomes an error (`json-out-of-memory`). Each distinct key is interned once per message. Test
   primitives: `nidhogg-workers--test-json-start`, `-test-json-step`, `-test-json-in-flight`, and the variables
   `nidhogg-workers--test-slice-entries`, `-test-intern-count`, `-test-json-fail-at`.
-<!-- wk: Task 24 -->
+- Framed processes: `(nidhogg-set-process-framing PROCESS FRAMING &rest ARGS)` and `(nidhogg-process-framing
+  PROCESS)`. FRAMING is `content-length` (LSP and DAP: header names in any case and order, at most 8 KB of header),
+  `lines` (newline-delimited JSON: a trailing `\r` dropped, empty lines skipped) or `records` (`:separator` 0, the
+  default, or `?\n`; an optional stateless `:coding` decodes each record). `nh-io` frames what it reads, tokenizes each
+  complete JSON message into a tape (or decodes each record) and queues the messages, at most 64 MB of complete ones
+  (the message in progress may grow to `:max-message`, 256 MB by default; past it, a framing error). The main thread
+  materializes queued messages for up to 4 ms per delivery (a large message may take several) and calls
+  `:batch-function` FN with the process and a batch, `((MESSAGE RAW ERROR) …)` in arrival order: MESSAGE what
+  `json-parse-string` (`:parse 'buffer`: `json-parse-buffer`) returns for RAW, the message's bytes, or ERROR the error
+  it signals; `:object-type` and the other json options apply. FN runs under a filter's protections and in the watchdog
+  phase `filter`; a batch for a process whose buffer is dead is dropped, and FN may call `accept-process-output` on its
+  own process. `nbytes_read` grows by the delivered messages' bytes, so `accept-process-output` returns non-nil only
+  once a message was delivered. A process can be framed only while `nh-io` reads it and it decodes with `binary` or
+  `no-conversion` (`records`: any stateless system); else `nidhogg-framing-unsupported` (with the process and a reason:
+  the hand-over refusal, `coding`, `not-read`). Framing goes off with FRAMING nil, any `set-process-filter` (also
+  through `add-function`), `set-process-coding-system`, `nidhogg-set-process-reader` nil or a framing error: every byte
+  not yet delivered (queued messages, the one in progress) goes to the filter as raw output, in order. Turning it on or
+  off is a command `nh-io` carries out between reads (the main thread waits, `worker-wait` reason `detach`); a
+  hand-back or a switch-off stops a tokenize in progress within 64 KB, and the main thread frames those bytes itself.
+  The status drains and inline mode deliver every complete message at once. The configuration lives on the process's
+  plist under an uninterned key. Test primitives: `(nidhogg-workers--test-frame CHUNKS EOF FRAMING &rest ARGS)`,
+  `nidhogg-workers--test-deliver-budget`, `--test-io-info`'s `:messages`, the io log's `stopped`;
+  `workers-harness.sh --fuzz SECONDS framers`.
 <!-- wk: Task 25 -->
 <!-- wk: Task 26 -->
 <!-- wk: Task 27 -->
