@@ -264,8 +264,31 @@ jobs:
       - name: Workers checks (nidhogg/check-subset.txt, workers-* files)
         if: ${{ steps.build.outcome == 'success' }}
         run: |
-          grep 'nidhogg-tests/workers-' nidhogg/check-subset.txt > "$RUNNER_TEMP/macos-subset.txt"
-          /bin/bash nidhogg/build.sh --host --stage check --jobs 3 --build-dir "$RUNNER_TEMP/build" --check "$RUNNER_TEMP/macos-subset.txt"
+          # SCRATCH (ci/workers-nw-debug only): keep going, one file per build.sh call, then list the failures
+          fails=""
+          for t in $(grep 'nidhogg-tests/workers-' nidhogg/check-subset.txt | sed 's/#.*//'); do
+            echo "$t" > "$RUNNER_TEMP/one.txt"
+            /bin/bash nidhogg/build.sh --host --stage check --jobs 3 --build-dir "$RUNNER_TEMP/build" --check "$RUNNER_TEMP/one.txt" || fails="$fails $t"
+          done
+          echo "== SUBSET FAILURES:${fails:- none}"
+          [ -z "$fails" ]
+      - name: SCRATCH other nidhogg-tests files (informational)
+        if: ${{ always() && steps.build.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          fails=""
+          for f in test/src/nidhogg-tests/*-tests.el; do
+            t=src/nidhogg-tests/$(basename "$f" .el)
+            case $t in *-gui-tests) continue ;; esac
+            grep -qx "$t" nidhogg/check-subset.txt && case $t in */workers-*) continue ;; esac
+            echo "$t" > "$RUNNER_TEMP/one.txt"
+            /bin/bash nidhogg/build.sh --host --stage check --jobs 3 --build-dir "$RUNNER_TEMP/build" --check "$RUNNER_TEMP/one.txt" || fails="$fails $t"
+          done
+          echo "== OTHER FAILURES:${fails:- none}"
+          [ -z "$fails" ]
+      - name: SCRATCH failed test summaries
+        if: always()
+        run: grep -a -h -e '^   FAILED' -e '^Ran ' "$RUNNER_TEMP"/build/obj/test/src/nidhogg-tests/*.log 2>/dev/null || true
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tarball-macos

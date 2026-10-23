@@ -521,16 +521,20 @@ Batches go to `workers-fr-tests--collect', raw output to the property
 UTF-8), committed, then changed.  Return its directory."
   (let ((default-directory (file-name-as-directory
                             (make-temp-file "wfr-repo" t))))
-    (should (eq 0 (call-process
-                   "sh" nil nil nil "-c"
+    (should (eq 0 (let ((r (with-temp-buffer
+                             (list (call-process
+                   "sh" nil t nil "-c"
                    (concat
-                    "git init -q . && mkdir d && "
+                    "set -x; git init -q . && mkdir d && "
                     (format "seq -f 'd/f%%.0f' 1 %d | xargs touch && " n)
                     "touch \"$(printf 'new\\nline')\" \"$(printf 'bad\\377name')\" && "
                     "git add -A && "
                     "git -c user.name=t -c user.email=t@example.org commit -qm init && "
                     "echo x > d/f1 && echo y > \"$(printf 'new\\nline')\" && "
-                    "touch \"$(printf 'untracked\\377')\""))))
+                    "touch \"$(printf 'untracked\\377')\""))
+                                   (buffer-string)))))
+                    (message "nh-dbg-repo: %S" r)
+                    (car r))))
     default-directory))
 
 (defun workers-fr-tests--split-output (dir args)
