@@ -108,13 +108,24 @@ seconds.  The plist: `:status' and `:code' (`process-status' and
 
 (defun workers-fatal-tests--should-die (r sig name)
   "R (from `workers-fatal-tests--run') died of signal SIG through the fatal path."
-  (should (equal (list (plist-get r :status) (plist-get r :code))
-                 (list 'signal (cdr sig))))
-  (should (plist-get r :secs))
-  (should (< (plist-get r :secs) 5))
-  (let ((err (plist-get r :err)))
-    (should (string-match-p (format "^Fatal error %d: %s" (cdr sig) name) err))
-    (should (string-match-p "^Backtrace:" err))))
+  ;; On macOS the NS build ends every fatal signal with abort(): after
+  ;; shut_down_emacs prints "Fatal error N: ..." (src/emacs.c:3145),
+  ;; ns_term_shutdown calls emacs_abort to "force a stack trace"
+  ;; (src/nsterm.m:6186-6187), which re-enters terminate_due_to_signal
+  ;; with the fatal error already in progress (src/emacs.c:451-472) and
+  ;; raises SIGABRT.  So the child dies of signal 6, prints no Backtrace,
+  ;; and the system names the signal itself ("Abort trap: 6").
+  (let ((darwin (eq system-type 'darwin)))
+    (should (equal (list (plist-get r :status) (plist-get r :code))
+                   (list 'signal (if darwin 6 (cdr sig)))))
+    (should (plist-get r :secs))
+    (should (< (plist-get r :secs) 5))
+    (let ((err (plist-get r :err)))
+      (should (string-match-p (format "^Fatal error %d: %s" (cdr sig)
+                                      (if darwin "" name))
+                              err))
+      (unless darwin
+        (should (string-match-p "^Backtrace:" err))))))
 
 (defmacro workers-fatal-tests--in-dir (dir &rest body)
   "Run BODY with DIR bound to a new temporary directory, then delete it."
