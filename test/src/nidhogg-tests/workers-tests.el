@@ -39,6 +39,16 @@
      n)
   "A form that counts this process's worker threads (for children too).")
 
+(defun workers-tests--wd-runs-p ()
+  "Non-nil where the watchdog can start: built in and on Linux.
+Elsewhere the feature builds but `nidhogg-watchdog--start' signals
+until W5 (the C side is `#ifndef __linux__')."
+  (and (featurep 'nidhogg-watchdog) (eq system-type 'gnu/linux)))
+
+(defun workers-tests--proc-p ()
+  "Non-nil where threads can be counted through /proc (Linux)."
+  (file-directory-p "/proc/self/task"))
+
 (defun workers-tests--emacs ()
   "The Emacs binary under test."
   (expand-file-name invocation-name invocation-directory))
@@ -127,6 +137,7 @@ ARGS go before the --eval."
 (ert-deftest workers/no-threads-when-unused ()
   ;; In a child, since the other rows here start workers: reading every
   ;; switch and the counters starts no thread and submits no job.
+  (skip-unless (workers-tests--proc-p))
   (should (equal (workers-tests--child
                   `(let ((tasks (length (directory-files "/proc/self/task" nil "\\`[0-9]")))
                          (stats nil))
@@ -198,6 +209,7 @@ ARGS go before the --eval."
   ;; here: a temacs born to dump runs only loadup.el (sort_args puts
   ;; --temacs before any -l FILE).
   ;; A fresh Nidhogg has no worker thread until its first job.
+  (skip-unless (workers-tests--proc-p))
   (should (equal (workers-tests--child
                   `(list ,workers-tests--count-form
                          (nidhogg-workers--test-wait
@@ -318,7 +330,9 @@ ARGS go before the --eval."
           (should (equal (plist-get (nidhogg-workers--test-job-info b) :comm) "nh-parse"))
           (let ((denied (workers-tests--fallbacks 'nh-parse 'boost-denied)))
             (should (eql (nidhogg-workers--test-wait a 50) 0))
-            (should (> (workers-tests--fallbacks 'nh-parse 'boost-denied) denied)))
+            ;; macOS boosts by a QoS override, which is not denied.
+            (when (eq system-type 'gnu/linux)
+              (should (> (workers-tests--fallbacks 'nh-parse 'boost-denied) denied))))
           (nidhogg-workers--release 'after-snapshot)
           (should (eql (nidhogg-workers--test-wait a 5000) 1)))
       (nidhogg-workers--release))))
@@ -372,7 +386,7 @@ ARGS go before the --eval."
   ;; is the main thread's).
   (skip-unless (featurep 'threads))
   (workers-tests--modes
-    (let ((wd (featurep 'nidhogg-watchdog))
+    (let ((wd (workers-tests--wd-runs-p))
           j result)
       (if (eq mode 'inline)
           (setq j (nidhogg-workers--test-job 'nh-blk 0 :class 'file))
@@ -441,7 +455,7 @@ the wait begins, and a finished job pushes no phase."
        (nidhogg-workers--release))))
 
 (ert-deftest workers/wait-phase ()
-  (skip-unless (featurep 'nidhogg-watchdog))
+  (skip-unless (workers-tests--wd-runs-p))
   (dolist (c '((worker-wait detach) (treesit-wait nil) (worker-wait display)))
     (workers-tests--wd
       (set 'nidhogg-watchdog--test-sample-on-phase (car c))
@@ -455,7 +469,7 @@ the wait begins, and a finished job pushes no phase."
 (ert-deftest workers/wait-is-one-span ()
   ;; A worker wait is not a select: the watchdog's span runs through it
   ;; and ends at the next responsive wait, leaving one stall.
-  (skip-unless (featurep 'nidhogg-watchdog))
+  (skip-unless (workers-tests--wd-runs-p))
   (workers-tests--wd
     (let ((t0 1000000000000))
       (nidhogg-watchdog--test-clock t0)
