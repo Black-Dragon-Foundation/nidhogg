@@ -8701,6 +8701,14 @@ setup_process_coding_systems (Lisp_Object process)
     }
   setup_coding_system (coding_system, proc_decode_coding_system[inch]);
 #ifdef HAVE_NIDHOGG_WORKERS
+  /* setup_coding_system leaves dst_multibyte alone, and the struct is
+     reused for whatever process gets this fd next: the default filter's
+     fast path into a unibyte buffer (read_and_insert_process_output)
+     would then depend on what the last decode into it was, and the
+     reader on or off would record different systems (Task 19).  The
+     first delivery decodes, as it always did, and records the system
+     it used.  */
+  proc_decode_coding_system[inch]->dst_multibyte = true;
   nh_io_coding_changed (p, proc_decode_coding_system[inch]);
 
 #endif
