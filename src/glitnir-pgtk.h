@@ -45,6 +45,14 @@ extern bool glitnir_pgtk_dead;
    draw the stock way (see glitnir-pgtk.c).  */
 extern void glitnir_pgtk_failed (const char *what, int32_t rc);
 
+/* End a section begun with block_input without what unblock_input does at
+   level 0: it would read pending input, and pgtk's reader dispatches GLib's
+   whole main context (GTK's layout and paints, idle points, atimers) in the
+   middle of Glitnir's work, so Lisp would read GTK's geometry sooner than
+   with Glitnir off and a paint could run between two steps of a change.
+   The signals stay pending for Emacs's next unblock_input or quit check.  */
+#define GLITNIR_UNBLOCK_INPUT() ((void) --interrupt_input_blocked)
+
 /* Every C->Rust call goes through this: input blocked around it (a draw may run
    atimers that would otherwise re-enter Emacs between two calls).  An error
    switches Glitnir off; once off, no call is made (GLITNIR_E_STATE).  */
@@ -53,7 +61,7 @@ extern void glitnir_pgtk_failed (const char *what, int32_t rc);
      if (!glitnir_pgtk_dead)						\
        {								\
 	 glitnir_pgtk_calls++;						\
-	 block_input (); glitnir_rc_ = (expr); unblock_input ();	\
+	 block_input (); glitnir_rc_ = (expr); GLITNIR_UNBLOCK_INPUT ();	\
 	 if (glitnir_rc_ != GLITNIR_OK)					\
 	   glitnir_pgtk_failed (#expr, glitnir_rc_);			\
        }								\
@@ -66,7 +74,7 @@ extern void glitnir_pgtk_failed (const char *what, int32_t rc);
   ({ int32_t glitnir_rc_ = GLITNIR_E_STATE;				\
      if (!glitnir_pgtk_dead)						\
        {								\
-	 block_input (); glitnir_rc_ = (expr); unblock_input ();	\
+	 block_input (); glitnir_rc_ = (expr); GLITNIR_UNBLOCK_INPUT ();	\
 	 if (glitnir_rc_ == GLITNIR_E_PANIC)				\
 	   glitnir_pgtk_failed (#expr, glitnir_rc_);			\
        }								\

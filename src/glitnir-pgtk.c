@@ -385,8 +385,8 @@ mark_dirty (struct frame *f)
     root->idle_id = g_idle_add (idle_point, root);
 }
 
-/* The state changes before each call: the unblock_input that ends a call
-   may run an atimer (the visible bell's) that records damage itself.  */
+/* The state changes before each call, so a call never sees it half made
+   (a call no longer runs atimers: GLITNIR_UNBLOCK_INPUT).  */
 
 /* Hand F's batched rectangles to Glitnir.  */
 static void
@@ -1619,7 +1619,7 @@ glitnir_pgtk_draw_begin (struct frame *f, GtkWidget *widget, cairo_t *cr)
 	  /* The failure painted the stock picture into CR; the draw ends
 	     here, outside Glitnir.  */
 	  r->draw_cr = NULL;
-	  unblock_input ();
+	  GLITNIR_UNBLOCK_INPUT ();
 	  return false;
 	}
     }
@@ -1875,7 +1875,7 @@ glitnir_pgtk_draw (struct frame *f, cairo_t *cr)
       glitnir_pgtk_calls++;
       block_input ();
       rc = glitnir_compose (root->id, &t, clip, nclip, src, nsrc);
-      unblock_input ();
+      GLITNIR_UNBLOCK_INPUT ();
       if (rc != GLITNIR_OK && rc != GLITNIR_E_STATE)
 	glitnir_pgtk_failed ("glitnir_compose", rc);
     }
@@ -1937,7 +1937,8 @@ glitnir_pgtk_draw_end (struct frame *f)
 	r->max_gap = max (r->max_gap, now - r->gap_from);
       r->gap_from = now;
     }
-  unblock_input ();
+  /* Not unblock_input: GTK's draw handler must not dispatch GLib again.  */
+  GLITNIR_UNBLOCK_INPUT ();
 }
 
 /* F is being deleted: forget its ring and release what we hold.  */
