@@ -254,7 +254,8 @@ their bytes, whether the auto-save file is newer than the visited file
           (insert "one\n")
           (funcall go)
           (set-visited-file-name (expand-file-name "b.txt" dir) t)
-          buffer-auto-save-file-name))
+          ;; Relative: each run has its own directory.
+          (file-relative-name buffer-auto-save-file-name dir)))
     (write-file
      . ,(lambda (dir go)
           (insert "one\n")
