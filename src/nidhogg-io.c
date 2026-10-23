@@ -41,7 +41,10 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
    under the same mutex nh-io appends under, and returns EAGAIN: the
    wake fd is readable exactly while there is something to deliver, so
    the round-robin never spins (fd audit, finding 13).  EOF and errors
-   come back as read would return them, once the FIFO is empty.
+   come back as read would return them, once the FIFO is empty.  When
+   the process decodes with a stateless system, nh-io decodes each chunk
+   as it reads it (nidhogg-decode.c) and a filter gets that decode if it
+   is still current (nh_io_decoded, Task 18).
 
    Hand-back is synchronous.  The main thread sends "detach" on the
    command fd and waits (worker-wait, reason detach) for the
@@ -84,6 +87,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #ifndef NH_WK_HARNESS
 # include "nidhogg-workers-phase.h"
+# include "coding.h"
 # include "process.h"
 # define NH_IO_PH NH_WK_PH_WORKER_WAIT
 # define NH_IO_RS NH_WK_RS_DETACH
@@ -122,10 +126,21 @@ enum nh_io_refusal
   NH_IO_RF_N
 };
 
+/* A chunk (Task 18): DATA holds the decoder's carry-in (NCIN bytes) and
+   then the bytes read, so OFF starts at NCIN and LEN counts both.  When
+   SYS is not NH_DEC_NONE, DEC (in the same block, after DATA) is their
+   decode, DLEN bytes and NCHARS characters, which left the NCOUT bytes
+   at COUT undecoded; GEN is the coding generation it was decoded
+   under.  */
 struct nh_io_chunk
 {
   struct nh_io_chunk *next;
   ptrdiff_t len, off;
+  int ncin, ncout, sys;
+  uint64_t gen;
+  unsigned char *dec;
+  ptrdiff_t dlen, nchars;
+  unsigned char cout[NH_DEC_CARRY];
   unsigned char data[];
 };
 
@@ -168,7 +183,25 @@ struct nh_io_h
   /* Set by whichever comes first: nh-io acknowledging, or the main
      thread giving up after a timed-out wait.  */
   _Atomic bool gone;
+
+  /* Decoding (Task 18).  The main thread's coding generation and the
+     system to decode with, as GEN << 4 | SYS (0, raw, until the first
+     nh_io_coding_changed: the constructors set the coding up after the
+     hand-over, fd audit finding 1).  */
+  _Atomic uint64_t coding;
+  /* The reader's (nh-io, or the main thread inline): the system of its
+     last chunk and what that chunk left undecoded.  */
+  int dsys;
+  struct nh_dec_state dst;
+  /* The main thread's: the chunk nh_io_take just delivered whole, kept
+     for nh_io_decoded; and how many decodes a filter got (`:decoded')
+     or the main thread made again (`:redecoded').  */
+  struct nh_io_chunk *last;
+  int64_t ndecoded, nredecoded;
 };
+
+#define NH_IO_SYS(coding) ((int) ((coding) & 0xF))
+#define NH_IO_GEN(coding) ((coding) >> 4)
 
 /* nh-io's mutex: the command list and every handle's FIFO.  */
 static pthread_mutex_t nh_io_m = PTHREAD_MUTEX_INITIALIZER;
@@ -221,6 +254,7 @@ nh_io_free (struct nh_io_h *h)
       next = c->next;
       free (c);
     }
+  free (h->last);
   nh_wk_stat_add (NH_WK_IO, NH_WK_ST_QUEUED_BYTES, -h->queued);
   if (!h->inl)
     nh_wk_wake_close (&h->wake);
@@ -309,6 +343,49 @@ nh_io_commands (struct nh_io_h ***set, int *n, int *cap,
     }
 }
 
+/* A chunk of the R bytes at BUF, which H's reader (nh-io, or the main
+   thread inline) decodes first when H's system is a stateless one; NULL
+   when out of memory.  */
+static struct nh_io_chunk *
+nh_io_chunk_new (struct nh_io_h *h, const unsigned char *buf, ptrdiff_t r)
+{
+  uint64_t coding = atomic_load (&h->coding);
+  int sys = NH_IO_SYS (coding);
+  /* A test may change the coding here: the chunk is then decoded under
+     a stale generation.  */
+  nh_wk_pause_point (NH_WK_P_BEFORE_DECODE);
+  if (sys != h->dsys)
+    {
+      h->dsys = sys;
+      h->dst.n = 0;
+    }
+  int ncin = sys != NH_DEC_NONE ? h->dst.n : 0;
+  ptrdiff_t total = ncin + r;
+  struct nh_io_chunk *c
+    = malloc (sizeof *c + total
+	      + (sys != NH_DEC_NONE ? NH_DEC_OUT_MAX (total) : 0));
+  if (!c)
+    return NULL;
+  *c = (struct nh_io_chunk) { .len = total, .off = ncin, .ncin = ncin,
+			      .gen = NH_IO_GEN (coding) };
+  memcpy (c->data, h->dst.carry, ncin);
+  memcpy (c->data + ncin, buf, r);
+  if (sys != NH_DEC_NONE)
+    {
+      ptrdiff_t consumed;
+      c->sys = sys;
+      c->dec = c->data + total;
+      c->dlen = nh_dec_run (sys, c->data, total, false, c->dec, &c->nchars,
+			    &consumed);
+      c->ncout = total - consumed;
+      NH_WK_ASSERT (c->ncout <= NH_DEC_CARRY);
+      memcpy (c->cout, c->data + consumed, c->ncout);
+      memcpy (h->dst.carry, c->cout, c->ncout);
+      h->dst.n = c->ncout;
+    }
+  return c;
+}
+
 /* Read H's copy once into its FIFO.  */
 static void
 nh_io_read_one (struct nh_io_h *h, unsigned char **buf, ptrdiff_t *size)
@@ -330,18 +407,11 @@ nh_io_read_one (struct nh_io_h *h, unsigned char **buf, ptrdiff_t *size)
   struct nh_io_chunk *c = NULL;
   if (r > 0)
     {
-      c = malloc (sizeof *c + r);
+      c = nh_io_chunk_new (h, *buf, r);
       if (!c)
 	{
 	  r = -1;
 	  err = ENOMEM;
-	}
-      else
-	{
-	  c->next = NULL;
-	  c->len = r;
-	  c->off = 0;
-	  memcpy (c->data, *buf, r);
 	}
     }
   nh_io_note (r > 0 ? NH_IO_EV_READ : r == 0 ? NH_IO_EV_EOF : NH_IO_EV_ERROR,
@@ -575,10 +645,15 @@ nh_io_take (struct nh_io_h *h, char *buf, ptrdiff_t size)
   ptrdiff_t n = -1;
   int err = EAGAIN;
   struct nh_io_chunk *done = NULL;
+  bool whole = false;
+  free (h->last);
+  h->last = NULL;
   nh_wk_lock (&nh_io_m);
   struct nh_io_chunk *c = h->head;
   if (c)
     {
+      /* A decoded chunk is any use only delivered in one piece.  */
+      whole = c->off == c->ncin && c->len - c->off <= size;
       n = c->len - c->off < size ? c->len - c->off : size;
       memcpy (buf, c->data + c->off, n);
       c->off += n;
@@ -598,7 +673,10 @@ nh_io_take (struct nh_io_h *h, char *buf, ptrdiff_t size)
   if (!h->head && !h->eof && !h->err && !h->inl)
     nh_wk_wake_clear (&h->wake);
   pthread_mutex_unlock (&nh_io_m);
-  free (done);
+  if (whole && done->dec)
+    h->last = done;
+  else
+    free (done);
   if (n > 0)
     nh_wk_stat_add (NH_WK_IO, NH_WK_ST_QUEUED_BYTES, -n);
   if (n < 0)
@@ -611,11 +689,25 @@ NH_IO_CORE ptrdiff_t
 nh_io_take_inline (struct nh_io_h *h, char *buf, ptrdiff_t size)
 {
   ssize_t r;
+  free (h->last);
+  h->last = NULL;
   do
     r = read (h->copy, buf, size);
   while (r < 0 && errno == EINTR);
   if (r >= 0)
     nh_io_note (r > 0 ? NH_IO_EV_READ : NH_IO_EV_EOF, h->id, h->copy, r);
+  /* Decode here what nh-io would decode (Task 18), so that inline mode
+     takes the same delivery path.  */
+  if (r > 0)
+    {
+      int err = errno;
+      struct nh_io_chunk *c = nh_io_chunk_new (h, (unsigned char *) buf, r);
+      if (c && c->dec)
+	h->last = c;
+      else
+	free (c);
+      errno = err;
+    }
   return r;
 }
 
@@ -835,6 +927,7 @@ nh_io_read (struct Lisp_Process *p, int channel, char *buf, ptrdiff_t size,
       errno = EAGAIN;
       return -1;
     }
+  /* (nh_io_take forgets the last delivery's decode too.)  */
   ptrdiff_t n = nh_io_take (h, buf, size);
   /* A drain (CHANNEL is the real fd) of a handed-back process reads the
      real fd once the handle's bytes are delivered.  */
@@ -861,10 +954,73 @@ nh_io_drain (struct Lisp_Process *p)
   (void) p;
 }
 
-void
-nh_io_coding_changed (struct Lisp_Process *p)
+/* Decoding (Task 18).  The main thread's generation and system go to
+   the reader in one atomic word; each chunk records the generation it
+   was decoded under, and its delivery uses that decode only while the
+   generation, the system and the bytes are still what the main thread
+   would decode.  Otherwise (a stale generation, a translation table,
+   inhibit-eol-conversion, a carryover the reader did not have, a
+   partial delivery) today's decode runs on the raw bytes the chunk
+   kept, with the real fd's struct.  */
+
+static void
+nh_io_set_coding (struct nh_io_h *h, int sys)
 {
-  (void) p;
+  uint64_t gen = NH_IO_GEN (atomic_load (&h->coding)) + 1;
+  atomic_store (&h->coding, gen << 4 | sys);
+}
+
+void
+nh_io_coding_changed (struct Lisp_Process *p, struct coding_system *coding)
+{
+  struct nh_io_h *h = nh_io_get (p);
+  if (h)
+    nh_io_set_coding (h, nh_dec_classify (coding));
+}
+
+void
+nh_io_coding_settled (struct Lisp_Process *p, struct coding_system *coding)
+{
+  struct nh_io_h *h = nh_io_get (p);
+  if (!h)
+    return;
+  int sys = nh_dec_classify (coding);
+  if (sys != NH_IO_SYS (atomic_load (&h->coding)))
+    nh_io_set_coding (h, sys);
+}
+
+bool
+nh_io_decoded (struct Lisp_Process *p, struct coding_system *coding,
+	       const char *chars, ptrdiff_t nbytes)
+{
+  struct nh_io_h *h = nh_io_get (p);
+  if (!h || !h->last)
+    return false;
+  struct nh_io_chunk *c = h->last;
+  h->last = NULL;
+  bool ok = (c->gen == NH_IO_GEN (atomic_load (&h->coding))
+	     && c->sys == nh_dec_classify (coding)
+	     && !inhibit_eol_conversion
+	     && (NILP (Venable_character_translation)
+		 || NILP (Vstandard_translation_table_for_decode))
+	     && nbytes == c->len
+	     && memcmp (chars, c->data, nbytes) == 0);
+  if (ok)
+    {
+      h->ndecoded++;
+      coding->dst_object
+	= (NH_DEC_MULTIBYTE (c->sys)
+	   ? make_multibyte_string ((char *) c->dec, c->nchars, c->dlen)
+	   : make_unibyte_string ((char *) c->dec, c->dlen));
+      coding->produced = c->dlen;
+      coding->produced_char = c->nchars;
+      coding->carryover_bytes = c->ncout;
+      memcpy (coding->carryover, c->cout, c->ncout);
+    }
+  else
+    h->nredecoded++;
+  free (c);
+  return ok;
 }
 
 int
@@ -903,10 +1059,15 @@ A plist: `:owned' (non-nil while the reader owns PROCESS's output),
 `:mode' (`threads' or `inline'), `:select' (the fd the select set holds
 for it), `:copy' (the reader's copy of its fd), `:wake' (its wake fd;
 nil inline), `:fds' (how many fds the reader holds for it), `:queued'
-\(bytes read and not yet delivered) and `:refused' (why the last
+\(bytes read and not yet delivered), `:refused' (why the last
 hand-over was refused: `off', `switch', `tls', `datagram', `server',
 `serial', `filter-t', `connecting', `opt-out', `fd-budget', `thread';
-nil if none was).  */)
+nil if none was), `:coding-generation' (how often its decoding was set
+up since the hand-over), `:decoder' (the stateless system the reader
+decodes with, such as `utf-8-unix' or `raw-text-dos'; nil: the main
+thread decodes), `:decoded' (deliveries to a filter that used the
+reader's decode) and `:redecoded' (deliveries whose decode was stale,
+so the main thread decoded the bytes again).  */)
   (Lisp_Object process)
 {
   CHECK_PROCESS (process);
@@ -921,7 +1082,8 @@ nil if none was).  */)
   pthread_mutex_unlock (&nh_io_m);
   int fds = (h->copy >= 0) + (h->wake.rfd >= 0)
     + (h->wake.wfd >= 0 && h->wake.wfd != h->wake.rfd);
-  return listn (16, QCowned, h->detached ? Qnil : Qt,
+  uint64_t coding = atomic_load (&h->coding);
+  return listn (24, QCowned, h->detached ? Qnil : Qt,
 		intern_c_string (":mode"), h->inl ? Qinline : Qthreads,
 		intern_c_string (":select"), make_int (h->sel),
 		intern_c_string (":copy"), h->copy >= 0 ? make_int (h->copy) : Qnil,
@@ -929,7 +1091,13 @@ nil if none was).  */)
 		h->wake.rfd >= 0 ? make_int (h->wake.rfd) : Qnil,
 		intern_c_string (":fds"), make_int (fds),
 		intern_c_string (":queued"), make_int (queued),
-		intern_c_string (":refused"), refused);
+		intern_c_string (":refused"), refused,
+		intern_c_string (":coding-generation"),
+		make_uint (NH_IO_GEN (coding)),
+		intern_c_string (":decoder"),
+		nh_dec_system_name (NH_IO_SYS (coding)),
+		intern_c_string (":decoded"), make_int (h->ndecoded),
+		intern_c_string (":redecoded"), make_int (h->nredecoded));
 }
 
 DEFUN ("nidhogg-workers--test-io-log", Fnidhogg_workers__test_io_log,
