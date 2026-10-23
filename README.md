@@ -345,7 +345,23 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   `--test-ts-select-entry` (batch Emacs never waits for keyboard input); `--test-ts-stats` adds `:attempts`,
   `:cancels`, `:started-demand`, `:started-create`, `:started-select`, `:waited` and `:abandoned`; `--test-ts-info`
   adds `:policy`.
-<!-- wk: Task 13 -->
+- Deferral at redisplay (`nidhogg-treesit-defer`, `lisp/nidhogg-workers-treesit.el`): with it and
+  `nidhogg-workers-treesit` on, redisplay (and only redisplay, not `vertical-motion`, `pos-visible-in-window-p` or other
+  display code called from Lisp) binds `nidhogg--redisplay-fontifying` to the buffer it fontifies. A tree-sitter major
+  mode's buffer gets two wrappers: one in place of `treesit--pre-redisplay` in `pre-redisplay-functions` (its demand of
+  the primary parser makes the 1 ms attempt and starts the job, then waits for the job within the redisplay's budget;
+  a parser still not ready leaves `treesit--pre-redisplay-tick` unrecorded), and one around
+  `font-lock-fontify-region-function`: when the primary parser, a local parser of the region or any other parser of the
+  buffer has a job that does not finish within what is left of the budget, it returns without calling font-lock, so
+  the region keeps the faces it had (nothing is unfontified), records the region and counts a `treesit` deferral in
+  `nidhogg-workers-stats`; jit-lock marks it fontified. A job started with deferral on lands through the drainer: once
+  no job runs for the buffer, its recorded regions are marked unfontified and its windows redisplayed, and that
+  redisplay's demand publishes the tree, runs the notifiers and colours them. Nothing else defers: `font-lock-ensure`
+  and `font-lock-fontify-buffer` (the variable is nil or names another buffer, as when Org fontifies a source block in
+  a temporary buffer), `syntax-ppss` and outline search (they call `treesit--pre-redisplay` itself, not the hook
+  entry), indentation, navigation, `treesit-node-at`, eglot and every package wait or parse as before. With
+  `nidhogg-treesit-defer` off, redisplay binds nothing and parses as before. `nidhogg-workers--test-ts-await-idle`
+  lands nh-parse's finished jobs first (a job started with deferral on is freed when it lands).
 <!-- wk: Task 14 -->
 <!-- wk: Task 15 -->
 - The process reader's fd ownership (`src/nidhogg-io.c`): an eligible process (a subprocess with pipes or a pty, a

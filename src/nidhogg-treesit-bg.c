@@ -19,9 +19,9 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
 /* Task 9: the allocator.  Task 10: parse jobs over snapshots, publish
    and ownership.  Task 11: the edit log and replay.  Task 12: the start
-   points and the wait rule.  Task 13 fills the rest (deferral at
-   redisplay).  README.md, "Work off the main thread", is the
-   user-facing description; the design's §7.3 to §7.5 the contract.
+   points and the wait rule.  Task 13: deferral at redisplay.
+   README.md, "Work off the main thread", is the user-facing
+   description; the design's §7.1 and §7.3 to §7.5 the contract.
 
    A job (struct nh_ts_job, one per parser, the latest snapshot wins)
    holds a snapshot taken on the main thread: the visible bytes of the
@@ -78,7 +78,18 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
    less than half its input; otherwise it waits (`treesit-wait', the
    job raised as PD-15 says) for at most the synchronous estimate (the
    last full parse's ns per byte times the input), then publishes, or
-   cancels and parses.  */
+   cancels and parses.
+
+   Deferral (§7.1, Task 13).  With `nidhogg-treesit-defer' on,
+   handle_fontified_prop binds `nidhogg--redisplay-fontifying' while
+   redisplay (only redisplay: redisplaying_p) runs
+   fontification-functions.  nidhogg-workers-treesit.el's wrappers make
+   the demand above, wait for a job within the redisplay's budget
+   (nidhogg-workers--treesit-await) and, if it is still running, leave
+   the region's faces as they are and record it.  A job started with
+   the switch on lands through the drainer (nh_ts_job_finish), which
+   calls the Lisp landing and asks for a redisplay; the landing marks the
+   recorded regions unfontified, and the redisplay's demand publishes.  */
 
 #ifndef NH_WK_HARNESS
 # include <config.h>
@@ -98,6 +109,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 # include "dynlib.h"
 # include "buffer.h"
 # include "coding.h"
+# include "keyboard.h"
 # include "treesit.h"
 # include "nidhogg-workers-phase.h"
 
@@ -507,6 +519,29 @@ nh_ts_switch_on (void)
   return !BASE_EQ (v, Qunbound) && !NILP (v);
 }
 
+/* `nidhogg-treesit-defer' (Task 13).  */
+static bool
+nh_ts_defer_on (void)
+{
+  Lisp_Object v = find_symbol_value (Qnidhogg_treesit_defer);
+  return !BASE_EQ (v, Qunbound) && !NILP (v);
+}
+
+/* The drainer (PD-6), main thread: a job started with deferral on has
+   landed.  The Lisp landing marks the regions redisplay deferred
+   unfontified once their buffer has no job left running; then redisplay
+   runs, after this timer check, and its demand publishes the tree.  */
+static void
+nh_ts_job_finish (struct nh_wk_job *job)
+{
+  (void) job;
+  if (!NILP (Ffboundp (Qnidhogg_workers_treesit__land)))
+    safe_calln (Qnidhogg_workers_treesit__land);
+  /* A wait for input redisplays after a timer check that ran something
+     (process.c, keyboard.c).  */
+  timers_run++;
+}
+
 static TSRange
 nh_ts_range (struct buffer *b, ptrdiff_t beg, ptrdiff_t end)
 {
@@ -709,6 +744,9 @@ nh_ts_start (Lisp_Object parser, bool from_demand)
   t->job.w = NH_WK_PARSE;
   t->job.speculative = true;
   t->job.run = nh_ts_job_run;
+  /* Only a job redisplay may have deferred colour for lands (Task 13):
+     the drainer holds the worker's reference until it runs.  */
+  t->job.finish = nh_ts_defer_on () ? nh_ts_job_finish : NULL;
   t->job.free = nh_ts_job_free;
   atomic_store (&t->job.refs, 1);	/* the parser's */
   NH_WK_PHASE_POP (depth);
@@ -1168,9 +1206,62 @@ overlaps the rest of `find-file'.  Return how many jobs started.  */)
 		   - started);
 }
 
+/* Deferral at redisplay (Task 13).  */
+
+DEFUN ("nidhogg-workers--treesit-await", Fnidhogg_workers__treesit_await,
+       Snidhogg_workers__treesit_await, 1, 2, 0,
+       doc: /* Wait for PARSER's parse job within the redisplay's wait budget.
+Return t when nothing runs for PARSER any more (no job, or its job
+finished, in time or before), so a demand would not wait; nil when its
+job still runs once the grant (the synchronous estimate, at most what
+is left of `nidhogg-redisplay-wait-budget' in this redisplay) is spent.
+With COUNT non-nil, a nil answer counts a tree-sitter deferral
+\(`:deferrals' of `nidhogg-workers-stats').  Internal: the redisplay
+wrappers of nidhogg-workers-treesit.el call it.  */)
+  (Lisp_Object parser, Lisp_Object count)
+{
+  struct Lisp_TS_Parser *p = nh_ts_check_parser (parser);
+  struct nh_ts_job *t = p->nh_job;
+  if (!t || nh_ts_job_finished (t))
+    return Qt;
+  /* No Lisp runs during the wait: T stays the parser's job.  */
+  int64_t grant = nh_wk_budget_take (nh_ts_estimate (t->len));
+  if (grant > 0)
+    nh_wk_wait (&t->job, grant, NH_WK_PH_TREESIT_WAIT, 0);
+  if (nh_ts_job_finished (t))
+    return Qt;
+  if (!NILP (count))
+    nh_wk_deferral_add (0);
+  return Qnil;
+}
+
+DEFUN ("nidhogg-workers--treesit-busy-p", Fnidhogg_workers__treesit_busy_p,
+       Snidhogg_workers__treesit_busy_p, 1, 1, 0,
+       doc: /* Return t if a parser of BUFFER has a parse job queued or running.
+Internal: the landing of deferred regions waits until none has.  */)
+  (Lisp_Object buffer)
+{
+  CHECK_BUFFER (buffer);
+  struct buffer *b = XBUFFER (buffer);
+  if (!BUFFER_LIVE_P (b))
+    return Qnil;
+  /* An indirect buffer's parsers are on its base buffer's list.  */
+  struct buffer *base = b->base_buffer ? b->base_buffer : b;
+  Lisp_Object tail = BVAR (base, ts_parser_list);
+  FOR_EACH_TAIL_SAFE (tail)
+    if (TS_PARSERP (XCAR (tail)))
+      {
+	struct Lisp_TS_Parser *p = XTS_PARSER (XCAR (tail));
+	if (XBUFFER (p->buffer) == b && p->nh_job
+	    && !nh_ts_job_finished (p->nh_job))
+	  return Qt;
+      }
+  return Qnil;
+}
+
 /* Test primitives.  */
 
-DEFUN ("nidhogg-workers--test-ts-start", Fnidhogg_workers__test_ts_start,
+DEFUN ("nidhogg-workers--test-ts-start",Fnidhogg_workers__test_ts_start,
        Snidhogg_workers__test_ts_start, 1, 1, 0,
        doc: /* Start a parse job for PARSER over a snapshot; for tests.
 Return t if a job for the current text is now queued, running or done,
@@ -1307,12 +1398,16 @@ DEFUN ("nidhogg-workers--test-ts-await-idle",
        Fnidhogg_workers__test_ts_await_idle,
        Snidhogg_workers__test_ts_await_idle, 1, 1, 0,
        doc: /* Wait at most MS milliseconds until every tree-sitter job is freed; for tests.
-Return t if none is left.  A bounded condition wait, not a sleep.  */)
+Return t if none is left.  A bounded condition wait, not a sleep.  Jobs
+started with `nidhogg-treesit-defer' on are freed when they land, so
+this first lands nh-parse's finished jobs, as
+`nidhogg-workers--test-await-landed' does.  */)
   (Lisp_Object ms)
 {
   CHECK_FIXNAT (ms);
   pthread_once (&nh_ts_once, nh_ts_init_once);
   int64_t deadline = nh_ts_now () + XFIXNAT (ms) * INT64_C (1000000);
+  Fnidhogg_workers__test_await_landed (intern_c_string ("nh-parse"), ms);
   nh_wk_lock (&nh_ts_live_m);
   while (nh_ts_live > 0 && nh_ts_now () < deadline)
     {
@@ -1391,13 +1486,31 @@ nh_ts_subtree_stat_cached (Lisp_Object node)
 #endif /* not HAVE_TREE_SITTER */
 
 void
+nh_ts_redisplay_fontifying (bool redisplaying)
+{
+#ifdef HAVE_TREE_SITTER
+  if (redisplaying && nh_ts_defer_on ())
+    specbind (Qnidhogg__redisplay_fontifying, Fcurrent_buffer ());
+#else
+  (void) redisplaying;
+#endif
+}
+
+void
 nh_ts_syms (void)
 {
   DEFVAR_LISP ("nidhogg--redisplay-fontifying", Vnidhogg__redisplay_fontifying,
-	       doc: /* The buffer a redisplay is fontifying, or nil.  */);
+	       doc: /* The buffer a redisplay is fontifying, or nil.
+Redisplay binds it around `fontification-functions' while
+`nidhogg-treesit-defer' is on.  */);
   Vnidhogg__redisplay_fontifying = Qnil;
+  DEFSYM (Qnidhogg__redisplay_fontifying, "nidhogg--redisplay-fontifying");
 #ifdef HAVE_TREE_SITTER
   DEFSYM (Qnidhogg_workers_treesit, "nidhogg-workers-treesit");
+  DEFSYM (Qnidhogg_treesit_defer, "nidhogg-treesit-defer");
+  DEFSYM (Qnidhogg_workers_treesit__land, "nidhogg-workers-treesit--land");
+  defsubr (&Snidhogg_workers__treesit_await);
+  defsubr (&Snidhogg_workers__treesit_busy_p);
   defsubr (&Snidhogg_workers__test_ts_alloc);
   defsubr (&Snidhogg_treesit_parser_ready_p);
   defsubr (&Snidhogg_workers__test_ts_start);
