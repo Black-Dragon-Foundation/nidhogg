@@ -84,6 +84,8 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 #include <sys/select.h>
@@ -2235,6 +2237,29 @@ Never returns.  */)
       sigaddset (&block, SIGINT);
       pthread_sigmask (SIG_BLOCK, &block, &waitmask);
       sigdelset (&waitmask, SIGINT);
+      if (getenv ("NIDHOGG_DEBUG"))
+	{
+	  struct termios tio;
+	  int tg = tcgetattr (STDIN_FILENO, &tio);
+	  struct sigaction sa;
+	  sigaction (SIGINT, NULL, &sa);
+	  struct sigaction st;
+	  sigaction (SIGTSTP, NULL, &st);
+	  fprintf (stderr,
+		   "nh-dbg: pid=%d ppid=%d pgrp=%d sid=%d tcpgrp=%d isatty=%d"
+		   " tcgetattr=%d ISIG=%d VINTR=%d VQUIT=%d VSUSP=%d"
+		   " intdfl=%d intign=%d tstpdfl=%d tstpign=%d"
+		   " waitmask-int=%d waitmask-tstp=%d\n",
+		   (int) getpid (), (int) getppid (), (int) getpgrp (),
+		   (int) getsid (0), (int) tcgetpgrp (STDIN_FILENO),
+		   isatty (STDIN_FILENO), tg, !!(tio.c_lflag & ISIG),
+		   tio.c_cc[VINTR], tio.c_cc[VQUIT], tio.c_cc[VSUSP],
+		   sa.sa_handler == SIG_DFL, sa.sa_handler == SIG_IGN,
+		   st.sa_handler == SIG_DFL, st.sa_handler == SIG_IGN,
+		   sigismember (&waitmask, SIGINT),
+		   sigismember (&waitmask, SIGTSTP));
+	  fflush (stderr);
+	}
       nh_wk_say ("nh-wk: holding\n");
       bool told = false;
       for (;;)

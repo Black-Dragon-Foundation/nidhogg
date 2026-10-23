@@ -266,6 +266,9 @@ jobs:
         run: |
           grep 'nidhogg-tests/workers-' nidhogg/check-subset.txt > "$RUNNER_TEMP/macos-subset.txt"
           /bin/bash nidhogg/build.sh --host --stage check --jobs 3 --build-dir "$RUNNER_TEMP/build" --check "$RUNNER_TEMP/macos-subset.txt"
+      - name: nh-dbg fatal test log
+        if: always()
+        run: find "$RUNNER_TEMP/build" -name 'workers-fatal-tests.log' -exec cat {} \;
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tarball-macos
