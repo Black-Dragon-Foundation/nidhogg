@@ -307,7 +307,11 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
 <!-- wk: Task 19 -->
 <!-- wk: Task 20 -->
 <!-- wk: Task 21 -->
-<!-- wk: Task 22 -->
+- JSON tape (`src/nidhogg-json-tape.c`): a tokenizer that copies json.c's rules byte for byte (strict UTF-8, surrogates,
+  depth 10,000, integer overflow, floats parsed in the C locale, the same error symbol at the same position) and
+  writes one malloc block (a tape of 16-byte entries, a string arena and a table with each distinct object key once),
+  with no Lisp, so a worker can run it; the main thread materializes the tape into the objects `json-parse-string`
+  and `json-parse-buffer` build. Test primitive: `(nidhogg-workers--test-tokenize STRING MODE &rest OPTIONS)`.
 <!-- wk: Task 23 -->
 <!-- wk: Task 24 -->
 <!-- wk: Task 25 -->
