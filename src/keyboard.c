@@ -76,7 +76,6 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #endif
 
 #include <sys/types.h>
-#include <stdlib.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <math.h>
@@ -12581,14 +12580,6 @@ handle_interrupt_signal (int sig)
 {
   /* See if we have an active terminal on our controlling tty.  */
   struct terminal *terminal = get_named_terminal (dev_tty);
-  if (getenv ("NIDHOGG_DEBUG"))
-    {
-      char b[160];
-      int n = snprintf (b, sizeof b,
-			"nh-dbg: SIGINT sig=%d terminal=%d quit=%d dev_tty=%s\n",
-			sig, terminal != NULL, !NILP (Vquit_flag), dev_tty);
-      ignore_value (write (STDERR_FILENO, b, n));
-    }
   if (!terminal)
     {
       /* There are no frames, so either 'quit' or exit.
@@ -12687,11 +12678,7 @@ handle_interrupt (bool in_signal_handler)
  * the user elects to return to emacs, at which point he can save the current
  * job and either dump core or continue.
  */
-      if (getenv ("NIDHOGG_DEBUG"))
-	ignore_value (write (STDERR_FILENO, "nh-dbg: suspending\n", 19));
       sys_suspend ();
-      if (getenv ("NIDHOGG_DEBUG"))
-	ignore_value (write (STDERR_FILENO, "nh-dbg: resumed\n", 16));
 #else
       /* Perhaps should really fork an inferior shell?
 	 But that would not provide any way to get back
