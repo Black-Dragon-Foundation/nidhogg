@@ -1125,6 +1125,16 @@ nh_wk_promote (struct nh_wk_job *job, pthread_t *t)
 static _Atomic int nh_wk_release_on_wait = -1;
 static void nh_wk_release (int p);
 
+/* A main-thread wait on a worker begins (nh_wk_wait's, or one that is
+   not on a job, as nh_io_settle's): release that pause point.  */
+void
+nh_wk_wait_begins (void)
+{
+  int rel = atomic_exchange (&nh_wk_release_on_wait, -1);
+  if (rel >= 0)
+    nh_wk_release (rel);
+}
+
 int
 nh_wk_wait (struct nh_wk_job *job, int64_t timeout_ns, int phase, int reason)
 {
@@ -1140,9 +1150,7 @@ nh_wk_wait (struct nh_wk_job *job, int64_t timeout_ns, int phase, int reason)
   int depth = NH_WK_PHASE_PUSH (phase, reason);
   pthread_t runner = pthread_self ();
   bool boosted = nh_wk_promote (job, &runner);
-  int rel = atomic_exchange (&nh_wk_release_on_wait, -1);
-  if (rel >= 0)
-    nh_wk_release (rel);
+  nh_wk_wait_begins ();
 
   nh_wk_lock (&nh_wk_done_m);
   for (;;)
