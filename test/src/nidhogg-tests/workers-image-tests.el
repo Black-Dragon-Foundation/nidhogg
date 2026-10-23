@@ -39,6 +39,21 @@
   (pcase (file-name-extension file)
     ("png" 'png) ("jpg" 'jpeg) ("gif" 'gif) ("webp" 'webp)))
 
+(defun workers-image-tests--core-p (file-or-type)
+  "Non-nil if this build's cores decode FILE-OR-TYPE (a corpus file or type).
+A build has a core for each decoder library it links: the NS build has
+no libjpeg or giflib (its loaders for those are NSImage's), so the rows
+of those types have nothing to run there."
+  (assq (if (stringp file-or-type) (workers-image-tests--type file-or-type)
+          file-or-type)
+        (nidhogg-workers--test-image-cores)))
+
+(defun workers-image-tests--header-p (type)
+  "Non-nil if the header path answers images of TYPE in this build.
+It never does where the loaders are the native image API's (NS):
+`nh_img_spec_format' knows no type there (src/image.c:3553-3575)."
+  (cdr (workers-image-tests--core-p type)))
+
 (defun workers-image-tests--core-spec (file index)
   "The image spec of corpus FILE with INDEX."
   `(image :type ,(workers-image-tests--type file)
@@ -77,11 +92,15 @@ GOLDEN-HEADER is the corpus' recorded frame background colour."
   ;; loaders, the synchronous loaders under the flag and the core equal
   ;; live and re-records them).
   (let* ((golden (workers-image-tests--golden))
-         (results (cdr (assq 'results golden)))
+         (results (cl-remove-if-not
+                   (lambda (r) (workers-image-tests--core-p (caar r)))
+                   (cdr (assq 'results golden))))
          (n 0))
     (should results)
     (nidhogg-workers--test-image-cache-clear)
-    (dolist (case (workers-image-tests--read "oracle-cases.eld"))
+    (dolist (case (cl-remove-if-not
+                   (lambda (c) (workers-image-tests--core-p (car c)))
+                   (workers-image-tests--read "oracle-cases.eld")))
       (pcase-let ((`(,file ,bg ,index) case))
         (let ((r (nidhogg-workers--test-image-decode
                   (workers-image-tests--core-spec file index)
@@ -95,7 +114,8 @@ GOLDEN-HEADER is the corpus' recorded frame background colour."
 (ert-deftest workers/image-animation-cache ()
   ;; Frame N decodes from the cached state at N-1: one frame decoded.
   (let ((golden (workers-image-tests--golden)))
-    (dolist (file '("oracle-anim-200.gif" "oracle-anim-200.webp"))
+    (dolist (file (cl-remove-if-not #'workers-image-tests--core-p
+                                    '("oracle-anim-200.gif" "oracle-anim-200.webp")))
       (nidhogg-workers--test-image-cache-clear)
       (let ((params (workers-image-tests--params file nil golden)))
         (dotimes (i 150)
@@ -151,7 +171,9 @@ GOLDEN-HEADER is the corpus' recorded frame background colour."
   (let ((golden (workers-image-tests--golden))
         (texts (workers-image-tests--read "oracle-errors-golden.eld")))
     (should texts)
-    (dolist (entry (workers-image-tests--read "oracle-errors.eld"))
+    (dolist (entry (cl-remove-if-not
+                    (lambda (e) (workers-image-tests--core-p (if (consp e) (car e) e)))
+                    (workers-image-tests--read "oracle-errors.eld")))
       (pcase-let ((`(,file ,bg ,index) (if (consp entry) entry
                                          (list entry nil nil))))
         (let ((r (nidhogg-workers--test-image-decode
@@ -254,63 +276,74 @@ GOLDEN-HEADER is the corpus' recorded frame background colour."
 (ert-deftest workers/image-header-answers ()
   ;; The size and the frame data of every corpus image come from the header
   ;; path, equal to what the loaders compute (the GUI row compares with the
-  ;; loaders themselves).
+  ;; loaders themselves).  A type the header path does not know in this
+  ;; build (any, on NS) is never answered: today's path computes it.
   (dolist (c workers-image-tests--corpus)
     (pcase-let ((`(,file ,type ,w ,h) c))
       (let ((spec (workers-image-tests--spec file type)))
-        (should (equal (workers-image-tests--answer 'size spec)
-                       (list (cons w h))))
-        (should (equal (workers-image-tests--answer
-                        'size (workers-image-tests--data file type 100000))
-                       (list (cons w h))))
-        (unless (memq type '(gif webp))
-          (should (equal (workers-image-tests--answer 'metadata spec)
-                         '(nil)))))))
+        (if (not (workers-image-tests--header-p type))
+            (progn
+              (should-not (workers-image-tests--answer 'size spec))
+              (should-not (workers-image-tests--answer 'metadata spec)))
+          (should (equal (workers-image-tests--answer 'size spec)
+                         (list (cons w h))))
+          (should (equal (workers-image-tests--answer
+                          'size (workers-image-tests--data file type 100000))
+                         (list (cons w h))))
+          (unless (memq type '(gif webp))
+            (should (equal (workers-image-tests--answer 'metadata spec)
+                           '(nil))))))))
   ;; The transform: :width, :max-width, :scale, :rotation and :margin.
-  (let ((png (lambda (&rest more)
-               (workers-image-tests--answer
-                'size (apply #'workers-image-tests--spec
-                             "palette.png" 'png more)))))
-    (should (equal (funcall png :width 34) '((34 . 22))))
-    (should (equal (funcall png :max-width 8) '((8 . 6))))
-    (should (equal (funcall png :height 22) '((34 . 22))))
-    (should (equal (funcall png :scale 2) '((34 . 22))))
-    (should (equal (funcall png :rotation 90) '((11 . 17))))
-    (should (equal (funcall png :rotation 180) '((17 . 11))))
-    (should (equal (funcall png :scale 2 :rotation 270) '((22 . 34))))
-    (should (equal (funcall png :margin 3) '((23 . 17))))
-    (should (equal (funcall png :margin '(1 . 2) :relief 1) '((21 . 17))))
-    ;; A rotation the loader reports an error for is not answered.
-    (should-not (funcall png :rotation 45)))
+  (when (workers-image-tests--header-p 'png)
+    (let ((png (lambda (&rest more)
+                 (workers-image-tests--answer
+                  'size (apply #'workers-image-tests--spec
+                               "palette.png" 'png more)))))
+      (should (equal (funcall png :width 34) '((34 . 22))))
+      (should (equal (funcall png :max-width 8) '((8 . 6))))
+      (should (equal (funcall png :height 22) '((34 . 22))))
+      (should (equal (funcall png :scale 2) '((34 . 22))))
+      (should (equal (funcall png :rotation 90) '((11 . 17))))
+      (should (equal (funcall png :rotation 180) '((17 . 11))))
+      (should (equal (funcall png :scale 2 :rotation 270) '((22 . 34))))
+      (should (equal (funcall png :margin 3) '((23 . 17))))
+      (should (equal (funcall png :margin '(1 . 2) :relief 1) '((21 . 17))))
+      ;; A rotation the loader reports an error for is not answered.
+      (should-not (funcall png :rotation 45))))
   ;; Frames.
-  (let ((m (car (workers-image-tests--answer
-                  'metadata (workers-image-tests--spec "anim.gif" 'gif)))))
-    (should (equal (plist-get m 'count) 3))
-    (should (equal (plist-get m 'delay) 0.07))
-    (should (plist-get m 'extension-data)))
-  (should (equal (workers-image-tests--answer
-                  'metadata (workers-image-tests--spec "anim.webp" 'webp))
-                 '((delay 0.12 count 3))))
-  (should (equal (workers-image-tests--answer
-                  'metadata (workers-image-tests--spec "lossy.webp" 'webp))
-                 '(nil)))
-  (should (equal (workers-image-tests--answer
-                  'size (workers-image-tests--spec "anim.gif" 'gif :index 2))
-                 '((12 . 10))))
+  (when (workers-image-tests--header-p 'gif)
+    (let ((m (car (workers-image-tests--answer
+                   'metadata (workers-image-tests--spec "anim.gif" 'gif)))))
+      (should (equal (plist-get m 'count) 3))
+      (should (equal (plist-get m 'delay) 0.07))
+      (should (plist-get m 'extension-data)))
+    (should (equal (workers-image-tests--answer
+                    'size (workers-image-tests--spec "anim.gif" 'gif :index 2))
+                   '((12 . 10)))))
+  (when (workers-image-tests--header-p 'webp)
+    (should (equal (workers-image-tests--answer
+                    'metadata (workers-image-tests--spec "anim.webp" 'webp))
+                   '((delay 0.12 count 3))))
+    (should (equal (workers-image-tests--answer
+                    'metadata (workers-image-tests--spec "lossy.webp" 'webp))
+                   '(nil))))
   ;; A frame the loader would report as missing is not answered.
   (should-not (workers-image-tests--answer
                'size (workers-image-tests--spec "anim.gif" 'gif :index 3)))
   ;; A corrupt body behind a valid header: the header's size (the recorded
   ;; residual); the frame scans of a truncated file answer nothing.
-  (should (equal (workers-image-tests--answer
-                  'size (workers-image-tests--data "palette.png" 'png 33))
-                 '((17 . 11))))
-  (should (equal (workers-image-tests--answer
-                  'size (workers-image-tests--data "progressive.jpg" 'jpeg 300))
-                 '((32 . 24))))
-  (should (equal (workers-image-tests--answer
-                  'size (workers-image-tests--data "one.gif" 'gif 13))
-                 '((18 . 14))))
+  (when (workers-image-tests--header-p 'png)
+    (should (equal (workers-image-tests--answer
+                    'size (workers-image-tests--data "palette.png" 'png 33))
+                   '((17 . 11)))))
+  (when (workers-image-tests--header-p 'jpeg)
+    (should (equal (workers-image-tests--answer
+                    'size (workers-image-tests--data "progressive.jpg" 'jpeg 300))
+                   '((32 . 24)))))
+  (when (workers-image-tests--header-p 'gif)
+    (should (equal (workers-image-tests--answer
+                    'size (workers-image-tests--data "one.gif" 'gif 13))
+                   '((18 . 14)))))
   (should-not (workers-image-tests--answer
                'metadata (workers-image-tests--data "anim.gif" 'gif 100)))
   (should-not (workers-image-tests--answer
@@ -326,16 +359,17 @@ GOLDEN-HEADER is the corpus' recorded frame background colour."
 (ert-deftest workers/image-header-bomb ()
   ;; A 100000 x 100000 header is refused by `max-image-size' before any
   ;; decode: the header path does not answer, so today's path reports the
-  ;; error.  Only the limit refuses it: without one the header is trusted.
+  ;; error.  Only the limit refuses it: without one the header is trusted
+  ;; (where the header path knows PNG; on NS nothing is answered).
   (let ((spec (list 'image :type 'png :data
-                    (workers-image-tests--png-header 100000 100000))))
+                    (workers-image-tests--png-header 100000 100000)))
+        (trusted (and (workers-image-tests--header-p 'png)
+                      '((100000 . 100000)))))
     (should-not (workers-image-tests--answer 'size spec))
     (let ((max-image-size nil))
-      (should (equal (workers-image-tests--answer 'size spec)
-                     '((100000 . 100000)))))
+      (should (equal (workers-image-tests--answer 'size spec) trusted)))
     (let ((max-image-size 200000))
-      (should (equal (workers-image-tests--answer 'size spec)
-                     '((100000 . 100000)))))
+      (should (equal (workers-image-tests--answer 'size spec) trusted)))
     ;; The same size in a GIF screen descriptor.
     (let ((gif (list 'image :type 'gif :data
                      (concat "GIF89a" (unibyte-string 160 134 160 134 0 0 0)))))
