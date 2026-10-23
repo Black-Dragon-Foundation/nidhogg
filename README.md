@@ -480,8 +480,10 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   per parser, the latest snapshot wins; deleting the parser, killing its buffer or GC cancels it, and whichever of
   the parser and the worker lets go last frees it. `(nidhogg-treesit-parser-ready-p PARSER)` says whether a demand
   would not parse on the main thread; `treesit-subtree-stat` on a first parse's published root answers from the worker's count. Test
-  primitives: `nidhogg-workers--test-ts-start`, `--test-ts-wait`, `--test-ts-info`, `--test-ts-stats`,
-  `--test-ts-await-idle`.
+  primitives: `nidhogg-workers--test-ts-start`, `--test-ts-wait`, `--test-ts-info`, `--test-ts-stats` (with the
+  jobs' time queued, parsing and walking), `--test-ts-await-idle`, and
+  `nidhogg-workers--test-ts-trace` (non-nil: each step of a main-thread demand, its microseconds and its Lisp callers,
+  is pushed onto it).
 - Edits during a parse job: every edit made to a parser's tree while it has a job (the changes Lisp makes, and the
   narrowing sync a demand does) is logged exactly as applied; a parser that has no tree yet logs the change in buffer
   bytes, which become tree edits at the publish. The publish replays the log onto the job's tree and, if there was any
