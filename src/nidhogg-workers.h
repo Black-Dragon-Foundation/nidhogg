@@ -269,7 +269,14 @@ extern void nh_io_coding_settled (struct Lisp_Process *,
    counts and carryover set as decode_coding_c_string would set them.  */
 extern bool nh_io_decoded (struct Lisp_Process *, struct coding_system *,
 			   const char *chars, ptrdiff_t nbytes);
+/* Task 20, Fgnutls_boot's hooks: with GNUTLS_STATE NULL (before any
+   GnuTLS call) the reader hands the process back for good and keeps
+   the bytes it had not delivered for GnuTLS; with the new session, the
+   session gets a pull function that returns those bytes first.  */
 extern int nh_io_tls_boot (struct Lisp_Process *, void *gnutls_state);
+/* The bytes of the session GNUTLS_STATE that its pull function has yet
+   to return (emacs_gnutls_record_check_pending).  */
+extern ptrdiff_t nh_io_tls_pending (void *gnutls_state);
 /* For the crash rows (Task 4's --test-crash on nh-io).  */
 extern bool nh_io_test_crash (void);
 /* Task 4's kill_buffer_processes hook: under nh_wk_dead, close a

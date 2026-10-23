@@ -371,7 +371,15 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   `--test-io-info`'s `:coding-generation`, `:decoder`, `:decoded` and `:redecoded`; `workers-harness.sh --fuzz SECONDS
   decode`.
 <!-- wk: Task 19 -->
-<!-- wk: Task 20 -->
+- STARTTLS, ptys, comint and TRAMP under the reader: `gnutls-boot` (every STARTTLS upgrade: smtpmail, Gnus, ERC,
+  `open-network-stream` with `:type` `starttls`, and a blocking `open-gnutls-stream`, which connects as a plain stream
+  first) takes the socket back from `nh-io` before any GnuTLS call, and that process is never handed over again (also
+  after `gnutls-deinit`). Bytes `nh-io` had read but not delivered go to GnuTLS, never to the filter (delivering them
+  would be STARTTLS response injection): the session gets a pull function that returns them before it reads the socket,
+  and TLS's pending check counts them. A pty's writes, `process-send-eof`, `set-process-window-size`,
+  `interrupt-process` and `process-tty-name` use the real fd or the tty name as before; comint and TRAMP see the same
+  results. Test primitives: `nidhogg-workers--test-io-info`'s `:tls-reclaimed`, `:tls-pulled`, `:tls-left` and
+  `:tls-pull`.
 <!-- wk: Task 21 -->
 - JSON tape (`src/nidhogg-json-tape.c`): a tokenizer that copies json.c's rules byte for byte (strict UTF-8, surrogates,
   depth 10,000, integer overflow, floats parsed in the C locale, the same error symbol at the same position) and
