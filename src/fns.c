@@ -4975,13 +4975,17 @@ maybe_resize_hash_table (struct Lisp_Hash_Table *h)
 
       Lisp_Object *key_and_value
 	= hash_table_alloc_bytes (2 * new_size * sizeof *key_and_value);
-      memcpy (key_and_value, h->key_and_value,
-	      2 * old_size * sizeof *key_and_value);
+      /* An empty table's arrays are NULL: memcpy must not see them,
+	 even for 0 bytes.  */
+      if (old_size > 0)
+	memcpy (key_and_value, h->key_and_value,
+		2 * old_size * sizeof *key_and_value);
       for (ptrdiff_t i = 2 * old_size; i < 2 * new_size; i++)
         key_and_value[i] = HASH_UNUSED_ENTRY_KEY;
 
       hash_hash_t *hash = hash_table_alloc_bytes (new_size * sizeof *hash);
-      memcpy (hash, h->hash, old_size * sizeof *hash);
+      if (old_size > 0)
+	memcpy (hash, h->hash, old_size * sizeof *hash);
 
       ptrdiff_t old_index_size = hash_table_index_size (h);
       ptrdiff_t index_bits = compute_hash_index_bits (new_size);
