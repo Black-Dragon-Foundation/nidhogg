@@ -1,14 +1,14 @@
 //! The C ABI: status codes, the panic guard and the exported functions.
 
 use crate::geom::Rect;
+use crate::scene::{Chrome, LayerDesc};
 use crate::stats::{StatsEntry, Summary};
 use std::panic::{UnwindSafe, catch_unwind};
 
 pub const GLITNIR_OK: i32 = 0;
 pub const GLITNIR_E_PANIC: i32 = -1;
 pub const GLITNIR_E_ARG: i32 = -2;
-// Returned once the global state machine exists (a call in the wrong state); nothing uses it yet.
-#[allow(dead_code)]
+/// A call in the wrong state (a scene call for a root without a scene).
 pub const GLITNIR_E_STATE: i32 = -3;
 
 /// The ABI version the header describes.
@@ -23,11 +23,24 @@ pub const EXPORTS: &[&str] = &[
     "glitnir_damage_forget",
     "glitnir_damage_pending",
     "glitnir_debug_panic",
+    "glitnir_layer_remove",
+    "glitnir_layer_set_chrome",
+    "glitnir_layer_upsert",
+    "glitnir_root_drop",
+    "glitnir_root_new",
     "glitnir_scroll",
+    "glitnir_stack_list",
+    "glitnir_stack_lower",
+    "glitnir_stack_raise",
+    "glitnir_stack_reparent",
     "glitnir_stats_forget",
     "glitnir_stats_record",
     "glitnir_stats_summary",
 ];
+
+fn code(r: Result<(), i32>) -> i32 {
+    r.err().unwrap_or(GLITNIR_OK)
+}
 
 /// Run an export's body; a panic becomes `GLITNIR_E_PANIC` instead of unwinding into C.
 pub(crate) fn ffi_guard<F: FnOnce() -> i32 + UnwindSafe>(f: F) -> i32 {
@@ -135,10 +148,13 @@ pub extern "C" fn glitnir_scroll(
     dy: i32,
     exposed: Rect,
 ) -> i32 {
-    // The window and the distance are for the scene's scroll operation; damage needs only the rectangles.
-    let _ = (window, dy);
+    // P1 composes a scroll as damage over the window's layer; the distance is for a backing with overscan later.
+    let _ = dy;
     ffi_guard(|| {
-        crate::damage::with(frame, |d| d.scroll(area, exposed));
+        crate::damage::with(frame, |d| {
+            d.scroll(area, exposed);
+            d.scrolled(window);
+        });
         GLITNIR_OK
     })
 }
@@ -198,6 +214,113 @@ pub extern "C" fn glitnir_damage_forget(frame: u64) -> i32 {
     ffi_guard(|| {
         crate::damage::forget(frame);
         GLITNIR_OK
+    })
+}
+
+/// Give ROOT a scene (an existing one is kept); its commits return the scene damage from then on.
+#[unsafe(no_mangle)]
+pub extern "C" fn glitnir_root_new(root: u64) -> i32 {
+    ffi_guard(|| {
+        crate::scene::root_new(root);
+        GLITNIR_OK
+    })
+}
+
+/// Drop ROOT's scene.
+#[unsafe(no_mangle)]
+pub extern "C" fn glitnir_root_drop(root: u64) -> i32 {
+    ffi_guard(|| {
+        crate::scene::root_drop(root);
+        GLITNIR_OK
+    })
+}
+
+/// Add or change a layer of ROOT's scene.
+///
+/// # Safety
+/// `desc` must be null or point to a readable `LayerDesc`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn glitnir_layer_upsert(root: u64, desc: *const LayerDesc) -> i32 {
+    ffi_guard(|| {
+        if desc.is_null() {
+            return GLITNIR_E_ARG;
+        }
+        // SAFETY: non-null, and the caller promises it is readable.
+        let d = unsafe { desc.read() };
+        code(crate::scene::with(root, |s| s.upsert(&d)))
+    })
+}
+
+/// Remove layer ID, and every layer under it, from ROOT's scene.
+#[unsafe(no_mangle)]
+pub extern "C" fn glitnir_layer_remove(root: u64, id: u64) -> i32 {
+    ffi_guard(|| {
+        code(crate::scene::with(root, |s| {
+            s.remove(id);
+            Ok(())
+        }))
+    })
+}
+
+/// Set layer ID's chrome; null clears it.
+///
+/// # Safety
+/// `chrome` must be null or point to a readable `Chrome`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn glitnir_layer_set_chrome(
+    root: u64,
+    id: u64,
+    chrome: *const Chrome,
+) -> i32 {
+    ffi_guard(|| {
+        // SAFETY: null, or readable as the caller promises.
+        let c = (!chrome.is_null()).then(|| unsafe { chrome.read() });
+        code(crate::scene::with(root, |s| s.set_chrome(id, c)))
+    })
+}
+
+/// Raise layer ID to the top of its siblings.
+#[unsafe(no_mangle)]
+pub extern "C" fn glitnir_stack_raise(root: u64, id: u64) -> i32 {
+    ffi_guard(|| code(crate::scene::with(root, |s| s.raise(id))))
+}
+
+/// Lower layer ID to the bottom of its siblings.
+#[unsafe(no_mangle)]
+pub extern "C" fn glitnir_stack_lower(root: u64, id: u64) -> i32 {
+    ffi_guard(|| code(crate::scene::with(root, |s| s.lower(id))))
+}
+
+/// Move layer ID, with its subtree, to the top of PARENT's children (0: the top level).
+#[unsafe(no_mangle)]
+pub extern "C" fn glitnir_stack_reparent(root: u64, id: u64, parent: u64) -> i32 {
+    ffi_guard(|| code(crate::scene::with(root, |s| s.reparent(id, parent))))
+}
+
+/// ROOT's child nodes bottom to top: `*ids` points to `*n` ids, valid until ROOT's next list or drop.
+///
+/// # Safety
+/// `ids` and `n` must be null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn glitnir_stack_list(root: u64, ids: *mut *const u64, n: *mut usize) -> i32 {
+    ffi_guard(|| {
+        if ids.is_null() || n.is_null() {
+            return GLITNIR_E_ARG;
+        }
+        match crate::scene::with(root, |s| {
+            let l = s.list();
+            Ok((l.as_ptr(), l.len()))
+        }) {
+            Ok((p, len)) => {
+                // SAFETY: both non-null, and the caller promises they are writable.
+                unsafe {
+                    ids.write(p);
+                    n.write(len);
+                }
+                GLITNIR_OK
+            }
+            Err(e) => e,
+        }
     })
 }
 
@@ -333,6 +456,82 @@ mod tests {
     fn rect_has_the_layout_of_glitnir_rect() {
         assert_eq!(std::mem::size_of::<Rect>(), 16);
         assert_eq!(std::mem::align_of::<Rect>(), 4);
+    }
+
+    #[test]
+    fn layer_desc_and_chrome_have_the_c_layout() {
+        assert_eq!(std::mem::size_of::<LayerDesc>(), 56);
+        assert_eq!(std::mem::offset_of!(LayerDesc, rect), 20);
+        assert_eq!(std::mem::offset_of!(LayerDesc, scale), 40);
+        assert_eq!(std::mem::offset_of!(LayerDesc, visible), 48);
+        assert_eq!(std::mem::size_of::<Chrome>(), 36);
+        assert_eq!(std::mem::offset_of!(Chrome, border_argb), 32);
+    }
+
+    #[test]
+    fn layers_round_trip_through_the_abi() {
+        let r = 8101;
+        let d = |id, parent, kind, rect| LayerDesc {
+            id,
+            parent,
+            kind,
+            rect,
+            scale: 1.0,
+            visible: 1,
+        };
+        let root = d(r, 0, 1, Rect::new(0, 0, 400, 300));
+        assert_eq!(unsafe { glitnir_layer_upsert(r, &root) }, GLITNIR_E_STATE);
+        assert_eq!(glitnir_root_new(r), GLITNIR_OK);
+        assert_eq!(unsafe { glitnir_layer_upsert(r, &root) }, GLITNIR_OK);
+        assert_eq!(
+            unsafe { glitnir_layer_upsert(r, std::ptr::null()) },
+            GLITNIR_E_ARG
+        );
+        assert_eq!(
+            unsafe { glitnir_layer_upsert(r, &d(5, r, 9, Rect::default())) },
+            GLITNIR_E_ARG
+        );
+        for id in [10, 20] {
+            let c = d(id, r, 3, Rect::new(10, 10, 50, 50));
+            assert_eq!(unsafe { glitnir_layer_upsert(r, &c) }, GLITNIR_OK);
+        }
+        let ch = Chrome {
+            blur_px: 8.0,
+            shadow_opacity: 0.5,
+            ..Chrome::default()
+        };
+        assert_eq!(unsafe { glitnir_layer_set_chrome(r, 10, &ch) }, GLITNIR_OK);
+        assert_eq!(
+            unsafe { glitnir_layer_set_chrome(r, 99, std::ptr::null()) },
+            GLITNIR_E_ARG
+        );
+        let list = || {
+            let (mut p, mut n) = (std::ptr::null::<u64>(), 0usize);
+            assert_eq!(unsafe { glitnir_stack_list(r, &mut p, &mut n) }, GLITNIR_OK);
+            // SAFETY: valid until R's next list.
+            unsafe { std::slice::from_raw_parts(p, n) }.to_vec()
+        };
+        assert_eq!(list(), vec![10, 20]);
+        assert_eq!(glitnir_stack_raise(r, 10), GLITNIR_OK);
+        assert_eq!(list(), vec![20, 10]);
+        assert_eq!(glitnir_stack_lower(r, 10), GLITNIR_OK);
+        assert_eq!(glitnir_stack_reparent(r, 20, 10), GLITNIR_OK);
+        assert_eq!(list(), vec![10, 20]);
+        assert_eq!(glitnir_stack_reparent(r, 10, 20), GLITNIR_E_ARG);
+        assert_eq!(glitnir_stack_raise(r, 99), GLITNIR_E_ARG);
+        let mut out = CommitOut {
+            rects: std::ptr::null(),
+            n: 0,
+        };
+        assert_eq!(unsafe { glitnir_commit(r, &mut out) }, GLITNIR_OK);
+        // SAFETY: valid until R's next commit.
+        let got = unsafe { std::slice::from_raw_parts(out.rects, out.n) };
+        assert!(got.contains(&Rect::new(0, 0, 400, 300)), "{got:?}");
+        assert_eq!(glitnir_layer_remove(r, 10), GLITNIR_OK);
+        assert!(list().is_empty());
+        assert_eq!(glitnir_root_drop(r), GLITNIR_OK);
+        assert_eq!(glitnir_stack_raise(r, 20), GLITNIR_E_STATE);
+        assert_eq!(glitnir_damage_forget(r), GLITNIR_OK);
     }
 
     #[test]
