@@ -2595,6 +2595,14 @@ DEFUN ("system-move-file-to-trash", Fsystem_move_file_to_trash,
     return calln (handler, operation, filename);
   else
     {
+#ifdef HAVE_NIDHOGG_WORKERS
+
+      /* As delete-file-internal: an auto-save job that would put this
+	 name back is dropped (nidhogg-workers.h).  */
+      extern void nh_save_file_deleted (Lisp_Object);
+      nh_save_file_deleted (filename);
+
+#endif
       NSFileManager *fm = [NSFileManager defaultManager];
       BOOL result = NO;
       NSURL *fileURL = [NSURL fileURLWithPath:[NSString stringWithLispString:filename]
