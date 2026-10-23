@@ -2218,6 +2218,77 @@ worker mutexes were taken in signal context (0: a lock there aborts).  */)
 		make_int (atomic_load (&nh_wk_signal_locks)));
 }
 
+/* The redisplay wait budget (MC-7): `nidhogg-redisplay-wait-budget' ms
+   per redisplay_internal call, shared by every wait in it.  -1: no
+   redisplay has begun, so the first take refills it.  The ledger counts
+   the ns granted and the takes that got nothing.  */
+static _Atomic int64_t nh_wk_budget_left = -1;
+static _Atomic int64_t nh_wk_budget_granted, nh_wk_budget_zero;
+
+static int64_t
+nh_wk_budget_full (void)
+{
+  if (FIXNATP (Vnidhogg_redisplay_wait_budget))
+    return XFIXNAT (Vnidhogg_redisplay_wait_budget) * NH_WK_MS;
+  return 8 * NH_WK_MS;
+}
+
+int64_t
+nh_wk_budget_take (int64_t want_ns)
+{
+  int64_t left = atomic_load (&nh_wk_budget_left);
+  if (left < 0)
+    left = nh_wk_budget_full ();
+  int64_t grant = want_ns < left ? want_ns : left;
+  if (grant < 0)
+    grant = 0;
+  atomic_store (&nh_wk_budget_left, left - grant);
+  if (grant == 0)
+    atomic_fetch_add (&nh_wk_budget_zero, 1);
+  atomic_fetch_add (&nh_wk_budget_granted, grant);
+  return grant;
+}
+
+void
+nh_wk_budget_reset (void)
+{
+  atomic_store (&nh_wk_budget_left, nh_wk_budget_full ());
+}
+
+DEFUN ("nidhogg-workers--test-redisplay-begin",
+       Fnidhogg_workers__test_redisplay_begin,
+       Snidhogg_workers__test_redisplay_begin, 0, 0, 0,
+       doc: /* Refill the redisplay wait budget, as a redisplay does; for tests.  */)
+  (void)
+{
+  nh_wk_budget_reset ();
+  return Qnil;
+}
+
+DEFUN ("nidhogg-workers--test-budget-take", Fnidhogg_workers__test_budget_take,
+       Snidhogg_workers__test_budget_take, 1, 1, 0,
+       doc: /* Take MS milliseconds from the redisplay wait budget; for tests.
+Return the milliseconds granted (0 once the budget is spent).  */)
+  (Lisp_Object ms)
+{
+  CHECK_FIXNAT (ms);
+  return make_fixnum (nh_wk_budget_take (XFIXNAT (ms) * NH_WK_MS) / NH_WK_MS);
+}
+
+DEFUN ("nidhogg-workers--test-budget-ledger",
+       Fnidhogg_workers__test_budget_ledger,
+       Snidhogg_workers__test_budget_ledger, 0, 1, 0,
+       doc: /* Return (GRANTED-NS . ZERO-TAKES) of the wait budget; for tests.
+With RESET non-nil, zero the ledger after reading it.  */)
+  (Lisp_Object reset)
+{
+  int64_t g = NILP (reset) ? atomic_load (&nh_wk_budget_granted)
+			   : atomic_exchange (&nh_wk_budget_granted, 0);
+  int64_t z = NILP (reset) ? atomic_load (&nh_wk_budget_zero)
+			   : atomic_exchange (&nh_wk_budget_zero, 0);
+  return Fcons (make_int (g), make_int (z));
+}
+
 /* `nidhogg-workers--mode' sets nh_wk_inline (a variable watcher).  */
 static Lisp_Object
 watch_nidhogg_workers_mode (Lisp_Object symbol, Lisp_Object newval,
@@ -2250,6 +2321,11 @@ with no scheduling, for tests.  */);
 	       doc: /* The ids of the test jobs that landed, the latest first; for tests.  */);
   Vnidhogg_workers__test_finished = Qnil;
 
+  DEFVAR_LISP ("nidhogg-redisplay-wait-budget", Vnidhogg_redisplay_wait_budget,
+	       doc: /* Milliseconds a redisplay may wait for worker threads.
+One budget per redisplay, shared by every tree-sitter and image wait in it.  */);
+  Vnidhogg_redisplay_wait_budget = make_fixnum (8);
+
   static union Aligned_Lisp_Subr Swatch_nidhogg_workers_mode =
      {{{ PSEUDOVECTOR_FLAG | (PVEC_SUBR << PSEUDOVECTOR_AREA_BITS) },
        { .a4 = watch_nidhogg_workers_mode },
@@ -2276,6 +2352,9 @@ with no scheduling, for tests.  */);
   defsubr (&Snidhogg_workers__test_crash);
   defsubr (&Snidhogg_workers__test_fatal_under_lock);
   defsubr (&Snidhogg_workers__test_signal_under_locks);
+  defsubr (&Snidhogg_workers__test_redisplay_begin);
+  defsubr (&Snidhogg_workers__test_budget_take);
+  defsubr (&Snidhogg_workers__test_budget_ledger);
 }
 
 #endif /* not NH_WK_HARNESS */
@@ -2289,17 +2368,6 @@ void
 nh_wk_fatal_begin (void)
 {
   atomic_store (&nh_wk_dead, true);
-}
-
-int64_t
-nh_wk_budget_take (int64_t want_ns)
-{
-  return want_ns;
-}
-
-void
-nh_wk_budget_reset (void)
-{
 }
 
 #ifndef NH_WK_HARNESS
