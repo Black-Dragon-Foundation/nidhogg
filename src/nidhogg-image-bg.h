@@ -139,6 +139,10 @@ extern uint64_t nh_img_hash (const uint8_t *data, size_t len);
 extern uint64_t nh_img_file_key (const char *path);
 extern uint64_t nh_img_hash_combine (uint64_t h, const void *p, size_t n);
 
+/* Base64 for `:nidhogg-data-encoding' (Task 30); see the definition.  */
+extern bool nh_img_b64_decode (const uint8_t *in, size_t n, uint8_t *out,
+			       size_t cap, size_t *got, bool *complete);
+
 /* The animation cache of the cores.  Counters for the tests: frames
    composed or decoded since the last reset.  */
 extern int64_t nh_img_decode_count (bool reset);

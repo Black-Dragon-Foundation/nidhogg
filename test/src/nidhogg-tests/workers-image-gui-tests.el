@@ -404,4 +404,130 @@ Return the window."
       (should (= 0 (workers-image-gui--info :pending)))
       (should (= jobs (workers-image-gui--img-jobs))))))
 
+;;; Task 30: the stand-in rule, prefetch and base64 frames.
+
+(defconst workers-image-gui--site-buffer " *workers-image-gui-site*")
+
+(defun workers-image-gui--bytes (name)
+  "The bytes of fixture NAME, unibyte."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally
+     (expand-file-name name workers-image-gui--dir))
+    (buffer-string)))
+
+(defun workers-image-gui--place (spec)
+  "Show SPEC as the display property of one character; return the window."
+  (with-current-buffer (get-buffer-create workers-image-gui--site-buffer)
+    (erase-buffer)
+    (insert (propertize "x" 'display spec))
+    (goto-char (point-min)))
+  (delete-other-windows)
+  (switch-to-buffer workers-image-gui--site-buffer)
+  (selected-window))
+
+(defun workers-image-gui--replace (spec)
+  "Put SPEC where `workers-image-gui--place' put the old one."
+  (with-current-buffer workers-image-gui--site-buffer
+    (put-text-property 1 2 'display spec)))
+
+(defun workers-image-gui--settle ()
+  "Redisplay until nothing is pending (every decode lands)."
+  (redisplay t)
+  (while (> (workers-image-gui--info :pending) 0)
+    (should (nidhogg-workers--test-await-landed 'nh-img 5000))
+    (redisplay t)))
+
+(ert-deftest workers-gui/image-stand-in ()
+  ;; §17.2b S4.  The old picture is drawn scaled into the new box while
+  ;; the new decode is parked, for each replacement the viewers make; a
+  ;; spec that differs in another key gets none.
+  (workers-image-gui--skip)
+  (skip-unless (nidhogg-workers--deferrable-p 'gif))
+  (workers-image-gui--with-defer
+    (let* ((gif (lambda (i) (append (workers-image-gui--spec
+                                     "oracle-anim-200.gif" nil nil)
+                                    (list :index i))))
+           (png (workers-image-gui--spec "palette.png" nil nil))
+           (data (lambda (n) (list 'image :type 'png
+                                   :data (workers-image-gui--bytes n))))
+           (cases `((index ,(funcall gif 0) ,(funcall gif 1) t)
+                    (zoom ,png ,(append png '(:scale 2)) t)
+                    (rotate ,png ,(append png '(:rotation 90)) t)
+                    (data ,(funcall data "palette.png")
+                          ,(funcall data "alpha.png") t)
+                    (other-key ,png ,(append png '(:background "#336699")) nil))))
+      (pcase-dolist (`(,name ,old ,new ,stands) cases)
+        (ert-info ((symbol-name name) :prefix "")
+          (clear-image-cache t)
+          (workers-image-gui--place old)
+          (workers-image-gui--settle)
+          (nidhogg-workers--pause-at 'after-header)
+          (workers-image-gui--replace new)
+          (redisplay t)
+          (should (nidhogg-workers--test-await-paused 'after-header 5000 1))
+          (should (= 1 (workers-image-gui--info :pending)))
+          (should (= (if stands 1 0) (workers-image-gui--info :standing)))
+          (workers-image-gui--land)
+          (should (= 0 (workers-image-gui--info :standing))))))))
+
+(ert-deftest workers-gui/image-prefetch ()
+  ;; The callback runs from `pending_funcalls' once the decode is ready (or
+  ;; failed); a swapped-in prefetched spec draws without a pending frame.
+  (workers-image-gui--skip)
+  (workers-image-gui--with-defer
+    (let ((spec (workers-image-gui--spec "palette.png" nil nil))
+          (bad (list 'image :type 'png :data "not a png"))
+          (called nil))
+      (clear-image-cache t)
+      (nidhogg-workers--pause-at 'after-header)
+      (nidhogg-image-prefetch spec (lambda (s r) (push (cons s r) called)))
+      (should (nidhogg-workers--test-await-paused 'after-header 5000 1))
+      (should (= 1 (workers-image-gui--info :pending)))
+      (should-not called)
+      (nidhogg-workers--release 'after-header)
+      (should (nidhogg-workers--test-await-landed 'nh-img 5000))
+      (with-timeout (5 (ert-fail "no callback"))
+        (while (not called) (accept-process-output nil 0.05)))
+      (should (equal called (list (cons spec 'ready))))
+      (should (= 0 (workers-image-gui--info :pending)))
+      ;; Swapped in: found in the cache, no new job, no pending frame.
+      (let ((jobs (workers-image-gui--img-jobs)))
+        (nidhogg-workers--pause-at 'after-header)
+        (workers-image-gui--place spec)
+        (redisplay t)
+        (should (= 0 (workers-image-gui--info :pending)))
+        (should (= jobs (workers-image-gui--img-jobs)))
+        (nidhogg-workers--release))
+      ;; A spec that cannot be decoded calls back with `failed'.
+      (setq called nil)
+      (nidhogg-image-prefetch bad (lambda (s r) (push (cons s r) called)))
+      (with-timeout (5 (ert-fail "no callback"))
+        (while (not called) (accept-process-output nil 0.05)))
+      (should (eq (cdar called) 'failed)))))
+
+(ert-deftest workers-gui/image-base64 ()
+  ;; A base64 `:data' with the property decodes to the same pixels as the
+  ;; decoded bytes: through the synchronous loader and through nh-img.
+  (workers-image-gui--skip)
+  (let* ((raw (workers-image-gui--bytes "alpha.png"))
+         (plain (list 'image :type 'png :data raw))
+         (b64 (list 'image :type 'png
+                    :data (base64-encode-string raw)
+                    :nidhogg-data-encoding 'base64))
+         (want (workers-image-gui--digest
+                (nidhogg-workers--test-image-pixels plain))))
+    (should (workers-image-gui--digest
+             (nidhogg-workers--test-image-pixels b64)))
+    (should (equal (workers-image-gui--digest
+                    (nidhogg-workers--test-image-pixels b64))
+                   want))
+    (workers-image-gui--with-defer
+      (workers-image-gui--pend (list b64))
+      (should (= 1 (workers-image-gui--info :pending)))
+      (workers-image-gui--land)
+      (should (equal (workers-image-gui--digest
+                      (nidhogg-workers--test-image-pixels b64 nil t))
+                     want)))))
+
 ;;; workers-image-gui-tests.el ends here
