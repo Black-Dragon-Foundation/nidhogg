@@ -309,6 +309,10 @@ enum
   NH_TS_C_START_SELECT,
   NH_TS_C_WAITED,
   NH_TS_C_ABANDONED,
+  /* The workers' time (ns): queued, parsing, the statistics walk.  */
+  NH_TS_C_JOB_QUEUE_NS,
+  NH_TS_C_JOB_PARSE_NS,
+  NH_TS_C_JOB_WALK_NS,
   NH_TS_C_N
 };
 static _Atomic int64_t nh_ts_count[NH_TS_C_N];
@@ -376,6 +380,51 @@ static void
 nh_ts_counted (int c)
 {
   atomic_fetch_add_explicit (&nh_ts_count[c], 1, memory_order_relaxed);
+}
+
+static void
+nh_ts_counted_ns (int c, int64_t ns)
+{
+  atomic_fetch_add_explicit (&nh_ts_count[c], ns, memory_order_relaxed);
+}
+
+/* The demand trace (test only): while `nidhogg-workers--test-ts-trace'
+   is non-nil, the main thread pushes (KIND US CALLERS) onto it at each
+   step of a demand, CALLERS being the innermost Lisp functions on the
+   stack that are not tree-sitter's or Nidhogg's own.  */
+extern bool backtrace_p (union specbinding *);
+extern union specbinding *backtrace_top (void);
+extern union specbinding *backtrace_next (union specbinding *);
+extern Lisp_Object (*const backtrace_function) (union specbinding *);
+
+static bool
+nh_ts_tracing (void)
+{
+  return !NILP (Vnidhogg_workers__test_ts_trace) && !nh_wk_on_worker ();
+}
+
+static void
+nh_ts_trace (const char *kind, int64_t ns)
+{
+  if (!nh_ts_tracing ())
+    return;
+  Lisp_Object callers = Qnil;
+  int n = 0;
+  for (union specbinding *pdl = backtrace_top ();
+       backtrace_p (pdl) && n < 5; pdl = backtrace_next (pdl))
+    {
+      Lisp_Object f = backtrace_function (pdl);
+      if (!SYMBOLP (f))
+	continue;
+      const char *s = SSDATA (SYMBOL_NAME (f));
+      if (!strncmp (s, "treesit", 7) || !strncmp (s, "nidhogg", 7))
+	continue;
+      callers = Fcons (f, callers);
+      n++;
+    }
+  Vnidhogg_workers__test_ts_trace
+    = Fcons (list3 (intern (kind), make_int (ns / 1000), Fnreverse (callers)),
+	     Vnidhogg_workers__test_ts_trace);
 }
 
 /* The worker's side.  */
@@ -490,6 +539,8 @@ nh_ts_job_run (struct nh_wk_job *job)
 #ifdef __linux__
   t->policy = sched_getscheduler (0);
 #endif
+  nh_ts_counted_ns (NH_TS_C_JOB_QUEUE_NS,
+		    (int64_t) (nh_ts_now () - job->submitted_ns));
   atomic_store (&job->total, t->len);
   nh_wk_pause_point (NH_WK_P_AFTER_SNAPSHOT);
 #if NH_TS_JOBS
@@ -504,6 +555,7 @@ nh_ts_job_run (struct nh_wk_job *job)
 			      .progress_callback = nh_ts_progress };
       int64_t t0 = nh_ts_now ();
       tree = ts_parser_parse_with_options (p, t->old, input, opts);
+      nh_ts_counted_ns (NH_TS_C_JOB_PARSE_NS, nh_ts_now () - t0);
       /* A cancelled parse is never resumed (§7.2).  */
       if (!tree)
 	ts_parser_reset (p);
@@ -516,8 +568,10 @@ nh_ts_job_run (struct nh_wk_job *job)
     ts_tree_delete (t->old);
   t->old = NULL;
   t->stat_valid = tree && full;
+  int64_t w0 = nh_ts_now ();
   if (t->stat_valid)
     nh_ts_stat_walk (ts_tree_root_node (tree), t->stat);
+  nh_ts_counted_ns (NH_TS_C_JOB_WALK_NS, nh_ts_now () - w0);
   t->result = tree;
   nh_wk_pause_point (NH_WK_P_BEFORE_DONE);
 }
@@ -847,6 +901,7 @@ nh_ts_start (Lisp_Object parser, bool from_demand)
   atomic_store (&t->job.refs, 1);	/* the parser's */
   NH_WK_PHASE_POP (depth);
   nh_wk_phase_ns_add (NH_WK_PH_TREESIT, NH_WK_RS_SNAPSHOT, nh_ts_now () - t0);
+  nh_ts_trace ("snapshot", nh_ts_now () - t0);
 
   pthread_once (&nh_ts_once, nh_ts_init_once);
   nh_wk_lock (&nh_ts_live_m);
@@ -1026,6 +1081,7 @@ nh_ts_publish (Lisp_Object parser, void **tree)
       ts_tree_delete (result);
       NH_WK_PHASE_POP (depth);
       nh_wk_phase_ns_add (NH_WK_PH_TREESIT, 0, nh_ts_now () - t0);
+      nh_ts_trace ("replay", nh_ts_now () - t0);
       if (!reparsed)
 	{
 	  nh_ts_drop (p);
@@ -1051,6 +1107,7 @@ nh_ts_publish (Lisp_Object parser, void **tree)
   p->nh_job = NULL;
   nh_wk_job_unref (&t->job);
   nh_ts_counted (NH_TS_C_PUBLISHED);
+  nh_ts_trace ("published", 0);
   return true;
 }
 
@@ -1113,6 +1170,7 @@ nh_ts_attempt (struct Lisp_TS_Parser *p)
     nh_ts_note_parse (p, p->tree != NULL, nh_ts_now () - t0,
 		      BUF_ZV_BYTE (XBUFFER (p->buffer))
 		      - BUF_BEGV_BYTE (XBUFFER (p->buffer)));
+  nh_ts_trace (tree ? "attempt-ok" : "attempt-cancel", nh_ts_now () - t0);
   return tree;
 #else
   (void) p;
@@ -1146,17 +1204,22 @@ nh_ts_wait_or_cancel (Lisp_Object parser, void **tree)
 				    * (1.0 - (double) atomic_load
 				       (&t->job.progress) / total)));
   bool pays = own < 0 || remaining < 0 || remaining <= own;
+  const char *why = (atomic_load (&t->job.state) == NH_WK_J_QUEUED
+		     ? "cancel-queued" : "cancel-behind");
   if (atomic_load (&t->job.state) != NH_WK_J_QUEUED
       && (first_big || (pays && !nh_ts_job_behind (p, t))))
     {
       nh_ts_counted (NH_TS_C_WAITED);
-      if (nh_wk_wait (&t->job,
-		      first_big ? NH_TS_WAIT_MAX_NS
-		      : own < 0 ? NH_TS_ATTEMPT_NS
-		      : max (NH_TS_ATTEMPT_NS, min (own, NH_TS_WAIT_MAX_NS)),
-		      NH_WK_PH_TREESIT_WAIT, 0) == 1
-	  && nh_ts_publish (parser, tree))
+      int64_t t0 = nh_ts_now ();
+      int w = nh_wk_wait (&t->job,
+			  first_big ? NH_TS_WAIT_MAX_NS
+			  : own < 0 ? NH_TS_ATTEMPT_NS
+			  : max (NH_TS_ATTEMPT_NS, min (own, NH_TS_WAIT_MAX_NS)),
+			  NH_WK_PH_TREESIT_WAIT, 0);
+      nh_ts_trace (w == 1 ? "wait-done" : "wait-timeout", nh_ts_now () - t0);
+      if (w == 1 && nh_ts_publish (parser, tree))
 	return NH_TS_TREE;
+      why = "wait-unpublished";
     }
   /* nh_ts_publish dropped a finished job it could not publish.  */
   if (p->nh_job)
@@ -1164,11 +1227,42 @@ nh_ts_wait_or_cancel (Lisp_Object parser, void **tree)
       nh_ts_drop (p);
       nh_ts_counted (NH_TS_C_ABANDONED);
     }
+  nh_ts_trace (why, 0);
   return NH_TS_SYNC;
 }
 
+static int nh_ts_demand_1 (Lisp_Object, bool, void **);
+
 int
 nh_ts_demand (Lisp_Object parser, bool may_defer, void **tree)
+{
+  if (!nh_ts_tracing ())
+    return nh_ts_demand_1 (parser, may_defer, tree);
+  /* Traced: the synchronous parse treesit_ensure_parsed would run, here,
+     timed.  */
+  struct Lisp_TS_Parser *p = XTS_PARSER (parser);
+  bool had_job = p->nh_job;
+  int r = nh_ts_demand_1 (parser, may_defer, tree);
+  if (r == NH_TS_NOT_READY)
+    nh_ts_trace ("not-ready", 0);
+  if (r != NH_TS_SYNC)
+    return r;
+  int64_t t0 = nh_ts_now ();
+  TSTree *t = ts_parser_parse (p->parser, p->tree, p->input);
+  int64_t ns = nh_ts_now () - t0;
+  nh_ts_trace (had_job ? "sync-fallback" : "sync", ns);
+  if (!t)
+    return NH_TS_SYNC;
+  /* It feeds the estimates as treesit_ensure_parsed's own parse does.  */
+  struct buffer *b = XBUFFER (p->buffer);
+  nh_ts_note_parse (p, p->tree != NULL, ns,
+		    BUF_ZV_BYTE (b) - BUF_BEGV_BYTE (b));
+  *tree = t;
+  return NH_TS_TREE;
+}
+
+static int
+nh_ts_demand_1 (Lisp_Object parser, bool may_defer, void **tree)
 {
   struct Lisp_TS_Parser *p = XTS_PARSER (parser);
   if (nh_ts_publish (parser, tree))
@@ -1367,13 +1461,18 @@ wrappers of nidhogg-workers-treesit.el call it.  */)
      wait of at most NH_WK_NEAR_DONE_NS and the budget's grant.  No Lisp
      runs during the wait: T stays the parser's job.  */
   uint64_t total = atomic_load (&t->job.total);
+  int64_t grant = 0;
+  int64_t t0 = nh_ts_now ();
   if (total > 0
       && 100 * atomic_load (&t->job.progress) >= NH_WK_NEAR_DONE_PCT * total)
     {
-      int64_t grant = nh_wk_budget_take (NH_WK_NEAR_DONE_NS);
+      grant = nh_wk_budget_take (NH_WK_NEAR_DONE_NS);
       if (grant > 0)
 	nh_wk_wait (&t->job, grant, NH_WK_PH_TREESIT_WAIT, 0);
     }
+  nh_ts_trace (grant <= 0 ? "await-nogrant"
+	       : nh_ts_job_finished (t) ? "await-done" : "await-deferred",
+	       nh_ts_now () - t0);
   if (nh_ts_job_finished (t))
     return Qt;
   if (!NILP (count))
@@ -1551,14 +1650,16 @@ demand's 1 ms attempts), `:cancels' (attempts cancelled and reset),
 `:started-demand', `:started-create', `:started-select' (jobs started at
 each start point), `:waited' (demands that waited for a job),
 `:abandoned' (demands that cancelled a queued or running job: not
-started, behind, or not done within the estimate) and `:live' (jobs not
-yet freed).  */)
+started, behind, or not done within the estimate), `:job-queue-us',
+`:job-parse-us', `:job-walk-us' (the jobs' microseconds queued, parsing
+and computing the subtree statistics) and `:live' (jobs not yet
+freed).  */)
   (void)
 {
   nh_wk_lock (&nh_ts_live_m);
   ptrdiff_t live = nh_ts_live;
   pthread_mutex_unlock (&nh_ts_live_m);
-  return listn (34,
+  return listn (40,
 		intern_c_string (":started"),
 		make_int (atomic_load (&nh_ts_count[NH_TS_C_STARTED])),
 		intern_c_string (":refused"),
@@ -1591,6 +1692,12 @@ yet freed).  */)
 		make_int (atomic_load (&nh_ts_count[NH_TS_C_WAITED])),
 		intern_c_string (":abandoned"),
 		make_int (atomic_load (&nh_ts_count[NH_TS_C_ABANDONED])),
+		intern_c_string (":job-queue-us"),
+		make_int (atomic_load (&nh_ts_count[NH_TS_C_JOB_QUEUE_NS]) / 1000),
+		intern_c_string (":job-parse-us"),
+		make_int (atomic_load (&nh_ts_count[NH_TS_C_JOB_PARSE_NS]) / 1000),
+		intern_c_string (":job-walk-us"),
+		make_int (atomic_load (&nh_ts_count[NH_TS_C_JOB_WALK_NS]) / 1000),
 		intern_c_string (":live"), make_int (live));
 }
 
@@ -1713,6 +1820,17 @@ nil, the default, is 1 ms; a natural number is the bound in nanoseconds,
 at most 2 s (0 cancels the attempt at tree-sitter's first progress
 check); t never cancels it.  */);
   Vnidhogg_workers__test_ts_attempt_bound = Qnil;
+  DEFVAR_LISP ("nidhogg-workers--test-ts-trace", Vnidhogg_workers__test_ts_trace,
+	       doc: /* Test only: the tree-sitter demand trace, or nil (off).
+While non-nil, each step of a demand on the main thread pushes (KIND US
+CALLERS) onto it: KIND is `attempt-ok', `attempt-cancel', `snapshot',
+`sync' (a synchronous parse), `sync-fallback' (one after a job was
+dropped), `not-ready', `published', `replay', `wait-done',
+`wait-timeout', `cancel-queued', `cancel-behind', `wait-unpublished',
+`await-done', `await-deferred' or `await-nogrant'; US its microseconds;
+CALLERS the innermost Lisp functions on the stack that are not
+tree-sitter's or Nidhogg's own.  */);
+  Vnidhogg_workers__test_ts_trace = Qnil;
   DEFSYM (Qnidhogg_workers_treesit, "nidhogg-workers-treesit");
   DEFSYM (Qnidhogg_treesit_defer, "nidhogg-treesit-defer");
   DEFSYM (Qnidhogg_workers_treesit__land, "nidhogg-workers-treesit--land");
