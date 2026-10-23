@@ -535,8 +535,11 @@ tk_key (struct nh_json_tk *p, size_t start, size_t nbytes, size_t nchars,
   while (p->htab[i])
     {
       const struct nh_json_key *k = &p->keys[p->htab[i] - 1];
+      /* An empty key may come before the arena exists (NULL):
+	 memcmp must not see it, even for 0 bytes.  */
       if (k->len == nbytes
-	  && memcmp (p->arena + k->off, p->arena + start, nbytes) == 0)
+	  && (nbytes == 0
+	      || memcmp (p->arena + k->off, p->arena + start, nbytes) == 0))
 	{
 	  *id = p->htab[i] - 1;
 	  p->n_ar = start;
