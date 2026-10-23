@@ -1286,6 +1286,12 @@ nh_ts_log_tree_edit (Lisp_Object parser, ptrdiff_t start_byte,
 		     new_end_byte);
 }
 
+/* Set by treesit-parser-changed-regions for the treesit_ensure_parsed
+   it calls next, which clears it at once: the one demand that may
+   answer "not ready" while redisplay fontifies (nidhogg-treesit-bg.c,
+   nh_ts_demand).  Every other demand ends with a tree.  */
+static bool nh_ts_demand_may_defer;
+
 #endif
 
 /* Given a position at POS_LINECOL, and the linecol of a buffer change
@@ -1988,6 +1994,12 @@ treesit_call_after_change_functions (Lisp_Object parser, Lisp_Object ranges)
 static Lisp_Object
 treesit_ensure_parsed (Lisp_Object parser)
 {
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  bool nh_may_defer = nh_ts_demand_may_defer;
+  nh_ts_demand_may_defer = false;
+
+#endif
   if (XTS_PARSER (parser)->within_reparse) return Qnil;
   XTS_PARSER (parser)->within_reparse = true;
 
@@ -2011,10 +2023,18 @@ treesit_ensure_parsed (Lisp_Object parser)
 
 #ifdef HAVE_NIDHOGG_WORKERS
 
-  /* A finished worker parse of the current text replaces the
-     synchronous one; everything after it is today's tail.  */
+  /* A worker's parse of the current text, a 1 ms attempt or a wait for
+     a nearly done job replaces the synchronous parse; everything after
+     it is today's tail.  While redisplay fontifies, a job may take the
+     parse instead: nothing changes now.  */
   void *published;
-  TSTree *new_tree = (nh_ts_publish (parser, &published)
+  int nh_demand = nh_ts_demand (parser, nh_may_defer, &published);
+  if (nh_demand == NH_TS_NOT_READY)
+    {
+      XTS_PARSER (parser)->within_reparse = false;
+      return Qnil;
+    }
+  TSTree *new_tree = (nh_demand == NH_TS_TREE
 		      ? published
 		      : ts_parser_parse (treesit_parser, tree, input));
 
@@ -3019,6 +3039,11 @@ or no affected ranges, return nil.  */)
 {
   treesit_check_parser (parser);
   treesit_initialize ();
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  nh_ts_demand_may_defer = true;
+
+#endif
   return treesit_ensure_parsed (parser);
 }
 
