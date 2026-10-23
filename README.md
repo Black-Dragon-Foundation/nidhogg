@@ -421,7 +421,22 @@ today, and so does everything with either switch off. Watchdog phases: `image` (
   inserts with the worker's counts only for `undecided` with UTF-8 first and valid UTF-8 (no null, ESC, CR, BOM), or
   ASCII-only text under an ASCII-compatible coding; everything else goes through `decode_coding_gap`.
   `nidhogg-blk--insert-path` (`fast` or `decode`) is the test hook.
-<!-- wk: Task 34 -->
+- Auto-save writes (`src/nidhogg-blk.c`, `nh-save`, one thread of its own): with `nidhogg-workers-autosave` on, an
+  auto-save the keyboard loop triggers (after `auto-save-interval` events or `auto-save-timeout` idle seconds) copies
+  each due buffer on the plain path (its auto-save file is not the visited file; no `write-region-annotate-functions`,
+  formats, selective display or file name handler) and writes the copy on `nh-save`, encoded as `utf-8-emacs-unix`,
+  into a new file in the same directory (an unnamed `O_TMPFILE` on Linux, else `.#NAME#.nh-PID-N`). At the next timer
+  check the file is renamed onto the buffer's current `buffer-auto-save-file-name`, unless the job was superseded: a
+  save of the buffer, `delete-file` of the name, `rename-file` of it to another name, a newer auto-save, or a
+  synchronous one. `do-auto-save` from Lisp, `kill-emacs`, the fatal path and the tty emergency escape stay
+  synchronous and also write any buffer whose job has not landed; `kill-buffer` lands a finished job, or writes a
+  running one's auto-save, before it asks about the auto-save file. Hooks, counters, messages and `recent-auto-save-p`
+  are as before. Within the contract: the file reaches the disk a few ms after "Auto-saving...done" and replaces the
+  old one by a rename; a write error shows the usual warning at that point; while a buffer's previous job still runs
+  its next auto-save is written synchronously with a warning, and a job running over 60 s turns auto-saving off for
+  that buffer for 20 minutes, as a 60 s write does. Test primitives: `nidhogg-workers--test-keyboard-auto-save`,
+  `--test-save-await`, `--test-save-jobs`, `--test-save-age`, `--test-save-encode`, `nidhogg-workers--save-unnamed`
+  and the `before-write` pause point.
 <!-- wk: Task 35 -->
 <!-- wk: Task 36 -->
 <!-- wk: Task 37 -->
