@@ -420,4 +420,309 @@ BODY sees `mode' and `dir' (the grammar directory)."
                                   (treesit-parser-root-node
                                    (treesit-parser-create 'c nil t))))))))))))))
 
+;;; The edit log and replay (Task 11).
+
+(defun workers-ts-tests--sexp (parser)
+  "The S-expression of PARSER's tree (a demand)."
+  (treesit-node-string (treesit-parser-root-node parser)))
+
+(defun workers-ts-tests--thirty-edits ()
+  "Thirty edits all over the current buffer, one change each."
+  (dotimes (i 30)
+    (goto-char (1+ (/ (* (1+ i) (buffer-size)) 31)))
+    (forward-line 0)
+    (pcase (% i 3)
+      (0 (insert (format "int e%d;\n" i)))
+      (1 (insert "/* é */ "))
+      (_ (delete-region (point) (line-beginning-position 2))))))
+
+(defun workers-ts-tests--type ()
+  "Type a 30-character definition in the middle, one character at a time."
+  (goto-char (/ (point-max) 2))
+  (forward-line 0)
+  (dolist (c (string-to-list "int typed (void) { return 0; }"))
+    (insert c)))
+
+(defun workers-ts-tests--replay-row (mode text has-tree edit)
+  "Edit twin buffers while A's job is paused at `after-snapshot'; check the replay.
+MODE is the workers' mode.  TEXT fills both buffers; with HAS-TREE both
+parse first and take one more edit.  Buffer B parses where A's job takes
+its snapshot (a synchronous replay with the same grouping); EDIT then
+makes 30 one-change edits in each.  A's publish replays them and equals
+B's tree."
+  (let ((a (generate-new-buffer " ts-replay-a"))
+        (b (generate-new-buffer " ts-replay-b"))
+        pa pb)
+    (unwind-protect
+        (progn
+          (dolist (buf (list a b))
+            (with-current-buffer buf
+              (insert text)))
+          (setq pa (treesit-parser-create 'c a t)
+                pb (treesit-parser-create 'c b t))
+          (when has-tree
+            (treesit-parser-root-node pa)
+            (treesit-parser-root-node pb)
+            (dolist (buf (list a b))
+              (with-current-buffer buf
+                (goto-char (point-max))
+                (insert "int z;\n"))))
+          (workers-ts-tests--pause mode 'after-snapshot)
+          (should (nidhogg-workers--test-ts-start pa))
+          (workers-ts-tests--await mode 'after-snapshot)
+          (treesit-parser-root-node pb)
+          (dolist (buf (list a b))
+            (with-current-buffer buf
+              (funcall edit)))
+          (should (eql (workers-ts-tests--info pa :log) 30))
+          (should-not (nidhogg-treesit-parser-ready-p pa))
+          (nidhogg-workers--release 'after-snapshot)
+          (workers-ts-tests--done pa)
+          (let ((pub (workers-ts-tests--stat :published))
+                (rep (workers-ts-tests--stat :replayed))
+                (edits (workers-ts-tests--stat :replayed-edits))
+                (sa (workers-ts-tests--sexp pa)))
+            (should (= (workers-ts-tests--stat :published) (1+ pub)))
+            (should (= (workers-ts-tests--stat :replayed) (1+ rep)))
+            (should (= (workers-ts-tests--stat :replayed-edits) (+ edits 30)))
+            (should (equal sa (workers-ts-tests--sexp pb)))))
+      (kill-buffer a)
+      (kill-buffer b))))
+
+(ert-deftest workers/ts-edits-during-job ()
+  ;; Edits while a job runs are logged and replayed onto its tree: the
+  ;; publish equals a synchronous replay.  The same for a parser with no
+  ;; tree yet: typing before the first parse lands (B3).
+  (workers-ts-tests--modes
+    (let ((text (workers-ts-tests--c-text 50000)))
+      (ert-info ("with a tree" :prefix "")
+        (workers-ts-tests--replay-row mode text t
+                                      #'workers-ts-tests--thirty-edits))
+      (ert-info ("no tree yet" :prefix "")
+        (workers-ts-tests--replay-row mode text nil
+                                      #'workers-ts-tests--type)))))
+
+(ert-deftest workers/ts-linecol ()
+  ;; A parser that tracks line and column: edits during a job are replayed
+  ;; with their points; a job started without a tree is dropped at its
+  ;; first edit (MC-19) and the demand parses synchronously.
+  (workers-ts-tests--modes
+    (let ((text (workers-ts-tests--c-text 50000))
+          (treesit-languages-require-line-column-tracking '(c)))
+      (ert-info ("with a tree" :prefix "")
+        (workers-ts-tests--replay-row mode text t
+                                      #'workers-ts-tests--thirty-edits))
+      (ert-info ("no tree yet" :prefix "")
+        (with-temp-buffer
+          (insert text)
+          (let ((p (treesit-parser-create 'c nil t))
+                (dis (workers-ts-tests--stat :discarded)))
+            (should (treesit-parser-tracking-line-column-p p))
+            (workers-ts-tests--pause mode 'after-snapshot)
+            (should (nidhogg-workers--test-ts-start p))
+            (workers-ts-tests--await mode 'after-snapshot)
+            (goto-char (point-min))
+            (insert "int y;\n")
+            (should-not (workers-ts-tests--info p :job))
+            (should (= (workers-ts-tests--stat :discarded) (1+ dis)))
+            (nidhogg-workers--release 'after-snapshot)
+            (let ((pub (workers-ts-tests--stat :published)))
+              (should (equal (workers-ts-tests--sexp p)
+                             (workers-ts-tests--sync-sexp (buffer-string))))
+              (should (= (workers-ts-tests--stat :published) pub)))
+            (should (nidhogg-workers--test-ts-await-idle 60000))))))))
+
+(ert-deftest workers/ts-cancel-restart ()
+  ;; §7.2: a start after an edit drops the older job for a new snapshot,
+  ;; whether its parse is finished (paused at `before-done') or not begun
+  ;; (`after-snapshot': the cancelled job never parses, so a cancelled
+  ;; parse is never resumed over changed input).
+  (workers-ts-tests--modes
+    (with-temp-buffer
+      (insert (workers-ts-tests--c-text 50000))
+      (let ((p (treesit-parser-create 'c nil t)))
+        (treesit-parser-root-node p)
+        (dolist (point '(before-done after-snapshot))
+          (ert-info ((format "paused at %s" point) :prefix "")
+            (goto-char (point-max))
+            (insert "int z;\n")
+            (let ((sup (workers-ts-tests--stat :superseded))
+                  (started (workers-ts-tests--stat :started))
+                  (parses (workers-ts-tests--stat :parses)))
+              (workers-ts-tests--pause mode point)
+              (should (nidhogg-workers--test-ts-start p))
+              (workers-ts-tests--await mode point)
+              (goto-char (point-min))
+              (insert "int y;\n")
+              (should (nidhogg-workers--test-ts-start p))
+              (should (= (workers-ts-tests--stat :superseded) (1+ sup)))
+              (should (= (workers-ts-tests--stat :started) (+ started 2)))
+              (should (eql (workers-ts-tests--info p :log) 0))
+              (nidhogg-workers--release point)
+              (workers-ts-tests--done p)
+              (should (nidhogg-treesit-parser-ready-p p))
+              ;; An inline job parses at its start; a worker never begins
+              ;; the parse of a job cancelled at `after-snapshot'.
+              (should (= (workers-ts-tests--stat :parses)
+                         (+ parses (if (and (eq mode 'threads)
+                                            (eq point 'after-snapshot))
+                                       1 2))))
+              (let ((pub (workers-ts-tests--stat :published))
+                    (rep (workers-ts-tests--stat :replayed)))
+                (should (equal (workers-ts-tests--sexp p)
+                               (workers-ts-tests--sync-sexp (buffer-string))))
+                (should (= (workers-ts-tests--stat :published) (1+ pub)))
+                (should (= (workers-ts-tests--stat :replayed) rep)))
+              (should (nidhogg-workers--test-ts-await-idle 60000)))))))))
+
+(ert-deftest workers/ts-subtree-stat-after-replay ()
+  ;; M4, second half: a replay reparse drops the worker's statistics; the
+  ;; answer is the walked value of the published tree.
+  (workers-ts-tests--modes
+    (with-temp-buffer
+      (insert (workers-ts-tests--c-text 200000))
+      (let ((p (treesit-parser-create 'c nil t)))
+        (treesit-parser-root-node p)
+        (goto-char (point-max))
+        (insert "int z;\n")
+        (workers-ts-tests--pause mode 'after-snapshot)
+        (should (nidhogg-workers--test-ts-start p))
+        (workers-ts-tests--await mode 'after-snapshot)
+        (goto-char (point-min))
+        (insert "int y (void) { return 2; }\n")
+        (nidhogg-workers--release 'after-snapshot)
+        (workers-ts-tests--done p)
+        (let* ((hits (workers-ts-tests--stat :stat-cached))
+               (rep (workers-ts-tests--stat :replayed))
+               (stat (treesit-subtree-stat (treesit-parser-root-node p))))
+          (should (= (workers-ts-tests--stat :replayed) (1+ rep)))
+          (should (= (workers-ts-tests--stat :stat-cached) hits))
+          (should (equal stat
+                         (let ((now (buffer-string)))
+                           (with-temp-buffer
+                             (insert now)
+                             (treesit-subtree-stat
+                              (treesit-parser-root-node
+                               (treesit-parser-create 'c nil t))))))))))))
+
+;; The oracle (§17.3 S12).
+
+(defconst workers-ts-tests--oracle-steps 5000
+  "The edit steps of `workers/ts-oracle', per grammar and mode.")
+
+(defun workers-ts-tests--undo ()
+  "Undo the current buffer's latest change group, as `undo' would."
+  (let ((list buffer-undo-list))
+    (while (and list (null (car list)))
+      (setq list (cdr list)))
+    (when list
+      (primitive-undo 1 list))))
+
+(defun workers-ts-tests--random-text (sample)
+  "A random piece of SAMPLE, now and then with a multibyte character."
+  (let* ((beg (random (length sample)))
+         (end (min (length sample) (+ beg 1 (random 40)))))
+    (concat (substring sample beg end) (if (zerop (random 6)) "é" ""))))
+
+(defun workers-ts-tests--random-edit (sample)
+  "A random edit of the current buffer, for `workers-ts-tests--apply-edit'.
+An insert, delete, replace, yank or undo; SAMPLE is a line of the
+language.  A buffer under 8000 characters gets a yank."
+  (let* ((size (buffer-size))
+         (pos (1+ (random (1+ size))))
+         (end (min (1+ size) (+ pos (random 200)))))
+    (pcase (if (< size 8000) 8 (random 10))
+      ((or 0 1 2 3) (list 'insert pos (workers-ts-tests--random-text sample)))
+      ((or 4 5) (list 'delete pos end))
+      ((or 6 7) (list 'replace pos end (workers-ts-tests--random-text sample)))
+      (8 (list 'yank pos (apply #'concat (make-list (1+ (random 5)) sample))))
+      (_ (list 'undo)))))
+
+(defun workers-ts-tests--apply-edit (edit)
+  "Apply EDIT, from `workers-ts-tests--random-edit', to the current buffer."
+  (undo-boundary)
+  (pcase edit
+    (`(insert ,pos ,text) (goto-char pos) (insert text))
+    (`(delete ,beg ,end) (delete-region beg end))
+    (`(replace ,beg ,end ,text)
+     ;; One change, as `replace-match' makes it.
+     (set-match-data (list beg end))
+     (replace-match text t t))
+    (`(yank ,pos ,text) (goto-char pos) (insert-for-yank text))
+    (`(undo) (workers-ts-tests--undo))))
+
+(defun workers-ts-tests--step (a b sample)
+  "One random edit, made identically in buffers A and B (SAMPLE: a line)."
+  (let ((edit (with-current-buffer a (workers-ts-tests--random-edit sample))))
+    (with-current-buffer a (workers-ts-tests--apply-edit edit))
+    (with-current-buffer b (workers-ts-tests--apply-edit edit))))
+
+(ert-deftest workers/ts-oracle ()
+  ;; S12: seeded edit scripts (insert, delete, replace, yank, undo) with
+  ;; demand points.  At each demand the published tree equals a synchronous
+  ;; replay with the identical edit grouping: a twin buffer parsed where
+  ;; the job took its snapshot.  Divergence from a fresh parse is counted
+  ;; and printed, never asserted.
+  (workers-ts-tests--modes
+    (dolist (s workers-ts-tests--samples)
+      (when (file-exists-p (expand-file-name
+                            (format "libtree-sitter-%s.so" (car s)) dir))
+        (ert-info ((format "%s" (car s)) :prefix "grammar ")
+          (let ((a (generate-new-buffer " ts-oracle-a"))
+                (b (generate-new-buffer " ts-oracle-b"))
+                (text (apply #'concat (make-list (/ 20000 (length (cdr s)))
+                                                 (cdr s))))
+                (steps 0) (demands 0) (replays 0) (divergent 0)
+                pa pb)
+            (unwind-protect
+                (progn
+                  (random (format "workers/ts-oracle %s" (car s)))
+                  (dolist (buf (list a b))
+                    (with-current-buffer buf
+                      (insert text)
+                      ;; After the text: an undo never empties the buffer.
+                      (buffer-enable-undo)))
+                  (setq pa (treesit-parser-create (car s) a t)
+                        pb (treesit-parser-create (car s) b t))
+                  (should (equal (workers-ts-tests--sexp pa)
+                                 (workers-ts-tests--sexp pb)))
+                  (while (< steps workers-ts-tests--oracle-steps)
+                    ;; Edits before the snapshot.
+                    (dotimes (_ (1+ (random 4)))
+                      (workers-ts-tests--step a b (cdr s))
+                      (setq steps (1+ steps)))
+                    (workers-ts-tests--pause mode 'after-snapshot)
+                    (let ((started (nidhogg-workers--test-ts-start pa))
+                          (pub (workers-ts-tests--stat :published))
+                          (rep (workers-ts-tests--stat :replayed)))
+                      ;; B parses where A's job takes its snapshot.
+                      (when started
+                        (workers-ts-tests--await mode 'after-snapshot)
+                        (treesit-parser-root-node pb))
+                      ;; Edits while the job runs.
+                      (dotimes (_ (random 16))
+                        (workers-ts-tests--step a b (cdr s))
+                        (setq steps (1+ steps)))
+                      (nidhogg-workers--release 'after-snapshot)
+                      (when started
+                        (workers-ts-tests--done pa))
+                      ;; The demand.
+                      (let ((sa (workers-ts-tests--sexp pa)))
+                        (should (equal sa (workers-ts-tests--sexp pb)))
+                        (setq demands (1+ demands))
+                        (when started
+                          (should (= (workers-ts-tests--stat :published)
+                                     (1+ pub)))
+                          (when (> (workers-ts-tests--stat :replayed) rep)
+                            (setq replays (1+ replays))))
+                        (unless (equal sa (with-current-buffer a
+                                            (workers-ts-tests--sync-sexp
+                                             (buffer-string) (car s))))
+                          (setq divergent (1+ divergent))))))
+                  (should (> replays 0))
+                  (message "workers/ts-oracle: %s %s: %d demands, %d replays, %d diverge from a fresh parse"
+                           mode (car s) demands replays divergent))
+              (kill-buffer a)
+              (kill-buffer b))))))))
+
 ;;; workers-ts-tests.el ends here
