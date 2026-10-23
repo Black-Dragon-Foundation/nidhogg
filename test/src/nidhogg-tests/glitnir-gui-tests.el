@@ -930,14 +930,18 @@ Glitnir is on again after, and they are redrawn whole once more (so `verify' com
       (when (frame-live-p c) (delete-frame c t)))))
 
 (ert-deftest glitnir-gui/geometry-parity ()
-  ;; Glitnir draws child frames, it never places them: their geometry, read right after each Lisp call, is the
-  ;; Glitnir-off run's.
+  ;; Glitnir draws child frames, it never places them: their geometry after each Lisp call is the Glitnir-off run's.
+  ;; Each side lets GTK's layout run before it reads: stock pgtk takes a child's `frame-edges' from GTK's allocation,
+  ;; which follows only at GTK's next layout (whenever GLib next dispatches, e.g. from an unblock_input with input
+  ;; pending), so a read right after the call races in stock too.  The fix is NH-PGTK-CHILD-EDGES-1 (branch
+  ;; nh-pgtk-child-frame-edges, below the flag groups).
   (glitnir-gui--under)
   (cl-flet ((run (on)
               (let ((glitnir-enable on) (out nil) (c nil))
                 (unwind-protect
-                    (cl-flet ((note () (push (list (frame-edges c) (frame-edges c 'native-edges) (frame-position c))
-                                             out)))
+                    (cl-flet ((note () (redisplay t) (sit-for 0.1)
+                                (push (list (frame-edges c) (frame-edges c 'native-edges) (frame-position c))
+                                      out)))
                       (setq c (glitnir-gui--popup glitnir-gui--chrome)) (note)
                       (set-frame-position c 260 230) (note)
                       (set-frame-size c 30 8) (note)
