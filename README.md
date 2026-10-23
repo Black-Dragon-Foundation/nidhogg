@@ -286,7 +286,13 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   (`nidhogg-workers--pause-at`, `--release`, `--test-await-paused`), `--test-job`, `--test-wait`, `--test-job-info`,
   `--test-signal-storm`, `--test-wake-race`, `--test-fd-reserve`; `nidhogg/test/workers-harness.sh --tsan queue wake`
   runs the queues and the wake protocol under ThreadSanitizer.
-<!-- wk: Task 4 -->
+- The fatal path: `shut_down_emacs` marks the workers dead first when Emacs dies of a signal or a fatal error. From
+  then on no job is submitted, no wait waits, completions are dropped and the queues are abandoned (not freed), so a
+  crash under a worker's mutex, or on a worker thread (forwarded to the main thread as usual), still prints its
+  backtrace and writes the emergency auto-save. No signal handler takes a worker mutex: the SIGCHLD handler runs in
+  signal context, where submit, wait and cancel refuse at once and a worker mutex taken anyway aborts the process
+  rather than deadlock. `kill-emacs` with jobs in flight exits without waiting for them. Test primitives:
+  `nidhogg-workers--test-crash`, `--test-fatal-under-lock`, `--test-signal-under-locks`.
 <!-- wk: Task 5 -->
 <!-- wk: Task 6 -->
 <!-- wk: Task 7 -->

@@ -3115,6 +3115,12 @@ killed.  */
 void
 shut_down_emacs (int sig, Lisp_Object stuff)
 {
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  /* The fatal path: from here on nothing waits on a worker.  */
+  if (sig || fatal_error_in_progress)
+    nh_wk_fatal_begin ();
+#endif
   /* Prevent running of hooks from now on.  */
   Vrun_hooks = Qnil;
 
