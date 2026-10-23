@@ -480,6 +480,12 @@ enum { NH_TS_START_DEMAND, NH_TS_START_CREATE, NH_TS_START_SELECT };
 extern void nh_ts_maybe_start (Lisp_Object parser, int start_point);
 /* NODE's (treesit-subtree-stat) if a worker computed it, else nil.  */
 extern Lisp_Object nh_ts_subtree_stat_cached (Lisp_Object node);
+/* handle_fontified_prop, inside its specbind of fontification-functions
+   [13]: with REDISPLAYING (redisplaying_p, so never for vertical-motion
+   and friends) and `nidhogg-treesit-defer' on, bind
+   `nidhogg--redisplay-fontifying' to the current buffer; the caller's
+   unbind_to undoes it.  */
+extern void nh_ts_redisplay_fontifying (bool redisplaying);
 extern Lisp_Object nh_img_size (Lisp_Object spec, Lisp_Object frame,
 				bool pixels, bool *answered);
 extern Lisp_Object nh_img_metadata (Lisp_Object spec, Lisp_Object frame,
