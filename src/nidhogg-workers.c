@@ -1268,7 +1268,7 @@ static void *
 nh_wk_gap_helper (void *arg)
 {
   (void) arg;
-  pthread_mutex_lock (&nh_wk_gap_m);
+  nh_wk_lock (&nh_wk_gap_m);
   for (;;)
     {
       while (nh_wk_gap_go == 0)
@@ -1278,7 +1278,7 @@ nh_wk_gap_helper (void *arg)
       nh_wk_gap_go = 0;
       pthread_mutex_unlock (&nh_wk_gap_m);
       nh_wk_cq_push (&nh_wk_race_q, &nh_wk_gap_job);
-      pthread_mutex_lock (&nh_wk_gap_m);
+      nh_wk_lock (&nh_wk_gap_m);
       nh_wk_gap_done = true;
       pthread_cond_broadcast (&nh_wk_gap_cv);
     }
@@ -1289,7 +1289,7 @@ nh_wk_gap_helper (void *arg)
 static void
 nh_wk_gap_hook (void)
 {
-  pthread_mutex_lock (&nh_wk_gap_m);
+  nh_wk_lock (&nh_wk_gap_m);
   nh_wk_gap_done = false;
   nh_wk_gap_go = 1;
   pthread_cond_broadcast (&nh_wk_gap_cv);
@@ -1329,7 +1329,7 @@ nh_wk_race_gap (int n)
 	lost++;
       nh_wk_race_reset ();
     }
-  pthread_mutex_lock (&nh_wk_gap_m);
+  nh_wk_lock (&nh_wk_gap_m);
   nh_wk_gap_go = -1;
   pthread_cond_broadcast (&nh_wk_gap_cv);
   pthread_mutex_unlock (&nh_wk_gap_m);
