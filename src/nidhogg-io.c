@@ -107,6 +107,29 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
    session gets a pull function that returns them first and then reads
    the fd, and TLS's pending check counts them (finding 10).
 
+   Framing (Task 24; the design's §5.1-§5.4 and §8.4).  A reader-owned
+   process with a framing (`nidhogg-set-process-framing') is read the
+   same way, but the reader also frames: it splits the bytes into
+   messages (content-length, lines or records), tokenizes each JSON
+   message into a tape (nidhogg-json-tape.c) or decodes each record, and
+   queues the messages instead of chunks; the wake fd works as for
+   chunks.  The framer's state (the bytes after the last message) is the
+   reader's: nh-io's, or the main thread's inline and once handed back.
+   At most 64 MB of complete messages queue (the message in progress
+   may grow to :max-message; past it, a framing error).  The main thread
+   materializes queued messages for up to 4 ms (a message may take
+   several deliveries: its materialization waits, rooted, in
+   h->cur_mat), then leaves the batch for
+   read_and_dispose_of_process_output, which calls the batch function
+   under a filter's protections.  The drains (the real fd) and inline
+   mode deliver every complete message at once.  Turning framing on and
+   off are commands nh-io carries out between reads, and the main thread
+   waits for them (the stop flag ends a tokenize within 64 KB): on, the
+   queued chunks become the framer's bytes; off, the queued messages and
+   the framer's bytes become chunks again, in order, and go to the
+   filter as raw output.  A framing error does the same from nh-io's
+   side for the bytes after the last good message.
+
    Inline mode (`nidhogg-workers--mode') has no thread: the select set
    holds the copy itself and nh_io_read reads it, so the hand-over, the
    select mapping and the close order run without scheduling.
@@ -183,6 +206,10 @@ enum nh_io_refusal
   NH_IO_RF_N
 };
 
+/* nh_io_fr_read's answer when a framing error turned framing off: the
+   delivery reads raw (Task 24).  */
+#define NH_IO_RAW PTRDIFF_MIN
+
 /* A chunk (Task 18): DATA holds the decoder's carry-in (NCIN bytes) and
    then the bytes read, so OFF starts at NCIN and LEN counts both.  When
    SYS is not NH_DEC_NONE, DEC (in the same block, after DATA) is their
@@ -201,7 +228,65 @@ struct nh_io_chunk
   unsigned char data[];
 };
 
-enum nh_io_op { NH_IO_OP_ADD, NH_IO_OP_DETACH };
+/* Framing (Task 24).  */
+enum nh_io_fkind
+{
+  NH_IO_FR_NONE,
+  NH_IO_FR_CL,			/* content-length */
+  NH_IO_FR_LINES,
+  NH_IO_FR_RECORDS
+};
+
+/* The most bytes of complete messages a framed process queues.  */
+#define NH_IO_FR_CAP ((ptrdiff_t) 64 * 1024 * 1024)
+/* A content-length header's most bytes.  */
+enum { NH_IO_FR_HEADER_MAX = 8192 };
+
+struct nh_io_fconf
+{
+  int kind;			/* enum nh_io_fkind */
+  int parse;			/* NH_JSON_MODE_*: the JSON framings */
+  int sep;			/* records: 0 or '\n' */
+  int sys;			/* records: a stateless system, or NH_DEC_NONE */
+  size_t max;			/* :max-message */
+};
+
+/* A framer: the bytes after the last message are BUF[START, LEN).
+   SCAN is where the next look for a line end or separator starts; PRE
+   is where the message in progress starts (`lines': after the empty
+   lines it skipped) or, for a content-length header, where its line in
+   progress starts; HDR and BODY are a content-length message's header
+   and body sizes once its header is complete (HDR > 0); all relative
+   to START.  */
+struct nh_io_framer
+{
+  struct nh_io_fconf c;
+  unsigned char *buf;
+  size_t start, len, size;
+  size_t scan, pre, hdr, body;
+  bool have_len;
+};
+
+/* A complete message.  WIRE (LEN bytes) holds every byte the stream
+   gave for it (the empty lines skipped before it, its header, its
+   terminator); RAW_OFF and RAW_LEN are the message itself.  TAPE: the
+   JSON framings' tokens.  DEC: a record's decode with :coding (MB: a
+   multibyte one).  Each a malloc block.  */
+struct nh_io_msg
+{
+  struct nh_io_msg *next;
+  size_t len, raw_off, raw_len;
+  unsigned char *wire;
+  struct nh_tape *tape;
+  unsigned char *dec;
+  ptrdiff_t dlen, nchars;
+  bool mb;
+};
+
+enum nh_io_op
+{
+  NH_IO_OP_ADD, NH_IO_OP_DETACH, NH_IO_OP_FRAME, NH_IO_OP_UNFRAME
+};
 
 struct nh_io_h;
 
@@ -210,6 +295,10 @@ struct nh_io_cmd
   int op;
   struct nh_io_h *h;
   struct nh_io_cmd *next;
+  /* FRAME and UNFRAME (malloc'd; nh-io frees them): the framing, and
+     the main thread's wait.  */
+  struct nh_io_fconf conf;
+  struct nh_wk_job *ack;
 };
 
 /* One reader-owned process.  */
@@ -272,6 +361,23 @@ struct nh_io_h
      byte, once COST_KNOWN; COST_FIXED when a test fixed it.  */
   double cost;
   bool cost_known, cost_fixed;
+
+  /* Framing (Task 24).  The reader's framer; the raw cap to go back to.  */
+  struct nh_io_framer fr;
+  ptrdiff_t rawcap;
+  /* Under nh_io_m: the complete messages, oldest first (QUEUED counts
+     their wire bytes), and whether a framing error turned the reader's
+     framing off (chunks follow the messages then).  */
+  struct nh_io_msg *mhead, *mtail;
+  bool fr_failed;
+  /* Set by the main thread before a detach or a framing switch-off: a
+     tokenize in progress stops (within 64 KB) and its bytes stay.  */
+  _Atomic bool stop;
+  /* The main thread's: framed for Lisp; the message being materialized
+     (taken from the queue) and its materialization.  */
+  bool m_framed;
+  struct nh_io_msg *cur;
+  struct nh_mat *cur_mat;
 };
 
 #define NH_IO_SYS(coding) ((int) ((coding) & 0xF))
@@ -293,7 +399,7 @@ enum nh_io_ev
 {
   NH_IO_EV_HANDOVER, NH_IO_EV_READ, NH_IO_EV_EOF, NH_IO_EV_ERROR,
   NH_IO_EV_ACK, NH_IO_EV_CLOSE, NH_IO_EV_TIMEOUT, NH_IO_EV_DIRECT,
-  NH_IO_EV_N
+  NH_IO_EV_STOPPED, NH_IO_EV_N
 };
 
 struct nh_io_logent
@@ -331,10 +437,43 @@ nh_io_chunks_free (struct nh_io_chunk *c)
 }
 
 static void
+nh_io_msg_free (struct nh_io_msg *m)
+{
+  if (m)
+    {
+      free (m->wire);
+      free (m->dec);
+      free (m->tape);
+      free (m);
+    }
+}
+
+static void
+nh_io_msgs_free (struct nh_io_msg *m)
+{
+  for (struct nh_io_msg *next; m; m = next)
+    {
+      next = m->next;
+      nh_io_msg_free (m);
+    }
+}
+
+/* Empty F, keeping its framing.  */
+static void
+nh_io_framer_reset (struct nh_io_framer *f)
+{
+  free (f->buf);
+  *f = (struct nh_io_framer) { .c = f->c };
+}
+
+static void
 nh_io_free (struct nh_io_h *h)
 {
   nh_io_chunks_free (h->head);
   nh_io_chunks_free (h->last);
+  nh_io_msgs_free (h->mhead);
+  nh_io_msg_free (h->cur);
+  free (h->fr.buf);
   nh_wk_stat_add (NH_WK_IO, NH_WK_ST_QUEUED_BYTES, -h->queued);
   if (!h->inl)
     nh_wk_wake_close (&h->wake);
@@ -367,6 +506,9 @@ nh_io_crash_now (void)
   int *volatile p = NULL;
   *p = 0;
 }
+
+static void nh_io_fr_on (struct nh_io_h *, const struct nh_io_fconf *);
+static void nh_io_fr_off (struct nh_io_h *);
 
 /* Take the command list and carry it out.  POLLED[0..NP) are the
    handles of the poll in progress; a detached one is forgotten there.  */
@@ -403,6 +545,18 @@ nh_io_commands (struct nh_io_h ***set, int *n, int *cap,
 	      *cap = ncap;
 	    }
 	  (*set)[(*n)++] = h;
+	}
+      else if (c->op == NH_IO_OP_FRAME || c->op == NH_IO_OP_UNFRAME)
+	{
+	  /* Task 24: the main thread waits for these.  */
+	  if (c->op == NH_IO_OP_FRAME)
+	    nh_io_fr_on (h, &c->conf);
+	  else
+	    nh_io_fr_off (h);
+	  struct nh_wk_job *ack = c->ack;
+	  free (c);
+	  /* (Drops nh-io's reference.)  */
+	  nh_wk_complete (ack);
 	}
       else
 	{
@@ -475,6 +629,466 @@ nh_io_chunk_new (struct nh_io_h *h, const unsigned char *buf, ptrdiff_t r)
   return c;
 }
 
+/* Framing (Task 24), the reader's half.  */
+
+/* A chunk of the N bytes at S that the filter gets as raw output (the
+   main thread decodes them).  */
+static struct nh_io_chunk *
+nh_io_raw_chunk (const unsigned char *s, size_t n)
+{
+  struct nh_io_chunk *c = malloc (sizeof *c + n);
+  NH_WK_ASSERT (c);
+  *c = (struct nh_io_chunk) { .len = n };
+  memcpy (c->data, s, n);
+  return c;
+}
+
+/* Append the N bytes at S to F's; false when out of memory.  */
+static bool
+nh_io_framer_add (struct nh_io_framer *f, const unsigned char *s, size_t n)
+{
+  if (n == 0)
+    return true;
+  if (f->len + n > f->size && f->start > 0)
+    {
+      memmove (f->buf, f->buf + f->start, f->len - f->start);
+      f->len -= f->start;
+      f->start = 0;
+    }
+  if (f->len + n > f->size)
+    {
+      size_t size = f->size ? f->size : 4096;
+      while (size < f->len + n)
+	size *= 2;
+      unsigned char *b = realloc (f->buf, size);
+      if (!b)
+	return false;
+      f->buf = b;
+      f->size = size;
+    }
+  memcpy (f->buf + f->len, s, n);
+  f->len += n;
+  return true;
+}
+
+/* A content-length header line, the N bytes at S without its CRLF: 1
+   a Content-Length (its value in *LEN), 0 another header, -1 not a
+   header.  Names are case-insensitive; the value may have spaces or
+   tabs around it.  */
+static int
+nh_io_cl_line (const unsigned char *s, size_t n, size_t *len)
+{
+  static const char name[] = "content-length";
+  size_t i = 0;
+  while (i < n && s[i] != ':' && 0x20 < s[i] && s[i] < 0x7f)
+    i++;
+  if (i == 0 || i == n || s[i] != ':')
+    return -1;
+  size_t nlen = i;
+  for (size_t k = nlen + 1; k < n; k++)
+    if (s[k] == '\r' || s[k] == '\n')
+      return -1;
+  if (nlen != sizeof name - 1)
+    return 0;
+  for (size_t k = 0; k < nlen; k++)
+    if ((s[k] | 0x20) != name[k])
+      return 0;
+  for (i = nlen + 1; i < n && (s[i] == ' ' || s[i] == '\t'); i++)
+    ;
+  if (i == n || s[i] < '0' || '9' < s[i])
+    return -1;
+  size_t v = 0;
+  for (; i < n && '0' <= s[i] && s[i] <= '9'; i++)
+    {
+      if (v > (SIZE_MAX - 9) / 10)
+	return -1;
+      v = 10 * v + (s[i] - '0');
+    }
+  for (; i < n && (s[i] == ' ' || s[i] == '\t'); i++)
+    ;
+  if (i != n)
+    return -1;
+  *len = v;
+  return 1;
+}
+
+/* F's next message: its WIRE bytes from F's start, the message itself
+   the RAW_LEN bytes at RAW_OFF in them, tokenized (stopping when *STOP
+   turns true) or decoded, appended at **TAIL.  0; or, with nothing
+   emitted, 1 when STOP stopped the tokenize, -2 when out of memory.  */
+static int
+nh_io_emit (struct nh_io_framer *f, size_t wire, size_t raw_off,
+	    size_t raw_len, const _Atomic bool *stop,
+	    struct nh_io_msg ***tail)
+{
+  const unsigned char *s = f->buf + f->start;
+  struct nh_io_msg *m = malloc (sizeof *m);
+  if (!m)
+    return -2;
+  *m = (struct nh_io_msg) { .len = wire, .raw_off = raw_off,
+			    .raw_len = raw_len };
+  if (f->c.kind != NH_IO_FR_RECORDS)
+    {
+      /* A test stops nh-io here (S16: a detach during a large
+	 message).  */
+      nh_wk_pause_point (NH_WK_P_BEFORE_TOKENIZE);
+      m->tape = nh_json_tokenize (s + raw_off, raw_len, f->c.parse, stop);
+      if (!m->tape)
+	{
+	  free (m);
+	  return stop && atomic_load (stop) ? 1 : -2;
+	}
+    }
+  else if (f->c.sys != NH_DEC_NONE)
+    {
+      ptrdiff_t consumed;
+      m->dec = malloc (NH_DEC_OUT_MAX (raw_len) + 1);
+      m->dlen = (m->dec
+		 ? nh_dec_run (f->c.sys, s + raw_off, raw_len, true, m->dec,
+			       &m->nchars, &consumed)
+		 : -1);
+      if (m->dlen < 0)
+	{
+	  nh_io_msg_free (m);
+	  return -2;
+	}
+      m->mb = NH_DEC_MULTIBYTE (f->c.sys);
+    }
+  if (f->start == 0 && wire == f->len)
+    {
+      /* The message is all F has: it takes F's buffer.  */
+      m->wire = f->buf;
+      f->buf = NULL;
+      f->len = f->size = 0;
+    }
+  else
+    {
+      m->wire = malloc (wire);
+      if (!m->wire)
+	{
+	  nh_io_msg_free (m);
+	  return -2;
+	}
+      memcpy (m->wire, s, wire);
+      f->start += wire;
+    }
+  **tail = m;
+  *tail = &m->next;
+  return 0;
+}
+
+/* The framers' steps: the next message from F's start (F has bytes
+   there).  2 when one was emitted; 0 when the bytes are a message in
+   progress, or skipped empty lines; else nh_io_emit's 1 or -2, or -1 a
+   framing error.  EOF: no more bytes come.  */
+
+static int
+nh_io_step_cl (struct nh_io_framer *f, bool eof, const _Atomic bool *stop,
+	       struct nh_io_msg ***tail)
+{
+  const unsigned char *s = f->buf + f->start;
+  size_t avail = f->len - f->start;
+  while (!f->hdr)
+    {
+      const unsigned char *nl = (f->scan < avail
+				 ? memchr (s + f->scan, '\n', avail - f->scan)
+				 : NULL);
+      if (!nl)
+	{
+	  f->scan = avail;
+	  return (avail > NH_IO_FR_HEADER_MAX || eof) ? -1 : 0;
+	}
+      size_t end = nl - s;
+      if (end >= NH_IO_FR_HEADER_MAX || end == f->pre || s[end - 1] != '\r')
+	return -1;
+      size_t line = f->pre, n = end - 1 - line;
+      f->pre = f->scan = end + 1;
+      size_t len = 0;
+      int k = n ? nh_io_cl_line (s + line, n, &len) : 0;
+      if (k < 0 || (k > 0 && (f->have_len || len > f->c.max)))
+	return -1;
+      if (k > 0)
+	{
+	  f->body = len;
+	  f->have_len = true;
+	}
+      else if (n == 0)
+	{
+	  /* The empty line: the header is complete.  */
+	  if (!f->have_len)
+	    return -1;
+	  f->hdr = end + 1;
+	}
+    }
+  if (avail - f->hdr < f->body)
+    return eof ? -1 : 0;
+  int r = nh_io_emit (f, f->hdr + f->body, f->hdr, f->body, stop, tail);
+  if (r != 0)
+    return r;
+  f->scan = f->pre = f->hdr = f->body = 0;
+  f->have_len = false;
+  return 2;
+}
+
+static int
+nh_io_step_lines (struct nh_io_framer *f, bool eof,
+		  const _Atomic bool *stop, struct nh_io_msg ***tail)
+{
+  const unsigned char *s = f->buf + f->start;
+  size_t avail = f->len - f->start;
+  for (;;)
+    {
+      const unsigned char *nl = (f->scan < avail
+				 ? memchr (s + f->scan, '\n', avail - f->scan)
+				 : NULL);
+      size_t end = nl ? (size_t) (nl - s) : avail;
+      if (!nl)
+	{
+	  f->scan = avail;
+	  /* The line in progress may still end in a \r that is dropped.  */
+	  if (avail - f->pre > f->c.max + 1)
+	    return -1;
+	  /* At EOF, a last line without its newline is a message.  */
+	  if (!eof || avail == f->pre)
+	    return 0;
+	}
+      size_t cend = end > f->pre && s[end - 1] == '\r' ? end - 1 : end;
+      size_t wire = nl ? end + 1 : end;
+      if (cend == f->pre)
+	{
+	  /* An empty line: its bytes go with the next message's.  */
+	  f->pre = f->scan = wire;
+	  if (!nl)
+	    return 0;
+	  continue;
+	}
+      if (cend - f->pre > f->c.max)
+	return -1;
+      int r = nh_io_emit (f, wire, f->pre, cend - f->pre, stop, tail);
+      if (r != 0)
+	return r;
+      f->pre = f->scan = 0;
+      return 2;
+    }
+}
+
+static int
+nh_io_step_records (struct nh_io_framer *f, bool eof,
+		    const _Atomic bool *stop, struct nh_io_msg ***tail)
+{
+  const unsigned char *s = f->buf + f->start;
+  size_t avail = f->len - f->start;
+  const unsigned char *sep = (f->scan < avail
+			      ? memchr (s + f->scan, f->c.sep, avail - f->scan)
+			      : NULL);
+  size_t end = sep ? (size_t) (sep - s) : avail;
+  if (!sep)
+    {
+      f->scan = avail;
+      if (avail > f->c.max)
+	return -1;
+      /* At EOF, a last record without its separator is a record.  */
+      if (!eof)
+	return 0;
+    }
+  if (end > f->c.max)
+    return -1;
+  int r = nh_io_emit (f, sep ? end + 1 : end, 0, end, stop, tail);
+  if (r != 0)
+    return r;
+  f->scan = 0;
+  return 2;
+}
+
+/* Frame F's bytes: emit every complete message at **TAIL.  0 when what
+   is left is a message in progress (or nothing), 1 when STOP stopped a
+   tokenize, -1 a framing error (the bytes from F's start are no
+   message), -2 out of memory.  EOF: no more bytes come.  */
+static int
+nh_io_frame (struct nh_io_framer *f, bool eof, const _Atomic bool *stop,
+	     struct nh_io_msg ***tail)
+{
+  int r = 2;
+  while (r == 2 && f->len > f->start)
+    r = (f->c.kind == NH_IO_FR_CL ? nh_io_step_cl (f, eof, stop, tail)
+	 : f->c.kind == NH_IO_FR_LINES ? nh_io_step_lines (f, eof, stop, tail)
+	 : nh_io_step_records (f, eof, stop, tail));
+  return r == 2 ? 0 : r;
+}
+
+/* H's reader queues what its framer makes of the N bytes at S it read
+   (EV 1; N 0: of the bytes it has), or after EOF (EV 0) or the read
+   error ERR (EV -1).  STOP: nh-io's stop flag (NULL on the main
+   thread).  A framing error turns the reader's framing off: the bytes
+   after the last message are queued as raw chunks.  */
+static void
+nh_io_fr_run (struct nh_io_h *h, const unsigned char *s, ptrdiff_t n,
+	      int ev, int err, const _Atomic bool *stop)
+{
+  struct nh_io_framer *f = &h->fr;
+  struct nh_io_msg *msgs = NULL, **tail = &msgs, *mlast = NULL;
+  struct nh_io_chunk *raw = NULL, *rlast = NULL;
+  int rc = -1;
+  if (n > 0 && !nh_io_framer_add (f, s, n))
+    raw = nh_io_raw_chunk (s, n);
+  else
+    rc = nh_io_frame (f, ev == 0, stop, &tail);
+  if (rc == 1)
+    nh_io_note (NH_IO_EV_STOPPED, h->id, h->copy, f->len - f->start);
+  else if (rc < 0)
+    {
+      if (f->len > f->start)
+	{
+	  struct nh_io_chunk *c = nh_io_raw_chunk (f->buf + f->start,
+						   f->len - f->start);
+	  c->next = raw;
+	  raw = c;
+	}
+      nh_io_framer_reset (f);
+      f->c.kind = NH_IO_FR_NONE;
+    }
+  ptrdiff_t add = 0;
+  for (struct nh_io_msg *m = msgs; m; m = m->next)
+    {
+      add += m->len;
+      mlast = m;
+    }
+  for (struct nh_io_chunk *c = raw; c; c = c->next)
+    {
+      add += c->len;
+      rlast = c;
+    }
+
+  nh_wk_lock (&nh_io_m);
+  bool was_quiet = (!h->head && !h->mhead && !h->eof && !h->err
+		    && !h->fr_failed);
+  if (msgs)
+    {
+      if (h->mtail)
+	h->mtail->next = msgs;
+      else
+	h->mhead = msgs;
+      h->mtail = mlast;
+    }
+  if (raw)
+    {
+      if (h->tail)
+	h->tail->next = raw;
+      else
+	h->head = raw;
+      h->tail = rlast;
+    }
+  if (rc < 0)
+    h->fr_failed = true;
+  if (ev == 0)
+    h->eof = true;
+  else if (ev < 0)
+    h->err = err;
+  bool capped = add > 0 && (h->queued += add) >= h->cap;
+  if (capped)
+    atomic_store (&h->capped, true);
+  if (was_quiet && (add > 0 || rc < 0 || ev <= 0) && !h->inl)
+    nh_wk_wake_signal (&h->wake);
+  pthread_mutex_unlock (&nh_io_m);
+
+  if (add > 0)
+    nh_wk_stat_add (NH_WK_IO, NH_WK_ST_QUEUED_BYTES, add);
+  if (ev <= 0)
+    h->io_end = true;
+  if (capped)
+    {
+      nh_wk_stat_add (NH_WK_IO, NH_WK_ST_BACKPRESSURE, 1);
+      nh_wk_pause_point (NH_WK_P_AFTER_READ);
+    }
+}
+
+/* Framing on with CONF, by H's reader: the queued chunks' bytes come
+   first in the framer.  */
+static void
+nh_io_fr_on (struct nh_io_h *h, const struct nh_io_fconf *conf)
+{
+  nh_wk_lock (&nh_io_m);
+  struct nh_io_chunk *c = h->head;
+  h->head = h->tail = NULL;
+  ptrdiff_t n = 0;
+  for (struct nh_io_chunk *k = c; k; k = k->next)
+    n += k->len - k->off;
+  h->queued -= n;
+  h->fr_failed = false;
+  h->cap = NH_IO_FR_CAP;
+  if (h->queued < h->cap)
+    atomic_store (&h->capped, false);
+  bool eof = h->eof;
+  pthread_mutex_unlock (&nh_io_m);
+  nh_wk_stat_add (NH_WK_IO, NH_WK_ST_QUEUED_BYTES, -n);
+  atomic_store (&h->stop, false);
+  nh_io_framer_reset (&h->fr);
+  h->fr.c = *conf;
+  for (struct nh_io_chunk *k = c; k; k = k->next)
+    {
+      bool ok = nh_io_framer_add (&h->fr, k->data + k->off, k->len - k->off);
+      NH_WK_ASSERT (ok);
+    }
+  nh_io_chunks_free (c);
+  nh_io_fr_run (h, NULL, 0, eof ? 0 : 1, 0, NULL);
+}
+
+/* Framing off, by H's reader: the queued messages, the chunks after
+   them (a framing error's) and the framer's bytes become the queue's
+   raw chunks, in that order.  */
+static void
+nh_io_fr_off (struct nh_io_h *h)
+{
+  struct nh_io_framer *f = &h->fr;
+  size_t k = f->len - f->start;
+  struct nh_io_chunk *part = k ? nh_io_raw_chunk (f->buf + f->start, k) : NULL;
+  nh_io_framer_reset (f);
+  f->c.kind = NH_IO_FR_NONE;
+  /* The decoder starts again: the main thread decodes these chunks.  */
+  h->dsys = NH_DEC_N;
+  h->dst.n = 0;
+
+  nh_wk_lock (&nh_io_m);
+  struct nh_io_chunk *first = NULL, *last = NULL;
+  for (struct nh_io_msg *m = h->mhead, *next; m; m = next)
+    {
+      next = m->next;
+      struct nh_io_chunk *c = nh_io_raw_chunk (m->wire, m->len);
+      if (last)
+	last->next = c;
+      else
+	first = c;
+      last = c;
+      nh_io_msg_free (m);
+    }
+  h->mhead = h->mtail = NULL;
+  if (first)
+    {
+      last->next = h->head;
+      if (!h->head)
+	h->tail = last;
+      h->head = first;
+    }
+  if (part)
+    {
+      if (h->tail)
+	h->tail->next = part;
+      else
+	h->head = part;
+      h->tail = part;
+      h->queued += k;
+    }
+  h->fr_failed = false;
+  h->cap = h->rawcap;
+  atomic_store (&h->capped, h->queued >= h->cap);
+  if (h->head && !h->inl)
+    nh_wk_wake_signal (&h->wake);
+  pthread_mutex_unlock (&nh_io_m);
+  if (k)
+    nh_wk_stat_add (NH_WK_IO, NH_WK_ST_QUEUED_BYTES, k);
+  atomic_store (&h->stop, false);
+}
+
 /* Read H's copy once into its FIFO, never past its cap.  */
 static void
 nh_io_read_one (struct nh_io_h *h, unsigned char **buf, ptrdiff_t *size)
@@ -504,6 +1118,15 @@ nh_io_read_one (struct nh_io_h *h, unsigned char **buf, ptrdiff_t *size)
       return;
     }
   int err = errno;
+  if (h->fr.c.kind != NH_IO_FR_NONE)
+    {
+      /* Framed (Task 24).  */
+      nh_io_note (r > 0 ? NH_IO_EV_READ : r == 0 ? NH_IO_EV_EOF
+		  : NH_IO_EV_ERROR, h->id, h->copy, r);
+      nh_io_fr_run (h, *buf, r > 0 ? r : 0, r > 0 ? 1 : r == 0 ? 0 : -1, err,
+		    &h->stop);
+      return;
+    }
   struct nh_io_chunk *c = NULL;
   if (r > 0)
     {
@@ -520,7 +1143,7 @@ nh_io_read_one (struct nh_io_h *h, unsigned char **buf, ptrdiff_t *size)
   nh_wk_lock (&nh_io_m);
   /* The wake fd is readable exactly while the FIFO holds a chunk or EOF
      or an error is recorded (nh_io_take clears it under this mutex).  */
-  bool was_quiet = !h->head && !h->eof && !h->err;
+  bool was_quiet = !h->head && !h->mhead && !h->eof && !h->err;
   bool capped = false;
   if (c)
     {
@@ -679,7 +1302,8 @@ nh_io_attach (int64_t id, int infd, ptrdiff_t readmax, bool inl, int *why)
   h->id = id;
   h->inl = inl;
   h->readmax = readmax;
-  h->cap = readmax < NH_IO_CAP_MIN / 4 ? NH_IO_CAP_MIN : 4 * readmax;
+  h->cap = h->rawcap = (readmax < NH_IO_CAP_MIN / 4 ? NH_IO_CAP_MIN
+			: 4 * readmax);
   h->wake = (struct nh_wk_wake) { -1, -1 };
   h->copy = fcntl (infd, F_DUPFD_CLOEXEC, 0);
   if (h->copy < 0 || (!inl && nh_wk_wake_open (&h->wake) < 0))
@@ -741,6 +1365,10 @@ nh_io_detach_1 (struct nh_io_h *h, int rs)
   ack->w = NH_WK_IO;
   ack->free = nh_io_job_free;
   h->ack = ack;
+  /* A tokenize in progress stops within 64 KB (Task 24): its message's
+     bytes stay in the framer, which is the main thread's from the
+     acknowledgement on.  */
+  atomic_store (&h->stop, true);
   nh_io_command (&h->detach);
   int r;
   while ((r = nh_wk_wait (ack, NH_IO_DETACH_NS, NH_IO_PH, rs)) == 0)
@@ -764,6 +1392,41 @@ NH_IO_CORE bool
 nh_io_detach (struct nh_io_h *h)
 {
   return nh_io_detach_1 (h, NH_IO_RS);
+}
+
+/* Turn H's framing on (OP NH_IO_OP_FRAME, with CONF) or off
+   (NH_IO_OP_UNFRAME) on its reader's side (Task 24): directly when the
+   main thread is the reader (inline, or handed back), else by a command
+   nh-io carries out between reads, which this waits for (worker-wait,
+   reason detach).  Switching off stops a tokenize in progress within
+   64 KB.  */
+NH_IO_CORE void
+nh_io_sync (struct nh_io_h *h, int op, const struct nh_io_fconf *conf)
+{
+  if (h->inl || h->detached)
+    {
+      if (op == NH_IO_OP_FRAME)
+	nh_io_fr_on (h, conf);
+      else
+	nh_io_fr_off (h);
+      return;
+    }
+  if (atomic_load (&nh_wk_dead))
+    return;
+  struct nh_io_cmd *c = calloc (1, sizeof *c);
+  struct nh_wk_job *ack = calloc (1, sizeof *ack);
+  NH_WK_ASSERT (c && ack);
+  atomic_store (&ack->refs, 2);
+  ack->w = NH_WK_IO;
+  ack->free = nh_io_job_free;
+  *c = (struct nh_io_cmd) { .op = op, .h = h, .ack = ack };
+  if (conf)
+    c->conf = *conf;
+  if (op == NH_IO_OP_UNFRAME)
+    atomic_store (&h->stop, true);
+  nh_io_command (c);
+  nh_wk_wait (ack, NH_IO_DETACH_NS, NH_IO_PH, NH_IO_RS);
+  nh_wk_job_unref (ack);
 }
 
 /* Whether the chunks C (a list) were all decoded, each going on from
@@ -831,7 +1494,7 @@ nh_io_take (struct nh_io_h *h, char *buf, ptrdiff_t size)
       else if (h->err)
 	err = h->err;
     }
-  if (!h->head && !h->eof && !h->err && !h->inl)
+  if (!h->head && !h->mhead && !h->eof && !h->err && !h->inl)
     nh_wk_wake_clear (&h->wake);
   bool uncapped = (n > 0 && atomic_load (&h->capped)
 		   && h->queued < h->cap);
@@ -937,6 +1600,20 @@ static struct nh_io_h *
 nh_io_get (struct Lisp_Process *p)
 {
   return 0 <= p->infd && p->infd < FD_SETSIZE ? nh_io_tab[p->infd] : NULL;
+}
+
+/* Framing (Task 24).  A framed process's configuration, the vector
+   [FRAMING FN OPTIONS], is on its plist under this uninterned symbol.  */
+static Lisp_Object nh_io_key;
+
+/* The materialization of H's current message, if any, is dropped (H is
+   about to go).  */
+static void
+nh_io_fr_forget (struct nh_io_h *h)
+{
+  if (h->cur_mat)
+    nh_json_mat_free (h->cur_mat);
+  h->cur_mat = NULL;
 }
 
 static bool
@@ -1133,6 +1810,13 @@ nh_io_handback (struct Lisp_Process *p, int reason)
   if (!h)
     return;
   atomic_store (&nh_io_live[fd], NULL);
+  if (reason == NH_IO_CLOSE)
+    {
+      /* The framing goes with the process (Task 24).  */
+      nh_io_fr_forget (h);
+      if (h->m_framed)
+	p->plist = plist_put (p->plist, nh_io_key, Qnil);
+    }
   int64_t id = h->id;
   if (!nh_io_detach_1 (h, (reason == NH_IO_STATUS
 			   ? NH_IO_RS_DRAIN : NH_IO_RS)))
@@ -1166,6 +1850,10 @@ nh_io_done (struct Lisp_Process *p)
     return false;
   if (atomic_load (&nh_wk_dead))
     return true;
+  /* A framed process keeps its handle (its framer and queue) until it
+     closes or its framing goes off (Task 24).  */
+  if (h->m_framed)
+    return false;
   nh_wk_lock (&nh_io_m);
   bool done = !h->head && !h->eof && !h->err;
   pthread_mutex_unlock (&nh_io_m);
@@ -1243,6 +1931,249 @@ nh_io_limit (struct Lisp_Process *p, struct nh_io_h *h, ptrdiff_t size)
   return lim < size ? (ptrdiff_t) lim : size;
 }
 
+/* Framing (Task 24), the main thread's half.  The batch a framed
+   delivery leaves for read_and_dispose_of_process_output: (PROCESS FN
+   . BATCH), or nil.  */
+static Lisp_Object nh_io_pending;
+
+static Lisp_Object
+nh_io_mat_step (Lisp_Object arg)
+{
+  return (nh_json_materialize (xmint_pointer (XCAR (arg)),
+			       XFIXNUM (XCDR (arg)))
+	  ? Qt : Qnil);
+}
+
+static Lisp_Object
+nh_io_mat_error (Lisp_Object err)
+{
+  return Fcons (Qerror, err);
+}
+
+/* M's batch entry (MESSAGE RAW ERROR) in *ENTRY, its JSON built in
+   *MAT (started here and freed once the entry is made) with the json
+   OPTIONS for at most LEFT ns (negative: no limit): false when the
+   materialization yielded first.  ERROR is what json-parse-* signals
+   for RAW (`json-out-of-memory' after a slice a signal left).  */
+static bool
+nh_io_msg_entry (struct nh_io_msg *m, struct nh_mat **mat, Lisp_Object opts,
+		 int64_t left, Lisp_Object *entry)
+{
+  const unsigned char *raw = m->wire + m->raw_off;
+  Lisp_Object value = Qnil, error = Qnil;
+  if (m->tape)
+    {
+      if (!*mat)
+	*mat = nh_json_mat_start (m->tape, raw, m->raw_len, opts);
+      Lisp_Object r
+	= internal_condition_case_1 (nh_io_mat_step,
+				     Fcons (make_mint_ptr (*mat),
+					    make_fixnum (left)),
+				     Qerror, nh_io_mat_error);
+      if (NILP (r))
+	return false;
+      if (CONSP (r))
+	error = (nh_json_mat_failed (*mat) ? list1 (Qjson_out_of_memory)
+		 : XCDR (r));
+      else
+	value = nh_json_mat_value (*mat);
+      nh_json_mat_free (*mat);
+      *mat = NULL;
+    }
+  Lisp_Object bytes = make_unibyte_string ((const char *) raw, m->raw_len);
+  if (!m->tape)
+    value = (!m->dec ? bytes
+	     : m->mb ? make_multibyte_string ((const char *) m->dec,
+					      m->nchars, m->dlen)
+	     : make_unibyte_string ((const char *) m->dec, m->dlen));
+  *entry = list3 (value, bytes, error);
+  return true;
+}
+
+/* Clear H's wake fd if nothing is left to deliver.  */
+static void
+nh_io_fr_quiet (struct nh_io_h *h)
+{
+  if (h->inl || h->cur)
+    return;
+  nh_wk_lock (&nh_io_m);
+  if (!h->head && !h->mhead && !h->eof && !h->err && !h->fr_failed)
+    nh_wk_wake_clear (&h->wake);
+  pthread_mutex_unlock (&nh_io_m);
+}
+
+/* Take H's queued messages into a batch for P's framing CONF, for up to
+   4 ms of materialization (UNSLICED: all of them), leave it in
+   nh_io_pending and return its wire bytes; -1 with EAGAIN when the
+   current message's materialization yielded first (it goes on at the
+   next delivery: the wake fd stays readable).  */
+static ptrdiff_t
+nh_io_fr_take (struct Lisp_Process *p, struct nh_io_h *h, Lisp_Object conf,
+	       bool unsliced)
+{
+  Lisp_Object opts = AREF (conf, 2);
+  Lisp_Object b = Vnidhogg_workers__test_deliver_budget;
+  int64_t budget = (unsliced ? -1 : FIXNATP (b) ? XFIXNAT (b)
+		    : (int64_t) NH_IO_FILTER_NS);
+  int64_t t0 = nh_io_now ();
+  int depth = NH_WK_PHASE_PUSH (NH_WK_PH_DELIVER, 0);
+  Lisp_Object batch = Qnil;
+  ptrdiff_t wire = 0;
+  for (;;)
+    {
+      if (!h->cur)
+	{
+	  nh_wk_lock (&nh_io_m);
+	  struct nh_io_msg *m = h->mhead;
+	  bool uncapped = false;
+	  if (m)
+	    {
+	      h->mhead = m->next;
+	      if (!h->mhead)
+		h->mtail = NULL;
+	      h->queued -= m->len;
+	      uncapped = atomic_load (&h->capped) && h->queued < h->cap;
+	      if (uncapped)
+		atomic_store (&h->capped, false);
+	    }
+	  pthread_mutex_unlock (&nh_io_m);
+	  if (!m)
+	    break;
+	  if (uncapped && !h->inl)
+	    nh_io_poke ();
+	  nh_wk_stat_add (NH_WK_IO, NH_WK_ST_QUEUED_BYTES, -m->len);
+	  m->next = NULL;
+	  h->cur = m;
+	}
+      int64_t left = budget - (nh_io_now () - t0);
+      Lisp_Object entry;
+      if (!nh_io_msg_entry (h->cur, &h->cur_mat, opts,
+			    budget < 0 ? -1 : left > 0 ? left : 0, &entry))
+	break;
+      batch = Fcons (entry, batch);
+      wire += h->cur->len;
+      nh_io_msg_free (h->cur);
+      h->cur = NULL;
+      if (budget >= 0 && nh_io_now () - t0 >= budget)
+	break;
+    }
+  NH_WK_PHASE_POP (depth);
+  nh_io_fr_quiet (h);
+  if (NILP (batch))
+    {
+      errno = EAGAIN;
+      return -1;
+    }
+  nh_io_pending = Fcons (make_lisp_proc (p),
+			 Fcons (AREF (conf, 1), Fnreverse (batch)));
+  return wire;
+}
+
+/* The main thread reads FD (inline the copy, in a drain the real fd)
+   once for H's framer: true when it read bytes, EOF or an error.  */
+static bool
+nh_io_fr_fill (struct nh_io_h *h, int fd, char *buf, ptrdiff_t size)
+{
+  if (atomic_load (&h->queued) >= h->cap)
+    return false;
+  ssize_t r;
+  do
+    r = read (fd, buf, size);
+  while (r < 0 && errno == EINTR);
+  if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+    return false;
+  int err = errno;
+  nh_io_note (r > 0 ? NH_IO_EV_READ : r == 0 ? NH_IO_EV_EOF : NH_IO_EV_ERROR,
+	      h->id, fd, r);
+  nh_io_fr_run (h, (unsigned char *) buf, r > 0 ? r : 0,
+		r > 0 ? 1 : r == 0 ? 0 : -1, err, NULL);
+  return true;
+}
+
+/* nh_io_read for P, framed with CONF: a batch's wire bytes (the batch
+   waits in nh_io_pending), or what nh_io_read returns with nothing
+   delivered; NH_IO_RAW when a framing error turned framing off.  In a
+   drain (CHANNEL is the real fd) and inline, the main thread reads the
+   fd itself and delivers every complete message at once.  */
+static ptrdiff_t
+nh_io_fr_read (struct Lisp_Process *p, struct nh_io_h *h, Lisp_Object conf,
+	       int channel, char *buf, ptrdiff_t size)
+{
+  bool unsliced = channel == p->infd || h->inl;
+  int fd = (h->detached ? (channel == p->infd ? p->infd : -1)
+	    : h->inl ? h->copy : -1);
+  /* Handed back, the framer is the main thread's: frame what nh-io left
+     (a tokenize the hand-back stopped).  */
+  if (h->detached && h->fr.c.kind != NH_IO_FR_NONE && h->fr.len > h->fr.start)
+    nh_io_fr_run (h, NULL, 0, 1, 0, NULL);
+  for (;;)
+    {
+      nh_wk_lock (&nh_io_m);
+      bool msgs = h->mhead, failed = h->fr_failed, eof = h->eof;
+      int err = h->err;
+      pthread_mutex_unlock (&nh_io_m);
+      if (h->cur || msgs)
+	return nh_io_fr_take (p, h, conf, unsliced);
+      if (failed)
+	{
+	  /* The rest is raw output.  */
+	  h->m_framed = false;
+	  p->plist = plist_put (p->plist, nh_io_key, Qnil);
+	  return NH_IO_RAW;
+	}
+      if (fd >= 0 && !eof && !err && nh_io_fr_fill (h, fd, buf, size))
+	continue;
+      if (eof)
+	return 0;
+      if (err)
+	{
+	  errno = err;
+	  return -1;
+	}
+      nh_io_fr_quiet (h);
+      errno = EAGAIN;
+      return -1;
+    }
+}
+
+/* The current message of H, taken from the queue, goes back to its head
+   as a raw chunk (framing went off).  */
+static void
+nh_io_fr_cur_back (struct nh_io_h *h)
+{
+  nh_io_fr_forget (h);
+  struct nh_io_msg *m = h->cur;
+  if (!m)
+    return;
+  h->cur = NULL;
+  struct nh_io_chunk *c = nh_io_raw_chunk (m->wire, m->len);
+  nh_wk_lock (&nh_io_m);
+  c->next = h->head;
+  h->head = c;
+  if (!h->tail)
+    h->tail = c;
+  h->queued += m->len;
+  if (!h->inl)
+    nh_wk_wake_signal (&h->wake);
+  pthread_mutex_unlock (&nh_io_m);
+  nh_wk_stat_add (NH_WK_IO, NH_WK_ST_QUEUED_BYTES, m->len);
+  nh_io_msg_free (m);
+}
+
+void
+nh_io_unframe (Lisp_Object proc)
+{
+  struct Lisp_Process *p = XPROCESS (proc);
+  if (!NILP (plist_get (p->plist, nh_io_key)))
+    p->plist = plist_put (p->plist, nh_io_key, Qnil);
+  struct nh_io_h *h = nh_io_get (p);
+  if (!h || !h->m_framed)
+    return;
+  h->m_framed = false;
+  nh_io_sync (h, NH_IO_OP_UNFRAME, NULL);
+  nh_io_fr_cur_back (h);
+}
+
 ptrdiff_t
 nh_io_read (struct Lisp_Process *p, int channel, char *buf, ptrdiff_t size,
 	    bool *handled)
@@ -1251,19 +2182,36 @@ nh_io_read (struct Lisp_Process *p, int channel, char *buf, ptrdiff_t size,
   *handled = h && (channel == h->sel || channel == p->infd);
   if (!*handled)
     return 0;
+  /* The fatal path takes no lock (nh-io may hold it forever).  */
+  if (!h->inl && atomic_load (&nh_wk_dead))
+    {
+      errno = EAGAIN;
+      return -1;
+    }
+  if (h->m_framed)
+    {
+      /* Framed (Task 24).  A configuration a plist change dropped turns
+	 framing off.  */
+      Lisp_Object conf = plist_get (p->plist, nh_io_key);
+      if (!VECTORP (conf))
+	nh_io_unframe (make_lisp_proc (p));
+      else
+	{
+	  ptrdiff_t n = nh_io_fr_read (p, h, conf, channel, buf, size);
+	  if (n != NH_IO_RAW)
+	    return n;
+	}
+    }
   size = nh_io_limit (p, h, size);
   if (h->inl)
     {
+      /* Bytes framing left as raw output come first.  */
+      if (h->head || h->eof || h->err)
+	return nh_io_take (h, buf, size);
       if (h->copy >= 0)
 	return nh_io_take_inline (h, buf, size);
       *handled = false;
       return 0;
-    }
-  /* The fatal path takes no lock (nh-io may hold it forever).  */
-  if (atomic_load (&nh_wk_dead))
-    {
-      errno = EAGAIN;
-      return -1;
     }
   /* (nh_io_take forgets the last delivery's decode too.)  */
   ptrdiff_t n = nh_io_take (h, buf, size);
@@ -1635,6 +2583,43 @@ nh_io_filter_end (struct Lisp_Process *p, int64_t t0, ptrdiff_t nbytes)
   h->cost_known = true;
 }
 
+/* Task 24: P's framed delivery left a batch.  Hand it to C (FN nil:
+   P's buffer is dead, the batch is dropped) and enter the `filter'
+   phase.  */
+bool
+nh_io_batch_begin (struct Lisp_Process *p, struct nh_io_call *c)
+{
+  Lisp_Object pend = nh_io_pending;
+  if (NILP (pend))
+    return false;
+  nh_io_pending = Qnil;
+  if (XPROCESS (XCAR (pend)) != p)
+    return false;
+  *c = (struct nh_io_call) { .fn = XCAR (XCDR (pend)),
+			     .batch = XCDR (XCDR (pend)), .depth = -1 };
+  if (BUFFERP (p->buffer) && !BUFFER_LIVE_P (XBUFFER (p->buffer)))
+    c->fn = Qnil;
+  if (!NILP (c->fn))
+    {
+      c->t0 = nh_io_now ();
+      c->depth = NH_WK_PHASE_PUSH (NH_WK_PH_FILTER, 0);
+    }
+  return true;
+}
+
+/* The batch function returned: its ns count as a filter's (not the
+   delivery's).  */
+void
+nh_io_batch_end (struct nh_io_call *c)
+{
+  if (!c->t0)
+    return;
+  NH_WK_PHASE_POP (c->depth);
+  int64_t ns = nh_io_now () - c->t0;
+  nh_io_filter_ns += ns;
+  nh_wk_phase_ns_add (NH_WK_PH_FILTER, 0, ns);
+}
+
 /* Fgnutls_boot's two hooks (§8.2 "A STARTTLS upgrade", MC-32).  With
    GNUTLS_STATE NULL, before any GnuTLS call: mark P's fd never to be
    handed over again and, if the reader owns P, hand it back now
@@ -1741,14 +2726,16 @@ with, such as `utf-8-unix' or `raw-text-dos'; nil: the main thread
 decodes), `:decoded' (deliveries that used the reader's decodes: a
 filter's string, or the default filter's insertion), `:redecoded'
 \(deliveries whose decode was stale, so the main thread decoded the
-bytes again) and `:filter-cost' (the filter's estimated nanoseconds per
-byte, a float; nil until a filter call measured it).  For a process the
-reader does not own, in a build with GnuTLS, also: `:tls-reclaimed' (bytes the
-reader had read and not delivered when `gnutls-boot' took the fd back,
-given to GnuTLS instead of the filter), `:tls-pulled' (how many of
-them GnuTLS has read), `:tls-left' (how many it has yet to read) and
-`:tls-pull' (non-nil if the session got the pull function that returns
-them).  A `tls' refusal also means `gnutls-boot' ran on PROCESS.  */)
+bytes again), `:filter-cost' (the filter's estimated nanoseconds per
+byte, a float; nil until a filter call measured it) and `:messages'
+\(framed: complete messages queued; their bytes count in `:queued').
+For a process the reader does not own, in a build with GnuTLS, also:
+`:tls-reclaimed' (bytes the reader had read and not delivered when
+`gnutls-boot' took the fd back, given to GnuTLS instead of the filter),
+`:tls-pulled' (how many of them GnuTLS has read), `:tls-left' (how
+many it has yet to read) and `:tls-pull' (non-nil if the session got
+the pull function that returns them).  A `tls' refusal also means
+`gnutls-boot' ran on PROCESS.  */)
   (Lisp_Object process)
 {
   CHECK_PROCESS (process);
@@ -1776,11 +2763,14 @@ them).  A `tls' refusal also means `gnutls-boot' ran on PROCESS.  */)
     return list4 (QCowned, Qnil, intern_c_string (":refused"), refused);
   nh_wk_lock (&nh_io_m);
   ptrdiff_t queued = h->queued;
+  intmax_t nmsgs = 0;
+  for (struct nh_io_msg *m = h->mhead; m; m = m->next)
+    nmsgs++;
   pthread_mutex_unlock (&nh_io_m);
   int fds = (h->copy >= 0) + (h->wake.rfd >= 0)
     + (h->wake.wfd >= 0 && h->wake.wfd != h->wake.rfd);
   uint64_t coding = atomic_load (&h->coding);
-  return listn (30, QCowned, h->detached ? Qnil : Qt,
+  return listn (32, QCowned, h->detached ? Qnil : Qt,
 		intern_c_string (":mode"), h->inl ? Qinline : Qthreads,
 		intern_c_string (":select"), make_int (h->sel),
 		intern_c_string (":copy"), h->copy >= 0 ? make_int (h->copy) : Qnil,
@@ -1799,7 +2789,8 @@ them).  A `tls' refusal also means `gnutls-boot' ran on PROCESS.  */)
 		intern_c_string (":decoded"), make_int (h->ndecoded),
 		intern_c_string (":redecoded"), make_int (h->nredecoded),
 		intern_c_string (":filter-cost"),
-		h->cost_known ? make_float (h->cost) : Qnil);
+		h->cost_known ? make_float (h->cost) : Qnil,
+		intern_c_string (":messages"), make_int (nmsgs));
 }
 
 DEFUN ("nidhogg-workers--test-filter-cost", Fnidhogg_workers__test_filter_cost,
@@ -1823,6 +2814,234 @@ it.  Return non-nil if the reader owns PROCESS (else nothing changes).  */)
   return Qt;
 }
 
+/* FRAMING and its ARGS (NARGS of them) for PROCESS (nil for the test
+   primitive): the reader's CONF, the batch function *FN and the JSON
+   options *OPTS (nil for records).  */
+static void
+nh_io_fr_args (Lisp_Object process, Lisp_Object framing, ptrdiff_t nargs,
+	       Lisp_Object *args, struct nh_io_fconf *conf, Lisp_Object *fn,
+	       Lisp_Object *opts)
+{
+  *conf = (struct nh_io_fconf) { .parse = NH_JSON_MODE_STRING, .sep = 0,
+				 .sys = NH_DEC_NONE,
+				 .max = (size_t) 256 * 1024 * 1024 };
+  if (EQ (framing, Qcontent_length))
+    conf->kind = NH_IO_FR_CL;
+  else if (EQ (framing, Qlines))
+    conf->kind = NH_IO_FR_LINES;
+  else if (EQ (framing, Qrecords))
+    conf->kind = NH_IO_FR_RECORDS;
+  else
+    wrong_choice (list3 (Qcontent_length, Qlines, Qrecords), framing);
+  if (nargs % 2)
+    wrong_type_argument (Qplistp, Flist (nargs, args));
+  Lisp_Object json = Qnil, coding = Qnil;
+  *fn = Qnil;
+  for (ptrdiff_t i = 0; i < nargs; i += 2)
+    {
+      Lisp_Object key = args[i], v = args[i + 1];
+      if (EQ (key, QCbatch_function))
+	*fn = v;
+      else if (EQ (key, QCmax_message))
+	{
+	  CHECK_FIXNAT (v);
+	  if (XFIXNAT (v) == 0)
+	    args_out_of_range (key, v);
+	  conf->max = XFIXNAT (v);
+	}
+      else if (conf->kind == NH_IO_FR_RECORDS && EQ (key, QCseparator))
+	{
+	  if (!BASE_EQ (v, make_fixnum (0)) && !BASE_EQ (v, make_fixnum ('\n')))
+	    wrong_choice (list2 (make_fixnum (0), make_fixnum ('\n')), v);
+	  conf->sep = XFIXNUM (v);
+	}
+      else if (conf->kind == NH_IO_FR_RECORDS && EQ (key, QCcoding))
+	coding = v;
+      else if (conf->kind != NH_IO_FR_RECORDS && EQ (key, QCparse))
+	{
+	  if (EQ (v, Qstring))
+	    conf->parse = NH_JSON_MODE_STRING;
+	  else if (EQ (v, Qbuffer))
+	    conf->parse = NH_JSON_MODE_BUFFER;
+	  else
+	    wrong_choice (list2 (Qstring, Qbuffer), v);
+	}
+      else if (conf->kind != NH_IO_FR_RECORDS)
+	json = Fcons (v, Fcons (key, json));
+      else
+	xsignal2 (Qerror, build_string ("Not a records framing keyword"), key);
+    }
+  *opts = (conf->kind == NH_IO_FR_RECORDS ? Qnil
+	   : nh_json_options (Fnreverse (json)));
+  if (!NILP (coding))
+    {
+      CHECK_CODING_SYSTEM (coding);
+      struct coding_system cs;
+      setup_coding_system (coding, &cs);
+      conf->sys = nh_dec_classify (&cs);
+      if (conf->sys == NH_DEC_NONE)
+	xsignal3 (Qnidhogg_framing_unsupported, process, Qcoding, coding);
+    }
+}
+
+DEFUN ("nidhogg-set-process-framing", Fnidhogg_set_process_framing,
+       Snidhogg_set_process_framing, 2, MANY, 0,
+       doc: /* Deliver PROCESS's output as messages, framed by FRAMING.
+FRAMING is `content-length' (LSP and DAP: headers, an empty line, then
+as many bytes as the Content-Length header says; header names in any
+case and order, at most 8 KB of header), `lines' (newline-delimited
+JSON: a trailing CR is dropped, empty lines are skipped) or `records'
+\(no JSON: the output split at a separator).  With FRAMING nil, framing
+goes off: every byte not yet delivered goes to PROCESS's filter as raw
+output, in order, and output flows to the filter as before.
+
+ARGS are keywords and values:
+`:batch-function' FN (required): FN is called with PROCESS and a batch,
+  a list of (MESSAGE RAW ERROR) in arrival order, as a filter is called
+  (`inhibit-quit' bound, match data saved, errors reported as a
+  filter's).  RAW is the message's bytes, a unibyte string.  MESSAGE is
+  what `json-parse-string' (or `json-parse-buffer') returns for them,
+  and ERROR nil; or MESSAGE is nil and ERROR the error it signals.  A
+  batch for a process whose buffer is dead is dropped.
+`:parse' `string' (the default) or `buffer': `json-parse-buffer's
+  semantics instead (one value, trailing bytes allowed).
+`:object-type', `:array-type', `:null-object', `:false-object': as for
+  `json-parse-string'.
+`:max-message' BYTES: a longer message is a framing error (default
+  256 MB).
+For `records': `:separator' 0 (the default) or ?\n, and `:coding' a
+  coding system without state, such as `utf-8-unix', that decodes each
+  record (else MESSAGE is RAW).  MESSAGE is the record (without its
+  separator) and ERROR nil.
+
+A framing error, a `set-process-filter' (also through `add-function')
+and a `set-process-coding-system' turn framing off as FRAMING nil does.
+PROCESS must be one the reader thread reads (see
+`nidhogg-set-process-reader'), decoding with `binary' (`records': any
+coding system without state); else this signals
+`nidhogg-framing-unsupported' with PROCESS and the reason.  Setting a
+new framing reframes the bytes not yet delivered.  Return FRAMING.
+usage: (nidhogg-set-process-framing PROCESS FRAMING &rest ARGS)  */)
+  (ptrdiff_t nargs, Lisp_Object *args)
+{
+  Lisp_Object process = args[0], framing = args[1];
+  CHECK_PROCESS (process);
+  struct Lisp_Process *p = XPROCESS (process);
+  if (NILP (framing))
+    {
+      nh_io_unframe (process);
+      return Qnil;
+    }
+  struct nh_io_fconf conf;
+  Lisp_Object fn, opts;
+  nh_io_fr_args (process, framing, nargs - 2, args + 2, &conf, &fn, &opts);
+  if (!FUNCTIONP (fn))
+    wrong_type_argument (Qfunctionp, fn);
+  struct nh_io_h *h = nh_io_get (p);
+  const char *why = NULL;
+  if (!h || h->detached)
+    {
+      int r = (h ? NH_IO_RF_ENDED
+	       : 0 <= p->infd && p->infd < FD_SETSIZE ? nh_io_refused[p->infd]
+	       : 0);
+      why = r ? nh_io_refusal_names[r] : "not-read";
+    }
+  else
+    {
+      int sys = NH_IO_SYS (atomic_load (&h->coding));
+      if (conf.kind == NH_IO_FR_RECORDS ? sys == NH_DEC_NONE
+	  : sys != NH_DEC_RAW_UNIX)
+	why = "coding";
+    }
+  if (why)
+    xsignal2 (Qnidhogg_framing_unsupported, process, intern_c_string (why));
+  /* A framing in place goes off first: its bytes are reframed.  */
+  nh_io_unframe (process);
+  p->plist = plist_put (p->plist, nh_io_key,
+			CALLN (Fvector, framing, fn, opts));
+  h->m_framed = true;
+  nh_io_sync (h, NH_IO_OP_FRAME, &conf);
+  return framing;
+}
+
+DEFUN ("nidhogg-process-framing", Fnidhogg_process_framing,
+       Snidhogg_process_framing, 1, 1, 0,
+       doc: /* Return PROCESS's framing (see `nidhogg-set-process-framing'), or nil.  */)
+  (Lisp_Object process)
+{
+  CHECK_PROCESS (process);
+  struct nh_io_h *h = nh_io_get (XPROCESS (process));
+  Lisp_Object conf = plist_get (XPROCESS (process)->plist, nh_io_key);
+  return h && h->m_framed && VECTORP (conf) ? AREF (conf, 0) : Qnil;
+}
+
+/* The test framer's memory, freed on any exit.  */
+struct nh_io_test_frame
+{
+  struct nh_io_framer f;
+  struct nh_io_msg *msgs;
+  struct nh_mat *mat;
+};
+
+static void
+nh_io_test_frame_free (void *arg)
+{
+  struct nh_io_test_frame *t = arg;
+  free (t->f.buf);
+  nh_io_msgs_free (t->msgs);
+  if (t->mat)
+    nh_json_mat_free (t->mat);
+}
+
+DEFUN ("nidhogg-workers--test-frame", Fnidhogg_workers__test_frame,
+       Snidhogg_workers__test_frame, 3, MANY, 0,
+       doc: /* Frame CHUNKS as the reader frames a process's reads; for tests.
+CHUNKS is a list of strings, read one after the other; with EOF
+non-nil the stream ends after them.  FRAMING and ARGS are those of
+`nidhogg-set-process-framing' (`:batch-function' is ignored).  Return
+\(MESSAGES REST ERROR): MESSAGES the batch entries (MESSAGE RAW ERROR)
+of every complete message, REST the bytes after the last one (a unibyte
+string) and ERROR non-nil after a framing error (REST then holds every
+byte from the error on).
+usage: (nidhogg-workers--test-frame CHUNKS EOF FRAMING &rest ARGS)  */)
+  (ptrdiff_t nargs, Lisp_Object *args)
+{
+  Lisp_Object chunks = args[0], fn, opts;
+  struct nh_io_test_frame t = { 0 };
+  nh_io_fr_args (Qnil, args[2], nargs - 3, args + 3, &t.f.c, &fn, &opts);
+  specpdl_ref count = SPECPDL_INDEX ();
+  record_unwind_protect_ptr (nh_io_test_frame_free, &t);
+  struct nh_io_msg **tail = &t.msgs;
+  int rc = 0;
+  for (Lisp_Object l = chunks; CONSP (l); l = XCDR (l))
+    {
+      Lisp_Object s = XCAR (l);
+      CHECK_STRING (s);
+      if (!nh_io_framer_add (&t.f, SDATA (s), SBYTES (s)))
+	memory_full (SBYTES (s));
+      /* After a framing error the reader frames no more.  */
+      if (rc == 0)
+	rc = nh_io_frame (&t.f, false, NULL, &tail);
+    }
+  if (rc == 0 && !NILP (args[1]))
+    rc = nh_io_frame (&t.f, true, NULL, &tail);
+  if (rc == -2)
+    memory_full (0);
+  Lisp_Object entries = Qnil;
+  for (struct nh_io_msg *m = t.msgs; m; m = m->next)
+    {
+      Lisp_Object entry;
+      nh_io_msg_entry (m, &t.mat, opts, -1, &entry);
+      entries = Fcons (entry, entries);
+    }
+  Lisp_Object rest = (t.f.len > t.f.start
+		      ? make_unibyte_string ((const char *) t.f.buf + t.f.start,
+					     t.f.len - t.f.start)
+		      : empty_unibyte_string);
+  return unbind_to (count, list3 (Fnreverse (entries), rest,
+				  rc < 0 ? Qt : Qnil));
+}
+
 DEFUN ("nidhogg-workers--test-io-log", Fnidhogg_workers__test_io_log,
        Snidhogg_workers__test_io_log, 1, 1, 0,
        doc: /* Start or stop the reader's event log; for tests.
@@ -1832,12 +3051,15 @@ most): each a list (EVENT ID FD N).  EVENT is `handover' (FD the real
 fd), `read', `eof' or `error' (by nh-io, or inline by the main thread,
 from the copy FD; N bytes), `ack' (nh-io dropped the handle and closed
 its copy), `close' (the real fd FD closes next), `timeout' (a hand-back
-gave up waiting) or `direct' (fds closed without nh-io).  ID names the
-handle: every hand-over makes a new one.  */)
+gave up waiting), `direct' (fds closed without nh-io) or `stopped' (a
+hand-back or framing switch-off stopped a tokenize; N bytes after the
+last message stay for the main thread).  ID names the handle: every
+hand-over makes a new one.  */)
   (Lisp_Object on)
 {
   static const char *const names[NH_IO_EV_N] = {
-    "handover", "read", "eof", "error", "ack", "close", "timeout", "direct"
+    "handover", "read", "eof", "error", "ack", "close", "timeout", "direct",
+    "stopped"
   };
   pthread_mutex_lock (&nh_io_log_m);
   Lisp_Object events = Qnil;
@@ -1894,6 +3116,33 @@ nh_io_syms (void)
   DEFSYM (Qnidhogg_workers_reader_sockets, "nidhogg-workers-reader-sockets");
   DEFSYM (Qnidhogg_workers_reader_ptys, "nidhogg-workers-reader-ptys");
   DEFSYM (QCowned, ":owned");
+
+  /* Task 24.  */
+  DEFSYM (Qnidhogg_framing_unsupported, "nidhogg-framing-unsupported");
+  define_error (Qnidhogg_framing_unsupported,
+		"Process output cannot be framed", Qerror);
+  DEFSYM (Qcontent_length, "content-length");
+  DEFSYM (Qlines, "lines");
+  DEFSYM (Qrecords, "records");
+  DEFSYM (QCbatch_function, ":batch-function");
+  DEFSYM (QCparse, ":parse");
+  DEFSYM (QCmax_message, ":max-message");
+  DEFSYM (QCseparator, ":separator");
+  nh_io_key = Fmake_symbol (build_string ("nidhogg-framing"));
+  staticpro (&nh_io_key);
+  nh_io_pending = Qnil;
+  staticpro (&nh_io_pending);
+  DEFVAR_LISP ("nidhogg-workers--test-deliver-budget",
+	       Vnidhogg_workers__test_deliver_budget,
+	       doc: /* Test only: a framed delivery's materialization budget, in nanoseconds.
+nil, the default, is 4 ms; 0 makes each delivery one message (with
+`nidhogg-workers--test-slice-entries' 1, a JSON message takes one
+delivery per value).  */);
+  Vnidhogg_workers__test_deliver_budget = Qnil;
+  defsubr (&Snidhogg_set_process_framing);
+  defsubr (&Snidhogg_process_framing);
+  defsubr (&Snidhogg_workers__test_frame);
+
   defsubr (&Snidhogg_set_process_reader);
   defsubr (&Snidhogg_workers__test_io_info);
   defsubr (&Snidhogg_workers__test_io_log);
