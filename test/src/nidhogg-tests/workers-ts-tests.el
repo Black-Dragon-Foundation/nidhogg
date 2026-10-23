@@ -22,6 +22,8 @@
 (require 'ert)
 (require 'profiler)
 (require 'treesit)
+(require 'c-ts-mode)
+(require 'nidhogg-workers-treesit)
 
 ;; The rows need real grammars: fixtures/grammars.sh builds them into
 ;; NIDHOGG_TEST_GRAMMARS (the `workers-asan' and `workers-pkg' CI jobs run it
@@ -724,5 +726,306 @@ language.  A buffer under 8000 characters gets a yank."
                            mode (car s) demands replays divergent))
               (kill-buffer a)
               (kill-buffer b))))))))
+
+;;; Start points and the wait rule (Task 12).
+
+(defun workers-ts-tests--fontifying-demand (parser)
+  "PARSER's demand as `treesit--pre-redisplay' makes it while redisplay fontifies.
+Return whether PARSER is ready afterwards."
+  (nidhogg-workers--test-fontifying (treesit-parser-buffer parser)
+    (treesit-parser-changed-regions parser))
+  (nidhogg-treesit-parser-ready-p parser))
+
+(defun workers-ts-tests--parse-waits ()
+  "How many waits on nh-parse jobs the workers have counted."
+  (apply #'+ (append (plist-get (plist-get (nidhogg-workers-stats) :nh-parse)
+                                :wait-ms)
+                     nil)))
+
+(defun workers-ts-tests--big-change (mode p change)
+  "Make CHANGE (a function) in P's buffer, then a fontifying demand.
+MODE is the workers' mode.  The 1 ms attempt is cancelled and reset, one
+job starts from the demand point; in threads mode the demand answers
+\"not ready\" (the job is parked at `after-snapshot'), inline the job is
+done at its start and the demand publishes it.  The tree that lands
+equals a synchronous parse."
+  (funcall change)
+  (let ((att (workers-ts-tests--stat :attempts))
+        (can (workers-ts-tests--stat :cancels))
+        (dem (workers-ts-tests--stat :started-demand))
+        (started (workers-ts-tests--stat :started)))
+    (workers-ts-tests--pause mode 'after-snapshot)
+    (let ((ready (workers-ts-tests--fontifying-demand p)))
+      (should (= (workers-ts-tests--stat :attempts) (1+ att)))
+      (should (= (workers-ts-tests--stat :cancels) (1+ can)))
+      (should (= (workers-ts-tests--stat :started-demand) (1+ dem)))
+      (should (= (workers-ts-tests--stat :started) (1+ started)))
+      (if (eq mode 'inline)
+          (should ready)
+        (should-not ready)
+        (workers-ts-tests--await mode 'after-snapshot)
+        (should (eq (workers-ts-tests--info p :job) 'running))
+        ;; Another demand of that redisplay: the job runs, no new attempt.
+        (should-not (workers-ts-tests--fontifying-demand p))
+        (should (= (workers-ts-tests--stat :attempts) (1+ att)))
+        (should (= (workers-ts-tests--stat :started) (1+ started)))
+        (nidhogg-workers--release 'after-snapshot)
+        (workers-ts-tests--done p)))
+    (should (equal (workers-ts-tests--sexp p)
+                   (workers-ts-tests--sync-sexp (buffer-string))))))
+
+(ert-deftest workers/ts-start-points ()
+  ;; §17.3 S1: in a 2 MB buffer that redisplay fontifies, a one-character
+  ;; edit finishes inside the 1 ms attempt (no snapshot); a 500 KB yank, a
+  ;; revert and an `indent-region' cancel the attempt and start one job
+  ;; each from the demand point; edits from a timer start a job at the
+  ;; select entry.
+  (workers-ts-tests--modes
+    (let* ((file (make-temp-file "workers-ts-start" nil ".txt"
+                                 (workers-ts-tests--c-text 2000000)))
+           (buf (find-file-noselect file)))
+      (unwind-protect
+          (with-current-buffer buf
+            (let ((p (treesit-parser-create 'c nil t)))
+              (treesit-parser-root-node p)
+              (ert-info ("one character" :prefix "")
+                (goto-char (/ (point-max) 2))
+                (insert " ")
+                (let ((att (workers-ts-tests--stat :attempts))
+                      (can (workers-ts-tests--stat :cancels))
+                      (started (workers-ts-tests--stat :started)))
+                  (should (workers-ts-tests--fontifying-demand p))
+                  (should (= (workers-ts-tests--stat :attempts) (1+ att)))
+                  (should (= (workers-ts-tests--stat :cancels) can))
+                  (should (= (workers-ts-tests--stat :started) started))))
+              (ert-info ("not fontifying: today's parse" :prefix "")
+                (goto-char (point-min))
+                (insert-for-yank (workers-ts-tests--c-text 100000))
+                (let ((att (workers-ts-tests--stat :attempts))
+                      (started (workers-ts-tests--stat :started)))
+                  (should (treesit-parser-changed-regions p))
+                  (should (nidhogg-treesit-parser-ready-p p))
+                  (should (= (workers-ts-tests--stat :attempts) att))
+                  (should (= (workers-ts-tests--stat :started) started))))
+              (ert-info ("a 500 KB yank" :prefix "")
+                (workers-ts-tests--big-change
+                 mode p (lambda ()
+                          (goto-char (/ (point-max) 2))
+                          (forward-line 0)
+                          (insert-for-yank
+                           (workers-ts-tests--c-text 500000)))))
+              (ert-info ("a revert" :prefix "")
+                (workers-ts-tests--big-change
+                 mode p (lambda ()
+                          (with-temp-file file
+                            (insert (string-replace
+                                     "a > b" "b > a"
+                                     (workers-ts-tests--c-text 2000000))))
+                          (revert-buffer t t t))))
+              (ert-info ("indent-region" :prefix "")
+                (workers-ts-tests--big-change
+                 mode p (lambda ()
+                          (goto-char (/ (point-max) 2))
+                          (let ((indent-line-function
+                                 (lambda () (indent-line-to 2))))
+                            (indent-region (line-beginning-position)
+                                           (line-beginning-position 2001))))))
+              (ert-info ("a timer's edit, at the select entry" :prefix "")
+                ;; Whatever earlier edits left for the select entry.
+                (nidhogg-workers--test-ts-select-entry)
+                (let ((sel (workers-ts-tests--stat :started-select))
+                      (size (buffer-size)))
+                  (run-at-time 0 nil
+                               (lambda ()
+                                 (with-current-buffer buf
+                                   (goto-char (point-min))
+                                   (insert-for-yank
+                                    (workers-ts-tests--c-text 500000)))))
+                  (accept-process-output nil 0)
+                  (should (> (buffer-size) size))
+                  (nidhogg-workers--test-ts-select-entry)
+                  (should (= (workers-ts-tests--stat :started-select) (1+ sel)))
+                  (should (workers-ts-tests--info p :job))
+                  ;; Nothing edited since: the next entry starts nothing.
+                  (nidhogg-workers--test-ts-select-entry)
+                  (should (= (workers-ts-tests--stat :started-select) (1+ sel)))
+                  (workers-ts-tests--done p)
+                  (should (equal (workers-ts-tests--sexp p)
+                                 (workers-ts-tests--sync-sexp
+                                  (buffer-string))))))))
+        (with-current-buffer buf
+          (set-buffer-modified-p nil))
+        (kill-buffer buf)
+        (delete-file file)
+        (should (nidhogg-workers--test-ts-await-idle 60000))))))
+
+(ert-deftest workers/ts-start-after-mode ()
+  ;; Review M17: opening a 1 MB file in `c-ts-mode' starts a job when the
+  ;; mode finishes, before any redisplay.
+  (workers-ts-tests--modes
+    (let* ((file (make-temp-file "workers-ts-mode" nil ".c"
+                                 (workers-ts-tests--c-text 1000000)))
+           (auto-mode-alist (cons '("\\.c\\'" . c-ts-mode) auto-mode-alist))
+           (c-ts-mode-emacs-sources-support nil)
+           (treesit-auto-install-grammar 'never)
+           (created (workers-ts-tests--stat :started-create))
+           (buf (find-file-noselect file)))
+      (unwind-protect
+          (with-current-buffer buf
+            (should (eq major-mode 'c-ts-mode))
+            (let ((p (car (treesit-parser-list nil 'c)))
+                  (pub (workers-ts-tests--stat :published)))
+              (should (= (workers-ts-tests--stat :started-create) (1+ created)))
+              (should (workers-ts-tests--info p :job))
+              (workers-ts-tests--done p)
+              (should (equal (workers-ts-tests--sexp p)
+                             (workers-ts-tests--sync-sexp (buffer-string))))
+              (should (= (workers-ts-tests--stat :published) (1+ pub)))))
+        (kill-buffer buf)
+        (delete-file file)))))
+
+(defun workers-ts-tests--blocked (fn)
+  "Call FN while nh-parse's idle-priority thread is busy; return its value.
+A test job parks that thread at `before-write', so a tree-sitter job
+started in FN stays queued until something waits for it."
+  (nidhogg-workers--pause-at 'before-write)
+  (let ((blocker (nidhogg-workers--test-job 'nh-parse 0 :speculative t
+                                            :pause 'before-write)))
+    (unwind-protect
+        (progn
+          (should (nidhogg-workers--test-await-paused 'before-write 30000))
+          (funcall fn))
+      (nidhogg-workers--release 'before-write)
+      (should (eql (nidhogg-workers--test-wait blocker 30000) 1)))))
+
+(ert-deftest workers/ts-wait-cancel ()
+  ;; §17.3 S2: a demand that needs a tree while a job runs cancels a job
+  ;; not started, or stale and under half done, and parses on the main
+  ;; thread; it waits for one nearly done over the current text.  A job
+  ;; not started and waited on runs on the normal-priority thread (PD-15).
+  (workers-ts-tests--modes
+    (with-temp-buffer
+      (insert (workers-ts-tests--c-text 50000))
+      (let ((p (treesit-parser-create 'c nil t)))
+        (treesit-parser-root-node p)
+        (when (eq mode 'threads)
+          (ert-info ("not started: cancelled" :prefix "")
+            (goto-char (point-max))
+            (insert "int z;\n")
+            (workers-ts-tests--blocked
+             (lambda ()
+               (should (nidhogg-workers--test-ts-start p))
+               (should (eq (workers-ts-tests--info p :job) 'queued))
+               (let ((ab (workers-ts-tests--stat :abandoned))
+                     (waited (workers-ts-tests--stat :waited))
+                     (pub (workers-ts-tests--stat :published)))
+                 (should (equal (workers-ts-tests--sexp p)
+                                (workers-ts-tests--sync-sexp (buffer-string))))
+                 (should (= (workers-ts-tests--stat :abandoned) (1+ ab)))
+                 (should (= (workers-ts-tests--stat :waited) waited))
+                 (should (= (workers-ts-tests--stat :published) pub))
+                 (should-not (workers-ts-tests--info p :job))))))
+          (ert-info ("stale and under half: cancelled" :prefix "")
+            (goto-char (point-max))
+            (insert "int y;\n")
+            (workers-ts-tests--pause mode 'after-snapshot)
+            (should (nidhogg-workers--test-ts-start p))
+            (workers-ts-tests--await mode 'after-snapshot)
+            (goto-char (point-min))
+            (insert "int x;\n")
+            (let ((ab (workers-ts-tests--stat :abandoned))
+                  (waited (workers-ts-tests--stat :waited)))
+              (should (equal (workers-ts-tests--sexp p)
+                             (workers-ts-tests--sync-sexp (buffer-string))))
+              (should (= (workers-ts-tests--stat :abandoned) (1+ ab)))
+              (should (= (workers-ts-tests--stat :waited) waited)))
+            (nidhogg-workers--release 'after-snapshot)
+            (should (nidhogg-workers--test-ts-await-idle 60000)))
+          (ert-info ("not started, waited on: the normal-priority thread"
+                     :prefix "")
+            (goto-char (point-max))
+            (insert "int w;\n")
+            (workers-ts-tests--blocked
+             (lambda ()
+               (should (nidhogg-workers--test-ts-start p))
+               (should (eq (workers-ts-tests--info p :job) 'queued))
+               (workers-ts-tests--done p)
+               (should (eq (workers-ts-tests--info p :policy) 'other))))
+            (treesit-parser-root-node p)))
+        (ert-info ("nearly done: waited" :prefix "")
+          (goto-char (point-max))
+          (insert "int v;\n")
+          (workers-ts-tests--pause mode 'before-done)
+          (should (nidhogg-workers--test-ts-start p))
+          (workers-ts-tests--await mode 'before-done)
+          (when (eq mode 'threads)
+            (nidhogg-workers--test-release-on-wait 'before-done))
+          (let ((waited (workers-ts-tests--stat :waited))
+                (waits (workers-ts-tests--parse-waits))
+                (pub (workers-ts-tests--stat :published))
+                (ab (workers-ts-tests--stat :abandoned)))
+            (unwind-protect
+                (should (equal (workers-ts-tests--sexp p)
+                               (workers-ts-tests--sync-sexp (buffer-string))))
+              (nidhogg-workers--test-release-on-wait nil))
+            (should (= (workers-ts-tests--stat :published) (1+ pub)))
+            (should (= (workers-ts-tests--stat :abandoned) ab))
+            ;; Inline, the job was done at its start: nothing to wait for.
+            (let ((n (if (eq mode 'threads) 1 0)))
+              (should (= (workers-ts-tests--stat :waited) (+ waited n)))
+              (should (= (workers-ts-tests--parse-waits) (+ waits n))))))))))
+
+(ert-deftest workers/ts-demand-from-lisp-thread ()
+  ;; Review Focus 2: a Lisp thread's `treesit-node-at' while a job is
+  ;; parked: the wait is bounded, the node is right, nothing deadlocks.
+  (workers-ts-tests--modes
+    (with-temp-buffer
+      (insert (workers-ts-tests--c-text 50000))
+      (let* ((p (treesit-parser-create 'c nil t))
+             (buf (current-buffer))
+             (pos (- (point-max) 20))
+             (node-type (lambda ()
+                          (thread-join
+                           (make-thread
+                            (lambda ()
+                              (with-current-buffer buf
+                                (treesit-node-type
+                                 (treesit-node-at pos p)))))))))
+        (treesit-parser-root-node p)
+        (ert-info ("the wait releases the job" :prefix "")
+          (goto-char (point-min))
+          (insert "int z;\n")
+          (workers-ts-tests--pause mode 'before-done)
+          (should (nidhogg-workers--test-ts-start p))
+          (workers-ts-tests--await mode 'before-done)
+          (when (eq mode 'threads)
+            (nidhogg-workers--test-release-on-wait 'before-done))
+          (let ((pub (workers-ts-tests--stat :published))
+                (waited (workers-ts-tests--stat :waited))
+                (type (unwind-protect (funcall node-type)
+                        (nidhogg-workers--test-release-on-wait nil))))
+            (should (equal type (treesit-node-type
+                                 (treesit-node-at pos (treesit-parser-create
+                                                       'c nil t)))))
+            (should (= (workers-ts-tests--stat :published) (1+ pub)))
+            (should (= (workers-ts-tests--stat :waited)
+                       (+ waited (if (eq mode 'threads) 1 0))))))
+        (ert-info ("the job stays parked: the wait ends at its bound"
+                   :prefix "")
+          (goto-char (point-min))
+          (insert "int y;\n")
+          (workers-ts-tests--pause mode 'before-done)
+          (should (nidhogg-workers--test-ts-start p))
+          (workers-ts-tests--await mode 'before-done)
+          (let* ((ab (workers-ts-tests--stat :abandoned))
+                 (type (unwind-protect (funcall node-type)
+                         ;; The main thread releases it afterwards.
+                         (nidhogg-workers--release 'before-done))))
+            (should (equal type (treesit-node-type
+                                 (treesit-node-at pos (treesit-parser-create
+                                                       'c nil t)))))
+            (should (= (workers-ts-tests--stat :abandoned)
+                       (+ ab (if (eq mode 'threads) 1 0))))))
+        (should (nidhogg-workers--test-ts-await-idle 60000))))))
 
 ;;; workers-ts-tests.el ends here
