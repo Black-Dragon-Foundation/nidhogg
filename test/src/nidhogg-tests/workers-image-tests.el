@@ -390,4 +390,13 @@ GOLDEN-HEADER is the corpus' recorded frame background colour."
               (dolist (i '(1 2 3))
                 (nidhogg-workers--test-image-forget i)))))))))
 
+;; macOS keeps NSImage for its native types (Task 37): they decode
+;; synchronously there, so none of them is deferrable.  WebP is not
+;; asserted: whether it reaches nh-img on NS is decided by the Mac build.
+(ert-deftest workers/macos-image-types ()
+  (skip-unless (and (eq system-type 'darwin)
+                    (fboundp 'nidhogg-workers--deferrable-p)))
+  (dolist (type '(png jpeg gif tiff))
+    (should-not (nidhogg-workers--deferrable-p type))))
+
 ;;; workers-image-tests.el ends here
