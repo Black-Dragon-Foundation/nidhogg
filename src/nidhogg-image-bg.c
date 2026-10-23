@@ -52,6 +52,10 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "nidhogg-image-bg.h"
 # ifndef NH_WK_HARNESS
 #  include "coding.h"
+# else
+/* The fuzz targets link this file without the runtime, and run no
+   signal handler.  */
+#  define nh_wk_lock pthread_mutex_lock
 # endif
 
 #ifdef HAVE_PNG
@@ -317,7 +321,7 @@ MAYBE_UNUSED static struct nh_img_centry *
 nh_img_cache_take (int fmt, uint64_t key)
 {
   struct nh_img_centry *e = NULL, **pp;
-  pthread_mutex_lock (&nh_img_cache_lock);
+  nh_wk_lock (&nh_img_cache_lock);
   for (pp = &nh_img_cache; *pp; pp = &(*pp)->next)
     if ((*pp)->key == key && (*pp)->fmt == fmt)
       {
@@ -334,7 +338,7 @@ MAYBE_UNUSED static void
 nh_img_cache_put (struct nh_img_centry *e)
 {
   struct nh_img_centry *drop = NULL;
-  pthread_mutex_lock (&nh_img_cache_lock);
+  nh_wk_lock (&nh_img_cache_lock);
   for (struct nh_img_centry *q = nh_img_cache; q; q = q->next)
     if (q->key == e->key && q->fmt == e->fmt)
       {
@@ -378,7 +382,7 @@ nh_img_cache_put (struct nh_img_centry *e)
 void
 nh_img_cache_clear (void)
 {
-  pthread_mutex_lock (&nh_img_cache_lock);
+  nh_wk_lock (&nh_img_cache_lock);
   struct nh_img_centry *all = nh_img_cache;
   nh_img_cache = NULL;
   pthread_mutex_unlock (&nh_img_cache_lock);
@@ -394,7 +398,7 @@ int
 nh_img_cache_entries (void)
 {
   int n = 0;
-  pthread_mutex_lock (&nh_img_cache_lock);
+  nh_wk_lock (&nh_img_cache_lock);
   for (struct nh_img_centry *q = nh_img_cache; q; q = q->next)
     n++;
   pthread_mutex_unlock (&nh_img_cache_lock);
@@ -2065,7 +2069,7 @@ static void *
 nh_img_tjob_run (void *arg)
 {
   struct nh_img_tjob *j = arg;
-  pthread_mutex_lock (&j->lock);
+  nh_wk_lock (&j->lock);
   while (!j->go)
     pthread_cond_wait (&j->cond, &j->lock);
   pthread_mutex_unlock (&j->lock);
@@ -2269,7 +2273,7 @@ DEFUN ("nidhogg-workers--test-image-decode-finish",
     error ("No such test decode");
   struct nh_img_tjob *j = nh_img_tjobs[slot];
   nh_img_tjobs[slot] = NULL;
-  pthread_mutex_lock (&j->lock);
+  nh_wk_lock (&j->lock);
   j->go = true;
   pthread_cond_broadcast (&j->cond);
   pthread_mutex_unlock (&j->lock);
