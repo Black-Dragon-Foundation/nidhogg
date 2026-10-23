@@ -36,9 +36,10 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
    process's readmax each), and writes the wake fd when the FIFO stops
    being empty (or EOF or an error is recorded).  The main thread's
    round-robin sees the wake fd readable and calls read_process_output,
-   whose reader branch (nh_io_read) takes one chunk into today's decode
-   and filter path.  When it finds the FIFO empty it clears the wake fd,
-   under the same mutex nh-io appends under, and returns EAGAIN: the
+   whose reader branch (nh_io_read) takes one delivery's worth of
+   chunks into today's decode and filter path.  When it finds the FIFO
+   empty it clears the wake fd, under the same mutex nh-io appends
+   under, and returns EAGAIN: the
    wake fd is readable exactly while there is something to deliver, so
    the round-robin never spins (fd audit, finding 13).  EOF and errors
    come back as read would return them, once the FIFO is empty.  When
@@ -79,6 +80,22 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
    reads the real fd to EAGAIN or EOF (a grandchild holding the pipe
    open cannot make it wait), all before the sentinel.
 
+   Delivery (Task 19; the design's §8.2 "Delivery", S2).  One delivery
+   per channel per select round, as today's one read, but it joins what
+   is queued: the first chunk (or as much of it as fits), then whole
+   chunks while they fit.  It never waits for more.  What fits is
+   read-process-output-max for the default filter, which is C; for any
+   other filter also the process's estimated 4 ms of filter work (a
+   moving average of the filter's ns per byte over its calls), and
+   before there is an estimate a pty's read (4 KB) or a pipe's or
+   socket's (64 KB).  Chunks taken whole and decoded in one run keep
+   their decodes for the delivery: a filter's string is their
+   concatenation (nh_io_decoded), and the default filter inserts them
+   into the buffer with today's bookkeeping (nh_io_insert), so the main
+   thread decodes nothing.  The rest of the C delivery runs in the
+   watchdog's `deliver' phase, the filter in its `filter' phase, and
+   both count their ns.  Adaptive read buffering does not apply.
+
    STARTTLS (Task 20, MC-32).  `gnutls-boot' gives GnuTLS the real fd,
    which GnuTLS then reads itself, so a reader-owned process is handed
    back at the start of Fgnutls_boot, before any GnuTLS call, and is
@@ -116,8 +133,12 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "nidhogg-workers.h"
 
 #ifndef NH_WK_HARNESS
+# include <time.h>
 # include "nidhogg-workers-phase.h"
+# include "buffer.h"
+# include "character.h"
 # include "coding.h"
+# include "composite.h"
 # include "process.h"
 # define NH_IO_PH NH_WK_PH_WORKER_WAIT
 # define NH_IO_RS NH_WK_RS_DETACH
@@ -240,11 +261,17 @@ struct nh_io_h
      last chunk and what that chunk left undecoded.  */
   int dsys;
   struct nh_dec_state dst;
-  /* The main thread's: the chunk nh_io_take just delivered whole, kept
-     for nh_io_decoded; and how many decodes a filter got (`:decoded')
-     or the main thread made again (`:redecoded').  */
+  /* The main thread's: the chunks nh_io_take just delivered whole, in
+     one run of decodes (a list through `next'), kept for nh_io_decoded
+     and nh_io_insert; and how many deliveries used those decodes
+     (`:decoded') or decoded the bytes again (`:redecoded').  */
   struct nh_io_chunk *last;
   int64_t ndecoded, nredecoded;
+
+  /* Delivery (Task 19), the main thread's: the filter's estimated ns per
+     byte, once COST_KNOWN; COST_FIXED when a test fixed it.  */
+  double cost;
+  bool cost_known, cost_fixed;
 };
 
 #define NH_IO_SYS(coding) ((int) ((coding) & 0xF))
@@ -294,14 +321,20 @@ nh_io_note (int ev, int64_t id, int fd, ptrdiff_t n)
 }
 
 static void
-nh_io_free (struct nh_io_h *h)
+nh_io_chunks_free (struct nh_io_chunk *c)
 {
-  for (struct nh_io_chunk *c = h->head, *next; c; c = next)
+  for (struct nh_io_chunk *next; c; c = next)
     {
       next = c->next;
       free (c);
     }
-  free (h->last);
+}
+
+static void
+nh_io_free (struct nh_io_h *h)
+{
+  nh_io_chunks_free (h->head);
+  nh_io_chunks_free (h->last);
   nh_wk_stat_add (NH_WK_IO, NH_WK_ST_QUEUED_BYTES, -h->queued);
   if (!h->inl)
     nh_wk_wake_close (&h->wake);
@@ -733,40 +766,71 @@ nh_io_detach (struct nh_io_h *h)
   return nh_io_detach_1 (h, NH_IO_RS);
 }
 
-/* Copy up to SIZE bytes of H's first chunk into BUF.  Return the count;
-   0 at EOF; -1 with errno set to the read error, or to EAGAIN when
-   nothing is queued (the wake fd is cleared then).  */
+/* Whether the chunks C (a list) were all decoded, each going on from
+   the carry the one before left: then their decodes, joined, are the
+   decode of their bytes joined (nh_io_take keeps them only so).  */
+static bool
+nh_io_run_ok (struct nh_io_chunk *c)
+{
+  for (; c; c = c->next)
+    {
+      struct nh_io_chunk *d = c->next;
+      if (!c->dec
+	  || (d && (d->sys != c->sys || d->gen != c->gen
+		    || d->ncin != c->ncout
+		    || memcmp (d->data, c->cout, c->ncout) != 0)))
+	return false;
+    }
+  return true;
+}
+
+/* Copy up to SIZE bytes of H's queued chunks into BUF (Task 19): the
+   first chunk, or as much of it as fits, then whole chunks while they
+   fit; never more than is queued now.  Return the count; 0 at EOF; -1
+   with errno set to the read error, or to EAGAIN when nothing is queued
+   (the wake fd is cleared then).  When every chunk taken was taken
+   whole and decoded in one run, they stay in h->last for nh_io_decoded
+   and nh_io_insert: a decode is any use only for bytes delivered in one
+   piece.  */
 NH_IO_CORE ptrdiff_t
 nh_io_take (struct nh_io_h *h, char *buf, ptrdiff_t size)
 {
-  ptrdiff_t n = -1;
+  ptrdiff_t n = 0;
   int err = EAGAIN;
-  struct nh_io_chunk *done = NULL;
-  bool whole = false;
-  free (h->last);
+  struct nh_io_chunk *taken = NULL, **tail = &taken;
+  bool whole = true;
+  nh_io_chunks_free (h->last);
   h->last = NULL;
   nh_wk_lock (&nh_io_m);
-  struct nh_io_chunk *c = h->head;
-  if (c)
+  for (struct nh_io_chunk *c; (c = h->head) && n < size; )
     {
-      /* A decoded chunk is any use only delivered in one piece.  */
-      whole = c->off == c->ncin && c->len - c->off <= size;
-      n = c->len - c->off < size ? c->len - c->off : size;
-      memcpy (buf, c->data + c->off, n);
-      c->off += n;
-      h->queued -= n;
-      if (c->off == c->len)
-	{
-	  h->head = c->next;
-	  if (!h->head)
-	    h->tail = NULL;
-	  done = c;
-	}
+      ptrdiff_t avail = c->len - c->off;
+      /* After the first chunk, whole chunks only.  */
+      if (n > 0 && avail > size - n)
+	break;
+      ptrdiff_t k = avail < size - n ? avail : size - n;
+      if (c->off != c->ncin || k < avail)
+	whole = false;
+      memcpy (buf + n, c->data + c->off, k);
+      c->off += k;
+      h->queued -= k;
+      n += k;
+      if (c->off < c->len)
+	break;
+      h->head = c->next;
+      if (!h->head)
+	h->tail = NULL;
+      c->next = NULL;
+      *tail = c;
+      tail = &c->next;
     }
-  else if (h->eof)
-    n = 0;
-  else if (h->err)
-    err = h->err;
+  if (n == 0)
+    {
+      if (h->eof)
+	err = 0;
+      else if (h->err)
+	err = h->err;
+    }
   if (!h->head && !h->eof && !h->err && !h->inl)
     nh_wk_wake_clear (&h->wake);
   bool uncapped = (n > 0 && atomic_load (&h->capped)
@@ -776,15 +840,19 @@ nh_io_take (struct nh_io_h *h, char *buf, ptrdiff_t size)
   pthread_mutex_unlock (&nh_io_m);
   if (uncapped)
     nh_io_poke ();
-  if (whole && done->dec)
-    h->last = done;
+  if (taken && whole && nh_io_run_ok (taken))
+    h->last = taken;
   else
-    free (done);
+    nh_io_chunks_free (taken);
   if (n > 0)
-    nh_wk_stat_add (NH_WK_IO, NH_WK_ST_QUEUED_BYTES, -n);
-  if (n < 0)
-    errno = err;
-  return n;
+    {
+      nh_wk_stat_add (NH_WK_IO, NH_WK_ST_QUEUED_BYTES, -n);
+      return n;
+    }
+  if (err == 0)
+    return 0;
+  errno = err;
+  return -1;
 }
 
 /* Inline: read the copy, as read_process_output reads the real fd.  */
@@ -792,7 +860,7 @@ NH_IO_CORE ptrdiff_t
 nh_io_take_inline (struct nh_io_h *h, char *buf, ptrdiff_t size)
 {
   ssize_t r;
-  free (h->last);
+  nh_io_chunks_free (h->last);
   h->last = NULL;
   do
     r = read (h->copy, buf, size);
@@ -1138,6 +1206,43 @@ nh_io_release (struct Lisp_Process *p)
   nh_io_free (h);
 }
 
+/* Delivery (Task 19).  A filter's work per delivery: 4 ms (MC-3).  */
+#define NH_IO_FILTER_NS 4e6
+/* Before the filter's cost is known: a Linux pty master read returns at
+   most N_TTY_BUF_SIZE; a pipe's or a socket's, 64 KB.  */
+enum { NH_IO_PTY_READ = 4096, NH_IO_PIPE_READ = 64 * 1024 };
+/* The least a delivery to a filter takes, however costly its estimate:
+   a filter whose cost is per call, not per byte, is not cut to a byte
+   at a time.  */
+enum { NH_IO_DELIVER_MIN = 512 };
+
+static int64_t
+nh_io_now (void)
+{
+  struct timespec ts;
+  clock_gettime (CLOCK_MONOTONIC, &ts);
+  return (int64_t) ts.tv_sec * 1000000000 + ts.tv_nsec;
+}
+
+/* The most one delivery to P takes, SIZE being the read it replaces
+   (read-process-output-max).  The default filter is C: SIZE.  Any other
+   filter: also its estimated 4 ms of work, at least NH_IO_DELIVER_MIN
+   bytes; before an estimate, the fd kind's natural read.  */
+static ptrdiff_t
+nh_io_limit (struct Lisp_Process *p, struct nh_io_h *h, ptrdiff_t size)
+{
+  if (fast_read_process_output
+      && EQ (p->filter, Qinternal_default_process_filter))
+    return size;
+  double lim = (!h->cost_known ? (p->pty_out ? NH_IO_PTY_READ
+				  : NH_IO_PIPE_READ)
+		: h->cost > 0 ? NH_IO_FILTER_NS / h->cost
+		: size);
+  if (lim < NH_IO_DELIVER_MIN)
+    lim = NH_IO_DELIVER_MIN;
+  return lim < size ? (ptrdiff_t) lim : size;
+}
+
 ptrdiff_t
 nh_io_read (struct Lisp_Process *p, int channel, char *buf, ptrdiff_t size,
 	    bool *handled)
@@ -1146,6 +1251,7 @@ nh_io_read (struct Lisp_Process *p, int channel, char *buf, ptrdiff_t size,
   *handled = h && (channel == h->sel || channel == p->infd);
   if (!*handled)
     return 0;
+  size = nh_io_limit (p, h, size);
   if (h->inl)
     {
       if (h->copy >= 0)
@@ -1337,38 +1443,196 @@ nh_io_coding_settled (struct Lisp_Process *p, struct coding_system *coding)
     nh_io_set_coding (h, sys);
 }
 
+/* The chunks of H's last take (a list, now the caller's to free) when
+   their decodes, joined, are what the main thread would make of the
+   NBYTES at CHARS (its carryover, then the bytes delivered) with CODING;
+   else NULL.  Their *DLEN bytes hold *NCHARS characters.  */
+static struct nh_io_chunk *
+nh_io_usable (struct nh_io_h *h, struct coding_system *coding,
+	      const char *chars, ptrdiff_t nbytes, ptrdiff_t *dlen,
+	      ptrdiff_t *nchars)
+{
+  if (!h || !h->last)
+    return NULL;
+  struct nh_io_chunk *c = h->last;
+  h->last = NULL;
+  /* nh_io_take kept one run: one generation, one system, each chunk
+     going on from the one before.  */
+  ptrdiff_t len = c->ncin;
+  *dlen = *nchars = 0;
+  for (struct nh_io_chunk *k = c; k; k = k->next)
+    {
+      len += k->len - k->ncin;
+      *dlen += k->dlen;
+      *nchars += k->nchars;
+    }
+  if (c->gen == NH_IO_GEN (atomic_load (&h->coding))
+      && c->sys == nh_dec_classify (coding)
+      && !inhibit_eol_conversion
+      && (NILP (Venable_character_translation)
+	  || NILP (Vstandard_translation_table_for_decode))
+      && nbytes == len
+      && memcmp (chars, c->data, c->ncin) == 0)
+    return c;
+  h->nredecoded++;
+  nh_io_chunks_free (c);
+  return NULL;
+}
+
+/* CODING's carryover is what the last of the chunks C left undecoded,
+   and P's delivery used their decodes.  Free C.  */
+static void
+nh_io_used (struct nh_io_h *h, struct coding_system *coding,
+	    struct nh_io_chunk *c)
+{
+  struct nh_io_chunk *last = c;
+  while (last->next)
+    last = last->next;
+  coding->carryover_bytes = last->ncout;
+  memcpy (coding->carryover, last->cout, last->ncout);
+  h->ndecoded++;
+  nh_io_chunks_free (c);
+}
+
 bool
 nh_io_decoded (struct Lisp_Process *p, struct coding_system *coding,
 	       const char *chars, ptrdiff_t nbytes)
 {
   struct nh_io_h *h = nh_io_get (p);
-  if (!h || !h->last)
+  ptrdiff_t dlen, nchars;
+  struct nh_io_chunk *c = nh_io_usable (h, coding, chars, nbytes, &dlen,
+					&nchars);
+  if (!c)
     return false;
-  struct nh_io_chunk *c = h->last;
-  h->last = NULL;
-  bool ok = (c->gen == NH_IO_GEN (atomic_load (&h->coding))
-	     && c->sys == nh_dec_classify (coding)
-	     && !inhibit_eol_conversion
-	     && (NILP (Venable_character_translation)
-		 || NILP (Vstandard_translation_table_for_decode))
-	     && nbytes == c->len
-	     && memcmp (chars, c->data, nbytes) == 0);
-  if (ok)
+  Lisp_Object s = (NH_DEC_MULTIBYTE (c->sys)
+		   ? make_uninit_multibyte_string (nchars, dlen)
+		   : make_uninit_string (dlen));
+  unsigned char *d = SDATA (s);
+  for (struct nh_io_chunk *k = c; k; k = k->next)
     {
-      h->ndecoded++;
-      coding->dst_object
-	= (NH_DEC_MULTIBYTE (c->sys)
-	   ? make_multibyte_string ((char *) c->dec, c->nchars, c->dlen)
-	   : make_unibyte_string ((char *) c->dec, c->dlen));
-      coding->produced = c->dlen;
-      coding->produced_char = c->nchars;
-      coding->carryover_bytes = c->ncout;
-      memcpy (coding->carryover, c->cout, c->ncout);
+      memcpy (d, k->dec, k->dlen);
+      d += k->dlen;
     }
-  else
-    h->nredecoded++;
-  free (c);
-  return ok;
+  coding->dst_object = s;
+  coding->produced = dlen;
+  coding->produced_char = nchars;
+  nh_io_used (h, coding, c);
+  return true;
+}
+
+/* The default filter's insertion (Task 19), from
+   read_and_insert_process_output where it would decode the NREAD bytes
+   at BUF into the current buffer, P's, at point: true when it inserted
+   nh-io's decodes there instead, as that decode inserts (before
+   markers, no text properties, compositions updated, point left before
+   the text), with CODING's produced counts and carryover set as it
+   sets them.  A unibyte system's bytes from 0x80 become raw-byte
+   characters in a multibyte buffer; a UTF-8 decode is no use in a
+   unibyte buffer.  */
+bool
+nh_io_insert (struct Lisp_Process *p, struct coding_system *coding,
+	      const char *buf, ptrdiff_t nread)
+{
+  struct nh_io_h *h = nh_io_get (p);
+  ptrdiff_t dlen, nchars;
+  struct nh_io_chunk *c = nh_io_usable (h, coding, buf, nread, &dlen,
+					&nchars);
+  if (!c)
+    return false;
+  bool multibyte = !NILP (BVAR (current_buffer, enable_multibyte_characters));
+  bool utf8 = NH_DEC_MULTIBYTE (c->sys);
+  if (!multibyte && utf8)
+    {
+      h->nredecoded++;
+      nh_io_chunks_free (c);
+      return false;
+    }
+  bool widen = multibyte && !utf8;
+  ptrdiff_t ibytes = 0;
+  for (struct nh_io_chunk *k = c; k; k = k->next)
+    ibytes += widen ? count_size_as_multibyte (k->dec, k->dlen) : k->dlen;
+  ptrdiff_t ichars = !multibyte ? ibytes : utf8 ? nchars : dlen;
+  USE_SAFE_ALLOCA;
+  unsigned char *text = c->dec;
+  if (widen || c->next)
+    {
+      unsigned char *d = text = SAFE_ALLOCA (ibytes);
+      for (struct nh_io_chunk *k = c; k; k = k->next)
+	if (widen)
+	  d += str_to_multibyte (d, k->dec, k->dlen);
+	else
+	  {
+	    memcpy (d, k->dec, k->dlen);
+	    d += k->dlen;
+	  }
+    }
+  ptrdiff_t pt = PT, pt_byte = PT_BYTE;
+  insert_1_both ((char *) text, ichars, ibytes, false, false, true);
+  update_compositions (pt, pt + ichars, CHECK_ALL);
+  TEMP_SET_PT_BOTH (pt, pt_byte);
+  SAFE_FREE ();
+  XSETBUFFER (coding->dst_object, current_buffer);
+  coding->produced = ibytes;
+  coding->produced_char = ichars;
+  nh_io_used (h, coding, c);
+  return true;
+}
+
+/* The ns of the filter calls nh_io_filter_end counted, for the
+   deliveries around them.  */
+static int64_t nh_io_filter_ns;
+
+/* Around read_and_dispose_of_process_output, for a delivery the reader
+   made (READER): the `deliver' phase, and its ns without the filter's
+   (a delivery nested in a filter counts in both).  */
+void
+nh_io_deliver_begin (bool reader, struct nh_io_deliver *d)
+{
+  *d = (struct nh_io_deliver) { .depth = -1 };
+  if (!reader)
+    return;
+  d->t0 = nh_io_now ();
+  d->filter_ns = nh_io_filter_ns;
+  d->depth = NH_WK_PHASE_PUSH (NH_WK_PH_DELIVER, 0);
+}
+
+void
+nh_io_deliver_end (struct nh_io_deliver *d)
+{
+  if (!d->t0)
+    return;
+  NH_WK_PHASE_POP (d->depth);
+  int64_t ns = (nh_io_now () - d->t0) - (nh_io_filter_ns - d->filter_ns);
+  if (ns > 0)
+    nh_wk_phase_ns_add (NH_WK_PH_DELIVER, 0, ns);
+}
+
+/* Around a filter call with P's output: the filter's cost.  The start
+   for nh_io_filter_end, 0 when the reader does not own P.  */
+int64_t
+nh_io_filter_begin (struct Lisp_Process *p)
+{
+  return nh_io_get (p) ? nh_io_now () : 0;
+}
+
+/* The filter called at T0 got NBYTES bytes (0: it was not called).
+   Count its ns, and fold its ns per byte into P's estimate (a moving
+   average, a quarter for the newest call) unless a test fixed it.  P's
+   filter may have deleted P or handed it back meanwhile.  */
+void
+nh_io_filter_end (struct Lisp_Process *p, int64_t t0, ptrdiff_t nbytes)
+{
+  if (!t0 || nbytes <= 0)
+    return;
+  int64_t ns = nh_io_now () - t0;
+  nh_io_filter_ns += ns;
+  nh_wk_phase_ns_add (NH_WK_PH_FILTER, 0, ns);
+  struct nh_io_h *h = nh_io_get (p);
+  if (!h || h->cost_fixed)
+    return;
+  double per = (double) ns / nbytes;
+  h->cost = h->cost_known ? h->cost + (per - h->cost) / 4 : per;
+  h->cost_known = true;
 }
 
 /* Fgnutls_boot's two hooks (§8.2 "A STARTTLS upgrade", MC-32).  With
@@ -1474,10 +1738,12 @@ reach), `:paused' (non-nil while paused, as by `set-process-filter' t),
 none was), `:coding-generation' (how often its decoding was set up since
 the hand-over), `:decoder' (the stateless system the reader decodes
 with, such as `utf-8-unix' or `raw-text-dos'; nil: the main thread
-decodes), `:decoded' (deliveries to a filter that used the reader's
-decode) and `:redecoded' (deliveries whose decode was stale, so the
-main thread decoded the bytes again).  For a process the reader does
-not own, in a build with GnuTLS, also: `:tls-reclaimed' (bytes the
+decodes), `:decoded' (deliveries that used the reader's decodes: a
+filter's string, or the default filter's insertion), `:redecoded'
+\(deliveries whose decode was stale, so the main thread decoded the
+bytes again) and `:filter-cost' (the filter's estimated nanoseconds per
+byte, a float; nil until a filter call measured it).  For a process the
+reader does not own, in a build with GnuTLS, also: `:tls-reclaimed' (bytes the
 reader had read and not delivered when `gnutls-boot' took the fd back,
 given to GnuTLS instead of the filter), `:tls-pulled' (how many of
 them GnuTLS has read), `:tls-left' (how many it has yet to read) and
@@ -1514,7 +1780,7 @@ them).  A `tls' refusal also means `gnutls-boot' ran on PROCESS.  */)
   int fds = (h->copy >= 0) + (h->wake.rfd >= 0)
     + (h->wake.wfd >= 0 && h->wake.wfd != h->wake.rfd);
   uint64_t coding = atomic_load (&h->coding);
-  return listn (28, QCowned, h->detached ? Qnil : Qt,
+  return listn (30, QCowned, h->detached ? Qnil : Qt,
 		intern_c_string (":mode"), h->inl ? Qinline : Qthreads,
 		intern_c_string (":select"), make_int (h->sel),
 		intern_c_string (":copy"), h->copy >= 0 ? make_int (h->copy) : Qnil,
@@ -1531,7 +1797,30 @@ them).  A `tls' refusal also means `gnutls-boot' ran on PROCESS.  */)
 		intern_c_string (":decoder"),
 		nh_dec_system_name (NH_IO_SYS (coding)),
 		intern_c_string (":decoded"), make_int (h->ndecoded),
-		intern_c_string (":redecoded"), make_int (h->nredecoded));
+		intern_c_string (":redecoded"), make_int (h->nredecoded),
+		intern_c_string (":filter-cost"),
+		h->cost_known ? make_float (h->cost) : Qnil);
+}
+
+DEFUN ("nidhogg-workers--test-filter-cost", Fnidhogg_workers__test_filter_cost,
+       Snidhogg_workers__test_filter_cost, 2, 2, 0,
+       doc: /* Fix the estimated cost of PROCESS's filter; for tests.
+NS is nanoseconds per byte, a number: from now on a delivery to a filter
+of PROCESS takes at most what NS makes 4 ms of the filter's work (at
+least 512 bytes), and filter calls no longer move the estimate.  With
+NS nil, the estimate is unknown again and the next filter call measures
+it.  Return non-nil if the reader owns PROCESS (else nothing changes).  */)
+  (Lisp_Object process, Lisp_Object ns)
+{
+  CHECK_PROCESS (process);
+  if (!NILP (ns))
+    CHECK_NUMBER (ns);
+  struct nh_io_h *h = nh_io_get (XPROCESS (process));
+  if (!h)
+    return Qnil;
+  h->cost_fixed = h->cost_known = !NILP (ns);
+  h->cost = NILP (ns) ? 0 : XFLOATINT (ns);
+  return Qt;
 }
 
 DEFUN ("nidhogg-workers--test-io-log", Fnidhogg_workers__test_io_log,
@@ -1610,6 +1899,7 @@ nh_io_syms (void)
   defsubr (&Snidhogg_workers__test_io_log);
   defsubr (&Snidhogg_workers__test_io_crash);
   defsubr (&Snidhogg_workers__test_io_hold_lock);
+  defsubr (&Snidhogg_workers__test_filter_cost);
 }
 
 #endif /* not NH_WK_HARNESS */
