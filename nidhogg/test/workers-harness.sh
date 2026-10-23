@@ -49,7 +49,7 @@ if [ "${1:-}" = --fuzz ]; then
   fi
   TARGETS=${*:-$(cd "$FZ" && ls *.c | grep -v '^driver\.c$' | grep -v '^tsan-' | sed 's/\.c$//')}
   for t in $TARGETS; do
-    case $t in header) SRCS="nidhogg-image-bg" ;; *) echo "fuzz: unknown target $t"; fail=1; continue ;; esac
+    case $t in header) SRCS="nidhogg-image-bg" ;; json) SRCS="" ;; *) echo "fuzz: unknown target $t"; fail=1; continue ;; esac
     srcs=(); for m in $SRCS; do srcs+=("$ROOT/src/$m.c"); done
     seeds=("$ROOT"/test/src/nidhogg-tests/fixtures/images/*)
     if echo 'int main(void){return 0;}' | "$CC" -fsanitize=fuzzer -x c - -o "$OUT/probe" 2>/dev/null; then
