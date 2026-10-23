@@ -135,7 +135,9 @@ seconds.  The plist: `:status' and `:code' (`process-status' and
        (delete-directory ,dir t))))
 
 (defun workers-fatal-tests--terminfo-p ()
-  (seq-some (lambda (d) (file-exists-p (expand-file-name "x/xterm" d)))
+  ;; Linux files entries under the first letter, macOS under its hex code.
+  (seq-some (lambda (d) (or (file-exists-p (expand-file-name "x/xterm" d))
+                            (file-exists-p (expand-file-name "78/xterm" d))))
             '("/usr/share/terminfo" "/lib/terminfo" "/etc/terminfo")))
 
 (ert-deftest workers/fatal-under-lock ()
