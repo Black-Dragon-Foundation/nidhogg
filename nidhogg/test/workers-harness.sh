@@ -47,7 +47,7 @@ if [ "${1:-}" = --fuzz ]; then
     [ "$(id -u)" = 0 ] && dnf install -y -q libasan libubsan >/dev/null 2>&1 || true
     echo 'int main(void){return 0;}' | "$CC" $SAN -x c - -o "$OUT/probe" 2>/dev/null || { SAN=; echo "fuzz: no sanitizers"; }
   fi
-  TARGETS=${*:-$(cd "$FZ" && ls *.c | grep -v '^driver\.c$' | sed 's/\.c$//')}
+  TARGETS=${*:-$(cd "$FZ" && ls *.c | grep -v '^driver\.c$' | grep -v '^tsan-' | sed 's/\.c$//')}
   for t in $TARGETS; do
     case $t in header) SRCS="nidhogg-image-bg" ;; *) echo "fuzz: unknown target $t"; fail=1; continue ;; esac
     srcs=(); for m in $SRCS; do srcs+=("$ROOT/src/$m.c"); done
