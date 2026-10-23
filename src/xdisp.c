@@ -503,6 +503,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #ifdef HAVE_NIDHOGG_WATCHDOG
 #include "nidhogg-watchdog-phase.h"
 #endif
+#ifdef HAVE_NIDHOGG_WORKERS
+#include "nidhogg-workers.h"
+#endif
 
 #ifndef FRAME_OUTPUT_DATA
 #define FRAME_OUTPUT_DATA(f) (NULL)
@@ -17408,6 +17411,9 @@ redisplay_internal (void)
   redisplaying_p = true;
 #ifdef HAVE_NIDHOGG_WATCHDOG
   nh_wd_redisplay_depth = nh_wd_phase_push (NH_WD_PH_REDISPLAY);
+#endif
+#ifdef HAVE_NIDHOGG_WORKERS
+  nh_wk_budget_reset ();
 #endif
   block_buffer_flips ();
   specbind (Qinhibit_free_realized_faces, Qnil);
