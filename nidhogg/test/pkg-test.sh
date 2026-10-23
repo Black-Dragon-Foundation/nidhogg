@@ -11,6 +11,7 @@
 # Groups: jsonrpc treesit process image files.  image needs the GUI runner (gui.sh): it runs only locally.
 # Third-party packages come from pkg-pins.txt into NIDHOGG_PKG_CACHE (default ~/.cache/nidhogg-pkg); servers and tools
 # are installed inside the container, never on the host.  Containers are memory-capped (--memory, default 8g).
+# Runs may go in parallel and share the cache and --out (on and off write different files); they fetch in turn.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
@@ -83,14 +84,15 @@ esac
 EMACS=$PREFIX/bin/nidhogg; [ -x "$EMACS" ] || EMACS=$PREFIX/bin/emacs
 export HOME=$(mktemp -d) NIDHOGG_WORKERS=$MODE EMACS
 T=/src/test
-# fetch the pinned packages once
+# fetch the pinned packages once; runs sharing the cache take turns (a lock file in the cache)
+(flock 9
 grep -v "^#" /src/nidhogg/test/pkg-pins.txt | while read -r n url sha; do
   [ -n "$n" ] || continue
   d=/cache/$n
   [ -d "$d/.git" ] || git clone -q "$url" "$d"
   git -C "$d" cat-file -e "$sha^{commit}" 2>/dev/null || git -C "$d" fetch -q origin "$sha"
   git -C "$d" checkout -q "$sha"
-done
+done) 9>/cache/.lock
 LP=""; for n in compat llama with-editor cond-let dash transient websocket; do LP="$LP -L /cache/$n -L /cache/$n/lisp"; done
 
 # ert LABEL ARGS...: one Emacs batch run; every test result line becomes an outcome line (LABEL/test)
@@ -137,7 +139,7 @@ for G in $GROUPS_RUN; do
       /usr/sbin/sshd -p 2222 -o PermitRootLogin=yes -o AuthorizedKeysFile=$HOME/.ssh/authorized_keys -o StrictModes=no
       REMOTE_TEMPORARY_FILE_DIRECTORY=/sshx:127.0.0.1:/tmp ert tramp-sshx -L $T/lisp -L $T/lisp/net -l $T/lisp/net/tramp-tests.el
       for p in magit eat vterm; do
-        [ $p != vterm ] || (cd /cache/vterm && cmake -S . -B build >/dev/null && make -C build -j2 >/dev/null 2>&1) || true
+        [ $p != vterm ] || (flock 9; cd /cache/vterm && cmake -S . -B build >/dev/null && make -C build -j2 >/dev/null 2>&1) 9>/cache/.lock || true
         fs=$(tests_of $p | sed "s/^/-l /" | tr "\n" " ")
         ert $p -L /cache/$p -L /cache/$p/lisp -L /cache/$p/build $fs
       done ;;
@@ -152,6 +154,8 @@ for G in $GROUPS_RUN; do
   echo "PKG $G $MODE: $p passed, $f failed, $s skipped"
 done'
 
+# the mounts are shared (z, not Z): several runs at once may use the same tree, prefix, cache and --out, and a private
+# label would lock every other running container out of them
 exec "$PODMAN" run --rm --memory "${NIDHOGG_PKG_MEMORY:-8g}" --memory-swap "${NIDHOGG_PKG_MEMORY:-8g}" \
   -e DISTRO="$DISTRO" -e PREFIX="$PREFIX" -e MODE="$MODE" -e GROUPS_RUN="$GROUPS_RUN" -e O=/out \
-  -v "$ROOT:/src:ro,Z" -v "$PREFIX:$PREFIX:ro,Z" -v "$CACHE:/cache:Z" -v "$OUT:/out:Z" "$IMAGE" bash -c "$INNER"
+  -v "$ROOT:/src:ro,z" -v "$PREFIX:$PREFIX:ro,z" -v "$CACHE:/cache:z" -v "$OUT:/out:z" "$IMAGE" bash -c "$INNER"
