@@ -6634,7 +6634,7 @@ handle_single_display_spec (struct it *it, Lisp_Object spec, Lisp_Object object,
 	     was temporarily moved to the window-point.  */
 	  specbind (Qinhibit_quit, Qt);
 #ifdef HAVE_NIDHOGG_WORKERS
-	  it->image_id = nh_img_redisplay_lookup (it->f, value, it->face_id);
+	  it->image_id = nh_img_redisplay_lookup (it->f, value, it->face_id, it);
 #else
 	  it->image_id = lookup_image (it->f, value, it->face_id);
 #endif
@@ -25142,7 +25142,7 @@ push_prefix_prop (struct it *it, Lisp_Object prop, int from_buffer)
     {
       it->what = IT_IMAGE;
 #ifdef HAVE_NIDHOGG_WORKERS
-      it->image_id = nh_img_redisplay_lookup (it->f, prop, it->face_id);
+      it->image_id = nh_img_redisplay_lookup (it->f, prop, it->face_id, it);
 #else
       it->image_id = lookup_image (it->f, prop, it->face_id);
 #endif
@@ -30566,7 +30566,8 @@ calc_pixel_width_or_height (double *res, struct it *it, Lisp_Object prop,
 	      && valid_image_p (prop))
 	    {
 #ifdef HAVE_NIDHOGG_WORKERS
-	      ptrdiff_t id = nh_img_redisplay_lookup (it->f, prop, it->face_id);
+	      ptrdiff_t id = nh_img_redisplay_lookup (it->f, prop, it->face_id,
+						      NULL);
 #else
 	      ptrdiff_t id = lookup_image (it->f, prop, it->face_id);
 #endif
@@ -32137,7 +32138,7 @@ draw_glyphs (struct window *w, int x, struct glyph_row *row,
 	      ptrdiff_t id;
 #ifdef HAVE_NIDHOGG_WORKERS
 	      id = nh_img_redisplay_lookup (f, s->img->spec,
-					    hlinfo->mouse_face_face_id);
+					    hlinfo->mouse_face_face_id, NULL);
 #else
 	      id = lookup_image (f, s->img->spec, hlinfo->mouse_face_face_id);
 #endif
