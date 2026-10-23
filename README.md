@@ -318,7 +318,15 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   would not parse on the main thread; `treesit-subtree-stat` on a published root answers from the worker's count. Test
   primitives: `nidhogg-workers--test-ts-start`, `--test-ts-wait`, `--test-ts-info`, `--test-ts-stats`,
   `--test-ts-await-idle`.
-<!-- wk: Task 11 -->
+- Edits during a parse job: every edit made to a parser's tree while it has a job (the changes Lisp makes, and the
+  narrowing sync a demand does) is logged exactly as applied; a parser that has no tree yet logs the change in buffer
+  bytes, which become tree edits at the publish. The publish replays the log onto the job's tree and, if there was any
+  edit, reparses once on the main thread (the watchdog's `treesit` phase) with the parser's current ranges: the same
+  incremental grouping as a synchronous parse at the snapshot, so typing during a long parse loses nothing the worker
+  did. A parser that tracks line and column (`treesit-languages-require-line-column-tracking`) drops a job that started
+  without a tree at its first edit. A start (unlike a demand) drops a job over older text for a new snapshot, and a
+  cancelled parse is never resumed. The worker's `treesit-subtree-stat` answer is dropped when a replay reparsed.
+  `--test-ts-stats` adds `:replayed`, `:replayed-edits`, `:superseded` and `:parses`; `--test-ts-info` adds `:log`.
 <!-- wk: Task 12 -->
 <!-- wk: Task 13 -->
 <!-- wk: Task 14 -->
