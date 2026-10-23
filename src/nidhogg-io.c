@@ -2530,6 +2530,9 @@ nh_io_insert (struct Lisp_Process *p, struct coding_system *coding,
   TEMP_SET_PT_BOTH (pt, pt_byte);
   SAFE_FREE ();
   XSETBUFFER (coding->dst_object, current_buffer);
+  /* As decode_coding_object sets it for a buffer: the default filter's
+     fast path into a unibyte buffer reads it.  */
+  coding->dst_multibyte = multibyte;
   coding->produced = ibytes;
   coding->produced_char = ichars;
   nh_io_used (h, coding, c);
