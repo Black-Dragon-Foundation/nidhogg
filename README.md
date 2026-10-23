@@ -687,7 +687,15 @@ a spec makes the decoder read `:data` as base64 text (on `nh-img` and in the syn
   that buffer for 20 minutes, as a 60 s write does. Test primitives: `nidhogg-workers--test-keyboard-auto-save`,
   `--test-save-await`, `--test-save-jobs`, `--test-save-age`, `--test-save-encode`, `nidhogg-workers--save-unnamed`
   and the `before-write` pause point.
-<!-- wk: Task 35 -->
+- Host-name lookups (`src/nidhogg-blk.c`, `nh-blk` class `dns`): with `nidhogg-workers-dns` on,
+  `make-network-process` with `:nowait` runs `getaddrinfo` with the same hints on a worker on every platform, in place
+  of glibc's `getaddrinfo_a` (and of the synchronous lookup where that is missing: macOS, Android, musl). The wait loop
+  hands the addresses to the same postponed connect; a failed lookup sets `(failed "Name lookup of HOST failed")`
+  everywhere. `delete-process` during a lookup drops the job and returns at once (glibc's path waits for a running
+  lookup). Lookups without `:nowait` are unchanged. Within the contract: off glibc, a bad host name with `:nowait`
+  becomes a `failed` status instead of an error from `make-network-process`. Test primitives:
+  `nidhogg-workers--test-dns-info`, `nidhogg-workers--test-glibc-dns-off` (the path of a platform without
+  `getaddrinfo_a`, on Linux) and the `in-lookup` pause point.
 <!-- wk: Task 36 -->
 <!-- wk: Task 37 -->
 <!-- wk: Task 38 -->
