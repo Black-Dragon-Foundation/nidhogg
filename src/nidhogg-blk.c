@@ -1751,13 +1751,21 @@ nh_save_plain_path (struct buffer *b)
 }
 
 /* Drop every job of B: a synchronous write supersedes them.  No lock,
-   no allocation: safe in a signal handler.  */
+   no allocation: safe in a signal handler.  A finished job's named
+   file goes at once (unlink is async-signal-safe; the free unlinks it
+   again, harmlessly): kill-emacs and the fatal path end the process
+   before the job is freed, and the named file, unlike an unnamed
+   O_TMPFILE one, would outlive it.  */
 static void
 nh_save_drop_buffer (struct buffer *b)
 {
   for (struct nh_save_job *j = nh_save_jobs; j; j = j->next)
     if (j->buf == b && !j->landed)
-      atomic_store (&j->dropped, true);
+      {
+	atomic_store (&j->dropped, true);
+	if (atomic_load (&j->job.state) == NH_WK_J_DONE && j->tmp)
+	  unlink (j->tmp);
+      }
 }
 
 /* B's job that has not finished running, or NULL.  */
