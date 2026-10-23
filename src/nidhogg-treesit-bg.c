@@ -177,7 +177,8 @@ nh_ts_alloc_test_thread (void *arg)
 	}
       if (p)
 	ts_parser_delete (p);
-      dynlib_close (h);
+      /* The handle stays open, as treesit.c leaves every grammar it
+	 loads: dynlib.c has dynlib_close only in native-comp builds.  */
     }
   return NULL;
 }
