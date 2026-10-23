@@ -1416,6 +1416,57 @@ nh_img_decode (int fmt, const uint8_t *data, size_t len,
 }
 
 
+/* Base64 (Task 30, `:nidhogg-data-encoding base64'): the standard
+   alphabet, white space skipped, `=' ends the data.  Decode IN (N bytes)
+   into OUT (CAP bytes); *GOT bytes were written and *COMPLETE says the
+   whole input was consumed (false: OUT filled up first).  False: a byte
+   that is not base64.  Lisp-free: the worker and the main thread both
+   call it.  */
+bool
+nh_img_b64_decode (const uint8_t *in, size_t n, uint8_t *out, size_t cap,
+		   size_t *got, bool *complete)
+{
+  uint32_t acc = 0;
+  int bits = 0;
+  size_t o = 0;
+  *complete = true;
+  for (size_t i = 0; i < n; i++)
+    {
+      uint8_t c = in[i];
+      int v;
+      if (c >= 'A' && c <= 'Z')
+	v = c - 'A';
+      else if (c >= 'a' && c <= 'z')
+	v = c - 'a' + 26;
+      else if (c >= '0' && c <= '9')
+	v = c - '0' + 52;
+      else if (c == '+')
+	v = 62;
+      else if (c == '/')
+	v = 63;
+      else if (c == '=')
+	break;
+      else if (c == ' ' || c == '\t' || c == '\r' || c == '\n')
+	continue;
+      else
+	return false;
+      acc = (acc << 6) | (uint32_t) v;
+      bits += 6;
+      if (bits >= 8)
+	{
+	  if (o == cap)
+	    {
+	      *complete = false;
+	      break;
+	    }
+	  bits -= 8;
+	  out[o++] = (acc >> bits) & 0xff;
+	}
+    }
+  *got = o;
+  return true;
+}
+
 /* The synchronous loaders' entry, nh_img_sync_load, is in image.c, which
    owns the frame and image internals it needs; so are the parts of the
    pending entries that touch them (Task 29, at the end of this file).  */
@@ -1842,9 +1893,17 @@ nh_img_ptr (const struct nh_img_src *s)
   return STRINGP (s->data) ? SDATA (s->data) : s->buf;
 }
 
+/* True if SPEC's :data is base64 text (Task 30).  */
+bool
+nh_img_b64_spec (Lisp_Object spec)
+{
+  return EQ (image_spec_value (spec, QCnidhogg_data_encoding, NULL), Qbase64);
+}
+
 /* Fill S from SPEC: all of a :data string, or the first CAP bytes of the
    file (a file bigger than CAP is refused when WHOLE).  A file's buffer
-   is freed by the caller's unbind_to.  */
+   is freed by the caller's unbind_to.  A base64 :data is decoded, up to
+   CAP bytes, into such a buffer.  */
 static bool
 nh_img_open (Lisp_Object spec, size_t cap, bool whole, struct nh_img_src *s)
 {
@@ -1854,6 +1913,22 @@ nh_img_open (Lisp_Object spec, size_t cap, bool whole, struct nh_img_src *s)
     {
       if (!STRINGP (s->data))
 	return false;
+      if (nh_img_b64_spec (spec))
+	{
+	  size_t bound = SBYTES (s->data) / 4 * 3 + 3;
+	  size_t alloc = min (cap, bound), got;
+	  bool complete;
+	  s->buf = xmalloc (alloc + 1);
+	  record_unwind_protect_ptr (xfree, s->buf);
+	  if (!nh_img_b64_decode (SDATA (s->data), SBYTES (s->data), s->buf,
+				  alloc, &got, &complete)
+	      || (whole && !complete))
+	    return false;
+	  s->data = Qnil;
+	  s->n = got;
+	  s->size = complete ? got : bound;
+	  return true;
+	}
       s->n = s->size = SBYTES (s->data);
       return true;
     }
@@ -2369,6 +2444,7 @@ struct nh_img_job
   ptrdiff_t id;
   uint64_t gen;
   bool consumed;		/* main thread: the result was taken */
+  bool b64;			/* DATA is base64 text: the job decodes it */
 };
 
 /* A pending entry; main thread (lock holder) only.  */
@@ -2381,7 +2457,15 @@ struct nh_img_pend
   struct nh_img_job *j;		/* a reference */
   bool landed;			/* decoded: lands at the next redisplay */
   bool synthetic;		/* a test entry: no image behind it */
+  bool prefetch;		/* `nidhogg-image-prefetch': lands in the drainer */
+  /* The stand-in (Task 30): the ready entry whose picture it draws
+     until it lands.  */
+  bool has_stand, stand_set;
+  ptrdiff_t stand_id;
+  EMACS_UINT stand_hash;
 };
+
+static void nh_img_prefetch_land (struct nh_img_pend *);
 
 static struct nh_img_pend *nh_img_pends;
 static uint64_t nh_img_gen;
@@ -2401,6 +2485,29 @@ static _Atomic int nh_img_live;
 static EMACS_INT nh_img_n_landed, nh_img_n_dropped, nh_img_n_deferred;
 /* The cache the test entries name.  */
 static char nh_img_test_cache;
+
+/* Task 30.  Where each window last drew a ready image: (window, position,
+   in a string or not) -> the entry; one slot per site, replaced in turn.
+   NH_IMG_CUR is the site redisplay is looking up now.  */
+struct nh_img_site
+{
+  const void *w;		/* the window (compared, never used) */
+  ptrdiff_t pos;
+  bool str;
+  const void *cache;
+  ptrdiff_t id;
+  EMACS_UINT hash;
+};
+enum { NH_IMG_SITE_N = 128 };
+static struct nh_img_site nh_img_sites[NH_IMG_SITE_N];
+static int nh_img_site_next;
+static struct nh_img_site nh_img_cur;
+/* `nidhogg-image-prefetch' is looking an image up; the generation of the
+   pending entry it made (0: none).  */
+static bool nh_img_prefetching;
+static uint64_t nh_img_prefetch_gen;
+/* The callbacks of the pending prefetches: ((GEN SPEC . CALLBACK) ...).  */
+static Lisp_Object nh_img_prefetch_cbs;
 
 static bool
 nh_img_defer_on (void)
@@ -2457,6 +2564,22 @@ nh_img_job_run (struct nh_wk_job *job)
       j->rc = nh_img_fail (&j->out, NH_IMG_E_SILENT);
       return;
     }
+  if (j->b64)
+    {
+      size_t cap = j->len / 4 * 3 + 3, got;
+      bool complete;
+      uint8_t *d = malloc (cap);
+      if (!d || !nh_img_b64_decode (j->data, j->len, d, cap, &got, &complete))
+	{
+	  free (d);
+	  j->rc = nh_img_fail (&j->out, NH_IMG_E_SILENT);
+	  return;
+	}
+      free (j->data);
+      j->data = d;
+      j->len = got;
+      j->b64 = false;
+    }
   if (j->params.frame_index >= 0)
     j->params.key = (j->data ? nh_img_hash (j->data, j->len)
 		     : nh_img_file_key (j->file));
@@ -2505,10 +2628,21 @@ nh_img_pend_free (struct nh_img_pend *r)
   free (r);
 }
 
+/* A forgotten prefetch never calls back.  No allocation.  */
+static void
+nh_img_prefetch_drop (uint64_t gen)
+{
+  Lisp_Object cell = Fassq (make_int (gen), nh_img_prefetch_cbs);
+  if (!NILP (cell))
+    nh_img_prefetch_cbs = Fdelq (cell, nh_img_prefetch_cbs);
+}
+
 /* R's entry is gone: its job is cancelled and its result dropped.  */
 static void
 nh_img_pend_forget (struct nh_img_pend *r)
 {
+  if (r->prefetch)
+    nh_img_prefetch_drop (r->gen);
   nh_img_pend_unlink (r);
   nh_wk_cancel (&r->j->job);
   nh_img_n_dropped++;
@@ -2527,6 +2661,11 @@ nh_img_job_finish (struct nh_wk_job *job)
   if (!r || r->gen != j->gen)
     {
       nh_img_n_dropped++;
+      return;
+    }
+  if (r->prefetch)
+    {
+      nh_img_prefetch_land (r);
       return;
     }
   r->landed = true;
@@ -2568,12 +2707,115 @@ nh_img_pending_p (struct frame *f, struct image *img)
   return nh_img_pends && nh_img_pend_find (FRAME_IMAGE_CACHE (f), img->id);
 }
 
+/* The stand-in rule (Task 30, §8.3 item 5).  A pending entry whose spec
+   equals a ready entry's except for the keys below, met where that image
+   was drawn in the window's last redisplay, draws the ready pixels scaled
+   into its own box until it lands.  */
+
+static bool
+nh_img_stand_key_p (Lisp_Object key)
+{
+  return (EQ (key, QCindex) || EQ (key, QCscale) || EQ (key, QCmax_width)
+	  || EQ (key, QCmax_height) || EQ (key, QCrotation)
+	  || EQ (key, QCwidth) || EQ (key, QCheight) || EQ (key, QCdata));
+}
+
+/* Every key of A (but the exempt ones) has an equal value in B.  A key
+   missing from B counts as nil.  */
+static bool
+nh_img_plist_covered (Lisp_Object a, Lisp_Object b)
+{
+  Lisp_Object t = XCDR (a);
+  for (; CONSP (t) && CONSP (XCDR (t)); t = XCDR (XCDR (t)))
+    {
+      Lisp_Object key = XCAR (t);
+      if (nh_img_stand_key_p (key))
+	continue;
+      if (NILP (Fequal (XCAR (XCDR (t)), image_spec_value (b, key, NULL))))
+	return false;
+    }
+  return true;
+}
+
+static bool
+nh_img_stand_spec_p (Lisp_Object a, Lisp_Object b)
+{
+  return (EQ (image_spec_value (a, QCtype, NULL), image_spec_value (b, QCtype, NULL))
+	  && nh_img_plist_covered (a, b) && nh_img_plist_covered (b, a));
+}
+
+static struct nh_img_site *
+nh_img_site_find (const struct nh_img_site *k)
+{
+  for (int i = 0; i < NH_IMG_SITE_N; i++)
+    {
+      struct nh_img_site *s = &nh_img_sites[i];
+      if (s->w == k->w && s->pos == k->pos && s->str == k->str)
+	return s;
+    }
+  return NULL;
+}
+
+/* The redisplay at site NH_IMG_CUR got ready entry IMG: remember it.  */
+static void
+nh_img_site_record (struct frame *f, struct image *img)
+{
+  struct nh_img_site *s = nh_img_site_find (&nh_img_cur);
+  if (!s)
+    {
+      s = &nh_img_sites[nh_img_site_next++ % NH_IMG_SITE_N];
+      nh_img_site_next %= NH_IMG_SITE_N;
+    }
+  *s = nh_img_cur;
+  s->cache = FRAME_IMAGE_CACHE (f);
+  s->id = img->id;
+  s->hash = img->hash;
+}
+
+/* The new pending entry P of IMG: link the ready entry drawn at this
+   site, if its spec qualifies.  */
+static void
+nh_img_stand_in_find (struct frame *f, struct image *img, struct nh_img_pend *p)
+{
+  if (!nh_img_in_redisplay || !nh_img_cur.w)
+    return;
+  struct nh_img_site *s = nh_img_site_find (&nh_img_cur);
+  if (!s || s->cache != FRAME_IMAGE_CACHE (f))
+    return;
+  struct image *e = IMAGE_OPT_FROM_ID (f, s->id);
+  if (!e || e == img || e->hash != s->hash || !e->pixmap
+      || !nh_img_stand_spec_p (e->spec, img->spec))
+    return;
+  p->has_stand = true;
+  p->stand_id = s->id;
+  p->stand_hash = s->hash;
+}
+
+/* prepare_image_for_display on pending IMG (image.c): give it the ready
+   entry's picture, if it has one.  True: cr_data is the stand-in.  */
+bool
+nh_img_stand_in_for (struct frame *f, struct image *img)
+{
+  struct nh_img_pend *r = nh_img_pend_find (FRAME_IMAGE_CACHE (f), img->id);
+  if (!r)
+    return false;
+  r->stand_set = false;
+  if (!r->has_stand)
+    return false;
+  struct image *e = IMAGE_OPT_FROM_ID (f, r->stand_id);
+  if (!e || e == img || e->hash != r->stand_hash || !e->pixmap
+      || e->load_failed_p)
+    return false;
+  r->stand_set = nh_img_stand_in (f, img, e);
+  return r->stand_set;
+}
+
 /* lookup_image's miss: see the commentary at the top.  */
 bool
 nh_img_lookup (struct frame *f, struct image *img)
 {
-  if (!nh_img_in_redisplay || !nh_img_on () || !nh_img_defer_on ()
-      || nh_img_failed_p (img->hash))
+  if ((!nh_img_in_redisplay && !nh_img_prefetching) || !nh_img_on ()
+      || !nh_img_defer_on () || nh_img_failed_p (img->hash))
     return false;
   Lisp_Object spec = img->spec;
   int hfmt = nh_img_spec_format (spec);
@@ -2603,6 +2845,7 @@ nh_img_lookup (struct frame *f, struct image *img)
   if (!j)
     return false;
   j->fmt = fmt;
+  j->b64 = j->data && nh_img_b64_spec (spec);
   nh_img_job_init (j, FRAME_IMAGE_CACHE (f), img->id);
   if (!nh_wk_submit (&j->job))
     {
@@ -2612,7 +2855,8 @@ nh_img_lookup (struct frame *f, struct image *img)
 
   /* Wait within the redisplay's budget (§8.3 item 4).  */
   int r = 0;
-  while (atomic_load (&j->job.state) != NH_WK_J_DONE)
+  /* A prefetch does not wait: nothing is waiting for the picture.  */
+  while (!nh_img_prefetching && atomic_load (&j->job.state) != NH_WK_J_DONE)
     {
       int64_t grant = nh_wk_budget_take (NH_IMG_SLICE_NS);
       if (grant <= 0)
@@ -2650,6 +2894,13 @@ nh_img_lookup (struct frame *f, struct image *img)
   p->j = j;			/* the submitter's reference */
   p->next = nh_img_pends;
   nh_img_pends = p;
+  if (nh_img_prefetching)
+    {
+      p->prefetch = true;
+      nh_img_prefetch_gen = p->gen;
+    }
+  else
+    nh_img_stand_in_find (f, img, p);
   img->width = w;
   img->height = h;
   img->load_failed_p = false;
@@ -2837,24 +3088,115 @@ nh_img_redisplay_restore (int old)
   nh_img_in_redisplay = old;
 }
 
+/* IT is the iterator that draws the image, or NULL where the image is only
+   measured: the stand-in rule needs the site.  */
 ptrdiff_t
-nh_img_redisplay_lookup (struct frame *f, Lisp_Object spec, int face_id)
+nh_img_redisplay_lookup (struct frame *f, Lisp_Object spec, int face_id,
+			 struct it *it)
 {
   if (!redisplaying_p)
     return lookup_image (f, spec, face_id);
   specpdl_ref count = SPECPDL_INDEX ();
   record_unwind_protect_int (nh_img_redisplay_restore, nh_img_in_redisplay);
   nh_img_in_redisplay = true;
+  memset (&nh_img_cur, 0, sizeof nh_img_cur);
+  if (it)
+    {
+      nh_img_cur.w = it->w;
+      nh_img_cur.pos = IT_CHARPOS (*it);
+      nh_img_cur.str = STRINGP (it->string);
+    }
   ptrdiff_t id = lookup_image (f, spec, face_id);
   unbind_to (count, Qnil);
+  if (it)
+    {
+      struct image *img = IMAGE_OPT_FROM_ID (f, id);
+      if (img && img->pixmap && !img->load_failed_p)
+	nh_img_site_record (f, img);
+    }
+  memset (&nh_img_cur, 0, sizeof nh_img_cur);
   return id;
+}
+
+/* A prefetched entry's job is done (the drainer): land it at once, there
+   is no window to mark, and call back.  */
+static void
+nh_img_prefetch_land (struct nh_img_pend *r)
+{
+  uint64_t gen = r->gen;
+  ptrdiff_t id = r->id;
+  const void *cache = r->cache;
+  bool ok = false;
+  nh_img_pend_unlink (r);
+  struct frame *f = nh_img_cache_frame (cache);
+  struct image *img = f ? IMAGE_OPT_FROM_ID (f, id) : NULL;
+  if (img && !img->pixmap && !img->load_failed_p)
+    {
+      nh_img_land_pend (f, img, r, false);
+      ok = !img->load_failed_p;
+    }
+  else
+    {
+      nh_img_n_dropped++;
+      nh_img_pend_free (r);
+    }
+  Lisp_Object cell = Fassq (make_int (gen), nh_img_prefetch_cbs);
+  if (!NILP (cell))
+    {
+      nh_img_prefetch_cbs = Fdelq (cell, nh_img_prefetch_cbs);
+      pending_funcalls = Fcons (list3 (XCDR (XCDR (cell)), XCAR (XCDR (cell)),
+				       ok ? Qready : Qfailed),
+				pending_funcalls);
+    }
+}
+
+static void
+nh_img_prefetch_restore (int old)
+{
+  nh_img_prefetching = old;
+}
+
+DEFUN ("nidhogg-image-prefetch", Fnidhogg_image_prefetch,
+       Snidhogg_image_prefetch, 2, 3, 0,
+       doc: /* Decode image SPEC into the image cache of FRAME without showing it.
+CALLBACK is called later, from the timer check, with SPEC and either
+`ready' or `failed'.  A spec that is displayed afterwards (on the face
+the default text uses) finds the picture in the cache and draws at once.
+With `nidhogg-workers-images' and `nidhogg-image-defer' on, a PNG, JPEG,
+GIF or WebP decodes on a worker; otherwise it is loaded now and the
+callback runs at the next timer check.  Clearing the image cache while
+the decode runs drops it, and CALLBACK is not called.  Value nil.  */)
+  (Lisp_Object spec, Lisp_Object callback, Lisp_Object frame)
+{
+  if (!valid_image_p (spec))
+    error ("Invalid image specification");
+  struct frame *f = decode_window_system_frame (frame);
+  specpdl_ref count = SPECPDL_INDEX ();
+  record_unwind_protect_int (nh_img_prefetch_restore, nh_img_prefetching);
+  nh_img_prefetching = true;
+  nh_img_prefetch_gen = 0;
+  ptrdiff_t id = lookup_image (f, spec, DEFAULT_FACE_ID);
+  unbind_to (count, Qnil);
+  struct image *img = IMAGE_OPT_FROM_ID (f, id);
+  uint64_t gen = nh_img_prefetch_gen;
+  if (gen && img && nh_img_pending_p (f, img))
+    nh_img_prefetch_cbs
+      = Fcons (Fcons (make_int (gen), Fcons (spec, callback)),
+	       nh_img_prefetch_cbs);
+  else
+    pending_funcalls
+      = Fcons (list3 (callback, spec,
+		      img && !img->load_failed_p ? Qready : Qfailed),
+	       pending_funcalls);
+  return Qnil;
 }
 
 DEFUN ("nidhogg-workers--test-image-info", Fnidhogg_workers__test_image_info,
        Snidhogg_workers__test_image_info, 0, 0, 0,
        doc: /* The pending image entries and their counters; for tests.
 A plist: `:pending' (entries without pixels, landed ones included),
-`:landed-waiting' (decoded, landing at the next redisplay), `:live'
+`:landed-waiting' (decoded, landing at the next redisplay), `:standing'
+\(pending entries drawing a ready entry's picture), `:live'
 \(decode jobs not freed yet), and since startup `:deferred' (entries made
 pending), `:landed' and `:dropped' (results whose entry was gone).  */)
   (void)
@@ -2865,13 +3207,17 @@ pending), `:landed' and `:dropped' (results whose entry was gone).  */)
       pending++;
       waiting += r->landed;
     }
-  return listn (12,
+  EMACS_INT standing = 0;
+  for (struct nh_img_pend *r = nh_img_pends; r; r = r->next)
+    standing += r->stand_set;
+  return listn (14,
 		intern_c_string (":pending"), make_int (pending),
 		intern_c_string (":landed-waiting"), make_int (waiting),
 		intern_c_string (":live"), make_int (atomic_load (&nh_img_live)),
 		intern_c_string (":deferred"), make_int (nh_img_n_deferred),
 		intern_c_string (":landed"), make_int (nh_img_n_landed),
-		intern_c_string (":dropped"), make_int (nh_img_n_dropped));
+		intern_c_string (":dropped"), make_int (nh_img_n_dropped),
+		intern_c_string (":standing"), make_int (standing));
 }
 
 DEFUN ("nidhogg-workers--test-marked-windows",
@@ -2994,6 +3340,12 @@ nh_img_syms (void)
 #ifdef HAVE_WINDOW_SYSTEM
   DEFSYM (Qnidhogg_workers_images, "nidhogg-workers-images");
   DEFSYM (Qsize, "size");
+  DEFSYM (Qready, "ready");
+  DEFSYM (Qbase64, "base64");
+  DEFSYM (QCnidhogg_data_encoding, ":nidhogg-data-encoding");
+  defsubr (&Snidhogg_image_prefetch);
+  staticpro (&nh_img_prefetch_cbs);
+  nh_img_prefetch_cbs = Qnil;
   defsubr (&Snidhogg_workers__test_image_answer);
   DEFSYM (Qnidhogg_image_defer, "nidhogg-image-defer");
   staticpro (&nh_img_marked);
