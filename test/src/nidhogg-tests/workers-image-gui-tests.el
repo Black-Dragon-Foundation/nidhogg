@@ -156,10 +156,11 @@ Value: (DIGEST LISP-DATA CORNERS FAILED LOG)."
 ;;; Task 29: pending entries, the display path, landing.  The rows wait
 ;;; on events (pause points, `--test-await-landed'), never on time.
 
-(defun workers-image-gui--skip ()
-  (skip-unless (and (display-graphic-p)
-                    (fboundp 'nidhogg-workers--deferrable-p)
-                    (nidhogg-workers--deferrable-p 'png))))
+(defmacro workers-image-gui--skip ()
+  ;; A macro: `skip-unless' exists only inside an `ert-deftest' body.
+  '(skip-unless (and (display-graphic-p)
+                     (fboundp 'nidhogg-workers--deferrable-p)
+                     (nidhogg-workers--deferrable-p 'png))))
 
 (defun workers-image-gui--info (key)
   (plist-get (nidhogg-workers--test-image-info) key))
