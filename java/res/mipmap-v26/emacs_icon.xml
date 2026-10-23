@@ -19,6 +19,7 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>. -->
 
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
   <background android:drawable="@drawable/emacs_background"/>
+  <!-- Nidhogg: no monochrome layer; the foreground is an opaque
+       picture, which a themed icon would show as a plain square.  -->
   <foreground android:drawable="@drawable/emacs_foreground"/>
-  <monochrome android:drawable="@drawable/emacs_foreground"/>
 </adaptive-icon>

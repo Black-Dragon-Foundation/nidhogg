@@ -18,6 +18,14 @@ for upstreaming.
 - Command: `nidhogg` (and `nidhoggclient`). Feature: `nidhogg` (`(require 'nidhogg)`). Variable: `nidhogg-version`.
 - `emacs-version` stays GNU Emacs's own (`"31.1"`): packages call `version<` on it, and `version-to-list` rejects
   `"31.1-nidhogg.3"`. Nidhogg's version lives in `nidhogg-version` and is appended to `M-x emacs-version` output.
+- Icon: the Black Dragon Foundation logo, in place of GNU Emacs's under the same file names, so the install rules,
+  `Icon=emacs` in the `.desktop` files and the app bundle's `Info.plist` stay as they are. In-tree: the hicolor PNGs
+  (`etc/images/icons/hicolor/<N>x<N>/apps/emacs.png`, 16 to 512 px; 48 px and below are a head-and-chest crop),
+  `scalable/apps/emacs.svg` (the 512 px PNG embedded; it is also the X/GTK frame icon), the macOS
+  `nextstep/Cocoa/Emacs.base/Contents/Resources/Emacs.icns` and the Android launcher icon under `java/res/`. GNU's
+  document icons and Windows icons (`nt/icons/`) are unchanged. If a rebase conflicts on one of these files, keep
+  Nidhogg's. The logo is Copyright (C) 2026 Black Dragon Foundation, under the GNU General Public License
+  version 3 or later, like the rest of Nidhogg.
 
 ## Version scheme
 
