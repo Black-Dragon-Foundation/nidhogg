@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # The package suites with the workers on and off (engine C, §17.4, PD-8).
-#   pkg-test.sh --container DISTRO --prefix DIR --mode on|off [--select GROUP] [--out DIR]
+#   pkg-test.sh --container DISTRO --prefix DIR --mode on|off|inline [--select GROUP] [--out DIR]
 #       Runs the groups (default: all but image) in a fresh podman container of DISTRO against the installed Nidhogg at
 #       DIR, with NIDHOGG_WORKERS=MODE and a temporary HOME.  Each test's outcome goes to DIR_OUT/pkg-GROUP-MODE.outcomes
 #       (TEST<TAB>passed|failed|skipped), and one "PKG GROUP MODE: N passed, M failed, K skipped" line per group is
-#       printed.  Exit 0 when the groups ran, whatever their outcomes: the verdict is --compare's.
+#       printed.  Exit 0 when the groups ran, whatever their outcomes: the verdict is --compare's (on against off;
+#       compare an inline run by hand).  The treesit group loads the test grammars from
+#       test/src/nidhogg-tests/fixtures/grammars-cache when grammars.sh has built them there.
 #   pkg-test.sh --compare DIR [--expected FILE]
 #       For each group, the tests that failed with the workers on must also have failed with them off, or be listed in
 #       pkg-expected-failures.txt.  A failure only with the workers on is the gate failure (exit 1).
@@ -56,8 +58,8 @@ while [ $# -gt 0 ]; do
 done
 if [ -n "$CMP" ]; then compare "$CMP" "$EXPECTED"; exit $?; fi
 
-[ -n "$DISTRO" ] && [ -n "$PREFIX" ] || { echo "usage: pkg-test.sh --container DISTRO --prefix DIR --mode on|off [--select GROUP] | --compare DIR" >&2; exit 2; }
-case $MODE in on|off) ;; *) echo "pkg-test: --mode on|off" >&2; exit 2 ;; esac
+[ -n "$DISTRO" ] && [ -n "$PREFIX" ] || { echo "usage: pkg-test.sh --container DISTRO --prefix DIR --mode on|off|inline [--select GROUP] | --compare DIR" >&2; exit 2; }
+case $MODE in on|off|inline) ;; *) echo "pkg-test: --mode on|off|inline" >&2; exit 2 ;; esac
 case $DISTRO in
   fedora-44) IMAGE=registry.fedoraproject.org/fedora:44 ;;
   fedora-45) IMAGE=registry.fedoraproject.org/fedora:45 ;;
@@ -122,6 +124,9 @@ for G in $GROUPS_RUN; do
     treesit)
       # deferral forced to "always wait": the packages must not see a half-parsed tree
       WAIT=(--eval "(when (boundp (quote nidhogg-treesit-defer)) (setq nidhogg-treesit-defer nil))")
+      # the test grammars, when grammars.sh built them in this tree (the rows that need others skip as before)
+      GR=/src/test/src/nidhogg-tests/fixtures/grammars-cache
+      [ ! -d $GR ] || WAIT+=(--eval "(setq treesit-extra-load-path (list \"$GR\"))")
       ert treesit -L $T/src "${WAIT[@]}" -l $T/src/treesit-tests.el
       for f in $T/lisp/progmodes/*-ts-mode-tests.el; do
         [ -f "$f" ] && ert "$(basename "$f" .el)" -L $T/lisp -L $T/lisp/progmodes "${WAIT[@]}" -l "$f"
