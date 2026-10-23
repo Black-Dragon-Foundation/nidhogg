@@ -289,7 +289,9 @@ jobs:
       - name: SCRATCH failed test summaries
         if: always()
         run: grep -a -h -e '^   FAILED' -e '^Ran ' "$RUNNER_TEMP"/build/obj/test/src/nidhogg-tests/*.log 2>/dev/null || true
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      # SCRATCH: the tarball goes up even when a workers check failed, so the drgnx suite still runs
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tarball-macos
           path: dist/
@@ -342,6 +344,8 @@ jobs:
   drgnx-macos:
     name: drgnx suite (macOS)
     needs: macos
+    # SCRATCH: runs whatever the macOS job's checks did; the tarball download still fails when there is none
+    if: ${{ !cancelled() }}
     runs-on: xcode-27
     timeout-minutes: 90
     steps:

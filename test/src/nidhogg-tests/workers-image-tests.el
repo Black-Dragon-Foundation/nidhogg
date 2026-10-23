@@ -105,12 +105,9 @@ GOLDEN-HEADER is the corpus' recorded frame background colour."
         (let ((r (nidhogg-workers--test-image-decode
                   (workers-image-tests--core-spec file index)
                   (workers-image-tests--params file bg golden))))
-          (message "nh-dbg-img %S cores=%S err=%S same=%S" case
-                   (nidhogg-workers--test-image-cores)
-                   (plist-get r :error)
-                   (and (not (plist-get r :error))
-                        (equal (workers-image-tests--digest r)
-                               (cdr (assoc case results)))))
+          (should-not (plist-get r :error))
+          (should (equal (workers-image-tests--digest r)
+                         (cdr (assoc case results))))
           (cl-incf n))))
     (should (= n (length results)))))
 
@@ -187,14 +184,15 @@ GOLDEN-HEADER is the corpus' recorded frame background colour."
                      (string-replace
                       "‘" "`"
                       (cdr (assoc (list file bg index) texts))))))
-          (message "nh-dbg-imgerr %S got=%S want=%S" entry
-                   (string-replace
-                    workers-image-tests--dir "@DIR@/"
-                    (concat (mapconcat
-                             (lambda (w) (format "PNG warning: %s\n" w))
-                             (plist-get r :warnings) "")
-                            (workers-image-tests--error-text file r index)))
-                   want))))))
+          (should (plist-get r :error))
+          (should-not (plist-get r :pixels))
+          (should (equal (string-replace
+                          workers-image-tests--dir "@DIR@/"
+                          (concat (mapconcat
+                                   (lambda (w) (format "PNG warning: %s\n" w))
+                                   (plist-get r :warnings) "")
+                                  (workers-image-tests--error-text file r index)))
+                         want)))))))
 
 (ert-deftest workers/image-data-copy ()
   ;; The job decodes a copy: the Lisp string is cleared and the heap

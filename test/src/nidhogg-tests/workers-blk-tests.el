@@ -422,16 +422,6 @@ Return its outcome as `workers-blk--dns-outcome' with DELETE-NOW does."
                (refs (mapcar (lambda (c) (apply #'workers-blk--dns-outcome c))
                              cases))
                (ref-deleted (workers-blk--dns-outcome "localhost" port t)))
-          (let ((print-length nil) (print-level nil))
-            (message "nh-dbg-dns refs=%S deleted=%S" refs ref-deleted)
-            (let ((nidhogg-workers-dns nil))
-              (message "nh-dbg-dns sync=%S"
-                       (mapcar (lambda (c) (apply #'workers-blk--dns-outcome c))
-                               cases)))
-            (let ((nidhogg-workers-dns t) (nidhogg-workers--mode 'threads))
-              (message "nh-dbg-dns threads=%S"
-                       (mapcar (lambda (c) (apply #'workers-blk--dns-outcome c))
-                               cases))))
           (should (equal (plist-get (nth 0 refs) :states)
                          '(connect open closed)))
           (should (equal (plist-get (nth 1 refs) :exit)
