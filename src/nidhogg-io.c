@@ -1937,6 +1937,15 @@ nh_io_limit (struct Lisp_Process *p, struct nh_io_h *h, ptrdiff_t size)
    . BATCH), or nil.  */
 static Lisp_Object nh_io_pending;
 
+/* P as a Lisp object (process.c's make_lisp_proc is static).  */
+static Lisp_Object
+make_lisp_proc (struct Lisp_Process *p)
+{
+  Lisp_Object proc;
+  XSETPROCESS (proc, p);
+  return proc;
+}
+
 static Lisp_Object
 nh_io_mat_step (Lisp_Object arg)
 {
