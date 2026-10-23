@@ -289,20 +289,22 @@ defaults to the selected frame.  */)
 DEFUN ("glitnir--last-paint", Fglitnir__last_paint, Sglitnir__last_paint,
        0, 1, 0,
        doc: /* Return the times of the latest recorded paint of FRAME's root frame.
-The value is (:commit-ns N :paint-ns N): the commit that paint showed (0
-if none) and the end of its draw, on the clock of `glitnir--now-ns'.
-FRAME defaults to the selected frame.  */)
+The value is (:commit-ns N :paint-ns N :present-ns N): the commit that
+paint showed (0 if none), the end of its draw, and the frame clock's
+after-paint that sent it to the compositor, on the clock of
+`glitnir--now-ns'.  FRAME defaults to the selected frame.  */)
   (Lisp_Object frame)
 {
   struct frame *f = decode_live_frame (frame);
-  uint64_t commit = 0, paint = 0;
+  uint64_t commit = 0, paint = 0, present = 0;
 #ifdef HAVE_PGTK
-  glitnir_pgtk_last_paint (f, &commit, &paint);
+  glitnir_pgtk_last_paint (f, &commit, &paint, &present);
 #else
   (void) f;
 #endif
-  return list4 (intern_c_string (":commit-ns"), make_uint (commit),
-		intern_c_string (":paint-ns"), make_uint (paint));
+  return listn (6, intern_c_string (":commit-ns"), make_uint (commit),
+		intern_c_string (":paint-ns"), make_uint (paint),
+		intern_c_string (":present-ns"), make_uint (present));
 }
 
 DEFUN ("glitnir--max-paint-gap-ms", Fglitnir__max_paint_gap_ms,

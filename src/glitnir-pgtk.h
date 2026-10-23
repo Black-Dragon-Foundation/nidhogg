@@ -136,7 +136,7 @@ extern uint64_t glitnir_pgtk_now_ns (void);
 extern uintmax_t glitnir_pgtk_draw_count (struct frame *f);
 extern bool glitnir_pgtk_frozen_p (struct frame *f);
 extern void glitnir_pgtk_last_paint (struct frame *f, uint64_t *commit,
-				     uint64_t *paint);
+				     uint64_t *paint, uint64_t *present);
 extern double glitnir_pgtk_max_paint_gap_ms (struct frame *f, bool reset);
 extern bool glitnir_pgtk_motion (struct frame *f, int x, int y);
 

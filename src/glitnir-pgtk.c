@@ -81,15 +81,18 @@ struct glitnir_root
   uint64_t t_update, t_freeze, t_commit, t_draw_start, t_draw_end;
   bool drawn;			/* a draw ran since the last record */
 
-  /* What the last draw saw; the device pixels committed since the last
-     record.  */
-  uint64_t damage_px, painted_px, commit_px;
+  /* Summed over every draw since the last record (a point that paints at
+     once can draw several times in one frame): the time spent drawing,
+     what the draws were asked for and painted; and the device pixels
+     committed.  */
+  uint64_t draw_ns, damage_px, painted_px, commit_px;
   uint8_t scale_mismatch;
 
-  /* For tests: the root's draws, its latest recorded paint, and the
-     longest time between two of its draws since GAP_FROM.  */
+  /* For tests: the root's draws, its latest recorded paint (and when the
+     after-paint that sent it to the compositor ran), and the longest time
+     between two of its draws since GAP_FROM.  */
   uintmax_t draws;
-  uint64_t last_commit, last_paint;
+  uint64_t last_commit, last_paint, last_present;
   uint64_t gap_from, max_gap;
 
   /* Debug modes.  `verify': the frame's surface at its previous commit
@@ -1084,7 +1087,9 @@ after_paint (GdkFrameClock *clock, gpointer data)
   e.t_update_ns = r->t_update;
   e.t_commit_ns = r->t_commit;
   e.t_freeze_ns = r->t_freeze;
-  e.t_draw_start_ns = r->t_draw_start;
+  /* The entry's draw time is the sum of the frame's draws, ending at the
+     last.  */
+  e.t_draw_start_ns = r->t_draw_end - min (r->draw_ns, r->t_draw_end);
   e.t_draw_end_ns = r->t_draw_end;
   e.clock_frame_us = gdk_frame_clock_get_frame_time (clock);
   e.presented_us = -1;
@@ -1098,8 +1103,9 @@ after_paint (GdkFrameClock *clock, gpointer data)
   r->violations = 0;
   r->last_commit = r->t_commit;
   r->last_paint = r->t_draw_end;
+  r->last_present = now_ns ();
   r->t_update = r->t_freeze = r->t_commit = 0;
-  r->commit_px = 0;
+  r->draw_ns = r->damage_px = r->painted_px = r->commit_px = 0;
   GLITNIR_CALL_UNCOUNTED (glitnir_stats_record (r->id, &e));
 }
 
@@ -1159,17 +1165,17 @@ glitnir_pgtk_draw_begin (struct frame *f, GtkWidget *widget, cairo_t *cr)
 	px = (uint64_t) ((double) alloc.width * sx)
 	     * (uint64_t) ((double) alloc.height * sy);
       cairo_rectangle_list_destroy (l);
-      r->painted_px = px;
+      r->painted_px += px;
       r->damage_px = r->commit_px;
     }
   else
     {
       /* Stock paints the whole widget; the damage is what GDK asked for.  */
-      r->painted_px = (uint64_t) ((double) alloc.width * sx)
-		      * (uint64_t) ((double) alloc.height * sy);
+      r->painted_px += (uint64_t) ((double) alloc.width * sx)
+		       * (uint64_t) ((double) alloc.height * sy);
       double x1, y1, x2, y2;
       cairo_clip_extents (cr, &x1, &y1, &x2, &y2);
-      r->damage_px = (x2 > x1 && y2 > y1)
+      r->damage_px += (x2 > x1 && y2 > y1)
 	? (uint64_t) ((x2 - x1) * sx) * (uint64_t) ((y2 - y1) * sy) : 0;
     }
 
@@ -1212,6 +1218,7 @@ glitnir_pgtk_draw_end (struct frame *f)
       r->draw_cr = NULL;
       uint64_t now = now_ns ();
       r->t_draw_end = now;
+      r->draw_ns += now - r->t_draw_start;
       r->drawn = true;
       if (r->gap_from)
 	r->max_gap = max (r->max_gap, now - r->gap_from);
@@ -1352,11 +1359,13 @@ glitnir_pgtk_frozen_p (struct frame *f)
 }
 
 void
-glitnir_pgtk_last_paint (struct frame *f, uint64_t *commit, uint64_t *paint)
+glitnir_pgtk_last_paint (struct frame *f, uint64_t *commit, uint64_t *paint,
+			 uint64_t *present)
 {
   struct glitnir_root *r = root_state (f);
   *commit = r ? r->last_commit : 0;
   *paint = r ? r->last_paint : 0;
+  *present = r ? r->last_present : 0;
 }
 
 double

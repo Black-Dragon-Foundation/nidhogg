@@ -219,6 +219,23 @@ until that redisplay is done."
       (should (>= (plist-get s :count) 5))
       (should (< (plist-get s :painted-px) (/ (glitnir-gui--frame-px) 10))))))
 
+(ert-deftest glitnir-gui/stats-sum-a-frames-draws ()
+  ;; A point that paints at once draws outside the frame clock; several such draws can come before the clock's
+  ;; after-paint records the frame.  Its entry sums them all (one draw's numbers would hide the others).
+  (with-temp-buffer
+    (switch-to-buffer (current-buffer))
+    (insert "hello")
+    (redisplay t) (sit-for 0.1)
+    (glitnir-stats nil t)
+    (let ((draws (glitnir--draw-count)))
+      ;; two whole-widget draws with no GLib dispatch between them: one frame
+      (dotimes (_ 2) (should (glitnir--compose-with-pending)))
+      (sit-for 0.1)
+      (let ((s (glitnir-stats)))
+        (should (>= (- (glitnir--draw-count) draws) 2))
+        (should (= (plist-get s :count) 1))
+        (should (>= (plist-get s :painted-px) (* 2 (glitnir-gui--frame-px))))))))
+
 (ert-deftest glitnir-gui/no-draw-while-frozen ()
   ;; The child frame is newer, so redisplay draws it first: its damage freezes the root before the root's jit-lock
   ;; runs.  The jit-lock function then moves the child (GTK invalidates the root on its next layout) and lets GLib
@@ -364,7 +381,8 @@ until that redisplay is done."
           (should (> (plist-get s :count) 0))
           (should (> (plist-get (plist-get s :latency-ms) :p50) 0))
           (should (null (plist-get s :backfill-rate)))
-          (should (<= (plist-get last :commit-ns) (plist-get last :paint-ns) (glitnir--now-ns))))))))
+          (should (<= (plist-get last :commit-ns) (plist-get last :paint-ns) (plist-get last :present-ns)
+                      (glitnir--now-ns))))))))
 
 ;; Debug modes (Task 22).
 
