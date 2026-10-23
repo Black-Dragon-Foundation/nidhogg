@@ -41,7 +41,7 @@
 The sub-switches gate each kind of process.")
 (nidhogg-workers--defswitch nidhogg-workers-reader-pipes t
   "Non-nil means the reader owns pipe processes.")
-(nidhogg-workers--defswitch nidhogg-workers-reader-sockets nil
+(nidhogg-workers--defswitch nidhogg-workers-reader-sockets t
   "Non-nil means the reader owns network sockets.")
 (nidhogg-workers--defswitch nidhogg-workers-reader-ptys nil
   "Non-nil means the reader owns pty processes.")
