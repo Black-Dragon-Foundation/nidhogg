@@ -215,20 +215,36 @@ extern void nh_ts_select_entry (void);
 /* Kill-buffer: cancel the parse jobs of the parsers of that buffer.  */
 extern void nh_ts_buffer_killed (struct buffer *);
 
-/* The reader, nidhogg-io.c [16, 17, 18, 19, 20].  */
+/* The reader, nidhogg-io.c [16, 17, 18, 19, 20].  A hand-back's
+   reasons.  */
+enum nh_io_reason
+{
+  NH_IO_CLOSE,			/* the process goes down: its fds close next */
+  NH_IO_TLS,
+  NH_IO_READER_OFF,
+  NH_IO_STATUS
+};
 extern bool nh_io_handover (struct Lisp_Process *);
 extern void nh_io_handback (struct Lisp_Process *, int reason);
 extern int nh_io_select_fd (struct Lisp_Process *);
+/* After a hand-back other than NH_IO_CLOSE: true once the bytes the
+   reader had read are delivered; then nh_io_release frees the handle
+   (the caller first takes the wake fd out of the select set).  */
+extern bool nh_io_done (struct Lisp_Process *);
+extern void nh_io_release (struct Lisp_Process *);
 extern void nh_io_pause (int infd);
 extern void nh_io_resume (int infd);
-extern ptrdiff_t nh_io_read (struct Lisp_Process *, int channel,
-			     bool *handled);
+/* read_process_output's reader branch: up to SIZE bytes into BUF, as
+   the read it replaces; *HANDLED false means read the fd as today.  */
+extern ptrdiff_t nh_io_read (struct Lisp_Process *, int channel, char *buf,
+			     ptrdiff_t size, bool *handled);
 extern void nh_io_drain (struct Lisp_Process *);
 extern void nh_io_coding_changed (struct Lisp_Process *);
 extern int nh_io_tls_boot (struct Lisp_Process *, void *gnutls_state);
-/* Under nh_wk_dead, a reader-owned process closes its real fd and its
-   wake fd directly, with no handshake; otherwise nothing.  From
-   kill_buffer_processes [4; live from 16].  */
+/* For the crash rows (Task 4's --test-crash on nh-io).  */
+extern bool nh_io_test_crash (void);
+/* Task 4's kill_buffer_processes hook: under nh_wk_dead, close a
+   reader-owned process's fds directly.  */
 extern void nh_io_dead_close (struct Lisp_Process *);
 
 /* Decoding, nidhogg-decode.c [18].  */
@@ -345,6 +361,9 @@ extern bool nh_img_displayed_size (struct frame *, Lisp_Object spec,
 				   int native_w, int native_h,
 				   int *width, int *height);
 extern bool nh_save_name_in_flight (Lisp_Object name);
+/* process.c, for nidhogg-set-process-reader: hand PROC back for good
+   (ON false), or let the reader take it again if it is being read.  */
+extern void nh_io_proc_reader (Lisp_Object proc, bool on);
 
 /* The `syms_of' part of each file, called from syms_of_nidhogg_workers.  */
 extern void syms_of_nidhogg_workers (void);
