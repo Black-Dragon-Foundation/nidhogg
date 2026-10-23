@@ -142,6 +142,19 @@ struct glitnir_root
   GlitnirLayerDesc layer;
   struct win_layer *wins;
   ptrdiff_t nwins, wins_size;
+
+  /* A child frame's chrome (Task 33), logical pixels as the resolver gave
+     it (HAS_CHROME; the shadow colour as 0xRRGGBB), and the border pgtk
+     drew last (BORDER_W px of the premultiplied ARGB BORDER_ARGB).  The
+     layer gets it at the next sync: CHROME_DIRTY (changed since the last
+     one), or a new layer, or a new scale (CHROME_SCALE).  APPLIED is what
+     Glitnir holds (CHROME_SET).  */
+  bool has_chrome, chrome_dirty, chrome_set;
+  float ch_radius, ch_blur, ch_ox, ch_oy, ch_spread, ch_opacity;
+  uint32_t ch_rgb, border_argb;
+  int border_w;
+  double chrome_scale;
+  GlitnirChrome applied;
 };
 
 /* A window's layer as last handed over.  */
@@ -958,6 +971,37 @@ sync_windows (struct glitnir_root *root, struct glitnir_root *s,
     }
 }
 
+/* Hand S's chrome, in device pixels at SCALE, to its layer (FRESH: the
+   layer was just made, so it holds none).  */
+static void
+chrome_apply (struct glitnir_root *root, struct glitnir_root *s,
+	      double scale, bool fresh)
+{
+  s->chrome_dirty = false;
+  s->chrome_scale = scale;
+  if (!s->has_chrome)
+    {
+      if (s->chrome_set && !fresh)
+	GLITNIR_CALL (glitnir_layer_set_chrome (root->id, s->id, NULL));
+      s->chrome_set = false;
+      return;
+    }
+  GlitnirChrome c = {
+    .radius_px = s->ch_radius * scale,
+    .blur_px = s->ch_blur * scale,
+    .offset_x = s->ch_ox * scale,
+    .offset_y = s->ch_oy * scale,
+    .spread_px = s->ch_spread * scale,
+    .shadow_opacity = s->ch_opacity,
+    .shadow_argb = 0xff000000u | s->ch_rgb,
+    .border_px = s->border_w * scale,
+    .border_argb = s->border_argb,
+  };
+  s->applied = c;
+  s->chrome_set = true;
+  GLITNIR_CALL (glitnir_layer_set_chrome (root->id, s->id, &c));
+}
+
 /* F's layer (under PARENT, at X, Y), its windows' and, recursively, its
    child frames'.  */
 static void
@@ -1000,14 +1044,18 @@ sync_frame (struct glitnir_root *root, struct frame *f, uint64_t parent,
 	}
       d.scale = sx;
     }
-  if (s->layer_root != root->id)
+  bool fresh = s->layer_root != root->id;
+  if (fresh)
     s->nwins = 0;
-  if (s->layer_root != root->id || !desc_equal (&d, &s->layer))
+  if (fresh || !desc_equal (&d, &s->layer))
     {
       s->layer = d;
       s->layer_root = root->id;
       GLITNIR_CALL (glitnir_layer_upsert (root->id, &d));
     }
+  if (f != root->frame
+      && (fresh || s->chrome_dirty || s->chrome_scale != d.scale))
+    chrome_apply (root, s, d.scale, fresh);
 
   for (ptrdiff_t i = 0; i < s->nwins; i++)
     s->wins[i].seen = false;
@@ -1866,6 +1914,123 @@ glitnir_pgtk_layer_rect (struct frame *f, GlitnirRect *out)
   if (s == NULL || s->layer_root == 0)
     return false;
   *out = s->layer.rect;
+  return true;
+}
+
+static float
+chrome_num (Lisp_Object v)
+{
+  return NUMBERP (v) ? (float) max (XFLOATINT (v), 0.0) : 0;
+}
+
+static Lisp_Object
+chrome_key (Lisp_Object plist, const char *name)
+{
+  return Fplist_get (plist, intern_c_string (name), Qnil);
+}
+
+void
+glitnir_pgtk_params_changed (struct frame *f)
+{
+  static bool busy;		/* the resolver changed parameters itself */
+  if (busy || !FRAME_PGTK_P (f) || f->output_data.pgtk == NULL
+      || FRAME_TOOLTIP_P (f))
+    return;
+  struct glitnir_root *s = FRAME_X_OUTPUT (f)->glitnir;
+  if (FRAME_PARENT_FRAME (f))
+    s = frame_state (f);
+  if (s == NULL || NILP (Ffboundp (Qglitnir__resolve)))
+    return;
+  Lisp_Object frame, res;
+  XSETFRAME (frame, f);
+  busy = true;
+  res = safe_calln (Qglitnir__resolve, frame);
+  busy = false;
+  struct glitnir_root n = *s;
+  n.has_chrome = CONSP (res);
+  n.ch_radius = n.ch_blur = n.ch_ox = n.ch_oy = n.ch_spread = 0;
+  n.ch_opacity = 0;
+  n.ch_rgb = 0;
+  if (n.has_chrome)
+    {
+      n.ch_radius = chrome_num (chrome_key (res, ":radius"));
+      Lisp_Object sh = chrome_key (res, ":shadow");
+      if (CONSP (sh))
+	{
+	  n.ch_blur = chrome_num (chrome_key (sh, ":blur"));
+	  Lisp_Object off = chrome_key (sh, ":offset");
+	  if (CONSP (off))
+	    {
+	      n.ch_ox = NUMBERP (XCAR (off)) ? XFLOATINT (XCAR (off)) : 0;
+	      n.ch_oy = NUMBERP (XCDR (off)) ? XFLOATINT (XCDR (off)) : 0;
+	    }
+	  n.ch_spread = NUMBERP (chrome_key (sh, ":spread"))
+	    ? XFLOATINT (chrome_key (sh, ":spread")) : 0;
+	  n.ch_opacity = min (chrome_num (chrome_key (sh, ":opacity")), 1);
+	  Lisp_Object col = chrome_key (sh, ":color");
+	  uint32_t rgb = 0;
+	  for (int i = 0; i < 3; i++, col = CONSP (col) ? XCDR (col) : Qnil)
+	    rgb = rgb << 8 | (CONSP (col) && FIXNATP (XCAR (col))
+			      ? min (XFIXNAT (XCAR (col)), 255) : 0);
+	  n.ch_rgb = rgb;
+	}
+    }
+  if (n.has_chrome == s->has_chrome && n.ch_radius == s->ch_radius
+      && n.ch_blur == s->ch_blur && n.ch_ox == s->ch_ox
+      && n.ch_oy == s->ch_oy && n.ch_spread == s->ch_spread
+      && n.ch_opacity == s->ch_opacity && n.ch_rgb == s->ch_rgb)
+    return;
+  s->has_chrome = n.has_chrome;
+  s->ch_radius = n.ch_radius;
+  s->ch_blur = n.ch_blur;
+  s->ch_ox = n.ch_ox;
+  s->ch_oy = n.ch_oy;
+  s->ch_spread = n.ch_spread;
+  s->ch_opacity = n.ch_opacity;
+  s->ch_rgb = n.ch_rgb;
+  s->chrome_dirty = true;
+  glitnir_pgtk_scene_changed (f);
+}
+
+void
+glitnir_pgtk_record_border (struct frame *f, int width, unsigned long rgb,
+			    double alpha)
+{
+  if (!FRAME_PARENT_FRAME (f))
+    return;
+  struct glitnir_root *s = frame_state (f);
+  if (s == NULL)
+    return;
+  alpha = min (max (alpha, 0.0), 1.0);
+  uint32_t a = lround (alpha * 255);
+  uint32_t r = (rgb >> 16 & 0xff) * a / 255, g = (rgb >> 8 & 0xff) * a / 255,
+    b = (rgb & 0xff) * a / 255;
+  uint32_t argb = a << 24 | r << 16 | g << 8 | b;
+  if (width == s->border_w && argb == s->border_argb)
+    return;
+  s->border_w = width;
+  s->border_argb = argb;
+  if (s->has_chrome)
+    {
+      /* The next point (the draw that records this makes one) commits
+	 the scene with the new ring.  */
+      s->chrome_dirty = true;
+      root_state (f)->scene_pending = true;
+    }
+}
+
+bool
+glitnir_pgtk_chrome (struct frame *f, GlitnirChrome *out)
+{
+  struct glitnir_root *root = root_state (f);
+  struct glitnir_root *s = frame_state (f);
+  if (root == NULL || s == NULL)
+    return false;
+  if (recording (root->frame))
+    layers_sync (root);
+  if (!s->chrome_set || s->layer_root != root->id)
+    return false;
+  *out = s->applied;
   return true;
 }
 

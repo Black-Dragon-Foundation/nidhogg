@@ -1754,6 +1754,11 @@ DEFUN ("x-create-frame", Fx_create_frame, Sx_create_frame, 1, 1, 0,
      and similar functions.  */
   Vwindow_list = Qnil;
 
+#ifdef HAVE_GLITNIR
+  /* The parameters are all in the alist now: resolve the chrome.  */
+  glitnir_pgtk_params_changed (f);
+#endif
+
   return unbind_to (count, frame);
 }
 

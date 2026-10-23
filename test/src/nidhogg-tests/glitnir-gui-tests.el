@@ -756,4 +756,61 @@ Glitnir is turned back on after (`revive'), for the tests that follow."
               (should (equal (take 2 (glitnir--layer-rect c)) (list (round (* 260 s)) (round (* 230 s))))))))
       (glitnir-gui--delete fs))))
 
+;; The Lisp surface (Task 33): chrome resolved from parameters and faces reaches the layer.
+
+(defun glitnir-gui--chromed (&rest params)
+  "A shown child frame with PARAMS (corner-radius, shadow ...) as frame parameters."
+  (let* ((b (glitnir-gui--text-buffer "*glitnir-chrome*" 5))
+         (c (glitnir-gui--child b t "#00ffff")))
+    (modify-frame-parameters c params)
+    (redisplay t) (sit-for 0.1)
+    c))
+
+(ert-deftest glitnir-gui/chrome-reaches-glitnir ()
+  (let ((c (glitnir-gui--chromed '(corner-radius . 8)
+                                 '(shadow . (:blur 16 :offset (0 . 6) :spread 2 :opacity 0.35)))))
+    (unwind-protect
+        (let* ((r (glitnir--resolve c)) (sh (plist-get r :shadow))
+               (s (float (frame-scale-factor)))
+               (ch (glitnir--chrome c)) (dsh (plist-get ch :shadow)))
+          (should r)
+          (should ch)
+          (should (= (plist-get ch :radius) (* s (plist-get r :radius))))
+          (should (= (plist-get dsh :blur) (* s (plist-get sh :blur))))
+          (should (= (car (plist-get dsh :offset)) (* s (car (plist-get sh :offset)))))
+          (should (= (cdr (plist-get dsh :offset)) (* s (cdr (plist-get sh :offset)))))
+          (should (= (plist-get dsh :spread) (* s (plist-get sh :spread))))
+          (should (< (abs (- (plist-get dsh :opacity) (plist-get sh :opacity))) 1e-6))
+          (should (equal (plist-get dsh :color) (plist-get sh :color)))
+          ;; opting out removes it
+          (modify-frame-parameters c '((corner-radius . 0) (shadow . nil)))
+          (redisplay t) (sit-for 0.1)
+          (should-not (glitnir--chrome c)))
+      (glitnir-gui--delete (list c)))))
+
+(ert-deftest glitnir-gui/per-frame-border-face-follows ()
+  (let ((c (glitnir-gui--chromed '(corner-radius . 8))))
+    (unwind-protect
+        (progn
+          (set-face-background 'child-frame-border "red" c)
+          (redisplay t) (sit-for 0.2) (redisplay t)
+          (let ((b (plist-get (glitnir--chrome c) :border)))
+            (should b)
+            (should (equal (take 3 (plist-get b :color)) '(255 0 0)))
+            (should (> (plist-get b :width) 0)))
+          (set-face-background 'child-frame-border "blue" c)
+          (redisplay t) (sit-for 0.2) (redisplay t)
+          (should (equal (take 3 (plist-get (plist-get (glitnir--chrome c) :border) :color)) '(0 0 255))))
+      (glitnir-gui--delete (list c)))))
+
+(ert-deftest glitnir-gui/per-frame-shadow-face-follows ()
+  (let ((c (glitnir-gui--chromed '(shadow . (:blur 16 :opacity 0.35)))))
+    (unwind-protect
+        (progn
+          (should (equal (plist-get (plist-get (glitnir--chrome c) :shadow) :color) '(0 0 0)))
+          (set-face-foreground 'child-frame-shadow "red" c)
+          (redisplay t) (sit-for 0.2) (redisplay t)
+          (should (equal (plist-get (plist-get (glitnir--chrome c) :shadow) :color) '(255 0 0))))
+      (glitnir-gui--delete (list c)))))
+
 ;;; glitnir-gui-tests.el ends here

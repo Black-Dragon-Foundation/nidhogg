@@ -148,6 +148,18 @@ extern ptrdiff_t glitnir_pgtk_stacking (struct frame *f, struct frame **out,
 					ptrdiff_t nmax);
 extern bool glitnir_pgtk_layer_rect (struct frame *f, GlitnirRect *out);
 
+/* Chrome (Task 33).  F's frame parameters or its faces may have changed:
+   resolve F's chrome with `glitnir--resolve' (a nested call, from a
+   resolver that sets parameters itself, returns at once) and hand it to
+   F's layer at the next commit.  pgtk drew F's internal (child-frame)
+   border of WIDTH px in the colour RGB (0xRRGGBB) at ALPHA: a change
+   re-chromes the layer at the next commit, with no Lisp.  The chrome last
+   handed to Glitnir for F's layer (false: none).  */
+extern void glitnir_pgtk_params_changed (struct frame *f);
+extern void glitnir_pgtk_record_border (struct frame *f, int width,
+					unsigned long rgb, double alpha);
+extern bool glitnir_pgtk_chrome (struct frame *f, GlitnirChrome *out);
+
 /* For tests; none calls into Glitnir.  */
 extern uint64_t glitnir_pgtk_now_ns (void);
 extern uintmax_t glitnir_pgtk_draw_count (struct frame *f);

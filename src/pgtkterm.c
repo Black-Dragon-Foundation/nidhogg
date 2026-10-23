@@ -5149,6 +5149,9 @@ pgtk_clear_under_internal_border (struct frame *f)
       block_input ();
 #ifdef HAVE_GLITNIR
       glitnir_pgtk_damage_internal_border (f);
+      glitnir_pgtk_record_border (f, border,
+				  face ? face->background : 0,
+				  face ? f->alpha_background : 0);
 #endif
 
       if (face)
@@ -5173,6 +5176,10 @@ pgtk_clear_under_internal_border (struct frame *f)
 
       unblock_input ();
     }
+#ifdef HAVE_GLITNIR
+  else if (FRAME_INTERNAL_BORDER_WIDTH (f) <= 0)
+    glitnir_pgtk_record_border (f, 0, 0, 0);
+#endif
 }
 
 static gboolean
