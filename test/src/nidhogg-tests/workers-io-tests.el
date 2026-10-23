@@ -211,10 +211,17 @@ The output, oldest first, is in the process property `out'."
   ;; Near FD_SETSIZE every process still starts; the ones whose two
   ;; reader fds would come within 64 of it stay on today's path; a
   ;; reader-owned process holds exactly two more fds (one inline,
-  ;; where the select set holds the copy itself) (§17.2a M1).
+  ;; where the select set holds the copy itself) (§17.2a M1).  Off
+  ;; Linux its wake is a pipe, not an eventfd: three in `threads' mode
+  ;; (NH_IO_FDS, src/nidhogg-io.c:182-188; plan Task 37, "three fds per
+  ;; reader-owned process").
   (workers-io-tests--modes
-    ;; Two more fds per process, against the same process unowned.
-    (let ((warm (workers-io-tests--cat "warm")))
+    ;; Two more fds per process (three off Linux), against the same
+    ;; process unowned.
+    (let ((warm (workers-io-tests--cat "warm"))
+          (owned-fds (cond ((eq mode 'inline) 1)
+                           ((eq system-type 'gnu/linux) 2)
+                           (t 3))))
       (should (workers-io-tests--info warm :owned))
       (let* ((n0 (workers-io-tests--fd-count))
              (owned (workers-io-tests--cat "owned"))
@@ -227,9 +234,8 @@ The output, oldest first, is in the process property `out'."
                (n3 (workers-io-tests--fd-count)))
           (should-not (workers-io-tests--info plain :owned))
           (should (eq (workers-io-tests--info plain :refused) 'switch))
-          (should (= (- (- n1 n0) (- n3 n2)) (if (eq mode 'threads) 2 1)))
-          (should (= (workers-io-tests--info warm :fds)
-                     (if (eq mode 'threads) 2 1)))
+          (should (= (- (- n1 n0) (- n3 n2)) owned-fds))
+          (should (= (workers-io-tests--info warm :fds) owned-fds))
           (delete-process plain)))
       (delete-process warm))
     ;; Fill the fds to 64 + 16 short of FD_SETSIZE, then start processes.
@@ -1033,7 +1039,16 @@ tramp-tests.el: a local `sh -i' over a pty, the same tramp-sh code)."
             (progn
               (should (workers-io-tests--info proc :owned))
               (should-not (workers-io-tests--info proc :filter-cost))
-              (should (workers-io-tests--busy-until (lambda () (file-exists-p done))))
+              ;; Inline, the kernel is the only queue.  An XNU pty holds
+              ;; at most t_hiwat bytes, roundup (2048, CBSIZE) at most
+              ;; (bsd/kern/tty.c ttsetwater, bsd/sys/tty.h TTMAXHIWAT),
+              ;; less than one read, and its writer sleeps until they
+              ;; are read: there the output is served while the writer
+              ;; runs, and the first delivery is still one read.
+              (should (if (and (eq mode 'inline) (eq system-type 'darwin))
+                          (workers-io-tests--until (lambda () (file-exists-p done)))
+                        (workers-io-tests--busy-until
+                         (lambda () (file-exists-p done)))))
               (when (eq mode 'threads)
                 (should (workers-io-tests--busy-until
                          (lambda () (= (workers-io-tests--info proc :queued) 12000)))))
