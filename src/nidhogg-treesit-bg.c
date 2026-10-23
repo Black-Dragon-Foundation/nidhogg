@@ -243,11 +243,7 @@ static pthread_once_t nh_ts_once = PTHREAD_ONCE_INIT;
 static void
 nh_ts_init_once (void)
 {
-  pthread_condattr_t attr;
-  pthread_condattr_init (&attr);
-  pthread_condattr_setclock (&attr, CLOCK_MONOTONIC);
-  pthread_cond_init (&nh_ts_live_cv, &attr);
-  pthread_condattr_destroy (&attr);
+  nh_wk_cond_init (&nh_ts_live_cv);
 }
 
 static int64_t
@@ -785,9 +781,7 @@ Return t if none is left.  A bounded condition wait, not a sleep.  */)
   nh_wk_lock (&nh_ts_live_m);
   while (nh_ts_live > 0 && nh_ts_now () < deadline)
     {
-      struct timespec ts = { .tv_sec = deadline / 1000000000,
-			     .tv_nsec = deadline % 1000000000 };
-      pthread_cond_timedwait (&nh_ts_live_cv, &nh_ts_live_m, &ts);
+      nh_wk_cond_wait_until (&nh_ts_live_cv, &nh_ts_live_m, deadline);
     }
   bool idle = nh_ts_live == 0;
   pthread_mutex_unlock (&nh_ts_live_m);
