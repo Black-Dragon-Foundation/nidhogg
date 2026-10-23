@@ -2382,6 +2382,7 @@ syms_of_nidhogg_workers (void)
   nh_json_syms ();
   nh_img_syms ();
   nh_blk_syms ();
+  nh_blk_file_syms ();
 
   Fprovide (intern_c_string ("nidhogg-workers"), Qnil);
 }

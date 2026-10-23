@@ -794,4 +794,612 @@ nh_blk_syms (void)
 
 #endif /* not NH_WK_HARNESS */
 
+
+#ifndef NH_WK_HARNESS
+
+/* ==== File blocks (Task 33): nidhogg-read-file-async and
+   nidhogg-insert-file-block, on nh-blk class `file' ===================
+
+   A worker reads the byte range of a regular file and scans it
+   (nh_dec_scan); the main thread gets a `user-ptr' block that owns the
+   bytes.  nidhogg-insert-file-block chooses the coding on the main
+   thread exactly as insert-file-contents does, and inserts the bytes
+   either straight from the worker's counts (fast path) or through
+   decode_coding_gap.  */
+
+#include <errno.h>
+#include <fcntl.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include "buffer.h"
+#include "coding.h"
+#include "composite.h"
+#include "region-cache.h"
+
+struct nh_blk_block
+{
+  unsigned char *bytes;
+  size_t n;
+  struct nh_dec_scan scan;
+  bool regular, has_beg, has_end;
+  off_t beg, end;
+  char *name;			/* the expanded name, as Lisp bytes */
+  ptrdiff_t name_nchars, name_nbytes;
+  bool name_multibyte;
+};
+
+static void
+nh_blk_block_free (void *p)
+{
+  struct nh_blk_block *b = p;
+  nh_wk_stat_add (NH_WK_BLK, NH_WK_ST_QUEUED_BYTES, -(int64_t) b->n);
+  free (b->bytes);
+  free (b->name);
+  free (b);
+}
+
+struct nh_blk_file_job
+{
+  struct nh_wk_job job;
+  char *path;			/* encoded */
+  struct nh_blk_block *blk;	/* result */
+  EMACS_INT cb_id;
+  int err;			/* errno, or 0 */
+  const char *err_op;		/* its operation, or a file-error message */
+};
+
+static void
+nh_blk_file_fail (struct nh_blk_file_job *j, const char *op, int err)
+{
+  j->err_op = op;
+  j->err = err;
+}
+
+static void
+nh_blk_file_run (struct nh_wk_job *job)
+{
+  struct nh_blk_file_job *j = (struct nh_blk_file_job *) job;
+  struct nh_blk_block *b = j->blk;
+  int fd = open (j->path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+  if (fd < 0)
+    {
+      nh_blk_file_fail (j, "Opening input file", errno);
+      return;
+    }
+  struct stat st;
+  if (fstat (fd, &st) < 0)
+    {
+      nh_blk_file_fail (j, "Input file status", errno);
+      close (fd);
+      return;
+    }
+  if (S_ISDIR (st.st_mode))
+    {
+      nh_blk_file_fail (j, "Read error", EISDIR);
+      close (fd);
+      return;
+    }
+  if (!S_ISREG (st.st_mode))
+    {
+      nh_blk_file_fail (j, "not a regular file", 0);
+      close (fd);
+      return;
+    }
+  b->regular = true;
+  off_t beg = b->has_beg ? b->beg : 0;
+  off_t end = b->has_end ? b->end : INT64_MAX;
+  if (end < beg)
+    end = beg;
+  off_t likely = st.st_size < end ? st.st_size : end;
+  size_t cap = (likely > beg ? likely - beg : 0) + 1, n = 0;
+  unsigned char *buf = malloc (cap);
+  if (!buf)
+    {
+      nh_blk_file_fail (j, "Read error", ENOMEM);
+      close (fd);
+      return;
+    }
+  off_t pos = beg;
+  while (pos < end && !atomic_load (&job->cancel))
+    {
+      if (cap - n < 2)
+	{
+	  size_t ncap = cap + (cap >> 1) + 1024 * 1024;
+	  unsigned char *nb = realloc (buf, ncap);
+	  if (!nb)
+	    {
+	      nh_blk_file_fail (j, "Read error", ENOMEM);
+	      break;
+	    }
+	  buf = nb;
+	  cap = ncap;
+	}
+      size_t want = cap - n;
+      if (want > 1024 * 1024)
+	want = 1024 * 1024;
+      if ((off_t) want > end - pos)
+	want = end - pos;
+      ssize_t r = pread (fd, buf + n, want, pos);
+      if (r < 0)
+	{
+	  if (errno == EINTR)
+	    continue;
+	  nh_blk_file_fail (j, "Read error", errno);
+	  break;
+	}
+      if (r == 0)
+	break;
+      n += r;
+      pos += r;
+    }
+  close (fd);
+  if (j->err_op)
+    {
+      free (buf);
+      return;
+    }
+  nh_wk_pause_point (NH_WK_P_AFTER_READ);
+  b->bytes = buf;
+  b->n = n;
+  nh_wk_stat_add (NH_WK_BLK, NH_WK_ST_QUEUED_BYTES, (int64_t) n);
+  nh_dec_scan (buf, n, &b->scan);
+}
+
+static void
+nh_blk_file_free (struct nh_wk_job *job)
+{
+  struct nh_blk_file_job *j = (struct nh_blk_file_job *) job;
+  if (j->blk)
+    nh_blk_block_free (j->blk);
+  free (j->path);
+  free (j);
+}
+
+/* Pending callbacks, (ID . CALLBACK), so the GC sees them.  */
+static Lisp_Object Vnh_blk_callbacks;
+static EMACS_INT nh_blk_next_id;
+static Lisp_Object Qnh_blk_QCbom;
+static Lisp_Object Qnh_blk_work_name;
+
+static Lisp_Object
+nh_blk_name_string (struct nh_blk_block *b)
+{
+  return make_specified_string (b->name, b->name_nchars, b->name_nbytes,
+				b->name_multibyte);
+}
+
+static void
+nh_blk_file_finish (struct nh_wk_job *job)
+{
+  struct nh_blk_file_job *j = (struct nh_blk_file_job *) job;
+  Lisp_Object cb = Qnil, tail, prev = Qnil;
+  for (tail = Vnh_blk_callbacks; CONSP (tail); prev = tail, tail = XCDR (tail))
+    if (XFIXNUM (XCAR (XCAR (tail))) == j->cb_id)
+      {
+	cb = XCDR (XCAR (tail));
+	if (NILP (prev))
+	  Vnh_blk_callbacks = XCDR (tail);
+	else
+	  XSETCDR (prev, XCDR (tail));
+	break;
+      }
+  if (NILP (cb))
+    return;
+  Lisp_Object block = Qnil, err = Qnil;
+  if (j->err_op)
+    {
+      Lisp_Object name = nh_blk_name_string (j->blk);
+      if (j->err)
+	err = get_file_errno_data (j->err_op, name, j->err);
+      else
+	err = Fcons (Qfile_error, list2 (build_string (j->err_op), name));
+    }
+  else
+    {
+      block = make_user_ptr (nh_blk_block_free, j->blk);
+      j->blk = NULL;
+    }
+  calln (cb, block, err);
+}
+
+DEFUN ("nidhogg-read-file-async", Fnidhogg_read_file_async,
+       Snidhogg_read_file_async, 2, MANY, 0,
+       doc: /* Read FILE on a worker thread; call CALLBACK with a file block.
+CALLBACK is called as (CALLBACK BLOCK ERROR) at a timer check: BLOCK is
+a file block for `nidhogg-insert-file-block', or nil with ERROR the error
+data `insert-file-contents' would have signaled (the file must be a
+regular file).  Keywords: `:beg' and `:end', byte offsets of the range
+to read.  Return an integer handle, or nil when the read was not
+started (the workers are off, dumping or out of file descriptors); the
+caller then reads synchronously.  A remote FILE signals
+`nidhogg-not-local'.
+usage: (nidhogg-read-file-async FILE CALLBACK &key BEG END)  */)
+  (ptrdiff_t nargs, Lisp_Object *args)
+{
+  Lisp_Object file = args[0], cb = args[1], beg = Qnil, end = Qnil;
+  for (ptrdiff_t i = 2; i + 1 < nargs; i += 2)
+    {
+      const char *k = SYMBOLP (args[i]) ? SSDATA (SYMBOL_NAME (args[i])) : "";
+      if (strcmp (k, ":beg") == 0)
+	beg = args[i + 1];
+      else if (strcmp (k, ":end") == 0)
+	end = args[i + 1];
+      else
+	xsignal2 (Qerror, build_string ("Unknown property"), args[i]);
+    }
+  CHECK_STRING (file);
+  if (!NILP (beg))
+    CHECK_FIXNAT (beg);
+  if (!NILP (end))
+    CHECK_FIXNAT (end);
+  file = Fexpand_file_name (file, Qnil);
+  if (!NILP (Ffind_file_name_handler (file, Qinsert_file_contents)))
+    xsignal1 (Qnidhogg_not_local, file);
+
+  Lisp_Object enc = ENCODE_FILE (file);
+  struct nh_blk_file_job *j = calloc (1, sizeof *j);
+  struct nh_blk_block *b = calloc (1, sizeof *b);
+  if (!j || !b)
+    {
+      free (j);
+      free (b);
+      memory_full (sizeof *j);
+    }
+  j->blk = b;
+  j->path = strdup (SSDATA (enc));
+  b->name = malloc (SBYTES (file) + 1);
+  if (!j->path || !b->name)
+    {
+      nh_blk_file_free (&j->job);
+      memory_full (SBYTES (file));
+    }
+  memcpy (b->name, SSDATA (file), SBYTES (file));
+  b->name_nchars = SCHARS (file);
+  b->name_nbytes = SBYTES (file);
+  b->name_multibyte = STRING_MULTIBYTE (file);
+  if (!NILP (beg))
+    {
+      b->has_beg = true;
+      b->beg = XFIXNAT (beg);
+    }
+  if (!NILP (end))
+    {
+      b->has_end = true;
+      b->end = XFIXNAT (end);
+    }
+  j->cb_id = ++nh_blk_next_id;
+  j->job.w = NH_WK_BLK;
+  j->job.cls = NH_WK_CL_FILE;
+  j->job.run = nh_blk_file_run;
+  j->job.finish = nh_blk_file_finish;
+  j->job.free = nh_blk_file_free;
+  atomic_store (&j->job.refs, 1);
+  Vnh_blk_callbacks = Fcons (Fcons (make_int (j->cb_id), cb),
+			     Vnh_blk_callbacks);
+  EMACS_INT id = j->cb_id;
+  if (!nh_wk_submit (&j->job))
+    {
+      Vnh_blk_callbacks = XCDR (Vnh_blk_callbacks);
+      nh_wk_job_unref (&j->job);
+      return Qnil;
+    }
+  nh_wk_job_unref (&j->job);	/* the submitter's */
+  return make_int (id);
+}
+
+/* ---- Inserting a block ------------------------------------------- */
+
+static struct nh_blk_block *
+nh_blk_block_arg (Lisp_Object x)
+{
+  if (!USER_PTRP (x) || XUSER_PTR (x)->finalizer != nh_blk_block_free
+      || !XUSER_PTR (x)->p)
+    wrong_type_argument (Qnh_blk_file_block_p, x);
+  return XUSER_PTR (x)->p;
+}
+
+/* Make the erased scratch buffer current (MULTIBYTE or not); the
+   caller unbinds.  */
+static void
+nh_blk_work_buffer (bool multibyte)
+{
+  record_unwind_current_buffer ();
+  Lisp_Object w = Fget_buffer_create (Qnh_blk_work_name, Qt);
+  struct buffer *buf = XBUFFER (w);
+  delete_all_overlays (buf);
+  bset_directory (buf, BVAR (current_buffer, directory));
+  bset_read_only (buf, Qnil);
+  bset_filename (buf, Qnil);
+  bset_undo_list (buf, Qt);
+  set_buffer_internal (buf);
+  Ferase_buffer ();
+  bset_enable_multibyte_characters (buf, multibyte ? Qt : Qnil);
+}
+
+/* set-auto-coding over the block's head and tail, as
+   insert-file-contents reads them for a non-empty buffer: the first
+   1 KiB and the last 3 KiB (all of a file of 4 KiB or less).  */
+static Lisp_Object
+nh_blk_auto_coding (struct nh_blk_block *b, Lisp_Object name)
+{
+  unsigned char text[4096];
+  size_t nread;
+  if (b->n <= 4096)
+    {
+      memcpy (text, b->bytes, b->n);
+      nread = b->n;
+    }
+  else
+    {
+      size_t tailbeg = b->n - 3072 > 4096 ? b->n - 3072 : 4096;
+      memcpy (text, b->bytes, 1024);
+      memcpy (text + 1024, b->bytes + tailbeg, b->n - tailbeg);
+      nread = 1024 + (b->n - tailbeg);
+    }
+  specpdl_ref count = SPECPDL_INDEX ();
+  nh_blk_work_buffer (false);
+  insert_1_both ((char *) text, nread, nread, 0, 0, 0);
+  TEMP_SET_PT_BOTH (BEG, BEG_BYTE);
+  Lisp_Object val = calln (Vset_auto_coding_function, name,
+			   make_fixnum (nread));
+  return unbind_to (count, val);
+}
+
+/* The coding system decode_coding_gap would report for the block under
+   CODING_SYSTEM: run it on a sample with the same detectable features
+   (non-ASCII, a line feed) in a scratch buffer.  */
+static Lisp_Object
+nh_blk_decided_name (Lisp_Object coding_system, bool nonascii, bool lf)
+{
+  unsigned char sample[4];
+  int len = 0;
+  if (nonascii)
+    {
+      sample[len++] = 0xC3;
+      sample[len++] = 0xA9;
+    }
+  else
+    sample[len++] = 'a';
+  if (lf)
+    sample[len++] = '\n';
+  specpdl_ref count = SPECPDL_INDEX ();
+  nh_blk_work_buffer (true);
+  move_gap_both (BEG, BEG_BYTE);
+  if (GAP_SIZE < len + 64)
+    make_gap (len + 64 - GAP_SIZE);
+  memcpy (GAP_END_ADDR - len, sample, len);
+  struct coding_system c;
+  setup_coding_system (coding_system, &c);
+  c.dst_multibyte = true;
+  decode_coding_gap (&c, len);
+  Lisp_Object name = CODING_ID_NAME (c.id);
+  unbind_to (count, Qnil);
+  return name;
+}
+
+/* True if detection under `undecided' would pick UTF-8 for valid
+   UTF-8 text without a signature.  */
+static bool
+nh_blk_utf8_first (void)
+{
+  struct coding_system c;
+  setup_coding_system (preferred_coding_system (), &c);
+  Lisp_Object attrs = CODING_ID_ATTRS (c.id);
+  if (!EQ (CODING_ATTR_TYPE (attrs), Qutf_8))
+    return false;
+  Lisp_Object bom = plist_get (CODING_ATTR_PLIST (attrs), Qnh_blk_QCbom);
+  return NILP (bom) || CONSP (bom);
+}
+
+DEFUN ("nidhogg-insert-file-block", Fnidhogg_insert_file_block,
+       Snidhogg_insert_file_block, 1, 1, 0,
+       doc: /* Insert the file block BLOCK after point, like `insert-file-contents'.
+The coding system is chosen here, on the main thread, the way
+`insert-file-contents' chooses it (`coding-system-for-read', the
+`coding:' cookies, `file-coding-system-alist'), and
+`last-coding-system-used' is set.  Valid UTF-8 without a null byte
+under `undecided' (when UTF-8 has the top priority) and ASCII-only text
+under an ASCII-compatible coding are inserted with the counts the
+worker found; everything else is decoded.  Return (FILE CHARS) as
+`insert-file-contents' does.  */)
+  (Lisp_Object block)
+{
+  struct nh_blk_block *b = nh_blk_block_arg (block);
+  specpdl_ref count = SPECPDL_INDEX ();
+  Lisp_Object name = nh_blk_name_string (b);
+  Lisp_Object beg = b->has_beg ? make_fixnum (b->beg) : Qnil;
+  Lisp_Object end = b->has_end ? make_fixnum (b->end) : Qnil;
+  Lisp_Object coding_system = Qnil, old_undo, p, insval;
+  struct coding_system coding;
+  bool multibyte = !NILP (BVAR (current_buffer, enable_multibyte_characters));
+  ptrdiff_t inserted = 0;
+
+  if (!NILP (BVAR (current_buffer, read_only)))
+    Fbarf_if_buffer_read_only (Qnil);
+
+  if (EQ (Vcoding_system_for_read, Qauto_save_coding))
+    coding_system = coding_inherit_eol_type (Qutf_8_emacs, Qunix);
+  else
+    {
+      if (!NILP (Vcoding_system_for_read))
+	coding_system = Vcoding_system_for_read;
+      else
+	{
+	  if (b->regular && b->n > 0 && !NILP (Vset_auto_coding_function))
+	    coding_system = nh_blk_auto_coding (b, name);
+	  if (NILP (coding_system))
+	    {
+	      coding_system = CALLN (Ffind_operation_coding_system,
+				     Qinsert_file_contents, name, Qnil,
+				     beg, end, Qnil);
+	      if (CONSP (coding_system))
+		coding_system = XCAR (coding_system);
+	    }
+	}
+      if (NILP (coding_system))
+	coding_system = Qundecided;
+      else
+	CHECK_CODING_SYSTEM (coding_system);
+      if (!multibyte)
+	coding_system = raw_text_coding_system (coding_system);
+    }
+  setup_coding_system (coding_system, &coding);
+
+  /* The fast path: the worker's counts stand in for the scans.  */
+  bool fast = false;
+  if (b->n > 0 && multibyte && CODING_MAY_REQUIRE_DECODING (&coding)
+      && b->scan.eol <= NH_DEC_EOL_LF && !b->scan.has_null
+      && !b->scan.has_esc)
+    {
+      Lisp_Object attrs = CODING_ID_ATTRS (coding.id);
+      if (!NILP (CODING_ATTR_ASCII_COMPAT (attrs))
+	  && NILP (CODING_ATTR_POST_READ (attrs))
+	  && NILP (CODING_ATTR_DECODE_TBL (attrs))
+	  && NILP (CODING_ATTR_TRANS_TBL (attrs)))
+	fast = (b->scan.ascii
+		|| (b->scan.utf8 && !b->scan.bom
+		    && EQ (CODING_ATTR_TYPE (attrs), Qundecided)
+		    && nh_blk_utf8_first ()));
+    }
+
+  if (b->n > 0)
+    {
+      if (BUF_BYTES_MAX - Z_BYTE < (ptrdiff_t) b->n)
+	buffer_overflow ();
+      prepare_to_modify_buffer (PT, PT, NULL);
+    }
+  move_gap_both (PT, PT_BYTE);
+  if ((size_t) GAP_SIZE <= b->n)
+    make_gap (b->n - GAP_SIZE + 1);
+  if (b->n > 0)
+    memcpy (GPT_ADDR, b->bytes, b->n);
+  inserted = b->n;
+  if (inserted > 0)
+    Fset (Qdeactivate_mark, Qt);
+
+  coding.dst_multibyte = multibyte;
+  if (fast)
+    {
+      Vnh_blk_insert_path = Qnh_blk_fast;
+      ptrdiff_t chars = b->scan.ascii ? (ptrdiff_t) b->n
+				      : (ptrdiff_t) b->scan.nchars;
+      insert_from_gap (chars, b->n, false, false);
+      inserted = chars;
+      coding_system
+	= nh_blk_decided_name (coding_system, !b->scan.ascii,
+			       b->scan.eol == NH_DEC_EOL_LF);
+    }
+  else
+    {
+      Vnh_blk_insert_path = Qnh_blk_decode;
+      if (CODING_MAY_REQUIRE_DECODING (&coding)
+	  && (inserted > 0 || CODING_REQUIRE_FLUSHING (&coding)))
+	{
+	  memmove (GAP_END_ADDR - inserted, GPT_ADDR, inserted);
+	  decode_coding_gap (&coding, inserted);
+	  inserted = coding.produced_char;
+	  coding_system = CODING_ID_NAME (coding.id);
+	}
+      else if (inserted > 0)
+	{
+	  eassert (NILP (BVAR (current_buffer, enable_multibyte_characters)));
+	  insert_from_gap_1 (inserted, inserted, false);
+	  invalidate_buffer_caches (current_buffer, PT, PT + inserted);
+	  adjust_after_insert (PT, PT_BYTE, PT + inserted, PT_BYTE + inserted,
+			       inserted);
+	}
+    }
+
+  if (inserted > 0 && b->n > 0)
+    {
+      signal_after_change (PT, 0, inserted);
+      update_compositions (PT, PT, CHECK_BORDER);
+    }
+
+  Vlast_coding_system_used = coding_system;
+
+  if (!NILP (Ffboundp (Qafter_insert_file_set_coding)))
+    {
+      insval = calln (Qafter_insert_file_set_coding, make_fixnum (inserted),
+		      Qnil);
+      if (!NILP (insval))
+	{
+	  if (!RANGED_FIXNUMP (0, insval, ZV - PT))
+	    wrong_type_argument (Qinserted_chars, insval);
+	  inserted = XFIXNAT (insval);
+	}
+    }
+
+  if (inserted > 0 && !NILP (Ffboundp (Qformat_decode)))
+    {
+      specpdl_ref count1 = SPECPDL_INDEX ();
+      ptrdiff_t old_inserted = inserted;
+      specbind (Qinhibit_point_motion_hooks, Qt);
+      specbind (Qinhibit_modification_hooks, Qt);
+      old_undo = BVAR (current_buffer, undo_list);
+      bset_undo_list (current_buffer, Qt);
+
+      insval = calln (Qformat_decode, Qnil, make_fixnum (inserted), Qnil);
+      if (!RANGED_FIXNUMP (0, insval, ZV - PT))
+	wrong_type_argument (Qinserted_chars, insval);
+      inserted = XFIXNAT (insval);
+
+      p = Vafter_insert_file_functions;
+      FOR_EACH_TAIL (p)
+	{
+	  insval = calln (XCAR (p), make_fixnum (inserted));
+	  if (!NILP (insval))
+	    {
+	      if (!RANGED_FIXNUMP (0, insval, ZV - PT))
+		wrong_type_argument (Qinserted_chars, insval);
+	      inserted = XFIXNAT (insval);
+	    }
+	}
+
+      bset_undo_list (current_buffer, old_undo);
+      if (CONSP (old_undo) && inserted != old_inserted)
+	{
+	  Lisp_Object tem = XCAR (old_undo);
+	  if (CONSP (tem) && FIXNUMP (XCAR (tem)) && FIXNUMP (XCDR (tem))
+	      && XFIXNUM (XCDR (tem)) == PT + old_inserted)
+	    XSETCDR (tem, make_fixnum (PT + inserted));
+	}
+      unbind_to (count1, Qnil);
+    }
+
+  if (current_buffer->base_buffer && current_buffer->base_buffer->newline_cache)
+    invalidate_region_cache (current_buffer->base_buffer,
+			     current_buffer->base_buffer->newline_cache,
+			     PT - BEG, Z - PT - inserted);
+  else if (current_buffer->newline_cache)
+    invalidate_region_cache (current_buffer, current_buffer->newline_cache,
+			     PT - BEG, Z - PT - inserted);
+
+  return unbind_to (count, list2 (name, make_fixnum (inserted)));
+}
+
+void
+nh_blk_file_syms (void)
+{
+  DEFSYM (Qnh_blk_file_block_p, "nidhogg-file-block-p");
+  DEFSYM (Qnh_blk_fast, "fast");
+  DEFSYM (Qnh_blk_decode, "decode");
+  Qnh_blk_QCbom = intern_c_string (":bom");
+  staticpro (&Qnh_blk_QCbom);
+  Qnh_blk_work_name = build_string (" *nidhogg-blk-work*");
+  staticpro (&Qnh_blk_work_name);
+  staticpro (&Vnh_blk_callbacks);
+  Vnh_blk_callbacks = Qnil;
+  DEFVAR_LISP ("nidhogg-blk--insert-path", Vnh_blk_insert_path,
+	       doc: /* `fast' or `decode': how the last `nidhogg-insert-file-block' inserted.
+Internal, for tests.  */);
+  Vnh_blk_insert_path = Qnil;
+  defsubr (&Snidhogg_read_file_async);
+  defsubr (&Snidhogg_insert_file_block);
+}
+
+#endif /* not NH_WK_HARNESS */
+
 #endif /* HAVE_NIDHOGG_WORKERS */
