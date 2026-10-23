@@ -12,6 +12,11 @@ on:
       drgnx_ref:
         description: "drgnx branch, tag or commit whose unit suite runs against the build (empty: the pinned commit)"
         default: ""
+      scope:
+        description: "full: every job; macos: the series rules and the macOS jobs only (between gates, Linux is tested locally)"
+        type: choice
+        options: [full, macos]
+        default: full
 
 permissions:
   contents: read
@@ -41,6 +46,7 @@ jobs:
 
   linux:
     name: Linux (${{ matrix.distro }})
+    if: ${{ inputs.scope != 'macos' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     strategy:
@@ -272,7 +278,7 @@ jobs:
     # runs once the Linux builds are done, whatever the other distros did: it needs only the fedora-45 tarball (the
     # download fails by itself when that build failed)
     needs: linux
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && inputs.scope != 'macos' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     outputs:
@@ -339,7 +345,7 @@ jobs:
   workers-harness:
     name: Workers C harness (TSan, fuzz)
     needs: linux
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && inputs.scope != 'macos' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -359,7 +365,7 @@ jobs:
   workers-asan:
     name: Workers batch files (ASan + UBSan dev build)
     needs: linux
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && inputs.scope != 'macos' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -388,7 +394,7 @@ jobs:
   workers-pkg:
     name: Package suites (${{ matrix.group }}, workers ${{ matrix.mode }})
     needs: linux
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && inputs.scope != 'macos' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
@@ -432,7 +438,7 @@ jobs:
   workers-pkg-compare:
     name: Package suites, on against off
     needs: workers-pkg
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && inputs.scope != 'macos' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
