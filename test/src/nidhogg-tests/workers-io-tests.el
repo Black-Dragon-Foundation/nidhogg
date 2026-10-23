@@ -436,10 +436,13 @@ meanwhile, while a SIGCHLD still reaches its handler and
 (ert-deftest workers/raw-flow-control ()
   ;; A stream far past the queue cap (MC-22, max (4 × readmax, 256 KB)):
   ;; the queue never holds more than the cap, nh-io stops reading at it
-  ;; and goes on when delivery takes chunks.  `stop-process' on a
-  ;; subprocess only stops the producer (fd audit finding 12: this is the
-  ;; cap's row, not the pause's); `continue-process' lets it finish;
-  ;; `set-process-filter' t pauses the reader, a filter again resumes it.
+  ;; and goes on when delivery takes chunks.  Stopping a subprocess only
+  ;; stops the producer (fd audit finding 12: this is the cap's row, not
+  ;; the pause's); `continue-process' lets it finish; `set-process-filter'
+  ;; t pauses the reader, a filter again resumes it.  The producer is
+  ;; stopped with SIGSTOP, not `stop-process': that sends SIGTSTP, and a
+  ;; subprocess leads its own session (setsid), so its process group is
+  ;; orphaned and Linux discards SIGTSTP; the status never becomes `stop'.
   ;; (32 MB, not 500 MB: the cap is 256 KB; the row needs a stream that
   ;; outruns it, not a long one.)
   (workers-io-tests--modes
@@ -466,7 +469,7 @@ meanwhile, while a SIGCHLD still reaches its handler and
         (should (= (workers-io-tests--info proc :queued)
                    (workers-io-tests--info proc :cap)))
         (should (> (workers-io-tests--io-stat :backpressure) 0)))
-      (stop-process proc)
+      (signal-process proc 'STOP)
       (nidhogg-workers--release 'after-read)
       (should (workers-io-tests--until
                (lambda () (eq (process-status proc) 'stop))))
