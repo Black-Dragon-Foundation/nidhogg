@@ -125,4 +125,67 @@ mode.  Afterwards every parse lands and the file and its buffer go."
           (should got)
           (should (equal got (workers-ts-gui--sync-keywords file end))))))))
 
+(defun workers-ts-gui--image-pending ()
+  (plist-get (nidhogg-workers--test-image-info) :pending))
+
+(ert-deftest workers-gui/redisplay-budget ()
+  ;; §17.3 S15.  A window pair: one shows a 2 MB C file whose parse is
+  ;; parked at `before-done', the other a 20-image page whose decodes are
+  ;; parked at `after-header'.  The budget ledger of that one redisplay
+  ;; grants at most `nidhogg-redisplay-wait-budget' in total, and every
+  ;; take after that gets 0: the colour and all 20 pictures defer.  Then
+  ;; both land.  The tree-sitter switches are on here only (not by default).
+  (skip-unless (and (display-graphic-p) (featurep 'nidhogg-workers)
+                    (workers-ts-gui--grammar-dir)
+                    (nidhogg-workers--deferrable-p 'png)))
+  (let ((png (expand-file-name "fixtures/images/palette.png"
+                               workers-ts-gui--dir))
+        (page (get-buffer-create " *workers-budget-page*"))
+        (nidhogg-workers-images t)
+        (nidhogg-image-defer t))
+    (with-current-buffer page
+      (erase-buffer)
+      (dotimes (i 20)
+        (insert-image (list 'image :type 'png :file png :ascent (+ 50 i)) "x")
+        (insert "\n"))
+      (goto-char (point-min)))
+    (unwind-protect
+        (workers-ts-gui--with-file (file 2000000)
+          (nidhogg-workers--pause-at 'before-done)
+          (nidhogg-workers--pause-at 'after-header)
+          (clear-image-cache t)
+          (let ((buf (find-file-noselect file)))
+            (should (eq (buffer-local-value 'major-mode buf) 'c-ts-mode))
+            ;; The create start's job, parked.
+            (should (nidhogg-workers--test-await-paused 'before-done 30000))
+            (delete-other-windows)
+            (switch-to-buffer buf)
+            (goto-char (point-min))
+            (set-window-buffer (split-window-right) page)
+            (nidhogg-workers--test-budget-ledger t)
+            (redisplay t)
+            (let ((ledger (nidhogg-workers--test-budget-ledger t)))
+              (should (> (car ledger) 0))
+              (should (<= (car ledger) (* nidhogg-redisplay-wait-budget 1000000)))
+              ;; Once spent, every image (and the colour, or the first
+              ;; image's last slice) takes 0.
+              (should (>= (cdr ledger) 20)))
+            (should (nidhogg-workers--test-await-paused 'after-header 5000 1))
+            (should (buffer-local-value 'nidhogg-workers-treesit--pending buf))
+            (should (= 20 (workers-ts-gui--image-pending)))
+            ;; Both land.
+            (nidhogg-workers--release 'after-header)
+            (nidhogg-workers--release 'before-done)
+            (should (nidhogg-workers--test-await-landed 'nh-img 10000))
+            (should (nidhogg-workers--test-await-landed 'nh-parse 30000))
+            (redisplay t)
+            (should (= 0 (workers-ts-gui--image-pending)))
+            (should-not (buffer-local-value 'nidhogg-workers-treesit--pending
+                                            buf))))
+      (nidhogg-workers--release)
+      (nidhogg-workers--test-await-landed 'nh-img 10000)
+      (kill-buffer page)
+      (clear-image-cache t)
+      (redisplay t))))
+
 ;;; workers-ts-gui-tests.el ends here
