@@ -269,7 +269,10 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   (preloaded; the feature is `nidhogg-workers`, the Lisp part `nidhogg-workers-lisp`; the tree-sitter and jsonrpc
   files load with their packages).
 - Tests: `workers/…` in `test/src/nidhogg-tests/workers-*-tests.el`, GUI rows `workers-gui/…` in `*-gui-tests.el`;
-  `nidhogg/test/workers-harness.sh` compiles the C files without Lisp.
+  `nidhogg/test/workers-harness.sh` compiles the C files without Lisp (`--tsan MODULE…` runs the ThreadSanitizer
+  drivers, `--fuzz SECONDS` the parser fuzz targets); `nidhogg/test/pkg-test.sh` runs the package suites (jsonrpc,
+  treesit, process, files) with the workers on and off and `--compare`s them; `NIDHOGG_BUILD_SANITIZE=address,undefined
+  nidhogg/build.sh --dev …` is the ASan build. CI jobs `workers-harness`, `workers-asan`, `workers-pkg` run them.
 - The runtime (`src/nidhogg-workers.c`): five workers, `nh-io`, `nh-parse`, `nh-img` (one thread per two cores, at
   most two), `nh-blk` (one to four threads, grown when every thread has been busy 50 ms; directory reads, file reads
   and lookups take at most two each and always leave one for a class with nothing running) and `nh-save`. Threads

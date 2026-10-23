@@ -75,7 +75,12 @@ rcis 1; has "never packed"
 run -- --dry-run --container fedora-44 --dev --stage pack
 rcis 1; has "never packed"
 run -- --dry-run --container fedora-44
-rcis 0; hasnt "site-init.el"; has "MODE_ID=aot"
+rcis 0; hasnt "site-init.el"; has "MODE_ID=aot"; hasnt "fsanitize"
+# NIDHOGG_BUILD_SANITIZE reaches CFLAGS and LDFLAGS; dev builds only
+run NIDHOGG_BUILD_SANITIZE=address,undefined -- --dry-run --container fedora-45 --dev
+rcis 0; has "CFLAGS='-g -O1 -fno-omit-frame-pointer -fsanitize=address,undefined'"; has "LDFLAGS='-fsanitize=address,undefined'"; has "libasan"
+run NIDHOGG_BUILD_SANITIZE=address,undefined -- --dry-run --container fedora-45
+rcis 1; has "dev builds only"
 # macOS counts free + inactive + speculative + purgeable pages (a fake vm_stat: 16 KiB pages, 262144 each = 4 GiB each)
 T=$(mktemp -d "${TMPDIR:-/tmp}/nidhogg-build-test.XXXXXX")
 trap 'rm -rf "$T"' EXIT

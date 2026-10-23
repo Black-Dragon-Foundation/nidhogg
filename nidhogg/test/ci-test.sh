@@ -30,4 +30,24 @@ grep -A8 'id: tb' "$wf" | grep -q "startsWith(github.ref, 'refs/tags/')" || fail
 ! grep -A12 'id: lc' "$wf" | grep -q restore-keys                 || fail "the compiled-Lisp cache has restore-keys"
 # every cache save comes after its build and only when the build succeeded
 [ "$(grep -c "steps.build.outcome == 'success'" "$wf")" -ge 6 ]  || fail "a cache save not gated on the build step"
+# the workers' jobs (engine C, PD-4): present, after linux, outside release's needs, never fail-fast, pkg suites on and off
+job() { awk -v j="  $1:" '$0==j{p=1;print;next} p&&/^  [a-z]/{exit} p' "$wf"; }
+for j in workers-harness workers-asan workers-pkg; do
+  job "$j" | grep -qE '^    needs: linux'                          || fail "no job $j (or it does not need linux)"
+  ! job "$j" | grep -q 'fail-fast: true'                            || fail "a workers job has fail-fast: $j"
+  ! awk '/^  release:/,0' "$wf" | grep -qE "needs:.*$j"             || fail "release needs $j"
+done
+job workers-pkg | grep -q 'fail-fast: false'                       || fail "workers-pkg has no fail-fast: false"
+{ job workers-pkg | grep -qE 'mode: \["on", "off"\]' && grep -q 'pkg-test.sh --compare' "$wf"; } || fail "workers-pkg does not run on and off and compare"
+job workers-asan | grep -q 'NIDHOGG_BUILD_SANITIZE'                || fail "workers-asan does not build sanitized"
+# pkg-test.sh --compare: an on-only failure fails, a failure in both passes, an expected failure passes
+d=$(mktemp -d)
+printf 'a\tpassed\nb\tfailed\nc\tfailed\nd\tfailed\n' > "$d/pkg-x-on.outcomes"
+printf 'a\tpassed\nb\tpassed\nc\tfailed\nd\tpassed\n' > "$d/pkg-x-off.outcomes"
+printf '# c\nb\treason\towner\n' > "$d/exp"
+: > "$d/none"
+! bash nidhogg/test/pkg-test.sh --compare "$d" --expected "$d/none" >/dev/null || fail "compare passed an on-only failure"
+printf 'a\tpassed\nb\tfailed\nc\tfailed\n' > "$d/pkg-x-on.outcomes"
+bash nidhogg/test/pkg-test.sh --compare "$d" --expected "$d/exp" >/dev/null    || fail "compare failed a failure in both modes or an expected failure"
+rm -r "$d"
 exit $rc

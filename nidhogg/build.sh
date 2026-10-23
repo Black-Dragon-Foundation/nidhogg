@@ -68,6 +68,12 @@ if [ "$DEV" = 1 ] && { [ -n "$OUT" ] || [ "$STAGE" = pack ]; }; then
   die "--dev builds are never packed (no --out, no --stage pack): a dev build is not a release; build without --dev"
 fi
 NATIVE=aot; [ "$DEV" = 0 ] || NATIVE=yes
+# NIDHOGG_BUILD_SANITIZE=address,undefined adds -fsanitize=... to CFLAGS and LDFLAGS: dev builds only (the workers-asan CI job)
+SANITIZE=${NIDHOGG_BUILD_SANITIZE:-}
+if [ -n "$SANITIZE" ]; then
+  case $SANITIZE in *[!a-z,]*) die "NIDHOGG_BUILD_SANITIZE takes a comma list such as address,undefined" ;; esac
+  [ "$DEV" = 1 ] || die "NIDHOGG_BUILD_SANITIZE is for dev builds only: add --dev"
+fi
 LISP_CACHE=${NIDHOGG_BUILD_LISP_CACHE:-} LC=""
 
 UNAME=${NIDHOGG_BUILD_UNAME:-$(uname -s)}
@@ -145,6 +151,8 @@ else
 fi
 [ "$WATCHDOG" = 0 ] || CONF="$CONF --with-nidhogg-watchdog"
 [ "$WORKERS" = 0 ] || CONF="$CONF --with-nidhogg-workers"
+# the quotes are parsed by the build script, not here
+[ -z "$SANITIZE" ] || CONF="$CONF CFLAGS='-g -O1 -fno-omit-frame-pointer -fsanitize=$SANITIZE' LDFLAGS='-fsanitize=$SANITIZE'"
 
 TEMP_BUILD=0
 if [ -z "$BUILD_DIR" ]; then
@@ -206,8 +214,12 @@ BODY
 script() {
   printf 'S=%q B=%q P=%q V=%q UPV=%q HB=%q\n' "$S" "$B" "$PREFIX" "$VERSION" "$UPSTREAM_VERSION" "${NIDHOGG_BUILD_HEARTBEAT:-300}"
   [ -z "$LISP_CACHE" ] || printf 'LC=%q\n' "$LC"
-  printf 'MODE_ID=%q\n' "$NATIVE"
+  printf 'MODE_ID=%q\n' "$NATIVE${SANITIZE:+-$SANITIZE}"
   printf 'CONF_ID=%q\n' "--prefix=$PREFIX $CONF"
+  # leak reports from configure's and the dump's short-lived programs are noise
+  [ -z "$SANITIZE" ] || echo 'export ASAN_OPTIONS=detect_leaks=0:abort_on_error=0 UBSAN_OPTIONS=print_stacktrace=1'
+  # the 100 MB-class workers rows read this to size themselves down under the sanitizers (nidhogg-workers--test-size-scale)
+  [ -z "${NIDHOGG_WORKERS_TEST_SIZE_SCALE:-}" ] || printf 'export NIDHOGG_WORKERS_TEST_SIZE_SCALE=%q\n' "$NIDHOGG_WORKERS_TEST_SIZE_SCALE"
   if [ "$MODE" = container ]; then
     case $DISTRO in
       ubuntu-*)
@@ -216,6 +228,8 @@ script() {
         echo "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \$(sed \"s/#.*//\" \$S/nidhogg/deps/$DISTRO.build)${NIDHOGG_BUILD_CCACHE:+ ccache}" ;;
       *) echo "dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install \$(sed \"s/#.*//\" \$S/nidhogg/deps/$DISTRO.build)${NIDHOGG_BUILD_CCACHE:+ ccache}" ;;
     esac
+    # Fedora ships the sanitizer runtimes apart from gcc
+    if [ -n "$SANITIZE" ]; then case $DISTRO in ubuntu-*) ;; *) echo "dnf -y --setopt=install_weak_deps=False install libasan libubsan libtsan" ;; esac; fi
     [ -z "${NIDHOGG_BUILD_CCACHE:-}" ] || echo 'export CCACHE_DIR=/ccache CCACHE_COMPILERCHECK=content CCACHE_MAXSIZE=500M CC="ccache gcc"; ccache -z >/dev/null'
   fi
   cat <<'BODY'
