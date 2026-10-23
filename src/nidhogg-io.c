@@ -1125,6 +1125,7 @@ nh_io_read_one (struct nh_io_h *h, unsigned char **buf, ptrdiff_t *size)
 		  : NH_IO_EV_ERROR, h->id, h->copy, r);
       nh_io_fr_run (h, *buf, r > 0 ? r : 0, r > 0 ? 1 : r == 0 ? 0 : -1, err,
 		    &h->stop);
+      atomic_store (&h->reading, false);
       return;
     }
   struct nh_io_chunk *c = NULL;
