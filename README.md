@@ -353,7 +353,21 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   wake fd only, and a process locked to a Lisp thread (`set-process-thread`) is delivered only on that thread. Test
   primitives: `nidhogg-workers--test-io-info`'s `:queued`, `:cap` and `:paused`; the `after-read` pause point (`nh-io`
   parks there when a queue reaches its cap).
-<!-- wk: Task 18 -->
+- Decoding on the reader (`src/nidhogg-decode.c`): when a reader-owned process decodes with a stateless system
+  (`utf-8`, `raw-text`, `no-conversion` or `binary` with a settled end of line: `-unix`, `-dos`, `-mac`; not
+  `utf-8-emacs`, BOM variants or systems with a translation table or post-read conversion), `nh-io` decodes each chunk as
+  it reads it, with copies of Emacs's own decoder and end-of-line rules (quirks included), and a filter gets that string:
+  multibyte for UTF-8 (invalid bytes as raw-byte characters), unibyte for the raw-text systems, as today. Every other
+  system, `undecided` and end-of-line detection stay on the main thread; once the main thread's detection settles a
+  process on a stateless system, `nh-io` decodes from the next chunk. Each chunk keeps its raw bytes and the process's
+  coding generation, which every `set-process-coding-system`, `set-process-buffer` and `set-process-filter` moves on: a
+  chunk decoded under an older generation, any chunk while `standard-translation-table-for-decode` or
+  `inhibit-eol-conversion` is in force, and any chunk whose carried-over bytes differ from the main thread's are decoded
+  again on the main thread from the raw bytes, so filters see what they see without the reader. An incomplete sequence
+  at the end of the stream is flushed as today. The default filter still decodes on the main thread. Test primitives:
+  `nidhogg-workers--test-decode` (the decoder, or with ORACLE the main thread's, over a list of chunks),
+  `--test-io-info`'s `:coding-generation`, `:decoder`, `:decoded` and `:redecoded`; `workers-harness.sh --fuzz SECONDS
+  decode`.
 <!-- wk: Task 19 -->
 <!-- wk: Task 20 -->
 <!-- wk: Task 21 -->
