@@ -142,7 +142,10 @@ for G in $GROUPS_RUN; do
         [ $p != vterm ] || (flock 9; cd /cache/vterm && cmake -S . -B build >/dev/null && make -C build -j2 >/dev/null 2>&1) 9>/cache/.lock || true
         fs=$(tests_of $p | sed "s/^/-l /" | tr "\n" " ")
         ert $p -L /cache/$p -L /cache/$p/lisp -L /cache/$p/build $fs
-      done ;;
+      done
+      # eat and vterm draw the same screens with the reader on and off (workers/terminal-emulators)
+      ert terminal -L $T/src/nidhogg-tests -L /cache/eat -L /cache/vterm -L /cache/vterm/build \
+        -l $T/src/nidhogg-tests/workers-terminal-tests.el ;;
     image) echo "image: needs the GUI runner; run it locally with gui.sh" >&2 ;;
     files)
       ert fileio -L $T/src -l $T/src/fileio-tests.el
