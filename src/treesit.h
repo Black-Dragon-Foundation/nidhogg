@@ -122,6 +122,20 @@ struct Lisp_TS_Parser
      prevent infinite recursion due to calling after change
      functions.  */
   bool within_reparse;
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  /* Nidhogg's worker threads (nidhogg-treesit-bg.c).  The parser's
+     reference to its parse job (a struct nh_ts_job), or NULL; the edit
+     generation, which every recorded change and every narrowing sync
+     that moves the tree's view increments; the subtree statistics of
+     the published tree, valid while NH_STAT_TIMESTAMP equals
+     TIMESTAMP.  */
+  void *nh_job;
+  ptrdiff_t nh_gen;
+  ptrdiff_t nh_stat[3];
+  ptrdiff_t nh_stat_timestamp;
+
+#endif
 };
 
 /* A wrapper around a tree-sitter node.  */

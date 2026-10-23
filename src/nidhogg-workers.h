@@ -212,6 +212,8 @@ extern void nh_ts_record_edit (void *parser_c, const void *ts_input_edit,
 			       ptrdiff_t start_byte, ptrdiff_t old_end_byte,
 			       ptrdiff_t new_end_byte);
 extern void nh_ts_select_entry (void);
+/* Kill-buffer: cancel the parse jobs of the parsers of that buffer.  */
+extern void nh_ts_buffer_killed (struct buffer *);
 
 /* The reader, nidhogg-io.c [16, 17, 18, 19, 20].  */
 extern bool nh_io_handover (struct Lisp_Process *);
@@ -325,8 +327,13 @@ extern void nh_dec_scan (const unsigned char *, size_t, struct nh_dec_scan *);
 #ifndef NH_WK_HARNESS
 
 extern void nh_blk_file_syms (void);
-extern bool nh_ts_publish (Lisp_Object parser);
+/* At a demand that must reparse: true when a finished job's tree (in
+   *TREE, now the caller's) is the parse of the current text; false
+   when the synchronous parse must run (any job is then dropped).  */
+extern bool nh_ts_publish (Lisp_Object parser, void **tree);
 extern void nh_ts_maybe_start (Lisp_Object parser, int start_point);
+/* NODE's (treesit-subtree-stat) if a worker computed it, else nil.  */
+extern Lisp_Object nh_ts_subtree_stat_cached (Lisp_Object node);
 extern Lisp_Object nh_img_size (Lisp_Object spec, Lisp_Object frame,
 				bool pixels, bool *answered);
 extern Lisp_Object nh_img_metadata (Lisp_Object spec, Lisp_Object frame,
