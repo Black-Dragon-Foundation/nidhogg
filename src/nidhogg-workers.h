@@ -188,6 +188,19 @@ extern void nh_wk_deferral_add (int area);
 /* The dead flag, from shut_down_emacs [4].  */
 extern void nh_wk_fatal_begin (void);
 
+/* Signal context [4] (§4 item 11).  A signal handler that may reach
+   worker code runs between nh_wk_signal_enter and nh_wk_signal_leave
+   (process.c's SIGCHLD handler).  nh_wk_signal_context is true there,
+   and on every thread but a worker once nh_wk_dead is set (the fatal
+   path): then nothing takes a worker mutex or waits.  Every worker
+   mutex is taken through nh_wk_lock, which counts a lock taken in signal
+   context and aborts, rather than deadlock on a mutex the interrupted
+   code holds.  */
+extern void nh_wk_signal_enter (void);
+extern void nh_wk_signal_leave (void);
+extern bool nh_wk_signal_context (void);
+extern void nh_wk_lock (pthread_mutex_t *);
+
 /* The redisplay budget [5].  */
 extern int64_t nh_wk_budget_take (int64_t want_ns);
 extern void nh_wk_budget_reset (void);
@@ -211,6 +224,10 @@ extern ptrdiff_t nh_io_read (struct Lisp_Process *, int channel,
 extern void nh_io_drain (struct Lisp_Process *);
 extern void nh_io_coding_changed (struct Lisp_Process *);
 extern int nh_io_tls_boot (struct Lisp_Process *, void *gnutls_state);
+/* Under nh_wk_dead, a reader-owned process closes its real fd and its
+   wake fd directly, with no handshake; otherwise nothing.  From
+   kill_buffer_processes [4; live from 16].  */
+extern void nh_io_dead_close (struct Lisp_Process *);
 
 /* Decoding, nidhogg-decode.c [18].  */
 extern ptrdiff_t nh_dec_chunk (int system, const unsigned char *in,
