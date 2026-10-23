@@ -221,8 +221,11 @@ script() {
   [ -z "$LISP_CACHE" ] || printf 'LC=%q\n' "$LC"
   printf 'MODE_ID=%q\n' "$NATIVE${SANITIZE:+-$SANITIZE}"
   printf 'CONF_ID=%q\n' "--prefix=$PREFIX $CONF"
-  # leak reports from configure's and the dump's short-lived programs are noise
-  [ -z "$SANITIZE" ] || echo 'export ASAN_OPTIONS=detect_leaks=0:abort_on_error=0 UBSAN_OPTIONS=print_stacktrace=1'
+  # leak reports from configure's and the dump's short-lived programs are noise.  detect_stack_use_after_return=0 as
+  # etc/DEBUG says: the runtime defaults it on (GCC 16's does), which moves main's locals to a heap "fake stack",
+  # so stack_bottom (&stack_bottom_variable) is not on the stack and the GC's mark_c_stack scans from the real stack
+  # into unmapped memory: temacs segfaulted at its first GC while dumping bootstrap-emacs.pdmp
+  [ -z "$SANITIZE" ] || echo 'export ASAN_OPTIONS=detect_leaks=0:abort_on_error=0:detect_stack_use_after_return=0 UBSAN_OPTIONS=print_stacktrace=1'
   # the 100 MB-class workers rows read this to size themselves down under the sanitizers (nidhogg-workers--test-size-scale)
   [ -z "${NIDHOGG_WORKERS_TEST_SIZE_SCALE:-}" ] || printf 'export NIDHOGG_WORKERS_TEST_SIZE_SCALE=%q\n' "$NIDHOGG_WORKERS_TEST_SIZE_SCALE"
   if [ "$MODE" = container ]; then
