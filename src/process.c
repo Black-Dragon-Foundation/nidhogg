@@ -6613,6 +6613,10 @@ read_process_output_set_last_coding_system (struct Lisp_Process *p,
 					    struct coding_system *coding)
 {
   Vlast_coding_system_used = CODING_ID_NAME (coding->id);
+#ifdef HAVE_NIDHOGG_WORKERS
+  nh_io_coding_settled (p, coding);
+
+#endif
   /* A new coding system might be found.  */
   if (!EQ (p->decode_coding_system, Vlast_coding_system_used))
     {
@@ -6753,6 +6757,11 @@ read_and_dispose_of_process_output (struct Lisp_Process *p, char *chars,
     read_and_insert_process_output (p, chars, nbytes, coding);
   else
     {
+#ifdef HAVE_NIDHOGG_WORKERS
+      /* nh-io's decode of these bytes, if it is still current.  */
+      if (!nh_io_decoded (p, coding, chars, nbytes))
+
+#endif
       decode_coding_c_string (coding, (unsigned char *) chars, nbytes, Qt);
       text = coding->dst_object;
 
@@ -8618,6 +8627,10 @@ setup_process_coding_systems (Lisp_Object process)
 	coding_system = raw_text_coding_system (coding_system);
     }
   setup_coding_system (coding_system, proc_decode_coding_system[inch]);
+#ifdef HAVE_NIDHOGG_WORKERS
+  nh_io_coding_changed (p, proc_decode_coding_system[inch]);
+
+#endif
 
   eassert (0 <= outch && outch < FD_SETSIZE);
   if (!proc_encode_coding_system[outch])
