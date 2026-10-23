@@ -862,9 +862,12 @@ names one (pkg-test.sh's sshd), else TRAMP's mock method (as
 tramp-tests.el: a local `sh -i' over a pty, the same tramp-sh code)."
   (require 'tramp)
   (require 'tramp-cache)
+  (require 'tramp-sh)
   (let* ((env (getenv "REMOTE_TEMPORARY_FILE_DIRECTORY"))
          (tramp-verbose 0)
          (tramp-persistency-file-name nil)
+         ;; No shell history file: the test never writes under ~.
+         (tramp-histfile-override t)
          (tramp-methods
           (cons `("mock"
                   (tramp-login-program ,tramp-encoding-shell)
