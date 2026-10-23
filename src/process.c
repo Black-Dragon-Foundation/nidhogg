@@ -484,6 +484,30 @@ clear_fd_callback_data (struct fd_callback_data* elem)
   elem->waiting_thread = NULL;
 }
 
+#ifdef HAVE_NIDHOGG_WORKERS
+
+/* The process reader (nidhogg-io.c).  A reader-owned process keeps its
+   real fd in p->infd and p->open_fd[]; the select set holds its wake fd
+   instead, which chan_process names too.  This is FD as the select set
+   knows it: the wake fd for a reader-owned process's real fd.  With
+   HAND_OVER an eligible process is handed over first.  (delete_read_fd
+   gets here from the SIGCHLD handler: lookups only, then.)  */
+static int
+nh_io_channel (int fd, bool hand_over)
+{
+  Lisp_Object proc = chan_process[fd];
+  if (!PROCESSP (proc) || XPROCESS (proc)->infd != fd)
+    return fd;
+  int sel = nh_io_select_fd (XPROCESS (proc));
+  if (sel < 0 && hand_over && nh_io_handover (XPROCESS (proc)))
+    {
+      sel = nh_io_select_fd (XPROCESS (proc));
+      chan_process[sel] = proc;
+    }
+  return sel < 0 ? fd : sel;
+}
+
+#endif
 
 /* Add a file descriptor FD to be monitored for when read is possible.
    When read is possible, call FUNC with argument DATA.  */
@@ -508,6 +532,10 @@ add_non_keyboard_read_fd (int fd, fd_callback func, void *data)
 static void
 add_process_read_fd (int fd)
 {
+#ifdef HAVE_NIDHOGG_WORKERS
+  fd = nh_io_channel (fd, true);
+
+#endif
   eassert (fd >= 0 && fd < FD_SETSIZE);
   eassert (fd_callback_info[fd].func == NULL);
 
@@ -524,9 +552,83 @@ add_process_read_fd (int fd)
 void
 delete_read_fd (int fd)
 {
+#ifdef HAVE_NIDHOGG_WORKERS
+  fd = nh_io_channel (fd, false);
+
+#endif
   delete_keyboard_wait_descriptor (fd);
 }
 
+#ifdef HAVE_NIDHOGG_WORKERS
+
+/* Hand PROC back to the main thread (REASON, an enum nh_io_reason).
+   The wake fd leaves the select set first, since after a detach that
+   timed out nh-io closes it (and a closed fd in the set aborts the next
+   select).  Unless the process is going down, the bytes the reader had
+   read keep the wake fd selected until nh_io_read has delivered them;
+   then reading goes back to the real fd, if it was on.  */
+static void
+nh_io_back (Lisp_Object proc, int reason)
+{
+  struct Lisp_Process *p = XPROCESS (proc);
+  int sel = p->infd < 0 ? -1 : nh_io_select_fd (p);
+  struct fd_callback_data d = { 0 };
+  if (sel >= 0)
+    {
+      d = fd_callback_info[sel];
+      chan_process[sel] = Qnil;
+      delete_keyboard_wait_descriptor (sel);
+    }
+  nh_io_handback (p, reason);
+  if (sel < 0 || reason == NH_IO_CLOSE)
+    return;
+  int fd = sel;
+  if (nh_io_done (p))
+    {
+      nh_io_release (p);
+      fd = p->infd;
+    }
+  else
+    chan_process[sel] = proc;
+  if (d.flags & FOR_READ)
+    {
+      add_process_read_fd (fd);
+      fd_callback_info[fd].thread = d.thread;
+    }
+}
+
+/* read_process_output's read for a reader-owned process: true if
+   *NBYTES holds what the reader delivered.  A handed-back process
+   whose last bytes are out goes back to its real fd.  */
+static bool
+nh_io_read_chunk (Lisp_Object proc, int channel, char *buf, ptrdiff_t size,
+		  ssize_t *nbytes)
+{
+  bool handled;
+  *nbytes = nh_io_read (XPROCESS (proc), channel, buf, size, &handled);
+  if (nh_io_select_fd (XPROCESS (proc)) >= 0 && nh_io_done (XPROCESS (proc)))
+    nh_io_back (proc, NH_IO_READER_OFF);
+  return handled;
+}
+
+void
+nh_io_proc_reader (Lisp_Object proc, bool on)
+{
+  struct Lisp_Process *p = XPROCESS (proc);
+  int fd = p->infd;
+  if (!on)
+    nh_io_back (proc, NH_IO_READER_OFF);
+  else if (fd >= 0 && nh_io_select_fd (p) < 0
+	   && (fd_callback_info[fd].flags & (FOR_READ | FOR_WRITE)) == FOR_READ)
+    {
+      struct thread_state *thread = fd_callback_info[fd].thread;
+      delete_keyboard_wait_descriptor (fd);
+      add_process_read_fd (fd);
+      fd_callback_info[nh_io_channel (fd, false)].thread = thread;
+    }
+}
+
+#endif
 /* Add a file descriptor FD to be monitored for when write is possible.
    When write is possible, call FUNC with argument DATA.  */
 
@@ -1406,6 +1508,11 @@ The string argument is normally a multibyte string, except:
     }
 
   pset_filter (p, filter);
+#ifdef HAVE_NIDHOGG_WORKERS
+  /* The hand-over at the add above saw the old filter, t.  */
+  if (p->infd >= 0 && !EQ (filter, Qt))
+    nh_io_proc_reader (process, true);
+#endif
 
   if (NETCONN1_P (p) || SERIALCONN1_P (p) || PIPECONN1_P (p))
     pset_childp (p, plist_put (p->childp, QCfilter, filter));
@@ -4838,6 +4945,11 @@ deactivate_process (Lisp_Object proc)
 
   /* Beware SIGCHLD hereabouts.  */
 
+#ifdef HAVE_NIDHOGG_WORKERS
+  /* The reader lets go of the process before any of its fds closes.  */
+  nh_io_back (proc, NH_IO_CLOSE);
+
+#endif
   for (i = 0; i < PROCESS_OPEN_FDS; i++)
     {
       if (p->open_fd[i] >= 0)
@@ -6253,7 +6365,13 @@ read_process_output (Lisp_Object proc, int channel)
   ssize_t nbytes;
   struct Lisp_Process *p = XPROCESS (proc);
   eassert (0 <= channel && channel < FD_SETSIZE);
+#ifdef HAVE_NIDHOGG_WORKERS
+  /* The real fd's struct: CHANNEL may be a reader's wake fd.  */
+  struct coding_system *coding = proc_decode_coding_system[p->infd];
+
+#else
   struct coding_system *coding = proc_decode_coding_system[channel];
+#endif
   int carryover = p->decoding_carryover;
   ptrdiff_t readmax = p->readmax;
   specpdl_ref count = SPECPDL_INDEX ();
@@ -6291,6 +6409,13 @@ read_process_output (Lisp_Object proc, int channel)
 	nbytes = emacs_gnutls_read (p, chars + carryover + buffered,
 				    readmax - buffered);
       else
+#endif
+#ifdef HAVE_NIDHOGG_WORKERS
+      if (nh_io_read_chunk (proc, channel, chars + carryover + buffered,
+			    readmax - buffered, &nbytes))
+	;
+      else
+
 #endif
 	nbytes = emacs_read (channel, chars + carryover + buffered,
 			     readmax - buffered);

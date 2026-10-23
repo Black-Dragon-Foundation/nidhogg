@@ -323,7 +323,17 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
 <!-- wk: Task 13 -->
 <!-- wk: Task 14 -->
 <!-- wk: Task 15 -->
-<!-- wk: Task 16 -->
+- The process reader's fd ownership (`src/nidhogg-io.c`): an eligible process (a subprocess with pipes or a pty, a
+  `make-pipe-process` pipe, a plain network stream once connected, a connection a server accepted) is handed to `nh-io`
+  when its fd would enter the select set, if `nidhogg-workers-process-reader` and its fd kind's sub-switch are on and two
+  more fds stay 64 below `FD_SETSIZE` (else it keeps today's path). `nh-io` reads its own `F_DUPFD_CLOEXEC` copy of the
+  fd; the select set holds a wake fd instead (so `process-prioritize-lower-fds` orders by wake fd); `p->infd` stays the
+  real fd for writes, ioctls and `process-send-eof`. Never handed over: TLS, datagrams, servers, serial, a `:nowait`
+  stream before it connects, filter `t` (until the filter changes), and a process after `(nidhogg-set-process-reader
+  PROCESS nil)`. Hand-back is synchronous: before any of a process's fds closes, `nh-io` drops it and closes its copy,
+  then acknowledges; the bytes it had read are delivered first. Delivery is today's: one queued chunk per channel per
+  select through the usual decode and filter path. Test primitives: `nidhogg-workers--test-io-info`, `--test-io-log`,
+  `--test-io-crash`, `--test-io-hold-lock`; `workers-harness.sh --tsan io`.
 <!-- wk: Task 17 -->
 <!-- wk: Task 18 -->
 <!-- wk: Task 19 -->
