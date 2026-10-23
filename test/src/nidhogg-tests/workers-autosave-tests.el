@@ -243,6 +243,14 @@ their bytes, whether the auto-save file is newer than the visited file
      . ,(lambda (_dir go)
           (insert "one\n")
           (save-buffer)
+          ;; File times come from the kernel's coarse clock (a tick,
+          ;; 1 ms or more): an auto-save in the save's tick has an equal
+          ;; mtime, and `file-newer-than-file-p' is strict, so "has auto
+          ;; save data" would be a coin toss in the synchronous run too.
+          ;; The save is backdated a minute and recorded as the visited
+          ;; modtime (the undo's unmodified state is this modtime).
+          (set-file-times buffer-file-name (time-subtract nil 60))
+          (set-visited-file-modtime)
           (undo-boundary)
           (insert "two\n")
           (funcall go)
@@ -345,11 +353,12 @@ Return (STATUS CODE AUTO-SAVED-BYTES)."
   ;; in `threads' mode; run but not landed in `inline' mode), then
   ;; released: the files left, the "has auto save data" test and what
   ;; the race saw equal the synchronous run's.  save-buffer leaves no
-  ;; auto-save file; undo to unmodified the same; set-visited-file-name
-  ;; and write-file land under the new name only; delete-file and a
-  ;; trash move drop the job; kill-buffer asks exactly as the
-  ;; synchronous run; do-auto-save from Lisp writes the current text at
-  ;; once and the job never overwrites it.
+  ;; auto-save file; an undo through the unmodified state keeps the
+  ;; job's text as auto save data (newer than the visited file);
+  ;; set-visited-file-name and write-file land under the new name only;
+  ;; delete-file and a trash move drop the job; kill-buffer asks exactly
+  ;; as the synchronous run; do-auto-save from Lisp writes the current
+  ;; text at once and the job never overwrites it.
   (dolist (mode '(threads inline))
     (dolist (s workers-autosave-tests--scenarios)
       (ert-info ((format "mode %s, %s" mode (car s)) :prefix "")
@@ -361,6 +370,10 @@ Return (STATUS CODE AUTO-SAVED-BYTES)."
             ('save-buffer
              (should-not (assoc "#a.txt#" (car async)))
              (should-not (nth 1 async)))
+            ('undo-to-unmodified
+             (should (equal (cdr (assoc "#a.txt#" (car async)))
+                            "one\ntwo\n"))
+             (should (nth 1 async)))
             ('set-visited-file-name
              (should (assoc "#b.txt#" (car async)))
              (should-not (assoc "#a.txt#" (car async))))
