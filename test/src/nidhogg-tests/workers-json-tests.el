@@ -368,7 +368,7 @@ delivered before the last slice.  Return (VALUE SLICES)."
 
 (ert-deftest workers/json-phase ()
   "A sample taken during a slice carries the phase `json'."
-  (skip-unless (featurep 'nidhogg-watchdog))
+  (skip-unless (and (featurep 'nidhogg-watchdog) (eq system-type 'gnu/linux)))
   (set 'nidhogg-watchdog--test-last-sample nil)
   (nidhogg-watchdog--start 100 2000 nil :no-monitor)
   (unwind-protect
