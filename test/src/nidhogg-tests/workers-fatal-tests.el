@@ -72,7 +72,7 @@ seconds.  The plist: `:status' and `:code' (`process-status' and
                               (push (list 'sent (- (float-time) start) (cdr a)
                                           (process-status p))
                                     dbg)
-                              (process-send-string p (cdr a))))))))
+                              (process-send-string p (cdr a)))))))
          (last-status nil))
     (while (and (process-live-p proc) (< (- (float-time) start) 30))
       (unless (eq (process-status proc) last-status)
@@ -92,6 +92,7 @@ seconds.  The plist: `:status' and `:code' (`process-status' and
                    :code (process-exit-status proc)
                    :secs (and marked (- end marked))
                    :out out
+                   :dbg (reverse dbg)
                    :err (with-temp-buffer
                           (insert-file-contents err)
                           (buffer-string)))
@@ -205,7 +206,9 @@ seconds.  The plist: `:status' and `:code' (`process-status' and
                (plist-get r :err)
                (let ((o (plist-get r :out)))
                  (substring o (max 0 (- (length o) 1500)))))
-      (ert-info ((format "%S" (plist-put (copy-sequence r) :out nil))
+      (ert-info ((format "%S" (plist-put (copy-sequence r) :out
+                                         (let ((o (plist-get r :out)))
+                                           (substring o (max 0 (- (length o) 600))))))
                  :prefix "child: ")
         (should (string-search "Auto-save done" (plist-get r :out)))
         (workers-fatal-tests--should-die r '(SIGABRT . 6) "Aborted")
