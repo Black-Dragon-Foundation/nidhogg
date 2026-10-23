@@ -1186,4 +1186,53 @@ mark.  Return what Lisp sees after it, and the reader's `:owned' and
         (should s)
         (should (eq (plist-get s :phase) 'filter))))))
 
+;;; Task 21: the sub-switches, one fd kind at a time.
+
+(defun workers-io-tests--kinds ()
+  "A pipe, a socket and a pty process, as (KIND . PROCESS); each echoes.
+The socket is a client of a local server whose connections echo; the
+output of each is in its process property `out'."
+  (let* ((collect (lambda (p s) (process-put p 'out (cons s (process-get p 'out)))))
+         (server (make-network-process
+                  :name "wio-kinds-server" :server t :host 'local :service t
+                  :family 'ipv4 :noquery t
+                  :filter (lambda (p s) (process-send-string p s))))
+         (port (process-contact server :service)))
+    (list (cons 'pipes (workers-io-tests--cat "kinds-pipe"))
+          (cons 'sockets (make-network-process
+                          :name "wio-kinds-socket" :host "127.0.0.1" :service port
+                          :family 'ipv4 :noquery t :filter collect))
+          (cons 'ptys (make-process :name "wio-kinds-pty" :command '("cat")
+                                    :connection-type 'pty :noquery t
+                                    :filter collect)))))
+
+(ert-deftest workers/reader-sub-switches ()
+  ;; Each of `nidhogg-workers-reader-pipes', `-sockets' and `-ptys' off
+  ;; with the others on: that fd kind takes today's path (the hand-over
+  ;; is refused for the switch), the other kinds stay reader-owned, and
+  ;; every process still echoes (§17.2a M8).
+  (workers-io-tests--modes
+    (dolist (off '(pipes sockets ptys))
+      (ert-info ((format "%s off" off) :prefix "")
+        (let ((nidhogg-workers-reader-pipes (not (eq off 'pipes)))
+              (nidhogg-workers-reader-sockets (not (eq off 'sockets)))
+              (nidhogg-workers-reader-ptys (not (eq off 'ptys))))
+          (unwind-protect
+              (dolist (k (workers-io-tests--kinds))
+                (ert-info ((format "%s" (car k)) :prefix "")
+                  (let ((proc (cdr k))
+                        (line (format "%s with %s off" (car k) off)))
+                    (if (eq (car k) off)
+                        (progn
+                          (should-not (workers-io-tests--info proc :owned))
+                          (should (eq (workers-io-tests--info proc :refused) 'switch)))
+                      (should (workers-io-tests--info proc :owned)))
+                    (process-send-string proc (concat line "\n"))
+                    (should (workers-io-tests--until
+                             (lambda ()
+                               (string-search line (workers-io-tests--out proc))))))))
+            (dolist (p (process-list))
+              (when (string-prefix-p "wio-kinds" (process-name p))
+                (delete-process p)))))))))
+
 ;;; workers-io-tests.el ends here
