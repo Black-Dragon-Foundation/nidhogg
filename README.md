@@ -510,8 +510,8 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   real fd for writes, ioctls and `process-send-eof`. Never handed over: TLS, datagrams, servers, serial, a `:nowait`
   stream before it connects, filter `t` (until the filter changes), and a process after `(nidhogg-set-process-reader
   PROCESS nil)`. Hand-back is synchronous: before any of a process's fds closes, `nh-io` drops it and closes its copy,
-  then acknowledges; the bytes it had read are delivered first. Delivery is today's: one queued chunk per channel per
-  select through the usual decode and filter path. Test primitives: `nidhogg-workers--test-io-info`, `--test-io-log`,
+  then acknowledges; the bytes it had read are delivered first. Delivery goes through the usual filter path, one
+  delivery per channel per select (below). Test primitives: `nidhogg-workers--test-io-info`, `--test-io-log`,
   `--test-io-crash`, `--test-io-hold-lock`; `workers-harness.sh --tsan io`.
 - The reader's flow control and drains: where Emacs stops reading a process (`set-process-filter` `t`, `stop-process` on
   a connection, the `SIGCHLD` handler when a child exits) `nh-io` pauses after the read in progress (an atomic flag and
@@ -539,11 +539,22 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   chunk decoded under an older generation, any chunk while `standard-translation-table-for-decode` or
   `inhibit-eol-conversion` is in force, and any chunk whose carried-over bytes differ from the main thread's are decoded
   again on the main thread from the raw bytes, so filters see what they see without the reader. An incomplete sequence
-  at the end of the stream is flushed as today. The default filter still decodes on the main thread. Test primitives:
+  at the end of the stream is flushed as today. The default filter inserts those decodes too (below). Test primitives:
   `nidhogg-workers--test-decode` (the decoder, or with ORACLE the main thread's, over a list of chunks),
   `--test-io-info`'s `:coding-generation`, `:decoder`, `:decoded` and `:redecoded`; `workers-harness.sh --fuzz SECONDS
   decode`.
-<!-- wk: Task 19 -->
+- Delivery from the reader: one delivery per channel per select, as today's one read, but it joins the chunks already
+  queued (it never waits for more). The default filter (with `fast-read-process-output`) gets up to
+  `read-process-output-max` bytes and inserts the reader's decodes directly, with today's process mark, marker and
+  after-change bookkeeping (a raw-text system's bytes from 0x80 become raw-byte characters in a multibyte buffer, as
+  today). Any other filter gets one string of at most `read-process-output-max` bytes and at most its estimated 4 ms of
+  work (a moving average of its nanoseconds per byte; at least 512 bytes), and before a first call has measured it 4 KB
+  on a pty, 64 KB on a pipe or socket: a cheap filter on a stream of small reads gets fewer, larger calls, and a costly
+  one no longer call than today's. `nbytes_read` grows by the raw bytes, so `accept-process-output` keeps its meaning;
+  the redisplay after each delivery stays. The C delivery runs in the watchdog's `deliver` phase and the filter in
+  `filter`; `nidhogg-workers-stats`'s `:phase-ms` counts both for reader-owned processes. Adaptive read buffering
+  (`process-adaptive-read-buffering`) does not apply to a reader-owned process. Test primitives:
+  `nidhogg-workers--test-filter-cost` (fix a filter's estimated cost), `--test-io-info`'s `:filter-cost`.
 - STARTTLS, ptys, comint and TRAMP under the reader: `gnutls-boot` (every STARTTLS upgrade: smtpmail, Gnus, ERC,
   `open-network-stream` with `:type` `starttls`, and a blocking `open-gnutls-stream`, which connects as a plain stream
   first) takes the socket back from `nh-io` before any GnuTLS call, and that process is never handed over again (also
