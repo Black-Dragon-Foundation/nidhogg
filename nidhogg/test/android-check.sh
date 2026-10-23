@@ -10,7 +10,10 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 NDK_VERSION=r27c
 NDK_URL=https://dl.google.com/android/repository/android-ndk-$NDK_VERSION-linux.zip
-NDK_SHA256=unpinned
+# Google publishes no sha256 for r27c.  This one was computed (2026-10-23) from the zip whose sha1
+# (090e8083a715fdb1a3e402d0763c388abb03fb4e) and size (663987688) match Google's repository manifest
+# (dl.google.com/android/repository/repository2-3.xml, package ndk;27.2.12479018).
+NDK_SHA256=59c2f6dc96743b5daf5d1626684640b20a6bd2b1d85b13156b90333741bad5cc
 CACHE=${NDK_CACHE:-${TMPDIR:-/tmp}/nidhogg-ndk}
 API=26			# pthread_getname_np needs 26; the Android port's minimum is the same or lower
 FILES="nidhogg-workers nidhogg-treesit-bg nidhogg-io nidhogg-decode nidhogg-json-tape nidhogg-image-bg nidhogg-blk"
