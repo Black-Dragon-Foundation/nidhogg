@@ -5,7 +5,8 @@
 #   workers-harness.sh --tsan MODULE...   build and run test/src/nidhogg-tests/fuzz/tsan-MODULE.c under
 #                                         ThreadSanitizer; exit 0 = every driver passed with no race report
 # Modules: queue (two producers, one consumer, 10^6 jobs through the runtime), wake (the completion channel's
-# clear/re-check protocol, 10^6 races).  Tasks 6, 10, 16, 18, 22, 24, 27-29 and 32 add drivers and fuzz targets.
+# clear/re-check protocol, 10^6 races), io (the reader's hand-over, wake fds and synchronous hand-back over pipes
+# filled by writer threads: every byte once and in order).  Tasks 6, 10, 16, 18, 22, 24, 27-29 and 32 add drivers and fuzz targets.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 CC=${CC:-cc}
