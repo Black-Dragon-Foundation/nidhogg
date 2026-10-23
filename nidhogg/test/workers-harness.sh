@@ -53,6 +53,8 @@ if [ "${1:-}" = --fuzz ]; then
   for t in $TARGETS; do
     DEFS=; LIBS=
     case $t in header) SRCS="nidhogg-image-bg" ;; json) SRCS="" ;;
+      # Task 18: the stateless decoders
+      decode) SRCS="nidhogg-decode" ;;
       # Task 28: the image decoder cores, with the decoder libraries
       cores) SRCS="nidhogg-image-bg"; DEFS="-DHAVE_PNG -DHAVE_JPEG -DHAVE_GIF -DHAVE_WEBP"
              LIBS="-lpng -ljpeg -lgif -lwebp -lwebpdemux -lm" ;;
