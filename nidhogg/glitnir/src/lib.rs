@@ -4,6 +4,7 @@
 
 use std::sync::Mutex;
 
+pub mod compose;
 pub mod damage;
 pub mod ffi;
 pub mod geom;
@@ -23,10 +24,12 @@ pub(crate) struct State {
     pub(crate) rings: stats::Rings,
     pub(crate) damage: damage::Frames,
     pub(crate) scenes: scene::Scenes,
+    pub(crate) composer: compose::Composer,
 }
 
 pub(crate) static STATE: Mutex<State> = Mutex::new(State {
     rings: stats::Rings::new(),
     damage: damage::Frames::new(),
     scenes: scene::Scenes::new(),
+    composer: compose::Composer::new(),
 });

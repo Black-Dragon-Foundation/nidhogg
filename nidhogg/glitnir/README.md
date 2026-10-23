@@ -36,6 +36,17 @@ views (`kernels::{Pixels, PixelsMut, Mask}`).
   coarsest that keeps the error within 2/255 of an 8×8-supersampled rounded rectangle convolved with an exact
   Gaussian.
 
+## Compose
+
+`glitnir_compose` draws a root's committed scene into a target buffer the host hands it (its pixels and their place
+in the root's device pixels), within the given rectangles (the damage, or a draw's clip), from the frames' surfaces
+(sources, by layer id), bottom to top: layers without chrome are copied; a chromed layer's shadow tiles go over what
+lies below, then the layer is copied but for its four corner squares, which go through the corner mask, with the
+border ring when it has a border. Window layers are their frame's pixels (P1 composes a scroll as damage). Pixels no
+layer covers are left alone. A pixel's value never depends on how the rectangles cut it, so composing the damage
+equals composing everything. A source whose device scale is not the target's is refused (`GLITNIR_E_STATE`) and the
+host draws that root the stock way. The time taken and the layers drawn fill the root's next frame-time entry.
+
 The `pixman-oracle` feature (Linux; `build.rs` links the system's `pixman-1`) adds the test that compares the
 kernels with pixman; `check.sh` runs it on Linux.
 

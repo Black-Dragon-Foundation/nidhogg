@@ -49,7 +49,9 @@ typedef struct
   uint64_t ticks, late_ticks, violations, scale_mismatch;
 } GlitnirStatsSummary;
 
-/* Append ENTRY to ROOT's ring (allocated at the first record).  GLITNIR_E_ARG if ENTRY is NULL.  */
+/* Append ENTRY to ROOT's ring (allocated at the first record).  An entry whose t_compose_start_ns and
+   t_compose_end_ns are both 0 gets the time ROOT's composes took since its last record, ending at t_draw_end_ns; one
+   whose layers is 0, the layers they drew.  GLITNIR_E_ARG if ENTRY is NULL.  */
 int32_t glitnir_stats_record (uint64_t root, const GlitnirStatsEntry *entry);
 
 /* Write ROOT's summary to OUT (zeros for an unknown root); empty the ring when RESET is non-zero.  */
@@ -160,6 +162,38 @@ int32_t glitnir_stack_reparent (uint64_t root, uint64_t id, uint64_t parent);
    below the parent's upper siblings): *IDS points to *N ids, valid until ROOT's next glitnir_stack_list or
    glitnir_root_drop.  GLITNIR_E_ARG if IDS or N is NULL.  */
 int32_t glitnir_stack_list (uint64_t root, const uint64_t **ids, size_t *n);
+
+/* Compose.  Pixels are premultiplied ARGB32 (CAIRO_FORMAT_ARGB32), HEIGHT rows of STRIDE bytes (whole pixels, at least
+   WIDTH), 4-byte aligned, borrowed for the call only.  A source is the surface of the frame whose id is LAYER, its
+   first pixel at that layer's top-left; it must not overlap the target.  */
+typedef struct
+{
+  uint64_t layer;
+  const uint8_t *pixels;
+  int32_t stride, width, height;
+  double scale;
+} GlitnirSource;
+
+typedef struct
+{
+  uint8_t *pixels;
+  int32_t stride, width, height;
+  int32_t origin_x, origin_y;	/* the first pixel's place, root device px */
+  double scale;
+} GlitnirTarget;
+
+/* Compose ROOT's committed scene (as its last commit left it) into TARGET within the NCLIP rectangles at CLIP (root
+   device px; overlaps are composed once), bottom to top: a frame or child-node layer without chrome is copied from
+   its source; a chromed layer's shadow goes over what lies below, then the layer is copied but for its corner
+   squares, which go through the corner mask, with the border redrawn along the rounded path (the straight edges stay
+   the source's).  Window layers are their frame's pixels and add nothing.  A layer without a source is not drawn;
+   target pixels no layer covers keep their value.  The time taken and the layers drawn go to ROOT's next
+   glitnir_stats_record.
+   GLITNIR_E_STATE, with nothing drawn, when ROOT has no scene or a source's scale differs from TARGET's (the host
+   then draws ROOT the stock way).  GLITNIR_E_ARG if TARGET is NULL, CLIP or SOURCES is NULL with a non-zero count,
+   or a size, stride or pixel pointer is not as above.  */
+int32_t glitnir_compose (uint64_t root, const GlitnirTarget *target, const GlitnirRect *clip, size_t nclip,
+			 const GlitnirSource *sources, size_t nsrc);
 
 #ifdef __cplusplus
 }

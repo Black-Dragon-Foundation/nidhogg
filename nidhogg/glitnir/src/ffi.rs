@@ -1,5 +1,6 @@
 //! The C ABI: status codes, the panic guard and the exported functions.
 
+use crate::compose::{Source, SourceView, Target};
 use crate::geom::Rect;
 use crate::scene::{Chrome, LayerDesc};
 use crate::stats::{StatsEntry, Summary};
@@ -18,6 +19,7 @@ const ABI_VERSION: u32 = 1;
 pub const EXPORTS: &[&str] = &[
     "glitnir_abi_version",
     "glitnir_commit",
+    "glitnir_compose",
     "glitnir_damage_add_n",
     "glitnir_damage_all",
     "glitnir_damage_forget",
@@ -69,7 +71,8 @@ pub extern "C" fn glitnir_debug_panic() -> i32 {
     ffi_guard(|| panic!("glitnir_debug_panic"))
 }
 
-/// Append one paint's record to ROOT's ring.
+/// Append one paint's record to ROOT's ring, its compose times and layers filled from ROOT's composes when it has
+/// none ([`crate::compose::fill_stats`]).
 ///
 /// # Safety
 /// `entry` must be null or point to a readable `StatsEntry`.
@@ -80,7 +83,9 @@ pub unsafe extern "C" fn glitnir_stats_record(root: u64, entry: *const StatsEntr
             return GLITNIR_E_ARG;
         }
         // SAFETY: non-null, and the caller promises it is readable.
-        crate::stats::record(root, unsafe { entry.read() });
+        let mut e = unsafe { entry.read() };
+        crate::compose::fill_stats(root, &mut e);
+        crate::stats::record(root, e);
         GLITNIR_OK
     })
 }
@@ -106,6 +111,7 @@ pub unsafe extern "C" fn glitnir_stats_summary(root: u64, reset: i32, out: *mut 
 pub extern "C" fn glitnir_stats_forget(root: u64) -> i32 {
     ffi_guard(|| {
         crate::stats::forget(root);
+        crate::compose::forget(root);
         GLITNIR_OK
     })
 }
@@ -324,6 +330,52 @@ pub unsafe extern "C" fn glitnir_stack_list(root: u64, ids: *mut *const u64, n: 
     })
 }
 
+/// Compose ROOT's committed scene into TARGET within the NCLIP rectangles at CLIP, from the NSRC sources at SOURCES
+/// ([`crate::compose`]).
+///
+/// # Safety
+/// `target` must be null or point to a readable `Target` whose pixels are writable as it describes; `clip` must point
+/// to `nclip` readable rectangles and `sources` to `nsrc` readable `Source`s (either may be null when its count is
+/// 0), whose pixels are readable as they describe and overlap none of the target's.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn glitnir_compose(
+    root: u64,
+    target: *const Target,
+    clip: *const Rect,
+    nclip: usize,
+    sources: *const Source,
+    nsrc: usize,
+) -> i32 {
+    ffi_guard(|| {
+        if target.is_null() || (clip.is_null() && nclip > 0) || (sources.is_null() && nsrc > 0) {
+            return GLITNIR_E_ARG;
+        }
+        let clips: &[Rect] = if nclip == 0 {
+            &[]
+        } else {
+            // SAFETY: non-null, and the caller promises NCLIP readable rectangles.
+            unsafe { std::slice::from_raw_parts(clip, nclip) }
+        };
+        let srcs: &[Source] = if nsrc == 0 {
+            &[]
+        } else {
+            // SAFETY: non-null, and the caller promises NSRC readable sources.
+            unsafe { std::slice::from_raw_parts(sources, nsrc) }
+        };
+        // SAFETY: the caller promises readable sources, each with readable pixels.
+        let views: Result<Vec<SourceView>, i32> =
+            srcs.iter().map(|s| unsafe { s.view() }).collect();
+        // SAFETY: non-null and readable, with writable pixels no source overlaps, as the caller promises.
+        let t = unsafe { target.read() };
+        // SAFETY: as above.
+        let mut t = match unsafe { t.view() } {
+            Ok(t) => t,
+            Err(e) => return e,
+        };
+        code(views.and_then(|v| crate::compose::compose_root(root, &mut t, clips, &v)))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,6 +518,17 @@ mod tests {
         assert_eq!(std::mem::offset_of!(LayerDesc, visible), 48);
         assert_eq!(std::mem::size_of::<Chrome>(), 36);
         assert_eq!(std::mem::offset_of!(Chrome, border_argb), 32);
+    }
+
+    #[test]
+    fn source_and_target_have_the_c_layout() {
+        assert_eq!(std::mem::size_of::<Source>(), 40);
+        assert_eq!(std::mem::offset_of!(Source, pixels), 8);
+        assert_eq!(std::mem::offset_of!(Source, height), 24);
+        assert_eq!(std::mem::offset_of!(Source, scale), 32);
+        assert_eq!(std::mem::size_of::<Target>(), 40);
+        assert_eq!(std::mem::offset_of!(Target, origin_y), 24);
+        assert_eq!(std::mem::offset_of!(Target, scale), 32);
     }
 
     #[test]
