@@ -5707,6 +5707,9 @@ wait_reading_process_output (intmax_t time_limit, int nsecs, int read_kbd,
 	    FD_CLR (fd, &Atemp);
 
 	  timeout = make_timespec (0, 0);
+#ifdef HAVE_NIDHOGG_WORKERS
+	  nh_io_settle (&Atemp);
+#endif
 	  if ((thread_select (pselect, max_desc + 1,
 			      &Atemp,
 			      (num_pending_connects > 0 ? &Ctemp : NULL),
