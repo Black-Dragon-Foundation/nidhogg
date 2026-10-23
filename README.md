@@ -496,7 +496,11 @@ Test primitives: `nidhogg-workers--test-image-decode`, `--test-image-decode-fini
 <!-- wk: Task 29 -->
 <!-- wk: Task 30 -->
 <!-- wk: Task 31 -->
-<!-- wk: Task 32 -->
+- Directory reads (`src/nidhogg-blk.c`, class `dir` of `nh-blk`): `(nidhogg-directory-files-async DIR CALLBACK &key
+  match nosort id-format recursive max-depth max-entries skip)` reads a local directory on a worker (`lstat`,
+  `readlink`, cached `getpwuid_r`/`getgrgid_r`) and calls `(CALLBACK BATCH DONE ERROR)` from the main loop with
+  `(NAME . ATTRIBUTES)` lists exactly as `directory-files-and-attributes` returns them. Sorted results arrive in one
+  batch, `:nosort` ones in batches of 1000. A name with a file name handler signals `nidhogg-not-local`.
 <!-- wk: Task 33 -->
 <!-- wk: Task 34 -->
 <!-- wk: Task 35 -->
