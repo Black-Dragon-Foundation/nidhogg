@@ -193,6 +193,9 @@ struct nh_io_h
 
   /* Paused by delete_read_fd (any thread, signal context included).  */
   _Atomic bool paused;
+  /* nh-io's: set before it reads the copy, cleared once what it read is
+     queued and the wake fd written (nh_io_settle).  */
+  _Atomic bool reading;
   /* The FIFO is at its cap: set and cleared under nh_io_m, read by nh-io
      without it.  */
   _Atomic bool capped;
@@ -447,11 +450,15 @@ nh_io_read_one (struct nh_io_h *h, unsigned char **buf, ptrdiff_t *size)
       *size = h->readmax;
     }
   ssize_t r;
+  atomic_store (&h->reading, true);
   do
     r = read (h->copy, *buf, want);
   while (r < 0 && errno == EINTR);
   if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
-    return;
+    {
+      atomic_store (&h->reading, false);
+      return;
+    }
   int err = errno;
   struct nh_io_chunk *c = NULL;
   if (r > 0)
@@ -491,6 +498,7 @@ nh_io_read_one (struct nh_io_h *h, unsigned char **buf, ptrdiff_t *size)
   if (was_quiet)
     nh_wk_wake_signal (&h->wake);
   pthread_mutex_unlock (&nh_io_m);
+  atomic_store (&h->reading, false);
 
   if (c)
     nh_wk_stat_add (NH_WK_IO, NH_WK_ST_QUEUED_BYTES, r);
@@ -1054,6 +1062,81 @@ nh_io_resume (int infd)
   struct nh_io_h *h = 0 <= infd && infd < FD_SETSIZE ? nh_io_tab[infd] : NULL;
   if (h && !h->detached && atomic_exchange (&h->paused, false) && !h->inl)
     nh_io_poke ();
+}
+
+/* Whether poll finds one of the N fds at PFD readable within MS (a
+   signal may cut a wait short: the caller loops).  */
+static bool
+nh_io_poll_any (struct pollfd *pfd, int n, int ms)
+{
+  int r;
+  do
+    r = poll (pfd, n, ms);
+  while (r < 0 && errno == EINTR && ms == 0);
+  return r > 0;
+}
+
+/* wait_reading_process_output runs sentinels (status_notify) only when
+   a zero-timeout select over MASK finds no process output, so that
+   output, a process's own and another's that came before it exited (a
+   `:stderr' pipe's EOF), reaches filters first.  A reader-owned
+   process's wake fd is readable only once nh-io has read: while nh-io
+   reads, or has yet to read, output of a process whose wake fd MASK
+   holds (it does while the process is read: not paused, not handed
+   back), wait for it to land on a wake fd, so that the select finds it
+   as today's would find it in the kernel.  Bounded: only an nh-io held
+   at a test's pause point reaches the bound.  */
+void
+nh_io_settle (fd_set *mask)
+{
+  if (atomic_load (&nh_wk_dead))
+    return;
+  struct pollfd real[FD_SETSIZE], wake[FD_SETSIZE];
+  struct nh_io_h *hs[FD_SETSIZE];
+  int n = 0;
+  for (int fd = 0; fd < FD_SETSIZE; fd++)
+    {
+      struct nh_io_h *h = nh_io_tab[fd];
+      if (h && !h->inl && !h->detached && FD_ISSET (h->sel, mask))
+	{
+	  real[n] = (struct pollfd) { .fd = fd, .events = POLLIN };
+	  wake[n] = (struct pollfd) { .fd = h->sel, .events = POLLIN };
+	  hs[n++] = h;
+	}
+    }
+  if (n == 0)
+    return;
+  int depth = -1;
+  bool waiting = false;
+  struct timespec t;
+  clock_gettime (CLOCK_MONOTONIC, &t);
+  int64_t deadline = (t.tv_sec * INT64_C (1000000000) + t.tv_nsec
+		      + NH_IO_DETACH_NS);
+  /* A wake fd readable: the select finds output, as today's would.
+     Else nothing in the kernel and no read in progress (checked in that
+     order: a read that ended in between wrote its wake fd): nothing is
+     on its way.  */
+  while (!nh_io_poll_any (wake, n, 0))
+    {
+      bool pending = nh_io_poll_any (real, n, 0);
+      for (int i = 0; !pending && i < n; i++)
+	pending = atomic_load (&hs[i]->reading);
+      if (!pending)
+	break;
+      clock_gettime (CLOCK_MONOTONIC, &t);
+      int64_t left = deadline - (t.tv_sec * INT64_C (1000000000) + t.tv_nsec);
+      if (left <= 0)
+	break;
+      if (!waiting)
+	{
+	  waiting = true;
+	  depth = NH_WK_PHASE_PUSH (NH_IO_PH, NH_IO_RS_DRAIN);
+	  nh_wk_wait_begins ();
+	}
+      nh_io_poll_any (wake, n, (int) (left / 1000000) + 1);
+    }
+  if (waiting)
+    NH_WK_PHASE_POP (depth);
 }
 
 /* Whether P is going down: its status says so, or (a subprocess) the
