@@ -413,6 +413,100 @@ ARGS go before the --eval."
                             (nidhogg-workers--test-job 'nh-blk 0 :class 'file) 5000))))
                  '(nil nil 1 t 1))))
 
+;;;; Watchdog phases and the redisplay wait budget (Task 5)
+
+(defun workers-tests--wd-wait (phase reason)
+  "On the main thread, wait on a paused job (released as the wait begins).
+Return the wait's value.  Threads mode only: inline jobs are done before
+the wait begins, and a finished job pushes no phase."
+  (let ((nidhogg-workers--mode 'threads))
+    (nidhogg-workers--pause-at 'before-done)
+    (let ((j (nidhogg-workers--test-job 'nh-blk 0 :class 'file
+                                        :pause 'before-done)))
+      (should (nidhogg-workers--test-await-paused 'before-done 5000))
+      (nidhogg-workers--test-release-on-wait 'before-done)
+      (nidhogg-workers--test-wait j 10000 phase reason))))
+
+(defmacro workers-tests--wd (&rest body)
+  "Run BODY with the watchdog started without a monitor thread."
+  (declare (indent 0) (debug t))
+  `(progn
+     (set 'nidhogg-watchdog--test-last-sample nil)
+     (nidhogg-watchdog--start 100 2000 nil :no-monitor)
+     (unwind-protect (progn ,@body)
+       (set 'nidhogg-watchdog--test-sample-on-phase nil)
+       (nidhogg-watchdog--test-clock nil)
+       (nidhogg-watchdog--stop)
+       (nidhogg-workers--release))))
+
+(ert-deftest workers/wait-phase ()
+  (skip-unless (featurep 'nidhogg-watchdog))
+  (dolist (c '((worker-wait detach) (treesit-wait nil) (worker-wait display)))
+    (workers-tests--wd
+      (set 'nidhogg-watchdog--test-sample-on-phase (car c))
+      (should (eql (workers-tests--wd-wait (car c) (cadr c)) 1))
+      (let ((s (symbol-value 'nidhogg-watchdog--test-last-sample)))
+        (should s)
+        (should (eq (plist-get s :phase) (car c)))
+        (should (eq (plist-get s :reason) (cadr c))))
+      (should (eq (nidhogg-watchdog--test-phase) 'lisp)))))
+
+(ert-deftest workers/wait-is-one-span ()
+  ;; A worker wait is not a select: the watchdog's span runs through it
+  ;; and ends at the next responsive wait, leaving one stall.
+  (skip-unless (featurep 'nidhogg-watchdog))
+  (workers-tests--wd
+    (let ((t0 1000000000000))
+      (nidhogg-watchdog--test-clock t0)
+      (nidhogg-watchdog--test-idle-wait 0.001)
+      (nidhogg-watchdog--take)
+      (set 'nidhogg-watchdog--test-sample-on-phase 'worker-wait)
+      (should (eql (workers-tests--wd-wait 'worker-wait 'detach) 1))
+      (nidhogg-watchdog--test-clock (+ t0 300000000))
+      (nidhogg-watchdog--test-idle-wait 0.001)
+      (should (= (length (car (nidhogg-watchdog--take))) 1))
+      (should (eq (plist-get (symbol-value 'nidhogg-watchdog--test-last-sample)
+                             :phase)
+                  'worker-wait)))))
+
+(ert-deftest workers/budget-shared ()
+  (nidhogg-workers--test-redisplay-begin)
+  (nidhogg-workers--test-budget-ledger t)
+  (should (equal (list (nidhogg-workers--test-budget-take 5)
+                       (nidhogg-workers--test-budget-take 5)
+                       (nidhogg-workers--test-budget-take 5))
+                 '(5 3 0)))
+  (should (equal (nidhogg-workers--test-budget-ledger t) '(8000000 . 1)))
+  (nidhogg-workers--test-redisplay-begin)
+  (should (eql (nidhogg-workers--test-budget-take 5) 5))
+  (let ((nidhogg-redisplay-wait-budget 2))
+    (nidhogg-workers--test-redisplay-begin)
+    (should (eql (nidhogg-workers--test-budget-take 5) 2))))
+
+(ert-deftest workers/phase-ms-counted ()
+  (let ((nidhogg-workers--mode 'threads)
+        j)
+    (nidhogg-workers-stats t)
+    (nidhogg-workers--pause-at 'before-done)
+    (setq j (nidhogg-workers--test-job 'nh-blk 20 :class 'file
+                                       :pause 'before-done))
+    (should (nidhogg-workers--test-await-paused 'before-done 5000))
+    (nidhogg-workers--test-release-on-wait 'before-done)
+    (unwind-protect
+        (progn
+          (should (eql (nidhogg-workers--test-wait j 10000 'worker-wait 'detach) 1))
+          (should (>= (plist-get (plist-get (plist-get (nidhogg-workers-stats)
+                                                       :phase-ms)
+                                            'worker-wait)
+                                 'detach)
+                      20.0)))
+      (nidhogg-workers--release))))
+
+(ert-deftest workers/no-watchdog-build ()
+  ;; Built --without-nidhogg-watchdog: phases are no-ops, the wait works.
+  (skip-unless (not (featurep 'nidhogg-watchdog)))
+  (should (eql (workers-tests--wd-wait 'worker-wait 'detach) 1)))
+
 (ert-deftest workers/stats-shape ()
   (let ((s (nidhogg-workers-stats)))
     (dolist (w '(:nh-io :nh-parse :nh-img :nh-blk :nh-save))
