@@ -215,6 +215,9 @@ extern void nh_wk_budget_reset (void);
 /* Tree-sitter, nidhogg-treesit-bg.c [9, 10, 11, 12].  */
 extern void nh_ts_alloc_install (void);
 extern void nh_ts_parser_freed (void *parser_c);
+/* treesit.c applied a TSInputEdit to the parser's tree, or (with
+   TS_INPUT_EDIT NULL) a parser without a tree saw a change in buffer
+   bytes: log it for the parser's job, if any [11].  */
 extern void nh_ts_record_edit (void *parser_c, const void *ts_input_edit,
 			       ptrdiff_t start_byte, ptrdiff_t old_end_byte,
 			       ptrdiff_t new_end_byte);
