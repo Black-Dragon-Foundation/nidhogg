@@ -87,6 +87,16 @@ extern bool glitnir_pgtk_draw_begin (struct frame *f, GtkWidget *widget,
 extern void glitnir_pgtk_draw_end (struct frame *f);
 extern void glitnir_pgtk_free_frame (struct frame *f);
 
+/* Between glitnir_pgtk_draw_begin and _end of frame F (a root, or a child
+   frame of a root Glitnir draws), compose F's root's committed scene into
+   CR's target within F's widget and CR's clip, less the rectangles of F's
+   mapped child frames (paint-through, DP-1 (i)).  True when it did (the
+   stock paint is then skipped); false for a stock draw of F: F painted
+   inside a group (a child frame's `alpha' below 1), or the root's
+   surfaces at another device scale than the target's (counted in
+   `:scale-mismatch').  */
+extern bool glitnir_pgtk_draw (struct frame *f, cairo_t *cr);
+
 /* Non-nil when Glitnir records F: `glitnir-enable', a pgtk frame that is
    not a tooltip, drawn on an ARGB32 image surface.  */
 extern bool glitnir_pgtk_active_p (struct frame *f);
@@ -179,6 +189,7 @@ extern uint64_t glitnir_pgtk_violations (struct frame *f, bool reset);
 extern bool glitnir_pgtk_draw_undamaged (struct frame *f);
 extern bool glitnir_pgtk_compose_with_pending (struct frame *f);
 extern bool glitnir_pgtk_debug_freeze (struct frame *f);
+extern bool glitnir_pgtk_debug_scale_mismatch (struct frame *f);
 
 /* A new ARGB32 image surface with F's root frame as GTK last painted it
    (device pixels), made by arming the after-paint handler and waiting up to

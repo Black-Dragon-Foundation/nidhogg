@@ -5206,6 +5206,10 @@ pgtk_handle_draw (GtkWidget *widget, cairo_t *cr, gpointer *data)
 	  if (src == NULL && FRAME_CR_ACTIVE_CONTEXT (f) != NULL)
 	    src = cairo_get_target (FRAME_CR_ACTIVE_CONTEXT (f));
 	}
+#ifdef HAVE_GLITNIR
+      if (glitnir_recorded && glitnir_pgtk_draw (f, cr))
+	src = NULL;
+#endif
       if (src != NULL)
 	{
 	  cairo_set_source_surface (cr, src, 0, 0);

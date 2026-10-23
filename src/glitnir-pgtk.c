@@ -89,6 +89,10 @@ struct glitnir_root
   uint64_t draw_ns, damage_px, painted_px, commit_px;
   uint8_t scale_mismatch;
 
+  /* glitnir--debug-scale-mismatch: every draw of the root's next paint
+     sees its surface at another scale than the target's.  */
+  bool debug_mismatch;
+
   /* For tests: the root's draws, its latest recorded paint (and when the
      after-paint that sent it to the compositor ran), and the longest time
      between two of its draws since GAP_FROM.  */
@@ -1519,6 +1523,7 @@ after_paint (GdkFrameClock *clock, gpointer data)
   if (!r->drawn)
     return;
   r->drawn = false;
+  r->debug_mismatch = false;
 
   if (r->armed && r->target)
     {
@@ -1552,6 +1557,7 @@ after_paint (GdkFrameClock *clock, gpointer data)
      a back-fill cannot be seen from here (R3, DP-9).  */
   e.backfill = 2;
   e.scale_mismatch = r->scale_mismatch;
+  r->scale_mismatch = 0;
   e.violations = r->violations;
   r->violations = 0;
   r->last_commit = r->t_commit;
@@ -1562,13 +1568,25 @@ after_paint (GdkFrameClock *clock, gpointer data)
   GLITNIR_CALL_UNCOUNTED (glitnir_stats_record (r->id, &e));
 }
 
-/* The draw handler of F's widget begins.  Returns true when F is a root we
-   record; input is then blocked until glitnir_pgtk_draw_end.  */
+/* The draw handler of F's widget begins.  Returns true when F is a root,
+   or a child frame of a root Glitnir draws; input is then blocked until
+   glitnir_pgtk_draw_end.  A child frame's draw counts in its root's
+   record (it is part of the root's paint).  */
 bool
 glitnir_pgtk_draw_begin (struct frame *f, GtkWidget *widget, cairo_t *cr)
 {
-  if (FRAME_PARENT_FRAME (f) || f->tooltip)
+  if (f->tooltip)
     return false;
+  if (FRAME_PARENT_FRAME (f))
+    {
+      struct glitnir_root *s = frame_state (f), *rs = root_state (f);
+      if (s == NULL || rs == NULL || recording (rs->frame) == NULL)
+	return false;
+      block_input ();
+      s->t_draw_start = now_ns ();
+      s->draw_cr = cr;
+      return true;
+    }
   struct glitnir_root *r = root_state (f);
   if (r == NULL)
     return false;
@@ -1586,7 +1604,8 @@ glitnir_pgtk_draw_begin (struct frame *f, GtkWidget *widget, cairo_t *cr)
   GtkAllocation alloc;
   gtk_widget_get_allocation (widget, &alloc);
   double scale_frame = gtk_widget_get_scale_factor (widget);
-  r->scale_mismatch = sx != scale_frame;
+  if (sx != scale_frame)
+    r->scale_mismatch = 1;
   r->draws++;
   r->draw_cr = cr;
 
@@ -1665,11 +1684,246 @@ glitnir_pgtk_draw_begin (struct frame *f, GtkWidget *widget, cairo_t *cr)
   return true;
 }
 
+/* Child frames as layers, paint-through (DP-1 (i)): every frame widget
+   of a root Glitnir draws composes the root's committed scene into GDK's
+   buffer, which the root and its child frames share (R2), within its own
+   rectangle and GTK's clip.  The root leaves out the rectangles its mapped
+   child frames paint (GTK draws them after it); a child frame leaves out
+   its own.  So a rounded corner shows what lies beneath, a shadow falls
+   on the root and on lower popups, and a move shows the committed
+   position, never GTK's newer one.  */
+
+/* Whether GTK draws child frame F inside a group: an `alpha' below 1 on F
+   or a child frame it lies in (GTK pushes a group for a widget's
+   opacity).  F then paints itself the stock way, so its parent's draw
+   neither leaves its rectangle to it nor composes it.  pgtk sets the
+   opacity only when the frame's focus changes, so the parameter counts
+   too (GLITNIR-ALPHA-1: alpha children are drawn stock until P2).  */
+static bool
+draws_stock (struct frame *f)
+{
+  for (; FRAME_PARENT_FRAME (f); f = FRAME_PARENT_FRAME (f))
+    {
+      GtkWidget *w = FRAME_GTK_WIDGET (f);
+      if ((w && gtk_widget_get_opacity (w) < 1)
+	  || (f->alpha[0] >= 0 && f->alpha[0] < 1)
+	  || (f->alpha[1] >= 0 && f->alpha[1] < 1))
+	return true;
+    }
+  return false;
+}
+
+/* F's retained surface: the visible bell's while it shows, else the last
+   completely drawn one, as the stock draw paints it.  NULL unless it is
+   an ARGB32 image.  */
+static cairo_surface_t *
+frame_source (struct frame *f)
+{
+  cairo_surface_t *s = FRAME_X_OUTPUT (f)->cr_surface_visible_bell;
+  if (s == NULL && f->output_data.pgtk->cr_active != NULL)
+    s = cairo_get_target (f->output_data.pgtk->cr_active);
+  if (s == NULL || cairo_surface_get_type (s) != CAIRO_SURFACE_TYPE_IMAGE
+      || cairo_image_surface_get_format (s) != CAIRO_FORMAT_ARGB32
+      || cairo_image_surface_get_data (s) == NULL)
+    return NULL;
+  return s;
+}
+
+/* The root device-pixel rectangle of a widget at logical X, Y (in the
+   root widget) of logical size W x H, at scale SX, SY.  */
+static cairo_rectangle_int_t
+widget_rect (int x, int y, int w, int h, double sx, double sy)
+{
+  int x0 = lround (x * sx), y0 = lround (y * sy);
+  return (cairo_rectangle_int_t) { x0, y0, (int) ceil ((x + w) * sx) - x0,
+				   (int) ceil ((y + h) * sy) - y0 };
+}
+
+bool
+glitnir_pgtk_draw (struct frame *f, cairo_t *cr)
+{
+  struct frame *rf = glitnir_root_of (f);
+  struct glitnir_root *root = frame_state (rf);
+  GtkWidget *w = FRAME_GTK_WIDGET (f), *rw = FRAME_GTK_WIDGET (rf);
+  if (root == NULL || !root->scene || w == NULL || rw == NULL
+      || recording (rf) == NULL)
+    return false;
+  /* Stock for this draw, no chrome: a child painted inside a group.  */
+  cairo_surface_t *target = cairo_get_target (cr);
+  if (cairo_get_group_target (cr) != target || draws_stock (f)
+      || cairo_surface_get_type (target) != CAIRO_SURFACE_TYPE_IMAGE
+      || cairo_image_surface_get_format (target) != CAIRO_FORMAT_ARGB32
+      || cairo_image_surface_get_data (target) == NULL)
+    return false;
+  /* GTK places a child widget's draw with a translation of the CTM (the
+     device transform holds the scale and offset).  */
+  cairo_matrix_t m;
+  cairo_get_matrix (cr, &m);
+  int ox = 0, oy = 0;
+  if (m.xx != 1 || m.yy != 1 || m.xy != 0 || m.yx != 0
+      || (f != rf && !gtk_widget_translate_coordinates (w, rw, 0, 0,
+							 &ox, &oy)))
+    return false;
+  double sx = 1, sy = 1, dx = 0, dy = 0;
+  cairo_surface_get_device_scale (target, &sx, &sy);
+  cairo_surface_get_device_offset (target, &dx, &dy);
+  /* Root device px (X, Y) is the target's pixel (X + RX, Y + RY).  */
+  int rx = lround ((m.x0 - ox) * sx + dx), ry = lround ((m.y0 - oy) * sy + dy);
+
+  /* What this draw composes: GTK's clip within the widget, less the
+     rectangles of the mapped child frames GTK draws after it.  */
+  cairo_region_t *reg = cairo_region_create ();
+  cairo_rectangle_list_t *l = cairo_copy_clip_rectangle_list (cr);
+  int nl = l->status == CAIRO_STATUS_SUCCESS ? l->num_rectangles : 1;
+  for (int i = 0; i < nl; i++)
+    {
+      double x1, y1, x2, y2;
+      if (l->status == CAIRO_STATUS_SUCCESS)
+	{
+	  cairo_rectangle_t *c = &l->rectangles[i];
+	  x1 = c->x, y1 = c->y, x2 = c->x + c->width, y2 = c->y + c->height;
+	}
+      else
+	cairo_clip_extents (cr, &x1, &y1, &x2, &y2);
+      int bx = floor ((x1 + m.x0) * sx + dx) - rx;
+      int by = floor ((y1 + m.y0) * sy + dy) - ry;
+      cairo_rectangle_int_t b
+	= { bx, by, (int) ceil ((x2 + m.x0) * sx + dx) - rx - bx,
+	    (int) ceil ((y2 + m.y0) * sy + dy) - ry - by };
+      if (b.width > 0 && b.height > 0)
+	cairo_region_union_rectangle (reg, &b);
+    }
+  cairo_rectangle_list_destroy (l);
+  cairo_rectangle_int_t own
+    = widget_rect (ox, oy, gtk_widget_get_allocated_width (w),
+		   gtk_widget_get_allocated_height (w), sx, sy);
+  cairo_region_intersect_rectangle (reg, &own);
+  Lisp_Object tail, frame;
+  ptrdiff_t nframes = 0;
+  FOR_EACH_FRAME (tail, frame)
+    {
+      struct frame *c = XFRAME (frame);
+      GtkWidget *cw;
+      int cx, cy;
+      nframes++;
+      if (FRAME_PARENT_FRAME (c) != f || !FRAME_PGTK_P (c)
+	  || c->output_data.pgtk == NULL || FRAME_TOOLTIP_P (c)
+	  || (cw = FRAME_GTK_WIDGET (c)) == NULL
+	  || !gtk_widget_is_drawable (cw) || draws_stock (c)
+	  || !gtk_widget_translate_coordinates (cw, rw, 0, 0, &cx, &cy))
+	continue;
+      cairo_rectangle_int_t b
+	= widget_rect (cx, cy, gtk_widget_get_allocated_width (cw),
+		       gtk_widget_get_allocated_height (cw), sx, sy);
+      cairo_region_subtract_rectangle (reg, &b);
+    }
+  int nclip = cairo_region_num_rectangles (reg);
+  if (nclip == 0)
+    {
+      cairo_region_destroy (reg);
+      return true;		/* the child frames paint all of it */
+    }
+
+  /* The sources: the retained surfaces of the root and of every child
+     frame in its scene (but those painting themselves).  */
+  GlitnirSource *src = xnmalloc (nframes, sizeof *src);
+  ptrdiff_t nsrc = 0;
+  FOR_EACH_FRAME (tail, frame)
+    {
+      struct frame *c = XFRAME (frame);
+      if (nsrc == nframes || !FRAME_PGTK_P (c) || c->output_data.pgtk == NULL
+	  || FRAME_TOOLTIP_P (c) || glitnir_root_of (c) != rf || draws_stock (c))
+	continue;
+      struct glitnir_root *s = FRAME_X_OUTPUT (c)->glitnir;
+      cairo_surface_t *p;
+      if (s == NULL || s->layer_root != root->id
+	  || (p = frame_source (c)) == NULL)
+	continue;
+      cairo_surface_flush (p);
+      double ssx = 1, ssy = 1;
+      cairo_surface_get_device_scale (p, &ssx, &ssy);
+      if (root->debug_mismatch && c == rf)
+	ssx = sx + 1;
+      src[nsrc++] = (GlitnirSource) {
+	.layer = s->id, .pixels = cairo_image_surface_get_data (p),
+	.stride = cairo_image_surface_get_stride (p),
+	.width = cairo_image_surface_get_width (p),
+	.height = cairo_image_surface_get_height (p), .scale = ssx };
+    }
+  GlitnirRect *clip = xnmalloc (nclip, sizeof *clip);
+  for (int i = 0; i < nclip; i++)
+    {
+      cairo_rectangle_int_t b;
+      cairo_region_get_rectangle (reg, i, &b);
+      clip[i] = (GlitnirRect) { b.x, b.y, b.width, b.height };
+    }
+  cairo_region_destroy (reg);
+  cairo_surface_flush (target);
+  GlitnirTarget t = {
+    .pixels = cairo_image_surface_get_data (target),
+    .stride = cairo_image_surface_get_stride (target),
+    .width = cairo_image_surface_get_width (target),
+    .height = cairo_image_surface_get_height (target),
+    .origin_x = -rx, .origin_y = -ry, .scale = sx };
+
+  /* Not GLITNIR_CALL: GLITNIR_E_STATE (no scene, or a source at another
+     scale than the target, as between a monitor's scale change and pgtk's
+     next look at it) only draws this root the stock way.  */
+  int32_t rc = GLITNIR_E_STATE;
+  if (!glitnir_pgtk_dead)
+    {
+      glitnir_pgtk_calls++;
+      block_input ();
+      rc = glitnir_compose (root->id, &t, clip, nclip, src, nsrc);
+      unblock_input ();
+      if (rc != GLITNIR_OK && rc != GLITNIR_E_STATE)
+	glitnir_pgtk_failed ("glitnir_compose", rc);
+    }
+  if (rc == GLITNIR_E_STATE)
+    for (ptrdiff_t i = 0; i < nsrc; i++)
+      if (src[i].scale != sx)
+	root->scale_mismatch = 1;
+  if (rc == GLITNIR_OK)
+    for (int i = 0; i < nclip; i++)
+      cairo_surface_mark_dirty_rectangle (target, clip[i].x + rx - dx,
+					  clip[i].y + ry - dy, clip[i].w,
+					  clip[i].h);
+  xfree (clip);
+  xfree (src);
+  return rc == GLITNIR_OK;
+}
+
+/* For tests: every draw of F's root's next paint sees a source scale that
+   is not the target's.  */
+bool
+glitnir_pgtk_debug_scale_mismatch (struct frame *f)
+{
+  struct glitnir_root *root = root_state (f);
+  if (root == NULL || recording (root->frame) == NULL)
+    return false;
+  GtkWidget *w = FRAME_GTK_WIDGET (root->frame);
+  if (w == NULL)
+    return false;
+  root->debug_mismatch = true;
+  gtk_widget_queue_draw (w);
+  return true;
+}
+
 void
 glitnir_pgtk_draw_end (struct frame *f)
 {
   struct glitnir_root *r = root_state (f);
-  if (r)
+  if (r && FRAME_PARENT_FRAME (f))
+    {
+      struct glitnir_root *s = frame_state (f);
+      uint64_t now = now_ns ();
+      s->draw_cr = NULL;
+      r->draw_ns += now - s->t_draw_start;
+      r->t_draw_end = max (r->t_draw_end, now);
+      r->drawn = true;
+      r->tick_frozen = false;
+    }
+  else if (r)
     {
       if (r->nflash && r->draw_cr)
 	paint_flash (r, r->draw_cr);

@@ -420,6 +420,29 @@ selected frame.  Return non-nil if the root is frozen.  */)
 #endif
 }
 
+DEFUN ("glitnir--debug-scale-mismatch", Fglitnir__debug_scale_mismatch,
+       Sglitnir__debug_scale_mismatch, 0, 1, 0,
+       doc: /* Make the next paint of FRAME's root frame see a scale mismatch (for tests).
+Every draw of that paint finds the root's surface at another device scale
+than GDK's buffer, as between a monitor's scale change and pgtk's next
+look at it: the root and its child frames are drawn the stock way,
+without chrome, and the paint counts in the `:scale-mismatch' of
+`glitnir-stats'.  The whole root is queued for that paint.  Refused
+unless `glitnir-debug' is non-nil.  FRAME defaults to the selected frame.
+Return non-nil if the paint was armed.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+  if (NILP (Vglitnir_debug))
+    error ("glitnir--debug-scale-mismatch: `glitnir-debug' is nil");
+#ifdef HAVE_PGTK
+  return glitnir_pgtk_debug_scale_mismatch (f) ? Qt : Qnil;
+#else
+  (void) f;
+  return Qnil;
+#endif
+}
+
 DEFUN ("glitnir--stacking", Fglitnir__stacking, Sglitnir__stacking, 0, 1, 0,
        doc: /* Return the child frames of FRAME's root frame as Glitnir stacks them.
 The list runs bottom to top, hidden frames included; a child frame's own
@@ -568,6 +591,7 @@ syms_of_nidhogg_glitnir (void)
   defsubr (&Sglitnir__motion);
   defsubr (&Sglitnir__stacking);
   defsubr (&Sglitnir__debug_freeze);
+  defsubr (&Sglitnir__debug_scale_mismatch);
   defsubr (&Sglitnir__layer_rect);
   defsubr (&Sglitnir__chrome);
   defsubr (&Sglitnir__rechrome);
