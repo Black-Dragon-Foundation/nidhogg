@@ -118,9 +118,11 @@ extern ptrdiff_t glitnir_pgtk_damage_take (struct frame *f, GlitnirRect *out,
    that drew, of pgtk_read_socket, or a scene change; 3 and 4 only outside
    redisplay and flip blocks.  When Glitnir draws the root, the root's
    damage (its child frames' included) is committed and invalidated on the
-   root widget, the root (frozen since its first damage) thaws and paints
-   at once; the value is then true, and the caller skips pgtk's
-   whole-widget invalidation.  Otherwise false: the stock present.  */
+   root widget and the root (frozen since its first damage) thaws; it paints
+   at once if a frame-clock cycle fell into a frozen span since its last
+   paint, else on the frame clock.  The value is then true, and the caller
+   skips pgtk's whole-widget invalidation.  Otherwise false: the stock
+   present.  */
 extern bool glitnir_pgtk_consistency_point (struct frame *f, int which);
 
 /* Point WHICH for every root with something to commit.  */
@@ -134,6 +136,9 @@ extern void glitnir_pgtk_scene_changed (struct frame *f);
 /* For tests; none calls into Glitnir.  */
 extern uint64_t glitnir_pgtk_now_ns (void);
 extern uintmax_t glitnir_pgtk_draw_count (struct frame *f);
+extern void glitnir_pgtk_paint_counters (struct frame *f,
+					 uintmax_t *paints_now,
+					 uintmax_t *new_buffers);
 extern bool glitnir_pgtk_frozen_p (struct frame *f);
 extern void glitnir_pgtk_last_paint (struct frame *f, uint64_t *commit,
 				     uint64_t *paint, uint64_t *present);

@@ -270,6 +270,27 @@ FRAME defaults to the selected frame.  */)
 #endif
 }
 
+DEFUN ("glitnir--paint-counters", Fglitnir__paint_counters,
+       Sglitnir__paint_counters, 0, 1, 0,
+       doc: /* Return counters of the paints of FRAME's root frame since start.
+The value is (:paints-now N :new-buffers N): the consistency points that
+painted at once, and the draws into a buffer GDK had not handed out
+before (it allocates one when the compositor still holds the last, and
+then copies every pixel the paint did not cover from that one).  FRAME
+defaults to the selected frame.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+  uintmax_t now = 0, buffers = 0;
+#ifdef HAVE_PGTK
+  glitnir_pgtk_paint_counters (f, &now, &buffers);
+#else
+  (void) f;
+#endif
+  return list4 (intern_c_string (":paints-now"), make_uint (now),
+		intern_c_string (":new-buffers"), make_uint (buffers));
+}
+
 DEFUN ("glitnir--frozen-p", Fglitnir__frozen_p, Sglitnir__frozen_p, 0, 1, 0,
        doc: /* Return non-nil if FRAME's root frame is frozen.
 A root is frozen from the first damage on it or its child frames until the
@@ -422,6 +443,7 @@ syms_of_nidhogg_glitnir (void)
   defsubr (&Sglitnir__snapshot_copies);
   defsubr (&Sglitnir__now_ns);
   defsubr (&Sglitnir__draw_count);
+  defsubr (&Sglitnir__paint_counters);
   defsubr (&Sglitnir__frozen_p);
   defsubr (&Sglitnir__last_paint);
   defsubr (&Sglitnir__max_paint_gap_ms);

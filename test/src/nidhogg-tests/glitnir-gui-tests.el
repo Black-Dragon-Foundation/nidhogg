@@ -236,6 +236,35 @@ until that redisplay is done."
         (should (= (plist-get s :count) 1))
         (should (>= (plist-get s :painted-px) (* 2 (glitnir-gui--frame-px))))))))
 
+(defun glitnir-gui--new-buffers (enable)
+  "GDK's new buffers over 20 tab-like switches with `glitnir-enable' ENABLE: each switch redraws the window, lets GLib
+dispatch (GDK commits that paint), then types and redraws again, as a command and the timer after it do."
+  (let ((a (glitnir-gui--text-buffer "*glitnir-tab-a*" 200))
+        (b (glitnir-gui--text-buffer "*glitnir-tab-b*" 200))
+        (glitnir-enable enable))
+    (unwind-protect
+        (progn
+          (switch-to-buffer a)
+          (redisplay t) (sit-for 0.1)
+          (let ((before (plist-get (glitnir--paint-counters) :new-buffers)))
+            (dotimes (i 20)
+              (switch-to-buffer (if (cl-evenp i) b a))
+              (redisplay t)
+              (accept-process-output nil 0.002)
+              (insert "x")
+              (redisplay t)
+              (sit-for 0.03))
+            (- (plist-get (glitnir--paint-counters) :new-buffers) before)))
+      (kill-buffer a) (kill-buffer b))))
+
+(ert-deftest glitnir-gui/points-reuse-the-buffer ()
+  ;; A paint while the compositor still holds the last committed buffer makes GDK allocate a new one and copy every
+  ;; pixel the paint left alone into it (5 MP at 2880x1800 scale 2).  The points must paint no more often into a new
+  ;; buffer than the stock present does.
+  (let ((off (glitnir-gui--new-buffers nil)) (on (glitnir-gui--new-buffers t)))
+    (princ (format "new buffers: on %d, off %d\n" on off) #'external-debugging-output)
+    (should (<= on (+ off 2)))))
+
 (ert-deftest glitnir-gui/no-draw-while-frozen ()
   ;; The child frame is newer, so redisplay draws it first: its damage freezes the root before the root's jit-lock
   ;; runs.  The jit-lock function then moves the child (GTK invalidates the root on its next layout) and lets GLib

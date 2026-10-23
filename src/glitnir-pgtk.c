@@ -71,8 +71,9 @@ struct glitnir_root
      last point (DIRTY), a scene change to commit (SCENE_PENDING), the GDK
      impl window frozen until the next point (FROZEN, referenced while
      frozen), and the idle point queued for damage made outside redisplay
-     (IDLE_ID).  */
-  bool dirty, scene_pending;
+     (IDLE_ID).  TICK_FROZEN: a frame-clock cycle ran while the root was
+     frozen (it painted nothing of the root) since the root's last paint.  */
+  bool dirty, scene_pending, tick_frozen;
   GdkWindow *frozen;
   guint idle_id;
 
@@ -93,6 +94,12 @@ struct glitnir_root
      between two of its draws since GAP_FROM.  */
   uintmax_t draws;
   uint64_t last_commit, last_paint, last_present;
+
+  /* For tests: the points that painted at once (PAINTS_NOW), and the draws
+     into a target GDK had not handed us before (NEW_BUFFERS: GDK allocates
+     a buffer when the compositor still holds the last one, then copies
+     every pixel the paint left alone from it).  */
+  uintmax_t paints_now, new_buffers;
   uint64_t gap_from, max_gap;
 
   /* Debug modes.  `verify': the frame's surface at its previous commit
@@ -920,7 +927,13 @@ present (struct glitnir_root *root)
 /* Paint ROOT now (the amended MP-22): the paint lands inside the point
    instead of waiting for a frame-clock paint that would fall into the
    next frozen span.  The commit to the compositor still goes out at
-   GDK's after-paint.  */
+   GDK's after-paint.  A point calls it only when a frame-clock cycle
+   already fell into a frozen span (TICK_FROZEN; amended 2026-10-23):
+   otherwise the thaw has queued the paint on the frame clock, which paints
+   once per cycle after the compositor's frame callback, as stock does.
+   Painting at every point drew several times a frame, inside the command,
+   and into a buffer the compositor still held, so GDK allocated a new one
+   and copied every pixel the damage left alone into it.  */
 static void
 paint_now (struct glitnir_root *root)
 {
@@ -928,6 +941,7 @@ paint_now (struct glitnir_root *root)
   GdkWindow *win = w ? gtk_widget_get_window (w) : NULL;
   if (win == NULL)
     return;
+  root->paints_now++;
   G_GNUC_BEGIN_IGNORE_DEPRECATIONS
   gdk_window_process_updates (gdk_window_get_toplevel (win), TRUE);
   G_GNUC_END_IGNORE_DEPRECATIONS
@@ -970,7 +984,7 @@ glitnir_pgtk_consistency_point (struct frame *f, int which)
   if (painted && root->t_commit == 0)
     root->t_commit = now;
   thaw (root);
-  if (painted)
+  if (painted && root->tick_frozen)
     paint_now (root);
   return true;
 }
@@ -1058,11 +1072,14 @@ crop_target (struct glitnir_root *r, cairo_surface_t *target,
 
 /* The frame clock's after-paint, connected after GDK's own: the target now
    holds the complete picture GDK committed.  One frame-time entry per paint
-   we drew.  */
+   we drew.  A cycle that ran while the root was frozen painted nothing of
+   it: the next point paints at once.  */
 static void
 after_paint (GdkFrameClock *clock, gpointer data)
 {
   struct glitnir_root *r = data;
+  if (r->frozen)
+    r->tick_frozen = true;
   if (!r->drawn)
     return;
   r->drawn = false;
@@ -1123,6 +1140,11 @@ glitnir_pgtk_draw_begin (struct frame *f, GtkWidget *widget, cairo_t *cr)
   r->t_draw_start = now_ns ();
 
   cairo_surface_t *target = cairo_get_target (cr);
+  static const cairo_user_data_key_t seen_key;
+  if (cairo_surface_get_user_data (target, &seen_key) == NULL
+      && cairo_surface_set_user_data (target, &seen_key, r, NULL)
+	 == CAIRO_STATUS_SUCCESS)
+    r->new_buffers++;
   double sx = 1, sy = 1;
   cairo_surface_get_device_scale (target, &sx, &sy);
   GtkAllocation alloc;
@@ -1220,6 +1242,7 @@ glitnir_pgtk_draw_end (struct frame *f)
       r->t_draw_end = now;
       r->draw_ns += now - r->t_draw_start;
       r->drawn = true;
+      r->tick_frozen = false;
       if (r->gap_from)
 	r->max_gap = max (r->max_gap, now - r->gap_from);
       r->gap_from = now;
@@ -1349,6 +1372,15 @@ glitnir_pgtk_draw_count (struct frame *f)
 {
   struct glitnir_root *r = root_state (f);
   return r ? r->draws : 0;
+}
+
+void
+glitnir_pgtk_paint_counters (struct frame *f, uintmax_t *paints_now,
+			     uintmax_t *new_buffers)
+{
+  struct glitnir_root *r = root_state (f);
+  *paints_now = r ? r->paints_now : 0;
+  *new_buffers = r ? r->new_buffers : 0;
 }
 
 bool
