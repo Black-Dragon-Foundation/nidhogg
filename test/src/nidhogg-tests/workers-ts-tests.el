@@ -1035,4 +1035,370 @@ started in FN stays queued until something waits for it."
                        (+ ab (if (eq mode 'threads) 1 0))))))
         (should (nidhogg-workers--test-ts-await-idle 60000))))))
 
+;;; Deferral at redisplay (Task 13).
+
+(defmacro workers-ts-tests--deferring (&rest body)
+  "Run BODY as `workers-ts-tests--modes' does, with `nidhogg-treesit-defer' on.
+Afterwards land every job: a job started with deferral on is freed when
+it lands."
+  (declare (indent 0) (debug t))
+  `(workers-ts-tests--modes
+     (let ((nidhogg-treesit-defer t)
+           (c-ts-mode-emacs-sources-support nil)
+           (treesit-auto-install-grammar 'never))
+       (unwind-protect
+           (progn ,@body)
+         (nidhogg-workers--release)
+         (should (nidhogg-workers--test-await-landed 'nh-parse 60000))))))
+
+(defun workers-ts-tests--c-ts-buffer (text)
+  "A new buffer in `c-ts-mode' holding TEXT, fontified through jit-lock.
+Batch Emacs keeps `font-lock-mode' off, so jit-lock is registered by
+hand, as `font-lock-mode' would."
+  (let ((buf (generate-new-buffer "workers-ts-defer")))
+    (with-current-buffer buf
+      (insert text)
+      (c-ts-mode)
+      (font-lock-set-defaults)
+      (jit-lock-register #'font-lock-fontify-region))
+    buf))
+
+(defun workers-ts-tests--redisplay-fontify (buf beg end)
+  "Fontify BEG..END of BUF as a redisplay does.
+A fresh wait budget, the pre-redisplay wrapper (redisplay runs
+`pre-redisplay-functions' before it fontifies, with the variable
+unbound), then jit-lock with `nidhogg--redisplay-fontifying' bound to BUF."
+  (with-current-buffer buf
+    (nidhogg-workers--test-redisplay-begin)
+    (nidhogg-workers-treesit--pre-redisplay (selected-window))
+    (nidhogg-workers--test-fontifying buf
+      (jit-lock-fontify-now beg end))))
+
+(defun workers-ts-tests--faces (beg end)
+  "The `face' runs between BEG and END: (FROM TO FACE)."
+  (let ((pos beg) out)
+    (while (< pos end)
+      (let ((next (next-single-property-change pos 'face nil end)))
+        (push (list pos next (get-text-property pos 'face)) out)
+        (setq pos next)))
+    (nreverse out)))
+
+(defun workers-ts-tests--has-face (face beg end)
+  "Non-nil if some text between BEG and END has FACE."
+  (let ((pos beg) found)
+    (while (and (not found) (< pos end))
+      (when (memq face (ensure-list (get-text-property pos 'face)))
+        (setq found t))
+      (setq pos (next-single-property-change pos 'face nil end)))
+    found))
+
+(defun workers-ts-tests--deferrals ()
+  "How many tree-sitter deferrals the workers have counted."
+  (plist-get (plist-get (nidhogg-workers-stats) :deferrals) 'treesit))
+
+(ert-deftest workers/ts-deferral ()
+  ;; §17.3 B4: redisplay finds the parse on a paused worker: the region
+  ;; keeps its old faces, the budget's grant is spent, the tick is not
+  ;; recorded; after the release the landing refontifies through a normal
+  ;; demand.  `font-lock-ensure' in another buffer, `syntax-ppss' and
+  ;; outline search wait and use the current tree.
+  (workers-ts-tests--deferring
+    (let ((buf (workers-ts-tests--c-ts-buffer
+                (workers-ts-tests--c-text 100000)))
+          (end 3001))
+      (unwind-protect
+          (with-current-buffer buf
+            (let ((p treesit-primary-parser))
+              (should (memq #'nidhogg-workers-treesit--pre-redisplay
+                            pre-redisplay-functions))
+              (should-not (memq #'treesit--pre-redisplay
+                                pre-redisplay-functions))
+              (treesit-parser-root-node p)
+              (workers-ts-tests--redisplay-fontify buf 1 end)
+              (should (workers-ts-tests--has-face 'font-lock-keyword-face 1 end))
+              (let ((faces (workers-ts-tests--faces 1 end)))
+                (ert-info ("the deferral" :prefix "")
+                  ;; Far from the region and far too long for 1 ms.
+                  (goto-char (point-max))
+                  (insert-for-yank (workers-ts-tests--c-text 500000))
+                  ;; What a notifier does for a changed range over it.
+                  (with-silent-modifications
+                    (put-text-property 1 end 'fontified nil))
+                  (workers-ts-tests--pause mode 'after-snapshot)
+                  (nidhogg-workers--test-budget-ledger t)
+                  (let ((pub (workers-ts-tests--stat :published))
+                        (defs (workers-ts-tests--deferrals)))
+                    (workers-ts-tests--redisplay-fontify buf 1 end)
+                    (should (equal (workers-ts-tests--faces 1 end) faces))
+                    (should-not (text-property-not-all 1 end 'fontified t))
+                    (if (eq mode 'inline)
+                        ;; The job was done at its start: published.
+                        (progn
+                          (should-not nidhogg-workers-treesit--pending)
+                          (should (= (workers-ts-tests--stat :published)
+                                     (1+ pub)))
+                          (should (= (workers-ts-tests--deferrals) defs)))
+                      (workers-ts-tests--await mode 'after-snapshot)
+                      (should (eq (workers-ts-tests--info p :job) 'running))
+                      (should nidhogg-workers-treesit--pending)
+                      (should (= (workers-ts-tests--stat :published) pub))
+                      (should (> (workers-ts-tests--deferrals) defs))
+                      (should (> (car (nidhogg-workers--test-budget-ledger)) 0))
+                      (should-not (eql treesit--pre-redisplay-tick
+                                       (buffer-chars-modified-tick))))))
+                (ert-info ("font-lock-ensure in another buffer" :prefix "")
+                  (let ((other (workers-ts-tests--c-ts-buffer
+                                (workers-ts-tests--c-text 50000)))
+                        (defs (workers-ts-tests--deferrals)))
+                    (unwind-protect
+                        (progn
+                          (nidhogg-workers--test-redisplay-begin)
+                          (nidhogg-workers--test-fontifying buf
+                            (with-current-buffer other
+                              (font-lock-ensure)))
+                          (with-current-buffer other
+                            (should (workers-ts-tests--has-face
+                                     'font-lock-keyword-face
+                                     (point-min) (point-max)))
+                            (should-not nidhogg-workers-treesit--pending))
+                          (should (= (workers-ts-tests--deferrals) defs)))
+                      (kill-buffer other))))
+                (ert-info ("the landing" :prefix "")
+                  (let ((pub (workers-ts-tests--stat :published)))
+                    (nidhogg-workers--release 'after-snapshot)
+                    (should (nidhogg-workers--test-await-landed 'nh-parse 60000))
+                    (should-not nidhogg-workers-treesit--pending)
+                    (when (eq mode 'threads)
+                      ;; The landing marked the region for jit-lock.
+                      (should (text-property-any 1 end 'fontified nil)))
+                    (workers-ts-tests--redisplay-fontify buf 1 end)
+                    (should-not (text-property-not-all 1 end 'fontified t))
+                    (should (equal (workers-ts-tests--faces 1 end) faces))
+                    (should (eql treesit--pre-redisplay-tick
+                                 (buffer-chars-modified-tick)))
+                    (should (= (workers-ts-tests--stat :published)
+                               (+ pub (if (eq mode 'threads) 1 0))))
+                    (should (equal (workers-ts-tests--sexp p)
+                                   (workers-ts-tests--sync-sexp
+                                    (buffer-string))))))
+                (dolist (call (list (cons "syntax-ppss"
+                                          (lambda ()
+                                            (treesit--pre-syntax-ppss
+                                             (point-min) (point-max))))
+                                    (cons "outline search"
+                                          (lambda () (treesit--pre-redisplay)))))
+                  (ert-info ((car call) :prefix "")
+                    (goto-char (point-max))
+                    (insert-for-yank (workers-ts-tests--c-text 200000))
+                    (workers-ts-tests--pause mode 'after-snapshot)
+                    (should (nidhogg-workers--test-ts-start p))
+                    (workers-ts-tests--await mode 'after-snapshot)
+                    (when (eq mode 'threads)
+                      (nidhogg-workers--test-release-on-wait 'after-snapshot))
+                    (let ((att (workers-ts-tests--stat :attempts))
+                          (defs (workers-ts-tests--deferrals)))
+                      (unwind-protect
+                          (progn
+                            (nidhogg-workers--test-redisplay-begin)
+                            (nidhogg-workers--test-fontifying buf
+                              (funcall (cdr call))))
+                        (nidhogg-workers--test-release-on-wait nil)
+                        (nidhogg-workers--release 'after-snapshot))
+                      ;; A demand that ended with a tree: no 1 ms attempt,
+                      ;; no deferral, the tick recorded.
+                      (should (nidhogg-treesit-parser-ready-p p))
+                      (should (= (workers-ts-tests--stat :attempts) att))
+                      (should (= (workers-ts-tests--deferrals) defs))
+                      (should (eql treesit--pre-redisplay-tick
+                                   (buffer-chars-modified-tick)))
+                      (should (equal (workers-ts-tests--sexp p)
+                                     (workers-ts-tests--sync-sexp
+                                      (buffer-string))))))))))
+        (kill-buffer buf)))))
+
+(ert-deftest workers/ts-defer-off ()
+  ;; With `nidhogg-treesit-defer' nil: today's waits, no pending regions,
+  ;; no 1 ms attempt, nothing deferred.
+  (workers-ts-tests--modes
+    (let* ((nidhogg-treesit-defer nil)
+           (c-ts-mode-emacs-sources-support nil)
+           (treesit-auto-install-grammar 'never)
+           (buf (workers-ts-tests--c-ts-buffer
+                 (workers-ts-tests--c-text 100000)))
+           (end 3001))
+      (unwind-protect
+          (with-current-buffer buf
+            (let ((p treesit-primary-parser)
+                  (att (workers-ts-tests--stat :attempts))
+                  (defs (workers-ts-tests--deferrals)))
+              (treesit-parser-root-node p)
+              (ert-info ("a long edit: today's synchronous parse" :prefix "")
+                (goto-char (point-max))
+                (insert-for-yank (workers-ts-tests--c-text 500000))
+                (with-silent-modifications
+                  (put-text-property 1 end 'fontified nil))
+                (let ((started (workers-ts-tests--stat :started)))
+                  (workers-ts-tests--redisplay-fontify buf 1 end)
+                  (should (= (workers-ts-tests--stat :started) started))))
+              (ert-info ("a job running: today's wait" :prefix "")
+                (goto-char (point-max))
+                (insert-for-yank (workers-ts-tests--c-text 200000))
+                (with-silent-modifications
+                  (put-text-property 1 end 'fontified nil))
+                (workers-ts-tests--pause mode 'before-done)
+                (should (nidhogg-workers--test-ts-start p))
+                (workers-ts-tests--await mode 'before-done)
+                (when (eq mode 'threads)
+                  (nidhogg-workers--test-release-on-wait 'before-done))
+                (let ((waited (workers-ts-tests--stat :waited)))
+                  (unwind-protect
+                      (workers-ts-tests--redisplay-fontify buf 1 end)
+                    (nidhogg-workers--test-release-on-wait nil)
+                    (nidhogg-workers--release 'before-done))
+                  (should (= (workers-ts-tests--stat :waited)
+                             (+ waited (if (eq mode 'threads) 1 0))))))
+              (should (workers-ts-tests--has-face 'font-lock-keyword-face 1 end))
+              (should-not (text-property-not-all 1 end 'fontified t))
+              (should-not nidhogg-workers-treesit--pending)
+              (should (= (workers-ts-tests--stat :attempts) att))
+              (should (= (workers-ts-tests--deferrals) defs))
+              (should (eql treesit--pre-redisplay-tick
+                           (buffer-chars-modified-tick)))
+              (should (equal (workers-ts-tests--sexp p)
+                             (workers-ts-tests--sync-sexp (buffer-string))))))
+        (kill-buffer buf)
+        (should (nidhogg-workers--test-ts-await-idle 60000))))))
+
+(ert-deftest workers/ts-org-block-coloured ()
+  ;; Review B2, the real path: Org fontifies a `c-ts-mode' source block in
+  ;; a temporary buffer with `font-lock-ensure' while redisplay fontifies
+  ;; the Org buffer; nh-parse is paused, the block is large enough to miss
+  ;; a 1 ms attempt, and still it is coloured: the temporary buffer is not
+  ;; the one redisplay fontifies, so nothing defers.
+  (workers-ts-tests--deferring
+    (require 'org)
+    (let ((org-src-fontify-natively t)
+          (buf (generate-new-buffer "workers-ts-org")))
+      (unwind-protect
+          (with-current-buffer buf
+            (insert "* Code\n#+begin_src c-ts\n"
+                    (workers-ts-tests--c-text 200000)
+                    "#+end_src\n")
+            (org-mode)
+            (font-lock-set-defaults)
+            (jit-lock-register #'font-lock-fontify-region)
+            (workers-ts-tests--pause mode 'after-snapshot)
+            (let ((defs (workers-ts-tests--deferrals)))
+              (nidhogg-workers--test-redisplay-begin)
+              (nidhogg-workers--test-fontifying buf
+                (jit-lock-fontify-now (point-min) (point-max)))
+              (should (workers-ts-tests--has-face 'font-lock-keyword-face
+                                                  (point-min) (point-max)))
+              (should (= (workers-ts-tests--deferrals) defs))))
+        (nidhogg-workers--release 'after-snapshot)
+        (kill-buffer buf)
+        ;; Org keeps its fontification buffer: its parser goes with it.
+        (dolist (b (buffer-list))
+          (when (string-prefix-p " *org-src-fontification:" (buffer-name b))
+            (kill-buffer b)))))))
+
+(ert-deftest workers/ts-vertical-motion-waits ()
+  ;; Review S3: the display iterator also runs from `vertical-motion'
+  ;; (and `pos-visible-in-window-p' and friends), where `redisplaying_p'
+  ;; is false: over unfontified text with nh-parse paused it waits and
+  ;; colours, and records no pending region.
+  (workers-ts-tests--deferring
+    (let ((buf (workers-ts-tests--c-ts-buffer
+                (workers-ts-tests--c-text 100000))))
+      (unwind-protect
+          (with-current-buffer buf
+            (let ((p treesit-primary-parser))
+              (treesit-parser-root-node p)
+              (goto-char (point-max))
+              (insert-for-yank (workers-ts-tests--c-text 200000))
+              (with-silent-modifications
+                (put-text-property (point-min) (point-max) 'fontified nil)
+                (remove-text-properties (point-min) (point-max) '(face nil)))
+              (workers-ts-tests--pause mode 'before-done)
+              (should (nidhogg-workers--test-ts-start p))
+              (workers-ts-tests--await mode 'before-done)
+              (when (eq mode 'threads)
+                (nidhogg-workers--test-release-on-wait 'before-done))
+              (set-window-buffer (selected-window) buf)
+              (goto-char (point-min))
+              (let ((att (workers-ts-tests--stat :attempts))
+                    (defs (workers-ts-tests--deferrals)))
+                (nidhogg-workers--test-redisplay-begin)
+                (unwind-protect
+                    (vertical-motion 20)
+                  (nidhogg-workers--test-release-on-wait nil)
+                  (nidhogg-workers--release 'before-done))
+                (should (> (point) (point-min)))
+                (should (workers-ts-tests--has-face 'font-lock-keyword-face
+                                                    (point-min) (point)))
+                (should-not nidhogg-workers-treesit--pending)
+                (should (= (workers-ts-tests--stat :attempts) att))
+                (should (= (workers-ts-tests--deferrals) defs)))))
+        (kill-buffer buf)))))
+
+(ert-deftest workers/ts-pre-redisplay-starts-job ()
+  ;; Review S2: after a 500 KB yank the pre-redisplay wrapper's call makes
+  ;; the 1 ms attempt and starts the job (on the path `read_char' runs
+  ;; before the select); jit-lock in the same redisplay finds it running
+  ;; and makes no second attempt.
+  (workers-ts-tests--deferring
+    (let ((buf (workers-ts-tests--c-ts-buffer
+                (workers-ts-tests--c-text 100000))))
+      (unwind-protect
+          (with-current-buffer buf
+            (let* ((p treesit-primary-parser)
+                   (beg (progn (treesit-parser-root-node p)
+                               (goto-char (/ (point-max) 2))
+                               (forward-line 0)
+                               (point)))
+                   (end (+ beg 3000)))
+              (insert-for-yank (workers-ts-tests--c-text 500000))
+              (workers-ts-tests--pause mode 'after-snapshot)
+              (let ((att (workers-ts-tests--stat :attempts))
+                    (can (workers-ts-tests--stat :cancels))
+                    (dem (workers-ts-tests--stat :started-demand))
+                    (started (workers-ts-tests--stat :started))
+                    (pub (workers-ts-tests--stat :published)))
+                (nidhogg-workers--test-redisplay-begin)
+                (nidhogg-workers-treesit--pre-redisplay (selected-window))
+                (should (= (workers-ts-tests--stat :attempts) (1+ att)))
+                (should (= (workers-ts-tests--stat :cancels) (1+ can)))
+                (should (= (workers-ts-tests--stat :started-demand) (1+ dem)))
+                (should (= (workers-ts-tests--stat :started) (1+ started)))
+                (if (eq mode 'inline)
+                    (progn
+                      (should (nidhogg-treesit-parser-ready-p p))
+                      (should (= (workers-ts-tests--stat :published) (1+ pub)))
+                      (should (eql treesit--pre-redisplay-tick
+                                   (buffer-chars-modified-tick))))
+                  (workers-ts-tests--await mode 'after-snapshot)
+                  (should (eq (workers-ts-tests--info p :job) 'running))
+                  (should-not (eql treesit--pre-redisplay-tick
+                                   (buffer-chars-modified-tick))))
+                ;; jit-lock in the same redisplay.
+                (nidhogg-workers--test-fontifying buf
+                  (jit-lock-fontify-now beg end))
+                (should (= (workers-ts-tests--stat :attempts) (1+ att)))
+                (should (= (workers-ts-tests--stat :started) (1+ started)))
+                (should-not (text-property-not-all beg end 'fontified t))
+                (if (eq mode 'inline)
+                    (should (workers-ts-tests--has-face 'font-lock-keyword-face
+                                                        beg end))
+                  (should nidhogg-workers-treesit--pending)
+                  (should-not (workers-ts-tests--has-face
+                               'font-lock-keyword-face beg end))
+                  (nidhogg-workers--release 'after-snapshot)
+                  (should (nidhogg-workers--test-await-landed 'nh-parse 60000))
+                  (should-not nidhogg-workers-treesit--pending)
+                  (workers-ts-tests--redisplay-fontify buf beg end)
+                  (should (= (workers-ts-tests--stat :published) (1+ pub)))
+                  (should (workers-ts-tests--has-face 'font-lock-keyword-face
+                                                      beg end))))))
+        (kill-buffer buf)))))
+
 ;;; workers-ts-tests.el ends here
