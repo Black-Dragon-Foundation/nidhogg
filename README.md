@@ -469,7 +469,14 @@ today, and so does everything with either switch off. Watchdog phases: `image` (
 `worker-wait` with `display` and `image-pixels`; `:deferrals` counts the images that landed late. Test primitives:
 `nidhogg-workers--test-await-landed`, `--test-marked-windows`, `--deferrable-p`, `--test-image-info`,
 `--test-image-job`, `--test-image-forget`, `--test-image-land`, and `--test-image-pixels`' CACHED argument.
-<!-- wk: Task 30 -->
+**A replaced image keeps its picture until the new one lands.** A pending entry whose spec equals a ready entry's
+except `:index`, `:scale`, `:max-width`, `:max-height`, `:rotation`, `:width`, `:height` or `:data`, met at the same
+buffer position (or display property) where a window last drew that ready image, draws the ready pixels scaled into its
+own box instead of the empty rectangle (a GIF stepping `:index`, `image-mode` zoom and rotate, `doc-view` pages);
+`--test-image-info` counts them as `:standing`. `(nidhogg-image-prefetch SPEC CALLBACK &optional FRAME)` decodes SPEC
+into the frame's cache on the default face without showing it and calls `(CALLBACK SPEC ready|failed)` from the timer
+check; a prefetched spec that is displayed afterwards draws without a pending frame. `:nidhogg-data-encoding base64` in
+a spec makes the decoder read `:data` as base64 text (on `nh-img` and in the synchronous loaders).
 <!-- wk: Task 31 -->
 - Directory reads (`src/nidhogg-blk.c`, class `dir` of `nh-blk`): `(nidhogg-directory-files-async DIR CALLBACK &key
   match nosort id-format recursive max-depth max-entries skip)` reads a local directory on a worker (`lstat`,
