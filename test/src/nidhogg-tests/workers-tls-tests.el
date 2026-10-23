@@ -73,11 +73,13 @@
 (defun workers-tls-tests--event-ids (log event)
   (mapcar #'cadr (cl-remove-if-not (lambda (e) (eq (car e) event)) log)))
 
-(defun workers-tls-tests--skip ()
-  (skip-unless (and (fboundp 'gnutls-available-p) (gnutls-available-p)))
-  (skip-unless (executable-find "gnutls-serv"))
-  (require 'gnutls)
-  (require 'network-stream))
+(defmacro workers-tls-tests--skip ()
+  ;; A macro: `skip-unless' exists only inside an `ert-deftest' body.
+  '(progn
+     (skip-unless (and (fboundp 'gnutls-available-p) (gnutls-available-p)))
+     (skip-unless (executable-find "gnutls-serv"))
+     (require 'gnutls)
+     (require 'network-stream)))
 
 (defun workers-tls-tests--server ()
   "`gnutls-serv' in echo mode on a free port: (PROCESS . PORT)."
