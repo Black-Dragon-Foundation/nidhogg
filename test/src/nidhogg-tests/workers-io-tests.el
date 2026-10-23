@@ -1104,6 +1104,17 @@ mark.  Return what Lisp sees after it, and the reader's `:owned' and
                       (memq coding '(utf-8-dos utf-8-mac raw-text-dos raw-text-mac)))
               (should (> (nth 2 on) 0)))))))))
 
+(ert-deftest workers/default-filter-coding-repeatable ()
+  ;; The decoding system a unibyte buffer's default filter records does
+  ;; not depend on what the last process on the same fd decoded into:
+  ;; reader off, a multibyte run, then two unibyte runs record the same.
+  (let ((nidhogg-workers-process-reader nil))
+    (workers-io-tests--df-run 'utf-8-unix t)
+    (let ((first (nth 6 (car (workers-io-tests--df-run 'utf-8-unix nil))))
+          (second (nth 6 (car (workers-io-tests--df-run 'utf-8-unix nil)))))
+      (should (eq first 'raw-text-unix))
+      (should (eq second first)))))
+
 (defmacro workers-io-tests--wd (&rest body)
   "Run BODY with the watchdog started without a monitor thread."
   (declare (indent 0) (debug t))
