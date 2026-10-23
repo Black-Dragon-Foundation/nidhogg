@@ -1416,8 +1416,11 @@ Internal, for tests.  */);
    instead, and its file removed, when it was superseded: a synchronous
    write of the buffer (any of them, below), `delete-file' of the name,
    `rename-file' of it to anything but the buffer's current name, a save
-   of the buffer past the snapshot (BUF_SAVE_MODIFF), a newer snapshot,
-   or the buffer's death.  A write error is reported at the landing with
+   of the buffer past the snapshot (BUF_SAVE_MODIFF moved and the
+   visited file's modtime changed: `set-buffer-modified-p' alone, as an
+   undo through the unmodified state does, writes nothing and leaves the
+   synchronous auto-save file in place), a newer snapshot, or the
+   buffer's death.  A write error is reported at the landing with
    auto_save_error's warning.
 
    Synchronous as today: do-auto-save from Lisp, kill-emacs, the fatal
@@ -1477,6 +1480,7 @@ struct nh_save_job
   struct buffer *buf;		/* XCAR (holder) */
   Lisp_Object holder;		/* (BUFFER . NAME), in nh_save_roots */
   modiff_count modiff;		/* BUF_MODIFF at the snapshot */
+  struct timespec modtime;	/* the buffer's modtime at the snapshot */
   struct timespec started;	/* CLOCK_MONOTONIC, at the snapshot */
   bool landed;
   struct nh_save_job *next;
@@ -1874,7 +1878,8 @@ nh_save_land (struct nh_save_job *j)
   if (nh_save_age_ns (j) > NH_SAVE_HUNG_NS)
     b->auto_save_failure_time = current_timespec ().tv_sec;
   if (atomic_load (&j->dropped)
-      || BUF_SAVE_MODIFF (b) >= j->modiff
+      || (BUF_SAVE_MODIFF (b) >= j->modiff
+	  && timespec_cmp (b->modtime, j->modtime) != 0)
       || !STRINGP (BVAR (b, auto_save_file_name)))
     return;
   if (j->err_op)
@@ -1950,6 +1955,7 @@ nh_save_queue (struct buffer *b, int mode)
   j->fd = -1;
   j->buf = b;
   j->modiff = BUF_MODIFF (b);
+  j->modtime = b->modtime;
   clock_gettime (CLOCK_MONOTONIC, &j->started);
   j->job.w = NH_WK_SAVE;
   j->job.run = nh_save_run;
