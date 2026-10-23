@@ -1809,6 +1809,12 @@ nh_img_webp_scan (const uint8_t *p, size_t n, int idx, struct nh_img_scan *sc)
 #include <fcntl.h>
 #include <sys/stat.h>
 
+/* The header path below, like the pending entries further down, works
+   on image.c's specs and frames, and image.c is built only with a
+   window system: a tty-only build has no images, so it has neither.
+   The decoder cores and their test primitives stay.  */
+#ifdef HAVE_WINDOW_SYSTEM
+
 /* Files bigger than this are not scanned for frames, and the JPEG
    header is looked for in at most the first megabyte.  */
 enum { NH_IMG_SCAN_MAX = 64 << 20, NH_IMG_JPEG_MAX = 1 << 20 };
@@ -2049,6 +2055,8 @@ header path would not answer, else (ANSWER) with the answer.  The switch
     error ("Unknown kind");
   return answered ? list1 (v) : Qnil;
 }
+
+#endif /* HAVE_WINDOW_SYSTEM */
 
 /* Test primitives.  */
 
@@ -2979,14 +2987,14 @@ extern void nh_img_image_syms (void);
 void
 nh_img_syms (void)
 {
-  DEFSYM (Qnidhogg_workers_images, "nidhogg-workers-images");
-  DEFSYM (Qsize, "size");
-  defsubr (&Snidhogg_workers__test_image_answer);
   defsubr (&Snidhogg_workers__test_image_decode);
   defsubr (&Snidhogg_workers__test_image_decode_finish);
   defsubr (&Snidhogg_workers__test_decode_count);
   defsubr (&Snidhogg_workers__test_image_cache_clear);
 #ifdef HAVE_WINDOW_SYSTEM
+  DEFSYM (Qnidhogg_workers_images, "nidhogg-workers-images");
+  DEFSYM (Qsize, "size");
+  defsubr (&Snidhogg_workers__test_image_answer);
   DEFSYM (Qnidhogg_image_defer, "nidhogg-image-defer");
   staticpro (&nh_img_marked);
   nh_img_marked = Qnil;
@@ -2996,8 +3004,8 @@ nh_img_syms (void)
   defsubr (&Snidhogg_workers__test_image_job);
   defsubr (&Snidhogg_workers__test_image_forget);
   defsubr (&Snidhogg_workers__test_image_land);
-#endif
   nh_img_image_syms ();
+#endif
 }
 
 #endif /* not NH_WK_HARNESS */
