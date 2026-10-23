@@ -349,10 +349,12 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   delivery catches up, so the kernel's back-pressure applies as today (`stop-process` on a subprocess only stops the
   child; the cap bounds what is read meanwhile). When a process ends, its last output is delivered before its sentinel
   runs: the reader hands it back and Emacs reads the rest of the fd itself until it would block, so a grandchild that
-  holds the pipe open does not delay the sentinel. `accept-process-output` with JUST-THIS-ONE waits on that process's
-  wake fd only, and a process locked to a Lisp thread (`set-process-thread`) is delivered only on that thread. Test
-  primitives: `nidhogg-workers--test-io-info`'s `:queued`, `:cap` and `:paused`; the `after-read` pause point (`nh-io`
-  parks there when a queue reaches its cap).
+  holds the pipe open does not delay the sentinel. Sentinels run, as today, only when no process has output waiting:
+  Emacs first waits (at most a second) for output `nh-io` is reading or has yet to read, so a `:stderr` pipe's last
+  output and EOF still come before the child's sentinel. `accept-process-output` with JUST-THIS-ONE waits on that
+  process's wake fd only, and a process locked to a Lisp thread (`set-process-thread`) is delivered only on that thread.
+  Test primitives: `nidhogg-workers--test-io-info`'s `:queued`, `:cap` and `:paused`; the `after-read` pause point
+  (`nh-io` parks there when a queue reaches its cap).
 - Decoding on the reader (`src/nidhogg-decode.c`): when a reader-owned process decodes with a stateless system
   (`utf-8`, `raw-text`, `no-conversion` or `binary` with a settled end of line: `-unix`, `-dos`, `-mac`; not
   `utf-8-emacs`, BOM variants or systems with a translation table or post-read conversion), `nh-io` decodes each chunk as

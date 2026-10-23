@@ -433,6 +433,44 @@ meanwhile, while a SIGCHLD still reaches its handler and
         (when (and gpid (> gpid 0))
           (signal-process gpid 'KILL))))))
 
+(ert-deftest workers/sentinel-after-stderr-eof ()
+  ;; Upstream's process-test-stderr-filter, made deterministic: a child
+  ;; writes to stdout and to a `:stderr' pipe process and exits.  Its
+  ;; sentinel runs only once no process has output waiting, as today, so
+  ;; the stderr pipe's output and EOF (its sentinel) come first.  In
+  ;; threads mode nh-io is held in the middle of a read when the exit is
+  ;; noticed: the wait for what it is reading releases it.
+  (workers-io-tests--modes
+    (let* ((err-out nil) (err-sentinel nil) (out nil) (at-sentinel nil)
+           (stderr (make-pipe-process
+                    :name "wio-stderr" :noquery t
+                    :filter (lambda (_p s) (push s err-out))
+                    :sentinel (lambda (_p _e) (setq err-sentinel t))))
+           (proc nil))
+      (should (workers-io-tests--info stderr :owned))
+      (when (eq mode 'threads)
+        (nidhogg-workers--pause-at 'before-decode))
+      (setq proc (make-process
+                  :name "wio-stderr-main" :noquery t :connection-type 'pipe
+                  :command '("sh" "-c" "echo out; echo err >&2; exit 3")
+                  :stderr stderr
+                  :filter (lambda (_p s) (push s out))
+                  :sentinel (lambda (_p _e)
+                              (setq at-sentinel
+                                    (apply #'concat (reverse err-out))))))
+      (when (eq mode 'threads)
+        (should (nidhogg-workers--test-await-paused 'before-decode 5000)))
+      (should (workers-io-tests--busy-until
+               (lambda () (eq (process-status proc) 'exit))))
+      (when (eq mode 'threads)
+        (nidhogg-workers--test-release-on-wait 'before-decode))
+      (should (workers-io-tests--until (lambda () at-sentinel)))
+      ;; The stderr pipe's EOF was read in the same wait: its sentinel
+      ;; ran in the same status_notify, after this one (newer first).
+      (should err-sentinel)
+      (should (equal (apply #'concat (reverse out)) "out\n"))
+      (should (equal at-sentinel "err\n")))))
+
 (ert-deftest workers/raw-flow-control ()
   ;; A stream far past the queue cap (MC-22, max (4 × readmax, 256 KB)):
   ;; the queue never holds more than the cap, nh-io stops reading at it
