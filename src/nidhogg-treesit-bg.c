@@ -18,10 +18,10 @@ You should have received a copy of the GNU General Public License
 along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
 /* Task 9: the allocator.  Task 10: parse jobs over snapshots, publish
-   and ownership.  Task 11: the edit log and replay.  Tasks 12 and 13
-   fill the rest (the start points, deferral).  README.md, "Work off
-   the main thread", is the user-facing description; the design's §7.3
-   to §7.5 the contract.
+   and ownership.  Task 11: the edit log and replay.  Task 12: the start
+   points and the wait rule.  Task 13 fills the rest (deferral at
+   redisplay).  README.md, "Work off the main thread", is the
+   user-facing description; the design's §7.3 to §7.5 the contract.
 
    A job (struct nh_ts_job, one per parser, the latest snapshot wins)
    holds a snapshot taken on the main thread: the visible bytes of the
@@ -58,7 +58,27 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
    parser's current ranges: the same grouping a synchronous parse at
    the snapshot would have had.  Only the main thread touches the log.
    A start drops a job whose snapshot is older than the newest edit
-   (the latest snapshot wins); a demand replays it.  */
+   (the latest snapshot wins); a demand replays it.
+
+   Start points (§7.3 item 1, MC-18), never inside insdel or a
+   primitive.  DEMAND: while redisplay fontifies the parser's buffer
+   (`nidhogg--redisplay-fontifying', Task 13 binds it) the demand of
+   treesit-parser-changed-regions (treesit--pre-redisplay's) first
+   parses on the main thread for at most 1 ms; a finished attempt
+   publishes as today, a cancelled one is reset (never resumed) and a
+   job takes the parse, the demand answering "not ready".  CREATE: after
+   the major mode, a job for each parser that never parsed
+   (nidhogg-workers-treesit.el).  SELECT: wait_reading_process_output
+   with READ_KBD != 0 starts jobs for the parsers edited since it last
+   ran (timers, filters) that no demand parsed.
+
+   The wait rule (§7.5).  A demand that needs a tree while a job runs
+   cancels it and parses on the main thread when it has not started,
+   or when its snapshot is older than the newest edit and it has parsed
+   less than half its input; otherwise it waits (`treesit-wait', the
+   job raised as PD-15 says) for at most the synchronous estimate (the
+   last full parse's ns per byte times the input), then publishes, or
+   cancels and parses.  */
 
 #ifndef NH_WK_HARNESS
 # include <config.h>
@@ -71,6 +91,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #if !defined NH_WK_HARNESS && defined HAVE_TREE_SITTER
 
 # include <errno.h>
+# include <sched.h>
 # include <signal.h>
 # include <string.h>
 # include <time.h>
@@ -253,6 +274,7 @@ struct nh_ts_job
   struct nh_ts_edit *log;
   ptrdiff_t nlog, log_room, log_gen;
   bool tree_less;		/* the parser had no tree at the snapshot */
+  int policy;			/* the runner's sched_getscheduler, or -1 */
 };
 
 /* The counters of `nidhogg-workers--test-ts-stats'.  */
@@ -267,9 +289,26 @@ enum
   NH_TS_C_REPLAYED_EDITS,
   NH_TS_C_SUPERSEDED,
   NH_TS_C_PARSES,
+  NH_TS_C_ATTEMPTS,
+  NH_TS_C_CANCELS,
+  NH_TS_C_START_DEMAND,
+  NH_TS_C_START_CREATE,
+  NH_TS_C_START_SELECT,
+  NH_TS_C_WAITED,
+  NH_TS_C_ABANDONED,
   NH_TS_C_N
 };
 static _Atomic int64_t nh_ts_count[NH_TS_C_N];
+
+/* The demand's synchronous attempt (§7.3 item 1), and the longest wait
+   for a nearly done job whatever the estimate says.  */
+# define NH_TS_ATTEMPT_NS INT64_C (1000000)
+# define NH_TS_WAIT_MAX_NS INT64_C (2000000000)
+/* The synchronous estimate (§7.5): ns per KiB of the last full parse
+   of at least NH_TS_ESTIMATE_MIN bytes (a worker's, any language); 0
+   until one, when NH_TS_DEFAULT_NS_PER_KIB (100 ns a byte) stands in.  */
+static _Atomic int64_t nh_ts_ns_per_kib;
+enum { NH_TS_ESTIMATE_MIN = 4096, NH_TS_DEFAULT_NS_PER_KIB = 100 * 1024 };
 
 /* Jobs allocated and not yet freed; the condition variable is
    broadcast whenever one is freed.  */
@@ -404,6 +443,9 @@ nh_ts_job_run (struct nh_wk_job *job)
   struct nh_ts_job *t = (struct nh_ts_job *) job;
   TSTree *tree = NULL;
 
+#ifdef __linux__
+  t->policy = sched_getscheduler (0);
+#endif
   atomic_store (&job->total, t->len);
   nh_wk_pause_point (NH_WK_P_AFTER_SNAPSHOT);
 #if NH_TS_JOBS
@@ -416,10 +458,16 @@ nh_ts_job_run (struct nh_wk_job *job)
 			.encoding = TSInputEncodingUTF8 };
       TSParseOptions opts = { .payload = t,
 			      .progress_callback = nh_ts_progress };
+      bool full = !t->old;
+      int64_t t0 = nh_ts_now ();
       tree = ts_parser_parse_with_options (p, t->old, input, opts);
       /* A cancelled parse is never resumed (§7.2).  */
       if (!tree)
 	ts_parser_reset (p);
+      else if (full && t->len >= NH_TS_ESTIMATE_MIN)
+	atomic_store_explicit (&nh_ts_ns_per_kib,
+			       (nh_ts_now () - t0) * 1024 / t->len,
+			       memory_order_relaxed);
     }
 #endif
   if (t->old)
@@ -537,6 +585,37 @@ nh_ts_job_done (struct nh_ts_job *t)
 	  && !atomic_load (&t->job.cancel) && t->result);
 }
 
+/* Has T's worker let go of it (done, or cancelled)?  */
+static bool
+nh_ts_job_finished (struct nh_ts_job *t)
+{
+  int st = atomic_load (&t->job.state);
+  return st == NH_WK_J_DONE || st == NH_WK_J_CANCELLED;
+}
+
+/* §7.5: is T's snapshot older than P's newest edit, with less than half
+   its input parsed (or its parse not begun)?  */
+static bool
+nh_ts_job_behind (struct Lisp_TS_Parser *p, struct nh_ts_job *t)
+{
+  uint64_t total = atomic_load (&t->job.total);
+  uint64_t done = atomic_load (&t->job.progress);
+  return t->gen < p->nh_gen && (total == 0 || 2 * done < total);
+}
+
+/* The synchronous estimate of parsing LEN bytes, in ns, within the
+   attempt's 1 ms and NH_TS_WAIT_MAX_NS.  */
+static int64_t
+nh_ts_estimate (uint32_t len)
+{
+  int64_t per = atomic_load_explicit (&nh_ts_ns_per_kib,
+				      memory_order_relaxed);
+  if (per <= 0)
+    per = NH_TS_DEFAULT_NS_PER_KIB;
+  int64_t ns = per * len / 1024;
+  return max (NH_TS_ATTEMPT_NS, min (ns, NH_TS_WAIT_MAX_NS));
+}
+
 /* Cancel P's job and drop the parser's reference.  */
 static void
 nh_ts_drop (struct Lisp_TS_Parser *p)
@@ -563,15 +642,17 @@ nh_ts_view_is_visible (struct Lisp_TS_Parser *p, struct buffer *b)
 
 /* Start a job for PARSER over a snapshot, unless one for the current
    text runs or is done.  Return true if such a job exists now.  Never
-   touches the parser's visible range, ranges or tree.  */
+   touches the parser's visible range, ranges or tree.  FROM_DEMAND:
+   called by treesit_ensure_parsed itself, after its narrowing sync and
+   before it parses (any other caller inside a reparse is refused).  */
 static bool
-nh_ts_start (Lisp_Object parser)
+nh_ts_start (Lisp_Object parser, bool from_demand)
 {
   struct Lisp_TS_Parser *p = XTS_PARSER (parser);
   struct buffer *b = XBUFFER (p->buffer);
 
   if (!NH_TS_JOBS || !nh_ts_switch_on () || p->deleted || !BUFFER_LIVE_P (b)
-      || p->within_reparse || !p->need_reparse
+      || (p->within_reparse && !from_demand) || !p->need_reparse
       || !nh_ts_view_is_visible (p, b)
       || BUF_Z_BYTE (b) - BUF_BEG_BYTE (b) > UINT32_MAX)
     {
@@ -622,6 +703,7 @@ nh_ts_start (Lisp_Object parser)
   t->old = p->tree ? ts_tree_copy (p->tree) : NULL;
   t->gen = t->log_gen = p->nh_gen;
   t->tree_less = !p->tree;
+  t->policy = -1;
   t->visible_beg = beg;
   t->visible_end = end;
   t->job.w = NH_WK_PARSE;
@@ -645,6 +727,38 @@ nh_ts_start (Lisp_Object parser)
   p->nh_job = t;
   nh_ts_counted (NH_TS_C_STARTED);
   return true;
+}
+
+/* The parsers edited since the select entry last ran (Task 12): main
+   thread or a Lisp thread, under the global lock.  A parser leaves the
+   list when it is deleted or freed; past NH_TS_DIRTY_MAX of them the
+   select entry looks at every buffer's parsers instead.  */
+enum { NH_TS_DIRTY_MAX = 32 };
+static struct Lisp_TS_Parser *nh_ts_dirty[NH_TS_DIRTY_MAX];
+static int nh_ts_ndirty;
+static bool nh_ts_dirty_all;
+
+static void
+nh_ts_mark_dirty (struct Lisp_TS_Parser *p)
+{
+  for (int i = nh_ts_ndirty - 1; i >= 0; i--)
+    if (nh_ts_dirty[i] == p)
+      return;
+  if (nh_ts_ndirty < NH_TS_DIRTY_MAX)
+    nh_ts_dirty[nh_ts_ndirty++] = p;
+  else
+    nh_ts_dirty_all = true;
+}
+
+static void
+nh_ts_unmark_dirty (struct Lisp_TS_Parser *p)
+{
+  for (int i = 0; i < nh_ts_ndirty; i++)
+    if (nh_ts_dirty[i] == p)
+      {
+	nh_ts_dirty[i] = nh_ts_dirty[--nh_ts_ndirty];
+	return;
+      }
 }
 
 /* The edit log (Task 11).  */
@@ -678,6 +792,8 @@ nh_ts_record_edit (void *parser_c, const void *ts_input_edit,
 		   ptrdiff_t new_end_byte)
 {
   struct Lisp_TS_Parser *p = parser_c;
+  /* The select entry's candidates (no Lisp: a pointer in an array).  */
+  nh_ts_mark_dirty (p);
   struct nh_ts_job *t = p->nh_job;
   if (!t)
     return;
@@ -737,12 +853,16 @@ nh_ts_replay (struct nh_ts_job *t, TSTree *tree, struct buffer *b)
 	      && ve + t->visible_beg == BUF_ZV_BYTE (b)));
 }
 
-bool
+/* At a demand that must reparse: true when P's finished job's tree (in
+   *TREE, now the caller's) is the parse of the current text.  A
+   finished job that cannot give one is dropped; a job still queued or
+   running stays (nh_ts_demand decides).  */
+static bool
 nh_ts_publish (Lisp_Object parser, void **tree)
 {
   struct Lisp_TS_Parser *p = XTS_PARSER (parser);
   struct nh_ts_job *t = p->nh_job;
-  if (!t)
+  if (!t || !nh_ts_job_finished (t))
     return false;
   struct buffer *b = XBUFFER (p->buffer);
   /* With edits since the snapshot, the log must hold every one of them
@@ -798,11 +918,171 @@ nh_ts_publish (Lisp_Object parser, void **tree)
   return true;
 }
 
+/* Start points and the wait rule (Task 12).  */
+
 void
 nh_ts_maybe_start (Lisp_Object parser, int start_point)
 {
-  (void) start_point;
-  nh_ts_start (parser);
+  static const int counter[] = {
+    [NH_TS_START_DEMAND] = NH_TS_C_START_DEMAND,
+    [NH_TS_START_CREATE] = NH_TS_C_START_CREATE,
+    [NH_TS_START_SELECT] = NH_TS_C_START_SELECT
+  };
+  int64_t started = atomic_load (&nh_ts_count[NH_TS_C_STARTED]);
+  nh_ts_start (parser, start_point == NH_TS_START_DEMAND);
+  if (atomic_load (&nh_ts_count[NH_TS_C_STARTED]) != started)
+    nh_ts_counted (counter[start_point]);
+}
+
+#if NH_TS_JOBS
+
+static bool
+nh_ts_attempt_progress (TSParseState *state)
+{
+  const int64_t *deadline = state->payload;
+  return nh_ts_now () >= *deadline;
+}
+
+#endif
+
+/* The demand's attempt (§7.3 item 1): P's parse on this thread, as
+   treesit_ensure_parsed would run it, cancelled after 1 ms.  A
+   cancelled parse is reset, never resumed (§7.2).  Return the tree, or
+   NULL if cancelled.  */
+static TSTree *
+nh_ts_attempt (struct Lisp_TS_Parser *p)
+{
+#if NH_TS_JOBS
+  nh_ts_counted (NH_TS_C_ATTEMPTS);
+  int64_t t0 = nh_ts_now ();
+  int64_t deadline = t0 + NH_TS_ATTEMPT_NS;
+  int depth = NH_WK_PHASE_PUSH (NH_WK_PH_TREESIT, 0);
+  TSParseOptions opts = { .payload = &deadline,
+			  .progress_callback = nh_ts_attempt_progress };
+  TSTree *tree = ts_parser_parse_with_options (p->parser, p->tree, p->input,
+					       opts);
+  if (!tree)
+    {
+      ts_parser_reset (p->parser);
+      nh_ts_counted (NH_TS_C_CANCELS);
+    }
+  NH_WK_PHASE_POP (depth);
+  nh_wk_phase_ns_add (NH_WK_PH_TREESIT, 0, nh_ts_now () - t0);
+  return tree;
+#else
+  (void) p;
+  return NULL;
+#endif
+}
+
+/* §7.5: a demand that needs a tree now, while P's job is queued or
+   running.  Cancel a job that has not started, or that is over older
+   text and short of half its input, and let the synchronous parse run;
+   wait for any other within the synchronous estimate (nh_wk_wait raises
+   it, PD-15), then publish it, or cancel it and parse.  */
+static int
+nh_ts_wait_or_cancel (Lisp_Object parser, void **tree)
+{
+  struct Lisp_TS_Parser *p = XTS_PARSER (parser);
+  struct nh_ts_job *t = p->nh_job;
+  if (atomic_load (&t->job.state) != NH_WK_J_QUEUED
+      && !nh_ts_job_behind (p, t))
+    {
+      nh_ts_counted (NH_TS_C_WAITED);
+      if (nh_wk_wait (&t->job, nh_ts_estimate (t->len),
+		      NH_WK_PH_TREESIT_WAIT, 0) == 1
+	  && nh_ts_publish (parser, tree))
+	return NH_TS_TREE;
+    }
+  /* nh_ts_publish dropped a finished job it could not publish.  */
+  if (p->nh_job)
+    {
+      nh_ts_drop (p);
+      nh_ts_counted (NH_TS_C_ABANDONED);
+    }
+  return NH_TS_SYNC;
+}
+
+int
+nh_ts_demand (Lisp_Object parser, bool may_defer, void **tree)
+{
+  struct Lisp_TS_Parser *p = XTS_PARSER (parser);
+  if (nh_ts_publish (parser, tree))
+    return NH_TS_TREE;
+  /* The demand path (review S2): only while redisplay fontifies this
+     parser's buffer, and only for the demand that may answer "not
+     ready" (treesit-parser-changed-regions).  */
+  bool defer = (NH_TS_JOBS && may_defer
+		&& EQ (Vnidhogg__redisplay_fontifying, p->buffer)
+		&& nh_ts_switch_on ());
+  if (p->nh_job && !defer)
+    return nh_ts_wait_or_cancel (parser, tree);
+  if (p->nh_job)
+    {
+      /* The job carries on (its log replays the newer edits at the
+	 publish) unless it is behind: then the latest snapshot wins.  */
+      if (!nh_ts_job_behind (p, p->nh_job))
+	return NH_TS_NOT_READY;
+      nh_ts_drop (p);
+      nh_ts_counted (NH_TS_C_ABANDONED);
+    }
+  if (!defer)
+    return NH_TS_SYNC;
+  TSTree *quick = nh_ts_attempt (p);
+  if (quick)
+    {
+      *tree = quick;
+      return NH_TS_TREE;
+    }
+  nh_ts_maybe_start (parser, NH_TS_START_DEMAND);
+  /* An inline job is done already.  */
+  if (nh_ts_publish (parser, tree))
+    return NH_TS_TREE;
+  /* No job (no thread, the switch...): today's parse, nothing defers.  */
+  return p->nh_job ? NH_TS_NOT_READY : NH_TS_SYNC;
+}
+
+/* The select entry's start for one edited parser.  */
+static void
+nh_ts_select_one (struct Lisp_TS_Parser *p)
+{
+  if (!p->deleted && !p->nh_job && p->need_reparse
+      && BUFFER_LIVE_P (XBUFFER (p->buffer)))
+    nh_ts_maybe_start (make_lisp_ptr (p, Lisp_Vectorlike),
+		       NH_TS_START_SELECT);
+}
+
+void
+nh_ts_select_entry (void)
+{
+  if (nh_ts_ndirty == 0 && !nh_ts_dirty_all)
+    return;
+  struct Lisp_TS_Parser *dirty[NH_TS_DIRTY_MAX];
+  int n = nh_ts_ndirty;
+  bool all = nh_ts_dirty_all;
+  memcpy (dirty, nh_ts_dirty, n * sizeof *dirty);
+  nh_ts_ndirty = 0;
+  nh_ts_dirty_all = false;
+  if (!NH_TS_JOBS || !nh_ts_switch_on () || nh_wk_signal_context ())
+    return;
+  /* No Lisp runs and nothing conses below, so no GC frees a parser in
+     DIRTY meanwhile.  */
+  for (int i = 0; i < n; i++)
+    nh_ts_select_one (dirty[i]);
+  if (all)
+    {
+      Lisp_Object tail, buf;
+      FOR_EACH_LIVE_BUFFER (tail, buf)
+	{
+	  /* An indirect buffer's parsers are on its base buffer's list.  */
+	  if (XBUFFER (buf)->base_buffer)
+	    continue;
+	  Lisp_Object parsers = BVAR (XBUFFER (buf), ts_parser_list);
+	  FOR_EACH_TAIL_SAFE (parsers)
+	    if (TS_PARSERP (XCAR (parsers)))
+	      nh_ts_select_one (XTS_PARSER (XCAR (parsers)));
+	}
+    }
 }
 
 Lisp_Object
@@ -821,6 +1101,7 @@ nh_ts_subtree_stat_cached (Lisp_Object node)
 void
 nh_ts_parser_freed (void *parser_c)
 {
+  nh_ts_unmark_dirty (parser_c);
   nh_ts_drop (parser_c);
 }
 
@@ -862,6 +1143,31 @@ current text (the next demand publishes its tree).  */)
   return t && nh_ts_job_done (t) && nh_ts_job_current (p, t, b) ? Qt : Qnil;
 }
 
+DEFUN ("nidhogg-workers--treesit-start-created",
+       Fnidhogg_workers__treesit_start_created,
+       Snidhogg_workers__treesit_start_created, 0, 0, 0,
+       doc: /* Start a parse job for each parser of this buffer that never parsed.
+The create start point: `nidhogg-workers-treesit--start-created' calls
+it on `after-change-major-mode-hook', so the first parse of a file
+overlaps the rest of `find-file'.  Return how many jobs started.  */)
+  (void)
+{
+  struct buffer *b = current_buffer;
+  struct buffer *base = b->base_buffer ? b->base_buffer : b;
+  int64_t started = atomic_load (&nh_ts_count[NH_TS_C_START_CREATE]);
+  Lisp_Object tail = BVAR (base, ts_parser_list);
+  FOR_EACH_TAIL_SAFE (tail)
+    if (TS_PARSERP (XCAR (tail)))
+      {
+	struct Lisp_TS_Parser *p = XTS_PARSER (XCAR (tail));
+	if (XBUFFER (p->buffer) == b && !p->deleted && !p->tree
+	    && !p->nh_job)
+	  nh_ts_maybe_start (XCAR (tail), NH_TS_START_CREATE);
+      }
+  return make_int (atomic_load (&nh_ts_count[NH_TS_C_START_CREATE])
+		   - started);
+}
+
 /* Test primitives.  */
 
 DEFUN ("nidhogg-workers--test-ts-start", Fnidhogg_workers__test_ts_start,
@@ -873,7 +1179,19 @@ nothing to parse, a temporary narrowing...).  */)
   (Lisp_Object parser)
 {
   nh_ts_check_parser (parser);
-  return nh_ts_start (parser) ? Qt : Qnil;
+  return nh_ts_start (parser, false) ? Qt : Qnil;
+}
+
+DEFUN ("nidhogg-workers--test-ts-select-entry",
+       Fnidhogg_workers__test_ts_select_entry,
+       Snidhogg_workers__test_ts_select_entry, 0, 0, 0,
+       doc: /* Run tree-sitter's select-entry start point; for tests.
+What `wait_reading_process_output' does when it waits for keyboard
+input, which a batch Emacs never does.  */)
+  (void)
+{
+  nh_ts_select_entry ();
+  return Qnil;
 }
 
 DEFUN ("nidhogg-workers--test-ts-wait", Fnidhogg_workers__test_ts_wait,
@@ -897,8 +1215,10 @@ DEFUN ("nidhogg-workers--test-ts-info", Fnidhogg_workers__test_ts_info,
        doc: /* Return PARSER's worker state; for tests.
 A plist: `:job' (nil, `queued', `running', `done' or `cancelled'),
 `:gen' (the edit generation), `:visible' (the byte range its tree
-sees, (BEG . END)), `:ranges' (its `last_set_ranges' itself, for `eq')
-and `:log' (the edits logged since the job's snapshot, or nil).  */)
+sees, (BEG . END)), `:ranges' (its `last_set_ranges' itself, for `eq'),
+`:log' (the edits logged since the job's snapshot, or nil) and `:policy'
+\(the scheduling policy of the thread that ran the job: `other', `idle',
+`batch', or nil if it has not run or the system does not say).  */)
   (Lisp_Object parser)
 {
   static const char *const states[] = {
@@ -908,7 +1228,17 @@ and `:log' (the edits logged since the job's snapshot, or nil).  */)
   struct nh_ts_job *t = p->nh_job;
   Lisp_Object job = (t ? intern_c_string (states[atomic_load (&t->job.state)])
 		     : Qnil);
-  return listn (10, intern_c_string (":log"), t ? make_int (t->nlog) : Qnil,
+  Lisp_Object policy = Qnil;
+#ifdef __linux__
+  if (t && t->policy == SCHED_OTHER)
+    policy = intern_c_string ("other");
+  else if (t && t->policy == SCHED_IDLE)
+    policy = intern_c_string ("idle");
+  else if (t && t->policy == SCHED_BATCH)
+    policy = intern_c_string ("batch");
+#endif
+  return listn (12, intern_c_string (":policy"), policy,
+		intern_c_string (":log"), t ? make_int (t->nlog) : Qnil,
 		intern_c_string (":job"), job,
 		intern_c_string (":gen"), make_int (p->nh_gen),
 		intern_c_string (":visible"),
@@ -925,14 +1255,19 @@ at an edit the log cannot replay), `:stat-cached' (subtree statistics
 answered from a publish), `:replayed' (publishes that replayed edits and
 reparsed), `:replayed-edits' (the edits they replayed), `:superseded'
 (jobs a start replaced with a newer snapshot), `:parses' (worker parses
-begun; a job cancelled before its parse begins none) and `:live' (jobs
-not yet freed).  */)
+begun; a job cancelled before its parse begins none), `:attempts' (the
+demand's 1 ms attempts), `:cancels' (attempts cancelled and reset),
+`:started-demand', `:started-create', `:started-select' (jobs started at
+each start point), `:waited' (demands that waited for a job),
+`:abandoned' (demands that cancelled a queued or running job: not
+started, behind, or not done within the estimate) and `:live' (jobs not
+yet freed).  */)
   (void)
 {
   nh_wk_lock (&nh_ts_live_m);
   ptrdiff_t live = nh_ts_live;
   pthread_mutex_unlock (&nh_ts_live_m);
-  return listn (20,
+  return listn (34,
 		intern_c_string (":started"),
 		make_int (atomic_load (&nh_ts_count[NH_TS_C_STARTED])),
 		intern_c_string (":refused"),
@@ -951,6 +1286,20 @@ not yet freed).  */)
 		make_int (atomic_load (&nh_ts_count[NH_TS_C_SUPERSEDED])),
 		intern_c_string (":parses"),
 		make_int (atomic_load (&nh_ts_count[NH_TS_C_PARSES])),
+		intern_c_string (":attempts"),
+		make_int (atomic_load (&nh_ts_count[NH_TS_C_ATTEMPTS])),
+		intern_c_string (":cancels"),
+		make_int (atomic_load (&nh_ts_count[NH_TS_C_CANCELS])),
+		intern_c_string (":started-demand"),
+		make_int (atomic_load (&nh_ts_count[NH_TS_C_START_DEMAND])),
+		intern_c_string (":started-create"),
+		make_int (atomic_load (&nh_ts_count[NH_TS_C_START_CREATE])),
+		intern_c_string (":started-select"),
+		make_int (atomic_load (&nh_ts_count[NH_TS_C_START_SELECT])),
+		intern_c_string (":waited"),
+		make_int (atomic_load (&nh_ts_count[NH_TS_C_WAITED])),
+		intern_c_string (":abandoned"),
+		make_int (atomic_load (&nh_ts_count[NH_TS_C_ABANDONED])),
 		intern_c_string (":live"), make_int (live));
 }
 
@@ -1005,23 +1354,24 @@ nh_ts_record_edit (void *parser_c, const void *ts_input_edit,
   (void) new_end_byte;
 }
 
-#endif /* NH_WK_HARNESS or no tree-sitter */
-
 void
 nh_ts_select_entry (void)
 {
 }
 
+#endif /* NH_WK_HARNESS or no tree-sitter */
+
 #ifndef NH_WK_HARNESS
 
 #ifndef HAVE_TREE_SITTER
 
-bool
-nh_ts_publish (Lisp_Object parser, void **tree)
+int
+nh_ts_demand (Lisp_Object parser, bool may_defer, void **tree)
 {
   (void) parser;
+  (void) may_defer;
   (void) tree;
-  return false;
+  return NH_TS_SYNC;
 }
 
 void
@@ -1055,6 +1405,8 @@ nh_ts_syms (void)
   defsubr (&Snidhogg_workers__test_ts_info);
   defsubr (&Snidhogg_workers__test_ts_stats);
   defsubr (&Snidhogg_workers__test_ts_await_idle);
+  defsubr (&Snidhogg_workers__treesit_start_created);
+  defsubr (&Snidhogg_workers__test_ts_select_entry);
 #endif
 }
 
