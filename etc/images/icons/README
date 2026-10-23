@@ -2,8 +2,17 @@ COPYRIGHT AND LICENSE INFORMATION FOR IMAGE FILES
 
 Files: hicolor/16x16/apps/emacs.png hicolor/24x24/apps/emacs.png
        hicolor/32x32/apps/emacs.png hicolor/48x48/apps/emacs.png
-       hicolor/128x128/apps/emacs.png hicolor/scalable/apps/emacs.svg
-       hicolor/scalable/mimetypes/emacs-document.svg
+       hicolor/64x64/apps/emacs.png hicolor/128x128/apps/emacs.png
+       hicolor/256x256/apps/emacs.png hicolor/512x512/apps/emacs.png
+       hicolor/scalable/apps/emacs.svg
+
+Nidhogg's application icon: the Black Dragon Foundation logo.
+Copyright (C) 2026 Black Dragon Foundation
+License: GNU General Public License version 3 or later (see COPYING)
+The same holds for the logo in nextstep/Cocoa/Emacs.base/Contents/Resources/Emacs.icns
+and in Android's java/res/ launcher icons.
+
+Files: hicolor/scalable/mimetypes/emacs-document.svg
 
 Author: Nicolas Petton <nicolas@petton.fr>
 Copyright (C) 2015-2026 Free Software Foundation, Inc.
