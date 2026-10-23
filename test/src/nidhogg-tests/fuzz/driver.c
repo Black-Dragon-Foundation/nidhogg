@@ -76,5 +76,10 @@ main (int argc, char **argv)
     }
   while ((t.tv_sec - t0.tv_sec) + (t.tv_nsec - t0.tv_nsec) / 1e9 < budget);
   printf ("fuzz: %lu runs\n", runs);
+  for (int i = 0; i < nseeds; i++)
+    free (seed[i]);
+  free (seed);
+  free (len);
+  free (buf);
   return 0;
 }
