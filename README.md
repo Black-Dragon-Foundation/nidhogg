@@ -424,7 +424,19 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   files load with their packages).
 - Tests: `workers/…` in `test/src/nidhogg-tests/workers-*-tests.el`, GUI rows `workers-gui/…` in `*-gui-tests.el`;
   `nidhogg/test/workers-harness.sh` compiles the C files without Lisp.
-<!-- wk: Task 3 -->
+- The runtime (`src/nidhogg-workers.c`): five workers, `nh-io`, `nh-parse`, `nh-img` (one thread per two cores, at
+  most two), `nh-blk` (one to four threads, grown when every thread has been busy 50 ms; directory reads, file reads
+  and lookups take at most two each and always leave one for a class with nothing running) and `nh-save`. Threads
+  start at their first job, never while dumping, with every asynchronous signal blocked (the fatal ones stay with
+  Emacs's crash forwarding). Speculative jobs run at `SCHED_IDLE`; a wait on one that has not started moves it to the
+  worker's normal-priority thread, and a wait on one already running tries to raise its thread (unprivileged this is
+  refused once and counted as `boost-denied`). Finished jobs land in completion order at the next timer check, never
+  inside a filter, through one completion fd (an eventfd; a pipe elsewhere) that is cleared before its queue is
+  re-checked. Waits are bounded, survive signals and never go through `select`. `(nidhogg-workers-stats &optional
+  RESET)` returns the counters. Test primitives: `nidhogg-workers--mode` (`threads` or `inline`), the pause points
+  (`nidhogg-workers--pause-at`, `--release`, `--test-await-paused`), `--test-job`, `--test-wait`, `--test-job-info`,
+  `--test-signal-storm`, `--test-wake-race`, `--test-fd-reserve`; `nidhogg/test/workers-harness.sh --tsan queue wake`
+  runs the queues and the wake protocol under ThreadSanitizer.
 <!-- wk: Task 4 -->
 <!-- wk: Task 5 -->
 <!-- wk: Task 6 -->

@@ -153,6 +153,36 @@ extern void nh_wk_wake_close (struct nh_wk_wake *);
 extern bool nh_wk_fd_budget_ok (int extra);
 extern bool nh_wk_on_worker (void);
 
+/* The counters of nidhogg-workers-stats, from any thread [3].  Why a job
+   took today's path, or a wait could not raise an idle thread
+   (`:fallbacks'); a later reason is a new entry here and a new name in
+   nidhogg-workers.c.  */
+enum nh_wk_fallback
+{
+  NH_WK_FB_DUMPING,
+  NH_WK_FB_DEAD,
+  NH_WK_FB_THREAD,		/* thread-create */
+  NH_WK_FB_FD_BUDGET,
+  NH_WK_FB_BOOST_DENIED,
+  NH_WK_FB_N
+};
+/* A worker's other counters: `:queued-bytes' (a gauge: add and
+   subtract), `:backpressure', `:slices'.  */
+enum nh_wk_stat
+{
+  NH_WK_ST_QUEUED_BYTES,
+  NH_WK_ST_BACKPRESSURE,
+  NH_WK_ST_SLICES,
+  NH_WK_ST_N
+};
+extern void nh_wk_fallback (enum nh_wk_worker, enum nh_wk_fallback);
+extern void nh_wk_stat_add (enum nh_wk_worker, enum nh_wk_stat, int64_t);
+/* NS spent in PHASE (an NH_WK_PH_*; REASON an NH_WK_RS_* for
+   worker-wait), for `:phase-ms' (PD-3).  nh_wk_wait counts its own.  */
+extern void nh_wk_phase_ns_add (int phase, int reason, int64_t ns);
+/* A deferral (`:deferrals'): AREA 0 tree-sitter, 1 images.  */
+extern void nh_wk_deferral_add (int area);
+
 /* The dead flag, from shut_down_emacs [4].  */
 extern void nh_wk_fatal_begin (void);
 
