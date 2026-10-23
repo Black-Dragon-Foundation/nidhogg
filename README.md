@@ -471,7 +471,13 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
 <!-- wk: Task 25 -->
 <!-- wk: Task 26 -->
 <!-- wk: Task 27 -->
-<!-- wk: Task 28 -->
+**Image decoder cores.** PNG, JPEG, GIF and WebP decode through Lisp-free cores in `src/nidhogg-image-bg.c`, copies
+of the loaders' decode paths behind the table `nh_img_decoders` of `src/nidhogg-image-bg.h`. With the flag the
+synchronous loaders in `image.c` (Cairo frames) use the same cores, so a picture never depends on who asked first;
+`nidhogg-workers--test-image-legacy` set to non-nil turns that off for a comparison. The cores keep their own animation
+cache (by file name and modification time, or a hash of the data), so frame N of a GIF or WebP decodes from frame N-1.
+Test primitives: `nidhogg-workers--test-image-decode`, `--test-image-decode-finish`, `--test-decode-count`,
+`--test-image-cache-clear`, `--test-image-pixels`.
 <!-- wk: Task 29 -->
 <!-- wk: Task 30 -->
 <!-- wk: Task 31 -->
