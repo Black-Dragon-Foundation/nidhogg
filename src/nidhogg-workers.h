@@ -134,6 +134,7 @@ struct image;
 struct buffer;
 struct addrinfo;
 struct nh_dec_state;
+struct coding_system;
 struct nh_tape;
 struct nh_mat;
 
@@ -253,7 +254,20 @@ extern ptrdiff_t nh_io_read (struct Lisp_Process *, int channel, char *buf,
 /* Before a drain [17]: true when the caller must hand the process back
    (NH_IO_STATUS) so its last bytes are read on the main thread.  */
 extern bool nh_io_drain (struct Lisp_Process *);
-extern void nh_io_coding_changed (struct Lisp_Process *);
+/* Task 18.  setup_process_coding_systems set up CODING, P's decoding
+   struct, again: the coding generation moves on.  */
+extern void nh_io_coding_changed (struct Lisp_Process *,
+				  struct coding_system *);
+/* The main thread decoded P's output with CODING, whose detection may
+   have settled it on a stateless system.  */
+extern void nh_io_coding_settled (struct Lisp_Process *,
+				  struct coding_system *);
+/* A filter's delivery of the NBYTES at CHARS (P's decoding carryover,
+   then the bytes nh_io_read delivered): true when nh-io's decode of
+   exactly those bytes is current, with CODING's dst_object, produced
+   counts and carryover set as decode_coding_c_string would set them.  */
+extern bool nh_io_decoded (struct Lisp_Process *, struct coding_system *,
+			   const char *chars, ptrdiff_t nbytes);
 extern int nh_io_tls_boot (struct Lisp_Process *, void *gnutls_state);
 /* For the crash rows (Task 4's --test-crash on nh-io).  */
 extern bool nh_io_test_crash (void);
@@ -261,11 +275,52 @@ extern bool nh_io_test_crash (void);
    reader-owned process's fds directly.  */
 extern void nh_io_dead_close (struct Lisp_Process *);
 
-/* Decoding, nidhogg-decode.c [18].  */
+/* Decoding, nidhogg-decode.c [18].  The stateless systems (§8.2) nh-io
+   decodes a process's output with; NH_DEC_NONE leaves it to the main
+   thread.  The UTF-8 ones make Emacs's multibyte form (invalid bytes as
+   raw-byte characters), the raw-text ones (raw-text-*, no-conversion,
+   binary) unibyte bytes.  */
+enum nh_dec_system
+{
+  NH_DEC_NONE,
+  NH_DEC_UTF8_UNIX,
+  NH_DEC_UTF8_DOS,
+  NH_DEC_UTF8_MAC,
+  NH_DEC_RAW_UNIX,
+  NH_DEC_RAW_DOS,
+  NH_DEC_RAW_MAC,
+  NH_DEC_N
+};
+
+#define NH_DEC_MULTIBYTE(sys) \
+  ((sys) == NH_DEC_UTF8_UNIX || (sys) == NH_DEC_UTF8_DOS \
+   || (sys) == NH_DEC_UTF8_MAC)
+/* The most bytes a decode of N bytes writes.  */
+#define NH_DEC_OUT_MAX(n) (2 * (n))
+
+/* What a chunk left undecoded for the next one: an incomplete sequence
+   (at most 4 bytes) or, -dos, a final CR.  */
+enum { NH_DEC_CARRY = 8 };
+struct nh_dec_state
+{
+  int n;
+  unsigned char carry[NH_DEC_CARRY];
+};
+
+/* Decode STATE's carry and then the N bytes at IN with SYSTEM, as the
+   process path decodes one read (one decode_coding call); with LAST,
+   flush an incomplete tail as CODING_MODE_LAST_BLOCK does.  Write at
+   most NH_DEC_OUT_MAX (carry + N) bytes at OUT, their character count
+   in *NCHARS; return the byte count, or -1 when out of memory.  */
 extern ptrdiff_t nh_dec_chunk (int system, const unsigned char *in,
 			       ptrdiff_t n, struct nh_dec_state *,
 			       unsigned char *out, ptrdiff_t *nchars,
 			       bool last);
+/* The same on the N bytes at S with no carry: *CONSUMED is how many
+   were decoded (the rest is the carry).  */
+extern ptrdiff_t nh_dec_run (int system, const unsigned char *s,
+			     ptrdiff_t n, bool last, unsigned char *out,
+			     ptrdiff_t *nchars, ptrdiff_t *consumed);
 
 /* The JSON tape, nidhogg-json-tape.c [22, 23].  */
 extern struct nh_tape *nh_json_tokenize (const unsigned char *, size_t,
@@ -378,6 +433,9 @@ extern bool nh_save_name_in_flight (Lisp_Object name);
 /* process.c, for nidhogg-set-process-reader: hand PROC back for good
    (ON false), or let the reader take it again if it is being read.  */
 extern void nh_io_proc_reader (Lisp_Object proc, bool on);
+/* The stateless system CODING decodes with, or NH_DEC_NONE [18].  */
+extern int nh_dec_classify (struct coding_system *);
+extern Lisp_Object nh_dec_system_name (int);
 
 /* The `syms_of' part of each file, called from syms_of_nidhogg_workers.  */
 extern void syms_of_nidhogg_workers (void);
