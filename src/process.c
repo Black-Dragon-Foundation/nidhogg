@@ -6436,6 +6436,9 @@ read_process_output (Lisp_Object proc, int channel)
 #ifdef HAVE_NIDHOGG_WORKERS
   /* The real fd's struct: CHANNEL may be a reader's wake fd.  */
   struct coding_system *coding = proc_decode_coding_system[p->infd];
+  /* The reader delivered (Task 19).  */
+  bool nh_reader = false;
+  struct nh_io_deliver nh_deliver;
 
 #else
   struct coding_system *coding = proc_decode_coding_system[channel];
@@ -6479,9 +6482,11 @@ read_process_output (Lisp_Object proc, int channel)
       else
 #endif
 #ifdef HAVE_NIDHOGG_WORKERS
-      if (nh_io_read_chunk (proc, channel, chars + carryover + buffered,
-			    readmax - buffered, &nbytes))
-	;
+      if ((nh_reader = nh_io_read_chunk (proc, channel,
+					 chars + carryover + buffered,
+					 readmax - buffered, &nbytes)))
+	/* Adaptive read buffering does not apply (Task 19).  */
+	goto nh_io_delivered;
       else
 
 #endif
@@ -6512,6 +6517,10 @@ read_process_output (Lisp_Object proc, int channel)
 	      process_output_skip = 1;
 	    }
 	}
+#ifdef HAVE_NIDHOGG_WORKERS
+    nh_io_delivered:
+
+#endif
       nbytes += buffered;
       nbytes += buffered && nbytes <= 0;
     }
@@ -6543,7 +6552,15 @@ read_process_output (Lisp_Object proc, int channel)
      friends don't expect current-buffer to be changed from under them.  */
   record_unwind_current_buffer ();
 
+#ifdef HAVE_NIDHOGG_WORKERS
+  nh_io_deliver_begin (nh_reader, &nh_deliver);
+
+#endif
   read_and_dispose_of_process_output (p, chars, nbytes, coding);
+#ifdef HAVE_NIDHOGG_WORKERS
+  nh_io_deliver_end (&nh_deliver);
+
+#endif
 
   /* Handling the process output should not deactivate the mark.  */
   Vdeactivate_mark = odeactivate;
@@ -6710,6 +6727,11 @@ read_and_insert_process_output (struct Lisp_Process *p, char *buf,
 	 faithfully reflect inserted text until we
 	 TEMP_SET_PT_BOTH below.  */
       specbind (Qinhibit_modification_hooks, Qt);
+#ifdef HAVE_NIDHOGG_WORKERS
+      /* nh-io's decode of these bytes, if it is still current (Task 19).  */
+      if (!nh_io_insert (p, process_coding, buf, nread))
+
+#endif
       decode_coding_c_string (process_coding,
 			      (unsigned char *) buf, nread, curbuf);
       unbind_to (count1, Qnil);
@@ -6783,6 +6805,11 @@ read_and_dispose_of_process_output (struct Lisp_Process *p, char *chars,
 #ifdef HAVE_NIDHOGG_WATCHDOG
       int nh_wd_d = nh_wd_phase_push (NH_WD_PH_FILTER);
 #endif
+#ifdef HAVE_NIDHOGG_WORKERS
+      /* The filter's cost, which caps its deliveries (Task 19).  */
+      int64_t nh_f0 = nh_io_filter_begin (p);
+
+#endif
       if (SBYTES (text) > 0)
 	/* FIXME: It's wrong to wrap or not based on debug-on-error, and
 	   sometimes it's simply wrong to wrap (e.g. when called from
@@ -6793,6 +6820,10 @@ read_and_dispose_of_process_output (struct Lisp_Process *p, char *chars,
 				   read_process_output_error_handler);
 #ifdef HAVE_NIDHOGG_WATCHDOG
       nh_wd_phase_pop_to (nh_wd_d);
+#endif
+#ifdef HAVE_NIDHOGG_WORKERS
+      nh_io_filter_end (p, nh_f0, SBYTES (text));
+
 #endif
 
     }
