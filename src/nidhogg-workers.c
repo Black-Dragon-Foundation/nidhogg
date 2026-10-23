@@ -203,14 +203,40 @@ nh_wk_abs (uint64_t ns)
 			     .tv_nsec = ns % 1000000000 };
 }
 
-static void
+void
 nh_wk_cond_init (pthread_cond_t *cv)
 {
+#ifdef __APPLE__
+
+  pthread_cond_init (cv, NULL);
+
+#else
+
   pthread_condattr_t attr;
   pthread_condattr_init (&attr);
   pthread_condattr_setclock (&attr, CLOCK_MONOTONIC);
   pthread_cond_init (cv, &attr);
   pthread_condattr_destroy (&attr);
+
+#endif
+}
+
+int
+nh_wk_cond_wait_until (pthread_cond_t *cv, pthread_mutex_t *m,
+		       uint64_t deadline)
+{
+#ifdef __APPLE__
+
+  uint64_t now = nh_wk_now ();
+  struct timespec rel = nh_wk_abs (deadline > now ? deadline - now : 0);
+  return pthread_cond_timedwait_relative_np (cv, m, &rel);
+
+#else
+
+  struct timespec ts = nh_wk_abs (deadline);
+  return pthread_cond_timedwait (cv, m, &ts);
+
+#endif
 }
 
 static void
@@ -821,9 +847,8 @@ nh_wk_standby (struct nh_wk_wst *ws, int pool)
 	  p->standby = false;
 	  return true;
 	}
-      struct timespec ts = nh_wk_abs (at > nh_wk_now () ? at
-				      : nh_wk_now () + NH_WK_MS);
-      pthread_cond_timedwait (&p->cv, &ws->m, &ts);
+      nh_wk_cond_wait_until (&p->cv, &ws->m, (at > nh_wk_now () ? at
+					      : nh_wk_now () + NH_WK_MS));
     }
 }
 
@@ -1112,8 +1137,7 @@ nh_wk_wait (struct nh_wk_job *job, int64_t timeout_ns, int phase, int reason)
 	break;
       /* Returns on a broadcast, the deadline, or for no reason at all
 	 (a signal may cause that): the loop decides.  */
-      struct timespec ts = nh_wk_abs (deadline);
-      pthread_cond_timedwait (&nh_wk_done_cv, &nh_wk_done_m, &ts);
+      nh_wk_cond_wait_until (&nh_wk_done_cv, &nh_wk_done_m, deadline);
     }
   pthread_mutex_unlock (&nh_wk_done_m);
 
@@ -1200,8 +1224,7 @@ nh_wk_await_paused (int p, int64_t ms, int n)
   nh_wk_lock (&nh_wk_pause_m);
   while (nh_wk_parked[p] < n && nh_wk_now () < deadline)
     {
-      struct timespec ts = nh_wk_abs (deadline);
-      pthread_cond_timedwait (&nh_wk_pause_cv, &nh_wk_pause_m, &ts);
+      nh_wk_cond_wait_until (&nh_wk_pause_cv, &nh_wk_pause_m, deadline);
     }
   int r = nh_wk_parked[p];
   pthread_mutex_unlock (&nh_wk_pause_m);
