@@ -369,7 +369,7 @@ jobs:
         run: |
           ls test/src/nidhogg-tests/workers-*-tests.el | sed 's|^test/||; s|[.]el$||' | grep -v -e -timing- -e -gui- > "$RUNNER_TEMP/asan-subset.txt"
           cat "$RUNNER_TEMP/asan-subset.txt"
-      - name: Build and run (the 100 MB-class rows are sized down: nidhogg-workers--test-size-scale)
+      - name: "Build and run (the 100 MB-class rows are sized down: nidhogg-workers--test-size-scale)"
         env:
           NIDHOGG_BUILD_SANITIZE: address,undefined
           NIDHOGG_WORKERS_TEST_SIZE_SCALE: "0.1"
