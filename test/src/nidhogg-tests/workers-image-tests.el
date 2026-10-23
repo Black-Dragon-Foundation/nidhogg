@@ -341,4 +341,53 @@ GOLDEN-HEADER is the corpus' recorded frame background colour."
                      (concat "GIF89a" (unibyte-string 160 134 160 134 0 0 0)))))
       (should-not (workers-image-tests--answer 'size gif)))))
 
+(defun workers-image-tests--info (key)
+  (plist-get (nidhogg-workers--test-image-info) key))
+
+(ert-deftest workers/image-evicted ()
+  ;; §17.2b S5, frame-less: display jobs for three test entries; two of
+  ;; the entries go (what free_image does for every eviction,
+  ;; `clear-image-cache', `image-flush' and frame deletion) while their
+  ;; decode is parked at `after-header' (threads) or already done
+  ;; (inline).  Their results are dropped by the entry's generation, the
+  ;; third lands, and every job is freed (ASan in workers-asan).  The GUI
+  ;; row workers-gui/image-evicted does it through the real cache.
+  (skip-unless (fboundp 'nidhogg-workers--test-image-job))
+  (let ((spec (workers-image-tests--spec "palette.png" 'png))
+        (params '(:bg (65535 65535 65535) :limit 10000)))
+    (dolist (mode '(threads inline))
+      (ert-info ((format "mode %s" mode) :prefix "")
+        (let ((nidhogg-workers--mode mode))
+          (nidhogg-workers--test-await-landed 'nh-img 5000)
+          (nidhogg-workers--test-image-land)
+          (let ((dropped (workers-image-tests--info :dropped))
+                (landed (workers-image-tests--info :landed)))
+            (unwind-protect
+                (progn
+                  (when (eq mode 'threads)
+                    (nidhogg-workers--pause-at 'after-header))
+                  (dotimes (i 3)
+                    (should (equal (nidhogg-workers--test-image-job
+                                    spec (1+ i) params)
+                                   (1+ i))))
+                  (when (eq mode 'threads)
+                    (should (nidhogg-workers--test-await-paused
+                             'after-header 5000 1)))
+                  (should (= 3 (workers-image-tests--info :pending)))
+                  (should (nidhogg-workers--test-image-forget 1))
+                  (should (nidhogg-workers--test-image-forget 2))
+                  (should-not (nidhogg-workers--test-image-forget 2))
+                  (should (= 1 (workers-image-tests--info :pending)))
+                  (nidhogg-workers--release 'after-header)
+                  (should (nidhogg-workers--test-await-landed 'nh-img 5000))
+                  (should (= 1 (workers-image-tests--info :landed-waiting)))
+                  (should (= 1 (nidhogg-workers--test-image-land)))
+                  (should (= 0 (workers-image-tests--info :pending)))
+                  (should (= (+ dropped 2) (workers-image-tests--info :dropped)))
+                  (should (= (+ landed 1) (workers-image-tests--info :landed)))
+                  (should (= 0 (workers-image-tests--info :live))))
+              (nidhogg-workers--release)
+              (dolist (i '(1 2 3))
+                (nidhogg-workers--test-image-forget i)))))))))
+
 ;;; workers-image-tests.el ends here

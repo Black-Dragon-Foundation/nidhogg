@@ -548,7 +548,19 @@ synchronous loaders in `image.c` (Cairo frames) use the same cores, so a picture
 cache (by file name and modification time, or a hash of the data), so frame N of a GIF or WebP decodes from frame N-1.
 Test primitives: `nidhogg-workers--test-image-decode`, `--test-image-decode-finish`, `--test-decode-count`,
 `--test-image-cache-clear`, `--test-image-pixels`.
-<!-- wk: Task 29 -->
+**Images decode on `nh-img` during redisplay.** With `nidhogg-workers-images` and `nidhogg-image-defer` on, a PNG,
+JPEG, GIF or WebP that redisplay meets for the first time (on a Cairo frame) is decoded on `nh-img` (up to two
+threads, one per two cores) from a copy of its `:data` or its file name, with the frame's and face's colours resolved
+first. Redisplay waits for it within the shared wait budget; past it the image keeps its final size from the header
+and shows the face's background (an empty rectangle) until it lands. The landing finishes it at the start of the next
+redisplay, exactly as a synchronous load would, and redraws only the windows that show it. Clearing the image cache,
+`image-flush`, eviction and deleting the frame drop a decode still running. A Lisp call that needs the pixels of an
+image still decoding (`image-mask-p`) waits for it, or loads it itself after a second; `image-size` answers from the
+header without waiting; display outside redisplay (`window-text-pixel-size`) and the tool bar load synchronously, as
+today, and so does everything with either switch off. Watchdog phases: `image` (header, synchronous decodes, landing),
+`worker-wait` with `display` and `image-pixels`; `:deferrals` counts the images that landed late. Test primitives:
+`nidhogg-workers--test-await-landed`, `--test-marked-windows`, `--deferrable-p`, `--test-image-info`,
+`--test-image-job`, `--test-image-forget`, `--test-image-land`, and `--test-image-pixels`' CACHED argument.
 <!-- wk: Task 30 -->
 <!-- wk: Task 31 -->
 - Directory reads (`src/nidhogg-blk.c`, class `dir` of `nh-blk`): `(nidhogg-directory-files-async DIR CALLBACK &key
