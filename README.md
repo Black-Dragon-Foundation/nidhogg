@@ -412,7 +412,8 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
 - Switches (customization group `nidhogg-workers`): `nidhogg-workers-process-reader` (on) with
   `nidhogg-workers-reader-pipes`, `-reader-sockets` and `-reader-ptys`; `nidhogg-workers-framing`,
   `nidhogg-workers-treesit`, `nidhogg-treesit-defer`, `nidhogg-workers-images`, `nidhogg-image-defer`,
-  `nidhogg-workers-autosave`, `nidhogg-workers-dns`. Each is off until the default-on commit of its step.
+  `nidhogg-workers-autosave`, `nidhogg-workers-dns`. Each is off until the default-on commit of its step; on so far:
+  `nidhogg-workers-reader-pipes`.
   `nidhogg-redisplay-wait-budget` (8) is how many milliseconds a redisplay may wait for a worker.
 - The environment variable `NIDHOGG_WORKERS`, read at startup: `default` (or unset), `on`, `off`, `inline`, or a list
   such as `+nidhogg-workers-treesit-nidhogg-workers-dns`. `nidhogg-workers-set-all` and `nidhogg-workers-apply` do the
@@ -583,7 +584,8 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   `:tls-pull`.
 - The reader's sub-switches go on by default one fd kind at a time, in the order pipes, sockets, ptys (the OT3 gate).
   Any kind can be turned off alone: with its sub-switch nil, that kind takes today's path and the other kinds stay
-  reader-owned (`workers/reader-sub-switches`). On by default so far: none. `workers/terminal-emulators`
+  reader-owned (`workers/reader-sub-switches`). On by default so far: pipes (subprocesses with pipes and
+  `make-pipe-process`). `workers/terminal-emulators`
   (`workers-terminal-tests.el`, run by `pkg-test.sh`'s `process` group, which has eat and vterm) draws a recorded `htop`
   and `ls --color` stream in eat and vterm with the reader off and on and compares the screens (text and faces).
 - JSON tape (`src/nidhogg-json-tape.c`): a tokenizer that copies json.c's rules byte for byte (strict UTF-8, surrogates,
