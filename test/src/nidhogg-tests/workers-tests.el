@@ -146,8 +146,9 @@ ARGS go before the --eval."
   (let* ((process-environment (cons "NIDHOGG_WORKERS=off" process-environment))
          (exe (expand-file-name invocation-name invocation-directory))
          (out (with-temp-buffer
+                ;; stdout only: sanitizer builds report on stderr.
                 (should (zerop (call-process
-                                exe nil t nil "-Q" "--batch" "--eval"
+                                exe nil '(t nil) nil "-Q" "--batch" "--eval"
                                 "(princ (mapcar #'symbol-value nidhogg-workers--switches))")))
                 (buffer-string))))
     (should (equal (read out) (make-list (length nidhogg-workers--switches) nil)))))
