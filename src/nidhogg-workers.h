@@ -492,8 +492,14 @@ extern bool nh_img_displayed_size (struct frame *, Lisp_Object spec,
 				   int *width, int *height);
 /* Task 29.  The iterator's lookup_image calls (xdisp.c): with
    redisplaying_p, a miss may defer.  */
+struct it;
 extern ptrdiff_t nh_img_redisplay_lookup (struct frame *, Lisp_Object spec,
-					  int face_id);
+					  int face_id, struct it *);
+/* Task 30: the stand-in rule (image-bg.c decides, image.c draws), and
+   `:nidhogg-data-encoding base64'.  */
+extern bool nh_img_stand_in_for (struct frame *, struct image *);
+extern bool nh_img_stand_in (struct frame *, struct image *, struct image *);
+extern bool nh_img_b64_spec (Lisp_Object spec);
 /* What image.c does for the pending entries (Cairo only; elsewhere
    nh_img_job_inputs refuses).  FMT is an enum nh_img_fmt.  */
 struct nh_img_params;
