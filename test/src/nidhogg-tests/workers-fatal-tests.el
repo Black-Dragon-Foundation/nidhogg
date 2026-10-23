@@ -250,4 +250,89 @@ seconds.  The plist: `:status' and `:code' (`process-status' and
             (should (>= (plist-get res :handled) 1000))
             (should (eql (plist-get res :signal-locks) 0))))))))
 
+;;; The reader on the fatal path (Task 16).  Both rows need Task 4's
+;;; fatal path (the workers-dead flag set first in shut_down_emacs, the
+;;; crash forwarding that parks the faulting worker), whose primitive
+;;; `nidhogg-workers--test-fatal-under-lock' marks it.
+
+(defun workers-fatal-tests--reader-child (crash-form)
+  "Run a child Nidhogg with live reader-owned pipes and a socket, then CRASH-FORM.
+The child visits a file with unsaved text first.  Return (STATUS
+AUTO-SAVED): how the child ended and whether its emergency auto-save
+holds the text.  Waits 20 s at most for the child."
+  (let* ((dir (make-temp-file "wfatal-" t))
+         (file (expand-file-name "unsaved.txt" dir))
+         (form
+          `(progn
+             (setq nidhogg-workers--mode 'threads
+                   nidhogg-workers-process-reader t
+                   nidhogg-workers-reader-pipes t
+                   nidhogg-workers-reader-sockets t)
+             (find-file ,file)
+             (insert "the unsaved text\n")
+             (auto-save-mode 1)
+             (dotimes (i 3)
+               (make-process :name (format "cat-%d" i) :command '("cat")
+                             :connection-type 'pipe :noquery t))
+             ;; eglot-style: a `:stderr' pipe process beside stdout.
+             (dotimes (i 2)
+               (make-process :name (format "eg-%d" i) :command '("cat")
+                             :connection-type 'pipe :noquery t
+                             :stderr (make-pipe-process
+                                      :name (format "eg-%d-stderr" i)
+                                      :noquery t)))
+             (let* ((server (make-network-process :name "srv" :server t
+                                                  :host 'local :service t
+                                                  :family 'ipv4 :noquery t))
+                    (client (make-network-process
+                             :name "client" :host "127.0.0.1" :noquery t
+                             :service (process-contact server :service))))
+               (unless (plist-get (nidhogg-workers--test-io-info client) :owned)
+                 (kill-emacs 3)))
+             ,crash-form
+             (sleep-for 30)
+             (kill-emacs 4)))
+         (child (make-process
+                 :name "wfatal-child" :noquery t :buffer nil
+                 :command (list (expand-file-name invocation-name
+                                                  invocation-directory)
+                                "-Q" "--batch" "--eval" (prin1-to-string form)))))
+    (unwind-protect
+        (let ((i 0))
+          (while (and (process-live-p child) (< i 1000))
+            (accept-process-output child 0.02)
+            (setq i (1+ i)))
+          (list (process-status child)
+                (let ((auto (expand-file-name "#unsaved.txt#" dir)))
+                  (and (file-exists-p auto)
+                       (with-temp-buffer
+                         (insert-file-contents auto)
+                         (string-search "the unsaved text" (buffer-string)))
+                       t))))
+      (when (process-live-p child)
+        (delete-process child))
+      (delete-directory dir t))))
+
+(ert-deftest workers/worker-crash-forwarded-live-pipes ()
+  ;; nh-io dereferences NULL while five pipe processes (two with
+  ;; `:stderr' pipes) and a socket are reader-owned: the crash reaches
+  ;; the main thread's fatal path, which closes every reader-owned fd
+  ;; without a handshake, and the emergency auto-save is written
+  ;; (§17.3).
+  (skip-unless (fboundp 'nidhogg-workers--test-fatal-under-lock))
+  (should (equal (workers-fatal-tests--reader-child
+                  '(nidhogg-workers--test-io-crash))
+                 '(signal t))))
+
+(ert-deftest workers/fatal-under-io-lock ()
+  ;; The main thread holds nh-io's queue mutex with reader-owned pipes
+  ;; alive when SIGSEGV arrives: the fatal path takes no reader lock and
+  ;; does no hand-back handshake, and the auto-save is written (§17.3 B4,
+  ;; review M5).
+  (skip-unless (fboundp 'nidhogg-workers--test-fatal-under-lock))
+  (should (equal (workers-fatal-tests--reader-child
+                  '(progn (nidhogg-workers--test-io-hold-lock t)
+                          (signal-process (emacs-pid) 'SIGSEGV)))
+                 '(signal t))))
+
 ;;; workers-fatal-tests.el ends here

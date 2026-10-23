@@ -17,36 +17,830 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
-/* Stubs (Task 2); Tasks 16 to 20 and 24 fill them.  No process is ever
-   handed over, so every caller keeps today's path.  */
+/* Fd ownership (Task 16; the design's §5.3 and §8.2).  Tasks 17 to 20
+   and 24 add flow control, drains, decoding, coalescing, TLS and
+   framing.
+
+   Hand-over.  When an eligible process's real fd would enter the
+   select set (add_process_read_fd), nh_io_handover gives nh-io its own
+   copy of the fd (F_DUPFD_CLOEXEC: the same open file description) and
+   opens a wake fd for the process; the select set holds the wake fd
+   and chan_process names the process there (process.c).  The real fd
+   stays p->infd and stays in p->open_fd[], so writes, ioctls,
+   setsockopt and process-send-eof are unchanged.  The handle is found
+   by the real fd's number (nh_io_tab, main thread; nh_io_live, the
+   lock-free view for signal context, published last and cleared first).
+
+   Reading.  nh-io polls its command fd and every copy, reads each
+   readable copy into the process's FIFO of chunks (one read of the
+   process's readmax each), and writes the wake fd when the FIFO stops
+   being empty (or EOF or an error is recorded).  The main thread's
+   round-robin sees the wake fd readable and calls read_process_output,
+   whose reader branch (nh_io_read) takes one chunk into today's decode
+   and filter path.  When it finds the FIFO empty it clears the wake fd,
+   under the same mutex nh-io appends under, and returns EAGAIN: the
+   wake fd is readable exactly while there is something to deliver, so
+   the round-robin never spins (fd audit, finding 13).  EOF and errors
+   come back as read would return them, once the FIFO is empty.
+
+   Hand-back is synchronous.  The main thread sends "detach" on the
+   command fd and waits (worker-wait, reason detach) for the
+   acknowledgement; nh-io looks at its commands at every poll return and
+   between reads, drops the handle, closes its copy, then acknowledges.
+   So a real fd number the main thread closes afterwards can never be
+   read by nh-io for another owner, and the child sees EOF once Emacs
+   closes.  Bytes nh-io read but the main thread did not deliver stay on
+   the handle: a process that goes on (not closing) keeps its wake fd
+   selected until they are delivered, then reads its real fd again.  A
+   wait that times out (nh-io stuck, which only a test pause point can
+   do) leaves the handle to nh-io, which frees it when it gets to the
+   command; once the workers are dead (the fatal path) nothing waits and
+   both fds close directly.
+
+   Inline mode (`nidhogg-workers--mode') has no thread: the select set
+   holds the copy itself and nh_io_read reads it, so the hand-over, the
+   select mapping and the close order run without scheduling.
+
+   The core (handles, the loop, the handshake) is Lisp-free; the
+   harness's ThreadSanitizer driver (fuzz/tsan-io.c) runs it.  */
 
 #ifndef NH_WK_HARNESS
 # include <config.h>
+#elif !defined _GNU_SOURCE
+# define _GNU_SOURCE		/* F_DUPFD_CLOEXEC on older libcs */
 #endif
 
 #ifdef HAVE_NIDHOGG_WORKERS
 
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/select.h>
+#include <sys/socket.h>
+
 #include "nidhogg-workers.h"
+
+#ifndef NH_WK_HARNESS
+# include "nidhogg-workers-phase.h"
+# include "process.h"
+# define NH_IO_PH NH_WK_PH_WORKER_WAIT
+# define NH_IO_RS NH_WK_RS_DETACH
+#else
+# define NH_IO_PH 0
+# define NH_IO_RS 0
+#endif
+
+/* How long a hand-back waits for nh-io: one 64 KB step is microseconds,
+   so only a stuck nh-io reaches this.  */
+#define NH_IO_DETACH_NS (INT64_C (1000) * 1000000)
+
+/* The fds a reader-owned process holds: its copy and its wake fd (a
+   pipe, two fds, where there is no eventfd).  */
+#ifdef __linux__
+enum { NH_IO_FDS = 2 };
+#else
+enum { NH_IO_FDS = 3 };
+#endif
+
+/* Why a hand-over was refused (`:refused' of --test-io-info).  */
+enum nh_io_refusal
+{
+  NH_IO_RF_NONE,
+  NH_IO_RF_OFF,			/* nidhogg-workers-process-reader is nil */
+  NH_IO_RF_SWITCH,		/* the fd kind's sub-switch is nil */
+  NH_IO_RF_TLS,
+  NH_IO_RF_DATAGRAM,
+  NH_IO_RF_SERVER,
+  NH_IO_RF_SERIAL,
+  NH_IO_RF_FILTER_T,
+  NH_IO_RF_CONNECTING,
+  NH_IO_RF_OPT_OUT,
+  NH_IO_RF_BUDGET,
+  NH_IO_RF_THREAD,
+  NH_IO_RF_N
+};
+
+struct nh_io_chunk
+{
+  struct nh_io_chunk *next;
+  ptrdiff_t len, off;
+  unsigned char data[];
+};
+
+enum nh_io_op { NH_IO_OP_ADD, NH_IO_OP_DETACH };
+
+struct nh_io_h;
+
+struct nh_io_cmd
+{
+  int op;
+  struct nh_io_h *h;
+  struct nh_io_cmd *next;
+};
+
+/* One reader-owned process.  */
+struct nh_io_h
+{
+  int64_t id;			/* for the test log */
+  int copy;			/* nh-io's copy of the real fd */
+  int sel;			/* in the select set: the wake fd, or the copy */
+  struct nh_wk_wake wake;
+  bool inl;			/* inline mode: no thread */
+  ptrdiff_t readmax;
+
+  /* Under nh_io_m.  */
+  struct nh_io_chunk *head, *tail;
+  ptrdiff_t queued;
+  bool eof;
+  int err;
+
+  /* The main thread's: the hand-back is done.  */
+  bool detached;
+  /* nh-io's: it read EOF or an error, and polls the copy no more.  */
+  bool io_end;
+
+  struct nh_io_cmd add, detach;
+  /* The detach handshake: nh-io completes it.  Two references, the main
+     thread's and nh-io's, so whichever is last frees it.  */
+  struct nh_wk_job *ack;
+  /* Set by whichever comes first: nh-io acknowledging, or the main
+     thread giving up after a timed-out wait.  */
+  _Atomic bool gone;
+};
+
+/* nh-io's mutex: the command list and every handle's FIFO.  */
+static pthread_mutex_t nh_io_m = PTHREAD_MUTEX_INITIALIZER;
+static struct nh_io_cmd *nh_io_cmd_head, *nh_io_cmd_tail;
+static struct nh_wk_wake nh_io_cmdw = { -1, -1 };
+static _Atomic bool nh_io_cmd_pending;
+static _Atomic bool nh_io_crash;
+
+/* nh-io's loop: one job that never ends.  */
+static struct nh_wk_job nh_io_loop;
+static bool nh_io_running;
+
+/* The test log (--test-io-log): a ring of the latest events.  */
+enum nh_io_ev
+{
+  NH_IO_EV_HANDOVER, NH_IO_EV_READ, NH_IO_EV_EOF, NH_IO_EV_ERROR,
+  NH_IO_EV_ACK, NH_IO_EV_CLOSE, NH_IO_EV_TIMEOUT, NH_IO_EV_DIRECT,
+  NH_IO_EV_N
+};
+
+struct nh_io_logent
+{
+  int ev, fd;
+  int64_t id;
+  ptrdiff_t n;
+};
+
+enum { NH_IO_LOG = 4096 };
+static pthread_mutex_t nh_io_log_m = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic bool nh_io_logging;
+static struct nh_io_logent nh_io_log[NH_IO_LOG];
+static int64_t nh_io_nlog;
+
+static void
+nh_io_note (int ev, int64_t id, int fd, ptrdiff_t n)
+{
+  if (!atomic_load (&nh_io_logging))
+    return;
+  pthread_mutex_lock (&nh_io_log_m);
+  nh_io_log[nh_io_nlog++ % NH_IO_LOG]
+    = (struct nh_io_logent) { .ev = ev, .fd = fd, .id = id, .n = n };
+  pthread_mutex_unlock (&nh_io_log_m);
+}
+
+static void
+nh_io_free (struct nh_io_h *h)
+{
+  for (struct nh_io_chunk *c = h->head, *next; c; c = next)
+    {
+      next = c->next;
+      free (c);
+    }
+  nh_wk_stat_add (NH_WK_IO, NH_WK_ST_QUEUED_BYTES, -h->queued);
+  if (!h->inl)
+    nh_wk_wake_close (&h->wake);
+  if (h->copy >= 0)
+    close (h->copy);
+  free (h);
+}
+
+/* nh-io.  */
+
+static _Noreturn void
+nh_io_park (void)
+{
+  for (;;)
+    poll (NULL, 0, -1);
+}
+
+static void
+nh_io_crash_now (void)
+{
+  int *volatile p = NULL;
+  *p = 0;
+}
+
+/* Take the command list and carry it out.  POLLED[0..NP) are the
+   handles of the poll in progress; a detached one is forgotten there.  */
+static void
+nh_io_commands (struct nh_io_h ***set, int *n, int *cap,
+		struct nh_io_h **polled, int np)
+{
+  if (!atomic_exchange (&nh_io_cmd_pending, false))
+    return;
+  nh_wk_wake_clear (&nh_io_cmdw);
+  if (atomic_load (&nh_io_crash))
+    nh_io_crash_now ();
+  nh_wk_lock (&nh_io_m);
+  struct nh_io_cmd *c = nh_io_cmd_head;
+  nh_io_cmd_head = nh_io_cmd_tail = NULL;
+  pthread_mutex_unlock (&nh_io_m);
+
+  while (c)
+    {
+      /* C lives in its handle, which the main thread may free as soon
+	 as the acknowledgement is out.  */
+      struct nh_io_cmd *next = c->next;
+      struct nh_io_h *h = c->h;
+      if (atomic_load (&nh_wk_dead))
+	nh_io_park ();
+      if (c->op == NH_IO_OP_ADD)
+	{
+	  if (*n == *cap)
+	    {
+	      int ncap = *cap ? 2 * *cap : 16;
+	      struct nh_io_h **s = realloc (*set, ncap * sizeof *s);
+	      NH_WK_ASSERT (s);
+	      *set = s;
+	      *cap = ncap;
+	    }
+	  (*set)[(*n)++] = h;
+	}
+      else
+	{
+	  for (int i = 0; i < *n; i++)
+	    if ((*set)[i] == h)
+	      {
+		(*set)[i] = (*set)[--*n];
+		break;
+	      }
+	  for (int k = 0; k < np; k++)
+	    if (polled[k] == h)
+	      polled[k] = NULL;
+	  close (h->copy);
+	  h->copy = -1;
+	  nh_io_note (NH_IO_EV_ACK, h->id, -1, 0);
+	  struct nh_wk_job *ack = h->ack;
+	  if (atomic_exchange (&h->gone, true))
+	    {
+	      /* The main thread gave up waiting: the handle is ours.  */
+	      nh_wk_job_unref (ack);
+	      nh_io_free (h);
+	    }
+	  else
+	    nh_wk_complete (ack);
+	}
+      c = next;
+    }
+}
+
+/* Read H's copy once into its FIFO.  */
+static void
+nh_io_read_one (struct nh_io_h *h, unsigned char **buf, ptrdiff_t *size)
+{
+  if (*size < h->readmax)
+    {
+      free (*buf);
+      *buf = malloc (h->readmax);
+      NH_WK_ASSERT (*buf);
+      *size = h->readmax;
+    }
+  ssize_t r;
+  do
+    r = read (h->copy, *buf, h->readmax);
+  while (r < 0 && errno == EINTR);
+  if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+    return;
+  int err = errno;
+  struct nh_io_chunk *c = NULL;
+  if (r > 0)
+    {
+      c = malloc (sizeof *c + r);
+      if (!c)
+	{
+	  r = -1;
+	  err = ENOMEM;
+	}
+      else
+	{
+	  c->next = NULL;
+	  c->len = r;
+	  c->off = 0;
+	  memcpy (c->data, *buf, r);
+	}
+    }
+  nh_io_note (r > 0 ? NH_IO_EV_READ : r == 0 ? NH_IO_EV_EOF : NH_IO_EV_ERROR,
+	      h->id, h->copy, r);
+
+  nh_wk_lock (&nh_io_m);
+  /* The wake fd is readable exactly while the FIFO holds a chunk or EOF
+     or an error is recorded (nh_io_take clears it under this mutex).  */
+  bool was_quiet = !h->head && !h->eof && !h->err;
+  if (c)
+    {
+      if (h->tail)
+	h->tail->next = c;
+      else
+	h->head = c;
+      h->tail = c;
+      h->queued += r;
+    }
+  else if (r == 0)
+    h->eof = true;
+  else
+    h->err = err;
+  if (was_quiet)
+    nh_wk_wake_signal (&h->wake);
+  pthread_mutex_unlock (&nh_io_m);
+
+  if (c)
+    nh_wk_stat_add (NH_WK_IO, NH_WK_ST_QUEUED_BYTES, r);
+  else
+    h->io_end = true;
+}
+
+static void
+nh_io_main (struct nh_wk_job *job)
+{
+  (void) job;
+  struct nh_io_h **set = NULL, **polled = NULL;
+  struct pollfd *pfd = NULL;
+  int n = 0, cap = 0, pcap = 0;
+  unsigned char *buf = NULL;
+  ptrdiff_t bufsize = 0;
+
+  for (;;)
+    {
+      if (pcap < n + 1)
+	{
+	  pcap = 2 * (n + 1);
+	  pfd = realloc (pfd, pcap * sizeof *pfd);
+	  polled = realloc (polled, pcap * sizeof *polled);
+	  NH_WK_ASSERT (pfd && polled);
+	}
+      int np = 0;
+      pfd[np] = (struct pollfd) { .fd = nh_io_cmdw.rfd, .events = POLLIN };
+      polled[np++] = NULL;
+      for (int i = 0; i < n; i++)
+	if (!set[i]->io_end)
+	  {
+	    pfd[np] = (struct pollfd) { .fd = set[i]->copy, .events = POLLIN };
+	    polled[np++] = set[i];
+	  }
+
+      int r = poll (pfd, np, -1);
+      if (atomic_load (&nh_wk_dead))
+	nh_io_park ();
+      if (r < 0)
+	continue;
+      nh_wk_pause_point (NH_WK_P_IN_POLL);
+      if (atomic_load (&nh_wk_dead))
+	nh_io_park ();
+
+      /* Commands first, then between reads: a detach waits for at most
+	 one read.  */
+      nh_io_commands (&set, &n, &cap, polled, np);
+      for (int k = 1; k < np; k++)
+	{
+	  struct nh_io_h *h = polled[k];
+	  if (!h || !(pfd[k].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)))
+	    continue;
+	  if (atomic_load (&nh_wk_dead))
+	    nh_io_park ();
+	  nh_io_read_one (h, &buf, &bufsize);
+	  nh_io_commands (&set, &n, &cap, polled, np);
+	}
+    }
+}
+
+/* Start nh-io once.  */
+static bool
+nh_io_start (void)
+{
+  if (nh_io_running)
+    return true;
+  if (nh_io_cmdw.rfd < 0 && nh_wk_wake_open (&nh_io_cmdw) < 0)
+    return false;
+  memset (&nh_io_loop, 0, sizeof nh_io_loop);
+  atomic_store (&nh_io_loop.refs, 1);
+  nh_io_loop.w = NH_WK_IO;
+  nh_io_loop.run = nh_io_main;
+  if (!nh_wk_submit (&nh_io_loop))
+    return false;
+  nh_io_running = true;
+  return true;
+}
+
+static void
+nh_io_command (struct nh_io_cmd *c)
+{
+  c->next = NULL;
+  nh_wk_lock (&nh_io_m);
+  if (nh_io_cmd_tail)
+    nh_io_cmd_tail->next = c;
+  else
+    nh_io_cmd_head = c;
+  nh_io_cmd_tail = c;
+  pthread_mutex_unlock (&nh_io_m);
+  atomic_store (&nh_io_cmd_pending, true);
+  nh_wk_wake_signal (&nh_io_cmdw);
+}
+
+/* The main thread's half of the core.  The harness's plain compile
+   uses none of it (its TSan driver does).  */
+#define NH_IO_CORE static __attribute__ ((unused))
+
+/* Handle ID for the real fd INFD (inline: read on the main thread), or
+   NULL with *WHY set.  */
+NH_IO_CORE struct nh_io_h *
+nh_io_attach (int64_t id, int infd, ptrdiff_t readmax, bool inl, int *why)
+{
+  *why = NH_IO_RF_BUDGET;
+  if (!nh_wk_fd_budget_ok (NH_IO_FDS))
+    {
+      nh_wk_fallback (NH_WK_IO, NH_WK_FB_FD_BUDGET);
+      return NULL;
+    }
+  if (!inl && !nh_io_start ())
+    {
+      *why = NH_IO_RF_THREAD;
+      return NULL;
+    }
+  struct nh_io_h *h = calloc (1, sizeof *h);
+  if (!h)
+    return NULL;
+  h->id = id;
+  h->inl = inl;
+  h->readmax = readmax;
+  h->wake = (struct nh_wk_wake) { -1, -1 };
+  h->copy = fcntl (infd, F_DUPFD_CLOEXEC, 0);
+  if (h->copy < 0 || (!inl && nh_wk_wake_open (&h->wake) < 0))
+    {
+      nh_io_free (h);
+      return NULL;
+    }
+  h->sel = inl ? h->copy : h->wake.rfd;
+  h->add = (struct nh_io_cmd) { .op = NH_IO_OP_ADD, .h = h };
+  h->detach = (struct nh_io_cmd) { .op = NH_IO_OP_DETACH, .h = h };
+  nh_io_note (NH_IO_EV_HANDOVER, id, infd, 0);
+  if (!inl)
+    nh_io_command (&h->add);
+  return h;
+}
+
+static void
+nh_io_job_free (struct nh_wk_job *job)
+{
+  free (job);
+}
+
+/* Close H's fds directly, without nh-io (the workers are dead).  */
+static void
+nh_io_direct (struct nh_io_h *h)
+{
+  nh_io_note (NH_IO_EV_DIRECT, h->id, h->copy, 0);
+  if (h->copy >= 0)
+    close (h->copy);
+  h->copy = -1;
+  nh_wk_wake_close (&h->wake);
+}
+
+/* The synchronous detach.  Return true when H is the main thread's
+   again (nh-io has dropped it and closed its copy), false when it is
+   not (a timed-out wait left it to nh-io; or the workers are dead and
+   its fds were closed directly, and it is abandoned).  */
+NH_IO_CORE bool
+nh_io_detach (struct nh_io_h *h)
+{
+  if (h->detached)
+    return true;
+  h->detached = true;
+  if (h->inl)
+    {
+      close (h->copy);
+      h->copy = -1;
+      return true;
+    }
+  if (atomic_load (&nh_wk_dead))
+    {
+      nh_io_direct (h);
+      return false;
+    }
+  struct nh_wk_job *ack = calloc (1, sizeof *ack);
+  NH_WK_ASSERT (ack);
+  atomic_store (&ack->refs, 2);
+  ack->w = NH_WK_IO;
+  ack->free = nh_io_job_free;
+  h->ack = ack;
+  nh_io_command (&h->detach);
+  int r;
+  while ((r = nh_wk_wait (ack, NH_IO_DETACH_NS, NH_IO_PH, NH_IO_RS)) == 0)
+    if (!atomic_exchange (&h->gone, true))
+      {
+	/* nh-io has not got to it: it frees H when it does.  */
+	nh_io_note (NH_IO_EV_TIMEOUT, h->id, -1, 0);
+	nh_wk_job_unref (ack);
+	return false;
+      }
+  if (r < 0)
+    {
+      nh_io_direct (h);
+      return false;
+    }
+  nh_wk_job_unref (ack);
+  return true;
+}
+
+/* Copy up to SIZE bytes of H's first chunk into BUF.  Return the count;
+   0 at EOF; -1 with errno set to the read error, or to EAGAIN when
+   nothing is queued (the wake fd is cleared then).  */
+NH_IO_CORE ptrdiff_t
+nh_io_take (struct nh_io_h *h, char *buf, ptrdiff_t size)
+{
+  ptrdiff_t n = -1;
+  int err = EAGAIN;
+  struct nh_io_chunk *done = NULL;
+  nh_wk_lock (&nh_io_m);
+  struct nh_io_chunk *c = h->head;
+  if (c)
+    {
+      n = c->len - c->off < size ? c->len - c->off : size;
+      memcpy (buf, c->data + c->off, n);
+      c->off += n;
+      h->queued -= n;
+      if (c->off == c->len)
+	{
+	  h->head = c->next;
+	  if (!h->head)
+	    h->tail = NULL;
+	  done = c;
+	}
+    }
+  else if (h->eof)
+    n = 0;
+  else if (h->err)
+    err = h->err;
+  if (!h->head && !h->eof && !h->err && !h->inl)
+    nh_wk_wake_clear (&h->wake);
+  pthread_mutex_unlock (&nh_io_m);
+  free (done);
+  if (n > 0)
+    nh_wk_stat_add (NH_WK_IO, NH_WK_ST_QUEUED_BYTES, -n);
+  if (n < 0)
+    errno = err;
+  return n;
+}
+
+/* Inline: read the copy, as read_process_output reads the real fd.  */
+NH_IO_CORE ptrdiff_t
+nh_io_take_inline (struct nh_io_h *h, char *buf, ptrdiff_t size)
+{
+  ssize_t r;
+  do
+    r = read (h->copy, buf, size);
+  while (r < 0 && errno == EINTR);
+  if (r >= 0)
+    nh_io_note (r > 0 ? NH_IO_EV_READ : NH_IO_EV_EOF, h->id, h->copy, r);
+  return r;
+}
+
+/* For Task 4's crash rows: nh-io dereferences NULL at its next look at
+   its commands.  Return false if nh-io is not running.  */
+bool
+nh_io_test_crash (void)
+{
+  if (!nh_io_running)
+    return false;
+  atomic_store (&nh_io_crash, true);
+  atomic_store (&nh_io_cmd_pending, true);
+  nh_wk_wake_signal (&nh_io_cmdw);
+  return true;
+}
+
+#ifndef NH_WK_HARNESS
+
+/* The process side.  Handles by real fd: nh_io_tab is the main
+   thread's; nh_io_live is what signal context may read (Task 17's
+   pause), published last at hand-over and cleared first at hand-back.
+   The opt-out and the last refusal are per real fd too (struct
+   Lisp_Process gets no field), cleared when the fd closes.  */
+static struct nh_io_h *nh_io_tab[FD_SETSIZE];
+static struct nh_io_h *_Atomic nh_io_live[FD_SETSIZE];
+static bool nh_io_optout[FD_SETSIZE];
+static unsigned char nh_io_refused[FD_SETSIZE];
+static int64_t nh_io_next_id;
+
+static const char *const nh_io_refusal_names[NH_IO_RF_N] = {
+  "none", "off", "switch", "tls", "datagram", "server", "serial", "filter-t",
+  "connecting", "opt-out", "fd-budget", "thread"
+};
+
+static struct nh_io_h *
+nh_io_get (struct Lisp_Process *p)
+{
+  return 0 <= p->infd && p->infd < FD_SETSIZE ? nh_io_tab[p->infd] : NULL;
+}
+
+static bool
+nh_io_switch (Lisp_Object sym)
+{
+  Lisp_Object v = find_symbol_value (sym);
+  return !BASE_EQ (v, Qunbound) && !NILP (v);
+}
+
+/* Why P may not be handed over now (an enum nh_io_refusal), or 0.  */
+static int
+nh_io_eligible (struct Lisp_Process *p)
+{
+  Lisp_Object kind;
+  if (!nh_io_switch (Qnidhogg_workers_process_reader))
+    return NH_IO_RF_OFF;
+#ifdef HAVE_GNUTLS
+  if (!NILP (p->gnutls_boot_parameters) || p->gnutls_p)
+    return NH_IO_RF_TLS;
+#endif
+  if (EQ (p->type, Qnetwork))
+    {
+      if (p->socktype == SOCK_DGRAM)
+	return NH_IO_RF_DATAGRAM;
+      if (p->is_server || EQ (p->status, Qlisten))
+	return NH_IO_RF_SERVER;
+      if (EQ (p->status, Qconnect)
+	  || (CONSP (p->status) && EQ (XCAR (p->status), Qconnect)))
+	return NH_IO_RF_CONNECTING;
+      kind = Qnidhogg_workers_reader_sockets;
+    }
+  else if (EQ (p->type, Qreal) && p->pty_out)
+    kind = Qnidhogg_workers_reader_ptys;
+  else if (EQ (p->type, Qreal) || EQ (p->type, Qpipe))
+    kind = Qnidhogg_workers_reader_pipes;
+  else
+    return NH_IO_RF_SERIAL;
+  if (EQ (p->filter, Qt))
+    return NH_IO_RF_FILTER_T;
+  if (nh_io_optout[p->infd])
+    return NH_IO_RF_OPT_OUT;
+  if (!nh_io_switch (kind))
+    return NH_IO_RF_SWITCH;
+  return 0;
+}
 
 bool
 nh_io_handover (struct Lisp_Process *p)
 {
-  (void) p;
-  return false;
-}
-
-void
-nh_io_handback (struct Lisp_Process *p, int reason)
-{
-  (void) p;
-  (void) reason;
+  int fd = p->infd;
+  if (fd < 0 || fd >= FD_SETSIZE)
+    return false;
+  if (nh_io_tab[fd])
+    return !nh_io_tab[fd]->detached;
+  int why = nh_io_eligible (p);
+  struct nh_io_h *h = why ? NULL : nh_io_attach (nh_io_next_id + 1, fd,
+						  p->readmax, nh_wk_inline,
+						  &why);
+  if (!h)
+    {
+      nh_io_refused[fd] = why;
+      return false;
+    }
+  nh_io_next_id++;
+  nh_io_refused[fd] = 0;
+  nh_io_tab[fd] = h;
+  atomic_store (&nh_io_live[fd], h);
+  return true;
 }
 
 int
 nh_io_select_fd (struct Lisp_Process *p)
 {
-  (void) p;
-  return -1;
+  struct nh_io_h *h = nh_io_get (p);
+  return h ? h->sel : -1;
+}
+
+void
+nh_io_handback (struct Lisp_Process *p, int reason)
+{
+  int fd = p->infd;
+  if (fd < 0 || fd >= FD_SETSIZE)
+    return;
+  if (reason == NH_IO_CLOSE)
+    {
+      nh_io_optout[fd] = false;
+      nh_io_refused[fd] = 0;
+    }
+  struct nh_io_h *h = nh_io_tab[fd];
+  if (!h)
+    return;
+  atomic_store (&nh_io_live[fd], NULL);
+  int64_t id = h->id;
+  if (!nh_io_detach (h))
+    {
+      nh_io_tab[fd] = NULL;
+      h = NULL;
+    }
+  if (reason == NH_IO_CLOSE)
+    {
+      /* The real fd closes next (deactivate_process).  */
+      nh_io_note (NH_IO_EV_CLOSE, id, fd, 0);
+      if (h)
+	{
+	  nh_io_tab[fd] = NULL;
+	  nh_io_free (h);
+	}
+    }
+}
+
+bool
+nh_io_done (struct Lisp_Process *p)
+{
+  struct nh_io_h *h = nh_io_get (p);
+  if (!h)
+    return true;
+  if (!h->detached)
+    return false;
+  if (atomic_load (&nh_wk_dead))
+    return true;
+  nh_wk_lock (&nh_io_m);
+  bool done = !h->head && !h->eof && !h->err;
+  pthread_mutex_unlock (&nh_io_m);
+  return done;
+}
+
+/* The fatal path (Task 4's kill_buffer_processes hook): once the workers
+   are dead, a reader-owned process's fds all close here, with no
+   handshake and no lock, and P forgets them so nothing closes them
+   twice.  The handle is abandoned: nh-io may still hold it.  */
+void
+nh_io_dead_close (struct Lisp_Process *p)
+{
+  struct nh_io_h *h = nh_io_get (p);
+  if (!h || !atomic_load (&nh_wk_dead))
+    return;
+  atomic_store (&nh_io_live[p->infd], NULL);
+  nh_io_tab[p->infd] = NULL;
+  h->detached = true;
+  nh_io_direct (h);
+  for (int i = 0; i < PROCESS_OPEN_FDS; i++)
+    if (p->open_fd[i] >= 0)
+      {
+	emacs_close (p->open_fd[i]);
+	p->open_fd[i] = -1;
+      }
+  p->infd = p->outfd = -1;
+}
+
+void
+nh_io_release (struct Lisp_Process *p)
+{
+  struct nh_io_h *h = nh_io_get (p);
+  if (!h)
+    return;
+  NH_WK_ASSERT (h->detached);
+  nh_io_tab[p->infd] = NULL;
+  nh_io_free (h);
+}
+
+ptrdiff_t
+nh_io_read (struct Lisp_Process *p, int channel, char *buf, ptrdiff_t size,
+	    bool *handled)
+{
+  struct nh_io_h *h = nh_io_get (p);
+  *handled = h && (channel == h->sel || channel == p->infd);
+  if (!*handled)
+    return 0;
+  if (h->inl)
+    {
+      if (h->copy >= 0)
+	return nh_io_take_inline (h, buf, size);
+      *handled = false;
+      return 0;
+    }
+  /* The fatal path takes no lock (nh-io may hold it forever).  */
+  if (atomic_load (&nh_wk_dead))
+    {
+      errno = EAGAIN;
+      return -1;
+    }
+  ptrdiff_t n = nh_io_take (h, buf, size);
+  /* A drain (CHANNEL is the real fd) of a handed-back process reads the
+     real fd once the handle's bytes are delivered.  */
+  if (n < 0 && errno == EAGAIN && h->detached && channel == p->infd)
+    *handled = false;
+  return n;
 }
 
 void
@@ -59,15 +853,6 @@ void
 nh_io_resume (int infd)
 {
   (void) infd;
-}
-
-ptrdiff_t
-nh_io_read (struct Lisp_Process *p, int channel, bool *handled)
-{
-  (void) p;
-  (void) channel;
-  *handled = false;
-  return 0;
 }
 
 void
@@ -90,17 +875,139 @@ nh_io_tls_boot (struct Lisp_Process *p, void *gnutls_state)
   return 0;
 }
 
-void
-nh_io_dead_close (struct Lisp_Process *p)
+DEFUN ("nidhogg-set-process-reader", Fnidhogg_set_process_reader,
+       Snidhogg_set_process_reader, 2, 2, 0,
+       doc: /* Say whether the reader thread may own PROCESS's output.
+With FLAG nil, PROCESS's output is read on the main thread from now on,
+as without the reader: the reader hands it back, after delivering what
+it had read.  With FLAG non-nil (every process starts so), the reader
+may own it again, when PROCESS is eligible and its kind of process is
+switched on (`nidhogg-workers-process-reader' and its sub-switches).
+Return FLAG.  */)
+  (Lisp_Object process, Lisp_Object flag)
 {
-  (void) p;
+  CHECK_PROCESS (process);
+  struct Lisp_Process *p = XPROCESS (process);
+  if (0 <= p->infd && p->infd < FD_SETSIZE)
+    {
+      nh_io_optout[p->infd] = NILP (flag);
+      nh_io_proc_reader (process, !NILP (flag));
+    }
+  return flag;
 }
 
-#ifndef NH_WK_HARNESS
+DEFUN ("nidhogg-workers--test-io-info", Fnidhogg_workers__test_io_info,
+       Snidhogg_workers__test_io_info, 1, 1, 0,
+       doc: /* Return what the reader knows of PROCESS; for tests.
+A plist: `:owned' (non-nil while the reader owns PROCESS's output),
+`:mode' (`threads' or `inline'), `:select' (the fd the select set holds
+for it), `:copy' (the reader's copy of its fd), `:wake' (its wake fd;
+nil inline), `:fds' (how many fds the reader holds for it), `:queued'
+\(bytes read and not yet delivered) and `:refused' (why the last
+hand-over was refused: `off', `switch', `tls', `datagram', `server',
+`serial', `filter-t', `connecting', `opt-out', `fd-budget', `thread';
+nil if none was).  */)
+  (Lisp_Object process)
+{
+  CHECK_PROCESS (process);
+  struct Lisp_Process *p = XPROCESS (process);
+  struct nh_io_h *h = nh_io_get (p);
+  int why = 0 <= p->infd && p->infd < FD_SETSIZE ? nh_io_refused[p->infd] : 0;
+  Lisp_Object refused = why ? intern_c_string (nh_io_refusal_names[why]) : Qnil;
+  if (!h)
+    return list4 (QCowned, Qnil, intern_c_string (":refused"), refused);
+  nh_wk_lock (&nh_io_m);
+  ptrdiff_t queued = h->queued;
+  pthread_mutex_unlock (&nh_io_m);
+  int fds = (h->copy >= 0) + (h->wake.rfd >= 0)
+    + (h->wake.wfd >= 0 && h->wake.wfd != h->wake.rfd);
+  return listn (16, QCowned, h->detached ? Qnil : Qt,
+		intern_c_string (":mode"), h->inl ? Qinline : Qthreads,
+		intern_c_string (":select"), make_int (h->sel),
+		intern_c_string (":copy"), h->copy >= 0 ? make_int (h->copy) : Qnil,
+		intern_c_string (":wake"),
+		h->wake.rfd >= 0 ? make_int (h->wake.rfd) : Qnil,
+		intern_c_string (":fds"), make_int (fds),
+		intern_c_string (":queued"), make_int (queued),
+		intern_c_string (":refused"), refused);
+}
+
+DEFUN ("nidhogg-workers--test-io-log", Fnidhogg_workers__test_io_log,
+       Snidhogg_workers__test_io_log, 1, 1, 0,
+       doc: /* Start or stop the reader's event log; for tests.
+With ON non-nil, empty the log and start it, and return nil.  With ON
+nil, stop it and return its events, oldest first (the latest 4096 at
+most): each a list (EVENT ID FD N).  EVENT is `handover' (FD the real
+fd), `read', `eof' or `error' (by nh-io, or inline by the main thread,
+from the copy FD; N bytes), `ack' (nh-io dropped the handle and closed
+its copy), `close' (the real fd FD closes next), `timeout' (a hand-back
+gave up waiting) or `direct' (fds closed without nh-io).  ID names the
+handle: every hand-over makes a new one.  */)
+  (Lisp_Object on)
+{
+  static const char *const names[NH_IO_EV_N] = {
+    "handover", "read", "eof", "error", "ack", "close", "timeout", "direct"
+  };
+  pthread_mutex_lock (&nh_io_log_m);
+  Lisp_Object events = Qnil;
+  if (NILP (on))
+    {
+      atomic_store (&nh_io_logging, false);
+      int64_t first = nh_io_nlog > NH_IO_LOG ? nh_io_nlog - NH_IO_LOG : 0;
+      for (int64_t i = nh_io_nlog - 1; i >= first; i--)
+	{
+	  struct nh_io_logent *e = &nh_io_log[i % NH_IO_LOG];
+	  events = Fcons (list4 (intern_c_string (names[e->ev]), make_int (e->id),
+				 make_int (e->fd), make_int (e->n)),
+			  events);
+	}
+    }
+  else
+    {
+      nh_io_nlog = 0;
+      atomic_store (&nh_io_logging, true);
+    }
+  pthread_mutex_unlock (&nh_io_log_m);
+  return events;
+}
+
+DEFUN ("nidhogg-workers--test-io-crash", Fnidhogg_workers__test_io_crash,
+       Snidhogg_workers__test_io_crash, 0, 0, 0,
+       doc: /* Make nh-io dereference NULL; for the fatal-path tests.
+Return nil if nh-io is not running (no process was handed over in
+`threads' mode yet).  */)
+  (void)
+{
+  return nh_io_test_crash () ? Qt : Qnil;
+}
+
+DEFUN ("nidhogg-workers--test-io-hold-lock", Fnidhogg_workers__test_io_hold_lock,
+       Snidhogg_workers__test_io_hold_lock, 1, 1, 0,
+       doc: /* With FLAG non-nil, take nh-io's queue mutex and keep it; nil gives it back.
+For the fatal-path tests: nh-io blocks on its next append, and nothing
+on the fatal path may take the mutex.  */)
+  (Lisp_Object flag)
+{
+  if (NILP (flag))
+    pthread_mutex_unlock (&nh_io_m);
+  else
+    nh_wk_lock (&nh_io_m);
+  return flag;
+}
 
 void
 nh_io_syms (void)
 {
+  DEFSYM (Qnidhogg_workers_process_reader, "nidhogg-workers-process-reader");
+  DEFSYM (Qnidhogg_workers_reader_pipes, "nidhogg-workers-reader-pipes");
+  DEFSYM (Qnidhogg_workers_reader_sockets, "nidhogg-workers-reader-sockets");
+  DEFSYM (Qnidhogg_workers_reader_ptys, "nidhogg-workers-reader-ptys");
+  DEFSYM (QCowned, ":owned");
+  defsubr (&Snidhogg_set_process_reader);
+  defsubr (&Snidhogg_workers__test_io_info);
+  defsubr (&Snidhogg_workers__test_io_log);
+  defsubr (&Snidhogg_workers__test_io_crash);
+  defsubr (&Snidhogg_workers__test_io_hold_lock);
 }
 
 #endif /* not NH_WK_HARNESS */
