@@ -35,6 +35,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "font.h"
 #include "xsettings.h"
 #include "atimer.h"
+#ifdef HAVE_GLITNIR
+#include "glitnir-pgtk.h"
+#endif
 
 static int x_decode_color (struct frame *f, Lisp_Object color_name,
 			   int mono_color);
@@ -1630,6 +1633,9 @@ DEFUN ("x-create-frame", Fx_create_frame, Sx_create_frame, 1, 1, 0,
       FRAME_OUTPUT_DATA (f)->ttip_window = NULL;
 
       unblock_input ();
+#ifdef HAVE_GLITNIR
+      glitnir_pgtk_scene_changed (f);
+#endif
     }
 
   if (FRAME_GTK_OUTER_WIDGET (f))

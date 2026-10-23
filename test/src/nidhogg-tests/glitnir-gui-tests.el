@@ -559,4 +559,201 @@ Glitnir is turned back on after (`revive'), for the tests that follow."
 (ert-deftest glitnir-gui/panic-in-draw-paints-stock ()
   (glitnir-gui--panics 'draw))
 
+;; Layers, the stacking list and scene commits from pgtk's hooks (Task 32).  Each test runs under `verify', which
+;; also checks at every commit that Glitnir stacks the child frames as GDK stacks their windows.
+
+(defmacro glitnir-gui--verified (&rest body)
+  "Run BODY with `glitnir-debug' `verify'; no violation may be counted meanwhile."
+  (declare (indent 0))
+  `(let ((glitnir-debug 'verify))
+     (redisplay t) (sit-for 0.1)
+     (glitnir-stats nil t)
+     ,@body
+     (redisplay t) (sit-for 0.1)
+     (should (= (glitnir-gui--violations) 0))))
+
+(defun glitnir-gui--children (n)
+  "N child frames of the selected frame, made and shown one after the other."
+  (let ((b (glitnir-gui--text-buffer "*glitnir-stack*" 5)))
+    (cl-loop for i below n
+             collect (glitnir-gui--child b t (nth (% i 4) '("#00ffff" "#ffff00" "#ff00ff" "#00ff00"))))))
+
+(defun glitnir-gui--nested (parent)
+  "A shown child frame of PARENT."
+  (let* ((root (selected-frame))
+         (f (make-frame `((parent-frame . ,parent) (minibuffer . nil) (left . 10) (top . 10)
+                          (width . 20) (height . 5) (background-color . "#0000ff")
+                          (visibility . nil) (no-accept-focus . t) (no-other-frame . t)
+                          (undecorated . t)))))
+    (select-frame root)
+    (make-frame-visible f)
+    f))
+
+(defun glitnir-gui--delete (frames)
+  (dolist (f (reverse frames))
+    (when (frame-live-p f) (delete-frame f t)))
+  (when (get-buffer "*glitnir-stack*") (kill-buffer "*glitnir-stack*")))
+
+(ert-deftest glitnir-gui/stacking-follows-raise-lower ()
+  (let ((fs (glitnir-gui--children 3)))
+    (unwind-protect
+        (glitnir-gui--verified
+          (pcase-let ((`(,a ,b ,c) fs))
+            (redisplay t)
+            (should (cl-every #'frame-visible-p fs))
+            (should (equal (glitnir--stacking) (list a b c)))
+            (raise-frame a)
+            (should (equal (glitnir--stacking) (list b c a)))
+            (lower-frame c)
+            (should (equal (glitnir--stacking) (list c b a)))
+            (raise-frame b) (redisplay t)
+            (should (equal (glitnir--stacking) (list c a b)))))
+      (glitnir-gui--delete fs))))
+
+(ert-deftest glitnir-gui/map-raises-the-node ()
+  (let ((fs (glitnir-gui--children 2)))
+    (unwind-protect
+        (glitnir-gui--verified
+          (pcase-let ((`(,a ,b) fs))
+            (redisplay t)
+            (should (equal (glitnir--stacking) (list a b)))
+            (make-frame-invisible a) (redisplay t)
+            (should (equal (glitnir--stacking) (list a b))) ; hidden nodes keep their place
+            (make-frame-visible a) (redisplay t)
+            (should (equal (glitnir--stacking) (list b a)))))
+      (glitnir-gui--delete fs))))
+
+(ert-deftest glitnir-gui/zgroup-changes-nothing-for-child-frames ()
+  ;; pgtk child frames have no z-group (pgtk_set_z_group needs an outer widget).
+  (let ((fs (glitnir-gui--children 2)))
+    (unwind-protect
+        (glitnir-gui--verified
+          (pcase-let ((`(,a ,b) fs))
+            (redisplay t)
+            (set-frame-parameter a 'z-group 'above) (redisplay t)
+            (should (equal (glitnir--stacking) (list a b)))
+            (set-frame-parameter b 'z-group 'below) (redisplay t)
+            (should (equal (glitnir--stacking) (list a b)))))
+      (glitnir-gui--delete fs))))
+
+(ert-deftest glitnir-gui/reparent-moves-the-node ()
+  (let ((fs (glitnir-gui--children 3)))
+    (unwind-protect
+        (glitnir-gui--verified
+          (pcase-let ((`(,a ,b ,c) fs))
+            (redisplay t)
+            ;; a goes on top of c's child frames, inside c
+            (set-frame-parameter a 'parent-frame c) (redisplay t)
+            (should (eq (frame-parent a) c))
+            (should (equal (glitnir--stacking) (list b c a)))
+            ;; b goes into a, inside c
+            (set-frame-parameter b 'parent-frame a) (redisplay t)
+            (should (equal (glitnir--stacking) (list c a b)))))
+      (glitnir-gui--delete fs))))
+
+(ert-deftest glitnir-gui/unparent-makes-a-root ()
+  (let* ((root (selected-frame)) (fs (glitnir-gui--children 2)) (d nil))
+    (unwind-protect
+        (glitnir-gui--verified
+          (pcase-let ((`(,a ,b) fs))
+            (redisplay t)
+            (set-frame-parameter a 'parent-frame nil)
+            (select-frame root)
+            (redisplay t) (sit-for 0.3)
+            (should-not (frame-parent a))
+            (should (equal (glitnir--stacking) (list b)))
+            (should (glitnir-active-p a))
+            (should (null (glitnir--stacking a)))
+            ;; a root of its own: its child frames stack in its scene
+            (setq d (glitnir-gui--nested a))
+            (redisplay t)
+            (should (equal (glitnir--stacking a) (list d)))
+            (should (equal (glitnir--stacking) (list b)))))
+      (select-frame root)
+      (glitnir-gui--delete (append fs (list d))))))
+
+(ert-deftest glitnir-gui/nested-child-stacks-in-its-parent ()
+  (let* ((fs (glitnir-gui--children 2)) (c nil))
+    (unwind-protect
+        (glitnir-gui--verified
+          (pcase-let ((`(,a ,b) fs))
+            (setq c (glitnir-gui--nested a))
+            (redisplay t)
+            (should (equal (glitnir--stacking) (list a c b)))
+            (raise-frame c) (redisplay t)
+            (should (equal (glitnir--stacking) (list a c b))) ; inside a, below b
+            (raise-frame a) (redisplay t)
+            (should (equal (glitnir--stacking) (list b a c)))))
+      (glitnir-gui--delete (append fs (list c))))))
+
+(ert-deftest glitnir-gui/delete-child-while-frozen ()
+  ;; Review Focus 1: a timer deletes a shown child (then, in the second round, the parent of a shown child) between
+  ;; the root's freeze and its next consistency point.  The commit drops the node (and the nodes under it), nothing
+  ;; reads their pixels (no `verify' violation), and the root thaws at the next point, which outside redisplay is
+  ;; GLib's next idle run.  The freeze is the first damage's, made by `glitnir--debug-freeze' in the same timer, so
+  ;; GLib runs nothing between it and the deletion.
+  (let* ((fs (glitnir-gui--children 2)) (c nil) (frozen nil))
+    (cl-flet ((delete-frozen (f)
+                (setq frozen 'unset)
+                (run-at-time 0 nil (lambda ()
+                                     (glitnir--debug-freeze)
+                                     (setq frozen (glitnir--frozen-p))
+                                     (delete-frame f t)))
+                (accept-process-output nil 0.05)
+                (should (eq frozen t))
+                (should-not (frame-live-p f))
+                (should-not (glitnir--frozen-p))
+                (accept-process-output nil 0.2)))
+      (unwind-protect
+          (glitnir-gui--verified
+            (pcase-let ((`(,a ,b) fs))
+              (redisplay t) (sit-for 0.1)
+              (delete-frozen a)
+              (should (equal (glitnir--stacking) (list b)))
+              ;; the parent of a shown nested child
+              (setq c (glitnir-gui--nested b))
+              (redisplay t) (sit-for 0.1)
+              (should (equal (glitnir--stacking) (list b c)))
+              (delete-frozen b)
+              (should-not (frame-live-p c))
+              (should (null (glitnir--stacking)))
+              (should (glitnir-active-p))))
+        (glitnir-gui--delete (append fs (list c)))))))
+
+(ert-deftest glitnir-gui/resized-child-keeps-its-last-complete-picture ()
+  (let ((fs (glitnir-gui--children 1)))
+    (unwind-protect
+        (glitnir-gui--verified
+          (let* ((c (car fs)) (s (frame-scale-factor))
+                 (size (lambda () (list (round (* (frame-pixel-width c) s)) (round (* (frame-pixel-height c) s)))))
+                 (old (progn (redisplay t) (sit-for 0.1) (funcall size))))
+            (should (equal (cddr (glitnir--layer-rect c)) old))
+            ;; GTK allocates the new size at its next layout (GLib runs, redisplay does not): until the child is
+            ;; redrawn, its node keeps the size of the picture it has
+            (set-frame-size c 70 20)
+            (accept-process-output nil 0.2)
+            (glitnir--stacking)
+            (should (equal (cddr (glitnir--layer-rect c)) old))
+            (redisplay t) (sit-for 0.1)
+            (should-not (equal (funcall size) old))
+            (should (equal (cddr (glitnir--layer-rect c)) (funcall size)))))
+      (glitnir-gui--delete fs))))
+
+(ert-deftest glitnir-gui/scene-hook-commits-outside-redisplay ()
+  ;; A timer moves a shown child and nothing is redrawn: the move hook commits the scene at once, so the next paint
+  ;; shows a commit made after the move (with no Emacs damage, no point would have committed).
+  (let ((fs (glitnir-gui--children 1)))
+    (unwind-protect
+        (glitnir-gui--verified
+          (let ((c (car fs)) (s (frame-scale-factor)))
+            (redisplay t) (sit-for 0.2)
+            (let ((t0 (glitnir--now-ns)) (n0 (plist-get (glitnir-stats) :count)))
+              (run-at-time 0 nil (lambda () (set-frame-position c 260 230)))
+              (accept-process-output nil 0.3)
+              (should-not (glitnir--frozen-p))
+              (should (>= (plist-get (glitnir-stats) :count) (1+ n0)))
+              (should (>= (plist-get (glitnir--last-paint) :commit-ns) t0))
+              (should (equal (take 2 (glitnir--layer-rect c)) (list (round (* 260 s)) (round (* 230 s))))))))
+      (glitnir-gui--delete fs))))
+
 ;;; glitnir-gui-tests.el ends here

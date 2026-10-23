@@ -130,7 +130,33 @@ struct glitnir_root
   cairo_surface_t *target;
   cairo_surface_t *snapshot;
   const char *snapshot_error;
+
+  /* The scene.  A root: Glitnir holds a scene for it (SCENE), which the
+     next sync rebuilds (SCENE_STALE: its hooks ran while Glitnir did not
+     draw it, so the stacking may have moved without Glitnir).  Every
+     frame: the root whose scene holds its layer (LAYER_ROOT, 0: none), the
+     layer as last handed over (LAYER), and its windows' layers (WINS,
+     NWINS of WINS_SIZE).  */
+  bool scene, scene_stale;
+  uint64_t layer_root;
+  GlitnirLayerDesc layer;
+  struct win_layer *wins;
+  ptrdiff_t nwins, wins_size;
 };
+
+/* A window's layer as last handed over.  */
+struct win_layer
+{
+  uint64_t id;
+  GlitnirRect rect;
+  double scale;
+  bool seen;
+};
+
+/* A window's layer id: its sequence_number, tagged so that it never equals
+   a frame's id (ids are unique within a root, whatever their kind).  */
+#define WINDOW_LAYER_ID(w) \
+  (((uint64_t) 1 << 63) | (uint64_t) (w)->sequence_number)
 
 static uint64_t
 now_ns (void)
@@ -465,7 +491,7 @@ glitnir_pgtk_scroll (struct frame *f, struct window *w, int x, int from_y,
 			 : device_rect (f, r, x, from_y, width,
 					to_y - from_y));
   r->pending = r->known = true;
-  GLITNIR_CALL (glitnir_scroll (r->id, w->sequence_number, area,
+  GLITNIR_CALL (glitnir_scroll (r->id, WINDOW_LAYER_ID (w), area,
 				lround ((to_y - from_y) * r->sy), exposed));
 }
 
@@ -761,12 +787,12 @@ paint_flash (struct glitnir_root *r, cairo_t *cr)
   cairo_restore (cr);
 }
 
-/* Move the damage of ROOT's child frames into ROOT's batch, in ROOT's
-   device pixels (each child where GTK has placed its widget).  */
+/* Hand the damage of ROOT's child frames to Glitnir under their own ids:
+   the commit moves each to its child's layer.  `verify' first takes it to
+   check the child's surface, then gives it back.  */
 static void
 gather_children (struct glitnir_root *root)
 {
-  GtkWidget *rw = FRAME_GTK_WIDGET (root->frame);
   Lisp_Object tail, frame;
   FOR_EACH_FRAME (tail, frame)
     {
@@ -786,36 +812,296 @@ gather_children (struct glitnir_root *root)
 	  continue;
 	}
       flush_damage (s);
-      const GlitnirRect *p = NULL;
-      size_t n = 0;
       s->pending = s->all = false;
-      if (GLITNIR_CALL (glitnir_damage_pending (s->id, &p, &n)) != GLITNIR_OK)
-	n = 0;
-      if (verifying ())
-	verify_frame (s, p, n);
-      else
-	verify_drop (s);
-      GtkWidget *cw = FRAME_GTK_WIDGET (c);
-      if (n == 0 || cw == NULL || rw == NULL || !gtk_widget_get_mapped (cw))
-	continue;		/* nothing shown */
-      int x, y;
-      if (!gtk_widget_translate_coordinates (cw, rw, 0, 0, &x, &y))
+      if (!verifying ())
 	{
-	  damage_all (root);
+	  verify_drop (s);
 	  continue;
 	}
-      int64_t cw_px = ceil (FRAME_PIXEL_WIDTH (c) * s->sx);
-      int64_t ch_px = ceil (FRAME_PIXEL_HEIGHT (c) * s->sy);
-      int64_t dx = lround (x * root->sx), dy = lround (y * root->sy);
-      for (size_t i = 0; i < n && !root->all; i++)
+      const GlitnirRect *p = NULL;
+      size_t n = 0;
+      if (GLITNIR_CALL (glitnir_damage_pending (s->id, &p, &n)) != GLITNIR_OK)
+	continue;
+      verify_frame (s, p, n);
+      GlitnirRect back[2 * GLITNIR_PGTK_BATCH];
+      if (n > ARRAYELTS (back))
 	{
-	  int64_t x0 = max (p[i].x, 0), y0 = max (p[i].y, 0);
-	  int64_t x1 = min ((int64_t) p[i].x + p[i].w, cw_px);
-	  int64_t y1 = min ((int64_t) p[i].y + p[i].h, ch_px);
-	  if (x1 > x0 && y1 > y0)
-	    batch_add (root, (GlitnirRect) { x0 + dx, y0 + dy,
-					     x1 - x0, y1 - y0 });
+	  s->known = true;
+	  GLITNIR_CALL (glitnir_damage_all (s->id));
+	  continue;
 	}
+      memcpy (back, p, n * sizeof *back);
+      s->known = true;
+      GLITNIR_CALL (glitnir_damage_add_n (s->id, back, n));
+    }
+}
+
+/* The scene (Task 32): ROOT's frame layer, a window layer per live window,
+   and a child node per child frame, nested as the frames are, in ROOT's
+   device pixels.  A sync hands Glitnir what changed since the last one;
+   the commit compares the scene with the committed one.  The stacking of
+   the child nodes follows GDK's: a new node goes on top of its parent's
+   (new frames are synced in GDK's order), and raise, lower, map and
+   reparent move it as GDK moves the frame's window.  */
+
+static struct frame *
+frame_of_id (uint64_t id)
+{
+  Lisp_Object tail, frame;
+  FOR_EACH_FRAME (tail, frame)
+    {
+      struct frame *f = XFRAME (frame);
+      if (FRAME_PGTK_P (f) && f->output_data.pgtk
+	  && FRAME_X_OUTPUT (f)->glitnir
+	  && ((struct glitnir_root *) FRAME_X_OUTPUT (f)->glitnir)->id == id)
+	return f;
+    }
+  return NULL;
+}
+
+/* F and the frames under it hold no layer any more.  */
+static void
+forget_layers (struct frame *f)
+{
+  Lisp_Object tail, frame;
+  FOR_EACH_FRAME (tail, frame)
+    {
+      struct frame *c = XFRAME (frame);
+      if (!FRAME_PGTK_P (c) || c->output_data.pgtk == NULL
+	  || FRAME_X_OUTPUT (c)->glitnir == NULL)
+	continue;
+      struct frame *a = c;
+      while (a && a != f)
+	a = FRAME_PARENT_FRAME (a);
+      if (a)
+	{
+	  struct glitnir_root *s = FRAME_X_OUTPUT (c)->glitnir;
+	  s->layer_root = 0;
+	  s->nwins = 0;
+	}
+    }
+}
+
+/* Where F's window sits among its siblings in GDK, bottom to top: higher
+   is upper.  A frame without a window yet comes on top (GDK puts a new
+   window there).  */
+static int
+gdk_height (struct frame *f)
+{
+  GtkWidget *w = FRAME_GTK_WIDGET (f);
+  GdkWindow *win = w ? gtk_widget_get_window (w) : NULL;
+  GdkWindow *parent = win ? gdk_window_get_parent (win) : NULL;
+  int i = parent ? g_list_index (gdk_window_peek_children (parent), win) : -1;
+  return i < 0 ? INT_MAX : -i;	/* GDK lists children top first */
+}
+
+static int
+height_cmp (const void *a, const void *b)
+{
+  int x = gdk_height (*(struct frame *const *) a);
+  int y = gdk_height (*(struct frame *const *) b);
+  return (x > y) - (x < y);
+}
+
+static bool
+desc_equal (const GlitnirLayerDesc *a, const GlitnirLayerDesc *b)
+{
+  return (a->id == b->id && a->parent == b->parent && a->kind == b->kind
+	  && a->rect.x == b->rect.x && a->rect.y == b->rect.y
+	  && a->rect.w == b->rect.w && a->rect.h == b->rect.h
+	  && a->scale == b->scale && a->visible == b->visible);
+}
+
+/* The windows of the tree at WINDOW on S's frame: their layers under S's,
+   at S's place OX, OY at SCALE.  */
+static void
+sync_windows (struct glitnir_root *root, struct glitnir_root *s,
+	      Lisp_Object window, int ox, int oy, double scale)
+{
+  for (; WINDOWP (window) && !glitnir_pgtk_dead;
+       window = XWINDOW (window)->next)
+    {
+      struct window *w = XWINDOW (window);
+      if (WINDOWP (w->contents))
+	{
+	  sync_windows (root, s, w->contents, ox, oy, scale);
+	  continue;
+	}
+      int x, y, wd, ht;
+      window_box (w, ANY_AREA, &x, &y, &wd, &ht);
+      int x0 = floor (x * scale), y0 = floor (y * scale);
+      GlitnirRect r = { ox + x0, oy + y0, (int) ceil ((x + wd) * scale) - x0,
+			(int) ceil ((y + ht) * scale) - y0 };
+      uint64_t id = WINDOW_LAYER_ID (w);
+      ptrdiff_t i = 0;
+      while (i < s->nwins && s->wins[i].id != id)
+	i++;
+      if (i == s->nwins)
+	{
+	  if (s->nwins == s->wins_size)
+	    s->wins = xpalloc (s->wins, &s->wins_size, 1, -1,
+			       sizeof *s->wins);
+	  s->nwins++;
+	}
+      else if (s->wins[i].rect.x == r.x && s->wins[i].rect.y == r.y
+	       && s->wins[i].rect.w == r.w && s->wins[i].rect.h == r.h
+	       && s->wins[i].scale == scale)
+	{
+	  s->wins[i].seen = true;
+	  continue;
+	}
+      s->wins[i] = (struct win_layer) { id, r, scale, true };
+      GlitnirLayerDesc d = { .id = id, .parent = s->id,
+			     .kind = GLITNIR_LAYER_WINDOW, .rect = r,
+			     .scale = scale, .visible = 1 };
+      GLITNIR_CALL (glitnir_layer_upsert (root->id, &d));
+    }
+}
+
+/* F's layer (under PARENT, at X, Y), its windows' and, recursively, its
+   child frames'.  */
+static void
+sync_frame (struct glitnir_root *root, struct frame *f, uint64_t parent,
+	    int x, int y)
+{
+  struct glitnir_root *s = frame_state (f);
+  if (s == NULL || glitnir_pgtk_dead)
+    return;
+  GlitnirLayerDesc d = { .id = s->id, .parent = parent, .visible = 1 };
+  if (f == root->frame)
+    {
+      d.kind = GLITNIR_LAYER_FRAME;
+      d.scale = root->sx;
+      d.rect = (GlitnirRect) { 0, 0, ceil (FRAME_PIXEL_WIDTH (f) * root->sx),
+			       ceil (FRAME_PIXEL_HEIGHT (f) * root->sy) };
+    }
+  else
+    {
+      /* At its position now, with the size of its last completely drawn
+	 surface (pgtk keeps it active until a redrawn one flips).  */
+      d.kind = GLITNIR_LAYER_CHILD;
+      cairo_t *cr = f->output_data.pgtk->cr_active;
+      cairo_surface_t *sf = cr ? cairo_get_target (cr) : NULL;
+      double sx = s->sx, sy = s->sy;
+      GtkWidget *w = FRAME_GTK_WIDGET (f);
+      if (sf && cairo_surface_get_type (sf) == CAIRO_SURFACE_TYPE_IMAGE)
+	{
+	  cairo_surface_get_device_scale (sf, &sx, &sy);
+	  d.rect = (GlitnirRect) { x, y, cairo_image_surface_get_width (sf),
+				   cairo_image_surface_get_height (sf) };
+	  d.visible = w && gtk_widget_get_mapped (w);
+	}
+      else
+	{
+	  /* Never drawn: nothing to show.  */
+	  d.rect = (GlitnirRect) { x, y, ceil (FRAME_PIXEL_WIDTH (f) * sx),
+				   ceil (FRAME_PIXEL_HEIGHT (f) * sy) };
+	  d.visible = 0;
+	}
+      d.scale = sx;
+    }
+  if (s->layer_root != root->id)
+    s->nwins = 0;
+  if (s->layer_root != root->id || !desc_equal (&d, &s->layer))
+    {
+      s->layer = d;
+      s->layer_root = root->id;
+      GLITNIR_CALL (glitnir_layer_upsert (root->id, &d));
+    }
+
+  for (ptrdiff_t i = 0; i < s->nwins; i++)
+    s->wins[i].seen = false;
+  sync_windows (root, s, f->root_window, x, y, d.scale);
+  ptrdiff_t k = 0;
+  for (ptrdiff_t i = 0; i < s->nwins; i++)
+    if (s->wins[i].seen)
+      s->wins[k++] = s->wins[i];
+    else if (!glitnir_pgtk_dead)
+      GLITNIR_CALL (glitnir_layer_remove (root->id, s->wins[i].id));
+  s->nwins = k;
+
+  /* The child frames, bottom to top as GDK stacks them.  */
+  ptrdiff_t n = 0;
+  Lisp_Object tail, frame;
+  FOR_EACH_FRAME (tail, frame)
+    if (FRAME_PARENT_FRAME (XFRAME (frame)) == f)
+      n++;
+  if (n == 0)
+    return;
+  struct frame **kids = xnmalloc (n, sizeof *kids);
+  n = 0;
+  FOR_EACH_FRAME (tail, frame)
+    {
+      struct frame *c = XFRAME (frame);
+      if (FRAME_PARENT_FRAME (c) == f && FRAME_PGTK_P (c)
+	  && c->output_data.pgtk && !FRAME_TOOLTIP_P (c))
+	kids[n++] = c;
+    }
+  qsort (kids, n, sizeof *kids, height_cmp);
+  for (ptrdiff_t i = 0; i < n; i++)
+    sync_frame (root, kids[i], s->id, x + lround (kids[i]->left_pos * root->sx),
+		y + lround (kids[i]->top_pos * root->sy));
+  xfree (kids);
+}
+
+/* Bring ROOT's scene in Glitnir up to date (made at the first sync, made
+   again when stale).  */
+static void
+layers_sync (struct glitnir_root *root)
+{
+  if (root->scene && root->scene_stale)
+    {
+      root->scene = false;
+      GLITNIR_CALL (glitnir_root_drop (root->id));
+    }
+  root->scene_stale = false;
+  if (!root->scene)
+    {
+      forget_layers (root->frame);
+      root->scene = true;
+      if (GLITNIR_CALL (glitnir_root_new (root->id)) != GLITNIR_OK)
+	return;
+    }
+  sync_frame (root, root->frame, 0, 0, 0);
+}
+
+/* `verify': Glitnir's stacking of ROOT's child frames is GDK's (each two
+   siblings in the same order).  */
+static void
+verify_stacking (struct glitnir_root *root)
+{
+  const uint64_t *ids = NULL;
+  size_t n = 0;
+  if (GLITNIR_CALL (glitnir_stack_list (root->id, &ids, &n)) != GLITNIR_OK
+      || n < 2)
+    return;
+  struct frame **fs = xnmalloc (n, sizeof *fs);
+  for (size_t i = 0; i < n; i++)
+    fs[i] = frame_of_id (ids[i]);
+  bool bad = false;
+  for (size_t i = 0; i < n && !bad; i++)
+    for (size_t j = i + 1; j < n && !bad; j++)
+      {
+	struct frame *a = fs[i], *b = fs[j];
+	if (a == NULL || b == NULL
+	    || FRAME_PARENT_FRAME (a) != FRAME_PARENT_FRAME (b))
+	  continue;
+	GtkWidget *wa = FRAME_GTK_WIDGET (a), *wb = FRAME_GTK_WIDGET (b);
+	GdkWindow *ga = wa ? gtk_widget_get_window (wa) : NULL;
+	GdkWindow *gb = wb ? gtk_widget_get_window (wb) : NULL;
+	if (ga == NULL || gb == NULL
+	    || gdk_window_get_parent (ga) != gdk_window_get_parent (gb))
+	  continue;
+	/* A below B in Glitnir: A after B in GDK's list (top first).  */
+	bad = gdk_height (a) > gdk_height (b);
+      }
+  xfree (fs);
+  if (bad)
+    {
+      root->violations++;
+      fprintf (stderr,
+	       "glitnir verify: %"PRIu64" stacking differs from GDK's\n",
+	       root->id);
     }
 }
 
@@ -849,14 +1135,9 @@ present (struct glitnir_root *root)
       GLITNIR_CALL (glitnir_damage_all (root->id));
     }
   flush_damage (root);
-  if (!root->pending)
-    {
-      if (verifying ())
-	verify_frame (root, NULL, 0);
-      else
-	verify_drop (root);
-      return false;
-    }
+  layers_sync (root);
+  if (glitnir_pgtk_dead)
+    return false;
   root->pending = root->all = false;
   GlitnirCommitOut out = { NULL, 0 };
   int32_t rc;
@@ -875,7 +1156,11 @@ present (struct glitnir_root *root)
       return false;
     }
   if (verifying ())
-    verify_frame (root, out.rects, out.n);
+    {
+      verify_frame (root, out.rects, out.n);
+      /* OUT stays valid: listing the stacking leaves the commit alone.  */
+      verify_stacking (root);
+    }
   else
     verify_drop (root);
   bool flash = debug_is ("damage");
@@ -965,6 +1250,9 @@ glitnir_pgtk_consistency_point (struct frame *f, int which)
 	 shows everything once.  No call into Glitnir.  */
       if (root->dirty && FRAME_GTK_WIDGET (rf))
 	gtk_widget_queue_draw (FRAME_GTK_WIDGET (rf));
+      /* The hooks change GDK's stacking meanwhile, not Glitnir's.  */
+      if (!glitnir_enable || glitnir_pgtk_dead)
+	root->scene_stale = true;
       root->dirty = root->scene_pending = false;
       thaw (root);
       if (which <= 2 && root->t_commit == 0)
@@ -1014,7 +1302,107 @@ glitnir_pgtk_scene_changed (struct frame *f)
   if (root == NULL)
     return;
   root->scene_pending = true;
+  /* Inside redisplay the change waits for point 1; GTK must not paint the
+     root meanwhile (it would show the scene before the commit).  */
+  if ((redisplaying_p || buffer_flipping_blocked_p ())
+      && recording (root->frame))
+    freeze (root);
   glitnir_pgtk_consistency_point (f, 4);
+}
+
+/* Raise (RAISE) or lower child frame F's node, as GDK just did its
+   window.  */
+static void
+restack (struct frame *f, bool raise)
+{
+  struct glitnir_root *root = root_state (f), *s = frame_state (f);
+  if (root == NULL || s == NULL)
+    return;
+  if (FRAME_PARENT_FRAME (f) && recording (root->frame))
+    {
+      layers_sync (root);	/* a node to move, and every newer one */
+      if (s->layer_root == root->id)
+	GLITNIR_CALL (raise ? glitnir_stack_raise (root->id, s->id)
+		      : glitnir_stack_lower (root->id, s->id));
+    }
+  glitnir_pgtk_scene_changed (f);
+}
+
+void
+glitnir_pgtk_raise_lower (struct frame *f, bool raise)
+{
+  /* pgtk raises and lowers visible frames only.  */
+  if (FRAME_VISIBLE_P (f))
+    restack (f, raise);
+}
+
+void
+glitnir_pgtk_frame_mapped (struct frame *f)
+{
+  /* gtk_widget_show maps the frame's window, and gdk_window_show raises
+     it; a widget GTK showed already (a child frame shows at its creation)
+     stays where it is.  */
+  int h = gdk_height (f);
+  Lisp_Object tail, frame;
+  FOR_EACH_FRAME (tail, frame)
+    {
+      struct frame *c = XFRAME (frame);
+      if (c != f && FRAME_PARENT_FRAME (c)
+	  && FRAME_PARENT_FRAME (c) == FRAME_PARENT_FRAME (f)
+	  && FRAME_PGTK_P (c) && c->output_data.pgtk
+	  && gdk_height (c) != INT_MAX && gdk_height (c) > h)
+	{
+	  glitnir_pgtk_scene_changed (f);
+	  return;
+	}
+    }
+  restack (f, true);
+}
+
+void
+glitnir_pgtk_reparented (struct frame *f)
+{
+  struct glitnir_root *s = frame_state (f), *root = root_state (f);
+  if (s == NULL || root == NULL)
+    return;
+  uint64_t old = s->layer_root;
+  if (old != 0 && old != root->id)
+    {
+      /* F left the root whose scene holds its layer.  */
+      if (old == s->id)
+	{
+	  /* F was a root: its scene goes; it is drawn by its new root.  */
+	  s->scene = false;
+	  s->dirty = s->scene_pending = false;
+	  thaw (s);
+	  GLITNIR_CALL (glitnir_root_drop (s->id));
+	}
+      else
+	{
+	  struct frame *of = frame_of_id (old);
+	  struct glitnir_root *o = of ? FRAME_X_OUTPUT (of)->glitnir : NULL;
+	  if (o && recording (of))
+	    {
+	      GLITNIR_CALL (glitnir_layer_remove (old, s->id));
+	      glitnir_pgtk_scene_changed (of);
+	    }
+	  else if (o)
+	    o->scene_stale = true;
+	}
+      forget_layers (f);
+    }
+  else if (old == root->id && FRAME_PARENT_FRAME (f) && recording (root->frame))
+    {
+      /* Within the root: on top of the new parent's nodes, as
+	 gtk_fixed_put and the show after it put its window.  */
+      struct glitnir_root *p = frame_state (FRAME_PARENT_FRAME (f));
+      if (p && p->layer_root == root->id)
+	{
+	  s->layer.parent = p->id;
+	  GLITNIR_CALL (glitnir_stack_reparent (root->id, s->id, p->id));
+	}
+    }
+  glitnir_pgtk_scene_changed (f);
 }
 
 /* Copy the widget's rectangle of TARGET into a new ARGB32 surface.  */
@@ -1274,6 +1662,26 @@ glitnir_pgtk_free_frame (struct frame *f)
     g_source_remove (r->flash_id);
   verify_drop (r);
   thaw (r);
+  /* Its node leaves its root's scene (F's own child frames went before
+     it), so the root's next commit damages where it was and nothing reads
+     its pixels after.  F is off the frame list already: the commit waits
+     for the next point, the root frozen until then.  */
+  struct frame *rf = (r->layer_root && r->layer_root != r->id
+		      ? frame_of_id (r->layer_root) : NULL);
+  struct glitnir_root *root = rf ? FRAME_X_OUTPUT (rf)->glitnir : NULL;
+  if (root && recording (rf))
+    {
+      GLITNIR_CALL (glitnir_layer_remove (root->id, r->id));
+      root->scene_pending = true;
+      freeze (root);
+      if (root->idle_id == 0)
+	root->idle_id = g_idle_add (idle_point, root);
+    }
+  else if (root)
+    root->scene_stale = true;
+  if (r->scene)
+    GLITNIR_CALL (glitnir_root_drop (r->id));
+  xfree (r->wins);
   GLITNIR_CALL_UNCOUNTED (glitnir_stats_forget (r->id));
   if (r->known)
     GLITNIR_CALL (glitnir_damage_forget (r->id));
@@ -1354,6 +1762,8 @@ glitnir_pgtk_debug_panic (int where)
       if (!FRAME_PGTK_P (f) || f->output_data.pgtk == NULL)
 	continue;
       struct glitnir_root *r = FRAME_X_OUTPUT (f)->glitnir;
+      if (r)
+	r->scene_stale = true;	/* the scenes before the panic */
       if (r && recording (f))
 	damage_all (r);
     }
@@ -1428,6 +1838,37 @@ glitnir_pgtk_violations (struct frame *f, bool reset)
   return n;
 }
 
+ptrdiff_t
+glitnir_pgtk_stacking (struct frame *f, struct frame **out, ptrdiff_t nmax)
+{
+  struct glitnir_root *root = root_state (f);
+  if (root == NULL || recording (root->frame) == NULL)
+    return 0;
+  layers_sync (root);
+  const uint64_t *ids = NULL;
+  size_t n = 0;
+  if (GLITNIR_CALL (glitnir_stack_list (root->id, &ids, &n)) != GLITNIR_OK)
+    return 0;
+  ptrdiff_t k = 0;
+  for (size_t i = 0; i < n && k < nmax; i++)
+    {
+      struct frame *c = frame_of_id (ids[i]);
+      if (c)
+	out[k++] = c;
+    }
+  return k;
+}
+
+bool
+glitnir_pgtk_layer_rect (struct frame *f, GlitnirRect *out)
+{
+  struct glitnir_root *s = frame_state (f);
+  if (s == NULL || s->layer_root == 0)
+    return false;
+  *out = s->layer.rect;
+  return true;
+}
+
 /* Paint a rectangle on F's surface without recording it.  */
 bool
 glitnir_pgtk_draw_undamaged (struct frame *f)
@@ -1446,6 +1887,19 @@ glitnir_pgtk_draw_undamaged (struct frame *f)
   cairo_fill (cr);
   cairo_restore (cr);
   return true;
+}
+
+/* Freeze F's root as the first damage after a point does (the same path:
+   dirty, frozen, the freeze time recorded, the idle point queued outside
+   redisplay), with nothing drawn.  */
+bool
+glitnir_pgtk_debug_freeze (struct frame *f)
+{
+  struct glitnir_root *root = root_state (f);
+  if (root == NULL || recording (root->frame) == NULL)
+    return false;
+  mark_dirty (root->frame);
+  return root->frozen != NULL;
 }
 
 /* Make GTK draw F's root while it has uncommitted damage.  */

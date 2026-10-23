@@ -133,6 +133,21 @@ extern void glitnir_pgtk_consistency_points (int which);
    redisplay.  */
 extern void glitnir_pgtk_scene_changed (struct frame *f);
 
+/* The scene's stacking hooks: pgtk raised or lowered F (visible frames
+   only), showed F (gtk_widget_show raises its window), or gave F a new
+   parent.  Each changes the scene as GDK changed the windows and calls
+   glitnir_pgtk_scene_changed.  */
+extern void glitnir_pgtk_raise_lower (struct frame *f, bool raise);
+extern void glitnir_pgtk_frame_mapped (struct frame *f);
+extern void glitnir_pgtk_reparented (struct frame *f);
+
+/* For tests: the child frames in F's root's scene, bottom to top (at most
+   NMAX into OUT; their number), after a sync; and the root device-pixel
+   rectangle of F's layer as last handed to Glitnir (false: none).  */
+extern ptrdiff_t glitnir_pgtk_stacking (struct frame *f, struct frame **out,
+					ptrdiff_t nmax);
+extern bool glitnir_pgtk_layer_rect (struct frame *f, GlitnirRect *out);
+
 /* For tests; none calls into Glitnir.  */
 extern uint64_t glitnir_pgtk_now_ns (void);
 extern uintmax_t glitnir_pgtk_draw_count (struct frame *f);
@@ -151,6 +166,7 @@ extern bool glitnir_pgtk_motion (struct frame *f, int x, int y);
 extern uint64_t glitnir_pgtk_violations (struct frame *f, bool reset);
 extern bool glitnir_pgtk_draw_undamaged (struct frame *f);
 extern bool glitnir_pgtk_compose_with_pending (struct frame *f);
+extern bool glitnir_pgtk_debug_freeze (struct frame *f);
 
 /* A new ARGB32 image surface with F's root frame as GTK last painted it
    (device pixels), made by arming the after-paint handler and waiting up to

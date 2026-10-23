@@ -399,6 +399,72 @@ draw was forced.  */)
 #endif
 }
 
+DEFUN ("glitnir--debug-freeze", Fglitnir__debug_freeze, Sglitnir__debug_freeze,
+       0, 1, 0,
+       doc: /* Freeze FRAME's root frame until its next consistency point (for tests).
+The root freezes as at the first damage after a point, with nothing
+drawn: GTK paints none of it until the next point commits and thaws it,
+which outside redisplay comes when GLib next runs its idle callbacks.
+Refused unless `glitnir-debug' is non-nil.  FRAME defaults to the
+selected frame.  Return non-nil if the root is frozen.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+  if (NILP (Vglitnir_debug))
+    error ("glitnir--debug-freeze: `glitnir-debug' is nil");
+#ifdef HAVE_PGTK
+  return glitnir_pgtk_debug_freeze (f) ? Qt : Qnil;
+#else
+  (void) f;
+  return Qnil;
+#endif
+}
+
+DEFUN ("glitnir--stacking", Fglitnir__stacking, Sglitnir__stacking, 0, 1, 0,
+       doc: /* Return the child frames of FRAME's root frame as Glitnir stacks them.
+The list runs bottom to top, hidden frames included; a child frame's own
+child frames come right after it.  FRAME defaults to the selected frame;
+the value is nil when Glitnir does not draw its root.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+#ifdef HAVE_PGTK
+  struct frame *fs[256];
+  ptrdiff_t n = glitnir_pgtk_stacking (f, fs, ARRAYELTS (fs));
+  Lisp_Object list = Qnil;
+  while (n-- > 0)
+    {
+      Lisp_Object c;
+      XSETFRAME (c, fs[n]);
+      list = Fcons (c, list);
+    }
+  return list;
+#else
+  (void) f;
+  return Qnil;
+#endif
+}
+
+DEFUN ("glitnir--layer-rect", Fglitnir__layer_rect, Sglitnir__layer_rect,
+       0, 1, 0,
+       doc: /* Return the rectangle of FRAME's layer in its root's scene, or nil.
+The value is (X Y WIDTH HEIGHT) in the root's device pixels, as last
+handed to Glitnir: a child frame at its position, with the size of its
+last completely drawn picture.  FRAME defaults to the selected frame.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+#ifdef HAVE_PGTK
+  GlitnirRect r;
+  if (!glitnir_pgtk_layer_rect (f, &r))
+    return Qnil;
+  return list4i (r.x, r.y, r.w, r.h);
+#else
+  (void) f;
+  return Qnil;
+#endif
+}
+
 DEFUN ("glitnir--debug-panic", Fglitnir__debug_panic, Sglitnir__debug_panic,
        0, 1, 0,
        doc: /* Make the next call into Glitnir at WHERE panic (for tests).
@@ -448,6 +514,9 @@ syms_of_nidhogg_glitnir (void)
   defsubr (&Sglitnir__last_paint);
   defsubr (&Sglitnir__max_paint_gap_ms);
   defsubr (&Sglitnir__motion);
+  defsubr (&Sglitnir__stacking);
+  defsubr (&Sglitnir__debug_freeze);
+  defsubr (&Sglitnir__layer_rect);
 
   DEFVAR_BOOL ("glitnir-enable", glitnir_enable,
 	       doc: /* Non-nil means Glitnir (the compositor) may draw graphical frames.
@@ -463,8 +532,9 @@ the `glitnir-debug-damage' face.  `verify' keeps a copy of each frame's
 surface as of the previous commit; at each commit, pixels that changed
 outside the reported damage are logged once to stderr ("glitnir verify:
 FRAME X Y W H after PRIMITIVE") and counted in the `:violations' of
-`glitnir-stats', as is a paint while the root has uncommitted damage and
-a freeze that lasts over a second.  `full' makes every commit damage the
+`glitnir-stats', as are a paint while the root has uncommitted damage, a
+freeze that lasts over a second, and a commit whose stacking of child
+frames differs from GDK's.  `full' makes every commit damage the
 whole frame.  `damage-hold' (for tests) keeps each frame's damage until
 `glitnir--damage' takes it, instead of handing it to the next consistency
 point; the points then present whole frames.  */);

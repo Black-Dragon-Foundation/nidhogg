@@ -419,6 +419,9 @@ pgtk_raise_frame (struct frame *f)
   if (FRAME_VISIBLE_P (f))
     gdk_window_raise (gtk_widget_get_window (FRAME_WIDGET (f)));
   unblock_input ();
+#ifdef HAVE_GLITNIR
+  glitnir_pgtk_raise_lower (f, true);
+#endif
 }
 
 /* Lower frame F.  */
@@ -431,6 +434,9 @@ pgtk_lower_frame (struct frame *f)
       block_input ();
       gdk_window_lower (gtk_widget_get_window (FRAME_WIDGET (f)));
       unblock_input ();
+#ifdef HAVE_GLITNIR
+      glitnir_pgtk_raise_lower (f, false);
+#endif
     }
 }
 
@@ -731,6 +737,9 @@ pgtk_set_offset (struct frame *f, int xoff, int yoff, int change_gravity)
 	  GtkWidget *parent = gtk_widget_get_parent (fixed);
 	  gtk_fixed_move (GTK_FIXED (parent), fixed,
 			  f->left_pos, f->top_pos);
+#ifdef HAVE_GLITNIR
+	  glitnir_pgtk_scene_changed (f);
+#endif
 	}
     }
   unblock_input ();
@@ -753,6 +762,9 @@ pgtk_set_window_size (struct frame *f, bool change_gravity,
   gtk_widget_queue_resize (FRAME_WIDGET (f));
 
   unblock_input ();
+#ifdef HAVE_GLITNIR
+  glitnir_pgtk_scene_changed (f);
+#endif
 }
 
 void
@@ -869,6 +881,9 @@ pgtk_make_frame_visible (struct frame *f)
       if (win)
 	gtk_window_deiconify (GTK_WINDOW (win));
 
+#ifdef HAVE_GLITNIR
+      glitnir_pgtk_frame_mapped (f);
+#endif
       pgtk_wait_for_map_event (f, false);
     }
 }
@@ -878,6 +893,9 @@ void
 pgtk_make_frame_invisible (struct frame *f)
 {
   gtk_widget_hide (FRAME_WIDGET (f));
+#ifdef HAVE_GLITNIR
+  glitnir_pgtk_scene_changed (f);
+#endif
 
   /* Handle any pending map event(s), then make the frame visible
      manually, to avoid race conditions.  */
@@ -1078,6 +1096,9 @@ pgtk_set_parent_frame (struct frame *f, Lisp_Object new_value,
       unblock_input ();
 
       fset_parent_frame (f, new_value);
+#ifdef HAVE_GLITNIR
+      glitnir_pgtk_reparented (f);
+#endif
     }
 }
 
