@@ -242,13 +242,17 @@ extern int nh_io_select_fd (struct Lisp_Process *);
    (the caller first takes the wake fd out of the select set).  */
 extern bool nh_io_done (struct Lisp_Process *);
 extern void nh_io_release (struct Lisp_Process *);
-extern void nh_io_pause (int infd);
+/* Flow control [17].  nh_io_pause is async-signal-safe and returns the
+   fd the select set holds for INFD (INFD when no reader owns it).  */
+extern int nh_io_pause (int infd);
 extern void nh_io_resume (int infd);
 /* read_process_output's reader branch: up to SIZE bytes into BUF, as
    the read it replaces; *HANDLED false means read the fd as today.  */
 extern ptrdiff_t nh_io_read (struct Lisp_Process *, int channel, char *buf,
 			     ptrdiff_t size, bool *handled);
-extern void nh_io_drain (struct Lisp_Process *);
+/* Before a drain [17]: true when the caller must hand the process back
+   (NH_IO_STATUS) so its last bytes are read on the main thread.  */
+extern bool nh_io_drain (struct Lisp_Process *);
 extern void nh_io_coding_changed (struct Lisp_Process *);
 extern int nh_io_tls_boot (struct Lisp_Process *, void *gnutls_state);
 /* For the crash rows (Task 4's --test-crash on nh-io).  */
