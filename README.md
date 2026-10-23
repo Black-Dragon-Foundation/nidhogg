@@ -225,7 +225,15 @@ turns the finished spans into JSON Lines records, names function, file and packa
 An open popup menu or dialog counts as the user waiting, not as a stall: on pgtk a wrapper around GLib's poll
 function (`src/nidhogg-watchdog-gtk.c`) marks the wait. A Lisp timer that runs inside a menu or dialog is still
 busy time and is reported.
-<!-- wd: Task 13 -->
+The timing group (`watchdog-timing-tests.el`) runs on the real clock with wide margins (spins of 0.5 to 10 s
+against a 100 ms threshold) and asserts counts, never sample numbers ("at least one sample, or `:missed` counted"): a
+1 s spin from a timer (state CPU, the timer function on the stack), a blocked `call-process` (phase `call-process`),
+no sample requests before half the threshold, child Nidhoggs on a pty for the real keyboard hooks (a key during a
+spin makes the stall `:felt`), a Lisp thread that holds the global lock while the main thread idles (`:lisp-thread`),
+`suspend-emacs` and `sit-for` (waiting, no stall), and a 10 s deep-sampling stress run (allocation, byte code, native
+code, forced collections, a specpdl past 10⁵ entries) in which every sampled word is a live object or
+`nidhogg-watchdog--gone`. GUI rows (`watchdog-gui-tests.el`, `nidhogg/test/gui.sh`): `sit-for` on a pgtk frame is
+waiting, and a mode-line `:eval` that spins is a stall in the `redisplay` phase with the `:eval` function innermost.
 `M-x nidhogg-watchdog-mode` (global, off by default) starts the monitor with `nidhogg-watchdog-threshold` (100 ms)
 and `nidhogg-watchdog-hang-ms` (2000) and one repeating 1 s idle timer. The timer's drain returns at once (no
 allocation) when nothing is pending; otherwise it takes the rings at once and resolves records within 2 ms, the rest
