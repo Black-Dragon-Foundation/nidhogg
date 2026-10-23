@@ -51,6 +51,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #ifndef NH_WK_HARNESS
 # include <config.h>
+# include <stat-time.h>
 #endif
 
 #ifdef HAVE_NIDHOGG_WORKERS
@@ -143,7 +144,14 @@ nh_img_file_key (const char *path)
     return 0;
   uint64_t h = nh_img_hash_combine (14695981039346656037ull, path,
 				    strlen (path));
-  h = nh_img_hash_combine (h, &st.st_mtim, sizeof st.st_mtim);
+#ifdef NH_WK_HARNESS
+  /* The harness builds in the Linux container only.  */
+  struct timespec mtime = st.st_mtim;
+#else
+  /* gnulib's: macOS names the field st_mtimespec.  */
+  struct timespec mtime = get_stat_mtime (&st);
+#endif
+  h = nh_img_hash_combine (h, &mtime, sizeof mtime);
   h = nh_img_hash_combine (h, &st.st_size, sizeof st.st_size);
   return h ? h : 1;
 }
