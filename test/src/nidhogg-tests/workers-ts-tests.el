@@ -1311,7 +1311,11 @@ unbound), then jit-lock with `nidhogg--redisplay-fontifying' bound to BUF."
   ;; Review S3: the display iterator also runs from `vertical-motion'
   ;; (and `pos-visible-in-window-p' and friends), where `redisplaying_p'
   ;; is false: over unfontified text with nh-parse paused it waits and
-  ;; colours, and records no pending region.
+  ;; colours, and records no pending region.  In batch `vertical-motion'
+  ;; moves with `vmotion' (indent.c, `noninteractive'), which never runs
+  ;; `fontification-functions'; `window-text-pixel-size' runs the display
+  ;; iterator there, and so `handle_fontified_prop' as `vertical-motion'
+  ;; does in a session.
   (workers-ts-tests--deferring
     (let ((buf (workers-ts-tests--c-ts-buffer
                 (workers-ts-tests--c-text 100000))))
@@ -1332,18 +1336,34 @@ unbound), then jit-lock with `nidhogg--redisplay-fontifying' bound to BUF."
               (set-window-buffer (selected-window) buf)
               (goto-char (point-min))
               (let ((att (workers-ts-tests--stat :attempts))
-                    (defs (workers-ts-tests--deferrals)))
-                (nidhogg-workers--test-redisplay-begin)
+                    (defs (workers-ts-tests--deferrals))
+                    (waited (workers-ts-tests--stat :waited))
+                    (end (save-excursion (forward-line 20) (point))))
                 (unwind-protect
-                    (vertical-motion 20)
+                    ;; No redisplay budget: a path that deferred could not
+                    ;; wait (nor release the job), so only the demand of
+                    ;; display code called from Lisp colours the text.
+                    (let ((nidhogg-redisplay-wait-budget 0))
+                      (nidhogg-workers--test-redisplay-begin)
+                      (window-text-pixel-size nil (point-min) end))
+                  (nidhogg-workers--test-redisplay-begin)
                   (nidhogg-workers--test-release-on-wait nil)
                   (nidhogg-workers--release 'before-done))
-                (should (> (point) (point-min)))
+                ;; The iterator's demand waited for the paused job: the
+                ;; tree is there and the text is coloured with it.
+                (should (= (workers-ts-tests--stat :waited)
+                           (+ waited (if (eq mode 'threads) 1 0))))
+                (should (nidhogg-treesit-parser-ready-p p))
+                (should-not (text-property-not-all (point-min) end
+                                                   'fontified t))
                 (should (workers-ts-tests--has-face 'font-lock-keyword-face
-                                                    (point-min) (point)))
+                                                    (point-min) end))
                 (should-not nidhogg-workers-treesit--pending)
                 (should (= (workers-ts-tests--stat :attempts) att))
-                (should (= (workers-ts-tests--deferrals) defs)))))
+                (should (= (workers-ts-tests--deferrals) defs))
+                (should (equal (workers-ts-tests--sexp p)
+                               (workers-ts-tests--sync-sexp
+                                (buffer-string)))))))
         (kill-buffer buf)))))
 
 (ert-deftest workers/ts-pre-redisplay-starts-job ()
