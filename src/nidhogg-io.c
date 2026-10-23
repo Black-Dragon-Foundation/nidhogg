@@ -79,6 +79,17 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
    reads the real fd to EAGAIN or EOF (a grandchild holding the pipe
    open cannot make it wait), all before the sentinel.
 
+   STARTTLS (Task 20, MC-32).  `gnutls-boot' gives GnuTLS the real fd,
+   which GnuTLS then reads itself, so a reader-owned process is handed
+   back at the start of Fgnutls_boot, before any GnuTLS call, and is
+   never handed over again: a per-fd mark, since `gnutls-deinit' clears
+   gnutls_p (fd audit finding 9).  Bytes nh-io had read but not delivered
+   arrived after the plaintext Lisp last saw; today they would still be
+   in the kernel, the start of what GnuTLS reads.  They go to GnuTLS,
+   never to the filter (that would be STARTTLS response injection): the
+   session gets a pull function that returns them first and then reads
+   the fd, and TLS's pending check counts them (finding 10).
+
    Inline mode (`nidhogg-workers--mode') has no thread: the select set
    holds the copy itself and nh_io_read reads it, so the hand-over, the
    select mapping and the close order run without scheduling.
@@ -193,6 +204,9 @@ struct nh_io_h
 
   /* Paused by delete_read_fd (any thread, signal context included).  */
   _Atomic bool paused;
+  /* nh-io's: set before it reads the copy, cleared once what it read is
+     queued and the wake fd written (nh_io_settle).  */
+  _Atomic bool reading;
   /* The FIFO is at its cap: set and cleared under nh_io_m, read by nh-io
      without it.  */
   _Atomic bool capped;
@@ -447,11 +461,15 @@ nh_io_read_one (struct nh_io_h *h, unsigned char **buf, ptrdiff_t *size)
       *size = h->readmax;
     }
   ssize_t r;
+  atomic_store (&h->reading, true);
   do
     r = read (h->copy, *buf, want);
   while (r < 0 && errno == EINTR);
   if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
-    return;
+    {
+      atomic_store (&h->reading, false);
+      return;
+    }
   int err = errno;
   struct nh_io_chunk *c = NULL;
   if (r > 0)
@@ -491,6 +509,7 @@ nh_io_read_one (struct nh_io_h *h, unsigned char **buf, ptrdiff_t *size)
   if (was_quiet)
     nh_wk_wake_signal (&h->wake);
   pthread_mutex_unlock (&nh_io_m);
+  atomic_store (&h->reading, false);
 
   if (c)
     nh_wk_stat_add (NH_WK_IO, NH_WK_ST_QUEUED_BYTES, r);
@@ -823,6 +842,24 @@ static bool nh_io_ended[FD_SETSIZE];
 static unsigned char nh_io_refused[FD_SETSIZE];
 static int64_t nh_io_next_id;
 
+#ifdef HAVE_GNUTLS
+/* STARTTLS, per real fd, cleared when the fd closes: the "never hand
+   over again" mark, the bytes reclaimed for GnuTLS (the main thread's;
+   GnuTLS reads only there), whether a pull function was installed, and
+   the counts for --test-io-info.  */
+struct nh_io_tls_left
+{
+  gnutls_session_t session;	/* whose pull function reads them */
+  ptrdiff_t len, off;
+  int err;			/* nh-io's read error after the bytes */
+  unsigned char bytes[];
+};
+static bool nh_io_tls[FD_SETSIZE];
+static struct nh_io_tls_left *nh_io_tls_left[FD_SETSIZE];
+static bool nh_io_tls_pull_on[FD_SETSIZE];
+static int64_t nh_io_tls_reclaimed[FD_SETSIZE], nh_io_tls_pulled[FD_SETSIZE];
+#endif
+
 static const char *const nh_io_refusal_names[NH_IO_RF_N] = {
   "none", "off", "switch", "tls", "datagram", "server", "serial", "filter-t",
   "connecting", "opt-out", "fd-budget", "thread", "ended"
@@ -851,7 +888,7 @@ nh_io_eligible (struct Lisp_Process *p)
   if (nh_io_ended[p->infd])
     return NH_IO_RF_ENDED;
 #ifdef HAVE_GNUTLS
-  if (!NILP (p->gnutls_boot_parameters) || p->gnutls_p)
+  if (!NILP (p->gnutls_boot_parameters) || p->gnutls_p || nh_io_tls[p->infd])
     return NH_IO_RF_TLS;
 #endif
   if (EQ (p->type, Qnetwork))
@@ -911,6 +948,100 @@ nh_io_select_fd (struct Lisp_Process *p)
   return h ? h->sel : -1;
 }
 
+#ifdef HAVE_GNUTLS
+/* A STARTTLS boot handed H (the real fd FD's) back: move the bytes it
+   read and did not deliver, and a read error after them, to FD's
+   reclaimed bytes for GnuTLS.  H's FIFO is left empty, so the hand-back
+   goes on to the real fd at once, and the filter never sees them.
+   (When the hand-back's wait timed out, nh-io kept H and its bytes:
+   only a test's pause point can make that happen.)  */
+static void
+nh_io_tls_reclaim (struct nh_io_h *h, int fd)
+{
+  nh_wk_lock (&nh_io_m);
+  ptrdiff_t n = 0;
+  for (struct nh_io_chunk *c = h->head; c; c = c->next)
+    n += c->len - c->off;
+  struct nh_io_tls_left *old = nh_io_tls_left[fd];
+  ptrdiff_t had = old ? old->len - old->off : 0;
+  if (n > 0 || h->err)
+    {
+      struct nh_io_tls_left *l = malloc (sizeof *l + had + n);
+      NH_WK_ASSERT (l);
+      *l = (struct nh_io_tls_left) { .len = had + n,
+				     .err = h->err ? h->err : old ? old->err : 0 };
+      if (old)
+	memcpy (l->bytes, old->bytes + old->off, had);
+      ptrdiff_t at = had;
+      for (struct nh_io_chunk *c = h->head, *next; c; c = next)
+	{
+	  next = c->next;
+	  /* The raw bytes: DATA starts with the decoder's carry-in.  */
+	  memcpy (l->bytes + at, c->data + c->off, c->len - c->off);
+	  at += c->len - c->off;
+	  free (c);
+	}
+      free (old);
+      nh_io_tls_left[fd] = l;
+      nh_io_tls_reclaimed[fd] += n;
+    }
+  h->head = h->tail = NULL;
+  h->queued = 0;
+  h->eof = false;
+  h->err = 0;
+  pthread_mutex_unlock (&nh_io_m);
+  nh_wk_stat_add (NH_WK_IO, NH_WK_ST_QUEUED_BYTES, -n);
+}
+
+/* GnuTLS's reads for a session that has reclaimed bytes: those first,
+   then the fd, as GnuTLS's own pull reads it.  */
+static ssize_t
+nh_io_tls_pull (gnutls_transport_ptr_t ptr, void *data, size_t size)
+{
+  int fd = (intptr_t) ptr;
+  struct nh_io_tls_left *l
+    = 0 <= fd && fd < FD_SETSIZE ? nh_io_tls_left[fd] : NULL;
+  if (l)
+    {
+      if (l->off < l->len)
+	{
+	  ptrdiff_t n = l->len - l->off;
+	  if ((size_t) n > size)
+	    n = size;
+	  memcpy (data, l->bytes + l->off, n);
+	  l->off += n;
+	  nh_io_tls_pulled[fd] += n;
+	  return n;
+	}
+      int err = l->err;
+      nh_io_tls_left[fd] = NULL;
+      free (l);
+      if (err)
+	{
+	  errno = err;
+	  return -1;
+	}
+    }
+  return recv (fd, data, size, 0);
+}
+
+# ifdef HAVE_GNUTLS3
+/* Whether a read would find something within MS milliseconds.  */
+static int
+nh_io_tls_pull_timeout (gnutls_transport_ptr_t ptr, unsigned int ms)
+{
+  int fd = (intptr_t) ptr;
+  struct nh_io_tls_left *l
+    = 0 <= fd && fd < FD_SETSIZE ? nh_io_tls_left[fd] : NULL;
+  if (l && (l->off < l->len || l->err))
+    return 1;
+  struct pollfd pfd = { .fd = fd, .events = POLLIN };
+  /* GNUTLS_INDEFINITE_TIMEOUT is UINT_MAX.  */
+  return poll (&pfd, 1, ms > INT_MAX ? -1 : (int) ms);
+}
+# endif
+#endif
+
 void
 nh_io_handback (struct Lisp_Process *p, int reason)
 {
@@ -922,6 +1053,13 @@ nh_io_handback (struct Lisp_Process *p, int reason)
       nh_io_optout[fd] = false;
       nh_io_ended[fd] = false;
       nh_io_refused[fd] = 0;
+#ifdef HAVE_GNUTLS
+      nh_io_tls[fd] = false;
+      free (nh_io_tls_left[fd]);
+      nh_io_tls_left[fd] = NULL;
+      nh_io_tls_pull_on[fd] = false;
+      nh_io_tls_reclaimed[fd] = nh_io_tls_pulled[fd] = 0;
+#endif
     }
   struct nh_io_h *h = nh_io_tab[fd];
   if (!h)
@@ -934,6 +1072,10 @@ nh_io_handback (struct Lisp_Process *p, int reason)
       nh_io_tab[fd] = NULL;
       h = NULL;
     }
+#ifdef HAVE_GNUTLS
+  else if (reason != NH_IO_CLOSE && nh_io_tls[fd])
+    nh_io_tls_reclaim (h, fd);
+#endif
   if (reason == NH_IO_CLOSE)
     {
       /* The real fd closes next (deactivate_process).  */
@@ -1056,6 +1198,84 @@ nh_io_resume (int infd)
     nh_io_poke ();
 }
 
+/* Whether poll finds one of the N fds at PFD readable within MS (a
+   signal may cut a wait short: the caller loops).  */
+static bool
+nh_io_poll_any (struct pollfd *pfd, int n, int ms)
+{
+  int r;
+  do
+    r = poll (pfd, n, ms);
+  while (r < 0 && errno == EINTR && ms == 0);
+  return r > 0;
+}
+
+/* Before a select over MASK with TIMEOUT in wait_reading_process_output.
+   A zero timeout asks what output is there now, which today is what
+   the kernel holds: `accept-process-output' with a zero timeout gets it,
+   and status_notify runs sentinels only when such a select finds none
+   (so a process's output, and another's that came before it exited, a
+   `:stderr' pipe's EOF, reach filters first).  A reader-owned process's
+   wake fd is readable only once nh-io has read: while nh-io reads, or
+   has yet to read, output of a process whose wake fd MASK holds (it
+   does while the process is read: not paused, not handed back), wait
+   for it to land on a wake fd, so that the select finds it as today's
+   finds it in the kernel.  Bounded: only an nh-io held at a test's
+   pause point reaches the bound.  */
+void
+nh_io_settle (fd_set *mask, struct timespec timeout)
+{
+  if (timeout.tv_sec != 0 || timeout.tv_nsec != 0
+      || atomic_load (&nh_wk_dead))
+    return;
+  struct pollfd real[FD_SETSIZE], wake[FD_SETSIZE];
+  struct nh_io_h *hs[FD_SETSIZE];
+  int n = 0;
+  for (int fd = 0; fd < FD_SETSIZE; fd++)
+    {
+      struct nh_io_h *h = nh_io_tab[fd];
+      if (h && !h->inl && !h->detached && FD_ISSET (h->sel, mask))
+	{
+	  real[n] = (struct pollfd) { .fd = fd, .events = POLLIN };
+	  wake[n] = (struct pollfd) { .fd = h->sel, .events = POLLIN };
+	  hs[n++] = h;
+	}
+    }
+  if (n == 0)
+    return;
+  int depth = -1;
+  bool waiting = false;
+  struct timespec t;
+  clock_gettime (CLOCK_MONOTONIC, &t);
+  int64_t deadline = (t.tv_sec * INT64_C (1000000000) + t.tv_nsec
+		      + NH_IO_DETACH_NS);
+  /* A wake fd readable: the select finds output, as today's would.
+     Else nothing in the kernel and no read in progress (checked in that
+     order: a read that ended in between wrote its wake fd): nothing is
+     on its way.  */
+  while (!nh_io_poll_any (wake, n, 0))
+    {
+      bool pending = nh_io_poll_any (real, n, 0);
+      for (int i = 0; !pending && i < n; i++)
+	pending = atomic_load (&hs[i]->reading);
+      if (!pending)
+	break;
+      clock_gettime (CLOCK_MONOTONIC, &t);
+      int64_t left = deadline - (t.tv_sec * INT64_C (1000000000) + t.tv_nsec);
+      if (left <= 0)
+	break;
+      if (!waiting)
+	{
+	  waiting = true;
+	  depth = NH_WK_PHASE_PUSH (NH_IO_PH, NH_IO_RS_DRAIN);
+	  nh_wk_wait_begins ();
+	}
+      nh_io_poll_any (wake, n, (int) (left / 1000000) + 1);
+    }
+  if (waiting)
+    NH_WK_PHASE_POP (depth);
+}
+
 /* Whether P is going down: its status says so, or (a subprocess) the
    SIGCHLD handler saw it exit.  */
 static bool
@@ -1151,12 +1371,71 @@ nh_io_decoded (struct Lisp_Process *p, struct coding_system *coding,
   return ok;
 }
 
+/* Fgnutls_boot's two hooks (§8.2 "A STARTTLS upgrade", MC-32).  With
+   GNUTLS_STATE NULL, before any GnuTLS call: mark P's fd never to be
+   handed over again and, if the reader owns P, hand it back now
+   (synchronously, the wake fd replaced by the real fd in the select
+   set); the bytes the reader had not delivered are reclaimed for
+   GnuTLS.  Return how many bytes are reclaimed.  With the session
+   GNUTLS_STATE, once gnutls_init made it: when bytes are reclaimed,
+   give the session the pull function that returns them before it reads
+   the fd; return 1 if it did, else 0.  */
 int
 nh_io_tls_boot (struct Lisp_Process *p, void *gnutls_state)
 {
+#ifdef HAVE_GNUTLS
+  int fd = p->infd;
+  if (fd < 0 || fd >= FD_SETSIZE)
+    return 0;
+  if (!gnutls_state)
+    {
+      nh_io_tls[fd] = true;
+      if (nh_io_tab[fd])
+	{
+	  Lisp_Object proc;
+	  XSETPROCESS (proc, p);
+	  nh_io_proc_reader (proc, false);
+	}
+      struct nh_io_tls_left *l = nh_io_tls_left[fd];
+      return l ? l->len - l->off : 0;
+    }
+  struct nh_io_tls_left *l = nh_io_tls_left[fd];
+  if (!l)
+    return 0;
+  l->session = gnutls_state;
+  gnutls_transport_set_pull_function (gnutls_state, nh_io_tls_pull);
+# ifdef HAVE_GNUTLS3
+  gnutls_transport_set_pull_timeout_function (gnutls_state,
+					      nh_io_tls_pull_timeout);
+# endif
+  nh_io_tls_pull_on[fd] = true;
+  return 1;
+#else
   (void) p;
   (void) gnutls_state;
   return 0;
+#endif
+}
+
+/* emacs_gnutls_record_check_pending: the reclaimed bytes GNUTLS_STATE's
+   pull function has yet to return, which the fd's readability cannot
+   show (fd audit finding 10).  */
+ptrdiff_t
+nh_io_tls_pending (void *gnutls_state)
+{
+#ifdef HAVE_GNUTLS
+  gnutls_transport_ptr_t recv_ptr, send_ptr;
+  gnutls_transport_get_ptr2 (gnutls_state, &recv_ptr, &send_ptr);
+  int fd = (intptr_t) recv_ptr;
+  struct nh_io_tls_left *l
+    = 0 <= fd && fd < FD_SETSIZE ? nh_io_tls_left[fd] : NULL;
+  /* A read error after them counts too: the pull returns it.  */
+  return (l && l->session == gnutls_state
+	  ? l->len - l->off + (l->err != 0) : 0);
+#else
+  (void) gnutls_state;
+  return 0;
+#endif
 }
 
 DEFUN ("nidhogg-set-process-reader", Fnidhogg_set_process_reader,
@@ -1197,7 +1476,13 @@ the hand-over), `:decoder' (the stateless system the reader decodes
 with, such as `utf-8-unix' or `raw-text-dos'; nil: the main thread
 decodes), `:decoded' (deliveries to a filter that used the reader's
 decode) and `:redecoded' (deliveries whose decode was stale, so the
-main thread decoded the bytes again).  */)
+main thread decoded the bytes again).  For a process the reader does
+not own, in a build with GnuTLS, also: `:tls-reclaimed' (bytes the
+reader had read and not delivered when `gnutls-boot' took the fd back,
+given to GnuTLS instead of the filter), `:tls-pulled' (how many of
+them GnuTLS has read), `:tls-left' (how many it has yet to read) and
+`:tls-pull' (non-nil if the session got the pull function that returns
+them).  A `tls' refusal also means `gnutls-boot' ran on PROCESS.  */)
   (Lisp_Object process)
 {
   CHECK_PROCESS (process);
@@ -1205,6 +1490,22 @@ main thread decoded the bytes again).  */)
   struct nh_io_h *h = nh_io_get (p);
   int why = 0 <= p->infd && p->infd < FD_SETSIZE ? nh_io_refused[p->infd] : 0;
   Lisp_Object refused = why ? intern_c_string (nh_io_refusal_names[why]) : Qnil;
+#ifdef HAVE_GNUTLS
+  if (!h && 0 <= p->infd && p->infd < FD_SETSIZE)
+    {
+      int fd = p->infd;
+      struct nh_io_tls_left *l = nh_io_tls_left[fd];
+      return listn (12, QCowned, Qnil, intern_c_string (":refused"), refused,
+		    intern_c_string (":tls-reclaimed"),
+		    make_int (nh_io_tls_reclaimed[fd]),
+		    intern_c_string (":tls-pulled"),
+		    make_int (nh_io_tls_pulled[fd]),
+		    intern_c_string (":tls-pull"),
+		    nh_io_tls_pull_on[fd] ? Qt : Qnil,
+		    intern_c_string (":tls-left"),
+		    make_int (l ? l->len - l->off : 0));
+    }
+#endif
   if (!h)
     return list4 (QCowned, Qnil, intern_c_string (":refused"), refused);
   nh_wk_lock (&nh_io_m);

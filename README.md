@@ -349,10 +349,14 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   delivery catches up, so the kernel's back-pressure applies as today (`stop-process` on a subprocess only stops the
   child; the cap bounds what is read meanwhile). When a process ends, its last output is delivered before its sentinel
   runs: the reader hands it back and Emacs reads the rest of the fd itself until it would block, so a grandchild that
-  holds the pipe open does not delay the sentinel. `accept-process-output` with JUST-THIS-ONE waits on that process's
-  wake fd only, and a process locked to a Lisp thread (`set-process-thread`) is delivered only on that thread. Test
-  primitives: `nidhogg-workers--test-io-info`'s `:queued`, `:cap` and `:paused`; the `after-read` pause point (`nh-io`
-  parks there when a queue reaches its cap).
+  holds the pipe open does not delay the sentinel. Sentinels run, as today, only when no process has output waiting:
+  Emacs first waits (at most a second) for output `nh-io` is reading or has yet to read, so a `:stderr` pipe's last
+  output and EOF still come before the child's sentinel. A zero-timeout wait (`accept-process-output` with a timeout of
+  0, how TRAMP polls) waits the same way, so it gets what the kernel holds, as today. `accept-process-output` with
+  JUST-THIS-ONE waits on that process's wake fd only, and a process locked to a Lisp thread (`set-process-thread`) is
+  delivered only on that thread.
+  Test primitives: `nidhogg-workers--test-io-info`'s `:queued`, `:cap` and `:paused`; the `after-read` pause point
+  (`nh-io` parks there when a queue reaches its cap).
 - Decoding on the reader (`src/nidhogg-decode.c`): when a reader-owned process decodes with a stateless system
   (`utf-8`, `raw-text`, `no-conversion` or `binary` with a settled end of line: `-unix`, `-dos`, `-mac`; not
   `utf-8-emacs`, BOM variants or systems with a translation table or post-read conversion), `nh-io` decodes each chunk as
@@ -369,7 +373,15 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   `--test-io-info`'s `:coding-generation`, `:decoder`, `:decoded` and `:redecoded`; `workers-harness.sh --fuzz SECONDS
   decode`.
 <!-- wk: Task 19 -->
-<!-- wk: Task 20 -->
+- STARTTLS, ptys, comint and TRAMP under the reader: `gnutls-boot` (every STARTTLS upgrade: smtpmail, Gnus, ERC,
+  `open-network-stream` with `:type` `starttls`, and a blocking `open-gnutls-stream`, which connects as a plain stream
+  first) takes the socket back from `nh-io` before any GnuTLS call, and that process is never handed over again (also
+  after `gnutls-deinit`). Bytes `nh-io` had read but not delivered go to GnuTLS, never to the filter (delivering them
+  would be STARTTLS response injection): the session gets a pull function that returns them before it reads the socket,
+  and TLS's pending check counts them. A pty's writes, `process-send-eof`, `set-process-window-size`,
+  `interrupt-process` and `process-tty-name` use the real fd or the tty name as before; comint and TRAMP see the same
+  results. Test primitives: `nidhogg-workers--test-io-info`'s `:tls-reclaimed`, `:tls-pulled`, `:tls-left` and
+  `:tls-pull`.
 <!-- wk: Task 21 -->
 - JSON tape (`src/nidhogg-json-tape.c`): a tokenizer that copies json.c's rules byte for byte (strict UTF-8, surrogates,
   depth 10,000, integer overflow, floats parsed in the C locale, the same error symbol at the same position) and

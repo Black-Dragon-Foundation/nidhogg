@@ -142,6 +142,7 @@ struct nh_mat;
 extern bool nh_wk_submit (struct nh_wk_job *);
 extern int nh_wk_wait (struct nh_wk_job *, int64_t timeout_ns, int phase,
 		       int reason);
+extern void nh_wk_wait_begins (void);
 extern void nh_wk_cancel (struct nh_wk_job *);
 extern void nh_wk_job_ref (struct nh_wk_job *);
 extern void nh_wk_job_unref (struct nh_wk_job *);
@@ -268,7 +269,14 @@ extern void nh_io_coding_settled (struct Lisp_Process *,
    counts and carryover set as decode_coding_c_string would set them.  */
 extern bool nh_io_decoded (struct Lisp_Process *, struct coding_system *,
 			   const char *chars, ptrdiff_t nbytes);
+/* Task 20, Fgnutls_boot's hooks: with GNUTLS_STATE NULL (before any
+   GnuTLS call) the reader hands the process back for good and keeps
+   the bytes it had not delivered for GnuTLS; with the new session, the
+   session gets a pull function that returns those bytes first.  */
 extern int nh_io_tls_boot (struct Lisp_Process *, void *gnutls_state);
+/* The bytes of the session GNUTLS_STATE that its pull function has yet
+   to return (emacs_gnutls_record_check_pending).  */
+extern ptrdiff_t nh_io_tls_pending (void *gnutls_state);
 /* For the crash rows (Task 4's --test-crash on nh-io).  */
 extern bool nh_io_test_crash (void);
 /* Task 4's kill_buffer_processes hook: under nh_wk_dead, close a
@@ -468,6 +476,11 @@ extern void nh_img_phase_end (int depth, int64_t t0);
 /* process.c, for nidhogg-set-process-reader: hand PROC back for good
    (ON false), or let the reader take it again if it is being read.  */
 extern void nh_io_proc_reader (Lisp_Object proc, bool on);
+/* Before a select over MASK with TIMEOUT: when TIMEOUT is zero (what is
+   there now: status_notify's check, a zero-timeout wait), output the
+   reader is reading, or has yet to read, for a process MASK selects
+   lands on its wake fd first (bounded).  */
+extern void nh_io_settle (fd_set *mask, struct timespec timeout);
 /* The stateless system CODING decodes with, or NH_DEC_NONE [18].  */
 extern int nh_dec_classify (struct coding_system *);
 extern Lisp_Object nh_dec_system_name (int);
