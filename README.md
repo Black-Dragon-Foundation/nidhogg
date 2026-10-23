@@ -581,7 +581,11 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   `interrupt-process` and `process-tty-name` use the real fd or the tty name as before; comint and TRAMP see the same
   results. Test primitives: `nidhogg-workers--test-io-info`'s `:tls-reclaimed`, `:tls-pulled`, `:tls-left` and
   `:tls-pull`.
-<!-- wk: Task 21 -->
+- The reader's sub-switches go on by default one fd kind at a time, in the order pipes, sockets, ptys (the OT3 gate).
+  Any kind can be turned off alone: with its sub-switch nil, that kind takes today's path and the other kinds stay
+  reader-owned (`workers/reader-sub-switches`). On by default so far: none. `workers/terminal-emulators`
+  (`workers-terminal-tests.el`, run by `pkg-test.sh`'s `process` group, which has eat and vterm) draws a recorded `htop`
+  and `ls --color` stream in eat and vterm with the reader off and on and compares the screens (text and faces).
 - JSON tape (`src/nidhogg-json-tape.c`): a tokenizer that copies json.c's rules byte for byte (strict UTF-8, surrogates,
   depth 10,000, integer overflow, floats parsed in the C locale, the same error symbol at the same position) and
   writes one malloc block (a tape of 16-byte entries, a string arena and a table with each distinct object key once),
