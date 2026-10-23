@@ -265,6 +265,38 @@ dispatch (GDK commits that paint), then types and redraws again, as a command an
     (princ (format "new buffers: on %d, off %d\n" on off) #'external-debugging-output)
     (should (<= on (+ off 2)))))
 
+(ert-deftest glitnir-gui/child-churn-paints-the-child-only ()
+  ;; posframe's cycle (popup-churn): show a child, move it, hide it; the paints should cover the child's rectangles,
+  ;; not the root.  Known failure GL-POPUP-CHURN-FULL-1: a child frame is a GtkWidget in its parent's EmacsFixed, so
+  ;; its show/hide restyles the parent's CSS node and GTK's style-updated handlers (gtk_widget_real_style_updated,
+  ;; gtk_fixed_style_updated) invalidate the whole root in the next layout phase.  MP-3's widget-less child frames
+  ;; remove it.
+  :expected-result :failed
+  (let* ((cb (glitnir-gui--text-buffer "*glitnir-churn*" 5))
+         (c (glitnir-gui--child cb nil))
+         (buf (generate-new-buffer "*glitnir-churn-root*")))
+    (unwind-protect
+        (progn
+          (switch-to-buffer buf)
+          (insert "root")
+          (redisplay t) (sit-for 0.1)
+          (glitnir-stats nil t)
+          (dotimes (i 20)
+            (set-frame-position c (+ 200 (* 4 (% i 10))) 200)
+            (make-frame-visible c)
+            (set-frame-position c (+ 204 (* 4 (% i 10))) 200)
+            (redisplay t)
+            (make-frame-invisible c)
+            (redisplay t)
+            (sit-for 0.03))
+          (let ((s (glitnir-stats)))
+            (princ (format "child churn: painted px p50 %d of %d\n" (plist-get s :painted-px) (glitnir-gui--frame-px))
+                   #'external-debugging-output)
+            (should (>= (plist-get s :count) 10))
+            (should (< (plist-get s :painted-px) (/ (glitnir-gui--frame-px) 4)))))
+      (delete-frame c)
+      (kill-buffer cb) (kill-buffer buf))))
+
 (ert-deftest glitnir-gui/no-draw-while-frozen ()
   ;; The child frame is newer, so redisplay draws it first: its damage freezes the root before the root's jit-lock
   ;; runs.  The jit-lock function then moves the child (GTK invalidates the root on its next layout) and lets GLib
