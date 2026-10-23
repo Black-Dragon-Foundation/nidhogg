@@ -216,15 +216,16 @@ script() {
     [ -z "${NIDHOGG_BUILD_CCACHE:-}" ] || echo 'export CCACHE_DIR=/ccache CCACHE_COMPILERCHECK=content CCACHE_MAXSIZE=500M CC="ccache gcc"; ccache -z >/dev/null'
   fi
   cat <<'BODY'
-# relative links so that a relocated binary finds its dump beside itself; the dump named by the installed binary's
-# fingerprint (a reused prefix keeps the dumps of earlier builds)
+# relative links so that a relocated binary finds its dump beside itself; the installed binary's own dump (a reused
+# prefix keeps the dumps of earlier builds): the one it loads when given it, since it refuses a dump not built for it
 dumplinks() {
   root=$1
-  fp=$("$root/bin/emacs-$UPV" --fingerprint 2>/dev/null) || return 0
-  set -- "$root"/libexec/emacs/*/*/"emacs-$fp.pdmp"
-  [ -e "$1" ] || return 0
-  rel=${1#"$root"/}
-  for n in nidhogg emacs "emacs-$UPV"; do ln -sf "../$rel" "$root/bin/$n.pdmp"; done
+  for f in "$root"/libexec/emacs/*/*/emacs-*.pdmp; do
+    "$root/bin/emacs-$UPV" --dump-file="$f" --fingerprint >/dev/null 2>&1 || continue
+    rel=${f#"$root"/}
+    for n in nidhogg emacs "emacs-$UPV"; do ln -sf "../$rel" "$root/bin/$n.pdmp"; done
+    return 0
+  done
 }
 phase() { PHASE=$1; echo "== $*"; }
 # run a logged step; a heartbeat line every HB seconds while it runs; on failure the last 100 lines of its log

@@ -161,10 +161,13 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do grep -q '^run ' "$T/pm.log" && break; sleep 0.
 kill -TERM "$bpid"; wait "$bpid"; trc=$?
 [ "$trc" = 143 ] || fail "TERM: exit $trc"
 grep -q '^stop ' "$T/pm.log" && grep -q '^rm -f nidhogg-build-' "$T/pm.log" || fail "TERM: container not removed: $(cat "$T/pm.log")"
-# dumplinks links the dump of the installed binary's fingerprint, not the first one a reused prefix holds
+# dumplinks links the installed binary's own dump, not the first one a reused prefix holds, even while the links still
+# name an earlier build's dump (the binary loads a dump before it reads any option, and refuses one not built for it)
 dl=$T/dl; mkdir -p "$dl/bin" "$dl/libexec/emacs/31.1/x86_64"
 : > "$dl/libexec/emacs/31.1/x86_64/emacs-aaa.pdmp"; : > "$dl/libexec/emacs/31.1/x86_64/emacs-bbb.pdmp"
-printf '#!/bin/sh\necho bbb\n' > "$dl/bin/emacs-31.1"; chmod +x "$dl/bin/emacs-31.1"
+ln -s ../libexec/emacs/31.1/x86_64/emacs-aaa.pdmp "$dl/bin/emacs-31.1.pdmp"
+printf '#!/bin/sh\ncase "$1" in --dump-file=*/emacs-bbb.pdmp) echo bbb ;; *) exit 1 ;; esac\n' > "$dl/bin/emacs-31.1"
+chmod +x "$dl/bin/emacs-31.1"
 ( eval "$(sed -n '/^dumplinks() {/,/^}/p' nidhogg/build.sh)"; UPV=31.1; dumplinks "$dl" )
 [ "$(readlink "$dl/bin/nidhogg.pdmp")" = ../libexec/emacs/31.1/x86_64/emacs-bbb.pdmp ] ||
   fail "dumplinks: nidhogg.pdmp -> $(readlink "$dl/bin/nidhogg.pdmp"), wanted the binary's emacs-bbb.pdmp"
