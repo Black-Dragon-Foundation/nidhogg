@@ -1,0 +1,2 @@
+# Tests that fail with the workers off too, and are not the workers' to fix: TEST<TAB>reason<TAB>owner.  Reviewed at Task 47.
+# Filled from the first off-mode run of each group (pkg-test.sh --mode off); empty until then.
