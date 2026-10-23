@@ -387,9 +387,7 @@ extern int nh_img_gif_scan (const uint8_t *, size_t, int idx,
 extern int nh_img_webp_scan (const uint8_t *, size_t, int idx,
 			     struct nh_img_scan *);
 
-/* Auto-save and name lookups, nidhogg-blk.c [34, 35].  */
-extern bool nh_save_auto_save_1 (struct buffer *);
-extern bool nh_save_keyboard_triggered;
+/* Name lookups, nidhogg-blk.c [35].  */
 extern bool nh_dns_start (struct Lisp_Process *, const char *host,
 			  const char *service, const struct addrinfo *hints);
 
@@ -418,6 +416,14 @@ struct nh_dec_scan
 };
 
 extern void nh_dec_scan (const unsigned char *, size_t, struct nh_dec_scan *);
+
+/* The auto-save encoder, nidhogg-decode.c [34]: N bytes of Emacs's
+   internal representation (a buffer's text, multibyte or unibyte) as
+   `utf-8-emacs-unix' encodes them: raw-byte characters become their
+   byte, everything else is copied.  OUT may be IN (it never runs
+   ahead); return the bytes written.  Lisp-free.  */
+extern size_t nh_dec_autosave_encode (const unsigned char *in, size_t n,
+				      unsigned char *out);
 
 #ifndef NH_WK_HARNESS
 
@@ -459,13 +465,31 @@ extern bool nh_img_prepare (struct frame *, struct image *);
    PD-3): the depth to hand to nh_img_phase_end.  */
 extern int nh_img_phase_begin (int64_t *t0);
 extern void nh_img_phase_end (int depth, int64_t t0);
-extern bool nh_save_name_in_flight (Lisp_Object name);
 /* process.c, for nidhogg-set-process-reader: hand PROC back for good
    (ON false), or let the reader take it again if it is being read.  */
 extern void nh_io_proc_reader (Lisp_Object proc, bool on);
 /* The stateless system CODING decodes with, or NH_DEC_NONE [18].  */
 extern int nh_dec_classify (struct coding_system *);
 extern Lisp_Object nh_dec_system_name (int);
+
+/* Auto-save writes on nh-save, nidhogg-blk.c [34] (§8.6).  The keyboard
+   loop's two auto-saves call nh_save_keyboard_auto_save instead of
+   do-auto-save.  auto_save_1 calls nh_save_auto_save_1 (current buffer,
+   mode bits) before it writes: true when the write was queued (or
+   skipped as hung), false when it must write synchronously, as it does
+   whenever it runs in signal context or on the fatal path.
+   nh_save_due is do-auto-save's extra due test: a synchronous auto-save
+   writes a buffer whose job has not landed.  delete-file-internal and
+   rename-file report names, kill-buffer settles the buffer's job.
+   nh_save_write_sync (fileio.c) is auto_save_1 for the current buffer,
+   as do-auto-save runs it.  */
+extern void nh_save_keyboard_auto_save (Lisp_Object no_message);
+extern bool nh_save_auto_save_1 (struct buffer *, int mode);
+extern bool nh_save_due (struct buffer *);
+extern void nh_save_file_deleted (Lisp_Object name);
+extern void nh_save_file_renamed (Lisp_Object from, Lisp_Object to);
+extern void nh_save_settle (struct buffer *);
+extern void nh_save_write_sync (void);
 
 /* The `syms_of' part of each file, called from syms_of_nidhogg_workers.  */
 extern void syms_of_nidhogg_workers (void);
