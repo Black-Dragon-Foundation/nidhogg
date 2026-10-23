@@ -291,6 +291,48 @@ would for a user at the terminal."
         (should (equal (workers-fatal-tests--auto-saved dir "c.txt")
                        "worker crash"))))))
 
+(defconst workers-fatal-tests--crash-grammar-dir
+  (let ((dir (or (getenv "NIDHOGG_TEST_GRAMMARS")
+                 (expand-file-name
+                  "fixtures/grammars-cache"
+                  (file-name-directory (or load-file-name buffer-file-name ""))))))
+    (and (file-exists-p (expand-file-name "libtree-sitter-crash.so" dir))
+         dir))
+  "The directory holding the `crash' test grammar, or nil.
+fixtures/grammars.sh builds it; found as `workers-ts-tests' finds its grammars.")
+
+(ert-deftest workers/worker-crash-forwarded-grammar ()
+  ;; §17.3 S10.  A grammar's external scanner dereferences NULL on a
+  ;; marker input (the `crash' grammar, fixtures/crash-scanner.c: Python
+  ;; whose scanner writes through a null pointer at a backquote) while
+  ;; nh-parse parses: the worker's SIGSEGV reaches the main thread's
+  ;; fatal path, and the emergency auto-save exists.  The main thread
+  ;; never parses here: the job is queued, then the child only waits.
+  (let ((grammars workers-fatal-tests--crash-grammar-dir))
+    (skip-unless grammars)
+    (workers-fatal-tests--in-dir dir
+      (let* ((file (expand-file-name "g.txt" dir))
+             (text "x=1\ny=`\nz=(`)\n`\n")
+             (r (workers-fatal-tests--batch
+                 `(progn
+                    ,(workers-fatal-tests--edit file text)
+                    (require 'treesit)
+                    (setq treesit-extra-load-path '(,grammars)
+                          nidhogg-workers-treesit t)
+                    (unless (treesit-language-available-p 'crash)
+                      (kill-emacs 3))
+                    (let ((p (treesit-parser-create 'crash)))
+                      (princ "nh-wk: ready\n")
+                      (unless (nidhogg-workers--test-ts-start p)
+                        (kill-emacs 4)))
+                    (while t
+                      (accept-process-output nil 0.05)))
+                 :pty t :mark "nh-wk: ready")))
+        (ert-info ((format "%S" r) :prefix "child: ")
+          (workers-fatal-tests--should-die r '(SIGSEGV . 11) "Segmentation fault")
+          (should (equal (workers-fatal-tests--auto-saved dir "g.txt")
+                         text)))))))
+
 (ert-deftest workers/kill-emacs-with-jobs-in-flight ()
   ;; Review Focus 4.  Every worker has a job parked at a pause point when
   ;; a timer calls `kill-emacs': the exit does not hang (status 0 within
