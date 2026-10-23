@@ -472,7 +472,7 @@ static void
 nh_wk_cq_push (struct nh_wk_cq *q, struct nh_wk_job *j)
 {
   j->next = NULL;
-  pthread_mutex_lock (&q->m);
+  nh_wk_lock (&q->m);
   bool was_empty = !q->head;
   if (q->tail)
     q->tail->next = j;
@@ -487,7 +487,7 @@ nh_wk_cq_push (struct nh_wk_cq *q, struct nh_wk_job *j)
 static struct nh_wk_job *
 nh_wk_cq_pop (struct nh_wk_cq *q)
 {
-  pthread_mutex_lock (&q->m);
+  nh_wk_lock (&q->m);
   struct nh_wk_job *j = q->head;
   if (j)
     {
@@ -503,7 +503,7 @@ nh_wk_cq_pop (struct nh_wk_cq *q)
 static bool
 nh_wk_cq_nonempty (struct nh_wk_cq *q)
 {
-  pthread_mutex_lock (&q->m);
+  nh_wk_lock (&q->m);
   bool r = q->head != NULL;
   pthread_mutex_unlock (&q->m);
   return r;
@@ -546,7 +546,7 @@ nh_wk_job_unref (struct nh_wk_job *job)
 static void
 nh_wk_set_state (struct nh_wk_job *job, int state)
 {
-  pthread_mutex_lock (&nh_wk_done_m);
+  nh_wk_lock (&nh_wk_done_m);
   atomic_store (&job->state, state);
   pthread_cond_broadcast (&nh_wk_done_cv);
   pthread_mutex_unlock (&nh_wk_done_m);
@@ -584,6 +584,78 @@ void
 nh_wk_set_on_worker (bool v)
 {
   nh_wk_flagged = v;
+}
+
+/* Signal context (Task 4, §4 item 11).  No signal handler takes a
+   worker mutex, waits on a condition variable or performs a handshake:
+   the code it interrupted may hold that very mutex.  The handlers that
+   may reach worker code enter and leave signal context (a depth, since
+   handlers nest); the fatal path is signal context from nh_wk_fatal_begin
+   on, for every thread but the workers.  There nh_wk_submit,
+   nh_wk_wait and nh_wk_cancel refuse at once, and nh_wk_lock counts and
+   aborts.  */
+
+static _Thread_local int nh_wk_in_signal;
+
+/* Worker mutexes taken in signal context: 0, or the process aborted.  */
+static _Atomic int nh_wk_signal_locks;
+
+/* Tests: the probe a handler runs when it enters signal context.  */
+static _Atomic bool nh_wk_probe_armed;
+static void nh_wk_signal_probe (void);
+
+void
+nh_wk_signal_enter (void)
+{
+  nh_wk_in_signal++;
+  if (atomic_load_explicit (&nh_wk_probe_armed, memory_order_relaxed))
+    nh_wk_signal_probe ();
+}
+
+void
+nh_wk_signal_leave (void)
+{
+  nh_wk_in_signal--;
+}
+
+bool
+nh_wk_signal_context (void)
+{
+  return (nh_wk_in_signal > 0
+	  || (atomic_load (&nh_wk_dead) && !nh_wk_on_worker ()));
+}
+
+void
+nh_wk_lock (pthread_mutex_t *m)
+{
+  if (nh_wk_signal_context ())
+    {
+      atomic_fetch_add (&nh_wk_signal_locks, 1);
+      abort ();
+    }
+  pthread_mutex_lock (m);
+}
+
+/* The probe (tests): in a handler, the main thread's entry points must
+   refuse without taking a lock.  Its job is never queued.  */
+static void
+nh_wk_probe_run (struct nh_wk_job *job)
+{
+  (void) job;
+}
+
+static struct nh_wk_job nh_wk_probe_job = {
+  .w = NH_WK_BLK, .cls = NH_WK_CL_FILE, .run = nh_wk_probe_run
+};
+static _Atomic int nh_wk_probes;
+
+static void
+nh_wk_signal_probe (void)
+{
+  nh_wk_submit (&nh_wk_probe_job);
+  nh_wk_wait (&nh_wk_probe_job, NH_WK_MS, 0, 0);
+  nh_wk_cancel (&nh_wk_probe_job);
+  atomic_fetch_add (&nh_wk_probes, 1);
 }
 
 /* Pools (all under the worker's mutex).  */
@@ -719,7 +791,7 @@ nh_wk_start_thread (int w, int pool, bool standby)
     return true;
 
   struct nh_wk_wst *ws = &nh_wk_w[w];
-  pthread_mutex_lock (&ws->m);
+  nh_wk_lock (&ws->m);
   ws->pool[pool].threads--;
   if (standby)
     ws->pool[pool].standby = false;
@@ -790,7 +862,7 @@ nh_wk_thread_main (void *arg)
   if (pool == NH_WK_POOL_IDLE)
     nh_wk_set_idle_priority ();
 
-  pthread_mutex_lock (&ws->m);
+  nh_wk_lock (&ws->m);
   if (standby && !nh_wk_standby (ws, pool))
     {
       p->threads--;
@@ -825,7 +897,7 @@ nh_wk_thread_main (void *arg)
       j->run (j);
       int64_t ns = nh_wk_now () - t0;
 
-      pthread_mutex_lock (&ws->m);
+      nh_wk_lock (&ws->m);
       p->running--;
       if (ws->class_caps && pool == NH_WK_POOL_NORMAL)
 	ws->class_running[j->cls]--;
@@ -833,7 +905,7 @@ nh_wk_thread_main (void *arg)
 	atomic_store_explicit (&ws->longest_ns, ns, memory_order_relaxed);
       pthread_mutex_unlock (&ws->m);
       nh_wk_complete (j);
-      pthread_mutex_lock (&ws->m);
+      nh_wk_lock (&ws->m);
     }
 }
 
@@ -866,15 +938,16 @@ nh_wk_submit (struct nh_wk_job *job)
   NH_WK_ASSERT (!nh_wk_on_worker ());
   int w = job->w;
   struct nh_wk_wst *ws = &nh_wk_w[w];
-  nh_wk_init ();
-  if (ws->class_caps)
-    NH_WK_ASSERT (0 <= job->cls && job->cls < NH_WK_CL_N);
-
-  if (atomic_load (&nh_wk_dead))
+  /* Dead, or in a signal handler: refuse before anything else.  */
+  if (nh_wk_signal_context ())
     {
       nh_wk_fallback (w, NH_WK_FB_DEAD);
       return false;
     }
+  nh_wk_init ();
+  if (ws->class_caps)
+    NH_WK_ASSERT (0 <= job->cls && job->cls < NH_WK_CL_N);
+
 #ifndef NH_WK_HARNESS
   /* Never while dumping.  A --daemon's fork happens in main, before any
      Lisp runs, so no job can come before it.  */
@@ -911,7 +984,7 @@ nh_wk_submit (struct nh_wk_job *job)
 	      ? NH_WK_POOL_IDLE : NH_WK_POOL_NORMAL);
   struct nh_wk_pool *p = &ws->pool[pool];
   bool standby;
-  pthread_mutex_lock (&ws->m);
+  nh_wk_lock (&ws->m);
   nh_wk_pool_append (p, job, false);
   ws->queued++;
   bool start = nh_wk_need_thread (ws, pool, &standby);
@@ -921,7 +994,7 @@ nh_wk_submit (struct nh_wk_job *job)
   if (start && !nh_wk_start_thread (w, pool, standby))
     {
       /* With no thread at all the job would never run.  */
-      pthread_mutex_lock (&ws->m);
+      nh_wk_lock (&ws->m);
       bool orphan = p->threads == 0 && nh_wk_pool_unlink (p, job);
       if (orphan)
 	ws->queued--;
@@ -979,7 +1052,7 @@ nh_wk_promote (struct nh_wk_job *job, pthread_t *t)
   struct nh_wk_wst *ws = &nh_wk_w[w];
   bool start = false, standby = false, running = false;
 
-  pthread_mutex_lock (&ws->m);
+  nh_wk_lock (&ws->m);
   if (job->speculative)
     {
       int st = atomic_load (&job->state);
@@ -1014,7 +1087,7 @@ nh_wk_wait (struct nh_wk_job *job, int64_t timeout_ns, int phase, int reason)
   int st = atomic_load (&job->state);
   if (st == NH_WK_J_DONE)
     return 1;
-  if (st == NH_WK_J_CANCELLED || atomic_load (&nh_wk_dead))
+  if (st == NH_WK_J_CANCELLED || nh_wk_signal_context ())
     return -1;
   NH_WK_ASSERT (!nh_wk_on_worker ());
 
@@ -1027,7 +1100,7 @@ nh_wk_wait (struct nh_wk_job *job, int64_t timeout_ns, int phase, int reason)
   if (rel >= 0)
     nh_wk_release (rel);
 
-  pthread_mutex_lock (&nh_wk_done_m);
+  nh_wk_lock (&nh_wk_done_m);
   for (;;)
     {
       st = atomic_load (&job->state);
@@ -1060,9 +1133,9 @@ nh_wk_cancel (struct nh_wk_job *job)
   bool unlinked = false, live;
 
   atomic_store (&job->cancel, true);
-  if (atomic_load (&nh_wk_dead))
+  if (nh_wk_signal_context ())
     return;
-  pthread_mutex_lock (&ws->m);
+  nh_wk_lock (&ws->m);
   int st = atomic_load (&job->state);
   live = st == NH_WK_J_QUEUED || st == NH_WK_J_RUNNING;
   if (st == NH_WK_J_QUEUED)
@@ -1089,7 +1162,7 @@ nh_wk_pause_point (enum nh_wk_pause p)
   if (!(atomic_load (&nh_wk_armed) & bit) || !nh_wk_on_worker ())
     return;
   nh_wk_count (&nh_wk_w[nh_wk_self - 1].pauses, 1);
-  pthread_mutex_lock (&nh_wk_pause_m);
+  nh_wk_lock (&nh_wk_pause_m);
   nh_wk_parked[p]++;
   pthread_cond_broadcast (&nh_wk_pause_cv);
   while ((atomic_load (&nh_wk_armed) & bit) && !atomic_load (&nh_wk_dead))
@@ -1111,7 +1184,7 @@ static void
 nh_wk_release (int p)
 {
   nh_wk_init ();
-  pthread_mutex_lock (&nh_wk_pause_m);
+  nh_wk_lock (&nh_wk_pause_m);
   atomic_fetch_and (&nh_wk_armed, p < 0 ? 0u : ~(1u << p));
   pthread_cond_broadcast (&nh_wk_pause_cv);
   pthread_mutex_unlock (&nh_wk_pause_m);
@@ -1124,7 +1197,7 @@ nh_wk_await_paused (int p, int64_t ms, int n)
 {
   nh_wk_init ();
   uint64_t deadline = nh_wk_now () + ms * NH_WK_MS;
-  pthread_mutex_lock (&nh_wk_pause_m);
+  nh_wk_lock (&nh_wk_pause_m);
   while (nh_wk_parked[p] < n && nh_wk_now () < deadline)
     {
       struct timespec ts = nh_wk_abs (deadline);
@@ -1461,7 +1534,7 @@ nh_wk_worker_stats (int w, bool reset)
 {
   struct nh_wk_wst *ws = &nh_wk_w[w];
   int queued, running = 0;
-  pthread_mutex_lock (&ws->m);
+  nh_wk_lock (&ws->m);
   queued = ws->queued;
   for (int p = 0; p < NH_WK_POOLS; p++)
     running += ws->pool[p].running;
@@ -1546,7 +1619,7 @@ cumulative counters after reading them, not `:queued', `:running',
 			     phase_ms));
 
   struct nh_wk_wst *blk = &nh_wk_w[NH_WK_BLK];
-  pthread_mutex_lock (&blk->m);
+  nh_wk_lock (&blk->m);
   int blk_threads = blk->pool[NH_WK_POOL_NORMAL].threads;
   pthread_mutex_unlock (&blk->m);
 
@@ -1966,6 +2039,185 @@ DEFUN ("nidhogg-workers--test-wake-open", Fnidhogg_workers__test_wake_open,
   return Qt;
 }
 
+/* The fatal path (Task 4).  */
+
+/* A null pointer the compiler cannot see through: a write through it is
+   a real SIGSEGV at address 0, not a trap the optimizer put there.  */
+static int *volatile nh_wk_null;
+
+static void
+nh_wk_crash_run (struct nh_wk_job *job)
+{
+  (void) job;
+  *nh_wk_null = 1;
+}
+
+DEFUN ("nidhogg-workers--test-crash", Fnidhogg_workers__test_crash,
+       Snidhogg_workers__test_crash, 1, 1, 0,
+       doc: /* Submit a job to WORKER that writes through a null pointer; for tests.
+The worker's SIGSEGV is forwarded to the main thread's fatal path.
+Return t if the job was submitted.  */)
+  (Lisp_Object worker)
+{
+  int w = nh_wk_name_index (worker, nh_wk_names, NH_WK_N, "worker");
+  struct nh_wk_job *job = calloc (1, sizeof *job);
+  if (!job)
+    memory_full (sizeof *job);
+  job->w = w;
+  job->cls = NH_WK_CL_FILE;
+  job->run = nh_wk_crash_run;
+  job->free = nh_wk_test_free;
+  atomic_store (&job->refs, 1);
+  bool submitted = nh_wk_submit (job);
+  nh_wk_job_unref (job);
+  return submitted ? Qt : Qnil;
+}
+
+/* Write MSG to standard output, signal-safely (the tests' markers).  */
+static void
+nh_wk_say (const char *msg)
+{
+  if (write (STDOUT_FILENO, msg, strlen (msg)) < 0)
+    {
+    }
+}
+
+DEFUN ("nidhogg-workers--test-fatal-under-lock",
+       Fnidhogg_workers__test_fatal_under_lock,
+       Snidhogg_workers__test_fatal_under_lock, 1, 2, 0,
+       doc: /* Hold WORKER's queue mutex while a job runs, then die; for tests.
+WORKER must have a job running (one parked at a pause point).  With HOW
+nil or `segv', write through a null pointer: the SIGSEGV takes the fatal
+path while this thread holds the mutex.  With `sigint', wait for
+signals instead: write "nh-wk: holding" to standard output, then
+"nh-wk: quit" once `quit-flag' is set, so that a second C-g on the
+controlling tty reaches the emergency escape (auto-save, then abort).
+Never returns.  */)
+  (Lisp_Object worker, Lisp_Object how)
+{
+  int w = nh_wk_name_index (worker, nh_wk_names, NH_WK_N, "worker");
+  if (!NILP (how))
+    CHECK_SYMBOL (how);
+  bool sigint = (!NILP (how)
+		 && strcmp (SSDATA (SYMBOL_NAME (how)), "sigint") == 0);
+  struct nh_wk_wst *ws = &nh_wk_w[w];
+  nh_wk_init ();
+  nh_wk_lock (&ws->m);
+  int running = 0;
+  for (int p = 0; p < NH_WK_POOLS; p++)
+    running += ws->pool[p].running;
+  if (running == 0)
+    {
+      pthread_mutex_unlock (&ws->m);
+      error ("No job running on %s", nh_wk_names[w]);
+    }
+  if (sigint)
+    {
+      /* SIGINT is blocked between the checks and let in only by
+	 sigsuspend, so no C-g is missed.  */
+      sigset_t block, waitmask;
+      sigemptyset (&block);
+      sigaddset (&block, SIGINT);
+      pthread_sigmask (SIG_BLOCK, &block, &waitmask);
+      sigdelset (&waitmask, SIGINT);
+      nh_wk_say ("nh-wk: holding\n");
+      bool told = false;
+      for (;;)
+	{
+	  if (!told && !NILP (Vquit_flag))
+	    {
+	      nh_wk_say ("nh-wk: quit\n");
+	      told = true;
+	    }
+	  sigsuspend (&waitmask);
+	}
+    }
+  *nh_wk_null = 1;
+  emacs_abort ();
+}
+
+/* The SIGCHLD storm of `--test-signal-under-locks'.  */
+struct nh_wk_chld_storm
+{
+  pthread_t target;
+  _Atomic bool stop;
+};
+
+static void *
+nh_wk_chld_storm_main (void *arg)
+{
+  struct nh_wk_chld_storm *s = arg;
+  while (!atomic_load (&s->stop))
+    {
+      struct timespec t = { 0, 100000 };
+      pthread_kill (s->target, SIGCHLD);
+      nanosleep (&t, NULL);
+    }
+  return NULL;
+}
+
+DEFUN ("nidhogg-workers--test-signal-under-locks",
+       Fnidhogg_workers__test_signal_under_locks,
+       Snidhogg_workers__test_signal_under_locks, 1, 1, 0,
+       doc: /* Take N SIGCHLDs while holding each worker mutex in turn; for tests.
+A helper thread sends this thread SIGCHLD every 100 microseconds.  Each
+handler runs the signal-context probe: `nh_wk_submit', `nh_wk_wait' and
+`nh_wk_cancel', which must refuse at once.  Meanwhile this thread holds
+each worker's mutex, then the completion queue's, the done mutex and the
+pause mutex, each for an equal share of the N handlers.  Return
+\(:handled H :signal-locks L): H probes ran (N, unless 20 s passed), L
+worker mutexes were taken in signal context (0: a lock there aborts).  */)
+  (Lisp_Object n)
+{
+  CHECK_FIXNAT (n);
+  enum { NLOCKS = NH_WK_N + 3 };
+  pthread_mutex_t *locks[NLOCKS];
+  int k = 0;
+  nh_wk_init ();
+  for (int w = 0; w < NH_WK_N; w++)
+    locks[k++] = &nh_wk_w[w].m;
+  locks[k++] = &nh_wk_done_q.m;
+  locks[k++] = &nh_wk_done_m;
+  locks[k++] = &nh_wk_pause_m;
+
+  static struct nh_wk_chld_storm s;
+  s.target = pthread_self ();
+  atomic_store (&s.stop, false);
+  atomic_store (&nh_wk_probes, 0);
+  atomic_store (&nh_wk_probe_armed, true);
+  pthread_t t;
+  sigset_t all, old;
+  sigfillset (&all);
+  pthread_sigmask (SIG_SETMASK, &all, &old);
+  int err = pthread_create (&t, NULL, nh_wk_chld_storm_main, &s);
+  pthread_sigmask (SIG_SETMASK, &old, NULL);
+  if (err)
+    {
+      atomic_store (&nh_wk_probe_armed, false);
+      error ("Cannot start the SIGCHLD storm");
+    }
+  EMACS_INT total = XFIXNAT (n);
+  uint64_t deadline = nh_wk_now () + 20000 * NH_WK_MS;
+  for (int i = 0; i < NLOCKS; i++)
+    {
+      EMACS_INT share_end = total * (i + 1) / NLOCKS;
+      nh_wk_lock (locks[i]);
+      while (atomic_load (&nh_wk_probes) < share_end
+	     && nh_wk_now () < deadline)
+	{
+	  struct timespec ts = { 0, 50000 };
+	  nanosleep (&ts, NULL);
+	}
+      pthread_mutex_unlock (locks[i]);
+    }
+  atomic_store (&nh_wk_probe_armed, false);
+  atomic_store (&s.stop, true);
+  pthread_join (t, NULL);
+  return list4 (nh_wk_kw (":handled"), make_int (atomic_load (&nh_wk_probes)),
+		nh_wk_kw (":signal-locks"),
+		make_int (atomic_load (&nh_wk_signal_locks)));
+}
+
 /* `nidhogg-workers--mode' sets nh_wk_inline (a variable watcher).  */
 static Lisp_Object
 watch_nidhogg_workers_mode (Lisp_Object symbol, Lisp_Object newval,
@@ -2021,15 +2273,22 @@ with no scheduling, for tests.  */);
   defsubr (&Snidhogg_workers__test_wake_race);
   defsubr (&Snidhogg_workers__test_fd_reserve);
   defsubr (&Snidhogg_workers__test_wake_open);
+  defsubr (&Snidhogg_workers__test_crash);
+  defsubr (&Snidhogg_workers__test_fatal_under_lock);
+  defsubr (&Snidhogg_workers__test_signal_under_locks);
 }
 
 #endif /* not NH_WK_HARNESS */
 
 /* Tasks 4 and 5.  */
 
+/* The fatal path begins (shut_down_emacs): from now on nothing waits on
+   a worker, completions are ignored and the queues are abandoned, not
+   freed.  Only the store: it may run in any signal handler.  */
 void
 nh_wk_fatal_begin (void)
 {
+  atomic_store (&nh_wk_dead, true);
 }
 
 int64_t

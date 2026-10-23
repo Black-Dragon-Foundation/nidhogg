@@ -127,6 +127,10 @@ static struct rlimit nofile_limit;
 #include "nidhogg-watchdog.h"
 #include "nidhogg-watchdog-phase.h"
 #endif
+#ifdef HAVE_NIDHOGG_WORKERS
+
+#include "nidhogg-workers.h"
+#endif
 
 #ifdef HAVE_WINDOW_SYSTEM
 #include TERM_HEADER
@@ -7793,7 +7797,15 @@ handle_child_signal (int sig)
 static void
 deliver_child_signal (int sig)
 {
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  nh_wk_signal_enter ();
+#endif
   deliver_process_signal (sig, handle_child_signal);
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  nh_wk_signal_leave ();
+#endif
 }
 
 
@@ -8482,6 +8494,10 @@ kill_buffer_processes (Lisp_Object buffer)
   FOR_EACH_PROCESS (tail, proc)
     if (NILP (buffer) || EQ (XPROCESS (proc)->buffer, buffer))
       {
+#ifdef HAVE_NIDHOGG_WORKERS
+
+	nh_io_dead_close (XPROCESS (proc));
+#endif
 	if (NETCONN_P (proc) || SERIALCONN_P (proc) || PIPECONN_P (proc))
 	  Fdelete_process (proc);
 	else if (XPROCESS (proc)->infd >= 0)
