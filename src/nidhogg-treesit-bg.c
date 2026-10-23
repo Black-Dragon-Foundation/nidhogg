@@ -18,9 +18,10 @@ You should have received a copy of the GNU General Public License
 along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
 /* Task 9: the allocator.  Task 10: parse jobs over snapshots, publish
-   and ownership.  Tasks 11 to 13 fill the rest (the edit log, the start
-   points, deferral).  README.md, "Work off the main thread", is the
-   user-facing description; the design's §7.3 to §7.5 the contract.
+   and ownership.  Task 11: the edit log and replay.  Tasks 12 and 13
+   fill the rest (the start points, deferral).  README.md, "Work off
+   the main thread", is the user-facing description; the design's §7.3
+   to §7.5 the contract.
 
    A job (struct nh_ts_job, one per parser, the latest snapshot wins)
    holds a snapshot taken on the main thread: the visible bytes of the
@@ -42,7 +43,22 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
    generation equal the parser's gives its tree to today's tail
    (timestamp, changed ranges, notifiers, the old tree freed); any other
    job is dropped and the synchronous parse runs.  So notifiers run only
-   at demand calls, and a node stays valid until the publish.  */
+   at demand calls, and a node stays valid until the publish.
+
+   The edit log (§7.3 item 5, §7.4).  While a parser has a job, every
+   edit treesit.c applies to the parser's tree (treesit_record_change_1,
+   treesit_sync_visible_region) is logged exactly as applied; a parser
+   without a tree logs the buffer bytes of the change, relative to the
+   snapshot's BEGV, and the publish turns them into tree edits the way
+   treesit_record_change_1 would have (B3).  A parser that tracks line
+   and column drops a tree-less job at its first edit (the tree edits
+   would need the snapshot's line and column, MC-19).  Publish replays
+   the log onto the job's tree and, if the log is not empty, reparses
+   it once on the main thread (the watchdog's `treesit' phase) with the
+   parser's current ranges: the same grouping a synchronous parse at
+   the snapshot would have had.  Only the main thread touches the log.
+   A start drops a job whose snapshot is older than the newest edit
+   (the latest snapshot wins); a demand replays it.  */
 
 #ifndef NH_WK_HARNESS
 # include <config.h>
@@ -207,6 +223,18 @@ how many times the thread reached `malloc_probe'.  Test only.  */)
 # define NH_TS_JOBS false
 #endif
 
+/* An edit made after the snapshot (main thread only).  */
+struct nh_ts_edit
+{
+  TSInputEdit edit;		/* as applied to the parser's tree */
+  /* A tree-less parser's change: buffer bytes from the snapshot's BEGV
+     (B3).  */
+  ptrdiff_t start, old_end, new_end;
+};
+
+/* The longest log; one more edit drops the job.  */
+enum { NH_TS_LOG_MAX = 1 << 16 };
+
 struct nh_ts_job
 {
   struct nh_wk_job job;
@@ -219,6 +247,11 @@ struct nh_ts_job
   TSTree *result;		/* the worker's parse; NULL if cancelled */
   ptrdiff_t gen, visible_beg, visible_end;
   ptrdiff_t stat[3];		/* (treesit-subtree-stat) of the result's root */
+  /* The edit log: its entries (malloc), how many, the room, and the
+     parser's edit generation it brings the job's tree to.  */
+  struct nh_ts_edit *log;
+  ptrdiff_t nlog, log_room, log_gen;
+  bool tree_less;		/* the parser had no tree at the snapshot */
 };
 
 /* The counters of `nidhogg-workers--test-ts-stats'.  */
@@ -229,6 +262,10 @@ enum
   NH_TS_C_PUBLISHED,
   NH_TS_C_DISCARDED,
   NH_TS_C_STAT_CACHED,
+  NH_TS_C_REPLAYED,
+  NH_TS_C_REPLAYED_EDITS,
+  NH_TS_C_SUPERSEDED,
+  NH_TS_C_PARSES,
   NH_TS_C_N
 };
 static _Atomic int64_t nh_ts_count[NH_TS_C_N];
@@ -373,6 +410,7 @@ nh_ts_job_run (struct nh_wk_job *job)
 		 : nh_ts_thread_parser (t->lang));
   if (p && ts_parser_set_included_ranges (p, t->ranges, t->nranges))
     {
+      nh_ts_counted (NH_TS_C_PARSES);
       TSInput input = { .payload = t, .read = nh_ts_read,
 			.encoding = TSInputEncodingUTF8 };
       TSParseOptions opts = { .payload = t,
@@ -403,6 +441,7 @@ nh_ts_job_free (struct nh_wk_job *job)
     ts_tree_delete (t->result);
   free (t->text);
   free (t->ranges);
+  free (t->log);
   free (t);
   nh_wk_lock (&nh_ts_live_m);
   nh_ts_live--;
@@ -543,7 +582,10 @@ nh_ts_start (Lisp_Object parser)
       && atomic_load (&cur->job.state) != NH_WK_J_CANCELLED
       && nh_ts_job_current (p, cur, b))
     return true;
-  /* The latest snapshot wins (MC-6).  */
+  /* The latest snapshot wins (MC-6): a job over older text, even a done
+     one whose log a demand could replay, gives way.  */
+  if (cur)
+    nh_ts_counted (NH_TS_C_SUPERSEDED);
   nh_ts_drop (p);
 
   int64_t t0 = nh_ts_now ();
@@ -577,7 +619,8 @@ nh_ts_start (Lisp_Object parser)
   t->nranges = nranges;
   t->lang = ts_parser_language (p->parser);
   t->old = p->tree ? ts_tree_copy (p->tree) : NULL;
-  t->gen = p->nh_gen;
+  t->gen = t->log_gen = p->nh_gen;
+  t->tree_less = !p->tree;
   t->visible_beg = beg;
   t->visible_end = end;
   t->job.w = NH_WK_PARSE;
@@ -603,6 +646,96 @@ nh_ts_start (Lisp_Object parser)
   return true;
 }
 
+/* The edit log (Task 11).  */
+
+static bool
+nh_ts_log_push (struct nh_ts_job *t, const struct nh_ts_edit *e)
+{
+  if (t->nlog == t->log_room)
+    {
+      if (t->log_room >= NH_TS_LOG_MAX)
+	return false;
+      ptrdiff_t room = t->log_room ? 2 * t->log_room : 16;
+      /* malloc's, not xmalloc's: the worker may free the job.  */
+      struct nh_ts_edit *log = realloc (t->log, room * sizeof *log);
+      if (!log)
+	return false;
+      t->log = log;
+      t->log_room = room;
+    }
+  t->log[t->nlog++] = *e;
+  return true;
+}
+
+/* treesit.c applied TS_INPUT_EDIT (a TSInputEdit) to PARSER_C's tree,
+   or, with TS_INPUT_EDIT NULL, recorded a change from START_BYTE to
+   OLD_END_BYTE (now NEW_END_BYTE) in a parser without a tree.  Called
+   from insdel: no Lisp, no signal.  */
+void
+nh_ts_record_edit (void *parser_c, const void *ts_input_edit,
+		   ptrdiff_t start_byte, ptrdiff_t old_end_byte,
+		   ptrdiff_t new_end_byte)
+{
+  struct Lisp_TS_Parser *p = parser_c;
+  struct nh_ts_job *t = p->nh_job;
+  if (!t)
+    return;
+  struct nh_ts_edit e = { .start = start_byte - t->visible_beg,
+			  .old_end = old_end_byte - t->visible_beg,
+			  .new_end = new_end_byte - t->visible_beg };
+  if (ts_input_edit)
+    e.edit = *(const TSInputEdit *) ts_input_edit;
+  bool tree_less = !ts_input_edit;
+  /* A job whose tree and the parser's disagree on having one cannot be
+     replayed; nor can a tree-less job of a parser that tracks line and
+     column (MC-19), or a log out of room.  */
+  if (tree_less != t->tree_less
+      || (tree_less && p->visi_beg_linecol.bytepos != 0)
+      || !nh_ts_log_push (t, &e))
+    {
+      nh_ts_drop (p);
+      nh_ts_counted (NH_TS_C_DISCARDED);
+      return;
+    }
+  t->log_gen = p->nh_gen;
+}
+
+/* Apply T's log to TREE, a tree of T's snapshot.  A tree-less job's
+   entries become the edits treesit_record_change_1 would have made,
+   clipped to the view the job's tree has, which must end up being the
+   buffer B's visible region.  Return false if the log cannot apply.  */
+static bool
+nh_ts_replay (struct nh_ts_job *t, TSTree *tree, struct buffer *b)
+{
+  /* The tree-less view, in bytes from the snapshot's BEGV.  */
+  ptrdiff_t vb = 0, ve = t->visible_end - t->visible_beg;
+  for (ptrdiff_t i = 0; i < t->nlog; i++)
+    {
+      struct nh_ts_edit *e = &t->log[i];
+      if (t->tree_less)
+	{
+	  ptrdiff_t s = min (ve, max (vb, e->start)) - vb;
+	  ptrdiff_t oe = min (ve, max (vb, e->old_end)) - vb;
+	  ptrdiff_t ne = max (vb, e->new_end) - vb;
+	  ptrdiff_t delta = (e->old_end > e->new_end
+			     ? min (vb, e->new_end) - min (vb, e->old_end)
+			     : e->old_end < vb ? e->new_end - e->old_end : 0);
+	  if (s < 0 || s > oe || s > ne || oe > UINT32_MAX || ne > UINT32_MAX)
+	    return false;
+	  vb += delta;
+	  ve += delta + (ne - oe);
+	  /* treesit.c's TREESIT_TS_POINT_1_0.  */
+	  TSPoint none = { 1, 0 };
+	  e->edit = (TSInputEdit) { (uint32_t) s, (uint32_t) oe,
+				    (uint32_t) ne, none, none, none };
+	}
+      ts_tree_edit (tree, &e->edit);
+    }
+  return (!t->tree_less
+	  || (vb + t->visible_beg == BUF_BEGV_BYTE (b)
+	      && ve + t->visible_beg == BUF_ZV_BYTE (b)));
+}
+
 bool
 nh_ts_publish (Lisp_Object parser, void **tree)
 {
@@ -610,17 +743,54 @@ nh_ts_publish (Lisp_Object parser, void **tree)
   struct nh_ts_job *t = p->nh_job;
   if (!t)
     return false;
-  if (!nh_ts_job_done (t) || !nh_ts_job_current (p, t, XBUFFER (p->buffer)))
+  struct buffer *b = XBUFFER (p->buffer);
+  /* With edits since the snapshot, the log must hold every one of them
+     (the reparse below takes the current ranges); without, the job
+     must have parsed exactly what a demand would.  */
+  bool replay = t->nlog > 0;
+  if (!nh_ts_job_done (t) || t->log_gen != p->nh_gen
+      || (replay ? t->lang != ts_parser_language (p->parser)
+	  : !nh_ts_job_current (p, t, b)))
     {
       nh_ts_drop (p);
       nh_ts_counted (NH_TS_C_DISCARDED);
       return false;
     }
-  *tree = t->result;
+  TSTree *result = t->result;
   t->result = NULL;
-  memcpy (p->nh_stat, t->stat, sizeof p->nh_stat);
-  /* The caller's tail increments the timestamp next.  */
-  p->nh_stat_timestamp = p->timestamp + 1;
+  if (replay)
+    {
+      /* One parse on this thread, from the job's tree with the edits
+	 replayed: the caller has synced the visible region, so the
+	 parser's input reads what a synchronous parse would.  */
+      int64_t t0 = nh_ts_now ();
+      int depth = NH_WK_PHASE_PUSH (NH_WK_PH_TREESIT, 0);
+      TSTree *reparsed = (nh_ts_replay (t, result, b)
+			  ? ts_parser_parse (p->parser, result, p->input)
+			  : NULL);
+      ts_tree_delete (result);
+      NH_WK_PHASE_POP (depth);
+      nh_wk_phase_ns_add (NH_WK_PH_TREESIT, 0, nh_ts_now () - t0);
+      if (!reparsed)
+	{
+	  nh_ts_drop (p);
+	  nh_ts_counted (NH_TS_C_DISCARDED);
+	  return false;
+	}
+      atomic_fetch_add_explicit (&nh_ts_count[NH_TS_C_REPLAYED_EDITS],
+				 t->nlog, memory_order_relaxed);
+      nh_ts_counted (NH_TS_C_REPLAYED);
+      result = reparsed;
+      /* The worker's statistics are of the tree before the edits.  */
+      p->nh_stat_timestamp = -1;
+    }
+  else
+    {
+      memcpy (p->nh_stat, t->stat, sizeof p->nh_stat);
+      /* The caller's tail increments the timestamp next.  */
+      p->nh_stat_timestamp = p->timestamp + 1;
+    }
+  *tree = result;
   p->nh_job = NULL;
   nh_wk_job_unref (&t->job);
   nh_ts_counted (NH_TS_C_PUBLISHED);
@@ -726,7 +896,8 @@ DEFUN ("nidhogg-workers--test-ts-info", Fnidhogg_workers__test_ts_info,
        doc: /* Return PARSER's worker state; for tests.
 A plist: `:job' (nil, `queued', `running', `done' or `cancelled'),
 `:gen' (the edit generation), `:visible' (the byte range its tree
-sees, (BEG . END)) and `:ranges' (its `last_set_ranges' itself, for `eq').  */)
+sees, (BEG . END)), `:ranges' (its `last_set_ranges' itself, for `eq')
+and `:log' (the edits logged since the job's snapshot, or nil).  */)
   (Lisp_Object parser)
 {
   static const char *const states[] = {
@@ -736,7 +907,8 @@ sees, (BEG . END)) and `:ranges' (its `last_set_ranges' itself, for `eq').  */)
   struct nh_ts_job *t = p->nh_job;
   Lisp_Object job = (t ? intern_c_string (states[atomic_load (&t->job.state)])
 		     : Qnil);
-  return listn (8, intern_c_string (":job"), job,
+  return listn (10, intern_c_string (":log"), t ? make_int (t->nlog) : Qnil,
+		intern_c_string (":job"), job,
 		intern_c_string (":gen"), make_int (p->nh_gen),
 		intern_c_string (":visible"),
 		Fcons (make_int (p->visible_beg), make_int (p->visible_end)),
@@ -747,14 +919,19 @@ DEFUN ("nidhogg-workers--test-ts-stats", Fnidhogg_workers__test_ts_stats,
        Snidhogg_workers__test_ts_stats, 0, 0, 0,
        doc: /* Return the tree-sitter jobs' counters; for tests.
 A plist: `:started', `:refused', `:published', `:discarded' (dropped at a
-demand: stale, not done, or ranges changed), `:stat-cached' (subtree
-statistics answered from a publish) and `:live' (jobs not yet freed).  */)
+demand: not done, or ranges changed with no edit since the snapshot; or
+at an edit the log cannot replay), `:stat-cached' (subtree statistics
+answered from a publish), `:replayed' (publishes that replayed edits and
+reparsed), `:replayed-edits' (the edits they replayed), `:superseded'
+(jobs a start replaced with a newer snapshot), `:parses' (worker parses
+begun; a job cancelled before its parse begins none) and `:live' (jobs
+not yet freed).  */)
   (void)
 {
   nh_wk_lock (&nh_ts_live_m);
   ptrdiff_t live = nh_ts_live;
   pthread_mutex_unlock (&nh_ts_live_m);
-  return listn (12,
+  return listn (20,
 		intern_c_string (":started"),
 		make_int (atomic_load (&nh_ts_count[NH_TS_C_STARTED])),
 		intern_c_string (":refused"),
@@ -765,6 +942,14 @@ statistics answered from a publish) and `:live' (jobs not yet freed).  */)
 		make_int (atomic_load (&nh_ts_count[NH_TS_C_DISCARDED])),
 		intern_c_string (":stat-cached"),
 		make_int (atomic_load (&nh_ts_count[NH_TS_C_STAT_CACHED])),
+		intern_c_string (":replayed"),
+		make_int (atomic_load (&nh_ts_count[NH_TS_C_REPLAYED])),
+		intern_c_string (":replayed-edits"),
+		make_int (atomic_load (&nh_ts_count[NH_TS_C_REPLAYED_EDITS])),
+		intern_c_string (":superseded"),
+		make_int (atomic_load (&nh_ts_count[NH_TS_C_SUPERSEDED])),
+		intern_c_string (":parses"),
+		make_int (atomic_load (&nh_ts_count[NH_TS_C_PARSES])),
 		intern_c_string (":live"), make_int (live));
 }
 
@@ -807,8 +992,6 @@ nh_ts_buffer_killed (struct buffer *b)
   (void) b;
 }
 
-#endif /* NH_WK_HARNESS or no tree-sitter */
-
 void
 nh_ts_record_edit (void *parser_c, const void *ts_input_edit,
 		   ptrdiff_t start_byte, ptrdiff_t old_end_byte,
@@ -820,6 +1003,8 @@ nh_ts_record_edit (void *parser_c, const void *ts_input_edit,
   (void) old_end_byte;
   (void) new_end_byte;
 }
+
+#endif /* NH_WK_HARNESS or no tree-sitter */
 
 void
 nh_ts_select_entry (void)

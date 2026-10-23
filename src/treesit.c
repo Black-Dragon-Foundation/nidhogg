@@ -1268,6 +1268,25 @@ treesit_tree_edit_1 (TSTree *tree, ptrdiff_t start_byte,
 		      start_point, old_end_point, new_end_point};
   ts_tree_edit (tree, &edit);
 }
+#ifdef HAVE_NIDHOGG_WORKERS
+
+/* Log the edit treesit_tree_edit_1 just applied to PARSER's tree, for
+   its parse job (nidhogg-treesit-bg.c replays it at the publish).  */
+static void
+nh_ts_log_tree_edit (Lisp_Object parser, ptrdiff_t start_byte,
+		     ptrdiff_t old_end_byte, ptrdiff_t new_end_byte,
+		     TSPoint start_point, TSPoint old_end_point,
+		     TSPoint new_end_point)
+{
+  TSInputEdit edit = {(uint32_t) start_byte,
+		      (uint32_t) old_end_byte,
+		      (uint32_t) new_end_byte,
+		      start_point, old_end_point, new_end_point};
+  nh_ts_record_edit (XTS_PARSER (parser), &edit, start_byte, old_end_byte,
+		     new_end_byte);
+}
+
+#endif
 
 /* Given a position at POS_LINECOL, and the linecol of a buffer change
    (START_LINECOL, OLD_END_LINECOL, and NEW_END_LINECOL), compute the new
@@ -1520,8 +1539,23 @@ treesit_record_change_1 (ptrdiff_t start_byte, ptrdiff_t old_end_byte,
 	  treesit_tree_edit_1 (tree, start_offset, old_end_offset,
 			       new_end_offset, start_point, old_end_point,
 			       new_end_point);
+#ifdef HAVE_NIDHOGG_WORKERS
+
+	  nh_ts_log_tree_edit (lisp_parser, start_offset, old_end_offset,
+			       new_end_offset, start_point, old_end_point,
+			       new_end_point);
+
+#endif
 	  XTS_PARSER (lisp_parser)->need_reparse = true;
 	}
+#ifdef HAVE_NIDHOGG_WORKERS
+
+      else
+	/* No tree: a job parsing the text logs the change itself (B3).  */
+	nh_ts_record_edit (XTS_PARSER (lisp_parser), NULL, start_byte,
+			   old_end_byte, new_end_byte);
+
+#endif
     }
 }
 
@@ -1711,6 +1745,13 @@ treesit_sync_visible_region (Lisp_Object parser)
       treesit_tree_edit_1 (tree, 0, 0, visible_beg - BUF_BEGV_BYTE (buffer),
 			   TREESIT_TS_POINT_1_0, TREESIT_TS_POINT_1_0,
 			   point_new_end);
+#ifdef HAVE_NIDHOGG_WORKERS
+
+      nh_ts_log_tree_edit (parser, 0, 0, visible_beg - BUF_BEGV_BYTE (buffer),
+			   TREESIT_TS_POINT_1_0, TREESIT_TS_POINT_1_0,
+			   point_new_end);
+
+#endif
       visible_beg = BUF_BEGV_BYTE (buffer);
       visi_beg_linecol = buffer_begv_linecol;
       eassert (visible_beg <= visible_end);
@@ -1729,6 +1770,14 @@ treesit_sync_visible_region (Lisp_Object parser)
 			   visible_end - visible_beg,
 			   BUF_ZV_BYTE (buffer) - visible_beg,
 			   point_start, point_start, point_new_end);
+#ifdef HAVE_NIDHOGG_WORKERS
+
+      nh_ts_log_tree_edit (parser, visible_end - visible_beg,
+			   visible_end - visible_beg,
+			   BUF_ZV_BYTE (buffer) - visible_beg,
+			   point_start, point_start, point_new_end);
+
+#endif
       visible_end = BUF_ZV_BYTE (buffer);
       visi_end_linecol = buffer_zv_linecol;
       eassert (visible_beg <= visible_end);
@@ -1746,6 +1795,14 @@ treesit_sync_visible_region (Lisp_Object parser)
 			   visible_end - visible_beg,
 			   BUF_ZV_BYTE (buffer) - visible_beg,
 			   point_start, point_old_end, point_start);
+#ifdef HAVE_NIDHOGG_WORKERS
+
+      nh_ts_log_tree_edit (parser, BUF_ZV_BYTE (buffer) - visible_beg,
+			   visible_end - visible_beg,
+			   BUF_ZV_BYTE (buffer) - visible_beg,
+			   point_start, point_old_end, point_start);
+
+#endif
       visible_end = BUF_ZV_BYTE (buffer);
       visi_end_linecol = buffer_zv_linecol;
       eassert (visible_beg <= visible_end);
@@ -1760,6 +1817,13 @@ treesit_sync_visible_region (Lisp_Object parser)
       treesit_tree_edit_1 (tree, 0, BUF_BEGV_BYTE (buffer) - visible_beg, 0,
 			   TREESIT_TS_POINT_1_0, point_old_end,
 			   TREESIT_TS_POINT_1_0);
+#ifdef HAVE_NIDHOGG_WORKERS
+
+      nh_ts_log_tree_edit (parser, 0, BUF_BEGV_BYTE (buffer) - visible_beg, 0,
+			   TREESIT_TS_POINT_1_0, point_old_end,
+			   TREESIT_TS_POINT_1_0);
+
+#endif
       visible_beg = BUF_BEGV_BYTE (buffer);
       visi_beg_linecol = buffer_begv_linecol;
       eassert (visible_beg <= visible_end);
