@@ -744,13 +744,16 @@ Return whether PARSER is ready afterwards."
 
 (defun workers-ts-tests--big-change (mode p change)
   "Make CHANGE (a function) in P's buffer, then a fontifying demand.
-MODE is the workers' mode.  The 1 ms attempt is cancelled and reset, one
-job starts from the demand point; in threads mode the demand answers
-\"not ready\" (the job is parked at `after-snapshot'), inline the job is
-done at its start and the demand publishes it.  The tree that lands
-equals a synchronous parse."
+MODE is the workers' mode.  The attempt is cancelled and reset, one job
+starts from the demand point; in threads mode the demand answers \"not
+ready\" (the job is parked at `after-snapshot'), inline the job is done
+at its start and the demand publishes it.  The tree that lands equals a
+synchronous parse.  The attempt's bound is 0, so it is cancelled
+whatever the machine's speed (the clock's own claim is the timing
+group's `workers/ts-attempt-clock')."
   (funcall change)
-  (let ((att (workers-ts-tests--stat :attempts))
+  (let ((nidhogg-workers--test-ts-attempt-bound 0)
+        (att (workers-ts-tests--stat :attempts))
         (can (workers-ts-tests--stat :cancels))
         (dem (workers-ts-tests--stat :started-demand))
         (started (workers-ts-tests--stat :started)))
@@ -776,10 +779,13 @@ equals a synchronous parse."
 
 (ert-deftest workers/ts-start-points ()
   ;; §17.3 S1: in a 2 MB buffer that redisplay fontifies, a one-character
-  ;; edit finishes inside the 1 ms attempt (no snapshot); a 500 KB yank, a
+  ;; edit finishes inside the attempt (no snapshot); a 500 KB yank, a
   ;; revert and an `indent-region' cancel the attempt and start one job
   ;; each from the demand point; edits from a timer start a job at the
-  ;; select entry.
+  ;; select entry.  The rows fix the attempt's bound (never cancelled for
+  ;; the one character, cancelled at once for the others): they assert
+  ;; the ledger, not a clock; `workers/ts-attempt-clock' in the timing
+  ;; group measures the edits against the real 1 ms.
   (workers-ts-tests--modes
     (let* ((file (make-temp-file "workers-ts-start" nil ".txt"
                                  (workers-ts-tests--c-text 2000000)))
@@ -791,7 +797,8 @@ equals a synchronous parse."
               (ert-info ("one character" :prefix "")
                 (goto-char (/ (point-max) 2))
                 (insert " ")
-                (let ((att (workers-ts-tests--stat :attempts))
+                (let ((nidhogg-workers--test-ts-attempt-bound t)
+                      (att (workers-ts-tests--stat :attempts))
                       (can (workers-ts-tests--stat :cancels))
                       (started (workers-ts-tests--stat :started)))
                   (should (workers-ts-tests--fontifying-demand p))
