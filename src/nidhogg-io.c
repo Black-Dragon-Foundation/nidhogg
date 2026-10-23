@@ -90,6 +90,12 @@ nh_io_tls_boot (struct Lisp_Process *p, void *gnutls_state)
   return 0;
 }
 
+void
+nh_io_dead_close (struct Lisp_Process *p)
+{
+  (void) p;
+}
+
 #ifndef NH_WK_HARNESS
 
 void
