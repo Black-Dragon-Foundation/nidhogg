@@ -288,7 +288,10 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
 <!-- wk: Task 6 -->
 <!-- wk: Task 7 -->
 <!-- wk: Task 8 -->
-<!-- wk: Task 9 -->
+- Tree-sitter's allocator: on a worker thread tree-sitter allocates with libc (a worker never reaches `xmalloc`, so the
+  memory profiler is never entered from one); on the main thread it still goes through `xmalloc`. Test grammars (C,
+  TypeScript, Python, Rust, HTML at pinned commits) are built by `test/src/nidhogg-tests/fixtures/grammars.sh` into
+  `NIDHOGG_TEST_GRAMMARS` (default `fixtures/grammars-cache/`); the tree-sitter rows skip without them.
 <!-- wk: Task 10 -->
 <!-- wk: Task 11 -->
 <!-- wk: Task 12 -->
