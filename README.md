@@ -496,9 +496,10 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   moved to the normal-priority thread or raised, as for every wait) for at most the synchronous estimate, the last
   full parse's time per byte times the input (100 ns a byte before any; between 1 ms and 2 s), then publishes it, or
   cancels it and parses. Test primitives: `nidhogg-workers--test-fontifying` (a macro binding the variable),
-  `--test-ts-select-entry` (batch Emacs never waits for keyboard input); `--test-ts-stats` adds `:attempts`,
-  `:cancels`, `:started-demand`, `:started-create`, `:started-select`, `:waited` and `:abandoned`; `--test-ts-info`
-  adds `:policy`.
+  `--test-ts-select-entry` (batch Emacs never waits for keyboard input), `--test-ts-attempt-bound` (the attempt's
+  bound in nanoseconds, `t` for none: the semantic rows assert the ledger, the timing group the 1 ms);
+  `--test-ts-stats` adds `:attempts`, `:cancels`, `:started-demand`, `:started-create`, `:started-select`, `:waited`
+  and `:abandoned`; `--test-ts-info` adds `:policy`.
 <!-- wk: Task 13 -->
 <!-- wk: Task 14 -->
 <!-- wk: Task 15 -->
