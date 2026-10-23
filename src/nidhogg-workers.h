@@ -153,6 +153,13 @@ extern void nh_wk_wake_close (struct nh_wk_wake *);
 extern bool nh_wk_fd_budget_ok (int extra);
 extern bool nh_wk_on_worker (void);
 extern void nh_wk_set_on_worker (bool);
+
+/* Condition variables whose timed waits use CLOCK_MONOTONIC deadlines
+   (ns).  macOS has no pthread_condattr_setclock: there the wait is
+   relative, for the time left until DEADLINE.  */
+extern void nh_wk_cond_init (pthread_cond_t *);
+extern int nh_wk_cond_wait_until (pthread_cond_t *, pthread_mutex_t *,
+				  uint64_t);
 extern _Atomic ptrdiff_t nh_wk_worker_probes;
 
 /* The counters of nidhogg-workers-stats, from any thread [3].  Why a job
