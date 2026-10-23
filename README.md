@@ -617,7 +617,17 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   plist under an uninterned key. Test primitives: `(nidhogg-workers--test-frame CHUNKS EOF FRAMING &rest ARGS)`,
   `nidhogg-workers--test-deliver-budget`, `--test-io-info`'s `:messages`, the io log's `stopped`;
   `workers-harness.sh --fuzz SECONDS framers`.
-<!-- wk: Task 25 -->
+- jsonrpc (`lisp/nidhogg-workers-jsonrpc.el`; `lisp/jsonrpc.el` is unchanged): with `nidhogg-workers-framing` on,
+  every `jsonrpc-process-connection` (eglot, dape, …) is framed `content-length` (`:parse 'buffer`, plists) when its
+  process starts. The batch function runs jsonrpc's filter tail unchanged: each message onto `jsonrpc-mqueue` with
+  `:jsonrpc-json` from RAW (or the same "Invalid JSON" warning), then one timer per message with one shared
+  `(current-time)` in reverse push order, so dispatch is in arrival order and `jsonrpc-event-hook` sees the same
+  `:json`. It stays on `jsonrpc--process-filter` when the process cannot be framed or `jsonrpc--json-read` or
+  `jsonrpc--process-filter` has advice; advice added later (eglot-booster) turns framing off at the next batch, and
+  that batch and every byte after it go to the filter. A framing error (a banner before the first header) hands the
+  bytes to the filter, which skips the junk as before. The process buffer stays empty while framed. The test
+  `workers/jsonrpc-tail-unchanged` holds the SHA-256 of `jsonrpc--process-filter`'s source: an upstream change fails it
+  until the copied tail is checked against it.
 <!-- wk: Task 26 -->
 <!-- wk: Task 27 -->
 **Image decoder cores.** PNG, JPEG, GIF and WebP decode through Lisp-free cores in `src/nidhogg-image-bg.c`, copies
