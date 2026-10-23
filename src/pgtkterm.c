@@ -3866,11 +3866,12 @@ recover_from_visible_bell (struct atimer *timer)
 
   if (FRAME_X_OUTPUT (f)->cr_surface_visible_bell != NULL)
     {
-#ifdef HAVE_GLITNIR
-      glitnir_pgtk_damage_all (f);
-#endif
       cairo_surface_destroy (FRAME_X_OUTPUT (f)->cr_surface_visible_bell);
       FRAME_X_OUTPUT (f)->cr_surface_visible_bell = NULL;
+#ifdef HAVE_GLITNIR
+      /* After the bell is gone: a paint the damage brings shows the frame.  */
+      glitnir_pgtk_damage_all (f);
+#endif
     }
 
   if (FRAME_X_OUTPUT (f)->atimer_visible_bell != NULL)
