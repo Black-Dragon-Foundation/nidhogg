@@ -443,18 +443,21 @@ Return (STATUS CODE AUTO-SAVED-BYTES)."
             (nidhogg-workers--release 'before-done)))))))
 
 (defun workers-autosave-tests--random-string (n)
-  "A random multibyte string of N characters, raw bytes included."
-  (let ((s (make-string n ?a t)))
-    (dotimes (i n)
-      (aset s i (pcase (random 7)
-                  (0 (random 128))
-                  (1 (+ #x80 (random #x780)))
-                  (2 (+ #x800 (random #xd000)))
-                  (3 (+ #x10000 (random #x100000)))
-                  (4 (+ #x110000 (random (- #x3fff80 #x110000))))
-                  (5 (+ #x3fff80 (random 128)))
-                  (_ (aref "\n\r\t é" (random 5))))))
-    s))
+  "A random multibyte string of N characters, raw bytes included.
+Built from a list of characters: `aset' refuses a non-ASCII character
+in a multibyte string, and `string' of ASCII alone is unibyte."
+  (string-to-multibyte
+   (apply #'string
+          (mapcar (lambda (_)
+                    (pcase (random 7)
+                      (0 (random 128))
+                      (1 (+ #x80 (random #x780)))
+                      (2 (+ #x800 (random #xd000)))
+                      (3 (+ #x10000 (random #x100000)))
+                      (4 (+ #x110000 (random (- #x3fff80 #x110000))))
+                      (5 (+ #x3fff80 (random 128)))
+                      (_ (aref "\n\r\t é" (random 5)))))
+                  (make-list n nil)))))
 
 (ert-deftest workers/autosave-encoder-differential ()
   ;; The job's encoder (a copy of encode_coding_utf_8's rule) against
