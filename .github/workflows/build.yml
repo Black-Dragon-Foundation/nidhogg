@@ -260,6 +260,12 @@ jobs:
           key: tarball-macos-${{ runner.arch }}-${{ steps.tree.outputs.tree }}-${{ hashFiles('nidhogg/build.sh') }}
       - name: The tarball runs unpacked
         run: bash nidhogg/test/tarball-test.sh dist/*.tar.xz macos
+      # the workers batch files of nidhogg/check-subset.txt (Task 37); a cached tarball has no build tree to check
+      - name: Workers checks (nidhogg/check-subset.txt, workers-* files)
+        if: ${{ steps.build.outcome == 'success' }}
+        run: |
+          grep 'nidhogg-tests/workers-' nidhogg/check-subset.txt > "$RUNNER_TEMP/macos-subset.txt"
+          /bin/bash nidhogg/build.sh --host --stage check --jobs 3 --build-dir "$RUNNER_TEMP/build" --check "$RUNNER_TEMP/macos-subset.txt"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tarball-macos

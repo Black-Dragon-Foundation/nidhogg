@@ -543,6 +543,13 @@ a spec makes the decoder read `:data` as base64 text (on `nh-img` and in the syn
   `nidhogg-workers--test-dns-info`, `nidhogg-workers--test-glibc-dns-off` (the path of a platform without
   `getaddrinfo_a`, on Linux) and the `in-lookup` pause point.
 <!-- wk: Task 36 -->
+- Platforms: Linux first; macOS (NS) builds the same sources. There the wake channels are pipes made with `emacs_pipe`
+  (a reader-owned process holds three fds, which the budget check counts), timed waits use
+  `pthread_cond_timedwait_relative_np`, speculative threads set `QOS_CLASS_UTILITY` on themselves and a wait raises the
+  running one with `pthread_override_qos_class_start_np` / `_end_np`, host names resolve through `nh-blk` (no
+  `getaddrinfo_a`), auto-save uses named temporary files (no `O_TMPFILE`), and images stay on NSImage, synchronously,
+  for every type (`nidhogg-workers--deferrable-p` is nil). The `macos` CI job runs the `workers-*` batch files of
+  `nidhogg/check-subset.txt`; there are no macOS GUI rows (no macOS GUI runner).
 <!-- wk: Task 37 -->
 <!-- wk: Task 38 -->
 
