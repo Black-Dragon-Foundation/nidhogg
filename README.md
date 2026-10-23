@@ -705,6 +705,17 @@ a spec makes the decoder read `:data` as base64 text (on `nh-img` and in the syn
   for every type (`nidhogg-workers--deferrable-p` is nil). The `macos` CI job runs the `workers-*` batch files of
   `nidhogg/check-subset.txt`; there are no macOS GUI rows (no macOS GUI runner).
 <!-- wk: Task 37 -->
+- Android: no Android build exists; `nidhogg/test/android-check.sh` compiles each worker file (`-fsyntax-only`, harness
+  mode, `aarch64-linux-android26`, the NDK pinned by version and sha256) against bionic's headers, and a fixture that
+  calls `getaddrinfo_a` must fail. `__linux__` is also defined on Android, so the Linux paths apply: `eventfd` wake fds,
+  `syscall (SYS_gettid)`, `pthread_setname_np (thread, name)` and `pthread_getname_np` (API 26), `SCHED_IDLE` through
+  `pthread_setschedparam` (a denial is the `boost-denied` fallback), `O_TMPFILE` for auto-save, and `nh-blk` for
+  `:nowait` lookups (bionic has no `getaddrinfo_a`). Review of `android_select` (`android.c`), by reading: it runs
+  `pselect` for the caller's fd sets on its poll thread, so a wake fd is an ordinary fd in `readfds` and ends the wait
+  like any process fd, in the non-threaded path (called from `wait_reading_process_output`) and in the threaded one
+  (`thread_select` through `android_select_wrapper`, which accepts no signal mask: the workers pass none). A completion
+  that arrives with the UI event queue empty is seen by the poll thread's `pselect`, which posts the select semaphore.
+  Not checked: the watchdog's files (they need Emacs's headers) and any run on a device.
 <!-- wk: Task 38 -->
 
 ## Reporting issues
