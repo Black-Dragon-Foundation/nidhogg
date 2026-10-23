@@ -566,10 +566,24 @@ nh_wk_complete (struct nh_wk_job *job)
     nh_wk_job_unref (job);
 }
 
+/* A thread that is not a pool worker but must act as one (tests, Task 9's
+   allocator row); nh_wk_set_on_worker sets it.  */
+static _Thread_local bool nh_wk_flagged;
+
+/* How many times a worker thread reached malloc_probe, which a worker
+   must never do (profiler.c counts and returns).  */
+_Atomic ptrdiff_t nh_wk_worker_probes;
+
 bool
 nh_wk_on_worker (void)
 {
-  return nh_wk_self != 0;
+  return nh_wk_self != 0 || nh_wk_flagged;
+}
+
+void
+nh_wk_set_on_worker (bool v)
+{
+  nh_wk_flagged = v;
 }
 
 /* Pools (all under the worker's mutex).  */

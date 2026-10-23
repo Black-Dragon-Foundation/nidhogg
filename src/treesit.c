@@ -25,6 +25,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "coding.h"
 
 #include "treesit.h"
+#ifdef HAVE_NIDHOGG_WORKERS
+#include "nidhogg-workers.h"
+#endif
 
 #if HAVE_TREE_SITTER
 
@@ -559,11 +562,13 @@ load_tree_sitter_if_necessary (bool required)
 #endif
 }
 
+#ifndef HAVE_NIDHOGG_WORKERS
 static void *
 treesit_calloc_wrapper (size_t n, size_t size)
 {
   return xzalloc (n * size);
 }
+#endif
 
 static void
 treesit_initialize (void)
@@ -571,7 +576,11 @@ treesit_initialize (void)
   if (!treesit_initialized)
     {
       load_tree_sitter_if_necessary (true);
+#ifdef HAVE_NIDHOGG_WORKERS
+      nh_ts_alloc_install ();
+#else
       ts_set_allocator (xmalloc, treesit_calloc_wrapper, xrealloc, xfree);
+#endif
       treesit_initialized = true;
     }
 }
