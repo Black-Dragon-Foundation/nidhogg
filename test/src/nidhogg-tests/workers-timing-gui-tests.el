@@ -82,4 +82,47 @@
           (delete-file file))
         (redisplay t)))))
 
+(ert-deftest workers-gui/image-open-no-wait ()
+  ;; §17.5: inserting a 4K PNG (fixtures/images/screenshot-4k.png, 16-bit
+  ;; RGBA) draws its space within one frame (asserted with a wide margin:
+  ;; under 1 s, where it takes at most the 8 ms budget and the drawing),
+  ;; and the picture follows when the decode lands.
+  (let ((png (expand-file-name "fixtures/images/screenshot-4k.png"
+                               workers-timing-gui--dir))
+        (buf (get-buffer-create " *workers-image-open-no-wait*")))
+    (skip-unless (and (display-graphic-p) (featurep 'nidhogg-workers)
+                      (nidhogg-workers--deferrable-p 'png)
+                      (file-exists-p png)))
+    (let ((nidhogg-workers--mode 'threads)
+          (nidhogg-workers-images t)
+          (nidhogg-image-defer t)
+          (spec (list 'image :type 'png :file png)))
+      (unwind-protect
+          (progn
+            (clear-image-cache t)
+            (delete-other-windows)
+            (switch-to-buffer buf)
+            (erase-buffer)
+            (redisplay t)
+            (let* ((t0 (float-time))
+                   (_ (insert-image spec " "))
+                   (_ (redisplay t))
+                   (dt (- (float-time) t0)))
+              (message "workers-gui/image-open-no-wait: first redisplay %.1f ms"
+                       (* dt 1000))
+              (should (< dt 1.0))
+              ;; The space: the header's size, without waiting for pixels.
+              (should (equal (image-size spec t) '(3840 . 2160)))
+              (should (nidhogg-workers--test-await-landed 'nh-img 30000))
+              (redisplay t)
+              (should (= 0 (plist-get (nidhogg-workers--test-image-info)
+                                      :pending)))
+              (let ((r (nidhogg-workers--test-image-pixels spec nil t)))
+                (should-not (plist-get r :failed))
+                (should (= 3840 (plist-get r :width))))))
+        (nidhogg-workers--test-await-landed 'nh-img 30000)
+        (kill-buffer buf)
+        (clear-image-cache t)
+        (redisplay t)))))
+
 ;;; workers-timing-gui-tests.el ends here
