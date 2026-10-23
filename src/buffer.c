@@ -51,6 +51,11 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #ifdef HAVE_TREE_SITTER
 #include "treesit.h"
 #endif
+#ifdef HAVE_NIDHOGG_WORKERS
+
+#include "nidhogg-workers.h"
+
+#endif
 
 /* Work around GCC bug 109847
    https://gcc.gnu.org/bugzilla/show_bug.cgi?id=109847
@@ -2077,6 +2082,12 @@ cleaning up all windows currently displaying the buffer to be killed. */)
      our buffer.  */
   if (!BUFFER_LIVE_P (b))
     return Qt;
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  /* Cancel the buffer's tree-sitter parse jobs (no Lisp).  */
+  nh_ts_buffer_killed (b);
+
+#endif
 
   /* These may run Lisp code and into infinite loops (if someone
      insisted on circular lists) so allow quitting here.  */
