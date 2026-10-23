@@ -5708,7 +5708,7 @@ wait_reading_process_output (intmax_t time_limit, int nsecs, int read_kbd,
 
 	  timeout = make_timespec (0, 0);
 #ifdef HAVE_NIDHOGG_WORKERS
-	  nh_io_settle (&Atemp);
+	  nh_io_settle (&Atemp, timeout);
 #endif
 	  if ((thread_select (pselect, max_desc + 1,
 			      &Atemp,
@@ -5954,6 +5954,9 @@ wait_reading_process_output (intmax_t time_limit, int nsecs, int read_kbd,
 	  if ((read_kbd || !NILP (wait_for_cell))
 	      && timespec_cmp (short_timeout, timeout) < 0)
 	    timeout = short_timeout;
+#endif
+#ifdef HAVE_NIDHOGG_WORKERS
+	  nh_io_settle (&Available, timeout);
 #endif
 
 	  /* Android requires using a replacement for pselect in
