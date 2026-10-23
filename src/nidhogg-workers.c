@@ -1952,10 +1952,7 @@ bounded condition wait, not a sleep.  */)
   uint64_t deadline = nh_wk_now () + lim * NH_WK_MS;
   nh_wk_lock (&nh_wk_done_m);
   while (atomic_load (&nh_wk_w[w].inflight) > 0 && nh_wk_now () < deadline)
-    {
-      struct timespec ts = nh_wk_abs (deadline);
-      pthread_cond_timedwait (&nh_wk_done_cv, &nh_wk_done_m, &ts);
-    }
+    nh_wk_cond_wait_until (&nh_wk_done_cv, &nh_wk_done_m, deadline);
   bool idle = atomic_load (&nh_wk_w[w].inflight) <= 0;
   pthread_mutex_unlock (&nh_wk_done_m);
   Fnidhogg_workers__drain ();
