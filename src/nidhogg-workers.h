@@ -225,7 +225,10 @@ extern bool nh_json_materialize (struct nh_mat *, int64_t budget_ns);
 
 /* Images, nidhogg-image-bg.c [27, 28, 29].  */
 extern bool nh_img_lookup (struct frame *, struct image *, ptrdiff_t id);
-extern bool nh_img_sync_load (struct frame *, struct image *, int fmt);
+/* The synchronous loaders' entry (image.c): true when it handled the load,
+   with the loader's result in *OK; false: run the loader as before.  */
+extern bool nh_img_sync_load (struct frame *, struct image *, int fmt,
+			      bool *ok);
 
 /* The header parsers and frame-count scans (Task 27), Lisp-free.  The
    formats are the loaders' four.  A parser answers 1 when it parsed,
