@@ -463,7 +463,9 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
 - Tree-sitter's allocator: on a worker thread tree-sitter allocates with libc (a worker never reaches `xmalloc`, so the
   memory profiler is never entered from one); on the main thread it still goes through `xmalloc`. Test grammars (C,
   TypeScript, Python, Rust, HTML at pinned commits) are built by `test/src/nidhogg-tests/fixtures/grammars.sh` into
-  `NIDHOGG_TEST_GRAMMARS` (default `fixtures/grammars-cache/`); the tree-sitter rows skip without them.
+  `NIDHOGG_TEST_GRAMMARS` (default `fixtures/grammars-cache/`); the tree-sitter rows skip without them. It also builds
+  `crash`, Python whose external scanner writes through a null pointer at a backquote (`fixtures/crash-scanner.c`):
+  `workers/worker-crash-forwarded-grammar` parses it on `nh-parse` and expects the fatal path.
 - Tree-sitter parse jobs (`src/nidhogg-treesit-bg.c`; tree-sitter 0.25 or later): with `nidhogg-workers-treesit` on, a
   job for a parser copies the buffer's visible text (two copies around the gap, the watchdog's `treesit` phase with
   reason `snapshot`), a copy of the parser's tree, the ranges a demand would parse with and the parser's edit
