@@ -24,12 +24,17 @@
 ;; tokenizes them, and the main thread delivers batches to a batch
 ;; function.  Every row runs in both of `nidhogg-workers--mode''s modes
 ;; unless it needs nh-io's thread.  Waits are on events: process output,
-;; status changes and pause points.
+;; status changes and pause points.  The `jsonrpc' rows (Task 25,
+;; lisp/nidhogg-workers-jsonrpc.el) talk to `cat', which echoes every
+;; message back.
 
 ;;; Code:
 
 (require 'ert)
 (require 'cl-lib)
+(require 'find-func)
+(require 'jsonrpc)
+(require 'nidhogg-workers-jsonrpc)
 
 (defvar nidhogg-workers--test-size-scale
   (let ((s (getenv "NIDHOGG_WORKERS_TEST_SIZE_SCALE")))
@@ -783,5 +788,238 @@ UTF-8), committed, then changed.  Return its directory."
                  (lambda () (equal (workers-fr-tests--raw client)
                                    (workers-fr-tests--lines 21 5)))))
         (should (= (length (workers-fr-tests--got client)) 20))))))
+
+;;; jsonrpc (Task 25)
+
+(defun workers-fr-tests--jr (name &optional command)
+  "A `jsonrpc-process-connection' NAME (prefixed \"wfr-\") to COMMAND.
+Started as eglot starts a server: a function makes a pipe process
+decoding UTF-8, and jsonrpc sets it to `binary'.  COMMAND defaults to
+`cat', which echoes every message back: a notification as itself, a
+request as a request whose reply comes back as the reply.  The `:n' of
+each notification dispatched goes to the process property `dispatched'
+\(newest first); a request is answered (:echo N)."
+  (let ((name (concat "wfr-" name)))
+    (make-instance
+     'jsonrpc-process-connection
+     :name name
+     :process (lambda ()
+                (make-process :name name :command (or command '("cat"))
+                              :connection-type 'pipe :noquery t
+                              :coding 'utf-8-emacs-unix))
+     :notification-dispatcher
+     (lambda (conn _method params)
+       (let ((p (jsonrpc--process conn)))
+         (process-put p 'dispatched (cons (plist-get params :n)
+                                          (process-get p 'dispatched)))))
+     :request-dispatcher
+     (lambda (_conn _method params) (list :echo (plist-get params :n))))))
+
+(defun workers-fr-tests--jr-close (conn)
+  "Delete CONN's process, without its sentinel, and kill its buffers."
+  (let ((p (jsonrpc--process conn)))
+    (set-process-sentinel p #'ignore)
+    (delete-process p)
+    (dolist (b (list (process-buffer p) (jsonrpc-stderr-buffer conn)
+                     (jsonrpc--events-buffer conn)))
+      (when (buffer-live-p b)
+        (kill-buffer b)))))
+
+(defun workers-fr-tests--jr-dispatched (proc)
+  "The `:n' of PROC's dispatched notifications, oldest first."
+  (reverse (process-get proc 'dispatched)))
+
+(defun workers-fr-tests--jr-count (proc)
+  (length (process-get proc 'dispatched)))
+
+(defun workers-fr-tests--jr-raw (n)
+  "The JSON of the notification `note' with :n N, a unibyte string."
+  (encode-coding-string
+   (format "{\"jsonrpc\":\"2.0\",\"method\":\"note\",\"params\":{\"n\":%d}}" n)
+   'utf-8-unix))
+
+(defun workers-fr-tests--jr-wire (n)
+  "The notification `note' with :n N, with its header."
+  (let ((raw (workers-fr-tests--jr-raw n)))
+    (format "Content-Length: %d\r\n\r\n%s" (length raw) raw)))
+
+(defun workers-fr-tests--jr-entry (n)
+  "The batch entry the reader makes of the notification `note' with :n N."
+  (let ((raw (workers-fr-tests--jr-raw n)))
+    (list (json-parse-string raw :object-type 'plist :null-object nil
+                             :false-object :json-false)
+          raw nil)))
+
+(ert-deftest workers/jsonrpc-timer-order ()
+  ;; B10: messages are dispatched in arrival order, two in one batch
+  ;; (given to the batch function) and one per batch (a delivery budget
+  ;; of 0, through the process), with a stubbed `current-time' that
+  ;; stays equal and one that steps back at every call.  A batch arms
+  ;; its timers with one time (one call), in reverse push order; the
+  ;; wait loop runs them before it delivers the next batch, as with
+  ;; jsonrpc's filter.
+  (workers-fr-tests--modes
+    (let ((nidhogg-workers-framing t)
+          (nidhogg-workers--test-deliver-budget 0))
+      (dolist (clock '(equal back))
+        (ert-info ((symbol-name clock) :prefix "clock ")
+          (let* ((conn (workers-fr-tests--jr "order"))
+                 (proc (jsonrpc--process conn))
+                 (base (time-subtract nil 100))
+                 (calls 0))
+            (unwind-protect
+                (progn
+                  (should (eq (nidhogg-process-framing proc) 'content-length))
+                  (cl-letf (((symbol-function 'current-time)
+                             (lambda ()
+                               (setq calls (1+ calls))
+                               (if (eq clock 'back)
+                                   (time-subtract base calls)
+                                 base))))
+                    (nidhogg-workers-jsonrpc--batch
+                     proc (list (workers-fr-tests--jr-entry 1)
+                                (workers-fr-tests--jr-entry 2)))
+                    (should (= calls 1))
+                    (should (workers-fr-tests--until
+                             (lambda () (= (workers-fr-tests--jr-count proc) 2))))
+                    (dotimes (i 6)
+                      (jsonrpc-notify conn :note (list :n (+ i 3))))
+                    (should (workers-fr-tests--until
+                             (lambda () (= (workers-fr-tests--jr-count proc) 8)))))
+                  (should (equal (workers-fr-tests--jr-dispatched proc)
+                                 (number-sequence 1 8))))
+              (workers-fr-tests--jr-close conn))))))))
+
+(ert-deftest workers/filter-replaced-advice ()
+  ;; B9: advice on `jsonrpc--json-read' when a connection starts keeps
+  ;; it on jsonrpc's filter.  Advice added once it is framed turns
+  ;; framing off at the next batch, and the advised parse sees every
+  ;; message from that batch on (with a delivery budget of 0, most of
+  ;; them are still queued then): none is lost or reordered.
+  (workers-fr-tests--modes
+    (let* ((nidhogg-workers-framing t)
+           (nidhogg-workers--test-deliver-budget 0)
+           (reads 0)
+           (advice (lambda (orig) (setq reads (1+ reads)) (funcall orig))))
+      (ert-info ("advised at the start" :prefix "")
+        (advice-add 'jsonrpc--json-read :around advice)
+        (let* ((conn (workers-fr-tests--jr "adv-start"))
+               (proc (jsonrpc--process conn)))
+          (unwind-protect
+              (progn
+                (should-not (nidhogg-process-framing proc))
+                (jsonrpc-notify conn :note '(:n 1))
+                (should (workers-fr-tests--until
+                         (lambda () (= (workers-fr-tests--jr-count proc) 1))))
+                (should (= reads 1)))
+            (advice-remove 'jsonrpc--json-read advice)
+            (workers-fr-tests--jr-close conn))))
+      (ert-info ("advised later" :prefix "")
+        (setq reads 0)
+        (let* ((conn (workers-fr-tests--jr "adv-later"))
+               (proc (jsonrpc--process conn)))
+          (unwind-protect
+              (progn
+                (should (eq (nidhogg-process-framing proc) 'content-length))
+                (dotimes (i 3)
+                  (jsonrpc-notify conn :note (list :n (1+ i))))
+                (should (workers-fr-tests--until
+                         (lambda () (= (workers-fr-tests--jr-count proc) 3))))
+                (should (= reads 0))
+                (advice-add 'jsonrpc--json-read :around advice)
+                ;; Ten messages in one write.
+                (process-send-string
+                 proc (mapconcat #'workers-fr-tests--jr-wire
+                                 (number-sequence 4 13) ""))
+                (should (workers-fr-tests--until
+                         (lambda () (>= (workers-fr-tests--jr-count proc) 4))))
+                (should-not (nidhogg-process-framing proc))
+                ;; One more (inline, the bytes framing left wait for the
+                ;; copy to be readable again).
+                (jsonrpc-notify conn :note '(:n 14))
+                (should (workers-fr-tests--until
+                         (lambda () (= (workers-fr-tests--jr-count proc) 14))))
+                (should (equal (workers-fr-tests--jr-dispatched proc)
+                               (number-sequence 1 14)))
+                (should (= reads 11)))
+            (advice-remove 'jsonrpc--json-read advice)
+            (workers-fr-tests--jr-close conn)))))))
+
+(ert-deftest workers/header-junk ()
+  ;; S6: a server prints a banner before its first header.  Framed, the
+  ;; banner is a framing error: the bytes go to jsonrpc's filter, which
+  ;; skips the banner as without the reader, and the reply to
+  ;; `initialize' arrives.
+  (workers-fr-tests--modes
+    (let* ((nidhogg-workers-framing t)
+           (conn (workers-fr-tests--jr
+                  "junk" '("sh" "-c" "read x; echo 'Starting the server...'; exec cat")))
+           (proc (jsonrpc--process conn)))
+      (unwind-protect
+          (progn
+            (should (eq (nidhogg-process-framing proc) 'content-length))
+            (process-send-string proc "go\n")
+            (should (equal (jsonrpc-request conn :initialize '(:n 7) :timeout 5)
+                           '(:echo 7)))
+            (should-not (nidhogg-process-framing proc)))
+        (workers-fr-tests--jr-close conn)))))
+
+(ert-deftest workers/jsonrpc-framed ()
+  ;; An eglot-shaped connection is framed.  A notification, a request
+  ;; coming in and a synchronous request's reply give
+  ;; `jsonrpc-event-hook' the same `:json' (unibyte) and foreign messages
+  ;; as with the reader off; the process buffer stays empty.
+  (cl-flet ((run (framed)
+              (let* ((events nil)
+                     (jsonrpc-event-hook
+                      (list (lambda (_conn origin &rest plist)
+                              (when (eq origin 'server)
+                                (push (list (plist-get plist :json)
+                                            (plist-get plist :foreign-message))
+                                      events)))))
+                     (conn (workers-fr-tests--jr "framed"))
+                     (proc (jsonrpc--process conn)))
+                (unwind-protect
+                    (progn
+                      (should (eq (nidhogg-process-framing proc)
+                                  (and framed 'content-length)))
+                      (jsonrpc-notify conn :note
+                                      '(:n 1 :text "héllo ☃" :ok :json-false))
+                      (should (equal (jsonrpc-request conn :ask '(:n 2) :timeout 5)
+                                     '(:echo 2)))
+                      (should (workers-fr-tests--until
+                               (lambda () (= (workers-fr-tests--jr-count proc) 1))))
+                      (when framed
+                        (should (= (buffer-size (process-buffer proc)) 0)))
+                      (reverse events))
+                  (workers-fr-tests--jr-close conn)))))
+    (let ((want (let ((nidhogg-workers-process-reader nil)
+                      (nidhogg-workers-framing t))
+                  (run nil))))
+      (should (= (length want) 3))
+      (dolist (e want)
+        (should (stringp (car e)))
+        (should-not (multibyte-string-p (car e))))
+      (workers-fr-tests--modes
+        (let ((nidhogg-workers-framing t))
+          (should (equal (run t) want)))))))
+
+(ert-deftest workers/jsonrpc-tail-unchanged ()
+  ;; Review M15: lisp/nidhogg-workers-jsonrpc.el copies the tail of
+  ;; `jsonrpc--process-filter'.  The SHA-256 recorded with the copy is
+  ;; the filter's source in lisp/jsonrpc.el, so an upstream change to
+  ;; the filter fails here until the copy is checked against it.
+  (let ((file (let ((src (expand-file-name "lisp/jsonrpc.el" source-directory)))
+                (if (file-readable-p src) src (find-library-name "jsonrpc")))))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-min))
+      (should (re-search-forward "^(cl-defun jsonrpc--process-filter " nil t))
+      (let ((start (match-beginning 0)))
+        (goto-char start)
+        (read (current-buffer))
+        (should (equal (secure-hash 'sha256
+                                    (buffer-substring-no-properties start (point)))
+                       nidhogg-workers-jsonrpc--filter-sha256))))))
 
 ;;; workers-framing-tests.el ends here
