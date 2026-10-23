@@ -458,7 +458,20 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   memory profiler is never entered from one); on the main thread it still goes through `xmalloc`. Test grammars (C,
   TypeScript, Python, Rust, HTML at pinned commits) are built by `test/src/nidhogg-tests/fixtures/grammars.sh` into
   `NIDHOGG_TEST_GRAMMARS` (default `fixtures/grammars-cache/`); the tree-sitter rows skip without them.
-<!-- wk: Task 10 -->
+- Tree-sitter parse jobs (`src/nidhogg-treesit-bg.c`; tree-sitter 0.25 or later): with `nidhogg-workers-treesit` on, a
+  job for a parser copies the buffer's visible text (two copies around the gap, the watchdog's `treesit` phase with
+  reason `snapshot`), a copy of the parser's tree, the ranges a demand would parse with and the parser's edit
+  generation; `nh-parse` parses that with a parser of its own (cancellable at any point; a cancelled parse is reset,
+  never resumed) and computes the tree's subtree statistics. Nothing is published early: the next demand
+  (`treesit_ensure_parsed`) takes the tree when the job is done and its language, visible range, ranges and
+  generation are still the parser's, then runs today's tail (timestamp, changed ranges, notifiers), so notifiers run
+  only at demands and nodes go out of date only there; any other job is dropped and today's synchronous parse runs.
+  No job starts under a temporary narrowing, and a start never changes the parser's visible range or ranges. One job
+  per parser, the latest snapshot wins; deleting the parser, killing its buffer or GC cancels it, and whichever of
+  the parser and the worker lets go last frees it. `(nidhogg-treesit-parser-ready-p PARSER)` says whether a demand
+  would not parse on the main thread; `treesit-subtree-stat` on a published root answers from the worker's count. Test
+  primitives: `nidhogg-workers--test-ts-start`, `--test-ts-wait`, `--test-ts-info`, `--test-ts-stats`,
+  `--test-ts-await-idle`.
 <!-- wk: Task 11 -->
 <!-- wk: Task 12 -->
 <!-- wk: Task 13 -->
