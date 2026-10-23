@@ -655,8 +655,9 @@ UTF-8), committed, then changed.  Return its directory."
                     (nidhogg-set-process-framing
                      p 'lines :object-type 'alist :batch-function fn)
                     p))
+                ;; Every byte delivered, PROCESS still running: its close
+                ;; would drop the framing (it goes with the process).
                 (finish (p)
-                  (process-send-eof p)
                   (should (workers-fr-tests--until
                            (lambda () (equal (workers-fr-tests--joined p) data))
                            10))))
