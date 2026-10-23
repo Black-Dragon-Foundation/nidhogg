@@ -518,23 +518,29 @@ Batches go to `workers-fr-tests--collect', raw output to the property
 
 (defun workers-fr-tests--repo (n)
   "A git repository with N files (and names with a newline and invalid
-UTF-8), committed, then changed.  Return its directory."
+UTF-8), committed, then changed.  Return its directory.
+APFS refuses a name that is not UTF-8 (EILSEQ), so on macOS the invalid
+name is an index entry only (committed, then missing from the work
+tree), and there is no untracked one."
   (let ((default-directory (file-name-as-directory
-                            (make-temp-file "wfr-repo" t))))
-    (should (eq 0 (let ((r (with-temp-buffer
-                             (list (call-process
-                   "sh" nil t nil "-c"
+                            (make-temp-file "wfr-repo" t)))
+        (darwin (eq system-type 'darwin)))
+    (should (eq 0 (call-process
+                   "sh" nil nil nil "-c"
                    (concat
-                    "set -x; git init -q . && mkdir d && "
+                    "git init -q . && mkdir d && "
                     (format "seq -f 'd/f%%.0f' 1 %d | xargs touch && " n)
-                    "touch \"$(printf 'new\\nline')\" \"$(printf 'bad\\377name')\" && "
+                    "touch \"$(printf 'new\\nline')\" && "
+                    (if darwin "" "touch \"$(printf 'bad\\377name')\" && ")
                     "git add -A && "
+                    (if darwin
+                        (concat "git update-index --add --cacheinfo "
+                                "100644,\"$(git hash-object -w /dev/null)\","
+                                "\"$(printf 'bad\\377name')\" && ")
+                      "")
                     "git -c user.name=t -c user.email=t@example.org commit -qm init && "
-                    "echo x > d/f1 && echo y > \"$(printf 'new\\nline')\" && "
-                    "touch \"$(printf 'untracked\\377')\""))
-                                   (buffer-string)))))
-                    (message "nh-dbg-repo: %S" r)
-                    (car r))))
+                    "echo x > d/f1 && echo y > \"$(printf 'new\\nline')\""
+                    (if darwin "" " && touch \"$(printf 'untracked\\377')\"")))))
     default-directory))
 
 (defun workers-fr-tests--split-output (dir args)

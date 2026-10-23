@@ -543,8 +543,15 @@ meanwhile, while a SIGCHLD still reaches its handler and
       (setq proc (make-process
                   :name "wio-flow" :connection-type 'pipe :noquery t
                   :coding 'binary :filter filter
+                  :stderr (get-buffer-create " wio-flow-err")
                   :command (list "head" "-c" (number-to-string total)
                                  "/dev/zero")))
+      (unless (workers-io-tests--info proc :owned)
+        (dotimes (_ 20) (accept-process-output nil 0.01))
+        (message "nh-dbg-flow mode=%s status=%S code=%S n=%S info=%S err=%S"
+                 mode (process-status proc) (process-exit-status proc) n
+                 (nidhogg-workers--test-io-info proc)
+                 (with-current-buffer " wio-flow-err" (buffer-string))))
       (should (workers-io-tests--info proc :owned))
       (when (eq mode 'threads)
         ;; Nothing is delivered yet: nh-io fills the queue to its cap,

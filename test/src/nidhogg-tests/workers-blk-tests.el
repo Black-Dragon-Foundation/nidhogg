@@ -59,13 +59,15 @@ Return (BATCHES ERROR), BATCHES the lists delivered, in order."
     (dolist (f '("a.txt" "b.txt" "c.log" "sub/x.el" "sub/y.el" "sub/deep/z.txt"
                  "sub/deep/deeper/w.txt" "skipme/in/hidden.txt" "locked/q"))
       (write-region "x" nil (expand-file-name f root) nil 'silent))
-    ;; Names: UTF-8, Latin-1 (unibyte), invalid UTF-8.
+    ;; Names: UTF-8, Latin-1 (unibyte), invalid UTF-8.  APFS refuses a
+    ;; name that is not UTF-8 (EILSEQ): on macOS such names cannot exist.
     (write-region "" nil (concat root (encode-coding-string "é.txt" 'utf-8))
                   nil 'silent)
-    (write-region "" nil (concat root (unibyte-string ?l #xe9 ?.))
-                  nil 'silent)
-    (write-region "" nil (concat root (unibyte-string ?b ?a ?d #xff #xfe))
-                  nil 'silent)
+    (unless (eq system-type 'darwin)
+      (write-region "" nil (concat root (unibyte-string ?l #xe9 ?.))
+                    nil 'silent)
+      (write-region "" nil (concat root (unibyte-string ?b ?a ?d #xff #xfe))
+                    nil 'silent))
     ;; Symlinks to a file, a directory and nowhere.
     (make-symbolic-link "a.txt" (concat root "link-file"))
     (make-symbolic-link "sub" (concat root "link-dir"))
@@ -409,12 +411,27 @@ Return its outcome as `workers-blk--dns-outcome' with DELETE-NOW does."
                   ("localhost" "nh-wk-no-such-service")
                   ("nh-wk-no-such-host.invalid" ,port))))
     (unwind-protect
-        (let* ((nidhogg-workers-dns nil)
+        (let* ((glibc (eq system-type 'gnu/linux))
+               ;; glibc's getaddrinfo_a path.  Without getaddrinfo_a
+               ;; (macOS) there is none to measure: nh-blk's inline
+               ;; lookups are the reference, held to the same literal
+               ;; outcomes below, and threads mode must equal them.
+               (nidhogg-workers-dns (not glibc))
+               (nidhogg-workers--mode 'inline)
                (nidhogg-workers--test-glibc-dns-off nil)
-               ;; glibc's getaddrinfo_a path.
                (refs (mapcar (lambda (c) (apply #'workers-blk--dns-outcome c))
                              cases))
                (ref-deleted (workers-blk--dns-outcome "localhost" port t)))
+          (let ((print-length nil) (print-level nil))
+            (message "nh-dbg-dns refs=%S deleted=%S" refs ref-deleted)
+            (let ((nidhogg-workers-dns nil))
+              (message "nh-dbg-dns sync=%S"
+                       (mapcar (lambda (c) (apply #'workers-blk--dns-outcome c))
+                               cases)))
+            (let ((nidhogg-workers-dns t) (nidhogg-workers--mode 'threads))
+              (message "nh-dbg-dns threads=%S"
+                       (mapcar (lambda (c) (apply #'workers-blk--dns-outcome c))
+                               cases))))
           (should (equal (plist-get (nth 0 refs) :states)
                          '(connect open closed)))
           (should (equal (plist-get (nth 1 refs) :exit)
@@ -425,14 +442,16 @@ Return its outcome as `workers-blk--dns-outcome' with DELETE-NOW does."
           (dolist (glibc-off '(nil t))
             (let ((nidhogg-workers--test-glibc-dns-off glibc-off))
               (ert-info ((format "glibc-dns-off %s" glibc-off) :prefix "")
-                (when glibc-off
+                (when (or glibc-off (not glibc))
                   ;; Off, the path without getaddrinfo_a looks up
                   ;; synchronously: a bad name signals.
-                  (should (equal (apply #'workers-blk--dns-outcome (nth 0 cases))
-                                 (nth 0 refs)))
-                  (should (eq (car (apply #'workers-blk--dns-outcome
-                                          (nth 1 cases)))
-                              'error)))
+                  (let ((nidhogg-workers-dns nil))
+                    (should (equal (apply #'workers-blk--dns-outcome
+                                          (nth 0 cases))
+                                   (nth 0 refs)))
+                    (should (eq (car (apply #'workers-blk--dns-outcome
+                                            (nth 1 cases)))
+                                'error))))
                 (dolist (mode '(threads inline))
                   (let ((nidhogg-workers--mode mode)
                         (nidhogg-workers-dns t))
