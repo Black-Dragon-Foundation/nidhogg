@@ -2384,6 +2384,34 @@ DEFUN ("nidhogg-workers--test-image-decode-finish",
   return r;
 }
 
+DEFUN ("nidhogg-workers--test-image-cores", Fnidhogg_workers__test_image_cores,
+       Snidhogg_workers__test_image_cores, 0, 0, 0,
+       doc: /* The image types this build's cores decode; for tests.
+Value: a list of (TYPE . HEADER), one for each of `png', `jpeg', `gif'
+and `webp' whose decoder library the build has, HEADER non-nil if the
+header path answers TYPE too (not where the loaders are the native
+image API's).  */)
+  (void)
+{
+  static char const *const names[NH_IMG_FMT_N] = {
+    [NH_IMG_PNG] = "png", [NH_IMG_JPEG] = "jpeg",
+    [NH_IMG_GIF] = "gif", [NH_IMG_WEBP] = "webp"
+  };
+  Lisp_Object r = Qnil;
+  for (int fmt = NH_IMG_FMT_N - 1; fmt >= 0; fmt--)
+    if (nh_img_decoders[fmt])
+      {
+	Lisp_Object type = intern_c_string (names[fmt]);
+	bool header = false;
+#ifdef HAVE_WINDOW_SYSTEM
+	header = (nh_img_spec_format (list3 (Qimage, QCtype, type))
+		  != NH_IMG_F_NONE);
+#endif
+	r = Fcons (Fcons (type, header ? Qt : Qnil), r);
+      }
+  return r;
+}
+
 DEFUN ("nidhogg-workers--test-decode-count", Fnidhogg_workers__test_decode_count,
        Snidhogg_workers__test_decode_count, 0, 1, 0,
        doc: /* Number of image frames the cores decoded or composed so far.
@@ -3343,6 +3371,7 @@ nh_img_syms (void)
 {
   defsubr (&Snidhogg_workers__test_image_decode);
   defsubr (&Snidhogg_workers__test_image_decode_finish);
+  defsubr (&Snidhogg_workers__test_image_cores);
   defsubr (&Snidhogg_workers__test_decode_count);
   defsubr (&Snidhogg_workers__test_image_cache_clear);
 #ifdef HAVE_WINDOW_SYSTEM
