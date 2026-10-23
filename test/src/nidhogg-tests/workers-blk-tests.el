@@ -317,4 +317,141 @@ Return the insertion path of the block."
     (should-error (nidhogg-read-file-async "/ssh:nowhere:/etc/passwd" #'ignore)
                   :type 'nidhogg-not-local)))
 
+;;; Host-name lookups (Task 35)
+
+(defun workers-blk--dns-wait (pred)
+  "Wait for PRED, at most about a minute (a lookup may time out)."
+  (let ((i 0))
+    (while (and (not (funcall pred)) (< i 6000))
+      (accept-process-output nil 0.01)
+      (setq i (1+ i)))
+    (funcall pred)))
+
+(defun workers-blk--dns-open (host service events)
+  "Open a `:nowait' connection to HOST and SERVICE.
+Sentinel events go onto the car of EVENTS.  Return the process, or
+\(error ERR) when `make-network-process' signals."
+  (condition-case err
+      (make-network-process :name "wk-dns" :host host :service service
+                            :family 'ipv4 :nowait t :noquery t
+                            :sentinel (lambda (_p e) (push e (car events))))
+    (error (list 'error err))))
+
+(defun workers-blk--dns-outcome (host service &optional delete-now)
+  "What Lisp sees of a `:nowait' connection to HOST and SERVICE.
+A plist: `:states' (the status at creation, once the lookup is over
+unless DELETE-NOW, and after `delete-process'), `:events' (the
+sentinel calls, in order) and `:exit' (`process-exit-status' once the
+lookup is over); or (error ERR) when `make-network-process' signals.
+With DELETE-NOW the process is deleted right after its creation."
+  (let* ((events (list nil))
+         (p (workers-blk--dns-open host service events)))
+    (if (eq (car-safe p) 'error)
+        p
+      (let ((states (list (process-status p))) exit)
+        (unless delete-now
+          (should (workers-blk--dns-wait
+                   (lambda () (not (eq (process-status p) 'connect)))))
+          (if (eq (process-status p) 'open)
+              (should (workers-blk--dns-wait (lambda () (car events))))
+            (dotimes (_ 2) (accept-process-output nil 0)))
+          (push (process-status p) states)
+          (setq exit (process-exit-status p)))
+        (delete-process p)
+        (dotimes (_ 2) (accept-process-output nil 0))
+        (push (process-status p) states)
+        (list :states (nreverse states) :events (reverse (car events))
+              :exit exit)))))
+
+(defun workers-blk--dns-held (port)
+  "A lookup of localhost:PORT held at `in-lookup' and deleted meanwhile.
+Return its outcome as `workers-blk--dns-outcome' with DELETE-NOW does."
+  ;; Earlier jobs land first, so `:live' counts only this one.
+  (should (nidhogg-workers--test-await-landed 'nh-blk))
+  (nidhogg-workers--pause-at 'in-lookup)
+  (unwind-protect
+      (let* ((info (nidhogg-workers--test-dns-info))
+             (events (list nil))
+             (p (workers-blk--dns-open "localhost" port events))
+             states)
+        (should (processp p))
+        (should (nidhogg-workers--test-await-paused 'in-lookup 5000))
+        ;; The wait loop sees the lookup running.
+        (accept-process-output nil 0)
+        (push (process-status p) states)
+        ;; A delete-process that waited on the job would release it here.
+        (nidhogg-workers--test-release-on-wait 'in-lookup)
+        (unwind-protect (delete-process p)
+          (nidhogg-workers--test-release-on-wait nil))
+        ;; It returned at once: the lookup is still held.
+        (should (nidhogg-workers--test-await-paused 'in-lookup 0))
+        (should (= (plist-get (nidhogg-workers--test-dns-info) :dropped)
+                   (1+ (plist-get info :dropped))))
+        (nidhogg-workers--release 'in-lookup)
+        (should (nidhogg-workers--test-await-landed 'nh-blk))
+        (dotimes (_ 2) (accept-process-output nil 0))
+        (push (process-status p) states)
+        ;; The dropped job is freed, and nothing reached the process.
+        (should (= (plist-get (nidhogg-workers--test-dns-info) :live)
+                   (plist-get info :live)))
+        (list :states (nreverse states) :events (reverse (car events))
+              :exit nil))
+    (nidhogg-workers--release 'in-lookup)))
+
+(ert-deftest workers/dns-nowait ()
+  "`:nowait' lookups on nh-blk: Lisp sees what glibc's getaddrinfo_a path shows."
+  (skip-unless (featurep 'make-network-process '(:nowait t)))
+  (let* ((server (make-network-process :name "wk-dns-server" :server t
+                                       :host 'local :service t :family 'ipv4
+                                       :noquery t))
+         (port (process-contact server :service))
+         (cases `(("localhost" ,port)
+                  ("localhost" "nh-wk-no-such-service")
+                  ("nh-wk-no-such-host.invalid" ,port))))
+    (unwind-protect
+        (let* ((nidhogg-workers-dns nil)
+               (nidhogg-workers--test-glibc-dns-off nil)
+               ;; glibc's getaddrinfo_a path.
+               (refs (mapcar (lambda (c) (apply #'workers-blk--dns-outcome c))
+                             cases))
+               (ref-deleted (workers-blk--dns-outcome "localhost" port t)))
+          (should (equal (plist-get (nth 0 refs) :states)
+                         '(connect open closed)))
+          (should (equal (plist-get (nth 1 refs) :exit)
+                         "Name lookup of localhost failed"))
+          (should (equal (plist-get (nth 2 refs) :exit)
+                         "Name lookup of nh-wk-no-such-host.invalid failed"))
+          (should (equal (plist-get ref-deleted :states) '(connect closed)))
+          (dolist (glibc-off '(nil t))
+            (let ((nidhogg-workers--test-glibc-dns-off glibc-off))
+              (ert-info ((format "glibc-dns-off %s" glibc-off) :prefix "")
+                (when glibc-off
+                  ;; Off, the path without getaddrinfo_a looks up
+                  ;; synchronously: a bad name signals.
+                  (should (equal (apply #'workers-blk--dns-outcome (nth 0 cases))
+                                 (nth 0 refs)))
+                  (should (eq (car (apply #'workers-blk--dns-outcome
+                                          (nth 1 cases)))
+                              'error)))
+                (dolist (mode '(threads inline))
+                  (let ((nidhogg-workers--mode mode)
+                        (nidhogg-workers-dns t))
+                    (ert-info ((format "mode %s" mode) :prefix "")
+                      (let ((started (plist-get (nidhogg-workers--test-dns-info)
+                                                :started)))
+                        (should (equal (mapcar (lambda (c)
+                                                 (apply #'workers-blk--dns-outcome c))
+                                               cases)
+                                       refs))
+                        (should (= (plist-get (nidhogg-workers--test-dns-info)
+                                              :started)
+                                   (+ started (length cases)))))
+                      (when (eq mode 'threads)
+                        (should (equal (workers-blk--dns-held port)
+                                       ref-deleted))))))))))
+      (nidhogg-workers--release nil)
+      (dolist (p (process-list))
+        (when (string-prefix-p "wk-dns" (process-name p))
+          (delete-process p))))))
+
 ;;; workers-blk-tests.el ends here

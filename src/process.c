@@ -1257,6 +1257,16 @@ Interactively, it will kill the current buffer's process.  */)
   process = get_process (process);
   p = XPROCESS (process);
 
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  /* A lookup on nh-blk is dropped, never waited for (Task 35).  */
+  if (p->nh_dns_job)
+    {
+      nh_dns_drop (p->nh_dns_job);
+      p->nh_dns_job = NULL;
+    }
+
+#endif
 #ifdef HAVE_GETADDRINFO_A
   if (p->dns_request)
     {
@@ -4151,6 +4161,9 @@ usage: (make-network-process &rest ARGS)  */)
 #ifdef HAVE_GETADDRINFO_A
   struct gaicb *dns_request = NULL;
 #endif
+#ifdef HAVE_NIDHOGG_WORKERS
+  struct nh_dns_job *nh_dns = NULL;
+#endif
   specpdl_ref count = SPECPDL_INDEX ();
 
   if (nargs == 0)
@@ -4320,6 +4333,20 @@ usage: (make-network-process &rest ARGS)  */)
 	  portstringlen = SBYTES (service);
 	}
 
+#ifdef HAVE_NIDHOGG_WORKERS
+
+      /* The lookup on nh-blk (Task 35), on every platform; the test
+	 variable takes the path of a platform without getaddrinfo_a.  */
+      if (nowait)
+	{
+	  nh_dns = nh_dns_start (SSDATA (host), portstring, family, socktype);
+	  if (nh_dns)
+	    goto open_socket;
+	  if (nh_dns_glibc_off)
+	    goto nh_dns_sync;
+	}
+
+#endif
 #ifdef HAVE_GETADDRINFO_A
       if (nowait)
 	{
@@ -4355,6 +4382,9 @@ usage: (make-network-process &rest ARGS)  */)
   /* If we have a host, use getaddrinfo to resolve both host and service.
      Otherwise, use getservbyname to lookup the service.  */
 
+#ifdef HAVE_NIDHOGG_WORKERS
+ nh_dns_sync:
+#endif
   if (!NILP (host))
     {
       struct addrinfo *res, *lres;
@@ -4476,6 +4506,17 @@ usage: (make-network-process &rest ARGS)  */)
       p->status = list1 (Qconnect);
       postpone_connection = true;
     }
+#endif
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  /* The same for a lookup on nh-blk (Task 35).  */
+  if (nh_dns && !p->is_server && NILP (addrinfos))
+    {
+      p->nh_dns_job = nh_dns;
+      p->status = list1 (Qconnect);
+      postpone_connection = true;
+    }
+
 #endif
   if (! postpone_connection)
     connect_network_socket (proc, addrinfos, use_external_socket_p);
@@ -5398,6 +5439,63 @@ check_for_dns (Lisp_Object proc)
 }
 
 #endif /* HAVE_GETADDRINFO_A */
+#ifdef HAVE_NIDHOGG_WORKERS
+
+/* While a lookup on nh-blk runs, the select comes back this often, as
+   ASYNC_RETRY_NSEC makes it for getaddrinfo_a (0.1 s).  */
+# define NH_DNS_RETRY_NSEC 100000000
+
+/* check_for_dns and its caller in the wait loop, for the lookups on
+   nh-blk (Task 35): each process WAIT_PROC covers (all with NULL) whose
+   lookup is over connects to the addresses found, or gets the status
+   glibc's path sets.  True when the select must come back to poll, as
+   retry_for_async.  */
+static bool
+nh_dns_check (struct Lisp_Process *wait_proc)
+{
+  Lisp_Object tail, proc;
+  bool retry = false;
+
+  FOR_EACH_PROCESS (tail, proc)
+    {
+      struct Lisp_Process *p = XPROCESS (proc);
+      struct addrinfo *res;
+
+      if (!p->nh_dns_job || (wait_proc && p != wait_proc))
+	continue;
+      if (nh_dns_poll (p->nh_dns_job, &res))
+	{
+	  retry = true;
+	  continue;
+	}
+      Lisp_Object addrinfos = Qnil;
+      if (res)
+	{
+	  for (struct addrinfo *r = res; r; r = r->ai_next)
+	    addrinfos = Fcons (conv_addrinfo_to_lisp (r), addrinfos);
+	  addrinfos = Fnreverse (addrinfos);
+	  freeaddrinfo (res);
+	}
+      else if (connecting_status (p->status))
+	{
+	  deactivate_process (proc);
+	  pset_status (p, (list2
+			   (Qfailed,
+			    concat3 (build_string ("Name lookup of "),
+				     build_string (nh_dns_host (p->nh_dns_job)),
+				     build_string (" failed")))));
+	}
+      nh_dns_drop (p->nh_dns_job);
+      p->nh_dns_job = NULL;
+      if (!NILP (addrinfos) && connecting_status (p->status))
+	connect_network_socket (proc, addrinfos, Qnil);
+      else
+	retry = true;
+    }
+  return retry;
+}
+
+#endif
 
 static void
 wait_for_socket_fds (Lisp_Object process, char const *name)
@@ -5527,6 +5625,9 @@ wait_reading_process_output (intmax_t time_limit, int nsecs, int read_kbd,
 #if defined HAVE_GETADDRINFO_A || defined HAVE_GNUTLS
   bool retry_for_async;
 #endif
+#ifdef HAVE_NIDHOGG_WORKERS
+  bool nh_dns_retry;
+#endif
   specpdl_ref count = SPECPDL_INDEX ();
 
   eassert (wait_proc == NULL
@@ -5642,6 +5743,12 @@ wait_reading_process_output (intmax_t time_limit, int nsecs, int read_kbd,
 	  }
       }
 #endif /* GETADDRINFO_A or GNUTLS */
+#ifdef HAVE_NIDHOGG_WORKERS
+
+      /* The lookups on nh-blk (Task 35), on every platform.  */
+      nh_dns_retry = nh_dns_check (wait_proc);
+
+#endif
 
       /* Compute time from now till when time limit is up.  */
       /* Exit if already run out.  */
@@ -5930,6 +6037,13 @@ wait_reading_process_output (intmax_t time_limit, int nsecs, int read_kbd,
 	      timeout.tv_sec = 0;
 	      timeout.tv_nsec = ASYNC_RETRY_NSEC;
 	    }
+#endif
+#ifdef HAVE_NIDHOGG_WORKERS
+
+	  if (nh_dns_retry
+	      && (timeout.tv_sec > 0 || timeout.tv_nsec > NH_DNS_RETRY_NSEC))
+	    timeout = make_timespec (0, NH_DNS_RETRY_NSEC);
+
 #endif
 
 #ifdef HAVE_GNUTLS

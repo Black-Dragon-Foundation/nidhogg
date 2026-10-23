@@ -424,10 +424,6 @@ extern int nh_img_gif_scan (const uint8_t *, size_t, int idx,
 extern int nh_img_webp_scan (const uint8_t *, size_t, int idx,
 			     struct nh_img_scan *);
 
-/* Name lookups, nidhogg-blk.c [35].  */
-extern bool nh_dns_start (struct Lisp_Process *, const char *host,
-			  const char *service, const struct addrinfo *hints);
-
 /* File blocks, nidhogg-decode.c and nidhogg-blk.c [33].  The scan is
    Lisp-free: what a worker learns about the bytes it read, so the main
    thread can skip its own scans when it inserts them.  EOL is
@@ -579,6 +575,24 @@ extern void nh_save_file_deleted (Lisp_Object name);
 extern void nh_save_file_renamed (Lisp_Object from, Lisp_Object to);
 extern void nh_save_settle (struct buffer *);
 extern void nh_save_write_sync (void);
+
+/* Host-name lookups, nidhogg-blk.c [35] (§8.7).  make-network-process
+   with `:nowait': nh_dns_start copies HOST and SERVICE and runs
+   getaddrinfo with the hints FAMILY and SOCKTYPE on nh-blk (class dns);
+   NULL when `nidhogg-workers-dns' is off or the job did not start
+   (today's path then).  The process owns the job (its nh_dns_job).
+   nh_dns_poll: true while the lookup runs; once it is over, *RES is the
+   address list (the caller's, for freeaddrinfo), NULL when it failed.
+   nh_dns_host: the host name looked up.  nh_dns_drop: the process lets
+   go of the job, after the poll or during the lookup (delete-process:
+   it never waits).  nh_dns_glibc_off (`nidhogg-workers--test-glibc-dns-off')
+   makes process.c take the path of a platform without getaddrinfo_a.  */
+struct nh_dns_job;
+extern struct nh_dns_job *nh_dns_start (const char *host, const char *service,
+					int family, int socktype);
+extern bool nh_dns_poll (struct nh_dns_job *, struct addrinfo **res);
+extern const char *nh_dns_host (struct nh_dns_job *);
+extern void nh_dns_drop (struct nh_dns_job *);
 
 /* The `syms_of' part of each file, called from syms_of_nidhogg_workers.  */
 extern void syms_of_nidhogg_workers (void);
