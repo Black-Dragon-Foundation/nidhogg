@@ -698,4 +698,211 @@ meanwhile, while a SIGCHLD still reaches its handler and
         (should (eq (nth 1 on) 'exit))
         (should (= (nth 2 on) 3))))))
 
+;;; Task 19: delivery.
+
+(defun workers-io-tests--sizer (proc string)
+  "A filter that records the byte size of each STRING PROC gets."
+  (process-put proc 'sizes (cons (string-bytes string) (process-get proc 'sizes))))
+
+(defun workers-io-tests--sizes (proc)
+  "The sizes of the strings PROC's filter got, oldest first."
+  (reverse (process-get proc 'sizes)))
+
+(defun workers-io-tests--got (proc)
+  (apply #'+ (process-get proc 'sizes)))
+
+(defun workers-io-tests--done-file ()
+  "A file name that does not exist yet, for a child to create when done."
+  (let ((f (make-temp-file "wio-done")))
+    (delete-file f)
+    f))
+
+(defun workers-io-tests--writer (name command &rest props)
+  "A process NAME running the shell COMMAND, its filter `workers-io-tests--sizer'."
+  (apply #'make-process :name (concat "wio-" name) :noquery t :coding 'binary
+         :command (list "sh" "-c" command)
+         :filter #'workers-io-tests--sizer props))
+
+(ert-deftest workers/raw-coalescing ()
+  ;; A delivery joins what is queued, up to `read-process-output-max'
+  ;; and the filter's estimated 4 ms; it never waits for more (§17.2a
+  ;; S2).  On ledgers, not clocks: filter costs are fixed with
+  ;; `nidhogg-workers--test-filter-cost'.  While the main thread is busy
+  ;; (`call-process' serves no process output) the output queues; then
+  ;; it is delivered.
+  (workers-io-tests--modes
+    (ert-info ("10,000 one-byte writes" :prefix "")
+      (let* ((done (workers-io-tests--done-file))
+             (proc (let ((read-process-output-max 1024))
+                     (workers-io-tests--writer
+                      "ones"
+                      (format "i=0; while [ $i -lt 10000 ]; do printf x; i=$((i+1)); done; : > %s; read x"
+                              (shell-quote-argument done))
+                      :connection-type 'pipe))))
+        (unwind-protect
+            (progn
+              (should (workers-io-tests--info proc :owned))
+              ;; A filter that costs nothing: only read-process-output-max caps.
+              (should (nidhogg-workers--test-filter-cost proc 0))
+              (should (workers-io-tests--busy-until (lambda () (file-exists-p done))))
+              (when (eq mode 'threads)
+                ;; nh-io read it all (in many small reads) and nothing
+                ;; was delivered.
+                (should (workers-io-tests--busy-until
+                         (lambda () (= (workers-io-tests--info proc :queued) 10000)))))
+              (should (workers-io-tests--until
+                       (lambda () (= (workers-io-tests--got proc) 10000))))
+              (let ((sizes (workers-io-tests--sizes proc)))
+                (should (<= (apply #'max sizes) 1024))
+                ;; One delivery per read would be hundreds.  Joining
+                ;; whole chunks of at most 1024 bytes up to 1024, any
+                ;; two deliveries in a row hold more than 1024 bytes
+                ;; (the second's first chunk did not fit the first), so
+                ;; 10,000 bytes take at most 19.
+                (should (<= (length sizes) 19))))
+          (ignore-errors (delete-file done)))))
+    (ert-info ("a byte while idle" :prefix "")
+      (let ((cat (workers-io-tests--cat "idle")))
+        (process-send-string cat "z")
+        ;; The next wait delivers it: nothing waits for more.
+        (should (accept-process-output cat 5 nil t))
+        (should (equal (workers-io-tests--out cat) "z"))))
+    (ert-info ("a pty before its filter's cost is known" :prefix "")
+      (let* ((done (workers-io-tests--done-file))
+             (proc (workers-io-tests--writer
+                    "pty"
+                    (format "head -c 12000 /dev/zero | tr '\\0' a; : > %s; read x"
+                            (shell-quote-argument done))
+                    :connection-type 'pty)))
+        (unwind-protect
+            (progn
+              (should (workers-io-tests--info proc :owned))
+              (should-not (workers-io-tests--info proc :filter-cost))
+              (should (workers-io-tests--busy-until (lambda () (file-exists-p done))))
+              (when (eq mode 'threads)
+                (should (workers-io-tests--busy-until
+                         (lambda () (= (workers-io-tests--info proc :queued) 12000)))))
+              (should (workers-io-tests--until
+                       (lambda () (= (workers-io-tests--got proc) 12000))))
+              ;; 12,000 bytes queued; the first delivery takes a pty's read.
+              (should (<= (car (workers-io-tests--sizes proc)) 4096))
+              ;; Its call measured the filter's cost.
+              (should (workers-io-tests--info proc :filter-cost)))
+          (ignore-errors (delete-file done)))))
+    (ert-info ("a filter at 1 µs per byte" :prefix "")
+      (let ((proc (let ((read-process-output-max 65536))
+                    (make-process :name "wio-cost" :command '("cat")
+                                  :connection-type 'pipe :noquery t :coding 'binary
+                                  :filter #'workers-io-tests--sizer))))
+        (should (nidhogg-workers--test-filter-cost proc 1000))
+        (process-send-string proc (make-string 60000 ?c))
+        (should (workers-io-tests--until
+                 (lambda () (= (workers-io-tests--got proc) 60000))))
+        (let ((sizes (workers-io-tests--sizes proc)))
+          ;; 4 ms of its work is 4,000 bytes.
+          (should (<= (apply #'max sizes) 4000))
+          (should (>= (length sizes) 15)))))))
+
+(defconst workers-io-tests--df-chunks
+  (append workers-io-tests--recorded
+          (list "crlf across\r" "\nnext\r" "mac line\r" "tail\n" "END\n"))
+  "The recorded stream, CRs at chunk ends, then an end mark.")
+
+(defun workers-io-tests--df-run (coding multibyte)
+  "The recorded stream through `cat' into a buffer, by the default filter.
+CODING decodes; the buffer is MULTIBYTE or not, starts with a line,
+point at its end, and has markers before, at and after the process
+mark.  Return what Lisp sees after it, and the reader's `:owned' and
+`:decoded'."
+  (let ((buf (generate-new-buffer "wio-df")))
+    (unwind-protect
+        (with-current-buffer buf
+          (set-buffer-multibyte multibyte)
+          (insert "head\n")
+          (let* ((m1 (copy-marker 2))
+                 (m2 (copy-marker (point-max)))
+                 (m3 (copy-marker (point-max) t))
+                 (proc (make-process :name "wio-df" :buffer buf :command '("cat")
+                                     :connection-type 'pipe :noquery t
+                                     :coding (cons coding 'binary))))
+            (dolist (chunk workers-io-tests--df-chunks)
+              (process-send-string proc chunk))
+            (should (workers-io-tests--until
+                     (lambda () (with-current-buffer buf
+                                  (string-suffix-p "END\n" (buffer-string))))))
+            (prog1 (list (list (buffer-string) (point)
+                               (marker-position m1) (marker-position m2)
+                               (marker-position m3)
+                               (marker-position (process-mark proc))
+                               (car (process-coding-system proc))
+                               (buffer-modified-p))
+                         (workers-io-tests--info proc :owned)
+                         (workers-io-tests--info proc :decoded))
+              (delete-process proc))))
+      (kill-buffer buf))))
+
+(ert-deftest workers/default-filter-equivalence ()
+  ;; The default filter inserts nh-io's decodes directly: the buffer's
+  ;; text, point, markers, process mark and decoding system are the
+  ;; reader-off run's, in multibyte and unibyte buffers, for each
+  ;; stateless system (raw bytes become raw-byte characters in a
+  ;; multibyte buffer, as today).
+  (workers-io-tests--modes
+    (dolist (coding '(utf-8-unix utf-8-dos utf-8-mac raw-text-unix
+                      raw-text-dos raw-text-mac no-conversion))
+      (dolist (multibyte '(t nil))
+        (ert-info ((format "%s, %s buffer" coding
+                           (if multibyte "multibyte" "unibyte"))
+                   :prefix "")
+          (let ((off (let ((nidhogg-workers-process-reader nil))
+                       (workers-io-tests--df-run coding multibyte)))
+                (on (workers-io-tests--df-run coding multibyte)))
+            (should-not (nth 1 off))
+            (should (nth 1 on))
+            (should (equal (car on) (car off)))
+            ;; The insertions used the reader's decodes where today's
+            ;; path decodes: always in a multibyte buffer; in a unibyte
+            ;; one (raw text) when the end of line is converted.
+            (when (or multibyte
+                      (memq coding '(utf-8-dos utf-8-mac raw-text-dos raw-text-mac)))
+              (should (> (nth 2 on) 0)))))))))
+
+(defmacro workers-io-tests--wd (&rest body)
+  "Run BODY with the watchdog started without a monitor thread."
+  (declare (indent 0) (debug t))
+  `(progn
+     (set 'nidhogg-watchdog--test-last-sample nil)
+     (nidhogg-watchdog--start 100 2000 nil :no-monitor)
+     (unwind-protect (progn ,@body)
+       (set 'nidhogg-watchdog--test-sample-on-phase nil)
+       (nidhogg-watchdog--stop))))
+
+(ert-deftest workers/deliver-phase ()
+  ;; The C delivery of a reader-owned process runs in the watchdog's
+  ;; `deliver' phase; its filter in `filter', above it.
+  (skip-unless (featurep 'nidhogg-watchdog))
+  (workers-io-tests--modes
+    (with-temp-buffer
+      (let ((buf (current-buffer))
+            (proc (make-process :name "wio-phase" :buffer (current-buffer)
+                                :command '("cat") :connection-type 'pipe
+                                :noquery t :coding 'utf-8-unix)))
+        (should (workers-io-tests--info proc :owned))
+        (workers-io-tests--wd
+          (set 'nidhogg-watchdog--test-sample-on-phase 'deliver)
+          (process-send-string proc (make-string 200000 ?d))
+          (should (workers-io-tests--until
+                   (lambda () (>= (buffer-size buf) 200000)))))
+        (let ((s (symbol-value 'nidhogg-watchdog--test-last-sample)))
+          (should s)
+          (should (eq (plist-get s :phase) 'deliver)))
+        (delete-process proc)))
+    (let ((cat (workers-io-tests--cat "phase-filter")))
+      (workers-io-tests--wd
+        (set 'nidhogg-watchdog--test-sample-on-phase 'filter)
+        (should (workers-io-tests--echo cat "in the filter\n")))
+      (let ((s (symbol-value 'nidhogg-watchdog--test-last-sample)))
+        (should s)
+        (should (eq (plist-get s :phase) 'filter))))))
+
 ;;; workers-io-tests.el ends here

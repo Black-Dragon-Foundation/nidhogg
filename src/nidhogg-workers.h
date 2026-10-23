@@ -247,8 +247,9 @@ extern void nh_io_release (struct Lisp_Process *);
    fd the select set holds for INFD (INFD when no reader owns it).  */
 extern int nh_io_pause (int infd);
 extern void nh_io_resume (int infd);
-/* read_process_output's reader branch: up to SIZE bytes into BUF, as
-   the read it replaces; *HANDLED false means read the fd as today.  */
+/* read_process_output's reader branch: one delivery's worth, up to SIZE
+   bytes, into BUF, as the read it replaces [19]; *HANDLED false means
+   read the fd as today.  */
 extern ptrdiff_t nh_io_read (struct Lisp_Process *, int channel, char *buf,
 			     ptrdiff_t size, bool *handled);
 /* Before a drain [17]: true when the caller must hand the process back
@@ -268,6 +269,25 @@ extern void nh_io_coding_settled (struct Lisp_Process *,
    counts and carryover set as decode_coding_c_string would set them.  */
 extern bool nh_io_decoded (struct Lisp_Process *, struct coding_system *,
 			   const char *chars, ptrdiff_t nbytes);
+/* Delivery [19].  The default filter's insertion: true when nh-io's
+   decodes of the NREAD bytes at BUF went into the current buffer at
+   point as decode_coding_c_string would insert them (point before the
+   text, CODING's counts and carryover set).  */
+extern bool nh_io_insert (struct Lisp_Process *, struct coding_system *,
+			  const char *buf, ptrdiff_t nread);
+/* Around a delivery the reader made: the `deliver' phase and its ns.  */
+struct nh_io_deliver
+{
+  int depth;
+  int64_t t0, filter_ns;
+};
+extern void nh_io_deliver_begin (bool reader, struct nh_io_deliver *);
+extern void nh_io_deliver_end (struct nh_io_deliver *);
+/* Around a filter call: its ns, and the estimate of its cost per byte
+   that caps the deliveries to it (NBYTES 0: it was not called).  */
+extern int64_t nh_io_filter_begin (struct Lisp_Process *);
+extern void nh_io_filter_end (struct Lisp_Process *, int64_t t0,
+			      ptrdiff_t nbytes);
 extern int nh_io_tls_boot (struct Lisp_Process *, void *gnutls_state);
 /* For the crash rows (Task 4's --test-crash on nh-io).  */
 extern bool nh_io_test_crash (void);
