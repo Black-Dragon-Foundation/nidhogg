@@ -183,26 +183,38 @@ ARGS go before the --eval."
   ;; synchronous fatal ones to the crash forwarding, and carries its
   ;; worker's name.
   (skip-unless (file-directory-p "/proc/self/task"))
-  (let ((nidhogg-workers--mode 'threads))
-    (dolist (w workers-tests--workers)
-      (let ((id (nidhogg-workers--test-job w 0)))
-        (should id)
-        (should (eql (nidhogg-workers--test-wait id 5000) 1))
-        (should (equal (plist-get (nidhogg-workers--test-job-info id) :comm)
-                       (symbol-name w)))))
-    (let ((threads (workers-tests--nh-threads)))
-      (should (equal (sort (delete-dups (mapcar #'cdr threads)) #'string<)
-                     (sort (mapcar #'symbol-name workers-tests--workers) #'string<)))
-      (dolist (th threads)
-        (let ((mask (workers-tests--sigblk (car th)))
-              wrong)
-          (dolist (s workers-tests--blocked)
-            (when (zerop (logand mask (ash 1 (1- (cdr s)))))
-              (push (car s) wrong)))
-          (dolist (s workers-tests--unblocked)
-            (unless (zerop (logand mask (ash 1 (1- (cdr s)))))
-              (push (car s) wrong)))
-          (should (equal (list th wrong) (list th nil))))))))
+  (let ((nidhogg-workers--mode 'threads) (cat nil))
+    (unwind-protect
+        (progn
+          (dolist (w workers-tests--workers)
+            (if (eq w 'nh-io)
+                ;; Once a process is reader-owned (pipes are by default),
+                ;; nh-io runs the reader's loop and a test job queued
+                ;; behind it never runs: a reader-owned `cat' starts it.
+                (let ((nidhogg-workers-process-reader t)
+                      (nidhogg-workers-reader-pipes t))
+                  (setq cat (make-process :name "workers-sig-cat" :command '("cat")
+                                          :connection-type 'pipe :noquery t))
+                  (should (plist-get (nidhogg-workers--test-io-info cat) :owned)))
+              (let ((id (nidhogg-workers--test-job w 0)))
+                (should id)
+                (should (eql (nidhogg-workers--test-wait id 5000) 1))
+                (should (equal (plist-get (nidhogg-workers--test-job-info id) :comm)
+                               (symbol-name w))))))
+          (let ((threads (workers-tests--nh-threads)))
+            (should (equal (sort (delete-dups (mapcar #'cdr threads)) #'string<)
+                           (sort (mapcar #'symbol-name workers-tests--workers) #'string<)))
+            (dolist (th threads)
+              (let ((mask (workers-tests--sigblk (car th)))
+                    wrong)
+                (dolist (s workers-tests--blocked)
+                  (when (zerop (logand mask (ash 1 (1- (cdr s)))))
+                    (push (car s) wrong)))
+                (dolist (s workers-tests--unblocked)
+                  (unless (zerop (logand mask (ash 1 (1- (cdr s)))))
+                    (push (car s) wrong)))
+                (should (equal (list th wrong) (list th nil)))))))
+      (when cat (delete-process cat)))))
 
 (ert-deftest workers/lazy-start ()
   ;; temacs refuses a submit while dumping (will_dump_p), but has no row
@@ -268,6 +280,10 @@ ARGS go before the --eval."
            (ours (lambda () (reverse (seq-filter #'cl-minusp
                                                  nidhogg-workers--test-finished))))
            filter-saw j1 j2 j3)
+      ;; Today's path for the cat, for good (`set-process-filter' below
+      ;; would hand it over again): the row arms `after-read' and
+      ;; `before-decode', where nh-io would park reading it.
+      (nidhogg-set-process-reader proc nil)
       (unwind-protect
           (progn
             (if (not threads)
