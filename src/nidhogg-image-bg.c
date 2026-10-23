@@ -28,8 +28,26 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
    animation cache they share.  Each core is a copy of the decode path of the
    loader of the same name in image.c, with libc allocation and error codes
    in place of `image_error'; the oracle (workers/image-oracle) holds the
-   copies equal to the loaders.  Tasks 29 and 30 add the pending entries
-   and the stand-in rule to this file.  */
+   copies equal to the loaders.
+
+   Pending entries and landing (Task 29, design §8.3 items 1-4, 7-9).
+   While redisplay looks an image up (the iterator's calls, with
+   redisplaying_p), a cache miss on a PNG, JPEG, GIF or WebP whose header
+   answers queues a decode on nh-img with copies of everything the loader
+   reads, and waits for it within the redisplay's wait budget.  Past the
+   budget the entry stays pending: it has the header's size, so layout is
+   final, and no pixels, so it draws as the face's background.  The job's
+   finish (the drainer, PD-6) only marks the entry landed and asks for a
+   redisplay; at the top of the next redisplay_internal every landed entry
+   is finished as a synchronous load would have finished it, and only the
+   windows whose current matrix shows it are redrawn.  Results address an
+   entry by (cache, id, generation): free_image, which every eviction,
+   clear-image-cache, image-flush and frame deletion goes through, drops
+   the entry's record and cancels its job, so a stale result is dropped.
+   A Lisp caller that needs the pixels of a pending entry (a lookup
+   outside redisplay) waits for the job or loads synchronously.  The
+   records and the landing are the main thread's (the global lock
+   holder's); the job is plain C.  Task 30 adds the stand-in rule.  */
 
 #ifndef NH_WK_HARNESS
 # include <config.h>
@@ -46,6 +64,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "nidhogg-workers.h"
@@ -1397,21 +1416,9 @@ nh_img_decode (int fmt, const uint8_t *data, size_t len,
 }
 
 
-/* Stubs of Tasks 29 (lookup) and 27 (size); the synchronous loaders'
-   entry, nh_img_sync_load, is in image.c, which owns the frame and image
-   internals it needs.  */
-
-#include <limits.h>
-#include <string.h>
-
-bool
-nh_img_lookup (struct frame *f, struct image *img, ptrdiff_t id)
-{
-  (void) f;
-  (void) img;
-  (void) id;
-  return false;
-}
+/* The synchronous loaders' entry, nh_img_sync_load, is in image.c, which
+   owns the frame and image internals it needs; so are the parts of the
+   pending entries that touch them (Task 29, at the end of this file).  */
 
 /* The header parsers.  */
 
@@ -1795,6 +1802,9 @@ nh_img_webp_scan (const uint8_t *p, size_t n, int idx, struct nh_img_scan *sc)
 #include "dispextern.h"
 #include "coding.h"
 #include "sysstdio.h"
+#include "window.h"
+#include "keyboard.h"
+#include "nidhogg-workers-phase.h"
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -2302,6 +2312,668 @@ DEFUN ("nidhogg-workers--test-image-cache-clear",
   return Qnil;
 }
 
+
+/* Pending entries and landing (Task 29); see the commentary at the top.  */
+
+static int64_t
+nh_img_now (void)
+{
+  struct timespec ts;
+  clock_gettime (CLOCK_MONOTONIC, &ts);
+  return (int64_t) ts.tv_sec * 1000000000 + ts.tv_nsec;
+}
+
+int
+nh_img_phase_begin (int64_t *t0)
+{
+  *t0 = nh_img_now ();
+  return NH_WK_PHASE_PUSH (NH_WK_PH_IMAGE, 0);
+}
+
+void
+nh_img_phase_end (int depth, int64_t t0)
+{
+  NH_WK_PHASE_POP (depth);
+  nh_wk_phase_ns_add (NH_WK_PH_IMAGE, 0, nh_img_now () - t0);
+}
+
+#ifdef HAVE_WINDOW_SYSTEM
+
+/* A redisplay wait takes the budget in slices, so that a decode that ends
+   early leaves the rest of the budget to the next image.  */
+#define NH_IMG_SLICE_NS INT64_C (1000000)
+/* How long a caller that needs the pixels of a pending entry waits before
+   it loads them itself.  */
+#define NH_IMG_PIXELS_WAIT_NS INT64_C (1000000000)
+
+struct nh_img_job
+{
+  struct nh_wk_job job;
+  int fmt;			/* enum nh_img_fmt */
+  uint8_t *data;		/* a copy of :data, or NULL */
+  size_t len;
+  char *file;			/* the encoded file name, or NULL */
+  struct nh_img_params params;
+  struct nh_img_out out;
+  int rc;
+  /* The entry, as (cache, id, generation).  CACHE is only compared.  */
+  const void *cache;
+  ptrdiff_t id;
+  uint64_t gen;
+  bool consumed;		/* main thread: the result was taken */
+};
+
+/* A pending entry; main thread (lock holder) only.  */
+struct nh_img_pend
+{
+  struct nh_img_pend *next;
+  const void *cache;
+  ptrdiff_t id;
+  uint64_t gen;
+  struct nh_img_job *j;		/* a reference */
+  bool landed;			/* decoded: lands at the next redisplay */
+  bool synthetic;		/* a test entry: no image behind it */
+};
+
+static struct nh_img_pend *nh_img_pends;
+static uint64_t nh_img_gen;
+static bool nh_img_any_landed;
+/* True while redisplay looks an image up (nh_img_redisplay_lookup).  */
+static bool nh_img_in_redisplay;
+/* The windows the last landing marked (tests).  */
+static Lisp_Object nh_img_marked;
+/* The hashes of the specs whose decode failed after a deferral: they load
+   synchronously from then on (a failed image is loaded again at every
+   lookup, as today) rather than decode and land at every redisplay.  */
+enum { NH_IMG_FAILED_N = 32 };
+static EMACS_UINT nh_img_failed[NH_IMG_FAILED_N];
+static int nh_img_failed_used;
+/* Counters (tests).  */
+static _Atomic int nh_img_live;
+static EMACS_INT nh_img_n_landed, nh_img_n_dropped, nh_img_n_deferred;
+/* The cache the test entries name.  */
+static char nh_img_test_cache;
+
+static bool
+nh_img_defer_on (void)
+{
+  Lisp_Object v = find_symbol_value (Qnidhogg_image_defer);
+  return !BASE_EQ (v, Qunbound) && !NILP (v);
+}
+
+static int
+nh_img_core_format (int hfmt)
+{
+  switch (hfmt)
+    {
+    case NH_IMG_F_PNG:
+      return NH_IMG_PNG;
+    case NH_IMG_F_JPEG:
+      return NH_IMG_JPEG;
+    case NH_IMG_F_GIF:
+      return NH_IMG_GIF;
+    case NH_IMG_F_WEBP:
+      return NH_IMG_WEBP;
+    default:
+      return -1;
+    }
+}
+
+static bool
+nh_img_failed_p (EMACS_UINT hash)
+{
+  int n = min (nh_img_failed_used, NH_IMG_FAILED_N);
+  for (int i = 0; i < n; i++)
+    if (nh_img_failed[i] == hash)
+      return true;
+  return false;
+}
+
+static void
+nh_img_failed_add (EMACS_UINT hash)
+{
+  if (!nh_img_failed_p (hash))
+    nh_img_failed[nh_img_failed_used++ % NH_IMG_FAILED_N] = hash;
+  if (nh_img_failed_used >= 2 * NH_IMG_FAILED_N)
+    nh_img_failed_used -= NH_IMG_FAILED_N;
+}
+
+/* The job, on nh-img.  */
+static void
+nh_img_job_run (struct nh_wk_job *job)
+{
+  struct nh_img_job *j = (struct nh_img_job *) job;
+  nh_wk_pause_point (NH_WK_P_AFTER_HEADER);
+  if (atomic_load (&job->cancel))
+    {
+      j->rc = nh_img_fail (&j->out, NH_IMG_E_SILENT);
+      return;
+    }
+  if (j->params.frame_index >= 0)
+    j->params.key = (j->data ? nh_img_hash (j->data, j->len)
+		     : nh_img_file_key (j->file));
+  j->rc = nh_img_decode (j->fmt, j->data, j->len, &j->params, &j->out);
+}
+
+/* The last reference is gone (either thread).  */
+static void
+nh_img_job_free (struct nh_wk_job *job)
+{
+  struct nh_img_job *j = (struct nh_img_job *) job;
+  nh_img_out_free (&j->out);
+  free (j->data);
+  free (j->file);
+  free (j);
+  atomic_fetch_sub (&nh_img_live, 1);
+}
+
+static struct nh_img_pend *
+nh_img_pend_find (const void *cache, ptrdiff_t id)
+{
+  for (struct nh_img_pend *r = nh_img_pends; r; r = r->next)
+    if (r->cache == cache && r->id == id)
+      return r;
+  return NULL;
+}
+
+static void
+nh_img_pend_unlink (struct nh_img_pend *r)
+{
+  for (struct nh_img_pend **pp = &nh_img_pends; *pp; pp = &(*pp)->next)
+    if (*pp == r)
+      {
+	*pp = r->next;
+	r->next = NULL;
+	return;
+      }
+}
+
+/* Drop R (unlinked) and the reference it holds.  */
+static void
+nh_img_pend_free (struct nh_img_pend *r)
+{
+  r->j->consumed = true;
+  nh_wk_job_unref (&r->j->job);
+  free (r);
+}
+
+/* R's entry is gone: its job is cancelled and its result dropped.  */
+static void
+nh_img_pend_forget (struct nh_img_pend *r)
+{
+  nh_img_pend_unlink (r);
+  nh_wk_cancel (&r->j->job);
+  nh_img_n_dropped++;
+  nh_img_pend_free (r);
+}
+
+/* The drainer (PD-6): the job is done.  Its entry, if it is still there,
+   lands at the next redisplay.  */
+static void
+nh_img_job_finish (struct nh_wk_job *job)
+{
+  struct nh_img_job *j = (struct nh_img_job *) job;
+  if (j->consumed)
+    return;
+  struct nh_img_pend *r = nh_img_pend_find (j->cache, j->id);
+  if (!r || r->gen != j->gen)
+    {
+      nh_img_n_dropped++;
+      return;
+    }
+  r->landed = true;
+  nh_img_any_landed = true;
+  /* Ask for a redisplay: a wait for input redisplays after a timer check
+     that ran something (process.c, keyboard.c).  */
+  timers_run++;
+}
+
+static void
+nh_img_job_init (struct nh_img_job *j, const void *cache, ptrdiff_t id)
+{
+  j->job.w = NH_WK_IMG;
+  j->job.speculative = true;
+  j->job.run = nh_img_job_run;
+  j->job.finish = nh_img_job_finish;
+  j->job.free = nh_img_job_free;
+  atomic_store (&j->job.refs, 1);	/* the submitter's */
+  j->cache = cache;
+  j->id = id;
+  j->gen = ++nh_img_gen;
+  atomic_fetch_add (&nh_img_live, 1);
+}
+
+/* free_image: IMG's record goes, whatever freed it.  */
+void
+nh_img_freed (struct frame *f, struct image *img)
+{
+  if (!nh_img_pends)
+    return;
+  struct nh_img_pend *r = nh_img_pend_find (FRAME_IMAGE_CACHE (f), img->id);
+  if (r)
+    nh_img_pend_forget (r);
+}
+
+bool
+nh_img_pending_p (struct frame *f, struct image *img)
+{
+  return nh_img_pends && nh_img_pend_find (FRAME_IMAGE_CACHE (f), img->id);
+}
+
+/* lookup_image's miss: see the commentary at the top.  */
+bool
+nh_img_lookup (struct frame *f, struct image *img)
+{
+  if (!nh_img_in_redisplay || !nh_img_on () || !nh_img_defer_on ()
+      || nh_img_failed_p (img->hash))
+    return false;
+  Lisp_Object spec = img->spec;
+  int hfmt = nh_img_spec_format (spec);
+  int fmt = nh_img_core_format (hfmt);
+  if (fmt < 0)
+    return false;
+
+  /* The header, here: the native size, refused where the loader would
+     report an error.  Then the job's copies.  */
+  int64_t t0;
+  int depth = nh_img_phase_begin (&t0);
+  bool scan = ((hfmt == NH_IMG_F_GIF || hfmt == NH_IMG_F_WEBP)
+	       && !NILP (image_spec_value (spec, QCindex, NULL)));
+  struct nh_img_scan sc;
+  int w = 0, h = 0, dw, dh;
+  bool ok = (nh_img_probe (spec, hfmt, scan, nh_img_index (spec), &sc, &w, &h)
+	     && nh_img_size_ok (f, w, h)
+	     && nh_img_displayed_size (f, spec, w, h, &dw, &dh));
+  struct nh_img_job *j = ok ? calloc (1, sizeof *j) : NULL;
+  if (j && !nh_img_job_inputs (f, img, fmt, &j->params, &j->data, &j->len,
+			       &j->file))
+    {
+      free (j);
+      j = NULL;
+    }
+  nh_img_phase_end (depth, t0);
+  if (!j)
+    return false;
+  j->fmt = fmt;
+  nh_img_job_init (j, FRAME_IMAGE_CACHE (f), img->id);
+  if (!nh_wk_submit (&j->job))
+    {
+      nh_wk_job_unref (&j->job);
+      return false;
+    }
+
+  /* Wait within the redisplay's budget (§8.3 item 4).  */
+  int r = 0;
+  while (atomic_load (&j->job.state) != NH_WK_J_DONE)
+    {
+      int64_t grant = nh_wk_budget_take (NH_IMG_SLICE_NS);
+      if (grant <= 0)
+	break;
+      r = nh_wk_wait (&j->job, grant, NH_WK_PH_WORKER_WAIT, NH_WK_RS_DISPLAY);
+      if (r != 0)
+	break;
+    }
+  int st = atomic_load (&j->job.state);
+  if (st == NH_WK_J_DONE)
+    {
+      /* In time: this redisplay shows it.  */
+      j->consumed = true;
+      depth = nh_img_phase_begin (&t0);
+      img->load_failed_p = !nh_img_load_result (f, img, fmt, &j->out, j->rc);
+      nh_img_phase_end (depth, t0);
+      nh_wk_job_unref (&j->job);
+      return true;
+    }
+  struct nh_img_pend *p = (st == NH_WK_J_CANCELLED || r < 0 ? NULL
+			   : calloc (1, sizeof *p));
+  if (!p)
+    {
+      nh_wk_cancel (&j->job);
+      j->consumed = true;
+      nh_wk_job_unref (&j->job);
+      return false;
+    }
+
+  /* Pending: the header's size, no pixels.  lookup_image goes on as after
+     a load, so the entry gets its final size.  */
+  p->cache = j->cache;
+  p->id = j->id;
+  p->gen = j->gen;
+  p->j = j;			/* the submitter's reference */
+  p->next = nh_img_pends;
+  nh_img_pends = p;
+  img->width = w;
+  img->height = h;
+  img->load_failed_p = false;
+  nh_img_n_deferred++;
+  nh_wk_deferral_add (1);
+  return true;
+}
+
+static bool
+nh_img_window_shows (struct window *w, ptrdiff_t id)
+{
+  struct glyph_matrix *m = w->current_matrix;
+  if (!m)
+    return false;
+  for (int i = 0; i < m->nrows; i++)
+    {
+      struct glyph_row *row = MATRIX_ROW (m, i);
+      if (!row->enabled_p)
+	continue;
+      for (int a = LEFT_MARGIN_AREA; a < LAST_AREA; a++)
+	for (struct glyph *g = row->glyphs[a], *e = g + row->used[a]; g < e; g++)
+	  if (g->type == IMAGE_GLYPH && g->u.img_id == id)
+	    return true;
+    }
+  return false;
+}
+
+static void
+nh_img_mark_window (Lisp_Object window, ptrdiff_t id)
+{
+  struct window *w = XWINDOW (window);
+  if (!nh_img_window_shows (w, id))
+    return;
+  /* The rows are unchanged (same image, same size), so only a cleared
+     current matrix makes the update draw them again.  */
+  clear_glyph_matrix (w->current_matrix);
+  wset_redisplay (w);
+  redisplay_other_windows ();
+  if (NILP (Fmemq (window, nh_img_marked)))
+    nh_img_marked = Fcons (window, nh_img_marked);
+}
+
+static void
+nh_img_mark_tree (Lisp_Object window, ptrdiff_t id)
+{
+  while (WINDOWP (window))
+    {
+      struct window *w = XWINDOW (window);
+      if (WINDOWP (w->contents))
+	nh_img_mark_tree (w->contents, id);
+      else
+	nh_img_mark_window (window, id);
+      window = w->next;
+    }
+}
+
+/* Mark for redisplay the windows that show entry ID of CACHE, on every
+   frame that shares the cache, and no other (§8.3 item 7).  */
+static void
+nh_img_mark (const void *cache, ptrdiff_t id)
+{
+  Lisp_Object tail, frame;
+  FOR_EACH_FRAME (tail, frame)
+    {
+      struct frame *f = XFRAME (frame);
+      if (!FRAME_WINDOW_P (f) || FRAME_IMAGE_CACHE (f) != cache)
+	continue;
+      /* The root window's siblings: the minibuffer window.  */
+      nh_img_mark_tree (FRAME_ROOT_WINDOW (f), id);
+      if (WINDOWP (f->tab_bar_window))
+	nh_img_mark_window (f->tab_bar_window, id);
+#ifndef HAVE_EXT_TOOL_BAR
+      if (WINDOWP (f->tool_bar_window))
+	nh_img_mark_window (f->tool_bar_window, id);
+#endif
+    }
+}
+
+static struct frame *
+nh_img_cache_frame (const void *cache)
+{
+  Lisp_Object tail, frame;
+  FOR_EACH_FRAME (tail, frame)
+    {
+      struct frame *f = XFRAME (frame);
+      if (FRAME_WINDOW_P (f) && FRAME_IMAGE_CACHE (f) == cache)
+	return f;
+    }
+  return NULL;
+}
+
+/* Land R (unlinked) into IMG on F: from its job's result, or with SYNC
+   (the job could not finish) by the loader.  */
+static void
+nh_img_land_pend (struct frame *f, struct image *img, struct nh_img_pend *r,
+		  bool sync)
+{
+  struct nh_img_job *j = r->j;
+  ptrdiff_t id = r->id;
+  const void *cache = r->cache;
+  j->consumed = true;
+  int64_t t0;
+  int depth = nh_img_phase_begin (&t0);
+  nh_img_land (f, img, j->fmt, sync ? NULL : &j->out, j->rc);
+  nh_img_phase_end (depth, t0);
+  nh_img_pend_free (r);
+  if (img->load_failed_p)
+    nh_img_failed_add (img->hash);
+  nh_img_n_landed++;
+  nh_img_mark (cache, id);
+}
+
+/* The top of redisplay_internal: every landed entry is finished at once.  */
+void
+nh_img_redisplay_begin (void)
+{
+  if (!nh_img_any_landed)
+    return;
+  nh_img_any_landed = false;
+  nh_img_marked = Qnil;
+  /* Take them out first: a landing logs errors, which runs Lisp.  */
+  struct nh_img_pend *landed = NULL, **pp = &nh_img_pends;
+  while (*pp)
+    {
+      struct nh_img_pend *r = *pp;
+      if (r->landed)
+	{
+	  *pp = r->next;
+	  r->next = landed;
+	  landed = r;
+	}
+      else
+	pp = &r->next;
+    }
+  while (landed)
+    {
+      struct nh_img_pend *r = landed;
+      landed = r->next;
+      r->next = NULL;
+      struct frame *f = r->synthetic ? NULL : nh_img_cache_frame (r->cache);
+      struct image *img = f ? IMAGE_OPT_FROM_ID (f, r->id) : NULL;
+      if (img && !img->pixmap && !img->load_failed_p)
+	nh_img_land_pend (f, img, r, false);
+      else
+	{
+	  if (r->synthetic)
+	    nh_img_n_landed++;
+	  else
+	    nh_img_n_dropped++;
+	  nh_img_pend_free (r);
+	}
+    }
+}
+
+/* lookup_image's hit, outside redisplay: a Lisp caller (or a display
+   function such as `window-text-pixel-size') may need the pixels of a
+   pending entry, so it waits for the job (§8.3 item 9) or, past the
+   bound, loads it as today.  */
+void
+nh_img_hit (struct frame *f, struct image *img)
+{
+  if (nh_img_in_redisplay || !nh_img_pends || img->pixmap
+      || img->load_failed_p)
+    return;
+  struct nh_img_pend *r = nh_img_pend_find (FRAME_IMAGE_CACHE (f), img->id);
+  if (!r)
+    return;
+  bool sync = false;
+  if (!r->landed
+      && nh_wk_wait (&r->j->job, NH_IMG_PIXELS_WAIT_NS, NH_WK_PH_WORKER_WAIT,
+		     NH_WK_RS_IMAGE_PIXELS) != 1)
+    {
+      nh_wk_cancel (&r->j->job);
+      sync = true;
+    }
+  nh_img_pend_unlink (r);
+  nh_img_land_pend (f, img, r, sync);
+}
+
+/* The iterator's lookup_image calls (§8.3 item 1): only while
+   redisplaying may a miss defer.  */
+static void
+nh_img_redisplay_restore (int old)
+{
+  nh_img_in_redisplay = old;
+}
+
+ptrdiff_t
+nh_img_redisplay_lookup (struct frame *f, Lisp_Object spec, int face_id)
+{
+  if (!redisplaying_p)
+    return lookup_image (f, spec, face_id);
+  specpdl_ref count = SPECPDL_INDEX ();
+  record_unwind_protect_int (nh_img_redisplay_restore, nh_img_in_redisplay);
+  nh_img_in_redisplay = true;
+  ptrdiff_t id = lookup_image (f, spec, face_id);
+  unbind_to (count, Qnil);
+  return id;
+}
+
+DEFUN ("nidhogg-workers--test-image-info", Fnidhogg_workers__test_image_info,
+       Snidhogg_workers__test_image_info, 0, 0, 0,
+       doc: /* The pending image entries and their counters; for tests.
+A plist: `:pending' (entries without pixels, landed ones included),
+`:landed-waiting' (decoded, landing at the next redisplay), `:live'
+\(decode jobs not freed yet), and since startup `:deferred' (entries made
+pending), `:landed' and `:dropped' (results whose entry was gone).  */)
+  (void)
+{
+  EMACS_INT pending = 0, waiting = 0;
+  for (struct nh_img_pend *r = nh_img_pends; r; r = r->next)
+    {
+      pending++;
+      waiting += r->landed;
+    }
+  return listn (12,
+		intern_c_string (":pending"), make_int (pending),
+		intern_c_string (":landed-waiting"), make_int (waiting),
+		intern_c_string (":live"), make_int (atomic_load (&nh_img_live)),
+		intern_c_string (":deferred"), make_int (nh_img_n_deferred),
+		intern_c_string (":landed"), make_int (nh_img_n_landed),
+		intern_c_string (":dropped"), make_int (nh_img_n_dropped));
+}
+
+DEFUN ("nidhogg-workers--test-marked-windows",
+       Fnidhogg_workers__test_marked_windows,
+       Snidhogg_workers__test_marked_windows, 0, 0, 0,
+       doc: /* The windows the last image landing marked for redisplay; for tests.  */)
+  (void)
+{
+  return Fcopy_sequence (nh_img_marked);
+}
+
+DEFUN ("nidhogg-workers--deferrable-p", Fnidhogg_workers__deferrable_p,
+       Snidhogg_workers__deferrable_p, 1, 1, 0,
+       doc: /* Non-nil if images of FORMAT may decode on nh-img in this build.
+FORMAT is an image type symbol such as `png'.  */)
+  (Lisp_Object format)
+{
+#ifdef USE_CAIRO
+  int fmt = nh_img_core_format (nh_img_spec_format (list3 (Qimage, QCtype,
+							   format)));
+  return fmt >= 0 && nh_img_decoders[fmt] ? Qt : Qnil;
+#else
+  return Qnil;
+#endif
+}
+
+DEFUN ("nidhogg-workers--test-image-job", Fnidhogg_workers__test_image_job,
+       Snidhogg_workers__test_image_job, 2, 3, 0,
+       doc: /* Decode image SPEC on nh-img for the test entry ID; for tests.
+SPEC and PARAMS are as for `nidhogg-workers--test-image-decode'.  The
+entry has no image behind it; otherwise its job is a display job: it
+passes the pause point `after-header', lands at the next redisplay (or
+`nidhogg-workers--test-image-land') and is dropped if the entry is
+forgotten first (`nidhogg-workers--test-image-forget', what free_image
+does).  Return ID, or nil if the submit was refused.  */)
+  (Lisp_Object spec, Lisp_Object id, Lisp_Object params)
+{
+  CHECK_FIXNAT (id);
+  if (nh_img_pend_find (&nh_img_test_cache, XFIXNAT (id)))
+    error ("The test entry exists");
+  struct nh_img_tjob *t = nh_img_tjob_make (spec, params);
+  struct nh_img_job *j = calloc (1, sizeof *j);
+  struct nh_img_pend *p = calloc (1, sizeof *p);
+  if (!j || !p)
+    {
+      free (j);
+      free (p);
+      nh_img_tjob_free (t);
+      memory_full (sizeof *j);
+    }
+  j->fmt = t->fmt;
+  j->data = t->data;
+  j->len = t->len;
+  j->file = t->file;
+  j->params = t->params;
+  j->params.file = j->file;
+  t->data = NULL;
+  t->file = NULL;
+  nh_img_tjob_free (t);
+  nh_img_job_init (j, &nh_img_test_cache, XFIXNAT (id));
+  if (!nh_wk_submit (&j->job))
+    {
+      nh_wk_job_unref (&j->job);
+      free (p);
+      return Qnil;
+    }
+  p->cache = j->cache;
+  p->id = j->id;
+  p->gen = j->gen;
+  p->j = j;
+  p->synthetic = true;
+  p->next = nh_img_pends;
+  nh_img_pends = p;
+  return id;
+}
+
+DEFUN ("nidhogg-workers--test-image-forget", Fnidhogg_workers__test_image_forget,
+       Snidhogg_workers__test_image_forget, 1, 1, 0,
+       doc: /* Forget the test entry ID as free_image forgets an entry; for tests.
+Return t if it was pending.  */)
+  (Lisp_Object id)
+{
+  CHECK_FIXNAT (id);
+  struct nh_img_pend *r = nh_img_pend_find (&nh_img_test_cache, XFIXNAT (id));
+  if (!r)
+    return Qnil;
+  nh_img_pend_forget (r);
+  return Qt;
+}
+
+DEFUN ("nidhogg-workers--test-image-land", Fnidhogg_workers__test_image_land,
+       Snidhogg_workers__test_image_land, 0, 0, 0,
+       doc: /* Land the decoded image entries as a redisplay does; for tests.
+Return how many landed.  */)
+  (void)
+{
+  EMACS_INT before = nh_img_n_landed;
+  nh_img_redisplay_begin ();
+  return make_int (nh_img_n_landed - before);
+}
+
+#else /* not HAVE_WINDOW_SYSTEM */
+
+void
+nh_img_redisplay_begin (void)
+{
+}
+
+#endif /* not HAVE_WINDOW_SYSTEM */
+
 extern void nh_img_image_syms (void);
 
 void
@@ -2314,6 +2986,17 @@ nh_img_syms (void)
   defsubr (&Snidhogg_workers__test_image_decode_finish);
   defsubr (&Snidhogg_workers__test_decode_count);
   defsubr (&Snidhogg_workers__test_image_cache_clear);
+#ifdef HAVE_WINDOW_SYSTEM
+  DEFSYM (Qnidhogg_image_defer, "nidhogg-image-defer");
+  staticpro (&nh_img_marked);
+  nh_img_marked = Qnil;
+  defsubr (&Snidhogg_workers__test_image_info);
+  defsubr (&Snidhogg_workers__test_marked_windows);
+  defsubr (&Snidhogg_workers__deferrable_p);
+  defsubr (&Snidhogg_workers__test_image_job);
+  defsubr (&Snidhogg_workers__test_image_forget);
+  defsubr (&Snidhogg_workers__test_image_land);
+#endif
   nh_img_image_syms ();
 }
 
