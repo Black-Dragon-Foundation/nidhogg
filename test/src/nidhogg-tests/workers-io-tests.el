@@ -90,8 +90,9 @@ The output, oldest first, is in the process property `out'."
   (mapcar #'cadr (cl-remove-if-not (lambda (e) (eq (car e) event)) log)))
 
 (ert-deftest workers/fd-reuse ()
-  ;; A reader-owned process killed during a burst while nh-io is parked
-  ;; after a poll: the hand-back's acknowledgement (nh-io closed its
+  ;; A reader-owned process killed after a burst, with more output on
+  ;; its way, while nh-io is parked after a poll: the hand-back's
+  ;; acknowledgement (nh-io closed its
   ;; copy) comes before the real fd closes, and nh-io reads nothing for
   ;; that handle afterwards, though the next process and files may take
   ;; its fd numbers (§17.2 B2).
@@ -112,10 +113,17 @@ The output, oldest first, is in the process property `out'."
             (should (workers-io-tests--until
                      (lambda () (> (or (process-get burst 'n) 0) 0))))
             (when (eq mode 'threads)
+              ;; The point is after a poll returns.  Arm it only once the
+              ;; whole burst is delivered: until then nh-io may sit at
+              ;; its queue cap, polling its command fd alone, so nothing
+              ;; returns its poll while this thread waits without
+              ;; delivering; and `cat', held up by it, may not take more
+              ;; input, so a send would wait for an nh-io that is parked.
+              ;; Then `cat''s pipes are empty: the short line goes in at
+              ;; once and its echo returns the poll.
+              (should (workers-io-tests--until
+                       (lambda () (= (process-get burst 'n) (* 1024 1024)))))
               (nidhogg-workers--pause-at 'in-poll)
-              ;; The point is after a poll returns, and nh-io may have
-              ;; read the whole burst already: more output makes its
-              ;; poll return.
               (process-send-string burst "more\n")
               (should (nidhogg-workers--test-await-paused 'in-poll 5000))
               (nidhogg-workers--test-release-on-wait 'in-poll))
