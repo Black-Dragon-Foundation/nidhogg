@@ -41,7 +41,8 @@ fail=0
 if [ "${1:-}" = --fuzz ]; then
   # --fuzz SECONDS [TARGET...]: each fuzz/TARGET.c (default: all) for SECONDS, under ASan and UBSan when the
   # compiler has them (dnf installs the runtimes when run as root).  libFuzzer when the compiler has it, else
-  # fuzz/driver.c (mutations of the seeds under fixtures/images, fixed random seed).
+  # fuzz/driver.c (mutations of the seeds under fixtures/images, or the target's own fixtures, fixed random seed).
+  # Targets: json, decode, header, cores, framers (Task 24: content-length, lines and records, whole and cut).
   SECS=${2:?--fuzz SECONDS}; shift 2
   FZ="$ROOT/test/src/nidhogg-tests/fuzz"; OUT=${TMPDIR:-/tmp}/nh-fuzz-$$; mkdir -p "$OUT"
   SAN=-fsanitize=address,undefined
@@ -52,16 +53,18 @@ if [ "${1:-}" = --fuzz ]; then
   TARGETS=${*:-$(cd "$FZ" && ls *.c | grep -v '^driver\.c$' | grep -v '^tsan-' | sed 's/\.c$//')}
   for t in $TARGETS; do
     # this target's result (fail is the whole run's: an earlier target's failure must not mark this one)
-    DEFS=; LIBS=; bad=0
+    DEFS=; LIBS=; bad=0; SEEDS=images
     case $t in header) SRCS="nidhogg-image-bg" ;; json) SRCS="" ;;
       # Task 18: the stateless decoders
       decode) SRCS="nidhogg-decode" ;;
+      # Task 24: the framers (the target includes nidhogg-io.c and nidhogg-json-tape.c), seeded with recorded streams
+      framers) SRCS="nidhogg-workers nidhogg-decode"; SEEDS="lsp ndjson" ;;
       # Task 28: the image decoder cores, with the decoder libraries
       cores) SRCS="nidhogg-image-bg"; DEFS="-DHAVE_PNG -DHAVE_JPEG -DHAVE_GIF -DHAVE_WEBP"
              LIBS="-lpng -ljpeg -lgif -lwebp -lwebpdemux -lm" ;;
       *) echo "fuzz: unknown target $t"; fail=1; continue ;; esac
     srcs=(); for m in $SRCS; do srcs+=("$ROOT/src/$m.c"); done
-    seeds=("$ROOT"/test/src/nidhogg-tests/fixtures/images/*)
+    seeds=(); for d in $SEEDS; do seeds+=("$ROOT"/test/src/nidhogg-tests/fixtures/$d/*); done
     if echo 'int main(void){return 0;}' | "$CC" -fsanitize=fuzzer -x c - -o "$OUT/probe" 2>/dev/null; then
       "$CC" -std=gnu11 -g -O1 $SAN -fsanitize=fuzzer $DEFS -DHAVE_NIDHOGG_WORKERS -DNH_WK_HARNESS -I"$ROOT/src" \
         "$FZ/$t.c" "${srcs[@]}" $LIBS -o "$OUT/$t" && "$OUT/$t" -max_total_time="$SECS" -seed=1 "${seeds[@]}" || bad=1

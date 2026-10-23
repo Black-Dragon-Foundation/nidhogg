@@ -60,12 +60,8 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #define NH_JSON_MAX_DEPTH 10000
 #define NH_JSON_STOP_STRIDE 65536
 
-/* Modes of nh_json_tokenize.  */
-enum
-{
-  NH_JSON_MODE_STRING,	/* json-parse-string: trailing content is an error.  */
-  NH_JSON_MODE_BUFFER	/* json-parse-buffer: one value, the rest is left.  */
-};
+/* The modes of nh_json_tokenize, NH_JSON_MODE_STRING and _BUFFER, are
+   in nidhogg-workers.h (nidhogg-io.c's framings use them too).  */
 
 enum nh_json_type
 {
@@ -1346,6 +1342,75 @@ nh_mat_parse_args (ptrdiff_t nargs, Lisp_Object *args,
 			     QCfalse_object),
 		      value);
     }
+}
+
+/* The framed branch's options (Task 24): CONF from OPTIONS, a plist of
+   json-parse-string's keywords, checked as json-parse-string checks
+   them.  */
+static void
+nh_mat_conf_of (Lisp_Object options, struct nh_mat_conf *conf)
+{
+  *conf = (struct nh_mat_conf) { NH_MAT_OBJ_HASH, NH_MAT_ARR_ARRAY, QCnull,
+				 QCfalse };
+  ptrdiff_t n = list_length (options);
+  USE_SAFE_ALLOCA;
+  Lisp_Object *args;
+  SAFE_ALLOCA_LISP (args, n);
+  for (ptrdiff_t i = 0; i < n; i++, options = XCDR (options))
+    args[i] = XCAR (options);
+  nh_mat_parse_args (n, args, conf);
+  SAFE_FREE ();
+}
+
+Lisp_Object
+nh_json_options (Lisp_Object options)
+{
+  struct nh_mat_conf conf;
+  nh_mat_conf_of (options, &conf);
+  return listn (8, QCobject_type,
+		(conf.object_type == NH_MAT_OBJ_HASH ? Qhash_table
+		 : conf.object_type == NH_MAT_OBJ_ALIST ? Qalist : Qplist),
+		QCarray_type,
+		conf.array_type == NH_MAT_ARR_ARRAY ? Qarray : Qlist,
+		QCnull_object, conf.null_object,
+		QCfalse_object, conf.false_object);
+}
+
+/* A materialization of TAPE, the JSON at SRC[0, NSRC) (unibyte), in
+   C memory: free it with nh_json_mat_free.  */
+struct nh_mat *
+nh_json_mat_start (const struct nh_tape *tape, const unsigned char *src,
+		   size_t nsrc, Lisp_Object options)
+{
+  struct nh_mat_conf conf;
+  nh_mat_conf_of (options, &conf);
+  struct nh_mat *m = xmalloc (sizeof *m);
+  nh_mat_init (m, tape, &conf);
+  m->src = src;
+  m->nsrc = nsrc;
+  m->src_multibyte = false;
+  return m;
+}
+
+Lisp_Object
+nh_json_mat_value (struct nh_mat *m)
+{
+  return nh_mat_result (m);
+}
+
+/* Whether a slice of M was left by a signal (a `memory-full'): the
+   message is then an error, `json-out-of-memory'.  */
+bool
+nh_json_mat_failed (struct nh_mat *m)
+{
+  return m->failed;
+}
+
+void
+nh_json_mat_free (struct nh_mat *m)
+{
+  nh_mat_release (m);
+  xfree (m);
 }
 
 static void

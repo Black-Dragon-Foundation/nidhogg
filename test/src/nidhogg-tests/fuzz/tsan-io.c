@@ -25,6 +25,8 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include "nidhogg-workers.c"
 #include "nidhogg-decode.c"
+/* The framers' tokenizer (Task 24).  */
+#include "nidhogg-json-tape.c"
 #include "nidhogg-io.c"
 
 enum { ROUNDS = 200, PIPES = 2, TOTAL = 256 * 1024, READMAX = 4096 };
