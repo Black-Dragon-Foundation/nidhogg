@@ -179,7 +179,71 @@ seconds.  The plist: `:status' and `:code' (`process-status' and
         (should (string-search "Auto-save done" (plist-get r :out)))
         (workers-fatal-tests--should-die r '(SIGABRT . 6) "Aborted")
         (should (equal (workers-fatal-tests--auto-saved dir "b.txt")
-                       "emergency escape"))))))
+                       "emergency escape")))))
+  ;; Task 34: an auto-save job on nh-save, parked at before-write, when
+  ;; the main thread dies holding nh-save's mutex.  The counters already
+  ;; describe the job's snapshot; the emergency auto-save still writes
+  ;; the buffer, to the real name, and no temporary file is left.
+  (workers-fatal-tests--in-dir dir
+    (let* ((file (expand-file-name "e.txt" dir))
+           (r (workers-fatal-tests--batch
+               `(progn
+                  ,(workers-fatal-tests--edit file "nh-save under lock")
+                  (setq nidhogg-workers-autosave t)
+                  (nidhogg-workers--pause-at 'before-write)
+                  (nidhogg-workers--test-keyboard-auto-save t)
+                  (unless (nidhogg-workers--test-await-paused 'before-write 5000)
+                    (kill-emacs 3))
+                  (princ "nh-wk: ready\n")
+                  (nidhogg-workers--test-fatal-under-lock 'nh-save))
+               :pty t :mark "nh-wk: ready")))
+      (ert-info ((format "%S" r) :prefix "child: ")
+        (workers-fatal-tests--should-die r '(SIGSEGV . 11) "Segmentation fault")
+        (should (equal (workers-fatal-tests--auto-saved dir "e.txt")
+                       "nh-save under lock"))
+        (should-not (directory-files dir nil "\\.nh-")))))
+  ;; Review S15: the SIGINT escape arrives while a keyboard-triggered
+  ;; auto-save holds its flag (its auto-save-hook holds nh-save's mutex,
+  ;; with an earlier job parked).  The escape's auto-save runs in signal
+  ;; context: it queues nothing, takes no worker lock and writes the
+  ;; buffer's current text to the real name.
+  (workers-fatal-tests--in-dir dir
+    (let* ((file (expand-file-name "f.txt" dir))
+           (r (workers-fatal-tests--run
+               (list "-nw" "-Q" "--eval"
+                     (prin1-to-string
+                      `(progn
+                         (setq nidhogg-workers--mode 'threads
+                               nidhogg-workers-autosave t)
+                         ,(workers-fatal-tests--edit file "escape in auto-save")
+                         (nidhogg-workers--pause-at 'before-write)
+                         (nidhogg-workers--test-keyboard-auto-save t)
+                         (insert " more")
+                         (run-at-time
+                          0 nil
+                          (lambda ()
+                            (if (not (nidhogg-workers--test-await-paused
+                                      'before-write 5000))
+                                (kill-emacs 3)
+                              (setq auto-save-hook
+                                    (list
+                                     (lambda ()
+                                       (setq auto-save-hook nil)
+                                       (nidhogg-workers--test-fatal-under-lock
+                                        'nh-save 'sigint))))
+                              (nidhogg-workers--test-keyboard-auto-save t)))))))
+               :pty t :env '("TERM=xterm")
+               :mark "nh-wk: holding"
+               :answers `(("nh-wk: holding" . "\C-g")
+                          ("nh-wk: quit" . "\C-g")
+                          (,(regexp-quote "Auto-save? (y or n)") . "y\n")
+                          (,(regexp-quote "Abort (and dump core)? (y or n)") . "y\n")))))
+      (ert-info ((format "%S" (plist-put (copy-sequence r) :out nil))
+                 :prefix "child: ")
+        (should (string-search "Auto-save done" (plist-get r :out)))
+        (workers-fatal-tests--should-die r '(SIGABRT . 6) "Aborted")
+        (should (equal (workers-fatal-tests--auto-saved dir "f.txt")
+                       "escape in auto-save more"))))))
 
 (ert-deftest workers/worker-crash-forwarded ()
   ;; §17.3 S10.  A job on nh-blk writes through a null pointer: the
@@ -205,7 +269,10 @@ seconds.  The plist: `:status' and `:code' (`process-status' and
   ;; Review Focus 4.  Every worker has a job parked at a pause point when
   ;; a timer calls `kill-emacs': the exit does not hang (status 0 within
   ;; 2 s), no temporary auto-save file is left, and the auto-save file
-  ;; holds the buffer's text.  Tasks 29 and 34 add their workers' jobs.
+  ;; holds the buffer's text.  Tasks 29 and 34 add their workers' jobs:
+  ;; Task 34's is a real auto-save job, queued behind nh-save's parked
+  ;; test job, so the counters say the buffer is auto-saved while
+  ;; nothing is on disk; the exit's auto-save writes it all the same.
   (workers-fatal-tests--in-dir dir
     (let* ((file (expand-file-name "d.txt" dir))
            (r (workers-fatal-tests--batch
@@ -224,6 +291,11 @@ seconds.  The plist: `:status' and `:code' (`process-status' and
                     (unless (nidhogg-workers--test-await-paused
                              'after-header 5000 1)
                       (kill-emacs 4)))
+                  (setq nidhogg-workers-autosave t)
+                  (nidhogg-workers--test-keyboard-auto-save t)
+                  (unless (equal (mapcar #'cadr (nidhogg-workers--test-save-jobs))
+                                 '(queued))
+                    (kill-emacs 5))
                   (princ "nh-wk: ready\n")
                   (run-at-time 0 nil #'kill-emacs)
                   (while t

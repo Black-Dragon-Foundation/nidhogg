@@ -1964,6 +1964,14 @@ cleaning up all windows currently displaying the buffer to be killed. */)
 	/* Recheck modified.  */
 	modified = BUF_MODIFF (b) > BUF_SAVE_MODIFF (b);
       }
+#ifdef HAVE_NIDHOGG_WORKERS
+
+    /* Land the buffer's finished auto-save job, or write a running
+       one's auto-save now: the question below sees the file it sees
+       when auto-saving is synchronous.  */
+    nh_save_settle (b);
+
+#endif
 
     /* Delete the autosave file, if requested. */
     if (modified
