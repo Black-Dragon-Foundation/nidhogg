@@ -8379,6 +8379,7 @@ nh_img_sync_load (struct frame *f, struct image *img, int fmt, bool *ok)
   Lisp_Object spec_data = image_spec_value (img->spec, QCdata, NULL);
   Lisp_Object file = Qnil, encoded = Qnil;
   const uint8_t *data = NULL;
+  uint8_t *decoded = NULL;
   size_t len = 0;
   struct nh_img_params p;
   memset (&p, 0, sizeof p);
@@ -8395,6 +8396,21 @@ nh_img_sync_load (struct frame *f, struct image *img, int fmt, bool *ok)
     {
       data = SDATA (spec_data);
       len = SBYTES (spec_data);
+      if (nh_img_b64_spec (img->spec))
+	{
+	  /* :nidhogg-data-encoding base64 (Task 30).  */
+	  size_t cap = len / 4 * 3 + 3, got;
+	  bool complete;
+	  decoded = malloc (cap);
+	  if (!decoded
+	      || !nh_img_b64_decode (data, len, decoded, cap, &got, &complete))
+	    {
+	      free (decoded);
+	      return false;
+	    }
+	  data = decoded;
+	  len = got;
+	}
     }
   else
     return false;
@@ -8417,6 +8433,7 @@ nh_img_sync_load (struct frame *f, struct image *img, int fmt, bool *ok)
       *ok = false;
     }
   nh_img_out_free (&out);
+  free (decoded);
   return true;
 }
 
@@ -8584,6 +8601,43 @@ nh_img_prepare (struct frame *f, struct image *img)
       img->cr_data = NULL;
       unblock_input ();
     }
+  nh_img_stand_in_for (f, img);
+  return true;
+}
+
+/* Task 30: give pending IMG the picture of READY, scaled into IMG's box
+   (its final displayed size).  READY's pattern keeps its own transform
+   (rotation, flip, scale); the new pattern shares its surface and maps
+   IMG's box onto READY's box first.  False: READY has no picture.  */
+bool
+nh_img_stand_in (struct frame *f, struct image *img, struct image *ready)
+{
+  cairo_surface_t *surface;
+  if (!ready->cr_data || ready->width <= 0 || ready->height <= 0
+      || img->width <= 0 || img->height <= 0
+      || cairo_pattern_get_type (ready->cr_data) != CAIRO_PATTERN_TYPE_SURFACE
+      || cairo_pattern_get_surface (ready->cr_data, &surface)
+	 != CAIRO_STATUS_SUCCESS)
+    return false;
+  block_input ();
+  cairo_pattern_t *pat = cairo_pattern_create_for_surface (surface);
+  if (cairo_pattern_status (pat) != CAIRO_STATUS_SUCCESS)
+    {
+      cairo_pattern_destroy (pat);
+      unblock_input ();
+      return false;
+    }
+  cairo_matrix_t mr, scale, m;
+  cairo_pattern_get_matrix (ready->cr_data, &mr);
+  cairo_matrix_init_scale (&scale, (double) ready->width / img->width,
+			   (double) ready->height / img->height);
+  cairo_matrix_multiply (&m, &scale, &mr);
+  cairo_pattern_set_matrix (pat, &m);
+  cairo_pattern_set_filter (pat, cairo_pattern_get_filter (ready->cr_data));
+  if (img->cr_data)
+    cairo_pattern_destroy (img->cr_data);
+  img->cr_data = pat;
+  unblock_input ();
   return true;
 }
 
@@ -8704,6 +8758,12 @@ nh_img_land (struct frame *f, struct image *img, int fmt,
 
 bool
 nh_img_prepare (struct frame *f, struct image *img)
+{
+  return false;
+}
+
+bool
+nh_img_stand_in (struct frame *f, struct image *img, struct image *ready)
 {
   return false;
 }
