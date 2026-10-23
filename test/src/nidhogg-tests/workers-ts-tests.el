@@ -1126,7 +1126,10 @@ unbound), then jit-lock with `nidhogg--redisplay-fontifying' bound to BUF."
                     (put-text-property 1 end 'fontified nil))
                   (workers-ts-tests--pause mode 'after-snapshot)
                   (nidhogg-workers--test-budget-ledger t)
-                  (let ((pub (workers-ts-tests--stat :published))
+                  ;; The attempt's bound is 0: it misses whatever the
+                  ;; machine's speed (`workers/ts-attempt-clock' times it).
+                  (let ((nidhogg-workers--test-ts-attempt-bound 0)
+                        (pub (workers-ts-tests--stat :published))
                         (defs (workers-ts-tests--deferrals)))
                     (workers-ts-tests--redisplay-fontify buf 1 end)
                     (should (equal (workers-ts-tests--faces 1 end) faces))
@@ -1288,7 +1291,9 @@ unbound), then jit-lock with `nidhogg--redisplay-fontifying' bound to BUF."
             (font-lock-set-defaults)
             (jit-lock-register #'font-lock-fontify-region)
             (workers-ts-tests--pause mode 'after-snapshot)
-            (let ((defs (workers-ts-tests--deferrals)))
+            ;; Any attempt misses, whatever the machine's speed.
+            (let ((nidhogg-workers--test-ts-attempt-bound 0)
+                  (defs (workers-ts-tests--deferrals)))
               (nidhogg-workers--test-redisplay-begin)
               (nidhogg-workers--test-fontifying buf
                 (jit-lock-fontify-now (point-min) (point-max)))
@@ -1359,7 +1364,10 @@ unbound), then jit-lock with `nidhogg--redisplay-fontifying' bound to BUF."
                    (end (+ beg 3000)))
               (insert-for-yank (workers-ts-tests--c-text 500000))
               (workers-ts-tests--pause mode 'after-snapshot)
-              (let ((att (workers-ts-tests--stat :attempts))
+              ;; The attempt's bound is 0: it misses whatever the
+              ;; machine's speed (`workers/ts-attempt-clock' times it).
+              (let ((nidhogg-workers--test-ts-attempt-bound 0)
+                    (att (workers-ts-tests--stat :attempts))
                     (can (workers-ts-tests--stat :cancels))
                     (dem (workers-ts-tests--stat :started-demand))
                     (started (workers-ts-tests--stat :started))
