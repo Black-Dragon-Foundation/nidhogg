@@ -39,7 +39,7 @@
 (nidhogg-workers--defswitch nidhogg-workers-process-reader t
   "Non-nil means a reader thread may own process output.
 The sub-switches gate each kind of process.")
-(nidhogg-workers--defswitch nidhogg-workers-reader-pipes nil
+(nidhogg-workers--defswitch nidhogg-workers-reader-pipes t
   "Non-nil means the reader owns pipe processes.")
 (nidhogg-workers--defswitch nidhogg-workers-reader-sockets nil
   "Non-nil means the reader owns network sockets.")
