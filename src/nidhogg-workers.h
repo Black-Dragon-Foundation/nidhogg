@@ -476,10 +476,11 @@ extern void nh_img_phase_end (int depth, int64_t t0);
 /* process.c, for nidhogg-set-process-reader: hand PROC back for good
    (ON false), or let the reader take it again if it is being read.  */
 extern void nh_io_proc_reader (Lisp_Object proc, bool on);
-/* Before the zero-timeout select over MASK that decides whether
-   status_notify runs: output the reader is reading, or has yet to read,
-   for a process MASK selects lands on its wake fd first (bounded).  */
-extern void nh_io_settle (fd_set *mask);
+/* Before a select over MASK with TIMEOUT: when TIMEOUT is zero (what is
+   there now: status_notify's check, a zero-timeout wait), output the
+   reader is reading, or has yet to read, for a process MASK selects
+   lands on its wake fd first (bounded).  */
+extern void nh_io_settle (fd_set *mask, struct timespec timeout);
 /* The stateless system CODING decodes with, or NH_DEC_NONE [18].  */
 extern int nh_dec_classify (struct coding_system *);
 extern Lisp_Object nh_dec_system_name (int);
