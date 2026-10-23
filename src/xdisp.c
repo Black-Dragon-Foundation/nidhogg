@@ -4706,6 +4706,11 @@ handle_fontified_prop (struct it *it)
 
       val = Vfontification_functions;
       specbind (Qfontification_functions, Qnil);
+#ifdef HAVE_NIDHOGG_WORKERS
+
+      nh_ts_redisplay_fontifying (redisplaying_p);
+
+#endif
 
       eassert (it->end_charpos == ZV);
 
