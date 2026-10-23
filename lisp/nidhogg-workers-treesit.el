@@ -19,9 +19,36 @@
 
 ;;; Commentary:
 
-;; Stub (Task 2).  Loaded after `treesit'; Task 13 adds the fontify-region and pre-redisplay wrappers.
+;; Loaded after `treesit' (nidhogg-workers.el).  The create start point
+;; of tree-sitter parse jobs: when a major mode has finished, a job
+;; parses each parser it created, so the first parse of a large file
+;; overlaps the rest of `find-file'.  Task 13 adds the fontify-region
+;; and pre-redisplay wrappers.
 
 ;;; Code:
+
+(defvar nidhogg-workers-treesit)
+(defvar nidhogg--redisplay-fontifying)
+(declare-function nidhogg-workers--treesit-start-created "nidhogg-treesit-bg.c" ())
+
+(defun nidhogg-workers-treesit--start-created ()
+  "Start a parse job for each parser of this buffer that never parsed.
+On `after-change-major-mode-hook'.  Nothing with `nidhogg-workers-treesit'
+off."
+  (when (and (bound-and-true-p nidhogg-workers-treesit)
+             (fboundp 'nidhogg-workers--treesit-start-created))
+    (nidhogg-workers--treesit-start-created)))
+
+(add-hook 'after-change-major-mode-hook
+          #'nidhogg-workers-treesit--start-created)
+
+(defmacro nidhogg-workers--test-fontifying (buffer &rest body)
+  "Run BODY as if redisplay were fontifying BUFFER; for tests.
+Binds `nidhogg--redisplay-fontifying' to BUFFER, as redisplay does
+around `fontification-functions'."
+  (declare (indent 1) (debug t))
+  `(let ((nidhogg--redisplay-fontifying ,buffer))
+     ,@body))
 
 (provide 'nidhogg-workers-treesit)
 

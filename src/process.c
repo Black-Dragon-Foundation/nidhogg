@@ -5537,6 +5537,13 @@ wait_reading_process_output (intmax_t time_limit, int nsecs, int read_kbd,
   record_unwind_protect_int (wait_reading_process_output_unwind,
 			     waiting_for_user_input_p);
   waiting_for_user_input_p = read_kbd;
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  /* Tree-sitter's start point for edits no redisplay demanded.  */
+  if (read_kbd != 0)
+    nh_ts_select_entry ();
+
+#endif
 
   if (TYPE_MAXIMUM (time_t) < time_limit)
     time_limit = TYPE_MAXIMUM (time_t);

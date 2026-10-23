@@ -327,7 +327,24 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   without a tree at its first edit. A start (unlike a demand) drops a job over older text for a new snapshot, and a
   cancelled parse is never resumed. The worker's `treesit-subtree-stat` answer is dropped when a replay reparsed.
   `--test-ts-stats` adds `:replayed`, `:replayed-edits`, `:superseded` and `:parses`; `--test-ts-info` adds `:log`.
-<!-- wk: Task 12 -->
+- Where tree-sitter jobs start, and when the main thread waits: a job starts (1) when a major mode has finished, for
+  each parser that never parsed (`nidhogg-workers-treesit--start-created` on `after-change-major-mode-hook`), so the
+  first parse of a large file overlaps the rest of `find-file`; (2) at redisplay's demand: while redisplay fontifies a
+  buffer (`nidhogg--redisplay-fontifying` names it), `treesit-parser-changed-regions` (the demand of
+  `treesit--pre-redisplay`) first parses on the main thread for at most 1 ms, so ordinary typing parses exactly as
+  before and takes no snapshot; a longer parse (a paste, a revert, `indent-region`) is cancelled and reset, never
+  resumed, a job takes it, and the demand answers "not ready" (it returns nil and the parser still needs a reparse);
+  every other demand (`treesit-parser-root-node`, so every node and query function) still ends with a tree; (3) when
+  Emacs waits for keyboard input (`wait_reading_process_output` with `READ_KBD` ≠ 0), for parsers edited since by
+  timers, filters or idle timers that no demand parsed. A demand that needs a tree while a job runs cancels the job
+  and parses on the main thread when the job has not started, or when its snapshot is older than the newest edit and
+  it has parsed less than half its input; otherwise it waits for the job (the watchdog's `treesit-wait` phase, the job
+  moved to the normal-priority thread or raised, as for every wait) for at most the synchronous estimate, the last
+  full parse's time per byte times the input (100 ns a byte before any; between 1 ms and 2 s), then publishes it, or
+  cancels it and parses. Test primitives: `nidhogg-workers--test-fontifying` (a macro binding the variable),
+  `--test-ts-select-entry` (batch Emacs never waits for keyboard input); `--test-ts-stats` adds `:attempts`,
+  `:cancels`, `:started-demand`, `:started-create`, `:started-select`, `:waited` and `:abandoned`; `--test-ts-info`
+  adds `:policy`.
 <!-- wk: Task 13 -->
 <!-- wk: Task 14 -->
 <!-- wk: Task 15 -->

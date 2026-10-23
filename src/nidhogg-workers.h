@@ -222,6 +222,8 @@ extern void nh_ts_parser_freed (void *parser_c);
 extern void nh_ts_record_edit (void *parser_c, const void *ts_input_edit,
 			       ptrdiff_t start_byte, ptrdiff_t old_end_byte,
 			       ptrdiff_t new_end_byte);
+/* wait_reading_process_output with READ_KBD != 0: start jobs for the
+   parsers edited since and not demanded (timers, filters) [12].  */
 extern void nh_ts_select_entry (void);
 /* Kill-buffer: cancel the parse jobs of the parsers of that buffer.  */
 extern void nh_ts_buffer_killed (struct buffer *);
@@ -428,10 +430,18 @@ extern size_t nh_dec_autosave_encode (const unsigned char *in, size_t n,
 #ifndef NH_WK_HARNESS
 
 extern void nh_blk_file_syms (void);
-/* At a demand that must reparse: true when a finished job's tree (in
-   *TREE, now the caller's) is the parse of the current text; false
-   when the synchronous parse must run (any job is then dropped).  */
-extern bool nh_ts_publish (Lisp_Object parser, void **tree);
+/* A demand that must reparse (treesit_ensure_parsed, after the
+   narrowing sync) [10, 11, 12]: NH_TS_TREE when *TREE (now the
+   caller's) is the parse of the current text (a finished job's, a 1 ms
+   attempt's, or the result of waiting for a nearly done job);
+   NH_TS_SYNC when the synchronous parse must run (any job is then
+   dropped); NH_TS_NOT_READY only with MAY_DEFER, when redisplay is
+   fontifying the parser's buffer and a job now parses the text (the
+   caller parses nothing and leaves need_reparse set).  */
+enum { NH_TS_SYNC, NH_TS_TREE, NH_TS_NOT_READY };
+extern int nh_ts_demand (Lisp_Object parser, bool may_defer, void **tree);
+/* The start points (§7.3 item 1) [12].  */
+enum { NH_TS_START_DEMAND, NH_TS_START_CREATE, NH_TS_START_SELECT };
 extern void nh_ts_maybe_start (Lisp_Object parser, int start_point);
 /* NODE's (treesit-subtree-stat) if a worker computed it, else nil.  */
 extern Lisp_Object nh_ts_subtree_stat_cached (Lisp_Object node);
