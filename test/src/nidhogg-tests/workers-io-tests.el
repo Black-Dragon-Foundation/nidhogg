@@ -471,6 +471,28 @@ meanwhile, while a SIGCHLD still reaches its handler and
       (should (equal (apply #'concat (reverse out)) "out\n"))
       (should (equal at-sentinel "err\n")))))
 
+(ert-deftest workers/zero-timeout-sees-the-kernel ()
+  ;; `accept-process-output' with a zero timeout and JUST-THIS-ONE (how
+  ;; TRAMP polls; tramp-test31-signal-process) gets output the kernel
+  ;; holds, as today: in threads mode nh-io is held in the middle of
+  ;; reading it, and the poll waits for it (releasing nh-io).
+  (workers-io-tests--modes
+    (let ((cat (workers-io-tests--cat "poll")))
+      (should (workers-io-tests--info cat :owned))
+      (when (eq mode 'threads)
+        (nidhogg-workers--pause-at 'before-decode))
+      (process-send-string cat "polled\n")
+      (if (eq mode 'threads)
+          (progn
+            (should (nidhogg-workers--test-await-paused 'before-decode 5000))
+            (nidhogg-workers--test-release-on-wait 'before-decode)
+            (should (accept-process-output cat 0 nil t)))
+        ;; Inline: the select holds the copy itself; nothing tells when
+        ;; `cat' has echoed, so only the delivery is checked.
+        (should (workers-io-tests--until
+                 (lambda () (equal (workers-io-tests--out cat) "polled\n")))))
+      (should (equal (workers-io-tests--out cat) "polled\n")))))
+
 (ert-deftest workers/raw-flow-control ()
   ;; A stream far past the queue cap (MC-22, max (4 × readmax, 256 KB)):
   ;; the queue never holds more than the cap, nh-io stops reading at it

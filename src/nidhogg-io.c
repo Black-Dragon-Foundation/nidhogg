@@ -1210,20 +1210,23 @@ nh_io_poll_any (struct pollfd *pfd, int n, int ms)
   return r > 0;
 }
 
-/* wait_reading_process_output runs sentinels (status_notify) only when
-   a zero-timeout select over MASK finds no process output, so that
-   output, a process's own and another's that came before it exited (a
-   `:stderr' pipe's EOF), reaches filters first.  A reader-owned
-   process's wake fd is readable only once nh-io has read: while nh-io
-   reads, or has yet to read, output of a process whose wake fd MASK
-   holds (it does while the process is read: not paused, not handed
-   back), wait for it to land on a wake fd, so that the select finds it
-   as today's would find it in the kernel.  Bounded: only an nh-io held
-   at a test's pause point reaches the bound.  */
+/* Before a select over MASK with TIMEOUT in wait_reading_process_output.
+   A zero timeout asks what output is there now, which today is what
+   the kernel holds: `accept-process-output' with a zero timeout gets it,
+   and status_notify runs sentinels only when such a select finds none
+   (so a process's output, and another's that came before it exited, a
+   `:stderr' pipe's EOF, reach filters first).  A reader-owned process's
+   wake fd is readable only once nh-io has read: while nh-io reads, or
+   has yet to read, output of a process whose wake fd MASK holds (it
+   does while the process is read: not paused, not handed back), wait
+   for it to land on a wake fd, so that the select finds it as today's
+   finds it in the kernel.  Bounded: only an nh-io held at a test's
+   pause point reaches the bound.  */
 void
-nh_io_settle (fd_set *mask)
+nh_io_settle (fd_set *mask, struct timespec timeout)
 {
-  if (atomic_load (&nh_wk_dead))
+  if (timeout.tv_sec != 0 || timeout.tv_nsec != 0
+      || atomic_load (&nh_wk_dead))
     return;
   struct pollfd real[FD_SETSIZE], wake[FD_SETSIZE];
   struct nh_io_h *hs[FD_SETSIZE];
