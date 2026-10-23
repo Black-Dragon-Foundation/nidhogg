@@ -490,8 +490,9 @@ clear_fd_callback_data (struct fd_callback_data* elem)
    real fd in p->infd and p->open_fd[]; the select set holds its wake fd
    instead, which chan_process names too.  This is FD as the select set
    knows it: the wake fd for a reader-owned process's real fd.  With
-   HAND_OVER an eligible process is handed over first.  (delete_read_fd
-   gets here from the SIGCHLD handler: lookups only, then.)  */
+   HAND_OVER (add_process_read_fd) an eligible process is handed over
+   first, keeping the real fd's thread lock, and a paused reader
+   resumes.  */
 static int
 nh_io_channel (int fd, bool hand_over)
 {
@@ -499,12 +500,37 @@ nh_io_channel (int fd, bool hand_over)
   if (!PROCESSP (proc) || XPROCESS (proc)->infd != fd)
     return fd;
   int sel = nh_io_select_fd (XPROCESS (proc));
-  if (sel < 0 && hand_over && nh_io_handover (XPROCESS (proc)))
+  if (sel >= 0 && hand_over)
+    nh_io_resume (fd);
+  else if (sel < 0 && hand_over && nh_io_handover (XPROCESS (proc)))
     {
       sel = nh_io_select_fd (XPROCESS (proc));
       chan_process[sel] = proc;
+      fd_callback_info[sel].thread = fd_callback_info[fd].thread;
     }
   return sel < 0 ? fd : sel;
+}
+
+/* delete_read_fd's FD as the select set knows it, the reader paused
+   first.  FD is a real fd, or a wake fd (the round-robin's EOF and EIO
+   paths pass their channel).  The SIGCHLD handler gets here: in signal
+   context only the lock-free nh_io_pause runs.  */
+static int
+nh_io_unread (int fd)
+{
+  int sel = nh_io_pause (fd);
+  return (sel != fd || nh_wk_signal_context ()
+	  ? sel : nh_io_channel (fd, false));
+}
+
+/* Lock P's select fd, if a reader owns P, to THRD too (set_proc_thread
+   and a dying thread's processes lock only infd and outfd).  */
+static void
+nh_io_set_thread (struct Lisp_Process *p, struct thread_state *thrd)
+{
+  int sel = p->infd < 0 ? -1 : nh_io_select_fd (p);
+  if (sel >= 0)
+    fd_callback_info[sel].thread = thrd;
 }
 
 #endif
@@ -553,7 +579,7 @@ void
 delete_read_fd (int fd)
 {
 #ifdef HAVE_NIDHOGG_WORKERS
-  fd = nh_io_channel (fd, false);
+  fd = nh_io_unread (fd);
 
 #endif
   delete_keyboard_wait_descriptor (fd);
@@ -626,6 +652,17 @@ nh_io_proc_reader (Lisp_Object proc, bool on)
       add_process_read_fd (fd);
       fd_callback_info[nh_io_channel (fd, false)].thread = thread;
     }
+}
+
+/* Before a drain (status_notify's, a non-running wait_proc's): an
+   ending reader-owned process is handed back, so the drain delivers the
+   reader's bytes and then reads the real fd to EAGAIN or EOF on this
+   thread, all before the sentinel (Task 17).  */
+static void
+nh_io_drain_back (Lisp_Object proc)
+{
+  if (XPROCESS (proc)->infd >= 0 && nh_io_drain (XPROCESS (proc)))
+    nh_io_back (proc, NH_IO_STATUS);
 }
 
 #endif
@@ -1089,6 +1126,10 @@ update_processes_for_thread_death (Lisp_Object dying_thread)
 
 	  pset_thread (proc, Qnil);
 	  eassert (proc->infd < FD_SETSIZE);
+#ifdef HAVE_NIDHOGG_WORKERS
+	  nh_io_set_thread (proc, NULL);
+
+#endif
 	  if (proc->infd >= 0)
 	    fd_callback_info[proc->infd].thread = NULL;
 	  eassert (proc->outfd < FD_SETSIZE);
@@ -1567,6 +1608,10 @@ set_proc_thread (struct Lisp_Process *proc, struct thread_state *thrd)
   eassert ((NILP (proc->thread) && !thrd)
 	   || (THREADP (proc->thread) && XTHREAD (proc->thread) == thrd));
   eassert (proc->infd < FD_SETSIZE);
+#ifdef HAVE_NIDHOGG_WORKERS
+  nh_io_set_thread (proc, thrd);
+
+#endif
   if (proc->infd >= 0)
     fd_callback_info[proc->infd].thread = thrd;
   eassert (proc->outfd < FD_SETSIZE);
@@ -5693,6 +5738,10 @@ wait_reading_process_output (intmax_t time_limit, int nsecs, int read_kbd,
 	    {
 	      unsigned int count = 0;
 	      XSETPROCESS (proc, wait_proc);
+#ifdef HAVE_NIDHOGG_WORKERS
+	      nh_io_drain_back (proc);
+
+#endif
 
 	      while (true)
 		{
@@ -5726,7 +5775,13 @@ wait_reading_process_output (intmax_t time_limit, int nsecs, int read_kbd,
 	{
 	  if (wait_proc->infd < 0)  /* Terminated.  */
 	    break;
+#ifdef HAVE_NIDHOGG_WORKERS
+	  /* Its wake fd, if a reader owns it.  */
+	  FD_SET (nh_io_channel (wait_proc->infd, false), &Available);
+
+#else
 	  FD_SET (wait_proc->infd, &Available);
+#endif
 	  check_delay = 0;
           check_write = 0;
 	}
@@ -8052,6 +8107,11 @@ status_notify (struct Lisp_Process *deleting_process,
 	{
 	  p->update_tick = p->tick;
 
+#ifdef HAVE_NIDHOGG_WORKERS
+	  if (p != deleting_process)
+	    nh_io_drain_back (proc);
+
+#endif
 	  /* If process is still active, read any output that remains.  */
 	  while (! EQ (p->filter, Qt)
 		 && ! connecting_status (p->status)

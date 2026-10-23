@@ -372,4 +372,327 @@ Return the filter's arguments in order, and whether the reader owned it."
           (should (equal (mapcar #'multibyte-string-p (car on))
                          (mapcar #'multibyte-string-p (car off)))))))))
 
+;;; Task 17: drains, flow control, caps and the waits.
+
+(defun workers-io-tests--busy-until (pred &optional tries)
+  "Keep the main thread busy until PRED holds (TRIES at most, default 5000).
+Each try runs `true' through `call-process', which serves no process
+output and runs no select over process fds: process output waits
+meanwhile, while a SIGCHLD still reaches its handler and
+`process-status' reports what the handler recorded."
+  (let ((i 0) (n (or tries 5000)))
+    (while (and (not (funcall pred)) (< i n))
+      (call-process "true")
+      (setq i (1+ i)))
+    (funcall pred)))
+
+(defun workers-io-tests--io-stat (key)
+  (plist-get (plist-get (nidhogg-workers-stats) :nh-io) key))
+
+(ert-deftest workers/raw-sentinel-order ()
+  ;; `seq' exits while the main thread is busy: every line reaches the
+  ;; filter before the sentinel runs, and a grandchild that holds the
+  ;; pipe open does not delay the sentinel (§17.2a B6).  In threads
+  ;; mode nh-io is parked after a poll the whole time, so every byte is
+  ;; still in the pipe when the child exits: the drain hands the process
+  ;; back and reads the real fd itself.  (10000 lines, not 100000: the
+  ;; output must fit the pipe for `seq' to exit while nothing reads it.)
+  (workers-io-tests--modes
+    (let* ((count 10000) (out nil) (at-sentinel nil) (gpid nil)
+           (proc nil))
+      (when (eq mode 'threads)
+        (nidhogg-workers--pause-at 'in-poll))
+      (setq proc (make-process
+                  :name "wio-seq" :connection-type 'pipe :noquery t
+                  :coding 'binary
+                  :command (list "sh" "-c"
+                                 (format "sleep 60 & echo $!; seq 1 %d" count))
+                  :filter (lambda (_p s) (push s out))
+                  :sentinel (lambda (_p _e)
+                              (unless at-sentinel
+                                (setq at-sentinel
+                                      (apply #'concat (reverse out)))))))
+      (unwind-protect
+          (progn
+            (should (workers-io-tests--info proc :owned))
+            (when (eq mode 'threads)
+              (should (nidhogg-workers--test-await-paused 'in-poll 5000))
+              ;; The drain's hand-back un-parks nh-io.
+              (nidhogg-workers--test-release-on-wait 'in-poll))
+            (should (workers-io-tests--busy-until
+                     (lambda () (eq (process-status proc) 'exit))))
+            (should (workers-io-tests--until (lambda () at-sentinel)))
+            (let ((lines (split-string at-sentinel "\n" t)))
+              (setq gpid (string-to-number (car lines)))
+              (should (> gpid 0))
+              ;; The grandchild still holds the pipe: no EOF was awaited.
+              (should (eq (signal-process gpid 0) 0))
+              (should (equal (cdr lines)
+                             (mapcar #'number-to-string
+                                     (number-sequence 1 count))))))
+        (when (and gpid (> gpid 0))
+          (signal-process gpid 'KILL))))))
+
+(ert-deftest workers/raw-flow-control ()
+  ;; A stream far past the queue cap (MC-22, max (4 × readmax, 256 KB)):
+  ;; the queue never holds more than the cap, nh-io stops reading at it
+  ;; and goes on when delivery takes chunks.  `stop-process' on a
+  ;; subprocess only stops the producer (fd audit finding 12: this is the
+  ;; cap's row, not the pause's); `continue-process' lets it finish;
+  ;; `set-process-filter' t pauses the reader, a filter again resumes it.
+  ;; (32 MB, not 500 MB: the cap is 256 KB; the row needs a stream that
+  ;; outruns it, not a long one.)
+  (workers-io-tests--modes
+    (let* ((total (* 32 1024 1024)) (n 0) (over nil) (proc nil)
+           (filter (lambda (p s)
+                     (setq n (+ n (length s)))
+                     (let ((q (or (workers-io-tests--info p :queued) 0))
+                           (cap (workers-io-tests--info p :cap)))
+                       (when (and cap (> q cap))
+                         (setq over (list q cap)))))))
+      (nidhogg-workers-stats t)
+      (when (eq mode 'threads)
+        (nidhogg-workers--pause-at 'after-read))
+      (setq proc (make-process
+                  :name "wio-flow" :connection-type 'pipe :noquery t
+                  :coding 'binary :filter filter
+                  :command (list "head" "-c" (number-to-string total)
+                                 "/dev/zero")))
+      (should (workers-io-tests--info proc :owned))
+      (when (eq mode 'threads)
+        ;; Nothing is delivered yet: nh-io fills the queue to its cap,
+        ;; exactly, and parks there.
+        (should (nidhogg-workers--test-await-paused 'after-read 5000))
+        (should (= (workers-io-tests--info proc :queued)
+                   (workers-io-tests--info proc :cap)))
+        (should (> (workers-io-tests--io-stat :backpressure) 0)))
+      (stop-process proc)
+      (nidhogg-workers--release 'after-read)
+      (should (workers-io-tests--until
+               (lambda () (eq (process-status proc) 'stop))))
+      (should (< n total))
+      (continue-process proc)
+      (should (workers-io-tests--until (lambda () (> n (/ total 2))) 2500))
+      ;; Filter t pauses the reader (it stays the owner); a filter resumes.
+      (set-process-filter proc t)
+      (should (workers-io-tests--info proc :owned))
+      (should (workers-io-tests--info proc :paused))
+      (set-process-filter proc filter)
+      (should-not (workers-io-tests--info proc :paused))
+      (should (workers-io-tests--until (lambda () (= n total)) 2500))
+      (should (workers-io-tests--until
+               (lambda () (eq (process-status proc) 'exit))))
+      (should-not over))))
+
+(ert-deftest workers/flow-control-signal-safe ()
+  ;; A SIGCHLD that arrives while the main thread holds nh-io's queue
+  ;; mutex pauses the reader through the atomic flag and one byte to the
+  ;; command fd: the handler takes no lock (a worker mutex taken in signal
+  ;; context aborts) and nothing deadlocks (§17.2 S17).  The output
+  ;; still reaches the filter before the sentinel.
+  (workers-io-tests--modes
+    (let* ((out nil) (at-sentinel nil)
+           (proc (make-process
+                  :name "wio-sig" :connection-type 'pipe :noquery t
+                  :command '("sh" "-c" "read x; echo \"$x done\"")
+                  :filter (lambda (_p s) (push s out))
+                  :sentinel (lambda (_p _e)
+                              (setq at-sentinel
+                                    (apply #'concat (reverse out)))))))
+      (should (workers-io-tests--info proc :owned))
+      (should-not (workers-io-tests--info proc :paused))
+      (nidhogg-workers--test-io-hold-lock t)
+      (unwind-protect
+          (progn
+            (process-send-string proc "go\n")
+            (workers-io-tests--busy-until
+             (lambda () (not (eq (process-status proc) 'run)))))
+        (nidhogg-workers--test-io-hold-lock nil))
+      (should (eq (process-status proc) 'exit))
+      (should (workers-io-tests--info proc :paused))
+      (should (workers-io-tests--until (lambda () at-sentinel)))
+      (should (equal at-sentinel "go done\n")))))
+
+(ert-deftest workers/accept-process-output-raw ()
+  ;; `accept-process-output' on a reader-owned process (§5.4): non-nil
+  ;; once PROC's output was delivered, nil on a timeout without any;
+  ;; JUST-THIS-ONE selects only PROC's wake fd (another process's ready
+  ;; output waits); a filter that calls it on its own process waits
+  ;; without a spin.
+  (workers-io-tests--modes
+    (let ((a (workers-io-tests--cat "apo-a"))
+          (b (workers-io-tests--cat "apo-b")))
+      (should (workers-io-tests--info a :owned))
+      (should (workers-io-tests--info b :owned))
+      (process-send-string a "one\n")
+      (should (accept-process-output a 5))
+      (should (equal (workers-io-tests--out a) "one\n"))
+      (should-not (accept-process-output a 0.1))
+      ;; JUST-THIS-ONE.
+      (process-send-string b "bee\n")
+      (when (eq mode 'threads)
+        (should (workers-io-tests--busy-until
+                 (lambda () (> (workers-io-tests--info b :queued) 0)))))
+      (process-send-string a "two\n")
+      (should (accept-process-output a 5 nil t))
+      (should (equal (workers-io-tests--out a) "one\ntwo\n"))
+      (should (equal (workers-io-tests--out b) ""))
+      (should (workers-io-tests--until
+               (lambda () (equal (workers-io-tests--out b) "bee\n"))))
+      ;; Recursion from the filter, with nothing more to come.
+      (let ((ret 'unset) (cpu nil))
+        (set-process-filter
+         a (lambda (p s)
+             (process-put p 'out (cons s (process-get p 'out)))
+             (when (equal s "rec\n")
+               (let ((t0 (current-cpu-time)))
+                 (setq ret (accept-process-output p 1 nil t))
+                 (let ((t1 (current-cpu-time)))
+                   (setq cpu (/ (float (- (car t1) (car t0))) (cdr t1))))))))
+        (process-send-string a "rec\n")
+        (should (workers-io-tests--until (lambda () cpu)))
+        (should-not ret)
+        (should (< cpu 0.05))))))
+
+(ert-deftest workers/lisp-thread-lock ()
+  ;; A reader-owned process locked to a `make-thread' thread is delivered
+  ;; only on that thread, though the main thread waits for output too:
+  ;; the lock covers the wake fd (fd audit finding 2).
+  (skip-unless (featurep 'threads))
+  (workers-io-tests--modes
+    (let* ((callers nil) (done nil)
+           (proc (workers-io-tests--cat "lock"))
+           (worker nil))
+      (set-process-filter proc (lambda (p s)
+                                 (push (current-thread) callers)
+                                 (process-put p 'out
+                                              (cons s (process-get p 'out)))))
+      ;; No yield between creating WORKER and locking: it never runs
+      ;; before the lock is its own.
+      (setq worker (make-thread (lambda ()
+                                  (while (not done)
+                                    (accept-process-output proc 0.05)))
+                                "wio-lock"))
+      (set-process-thread proc worker)
+      (should (workers-io-tests--info proc :owned))
+      (unwind-protect
+          (progn
+            (process-send-string proc "locked\n")
+            (should (workers-io-tests--until
+                     (lambda () (equal (workers-io-tests--out proc)
+                                       "locked\n"))))
+            (should callers)
+            (should (cl-every (lambda (th) (eq th worker)) callers)))
+        (setq done t)
+        (thread-join worker)))))
+
+(defun workers-io-tests--numbered (n)
+  "N numbered lines, 7 bytes each."
+  (mapconcat (lambda (i) (format "%06d\n" i)) (number-sequence 1 n) ""))
+
+(defun workers-io-tests--small-cat (name filter)
+  "A `cat' NAME with FILTER, read 4 KB at a time (many chunks)."
+  (let ((read-process-output-max 4096))
+    (make-process :name (concat "wio-" name) :command '("cat")
+                  :connection-type 'pipe :noquery t :coding 'binary
+                  :filter filter)))
+
+(ert-deftest workers/reconfigure-inside-own-filter ()
+  ;; Inside its own filter a process deletes itself, changes its filter,
+  ;; stops itself, changes its buffer, or deletes the next process: no
+  ;; delivery to a deleted process after `delete-process' returns, and
+  ;; every undelivered byte reaches the new filter, in order (Review
+  ;; Focus 5; ASan in the `workers-asan' job).
+  (workers-io-tests--modes
+    (let ((data (workers-io-tests--numbered 5000)))
+      (ert-info ("delete-process" :prefix "")
+        (let* ((deleted nil) (after 0)
+               (p (workers-io-tests--small-cat
+                   "re-del" (lambda (p _s)
+                              (if deleted
+                                  (setq after (1+ after))
+                                (delete-process p)
+                                (setq deleted t))))))
+          (process-send-string p data)
+          (should (workers-io-tests--until (lambda () deleted)))
+          (workers-io-tests--until #'ignore 5)
+          (should (= after 0))))
+      (ert-info ("set-process-filter" :prefix "")
+        (let* ((got nil)
+               (second (lambda (_p s) (push s got)))
+               (p (workers-io-tests--small-cat
+                   "re-filter" (lambda (p s)
+                                 (push s got)
+                                 (set-process-filter p second)))))
+          (process-send-string p data)
+          (should (workers-io-tests--until
+                   (lambda () (equal (apply #'concat (reverse got)) data))))))
+      (ert-info ("stop-process" :prefix "")
+        (let* ((got nil)
+               (p (workers-io-tests--small-cat
+                   "re-stop" (lambda (p s)
+                               (unless got
+                                 (stop-process p))
+                               (push s got)))))
+          (process-send-string p data)
+          (should (workers-io-tests--until (lambda () got)))
+          (continue-process p)
+          (should (workers-io-tests--until
+                   (lambda () (equal (apply #'concat (reverse got)) data))))))
+      (ert-info ("set-process-buffer" :prefix "")
+        (with-temp-buffer
+          (let* ((buf (current-buffer)) (got nil)
+                 (p (workers-io-tests--small-cat
+                     "re-buffer" (lambda (p s)
+                                   (unless got
+                                     (set-process-buffer p buf))
+                                   (push s got)))))
+            (process-send-string p data)
+            (should (workers-io-tests--until
+                     (lambda () (equal (apply #'concat (reverse got)) data))))
+            (should (eq (process-buffer p) buf))
+            (set-process-buffer p nil))))
+      (ert-info ("delete the next process" :prefix "")
+        (let* ((b-deleted nil) (b-after 0)
+               (b (workers-io-tests--small-cat
+                   "re-next-b" (lambda (_p _s)
+                                 (when b-deleted
+                                   (setq b-after (1+ b-after))))))
+               (a (workers-io-tests--small-cat
+                   "re-next-a" (lambda (_p _s)
+                                 (unless b-deleted
+                                   (delete-process b)
+                                   (setq b-deleted t))))))
+          (process-send-string b data)
+          (process-send-string a data)
+          (should (workers-io-tests--until (lambda () b-deleted)))
+          (workers-io-tests--until #'ignore 5)
+          (should (= b-after 0))
+          (should-not (process-live-p b))
+          (should (process-live-p a)))))))
+
+(ert-deftest workers/pty-eio ()
+  ;; A pty child's exit: the reader gives -1 with EIO once its queue is
+  ;; empty (fd audit P85), and Lisp sees today's output, status, exit
+  ;; code and sentinel message (the reader-off run's).
+  (workers-io-tests--modes
+    (cl-flet ((run ()
+                (let* ((out nil) (events nil)
+                       (p (make-process
+                           :name "wio-pty" :connection-type 'pty :noquery t
+                           :command '("sh" "-c" "printf 'pty out\\n'; exit 3")
+                           :filter (lambda (_p s) (push s out))
+                           :sentinel (lambda (_p e) (push e events))))
+                       (owned (workers-io-tests--info p :owned)))
+                  (should (workers-io-tests--until (lambda () events)))
+                  (list (apply #'concat (reverse out)) (process-status p)
+                        (process-exit-status p) (reverse events) owned))))
+      (let ((off (let ((nidhogg-workers-process-reader nil)) (run)))
+            (on (run)))
+        (should-not (nth 4 off))
+        (should (nth 4 on))
+        (should (equal (butlast on) (butlast off)))
+        (should (eq (nth 1 on) 'exit))
+        (should (= (nth 2 on) 3))))))
+
 ;;; workers-io-tests.el ends here
