@@ -736,4 +736,178 @@ meanwhile, while a SIGCHLD still reaches its handler and
         (should (eq (nth 1 on) 'exit))
         (should (= (nth 2 on) 3))))))
 
+;;; Task 20: ptys, comint and TRAMP.
+
+(defconst workers-io-tests--pty-script
+  "n=0
+trap 'echo \"winch $(stty size)\"' WINCH
+trap 'echo int; n=1' INT
+echo \"tty $(tty)\"
+read a; echo \"got $a\"
+while [ $n = 0 ]; do sleep 0.05; done
+echo \"after int\"
+read b || echo eof
+exit 3"
+  "A pty child that reports a line, a resize, an interrupt and EOF.")
+
+(ert-deftest workers/pty-semantics ()
+  ;; A pty child under the reader (§17.2a): writes, `process-tty-name',
+  ;; `set-process-window-size' (the child sees SIGWINCH and the new
+  ;; size), `interrupt-process', `process-send-eof' (C-d) and the child's
+  ;; exit (EIO) give the reader-off run's output, status and sentinel
+  ;; messages: they all use the real fd or the tty name.
+  (workers-io-tests--modes
+    (cl-flet ((run ()
+                (let* ((out nil) (events nil)
+                       (p (make-process
+                           :name "wio-ptysem" :connection-type 'pty :noquery t
+                           :command (list "sh" "-c" workers-io-tests--pty-script)
+                           :filter (lambda (_p s) (push s out))
+                           :sentinel (lambda (_p e) (push e events))))
+                       (owned (workers-io-tests--info p :owned))
+                       (text (lambda () (apply #'concat (reverse out))))
+                       (seen (lambda (re)
+                               (workers-io-tests--until
+                                (lambda () (string-match-p re (funcall text)))))))
+                  (should (funcall seen "^tty /.*\n"))
+                  (let ((s (funcall text)))
+                    (string-match "^tty \\(/[^\r\n]*\\)" s)
+                    (should (equal (match-string 1 s) (process-tty-name p))))
+                  (process-send-string p "hello\n")
+                  (should (funcall seen "^got hello"))
+                  (should (set-process-window-size p 33 111))
+                  (should (funcall seen "^winch 33 111"))
+                  (interrupt-process p)
+                  (should (funcall seen "^after int"))
+                  (process-send-eof p)
+                  (should (workers-io-tests--until (lambda () events)))
+                  (list (replace-regexp-in-string "^tty .*\n" "" (funcall text))
+                        (process-status p) (process-exit-status p)
+                        (reverse events) owned))))
+      (let ((off (let ((nidhogg-workers-process-reader nil)) (run)))
+            (on (run)))
+        (should-not (nth 4 off))
+        (should (nth 4 on))
+        (should (equal (butlast on) (butlast off)))
+        (should (string-match-p "^int" (car on)))
+        (should (string-match-p "^eof" (car on)))
+        (should (eq (nth 1 on) 'exit))
+        (should (= (nth 2 on) 3))))))
+
+(defun workers-io-tests--comint ()
+  "A `shell-mode' session: a command, then a `comint-redirect-send-command'.
+Return the buffer's text, the last prompt, the redirected output, and
+whether the reader owned the shell."
+  (require 'shell)
+  (let* ((bash (executable-find "bash"))
+         (explicit-shell-file-name (or bash "sh"))
+         (explicit-bash-args '("--noediting" "--norc" "-i"))
+         ;; Sets before unsets (Emacs drops NAME=… after a bare NAME).
+         (process-environment (append '("PS1=wio$ " "ENV" "HISTFILE")
+                                      process-environment))
+         (buf (get-buffer-create "*wio-comint*"))
+         (redirect (get-buffer-create " *wio-redirect*"))
+         (proc nil))
+    (unwind-protect
+        (with-current-buffer buf
+          (shell buf)
+          (setq proc (get-buffer-process buf))
+          (should (workers-io-tests--until
+                   (lambda () (string-suffix-p "wio$ " (buffer-string)))))
+          (goto-char (point-max))
+          (insert "echo hi")
+          (comint-send-input)
+          (should (workers-io-tests--until
+                   (lambda () (string-match-p "^hi\r?\nwio\\$ \\'"
+                                              (buffer-string)))))
+          (comint-redirect-send-command "echo redirected" redirect nil t)
+          (should (workers-io-tests--until (lambda () comint-redirect-completed)))
+          (list (buffer-substring-no-properties (point-min) (point-max))
+                (and comint-last-prompt
+                     (buffer-substring-no-properties (car comint-last-prompt)
+                                                     (cdr comint-last-prompt)))
+                (with-current-buffer redirect (buffer-string))
+                (workers-io-tests--info proc :owned)))
+      (when (process-live-p proc)
+        (delete-process proc))
+      (kill-buffer buf)
+      (kill-buffer redirect))))
+
+(defun workers-io-tests--tramp ()
+  "Write, read, list and run on TRAMP's connection; return the results.
+The connection is sshx to `REMOTE_TEMPORARY_FILE_DIRECTORY' when that
+names one (pkg-test.sh's sshd), else TRAMP's mock method (as
+tramp-tests.el: a local `sh -i' over a pty, the same tramp-sh code)."
+  (require 'tramp)
+  (require 'tramp-cache)
+  (let* ((env (getenv "REMOTE_TEMPORARY_FILE_DIRECTORY"))
+         (tramp-verbose 0)
+         (tramp-persistency-file-name nil)
+         (tramp-methods
+          (cons `("mock"
+                  (tramp-login-program ,tramp-encoding-shell)
+                  (tramp-login-args (("-i")))
+                  (tramp-direct-async ("-c"))
+                  (tramp-tmpdir ,temporary-file-directory)
+                  (tramp-remote-shell ,tramp-default-remote-shell)
+                  (tramp-remote-shell-args ("-c"))
+                  (tramp-connection-timeout 10))
+                tramp-methods))
+         (tramp-default-host-alist
+          (cons `("\\`mock\\'" nil ,(system-name)) tramp-default-host-alist))
+         (dir (file-name-as-directory
+               (if (and env (string-prefix-p "/sshx:" env))
+                   env
+                 (format "/mock::%s" temporary-file-directory))))
+         (file (expand-file-name (make-temp-name "wio-tramp") dir))
+         (text "line one\nline two\n"))
+    (tramp-cleanup-all-connections)
+    (unwind-protect
+        (progn
+          (write-region text nil file nil 'nomessage)
+          (list (with-temp-buffer
+                  (insert-file-contents file)
+                  (buffer-string))
+                (file-exists-p file)
+                (file-attribute-size (file-attributes file))
+                (and (member (file-name-nondirectory file) (directory-files dir))
+                     t)
+                (let ((default-directory dir))
+                  (with-temp-buffer
+                    (list (process-file "sh" nil t nil "-c"
+                                        "printf 'remote %s\\n' ok; exit 4")
+                          (buffer-string))))
+                (let ((default-directory dir))
+                  (shell-command-to-string "echo via shell"))
+                (let ((p (tramp-get-connection-process
+                          (tramp-dissect-file-name dir))))
+                  (and p (workers-io-tests--info p :owned)))))
+      (ignore-errors (delete-file file))
+      (tramp-cleanup-all-connections))))
+
+(ert-deftest workers/comint-and-tramp ()
+  ;; §17.2a: `shell-mode''s prompt tracking and
+  ;; `comint-redirect-send-command', and TRAMP's connection (its waits
+  ;; use JUST-THIS-ONE, which selects only that process's wake fd): the
+  ;; same results with the reader on and off.
+  (workers-io-tests--modes
+    (ert-info ("comint" :prefix "")
+      (let ((off (let ((nidhogg-workers-process-reader nil))
+                   (workers-io-tests--comint)))
+            (on (workers-io-tests--comint)))
+        (should-not (car (last off)))
+        (should (car (last on)))
+        (should (equal (butlast on) (butlast off)))
+        (should (equal (nth 1 on) "wio$ "))
+        (should (string-match-p "redirected" (nth 2 on)))))
+    (ert-info ("tramp" :prefix "")
+      (let ((off (let ((nidhogg-workers-process-reader nil))
+                   (workers-io-tests--tramp)))
+            (on (workers-io-tests--tramp)))
+        (should-not (car (last off)))
+        (should (car (last on)))
+        (should (equal (butlast on) (butlast off)))
+        (should (equal (car on) "line one\nline two\n"))
+        (should (equal (nth 4 on) '(4 "remote ok\n")))))))
+
 ;;; workers-io-tests.el ends here

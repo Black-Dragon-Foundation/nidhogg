@@ -26,6 +26,10 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "coding.h"
 #include "buffer.h"
 #include "pdumper.h"
+#ifdef HAVE_NIDHOGG_WORKERS
+
+#include "nidhogg-workers.h"
+#endif
 
 #ifdef HAVE_GNUTLS
 
@@ -731,6 +735,12 @@ emacs_gnutls_handshake (struct Lisp_Process *proc)
 ptrdiff_t
 emacs_gnutls_record_check_pending (gnutls_session_t state)
 {
+#ifdef HAVE_NIDHOGG_WORKERS
+  ptrdiff_t reclaimed = nh_io_tls_pending (state);
+  if (reclaimed > 0)
+    return reclaimed;
+
+#endif
   return gnutls_record_check_pending (state);
 }
 
@@ -2054,6 +2064,10 @@ one trustfile (usually a CA bundle).  */)
       return Qnil;
     }
   c_hostname = SSDATA (hostname);
+#ifdef HAVE_NIDHOGG_WORKERS
+  nh_io_tls_boot (p, NULL);
+
+#endif
 
   state = XPROCESS (proc)->gnutls_state;
 
@@ -2255,6 +2269,10 @@ one trustfile (usually a CA bundle).  */)
   if (ret < GNUTLS_E_SUCCESS)
     return gnutls_make_error (ret);
   GNUTLS_INITSTAGE (proc) = GNUTLS_STAGE_INIT;
+#ifdef HAVE_NIDHOGG_WORKERS
+  nh_io_tls_boot (p, state);
+
+#endif
 
   if (STRINGP (priority_string))
     {
