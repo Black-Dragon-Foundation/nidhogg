@@ -334,7 +334,17 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   then acknowledges; the bytes it had read are delivered first. Delivery is today's: one queued chunk per channel per
   select through the usual decode and filter path. Test primitives: `nidhogg-workers--test-io-info`, `--test-io-log`,
   `--test-io-crash`, `--test-io-hold-lock`; `workers-harness.sh --tsan io`.
-<!-- wk: Task 17 -->
+- The reader's flow control and drains: where Emacs stops reading a process (`set-process-filter` `t`, `stop-process` on
+  a connection, the `SIGCHLD` handler when a child exits) `nh-io` pauses after the read in progress (an atomic flag and
+  one byte to its command fd: no lock, so the signal handler may do it), and resumes where reading resumes. Each process
+  queues at most max (4 × `read-process-output-max`, 256 KB) of unread output; at that cap `nh-io` stops reading it until
+  delivery catches up, so the kernel's back-pressure applies as today (`stop-process` on a subprocess only stops the
+  child; the cap bounds what is read meanwhile). When a process ends, its last output is delivered before its sentinel
+  runs: the reader hands it back and Emacs reads the rest of the fd itself until it would block, so a grandchild that
+  holds the pipe open does not delay the sentinel. `accept-process-output` with JUST-THIS-ONE waits on that process's
+  wake fd only, and a process locked to a Lisp thread (`set-process-thread`) is delivered only on that thread. Test
+  primitives: `nidhogg-workers--test-io-info`'s `:queued`, `:cap` and `:paused`; the `after-read` pause point (`nh-io`
+  parks there when a queue reaches its cap).
 <!-- wk: Task 18 -->
 <!-- wk: Task 19 -->
 <!-- wk: Task 20 -->
