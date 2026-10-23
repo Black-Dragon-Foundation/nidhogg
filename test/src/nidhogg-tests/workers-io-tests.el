@@ -62,6 +62,16 @@
 (defun workers-io-tests--info (proc key)
   (plist-get (nidhogg-workers--test-io-info proc) key))
 
+(defun workers-io-tests--explain-info (proc _key)
+  "Everything the reader knows of PROC, for a failed `should' on its info.
+A row that finds a process not owned then says why: `:refused' (no
+handle) or the handle's own state (one that was handed back)."
+  (list :status (process-status proc)
+        :info (nidhogg-workers--test-io-info proc)))
+
+(function-put #'workers-io-tests--info 'ert-explainer
+              #'workers-io-tests--explain-info)
+
 (defun workers-io-tests--cat (name &rest props)
   "A `cat' process NAME (prefixed \"wio-\") whose filter collects its output.
 The output, oldest first, is in the process property `out'."
