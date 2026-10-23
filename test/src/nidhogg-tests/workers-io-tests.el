@@ -1146,7 +1146,7 @@ mark.  Return what Lisp sees after it, and the reader's `:owned' and
 (ert-deftest workers/deliver-phase ()
   ;; The C delivery of a reader-owned process runs in the watchdog's
   ;; `deliver' phase; its filter in `filter', above it.
-  (skip-unless (featurep 'nidhogg-watchdog))
+  (skip-unless (and (featurep 'nidhogg-watchdog) (eq system-type 'gnu/linux)))
   (workers-io-tests--modes
     (with-temp-buffer
       (let ((buf (current-buffer))
