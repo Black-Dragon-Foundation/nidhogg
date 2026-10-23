@@ -420,6 +420,98 @@ nh_dec_scan (const unsigned char *p, size_t n, struct nh_dec_scan *s)
     s->eol = NH_DEC_EOL_MIXED;
 }
 
+/* ---- Task 34: the auto-save encoder --------------------------------- */
+
+/* The length of the character at P in Emacs's internal representation,
+   or 0 if P does not start one: a copy of character.h's
+   multibyte_length with CHECK and ALLOW_8BIT true, the test that
+   consume_chars applies to a buffer's text when it encodes.  */
+static int
+nh_dec_mb_length (const unsigned char *p, const unsigned char *pend)
+{
+  if (p < pend)
+    {
+      unsigned char c = p[0];
+      if (c < 0x80)
+	return 1;
+      if (p + 1 < pend)
+	{
+	  unsigned char d = p[1];
+	  int w = ((d & 0xC0) << 2) + c;
+	  if (0x2C0 <= w && w <= 0x2DF)
+	    return 2;
+	  if (p + 2 < pend)
+	    {
+	      unsigned char e = p[2];
+	      w += (e & 0xC0) << 4;
+	      int w1 = w | ((d & 0x20) >> 2);
+	      if (0xAE1 <= w1 && w1 <= 0xAEF)
+		return 3;
+	      if (p + 3 < pend)
+		{
+		  unsigned char f = p[3];
+		  w += (f & 0xC0) << 6;
+		  int w2 = w | ((d & 0x30) >> 3);
+		  if (0x2AF1 <= w2 && w2 <= 0x2AF7)
+		    return 4;
+		  if (p + 4 < pend)
+		    {
+		      int_fast64_t lw = w + ((p[4] & 0xC0) << 8),
+			w3 = (lw << 24) + (d << 16) + (e << 8) + f;
+		      if (0xAAF8888080 <= w3 && w3 <= 0xAAF88FBFBD)
+			return 5;
+		    }
+		}
+	    }
+	}
+    }
+  return 0;
+}
+
+/* encode_coding_utf_8's rule for `utf-8-emacs-unix' (no BOM, no EOL
+   conversion, no translation table): a raw-byte character (internally
+   C0 or C1 and one continuation byte) is written as its byte; any other
+   character is written as its internal bytes; a byte that starts no
+   character (a unibyte buffer's) is a raw byte, written as itself.  */
+size_t
+nh_dec_autosave_encode (const unsigned char *in, size_t n, unsigned char *out)
+{
+  const unsigned char *end = in + n;
+  size_t o = 0;
+  for (size_t i = 0; i < n; )
+    {
+      unsigned char c = in[i];
+      if (c < 0x80)
+	{
+	  /* A run of ASCII.  */
+	  size_t j = i + 1;
+	  while (j < n && in[j] < 0x80)
+	    j++;
+	  if (out + o != in + i)
+	    memmove (out + o, in + i, j - i);
+	  o += j - i;
+	  i = j;
+	  continue;
+	}
+      int len = nh_dec_mb_length (in + i, end);
+      if (len == 2 && c < 0xC2)
+	{
+	  out[o++] = 0x80 | ((c & 1) << 6) | (in[i + 1] & 0x3F);
+	  i += 2;
+	}
+      else if (len > 0)
+	{
+	  if (out + o != in + i)
+	    memmove (out + o, in + i, len);
+	  o += len;
+	  i += len;
+	}
+      else
+	out[o++] = in[i++];
+    }
+  return o;
+}
+
 #ifndef NH_WK_HARNESS
 
 /* Task 18: which stateless system CODING decodes with.  A settled end

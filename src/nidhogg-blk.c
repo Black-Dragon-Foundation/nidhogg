@@ -27,15 +27,6 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include "nidhogg-workers.h"
 
-bool nh_save_keyboard_triggered;
-
-bool
-nh_save_auto_save_1 (struct buffer *b)
-{
-  (void) b;
-  return false;
-}
-
 bool
 nh_dns_start (struct Lisp_Process *p, const char *host, const char *service,
 	      const struct addrinfo *hints)
@@ -779,17 +770,13 @@ nh_dir_syms (void)
 
 /* ===== End of directory reads ======================================= */
 
-bool
-nh_save_name_in_flight (Lisp_Object name)
-{
-  (void) name;
-  return false;
-}
+static void nh_save_syms (void);
 
 void
 nh_blk_syms (void)
 {
   nh_dir_syms ();
+  nh_save_syms ();
 }
 
 #endif /* not NH_WK_HARNESS */
@@ -1399,6 +1386,833 @@ Internal, for tests.  */);
   defsubr (&Snidhogg_read_file_async);
   defsubr (&Snidhogg_insert_file_block);
 }
+
+#endif /* not NH_WK_HARNESS */
+
+
+#ifndef NH_WK_HARNESS
+
+/* ==== Auto-save writes (Task 34): keyboard-triggered auto-saves on
+   nh-save ===========================================================
+
+   The keyboard loop's do-auto-save (after `auto-save-interval' events
+   or `auto-save-timeout' idle seconds) runs with
+   nh_save_keyboard_triggered set.  There, with `nidhogg-workers-autosave'
+   on, auto_save_1 hands a buffer on the plain path (its auto-save file
+   is not the visited file; no annotation functions, formats, selective
+   display, encoding translation or file name handler) to
+   nh_save_auto_save_1: it copies the text around the gap and queues a
+   job on nh-save, and do-auto-save goes on as before (hooks, counters,
+   messages and `recent-auto-save-p' unchanged).  The job encodes the
+   text as `utf-8-emacs-unix' does (nh_dec_autosave_encode) into a new
+   file in the auto-save file's directory, created with the auto-save
+   mode bits: an unnamed O_TMPFILE where the file system has them, else
+   `.#NAME#.nh-PID-N' (a leftover of a dead Emacs is removed by the next
+   such write there).  It never writes the auto-save file's name.
+
+   The landing (the drainer, main thread) puts the file in place with
+   one check and one rename (after linkat of an unnamed file), to the
+   buffer's *current* `buffer-auto-save-file-name'.  The job is dropped
+   instead, and its file removed, when it was superseded: a synchronous
+   write of the buffer (any of them, below), `delete-file' of the name,
+   `rename-file' of it to anything but the buffer's current name, a save
+   of the buffer past the snapshot (BUF_SAVE_MODIFF), a newer snapshot,
+   or the buffer's death.  A write error is reported at the landing with
+   auto_save_error's warning.
+
+   Synchronous as today: do-auto-save from Lisp, kill-emacs, the fatal
+   path and the tty emergency escape (signal context), every buffer off
+   the plain path.  Any of them writes a buffer whose job has not landed
+   (nh_save_due: the counters already describe the snapshot) and drops
+   the job; reading the jobs needs no lock (main-thread state), so this
+   works in a signal handler, which only reads the list and sets
+   `dropped'.  A keyboard-triggered auto-save of a buffer whose job still
+   runs is written synchronously, with the warning; a job running over
+   60 s sets `auto_save_failure_time' (the buffer is then skipped for 20
+   minutes) and the auto-save is not written.  kill-buffer settles the
+   job before it asks about the auto-save file: it lands a finished job,
+   or writes a running one's auto-save now.
+
+   References: the list of jobs holds one (dropped when the job's finish
+   runs), the worker one, so a job is freed on the main thread after its
+   landing; the free closes the unnamed file and removes the named one if
+   it was not put in place.  */
+
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+
+#include "buffer.h"
+#include "coding.h"
+#include "frame.h"
+#include "systime.h"
+#include "nidhogg-workers-phase.h"
+
+#define NH_SAVE_HUNG_NS (INT64_C (60) * 1000000000)
+
+struct nh_save_job
+{
+  struct nh_wk_job job;
+  /* Inputs (copies).  */
+  unsigned char *text;		/* the snapshot; encoded in place */
+  size_t nbytes;
+  char *target;			/* the encoded auto-save name at the snapshot */
+  int mode;
+  bool unnamed;			/* try O_TMPFILE first */
+  uintmax_t serial;		/* N of the temporary names */
+  /* Set by the main thread (also in a signal handler), read by the
+     worker and the landing.  */
+  _Atomic bool dropped;
+  /* Worker output.  */
+  int fd;			/* the unnamed file, open; else -1 */
+  char *tmp;			/* the named file, or NULL */
+  const char *err_op;		/* NULL, or the failed operation */
+  int err;
+  /* Main thread only.  */
+  struct buffer *buf;		/* XCAR (holder) */
+  Lisp_Object holder;		/* (BUFFER . NAME), in nh_save_roots */
+  modiff_count modiff;		/* BUF_MODIFF at the snapshot */
+  struct timespec started;	/* CLOCK_MONOTONIC, at the snapshot */
+  bool landed;
+  struct nh_save_job *next;
+};
+
+/* The jobs whose finish has not run, newest first.  Main thread only;
+   a signal handler on the main thread reads it (every change is one
+   pointer store, so it sees the list before or after) and sets
+   `dropped'.  */
+static struct nh_save_job *nh_save_jobs;
+static Lisp_Object nh_save_roots;
+static uintmax_t nh_save_serial;
+
+/* The keyboard loop's do-auto-save is running, at this eval depth (an
+   auto-save-hook function calling do-auto-save is deeper: Lisp).  */
+static bool nh_save_keyboard_triggered;
+static intmax_t nh_save_kbd_depth;
+
+static int64_t
+nh_save_age_ns (struct nh_save_job *j)
+{
+  struct timespec now;
+  clock_gettime (CLOCK_MONOTONIC, &now);
+  return ((int64_t) (now.tv_sec - j->started.tv_sec) * 1000000000
+	  + (now.tv_nsec - j->started.tv_nsec));
+}
+
+/* ---- The worker ----------------------------------------------------- */
+
+/* `DIR/.#BASE#.nh-PID-SERIAL' for TARGET = DIR/BASE.  */
+static char *
+nh_save_tmpname (const char *target, uintmax_t serial)
+{
+  const char *slash = strrchr (target, '/');
+  int dirlen = slash ? slash - target + 1 : 0;
+  size_t size = strlen (target) + 64;
+  char *s = malloc (size);
+  NH_WK_ASSERT (s);
+  snprintf (s, size, "%.*s.#%s#.nh-%jd-%ju", dirlen, target, target + dirlen,
+	    (intmax_t) getpid (), serial);
+  return s;
+}
+
+static char *
+nh_save_dirname (const char *target)
+{
+  const char *slash = strrchr (target, '/');
+  if (!slash)
+    {
+      char *s = strdup (".");
+      NH_WK_ASSERT (s);
+      return s;
+    }
+  size_t n = slash == target ? 1 : slash - target;
+  char *s = malloc (n + 1);
+  NH_WK_ASSERT (s);
+  memcpy (s, target, n);
+  s[n] = 0;
+  return s;
+}
+
+/* Remove the `.#BASE#.nh-PID-N' files of TARGET whose Emacs is gone.  */
+static void
+nh_save_clean_leftovers (const char *target)
+{
+  char *dir = nh_save_dirname (target);
+  const char *slash = strrchr (target, '/');
+  const char *base = slash ? slash + 1 : target;
+  size_t plen = strlen (base) + sizeof ".##.nh-" - 1;
+  char *prefix = malloc (plen + 1);
+  NH_WK_ASSERT (prefix);
+  snprintf (prefix, plen + 1, ".#%s#.nh-", base);
+  int fd = open (dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  DIR *d = fd < 0 ? NULL : fdopendir (fd);
+  if (!d && fd >= 0)
+    close (fd);
+  for (struct dirent *e; d && (e = readdir (d)); )
+    {
+      if (strncmp (e->d_name, prefix, plen) != 0)
+	continue;
+      char *end;
+      long pid = strtol (e->d_name + plen, &end, 10);
+      if (end != e->d_name + plen && *end == '-' && pid > 0
+	  && pid != getpid () && kill (pid, 0) != 0 && errno == ESRCH)
+	unlinkat (dirfd (d), e->d_name, 0);
+    }
+  if (d)
+    closedir (d);
+  free (prefix);
+  free (dir);
+}
+
+static void
+nh_save_fail (struct nh_save_job *j, const char *op, int err)
+{
+  j->err_op = op;
+  j->err = err;
+}
+
+static void
+nh_save_write (struct nh_save_job *j)
+{
+  size_t n = nh_dec_autosave_encode (j->text, j->nbytes, j->text);
+  if (!nh_wk_fd_budget_ok (2))
+    {
+      nh_save_fail (j, "Opening output file", EMFILE);
+      return;
+    }
+
+  int fd = -1;
+#ifdef O_TMPFILE
+  if (j->unnamed)
+    {
+      char *dir = nh_save_dirname (j->target);
+      fd = open (dir, O_TMPFILE | O_WRONLY | O_CLOEXEC, j->mode);
+      int e = errno;
+      free (dir);
+      /* No O_TMPFILE on this file system: the named file.  */
+      if (fd < 0 && e != EOPNOTSUPP && e != EISDIR && e != EINVAL)
+	{
+	  nh_save_fail (j, "Opening output file", e);
+	  return;
+	}
+    }
+#endif
+  if (fd < 0)
+    {
+      nh_save_clean_leftovers (j->target);
+      j->tmp = nh_save_tmpname (j->target, j->serial);
+      fd = open (j->tmp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, j->mode);
+      if (fd < 0)
+	{
+	  int e = errno;
+	  free (j->tmp);
+	  j->tmp = NULL;
+	  nh_save_fail (j, "Opening output file", e);
+	  return;
+	}
+    }
+
+  int werr = 0;
+  for (size_t done = 0; done < n; )
+    {
+      size_t want = n - done < (1u << 30) ? n - done : (1u << 30);
+      ssize_t r = write (fd, j->text + done, want);
+      if (r < 0)
+	{
+	  if (errno == EINTR)
+	    continue;
+	  werr = errno;
+	  break;
+	}
+      done += r;
+    }
+  /* A named file is complete once closed; NFS reports late errors at
+     the close.  The unnamed one stays open for linkat.  */
+  if (j->tmp)
+    {
+      if (close (fd) != 0 && !werr)
+	werr = errno;
+      fd = -1;
+    }
+  if (werr)
+    {
+      if (fd >= 0)
+	close (fd);
+      if (j->tmp)
+	{
+	  unlink (j->tmp);
+	  free (j->tmp);
+	  j->tmp = NULL;
+	}
+      nh_save_fail (j, "Write error", werr);
+      return;
+    }
+  j->fd = fd;
+}
+
+static void
+nh_save_free_text (struct nh_save_job *j)
+{
+  if (j->text)
+    {
+      free (j->text);
+      j->text = NULL;
+      nh_wk_stat_add (NH_WK_SAVE, NH_WK_ST_QUEUED_BYTES, -(int64_t) j->nbytes);
+    }
+}
+
+static void
+nh_save_run (struct nh_wk_job *wj)
+{
+  struct nh_save_job *j = (struct nh_save_job *) wj;
+  nh_wk_pause_point (NH_WK_P_BEFORE_WRITE);
+  if (!atomic_load (&j->dropped))
+    nh_save_write (j);
+  nh_save_free_text (j);
+}
+
+/* Lisp-free: it may run wherever the last reference goes.  */
+static void
+nh_save_free (struct nh_wk_job *wj)
+{
+  struct nh_save_job *j = (struct nh_save_job *) wj;
+  if (j->fd >= 0)
+    close (j->fd);
+  if (j->tmp)
+    {
+      unlink (j->tmp);
+      free (j->tmp);
+    }
+  nh_save_free_text (j);
+  free (j->target);
+  free (j);
+}
+
+/* ---- The main thread ------------------------------------------------ */
+
+/* May this auto-save queue jobs?  Never in a signal handler or on the
+   fatal path, whatever the flag says.  */
+static bool
+nh_save_async_context (void)
+{
+  return (nh_save_keyboard_triggered && lisp_eval_depth == nh_save_kbd_depth
+	  && !nh_wk_signal_context () && !fatal_error_in_progress);
+}
+
+static bool
+nh_save_switch_on (void)
+{
+  Lisp_Object v = find_symbol_value (Qnidhogg_workers_autosave);
+  return !BASE_EQ (v, Qunbound) && !NILP (v);
+}
+
+/* auto_save_error's warning, for buffer B (it is static in fileio.c).  */
+static void
+nh_save_warn (struct buffer *b, Lisp_Object error_val)
+{
+  specpdl_ref count = SPECPDL_INDEX ();
+  record_unwind_current_buffer ();
+  set_buffer_internal (b);
+  ring_bell (XFRAME (selected_frame));
+  AUTO_STRING (format, "Auto-saving %s: %s");
+  Lisp_Object msg = CALLN (Fformat, format, BVAR (current_buffer, name),
+			   Ferror_message_string (error_val));
+  calln (Qdisplay_warning, Qauto_save, msg, QCerror);
+  unbind_to (count, Qnil);
+}
+
+/* B's auto-save name now, expanded in B's directory, or nil.  */
+static Lisp_Object
+nh_save_name (struct buffer *b)
+{
+  Lisp_Object name = BVAR (b, auto_save_file_name);
+  return STRINGP (name) ? Fexpand_file_name (name, BVAR (b, directory)) : Qnil;
+}
+
+/* The plain path (§8.6): what write-region would do for B's auto-save
+   is a plain write of the encoded text.  B is the current buffer.  */
+static bool
+nh_save_plain_path (struct buffer *b)
+{
+  Lisp_Object name = BVAR (b, auto_save_file_name);
+  Lisp_Object format = BVAR (b, auto_save_file_format);
+  if (EQ (format, Qt))
+    format = BVAR (b, file_format);
+  return (STRINGP (name)
+	  && NILP (Fstring_equal (BVAR (b, filename), name))
+	  && NILP (Vauto_save_visited_file_name)
+	  && NILP (Vwrite_region_annotate_functions)
+	  && NILP (Vwrite_region_post_annotation_function)
+	  && NILP (format)
+	  && !EQ (BVAR (b, selective_display), Qt)
+	  && (NILP (Venable_character_translation)
+	      || NILP (Vstandard_translation_table_for_encode))
+	  && NILP (Ffind_file_name_handler (nh_save_name (b), Qwrite_region)));
+}
+
+/* Drop every job of B: a synchronous write supersedes them.  No lock,
+   no allocation: safe in a signal handler.  */
+static void
+nh_save_drop_buffer (struct buffer *b)
+{
+  for (struct nh_save_job *j = nh_save_jobs; j; j = j->next)
+    if (j->buf == b && !j->landed)
+      atomic_store (&j->dropped, true);
+}
+
+/* B's job that has not finished running, or NULL.  */
+static struct nh_save_job *
+nh_save_running (struct buffer *b)
+{
+  for (struct nh_save_job *j = nh_save_jobs; j; j = j->next)
+    if (j->buf == b && !j->landed)
+      {
+	int st = atomic_load (&j->job.state);
+	if (st == NH_WK_J_QUEUED || st == NH_WK_J_RUNNING)
+	  return j;
+      }
+  return NULL;
+}
+
+/* The jobs whose finish has not run, each with a reference, for a walk
+   that runs Lisp (a job may land and leave the list meanwhile).  */
+struct nh_save_held
+{
+  struct nh_save_job **v;
+  ptrdiff_t n;
+};
+
+static void
+nh_save_hold (struct nh_save_held *h)
+{
+  ptrdiff_t k = 0;
+  for (struct nh_save_job *j = nh_save_jobs; j; j = j->next)
+    k++;
+  h->v = xnmalloc (k ? k : 1, sizeof *h->v);
+  h->n = 0;
+  for (struct nh_save_job *j = nh_save_jobs; j; j = j->next)
+    {
+      nh_wk_job_ref (&j->job);
+      h->v[h->n++] = j;
+    }
+}
+
+/* The unwind that ends such a walk.  */
+static void
+nh_save_release (void *arg)
+{
+  struct nh_save_held *h = arg;
+  for (ptrdiff_t i = 0; i < h->n; i++)
+    nh_wk_job_unref (&h->v[i]->job);
+  xfree (h->v);
+}
+
+static void
+nh_save_unref_unwind (void *job)
+{
+  nh_wk_job_unref (job);
+}
+
+/* Undo the counters' claim that the snapshot is on disk: the next
+   auto-save of B writes it (a landing that could not rename).  */
+static void
+nh_save_redue (struct buffer *b, struct nh_save_job *j)
+{
+  if (BUF_AUTOSAVE_MODIFF (b) >= j->modiff)
+    BUF_AUTOSAVE_MODIFF (b) = j->modiff - 1;
+}
+
+/* Put the job's file in place as TARGET; return 0 or an errno.  */
+static int
+nh_save_put (struct nh_save_job *j, const char *target)
+{
+  if (j->tmp)
+    {
+      if (rename (j->tmp, target) != 0)
+	return errno;
+      free (j->tmp);
+      j->tmp = NULL;
+      return 0;
+    }
+#ifdef O_TMPFILE
+  if (j->fd < 0)
+    return EBADF;
+  char proc[64];
+  snprintf (proc, sizeof proc, "/proc/self/fd/%d", j->fd);
+  char *tmp = nh_save_tmpname (target, j->serial);
+  int err = 0;
+  if (linkat (AT_FDCWD, proc, AT_FDCWD, tmp, AT_SYMLINK_FOLLOW) != 0)
+    err = errno;
+  else if (rename (tmp, target) != 0)
+    {
+      err = errno;
+      unlink (tmp);
+    }
+  free (tmp);
+  return err;
+#else
+  return EBADF;
+#endif
+}
+
+/* The landing: put J's file in place, unless J was superseded.  */
+static void
+nh_save_land (struct nh_save_job *j)
+{
+  Lisp_Object holder = j->holder; /* on the stack: the GC sees it */
+  struct buffer *b = XBUFFER (XCAR (holder));
+
+  j->landed = true;
+  if (!BUFFER_LIVE_P (b))
+    return;
+  /* As a write that took over 60 s does today.  */
+  if (nh_save_age_ns (j) > NH_SAVE_HUNG_NS)
+    b->auto_save_failure_time = current_timespec ().tv_sec;
+  if (atomic_load (&j->dropped)
+      || BUF_SAVE_MODIFF (b) >= j->modiff
+      || !STRINGP (BVAR (b, auto_save_file_name)))
+    return;
+  if (j->err_op)
+    {
+      nh_save_warn (b, get_file_errno_data (j->err_op, XCDR (holder), j->err));
+      return;
+    }
+  Lisp_Object target = nh_save_name (b);
+  if (!NILP (Ffind_file_name_handler (target, Qwrite_region)))
+    {
+      nh_save_redue (b, j);
+      return;
+    }
+  int err = nh_save_put (j, SSDATA (ENCODE_FILE (target)));
+  if (err == EXDEV)
+    nh_save_redue (b, j);
+  else if (err)
+    nh_save_warn (b, get_file_errno_data ("Opening output file", target, err));
+}
+
+/* J's finish has run: it leaves the list and drops the list's
+   reference (the drainer still holds the worker's).  */
+static void
+nh_save_forget (struct nh_save_job *j)
+{
+  for (struct nh_save_job **p = &nh_save_jobs; *p; p = &(*p)->next)
+    if (*p == j)
+      {
+	*p = j->next;
+	break;
+      }
+  nh_save_roots = Fdelq (j->holder, nh_save_roots);
+  nh_wk_job_unref (&j->job);
+}
+
+/* The drainer's reference keeps J alive through the landing.  */
+static void
+nh_save_finish (struct nh_wk_job *wj)
+{
+  struct nh_save_job *j = (struct nh_save_job *) wj;
+  nh_save_forget (j);
+  if (!j->landed)
+    nh_save_land (j);
+}
+
+/* Copy B's text (the current buffer) and queue its write.  */
+static bool
+nh_save_queue (struct buffer *b, int mode)
+{
+  ptrdiff_t n1 = BUF_GPT_BYTE (b) - BEG_BYTE;
+  ptrdiff_t n2 = BUF_Z_BYTE (b) - BUF_GPT_BYTE (b);
+  Lisp_Object name = nh_save_name (b);
+  Lisp_Object encoded = ENCODE_FILE (name);
+  struct nh_save_job *j = calloc (1, sizeof *j);
+  unsigned char *text = malloc (n1 + n2 ? n1 + n2 : 1);
+  char *target = strdup (SSDATA (encoded));
+  if (!j || !text || !target)
+    {
+      free (j);
+      free (text);
+      free (target);
+      return false;
+    }
+  memcpy (text, BUF_BEG_ADDR (b), n1);
+  memcpy (text + n1, BUF_GAP_END_ADDR (b), n2);
+  j->text = text;
+  j->nbytes = n1 + n2;
+  nh_wk_stat_add (NH_WK_SAVE, NH_WK_ST_QUEUED_BYTES, (int64_t) j->nbytes);
+  j->target = target;
+  j->mode = mode;
+  j->unnamed = nh_save_unnamed;
+  j->serial = ++nh_save_serial;
+  j->fd = -1;
+  j->buf = b;
+  j->modiff = BUF_MODIFF (b);
+  clock_gettime (CLOCK_MONOTONIC, &j->started);
+  j->job.w = NH_WK_SAVE;
+  j->job.run = nh_save_run;
+  j->job.finish = nh_save_finish;
+  j->job.free = nh_save_free;
+  atomic_store (&j->job.refs, 1);	/* the list's */
+  Lisp_Object buffer;
+  XSETBUFFER (buffer, b);
+  j->holder = Fcons (buffer, name);
+  nh_save_roots = Fcons (j->holder, nh_save_roots);
+  if (!nh_wk_submit (&j->job))
+    {
+      nh_save_roots = XCDR (nh_save_roots);
+      nh_wk_job_unref (&j->job);
+      return false;
+    }
+  /* Two stores, in this order: a signal handler sees the old list or
+     the new one.  */
+  j->next = nh_save_jobs;
+  nh_save_jobs = j;
+  return true;
+}
+
+bool
+nh_save_auto_save_1 (struct buffer *b, int mode)
+{
+  if (!nh_save_async_context ()
+      || !nh_save_switch_on () || !nh_save_plain_path (b))
+    {
+      nh_save_drop_buffer (b);
+      return false;
+    }
+  struct nh_save_job *prev = nh_save_running (b);
+  if (prev)
+    {
+      bool live = !atomic_load (&prev->dropped);
+      if (live && nh_save_age_ns (prev) > NH_SAVE_HUNG_NS)
+	{
+	  /* As a 60 s write does today: skipped for 20 minutes.  */
+	  b->auto_save_failure_time = current_timespec ().tv_sec;
+	  nh_save_warn (b, list2 (Qerror,
+				  build_string ("The previous auto-save has"
+						" not finished in 60 seconds")));
+	  return true;
+	}
+      nh_save_drop_buffer (b);
+      if (live)
+	nh_save_warn (b, list2 (Qerror,
+				build_string ("The previous auto-save is"
+					      " still being written")));
+      return false;
+    }
+  /* A finished job not landed yet: the newer snapshot replaces it.  */
+  nh_save_drop_buffer (b);
+  return nh_save_queue (b, mode);
+}
+
+bool
+nh_save_due (struct buffer *b)
+{
+  if (!nh_save_jobs || nh_save_async_context ())
+    return false;
+  for (struct nh_save_job *j = nh_save_jobs; j; j = j->next)
+    if (j->buf == b && !j->landed && !atomic_load (&j->dropped))
+      return true;
+  return false;
+}
+
+static void
+nh_save_kbd_unwind (void)
+{
+  nh_save_keyboard_triggered = false;
+}
+
+void
+nh_save_keyboard_auto_save (Lisp_Object no_message)
+{
+  specpdl_ref count = SPECPDL_INDEX ();
+  record_unwind_protect_void (nh_save_kbd_unwind);
+  nh_save_keyboard_triggered = true;
+  nh_save_kbd_depth = lisp_eval_depth;
+  Fdo_auto_save (no_message, Qnil);
+  unbind_to (count, Qnil);
+}
+
+/* Drop the jobs whose current auto-save name is FROM, unless they keep
+   that name (TO is it); TO nil: a deletion.  */
+static void
+nh_save_name_gone (Lisp_Object from, Lisp_Object to)
+{
+  if (!nh_save_jobs)
+    return;
+  struct nh_save_held h;
+  specpdl_ref count = SPECPDL_INDEX ();
+  nh_save_hold (&h);
+  record_unwind_protect_ptr (nh_save_release, &h);
+  for (ptrdiff_t i = 0; i < h.n; i++)
+    {
+      struct nh_save_job *j = h.v[i];
+      if (j->landed || atomic_load (&j->dropped) || !BUFFER_LIVE_P (j->buf))
+	continue;
+      Lisp_Object cur = nh_save_name (j->buf);
+      if (STRINGP (cur) && !NILP (Fstring_equal (cur, from))
+	  && (NILP (to) || NILP (Fstring_equal (cur, to))))
+	atomic_store (&j->dropped, true);
+    }
+  unbind_to (count, Qnil);
+}
+
+void
+nh_save_file_deleted (Lisp_Object name)
+{
+  nh_save_name_gone (name, Qnil);
+}
+
+void
+nh_save_file_renamed (Lisp_Object from, Lisp_Object to)
+{
+  nh_save_name_gone (from, to);
+}
+
+void
+nh_save_settle (struct buffer *b)
+{
+  bool write = false;
+ again:
+  for (struct nh_save_job *j = nh_save_jobs; j; j = j->next)
+    if (j->buf == b && !j->landed && !atomic_load (&j->dropped))
+      {
+	if (atomic_load (&j->job.state) == NH_WK_J_DONE)
+	  {
+	    /* The landing may run Lisp: hold J, then walk again.  */
+	    specpdl_ref count = SPECPDL_INDEX ();
+	    nh_wk_job_ref (&j->job);
+	    record_unwind_protect_ptr (nh_save_unref_unwind, &j->job);
+	    nh_save_land (j);
+	    unbind_to (count, Qnil);
+	    goto again;
+	  }
+	write = true;
+      }
+  if (write)
+    {
+      /* auto_save_1 drops the running job: this write supersedes it.  */
+      specpdl_ref count = SPECPDL_INDEX ();
+      record_unwind_current_buffer ();
+      set_buffer_internal (b);
+      nh_save_write_sync ();
+      unbind_to (count, Qnil);
+    }
+}
+
+/* ---- Test primitives ------------------------------------------------ */
+
+DEFUN ("nidhogg-workers--test-keyboard-auto-save",
+       Fnidhogg_workers__test_keyboard_auto_save,
+       Snidhogg_workers__test_keyboard_auto_save, 0, 1, 0,
+       doc: /* Auto-save as the keyboard loop does after typing; for tests.
+NO-MESSAGE as for `do-auto-save'.  This is the call `read_char' makes
+after `auto-save-interval' events or `auto-save-timeout' idle seconds.  */)
+  (Lisp_Object no_message)
+{
+  nh_save_keyboard_auto_save (no_message);
+  return Qnil;
+}
+
+DEFUN ("nidhogg-workers--test-save-await", Fnidhogg_workers__test_save_await,
+       Snidhogg_workers__test_save_await, 1, 1, 0,
+       doc: /* Wait at most MS ms for the auto-save jobs to finish, then land them; for tests.
+Return t if every job has landed, nil if one is still running (a job
+parked at a pause point).  Bounded condition waits, not sleeps.  */)
+  (Lisp_Object ms)
+{
+  CHECK_FIXNAT (ms);
+  struct timespec t0;
+  clock_gettime (CLOCK_MONOTONIC, &t0);
+  int64_t deadline = ((int64_t) t0.tv_sec * 1000000000 + t0.tv_nsec
+		      + (int64_t) XFIXNAT (ms) * 1000000);
+  struct nh_save_held h;
+  specpdl_ref count = SPECPDL_INDEX ();
+  nh_save_hold (&h);
+  record_unwind_protect_ptr (nh_save_release, &h);
+  for (ptrdiff_t i = 0; i < h.n; i++)
+    {
+      struct timespec now;
+      clock_gettime (CLOCK_MONOTONIC, &now);
+      int64_t left = deadline - ((int64_t) now.tv_sec * 1000000000
+				 + now.tv_nsec);
+      nh_wk_wait (&h.v[i]->job, left > 0 ? left : 0, NH_WK_PH_WORKER_WAIT, 0);
+    }
+  unbind_to (count, Qnil);
+  Fnidhogg_workers__drain ();
+  for (struct nh_save_job *j = nh_save_jobs; j; j = j->next)
+    if (!j->landed)
+      return Qnil;
+  return Qt;
+}
+
+DEFUN ("nidhogg-workers--test-save-jobs", Fnidhogg_workers__test_save_jobs,
+       Snidhogg_workers__test_save_jobs, 0, 0, 0,
+       doc: /* Return the auto-save jobs not landed, newest first; for tests.
+A list of (BUFFER STATE), STATE `queued', `running', `done' or
+`dropped'.  */)
+  (void)
+{
+  static const char *const states[] = { "queued", "running", "done", "done" };
+  Lisp_Object r = Qnil;
+  for (struct nh_save_job *j = nh_save_jobs; j; j = j->next)
+    if (!j->landed)
+      r = Fcons (list2 (XCAR (j->holder),
+			intern_c_string (atomic_load (&j->dropped) ? "dropped"
+					 : states[atomic_load (&j->job.state)])),
+		 r);
+  return Fnreverse (r);
+}
+
+DEFUN ("nidhogg-workers--test-save-age", Fnidhogg_workers__test_save_age,
+       Snidhogg_workers__test_save_age, 1, 1, 0,
+       doc: /* Make every auto-save job not landed SECONDS older; for tests.  */)
+  (Lisp_Object seconds)
+{
+  CHECK_FIXNAT (seconds);
+  for (struct nh_save_job *j = nh_save_jobs; j; j = j->next)
+    j->started.tv_sec -= XFIXNAT (seconds);
+  return Qnil;
+}
+
+DEFUN ("nidhogg-workers--test-save-encode", Fnidhogg_workers__test_save_encode,
+       Snidhogg_workers__test_save_encode, 1, 1, 0,
+       doc: /* Return STRING's internal bytes as the auto-save job encodes them; for tests.
+The value is a unibyte string.  For a multibyte STRING it equals
+`encode-coding-string' with `utf-8-emacs-unix'; for a unibyte one, what
+`write-region' writes from a unibyte buffer with that coding.  */)
+  (Lisp_Object string)
+{
+  CHECK_STRING (string);
+  ptrdiff_t n = SBYTES (string);
+  unsigned char *buf = xmalloc (n ? n : 1);
+  memcpy (buf, SDATA (string), n);
+  size_t m = nh_dec_autosave_encode (buf, n, buf);
+  Lisp_Object r = make_unibyte_string ((char *) buf, m);
+  xfree (buf);
+  return r;
+}
+
+static void
+nh_save_syms (void)
+{
+  DEFSYM (Qnidhogg_workers_autosave, "nidhogg-workers-autosave");
+  nh_save_roots = Qnil;
+  staticpro (&nh_save_roots);
+  DEFVAR_BOOL ("nidhogg-workers--save-unnamed", nh_save_unnamed,
+	       doc: /* Non-nil: an auto-save job writes an unnamed O_TMPFILE where it can.
+Nil: always the named `.#NAME#.nh-PID-N' file.  Internal, for tests.  */);
+  nh_save_unnamed = true;
+  defsubr (&Snidhogg_workers__test_keyboard_auto_save);
+  defsubr (&Snidhogg_workers__test_save_await);
+  defsubr (&Snidhogg_workers__test_save_jobs);
+  defsubr (&Snidhogg_workers__test_save_age);
+  defsubr (&Snidhogg_workers__test_save_encode);
+}
+
+/* ==== End of auto-save writes ======================================== */
 
 #endif /* not NH_WK_HARNESS */
 
