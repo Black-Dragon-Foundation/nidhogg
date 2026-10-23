@@ -20,6 +20,10 @@
 ;;; Code:
 
 (require 'ert)
+;; Loaded first, so the rows' `let' binds `treesit-auto-install-grammar' and
+;; `c-ts-mode-emacs-sources-support' dynamically: loading their defvars inside
+;; a lexical binding signals "Defining as dynamic an already lexical var".
+(require 'c-ts-mode)
 
 ;; Run by nidhogg/test/gui.sh (gui-runner.el loads every *-gui-tests.el).
 

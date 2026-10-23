@@ -20,6 +20,9 @@
 ;;; Code:
 
 (require 'ert)
+;; Loaded first, so the row's `let' binds `treesit-auto-install-grammar' and
+;; `c-ts-mode-emacs-sources-support' dynamically (see workers-ts-gui-tests.el).
+(require 'c-ts-mode)
 
 ;; Run by nidhogg/test/gui.sh (gui-runner.el loads every *-gui-tests.el).
 ;; Local only (review M4): wall-clock assertions with wide margins.
