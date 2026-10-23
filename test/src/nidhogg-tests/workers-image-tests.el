@@ -20,6 +20,178 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
+
+(defconst workers-image-tests--dir
+  (expand-file-name "fixtures/images/"
+                    (file-name-directory (or load-file-name buffer-file-name)))
+  "The image corpus.")
+
+(defun workers-image-tests--read (name)
+  "The Lisp data in fixtures/images/NAME."
+  (with-temp-buffer
+    (insert-file-contents (expand-file-name name workers-image-tests--dir))
+    (goto-char (point-min))
+    (read (current-buffer))))
+
+(defun workers-image-tests--type (file)
+  "The image type of FILE, by extension."
+  (pcase (file-name-extension file)
+    ("png" 'png) ("jpg" 'jpeg) ("gif" 'gif) ("webp" 'webp)))
+
+(defun workers-image-tests--core-spec (file index)
+  "The image spec of corpus FILE with INDEX."
+  `(image :type ,(workers-image-tests--type file)
+          :file ,(expand-file-name file workers-image-tests--dir)
+          ,@(and index (list :index index))))
+
+(defun workers-image-tests--params (file bg golden-header)
+  "The core's params for FILE over background BG (a colour string or nil).
+GOLDEN-HEADER is the corpus' recorded frame background colour."
+  (let* ((type (workers-image-tests--type file))
+         (frame-color (cadr (assq 'frame-bg-color golden-header)))
+         (c (and bg (color-values bg)))
+         (px (lambda (v) (logior (ash (ash (nth 0 v) -8) 16)
+                                 (ash (ash (nth 1 v) -8) 8)
+                                 (ash (nth 2 v) -8)))))
+    (append '(:limit 10000)
+            (and (memq type '(png webp))
+                 (list :bg (or c frame-color)))
+            (and (eq type 'gif)
+                 (append (list :frame-bg (funcall px frame-color))
+                         (and c (list :gif-bg (funcall px c))))))))
+
+(defun workers-image-tests--digest (r)
+  "(W H PIXELS-SHA1 MASK-SHA1) of the core's result R."
+  (list (plist-get r :width) (plist-get r :height)
+        (secure-hash 'sha1 (plist-get r :pixels))
+        (and (plist-get r :mask) (secure-hash 'sha1 (plist-get r :mask)))))
+
+(defun workers-image-tests--golden ()
+  "The recorded results: ((FRAME-BG-COLOR C) (RESULTS . ALIST))."
+  (workers-image-tests--read "oracle-golden.eld"))
+
+(ert-deftest workers/image-oracle ()
+  ;; Every corpus image through the core equals what today's loaders
+  ;; produce (the recorded results; workers-gui/image-oracle holds the
+  ;; loaders, the synchronous loaders under the flag and the core equal
+  ;; live and re-records them).
+  (let* ((golden (workers-image-tests--golden))
+         (results (cdr (assq 'results golden)))
+         (n 0))
+    (should results)
+    (nidhogg-workers--test-image-cache-clear)
+    (dolist (case (workers-image-tests--read "oracle-cases.eld"))
+      (pcase-let ((`(,file ,bg ,index) case))
+        (let ((r (nidhogg-workers--test-image-decode
+                  (workers-image-tests--core-spec file index)
+                  (workers-image-tests--params file bg golden))))
+          (should-not (plist-get r :error))
+          (should (equal (workers-image-tests--digest r)
+                         (cdr (assoc case results))))
+          (cl-incf n))))
+    (should (= n (length results)))))
+
+(ert-deftest workers/image-animation-cache ()
+  ;; Frame N decodes from the cached state at N-1: one frame decoded.
+  (let ((golden (workers-image-tests--golden)))
+    (dolist (file '("oracle-anim-200.gif" "oracle-anim-200.webp"))
+      (nidhogg-workers--test-image-cache-clear)
+      (let ((params (workers-image-tests--params file nil golden)))
+        (dotimes (i 150)
+          (should-not (plist-get (nidhogg-workers--test-image-decode
+                                  (workers-image-tests--core-spec file i) params)
+                                 :error)))
+        (nidhogg-workers--test-decode-count t)
+        (let ((r (nidhogg-workers--test-image-decode
+                  (workers-image-tests--core-spec file 150) params)))
+          (should (= 1 (nidhogg-workers--test-decode-count)))
+          ;; The same pixels as the loaders'.
+          (should (equal (workers-image-tests--digest r)
+                         (cdr (assoc (list file nil 150)
+                                     (cdr (assq 'results golden))))))
+          ;; Without the cache: all 151 frames, same pixels.
+          (nidhogg-workers--test-image-cache-clear)
+          (nidhogg-workers--test-decode-count t)
+          (should (equal (workers-image-tests--digest
+                          (nidhogg-workers--test-image-decode
+                           (workers-image-tests--core-spec file 150) params))
+                         (workers-image-tests--digest r)))
+          (should (= 151 (nidhogg-workers--test-decode-count))))))))
+
+(defun workers-image-tests--error-text (file r &optional index)
+  "The text the loader logs for the core's failure R on FILE."
+  (let* ((type (workers-image-tests--type file))
+         (path (expand-file-name file workers-image-tests--dir))
+         (msg (plist-get r :message))
+         (spec (workers-image-tests--core-spec file index)))
+    (pcase (plist-get r :error)
+      ('not-image (format "Not a PNG file: `%s'" path))
+      ('lib (if (eq type 'png)
+                (format "PNG error: %s" msg)
+              (format "Error reading JPEG image `%s': %s" spec msg)))
+      ('gif-open (if (equal msg "")
+                     (format "Cannot open `%s'" path)
+                   (format "Cannot open `%s': %s" path msg)))
+      ('gif-read (if (equal msg "")
+                     (format "Error reading `%s'" spec)
+                   (format "Error reading `%s' (%s)" spec msg)))
+      ('gif-index (format "Invalid image number `%s' in image `%s'"
+                          (plist-get r :arg) spec))
+      ('webp-headers (format "Error parsing WebP headers from file: `%s'" path))
+      ('webp-parse (format "Error parsing WebP file: `%s'" path))
+      ('webp-decode (format "Error decoding WebP file: `%s'" path))
+      ('webp-frame (format "Error decoding frame #%d from WebP file: `%s'"
+                           (plist-get r :arg) path))
+      ('size "Invalid image size (see `max-image-size')")
+      (e (format "%s" e)))))
+
+(ert-deftest workers/image-errors ()
+  ;; Truncated and corrupt images fail with the loaders' text.
+  (let ((golden (workers-image-tests--golden))
+        (texts (workers-image-tests--read "oracle-errors-golden.eld")))
+    (should texts)
+    (dolist (entry (workers-image-tests--read "oracle-errors.eld"))
+      (pcase-let ((`(,file ,bg ,index) (if (consp entry) entry
+                                         (list entry nil nil))))
+        (let ((r (nidhogg-workers--test-image-decode
+                  (workers-image-tests--core-spec file index)
+                  (workers-image-tests--params file bg golden)))
+              (want (string-replace ;; recorded in a GUI frame: curved quotes
+                     "’" "'"
+                     (string-replace
+                      "‘" "`"
+                      (cdr (assoc (list file bg index) texts))))))
+          (should (plist-get r :error))
+          (should-not (plist-get r :pixels))
+          (should (equal (string-replace
+                          workers-image-tests--dir "@DIR@/"
+                          (concat (mapconcat
+                                   (lambda (w) (format "PNG warning: %s\n" w))
+                                   (plist-get r :warnings) "")
+                                  (workers-image-tests--error-text file r index)))
+                         want)))))))
+
+(ert-deftest workers/image-data-copy ()
+  ;; The job decodes a copy: the Lisp string is cleared and the heap
+  ;; collected while the job is held, and the copy still decodes.
+  (let* ((golden (workers-image-tests--golden))
+         (file "oracle-rgb16.png")
+         (data (with-temp-buffer
+                 (set-buffer-multibyte nil)
+                 (insert-file-contents-literally
+                  (expand-file-name file workers-image-tests--dir))
+                 (buffer-string)))
+         (want (cdr (assoc (list file nil nil) (cdr (assq 'results golden)))))
+         (h (nidhogg-workers--test-image-decode
+             `(image :type png :data ,data)
+             (workers-image-tests--params file nil golden) 'thread)))
+    (should (natnump h))
+    (clear-string data)
+    (garbage-collect)
+    (let ((r (nidhogg-workers--test-image-decode-finish h)))
+      (should-not (plist-get r :error))
+      (should (equal (workers-image-tests--digest r) want)))))
 
 (defconst workers-image-tests--dir
   (expand-file-name "fixtures/images/"

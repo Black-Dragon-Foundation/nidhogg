@@ -17,14 +17,19 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
-/* Header parsers and header answers (Task 27); the decoder cores and
-   the pending entries are Tasks 28 and 29.  Nothing here decodes: the
-   parsers read the bytes of a file or a :data string and say how big
-   the image is and, for GIF and WebP, how many frames it has.  An
-   image they cannot parse answers nothing, and the caller keeps
-   today's synchronous path.  The parsers are Lisp-free (the harness
-   fuzzes them); the part that reads specs and builds Lisp objects is
-   under #ifndef NH_WK_HARNESS.  */
+/* Header parsers and header answers (Task 27): the parsers read the bytes
+   of a file or a :data string and say how big the image is and, for GIF
+   and WebP, how many frames it has.  An image they cannot parse answers
+   nothing, and the caller keeps today's synchronous path.  The parsers
+   are Lisp-free (the harness fuzzes them); the part that reads specs and
+   builds Lisp objects is under #ifndef NH_WK_HARNESS.
+
+   The Lisp-free decoder cores of PNG, JPEG, GIF and WebP (Task 28) and the
+   animation cache they share.  Each core is a copy of the decode path of the
+   loader of the same name in image.c, with libc allocation and error codes
+   in place of `image_error'; the oracle (workers/image-oracle) holds the
+   copies equal to the loaders.  Tasks 29 and 30 add the pending entries
+   and the stand-in rule to this file.  */
 
 #ifndef NH_WK_HARNESS
 # include <config.h>
@@ -32,7 +37,1365 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #ifdef HAVE_NIDHOGG_WORKERS
 
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <pthread.h>
+#include <setjmp.h>
+#include <signal.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include "nidhogg-workers.h"
+#include "nidhogg-image-bg.h"
+# ifndef NH_WK_HARNESS
+#  include "coding.h"
+# endif
+
+#ifdef HAVE_PNG
+# include <png.h>
+#endif
+#ifdef HAVE_JPEG
+# ifdef HAVE_STDLIB_H
+#  undef HAVE_STDLIB_H
+# endif
+# include <jpeglib.h>
+# include <jerror.h>
+#endif
+#ifdef HAVE_GIF
+# include <gif_lib.h>
+#endif
+#ifdef HAVE_WEBP
+# include <webp/decode.h>
+# include <webp/demux.h>
+#endif
+
+/* The harness builds without the decoder libraries, where the cores'
+   helpers go unused.  */
+#ifndef MAYBE_UNUSED
+# define MAYBE_UNUSED __attribute__ ((unused))
+#endif
+
+/* Pixels the cores refuse whatever the limits say (512 MiB of words).  */
+#define NH_IMG_MAX_PIXELS ((int64_t) 1 << 27)
+
+static _Atomic int64_t nh_img_decodes;
+
+int64_t
+nh_img_decode_count (bool reset)
+{
+  return reset ? atomic_exchange (&nh_img_decodes, 0)
+	       : atomic_load (&nh_img_decodes);
+}
+
+#define NH_IMG_COUNT() atomic_fetch_add (&nh_img_decodes, 1)
+
+/* FNV-1a, for the identity of the data of an animation.  */
+uint64_t
+nh_img_hash_combine (uint64_t h, const void *p, size_t n)
+{
+  const uint8_t *b = p;
+  for (size_t i = 0; i < n; i++)
+    {
+      h ^= b[i];
+      h *= 1099511628211ull;
+    }
+  return h;
+}
+
+uint64_t
+nh_img_hash (const uint8_t *data, size_t len)
+{
+  uint64_t h = nh_img_hash_combine (14695981039346656037ull, data, len);
+  return h ? h : 1;
+}
+
+uint64_t
+nh_img_file_key (const char *path)
+{
+  struct stat st;
+  if (stat (path, &st) != 0)
+    return 0;
+  uint64_t h = nh_img_hash_combine (14695981039346656037ull, path,
+				    strlen (path));
+  h = nh_img_hash_combine (h, &st.st_mtim, sizeof st.st_mtim);
+  h = nh_img_hash_combine (h, &st.st_size, sizeof st.st_size);
+  return h ? h : 1;
+}
+
+void
+nh_img_out_free (struct nh_img_out *out)
+{
+  free (out->pixels);
+  free (out->mask);
+  while (out->ext)
+    {
+      struct nh_img_ext *e = out->ext;
+      out->ext = e->next;
+      free (e->bytes);
+      free (e);
+    }
+  out->pixels = NULL;
+  out->mask = NULL;
+}
+
+static int
+nh_img_fail (struct nh_img_out *out, int code)
+{
+  out->err = code;
+  return code;
+}
+
+MAYBE_UNUSED static bool
+nh_core_size_ok (const struct nh_img_params *p, int64_t w, int64_t h)
+{
+  if (w <= 0 || h <= 0 || w > INT_MAX || h > INT_MAX)
+    return false;
+  if (p->limit_w >= 0 && w > p->limit_w)
+    return false;
+  if (p->limit_h >= 0 && h > p->limit_h)
+    return false;
+  return w * h <= NH_IMG_MAX_PIXELS;
+}
+
+/* The encoded bytes: DATA, or the contents of PARAMS->file.  */
+struct nh_img_in
+{
+  const uint8_t *p;
+  size_t len;
+  uint8_t *owned;
+};
+
+MAYBE_UNUSED static int
+nh_img_input (const uint8_t *data, size_t len, const struct nh_img_params *p,
+	      struct nh_img_in *in, struct nh_img_out *out)
+{
+  in->owned = NULL;
+  if (data)
+    {
+      in->p = data;
+      in->len = len;
+      return 0;
+    }
+  if (!p->file)
+    return nh_img_fail (out, NH_IMG_E_OPEN);
+  int fd = open (p->file, O_RDONLY | O_CLOEXEC);
+  if (fd < 0)
+    return nh_img_fail (out, NH_IMG_E_OPEN);
+  struct stat st;
+  size_t cap = fstat (fd, &st) == 0 && st.st_size > 0 ? st.st_size : 4096;
+  uint8_t *buf = malloc (cap);
+  size_t n = 0;
+  while (buf)
+    {
+      if (n == cap)
+	{
+	  if (cap > SIZE_MAX / 2)
+	    {
+	      free (buf);
+	      buf = NULL;
+	      break;
+	    }
+	  cap *= 2;
+	  uint8_t *nb = realloc (buf, cap);
+	  if (!nb)
+	    {
+	      free (buf);
+	      buf = NULL;
+	      break;
+	    }
+	  buf = nb;
+	}
+      ssize_t r = read (fd, buf + n, cap - n);
+      if (r < 0 && errno == EINTR)
+	continue;
+      if (r < 0)
+	{
+	  free (buf);
+	  buf = NULL;
+	  break;
+	}
+      if (r == 0)
+	break;
+      n += r;
+    }
+  close (fd);
+  if (!buf)
+    return nh_img_fail (out, NH_IMG_E_OPEN);
+  in->owned = buf;
+  in->p = buf;
+  in->len = n;
+  return 0;
+}
+
+MAYBE_UNUSED static void
+nh_img_in_free (struct nh_img_in *in)
+{
+  free (in->owned);
+  in->owned = NULL;
+}
+
+
+/* The animation cache: per image (by the identity of its data) the state
+   that lets frame N be decoded from frame N-1.  An entry is taken out of
+   the list while a decode uses it, so two threads never share one; a
+   second decode of the same image meanwhile starts from frame 0.  */
+
+struct nh_img_centry
+{
+  struct nh_img_centry *next;
+  uint64_t key;
+  int fmt;
+  size_t bytes;
+  int pos;			/* the last frame decoded, -1 if none */
+#ifdef HAVE_GIF
+  GifFileType *gif;
+  uint32_t *canvas;
+  uint32_t frame_bg;
+  bool bg_set;
+  uint32_t bg;
+#endif
+#ifdef HAVE_WEBP
+  WebPAnimDecoder *dec;
+  uint8_t *contents;
+  uint8_t *last;		/* RGBA of frame POS */
+  int width, height, frames;
+  int timestamp;		/* of frame POS */
+  int duration;			/* of frame POS */
+  bool has_alpha;
+#endif
+};
+
+#define NH_IMG_CACHE_MAX_ENTRIES 8
+#define NH_IMG_CACHE_MAX_BYTES ((size_t) 256 << 20)
+
+static pthread_mutex_t nh_img_cache_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct nh_img_centry *nh_img_cache;
+
+#ifdef HAVE_GIF
+static void
+nh_gif_close (GifFileType *gif)
+{
+  int err;
+# if GIFLIB_MAJOR + (GIFLIB_MINOR >= 1) > 5
+  DGifCloseFile (gif, &err);
+# else
+  DGifCloseFile (gif);
+  (void) err;
+# endif
+}
+#endif
+
+static void
+nh_img_centry_free (struct nh_img_centry *e)
+{
+  if (!e)
+    return;
+#ifdef HAVE_GIF
+  if (e->fmt == NH_IMG_GIF)
+    {
+      if (e->gif)
+	nh_gif_close (e->gif);
+      free (e->canvas);
+    }
+#endif
+#ifdef HAVE_WEBP
+  if (e->fmt == NH_IMG_WEBP)
+    {
+      if (e->dec)
+	WebPAnimDecoderDelete (e->dec);
+      free (e->contents);
+      free (e->last);
+    }
+#endif
+  free (e);
+}
+
+MAYBE_UNUSED static struct nh_img_centry *
+nh_img_cache_take (int fmt, uint64_t key)
+{
+  struct nh_img_centry *e = NULL, **pp;
+  pthread_mutex_lock (&nh_img_cache_lock);
+  for (pp = &nh_img_cache; *pp; pp = &(*pp)->next)
+    if ((*pp)->key == key && (*pp)->fmt == fmt)
+      {
+	e = *pp;
+	*pp = e->next;
+	e->next = NULL;
+	break;
+      }
+  pthread_mutex_unlock (&nh_img_cache_lock);
+  return e;
+}
+
+MAYBE_UNUSED static void
+nh_img_cache_put (struct nh_img_centry *e)
+{
+  struct nh_img_centry *drop = NULL;
+  pthread_mutex_lock (&nh_img_cache_lock);
+  for (struct nh_img_centry *q = nh_img_cache; q; q = q->next)
+    if (q->key == e->key && q->fmt == e->fmt)
+      {
+	drop = e;		/* another decode stored it meanwhile */
+	e = NULL;
+	break;
+      }
+  if (e)
+    {
+      e->next = nh_img_cache;
+      nh_img_cache = e;
+    }
+  int n = 0;
+  size_t bytes = 0;
+  struct nh_img_centry **pp = &nh_img_cache;
+  while (*pp)
+    {
+      n++;
+      bytes += (*pp)->bytes;
+      if (n > NH_IMG_CACHE_MAX_ENTRIES || bytes > NH_IMG_CACHE_MAX_BYTES)
+	{
+	  struct nh_img_centry *victim = *pp;
+	  *pp = victim->next;
+	  victim->next = drop;
+	  drop = victim;
+	  n--;
+	  bytes -= victim->bytes;
+	  continue;
+	}
+      pp = &(*pp)->next;
+    }
+  pthread_mutex_unlock (&nh_img_cache_lock);
+  while (drop)
+    {
+      struct nh_img_centry *next = drop->next;
+      nh_img_centry_free (drop);
+      drop = next;
+    }
+}
+
+void
+nh_img_cache_clear (void)
+{
+  pthread_mutex_lock (&nh_img_cache_lock);
+  struct nh_img_centry *all = nh_img_cache;
+  nh_img_cache = NULL;
+  pthread_mutex_unlock (&nh_img_cache_lock);
+  while (all)
+    {
+      struct nh_img_centry *next = all->next;
+      nh_img_centry_free (all);
+      all = next;
+    }
+}
+
+int
+nh_img_cache_entries (void)
+{
+  int n = 0;
+  pthread_mutex_lock (&nh_img_cache_lock);
+  for (struct nh_img_centry *q = nh_img_cache; q; q = q->next)
+    n++;
+  pthread_mutex_unlock (&nh_img_cache_lock);
+  return n;
+}
+
+
+/* PNG (png_load_body).  */
+
+#ifdef HAVE_PNG
+
+struct nh_png_ctx
+{
+  png_structp png;
+  png_infop info, end;
+  uint8_t *rows_mem;
+  png_bytep *rows;
+  struct nh_img_out *out;
+  const uint8_t *bytes;
+  size_t len, pos;
+};
+
+static void
+nh_png_error (png_structp png, png_const_charp msg)
+{
+  struct nh_png_ctx *c = png_get_error_ptr (png);
+  snprintf (c->out->errmsg, sizeof c->out->errmsg, "%s", msg);
+  png_longjmp (png, 1);
+}
+
+static void
+nh_png_warning (png_structp png, png_const_charp msg)
+{
+  struct nh_png_ctx *c = png_get_error_ptr (png);
+  if (c->out->nwarn < 4)
+    snprintf (c->out->warn[c->out->nwarn++], sizeof c->out->warn[0], "%s",
+	      msg);
+}
+
+static void
+nh_png_read (png_structp png, png_bytep data, size_t length)
+{
+  struct nh_png_ctx *c = png_get_io_ptr (png);
+  if (length > c->len - c->pos)
+    png_error (png, "Read error");
+  memcpy (data, c->bytes + c->pos, length);
+  c->pos += length;
+}
+
+static int
+nh_png_decode (const uint8_t *data, size_t len,
+	       const struct nh_img_params *p, struct nh_img_out *out)
+{
+  struct nh_img_in in;
+  struct nh_png_ctx ctx;
+  struct nh_png_ctx *volatile c = &ctx;
+  memset (&ctx, 0, sizeof ctx);
+  ctx.out = out;
+  if (nh_img_input (data, len, p, &in, out))
+    return out->err;
+  if (in.len < 8 || png_sig_cmp (in.p, 0, 8))
+    {
+      nh_img_in_free (&in);
+      return nh_img_fail (out, NH_IMG_E_NOT_IMAGE);
+    }
+  ctx.bytes = in.p + 8;
+  ctx.len = in.len - 8;
+
+  ctx.png = png_create_read_struct (PNG_LIBPNG_VER_STRING, &ctx,
+				    nh_png_error, nh_png_warning);
+  if (ctx.png)
+    {
+      ctx.info = png_create_info_struct (ctx.png);
+      ctx.end = png_create_info_struct (ctx.png);
+    }
+  if (!(ctx.info && ctx.end))
+    {
+      png_destroy_read_struct (&ctx.png, &ctx.info, &ctx.end);
+      nh_img_in_free (&in);
+      return nh_img_fail (out, NH_IMG_E_SILENT);
+    }
+
+  if (setjmp (png_jmpbuf (ctx.png)))
+    {
+      if (!c->out->err)
+	c->out->err = NH_IMG_E_LIB;
+      goto done;
+    }
+
+  png_set_read_fn (ctx.png, &ctx, nh_png_read);
+  png_set_sig_bytes (ctx.png, 8);
+  png_read_info (ctx.png, ctx.info);
+  png_uint_32 width, height;
+  int bit_depth, color_type, interlace_type;
+  png_get_IHDR (ctx.png, ctx.info, &width, &height, &bit_depth, &color_type,
+		&interlace_type, NULL, NULL);
+  if (!nh_core_size_ok (p, width, height))
+    {
+      out->err = NH_IMG_E_SIZE;
+      goto done;
+    }
+  out->width = width;
+  out->height = height;
+  out->pixels = malloc ((size_t) width * height * sizeof *out->pixels);
+  if (!out->pixels)
+    {
+      out->err = NH_IMG_E_NOMEM;
+      goto done;
+    }
+
+  bool transparent_p = false;
+# ifdef PNG_tRNS_SUPPORTED
+  png_bytep trans_alpha;
+  int num_trans;
+  if (png_get_tRNS (ctx.png, ctx.info, &trans_alpha, &num_trans, NULL))
+    {
+      transparent_p = true;
+      if (trans_alpha)
+	for (int i = 0; i < num_trans; i++)
+	  if (0 < trans_alpha[i] && trans_alpha[i] < 255)
+	    {
+	      transparent_p = false;
+	      break;
+	    }
+    }
+# endif
+
+  if (bit_depth == 16)
+    png_set_strip_16 (ctx.png);
+  png_set_expand (ctx.png);
+  if (color_type == PNG_COLOR_TYPE_GRAY
+      || color_type == PNG_COLOR_TYPE_GRAY_ALPHA)
+    png_set_gray_to_rgb (ctx.png);
+
+  if (!transparent_p && p->bg_set)
+    {
+      int shift = bit_depth == 16 ? 0 : 8;
+      png_color_16 bg = { 0 };
+      bg.red = p->bg_r >> shift;
+      bg.green = p->bg_g >> shift;
+      bg.blue = p->bg_b >> shift;
+      png_set_background (ctx.png, &bg, PNG_BACKGROUND_GAMMA_SCREEN, 0, 1.0);
+    }
+
+  png_set_interlace_handling (ctx.png);
+  png_read_update_info (ctx.png, ctx.info);
+
+  int channels = png_get_channels (ctx.png, ctx.info);
+  if (channels != 3 && channels != 4)
+    {
+      snprintf (out->errmsg, sizeof out->errmsg, "Unsupported channels");
+      out->err = NH_IMG_E_LIB;
+      goto done;
+    }
+  size_t row_bytes = png_get_rowbytes (ctx.png, ctx.info);
+  if (row_bytes > SIZE_MAX / height)
+    {
+      out->err = NH_IMG_E_NOMEM;
+      goto done;
+    }
+  ctx.rows_mem = malloc (row_bytes * height);
+  ctx.rows = malloc (height * sizeof *ctx.rows);
+  if (!ctx.rows_mem || !ctx.rows)
+    {
+      out->err = NH_IMG_E_NOMEM;
+      goto done;
+    }
+  for (png_uint_32 i = 0; i < height; i++)
+    ctx.rows[i] = ctx.rows_mem + (size_t) i * row_bytes;
+
+  png_read_image (ctx.png, ctx.rows);
+  png_read_end (ctx.png, ctx.info);
+
+  if (channels == 4 && transparent_p)
+    {
+      out->mask = malloc ((size_t) width * height);
+      if (!out->mask)
+	{
+	  out->err = NH_IMG_E_NOMEM;
+	  goto done;
+	}
+    }
+
+  for (png_uint_32 y = 0; y < height; y++)
+    {
+      const uint8_t *q = ctx.rows[y];
+      for (png_uint_32 x = 0; x < width; x++)
+	{
+	  uint32_t r = *q++, g = *q++, b = *q++;
+	  out->pixels[(size_t) y * width + x] = (r << 16) | (g << 8) | b;
+	  if (channels == 4)
+	    {
+	      if (out->mask)
+		out->mask[(size_t) y * width + x] = *q > 0 ? 255 : 0;
+	      q++;
+	    }
+	}
+    }
+
+  png_color_16p bkgd;
+  if (png_get_bKGD (ctx.png, ctx.info, &bkgd))
+    {
+      out->bkgd_valid = true;
+      out->bkgd[0] = bkgd->red;
+      out->bkgd[1] = bkgd->green;
+      out->bkgd[2] = bkgd->blue;
+    }
+  NH_IMG_COUNT ();
+
+ done:
+  c = &ctx;
+  png_destroy_read_struct (&c->png, &c->info, &c->end);
+  free (c->rows_mem);
+  free (c->rows);
+  nh_img_in_free (&in);
+  if (out->err)
+    {
+      free (out->pixels);
+      free (out->mask);
+      out->pixels = NULL;
+      out->mask = NULL;
+    }
+  return out->err;
+}
+
+#endif /* HAVE_PNG */
+
+
+/* JPEG (jpeg_load_body).  */
+
+#ifdef HAVE_JPEG
+
+struct nh_jpeg_err
+{
+  struct jpeg_error_mgr pub;
+  jmp_buf jb;
+  struct nh_img_out *out;
+};
+
+struct nh_jpeg_src
+{
+  struct jpeg_source_mgr mgr;
+  bool lenient;		/* a file: read in chunks as the stdio source does */
+  bool finished;
+  JOCTET eoi[2];
+  JOCTET *buf;		/* the file source's 8192-byte buffer */
+  const uint8_t *rest;	/* what the file source has not handed out yet */
+  size_t left;
+};
+
+static void
+nh_jpeg_exit (j_common_ptr cinfo)
+{
+  struct nh_jpeg_err *e = (struct nh_jpeg_err *) cinfo->err;
+  char buf[JMSG_LENGTH_MAX];
+  cinfo->err->format_message (cinfo, buf);
+  snprintf (e->out->errmsg, sizeof e->out->errmsg, "%s", buf);
+  longjmp (e->jb, 1);
+}
+
+static void
+nh_jpeg_init_source (j_decompress_ptr cinfo)
+{
+}
+
+static void
+nh_jpeg_term_source (j_decompress_ptr cinfo)
+{
+}
+
+static boolean
+nh_jpeg_fill (j_decompress_ptr cinfo)
+{
+  struct nh_jpeg_src *s = (struct nh_jpeg_src *) cinfo->src;
+  s->finished = true;
+  s->eoi[0] = (JOCTET) 0xFF;
+  s->eoi[1] = (JOCTET) JPEG_EOI;
+  s->mgr.next_input_byte = s->eoi;
+  s->mgr.bytes_in_buffer = 2;
+  return 1;
+}
+
+/* The file source of image.c's jpeg_file_src, over the bytes already
+   read: 8192-byte chunks, the fake EOI once, and then (as the stdio
+   source does) no refill, so a decoder that reads on past the end sees
+   the stale buffer.  The oracle holds this equal to the loader.  */
+#define NH_JPEG_CHUNK 8192
+
+static boolean
+nh_jpeg_fill_file (j_decompress_ptr cinfo)
+{
+  struct nh_jpeg_src *s = (struct nh_jpeg_src *) cinfo->src;
+  if (!s->finished)
+    {
+      size_t n = s->left < NH_JPEG_CHUNK ? s->left : NH_JPEG_CHUNK;
+      if (n > 0)
+	{
+	  memcpy (s->buf, s->rest, n);
+	  s->rest += n;
+	  s->left -= n;
+	  s->mgr.bytes_in_buffer = n;
+	}
+      else
+	{
+	  WARNMS (cinfo, JWRN_JPEG_EOF);
+	  s->finished = true;
+	  s->buf[0] = (JOCTET) 0xFF;
+	  s->buf[1] = (JOCTET) JPEG_EOI;
+	  s->mgr.bytes_in_buffer = 2;
+	}
+      s->mgr.next_input_byte = s->buf;
+    }
+  return 1;
+}
+
+static void
+nh_jpeg_skip_file (j_decompress_ptr cinfo, long num_bytes)
+{
+  struct nh_jpeg_src *s = (struct nh_jpeg_src *) cinfo->src;
+  while (num_bytes > 0 && !s->finished)
+    {
+      if ((size_t) num_bytes <= s->mgr.bytes_in_buffer)
+	{
+	  s->mgr.bytes_in_buffer -= num_bytes;
+	  s->mgr.next_input_byte += num_bytes;
+	  break;
+	}
+      num_bytes -= s->mgr.bytes_in_buffer;
+      s->mgr.bytes_in_buffer = 0;
+      s->mgr.next_input_byte = NULL;
+      nh_jpeg_fill_file (cinfo);
+    }
+}
+
+static void
+nh_jpeg_skip (j_decompress_ptr cinfo, long num_bytes)
+{
+  struct nh_jpeg_src *s = (struct nh_jpeg_src *) cinfo->src;
+  if (num_bytes <= 0)
+    return;
+  if ((size_t) num_bytes > s->mgr.bytes_in_buffer)
+    ERREXIT (cinfo, JERR_INPUT_EOF);
+  s->mgr.bytes_in_buffer -= num_bytes;
+  s->mgr.next_input_byte += num_bytes;
+}
+
+static int
+nh_jpeg_decode (const uint8_t *data, size_t len,
+		const struct nh_img_params *p, struct nh_img_out *out)
+{
+  struct nh_img_in in;
+  struct nh_jpeg_err err;
+  struct nh_jpeg_err *volatile ev = &err;
+  struct nh_img_in *volatile inv = &in;
+  struct jpeg_decompress_struct cinfo;
+  struct jpeg_decompress_struct *volatile cv = &cinfo;
+
+  if (nh_img_input (data, len, p, &in, out))
+    return out->err;
+  memset (&cinfo, 0, sizeof cinfo);
+  err.out = out;
+  cinfo.err = jpeg_std_error (&err.pub);
+  err.pub.error_exit = nh_jpeg_exit;
+  if (setjmp (err.jb))
+    {
+      if (!ev->out->err)
+	ev->out->err = NH_IMG_E_LIB;
+      goto done;
+    }
+
+  jpeg_CreateDecompress (&cinfo, JPEG_LIB_VERSION, sizeof cinfo);
+  {
+    struct nh_jpeg_src *s
+      = cinfo.mem->alloc_small ((j_common_ptr) &cinfo, JPOOL_PERMANENT,
+				sizeof *s);
+    cinfo.src = &s->mgr;
+    s->lenient = data == NULL;
+    s->finished = false;
+    s->mgr.init_source = nh_jpeg_init_source;
+    s->mgr.resync_to_restart = jpeg_resync_to_restart;
+    s->mgr.term_source = nh_jpeg_term_source;
+    if (s->lenient)
+      {
+	s->buf = cinfo.mem->alloc_small ((j_common_ptr) &cinfo,
+					 JPOOL_PERMANENT, NH_JPEG_CHUNK);
+	s->rest = in.p;
+	s->left = in.len;
+	s->mgr.fill_input_buffer = nh_jpeg_fill_file;
+	s->mgr.skip_input_data = nh_jpeg_skip_file;
+	s->mgr.bytes_in_buffer = 0;
+	s->mgr.next_input_byte = NULL;
+      }
+    else
+      {
+	s->mgr.fill_input_buffer = nh_jpeg_fill;
+	s->mgr.skip_input_data = nh_jpeg_skip;
+	s->mgr.bytes_in_buffer = in.len;
+	s->mgr.next_input_byte = in.p;
+      }
+  }
+
+  jpeg_read_header (&cinfo, 1);
+  jpeg_start_decompress (&cinfo);
+  int width = cinfo.output_width, height = cinfo.output_height;
+  int ncomp = cinfo.output_components;
+  int ir, ig, ib;
+  if (ncomp > 2)
+    ir = 0, ig = 1, ib = 2;
+  else if (ncomp > 1)
+    ir = 0, ig = 1, ib = 0;
+  else
+    ir = 0, ig = 0, ib = 0;
+  if (!nh_core_size_ok (p, width, height))
+    {
+      out->err = NH_IMG_E_SIZE;
+      goto done;
+    }
+  out->width = width;
+  out->height = height;
+  out->pixels = malloc ((size_t) width * height * sizeof *out->pixels);
+  if (!out->pixels)
+    {
+      out->err = NH_IMG_E_NOMEM;
+      goto done;
+    }
+  JSAMPARRAY buffer
+    = cinfo.mem->alloc_sarray ((j_common_ptr) &cinfo, JPOOL_IMAGE,
+			       (JDIMENSION) width * ncomp, 1);
+  for (int y = 0; y < height; y++)
+    {
+      jpeg_read_scanlines (&cinfo, buffer, 1);
+      for (int x = 0; x < width; x++)
+	{
+	  int off = x * ncomp;
+	  uint32_t r = buffer[0][off + ir], g = buffer[0][off + ig],
+	    b = buffer[0][off + ib];
+	  out->pixels[(size_t) y * width + x] = (r << 16) | (g << 8) | b;
+	}
+    }
+  jpeg_finish_decompress (&cinfo);
+  NH_IMG_COUNT ();
+
+ done:
+  if (cv->mem)
+    jpeg_destroy_decompress (cv);
+  nh_img_in_free (inv);
+  if (out->err)
+    {
+      free (out->pixels);
+      free (out->mask);
+      out->pixels = NULL;
+      out->mask = NULL;
+    }
+  return out->err;
+}
+
+#endif /* HAVE_JPEG */
+
+
+/* GIF (gif_load).  Needs giflib 5.  */
+
+#if defined HAVE_GIF && GIFLIB_MAJOR >= 5
+
+struct nh_gif_src
+{
+  const uint8_t *bytes;
+  size_t len, index;
+};
+
+static int
+nh_gif_read (GifFileType *file, GifByteType *buf, int len)
+{
+  struct nh_gif_src *s = file->UserData;
+  if (len < 0 || (size_t) len > s->len - s->index)
+    return -1;
+  memcpy (buf, s->bytes + s->index, len);
+  s->index += len;
+  return len;
+}
+
+static void
+nh_gif_errmsg (struct nh_img_out *out, int code)
+{
+# if GIFLIB_MAJOR + (GIFLIB_MINOR >= 1) > 5
+  const char *s = GifErrorString (code);
+  if (s)
+    snprintf (out->errmsg, sizeof out->errmsg, "%s", s);
+# else
+  (void) code;
+# endif
+}
+
+static int
+nh_gif_decode (const uint8_t *data, size_t len,
+	       const struct nh_img_params *p, struct nh_img_out *out)
+{
+  struct nh_img_centry *e = NULL;
+  GifFileType *gif = NULL;
+  uint32_t *canvas = NULL;
+  bool want_cache = p->frame_index >= 0 && p->key != 0;
+  int idx = p->frame_index >= 0 ? p->frame_index : 0;
+  int pos = -1, width, height, gif_err = 0;
+  size_t data_bytes = 0;
+
+  if (want_cache && (e = nh_img_cache_take (NH_IMG_GIF, p->key)))
+    {
+      gif = e->gif;
+      canvas = e->canvas;
+      pos = e->pos;
+      data_bytes = e->bytes - (size_t) gif->SWidth * gif->SHeight * 4;
+      if (e->frame_bg != p->frame_bg_pixel || e->bg_set != p->gif_bg_set
+	  || (e->bg_set && e->bg != p->gif_bg_pixel))
+	pos = -1;
+    }
+  if (!gif)
+    {
+      struct nh_img_in in;
+      struct nh_gif_src src;
+      if (nh_img_input (data, len, p, &in, out))
+	return out->err;
+      data_bytes = in.len;
+      src.bytes = in.p;
+      src.len = in.len;
+      src.index = 0;
+      gif = DGifOpen (&src, nh_gif_read, &gif_err);
+      if (!gif)
+	{
+	  nh_gif_errmsg (out, gif_err);
+	  nh_img_in_free (&in);
+	  return nh_img_fail (out, NH_IMG_E_GIF_OPEN);
+	}
+      if (!nh_core_size_ok (p, gif->SWidth, gif->SHeight))
+	{
+	  nh_gif_close (gif);
+	  nh_img_in_free (&in);
+	  return nh_img_fail (out, NH_IMG_E_SIZE);
+	}
+      int rc = DGifSlurp (gif);
+      if (rc == GIF_ERROR || gif->ImageCount <= 0)
+	{
+	  nh_gif_errmsg (out, gif->Error);
+	  nh_gif_close (gif);
+	  nh_img_in_free (&in);
+	  return nh_img_fail (out, NH_IMG_E_GIF_READ);
+	}
+      nh_img_in_free (&in);
+      width = gif->SWidth;
+      height = gif->SHeight;
+      for (int j = 0; j < gif->ImageCount; j++)
+	{
+	  struct SavedImage *s = gif->SavedImages + j;
+	  if (s->ImageDesc.Width < 0 || s->ImageDesc.Height < 0
+	      || s->ImageDesc.Top < 0 || s->ImageDesc.Left < 0
+	      || s->ImageDesc.Top + s->ImageDesc.Height > height
+	      || s->ImageDesc.Left + s->ImageDesc.Width > width)
+	    {
+	      nh_gif_close (gif);
+	      return nh_img_fail (out, NH_IMG_E_GIF_SUBIMAGE);
+	    }
+	}
+    }
+  width = gif->SWidth;
+  height = gif->SHeight;
+
+  int err = 0;
+  if (idx < 0 || idx >= gif->ImageCount)
+    {
+      out->err_arg = idx;
+      err = NH_IMG_E_GIF_INDEX;
+    }
+  else if (!nh_core_size_ok (p, width, height))
+    err = NH_IMG_E_SIZE;
+  else if (!canvas
+	   && !(canvas = malloc ((size_t) width * height * sizeof *canvas)))
+    err = NH_IMG_E_NOMEM;
+  if (err)
+    {
+      nh_gif_close (gif);
+      free (canvas);
+      nh_img_centry_free (e ? (e->gif = NULL, e->canvas = NULL, e) : NULL);
+      return nh_img_fail (out, err);
+    }
+
+  int top = gif->SavedImages[0].ImageDesc.Top;
+  int left = gif->SavedImages[0].ImageDesc.Left;
+  int bot = top + gif->SavedImages[0].ImageDesc.Height;
+  int right = left + gif->SavedImages[0].ImageDesc.Width;
+  uint32_t frame_bg = p->frame_bg_pixel;
+
+  /* As gif_load: the part outside the first subimage is the frame
+     background, refilled on every call, cached canvas or not.  */
+  for (int y = 0; y < top; y++)
+    for (int x = 0; x < width; x++)
+      canvas[x + (size_t) y * width] = frame_bg;
+  for (int y = bot; y < height; y++)
+    for (int x = 0; x < width; x++)
+      canvas[x + (size_t) y * width] = frame_bg;
+  for (int y = top; y < bot; y++)
+    {
+      for (int x = 0; x < left; x++)
+	canvas[x + (size_t) y * width] = frame_bg;
+      for (int x = right; x < width; x++)
+	canvas[x + (size_t) y * width] = frame_bg;
+    }
+
+  int start = (e && pos >= 0 && pos == idx - 1) ? idx : 0;
+  for (int j = start; j <= idx; j++)
+    {
+      struct SavedImage *sub = gif->SavedImages + j;
+      unsigned char *raster = (unsigned char *) sub->RasterBits;
+      int sw = sub->ImageDesc.Width, sh = sub->ImageDesc.Height;
+      int st = sub->ImageDesc.Top, sl = sub->ImageDesc.Left;
+      GraphicsControlBlock gcb;
+      DGifSavedExtensionToGCB (gif, j, &gcb);
+      int disposal = gcb.DisposalMode;
+      int transparency = gcb.TransparentColor;
+      if (j == 0)
+	disposal = DISPOSE_BACKGROUND;
+      if (disposal == DISPOSAL_UNSPECIFIED)
+	disposal = DISPOSE_DO_NOT;
+      if (disposal == DISPOSE_PREVIOUS)
+	disposal = DISPOSE_DO_NOT;
+      ColorMapObject *map = sub->ImageDesc.ColorMap;
+      if (!map)
+	map = gif->SColorMap;
+      uint32_t colors[256] = { 0, };
+      if (map)
+	for (int i = 0; i < map->ColorCount && i < 256; i++)
+	  {
+	    if (transparency == i)
+	      colors[i] = p->gif_bg_set ? p->gif_bg_pixel : frame_bg;
+	    else
+	      colors[i] = ((uint32_t) map->Colors[i].Red << 16)
+		| ((uint32_t) map->Colors[i].Green << 8)
+		| map->Colors[i].Blue;
+	  }
+      for (int y = 0; y < sh; y++)
+	for (int x = 0; x < sw; x++)
+	  {
+	    int c = raster[(size_t) y * sw + x];
+	    if (transparency != c || disposal != DISPOSE_DO_NOT)
+	      canvas[x + sl + (size_t) (y + st) * width] = colors[c];
+	  }
+      NH_IMG_COUNT ();
+    }
+
+  out->width = width;
+  out->height = height;
+  out->has_corners = true;
+  out->corners[0] = top;
+  out->corners[1] = left;
+  out->corners[2] = bot;
+  out->corners[3] = right;
+  out->frame_count = gif->ImageCount;
+  struct SavedImage *cur = gif->SavedImages + idx;
+  struct nh_img_ext **tail = &out->ext;
+  for (int i = 0; i < cur->ExtensionBlockCount; i++)
+    {
+      ExtensionBlock *b = cur->ExtensionBlocks + i;
+      struct nh_img_ext *x = calloc (1, sizeof *x);
+      if (!x)
+	break;
+      x->function = b->Function;
+      x->len = b->ByteCount;
+      x->bytes = malloc (b->ByteCount ? b->ByteCount : 1);
+      if (!x->bytes)
+	{
+	  free (x);
+	  break;
+	}
+      memcpy (x->bytes, b->Bytes, b->ByteCount);
+      *tail = x;
+      tail = &x->next;
+      out->has_delay = true;
+      if (b->Function == 249 && b->ByteCount == 4)
+	out->delay = (b->Bytes[2] << 8) | b->Bytes[1];
+    }
+
+  if (want_cache)
+    {
+      out->pixels = malloc ((size_t) width * height * sizeof *out->pixels);
+      if (out->pixels)
+	memcpy (out->pixels, canvas, (size_t) width * height * 4);
+      if (!e)
+	{
+	  e = calloc (1, sizeof *e);
+	  if (e)
+	    {
+	      e->fmt = NH_IMG_GIF;
+	      e->key = p->key;
+	    }
+	}
+      if (e)
+	{
+	  e->gif = gif;
+	  e->canvas = canvas;
+	  e->pos = idx;
+	  e->frame_bg = frame_bg;
+	  e->bg_set = p->gif_bg_set;
+	  e->bg = p->gif_bg_pixel;
+	  e->bytes = (size_t) width * height * 4 + data_bytes;
+	  nh_img_cache_put (e);
+	}
+      else
+	{
+	  nh_gif_close (gif);
+	  free (canvas);
+	}
+    }
+  else
+    {
+      out->pixels = canvas;
+      nh_gif_close (gif);
+    }
+  if (!out->pixels)
+    {
+      nh_img_out_free (out);
+      return nh_img_fail (out, NH_IMG_E_NOMEM);
+    }
+  return 0;
+}
+
+#endif /* HAVE_GIF && GIFLIB_MAJOR >= 5 */
+
+
+/* WebP (webp_load).  */
+
+#ifdef HAVE_WEBP
+
+static int
+nh_webp_decode (const uint8_t *data, size_t len,
+		const struct nh_img_params *p, struct nh_img_out *out)
+{
+  struct nh_img_centry *e = NULL;
+  bool want_cache = p->frame_index >= 0 && p->key != 0;
+  WebPBitstreamFeatures features;
+  memset (&features, 0, sizeof features);
+  uint8_t *decoded_cpy = NULL;
+  const uint8_t *decoded = NULL;
+  int width = -1, height = -1, frames = -1, duration = -1;
+  int err = 0;
+
+  if (want_cache)
+    e = nh_img_cache_take (NH_IMG_WEBP, p->key);
+
+  if (e)
+    {
+      features.has_alpha = e->has_alpha;
+      features.has_animation = 1;
+    }
+  else
+    {
+      struct nh_img_in in;
+      if (nh_img_input (data, len, p, &in, out))
+	return out->err;
+      if (WebPGetFeatures (in.p, in.len, &features) != VP8_STATUS_OK)
+	{
+	  nh_img_in_free (&in);
+	  return nh_img_fail (out, NH_IMG_E_WEBP_HEADERS);
+	}
+      if (!nh_core_size_ok (p, features.width, features.height))
+	{
+	  nh_img_in_free (&in);
+	  return nh_img_fail (out, NH_IMG_E_SIZE);
+	}
+      if (features.has_animation)
+	{
+	  e = calloc (1, sizeof *e);
+	  if (!e)
+	    {
+	      nh_img_in_free (&in);
+	      return nh_img_fail (out, NH_IMG_E_NOMEM);
+	    }
+	  e->fmt = NH_IMG_WEBP;
+	  e->key = p->key;
+	  e->pos = -1;
+	  e->has_alpha = features.has_alpha;
+	  if (in.owned)
+	    {
+	      e->contents = in.owned;
+	      in.owned = NULL;
+	    }
+	  else
+	    {
+	      e->contents = malloc (in.len ? in.len : 1);
+	      if (e->contents)
+		memcpy (e->contents, in.p, in.len);
+	    }
+	  if (!e->contents)
+	    err = NH_IMG_E_NOMEM;
+	  else
+	    {
+	      WebPData wd = { .bytes = e->contents, .size = in.len };
+	      e->dec = WebPAnimDecoderNew (&wd, NULL);
+	      WebPAnimInfo info;
+	      if (!e->dec)
+		err = NH_IMG_E_WEBP_PARSE;
+	      else if (!WebPAnimDecoderGetInfo (e->dec, &info))
+		err = NH_IMG_E_WEBP_INFO;
+	      else
+		{
+		  e->width = info.canvas_width;
+		  e->height = info.canvas_height;
+		  e->frames = info.frame_count;
+		  e->bytes = in.len + (size_t) e->width * e->height * 8;
+		  if (!nh_core_size_ok (p, e->width, e->height))
+		    err = NH_IMG_E_SIZE;
+		}
+	    }
+	  nh_img_in_free (&in);
+	  if (err)
+	    {
+	      nh_img_centry_free (e);
+	      return nh_img_fail (out, err);
+	    }
+	}
+      else
+	{
+	  decoded_cpy = features.has_alpha
+	    ? WebPDecodeRGBA (in.p, in.len, &width, &height)
+	    : WebPDecodeRGB (in.p, in.len, &width, &height);
+	  decoded = decoded_cpy;
+	  nh_img_in_free (&in);
+	  if (decoded)
+	    NH_IMG_COUNT ();
+	}
+    }
+
+  bool alpha_blend;
+  if (e)
+    {
+      width = e->width;
+      height = e->height;
+      frames = e->frames;
+      int idx = p->frame_index >= 0 ? (p->frame_index < frames
+				       ? p->frame_index : frames) : 0;
+      if (e->pos == idx && e->last)
+	{
+	  decoded = e->last;
+	  duration = e->duration;
+	}
+      else
+	{
+	  if (e->pos >= idx)
+	    {
+	      WebPAnimDecoderReset (e->dec);
+	      e->timestamp = 0;
+	      e->pos = -1;
+	    }
+	  uint8_t *frame = NULL;
+	  while (e->pos < idx && WebPAnimDecoderHasMoreFrames (e->dec))
+	    {
+	      int ts;
+	      if (!WebPAnimDecoderGetNext (e->dec, &frame, &ts))
+		{
+		  out->err_arg = e->pos + 1;
+		  nh_img_centry_free (e);
+		  return nh_img_fail (out, NH_IMG_E_WEBP_FRAME);
+		}
+	      NH_IMG_COUNT ();
+	      duration = ts - e->timestamp;
+	      e->timestamp = ts;
+	      e->pos++;
+	      decoded = frame;
+	    }
+	  if (decoded && want_cache)
+	    {
+	      size_t n = (size_t) width * height * 4;
+	      if (!e->last)
+		e->last = malloc (n);
+	      if (e->last)
+		{
+		  memcpy (e->last, decoded, n);
+		  decoded = e->last;
+		}
+	      e->duration = duration;
+	    }
+	}
+      alpha_blend = true;
+    }
+  else
+    alpha_blend = features.has_alpha;
+
+  if (!decoded)
+    {
+      if (e)
+	nh_img_centry_free (e);
+      WebPFree (decoded_cpy);
+      return nh_img_fail (out, NH_IMG_E_WEBP_DECODE);
+    }
+  if (!nh_core_size_ok (p, width, height))
+    {
+      if (e)
+	nh_img_centry_free (e);
+      WebPFree (decoded_cpy);
+      return nh_img_fail (out, NH_IMG_E_SIZE);
+    }
+  out->pixels = malloc ((size_t) width * height * sizeof *out->pixels);
+  if (!out->pixels)
+    {
+      if (e)
+	nh_img_centry_free (e);
+      WebPFree (decoded_cpy);
+      return nh_img_fail (out, NH_IMG_E_NOMEM);
+    }
+  int bgr = p->bg_set ? p->bg_r >> 8 : 0;
+  int bgg = p->bg_set ? p->bg_g >> 8 : 0;
+  int bgb = p->bg_set ? p->bg_b >> 8 : 0;
+  const uint8_t *q = decoded;
+  for (int y = 0; y < height; y++)
+    for (int x = 0; x < width; x++)
+      {
+	int r, g, b;
+	if (alpha_blend)
+	  {
+	    float a = (float) q[3] / UINT8_MAX;
+	    r = (int) (a * q[0] + (1 - a) * bgr);
+	    g = (int) (a * q[1] + (1 - a) * bgg);
+	    b = (int) (a * q[2] + (1 - a) * bgb);
+	    q += 4;
+	  }
+	else
+	  {
+	    r = *q++;
+	    g = *q++;
+	    b = *q++;
+	  }
+	out->pixels[(size_t) y * width + x]
+	  = ((uint32_t) r << 16) | ((uint32_t) g << 8) | (uint32_t) b;
+      }
+  out->width = width;
+  out->height = height;
+  out->has_corners = true;
+  out->corners[0] = 0;
+  out->corners[1] = 0;
+  out->corners[2] = height;
+  out->corners[3] = width;
+  if (features.has_animation)
+    {
+      out->animated = true;
+      out->frame_count = frames;
+      out->has_delay = true;
+      out->delay = duration;
+    }
+  WebPFree (decoded_cpy);
+  if (e)
+    {
+      if (want_cache)
+	nh_img_cache_put (e);
+      else
+	nh_img_centry_free (e);
+    }
+  return 0;
+}
+
+#endif /* HAVE_WEBP */
+
+
+/* The table (PD-11).  */
+
+#ifdef HAVE_PNG
+static const struct nh_img_decoder nh_img_c_png = { nh_png_decode };
+#endif
+#ifdef HAVE_JPEG
+static const struct nh_img_decoder nh_img_c_jpeg = { nh_jpeg_decode };
+#endif
+#if defined HAVE_GIF && GIFLIB_MAJOR >= 5
+static const struct nh_img_decoder nh_img_c_gif = { nh_gif_decode };
+#endif
+#ifdef HAVE_WEBP
+static const struct nh_img_decoder nh_img_c_webp = { nh_webp_decode };
+#endif
+
+const struct nh_img_decoder *nh_img_decoders[NH_IMG_FMT_N] = {
+#ifdef HAVE_PNG
+  [NH_IMG_PNG] = &nh_img_c_png,
+#endif
+#ifdef HAVE_JPEG
+  [NH_IMG_JPEG] = &nh_img_c_jpeg,
+#endif
+#if defined HAVE_GIF && GIFLIB_MAJOR >= 5
+  [NH_IMG_GIF] = &nh_img_c_gif,
+#endif
+#ifdef HAVE_WEBP
+  [NH_IMG_WEBP] = &nh_img_c_webp,
+#endif
+};
+
+int
+nh_img_decode (int fmt, const uint8_t *data, size_t len,
+	       const struct nh_img_params *params, struct nh_img_out *out)
+{
+  if (fmt < 0 || fmt >= NH_IMG_FMT_N || !nh_img_decoders[fmt])
+    return nh_img_fail (out, NH_IMG_E_UNSUPPORTED);
+  return nh_img_decoders[fmt]->decode (data, len, params, out);
+}
+
+
+/* Stubs of Tasks 29 (lookup) and 27 (size); the synchronous loaders'
+   entry, nh_img_sync_load, is in image.c, which owns the frame and image
+   internals it needs.  */
 
 #include <limits.h>
 #include <string.h>
@@ -45,16 +1408,6 @@ nh_img_lookup (struct frame *f, struct image *img, ptrdiff_t id)
   (void) id;
   return false;
 }
-
-bool
-nh_img_sync_load (struct frame *f, struct image *img, int fmt)
-{
-  (void) f;
-  (void) img;
-  (void) fmt;
-  return false;
-}
-
 
 /* The header parsers.  */
 
@@ -432,7 +1785,6 @@ nh_img_webp_scan (const uint8_t *p, size_t n, int idx, struct nh_img_scan *sc)
   return seen_stream;
 }
 
-
 #ifndef NH_WK_HARNESS
 
 #include "frame.h"
@@ -684,12 +2036,281 @@ header path would not answer, else (ANSWER) with the answer.  The switch
   return answered ? list1 (v) : Qnil;
 }
 
+/* Test primitives.  */
+
+static const char *const nh_img_err_names[NH_IMG_E_N] = {
+  "ok", "unsupported", "open", "not-image", "lib", "size", "silent", "nomem",
+  "gif-open", "gif-read", "gif-subimage", "gif-index", "webp-headers",
+  "webp-parse", "webp-info", "webp-frame", "webp-decode"
+};
+
+struct nh_img_tjob
+{
+  int fmt;
+  uint8_t *data;
+  size_t len;
+  char *file;
+  struct nh_img_params params;
+  struct nh_img_out out;
+  pthread_t thread;
+  pthread_mutex_t lock;
+  pthread_cond_t cond;
+  bool go;
+};
+
+#define NH_IMG_TJOBS 8
+static struct nh_img_tjob *nh_img_tjobs[NH_IMG_TJOBS];
+
+static void *
+nh_img_tjob_run (void *arg)
+{
+  struct nh_img_tjob *j = arg;
+  pthread_mutex_lock (&j->lock);
+  while (!j->go)
+    pthread_cond_wait (&j->cond, &j->lock);
+  pthread_mutex_unlock (&j->lock);
+  nh_img_decode (j->fmt, j->data, j->len, &j->params, &j->out);
+  return NULL;
+}
+
+static Lisp_Object
+nh_img_plist_get (Lisp_Object plist, const char *key)
+{
+  for (; CONSP (plist) && CONSP (XCDR (plist)); plist = XCDR (XCDR (plist)))
+    if (SYMBOLP (XCAR (plist))
+	&& strcmp (SSDATA (SYMBOL_NAME (XCAR (plist))), key) == 0)
+      return XCAR (XCDR (plist));
+  return Qnil;
+}
+
+static Lisp_Object
+nh_img_out_lisp (struct nh_img_out *out)
+{
+  Lisp_Object r = Qnil;
+  if (out->err)
+    {
+      r = list2 (intern_c_string (":error"),
+		 intern_c_string (nh_img_err_names[out->err]));
+      r = nconc2 (r, list2 (intern_c_string (":message"),
+			    build_string (out->errmsg)));
+      r = nconc2 (r, list2 (intern_c_string (":arg"),
+			    make_fixnum (out->err_arg)));
+      return r;
+    }
+  size_t n = (size_t) out->width * out->height;
+  r = list2 (intern_c_string (":width"), make_fixnum (out->width));
+  r = nconc2 (r, list2 (intern_c_string (":height"), make_fixnum (out->height)));
+  r = nconc2 (r, list2 (intern_c_string (":pixels"),
+			make_unibyte_string ((char *) out->pixels, n * 4)));
+  r = nconc2 (r, list2 (intern_c_string (":mask"),
+			out->mask ? make_unibyte_string ((char *) out->mask, n)
+			: Qnil));
+  r = nconc2 (r, list2 (intern_c_string (":frames"),
+			make_fixnum (out->frame_count)));
+  r = nconc2 (r, list2 (intern_c_string (":delay"),
+			out->has_delay ? make_fixnum (out->delay) : Qnil));
+  r = nconc2 (r, list2 (intern_c_string (":corners"),
+			out->has_corners
+			? list4 (make_fixnum (out->corners[0]),
+				 make_fixnum (out->corners[1]),
+				 make_fixnum (out->corners[2]),
+				 make_fixnum (out->corners[3]))
+			: Qnil));
+  r = nconc2 (r, list2 (intern_c_string (":bkgd"),
+			out->bkgd_valid
+			? list3 (make_fixnum (out->bkgd[0]),
+				 make_fixnum (out->bkgd[1]),
+				 make_fixnum (out->bkgd[2]))
+			: Qnil));
+  Lisp_Object warns = Qnil;
+  for (int i = out->nwarn - 1; i >= 0; i--)
+    warns = Fcons (build_string (out->warn[i]), warns);
+  r = nconc2 (r, list2 (intern_c_string (":warnings"), warns));
+  return r;
+}
+
+/* Fill TJ from the Lisp SPEC and PARAMS; the data is copied.  */
+static struct nh_img_tjob *
+nh_img_tjob_make (Lisp_Object spec, Lisp_Object params)
+{
+  CHECK_CONS (spec);
+  Lisp_Object plist = XCDR (spec);
+  Lisp_Object type = nh_img_plist_get (plist, ":type");
+  Lisp_Object file = nh_img_plist_get (plist, ":file");
+  Lisp_Object dat = nh_img_plist_get (plist, ":data");
+  Lisp_Object index = nh_img_plist_get (plist, ":index");
+  CHECK_SYMBOL (type);
+  const char *tn = SSDATA (SYMBOL_NAME (type));
+  int fmt = strcmp (tn, "png") == 0 ? NH_IMG_PNG
+    : strcmp (tn, "jpeg") == 0 ? NH_IMG_JPEG
+    : strcmp (tn, "gif") == 0 ? NH_IMG_GIF
+    : strcmp (tn, "webp") == 0 ? NH_IMG_WEBP : -1;
+  if (fmt < 0)
+    error ("Unsupported image type");
+  struct nh_img_tjob *j = calloc (1, sizeof *j);
+  if (!j)
+    memory_full (sizeof *j);
+  j->fmt = fmt;
+  pthread_mutex_init (&j->lock, NULL);
+  pthread_cond_init (&j->cond, NULL);
+  struct nh_img_params *q = &j->params;
+  q->frame_index = FIXNATP (index) ? XFIXNAT (index) : -1;
+  q->limit_w = q->limit_h = -1;
+  if (STRINGP (dat))
+    {
+      j->len = SBYTES (dat);
+      j->data = malloc (j->len ? j->len : 1);
+      if (!j->data)
+	memory_full (j->len);
+      memcpy (j->data, SDATA (dat), j->len);
+      if (q->frame_index >= 0)
+	q->key = nh_img_hash (j->data, j->len);
+    }
+  else
+    {
+      CHECK_STRING (file);
+      Lisp_Object f = ENCODE_FILE (Fexpand_file_name (file, Qnil));
+      j->file = strdup (SSDATA (f));
+      if (!j->file)
+	memory_full (0);
+      q->file = j->file;
+      if (q->frame_index >= 0)
+	q->key = nh_img_file_key (j->file);
+    }
+  Lisp_Object v;
+  if (!NILP (v = nh_img_plist_get (params, ":bg")) && CONSP (v))
+    {
+      q->bg_set = true;
+      q->bg_r = XFIXNUM (XCAR (v));
+      q->bg_g = XFIXNUM (XCAR (XCDR (v)));
+      q->bg_b = XFIXNUM (XCAR (XCDR (XCDR (v))));
+    }
+  if (FIXNUMP (v = nh_img_plist_get (params, ":frame-bg")))
+    q->frame_bg_pixel = XFIXNUM (v);
+  if (FIXNUMP (v = nh_img_plist_get (params, ":gif-bg")))
+    {
+      q->gif_bg_set = true;
+      q->gif_bg_pixel = XFIXNUM (v);
+    }
+  if (FIXNUMP (v = nh_img_plist_get (params, ":limit")))
+    q->limit_w = q->limit_h = XFIXNUM (v);
+  return j;
+}
+
+static void
+nh_img_tjob_free (struct nh_img_tjob *j)
+{
+  nh_img_out_free (&j->out);
+  free (j->data);
+  free (j->file);
+  pthread_mutex_destroy (&j->lock);
+  pthread_cond_destroy (&j->cond);
+  free (j);
+}
+
+DEFUN ("nidhogg-workers--test-image-decode", Fnidhogg_workers__test_image_decode,
+       Snidhogg_workers__test_image_decode, 1, 3, 0,
+       doc: /* Decode image SPEC through the Lisp-free core (test primitive).
+SPEC is (image :type TYPE :file F or :data D [:index N]).  PARAMS is a
+plist of :bg (R G B, 16 bits each), :frame-bg PIXEL, :gif-bg PIXEL and
+:limit PIXELS.  Value: a plist with :width, :height, :pixels (32-bit words
+0x00RRGGBB, little endian), :mask, :frames, :delay, :corners, :bkgd and
+:warnings, or with :error, :message and :arg.  The data is copied first.
+With MODE `thread' the copy is decoded by a separate thread, held until
+`nidhogg-workers--test-image-decode-finish', and the value is its handle.  */)
+  (Lisp_Object spec, Lisp_Object params, Lisp_Object mode)
+{
+  struct nh_img_tjob *j = nh_img_tjob_make (spec, params);
+  if (!EQ (mode, intern_c_string ("thread")))
+    {
+      nh_img_decode (j->fmt, j->data, j->len, &j->params, &j->out);
+      Lisp_Object r = nh_img_out_lisp (&j->out);
+      nh_img_tjob_free (j);
+      return r;
+    }
+  int slot = 0;
+  while (slot < NH_IMG_TJOBS && nh_img_tjobs[slot])
+    slot++;
+  if (slot == NH_IMG_TJOBS)
+    {
+      nh_img_tjob_free (j);
+      error ("Too many pending test decodes");
+    }
+  /* The worker contract: the asynchronous signals blocked in the thread.  */
+  sigset_t all, old;
+  sigfillset (&all);
+  sigdelset (&all, SIGSEGV);
+  sigdelset (&all, SIGBUS);
+  sigdelset (&all, SIGILL);
+  sigdelset (&all, SIGFPE);
+  sigdelset (&all, SIGABRT);
+  sigdelset (&all, SIGTRAP);
+  pthread_sigmask (SIG_BLOCK, &all, &old);
+  int rc = pthread_create (&j->thread, NULL, nh_img_tjob_run, j);
+  pthread_sigmask (SIG_SETMASK, &old, NULL);
+  if (rc)
+    {
+      nh_img_tjob_free (j);
+      error ("Cannot start the test decode thread");
+    }
+  nh_img_tjobs[slot] = j;
+  return make_fixnum (slot);
+}
+
+DEFUN ("nidhogg-workers--test-image-decode-finish",
+       Fnidhogg_workers__test_image_decode_finish,
+       Snidhogg_workers__test_image_decode_finish, 1, 1, 0,
+       doc: /* Release the held decode HANDLE, wait for it and return its result.  */)
+  (Lisp_Object handle)
+{
+  CHECK_FIXNAT (handle);
+  EMACS_INT slot = XFIXNAT (handle);
+  if (slot >= NH_IMG_TJOBS || !nh_img_tjobs[slot])
+    error ("No such test decode");
+  struct nh_img_tjob *j = nh_img_tjobs[slot];
+  nh_img_tjobs[slot] = NULL;
+  pthread_mutex_lock (&j->lock);
+  j->go = true;
+  pthread_cond_broadcast (&j->cond);
+  pthread_mutex_unlock (&j->lock);
+  pthread_join (j->thread, NULL);
+  Lisp_Object r = nh_img_out_lisp (&j->out);
+  nh_img_tjob_free (j);
+  return r;
+}
+
+DEFUN ("nidhogg-workers--test-decode-count", Fnidhogg_workers__test_decode_count,
+       Snidhogg_workers__test_decode_count, 0, 1, 0,
+       doc: /* Number of image frames the cores decoded or composed so far.
+With non-nil RESET, also reset the count.  */)
+  (Lisp_Object reset)
+{
+  return make_int (nh_img_decode_count (!NILP (reset)));
+}
+
+DEFUN ("nidhogg-workers--test-image-cache-clear",
+       Fnidhogg_workers__test_image_cache_clear,
+       Snidhogg_workers__test_image_cache_clear, 0, 0, 0,
+       doc: /* Empty the animation cache of the image cores.  */)
+  (void)
+{
+  nh_img_cache_clear ();
+  return Qnil;
+}
+
+extern void nh_img_image_syms (void);
+
 void
 nh_img_syms (void)
 {
   DEFSYM (Qnidhogg_workers_images, "nidhogg-workers-images");
   DEFSYM (Qsize, "size");
   defsubr (&Snidhogg_workers__test_image_answer);
+  defsubr (&Snidhogg_workers__test_image_decode);
+  defsubr (&Snidhogg_workers__test_image_decode_finish);
+  defsubr (&Snidhogg_workers__test_decode_count);
+  defsubr (&Snidhogg_workers__test_image_cache_clear);
+  nh_img_image_syms ();
 }
 
 #endif /* not NH_WK_HARNESS */
