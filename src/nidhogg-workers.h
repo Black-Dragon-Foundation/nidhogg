@@ -229,7 +229,7 @@ extern void nh_ts_select_entry (void);
 /* Kill-buffer: cancel the parse jobs of the parsers of that buffer.  */
 extern void nh_ts_buffer_killed (struct buffer *);
 
-/* The reader, nidhogg-io.c [16, 17, 18, 19, 20].  A hand-back's
+/* The reader, nidhogg-io.c [16, 17, 18, 19, 20, 24].  A hand-back's
    reasons.  */
 enum nh_io_reason
 {
@@ -352,7 +352,14 @@ extern ptrdiff_t nh_dec_run (int system, const unsigned char *s,
 			     ptrdiff_t n, bool last, unsigned char *out,
 			     ptrdiff_t *nchars, ptrdiff_t *consumed);
 
-/* The JSON tape, nidhogg-json-tape.c [22, 23].  */
+/* The JSON tape, nidhogg-json-tape.c [22, 23].  The tokenizer's modes:
+   `json-parse-string' (trailing content is an error) and
+   `json-parse-buffer' (one value, the rest is left).  */
+enum
+{
+  NH_JSON_MODE_STRING,
+  NH_JSON_MODE_BUFFER
+};
 extern struct nh_tape *nh_json_tokenize (const unsigned char *, size_t,
 					 int mode, const _Atomic bool *stop);
 extern bool nh_json_materialize (struct nh_mat *, int64_t budget_ns);
@@ -511,6 +518,33 @@ extern void nh_io_proc_reader (Lisp_Object proc, bool on);
    reader is reading, or has yet to read, for a process MASK selects
    lands on its wake fd first (bounded).  */
 extern void nh_io_settle (fd_set *mask, struct timespec timeout);
+/* Framing [24].  A framed delivery left its batch for
+   read_and_dispose_of_process_output: nh_io_batch_begin hands it over
+   (FN nil: the process's buffer is dead, the batch is dropped) and
+   enters the `filter' phase; nh_io_batch_end leaves it.  */
+struct nh_io_call
+{
+  Lisp_Object fn, batch;
+  int depth;
+  int64_t t0;
+};
+extern bool nh_io_batch_begin (struct Lisp_Process *, struct nh_io_call *);
+extern void nh_io_batch_end (struct nh_io_call *);
+/* `set-process-filter', `set-process-coding-system' and the reader's
+   switch-off turn PROC's framing off: its pending bytes go to the
+   filter as raw output.  */
+extern void nh_io_unframe (Lisp_Object proc);
+/* The materializer for the framed branch, nidhogg-json-tape.c [24]:
+   OPTIONS is a plist of json-parse-string's keywords; nh_json_options
+   checks one and returns it complete, in a fixed order.  SRC stays the
+   caller's until nh_json_mat_free.  */
+extern Lisp_Object nh_json_options (Lisp_Object options);
+extern struct nh_mat *nh_json_mat_start (const struct nh_tape *,
+					 const unsigned char *src,
+					 size_t nsrc, Lisp_Object options);
+extern Lisp_Object nh_json_mat_value (struct nh_mat *);
+extern bool nh_json_mat_failed (struct nh_mat *);
+extern void nh_json_mat_free (struct nh_mat *);
 /* The stateless system CODING decodes with, or NH_DEC_NONE [18].  */
 extern int nh_dec_classify (struct coding_system *);
 extern Lisp_Object nh_dec_system_name (int);

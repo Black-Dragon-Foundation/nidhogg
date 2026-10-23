@@ -643,7 +643,11 @@ nh_io_proc_reader (Lisp_Object proc, bool on)
   struct Lisp_Process *p = XPROCESS (proc);
   int fd = p->infd;
   if (!on)
-    nh_io_back (proc, NH_IO_READER_OFF);
+    {
+      /* Framing goes off first (Task 24): its bytes go to the filter.  */
+      nh_io_unframe (proc);
+      nh_io_back (proc, NH_IO_READER_OFF);
+    }
   else if (fd >= 0 && nh_io_select_fd (p) < 0
 	   && (fd_callback_info[fd].flags & (FOR_READ | FOR_WRITE)) == FOR_READ)
     {
@@ -1550,6 +1554,9 @@ The string argument is normally a multibyte string, except:
 
   pset_filter (p, filter);
 #ifdef HAVE_NIDHOGG_WORKERS
+  /* Any filter turns framing off: the bytes not yet delivered go to it
+     (Task 24).  */
+  nh_io_unframe (process);
   /* The hand-over at the add above saw the old filter, t.  */
   if (p->infd >= 0 && !EQ (filter, Qt))
     nh_io_proc_reader (process, true);
@@ -6787,6 +6794,23 @@ read_and_dispose_of_process_output (struct Lisp_Process *p, char *chars,
      save the match data in a special nonrecursive fashion.  */
   running_asynch_code = 1;
 
+#ifdef HAVE_NIDHOGG_WORKERS
+  struct nh_io_call nh_call;
+  /* A framed delivery: the batch function gets its batch, as a filter
+     gets its string (Task 24).  */
+  if (nh_io_batch_begin (p, &nh_call))
+    {
+      if (!NILP (nh_call.fn))
+	internal_condition_case_1 (read_process_output_call,
+				   list3 (nh_call.fn, make_lisp_proc (p),
+					  nh_call.batch),
+				   !NILP (Vdebug_on_error) ? Qnil : Qerror,
+				   read_process_output_error_handler);
+      nh_io_batch_end (&nh_call);
+    }
+  else
+
+#endif
   if (fast_read_process_output
       && EQ (p->filter, Qinternal_default_process_filter))
     read_and_insert_process_output (p, chars, nbytes, coding);
@@ -8299,6 +8323,11 @@ encode subprocess input. */)
   encoding = coding_inherit_eol_type (encoding, Qnil);
   pset_decode_coding_system (p, decoding);
   pset_encode_coding_system (p, encoding);
+#ifdef HAVE_NIDHOGG_WORKERS
+  /* A coding system turns framing off (Task 24).  */
+  nh_io_unframe (process);
+
+#endif
 
   /* If the sockets haven't been set up yet, the final setup part of
      this will be called asynchronously. */
