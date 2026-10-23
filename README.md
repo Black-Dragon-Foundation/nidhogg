@@ -505,8 +505,10 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   runs: the reader hands it back and Emacs reads the rest of the fd itself until it would block, so a grandchild that
   holds the pipe open does not delay the sentinel. Sentinels run, as today, only when no process has output waiting:
   Emacs first waits (at most a second) for output `nh-io` is reading or has yet to read, so a `:stderr` pipe's last
-  output and EOF still come before the child's sentinel. `accept-process-output` with JUST-THIS-ONE waits on that
-  process's wake fd only, and a process locked to a Lisp thread (`set-process-thread`) is delivered only on that thread.
+  output and EOF still come before the child's sentinel. A zero-timeout wait (`accept-process-output` with a timeout of
+  0, how TRAMP polls) waits the same way, so it gets what the kernel holds, as today. `accept-process-output` with
+  JUST-THIS-ONE waits on that process's wake fd only, and a process locked to a Lisp thread (`set-process-thread`) is
+  delivered only on that thread.
   Test primitives: `nidhogg-workers--test-io-info`'s `:queued`, `:cap` and `:paused`; the `after-read` pause point
   (`nh-io` parks there when a queue reaches its cap).
 - Decoding on the reader (`src/nidhogg-decode.c`): when a reader-owned process decodes with a stateless system
