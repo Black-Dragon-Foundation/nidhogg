@@ -273,4 +273,113 @@ Below 100 levels the value is replaced by `deep' (Lisp's own depth limit)."
           (should (equal '(0.1) (append (nidhogg-workers--test-tokenize "[0.1]" 'string) nil))))
       (nidhogg-workers--test-set-numeric-locale (or old "C")))))
 
+;; Slicing (Task 23): the materializer's partial state lives in a rooted
+;; Lisp vector, so GC may run between slices; with one entry per slice
+;; (`nidhogg-workers--test-slice-entries' 1, a budget of 0) the tests
+;; call `garbage-collect' between slices.
+
+(defvar nidhogg-workers--test-size-scale
+  (let ((s (getenv "NIDHOGG_WORKERS_TEST_SIZE_SCALE")))
+    (if s (string-to-number s) 1))
+  "How much of their size the large rows use (CI's sanitizer jobs: 0.1).")
+
+(defun workers-json--big-doc (bytes)
+  "An array of LSP-like completion items, about BYTES long."
+  (with-temp-buffer
+    (insert "[")
+    (let ((i 0) (pad (make-string 40 ?x)))
+      (while (< (buffer-size) bytes)
+        (when (> i 0) (insert ","))
+        (insert (format "{\"label\":\"item-%d\",\"kind\":%d,\"detail\":\"%s\",\"sortText\":\"%08d\",\
+\"deprecated\":%s,\"score\":%d.5,\"data\":null,\"range\":{\"start\":{\"line\":%d,\"character\":%d},\
+\"end\":{\"line\":%d,\"character\":%d}},\"tags\":[1,2,%d]}"
+                        i (% i 25) pad i (if (zerop (% i 3)) "true" "false") i i (% i 80) i
+                        (+ 3 (% i 80)) i))
+        (setq i (1+ i))))
+    (insert "]")
+    (buffer-string)))
+
+(defun workers-json--sliced (gc-every)
+  "Step the test materialization one entry at a time to its value.
+Call `garbage-collect' every GC-EVERY slices; check that nothing is
+delivered before the last slice.  Return (VALUE SLICES)."
+  (let ((slices 0) r)
+    (while (not (setq r (nidhogg-workers--test-json-step 0)))
+      (setq slices (1+ slices))
+      (unless (eql (nidhogg-workers--test-json-in-flight) 1)
+        (error "Not in flight after slice %d" slices))
+      (when (zerop (% slices gc-every))
+        (garbage-collect)))
+    (list (car r) slices)))
+
+(ert-deftest workers/json-slicing ()
+  "Sliced materialization with GC between slices equals the unsliced."
+  (let ((nidhogg-workers--test-slice-entries 1))
+    ;; Small documents under every option set, GC after every slice; the
+    ;; :null-object is a fresh object only the materialization holds.
+    (dolist (doc (list "{\"a\":[1,{\"b\":null},true],\"c\":false,\"a\":\"x\",\"d\":{}}"
+                       (encode-coding-string
+                        "[\"日本語\",{\"k\":[123456789012345678901234567890,-0.5,[],null]},\"é\"]"
+                        'utf-8)))
+      (dolist (opts workers-json--options)
+        (apply #'nidhogg-workers--test-json-start doc 'string opts)
+        (pcase-let ((`(,v ,slices) (workers-json--sliced 1)))
+          (should (> slices 10))
+          (should (eql (nidhogg-workers--test-json-in-flight) 0))
+          (should (equal (workers-json--norm v) (workers-json--string-ref doc opts)))))
+      (nidhogg-workers--test-json-start doc 'string :null-object (list (make-string 3 ?n)))
+      (should (equal (workers-json--norm (car (workers-json--sliced 1)))
+                     (workers-json--string-ref doc '(:null-object ("nnn"))))))
+    ;; 20 MB, one entry per slice, GC every 65,536 slices; the reference
+    ;; parse comes after, so the GCs see only the materialization.
+    (let* ((doc (workers-json--big-doc (round (* 20e6 nidhogg-workers--test-size-scale))))
+           (got (progn (nidhogg-workers--test-json-start doc 'string :object-type 'alist)
+                       (workers-json--sliced 65536))))
+      (should (> (nth 1 got) 1000))
+      (should (equal (car got) (json-parse-string doc :object-type 'alist))))
+    ;; A `memory-full' in a slice unlinks the materialization, which is
+    ;; an error record from then on.
+    (nidhogg-workers--test-json-start "[1,[2,3],{\"a\":4},5]" 'string)
+    (should-not (nidhogg-workers--test-json-step 0))
+    (should-not (nidhogg-workers--test-json-step 0))
+    (should (eql (nidhogg-workers--test-json-in-flight) 1))
+    (let ((nidhogg-workers--test-json-fail-at 5))
+      (should (equal (condition-case e
+                         (progn (while (not (nidhogg-workers--test-json-step 0))) 'completed)
+                       (error e))
+                     memory-signal-data)))
+    (should (eql (nidhogg-workers--test-json-in-flight) 0))
+    (should (eq (car (should-error (nidhogg-workers--test-json-step 0)))
+                'json-out-of-memory))))
+
+(ert-deftest workers/json-key-dedup ()
+  "10,000 repeats of 20 keys intern 20 symbols; hash tables intern none."
+  (let* ((keys (mapcar (lambda (i) (format "dedup-key-%02d" i)) (number-sequence 1 20)))
+         (obj (concat "{" (mapconcat (lambda (k) (format "\"%s\":1" k)) keys ",") "}"))
+         (doc (concat "[" (mapconcat #'identity (make-list 10000 obj) ",") "]")))
+    (dolist (opts '((:object-type alist) (:object-type plist :array-type list)))
+      (setq nidhogg-workers--test-intern-count 0)
+      (let ((v (apply #'nidhogg-workers--test-tokenize doc 'string opts)))
+        (should (eql nidhogg-workers--test-intern-count 20))
+        (should (equal v (apply #'json-parse-string doc opts)))))
+    (setq nidhogg-workers--test-intern-count 0)
+    (should (eql (length (nidhogg-workers--test-tokenize doc 'string)) 10000))
+    (should (eql nidhogg-workers--test-intern-count 0))))
+
+(ert-deftest workers/json-phase ()
+  "A sample taken during a slice carries the phase `json'."
+  (skip-unless (featurep 'nidhogg-watchdog))
+  (set 'nidhogg-watchdog--test-last-sample nil)
+  (nidhogg-watchdog--start 100 2000 nil :no-monitor)
+  (unwind-protect
+      (progn
+        (set 'nidhogg-watchdog--test-sample-on-phase 'json)
+        (should (equal (nidhogg-workers--test-tokenize "[1,2]" 'string) [1 2])))
+    (set 'nidhogg-watchdog--test-sample-on-phase nil)
+    (nidhogg-watchdog--stop))
+  (let ((s (symbol-value 'nidhogg-watchdog--test-last-sample)))
+    (should (eq (plist-get s :phase) 'json))
+    (should (memq 'nidhogg-workers--test-tokenize (append (plist-get s :frames) nil))))
+  (should (eq (funcall 'nidhogg-watchdog--test-phase) 'lisp)))
+
 ;;; workers-json-tests.el ends here

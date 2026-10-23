@@ -23,7 +23,8 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
    signalled, so the materializer can signal exactly what
    `json-parse-string' and `json-parse-buffer' signal.  The
    materializer (nh_json_materialize) runs on the main thread and builds
-   what json_parse_value builds.  json.c is not edited.
+   what json_parse_value builds, in slices that GC may run between (its
+   partial state is a rooted Lisp vector).  json.c is not edited.
 
    The tape is one malloc block:
 
@@ -933,7 +934,10 @@ nh_json_tokenize (const unsigned char *bytes, size_t n, int mode,
 
 #ifndef NH_WK_HARNESS
 
+#include <time.h>
+
 #include "buffer.h"
+#include "nidhogg-workers-phase.h"
 
 /* What the materializer needs besides the tape: json.c's options, and
    the source bytes, for the line and position of an error.  */
@@ -945,16 +949,115 @@ struct nh_mat_conf
   Lisp_Object false_object;
 };
 
+/* A materialization in progress.  The struct lives in C memory, which
+   GC does not scan, so every Lisp object it needs between slices is in
+   STATE, a vector on nh_json_in_flight (staticpro'd):
+
+     RESULT	the value, once the document's last entry is built;
+     WORK	the elements collected so far for every open container,
+		one after the other, the innermost last (TOP are used);
+     KEYS	the interned key of each key-table index, or 0 until the
+		first occurrence interns it (alist and plist only);
+     NULL, FALSE  the :null-object and :false-object.
+
+   A container is built when its END entry is reached, from its slice
+   of WORK, so nothing partial is ever a Lisp object Lisp can see.  */
+enum
+{
+  NH_MAT_S_RESULT,
+  NH_MAT_S_WORK,
+  NH_MAT_S_KEYS,
+  NH_MAT_S_NULL,
+  NH_MAT_S_FALSE,
+  NH_MAT_S_N
+};
+
+struct nh_mat_open
+{
+  size_t ent;			/* The container's entry.  */
+  ptrdiff_t start;		/* Where its elements start in WORK.  */
+};
+
 struct nh_mat
 {
   const struct nh_tape *tape;
   struct nh_mat_conf conf;
   size_t next;			/* The next entry to build.  */
-  Lisp_Object result;
+  Lisp_Object state;		/* The vector above, or nil once unlinked.  */
+  ptrdiff_t top;		/* Slots of WORK in use.  */
+  struct nh_mat_open *open;	/* The open containers, innermost last.  */
+  ptrdiff_t n_open, cap_open;
+  bool in_slice, failed, done;
+  int phase_depth;
   const unsigned char *src;
   size_t nsrc;
   bool src_multibyte;
 };
+
+/* Every materialization between nh_mat_init and nh_mat_release (or a
+   failed slice): a list of their STATE vectors.  */
+static Lisp_Object nh_json_in_flight;
+
+static uint64_t
+nh_json_now (void)
+{
+  struct timespec ts;
+  clock_gettime (CLOCK_MONOTONIC, &ts);
+  return (uint64_t) ts.tv_sec * 1000000000 + ts.tv_nsec;
+}
+
+/* Start materializing TAPE with CONF into M; the options' objects are
+   rooted from here on.  */
+static void
+nh_mat_init (struct nh_mat *m, const struct nh_tape *tape,
+	     const struct nh_mat_conf *conf)
+{
+  m->tape = tape;
+  m->conf = *conf;
+  m->next = 0;
+  m->state = Qnil;
+  m->top = 0;
+  m->open = NULL;
+  m->n_open = m->cap_open = 0;
+  m->in_slice = m->failed = m->done = false;
+  m->phase_depth = -1;
+  Lisp_Object s = make_nil_vector (NH_MAT_S_N);
+  ASET (s, NH_MAT_S_WORK, make_nil_vector (16));
+  ASET (s, NH_MAT_S_KEYS,
+	make_vector (conf->object_type == NH_MAT_OBJ_HASH ? 0 : tape->n_keys,
+		     make_fixnum (0)));
+  ASET (s, NH_MAT_S_NULL, conf->null_object);
+  ASET (s, NH_MAT_S_FALSE, conf->false_object);
+  m->state = s;
+  nh_json_in_flight = Fcons (s, nh_json_in_flight);
+}
+
+static void
+nh_mat_unlink (struct nh_mat *m)
+{
+  if (!NILP (m->state))
+    {
+      nh_json_in_flight = Fdelq (m->state, nh_json_in_flight);
+      m->state = Qnil;
+    }
+}
+
+/* Drop M's Lisp state and its stack.  The tape stays the caller's.  */
+static void
+nh_mat_release (struct nh_mat *m)
+{
+  nh_mat_unlink (m);
+  xfree (m->open);
+  m->open = NULL;
+  m->n_open = m->cap_open = 0;
+}
+
+/* The value, once nh_json_materialize has answered true.  */
+static Lisp_Object
+nh_mat_result (struct nh_mat *m)
+{
+  return AREF (m->state, NH_MAT_S_RESULT);
+}
 
 static Lisp_Object
 nh_mat_error_symbol (int err)
@@ -991,149 +1094,211 @@ nh_mat_signal (struct nh_mat *m)
 	    INT_TO_INTEGER (pos));
 }
 
+/* The key of entry E: a fresh string for hash tables (as json.c), else
+   the symbol, interned once per message (the key table's index caches
+   it in KEYS).  */
 static Lisp_Object
-nh_mat_key (struct nh_mat *m, const struct nh_json_ent *e, bool intern,
-	    bool colon)
+nh_mat_key (struct nh_mat *m, const struct nh_json_ent *e)
 {
   const struct nh_tape *t = m->tape;
   const char *s = (const char *) t->arena + t->keys[e->v.s.c].off;
   ptrdiff_t nbytes = e->a, nchars = e->v.s.b;
-  if (!intern)
+  if (m->conf.object_type == NH_MAT_OBJ_HASH)
     return make_multibyte_string (s, nchars, nbytes);
-  if (!colon)
-    return intern_c_multibyte (s, nchars, nbytes);
-  USE_SAFE_ALLOCA;
-  char *buf = SAFE_ALLOCA (nbytes + 1);
-  buf[0] = ':';
-  memcpy (buf + 1, s, nbytes);
-  Lisp_Object sym = intern_c_multibyte (buf, nchars + 1, nbytes + 1);
-  SAFE_FREE ();
+  Lisp_Object keys = AREF (m->state, NH_MAT_S_KEYS);
+  Lisp_Object sym = AREF (keys, e->v.s.c);
+  if (!FIXNUMP (sym))
+    return sym;
+  nidhogg_workers__test_intern_count++;
+  if (m->conf.object_type == NH_MAT_OBJ_ALIST)
+    sym = intern_c_multibyte (s, nchars, nbytes);
+  else
+    {
+      USE_SAFE_ALLOCA;
+      char *buf = SAFE_ALLOCA (nbytes + 1);
+      buf[0] = ':';
+      memcpy (buf + 1, s, nbytes);
+      sym = intern_c_multibyte (buf, nchars + 1, nbytes + 1);
+      SAFE_FREE ();
+    }
+  ASET (keys, e->v.s.c, sym);
   return sym;
 }
 
-/* Build the value at M->next, as json_parse_value does.  It recurses
-   like json.c does (and holds every Lisp object in a local, which the
-   conservative stack scan sees); Task 23 slices it.  */
-static Lisp_Object
-nh_mat_value (struct nh_mat *m)
+/* A built value: the document's (RESULT) or the innermost open
+   container's next element (WORK).  */
+static void
+nh_mat_put (struct nh_mat *m, Lisp_Object v)
 {
-  const struct nh_tape *t = m->tape;
-  const struct nh_json_ent *e = &t->ents[m->next++];
-  switch (e->type)
+  if (m->n_open == 0)
     {
-    case NH_JSON_T_STRING:
-      return make_multibyte_string ((const char *) t->arena + e->v.s.c,
-				    e->v.s.b, e->a);
-    case NH_JSON_T_INTEGER:
-      if (e->neg)
-	return INT_TO_INTEGER ((intmax_t) -(uintmax_t) e->v.u);
-      return INT_TO_INTEGER ((uintmax_t) e->v.u);
-    case NH_JSON_T_BIGNUM:
-      {
-	ptrdiff_t len;
-	Lisp_Object r = string_to_number ((const char *) t->arena + e->v.s.c,
-					  10, &len);
-	eassert (len == e->a);
-	return r;
-      }
-    case NH_JSON_T_FLOAT:
-      return make_float (e->v.d);
-    case NH_JSON_T_TRUE:
-      return Qt;
-    case NH_JSON_T_FALSE:
-      return m->conf.false_object;
-    case NH_JSON_T_NULL:
-      return m->conf.null_object;
-    case NH_JSON_T_ARRAY:
-      {
-	ptrdiff_t n = e->a;
-	Lisp_Object result = Qnil;
-	if (m->conf.array_type == NH_MAT_ARR_ARRAY)
-	  {
-	    result = make_vector (n, Qnil);
-	    for (ptrdiff_t i = 0; i < n; i++)
-	      {
-		Lisp_Object x = nh_mat_value (m);
-		ASET (result, i, x);
-	      }
-	  }
-	else
-	  {
-	    Lisp_Object *cdr = &result;
-	    for (ptrdiff_t i = 0; i < n; i++)
-	      {
-		Lisp_Object nc = Fcons (nh_mat_value (m), Qnil);
-		*cdr = nc;
-		cdr = xcdr_addr (nc);
-	      }
-	  }
-	m->next++;		/* END */
-	return result;
-      }
-    case NH_JSON_T_OBJECT:
-      {
-	ptrdiff_t n = e->a;
-	Lisp_Object result = Qnil;
-	if (m->conf.object_type == NH_MAT_OBJ_HASH)
-	  {
-	    result = make_hash_table (&hashtest_equal, n, Weak_None);
-	    struct Lisp_Hash_Table *h = XHASH_TABLE (result);
-	    for (ptrdiff_t i = 0; i < n; i++)
-	      {
-		Lisp_Object key = nh_mat_key (m, &t->ents[m->next++], false,
-					      false);
-		Lisp_Object value = nh_mat_value (m);
-		hash_hash_t hash;
-		ptrdiff_t idx = hash_find_get_hash (h, key, &hash);
-		if (idx < 0)
-		  hash_put (h, key, value, hash);
-		else
-		  set_hash_value_slot (h, idx, value);
-	      }
-	  }
-	else
-	  {
-	    bool plist = m->conf.object_type == NH_MAT_OBJ_PLIST;
-	    Lisp_Object *cdr = &result;
-	    for (ptrdiff_t i = 0; i < n; i++)
-	      {
-		Lisp_Object key = nh_mat_key (m, &t->ents[m->next++], true,
-					      plist);
-		Lisp_Object value = nh_mat_value (m);
-		Lisp_Object nc;
-		if (plist)
-		  {
-		    nc = Fcons (key, Qnil);
-		    *cdr = nc;
-		    cdr = xcdr_addr (nc);
-		    nc = Fcons (value, Qnil);
-		  }
-		else
-		  nc = Fcons (Fcons (key, value), Qnil);
-		*cdr = nc;
-		cdr = xcdr_addr (nc);
-	      }
-	  }
-	m->next++;		/* END */
-	return result;
-      }
-    default:
-      emacs_abort ();
+      ASET (m->state, NH_MAT_S_RESULT, v);
+      return;
     }
+  Lisp_Object work = AREF (m->state, NH_MAT_S_WORK);
+  if (m->top == ASIZE (work))
+    {
+      work = larger_vector (work, 1, -1);
+      ASET (m->state, NH_MAT_S_WORK, work);
+    }
+  ASET (work, m->top++, v);
 }
 
-/* Build M's value into M->result, or signal the tape's error.  BUDGET_NS
-   is ignored until Task 23 slices the work; the answer is always true
-   (done).  */
+/* The innermost container is complete: build it from its elements, as
+   json_parse_array and json_parse_object do, and clear their slots.  */
+static Lisp_Object
+nh_mat_close (struct nh_mat *m)
+{
+  struct nh_mat_open o = m->open[--m->n_open];
+  const struct nh_json_ent *e = &m->tape->ents[o.ent];
+  Lisp_Object work = AREF (m->state, NH_MAT_S_WORK);
+  Lisp_Object *w = XVECTOR (work)->contents + o.start;
+  ptrdiff_t n = m->top - o.start;
+  Lisp_Object r = Qnil;
+  if (e->type == NH_JSON_T_ARRAY)
+    r = (m->conf.array_type == NH_MAT_ARR_ARRAY ? Fvector (n, w)
+	 : Flist (n, w));
+  else
+    switch (m->conf.object_type)
+      {
+      case NH_MAT_OBJ_HASH:
+	{
+	  r = make_hash_table (&hashtest_equal, n / 2, Weak_None);
+	  struct Lisp_Hash_Table *h = XHASH_TABLE (r);
+	  for (ptrdiff_t i = 0; i < n; i += 2)
+	    {
+	      hash_hash_t hash;
+	      ptrdiff_t idx = hash_find_get_hash (h, w[i], &hash);
+	      if (idx < 0)
+		hash_put (h, w[i], w[i + 1], hash);
+	      else
+		set_hash_value_slot (h, idx, w[i + 1]);
+	    }
+	  break;
+	}
+      case NH_MAT_OBJ_ALIST:
+	for (ptrdiff_t i = n - 2; i >= 0; i -= 2)
+	  r = Fcons (Fcons (w[i], w[i + 1]), r);
+	break;
+      case NH_MAT_OBJ_PLIST:
+	r = Flist (n, w);
+	break;
+      }
+  memclear (w, n * word_size);
+  m->top = o.start;
+  return r;
+}
+
+/* Build entries from M->next until the document is complete (true) or,
+   at a check every `nidhogg-workers--test-slice-entries' entries, the
+   slice has run BUDGET_NS or longer (false).  */
+static bool
+nh_mat_slice (struct nh_mat *m, int64_t budget_ns)
+{
+  const struct nh_tape *t = m->tape;
+  EMACS_INT stride = max (1, nidhogg_workers__test_slice_entries);
+  EMACS_INT left = stride;
+  uint64_t t0 = nh_json_now ();
+  while (m->next < t->n_ent)
+    {
+      if ((EMACS_INT) m->next == nidhogg_workers__test_json_fail_at)
+	xsignal (Qnil, Vmemory_signal_data);
+      const struct nh_json_ent *e = &t->ents[m->next];
+      Lisp_Object v = Qnil;
+      switch (e->type)
+	{
+	case NH_JSON_T_ARRAY:
+	case NH_JSON_T_OBJECT:
+	  if (m->n_open == m->cap_open)
+	    m->open = xpalloc (m->open, &m->cap_open, 1, -1, sizeof *m->open);
+	  m->open[m->n_open++] = (struct nh_mat_open) { m->next, m->top };
+	  break;
+	case NH_JSON_T_END:
+	  v = nh_mat_close (m);
+	  break;
+	case NH_JSON_T_KEY:
+	  v = nh_mat_key (m, e);
+	  break;
+	case NH_JSON_T_STRING:
+	  v = make_multibyte_string ((const char *) t->arena + e->v.s.c,
+				     e->v.s.b, e->a);
+	  break;
+	case NH_JSON_T_INTEGER:
+	  v = (e->neg ? INT_TO_INTEGER ((intmax_t) -(uintmax_t) e->v.u)
+	       : INT_TO_INTEGER ((uintmax_t) e->v.u));
+	  break;
+	case NH_JSON_T_BIGNUM:
+	  {
+	    ptrdiff_t len;
+	    v = string_to_number ((const char *) t->arena + e->v.s.c, 10, &len);
+	    eassert (len == e->a);
+	    break;
+	  }
+	case NH_JSON_T_FLOAT:
+	  v = make_float (e->v.d);
+	  break;
+	case NH_JSON_T_TRUE:
+	  v = Qt;
+	  break;
+	case NH_JSON_T_FALSE:
+	  v = AREF (m->state, NH_MAT_S_FALSE);
+	  break;
+	case NH_JSON_T_NULL:
+	  v = AREF (m->state, NH_MAT_S_NULL);
+	  break;
+	default:
+	  emacs_abort ();
+	}
+      if (e->type != NH_JSON_T_ARRAY && e->type != NH_JSON_T_OBJECT)
+	nh_mat_put (m, v);
+      m->next++;
+      if (--left == 0)
+	{
+	  left = stride;
+	  if (m->next < t->n_ent && budget_ns >= 0
+	      && nh_json_now () - t0 >= (uint64_t) budget_ns)
+	    return false;
+	}
+    }
+  return true;
+}
+
+/* A slice left by a signal or throw (a `memory-full' among them): the
+   message becomes an error record and its partial state is dropped.  */
+static void
+nh_mat_slice_unwind (void *p)
+{
+  struct nh_mat *m = p;
+  if (!m->in_slice)
+    return;
+  m->in_slice = false;
+  m->failed = true;
+  NH_WK_PHASE_POP (m->phase_depth);
+  nh_mat_unlink (m);
+}
+
+/* Continue building M's value for about BUDGET_NS (negative: no limit),
+   in the phase `json'; true once it is complete (nh_mat_result), false
+   when it yielded.  GC may run between calls.  Signal the tape's error,
+   or `json-out-of-memory' after a slice that was left by a signal.  */
 bool
 nh_json_materialize (struct nh_mat *m, int64_t budget_ns)
 {
-  (void) budget_ns;
   if (m->tape->err != NH_JSON_E_NONE)
     nh_mat_signal (m);
-  m->next = 0;
-  m->result = nh_mat_value (m);
-  return true;
+  if (m->failed)
+    xsignal0 (Qjson_out_of_memory);
+  if (m->done)
+    return true;
+  specpdl_ref count = SPECPDL_INDEX ();
+  record_unwind_protect_ptr (nh_mat_slice_unwind, m);
+  m->phase_depth = NH_WK_PHASE_PUSH (NH_WK_PH_JSON, 0);
+  m->in_slice = true;
+  m->done = nh_mat_slice (m, budget_ns);
+  m->in_slice = false;
+  NH_WK_PHASE_POP (m->phase_depth);
+  unbind_to (count, Qnil);
+  return m->done;
 }
 
 static void
@@ -1186,6 +1351,44 @@ nh_json_free_cleanup (void *p)
   free (p);
 }
 
+static void
+nh_mat_release_cleanup (void *p)
+{
+  nh_mat_release (p);
+}
+
+/* The test primitives' start: check ARGS (STRING MODE &rest OPTIONS)
+   into CONF and MODE and tokenize STRING.  The tape is the caller's.  */
+static struct nh_tape *
+nh_json_test_tokenize (ptrdiff_t nargs, Lisp_Object *args,
+		       struct nh_mat_conf *conf, int *mode)
+{
+  Lisp_Object string = args[0];
+  CHECK_STRING (string);
+  if (EQ (args[1], Qstring))
+    *mode = NH_JSON_MODE_STRING;
+  else if (EQ (args[1], Qbuffer))
+    *mode = NH_JSON_MODE_BUFFER;
+  else
+    wrong_choice (list2 (Qstring, Qbuffer), args[1]);
+  *conf = (struct nh_mat_conf) { NH_MAT_OBJ_HASH, NH_MAT_ARR_ARRAY, QCnull,
+				 QCfalse };
+  nh_mat_parse_args (nargs - 2, args + 2, conf);
+  struct nh_tape *tape = nh_json_tokenize (SDATA (string), SBYTES (string),
+					   *mode, NULL);
+  if (!tape)
+    xsignal0 (Qjson_out_of_memory);
+  return tape;
+}
+
+static void
+nh_mat_set_src (struct nh_mat *m, Lisp_Object string)
+{
+  m->src = SDATA (string);
+  m->nsrc = SBYTES (string);
+  m->src_multibyte = STRING_MULTIBYTE (string);
+}
+
 DEFUN ("nidhogg-workers--test-tokenize", Fnidhogg_workers__test_tokenize,
        Snidhogg_workers__test_tokenize, 2, MANY, 0,
        doc: /* Parse STRING through the JSON tape; for tests.
@@ -1198,35 +1401,85 @@ usage: (nidhogg-workers--test-tokenize STRING MODE &rest OPTIONS)  */)
   (ptrdiff_t nargs, Lisp_Object *args)
 {
   specpdl_ref count = SPECPDL_INDEX ();
-  Lisp_Object string = args[0];
-  CHECK_STRING (string);
+  struct nh_mat_conf conf;
   int mode;
-  if (EQ (args[1], Qstring))
-    mode = NH_JSON_MODE_STRING;
-  else if (EQ (args[1], Qbuffer))
-    mode = NH_JSON_MODE_BUFFER;
-  else
-    wrong_choice (list2 (Qstring, Qbuffer), args[1]);
-
-  struct nh_mat m;
-  m.conf = (struct nh_mat_conf) { NH_MAT_OBJ_HASH, NH_MAT_ARR_ARRAY, QCnull,
-				  QCfalse };
-  nh_mat_parse_args (nargs - 2, args + 2, &m.conf);
-  m.src = SDATA (string);
-  m.nsrc = SBYTES (string);
-  m.src_multibyte = STRING_MULTIBYTE (string);
-
-  struct nh_tape *tape = nh_json_tokenize (m.src, m.nsrc, mode, NULL);
-  if (!tape)
-    xsignal0 (Qjson_out_of_memory);
+  struct nh_tape *tape = nh_json_test_tokenize (nargs, args, &conf, &mode);
   record_unwind_protect_ptr (nh_json_free_cleanup, tape);
-  m.tape = tape;
-  m.result = Qnil;
-  nh_json_materialize (&m, 0);
-  Lisp_Object result = m.result;
+  struct nh_mat m;
+  nh_mat_init (&m, tape, &conf);
+  nh_mat_set_src (&m, args[0]);
+  record_unwind_protect_ptr (nh_mat_release_cleanup, &m);
+  nh_json_materialize (&m, -1);
+  Lisp_Object result = nh_mat_result (&m);
   if (mode == NH_JSON_MODE_BUFFER)
     result = Fcons (result, make_fixnum (tape->consumed));
   return unbind_to (count, result);
+}
+
+/* The one sliced materialization the tests drive, and its tape.  */
+static struct nh_mat nh_json_test_mat;
+static bool nh_json_test_live;
+static struct nh_tape *nh_json_test_tape;
+
+static void
+nh_json_test_drop (void)
+{
+  if (nh_json_test_live)
+    nh_mat_release (&nh_json_test_mat);
+  nh_json_test_live = false;
+  free (nh_json_test_tape);
+  nh_json_test_tape = NULL;
+}
+
+DEFUN ("nidhogg-workers--test-json-start", Fnidhogg_workers__test_json_start,
+       Snidhogg_workers__test_json_start, 2, MANY, 0,
+       doc: /* Start a sliced materialization of STRING; for tests.
+The arguments are those of `nidhogg-workers--test-tokenize'.  An earlier
+one is dropped.  Signal the tape's error, if it has one; else build
+nothing yet: `nidhogg-workers--test-json-step' does.
+usage: (nidhogg-workers--test-json-start STRING MODE &rest OPTIONS)  */)
+  (ptrdiff_t nargs, Lisp_Object *args)
+{
+  nh_json_test_drop ();
+  struct nh_mat_conf conf;
+  int mode;
+  nh_json_test_tape = nh_json_test_tokenize (nargs, args, &conf, &mode);
+  if (nh_json_test_tape->err != NH_JSON_E_NONE)
+    {
+      struct nh_mat em = { .tape = nh_json_test_tape };
+      nh_mat_set_src (&em, args[0]);
+      nh_mat_signal (&em);
+    }
+  nh_mat_init (&nh_json_test_mat, nh_json_test_tape, &conf);
+  nh_json_test_live = true;
+  return Qnil;
+}
+
+DEFUN ("nidhogg-workers--test-json-step", Fnidhogg_workers__test_json_step,
+       Snidhogg_workers__test_json_step, 1, 1, 0,
+       doc: /* Run one slice of the test materialization; for tests.
+BUDGET-NS is the slice's budget (negative: none).  Return nil when the
+slice yielded, or (VALUE) when the document is complete (the
+materialization is then dropped).  */)
+  (Lisp_Object budget_ns)
+{
+  CHECK_FIXNUM (budget_ns);
+  if (!nh_json_test_live)
+    error ("No test materialization");
+  if (!nh_json_materialize (&nh_json_test_mat, XFIXNUM (budget_ns)))
+    return Qnil;
+  Lisp_Object value = nh_mat_result (&nh_json_test_mat);
+  nh_json_test_drop ();
+  return list1 (value);
+}
+
+DEFUN ("nidhogg-workers--test-json-in-flight",
+       Fnidhogg_workers__test_json_in_flight,
+       Snidhogg_workers__test_json_in_flight, 0, 0, 0,
+       doc: /* The number of JSON materializations in flight; for tests.  */)
+  (void)
+{
+  return make_fixnum (list_length (nh_json_in_flight));
 }
 
 DEFUN ("nidhogg-workers--test-set-numeric-locale",
@@ -1253,6 +1506,30 @@ nh_json_syms (void)
 {
   defsubr (&Snidhogg_workers__test_tokenize);
   defsubr (&Snidhogg_workers__test_set_numeric_locale);
+  defsubr (&Snidhogg_workers__test_json_start);
+  defsubr (&Snidhogg_workers__test_json_step);
+  defsubr (&Snidhogg_workers__test_json_in_flight);
+
+  nh_json_in_flight = Qnil;
+  staticpro (&nh_json_in_flight);
+
+  DEFVAR_INT ("nidhogg-workers--test-slice-entries",
+	      nidhogg_workers__test_slice_entries,
+	      doc: /* How many tape entries a JSON slice builds between clock checks.
+4,096; tests lower it (1 with a budget of 0 is one entry per slice).  */);
+  nidhogg_workers__test_slice_entries = 4096;
+
+  DEFVAR_INT ("nidhogg-workers--test-intern-count",
+	      nidhogg_workers__test_intern_count,
+	      doc: /* Test only: how many keys the JSON materializer has interned.
+Tests set it to 0 and read it after a parse.  */);
+  nidhogg_workers__test_intern_count = 0;
+
+  DEFVAR_INT ("nidhogg-workers--test-json-fail-at",
+	      nidhogg_workers__test_json_fail_at,
+	      doc: /* Test only: the tape entry at which a JSON slice signals `memory-full'.
+-1, the default, is none.  The signal is what `memory_full' signals.  */);
+  nidhogg_workers__test_json_fail_at = -1;
 }
 
 #endif /* not NH_WK_HARNESS */
