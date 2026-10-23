@@ -157,6 +157,9 @@ struct nh_wk_wst
   bool class_caps;		/* nh-blk: per-class limits */
   int class_running[NH_WK_CL_N];
   int queued;			/* under m */
+  /* Jobs submitted whose run is not over (changes under the done
+     mutex, with a broadcast): what --test-await-landed waits out.  */
+  _Atomic int64_t inflight;
   _Atomic int64_t jobs, cancels, pauses, longest_ns;
   _Atomic int64_t stat[NH_WK_ST_N];
   _Atomic int64_t fallbacks[NH_WK_FB_N];
@@ -592,6 +595,18 @@ nh_wk_complete (struct nh_wk_job *job)
     nh_wk_job_unref (job);
 }
 
+/* A job of worker W is over: run, or cancelled before it ran.  Not in
+   nh_wk_complete, which a worker with its own loop calls again for one
+   job (nh-blk's batches).  */
+static void
+nh_wk_inflight_end (int w)
+{
+  nh_wk_lock (&nh_wk_done_m);
+  atomic_fetch_sub (&nh_wk_w[w].inflight, 1);
+  pthread_cond_broadcast (&nh_wk_done_cv);
+  pthread_mutex_unlock (&nh_wk_done_m);
+}
+
 /* A thread that is not a pool worker but must act as one (tests, Task 9's
    allocator row); nh_wk_set_on_worker sets it.  */
 static _Thread_local bool nh_wk_flagged;
@@ -930,6 +945,7 @@ nh_wk_thread_main (void *arg)
 	atomic_store_explicit (&ws->longest_ns, ns, memory_order_relaxed);
       pthread_mutex_unlock (&ws->m);
       nh_wk_complete (j);
+      nh_wk_inflight_end (w);
       nh_wk_lock (&ws->m);
     }
 }
@@ -993,6 +1009,7 @@ nh_wk_submit (struct nh_wk_job *job)
   job->submitted_ns = nh_wk_now ();
   atomic_store (&job->state, NH_WK_J_QUEUED);
   nh_wk_count (&ws->jobs, 1);
+  atomic_fetch_add (&ws->inflight, 1);
 
   if (nh_wk_inline)
     {
@@ -1000,6 +1017,7 @@ nh_wk_submit (struct nh_wk_job *job)
       atomic_store (&job->state, NH_WK_J_RUNNING);
       job->run (job);
       nh_wk_complete (job);
+      nh_wk_inflight_end (w);
       if (job->finish)
 	nh_wk_arm_inline ();
       return true;
@@ -1028,6 +1046,7 @@ nh_wk_submit (struct nh_wk_job *job)
 	{
 	  atomic_store (&job->state, NH_WK_J_CANCELLED);
 	  atomic_fetch_sub (&job->refs, 1);
+	  nh_wk_inflight_end (w);
 	  return false;
 	}
     }
@@ -1174,6 +1193,7 @@ nh_wk_cancel (struct nh_wk_job *job)
     {
       nh_wk_set_state (job, NH_WK_J_CANCELLED);
       nh_wk_job_unref (job);
+      nh_wk_inflight_end (w);
     }
 }
 
@@ -1911,6 +1931,37 @@ N.  A bounded condition wait, not a sleep.  */)
   return r < 0 ? Qnil : make_int (r);
 }
 
+DEFUN ("nidhogg-workers--test-await-landed",
+       Fnidhogg_workers__test_await_landed,
+       Snidhogg_workers__test_await_landed, 1, 2, 0,
+       doc: /* Wait until WORKER's jobs have run, then land them; for tests.
+Wait at most MS milliseconds (default 5000) until no job of WORKER is
+queued or running, then run the finish functions of every job that has
+landed, as the drainer does.  Return t if no job of WORKER was left.  A
+bounded condition wait, not a sleep.  */)
+  (Lisp_Object worker, Lisp_Object ms)
+{
+  int w = nh_wk_name_index (worker, nh_wk_names, NH_WK_N, "worker");
+  int64_t lim = 5000;
+  if (!NILP (ms))
+    {
+      CHECK_FIXNAT (ms);
+      lim = XFIXNAT (ms);
+    }
+  nh_wk_init ();
+  uint64_t deadline = nh_wk_now () + lim * NH_WK_MS;
+  nh_wk_lock (&nh_wk_done_m);
+  while (atomic_load (&nh_wk_w[w].inflight) > 0 && nh_wk_now () < deadline)
+    {
+      struct timespec ts = nh_wk_abs (deadline);
+      pthread_cond_timedwait (&nh_wk_done_cv, &nh_wk_done_m, &ts);
+    }
+  bool idle = atomic_load (&nh_wk_w[w].inflight) <= 0;
+  pthread_mutex_unlock (&nh_wk_done_m);
+  Fnidhogg_workers__drain ();
+  return idle ? Qt : Qnil;
+}
+
 DEFUN ("nidhogg-workers--test-release-on-wait",
        Fnidhogg_workers__test_release_on_wait,
        Snidhogg_workers__test_release_on_wait, 1, 1, 0,
@@ -2366,6 +2417,7 @@ One budget per redisplay, shared by every tree-sitter and image wait in it.  */)
   defsubr (&Snidhogg_workers__pause_at);
   defsubr (&Snidhogg_workers__release);
   defsubr (&Snidhogg_workers__test_await_paused);
+  defsubr (&Snidhogg_workers__test_await_landed);
   defsubr (&Snidhogg_workers__test_release_on_wait);
   defsubr (&Snidhogg_workers__test_signal_storm);
   defsubr (&Snidhogg_workers__test_storm_sent);
