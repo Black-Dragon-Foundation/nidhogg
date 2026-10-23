@@ -27,17 +27,6 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include "nidhogg-workers.h"
 
-bool
-nh_dns_start (struct Lisp_Process *p, const char *host, const char *service,
-	      const struct addrinfo *hints)
-{
-  (void) p;
-  (void) host;
-  (void) service;
-  (void) hints;
-  return false;
-}
-
 #ifndef NH_WK_HARNESS
 
 /* ===== Directory reads (Task 32) =====================================
@@ -771,12 +760,14 @@ nh_dir_syms (void)
 /* ===== End of directory reads ======================================= */
 
 static void nh_save_syms (void);
+static void nh_dns_syms (void);
 
 void
 nh_blk_syms (void)
 {
   nh_dir_syms ();
   nh_save_syms ();
+  nh_dns_syms ();
 }
 
 #endif /* not NH_WK_HARNESS */
@@ -2219,6 +2210,180 @@ Nil: always the named `.#NAME#.nh-PID-N' file.  Internal, for tests.  */);
 }
 
 /* ==== End of auto-save writes ======================================== */
+
+#endif /* not NH_WK_HARNESS */
+
+
+#ifndef NH_WK_HARNESS
+
+/* ==== Host-name lookups (Task 35): make-network-process `:nowait' on
+   nh-blk class `dns' ==================================================
+
+   (§8.7, MC-27) The lookup glibc's getaddrinfo_a made, on every
+   platform: getaddrinfo with the same hints, on an nh-blk thread.  The
+   process owns the job (its nh_dns_job); the wait loop polls it where it
+   polls getaddrinfo_a's request and hands the addresses to the same
+   postponed connect, or sets the status glibc's path sets.  A running
+   getaddrinfo cannot be cancelled: a delete-process during the lookup
+   drops the job and returns at once; a lookup still parked or queued
+   is skipped, and one already in getaddrinfo finishes on its thread,
+   which frees what it found.  The finish does nothing: it is there so
+   the landing wakes the select (which also comes back every 100 ms
+   while a lookup runs, as for getaddrinfo_a).  */
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netdb.h>
+
+struct nh_dns_job
+{
+  struct nh_wk_job job;
+  char *host, *service;		/* one allocation */
+  struct addrinfo hints;
+  /* Worker output, read once the state is NH_WK_J_DONE.  */
+  int err;
+  struct addrinfo *res;
+};
+
+/* Counters for `nidhogg-workers--test-dns-info'.  */
+static _Atomic int64_t nh_dns_started, nh_dns_dropped, nh_dns_live;
+
+static void
+nh_dns_run (struct nh_wk_job *wj)
+{
+  struct nh_dns_job *j = (struct nh_dns_job *) wj;
+  nh_wk_pause_point (NH_WK_P_IN_LOOKUP);
+  if (atomic_load (&wj->cancel))
+    {
+      j->err = EAI_FAIL;
+      return;
+    }
+  j->err = getaddrinfo (j->host, j->service, &j->hints, &j->res);
+  if (j->err)
+    j->res = NULL;
+}
+
+static void
+nh_dns_finish (struct nh_wk_job *wj)
+{
+  (void) wj;
+}
+
+static void
+nh_dns_free (struct nh_wk_job *wj)
+{
+  struct nh_dns_job *j = (struct nh_dns_job *) wj;
+  if (j->res)
+    freeaddrinfo (j->res);
+  free (j->host);
+  free (j);
+  atomic_fetch_sub (&nh_dns_live, 1);
+}
+
+static bool
+nh_dns_switch_on (void)
+{
+  Lisp_Object v = find_symbol_value (Qnidhogg_workers_dns);
+  return !BASE_EQ (v, Qunbound) && !NILP (v);
+}
+
+struct nh_dns_job *
+nh_dns_start (const char *host, const char *service, int family,
+	      int socktype)
+{
+  if (!nh_dns_switch_on ())
+    return NULL;
+  size_t hl = strlen (host), sl = strlen (service);
+  struct nh_dns_job *j = calloc (1, sizeof *j);
+  char *s = malloc (hl + 1 + sl + 1);
+  if (!j || !s)
+    {
+      free (j);
+      free (s);
+      memory_full (sizeof *j + hl + sl + 2);
+    }
+  memcpy (s, host, hl + 1);
+  memcpy (s + hl + 1, service, sl + 1);
+  j->host = s;
+  j->service = s + hl + 1;
+  j->hints.ai_family = family;
+  j->hints.ai_socktype = socktype;
+  j->job.w = NH_WK_BLK;
+  j->job.cls = NH_WK_CL_DNS;
+  j->job.run = nh_dns_run;
+  j->job.finish = nh_dns_finish;
+  j->job.free = nh_dns_free;
+  atomic_store (&j->job.refs, 1);
+  atomic_fetch_add (&nh_dns_live, 1);
+  if (!nh_wk_submit (&j->job))
+    {
+      nh_wk_job_unref (&j->job);
+      return NULL;
+    }
+  atomic_fetch_add (&nh_dns_started, 1);
+  /* The submitter's reference is the process's now.  */
+  return j;
+}
+
+bool
+nh_dns_poll (struct nh_dns_job *j, struct addrinfo **res)
+{
+  int st = atomic_load (&j->job.state);
+  if (st == NH_WK_J_QUEUED || st == NH_WK_J_RUNNING)
+    return true;
+  *res = st == NH_WK_J_DONE && j->err == 0 ? j->res : NULL;
+  if (*res)
+    j->res = NULL;
+  return false;
+}
+
+const char *
+nh_dns_host (struct nh_dns_job *j)
+{
+  return j->host;
+}
+
+void
+nh_dns_drop (struct nh_dns_job *j)
+{
+  int st = atomic_load (&j->job.state);
+  if (st == NH_WK_J_QUEUED || st == NH_WK_J_RUNNING)
+    {
+      atomic_fetch_add (&nh_dns_dropped, 1);
+      nh_wk_cancel (&j->job);
+    }
+  nh_wk_job_unref (&j->job);
+}
+
+DEFUN ("nidhogg-workers--test-dns-info", Fnidhogg_workers__test_dns_info,
+       Snidhogg_workers__test_dns_info, 0, 0, 0,
+       doc: /* Return the counters of the `:nowait' lookups on nh-blk; for tests.
+A plist: `:started' (jobs submitted), `:dropped' (jobs a process let go
+of before they ended) and `:live' (jobs not yet freed).  */)
+  (void)
+{
+  return list (intern_c_string (":started"),
+	       make_int (atomic_load (&nh_dns_started)),
+	       intern_c_string (":dropped"),
+	       make_int (atomic_load (&nh_dns_dropped)),
+	       intern_c_string (":live"),
+	       make_int (atomic_load (&nh_dns_live)));
+}
+
+static void
+nh_dns_syms (void)
+{
+  DEFSYM (Qnidhogg_workers_dns, "nidhogg-workers-dns");
+  DEFVAR_BOOL ("nidhogg-workers--test-glibc-dns-off", nh_dns_glibc_off,
+	       doc: /* Non-nil: `:nowait' lookups take the path of a platform without getaddrinfo_a.
+With `nidhogg-workers-dns' off (or a job that could not start) the
+lookup is then synchronous, as on macOS, Android and musl.  No effect
+where Emacs has no getaddrinfo_a.  Internal, for tests.  */);
+  nh_dns_glibc_off = false;
+  defsubr (&Snidhogg_workers__test_dns_info);
+}
+
+/* ==== End of host-name lookups ======================================= */
 
 #endif /* not NH_WK_HARNESS */
 
