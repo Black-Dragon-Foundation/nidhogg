@@ -94,7 +94,7 @@ The output, oldest first, is in the process property `out'."
      (lambda () (equal (workers-io-tests--out proc) want)))))
 
 (defun workers-io-tests--fd-count ()
-  (length (directory-files "/proc/self/fd" nil "\\`[0-9]")))
+  (length (directory-files "/dev/fd" nil "\\`[0-9]")))
 
 (defun workers-io-tests--event-ids (log event)
   (mapcar #'cadr (cl-remove-if-not (lambda (e) (eq (car e) event)) log)))
@@ -178,14 +178,14 @@ The output, oldest first, is in the process property `out'."
                                             (workers-io-tests--info p :wake)))))
            (child-fds
             (with-temp-buffer
-              (call-process "sh" nil t nil "-c" "ls /proc/$$/fd; :")
+              (call-process "sh" nil t nil "-c" "ls /dev/fd; :")
               (mapcar #'string-to-number (split-string (buffer-string))))))
       (should (= (length reader-fds) (if (eq mode 'threads) 20 10)))
       (should (memq 0 child-fds))
       (should-not (cl-intersection reader-fds child-fds))
       (let* ((async-fds nil)
              (lister (make-process :name "wio-lister"
-                                   :command '("sh" "-c" "ls /proc/$$/fd; read x")
+                                   :command '("sh" "-c" "ls /dev/fd; read x")
                                    :connection-type 'pipe :noquery t
                                    :filter (lambda (_p s)
                                              (setq async-fds (concat async-fds s))))))
