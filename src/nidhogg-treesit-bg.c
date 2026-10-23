@@ -955,7 +955,12 @@ nh_ts_attempt (struct Lisp_TS_Parser *p)
 #if NH_TS_JOBS
   nh_ts_counted (NH_TS_C_ATTEMPTS);
   int64_t t0 = nh_ts_now ();
-  int64_t deadline = t0 + NH_TS_ATTEMPT_NS;
+  /* A test may fix the bound: the rows assert the ledger, not a clock.  */
+  Lisp_Object bound = Vnidhogg_workers__test_ts_attempt_bound;
+  int64_t deadline = (EQ (bound, Qt) ? INT64_MAX
+		      : FIXNATP (bound) ? t0 + min (XFIXNAT (bound),
+						    NH_TS_WAIT_MAX_NS)
+		      : t0 + NH_TS_ATTEMPT_NS);
   int depth = NH_WK_PHASE_PUSH (NH_WK_PH_TREESIT, 0);
   TSParseOptions opts = { .payload = &deadline,
 			  .progress_callback = nh_ts_attempt_progress };
@@ -1397,6 +1402,13 @@ nh_ts_syms (void)
 	       doc: /* The buffer a redisplay is fontifying, or nil.  */);
   Vnidhogg__redisplay_fontifying = Qnil;
 #ifdef HAVE_TREE_SITTER
+  DEFVAR_LISP ("nidhogg-workers--test-ts-attempt-bound",
+	       Vnidhogg_workers__test_ts_attempt_bound,
+	       doc: /* Test only: the bound of a demand's synchronous attempt.
+nil, the default, is 1 ms; a natural number is the bound in nanoseconds,
+at most 2 s (0 cancels the attempt at tree-sitter's first progress
+check); t never cancels it.  */);
+  Vnidhogg_workers__test_ts_attempt_bound = Qnil;
   DEFSYM (Qnidhogg_workers_treesit, "nidhogg-workers-treesit");
   defsubr (&Snidhogg_workers__test_ts_alloc);
   defsubr (&Snidhogg_treesit_parser_ready_p);
