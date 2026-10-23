@@ -91,6 +91,9 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 # include <sys/eventfd.h>
 # include <sys/syscall.h>
 #endif
+#ifdef __APPLE__
+# include <pthread/qos.h>
+#endif
 
 #include "nidhogg-workers.h"
 #ifndef NH_WK_HARNESS
@@ -187,7 +190,9 @@ static NH_WK_TEST_ONLY _Atomic int64_t nh_wk_phase_ns[NH_WK_PHASE_SLOTS];
 static _Atomic int64_t nh_wk_deferrals[2];
 
 /* The boost: 0 untried, 1 works, 2 denied (never tried again).  */
+#ifndef __APPLE__
 static _Atomic int nh_wk_boost_state;
+#endif
 
 static pthread_once_t nh_wk_once = PTHREAD_ONCE_INIT;
 
@@ -882,7 +887,9 @@ nh_wk_set_name (int w)
 static void
 nh_wk_set_idle_priority (void)
 {
-#ifdef SCHED_IDLE
+#if defined __APPLE__
+  pthread_set_qos_class_self_np (QOS_CLASS_UTILITY, 0);
+#elif defined SCHED_IDLE
   struct sched_param sp = { 0 };
   pthread_setschedparam (pthread_self (), SCHED_IDLE, &sp);
 #endif
@@ -1053,11 +1060,24 @@ nh_wk_submit (struct nh_wk_job *job)
   return true;
 }
 
+#ifdef __APPLE__
+/* The override of the wait in progress on this thread (nh_wk_wait is
+   not reentrant on one thread).  */
+static _Thread_local pthread_override_t nh_wk_override;
+#endif
+
 /* Try to raise the idle-priority thread T for a wait.  */
 static bool
 nh_wk_boost (int w, pthread_t t)
 {
-#ifdef SCHED_IDLE
+#ifdef __APPLE__
+  /* A thread's QoS class cannot be changed from outside; an override
+     raises it until ended.  Start and end run on the waiting thread.  */
+  nh_wk_override = pthread_override_qos_class_start_np
+    (t, QOS_CLASS_USER_INITIATED, 0);
+  if (nh_wk_override)
+    return true;
+#elif defined SCHED_IDLE
   if (atomic_load (&nh_wk_boost_state) != 2)
     {
       struct sched_param sp = { 0 };
@@ -1078,7 +1098,12 @@ nh_wk_boost (int w, pthread_t t)
 static void
 nh_wk_unboost (pthread_t t)
 {
-#ifdef SCHED_IDLE
+#ifdef __APPLE__
+  (void) t;
+  if (nh_wk_override)
+    pthread_override_qos_class_end_np (nh_wk_override);
+  nh_wk_override = NULL;
+#elif defined SCHED_IDLE
   struct sched_param sp = { 0 };
   pthread_setschedparam (t, SCHED_IDLE, &sp);
 #else
@@ -1743,6 +1768,12 @@ nh_wk_test_run (struct nh_wk_job *job)
   t->tid = syscall (SYS_gettid);
   t->policy = sched_getscheduler (0);
   pthread_getname_np (pthread_self (), t->comm, sizeof t->comm);
+#elif defined __APPLE__
+  /* The QoS class stands for the policy: 1 utility (idle), 0 other.  */
+  qos_class_t qc = QOS_CLASS_UNSPECIFIED;
+  pthread_get_qos_class_np (pthread_self (), &qc, NULL);
+  t->policy = qc == QOS_CLASS_UTILITY;
+  pthread_getname_np (pthread_self (), t->comm, sizeof t->comm);
 #else
   t->policy = -1;
 #endif
@@ -1886,6 +1917,11 @@ once it ran, `:comm' (its thread's name), `:policy' (`other', `idle',
     policy = intern_c_string ("idle");
   else if (t->policy == SCHED_BATCH)
     policy = intern_c_string ("batch");
+#elif defined __APPLE__
+  if (t->policy == 1)
+    policy = intern_c_string ("idle");
+  else if (t->policy == 0)
+    policy = intern_c_string ("other");
 #endif
   bool ran = st != NH_WK_J_QUEUED && t->comm[0];
   return listn (8, nh_wk_kw (":state"), intern_c_string (states[st]),
