@@ -2456,11 +2456,39 @@ nh_img_phase_end (int depth, int64_t t0)
   nh_wk_phase_ns_add (NH_WK_PH_IMAGE, 0, nh_img_now () - t0);
 }
 
+static struct nh_wk_cost nh_img_cost[NH_IMG_FMT_N];
+
+static const char *const nh_img_fmt_names[NH_IMG_FMT_N]
+  = { "png", "jpeg", "gif", "webp" };
+
+void
+nh_img_cost_seed (const char *name, int64_t ns_per_px)
+{
+  for (int i = 0; i < NH_IMG_FMT_N; i++)
+    if (strcmp (name, nh_img_fmt_names[i]) == 0)
+      {
+	atomic_store (&nh_img_cost[i].per_x1024, ns_per_px * 1024);
+	atomic_store (&nh_img_cost[i].n, 1);
+	return;
+      }
+  error ("Unknown image format: %s", name);
+}
+
+Lisp_Object
+nh_img_costs_lisp (void)
+{
+  Lisp_Object r = Qnil;
+  for (int i = NH_IMG_FMT_N - 1; i >= 0; i--)
+    if (atomic_load (&nh_img_cost[i].n))
+      r = Fcons (Fcons (intern_c_string (nh_img_fmt_names[i]),
+			make_int (atomic_load (&nh_img_cost[i].per_x1024)
+				  / 1024)),
+		 r);
+  return list2 (intern_c_string ("image"), r);
+}
+
 #ifdef HAVE_WINDOW_SYSTEM
 
-/* A redisplay wait takes the budget in slices, so that a decode that ends
-   early leaves the rest of the budget to the next image.  */
-#define NH_IMG_SLICE_NS INT64_C (1000000)
 /* How long a caller that needs the pixels of a pending entry waits before
    it loads them itself.  */
 #define NH_IMG_PIXELS_WAIT_NS INT64_C (1000000000)
@@ -2481,6 +2509,7 @@ struct nh_img_job
   uint64_t gen;
   bool consumed;		/* main thread: the result was taken */
   bool b64;			/* DATA is base64 text: the job decodes it */
+  int64_t px, decode_ns;	/* native pixels; the decode's time */
 };
 
 /* A pending entry; main thread (lock holder) only.  */
@@ -2521,6 +2550,26 @@ static _Atomic int nh_img_live;
 static EMACS_INT nh_img_n_landed, nh_img_n_dropped, nh_img_n_deferred;
 /* The cache the test entries name.  */
 static char nh_img_test_cache;
+
+/* Decode ns per pixel (x 1024) of each format (§7.1a).  Fed by a job's
+   decode at landing and by the loader's time when nh_img_lookup
+   declined (nh_img_decl_*, consumed by nh_img_cost_add).  */
+static int nh_img_decl_fmt = -1;
+static int64_t nh_img_decl_px, nh_img_decl_t0;
+
+/* image.c, after the loader ran: if nh_img_lookup declined to inline, the
+   time since is the format's decode cost.  */
+void
+nh_img_cost_add (struct image *img)
+{
+  if (nh_img_decl_fmt < 0)
+    return;
+  int fmt = nh_img_decl_fmt;
+  nh_img_decl_fmt = -1;
+  if (!img->load_failed_p)
+    nh_wk_cost_add (&nh_img_cost[fmt], nh_img_now () - nh_img_decl_t0,
+		    nh_img_decl_px);
+}
 
 /* Task 30.  Where each window last drew a ready image: (window, position,
    in a string or not) -> the entry; one slot per site, replaced in turn.
@@ -2619,7 +2668,18 @@ nh_img_job_run (struct nh_wk_job *job)
   if (j->params.frame_index >= 0)
     j->params.key = (j->data ? nh_img_hash (j->data, j->len)
 		     : nh_img_file_key (j->file));
+  int64_t t0 = nh_img_now ();
   j->rc = nh_img_decode (j->fmt, j->data, j->len, &j->params, &j->out);
+  j->decode_ns = nh_img_now () - t0;
+}
+
+/* The job's decode time is its format's cost, once the main thread
+   takes the result.  */
+static void
+nh_img_job_cost (struct nh_img_job *j)
+{
+  if (j->rc == 0 && j->px > 0 && j->decode_ns > 0 && j->fmt < NH_IMG_FMT_N)
+    nh_wk_cost_add (&nh_img_cost[j->fmt], j->decode_ns, j->px);
 }
 
 /* The last reference is gone (either thread).  */
@@ -2810,17 +2870,26 @@ nh_img_site_record (struct frame *f, struct image *img)
 
 /* The new pending entry P of IMG: link the ready entry drawn at this
    site, if its spec qualifies.  */
-static void
-nh_img_stand_in_find (struct frame *f, struct image *img, struct nh_img_pend *p)
+static struct nh_img_site *
+nh_img_stand_site (struct frame *f, struct image *img)
 {
   if (!nh_img_in_redisplay || !nh_img_cur.w)
-    return;
+    return NULL;
   struct nh_img_site *s = nh_img_site_find (&nh_img_cur);
   if (!s || s->cache != FRAME_IMAGE_CACHE (f))
-    return;
+    return NULL;
   struct image *e = IMAGE_OPT_FROM_ID (f, s->id);
   if (!e || e == img || e->hash != s->hash || !e->pixmap
       || !nh_img_stand_spec_p (e->spec, img->spec))
+    return NULL;
+  return s;
+}
+
+static void
+nh_img_stand_in_find (struct frame *f, struct image *img, struct nh_img_pend *p)
+{
+  struct nh_img_site *s = nh_img_stand_site (f, img);
+  if (!s)
     return;
   p->has_stand = true;
   p->stand_id = s->id;
@@ -2870,6 +2939,21 @@ nh_img_lookup (struct frame *f, struct image *img)
   bool ok = (nh_img_probe (spec, hfmt, scan, nh_img_index (spec), &sc, &w, &h)
 	     && nh_img_size_ok (f, w, h)
 	     && nh_img_displayed_size (f, spec, w, h, &dw, &dh));
+  /* The one rule (§7.1a): inline up to the threshold, today's loader
+     with no snapshot or copy; without a stand-in only the base threshold
+     applies, so pressure never draws a blank frame.  A prefetch is no
+     frame's: it always takes the job.  */
+  if (ok && !nh_img_prefetching
+      && nh_wk_decide (NH_WK_A_IMAGE,
+		       nh_wk_cost_estimate (&nh_img_cost[fmt], (int64_t) w * h),
+		       !nh_img_stand_site (f, img)))
+    {
+      nh_img_phase_end (depth, t0);
+      nh_img_decl_fmt = fmt;
+      nh_img_decl_px = (int64_t) w * h;
+      nh_img_decl_t0 = nh_img_now ();
+      return false;
+    }
   struct nh_img_job *j = ok ? calloc (1, sizeof *j) : NULL;
   if (j && !nh_img_job_inputs (f, img, fmt, &j->params, &j->data, &j->len,
 			       &j->file))
@@ -2880,6 +2964,7 @@ nh_img_lookup (struct frame *f, struct image *img)
   nh_img_phase_end (depth, t0);
   if (!j)
     return false;
+  j->px = (int64_t) w * h;
   j->fmt = fmt;
   j->b64 = j->data && nh_img_b64_spec (spec);
   nh_img_job_init (j, FRAME_IMAGE_CACHE (f), img->id);
@@ -2889,23 +2974,15 @@ nh_img_lookup (struct frame *f, struct image *img)
       return false;
     }
 
-  /* Wait within the redisplay's budget (§8.3 item 4).  */
+  /* Redisplay never waits (§7.1): a job that is not done (the inline
+     mode runs it at once) is pending, shown as the stand-in or the
+     background rectangle.  */
   int r = 0;
-  /* A prefetch does not wait: nothing is waiting for the picture.  */
-  while (!nh_img_prefetching && atomic_load (&j->job.state) != NH_WK_J_DONE)
-    {
-      int64_t grant = nh_wk_budget_take (NH_IMG_SLICE_NS);
-      if (grant <= 0)
-	break;
-      r = nh_wk_wait (&j->job, grant, NH_WK_PH_WORKER_WAIT, NH_WK_RS_DISPLAY);
-      if (r != 0)
-	break;
-    }
   int st = atomic_load (&j->job.state);
   if (st == NH_WK_J_DONE)
     {
-      /* In time: this redisplay shows it.  */
       j->consumed = true;
+      nh_img_job_cost (j);
       depth = nh_img_phase_begin (&t0);
       img->load_failed_p = !nh_img_load_result (f, img, fmt, &j->out, j->rc);
       nh_img_phase_end (depth, t0);
@@ -3040,6 +3117,8 @@ nh_img_land_pend (struct frame *f, struct image *img, struct nh_img_pend *r,
   j->consumed = true;
   int64_t t0;
   int depth = nh_img_phase_begin (&t0);
+  if (!sync)
+    nh_img_job_cost (j);
   nh_img_land (f, img, j->fmt, sync ? NULL : &j->out, j->rc);
   nh_img_phase_end (depth, t0);
   nh_img_pend_free (r);

@@ -174,8 +174,11 @@ Value: (DIGEST LISP-DATA CORNERS FAILED LOG)."
   `(let ((nidhogg-workers-images t)
          (nidhogg-image-defer t)
          (nidhogg-workers--mode 'threads))
+     ;; The rows test the job path: every decision offloads.
+     (nidhogg-workers--test-decide 'offload)
      (unwind-protect
          (progn ,@body)
+       (nidhogg-workers--test-decide nil)
        (nidhogg-workers--release)
        (nidhogg-workers--test-release-on-wait nil)
        (nidhogg-workers--test-await-landed 'nh-img 5000)
@@ -300,9 +303,9 @@ Return the window."
       (set-frame-parameter nil 'background-color old))))
 
 (ert-deftest workers-gui/image-twenty-in-one-budget ()
-  ;; S15.  A 20-image page with every decode parked: the budget ledger of
-  ;; that one redisplay grants at most the budget in total and nothing to
-  ;; every take after it; every image lands later.
+  ;; S15.  A 20-image page with every decode parked: that one redisplay
+  ;; takes nothing from the wait budget (images never wait); every image
+  ;; lands later.
   (workers-image-gui--skip)
   (workers-image-gui--with-defer
     (let ((specs (cl-loop for i from 1 to 20
@@ -315,9 +318,8 @@ Return the window."
       (nidhogg-workers--test-budget-ledger t)
       (redisplay t)
       (let ((ledger (nidhogg-workers--test-budget-ledger t)))
-        (should (<= (car ledger) (* nidhogg-redisplay-wait-budget 1000000)))
-        ;; The first image's last take and one take for each of the rest.
-        (should (>= (cdr ledger) 20)))
+        ;; Redisplay never waits for an image: no take at all.
+        (should (equal ledger '(0 . 0))))
       (should (= 20 (workers-image-gui--info :pending)))
       (nidhogg-workers--release 'after-header)
       (should (nidhogg-workers--test-await-landed 'nh-img 10000))
@@ -531,3 +533,81 @@ Return the window."
                      want)))))
 
 ;;; workers-image-gui-tests.el ends here
+
+;;; Task 55: the inline-or-offload rule for images.
+
+(defmacro workers-image-gui--with-policy (&rest body)
+  "Run BODY with deferral on, the decision left to the rule, quiet."
+  (declare (indent 0))
+  `(let ((nidhogg-workers-images t)
+         (nidhogg-image-defer t)
+         (nidhogg-workers--mode 'threads))
+     (unwind-protect
+         (progn (nidhogg-workers--test-decide nil)
+                (nidhogg-workers--test-pressure 'quiet)
+                (nidhogg-workers-stats t)
+                ,@body)
+       (nidhogg-workers--test-pressure nil)
+       (nidhogg-workers--release)
+       (nidhogg-workers--test-release-on-wait nil)
+       (nidhogg-workers--test-await-landed 'nh-img 5000)
+       (redisplay t))))
+
+(defun workers-image-gui--display-wait ()
+  (plist-get (plist-get (plist-get (nidhogg-workers-stats) :phase-ms)
+                        'worker-wait)
+             'display))
+
+(ert-deftest workers-gui/image-small-inline ()
+  (workers-image-gui--skip)
+  (workers-image-gui--with-policy
+    (nidhogg-workers--test-cost 'image 'png 10)
+    (let ((jobs (workers-image-gui--img-jobs)))
+      (clear-image-cache t)
+      (workers-image-gui--show (list (workers-image-gui--spec "palette.png" nil nil)))
+      (redisplay t)
+      (should (= 0 (workers-image-gui--info :pending)))
+      (should (= jobs (workers-image-gui--img-jobs)))
+      (should (assoc '(image inline estimate)
+                     (plist-get (nidhogg-workers-stats) :decisions))))))
+
+(ert-deftest workers-gui/image-no-wait ()
+  ;; A parked decode: redisplay shows the pending entry and never waits.
+  (workers-image-gui--skip)
+  (workers-image-gui--with-defer
+    (nidhogg-workers-stats t)
+    (workers-image-gui--pend
+     (list (workers-image-gui--spec "palette.png" nil nil)))
+    (should (= 1 (workers-image-gui--info :pending)))
+    (should (zerop (workers-image-gui--display-wait)))
+    (workers-image-gui--land)))
+
+(ert-deftest workers-gui/image-no-standin-base-only ()
+  ;; 2 ms is above the pressure threshold and below the base one: with
+  ;; no stand-in the base one applies, so no blank frame is drawn.
+  (workers-image-gui--skip)
+  (workers-image-gui--with-policy
+    (nidhogg-workers--test-cost 'image 'png 10700)
+    (nidhogg-workers--test-pressure t)
+    (clear-image-cache t)
+    (workers-image-gui--show (list (workers-image-gui--spec "palette.png" nil nil)))
+    (redisplay t)
+    (should (= 0 (workers-image-gui--info :pending)))
+    (should (assoc '(image inline estimate)
+                   (plist-get (nidhogg-workers-stats) :decisions)))))
+
+(ert-deftest workers-gui/live-view-inline ()
+  ;; 100 frames of a 1-2 ms image, quiet: always inline, no wait, no
+  ;; pending entry (no blank frame).
+  (workers-image-gui--skip)
+  (workers-image-gui--with-policy
+    (nidhogg-workers--test-cost 'image 'png 8000)
+    (let ((jobs (workers-image-gui--img-jobs))
+          (spec (workers-image-gui--spec "palette.png" nil nil)))
+      (dotimes (_ 100)
+        (clear-image-cache t)
+        (workers-image-gui--show (list spec))
+        (redisplay t)
+        (should (= 0 (workers-image-gui--info :pending))))
+      (should (= jobs (workers-image-gui--img-jobs)))
+      (should (zerop (workers-image-gui--display-wait))))))

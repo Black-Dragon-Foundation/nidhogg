@@ -506,10 +506,10 @@ the wait begins, and a finished job pushes no phase."
   (should (equal (list (nidhogg-workers--test-budget-take 5)
                        (nidhogg-workers--test-budget-take 5)
                        (nidhogg-workers--test-budget-take 5))
-                 '(5 3 0)))
-  (should (equal (nidhogg-workers--test-budget-ledger t) '(8000000 . 1)))
+                 '(1 0 0)))
+  (should (equal (nidhogg-workers--test-budget-ledger t) '(1000000 . 2)))
   (nidhogg-workers--test-redisplay-begin)
-  (should (eql (nidhogg-workers--test-budget-take 5) 5))
+  (should (eql (nidhogg-workers--test-budget-take 5) 1))
   (let ((nidhogg-redisplay-wait-budget 2))
     (nidhogg-workers--test-redisplay-begin)
     (should (eql (nidhogg-workers--test-budget-take 5) 2))))
@@ -567,3 +567,71 @@ the wait begins, and a finished job pushes no phase."
     (should (eql (workers-tests--stat 'nh-save :jobs) 0))))
 
 ;;; workers-tests.el ends here
+
+;;;; The inline-or-offload rule (Task 55)
+
+(defmacro workers-tests--policy (&rest body)
+  "Run BODY with a clean decision ledger and pressure, then restore."
+  (declare (indent 0))
+  `(unwind-protect
+       (progn (nidhogg-workers--test-decide nil)
+              (nidhogg-workers--test-pressure 'quiet)
+              (nidhogg-workers-stats t)
+              ,@body)
+     (nidhogg-workers--test-decide nil)
+     (nidhogg-workers--test-pressure nil)))
+
+(defun workers-tests--decisions ()
+  (plist-get (nidhogg-workers-stats) :decisions))
+
+(ert-deftest workers/decide-inline-below-threshold ()
+  (skip-unless (not (eq nidhogg-workers--mode 'inline)))
+  (workers-tests--policy
+    (should (eq (nidhogg-workers--decide 'image 3000000) 'inline))
+    (should (eq (nidhogg-workers--decide 'image 5000000) 'offload))
+    (should (eq (nidhogg-workers--decide 'image nil) 'offload))
+    (let ((d (workers-tests--decisions)))
+      (should (eql (cdr (assoc '(image inline estimate) d)) 1))
+      (should (eql (cdr (assoc '(image offload estimate) d)) 1))
+      (should (eql (cdr (assoc '(image offload no-estimate) d)) 1)))
+    (should (equal (plist-get (nidhogg-workers--policy) :inline-ns) 4000000))))
+
+(ert-deftest workers/decide-pressure-lowers ()
+  (workers-tests--policy
+    (should (eq (nidhogg-workers--decide 'ts 2000000) 'inline))
+    (nidhogg-workers--test-pressure t)
+    (should (eq (nidhogg-workers--decide 'ts 2000000) 'offload))
+    (should (eql (cdr (assoc '(ts offload pressure) (workers-tests--decisions)))
+                 1))
+    ;; base-only ignores it.
+    (should (eq (nidhogg-workers--decide 'ts 2000000 t) 'inline))))
+
+(ert-deftest workers/pressure-hysteresis ()
+  (workers-tests--policy
+    (nidhogg-workers--test-pressure t)
+    (nidhogg-workers--test-redisplay-begin)
+    (nidhogg-workers--test-pressure 'quiet t)
+    (dotimes (_ 2)
+      (nidhogg-workers--test-redisplay-begin)
+      (should (plist-get (plist-get (nidhogg-workers-stats) :pressure) :now)))
+    (nidhogg-workers--test-redisplay-begin)
+    (should-not (plist-get (plist-get (nidhogg-workers-stats) :pressure) :now))
+    (should (eq (nidhogg-workers--decide 'ts 2000000) 'inline))))
+
+(ert-deftest workers/pressure-never-raises ()
+  (workers-tests--policy
+    (should (eq (nidhogg-workers--decide 'ts 5000000) 'offload))
+    (should (eql (cdr (assoc '(ts offload estimate) (workers-tests--decisions)))
+                 1))))
+
+(ert-deftest workers/decide-forced-inline-mode ()
+  (workers-tests--policy
+    (let ((nidhogg-workers--mode 'inline))
+      (should (eq (nidhogg-workers--decide 'image 1) 'offload))
+      (should (eql (cdr (assoc '(image offload forced)
+                               (workers-tests--decisions)))
+                   1)))
+    (nidhogg-workers--test-decide 'inline)
+    (should (eq (nidhogg-workers--decide 'image 99000000) 'inline))
+    (should (eql (cdr (assoc '(image inline forced) (workers-tests--decisions)))
+                 1))))
