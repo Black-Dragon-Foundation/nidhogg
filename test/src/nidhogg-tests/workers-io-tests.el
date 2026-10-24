@@ -67,6 +67,8 @@
 A row that finds a process not owned then says why: `:refused' (no
 handle) or the handle's own state (one that was handed back)."
   (list :status (process-status proc)
+        :exit (and (memq (process-status proc) '(exit signal))
+                   (process-exit-status proc))
         :info (nidhogg-workers--test-io-info proc)))
 
 (function-put #'workers-io-tests--info 'ert-explainer
@@ -528,9 +530,14 @@ meanwhile, while a SIGCHLD still reaches its handler and
   ;; subprocess leads its own session (setsid), so its process group is
   ;; orphaned and Linux discards SIGTSTP; the status never becomes `stop'.
   ;; (32 MB, not 500 MB: the cap is 256 KB; the row needs a stream that
-  ;; outruns it, not a long one.)
+  ;; outruns it, not a long one.)  The stream comes in two halves, the
+  ;; second once the row sends a line: the filter-t pause is checked on
+  ;; a running process, which must not have sent its last byte (and been
+  ;; handed back at its EOF) by then.  Big deliveries take the first half
+  ;; in a few waits, so a check after "more than half arrived" raced the
+  ;; end; the producer's process group is stopped, its shell and `head'.
   (workers-io-tests--modes
-    (let* ((total (* 32 1024 1024)) (n 0) (over nil) (proc nil)
+    (let* ((total (* 32 1024 1024)) (half (/ total 2)) (n 0) (over nil) (proc nil)
            (filter (lambda (p s)
                      (setq n (+ n (length s)))
                      (let ((q (or (workers-io-tests--info p :queued) 0))
@@ -543,8 +550,9 @@ meanwhile, while a SIGCHLD still reaches its handler and
       (setq proc (make-process
                   :name "wio-flow" :connection-type 'pipe :noquery t
                   :coding 'binary :filter filter
-                  :command (list "head" "-c" (number-to-string total)
-                                 "/dev/zero")))
+                  :command (list "sh" "-c"
+                                 (format "head -c %d /dev/zero; read x; exec head -c %d /dev/zero"
+                                         half half))))
       (should (workers-io-tests--info proc :owned))
       (when (eq mode 'threads)
         ;; Nothing is delivered yet: nh-io fills the queue to its cap,
@@ -553,17 +561,20 @@ meanwhile, while a SIGCHLD still reaches its handler and
         (should (= (workers-io-tests--info proc :queued)
                    (workers-io-tests--info proc :cap)))
         (should (> (workers-io-tests--io-stat :backpressure) 0)))
-      (signal-process proc 'STOP)
+      (signal-process (- (process-id proc)) 'STOP)
       (nidhogg-workers--release 'after-read)
       (should (workers-io-tests--until
                (lambda () (eq (process-status proc) 'stop))))
-      (should (< n total))
+      (should (< n half))
       (continue-process proc)
-      (should (workers-io-tests--until (lambda () (> n (/ total 2))) 2500))
-      ;; Filter t pauses the reader (it stays the owner); a filter resumes.
+      ;; The whole first half; the shell now waits for its line.
+      (should (workers-io-tests--until (lambda () (= n half)) 2500))
+      ;; Filter t pauses the reader (it stays the owner); a filter resumes:
+      ;; the second half, sent while paused, all arrives.
       (set-process-filter proc t)
       (should (workers-io-tests--info proc :owned))
       (should (workers-io-tests--info proc :paused))
+      (process-send-string proc "\n")
       (set-process-filter proc filter)
       (should-not (workers-io-tests--info proc :paused))
       (should (workers-io-tests--until (lambda () (= n total)) 2500))
