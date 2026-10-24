@@ -4,6 +4,14 @@
 #                    [--build-dir DIR] [--check FILE] [--out FILE] [--stage STAGE] [--dry-run]
 # --stage build|check|pack runs one part on an existing --build-dir (default: all three in one run): build = configure and make
 # (and the compiled-Lisp cache), check = the --check targets in the built tree, pack = install and the tarball (--out).
+# --dev (or NIDHOGG_BUILD_DEV=1) is the DEV BUILD, for agents' task builds and functional/GUI tests: it configures
+# --with-native-compilation=yes instead of aot, so only the preloaded Lisp (the files dumped into emacs) is native-compiled and the
+# other ~1,400 files stay bytecode; the build takes minutes where the AOT build takes the better part of an hour.  Skipped:
+# the .eln of every non-preloaded library.  Also baked in: lisp/site-init.el (in the build copy, dumped into the image) sets
+# native-comp-jit-compilation to nil, so no background compiles start while tests run.  Fine on a dev build: GUI and functional
+# tests.  Needs the AOT build: performance runs (Gate A, budgets, A/B) and releases.  A dev build can never be mistaken for a
+# release: --dev refuses --out and --stage pack (no tarball is made), and its compiled-Lisp cache stamp says "dev", so dev and
+# AOT entries never mix (use a fresh --build-dir when switching modes).
 # Exit: 0 ok, 1 build/check failed or not enough memory, 2 usage.
 # Test overrides: NIDHOGG_BUILD_UNAME, NIDHOGG_BUILD_NPROC, NIDHOGG_BUILD_MEMORY_KB, NIDHOGG_BUILD_PODMAN,
 # NIDHOGG_BUILD_VMSTAT (a vm_stat stand-in), NIDHOGG_BUILD_HEARTBEAT (seconds between "still running" lines, default 300).
@@ -13,7 +21,9 @@
 # NIDHOGG_BUILD_LISP_CACHE=DIR keeps the build's compiled Lisp (the generated files under lisp/ and leim/: .elc, loaddefs, ...,
 # and obj/native-lisp: the .eln files) in DIR: written after `make`, restored (made newer than every source) before it.  The
 # caller keys DIR on everything that determines the output (the Lisp and C sources, build.sh, the distro, the compiler): an
-# entry is only ever reused for the exact same inputs.
+# entry is only ever reused for the exact same inputs; build.sh itself restores only an entry made by the same compiler,
+# architecture and configure line (--prefix included: it is part of the .eln files' ABI hash).  Builds of one key may share DIR at once: a restore holds DIR/.lock
+# shared and a save holds it exclusive (with flock; without it, as before).
 # bash 3.2-safe (macOS): none of the bash 4 features.
 set -euo pipefail
 
@@ -24,7 +34,7 @@ DISTROS="fedora-44 fedora-45 ubuntu-26.04"
 usage() {
   cat >&2 <<USAGE
 usage: nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memory SIZE]
-                        [--build-dir DIR] [--check FILE] [--out FILE] [--stage build|check|pack] [--without-glitnir] [--dry-run]
+                        [--build-dir DIR] [--check FILE] [--out FILE] [--stage build|check|pack] [--without-glitnir] [--dev] [--dry-run]
   DISTRO: $DISTROS
 USAGE
   exit 2
@@ -32,6 +42,7 @@ USAGE
 die() { echo "build.sh: $*" >&2; exit 1; }
 
 MODE="" DISTRO="" PREFIX="" JOBS="" MEMORY="" BUILD_DIR="" CHECK="" OUT="" DRY=0 STAGE=all GLITNIR=--with-glitnir
+DEV=0; [ "${NIDHOGG_BUILD_DEV:-}" != 1 ] || DEV=1
 while [ $# -gt 0 ]; do
   case $1 in
     --container) [ $# -ge 2 ] || usage; MODE=container; DISTRO=$2; shift 2 ;;
@@ -44,11 +55,16 @@ while [ $# -gt 0 ]; do
     --out) [ $# -ge 2 ] || usage; OUT=$2; shift 2 ;;
     --stage) [ $# -ge 2 ] || usage; STAGE=$2; shift 2; case $STAGE in all|build|check|pack) ;; *) usage ;; esac ;;
     --without-glitnir) GLITNIR=""; shift ;;
+    --dev) DEV=1; shift ;;
     --dry-run) DRY=1; shift ;;
     *) echo "unknown option: $1" >&2; usage ;;
   esac
 done
 [ -n "$MODE" ] || usage
+if [ "$DEV" = 1 ] && { [ -n "$OUT" ] || [ "$STAGE" = pack ]; }; then
+  die "--dev builds are never packed (no --out, no --stage pack): a dev build is not a release; build without --dev"
+fi
+NATIVE=aot; [ "$DEV" = 0 ] || NATIVE=yes
 LISP_CACHE=${NIDHOGG_BUILD_LISP_CACHE:-} LC=""
 
 UNAME=${NIDHOGG_BUILD_UNAME:-$(uname -s)}
@@ -120,9 +136,9 @@ if [ -z "$JOBS" ]; then
 fi
 
 if [ "$MODE" = host ] && [ "$UNAME" = Darwin ]; then
-  CONF="--with-ns --with-native-compilation=aot --with-tree-sitter"
+  CONF="--with-ns --with-native-compilation=$NATIVE --with-tree-sitter"
 else
-  CONF="--with-native-compilation=aot --with-tree-sitter --with-pgtk"
+  CONF="--with-native-compilation=$NATIVE --with-tree-sitter --with-pgtk"
 fi
 # Glitnir (the compositor, Rust) is on by default on pgtk and NS; --without-glitnir drops it and the Rust packages
 CONF="$CONF${GLITNIR:+ $GLITNIR}"
@@ -189,6 +205,8 @@ BODY
 script() {
   printf 'S=%q B=%q P=%q V=%q UPV=%q HB=%q\n' "$S" "$B" "$PREFIX" "$VERSION" "$UPSTREAM_VERSION" "${NIDHOGG_BUILD_HEARTBEAT:-300}"
   [ -z "$LISP_CACHE" ] || printf 'LC=%q\n' "$LC"
+  printf 'MODE_ID=%q\n' "$NATIVE"
+  printf 'CONF_ID=%q\n' "--prefix=$PREFIX $CONF"
   if [ "$MODE" = container ]; then
     case $DISTRO in
       ubuntu-*)
@@ -200,13 +218,16 @@ script() {
     [ -z "${NIDHOGG_BUILD_CCACHE:-}" ] || echo 'export CCACHE_DIR=/ccache CCACHE_COMPILERCHECK=content CCACHE_MAXSIZE=500M CC="ccache gcc"; ccache -z >/dev/null'
   fi
   cat <<'BODY'
-# relative links so that a relocated binary finds its dump beside itself
+# relative links so that a relocated binary finds its dump beside itself; the installed binary's own dump (a reused
+# prefix keeps the dumps of earlier builds): the one it loads when given it, since it refuses a dump not built for it
 dumplinks() {
   root=$1
-  set -- "$root"/libexec/emacs/*/*/emacs-*.pdmp
-  [ -e "$1" ] || return 0
-  rel=${1#"$root"/}
-  for n in nidhogg emacs "emacs-$UPV"; do ln -sf "../$rel" "$root/bin/$n.pdmp"; done
+  for f in "$root"/libexec/emacs/*/*/emacs-*.pdmp; do
+    "$root/bin/emacs-$UPV" --dump-file="$f" --fingerprint >/dev/null 2>&1 || continue
+    rel=${f#"$root"/}
+    for n in nidhogg emacs "emacs-$UPV"; do ln -sf "../$rel" "$root/bin/$n.pdmp"; done
+    return 0
+  done
 }
 phase() { PHASE=$1; echo "== $*"; }
 # run a logged step; a heartbeat line every HB seconds while it runs; on failure the last 100 lines of its log
@@ -236,9 +257,15 @@ for e in "$S"/* "$S"/.[!.]*; do [ -e "$e" ] || continue; [ "${e##*/}" = .git ] |
 cd "$B/src"
 BODY
   if [ -n "$LISP_CACHE" ]; then cat <<'BODY'
-# the compiled-Lisp cache (used only when made by the same compiler and architecture): restored files all get one timestamp, newer than every source (and equal among themselves, so
+# the compiled-Lisp cache (used only when made by the same compiler, architecture and configure line: the .eln files sit
+# under native-lisp/VERSION-HASH/, a hash of the primitives and the configure options, --prefix included, so another
+# configuration's .eln are never loaded): restored files all get one timestamp, newer than every source (and equal among themselves, so
 # no .eln is older than its .elc), so that make sees them as up to date
-cc_id() { printf '%s %s\n' "$(gcc --version | head -n 1)" "$(uname -m)"; }
+cc_id() { printf '%s %s %s %s\n' "$(gcc --version | head -n 1)" "$(uname -m)" "$MODE_ID" "$CONF_ID"; }
+# builds of the same key share DIR: a restore holds DIR/.lock shared, a save exclusive (where flock exists)
+lc_lock() { if command -v flock >/dev/null; then exec 9>"$LC/.lock"; flock "$1" 9; fi; }
+lc_unlock() { if command -v flock >/dev/null; then flock -u 9; exec 9>&-; fi; }
+lc_lock -s
 if [ -f "$LC/stamp" ] && [ "$(cat "$LC/stamp")" = "$(cc_id)" ]; then
   phase restore compiled Lisp
   tar -C "$LC" -cf - src obj | tar -C "$B" -xf -
@@ -246,6 +273,7 @@ if [ -f "$LC/stamp" ] && [ "$(cat "$LC/stamp")" = "$(cc_id)" ]; then
   (cd "$LC/src" && find . -type f) | while IFS= read -r f; do touch -r "$B/.restored" "$B/src/$f"; done
   (cd "$LC/obj" && find . -type f) | while IFS= read -r f; do touch -r "$B/.restored" "$B/obj/$f"; done
 fi
+lc_unlock
 BODY
   fi
   cat <<'BODY'
@@ -253,6 +281,10 @@ phase autogen
 logged "$B/autogen.log" ./autogen.sh
 cd "$B/obj"
 BODY
+  if [ "$DEV" = 1 ]; then
+    # loadup.el loads lisp/site-init.el when present, and the dump keeps what it sets (the build copy only, never the source tree)
+    echo "printf '%s\\n' ';;; dev build (nidhogg/build.sh --dev): no background native compilation' '(setq native-comp-jit-compilation nil)' > \"\$B/src/lisp/site-init.el\""
+  fi
   echo "phase configure"
   echo "logged \"\$B/configure.log\" \"\$B/src/configure\" --prefix=\"\$P\" $CONF || { echo \"configure failed; the build packages are listed in nidhogg/deps/$DISTRO.build\" >&2; exit 1; }"
   cat <<'BODY'
@@ -262,12 +294,14 @@ BODY
   echo "logged \"\$B/make.log\" make -j$JOBS"
   if [ -n "$LISP_CACHE" ]; then cat <<'BODY'
 phase save compiled Lisp
+lc_lock -x
 rm -rf "$LC/stamp" "$LC/src" "$LC/obj"
 mkdir -p "$LC/src" "$LC/obj"
 # the files make generated under lisp/ and leim/ (those the sources do not have), and the .eln files
 (cd "$B/src" && find lisp leim -type f | while IFS= read -r f; do [ -e "$S/$f" ] || echo "$f"; done > "$B/lisp-cache.list" && tar -cf - -T "$B/lisp-cache.list") | tar -C "$LC/src" -xf -
 [ ! -d "$B/obj/native-lisp" ] || tar -C "$B/obj" -cf - native-lisp | tar -C "$LC/obj" -xf -
 cc_id > "$LC/stamp"
+lc_unlock
 BODY
   fi
   fi
@@ -298,12 +332,14 @@ if [ "$MODE" = container ]; then
   elif [ -n "$OUT" ]; then MOUNT="$OUT_DIR:/out:Z"; else MOUNT="$PREFIX:$PREFIX:Z"; [ "$DRY" = 1 ] || mkdir -p "$PREFIX"; fi
   NAME=nidhogg-build-$$
   CACHE_ARGS=""
+  # the caches are shared by builds running at once: :z (a shared label), since :Z relabels a directory for one container
+  # and a second build's :Z locks the first one out of it mid-build
   if [ -n "${NIDHOGG_BUILD_PKG_CACHE:-}" ]; then
-    case $DISTRO in ubuntu-*) CACHE_ARGS="-v $NIDHOGG_BUILD_PKG_CACHE/apt:/var/cache/apt/archives:Z" ;;
-      *) CACHE_ARGS="-v $NIDHOGG_BUILD_PKG_CACHE/dnf:/var/cache/libdnf5:Z" ;; esac
+    case $DISTRO in ubuntu-*) CACHE_ARGS="-v $NIDHOGG_BUILD_PKG_CACHE/apt:/var/cache/apt/archives:z" ;;
+      *) CACHE_ARGS="-v $NIDHOGG_BUILD_PKG_CACHE/dnf:/var/cache/libdnf5:z" ;; esac
   fi
-  [ -z "${NIDHOGG_BUILD_CCACHE:-}" ] || CACHE_ARGS="$CACHE_ARGS -v $NIDHOGG_BUILD_CCACHE:/ccache:Z"
-  [ -z "$LISP_CACHE" ] || CACHE_ARGS="$CACHE_ARGS -v $LISP_CACHE:/lispcache:Z"
+  [ -z "${NIDHOGG_BUILD_CCACHE:-}" ] || CACHE_ARGS="$CACHE_ARGS -v $NIDHOGG_BUILD_CCACHE:/ccache:z"
+  [ -z "$LISP_CACHE" ] || CACHE_ARGS="$CACHE_ARGS -v $LISP_CACHE:/lispcache:z"
   CMD_HEAD="$PODMAN run --rm --name $NAME --memory $MEMORY --memory-swap $MEMORY -v $ROOT:/src:ro,Z -v $BUILD_DIR:/build:Z ${MOUNT:+-v $MOUNT} $CACHE_ARGS $IMAGE"
   if [ "$DRY" = 1 ]; then
     echo "$CMD_HEAD bash -euo pipefail -c '"
