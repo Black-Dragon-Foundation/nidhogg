@@ -36,6 +36,17 @@ jobs:
           persist-credentials: false
       - run: bash nidhogg/test/tree-test.sh
       - run: bash nidhogg/test/ci-test.sh
+      # Glitnir (the compositor): the crate's checks (fmt, clippy, tests, licences, vendor drift) and the advisories.
+      - name: Glitnir's checks
+        run: |
+          sudo apt-get update && sudo apt-get install -y libpixman-1-dev
+          d="cargo-deny-0.20.2-x86_64-unknown-linux-musl"
+          curl -sSfL -o "$RUNNER_TEMP/cd.tgz" "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/$d.tar.gz"
+          echo "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f  $RUNNER_TEMP/cd.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin" && tar -xzf "$RUNNER_TEMP/cd.tgz" -C "$RUNNER_TEMP/bin" --strip-components=1 "$d/cargo-deny"
+          export PATH="$RUNNER_TEMP/bin:$PATH"
+          bash nidhogg/glitnir/check.sh
+          cd nidhogg/glitnir && cargo deny check advisories
 
   linux:
     name: Linux (${{ matrix.distro }})
@@ -166,6 +177,19 @@ jobs:
           path: ${{ runner.temp }}/build/*.log
           if-no-files-found: ignore
 
+  # Glitnir (the compositor) is behind --with-glitnir: the tree still configures and compiles without it, with no
+  # Rust installed (build.sh leaves cargo and rust out of the package list under --without-glitnir).
+  compile-noglitnir:
+    name: Compile without Glitnir (fedora-44)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build
+        run: bash nidhogg/build.sh --container fedora-44 --without-glitnir --stage build --memory 12g --jobs 4 --build-dir "$RUNNER_TEMP/build"
+
   macos:
     name: macOS (NS app)
     runs-on: xcode-27
@@ -214,6 +238,14 @@ jobs:
         with:
           path: ${{ steps.brewdir.outputs.dir }}
           key: brew-macos-${{ runner.arch }}-${{ hashFiles('nidhogg/deps/macos.build') }}
+      # Glitnir (the compositor): the crate's tests with Homebrew's rust (cargo, clippy, rustfmt; no pixman, the oracle is
+      # Linux only; no cargo-deny, check.sh skips the licence check without it), so the aarch64 NEON baseline kernels are
+      # tested somewhere.  Skipped with the build when the tarball for this tree is cached (it was built after these passed).
+      - name: Glitnir's checks
+        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        env:
+          CARGO_HOME: ${{ runner.temp }}/cargo-home
+        run: bash nidhogg/glitnir/check.sh
       # compiled Lisp: also keyed by the installed gcc and libgccjit versions and the build path (.eln names embed it)
       - name: Toolchain versions
         id: tc
