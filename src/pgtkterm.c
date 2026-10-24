@@ -276,6 +276,25 @@ flip_cr_context (struct frame *f)
   cairo_t *cr = FRAME_CR_ACTIVE_CONTEXT (f);
 
   block_input ();
+#ifdef HAVE_GLITNIR
+  /* A surface made anew inside redisplay may hold only what that
+     redisplay drew after (its border at least): redisplay clears the
+     garbaged flag of a frame it updated, so the frame's rows are never
+     redrawn into it.  It never becomes the shown one before the frame
+     has been redrawn whole: the last complete surface stays, and the
+     frame is garbaged again for the next redisplay
+     (GL-U1-BLANK-CORFU-1).  */
+  if (FRAME_X_OUTPUT (f)->cr_reset_in_redisplay)
+    {
+      if (!redisplaying_p)
+	{
+	  FRAME_X_OUTPUT (f)->cr_reset_in_redisplay = false;
+	  SET_FRAME_GARBAGED (f);
+	}
+      unblock_input ();
+      return;
+    }
+#endif
   if (cr != FRAME_CR_CONTEXT (f))
     {
 #ifdef HAVE_GLITNIR
@@ -7700,6 +7719,8 @@ pgtk_cr_update_surface_desired_size (struct frame *f, int width, int height, boo
       FRAME_CR_SURFACE_DESIRED_HEIGHT (f) = height;
       SET_FRAME_GARBAGED (f);
 #ifdef HAVE_GLITNIR
+      if (redisplaying_p)
+	FRAME_X_OUTPUT (f)->cr_reset_in_redisplay = true;
       glitnir_pgtk_damage_all (f);
 #endif
     }

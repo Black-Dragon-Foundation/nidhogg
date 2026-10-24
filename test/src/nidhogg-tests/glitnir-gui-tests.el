@@ -921,6 +921,33 @@ Glitnir is on again after, and they are redrawn whole once more (so `verify' com
             (should-not (equal (glitnir-gui--pixel snap (list x (+ y (/ h 2)))) '(255 0 255)))))
       (when (frame-live-p c) (delete-frame c t)))))
 
+(ert-deftest glitnir-gui/surface-reset-inside-redisplay-keeps-content ()
+  ;; A popup's surface made anew inside redisplay after the popup was updated (pgtk's scale watch or GTK's
+  ;; size-allocate at an unblock_input; newer frames are updated first, so the root's fontification runs after the
+  ;; popup's update): redisplay then clears the popup's garbaged flag, its rows are never redrawn, and the surface
+  ;; that became the shown one held its border only, composed with its chrome around a transparent inside
+  ;; (GL-U1-BLANK-CORFU-1).  The last complete surface stays until the popup has been redrawn whole.
+  (glitnir-gui--under)
+  (let ((c nil) (armed t))
+    (unwind-protect
+        (glitnir-gui--verified
+          (setq c (glitnir-gui--popup '((corner-radius . 0) (shadow . nil))))
+          (with-current-buffer "*glitnir-under*"
+            (setq-local fontification-functions
+                        (list (lambda (pos)
+                                (put-text-property pos (point-max) 'fontified t)
+                                (when armed
+                                  (setq armed nil)
+                                  (glitnir--debug-reset-surface c)))))
+            (put-text-property (point-min) (point-max) 'fontified nil))
+          (force-mode-line-update t)     ; every frame's windows: the popup is updated before the root's
+          (redisplay t) (sit-for 0.1) (redisplay t)
+          (should-not armed)
+          (pcase-let ((snap (glitnir-snapshot nil 'raw)) (`(,x ,y ,w ,h) (glitnir--layer-rect c)))
+            (should (equal (glitnir-gui--pixel snap (glitnir-gui--mid (list x y w h))) '(0 255 255)))))
+      (with-current-buffer "*glitnir-under*" (kill-local-variable 'fontification-functions))
+      (when (frame-live-p c) (delete-frame c t)))))
+
 (ert-deftest glitnir-gui/shadow-darkens-below ()
   (glitnir-gui--under)
   (let ((c nil))

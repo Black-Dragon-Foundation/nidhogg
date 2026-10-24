@@ -443,6 +443,27 @@ Return non-nil if the paint was armed.  */)
 #endif
 }
 
+DEFUN ("glitnir--debug-reset-surface", Fglitnir__debug_reset_surface,
+       Sglitnir__debug_reset_surface, 0, 1, 0,
+       doc: /* Make FRAME's surface anew, as a size or scale change does (for tests).
+The frame is garbaged and its next drawing goes into a new, empty
+surface; the last complete one is shown until the frame has been redrawn
+whole, even when this runs inside redisplay.  Refused unless
+`glitnir-debug' is non-nil.  FRAME defaults to the selected frame.
+Return non-nil if the surface was made anew.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+  if (NILP (Vglitnir_debug))
+    error ("glitnir--debug-reset-surface: `glitnir-debug' is nil");
+#ifdef HAVE_PGTK
+  return glitnir_pgtk_debug_reset_surface (f) ? Qt : Qnil;
+#else
+  (void) f;
+  return Qnil;
+#endif
+}
+
 DEFUN ("glitnir--stacking", Fglitnir__stacking, Sglitnir__stacking, 0, 1, 0,
        doc: /* Return the child frames of FRAME's root frame as Glitnir stacks them.
 The list runs bottom to top, hidden frames included; a child frame's own
@@ -592,6 +613,7 @@ syms_of_nidhogg_glitnir (void)
   defsubr (&Sglitnir__stacking);
   defsubr (&Sglitnir__debug_freeze);
   defsubr (&Sglitnir__debug_scale_mismatch);
+  defsubr (&Sglitnir__debug_reset_surface);
   defsubr (&Sglitnir__layer_rect);
   defsubr (&Sglitnir__chrome);
   defsubr (&Sglitnir__rechrome);

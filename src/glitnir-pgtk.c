@@ -1777,6 +1777,33 @@ frame_source (struct frame *f)
   return s;
 }
 
+/* `verify': log a child frame's source P composed without content (a
+   fully transparent middle pixel on an opaque frame, or a surface made
+   anew inside redisplay shown before the frame was redrawn whole,
+   GL-U1-BLANK-CORFU-1).  Not counted: the tests' pixel checks see it.  */
+static void
+verify_source (struct glitnir_root *s, cairo_surface_t *p)
+{
+  struct frame *c = s->frame;
+  int w = cairo_image_surface_get_width (p);
+  int h = cairo_image_surface_get_height (p);
+  if (w <= 0 || h <= 0)
+    return;
+  uint32_t px;
+  memcpy (&px, (cairo_image_surface_get_data (p)
+		+ (size_t) (h / 2) * cairo_image_surface_get_stride (p)
+		+ (size_t) (w / 2) * 4), 4);
+  bool reset = FRAME_X_OUTPUT (c)->cr_reset_in_redisplay;
+  if (!((px >> 24) == 0 && c->alpha_background >= 1)
+      && !(reset && c->output_data.pgtk->cr_active
+	   == c->output_data.pgtk->cr_context))
+    return;
+  fprintf (stderr, "glitnir verify: %"PRIu64" composed without content"
+	   " {layer-root %"PRIu64", middle %08"PRIx32", reset in redisplay %d}",
+	   s->id, s->layer_root, px, reset);
+  verify_state (s);
+}
+
 /* The root device-pixel rectangle of a widget at logical X, Y (in the
    root widget) of logical size W x H, at scale SX, SY.  */
 static cairo_rectangle_int_t
@@ -1888,6 +1915,8 @@ glitnir_pgtk_draw (struct frame *f, cairo_t *cr)
 	  || (p = frame_source (c)) == NULL)
 	continue;
       cairo_surface_flush (p);
+      if (c != rf && verifying ())
+	verify_source (s, p);
       double ssx = 1, ssy = 1;
       cairo_surface_get_device_scale (p, &ssx, &ssy);
       if (root->debug_mismatch && c == rf)
@@ -1954,6 +1983,20 @@ glitnir_pgtk_debug_scale_mismatch (struct frame *f)
     return false;
   root->debug_mismatch = true;
   gtk_widget_queue_draw (w);
+  return true;
+}
+
+/* For tests: make F's surface anew, as pgtk does at a size or scale
+   change (from GTK's size-allocate or the scale watch, both of which can
+   run inside redisplay).  */
+bool
+glitnir_pgtk_debug_reset_surface (struct frame *f)
+{
+  if (!FRAME_PGTK_P (f) || f->output_data.pgtk == NULL)
+    return false;
+  pgtk_cr_update_surface_desired_size (f, FRAME_CR_SURFACE_DESIRED_WIDTH (f),
+				       FRAME_CR_SURFACE_DESIRED_HEIGHT (f),
+				       true);
   return true;
 }
 

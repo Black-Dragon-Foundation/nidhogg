@@ -198,6 +198,7 @@ extern bool glitnir_pgtk_draw_undamaged (struct frame *f);
 extern bool glitnir_pgtk_compose_with_pending (struct frame *f);
 extern bool glitnir_pgtk_debug_freeze (struct frame *f);
 extern bool glitnir_pgtk_debug_scale_mismatch (struct frame *f);
+extern bool glitnir_pgtk_debug_reset_surface (struct frame *f);
 
 /* A new ARGB32 image surface with F's root frame as GTK last painted it
    (device pixels), made by arming the after-paint handler and waiting up to

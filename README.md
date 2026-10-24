@@ -137,7 +137,12 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
     without recording it (the next commit reports it); `(glitnir--compose-with-pending)` forces one paint of the root
     while damage is pending; `(glitnir--debug-freeze)` (any non-nil `glitnir-debug`) freezes the root as the first
     damage after a point does, so that a test can act between the freeze and the point that thaws it. Verify also
-    counts a commit whose stacking of child frames differs from GDK's (`(glitnir--stacking)`: Glitnir's, bottom to top).
+    counts a commit whose stacking of child frames differs from GDK's (`(glitnir--stacking)`: Glitnir's, bottom to top),
+    and logs uncounted `glitnir verify: FRAME composed without content` for a child frame's surface composed with a
+    transparent middle pixel on an opaque frame. A frame's surface made anew inside redisplay (a size or scale change
+    at an `unblock_input`) is never shown before the frame has been redrawn whole: redisplay may clear the garbaged
+    flag that would redraw it, so the last complete surface stays and the frame is garbaged again;
+    `(glitnir--debug-reset-surface FRAME)` makes it anew for tests.
   - `full`: every commit damages the whole frame (the paint that Glitnir would otherwise have saved).
 - **Dev build** (`--dev` or `NIDHOGG_BUILD_DEV=1`, for agents' task builds): configures `--with-native-compilation=yes`
   instead of `aot`, so only the preloaded Lisp is native-compiled and the other ~1,400 files stay bytecode (minutes instead
