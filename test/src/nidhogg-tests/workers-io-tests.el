@@ -703,18 +703,25 @@ meanwhile, while a SIGCHLD still reaches its handler and
   ;; stops itself, changes its buffer, or deletes the next process: no
   ;; delivery to a deleted process after `delete-process' returns, and
   ;; every undelivered byte reaches the new filter, in order (Review
-  ;; Focus 5; ASan in the `workers-asan' job).
+  ;; Focus 5; ASan in the `workers-asan' job).  The deleting and the
+  ;; stopping filter act only once the send has returned: a send that
+  ;; fills the pipe (a small one: 8 KB when the user is over
+  ;; `pipe-user-pages-soft') waits for output, which runs filters, and a
+  ;; filter that deletes its process then fails the send ("Output file
+  ;; descriptor ... is closed"), one that stops it leaves the send
+  ;; waiting for a reader that no longer reads.
   (workers-io-tests--modes
     (let ((data (workers-io-tests--numbered 5000)))
       (ert-info ("delete-process" :prefix "")
-        (let* ((deleted nil) (after 0)
+        (let* ((sent nil) (deleted nil) (after 0)
                (p (workers-io-tests--small-cat
                    "re-del" (lambda (p _s)
-                              (if deleted
-                                  (setq after (1+ after))
-                                (delete-process p)
-                                (setq deleted t))))))
+                              (cond ((not sent))
+                                    (deleted (setq after (1+ after)))
+                                    (t (delete-process p)
+                                       (setq deleted t)))))))
           (process-send-string p data)
+          (setq sent t)
           (should (workers-io-tests--until (lambda () deleted)))
           (workers-io-tests--until #'ignore 5)
           (should (= after 0))))
@@ -729,14 +736,16 @@ meanwhile, while a SIGCHLD still reaches its handler and
           (should (workers-io-tests--until
                    (lambda () (equal (apply #'concat (reverse got)) data))))))
       (ert-info ("stop-process" :prefix "")
-        (let* ((got nil)
+        (let* ((sent nil) (stopped nil) (got nil)
                (p (workers-io-tests--small-cat
                    "re-stop" (lambda (p s)
-                               (unless got
+                               (when (and sent (not stopped))
+                                 (setq stopped t)
                                  (stop-process p))
                                (push s got)))))
           (process-send-string p data)
-          (should (workers-io-tests--until (lambda () got)))
+          (setq sent t)
+          (should (workers-io-tests--until (lambda () stopped)))
           (continue-process p)
           (should (workers-io-tests--until
                    (lambda () (equal (apply #'concat (reverse got)) data))))))
