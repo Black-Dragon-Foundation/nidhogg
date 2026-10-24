@@ -813,6 +813,22 @@ pgtk_wait_for_map_event (struct frame *f, bool multiple_times)
 	= (guint) (XFLOAT_DATA (Vpgtk_wait_for_event_timeout) * 1000);
       int found = 0;
       int timed_out = 0;
+
+      if (multiple_times)
+	{
+	  /* Hiding: do not wait for events that may never come.  One
+	     round trip puts everything the compositor sent before the
+	     hide (such as a map event of an earlier show) in the queue;
+	     then handle what is pending, no longer than the timeout.  */
+	  gint64 deadline = g_get_monotonic_time () + (gint64) msec * 1000;
+
+	  gdk_display_sync (gtk_widget_get_display (FRAME_WIDGET (f)));
+	  while (gtk_events_pending ()
+		 && g_get_monotonic_time () < deadline)
+	    gtk_main_iteration_do (FALSE);
+	  return;
+	}
+
       gulong id
 	= g_signal_connect (FRAME_WIDGET (f), "map-event",
 			    G_CALLBACK
@@ -823,16 +839,8 @@ pgtk_wait_for_map_event (struct frame *f, bool multiple_times)
 			 pgtk_make_frame_visible_wait_for_map_event_timeout,
 			 &timed_out);
 
-      if (!multiple_times)
-	{
-	  while (!found && !timed_out)
-	    gtk_main_iteration ();
-	}
-      else
-	{
-	  while (!timed_out)
-	    gtk_main_iteration ();
-	}
+      while (!found && !timed_out)
+	gtk_main_iteration ();
 
       g_signal_handler_disconnect (FRAME_WIDGET (f), id);
 
