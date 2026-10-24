@@ -99,6 +99,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #ifndef NH_WK_HARNESS
 # include "nidhogg-workers-phase.h"
 # include "process.h"
+# include "keyboard.h"
 #else
 # define NH_WK_PHASE_PUSH(ph, reason) ((void) (ph), (void) (reason), 0)
 # define NH_WK_PHASE_POP(depth) ((void) (depth))
@@ -1654,6 +1655,10 @@ nh_wk_worker_stats (int w, bool reset)
 		nh_wk_kw (":longest-ms"), longest);
 }
 
+static Lisp_Object nh_wk_decisions_lisp (bool);
+static Lisp_Object nh_wk_pressure_lisp (bool);
+extern Lisp_Object nh_img_costs_lisp (void);
+
 DEFUN ("nidhogg-workers-stats", Fnidhogg_workers_stats,
        Snidhogg_workers_stats, 0, 1, 0,
        doc: /* Return the worker threads' counters; with RESET, zero them.
@@ -1666,7 +1671,7 @@ an idle thread: dumping, dead, thread-create, fd-budget, boost-denied),
 `:cancels', `:pauses' (test pause points hit), `:backpressure',
 `:slices' and `:longest-ms' (the longest job); then `:phase-ms', the
 milliseconds spent in each phase (`worker-wait' by reason), `:blk-threads'
-\(nh-blk's normal-priority threads) and `:deferrals'.  RESET zeroes the
+\(nh-blk's normal-priority threads), `:deferrals', `:decisions' (((AREA OUTCOME REASON) . N)...), `:costs' and `:pressure'.  RESET zeroes the
 cumulative counters after reading them, not `:queued', `:running',
 `:queued-bytes' or `:blk-threads'.  */)
   (Lisp_Object reset)
@@ -1707,9 +1712,12 @@ cumulative counters after reading them, not `:queued', `:running',
 	     make_int (r ? atomic_exchange (&nh_wk_deferrals[1], 0)
 		       : atomic_load (&nh_wk_deferrals[1])));
 
-  Lisp_Object tail = listn (6, nh_wk_kw (":phase-ms"), phase_ms,
+  Lisp_Object tail = listn (12, nh_wk_kw (":phase-ms"), phase_ms,
 			    nh_wk_kw (":blk-threads"), make_int (blk_threads),
-			    nh_wk_kw (":deferrals"), deferrals);
+			    nh_wk_kw (":deferrals"), deferrals,
+			    nh_wk_kw (":decisions"), nh_wk_decisions_lisp (r),
+			    nh_wk_kw (":costs"), nh_img_costs_lisp (),
+			    nh_wk_kw (":pressure"), nh_wk_pressure_lisp (r));
   for (int w = NH_WK_N - 1; w >= 0; w--)
     {
       char key[16];
@@ -2345,7 +2353,228 @@ nh_wk_budget_full (void)
 {
   if (FIXNATP (Vnidhogg_redisplay_wait_budget))
     return XFIXNAT (Vnidhogg_redisplay_wait_budget) * NH_WK_MS;
-  return 8 * NH_WK_MS;
+  return 1 * NH_WK_MS;
+}
+
+/* The inline-or-offload rule (§7.1a).  */
+
+void
+nh_wk_cost_add (struct nh_wk_cost *c, int64_t ns, int64_t units)
+{
+  if (units <= 0 || ns < 0)
+    return;
+  int64_t s = ns * 1024 / units;
+  int64_t avg = atomic_load (&c->per_x1024);
+  if (atomic_load (&c->n) == 0)
+    atomic_store (&c->per_x1024, s);
+  else
+    {
+      if (s > 4 * avg)
+	s = 4 * avg;
+      atomic_store (&c->per_x1024, avg + (s - avg) / 4);
+    }
+  atomic_fetch_add (&c->n, 1);
+}
+
+int64_t
+nh_wk_cost_estimate (const struct nh_wk_cost *c, int64_t units)
+{
+  if (atomic_load (&c->n) == 0)
+    return -1;
+  return atomic_load (&c->per_x1024) * units / 1024;
+}
+
+/* Pressure: sampled where named, cached between samples.  The test
+   override: 0 measure, 1 pressure, 2 quiet.  */
+static bool nh_wk_press_now;
+static int nh_wk_press_quiet;
+static int nh_wk_press_test;
+static int64_t nh_wk_press_starts, nh_wk_press_frames;
+static int nh_wk_force;		/* 0 none, 1 inline, 2 offload */
+
+bool
+nh_wk_pressure (void)
+{
+  return nh_wk_press_now;
+}
+
+void
+nh_wk_pressure_sample (void)
+{
+  bool p;
+  if (nh_wk_press_test)
+    p = nh_wk_press_test == 1;
+  else
+    {
+      p = detect_input_pending () || !NILP (Vunread_command_events);
+#ifdef HAVE_NIDHOGG_WATCHDOG
+      p = p || nh_wd_last_span_ns () > NH_WK_FRAME_NS;
+#endif
+    }
+  if (p)
+    {
+      if (!nh_wk_press_now)
+	nh_wk_press_starts++;
+      nh_wk_press_now = true;
+      nh_wk_press_quiet = 0;
+    }
+  else if (nh_wk_press_now && ++nh_wk_press_quiet >= NH_WK_QUIET_FRAMES)
+    nh_wk_press_now = false;
+  if (nh_wk_press_now)
+    nh_wk_press_frames++;
+}
+
+int64_t
+nh_wk_inline_ns (void)
+{
+  return nh_wk_press_now ? NH_WK_INLINE_PRESSURE_NS : NH_WK_INLINE_NS;
+}
+
+static _Atomic int64_t nh_wk_decisions[3][2][4];
+
+void
+nh_wk_count_decision (int area, bool inline_, int why)
+{
+  atomic_fetch_add (&nh_wk_decisions[area][inline_ ? 0 : 1][why], 1);
+}
+
+bool
+nh_wk_decide (int area, int64_t estimate_ns, bool base_only)
+{
+  bool in;
+  int why = NH_WK_WHY_ESTIMATE;
+  if (nh_wk_inline)
+    in = false, why = NH_WK_WHY_FORCED;
+  else if (nh_wk_force)
+    in = nh_wk_force == 1, why = NH_WK_WHY_FORCED;
+  else if (estimate_ns < 0)
+    in = false, why = NH_WK_WHY_NO_ESTIMATE;
+  else
+    {
+      bool under = !base_only && nh_wk_press_now;
+      in = estimate_ns <= (under ? NH_WK_INLINE_PRESSURE_NS
+			   : NH_WK_INLINE_NS);
+      if (!in && under && estimate_ns <= NH_WK_INLINE_NS)
+	why = NH_WK_WHY_PRESSURE;
+    }
+  nh_wk_count_decision (area, in, why);
+  return in;
+}
+
+DEFUN ("nidhogg-workers--test-decide", Fnidhogg_workers__test_decide,
+       Snidhogg_workers__test_decide, 1, 1, 0,
+       doc: /* Force every inline-or-offload decision to MODE; for tests.
+MODE is nil (decide), `inline' or `offload'; a forced decision has
+the reason `forced'.  */)
+  (Lisp_Object mode)
+{
+  nh_wk_force = (NILP (mode) ? 0 : EQ (mode, Qinline) ? 1 : 2);
+  return Qnil;
+}
+
+DEFUN ("nidhogg-workers--decide", Fnidhogg_workers__decide,
+       Snidhogg_workers__decide, 2, 3, 0,
+       doc: /* Decide for AREA (ts, image, io) with an estimate of NS nanoseconds.
+Return `inline' or `offload' and count it; NS nil means no estimate.
+BASE-ONLY non-nil ignores pressure.  For tests.  */)
+  (Lisp_Object area, Lisp_Object ns, Lisp_Object base_only)
+{
+  CHECK_SYMBOL (area);
+  const char *a = SSDATA (SYMBOL_NAME (area));
+  int ar = (strcmp (a, "ts") == 0 ? NH_WK_A_TS
+	    : strcmp (a, "image") == 0 ? NH_WK_A_IMAGE : NH_WK_A_IO);
+  int64_t e = NILP (ns) ? -1 : XFIXNUM (ns);
+  return nh_wk_decide (ar, e, !NILP (base_only)) ? Qinline
+    : intern_c_string ("offload");
+}
+
+DEFUN ("nidhogg-workers--test-pressure", Fnidhogg_workers__test_pressure,
+       Snidhogg_workers__test_pressure, 1, 2, 0,
+       doc: /* Fix the pressure sample to VALUE; for tests.
+VALUE is nil (measure), t (pressure) or `quiet'.  The pressure state
+is reset, unless KEEP is non-nil; t applies at once.  */)
+  (Lisp_Object value, Lisp_Object keep)
+{
+  nh_wk_press_test = (NILP (value) ? 0 : EQ (value, Qt) ? 1 : 2);
+  if (NILP (keep))
+    {
+      nh_wk_press_now = false;
+      nh_wk_press_quiet = 0;
+    }
+  if (nh_wk_press_test == 1 && !nh_wk_press_now)
+    {
+      nh_wk_press_now = true;
+      nh_wk_press_starts++;
+    }
+  return Qnil;
+}
+
+extern void nh_img_cost_seed (const char *fmt, int64_t ns_per_unit);
+
+DEFUN ("nidhogg-workers--test-cost", Fnidhogg_workers__test_cost,
+       Snidhogg_workers__test_cost, 3, 3, 0,
+       doc: /* Seed the cost of AREA's KEY at NS-PER-UNIT; for tests.
+Only (image FORMAT) is kept: ns per pixel of the format (png, jpeg,
+gif, webp).  */)
+  (Lisp_Object area, Lisp_Object key, Lisp_Object ns_per_unit)
+{
+  CHECK_SYMBOL (area);
+  CHECK_SYMBOL (key);
+  if (strcmp (SSDATA (SYMBOL_NAME (area)), "image") != 0)
+    error ("Unknown area");
+  nh_img_cost_seed (SSDATA (SYMBOL_NAME (key)), XFIXNUM (ns_per_unit));
+  return Qnil;
+}
+
+static Lisp_Object
+nh_wk_decisions_lisp (bool reset)
+{
+  static const char *const areas[] = { "ts", "image", "io" };
+  static const char *const outs[3][2] = { { "inline", "offload" },
+					  { "inline", "offload" },
+					  { "full", "shrunk" } };
+  static const char *const whys[] = { "estimate", "pressure", "no-estimate",
+				      "forced" };
+  Lisp_Object r = Qnil;
+  for (int a = 2; a >= 0; a--)
+    for (int o = 1; o >= 0; o--)
+      for (int w = 3; w >= 0; w--)
+	{
+	  int64_t n = (reset ? atomic_exchange (&nh_wk_decisions[a][o][w], 0)
+		       : atomic_load (&nh_wk_decisions[a][o][w]));
+	  if (n)
+	    r = Fcons (Fcons (list3 (intern_c_string (areas[a]),
+				     intern_c_string (outs[a][o]),
+				     intern_c_string (whys[w])),
+			      make_int (n)),
+		       r);
+	}
+  return r;
+}
+
+static Lisp_Object
+nh_wk_pressure_lisp (bool reset)
+{
+  Lisp_Object r = listn (6, nh_wk_kw (":now"), nh_wk_press_now ? Qt : Qnil,
+			 nh_wk_kw (":starts"), make_int (nh_wk_press_starts),
+			 nh_wk_kw (":frames"), make_int (nh_wk_press_frames));
+  if (reset)
+    nh_wk_press_starts = nh_wk_press_frames = 0;
+  return r;
+}
+
+DEFUN ("nidhogg-workers--policy", Fnidhogg_workers__policy,
+       Snidhogg_workers__policy, 0, 0, 0,
+       doc: /* Return the policy constants as a plist (nanoseconds, percent, frames).  */)
+  (void)
+{
+  return listn (12, nh_wk_kw (":inline-ns"), make_int (NH_WK_INLINE_NS),
+		nh_wk_kw (":inline-pressure-ns"),
+		make_int (NH_WK_INLINE_PRESSURE_NS),
+		nh_wk_kw (":near-done-ns"), make_int (NH_WK_NEAR_DONE_NS),
+		nh_wk_kw (":near-done-pct"), make_int (NH_WK_NEAR_DONE_PCT),
+		nh_wk_kw (":frame-ns"), make_int (NH_WK_FRAME_NS),
+		nh_wk_kw (":quiet-frames"), make_int (NH_WK_QUIET_FRAMES));
 }
 
 int64_t
@@ -2368,6 +2597,7 @@ void
 nh_wk_budget_reset (void)
 {
   atomic_store (&nh_wk_budget_left, nh_wk_budget_full ());
+  nh_wk_pressure_sample ();
 }
 
 DEFUN ("nidhogg-workers--test-redisplay-begin",
@@ -2439,7 +2669,7 @@ with no scheduling, for tests.  */);
   DEFVAR_LISP ("nidhogg-redisplay-wait-budget", Vnidhogg_redisplay_wait_budget,
 	       doc: /* Milliseconds a redisplay may wait for worker threads.
 One budget per redisplay, shared by every tree-sitter and image wait in it.  */);
-  Vnidhogg_redisplay_wait_budget = make_fixnum (8);
+  Vnidhogg_redisplay_wait_budget = make_fixnum (1);
 
   static union Aligned_Lisp_Subr Swatch_nidhogg_workers_mode =
      {{{ PSEUDOVECTOR_FLAG | (PVEC_SUBR << PSEUDOVECTOR_AREA_BITS) },
@@ -2471,6 +2701,11 @@ One budget per redisplay, shared by every tree-sitter and image wait in it.  */)
   defsubr (&Snidhogg_workers__test_redisplay_begin);
   defsubr (&Snidhogg_workers__test_budget_take);
   defsubr (&Snidhogg_workers__test_budget_ledger);
+  defsubr (&Snidhogg_workers__test_decide);
+  defsubr (&Snidhogg_workers__decide);
+  defsubr (&Snidhogg_workers__test_pressure);
+  defsubr (&Snidhogg_workers__test_cost);
+  defsubr (&Snidhogg_workers__policy);
 }
 
 #endif /* not NH_WK_HARNESS */

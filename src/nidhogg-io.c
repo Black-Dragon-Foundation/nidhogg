@@ -1923,12 +1923,21 @@ nh_io_limit (struct Lisp_Process *p, struct nh_io_h *h, ptrdiff_t size)
   if (fast_read_process_output
       && EQ (p->filter, Qinternal_default_process_filter))
     return size;
+  nh_wk_pressure_sample ();
   double lim = (!h->cost_known ? (p->pty_out ? NH_IO_PTY_READ
 				  : NH_IO_PIPE_READ)
-		: h->cost > 0 ? NH_IO_FILTER_NS / h->cost
+		: h->cost > 0 ? (double) nh_wk_inline_ns () / h->cost
 		: size);
   if (lim < NH_IO_DELIVER_MIN)
     lim = NH_IO_DELIVER_MIN;
+  if (h->cost_known && h->cost > 0)
+    {
+      bool shrunk = lim < size;
+      double base = (double) NH_WK_INLINE_NS / h->cost;
+      nh_wk_count_decision (NH_WK_A_IO, !shrunk,
+			    shrunk && base >= size ? NH_WK_WHY_PRESSURE
+			    : NH_WK_WHY_ESTIMATE);
+    }
   return lim < size ? (ptrdiff_t) lim : size;
 }
 

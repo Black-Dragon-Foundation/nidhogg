@@ -1264,3 +1264,26 @@ output of each is in its process property `out'."
                 (delete-process p)))))))))
 
 ;;; workers-io-tests.el ends here
+
+(ert-deftest workers/io-pressure-shrinks ()
+  ;; Task 55: under pressure a known-cost filter gets at most 1 ms of
+  ;; its bytes per delivery (20,000 at 50 ns a byte, where 4 ms would
+  ;; not shrink the 65,536-byte cap), never above the cap.
+  (workers-io-tests--modes
+    (unwind-protect
+        (let ((proc (let ((read-process-output-max 65536))
+                      (make-process :name "wio-press" :command '("cat")
+                                    :connection-type 'pipe :noquery t
+                                    :coding 'binary
+                                    :filter #'workers-io-tests--sizer))))
+          (nidhogg-workers--test-pressure t)
+          (nidhogg-workers-stats t)
+          (should (nidhogg-workers--test-filter-cost proc 50))
+          (process-send-string proc (make-string 60000 ?c))
+          (should (workers-io-tests--until
+                   (lambda () (= (workers-io-tests--got proc) 60000))))
+          (let ((sizes (workers-io-tests--sizes proc)))
+            (should (<= (apply #'max sizes) 20000)))
+          (should (assoc '(io shrunk pressure)
+                         (plist-get (nidhogg-workers-stats) :decisions))))
+      (nidhogg-workers--test-pressure nil))))
