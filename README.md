@@ -467,6 +467,9 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   `NIDHOGG_TEST_GRAMMARS` (default `fixtures/grammars-cache/`); the tree-sitter rows skip without them. It also builds
   `crash`, Python whose external scanner writes through a null pointer at a backquote (`fixtures/crash-scanner.c`):
   `workers/worker-crash-forwarded-grammar` parses it on `nh-parse` and expects the fatal path.
+- Tree-sitter on the main thread: every synchronous parse a demand makes (`treesit_ensure_parsed`) is in the watchdog's
+  `treesit` phase and its `:phase-ms`, with the workers' switches on or off, so an A/B compares the main thread's
+  whole tree-sitter time (parses plus `treesit-wait`).
 - Tree-sitter parse jobs (`src/nidhogg-treesit-bg.c`; tree-sitter 0.25 or later): with `nidhogg-workers-treesit` on, a
   job for a parser copies the buffer's visible text (two copies around the gap, the watchdog's `treesit` phase with
   reason `snapshot`), a copy of the parser's tree, the ranges a demand would parse with and the parser's edit
