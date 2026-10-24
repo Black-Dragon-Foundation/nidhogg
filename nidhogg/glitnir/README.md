@@ -20,3 +20,30 @@ parameters only, so it knows nothing of the program that embeds it.
 `cargo deny check licenses bans sources` (when `cargo-deny` is installed) and a vendor-drift check (it vendors a copy
 of the crate and compares; the source tree is never written). Without `--container` it uses the host's cargo; with
 `--container fedora-44` it runs in a podman container capped at 2 GiB.
+
+## Damage
+
+`damage.rs` keeps each frame's pending damage (device pixels; at most 32 rectangles, `region.rs`):
+`glitnir_damage_add_n` adds rectangles, `glitnir_damage_all` the whole frame, `glitnir_scroll` a scroll's area and the
+strip it left stale. A rectangle the damage already contains adds nothing, and a new one drops those it contains.
+`glitnir_damage_pending` takes the damage (the frame then has none); the rectangles stay valid until that frame's next
+take. Whole-frame damage reads back as `{0, 0, INT32_MAX, INT32_MAX}`, which the host clips to the frame.
+
+`glitnir_commit` runs at the host's consistency points (no drawing in progress on a root or its children): it takes
+the root's pending damage, into which the host has first moved its child frames' damage (in root coordinates), and
+hands it back for invalidation; the rectangles stay valid until the root's next commit, apart from any debug take.
+
+The frame-time record's `backfill_rate` is -1 when no entry knows whether its paint back-filled (`backfill` 2).
+
+## Limits
+
+A panic inside the library is caught at the boundary (`GLITNIR_E_PANIC`), and so is any other error a call returns:
+the glue then thaws every frozen root, finishes a running draw with the stock picture, restores pgtk's whole-widget
+invalidations, redraws every frame and switches Glitnir off for the session (no further `glitnir_*` call;
+`glitnir-active-p` and `glitnir-stats` are nil, `glitnir-snapshot` still works). It shows one message.
+`glitnir--debug-panic` (only with `glitnir-debug` set; WHERE `commit` or `draw`) makes the next such call panic, and
+`revive` turns Glitnir back on for the tests that follow.
+
+Three failures the fallback cannot catch still abort the process: an allocation failure, a second panic while one is
+being handled, and a stack overflow. To keep the first rare, the frame-time rings are preallocated and the caches
+bounded.
