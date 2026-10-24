@@ -64,6 +64,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "font.h"
 #include "xsettings.h"
 #include "emacsgtkfixed.h"
+#ifdef HAVE_GLITNIR
+#include "glitnir-pgtk.h"
+#endif
 
 #ifdef GDK_WINDOWING_WAYLAND
 #include <gdk/gdkwayland.h>
@@ -453,6 +456,9 @@ pgtk_free_frame_resources (struct frame *f)
 
   block_input ();
 
+#ifdef HAVE_GLITNIR
+  glitnir_pgtk_free_frame (f);
+#endif
   pgtk_unlink_touch_points (f);
 #ifdef HAVE_XWIDGETS
   kill_frame_xwidget_views (f);
@@ -3359,6 +3365,9 @@ pgtk_text_icon (struct frame *f, const char *icon_name)
 static void
 pgtk_update_begin (struct frame *f)
 {
+#ifdef HAVE_GLITNIR
+  glitnir_pgtk_update_begin (f);
+#endif
   pgtk_clear_under_internal_border (f);
 }
 
@@ -3463,6 +3472,9 @@ pgtk_frame_up_to_date (struct frame *f)
   FRAME_MOUSE_UPDATE (f);
   if (!buffer_flipping_blocked_p ())
     {
+#ifdef HAVE_GLITNIR
+      glitnir_pgtk_commit (f);
+#endif
       flip_cr_context (f);
       gtk_widget_queue_draw (FRAME_GTK_WIDGET (f));
     }
@@ -5101,6 +5113,9 @@ static gboolean
 pgtk_handle_draw (GtkWidget *widget, cairo_t *cr, gpointer *data)
 {
   struct frame *f;
+#ifdef HAVE_GLITNIR
+  bool glitnir_recorded = false;
+#endif
 
   GdkWindow *win = gtk_widget_get_window (widget);
 
@@ -5108,6 +5123,10 @@ pgtk_handle_draw (GtkWidget *widget, cairo_t *cr, gpointer *data)
     {
       cairo_surface_t *src = NULL;
       f = pgtk_any_window_to_frame (win);
+#ifdef HAVE_GLITNIR
+      if (f != NULL)
+	glitnir_recorded = glitnir_pgtk_draw_begin (f, widget, cr);
+#endif
       if (f != NULL)
 	{
 	  src = FRAME_X_OUTPUT (f)->cr_surface_visible_bell;
@@ -5119,6 +5138,10 @@ pgtk_handle_draw (GtkWidget *widget, cairo_t *cr, gpointer *data)
 	  cairo_set_source_surface (cr, src, 0, 0);
 	  cairo_paint (cr);
 	}
+#ifdef HAVE_GLITNIR
+      if (glitnir_recorded)
+	glitnir_pgtk_draw_end (f);
+#endif
     }
   return FALSE;
 }

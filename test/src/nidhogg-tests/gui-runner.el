@@ -42,6 +42,14 @@
                         (glitnir-gui--scale) (frame-scale-factor) (display-monitor-attributes-list))
       (kill-emacs 1))))
 
+(defun glitnir-gui--wait-for-first-paint ()
+  "Wait (10 s at most) until Glitnir's frame-time record holds a paint of the selected frame."
+  (when (fboundp 'glitnir-stats)
+    (let ((deadline (+ (float-time) 10)))
+      (while (and (< (or (plist-get (glitnir-stats) :count) 0) 1) (< (float-time) deadline))
+        (redisplay t)
+        (sit-for 0.1)))))
+
 (defun glitnir-gui--load-tests ()
   (let ((dir (or (getenv "GLITNIR_GUI_TESTS") glitnir-gui--dir)))
     (dolist (f (directory-files dir t "-gui-tests\\.el\\'"))
@@ -59,6 +67,7 @@
 
 (defun glitnir-gui--run ()
   (glitnir-gui--wait-for-scale)
+  (glitnir-gui--wait-for-first-paint)
   (glitnir-gui--load-tests)
   (let* ((stats (ert-run-tests (or (getenv "GLITNIR_GUI_SELECT") t) #'glitnir-gui--report))
          (n (ert-stats-total stats)) (bad (ert-stats-completed-unexpected stats)))
