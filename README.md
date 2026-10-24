@@ -122,7 +122,9 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
 ## CI and releases
 
 `.github/workflows/build.yml` runs on pushes to `nidhogg-31`, `v*-nidhogg.*` tags, pull requests and by hand
-(`drgnx_ref` input: the drgnx branch, tag or commit under test, default `main`).
+(`drgnx_ref` input: the drgnx branch, tag or commit under test). Without the input the drgnx commit is the one pinned
+in `DRGNX_REF`, never drgnx's moving `main`: a drgnx push cannot turn Nidhogg red. Bump the pin by hand to a drgnx
+`main` commit whose own CI is green.
 
 - `tree`: `tree-test.sh` and `ci-test.sh` (full history and tags).
 - `linux` (fedora-44, fedora-45, ubuntu-26.04): `build.sh --container D --stage build`, the cache saves, then `--stage check
@@ -131,7 +133,9 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   `tarball-test.sh macos`. Each uploads its tarball and `.sha256`.
 - `compile-noglitnir` (fedora-44): `build.sh --without-glitnir --stage build`, with no Rust installed (the tree still
   compiles without Glitnir). It is not part of the release gate.
-- `drgnx-linux` (fedora-45 tarball) and `drgnx-macos`: `nidhogg/ci/drgnx-suite.sh TARBALL DISTRO DRGNX_DIR` runs drgnx's
+- `drgnx-linux` (fedora-45 tarball) and `drgnx-macos`: first what drgnx's `ci.yml` builds for its suite, from the drgnx
+  checkout and cached as there (Ratatoskr with the test hooks and `ratatoskr-mock`: `DRGNX_RATATOSKR_BIN`; huginn's
+  `dump` example: `DRGNX_HUGINN_DUMP`), then `nidhogg/ci/drgnx-suite.sh TARBALL DISTRO DRGNX_DIR` runs drgnx's
   unit suite with `DRGNX_EMACS` set to the built Nidhogg (the `:timing` tests in a second run). Locally, a narrowed run:
   `DRGNX_TEST_SELECTOR='drgnx-doctor/' bash nidhogg/ci/drgnx-suite.sh TARBALL fedora-44 ../drgnx`.
 - `release` (a pushed `v*` tag only, never a manual run or a pull request) needs all five jobs, fails unless the tag is `v$(cat nidhogg/version)`, and publishes the

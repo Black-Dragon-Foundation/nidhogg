@@ -2,7 +2,10 @@
 # drgnx's unit suite against a built Nidhogg tarball.
 #   nidhogg/ci/drgnx-suite.sh TARBALL DISTRO DRGNX_DIR     (DISTRO: fedora-44 | fedora-45 | ubuntu-26.04 | macos)
 # Linux: a fresh --memory ${NIDHOGG_SUITE_MEMORY:-4g} podman container of DISTRO; the tarball is unpacked at its BUILDINFO
-# prefix and DRGNX_DIR is mounted read-only.  macOS: on the host (brew install of deps.runtime + ripgrep).
+# prefix and DRGNX_DIR is mounted read-only.  macOS: on the host (brew install of deps.runtime + ripgrep + rust).
+# DRGNX_RATATOSKR_BIN (Ratatoskr with the test hooks, ratatoskr-mock beside it) and DRGNX_HUGINN_DUMP (huginn's dump
+# example) are passed through when set (Linux: their directories mounted read-only): the workflow builds them from DRGNX_DIR
+# as drgnx's ci.yml does.  Unset, the tests that need them skip, and a full run fails on drgnx's test/no-skip.eld.
 # Run as drgnx's own unit tier does: DRGNX_TEST_NO_TIMING=1, DRGNX_TEST_RERUN=1, one run (no timing pass).  DRGNX_TEST_SELECTOR narrows it.
 # Exit 0 when the suite passes, else non-zero.  bash 3.2-safe.
 set -eu
@@ -66,8 +69,16 @@ git config --global --add safe.directory "*"
 cd /drgnx
 bin/drgnx test'
 
-SEL=()
-[ -z "${DRGNX_TEST_SELECTOR:-}" ] || SEL=(-e "DRGNX_TEST_SELECTOR=$DRGNX_TEST_SELECTOR")
+OPTS=()
+[ -z "${DRGNX_TEST_SELECTOR:-}" ] || OPTS=(-e "DRGNX_TEST_SELECTOR=$DRGNX_TEST_SELECTOR")
+if [ -n "${DRGNX_RATATOSKR_BIN:-}" ]; then
+  OPTS+=(-v "$(cd "$(dirname "$DRGNX_RATATOSKR_BIN")" && pwd):/opt/ratatoskr:ro,Z"
+        -e "DRGNX_RATATOSKR_BIN=/opt/ratatoskr/$(basename "$DRGNX_RATATOSKR_BIN")")
+fi
+if [ -n "${DRGNX_HUGINN_DUMP:-}" ]; then
+  OPTS+=(-v "$(cd "$(dirname "$DRGNX_HUGINN_DUMP")" && pwd):/opt/huginn:ro,Z"
+        -e "DRGNX_HUGINN_DUMP=/opt/huginn/$(basename "$DRGNX_HUGINN_DUMP")")
+fi
 "$PODMAN" run --rm --memory "${NIDHOGG_SUITE_MEMORY:-4g}" --memory-swap "${NIDHOGG_SUITE_MEMORY:-4g}" \
-  -e "TOP=$TOP" ${SEL[@]+"${SEL[@]}"} \
+  -e "TOP=$TOP" ${OPTS[@]+"${OPTS[@]}"} \
   -v "$TARBALL:/t.tar.xz:ro,Z" -v "$DRGNX:/drgnx:ro,Z" "$IMAGE" bash -c "$INNER"
