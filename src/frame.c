@@ -53,6 +53,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "widget.h"
 #endif
 #include "pdumper.h"
+#if defined HAVE_GLITNIR && defined HAVE_PGTK
+#include "glitnir-pgtk.h"
+#endif
 
 /* The currently selected frame.  */
 Lisp_Object selected_frame;
@@ -4260,7 +4263,14 @@ list, but are otherwise ignored.  */)
   /* I think this should be done with a hook.  */
 #ifdef HAVE_WINDOW_SYSTEM
   if (FRAME_WINDOW_P (f))
+#if defined HAVE_GLITNIR && defined HAVE_PGTK
+    {
+      gui_set_frame_parameters (f, alist);
+      glitnir_pgtk_params_changed (f);
+    }
+#else
     gui_set_frame_parameters (f, alist);
+#endif
   else
 #endif
 #ifdef MSDOS
