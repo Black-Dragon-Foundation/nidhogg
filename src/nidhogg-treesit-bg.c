@@ -1028,11 +1028,17 @@ nh_ts_wait_or_cancel (Lisp_Object parser, void **tree)
 {
   struct Lisp_TS_Parser *p = XTS_PARSER (parser);
   struct nh_ts_job *t = p->nh_job;
+  /* A first parse (no tree) past half its input is never cancelled into
+     a from-scratch parse: it is waited for, up to NH_TS_WAIT_MAX_NS.  */
+  uint64_t total = atomic_load (&t->job.total);
+  bool first_big = (t->tree_less && total > 0
+		    && 2 * atomic_load (&t->job.progress) >= total);
   if (atomic_load (&t->job.state) != NH_WK_J_QUEUED
-      && !nh_ts_job_behind (p, t))
+      && (first_big || !nh_ts_job_behind (p, t)))
     {
       nh_ts_counted (NH_TS_C_WAITED);
-      if (nh_wk_wait (&t->job, nh_ts_estimate (t->len),
+      if (nh_wk_wait (&t->job,
+		      first_big ? NH_TS_WAIT_MAX_NS : nh_ts_estimate (t->len),
 		      NH_WK_PH_TREESIT_WAIT, 0) == 1
 	  && nh_ts_publish (parser, tree))
 	return NH_TS_TREE;
@@ -1215,11 +1221,11 @@ overlaps the rest of `find-file'.  Return how many jobs started.  */)
 
 DEFUN ("nidhogg-workers--treesit-await", Fnidhogg_workers__treesit_await,
        Snidhogg_workers__treesit_await, 1, 2, 0,
-       doc: /* Wait for PARSER's parse job within the redisplay's wait budget.
+       doc: /* Check PARSER's parse job; redisplay does not wait for it.
 Return t when nothing runs for PARSER any more (no job, or its job
-finished, in time or before), so a demand would not wait; nil when its
-job still runs once the grant (the synchronous estimate, at most what
-is left of `nidhogg-redisplay-wait-budget' in this redisplay) is spent.
+finished), so a demand would not wait; nil when its job still runs.  A
+job at least 90% done gets one wait of at most 1 ms (and what is left
+of `nidhogg-redisplay-wait-budget' in this redisplay).
 With COUNT non-nil, a nil answer counts a tree-sitter deferral
 \(`:deferrals' of `nidhogg-workers-stats').  Internal: the redisplay
 wrappers of nidhogg-workers-treesit.el call it.  */)
@@ -1229,10 +1235,17 @@ wrappers of nidhogg-workers-treesit.el call it.  */)
   struct nh_ts_job *t = p->nh_job;
   if (!t || nh_ts_job_finished (t))
     return Qt;
-  /* No Lisp runs during the wait: T stays the parser's job.  */
-  int64_t grant = nh_wk_budget_take (nh_ts_estimate (t->len));
-  if (grant > 0)
-    nh_wk_wait (&t->job, grant, NH_WK_PH_TREESIT_WAIT, 0);
+  /* Redisplay never waits (§7.1), except for a job nearly done: one
+     wait of at most NH_WK_NEAR_DONE_NS and the budget's grant.  No Lisp
+     runs during the wait: T stays the parser's job.  */
+  uint64_t total = atomic_load (&t->job.total);
+  if (total > 0
+      && 100 * atomic_load (&t->job.progress) >= NH_WK_NEAR_DONE_PCT * total)
+    {
+      int64_t grant = nh_wk_budget_take (NH_WK_NEAR_DONE_NS);
+      if (grant > 0)
+	nh_wk_wait (&t->job, grant, NH_WK_PH_TREESIT_WAIT, 0);
+    }
   if (nh_ts_job_finished (t))
     return Qt;
   if (!NILP (count))
@@ -1276,6 +1289,24 @@ nothing to parse, a temporary narrowing...).  */)
 {
   nh_ts_check_parser (parser);
   return nh_ts_start (parser, false) ? Qt : Qnil;
+}
+
+DEFUN ("nidhogg-workers--test-ts-progress",
+       Fnidhogg_workers__test_ts_progress,
+       Snidhogg_workers__test_ts_progress, 2, 2, 0,
+       doc: /* Set PARSER's job progress to PCT percent; for tests.
+Only meaningful for a job parked before it reports its own.  */)
+  (Lisp_Object parser, Lisp_Object pct)
+{
+  struct Lisp_TS_Parser *p = nh_ts_check_parser (parser);
+  CHECK_FIXNAT (pct);
+  struct nh_ts_job *t = p->nh_job;
+  if (t)
+    {
+      atomic_store (&t->job.total, 1000);
+      atomic_store (&t->job.progress, 10 * XFIXNAT (pct));
+    }
+  return Qnil;
 }
 
 DEFUN ("nidhogg-workers--test-ts-select-entry",
@@ -1526,6 +1557,7 @@ check); t never cancels it.  */);
   defsubr (&Snidhogg_workers__test_ts_alloc);
   defsubr (&Snidhogg_treesit_parser_ready_p);
   defsubr (&Snidhogg_workers__test_ts_start);
+  defsubr (&Snidhogg_workers__test_ts_progress);
   defsubr (&Snidhogg_workers__test_ts_wait);
   defsubr (&Snidhogg_workers__test_ts_info);
   defsubr (&Snidhogg_workers__test_ts_stats);

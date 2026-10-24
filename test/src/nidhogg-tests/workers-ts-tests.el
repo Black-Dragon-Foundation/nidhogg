@@ -1146,7 +1146,7 @@ unbound), then jit-lock with `nidhogg--redisplay-fontifying' bound to BUF."
                       (should nidhogg-workers-treesit--pending)
                       (should (= (workers-ts-tests--stat :published) pub))
                       (should (> (workers-ts-tests--deferrals) defs))
-                      (should (> (car (nidhogg-workers--test-budget-ledger)) 0))
+                      (should (= (car (nidhogg-workers--test-budget-ledger)) 0))
                       (should-not (eql treesit--pre-redisplay-tick
                                        (buffer-chars-modified-tick))))))
                 (ert-info ("font-lock-ensure in another buffer" :prefix "")
@@ -1430,3 +1430,66 @@ unbound), then jit-lock with `nidhogg--redisplay-fontifying' bound to BUF."
         (kill-buffer buf)))))
 
 ;;; workers-ts-tests.el ends here
+
+;;; Task 55: redisplay never waits; the Lisp wait rule.
+
+(defun workers-ts-tests--wait-ms ()
+  "Milliseconds counted in the `treesit-wait' phase."
+  (plist-get (plist-get (nidhogg-workers-stats) :phase-ms) 'treesit-wait))
+
+(ert-deftest workers/ts-redisplay-no-wait ()
+  ;; A job at 50 %: the redisplay's check answers nil at once, no wait.
+  ;; At 95 %: one wait of at most 1 ms (the near-done wait), still nil
+  ;; for a job that stays parked.
+  (workers-ts-tests--modes
+    (when (eq mode 'threads)
+      (with-temp-buffer
+        (insert (workers-ts-tests--c-text 50000))
+        (let ((p (treesit-parser-create 'c nil t)))
+          (treesit-parser-root-node p)
+          (goto-char (point-max))
+          (insert "int q;\n")
+          (workers-ts-tests--pause mode 'after-snapshot)
+          (should (nidhogg-workers--test-ts-start p))
+          (workers-ts-tests--await mode 'after-snapshot)
+          (nidhogg-workers--test-ts-progress p 50)
+          (nidhogg-workers-stats t)
+          (nidhogg-workers--test-redisplay-begin)
+          (should-not (nidhogg-workers--treesit-await p))
+          (should (zerop (workers-ts-tests--wait-ms)))
+          (nidhogg-workers--test-ts-progress p 95)
+          (nidhogg-workers--test-redisplay-begin)
+          (should-not (nidhogg-workers--treesit-await p))
+          (should (<= 0 (workers-ts-tests--wait-ms) 3.0))
+          (should (> (workers-ts-tests--wait-ms) 0))
+          (nidhogg-workers--release 'after-snapshot)
+          ;; A demand takes or drops the finished job.
+          (treesit-parser-root-node p)
+          (should (nidhogg-workers--test-ts-await-idle 60000)))))))
+
+(ert-deftest workers/ts-lisp-wait-rule ()
+  ;; A demand outside redisplay: a stale job under half done is
+  ;; cancelled; a first parse (no tree) past half is waited for.
+  (workers-ts-tests--modes
+    (when (eq mode 'threads)
+      (dolist (case '((40 cancelled) (60 waited)))
+        (with-temp-buffer
+          (insert (workers-ts-tests--c-text 50000))
+          (let ((p (treesit-parser-create 'c nil t)))
+            (nidhogg-workers--pause-at 'after-snapshot)
+            (should (nidhogg-workers--test-ts-start p))
+            (workers-ts-tests--await mode 'after-snapshot)
+            (goto-char (point-min))
+            (insert "int x;\n")
+            (nidhogg-workers--test-ts-progress p (car case))
+            (let ((ab (workers-ts-tests--stat :abandoned))
+                  (waited (workers-ts-tests--stat :waited)))
+              (nidhogg-workers--test-release-on-wait 'after-snapshot)
+              (should (equal (workers-ts-tests--sexp p)
+                             (workers-ts-tests--sync-sexp (buffer-string))))
+              (if (eq (cadr case) 'cancelled)
+                  (progn (should (= (workers-ts-tests--stat :abandoned) (1+ ab)))
+                         (should (= (workers-ts-tests--stat :waited) waited)))
+                (should (= (workers-ts-tests--stat :waited) (1+ waited)))))
+            (nidhogg-workers--release 'after-snapshot)
+            (should (nidhogg-workers--test-ts-await-idle 60000))))))))
