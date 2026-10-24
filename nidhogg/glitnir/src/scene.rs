@@ -1,0 +1,733 @@
+//! The scene: one root's layers as a tree, their stacking, and the commit that turns changes into damage.
+//!
+//! A root's scene holds frame layers (the root's own surface), window layers (a window's rectangle on its frame's
+//! surface) and child nodes (a child frame's surface, with its windows and nested children under it). Every
+//! rectangle is in the root's device pixels. The host changes the scene at any time; a commit compares it with the
+//! last committed scene and returns the scene damage (§6.2):
+//!
+//! - each frame's (or child frame's) own damage, clipped to its layer and moved into the root's coordinates;
+//! - a scroll operation: its window layer's rectangle (P1 composes a scroll as damage);
+//! - the old and the new bounds, shadow included, of every layer that moved, resized, appeared, disappeared, changed
+//!   chrome or changed place in the stacking; all of them when the root's scale changed.
+//!
+//! Comparing with the committed scene, rather than logging changes, makes a hide and a show of a layer within one
+//! commit cancel. Ids are unique within a root, whatever their kind.
+
+use crate::damage::{Damage, Frames};
+use crate::ffi::{GLITNIR_E_ARG, GLITNIR_E_STATE};
+use crate::geom::Rect;
+use crate::stack::Stack;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// Every root's scene.
+pub type Scenes = BTreeMap<u64, Scene>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// A frame's surface (the root's own).
+    Frame,
+    /// A window's rectangle on its frame's surface.
+    Window,
+    /// A child frame's surface, with its windows and nested child frames under it.
+    Child,
+}
+
+impl Kind {
+    /// The C value: 1 frame, 2 window, 3 child node.
+    pub fn from_c(k: u32) -> Option<Kind> {
+        match k {
+            1 => Some(Kind::Frame),
+            2 => Some(Kind::Window),
+            3 => Some(Kind::Child),
+            _ => None,
+        }
+    }
+}
+
+/// One layer as the host describes it.  Layout equals `GlitnirLayerDesc`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LayerDesc {
+    pub id: u64,
+    /// 0 for a root's frame layer.
+    pub parent: u64,
+    /// [`Kind::from_c`].
+    pub kind: u32,
+    /// Root device px.
+    pub rect: Rect,
+    pub scale: f64,
+    pub visible: u8,
+}
+
+/// A layer's chrome, device px; colours premultiplied ARGB in Cairo's order.  Layout equals `GlitnirChrome`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Chrome {
+    pub radius_px: f32,
+    /// The CSS blur radius (σ = blur / 2).
+    pub blur_px: f32,
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub spread_px: f32,
+    pub shadow_opacity: f32,
+    pub shadow_argb: u32,
+    pub border_px: f32,
+    pub border_argb: u32,
+}
+
+/// Clamp to i32 for a pixel coordinate.
+fn px(v: f64) -> i64 {
+    v.clamp(i32::MIN as f64, i32::MAX as f64) as i64
+}
+
+impl Chrome {
+    pub fn has_shadow(&self) -> bool {
+        self.shadow_opacity > 0.0
+    }
+
+    /// The shadow image of a layer at RECT: the layer grown by the spread and the blur's reach, then offset, rounded
+    /// outward (the image [`crate::shadow::ShadowTiles`] draws).  Empty without a shadow.
+    pub fn shadow_rect(&self, rect: Rect) -> Rect {
+        if rect.is_empty() || !self.has_shadow() {
+            return Rect::default();
+        }
+        let spread = self.spread_px.round() as i64;
+        let reach = crate::shadow::reach(self.blur_px) as i64;
+        let pad = reach + spread;
+        let w = (rect.w as i64 + 2 * spread).max(0) + 2 * reach;
+        let h = (rect.h as i64 + 2 * spread).max(0) + 2 * reach;
+        let x = (rect.x as i64 - pad) as f64 + self.offset_x as f64;
+        let y = (rect.y as i64 - pad) as f64 + self.offset_y as f64;
+        let (x0, y0) = (px(x.floor()), px(y.floor()));
+        let (x1, y1) = (px((x + w as f64).ceil()), px((y + h as f64).ceil()));
+        let side = |a: i64, b: i64| (b - a).min(i32::MAX as i64) as i32;
+        Rect::new(x0 as i32, y0 as i32, side(x0, x1), side(y0, y1))
+    }
+}
+
+/// The pixels a layer at RECT with CHROME can touch: its rectangle and its shadow image.
+pub fn bounds(rect: Rect, chrome: Option<&Chrome>) -> Rect {
+    match chrome {
+        Some(c) if !rect.is_empty() => rect.bounds(&c.shadow_rect(rect)),
+        _ => rect,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Layer {
+    kind: Kind,
+    rect: Rect,
+    scale: f64,
+    visible: bool,
+    chrome: Option<Chrome>,
+}
+
+/// A layer of a committed scene.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Placed {
+    pub id: u64,
+    pub parent: u64,
+    pub kind: Kind,
+    pub rect: Rect,
+    pub scale: f64,
+    pub chrome: Option<Chrome>,
+    /// [`bounds`] of the rectangle and chrome.
+    pub bounds: Rect,
+}
+
+impl Placed {
+    fn looks_same(&self, o: &Placed) -> bool {
+        self.kind == o.kind
+            && self.rect == o.rect
+            && self.scale == o.scale
+            && self.chrome == o.chrome
+    }
+}
+
+/// One root's scene: the layers now, their stacking, and the committed scene.
+#[derive(Debug, Default)]
+pub struct Scene {
+    layers: BTreeMap<u64, Layer>,
+    stack: Stack,
+    /// Layers whose place in the stacking changed since the last commit.
+    restacked: BTreeSet<u64>,
+    committed: Vec<Placed>,
+    listed: Vec<u64>,
+}
+
+impl Scene {
+    /// Add or change a layer.  A new layer, or one under a new parent, goes on top of its parent's children.
+    /// `GLITNIR_E_ARG` for an unknown kind, id 0, a scale that is not positive, or a parent under the layer.
+    pub fn upsert(&mut self, d: &LayerDesc) -> Result<(), i32> {
+        let kind = Kind::from_c(d.kind).ok_or(GLITNIR_E_ARG)?;
+        let scale_ok = d.scale.is_finite() && d.scale > 0.0;
+        if d.id == 0 || !scale_ok || self.stack.would_cycle(d.id, d.parent) {
+            return Err(GLITNIR_E_ARG);
+        }
+        let had = self.stack.parent_of(d.id);
+        if had != Some(d.parent) {
+            self.stack.place_top(d.id, d.parent);
+            if had.is_some() {
+                self.mark_restacked(d.id);
+            }
+        }
+        let chrome = self.layers.get(&d.id).and_then(|l| l.chrome);
+        self.layers.insert(
+            d.id,
+            Layer {
+                kind,
+                rect: d.rect,
+                scale: d.scale,
+                visible: d.visible != 0,
+                chrome,
+            },
+        );
+        Ok(())
+    }
+
+    /// Remove ID and every layer under it (an unknown id is no change).
+    pub fn remove(&mut self, id: u64) {
+        for c in self.stack.remove_subtree(id) {
+            self.layers.remove(&c);
+            self.restacked.remove(&c);
+        }
+    }
+
+    /// Set (or, with `None`, clear) ID's chrome.  `GLITNIR_E_ARG` for an unknown id.
+    pub fn set_chrome(&mut self, id: u64, chrome: Option<Chrome>) -> Result<(), i32> {
+        self.layers.get_mut(&id).ok_or(GLITNIR_E_ARG)?.chrome = chrome;
+        Ok(())
+    }
+
+    fn known(&self, id: u64) -> Result<(), i32> {
+        if self.layers.contains_key(&id) {
+            Ok(())
+        } else {
+            Err(GLITNIR_E_ARG)
+        }
+    }
+
+    fn mark_restacked(&mut self, id: u64) {
+        self.restacked.extend(self.stack.subtree(id));
+    }
+
+    /// Raise ID to the top of its siblings.
+    pub fn raise(&mut self, id: u64) -> Result<(), i32> {
+        self.known(id)?;
+        if self.stack.raise(id) {
+            self.mark_restacked(id);
+        }
+        Ok(())
+    }
+
+    /// Lower ID to the bottom of its siblings.
+    pub fn lower(&mut self, id: u64) -> Result<(), i32> {
+        self.known(id)?;
+        if self.stack.lower(id) {
+            self.mark_restacked(id);
+        }
+        Ok(())
+    }
+
+    /// Move ID, with everything under it, to the top of PARENT's children (0: the top level).
+    pub fn reparent(&mut self, id: u64, parent: u64) -> Result<(), i32> {
+        self.known(id)?;
+        if self.stack.would_cycle(id, parent) {
+            return Err(GLITNIR_E_ARG);
+        }
+        self.stack.place_top(id, parent);
+        self.mark_restacked(id);
+        Ok(())
+    }
+
+    /// The child nodes, hidden ones included, bottom to top: depth first, so a nested child sits right above its
+    /// parent and below the parent's upper siblings.  Valid until the next call.
+    pub fn list(&mut self) -> &[u64] {
+        self.listed.clear();
+        let mut todo: Vec<u64> = self.stack.children(0).iter().rev().copied().collect();
+        while let Some(id) = todo.pop() {
+            if self.layers.get(&id).is_some_and(|l| l.kind == Kind::Child) {
+                self.listed.push(id);
+            }
+            todo.extend(self.stack.children(id).iter().rev());
+        }
+        &self.listed
+    }
+
+    /// The visible layers now, in paint order: depth first, bottom to top; under each layer its windows, then its
+    /// child nodes in stacking order.
+    fn placed(&self) -> Vec<Placed> {
+        let mut out = Vec::new();
+        self.walk(0, &mut out);
+        out
+    }
+
+    fn walk(&self, parent: u64, out: &mut Vec<Placed>) {
+        for windows in [true, false] {
+            for &id in self.stack.children(parent) {
+                let Some(l) = self.layers.get(&id) else {
+                    continue;
+                };
+                if !l.visible || (l.kind == Kind::Window) != windows {
+                    continue;
+                }
+                out.push(Placed {
+                    id,
+                    parent,
+                    kind: l.kind,
+                    rect: l.rect,
+                    scale: l.scale,
+                    chrome: l.chrome,
+                    bounds: bounds(l.rect, l.chrome.as_ref()),
+                });
+                self.walk(id, out);
+            }
+        }
+    }
+
+    /// The committed scene's visible layers in paint order.
+    pub fn committed(&self) -> &[Placed] {
+        &self.committed
+    }
+
+    /// Commit ROOT's scene: take its frames' damage from FRAMES, damage what changed since the last commit, clipped
+    /// to the root's frame layer, and return it (ROOT's committed damage, kept in FRAMES until the next commit).
+    pub fn commit<'a>(&mut self, root: u64, frames: &'a mut Frames) -> &'a [Rect] {
+        let new = self.placed();
+        let old = std::mem::take(&mut self.committed);
+        let mut out: Vec<Rect> = Vec::new();
+        {
+            let new_by: BTreeMap<u64, &Placed> = new.iter().map(|p| (p.id, p)).collect();
+            let old_by: BTreeMap<u64, &Placed> = old.iter().map(|p| (p.id, p)).collect();
+            // Layer damage: a frame's own, in its coordinates.  A hidden layer's is dropped.
+            for (&id, l) in &self.layers {
+                if l.kind == Kind::Window {
+                    continue;
+                }
+                let Some((rects, scrolls)) = frames.get_mut(&id).map(Damage::drain) else {
+                    continue;
+                };
+                let Some(p) = new_by.get(&id) else {
+                    continue;
+                };
+                let local = Rect::new(0, 0, p.rect.w, p.rect.h);
+                out.extend(
+                    rects
+                        .iter()
+                        .map(|r| r.intersect(&local).translate(p.rect.x, p.rect.y)),
+                );
+                out.extend(scrolls.iter().filter_map(|w| new_by.get(w)).map(|w| w.rect));
+            }
+            if !self.layers.contains_key(&root)
+                && let Some(d) = frames.get_mut(&root)
+            {
+                out.extend(d.drain().0);
+            }
+            // Geometry, chrome, visibility and stacking: old and new bounds.
+            let scale = |by: &BTreeMap<u64, &Placed>| by.get(&root).map(|p| p.scale);
+            let rescaled = matches!((scale(&old_by), scale(&new_by)), (Some(a), Some(b)) if a != b);
+            let ids: BTreeSet<u64> = old_by.keys().chain(new_by.keys()).copied().collect();
+            for id in ids {
+                let (o, n) = (old_by.get(&id), new_by.get(&id));
+                let changed = match (o, n) {
+                    (Some(o), Some(n)) => {
+                        rescaled || !o.looks_same(n) || self.restacked.contains(&id)
+                    }
+                    _ => true,
+                };
+                if changed {
+                    out.extend(o.map(|p| p.bounds));
+                    out.extend(n.map(|p| p.bounds));
+                }
+            }
+            if let Some(clip) = new_by.get(&root).map(|p| p.rect) {
+                for r in &mut out {
+                    *r = r.intersect(&clip);
+                }
+            }
+        }
+        self.committed = new;
+        self.restacked.clear();
+        let d = frames.entry(root).or_default();
+        for r in out {
+            d.add(r);
+        }
+        d.commit()
+    }
+}
+
+/// Run `f` on ROOT's scene; `GLITNIR_E_STATE` when ROOT has none.
+pub fn with<R>(root: u64, f: impl FnOnce(&mut Scene) -> Result<R, i32>) -> Result<R, i32> {
+    let mut st = crate::STATE.lock().unwrap_or_else(|p| p.into_inner());
+    st.scenes.get_mut(&root).ok_or(GLITNIR_E_STATE).and_then(f)
+}
+
+/// Give ROOT a scene (an existing one is kept).
+pub fn root_new(root: u64) {
+    let mut st = crate::STATE.lock().unwrap_or_else(|p| p.into_inner());
+    st.scenes.entry(root).or_default();
+}
+
+/// Drop ROOT's scene; its commits fall back to its own damage.
+pub fn root_drop(root: u64) {
+    let mut st = crate::STATE.lock().unwrap_or_else(|p| p.into_inner());
+    st.scenes.remove(&root);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rng::XorShift;
+    use crate::shadow::{ShadowCache, ShadowSpec};
+
+    const ROOT: u64 = 1;
+
+    fn desc(id: u64, parent: u64, kind: u32, rect: Rect, scale: f64, visible: bool) -> LayerDesc {
+        LayerDesc {
+            id,
+            parent,
+            kind,
+            rect,
+            scale,
+            visible: visible as u8,
+        }
+    }
+
+    /// A scene with the root's frame layer at W×H, committed once.
+    fn scene(w: i32, h: i32, scale: f64) -> (Scene, Frames) {
+        let (mut s, mut f) = (Scene::default(), Frames::new());
+        s.upsert(&desc(ROOT, 0, 1, Rect::new(0, 0, w, h), scale, true))
+            .unwrap();
+        s.commit(ROOT, &mut f);
+        (s, f)
+    }
+
+    fn child(s: &mut Scene, id: u64, parent: u64, rect: Rect) {
+        s.upsert(&desc(id, parent, 3, rect, 1.0, true)).unwrap();
+    }
+
+    fn commit(s: &mut Scene, f: &mut Frames) -> Vec<Rect> {
+        s.commit(ROOT, f).to_vec()
+    }
+
+    fn covered(damage: &[Rect], x: i32, y: i32) -> bool {
+        damage.iter().any(|r| r.contains(x, y))
+    }
+
+    /// Every pixel of R is in DAMAGE.
+    fn covers(damage: &[Rect], r: Rect) -> bool {
+        (r.y..r.y + r.h.max(0)).all(|y| (r.x..r.x + r.w.max(0)).all(|x| covered(damage, x, y)))
+    }
+
+    fn shadow() -> Chrome {
+        Chrome {
+            radius_px: 16.0,
+            blur_px: 32.0,
+            offset_x: 0.0,
+            offset_y: 12.0,
+            spread_px: 0.0,
+            shadow_opacity: 0.35,
+            shadow_argb: 0xff00_0000,
+            border_px: 2.0,
+            border_argb: 0xff80_8080,
+        }
+    }
+
+    #[test]
+    fn commit_damage_covers_old_and_new_bounds() {
+        const N: i32 = 160;
+        let root = Rect::new(0, 0, N, N);
+        for seed in 1..=100u64 {
+            let mut g = XorShift::new(seed);
+            let (mut s, mut f) = scene(N, N, 1.0);
+            let rnd = |g: &mut XorShift| {
+                Rect::new(
+                    g.below(N as u32) as i32 - 20,
+                    g.below(N as u32) as i32 - 20,
+                    g.below(60) as i32,
+                    g.below(60) as i32,
+                )
+            };
+            // (rect, visible, chrome) per child id 10..14
+            let mut model: Vec<(Rect, bool, Option<Chrome>)> = Vec::new();
+            for i in 0..4u64 {
+                let r = rnd(&mut g);
+                child(&mut s, 10 + i, ROOT, r);
+                model.push((r, true, None));
+            }
+            commit(&mut s, &mut f);
+            for _round in 0..4 {
+                let before = model.clone();
+                for (i, m) in model.iter_mut().enumerate() {
+                    let id = 10 + i as u64;
+                    match g.below(5) {
+                        0 => m.0 = rnd(&mut g),
+                        1 => m.1 = !m.1,
+                        2 => {
+                            let mut c = shadow();
+                            c.blur_px = g.below(20) as f32;
+                            c.offset_x = g.below(9) as f32 - 4.5;
+                            m.2 = Some(c);
+                            s.set_chrome(id, m.2).unwrap();
+                        }
+                        _ => {}
+                    }
+                    s.upsert(&desc(id, ROOT, 3, m.0, 1.0, m.1)).unwrap();
+                }
+                let d = commit(&mut s, &mut f);
+                for (o, n) in before.iter().zip(&model) {
+                    if o == n {
+                        continue;
+                    }
+                    for (r, vis, c) in [o, n] {
+                        if *vis {
+                            let b = bounds(*r, c.as_ref()).intersect(&root);
+                            assert!(covers(&d, b), "seed {seed}: {b:?} not in {d:?}");
+                        }
+                    }
+                }
+                assert!(d.iter().all(|r| root.intersect(r) == *r), "seed {seed}");
+            }
+            // nothing changed: nothing damaged
+            assert!(commit(&mut s, &mut f).is_empty(), "seed {seed}");
+        }
+        // a child frame's own damage lands at its place; a scroll damages its window layer
+        let (mut s, mut f) = scene(800, 600, 1.0);
+        child(&mut s, 10, ROOT, Rect::new(100, 50, 200, 100));
+        s.upsert(&desc(11, 10, 2, Rect::new(104, 54, 192, 80), 1.0, true))
+            .unwrap();
+        commit(&mut s, &mut f);
+        let fd = f.entry(10).or_default();
+        fd.add(Rect::new(0, 0, 5, 5));
+        fd.add(Rect::new(190, 90, 50, 50));
+        fd.scrolled(11);
+        let d = commit(&mut s, &mut f);
+        assert!(covers(&d, Rect::new(100, 50, 5, 5)));
+        assert!(covers(&d, Rect::new(290, 140, 10, 10)));
+        assert!(covers(&d, Rect::new(104, 54, 192, 80)));
+        assert!(!covered(&d, 300, 150), "clipped to the child: {d:?}");
+    }
+
+    #[test]
+    fn shadow_extent_is_in_the_damage() {
+        let (mut s, mut f) = scene(800, 600, 2.0);
+        let r = Rect::new(200, 150, 300, 200);
+        let c = shadow();
+        s.upsert(&desc(10, ROOT, 3, r, 2.0, true)).unwrap();
+        s.set_chrome(10, Some(c)).unwrap();
+        // the image Task 30's tiles draw: pad above and left of the layer, then the offset
+        let tiles = ShadowCache::new().get(
+            r.w as u32,
+            r.h as u32,
+            &ShadowSpec {
+                radius: c.radius_px,
+                blur: c.blur_px,
+                spread: c.spread_px,
+                colour: c.shadow_argb,
+                scale: 2.0,
+            },
+        );
+        let (iw, ih) = tiles.image_size(r.w as u32, r.h as u32);
+        let image = Rect::new(
+            r.x - tiles.pad(),
+            r.y - tiles.pad() + c.offset_y as i32,
+            iw as i32,
+            ih as i32,
+        );
+        assert_eq!(c.shadow_rect(r), image);
+        let d = commit(&mut s, &mut f);
+        assert!(covers(&d, image) && covers(&d, r), "{d:?}");
+        let b = r.bounds(&image);
+        assert!(d.iter().all(|x| b.intersect(x) == *x), "{d:?} past {b:?}");
+        // re-chromed: the shadow's extent again
+        s.set_chrome(
+            10,
+            Some(Chrome {
+                shadow_opacity: 0.6,
+                ..c
+            }),
+        )
+        .unwrap();
+        assert!(covers(&commit(&mut s, &mut f), image));
+        // moved: old and new shadows
+        s.upsert(&desc(10, ROOT, 3, r.translate(40, 0), 2.0, true))
+            .unwrap();
+        let d = commit(&mut s, &mut f);
+        assert!(covers(&d, image) && covers(&d, image.translate(40, 0)));
+        // a fractional offset rounds outward
+        let mut half = c;
+        half.offset_x = 0.5;
+        let h = half.shadow_rect(r);
+        assert_eq!((h.x, h.w), (image.x, image.w + 1));
+        // no shadow: the rectangle only
+        assert_eq!(bounds(r, Some(&Chrome::default())), r);
+    }
+
+    #[test]
+    fn hide_then_show_in_one_commit_cancels() {
+        let (mut s, mut f) = scene(800, 600, 1.0);
+        let r = Rect::new(10, 10, 100, 40);
+        child(&mut s, 10, ROOT, r);
+        s.set_chrome(10, Some(shadow())).unwrap();
+        assert!(!commit(&mut s, &mut f).is_empty());
+        s.upsert(&desc(10, ROOT, 3, r, 1.0, false)).unwrap();
+        s.upsert(&desc(10, ROOT, 3, r, 1.0, true)).unwrap();
+        assert!(commit(&mut s, &mut f).is_empty());
+        // showing raises: already on top, nothing moves
+        s.raise(10).unwrap();
+        assert!(commit(&mut s, &mut f).is_empty());
+        // a hide alone damages the bounds; so does the show after it
+        let b = bounds(r, Some(&shadow())).intersect(&Rect::new(0, 0, 800, 600));
+        s.upsert(&desc(10, ROOT, 3, r, 1.0, false)).unwrap();
+        assert!(covers(&commit(&mut s, &mut f), b));
+        s.upsert(&desc(10, ROOT, 3, r, 1.0, true)).unwrap();
+        assert!(covers(&commit(&mut s, &mut f), b));
+    }
+
+    #[test]
+    fn raise_lower_order() {
+        for seed in 1..=200u64 {
+            let mut g = XorShift::new(seed);
+            let (mut s, _) = scene(800, 600, 1.0);
+            let mut model: Vec<u64> = Vec::new();
+            for _ in 0..300 {
+                let id = 10 + g.below(8) as u64;
+                let known = model.contains(&id);
+                match g.below(4) {
+                    _ if !known => {
+                        child(&mut s, id, ROOT, Rect::new(0, 0, 10, 10));
+                        model.push(id);
+                    }
+                    0 => {
+                        s.raise(id).unwrap();
+                        model.retain(|&x| x != id);
+                        model.push(id);
+                    }
+                    1 => {
+                        s.lower(id).unwrap();
+                        model.retain(|&x| x != id);
+                        model.insert(0, id);
+                    }
+                    2 => {
+                        s.remove(id);
+                        model.retain(|&x| x != id);
+                    }
+                    _ => {
+                        // a change of geometry keeps the place
+                        child(&mut s, id, ROOT, Rect::new(5, 5, 20, 20));
+                    }
+                }
+                assert_eq!(s.list(), model.as_slice(), "seed {seed}");
+            }
+        }
+        let (mut s, _) = scene(800, 600, 1.0);
+        assert_eq!(s.raise(99), Err(GLITNIR_E_ARG));
+        assert_eq!(s.lower(99), Err(GLITNIR_E_ARG));
+    }
+
+    #[test]
+    fn reparent_moves_the_subtree() {
+        let (mut s, mut f) = scene(800, 600, 1.0);
+        let (a, b, c, w) = (10, 20, 30, 31);
+        let (ra, rc) = (Rect::new(10, 10, 100, 100), Rect::new(20, 20, 30, 30));
+        child(&mut s, a, ROOT, ra);
+        child(&mut s, b, ROOT, Rect::new(50, 50, 100, 100));
+        child(&mut s, c, a, rc);
+        s.upsert(&desc(w, c, 2, Rect::new(22, 22, 26, 26), 1.0, true))
+            .unwrap();
+        commit(&mut s, &mut f);
+        assert_eq!(s.list(), &[a, c, b]);
+        s.reparent(a, b).unwrap();
+        assert_eq!(s.list(), &[b, a, c]);
+        let ids: Vec<u64> = s.placed().iter().map(|p| p.id).collect();
+        assert_eq!(ids, vec![ROOT, b, a, c, w]);
+        let d = commit(&mut s, &mut f);
+        assert!(covers(&d, ra) && covers(&d, rc), "{d:?}");
+        // under its own subtree: refused, nothing changes
+        assert_eq!(s.reparent(b, c), Err(GLITNIR_E_ARG));
+        assert_eq!(
+            s.upsert(&desc(b, w, 3, Rect::new(0, 0, 1, 1), 1.0, true)),
+            Err(GLITNIR_E_ARG)
+        );
+        assert_eq!(s.list(), &[b, a, c]);
+        // an upsert under a new parent reparents
+        child(&mut s, c, ROOT, rc);
+        assert_eq!(s.list(), &[b, a, c]);
+        s.reparent(a, ROOT).unwrap();
+        assert_eq!(s.list(), &[b, c, a]);
+        assert!(covers(&commit(&mut s, &mut f), ra));
+    }
+
+    #[test]
+    fn nested_child_stacks_inside_its_parent() {
+        let (mut s, mut f) = scene(800, 600, 1.0);
+        let (a, b, c, d, w) = (10, 20, 30, 40, 11);
+        child(&mut s, a, ROOT, Rect::new(0, 0, 300, 300));
+        child(&mut s, b, ROOT, Rect::new(100, 100, 300, 300));
+        child(&mut s, c, a, Rect::new(10, 10, 50, 50));
+        assert_eq!(s.list(), &[a, c, b]);
+        s.raise(c).unwrap();
+        assert_eq!(s.list(), &[a, c, b], "C stays inside A, below B");
+        s.raise(a).unwrap();
+        assert_eq!(s.list(), &[b, a, c]);
+        child(&mut s, d, a, Rect::new(20, 20, 50, 50));
+        assert_eq!(s.list(), &[b, a, c, d]);
+        s.lower(c).unwrap();
+        assert_eq!(s.list(), &[b, a, c, d]);
+        s.lower(d).unwrap();
+        assert_eq!(s.list(), &[b, a, d, c]);
+        // A's window paints above A and below A's children, whenever it came
+        s.upsert(&desc(w, a, 2, Rect::new(2, 2, 290, 290), 1.0, true))
+            .unwrap();
+        commit(&mut s, &mut f);
+        let ids: Vec<u64> = s.committed().iter().map(|p| p.id).collect();
+        assert_eq!(ids, vec![ROOT, b, a, w, d, c]);
+        // a hidden parent hides its subtree from the paint, not from the stacking
+        s.upsert(&desc(a, ROOT, 3, Rect::new(0, 0, 300, 300), 1.0, false))
+            .unwrap();
+        commit(&mut s, &mut f);
+        let ids: Vec<u64> = s.committed().iter().map(|p| p.id).collect();
+        assert_eq!(ids, vec![ROOT, b]);
+        assert_eq!(s.list(), &[b, a, d, c]);
+    }
+
+    #[test]
+    fn removed_layer_has_no_damage_source() {
+        let (mut s, mut f) = scene(800, 600, 1.0);
+        let (c, n) = (10, 20);
+        let r = Rect::new(100, 100, 50, 50);
+        child(&mut s, c, ROOT, r);
+        child(&mut s, n, c, Rect::new(110, 110, 10, 10));
+        commit(&mut s, &mut f);
+        f.entry(c).or_default().add(Rect::new(0, 0, 10, 10));
+        s.remove(c);
+        assert!(s.list().is_empty(), "the subtree went too");
+        assert_eq!(s.set_chrome(n, None), Err(GLITNIR_E_ARG));
+        assert!(covers(&commit(&mut s, &mut f), r));
+        // the frame still draws (it is alive, e.g. on its way to another root): nothing reaches this root
+        f.entry(c).or_default().add(Rect::new(0, 0, 10, 10));
+        f.entry(c).or_default().scrolled(n);
+        assert!(commit(&mut s, &mut f).is_empty());
+        assert!(s.committed().iter().all(|p| p.id == ROOT));
+        // and its damage is still the frame's own
+        assert!(!f.entry(c).or_default().is_empty());
+    }
+
+    #[test]
+    fn scale_change_damages_everything() {
+        let (mut s, mut f) = scene(800, 600, 1.0);
+        child(&mut s, 10, ROOT, Rect::new(100, 100, 50, 50));
+        commit(&mut s, &mut f);
+        assert!(commit(&mut s, &mut f).is_empty());
+        let all = Rect::new(0, 0, 800, 600);
+        s.upsert(&desc(ROOT, 0, 1, all, 2.0, true)).unwrap();
+        let d = commit(&mut s, &mut f);
+        assert!(covers(&d, all), "{d:?}");
+        assert!(commit(&mut s, &mut f).is_empty());
+        // a child's scale alone damages the child
+        s.upsert(&desc(10, ROOT, 3, Rect::new(100, 100, 50, 50), 2.0, true))
+            .unwrap();
+        let d = commit(&mut s, &mut f);
+        assert!(covers(&d, Rect::new(100, 100, 50, 50)) && !covered(&d, 0, 0));
+    }
+}
