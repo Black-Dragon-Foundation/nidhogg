@@ -127,6 +127,28 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   Linux) and runs the checks on each. On Linux they start with `ldd` on every program in `bin/` and `libexec/`: a
   library not found fails the test, all of them named at once (their packages belong in `deps/<distro>.runtime`).
 
+## GUI tests
+
+`bash nidhogg/test/gui.sh --prefix DIR [--scale S] [--size WxH] [--monitors N] [--select REGEXP] [--tests DIR]
+[--daemon] [--container DISTRO] [--wayland-debug FILE] [--env K=V]... [--timeout SEC]` runs the `*-gui-tests.el` files of
+`test/src/nidhogg-tests/` (ERT tests named `glitnir-gui/…`, `nidhogg-gui/…`) on a Nidhogg pgtk frame under a headless
+mutter. `DIR` is a Nidhogg prefix (an unpacked tarball or an install).
+
+- Everything is private to the run: `dbus-run-session` gives mutter its own session bus, mutter its own Wayland display
+  (`glitnir-gui-<pid>`) and virtual monitors (`--size`, default 2880x1800, `--monitors`), and `HOME` and the XDG
+  directories are temporary. `WAYLAND_DISPLAY`, `DISPLAY`, the session bus and `EMACS_SOCKET_NAME` of the caller are
+  unset, so a run never reaches the caller's compositor, session or Emacs server. Everything started is stopped on exit.
+- The scale: `gdctl set --logical-monitor --scale S` inside the session (mutter 50 accepts a fractional scale on a headless
+  virtual monitor). GTK 3 knows only integer scales, so `(frame-scale-factor)` is `ceil(S)` and the monitor's GDK geometry
+  `(WxH / S) * ceil(S)` (S = 1.25 on 2880x1800: 4608x2880). The runner waits up to 10 s for both before the tests start.
+- `--daemon` starts `nidhogg --fg-daemon` (socket in the run's private runtime directory) and opens the frame with
+  `nidhoggclient -c`; the runner starts the tests from `server-after-make-frame-hook`.
+- `--container fedora-45` does the same in a `--memory 6g` podman container (image pinned by digest; `mutter`,
+  `dbus-daemon` and the tarball's `deps.runtime` are installed there). A tarball is mounted at the prefix its `BUILDINFO` names.
+- The tests start after the first frame is visible and redisplayed, never inside `command-line`. Exit 0 when all tests
+  passed, 1 on a failure or a timeout (default 300 s).
+- CI job `gui` (below) runs the fedora-45 tarball at scales 1 and 2.
+
 ## CI and releases
 
 `.github/workflows/build.yml` runs on pushes to `nidhogg-31`, `v*-nidhogg.*` tags, pull requests and by hand
@@ -146,6 +168,8 @@ in `DRGNX_REF`, never drgnx's moving `main`: a drgnx push cannot turn Nidhogg re
   `dump` example: `DRGNX_HUGINN_DUMP`), then `nidhogg/ci/drgnx-suite.sh TARBALL DISTRO DRGNX_DIR` runs drgnx's
   unit suite with `DRGNX_EMACS` set to the built Nidhogg (the `:timing` tests in a second run). Locally, a narrowed run:
   `DRGNX_TEST_SELECTOR='drgnx-doctor/' bash nidhogg/ci/drgnx-suite.sh TARBALL fedora-44 ../drgnx`.
+- `gui` (fedora-45 tarball, after `linux`; scales 1 and 2; 60 minutes): `nidhogg/test/gui.sh --container fedora-45`
+  (see GUI tests). It is not part of the release gate.
 - `release` (a pushed `v*` tag only, never a manual run or a pull request) needs all five jobs, fails unless the tag is `v$(cat nidhogg/version)`, and publishes the
   tarballs, their `.sha256` files and `SHA256SUMS`; the notes name the built commit and the drgnx commit tested.
 - Caches (`actions/cache/restore` before the build, `actions/cache/save` right after the step that produced them, so a
