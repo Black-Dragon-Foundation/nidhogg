@@ -399,6 +399,168 @@ draw was forced.  */)
 #endif
 }
 
+DEFUN ("glitnir--debug-freeze", Fglitnir__debug_freeze, Sglitnir__debug_freeze,
+       0, 1, 0,
+       doc: /* Freeze FRAME's root frame until its next consistency point (for tests).
+The root freezes as at the first damage after a point, with nothing
+drawn: GTK paints none of it until the next point commits and thaws it,
+which outside redisplay comes when GLib next runs its idle callbacks.
+Refused unless `glitnir-debug' is non-nil.  FRAME defaults to the
+selected frame.  Return non-nil if the root is frozen.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+  if (NILP (Vglitnir_debug))
+    error ("glitnir--debug-freeze: `glitnir-debug' is nil");
+#ifdef HAVE_PGTK
+  return glitnir_pgtk_debug_freeze (f) ? Qt : Qnil;
+#else
+  (void) f;
+  return Qnil;
+#endif
+}
+
+DEFUN ("glitnir--debug-scale-mismatch", Fglitnir__debug_scale_mismatch,
+       Sglitnir__debug_scale_mismatch, 0, 1, 0,
+       doc: /* Make the next paint of FRAME's root frame see a scale mismatch (for tests).
+Every draw of that paint finds the root's surface at another device scale
+than GDK's buffer, as between a monitor's scale change and pgtk's next
+look at it: the root and its child frames are drawn the stock way,
+without chrome, and the paint counts in the `:scale-mismatch' of
+`glitnir-stats'.  The whole root is queued for that paint.  Refused
+unless `glitnir-debug' is non-nil.  FRAME defaults to the selected frame.
+Return non-nil if the paint was armed.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+  if (NILP (Vglitnir_debug))
+    error ("glitnir--debug-scale-mismatch: `glitnir-debug' is nil");
+#ifdef HAVE_PGTK
+  return glitnir_pgtk_debug_scale_mismatch (f) ? Qt : Qnil;
+#else
+  (void) f;
+  return Qnil;
+#endif
+}
+
+DEFUN ("glitnir--debug-reset-surface", Fglitnir__debug_reset_surface,
+       Sglitnir__debug_reset_surface, 0, 1, 0,
+       doc: /* Make FRAME's surface anew, as a size or scale change does (for tests).
+The frame is garbaged and its next drawing goes into a new, empty
+surface; the last complete one is shown until the frame has been redrawn
+whole, even when this runs inside redisplay.  Refused unless
+`glitnir-debug' is non-nil.  FRAME defaults to the selected frame.
+Return non-nil if the surface was made anew.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+  if (NILP (Vglitnir_debug))
+    error ("glitnir--debug-reset-surface: `glitnir-debug' is nil");
+#ifdef HAVE_PGTK
+  return glitnir_pgtk_debug_reset_surface (f) ? Qt : Qnil;
+#else
+  (void) f;
+  return Qnil;
+#endif
+}
+
+DEFUN ("glitnir--stacking", Fglitnir__stacking, Sglitnir__stacking, 0, 1, 0,
+       doc: /* Return the child frames of FRAME's root frame as Glitnir stacks them.
+The list runs bottom to top, hidden frames included; a child frame's own
+child frames come right after it.  FRAME defaults to the selected frame;
+the value is nil when Glitnir does not draw its root.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+#ifdef HAVE_PGTK
+  struct frame *fs[256];
+  ptrdiff_t n = glitnir_pgtk_stacking (f, fs, ARRAYELTS (fs));
+  Lisp_Object list = Qnil;
+  while (n-- > 0)
+    {
+      Lisp_Object c;
+      XSETFRAME (c, fs[n]);
+      list = Fcons (c, list);
+    }
+  return list;
+#else
+  (void) f;
+  return Qnil;
+#endif
+}
+
+DEFUN ("glitnir--layer-rect", Fglitnir__layer_rect, Sglitnir__layer_rect,
+       0, 1, 0,
+       doc: /* Return the rectangle of FRAME's layer in its root's scene, or nil.
+The value is (X Y WIDTH HEIGHT) in the root's device pixels, as last
+handed to Glitnir: a child frame at its position, with the size of its
+last completely drawn picture.  FRAME defaults to the selected frame.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+#ifdef HAVE_PGTK
+  GlitnirRect r;
+  if (!glitnir_pgtk_layer_rect (f, &r))
+    return Qnil;
+  return list4i (r.x, r.y, r.w, r.h);
+#else
+  (void) f;
+  return Qnil;
+#endif
+}
+
+DEFUN ("glitnir--chrome", Fglitnir__chrome, Sglitnir__chrome, 0, 1, 0,
+       doc: /* Return the chrome Glitnir holds for FRAME's layer, or nil.
+The value is (:radius R :shadow (:blur B :offset (X . Y) :spread S :opacity
+O :color (R G B)) :border (:width W :color (R G B A))) in the layer's device
+pixels (colour channels 0-255, the border's premultiplied).  FRAME defaults
+to the selected frame.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+#ifdef HAVE_PGTK
+  GlitnirChrome c;
+  if (!glitnir_pgtk_chrome (f, &c))
+    return Qnil;
+  Lisp_Object kw_radius = intern_c_string (":radius");
+  Lisp_Object kw_shadow = intern_c_string (":shadow");
+  Lisp_Object kw_border = intern_c_string (":border");
+  Lisp_Object shadow
+    = list (intern_c_string (":blur"), make_float (c.blur_px),
+	    intern_c_string (":offset"),
+	    Fcons (make_float (c.offset_x), make_float (c.offset_y)),
+	    intern_c_string (":spread"), make_float (c.spread_px),
+	    intern_c_string (":opacity"), make_float (c.shadow_opacity),
+	    intern_c_string (":color"),
+	    list3i ((c.shadow_argb >> 16) & 0xff, (c.shadow_argb >> 8) & 0xff,
+		    c.shadow_argb & 0xff));
+  Lisp_Object border
+    = list (intern_c_string (":width"), make_float (c.border_px),
+	    intern_c_string (":color"),
+	    list4i ((c.border_argb >> 16) & 0xff, (c.border_argb >> 8) & 0xff,
+		    c.border_argb & 0xff, c.border_argb >> 24));
+  return list (kw_radius, make_float (c.radius_px), kw_shadow, shadow,
+	       kw_border, border);
+#else
+  (void) f;
+  return Qnil;
+#endif
+}
+
+DEFUN ("glitnir--rechrome", Fglitnir__rechrome, Sglitnir__rechrome, 1, 1, 0,
+       doc: /* Resolve FRAME's chrome again and hand it to Glitnir.
+Return nil.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+#ifdef HAVE_PGTK
+  glitnir_pgtk_params_changed (f);
+#else
+  (void) f;
+#endif
+  return Qnil;
+}
+
 DEFUN ("glitnir--debug-panic", Fglitnir__debug_panic, Sglitnir__debug_panic,
        0, 1, 0,
        doc: /* Make the next call into Glitnir at WHERE panic (for tests).
@@ -448,6 +610,13 @@ syms_of_nidhogg_glitnir (void)
   defsubr (&Sglitnir__last_paint);
   defsubr (&Sglitnir__max_paint_gap_ms);
   defsubr (&Sglitnir__motion);
+  defsubr (&Sglitnir__stacking);
+  defsubr (&Sglitnir__debug_freeze);
+  defsubr (&Sglitnir__debug_scale_mismatch);
+  defsubr (&Sglitnir__debug_reset_surface);
+  defsubr (&Sglitnir__layer_rect);
+  defsubr (&Sglitnir__chrome);
+  defsubr (&Sglitnir__rechrome);
 
   DEFVAR_BOOL ("glitnir-enable", glitnir_enable,
 	       doc: /* Non-nil means Glitnir (the compositor) may draw graphical frames.
@@ -455,6 +624,7 @@ Setting it to nil makes Glitnir hand every frame back to the stock drawing.  */)
   glitnir_enable = true;
 
   DEFSYM (Qdamage_hold, "damage-hold");
+  DEFSYM (Qglitnir__resolve, "glitnir--resolve");
   DEFSYM (Qglitnir_debug_damage, "glitnir-debug-damage");
   DEFVAR_LISP ("glitnir-debug", Vglitnir_debug,
 	       doc: /* Glitnir's debug mode: nil (the default) or a symbol.
@@ -463,8 +633,9 @@ the `glitnir-debug-damage' face.  `verify' keeps a copy of each frame's
 surface as of the previous commit; at each commit, pixels that changed
 outside the reported damage are logged once to stderr ("glitnir verify:
 FRAME X Y W H after PRIMITIVE") and counted in the `:violations' of
-`glitnir-stats', as is a paint while the root has uncommitted damage and
-a freeze that lasts over a second.  `full' makes every commit damage the
+`glitnir-stats', as are a paint while the root has uncommitted damage, a
+freeze that lasts over a second, and a commit whose stacking of child
+frames differs from GDK's.  `full' makes every commit damage the
 whole frame.  `damage-hold' (for tests) keeps each frame's damage until
 `glitnir--damage' takes it, instead of handing it to the next consistency
 point; the points then present whole frames.  */);

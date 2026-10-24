@@ -45,6 +45,14 @@ extern bool glitnir_pgtk_dead;
    draw the stock way (see glitnir-pgtk.c).  */
 extern void glitnir_pgtk_failed (const char *what, int32_t rc);
 
+/* End a section begun with block_input without what unblock_input does at
+   level 0: it would read pending input, and pgtk's reader dispatches GLib's
+   whole main context (GTK's layout and paints, idle points, atimers) in the
+   middle of Glitnir's work, so Lisp would read GTK's geometry sooner than
+   with Glitnir off and a paint could run between two steps of a change.
+   The signals stay pending for Emacs's next unblock_input or quit check.  */
+#define GLITNIR_UNBLOCK_INPUT() ((void) --interrupt_input_blocked)
+
 /* Every C->Rust call goes through this: input blocked around it (a draw may run
    atimers that would otherwise re-enter Emacs between two calls).  An error
    switches Glitnir off; once off, no call is made (GLITNIR_E_STATE).  */
@@ -53,7 +61,7 @@ extern void glitnir_pgtk_failed (const char *what, int32_t rc);
      if (!glitnir_pgtk_dead)						\
        {								\
 	 glitnir_pgtk_calls++;						\
-	 block_input (); glitnir_rc_ = (expr); unblock_input ();	\
+	 block_input (); glitnir_rc_ = (expr); GLITNIR_UNBLOCK_INPUT ();	\
 	 if (glitnir_rc_ != GLITNIR_OK)					\
 	   glitnir_pgtk_failed (#expr, glitnir_rc_);			\
        }								\
@@ -66,7 +74,7 @@ extern void glitnir_pgtk_failed (const char *what, int32_t rc);
   ({ int32_t glitnir_rc_ = GLITNIR_E_STATE;				\
      if (!glitnir_pgtk_dead)						\
        {								\
-	 block_input (); glitnir_rc_ = (expr); unblock_input ();	\
+	 block_input (); glitnir_rc_ = (expr); GLITNIR_UNBLOCK_INPUT ();	\
 	 if (glitnir_rc_ == GLITNIR_E_PANIC)				\
 	   glitnir_pgtk_failed (#expr, glitnir_rc_);			\
        }								\
@@ -86,6 +94,16 @@ extern bool glitnir_pgtk_draw_begin (struct frame *f, GtkWidget *widget,
 				     cairo_t *cr);
 extern void glitnir_pgtk_draw_end (struct frame *f);
 extern void glitnir_pgtk_free_frame (struct frame *f);
+
+/* Between glitnir_pgtk_draw_begin and _end of frame F (a root, or a child
+   frame of a root Glitnir draws), compose F's root's committed scene into
+   CR's target within F's widget and CR's clip, less the rectangles of F's
+   mapped child frames (paint-through, DP-1 (i)).  True when it did (the
+   stock paint is then skipped); false for a stock draw of F: F painted
+   inside a group (a child frame's `alpha' below 1), or the root's
+   surfaces at another device scale than the target's (counted in
+   `:scale-mismatch').  */
+extern bool glitnir_pgtk_draw (struct frame *f, cairo_t *cr);
 
 /* Non-nil when Glitnir records F: `glitnir-enable', a pgtk frame that is
    not a tooltip, drawn on an ARGB32 image surface.  */
@@ -133,6 +151,33 @@ extern void glitnir_pgtk_consistency_points (int which);
    redisplay.  */
 extern void glitnir_pgtk_scene_changed (struct frame *f);
 
+/* The scene's stacking hooks: pgtk raised or lowered F (visible frames
+   only), showed F (gtk_widget_show raises its window), or gave F a new
+   parent.  Each changes the scene as GDK changed the windows and calls
+   glitnir_pgtk_scene_changed.  */
+extern void glitnir_pgtk_raise_lower (struct frame *f, bool raise);
+extern void glitnir_pgtk_frame_mapped (struct frame *f);
+extern void glitnir_pgtk_reparented (struct frame *f);
+
+/* For tests: the child frames in F's root's scene, bottom to top (at most
+   NMAX into OUT; their number), after a sync; and the root device-pixel
+   rectangle of F's layer as last handed to Glitnir (false: none).  */
+extern ptrdiff_t glitnir_pgtk_stacking (struct frame *f, struct frame **out,
+					ptrdiff_t nmax);
+extern bool glitnir_pgtk_layer_rect (struct frame *f, GlitnirRect *out);
+
+/* Chrome (Task 33).  F's frame parameters or its faces may have changed:
+   resolve F's chrome with `glitnir--resolve' (a nested call, from a
+   resolver that sets parameters itself, returns at once) and hand it to
+   F's layer at the next commit.  pgtk drew F's internal (child-frame)
+   border of WIDTH px in the colour RGB (0xRRGGBB) at ALPHA: a change
+   re-chromes the layer at the next commit, with no Lisp.  The chrome last
+   handed to Glitnir for F's layer (false: none).  */
+extern void glitnir_pgtk_params_changed (struct frame *f);
+extern void glitnir_pgtk_record_border (struct frame *f, int width,
+					unsigned long rgb, double alpha);
+extern bool glitnir_pgtk_chrome (struct frame *f, GlitnirChrome *out);
+
 /* For tests; none calls into Glitnir.  */
 extern uint64_t glitnir_pgtk_now_ns (void);
 extern uintmax_t glitnir_pgtk_draw_count (struct frame *f);
@@ -151,6 +196,9 @@ extern bool glitnir_pgtk_motion (struct frame *f, int x, int y);
 extern uint64_t glitnir_pgtk_violations (struct frame *f, bool reset);
 extern bool glitnir_pgtk_draw_undamaged (struct frame *f);
 extern bool glitnir_pgtk_compose_with_pending (struct frame *f);
+extern bool glitnir_pgtk_debug_freeze (struct frame *f);
+extern bool glitnir_pgtk_debug_scale_mismatch (struct frame *f);
+extern bool glitnir_pgtk_debug_reset_surface (struct frame *f);
 
 /* A new ARGB32 image surface with F's root frame as GTK last painted it
    (device pixels), made by arming the after-paint handler and waiting up to
