@@ -17,12 +17,12 @@ for upstreaming.
 
 - Command: `nidhogg` (and `nidhoggclient`). Feature: `nidhogg` (`(require 'nidhogg)`). Variable: `nidhogg-version`.
 - `emacs-version` stays GNU Emacs's own (`"31.1"`): packages call `version<` on it, and `version-to-list` rejects
-  `"31.1-nidhogg.1"`. Nidhogg's version lives in `nidhogg-version` and is appended to `M-x emacs-version` output.
+  `"31.1-nidhogg.2"`. Nidhogg's version lives in `nidhogg-version` and is appended to `M-x emacs-version` output.
 
 ## Version scheme
 
 `<GNU Emacs version>-nidhogg.<N>`. N counts Nidhogg releases on one upstream release and restarts at 1 on the next
-(31.2 gives `31.2-nidhogg.1`). The git tag is `v31.1-nidhogg.1`. The single source is the file `nidhogg/version`.
+(31.2 gives `31.2-nidhogg.1`). The git tag is `v31.1-nidhogg.2`. The single source is the file `nidhogg/version`.
 
 ## Branches and the patch series
 
@@ -65,6 +65,10 @@ without a conflict is caught by `tree-test.sh`: restore it with `printf '@AGENTS
 commit. `bash nidhogg/test/agents-test.sh` checks these commands on a throwaway repo, including upstream adding
 `README.md`.
 
+How much to expect: upstream's pgtk code (`src/pgtk*.c`, `src/gtkutil.c`) changed by +512/−185 lines from 29.1 to 30.1
+and +528/−464 from 30.1 to 31.1 (measured 2026-10-21). Glitnir's hooks in it are 23 lines at five sites, and only
+`pgtk_free_frame_resources` saw upstream hunks in that span: medium churn, acceptable.
+
 ## Building
 
 ```bash
@@ -106,7 +110,9 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   FRAME)` takes a frame's pending damage as `((X Y W H) …)`; the next consistency point takes it otherwise, unless
   `glitnir-debug` is `damage-hold` (the damage then stays until read and the points present whole frames).
   **Damage-only present.** The first damage on a root frame or its child frames freezes the root's GDK window
-  (`gdk_window_freeze_updates`), so GTK never paints a half-drawn picture. At a **consistency point** (redisplay's buffer
+  (`gdk_window_freeze_updates`), so GTK never paints a half-drawn picture; so does a scene change made inside
+  redisplay, and a child frame's new border ring (its first one is drawn before it has a surface, so no damage of its
+  own would freeze the root). At a **consistency point** (redisplay's buffer
   flips unblocked, also after an error or a throw out of redisplay; a frame up to date outside a flip block;
   `flush_display` and the end of the pgtk handlers that draw — mouse highlight, focus, the visible bell — and of
   `pgtk_read_socket`, these only outside redisplay; an idle callback for any other drawing outside redisplay) the root's
@@ -124,12 +130,23 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
     `glitnir-debug-damage` face (half transparent; the frame's surface never holds it).
   - `verify`: a copy of each frame's surface (a child frame's too) is kept as of the previous commit. At each commit,
     pixels that changed outside the committed damage are logged once to stderr, `glitnir verify: FRAME X Y W H after
-    PRIMITIVE` (the bounding box in device pixels, the drawing primitive that recorded damage last), and counted in
-    `:violations` of `glitnir-stats`. A GTK paint of a root that still has uncommitted damage logs `glitnir verify:
-    compose with pending damage` and counts; a freeze that lasts over a second logs when it ends. It costs a full
+    PRIMITIVE` (the bounding box in device pixels, the drawing primitive that recorded damage last), then in braces
+    the count of such pixels, the first one's old and new value and the committed rectangles, and counted in
+    `:violations` of `glitnir-stats`. A GTK paint of a root that still has uncommitted damage or an uncommitted scene
+    change logs `glitnir verify: compose with pending damage` and a backtrace (who dispatched GLib), and counts; a
+    freeze that lasts over a second logs when it ends. Each counted line ends with the frame's state in brackets (root
+    or child, its name, size and place, its surface, visibility, whether redisplay runs, the root's dirty, pending and
+    frozen state, a monotonic time in ms). It costs a full
     surface compare per commit: for tests and hunting, not daily use. `(glitnir--draw-undamaged)` paints a rectangle
     without recording it (the next commit reports it); `(glitnir--compose-with-pending)` forces one paint of the root
-    while damage is pending.
+    while damage is pending; `(glitnir--debug-freeze)` (any non-nil `glitnir-debug`) freezes the root as the first
+    damage after a point does, so that a test can act between the freeze and the point that thaws it. Verify also
+    counts a commit whose stacking of child frames differs from GDK's (`(glitnir--stacking)`: Glitnir's, bottom to top),
+    and logs uncounted `glitnir verify: FRAME composed without content` for a child frame's surface composed with a
+    transparent middle pixel on an opaque frame. A frame's surface made anew inside redisplay (a size or scale change
+    at an `unblock_input`) is never shown before the frame has been redrawn whole: redisplay may clear the garbaged
+    flag that would redraw it, so the last complete surface stays and the frame is garbaged again;
+    `(glitnir--debug-reset-surface FRAME)` makes it anew for tests.
   - `full`: every commit damages the whole frame (the paint that Glitnir would otherwise have saved).
 - **Dev build** (`--dev` or `NIDHOGG_BUILD_DEV=1`, for agents' task builds): configures `--with-native-compilation=yes`
   instead of `aot`, so only the preloaded Lisp is native-compiled and the other ~1,400 files stay bytecode (minutes instead
