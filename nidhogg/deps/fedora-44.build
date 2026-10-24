@@ -32,3 +32,5 @@ fontconfig-devel
 freetype-devel
 libacl-devel
 zlib-ng-compat-devel
+cargo
+rust
