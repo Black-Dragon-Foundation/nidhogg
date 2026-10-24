@@ -13,12 +13,13 @@ use std::collections::BTreeMap;
 pub const ALL: Rect = Rect::new(0, 0, i32::MAX, i32::MAX);
 
 /// The pending damage of one frame, the last damage taken and the last committed (each borrowed by the caller until
-/// the next take, or the next commit).
+/// the next take, or the next commit), and the windows scrolled since the damage was last taken.
 #[derive(Debug, Default)]
 pub struct Damage {
     region: Region,
     taken: Vec<Rect>,
     committed: Vec<Rect>,
+    scrolls: Vec<u64>,
 }
 
 fn contains(outer: &Rect, inner: &Rect) -> bool {
@@ -74,12 +75,28 @@ impl Damage {
         self.add(exposed);
     }
 
+    /// WINDOW's content scrolled (a scene with that window layer damages the layer).  Past 32 windows the rest are
+    /// dropped: the scrolled areas are in the damage already.
+    pub fn scrolled(&mut self, window: u64) {
+        if !self.scrolls.contains(&window) && self.scrolls.len() < crate::region::MAX_RECTS {
+            self.scrolls.push(window);
+        }
+    }
+
     /// Move the pending damage out (the frame then has none) and return it.
     pub fn take(&mut self) -> &[Rect] {
         self.taken.clear();
         self.taken.extend(self.region.iter().copied());
         self.region = Region::new();
+        self.scrolls.clear();
         &self.taken
+    }
+
+    /// Move the pending damage and the scrolled windows out, leaving the last taken and committed lists alone.
+    pub fn drain(&mut self) -> (Vec<Rect>, Vec<u64>) {
+        let rects = self.region.iter().copied().collect();
+        self.region = Region::new();
+        (rects, std::mem::take(&mut self.scrolls))
     }
 
     /// Commit: move the pending damage into the committed list (the frame then has none) and return it.
@@ -87,6 +104,7 @@ impl Damage {
         self.committed.clear();
         self.committed.extend(self.region.iter().copied());
         self.region = Region::new();
+        self.scrolls.clear();
         &self.committed
     }
 
@@ -117,17 +135,20 @@ pub fn take(frame: u64) -> (*const Rect, usize) {
     }
 }
 
-/// Commit ROOT at a consistency point: its pending damage (the host has moved its children's damage into it), valid
-/// until ROOT's next commit or forget.  An unknown root has none (null, 0).
+/// Commit ROOT at a consistency point: with a scene, the scene damage ([`crate::scene::Scene::commit`]); without,
+/// its pending damage (the host has moved its children's damage into it).  Valid until ROOT's next commit or forget.
+/// An unknown root has none (null, 0).
 pub fn commit(root: u64) -> (*const Rect, usize) {
     let mut st = crate::STATE.lock().unwrap_or_else(|p| p.into_inner());
-    match st.damage.get_mut(&root) {
-        Some(d) => {
-            let c = d.commit();
-            (c.as_ptr(), c.len())
-        }
-        None => (std::ptr::null(), 0),
-    }
+    let crate::State { damage, scenes, .. } = &mut *st;
+    let c = match scenes.get_mut(&root) {
+        Some(scene) => scene.commit(root, damage),
+        None => match damage.get_mut(&root) {
+            Some(d) => d.commit(),
+            None => return (std::ptr::null(), 0),
+        },
+    };
+    (c.as_ptr(), c.len())
 }
 
 /// Drop FRAME's damage (the frame is gone).
