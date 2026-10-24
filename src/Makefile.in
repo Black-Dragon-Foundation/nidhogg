@@ -325,6 +325,15 @@ W32_LIBS=@W32_LIBS@
 PGTK_OBJ=@PGTK_OBJ@
 PGTK_LIBS=@PGTK_LIBS@
 
+## Nidhogg: Glitnir (the compositor), a Rust static library built by cargo from nidhogg/glitnir.
+## GLITNIR_LIBS is the library plus the native libraries rustc says it needs (empty without --with-glitnir).
+HAVE_GLITNIR=@HAVE_GLITNIR@
+GLITNIR_OBJ=@GLITNIR_OBJ@
+GLITNIR_LIBS=@GLITNIR_LIBS@
+GLITNIR_SRCDIR=@GLITNIR_SRCDIR@
+GLITNIR_ENV=@GLITNIR_ENV@
+GLITNIR_A=glitnir-target/release/libglitnir.a
+
 ## emacs.res if HAVE_W32
 EMACSRES = @EMACSRES@
 ## If HAVE_W32, compiler arguments for including
@@ -466,7 +475,7 @@ base_obj = dispnew.o frame.o scroll.o xdisp.o menu.o $(XMENU_OBJ) window.o     \
 	itree.o json.o 							       \
 	$(MSDOS_OBJ) $(MSDOS_X_OBJ) $(NS_OBJ) $(CYGWIN_OBJ) $(FONT_OBJ)        \
 	$(W32_OBJ) $(WINDOW_SYSTEM_OBJ) $(XGSELOBJ)			       \
-	$(HAIKU_OBJ) $(PGTK_OBJ) $(ANDROID_OBJ)
+	$(HAIKU_OBJ) $(PGTK_OBJ) $(ANDROID_OBJ) $(GLITNIR_OBJ)
 doc_obj = $(base_obj) $(NS_OBJC_OBJ)
 obj = $(doc_obj) $(HAIKU_CXX_OBJ)
 
@@ -584,7 +593,7 @@ LIBES = $(LIBS) $(W32_LIBS) $(LIBS_GNUSTEP) $(PGTK_LIBS) $(LIBX_BASE) $(LIBIMAGE
    $(NOTIFY_LIBS) $(LIB_MATH) $(LIBZ) $(LIBMODULES) $(LIBSYSTEMD_LIBS) \
    $(LIBGMP) $(LIBGCCJIT_LIBS) $(XINPUT_LIBS) $(HAIKU_LIBS) \
    $(TREE_SITTER_LIBS) $(SQLITE3_LIBS) $(XCOMPOSITE_LIBS) $(XSHAPE_LIBS) \
-   $(ANDROID_LIBS)
+   $(ANDROID_LIBS) $(GLITNIR_LIBS)
 
 ## FORCE it so that admin/unidata can decide whether this file is
 ## up-to-date.  Although since charprop depends on bootstrap-emacs,
@@ -703,7 +712,17 @@ endif
 ## existence when setting Vinstallation_directory (FIXME?).
 ## This goes on to affect various things, and the emacs binary fails
 ## to start if Vinstallation_directory has the wrong value.
+ifeq ($(HAVE_GLITNIR),yes)
+GLITNIR_DEPS = $(wildcard $(GLITNIR_SRCDIR)/Cargo.toml $(GLITNIR_SRCDIR)/Cargo.lock $(GLITNIR_SRCDIR)/build.rs \
+  $(GLITNIR_SRCDIR)/src/*.rs $(GLITNIR_SRCDIR)/src/*/*.rs)
+## cargo runs offline and locked, with its home and target directory in the build tree (never ~/.cargo).
+$(GLITNIR_A): $(GLITNIR_DEPS)
+	cd $(GLITNIR_SRCDIR) && env CARGO_HOME=$(abs_top_builddir)/src/glitnir-cargo-home $(GLITNIR_ENV) \
+	  cargo build --release --offline --locked --target-dir $(abs_top_builddir)/src/glitnir-target
+endif
+
 temacs$(EXEEXT): $(LIBXMENU) $(ALLOBJS) $(LIBEGNU_ARCHIVE) $(EMACSRES) \
+  $(if $(filter yes,$(HAVE_GLITNIR)),$(GLITNIR_A)) \
   $(charsets) $(charscript) ${emoji-zwj} $(MAKE_PDUMPER_FINGERPRINT)
 ifeq ($(HAVE_BE_APP),yes)
 	$(AM_V_CXXLD)$(CXX) -o $@.tmp \
@@ -807,6 +826,7 @@ versionclean:
 	rm -f ../etc/DOC*
 clean: mostlyclean versionclean
 	rm -f $(DEPDIR)/*
+	rm -fr glitnir-target glitnir-cargo-home
 
 ## bootstrap-clean is used to clean up just before a bootstrap.
 ## It should remove all files generated during a compilation/bootstrap,

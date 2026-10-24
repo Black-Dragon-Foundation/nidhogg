@@ -4314,6 +4314,9 @@ extern void syms_of_image (void);
 
 /* Defined in json.c.  */
 extern void syms_of_json (void);
+#ifdef HAVE_GLITNIR
+extern void syms_of_nidhogg_glitnir (void);
+#endif
 
 /* Defined in insdel.c.  */
 extern void move_gap_both (ptrdiff_t, ptrdiff_t);

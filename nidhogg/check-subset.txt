@@ -1,6 +1,7 @@
 # The `make -C test` targets CI runs: the C areas V2 patches (processes, threads, JSON, tree-sitter, redisplay,
 # input, native compilation) plus core Lisp.
 src/nidhogg-tests/identity-tests
+src/nidhogg-tests/glitnir-tests
 src/emacs-tests
 src/fns-tests
 src/process-tests

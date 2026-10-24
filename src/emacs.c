@@ -2491,6 +2491,9 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
       syms_of_profiler ();
       syms_of_pdumper ();
       syms_of_json ();
+#ifdef HAVE_GLITNIR
+      syms_of_nidhogg_glitnir ();
+#endif
 
       keys_of_keyboard ();
 

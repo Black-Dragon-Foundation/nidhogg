@@ -1,0 +1,22 @@
+[package]
+name = "glitnir"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+license = "GPL-3.0-or-later"
+description = "Glitnir, a small compositor library with a C ABI"
+publish = false
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+
+[features]
+pixman-oracle = []
+
+[profile.release]
+panic = "unwind"
+lto = true
+codegen-units = 1
+debug = 1
