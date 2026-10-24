@@ -324,22 +324,35 @@ jobs:
       # what drgnx's ci.yml (emacs-31) builds for its suite, from the drgnx checkout and cached as there: Ratatoskr with
       # the test hooks and ratatoskr-mock beside it (DRGNX_RATATOSKR_BIN), huginn's dump example (DRGNX_HUGINN_DUMP).
       # Built on the runner (glibc older than Fedora 45's); drgnx-suite.sh mounts them into the test container.  The
-      # tests that need them are on drgnx's test/no-skip.eld: without them they skip and the suite fails.
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # tests that need them are on drgnx's test/no-skip.eld: without them they skip and the suite fails.  The cargo cache
+      # is restored before the builds and saved right after them, as the build job's caches are.
+      - name: Cargo cache (drgnx's runtime)
+        id: cg
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             drgnx/runtime/target
           key: cargo-${{ runner.os }}-drgnx-suite-${{ hashFiles('drgnx/runtime/Cargo.lock') }}
       - name: Ratatoskr (cargo build, for drgnx's client tests)
+        id: rt
         run: |
           cargo build --locked --manifest-path drgnx/runtime/Cargo.toml -p drgnx-ratatoskr -p domr \
             --features drgnx-ratatoskr/test-hooks --bin ratatoskr --bin ratatoskr-mock
           echo "DRGNX_RATATOSKR_BIN=$GITHUB_WORKSPACE/drgnx/runtime/target/debug/ratatoskr" >> "$GITHUB_ENV"
       - name: huginn's dump example (DRGNX_HUGINN_DUMP)
+        id: hd
         run: |
           cargo build --locked --manifest-path drgnx/runtime/Cargo.toml -p huginn --example dump
           echo "DRGNX_HUGINN_DUMP=$GITHUB_WORKSPACE/drgnx/runtime/target/debug/examples/dump" >> "$GITHUB_ENV"
+      - name: Save the cargo cache
+        if: ${{ always() && steps.rt.outcome == 'success' && steps.hd.outcome == 'success' && steps.cg.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            drgnx/runtime/target
+          key: cargo-${{ runner.os }}-drgnx-suite-${{ hashFiles('drgnx/runtime/Cargo.lock') }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         id: dl
         continue-on-error: true
@@ -409,21 +422,33 @@ jobs:
       # as drgnx-linux (Homebrew's rust, as drgnx's macos.yml)
       - name: Rust (Homebrew)
         run: brew install rust
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Cargo cache (drgnx's runtime)
+        id: cg
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             drgnx/runtime/target
           key: cargo-${{ runner.os }}-drgnx-suite-${{ hashFiles('drgnx/runtime/Cargo.lock') }}
       - name: Ratatoskr (cargo build, for drgnx's client tests)
+        id: rt
         run: |
           cargo build --locked --manifest-path drgnx/runtime/Cargo.toml -p drgnx-ratatoskr -p domr \
             --features drgnx-ratatoskr/test-hooks --bin ratatoskr --bin ratatoskr-mock
           echo "DRGNX_RATATOSKR_BIN=$GITHUB_WORKSPACE/drgnx/runtime/target/debug/ratatoskr" >> "$GITHUB_ENV"
       - name: huginn's dump example (DRGNX_HUGINN_DUMP)
+        id: hd
         run: |
           cargo build --locked --manifest-path drgnx/runtime/Cargo.toml -p huginn --example dump
           echo "DRGNX_HUGINN_DUMP=$GITHUB_WORKSPACE/drgnx/runtime/target/debug/examples/dump" >> "$GITHUB_ENV"
+      - name: Save the cargo cache
+        if: ${{ always() && steps.rt.outcome == 'success' && steps.hd.outcome == 'success' && steps.cg.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            drgnx/runtime/target
+          key: cargo-${{ runner.os }}-drgnx-suite-${{ hashFiles('drgnx/runtime/Cargo.lock') }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         id: dl
         continue-on-error: true
