@@ -214,6 +214,30 @@ extern void nh_wk_lock (pthread_mutex_t *);
 extern int64_t nh_wk_budget_take (int64_t want_ns);
 extern void nh_wk_budget_reset (void);
 
+/* The inline-or-offload rule (§7.1a).  Thresholds, calibrated by
+   cal-costs (the first three) and cal-pressure (QUIET_FRAMES).  */
+#define NH_WK_INLINE_NS INT64_C (4000000)
+#define NH_WK_INLINE_PRESSURE_NS INT64_C (1000000)
+#define NH_WK_NEAR_DONE_NS INT64_C (1000000)
+#define NH_WK_NEAR_DONE_PCT 90
+#define NH_WK_FRAME_NS INT64_C (16000000)
+#define NH_WK_QUIET_FRAMES 3
+
+/* ns per unit x 1024, as a moving average of quarter weight.  */
+struct nh_wk_cost { _Atomic int64_t per_x1024; _Atomic int64_t n; };
+extern void nh_wk_cost_add (struct nh_wk_cost *, int64_t ns, int64_t units);
+/* -1: no sample yet.  */
+extern int64_t nh_wk_cost_estimate (const struct nh_wk_cost *, int64_t units);
+extern int64_t nh_wk_inline_ns (void);
+extern bool nh_wk_pressure (void);
+extern void nh_wk_pressure_sample (void);
+enum { NH_WK_A_TS, NH_WK_A_IMAGE, NH_WK_A_IO };
+enum { NH_WK_WHY_ESTIMATE, NH_WK_WHY_PRESSURE, NH_WK_WHY_NO_ESTIMATE,
+       NH_WK_WHY_FORCED };
+/* True: run inline.  Counted.  An io caller uses nh_wk_count_decision.  */
+extern bool nh_wk_decide (int area, int64_t estimate_ns, bool base_only);
+extern void nh_wk_count_decision (int area, bool inline_, int why);
+
 /* Tree-sitter, nidhogg-treesit-bg.c [9, 10, 11, 12].  */
 extern void nh_ts_alloc_install (void);
 extern void nh_ts_parser_freed (void *parser_c);
@@ -372,6 +396,9 @@ extern bool nh_json_materialize (struct nh_mat *, int64_t budget_ns);
    prepare_image_for_display (true: a pending entry, not to be loaded),
    in free_image, and at the top of redisplay_internal (the landing).  */
 extern bool nh_img_lookup (struct frame *, struct image *);
+/* image.c, right after the loader: feeds the format's cost when
+   nh_img_lookup declined to offload.  */
+extern void nh_img_cost_add (struct image *);
 extern void nh_img_hit (struct frame *, struct image *);
 extern bool nh_img_pending_p (struct frame *, struct image *);
 extern void nh_img_freed (struct frame *, struct image *);

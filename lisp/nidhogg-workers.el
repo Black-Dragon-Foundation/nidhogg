@@ -60,8 +60,8 @@ The sub-switches gate each kind of process.")
 (nidhogg-workers--defswitch nidhogg-workers-dns nil
   "Non-nil means host-name lookups run on a worker thread.")
 
-(defcustom nidhogg-redisplay-wait-budget 8
-  "Milliseconds a redisplay may wait for worker threads."
+(defcustom nidhogg-redisplay-wait-budget 1
+  "Milliseconds a redisplay may wait for a nearly finished worker job."
   :type 'integer
   :group 'nidhogg-workers)
 

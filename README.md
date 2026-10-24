@@ -414,7 +414,7 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   `nidhogg-workers-treesit`, `nidhogg-treesit-defer`, `nidhogg-workers-images`, `nidhogg-image-defer`,
   `nidhogg-workers-autosave`, `nidhogg-workers-dns`. Each is off until the default-on commit of its step; on so far:
   `nidhogg-workers-reader-pipes`, `nidhogg-workers-reader-sockets`.
-  `nidhogg-redisplay-wait-budget` (8) is how many milliseconds a redisplay may wait for a worker.
+  `nidhogg-redisplay-wait-budget` (1) is how many milliseconds a redisplay may wait for a nearly finished worker job.
 - The environment variable `NIDHOGG_WORKERS`, read at startup: `default` (or unset), `on`, `off`, `inline`, or a list
   such as `+nidhogg-workers-treesit-nidhogg-workers-dns`. `nidhogg-workers-set-all` and `nidhogg-workers-apply` do the
   same at run time.
@@ -450,8 +450,13 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   `nidhogg-workers--test-crash`, `--test-fatal-under-lock`, `--test-signal-under-locks`.
 - Waits and the redisplay budget: a main-thread wait on a worker pushes the watchdog's `worker-wait` (or `treesit-wait`)
   phase and counts its time in `:phase-ms`; it never enters `select`, so the watchdog's span runs through it. Every
-  `redisplay_internal` call starts a wait budget of `nidhogg-redisplay-wait-budget` milliseconds (default 8), shared by
-  all tree-sitter and image waits in that redisplay; once spent, a wait is granted nothing.
+  `redisplay_internal` call starts a wait budget of `nidhogg-redisplay-wait-budget` milliseconds (default 1), spent
+  only on a tree-sitter job at least 90 % done (one wait of at most 1 ms); redisplay never waits for an image.
+- Inline or offload (one rule): work whose estimate (a moving average of measured cost: decode ns per pixel per format,
+  a filter's ns per byte) is at most 4 ms runs inline, exactly as without workers; above it the work goes to a worker
+  and the caller does not wait. The threshold drops to 1 ms under pressure (input pending, or the last busy span over
+  16 ms; it ends after 3 quiet redisplays) and is never raised above 4 ms; an image with no stand-in keeps the 4 ms.
+  `nidhogg-workers-stats` reports `:decisions`, `:costs` and `:pressure`; `nidhogg-workers--policy` the constants.
 <!-- wk: Task 6 -->
 <!-- wk: Task 7 -->
 <!-- wk: Task 8 -->

@@ -3721,6 +3721,9 @@ lookup_image (struct frame *f, Lisp_Object spec, int face_id)
 
 #endif
       img->load_failed_p = ! img->type->load_img (f, img);
+#ifdef HAVE_NIDHOGG_WORKERS
+      nh_img_cost_add (img);
+#endif
 
       /* If we can't load the image, and we don't have a width and
 	 height, use some arbitrary width and height so that we can
