@@ -633,6 +633,26 @@ B's tree."
                               (treesit-parser-root-node
                                (treesit-parser-create 'c nil t))))))))))))
 
+(ert-deftest workers/ts-sync-parse-in-treesit-phase ()
+  ;; A demand's synchronous parse counts in the watchdog's `treesit'
+  ;; phase with the switch off too, so an A/B compares the main thread's
+  ;; whole tree-sitter time on both sides (the OT2 gate).
+  (let ((dir (workers-ts-tests--grammar-dir)))
+    (skip-unless dir)
+    (let ((treesit-extra-load-path (list dir))
+          (nidhogg-workers-treesit nil)
+          (phase (lambda ()
+                   (plist-get (plist-get (nidhogg-workers-stats) :phase-ms)
+                              'treesit))))
+      (with-temp-buffer
+        (insert (workers-ts-tests--c-text 500000))
+        (let ((p (treesit-parser-create 'c nil t))
+              (before (funcall phase))
+              (started (workers-ts-tests--stat :started)))
+          (treesit-parser-root-node p)
+          (should (> (funcall phase) before))
+          (should (= (workers-ts-tests--stat :started) started)))))))
+
 ;; The oracle (§17.3 S12).
 
 (defconst workers-ts-tests--oracle-steps 5000

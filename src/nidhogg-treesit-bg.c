@@ -1236,10 +1236,6 @@ static int nh_ts_demand_1 (Lisp_Object, bool, void **);
 int
 nh_ts_demand (Lisp_Object parser, bool may_defer, void **tree)
 {
-  if (!nh_ts_tracing ())
-    return nh_ts_demand_1 (parser, may_defer, tree);
-  /* Traced: the synchronous parse treesit_ensure_parsed would run, here,
-     timed.  */
   struct Lisp_TS_Parser *p = XTS_PARSER (parser);
   bool had_job = p->nh_job;
   int r = nh_ts_demand_1 (parser, may_defer, tree);
@@ -1247,9 +1243,16 @@ nh_ts_demand (Lisp_Object parser, bool may_defer, void **tree)
     nh_ts_trace ("not-ready", 0);
   if (r != NH_TS_SYNC)
     return r;
+  /* The synchronous parse treesit_ensure_parsed would run, here: in the
+     watchdog's treesit phase whether the workers' switches are on or
+     off, so an A/B compares the main thread's whole tree-sitter time
+     (the OT2 gate: the off side's parses were outside every phase).  */
   int64_t t0 = nh_ts_now ();
+  int depth = NH_WK_PHASE_PUSH (NH_WK_PH_TREESIT, 0);
   TSTree *t = ts_parser_parse (p->parser, p->tree, p->input);
+  NH_WK_PHASE_POP (depth);
   int64_t ns = nh_ts_now () - t0;
+  nh_wk_phase_ns_add (NH_WK_PH_TREESIT, 0, ns);
   nh_ts_trace (had_job ? "sync-fallback" : "sync", ns);
   if (!t)
     return NH_TS_SYNC;
