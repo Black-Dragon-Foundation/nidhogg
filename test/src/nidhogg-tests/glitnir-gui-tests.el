@@ -323,13 +323,14 @@ dispatch (GDK commits that paint), then types and redraws again, as a command an
           (setq glitnir-gui--jit-hook nil)
           (let ((draws (glitnir--draw-count)))
             (redisplay t) (sit-for 0.1)
-            (should (> (glitnir--draw-count) draws))))
+            (should (> (glitnir--draw-count) draws))
+            ;; before the cleanup: deleting the child damages the root, which freezes it again until the next redisplay
+            (should-not (glitnir--frozen-p))))
       (setq glitnir-gui--jit-hook nil)
       (delete-frame c)
       (kill-buffer a) (kill-buffer b))
     (should (>= (length deltas) 5))
-    (should (cl-every #'zerop deltas))
-    (should-not (glitnir--frozen-p))))
+    (should (cl-every #'zerop deltas))))
 
 (ert-deftest glitnir-gui/error-in-redisplay-thaws ()
   (let ((buf (generate-new-buffer "*glitnir-err*")))
