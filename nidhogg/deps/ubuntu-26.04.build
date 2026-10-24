@@ -32,3 +32,5 @@ libfontconfig-dev
 libfreetype-dev
 libacl1-dev
 zlib1g-dev
+cargo
+rustc
