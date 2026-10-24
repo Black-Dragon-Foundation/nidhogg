@@ -421,10 +421,13 @@ meanwhile, while a SIGCHLD still reaches its handler and
   ;; pipe open does not delay the sentinel (§17.2a B6).  In threads
   ;; mode nh-io is parked after a poll the whole time, so every byte is
   ;; still in the pipe when the child exits: the drain hands the process
-  ;; back and reads the real fd itself.  (10000 lines, not 100000: the
-  ;; output must fit the pipe for `seq' to exit while nothing reads it.)
+  ;; back and reads the real fd itself.  (1000 lines, 3.9 KB: the output
+  ;; must fit the pipe for `seq' to exit while nothing reads it, and a
+  ;; new pipe may hold only 8 KB: a user over `pipe-user-pages-soft'
+  ;; (every container of one account counts) gets 2-page pipes on Linux.
+  ;; 10000 lines, 49 KB, failed then.)
   (workers-io-tests--modes
-    (let* ((count 10000) (out nil) (at-sentinel nil) (gpid nil)
+    (let* ((count 1000) (out nil) (at-sentinel nil) (gpid nil)
            (proc nil))
       (when (eq mode 'threads)
         (nidhogg-workers--pause-at 'in-poll))
@@ -1001,14 +1004,18 @@ tramp-tests.el: a local `sh -i' over a pty, the same tramp-sh code)."
   ;; S2).  On ledgers, not clocks: filter costs are fixed with
   ;; `nidhogg-workers--test-filter-cost'.  While the main thread is busy
   ;; (`call-process' serves no process output) the output queues; then
-  ;; it is delivered.
+  ;; it is delivered.  Inline the kernel is the only queue, so what a
+  ;; writer sends while the main thread is busy must fit it: a pipe may
+  ;; hold only 8 KB (a user over `pipe-user-pages-soft' gets 2-page
+  ;; pipes on Linux), a Linux pty 15-20 KB (less while the tty layer's
+  ;; flush work lags), an XNU pty less than one read.
   (workers-io-tests--modes
-    (ert-info ("10,000 one-byte writes" :prefix "")
+    (ert-info ("4,000 one-byte writes" :prefix "")
       (let* ((done (workers-io-tests--done-file))
              (proc (let ((read-process-output-max 1024))
                      (workers-io-tests--writer
                       "ones"
-                      (format "i=0; while [ $i -lt 10000 ]; do printf x; i=$((i+1)); done; : > %s; read x"
+                      (format "i=0; while [ $i -lt 4000 ]; do printf x; i=$((i+1)); done; : > %s; read x"
                               (shell-quote-argument done))
                       :connection-type 'pipe))))
         (unwind-protect
@@ -1021,17 +1028,17 @@ tramp-tests.el: a local `sh -i' over a pty, the same tramp-sh code)."
                 ;; nh-io read it all (in many small reads) and nothing
                 ;; was delivered.
                 (should (workers-io-tests--busy-until
-                         (lambda () (= (workers-io-tests--info proc :queued) 10000)))))
+                         (lambda () (= (workers-io-tests--info proc :queued) 4000)))))
               (should (workers-io-tests--until
-                       (lambda () (= (workers-io-tests--got proc) 10000))))
+                       (lambda () (= (workers-io-tests--got proc) 4000))))
               (let ((sizes (workers-io-tests--sizes proc)))
                 (should (<= (apply #'max sizes) 1024))
                 ;; One delivery per read would be hundreds.  Joining
                 ;; whole chunks of at most 1024 bytes up to 1024, any
                 ;; two deliveries in a row hold more than 1024 bytes
                 ;; (the second's first chunk did not fit the first), so
-                ;; 10,000 bytes take at most 19.
-                (should (<= (length sizes) 19))))
+                ;; 4,000 bytes take at most 7.
+                (should (<= (length sizes) 7))))
           (ignore-errors (delete-file done)))))
     (ert-info ("a byte while idle" :prefix "")
       (let ((cat (workers-io-tests--cat "idle")))
@@ -1043,7 +1050,7 @@ tramp-tests.el: a local `sh -i' over a pty, the same tramp-sh code)."
       (let* ((done (workers-io-tests--done-file))
              (proc (workers-io-tests--writer
                     "pty"
-                    (format "head -c 12000 /dev/zero | tr '\\0' a; : > %s; read x"
+                    (format "head -c 8000 /dev/zero | tr '\\0' a; : > %s; read x"
                             (shell-quote-argument done))
                     :connection-type 'pty)))
         (unwind-protect
@@ -1062,10 +1069,11 @@ tramp-tests.el: a local `sh -i' over a pty, the same tramp-sh code)."
                          (lambda () (file-exists-p done)))))
               (when (eq mode 'threads)
                 (should (workers-io-tests--busy-until
-                         (lambda () (= (workers-io-tests--info proc :queued) 12000)))))
+                         (lambda () (= (workers-io-tests--info proc :queued) 8000)))))
               (should (workers-io-tests--until
-                       (lambda () (= (workers-io-tests--got proc) 12000))))
-              ;; 12,000 bytes queued; the first delivery takes a pty's read.
+                       (lambda () (= (workers-io-tests--got proc) 8000))))
+              ;; 8,000 bytes queued, more than one read; the first
+              ;; delivery takes a pty's read.
               (should (<= (car (workers-io-tests--sizes proc)) 4096))
               ;; Its call measured the filter's cost.
               (should (workers-io-tests--info proc :filter-cost)))
