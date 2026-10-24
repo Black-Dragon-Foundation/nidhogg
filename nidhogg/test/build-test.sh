@@ -57,6 +57,17 @@ run -- --dry-run --container fedora-44 --out dist/x.tar.xz
 rcis 0; has "DESTDIR=/build/stage"; has "BUILDINFO"; has "/out:Z"
 run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --out dist/x.tar.xz
 rcis 0; has "Nidhogg.app"; has "BUILDINFO"
+# --dev: native-compilation=yes, no JIT in the image, never packed, cache stamp carries the mode
+run -- --dry-run --container fedora-44 --dev
+rcis 0; has "--with-native-compilation=yes"; hasnt "--with-native-compilation=aot"; has "site-init.el"; has "MODE_ID=yes"; has "--with-tree-sitter"
+run NIDHOGG_BUILD_DEV=1 -- --dry-run --container fedora-44
+rcis 0; has "--with-native-compilation=yes"
+run -- --dry-run --container fedora-44 --dev --out dist/x.tar.xz
+rcis 1; has "never packed"
+run -- --dry-run --container fedora-44 --dev --stage pack
+rcis 1; has "never packed"
+run -- --dry-run --container fedora-44
+rcis 0; hasnt "site-init.el"; has "MODE_ID=aot"
 # macOS counts free + inactive + speculative + purgeable pages (a fake vm_stat: 16 KiB pages, 262144 each = 4 GiB each)
 T=$(mktemp -d "${TMPDIR:-/tmp}/nidhogg-build-test.XXXXXX")
 trap 'rm -rf "$T"' EXIT
@@ -82,14 +93,19 @@ run NIDHOGG_BUILD_MEMORY_KB= NIDHOGG_BUILD_UNAME=Darwin NIDHOGG_BUILD_VMSTAT="$T
 rcis 0; has "make -j2"
 # ccache: opt-in, the cache directory mounted, ccache installed, the compiler checked by content
 run NIDHOGG_BUILD_CCACHE=/var/tmp/cc -- --dry-run --container fedora-45
-rcis 0; has "-v /var/tmp/cc:/ccache:Z"; has "CCACHE_COMPILERCHECK=content"; has 'CC="ccache gcc"'; has " ccache"
+rcis 0; has "-v /var/tmp/cc:/ccache:z"; has "CCACHE_COMPILERCHECK=content"; has 'CC="ccache gcc"'; has " ccache"
 run NIDHOGG_BUILD_CCACHE=/var/tmp/cc -- --dry-run --container ubuntu-26.04
 rcis 0; has "--no-install-recommends \$(sed"; has "ccache -s"
 run -- --dry-run --container fedora-45
 rcis 0; hasnt "ccache"
-# compiled-Lisp cache: opt-in, mounted, restored before autogen, saved after make, only for the same compiler
+# compiled-Lisp cache: opt-in, mounted with a shared label, restored before autogen under a shared lock, saved after make
+# under an exclusive one, only for the same compiler
 run NIDHOGG_BUILD_LISP_CACHE=/var/tmp/lc -- --dry-run --container fedora-45
-rcis 0; has "-v /var/tmp/lc:/lispcache:Z"; has "phase restore compiled Lisp"; has "phase save compiled Lisp"; has 'cc_id'
+rcis 0; has "-v /var/tmp/lc:/lispcache:z"; has "phase restore compiled Lisp"; has "phase save compiled Lisp"; has 'cc_id'
+has "lc_lock -s"; has "lc_lock -x"; hasnt "/lispcache:Z"
+# ... and only for the same configure line: the prefix and the flags are part of the .eln files' ABI hash
+run NIDHOGG_BUILD_LISP_CACHE=/var/tmp/lc -- --dry-run --container fedora-45 --prefix /tmp/p1
+rcis 0; has "CONF_ID=--prefix=/tmp/p1\\ --with-native-compilation=aot"; has '"$MODE_ID" "$CONF_ID"'
 run -- --dry-run --container fedora-45
 rcis 0; hasnt "lispcache"; hasnt "compiled Lisp"
 # stages: build = make only, check = the check targets in the built tree, pack = install and tarball; no prefix mount unless packing
@@ -138,7 +154,7 @@ for st in build check pack; do
   rcis 0
   # the fake podman logs "$@" joined by spaces: an empty argument shows as a double space or a trailing/leading one
   case $(grep '^run ' "$T/pm.log") in *"  "*|*" ") fail "stage $st: empty podman argument: $(cat "$T/pm.log")";; esac
-  grep -q -- "-v $T/c/lisp:/lispcache:Z" "$T/pm.log" || fail "stage $st: lisp cache not mounted"
+  grep -q -- "-v $T/c/lisp:/lispcache:z" "$T/pm.log" || fail "stage $st: lisp cache not mounted"
 done
 : > "$T/pm.log"
 NIDHOGG_BUILD_UNAME=Linux NIDHOGG_BUILD_PODMAN="$T/podman" FAKE_LOG="$T/pm.log" FAKE_HANG=1 NIDHOGG_BUILD_MEMORY_KB=$((16*1024*1024)) \
@@ -148,6 +164,16 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do grep -q '^run ' "$T/pm.log" && break; sleep 0.
 kill -TERM "$bpid"; wait "$bpid"; trc=$?
 [ "$trc" = 143 ] || fail "TERM: exit $trc"
 grep -q '^stop ' "$T/pm.log" && grep -q '^rm -f nidhogg-build-' "$T/pm.log" || fail "TERM: container not removed: $(cat "$T/pm.log")"
+# dumplinks links the installed binary's own dump, not the first one a reused prefix holds, even while the links still
+# name an earlier build's dump (the binary loads a dump before it reads any option, and refuses one not built for it)
+dl=$T/dl; mkdir -p "$dl/bin" "$dl/libexec/emacs/31.1/x86_64"
+: > "$dl/libexec/emacs/31.1/x86_64/emacs-aaa.pdmp"; : > "$dl/libexec/emacs/31.1/x86_64/emacs-bbb.pdmp"
+ln -s ../libexec/emacs/31.1/x86_64/emacs-aaa.pdmp "$dl/bin/emacs-31.1.pdmp"
+printf '#!/bin/sh\ncase "$1" in --dump-file=*/emacs-bbb.pdmp) echo bbb ;; *) exit 1 ;; esac\n' > "$dl/bin/emacs-31.1"
+chmod +x "$dl/bin/emacs-31.1"
+( eval "$(sed -n '/^dumplinks() {/,/^}/p' nidhogg/build.sh)"; UPV=31.1; dumplinks "$dl" )
+[ "$(readlink "$dl/bin/nidhogg.pdmp")" = ../libexec/emacs/31.1/x86_64/emacs-bbb.pdmp ] ||
+  fail "dumplinks: nidhogg.pdmp -> $(readlink "$dl/bin/nidhogg.pdmp"), wanted the binary's emacs-bbb.pdmp"
 # every distro has both lists; build.sh has no bash-4 constructs
 for d in fedora-44 fedora-45 ubuntu-26.04 macos; do
   { test -s nidhogg/deps/$d.build && test -s nidhogg/deps/$d.runtime; } || fail "deps lists missing for $d"
