@@ -31,7 +31,15 @@ for upstreaming.
 - Every commit on `emacs-31.1..nidhogg-31` has a subject starting `nidhogg: `.
 - Files only Nidhogg owns live under `nidhogg/`, `.github/` and `README.md`, so rebases do not conflict.
 - C patches sit behind `--with-nidhogg-<feature>` configure flags. The identity patch is unconditional.
-- `bash nidhogg/test/tree-test.sh [BASE]` checks these rules.
+- Each flag group has commits with subjects starting `nidhogg: <group>:` (groups: `glitnir`, `watchdog`, `workers`; the stack order is watchdog, then workers, then glitnir, and the check is
+  order-independent; `FLAG_GROUPS`,
+  overridable: name:define:feature) and its own base: `<GROUP>_BASE` (overridable, e.g. `GLITNIR_BASE`) is the parent of
+  the oldest such commit on HEAD; a group with none is skipped. The groups may stack in either order. With the defines
+  of every group that has commits in `base..HEAD` undefined (`HAVE_GLITNIR`, `HAVE_NIDHOGG_WATCHDOG`, `HAVE_NIDHOGG_WORKERS`), every C file under
+  `src/` the group touched must equal its base version (`unifdef -U…`); a changed `lisp/` file is new or `lisp/loadup.el`
+  with one `(featurep 'FEATURE)` line per group; a commit in the range touching `src/` that belongs to no group goes
+  below the groups. Needs `unifdef`.
+- `bash nidhogg/test/tree-test.sh [BASE]` checks these rules; `TREE_TEST_SELF=1` runs the flag-group rule on fixtures.
 
 ## Rebasing onto a new upstream release
 
