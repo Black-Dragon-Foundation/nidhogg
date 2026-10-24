@@ -572,6 +572,12 @@ $(abs_top_builddir)/src/lisp.mk: $(lispsource)/loadup.el
 -include $(abs_top_builddir)/src/lisp.mk
 shortlisp_filter = leim/leim-list.el site-load.elc site-init.elc
 shortlisp := $(filter-out ${shortlisp_filter},${shortlisp})
+## Nidhogg: lisp/glitnir.el is loaded by a featurep-guarded line in loadup.el, which the sed above does not see.  It is
+## preloaded like the rest: compiled before the dump, dumped again when it changes, and native-compiled with the
+## preloaded Lisp.
+ifeq ($(HAVE_GLITNIR),yes)
+shortlisp += glitnir.elc
+endif
 ## Place loaddefs.el first, so it gets generated first, since it is on
 ## the critical path (relevant in parallel compilations).
 ## We don't really need to sort, but may as well use it to remove duplicates.
