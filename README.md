@@ -208,7 +208,9 @@ in `DRGNX_REF`, never drgnx's moving `main`: a drgnx push cannot turn Nidhogg re
   `tarball-test.sh macos`. Each uploads its tarball and `.sha256`.
 - `compile-noglitnir` (fedora-44): `build.sh --without-glitnir --stage build`, with no Rust installed (the tree still
   compiles without Glitnir). It is not part of the release gate.
-- `drgnx-linux` (fedora-45 tarball) and `drgnx-macos`: `nidhogg/ci/drgnx-suite.sh TARBALL DISTRO DRGNX_DIR` runs drgnx's
+- `drgnx-linux` (fedora-45 tarball) and `drgnx-macos`: first what drgnx's `ci.yml` builds for its suite, from the drgnx
+  checkout and cached as there (Ratatoskr with the test hooks and `ratatoskr-mock`: `DRGNX_RATATOSKR_BIN`; huginn's
+  `dump` example: `DRGNX_HUGINN_DUMP`), then `nidhogg/ci/drgnx-suite.sh TARBALL DISTRO DRGNX_DIR` runs drgnx's
   unit suite with `DRGNX_EMACS` set to the built Nidhogg (the `:timing` tests in a second run). Locally, a narrowed run:
   `DRGNX_TEST_SELECTOR='drgnx-doctor/' bash nidhogg/ci/drgnx-suite.sh TARBALL fedora-44 ../drgnx`.
 - `gui` (fedora-45 tarball, after `linux`; scales 1 and 2; 60 minutes): `nidhogg/test/gui.sh --container fedora-45`

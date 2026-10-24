@@ -3,9 +3,9 @@
 #   nidhogg/ci/drgnx-suite.sh TARBALL DISTRO DRGNX_DIR     (DISTRO: fedora-44 | fedora-45 | ubuntu-26.04 | macos)
 # Linux: a fresh --memory ${NIDHOGG_SUITE_MEMORY:-4g} podman container of DISTRO; the tarball is unpacked at its BUILDINFO
 # prefix and DRGNX_DIR is mounted read-only.  macOS: on the host (brew install of deps.runtime + ripgrep + rust).
-# Both build drgnx's runtime/ (Ratatoskr with the test hooks, as drgnx's macos.yml does) outside the tarball and outside
-# HOME, and export DRGNX_RATATOSKR_BIN to it: the client's no-skip tests that need it would otherwise skip and fail the run.
-# Linux pins rustup 1.88.0 (drgnx's MSRV, as its runtime.yml); macOS takes Homebrew's rust, as its macos.yml.
+# DRGNX_RATATOSKR_BIN (Ratatoskr with the test hooks, ratatoskr-mock beside it) and DRGNX_HUGINN_DUMP (huginn's dump
+# example) are passed through when set (Linux: their directories mounted read-only): the workflow builds them from DRGNX_DIR
+# as drgnx's ci.yml does.  Unset, the tests that need them skip, and a full run fails on drgnx's test/no-skip.eld.
 # Run as drgnx's own unit tier does: DRGNX_TEST_NO_TIMING=1, DRGNX_TEST_RERUN=1, one run (no timing pass).  DRGNX_TEST_SELECTOR narrows it.
 # Exit 0 when the suite passes, else non-zero.  bash 3.2-safe.
 set -eu
@@ -23,9 +23,7 @@ if [ "$DISTRO" = macos ]; then
   trap 'rm -rf "$W"' EXIT
   tar -C "$W" -xJf "$TARBALL"
   # shellcheck disable=SC2046
-  brew install $(sed 's/#.*//' "$W/$TOP/deps.runtime") ripgrep rust
-  cargo build --locked --manifest-path "$DRGNX/runtime/Cargo.toml" -p drgnx-ratatoskr --features test-hooks --target-dir "$W/ratatoskr"
-  export DRGNX_RATATOSKR_BIN="$W/ratatoskr/debug/ratatoskr"
+  brew install $(sed 's/#.*//' "$W/$TOP/deps.runtime") ripgrep
   export DRGNX_EMACS="$W/$TOP/Nidhogg.app/Contents/MacOS/Emacs"
   cd "$DRGNX"
   export DRGNX_TEST_JOBS
@@ -58,16 +56,12 @@ prefix=$(tar -xJOf /t.tar.xz "$TOP/share/nidhogg/BUILDINFO" | sed -n "s/^prefix=
 '
 # shellcheck disable=SC2016
 case $DISTRO in
-  ubuntu-*) INNER="$INNER"'DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git diffutils findutils procps zsh fish ripgrep ca-certificates curl gcc $(cat /deps.runtime) > /dev/null' ;;
-  *) INNER="$INNER"'dnf -y -q --setopt=install_weak_deps=False install git diffutils findutils procps-ng util-linux zsh fish ripgrep curl gcc $(cat /deps.runtime) > /dev/null' ;;
+  ubuntu-*) INNER="$INNER"'DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git diffutils findutils procps zsh fish ripgrep ca-certificates $(cat /deps.runtime) > /dev/null' ;;
+  *) INNER="$INNER"'dnf -y -q --setopt=install_weak_deps=False install git diffutils findutils procps-ng util-linux zsh fish ripgrep $(cat /deps.runtime) > /dev/null' ;;
 esac
 # shellcheck disable=SC2016
 INNER="$INNER"'
 mkdir -p "$prefix" && tar -C "$prefix" --strip-components=1 -xJf /t.tar.xz
-export RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=/opt/rust/cargo
-curl -fsSL --proto "=https" --tlsv1.2 https://sh.rustup.rs | sh -s -- -y -q --no-modify-path --profile minimal --default-toolchain 1.88.0
-"$CARGO_HOME/bin/cargo" build --locked --manifest-path /drgnx/runtime/Cargo.toml -p drgnx-ratatoskr --features test-hooks --target-dir /opt/ratatoskr
-export DRGNX_RATATOSKR_BIN=/opt/ratatoskr/debug/ratatoskr
 export HOME=/tmp/home DRGNX_EMACS="$prefix/bin/nidhogg" DRGNX_TEST_RERUN=1 DRGNX_TEST_NO_TIMING=1 DRGNX_TEST_JOBS=$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 ln -sf "$prefix/bin/nidhogg" /usr/local/bin/emacs
 mkdir -p "$HOME"
@@ -75,8 +69,16 @@ git config --global --add safe.directory "*"
 cd /drgnx
 bin/drgnx test'
 
-SEL=()
-[ -z "${DRGNX_TEST_SELECTOR:-}" ] || SEL=(-e "DRGNX_TEST_SELECTOR=$DRGNX_TEST_SELECTOR")
+OPTS=()
+[ -z "${DRGNX_TEST_SELECTOR:-}" ] || OPTS=(-e "DRGNX_TEST_SELECTOR=$DRGNX_TEST_SELECTOR")
+if [ -n "${DRGNX_RATATOSKR_BIN:-}" ]; then
+  OPTS+=(-v "$(cd "$(dirname "$DRGNX_RATATOSKR_BIN")" && pwd):/opt/ratatoskr:ro,Z"
+        -e "DRGNX_RATATOSKR_BIN=/opt/ratatoskr/$(basename "$DRGNX_RATATOSKR_BIN")")
+fi
+if [ -n "${DRGNX_HUGINN_DUMP:-}" ]; then
+  OPTS+=(-v "$(cd "$(dirname "$DRGNX_HUGINN_DUMP")" && pwd):/opt/huginn:ro,Z"
+        -e "DRGNX_HUGINN_DUMP=/opt/huginn/$(basename "$DRGNX_HUGINN_DUMP")")
+fi
 "$PODMAN" run --rm --memory "${NIDHOGG_SUITE_MEMORY:-4g}" --memory-swap "${NIDHOGG_SUITE_MEMORY:-4g}" \
-  -e "TOP=$TOP" ${SEL[@]+"${SEL[@]}"} \
+  -e "TOP=$TOP" ${OPTS[@]+"${OPTS[@]}"} \
   -v "$TARBALL:/t.tar.xz:ro,Z" -v "$DRGNX:/drgnx:ro,Z" "$IMAGE" bash -c "$INNER"
