@@ -52,8 +52,8 @@ fail() { echo "check.sh: FAIL $1" >&2; exit 1; }
 cargo fmt --check                                                   || fail fmt
 cargo clippy --all-targets --offline --locked -- -D warnings        || fail clippy
 cargo test --offline --locked ${TEST:+"$TEST"}                      || fail test
-# the pixman oracle (Task 30 adds the feature's code; the feature exists from the start)
-if [ "$(uname -s)" = Linux ] && grep -q '^pixman-oracle' Cargo.toml && [ -f src/oracle.rs ]; then
+# the pixman oracle: the kernels' OVER against pixman_image_composite32, bit for bit (Linux, where pixman is)
+if [ "$(uname -s)" = Linux ]; then
   cargo test --offline --locked --features pixman-oracle ${TEST:+"$TEST"} || fail test-pixman-oracle
 fi
 if command -v cargo-deny >/dev/null 2>&1; then
@@ -64,7 +64,7 @@ fi
 # vendor drift: vendor a copy, compare with vendor/
 copy="$CARGO_TARGET_DIR/vendor-check"
 rm -rf "$copy" && mkdir -p "$copy"
-for f in Cargo.toml Cargo.lock .cargo src include; do cp -r "$f" "$copy/" || fail vendor; done
+for f in Cargo.toml Cargo.lock .cargo build.rs src include; do cp -r "$f" "$copy/" || fail vendor; done
 mkdir "$copy/vendor"
 ( cd "$copy" && cargo vendor --locked --offline vendor >/dev/null ) || fail vendor
 diff -r -x .keep "$copy/vendor" vendor                              || fail vendor-drift
