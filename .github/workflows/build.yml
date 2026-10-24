@@ -370,6 +370,40 @@ jobs:
       - name: drgnx's unit suite on the built Nidhogg
         run: bash nidhogg/ci/drgnx-suite.sh dist/*.tar.xz fedora-45 drgnx
 
+  # GUI tests (test/src/nidhogg-tests/*-gui-tests.el): the fedora-45 tarball in a fedora-45 container on a headless mutter
+  # with its own session bus, at monitor scale 1 and 2 (nidhogg/test/gui.sh).  Not part of the release gate.
+  gui:
+    name: GUI tests (headless mutter, scale ${{ matrix.scale }})
+    needs: linux
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        scale: [1, 2]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        id: dl
+        continue-on-error: true
+        with:
+          name: tarball-fedora-45
+          path: dist
+      - name: The fedora-45 build made a tarball
+        if: ${{ steps.dl.outcome == 'failure' }}
+        run: |
+          echo "::error::no tarball: the fedora-45 build job failed (see the Linux fedora-45 job), so there is nothing to test"
+          exit 1
+      - name: Unpack the tarball
+        run: |
+          mkdir -p "$RUNNER_TEMP/nidhogg"
+          tar -xJf dist/*.tar.xz -C "$RUNNER_TEMP/nidhogg" --strip-components=1
+      - name: GUI tests at scale ${{ matrix.scale }}
+        run: bash nidhogg/test/gui.sh --prefix "$RUNNER_TEMP/nidhogg" --scale "${{ matrix.scale }}" --container fedora-45 --timeout 1800
+
   drgnx-macos:
     name: drgnx suite (macOS)
     needs: macos
