@@ -5,11 +5,14 @@
 use std::sync::Mutex;
 
 pub mod ffi;
+pub mod stats;
 
 /// All of the library's global state, behind one lock.
 #[derive(Debug, Default)]
-pub(crate) struct State {}
+pub(crate) struct State {
+    pub(crate) rings: stats::Rings,
+}
 
-// Nothing reads it until the first stateful export lands.
-#[allow(dead_code)]
-pub(crate) static STATE: Mutex<State> = Mutex::new(State {});
+pub(crate) static STATE: Mutex<State> = Mutex::new(State {
+    rings: stats::Rings::new(),
+});
