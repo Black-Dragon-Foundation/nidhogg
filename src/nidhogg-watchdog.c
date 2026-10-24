@@ -68,6 +68,9 @@ char *nh_wd_hang_file;
    lock held or in wait_leave, which only the main thread runs).  */
 static bool wd_waiting;		/* in a responsive wait */
 static uint64_t wd_busy_since;	/* the current span's start */
+#ifdef HAVE_NIDHOGG_WORKERS
+static uint64_t wd_last_wall;	/* the last closed span's length (ns) */
+#endif
 static uint64_t wd_gc_ns0, wd_gcs0, wd_cmds0; /* snapshots at its start */
 static int wd_wait_depth = -1;	/* phase depth to pop back to after a
 				   non-responsive wait, or -1 */
@@ -175,6 +178,16 @@ finalise (uint64_t now, uint64_t wall, uint64_t gc, uint64_t gcs,
   __atomic_fetch_add (&nh_wd.stalls, 1, __ATOMIC_RELAXED);
 }
 
+#ifdef HAVE_NIDHOGG_WORKERS
+/* How long the last busy span lasted, for the workers' pressure
+   sample (main thread).  */
+uint64_t
+nh_wd_last_span_ns (void)
+{
+  return wd_last_wall;
+}
+
+#endif
 /* The span ends at NOW: a responsive wait begins.  */
 static void
 span_close (uint64_t now)
@@ -186,6 +199,9 @@ span_close (uint64_t now)
   if (!wd_waiting)
     {
       uint64_t wall = now > wd_busy_since ? now - wd_busy_since : 0;
+#ifdef HAVE_NIDHOGG_WORKERS
+      wd_last_wall = wall;
+#endif
       uint64_t gc = (__atomic_load_n (&nh_wd.gc_ns_total, __ATOMIC_RELAXED)
 		     - wd_gc_ns0);
       uint64_t gcs = (__atomic_load_n (&nh_wd.gc_count, __ATOMIC_RELAXED)

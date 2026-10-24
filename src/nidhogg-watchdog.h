@@ -262,6 +262,9 @@ extern void nh_wd_wait_enter_modal (const struct timespec *timeout);
 extern void nh_wd_wait_leave (struct thread_state *self);
 extern void nh_wd_suspend (bool);
 extern uint64_t nh_wd_now_ns (void);
+#ifdef HAVE_NIDHOGG_WORKERS
+extern uint64_t nh_wd_last_span_ns (void);
+#endif
 
 /* The histograms of `--stats', one count per bucket of NH_WD_BUCKETS.
    Any thread may add (relaxed atomics): the edges add every span by its
