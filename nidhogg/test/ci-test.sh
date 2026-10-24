@@ -46,4 +46,13 @@ grep -qF 'fedora-44' <<<"$nj"                                     || fail "compi
 mj=$(awk '/^  macos:/,/^  drgnx-linux:/' "$wf")
 grep -qF 'bash nidhogg/glitnir/check.sh' <<<"$mj"                 || fail "macos runs the glitnir checks"
 [ "$(grep -n 'glitnir/check.sh' <<<"$mj" | head -1 | cut -d: -f1)" -lt "$(grep -n 'id: build' <<<"$mj" | head -1 | cut -d: -f1)" ] 2>/dev/null || fail "macos runs the glitnir checks after the build"
+# the GUI job: needs the Linux builds, runs the fedora-45 tarball in a container at scales 1 and 2, with a time limit
+gj=$(awk '/^  gui:/,/^  drgnx-macos:/' "$wf")
+[ -n "$gj" ]                                                      || fail "no job gui"
+grep -qE 'needs: linux' <<<"$gj"                                  || fail "gui does not need linux"
+grep -qE 'timeout-minutes: 60' <<<"$gj"                           || fail "gui has no 60-minute limit"
+grep -qE 'scale: \[1, 2\]' <<<"$gj"                               || fail "gui does not run scales 1 and 2"
+grep -qF 'tarball-fedora-45' <<<"$gj"                             || fail "gui does not use the fedora-45 tarball"
+grep -qF -- '--container fedora-45' <<<"$gj"                      || fail "gui does not run in a container"
+grep -qF 'bash nidhogg/test/gui.sh' <<<"$gj"                      || fail "gui does not run gui.sh"
 exit $rc
