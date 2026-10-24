@@ -5,6 +5,9 @@ use std::collections::BTreeMap;
 /// Entries kept per root.
 pub const RING: usize = 1024;
 
+/// `backfill_rate` when no entry knows whether its paint back-filled (`backfill` 2 everywhere).
+pub const UNKNOWN_RATE: f64 = -1.0;
+
 /// One paint, as the glue measures it.  Mirrors `GlitnirStatsEntry` in `include/glitnir.h`.
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
@@ -149,7 +152,7 @@ fn summarise(r: &Ring) -> Summary {
         damage_px_p50: rank(&damage, 50),
         painted_px_p50: rank(&painted, 50),
         backfill_rate: if known == 0 {
-            0.0
+            UNKNOWN_RATE
         } else {
             filled as f64 / known as f64
         },
@@ -166,11 +169,12 @@ pub fn record(root: u64, e: StatsEntry) {
     st.rings.entry(root).or_insert_with(Ring::new).push(e);
 }
 
-/// ROOT's summary, then empty its ring when `reset`.  A root with no record yet summarises as zeros.
+/// ROOT's summary, then empty its ring when `reset`.  A root with no record yet summarises as an empty ring (zeros,
+/// no back-fill rate).
 pub fn summary(root: u64, reset: bool) -> Summary {
     let mut st = crate::STATE.lock().unwrap_or_else(|p| p.into_inner());
     let Some(r) = st.rings.get_mut(&root) else {
-        return Summary::default();
+        return summarise(&Ring::new());
     };
     let s = summarise(r);
     if reset {
@@ -253,7 +257,7 @@ mod tests {
     fn summary_percentiles_match_a_sorted_list() {
         let root = 9002;
         let mut rng = Rng(seed());
-        let n = 200 + (rng.next() % 900) as usize;
+        let n = 200 + (rng.next() % (RING - 200) as u64) as usize; // the ring keeps them all
         let all: Vec<StatsEntry> = (0..n).map(|_| random_entry(&mut rng)).collect();
         for e in &all {
             record(root, *e);
@@ -279,17 +283,46 @@ mod tests {
     }
 
     #[test]
+    fn backfill_rate_is_unknown_without_a_known_entry() {
+        let root = 9004;
+        let mut rng = Rng(seed());
+        for _ in 0..10 {
+            record(
+                root,
+                StatsEntry {
+                    backfill: 2,
+                    ..random_entry(&mut rng)
+                },
+            );
+        }
+        assert_eq!(summary(root, false).backfill_rate, UNKNOWN_RATE);
+        record(
+            root,
+            StatsEntry {
+                backfill: 1,
+                ..random_entry(&mut rng)
+            },
+        );
+        assert_eq!(summary(root, false).backfill_rate, 1.0);
+        forget(root);
+    }
+
+    #[test]
     fn reset_empties_the_ring() {
         let root = 9003;
         let mut rng = Rng(seed());
         for _ in 0..10 {
             record(root, random_entry(&mut rng));
         }
+        let empty = Summary {
+            backfill_rate: UNKNOWN_RATE,
+            ..Summary::default()
+        };
         assert_eq!(summary(root, true).count, 10);
-        assert_eq!(summary(root, false), Summary::default());
+        assert_eq!(summary(root, false), empty);
         record(root, random_entry(&mut rng));
         assert_eq!(summary(root, false).count, 1);
         forget(root);
-        assert_eq!(summary(root, false), Summary::default());
+        assert_eq!(summary(root, false), empty);
     }
 }

@@ -4,15 +4,21 @@
 
 use std::sync::Mutex;
 
+pub mod damage;
 pub mod ffi;
+pub mod geom;
+pub mod region;
+pub mod rng;
 pub mod stats;
 
 /// All of the library's global state, behind one lock.
 #[derive(Debug, Default)]
 pub(crate) struct State {
     pub(crate) rings: stats::Rings,
+    pub(crate) damage: damage::Frames,
 }
 
 pub(crate) static STATE: Mutex<State> = Mutex::new(State {
     rings: stats::Rings::new(),
+    damage: damage::Frames::new(),
 });
