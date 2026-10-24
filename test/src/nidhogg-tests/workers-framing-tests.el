@@ -661,7 +661,13 @@ tree), and there is no untracked one."
   ;; reaches a deleted process after `delete-process' returns; a new
   ;; filter or coding system turns framing off and the filter gets every
   ;; byte not delivered, in order; the others keep it framed.  (A
-  ;; delivery budget of 0 keeps messages queued at each batch.)
+  ;; delivery budget of 0 keeps messages queued at each batch.)  The
+  ;; deleting and the stopping batch act only once the send has
+  ;; returned: a send that fills the pipe (a small one: 8 KB when the
+  ;; user is over `pipe-user-pages-soft') waits for output, which runs
+  ;; batches, and a batch that deletes its process then fails the send
+  ;; ("Output file descriptor ... is closed"), one that stops it leaves
+  ;; the send waiting for a reader that no longer reads.
   (workers-fr-tests--modes
     (let ((data (workers-fr-tests--lines 1 3000))
           (nidhogg-workers--test-deliver-budget 0))
@@ -677,13 +683,14 @@ tree), and there is no untracked one."
                            (lambda () (equal (workers-fr-tests--joined p) data))
                            10))))
         (ert-info ("delete-process" :prefix "")
-          (let* ((deleted nil) (after 0)
+          (let* ((sent nil) (deleted nil) (after 0)
                  (p (framed "re-del" (lambda (p _b)
-                                       (if deleted
-                                           (setq after (1+ after))
-                                         (delete-process p)
-                                         (setq deleted t))))))
+                                       (cond ((not sent))
+                                             (deleted (setq after (1+ after)))
+                                             (t (delete-process p)
+                                                (setq deleted t)))))))
             (process-send-string p data)
+            (setq sent t)
             (should (workers-fr-tests--until (lambda () deleted)))
             (workers-fr-tests--until #'ignore 0.1)
             (should (= after 0))))
@@ -708,11 +715,14 @@ tree), and there is no untracked one."
         (ert-info ("stop-process" :prefix "")
           (let ((p (framed "re-stop"
                            (lambda (p b)
-                             (unless (process-get p 'got)
+                             (when (and (process-get p 'sent)
+                                        (not (process-get p 'stopped)))
+                               (process-put p 'stopped t)
                                (stop-process p))
                              (workers-fr-tests--collect p b)))))
             (process-send-string p data)
-            (should (workers-fr-tests--until (lambda () (process-get p 'got))))
+            (process-put p 'sent t)
+            (should (workers-fr-tests--until (lambda () (process-get p 'stopped))))
             (continue-process p)
             (finish p)
             (should (eq (nidhogg-process-framing p) 'lines))
