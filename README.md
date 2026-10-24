@@ -106,7 +106,9 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   FRAME)` takes a frame's pending damage as `((X Y W H) …)`; the next consistency point takes it otherwise, unless
   `glitnir-debug` is `damage-hold` (the damage then stays until read and the points present whole frames).
   **Damage-only present.** The first damage on a root frame or its child frames freezes the root's GDK window
-  (`gdk_window_freeze_updates`), so GTK never paints a half-drawn picture. At a **consistency point** (redisplay's buffer
+  (`gdk_window_freeze_updates`), so GTK never paints a half-drawn picture; so does a scene change made inside
+  redisplay, and a child frame's new border ring (its first one is drawn before it has a surface, so no damage of its
+  own would freeze the root). At a **consistency point** (redisplay's buffer
   flips unblocked, also after an error or a throw out of redisplay; a frame up to date outside a flip block;
   `flush_display` and the end of the pgtk handlers that draw — mouse highlight, focus, the visible bell — and of
   `pgtk_read_socket`, these only outside redisplay; an idle callback for any other drawing outside redisplay) the root's

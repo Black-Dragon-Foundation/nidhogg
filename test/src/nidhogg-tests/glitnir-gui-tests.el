@@ -813,6 +813,23 @@ Glitnir is turned back on after (`revive'), for the tests that follow."
           (should (equal (plist-get (plist-get (glitnir--chrome c) :shadow) :color) '(255 0 0))))
       (glitnir-gui--delete (list c)))))
 
+(ert-deftest glitnir-gui/first-border-holds-the-root ()
+  ;; A child frame's first border is drawn before it has a surface (redraw_frame's update_begin, as a new popup's
+  ;; first redisplay does), so it records no damage, but its ring changes the scene.  The root stays frozen until
+  ;; the point that commits it: the unblock_input that follows dispatches GLib, and GTK must not paint the root
+  ;; first (`verify' counted that as a compose with pending damage, GL-VERIFY-RESIZE-FLAKE-1).
+  (let ((root (selected-frame)) (c nil))
+    (unwind-protect
+        (glitnir-gui--verified
+          (setq c (make-frame `((parent-frame . ,root) (minibuffer . nil) (visibility . nil) (undecorated . t)
+                                (internal-border-width . 1) (corner-radius . 8) (width . 24) (height . 6))))
+          (select-frame root)
+          (redisplay t) (sit-for 0.1)
+          (should-not (glitnir--frozen-p root))
+          ;; The idle point may commit before this returns, so the freeze itself is not asserted: `verified' is.
+          (redraw-frame c))
+      (when (frame-live-p c) (delete-frame c t)))))
+
 ;; Child frames as layers, paint-through (Task 34): each frame's draw handler composes the committed scene into GDK's
 ;; buffer.  The root shows magenta under the popups (cyan, empty), so a rounded corner, a shadow and the stock
 ;; picture are told apart by their pixels.  Every test runs under `verify'.

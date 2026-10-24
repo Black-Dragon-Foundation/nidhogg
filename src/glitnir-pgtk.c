@@ -2315,10 +2315,21 @@ glitnir_pgtk_record_border (struct frame *f, int width, unsigned long rgb,
   s->border_argb = argb;
   if (s->has_chrome)
     {
-      /* The next point (the draw that records this makes one) commits
-	 the scene with the new ring.  */
+      /* The next point commits the scene with the new ring; the root
+	 stays frozen until then (MP-22), as for damage.  A frame's first
+	 border is drawn before it has a surface, so it records no damage
+	 that would freeze it, and the unblock_input after redraw_frame's
+	 update_begin dispatches GLib (GL-VERIFY-RESIZE-FLAKE-1).  */
+      struct glitnir_root *root = root_state (f);
       s->chrome_dirty = true;
-      root_state (f)->scene_pending = true;
+      root->scene_pending = true;
+      if (recording (root->frame))
+	{
+	  freeze (root);
+	  if (root->idle_id == 0 && !redisplaying_p
+	      && !buffer_flipping_blocked_p ())
+	    root->idle_id = g_idle_add (idle_point, root);
+	}
     }
 }
 
