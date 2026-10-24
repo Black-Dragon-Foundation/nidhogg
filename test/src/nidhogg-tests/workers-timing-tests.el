@@ -123,4 +123,108 @@
     (should (> fresh 0))
     (should (< (nth 3 r) (nth 1 r)))))
 
+(defun workers-timing-tests--big-message (bytes)
+  "A Content-Length framed notification `big' of about BYTES, unibyte.
+Its params hold completion-shaped items, as a large completion answer."
+  (let* ((item "{\"label\":\"workers_timing_item_%06d\",\"kind\":6,\"detail\":\"int (int a, int b)\",\"sortText\":\"%06d\",\"insertTextFormat\":1}")
+         (n (/ bytes (length (format item 0 0))))
+         (body (concat "{\"jsonrpc\":\"2.0\",\"method\":\"big\",\"params\":{\"items\":["
+                       (mapconcat (lambda (i) (format item i i)) (number-sequence 1 n) ",")
+                       "]}}")))
+    (encode-coding-string
+     (format "Content-Length: %d\r\n\r\n%s" (string-bytes body) body) 'utf-8-unix)))
+
+(ert-deftest workers/lsp-burst-latency ()
+  ;; §17.5: typing 100 characters (one every 20 ms, from a timer) while
+  ;; a mock server sends a 3 MB message every 200 ms to a framed
+  ;; jsonrpc connection: no stall of 100 ms or more has a sample in the
+  ;; `json' or `filter' phase (the materializer's slices and the batch
+  ;; function), every character is typed and every message dispatched.
+  ;; The watchdog's 100 ms threshold against slices of 4 ms is the wide
+  ;; margin.  Threads only: inline mode delivers every message unsliced.
+  (skip-unless (and (featurep 'nidhogg-watchdog) (eq system-type 'gnu/linux)))
+  (require 'cl-lib)
+  (require 'jsonrpc)
+  (require 'nidhogg-workers-jsonrpc)
+  (let* ((nidhogg-workers--mode 'threads)
+         (nidhogg-workers-process-reader t)
+         (nidhogg-workers-reader-pipes t)
+         (nidhogg-workers-framing t)
+         (messages 10)
+         (file (make-temp-file "workers-lsp-burst" nil ".bin"))
+         (got 0) (typed 0) (stalls nil) (phases nil) conn)
+    (unwind-protect
+        (progn
+          (let ((coding-system-for-write 'no-conversion))
+            (write-region (workers-timing-tests--big-message 3000000) nil file nil 'silent))
+          (setq conn
+                (make-instance
+                 'jsonrpc-process-connection
+                 :name "wtt-lsp-burst" :events-buffer-config '(:size 0)
+                 :process (lambda ()
+                            (make-process
+                             :name "wtt-lsp-burst" :connection-type 'pipe
+                             :noquery t :coding 'utf-8-emacs-unix
+                             :command (list "sh" "-c"
+                                            (format "read go; for i in $(seq %d); do cat %s; sleep 0.2; done; cat"
+                                                    messages (shell-quote-argument file)))))
+                 :notification-dispatcher (lambda (_c _m _p) (setq got (1+ got)))
+                 :request-dispatcher #'ignore))
+          (should (eq (nidhogg-process-framing (jsonrpc--process conn))
+                      'content-length))
+          (with-temp-buffer
+            (nidhogg-watchdog--start 100 600000 nil)
+            (unwind-protect
+                (let ((timer nil)
+                      (buf (current-buffer))
+                      (end (+ (float-time) 60)))
+                  (nidhogg-watchdog--test-idle-wait 0.01)
+                  (nidhogg-watchdog--take)
+                  (nidhogg-workers-stats t)
+                  (setq timer (run-at-time 0 0.02
+                                           (lambda ()
+                                             (when (< typed 100)
+                                               (with-current-buffer buf
+                                                 (insert ?x))
+                                               (setq typed (1+ typed))))))
+                  (unwind-protect
+                      (progn
+                        (process-send-string (jsonrpc--process conn) "go\n")
+                        ;; Idle waits, as the command loop's: each ends
+                        ;; the watchdog's span (`accept-process-output'
+                        ;; would not), so a stall is one stretch of work.
+                        (while (and (< (float-time) end)
+                                    (or (< got messages) (< typed 100)))
+                          (nidhogg-watchdog--test-idle-wait 0.02)))
+                    (cancel-timer timer))
+                  (nidhogg-watchdog--test-idle-wait 0.02)
+                  (setq stalls (car (nidhogg-watchdog--take))
+                        phases (plist-get (nidhogg-workers-stats) :phase-ms)))
+              (nidhogg-watchdog--stop))
+            (should (= typed 100))
+            (should (= (buffer-size) 100)))
+          (should (= got messages))
+          (let ((from-json-or-filter
+                 (cl-remove-if-not
+                  (lambda (st)
+                    (cl-some (lambda (s) (memq (plist-get s :phase) '(json filter)))
+                             (plist-get st :samples)))
+                  stalls)))
+            (message "workers/lsp-burst-latency: %d stalls >= 100 ms (%s), %d from json/filter; json %.1f ms, filter %.1f ms"
+                     (length stalls)
+                     (mapconcat (lambda (st) (format "%.0f" (plist-get st :wall-ms)))
+                                stalls " ")
+                     (length from-json-or-filter)
+                     (plist-get phases 'json) (plist-get phases 'filter))
+            ;; The messages were built in the main thread's `json' slices.
+            (should (> (plist-get phases 'json) 0))
+            (should-not from-json-or-filter)))
+      (when conn
+        (let ((p (jsonrpc--process conn)))
+          (set-process-sentinel p #'ignore)
+          (delete-process p)
+          (dolist (b (list (process-buffer p) (jsonrpc-stderr-buffer conn)))
+            (when (buffer-live-p b) (kill-buffer b)))))
+      (delete-file file))))
+
 ;;; workers-timing-tests.el ends here
