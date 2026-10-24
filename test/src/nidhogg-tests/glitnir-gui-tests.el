@@ -839,12 +839,13 @@ Glitnir is turned back on after (`revive'), for the tests that follow."
     (redisplay t)))
 
 (defun glitnir-gui--popup (params &optional left top)
-  "A shown child frame at LEFT, TOP (default 200, 200), cyan, empty, 24x6 characters, with the frame PARAMS."
+  "A shown child frame at LEFT, TOP (default 200, 200), cyan, empty, 24x6 characters, with the frame PARAMS.
+PARAMS come first, so they win over the defaults here."
   (let* ((root (selected-frame))
-         (f (make-frame `((parent-frame . ,root) (minibuffer . nil) (left . ,(or left 200)) (top . ,(or top 200))
+         (f (make-frame `(,@params (parent-frame . ,root) (minibuffer . nil) (left . ,(or left 200)) (top . ,(or top 200))
                           (width . 24) (height . 6) (background-color . "#00ffff")
                           (visibility . nil) (no-accept-focus . t) (no-other-frame . t)
-                          (undecorated . t) (internal-border-width . 1) ,@params))))
+                          (undecorated . t) (internal-border-width . 1)))))
     (select-frame root)
     (set-window-buffer (frame-root-window f) (get-buffer-create "*glitnir-pop*"))
     (make-frame-visible f)
@@ -964,6 +965,22 @@ Glitnir is on again after, and they are redrawn whole once more (so `verify' com
         (glitnir-gui--verified
           (setq child-frame-chrome glitnir-gui--chrome)
           (setq c (glitnir-gui--popup '((corner-radius . 0) (shadow . nil))))
+          (sit-for 0.1)
+          (let ((rect (glitnir-gui--around c)) (on (glitnir-snapshot nil 'raw)))
+            (should-not (glitnir--chrome c))
+            (should (= (glitnir-gui--differ on (glitnir-gui--off (list c)) rect) 0))))
+      (setq child-frame-chrome old)
+      (when (frame-live-p c) (delete-frame c t)))))
+
+(ert-deftest glitnir-gui/decorated-child-identical ()
+  ;; Design §3.4: a decorated (not `undecorated') child frame gets no chrome, from the option or its own
+  ;; parameters: its pixels are Glitnir off's.
+  (glitnir-gui--under)
+  (let ((c nil) (old child-frame-chrome))
+    (unwind-protect
+        (glitnir-gui--verified
+          (setq child-frame-chrome glitnir-gui--chrome)
+          (setq c (glitnir-gui--popup '((undecorated . nil) (corner-radius . 8))))
           (sit-for 0.1)
           (let ((rect (glitnir-gui--around c)) (on (glitnir-snapshot nil 'raw)))
             (should-not (glitnir--chrome c))

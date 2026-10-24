@@ -48,10 +48,11 @@
 (require 'cl-lib)
 
 (defmacro glitnir-test--as-child (params &rest body)
-  "Run BODY with the selected frame a child frame with parameters PARAMS."
+  "Run BODY with the selected frame an undecorated child frame with parameters PARAMS."
   (declare (indent 1))
   `(cl-letf (((symbol-function 'frame-parent) (lambda (&optional _f) (selected-frame)))
-             ((symbol-function 'frame-parameters) (lambda (&optional _f) ,params)))
+             ((symbol-function 'frame-parameters)
+              (lambda (&optional _f) (append ,params '((undecorated . t))))))
      ,@body))
 
 (ert-deftest glitnir/resolve-merges-the-option ()
@@ -102,6 +103,12 @@
   (let ((child-frame-chrome '((corner-radius . 8) (shadow . (:blur 16)))))
     (should-not (frame-parent))
     (should-not (glitnir--resolve (selected-frame)))))
+
+(ert-deftest glitnir/decorated-children-get-none ()
+  ;; Design §3.4: a decorated child frame is a plain one, its own chrome parameters included.
+  (let ((child-frame-chrome '((corner-radius . 8) (shadow . (:blur 16)))))
+    (glitnir-test--as-child '((undecorated . nil) (corner-radius . 4))
+      (should-not (glitnir--resolve (selected-frame))))))
 
 (ert-deftest glitnir/function-option-may-modify-parameters ()
   ;; A function option that sets parameters itself must not recurse into the resolver for good: the C side

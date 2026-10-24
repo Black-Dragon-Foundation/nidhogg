@@ -44,7 +44,8 @@ alist may hold `corner-radius' (a number of pixels) and `shadow' (a
 plist of :blur, :offset (X . Y), :spread and :opacity, or nil for no
 shadow).  A frame's own `corner-radius' and `shadow' parameters win
 over it; `(corner-radius . 0)' and `(shadow . nil)' opt a frame out.
-Root frames get no chrome.  The shadow colour is the foreground of the
+Root frames and decorated (not `undecorated') child frames get no
+chrome.  The shadow colour is the foreground of the
 `child-frame-shadow' face."
   :type '(choice (const :tag "None" nil)
                  (alist :key-type (choice (const corner-radius) (const shadow))
@@ -93,14 +94,17 @@ Set it for one frame with `set-face-foreground' to change that frame's."
   "Return FRAME's chrome, or nil.
 The value is (:radius R :shadow (:blur B :offset (X . Y) :spread S
 :opacity O :color (R G B))) in logical pixels, from FRAME's parameters
-and `child-frame-chrome'.  Root frames have none."
+and `child-frame-chrome'.  Root frames and decorated (not
+`undecorated') child frames have none."
   (when (frame-parent frame)
-    (let* ((opt (if (functionp child-frame-chrome)
-                    (funcall child-frame-chrome frame)
-                  child-frame-chrome))
-           (params (frame-parameters frame))
-           (r (or (assq 'corner-radius params) (assq 'corner-radius opt)))
-           (s (or (assq 'shadow params) (assq 'shadow opt)))
+    (let* ((params (frame-parameters frame))
+           (chromed (cdr (assq 'undecorated params)))
+           (opt (and chromed
+                     (if (functionp child-frame-chrome)
+                         (funcall child-frame-chrome frame)
+                       child-frame-chrome)))
+           (r (and chromed (or (assq 'corner-radius params) (assq 'corner-radius opt))))
+           (s (and chromed (or (assq 'shadow params) (assq 'shadow opt))))
            (radius (cdr r))
            (shadow (and (cdr s) (glitnir--shadow (cdr s) frame))))
       (when radius
