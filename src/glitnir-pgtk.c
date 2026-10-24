@@ -670,6 +670,32 @@ covered (const GlitnirRect *rects, size_t n, int x, int y)
   return false;
 }
 
+/* `verify': the end of a log line, the state of R's frame and its root
+   (a surface of -1x-1: none yet).  */
+static void
+verify_state (struct glitnir_root *r)
+{
+  struct frame *f = r->frame;
+  struct frame *p = FRAME_PARENT_FRAME (f);
+  GtkWidget *w = FRAME_GTK_WIDGET (f);
+  cairo_t *cr = f->output_data.pgtk->cr_context;
+  cairo_surface_t *s = cr ? cairo_get_target (cr) : NULL;
+  bool img = s && cairo_surface_get_type (s) == CAIRO_SURFACE_TYPE_IMAGE;
+  struct glitnir_root *root = root_state (f);
+  fprintf (stderr,
+	   " [%s %s, frame %dx%d at %d,%d, surface %dx%d at %g%s, visible %d"
+	   " mapped %d, redisplaying %d flips-blocked %d, root dirty %d"
+	   " scene-pending %d frozen %d, t %"PRIu64" ms]\n",
+	   p ? "child" : "root", STRINGP (f->name) ? SSDATA (f->name) : "?",
+	   FRAME_PIXEL_WIDTH (f), FRAME_PIXEL_HEIGHT (f), f->left_pos,
+	   f->top_pos, img ? cairo_image_surface_get_width (s) : -1,
+	   img ? cairo_image_surface_get_height (s) : -1, r->sx,
+	   f->output_data.pgtk->cr_active != cr ? " (flip pending)" : "",
+	   FRAME_VISIBLE_P (f), w && gtk_widget_get_mapped (w), redisplaying_p,
+	   buffer_flipping_blocked_p (), root->dirty, root->scene_pending,
+	   root->frozen != NULL, now_ns () / 1000000);
+}
+
 /* Compare R's frame surface with its copy at the previous commit; RECTS,
    N are what this commit reports (device pixels).  Log and count one
    violation if pixels changed outside them, then keep a new copy.  */
@@ -704,6 +730,8 @@ verify_frame (struct glitnir_root *r, const GlitnirRect *rects, size_t n)
       return;
     }
   int bx0 = INT_MAX, by0 = INT_MAX, bx1 = -1, by1 = -1;
+  uint64_t nbad = 0;
+  uint32_t was = 0, now = 0;
   for (int y = 0; y < h; y++)
     {
       const unsigned char *a = cur + (size_t) y * stride;
@@ -714,6 +742,11 @@ verify_frame (struct glitnir_root *r, const GlitnirRect *rects, size_t n)
 	if (memcmp (a + (size_t) x * 4, b + (size_t) x * 4, 4) != 0
 	    && !covered (rects, n, x, y))
 	  {
+	    if (nbad++ == 0)
+	      {
+		memcpy (&now, a + (size_t) x * 4, 4);
+		memcpy (&was, b + (size_t) x * 4, 4);
+	      }
 	    bx0 = min (bx0, x);
 	    by0 = min (by0, y);
 	    bx1 = max (bx1, x);
@@ -724,8 +757,15 @@ verify_frame (struct glitnir_root *r, const GlitnirRect *rects, size_t n)
   if (bx1 >= 0)
     {
       r->violations++;
-      fprintf (stderr, "glitnir verify: %"PRIu64" %d %d %d %d after %s\n",
+      fprintf (stderr, "glitnir verify: %"PRIu64" %d %d %d %d after %s",
 	       r->id, bx0, by0, bx1 - bx0 + 1, by1 - by0 + 1, last_prim);
+      fprintf (stderr, " {%"PRIu64" px, first %08"PRIx32" -> %08"PRIx32
+	       ", %zu rects:", nbad, was, now, n);
+      for (size_t i = 0; i < n && i < 6; i++)
+	fprintf (stderr, " %d,%d %dx%d", rects[i].x, rects[i].y, rects[i].w,
+		 rects[i].h);
+      fprintf (stderr, "}");
+      verify_state (r);
     }
 }
 
@@ -1147,14 +1187,19 @@ verify_stacking (struct glitnir_root *root)
 	/* A below B in Glitnir: A after B in GDK's list (top first).  */
 	bad = gdk_height (a) > gdk_height (b);
       }
-  xfree (fs);
   if (bad)
     {
       root->violations++;
       fprintf (stderr,
-	       "glitnir verify: %"PRIu64" stacking differs from GDK's\n",
+	       "glitnir verify: %"PRIu64" stacking differs from GDK's {",
 	       root->id);
+      for (size_t i = 0; i < n; i++)
+	fprintf (stderr, " %"PRIu64"@%d", ids[i],
+		 fs[i] ? gdk_height (fs[i]) : INT_MIN);
+      fprintf (stderr, "}");
+      verify_state (root);
     }
+  xfree (fs);
 }
 
 /* Hand ROOT's damage to Glitnir and invalidate what it gives back on
@@ -1627,7 +1672,10 @@ glitnir_pgtk_draw_begin (struct frame *f, GtkWidget *widget, cairo_t *cr)
     {
       if (verifying () && (r->dirty || r->scene_pending))
 	{
-	  fprintf (stderr, "glitnir verify: compose with pending damage\n");
+	  fprintf (stderr, "glitnir verify: compose with pending damage");
+	  verify_state (r);
+	  /* Who dispatched GLib with the change uncommitted.  */
+	  emacs_backtrace (100);
 	  r->violations++;
 	}
       /* Damage-only present: the paint covers GDK's clip, the damage

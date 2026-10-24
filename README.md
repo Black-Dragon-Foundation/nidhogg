@@ -124,9 +124,13 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
     `glitnir-debug-damage` face (half transparent; the frame's surface never holds it).
   - `verify`: a copy of each frame's surface (a child frame's too) is kept as of the previous commit. At each commit,
     pixels that changed outside the committed damage are logged once to stderr, `glitnir verify: FRAME X Y W H after
-    PRIMITIVE` (the bounding box in device pixels, the drawing primitive that recorded damage last), and counted in
-    `:violations` of `glitnir-stats`. A GTK paint of a root that still has uncommitted damage logs `glitnir verify:
-    compose with pending damage` and counts; a freeze that lasts over a second logs when it ends. It costs a full
+    PRIMITIVE` (the bounding box in device pixels, the drawing primitive that recorded damage last), then in braces
+    the count of such pixels, the first one's old and new value and the committed rectangles, and counted in
+    `:violations` of `glitnir-stats`. A GTK paint of a root that still has uncommitted damage or an uncommitted scene
+    change logs `glitnir verify: compose with pending damage` and a backtrace (who dispatched GLib), and counts; a
+    freeze that lasts over a second logs when it ends. Each counted line ends with the frame's state in brackets (root
+    or child, its name, size and place, its surface, visibility, whether redisplay runs, the root's dirty, pending and
+    frozen state, a monotonic time in ms). It costs a full
     surface compare per commit: for tests and hunting, not daily use. `(glitnir--draw-undamaged)` paints a rectangle
     without recording it (the next commit reports it); `(glitnir--compose-with-pending)` forces one paint of the root
     while damage is pending; `(glitnir--debug-freeze)` (any non-nil `glitnir-debug`) freezes the root as the first
