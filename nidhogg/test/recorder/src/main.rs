@@ -1,10 +1,14 @@
 //! nh-recorder: a recording Wayland compositor for Nidhogg's client tests.  Test-only; never shipped.
+mod clock;
 mod control;
 mod log;
+mod scale;
+mod shell;
 mod state;
 
 use calloop::generic::Generic;
 use calloop::signals::{Signal, Signals};
+use calloop::timer::{TimeoutAction, Timer};
 use calloop::{EventLoop, Interest, Mode, PostAction};
 use smithay::reexports::wayland_server::Display;
 use smithay::wayland::socket::ListeningSocketSource;
@@ -136,6 +140,14 @@ fn main() {
         )
         .unwrap_or_else(|e| die(e.to_string()));
 
+    // frame clock tick and ping timeouts
+    handle
+        .insert_source(Timer::from_duration(clock::FRAME), |_, _, state| {
+            state.tick();
+            TimeoutAction::ToDuration(clock::FRAME)
+        })
+        .unwrap_or_else(|e| die(e.to_string()));
+
     println!("READY");
     std::io::stdout().flush().ok();
 
@@ -170,6 +182,7 @@ fn add_control_connection(handle: &calloop::LoopHandle<'static, State>, stream: 
                     Err(_) => return Ok(PostAction::Remove),
                 }
             }
+            let stream_ref: &UnixStream = stream;
             while let Some(i) = pending.iter().position(|&b| b == b'\n') {
                 let line: Vec<u8> = pending.drain(..=i).collect();
                 let line = String::from_utf8_lossy(&line);
@@ -177,19 +190,8 @@ fn add_control_connection(handle: &calloop::LoopHandle<'static, State>, stream: 
                 if line.is_empty() {
                     continue;
                 }
-                let mut reply = control::handle(state, line).to_string();
-                reply.push('\n');
-                let mut w = &**stream;
-                let mut bytes = reply.as_bytes();
-                while !bytes.is_empty() {
-                    match w.write(bytes) {
-                        Ok(n) => bytes = &bytes[n..],
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::yield_now()
-                        }
-                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                        Err(_) => return Ok(PostAction::Remove),
-                    }
+                if let Some(reply) = control::handle(state, line, stream_ref) {
+                    control::write_reply(stream_ref, &reply);
                 }
             }
             Ok(PostAction::Continue)

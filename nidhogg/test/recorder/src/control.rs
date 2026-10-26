@@ -2,21 +2,46 @@
 //! commands to its `match`.
 use crate::state::State;
 use serde_json::{json, Value};
+use std::io::Write;
+use std::os::unix::net::UnixStream;
 
-fn err(msg: impl Into<String>) -> Value {
+pub fn err(msg: impl Into<String>) -> Value {
     json!({"ok": false, "error": msg.into()})
 }
 
-/// Run one command line; returns the reply.
-pub fn handle(state: &mut State, line: &str) -> Value {
+/// Write one reply line on a (non-blocking) control stream.
+pub fn write_reply(stream: &UnixStream, reply: &Value) {
+    let mut line = reply.to_string();
+    line.push('\n');
+    let mut w = stream;
+    let mut bytes = line.as_bytes();
+    while !bytes.is_empty() {
+        match w.write(bytes) {
+            Ok(n) => bytes = &bytes[n..],
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::yield_now(),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return,
+        }
+    }
+}
+
+/// Run one command line; returns the reply, or None when the reply comes later (`ping`).
+pub fn handle(state: &mut State, line: &str, stream: &UnixStream) -> Option<Value> {
     let req: Value = match serde_json::from_str(line) {
         Ok(v) => v,
-        Err(e) => return err(format!("bad JSON: {e}")),
+        Err(e) => return Some(err(format!("bad JSON: {e}"))),
     };
     let Some(cmd) = req.get("cmd").and_then(Value::as_str) else {
-        return err("missing \"cmd\"");
+        return Some(err("missing \"cmd\""));
     };
-    match cmd {
+    if cmd == "ping" {
+        return crate::shell::ping(state, stream);
+    }
+    Some(match cmd {
+        "configure" => crate::shell::configure(state, &req),
+        "decoration" => crate::shell::decoration(state, &req),
+        "scale" => crate::scale::scale(state, &req),
+        "present" => crate::clock::present(state, &req),
         "globals" => json!({"ok": true, "globals": state.globals}),
         "clients" => {
             let list: Vec<Value> = state
@@ -38,5 +63,5 @@ pub fn handle(state: &mut State, line: &str) -> Value {
             json!({"ok": true})
         }
         other => err(format!("unknown command {other:?}")),
-    }
+    })
 }

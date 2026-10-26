@@ -6,7 +6,6 @@ use serde::Deserialize;
 use smithay::delegate_compositor;
 use smithay::delegate_output;
 use smithay::delegate_shm;
-use smithay::delegate_xdg_shell;
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
@@ -22,21 +21,30 @@ use smithay::reexports::wayland_server::protocol::wl_touch::WlTouch;
 use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
 };
-use smithay::utils::{Serial, Transform};
+use smithay::utils::Transform;
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
     self, BufferAssignment, CompositorClientState, CompositorHandler, CompositorState, Damage,
-    SurfaceAttributes,
+    SubsurfaceCachedState, SurfaceAttributes,
 };
 use smithay::wayland::output::OutputHandler;
+use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation::WpPresentation;
+use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecoMode;
+use smithay::utils::{Clock as SmClock, Monotonic};
+use smithay::wayland::fractional_scale::FractionalScaleManagerState;
+use smithay::wayland::presentation::{PresentationFeedbackCachedState, PresentationState};
+use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::shell::xdg::{
-    PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+    PopupSurface, ShellClient, ToplevelSurface, XdgShellState, XdgToplevelSurfaceData,
 };
 use smithay::wayland::shm::{with_buffer_contents, ShmHandler, ShmState};
-use std::collections::BTreeMap;
+use smithay::wayland::viewporter::{ViewportCachedState, ViewporterState};
+use std::collections::{BTreeMap, HashMap};
+use std::os::unix::net::UnixStream;
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Clock {
@@ -49,6 +57,13 @@ pub enum Clock {
 pub struct Profile {
     pub name: String,
     pub globals: BTreeMap<String, u32>,
+    /// The decoration mode the compositor sends: `server`, or `none` (the default; client-side).
+    #[serde(default)]
+    pub decoration: String,
+    /// Globals whose version is below the real compositor's, with the reason (documentation only).
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub capped: BTreeMap<String, String>,
 }
 
 impl Profile {
@@ -83,17 +98,39 @@ pub struct State {
     pub shm_state: ShmState,
     pub xdg_shell_state: XdgShellState,
     pub seat_state: SeatState<State>,
-    #[allow(dead_code)] // Task 2 sends scale and mode changes through it
     pub output: Output,
     /// The globals advertised, name to version.
     pub globals: BTreeMap<String, u32>,
     pub log: Log,
     pub clients: Arc<Mutex<Vec<ClientInfo>>>,
-    #[allow(dead_code)] // Task 2's frame callbacks follow it
     pub clock: Clock,
     start: Instant,
     next_client: u32,
     signal: LoopSignal,
+    /// The scale announced to clients, in 120ths.
+    pub scale120: u32,
+    /// The decoration mode sent for toplevels (`decoration` command; the profile sets the start value).
+    pub decoration_mode: DecoMode,
+    /// Every surface created, for scale events and frame callbacks.
+    pub surfaces: Vec<WlSurface>,
+    pub toplevels: Vec<ToplevelSurface>,
+    pub popups: Vec<PopupSurface>,
+    /// Newest configure serial sent, and newest acked since the last commit, by surface protocol id.
+    pub sent_serial: HashMap<u32, u32>,
+    pub acked: HashMap<u32, u32>,
+    pub shell_clients: Vec<Rc<ShellClient>>,
+    pub pings: Vec<PendingPing>,
+    /// The clock the frame callbacks and presentation feedback report: monotonic base plus the manual advance.
+    pub mono_base: Duration,
+    pub manual_ns: u64,
+    pub present_seq: u64,
+}
+
+/// A `ping` control command waiting for pongs.
+pub struct PendingPing {
+    pub reply: UnixStream,
+    pub started: Instant,
+    pub waiting: Vec<Rc<ShellClient>>,
 }
 
 /// The highest version of each global this recorder serves.
@@ -105,6 +142,10 @@ fn max_version(name: &str) -> Option<u32> {
         "wl_seat" => 9,
         "wl_output" => 4,
         "xdg_wm_base" => 6,
+        "zxdg_decoration_manager_v1" => 1,
+        "wp_fractional_scale_manager_v1" => 1,
+        "wp_viewporter" => 1,
+        "wp_presentation" => 2,
         _ => return None,
     })
 }
@@ -125,6 +166,28 @@ impl State {
         dh.remove_global::<State>(compositor_state.subcompositor_global());
         dh.remove_global::<State>(shm_state.global());
         dh.remove_global::<State>(xdg_shell_state.global());
+        // The extra protocols: Smithay creates each at its one version; a global the profile does not list is removed.
+        let extra = [
+            (
+                "zxdg_decoration_manager_v1",
+                XdgDecorationState::new::<State>(dh).global(),
+            ),
+            (
+                "wp_fractional_scale_manager_v1",
+                FractionalScaleManagerState::new::<State>(dh).global(),
+            ),
+            ("wp_viewporter", ViewporterState::new::<State>(dh).global()),
+            // wp_presentation is recreated below at the profile's version, on CLOCK_MONOTONIC (1)
+            (
+                "wp_presentation",
+                PresentationState::new::<State>(dh, 1).global(),
+            ),
+        ];
+        for (name, id) in extra {
+            if !profile.globals.contains_key(name) || name == "wp_presentation" {
+                dh.remove_global::<State>(id);
+            }
+        }
 
         let (w, h, scale120) = output;
         let out = Output::new(
@@ -177,10 +240,23 @@ impl State {
                 "xdg_wm_base" => {
                     dh.create_global::<State, smithay::reexports::wayland_protocols::xdg::shell::server::xdg_wm_base::XdgWmBase, _>(v, ());
                 }
+                "wp_presentation" => {
+                    dh.create_global::<State, WpPresentation, u32>(v, 1);
+                }
+                // created above
+                "zxdg_decoration_manager_v1"
+                | "wp_fractional_scale_manager_v1"
+                | "wp_viewporter" => {}
                 _ => unreachable!(),
             }
             globals.insert(name.clone(), v);
         }
+        let decoration_mode = if profile.decoration == "server" {
+            DecoMode::ServerSide
+        } else {
+            DecoMode::ClientSide
+        };
+        let mono_base = Duration::from(SmClock::<Monotonic>::new().now());
 
         State {
             display: dh.clone(),
@@ -196,6 +272,18 @@ impl State {
             start: Instant::now(),
             next_client: 1,
             signal,
+            scale120,
+            decoration_mode,
+            surfaces: Vec::new(),
+            toplevels: Vec::new(),
+            popups: Vec::new(),
+            sent_serial: HashMap::new(),
+            acked: HashMap::new(),
+            shell_clients: Vec::new(),
+            pings: Vec::new(),
+            mono_base,
+            manual_ns: 0,
+            present_seq: 0,
         }
     }
 
@@ -218,7 +306,7 @@ impl State {
         }
     }
 
-    fn t_ns(&self) -> u64 {
+    pub fn t_ns(&self) -> u64 {
         self.start.elapsed().as_nanos() as u64
     }
 }
@@ -232,7 +320,22 @@ impl CompositorHandler for State {
         &client.get_data::<ClientState>().unwrap().compositor
     }
 
+    fn new_surface(&mut self, surface: &WlSurface) {
+        self.surfaces.retain(|s| s.is_alive());
+        self.surfaces.push(surface.clone());
+        // a surface born at a scale above 1 hears it at once
+        compositor::with_states(surface, |states| {
+            compositor::send_surface_state(
+                surface,
+                states,
+                self.scale120.div_ceil(120) as i32,
+                Transform::Normal,
+            )
+        });
+    }
+
     fn commit(&mut self, surface: &WlSurface) {
+        let sid = surface.id().protocol_id();
         let client = surface
             .client()
             .and_then(|c| c.get_data::<ClientState>().map(|d| d.id))
@@ -246,55 +349,118 @@ impl CompositorHandler for State {
             Some(other) => other.to_string(),
         };
         let parent = compositor::get_parent(surface).map(|p| p.id().protocol_id());
-        let (buffer, buffer_scale, damage, frame_cb) = compositor::with_states(surface, |states| {
-            let mut cached = states.cached_state.get::<SurfaceAttributes>();
-            let attrs = cached.current();
-            let buffer = match attrs.buffer.take() {
-                Some(BufferAssignment::NewBuffer(buf)) => {
-                    let info = with_buffer_contents(&buf, |_, _, d| BufferInfo {
-                        w: d.width,
-                        h: d.height,
-                        stride: d.stride,
-                        format: format!("{:?}", d.format).to_lowercase(),
+        let (buffer, buffer_scale, damage, frame_cb, viewport, presentation, pos, title, app_id) =
+            compositor::with_states(surface, |states| {
+                let viewport = {
+                    let mut cached = states.cached_state.get::<ViewportCachedState>();
+                    let v = cached.current();
+                    Viewport {
+                        src: v.src.map(|r| [r.loc.x, r.loc.y, r.size.w, r.size.h]),
+                        dst: v.dst.map(|s| [s.w, s.h]),
+                    }
+                };
+                let presentation = !states
+                    .cached_state
+                    .get::<PresentationFeedbackCachedState>()
+                    .current()
+                    .callbacks
+                    .is_empty();
+                let pos = if role == "subsurface" {
+                    let mut cached = states.cached_state.get::<SubsurfaceCachedState>();
+                    let l = cached.current().location;
+                    Some([l.x, l.y])
+                } else {
+                    None
+                };
+                let (title, app_id) = if role == "toplevel" {
+                    states
+                        .data_map
+                        .get::<XdgToplevelSurfaceData>()
+                        .map(|d| {
+                            let d = d.lock().unwrap();
+                            (d.title.clone(), d.app_id.clone())
+                        })
+                        .unwrap_or_default()
+                } else {
+                    (None, None)
+                };
+                let mut cached = states.cached_state.get::<SurfaceAttributes>();
+                let attrs = cached.current();
+                let buffer = match attrs.buffer.take() {
+                    Some(BufferAssignment::NewBuffer(buf)) => {
+                        let info = with_buffer_contents(&buf, |_, _, d| BufferInfo {
+                            w: d.width,
+                            h: d.height,
+                            stride: d.stride,
+                            format: format!("{:?}", d.format).to_lowercase(),
+                        })
+                        .ok();
+                        buf.release();
+                        info
+                    }
+                    _ => None,
+                };
+                let damage = attrs
+                    .damage
+                    .iter()
+                    .map(|d| match d {
+                        Damage::Surface(r) => [r.loc.x, r.loc.y, r.size.w, r.size.h],
+                        Damage::Buffer(r) => [r.loc.x, r.loc.y, r.size.w, r.size.h],
                     })
-                    .ok();
-                    buf.release();
-                    info
+                    .collect();
+                (
+                    buffer,
+                    attrs.buffer_scale,
+                    damage,
+                    !attrs.frame_callbacks.is_empty(),
+                    viewport,
+                    presentation,
+                    pos,
+                    title,
+                    app_id,
+                )
+            });
+        let ack_serial = self.acked.remove(&sid);
+        let ack_stale = match (ack_serial, self.sent_serial.get(&sid)) {
+            (Some(a), Some(&newest)) => a < newest,
+            _ => false,
+        };
+        let decoration = self
+            .toplevels
+            .iter()
+            .find(|t| t.wl_surface() == surface)
+            .and_then(|t| t.with_pending_state(|s| s.decoration_mode))
+            .map(|m| {
+                if m == DecoMode::ServerSide {
+                    "server"
+                } else {
+                    "client"
                 }
-                _ => None,
-            };
-            let damage = attrs
-                .damage
-                .iter()
-                .map(|d| match d {
-                    Damage::Surface(r) => [r.loc.x, r.loc.y, r.size.w, r.size.h],
-                    Damage::Buffer(r) => [r.loc.x, r.loc.y, r.size.w, r.size.h],
-                })
-                .collect();
-            (
-                buffer,
-                attrs.buffer_scale,
-                damage,
-                !attrs.frame_callbacks.is_empty(),
-            )
-        });
+                .to_string()
+            });
         let commit = Commit {
             seq: self.log.next_seq(),
             client,
-            surface: surface.id().protocol_id(),
+            surface: sid,
             role,
             parent,
             buffer,
             buffer_scale,
-            viewport: Viewport::default(),
-            pos: None,
+            viewport,
+            pos,
             damage,
             frame_cb,
-            presentation: false,
-            ack_serial: None,
+            presentation,
+            ack_serial,
+            ack_stale,
+            scale120_at_commit: self.scale120,
+            decoration,
+            title,
+            app_id,
             t_ns: self.t_ns(),
         };
         self.log.push(commit);
+        self.initial_configure(surface);
     }
 }
 
@@ -319,22 +485,6 @@ impl BufferHandler for State {
 impl ShmHandler for State {
     fn shm_state(&self) -> &ShmState {
         &self.shm_state
-    }
-}
-
-impl XdgShellHandler for State {
-    fn xdg_shell_state(&mut self) -> &mut XdgShellState {
-        &mut self.xdg_shell_state
-    }
-    fn new_toplevel(&mut self, _surface: ToplevelSurface) {}
-    fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {}
-    fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: Serial) {}
-    fn reposition_request(
-        &mut self,
-        _surface: PopupSurface,
-        _positioner: PositionerState,
-        _token: u32,
-    ) {
     }
 }
 
@@ -402,4 +552,3 @@ inert_dispatch!(WlPointer, WlKeyboard, WlTouch);
 delegate_compositor!(State);
 delegate_shm!(State);
 delegate_output!(State);
-delegate_xdg_shell!(State);
