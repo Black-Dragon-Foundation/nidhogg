@@ -348,10 +348,7 @@ mod toplevel {
         assert_eq!(logged, None);
     }
 
-    /// Needs a `close` control command, which nh-recorder does not have yet (S0 follow-up); `CLOSE` itself is one line
-    /// in `toplevel.rs`.
     #[test]
-    #[ignore = "nh-recorder has no close command"]
     fn close_event() {
         let rec = Recorder::start("mutter");
         let mut shell = rec.open();
