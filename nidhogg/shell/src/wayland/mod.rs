@@ -11,10 +11,12 @@
 
 pub mod conn;
 pub mod output;
+pub mod decor;
 pub mod reader;
 pub mod registry;
 pub mod scale;
 pub mod serial;
+pub mod toplevel;
 
 use crate::api::*;
 use crate::caps::NhShellCaps;
@@ -31,10 +33,13 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::thread::JoinHandle;
 use wayland_client::protocol::wl_compositor::WlCompositor;
 use wayland_client::protocol::wl_registry::WlRegistry;
+use wayland_client::protocol::wl_seat::WlSeat;
 use wayland_client::protocol::wl_shm::WlShm;
 use wayland_client::protocol::wl_subcompositor::WlSubcompositor;
 use wayland_client::protocol::wl_surface::{self, WlSurface};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop};
+use wayland_protocols::xdg::decoration::zv1::client::zxdg_decoration_manager_v1::ZxdgDecorationManagerV1;
+use wayland_protocols::xdg::shell::client::xdg_wm_base::XdgWmBase;
 
 /// What the main queue's handlers own; they run on the host's thread.
 #[derive(Default)]
@@ -50,6 +55,14 @@ pub struct MainState {
     viewporter: Option<wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter>,
     outputs: HashMap<u32, output::Output>,
     scales: HashMap<u64, scale::SurfaceScale>,
+    wm_base: Option<XdgWmBase>,
+    seat: Option<WlSeat>,
+    decoration_manager: Option<ZxdgDecorationManagerV1>,
+    windows: HashMap<u64, toplevel::Window>,
+    /// `NIDHOGG_SHELL_FORCE_CSD` was set when the shell opened.
+    force_csd: bool,
+    /// The latest decoration mode the compositor granted a window.
+    ssd: bool,
 }
 
 /// The main queue's waker: an event routed into the main queue (by the reader's read) marks it pending and wakes the
@@ -86,6 +99,7 @@ impl WaylandShell {
         let mut main = MainState {
             registry: Some(conn.display().get_registry(&mqh, ())),
             shared: Some(shared.clone()),
+            force_csd: decor::force_csd_from_env(),
             ..MainState::default()
         };
         main_queue.roundtrip(&mut main).map_err(lost)?;
@@ -106,6 +120,9 @@ impl WaylandShell {
             main.viewporter = g.bind(reg, &mqh, ());
             rstate.seat = g.bind(reg, &rqh, ());
             rstate.wm_base = g.bind(reg, &rqh, ());
+            main.decoration_manager = g.bind(reg, &mqh, ());
+            main.seat = rstate.seat.clone();
+            main.wm_base = rstate.wm_base.clone();
         }
         // Before the reader owns its queue, this thread may still read: two round trips let the seat announce its
         // capabilities and the keyboard bind, so the shell opens with its input objects in place.
@@ -233,7 +250,10 @@ impl ShellBackend for WaylandShell {
     }
 
     fn caps(&self) -> NhShellCaps {
-        self.main.globals.caps()
+        let mut caps = self.main.globals.caps();
+        caps.ssd = self.main.ssd;
+        caps.force_csd = self.main.force_csd;
+        caps
     }
 
     /// The next record.  When the records are empty: drain the wake descriptor, dispatch the main queue if it is
@@ -261,42 +281,42 @@ impl ShellBackend for WaylandShell {
         self.flush()
     }
 
-    // Windows and the presenter arrive with W0 Tasks 5 and 8.
-    fn window_new(&mut self, _: &WindowDesc) -> ShellResult<WindowId> {
-        Err(ShellError::Unsupported)
+    // The presenter arrives with W0 Task 6.
+    fn window_new(&mut self, desc: &WindowDesc) -> ShellResult<WindowId> {
+        self.window_create(desc)
     }
-    fn window_destroy(&mut self, _: WindowId) -> ShellResult {
-        Err(ShellError::Unsupported)
+    fn window_destroy(&mut self, w: WindowId) -> ShellResult {
+        self.window_destroy_impl(w)
     }
-    fn set_title(&mut self, _: WindowId, _: &str) -> ShellResult {
-        Err(ShellError::Unsupported)
+    fn set_title(&mut self, w: WindowId, t: &str) -> ShellResult {
+        self.window_set_title(w, t)
     }
-    fn set_app_id(&mut self, _: WindowId, _: &str) -> ShellResult {
-        Err(ShellError::Unsupported)
+    fn set_app_id(&mut self, w: WindowId, a: &str) -> ShellResult {
+        self.window_set_app_id(w, a)
     }
-    fn set_min_size(&mut self, _: WindowId, _: i32, _: i32) -> ShellResult {
-        Err(ShellError::Unsupported)
+    fn set_min_size(&mut self, win: WindowId, w: i32, h: i32) -> ShellResult {
+        self.window_set_min_size(win, w, h)
     }
-    fn set_fullscreen(&mut self, _: WindowId, _: bool) -> ShellResult {
-        Err(ShellError::Unsupported)
+    fn set_fullscreen(&mut self, w: WindowId, on: bool) -> ShellResult {
+        self.window_set_fullscreen(w, on)
     }
-    fn set_maximized(&mut self, _: WindowId, _: bool) -> ShellResult {
-        Err(ShellError::Unsupported)
+    fn set_maximized(&mut self, w: WindowId, on: bool) -> ShellResult {
+        self.window_set_maximized(w, on)
     }
-    fn minimize(&mut self, _: WindowId) -> ShellResult {
-        Err(ShellError::Unsupported)
+    fn minimize(&mut self, w: WindowId) -> ShellResult {
+        self.window_minimize(w)
     }
-    fn move_window(&mut self, _: WindowId) -> ShellResult {
-        Err(ShellError::Unsupported)
+    fn move_window(&mut self, w: WindowId) -> ShellResult {
+        self.window_move(w)
     }
-    fn resize(&mut self, _: WindowId, _: u32) -> ShellResult {
-        Err(ShellError::Unsupported)
+    fn resize(&mut self, w: WindowId, edges: u32) -> ShellResult {
+        self.window_resize(w, edges)
     }
-    fn show_menu(&mut self, _: WindowId, _: i32, _: i32) -> ShellResult {
-        Err(ShellError::Unsupported)
+    fn show_menu(&mut self, w: WindowId, x: i32, y: i32) -> ShellResult {
+        self.window_show_menu(w, x, y)
     }
-    fn ack_configure(&mut self, _: WindowId, _: u32) -> ShellResult {
-        Err(ShellError::Unsupported)
+    fn ack_configure(&mut self, w: WindowId, serial: u32) -> ShellResult {
+        self.window_ack_configure(w, serial)
     }
     fn set_cursor(&mut self, _: WindowId, _: u32) -> ShellResult {
         Err(ShellError::Unsupported)
