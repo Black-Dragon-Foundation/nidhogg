@@ -76,6 +76,18 @@
                      (equal (buffer-string) "abc")))))
       (kill-buffer buf))))
 
+(ert-deftest nhwl-gui/kill-and-yank-without-selections ()
+  "Selections are not in W0, yet killing and yanking work: the selection
+primitives answer nil instead of signalling."
+  (skip-unless (nhwl-gui--on-p))
+  (with-temp-buffer
+    (let ((select-enable-clipboard t))
+      (insert "hello")
+      (kill-region (point-min) (point-max))
+      (should (equal (buffer-string) ""))
+      (yank)
+      (should (equal (buffer-string) "hello")))))
+
 (ert-deftest nhwl-gui/keymap-option-gives-control ()
   (skip-unless (nhwl-gui--on-p))
   (let ((buf (generate-new-buffer " *nhwl-keymap*")))
