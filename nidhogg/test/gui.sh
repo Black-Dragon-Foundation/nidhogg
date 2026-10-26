@@ -122,7 +122,8 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
       ;;
     recorder)
       ctl=$XDG_RUNTIME_DIR/nh-recorder.ctl
-      "$recorder" --output "${size}@${s120}" --profile "$rprofile" --socket "$display" --control "$ctl" > "$clog" 2>&1 &
+      # the recorder takes a profile file; they sit next to its source (the checkout is /src in a container)
+      "$recorder" --output "${size}@${s120}" --profile "$(dirname "$self")/recorder/profiles/$rprofile.json" --socket "$display" --control "$ctl" > "$clog" 2>&1 &
       mpid=$!
       ;;
   esac
@@ -203,7 +204,7 @@ if [ "${GLITNIR_GUI_DRY:-}" = 1 ]; then
   case $compositor in
     sway) echo "sway -c RUN/sway.conf   (output HEADLESS-1 mode $size scale $scale; $monitors output(s))" ;;
     mutter) echo "mutter --headless --wayland --no-x11 --wayland-display NAME ($monitors x --virtual-monitor $size; scale $scale)" ;;
-    recorder) echo "$recorder --output ${size}@${s120} --profile $rprofile --socket NAME --control CTL" ;;
+    recorder) echo "$recorder --output ${size}@${s120} --profile $(dirname "$self")/recorder/profiles/$rprofile.json --socket NAME --control CTL" ;;
   esac
   echo "$prefix/bin/nidhogg -Q --fullscreen -l $checkout/test/src/nidhogg-tests/gui-runner.el"
   exit 0

@@ -20,8 +20,12 @@ use smithay::reexports::wayland_server::{
 };
 use smithay::utils::SERIAL_COUNTER;
 use smithay::wayland::compositor::with_states;
+use smithay::wayland::selection::data_device::{
+    ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
+};
+use smithay::wayland::selection::SelectionHandler;
 use smithay::wayland::tablet_manager::TabletSeatHandler;
-use smithay::{delegate_alpha_modifier, delegate_cursor_shape, delegate_seat};
+use smithay::{delegate_alpha_modifier, delegate_cursor_shape, delegate_data_device, delegate_seat};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -171,7 +175,20 @@ impl SeatHandler for State {
 
 impl TabletSeatHandler for State {}
 
+// Selections and drag-and-drop are served but neither logged nor scripted.
+impl SelectionHandler for State {
+    type SelectionUserData = ();
+}
+impl DataDeviceHandler for State {
+    fn data_device_state(&self) -> &DataDeviceState {
+        &self.data_device_state
+    }
+}
+impl ClientDndGrabHandler for State {}
+impl ServerDndGrabHandler for State {}
+
 delegate_seat!(State);
+delegate_data_device!(State);
 delegate_cursor_shape!(State);
 delegate_alpha_modifier!(State);
 
