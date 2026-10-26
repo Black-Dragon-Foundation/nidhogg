@@ -65,4 +65,27 @@
     (should (equal (pgtk-gui--socket-owner sock)
                    (pcase asked ("sway" "sway") ("mutter" "mutter") ("recorder" "nh-recorder"))))))
 
+(ert-deftest pgtk-gui/grab-matches-snapshot ()
+  "The compositor's grab and Glitnir's own snapshot of a fullscreen frame agree (scale 1)."
+  (skip-unless (= (frame-scale-factor) 1))
+  (switch-to-buffer "*scratch*")
+  (erase-buffer)
+  (insert (propertize (make-string 400 ?\s) 'face '(:background "#c03030"))
+          "\n"
+          (propertize (make-string 400 ?\s) 'face '(:background "#3050c0"))
+          "\nsome text\n")
+  (goto-char (point-min))
+  (gui-runner-wait-settled)
+  (let* ((full (gui-runner-screen-grab))
+         (snap (glitnir-snapshot nil 'raw))
+         ;; the snapshot is the frame's drawing area; the grab also holds the GTK widgets above it (the menu bar)
+         (top (- (nth 1 full) (nth 1 snap)))
+         (grab (progn (should (= (nth 0 full) (nth 0 snap)))
+                      (should (>= top 0))
+                      (list (nth 0 full) (nth 1 snap) (substring (nth 2 full) (* 4 (nth 0 full) top)))))
+         (diff (gui-runner-pixel-diff grab snap))
+         (total (* (nth 0 snap) (nth 1 snap))))
+    (should (<= (car diff) 2))
+    (should (<= (cdr diff) (/ total 1000)))))
+
 ;;; pgtk-gui-tests.el ends here
