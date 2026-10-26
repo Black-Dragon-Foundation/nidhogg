@@ -12,8 +12,10 @@
 
 use crate::event::{FocusEv, NHSHELL_EV_FOCUS, NhShellEvent};
 use crate::wayland::conn::Shared;
+use crate::wayland::keyboard::KeyboardState;
 use crate::wayland::serial::SerialKind;
 use rustix::event::{PollFd, PollFlags, poll};
+use std::os::fd::AsFd;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -31,6 +33,8 @@ pub struct ReaderState {
     pub seat: Option<WlSeat>,
     pub wm_base: Option<XdgWmBase>,
     keyboard: Option<WlKeyboard>,
+    /// xkb, compose and key repeat (`keyboard.rs`).
+    pub kbd: KeyboardState,
     /// A record was posted since the last wake.
     posted: bool,
 }
@@ -42,7 +46,14 @@ impl ReaderState {
             seat: None,
             wm_base: None,
             keyboard: None,
+            kbd: KeyboardState::new(),
             posted: false,
+        }
+    }
+
+    fn post_all(&mut self, evs: Vec<NhShellEvent>) {
+        for ev in evs {
+            self.post(ev);
         }
     }
 
@@ -130,27 +141,42 @@ impl Reader {
             self.flush()?;
             // 3. wait for the compositor, a writable socket when a flush is pending, or the shell
             let want_out = shared.want_flush.load(Ordering::Acquire);
-            let (conn_rev, wake_rev) = {
+            let (conn_rev, wake_rev, timer_rev) = {
                 let fd = guard.connection_fd();
                 let wake_fd = shared.reader_wake.fd();
                 let mut flags = PollFlags::IN;
                 if want_out {
                     flags |= PollFlags::OUT;
                 }
-                let mut fds = [
+                // key repeat's timerfd (absent when the system could not make one: no repeat then)
+                let timer_fd = self.state.kbd.timer_fd().map(|t| t.as_fd());
+                let mut fds = vec![
                     PollFd::new(&fd, flags),
                     PollFd::new(&wake_fd, PollFlags::IN),
                 ];
+                if let Some(t) = &timer_fd {
+                    fds.push(PollFd::new(t, PollFlags::IN));
+                }
                 match poll(&mut fds, None) {
                     Ok(_) => {}
                     // signals are blocked here, but a cancelled read and another turn is always safe
                     Err(rustix::io::Errno::INTR) => continue,
                     Err(_) => return Err(Lost),
                 }
-                (fds[0].revents(), fds[1].revents())
+                (
+                    fds[0].revents(),
+                    fds[1].revents(),
+                    fds.get(2).map_or(PollFlags::empty(), |f| f.revents()),
+                )
             };
             if wake_rev.contains(PollFlags::IN) {
                 shared.reader_wake.drain();
+            }
+            if timer_rev.contains(PollFlags::IN) {
+                let mut out = Vec::new();
+                self.state.kbd.on_timer(&shared, &mut out);
+                self.state.post_all(out);
+                self.state.wake_host();
             }
             if conn_rev.contains(PollFlags::OUT) {
                 shared.want_flush.store(false, Ordering::Release);
@@ -232,7 +258,11 @@ impl Dispatch<WlSeat, ()> for ReaderState {
         {
             let has = caps.contains(Capability::Keyboard);
             match (has, state.keyboard.take()) {
-                (true, None) => state.keyboard = Some(seat.get_keyboard(qh, ())),
+                (true, None) => {
+                    // from seat 10 the compositor sends `repeated` key states itself
+                    state.kbd.set_compositor_repeats(seat.version() >= 10);
+                    state.keyboard = Some(seat.get_keyboard(qh, ()));
+                }
                 (false, Some(kb)) if kb.version() >= 3 => kb.release(),
                 (_, kb) => state.keyboard = kb,
             }
@@ -256,24 +286,73 @@ impl Dispatch<WlKeyboard, ()> for ReaderState {
             ev
         };
         match event {
-            wl_keyboard::Event::Enter { surface, .. } => state.post(focus(&surface, 1)),
-            wl_keyboard::Event::Leave { surface, .. } => state.post(focus(&surface, 0)),
-            wl_keyboard::Event::Key {
-                serial,
-                state: WEnum::Value(KeyState::Pressed),
+            wl_keyboard::Event::Enter { surface, .. } => {
+                state.kbd.enter(surface.id().protocol_id().into());
+                state.post(focus(&surface, 1));
+            }
+            wl_keyboard::Event::Leave { surface, .. } => {
+                state.kbd.leave(surface.id().protocol_id().into());
+                state.post(focus(&surface, 0));
+            }
+            wl_keyboard::Event::Keymap {
+                format: WEnum::Value(wl_keyboard::KeymapFormat::XkbV1),
+                fd,
+                size,
+            } => {
+                if let Some(text) = keymap_text(fd, size) {
+                    state.kbd.set_keymap(text);
+                }
+            }
+            wl_keyboard::Event::RepeatInfo { rate, delay } => {
+                state.kbd.set_repeat_info(rate, delay)
+            }
+            wl_keyboard::Event::Modifiers {
+                mods_depressed,
+                mods_latched,
+                mods_locked,
+                group,
                 ..
             } => {
-                let mut serials = state
-                    .shared
-                    .serials
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                serials.update(SerialKind::KeyPress, serial);
+                let mut out = Vec::new();
+                state
+                    .kbd
+                    .modifiers(mods_depressed, mods_latched, mods_locked, group, &mut out);
+                state.post_all(out);
             }
-            // the keymap's descriptor is closed when the event drops; keys and repeat are W0 Task 7
+            wl_keyboard::Event::Key {
+                serial,
+                time,
+                key,
+                state: WEnum::Value(key_state),
+            } => {
+                if key_state == KeyState::Pressed {
+                    let mut serials = state
+                        .shared
+                        .serials
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    serials.update(SerialKind::KeyPress, serial);
+                }
+                let mut out = Vec::new();
+                state.kbd.key(time, key, key_state as u32, &mut out);
+                state.post_all(out);
+            }
             _ => {}
         }
     }
+}
+
+/// The keymap text from the compositor's descriptor.  Read at offset 0 with `pread`: the descriptor shares its file
+/// offset with the compositor's.
+fn keymap_text(fd: std::os::fd::OwnedFd, size: u32) -> Option<String> {
+    use std::os::unix::fs::FileExt;
+    let file = std::fs::File::from(fd);
+    let mut buf = vec![0u8; size as usize];
+    file.read_exact_at(&mut buf, 0).ok()?;
+    if let Some(nul) = buf.iter().position(|&b| b == 0) {
+        buf.truncate(nul);
+    }
+    String::from_utf8(buf).ok()
 }
 
 impl Dispatch<XdgWmBase, ()> for ReaderState {
