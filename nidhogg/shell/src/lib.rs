@@ -8,6 +8,7 @@ pub mod api;
 pub mod caps;
 pub mod event;
 pub mod ffi;
+pub mod wayland;
 
 /// Glitnir's C ABI under another name, because this crate's own `ffi` shadows the glob below.
 pub use glitnir::ffi as glitnir_ffi;
