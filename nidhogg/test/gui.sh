@@ -250,6 +250,7 @@ if [ -n "$container" ]; then
       pkgs=$(sed "s/#.*//" "'"$inprefix"'/share/nidhogg/deps.runtime" 2>/dev/null || true)
       dnf -y -q --setopt=install_weak_deps=False install mutter sway grim pixman libxkbcommon libcap dbus-daemon \
         mesa-dri-drivers mesa-libEGL mesa-libgbm python3-gobject-base dejavu-sans-mono-fonts procps-ng util-linux \
+        $(case " $* " in *" mutter "*) echo pipewire wireplumber gstreamer1-plugins-base pipewire-gstreamer pipewire-utils ;; esac) \
         $pkgs > /tmp/dnf.log 2>&1 || { cat /tmp/dnf.log; exit 1; }
       # sway ships with file capabilities a container refuses to exec: a copy without them
       cp /usr/bin/sway /usr/local/bin/sway; setcap -r /usr/local/bin/sway 2>/dev/null || true
