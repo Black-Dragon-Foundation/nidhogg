@@ -107,6 +107,13 @@ impl MainState {
     }
 
     pub(crate) fn detach_scale(&mut self, id: u64) {
+        if let Some(shared) = &self.shared {
+            shared
+                .scale120
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&id);
+        }
         if let Some(s) = self.scales.remove(&id) {
             s.destroy();
         }
@@ -133,6 +140,13 @@ impl MainState {
         }
         if let Some(s) = self.scales.get_mut(&id) {
             s.current = new;
+        }
+        if let Some(shared) = &self.shared {
+            shared
+                .scale120
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(id, new);
         }
         let mut ev = NhShellEvent::new(NHSHELL_EV_SCALE, id, 0);
         ev.u.scale.scale120 = new;
