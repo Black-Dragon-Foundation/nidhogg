@@ -8,6 +8,7 @@
 # $NHSHELL_CARGO_DIR (default $T/nhshell-cargo), the package cache under $NIDHOGG_BUILD_PKG_CACHE when set.  The
 # crate directory is only written by --revendor, which regenerates Cargo.lock and vendor/ (needs the network).
 # The vendor-drift check and --revendor use cargo-vendor-filterer, installed into $CARGO_HOME/bin on first use.
+# NH_RECORDER (S0's nh-recorder binary) is passed to the T1 tests (tests/reader.rs); in a container it is mounted.
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 DISTRO="" TEST="" INNER=0 REVENDOR=0 FULL=0
@@ -35,6 +36,11 @@ if [ -n "$DISTRO" ] && [ "$INNER" = 0 ]; then
   if [ -n "${NIDHOGG_BUILD_PKG_CACHE:-}" ]; then
     mkdir -p "$NIDHOGG_BUILD_PKG_CACHE/dnf"
     EXTRA=(-v "$NIDHOGG_BUILD_PKG_CACHE/dnf:/var/cache/libdnf5:Z")
+  fi
+  # the T1 tests' recorder (S0's nh-recorder): the binary read-only (shared label: other containers use it too)
+  if [ -n "${NH_RECORDER:-}" ]; then
+    [ -x "$NH_RECORDER" ] || { echo "check.sh: NH_RECORDER is not an executable: $NH_RECORDER" >&2; exit 2; }
+    EXTRA+=(-v "$NH_RECORDER:/nh-recorder:ro,z" -e NH_RECORDER=/nh-recorder)
   fi
   # nidhogg/ is mounted whole: the crate depends on ../glitnir.  Read-only, except for --revendor.
   NH=$(cd "$HERE/.." && pwd)

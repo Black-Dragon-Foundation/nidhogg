@@ -1,0 +1,135 @@
+// SPDX-License-Identifier: GPL-3.0-or-later AND Apache-2.0
+// Copyright 2022-2026 Zed Industries, Inc.
+// Adapted-from: https://github.com/zed-industries/zed@347f171a3fd00a3b672382d78348b37bd969d17c crates/gpui_linux/src/linux/wayland/serial.rs
+// Modified for Nidhogg: std's HashMap instead of Zed's `collections` crate, `pub` visibility for the shell's crate
+// layout, and this header.  The logic and the tests are Zed's.
+
+//! The latest input serial of each kind: requests such as an interactive move or a selection need the serial of the
+//! input event that caused them.
+
+use std::collections::HashMap;
+
+#[derive(Debug, Hash, PartialEq, Eq)]
+pub enum SerialKind {
+    DataDevice,
+    InputMethod,
+    MouseEnter,
+    MousePress,
+    KeyPress,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Serial(u32);
+
+impl Serial {
+    pub fn as_raw(self) -> u32 {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SelectionSerial(Serial);
+
+impl SelectionSerial {
+    pub fn as_raw(self) -> u32 {
+        self.0.as_raw()
+    }
+}
+
+#[derive(Debug, Default)]
+/// Helper for tracking of different serial kinds.
+pub struct SerialTracker {
+    serials: HashMap<SerialKind, Serial>,
+    selection_serial: Option<SelectionSerial>,
+}
+
+impl SerialTracker {
+    pub fn new() -> Self {
+        Self {
+            serials: HashMap::default(),
+            selection_serial: None,
+        }
+    }
+
+    pub fn update(&mut self, kind: SerialKind, value: u32) {
+        let serial = Serial(value);
+
+        if matches!(&kind, SerialKind::KeyPress | SerialKind::MousePress) {
+            self.selection_serial = Some(SelectionSerial(serial));
+        }
+
+        self.serials.insert(kind, serial);
+    }
+
+    /// Returns the latest tracked serial of the provided [`SerialKind`].
+    ///
+    /// Returns a serial with a raw value of 0 if the kind has not been tracked.
+    pub fn get(&self, kind: SerialKind) -> Serial {
+        self.serials.get(&kind).copied().unwrap_or(Serial(0))
+    }
+
+    pub fn selection_serial(&self) -> Option<SelectionSerial> {
+        self.selection_serial
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn raw_selection_serial(serial_tracker: &SerialTracker) -> Option<u32> {
+        serial_tracker
+            .selection_serial()
+            .map(SelectionSerial::as_raw)
+    }
+
+    #[test]
+    fn test_selection_serial_ignores_unrelated_serial_kinds() {
+        let mut serial_tracker = SerialTracker::new();
+        serial_tracker.update(SerialKind::MousePress, 3783);
+        serial_tracker.update(SerialKind::InputMethod, 5011);
+        serial_tracker.update(SerialKind::KeyPress, 3787);
+        serial_tracker.update(SerialKind::MouseEnter, 6000);
+        serial_tracker.update(SerialKind::DataDevice, 7000);
+
+        assert_eq!(raw_selection_serial(&serial_tracker), Some(3787));
+    }
+
+    #[test]
+    fn test_selection_serial_uses_mouse_press_without_key_press() {
+        let mut serial_tracker = SerialTracker::new();
+        serial_tracker.update(SerialKind::MousePress, 3783);
+
+        assert_eq!(raw_selection_serial(&serial_tracker), Some(3783));
+    }
+
+    #[test]
+    fn test_selection_serial_uses_event_arrival_order_across_rollover() {
+        let mut serial_tracker = SerialTracker::new();
+        serial_tracker.update(SerialKind::KeyPress, 0xffff_fff0);
+        serial_tracker.update(SerialKind::MousePress, 0x0000_0010);
+
+        assert_eq!(raw_selection_serial(&serial_tracker), Some(0x0000_0010));
+    }
+
+    #[test]
+    fn test_selection_serial_is_unavailable_without_eligible_input() {
+        let mut serial_tracker = SerialTracker::new();
+
+        assert_eq!(raw_selection_serial(&serial_tracker), None);
+
+        serial_tracker.update(SerialKind::InputMethod, 5011);
+        serial_tracker.update(SerialKind::MouseEnter, 6000);
+        serial_tracker.update(SerialKind::DataDevice, 7000);
+
+        assert_eq!(raw_selection_serial(&serial_tracker), None);
+    }
+
+    #[test]
+    fn test_zero_is_a_valid_selection_serial() {
+        let mut serial_tracker = SerialTracker::new();
+        serial_tracker.update(SerialKind::KeyPress, 0);
+
+        assert_eq!(raw_selection_serial(&serial_tracker), Some(0));
+    }
+}

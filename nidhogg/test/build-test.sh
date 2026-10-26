@@ -55,6 +55,7 @@ run -- --dry-run --container fedora-44 --check nidhogg/check-subset.txt
 rcis 0; has "make -C test src/nidhogg-tests"
 run -- --dry-run --container fedora-44 --out dist/x.tar.xz
 rcis 0; has "DESTDIR=/build/stage"; has "BUILDINFO"; has "/out:Z"
+has 'lic=$pk/share/nidhogg/licenses'; has 'cp -a "$S/nidhogg/licenses/." "$lic/"'; has 'cp "$S/nidhogg/THIRD_PARTY.md" "$lic/"'
 run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --out dist/x.tar.xz
 rcis 0; has "Nidhogg.app"; has "BUILDINFO"
 # --dev: native-compilation=yes, no JIT in the image, never packed, cache stamp carries the mode

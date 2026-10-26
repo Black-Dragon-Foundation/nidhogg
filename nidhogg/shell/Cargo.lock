@@ -98,6 +98,7 @@ name = "nhshell"
 version = "0.1.0"
 dependencies = [
  "glitnir",
+ "libc",
  "rustix",
  "wayland-backend",
  "wayland-client",
