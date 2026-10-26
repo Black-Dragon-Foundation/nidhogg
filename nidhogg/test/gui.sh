@@ -106,6 +106,8 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
       echo "gui.sh: $compositor peak RSS: $(sed -n 's/^VmHWM:[[:space:]]*\(.*\)$/\1/p' "/proc/$mpid/status" 2>/dev/null) (scale $scale)"
     for p in $epid $mpid; do kill "$p" 2>/dev/null; done
     for p in $epid $mpid; do wait "$p" 2>/dev/null; done
+    # the sockets and files the run left in its XDG dir (dbus makes an empty dbus-1/services), listed after the compositor is gone and before the outer trap removes it
+    [ -z "${GLITNIR_GUI_LEFTOVER:-}" ] || find "$XDG_RUNTIME_DIR" -mindepth 1 -not -type d > "$GLITNIR_GUI_LEFTOVER" 2>&1
   }
   trap cleanup EXIT
   trap 'exit 1' INT TERM
@@ -271,6 +273,7 @@ if [ -n "$container" ]; then
   sockenv=()
   if [ -n "${GLITNIR_GUI_SOCKDIR:-}" ]; then
     mounts+=(-v "$GLITNIR_GUI_SOCKDIR:$GLITNIR_GUI_SOCKDIR:Z"); sockenv=(-e "GLITNIR_GUI_SOCKDIR=$GLITNIR_GUI_SOCKDIR")
+    [ -z "${GLITNIR_GUI_LEFTOVER:-}" ] || sockenv+=(-e "GLITNIR_GUI_LEFTOVER=$GLITNIR_GUI_LEFTOVER")
   fi
   [ "$tests" = "$checkout/test/src/nidhogg-tests" ] || mounts+=(-v "$tests:/src/test/src/nidhogg-tests:ro,Z")
   if [ -n "$wdebug" ]; then
