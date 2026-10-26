@@ -138,6 +138,43 @@ check_x_display_info (Lisp_Object frame)
   return check_nhwl_display_info (frame);
 }
 
+/* The compositor went away.  A non-daemon Emacs with no other display
+   exits with status 70 (as xterm does); otherwise the display's frames
+   and its terminal are deleted without running Lisp and the session
+   goes on.  Frees DPYINFO.  */
+static void
+nhwl_connection_lost (struct nhwl_display_info *dpyinfo)
+{
+  struct terminal *t = dpyinfo->terminal, *p;
+  Lisp_Object tail, frame;
+  bool other = false;
+  struct nhwl_display_info *d;
+
+  for (d = x_display_list; d; d = d->next)
+    other |= d != dpyinfo;
+  if (!IS_DAEMON && !other)
+    {
+      fprintf (stderr, "nidhogg-wayland: connection to the display lost\n");
+      shut_down_emacs (0, Qnil);
+      exit (70);
+    }
+
+  FOR_EACH_FRAME (tail, frame)
+    if (FRAME_NHWL_P (XFRAME (frame))
+	&& FRAME_DISPLAY_INFO (XFRAME (frame)) == dpyinfo
+	&& FRAME_LIVE_P (XFRAME (frame)))
+      delete_frame (frame, Qnoelisp);
+
+  /* Deleting the last frame deletes the terminal as well.  */
+  for (p = terminal_list; p; p = p->next_terminal)
+    if (p == t)
+      {
+	XSETTERMINAL (frame, t);
+	Fdelete_terminal (frame, Qnoelisp);
+	break;
+      }
+}
+
 /* Return the display structure for the display named NAME, opening a
    new connection if necessary.  */
 struct nhwl_display_info *
@@ -1845,8 +1882,7 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	  break;
 
 	case NHSHELL_EV_DISCONNECTED:
-	  /* Task 12 ends the display's frames; until then the shell is
-	     marked gone so nothing else is sent to it.  */
+	  /* Handled after the loop, once the queue is empty.  */
 	  dpyinfo->connection_lost = true;
 	  break;
 
@@ -1861,6 +1897,9 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	}
     }
 
+  if (rc == NHSHELL_E_DISCONNECTED)
+    dpyinfo->connection_lost = true;
+
   /* Flush what we sent while handling the events.  */
   if (rc != NHSHELL_E_DISCONNECTED)
     nhshell_dispatch_main (dpyinfo->shell);
@@ -1873,10 +1912,14 @@ static int
 nhwl_read_socket (struct terminal *terminal, struct input_event *hold_quit)
 {
   struct nhwl_display_info *dpyinfo = terminal->display_info.nhwl;
+  int n;
 
   if (!dpyinfo || !dpyinfo->shell)
     return 0;
-  return nhwl_drain_events (dpyinfo, hold_quit);
+  n = nhwl_drain_events (dpyinfo, hold_quit);
+  if (dpyinfo->connection_lost)
+    nhwl_connection_lost (dpyinfo);	/* frees DPYINFO */
+  return n;
 }
 
 /* No popup menus in W0 (nil hooks).  */
