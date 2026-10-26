@@ -5,6 +5,7 @@
 
 use crate::caps::NhShellCaps;
 use crate::wayland::MainState;
+use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_registry::{self, WlRegistry};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
 
@@ -111,24 +112,30 @@ impl Globals {
 impl Dispatch<WlRegistry, ()> for MainState {
     fn event(
         state: &mut Self,
-        _: &WlRegistry,
+        registry: &WlRegistry,
         event: wl_registry::Event,
         _: &(),
         _: &Connection,
-        _: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
     ) {
         match event {
             wl_registry::Event::Global {
                 name,
                 interface,
                 version,
-            } => state.globals.list.push(Global {
-                name,
-                interface,
-                version,
-            }),
+            } => {
+                if let (Some(v), "wl_output") = (supported(&interface), interface.as_str()) {
+                    registry.bind::<WlOutput, u32, MainState>(name, version.min(v), qh, name);
+                }
+                state.globals.list.push(Global {
+                    name,
+                    interface,
+                    version,
+                })
+            }
             wl_registry::Event::GlobalRemove { name } => {
-                state.globals.list.retain(|g| g.name != name)
+                state.globals.list.retain(|g| g.name != name);
+                state.output_removed(name);
             }
             _ => {}
         }
