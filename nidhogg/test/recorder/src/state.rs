@@ -40,7 +40,8 @@ use smithay::wayland::presentation::{PresentationFeedbackCachedState, Presentati
 use smithay::wayland::selection::data_device::DataDeviceState;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::shell::xdg::{
-    PopupSurface, ShellClient, ToplevelSurface, XdgShellState, XdgToplevelSurfaceData,
+    PopupSurface, ShellClient, SurfaceCachedState as XdgCachedState, ToplevelSurface, XdgShellState,
+    XdgToplevelSurfaceData,
 };
 use smithay::wayland::shm::{with_buffer_contents, ShmHandler, ShmState};
 use smithay::wayland::viewporter::{ViewportCachedState, ViewporterState};
@@ -472,6 +473,17 @@ impl CompositorHandler for State {
                     app_id,
                 )
             });
+        let geometry = if role == "toplevel" || role == "popup" {
+            compositor::with_states(surface, |states| {
+                let mut cached = states.cached_state.get::<XdgCachedState>();
+                cached
+                    .current()
+                    .geometry
+                    .map(|g| [g.loc.x, g.loc.y, g.size.w, g.size.h])
+            })
+        } else {
+            None
+        };
         on_commit_buffer_handler::<State>(surface);
         let ack_serial = self.acked.remove(&sid);
         let ack_stale = match (ack_serial, self.sent_serial.get(&sid)) {
@@ -510,6 +522,7 @@ impl CompositorHandler for State {
             decoration,
             title,
             app_id,
+            geometry,
             t_ns: self.t_ns(),
         };
         self.log.push(commit);

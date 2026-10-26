@@ -72,6 +72,20 @@ fn shell_configure_stale_ack_is_logged_as_stale() {
 }
 
 #[test]
+fn shell_commit_logs_window_geometry() {
+    let mut env = Env::new("sway", &[]);
+    let (surface, xs, _top) = env.toplevel(200, 100);
+    assert_eq!(env.rec.commits().last().unwrap()["geometry"], json!(null));
+    xs.set_window_geometry(10, 20, 180, 70);
+    surface.commit();
+    env.roundtrip();
+    assert_eq!(
+        env.rec.commits().last().unwrap()["geometry"],
+        json!([10, 20, 180, 70])
+    );
+}
+
+#[test]
 fn shell_decoration_mode_per_profile() {
     // sway: server-side is sent whatever the client asks
     let mut env = Env::new("sway", &[]);
