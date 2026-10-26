@@ -24,3 +24,5 @@ freetype
 libacl
 zlib-ng-compat
 ncurses-libs
+libwayland-client
+libxkbcommon
