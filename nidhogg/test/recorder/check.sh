@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # nh-recorder's checks: fmt, clippy, tests, licence policy; --build makes the release binary.  The crate directory is
-# never written.  Usage: check.sh [--container DISTRO] [--test NAME] [--build]   Exit 0 ok, 1 "check.sh: FAIL <check>",
+# never written.  Usage: check.sh [--container DISTRO] [--test NAME[\|NAME...]] [--build]   Exit 0 ok, 1 "check.sh: FAIL <check>",
 # 2 usage.  Without --container the host's cargo runs (CI).  With it, podman runs a memory-capped container (3 GiB) that
 # installs cargo, clippy, rustfmt and the -devel packages; CARGO_HOME and CARGO_TARGET_DIR live under
 # $NH_RECORDER_CARGO_DIR (default $T/nh-recorder-cargo for CARGO_HOME, $T/nh-recorder-target for the target), and the
@@ -8,7 +8,7 @@
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 DISTRO="" TEST="" BUILD=0 INNER=0
-usage() { echo "usage: check.sh [--container DISTRO] [--test NAME] [--build]" >&2; exit 2; }
+usage() { echo "usage: check.sh [--container DISTRO] [--test NAME[\|NAME...]] [--build]" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case $1 in
     --container) [ $# -ge 2 ] || usage; DISTRO=$2; shift 2 ;;
@@ -35,7 +35,7 @@ if [ -n "$DISTRO" ] && [ "$INNER" = 0 ]; then
   trap cleanup EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  inner="dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install cargo rust clippy rustfmt gcc pixman-devel libxkbcommon-devel wayland-devel diffutils >/dev/null && bash /crate/check.sh --inner${TEST:+ --test $TEST}"
+  inner="dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install cargo rust clippy rustfmt gcc pixman-devel libxkbcommon-devel wayland-devel diffutils >/dev/null && bash /crate/check.sh --inner${TEST:+ --test $(printf '%q' "$TEST")}"
   [ "$BUILD" = 1 ] && inner="$inner --build"
   podman run --rm --name "$NAME" --memory 3g --memory-swap 3g \
     -v "$HERE:/crate:ro,Z" -v "$HOME_DIR:/cargo-home:Z" -v "$TARGET_DIR:/cargo-target:Z" "${EXTRA[@]}" \
@@ -55,7 +55,13 @@ fail() { echo "check.sh: FAIL $1" >&2; exit 1; }
 
 cargo fmt --check                                              || fail fmt
 cargo clippy --all-targets --locked -- -D warnings             || fail clippy
-cargo test --locked ${TEST:+--test "$TEST"}                    || fail test
+# --test takes test file names separated by \| (or |): "shell\|scale" runs tests/shell.rs and tests/scale.rs
+TESTARGS=()
+if [ -n "$TEST" ]; then
+  IFS='|' read -ra names <<< "${TEST//\\|/|}"
+  for n in "${names[@]}"; do TESTARGS+=(--test "$n"); done
+fi
+cargo test --locked "${TESTARGS[@]}"                           || fail test
 if command -v cargo-deny >/dev/null 2>&1; then
   cargo deny check licenses bans sources                       || fail deny
 else

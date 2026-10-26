@@ -30,7 +30,16 @@ pub struct Commit {
     pub damage: Vec<[i32; 4]>,
     pub frame_cb: bool,
     pub presentation: bool,
+    /// The newest configure serial the client acked since its previous commit.
     pub ack_serial: Option<u32>,
+    /// The acked serial is older than the newest configure the recorder sent for the surface.
+    pub ack_stale: bool,
+    /// The scale (value120) the recorder had announced when it processed the commit.
+    pub scale120_at_commit: u32,
+    /// The decoration mode the recorder sent for a toplevel: `server`, `client` or null.
+    pub decoration: Option<String>,
+    pub title: Option<String>,
+    pub app_id: Option<String>,
     pub t_ns: u64,
 }
 

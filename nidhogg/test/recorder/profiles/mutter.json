@@ -1,0 +1,22 @@
+{
+  "name": "mutter",
+  "decoration": "none",
+  "globals": {
+    "wl_compositor": 6,
+    "wl_subcompositor": 1,
+    "wl_shm": 2,
+    "wl_output": 4,
+    "wl_seat": 10,
+    "xdg_wm_base": 7,
+    "wp_fractional_scale_manager_v1": 1,
+    "wp_viewporter": 1,
+    "wp_presentation": 2,
+    "zwp_text_input_manager_v3": 2,
+    "wp_cursor_shape_manager_v1": 2
+  },
+  "capped": {
+    "wl_seat": "mutter 49 serves 10; Smithay 0.7 serves 9",
+    "xdg_wm_base": "mutter 49 serves 7; Smithay 0.7 serves 6",
+    "zwp_text_input_manager_v3": "mutter 51 serves 2; Smithay 0.7 serves 1 (Task 3 confirms)"
+  }
+}
