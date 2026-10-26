@@ -46,7 +46,7 @@ impl ReaderState {
         }
     }
 
-    fn post(&mut self, ev: NhShellEvent) {
+    pub(super) fn post(&mut self, ev: NhShellEvent) {
         self.shared.post(ev);
         self.posted = true;
     }
