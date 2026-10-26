@@ -1744,6 +1744,10 @@ getenv_internal (const char *var, ptrdiff_t varlen, char **value,
   /* For DISPLAY try to get the values from the frame or the initial env.  */
   if (strcmp (var, "DISPLAY") == 0)
     {
+#ifdef HAVE_NHWL
+/* Under Nidhogg's Wayland shell the `display' parameter names a Wayland display, never DISPLAY (scoped to this block).  */
+# define HAVE_PGTK 1
+#endif
 #ifndef HAVE_PGTK
       Lisp_Object display
 	= Fframe_parameter (NILP (frame) ? selected_frame : frame, Qdisplay);
@@ -1754,6 +1758,9 @@ getenv_internal (const char *var, ptrdiff_t varlen, char **value,
 	  return 1;
 	}
 #endif /* !HAVE_PGTK */
+#ifdef HAVE_NHWL
+# undef HAVE_PGTK
+#endif
       /* If still not found, Look for DISPLAY in Vinitial_environment.  */
       if (getenv_internal_1 (var, varlen, value, valuelen,
 			     Vinitial_environment))
@@ -1891,6 +1898,11 @@ make_environment_block (Lisp_Object current_dir)
 		       "GdkX11Display"))
 	  tmp = Qnil;
 #endif /* HAVE_PGTK */
+#ifdef HAVE_NHWL
+	/* DISPLAY must not be set to a Wayland display name.  */
+	if (FRAME_WINDOW_P (SELECTED_FRAME ()))
+	  tmp = Qnil;
+#endif /* HAVE_NHWL */
 
 	if (!STRINGP (tmp) && CONSP (Vinitial_environment))
 	  /* If still not found, Look for DISPLAY in Vinitial_environment.  */

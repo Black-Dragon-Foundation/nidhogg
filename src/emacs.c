@@ -193,6 +193,9 @@ bool running_asynch_code;
 /* If true, -d was specified, meaning we're using some window system.  */
 bool display_arg;
 #endif
+#ifdef HAVE_NHWL
+bool display_arg;
+#endif
 
 /* To run as a background daemon under Cocoa or Windows,
    we must do a fork+exec, not a simple fork.
@@ -2086,6 +2089,10 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
   {
     int count_before = skip_args;
 
+#ifdef HAVE_NHWL
+/* Nidhogg's Wayland shell takes -d/--display like pgtk does (scoped to this block).  */
+# define HAVE_PGTK 1
+#endif
 #if defined (HAVE_X_WINDOWS) || defined (HAVE_PGTK)
     char *displayname = 0;
 
@@ -2119,6 +2126,9 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
 	argv[count_before + 1] = (char *) "-d";
       }
 #endif	/* HAVE_X_WINDOWS */
+#ifdef HAVE_NHWL
+# undef HAVE_PGTK
+#endif
 
     if (! no_site_lisp)
       {
@@ -2435,6 +2445,11 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
       syms_of_fontset ();
       syms_of_xsettings ();
 #endif /* HAVE_PGTK */
+#ifdef HAVE_NHWL
+      syms_of_nhwlterm ();
+      syms_of_nhwlfns ();
+      syms_of_fontset ();
+#endif /* HAVE_NHWL */
 #ifdef HAVE_HAIKU
       syms_of_haikuterm ();
       syms_of_haikufns ();

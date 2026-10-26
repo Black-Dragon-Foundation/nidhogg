@@ -27733,6 +27733,11 @@ display_menu_bar (struct window *w)
   if (NILP (FRAME_MENU_BAR_ITEMS (f)))
     return;
 
+#ifdef HAVE_NHWL
+/* Nidhogg's Wayland shell draws the menu bar itself, as a build without a
+   toolkit does (the branch below; scoped to this function's setup).  */
+# define HAVE_ANDROID 1
+#endif
 #if defined (USE_X_TOOLKIT) || defined (USE_GTK)
   eassert (!FRAME_WINDOW_P (f));
   init_iterator (&it, w, -1, -1, f->desired_matrix->rows, MENU_FACE_ID);
@@ -27753,6 +27758,9 @@ display_menu_bar (struct window *w)
     }
   else
 #endif /* not USE_X_TOOLKIT and not USE_GTK */
+#ifdef HAVE_NHWL
+# undef HAVE_ANDROID
+#endif
     {
       /* This is a TTY frame, i.e. character hpos/vpos are used as
 	 pixel x/y.  */
