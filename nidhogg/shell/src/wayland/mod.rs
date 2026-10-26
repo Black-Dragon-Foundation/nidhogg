@@ -12,10 +12,12 @@
 pub mod conn;
 pub mod decor;
 pub mod output;
+pub mod present;
 pub mod reader;
 pub mod registry;
 pub mod scale;
 pub mod serial;
+pub mod shm;
 pub mod toplevel;
 
 use crate::api::*;
@@ -58,6 +60,9 @@ pub struct MainState {
     wm_base: Option<XdgWmBase>,
     seat: Option<WlSeat>,
     decoration_manager: Option<ZxdgDecorationManagerV1>,
+    presentation: Option<wayland_protocols::wp::presentation_time::client::wp_presentation::WpPresentation>,
+    presents: HashMap<u64, Arc<std::sync::Mutex<present::Present>>>,
+    reader_qh: Option<QueueHandle<ReaderState>>,
     windows: HashMap<u64, toplevel::Window>,
     /// `NIDHOGG_SHELL_FORCE_CSD` was set when the shell opened.
     force_csd: bool,
@@ -121,6 +126,8 @@ impl WaylandShell {
             rstate.seat = g.bind(reg, &rqh, ());
             rstate.wm_base = g.bind(reg, &rqh, ());
             main.decoration_manager = g.bind(reg, &mqh, ());
+            main.presentation = g.bind(reg, &mqh, ());
+            main.reader_qh = Some(rqh.clone());
             main.seat = rstate.seat.clone();
             main.wm_base = rstate.wm_base.clone();
         }
@@ -278,6 +285,7 @@ impl ShellBackend for WaylandShell {
             return Err(ShellError::Disconnected);
         }
         self.dispatch_main_queue()?;
+        self.present_housekeeping();
         self.flush()
     }
 
@@ -332,11 +340,11 @@ impl ShellBackend for WaylandShell {
     fn window_logical_size(&self, _: WindowId) -> ShellResult<(i32, i32)> {
         Err(ShellError::Unsupported)
     }
-    fn present_begin(&mut self, _: WindowId, _: i32, _: i32) -> ShellResult<NhShellBuffer> {
-        Err(ShellError::Unsupported)
+    fn present_begin(&mut self, w: WindowId, dw: i32, dh: i32) -> ShellResult<NhShellBuffer> {
+        self.present_begin_impl(w, dw, dh)
     }
-    fn present_commit(&mut self, _: WindowId, _: &[Rect]) -> ShellResult {
-        Err(ShellError::Unsupported)
+    fn present_commit(&mut self, w: WindowId, damage: &[Rect]) -> ShellResult {
+        self.present_commit_impl(w, damage)
     }
 }
 

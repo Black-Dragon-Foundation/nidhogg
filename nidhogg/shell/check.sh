@@ -96,6 +96,8 @@ if [ -n "$TEST" ]; then
   for p in "${parts[@]}"; do [ -n "$p" ] && filters+=("$p"); done
 fi
 cargo test --offline --locked -- "${filters[@]}"                     || fail test
+# the filters also select glitnir's own tests (pool policy and the like) when a task names them
+if [ -n "$TEST" ]; then (cd ../glitnir && cargo test --offline --locked -- "${filters[@]}") || fail test-glitnir; fi
 if command -v cargo-deny >/dev/null 2>&1; then
   cargo deny check licenses bans sources                            || fail deny
 else

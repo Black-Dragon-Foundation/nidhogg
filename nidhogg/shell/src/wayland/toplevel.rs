@@ -139,6 +139,7 @@ impl WaylandShell {
         let w = self.main.windows.remove(&id).ok_or(ShellError::State)?;
         self.main.surfaces.remove(&id);
         self.main.detach_scale(id);
+        self.present_drop(id);
         if let Some(d) = &w.decoration {
             d.destroy();
         }
@@ -215,6 +216,7 @@ impl WaylandShell {
     /// Ack configure `serial`; the host calls it right before the commit that carries the new size.
     pub(super) fn window_ack_configure(&mut self, id: WindowId, serial: u32) -> ShellResult {
         self.window(id)?.xdg_surface.ack_configure(serial);
+        self.present_force_next(id);
         Ok(())
     }
 }
