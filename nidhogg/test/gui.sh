@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
-# Nidhogg's GUI test runner: a headless mutter (its own session bus, its own Wayland display), a Nidhogg pgtk frame
-# on it, and the *-gui-tests.el files run by test/src/nidhogg-tests/gui-runner.el.  Never touches the caller's display,
-# session bus or Emacs server: everything it starts is private and stopped on exit.
+# Nidhogg's GUI test runner: a headless compositor (headless sway by default; its own session bus, its own Wayland
+# display), a Nidhogg pgtk frame on it, and the *-gui-tests.el files run by test/src/nidhogg-tests/gui-runner.el.
+# Never touches the caller's display, session bus or Emacs server: everything it starts is private and stopped on exit.
 #
-#   nidhogg/test/gui.sh --prefix DIR [--scale S] [--size WxH] [--monitors N] [--select REGEXP] [--tests DIR]
-#                       [--daemon] [--container DISTRO] [--wayland-debug FILE] [--env K=V]... [--timeout SEC]
+#   nidhogg/test/gui.sh --prefix DIR [--compositor sway|mutter|recorder] [--recorder BIN]
+#                       [--recorder-profile sway|kwin|mutter] [--scale S] [--size WxH] [--monitors N]
+#                       [--select REGEXP] [--tests DIR] [--daemon] [--container DISTRO] [--wayland-debug FILE]
+#                       [--env K=V]... [--timeout SEC]
 #
 #   --prefix DIR        an unpacked Nidhogg (DIR/bin/nidhogg)
+#   --compositor C      sway (default: headless sway, wlroots pixman renderer), mutter (headless mutter) or recorder
+#                       (nh-recorder, our own recording compositor, one output)
+#   --recorder BIN      the nh-recorder binary (default $REC); mounted at /opt/nh-recorder in a container
+#   --recorder-profile  what the recorder imitates: sway (default), kwin or mutter
+#   GLITNIR_GUI_DRY=1   print the commands a run would start and exit 0 (nothing is started)
 #   --scale S           the monitors' scale, integer or fractional (default 1)
 #   --size WxH          each virtual monitor in device pixels (default 2880x1800)
 #   --monitors N        virtual monitors, side by side (default 1)
@@ -19,9 +26,9 @@
 #   --timeout SEC       kill the run after SEC seconds (default 300)
 #
 # Exit 0 all tests passed, 1 a failure, a timeout or a session that did not come up, 2 usage.
-# The scale is applied with `gdctl set --logical-monitor --scale S' inside the session (mutter 50 sets fractional
-# scales on a headless virtual monitor; no scale-monitor-framebuffer fallback was needed), after which the runner waits
-# for (frame-scale-factor) = ceil(S) (GTK 3 knows only integer scales) and the monitor's GDK geometry = (WxH / S) * ceil(S).
+# Mutter: the scale is applied with `gdctl set --logical-monitor --scale S' inside the session (mutter 50 sets fractional
+# scales on a headless virtual monitor; no scale-monitor-framebuffer fallback was needed).  Sway: `output NAME ... scale S'.
+# Recorder: --output WxH@round(S*120).  The runner (gui-runner.el) then waits for the scale rule of the compositor.
 # Temp files live under ${TMPDIR:-/tmp}/glitnir-gui.XXXXXX (HOME, XDG_*, caches), never in ~.
 set -u
 
@@ -34,10 +41,14 @@ IMAGE_fedora_45=registry.fedoraproject.org/fedora@sha256:6430abb162172c052b6ac9c
 usage() { sed -n '2,/^# Temp files/s/^# \{0,1\}//p' "$self" >&2; exit 2; }
 
 prefix= scale=1 size=2880x1800 monitors=1 select= tests= daemon=0 container= wdebug= timeout=300
+compositor=sway recorder=${REC:-} rprofile=sway
 envs=()
 while [ $# -gt 0 ]; do
   case $1 in
     --prefix) prefix=${2:-}; shift 2 ;;
+    --compositor) compositor=${2:-}; shift 2 ;;
+    --recorder) recorder=${2:-}; shift 2 ;;
+    --recorder-profile) rprofile=${2:-}; shift 2 ;;
     --scale) scale=${2:-}; shift 2 ;;
     --size) size=${2:-}; shift 2 ;;
     --monitors) monitors=${2:-}; shift 2 ;;
@@ -60,6 +71,16 @@ case $size in [0-9]*x[0-9]*) ;; *) echo "gui.sh: --size is WxH" >&2; exit 2 ;; e
 [ -n "$tests" ] || tests=$checkout/test/src/nidhogg-tests
 tests=$(cd "$tests" && pwd) || exit 2
 W=${size%x*} H=${size#*x}
+case $compositor in sway|mutter|recorder) ;; *) echo "gui.sh: --compositor is sway, mutter or recorder" >&2; exit 2 ;; esac
+case $rprofile in sway|kwin|mutter) ;; *) echo "gui.sh: --recorder-profile is sway, kwin or mutter" >&2; exit 2 ;; esac
+if [ "$compositor" = recorder ]; then
+  [ -n "$recorder" ] && [ -x "$recorder" ] || { echo "gui.sh: nh-recorder not built (--recorder BIN or \$REC: '$recorder')" >&2; exit 2; }
+  recorder=$(cd "$(dirname "$recorder")" && pwd)/$(basename "$recorder")
+  [ "$monitors" = 1 ] || { echo "gui.sh: the recorder has one output (--monitors 1)" >&2; exit 2; }
+fi
+known=$tests/gui-known-differences.eld
+# the recorder's scale is a 120th: round(S * 120)
+s120=$(awk -v s="$scale" 'BEGIN { printf "%d", s * 120 + 0.5 }')
 
 # ---------------------------------------------------------------- in the session (private bus)
 if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
@@ -72,30 +93,72 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
   trap cleanup EXIT
   trap 'exit 1' INT TERM
 
-  vm=()
-  for ((i = 0; i < monitors; i++)); do vm+=(--virtual-monitor "$size"); done
-  mutter --headless --wayland --no-x11 --wayland-display "$display" "${vm[@]}" \
-    > "$GLITNIR_GUI_RUN/mutter.log" 2>&1 &
-  mpid=$!
-  for _ in $(seq 100); do
-    [ -S "$XDG_RUNTIME_DIR/$display" ] && break
-    kill -0 "$mpid" 2>/dev/null || { echo "gui.sh: mutter exited early:"; cat "$GLITNIR_GUI_RUN/mutter.log"; exit 1; }
+  clog=$GLITNIR_GUI_RUN/$compositor.log
+  lw=$(awk -v w="$W" -v s="$scale" 'BEGIN { printf "%d", w / s + 0.5 }')
+  ctl=
+  case $compositor in
+    mutter)
+      vm=()
+      for ((i = 0; i < monitors; i++)); do vm+=(--virtual-monitor "$size"); done
+      mutter --headless --wayland --no-x11 --wayland-display "$display" "${vm[@]}" > "$clog" 2>&1 &
+      mpid=$!
+      ;;
+    sway)
+      # no bar, no borders, no XWayland (it would take an X display in the shared /tmp), every client floating
+      {
+        echo "output HEADLESS-1 mode ${size} scale $scale position 0 0"
+        echo "xwayland disable"
+        echo "default_border none"
+        echo "default_floating_border none"
+        echo 'for_window [app_id=".*"] floating enable'
+      } > "$GLITNIR_GUI_RUN/sway.conf"
+      WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 SWAYSOCK="$XDG_RUNTIME_DIR/sway-ipc.sock" \
+        sway -c "$GLITNIR_GUI_RUN/sway.conf" > "$clog" 2>&1 &
+      mpid=$!
+      ;;
+    recorder)
+      ctl=$XDG_RUNTIME_DIR/nh-recorder.ctl
+      "$recorder" --output "${size}@${s120}" --profile "$rprofile" --socket "$display" --control "$ctl" > "$clog" 2>&1 &
+      mpid=$!
+      ;;
+  esac
+  for _ in $(seq 150); do
+    if [ "$compositor" = sway ]; then
+      sock=$(compgen -G "$XDG_RUNTIME_DIR/wayland-*" | grep -v '\.lock$' | head -n 1)
+      [ -n "$sock" ] && [ -S "$sock" ] && { display=${sock##*/}; break; }
+    elif [ "$compositor" = recorder ]; then
+      grep -q '^READY' "$clog" 2>/dev/null && [ -S "$XDG_RUNTIME_DIR/$display" ] && break
+    else
+      [ -S "$XDG_RUNTIME_DIR/$display" ] && break
+    fi
+    kill -0 "$mpid" 2>/dev/null || { echo "gui.sh: $compositor exited early:"; cat "$clog"; exit 1; }
     sleep 0.1
   done
-  [ -S "$XDG_RUNTIME_DIR/$display" ] || { echo "gui.sh: mutter has no display $display"; exit 1; }
+  [ -S "$XDG_RUNTIME_DIR/$display" ] || { echo "gui.sh: $compositor has no display"; cat "$clog"; exit 1; }
 
-  # the scale: gdctl on the session's own mutter (WAYLAND_DISPLAY is set only for the commands below)
+  # the scale (WAYLAND_DISPLAY is set only for the commands below)
   export WAYLAND_DISPLAY=$display
-  names=$(gdctl show | grep -o 'Monitor Meta-[0-9]*' | sed 's/Monitor //')
-  args=() x=0 first=--primary
-  lw=$(awk -v w="$W" -v s="$scale" 'BEGIN { printf "%d", w / s + 0.5 }')
-  for n in $names; do
-    args+=(--logical-monitor $first --monitor "$n" --scale "$scale" --x "$x" --y 0)
-    first=; x=$((x + lw))
-  done
-  gdctl set "${args[@]}" || { echo "gui.sh: gdctl could not set scale $scale"; exit 1; }
+  if [ "$compositor" = mutter ]; then
+    # gdctl on the session's own mutter
+    names=$(gdctl show | grep -o 'Monitor Meta-[0-9]*' | sed 's/Monitor //')
+    args=() x=0 first=--primary
+    for n in $names; do
+      args+=(--logical-monitor $first --monitor "$n" --scale "$scale" --x "$x" --y 0)
+      first=; x=$((x + lw))
+    done
+    gdctl set "${args[@]}" || { echo "gui.sh: gdctl could not set scale $scale"; exit 1; }
+  elif [ "$compositor" = sway ]; then
+    export SWAYSOCK=$XDG_RUNTIME_DIR/sway-ipc.sock
+    for ((i = 2; i <= monitors; i++)); do
+      swaymsg create_output > /dev/null || { echo "gui.sh: swaymsg could not create output $i"; exit 1; }
+      swaymsg "output HEADLESS-$i mode $size scale $scale position $(((i - 1) * lw)) 0" > /dev/null \
+        || { echo "gui.sh: swaymsg could not set output $i"; exit 1; }
+    done
+  fi
 
   export GLITNIR_GUI_SCALE=$scale GLITNIR_GUI_SIZE=$size GLITNIR_GUI_TESTS=$tests GLITNIR_GUI_SELECT=$select
+  export GLITNIR_GUI_COMPOSITOR=$compositor GLITNIR_GUI_KNOWN=$known
+  [ -z "$ctl" ] || export GLITNIR_GUI_RECORDER=$ctl
   export GDK_BACKEND=wayland NO_AT_BRIDGE=1
   unset DISPLAY EMACS_SOCKET_NAME
   for kv in ${envs[@]+"${envs[@]}"}; do export "$kv"; done
@@ -126,8 +189,19 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
     wait "$epid"; rc=$?
     epid=
   fi
-  [ "$rc" = 0 ] || echo "gui.sh: nidhogg exited with $rc"
+  [ "$rc" = 0 ] || { echo "gui.sh: nidhogg exited with $rc; the $compositor log:"; tail -n 20 "$clog"; }
   [ "$rc" = 0 ] && exit 0 || exit 1
+fi
+
+# ---------------------------------------------------------------- dry run: what would start
+if [ "${GLITNIR_GUI_DRY:-}" = 1 ]; then
+  case $compositor in
+    sway) echo "sway -c RUN/sway.conf   (output HEADLESS-1 mode $size scale $scale; $monitors output(s))" ;;
+    mutter) echo "mutter --headless --wayland --no-x11 --wayland-display NAME ($monitors x --virtual-monitor $size; scale $scale)" ;;
+    recorder) echo "$recorder --output ${size}@${s120} --profile $rprofile --socket NAME --control CTL" ;;
+  esac
+  echo "$prefix/bin/nidhogg -Q --fullscreen -l $checkout/test/src/nidhogg-tests/gui-runner.el"
+  exit 0
 fi
 
 # ---------------------------------------------------------------- in a container
@@ -142,13 +216,21 @@ if [ -n "$container" ]; then
   # a tarball runs at the prefix it was built for (BUILDINFO), so it is mounted there
   inprefix=$(sed -n 's/^prefix=//p' "$prefix/share/nidhogg/BUILDINFO" 2>/dev/null)
   [ -n "$inprefix" ] || inprefix=$prefix
-  args=(--prefix "$inprefix" --scale "$scale" --size "$size" --monitors "$monitors" --tests /src/test/src/nidhogg-tests --timeout "$timeout")
+  args=(--prefix "$inprefix" --compositor "$compositor" --recorder-profile "$rprofile" --scale "$scale" --size "$size"
+        --monitors "$monitors" --tests /src/test/src/nidhogg-tests --timeout "$timeout")
+  [ "$compositor" != recorder ] || args+=(--recorder /opt/nh-recorder)
   [ -z "$select" ] || args+=(--select "$select")
   [ "$daemon" = 0 ] || args+=(--daemon)
   [ -z "$wdebug" ] || args+=(--wayland-debug /out/wayland-debug.txt)
   for kv in ${envs[@]+"${envs[@]}"}; do args+=(--env "$kv"); done
   out=
   mounts=(-v "$checkout:/src:ro,Z" -v "$prefix:$inprefix:ro,Z")
+  [ "$compositor" != recorder ] || mounts+=(-v "$recorder:/opt/nh-recorder:ro,Z")
+  # a caller's GLITNIR_GUI_SOCKDIR (a host directory) is where the run's XDG_RUNTIME_DIR is made, so the caller can see it
+  sockenv=()
+  if [ -n "${GLITNIR_GUI_SOCKDIR:-}" ]; then
+    mounts+=(-v "$GLITNIR_GUI_SOCKDIR:$GLITNIR_GUI_SOCKDIR:Z"); sockenv=(-e "GLITNIR_GUI_SOCKDIR=$GLITNIR_GUI_SOCKDIR")
+  fi
   [ "$tests" = "$checkout/test/src/nidhogg-tests" ] || mounts+=(-v "$tests:/src/test/src/nidhogg-tests:ro,Z")
   if [ -n "$wdebug" ]; then
     out=$(mktemp -d "${TMPDIR:-/tmp}/glitnir-gui-out.XXXXXX")
@@ -156,12 +238,14 @@ if [ -n "$container" ]; then
   fi
   # deps.runtime of the tarball, mutter (the compositor and gdctl), dbus-daemon, software GL, one monospace font
   podman run --rm --name "$name" --memory "${GLITNIR_GUI_MEMORY:-6g}" --memory-swap "${GLITNIR_GUI_MEMORY:-6g}" \
-    "${mounts[@]}" "$image" bash -c '
+    ${sockenv[@]+"${sockenv[@]}"} "${mounts[@]}" "$image" bash -c '
       set -eu
       pkgs=$(sed "s/#.*//" "'"$inprefix"'/share/nidhogg/deps.runtime" 2>/dev/null || true)
-      dnf -y -q --setopt=install_weak_deps=False install mutter dbus-daemon mesa-dri-drivers mesa-libEGL \
-        mesa-libgbm python3-gobject-base dejavu-sans-mono-fonts procps-ng util-linux $pkgs > /tmp/dnf.log 2>&1 \
-        || { cat /tmp/dnf.log; exit 1; }
+      dnf -y -q --setopt=install_weak_deps=False install mutter sway grim pixman libxkbcommon libcap dbus-daemon \
+        mesa-dri-drivers mesa-libEGL mesa-libgbm python3-gobject-base dejavu-sans-mono-fonts procps-ng util-linux \
+        $pkgs > /tmp/dnf.log 2>&1 || { cat /tmp/dnf.log; exit 1; }
+      # sway ships with file capabilities a container refuses to exec: a copy without them
+      cp /usr/bin/sway /usr/local/bin/sway; setcap -r /usr/local/bin/sway 2>/dev/null || true
       # glycin (GTK 3 loads its icons through it) sandboxes its image loaders with bwrap --dev /dev, which a podman
       # container refuses (it cannot mount a devpts); the loaders get the container'"'"'s own /dev instead
       printf "%s\n" "#!/bin/bash" "a=(); while [ \$# -gt 0 ]; do if [ \"\$1\" = --dev ]; then a+=(--dev-bind \"\$2\" \"\$2\"); shift 2; else a+=(\"\$1\"); shift; fi; done" \
@@ -175,8 +259,13 @@ if [ -n "$container" ]; then
 fi
 
 # ---------------------------------------------------------------- on the host: a run dir, a private session bus
-for t in mutter gdctl dbus-run-session; do
-  command -v "$t" > /dev/null || { echo "gui.sh: $t not found (the host needs mutter and dbus; or use --container)" >&2; exit 1; }
+case $compositor in
+  sway) need="sway swaymsg dbus-run-session" ;;
+  mutter) need="mutter gdctl dbus-run-session" ;;
+  *) need="dbus-run-session" ;;
+esac
+for t in $need; do
+  command -v "$t" > /dev/null || { echo "gui.sh: $t not found (the host needs $need; or use --container)" >&2; exit 1; }
 done
 run=$(mktemp -d "${TMPDIR:-/tmp}/glitnir-gui.XXXXXX")
 # XDG_RUNTIME_DIR holds only sockets, and a Unix socket path is limited to 107 bytes: it sits in a short directory.
@@ -189,7 +278,7 @@ env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u EMACS_SOCKET_NA
   HOME="$run/home" XDG_RUNTIME_DIR="$xdg" XDG_CACHE_HOME="$run/cache" XDG_DATA_HOME="$run/data" \
   XDG_CONFIG_HOME="$run/config" XDG_SESSION_TYPE=wayland GIO_USE_VFS=local GSETTINGS_BACKEND=memory \
   GLITNIR_GUI_INNER=1 GLITNIR_GUI_PID=$$ GLITNIR_GUI_RUN="$run" \
-  dbus-run-session -- bash "$self" --prefix "$prefix" --scale "$scale" --size "$size" --monitors "$monitors" \
+  dbus-run-session -- bash "$self" --prefix "$prefix" --compositor "$compositor" --recorder-profile "$rprofile" ${recorder:+--recorder "$recorder"} --scale "$scale" --size "$size" --monitors "$monitors" \
     --tests "$tests" --timeout "$timeout" ${select:+--select "$select"} ${wdebug:+--wayland-debug "$wdebug"} \
     $([ "$daemon" = 0 ] || echo --daemon) $(for kv in ${envs[@]+"${envs[@]}"}; do echo --env "$kv"; done)
 exit $?
