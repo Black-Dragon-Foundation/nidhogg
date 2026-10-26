@@ -1,0 +1,25 @@
+[package]
+name = "nhshell"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+license = "GPL-3.0-or-later"
+description = "nhshell, Nidhogg's native Wayland shell layer with a C ABI (one static library with Glitnir)"
+publish = false
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+glitnir = { path = "../glitnir", version = "0.1.0" }
+wayland-client = "0.31"
+wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
+xkbcommon = { version = "0.9", default-features = false }
+rustix = { version = "1", features = ["fs", "mm", "event", "pipe"] }
+
+[profile.release]
+panic = "unwind"
+lto = true
+codegen-units = 1
+debug = 1
