@@ -98,8 +98,9 @@ pub trait ShellBackend {
     fn wake_fd(&self) -> i32;
     fn caps(&self) -> NhShellCaps;
 
-    /// The next queued event, or `None` when the queue is empty.
-    fn next_event(&mut self) -> Option<NhShellEvent>;
+    /// The next queued event, or `None` when the queue is empty.  After the connection is lost, one `DISCONNECTED`
+    /// event comes out, then `ShellError::Disconnected`.
+    fn next_event(&mut self) -> ShellResult<Option<NhShellEvent>>;
     /// Run the work that must happen on the host's thread (configure and surface events).
     fn dispatch_main(&mut self) -> ShellResult;
 

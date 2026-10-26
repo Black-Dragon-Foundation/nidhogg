@@ -26,8 +26,9 @@ pub struct NhShellWindowDesc {
 }
 
 /// Connect to `display` (`None`: the environment's).  The backends are added here as they are written.
-fn open_backend(_display: Option<&str>) -> ShellResult<Box<dyn ShellBackend>> {
-    Err(ShellError::Unsupported)
+fn open_backend(display: Option<&CStr>) -> ShellResult<Box<dyn ShellBackend>> {
+    let shell = crate::wayland::WaylandShell::open(display)?;
+    Ok(Box::new(shell))
 }
 
 /// # Safety
@@ -100,10 +101,7 @@ pub unsafe extern "C" fn nhshell_open(display: *const c_char, out: *mut *mut NhS
             None
         } else {
             // SAFETY: non-null, NUL-terminated by the caller's promise.
-            match unsafe { cstr(display) } {
-                Ok(s) => Some(s),
-                Err(e) => return e.code(),
-            }
+            Some(unsafe { CStr::from_ptr(display) })
         };
         let r = open_backend(display).and_then(|backend| {
             let p = Box::into_raw(Box::new(NhShell { backend }));
@@ -165,7 +163,7 @@ pub unsafe extern "C" fn nhshell_caps(sh: *mut NhShell, out: *mut NhShellCaps) -
 pub unsafe extern "C" fn nhshell_next_event(sh: *mut NhShell, out: *mut NhShellEvent) -> i32 {
     guard(
         sh,
-        |b| match b.next_event() {
+        |b| match b.next_event()? {
             // SAFETY: `out` is null or writable.
             Some(ev) => unsafe { put(out, ev) }.map(|()| 1),
             None => Ok(0),
@@ -338,11 +336,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn open_without_a_backend_is_unsupported() {
+    fn open_without_a_compositor_is_unsupported() {
         let mut sh: *mut NhShell = std::ptr::null_mut();
-        // SAFETY: null display is allowed; `sh` is writable.
+        // an explicit path that does not exist (never the environment's display: tests stay off the user's session)
+        let display = c"/nonexistent/nhshell-test-display";
+        // SAFETY: `display` is NUL-terminated; `sh` is writable.
         assert_eq!(
-            unsafe { nhshell_open(std::ptr::null(), &mut sh) },
+            unsafe { nhshell_open(display.as_ptr(), &mut sh) },
             NHSHELL_E_UNSUPPORTED
         );
         assert!(sh.is_null());
