@@ -50,7 +50,7 @@ if [ -n "$DISTRO" ] && [ "$INNER" = 0 ]; then
   trap cleanup EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  inner="dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install cargo rust clippy rustfmt gcc binutils diffutils pkgconf-pkg-config openssl-devel cmake wayland-devel libxkbcommon-devel pixman-devel >/dev/null && (dnf -y install cargo-deny >/dev/null 2>&1 || true) && bash /nh/shell/check.sh --inner${TEST:+ --test $(printf %q "$TEST")}$([ "$REVENDOR" = 1 ] && echo ' --revendor')$([ "$FULL" = 1 ] && echo ' --full')"
+  inner="dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install cargo rust clippy rustfmt gcc binutils diffutils pkgconf-pkg-config openssl-devel cmake wayland-devel libxkbcommon-devel xkeyboard-config libX11-common pixman-devel >/dev/null && (dnf -y install cargo-deny >/dev/null 2>&1 || true) && bash /nh/shell/check.sh --inner${TEST:+ --test $(printf %q "$TEST")}$([ "$REVENDOR" = 1 ] && echo ' --revendor')$([ "$FULL" = 1 ] && echo ' --full')"
   podman run --rm --name "$NAME" --memory 2g --memory-swap 2g \
     -v "$NH:/nh:$MODE,Z" -v "$CARGO_DIR:/cargo:Z" "${EXTRA[@]}" \
     -e CARGO_HOME=/cargo/home -e CARGO_TARGET_DIR=/cargo/target -e CARGO_BUILD_JOBS=2 \
