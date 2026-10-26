@@ -1,0 +1,2 @@
+# the root .gitignore ignores dot-files; cargo needs these checksums
+!vendor/**/.cargo-checksum.json
