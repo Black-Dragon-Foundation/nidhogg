@@ -261,7 +261,8 @@ fn snake(s: &str) -> String {
 }
 
 /// `{"cmd":"configure","surface":ID|"focused","size":[W,H],"states":[...]}`
-pub fn configure(state: &mut State, req: &Value) -> Value {
+/// The toplevel a command's `"surface"` names: a surface id, or `"focused"` (the newest).
+fn find_toplevel(state: &mut State, req: &Value) -> Result<ToplevelSurface, Value> {
     state.toplevels.retain(|t| t.alive());
     let toplevel = match req.get("surface") {
         Some(Value::Number(n)) => {
@@ -272,10 +273,26 @@ pub fn configure(state: &mut State, req: &Value) -> Value {
                 .find(|t| t.wl_surface().id().protocol_id() == id)
         }
         Some(Value::String(s)) if s == "focused" => state.toplevels.last(),
-        _ => return err("\"surface\" must be an id or \"focused\""),
+        _ => return Err(err("\"surface\" must be an id or \"focused\"")),
     };
-    let Some(toplevel) = toplevel.cloned() else {
-        return err("no such toplevel");
+    toplevel.cloned().ok_or_else(|| err("no such toplevel"))
+}
+
+/// `close`: send `xdg_toplevel.close`, as a compositor does when the user closes the window.
+pub fn close(state: &mut State, req: &Value) -> Value {
+    match find_toplevel(state, req) {
+        Ok(toplevel) => {
+            toplevel.send_close();
+            json!({"ok": true})
+        }
+        Err(e) => e,
+    }
+}
+
+pub fn configure(state: &mut State, req: &Value) -> Value {
+    let toplevel = match find_toplevel(state, req) {
+        Ok(t) => t,
+        Err(e) => return e,
     };
     let size = match req.get("size") {
         None => None,

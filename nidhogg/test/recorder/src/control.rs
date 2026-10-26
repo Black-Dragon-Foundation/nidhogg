@@ -43,6 +43,7 @@ pub fn handle(state: &mut State, line: &str, stream: &UnixStream) -> Option<Valu
     Some(match cmd {
         "snapshot" => crate::render::snapshot(state, &req),
         "configure" => crate::shell::configure(state, &req),
+        "close" => crate::shell::close(state, &req),
         "decoration" => crate::shell::decoration(state, &req),
         "scale" => crate::scale::scale(state, &req),
         "present" => crate::clock::present(state, &req),
