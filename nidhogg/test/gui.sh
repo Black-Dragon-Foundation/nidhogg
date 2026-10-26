@@ -6,7 +6,7 @@
 #   nidhogg/test/gui.sh --prefix DIR [--compositor sway|mutter|recorder] [--recorder BIN]
 #                       [--recorder-profile sway|kwin|mutter] [--scale S] [--size WxH] [--monitors N]
 #                       [--select REGEXP] [--tests DIR] [--daemon] [--container DISTRO] [--wayland-debug FILE]
-#                       [--env K=V]... [--timeout SEC]
+#                       [--env K=V]... [--force-csd] [--timeout SEC]
 #
 #   --prefix DIR        an unpacked Nidhogg (DIR/bin/nidhogg)
 #   --compositor C      sway (default: headless sway, wlroots pixman renderer), mutter (headless mutter) or recorder
@@ -23,6 +23,8 @@
 #   --container DISTRO  the same, inside a memory-capped podman container (fedora-45), image pinned by digest
 #   --wayland-debug F   Emacs's stderr (WAYLAND_DEBUG=client protocol trace and the test output) goes to F
 #   --env K=V           an extra environment variable for Nidhogg (repeatable)
+#   --force-csd         client-side decorations: GTK_CSD=1 for pgtk, NIDHOGG_SHELL_FORCE_CSD=1 for the shell, and
+#                       GLITNIR_GUI_CSD=1 for the runner (on sway a non-fullscreen frame then has its own title bar)
 #   --timeout SEC       kill the run after SEC seconds (default 300)
 #
 # Exit 0 all tests passed, 1 a failure, a timeout or a session that did not come up, 2 usage.
@@ -42,7 +44,7 @@ usage() { sed -n '2,/^# Temp files/s/^# \{0,1\}//p' "$self" >&2; exit 2; }
 
 prefix= scale=1 size=2880x1800 monitors=1 select= tests= daemon=0 container= wdebug= timeout=300
 compositor=sway recorder=${REC:-} rprofile=sway
-envs=()
+envs=() csd=0
 while [ $# -gt 0 ]; do
   case $1 in
     --prefix) prefix=${2:-}; shift 2 ;;
@@ -58,6 +60,7 @@ while [ $# -gt 0 ]; do
     --container) container=${2:-}; shift 2 ;;
     --wayland-debug) wdebug=${2:-}; shift 2 ;;
     --env) envs+=("${2:-}"); shift 2 ;;
+    --force-csd) csd=1; shift ;;
     --timeout) timeout=${2:-}; shift 2 ;;
     --inner) shift ;;   # internal: the part that runs under dbus-run-session
     -h|--help) usage ;;
@@ -162,6 +165,7 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
   export GDK_BACKEND=wayland NO_AT_BRIDGE=1
   unset DISPLAY EMACS_SOCKET_NAME
   for kv in ${envs[@]+"${envs[@]}"}; do export "$kv"; done
+  [ "$csd" = 0 ] || export GTK_CSD=1 NIDHOGG_SHELL_FORCE_CSD=1 GLITNIR_GUI_CSD=1
   [ -z "$wdebug" ] || export WAYLAND_DEBUG=client
   runner=$checkout/test/src/nidhogg-tests/gui-runner.el
   err=/dev/stderr; [ -z "$wdebug" ] || err=$wdebug
@@ -221,6 +225,7 @@ if [ -n "$container" ]; then
   [ "$compositor" != recorder ] || args+=(--recorder /opt/nh-recorder)
   [ -z "$select" ] || args+=(--select "$select")
   [ "$daemon" = 0 ] || args+=(--daemon)
+  [ "$csd" = 0 ] || args+=(--force-csd)
   [ -z "$wdebug" ] || args+=(--wayland-debug /out/wayland-debug.txt)
   for kv in ${envs[@]+"${envs[@]}"}; do args+=(--env "$kv"); done
   out=
@@ -280,5 +285,5 @@ env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u EMACS_SOCKET_NA
   GLITNIR_GUI_INNER=1 GLITNIR_GUI_PID=$$ GLITNIR_GUI_RUN="$run" \
   dbus-run-session -- bash "$self" --prefix "$prefix" --compositor "$compositor" --recorder-profile "$rprofile" ${recorder:+--recorder "$recorder"} --scale "$scale" --size "$size" --monitors "$monitors" \
     --tests "$tests" --timeout "$timeout" ${select:+--select "$select"} ${wdebug:+--wayland-debug "$wdebug"} \
-    $([ "$daemon" = 0 ] || echo --daemon) $(for kv in ${envs[@]+"${envs[@]}"}; do echo --env "$kv"; done)
+    $([ "$daemon" = 0 ] || echo --daemon) $([ "$csd" = 0 ] || echo --force-csd) $(for kv in ${envs[@]+"${envs[@]}"}; do echo --env "$kv"; done)
 exit $?

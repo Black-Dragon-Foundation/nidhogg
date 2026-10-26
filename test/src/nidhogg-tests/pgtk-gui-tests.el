@@ -39,6 +39,45 @@
     (should-not (frame-visible-p root))
     (delete-frame root)))
 
+;; Forced client-side decorations (gui.sh --force-csd sets GLITNIR_GUI_CSD and GTK_CSD): the frame carries its own
+;; title bar.  Without it, sway's server-side decorations leave the client's outer height equal to its native height.
+(defun pgtk-gui--title-bar-height (frame)
+  "FRAME's outer height minus its native height, in logical pixels."
+  (- (cdr (alist-get 'outer-size (frame-geometry frame))) (frame-native-height frame)))
+
+(defun pgtk-gui--new-plain-frame ()
+  (prog1 (make-frame '((width . 75) (height . 25) (visibility . t)))
+    (redisplay t)
+    (sit-for 0.5)))
+
+(ert-deftest pgtk-gui/csd-frame-has-a-title-bar ()
+  (skip-unless (getenv "GLITNIR_GUI_CSD"))
+  (let ((frame (pgtk-gui--new-plain-frame)))
+    (unwind-protect
+        (progn
+          (should-not (frame-parameter frame 'fullscreen))
+          (should (>= (pgtk-gui--title-bar-height frame) 24))
+          ;; the 24 rows above the native area are not the desktop background (sway's is black)
+          (when (and (fboundp 'gui-runner-screen-grab) (equal (getenv "GLITNIR_GUI_COMPOSITOR") "sway"))
+            (pcase-let* ((`(,w ,_h ,bytes) (gui-runner-screen-grab))
+                         (`(,left ,top . ,_) (frame-edges frame 'native-edges))
+                         (found nil))
+              (cl-loop for y from (max 0 (- top 24)) below top
+                       do (cl-loop for x from left below (min w (+ left 600))
+                                   for i = (* 4 (+ (* y w) x))
+                                   unless (and (zerop (aref bytes i)) (zerop (aref bytes (+ i 1)))
+                                               (zerop (aref bytes (+ i 2))))
+                                   do (setq found t)))
+              (should found))))
+      (delete-frame frame))))
+
+(ert-deftest pgtk-gui/ssd-frame-has-no-client-title-bar ()
+  (skip-unless (and (equal (getenv "GLITNIR_GUI_COMPOSITOR") "sway") (not (getenv "GLITNIR_GUI_CSD"))))
+  (let ((frame (pgtk-gui--new-plain-frame)))
+    (unwind-protect
+        (should (= (pgtk-gui--title-bar-height frame) 0))
+      (delete-frame frame))))
+
 ;;; pgtk-gui-tests.el ends here
 
 (defun pgtk-gui--socket-owner (path)
