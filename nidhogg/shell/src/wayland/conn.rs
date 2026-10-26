@@ -11,7 +11,7 @@
 //! - when the connection fails the reader posts one `DISCONNECTED` record and closes the records.
 
 use crate::api::{ShellError, ShellResult};
-use crate::event::{NHSHELL_EV_DISCONNECTED, NhShellEvent};
+use crate::event::{NHSHELL_EV_DISCONNECTED, NHSHELL_EV_KEY, NhShellEvent};
 use crate::wayland::serial::SerialTracker;
 use rustix::event::{EventfdFlags, eventfd};
 use rustix::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
@@ -142,6 +142,14 @@ impl Shared {
             None if r.closed => Err(ShellError::Disconnected),
             None => Ok(None),
         }
+    }
+
+    /// A repeat of `keycode` is queued and not yet taken (the reader's repeat coalescing).
+    pub fn has_unread_repeat(&self, keycode: u32) -> bool {
+        relock(&self.records).queue.iter().any(|e| {
+            // SAFETY: a KEY record's valid member is `key`.
+            e.kind == NHSHELL_EV_KEY && unsafe { e.u.key.repeat == 1 && e.u.key.keycode == keycode }
+        })
     }
 
     pub fn is_closed(&self) -> bool {
