@@ -28,6 +28,8 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "haikuterm.h"
 #include "haiku_support.h"
 #include "termchar.h"
+#elif defined HAVE_NHWL
+#include "nhwlterm.h"
 #else
 #include "pgtkterm.h"
 #endif
