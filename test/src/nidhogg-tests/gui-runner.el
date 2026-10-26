@@ -6,6 +6,9 @@
 ;;   GLITNIR_GUI_SIZE    WxH of the virtual monitor in device pixels (for the fractional-scale check)
 ;;   GLITNIR_GUI_TESTS   directory holding the *-gui-tests.el files (default: this file's directory)
 ;;   GLITNIR_GUI_SELECT  ERT selector, an Emacs regexp (default: every test)
+;;   GLITNIR_GUI_COMPOSITOR  sway, mutter or recorder (selects the scale rule and the known differences)
+;;   GLITNIR_GUI_RECORDER    the recorder's control socket (recorder only)
+;;   GLITNIR_GUI_KNOWN       the known-differences file (gui-known-differences.eld next to the tests)
 ;; Prints every result to `external-debugging-output', then `kill-emacs' 0 (all as expected) or 1.
 ;; The tests start only once the first frame is visible and has been redisplayed, never inside `command-line'.
 
@@ -20,8 +23,20 @@
 (defun glitnir-gui--scale ()
   (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1")))
 
+(defun glitnir-gui--compositor ()
+  "The compositor gui.sh runs on: \"sway\", \"mutter\" or \"recorder\" (mutter when unset)."
+  (or (getenv "GLITNIR_GUI_COMPOSITOR") "mutter"))
+
 (defun glitnir-gui--scale-ready-p ()
-  "Non-nil once the selected frame sits at the asked scale (the monitor's scale applied)."
+  "Non-nil once the selected frame sits at the asked scale (the monitor's scale applied), by the rule of the compositor."
+  (pcase (glitnir-gui--compositor)
+    ;; Probed 2026-10-26 on the .2 prefix, sway, 2880x1800: scale 1 gives (frame-scale-factor) 1.0 and geometry
+    ;; 2880x1800; 1.25 gives 2.0 and 4608x2880; 1.5 gives 2.0 and 3840x2400; 2 gives 2.0 and 2880x1800.  That is
+    ;; mutter's rule too.  The recorder (profile sway) sends the same wl_output scale and xdg-output size.
+    ((or "sway" "mutter" "recorder") (glitnir-gui--gtk3-scale-ready-p))
+    (c (error "gui-runner: unknown compositor %S" c))))
+
+(defun glitnir-gui--gtk3-scale-ready-p ()
   (let ((s (glitnir-gui--scale)))
     ;; GTK 3 knows only integer scales: it reports ceil(S) and a monitor geometry of the logical size (WxH / S)
     ;; times ceil(S) (S = 1.25 on 2880x1800: 4608x2880), which tells S = 1.25 from S = 2.
@@ -55,6 +70,20 @@
     (dolist (f (directory-files dir t "-gui-tests\\.el\\'"))
       (load f nil t))))
 
+(defun gui-runner-known-differences ()
+  "The tests expected to fail on this compositor, from the file GLITNIR_GUI_KNOWN (see its header)."
+  (let ((file (getenv "GLITNIR_GUI_KNOWN")))
+    (when (and file (file-readable-p file))
+      (with-temp-buffer
+        (insert-file-contents file)
+        (cdr (assoc (glitnir-gui--compositor) (read (current-buffer))))))))
+
+(defun glitnir-gui--apply-known-differences ()
+  "Make the known differences expected failures (before `ert-run-tests')."
+  (dolist (name (gui-runner-known-differences))
+    (when (ert-test-boundp name)
+      (setf (ert-test-expected-result-type (ert-get-test name)) :failed))))
+
 (defun glitnir-gui--report (event-type &rest args)
   (pcase event-type
     ('test-ended
@@ -69,6 +98,7 @@
   (glitnir-gui--wait-for-scale)
   (glitnir-gui--wait-for-first-paint)
   (glitnir-gui--load-tests)
+  (glitnir-gui--apply-known-differences)
   (let* ((stats (ert-run-tests (or (getenv "GLITNIR_GUI_SELECT") t) #'glitnir-gui--report))
          (n (ert-stats-total stats)) (bad (ert-stats-completed-unexpected stats)))
     (glitnir-gui--say "Ran %d tests, %d results as expected, %d unexpected" n (- n bad) bad)
