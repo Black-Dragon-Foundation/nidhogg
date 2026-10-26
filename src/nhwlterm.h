@@ -207,6 +207,9 @@ struct nhwl_display_info
 /* This is a chain of structures for all the displays currently in use.  */
 extern struct nhwl_display_info *x_display_list;
 
+#define NHWL_PENDING_MAX 32	/* damage rectangles kept per present */
+#define NHWL_HIST 4		/* presents whose damage repairs an old buffer */
+
 struct nhwl_output
 {
   struct frame *frame;
@@ -233,6 +236,18 @@ struct nhwl_output
   cairo_surface_t *cr_surface;
   cairo_t *cr_context;
   int cr_width, cr_height;
+
+  /* Glitnir's scene of this frame: its id (0: none yet), the size and scale
+     it was told, the damage committed but not yet presented, and the
+     damage of the last presents (to repair an older buffer).  */
+  uint64_t glitnir_id;
+  int glitnir_w, glitnir_h;
+  uint32_t glitnir_s120;
+  GlitnirRect pending[NHWL_PENDING_MAX];
+  int npending;
+  GlitnirRect hist[NHWL_HIST][NHWL_PENDING_MAX];
+  int nhistn[NHWL_HIST];
+  int nhist;
 
   /* Cursors (the shell's pointer shape plus one)  */
   Emacs_Cursor current_cursor;
@@ -416,6 +431,36 @@ extern void nhwl_set_cr_source_with_gc_background (struct frame *, Emacs_GC *,
 extern void nhwl_set_cr_source_with_color (struct frame *, unsigned long,
 					   bool);
 extern void nhwl_present (struct frame *);
+
+/* nhwldraw.c: drawing, the backing and Glitnir.  */
+extern void nhwl_scroll_run (struct window *, struct run *);
+extern void nhwl_draw_fringe_bitmap (struct window *, struct glyph_row *,
+				     struct draw_fringe_bitmap_params *);
+extern void nhwl_define_fringe_bitmap (int, unsigned short *, int, int);
+extern void nhwl_destroy_fringe_bitmap (int);
+extern void nhwl_draw_glyph_string (struct glyph_string *);
+extern void nhwl_draw_window_cursor (struct window *, struct glyph_row *, int,
+				     int, enum text_cursor_kinds, int, bool,
+				     bool);
+extern void nhwl_draw_vertical_window_border (struct window *, int, int, int);
+extern void nhwl_draw_window_divider (struct window *, int, int, int, int);
+extern void nhwl_fill_background_by_face (struct frame *, struct face *, int,
+					  int, int, int);
+extern void nhwl_damage (struct frame *, int, int, int, int);
+extern void nhwl_damage_internal_border (struct frame *);
+extern void nhwl_backing_resize (struct frame *);
+extern void nhwl_glitnir_ensure (struct frame *);
+extern void nhwl_glitnir_forget (struct frame *);
+extern void nhwl_glitnir_commit (struct frame *);
+extern void nhwl_glitnir_compose (struct frame *, const NhShellBuffer *);
+extern void nhwl_glitnir_presented (struct frame *);
+extern void nhwl_glitnir_scroll (struct frame *, struct window *, int, int,
+				 int, int, int);
+extern void nhwl_damage_glyphs (struct glyph_string *);
+extern void nhwl_damage_cursor (struct window *, struct glyph_row *, bool);
+extern void nhwl_damage_fringe (struct window *,
+				struct draw_fringe_bitmap_params *);
+extern cairo_surface_t *nhwl_snapshot (struct frame *);
 
 /* The names ftcrfont.c and the other Cairo code shared with pgtk use.  */
 #define FRAME_CR_CONTEXT(f) (FRAME_NHWL_OUTPUT (f)->cr_context)
