@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # nhshell's checks: fmt, clippy, tests, licence policy, vendor drift, and the exports of libnhshell.a.
-# Usage: check.sh [--container DISTRO] [--test NAME] [--revendor]     Exit 0 ok, 1 "check.sh: FAIL <check>", 2 usage.
+# Usage: check.sh [--container DISTRO] [--test NAME] [--full] [--revendor]   Exit 0 ok, 1 "check.sh: FAIL <check>", 2 usage.
+# --full adds the slow checks (vendor drift, which needs the network, and the LTO release build with its exports); a
+# task's author check runs without it, integration builds and gates with it.
 # Without --container the host's cargo runs (CI, macOS).  With it, podman runs a memory-capped container (2 GiB) that
 # installs cargo, clippy, rustfmt and the -devel packages; CARGO_HOME and CARGO_TARGET_DIR live under
 # $NHSHELL_CARGO_DIR (default $T/nhshell-cargo), the package cache under $NIDHOGG_BUILD_PKG_CACHE when set.  The
@@ -8,13 +10,14 @@
 # The vendor-drift check and --revendor use cargo-vendor-filterer, installed into $CARGO_HOME/bin on first use.
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-DISTRO="" TEST="" INNER=0 REVENDOR=0
-usage() { echo "usage: check.sh [--container DISTRO] [--test NAME] [--revendor]" >&2; exit 2; }
+DISTRO="" TEST="" INNER=0 REVENDOR=0 FULL=0
+usage() { echo "usage: check.sh [--container DISTRO] [--test NAME] [--full] [--revendor]" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case $1 in
     --container) [ $# -ge 2 ] || usage; DISTRO=$2; shift 2 ;;
     --test) [ $# -ge 2 ] || usage; TEST=$2; shift 2 ;;
     --revendor) REVENDOR=1; shift ;;
+    --full) FULL=1; shift ;;
     --inner) INNER=1; shift ;;
     *) usage ;;
   esac
@@ -41,7 +44,7 @@ if [ -n "$DISTRO" ] && [ "$INNER" = 0 ]; then
   trap cleanup EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  inner="dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install cargo rust clippy rustfmt gcc binutils diffutils pkgconf-pkg-config openssl-devel cmake wayland-devel libxkbcommon-devel pixman-devel >/dev/null && (dnf -y install cargo-deny >/dev/null 2>&1 || true) && bash /nh/shell/check.sh --inner${TEST:+ --test $TEST}$([ "$REVENDOR" = 1 ] && echo ' --revendor')"
+  inner="dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install cargo rust clippy rustfmt gcc binutils diffutils pkgconf-pkg-config openssl-devel cmake wayland-devel libxkbcommon-devel pixman-devel >/dev/null && (dnf -y install cargo-deny >/dev/null 2>&1 || true) && bash /nh/shell/check.sh --inner${TEST:+ --test $TEST}$([ "$REVENDOR" = 1 ] && echo ' --revendor')$([ "$FULL" = 1 ] && echo ' --full')"
   podman run --rm --name "$NAME" --memory 2g --memory-swap 2g \
     -v "$NH:/nh:$MODE,Z" -v "$CARGO_DIR:/cargo:Z" "${EXTRA[@]}" \
     -e CARGO_HOME=/cargo/home -e CARGO_TARGET_DIR=/cargo/target -e CARGO_BUILD_JOBS=2 \
@@ -92,6 +95,7 @@ if command -v cargo-deny >/dev/null 2>&1; then
 else
   echo "check.sh: cargo-deny not on PATH, skipping the licence check"
 fi
+[ "$FULL" = 1 ] || { echo "check.sh: ok (without --full: no vendor drift, no release build)"; exit 0; }
 # vendor drift: vendor a copy from crates.io (network), compare with vendor/
 ensure_filterer
 copy=$CARGO_TARGET_DIR/vendor-check
