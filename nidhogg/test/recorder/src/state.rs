@@ -1,7 +1,7 @@
 //! The compositor state: Smithay's compositor, shm and xdg-shell states plus the globals a profile lists, each at
 //! `min(profile version, the version this recorder supports)`.
-use crate::log::{BufferInfo, Commit, Log, Viewport};
-use calloop::LoopSignal;
+use crate::log::{BufferInfo, Commit, DamageRect, Log, Viewport};
+use calloop::{LoopHandle, LoopSignal};
 use serde::Deserialize;
 use smithay::delegate_compositor;
 use smithay::delegate_output;
@@ -10,7 +10,8 @@ use smithay::wayland::alpha_modifier::AlphaModifierState;
 use smithay::wayland::cursor_shape::CursorShapeManagerState;
 use smithay::input::{Seat, SeatState};
 use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
-use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
+use smithay::backend::renderer::pixman::PixmanRenderer;
+use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason, ObjectId};
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_compositor::WlCompositor;
 use smithay::reexports::wayland_server::protocol::wl_keyboard::WlKeyboard;
@@ -128,15 +129,28 @@ pub struct State {
     pub surfaces: Vec<WlSurface>,
     pub toplevels: Vec<ToplevelSurface>,
     pub popups: Vec<PopupSurface>,
-    /// Newest configure serial sent, and newest acked since the last commit, by surface protocol id.
-    pub sent_serial: HashMap<u32, u32>,
-    pub acked: HashMap<u32, u32>,
+    /// Newest configure serial sent, and newest acked since the last commit, by surface object (protocol ids are
+    /// per client and reused); an entry goes when its surface is destroyed.
+    pub sent_serial: HashMap<ObjectId, u32>,
+    pub acked: HashMap<ObjectId, u32>,
     pub shell_clients: Vec<Rc<ShellClient>>,
     pub pings: Vec<PendingPing>,
     /// The clock the frame callbacks and presentation feedback report: monotonic base plus the manual advance.
     pub mono_base: Duration,
     pub manual_ns: u64,
     pub present_seq: u64,
+    /// The one renderer snapshots use (its buffer imports live as long as the surfaces).
+    pub renderer: PixmanRenderer,
+    /// The event loop, to queue a reply the control socket cannot take at once.
+    pub handle: LoopHandle<'static, State>,
+}
+
+/// What one commit asked for, taken from the pending state before it is merged into the surface's current one
+/// (Smithay's merge accumulates damage and frame callbacks until the renderer takes them).
+#[derive(Default)]
+struct CommitRequest {
+    damage: Vec<DamageRect>,
+    frame_cb: bool,
 }
 
 /// A `ping` control command waiting for pongs.
@@ -157,7 +171,7 @@ fn max_version(name: &str) -> Option<u32> {
         "zwp_text_input_manager_v3" => 1,
         "wp_cursor_shape_manager_v1" => 2,
         "wp_alpha_modifier_v1" => 1,
-        "wl_output" => 4,
+        "wl_output" => 4, // Smithay's fixed version: a lower profile value is served as 4 (and reported as 4)
         "xdg_wm_base" => 6,
         "zxdg_decoration_manager_v1" => 1,
         "wp_fractional_scale_manager_v1" => 1,
@@ -174,6 +188,7 @@ impl State {
         clock: Clock,
         output: (i32, i32, u32),
         signal: LoopSignal,
+        handle: LoopHandle<'static, State>,
     ) -> State {
         // Smithay's states create their globals at its maximum versions; drop those and create the profile's.
         let compositor_state = CompositorState::new_v6::<State>(dh);
@@ -256,7 +271,11 @@ impl State {
                 );
                 continue;
             };
-            let v = want.min(max);
+            let v = if name == "wl_output" {
+                max
+            } else {
+                want.min(max)
+            };
             match name.as_str() {
                 "wl_compositor" => {
                     dh.create_global::<State, WlCompositor, _>(v, ());
@@ -275,6 +294,8 @@ impl State {
                     dh.create_global::<State, ZwpTextInputManagerV3, _>(v, ());
                 }
                 "wl_output" => {
+                    // Smithay creates wl_output at its one version (4); `max_version` says so, and `globals` below
+                    // reports it
                     out.create_global::<State>(dh);
                 }
                 "xdg_wm_base" => {
@@ -338,6 +359,8 @@ impl State {
             mono_base,
             manual_ns: 0,
             present_seq: 0,
+            renderer: PixmanRenderer::new().expect("the pixman renderer"),
+            handle,
         }
     }
 
@@ -345,7 +368,26 @@ impl State {
         self.signal.stop();
     }
 
-    /// Data for a freshly accepted client; the client is listed with its pid when the peer credentials say.
+    /// Fill in a new client's pid from its peer credentials.
+    pub fn note_client_pid(&mut self, client: &Client) {
+        let (Some(data), Ok(cred)) = (
+            client.get_data::<ClientState>(),
+            client.get_credentials(&self.display),
+        ) else {
+            return;
+        };
+        if let Some(c) = self
+            .clients
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .find(|c| c.id == data.id)
+        {
+            c.pid = Some(cred.pid);
+        }
+    }
+
+    /// Data for a freshly accepted client; `note_client_pid` lists it with its pid once it is inserted.
     pub fn new_client_data(&mut self) -> ClientState {
         let id = self.next_client;
         self.next_client += 1;
@@ -378,6 +420,35 @@ impl CompositorHandler for State {
         self.surfaces.retain(|s| s.is_alive());
         self.surfaces.push(surface.clone());
         // a surface born at a scale above 1 hears it at once
+        compositor::add_pre_commit_hook::<State, _>(surface, |_, _, surface| {
+            compositor::with_states(surface, |states| {
+                let request = {
+                    let mut cached = states.cached_state.get::<SurfaceAttributes>();
+                    let pending = cached.pending();
+                    CommitRequest {
+                        damage: pending
+                            .damage
+                            .iter()
+                            .map(|d| match d {
+                                Damage::Surface(r) => {
+                                    DamageRect::new("surface", r.loc.x, r.loc.y, r.size.w, r.size.h)
+                                }
+                                Damage::Buffer(r) => {
+                                    DamageRect::new("buffer", r.loc.x, r.loc.y, r.size.w, r.size.h)
+                                }
+                            })
+                            .collect(),
+                        frame_cb: !pending.frame_callbacks.is_empty(),
+                    }
+                };
+                states
+                    .data_map
+                    .insert_if_missing_threadsafe(|| Mutex::new(CommitRequest::default()));
+                if let Some(slot) = states.data_map.get::<Mutex<CommitRequest>>() {
+                    *slot.lock().unwrap() = request;
+                }
+            })
+        });
         compositor::with_states(surface, |states| {
             compositor::send_surface_state(
                 surface,
@@ -403,7 +474,7 @@ impl CompositorHandler for State {
             Some(other) => other.to_string(),
         };
         let parent = compositor::get_parent(surface).map(|p| p.id().protocol_id());
-        let (buffer, buffer_scale, damage, frame_cb, viewport, presentation, pos, title, app_id) =
+        let (buffer, buffer_scale, request, viewport, presentation, pos, title, app_id) =
             compositor::with_states(surface, |states| {
                 let viewport = {
                     let mut cached = states.cached_state.get::<ViewportCachedState>();
@@ -453,19 +524,15 @@ impl CompositorHandler for State {
                     }
                     _ => None,
                 };
-                let damage = attrs
-                    .damage
-                    .iter()
-                    .map(|d| match d {
-                        Damage::Surface(r) => [r.loc.x, r.loc.y, r.size.w, r.size.h],
-                        Damage::Buffer(r) => [r.loc.x, r.loc.y, r.size.w, r.size.h],
-                    })
-                    .collect();
+                let request = states
+                    .data_map
+                    .get::<Mutex<CommitRequest>>()
+                    .map(|m| std::mem::take(&mut *m.lock().unwrap()))
+                    .unwrap_or_default();
                 (
                     buffer,
                     attrs.buffer_scale,
-                    damage,
-                    !attrs.frame_callbacks.is_empty(),
+                    request,
                     viewport,
                     presentation,
                     pos,
@@ -485,8 +552,8 @@ impl CompositorHandler for State {
             None
         };
         on_commit_buffer_handler::<State>(surface);
-        let ack_serial = self.acked.remove(&sid);
-        let ack_stale = match (ack_serial, self.sent_serial.get(&sid)) {
+        let ack_serial = self.acked.remove(&surface.id());
+        let ack_stale = match (ack_serial, self.sent_serial.get(&surface.id())) {
             (Some(a), Some(&newest)) => a < newest,
             _ => false,
         };
@@ -513,8 +580,8 @@ impl CompositorHandler for State {
             buffer_scale,
             viewport,
             pos,
-            damage,
-            frame_cb,
+            damage: request.damage,
+            frame_cb: request.frame_cb,
             presentation,
             ack_serial,
             ack_stale,
@@ -527,6 +594,11 @@ impl CompositorHandler for State {
         };
         self.log.push(commit);
         self.initial_configure(surface);
+    }
+
+    fn destroyed(&mut self, surface: &WlSurface) {
+        self.sent_serial.remove(&surface.id());
+        self.acked.remove(&surface.id());
     }
 }
 

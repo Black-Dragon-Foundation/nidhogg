@@ -63,3 +63,26 @@ fn subsurface_composited_at_pos() {
     assert_eq!(at(20, 20), 0xff33_6699);
     assert_eq!(at(10, 30), 0xff33_6699);
 }
+
+/// The recorder's peak resident memory after snapshots of a 2880x1800 output stays small (the output is 20 MB of
+/// pixels: one image, no copies of it).  NH_RECORDER_BIN=<release binary> with `--nocapture` prints the number.
+#[test]
+fn snapshot_peak_memory_stays_under_50_mb() {
+    let mut env = Env::new("sway", &["--output", "2880x1800@120"]);
+    let (_surface, _xs, _top) = env.toplevel(640, 480);
+    let (w, h, _) = snapshot(&env);
+    assert_eq!((w, h), (2880, 1800));
+    let png = env.rec.dir.join("snap.png");
+    let reply = env
+        .rec
+        .control(json!({"cmd": "snapshot", "path": png, "format": "png"}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    let status = std::fs::read_to_string(format!("/proc/{}/status", env.rec.pid())).unwrap();
+    let kb: u64 = status
+        .lines()
+        .find_map(|l| l.strip_prefix("VmHWM:"))
+        .and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok())
+        .expect("VmHWM");
+    eprintln!("nh-recorder VmHWM after two snapshots: {kb} kB");
+    assert!(kb <= 50 * 1024, "VmHWM {kb} kB");
+}

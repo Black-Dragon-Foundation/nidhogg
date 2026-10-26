@@ -17,6 +17,21 @@ pub struct Viewport {
 }
 
 #[derive(Serialize, Clone, Debug)]
+pub struct DamageRect {
+    pub kind: &'static str,
+    pub rect: [i32; 4],
+}
+
+impl DamageRect {
+    pub fn new(kind: &'static str, x: i32, y: i32, w: i32, h: i32) -> Self {
+        DamageRect {
+            kind,
+            rect: [x, y, w, h],
+        }
+    }
+}
+
+#[derive(Serialize, Clone, Debug)]
 pub struct Commit {
     pub seq: u64,
     pub client: u32,
@@ -27,7 +42,9 @@ pub struct Commit {
     pub buffer_scale: i32,
     pub viewport: Viewport,
     pub pos: Option<[i32; 2]>,
-    pub damage: Vec<[i32; 4]>,
+    /// Each rectangle this commit damaged (not the accumulation of earlier commits), by `surface` or `buffer`
+    /// coordinates.
+    pub damage: Vec<DamageRect>,
     pub frame_cb: bool,
     pub presentation: bool,
     /// The newest configure serial the client acked since its previous commit.
