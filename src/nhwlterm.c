@@ -307,27 +307,15 @@ nhwl_query_frame_background_color (struct frame *f, Emacs_Color *bgcolor)
 		    The backing and the present path
  ***********************************************************************/
 
-/* Adapted from pgtk_begin_cr_clip: the frame's retained surface, device
-   size (the frame's pixel size), created on first use.  */
+/* Adapted from pgtk_begin_cr_clip: the frame's retained backing, device
+   size (the frame's pixel size), made or resized on use.  */
 cairo_t *
 nhwl_begin_cr_clip (struct frame *f)
 {
-  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
-  cairo_t *cr = out->cr_context;
+  cairo_t *cr;
 
-  if (!cr)
-    {
-      int w = max (1, FRAME_PIXEL_WIDTH (f));
-      int h = max (1, FRAME_PIXEL_HEIGHT (f));
-      cairo_surface_t *surface
-	= cairo_image_surface_create (CAIRO_FORMAT_ARGB32, w, h);
-
-      cr = out->cr_context = cairo_create (surface);
-      out->cr_surface = surface;
-      out->cr_width = w;
-      out->cr_height = h;
-    }
-
+  nhwl_backing_resize (f);
+  cr = FRAME_NHWL_OUTPUT (f)->cr_context;
   cairo_save (cr);
   return cr;
 }
@@ -413,22 +401,20 @@ nhwl_set_cr_source_with_color (struct frame *f, unsigned long color,
     }
 }
 
-/* Show the backing as the window's next buffer (until Task 10 the whole
-   of it), then ack the configure the buffer answers.  Nothing is done
-   while a frame callback is pending (the next FRAME_DONE presents what
-   accumulated), while the frame is suspended, or before the compositor's
-   first configure -- except that a configure's ack must reach the
-   compositor, so a pending serial always presents.  */
+/* Show the backing: Glitnir commits the frame's damage, the shell hands
+   out a buffer, Glitnir composes the damage (and what the buffer's age
+   leaves stale) into it, and the buffer is committed, acking the configure
+   it answers.  Nothing is done while a frame callback is pending (the next
+   FRAME_DONE presents what accumulated), while the frame is suspended, or
+   before the compositor's first configure -- except that a configure's ack
+   must reach the compositor, so a pending serial always presents.  */
 void
 nhwl_present (struct frame *f)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
   struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
   NhShellBuffer buf;
-  GlitnirRect damage;
-  int w, h, y, rc;
-  const unsigned char *src;
-  int src_stride, row;
+  int rc;
 
   if (!dpyinfo->shell || !out->window || !out->configured)
     return;
@@ -440,40 +426,12 @@ nhwl_present (struct frame *f)
       return;
     }
 
-  w = max (1, FRAME_PIXEL_WIDTH (f));
-  h = max (1, FRAME_PIXEL_HEIGHT (f));
-
   block_input ();
-  if (!out->cr_context)
-    {
-      /* Nothing drawn yet: a blank backing in the frame's background.  */
-      cairo_t *cr = nhwl_begin_cr_clip (f);
+  nhwl_backing_resize (f);
+  nhwl_glitnir_commit (f);
 
-      nhwl_set_cr_source_with_color (f, out->background_color, true);
-      cairo_paint (cr);
-      nhwl_end_cr_clip (f);
-    }
-  else if (out->cr_width != w || out->cr_height != h)
-    {
-      /* The frame changed size since the backing was made: carry the old
-	 pixels over (they are redrawn by the garbaged frame).  */
-      cairo_surface_t *old = out->cr_surface;
-      cairo_t *old_cr = out->cr_context;
-      cairo_surface_t *surface
-	= cairo_image_surface_create (CAIRO_FORMAT_ARGB32, w, h);
-      cairo_t *cr = cairo_create (surface);
-
-      cairo_set_source_surface (cr, old, 0, 0);
-      cairo_paint (cr);
-      cairo_destroy (old_cr);
-      cairo_surface_destroy (old);
-      out->cr_surface = surface;
-      out->cr_context = cr;
-      out->cr_width = w;
-      out->cr_height = h;
-    }
-
-  rc = nhshell_present_begin (dpyinfo->shell, out->window, w, h, &buf);
+  rc = nhshell_present_begin (dpyinfo->shell, out->window, out->cr_width,
+			      out->cr_height, &buf);
   if (rc < 0)
     {
       /* Both buffers busy: try again at the next FRAME_DONE.  */
@@ -482,13 +440,7 @@ nhwl_present (struct frame *f)
       return;
     }
 
-  cairo_surface_flush (out->cr_surface);
-  src = cairo_image_surface_get_data (out->cr_surface);
-  src_stride = cairo_image_surface_get_stride (out->cr_surface);
-  row = min (w, buf.w) * 4;
-  for (y = 0; y < min (h, buf.h); y++)
-    memcpy (buf.pixels + (ptrdiff_t) y * buf.stride,
-	    src + (ptrdiff_t) y * src_stride, row);
+  nhwl_glitnir_compose (f, &buf);
 
   if (out->serial_pending)
     {
@@ -496,15 +448,13 @@ nhwl_present (struct frame *f)
       out->serial_pending = false;
     }
 
-  damage.x = 0;
-  damage.y = 0;
-  damage.w = buf.w;
-  damage.h = buf.h;
-  rc = nhshell_present_commit (dpyinfo->shell, out->window, &damage, 1);
+  rc = nhshell_present_commit (dpyinfo->shell, out->window, out->pending,
+			       out->npending);
   if (rc >= 0)
     {
       out->frame_pending++;
       out->present_owed = false;
+      nhwl_glitnir_presented (f);
     }
   else
     out->present_owed = true;
@@ -520,6 +470,7 @@ nhwl_clear_area (struct frame *f, int x, int y, int width, int height)
   eassert (width > 0 && height > 0);
 
   cr = nhwl_begin_cr_clip (f);
+  nhwl_damage (f, x, y, width, height);
   nhwl_set_cr_source_with_color (f, FRAME_NHWL_OUTPUT (f)->background_color,
 				 true);
   cairo_rectangle (cr, x, y, width, height);
@@ -548,7 +499,7 @@ nhwl_clear_frame (struct frame *f)
 }
 
 /* Adapted from fill_background_by_face (pgtkterm.c).  */
-static void
+void
 nhwl_fill_background_by_face (struct frame *f, struct face *face, int x,
 			      int y, int width, int height)
 {
@@ -604,6 +555,7 @@ nhwl_clear_under_internal_border (struct frame *f)
       struct face *face = FACE_FROM_ID_OR_NULL (f, face_id);
 
       block_input ();
+      nhwl_damage_internal_border (f);
 
       if (face)
 	{
@@ -630,7 +582,7 @@ nhwl_clear_under_internal_border (struct frame *f)
 
 
 /***********************************************************************
-		 The redisplay interface (Task 10 draws)
+		 The redisplay interface
  ***********************************************************************/
 
 /* Adapted from pgtk_compute_glyph_string_overhangs.  */
@@ -669,52 +621,6 @@ nhwl_compute_glyph_string_overhangs (struct glyph_string *s)
       s->right_overhang = s->cmp->rbearing - s->cmp->pixel_width;
       s->left_overhang = -s->cmp->lbearing;
     }
-}
-
-/* The drawing slots below are Task 10's (adapted from pgtkterm.c onto
-   this backing); until then a frame shows its background and no text.  */
-
-static void
-nhwl_scroll_run (struct window *w, struct run *run)
-{
-}
-
-static void
-nhwl_draw_fringe_bitmap (struct window *w, struct glyph_row *row,
-			 struct draw_fringe_bitmap_params *p)
-{
-}
-
-static void
-nhwl_define_fringe_bitmap (int which, unsigned short *bits, int h, int wd)
-{
-}
-
-static void
-nhwl_destroy_fringe_bitmap (int which)
-{
-}
-
-static void
-nhwl_draw_glyph_string (struct glyph_string *s)
-{
-}
-
-static void
-nhwl_draw_window_cursor (struct window *w, struct glyph_row *glyph_row, int x,
-			 int y, enum text_cursor_kinds cursor_type,
-			 int cursor_width, bool on_p, bool active_p)
-{
-}
-
-static void
-nhwl_draw_vertical_window_border (struct window *w, int x, int y0, int y1)
-{
-}
-
-static void
-nhwl_draw_window_divider (struct window *w, int x0, int x1, int y0, int y1)
-{
 }
 
 static void
@@ -1193,6 +1099,7 @@ nhwl_free_frame_resources (struct frame *f)
   out->window = 0;
 
   nhwl_cr_destroy_frame_context (f);
+  nhwl_glitnir_forget (f);
 
   xfree (f->output_data.nhwl);
   f->output_data.nhwl = NULL;
