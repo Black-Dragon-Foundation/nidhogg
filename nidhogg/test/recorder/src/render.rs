@@ -12,6 +12,7 @@ use smithay::backend::renderer::pixman::PixmanRenderer;
 use smithay::backend::renderer::utils::draw_render_elements;
 use smithay::backend::renderer::{Bind, Color32F, Frame, Offscreen, Renderer};
 use smithay::utils::{Rectangle, Transform};
+use std::io::Write;
 
 /// `{"cmd":"snapshot","path":P,"format":"bgra|png"}`: replies `{"ok":true,"w":W,"h":H}`.
 pub fn snapshot(state: &mut State, req: &Value) -> Value {
@@ -23,24 +24,27 @@ pub fn snapshot(state: &mut State, req: &Value) -> Value {
         Some("png") => true,
         _ => return err("\"format\" must be \"bgra\" or \"png\""),
     };
-    match render(state) {
-        Ok((w, h, bytes)) => {
-            let written = if png {
-                write_png(path, w, h, &bytes)
-            } else {
-                std::fs::write(path, &bytes).map_err(|e| e.to_string())
-            };
-            match written {
-                Ok(()) => json!({"ok": true, "w": w, "h": h}),
-                Err(e) => err(format!("{path}: {e}")),
-            }
+    let result = render(state, |w, h, stride, data| {
+        if png {
+            write_png(path, w, h, stride, data)
+        } else {
+            write_bgra(path, w, h, stride, data)
         }
+    });
+    match result {
+        Ok((w, h, Ok(()))) => json!({"ok": true, "w": w, "h": h}),
+        Ok((_, _, Err(e))) => err(format!("{path}: {e}")),
         Err(e) => err(e),
     }
 }
 
-/// The output's pixels as BGRA bytes (premultiplied ARGB32, little-endian), and the buffer size.
-fn render(state: &mut State) -> Result<(u32, u32, Vec<u8>), String> {
+/// Composite the output into one offscreen image and hand `write` its pixels in place: (W, H, stride in bytes, the
+/// BGRA data, premultiplied ARGB32 little-endian).  The pixels are never copied: the image is the only full-output
+/// buffer.
+fn render<T>(
+    state: &mut State,
+    write: impl FnOnce(u32, u32, usize, &[u8]) -> T,
+) -> Result<(u32, u32, T), String> {
     state.toplevels.retain(|t| t.alive());
     let mode = state
         .output
@@ -48,12 +52,12 @@ fn render(state: &mut State) -> Result<(u32, u32, Vec<u8>), String> {
         .ok_or("the output has no mode")?;
     let (w, h) = (mode.size.w, mode.size.h);
     let scale = f64::from(state.scale120) / 120.0;
-    let mut renderer = PixmanRenderer::new().map_err(|e| e.to_string())?;
+    let renderer = &mut state.renderer;
     // toplevels are stacked in creation order; elements are listed front to back
     let mut elements: Vec<WaylandSurfaceRenderElement<PixmanRenderer>> = Vec::new();
     for t in state.toplevels.iter().rev() {
         elements.extend(render_elements_from_surface_tree(
-            &mut renderer,
+            renderer,
             t.wl_surface(),
             (0, 0),
             scale,
@@ -77,35 +81,48 @@ fn render(state: &mut State) -> Result<(u32, u32, Vec<u8>), String> {
             .map_err(|e| e.to_string())?;
         let _ = frame.finish().map_err(|e| e.to_string())?;
     }
-    let (stride, row) = (image.stride(), w as usize * 4);
+    let stride = image.stride();
     // SAFETY: the image owns `stride * h` bytes of pixel data, valid while `image` lives
     let data =
         unsafe { std::slice::from_raw_parts(image.data().cast::<u8>(), stride * h as usize) };
-    let mut bytes = Vec::with_capacity(row * h as usize);
-    for y in 0..h as usize {
-        bytes.extend_from_slice(&data[y * stride..y * stride + row]);
-    }
-    Ok((w as u32, h as u32, bytes))
+    Ok((w as u32, h as u32, write(w as u32, h as u32, stride, data)))
 }
 
-fn write_png(path: &str, w: u32, h: u32, bgra: &[u8]) -> Result<(), String> {
+fn write_bgra(path: &str, w: u32, h: u32, stride: usize, data: &[u8]) -> Result<(), String> {
+    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    let mut out = std::io::BufWriter::new(file);
+    let row = w as usize * 4;
+    for y in 0..h as usize {
+        out.write_all(&data[y * stride..y * stride + row])
+            .map_err(|e| e.to_string())?;
+    }
+    out.flush().map_err(|e| e.to_string())
+}
+
+fn write_png(path: &str, w: u32, h: u32, stride: usize, data: &[u8]) -> Result<(), String> {
     let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
     let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
     let mut writer = enc.write_header().map_err(|e| e.to_string())?;
-    let mut rgba = Vec::with_capacity(bgra.len());
-    for p in bgra.as_chunks::<4>().0 {
-        let a = u32::from(p[3]);
-        // premultiplied to straight alpha
-        let un = |c: u8| {
-            if a == 0 || a == 255 {
-                c
-            } else {
-                (u32::from(c) * 255 / a).min(255) as u8
-            }
-        };
-        rgba.extend_from_slice(&[un(p[2]), un(p[1]), un(p[0]), p[3]]);
+    let mut stream = writer.stream_writer().map_err(|e| e.to_string())?;
+    let row = w as usize * 4;
+    let mut rgba = Vec::with_capacity(row);
+    for y in 0..h as usize {
+        rgba.clear();
+        for p in data[y * stride..y * stride + row].as_chunks::<4>().0 {
+            let a = u32::from(p[3]);
+            // premultiplied to straight alpha
+            let un = |c: u8| {
+                if a == 0 || a == 255 {
+                    c
+                } else {
+                    (u32::from(c) * 255 / a).min(255) as u8
+                }
+            };
+            rgba.extend_from_slice(&[un(p[2]), un(p[1]), un(p[0]), p[3]]);
+        }
+        stream.write_all(&rgba).map_err(|e| e.to_string())?;
     }
-    writer.write_image_data(&rgba).map_err(|e| e.to_string())
+    stream.finish().map_err(|e| e.to_string())
 }
