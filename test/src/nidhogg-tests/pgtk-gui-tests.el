@@ -22,6 +22,7 @@
 
 (ert-deftest nidhogg-gui/show-then-hide-stays-hidden ()
   "The race the wait in `pgtk_make_frame_invisible' exists for."
+  :tags '(gnome-smoke)
   (let ((child (make-frame `((parent-frame . ,(selected-frame)) (width . 20) (height . 5)
                              (visibility . nil)))))
     (make-frame-visible child)
@@ -59,6 +60,7 @@
 
 (ert-deftest pgtk-gui/compositor-is-the-asked-one ()
   "The process listening on WAYLAND_DISPLAY's socket is the compositor gui.sh was asked for."
+  :tags '(gnome-smoke)
   (let* ((asked (getenv "GLITNIR_GUI_COMPOSITOR"))
          (sock (expand-file-name (getenv "WAYLAND_DISPLAY") (getenv "XDG_RUNTIME_DIR"))))
     (skip-unless asked)
@@ -67,6 +69,7 @@
 
 (ert-deftest pgtk-gui/grab-matches-snapshot ()
   "The compositor's grab and Glitnir's own snapshot of a fullscreen frame agree (scale 1)."
+  :tags '(gnome-smoke)
   (skip-unless (= (frame-scale-factor) 1))
   (switch-to-buffer "*scratch*")
   (erase-buffer)
@@ -75,9 +78,11 @@
           (propertize (make-string 400 ?\s) 'face '(:background "#3050c0"))
           "\nsome text\n")
   (goto-char (point-min))
-  (gui-runner-wait-settled)
-  (let* ((full (gui-runner-screen-grab))
-         (snap (glitnir-snapshot nil 'raw))
+  (redisplay t)
+  ;; Glitnir's snapshot first, then wait for the compositor to show that frame, then grab (a grab right after redisplay
+  ;; can race Glitnir's paint).
+  (let* ((snap (glitnir-snapshot nil 'raw))
+         (full (progn (gui-runner-wait-settled) (gui-runner-screen-grab)))
          ;; the snapshot is the frame's drawing area; the grab also holds the GTK widgets above it (the menu bar)
          (top (- (nth 1 full) (nth 1 snap)))
          (grab (progn (should (= (nth 0 full) (nth 0 snap)))
@@ -87,5 +92,27 @@
          (total (* (nth 0 snap) (nth 1 snap))))
     (should (<= (car diff) 2))
     (should (<= (cdr diff) (/ total 1000)))))
+
+(ert-deftest pgtk-gui/csd-frame-maps-on-gnome ()
+  "A 600x400 frame that is not fullscreen maps and is visible: on mutter GTK draws its own title bar."
+  :tags '(gnome-smoke)
+  (skip-unless (equal (getenv "GLITNIR_GUI_COMPOSITOR") "mutter"))
+  (let ((f (make-frame '((width . 75) (height . 25) (visibility . t) (fullscreen . nil)))))
+    (unwind-protect
+        (progn
+          (redisplay t)
+          (sit-for 0.3)
+          (should (frame-live-p f))
+          (should (frame-visible-p f))
+          (should (> (frame-pixel-width f) 0))
+          (should (> (frame-pixel-height f) 0))
+          (should-not (frame-parameter f 'fullscreen)))
+      (when (frame-live-p f) (delete-frame f t)))))
+
+(ert-deftest pgtk-gui/clipboard-roundtrip ()
+  "A string put on the CLIPBOARD reads back while the frame is focused."
+  :tags '(gnome-smoke)
+  (gui-set-selection 'CLIPBOARD "nh-smoke")
+  (should (equal (gui-get-selection 'CLIPBOARD 'UTF8_STRING) "nh-smoke")))
 
 ;;; pgtk-gui-tests.el ends here
