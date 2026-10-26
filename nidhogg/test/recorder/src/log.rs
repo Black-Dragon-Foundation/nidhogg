@@ -40,6 +40,10 @@ pub struct Commit {
     pub decoration: Option<String>,
     pub title: Option<String>,
     pub app_id: Option<String>,
+    /// A toplevel's or popup's window geometry (`xdg_surface.set_window_geometry`, surface-local logical
+    /// `[x, y, w, h]`): where the window sits inside its buffer (GTK's client-side shadow lies outside it); null when
+    /// the client never set one.
+    pub geometry: Option<[i32; 4]>,
     pub t_ns: u64,
 }
 
