@@ -27,6 +27,20 @@ fn shell_configure_states_reach_the_client() {
 }
 
 #[test]
+fn shell_close_reaches_the_client() {
+    let mut env = Env::new("sway", &[]);
+    let _top = env.toplevel(200, 100);
+    let reply = env
+        .rec
+        .control(json!({"cmd": "close", "surface": "focused"}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    env.roundtrip();
+    assert_eq!(env.client.closes, 1);
+    let reply = env.rec.control(json!({"cmd": "close", "surface": 9999}));
+    assert_eq!(reply["ok"], false, "{reply}");
+}
+
+#[test]
 fn shell_configure_stale_ack_is_logged_as_stale() {
     let mut env = Env::new("sway", &[]);
     let (surface, xs, _top) = env.toplevel(200, 100);
