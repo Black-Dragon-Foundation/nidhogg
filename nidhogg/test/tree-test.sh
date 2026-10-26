@@ -192,4 +192,28 @@ hits=$(git ls-files nidhogg .github README.md | while IFS= read -r f; do
 
 flag_rule
 
+# Adapted-from rule: every file under nidhogg/ and src/ with an Adapted-from line (colon, then a source) names a '## <source>'
+# entry of nidhogg/THIRD_PARTY.md, and every entry is named by at least one file.  (Pattern in two halves, as above.)
+third=nidhogg/THIRD_PARTY.md
+apat='Adapted''-from:'
+entries=$(sed -n 's/^## *//p' "$third" 2>/dev/null | sed -E 's/[[:space:]]+$//')
+used=""
+while IFS= read -r f; do
+  [ "$f" = "$third" ] && continue
+  [ -f "$f" ] || continue
+  while IFS= read -r src; do
+    src=$(printf '%s' "$src" | sed -E "s/.*${apat}[[:space:]]*//; s/[[:space:]]*(\*\/|-->)?[[:space:]]*\$//")
+    if printf '%s\n' "$entries" | grep -qxF -- "$src"; then
+      used="$used
+$src"
+    else
+      fail "$f: Adapted-from not in THIRD_PARTY.md"
+    fi
+  done < <(grep -Ia -- "$apat" "$f")
+done < <(git ls-files nidhogg src)
+while IFS= read -r e; do
+  [ -n "$e" ] || continue
+  printf '%s\n' "$used" | grep -qxF -- "$e" || fail "$third: entry '$e' is named by no file"
+done <<< "$entries"
+
 exit "$fails"
