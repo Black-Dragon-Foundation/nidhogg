@@ -18,6 +18,7 @@ serde_json = "1"
 
 [dev-dependencies]
 wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
 
 [profile.release]
 opt-level = 2
