@@ -1445,10 +1445,11 @@ DEFUN ("tool-bar-get-system-style", Ftool_bar_get_system_style,
   return Qnil;
 }
 
-/* The selection primitives of pgtk-win.el (W0-6: not in W0).  */
+/* The selection primitives of pgtk-win.el (W0-6: not in W0, they arrive in
+   W1).  Until then nothing is owned and nothing exists, quietly: every kill
+   calls `gui-select-text', so an error here would break editing.  */
 
-#define NHWL_NO_SELECTIONS \
-  error ("nidhogg-wayland: selections arrive in W1")
+#define NHWL_NO_SELECTIONS return Qnil
 
 DEFUN ("pgtk-own-selection-internal", Fpgtk_own_selection_internal,
        Spgtk_own_selection_internal, 2, 3, 0,
