@@ -80,7 +80,13 @@ fi
 
 cargo fmt --check                                                   || fail fmt
 cargo clippy --all-targets --offline --locked -- -D warnings        || fail clippy
-cargo test --offline --locked ${TEST:+"$TEST"}                      || fail test
+# NAME may list several filters separated by '|' or '\|' (cargo's filter is a substring, not a regexp)
+filters=()
+if [ -n "$TEST" ]; then
+  IFS='|' read -ra parts <<< "${TEST//\\/}"
+  for p in "${parts[@]}"; do [ -n "$p" ] && filters+=("$p"); done
+fi
+cargo test --offline --locked -- "${filters[@]}"                     || fail test
 if command -v cargo-deny >/dev/null 2>&1; then
   cargo deny check licenses bans sources                            || fail deny
 else
