@@ -52,11 +52,12 @@ tall: GTK's menu bar and tool bar sit above the drawing area) and whose buffer h
                         (recorder-gui--commits))))
     (should hit)))
 
-(ert-deftest recorder-gui/pgtk-acks-maximize ()
-  (skip-unless (getenv "GLITNIR_GUI_RECORDER"))
+(defun recorder-gui--configure-and-ack (size states)
+  "Send the frame's toplevel a configure of SIZE (a vector [W H]) and STATES; wait (2 s at most) for the commit that
+acks it and return that commit (nil when none came)."
   (let* ((seq-before (plist-get (gui-runner-recorder '(:cmd "log" :since 0)) :next))
          (serial (plist-get (gui-runner-recorder
-                             '(:cmd "configure" :surface "focused" :size [800 600] :states ["maximized" "activated"]))
+                             (list :cmd "configure" :surface "focused" :size size :states states))
                             :serial))
          (acked nil)
          (deadline (+ (float-time) 2)))
@@ -66,9 +67,18 @@ tall: GTK's menu bar and tool bar sit above the drawing area) and whose buffer h
                               (and (>= (plist-get c :seq) seq-before)
                                    (eql (plist-get c :ack_serial) serial)))
                             (recorder-gui--commits))))
-    (should acked)
-    (should-not (eq (plist-get acked :ack_stale) t))
-    (should (eq (frame-parameter nil 'fullscreen) 'maximized))))
+    acked))
+
+(ert-deftest recorder-gui/pgtk-acks-maximize ()
+  (skip-unless (getenv "GLITNIR_GUI_RECORDER"))
+  (pcase-let ((`(,_x ,_y ,w ,h) (recorder-gui--geometry (recorder-gui--frame-toplevel))))
+    (unwind-protect
+        (let ((acked (recorder-gui--configure-and-ack [800 600] ["maximized" "activated"])))
+          (should acked)
+          (should-not (eq (plist-get acked :ack_stale) t))
+          (should (eq (frame-parameter nil 'fullscreen) 'maximized)))
+      ;; the rows after this one run on the fullscreen frame
+      (recorder-gui--configure-and-ack (vector w h) ["fullscreen" "activated"]))))
 
 (defun recorder-gui--wait (pred &optional seconds)
   "Wait up to SECONDS (default 3) for PRED to return non-nil; return its value."
