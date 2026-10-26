@@ -94,6 +94,7 @@ fn main() {
         args.clock,
         args.output,
         event_loop.get_signal(),
+        handle.clone(),
     );
 
     // the Wayland display and its listening socket
@@ -112,7 +113,9 @@ fn main() {
     handle
         .insert_source(listening, |stream, _, state| {
             let data = state.new_client_data();
-            state.display.insert_client(stream, Arc::new(data)).ok();
+            if let Ok(client) = state.display.insert_client(stream, Arc::new(data)) {
+                state.note_client_pid(&client);
+            }
         })
         .unwrap_or_else(|e| die(e.to_string()));
 
@@ -193,7 +196,7 @@ fn add_control_connection(handle: &calloop::LoopHandle<'static, State>, stream: 
                     continue;
                 }
                 if let Some(reply) = control::handle(state, line, stream_ref) {
-                    control::write_reply(stream_ref, &reply);
+                    control::write_reply(state, stream_ref, &reply);
                 }
             }
             Ok(PostAction::Continue)

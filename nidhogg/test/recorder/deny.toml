@@ -11,7 +11,6 @@ allow = [
     "Unicode-3.0",
     "Unlicense",
     "CC0-1.0",
-    "MPL-2.0",
 ]
 # nh-recorder itself (publish = false) is GPL-3.0-or-later, Nidhogg's own licence
 private = { ignore = true }

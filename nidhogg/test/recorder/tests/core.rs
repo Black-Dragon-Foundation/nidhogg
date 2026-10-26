@@ -200,7 +200,10 @@ fn core_commit_is_logged() {
     assert_eq!(c["buffer"]["w"], 64);
     assert_eq!(c["buffer"]["h"], 32);
     assert_eq!(c["buffer"]["stride"], 256);
-    assert_eq!(c["damage"], json!([[0, 0, 64, 32]]));
+    assert_eq!(
+        c["damage"],
+        json!([{"kind": "surface", "rect": [0, 0, 64, 32]}])
+    );
     assert_eq!(c["role"], "none");
     assert_eq!(c["seq"], 1);
     assert_eq!(reply["next"], 2);

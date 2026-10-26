@@ -1,25 +1,54 @@
 //! The control channel: one JSON object per line in, one per line out.  `handle` is the dispatch; later tasks add
 //! commands to its `match`.
 use crate::state::State;
+use calloop::generic::Generic;
+use calloop::{Interest, Mode, PostAction};
 use serde_json::{json, Value};
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::os::unix::net::UnixStream;
 
 pub fn err(msg: impl Into<String>) -> Value {
     json!({"ok": false, "error": msg.into()})
 }
 
-/// Write one reply line on a (non-blocking) control stream.
-pub fn write_reply(stream: &UnixStream, reply: &Value) {
+/// Write one reply line on a (non-blocking) control stream.  What the socket does not take at once is queued on the
+/// event loop and written when the socket is writable; the loop never waits on a slow reader.  (A client sends one
+/// command and reads its reply before the next, so replies to one stream do not overtake each other.)
+pub fn write_reply(state: &State, stream: &UnixStream, reply: &Value) {
     let mut line = reply.to_string();
     line.push('\n');
     let mut w = stream;
-    let mut bytes = line.as_bytes();
-    while !bytes.is_empty() {
-        match w.write(bytes) {
-            Ok(n) => bytes = &bytes[n..],
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::yield_now(),
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+    let mut done = 0;
+    while done < line.len() {
+        match w.write(&line.as_bytes()[done..]) {
+            Ok(n) => done += n,
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                let Ok(clone) = stream.try_clone() else {
+                    return;
+                };
+                let bytes = line.into_bytes();
+                let _ = state.handle.insert_source(
+                    Generic::new(clone, Interest::WRITE, Mode::Level),
+                    move |_, s, _| {
+                        let mut w: &UnixStream = s;
+                        loop {
+                            match w.write(&bytes[done..]) {
+                                Ok(n) => done += n,
+                                Err(e) if e.kind() == ErrorKind::Interrupted => {}
+                                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                                    return Ok(PostAction::Continue)
+                                }
+                                Err(_) => return Ok(PostAction::Remove),
+                            }
+                            if done == bytes.len() {
+                                return Ok(PostAction::Remove);
+                            }
+                        }
+                    },
+                );
+                return;
+            }
             Err(_) => return,
         }
     }
