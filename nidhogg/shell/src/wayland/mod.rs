@@ -10,8 +10,8 @@
 //! the socket (no roundtrip, no `blocking_dispatch`).
 
 pub mod conn;
-pub mod output;
 pub mod decor;
+pub mod output;
 pub mod reader;
 pub mod registry;
 pub mod scale;
