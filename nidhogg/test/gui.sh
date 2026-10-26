@@ -24,7 +24,8 @@
 #   --wayland-debug F   Emacs's stderr (WAYLAND_DEBUG=client protocol trace and the test output) goes to F
 #   --env K=V           an extra environment variable for Nidhogg (repeatable)
 #   --force-csd         client-side decorations: GTK_CSD=1 for pgtk, NIDHOGG_SHELL_FORCE_CSD=1 for the shell, and
-#                       GLITNIR_GUI_CSD=1 for the runner (on sway a non-fullscreen frame then has its own title bar)
+#                       GLITNIR_GUI_CSD=1 for the runner.  The shell then draws its own title bar on sway; GTK 3
+#                       ignores GTK_CSD there (it asks sway's KDE server-decoration global for server mode)
 #   --timeout SEC       kill the run after SEC seconds (default 300)
 #
 # Exit 0 all tests passed, 1 a failure, a timeout or a session that did not come up, 2 usage.
