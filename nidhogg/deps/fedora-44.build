@@ -34,3 +34,5 @@ libacl-devel
 zlib-ng-compat-devel
 cargo
 rust
+wayland-devel
+libxkbcommon-devel

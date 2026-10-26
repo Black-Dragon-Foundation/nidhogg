@@ -5134,6 +5134,9 @@ extern char const *emacs_wd;
 #if defined (HAVE_X_WINDOWS) || defined (HAVE_PGTK) || defined (HAVE_NS)
 extern bool display_arg;
 #endif
+#ifdef HAVE_NHWL
+extern bool display_arg;
+#endif
 extern Lisp_Object decode_env_path (const char *, const char *, bool);
 extern Lisp_Object empty_unibyte_string, empty_multibyte_string;
 extern AVOID terminate_due_to_signal (int, int);

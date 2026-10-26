@@ -332,8 +332,13 @@ GLITNIR_OBJ=@GLITNIR_OBJ@
 GLITNIR_LIBS=@GLITNIR_LIBS@
 GLITNIR_SRCDIR=@GLITNIR_SRCDIR@
 GLITNIR_ENV=@GLITNIR_ENV@
-GLITNIR_A=glitnir-target/release/libglitnir.a
-GLITNIR_CFLAGS=$(if $(GLITNIR_SRCDIR),-I$(GLITNIR_SRCDIR)/include)
+## Under --with-nidhogg-wayland the library is libnhshell.a (nidhogg/shell, which carries every glitnir_* symbol) and
+## GLITNIR_CRATE_DEPS is the glitnir crate it builds on.
+GLITNIR_CRATE_DEPS=@GLITNIR_CRATE_DEPS@
+GLITNIR_CRATE_INCLUDE=@GLITNIR_CRATE_INCLUDE@
+GLITNIR_A=glitnir-target/release/@GLITNIR_LIBNAME@
+GLITNIR_CFLAGS=$(if $(GLITNIR_SRCDIR),-I$(GLITNIR_SRCDIR)/include) $(GLITNIR_CRATE_INCLUDE)
+NHWL_OBJ=@NHWL_OBJ@
 
 ## emacs.res if HAVE_W32
 EMACSRES = @EMACSRES@
@@ -476,7 +481,7 @@ base_obj = dispnew.o frame.o scroll.o xdisp.o menu.o $(XMENU_OBJ) window.o     \
 	itree.o json.o 							       \
 	$(MSDOS_OBJ) $(MSDOS_X_OBJ) $(NS_OBJ) $(CYGWIN_OBJ) $(FONT_OBJ)        \
 	$(W32_OBJ) $(WINDOW_SYSTEM_OBJ) $(XGSELOBJ)			       \
-	$(HAIKU_OBJ) $(PGTK_OBJ) $(ANDROID_OBJ) $(GLITNIR_OBJ)
+	$(HAIKU_OBJ) $(PGTK_OBJ) $(NHWL_OBJ) $(ANDROID_OBJ) $(GLITNIR_OBJ)
 doc_obj = $(base_obj) $(NS_OBJC_OBJ)
 obj = $(doc_obj) $(HAIKU_CXX_OBJ)
 
@@ -721,7 +726,8 @@ endif
 ## to start if Vinstallation_directory has the wrong value.
 ifeq ($(HAVE_GLITNIR),yes)
 GLITNIR_DEPS = $(wildcard $(GLITNIR_SRCDIR)/Cargo.toml $(GLITNIR_SRCDIR)/Cargo.lock $(GLITNIR_SRCDIR)/build.rs \
-  $(GLITNIR_SRCDIR)/src/*.rs $(GLITNIR_SRCDIR)/src/*/*.rs)
+  $(GLITNIR_SRCDIR)/src/*.rs $(GLITNIR_SRCDIR)/src/*/*.rs \
+  $(if $(GLITNIR_CRATE_DEPS),$(GLITNIR_CRATE_DEPS)/Cargo.toml $(GLITNIR_CRATE_DEPS)/src/*.rs $(GLITNIR_CRATE_DEPS)/src/*/*.rs))
 ## cargo runs offline and locked, with its home and target directory in the build tree (never ~/.cargo).
 $(GLITNIR_A): $(GLITNIR_DEPS)
 	cd $(GLITNIR_SRCDIR) && env CARGO_HOME=$(abs_top_builddir)/src/glitnir-cargo-home $(GLITNIR_ENV) \

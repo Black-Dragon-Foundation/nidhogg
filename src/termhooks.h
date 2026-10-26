@@ -65,6 +65,9 @@ enum output_method
   output_pgtk,
   output_haiku,
   output_android,
+#ifdef HAVE_NHWL
+  output_nhwl,
+#endif
 };
 
 /* Input queue declarations and hooks.  */
@@ -540,6 +543,9 @@ struct terminal
     struct pgtk_display_info *pgtk;		/* pgtkterm.h */
     struct haiku_display_info *haiku;		/* haikuterm.h */
     struct android_display_info *android;	/* androidterm.h */
+#ifdef HAVE_NHWL
+    struct nhwl_display_info *nhwl;		/* nhwlterm.h */
+#endif
   } display_info;
 
 
@@ -618,6 +624,10 @@ struct terminal
   /* On frame F, translate pixel colors to RGB values for the NCOLORS
      colors in COLORS.  Use cached information, if available.  */
 
+  void (*query_colors) (struct frame *f, Emacs_Color *colors, int ncolors);
+#endif
+#ifdef HAVE_NHWL
+  /* Same as above (nhwlterm.c).  */
   void (*query_colors) (struct frame *f, Emacs_Color *colors, int ncolors);
 #endif
   /* Return the current position of the mouse.
@@ -957,6 +967,9 @@ extern struct terminal *terminal_list;
 #elif defined (HAVE_ANDROID)
 #define TERMINAL_FONT_CACHE(t)						\
   (t->type == output_android ? t->display_info.android->name_list_element : Qnil)
+#elif defined (HAVE_NHWL)
+#define TERMINAL_FONT_CACHE(t)						\
+  (t->type == output_nhwl ? t->display_info.nhwl->name_list_element : Qnil)
 #endif
 
 extern struct terminal *decode_live_terminal (Lisp_Object);

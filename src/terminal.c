@@ -468,6 +468,9 @@ return values.  */)
       return Qpc;
     case output_ns:
       return Qns;
+#ifdef HAVE_NHWL
+    case output_nhwl:
+#endif
     case output_pgtk:
       return Qpgtk;
     case output_haiku:

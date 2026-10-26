@@ -34,3 +34,5 @@ libacl1-dev
 zlib1g-dev
 cargo
 rustc
+libwayland-dev
+libxkbcommon-dev

@@ -156,6 +156,12 @@ typedef Emacs_Pixmap XImagePtr;
 typedef XImagePtr XImagePtr_or_DC;
 #endif /* HAVE_PGTK */
 
+#ifdef HAVE_NHWL
+#include "nhwlgui.h"
+typedef struct nhwl_display_info Display_Info;
+typedef Emacs_Pixmap XImagePtr;
+typedef XImagePtr XImagePtr_or_DC;
+#endif /* HAVE_NHWL */
 #ifdef HAVE_HAIKU
 #include "haikugui.h"
 typedef struct haiku_display_info Display_Info;
@@ -1459,6 +1465,9 @@ struct glyph_string
   HDC hdc;
 #endif
 #if defined (HAVE_PGTK)
+  Emacs_GC xgcv;
+#endif
+#ifdef HAVE_NHWL
   Emacs_GC xgcv;
 #endif
 
