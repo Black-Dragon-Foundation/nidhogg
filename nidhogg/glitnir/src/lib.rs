@@ -11,6 +11,7 @@ pub mod geom;
 pub mod kernels;
 #[cfg(all(test, feature = "pixman-oracle"))]
 mod oracle;
+pub mod pool;
 pub mod region;
 pub mod rng;
 pub mod scene;
