@@ -37,7 +37,11 @@ pub fn handle(state: &mut State, line: &str, stream: &UnixStream) -> Option<Valu
     if cmd == "ping" {
         return crate::shell::ping(state, stream);
     }
+    if let Some(reply) = crate::input::command(state, cmd, &req) {
+        return Some(reply);
+    }
     Some(match cmd {
+        "snapshot" => crate::render::snapshot(state, &req),
         "configure" => crate::shell::configure(state, &req),
         "decoration" => crate::shell::decoration(state, &req),
         "scale" => crate::scale::scale(state, &req),

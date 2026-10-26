@@ -6,10 +6,12 @@ use smithay::delegate_xdg_decoration;
 use smithay::delegate_xdg_shell;
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as TState;
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge;
+use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Resource;
-use smithay::utils::{Serial, SERIAL_COUNTER};
+use smithay::utils::{Logical, Point, Serial, SERIAL_COUNTER};
 use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
 use smithay::wayland::shell::xdg::{
     Configure, PopupSurface, PositionerState, ShellClient, ToplevelSurface, XdgShellHandler,
@@ -66,6 +68,25 @@ impl State {
                 }
             }
         }
+    }
+
+    /// An interactive xdg_toplevel request, for the input log (`serial` is null for the requests that carry none).
+    fn log_toplevel(
+        &mut self,
+        t: &ToplevelSurface,
+        req: &str,
+        serial: Option<Serial>,
+        extra: Value,
+    ) {
+        let mut entry = json!({
+            "req": format!("xdg_toplevel.{req}"),
+            "surface": t.wl_surface().id().protocol_id(),
+            "serial": serial.map(u32::from),
+        });
+        if let (Some(e), Some(x)) = (entry.as_object_mut(), extra.as_object()) {
+            e.extend(x.clone());
+        }
+        self.log_input(entry);
     }
 
     fn send_decoration(&mut self, toplevel: &ToplevelSurface) {
@@ -145,6 +166,63 @@ impl XdgShellHandler for State {
     ) {
     }
 
+    fn move_request(&mut self, surface: ToplevelSurface, _: WlSeat, serial: Serial) {
+        self.log_toplevel(&surface, "move", Some(serial), json!({}));
+    }
+
+    fn resize_request(
+        &mut self,
+        surface: ToplevelSurface,
+        _: WlSeat,
+        serial: Serial,
+        edges: ResizeEdge,
+    ) {
+        self.log_toplevel(
+            &surface,
+            "resize",
+            Some(serial),
+            json!({"edges": snake(&format!("{edges:?}"))}),
+        );
+    }
+
+    fn show_window_menu(
+        &mut self,
+        surface: ToplevelSurface,
+        _: WlSeat,
+        serial: Serial,
+        location: Point<i32, Logical>,
+    ) {
+        self.log_toplevel(
+            &surface,
+            "show_window_menu",
+            Some(serial),
+            json!({"location": [location.x, location.y]}),
+        );
+    }
+
+    // the defaults send a configure for these two; keep that
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        self.log_toplevel(&surface, "set_maximized", None, json!({}));
+        surface.send_configure();
+    }
+
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        self.log_toplevel(&surface, "unset_maximized", None, json!({}));
+    }
+
+    fn fullscreen_request(&mut self, surface: ToplevelSurface, _: Option<WlOutput>) {
+        self.log_toplevel(&surface, "set_fullscreen", None, json!({}));
+        surface.send_configure();
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        self.log_toplevel(&surface, "unset_fullscreen", None, json!({}));
+    }
+
+    fn minimize_request(&mut self, surface: ToplevelSurface) {
+        self.log_toplevel(&surface, "set_minimized", None, json!({}));
+    }
+
     fn ack_configure(&mut self, surface: WlSurface, configure: Configure) {
         let serial = match configure {
             Configure::Toplevel(c) => c.serial,
@@ -169,6 +247,18 @@ impl XdgDecorationHandler for State {
 
 delegate_xdg_shell!(State);
 delegate_xdg_decoration!(State);
+
+/// `TopLeft` to `top_left`.
+fn snake(s: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if c.is_uppercase() && i > 0 {
+            out.push('_');
+        }
+        out.extend(c.to_lowercase());
+    }
+    out
+}
 
 /// `{"cmd":"configure","surface":ID|"focused","size":[W,H],"states":[...]}`
 pub fn configure(state: &mut State, req: &Value) -> Value {
