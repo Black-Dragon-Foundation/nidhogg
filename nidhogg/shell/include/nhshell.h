@@ -177,8 +177,10 @@ int32_t nhshell_close (NhShell *sh);
 int32_t nhshell_wake_fd (NhShell *sh);
 int32_t nhshell_caps (NhShell *sh, NhShellCaps *out);
 
-/* Events.  next_event returns 1 with an event in *OUT, 0 when the queue is empty.  dispatch_main runs the work that
-   must happen on the host's thread (configure and surface events).  */
+/* Events.  next_event returns 1 with an event in *OUT, 0 when the queue is empty; when the wake descriptor is readable
+   the host calls it until it returns 0 (which also runs pending main-thread work and clears the descriptor).  After
+   the connection is lost it yields one DISCONNECTED event, then returns NHSHELL_E_DISCONNECTED.  dispatch_main runs
+   the work that must happen on the host's thread (configure and surface events) and flushes.  */
 int32_t nhshell_next_event (NhShell *sh, NhShellEvent *out);
 int32_t nhshell_dispatch_main (NhShell *sh);
 
