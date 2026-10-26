@@ -26,3 +26,5 @@ libacl1
 libattr1
 zlib1g
 libncurses6
+libwayland-client0
+libxkbcommon0
