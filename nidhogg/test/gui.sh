@@ -6,7 +6,7 @@
 #   nidhogg/test/gui.sh --prefix DIR [--compositor sway|mutter|recorder] [--recorder BIN]
 #                       [--recorder-profile sway|kwin|mutter] [--scale S] [--size WxH] [--monitors N]
 #                       [--select REGEXP] [--tests DIR] [--daemon] [--container DISTRO] [--wayland-debug FILE]
-#                       [--env K=V]... [--force-csd] [--timeout SEC]
+#                       [--env K=V]... [--force-csd] [--timeout SEC] [--smoke] [--files GLOB] [--tag TAG]
 #
 #   --prefix DIR        an unpacked Nidhogg (DIR/bin/nidhogg)
 #   --compositor C      sway (default: headless sway, wlroots pixman renderer), mutter (headless mutter) or recorder
@@ -27,6 +27,12 @@
 #                       GLITNIR_GUI_CSD=1 for the runner.  The shell then draws its own title bar on sway; GTK 3
 #                       ignores GTK_CSD there (it asks sway's KDE server-decoration global for server mode)
 #   --timeout SEC       kill the run after SEC seconds (default 300)
+#   --smoke             the GNOME smoke tier: implies --compositor mutter; every *-gui-tests.el file that holds a
+#                       gnome-smoke row runs in its own mutter (restarted per file) at scales 1.25 and 1.5, only its
+#                       gnome-smoke rows, under GLITNIR_GUI_MEMORY (default 2g here); exit 1 if any run fails
+#   --files GLOB        load only the test files matching GLOB (in --tests); also $GLITNIR_GUI_FILES
+#   --tag TAG           run only the rows tagged TAG (selector (and REGEXP (tag TAG))); also $GLITNIR_GUI_TAG
+#   A mutter run prints "gui.sh: mutter peak RSS: N kB" (VmHWM, read at exit).
 #
 # Exit 0 all tests passed, 1 a failure, a timeout or a session that did not come up, 2 usage.
 # Mutter: the scale is applied with `gdctl set --logical-monitor --scale S' inside the session (mutter 50 sets fractional
@@ -45,7 +51,7 @@ usage() { sed -n '2,/^# Temp files/s/^# \{0,1\}//p' "$self" >&2; exit 2; }
 
 prefix= scale=1 size=2880x1800 monitors=1 select= tests= daemon=0 container= wdebug= timeout=300
 compositor=sway recorder=${REC:-} rprofile=sway
-envs=() csd=0
+envs=() csd=0 smoke=0 files=${GLITNIR_GUI_FILES:-} tag=${GLITNIR_GUI_TAG:-}
 while [ $# -gt 0 ]; do
   case $1 in
     --prefix) prefix=${2:-}; shift 2 ;;
@@ -63,11 +69,15 @@ while [ $# -gt 0 ]; do
     --env) envs+=("${2:-}"); shift 2 ;;
     --force-csd) csd=1; shift ;;
     --timeout) timeout=${2:-}; shift 2 ;;
+    --smoke) smoke=1; shift ;;
+    --files) files=${2:-}; shift 2 ;;
+    --tag) tag=${2:-}; shift 2 ;;
     --inner) shift ;;   # internal: the part that runs under dbus-run-session
     -h|--help) usage ;;
     *) echo "gui.sh: unknown argument $1" >&2; usage ;;
   esac
 done
+[ "$smoke" = 0 ] || compositor=mutter
 [ -n "$prefix" ] || { echo "gui.sh: --prefix is required" >&2; usage; }
 prefix=$(cd "$prefix" 2>/dev/null && pwd) || { echo "gui.sh: no such prefix" >&2; exit 2; }
 [ -x "$prefix/bin/nidhogg" ] || { echo "gui.sh: $prefix/bin/nidhogg not found" >&2; exit 2; }
@@ -91,6 +101,9 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
   display=glitnir-gui-$GLITNIR_GUI_PID
   mpid= epid=
   cleanup() {
+    # mutter's peak resident set (VmHWM) while it is still alive
+    [ "$compositor" != mutter ] || [ -z "$mpid" ] || \
+      echo "gui.sh: mutter peak RSS: $(sed -n 's/^VmHWM:[[:space:]]*\(.*\)$/\1/p' "/proc/$mpid/status" 2>/dev/null) (scale $scale)"
     for p in $epid $mpid; do kill "$p" 2>/dev/null; done
     for p in $epid $mpid; do wait "$p" 2>/dev/null; done
   }
@@ -162,7 +175,7 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
   fi
 
   export GLITNIR_GUI_SCALE=$scale GLITNIR_GUI_SIZE=$size GLITNIR_GUI_TESTS=$tests GLITNIR_GUI_SELECT=$select
-  export GLITNIR_GUI_COMPOSITOR=$compositor GLITNIR_GUI_KNOWN=$known
+  export GLITNIR_GUI_COMPOSITOR=$compositor GLITNIR_GUI_KNOWN=$known GLITNIR_GUI_FILES=$files GLITNIR_GUI_TAG=$tag
   [ -z "$ctl" ] || export GLITNIR_GUI_RECORDER=$ctl
   export GDK_BACKEND=wayland NO_AT_BRIDGE=1
   unset DISPLAY EMACS_SOCKET_NAME
@@ -199,6 +212,25 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
   [ "$rc" = 0 ] && exit 0 || exit 1
 fi
 
+# ---------------------------------------------------------------- the smoke tier: one mutter per tagged file and scale
+if [ "$smoke" = 1 ]; then
+  smoked=$(grep -l 'gnome-smoke' "$tests"/*-gui-tests.el 2>/dev/null)
+  [ -n "$smoked" ] || { echo "gui.sh: no *-gui-tests.el file in $tests holds a gnome-smoke row" >&2; exit 1; }
+  export GLITNIR_GUI_MEMORY=${GLITNIR_GUI_MEMORY:-2g}
+  smoke_rc=0
+  for f in $smoked; do
+    for s in 1.25 1.5; do
+      echo "gui.sh: smoke: $(basename "$f") at scale $s"
+      bash "$self" --prefix "$prefix" --compositor mutter --scale "$s" --size "$size" --monitors "$monitors" \
+        --tests "$tests" --timeout "$timeout" --files "$(basename "$f")" --tag gnome-smoke \
+        ${select:+--select "$select"} ${container:+--container "$container"} \
+        $([ "$daemon" = 0 ] || echo --daemon) $([ "$csd" = 0 ] || echo --force-csd) \
+        $(for kv in ${envs[@]+"${envs[@]}"}; do echo --env "$kv"; done) || smoke_rc=1
+    done
+  done
+  exit $smoke_rc
+fi
+
 # ---------------------------------------------------------------- dry run: what would start
 if [ "${GLITNIR_GUI_DRY:-}" = 1 ]; then
   case $compositor in
@@ -228,6 +260,8 @@ if [ -n "$container" ]; then
   [ -z "$select" ] || args+=(--select "$select")
   [ "$daemon" = 0 ] || args+=(--daemon)
   [ "$csd" = 0 ] || args+=(--force-csd)
+  [ -z "$files" ] || args+=(--files "$files")
+  [ -z "$tag" ] || args+=(--tag "$tag")
   [ -z "$wdebug" ] || args+=(--wayland-debug /out/wayland-debug.txt)
   for kv in ${envs[@]+"${envs[@]}"}; do args+=(--env "$kv"); done
   out=
@@ -288,5 +322,6 @@ env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u EMACS_SOCKET_NA
   GLITNIR_GUI_INNER=1 GLITNIR_GUI_PID=$$ GLITNIR_GUI_RUN="$run" \
   dbus-run-session -- bash "$self" --prefix "$prefix" --compositor "$compositor" --recorder-profile "$rprofile" ${recorder:+--recorder "$recorder"} --scale "$scale" --size "$size" --monitors "$monitors" \
     --tests "$tests" --timeout "$timeout" ${select:+--select "$select"} ${wdebug:+--wayland-debug "$wdebug"} \
+    ${files:+--files "$files"} ${tag:+--tag "$tag"} \
     $([ "$daemon" = 0 ] || echo --daemon) $([ "$csd" = 0 ] || echo --force-csd) $(for kv in ${envs[@]+"${envs[@]}"}; do echo --env "$kv"; done)
 exit $?

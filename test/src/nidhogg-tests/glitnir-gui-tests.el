@@ -7,6 +7,7 @@
 (require 'cl-lib)
 
 (ert-deftest glitnir-gui/a-pgtk-frame-at-the-asked-scale ()
+  :tags '(gnome-smoke)
   (let ((s (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1"))))
     (should (eq (framep (selected-frame)) 'pgtk))
     (should (= (frame-scale-factor) (ceiling s)))))
@@ -27,6 +28,7 @@
                              (expt (frame-scale-factor) 2)))))))))
 
 (ert-deftest glitnir-gui/snapshot-has-the-frame-size ()
+  :tags '(gnome-smoke)
   (pcase-let ((`(,w ,h ,bytes) (glitnir-snapshot nil 'raw)))
     (should (= w (round (* (frame-pixel-width) (frame-scale-factor)))))
     (should (= h (round (* (frame-pixel-height) (frame-scale-factor)))))
@@ -34,6 +36,7 @@
     (should-not (multibyte-string-p bytes))))
 
 (ert-deftest glitnir-gui/snapshot-png-is-a-png ()
+  :tags '(gnome-smoke)
   (let ((png (glitnir-snapshot nil)))
     (should-not (multibyte-string-p png))
     (should (string-prefix-p "\x89PNG" png))))
@@ -59,6 +62,7 @@
         (round (* (frame-pixel-height) (frame-scale-factor)))))
 
 (ert-deftest glitnir-gui/typing-damages-one-row ()
+  :tags '(gnome-smoke)
   (with-temp-buffer
     (switch-to-buffer (current-buffer))
     (insert "hello")
@@ -908,6 +912,7 @@ Glitnir is on again after, and they are redrawn whole once more (so `verify' com
     (glitnir-gui--redraw frames)))
 
 (ert-deftest glitnir-gui/corner-shows-what-is-beneath ()
+  :tags '(gnome-smoke)
   (glitnir-gui--under)
   (let ((c nil))
     (unwind-protect
@@ -949,6 +954,7 @@ Glitnir is on again after, and they are redrawn whole once more (so `verify' com
       (when (frame-live-p c) (delete-frame c t)))))
 
 (ert-deftest glitnir-gui/shadow-darkens-below ()
+  :tags '(gnome-smoke)
   (glitnir-gui--under)
   (let ((c nil))
     (unwind-protect
