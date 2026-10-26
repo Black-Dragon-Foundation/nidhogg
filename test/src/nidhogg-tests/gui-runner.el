@@ -273,10 +273,13 @@ with any channel differing by more than 2."
         (cdr (assoc (glitnir-gui--compositor) (read (current-buffer))))))))
 
 (defun glitnir-gui--apply-known-differences ()
-  "Make the known differences expected failures (before `ert-run-tests')."
-  (dolist (name (gui-runner-known-differences))
-    (when (ert-test-boundp name)
-      (setf (ert-test-expected-result-type (ert-get-test name)) :failed))))
+  "Make the known differences expected failures (before `ert-run-tests').
+An entry (either NAME) accepts either result: a row that lands on both sides on this compositor."
+  (dolist (entry (gui-runner-known-differences))
+    (let ((name (if (eq (car-safe entry) 'either) (cadr entry) entry)))
+      (when (ert-test-boundp name)
+        (setf (ert-test-expected-result-type (ert-get-test name))
+              (if (consp entry) t :failed))))))
 
 (defun glitnir-gui--report (event-type &rest args)
   (pcase event-type
