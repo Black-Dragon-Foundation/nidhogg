@@ -10,9 +10,11 @@
 //! the socket (no roundtrip, no `blocking_dispatch`).
 
 pub mod conn;
+pub mod cursor;
 pub mod decor;
 pub mod keyboard;
 pub mod output;
+pub mod pointer;
 pub mod present;
 pub mod reader;
 pub mod registry;
@@ -126,6 +128,7 @@ impl WaylandShell {
             main.viewporter = g.bind(reg, &mqh, ());
             rstate.seat = g.bind(reg, &rqh, ());
             rstate.wm_base = g.bind(reg, &rqh, ());
+            rstate.cursor_manager = g.bind(reg, &rqh, ());
             main.decoration_manager = g.bind(reg, &mqh, ());
             main.presentation = g.bind(reg, &mqh, ());
             main.reader_qh = Some(rqh.clone());
@@ -327,8 +330,8 @@ impl ShellBackend for WaylandShell {
     fn ack_configure(&mut self, w: WindowId, serial: u32) -> ShellResult {
         self.window_ack_configure(w, serial)
     }
-    fn set_cursor(&mut self, _: WindowId, _: u32) -> ShellResult {
-        Err(ShellError::Unsupported)
+    fn set_cursor(&mut self, w: WindowId, shape: u32) -> ShellResult {
+        self.window_set_cursor(w, shape)
     }
     fn window_scale(&self, window: WindowId) -> ShellResult<u32> {
         Ok(self

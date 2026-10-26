@@ -3,7 +3,8 @@
 //! One record type for every backend.  `kind` says which member of the union `u` is valid; kinds without a member
 //! (`CLOSE`, `DISCONNECTED`, `POINTER_LEAVE`) leave it zeroed.  `MODIFIERS` uses `key.mods`; `POINTER_ENTER`,
 //! `POINTER_MOTION` and `POINTER_LEAVE` use `pointer.x`/`y`; `BUTTON` uses `pointer.button`/`state`; `OUTPUT_REMOVE`
-//! uses `output.id`.  Positions are logical pixels; `time_ns` is the compositor's clock in nanoseconds.
+//! uses `output.id`.  Window sizes are logical pixels; pointer positions are device pixels (logical x scale);
+//! `time_ns` is the compositor's clock in nanoseconds.
 
 pub const NHSHELL_EV_KEY: u32 = 1;
 pub const NHSHELL_EV_MODIFIERS: u32 = 2;

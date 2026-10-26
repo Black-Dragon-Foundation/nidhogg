@@ -13,6 +13,7 @@
 use crate::event::{FocusEv, NHSHELL_EV_FOCUS, NhShellEvent};
 use crate::wayland::conn::Shared;
 use crate::wayland::keyboard::KeyboardState;
+use crate::wayland::pointer::{self, PointerState};
 use crate::wayland::serial::SerialKind;
 use rustix::event::{PollFd, PollFlags, poll};
 use std::os::fd::AsFd;
@@ -25,6 +26,7 @@ use wayland_client::backend::WaylandError;
 use wayland_client::protocol::wl_keyboard::{self, KeyState, WlKeyboard};
 use wayland_client::protocol::wl_seat::{self, Capability, WlSeat};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
+use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1::WpCursorShapeManagerV1;
 use wayland_protocols::xdg::shell::client::xdg_wm_base::{self, XdgWmBase};
 
 /// What the reader's handlers own.  Objects created with this queue's handle run their events on the reader thread.
@@ -35,6 +37,8 @@ pub struct ReaderState {
     keyboard: Option<WlKeyboard>,
     /// xkb, compose and key repeat (`keyboard.rs`).
     pub kbd: KeyboardState,
+    pub cursor_manager: Option<WpCursorShapeManagerV1>,
+    pub pointer: PointerState,
     /// A record was posted since the last wake.
     posted: bool,
 }
@@ -47,6 +51,8 @@ impl ReaderState {
             wm_base: None,
             keyboard: None,
             kbd: KeyboardState::new(),
+            cursor_manager: None,
+            pointer: PointerState::default(),
             posted: false,
         }
     }
@@ -266,6 +272,7 @@ impl Dispatch<WlSeat, ()> for ReaderState {
                 (false, Some(kb)) if kb.version() >= 3 => kb.release(),
                 (_, kb) => state.keyboard = kb,
             }
+            pointer::seat_capabilities(state, seat, caps, qh);
         }
     }
 }
