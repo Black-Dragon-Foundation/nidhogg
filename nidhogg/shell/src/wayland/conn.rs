@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use wayland_client::Connection;
 use wayland_client::backend::WaylandError;
+use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::WpCursorShapeDeviceV1;
 
 /// Connect to `display`: a socket name in `$XDG_RUNTIME_DIR` or an absolute path; `None` (or empty) uses the
 /// environment (`WAYLAND_SOCKET`, `WAYLAND_DISPLAY`).
@@ -92,6 +93,10 @@ pub struct Shared {
     pub stop: AtomicBool,
     /// Input serials, written by the reader's handlers and read by the host's requests (move, resize, menus).
     pub serials: Mutex<SerialTracker>,
+    /// The scale (times 120) of each surface, mirrored from the main queue for the pointer's device pixels.
+    pub scale120: Mutex<std::collections::HashMap<u64, u32>>,
+    /// The seat pointer's `wp_cursor_shape_device_v1`, when the compositor has the manager.
+    pub cursor_device: Mutex<Option<WpCursorShapeDeviceV1>>,
 }
 
 fn relock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -109,6 +114,8 @@ impl Shared {
             main_pending: AtomicBool::new(false),
             stop: AtomicBool::new(false),
             serials: Mutex::default(),
+            scale120: Mutex::default(),
+            cursor_device: Mutex::default(),
         })
     }
 
