@@ -6,6 +6,8 @@
 ;;   GLITNIR_GUI_SIZE    WxH of the virtual monitor in device pixels (for the fractional-scale check)
 ;;   GLITNIR_GUI_TESTS   directory holding the *-gui-tests.el files (default: this file's directory)
 ;;   GLITNIR_GUI_SELECT  ERT selector, an Emacs regexp (default: every test)
+;;   GLITNIR_GUI_FILES   a glob (in GLITNIR_GUI_TESTS) of the test files to load (default: every *-gui-tests.el)
+;;   GLITNIR_GUI_TAG     when set, only rows tagged TAG: the selector is (and REGEXP (tag TAG))
 ;;   GLITNIR_GUI_COMPOSITOR  sway, mutter or recorder (selects the scale rule and the known differences)
 ;;   GLITNIR_GUI_RECORDER    the recorder's control socket (recorder only)
 ;;   GLITNIR_GUI_KNOWN       the known-differences file (gui-known-differences.eld next to the tests)
@@ -256,7 +258,10 @@ with any channel differing by more than 2."
 
 (defun glitnir-gui--load-tests ()
   (let ((dir (or (getenv "GLITNIR_GUI_TESTS") glitnir-gui--dir)))
-    (dolist (f (directory-files dir t "-gui-tests\\.el\\'"))
+    (dolist (f (let ((glob (getenv "GLITNIR_GUI_FILES")))
+                 (if (and glob (not (string-empty-p glob)))
+                     (file-expand-wildcards (expand-file-name glob dir) t)
+                   (directory-files dir t "-gui-tests\\.el\\'"))))
       (load f nil t))))
 
 (defun gui-runner-known-differences ()
@@ -283,12 +288,21 @@ with any channel differing by more than 2."
          (when (ert-test-result-with-condition-p result)
            (glitnir-gui--say "  %S" (ert-test-result-with-condition-condition result))))))))
 
+(defun glitnir-gui--selector ()
+  "The ERT selector: GLITNIR_GUI_SELECT (an Emacs regexp, default every test), and with GLITNIR_GUI_TAG set
+\(and REGEXP (tag TAG))."
+  (let ((re (let ((r (getenv "GLITNIR_GUI_SELECT"))) (and r (not (string-empty-p r)) r)))
+        (tag (let ((x (getenv "GLITNIR_GUI_TAG"))) (and x (not (string-empty-p x)) (intern x)))))
+    (cond ((and re tag) `(and ,re (tag ,tag)))
+          (tag `(tag ,tag))
+          (t (or re t)))))
+
 (defun glitnir-gui--run ()
   (glitnir-gui--wait-for-scale)
   (glitnir-gui--wait-for-first-paint)
   (glitnir-gui--load-tests)
   (glitnir-gui--apply-known-differences)
-  (let* ((stats (ert-run-tests (or (getenv "GLITNIR_GUI_SELECT") t) #'glitnir-gui--report))
+  (let* ((stats (ert-run-tests (glitnir-gui--selector) #'glitnir-gui--report))
          (n (ert-stats-total stats)) (bad (ert-stats-completed-unexpected stats)))
     (glitnir-gui--say "Ran %d tests, %d results as expected, %d unexpected" n (- n bad) bad)
     (kill-emacs (if (and (> n 0) (= bad 0)) 0 1))))

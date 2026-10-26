@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Checks of nidhogg/test/gui.sh itself.  The first two run on the host and start no compositor (GLITNIR_GUI_DRY=1);
-# the third runs a real run in a container.  Needs GUI_TEST_PREFIX, an unpacked Nidhogg (the third also needs podman).
+# Checks of nidhogg/test/gui.sh itself.  The first three run on the host and start no compositor (GLITNIR_GUI_DRY=1);
+# the last runs a real run in a container.  Needs GUI_TEST_PREFIX, an unpacked Nidhogg (the third also needs podman).
 #   GUI_TEST_PREFIX=DIR bash nidhogg/test/gui-test.sh [--container]
 # (--container is ignored: it tells the slot scripts that this script starts its own container.)
 set -u
@@ -19,6 +19,16 @@ if [ $rc = 0 ] && grep -q '^sway -c ' <<< "$out"; then ok gui-sh-default-is-sway
 # gui-sh-recorder-needs-binary
 out=$(GLITNIR_GUI_DRY=1 REC= bash "$gui" --prefix "$prefix" --compositor recorder --recorder /nonexistent/nh-recorder 2>&1); rc=$?
 if [ $rc = 2 ] && grep -q 'nh-recorder not built' <<< "$out"; then ok gui-sh-recorder-needs-binary; else bad gui-sh-recorder-needs-binary "rc=$rc: $out"; fi
+
+# gui-sh-smoke-restarts-per-file: a dry --smoke run starts one mutter per gnome-smoke-tagged file and per scale (1.25, 1.5)
+tests=$(cd "$here/../.." && pwd)/test/src/nidhogg-tests
+nfiles=$(grep -l gnome-smoke "$tests"/*-gui-tests.el 2>/dev/null | wc -l)
+out=$(GLITNIR_GUI_DRY=1 bash "$gui" --prefix "$prefix" --smoke 2>&1); rc=$?
+nstart=$(grep -c '^mutter --headless' <<< "$out")
+if [ $rc = 0 ] && [ "$nfiles" -ge 2 ] && [ "$nstart" = $((nfiles * 2)) ] && grep -q 'scale 1.25)' <<< "$out" \
+   && grep -q 'scale 1.5)' <<< "$out" && ! grep -q '^sway ' <<< "$out"; then
+  ok gui-sh-smoke-restarts-per-file
+else bad gui-sh-smoke-restarts-per-file "rc=$rc files=$nfiles starts=$nstart: $out"; fi
 
 # gui-sh-cleans-up-after-a-killed-client: SIGKILL Nidhogg in a sway run; gui.sh exits 1 within 10 s and leaves no
 # socket under the run's XDG_RUNTIME_DIR (GLITNIR_GUI_SOCKDIR, a host directory mounted into the container).  The
