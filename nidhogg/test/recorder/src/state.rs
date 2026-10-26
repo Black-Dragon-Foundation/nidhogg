@@ -6,7 +6,9 @@ use serde::Deserialize;
 use smithay::delegate_compositor;
 use smithay::delegate_output;
 use smithay::delegate_shm;
-use smithay::input::{Seat, SeatHandler, SeatState};
+use smithay::wayland::alpha_modifier::AlphaModifierState;
+use smithay::wayland::cursor_shape::CursorShapeManagerState;
+use smithay::input::{Seat, SeatState};
 use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
@@ -22,12 +24,14 @@ use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
 };
 use smithay::utils::Transform;
+use smithay::backend::renderer::utils::on_commit_buffer_handler;
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
     self, BufferAssignment, CompositorClientState, CompositorHandler, CompositorState, Damage,
     SubsurfaceCachedState, SurfaceAttributes,
 };
 use smithay::wayland::output::OutputHandler;
+use smithay::reexports::wayland_protocols::wp::text_input::zv3::server::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
 use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation::WpPresentation;
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecoMode;
 use smithay::utils::{Clock as SmClock, Monotonic};
@@ -98,6 +102,12 @@ pub struct State {
     pub shm_state: ShmState,
     pub xdg_shell_state: XdgShellState,
     pub seat_state: SeatState<State>,
+    pub seat: Seat<State>,
+    pub rmlvo: crate::input::Rmlvo,
+    /// The keyboard focus (set by the `focus` command).
+    pub focus: Option<WlSurface>,
+    pub text_inputs: Vec<crate::input::TextInput>,
+    pub input_log: Vec<serde_json::Value>,
     pub output: Output,
     /// The globals advertised, name to version.
     pub globals: BTreeMap<String, u32>,
@@ -140,6 +150,9 @@ fn max_version(name: &str) -> Option<u32> {
         "wl_subcompositor" => 1,
         "wl_shm" => 2,
         "wl_seat" => 9,
+        "zwp_text_input_manager_v3" => 1,
+        "wp_cursor_shape_manager_v1" => 2,
+        "wp_alpha_modifier_v1" => 1,
         "wl_output" => 4,
         "xdg_wm_base" => 6,
         "zxdg_decoration_manager_v1" => 1,
@@ -167,6 +180,14 @@ impl State {
         dh.remove_global::<State>(shm_state.global());
         dh.remove_global::<State>(xdg_shell_state.global());
         // The extra protocols: Smithay creates each at its one version; a global the profile does not list is removed.
+        // Smithay's seat global is version 9; a profile with a lower wl_seat gets the capability-less one below.
+        let mut seat_state = SeatState::new();
+        let mut seat = seat_state.new_wl_seat(dh, "seat0");
+        let rmlvo = crate::input::Rmlvo::default();
+        seat.add_keyboard(rmlvo.xkb_config(), 600, 25)
+            .expect("the default keymap compiles");
+        seat.add_pointer();
+        let seat_global = seat.global();
         let extra = [
             (
                 "zxdg_decoration_manager_v1",
@@ -177,6 +198,14 @@ impl State {
                 FractionalScaleManagerState::new::<State>(dh).global(),
             ),
             ("wp_viewporter", ViewporterState::new::<State>(dh).global()),
+            (
+                "wp_cursor_shape_manager_v1",
+                CursorShapeManagerState::new::<State>(dh).global(),
+            ),
+            (
+                "wp_alpha_modifier_v1",
+                AlphaModifierState::new::<State>(dh).global(),
+            ),
             // wp_presentation is recreated below at the profile's version, on CLOCK_MONOTONIC (1)
             (
                 "wp_presentation",
@@ -231,8 +260,12 @@ impl State {
                 "wl_shm" => {
                     dh.create_global::<State, WlShm, _>(v, ());
                 }
+                "wl_seat" if v >= 9 => {}
                 "wl_seat" => {
                     dh.create_global::<State, WlSeat, _>(v, ());
+                }
+                "zwp_text_input_manager_v3" => {
+                    dh.create_global::<State, ZwpTextInputManagerV3, _>(v, ());
                 }
                 "wl_output" => {
                     out.create_global::<State>(dh);
@@ -246,10 +279,17 @@ impl State {
                 // created above
                 "zxdg_decoration_manager_v1"
                 | "wp_fractional_scale_manager_v1"
-                | "wp_viewporter" => {}
+                | "wp_viewporter"
+                | "wp_cursor_shape_manager_v1"
+                | "wp_alpha_modifier_v1" => {}
                 _ => unreachable!(),
             }
             globals.insert(name.clone(), v);
+        }
+        if globals.get("wl_seat").is_none_or(|&v| v < 9) {
+            if let Some(id) = seat_global {
+                dh.remove_global::<State>(id);
+            }
         }
         let decoration_mode = if profile.decoration == "server" {
             DecoMode::ServerSide
@@ -263,7 +303,12 @@ impl State {
             compositor_state,
             shm_state,
             xdg_shell_state,
-            seat_state: SeatState::new(),
+            seat_state,
+            seat,
+            rmlvo,
+            focus: None,
+            text_inputs: Vec::new(),
+            input_log: Vec::new(),
             output: out,
             globals,
             log: Log::new(),
@@ -386,17 +431,16 @@ impl CompositorHandler for State {
                 };
                 let mut cached = states.cached_state.get::<SurfaceAttributes>();
                 let attrs = cached.current();
-                let buffer = match attrs.buffer.take() {
+                let buffer = match attrs.buffer.as_ref() {
+                    // the renderer's surface state (below) keeps the buffer and releases it when replaced
                     Some(BufferAssignment::NewBuffer(buf)) => {
-                        let info = with_buffer_contents(&buf, |_, _, d| BufferInfo {
+                        with_buffer_contents(buf, |_, _, d| BufferInfo {
                             w: d.width,
                             h: d.height,
                             stride: d.stride,
                             format: format!("{:?}", d.format).to_lowercase(),
                         })
-                        .ok();
-                        buf.release();
-                        info
+                        .ok()
                     }
                     _ => None,
                 };
@@ -420,6 +464,7 @@ impl CompositorHandler for State {
                     app_id,
                 )
             });
+        on_commit_buffer_handler::<State>(surface);
         let ack_serial = self.acked.remove(&sid);
         let ack_stale = match (ack_serial, self.sent_serial.get(&sid)) {
             (Some(a), Some(&newest)) => a < newest,
@@ -465,18 +510,6 @@ impl CompositorHandler for State {
 }
 
 impl OutputHandler for State {}
-
-// Smithay's xdg-shell wants a SeatHandler; the seat global itself is ours (below), so this state stays empty.
-impl SeatHandler for State {
-    type KeyboardFocus = WlSurface;
-    type PointerFocus = WlSurface;
-    type TouchFocus = WlSurface;
-    fn seat_state(&mut self) -> &mut SeatState<State> {
-        &mut self.seat_state
-    }
-    fn focus_changed(&mut self, _: &Seat<State>, _: Option<&WlSurface>) {}
-    fn cursor_image(&mut self, _: &Seat<State>, _: smithay::input::pointer::CursorImageStatus) {}
-}
 
 impl BufferHandler for State {
     fn buffer_destroyed(&mut self, _buffer: &WlBuffer) {}

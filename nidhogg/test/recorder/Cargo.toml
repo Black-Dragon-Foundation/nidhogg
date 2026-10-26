@@ -11,10 +11,12 @@ name = "nh-recorder"
 path = "src/main.rs"
 
 [dependencies]
-smithay = { version = "=0.7.0", default-features = false, features = ["wayland_frontend"] }
+smithay = { version = "=0.7.0", default-features = false, features = ["wayland_frontend", "renderer_pixman"] }
 calloop = { version = "0.14", features = ["signals"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+xkbcommon = { version = "0.8", features = ["wayland"] }
+png = "0.17"
 
 [dev-dependencies]
 wayland-client = "0.31"
