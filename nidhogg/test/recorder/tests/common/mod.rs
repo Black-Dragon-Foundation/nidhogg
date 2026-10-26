@@ -104,6 +104,8 @@ pub struct Client {
     pub xdg_serial: u32,
     /// (width, height, state numbers) of every xdg_toplevel.configure
     pub configures: Vec<(i32, i32, Vec<u32>)>,
+    /// xdg_toplevel.close events received
+    pub closes: u32,
     pub deco_modes: Vec<u32>,
     pub fractional: Vec<u32>,
     pub buffer_scales: Vec<i32>,
@@ -204,19 +206,22 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for Client {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let xdg_toplevel::Event::Configure {
-            width,
-            height,
-            states,
-        } = e
-        {
-            let states = states
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|c| u32::from_ne_bytes(*c))
-                .collect();
-            s.configures.push((width, height, states));
+        match e {
+            xdg_toplevel::Event::Configure {
+                width,
+                height,
+                states,
+            } => {
+                let states = states
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| u32::from_ne_bytes(*c))
+                    .collect();
+                s.configures.push((width, height, states));
+            }
+            xdg_toplevel::Event::Close => s.closes += 1,
+            _ => {}
         }
     }
 }
