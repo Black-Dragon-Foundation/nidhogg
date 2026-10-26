@@ -22,6 +22,8 @@ use wayland_protocols::xdg::decoration::zv1::client::{
 };
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
+pub mod extra;
+
 pub struct Recorder {
     child: Child,
     pub dir: PathBuf,
@@ -107,6 +109,8 @@ pub struct Client {
     pub buffer_scales: Vec<i32>,
     pub output_scales: Vec<i32>,
     pub frames: u32,
+    /// Seat, keyboard, pointer and text-input events (see `extra`).
+    pub ev: extra::Events,
     pub presented: Vec<Duration>,
 }
 
@@ -316,6 +320,8 @@ pub struct Env {
     pub registry: wl_registry::WlRegistry,
     _conn: Connection,
     pools: u32,
+    /// The ARGB value `buffer` fills new buffers with (0 = left as the empty file).
+    pub fill: u32,
 }
 
 impl Env {
@@ -333,6 +339,7 @@ impl Env {
             registry,
             _conn: conn,
             pools: 0,
+            fill: 0,
         };
         env.roundtrip();
         env
@@ -356,7 +363,7 @@ impl Env {
     pub fn buffer(&mut self, w: i32, h: i32) -> wl_buffer::WlBuffer {
         let shm: wl_shm::WlShm = self.bind("wl_shm", 1);
         self.pools += 1;
-        let file = std::fs::OpenOptions::new()
+        let mut file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
@@ -365,6 +372,11 @@ impl Env {
             .unwrap();
         let size = (w * h * 4) as u64;
         file.set_len(size).unwrap();
+        if self.fill != 0 {
+            let pixel = self.fill.to_le_bytes();
+            let bytes: Vec<u8> = pixel.iter().cycle().take(size as usize).copied().collect();
+            file.write_all(&bytes).unwrap();
+        }
         let pool = shm.create_pool(file.as_fd(), size as i32, &self.qh, ());
         pool.create_buffer(0, w, h, w * 4, wl_shm::Format::Argb8888, &self.qh, ())
     }
