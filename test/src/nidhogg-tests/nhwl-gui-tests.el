@@ -8,6 +8,8 @@
 (require 'json)
 (require 'seq)
 
+(defvar nhwl-gui--display-lost nil)
+
 (defun nhwl-gui--on-p ()
   (and (featurep 'nidhogg-wayland) (getenv "GLITNIR_GUI_RECORDER")))
 
@@ -141,5 +143,77 @@ primitives answer nil instead of signalling."
                  (redisplay t)
                  (and (= (frame-pixel-width) (round (* lw s)))
                       (= (frame-pixel-height) (round (* lh s))))))))))
+
+;; The daemon rows run under gui.sh `--daemon' (the runner is in the daemon).
+
+(defun nhwl-gui--nhwl-frames ()
+  (seq-filter (lambda (f) (and (frame-live-p f) (eq (framep f) 'pgtk))) (frame-list)))
+
+(ert-deftest nhwl-gui/daemon-frame-from-client ()
+  (skip-unless (and (nhwl-gui--on-p) (daemonp)))
+  (let ((f (car (nhwl-gui--nhwl-frames))))
+    (should f)
+    (should (equal (terminal-name (frame-terminal f)) (getenv "WAYLAND_DISPLAY")))
+    (should (nhwl-gui--wait #'nhwl-gui--toplevel-commits))))
+
+(ert-deftest nhwl-gui/delete-and-reopen-frame ()
+  (skip-unless (and (nhwl-gui--on-p) (daemonp)))
+  (let* ((display (getenv "WAYLAND_DISPLAY"))
+         (old (car (nhwl-gui--nhwl-frames)))
+         (before (length (nhwl-gui--toplevel-commits)))
+         (new (progn (make-frame-on-display display)
+                     (delete-frame old t)
+                     (car (nhwl-gui--nhwl-frames)))))
+    (should (and new (not (eq new old))))
+    (should (equal (terminal-name (frame-terminal new)) display))
+    (should (nhwl-gui--wait (lambda () (> (length (nhwl-gui--toplevel-commits)) before))))))
+
+(ert-deftest nhwl-gui/ping-answered-while-a-lisp-thread-sleeps ()
+  (skip-unless (and (nhwl-gui--on-p) (daemonp) (not nhwl-gui--display-lost)))
+  (let ((buf (generate-new-buffer " *nhwl-ping*")))
+    (unwind-protect
+        (progn
+          (switch-to-buffer buf)
+          (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
+          (make-thread (lambda () (sleep-for 5)))
+          (let ((r nil))
+            (run-at-time 0.5 nil
+                         (lambda ()
+                           (setq r (gui-runner-recorder '(:cmd "ping")))
+                           (gui-runner-recorder '(:cmd "key" :text "x"))))
+            (sit-for 3)
+            (should r)
+            (should (< (plist-get r :pong_ms) 100))
+            (should (nhwl-gui--wait
+                     (lambda ()
+                       (let ((ev (read-event nil nil 0.1)))
+                         (when (characterp ev)
+                           (setq last-command-event ev)
+                           (command-execute (key-binding (vector ev)) nil (vector ev))))
+                       (equal (buffer-string) "x"))))))
+      (kill-buffer buf))))
+
+(ert-deftest nhwl-gui/no-such-display-leaves-the-daemon-up ()
+  (skip-unless (and (nhwl-gui--on-p) (daemonp) (not nhwl-gui--display-lost)))
+  (let ((frames (nhwl-gui--nhwl-frames)))
+    (should-error (make-frame-on-display "wayland-nonexistent"))
+    (should (daemonp))
+    (should (equal (nhwl-gui--nhwl-frames) frames))
+    (should (frame-live-p (car frames)))
+    (with-selected-frame (car frames) (redisplay t))))
+
+;; ERT runs rows alphabetically and this row ends the recorder, so it first runs the two rows that need a live display; they
+;; skip afterwards.
+(ert-deftest nhwl-gui/display-lost-daemon-survives ()
+  (skip-unless (and (nhwl-gui--on-p) (daemonp)))
+  (dolist (name '(nhwl-gui/no-such-display-leaves-the-daemon-up
+                  nhwl-gui/ping-answered-while-a-lisp-thread-sleeps))
+    (let ((test (ert-get-test name)))
+      (should (ert-test-result-expected-p test (ert-run-test test)))))
+  (setq nhwl-gui--display-lost t)
+  (should (nhwl-gui--nhwl-frames))
+  (gui-runner-recorder '(:cmd "quit"))
+  (should (nhwl-gui--wait (lambda () (null (nhwl-gui--nhwl-frames))) 2))
+  (should (daemonp)))
 
 ;;; nhwl-gui-tests.el ends here
