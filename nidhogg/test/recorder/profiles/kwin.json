@@ -7,6 +7,7 @@
     "wl_shm": 2,
     "wl_output": 4,
     "wl_seat": 10,
+    "wl_data_device_manager": 3,
     "xdg_wm_base": 6,
     "zxdg_decoration_manager_v1": 2,
     "wp_fractional_scale_manager_v1": 1,

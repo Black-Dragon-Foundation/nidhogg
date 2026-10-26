@@ -146,6 +146,26 @@ fn core_globals_follow_profile() {
 }
 
 #[test]
+fn core_profiles_serve_a_data_device_manager() {
+    // GTK 3 adds no seat until a wl_data_device_manager is bound, and then dies on its first seat lookup
+    for p in ["sway", "mutter", "kwin"] {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("profiles/{p}.json"));
+        let profile: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let r = Recorder::start(&profile);
+        let conn = r.connect();
+        let mut queue = conn.new_event_queue::<Client>();
+        let _registry = conn.display().get_registry(&queue.handle(), ());
+        let mut client = Client::default();
+        queue.roundtrip(&mut client).unwrap();
+        assert_eq!(
+            client.globals.get("wl_data_device_manager"),
+            Some(&3),
+            "{p}"
+        );
+    }
+}
+
+#[test]
 fn core_commit_is_logged() {
     let r = Recorder::start(&six());
     let conn = r.connect();
