@@ -72,6 +72,7 @@
 (require 'cl-lib)
 (require 'dbus)
 (require 'json)
+(require 'seq)
 
 (defun gui-runner-recorder (plist)
   "Send PLIST as one JSON line to the recorder at $GLITNIR_GUI_RECORDER; return the parsed reply (a plist).
@@ -205,29 +206,46 @@ little-endian), the shape of `glitnir-snapshot's `raw'.  Sway: grim; recorder: i
     ("mutter" (gui-runner--mutter-grab))
     (c (error "gui-runner-screen-grab: unknown compositor %S" c))))
 
+(defun gui-runner--sway-node-shown-p (node)
+  "Non-nil when NODE of `swaymsg -t get_tree' (an alist) or a node below it is a visible window of Nidhogg."
+  (or (and (equal (alist-get 'app_id node) "nidhogg") (alist-get 'visible node))
+      (seq-some #'gui-runner--sway-node-shown-p
+                (append (alist-get 'nodes node) (alist-get 'floating_nodes node)))))
+
 (defun gui-runner--sway-window-shown-p ()
-  "Non-nil when `swaymsg -t get_tree' lists a mapped window."
+  "Non-nil when `swaymsg -t get_tree' shows a visible window whose app_id is Nidhogg's (not just any visible node:
+the workspaces and the output are \"visible\" before any window maps)."
   (with-temp-buffer
     (and (eq 0 (call-process "swaymsg" nil t nil "-t" "get_tree"))
-         (progn (goto-char (point-min)) (re-search-forward "\"pid\": *[0-9]+" nil t))
-         (progn (goto-char (point-min)) (re-search-forward "\"visible\": *true" nil t))
-         t)))
+         (progn (goto-char (point-min))
+                (gui-runner--sway-node-shown-p
+                 (json-parse-string (buffer-string) :object-type 'alist :array-type 'list
+                                    :false-object nil :null-object nil))))))
+
+(defun gui-runner--recorder-commit-after-p (since)
+  "Non-nil when the recorder logged a toplevel commit with a seq of at least SINCE."
+  (seq-some (lambda (c) (equal (plist-get c :role) "toplevel"))
+            (plist-get (gui-runner-recorder (list :cmd "log" :since since)) :commits)))
 
 (defun gui-runner-wait-settled ()
   "Wait until the compositor shows what the frame last drew.
-Sway: two frame periods (60 Hz) after `swaymsg -t get_tree' shows the window.  Recorder: `present' in the manual
-clock, else 50 ms.  Mutter: redisplay and 0.5 s."
-  (redisplay t)
-  (pcase (glitnir-gui--compositor)
-    ("sway"
-     (let ((deadline (+ (float-time) 10)))
-       (while (and (not (gui-runner--sway-window-shown-p)) (< (float-time) deadline))
-         (sit-for 0.1)))
-     (sit-for (/ 2.0 60)))
-    ("recorder"
-     (unless (ignore-errors (gui-runner-recorder '(:cmd "present" :advance_ns 16666667)) t)
-       (sit-for 0.05)))
-    (_ (sit-for 0.5))))
+Sway: two frame periods (60 Hz) after `swaymsg -t get_tree' shows a window of Nidhogg.  Recorder: a toplevel commit
+newer than this call (0.5 s at most: a redisplay that changes nothing commits nothing); a dead control socket is an
+error.  Mutter: redisplay and 0.5 s."
+  (let ((since (and (equal (glitnir-gui--compositor) "recorder")
+                    (plist-get (gui-runner-recorder '(:cmd "log" :since 0)) :next))))
+    (redisplay t)
+    (pcase (glitnir-gui--compositor)
+      ("sway"
+       (let ((deadline (+ (float-time) 10)))
+         (while (and (not (gui-runner--sway-window-shown-p)) (< (float-time) deadline))
+           (sit-for 0.1)))
+       (sit-for (/ 2.0 60)))
+      ("recorder"
+       (let ((deadline (+ (float-time) 0.5)))
+         (while (and (not (gui-runner--recorder-commit-after-p since)) (< (float-time) deadline))
+           (sit-for 0.02))))
+      (_ (sit-for 0.5)))))
 
 (defun gui-runner-pixel-diff (a b &optional rect)
   "Compare two grabs A and B (each (W H BYTES)) over RECT, a list (X Y W H) in both (default: the common top-left
@@ -264,29 +282,43 @@ with any channel differing by more than 2."
                    (directory-files dir t "-gui-tests\\.el\\'"))))
       (load f nil t))))
 
+;; The known-differences file holds entries (TEST-NAME COMPOSITOR REASON . OPTIONS): the test is expected to fail on that
+;; compositor, for REASON (a string).  OPTIONS is a plist: `:either t' also accepts a pass (a row that lands on both
+;; sides there).  A failure is a failed assertion: an error
+;; in a listed row is a different failure and is unexpected.  A skipped row is expected.
 (defun gui-runner-known-differences ()
-  "The tests expected to fail on this compositor, from the file GLITNIR_GUI_KNOWN (see its header)."
+  "The entries of the file GLITNIR_GUI_KNOWN that apply to this compositor."
   (let ((file (getenv "GLITNIR_GUI_KNOWN")))
     (when (and file (file-readable-p file))
       (with-temp-buffer
         (insert-file-contents file)
-        (cdr (assoc (glitnir-gui--compositor) (read (current-buffer))))))))
+        (seq-filter (lambda (e)
+                      (equal (nth 1 e) (glitnir-gui--compositor)))
+                    (read (current-buffer)))))))
+
+(defun glitnir-gui--assertion-failure-p (result)
+  "Non-nil when RESULT is a failed `should' (not an error signalled by the row)."
+  (and (ert-test-failed-p result)
+       (eq (car-safe (ert-test-result-with-condition-condition result)) 'ert-test-failed)))
 
 (defun glitnir-gui--apply-known-differences ()
-  "Make the known differences expected failures (before `ert-run-tests').
-An entry (either NAME) accepts either result: a row that lands on both sides on this compositor."
+  "Make the known differences the rows' expected results (before `ert-run-tests')."
   (dolist (entry (gui-runner-known-differences))
-    (let ((name (if (eq (car-safe entry) 'either) (cadr entry) entry)))
+    (let ((name (let ((n (nth 0 entry))) (if (symbolp n) n (intern n)))))
       (when (ert-test-boundp name)
         (setf (ert-test-expected-result-type (ert-get-test name))
-              (if (consp entry) t :failed))))))
+              (if (plist-get (nthcdr 3 entry) :either)
+                  '(or :passed :skipped (satisfies glitnir-gui--assertion-failure-p))
+                '(or :skipped (satisfies glitnir-gui--assertion-failure-p))))))))
 
 (defun glitnir-gui--report (event-type &rest args)
   (pcase event-type
     ('test-ended
      (let* ((test (nth 1 args)) (result (nth 2 args))
             (expected (ert-test-result-expected-p test result)))
-       (glitnir-gui--say "%s %s" (if expected "passed" "FAILED") (ert-test-name test))
+       (glitnir-gui--say "%s %s"
+                         (cond ((not expected) "FAILED") ((ert-test-skipped-p result) "skipped") (t "passed"))
+                         (ert-test-name test))
        (unless expected
          (when (ert-test-result-with-condition-p result)
            (glitnir-gui--say "  %S" (ert-test-result-with-condition-condition result))))))))
@@ -306,8 +338,9 @@ An entry (either NAME) accepts either result: a row that lands on both sides on 
   (glitnir-gui--load-tests)
   (glitnir-gui--apply-known-differences)
   (let* ((stats (ert-run-tests (glitnir-gui--selector) #'glitnir-gui--report))
-         (n (ert-stats-total stats)) (bad (ert-stats-completed-unexpected stats)))
-    (glitnir-gui--say "Ran %d tests, %d results as expected, %d unexpected" n (- n bad) bad)
+         (n (ert-stats-total stats)) (bad (ert-stats-completed-unexpected stats))
+         (skipped (ert-stats-skipped stats)))
+    (glitnir-gui--say "Ran %d tests, %d as expected (%d skipped), %d unexpected" n (- n bad) skipped bad)
     (kill-emacs (if (and (> n 0) (= bad 0)) 0 1))))
 
 (defun glitnir-gui--start (&rest _)
