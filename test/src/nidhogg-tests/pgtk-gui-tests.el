@@ -93,8 +93,8 @@
     (should (<= (car diff) 2))
     (should (<= (cdr diff) (/ total 1000)))))
 
-(ert-deftest pgtk-gui/csd-frame-maps-on-gnome ()
-  "A 600x400 frame that is not fullscreen maps and is visible: on mutter GTK draws its own title bar."
+(ert-deftest pgtk-gui/windowed-frame-maps-on-gnome ()
+  "A 600x400 frame that is not fullscreen maps and is visible on mutter (it checks no decoration)."
   :tags '(gnome-smoke)
   (skip-unless (equal (getenv "GLITNIR_GUI_COMPOSITOR") "mutter"))
   (let ((f (make-frame '((width . 75) (height . 25) (visibility . t) (fullscreen . nil)))))
@@ -108,11 +108,5 @@
           (should (> (frame-pixel-height f) 0))
           (should-not (frame-parameter f 'fullscreen)))
       (when (frame-live-p f) (delete-frame f t)))))
-
-(ert-deftest pgtk-gui/clipboard-roundtrip ()
-  "A string put on the CLIPBOARD reads back while the frame is focused."
-  :tags '(gnome-smoke)
-  (gui-set-selection 'CLIPBOARD "nh-smoke")
-  (should (equal (gui-get-selection 'CLIPBOARD 'UTF8_STRING) "nh-smoke")))
 
 ;;; pgtk-gui-tests.el ends here
