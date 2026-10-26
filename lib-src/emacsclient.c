@@ -630,12 +630,19 @@ decode_options (int argc, char **argv)
       alt_display = "be";
 #endif /* NS_IMPL_COCOA */
 
+#ifdef HAVE_NHWL
+/* Under Nidhogg's Wayland shell the display is the Wayland one, as under pgtk (scoped to this block).  */
+# define HAVE_PGTK 1
+#endif
 #ifdef HAVE_PGTK
       display = egetenv ("WAYLAND_DISPLAY");
       alt_display = egetenv ("DISPLAY");
 #else /* !HAVE_PGTK */
       display = egetenv ("DISPLAY");
 #endif /* HAVE_PGTK */
+#ifdef HAVE_NHWL
+# undef HAVE_PGTK
+#endif
 #else /* HAVE_ANDROID */
       /* Disregard the DISPLAY environment variable under Android.
          Several terminal emulator programs furnish their own X

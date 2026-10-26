@@ -659,6 +659,9 @@ struct frame
     struct pgtk_output *pgtk;		/* From pgtkterm.h. */
     struct haiku_output *haiku;		/* From haikuterm.h. */
     struct android_output *android;	/* From androidterm.h.  */
+#ifdef HAVE_NHWL
+    struct nhwl_output *nhwl;		/* From nhwlterm.h.  */
+#endif
   }
   output_data;
 
@@ -952,6 +955,9 @@ default_pixels_per_inch_y (void)
 #else
 #define FRAME_PGTK_P(f) ((f)->output_method == output_pgtk)
 #endif
+#ifdef HAVE_NHWL
+#define FRAME_NHWL_P(f) ((f)->output_method == output_nhwl)
+#endif
 #ifndef HAVE_HAIKU
 #define FRAME_HAIKU_P(f) false
 #else
@@ -976,6 +982,9 @@ default_pixels_per_inch_y (void)
 #endif
 #ifdef HAVE_PGTK
 #define FRAME_WINDOW_P(f) FRAME_PGTK_P(f)
+#endif
+#ifdef HAVE_NHWL
+#define FRAME_WINDOW_P(f) FRAME_NHWL_P(f)
 #endif
 #ifdef HAVE_HAIKU
 #define FRAME_WINDOW_P(f) FRAME_HAIKU_P (f)
@@ -1057,6 +1066,9 @@ default_pixels_per_inch_y (void)
 # define FRAME_SCALE_FACTOR(f) (FRAME_NS_P (f) ? ns_frame_scale_factor (f) : 1)
 #elif defined HAVE_PGTK
 # define FRAME_SCALE_FACTOR(f) (FRAME_PGTK_P (f) ? pgtk_frame_scale_factor (f) : 1)
+#elif defined HAVE_NHWL
+/* Frames are in device pixels (nothing is drawn at a fractional scale), so the shared code sees 1.  */
+# define FRAME_SCALE_FACTOR(f) 1
 #else
 # define FRAME_SCALE_FACTOR(f) 1
 #endif
@@ -1930,6 +1942,9 @@ struct MonitorInfo {
   int mm_width, mm_height;
   char *name;
 #ifdef HAVE_PGTK
+  double scale_factor;
+#endif
+#ifdef HAVE_NHWL
   double scale_factor;
 #endif
 };

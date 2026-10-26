@@ -566,6 +566,8 @@ OPTION_DEFAULT_ON([cairo],[don't compile with Cairo drawing])
 OPTION_DEFAULT_OFF([cairo-xcb], [use XCB surfaces for Cairo support])
 dnl Nidhogg: Glitnir (the compositor), a Rust static library (nidhogg/glitnir)
 OPTION_DEFAULT_OFF([glitnir],[build Glitnir (the compositor, Rust); needs cargo and rustc 1.93 or newer])
+dnl Nidhogg: the native Wayland shell (nidhogg/shell, Rust, with Glitnir inside) and the C glue src/nhwl*.c
+OPTION_DEFAULT_OFF([nidhogg-wayland],[use Nidhogg's own Wayland shell (no GTK); implies --with-glitnir; Linux only])
 OPTION_DEFAULT_ON([xml2],[don't compile with XML parsing support])
 OPTION_DEFAULT_OFF([imagemagick],[compile with ImageMagick image support])
 OPTION_DEFAULT_ON([native-image-api], [don't use native image APIs (GDI+ on Windows)])
@@ -2622,6 +2624,22 @@ AC_SUBST([AUTO_DEPEND])
 
 #### Choose a window system.
 
+dnl Nidhogg: --with-nidhogg-wayland is one window system of its own: it refuses the others, wants Linux, and builds Glitnir.
+if test "${with_nidhogg_wayland}" = yes; then
+  test "${with_pgtk}" != yes ||
+    AC_MSG_ERROR([--with-nidhogg-wayland cannot be combined with --with-pgtk])
+  test "${with_x}" != yes ||
+    AC_MSG_ERROR([--with-nidhogg-wayland cannot be combined with --with-x])
+  test "${with_ns}" != yes ||
+    AC_MSG_ERROR([--with-nidhogg-wayland cannot be combined with --with-ns])
+  case "${host_os}" in
+    linux*) ;;
+    *) AC_MSG_ERROR([--with-nidhogg-wayland is Linux only]) ;;
+  esac
+  with_glitnir=yes
+  with_ns=no
+fi
+
 ## We leave window_system equal to none if
 ## we end up building without one.  Any new window system should
 ## set window_system to an appropriate value and add objects to
@@ -2727,6 +2745,10 @@ if test "${ANDROID}" != "yes"; then
   if test "$no_x" != yes && test "${with_pgtk}" != "yes"; then
     window_system=x11
   fi
+fi
+
+if test "${with_nidhogg_wayland}" = "yes"; then
+  window_system=nhwl
 fi
 
 LD_SWITCH_X_SITE_RPATH=
@@ -3182,6 +3204,7 @@ HAVE_X_WINDOWS=no
 HAVE_X11=no
 USE_X_TOOLKIT=none
 HAVE_PGTK=no
+HAVE_NHWL=no
 
 case "${window_system}" in
   x11 )
@@ -3221,6 +3244,12 @@ dnl use the toolkit if we have gtk, or X11R5 or newer.
     HAVE_PGTK=yes
     AC_DEFINE([HAVE_PGTK], [1], [Define to 1 if you have pure Gtk+-3.])
   ;;
+  nhwl )
+    term_header=nhwlterm.h
+    USE_X_TOOLKIT=none
+    HAVE_NHWL=yes
+    AC_DEFINE([HAVE_NHWL], [1], [Define to 1 if you have Nidhogg's own Wayland shell.])
+  ;;
   haiku )
     term_header=haikuterm.h
   ;;
@@ -3230,6 +3259,7 @@ dnl use the toolkit if we have gtk, or X11R5 or newer.
 esac
 
 AC_SUBST([HAVE_PGTK])
+AC_SUBST([HAVE_NHWL])
 
 if test "$window_system" = none && test "X$with_x" != "Xno"; then
    AC_CHECK_PROG([HAVE_XSERVER], [X], [true], [false])
@@ -3935,6 +3965,10 @@ GLITNIR_OBJ=
 GLITNIR_LIBS=
 GLITNIR_SRCDIR=
 GLITNIR_ENV=
+GLITNIR_LIBNAME=libglitnir.a
+GLITNIR_CRATE_DEPS=
+GLITNIR_CRATE_INCLUDE=
+NHWL_OBJ=
 if test "${with_glitnir}" = yes; then
   AC_PATH_PROG([GLITNIR_CARGO], [cargo])
   AC_PATH_PROG([GLITNIR_RUSTC], [rustc])
@@ -3950,21 +3984,39 @@ if test "${with_glitnir}" = yes; then
     AC_MSG_ERROR([--with-glitnir needs cargo and rustc 1.93 or newer (packages: nidhogg/deps/*.build)])
   GLITNIR_SRCDIR=`cd "$srcdir/nidhogg/glitnir" && pwd` ||
     AC_MSG_ERROR([nidhogg/glitnir is missing])
+  glitnir_lib=libglitnir.a
+  GLITNIR_CRATE_DEPS=
+  GLITNIR_CRATE_INCLUDE=
+  dnl Nidhogg's own Wayland shell: libnhshell.a replaces libglitnir.a (it carries every glitnir_* symbol; two Rust
+  dnl static libraries in one binary would collide on std's symbols).
+  if test "$HAVE_NHWL" = yes; then
+    EMACS_CHECK_MODULES([NHWL_WAYLAND], [wayland-client >= 1.26])
+    EMACS_CHECK_MODULES([NHWL_XKBCOMMON], [xkbcommon >= 1.13])
+    test "$HAVE_NHWL_WAYLAND" = yes && test "$HAVE_NHWL_XKBCOMMON" = yes ||
+      AC_MSG_ERROR([--with-nidhogg-wayland needs wayland-client >= 1.26 and xkbcommon >= 1.13 (packages: nidhogg/deps/*.build)])
+    glitnir_lib=libnhshell.a
+    GLITNIR_CRATE_DEPS="$srcdir/nidhogg/glitnir"
+    GLITNIR_CRATE_INCLUDE="-I`cd "$srcdir/nidhogg/glitnir" && pwd`/include"
+    GLITNIR_SRCDIR=`cd "$srcdir/nidhogg/shell" && pwd` ||
+      AC_MSG_ERROR([nidhogg/shell is missing])
+    NHWL_OBJ="nhwlterm.o nhwlfns.o"
+  fi
+  GLITNIR_LIBNAME=$glitnir_lib
   glitnir_home=`pwd`/src/glitnir-cargo-home
   glitnir_target=`pwd`/src/glitnir-target
   test -z "$MACOSX_DEPLOYMENT_TARGET" || GLITNIR_ENV="MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET"
   AC_MSG_CHECKING([the native libraries Glitnir links])
   rm -rf "$glitnir_target"
   glitnir_native=`cd "$GLITNIR_SRCDIR" && env CARGO_HOME="$glitnir_home" $GLITNIR_ENV "$GLITNIR_CARGO" rustc --release --offline --locked --target-dir "$glitnir_target" -- --print native-static-libs 2>&1 | sed -n 's/.*native-static-libs: *//p' | tail -n 1`
-  if test ! -f "$glitnir_target/release/libglitnir.a" || test -z "$glitnir_native"; then
+  if test ! -f "$glitnir_target/release/$glitnir_lib" || test -z "$glitnir_native"; then
     AC_MSG_RESULT([failed])
-    AC_MSG_ERROR([cannot build nidhogg/glitnir with cargo (see $glitnir_target)])
+    AC_MSG_ERROR([cannot build $GLITNIR_SRCDIR with cargo (see $glitnir_target)])
   fi
   AC_MSG_RESULT([$glitnir_native])
   HAVE_GLITNIR=yes
   GLITNIR_OBJ="nidhogg-glitnir.o"
   test "$HAVE_PGTK" = yes && GLITNIR_OBJ="$GLITNIR_OBJ glitnir-pgtk.o"
-  GLITNIR_LIBS="glitnir-target/release/libglitnir.a $glitnir_native"
+  GLITNIR_LIBS="glitnir-target/release/$glitnir_lib $glitnir_native"
   AC_DEFINE([HAVE_GLITNIR], [1], [Define to 1 to build Glitnir (the compositor, Rust).])
 fi
 AC_SUBST([HAVE_GLITNIR])
@@ -3972,6 +4024,10 @@ AC_SUBST([GLITNIR_OBJ])
 AC_SUBST([GLITNIR_LIBS])
 AC_SUBST([GLITNIR_SRCDIR])
 AC_SUBST([GLITNIR_ENV])
+AC_SUBST([GLITNIR_LIBNAME])
+AC_SUBST([GLITNIR_CRATE_DEPS])
+AC_SUBST([GLITNIR_CRATE_INCLUDE])
+AC_SUBST([NHWL_OBJ])
 
 AC_CHECK_FUNCS([malloc_trim])
 
@@ -4567,7 +4623,7 @@ if test "$with_xwidgets" != "no"; then
 fi
 AC_SUBST([XWIDGETS_OBJ])
 
-if test "$window_system" = "pgtk"; then
+if test "$window_system" = "pgtk" || test "$window_system" = "nhwl"; then
   CAIRO_REQUIRED=1.12.0
   CAIRO_MODULE="cairo >= $CAIRO_REQUIRED"
   EMACS_CHECK_MODULES([CAIRO], [$CAIRO_MODULE])
@@ -4737,7 +4793,7 @@ if test "${HAVE_X11}" = "yes"; then
     fi
   fi
 else # "${HAVE_X11}" != "yes"
-  if test $window_system = pgtk; then
+  if test $window_system = pgtk || test $window_system = nhwl; then
     EMACS_CHECK_MODULES([FONTCONFIG], [fontconfig >= 2.2.0])
     EMACS_CHECK_MODULES([FREETYPE], [freetype2])
     if test "$HAVE_FONTCONFIG" != yes -o "$HAVE_FREETYPE" != yes; then
@@ -4776,7 +4832,7 @@ else
   harfbuzz_required_ver=0.9.42
 fi
 if test "${HAVE_X11}" = "yes" && test "${HAVE_FREETYPE}" = "yes" \
-        || test "$window_system" = "pgtk" \
+        || test "$window_system" = "pgtk" || test "$window_system" = "nhwl" \
         || test "${HAVE_W32}" = "yes" \
 	|| test "$REALLY_ANDROID" = "yes"; then
   if test "${with_harfbuzz}" != "no"; then
@@ -5107,7 +5163,7 @@ MODULES_SUFFIX="${DYNAMIC_LIB_SUFFIX}"
 MODULES_SECONDARY_SUFFIX="${DYNAMIC_LIB_SECONDARY_SUFFIX}"
 
 # pgtkterm.c uses dlsym
-if test $window_system = pgtk; then
+if test $window_system = pgtk || test $window_system = nhwl; then
   case $opsys in
     gnu|gnu-linux)
     LIBMODULES="-ldl"
@@ -7294,7 +7350,7 @@ if test "${HAVE_X_WINDOWS}" = "yes" ; then
   fi
 fi
 
-if test "${window_system}" = "pgtk"; then
+if test "${window_system}" = "pgtk" || test "${window_system}" = "nhwl"; then
    FONT_OBJ="ftfont.o ftcrfont.o"
 fi
 

@@ -5871,6 +5871,9 @@ garbage_collect (void)
 #ifdef HAVE_PGTK
   mark_pgtkterm ();
 #endif
+#ifdef HAVE_NHWL
+  mark_nhwlterm ();
+#endif
 
 #ifdef USE_GTK
   xg_mark_data ();
