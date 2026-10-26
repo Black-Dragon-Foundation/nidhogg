@@ -10,8 +10,10 @@
 //! the socket (no roundtrip, no `blocking_dispatch`).
 
 pub mod conn;
+pub mod output;
 pub mod reader;
 pub mod registry;
+pub mod scale;
 pub mod serial;
 
 use crate::api::*;
@@ -43,6 +45,11 @@ pub struct MainState {
     subcompositor: Option<WlSubcompositor>,
     shm: Option<WlShm>,
     surfaces: HashMap<u64, WlSurface>,
+    shared: Option<Arc<Shared>>,
+    fractional: Option<wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1>,
+    viewporter: Option<wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter>,
+    outputs: HashMap<u32, output::Output>,
+    scales: HashMap<u64, scale::SurfaceScale>,
 }
 
 /// The main queue's waker: an event routed into the main queue (by the reader's read) marks it pending and wakes the
@@ -78,6 +85,7 @@ impl WaylandShell {
         let mqh = main_queue.handle();
         let mut main = MainState {
             registry: Some(conn.display().get_registry(&mqh, ())),
+            shared: Some(shared.clone()),
             ..MainState::default()
         };
         main_queue.roundtrip(&mut main).map_err(lost)?;
@@ -94,6 +102,8 @@ impl WaylandShell {
             main.compositor = g.bind(reg, &mqh, ());
             main.subcompositor = g.bind(reg, &mqh, ());
             main.shm = g.bind(reg, &mqh, ());
+            main.fractional = g.bind(reg, &mqh, ());
+            main.viewporter = g.bind(reg, &mqh, ());
             rstate.seat = g.bind(reg, &rqh, ());
             rstate.wm_base = g.bind(reg, &rqh, ());
         }
@@ -147,6 +157,39 @@ impl WaylandShell {
         let id = u64::from(surface.id().protocol_id());
         self.main.surfaces.insert(id, surface);
         Ok(id)
+    }
+
+    /// Give surface `id` its scale state (a fractional-scale object and a viewport when the compositor has them).
+    /// A window owns this for its surface's lifetime; `window_scale` and `SCALE` events use the surface id.
+    pub fn scale_attach(&mut self, id: u64) -> ShellResult {
+        let surface = self
+            .main
+            .surfaces
+            .get(&id)
+            .ok_or(ShellError::State)?
+            .clone();
+        self.main.attach_scale(&surface, &self.main_queue.handle());
+        Ok(())
+    }
+
+    /// Drop surface `id`'s scale state.
+    pub fn scale_detach(&mut self, id: u64) {
+        self.main.detach_scale(id);
+    }
+
+    /// The viewport destination of surface `id` (its logical size).
+    pub fn scale_set_destination(
+        &mut self,
+        id: u64,
+        logical_w: i32,
+        logical_h: i32,
+    ) -> ShellResult {
+        self.main
+            .scales
+            .get(&id)
+            .ok_or(ShellError::State)?
+            .set_destination(logical_w, logical_h);
+        Ok(())
     }
 
     /// Commit surface `id` (not flushed).
@@ -258,8 +301,13 @@ impl ShellBackend for WaylandShell {
     fn set_cursor(&mut self, _: WindowId, _: u32) -> ShellResult {
         Err(ShellError::Unsupported)
     }
-    fn window_scale(&self, _: WindowId) -> ShellResult<u32> {
-        Err(ShellError::Unsupported)
+    fn window_scale(&self, window: WindowId) -> ShellResult<u32> {
+        Ok(self
+            .main
+            .scales
+            .get(&window)
+            .ok_or(ShellError::State)?
+            .scale120())
     }
     fn window_logical_size(&self, _: WindowId) -> ShellResult<(i32, i32)> {
         Err(ShellError::Unsupported)
@@ -278,13 +326,13 @@ delegate_noop!(MainState: ignore WlShm);
 
 impl Dispatch<WlSurface, ()> for MainState {
     fn event(
-        _: &mut Self,
-        _: &WlSurface,
-        _: wl_surface::Event,
+        state: &mut Self,
+        surface: &WlSurface,
+        event: wl_surface::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        // enter, leave and the preferred scale are W0 Task 4's
+        scale::surface_event(state, surface, event);
     }
 }
