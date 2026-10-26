@@ -38,8 +38,7 @@ const STATES: [(&str, TState); 9] = [
 
 impl State {
     fn note_sent(&mut self, surface: &WlSurface, serial: Serial) {
-        self.sent_serial
-            .insert(surface.id().protocol_id(), u32::from(serial));
+        self.sent_serial.insert(surface.id(), u32::from(serial));
     }
 
     /// The configure a real compositor sends after a surface's first commit.
@@ -92,8 +91,12 @@ impl State {
     fn send_decoration(&mut self, toplevel: &ToplevelSurface) {
         let mode = self.decoration_mode;
         toplevel.with_pending_state(|s| s.decoration_mode = Some(mode));
-        let serial = toplevel.send_configure();
-        self.note_sent(toplevel.wl_surface(), serial);
+        // before the first commit the initial configure (sent after it) carries the mode: a configure now would
+        // arrive before the client has committed (a client may send its decoration request before its first commit)
+        if toplevel.is_initial_configure_sent() {
+            let serial = toplevel.send_configure();
+            self.note_sent(toplevel.wl_surface(), serial);
+        }
     }
 
     /// A pong arrived: finish every ping that has no client left to wait for.
@@ -110,7 +113,7 @@ impl State {
         for i in done.into_iter().rev() {
             let p = self.pings.remove(i);
             let ms = p.started.elapsed().as_secs_f64() * 1000.0;
-            write_reply(&p.reply, &json!({"ok": true, "pong_ms": ms}));
+            write_reply(self, &p.reply, &json!({"ok": true, "pong_ms": ms}));
         }
     }
 
@@ -120,7 +123,7 @@ impl State {
         while i < self.pings.len() {
             if self.pings[i].started.elapsed() >= PING_TIMEOUT {
                 let p = self.pings.remove(i);
-                write_reply(&p.reply, &err("no pong in 5000 ms"));
+                write_reply(self, &p.reply, &err("no pong in 5000 ms"));
             } else {
                 i += 1;
             }
@@ -203,7 +206,8 @@ impl XdgShellHandler for State {
     // the defaults send a configure for these two; keep that
     fn maximize_request(&mut self, surface: ToplevelSurface) {
         self.log_toplevel(&surface, "set_maximized", None, json!({}));
-        surface.send_configure();
+        let serial = surface.send_configure();
+        self.note_sent(surface.wl_surface(), serial);
     }
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
@@ -212,7 +216,8 @@ impl XdgShellHandler for State {
 
     fn fullscreen_request(&mut self, surface: ToplevelSurface, _: Option<WlOutput>) {
         self.log_toplevel(&surface, "set_fullscreen", None, json!({}));
-        surface.send_configure();
+        let serial = surface.send_configure();
+        self.note_sent(surface.wl_surface(), serial);
     }
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
@@ -228,8 +233,7 @@ impl XdgShellHandler for State {
             Configure::Toplevel(c) => c.serial,
             Configure::Popup(c) => c.serial,
         };
-        self.acked
-            .insert(surface.id().protocol_id(), u32::from(serial));
+        self.acked.insert(surface.id(), u32::from(serial));
     }
 }
 

@@ -41,7 +41,8 @@ impl Recorder {
         let profile_path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("profiles")
             .join(format!("{profile}.json"));
-        let mut child = Command::new(env!("CARGO_BIN_EXE_nh-recorder"))
+        let mut child = // NH_RECORDER_BIN measures another build (the release binary) with the same tests
+        Command::new(std::env::var_os("NH_RECORDER_BIN").unwrap_or(env!("CARGO_BIN_EXE_nh-recorder").into()))
             .args(["--socket", &socket, "--control"])
             .arg(dir.join("control"))
             .arg("--profile")
@@ -57,6 +58,10 @@ impl Recorder {
             .unwrap();
         assert_eq!(line, "READY\n");
         Recorder { child, dir, socket }
+    }
+
+    pub fn pid(&self) -> u32 {
+        self.child.id()
     }
 
     pub fn control_path(&self) -> PathBuf {
@@ -318,7 +323,7 @@ ignore_events!(
 
 /// A connected client with the registry listed.
 pub struct Env {
-    pub rec: Recorder,
+    pub rec: std::rc::Rc<Recorder>,
     pub queue: EventQueue<Client>,
     pub qh: QueueHandle<Client>,
     pub client: Client,
@@ -331,7 +336,15 @@ pub struct Env {
 
 impl Env {
     pub fn new(profile: &str, extra: &[&str]) -> Env {
-        let rec = Recorder::start(profile, extra);
+        Env::connect_to(std::rc::Rc::new(Recorder::start(profile, extra)))
+    }
+
+    /// Another client of the same recorder.
+    pub fn join(&self) -> Env {
+        Env::connect_to(self.rec.clone())
+    }
+
+    fn connect_to(rec: std::rc::Rc<Recorder>) -> Env {
         let conn = rec.connect();
         let queue = conn.new_event_queue::<Client>();
         let qh = queue.handle();
@@ -367,7 +380,8 @@ impl Env {
     /// A shm buffer of `w` x `h` ARGB pixels.
     pub fn buffer(&mut self, w: i32, h: i32) -> wl_buffer::WlBuffer {
         let shm: wl_shm::WlShm = self.bind("wl_shm", 1);
-        self.pools += 1;
+        static POOLS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        self.pools = POOLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         let mut file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
