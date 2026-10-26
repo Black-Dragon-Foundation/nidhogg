@@ -4,6 +4,7 @@
 
 (require 'ert)
 (require 'benchmark)
+(require 'cl-lib)
 
 (ert-deftest nidhogg-gui/hide-returns-before-the-timeout ()
   (let ((child (make-frame `((parent-frame . ,(selected-frame)) (width . 20) (height . 5)
@@ -39,3 +40,29 @@
     (delete-frame root)))
 
 ;;; pgtk-gui-tests.el ends here
+
+(defun pgtk-gui--socket-owner (path)
+  "The process name (`/proc/PID/comm') of the process listening on the Unix socket PATH, or nil."
+  (let (inode)
+    (with-temp-buffer
+      (insert-file-contents "/proc/net/unix")
+      (goto-char (point-min))
+      (when (re-search-forward (concat " \\([0-9]+\\) " (regexp-quote path) "$") nil t)
+        (setq inode (match-string 1))))
+    (when inode
+      (cl-loop for pid in (directory-files "/proc" nil "\\`[0-9]+\\'")
+               for found = (ignore-errors
+                             (cl-loop for fd in (directory-files (format "/proc/%s/fd" pid) t "[0-9]")
+                                      thereis (equal (file-symlink-p fd) (format "socket:[%s]" inode))))
+               when found
+               return (string-trim (with-temp-buffer
+                                     (insert-file-contents (format "/proc/%s/comm" pid))
+                                     (buffer-string)))))))
+
+(ert-deftest pgtk-gui/compositor-is-the-asked-one ()
+  "The process listening on WAYLAND_DISPLAY's socket is the compositor gui.sh was asked for."
+  (let* ((asked (getenv "GLITNIR_GUI_COMPOSITOR"))
+         (sock (expand-file-name (getenv "WAYLAND_DISPLAY") (getenv "XDG_RUNTIME_DIR"))))
+    (skip-unless asked)
+    (should (equal (pgtk-gui--socket-owner sock)
+                   (pcase asked ("sway" "sway") ("mutter" "mutter") ("recorder" "nh-recorder"))))))
