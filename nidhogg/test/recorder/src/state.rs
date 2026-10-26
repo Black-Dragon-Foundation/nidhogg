@@ -37,6 +37,7 @@ use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_to
 use smithay::utils::{Clock as SmClock, Monotonic};
 use smithay::wayland::fractional_scale::FractionalScaleManagerState;
 use smithay::wayland::presentation::{PresentationFeedbackCachedState, PresentationState};
+use smithay::wayland::selection::data_device::DataDeviceState;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::shell::xdg::{
     PopupSurface, ShellClient, ToplevelSurface, XdgShellState, XdgToplevelSurfaceData,
@@ -103,6 +104,7 @@ pub struct State {
     pub xdg_shell_state: XdgShellState,
     pub seat_state: SeatState<State>,
     pub seat: Seat<State>,
+    pub data_device_state: DataDeviceState,
     pub rmlvo: crate::input::Rmlvo,
     /// The keyboard focus (set by the `focus` command).
     pub focus: Option<WlSurface>,
@@ -150,6 +152,7 @@ fn max_version(name: &str) -> Option<u32> {
         "wl_subcompositor" => 1,
         "wl_shm" => 2,
         "wl_seat" => 9,
+        "wl_data_device_manager" => 3,
         "zwp_text_input_manager_v3" => 1,
         "wp_cursor_shape_manager_v1" => 2,
         "wp_alpha_modifier_v1" => 1,
@@ -188,7 +191,10 @@ impl State {
             .expect("the default keymap compiles");
         seat.add_pointer();
         let seat_global = seat.global();
+        // GTK 3 adds no seat until a wl_data_device_manager is bound, so every profile lists it
+        let data_device_state = DataDeviceState::new::<State>(dh);
         let extra = [
+            ("wl_data_device_manager", data_device_state.global()),
             (
                 "zxdg_decoration_manager_v1",
                 XdgDecorationState::new::<State>(dh).global(),
@@ -277,7 +283,8 @@ impl State {
                     dh.create_global::<State, WpPresentation, u32>(v, 1);
                 }
                 // created above
-                "zxdg_decoration_manager_v1"
+                "wl_data_device_manager"
+                | "zxdg_decoration_manager_v1"
                 | "wp_fractional_scale_manager_v1"
                 | "wp_viewporter"
                 | "wp_cursor_shape_manager_v1"
@@ -305,6 +312,7 @@ impl State {
             xdg_shell_state,
             seat_state,
             seat,
+            data_device_state,
             rmlvo,
             focus: None,
             text_inputs: Vec::new(),
