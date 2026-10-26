@@ -11,6 +11,7 @@
 
 pub mod conn;
 pub mod decor;
+pub mod keyboard;
 pub mod output;
 pub mod present;
 pub mod reader;
