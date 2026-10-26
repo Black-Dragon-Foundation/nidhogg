@@ -5187,6 +5187,9 @@ tty_display_dimension (Lisp_Object frame, int *width, int *height)
     case output_msdos_raw:
     case output_w32:
     case output_ns:
+#ifdef HAVE_NHWL
+    case output_nhwl:
+#endif
     case output_pgtk:
     case output_haiku:
     case output_android:

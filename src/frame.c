@@ -315,6 +315,9 @@ See also `frame-live-p'.  */)
       return Qpc;
     case output_ns:
       return Qns;
+#ifdef HAVE_NHWL
+    case output_nhwl:
+#endif
     case output_pgtk:
       return Qpgtk;
     case output_haiku:
@@ -4810,6 +4813,12 @@ multiplied to find the real number of pixels.  */)
 {
   struct frame *f = decode_live_frame (frame);
 
+#ifdef HAVE_NHWL
+  /* The exact scale (frames are in device pixels, so the shared code
+     sees FRAME_SCALE_FACTOR as 1).  */
+  if (f && FRAME_NHWL_P (f))
+    return make_float (nhwl_frame_scale_factor (f));
+#endif
   return (make_float (f ? FRAME_SCALE_FACTOR (f) : 1));
 }
 
@@ -7170,6 +7179,10 @@ make_monitor_attribute_list (struct MonitorInfo *monitors,
       attributes = Fcons (Fcons (Qframes, AREF (monitor_frames, i)),
 			  attributes);
 #ifdef HAVE_PGTK
+      attributes = Fcons (Fcons (Qscale_factor, make_float (mi->scale_factor)),
+			  attributes);
+#endif
+#ifdef HAVE_NHWL
       attributes = Fcons (Fcons (Qscale_factor, make_float (mi->scale_factor)),
 			  attributes);
 #endif

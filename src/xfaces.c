@@ -251,6 +251,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #define GCGraphicsExposures 0
 #endif /* HAVE_PGTK */
 
+#ifdef HAVE_NHWL
+#define GCGraphicsExposures 0
+#endif /* HAVE_NHWL */
 #ifdef HAVE_HAIKU
 #define GCGraphicsExposures 0
 #endif /* HAVE_HAIKU */
@@ -611,6 +614,25 @@ x_free_gc (struct frame *f, Emacs_GC *gc)
 }
 #endif  /* HAVE_NS */
 
+#ifdef HAVE_NHWL
+/* Nidhogg's Wayland shell: emulation of GCs, as for PGTK.  */
+
+static Emacs_GC *
+x_create_gc (struct frame *f,
+	     unsigned long mask,
+	     Emacs_GC *xgcv)
+{
+  Emacs_GC *gc = xmalloc (sizeof *gc);
+  *gc = *xgcv;
+  return gc;
+}
+
+static void
+x_free_gc (struct frame *f, Emacs_GC *gc)
+{
+  xfree (gc);
+}
+#endif  /* HAVE_NHWL */
 #ifdef HAVE_ANDROID
 
 /* Android real GCs.  */
