@@ -183,16 +183,17 @@ out_steps() {
   if [ "$MODE" = host ] && [ "$UNAME" = Darwin ]; then
     echo 'phase install'
     echo 'logged "$B/install.log" make install'
-    echo 'pk=$B/pkg/nidhogg-$V; rm -rf "$B/pkg"; mkdir -p "$pk"; mv nextstep/Emacs.app "$pk/Nidhogg.app"; info=$pk/BUILDINFO; rt=$pk/deps.runtime'
+    echo 'pk=$B/pkg/nidhogg-$V; rm -rf "$B/pkg"; mkdir -p "$pk"; mv nextstep/Emacs.app "$pk/Nidhogg.app"; info=$pk/BUILDINFO; rt=$pk/deps.runtime; lic=$pk/licenses'
   else
     echo 'phase install'
     echo 'rm -rf "$B/stage"'
     echo "logged \"\$B/install.log\" make install DESTDIR=$B/stage"
-    echo 'pk=$B/pkg/nidhogg-$V; rm -rf "$B/pkg"; mkdir -p "$B/pkg"; cp -a "$B/stage$P" "$pk"; dumplinks "$pk"; mkdir -p "$pk/share/nidhogg"; info=$pk/share/nidhogg/BUILDINFO; rt=$pk/share/nidhogg/deps.runtime'
+    echo 'pk=$B/pkg/nidhogg-$V; rm -rf "$B/pkg"; mkdir -p "$B/pkg"; cp -a "$B/stage$P" "$pk"; dumplinks "$pk"; mkdir -p "$pk/share/nidhogg"; info=$pk/share/nidhogg/BUILDINFO; rt=$pk/share/nidhogg/deps.runtime; lic=$pk/share/nidhogg/licenses'
     echo 'cp "$S/nidhogg/env.sh" "$pk/share/nidhogg/env.sh"'
   fi
   cat <<'BODY'
 cp "$S/nidhogg/deps/$DISTRO_TAG.runtime" "$rt"
+mkdir -p "$lic" && cp -a "$S/nidhogg/licenses/." "$lic/" && cp "$S/nidhogg/THIRD_PARTY.md" "$lic/"
 printf 'version=%s\ncommit=%s\ndistro=%s\narch=%s\nprefix=%s\nconfigure=%s\ndate=%s\n' \
   "$V" "$COMMIT" "$DISTRO_TAG" "$ARCH" "$P" "$CONF" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$info"
 phase tarball
