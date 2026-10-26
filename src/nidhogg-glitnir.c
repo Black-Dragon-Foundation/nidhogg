@@ -28,6 +28,9 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #ifdef HAVE_PGTK
 #include "glitnir-pgtk.h"
 #endif
+#ifdef HAVE_NHWL
+#include "nhwlterm.h"
+#endif
 
 DEFUN ("glitnir-active-p", Fglitnir_active_p, Sglitnir_active_p, 0, 1, 0,
        doc: /* Return non-nil if Glitnir (the compositor) draws FRAME.
@@ -139,7 +142,7 @@ empties the record after reading it.  */)
 #endif
 }
 
-#ifdef HAVE_PGTK
+#if defined HAVE_PGTK || defined HAVE_NHWL
 
 struct png_sink
 {
@@ -179,13 +182,22 @@ copy, requests a repaint, and waits up to one second for it.  */)
   if (!NILP (format) && !EQ (format, intern_c_string ("png"))
       && !EQ (format, intern_c_string ("raw")))
     error ("glitnir-snapshot: unknown format");
-#ifdef HAVE_PGTK
+#if defined HAVE_PGTK || defined HAVE_NHWL
+  cairo_surface_t *s;
+# ifdef HAVE_NHWL
+  if (!FRAME_NHWL_P (f))
+    error ("glitnir-snapshot: no image surface");
+  s = nhwl_snapshot (f);
+  if (s == NULL)
+    error ("glitnir-snapshot: the frame has no picture yet");
+# else
   if (!FRAME_PGTK_P (f))
     error ("glitnir-snapshot: no image surface");
   const char *err = NULL;
-  cairo_surface_t *s = glitnir_pgtk_snapshot (f, &err);
+  s = glitnir_pgtk_snapshot (f, &err);
   if (s == NULL)
     error ("%s", err);
+# endif
   int w = cairo_image_surface_get_width (s);
   int h = cairo_image_surface_get_height (s);
   Lisp_Object result;

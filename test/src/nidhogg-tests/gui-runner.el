@@ -40,15 +40,21 @@
 
 (defun glitnir-gui--gtk3-scale-ready-p ()
   (let ((s (glitnir-gui--scale)))
-    ;; GTK 3 knows only integer scales: it reports ceil(S) and a monitor geometry of the logical size (WxH / S)
-    ;; times ceil(S) (S = 1.25 on 2880x1800: 4608x2880), which tells S = 1.25 from S = 2.
-    (and (= (frame-scale-factor) (ceiling s))
-         (let* ((size (getenv "GLITNIR_GUI_SIZE"))
-                (geo (alist-get 'geometry (car (display-monitor-attributes-list))))
-                (m (and size (string-match "\\`\\([0-9]+\\)x\\([0-9]+\\)\\'" size))))
-           (or (not m)
-               (and (= (nth 2 geo) (* (ceiling s) (round (/ (string-to-number (match-string 1 size)) s))))
-                    (= (nth 3 geo) (* (ceiling s) (round (/ (string-to-number (match-string 2 size)) s))))))))))
+    (if (featurep 'nidhogg-wayland)
+        ;; Nidhogg's own Wayland shell has the exact scale and the monitor's device size
+        (and (< (abs (- (frame-scale-factor) s)) 0.001)
+             (let ((size (getenv "GLITNIR_GUI_SIZE"))
+                   (geo (alist-get 'geometry (car (display-monitor-attributes-list)))))
+               (or (not size) (equal (format "%dx%d" (nth 2 geo) (nth 3 geo)) size))))
+      ;; GTK 3 knows only integer scales: it reports ceil(S) and a monitor geometry of the logical size (WxH / S)
+      ;; times ceil(S) (S = 1.25 on 2880x1800: 4608x2880), which tells S = 1.25 from S = 2.
+      (and (= (frame-scale-factor) (ceiling s))
+           (let* ((size (getenv "GLITNIR_GUI_SIZE"))
+                  (geo (alist-get 'geometry (car (display-monitor-attributes-list))))
+                  (m (and size (string-match "\\`\\([0-9]+\\)x\\([0-9]+\\)\\'" size))))
+             (or (not m)
+                 (and (= (nth 2 geo) (* (ceiling s) (round (/ (string-to-number (match-string 1 size)) s))))
+                      (= (nth 3 geo) (* (ceiling s) (round (/ (string-to-number (match-string 2 size)) s)))))))))))
 
 (defun glitnir-gui--wait-for-scale ()
   (let ((deadline (+ (float-time) 10)))
