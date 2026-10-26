@@ -17,6 +17,6 @@
   "capped": {
     "wl_seat": "mutter 49 serves 10; Smithay 0.7 serves 9",
     "xdg_wm_base": "mutter 49 serves 7; Smithay 0.7 serves 6",
-    "zwp_text_input_manager_v3": "mutter 51 serves 2; Smithay 0.7 serves 1 (Task 3 confirms)"
+    "zwp_text_input_manager_v3": "mutter 51 serves 2; Smithay 0.7 serves 1 (its TextInputManagerState is fixed at version 1; the recorder serves its own text-input at 1)"
   }
 }

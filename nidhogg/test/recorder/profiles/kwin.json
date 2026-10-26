@@ -19,6 +19,6 @@
   "capped": {
     "wl_seat": "KWin serves 10; Smithay 0.7 serves 9",
     "zxdg_decoration_manager_v1": "the design matrix says v2; the protocol XML (zxdg_decoration_manager_v1) has only version 1, Smithay serves 1",
-    "zwp_text_input_manager_v3": "KWin 6.7 serves 2; Smithay 0.7 serves 1 (Task 3 confirms)"
+    "zwp_text_input_manager_v3": "KWin 6.7 serves 2; Smithay 0.7 serves 1 (its TextInputManagerState is fixed at version 1; the recorder serves its own text-input at 1)"
   }
 }

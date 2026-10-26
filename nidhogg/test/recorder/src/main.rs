@@ -1,7 +1,9 @@
 //! nh-recorder: a recording Wayland compositor for Nidhogg's client tests.  Test-only; never shipped.
 mod clock;
 mod control;
+mod input;
 mod log;
+mod render;
 mod scale;
 mod shell;
 mod state;
