@@ -32,7 +32,7 @@
 #                       gnome-smoke rows, under GLITNIR_GUI_MEMORY (default 2g here); exit 1 if any run fails
 #   --files GLOB        load only the test files matching GLOB (in --tests); also $GLITNIR_GUI_FILES
 #   --tag TAG           run only the rows tagged TAG (selector (and REGEXP (tag TAG))); also $GLITNIR_GUI_TAG
-#   A mutter run prints "gui.sh: mutter peak RSS: N kB" (VmHWM, read at exit).
+#   Every run prints "gui.sh: COMPOSITOR peak RSS: N kB" (VmHWM, read at exit).
 #
 # Exit 0 all tests passed, 1 a failure, a timeout or a session that did not come up, 2 usage.
 # Mutter: the scale is applied with `gdctl set --logical-monitor --scale S' inside the session (mutter 50 sets fractional
@@ -101,9 +101,9 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
   display=glitnir-gui-$GLITNIR_GUI_PID
   mpid= epid=
   cleanup() {
-    # mutter's peak resident set (VmHWM) while it is still alive
-    [ "$compositor" != mutter ] || [ -z "$mpid" ] || \
-      echo "gui.sh: mutter peak RSS: $(sed -n 's/^VmHWM:[[:space:]]*\(.*\)$/\1/p' "/proc/$mpid/status" 2>/dev/null) (scale $scale)"
+    # the compositor's peak resident set (VmHWM) while it is still alive
+    [ -z "$mpid" ] || \
+      echo "gui.sh: $compositor peak RSS: $(sed -n 's/^VmHWM:[[:space:]]*\(.*\)$/\1/p' "/proc/$mpid/status" 2>/dev/null) (scale $scale)"
     for p in $epid $mpid; do kill "$p" 2>/dev/null; done
     for p in $epid $mpid; do wait "$p" 2>/dev/null; done
   }
