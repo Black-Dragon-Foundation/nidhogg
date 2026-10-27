@@ -54,7 +54,7 @@ rcis 0; has "--with-ns"; has "/Nidhogg.app"; has "P=/tmp/n"; hasnt "podman"
 run -- --dry-run --container fedora-44 --check nidhogg/check-subset.txt
 rcis 0; has "make -C test src/nidhogg-tests"
 run -- --dry-run --container fedora-44 --out dist/x.tar.xz
-rcis 0; has "DESTDIR=/build/stage"; has "BUILDINFO"; has "/out:Z"
+rcis 0; has "DESTDIR=/build/stage"; has "BUILDINFO"; has "/out:Z"; has "/src:ro,z"
 has 'lic=$pk/share/nidhogg/licenses'; has 'cp -a "$S/nidhogg/licenses/." "$lic/"'; has 'cp "$S/nidhogg/THIRD_PARTY.md" "$lic/"'
 run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --out dist/x.tar.xz
 rcis 0; has "Nidhogg.app"; has "BUILDINFO"
