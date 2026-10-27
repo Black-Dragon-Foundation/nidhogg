@@ -33,3 +33,10 @@ Entries:
 - Licence: Apache-2.0 (`nidhogg/licenses/LICENSE-APACHE`); the adapted file is `GPL-3.0-or-later AND Apache-2.0`
 - Files: `nidhogg/shell/src/wayland/clipboard.rs` (the offers' MIME tracking, reading a `receive` pipe and writing a
   `send` descriptor; the calloop parts rewritten for the reader thread, the changes noted in its header)
+## https://codeberg.org/dnkl/foot@cb2771788998f6a6288e2de8273c55a8214551e0 ime.c
+
+- URL: https://codeberg.org/dnkl/foot
+- Commit: cb2771788998f6a6288e2de8273c55a8214551e0 (2026-09-18)
+- Licence: MIT (`nidhogg/licenses/LICENSE-MIT-foot`); the adapted file is `GPL-3.0-or-later AND MIT`
+- Files: `nidhogg/shell/src/wayland/text_input.rs` (foot's text-input-v3 logic: pending state applied on `done`, the
+  commit-serial check, enable on enter and disable on leave; rewritten in Rust)

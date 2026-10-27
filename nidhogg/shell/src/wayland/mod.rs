@@ -25,6 +25,7 @@ pub mod scale;
 pub mod selection;
 pub mod serial;
 pub mod shm;
+pub mod text_input;
 pub mod toplevel;
 
 use crate::api::*;
@@ -44,6 +45,7 @@ use wayland_client::protocol::wl_shm::WlShm;
 use wayland_client::protocol::wl_subcompositor::WlSubcompositor;
 use wayland_client::protocol::wl_surface::{self, WlSurface};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop};
+use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
 use wayland_protocols::xdg::decoration::zv1::client::zxdg_decoration_manager_v1::ZxdgDecorationManagerV1;
 use wayland_protocols::xdg::shell::client::xdg_wm_base::XdgWmBase;
 
@@ -94,6 +96,8 @@ pub struct WaylandShell {
     main: MainState,
     main_waker: Waker,
     reader: Option<JoinHandle<()>>,
+    /// text-input-v3's state, shared with the reader's handlers.
+    text_input: Arc<text_input::TextInput>,
 }
 
 impl MainState {
@@ -143,6 +147,14 @@ impl WaylandShell {
             rstate.cursor_manager = g.bind(reg, &rqh, ());
             main.decoration_manager = g.bind(reg, &mqh, ());
             main.presentation = g.bind(reg, &mqh, ());
+            if let (Some(seat), Some(manager)) = (
+                &rstate.seat,
+                g.bind::<ZwpTextInputManagerV3, _, _>(reg, &rqh, ()),
+            ) {
+                rstate
+                    .text_input
+                    .set_object(manager.get_text_input(seat, &rqh, ()));
+            }
             main.reader_qh = Some(rqh.clone());
             main.seat = rstate.seat.clone();
             main.wm_base = rstate.wm_base.clone();
@@ -154,6 +166,7 @@ impl WaylandShell {
             conn.roundtrip().map_err(lost)?;
             reader_queue.dispatch_pending(&mut rstate).map_err(lost)?;
         }
+        let text_input = rstate.text_input.clone();
         let main_waker = Waker::from(Arc::new(MainWaker(shared.clone())));
         let reader =
             reader::spawn(conn.clone(), reader_queue, rstate).map_err(|_| ShellError::NoMem)?;
@@ -164,6 +177,7 @@ impl WaylandShell {
             main,
             main_waker,
             reader: Some(reader),
+            text_input,
         };
         // dispatches the setup's main-queue events and registers the waker
         shell.dispatch_main().map_err(|_| ShellError::Unsupported)?;

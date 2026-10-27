@@ -25,6 +25,7 @@ extern "C" {
 #define NHSHELL_E_UNSUPPORTED     -4   /* no backend, or a protocol it needs is absent */
 #define NHSHELL_E_DISCONNECTED    -5   /* the connection to the display is gone */
 #define NHSHELL_E_NOMEM           -6
+#define NHSHELL_E_TOO_SMALL       -8   /* nhshell_take_text: the buffer is short; *LEN is the size, the text stays */
 
 /* Write the ABI version (1) to *OUT.  NHSHELL_E_ARG if OUT is NULL.  */
 int32_t nhshell_abi_version (uint32_t *out);
@@ -57,6 +58,15 @@ enum
   /* the window's pacer lets the host present what it drew (see nhshell_window_dirty); 16-20 belong to popups and
      children */
   NHSHELL_EV_FRAME_READY = 21
+};
+
+/* text-input-v3 events (u.text; lengths and offsets are UTF-8 bytes).  PREEDIT: the preedit changed; u.text.id and len
+   say its text (len 0: cleared), cursor_begin and cursor_end the cursor in it (-1: hidden).  COMMIT_TEXT: insert the
+   text (id, len).  DELETE_SURROUNDING: delete u.text.before bytes before and u.text.after bytes after the cursor.
+   Within one `done` the records come in the protocol's order: clear the old preedit, delete, commit, new preedit.  */
+enum
+{
+  NHSHELL_EV_PREEDIT = 18, NHSHELL_EV_COMMIT_TEXT = 19, NHSHELL_EV_DELETE_SURROUNDING = 20
 };
 
 /* u.key.mods */
@@ -137,6 +147,12 @@ typedef struct
       char name[32];
     } output;
     struct { uint32_t kind; } selection;  /* NHSHELL_SEL_* */
+    struct
+    {
+      uint32_t id, len;           /* the text for nhshell_take_text; 0 for none */
+      int32_t cursor_begin, cursor_end;
+      uint32_t before, after;
+    } text;
   } u;
 } NhShellEvent;
 
@@ -278,6 +294,17 @@ int32_t nhshell_selection_types (NhShell *sh, uint32_t kind, char *buf, size_t c
 int32_t nhshell_selection_read (NhShell *sh, uint32_t kind, const char *mime, uint32_t timeout_ms, uint8_t **out,
                                 size_t *len);
 void nhshell_free_bytes (uint8_t *p);
+/* Text input (text-input-v3).  enable turns it on or off for WINDOW; the state survives the window losing and
+   regaining text-input focus.  cursor is the cursor rectangle in the window (logical pixels), sent to the input method
+   only when it changed.  surrounding is the text around the cursor (UTF-8, LEN bytes; CURSOR and ANCHOR byte offsets),
+   cut to 4000 bytes around the cursor on a character boundary.  take_text copies the text of a PREEDIT or COMMIT_TEXT
+   record into BUF (CAP bytes, no NUL) and stores its length in *LEN; the id is single-use.  NHSHELL_E_UNSUPPORTED
+   without text-input-v3.  */
+int32_t nhshell_text_input_enable (NhShell *sh, uint64_t window, int32_t on);
+int32_t nhshell_text_input_cursor (NhShell *sh, uint64_t window, int32_t x, int32_t y, int32_t w, int32_t h);
+int32_t nhshell_text_input_surrounding (NhShell *sh, uint64_t window, const char *utf8, size_t len, int32_t cursor,
+                                        int32_t anchor);
+int32_t nhshell_take_text (NhShell *sh, uint32_t id, char *buf, size_t cap, size_t *len);
 
 #ifdef __cplusplus
 }
