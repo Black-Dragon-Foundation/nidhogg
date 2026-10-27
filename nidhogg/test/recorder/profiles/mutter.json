@@ -1,6 +1,7 @@
 {
   "name": "mutter",
   "decoration": "none",
+  "occlusion": true,
   "globals": {
     "wl_compositor": 6,
     "wl_subcompositor": 1,
