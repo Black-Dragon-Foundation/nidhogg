@@ -413,7 +413,7 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   `nidhogg-workers-reader-pipes`, `-reader-sockets` and `-reader-ptys`; `nidhogg-workers-framing`,
   `nidhogg-workers-treesit`, `nidhogg-treesit-defer`, `nidhogg-workers-images`, `nidhogg-image-defer`,
   `nidhogg-workers-autosave`, `nidhogg-workers-dns`. Each is off until the default-on commit of its step; on so far:
-  `nidhogg-workers-reader-pipes`, `nidhogg-workers-reader-sockets`.
+  `nidhogg-workers-reader-pipes`, `nidhogg-workers-reader-sockets`, `nidhogg-workers-images`, `nidhogg-image-defer`.
   `nidhogg-redisplay-wait-budget` (1) is how many milliseconds a redisplay may wait for a nearly finished worker job.
 - The environment variable `NIDHOGG_WORKERS`, read at startup: `default` (or unset), `on`, `off`, `inline`, or a list
   such as `+nidhogg-workers-treesit-nidhogg-workers-dns`. `nidhogg-workers-set-all` and `nidhogg-workers-apply` do the
@@ -654,7 +654,7 @@ synchronous loaders in `image.c` (Cairo frames) use the same cores, so a picture
 cache (by file name and modification time, or a hash of the data), so frame N of a GIF or WebP decodes from frame N-1.
 Test primitives: `nidhogg-workers--test-image-decode`, `--test-image-decode-finish`, `--test-decode-count`,
 `--test-image-cache-clear`, `--test-image-pixels`.
-**Images decode on `nh-img` during redisplay.** With `nidhogg-workers-images` and `nidhogg-image-defer` on, a PNG,
+**Images decode on `nh-img` during redisplay.** With `nidhogg-workers-images` and `nidhogg-image-defer` on (both are by default), a PNG,
 JPEG, GIF or WebP that redisplay meets for the first time (on a Cairo frame) is decoded on `nh-img` (up to two
 threads, one per two cores) from a copy of its `:data` or its file name, with the frame's and face's colours resolved
 first. Redisplay waits for it within the shared wait budget; past it the image keeps its final size from the header
