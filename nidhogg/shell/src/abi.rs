@@ -117,6 +117,11 @@ mod tests {
             size_of::<OutputEv>(),
             align_of::<OutputEv>(),
         );
+        ty(
+            "__typeof__(((NhShellEvent *)0)->u.selection)",
+            size_of::<SelectionEv>(),
+            align_of::<SelectionEv>(),
+        );
         let mut off = |c: &str, o: usize| rows.push((format!("offsetof(NhShellEvent, {c})"), o));
         off("kind", offset_of!(E, kind));
         off("window", offset_of!(E, window));
@@ -138,6 +143,10 @@ mod tests {
             offset_of!(E, u) + offset_of!(ScaleEv, scale120),
         );
         off("u.focus.in", offset_of!(E, u) + offset_of!(FocusEv, r#in));
+        off(
+            "u.selection.kind",
+            offset_of!(E, u) + offset_of!(SelectionEv, kind),
+        );
 
         let dir = std::env::temp_dir().join(format!("nhshell-layout-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

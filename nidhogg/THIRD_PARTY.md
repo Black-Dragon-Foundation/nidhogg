@@ -25,3 +25,11 @@ Entries:
 - Licence: Apache-2.0 (`nidhogg/licenses/LICENSE-APACHE`); the adapted file is `GPL-3.0-or-later AND Apache-2.0`
 - Files: `nidhogg/shell/src/wayland/serial.rs` (the input serial tracker, copied with small changes noted in its
   header)
+
+## https://github.com/zed-industries/zed@347f171a3fd00a3b672382d78348b37bd969d17c crates/gpui_linux/src/linux/wayland/clipboard.rs
+
+- URL: https://github.com/zed-industries/zed
+- Commit: 347f171a3fd00a3b672382d78348b37bd969d17c (2026-10-24)
+- Licence: Apache-2.0 (`nidhogg/licenses/LICENSE-APACHE`); the adapted file is `GPL-3.0-or-later AND Apache-2.0`
+- Files: `nidhogg/shell/src/wayland/clipboard.rs` (the offers' MIME tracking, reading a `receive` pipe and writing a
+  `send` descriptor; the calloop parts rewritten for the reader thread, the changes noted in its header)

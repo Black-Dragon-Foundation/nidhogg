@@ -10,6 +10,7 @@
 //! the socket (no roundtrip, no `blocking_dispatch`).
 
 pub mod child;
+pub mod clipboard;
 pub mod conn;
 pub mod cursor;
 pub mod decor;
@@ -21,6 +22,7 @@ pub mod present;
 pub mod reader;
 pub mod registry;
 pub mod scale;
+pub mod selection;
 pub mod serial;
 pub mod shm;
 pub mod toplevel;
@@ -144,6 +146,7 @@ impl WaylandShell {
             main.reader_qh = Some(rqh.clone());
             main.seat = rstate.seat.clone();
             main.wm_base = rstate.wm_base.clone();
+            selection::bind(g, reg, &rqh, &shared, rstate.seat.as_ref());
         }
         // Before the reader owns its queue, this thread may still read: two round trips let the seat announce its
         // capabilities and the keyboard bind, so the shell opens with its input objects in place.
