@@ -43,7 +43,7 @@ typedef struct
   bool force_csd;  /* client-side decorations are forced (a test switch) */
 } NhShellCaps;
 
-/* Event kinds.  KIND says which member of NhShellEvent.u is valid; CLOSE, POINTER_LEAVE, DISCONNECTED and BUFFER_FREE
+/* Event kinds.  KIND says which member of NhShellEvent.u is valid; CLOSE, POINTER_LEAVE, DISCONNECTED and FRAME_READY
    have none.  MODIFIERS uses u.key.mods; POINTER_ENTER, POINTER_MOTION and POINTER_LEAVE use u.pointer.x and y;
    BUTTON uses u.pointer.button and state; OUTPUT_REMOVE uses u.output.id.  Positions are logical pixels; TIME_NS is
    the compositor's clock.  */
@@ -53,8 +53,9 @@ enum
   NHSHELL_EV_POINTER_MOTION, NHSHELL_EV_BUTTON, NHSHELL_EV_SCROLL, NHSHELL_EV_CONFIGURE, NHSHELL_EV_CLOSE,
   NHSHELL_EV_SCALE, NHSHELL_EV_FOCUS, NHSHELL_EV_FRAME_DONE, NHSHELL_EV_OUTPUT_ADD, NHSHELL_EV_OUTPUT_REMOVE,
   NHSHELL_EV_DISCONNECTED,
-  /* a buffer of the window came free after nhshell_present_begin found none: present what is owed */
-  NHSHELL_EV_BUFFER_FREE
+  /* the window's pacer lets the host present what it drew (see nhshell_window_dirty); 16-20 belong to popups and
+     children */
+  NHSHELL_EV_FRAME_READY = 21
 };
 
 /* u.key.mods */
@@ -201,6 +202,7 @@ int32_t nhshell_window_show_menu (NhShell *sh, uint64_t window, int32_t x, int32
 /* The window geometry (surface-local logical pixels): where the window sits inside the surface, for a client that
    draws its own decorations and resize margins.  Takes effect with the next commit.  */
 int32_t nhshell_window_set_geometry (NhShell *sh, uint64_t window, int32_t x, int32_t y, int32_t w, int32_t h);
+/* Acks a configure at once; the next present_commit (which is made in any pacer state) carries the buffer.  */
 int32_t nhshell_window_ack_configure (NhShell *sh, uint64_t window, uint32_t serial);
 int32_t nhshell_window_set_cursor (NhShell *sh, uint64_t window, uint32_t shape);
 
@@ -211,6 +213,11 @@ int32_t nhshell_window_ssd (NhShell *sh, uint64_t window, int32_t *ssd);
 
 /* The presenter.  begin returns a buffer of DEV_W x DEV_H device pixels in *OUT; commit shows it, with DAMAGE (N
    rectangles in device pixels; NULL only when N is 0, which presents with no damage).  */
+/* Pacing.  window_dirty says the host drew something; NHSHELL_EV_FRAME_READY follows when the window's pacer lets it
+   present (frame callbacks pace, an ack never waits, a starved window waits for a buffer release).  window_ready
+   asks the same: *READY is 1 when the host may begin a frame now.  */
+int32_t nhshell_window_dirty (NhShell *sh, uint64_t window);
+int32_t nhshell_window_ready (NhShell *sh, uint64_t window, int32_t *ready);
 int32_t nhshell_present_begin (NhShell *sh, uint64_t window, int32_t dev_w, int32_t dev_h, NhShellBuffer *out);
 int32_t nhshell_present_commit (NhShell *sh, uint64_t window, const GlitnirRect *damage, size_t n);
 

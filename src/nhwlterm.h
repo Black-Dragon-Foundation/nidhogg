@@ -247,10 +247,7 @@ struct nhwl_output
   int logical_w, logical_h;	/* the compositor's last suggestion, logical px */
   uint32_t states;		/* NHSHELL_STATE_* of the last configure */
   bool configured;		/* a configure has been seen (the toplevel is mapped) */
-  bool serial_pending;		/* a configure serial waits for the next commit */
   uint32_t serial;
-  int frame_pending;		/* frame callbacks not yet done */
-  bool present_owed;		/* drawn since the last present */
 
   /* The retained backing: the frame's pixels, device size.  */
   cairo_surface_t *cr_surface;
@@ -456,7 +453,8 @@ extern void nhwl_set_cr_source_with_gc_background (struct frame *, Emacs_GC *,
 						   bool);
 extern void nhwl_set_cr_source_with_color (struct frame *, unsigned long,
 					   bool);
-extern void nhwl_present (struct frame *);
+extern bool nhwl_present (struct frame *);
+extern void nhwl_dirty (struct frame *);
 
 /* nhwldraw.c: drawing, the backing and Glitnir.  */
 extern void nhwl_scroll_run (struct window *, struct run *);

@@ -334,7 +334,7 @@ void
 nhwl_end_cr_clip (struct frame *f)
 {
   cairo_restore (FRAME_NHWL_OUTPUT (f)->cr_context);
-  FRAME_NHWL_OUTPUT (f)->present_owed = true;
+  nhwl_dirty (f);
 }
 
 /* Adapted from pgtk_cr_destroy_frame_context.  */
@@ -411,34 +411,42 @@ nhwl_set_cr_source_with_color (struct frame *f, unsigned long color,
     }
 }
 
-/* Show the backing: Glitnir commits the frame's damage, the shell hands
-   out a buffer, Glitnir composes the damage (and what the buffer's age
-   leaves stale) into it, and the buffer is committed, acking the configure
-   it answers.  Nothing is done while a frame callback is pending (the next
-   FRAME_DONE presents what accumulated), while the frame is suspended, or
-   before the compositor's first configure -- except that a configure's ack
-   must reach the compositor, so a pending serial always presents.  A size
-   the frame has not taken yet (change_frame_size queued it for the next
-   redisplay) holds everything back, the ack included: the buffer would be
-   the old size, and its ack would say it is the new one.  */
+/* The frame has something to show: the window's pacer answers with
+   FRAME_READY when the frame may be presented.  */
 void
+nhwl_dirty (struct frame *f)
+{
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
+
+  if (dpyinfo->shell && out->window)
+    nhshell_window_dirty (dpyinfo->shell, out->window);
+}
+
+/* Show the backing when the window's pacer says so (FRAME_READY): Glitnir
+   commits the frame's damage, the shell hands out a buffer, Glitnir
+   composes the damage (and what the buffer's age leaves stale) into it, and
+   the buffer is committed.  The pacer owns when: frame callbacks, the
+   suspended state and a lack of buffers are its states, not ours.  Nothing
+   is done before the compositor's first configure, while the frame is
+   invisible, or while the frame has not taken the size change_frame_size
+   queued for the next redisplay (the next redisplay draws, and
+   nhwl_frame_up_to_date asks again).  Return true when a buffer was
+   committed.  */
+bool
 nhwl_present (struct frame *f)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
   struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
   NhShellBuffer buf;
-  int rc;
+  int rc, ready = 0;
 
-  if (!dpyinfo->shell || !out->window || !out->configured)
-    return;
-  if (f->new_size_p
-      || (!out->serial_pending
-	  && (out->frame_pending > 0
-	      || (out->states & NHSHELL_STATE_SUSPENDED))))
-    {
-      out->present_owed = true;
-      return;
-    }
+  if (!dpyinfo->shell || !out->window)
+    return false;
+  /* Asking is what lets the pacer say FRAME_READY again, so ask first.  */
+  if (nhshell_window_ready (dpyinfo->shell, out->window, &ready) < 0
+      || !ready || !out->configured || !FRAME_VISIBLE_P (f) || f->new_size_p)
+    return false;
 
   block_input ();
   nhwl_backing_resize (f);
@@ -449,33 +457,23 @@ nhwl_present (struct frame *f)
 			      out->cr_height, &buf);
   if (rc < 0)
     {
-      /* Both buffers busy: try again at the next FRAME_DONE or
-	 BUFFER_FREE.  */
-      out->present_owed = true;
+      /* Every buffer is busy: the pacer is starved and says FRAME_READY
+	 again at a buffer release.  */
       unblock_input ();
-      return;
+      return false;
     }
 
   nhwl_glitnir_compose (f, &buf);
 
   nhwl_csd_send_geometry (f);
-  if (out->serial_pending)
-    {
-      nhshell_window_ack_configure (dpyinfo->shell, out->window, out->serial);
-      out->serial_pending = false;
-    }
-
   rc = nhshell_present_commit (dpyinfo->shell, out->window, out->pending,
 			       out->npending);
   if (rc >= 0)
-    {
-      out->frame_pending++;
-      out->present_owed = false;
-      nhwl_glitnir_presented (f);
-    }
+    nhwl_glitnir_presented (f);
   else
-    out->present_owed = true;
+    nhwl_dirty (f);
   unblock_input ();
+  return rc >= 0;
 }
 
 /* Adapted from pgtk_clear_area.  */
@@ -986,7 +984,7 @@ nhwl_make_frame_visible (struct frame *f)
 	  SET_FRAME_ICONIFIED (f, false);
 	  out->has_been_visible = true;
 	  SET_FRAME_GARBAGED (f);
-	  nhwl_present (f);
+	  nhwl_dirty (f);
 	}
     }
 }
@@ -1546,7 +1544,6 @@ nhwl_configure (struct frame *f, const NhShellEvent *ev)
   out->logical_w = ev->u.configure.w;
   out->logical_h = ev->u.configure.h;
   out->serial = ev->u.configure.serial;
-  out->serial_pending = true;
   out->configured = true;
 
   if (states & NHSHELL_STATE_FULLSCREEN)
@@ -1577,9 +1574,11 @@ nhwl_configure (struct frame *f, const NhShellEvent *ev)
     }
  done:
 
-  /* The ack goes with the next buffer: ask for a redisplay, which
-     presents.  */
-  out->present_owed = true;
+  /* The ack never waits for the pacer or for Lisp: it goes out now, and the
+     buffer that follows it with the next present.  */
+  nhshell_window_ack_configure (FRAME_DISPLAY_INFO (f)->shell, out->window,
+				out->serial);
+  nhwl_dirty (f);
   if (FRAME_VISIBLE_P (f))
     fset_redisplay (f);
 }
@@ -1795,18 +1794,12 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	    }
 	  break;
 
-	case NHSHELL_EV_FRAME_DONE:
-	case NHSHELL_EV_BUFFER_FREE:
+	case NHSHELL_EV_FRAME_READY:
 	  if (f)
-	    {
-	      struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+	    nhwl_present (f);
+	  break;
 
-	      if (ev.kind == NHSHELL_EV_FRAME_DONE && out->frame_pending > 0)
-		out->frame_pending--;
-	      if (out->present_owed && out->frame_pending == 0
-		  && FRAME_VISIBLE_P (f))
-		nhwl_present (f);
-	    }
+	case NHSHELL_EV_FRAME_DONE:
 	  break;
 
 	case NHSHELL_EV_OUTPUT_ADD:
@@ -1993,18 +1986,16 @@ nhwl_frame_up_to_date (struct frame *f)
 {
   block_input ();
   FRAME_MOUSE_UPDATE (f);
-  if (!buffer_flipping_blocked_p () && FRAME_VISIBLE_P (f)
-      && (FRAME_NHWL_OUTPUT (f)->present_owed
-	  || FRAME_NHWL_OUTPUT (f)->serial_pending))
-    nhwl_present (f);
+  if (!buffer_flipping_blocked_p () && FRAME_VISIBLE_P (f))
+    nhwl_dirty (f);
   unblock_input ();
 }
 
 static void
 nhwl_buffer_flipping_unblocked_hook (struct frame *f)
 {
-  if (FRAME_VISIBLE_P (f) && FRAME_NHWL_OUTPUT (f)->present_owed)
-    nhwl_present (f);
+  if (FRAME_VISIBLE_P (f))
+    nhwl_dirty (f);
 }
 
 static void
@@ -2529,25 +2520,28 @@ between two presents.  The motion bench of the W0 budgets.  */)
     {
       double t0, t1;
       int waits = 0;
+      bool committed;
 
-      /* The previous present's frame callback (about one refresh).  */
-      while (out->frame_pending > 0 && waits++ < 50)
-	{
-	  struct pollfd p = { dpyinfo->connection, POLLIN, 0 };
-
-	  poll (&p, 1, 100);
-	  nhwl_drain_events (dpyinfo, NULL);
-	}
-      if (out->frame_pending > 0)
-	break;
+      /* The previous present's frame callback (about one refresh): the
+	 pacer is ready again.  */
       glitnir_damage_all (out->glitnir_id);
+      nhwl_dirty (f);
+      while (waits++ < 5000)
+	{
+	  int ready = 0;
+
+	  if (nhshell_window_ready (dpyinfo->shell, out->window, &ready) < 0
+	      || ready)
+	    break;
+	  poll (NULL, 0, 1);
+	}
       clock_gettime (CLOCK_MONOTONIC, &ts);
       t0 = nhwl_bench_ms (ts);
-      nhwl_present (f);
+      committed = nhwl_present (f);
       clock_gettime (CLOCK_MONOTONIC, &ts);
       t1 = nhwl_bench_ms (ts);
-      if (out->frame_pending == 0)
-	break;			/* nothing was committed */
+      if (!committed)
+	break;
       compose[done] = t1 - t0;
       if (done > 0)
 	interval[done - 1] = t1 - prev;

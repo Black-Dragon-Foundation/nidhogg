@@ -86,7 +86,7 @@ nhwl_csd_layout (struct frame *f)
       c->t = m + strip;
       c->sig_valid = false;
       SET_FRAME_GARBAGED (f);
-      out->present_owed = true;
+      nhwl_dirty (f);
     }
 }
 
@@ -99,7 +99,7 @@ nhwl_csd_changed (struct frame *f)
   if (out->csd.on)
     {
       out->csd.sig_valid = false;
-      out->present_owed = true;
+      nhwl_dirty (f);
       fset_redisplay (f);
     }
 }
