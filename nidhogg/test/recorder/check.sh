@@ -38,7 +38,7 @@ if [ -n "$DISTRO" ] && [ "$INNER" = 0 ]; then
   inner="dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install cargo rust clippy rustfmt gcc pixman-devel libxkbcommon-devel wayland-devel diffutils >/dev/null && bash /crate/check.sh --inner${TEST:+ --test $(printf '%q' "$TEST")}"
   [ "$BUILD" = 1 ] && inner="$inner --build"
   podman run --rm --name "$NAME" --memory 3g --memory-swap 3g \
-    -v "$HERE:/crate:ro,Z" -v "$HOME_DIR:/cargo-home:Z" -v "$TARGET_DIR:/cargo-target:Z" "${EXTRA[@]}" \
+    -v "$HERE:/crate:ro,z" -v "$HOME_DIR:/cargo-home:Z" -v "$TARGET_DIR:/cargo-target:Z" "${EXTRA[@]}" \
     -e CARGO_HOME=/cargo-home -e CARGO_TARGET_DIR=/cargo-target \
     "registry.fedoraproject.org/fedora:${DISTRO#fedora-}" bash -euo pipefail -c "$inner" &
   pid=$!
