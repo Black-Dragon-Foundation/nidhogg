@@ -502,4 +502,49 @@ in a multibyte string, and `string' of ASCII alone is unibyte."
                            (workers-autosave-tests--bytes f)))))
       (delete-file f))))
 
+(defun workers-autosave-tests--save-once (async)
+  "Auto-save the current buffer ASYNC and wait for the landing."
+  (let ((nidhogg-workers-autosave async))
+    (nidhogg-workers--test-keyboard-auto-save t)
+    (should (nidhogg-workers--test-save-await 30000))))
+
+(defun workers-autosave-tests--snapshot (key)
+  "The last snapshot's KEY."
+  (plist-get (nidhogg-workers--test-save-snapshot) key))
+
+(ert-deftest workers/autosave-arena-reused ()
+  ;; The first save of a 40 MB buffer (past glibc's largest mmap
+  ;; threshold, so malloc always maps fresh pages) copies into fresh
+  ;; memory (page faults); the next into the memory the first left:
+  ;; about none.
+  (let ((nidhogg-workers--mode 'threads))
+    (workers-autosave-tests--in-dir dir
+      (let ((buf (workers-autosave-tests--visit
+                  (expand-file-name "arena.txt" dir) "")))
+        (with-current-buffer buf
+          (insert (make-string 40000000 ?a))
+          (workers-autosave-tests--save-once t)
+          (let ((first (workers-autosave-tests--snapshot :snapshot-faults)))
+            (should (> first 1000))
+            (insert "more\n")
+            (workers-autosave-tests--save-once t)
+            (should (< (workers-autosave-tests--snapshot :snapshot-faults)
+                       (/ first 20)))))))))
+
+(ert-deftest workers/autosave-arena-freed ()
+  ;; Killing the buffer frees what its saves kept; so does turning
+  ;; auto-save off.
+  (let ((nidhogg-workers--mode 'threads))
+    (workers-autosave-tests--in-dir dir
+      (let ((buf (workers-autosave-tests--visit
+                  (expand-file-name "freed.txt" dir) "")))
+        (with-current-buffer buf
+          (insert (make-string 40000000 ?a))
+          (workers-autosave-tests--save-once t)
+          (should (>= (workers-autosave-tests--snapshot :arena-bytes) 40000000))
+          (set-buffer-modified-p nil)
+          (let ((kill-buffer-query-functions nil))
+            (kill-buffer buf))
+          (should (zerop (workers-autosave-tests--snapshot :arena-bytes))))))))
+
 ;;; workers-autosave-tests.el ends here
