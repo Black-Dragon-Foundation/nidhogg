@@ -150,6 +150,10 @@ impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for Client {
                 text.unwrap_or_default()
             ),
             E::CommitString { text } => format!("commit {:?}", text.unwrap_or_default()),
+            E::DeleteSurroundingText {
+                before_length,
+                after_length,
+            } => format!("delete {before_length} {after_length}"),
             E::Done { serial } => format!("done {serial}"),
             _ => return,
         });
