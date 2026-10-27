@@ -63,7 +63,10 @@
        (glitnir-gui--say "%s %s" (if expected "passed" "FAILED") (ert-test-name test))
        (unless expected
          (when (ert-test-result-with-condition-p result)
-           (glitnir-gui--say "  %S" (ert-test-result-with-condition-condition result))))))))
+           (glitnir-gui--say "  %S" (ert-test-result-with-condition-condition result))
+           ;; the `ert-info' lines, innermost first
+           (dolist (info (ert-test-result-with-condition-infos result))
+             (glitnir-gui--say "  %s%s" (car info) (cdr info)))))))))
 
 (defun glitnir-gui--run ()
   (glitnir-gui--wait-for-scale)
