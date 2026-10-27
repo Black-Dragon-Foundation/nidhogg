@@ -20,9 +20,10 @@
 ;;; Commentary:
 
 ;; The ranking of stalls by package and signature, and the report buffer
-;; (design 6.3, 7.1).  Both read the day files (JSON Lines) when asked for,
-;; never on a timer.  This file is preloaded, so it takes no cl-lib and
-;; loads tabulated-list and iso8601 only when a report is asked for.
+;; (README.md, "Stall watchdog").  Both read the day files (JSON Lines)
+;; when asked for, never on a timer.  This file is preloaded, so it takes
+;; no cl-lib and loads tabulated-list and iso8601 only when a report is
+;; asked for.
 
 ;;; Code:
 

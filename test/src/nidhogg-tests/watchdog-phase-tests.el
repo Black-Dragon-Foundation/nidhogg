@@ -19,7 +19,7 @@
 
 ;;; Commentary:
 
-;; Phases, felt input and typing commands (Task 11).  Phases are read
+;; Phases, felt input and typing commands.  Phases are read
 ;; with `nidhogg-watchdog--test-phase' (the top of the phase stack) and,
 ;; where a sample must show the phase and the Lisp caller, by setting
 ;; `nidhogg-watchdog--test-sample-on-phase': the push of that phase takes
@@ -153,7 +153,7 @@ the primitive itself, when it has one, comes first)."
 
 (ert-deftest watchdog/phase-restored-after-error ()
   ;; A non-local exit pops the phases pushed inside its catch target
-  ;; (PD-4): an error out of `json-parse-string', a `throw' out of a
+  ;; (`unwind_to_catch'): an error out of `json-parse-string', a `throw' out of a
   ;; filter.
   (wdph-running
     (should (eq (condition-case nil (json-parse-string "{") (error 'caught))

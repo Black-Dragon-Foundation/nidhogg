@@ -91,6 +91,14 @@ nh_wd_gc_pending (void)
   return nh_wd_gc_count;
 }
 
+/* At `--start' (the hook is off): forget the collections an earlier
+   run left untaken, so a new run's first take holds only its own.  */
+void
+nh_wd_gc_reset (void)
+{
+  nh_wd_gc_head = nh_wd_gc_count = 0;
+}
+
 /* The waiting collections as a list, oldest first, and remove them:
    (:gc ID :gcs-done N :start SECONDS :pause-ms F :span N :explicit BOOL
     :lisp-thread BOOL).  */

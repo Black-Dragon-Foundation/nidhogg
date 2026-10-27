@@ -3,8 +3,8 @@
 #
 #   bash nidhogg/test/watchdog-park-test.sh [--cycles N] [--tsan-cycles N]
 #
-# Needs gcc with ThreadSanitizer (libtsan), nothing from an Emacs build; run it in the dev container
-# (`.claude/tmp/ctr.sh -- bash nidhogg/test/watchdog-park-test.sh` in the Foundation's workspace).
+# Needs gcc with ThreadSanitizer (libtsan), nothing from an Emacs build; any container with gcc and
+# libtsan runs it.
 # It compiles the header's steps with a two-thread driver: a main thread that flips busy/waiting
 # (default 10^7 cycles) against a monitor that parks with the same steps the watchdog's monitor uses.
 # After each busy edge the main thread waits until the monitor has seen the span. Every park is a
