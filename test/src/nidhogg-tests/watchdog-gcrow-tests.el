@@ -19,7 +19,7 @@
 
 ;;; Commentary:
 
-;; The GC row (Task 16, lisp/nidhogg-watchdog-gc.el): the `post-gc-hook'
+;; The GC row (lisp/nidhogg-watchdog-gc.el): the `post-gc-hook'
 ;; notes joined with the C GC ring on `gcs-done', the collection lines, and
 ;; the numbers `nidhogg-watchdog-gc-row' derives from the day files.  Logs
 ;; go to a temporary directory; automatic collections are kept out by
