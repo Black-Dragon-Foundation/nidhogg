@@ -251,6 +251,10 @@ int32_t nhshell_window_set_cursor (NhShell *sh, uint64_t window, uint32_t shape)
 /* The Xcursor theme (NAME, logical SIZE) shown where the compositor lacks wp_cursor_shape_v1; a cursor already shown
    from the theme is redrawn.  NHSHELL_CURSOR_HIDDEN shows no cursor.  */
 int32_t nhshell_set_cursor_theme (NhShell *sh, const char *name, uint32_t size);
+/* Ask the compositor to activate the window (xdg-activation).  TOKEN is the activation token to use (emacsclient's
+   XDG_ACTIVATION_TOKEN); NULL requests one with the latest input serial and the window's surface, and activates when
+   it arrives (NHSHELL_E_STATE before any input; NHSHELL_E_UNSUPPORTED without xdg_activation_v1).  */
+int32_t nhshell_window_activate (NhShell *sh, uint64_t window, const char *token);
 
 /* Children and popups.  set_position: a child moves with its parent's next commit; a popup's anchor rectangle moves to
    (X, Y) (xdg_popup.reposition).  stack: put a child above or below SIBLING (0: the parent), with the parent's next
