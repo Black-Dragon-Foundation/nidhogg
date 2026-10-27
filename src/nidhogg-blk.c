@@ -57,6 +57,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <grp.h>
 #include <pwd.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <filemode.h>
@@ -1449,12 +1450,102 @@ Internal, for tests.  */);
 
 #define NH_SAVE_HUNG_NS (INT64_C (60) * 1000000000)
 
+/* A buffer's pre-faulted snapshot memory (§8.4): the text of a save
+   of a buffer of at least NH_SAVE_ARENA_MIN bytes stays allocated when
+   its job lands, and the next save copies into it without page faults.
+   A save finds it free (not BUSY: no job is using it) and big enough,
+   else it mallocs.  Freed when the buffer is killed or auto-save goes
+   off; a busy one then goes when its job is freed (DEAD).  */
+enum { NH_SAVE_ARENA_MIN = 4 * 1024 * 1024 };
+struct nh_save_arena
+{
+  struct buffer *buf;		/* the key; never dereferenced */
+  unsigned char *mem;
+  size_t cap;
+  bool busy, dead;
+  struct nh_save_arena *next;
+};
+static pthread_mutex_t nh_save_arena_m = PTHREAD_MUTEX_INITIALIZER;
+static struct nh_save_arena *nh_save_arenas;
+/* The bytes of pre-faulted snapshot memory kept for later saves.  */
+static _Atomic int64_t nh_save_arena_bytes;
+
+/* B's arena, under nh_save_arena_m.  */
+static struct nh_save_arena *
+nh_save_arena_find (struct buffer *b)
+{
+  for (struct nh_save_arena *a = nh_save_arenas; a; a = a->next)
+    if (a->buf == b)
+      return a;
+  return NULL;
+}
+
+static void
+nh_save_arena_unlink (struct nh_save_arena *a)
+{
+  for (struct nh_save_arena **p = &nh_save_arenas; *p; p = &(*p)->next)
+    if (*p == a)
+      {
+	*p = a->next;
+	break;
+      }
+  atomic_fetch_sub (&nh_save_arena_bytes, (int64_t) a->cap);
+  free (a->mem);
+  free (a);
+}
+
+/* Free B's arena (a busy one when its job is freed).  */
+static void
+nh_save_arena_free (struct buffer *b)
+{
+  pthread_mutex_lock (&nh_save_arena_m);
+  struct nh_save_arena *a = nh_save_arena_find (b);
+  if (a)
+    {
+      if (a->busy)
+	a->dead = true;
+      else
+	nh_save_arena_unlink (a);
+    }
+  pthread_mutex_unlock (&nh_save_arena_m);
+}
+
+/* A text of N bytes for a snapshot of B: B's free arena if it holds N,
+   else malloc, with an eighth to spare for a big text (the pages
+   untouched cost nothing) so that typing between saves fits the arena
+   it becomes.  *ARENA is the arena used, or NULL; *CAP the size.  */
+static unsigned char *
+nh_save_arena_take (struct buffer *b, size_t n, struct nh_save_arena **arena,
+		    size_t *cap)
+{
+  unsigned char *text = NULL;
+  *arena = NULL;
+  *cap = n;
+  pthread_mutex_lock (&nh_save_arena_m);
+  struct nh_save_arena *a = nh_save_arena_find (b);
+  if (a && !a->busy && !a->dead && a->cap >= n)
+    {
+      a->busy = true;
+      *arena = a;
+      *cap = a->cap;
+      text = a->mem;
+    }
+  pthread_mutex_unlock (&nh_save_arena_m);
+  if (text)
+    return text;
+  if (n >= NH_SAVE_ARENA_MIN)
+    *cap = n + n / 8;
+  return malloc (*cap ? *cap : 1);
+}
+
 struct nh_save_job
 {
   struct nh_wk_job job;
   /* Inputs (copies).  */
   unsigned char *text;		/* the snapshot; encoded in place */
   size_t nbytes;
+  size_t cap;			/* the allocation TEXT is in */
+  struct nh_save_arena *arena;	/* the arena TEXT is, or NULL (malloc) */
   char *target;			/* the encoded auto-save name at the snapshot */
   int mode;
   bool unnamed;			/* try O_TMPFILE first */
@@ -1484,6 +1575,36 @@ struct nh_save_job
 static struct nh_save_job *nh_save_jobs;
 static Lisp_Object nh_save_roots;
 static uintmax_t nh_save_serial;
+
+/* J's job is over: keep a big text as its buffer's arena
+   (J's own pages are already faulted), unless one as big is there.  */
+static void
+nh_save_arena_adopt (struct nh_save_job *j)
+{
+  if (!j->text || j->arena || j->nbytes < NH_SAVE_ARENA_MIN)
+    return;
+  pthread_mutex_lock (&nh_save_arena_m);
+  struct nh_save_arena *a = nh_save_arena_find (j->buf);
+  if (a && (a->busy || a->dead || a->cap >= j->cap))
+    {
+      pthread_mutex_unlock (&nh_save_arena_m);
+      return;
+    }
+  if (a)
+    nh_save_arena_unlink (a);
+  a = calloc (1, sizeof *a);
+  if (a)
+    {
+      *a = (struct nh_save_arena) { .buf = j->buf, .mem = j->text,
+				    .cap = j->cap, .next = nh_save_arenas };
+      nh_save_arenas = a;
+      atomic_fetch_add (&nh_save_arena_bytes, (int64_t) a->cap);
+      nh_wk_stat_add (NH_WK_SAVE, NH_WK_ST_QUEUED_BYTES,
+		      -(int64_t) j->nbytes);
+      j->text = NULL;
+    }
+  pthread_mutex_unlock (&nh_save_arena_m);
+}
 
 /* The keyboard loop's do-auto-save is running, at this eval depth (an
    auto-save-hook function calling do-auto-save is deeper: Lisp).  */
@@ -1655,7 +1776,18 @@ nh_save_free_text (struct nh_save_job *j)
 {
   if (j->text)
     {
-      free (j->text);
+      if (j->arena)
+	{
+	  /* The memory stays the buffer's, unless it was freed
+	     meanwhile.  */
+	  pthread_mutex_lock (&nh_save_arena_m);
+	  j->arena->busy = false;
+	  if (j->arena->dead)
+	    nh_save_arena_unlink (j->arena);
+	  pthread_mutex_unlock (&nh_save_arena_m);
+	}
+      else
+	free (j->text);
       j->text = NULL;
       nh_wk_stat_add (NH_WK_SAVE, NH_WK_ST_QUEUED_BYTES, -(int64_t) j->nbytes);
     }
@@ -1668,6 +1800,7 @@ nh_save_run (struct nh_wk_job *wj)
   nh_wk_pause_point (NH_WK_P_BEFORE_WRITE);
   if (!atomic_load (&j->dropped))
     nh_save_write (j);
+  nh_save_arena_adopt (j);
   nh_save_free_text (j);
 }
 
@@ -1872,7 +2005,11 @@ nh_save_land (struct nh_save_job *j)
 
   j->landed = true;
   if (!BUFFER_LIVE_P (b))
-    return;
+    {
+      /* Killed while the job ran: it may have left an arena.  */
+      nh_save_arena_free (b);
+      return;
+    }
   /* As a write that took over 60 s does today.  */
   if (nh_save_age_ns (j) > NH_SAVE_HUNG_NS)
     b->auto_save_failure_time = current_timespec ().tv_sec;
@@ -1924,6 +2061,24 @@ nh_save_finish (struct nh_wk_job *wj)
     nh_save_land (j);
 }
 
+/* The snapshot's copy, timed and its minor faults counted (this
+   thread's), for `nidhogg-workers--test-save-snapshot'.  */
+static _Atomic int64_t nh_save_snap_ns, nh_save_snap_faults;
+
+static int64_t
+nh_save_thread_faults (void)
+{
+  struct rusage ru;
+#ifdef RUSAGE_THREAD
+  if (getrusage (RUSAGE_THREAD, &ru) != 0)
+    return 0;
+#else
+  if (getrusage (RUSAGE_SELF, &ru) != 0)
+    return 0;
+#endif
+  return ru.ru_minflt;
+}
+
 /* Copy B's text (the current buffer) and queue its write.  */
 static bool
 nh_save_queue (struct buffer *b, int mode)
@@ -1933,17 +2088,37 @@ nh_save_queue (struct buffer *b, int mode)
   Lisp_Object name = nh_save_name (b);
   Lisp_Object encoded = ENCODE_FILE (name);
   struct nh_save_job *j = calloc (1, sizeof *j);
-  unsigned char *text = malloc (n1 + n2 ? n1 + n2 : 1);
+  struct nh_save_arena *arena;
+  size_t cap;
+  unsigned char *text = nh_save_arena_take (b, n1 + n2, &arena, &cap);
   char *target = strdup (SSDATA (encoded));
   if (!j || !text || !target)
     {
       free (j);
-      free (text);
+      if (arena)
+	{
+	  pthread_mutex_lock (&nh_save_arena_m);
+	  arena->busy = false;
+	  pthread_mutex_unlock (&nh_save_arena_m);
+	}
+      else
+	free (text);
       free (target);
       return false;
     }
+  j->arena = arena;
+  j->cap = cap;
+  struct timespec c0, c1;
+  int64_t f0 = nh_save_thread_faults ();
+  int depth = NH_WK_PHASE_PUSH (NH_WK_PH_WORKER_WAIT, NH_WK_RS_SNAPSHOT);
+  clock_gettime (CLOCK_MONOTONIC, &c0);
   memcpy (text, BUF_BEG_ADDR (b), n1);
   memcpy (text + n1, BUF_GAP_END_ADDR (b), n2);
+  clock_gettime (CLOCK_MONOTONIC, &c1);
+  NH_WK_PHASE_POP (depth);
+  atomic_store (&nh_save_snap_ns, (int64_t) (c1.tv_sec - c0.tv_sec)
+		* 1000000000 + (c1.tv_nsec - c0.tv_nsec));
+  atomic_store (&nh_save_snap_faults, nh_save_thread_faults () - f0);
   j->text = text;
   j->nbytes = n1 + n2;
   nh_wk_stat_add (NH_WK_SAVE, NH_WK_ST_QUEUED_BYTES, (int64_t) j->nbytes);
@@ -1985,6 +2160,7 @@ nh_save_auto_save_1 (struct buffer *b, int mode)
       || !nh_save_switch_on () || !nh_save_plain_path (b))
     {
       nh_save_drop_buffer (b);
+      nh_save_arena_free (b);
       return false;
     }
   struct nh_save_job *prev = nh_save_running (b);
@@ -2105,6 +2281,8 @@ nh_save_settle (struct buffer *b)
       nh_save_write_sync ();
       unbind_to (count, Qnil);
     }
+  /* The buffer is being killed: its snapshot memory goes.  */
+  nh_save_arena_free (b);
 }
 
 /* ---- Test primitives ------------------------------------------------ */
@@ -2182,6 +2360,63 @@ DEFUN ("nidhogg-workers--test-save-age", Fnidhogg_workers__test_save_age,
   return Qnil;
 }
 
+DEFUN ("nidhogg-workers--test-save-snapshot",
+       Fnidhogg_workers__test_save_snapshot,
+       Snidhogg_workers__test_save_snapshot, 0, 0, 0,
+       doc: /* The last auto-save snapshot's copy; for tests.
+A plist: `:snapshot-ns' and `:snapshot-faults' (this thread's minor
+page faults during the copy), `:arena-bytes' (pre-faulted snapshot
+memory kept for later saves).  */)
+  (void)
+{
+  return list (intern_c_string (":snapshot-ns"),
+	       make_int (atomic_load (&nh_save_snap_ns)),
+	       intern_c_string (":snapshot-faults"),
+	       make_int (atomic_load (&nh_save_snap_faults)),
+	       intern_c_string (":arena-bytes"),
+	       make_int (atomic_load (&nh_save_arena_bytes)));
+}
+
+DEFUN ("nidhogg-workers--test-copy-bench", Fnidhogg_workers__test_copy_bench,
+       Snidhogg_workers__test_copy_bench, 1, 1, 0,
+       doc: /* Copy BYTES into fresh memory, then into the same memory; for tests.
+Return (NS1 FAULTS1 NS2 FAULTS2): the time and this thread's minor
+faults of each copy.  */)
+  (Lisp_Object bytes)
+{
+  CHECK_FIXNAT (bytes);
+  size_t n = XFIXNAT (bytes);
+  unsigned char *src = malloc (n ? n : 1), *dst = malloc (n ? n : 1);
+  if (!src || !dst)
+    {
+      free (src);
+      free (dst);
+      memory_full (n);
+    }
+  memset (src, 'x', n);
+  /* The copies are observed (the compiler may not drop them).  */
+  volatile unsigned char sink = 0;
+  int64_t ns[2], faults[2];
+  for (int i = 0; i < 2; i++)
+    {
+      struct timespec c0, c1;
+      int64_t f0 = nh_save_thread_faults ();
+      clock_gettime (CLOCK_MONOTONIC, &c0);
+      memcpy (dst, src, n);
+      __asm__ volatile ("" : : "r" (dst) : "memory");
+      clock_gettime (CLOCK_MONOTONIC, &c1);
+      faults[i] = nh_save_thread_faults () - f0;
+      sink += dst[n / 2];
+      ns[i] = (int64_t) (c1.tv_sec - c0.tv_sec) * 1000000000
+	+ (c1.tv_nsec - c0.tv_nsec);
+    }
+  (void) sink;
+  free (src);
+  free (dst);
+  return list4 (make_int (ns[0]), make_int (faults[0]),
+		make_int (ns[1]), make_int (faults[1]));
+}
+
 DEFUN ("nidhogg-workers--test-save-encode", Fnidhogg_workers__test_save_encode,
        Snidhogg_workers__test_save_encode, 1, 1, 0,
        doc: /* Return STRING's internal bytes as the auto-save job encodes them; for tests.
@@ -2215,6 +2450,8 @@ Nil: always the named `.#NAME#.nh-PID-N' file.  Internal, for tests.  */);
   defsubr (&Snidhogg_workers__test_save_jobs);
   defsubr (&Snidhogg_workers__test_save_age);
   defsubr (&Snidhogg_workers__test_save_encode);
+  defsubr (&Snidhogg_workers__test_save_snapshot);
+  defsubr (&Snidhogg_workers__test_copy_bench);
 }
 
 /* ==== End of auto-save writes ======================================== */
