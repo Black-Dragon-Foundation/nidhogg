@@ -560,7 +560,8 @@ fn axis(state: &mut State, req: &Value) -> Value {
 }
 
 /// `{"cmd":"text_input","preedit":"…","cursor":[B,E],"commit":"…"}`: text-input-v3 events to the focused client's
-/// enabled text input, in protocol order (preedit_string, commit_string), then one `done`.
+/// enabled text input, in protocol order (preedit_string, commit_string), then one `done`.  `"delete":[BEFORE,AFTER]`
+/// (bytes) adds a delete_surrounding_text before the `done`.
 fn text_input(state: &mut State, req: &Value) -> Value {
     state.text_inputs.retain(|t| t.res.is_alive());
     let Some(focus) = state.focus.clone() else {
@@ -575,8 +576,14 @@ fn text_input(state: &mut State, req: &Value) -> Value {
     };
     let preedit = str_of(req, "preedit");
     let commit = str_of(req, "commit");
-    if preedit.is_none() && commit.is_none() {
-        return err("\"preedit\" or \"commit\" is required");
+    let delete = req.get("delete").and_then(|d| {
+        Some((
+            u32::try_from(d.get(0)?.as_u64()?).ok()?,
+            u32::try_from(d.get(1)?.as_u64()?).ok()?,
+        ))
+    });
+    if preedit.is_none() && commit.is_none() && delete.is_none() {
+        return err("\"preedit\", \"commit\" or \"delete\" is required");
     }
     if let Some(p) = preedit {
         let cursor = |i: usize| {
@@ -591,12 +598,15 @@ fn text_input(state: &mut State, req: &Value) -> Value {
             cursor(0).unwrap_or(end),
             cursor(1).unwrap_or(end),
         );
-    } else {
+    } else if commit.is_some() {
         // committing text replaces the preedit
         ti.res.preedit_string(None, 0, 0);
     }
     if let Some(c) = commit {
         ti.res.commit_string(Some(c.to_string()));
+    }
+    if let Some((before, after)) = delete {
+        ti.res.delete_surrounding_text(before, after);
     }
     ti.res.done(ti.data.commits.load(Ordering::SeqCst));
     json!({"ok": true})
