@@ -51,9 +51,9 @@ The sub-switches gate each kind of process.")
   "Non-nil means tree-sitter parses on a worker thread.")
 (nidhogg-workers--defswitch nidhogg-treesit-defer nil
   "Non-nil means tree-sitter colour may land a moment after the text.")
-(nidhogg-workers--defswitch nidhogg-workers-images nil
+(nidhogg-workers--defswitch nidhogg-workers-images t
   "Non-nil means images decode on a worker thread.")
-(nidhogg-workers--defswitch nidhogg-image-defer nil
+(nidhogg-workers--defswitch nidhogg-image-defer t
   "Non-nil means an image may appear a moment after the text.")
 (nidhogg-workers--defswitch nidhogg-workers-autosave nil
   "Non-nil means auto-saving writes on a worker thread.")
