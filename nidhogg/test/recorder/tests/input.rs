@@ -102,6 +102,26 @@ fn text_input_preedit_then_commit_order() {
 }
 
 #[test]
+fn text_input_delete_surrounding() {
+    let mut env = Env::new("sway", &[]);
+    let (_surface, _xs, _top) = env.toplevel(200, 100);
+    let seat: WlSeat = env.bind("wl_seat", 9);
+    let manager: ZwpTextInputManagerV3 = env.bind("zwp_text_input_manager_v3", 1);
+    let ti = manager.get_text_input(&seat, &env.qh, ());
+    env.rec
+        .control(json!({"cmd": "focus", "surface": "toplevel"}));
+    ti.enable();
+    ti.commit();
+    env.roundtrip();
+    let reply = env
+        .rec
+        .control(json!({"cmd": "text_input", "delete": [2, 1]}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    env.roundtrip();
+    assert_eq!(env.client.ev.text, ["enter", "delete 2 1", "done 1"]);
+}
+
+#[test]
 fn cursor_shape_lands_in_the_input_log() {
     let mut env = Env::new("sway", &[]);
     let (_surface, _xs, _top) = env.toplevel(200, 100);
