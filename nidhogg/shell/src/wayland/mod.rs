@@ -1,6 +1,6 @@
 //! The Wayland backend of the shell API.
 //!
-//! Queue ownership is fixed (MP-NS11, spec §2.3):
+//! Queue ownership is fixed, so that one thread reads the socket and no handler runs on a thread it does not expect:
 //! - the reader queue (`reader.rs`, the reader thread): `wl_seat`, `wl_keyboard`, `xdg_wm_base` (pings), and later
 //!   the pointer, key repeat and frame callbacks;
 //! - the main queue (`MainState`, the host's thread): `wl_registry`, `wl_compositor`, `wl_subcompositor`, `wl_shm`
@@ -24,10 +24,7 @@ pub mod shm;
 pub mod toplevel;
 
 use crate::api::*;
-use crate::caps::NhShellCaps;
-use crate::event::NhShellEvent;
 use conn::Shared;
-use glitnir::geom::Rect;
 use reader::ReaderState;
 use registry::Globals;
 use std::collections::HashMap;
@@ -178,7 +175,7 @@ impl WaylandShell {
         self.shared.host_flush(&self.conn)
     }
 
-    /// A bare surface on the main queue (the windows of W0 Task 5 are built on these); its id is the protocol id.
+    /// A bare surface on the main queue, for tests that need no window; its id is the protocol id.
     pub fn surface_new(&mut self) -> ShellResult<u64> {
         let compositor = self.main.compositor.as_ref().ok_or(ShellError::State)?;
         let surface = compositor.create_surface(&self.main_queue.handle(), ());
@@ -252,106 +249,6 @@ impl Drop for WaylandShell {
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
-    }
-}
-
-impl ShellBackend for WaylandShell {
-    fn wake_fd(&self) -> i32 {
-        self.shared.wake.raw()
-    }
-
-    fn caps(&self) -> NhShellCaps {
-        let mut caps = self.main.globals.caps();
-        caps.ssd = self.main.ssd;
-        caps.force_csd = self.main.force_csd;
-        caps
-    }
-
-    /// The next record.  When the records are empty: drain the wake descriptor, dispatch the main queue if it is
-    /// pending, and look again, so nothing posted in between is lost.
-    fn next_event(&mut self) -> ShellResult<Option<NhShellEvent>> {
-        loop {
-            if let Some(ev) = self.shared.take()? {
-                return Ok(Some(ev));
-            }
-            self.shared.wake.drain();
-            if self.shared.main_pending.swap(false, Ordering::AcqRel) {
-                // an error here reaches the host as the reader's DISCONNECTED record
-                let _ = self.dispatch_main_queue();
-                continue;
-            }
-            return self.shared.take();
-        }
-    }
-
-    fn dispatch_main(&mut self) -> ShellResult {
-        if self.shared.is_closed() {
-            return Err(ShellError::Disconnected);
-        }
-        self.dispatch_main_queue()?;
-        self.present_housekeeping();
-        self.flush()
-    }
-
-    // The presenter arrives with W0 Task 6.
-    fn window_new(&mut self, desc: &WindowDesc) -> ShellResult<WindowId> {
-        self.window_create(desc)
-    }
-    fn window_destroy(&mut self, w: WindowId) -> ShellResult {
-        self.window_destroy_impl(w)
-    }
-    fn set_title(&mut self, w: WindowId, t: &str) -> ShellResult {
-        self.window_set_title(w, t)
-    }
-    fn set_app_id(&mut self, w: WindowId, a: &str) -> ShellResult {
-        self.window_set_app_id(w, a)
-    }
-    fn set_min_size(&mut self, win: WindowId, w: i32, h: i32) -> ShellResult {
-        self.window_set_min_size(win, w, h)
-    }
-    fn set_fullscreen(&mut self, w: WindowId, on: bool) -> ShellResult {
-        self.window_set_fullscreen(w, on)
-    }
-    fn set_maximized(&mut self, w: WindowId, on: bool) -> ShellResult {
-        self.window_set_maximized(w, on)
-    }
-    fn minimize(&mut self, w: WindowId) -> ShellResult {
-        self.window_minimize(w)
-    }
-    fn move_window(&mut self, w: WindowId) -> ShellResult {
-        self.window_move(w)
-    }
-    fn resize(&mut self, w: WindowId, edges: u32) -> ShellResult {
-        self.window_resize(w, edges)
-    }
-    fn show_menu(&mut self, w: WindowId, x: i32, y: i32) -> ShellResult {
-        self.window_show_menu(w, x, y)
-    }
-    fn set_geometry(&mut self, win: WindowId, x: i32, y: i32, w: i32, h: i32) -> ShellResult {
-        self.window_set_geometry(win, x, y, w, h)
-    }
-    fn ack_configure(&mut self, w: WindowId, serial: u32) -> ShellResult {
-        self.window_ack_configure(w, serial)
-    }
-    fn set_cursor(&mut self, w: WindowId, shape: u32) -> ShellResult {
-        self.window_set_cursor(w, shape)
-    }
-    fn window_scale(&self, window: WindowId) -> ShellResult<u32> {
-        Ok(self
-            .main
-            .scales
-            .get(&window)
-            .ok_or(ShellError::State)?
-            .scale120())
-    }
-    fn window_logical_size(&self, _: WindowId) -> ShellResult<(i32, i32)> {
-        Err(ShellError::Unsupported)
-    }
-    fn present_begin(&mut self, w: WindowId, dw: i32, dh: i32) -> ShellResult<NhShellBuffer> {
-        self.present_begin_impl(w, dw, dh)
-    }
-    fn present_commit(&mut self, w: WindowId, damage: &[Rect]) -> ShellResult {
-        self.present_commit_impl(w, damage)
     }
 }
 

@@ -1,4 +1,4 @@
-//! Cursor shapes through `wp_cursor_shape_v1` (the Xcursor fallback is W1's).
+//! Cursor shapes through `wp_cursor_shape_v1` (no Xcursor fallback yet).
 
 use super::WaylandShell;
 use crate::api::*;

@@ -1,6 +1,6 @@
-//! Scale: the stable-rounding arithmetic and the per-surface scale state (`SurfaceScale`).
+//! Scale: the buffer-size arithmetic and the per-surface scale state (`SurfaceScale`).
 //!
-//! The frame's pixel is the device pixel (W0-2).  The protocol sees logical sizes only: the buffer is
+//! The frame's pixel is the device pixel: Emacs draws at the output's real resolution.  The protocol sees logical sizes only: the buffer is
 //! `round(logical x s)` device pixels, `wp_viewport`'s destination is the logical size and `buffer_scale` stays 1.
 //! A surface's scale comes from `wp_fractional_scale_v1` when the compositor has it, else from
 //! `wl_surface.preferred_buffer_scale`, else from the largest scale of the outputs the surface entered.  All of it
@@ -19,15 +19,6 @@ use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 
 /// The scale of a surface that has heard nothing: 1.0.
 pub const SCALE_ONE: u32 = 120;
-
-/// Stable rounding (mutter !2726): the device-pixel origin and extent of a rectangle at logical `pos` with logical
-/// `size`, at scale `s`.  The origin is `round(pos s)` and the far edge is `round((pos + size) s)`, so neighbouring
-/// rectangles tile with no gap or overlap.  f32 arithmetic, halves away from zero.
-pub fn device_extent(pos: f32, size: f32, s: f32) -> (i32, i32) {
-    let origin = (pos * s).round();
-    let end = ((pos + size) * s).round();
-    (origin as i32, (end - origin) as i32)
-}
 
 /// The buffer size in device pixels for a logical size: `round(logical x scale120 / 120)` each, halves away from
 /// zero.  Exact (integer arithmetic).
@@ -222,30 +213,6 @@ impl Dispatch<WpFractionalScaleV1, u64> for MainState {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn stable_rounding_table() {
-        let s = 1.25_f32;
-        for pos in 0..2000 {
-            for size in 1..40 {
-                let (o, e) = device_extent(pos as f32, size as f32, s);
-                assert!(o >= 0 && e >= 0, "pos {pos} size {size}: {o} {e}");
-                // the next rectangle starts where this one ends
-                let (o2, _) = device_extent((pos + size) as f32, 3.0, s);
-                assert_eq!(o + e, o2, "gap or overlap at {pos}+{size}");
-            }
-        }
-        for s in [1.0_f32, 2.0] {
-            for pos in 0..500 {
-                for size in 1..40 {
-                    assert_eq!(
-                        device_extent(pos as f32, size as f32, s),
-                        ((pos as f32 * s) as i32, (size as f32 * s) as i32)
-                    );
-                }
-            }
-        }
-    }
 
     #[test]
     fn buffer_size_examples() {

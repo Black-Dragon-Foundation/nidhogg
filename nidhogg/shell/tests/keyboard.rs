@@ -1,20 +1,15 @@
-//! The keyboard (W0 Task 7).  T0 tests drive `Xkb` and `RepeatState` directly (they need xkeyboard-config and the
-//! X11 locale data, which the check container installs); the T1 test runs against nh-recorder (`NH_RECORDER`).
+//! The keyboard.  T0 tests drive `Xkb` and `RepeatState` directly (they need xkeyboard-config and the X11 locale
+//! data, which the check container installs); the T1 test runs against nh-recorder (harness: `common/mod.rs`).
+
+mod common;
 
 #[allow(clippy::module_inception)]
 mod keyboard {
+    use super::common::*;
     use nhshell::api::ShellBackend;
     use nhshell::event::*;
-    use nhshell::wayland::WaylandShell;
     use nhshell::wayland::keyboard::{RepeatState, Xkb};
-    use rustix::event::{PollFd, PollFlags, Timespec, poll};
-    use rustix::fd::BorrowedFd;
-    use std::ffi::{CString, OsStr};
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::net::UnixStream;
-    use std::path::{Path, PathBuf};
-    use std::process::{Child, Command, Stdio};
+    use std::ffi::OsStr;
     use std::time::{Duration, Instant};
 
     const KEY_LEFTCTRL: u32 = 29;
@@ -129,85 +124,19 @@ mod keyboard {
         assert_eq!(r.deadline(), None, "rate 0 disables repeat");
     }
 
-    struct Recorder {
-        child: Child,
-        dir: PathBuf,
-    }
-
-    impl Recorder {
-        fn start(profile: &str) -> Recorder {
-            let bin = std::env::var_os("NH_RECORDER")
-                .expect("NH_RECORDER is not set (the path of S0's nh-recorder binary)");
-            let dir = std::env::temp_dir().join(format!("nhshell-keyboard-{}", std::process::id()));
-            std::fs::create_dir_all(&dir).unwrap();
-            let profile = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../test/recorder/profiles")
-                .join(format!("{profile}.json"));
-            let mut child = Command::new(bin)
-                .args(["--socket", "wl", "--control"])
-                .arg(dir.join("control"))
-                .arg("--profile")
-                .arg(&profile)
-                .env("XDG_RUNTIME_DIR", &dir)
-                .stdout(Stdio::piped())
-                .spawn()
-                .expect("spawn nh-recorder");
-            let mut line = String::new();
-            BufReader::new(child.stdout.take().unwrap())
-                .read_line(&mut line)
-                .unwrap();
-            assert_eq!(line, "READY\n");
-            Recorder { child, dir }
-        }
-
-        fn control(&self, req: &str) -> String {
-            let deadline = Instant::now() + Duration::from_secs(2);
-            loop {
-                let mut s = UnixStream::connect(self.dir.join("control")).unwrap();
-                writeln!(s, "{req}").unwrap();
-                let mut line = String::new();
-                BufReader::new(s).read_line(&mut line).unwrap();
-                if line.contains("\"ok\":true") || Instant::now() > deadline {
-                    return line;
-                }
-                std::thread::sleep(Duration::from_millis(5));
-            }
-        }
-    }
-
-    impl Drop for Recorder {
-        fn drop(&mut self) {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-            let _ = std::fs::remove_dir_all(&self.dir);
-        }
-    }
-
-    fn readable_within(fd: i32, ms: i64) -> bool {
-        // SAFETY: the shell's wake descriptor stays open while the shell lives.
-        let fd = unsafe { BorrowedFd::borrow_raw(fd) };
-        let mut fds = [PollFd::new(&fd, PollFlags::IN)];
-        let t = Timespec {
-            tv_sec: ms / 1000,
-            tv_nsec: (ms % 1000) * 1_000_000,
-        };
-        matches!(poll(&mut fds, Some(&t)), Ok(n) if n > 0)
-    }
-
     #[test]
     fn keys_arrive_with_focus() {
         let rec = Recorder::start("sway");
-        let display = CString::new(rec.dir.join("wl").as_os_str().as_bytes()).unwrap();
-        let mut shell = WaylandShell::open(Some(&display)).expect("open");
+        let mut shell = rec.open();
         let surface = shell.surface_new().unwrap();
         shell.flush().unwrap();
-        let reply = rec.control(
+        let reply = rec.control_ok(
             r#"{"cmd":"keymap","rmlvo":{"rules":"evdev","model":"pc105","layout":"us","variant":"","options":""}}"#,
         );
         assert!(reply.contains("\"ok\":true"), "{reply}");
-        let reply = rec.control(&format!(r#"{{"cmd":"focus","surface":{surface}}}"#));
+        let reply = rec.control_ok(&format!(r#"{{"cmd":"focus","surface":{surface}}}"#));
         assert!(reply.contains("\"ok\":true"), "{reply}");
-        let reply = rec.control(r#"{"cmd":"key","text":"a"}"#);
+        let reply = rec.control_ok(r#"{"cmd":"key","text":"a"}"#);
         assert!(reply.contains("\"ok\":true"), "{reply}");
         // FOCUS, then the press and the release of "a"
         let mut keys = Vec::new();
