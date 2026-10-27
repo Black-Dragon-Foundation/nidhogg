@@ -6,6 +6,7 @@
 
 use crate::event::*;
 use crate::wayland::reader::ReaderState;
+use crate::wayland::selection;
 use crate::wayland::serial::SerialKind;
 use wayland_client::protocol::wl_pointer::{self, Axis, AxisSource, ButtonState, WlPointer};
 use wayland_client::protocol::wl_seat::{Capability, WlSeat};
@@ -203,6 +204,7 @@ impl Dispatch<WlPointer, ()> for ReaderState {
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .update(SerialKind::MousePress, serial);
+                    selection::lock(&state.shared).input(serial);
                 }
                 let mut ev =
                     NhShellEvent::new(NHSHELL_EV_BUTTON, state.pointer.surface, time_ns(time));

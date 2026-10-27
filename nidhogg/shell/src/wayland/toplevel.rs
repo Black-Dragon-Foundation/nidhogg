@@ -342,6 +342,26 @@ impl ShellBackend for WaylandShell {
     fn present_commit(&mut self, id: WindowId, damage: &[Rect]) -> ShellResult {
         self.present_commit_impl(id, damage)
     }
+
+    fn selection_own(&mut self, kind: u32, items: &[(&str, &[u8])]) -> ShellResult {
+        self.sel_own(kind, items)
+    }
+
+    fn selection_disown(&mut self, kind: u32) -> ShellResult {
+        self.sel_disown(kind)
+    }
+
+    fn selection_owned(&self, kind: u32) -> ShellResult<bool> {
+        self.sel_owned(kind)
+    }
+
+    fn selection_types(&self, kind: u32) -> ShellResult<Vec<String>> {
+        self.sel_types(kind)
+    }
+
+    fn selection_read(&mut self, kind: u32, mime: &str, timeout_ms: u32) -> ShellResult<Vec<u8>> {
+        self.sel_read(kind, mime, timeout_ms)
+    }
 }
 
 impl Dispatch<XdgSurface, u64> for MainState {
