@@ -196,6 +196,9 @@ int32_t nhshell_window_minimize (NhShell *sh, uint64_t window);
 int32_t nhshell_window_move (NhShell *sh, uint64_t window);
 int32_t nhshell_window_resize (NhShell *sh, uint64_t window, uint32_t edges);
 int32_t nhshell_window_show_menu (NhShell *sh, uint64_t window, int32_t x, int32_t y);
+/* The window geometry (surface-local logical pixels): where the window sits inside the surface, for a client that
+   draws its own decorations and resize margins.  Takes effect with the next commit.  */
+int32_t nhshell_window_set_geometry (NhShell *sh, uint64_t window, int32_t x, int32_t y, int32_t w, int32_t h);
 int32_t nhshell_window_ack_configure (NhShell *sh, uint64_t window, uint32_t serial);
 int32_t nhshell_window_set_cursor (NhShell *sh, uint64_t window, uint32_t shape);
 
