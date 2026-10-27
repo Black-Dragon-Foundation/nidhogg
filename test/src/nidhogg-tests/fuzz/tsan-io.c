@@ -131,7 +131,7 @@ round_once (unsigned seed)
       int why;
       rd[i] = (struct reader) { .rfd = fds[0],
 				.detach_at = rand_r (&seed) % (TOTAL + 1) };
-      rd[i].h = nh_io_attach (i + 1, fds[0], READMAX, false, &why);
+      rd[i].h = nh_io_attach (i + 1, fds[0], READMAX, false, 0, &why);
       if (!rd[i].h)
 	{
 	  fprintf (stderr, "io: attach refused (%d)\n", why);
