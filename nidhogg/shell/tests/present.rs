@@ -5,7 +5,7 @@ mod common;
 
 use common::*;
 use glitnir::geom::Rect;
-use nhshell::api::{ShellBackend, WindowDesc};
+use nhshell::api::{NHSHELL_ACK_CONTENT, ShellBackend, WindowDesc};
 use nhshell::event::*;
 use nhshell::wayland::WaylandShell;
 use std::time::{Duration, Instant};
@@ -67,7 +67,7 @@ fn window(shell: &mut WaylandShell) -> u64 {
     let ev = wait_for(shell, |e| e.kind == NHSHELL_EV_CONFIGURE);
     // SAFETY: a CONFIGURE record carries `configure`.
     shell
-        .ack_configure(id, unsafe { ev.u.configure }.serial)
+        .ack_configure(id, unsafe { ev.u.configure }.serial, NHSHELL_ACK_CONTENT)
         .unwrap();
     id
 }
@@ -150,13 +150,18 @@ mod present {
         assert_eq!(shell.present_pacer(id).map(|p| p.0), Some(true), "waits");
         while shell.next_event().unwrap().is_some() {}
         shell.window_dirty(id).unwrap();
-        assert!(!shell.window_ready(id).unwrap(), "not before the callback");
+        assert_eq!(
+            shell.window_ready(id).unwrap(),
+            0,
+            "not before the callback"
+        );
         present(&rec);
         wait_for(&mut shell, |e| {
             e.kind == NHSHELL_EV_FRAME_READY && e.window == id
         });
-        assert!(
+        assert_ne!(
             shell.window_ready(id).unwrap(),
+            0,
             "{:?}",
             shell.present_pacer(id)
         );

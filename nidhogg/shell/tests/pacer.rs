@@ -8,7 +8,9 @@ mod common;
 
 use common::*;
 use glitnir::geom::Rect;
-use nhshell::api::{ShellBackend, WindowDesc};
+use nhshell::api::{
+    NHSHELL_ACK_CONTENT, NHSHELL_READY_CONTENT, NHSHELL_READY_OWED, ShellBackend, WindowDesc,
+};
 use nhshell::event::*;
 use nhshell::wayland::WaylandShell;
 use std::time::{Duration, Instant};
@@ -63,7 +65,7 @@ fn window(shell: &mut WaylandShell) -> u64 {
     let ev = wait_for(shell, |e| e.kind == NHSHELL_EV_CONFIGURE);
     // SAFETY: a CONFIGURE record carries `configure`.
     shell
-        .ack_configure(id, unsafe { ev.u.configure }.serial)
+        .ack_configure(id, unsafe { ev.u.configure }.serial, NHSHELL_ACK_CONTENT)
         .unwrap();
     id
 }
@@ -88,19 +90,55 @@ fn warm(shell: &mut WaylandShell, rec: &Recorder, id: u64) {
     std::thread::sleep(Duration::from_millis(100));
 }
 
-/// Send a configure of the same size (with `states`), wait for it, ack it; its serial.
-fn reconfigure(shell: &mut WaylandShell, rec: &Recorder, id: u64, states: &str) -> u32 {
+/// The pacer's ready bits (`NHSHELL_READY_*`) of window `id`.
+fn bits(shell: &mut WaylandShell, id: u64) -> u32 {
+    shell.window_ready(id).unwrap()
+}
+
+fn ready(shell: &mut WaylandShell, id: u64) -> bool {
+    bits(shell, id) != 0
+}
+
+/// Send a configure of `size` (with `states`), wait for it, record its ack with `flags`; its serial.
+fn configure_acked(
+    shell: &mut WaylandShell,
+    rec: &Recorder,
+    id: u64,
+    size: (i32, i32),
+    states: &str,
+    flags: u32,
+) -> u32 {
     let r = rec.control(&format!(
-        r#"{{"cmd":"configure","surface":"focused","size":[200,100],"states":[{states}]}}"#
+        r#"{{"cmd":"configure","surface":"focused","size":[{},{}],"states":[{states}]}}"#,
+        size.0, size.1
     ));
     let serial = number(&r, "serial").expect("a serial") as u32;
     wait_for(shell, |e| e.kind == NHSHELL_EV_CONFIGURE);
-    shell.ack_configure(id, serial).unwrap();
+    shell.ack_configure(id, serial, flags).unwrap();
     serial
+}
+
+/// A configure of the same size (a bare ack).
+fn reconfigure(shell: &mut WaylandShell, rec: &Recorder, id: u64, states: &str) -> u32 {
+    configure_acked(shell, rec, id, (200, 100), states, 0)
 }
 
 fn commit_log(rec: &Recorder) -> String {
     rec.control(r#"{"cmd":"log","since":1}"#)
+}
+
+/// The recorder's next commit number.
+fn next_seq(rec: &Recorder) -> u64 {
+    number(&rec.control(r#"{"cmd":"log","since":1}"#), "next").expect("next")
+}
+
+/// The log from commit `seq` on.
+fn log_since(rec: &Recorder, seq: u64) -> String {
+    rec.control(&format!(r#"{{"cmd":"log","since":{seq}}}"#))
+}
+
+fn acked(log: &str, serial: u32) -> bool {
+    log.contains(&format!("\"ack_serial\":{serial}"))
 }
 
 mod pacer {
@@ -125,10 +163,7 @@ mod pacer {
         );
         assert!(!waiting(&shell, id));
         shell.window_dirty(id).unwrap();
-        assert!(
-            shell.window_ready(id).unwrap(),
-            "the next frame may go at once"
-        );
+        assert!(ready(&mut shell, id), "the next frame may go at once");
     }
 
     /// Path 2: a commit on a surface that is not shown is never answered.  A configure re-arms the wait with a new
@@ -163,18 +198,18 @@ mod pacer {
         let id = window(&mut shell);
         warm(&mut shell, &rec, id);
         let serial = reconfigure(&mut shell, &rec, id, r#""suspended""#);
-        assert!(shell.window_ready(id).unwrap(), "the ack is owed");
+        assert!(ready(&mut shell, id), "the ack is owed");
         draw(&mut shell, id, &[]);
         let log = commit_log(&rec);
         assert!(log.contains(&format!("\"ack_serial\":{serial}")), "{log}");
         shell.window_dirty(id).unwrap();
-        assert!(!shell.window_ready(id).unwrap(), "suspended: content waits");
+        assert!(!ready(&mut shell, id), "suspended: content waits");
         while shell.next_event().unwrap().is_some() {}
         reconfigure(&mut shell, &rec, id, "");
         wait_for(&mut shell, |e| e.kind == NHSHELL_EV_FRAME_READY);
         draw(&mut shell, id, &[]);
         shell.window_dirty(id).unwrap();
-        assert!(shell.window_ready(id).unwrap(), "suspension ended");
+        assert!(ready(&mut shell, id), "suspension ended");
     }
 
     /// Path 4: the compositor keeps buffers.  With the pool's two buffers busy and the pacer idle the pool grows to
@@ -198,11 +233,11 @@ mod pacer {
         assert!(starved(&shell, id));
         while shell.next_event().unwrap().is_some() {}
         shell.window_dirty(id).unwrap();
-        assert!(!shell.window_ready(id).unwrap(), "starved");
+        assert!(!ready(&mut shell, id), "starved");
         rec.control(r#"{"cmd":"release"}"#);
         wait_for(&mut shell, |e| e.kind == NHSHELL_EV_FRAME_READY);
         assert!(!starved(&shell, id));
-        assert!(shell.window_ready(id).unwrap());
+        assert!(ready(&mut shell, id));
     }
 
     /// Path 4, waiting: two buffers busy while the pacer waits (an ack's commit went out in the middle of a wait)
@@ -225,7 +260,7 @@ mod pacer {
         until(&mut shell, "the pacer idle", |s| !waiting(s, id));
         assert!(!starved(&shell, id));
         shell.window_dirty(id).unwrap();
-        assert!(shell.window_ready(id).unwrap());
+        assert!(ready(&mut shell, id));
         draw(&mut shell, id, &[full()]);
     }
 
@@ -240,7 +275,7 @@ mod pacer {
         present(&rec);
         until(&mut shell, "the frame callbacks", |s| !waiting(s, id));
         shell.window_dirty(id).unwrap();
-        assert!(shell.window_ready(id).unwrap());
+        assert!(ready(&mut shell, id));
     }
 
     /// Path 6: an ack never waits: a configure that arrives while a frame is pending is acked, and its commit is
@@ -253,7 +288,7 @@ mod pacer {
         draw(&mut shell, id, &[full()]);
         assert!(waiting(&shell, id));
         let serial = reconfigure(&mut shell, &rec, id, "");
-        assert!(shell.window_ready(id).unwrap(), "waiting, with an ack owed");
+        assert!(ready(&mut shell, id), "waiting, with an ack owed");
         draw(&mut shell, id, &[full()]);
         let log = commit_log(&rec);
         assert!(log.contains(&format!("\"ack_serial\":{serial}")), "{log}");
@@ -269,15 +304,166 @@ mod pacer {
         while shell.next_event().unwrap().is_some() {}
         shell.window_dirty(id).unwrap();
         shell.window_dirty(id).unwrap();
-        let mut ready = 0;
+        let mut posted = 0;
         let deadline = Instant::now() + Duration::from_millis(300);
         while Instant::now() < deadline {
             while let Some(e) = shell.next_event().unwrap() {
-                ready += usize::from(e.kind == NHSHELL_EV_FRAME_READY && e.window == id);
+                posted += usize::from(e.kind == NHSHELL_EV_FRAME_READY && e.window == id);
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert_eq!(ready, 1);
-        assert!(shell.window_ready(id).unwrap());
+        assert_eq!(posted, 1);
+        assert!(ready(&mut shell, id));
+    }
+
+    /// A bare commit has no buffer, frame callback or feedback, and leaves the pacer alone.
+    #[test]
+    fn bare_commit_has_no_buffer_or_callback() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let mut shell = rec.open();
+        let id = window(&mut shell);
+        warm(&mut shell, &rec, id);
+        let seq = next_seq(&rec);
+        shell.present_bare(id).unwrap();
+        until(&mut shell, "the bare commit", |_| {
+            log_since(&rec, seq).contains("\"role\":\"toplevel\"")
+        });
+        let log = log_since(&rec, seq);
+        assert!(log.contains("\"buffer\":null"), "{log}");
+        assert!(log.contains("\"frame_cb\":false"), "{log}");
+        assert!(log.contains("\"presentation\":false"), "{log}");
+        assert!(!waiting(&shell, id));
+        let o = outstanding(&rec);
+        assert_eq!((o.0, o.1), (0, 0));
+    }
+
+    /// An ack goes out right before the commit that carries it, and with nothing else.
+    #[test]
+    fn ack_goes_out_with_its_commit() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let mut shell = rec.open();
+        let id = window(&mut shell);
+        warm(&mut shell, &rec, id);
+        let serial = reconfigure(&mut shell, &rec, id, "");
+        shell.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(!acked(&commit_log(&rec), serial), "no commit, no ack");
+        draw(&mut shell, id, &[full()]);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(acked(&commit_log(&rec), serial), "{}", commit_log(&rec));
+    }
+
+    /// A waiting pacer re-arms at a configure (a frame callback and an empty commit); that commit carries no ack.
+    #[test]
+    fn rearm_never_carries_an_ack() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let mut shell = rec.open();
+        let id = window(&mut shell);
+        draw(&mut shell, id, &[full()]);
+        assert!(waiting(&shell, id));
+        let serial = reconfigure(&mut shell, &rec, id, "");
+        until(&mut shell, "the re-armed callback", |_| {
+            outstanding(&rec).0 == 2
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!acked(&commit_log(&rec), serial), "{}", commit_log(&rec));
+        shell.present_bare(id).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(acked(&commit_log(&rec), serial), "{}", commit_log(&rec));
+    }
+
+    /// Three buffers busy and a new size acked: nothing is owed that could go bare, a bare commit carries no ack, and
+    /// the buffer commit after a release carries it.
+    #[test]
+    fn resize_ack_never_bare_while_starved() {
+        let rec = Recorder::start_clock("kwin", "manual");
+        rec.control(r#"{"cmd":"mode","hold_buffers":2}"#);
+        let mut shell = rec.open();
+        let id = window(&mut shell);
+        for _ in 0..3 {
+            draw(&mut shell, id, &[full()]);
+            present(&rec);
+            until(&mut shell, "the frame callback", |s| !waiting(s, id));
+        }
+        assert!(shell.present_begin(id, 200, 100).is_err(), "all three busy");
+        assert!(starved(&shell, id));
+        while shell.next_event().unwrap().is_some() {}
+        let serial = configure_acked(&mut shell, &rec, id, (300, 150), "", NHSHELL_ACK_CONTENT);
+        assert_eq!(bits(&mut shell, id), 0, "a held content ack is not owed");
+        let seq = next_seq(&rec);
+        shell.present_bare(id).unwrap();
+        until(&mut shell, "the bare commit", |_| {
+            log_since(&rec, seq).contains("\"role\":\"toplevel\"")
+        });
+        assert!(!acked(&log_since(&rec, seq), serial), "no bare ack");
+        rec.control(r#"{"cmd":"release"}"#);
+        wait_for(&mut shell, |e| e.kind == NHSHELL_EV_FRAME_READY);
+        assert_ne!(bits(&mut shell, id) & NHSHELL_READY_CONTENT, 0);
+        draw(&mut shell, id, &[full()]);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            acked(&log_since(&rec, seq), serial),
+            "the buffer carries it"
+        );
+    }
+
+    /// A content ack waives the wait: the pool grows to three buffers where two are busy and the pacer waits.
+    #[test]
+    fn content_ack_grows_the_pool_while_waiting() {
+        let rec = Recorder::start_clock("kwin", "manual");
+        rec.control(r#"{"cmd":"mode","hold_buffers":2}"#);
+        let mut shell = rec.open();
+        let id = window(&mut shell);
+        draw(&mut shell, id, &[full()]);
+        draw(&mut shell, id, &[full()]);
+        assert!(waiting(&shell, id));
+        let serial = configure_acked(&mut shell, &rec, id, (300, 150), "", NHSHELL_ACK_CONTENT);
+        assert!(shell.present_begin(id, 300, 150).is_ok(), "a third buffer");
+        shell.present_commit(id, &[full()]).unwrap();
+        shell.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(acked(&commit_log(&rec), serial));
+    }
+
+    /// A bare ack is ready (OWED) while the pacer is starved, and content is not.
+    #[test]
+    fn bare_ack_is_ready_while_starved() {
+        let rec = Recorder::start_clock("kwin", "manual");
+        rec.control(r#"{"cmd":"mode","hold_buffers":2}"#);
+        let mut shell = rec.open();
+        let id = window(&mut shell);
+        for _ in 0..3 {
+            draw(&mut shell, id, &[full()]);
+            present(&rec);
+            until(&mut shell, "the frame callback", |s| !waiting(s, id));
+        }
+        assert!(shell.present_begin(id, 200, 100).is_err());
+        while shell.next_event().unwrap().is_some() {}
+        let serial = reconfigure(&mut shell, &rec, id, "");
+        assert_eq!(bits(&mut shell, id), NHSHELL_READY_OWED);
+        shell.present_bare(id).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(acked(&commit_log(&rec), serial), "{}", commit_log(&rec));
+    }
+
+    /// Asking `window_ready` takes the draw: with nothing presented, the next callbacks post no `FRAME_READY`.
+    #[test]
+    fn ready_clears_dirty() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let mut shell = rec.open();
+        let id = window(&mut shell);
+        draw(&mut shell, id, &[full()]);
+        while shell.next_event().unwrap().is_some() {}
+        shell.window_dirty(id).unwrap();
+        present(&rec);
+        wait_for(&mut shell, |e| e.kind == NHSHELL_EV_FRAME_READY);
+        assert_ne!(bits(&mut shell, id) & NHSHELL_READY_CONTENT, 0);
+        // the host decided on "nothing": a second ask finds nothing, and no record follows
+        assert_eq!(bits(&mut shell, id), 0);
+        assert!(
+            collect(&mut shell, 300)
+                .iter()
+                .all(|e| e.kind != NHSHELL_EV_FRAME_READY)
+        );
     }
 }
