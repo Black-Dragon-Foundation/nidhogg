@@ -231,6 +231,7 @@ ffi!(fn nhshell_window_minimize(window: u64) |b| b.minimize(window));
 ffi!(fn nhshell_window_move(window: u64) |b| b.move_window(window));
 ffi!(fn nhshell_window_resize(window: u64, edges: u32) |b| b.resize(window, edges));
 ffi!(fn nhshell_window_show_menu(window: u64, x: i32, y: i32) |b| b.show_menu(window, x, y));
+ffi!(fn nhshell_window_set_geometry(window: u64, x: i32, y: i32, w: i32, h: i32) |b| b.set_geometry(window, x, y, w, h));
 ffi!(fn nhshell_window_ack_configure(window: u64, serial: u32) |b| b.ack_configure(window, serial));
 ffi!(fn nhshell_window_set_cursor(window: u64, shape: u32) |b| b.set_cursor(window, shape));
 

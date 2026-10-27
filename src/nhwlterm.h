@@ -210,6 +210,26 @@ extern struct nhwl_display_info *x_display_list;
 #define NHWL_PENDING_MAX 32	/* damage rectangles kept per present */
 #define NHWL_HIST 4		/* presents whose damage repairs an old buffer */
 
+/* The bare client-side title bar (nhwlcsd.c): device pixels, in the backing.  The backing is the native area plus
+   this border: L, T, R and B are the native area's offsets (T includes the strip); M is the resize margin and STRIP
+   the title strip's height now in effect (0 when hidden).  */
+struct nhwl_csd
+{
+  bool on;			/* the compositor offers no server decorations */
+  int m, strip, l, t, r, b;
+  /* What the border was last drawn for, and that backing's generation.  */
+  struct { int w, h, l, t; uint32_t title; bool active; unsigned long fg, bg; uint64_t gen; } sig;
+  bool sig_valid;
+  /* The window geometry last sent (logical), if any.  */
+  int geom[4];
+  bool geom_sent;
+  /* The pointer in the surface (device px), the region a consumed press began in, and the last strip click.  */
+  double px, py;
+  int down;
+  bool grab, in_border;
+  uint64_t click_ns;
+};
+
 struct nhwl_output
 {
   struct frame *frame;
@@ -236,6 +256,8 @@ struct nhwl_output
   cairo_surface_t *cr_surface;
   cairo_t *cr_context;
   int cr_width, cr_height;
+  uint64_t cr_gen;		/* counts the backing's creations */
+  struct nhwl_csd csd;
 
   /* Glitnir's scene of this frame: its id (0: none yet), the size and scale
      it was told, the damage committed but not yet presented, and the
@@ -461,6 +483,19 @@ extern void nhwl_damage_cursor (struct window *, struct glyph_row *, bool);
 extern void nhwl_damage_fringe (struct window *,
 				struct draw_fringe_bitmap_params *);
 extern cairo_surface_t *nhwl_snapshot (struct frame *);
+
+/* nhwlcsd.c: the bare client-side title bar.  */
+extern void nhwl_csd_layout (struct frame *);
+extern void nhwl_csd_draw (struct frame *);
+extern void nhwl_csd_send_geometry (struct frame *);
+extern void nhwl_csd_changed (struct frame *);
+extern void nhwl_csd_geometry_size (struct frame *, int *, int *);
+extern void nhwl_csd_native_size (struct frame *, int, int, int *, int *);
+extern void nhwl_csd_native_pos (struct frame *, double, double, int *, int *);
+extern int nhwl_to_logical (int, uint32_t);
+extern int nhwl_to_device (int, uint32_t);
+extern bool nhwl_csd_pointer (struct frame *, double, double);
+extern bool nhwl_csd_button (struct frame *, const NhShellEvent *, bool *);
 
 /* The names ftcrfont.c and the other Cairo code shared with pgtk use.  */
 #define FRAME_CR_CONTEXT(f) (FRAME_NHWL_OUTPUT (f)->cr_context)
