@@ -121,7 +121,12 @@ pub trait ShellBackend {
     /// Set the window geometry (`xdg_surface.set_window_geometry`, surface-local logical pixels), which takes effect
     /// with the next commit.
     fn set_geometry(&mut self, window: WindowId, x: i32, y: i32, w: i32, h: i32) -> ShellResult;
+    /// Ack configure `serial` now; the commit that follows is the host's next `present_commit`.
     fn ack_configure(&mut self, window: WindowId, serial: u32) -> ShellResult;
+    /// The host drew something: `FRAME_READY` follows when the window's pacer lets it present.
+    fn window_dirty(&mut self, window: WindowId) -> ShellResult;
+    /// Whether the window's pacer lets the host begin a frame now.
+    fn window_ready(&mut self, window: WindowId) -> ShellResult<bool>;
     fn set_cursor(&mut self, window: WindowId, shape: u32) -> ShellResult;
 
     /// The window's preferred scale times 120 (120 when the compositor has not said).

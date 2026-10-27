@@ -2144,7 +2144,7 @@ nhwl_scroll_run (struct window *w, struct run *run)
     cairo_surface_mark_dirty (out->cr_surface);
   }
   nhwl_glitnir_scroll (f, w, x, from_y, to_y, width, height);
-  out->present_owed = true;
+  nhwl_dirty (f);
 
   unblock_input ();
 }
@@ -2192,7 +2192,7 @@ nhwl_damage (struct frame *f, int x, int y, int w, int h)
   r.y += c->t;
   nhwl_glitnir_ensure (f);
   glitnir_damage_add_n (out->glitnir_id, &r, 1);
-  out->present_owed = true;
+  nhwl_dirty (f);
 }
 
 /* Adapted from glitnir_pgtk_damage_glyphs: a glyph string covers its row's
