@@ -41,6 +41,7 @@
   :prefix "nidhogg-watchdog-")
 
 (defvar nidhogg-watchdog-mode)          ; `define-minor-mode' below
+(defvar nidhogg-watchdog--deadline)     ; the resolver's, bound by the drain
 
 (defcustom nidhogg-watchdog-threshold 100
   "A busy span of at least this many milliseconds is a stall.
@@ -76,7 +77,8 @@ A list of up to 16 symbols, mirrored into the C side."
   :type 'hook)
 
 (defcustom nidhogg-watchdog-package-functions nil
-  "Functions run with a function name until one returns its package."
+  "Functions run with a file name until one returns its package name.
+When none does, files of installed packages and of Emacs itself are mapped."
   :type 'hook)
 
 (defvar nidhogg-watchdog-gc-origin nil
@@ -110,8 +112,19 @@ Nil drops them.")
 (defvar nidhogg-watchdog--queue nil
   "Taken, not yet resolved stalls (Lisp data; GC keeps them alive).")
 (defvar nidhogg-watchdog--draining nil)
+(defconst nidhogg-watchdog--drain-edges [1 2 4 8 16 33 50 100]
+  "Upper edges (ms) of the drain histograms' buckets; the last is open.
+Finer than the C histograms' edges, so the 2 ms budget can be judged.")
 (defvar nidhogg-watchdog--drain-hist (make-vector 9 0)
-  "Drain durations by the buckets of the C histograms (ms).")
+  "Budgeted drains by duration (ms), on `nidhogg-watchdog--drain-edges'.
+`nidhogg-watchdog-drain-now' (no budget) is not counted.")
+(defvar nidhogg-watchdog--drain-take-hist (make-vector 9 0)
+  "The same drains' take and collection lines alone (ms), same edges.
+They run before the resolve loop, outside the budget's control.")
+(defvar nidhogg-watchdog--drain-over 0
+  "Budgeted drains that took longer than `nidhogg-watchdog--drain-budget'.")
+(defvar nidhogg-watchdog--summary-base nil
+  "`nidhogg-watchdog-stats' at the last summary line; the next one subtracts it.")
 (defvar nidhogg-watchdog--day nil "The day the counters below belong to.")
 (defvar nidhogg-watchdog--day-dir nil "The log directory of that day's counters.")
 (defvar nidhogg-watchdog--day-stalls 0 "Stall lines in today's file.")
@@ -205,52 +218,114 @@ a stall past the day's cap is only counted."
                    :null-object :null :false-object :false))
             (file (nidhogg-watchdog--file day))
             (coding-system-for-write 'binary)
-            (inhibit-message t))
+            (inhibit-message t)
+            (create-lockfiles nil)
+            (write-region-annotate-functions nil)
+            (write-region-post-annotation-function nil))
         (make-directory nidhogg-watchdog-log-directory t)
-        (write-region (concat line "\n") nil file t 'silent)
+        ;; LOCKNAME is a name no buffer visits: a buffer visiting the day
+        ;; file (a person reading it) would otherwise make `write-region'
+        ;; ask about the changed file, from an idle timer.
+        (write-region (concat line "\n") nil file t 'silent
+                      (concat file ".nolock"))
         (when (eq type 'stall)
           (setq nidhogg-watchdog--day-stalls (1+ nidhogg-watchdog--day-stalls)))
         t))))
 
 ;;; Histograms and stats
 
-(defun nidhogg-watchdog--bucket (ms)
-  "The bucket index of MS milliseconds."
-  (let ((i 0))
-    (while (and (< i 8) (>= ms (aref nidhogg-watchdog--bucket-edges i)))
+(defun nidhogg-watchdog--bucket (ms &optional edges)
+  "The bucket index of MS milliseconds on EDGES (default the C histograms')."
+  (let ((edges (or edges nidhogg-watchdog--bucket-edges)) (i 0))
+    (while (and (< i 8) (>= ms (aref edges i)))
       (setq i (1+ i)))
     i))
 
-(defun nidhogg-watchdog--p95 (hist)
-  "The upper edge (ms) of the bucket holding the 95th percentile of HIST."
-  (let ((total (apply #'+ (append hist nil))) (acc 0) (i 0))
+(defun nidhogg-watchdog--p95 (hist &optional edges)
+  "The upper edge (ms) of the bucket holding the 95th percentile of HIST.
+EDGES are the buckets' upper edges (default the C histograms')."
+  (let ((edges (or edges nidhogg-watchdog--bucket-edges))
+        (total (apply #'+ (append hist nil))) (acc 0) (i 0))
     (if (zerop total)
         0
       (while (and (< i 8)
                   (< (* 20 (setq acc (+ acc (aref hist i)))) (* 19 total)))
         (setq i (1+ i)))
-      (aref nidhogg-watchdog--bucket-edges (min i 7)))))
+      (aref edges (min i 7)))))
 
 (defun nidhogg-watchdog-stats (&optional reset)
   "The C counters and histograms, plus the drain's.
-Adds `:drain' (a histogram), `:drain-p95-ms' and `:stalls-over-cap'.
-Nil when the watchdog is off.  With RESET, zero them all."
+Adds `:drain' (budgeted drains by duration, in buckets <1 <2 <4 <8 <16
+<33 <50 <100 >=100 ms; `nidhogg-watchdog-drain-now' is not counted),
+`:drain-take' (the same drains' take and collection lines alone, same
+buckets), `:drain-over-budget' (drains past the 2 ms budget),
+`:drain-p95-ms' (the upper edge of the bucket holding the 95th
+percentile) and `:stalls-over-cap'.  Nil when the watchdog is off.
+With RESET, zero them all; to measure a stretch without disturbing other
+readers (the summary lines), keep a value and use
+`nidhogg-watchdog--stats-delta' instead."
   (let ((c (nidhogg-watchdog--stats reset)))
     (when c
       (let* ((h (copy-sequence nidhogg-watchdog--drain-hist))
              (r (append c (list :drain h
-                                :drain-p95-ms (nidhogg-watchdog--p95 h)
+                                :drain-take (copy-sequence
+                                             nidhogg-watchdog--drain-take-hist)
+                                :drain-over-budget nidhogg-watchdog--drain-over
+                                :drain-p95-ms (nidhogg-watchdog--p95
+                                               h nidhogg-watchdog--drain-edges)
                                 :stalls-over-cap nidhogg-watchdog--over-cap))))
         (when reset
           (fillarray nidhogg-watchdog--drain-hist 0)
-          (setq nidhogg-watchdog--over-cap 0))
+          (fillarray nidhogg-watchdog--drain-take-hist 0)
+          (setq nidhogg-watchdog--drain-over 0
+                nidhogg-watchdog--over-cap 0))
         r))))
 
+(defun nidhogg-watchdog--delta (now base)
+  "NOW less BASE: numbers, vectors (as a whole) or plists (key by key).
+A number or vector smaller than its base was reset meanwhile, and counts
+in full."
+  (cond ((null base) now)
+        ((numberp now) (if (and (numberp base) (>= now base)) (- now base) now))
+        ((vectorp now)
+         (let ((d (copy-sequence now)) (i 0) (ok (and (vectorp base)
+                                                      (= (length base) (length now)))))
+           (while (and ok (< i (length now)))
+             (if (< (aref now i) (aref base i))
+                 (setq ok nil)
+               (aset d i (- (aref now i) (aref base i))))
+             (setq i (1+ i)))
+           (if ok d now)))
+        ((and (consp now) (keywordp (car now)))
+         (let (out)
+           (while now
+             (push (car now) out)
+             (push (nidhogg-watchdog--delta (cadr now) (plist-get base (car now)))
+                   out)
+             (setq now (cddr now)))
+           (nreverse out)))
+        (t now)))
+
+(defun nidhogg-watchdog--stats-delta (now base)
+  "The counters of NOW (a `nidhogg-watchdog-stats' value) since BASE.
+BASE is an earlier value, or nil for everything since the start.  A
+counter reset meanwhile counts from its reset.  `:drain-p95-ms' is that
+of the delta's drains."
+  (let ((d (nidhogg-watchdog--delta now base)))
+    (plist-put d :drain-p95-ms (nidhogg-watchdog--p95
+                                (plist-get d :drain)
+                                nidhogg-watchdog--drain-edges))))
+
 (defun nidhogg-watchdog--write-summary (&optional final)
-  "Write a summary line with the deltas since the last one; FINAL at mode off."
-  (let ((s (nidhogg-watchdog-stats t))
-        (now (funcall nidhogg-watchdog--clock)))
-    (setq nidhogg-watchdog--last-summary now)
+  "Write a summary line with the deltas since the last one; FINAL at mode off.
+It never resets the counters: it subtracts the values it kept at the last
+line, so other readers of `nidhogg-watchdog-stats' see whole totals."
+  (let* ((now-stats (nidhogg-watchdog-stats))
+         (s (and now-stats (nidhogg-watchdog--stats-delta
+                            now-stats nidhogg-watchdog--summary-base)))
+         (now (funcall nidhogg-watchdog--clock)))
+    (setq nidhogg-watchdog--last-summary now
+          nidhogg-watchdog--summary-base now-stats)
     (when s
       (let ((h (plist-get s :histograms)))
         (nidhogg-watchdog--log-write
@@ -265,11 +340,13 @@ Nil when the watchdog is off.  With RESET, zero them all."
                :gc-dropped (plist-get s :gc-dropped)
                :monitor-cpu-ms (plist-get s :monitor-cpu-ms)
                :drain-p95-ms (plist-get s :drain-p95-ms)
+               :drain-over-budget (plist-get s :drain-over-budget)
                :histograms (list :command (plist-get h :command)
                                  :other (plist-get h :other)
                                  :typing (plist-get h :typing)
                                  :collections (plist-get h :collections)
-                                 :drain (plist-get s :drain))))))))
+                                 :drain (plist-get s :drain)
+                                 :drain-take (plist-get s :drain-take))))))))
 
 (defun nidhogg-watchdog--maybe-summary ()
   "Write a summary line when `nidhogg-watchdog--summary-interval' has passed."
@@ -330,19 +407,36 @@ Allocates nothing when nothing waits."
       (setq nidhogg-watchdog--queue (nconc nidhogg-watchdog--queue (car taken)))
       (when (and (cdr taken) nidhogg-watchdog--collections-function)
         (funcall nidhogg-watchdog--collections-function (cdr taken)))
-      (while (and nidhogg-watchdog--queue
-                  (or unlimited
-                      (< (- (funcall clock) t0) nidhogg-watchdog--drain-budget)))
-        (let ((raw (pop nidhogg-watchdog--queue)))
-          (nidhogg-watchdog--emit
-           (if nidhogg-watchdog--resolve-function
-               (funcall nidhogg-watchdog--resolve-function raw)
-             raw))
-          (setq done (1+ done))))
-      (let ((i (nidhogg-watchdog--bucket (* 1000 (- (funcall clock) t0)))))
-        (aset nidhogg-watchdog--drain-hist i
-              (1+ (aref nidhogg-watchdog--drain-hist i))))
+      (unless unlimited
+        (nidhogg-watchdog--drain-count nidhogg-watchdog--drain-take-hist
+                                       (- (funcall clock) t0)))
+      (let (later)
+        (while (and nidhogg-watchdog--queue (not later)
+                    (or unlimited
+                        (< (- (funcall clock) t0) nidhogg-watchdog--drain-budget)))
+          (let* ((raw (pop nidhogg-watchdog--queue))
+                 (res (if nidhogg-watchdog--resolve-function
+                          (let ((nidhogg-watchdog--deadline
+                                 (and (not unlimited)
+                                      (+ t0 nidhogg-watchdog--drain-budget))))
+                            (funcall nidhogg-watchdog--resolve-function raw))
+                        raw)))
+            (if (eq res :later)
+                (progn (push raw nidhogg-watchdog--queue) (setq later t))
+              (nidhogg-watchdog--emit res)
+              (setq done (1+ done))))))
+      ;; Only budgeted drains are judged against the budget.
+      (unless unlimited
+        (let ((secs (- (funcall clock) t0)))
+          (nidhogg-watchdog--drain-count nidhogg-watchdog--drain-hist secs)
+          (when (> secs nidhogg-watchdog--drain-budget)
+            (setq nidhogg-watchdog--drain-over (1+ nidhogg-watchdog--drain-over)))))
       done)))
+
+(defun nidhogg-watchdog--drain-count (hist secs)
+  "Count SECS seconds in HIST, on `nidhogg-watchdog--drain-edges'."
+  (let ((i (nidhogg-watchdog--bucket (* 1000 secs) nidhogg-watchdog--drain-edges)))
+    (aset hist i (1+ (aref hist i)))))
 
 (defun nidhogg-watchdog-drain-now ()
   "Drain everything now, without the budget (perf and tests)."
@@ -376,8 +470,11 @@ Allocates nothing when nothing waits."
   (setq nidhogg-watchdog--queue nil
         nidhogg-watchdog--errors 0
         nidhogg-watchdog--day nil
-        nidhogg-watchdog--last-summary (funcall nidhogg-watchdog--clock))
+        nidhogg-watchdog--last-summary (funcall nidhogg-watchdog--clock)
+        nidhogg-watchdog--summary-base nil
+        nidhogg-watchdog--drain-over 0)
   (fillarray nidhogg-watchdog--drain-hist 0)
+  (fillarray nidhogg-watchdog--drain-take-hist 0)
   (nidhogg-watchdog--prune)
   (setq nidhogg-watchdog--timer
         (run-with-idle-timer 1 t #'nidhogg-watchdog--tick))
