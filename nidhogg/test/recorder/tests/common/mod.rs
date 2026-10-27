@@ -133,14 +133,20 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let wl_registry::Event::Global {
-            name,
-            interface,
-            version,
-        } = e
-        {
-            s.names.insert(interface.clone(), name);
-            s.versions.insert(interface, version);
+        match e {
+            wl_registry::Event::Global {
+                name,
+                interface,
+                version,
+            } => {
+                if interface == "wl_output" {
+                    s.ev.outputs.push(name);
+                }
+                s.names.insert(interface.clone(), name);
+                s.versions.insert(interface, version);
+            }
+            wl_registry::Event::GlobalRemove { name } => s.ev.outputs.retain(|&n| n != name),
+            _ => {}
         }
     }
 }
