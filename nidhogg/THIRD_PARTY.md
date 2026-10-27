@@ -40,3 +40,13 @@ Entries:
 - Licence: MIT (`nidhogg/licenses/LICENSE-MIT-foot`); the adapted file is `GPL-3.0-or-later AND MIT`
 - Files: `nidhogg/shell/src/wayland/text_input.rs` (foot's text-input-v3 logic: pending state applied on `done`, the
   commit-serial check, enable on enter and disable on leave; rewritten in Rust)
+
+## https://github.com/zed-industries/zed@347f171a3fd00a3b672382d78348b37bd969d17c crates/gpui_linux/src/linux/wayland/cursor.rs
+
+- URL: https://github.com/zed-industries/zed
+- Commit: 347f171a3fd00a3b672382d78348b37bd969d17c (2026-10-24)
+- Licence: Apache-2.0 (`nidhogg/licenses/LICENSE-APACHE`); the adapted file is `GPL-3.0-or-later AND Apache-2.0`
+- Files: `nidhogg/shell/src/wayland/cursor_theme.rs` (loading an Xcursor theme through `wayland-cursor` and showing
+  one cursor image on a pointer surface; sizes, names and the reload rules are Nidhogg's, noted in its header)
+
+Crates vendored for the cursor theme (in `nidhogg/shell/vendor/`, unmodified, MIT, accepted by `deny.toml`): `wayland-cursor` 0.31.14 and `xcursor` 0.3.11, from crates.io.
