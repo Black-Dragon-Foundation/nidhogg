@@ -524,6 +524,7 @@ extern bool nhwl_csd_button (struct frame *, const NhShellEvent *, bool *);
 extern uint64_t nhwl_frame_window (struct frame *);
 extern struct frame *nhwl_window_frame (uint64_t);
 extern bool nhwl_child_p (struct frame *);
+extern void nhwl_tip_dismissed (struct frame *);
 extern void nhwl_child_describe (struct frame *, NhShellWindowDesc *);
 extern void nhwl_child_created (struct frame *);
 extern void nhwl_child_layout (struct frame *);

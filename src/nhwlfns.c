@@ -22,7 +22,7 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
    is provided too).  Functions adapted from pgtkfns.c name their origin.
    The frame parameters with a handler in nhwl_frame_parm_handlers have
    effects; every other parameter is accepted and stored.  Not in W0:
-   selections (they answer nil), child and tip frames (they signal).  */
+   selections (they answer nil).  */
 
 #include <config.h>
 
@@ -1435,19 +1435,510 @@ DEFUN ("pgtk-set-mouse-absolute-pixel-position",
   return Qnil;
 }
 
+/***********************************************************************
+				Tool tips
+ ***********************************************************************/
+
+/* A tip frame is an xdg popup of the frame under the pointer, anchored
+   at the pointer (the compositor places it: gravity bottom-right, flip
+   and slide keep it on the output).  A popup cannot change size, so the
+   frame exists first without a window; the window is made once the text
+   is measured.  */
+
+/* The frame of the currently visible tooltip.  Adapted from pgtkfns.c.  */
+static Lisp_Object tip_frame;
+
+/* A timer that hides the currently visible tooltip when it fires.  */
+static Lisp_Object tip_timer;
+
+/* STRING, normalized FRAME and PARMS arguments of the last `x-show-tip'
+   call.  */
+static Lisp_Object tip_last_string, tip_last_frame, tip_last_parms;
+
+/* Adapted from unwind_create_tip_frame (pgtkfns.c).  */
+static void
+unwind_create_tip_frame (Lisp_Object frame)
+{
+  if (EQ (unwind_create_frame (frame), Qt))
+    tip_frame = Qnil;
+}
+
+/* Adapted from pgtk_create_tip_frame: a frame for a tooltip on DPYINFO
+   with the frame parameters PARMS; it has no window yet.  Value is the
+   frame.  */
+static Lisp_Object
+nhwl_create_tip_frame (struct nhwl_display_info *dpyinfo, Lisp_Object parms)
+{
+  struct frame *f;
+  struct nhwl_output *out;
+  Lisp_Object frame, name;
+  specpdl_ref count = SPECPDL_INDEX ();
+  bool face_change_before = face_change;
+
+  if (!dpyinfo->terminal->name)
+    error ("Terminal is not live, can't create new frames on it");
+
+  parms = Fcopy_alist (parms);
+  name = gui_display_get_arg (dpyinfo, parms, Qname, "name", "Name",
+			      RES_TYPE_STRING);
+  if (!STRINGP (name) && !BASE_EQ (name, Qunbound) && !NILP (name))
+    error ("Invalid frame name--not a string or nil");
+
+  f = make_frame (false);
+  f->wants_modeline = false;
+  XSETFRAME (frame, f);
+  record_unwind_protect (unwind_create_tip_frame, frame);
+
+  f->terminal = dpyinfo->terminal;
+  f->output_method = output_nhwl;
+  FRAME_X_OUTPUT (f) = xzalloc (sizeof *FRAME_X_OUTPUT (f));
+  out = FRAME_NHWL_OUTPUT (f);
+  out->frame = f;
+  FRAME_FONTSET (f) = -1;
+  out->white_relief.pixel = -1;
+  out->black_relief.pixel = -1;
+
+  f->tooltip = true;
+  fset_icon_name (f, Qnil);
+  FRAME_DISPLAY_INFO (f) = dpyinfo;
+
+  /* The colors are set later; this gets their reference counts right.  */
+  {
+    Lisp_Object black = build_string ("black");
+
+    FRAME_FOREGROUND_PIXEL (f) = -1;
+    FRAME_BACKGROUND_PIXEL (f) = -1;
+    out->cursor_color = -1;
+    out->cursor_foreground_color = -1;
+    out->border_pixel = -1;
+    out->mouse_color = -1;
+    FRAME_FOREGROUND_PIXEL (f)
+      = x_decode_color (f, black, BLACK_PIX_DEFAULT (f));
+    FRAME_BACKGROUND_PIXEL (f)
+      = x_decode_color (f, black, BLACK_PIX_DEFAULT (f));
+    out->cursor_color = x_decode_color (f, black, BLACK_PIX_DEFAULT (f));
+    out->cursor_foreground_color
+      = x_decode_color (f, black, BLACK_PIX_DEFAULT (f));
+    out->border_pixel = x_decode_color (f, black, BLACK_PIX_DEFAULT (f));
+    out->mouse_color = x_decode_color (f, black, BLACK_PIX_DEFAULT (f));
+  }
+
+  if (BASE_EQ (name, Qunbound) || NILP (name))
+    {
+      fset_name (f, build_string (dpyinfo->x_id_name));
+      f->explicit_name = false;
+    }
+  else
+    {
+      fset_name (f, name);
+      f->explicit_name = true;
+      specbind (Qx_resource_name, name);
+    }
+
+  register_font_driver (&ftcrfont_driver, f);
+#ifdef HAVE_HARFBUZZ
+  register_font_driver (&ftcrhbfont_driver, f);
+#endif	/* HAVE_HARFBUZZ */
+
+  gui_default_parameter (f, parms, Qfont_backend, Qnil,
+			 "fontBackend", "FontBackend", RES_TYPE_STRING);
+  nhwl_default_font_parameter (f, parms);
+
+  gui_default_parameter (f, parms, Qborder_width, make_fixnum (0),
+			 "borderWidth", "BorderWidth", RES_TYPE_NUMBER);
+  if (NILP (Fassq (Qinternal_border_width, parms)))
+    {
+      Lisp_Object value
+	= gui_display_get_arg (dpyinfo, parms, Qinternal_border_width,
+			       "internalBorder", "internalBorder",
+			       RES_TYPE_NUMBER);
+
+      if (!BASE_EQ (value, Qunbound))
+	parms = Fcons (Fcons (Qinternal_border_width, value), parms);
+    }
+  gui_default_parameter (f, parms, Qinternal_border_width, make_fixnum (1),
+			 "internalBorderWidth", "internalBorderWidth",
+			 RES_TYPE_NUMBER);
+  gui_default_parameter (f, parms, Qright_divider_width, make_fixnum (0),
+			 NULL, NULL, RES_TYPE_NUMBER);
+  gui_default_parameter (f, parms, Qbottom_divider_width, make_fixnum (0),
+			 NULL, NULL, RES_TYPE_NUMBER);
+  gui_default_parameter (f, parms, Qforeground_color, build_string ("black"),
+			 "foreground", "Foreground", RES_TYPE_STRING);
+  gui_default_parameter (f, parms, Qbackground_color, build_string ("white"),
+			 "background", "Background", RES_TYPE_STRING);
+  gui_default_parameter (f, parms, Qmouse_color, build_string ("black"),
+			 "pointerColor", "Foreground", RES_TYPE_STRING);
+  gui_default_parameter (f, parms, Qcursor_color, build_string ("black"),
+			 "cursorColor", "Foreground", RES_TYPE_STRING);
+  gui_default_parameter (f, parms, Qborder_color, build_string ("black"),
+			 "borderColor", "BorderColor", RES_TYPE_STRING);
+  gui_default_parameter (f, parms, Qno_special_glyphs, Qnil,
+			 NULL, NULL, RES_TYPE_BOOLEAN);
+
+  init_frame_faces (f);
+
+  gui_default_parameter (f, parms, Qinhibit_double_buffering, Qnil,
+			 "inhibitDoubleBuffering", "InhibitDoubleBuffering",
+			 RES_TYPE_BOOLEAN);
+  gui_figure_window_size (f, parms, false, false);
+
+  out->current_cursor = out->text_cursor
+    = nhwl_cursor_for_shape (NHSHELL_CURSOR_TEXT);
+
+  gui_default_parameter (f, parms, Qauto_raise, Qnil,
+			 "autoRaise", "AutoRaiseLower", RES_TYPE_BOOLEAN);
+  gui_default_parameter (f, parms, Qauto_lower, Qnil,
+			 "autoLower", "AutoRaiseLower", RES_TYPE_BOOLEAN);
+  gui_default_parameter (f, parms, Qcursor_type, Qbox,
+			 "cursorType", "CursorType", RES_TYPE_SYMBOL);
+  gui_default_parameter (f, parms, Qalpha, Qnil,
+			 "alpha", "Alpha", RES_TYPE_NUMBER);
+  gui_default_parameter (f, parms, Qalpha_background, Qnil,
+			 "alphaBackground", "AlphaBackground", RES_TYPE_NUMBER);
+  gui_default_parameter (f, parms, Qborders_respect_alpha_background, Qnil,
+			 "bordersRespectAlphaBackground",
+			 "BordersRespectAlphaBackground", RES_TYPE_NUMBER);
+
+  if (NILP (Fframe_parameter (frame, Qtooltip)))
+    {
+      AUTO_FRAME_ARG (arg, Qtooltip, Qt);
+      Fmodify_frame_parameters (frame, arg);
+    }
+  if (NILP (Fframe_parameter (frame, Qdisplay_type)))
+    {
+      AUTO_FRAME_ARG (arg, Qdisplay_type, intern_c_string ("color"));
+      Fmodify_frame_parameters (frame, arg);
+    }
+
+  /* Face setup merges attributes that must not reach the internal border
+     (see pgtk_create_tip_frame).  */
+  {
+    Lisp_Object bg = Fframe_parameter (frame, Qbackground_color);
+
+    calln (Qface_set_after_frame_default, frame, Qnil);
+    if (!EQ (bg, Fframe_parameter (frame, Qbackground_color)))
+      {
+	AUTO_FRAME_ARG (arg, Qbackground_color, bg);
+	Fmodify_frame_parameters (frame, arg);
+      }
+  }
+
+  f->no_split = true;
+
+  /* The frame is official now.  */
+  FRAME_DISPLAY_INFO (f)->reference_count++;
+  f->terminal->reference_count++;
+  Vframe_list = Fcons (frame, Vframe_list);
+  f->can_set_window_size = true;
+  adjust_frame_size (f, FRAME_TEXT_WIDTH (f), FRAME_TEXT_HEIGHT (f),
+		     0, true, Qtip_frame);
+
+  /* Faces set from resources would clear every matrix; nothing changes
+     for the other frames.  */
+  face_change = face_change_before;
+
+  return unbind_to (count, frame);
+}
+
+/* Where a tip hanging on PF goes: the pointer plus DX and DY, or the
+   `left' and `top' of PARMS (native pixels in PF), as logical pixels of
+   PF's surface.  Adapted from compute_tip_xy (pgtkfns.c); the
+   compositor's flip and slide replace its fitting to the monitor.  */
+static void
+nhwl_tip_anchor (struct frame *pf, Lisp_Object parms, Lisp_Object dx,
+		 Lisp_Object dy, int *ax, int *ay)
+{
+  struct nhwl_output *po = FRAME_NHWL_OUTPUT (pf);
+  struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (pf);
+  Lisp_Object left = Fcdr (Fassq (Qleft, parms));
+  Lisp_Object top = Fcdr (Fassq (Qtop, parms));
+  int x = 0, y = 0;
+
+  if (dpyinfo->last_mouse_motion_frame == pf)
+    {
+      x = dpyinfo->last_mouse_motion_x;
+      y = dpyinfo->last_mouse_motion_y;
+    }
+  x = FIXNUMP (left) ? XFIXNUM (left) : x + XFIXNUM (dx);
+  y = FIXNUMP (top) ? XFIXNUM (top) : y + XFIXNUM (dy);
+  *ax = nhwl_to_logical (po->csd.l + x, po->scale120);
+  *ay = nhwl_to_logical (po->csd.t + y, po->scale120);
+}
+
+/* Hide the tooltip: its frame is deleted, as pgtk_hide_tip does while
+   `tooltip-reuse-hidden-frame' is nil.  Value is t when a tip was
+   showing.  Adapted from pgtk_hide_tip.  */
+static Lisp_Object
+nhwl_hide_tip (void)
+{
+  Lisp_Object was_open = Qnil;
+  specpdl_ref count = SPECPDL_INDEX ();
+
+  if (!NILP (tip_timer))
+    {
+      calln (Qcancel_timer, tip_timer);
+      tip_timer = Qnil;
+    }
+  if (!FRAMEP (tip_frame))
+    return Qnil;
+
+  specbind (Qinhibit_redisplay, Qt);
+  specbind (Qinhibit_quit, Qt);
+  if (FRAME_LIVE_P (XFRAME (tip_frame)))
+    {
+      /* A tip the compositor dismissed is closed already.  */
+      was_open = FRAME_VISIBLE_P (XFRAME (tip_frame)) ? Qt : Qnil;
+      delete_frame (tip_frame, Qnil);
+    }
+  tip_frame = Qnil;
+  return unbind_to (count, was_open);
+}
+
+/* The compositor dismissed the popup of tip frame F (xdg_popup
+   popup_done); the event loop calls this, so no Lisp runs: the window
+   goes at once, the frame object when the tip's timer, the next
+   x-hide-tip or the next x-show-tip deletes it.  New for nhwl.  */
+void
+nhwl_tip_dismissed (struct frame *f)
+{
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+
+  if (out->window)
+    nhshell_window_destroy (FRAME_NHWL_SHELL (f), out->window);
+  out->window = 0;
+  SET_FRAME_VISIBLE (f, 0);
+}
+
+/* Make tip frame TIP_F's popup, WIDTH x HEIGHT device pixels, anchored
+   at (AX, AY) in the surface of PF.  Takes the place of the end of
+   Fx_show_tip (pgtkfns.c), where GTK resizes, moves and shows the
+   widget.  */
+static void
+nhwl_tip_map (struct frame *tip_f, struct frame *pf, int width, int height,
+	      int ax, int ay)
+{
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (tip_f);
+  struct nhwl_output *po = FRAME_NHWL_OUTPUT (pf);
+  struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (tip_f);
+  NhShellWindowDesc desc;
+  uint64_t id = 0;
+  int rc;
+
+  out->scale120 = po->scale120 ? po->scale120 : 120;
+  tip_f->pixel_width = width;
+  tip_f->pixel_height = height;
+
+  memset (&desc, 0, sizeof desc);
+  desc.w = max (1, nhwl_to_logical (width, out->scale120));
+  desc.h = max (1, nhwl_to_logical (height, out->scale120));
+  desc.title = "";
+  desc.app_id = "nidhogg";
+  desc.flags = NHSHELL_WIN_UNDECORATED;
+  desc.kind = NHSHELL_KIND_POPUP;
+  desc.parent = po->window;
+  desc.anchor.x = ax;
+  desc.anchor.y = ay;
+  desc.anchor.w = desc.anchor.h = 1;
+  desc.anchor.gravity = 8;	/* bottom-right */
+  desc.anchor.adjust = NHSHELL_ADJUST_FLIP_X | NHSHELL_ADJUST_FLIP_Y
+    | NHSHELL_ADJUST_SLIDE_X | NHSHELL_ADJUST_SLIDE_Y;
+
+  block_input ();
+  rc = nhshell_window_new (dpyinfo->shell, &desc, &id);
+  unblock_input ();
+  if (rc < 0)
+    error ("nidhogg-wayland: cannot create a tooltip window (%d)", rc);
+  out->window = id;
+  /* A popup has no configure the host waits for.  */
+  out->configured = true;
+  out->next_output = dpyinfo->outputs;
+  dpyinfo->outputs = out;
+
+  SET_FRAME_VISIBLE (tip_f, 1);
+  out->has_been_visible = true;
+  nhwl_backing_resize (tip_f);
+  glitnir_damage_all (out->glitnir_id);
+  out->nhist = 0;
+}
+
+/* The frame a tip of F hangs on: the frame under the pointer when there
+   is one.  New for nhwl (pgtk's tip is transient for F).  */
+static struct frame *
+nhwl_tip_parent (struct frame *f)
+{
+  struct frame *p = FRAME_DISPLAY_INFO (f)->last_mouse_motion_frame;
+
+  if (p && FRAME_LIVE_P (p) && FRAME_NHWL_P (p) && FRAME_VISIBLE_P (p)
+      && !FRAME_TOOLTIP_P (p) && FRAME_NHWL_OUTPUT (p)->window)
+    return p;
+  return f;
+}
+
+/* Adapted from Fx_show_tip (pgtkfns.c), without GTK system tooltips and
+   without reusing a hidden frame.  */
 DEFUN ("x-show-tip", Fx_show_tip, Sx_show_tip, 1, 6, 0,
        doc: /* SKIP: real doc in xfns.c.  */)
   (Lisp_Object string, Lisp_Object frame, Lisp_Object parms,
    Lisp_Object timeout, Lisp_Object dx, Lisp_Object dy)
 {
-  error ("nidhogg-wayland: tooltip frames arrive in W1");
+  struct frame *f, *pf, *tip_f;
+  struct window *w;
+  struct buffer *old_buffer;
+  struct text_pos pos;
+  int width, height, ax, ay;
+  int old_windows_or_buffers_changed = windows_or_buffers_changed;
+  specpdl_ref count = SPECPDL_INDEX ();
+  Lisp_Object window, size, tip_buf;
+  AUTO_STRING (tip, " *tip*");
+
+  specbind (Qinhibit_redisplay, Qt);
+
+  CHECK_STRING (string);
+  if (SCHARS (string) == 0)
+    string = make_unibyte_string (" ", 1);
+
+  if (NILP (frame))
+    frame = selected_frame;
+  f = decode_window_system_frame (frame);
+  if (!FRAME_NHWL_P (f) || !FRAME_NHWL_OUTPUT (f)->window)
+    return unbind_to (count, Qnil);
+
+  if (NILP (timeout))
+    timeout = Vx_show_tooltip_timeout;
+  CHECK_FIXNAT (timeout);
+  if (NILP (dx))
+    dx = make_fixnum (5);
+  else
+    CHECK_FIXNUM (dx);
+  if (NILP (dy))
+    dy = make_fixnum (-10);
+  else
+    CHECK_FIXNUM (dy);
+
+  pf = nhwl_tip_parent (f);
+  nhwl_tip_anchor (pf, parms, dx, dy, &ax, &ay);
+
+  if (FRAMEP (tip_frame) && FRAME_LIVE_P (XFRAME (tip_frame))
+      && FRAME_VISIBLE_P (XFRAME (tip_frame))
+      && EQ (frame, tip_last_frame)
+      && !NILP (Fequal_including_properties (tip_last_string, string))
+      && !NILP (Fequal (tip_last_parms, parms)))
+    {
+      /* Only DX and DY have changed.  */
+      if (!NILP (tip_timer))
+	{
+	  calln (Qcancel_timer, tip_timer);
+	  tip_timer = Qnil;
+	}
+      block_input ();
+      nhshell_window_set_position (FRAME_NHWL_SHELL (f),
+				   FRAME_NHWL_OUTPUT (XFRAME (tip_frame))->window,
+				   ax, ay);
+      unblock_input ();
+      goto start_timer;
+    }
+  nhwl_hide_tip ();
+
+  tip_last_frame = frame;
+  tip_last_string = string;
+  tip_last_parms = parms;
+
+  /* Add default values to frame parameters.  */
+  if (NILP (Fassq (Qname, parms)))
+    parms = Fcons (Fcons (Qname, build_string ("tooltip")), parms);
+  if (NILP (Fassq (Qinternal_border_width, parms)))
+    parms = Fcons (Fcons (Qinternal_border_width, make_fixnum (3)), parms);
+  if (NILP (Fassq (Qborder_width, parms)))
+    parms = Fcons (Fcons (Qborder_width, make_fixnum (1)), parms);
+  if (NILP (Fassq (Qborder_color, parms)))
+    parms = Fcons (Fcons (Qborder_color, build_string ("lightyellow")), parms);
+  if (NILP (Fassq (Qbackground_color, parms)))
+    parms = Fcons (Fcons (Qbackground_color, build_string ("lightyellow")),
+		   parms);
+
+  if (NILP ((tip_frame = nhwl_create_tip_frame (FRAME_DISPLAY_INFO (f), parms))))
+    return unbind_to (count, Qnil);
+
+  tip_f = XFRAME (tip_frame);
+  window = FRAME_ROOT_WINDOW (tip_f);
+  tip_buf = Fget_buffer_create (tip, Qnil);
+  /* A pseudo-window cannot have display margins.  */
+  bset_left_margin_cols (XBUFFER (tip_buf), make_fixnum (0));
+  bset_right_margin_cols (XBUFFER (tip_buf), make_fixnum (0));
+  set_window_buffer (window, tip_buf, false, false);
+  w = XWINDOW (window);
+  w->pseudo_window_p = true;
+
+  /* Set up the root window only far enough for the text size
+     calculations.  */
+  w->left_col = 0;
+  w->top_line = 0;
+  w->pixel_left = 0;
+  w->pixel_top = 0;
+
+  if (CONSP (Vx_max_tooltip_size)
+      && RANGED_FIXNUMP (1, XCAR (Vx_max_tooltip_size), INT_MAX)
+      && RANGED_FIXNUMP (1, XCDR (Vx_max_tooltip_size), INT_MAX))
+    {
+      w->total_cols = XFIXNAT (XCAR (Vx_max_tooltip_size));
+      w->total_lines = XFIXNAT (XCDR (Vx_max_tooltip_size));
+    }
+  else
+    {
+      w->total_cols = 80;
+      w->total_lines = 40;
+    }
+
+  w->pixel_width = w->total_cols * FRAME_COLUMN_WIDTH (tip_f);
+  w->pixel_height = w->total_lines * FRAME_LINE_HEIGHT (tip_f);
+  FRAME_TOTAL_COLS (tip_f) = w->total_cols;
+  adjust_frame_glyphs (tip_f);
+
+  /* Insert STRING into the root window's buffer and fit the frame to
+     it.  */
+  specpdl_ref count_1 = SPECPDL_INDEX ();
+  old_buffer = current_buffer;
+  set_buffer_internal_1 (XBUFFER (w->contents));
+  bset_truncate_lines (current_buffer, Qnil);
+  specbind (Qinhibit_read_only, Qt);
+  specbind (Qinhibit_modification_hooks, Qt);
+  specbind (Qinhibit_point_motion_hooks, Qt);
+  Ferase_buffer ();
+  Finsert (1, &string);
+  clear_glyph_matrix (w->desired_matrix);
+  clear_glyph_matrix (w->current_matrix);
+  SET_TEXT_POS (pos, BEGV, BEGV_BYTE);
+  try_window (window, pos, TRY_WINDOW_IGNORE_FONTS_CHANGE);
+
+  size = Fwindow_text_pixel_size (window, Qnil, Qnil, Qnil,
+				  make_fixnum (w->pixel_height), Qnil, Qnil);
+  width = XFIXNUM (Fcar (size)) + 2 * FRAME_INTERNAL_BORDER_WIDTH (tip_f);
+  height = XFIXNUM (Fcdr (size)) + 2 * FRAME_INTERNAL_BORDER_WIDTH (tip_f);
+  width += FRAME_COLUMN_WIDTH (tip_f);
+
+  /* Show the tip: its popup, then its text.  */
+  nhwl_tip_map (tip_f, pf, width, height, ax, ay);
+  w->must_be_updated_p = true;
+  update_single_window (w);
+  flush_frame (tip_f);
+  nhwl_dirty (tip_f);
+  set_buffer_internal_1 (old_buffer);
+  unbind_to (count_1, Qnil);
+  windows_or_buffers_changed = old_windows_or_buffers_changed;
+
+ start_timer:
+  /* Let the tip disappear after TIMEOUT seconds.  */
+  tip_timer = calln (Qrun_at_time, timeout, Qnil, Qx_hide_tip);
+
+  return unbind_to (count, Qnil);
 }
 
 DEFUN ("x-hide-tip", Fx_hide_tip, Sx_hide_tip, 0, 0, 0,
        doc: /* SKIP: real doc in xfns.c.  */)
   (void)
 {
-  return Qnil;
+  return nhwl_hide_tip ();
 }
 
 /* The font settings the shared Lisp reads (xsettings.c does not exist
@@ -1571,6 +2062,17 @@ syms_of_nhwlfns (void)
   DEFVAR_LISP ("x-max-tooltip-size", Vx_max_tooltip_size,
     doc: /* SKIP: real doc in xfns.c.  */);
   Vx_max_tooltip_size = Qnil;
+
+  DEFSYM (Qcancel_timer, "cancel-timer");
+  DEFSYM (Qrun_at_time, "run-at-time");
+  DEFSYM (Qx_hide_tip, "x-hide-tip");
+  tip_timer = tip_frame = tip_last_frame = tip_last_string = tip_last_parms
+    = Qnil;
+  staticpro (&tip_timer);
+  staticpro (&tip_frame);
+  staticpro (&tip_last_frame);
+  staticpro (&tip_last_string);
+  staticpro (&tip_last_parms);
 
   DEFVAR_BOOL ("font-use-system-font", use_system_font,
     doc: /* SKIP: real doc in xsettings.c.  */);

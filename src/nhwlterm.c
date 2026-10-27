@@ -1830,6 +1830,12 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	case NHSHELL_EV_FRAME_DONE:
 	  break;
 
+	case NHSHELL_EV_POPUP_DONE:
+	  /* Only tip frames are popups.  */
+	  if (f && FRAME_TOOLTIP_P (f))
+	    nhwl_tip_dismissed (f);
+	  break;
+
 	case NHSHELL_EV_OUTPUT_ADD:
 	  {
 	    int i;

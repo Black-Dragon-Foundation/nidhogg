@@ -925,3 +925,53 @@ Return the two replies."
                      (seq-find (lambda (a) (memql (plist-get a :surface) (funcall surfaces))) (funcall entries)))
                    5)))
       (when (frame-live-p new) (delete-frame new t)))))
+
+;; Task 11: tip frames.  A tooltip is an xdg popup of the frame under the pointer; the recorder's `tree' shows it with
+;; role "popup".
+
+(defun nhwl-gui--popup-ids ()
+  (mapcar (lambda (n) (plist-get n :id))
+          (seq-filter (lambda (n) (equal (plist-get n :role) "popup")) (nhwl-gui--tree))))
+
+(defun nhwl-gui--new-popup (before)
+  "The popup node that is not in the id list BEFORE, once it has a buffer."
+  (seq-find (lambda (n) (and (equal (plist-get n :role) "popup")
+                             (not (memq (plist-get n :id) before))
+                             (nhwl-gui--get n :buffer)))
+            (nhwl-gui--tree)))
+
+(ert-deftest nhwl-gui/tooltip-is-a-popup ()
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((before (nhwl-gui--popup-ids)))
+    (unwind-protect
+        (progn
+          (x-show-tip "hello" nil nil 5)
+          (let ((n (nhwl-gui--wait (lambda () (nhwl-gui--pump) (nhwl-gui--new-popup before)) 5)))
+            (should n)
+            (should (> (plist-get (plist-get n :buffer) :w) 0))
+            (should (> (plist-get (plist-get n :buffer) :h) 0))))
+      (x-hide-tip))))
+
+(ert-deftest nhwl-gui/tooltip-hidden-by-x-hide-tip ()
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((before (nhwl-gui--popup-ids)))
+    (unwind-protect
+        (progn
+          (x-show-tip "hello" nil nil 5)
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (nhwl-gui--new-popup before)) 5))
+          (should (x-hide-tip))
+          (should (nhwl-gui--wait (lambda () (equal (nhwl-gui--popup-ids) before)) 5))
+          (should-not (x-hide-tip)))
+      (x-hide-tip))))
+
+(ert-deftest nhwl-gui/tooltip-dismissed-by-the-compositor ()
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((before (nhwl-gui--popup-ids)))
+    (unwind-protect
+        (progn
+          (x-show-tip "hello" nil nil 5)
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (nhwl-gui--new-popup before)) 5))
+          (gui-runner-recorder '(:cmd "popup_done" :surface "newest"))
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (equal (nhwl-gui--popup-ids) before)) 5))
+          (should-not (x-hide-tip)))
+      (x-hide-tip))))
