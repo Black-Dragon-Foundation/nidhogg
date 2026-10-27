@@ -93,6 +93,8 @@ lost_case() {
 (require 'ert)
 (ert-deftest lost/quit () (gui-runner-recorder '(:cmd "quit")) (sleep-for 30))
 EL
+  # in a container the test directory is mounted over the checkout's, where Nidhogg loads the runner from
+  cp "$tests/gui-runner.el" "$work/tests/"
   GLITNIR_GUI_NAME=gui-test-lost-$$ bash "$gui" --prefix "$prefix" --container fedora-45 --compositor recorder \
     --recorder "$GUI_TEST_RECORDER" --tests "$work/tests" --timeout 300 > "$work/out.log" 2>&1
   rc=$?
