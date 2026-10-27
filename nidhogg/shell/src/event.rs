@@ -28,6 +28,13 @@ pub const NHSHELL_EV_FRAME_READY: u32 = 21;
 pub const NHSHELL_EV_POPUP_DONE: u32 = 16;
 /// The clipboard or the primary selection changed (ours or another client's); `u.selection.kind` says which.
 pub const NHSHELL_EV_SELECTION: u32 = 17;
+// text-input-v3 (`u.text`); the text is fetched with `nhshell_take_text`
+/// The preedit changed: `u.text.id`/`len` its text (len 0: cleared), `cursor_begin`/`cursor_end` bytes (-1: hidden).
+pub const NHSHELL_EV_PREEDIT: u32 = 18;
+/// Text to insert: `u.text.id`, `u.text.len`.
+pub const NHSHELL_EV_COMMIT_TEXT: u32 = 19;
+/// Delete `u.text.before` bytes before and `u.text.after` bytes after the cursor.
+pub const NHSHELL_EV_DELETE_SURROUNDING: u32 = 20;
 
 pub const NHSHELL_MOD_SHIFT: u32 = 1 << 0;
 pub const NHSHELL_MOD_CTRL: u32 = 1 << 1;
@@ -139,6 +146,19 @@ pub struct OutputEv {
     pub name: [u8; 32],
 }
 
+/// text-input-v3 records; lengths and offsets are bytes of UTF-8.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct TextEv {
+    /// The text for `nhshell_take_text`; 0 for none.
+    pub id: u32,
+    pub len: u32,
+    pub cursor_begin: i32,
+    pub cursor_end: i32,
+    pub before: u32,
+    pub after: u32,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct SelectionEv {
@@ -158,6 +178,7 @@ pub union NhShellEventData {
     pub frame_done: FrameDoneEv,
     pub output: OutputEv,
     pub selection: SelectionEv,
+    pub text: TextEv,
 }
 
 #[repr(C)]

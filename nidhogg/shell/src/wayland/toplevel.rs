@@ -179,6 +179,7 @@ impl ShellBackend for WaylandShell {
     }
 
     fn window_destroy(&mut self, id: WindowId) -> ShellResult {
+        self.text_input.forget(id);
         for dep in self.dependents_of(id) {
             let _ = self.window_destroy(dep);
         }
@@ -343,6 +344,36 @@ impl ShellBackend for WaylandShell {
         self.present_commit_impl(id, damage)
     }
 
+    fn text_input_enable(&mut self, w: WindowId, on: bool) -> ShellResult {
+        self.text_input_flush(self.main.surfaces.contains_key(&w), |t| t.enable(w, on))
+    }
+
+    fn text_input_cursor(&mut self, w: WindowId, x: i32, y: i32, cw: i32, ch: i32) -> ShellResult {
+        self.text_input_flush(self.main.surfaces.contains_key(&w), |t| {
+            t.cursor(w, [x, y, cw, ch])
+        })
+    }
+
+    fn text_input_surrounding(
+        &mut self,
+        w: WindowId,
+        text: &str,
+        cursor: usize,
+        anchor: usize,
+    ) -> ShellResult {
+        self.text_input_flush(self.main.surfaces.contains_key(&w), |t| {
+            t.surrounding(w, text, cursor, anchor)
+        })
+    }
+
+    fn text_len(&self, id: u32) -> ShellResult<usize> {
+        self.text_input.text_len(id)
+    }
+
+    fn take_text(&mut self, id: u32) -> ShellResult<Vec<u8>> {
+        self.text_input.take_text(id)
+    }
+
     fn selection_own(&mut self, kind: u32, items: &[(&str, &[u8])]) -> ShellResult {
         self.sel_own(kind, items)
     }
@@ -361,6 +392,23 @@ impl ShellBackend for WaylandShell {
 
     fn selection_read(&mut self, kind: u32, mime: &str, timeout_ms: u32) -> ShellResult<Vec<u8>> {
         self.sel_read(kind, mime, timeout_ms)
+    }
+}
+
+impl WaylandShell {
+    /// Run a text-input request for a known window and flush it if it sent anything.
+    fn text_input_flush(
+        &self,
+        known: bool,
+        f: impl FnOnce(&crate::wayland::text_input::TextInput) -> ShellResult<bool>,
+    ) -> ShellResult {
+        if !known {
+            return Err(ShellError::State);
+        }
+        if f(&self.text_input)? {
+            self.flush()?;
+        }
+        Ok(())
     }
 }
 
