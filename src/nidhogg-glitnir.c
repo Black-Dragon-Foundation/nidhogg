@@ -580,6 +580,8 @@ Return nil.  */)
   struct frame *f = decode_live_frame (frame);
 #ifdef HAVE_PGTK
   glitnir_pgtk_params_changed (f);
+#elif defined HAVE_NHWL
+  nhwl_child_params_changed (f);
 #else
   (void) f;
 #endif
