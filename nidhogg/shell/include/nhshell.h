@@ -136,6 +136,7 @@ typedef struct
       uint32_t scale120;
       char name[32];
     } output;
+    struct { uint32_t kind; } selection;  /* NHSHELL_SEL_* */
   } u;
 } NhShellEvent;
 
@@ -256,6 +257,27 @@ int32_t nhshell_window_dirty (NhShell *sh, uint64_t window);
 int32_t nhshell_window_ready (NhShell *sh, uint64_t window, int32_t *ready);
 int32_t nhshell_present_begin (NhShell *sh, uint64_t window, int32_t dev_w, int32_t dev_h, NhShellBuffer *out);
 int32_t nhshell_present_commit (NhShell *sh, uint64_t window, const GlitnirRect *damage, size_t n);
+
+/* Selections.  KIND is NHSHELL_SEL_CLIPBOARD or NHSHELL_SEL_PRIMARY.  own copies N types (MIMES[i] with the LENS[i]
+   bytes at DATA[i]); other clients' pastes are answered from the copy by the shell's own thread.  It needs keyboard
+   focus (NHSHELL_E_STATE without).  owned returns 1 while our source is the current selection, else 0.  types writes
+   the current MIME types, each followed by a NUL, to BUF when CAP holds them all, sets *LEN to the bytes needed and
+   returns the count.  read returns our own bytes at once, or reads another client's until it finishes or TIMEOUT_MS
+   passes (NHSHELL_E_TIMEOUT); NHSHELL_E_STATE when there is no selection or no such type.  Free *OUT with
+   nhshell_free_bytes.  NHSHELL_EV_SELECTION (u.selection.kind) says a selection changed, ours or another
+   client's.  */
+#define NHSHELL_E_TIMEOUT         -7
+#define NHSHELL_SEL_CLIPBOARD 0u
+#define NHSHELL_SEL_PRIMARY   1u
+enum { NHSHELL_EV_SELECTION = 17 };
+int32_t nhshell_selection_own (NhShell *sh, uint32_t kind, const char *const *mimes, const uint8_t *const *data,
+                               const size_t *lens, size_t n);
+int32_t nhshell_selection_disown (NhShell *sh, uint32_t kind);
+int32_t nhshell_selection_owned (NhShell *sh, uint32_t kind);
+int32_t nhshell_selection_types (NhShell *sh, uint32_t kind, char *buf, size_t cap, size_t *len);
+int32_t nhshell_selection_read (NhShell *sh, uint32_t kind, const char *mime, uint32_t timeout_ms, uint8_t **out,
+                                size_t *len);
+void nhshell_free_bytes (uint8_t *p);
 
 #ifdef __cplusplus
 }
