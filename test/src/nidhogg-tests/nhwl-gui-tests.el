@@ -700,6 +700,89 @@ Return the two replies."
           (should (nhwl-gui--wait (lambda () (equal (funcall order) (list ia ib))) 5)))
       (dolist (f (list a b)) (when (and f (frame-live-p f)) (delete-frame f t))))))
 
+;; Live rows: they run on any compositor, the real sway and mutter included, and assert only that the frame is live and
+;; nothing signalled.  What the shell said to the compositor is judged afterwards by the trace checker
+;; (`gui.sh --wayland-debug F --trace-check RULES', nidhogg/test/wl-trace-check.el).
+
+(defun nhwl-gui--live-settle (&optional seconds)
+  "Redisplay and run process output for SECONDS (default 0.3), so the shell's commits and the compositor's answers happen."
+  (let ((end (+ (float-time) (or seconds 0.3))))
+    (while (< (float-time) end)
+      (redisplay t)
+      (accept-process-output nil 0.05))))
+
+;; They leave frames, a tip and the window size behind, so they run after the other rows (`runs-last'); a row that ended
+;; the session's display (the display-lost row) leaves no native frame, and they skip.
+(ert-deftest nhwl-gui/live-child-frames ()
+  :tags '(runs-last)
+  (skip-unless (and (nhwl-gui--live-p) (nhwl-gui--nhwl-frames)))
+  (let ((a nil) (b nil) (g nil) (old (and (boundp 'child-frame-chrome) child-frame-chrome)))
+    (unwind-protect
+        (progn
+          (setq a (nhwl-gui--child '(left . 10)) b (nhwl-gui--child '(left . 120)))
+          (nhwl-gui--live-settle)
+          (dotimes (i 5)
+            (set-frame-position a (+ 20 (* i 15)) (+ 30 (* i 10)))
+            (nhwl-gui--live-settle))
+          (raise-frame a) (nhwl-gui--live-settle)
+          (lower-frame a) (nhwl-gui--live-settle)
+          (make-frame-invisible b) (nhwl-gui--live-settle)
+          (make-frame-visible b) (nhwl-gui--live-settle)
+          ;; the chrome (shadow, rounded corners) sets the input region; with and without
+          (when (and (boundp 'child-frame-chrome) (fboundp 'glitnir-refresh))
+            (setq child-frame-chrome '((corner-radius . 8) (shadow :blur 6 :offset (0 . 2) :opacity 0.3)))
+            (glitnir-refresh a) (nhwl-gui--live-settle)
+            (setq child-frame-chrome nil)
+            (glitnir-refresh a) (nhwl-gui--live-settle))
+          ;; a grandchild
+          (setq g (make-frame `((parent-frame . ,a) (left . 5) (top . 5) (width . 8) (height . 2)
+                                (undecorated . t) (minibuffer . nil))))
+          (nhwl-gui--live-settle)
+          (set-frame-position g 15 12) (nhwl-gui--live-settle)
+          (set-frame-position g 25 20) (nhwl-gui--live-settle)
+          (should (frame-live-p a))
+          (should (frame-live-p b))
+          (should (frame-live-p g)))
+      (when (boundp 'child-frame-chrome) (setq child-frame-chrome old))
+      (dolist (f (list g b a)) (when (and f (frame-live-p f)) (delete-frame f t))))
+    (nhwl-gui--live-settle)
+    (should (frame-live-p (selected-frame)))))
+
+(ert-deftest nhwl-gui/live-tip-moves ()
+  :tags '(runs-last)
+  (skip-unless (and (nhwl-gui--live-p) (nhwl-gui--nhwl-frames)))
+  (unwind-protect
+      (progn
+        (x-show-tip "hello" nil nil 10)
+        (nhwl-gui--live-settle 0.5)
+        ;; only the offset changes: the tip moves with DX and DY and nothing else
+        (dotimes (i 5)
+          (x-show-tip "hello" nil nil 10 (* (1+ i) 7) (* (1+ i) 3))
+          (nhwl-gui--live-settle))
+        (should (frame-live-p (selected-frame))))
+    (x-hide-tip)
+    (nhwl-gui--live-settle)))
+
+(ert-deftest nhwl-gui/live-resize ()
+  :tags '(runs-last)
+  (skip-unless (and (nhwl-gui--live-p) (nhwl-gui--nhwl-frames)))
+  (let ((old (frame-parameter nil 'fullscreen)))
+    (unwind-protect
+        (progn
+          (set-frame-parameter nil 'fullscreen nil)
+          (nhwl-gui--live-settle 0.5)
+          (set-frame-parameter nil 'fullscreen 'fullboth)
+          (nhwl-gui--live-settle 0.5)
+          (set-frame-parameter nil 'fullscreen nil)
+          (nhwl-gui--live-settle 0.5)
+          (set-frame-size nil 60 20)
+          (nhwl-gui--live-settle 0.5)
+          (set-frame-size nil 70 24)
+          (nhwl-gui--live-settle 0.5)
+          (should (frame-live-p (selected-frame))))
+      (set-frame-parameter nil 'fullscreen old)
+      (nhwl-gui--live-settle 0.5))))
+
 ;; `skip-unless' is `(unless (ignore-errors FORM) (ert-skip ...))': a void function in its form skips the row silently.
 ;; This row fails when a file's `skip-unless' forms call a function that is not defined.
 (defvar nhwl-gui--source (or load-file-name buffer-file-name))

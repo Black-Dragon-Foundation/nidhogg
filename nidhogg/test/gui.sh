@@ -7,6 +7,7 @@
 #                       [--recorder-profile sway|kwin|mutter] [--scale S] [--size WxH] [--monitors N]
 #                       [--select REGEXP] [--tests DIR] [--daemon] [--container DISTRO] [--wayland-debug FILE]
 #                       [--env K=V]... [--force-csd] [--timeout SEC] [--smoke] [--files GLOB] [--tag TAG]
+#                       [--trace-check RULES]
 #
 #   --prefix DIR        an unpacked Nidhogg (DIR/bin/nidhogg)
 #   --compositor C      sway (default: headless sway, wlroots pixman renderer), mutter (headless mutter) or recorder
@@ -14,7 +15,10 @@
 #                       --virtual backend, one output, scale by kscreen-doctor) and labwc (wlroots headless, pixman,
 #                       scale by wlr-randr).  Every compositor binary runs as a copy without file capabilities.
 #   --recorder BIN      the nh-recorder binary (default $REC); mounted at /opt/nh-recorder in a container
-#   --recorder-profile  what the recorder imitates: sway (default), kwin or mutter
+#   --recorder-profile  what the recorder imitates: sway (default), kwin, mutter or xdg-v2 (xdg_wm_base at version 2)
+#   --trace-check RULES after the session, check the --wayland-debug trace against RULES (a comma list of errors, acks,
+#                       unconfigured, subsurface, popup, sync; see nidhogg/test/wl-trace-check.el), in the same
+#                       container; the violations are printed and make the exit status 1.  Needs --wayland-debug
 #   GLITNIR_GUI_DRY=1   print the commands a run would start and exit 0 (nothing is started)
 #   --scale S           the monitors' scale, integer or fractional (default 1)
 #   --size WxH          each virtual monitor in device pixels (default 2880x1800)
@@ -55,7 +59,7 @@ IMAGE_fedora_45=registry.fedoraproject.org/fedora@sha256:6430abb162172c052b6ac9c
 usage() { sed -n '2,/^# Temp files/s/^# \{0,1\}//p' "$self" >&2; exit 2; }
 
 prefix= scale=1 size=2880x1800 monitors=1 select= tests= daemon=0 container= wdebug= timeout=300
-compositor=sway recorder=${REC:-} rprofile=sway
+compositor=sway recorder=${REC:-} rprofile=sway tracecheck=
 envs=() csd=0 smoke=0 files=${GLITNIR_GUI_FILES:-} tag=${GLITNIR_GUI_TAG:-}
 while [ $# -gt 0 ]; do
   case $1 in
@@ -71,6 +75,7 @@ while [ $# -gt 0 ]; do
     --daemon) daemon=1; shift ;;
     --container) container=${2:-}; shift 2 ;;
     --wayland-debug) wdebug=${2:-}; shift 2 ;;
+    --trace-check) tracecheck=${2:-}; shift 2 ;;
     --env) envs+=("${2:-}"); shift 2 ;;
     --force-csd) csd=1; shift ;;
     --timeout) timeout=${2:-}; shift 2 ;;
@@ -92,7 +97,8 @@ tests=$(cd "$tests" && pwd) || exit 2
 W=${size%x*} H=${size#*x}
 case $compositor in sway|mutter|kwin|labwc|recorder) ;; *) echo "gui.sh: --compositor is sway, mutter, kwin, labwc or recorder" >&2; exit 2 ;; esac
 [ "$compositor" != kwin ] || [ "$monitors" = 1 ] || { echo "gui.sh: KWin's virtual backend has one output (--monitors 1)" >&2; exit 2; }
-case $rprofile in sway|kwin|mutter) ;; *) echo "gui.sh: --recorder-profile is sway, kwin or mutter" >&2; exit 2 ;; esac
+case $rprofile in sway|kwin|mutter|xdg-v2) ;; *) echo "gui.sh: --recorder-profile is sway, kwin, mutter or xdg-v2" >&2; exit 2 ;; esac
+[ -z "$tracecheck" ] || [ -n "$wdebug" ] || { echo "gui.sh: --trace-check needs --wayland-debug" >&2; exit 2; }
 if [ "$compositor" = recorder ]; then
   [ -n "$recorder" ] && [ -x "$recorder" ] || { echo "gui.sh: nh-recorder not built (--recorder BIN or \$REC: '$recorder')" >&2; exit 2; }
   recorder=$(cd "$(dirname "$recorder")" && pwd)/$(basename "$recorder")
@@ -291,6 +297,7 @@ if [ -n "$container" ]; then
   [ -z "$files" ] || args+=(--files "$files")
   [ -z "$tag" ] || args+=(--tag "$tag")
   [ -z "$wdebug" ] || args+=(--wayland-debug /out/wayland-debug.txt)
+  [ -z "$tracecheck" ] || args+=(--trace-check "$tracecheck")
   for kv in ${envs[@]+"${envs[@]}"}; do args+=(--env "$kv"); done
   out=
   mounts=(-v "$checkout:/src:ro,z" -v "$prefix:$inprefix:ro,z")
@@ -358,4 +365,10 @@ env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u EMACS_SOCKET_NA
     --tests "$tests" --timeout "$timeout" ${select:+--select "$select"} ${wdebug:+--wayland-debug "$wdebug"} \
     ${files:+--files "$files"} ${tag:+--tag "$tag"} \
     $([ "$daemon" = 0 ] || echo --daemon) $([ "$csd" = 0 ] || echo --force-csd) $(for kv in ${envs[@]+"${envs[@]}"}; do echo --env "$kv"; done)
-exit $?
+rc=$?
+if [ -n "$tracecheck" ]; then
+  grep -E '^(Ran |FAILED)' "$wdebug"   # the rows' own result: the checker judges only the trace
+  env -u WAYLAND_DISPLAY -u DISPLAY "$prefix/bin/nidhogg" -Q --batch -l "$checkout/nidhogg/test/wl-trace-check.el" \
+    -f wl-trace-check-batch "$wdebug" "$tracecheck" || rc=1
+fi
+exit $rc
