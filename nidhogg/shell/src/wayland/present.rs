@@ -391,6 +391,8 @@ impl Dispatch<WlCallback, Arc<Mutex<Present>>> for ReaderState {
         if let wl_callback::Event::Done { .. } = event {
             let mut p = lock(present);
             p.waiting = false;
+            // starved while waiting: the pacer is idle now, and an idle pacer grows the pool
+            p.starved = false;
             p.notify();
         }
     }
