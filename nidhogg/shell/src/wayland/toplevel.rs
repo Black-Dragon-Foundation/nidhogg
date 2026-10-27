@@ -213,6 +213,22 @@ impl WaylandShell {
         self.flush()
     }
 
+    /// Takes effect with the surface's next commit.
+    pub(super) fn window_set_geometry(
+        &mut self,
+        id: WindowId,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+    ) -> ShellResult {
+        if w <= 0 || h <= 0 {
+            return Err(ShellError::Arg);
+        }
+        self.window(id)?.xdg_surface.set_window_geometry(x, y, w, h);
+        Ok(())
+    }
+
     /// Ack configure `serial`; the host calls it right before the commit that carries the new size.
     pub(super) fn window_ack_configure(&mut self, id: WindowId, serial: u32) -> ShellResult {
         self.window(id)?.xdg_surface.ack_configure(serial);

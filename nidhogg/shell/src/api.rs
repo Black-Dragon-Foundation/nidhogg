@@ -118,6 +118,9 @@ pub trait ShellBackend {
     fn resize(&mut self, window: WindowId, edges: u32) -> ShellResult;
     /// Show the window menu at (`x`, `y`) in the window; the backend uses the latest input serial.
     fn show_menu(&mut self, window: WindowId, x: i32, y: i32) -> ShellResult;
+    /// Set the window geometry (`xdg_surface.set_window_geometry`, surface-local logical pixels), which takes effect
+    /// with the next commit.
+    fn set_geometry(&mut self, window: WindowId, x: i32, y: i32, w: i32, h: i32) -> ShellResult;
     fn ack_configure(&mut self, window: WindowId, serial: u32) -> ShellResult;
     fn set_cursor(&mut self, window: WindowId, shape: u32) -> ShellResult;
 
