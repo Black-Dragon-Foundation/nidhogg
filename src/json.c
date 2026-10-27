@@ -29,6 +29,10 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "buffer.h"
 #include "coding.h"
 
+#ifdef HAVE_NIDHOGG_WATCHDOG
+#include "nidhogg-watchdog-phase.h"
+
+#endif
 enum json_object_type
   {
     json_object_hashtable,
@@ -622,7 +626,13 @@ usage: (json-serialize OBJECT &rest ARGS)  */)
 {
   specpdl_ref count = SPECPDL_INDEX ();
   json_out_t jo;
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  int nh_wd_d = nh_wd_phase_push (NH_WD_PH_JSON);
+#endif
   json_serialize (&jo, args[0], nargs - 1, args + 1);
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  nh_wd_phase_pop_to (nh_wd_d);
+#endif
   return unbind_to (count, make_unibyte_string (jo.buf, jo.size));
 }
 
@@ -639,7 +649,13 @@ usage: (json-insert OBJECT &rest ARGS)  */)
 {
   specpdl_ref count = SPECPDL_INDEX ();
   json_out_t jo;
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  int nh_wd_d = nh_wd_phase_push (NH_WD_PH_JSON);
+#endif
   json_serialize (&jo, args[0], nargs - 1, args + 1);
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  nh_wd_phase_pop_to (nh_wd_d);
+#endif
 
   prepare_to_modify_buffer (PT, PT, NULL);
   move_gap_both (PT, PT_BYTE);
@@ -1734,7 +1750,13 @@ usage: (json-parse-string STRING &rest ARGS) */)
   json_parser_init (&p, conf, begin, begin + SBYTES (string), NULL, NULL,
 		    string_byte_to_pos, string_byte_to_line, string);
   record_unwind_protect_ptr (json_parser_done, &p);
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  int nh_wd_d = nh_wd_phase_push (NH_WD_PH_JSON);
+#endif
   Lisp_Object result = json_parse (&p);
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  nh_wd_phase_pop_to (nh_wd_d);
+#endif
 
   if (json_skip_whitespace_if_possible (&p) >= 0)
     json_signal_error (&p, Qjson_trailing_content);
@@ -1816,7 +1838,13 @@ usage: (json-parse-buffer &rest args) */)
   json_parser_init (&p, conf, begin, end, secondary_begin, secondary_end,
 		    buffer_byte_to_pos, buffer_byte_to_line, Qnil);
   record_unwind_protect_ptr (json_parser_done, &p);
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  int nh_wd_d = nh_wd_phase_push (NH_WD_PH_JSON);
+#endif
   Lisp_Object result = json_parse (&p);
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  nh_wd_phase_pop_to (nh_wd_d);
+#endif
 
   ptrdiff_t byte = (PT_BYTE + p.input_current - p.input_begin
 		    + p.additional_bytes_count);
