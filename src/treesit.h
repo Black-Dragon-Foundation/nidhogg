@@ -142,6 +142,8 @@ struct Lisp_TS_Parser
      since the last parse.  */
   struct nh_wk_cost nh_incr, nh_full;
   ptrdiff_t nh_edited_bytes;
+  /* ... and the edits made since then.  */
+  ptrdiff_t nh_edit_count;
 
 #endif
 };
