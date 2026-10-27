@@ -124,4 +124,13 @@
       (should (= (plist-get (glitnir--resolve (selected-frame)) :radius) 6))
       (should (<= max-depth 2)))))
 
+(ert-deftest glitnir/probe-rejects-short-bytes ()
+  ;; RAW shorter than 4*W*H bytes is refused before anything reads it.
+  (skip-unless (fboundp 'glitnir--probe))
+  (should-error (glitnir--probe 'edges (list 4 4 (make-string 63 0)) '(0 0 4 4))
+                :type 'args-out-of-range)
+  (should-error (glitnir--probe 'edges (list 4 4 (make-string 64 0)) '(0 0 5 4))
+                :type 'args-out-of-range)
+  (should-error (glitnir--probe 'blur (list 4 4 (make-string 64 0)) '(0 0 4 4))))
+
 ;;; glitnir-tests.el ends here

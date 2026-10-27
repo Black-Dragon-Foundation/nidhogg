@@ -1,7 +1,9 @@
 //! The C ABI: status codes, the panic guard and the exported functions.
 
 use crate::compose::{Source, SourceView, Target};
+use crate::decor::Anchor;
 use crate::geom::Rect;
+use crate::probe::{EdgeStats, Image, RuleStats, edges, rule, seams};
 use crate::scene::{Chrome, LayerDesc};
 use crate::stats::{StatsEntry, Summary};
 use std::panic::{UnwindSafe, catch_unwind};
@@ -25,12 +27,29 @@ pub const EXPORTS: &[&str] = &[
     "glitnir_damage_forget",
     "glitnir_damage_pending",
     "glitnir_debug_panic",
+    "glitnir_decor_corners",
+    "glitnir_decor_drop_all",
+    "glitnir_decor_drop_extent",
+    "glitnir_decor_drop_rect",
+    "glitnir_decor_put",
+    "glitnir_decor_scroll",
+    "glitnir_decor_sprite_has",
+    "glitnir_decor_sprite_put",
     "glitnir_layer_remove",
+    "glitnir_probe_edges",
+    "glitnir_probe_rule",
+    "glitnir_probe_seams",
     "glitnir_layer_set_chrome",
     "glitnir_layer_upsert",
+    "glitnir_mask_to_device",
     "glitnir_root_drop",
     "glitnir_root_new",
     "glitnir_scroll",
+    "glitnir_snap_line",
+    "glitnir_snap_rect",
+    "glitnir_stable_extent",
+    "glitnir_stable_origin",
+    "glitnir_stable_rect",
     "glitnir_stack_list",
     "glitnir_stack_lower",
     "glitnir_stack_raise",
@@ -69,6 +88,170 @@ pub unsafe extern "C" fn glitnir_abi_version(out: *mut u32) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn glitnir_debug_panic() -> i32 {
     ffi_guard(|| panic!("glitnir_debug_panic"))
+}
+
+/// The device origin of a surface at logical `pos` under `scale120` (scale times 120), mutter's stable rounding.
+#[unsafe(no_mangle)]
+pub extern "C" fn glitnir_stable_origin(pos: i32, scale120: u32) -> i32 {
+    ffi_guard(|| crate::snap::stable_origin(pos, scale120))
+}
+
+/// The device extent of the logical span `pos .. pos + size` under `scale120`.
+#[unsafe(no_mangle)]
+pub extern "C" fn glitnir_stable_extent(pos: i32, size: i32, scale120: u32) -> i32 {
+    ffi_guard(|| crate::snap::stable_extent(pos, size, scale120))
+}
+
+/// The device rectangle of `logical`, relative to the device origin of a surface at logical (`origin_x`, `origin_y`).
+/// A panic returns the empty rectangle.
+#[unsafe(no_mangle)]
+pub extern "C" fn glitnir_stable_rect(
+    logical: Rect,
+    origin_x: i32,
+    origin_y: i32,
+    scale120: u32,
+) -> Rect {
+    catch_unwind(|| crate::snap::stable_rect(logical, origin_x, origin_y, scale120))
+        .unwrap_or_default()
+}
+
+/// Snap a logical rectangle's edges to the device grid at `scale`.  A panic returns the input.
+#[unsafe(no_mangle)]
+pub extern "C" fn glitnir_snap_rect(
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    scale: f64,
+) -> crate::snap::RectF {
+    catch_unwind(|| crate::snap::snap_rect(x, y, w, h, scale)).unwrap_or(crate::snap::RectF {
+        x,
+        y,
+        w,
+        h,
+    })
+}
+
+/// Snap a line width at `scale`.  A panic returns the input.
+#[unsafe(no_mangle)]
+pub extern "C" fn glitnir_snap_line(w: f64, scale: f64) -> f64 {
+    catch_unwind(|| crate::snap::snap_line(w, scale)).unwrap_or(w)
+}
+
+/// Resample the `w` x `h` mask at `src` (A1 when `a1` is not 0, else A8, rows `src_stride` bytes apart) to A8 on the
+/// device grid at `scale120` into `out` (`stable_origin(w)` x `stable_origin(h)` pixels, rows `out_stride` apart).
+/// `GLITNIR_E_ARG` for null pointers, empty sizes or strides too small.
+///
+/// # Safety
+/// `src` must be readable for `src_stride * (h - 1)` plus one row, `out` writable for the device size likewise.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn glitnir_mask_to_device(
+    src: *const u8,
+    src_stride: i32,
+    w: i32,
+    h: i32,
+    a1: i32,
+    scale120: u32,
+    out: *mut u8,
+    out_stride: i32,
+) -> i32 {
+    ffi_guard(|| {
+        if src.is_null() || out.is_null() || src_stride <= 0 || out_stride <= 0 || w <= 0 || h <= 0
+        {
+            return GLITNIR_E_ARG;
+        }
+        let (w, h) = (w as usize, h as usize);
+        let (ss, os) = (src_stride as usize, out_stride as usize);
+        let dh = crate::snap::stable_origin(h as i32, scale120).max(0) as usize;
+        let row_bytes = if a1 != 0 { w.div_ceil(8) } else { w };
+        // SAFETY: non-null, and the caller promises the extents above.
+        let s = unsafe { std::slice::from_raw_parts(src, ss * (h - 1) + row_bytes) };
+        let o = if dh == 0 {
+            &mut [][..]
+        } else {
+            // SAFETY: as above.
+            unsafe {
+                std::slice::from_raw_parts_mut(
+                    out,
+                    os * (dh - 1) + crate::snap::stable_origin(w as i32, scale120).max(0) as usize,
+                )
+            }
+        };
+        match crate::snap::mask_to_device(s, ss, w, h, a1 != 0, scale120, o, os) {
+            Some(()) => GLITNIR_OK,
+            None => GLITNIR_E_ARG,
+        }
+    })
+}
+
+/// Draw the rounded corners of a decorated box (PD) into an ARGB32 picture: in each corner of `corners_mask` (1 top
+/// left, 2 top right, 4 bottom right, 8 bottom left) of `run` (device px), `beneath` outside the arc of radius
+/// `radius`·`scale` and the ring of width `ring_w`·`scale` along it, both rounded to device px (the radius clamped to
+/// half the shorter side). `fill` 0 composes OVER the pixels (the box's inside stays); otherwise the corner squares
+/// are replaced, `fill` inside the ring. Colours premultiplied; tiles cached per (radius, scale, colours).
+/// `GLITNIR_E_ARG` for a null or misaligned `argb`, a stride not a multiple of 4 or too small for `run`, a negative
+/// origin, an empty run, or a radius, width or scale that is not finite and non-negative (scale positive).
+///
+/// # Safety
+/// `argb` must be writable for `run`'s rows: `stride * (run.y + run.h - 1) + 4 * (run.x + run.w)` bytes.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn glitnir_decor_corners(
+    argb: *mut u8,
+    stride: i32,
+    run: Rect,
+    radius: f64,
+    fill: u32,
+    ring: u32,
+    beneath: u32,
+    ring_w: f64,
+    corners_mask: u32,
+    scale: f64,
+) -> i32 {
+    ffi_guard(|| {
+        let px = |v: f64| (v.is_finite() && v >= 0.0).then(|| (v * scale).round() as u32);
+        let (Some(r), Some(b)) = (px(radius), px(ring_w)) else {
+            return GLITNIR_E_ARG;
+        };
+        if argb.is_null()
+            || !(argb as usize).is_multiple_of(4)
+            || !scale.is_finite()
+            || scale <= 0.0
+            || stride <= 0
+            || stride % 4 != 0
+            || run.x < 0
+            || run.y < 0
+            || run.w <= 0
+            || run.h <= 0
+            || (run.x as i64 + run.w as i64) * 4 > stride as i64
+        {
+            return GLITNIR_E_ARG;
+        }
+        let s = stride as usize / 4;
+        let (x, y, w, h) = (
+            run.x as usize,
+            run.y as usize,
+            run.w as usize,
+            run.h as usize,
+        );
+        // SAFETY: non-null and aligned; the caller promises `run`'s rows are writable.
+        let data = unsafe {
+            std::slice::from_raw_parts_mut((argb as *mut u32).add(y * s + x), (h - 1) * s + w)
+        };
+        crate::kernels::kernels().decor_corners(
+            &mut crate::kernels::PixelsMut { data, stride: s },
+            w,
+            h,
+            r,
+            b,
+            fill,
+            ring,
+            beneath,
+            corners_mask,
+        );
+        GLITNIR_OK
+    })
 }
 
 /// Append one paint's record to ROOT's ring, its compose times and layers filled from ROOT's composes when it has
@@ -257,6 +440,102 @@ pub unsafe extern "C" fn glitnir_layer_upsert(root: u64, desc: *const LayerDesc)
     })
 }
 
+/// Record anchor A on window layer LAYER of ROOT, replacing the anchors whose glyph it overlaps.
+///
+/// # Safety
+/// `a` must be null or point to a readable `Anchor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn glitnir_decor_put(root: u64, layer: u64, a: *const Anchor) -> i32 {
+    ffi_guard(|| {
+        if a.is_null() {
+            return GLITNIR_E_ARG;
+        }
+        // SAFETY: non-null, and the caller promises it is readable.
+        let a = unsafe { a.read() };
+        code(crate::scene::with(root, |s| s.decor_put(layer, &a)))
+    })
+}
+
+/// Drop LAYER's anchors whose glyph meets EXTENT.
+#[unsafe(no_mangle)]
+pub extern "C" fn glitnir_decor_drop_extent(root: u64, layer: u64, extent: Rect) -> i32 {
+    ffi_guard(|| {
+        code(crate::scene::with(root, |s| {
+            s.decor_drop_extent(layer, extent)
+        }))
+    })
+}
+
+/// Drop LAYER's anchors whose glyph lies wholly in R.
+#[unsafe(no_mangle)]
+pub extern "C" fn glitnir_decor_drop_rect(root: u64, layer: u64, r: Rect) -> i32 {
+    ffi_guard(|| code(crate::scene::with(root, |s| s.decor_drop_rect(layer, r))))
+}
+
+/// Drop LAYER's anchors (0: every layer of ROOT).
+#[unsafe(no_mangle)]
+pub extern "C" fn glitnir_decor_drop_all(root: u64, layer: u64) -> i32 {
+    ffi_guard(|| code(crate::scene::with(root, |s| s.decor_drop_all(layer))))
+}
+
+/// Move LAYER's anchors in BAND by DY; those that leave the band or the layer are dropped.
+#[unsafe(no_mangle)]
+pub extern "C" fn glitnir_decor_scroll(root: u64, layer: u64, band: Rect, dy: i32) -> i32 {
+    ffi_guard(|| {
+        code(crate::scene::with(root, |s| {
+            s.decor_scroll(layer, band, dy)
+        }))
+    })
+}
+
+/// The largest sprite side accepted.
+const SPRITE_MAX: i32 = 4096;
+
+/// Cache a sprite (premultiplied ARGB32, H rows of STRIDE bytes) under KEY.
+///
+/// # Safety
+/// `argb` must be null or point to the pixels as described, readable for the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn glitnir_decor_sprite_put(
+    key: u64,
+    argb: *const u8,
+    stride: i32,
+    w: i32,
+    h: i32,
+) -> i32 {
+    ffi_guard(|| {
+        if w <= 0 || h <= 0 || w > SPRITE_MAX || h > SPRITE_MAX {
+            return GLITNIR_E_ARG;
+        }
+        let (row, len) = match crate::compose::layout(stride, w, h) {
+            Ok(l) => l,
+            Err(e) => return e,
+        };
+        let p = argb.cast::<u32>();
+        if p.is_null() || !p.is_aligned() {
+            return GLITNIR_E_ARG;
+        }
+        // SAFETY: non-null and aligned; the caller promises LEN readable pixels.
+        let src = unsafe { std::slice::from_raw_parts(p, len) };
+        let (wu, hu) = (w as usize, h as usize);
+        let px: Vec<u32> = (0..hu)
+            .flat_map(|r| src[r * row..][..wu].iter().copied())
+            .collect();
+        let mut st = crate::STATE.lock().unwrap_or_else(|p| p.into_inner());
+        st.sprites.put(key, px, w, h);
+        GLITNIR_OK
+    })
+}
+
+/// 1 if KEY is cached (counts as a use), else 0.
+#[unsafe(no_mangle)]
+pub extern "C" fn glitnir_decor_sprite_has(key: u64) -> i32 {
+    ffi_guard(|| {
+        let mut st = crate::STATE.lock().unwrap_or_else(|p| p.into_inner());
+        i32::from(st.sprites.has(key))
+    })
+}
+
 /// Remove layer ID, and every layer under it, from ROOT's scene.
 #[unsafe(no_mangle)]
 pub extern "C" fn glitnir_layer_remove(root: u64, id: u64) -> i32 {
@@ -373,6 +652,115 @@ pub unsafe extern "C" fn glitnir_compose(
             Err(e) => return e,
         };
         code(views.and_then(|v| crate::compose::compose_root(root, &mut t, clips, &v)))
+    })
+}
+
+/// Build an `Image` over `argb`, or `None` when the arguments do not describe one.
+///
+/// # Safety
+/// `argb` must be null or point to `stride * h` readable bytes (the last row may stop after `4 * w`).
+unsafe fn probe_image<'a>(argb: *const u8, stride: i32, w: i32, h: i32) -> Option<Image<'a>> {
+    if argb.is_null() || stride <= 0 || w <= 0 || h <= 0 {
+        return None;
+    }
+    let (stride, w, h) = (stride as usize, w as usize, h as usize);
+    if stride < w.checked_mul(4)? {
+        return None;
+    }
+    let len = stride.checked_mul(h - 1)?.checked_add(w * 4)?;
+    // SAFETY: non-null, and the caller promises `len` readable bytes.
+    let argb = unsafe { std::slice::from_raw_parts(argb, len) };
+    Some(Image { argb, stride, w, h })
+}
+
+/// Measure the edges in `region` of an ARGB32 picture.
+///
+/// # Safety
+/// `argb` as for the picture (`stride * h` bytes); `out` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn glitnir_probe_edges(
+    argb: *const u8,
+    stride: i32,
+    w: i32,
+    h: i32,
+    region: Rect,
+    out: *mut EdgeStats,
+) -> i32 {
+    ffi_guard(|| {
+        // SAFETY: the caller's promise.
+        let Some(img) = (unsafe { probe_image(argb, stride, w, h) }) else {
+            return GLITNIR_E_ARG;
+        };
+        match (out.is_null(), edges(img, region)) {
+            (false, Some(s)) => {
+                // SAFETY: non-null, and the caller promises it is writable.
+                unsafe { out.write(s) };
+                GLITNIR_OK
+            }
+            _ => GLITNIR_E_ARG,
+        }
+    })
+}
+
+/// Measure a rule in `band` of an ARGB32 picture (`vertical` non-zero: the profile runs along x).
+///
+/// # Safety
+/// As for [`glitnir_probe_edges`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn glitnir_probe_rule(
+    argb: *const u8,
+    stride: i32,
+    w: i32,
+    h: i32,
+    band: Rect,
+    vertical: i32,
+    out: *mut RuleStats,
+) -> i32 {
+    ffi_guard(|| {
+        // SAFETY: the caller's promise.
+        let Some(img) = (unsafe { probe_image(argb, stride, w, h) }) else {
+            return GLITNIR_E_ARG;
+        };
+        match (out.is_null(), rule(img, band, vertical != 0)) {
+            (false, Some(s)) => {
+                // SAFETY: non-null, and the caller promises it is writable.
+                unsafe { out.write(s) };
+                GLITNIR_OK
+            }
+            _ => GLITNIR_E_ARG,
+        }
+    })
+}
+
+/// Count the pixels of `fill` (inset by `inset`) that are off the colour `argb`.
+///
+/// # Safety
+/// As for [`glitnir_probe_edges`]; `count` null or writable.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn glitnir_probe_seams(
+    argb_px: *const u8,
+    stride: i32,
+    w: i32,
+    h: i32,
+    fill: Rect,
+    argb: u32,
+    inset: u32,
+    count: *mut u32,
+) -> i32 {
+    ffi_guard(|| {
+        // SAFETY: the caller's promise.
+        let Some(img) = (unsafe { probe_image(argb_px, stride, w, h) }) else {
+            return GLITNIR_E_ARG;
+        };
+        match (count.is_null(), seams(img, fill, argb, inset)) {
+            (false, Some(n)) => {
+                // SAFETY: non-null, and the caller promises it is writable.
+                unsafe { count.write(n) };
+                GLITNIR_OK
+            }
+            _ => GLITNIR_E_ARG,
+        }
     })
 }
 

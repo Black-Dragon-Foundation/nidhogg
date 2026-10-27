@@ -9,13 +9,15 @@
 //!   copied, except its four corner squares, which go through the corner mask OVER what lies below, with the border
 //!   ring along the rounded path when the layer has a border;
 //! - a window layer adds nothing of its own: its pixels are its frame's (P1 composes a scroll as damage, so a window
-//!   has no offset of its own), copied with the frame.
+//!   has no offset of its own), copied with the frame; but the label sprites ([`crate::decor`]) of the window go over
+//!   them, clipped to the label's clip, in the layer's place in the paint order.
 //!
 //! A layer without a source is not drawn, so the target keeps its pixels there, as it does where no layer lies. The
 //! shadow beneath a layer's copied part is skipped. A pixel's value depends only on the scene and the sources, never
 //! on how the rectangles cut it, so composing the damage equals composing everything wherever the damage covers what
 //! changed.
 
+use crate::decor::{Label, Sprites};
 use crate::ffi::{GLITNIR_E_ARG, GLITNIR_E_STATE};
 use crate::geom::Rect;
 use crate::kernels::{
@@ -77,7 +79,7 @@ pub struct TargetView<'a> {
 
 /// The stride in pixels and the slice length (up to the last row's last pixel) of a strided buffer.
 /// `GLITNIR_E_ARG` for a negative size, or a stride that is not whole pixels or is shorter than a row.
-fn layout(stride: i32, width: i32, height: i32) -> Result<(usize, usize), i32> {
+pub(crate) fn layout(stride: i32, width: i32, height: i32) -> Result<(usize, usize), i32> {
     if width < 0 || height < 0 || stride < 0 || stride % 4 != 0 || stride / 4 < width {
         return Err(GLITNIR_E_ARG);
     }
@@ -366,13 +368,67 @@ pub fn compose(
     sources: &[SourceView],
     shadows: &mut ShadowCache,
 ) -> Result<u32, i32> {
+    compose_with(
+        k,
+        scene,
+        &[],
+        t,
+        clips,
+        sources,
+        shadows,
+        &mut Sprites::new(),
+    )
+}
+
+/// Draw LABEL's sprite within PIECES (disjoint, inside the target).  A sprite replaced or evicted since the label was
+/// placed is skipped; the next commit damages the label.
+fn draw_label(k: &Kernels, t: &mut TargetView, pieces: &[Rect], l: &Label, sprites: &mut Sprites) {
+    let Some(sp) = sprites.get(l.sprite) else {
+        return;
+    };
+    if sp.generation() != l.generation {
+        return;
+    }
+    let vis = l.visible();
+    for c in pieces {
+        let q = vis.intersect(c);
+        if q.is_empty() {
+            continue;
+        }
+        let off = (q.y - l.rect.y) as usize * sp.w as usize + (q.x - l.rect.x) as usize;
+        let src = Pixels {
+            data: &sp.px[off..],
+            stride: sp.w as usize,
+        };
+        k.over(&mut t.at(q), &src, q.w as usize, q.h as usize);
+    }
+}
+
+/// [`compose`] with the labels (from [`crate::scene::Scene::labels`]) and the sprite cache they draw from.
+#[allow(clippy::too_many_arguments)]
+pub fn compose_with(
+    k: &Kernels,
+    scene: &[Placed],
+    labels: &[Label],
+    t: &mut TargetView,
+    clips: &[Rect],
+    sources: &[SourceView],
+    shadows: &mut ShadowCache,
+    sprites: &mut Sprites,
+) -> Result<u32, i32> {
     if sources.iter().any(|s| s.scale != t.scale) {
         return Err(GLITNIR_E_STATE);
     }
     let pieces = disjoint(clips, t.rect);
     let mut drawn = 0u32;
     for p in scene {
-        if p.kind == Kind::Window || !pieces.iter().any(|c| !c.intersect(&p.bounds).is_empty()) {
+        if p.kind == Kind::Window {
+            for l in labels.iter().filter(|l| l.layer == p.id) {
+                draw_label(k, t, &pieces, l, sprites);
+            }
+            continue;
+        }
+        if !pieces.iter().any(|c| !c.intersect(&p.bounds).is_empty()) {
             continue;
         }
         let Some(src) = sources.iter().find(|s| s.layer == p.id) else {
@@ -429,17 +485,22 @@ pub fn compose_root(
     let start = Instant::now();
     let mut st = crate::STATE.lock().unwrap_or_else(|p| p.into_inner());
     let crate::State {
-        scenes, composer, ..
+        scenes,
+        composer,
+        sprites,
+        ..
     } = &mut *st;
     let scene = scenes.get(&root).ok_or(GLITNIR_E_STATE)?;
     let shadows = composer.shadows.get_or_insert_with(ShadowCache::new);
-    let layers = compose(
+    let layers = compose_with(
         crate::kernels::kernels(),
         scene.committed(),
+        scene.labels(),
         t,
         clips,
         sources,
         shadows,
+        sprites,
     )?;
     let tally = composer.tallies.entry(root).or_default();
     let ns = u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
