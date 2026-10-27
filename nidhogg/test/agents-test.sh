@@ -14,7 +14,7 @@ cp "$here/tree-test.sh" "$tmp/r/nidhogg/test/"
 printf 'upstream agents v1\n' > "$tmp/r/AGENTS.md"; printf '@AGENTS.md\n' > "$tmp/r/CLAUDE.md"
 echo 31.1 > "$tmp/r/emacs.txt"
 g add -A && g commit -q -m "upstream 31.1" && g tag emacs-31.1
-echo 31.1-nidhogg.2 > "$tmp/r/nidhogg/version"
+echo 31.1-nidhogg.4 > "$tmp/r/nidhogg/version"
 printf '# AGENTS.md — Nidhogg — agent rules\n' > "$tmp/r/AGENTS.md"
 printf '# Nidhogg\n' > "$tmp/r/README.md"
 g add -A && g commit -q -m "nidhogg: tree"

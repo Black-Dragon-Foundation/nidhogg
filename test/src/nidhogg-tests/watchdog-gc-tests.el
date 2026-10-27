@@ -99,6 +99,15 @@ The rings are emptied first and after; the watchdog is stopped after."
         (should (= (plist-get (nidhogg-watchdog--stats) :gc-dropped)
                    (1+ dropped)))))))
 
+(ert-deftest watchdog/gc-ring-reset-at-start ()
+  ;; Collections a run left untaken are not the next run's.
+  (let ((gc-cons-threshold most-positive-fixnum))
+    (watchdog-gc--with-mode 100
+      (garbage-collect)
+      (nidhogg-watchdog--stop)
+      (nidhogg-watchdog--start 100 600000 nil :no-monitor)
+      (should-not (cdr (nidhogg-watchdog--take))))))
+
 (ert-deftest watchdog/gc-hook-off-costs-nothing ()
   (let ((gc-cons-threshold most-positive-fixnum))
     ;; Empty whatever an earlier row left, then collect with the mode off.
@@ -174,7 +183,7 @@ The rings are emptied first and after; the watchdog is stopped after."
       (nidhogg-watchdog--test-clock nil))))
 
 (ert-deftest watchdog/gc-split ()
-  ;; §12: threshold 1 ms; a timer forces a collection on a 2M-cons heap
+  ;; Threshold 1 ms; a timer forces a collection on a 2M-cons heap
   ;; and spins.  Its span is a record with the collection's exact pause
   ;; as its GC time, and the collection names that pause.
   (let ((gc-cons-threshold most-positive-fixnum)

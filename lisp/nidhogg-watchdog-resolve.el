@@ -19,7 +19,7 @@
 
 ;;; Commentary:
 
-;; Attribution (design section 5), run at idle on the main thread.  A raw
+;; Attribution, run at idle on the main thread.  A raw
 ;; record (from `nidhogg-watchdog--take') becomes a resolved one: every
 ;; function object gets a name, a file and a package (cached in a weak `eq'
 ;; table), then the record's samples give its entry, culprit, state, phase

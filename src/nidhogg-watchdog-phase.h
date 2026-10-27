@@ -17,19 +17,19 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
-/* A phase says what C is doing when the Lisp frames cannot (design
-   §4.4): the one-line hooks in upstream files push one around the work
+/* A phase says what C is doing when the Lisp frames cannot: the
+   one-line hooks in upstream files push one around the work
    and pop back to the depth the push returned.  The stack is the main
    thread's: a push anywhere else (a Lisp thread, the watchdog off, a
    full stack) pushes nothing and returns NH_WD_PHASE_NONE, and popping
    to that is a no-op.  A responsive wait resets it (the edges pop to
    0), a non-local exit pops what was pushed inside its catch target
-   (nh_wd_unwind_phases, called by unwind_to_catch: PD-4).
+   (nh_wd_unwind_phases, called by unwind_to_catch).
 
    The signal handler reads the stack (nh_wd_phase_top) while it
    interrupts the main thread, so the compiler is the only reorderer:
-   the push writes the slot, then a signal fence, then the depth (review
-   S17); a pop only lowers the depth, and a slot above the depth is
+   the push writes the slot, then a signal fence, then the depth; a pop
+   only lowers the depth, and a slot above the depth is
    never read.  */
 
 #ifndef NIDHOGG_WATCHDOG_PHASE_H

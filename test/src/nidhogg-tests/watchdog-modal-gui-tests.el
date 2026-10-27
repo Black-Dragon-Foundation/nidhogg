@@ -25,7 +25,7 @@
 
 ;; The watchdog treats a menu or a dialog the user is looking at as waiting
 ;; (the GLib poll wrapper, nidhogg-watchdog-gtk.c), and a Lisp timer that
-;; runs inside one as busy.  Needs Task 7 (`--start', spans, `--take').
+;; runs inside one as busy.  Uses `--start', the spans and `--take'.
 
 (defmacro watchdog-modal--with-watchdog (&rest body)
   "Run BODY with the watchdog on at a 100 ms threshold; stop it after."

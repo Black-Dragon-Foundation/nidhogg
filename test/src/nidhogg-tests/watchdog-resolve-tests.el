@@ -19,7 +19,7 @@
 
 ;;; Commentary:
 
-;; Attribution (Task 15).  The fixture rows take real samples inside the
+;; Attribution.  The fixture rows take real samples inside the
 ;; `wdfix' package (watchdog-resources/wdfix); the rule rows resolve
 ;; hand-built records whose function infos are seeded into the cache, so
 ;; they need neither the index nor a watchdog thread.

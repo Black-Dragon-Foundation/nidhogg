@@ -26,8 +26,16 @@
 ;; `nidhogg-watchdog-mode' starts the C monitor and one repeating idle timer.
 ;; The timer drains the C rings (take at once, resolve within 2 ms) and appends
 ;; JSON Lines, one file per day.  Names, files and packages come from
-;; nidhogg-watchdog-resolve.el (Task 15), the GC row from -gc.el (Task 16),
-;; ranking from -report.el (Task 17); hang files arrive in Task 18.
+;; nidhogg-watchdog-resolve.el, the GC row from -gc.el, the ranking and
+;; the report from -report.el.
+;;
+;; Hangs (busy spans past `nidhogg-watchdog-hang-ms'): the C monitor writes a
+;; hang file, `hang-PID-START.txt' in the log directory, while the hang lasts
+;; and deletes it when the span ends.  The mode turned off inside the hang
+;; (`kill-emacs' run by SIGTERM, SIGHUP or SIGINT while Lisp is busy) keeps
+;; the file.  A file still there at the next mode start whose process is
+;; gone (dead, or its pid reused, or another boot) becomes a `:killed'
+;; record; this session's own file is only deleted.
 
 ;;; Code:
 
@@ -101,11 +109,11 @@ Nil means an automatic collection.")
   "Function returning the drain's time in seconds (tests bind a virtual one).")
 
 (defvar nidhogg-watchdog--resolve-function nil
-  "Function turning a raw record into a resolved one (set by Task 15).
+  "Function turning a raw record into a resolved one (set by -resolve.el).
 Nil leaves the raw record as it is.")
 
 (defvar nidhogg-watchdog--collections-function nil
-  "Function called with the list of taken collections (set by Task 16).
+  "Function called with the list of taken collections (set by -gc.el).
 Nil drops them.")
 
 (defvar nidhogg-watchdog--timer nil)
@@ -334,6 +342,7 @@ line, so other readers of `nidhogg-watchdog-stats' see whole totals."
                :spans (plist-get s :spans)
                :stalls (plist-get s :stalls)
                :stalls-over-cap (plist-get s :stalls-over-cap)
+               :samples (plist-get s :samples)
                :missed (plist-get s :missed)
                :stale (plist-get s :stale)
                :ring-overflows (plist-get s :dropped)
@@ -377,6 +386,7 @@ line, so other readers of `nidhogg-watchdog-stats' see whole totals."
          :input-queued (nidhogg-watchdog--bool (plist-get record :input-queued))
          :hang (nidhogg-watchdog--bool (plist-get record :hang))
          :killed (nidhogg-watchdog--bool (plist-get record :killed))
+         :deep (nidhogg-watchdog--bool (plist-get record :deep))
          :entry (plist-get record :entry)
          :culprit (plist-get record :culprit)
          :phases (plist-get record :phases)
@@ -452,6 +462,107 @@ Allocates nothing when nothing waits."
      (when (= 1 (setq nidhogg-watchdog--errors (1+ nidhogg-watchdog--errors)))
        (message "nidhogg-watchdog: drain failed: %S" err)))))
 
+;;; Hang files
+
+(defun nidhogg-watchdog--hang-file ()
+  "This session's hang file: `hang-PID-START.txt', START its start in ns."
+  (expand-file-name (format "hang-%d-%d.txt" (emacs-pid)
+                            (car (time-convert before-init-time 1000000000)))
+                    nidhogg-watchdog-log-directory))
+
+(defun nidhogg-watchdog--read-small (file)
+  "FILE's contents as a string, or nil when it cannot be read."
+  (ignore-errors
+    (with-temp-buffer
+      (let ((coding-system-for-read 'utf-8-unix))
+        (insert-file-contents file))
+      (buffer-string))))
+
+(defun nidhogg-watchdog--boot-id ()
+  "This boot's id, or nil."
+  (let ((s (nidhogg-watchdog--read-small "/proc/sys/kernel/random/boot_id")))
+    (and s (string-trim s))))
+
+(defun nidhogg-watchdog--proc-start (pid)
+  "The start time of process PID (`/proc/PID/stat' field 22), or nil."
+  (let ((s (nidhogg-watchdog--read-small (format "/proc/%d/stat" pid))))
+    (when s
+      ;; The fields after the command's closing parenthesis start at 3.
+      (let ((fields (split-string (substring s (1+ (string-match ")[^)]*\\'" s)))
+                                  " " t)))
+        (nth 19 fields)))))
+
+(defun nidhogg-watchdog--read-hang-file (file)
+  "The hang FILE as a plist, or nil when it is not one.
+\(:pid N :proc-start STRING :boot-id STRING :start SECONDS :duration-ms F
+:phase STRING :stacks LIST), STACKS newest first, each a list of names,
+innermost first."
+  (let ((s (nidhogg-watchdog--read-small file))
+        (fields nil) (stacks nil))
+    (when (and s (string-prefix-p "nidhogg-watchdog-hang 1\n" s))
+      (dolist (line (cdr (split-string s "\n" t)))
+        (if (string-prefix-p "stack" line)
+            (push (cdr (split-string line "\t" t)) stacks)
+          (let ((i (string-search " " line)))
+            (when i
+              (push (cons (substring line 0 i) (substring line (1+ i)))
+                    fields)))))
+      (let ((pid (cdr (assoc "pid" fields))))
+        (when (and pid (string-match-p "\\`[0-9]+\\'" pid))
+          (list :pid (string-to-number pid)
+                :proc-start (cdr (assoc "proc-start" fields))
+                :boot-id (cdr (assoc "boot-id" fields))
+                :start (string-to-number (or (cdr (assoc "start" fields)) "0"))
+                :duration-ms (string-to-number
+                              (or (cdr (assoc "duration-ms" fields)) "0"))
+                :phase (cdr (assoc "phase" fields))
+                :stacks (nreverse stacks)))))))
+
+(defun nidhogg-watchdog--hang-dead-p (hang)
+  "Whether the process that wrote HANG (a plist) is gone.
+Gone: another boot, no process with its pid, or one with another start
+time (the pid was reused)."
+  (or (not (equal (plist-get hang :boot-id) (nidhogg-watchdog--boot-id)))
+      (not (equal (plist-get hang :proc-start)
+                  (nidhogg-watchdog--proc-start (plist-get hang :pid))))))
+
+(defun nidhogg-watchdog--killed-record (hang)
+  "The `:killed' stall record of HANG (a plist from a hang file)."
+  (let ((phase (plist-get hang :phase)))
+    (list :killed t :hang t
+          :hang-pid (plist-get hang :pid)
+          :start (plist-get hang :start)
+          :wall-ms (plist-get hang :duration-ms)
+          :phases (and phase (list (intern (concat ":" phase)) 1.0))
+          :stacks (mapcar (lambda (frames) (list :n 1 :frames (vconcat frames)))
+                          (plist-get hang :stacks))
+          :samples-taken 0 :missed 0)))
+
+(defun nidhogg-watchdog--collect-hangs ()
+  "Turn each hang file of a gone process into a `:killed' record; delete it.
+Each record is run through `nidhogg-watchdog-record-functions' and written
+to the log.  This session's own file (the mode was turned off inside a
+hang, and Emacs did not exit) is deleted without a record.  Return the
+number of records."
+  (let ((n 0) (own (nidhogg-watchdog--hang-file)))
+    (when (file-directory-p nidhogg-watchdog-log-directory)
+      (dolist (file (directory-files nidhogg-watchdog-log-directory t
+                                     "\\`hang-[0-9]+-[0-9]+\\.txt\\'"))
+        (if (equal file own)
+            (ignore-errors (delete-file file))
+          (let ((hang (ignore-errors (nidhogg-watchdog--read-hang-file file))))
+            (when (and hang (nidhogg-watchdog--hang-dead-p hang))
+              ;; A file whose record cannot be written is still deleted:
+              ;; kept, it would fail again at every start, and stop the
+              ;; files after it.
+              (condition-case nil
+                  (progn
+                    (nidhogg-watchdog--emit (nidhogg-watchdog--killed-record hang))
+                    (setq n (1+ n)))
+                (error nil))
+              (ignore-errors (delete-file file)))))))
+    n))
+
 ;;; The mode
 
 (defun nidhogg-watchdog--at-exit ()
@@ -463,8 +574,19 @@ Allocates nothing when nothing waits."
   "Start the C side, the drain timer and the housekeeping."
   (unless (fboundp 'nidhogg-watchdog--start)
     (user-error "This Emacs was built without the stall watchdog"))
+  ;; The monitor writes hang files there, and never creates directories.
+  (ignore-errors (make-directory nidhogg-watchdog-log-directory t))
   (nidhogg-watchdog--start nidhogg-watchdog-threshold nidhogg-watchdog-hang-ms
-                           nil)
+                           (nidhogg-watchdog--hang-file))
+  ;; A later step that fails stops the C side again, so nothing keeps
+  ;; running undrained and the next start is not refused as "already on".
+  (condition-case err
+      (nidhogg-watchdog--enable-rest)
+    (error (nidhogg-watchdog--stop)
+           (signal (car err) (cdr err)))))
+
+(defun nidhogg-watchdog--enable-rest ()
+  "The steps of `nidhogg-watchdog--enable' after the C side started."
   (when (fboundp 'nidhogg-watchdog--set-typing-commands)
     (nidhogg-watchdog--set-typing-commands nidhogg-watchdog-typing-commands))
   (setq nidhogg-watchdog--queue nil
@@ -476,6 +598,8 @@ Allocates nothing when nothing waits."
   (fillarray nidhogg-watchdog--drain-hist 0)
   (fillarray nidhogg-watchdog--drain-take-hist 0)
   (nidhogg-watchdog--prune)
+  ;; An old session's hang never stops this one from starting.
+  (ignore-errors (nidhogg-watchdog--collect-hangs))
   (setq nidhogg-watchdog--timer
         (run-with-idle-timer 1 t #'nidhogg-watchdog--tick))
   (add-hook 'kill-emacs-hook #'nidhogg-watchdog--at-exit))

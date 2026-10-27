@@ -24,7 +24,7 @@
 
 ;; Run by nidhogg/test/gui.sh (gui-runner.el loads every *-gui-tests.el).
 
-;; Real-time rows of the stall watchdog on a pgtk frame (design §12):
+;; Real-time rows of the stall watchdog on a pgtk frame:
 ;; `sit-for' is waiting, and a mode-line :eval that spins is a stall in
 ;; the `redisplay' phase with the :eval function innermost.
 

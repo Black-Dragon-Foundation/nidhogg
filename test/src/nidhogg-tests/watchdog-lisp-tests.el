@@ -22,7 +22,7 @@
 (require 'ert)
 (require 'cl-lib)
 
-;; The mode, the drain and the log (Task 14).  The drain rows run the C side
+;; The mode, the drain and the log.  The drain rows run the C side
 ;; on the virtual clock (`--test-clock', no monitor thread) to make real
 ;; stalls; the drain's own clock is `nidhogg-watchdog--clock', bound to a
 ;; virtual one where time matters.  Logs go to a temporary directory.
@@ -209,6 +209,7 @@ starts are in 1970."
         (should (eq (alist-get 'felt stall) :false))
         (should (eq (alist-get 'hang stall) :false))
         (should (eq (alist-get 'killed stall) :false))
+        (should (eq (alist-get 'deep stall) :false))
         (should (eq (alist-get 'input_queued stall) :false))
         (should (eq (alist-get 'entry stall) :null))
         (should (eq (alist-get 'signature stall) :null))
@@ -217,7 +218,7 @@ starts are in 1970."
         (should (eq (alist-get 'felt gc) :false))
         (should (= (alist-get 'live_mb (alist-get 'heap gc)) 742.3))
         (should (eq (alist-get 'final summary) :false))
-        (dolist (k '(spans stalls stalls_over_cap missed stale ring_overflows
+        (dolist (k '(spans stalls stalls_over_cap samples missed stale ring_overflows
                      gc_dropped monitor_cpu_ms drain_p95_ms histograms))
           (should (assq k summary)))
         (should (= (length (alist-get 'command (alist-get 'histograms summary)))
@@ -337,4 +338,24 @@ starts are in 1970."
               (should (= (length summaries) 1))
               (should (eq (alist-get 'final (car summaries)) t))))
         (when nidhogg-watchdog-mode (nidhogg-watchdog-mode -1))))))
+
+(ert-deftest watchdog/failed-start-stops ()
+  ;; A step after the C side started fails (17 typing commands, one more
+  ;; than C takes): the mode stays off, the C side is stopped again, and
+  ;; the next start works.
+  (watchdog-lisp--with-log
+    (unwind-protect
+        (progn
+          (let ((nidhogg-watchdog-typing-commands
+                 (make-list 17 'self-insert-command)))
+            (should-error (nidhogg-watchdog-mode 1)))
+          (should-not nidhogg-watchdog-mode)
+          (should-not nidhogg-watchdog--timer)
+          (should-not (nidhogg-watchdog--stats))
+          (nidhogg-watchdog-mode 1)
+          (should nidhogg-watchdog-mode)
+          (should (nidhogg-watchdog--stats)))
+      (when nidhogg-watchdog-mode (nidhogg-watchdog-mode -1))
+      (ignore-errors (nidhogg-watchdog--stop)))))
+
 ;;; watchdog-lisp-tests.el ends here
