@@ -692,6 +692,26 @@ nh_ts_reparse_estimate (struct Lisp_TS_Parser *p)
   return inc + (full > 0 ? full : 0);
 }
 
+/* What P's edits cost a synchronous reparse, in ns: the edited bytes at
+   the full-parse rate, plus the incremental average for each edit past
+   the first.  -1 until a synchronous reparse has been timed (the
+   attempt then seeds one).  The first edit's incremental cost is left
+   out on purpose: only synchronous parses feed the average, so one
+   above the inline base would send every key to a job and never come
+   down (§7.6: typing stays synchronous).  Only an edit that is big
+   itself, or many of them, goes to the worker.  */
+static int64_t
+nh_ts_edit_estimate (struct Lisp_TS_Parser *p)
+{
+  int64_t inc = nh_ts_reparse_estimate (p);
+  if (inc < 0)
+    return -1;
+  int64_t full = nh_ts_full_rate_estimate (p, p->nh_edited_bytes);
+  inc -= max (0, full);
+  return max (0, full) + (p->nh_edit_count > 1
+			  ? inc * (p->nh_edit_count - 1) : 0);
+}
+
 /* What a parse of LEN bytes without a tree would cost, or -1.  */
 static int64_t
 nh_ts_full_estimate (struct Lisp_TS_Parser *p, int64_t len)
@@ -720,6 +740,7 @@ nh_ts_note_parse (struct Lisp_TS_Parser *p, bool had_tree, int64_t ns,
 					  false), ns, len);
     }
   p->nh_edited_bytes = 0;
+  p->nh_edit_count = 0;
 }
 
 /* Cancel P's job and drop the parser's reference.  */
@@ -1170,7 +1191,7 @@ nh_ts_demand (Lisp_Object parser, bool may_defer, void **tree)
      no estimate yet, by an attempt that seeds one.  */
   if (p->tree)
     {
-      int64_t est = nh_ts_reparse_estimate (p);
+      int64_t est = nh_ts_edit_estimate (p);
       if (est < 0)
 	{
 	  TSTree *quick = nh_ts_attempt (p);
@@ -1197,7 +1218,7 @@ nh_ts_select_one (struct Lisp_TS_Parser *p)
 {
   if (!p->deleted && !p->nh_job && p->need_reparse
       && BUFFER_LIVE_P (XBUFFER (p->buffer))
-      && (!p->tree || nh_ts_reparse_estimate (p) > NH_WK_INLINE_NS))
+      && (!p->tree || nh_ts_edit_estimate (p) > NH_WK_INLINE_NS))
     nh_ts_maybe_start (make_lisp_ptr (p, Lisp_Vectorlike),
 		       NH_TS_START_SELECT);
 }
