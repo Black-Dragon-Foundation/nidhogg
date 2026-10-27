@@ -105,6 +105,7 @@ impl ShellBackend for WaylandShell {
     fn next_event(&mut self) -> ShellResult<Option<NhShellEvent>> {
         loop {
             if let Some(ev) = self.shared.take()? {
+                self.frame_ready_taken(&ev);
                 return Ok(Some(ev));
             }
             self.shared.wake.drain();
@@ -113,7 +114,11 @@ impl ShellBackend for WaylandShell {
                 let _ = self.dispatch_main_queue();
                 continue;
             }
-            return self.shared.take();
+            let ev = self.shared.take()?;
+            if let Some(ev) = &ev {
+                self.frame_ready_taken(ev);
+            }
+            return Ok(ev);
         }
     }
 
@@ -263,7 +268,16 @@ impl ShellBackend for WaylandShell {
     /// Ack configure `serial`; the host calls it right before the commit that carries the new size.
     fn ack_configure(&mut self, id: WindowId, serial: u32) -> ShellResult {
         self.window(id)?.xdg_surface.ack_configure(serial);
+        self.ack_sent(id);
         Ok(())
+    }
+
+    fn window_dirty(&mut self, id: WindowId) -> ShellResult {
+        self.window_dirty_impl(id)
+    }
+
+    fn window_ready(&mut self, id: WindowId) -> ShellResult<bool> {
+        self.window_ready_impl(id)
     }
 
     fn set_cursor(&mut self, id: WindowId, shape: u32) -> ShellResult {
@@ -303,13 +317,14 @@ impl Dispatch<XdgSurface, u64> for MainState {
         _: &XdgSurface,
         event: xdg_surface::Event,
         id: &u64,
-        _: &Connection,
+        conn: &Connection,
         _: &QueueHandle<Self>,
     ) {
         if let xdg_surface::Event::Configure { serial } = event
             && let (Some(w), Some(shared)) = (state.windows.get(id), state.shared.as_ref())
         {
             let (cw, ch, states) = w.pending;
+            let suspended = states & NHSHELL_STATE_SUSPENDED != 0;
             let mut ev = NhShellEvent::new(NHSHELL_EV_CONFIGURE, *id, 0);
             ev.u.configure = ConfigureEv {
                 w: cw,
@@ -318,6 +333,7 @@ impl Dispatch<XdgSurface, u64> for MainState {
                 serial,
             };
             shared.post(ev);
+            state.present_configured(*id, suspended, conn);
         }
     }
 }

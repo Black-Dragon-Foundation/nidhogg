@@ -54,7 +54,7 @@ scale: `scale120` = 120 x (Xft DPI / 96), and server-side decorations always (`s
 | events: `KEY`, `MODIFIERS`, `BUTTON`, `POINTER_*`, `SCROLL` | `keyDown:` (`keyCode`, `characters`), `flagsChanged:`, mouse and `scrollWheel:` (`v120` 0, the precise deltas in `dx`, `dy`) | XInput2 key and button events through xkb (`v120` from wheel buttons) | fits |
 | events: `CONFIGURE`, `CLOSE`, `SCALE`, `FOCUS` | `windowDidResize:`, `windowShouldClose:`, `windowDidChangeBackingProperties:`, `windowDidBecomeKey:` | `ConfigureNotify`, `WM_DELETE_WINDOW`, an Xft DPI change, `FocusIn` | fits |
 | events: `FRAME_DONE` | the display link (`presented_ns` 0 unless known) | after `XShmPutImage` completes (`presented_ns` 0) | fits |
-| events: `BUFFER_FREE` | never sent (a layer's bitmap is never busy) | `XShmCompletion` of a busy image | fits |
+| events: `FRAME_READY` (21), `window_dirty`, `window_ready` | the display link: ready when the layer may show the next bitmap (always, once drawn) | idle after `XShmCompletion` of the last put | fits |
 | events: `OUTPUT_ADD`, `OUTPUT_REMOVE` | `NSScreen` and `didChangeScreenParameters` | RandR monitors | fits |
 | events: `DISCONNECTED` | never sent | connection error | fits |
 

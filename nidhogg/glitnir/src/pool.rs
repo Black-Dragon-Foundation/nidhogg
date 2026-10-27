@@ -14,6 +14,8 @@ use crate::geom::Rect;
 pub const IDLE_NS: u64 = 2_000_000_000;
 /// The most buffers in use at once.
 pub const MAX_BUFFERS: usize = 2;
+/// The most buffers when the pacer is idle and every buffer is busy (the compositor holds them).
+pub const GROWN_BUFFERS: usize = 3;
 /// The damage of more rectangles than this becomes its bounding box (as the damage tracker's merge).
 pub const MAX_RECTS: usize = 32;
 
@@ -101,6 +103,11 @@ impl Pool {
     /// A free slot of `w` x `h`, with its age; `None` when every buffer is busy.  A slot with `age == 0` is new: the
     /// shell makes its memory.  Free buffers of another size are retired (`trim` reports them).
     pub fn begin(&mut self, w: i32, h: i32, now_ns: u64) -> Option<BufferSlot> {
+        self.begin_with(w, h, now_ns, MAX_BUFFERS)
+    }
+
+    /// `begin` with room for `max` buffers (`GROWN_BUFFERS` when the host is idle and every buffer is busy).
+    pub fn begin_with(&mut self, w: i32, h: i32, now_ns: u64, max: usize) -> Option<BufferSlot> {
         self.size = (w, h);
         self.active_ns = now_ns;
         while let Some(i) = self
@@ -119,7 +126,7 @@ impl Pool {
             .map(|(i, _)| i);
         let i = match pick {
             Some(i) => i,
-            None if self.slots.len() < MAX_BUFFERS => {
+            None if self.slots.len() < max => {
                 let id = self.next_id;
                 self.next_id += 1;
                 self.slots.push(Slot {
