@@ -153,6 +153,20 @@ list (R G B) of floats, or nil), `button-layout' (a string),
       (nhwl-settings--set (car entry)
                           (nhwl-settings--normalize (car entry) value)))))
 
+;; The shell draws the pointer from this theme where the compositor has no cursor-shape protocol.
+(defun nhwl-settings--apply-cursor ()
+  "Give the shell the desktop's cursor theme and size."
+  (when (fboundp 'nhwl-set-cursor-theme)
+    (nhwl-set-cursor-theme (nhwl-settings-get 'cursor-theme)
+                           (nhwl-settings-get 'cursor-size))))
+
+(defun nhwl-settings--cursor-changed (key _value)
+  "Apply the cursor theme when the setting KEY is one of its two."
+  (when (memq key '(cursor-theme cursor-size))
+    (nhwl-settings--apply-cursor)))
+
+(add-hook 'nhwl-settings-changed-functions #'nhwl-settings--cursor-changed)
+
 (defun nhwl-settings-init ()
   "Read the desktop settings from the portal and follow their changes.
 Without a portal the defaults stay.  Does nothing the second time."
@@ -165,6 +179,7 @@ Without a portal the defaults stay.  Does nothing the second time."
                        (error nil))))
           (nhwl-settings--set (car entry)
                               (nhwl-settings--normalize (car entry) value))))
+      (nhwl-settings--apply-cursor)
       (condition-case nil
           (dbus-register-signal
            :session "org.freedesktop.portal.Desktop"

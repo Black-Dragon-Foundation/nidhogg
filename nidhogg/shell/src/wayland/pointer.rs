@@ -102,9 +102,20 @@ pub fn seat_capabilities(
                 .cursor_device
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) = device;
+            *state
+                .shared
+                .pointer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(ptr.clone());
             state.pointer.pointer = Some(ptr);
         }
         (false, Some(ptr)) => {
+            state
+                .shared
+                .pointer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
             if let Some(d) = state
                 .shared
                 .cursor_device
