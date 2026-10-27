@@ -581,6 +581,12 @@ shortlisp := $(filter-out ${shortlisp_filter},${shortlisp})
 ifeq ($(HAVE_GLITNIR),yes)
 shortlisp += glitnir.elc
 endif
+## Nidhogg: the stall watchdog's Lisp files are loaded by one featurep-guarded line in loadup.el, which the sed above
+## does not see.  They are preloaded like the rest: compiled before the dump, dumped again when they change, and
+## native-compiled with the preloaded Lisp.
+ifneq (${NIDHOGG_WATCHDOG_OBJ},)
+shortlisp += $(patsubst ${lispsource}/%.el,%.elc,$(wildcard ${lispsource}/nidhogg-watchdog*.el))
+endif
 ## Place loaddefs.el first, so it gets generated first, since it is on
 ## the critical path (relevant in parallel compilations).
 ## We don't really need to sort, but may as well use it to remove duplicates.
