@@ -1,7 +1,7 @@
 //! The connection, and the state the reader thread and the host's thread share: the event records, the two wake
 //! descriptors and the flags between them.
 //!
-//! Hand-off rules (spec §2.3, MP-NS11):
+//! Hand-off rules (the reader thread posts, the host's thread takes; neither may lose a wake-up):
 //! - the reader posts records and then signals `wake`; the host drains `wake` only when the records are empty, then
 //!   looks again, so a record posted in between is never lost;
 //! - a main-queue event makes the main waker set `main_pending` and signal `wake`; the host dispatches the main queue

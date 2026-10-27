@@ -1,4 +1,4 @@
-//! The reader thread (MP-NS11, spec §2.3): the only caller of `prepare_read`/`read_events`.
+//! The reader thread: the only caller of `prepare_read`/`read_events`.
 //!
 //! Emacs drops its global lock around `pselect`, and libwayland's `read_events` waits for every thread that prepared a
 //! read, so reading from the host's threads can deadlock with Lisp threads.  Here one thread reads, with every signal
@@ -264,11 +264,7 @@ impl Dispatch<WlSeat, ()> for ReaderState {
         {
             let has = caps.contains(Capability::Keyboard);
             match (has, state.keyboard.take()) {
-                (true, None) => {
-                    // from seat 10 the compositor sends `repeated` key states itself
-                    state.kbd.set_compositor_repeats(seat.version() >= 10);
-                    state.keyboard = Some(seat.get_keyboard(qh, ()));
-                }
+                (true, None) => state.keyboard = Some(seat.get_keyboard(qh, ())),
                 (false, Some(kb)) if kb.version() >= 3 => kb.release(),
                 (_, kb) => state.keyboard = kb,
             }
@@ -286,7 +282,7 @@ impl Dispatch<WlKeyboard, ()> for ReaderState {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        // The window id is the surface's protocol id until windows have their own (W0 Task 5).
+        // The window id is the surface's protocol id.
         let focus = |surface: &wayland_client::protocol::wl_surface::WlSurface, on: u8| {
             let mut ev = NhShellEvent::new(NHSHELL_EV_FOCUS, surface.id().protocol_id().into(), 0);
             ev.u.focus = FocusEv { r#in: on };
@@ -332,7 +328,8 @@ impl Dispatch<WlKeyboard, ()> for ReaderState {
                 key,
                 state: WEnum::Value(key_state),
             } => {
-                if key_state == KeyState::Pressed {
+                let pressed = key_state == KeyState::Pressed;
+                if pressed {
                     let mut serials = state
                         .shared
                         .serials
@@ -341,7 +338,7 @@ impl Dispatch<WlKeyboard, ()> for ReaderState {
                     serials.update(SerialKind::KeyPress, serial);
                 }
                 let mut out = Vec::new();
-                state.kbd.key(time, key, key_state as u32, &mut out);
+                state.kbd.key(time, key, pressed, &mut out);
                 state.post_all(out);
             }
             _ => {}

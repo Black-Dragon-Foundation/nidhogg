@@ -2,10 +2,10 @@
 //!
 //! A commit attaches the buffer, damages it (buffer coordinates), sets the viewport destination to the logical size and
 //! `buffer_scale` 1 (the integer scale without a viewporter), requests a frame callback and presentation feedback and
-//! commits.  While a frame callback is pending no commit is made: the begun buffer is kept, its damage is merged, and
-//! the next `present_begin` hands the same buffer out again (age 1, it holds the previous frame).  The one exception is
-//! a commit right after `ack_configure`, which must reach the compositor.  Frame callbacks, presentation feedback and
-//! buffer releases run on the reader queue and post `FRAME_DONE`; the policy is `glitnir::pool`.
+//! commits.  Pacing is the host's: it waits for `FRAME_DONE` before it presents again, and every `present_commit` is a
+//! commit.  Frame callbacks, presentation feedback and buffer releases run on the reader queue; the first two post
+//! `FRAME_DONE`, and a release posts `BUFFER_FREE` when a `present_begin` found every buffer busy.  The policy is
+//! `glitnir::pool`.
 
 use crate::api::*;
 use crate::event::*;
@@ -29,30 +29,19 @@ use wayland_protocols::wp::presentation_time::client::wp_presentation_feedback::
 
 /// A window's presenter state, shared with the reader thread's handlers.
 pub struct Present {
+    window: u64,
     pool: Pool,
     bufs: HashMap<usize, ShmBuf>,
     /// The slot `present_begin` handed out and nothing committed yet.
     begun: Option<BufferSlot>,
-    /// A begun slot whose commit waited for a frame callback, and the damage it has gathered.
-    deferred: Option<(BufferSlot, Vec<Rect>)>,
-    /// Frame callbacks requested and not yet done.
-    cb_pending: u32,
-    /// `ack_configure` ran: the next commit must be made.
-    force: bool,
+    /// A `present_begin` found every buffer busy: the next release posts `BUFFER_FREE`.
+    starved: bool,
     /// Buffers freed by trimming or a resize.
     freed: usize,
 }
 
 /// The user data of a `wl_buffer`: its window's presenter and its slot.
 pub type BufData = (Arc<Mutex<Present>>, usize);
-
-/// The user data of a frame callback.
-pub struct FrameTag {
-    window: u64,
-    present: Arc<Mutex<Present>>,
-    /// Presentation feedback was requested with this commit; it posts `FRAME_DONE`.
-    feedback: bool,
-}
 
 fn lock(p: &Mutex<Present>) -> MutexGuard<'_, Present> {
     p.lock().unwrap_or_else(|e| e.into_inner())
@@ -64,14 +53,13 @@ fn now_ns() -> u64 {
 }
 
 impl Present {
-    fn new() -> Present {
+    fn new(window: u64) -> Present {
         Present {
+            window,
             pool: Pool::new(),
             bufs: HashMap::new(),
             begun: None,
-            deferred: None,
-            cb_pending: 0,
-            force: false,
+            starved: false,
             freed: 0,
         }
     }
@@ -89,7 +77,6 @@ impl Present {
     pub fn clear(&mut self) {
         self.bufs.clear();
         self.begun = None;
-        self.deferred = None;
     }
 }
 
@@ -97,7 +84,7 @@ impl MainState {
     fn present_of(&mut self, id: u64) -> Arc<Mutex<Present>> {
         self.presents
             .entry(id)
-            .or_insert_with(|| Arc::new(Mutex::new(Present::new())))
+            .or_insert_with(|| Arc::new(Mutex::new(Present::new(id))))
             .clone()
     }
 }
@@ -117,42 +104,39 @@ impl WaylandShell {
         let mut p = lock(&present);
         let now = now_ns();
         p.reap(now);
-        let slot = match (p.begun, p.deferred.take()) {
+        let slot = match p.begun.take() {
             // begun twice without a commit: the same buffer
-            (Some(s), d) if (s.w, s.h) == (dev_w, dev_h) => {
-                p.deferred = d;
-                s
-            }
-            // a frame whose commit waited: draw over it, it holds the previous frame
-            (_, Some((s, d))) if (s.w, s.h) == (dev_w, dev_h) => {
-                p.deferred = Some((s, d));
-                BufferSlot { age: 1, ..s }
-            }
-            (b, d) => {
-                for s in b.into_iter().chain(d.map(|(s, _)| s)) {
+            Some(s) if (s.w, s.h) == (dev_w, dev_h) => s,
+            b => {
+                if let Some(s) = b {
                     p.pool.abandon(s);
                 }
-                p.begun = None;
-                p.deferred = None;
-                p.pool.begin(dev_w, dev_h, now).ok_or(ShellError::State)?
+                let Some(s) = p.pool.begin(dev_w, dev_h, now) else {
+                    p.starved = true;
+                    return Err(ShellError::State);
+                };
+                s
             }
         };
         p.reap(now);
-        if let std::collections::hash_map::Entry::Vacant(e) = p.bufs.entry(slot.id) {
+        if !p.bufs.contains_key(&slot.id) {
             let (shm, rqh) = (
                 self.main.shm.as_ref().ok_or(ShellError::State)?,
                 self.main.reader_qh.as_ref().ok_or(ShellError::State)?,
             );
-            let buf = ShmBuf::create(
+            let made = ShmBuf::create(
                 shm,
                 &self.main_queue.handle(),
                 rqh,
                 dev_w,
                 dev_h,
                 (present.clone(), slot.id),
-            )
-            .map_err(|_| ShellError::NoMem)?;
-            e.insert(buf);
+            );
+            let Ok(buf) = made else {
+                p.pool.abandon(slot);
+                return Err(ShellError::NoMem);
+            };
+            p.bufs.insert(slot.id, buf);
         }
         p.begun = Some(slot);
         let b = &p.bufs[&slot.id];
@@ -175,15 +159,7 @@ impl WaylandShell {
             .clone();
         let mut p = lock(&present);
         let slot = p.begun.take().ok_or(ShellError::State)?;
-        let mut all = p.deferred.take().map(|(_, d)| d).unwrap_or_default();
-        all.extend_from_slice(damage);
-        let all = merged(&all);
-        if p.cb_pending > 0 && !p.force {
-            p.deferred = Some((slot, all));
-            p.begun = None;
-            return Ok(());
-        }
-        p.force = false;
+        let all = merged(damage);
         let surface = self.main.surfaces.get(&id).ok_or(ShellError::State)?;
         let buf = p.bufs.get(&slot.id).ok_or(ShellError::State)?;
         let scale = self
@@ -207,22 +183,15 @@ impl WaylandShell {
         for r in &all {
             surface.damage_buffer(r.x, r.y, r.w, r.h);
         }
+        // one source of FRAME_DONE per commit: presentation feedback, else a frame callback
         let rqh = self.main.reader_qh.as_ref().ok_or(ShellError::State)?;
-        let feedback = self.main.presentation.is_some();
-        surface.frame(
-            rqh,
-            FrameTag {
-                window: id,
-                present: present.clone(),
-                feedback,
-            },
-        );
         if let Some(pres) = &self.main.presentation {
             pres.feedback(surface, rqh, id);
+        } else {
+            surface.frame(rqh, id);
         }
         surface.commit();
-        p.cb_pending += 1;
-        p.pool.submitted(slot, &all);
+        p.pool.submitted(slot);
         drop(p);
         self.flush()
     }
@@ -240,12 +209,6 @@ impl WaylandShell {
         if let Some(p) = self.main.presents.remove(&id) {
             lock(&p).clear();
         }
-    }
-
-    /// `ack_configure` ran: the next commit of the window must be made even while a frame callback is pending.
-    pub(super) fn present_force_next(&mut self, id: u64) {
-        let p = self.main.present_of(id);
-        lock(&p).force = true;
     }
 
     /// Test hook: (live buffers, buffers freed so far, the size of the newest buffer's memfd) of window `id`.
@@ -275,25 +238,19 @@ fn frame_done(state: &mut ReaderState, window: u64, time_ns: u64, presented_ns: 
     state.post(ev);
 }
 
-impl Dispatch<WlCallback, FrameTag> for ReaderState {
+/// A frame callback (requested only without `wp_presentation`); its user data is the window.
+impl Dispatch<WlCallback, u64> for ReaderState {
     fn event(
         state: &mut Self,
         _: &WlCallback,
         event: wl_callback::Event,
-        tag: &FrameTag,
+        window: &u64,
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        // no presentation-time: the callback's own time (milliseconds)
         if let wl_callback::Event::Done { callback_data } = event {
-            {
-                let mut p = lock(&tag.present);
-                p.cb_pending = p.cb_pending.saturating_sub(1);
-            }
-            if !tag.feedback {
-                // no presentation-time: the callback's own time (milliseconds)
-                let t = u64::from(callback_data) * 1_000_000;
-                frame_done(state, tag.window, t, 0, 0);
-            }
+            frame_done(state, *window, u64::from(callback_data) * 1_000_000, 0, 0);
         }
     }
 }
@@ -329,7 +286,7 @@ impl Dispatch<WpPresentationFeedback, u64> for ReaderState {
 
 impl Dispatch<WlBuffer, BufData> for ReaderState {
     fn event(
-        _: &mut Self,
+        state: &mut Self,
         _: &WlBuffer,
         event: wl_buffer::Event,
         (present, id): &BufData,
@@ -346,6 +303,12 @@ impl Dispatch<WlBuffer, BufData> for ReaderState {
                     h: b.h,
                 };
                 p.pool.released(slot);
+            }
+            // the host owes a frame that found no buffer: tell it one is free
+            if std::mem::take(&mut p.starved) {
+                let window = p.window;
+                drop(p);
+                state.post(NhShellEvent::new(NHSHELL_EV_BUFFER_FREE, window, 0));
             }
         }
     }

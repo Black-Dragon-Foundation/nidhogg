@@ -20,9 +20,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 /* The primitives carry pgtk's names, so that term/pgtk-win.el loads
    unchanged (the Lisp-level window system is `pgtk', and `nidhogg-wayland'
    is provided too).  Functions adapted from pgtkfns.c name their origin.
-   The frame parameters of W0 (the plan's W0-5) have effects; every other
-   parameter is accepted and stored.  Not in W0 (W0-6): selections, child
-   and tip frames; they signal.  */
+   The frame parameters with a handler in nhwl_frame_parm_handlers have
+   effects; every other parameter is accepted and stored.  Not in W0:
+   selections (they answer nil), child and tip frames (they signal).  */
 
 #include <config.h>
 
@@ -123,7 +123,7 @@ nhwl_set_background_color (struct frame *f, Lisp_Object arg,
 }
 
 /* The backing carries the alpha: gui_set_alpha_background stores it in
-   the frame and Task 10 paints with it.  */
+   the frame and the drawing code paints with it.  */
 static void
 nhwl_set_alpha_background (struct frame *f, Lisp_Object arg,
 			   Lisp_Object oldval)
@@ -476,7 +476,7 @@ nhwl_default_font_parameter (struct frame *f, Lisp_Object parms)
 }
 
 /* The parameter handlers, in the order of frame.c's table.  Entries that
-   are 0 are accepted and stored only (W0-5).  */
+   are 0 are accepted and stored only.  */
 extern frame_parm_handler nhwl_frame_parm_handlers[];
 frame_parm_handler nhwl_frame_parm_handlers[] =
   {
@@ -610,7 +610,7 @@ DEFUN ("x-create-frame", Fx_create_frame, Sx_create_frame, 1, 1, 0,
   if (STRINGP (name))
     Vx_resource_name = name;
 
-  /* Child frames (W0-6: not in W0).  */
+  /* Child frames: not in W0.  */
   parent = gui_display_get_arg (dpyinfo, parms, Qparent_id, NULL, NULL,
 				RES_TYPE_NUMBER);
   if (BASE_EQ (parent, Qunbound))
@@ -770,7 +770,7 @@ DEFUN ("x-create-frame", Fx_create_frame, Sx_create_frame, 1, 1, 0,
 			 NULL, NULL, RES_TYPE_NUMBER);
   gui_default_parameter (f, parms, Qbottom_divider_width, make_fixnum (0),
 			 NULL, NULL, RES_TYPE_NUMBER);
-  /* The scroll bar parameters are stored and ignored (W0-6).  */
+  /* The scroll bar parameters are stored and ignored.  */
   gui_default_parameter (f, parms, Qvertical_scroll_bars, Qnil,
 			 "verticalScrollBars", "ScrollBars", RES_TYPE_SYMBOL);
   gui_default_parameter (f, parms, Qhorizontal_scroll_bars, Qnil,
@@ -1445,7 +1445,7 @@ DEFUN ("tool-bar-get-system-style", Ftool_bar_get_system_style,
   return Qnil;
 }
 
-/* The selection primitives of pgtk-win.el (W0-6: not in W0, they arrive in
+/* The selection primitives of pgtk-win.el (not in W0, they arrive in
    W1).  Until then nothing is owned and nothing exists, quietly: every kill
    calls `gui-select-text', so an error here would break editing.  */
 
