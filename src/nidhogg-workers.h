@@ -498,6 +498,9 @@ extern void nh_blk_file_syms (void);
    caller parses nothing and leaves need_reparse set).  */
 enum { NH_TS_SYNC, NH_TS_TREE, NH_TS_NOT_READY };
 extern int nh_ts_demand (Lisp_Object parser, bool may_defer, void **tree);
+struct Lisp_TS_Parser;
+extern void nh_ts_note_parse (struct Lisp_TS_Parser *, bool had_tree,
+			      int64_t ns, int64_t len);
 /* The start points (§7.3 item 1) [12].  */
 enum { NH_TS_START_DEMAND, NH_TS_START_CREATE, NH_TS_START_SELECT };
 extern void nh_ts_maybe_start (Lisp_Object parser, int start_point);

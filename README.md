@@ -491,26 +491,31 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   each parser that never parsed (`nidhogg-workers-treesit--start-created` on `after-change-major-mode-hook`), so the
   first parse of a large file overlaps the rest of `find-file`; (2) at redisplay's demand: while redisplay fontifies a
   buffer (`nidhogg--redisplay-fontifying` names it), `treesit-parser-changed-regions` (the demand of
-  `treesit--pre-redisplay`) first parses on the main thread for at most 1 ms, so ordinary typing parses exactly as
-  before and takes no snapshot; a longer parse (a paste, a revert, `indent-region`) is cancelled and reset, never
-  resumed, a job takes it, and the demand answers "not ready" (it returns nil and the parser still needs a reparse);
+  `treesit--pre-redisplay`) estimates the reparse (the parser's average incremental parse plus the bytes edited since
+  at the full-parse rate, per parser, the language's until the parser has its own): at most the inline base (4 ms,
+  pressure ignored over a tree) it parses on the main thread as upstream does and takes no snapshot, so typing gains
+  nothing from the workers; over it (a paste, a revert, `indent-region`) a job takes it and the demand answers "not
+  ready" (it returns nil and the parser still needs a reparse). A parser with no tree goes to a job; one with no
+  incremental sample yet makes one 16 ms attempt (cancelled and reset, never resumed, then a job) that seeds the
+  estimate;
   every other demand (`treesit-parser-root-node`, so every node and query function) still ends with a tree; (3) when
   Emacs waits for keyboard input (`wait_reading_process_output` with `READ_KBD` ≠ 0), for parsers edited since by
   timers, filters or idle timers that no demand parsed. A demand that needs a tree while a job runs cancels the job
   and parses on the main thread when the job has not started, or when its snapshot is older than the newest edit and
   it has parsed less than half its input; otherwise it waits for the job (the watchdog's `treesit-wait` phase, the job
-  moved to the normal-priority thread or raised, as for every wait) for at most the synchronous estimate, the last
-  full parse's time per byte times the input (100 ns a byte before any; between 1 ms and 2 s), then publishes it, or
-  cancels it and parses. Test primitives: `nidhogg-workers--test-fontifying` (a macro binding the variable),
+  moved to the normal-priority thread or raised, as for every wait) for at most what parsing it here would cost (a reparse estimate over a tree, a full-parse estimate without; between
+  16 ms and 2 s), and only when what is left of the job's estimate is no more than that; then it publishes it, or
+  cancels it and parses. The select entry starts a job only for a parser with no tree or an estimate over the base. Test primitives: `nidhogg-workers--test-fontifying` (a macro binding the variable),
   `--test-ts-select-entry` (batch Emacs never waits for keyboard input), `--test-ts-attempt-bound` (the attempt's
-  bound in nanoseconds, `t` for none: the semantic rows assert the ledger, the timing group the 1 ms);
+  bound in nanoseconds, `t` for none: the semantic rows assert the ledger, the timing group the 16 ms), `--test-ts-cost`
+  (seed or add a parser's reparse estimates);
   `--test-ts-stats` adds `:attempts`, `:cancels`, `:started-demand`, `:started-create`, `:started-select`, `:waited`
   and `:abandoned`; `--test-ts-info` adds `:policy`.
 - Deferral at redisplay (`nidhogg-treesit-defer`, `lisp/nidhogg-workers-treesit.el`): with it and
   `nidhogg-workers-treesit` on, redisplay (and only redisplay, not `vertical-motion`, `pos-visible-in-window-p` or other
   display code called from Lisp) binds `nidhogg--redisplay-fontifying` to the buffer it fontifies. A tree-sitter major
   mode's buffer gets two wrappers: one in place of `treesit--pre-redisplay` in `pre-redisplay-functions` (its demand of
-  the primary parser makes the 1 ms attempt and starts the job, then waits for the job within the redisplay's budget;
+  the primary parser starts the job (or parses, by the estimate), then waits for the job within the redisplay's budget;
   a parser still not ready leaves `treesit--pre-redisplay-tick` unrecorded), and one around
   `font-lock-fontify-region-function`: when the primary parser, a local parser of the region or any other parser of the
   buffer has a job that does not finish within what is left of the budget, it returns without calling font-lock, so

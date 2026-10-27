@@ -759,8 +759,9 @@ group's `workers/ts-attempt-clock')."
         (started (workers-ts-tests--stat :started)))
     (workers-ts-tests--pause mode 'after-snapshot)
     (let ((ready (workers-ts-tests--fontifying-demand p)))
-      (should (= (workers-ts-tests--stat :attempts) (1+ att)))
-      (should (= (workers-ts-tests--stat :cancels) (1+ can)))
+      ;; A known estimate over the base: the job starts, no attempt.
+      (should (= (workers-ts-tests--stat :attempts) att))
+      (should (= (workers-ts-tests--stat :cancels) can))
       (should (= (workers-ts-tests--stat :started-demand) (1+ dem)))
       (should (= (workers-ts-tests--stat :started) (1+ started)))
       (if (eq mode 'inline)
@@ -770,7 +771,7 @@ group's `workers/ts-attempt-clock')."
         (should (eq (workers-ts-tests--info p :job) 'running))
         ;; Another demand of that redisplay: the job runs, no new attempt.
         (should-not (workers-ts-tests--fontifying-demand p))
-        (should (= (workers-ts-tests--stat :attempts) (1+ att)))
+        (should (= (workers-ts-tests--stat :attempts) att))
         (should (= (workers-ts-tests--stat :started) (1+ started)))
         (nidhogg-workers--release 'after-snapshot)
         (workers-ts-tests--done p)))
@@ -794,6 +795,9 @@ group's `workers/ts-attempt-clock')."
           (with-current-buffer buf
             (let ((p (treesit-parser-create 'c nil t)))
               (treesit-parser-root-node p)
+              ;; No incremental sample (not even the language's): the
+              ;; attempt runs once and seeds one.
+              (nidhogg-workers--test-ts-cost p nil 100)
               (ert-info ("one character" :prefix "")
                 (goto-char (/ (point-max) 2))
                 (insert " ")
@@ -1378,6 +1382,7 @@ unbound), then jit-lock with `nidhogg--redisplay-fontifying' bound to BUF."
           (with-current-buffer buf
             (let* ((p treesit-primary-parser)
                    (beg (progn (treesit-parser-root-node p)
+                               (nidhogg-workers--test-ts-cost p 100000 100)
                                (goto-char (/ (point-max) 2))
                                (forward-line 0)
                                (point)))
@@ -1394,8 +1399,8 @@ unbound), then jit-lock with `nidhogg--redisplay-fontifying' bound to BUF."
                     (pub (workers-ts-tests--stat :published)))
                 (nidhogg-workers--test-redisplay-begin)
                 (nidhogg-workers-treesit--pre-redisplay (selected-window))
-                (should (= (workers-ts-tests--stat :attempts) (1+ att)))
-                (should (= (workers-ts-tests--stat :cancels) (1+ can)))
+                (should (= (workers-ts-tests--stat :attempts) att))
+                (should (= (workers-ts-tests--stat :cancels) can))
                 (should (= (workers-ts-tests--stat :started-demand) (1+ dem)))
                 (should (= (workers-ts-tests--stat :started) (1+ started)))
                 (if (eq mode 'inline)
@@ -1411,7 +1416,7 @@ unbound), then jit-lock with `nidhogg--redisplay-fontifying' bound to BUF."
                 ;; jit-lock in the same redisplay.
                 (nidhogg-workers--test-fontifying buf
                   (jit-lock-fontify-now beg end))
-                (should (= (workers-ts-tests--stat :attempts) (1+ att)))
+                (should (= (workers-ts-tests--stat :attempts) att))
                 (should (= (workers-ts-tests--stat :started) (1+ started)))
                 (should-not (text-property-not-all beg end 'fontified t))
                 (if (eq mode 'inline)
@@ -1428,6 +1433,130 @@ unbound), then jit-lock with `nidhogg--redisplay-fontifying' bound to BUF."
                   (should (workers-ts-tests--has-face 'font-lock-keyword-face
                                                       beg end))))))
         (kill-buffer buf)))))
+
+;;; Task 56: tree-sitter's worker takes big parses only.
+
+(defmacro workers-ts-tests--typing (seed &rest body)
+  "Run BODY in threads mode, in a buffer of C text with a parsed parser `p'.
+SEED is (INCR-NS FULL-NS-PER-BYTE) for `nidhogg-workers--test-ts-cost'."
+  (declare (indent 1) (debug t))
+  `(workers-ts-tests--modes
+     (when (eq mode 'threads)
+       (with-temp-buffer
+         (insert (workers-ts-tests--c-text 50000))
+         (let ((p (treesit-parser-create 'c nil t)))
+           (treesit-parser-root-node p)
+           (nidhogg-workers--test-ts-cost p ,@seed)
+           (unwind-protect
+               (progn ,@body)
+             (nidhogg-workers--release)
+             (should (nidhogg-workers--test-ts-await-idle 60000))))))))
+
+(defun workers-ts-tests--type-char ()
+  "Insert one character in the middle of the buffer."
+  (goto-char (/ (point-max) 2))
+  (forward-line 0)
+  (insert " "))
+
+(ert-deftest workers/ts-typing-inline ()
+  ;; A seeded estimate under the inline base: a one-character edit
+  ;; parses synchronously: no attempt, no snapshot.
+  (workers-ts-tests--typing (100000 100)
+    (workers-ts-tests--type-char)
+    (let ((att (workers-ts-tests--stat :attempts))
+          (started (workers-ts-tests--stat :started)))
+      (should (workers-ts-tests--fontifying-demand p))
+      (should (= (workers-ts-tests--stat :attempts) att))
+      (should (= (workers-ts-tests--stat :started) started))
+      (should (equal (workers-ts-tests--sexp p)
+                     (workers-ts-tests--sync-sexp (buffer-string)))))))
+
+(ert-deftest workers/ts-paste-offloads ()
+  ;; A 500 KB yank: a job (no attempt), the wrapper defers.
+  (workers-ts-tests--typing (100000 100)
+    (goto-char (/ (point-max) 2))
+    (forward-line 0)
+    (insert-for-yank (workers-ts-tests--c-text 500000))
+    (workers-ts-tests--pause mode 'after-snapshot)
+    (let ((att (workers-ts-tests--stat :attempts))
+          (dem (workers-ts-tests--stat :started-demand)))
+      (should-not (workers-ts-tests--fontifying-demand p))
+      (should (= (workers-ts-tests--stat :attempts) att))
+      (should (= (workers-ts-tests--stat :started-demand) (1+ dem)))
+      (workers-ts-tests--await mode 'after-snapshot)
+      (should (eq (workers-ts-tests--info p :job) 'running))
+      (nidhogg-workers--release 'after-snapshot)
+      (workers-ts-tests--done p)
+      (should (equal (workers-ts-tests--sexp p)
+                     (workers-ts-tests--sync-sexp (buffer-string)))))))
+
+(ert-deftest workers/ts-attempt-no-estimate-only ()
+  ;; The 16 ms attempt runs only while there is no estimate, and its
+  ;; parse seeds one.
+  (workers-ts-tests--typing (nil nil)
+    (let ((nidhogg-workers--test-ts-attempt-bound t))
+      (workers-ts-tests--type-char)
+      (let ((att (workers-ts-tests--stat :attempts)))
+        (should (workers-ts-tests--fontifying-demand p))
+        (should (= (workers-ts-tests--stat :attempts) (1+ att)))
+        (workers-ts-tests--type-char)
+        (should (workers-ts-tests--fontifying-demand p))
+        (should (= (workers-ts-tests--stat :attempts) (1+ att)))))))
+
+(ert-deftest workers/ts-select-entry-no-snapshot ()
+  ;; A one-character edit from a timer starts no job at the select entry.
+  (workers-ts-tests--typing (100000 100)
+    (workers-ts-tests--type-char)
+    (nidhogg-workers--test-ts-select-entry)
+    (should-not (workers-ts-tests--info p :job))
+    (let ((sel (workers-ts-tests--stat :started-select)))
+      (nidhogg-workers--test-ts-select-entry)
+      (should (= (workers-ts-tests--stat :started-select) sel)))))
+
+(ert-deftest workers/ts-lisp-wait-incremental-bound ()
+  ;; A demand outside redisplay, over a parser with a tree: a job at 60 %
+  ;; of a 50 KB parse is not waited for when parsing the edit here is
+  ;; cheaper than what is left of it.
+  (workers-ts-tests--typing (100000 100)
+    (goto-char (point-max))
+    (insert "int w;\n")
+    (nidhogg-workers--pause-at 'after-snapshot)
+    (should (nidhogg-workers--test-ts-start p))
+    (workers-ts-tests--await mode 'after-snapshot)
+    (goto-char (point-min))
+    (insert "int x;\n")
+    (nidhogg-workers--test-ts-progress p 60)
+    (let ((ab (workers-ts-tests--stat :abandoned))
+          (waited (workers-ts-tests--stat :waited)))
+      (nidhogg-workers--test-release-on-wait 'after-snapshot)
+      (should (equal (workers-ts-tests--sexp p)
+                     (workers-ts-tests--sync-sexp (buffer-string))))
+      (should (= (workers-ts-tests--stat :waited) waited))
+      (should (= (workers-ts-tests--stat :abandoned) (1+ ab))))))
+
+(ert-deftest workers/ts-pressure-ignored-with-tree ()
+  ;; An estimate of 2 ms parses synchronously over a tree, pressure or not.
+  (workers-ts-tests--typing (2000000 0)
+    (nidhogg-workers--test-pressure t)
+    (unwind-protect
+        (progn
+          (workers-ts-tests--type-char)
+          (let ((started (workers-ts-tests--stat :started))
+                (att (workers-ts-tests--stat :attempts)))
+            (should (workers-ts-tests--fontifying-demand p))
+            (should (= (workers-ts-tests--stat :started) started))
+            (should (= (workers-ts-tests--stat :attempts) att))))
+      (nidhogg-workers--test-pressure nil))))
+
+(ert-deftest workers/ts-outlier-clamped ()
+  ;; One 200 ms sample among small ones moves the average by a quarter
+  ;; of four times it: typing stays inline.
+  (workers-ts-tests--typing (100000 100)
+    (nidhogg-workers--test-ts-cost p 200000000 nil t)
+    (workers-ts-tests--type-char)
+    (let ((started (workers-ts-tests--stat :started)))
+      (should (workers-ts-tests--fontifying-demand p))
+      (should (= (workers-ts-tests--stat :started) started)))))
 
 ;;; workers-ts-tests.el ends here
 
