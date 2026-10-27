@@ -412,3 +412,133 @@ Return the two replies."
         (should (<= (length (plist-get c :damage)) 3))))))
 
 ;;; nhwl-gui-tests.el ends here
+
+;; Task 11: the bare client-side title bar (nhwlcsd.c).  Logical sizes: the strip is 32, the resize margins are 8.
+
+(defun nhwl-gui--live-p ()
+  (and (featurep 'nidhogg-wayland) (not nhwl-gui--display-lost)))
+
+(defun nhwl-gui--decoration ()
+  "The decoration mode the recorder sent for the newest toplevel (nil: none; nil off the recorder)."
+  (when (getenv "GLITNIR_GUI_RECORDER")
+    (nhwl-gui--get (car (last (nhwl-gui--toplevel-commits))) :decoration)))
+
+(defun nhwl-gui--csd-p ()
+  (and (nhwl-gui--live-p)
+       (if (getenv "GLITNIR_GUI_RECORDER")
+           (not (equal (nhwl-gui--decoration) "server"))
+         (getenv "GLITNIR_GUI_CSD"))))
+
+(defun nhwl-gui--windowed ()
+  "Leave fullscreen; on the recorder to an 800 x 600 geometry."
+  (set-frame-parameter nil 'fullscreen nil)
+  (when (getenv "GLITNIR_GUI_RECORDER")
+    (gui-runner-recorder '(:cmd "configure" :surface "focused" :size [800 600] :states ["activated"]))
+    (nhwl-gui--wait (lambda () (redisplay t) (= (frame-pixel-width) (round (* 800 (frame-scale-factor))))) 5))
+  (sit-for 0.3)
+  (redisplay t)
+  (gui-runner-wait-settled))
+
+(defun nhwl-gui--last-commit ()
+  (car (last (nhwl-gui--toplevel-commits))))
+
+(defun nhwl-gui--pump ()
+  "Let the shell's input events be read and the keyboard queue drained."
+  (let ((deadline (+ (float-time) 0.3)))
+    (while (< (float-time) deadline) (read-event nil nil 0.05))))
+
+(defun nhwl-gui--point (x y)
+  (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
+  (gui-runner-recorder (list :cmd "pointer" :pos (vector x y)))
+  (nhwl-gui--pump))
+
+(defun nhwl-gui--click (x y)
+  (nhwl-gui--point x y)
+  (gui-runner-recorder '(:cmd "button" :button 272 :state "press"))
+  (gui-runner-recorder '(:cmd "button" :button 272 :state "release"))
+  (nhwl-gui--pump))
+
+(defun nhwl-gui--input-since (mark req)
+  (seq-find (lambda (e) (equal (plist-get e :req) req))
+            (plist-get (gui-runner-recorder (list :cmd "input_log" :since mark)) :entries)))
+
+(ert-deftest nhwl-gui/csd-strip-drawn ()
+  (skip-unless (nhwl-gui--csd-p))
+  (nhwl-gui--windowed)
+  (let* ((s (frame-scale-factor))
+         (m (round (* 8 s))) (strip (round (* 32 s)))
+         (snap (glitnir-snapshot nil 'raw))
+         (w (nth 0 snap)) (h (nth 1 snap)) (bytes (nth 2 snap))
+         (bg (mapcar (lambda (v) (/ v 257)) (color-values (face-background 'default))))
+         (px (lambda (x y) (let ((i (* 4 (+ (* y w) x))))
+                             (list (aref bytes (+ i 2)) (aref bytes (+ i 1)) (aref bytes i) (aref bytes (+ i 3)))))))
+    ;; the native area excludes the strip and the margins
+    (should (= (frame-pixel-width) (- w (* 2 m))))
+    (should (= (frame-pixel-height) (- h (* 2 m) strip)))
+    ;; the strip's top rows over the native area are not the background
+    (dotimes (i 3)
+      (let ((p (funcall px (/ w 2) (+ m 2 (* i 4)))))
+        (should (= (nth 3 p) 255))
+        (should (seq-some #'identity (seq-mapn (lambda (a b) (> (abs (- a b)) 2)) (seq-take p 3) bg)))))
+    ;; the margins are transparent
+    (should (= (nth 3 (funcall px 1 (/ h 2))) 0))
+    (when (getenv "GLITNIR_GUI_RECORDER")
+      (should (equal (nhwl-gui--get (nhwl-gui--last-commit) :geometry)
+                     (list 8 8 (- (round (/ w s)) 16) (- (round (/ h s)) 16)))))))
+
+(ert-deftest nhwl-gui/csd-press-moves ()
+  (skip-unless (and (getenv "GLITNIR_GUI_RECORDER") (nhwl-gui--csd-p)))
+  (nhwl-gui--windowed)
+  (let ((mark (plist-get (gui-runner-recorder '(:cmd "input_log" :since 0)) :next)))
+    (nhwl-gui--point 300 24)
+    (gui-runner-recorder '(:cmd "button" :button 272 :state "press"))
+    (nhwl-gui--pump)
+    (gui-runner-recorder '(:cmd "button" :button 272 :state "release"))
+    (let ((e (nhwl-gui--wait (lambda () (nhwl-gui--pump) (nhwl-gui--input-since mark "xdg_toplevel.move")))))
+      (should e)
+      (should (integerp (plist-get e :serial))))))
+
+(ert-deftest nhwl-gui/csd-edge-resizes ()
+  (skip-unless (and (getenv "GLITNIR_GUI_RECORDER") (nhwl-gui--csd-p)))
+  (nhwl-gui--windowed)
+  (let* ((dst (plist-get (plist-get (nhwl-gui--last-commit) :viewport) :dst))
+         (mark (plist-get (gui-runner-recorder '(:cmd "input_log" :since 0)) :next)))
+    (nhwl-gui--point (- (car dst) 2) (/ (cadr dst) 2))
+    (gui-runner-recorder '(:cmd "button" :button 272 :state "press"))
+    (let ((e (nhwl-gui--wait (lambda () (nhwl-gui--pump) (nhwl-gui--input-since mark "xdg_toplevel.resize")))))
+      (should e)
+      (should (equal (plist-get e :edges) "right")))
+    (gui-runner-recorder '(:cmd "button" :button 272 :state "release"))))
+
+(ert-deftest nhwl-gui/csd-close-deletes-frame ()
+  (skip-unless (and (getenv "GLITNIR_GUI_RECORDER") (nhwl-gui--csd-p)))
+  (nhwl-gui--windowed)
+  (let* ((old (selected-frame)) (new nil) (mark (nhwl-gui--mark))
+         (old-surface (plist-get (nhwl-gui--last-commit) :surface))
+         (fresh (lambda ()
+                  (seq-filter (lambda (c) (not (eql (plist-get c :surface) old-surface))) (nhwl-gui--new mark)))))
+    (unwind-protect
+        (progn
+          (setq new (make-frame))
+          (should (= (length (frame-list)) 2))
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (funcall fresh)) 5))
+          (gui-runner-wait-settled)
+          (let* ((dst (plist-get (plist-get (car (last (funcall fresh))) :viewport) :dst)))
+            ;; the close button is the rightmost 32 px of the strip, inside the 8 px margin
+            (nhwl-gui--click (- (car dst) 8 16) (+ 8 16))
+            (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (= (length (frame-list)) 1))))
+            (should (frame-live-p old))))
+      (when (and new (frame-live-p new)) (delete-frame new t)))))
+
+(ert-deftest nhwl-gui/ssd-no-strip ()
+  (skip-unless (and (nhwl-gui--on-p) (equal (nhwl-gui--decoration) "server")))
+  (nhwl-gui--windowed)
+  (let* ((s (frame-scale-factor))
+         (c (nhwl-gui--last-commit))
+         (b (plist-get c :buffer))
+         (geom (nhwl-gui--get c :geometry)))
+    ;; the native size is the whole surface, and no geometry narrows it
+    (should (= (frame-pixel-width) (plist-get b :w)))
+    (should (= (frame-pixel-height) (plist-get b :h)))
+    (should (or (null geom)
+                (equal geom (list 0 0 (round (/ (plist-get b :w) s)) (round (/ (plist-get b :h) s))))))))
