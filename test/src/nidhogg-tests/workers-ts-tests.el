@@ -1471,6 +1471,28 @@ SEED is (INCR-NS FULL-NS-PER-BYTE) for `nidhogg-workers--test-ts-cost'."
       (should (equal (workers-ts-tests--sexp p)
                      (workers-ts-tests--sync-sexp (buffer-string)))))))
 
+;; A slow incremental average never sends a typing edit to a job (§7.6).
+(ert-deftest workers/ts-typing-ignores-slow-incremental-average ()
+  ;; Only synchronous parses feed the average, so an offloaded edit
+  ;; could never bring a high one down again.  The edit's size decides:
+  ;; one key parses here, no job, and a Lisp demand has nothing to
+  ;; wait for.
+  (workers-ts-tests--typing (50000000 100)
+    (workers-ts-tests--type-char)
+    (let ((started (workers-ts-tests--stat :started))
+          (waited (workers-ts-tests--stat :waited))
+          (att (workers-ts-tests--stat :attempts)))
+      (should (workers-ts-tests--fontifying-demand p))
+      (should (= (workers-ts-tests--stat :started) started))
+      (should (= (workers-ts-tests--stat :attempts) att))
+      (should-not (workers-ts-tests--info p :job))
+      (workers-ts-tests--type-char)
+      (nidhogg-workers--test-ts-select-entry)
+      (should-not (workers-ts-tests--info p :job))
+      (should (equal (workers-ts-tests--sexp p)
+                     (workers-ts-tests--sync-sexp (buffer-string))))
+      (should (= (workers-ts-tests--stat :waited) waited)))))
+
 (ert-deftest workers/ts-paste-offloads ()
   ;; A 500 KB yank: a job (no attempt), the wrapper defers.
   (workers-ts-tests--typing (100000 100)

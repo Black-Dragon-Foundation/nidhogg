@@ -1438,6 +1438,7 @@ treesit_record_change_1 (ptrdiff_t start_byte, ptrdiff_t old_end_byte,
       XTS_PARSER (lisp_parser)->nh_gen++;
       XTS_PARSER (lisp_parser)->nh_edited_bytes
 	+= max (new_end_byte, old_end_byte) - start_byte;
+      XTS_PARSER (lisp_parser)->nh_edit_count++;
 
 #endif
 
@@ -2051,7 +2052,10 @@ treesit_ensure_parsed (Lisp_Object parser)
 			  BUF_ZV_BYTE (buffer) - BUF_BEGV_BYTE (buffer));
     }
   else
-    XTS_PARSER (parser)->nh_edited_bytes = 0;
+    {
+      XTS_PARSER (parser)->nh_edited_bytes = 0;
+      XTS_PARSER (parser)->nh_edit_count = 0;
+    }
 
 #else
   TSTree *new_tree = ts_parser_parse (treesit_parser, tree, input);
@@ -2178,6 +2182,7 @@ make_treesit_parser (Lisp_Object buffer, TSParser *parser,
   lisp_parser->nh_incr = (struct nh_wk_cost) { 0 };
   lisp_parser->nh_full = (struct nh_wk_cost) { 0 };
   lisp_parser->nh_edited_bytes = 0;
+  lisp_parser->nh_edit_count = 0;
 
 #endif
   eassert (lisp_parser->visible_beg <= lisp_parser->visible_end);
