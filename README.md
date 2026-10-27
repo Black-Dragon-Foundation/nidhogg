@@ -246,6 +246,38 @@ in `DRGNX_REF`, never drgnx's moving `main`: a drgnx push cannot turn Nidhogg re
     ([GitHub: dependency caching](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)).
 - Actions are pinned to commit SHAs. `bash nidhogg/test/ci-test.sh` checks these rules.
 
+## Stall watchdog
+
+An always-on measurement of the stalls (busy spans of the main thread at least as long as a threshold, 100 ms by
+default): a C monitor thread asks the main thread, by signal, for samples of what it is running, and Nidhogg's Lisp
+turns the finished spans into JSON Lines records, names function, file and package, and ranks them.
+
+- Build flag: `--with-nidhogg-watchdog` (defines `HAVE_NIDHOGG_WATCHDOG`; `build.sh` passes it on every target unless
+  given `--without-nidhogg-watchdog`). `--with-nidhogg-watchdog-signal=NAME` picks the signal (default `SIGURG`).
+  Linux (pgtk and terminal) first; elsewhere the flag builds and starting the watchdog signals an error.
+- Off unless something turns it on (drgnx does). With the flag built in and nothing started there is no thread and no
+  signal handler.
+- With the flag off the build equals upstream's for every file the watchdog touches (checked by
+  `nidhogg/test/tree-test.sh`).
+- Files: `src/nidhogg-watchdog.h` (the shared layout and every cross-file prototype), `src/nidhogg-watchdog.c` (edges,
+  spans, records), `-monitor.c` (monitor thread, park protocol), `-sample.c` (signal handler, raw ring), `-gc.c` (GC end
+  hook), `-input.c` and `-phase.h` (phases, felt input), `-gtk.c` (GLib poll wrapper, pgtk only), `-park.h` (the park
+  protocol's steps); Lisp in `lisp/nidhogg-watchdog*.el` (preloaded; the feature is `nidhogg-watchdog`).
+- Tests: `watchdog/…` in `test/src/nidhogg-tests/watchdog-*-tests.el`, GUI rows `watchdog-gui/…` in `*-gui-tests.el`.
+
+<!-- wd: Task 7 -->
+<!-- wd: Task 8 -->
+<!-- wd: Task 9 -->
+<!-- wd: Task 10 -->
+<!-- wd: Task 11 -->
+<!-- wd: Task 12 -->
+<!-- wd: Task 13 -->
+<!-- wd: Task 14 -->
+<!-- wd: Task 15 -->
+<!-- wd: Task 16 -->
+<!-- wd: Task 17 -->
+<!-- wd: Task 18 -->
+
 ## Reporting issues
 
 - Problems specific to Nidhogg (its patches, build, or `nidhogg-version`) go to this repository's issue tracker.
