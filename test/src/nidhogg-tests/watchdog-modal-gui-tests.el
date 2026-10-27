@@ -47,6 +47,18 @@
   (let ((end (+ (float-time) (/ ms 1000.0))))
     (while (< (float-time) end))))
 
+(defun watchdog-modal--describe-stalls (stalls)
+  "One line per stall in STALLS: its wall time, span and top frames."
+  (mapconcat
+   (lambda (s)
+     (let* ((samples (append (plist-get s :samples) nil))
+            (frames (and samples (append (plist-get (car samples) :frames) nil))))
+       (format "wall %s ms (nongc %s, late %s) span %s, %d samples, top frames %S"
+               (plist-get s :wall-ms) (plist-get s :nongc-ms)
+               (plist-get s :late-ms) (plist-get s :span) (length samples)
+               (seq-take frames 6))))
+   stalls "\n"))
+
 (ert-deftest watchdog-gui/menu-open-is-waiting ()
   (watchdog-modal--with-watchdog
     (nidhogg-watchdog--test-popdown-after 1000)
@@ -65,12 +77,23 @@
           (progn
             (nidhogg-watchdog--test-dialog-response-after 1000)
             (condition-case nil (x-file-dialog "Pick" "/tmp/" nil t) (quit nil))
-            (let ((stalls (watchdog-modal--stalls)))
-              (should (= (length stalls) 1))
-              (should (memq 'watchdog-modal--busy-timer
-                            (append (plist-get (aref (plist-get (car stalls) :samples) 0)
-                                               :frames)
-                                    nil)))))
+            ;; The chooser's own setup may stall on a slow machine (a real
+            ;; stall in `x-file-dialog', before the dialog loop starts), so
+            ;; the claim is about the timer's stall, not the stall count.
+            (let* ((stalls (watchdog-modal--stalls))
+                   (busy (seq-filter
+                          (lambda (s)
+                            ;; any sample: the first can land in the dialog
+                            ;; loop's C side, before the timer's frames exist
+                            (seq-some
+                             (lambda (sample)
+                               (memq 'watchdog-modal--busy-timer
+                                     (append (plist-get sample :frames) nil)))
+                             (plist-get s :samples)))
+                          stalls)))
+              (ert-info ((watchdog-modal--describe-stalls stalls) :prefix "stalls: ")
+                (should (= (length busy) 1))
+                (should (>= (plist-get (car busy) :wall-ms) 300)))))
         (cancel-timer timer)))))
 
 (defun watchdog-modal--busy-timer ()
