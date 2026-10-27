@@ -122,6 +122,11 @@ mod tests {
             size_of::<SelectionEv>(),
             align_of::<SelectionEv>(),
         );
+        ty(
+            "__typeof__(((NhShellEvent *)0)->u.text)",
+            size_of::<TextEv>(),
+            align_of::<TextEv>(),
+        );
         let mut off = |c: &str, o: usize| rows.push((format!("offsetof(NhShellEvent, {c})"), o));
         off("kind", offset_of!(E, kind));
         off("window", offset_of!(E, window));
@@ -138,6 +143,16 @@ mod tests {
         members!(configure, ConfigureEv, w, h, states, serial);
         members!(frame_done, FrameDoneEv, presented_ns, refresh_ns);
         members!(output, OutputEv, id, x, y, w, h, mm_w, mm_h, scale120, name);
+        members!(
+            text,
+            TextEv,
+            id,
+            len,
+            cursor_begin,
+            cursor_end,
+            before,
+            after
+        );
         off(
             "u.scale.scale120",
             offset_of!(E, u) + offset_of!(ScaleEv, scale120),

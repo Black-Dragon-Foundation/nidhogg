@@ -41,6 +41,8 @@ pub struct ReaderState {
     pub kbd: KeyboardState,
     pub cursor_manager: Option<WpCursorShapeManagerV1>,
     pub pointer: PointerState,
+    /// text-input-v3 (`text_input.rs`).
+    pub text_input: Arc<crate::wayland::text_input::TextInput>,
     /// A record was posted since the last wake.
     posted: bool,
     /// Our selection bytes being written to other clients (`selection.rs`).
@@ -57,6 +59,7 @@ impl ReaderState {
             kbd: KeyboardState::new(),
             cursor_manager: None,
             pointer: PointerState::default(),
+            text_input: Arc::default(),
             posted: false,
             sends: Vec::new(),
         }
