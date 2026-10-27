@@ -15,6 +15,7 @@ use smithay::backend::renderer::utils::RendererSurfaceStateUserData;
 use smithay::utils::{Logical, Point, Serial, SERIAL_COUNTER};
 use smithay::wayland::compositor::{self, RectangleKind, SubsurfaceCachedState, SurfaceAttributes};
 use smithay::wayland::shell::xdg::SurfaceCachedState as XdgCachedState;
+use smithay::wayland::shell::xdg::XdgPopupSurfaceData;
 use smithay::wayland::shm::with_buffer_contents;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
 use smithay::wayland::shell::xdg::{
@@ -404,7 +405,7 @@ pub fn popup_done(state: &mut State, req: &Value) -> Value {
 }
 
 /// `tree`: every live surface with its role, parent, place and stack.  `position` is the subsurface offset in its
-/// parent (a popup's, the positioner's), `above` the later siblings in stacking order (Smithay does not say where a
+/// parent (a popup's, the one its last acked commit applied), `sync` whether a subsurface is synchronised, `above` the later siblings in stacking order (Smithay does not say where a
 /// parent sits among its children, so `children` lists a parent's subsurfaces bottom to top), `input_region` the
 /// added rectangles (null when the client set none).
 pub fn tree(state: &mut State) -> Value {
@@ -482,17 +483,22 @@ pub fn tree(state: &mut State) -> Value {
                         .map(|g| [g.loc.x, g.loc.y, g.size.w, g.size.h]);
                     (mapped, buffer, input_region, geometry)
                 });
+            // a popup's position is the one the client acked and committed, as in a compositor: not the one the
+            // latest configure carries
             if role == "popup" {
-                if let Some(p) = state.popups.iter().find(|p| p.wl_surface() == surface) {
-                    let l = p.with_pending_state(|s| s.geometry.loc);
-                    position = [l.x, l.y];
-                }
+                compositor::with_states(surface, |states| {
+                    if let Some(d) = states.data_map.get::<XdgPopupSurfaceData>() {
+                        let l = d.lock().unwrap().current.geometry.loc;
+                        position = [l.x, l.y];
+                    }
+                });
             }
             json!({
                 "id": id,
                 "role": role,
                 "parent": parent.map(|p| p.id().protocol_id()),
                 "position": position,
+                "sync": role == "subsurface" && compositor::is_sync_subsurface(surface),
                 "above": above,
                 "children": children,
                 "mapped": mapped,

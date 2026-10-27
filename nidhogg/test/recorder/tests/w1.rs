@@ -363,3 +363,133 @@ fn alpha_multiplier_in_commit_log() {
     assert!((a - 0.5).abs() < 0.001, "{a}");
     assert!(commits[0].get("alpha").is_none(), "absent when unset");
 }
+
+/// A mapped popup 50x40 at (5,6)-anchored; returns what a test needs to move it.
+fn popup(
+    env: &mut Env,
+    xs: &wayland_protocols::xdg::shell::client::xdg_surface::XdgSurface,
+) -> (
+    wayland_client::protocol::wl_surface::WlSurface,
+    wayland_protocols::xdg::shell::client::xdg_surface::XdgSurface,
+    wayland_protocols::xdg::shell::client::xdg_popup::XdgPopup,
+) {
+    let wm: XdgWmBase = env.bind("xdg_wm_base", 6);
+    let positioner = wm.create_positioner(&env.qh, ());
+    positioner.set_size(50, 40);
+    positioner.set_anchor_rect(5, 6, 10, 10);
+    let surface = env.surface();
+    let pxs = wm.get_xdg_surface(&surface, &env.qh, ());
+    let p = pxs.get_popup(Some(xs), &positioner, &env.qh, ());
+    surface.commit();
+    env.roundtrip();
+    pxs.ack_configure(env.client.xdg_serial);
+    let buffer = env.buffer(50, 40);
+    surface.attach(Some(&buffer), 0, 0);
+    surface.commit();
+    env.roundtrip();
+    (surface, pxs, p)
+}
+
+#[test]
+fn popup_reposition_applies_at_the_acks_commit() {
+    let mut env = Env::new("sway", &[]);
+    let (_top, xs, _t) = env.toplevel(200, 200);
+    let (surface, pxs, p) = popup(&mut env, &xs);
+    let id = surface.id().protocol_id();
+    let before = node(&env.rec.control(json!({"cmd": "tree"})), id)["position"].clone();
+    let wm: XdgWmBase = env.bind("xdg_wm_base", 6);
+    let positioner = wm.create_positioner(&env.qh, ());
+    positioner.set_size(50, 40);
+    positioner.set_anchor_rect(105, 106, 10, 10);
+    p.reposition(&positioner, 7);
+    env.roundtrip();
+    let tree = env.rec.control(json!({"cmd": "tree"}));
+    assert_eq!(
+        node(&tree, id)["position"],
+        before,
+        "the configure alone moves nothing"
+    );
+    pxs.ack_configure(env.client.xdg_serial);
+    env.roundtrip();
+    let tree = env.rec.control(json!({"cmd": "tree"}));
+    assert_eq!(
+        node(&tree, id)["position"],
+        before,
+        "an ack alone moves nothing"
+    );
+    surface.commit();
+    env.roundtrip();
+    let tree = env.rec.control(json!({"cmd": "tree"}));
+    let after = node(&tree, id)["position"].clone();
+    assert_ne!(after, before, "the commit after the ack applies it");
+}
+
+#[test]
+fn sync_child_applies_with_the_parent() {
+    let mut env = Env::new("sway", &[]);
+    let (top, _xs, _t) = env.toplevel(100, 100);
+    let sub: WlSubcompositor = env.bind("wl_subcompositor", 1);
+    let child = env.surface();
+    let sc = sub.get_subsurface(&child, &top, &env.qh, ());
+    sc.set_position(10, 20);
+    let buffer = env.buffer(16, 8);
+    child.attach(Some(&buffer), 0, 0);
+    child.damage_buffer(0, 0, 16, 8);
+    child.commit();
+    env.roundtrip();
+    let cid = child.id().protocol_id();
+    let tree = env.rec.control(json!({"cmd": "tree"}));
+    assert_eq!(node(&tree, cid)["sync"], true);
+    assert_eq!(node(&tree, top.id().protocol_id())["sync"], false);
+    assert!(
+        !env.rec.commits().iter().any(|c| c["surface"] == cid),
+        "a sync child's commit waits for its parent"
+    );
+    top.commit();
+    env.roundtrip();
+    let commits = env.rec.commits();
+    let root = commits.last().unwrap();
+    assert_eq!(root["surface"], top.id().protocol_id());
+    assert_eq!(root["applied_by"], Value::Null);
+    let c = commits
+        .iter()
+        .find(|c| c["surface"] == cid)
+        .expect("applied");
+    assert_eq!(c["sync"], true, "{c}");
+    assert_eq!(c["applied_by"], root["seq"], "{c}");
+}
+
+#[test]
+fn empty_buffer_commits_counts_only_buffers_without_damage() {
+    let mut env = Env::new("sway", &[]);
+    let (top, _xs, _t) = env.toplevel(100, 100);
+    let since = env.rec.commits().last().unwrap()["seq"].as_u64().unwrap() + 1;
+    let n = |env: &Env| {
+        let r = env
+            .rec
+            .control(json!({"cmd": "empty_buffer_commits", "since": since}));
+        assert_eq!(r["ok"], true, "{r}");
+        r["commits"].as_array().unwrap().len()
+    };
+    assert_eq!(n(&env), 0);
+    // a buffer with damage, and a commit with no buffer: neither counts
+    let b = env.buffer(100, 100);
+    top.attach(Some(&b), 0, 0);
+    top.damage_buffer(0, 0, 100, 100);
+    top.commit();
+    top.commit();
+    env.roundtrip();
+    assert_eq!(n(&env), 0);
+    // a buffer with no damage counts
+    let b = env.buffer(100, 100);
+    top.attach(Some(&b), 0, 0);
+    top.commit();
+    env.roundtrip();
+    assert_eq!(n(&env), 1);
+}
+
+#[test]
+fn xdg_v2_profile_serves_version_2() {
+    let env = Env::new("xdg-v2", &[]);
+    assert_eq!(env.client.versions["xdg_wm_base"], 2);
+}
