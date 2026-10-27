@@ -29,6 +29,10 @@ views (`kernels::{Pixels, PixelsMut, Mask}`).
   supersampling); the rest are exact. Cached per radius.
 - `ring` redraws the host's square border along the rounded path, in the corner squares only, so straight edges keep
   the host's pixels. `ring_coverage(r, b)` gives the ring mask and the `inner` mask a bordered layer's corners use.
+- `decor_corners` (C: `glitnir_decor_corners`) draws a decorated box's rounded corners (PD) from one premultiplied
+  tile per (radius, border, colours) built from those masks (`decor_tile`, the 32 most recently used): OVER the
+  pixels for a box just drawn, replacing the corner squares for the repaint of a run's end. A Cairo fill along a
+  curve costs several µs per call; the tile is a copy or one OVER pass (R-D1, Task 14).
 - `shadow::ShadowCache` holds nine-slice shadow tiles (one corner tile mirrored four ways, two 1-D edge profiles and
   the middle value) of the Gaussian-blurred rounded rectangle in closed form (Evan Wallace's method, 8 samples), keyed
   by size class, radius, blur, spread, colour and scale, the 64 most recently used. σ = blur / 2; the shadow reaches
@@ -49,6 +53,16 @@ host draws that root the stock way. The time taken and the layers drawn fill the
 
 The `pixman-oracle` feature (Linux; `build.rs` links the system's `pixman-1`) adds the test that compares the
 kernels with pixman; `check.sh` runs it on Linux.
+
+## Decorations
+
+A window layer carries label anchors (`glitnir_decor_*`): the first glyph of a labelled run, its clip and a sprite key,
+in layer pixels. The host keeps them as true as the pixels (a glyph draw drops and records, a clear drops, a scroll
+moves). At commit the scene places a label per anchor whose sprite is cached (`glitnir_decor_sprite_put`, 64 sprites,
+least recently used out): above the glyph, below it on the window's first text row, shifted right past an earlier label
+on the row, one row further from the text when the shift would leave the layer. A label that appears, moves or goes
+damages its old and new bounds; compose draws the sprites over the window layer's pixels, clipped. Sprites are drawn
+as given, at the layer's device scale, never resampled.
 
 ## Checks
 
@@ -83,3 +97,18 @@ invalidations, redraws every frame and switches Glitnir off for the session (no 
 Three failures the fallback cannot catch still abort the process: an allocation failure, a second panic while one is
 being handled, and a stack overflow. To keep the first rare, the frame-time rings are preallocated and the caches
 bounded.
+
+## Headless mutter
+
+The GUI rows run under `mutter --headless` (`nidhogg/test/gui.sh`), which loads mutter's default plugin, not GNOME
+Shell. In mutter 51.1 (Fedora 45) that plugin's size-change effect (`size_change` / `size_changed`,
+`src/compositor/plugins/default.c`) leaks: each fullscreen or maximize change paints the window into a new clone
+actor, which is destroyed only when its 250 ms effect stops normally. A change that comes while an effect still runs
+overwrites the clone pointer, a switch between two states of one size (fullscreen <-> maximized: a headless monitor
+has no panels) never reaches `size_changed`, and with `MUTTER_DEBUG_DISABLE_ANIMATIONS=1` no clone is ever destroyed.
+Every leaked clone keeps a window-sized texture: about 40 MB at 1920x1080, 50-150 MB at 2560x1440 and 1.25. A plain
+GTK 3 window and Nidhogg with Glitnir off leak alike, at every scale; resizes and `glitnir-exact-scale` toggles do
+not leak. I2's OOM (335 MB -> 5.7 GB at 1.25) came from rows switching fullboth <-> maximized every 0.1 s. The rows
+therefore change these states only from a plain window and `glitnir-p15-gui--settle` (0.6 s) apart
+(`glitnir-p15-gui--state`), and `glitnir-gui/exact-compositor-memory-bounded` keeps mutter's growth under 300 MB
+across toggles, resizes and maximize/fullscreen changes at the exact scale.

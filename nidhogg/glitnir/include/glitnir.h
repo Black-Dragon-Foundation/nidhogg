@@ -63,6 +63,47 @@ int32_t glitnir_stats_forget (uint64_t root);
 /* A rectangle in device pixels; empty when w <= 0 or h <= 0.  */
 typedef struct { int32_t x, y, w, h; } GlitnirRect;
 
+/* A rectangle in logical units.  */
+typedef struct { double x, y, w, h; } GlitnirRectF;
+
+/* Snapping and stable rounding.  SCALE120 is the fractional scale times 120.  Stable rounding is mutter's: an origin is
+   roundf (POS * s), an extent roundf ((POS + SIZE) * s) - roundf (POS * s), in float, half away from zero.  */
+
+/* The device origin of a surface at logical POS.  */
+int32_t glitnir_stable_origin (int32_t pos, uint32_t scale120);
+
+/* The device extent of the logical span POS .. POS + SIZE.  */
+int32_t glitnir_stable_extent (int32_t pos, int32_t size, uint32_t scale120);
+
+/* The device rectangle of LOGICAL, relative to the device origin of a surface at logical (ORIGIN_X, ORIGIN_Y).  */
+GlitnirRect glitnir_stable_rect (GlitnirRect logical, int32_t origin_x, int32_t origin_y, uint32_t scale120);
+
+/* Move a logical rectangle's edges to round (e * SCALE) / SCALE; one under 2 device px wide or high becomes
+   max (1, floor (size * SCALE)) device px at round (pos * SCALE).  An integer SCALE returns the input.  */
+GlitnirRectF glitnir_snap_rect (double x, double y, double w, double h, double scale);
+
+/* A line width of W logical px at SCALE: under 2 device px, max (1, floor (W * SCALE)) of them; else the nearest whole
+   count.  An integer SCALE returns W.  */
+double glitnir_snap_line (double w, double scale);
+
+/* Resample the W x H mask at SRC (A1 in cairo's bit order when A1 is not 0, else A8; rows SRC_STRIDE bytes apart) to A8
+   on the device grid at SCALE120 into OUT, which holds glitnir_stable_origin (W) x glitnir_stable_origin (H) pixels
+   (rows OUT_STRIDE bytes apart).  Logical cell I covers device px [stable_origin (I), stable_origin (I + 1)), nearest,
+   so every device pixel of an A1 mask is fully on or off.  GLITNIR_E_ARG for a NULL pointer, an empty size or a stride
+   too small.  */
+int32_t glitnir_mask_to_device (const uint8_t *src, int32_t src_stride, int32_t w, int32_t h, int32_t a1,
+				uint32_t scale120, uint8_t *out, int32_t out_stride);
+
+/* The rounded corners of a decorated box (PD) into the ARGB32 picture ARGB (rows STRIDE bytes apart, 4-byte aligned):
+   in each corner of CORNERS_MASK (1 top left, 2 top right, 4 bottom right, 8 bottom left) of RUN (device px), BENEATH
+   outside the arc of radius RADIUS * SCALE and the ring of width RING_W * SCALE along it, rounded to device px (the
+   radius clamped to half the shorter side).  FILL 0 composes OVER the pixels (the box's inside stays); otherwise the
+   corner squares are replaced, FILL inside the ring.  Colours premultiplied 0xAARRGGBB; tiles cached per (radius,
+   scale, colours).  The straight edges are the caller's, and RUN must lie in the picture (the caller clips).
+   GLITNIR_E_ARG for a NULL or misaligned ARGB, a bad stride, a negative origin, an empty RUN or a bad number.  */
+int32_t glitnir_decor_corners (uint8_t *argb, int32_t stride, GlitnirRect run, double radius, uint32_t fill,
+			       uint32_t ring, uint32_t beneath, double ring_w, uint32_t corners_mask, double scale);
+
 /* Damage: what changed on a frame since its damage was last taken.  A rectangle already contained in the damage adds
    nothing.  Whole-frame damage reads back as one rectangle {0, 0, INT32_MAX, INT32_MAX}: the reader clips it to the
    frame.  */
@@ -163,6 +204,48 @@ int32_t glitnir_stack_reparent (uint64_t root, uint64_t id, uint64_t parent);
    glitnir_root_drop.  GLITNIR_E_ARG if IDS or N is NULL.  */
 int32_t glitnir_stack_list (uint64_t root, const uint64_t **ids, size_t *n);
 
+/* Decorations (labels).  An anchor states something about a window layer's pixels: the first glyph of a labelled run.
+   Coordinates are device px in the window layer (its top-left is 0, 0); the sprite is a name tag the host rendered
+   once, at the layer's device scale, and cached with glitnir_decor_sprite_put.  Every call but the sprite ones is
+   GLITNIR_E_STATE for a ROOT without a scene and GLITNIR_E_ARG for an unknown LAYER.  */
+typedef struct
+{
+  GlitnirRect glyph;		/* the anchor glyph */
+  GlitnirRect clip;		/* the label is drawn only inside this (and the layer) */
+  uint64_t sprite;		/* the sprite's key */
+  int32_t row_top;		/* the window's first text row's top: a glyph with y <= row_top gets its label below */
+} GlitnirAnchor;
+
+/* Record A on LAYER, replacing the anchors whose glyph it overlaps.  GLITNIR_E_ARG if A is NULL.  */
+int32_t glitnir_decor_put (uint64_t root, uint64_t layer, const GlitnirAnchor *a);
+
+/* Drop LAYER's anchors whose glyph meets EXTENT (a glyph string drew over it).  */
+int32_t glitnir_decor_drop_extent (uint64_t root, uint64_t layer, GlitnirRect extent);
+
+/* Drop LAYER's anchors whose glyph lies wholly inside R (a clear covered it).  */
+int32_t glitnir_decor_drop_rect (uint64_t root, uint64_t layer, GlitnirRect r);
+
+/* Drop LAYER's anchors; LAYER 0: every layer of ROOT.  */
+int32_t glitnir_decor_drop_all (uint64_t root, uint64_t layer);
+
+/* LAYER's pixels in BAND moved vertically by DY: the anchors whose glyph lies in BAND move with them, and those that
+   would end outside BAND or the layer are dropped.  Call it with glitnir_scroll.  */
+int32_t glitnir_decor_scroll (uint64_t root, uint64_t layer, GlitnirRect band, int32_t dy);
+
+/* Cache the sprite KEY: premultiplied ARGB32, H rows of STRIDE bytes (whole pixels, at least W), 4-byte aligned, at
+   most 4096 on a side; replaces an earlier sprite of that key.  The cache keeps the 64 most recently used.
+   GLITNIR_E_ARG for a bad size, stride or pointer.  */
+int32_t glitnir_decor_sprite_put (uint64_t key, const uint8_t *argb, int32_t stride, int32_t w, int32_t h);
+
+/* 1 if KEY is cached (and counts as a use), else 0.  */
+int32_t glitnir_decor_sprite_has (uint64_t key);
+
+/* Labels.  At commit the scene places a label for each anchor whose sprite is cached: above the anchor glyph, below it
+   when glyph.y <= row_top, shifted right past an earlier label on the same row, and one row further from the text (up
+   for a label above, down for one below) when the shift would take it out of the layer.  A label that appears,
+   moves, changes sprite or goes adds its old and new sprite bounds to the commit's damage, and compose draws the
+   sprites over the window layer's pixels, clipped to the anchor's clip.  */
+
 /* Compose.  Pixels are premultiplied ARGB32 (CAIRO_FORMAT_ARGB32), HEIGHT rows of STRIDE bytes (whole pixels, at least
    WIDTH), 4-byte aligned, borrowed for the call only.  A source is the surface of the frame whose id is LAYER, its
    first pixel at that layer's top-left; it must not overlap the target.  */
@@ -186,7 +269,7 @@ typedef struct
    device px; overlaps are composed once), bottom to top: a frame or child-node layer without chrome is copied from
    its source; a chromed layer's shadow goes over what lies below, then the layer is copied but for its corner
    squares, which go through the corner mask, with the border redrawn along the rounded path (the straight edges stay
-   the source's).  Window layers are their frame's pixels and add nothing.  A layer without a source is not drawn;
+   the source's).  Window layers are their frame's pixels and add nothing but their labels' sprites.  A layer without a source is not drawn;
    target pixels no layer covers keep their value.  The time taken and the layers drawn go to ROOT's next
    glitnir_stats_record.
    GLITNIR_E_STATE, with nothing drawn, when ROOT has no scene or a source's scale differs from TARGET's (the host
@@ -194,6 +277,30 @@ typedef struct
    or a size, stride or pixel pointer is not as above.  */
 int32_t glitnir_compose (uint64_t root, const GlitnirTarget *target, const GlitnirRect *clip, size_t nclip,
 			 const GlitnirSource *sources, size_t nsrc);
+
+/* Image probes on an ARGB32 picture (native byte order; STRIDE bytes per row, at least 4 * W; the buffer holds
+   STRIDE * H bytes, the last row possibly stopping after 4 * W).  Luminance is that of the sRGB-encoded values, 0 to 1.
+   All return GLITNIR_E_ARG for a NULL pointer, a non-positive size, a stride under 4 * W, or a region that is empty or
+   not inside the picture.  */
+
+/* R9's edge metric over REGION: the monotonic luminance runs along every row and column.  SPREAD_PX is the mean 10-90 %
+   rise distance (linearly interpolated) of the RUNS runs whose amplitude is >= 0.5; CONTRAST the mean amplitude of
+   the runs >= 0.2.  */
+typedef struct { double spread_px, contrast; uint32_t runs; } GlitnirEdgeStats;
+int32_t glitnir_probe_edges (const uint8_t *argb, int32_t stride, int32_t w, int32_t h, GlitnirRect region,
+			     GlitnirEdgeStats *out);
+
+/* A rule inside BAND: the darkness (1 - luminance, averaged along the rule) profile across the band, along x when
+   VERTICAL is non-zero, else along y; the runs above min + 0.02 are measured and the heaviest is reported: WIDTH
+   its pixels, PEAK its largest excess over the minimum, MASS the sum of those excesses.  */
+typedef struct { double width, peak, mass; } GlitnirRuleStats;
+int32_t glitnir_probe_rule (const uint8_t *argb, int32_t stride, int32_t w, int32_t h, GlitnirRect band,
+			    int32_t vertical, GlitnirRuleStats *out);
+
+/* Write to COUNT the number of pixels of FILL, inset by INSET on every side, whose luminance differs from that of
+   the colour FILL_ARGB (0xAARRGGBB) by more than 1/255.  */
+int32_t glitnir_probe_seams (const uint8_t *argb, int32_t stride, int32_t w, int32_t h, GlitnirRect fill,
+			     uint32_t fill_argb, uint32_t inset, uint32_t *count);
 
 #ifdef __cplusplus
 }
