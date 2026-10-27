@@ -12,6 +12,7 @@
 
 use crate::api::{ShellError, ShellResult};
 use crate::event::{NHSHELL_EV_DISCONNECTED, NHSHELL_EV_KEY, NhShellEvent};
+use crate::wayland::selection::Selections;
 use crate::wayland::serial::SerialTracker;
 use rustix::event::{EventfdFlags, eventfd};
 use rustix::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
@@ -97,6 +98,8 @@ pub struct Shared {
     pub scale120: Mutex<std::collections::HashMap<u64, u32>>,
     /// The seat pointer's `wp_cursor_shape_device_v1`, when the compositor has the manager.
     pub cursor_device: Mutex<Option<WpCursorShapeDeviceV1>>,
+    /// The clipboard and the primary selection (`selection.rs`): offers, our sources and the focus they need.
+    pub selections: Mutex<Selections>,
 }
 
 fn relock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -116,6 +119,7 @@ impl Shared {
             serials: Mutex::default(),
             scale120: Mutex::default(),
             cursor_device: Mutex::default(),
+            selections: Mutex::default(),
         })
     }
 

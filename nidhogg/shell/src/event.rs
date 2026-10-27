@@ -26,6 +26,8 @@ pub const NHSHELL_EV_DISCONNECTED: u32 = 15;
 pub const NHSHELL_EV_FRAME_READY: u32 = 21;
 /// The compositor dismissed a popup (no payload); the window is still there until the host destroys it.
 pub const NHSHELL_EV_POPUP_DONE: u32 = 16;
+/// The clipboard or the primary selection changed (ours or another client's); `u.selection.kind` says which.
+pub const NHSHELL_EV_SELECTION: u32 = 17;
 
 pub const NHSHELL_MOD_SHIFT: u32 = 1 << 0;
 pub const NHSHELL_MOD_CTRL: u32 = 1 << 1;
@@ -139,6 +141,13 @@ pub struct OutputEv {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+pub struct SelectionEv {
+    /// `NHSHELL_SEL_CLIPBOARD` or `NHSHELL_SEL_PRIMARY`.
+    pub kind: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub union NhShellEventData {
     pub key: KeyEv,
     pub pointer: PointerEv,
@@ -148,6 +157,7 @@ pub union NhShellEventData {
     pub focus: FocusEv,
     pub frame_done: FrameDoneEv,
     pub output: OutputEv,
+    pub selection: SelectionEv,
 }
 
 #[repr(C)]

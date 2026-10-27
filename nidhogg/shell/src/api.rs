@@ -20,6 +20,8 @@ pub const NHSHELL_E_UNSUPPORTED: i32 = -4;
 pub const NHSHELL_E_DISCONNECTED: i32 = -5;
 /// Out of memory or descriptors.
 pub const NHSHELL_E_NOMEM: i32 = -6;
+/// The other side did not answer in time (a selection read).
+pub const NHSHELL_E_TIMEOUT: i32 = -7;
 
 /// Why a call failed; `code` is the C ABI's value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,6 +31,7 @@ pub enum ShellError {
     Unsupported,
     Disconnected,
     NoMem,
+    Timeout,
 }
 
 impl ShellError {
@@ -39,6 +42,7 @@ impl ShellError {
             ShellError::Unsupported => NHSHELL_E_UNSUPPORTED,
             ShellError::Disconnected => NHSHELL_E_DISCONNECTED,
             ShellError::NoMem => NHSHELL_E_NOMEM,
+            ShellError::Timeout => NHSHELL_E_TIMEOUT,
         }
     }
 }
@@ -69,6 +73,10 @@ pub const NHSHELL_CURSOR_RESIZE_EW: u32 = 9;
 pub const NHSHELL_CURSOR_RESIZE_NWSE: u32 = 10;
 pub const NHSHELL_CURSOR_RESIZE_NESW: u32 = 11;
 pub const NHSHELL_CURSOR_HIDDEN: u32 = 12;
+
+/// The selections, for the `selection_*` calls and `NHSHELL_EV_SELECTION`.
+pub const NHSHELL_SEL_CLIPBOARD: u32 = 0;
+pub const NHSHELL_SEL_PRIMARY: u32 = 1;
 
 /// What to open a window with.  Strings are copied by the callee.
 #[derive(Clone, Debug)]
@@ -193,6 +201,18 @@ pub trait ShellBackend {
     ) -> ShellResult<NhShellBuffer>;
     /// Show the begun buffer; `damage` is in device pixels.
     fn present_commit(&mut self, window: WindowId, damage: &[Rect]) -> ShellResult;
+
+    /// Own selection `kind` (`NHSHELL_SEL_*`) with these MIME types and bytes (copied); other clients' pastes are
+    /// answered from the copy.  `State` without keyboard focus.
+    fn selection_own(&mut self, kind: u32, items: &[(&str, &[u8])]) -> ShellResult;
+    fn selection_disown(&mut self, kind: u32) -> ShellResult;
+    /// Whether our source is the current selection `kind`.
+    fn selection_owned(&self, kind: u32) -> ShellResult<bool>;
+    /// The current selection's MIME types (empty when there is none).
+    fn selection_types(&self, kind: u32) -> ShellResult<Vec<String>>;
+    /// The selection's bytes as `mime`: our own without a round trip, another client's within `timeout_ms` or
+    /// `Timeout`.  `State` when there is no selection or it has no such type.
+    fn selection_read(&mut self, kind: u32, mime: &str, timeout_ms: u32) -> ShellResult<Vec<u8>>;
 }
 
 #[cfg(test)]
