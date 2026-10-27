@@ -198,10 +198,11 @@ impl Dispatch<WpFractionalScaleV1, u64> for MainState {
         _: &WpFractionalScaleV1,
         event: wp_fractional_scale_v1::Event,
         id: &u64,
-        _: &Connection,
+        conn: &Connection,
         _: &QueueHandle<Self>,
     ) {
         if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
+            state.present_rearm(*id, conn);
             if let Some(s) = state.scales.get_mut(id) {
                 s.frac120 = Some(scale);
             }

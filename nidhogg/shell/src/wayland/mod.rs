@@ -262,9 +262,16 @@ impl Dispatch<WlSurface, ()> for MainState {
         surface: &WlSurface,
         event: wl_surface::Event,
         _: &(),
-        _: &Connection,
+        conn: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        // the surface may be shown again, or its scale changed: a waiting pacer asks again
+        if matches!(
+            event,
+            wl_surface::Event::Enter { .. } | wl_surface::Event::PreferredBufferScale { .. }
+        ) {
+            state.present_rearm(u64::from(surface.id().protocol_id()), conn);
+        }
         scale::surface_event(state, surface, event);
     }
 }

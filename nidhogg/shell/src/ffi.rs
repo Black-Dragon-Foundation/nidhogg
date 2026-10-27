@@ -233,6 +233,15 @@ ffi!(fn nhshell_window_resize(window: u64, edges: u32) |b| b.resize(window, edge
 ffi!(fn nhshell_window_show_menu(window: u64, x: i32, y: i32) |b| b.show_menu(window, x, y));
 ffi!(fn nhshell_window_set_geometry(window: u64, x: i32, y: i32, w: i32, h: i32) |b| b.set_geometry(window, x, y, w, h));
 ffi!(fn nhshell_window_ack_configure(window: u64, serial: u32) |b| b.ack_configure(window, serial));
+ffi!(fn nhshell_window_dirty(window: u64) |b| b.window_dirty(window));
+ffi!(
+    /// Whether the window's pacer lets the host present now: 1 or 0 to `*ready`.
+    fn nhshell_window_ready(window: u64, ready: *mut i32) |b| {
+        let r = b.window_ready(window)?;
+        // SAFETY: null or writable, by the contract.
+        unsafe { put(ready, i32::from(r)) }
+    }
+);
 ffi!(fn nhshell_window_set_cursor(window: u64, shape: u32) |b| b.set_cursor(window, shape));
 
 /// The window's preferred scale times 120 to `*scale120`.
