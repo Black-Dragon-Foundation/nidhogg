@@ -65,7 +65,7 @@
          (sock (expand-file-name (getenv "WAYLAND_DISPLAY") (getenv "XDG_RUNTIME_DIR"))))
     (skip-unless asked)
     (should (equal (pgtk-gui--socket-owner sock)
-                   (pcase asked ("sway" "sway") ("mutter" "mutter") ("recorder" "nh-recorder"))))))
+                   (pcase asked ("sway" "sway") ("mutter" "mutter") ("kwin" "kwin_wayland") ("labwc" "labwc") ("recorder" "nh-recorder"))))))
 
 (ert-deftest pgtk-gui/grab-matches-snapshot ()
   "The compositor's grab and Glitnir's own snapshot of a fullscreen frame agree (scale 1)."
