@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Build the tree-sitter grammars the workers' rows use (C, TypeScript, Python, Rust, HTML) at pinned
+# Build the tree-sitter grammars the workers' rows and treesit-tests.el use (C, TypeScript, Python, Rust, HTML, JSON,
+# JavaScript, CSS, Bash, Elixir) at pinned
 # commits into a cache directory, and check each one's ABI against tree-sitter 0.25 (13 to 15).
 #   grammars.sh [CACHE-DIR [LANGUAGE...]]   (default dir: $NIDHOGG_TEST_GRAMMARS, else grammars-cache/ beside this
-#                                            script; default languages: all five, and `crash')
+#                                            script; default languages: all of them, and `crash')
 # `crash' is the test grammar of workers/worker-crash-forwarded-grammar: tree-sitter-python with its external
 # scanner wrapped by crash-scanner.c, which writes through a null pointer at a backquote.
 # Prints the directory.  A grammar already built is kept.  Needs git, a C compiler (a C++ one only for a
@@ -27,6 +28,11 @@ typescript tree-sitter/tree-sitter-typescript f975a621f4e7f532fe322e13c4f79495e0
 python     tree-sitter/tree-sitter-python     293fdc02038ee2bf0e2e206711b69c90ac0d413f .
 rust       tree-sitter/tree-sitter-rust       18b0515fca567f5a10aee9978c6d2640e878671a .
 html       tree-sitter/tree-sitter-html       5a5ca8551a179998360b4a4ca2c0f366a35acc03 .
+json       tree-sitter/tree-sitter-json       4d770d31f732d50d3ec373865822fbe659e47c75 .
+javascript tree-sitter/tree-sitter-javascript 108b2d4d17a04356a340aea809e4dd5b801eb40d .
+css        tree-sitter/tree-sitter-css        6a442a3cf461b0ce275339e5afa178693484c927 .
+bash       tree-sitter/tree-sitter-bash       a06c2e4415e9bc0346c6b86d401879ffb44058f7 .
+elixir     elixir-lang/tree-sitter-elixir     02a6f7fd4be28dd94ee4dd2ca19cb777053ea74e .
 crash      tree-sitter/tree-sitter-python     293fdc02038ee2bf0e2e206711b69c90ac0d413f .
 "
 
