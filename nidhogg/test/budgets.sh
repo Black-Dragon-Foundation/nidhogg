@@ -226,11 +226,12 @@ measure() {
   # typing: 10 chars/s through zwp_virtual_keyboard
   n=$((window * 10))
   str=$(awk -v n="$n" 'BEGIN { for (i = 0; i < n; i++) printf "%c", 97 + i % 26 }')
-  cl '(progn (goto-char (point-min)) (setq budgets--n (buffer-size)) (glitnir-stats nil t) t)' > /dev/null
+  # emacsclient -e runs in the server buffer, not the one the keys go to: read the selected window's buffer
+  cl '(with-current-buffer (window-buffer (selected-window)) (goto-char (point-min)) (setq budgets--n (buffer-size)) (glitnir-stats nil t) t)' > /dev/null
   s1=$(snap)
   wtype -d 100 -- "$str" 2> "$run/wtype.err"; local wrc=$?
   s2=$(snap)
-  got=$(cl '(- (buffer-size) budgets--n)')
+  got=$(cl '(with-current-buffer (window-buffer (selected-window)) (- (buffer-size) budgets--n))')
   if [ "$wrc" != 0 ] || [ "${got:-0}" -lt $((n / 2)) ] 2> /dev/null; then
     SKIP_TYPING="wtype did not reach the frame (exit $wrc, $got of $n chars typed): $(head -c 120 "$run/wtype.err" | tr '"\n' "' ")"
     for rr in cpu-typing power-typing latency-typing pixels-per-char; do rec "$rr" "$side" "SKIP $SKIP_TYPING"; done
@@ -343,7 +344,9 @@ awk -F'|' '
       if (u == "") u = (row ~ /^cpu-/) ? "% of one core" : (row ~ /^power-/) ? "W" : (row ~ /^pss-/) ? "kB" : "-"
       line = "(:row " row " :unit \"" u "\""
       if (skip[row]) {
-        reason = ((row, "A") in why) ? "A: " why[row, "A"] : "B: " why[row, "B"]
+        reason = ""
+        if ((row, "A") in why) reason = "A: " why[row, "A"]
+        if ((row, "B") in why) reason = reason (reason == "" ? "" : "; ") "B: " why[row, "B"]
         gsub(/"/, "\047", reason)
         line = line " :skipped \"" reason "\""
         if (cnt[row, "A"]) line = line " :a " pair(row, "A")
