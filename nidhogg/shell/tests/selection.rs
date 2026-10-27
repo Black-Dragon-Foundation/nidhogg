@@ -241,6 +241,11 @@ mod selection {
                 title: c"selection".as_ptr(),
                 app_id: std::ptr::null(),
                 flags: 0,
+                kind: 0,
+                parent: 0,
+                x: 0,
+                y: 0,
+                anchor: Anchor::default(),
             };
             let mut win = 0u64;
             assert_eq!(nhshell_window_new(sh, &desc, &mut win), NHSHELL_OK);
