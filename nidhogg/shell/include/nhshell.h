@@ -53,6 +53,7 @@ enum
   NHSHELL_EV_POINTER_MOTION, NHSHELL_EV_BUTTON, NHSHELL_EV_SCROLL, NHSHELL_EV_CONFIGURE, NHSHELL_EV_CLOSE,
   NHSHELL_EV_SCALE, NHSHELL_EV_FOCUS, NHSHELL_EV_FRAME_DONE, NHSHELL_EV_OUTPUT_ADD, NHSHELL_EV_OUTPUT_REMOVE,
   NHSHELL_EV_DISCONNECTED,
+  NHSHELL_EV_POPUP_DONE = 16,      /* the compositor dismissed a popup; no payload */
   /* the window's pacer lets the host present what it drew (see nhshell_window_dirty); 16-20 belong to popups and
      children */
   NHSHELL_EV_FRAME_READY = 21
@@ -157,11 +158,36 @@ enum
   NHSHELL_CURSOR_HIDDEN
 };
 
+/* Window kinds: a child is a subsurface of its parent (moves and stacks with the parent's next commit); a popup is
+   placed by the compositor beside an anchor rectangle.  */
+#define NHSHELL_KIND_TOPLEVEL 0u
+#define NHSHELL_KIND_CHILD    1u
+#define NHSHELL_KIND_POPUP    2u
+
+#define NHSHELL_ADJUST_SLIDE_X (1u << 0)
+#define NHSHELL_ADJUST_SLIDE_Y (1u << 1)
+#define NHSHELL_ADJUST_FLIP_X  (1u << 2)
+#define NHSHELL_ADJUST_FLIP_Y  (1u << 3)
+
+/* The rectangle (logical pixels in the parent) a popup sits beside.  GRAVITY is the side or corner it grows toward:
+   0 none, 1 top, 2 bottom, 3 left, 4 right, 5 top-left, 6 bottom-left, 7 top-right, 8 bottom-right; the popup's
+   matching corner touches the same corner of the rectangle (8: below and right of it).  ADJUST: NHSHELL_ADJUST_*.  */
+typedef struct
+{
+  int32_t x, y, w, h;
+  uint32_t gravity;
+  uint32_t adjust;
+} NhShellAnchor;
+
 typedef struct
 {
   int32_t w, h;                    /* logical pixels */
   const char *title, *app_id;      /* NULL: "" */
   uint32_t flags;                  /* NHSHELL_WIN_* */
+  uint32_t kind;                   /* NHSHELL_KIND_*; 0 for a top-level window (the fields below are for the others) */
+  uint64_t parent;                 /* children and popups: the parent window */
+  int32_t x, y;                    /* children: offset in the parent, logical pixels */
+  NhShellAnchor anchor;            /* popups: where to put it (x, y are ignored) */
 } NhShellWindowDesc;
 
 /* A pixel buffer to draw into until the next nhshell_present_commit.  AGE is how many presents ago these pixels were
@@ -205,6 +231,16 @@ int32_t nhshell_window_set_geometry (NhShell *sh, uint64_t window, int32_t x, in
 /* Acks a configure at once; the next present_commit (which is made in any pacer state) carries the buffer.  */
 int32_t nhshell_window_ack_configure (NhShell *sh, uint64_t window, uint32_t serial);
 int32_t nhshell_window_set_cursor (NhShell *sh, uint64_t window, uint32_t shape);
+
+/* Children and popups.  set_position: a child moves with its parent's next commit; a popup's anchor rectangle moves to
+   (X, Y) (xdg_popup.reposition).  stack: put a child above or below SIBLING (0: the parent), with the parent's next
+   commit.  set_input_region: the part that takes input, N rectangles in logical pixels (N 0: the whole surface).
+   set_mapped: off shows nothing (a null buffer); on lets the next present show the window.  Pointer events over a child
+   or popup carry its id.  destroy of a window also destroys its children and popups.  */
+int32_t nhshell_window_set_position (NhShell *sh, uint64_t window, int32_t x, int32_t y);
+int32_t nhshell_window_stack (NhShell *sh, uint64_t window, uint64_t sibling, int32_t above);
+int32_t nhshell_window_set_input_region (NhShell *sh, uint64_t window, const GlitnirRect *rects, size_t n);
+int32_t nhshell_window_set_mapped (NhShell *sh, uint64_t window, int32_t on);
 
 /* The window's preferred scale times 120 (120 until the compositor says), and whether the compositor decorates it
    (*SSD 1 or 0; caps.ssd is the latest answer for any window).  */

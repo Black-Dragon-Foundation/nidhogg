@@ -24,6 +24,8 @@ pub const NHSHELL_EV_DISCONNECTED: u32 = 15;
 /// The window's pacer lets the host present what it drew (after `window_dirty`, an ack, a frame callback or a release).
 /// It may come twice for one frame: `window_ready` says whether to present.  16–20 belong to popups and children.
 pub const NHSHELL_EV_FRAME_READY: u32 = 21;
+/// The compositor dismissed a popup (no payload); the window is still there until the host destroys it.
+pub const NHSHELL_EV_POPUP_DONE: u32 = 16;
 
 pub const NHSHELL_MOD_SHIFT: u32 = 1 << 0;
 pub const NHSHELL_MOD_CTRL: u32 = 1 << 1;

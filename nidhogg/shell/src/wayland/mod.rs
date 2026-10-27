@@ -9,12 +9,14 @@
 //! After `open` returns, the host's thread only sends requests, flushes and dispatches the main queue; it never reads
 //! the socket (no roundtrip, no `blocking_dispatch`).
 
+pub mod child;
 pub mod conn;
 pub mod cursor;
 pub mod decor;
 pub mod keyboard;
 pub mod output;
 pub mod pointer;
+pub mod popup;
 pub mod present;
 pub mod reader;
 pub mod registry;
@@ -64,6 +66,8 @@ pub struct MainState {
     presents: HashMap<u64, Arc<std::sync::Mutex<present::Present>>>,
     reader_qh: Option<QueueHandle<ReaderState>>,
     windows: HashMap<u64, toplevel::Window>,
+    children: HashMap<u64, child::Child>,
+    popups: HashMap<u64, popup::Popup>,
     /// `NIDHOGG_SHELL_FORCE_CSD` was set when the shell opened.
     force_csd: bool,
     /// The latest decoration mode the compositor granted a window.
@@ -88,6 +92,15 @@ pub struct WaylandShell {
     main: MainState,
     main_waker: Waker,
     reader: Option<JoinHandle<()>>,
+}
+
+impl MainState {
+    /// Whether `id` is a window of any kind (top-level, child or popup).
+    fn is_window(&self, id: u64) -> bool {
+        self.windows.contains_key(&id)
+            || self.children.contains_key(&id)
+            || self.popups.contains_key(&id)
+    }
 }
 
 impl WaylandShell {
@@ -254,6 +267,9 @@ impl Drop for WaylandShell {
 
 delegate_noop!(MainState: WlCompositor);
 delegate_noop!(MainState: WlSubcompositor);
+delegate_noop!(MainState: wayland_client::protocol::wl_subsurface::WlSubsurface);
+delegate_noop!(MainState: wayland_client::protocol::wl_region::WlRegion);
+delegate_noop!(MainState: wayland_protocols::xdg::shell::client::xdg_positioner::XdgPositioner);
 delegate_noop!(MainState: ignore WlShm);
 
 impl Dispatch<WlSurface, ()> for MainState {
