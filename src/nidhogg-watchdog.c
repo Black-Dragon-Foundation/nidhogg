@@ -17,7 +17,7 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
-/* The main thread is authoritative (design §4.1, §4.2): it times every
+/* The main thread is authoritative: it times every
    busy span at the two edges of the responsive wait and turns every span
    at least as long as the threshold into a record itself.  The monitor
    (nidhogg-watchdog-monitor.c) and the signal handler
@@ -33,7 +33,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
    thread's select never touches the state.
 
    The main thread keeps its own copy of "waiting" and "busy since" in
-   the statics below and publishes them through Task 8's
+   the statics below and publishes them through the monitor file's
    nh_wd_publish_busy/_waiting for the monitor and the handler.  */
 
 #include <config.h>
@@ -76,7 +76,7 @@ static bool wd_monitor_started;
 /* The ring of finished stalls (NH_WD_RING slots, oldest at HEAD).
    Written by the main thread's finalise, read by `--take'; both run with
    the global lock held, so no atomics.  Allocated by `--start', never a
-   GC root: its words are raw (design §4.3).  */
+   GC root: its words are raw.  */
 static struct nh_wd_stall *wd_ring;
 static unsigned wd_ring_head, wd_ring_n;
 static uint64_t wd_next_id;
@@ -141,8 +141,8 @@ ring_slot (void)
   return &wd_ring[(wd_ring_head + wd_ring_n++) % NH_WD_RING];
 }
 
-/* Turn the span that ends at NOW into a record.  The order is binding
-   (Global Constraints): publish "waiting" first, so from here on the
+/* Turn the span that ends at NOW into a record.  The order is binding:
+   publish "waiting" first, so from here on the
    handler counts any request as stale; only then close the samples
    (nh_wd_sample_close marks the accumulator closed before it copies).  */
 static void
@@ -216,7 +216,7 @@ nh_wd_wait_enter (struct thread_state *self, const struct timespec *timeout)
   /* No wait is inside a specpdl growth: a memory_full longjmp out of
      xpalloc would otherwise leave the flag set for good.  */
   nh_wd_specpdl_unstable = 0;
-  /* Responsive (§4.2): returns on input, the screen can update, and it
+  /* Responsive: returns on input, the screen can update, and it
      really waits (a NULL timeout waits forever).  SELF holds the lock
      here, so Vinhibit_redisplay is its own binding.  */
   if (self->m_waiting_for_user_input_p != 0
@@ -238,7 +238,6 @@ nh_wd_wait_enter_modal (const struct timespec *timeout)
   if (!nh_wd_on || !pthread_equal (pthread_self (), nh_wd.main_id)
       || !main_thread_p (current_thread))
     return;
-  wd_wait_depth = -1;
   if (timeout && timeout->tv_sec == 0 && timeout->tv_nsec == 0)
     return;
 #ifdef HAVE_PGTK
@@ -246,6 +245,8 @@ nh_wd_wait_enter_modal (const struct timespec *timeout)
      test: the field is the command's outer 0 here.  */
   if (!(popup_activated () || nh_wd_dialog_depth > 0))
     return;
+  /* Only a wait that ends the span forgets a busy wait's phase depth.  */
+  wd_wait_depth = -1;
   __atomic_fetch_add (&nh_wd.wrapper_edges, 1, __ATOMIC_RELAXED);
   span_close (nh_wd_now_ns ());
 #endif
@@ -329,11 +330,14 @@ usage: (nidhogg-watchdog--start THRESHOLD-MS HANG-MS HANG-FILE &rest FLAGS)  */)
   if (nh_wd_on)
     error ("nidhogg-watchdog: already on");
 
-  wd_ring = xzalloc (NH_WD_RING * sizeof *wd_ring);
-  wd_ring_head = wd_ring_n = 0;
+  /* The name first: expanding and encoding it can signal, and nothing is
+     allocated yet.  */
   if (!NILP (args[2]))
     nh_wd_hang_file
       = xstrdup (SSDATA (ENCODE_FILE (Fexpand_file_name (args[2], Qnil))));
+  wd_ring = xzalloc (NH_WD_RING * sizeof *wd_ring);
+  wd_ring_head = wd_ring_n = 0;
+  nh_wd_gc_reset ();
 
   /* Nothing else runs on this state yet: no handler, no monitor, and
      the GC hook and the edges wait for nh_wd_on.  */
@@ -391,8 +395,17 @@ Unfinished and untaken records are dropped.  Safe when it is off.  */)
   if (!main_thread_p (current_thread))
     error ("nidhogg-watchdog: stop it from the main thread");
   nh_wd_on = false;
+  /* A stop inside a hang: SIGTERM, SIGHUP and SIGINT call `kill-emacs'
+     from the signal handler, while the main thread is still busy.  The
+     span in progress is dropped, so its hang file must stay for the next
+     start's `:killed' record.  */
+  uint64_t now = nh_wd_now_ns ();
+  uint64_t hang = __atomic_load_n (&nh_wd.hang_ns, __ATOMIC_RELAXED);
+  if (wd_monitor_started && !wd_waiting && hang
+      && now >= wd_busy_since && now - wd_busy_since >= hang)
+    nh_wd_monitor_keep_hang ();
   /* From here on the handler counts any request as stale.  */
-  nh_wd_publish_waiting (nh_wd_now_ns ());
+  nh_wd_publish_waiting (now);
   if (wd_monitor_started)
     nh_wd_monitor_stop ();
   wd_monitor_started = false;
@@ -424,7 +437,7 @@ wd_bool (unsigned x)
   return x ? Qt : Qnil;
 }
 
-/* The §6.1 plist of ST.  EPOCH is CLOCK_REALTIME minus CLOCK_MONOTONIC,
+/* The record plist of ST (`--take').  EPOCH is CLOCK_REALTIME minus CLOCK_MONOTONIC,
    in seconds.  */
 static Lisp_Object
 stall_to_lisp (const struct nh_wd_stall *st, double epoch)
@@ -497,7 +510,7 @@ Return (STALLS . COLLECTIONS), oldest first: STALLS a list of plists
 DEFUN ("nidhogg-watchdog--stats", Fnidhogg_watchdog__stats,
        Snidhogg_watchdog__stats, 0, 1, 0,
        doc: /* Return the stall watchdog's counters, or nil when it is off.
-\(:spans N :stalls N :dropped N :missed N :stale N :requests N
+\(:spans N :stalls N :dropped N :missed N :stale N :requests N :samples N
  :monitor-wakeups N :monitor-cpu-ms F :gc-dropped N :wrapper-edges N
  :histograms (:command V :other V :typing V :collections V)), each V a
 vector of counts by bucket (ms): <4 <8 <16 <33 <50 <100 <250 <1000 >=1000.
@@ -526,10 +539,12 @@ With RESET non-nil, also zero them.  */)
   Lisp_Object cpu = wd_ms (WD_TAKE (&nh_wd.monitor_cpu_ns));
   Lisp_Object gc_dropped = make_uint (WD_TAKE (&nh_wd.gc_dropped));
   Lisp_Object edges = make_uint (WD_TAKE (&nh_wd.wrapper_edges));
+  Lisp_Object samples = make_uint (WD_TAKE (&nh_wd.samples_taken));
 #undef WD_TAKE
-  return listn (22,
+  return listn (24,
 		QCspans, spans, QCstalls, stalls, QCdropped, dropped,
 		QCmissed, missed, QCstale, stale, QCrequests, requests,
+		QCsamples, samples,
 		QCmonitor_wakeups, wakeups, QCmonitor_cpu_ms, cpu,
 		QCgc_dropped, gc_dropped, QCwrapper_edges, edges,
 		QChistograms,

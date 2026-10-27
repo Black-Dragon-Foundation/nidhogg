@@ -1,7 +1,7 @@
 /* Nidhogg's stall watchdog: the signal handler, the raw ring and `--take'.
 
-   Task 9 wrote the handler, the guards, the specpdl walk, the thinning
-   and the validation; Task 18 adds names mode.
+   The handler, its guards, the specpdl walk, the thinning, the
+   validation at `--take', and names mode for hangs.
 
 Copyright (C) 2026 Black Dragon Foundation contributors.
 
@@ -20,8 +20,7 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
-/* The handler's rules (the design's §4.3; the plan's Global
-   Constraints, "The handler"):
+/* The handler's rules (README.md, "Stall watchdog", Samples):
 
    - It saves errno, and returns at once (counting `stale') off the main
      thread, without a pending request, with a request for another span,
@@ -32,7 +31,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
    - It dereferences nothing but the main thread's specpdl slots, with
      two exceptions: a hook runner's first argument, read only for
      frames below the innermost, only when NARGS >= 1, and tested with
-     the tag-only BARE_SYMBOL_P; and (Task 18) symbol names below the
+     the tag-only BARE_SYMBOL_P; and (names mode) symbol names below the
      innermost frame when !gc_in_progress.  The innermost slot may be
      half-written (an entry is written with plain stores, then
      specpdl_ptr moves), so its words are copied raw and never followed.
@@ -89,7 +88,7 @@ static struct
   uint32_t seq[NH_WD_SAMPLES];
 } nh_wd_hs;
 
-/* Test-only flags (PD-3), read by the handler.  */
+/* Test-only flags (set by the test primitives), read by the handler.  */
 static volatile sig_atomic_t nh_wd_test_lisp_thread;
 
 /* The installed action and the one it replaced.  */
@@ -124,7 +123,7 @@ nh_wd_acc_reset (struct nh_wd_stall *acc, uint64_t span)
 }
 
 /* Keep every other kept sample, free the others' slots, double the
-   stride.  Only the index array moves (PD-5).  */
+   stride.  Only the index array moves, never a sample.  */
 static void
 nh_wd_acc_thin (struct nh_wd_stall *acc)
 {
@@ -285,6 +284,86 @@ nh_wd_fill (struct nh_wd_sample *s, struct nh_wd_stall *acc)
 	      acc->deep ? NH_WD_DEEP_INNER : NH_WD_INNER);
 }
 
+/* Names mode (hangs).  Test-only: 1 forces names mode for the next
+   sample, 2 also makes it see a collection in progress.  */
+static volatile sig_atomic_t nh_wd_test_hang_now;
+
+/* Copy the name of the frame function W into D (64 bytes, NUL ended):
+   a symbol's name, cut at 63 bytes; any other function `<lambda>',
+   read from nothing (the word's object is never followed).  */
+static void
+nh_wd_name_of (char *d, uintptr_t w)
+{
+  static const char lambda[] = "<lambda>";
+  const char *src = lambda;
+  ptrdiff_t len = sizeof lambda - 1;
+  Lisp_Object fn = XIL (w);
+  if (BARE_SYMBOL_P (fn))
+    {
+      Lisp_Object name = XBARE_SYMBOL (fn)->u.s.name;
+      if (!STRINGP (name))
+	len = 0;
+      else
+	{
+	  src = SSDATA (name);
+	  len = SBYTES (name);
+	}
+    }
+  if (len > 63)
+    {
+      /* Cut before a character, never inside one: back off while the
+	 first byte left out continues a multibyte sequence.  */
+      len = 63;
+      while (len > 0 && ((unsigned char) src[len] & 0xc0) == 0x80)
+	len--;
+    }
+  for (ptrdiff_t i = 0; i < len; i++)
+    d[i] = src[i];
+  d[len] = 0;
+}
+
+/* Copy the names of the main thread's innermost frames into the next
+   names slot and publish it (release: the monitor reads names_next with
+   acquire).  Called only when no collection runs, so string data does
+   not move.  The innermost frame may be half-written: its name stays
+   empty; only the frames below it are followed, and only to their
+   symbol's name.  */
+static void
+nh_wd_names_take (void)
+{
+  if (nh_wd_specpdl_unstable)
+    return;
+  struct thread_state *t = __atomic_load_n (&current_thread,
+					    __ATOMIC_RELAXED);
+  if (t != nh_wd_main_state || nh_wd_test_lisp_thread)
+    return;
+  union specbinding *base = t->m_specpdl;
+  union specbinding *ptr = t->m_specpdl_ptr;
+  union specbinding *end = t->m_specpdl_end;
+  if (!base || !(base <= ptr && ptr <= end))
+    return;
+
+  uint32_t k = __atomic_load_n (&nh_wd_cur.names_next, __ATOMIC_RELAXED);
+  struct nh_wd_names *nm = &nh_wd_cur.names[k % 4];
+  int n = 0;
+  for (ptrdiff_t i = ptr - base; 0 < i && n < 32; )
+    {
+      const union specbinding *p = &base[--i];
+      if (p->kind != SPECPDL_BACKTRACE)
+	continue;
+      if (n == 0)
+	nm->name[n][0] = 0;
+      else
+	nh_wd_name_of (nm->name[n], XLI (p->bt.function));
+      n++;
+    }
+  struct timespec ts;
+  clock_gettime (CLOCK_MONOTONIC, &ts);
+  nm->t_ns = (uint64_t) ts.tv_sec * 1000000000 + ts.tv_nsec;
+  nm->n = n;
+  __atomic_store_n (&nh_wd_cur.names_next, k + 1, __ATOMIC_RELEASE);
+}
+
 static void
 nh_wd_handler (int sig)
 {
@@ -315,6 +394,20 @@ nh_wd_handler (int sig)
     {
       nh_wd_fill (s, acc);
       __atomic_fetch_add (&nh_wd.samples_taken, 1, __ATOMIC_RELAXED);
+    }
+
+  /* Names mode: the monitor set it for this span (past the hang
+     threshold), or a test forced it.  */
+  int hang_now = nh_wd_test_hang_now;
+  if (hang_now
+      || (__atomic_load_n (&nh_wd.mode, __ATOMIC_RELAXED) == 1
+	  && __atomic_load_n (&nh_wd.armed_span, __ATOMIC_RELAXED) == span))
+    {
+      nh_wd_test_hang_now = 0;
+      if (s && hang_now == 2)
+	s->gc = 1;
+      if (!gc_in_progress && hang_now != 2)
+	nh_wd_names_take ();
     }
 
   /* Answered: clear the request this handler saw, not a newer one.  */
@@ -364,7 +457,8 @@ nh_wd_handler_install (void)
     return -1;
 
   /* A library that claimed the signal keeps it: the watchdog refuses
-     rather than break it (the W0 survey found none, Task 6).  */
+     rather than break it (a survey of common libraries found none that
+     uses it).  */
   struct sigaction old;
   if (sigaction (NIDHOGG_WATCHDOG_SIGNAL, NULL, &old) != 0
       || ((old.sa_flags & SA_SIGINFO)
@@ -392,7 +486,7 @@ nh_wd_handler_install (void)
   struct sigaction act;
   emacs_sigaction_init (&act, nh_wd_handler);
   /* Explicitly: emacs_sigaction_init sets SA_RESTART only in batch, and
-     the watchdog never needs to break a system call (§4.3).  */
+     the watchdog never needs to break a system call.  */
   act.sa_flags = SA_RESTART;
   if (sigaction (NIDHOGG_WATCHDOG_SIGNAL, &act, &nh_wd_old_action) != 0)
     return -1;
@@ -413,7 +507,8 @@ nh_wd_handler_uninstall (void)
 }
 
 
-/* Closing the span's samples (the main thread's finalise, Task 7).  */
+/* Closing the span's samples (the main thread's finalise,
+   nidhogg-watchdog.c).  */
 
 void
 nh_wd_sample_close (struct nh_wd_stall *out)
@@ -647,7 +742,7 @@ nh_wd_sample_to_lisp (const struct nh_wd_sample *s)
 }
 
 
-/* Lisp: deep mode and the test-only primitives (PD-3).  */
+/* Lisp: deep mode and the test-only primitives.  */
 
 DEFUN ("nidhogg-watchdog--deep", Fnidhogg_watchdog__deep,
        Snidhogg_watchdog__deep, 1, 1, 0,
@@ -917,6 +1012,46 @@ sample's request number), :samples, and the handler's :stale.  */)
   return unbind_to (count, result);
 }
 
+DEFUN ("nidhogg-watchdog--test-hang-now", Fnidhogg_watchdog__test_hang_now,
+       Snidhogg_watchdog__test_hang_now, 0, 1, 0,
+       doc: /* Test only: force names mode for the next synchronous sample.
+With IN-GC non-nil, that sample also sees a collection in progress.
+Return nil.  */)
+  (Lisp_Object in_gc)
+{
+  nh_wd_test_hang_now = NILP (in_gc) ? 1 : 2;
+  return Qnil;
+}
+
+DEFUN ("nidhogg-watchdog--test-names", Fnidhogg_watchdog__test_names,
+       Snidhogg_watchdog__test_names, 0, 0, 0,
+       doc: /* Test only: the latest names-mode copy of the span in progress.
+Return (:count N :names LIST): N copies so far in this span, LIST the
+latest one's names, innermost first, nil for the innermost frame.  */)
+  (void)
+{
+  struct nh_wd_names nm;
+  sigset_t old;
+  nh_wd_block_signal (&old);
+  /* Only the span in progress: the slots and names_next are reset by
+     the handler at a span's first sample, so until then they still
+     hold an older span's (nh_wd_sample_close's rule).  */
+  uint64_t span = __atomic_load_n (&nh_wd.span, __ATOMIC_RELAXED);
+  bool mine = nh_wd_cur.acc.stride != 0 && nh_wd_cur.acc.span == span;
+  uint32_t k = (mine ? __atomic_load_n (&nh_wd_cur.names_next,
+					__ATOMIC_RELAXED)
+		: 0);
+  nm.n = 0;
+  if (k)
+    nm = nh_wd_cur.names[(k - 1) % 4];
+  pthread_sigmask (SIG_SETMASK, &old, NULL);
+
+  Lisp_Object names = Qnil;
+  for (int i = min (nm.n, 32); 0 < i--; )
+    names = Fcons (nm.name[i][0] ? build_string (nm.name[i]) : Qnil, names);
+  return list4 (QCcount, make_uint (k), QCnames, names);
+}
+
 void
 nh_wd_syms_of_sample (void)
 {
@@ -959,6 +1094,11 @@ nh_wd_syms_of_sample (void)
   defsubr (&Snidhogg_watchdog__test_set_unstable);
   defsubr (&Snidhogg_watchdog__test_handler_flags);
   defsubr (&Snidhogg_watchdog__test_accumulator);
+
+  DEFSYM (QCcount, ":count");
+  DEFSYM (QCnames, ":names");
+  defsubr (&Snidhogg_watchdog__test_hang_now);
+  defsubr (&Snidhogg_watchdog__test_names);
 }
 
 #endif /* HAVE_NIDHOGG_WATCHDOG */

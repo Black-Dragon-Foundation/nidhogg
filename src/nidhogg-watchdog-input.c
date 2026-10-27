@@ -18,15 +18,14 @@ You should have received a copy of the GNU General Public License
 along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
 /* The phase stack lives here (its inline push and pop are in
-   nidhogg-watchdog-phase.h), with the per-span input accounting
-   (design §4.4, §6.4):
+   nidhogg-watchdog-phase.h), with the per-span input accounting:
 
    - felt: the first keyboard, button or wheel event stored in a span
      (kbd_buffer_store_buffered_event, on whichever thread holds the
      global lock) marks the span felt and keeps its arrival: the event's
      own timestamp when it is a pgtk event whose timestamp reads as
-     CLOCK_MONOTONIC milliseconds (Task 6 Step 3 calibrated mutter and
-     KWin: 32 bits, accepted within the last 2 s), else the store time.
+     CLOCK_MONOTONIC milliseconds (as measured on mutter and KWin: 32
+     bits, accepted within the last 2 s), else the store time.
      A span that ran a command is felt too.  These words are relaxed
      atomics (struct nh_wd_input): the main thread resets them in
      wait_leave without the lock.

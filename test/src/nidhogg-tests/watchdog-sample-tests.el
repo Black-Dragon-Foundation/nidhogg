@@ -82,6 +82,15 @@ Return the stalls taken after the span ended."
 (defun wdtest--ert-frame-p (f)
   (and (symbolp f) (string-prefix-p "ert-" (symbol-name f))))
 
+(ert-deftest watchdog/stats-count-samples ()
+  ;; `--stats' counts the samples the handler kept (`:samples'), so a
+  ;; reader can set `:missed' against them.
+  (wdtest-sampling
+    (let ((before (plist-get (nidhogg-watchdog--stats) :samples)))
+      (should (natnump before))
+      (should (nidhogg-watchdog--test-sample))
+      (should (= (1+ before) (plist-get (nidhogg-watchdog--stats) :samples))))))
+
 (ert-deftest watchdog/sample-attribution ()
   ;; Interpreted, then byte-compiled: the frames are the same symbols.
   (eval '(progn

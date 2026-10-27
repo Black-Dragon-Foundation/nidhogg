@@ -17,12 +17,12 @@ for upstreaming.
 
 - Command: `nidhogg` (and `nidhoggclient`). Feature: `nidhogg` (`(require 'nidhogg)`). Variable: `nidhogg-version`.
 - `emacs-version` stays GNU Emacs's own (`"31.1"`): packages call `version<` on it, and `version-to-list` rejects
-  `"31.1-nidhogg.2"`. Nidhogg's version lives in `nidhogg-version` and is appended to `M-x emacs-version` output.
+  `"31.1-nidhogg.3"`. Nidhogg's version lives in `nidhogg-version` and is appended to `M-x emacs-version` output.
 
 ## Version scheme
 
 `<GNU Emacs version>-nidhogg.<N>`. N counts Nidhogg releases on one upstream release and restarts at 1 on the next
-(31.2 gives `31.2-nidhogg.1`). The git tag is `v31.1-nidhogg.2`. The single source is the file `nidhogg/version`.
+(31.2 gives `31.2-nidhogg.1`). The git tag is `v31.1-nidhogg.3`. The single source is the file `nidhogg/version`.
 
 ## Branches and the patch series
 
@@ -328,7 +328,8 @@ code, forced collections, a specpdl past 10⁵ entries) in which every sampled w
 `nidhogg-watchdog--gone`. GUI rows (`watchdog-gui-tests.el`, `nidhogg/test/gui.sh`): `sit-for` on a pgtk frame is
 waiting, and a mode-line `:eval` that spins is a stall in the `redisplay` phase with the `:eval` function innermost.
 `M-x nidhogg-watchdog-mode` (global, off by default) starts the monitor with `nidhogg-watchdog-threshold` (100 ms)
-and `nidhogg-watchdog-hang-ms` (2000) and one repeating 1 s idle timer. The timer's drain returns at once (no
+and `nidhogg-watchdog-hang-ms` (2000) and one repeating 1 s idle timer; a start that fails after the C side started
+(too many typing commands, an unreadable log directory) stops it again and leaves the mode off. The timer's drain returns at once (no
 allocation) when nothing is pending; otherwise it takes the rings at once and resolves records within 2 ms, the rest
 waiting for the next idle period (`nidhogg-watchdog-drain-now` drains everything). Each stall is one JSON line (schema
 `v` 1) in `YYYY-MM-DD.jsonl` under `nidhogg-watchdog-log-directory` (default `~/.emacs.d/watchdog/`); `nidhogg-watchdog-record-functions` sees each
@@ -341,7 +342,9 @@ perf probe can use the same way), so any number of readers can measure a stretch
 `nidhogg-watchdog-stats` adds the drain's numbers to the C counters: `:drain`, the budgeted drains by duration in
 buckets that start at 1 and 2 ms (<1 <2 <4 <8 <16 <33 <50 <100 ≥100), `:drain-take`, the part of each that takes the
 rings and writes the collection lines (it runs before the budget's resolve loop), `:drain-over-budget` and
-`:drain-p95-ms`; `nidhogg-watchdog-drain-now` (no budget: tests, perf, mode off) is not counted.
+`:drain-p95-ms`; `nidhogg-watchdog-drain-now` (no budget: tests, perf, mode off) is not counted. The C counters
+include `:samples` (samples the handler kept), to set `:missed` against; the summary line carries it too. A stall
+record and its line say `deep` when the stall was sampled in deep mode (`nidhogg-watchdog--deep`).
 Records are resolved at idle (`lisp/nidhogg-watchdog-resolve.el`): each function gets a name, file and package (native
 subrs through their `.eln` unit, symbols through `function-history` or a `load-history` index built in 2 ms slices, a
 record waiting until its symbols are indexed; closures are `<lambda>` and credited to the nearest named frame, native
@@ -366,8 +369,37 @@ the live-heap trend (MB per day). A day meets the row when that p95 is at most `
 (250 ms). The row reads only the files its windows need (the newest DAYS + 6) and keeps a small digest of each,
 made again only when the file's size or time changed, so asking for it at idle every half hour costs no re-parse
 of closed days.
-<!-- wd: Task 17 -->
-<!-- wd: Task 18 -->
+The ranking (`lisp/nidhogg-watchdog-report.el`) reads the day files only when asked, never on a timer.
+`(nidhogg-watchdog-ranking &key since felt-only)` returns the GC row first (`:gc t`, the collections' count, felt,
+total, max and p50, the lines themselves and `nidhogg-watchdog-gc-row`'s numbers), then one row per package (the
+culprit's package, `unsampled` when a stall has none), biggest score first. A package's score is the sum, over its
+stalls whose non-GC time reaches the threshold, of that time minus the threshold, so many slightly slow stalls and
+one long one weigh alike. Each row has the count, felt count, total, max and p50 of non-GC ms, the mix of states and
+of phases (weighted by non-GC ms), the first and last time, a merged call tree of its stacks, and the same rows per
+signature under it. `:since` (a time) limits it to lines from then on, `:felt-only` to felt stalls and
+collections. `M-x nidhogg-watchdog-report` shows today's ranking in `*Nidhogg Watchdog*`: a header line (stalls,
+felt, the longest, collections and their max, the share of typing commands at 16 ms or more), the GC row and the
+packages with their signatures indented; RET opens a row's call tree, or on the GC row the day's collections; a
+prefix argument shows felt stalls only.
+Hangs (`-monitor.c`, `-sample.c`): past `nidhogg-watchdog-hang-ms` a stall is a hang, and its record says `:hang t`.
+The monitor switches the handler to names mode: outside a collection it also copies the symbol names (64 bytes at
+most, closures as `<lambda>`) of up to 32 frames below the innermost one, which stays a raw word, and publishes them
+to the monitor through a small seqlock. The monitor owns the hang file, `hang-PID-START.txt` in the log directory
+(START is the session's start in ns): it writes it through a temporary file (`open`, `write`, `fsync`, `rename`, and
+an `fsync` of the directory, held open while the monitor runs, after the hang's first rename) once a names-mode copy is
+in, then every 2 s, with the pid, the process start time (`/proc/self/stat` field 22) and the boot
+id (both read once at start), the hang's start, its duration, its phase and its latest stacks; it skips the rename
+when the span ended meanwhile, and deletes the file when the span has ended, before it parks. The main thread never
+touches the file. A stop inside a hang keeps it: SIGTERM, SIGHUP and SIGINT make Emacs run `kill-emacs` from the
+signal handler while Lisp is still busy, which turns the mode off, so `nidhogg-watchdog--stop` tells the monitor to
+keep the file when the span in progress is past the hang threshold. When `nidhogg-watchdog-mode` starts, every hang
+file whose process is gone (no such pid, or a pid with another start time or boot id) becomes a record with `:killed
+t`, `:hang-pid` and its stacks (names), run through `nidhogg-watchdog-record-functions` and written to the log, and
+is deleted; the session's own file (the mode turned off inside a hang without exiting) is only deleted. Rows:
+`watchdog-hang-tests.el` (names mode, the identity, the file's schema and its deletion, a span that ends during a
+write, using `nidhogg-watchdog--test-hang-now`, `--test-names` and `--test-hold-rename`) and
+`watchdog/hang-file-survives-kill`, `-sigterm` and `-sighup` in the timing group (a child killed by that signal during
+a 5 s hang; a fresh child records it).
 
 ## Reporting issues
 
