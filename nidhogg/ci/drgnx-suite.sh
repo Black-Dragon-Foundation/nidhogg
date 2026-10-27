@@ -72,13 +72,13 @@ bin/drgnx test'
 OPTS=()
 [ -z "${DRGNX_TEST_SELECTOR:-}" ] || OPTS=(-e "DRGNX_TEST_SELECTOR=$DRGNX_TEST_SELECTOR")
 if [ -n "${DRGNX_RATATOSKR_BIN:-}" ]; then
-  OPTS+=(-v "$(cd "$(dirname "$DRGNX_RATATOSKR_BIN")" && pwd):/opt/ratatoskr:ro,Z"
+  OPTS+=(-v "$(cd "$(dirname "$DRGNX_RATATOSKR_BIN")" && pwd):/opt/ratatoskr:ro,z"
         -e "DRGNX_RATATOSKR_BIN=/opt/ratatoskr/$(basename "$DRGNX_RATATOSKR_BIN")")
 fi
 if [ -n "${DRGNX_HUGINN_DUMP:-}" ]; then
-  OPTS+=(-v "$(cd "$(dirname "$DRGNX_HUGINN_DUMP")" && pwd):/opt/huginn:ro,Z"
+  OPTS+=(-v "$(cd "$(dirname "$DRGNX_HUGINN_DUMP")" && pwd):/opt/huginn:ro,z"
         -e "DRGNX_HUGINN_DUMP=/opt/huginn/$(basename "$DRGNX_HUGINN_DUMP")")
 fi
 "$PODMAN" run --rm --memory "${NIDHOGG_SUITE_MEMORY:-4g}" --memory-swap "${NIDHOGG_SUITE_MEMORY:-4g}" \
   -e "TOP=$TOP" ${OPTS[@]+"${OPTS[@]}"} \
-  -v "$TARBALL:/t.tar.xz:ro,Z" -v "$DRGNX:/drgnx:ro,Z" "$IMAGE" bash -c "$INNER"
+  -v "$TARBALL:/t.tar.xz:ro,z" -v "$DRGNX:/drgnx:ro,z" "$IMAGE" bash -c "$INNER"

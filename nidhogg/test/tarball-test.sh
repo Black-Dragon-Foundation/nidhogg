@@ -79,5 +79,5 @@ case $DISTRO in
   *) echo "TARBALL FAIL: unknown distro $DISTRO"; exit 1 ;;
 esac
 "$PODMAN" run --rm --memory 2g --memory-swap 2g -e "V=$VERSION" \
-  -v "$TARBALL:/t.tar.xz:ro,Z" -v "$CHECKS_FILE:/checks.sh:ro,Z" "$IMAGE" bash -c "$INNER" ||
+  -v "$TARBALL:/t.tar.xz:ro,z" -v "$CHECKS_FILE:/checks.sh:ro,z" "$IMAGE" bash -c "$INNER" ||
   { echo "TARBALL FAIL: $DISTRO container run"; exit 1; }
