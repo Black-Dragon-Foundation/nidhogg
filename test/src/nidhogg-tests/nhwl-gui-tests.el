@@ -570,7 +570,7 @@ Return the two replies."
     (list l (- (plist-get b :h) (frame-pixel-height (selected-frame)) l))))
 
 (ert-deftest nhwl-gui/child-frame-is-a-subsurface ()
-  (skip-unless (nhwl-gui--on-p))
+  (skip-unless (nhwl-gui--recorder-p))
   (let* ((s (frame-scale-factor)) (before (nhwl-gui--sub-ids)) (c nil))
     (unwind-protect
         (progn
@@ -585,7 +585,7 @@ Return the two replies."
       (when (frame-live-p c) (delete-frame c t)))))
 
 (ert-deftest nhwl-gui/child-frame-move-is-a-position-change ()
-  (skip-unless (nhwl-gui--on-p))
+  (skip-unless (nhwl-gui--recorder-p))
   (let* ((s (frame-scale-factor)) (before (nhwl-gui--sub-ids)) (c nil))
     (unwind-protect
         (progn
@@ -605,7 +605,7 @@ Return the two replies."
       (when (frame-live-p c) (delete-frame c t)))))
 
 (ert-deftest nhwl-gui/child-frame-corners-and-shadow ()
-  (skip-unless (and (nhwl-gui--on-p) (boundp 'child-frame-chrome)))
+  (skip-unless (and (nhwl-gui--recorder-p) (boundp 'child-frame-chrome)))
   (let* ((s (frame-scale-factor)) (before (nhwl-gui--sub-ids)) (c nil)
          (old child-frame-chrome))
     (unwind-protect
@@ -634,7 +634,7 @@ Return the two replies."
       (when (frame-live-p c) (delete-frame c t)))))
 
 (ert-deftest nhwl-gui/child-frame-churn-leaves-no-surface ()
-  (skip-unless (nhwl-gui--on-p))
+  (skip-unless (nhwl-gui--recorder-p))
   (let ((before (nhwl-gui--sub-ids)) (c nil))
     (unwind-protect
         (progn
@@ -656,7 +656,7 @@ Return the two replies."
       (when (and c (frame-live-p c)) (delete-frame c t)))))
 
 (ert-deftest nhwl-gui/child-frame-click-goes-to-the-child ()
-  (skip-unless (nhwl-gui--on-p))
+  (skip-unless (nhwl-gui--recorder-p))
   (let ((before (nhwl-gui--sub-ids)) (c nil) (events nil))
     (unwind-protect
         (progn
@@ -683,7 +683,7 @@ Return the two replies."
       (when (frame-live-p c) (delete-frame c t)))))
 
 (ert-deftest nhwl-gui/child-frames-stack ()
-  (skip-unless (nhwl-gui--on-p))
+  (skip-unless (nhwl-gui--recorder-p))
   (let ((a nil) (b nil))
     (unwind-protect
         (let* ((before (nhwl-gui--sub-ids))
@@ -699,6 +699,25 @@ Return the two replies."
           (lower-frame a)
           (should (nhwl-gui--wait (lambda () (equal (funcall order) (list ia ib))) 5)))
       (dolist (f (list a b)) (when (and f (frame-live-p f)) (delete-frame f t))))))
+
+;; `skip-unless' is `(unless (ignore-errors FORM) (ert-skip ...))': a void function in its form skips the row silently.
+;; This row fails when a file's `skip-unless' forms call a function that is not defined.
+(defvar nhwl-gui--source (or load-file-name buffer-file-name))
+
+(ert-deftest nhwl-gui/skip-predicates-are-defined ()
+  (let (missing)
+    (with-temp-buffer
+      (insert-file-contents nhwl-gui--source)
+      (goto-char (point-min))
+      (while (re-search-forward "^ +(skip-unless " nil t)
+        (let ((form (save-excursion (goto-char (match-beginning 0)) (read (current-buffer)))))
+          (letrec ((walk (lambda (f)
+                           (when (and (consp f) (not (eq (car f) 'quote)))
+                             (when (and (symbolp (car f)) (not (keywordp (car f))) (not (fboundp (car f))))
+                               (push (car f) missing))
+                             (when (listp (cdr f)) (mapc walk (cdr f)))))))
+            (funcall walk (cadr form))))))
+    (should-not missing)))
 
 ;;; nhwl-gui-tests.el ends here
 
@@ -868,7 +887,7 @@ Return the two replies."
   (and (equal (plist-get e :req) "set_cursor") (eq (plist-get e :surface) :null)))
 
 (ert-deftest nhwl-gui/pointer-hidden-while-typing ()
-  (skip-unless (nhwl-gui--on-p))
+  (skip-unless (nhwl-gui--recorder-p))
   (nhwl-gui--windowed)
   (let ((make-pointer-invisible t)
         (buf (generate-new-buffer " *nhwl-pointer*"))
@@ -905,7 +924,7 @@ Return the two replies."
              :token))
 
 (ert-deftest nhwl-gui/client-frame-activates-with-its-token ()
-  (skip-unless (and (nhwl-gui--on-p) (daemonp)))
+  (skip-unless (and (nhwl-gui--recorder-p) (daemonp)))
   (let* ((token (nhwl-gui--issued-token))
          (mark (nhwl-gui--mark))
          (old-surface (plist-get (nhwl-gui--last-commit) :surface))
