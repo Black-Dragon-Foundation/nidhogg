@@ -43,6 +43,9 @@
           (nidhogg-watchdog--queue nil)
           (nidhogg-watchdog--last-summary nil)
           (nidhogg-watchdog--drain-hist (make-vector 9 0))
+          (nidhogg-watchdog--drain-take-hist (make-vector 9 0))
+          (nidhogg-watchdog--drain-over 0)
+          (nidhogg-watchdog--summary-base nil)
           (nidhogg-watchdog-record-functions nil)
           (nidhogg-watchdog--resolve-function nil)
           (nidhogg-watchdog--collections-function nil))
@@ -126,6 +129,59 @@ starts are in 1970."
         (should (equal (plist-get (nidhogg-watchdog-stats) :drain)
                        nidhogg-watchdog--drain-hist))))))
 
+(ert-deftest watchdog/drain-stats-budgeted-only ()
+  ;; Only budgeted drains go into the drain histograms, whose buckets start
+  ;; at 1 and 2 ms so the 2 ms budget can be judged; `drain-now' is not
+  ;; counted.  The take and the collection lines are counted apart.
+  (watchdog-lisp--with-log
+    (watchdog-lisp--running
+      (let* ((vt 0.0)
+             (cost 0.0005)
+             (nidhogg-watchdog--clock (lambda () vt))
+             (nidhogg-watchdog--resolve-function
+              (lambda (raw) (setq vt (+ vt cost)) raw)))
+        (watchdog-lisp--span 100)
+        (should (= 1 (nidhogg-watchdog--drain)))      ; 0.5 ms
+        (watchdog-lisp--span 100)
+        (setq cost 0.003)
+        (should (= 1 (nidhogg-watchdog--drain)))      ; 3 ms: over budget
+        (watchdog-lisp--span 100)
+        (watchdog-lisp--span 100)
+        (nidhogg-watchdog-drain-now)                  ; 6 ms, not counted
+        (let ((s (nidhogg-watchdog-stats)))
+          (should (equal (plist-get s :drain) [1 0 1 0 0 0 0 0 0]))
+          (should (equal (plist-get s :drain-take) [2 0 0 0 0 0 0 0 0]))
+          (should (= 1 (plist-get s :drain-over-budget)))
+          (should (= 4 (plist-get s :drain-p95-ms))))))))
+
+(ert-deftest watchdog/summary-never-resets ()
+  ;; A summary line holds the deltas since the last one, by subtracting
+  ;; what it kept, so other readers of `nidhogg-watchdog-stats' (a perf
+  ;; probe) see whole totals; a reset by another caller only restarts the
+  ;; count.
+  (watchdog-lisp--with-log
+    (watchdog-lisp--running
+      (watchdog-lisp--span 150)
+      (watchdog-lisp--span 150)
+      (nidhogg-watchdog-drain-now)
+      (nidhogg-watchdog--write-summary)
+      (should (= 2 (plist-get (nidhogg-watchdog-stats) :stalls)))
+      (watchdog-lisp--span 150)
+      (nidhogg-watchdog--write-summary)
+      (should (= 3 (plist-get (nidhogg-watchdog-stats) :stalls)))
+      (watchdog-lisp--span 150)
+      (nidhogg-watchdog-stats t)
+      (watchdog-lisp--span 150)
+      (nidhogg-watchdog--write-summary t)
+      (let ((summaries (watchdog-lisp--lines "summary")))
+        (should (equal (mapcar (lambda (l) (alist-get 'stalls l)) summaries)
+                       '(2 1 1)))
+        (dolist (l summaries)
+          (should (assq 'drain_over_budget l))
+          (should (= 9 (length (alist-get 'drain_take
+                                          (alist-get 'histograms l)))))
+          (should (>= (alist-get 'spans l) 1)))))))
+
 (ert-deftest watchdog/log-schema ()
   (watchdog-lisp--with-log
     (watchdog-lisp--running
@@ -180,6 +236,31 @@ starts are in 1970."
     (let ((nidhogg-watchdog--day nil))
       (nidhogg-watchdog--log-write 'stall '(:wall-ms 100.0))
       (should (= (length (watchdog-lisp--lines "stall")) 5000)))))
+
+(ert-deftest watchdog/log-write-never-asks ()
+  ;; Someone reads today's day file in a buffer, and the file changes on
+  ;; disk behind it.  The next append must not ask about that: the drain
+  ;; runs from an idle timer, and in a daemon a prompt has no frame.
+  (watchdog-lisp--with-log
+    (nidhogg-watchdog--log-write 'gc '(:pause-ms 1.0))
+    (let* ((file (car (directory-files nidhogg-watchdog-log-directory t
+                                       "\\.jsonl\\'")))
+           (buf (find-file-noselect file)))
+      (unwind-protect
+          (progn
+            (nidhogg-watchdog--log-write 'gc '(:pause-ms 2.0))
+            (set-file-times file (time-subtract nil 60))
+            (should-not (verify-visited-file-modtime buf))
+            (cl-letf (((symbol-function 'ask-user-about-supersession-threat)
+                       (lambda (&rest _) (error "Asked about supersession")))
+                      ((symbol-function
+                        'userlock--ask-user-about-supersession-threat)
+                       (lambda (&rest _) (error "Asked about supersession"))))
+              (nidhogg-watchdog--log-write 'gc '(:pause-ms 3.0)))
+            (should (= 3 (length (watchdog-lisp--lines "gc"))))
+            (should-not (directory-files nidhogg-watchdog-log-directory nil
+                                         "nolock\\|\\`\\.#")))
+        (kill-buffer buf)))))
 
 (ert-deftest watchdog/log-prune ()
   (watchdog-lisp--with-log

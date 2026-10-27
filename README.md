@@ -332,11 +332,40 @@ and `nidhogg-watchdog-hang-ms` (2000) and one repeating 1 s idle timer. The time
 allocation) when nothing is pending; otherwise it takes the rings at once and resolves records within 2 ms, the rest
 waiting for the next idle period (`nidhogg-watchdog-drain-now` drains everything). Each stall is one JSON line (schema
 `v` 1) in `YYYY-MM-DD.jsonl` under `nidhogg-watchdog-log-directory` (default `~/.emacs.d/watchdog/`); `nidhogg-watchdog-record-functions` sees each
-resolved record. At most 5,000 stall lines are written per day (the rest are only counted), day files older than 14
-days are deleted, and a `summary` line (histogram deltas, counters, monitor CPU, drain p95; `nidhogg-watchdog-stats`
-adds the drain's histogram) is appended at most every 10 minutes and when the mode is turned off or Emacs exits.
-<!-- wd: Task 15 -->
-<!-- wd: Task 16 -->
+resolved record. An append never prompts, even while a buffer visits the day file (it locks under a name no buffer
+visits, with lock files off). At most 5,000 stall lines are written per day (the rest are only counted), day files older than 14
+days are deleted, and a `summary` line (histogram deltas, counters, monitor CPU, the drain's histograms, p95 and
+drains over budget) is appended at most every 10 minutes and when the mode is turned off or Emacs exits. A summary
+never resets a counter: it subtracts the values it kept at the last line (`nidhogg-watchdog--stats-delta`, which a
+perf probe can use the same way), so any number of readers can measure a stretch side by side.
+`nidhogg-watchdog-stats` adds the drain's numbers to the C counters: `:drain`, the budgeted drains by duration in
+buckets that start at 1 and 2 ms (<1 <2 <4 <8 <16 <33 <50 <100 ≥100), `:drain-take`, the part of each that takes the
+rings and writes the collection lines (it runs before the budget's resolve loop), `:drain-over-budget` and
+`:drain-p95-ms`; `nidhogg-watchdog-drain-now` (no budget: tests, perf, mode off) is not counted.
+Records are resolved at idle (`lisp/nidhogg-watchdog-resolve.el`): each function gets a name, file and package (native
+subrs through their `.eln` unit, symbols through `function-history` or a `load-history` index built in 2 ms slices, a
+record waiting until its symbols are indexed; closures are `<lambda>` and credited to the nearest named frame, native
+lambdas are `<lambda in FILE>`). The stall line carries `entry` (command, timer, filter, sentinel, hook, redisplay,
+gc, lisp-thread), `culprit` (innermost non-`emacs` Lisp frame in at least half the non-GC samples, with package, file,
+share and dominant phase), `state` (`gc`, `cpu`, `blocked`, `mixed`), `phases`, `stacks` and a `signature`
+(`entry.kind:entry.fn>culprit.fn/phase`) that byte code and native code share. `nidhogg-watchdog-package-functions`
+(each called with a file name) can name a file's package before the defaults.
+The GC row (`lisp/nidhogg-watchdog-gc.el`): GC pauses are judged by their own target, not the 100 ms goal. While
+the mode is on, a `post-gc-hook` function only notes `gcs-done`, `garbage-collect-heapsize`, the origin and the
+threshold in a 64-slot ring (no I/O); the drain joins those notes with the C GC ring's collections on `gcs-done`,
+never by order, and writes one `gc` line per collection: `pause_ms` (exact, from C), `origin` (`idle`, `gap`,
+`audit`, `explicit` or `auto`: the binding of `nidhogg-watchdog-gc-origin` around `garbage-collect`, else the C
+side's explicit flag), `felt`, `span_wall_ms` and `span_nongc_ms` (when the collection's span is a stall; else
+null), `gcs_done`, `heap` (live MB by type and free MB), `rss_mb` (at write) and `threshold_mb`. A collection or a
+note whose partner was dropped by the other ring is written with the fields it has and counted.
+`(nidhogg-watchdog-gc-row &key days)` reads the `gc` lines back (drgnx's GC census writes the same lines): per day
+the count, total seconds, max, p50/p95/p99 from the histogram buckets, felt count and the last live heap; over the 7
+days ending on a day the p95 (only from 20 collections on), the slope of pause against live heap (ms per 100 MB) and
+the live-heap trend (MB per day). A day meets the row when that p95 is at most `nidhogg-watchdog-gc-target-p95`
+(50 ms; unknown under 20 collections, then only the max judges) and no collection reaches `nidhogg-watchdog-gc-max`
+(250 ms). The row reads only the files its windows need (the newest DAYS + 6) and keeps a small digest of each,
+made again only when the file's size or time changed, so asking for it at idle every half hour costs no re-parse
+of closed days.
 <!-- wd: Task 17 -->
 <!-- wd: Task 18 -->
 
