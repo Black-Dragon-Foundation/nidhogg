@@ -50,6 +50,8 @@ scale: `scale120` = 120 x (Xft DPI / 96), and server-side decorations always (`s
 | `set_cursor` | `NSCursor` set | cursor font via `ChangeWindowAttributes` | fits |
 | `window_scale` | `backingScaleFactor` x 120 (120 or 240) | 120 x Xft DPI ratio | fits |
 | `window_ssd` | always true (the system draws the title bar) | true | fits |
+| `window_new` kinds child / popup, `set_position`, `stack` | a child `NSWindow` (`addChildWindow:ordered:`, `setFrameOrigin:`); a popup is a borderless child panel placed by the host from the anchor | an override-redirect window (`XMoveWindow`, `XConfigureWindow` stack mode); `POPUP_DONE` never sent | fits |
+| `set_input_region`, `set_mapped` | `ignoresMouseEvents` for an empty region (a hit-test override otherwise); `orderOut:` / `orderFront:` | `XShapeCombineRectangles` (input); `XUnmapWindow` / `XMapWindow` | fits |
 | `present_begin`, `present_commit` | a bitmap the layer shows (`CALayer.contents`); `age` 0 or 1; damage as `setNeedsDisplayInRect:` | MIT-SHM `XImage`, `XShmPutImage` per damage rectangle; `age` 0 or 2 | fits |
 | events: `KEY`, `MODIFIERS`, `BUTTON`, `POINTER_*`, `SCROLL` | `keyDown:` (`keyCode`, `characters`), `flagsChanged:`, mouse and `scrollWheel:` (`v120` 0, the precise deltas in `dx`, `dy`) | XInput2 key and button events through xkb (`v120` from wheel buttons) | fits |
 | events: `CONFIGURE`, `CLOSE`, `SCALE`, `FOCUS` | `windowDidResize:`, `windowShouldClose:`, `windowDidChangeBackingProperties:`, `windowDidBecomeKey:` | `ConfigureNotify`, `WM_DELETE_WINDOW`, an Xft DPI change, `FocusIn` | fits |

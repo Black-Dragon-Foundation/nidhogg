@@ -175,7 +175,7 @@ impl WaylandShell {
         dev_w: i32,
         dev_h: i32,
     ) -> ShellResult<NhShellBuffer> {
-        if !self.main.windows.contains_key(&id) || dev_w <= 0 || dev_h <= 0 {
+        if !self.main.is_window(id) || dev_w <= 0 || dev_h <= 0 {
             return Err(ShellError::State);
         }
         let present = self.main.present_of(id);
@@ -290,7 +290,7 @@ impl WaylandShell {
 
     /// The host has drawn into window `id`: `FRAME_READY` comes when the pacer lets it present.
     pub(super) fn window_dirty_impl(&mut self, id: WindowId) -> ShellResult {
-        if !self.main.windows.contains_key(&id) {
+        if !self.main.is_window(id) {
             return Err(ShellError::State);
         }
         let present = self.main.present_of(id);
@@ -319,7 +319,7 @@ impl WaylandShell {
 
     /// Whether the host may draw and present window `id` now.
     pub(super) fn window_ready_impl(&mut self, id: WindowId) -> ShellResult<bool> {
-        if !self.main.windows.contains_key(&id) {
+        if !self.main.is_window(id) {
             return Err(ShellError::State);
         }
         Ok(self.main.presents.get(&id).is_some_and(|p| {

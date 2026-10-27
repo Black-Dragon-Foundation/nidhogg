@@ -80,6 +80,45 @@ pub struct WindowDesc {
     pub flags: u32,
 }
 
+/// `ChildDesc::kind`: a top-level window (made by `window_new`), a child (a subsurface) or a popup.
+pub const NHSHELL_KIND_TOPLEVEL: u32 = 0;
+pub const NHSHELL_KIND_CHILD: u32 = 1;
+pub const NHSHELL_KIND_POPUP: u32 = 2;
+
+/// `Anchor::adjust`: what the compositor may do when a popup would leave the screen.
+pub const NHSHELL_ADJUST_SLIDE_X: u32 = 1 << 0;
+pub const NHSHELL_ADJUST_SLIDE_Y: u32 = 1 << 1;
+pub const NHSHELL_ADJUST_FLIP_X: u32 = 1 << 2;
+pub const NHSHELL_ADJUST_FLIP_Y: u32 = 1 << 3;
+
+/// Where a popup goes: the rectangle `x`, `y`, `w`, `h` (logical pixels in the parent's surface) it sits beside.
+/// `gravity` is the side (and corner) it grows toward: 0 none, 1 top, 2 bottom, 3 left, 4 right, 5 top-left,
+/// 6 bottom-left, 7 top-right, 8 bottom-right.  The popup's matching corner touches the same corner of the rectangle,
+/// so 8 puts it below and right of the rectangle.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Anchor {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    pub gravity: u32,
+    pub adjust: u32,
+}
+
+/// What to open a child or popup with: `w` x `h` logical pixels at (`x`, `y`) in `parent`.  A popup is placed by
+/// `anchor` and ignores `x`, `y`.
+#[derive(Clone, Copy, Debug)]
+pub struct ChildDesc {
+    pub kind: u32,
+    pub parent: WindowId,
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    pub anchor: Anchor,
+}
+
 /// A pixel buffer to draw into until the next `present_commit`.  `age` is how many presents ago these pixels were
 /// last shown (0: contents undefined, draw everything).  Valid until `present_commit` or the next `present_begin`.
 #[repr(C)]
@@ -133,6 +172,17 @@ pub trait ShellBackend {
     fn window_scale(&self, window: WindowId) -> ShellResult<u32>;
     /// Whether the compositor decorates the window (server-side decorations were granted to it).
     fn window_ssd(&self, window: WindowId) -> ShellResult<bool>;
+
+    /// Create a child (`NHSHELL_KIND_CHILD`) or popup (`NHSHELL_KIND_POPUP`) window.
+    fn child_new(&mut self, desc: &ChildDesc) -> ShellResult<WindowId>;
+    /// Move a child (applied with its parent's next commit) or a popup (its anchor rectangle's origin).
+    fn set_position(&mut self, window: WindowId, x: i32, y: i32) -> ShellResult;
+    /// Put a child above or below `sibling` (0: its parent), applied with the parent's next commit.
+    fn stack(&mut self, window: WindowId, sibling: WindowId, above: bool) -> ShellResult;
+    /// The part of the window that takes input (logical pixels); none at all means the whole surface.
+    fn set_input_region(&mut self, window: WindowId, rects: &[Rect]) -> ShellResult;
+    /// Off: show nothing (a null buffer); on: the next present shows the window again.
+    fn set_mapped(&mut self, window: WindowId, on: bool) -> ShellResult;
 
     /// Begin a frame of `dev_w` x `dev_h` device pixels.
     fn present_begin(
