@@ -24,14 +24,19 @@ struct Recorder {
 
 impl Recorder {
     fn start() -> Recorder {
+        Recorder::start_profile("sway")
+    }
+
+    fn start_profile(name: &str) -> Recorder {
         let bin = std::env::var_os("NH_RECORDER")
             .expect("NH_RECORDER is not set (the path of S0's nh-recorder binary)");
         static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let dir = std::env::temp_dir().join(format!("nhshell-child-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let profile =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../test/recorder/profiles/sway.json");
+        let profile = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../test/recorder/profiles")
+            .join(format!("{name}.json"));
         let mut child = Command::new(bin)
             .args(["--socket", "wl", "--control"])
             .arg(dir.join("control"))
@@ -140,7 +145,7 @@ fn wait_for(shell: &mut WaylandShell, pred: impl Fn(&NhShellEvent) -> bool) -> N
     }
 }
 
-/// A window of 200x100 logical pixels whose first configure is acked.
+/// A window of 200x100 logical pixels that is mapped: its first configure is acked, with the buffer that carries it.
 fn window(shell: &mut WaylandShell) -> u64 {
     let id = shell
         .window_new(&WindowDesc {
@@ -154,8 +159,9 @@ fn window(shell: &mut WaylandShell) -> u64 {
     let ev = wait_for(shell, |e| e.kind == NHSHELL_EV_CONFIGURE);
     // SAFETY: a CONFIGURE record carries `configure`.
     shell
-        .ack_configure(id, unsafe { ev.u.configure }.serial)
+        .ack_configure(id, unsafe { ev.u.configure }.serial, NHSHELL_ACK_CONTENT)
         .unwrap();
+    draw(shell, id, 200, 100);
     id
 }
 
@@ -298,12 +304,129 @@ mod child {
             adjust: 0,
         };
         let p = popup(&mut shell, parent, anchor);
+        // the first configure is acked with the popup's first buffer
+        wait_for(&mut shell, |e| {
+            e.kind == NHSHELL_EV_FRAME_READY && e.window == p
+        });
+        draw(&mut shell, p, 60, 30);
         // below and right of the rectangle: its bottom-right corner is the popup's top-left
         let n = rec.wait_node(p, |n| n.contains("\"position\":[110,60]"));
         assert!(n.contains("\"role\":\"popup\""), "{n}");
         shell.set_position(p, 20, 25).unwrap();
-        shell.flush().unwrap();
+        wait_for(&mut shell, |e| {
+            e.kind == NHSHELL_EV_FRAME_READY && e.window == p
+        });
+        shell.present_bare(p).unwrap();
         rec.wait_node(p, |n| n.contains("\"position\":[30,35]"));
+    }
+
+    /// The tip bug: a reposition takes effect when the client acks and commits.  The ack makes the popup ready
+    /// (`OWED`), and a bare commit carries it.
+    #[test]
+    fn popup_move_applies_with_the_acks_commit() {
+        let rec = Recorder::start();
+        let mut shell = rec.open();
+        let parent = window(&mut shell);
+        let anchor = Anchor {
+            x: 100,
+            y: 50,
+            w: 10,
+            h: 10,
+            gravity: 8,
+            adjust: 0,
+        };
+        let p = popup(&mut shell, parent, anchor);
+        wait_for(&mut shell, |e| {
+            e.kind == NHSHELL_EV_FRAME_READY && e.window == p
+        });
+        draw(&mut shell, p, 60, 30);
+        rec.wait_node(p, |n| n.contains("\"position\":[110,60]"));
+        shell.set_position(p, 20, 25).unwrap();
+        wait_for(&mut shell, |e| {
+            e.kind == NHSHELL_EV_FRAME_READY && e.window == p
+        });
+        assert_eq!(shell.window_ready(p).unwrap(), NHSHELL_READY_OWED);
+        // acked, not committed: the position stays
+        std::thread::sleep(Duration::from_millis(100));
+        rec.wait_node(p, |n| n.contains("\"position\":[110,60]"));
+        shell.present_bare(p).unwrap();
+        rec.wait_node(p, |n| n.contains("\"position\":[30,35]"));
+    }
+
+    /// B2: a child's move or stacking is its parent's state, so the parent owes a commit.
+    #[test]
+    fn child_move_marks_the_parent_owed() {
+        let rec = Recorder::start();
+        let mut shell = rec.open();
+        let parent = window(&mut shell);
+        let c = child(&mut shell, parent, 40, 30);
+        while shell.next_event().unwrap().is_some() {}
+        std::thread::sleep(Duration::from_millis(100));
+        while shell.next_event().unwrap().is_some() {}
+        assert_eq!(shell.window_ready(parent).unwrap(), 0);
+        shell.set_position(c, 70, 10).unwrap();
+        wait_for(&mut shell, |e| {
+            e.kind == NHSHELL_EV_FRAME_READY && e.window == parent
+        });
+        assert_ne!(shell.window_ready(parent).unwrap() & NHSHELL_READY_OWED, 0);
+        // a bare commit of the parent clears it, and applies the move
+        shell.present_bare(parent).unwrap();
+        rec.wait_node(c, |n| n.contains("\"position\":[70,10]"));
+        assert_eq!(shell.window_ready(parent).unwrap(), 0);
+        shell.stack(c, 0, false).unwrap();
+        assert_ne!(shell.window_ready(parent).unwrap() & NHSHELL_READY_OWED, 0);
+    }
+
+    /// A popup takes no buffer before its first configure.
+    #[test]
+    fn popup_takes_no_buffer_before_its_first_configure() {
+        let rec = Recorder::start();
+        let mut shell = rec.open();
+        let parent = window(&mut shell);
+        let p = popup(&mut shell, parent, Anchor::default());
+        shell.window_dirty(p).unwrap();
+        assert_eq!(shell.window_ready(p).unwrap(), 0);
+        assert!(shell.present_begin(p, 60, 30).is_err());
+        // the configure is dispatched: its content ack makes the popup ready
+        wait_for(&mut shell, |e| {
+            e.kind == NHSHELL_EV_FRAME_READY && e.window == p
+        });
+        assert_ne!(shell.window_ready(p).unwrap() & NHSHELL_READY_CONTENT, 0);
+        assert!(shell.present_begin(p, 60, 30).is_ok());
+    }
+
+    /// Below `xdg_popup` v3 a move recreates the popup: the answer is "redraw all", the old `xdg_surface` is acked
+    /// no more, and the next buffer maps the new popup.
+    #[test]
+    fn popup_recreate_asks_for_a_redraw() {
+        let rec = Recorder::start_profile("xdg-v2");
+        let mut shell = rec.open();
+        let parent = window(&mut shell);
+        let anchor = Anchor {
+            x: 100,
+            y: 50,
+            w: 10,
+            h: 10,
+            gravity: 8,
+            adjust: 0,
+        };
+        let p = popup(&mut shell, parent, anchor);
+        wait_for(&mut shell, |e| {
+            e.kind == NHSHELL_EV_FRAME_READY && e.window == p
+        });
+        draw(&mut shell, p, 60, 30);
+        rec.wait_node(p, |n| n.contains("\"position\":[110,60]"));
+        assert!(shell.set_position(p, 20, 25).unwrap(), "redraw all");
+        // the new popup is configured again, and that first configure wants a buffer
+        wait_for(&mut shell, |e| {
+            e.kind == NHSHELL_EV_FRAME_READY && e.window == p
+        });
+        assert_ne!(shell.window_ready(p).unwrap() & NHSHELL_READY_CONTENT, 0);
+        draw(&mut shell, p, 60, 30);
+        let n = rec.wait_node(p, |n| n.contains("\"position\":[30,35]"));
+        assert!(!n.contains("\"buffer\":null"), "{n}");
+        // the connection is still up: the recorder raised no protocol error
+        assert!(shell.next_event().is_ok());
     }
 
     #[test]

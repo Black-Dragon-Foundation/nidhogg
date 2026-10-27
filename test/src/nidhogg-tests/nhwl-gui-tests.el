@@ -1244,3 +1244,66 @@ Return the two replies."
           (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (equal (nhwl-gui--popup-ids) before)) 5))
           (should-not (x-hide-tip)))
       (x-hide-tip))))
+
+;; Present path S2: acks are recorded and go out with the commit that carries them.
+
+(defun nhwl-gui--popup-commits (mark)
+  "The popups' commits since MARK."
+  (seq-filter (lambda (c) (equal (plist-get c :role) "popup"))
+              (plist-get (gui-runner-recorder (list :cmd "log" :since mark)) :commits)))
+
+(ert-deftest nhwl-gui/tip-move-applies ()
+  "A tip that only moves (DX and DY) is moved by the commit that carries the reposition's ack."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((before (nhwl-gui--popup-ids)))
+    (unwind-protect
+        (progn
+          (x-show-tip "hello" nil nil 30 0 0)
+          (let* ((n (nhwl-gui--wait (lambda () (nhwl-gui--pump) (nhwl-gui--new-popup before)) 5))
+                 (mark (nhwl-gui--mark))
+                 (was (plist-get n :position)))
+            (should n)
+            (x-show-tip "hello" nil nil 30 20 12)
+            (should (nhwl-gui--wait
+                     (lambda ()
+                       (nhwl-gui--pump)
+                       (and (seq-find (lambda (c) (nhwl-gui--get c :ack_serial)) (nhwl-gui--popup-commits mark))
+                            (not (equal (plist-get (nhwl-gui--node (plist-get n :id)) :position) was))))
+                     1))))
+      (x-hide-tip))))
+
+(ert-deftest nhwl-gui/ack-carries-the-new-size ()
+  "Two configures while the pacer waits: no commit carries the older serial, and every ack comes with a buffer of
+its own configure's size."
+  ;; the profile must be able to hold frame callbacks (mutter's occlusion)
+  (skip-unless (and (nhwl-gui--recorder-p) (ignore-errors (gui-runner-recorder '(:cmd "unocclude")))))
+  (nhwl-gui--windowed)
+  (switch-to-buffer "*scratch*")
+  (unwind-protect
+      (progn
+        (gui-runner-recorder '(:cmd "occlude"))
+        (insert "x")
+        (redisplay t)
+        (sleep-for 0.1)
+        ;; the commit above waits for its callback, which is held
+        (let* ((mark (nhwl-gui--mark))
+               (a (let ((inhibit-redisplay t))
+                    (prog1 (plist-get (gui-runner-recorder
+                                       '(:cmd "configure" :surface "focused" :size [700 500] :states ["activated"]))
+                                      :serial)
+                      (sleep-for 0.2)
+                      (input-pending-p))))
+               (b (plist-get (gui-runner-recorder
+                              '(:cmd "configure" :surface "focused" :size [760 540] :states ["activated"]))
+                             :serial)))
+          (sleep-for 0.2)
+          (input-pending-p)
+          (should (nhwl-gui--wait
+                   (lambda ()
+                     (redisplay t)
+                     (seq-find (lambda (c) (eql (nhwl-gui--get c :ack_serial) b)) (nhwl-gui--new mark)))
+                   5))
+          (let ((acks (seq-filter (lambda (c) (nhwl-gui--get c :ack_serial)) (nhwl-gui--new mark))))
+            (should-not (seq-find (lambda (c) (eql (nhwl-gui--get c :ack_serial) a)) acks))
+            (should (equal (seq-uniq (mapcar #'nhwl-gui--logical-size acks)) '((760 540)))))))
+    (gui-runner-recorder '(:cmd "unocclude"))))

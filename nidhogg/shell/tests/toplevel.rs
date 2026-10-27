@@ -73,8 +73,8 @@ mod toplevel {
         assert_eq!(token(initial, "ack_serial"), Some("null"), "{initial}");
         assert_eq!(token(initial, "buffer"), Some("null"), "{initial}");
         // the host acks, then commits
-        shell.ack_configure(id, first.serial).unwrap();
-        shell.surface_commit(id).unwrap();
+        shell.ack_configure(id, first.serial, 0).unwrap();
+        shell.present_bare(id).unwrap();
         shell.flush().unwrap();
         let log = wait_commit(&rec, 1, |c| token(c, "ack_serial") != Some("null"));
         let acked = log
@@ -94,8 +94,8 @@ mod toplevel {
         let mut shell = rec.open();
         let id = new_window(&mut shell);
         let first = configure_of(&wait_event(&mut shell, NHSHELL_EV_CONFIGURE));
-        shell.ack_configure(id, first.serial).unwrap();
-        shell.surface_commit(id).unwrap();
+        shell.ack_configure(id, first.serial, 0).unwrap();
+        shell.present_bare(id).unwrap();
         shell.flush().unwrap();
         collect(&mut shell, 50);
         // two configures before the client commits
@@ -164,9 +164,9 @@ mod toplevel {
             .rfind(|e| e.kind == NHSHELL_EV_CONFIGURE)
             .expect("a configure");
         shell
-            .ack_configure(id, configure_of(&first).serial)
+            .ack_configure(id, configure_of(&first).serial, 0)
             .unwrap();
-        shell.surface_commit(id).unwrap();
+        shell.present_bare(id).unwrap();
         shell.flush().unwrap();
         let log = wait_commit(rec, 1, |c| token(c, "ack_serial") != Some("null"));
         let acked = log
