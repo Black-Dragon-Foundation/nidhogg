@@ -109,4 +109,17 @@
                                  1))))))))))
     (should (nidhogg-workers--test-ts-await-idle 60000))))
 
+(ert-deftest workers/autosave-snapshot ()
+  ;; The auto-save snapshot's copy of 50 MB: into fresh memory, then into
+  ;; the same memory.  The numbers go to the log; the copy is
+  ;; fault-bound when the second takes at most half of the first.
+  (let* ((r (nidhogg-workers--test-copy-bench (* 50 1024 1024)))
+         (fresh (nth 0 r))
+         (again (nth 2 r)))
+    (message "workers/autosave-snapshot: fresh %.1f ms, %d faults; same %.1f ms, %d faults; %s"
+             (/ fresh 1e6) (nth 1 r) (/ again 1e6) (nth 3 r)
+             (if (<= (* 2 again) fresh) "fault-bound" "copy-bound"))
+    (should (> fresh 0))
+    (should (< (nth 3 r) (nth 1 r)))))
+
 ;;; workers-timing-tests.el ends here
