@@ -291,6 +291,136 @@ fn corner_coverage_within_1_of_255() {
     );
 }
 
+/// PD's corners (Task 14) against a Cairo-free reference: each pixel of a corner square takes 16×16 point samples,
+/// each sample `beneath` beyond the outer arc, `ring` between the arcs, else the inside (`fill`, or the pixel as drawn
+/// when `fill` is 0); every channel within 1/255. Outside the squares of the mask nothing changes.
+#[test]
+fn decor_corners_match_cairo_within_1() {
+    let k = kernels();
+    let (w, h, stride) = (70usize, 40usize, 75usize);
+    let (bg, ring, beneath) = (0xff30_3060u32, 0xffff_8000u32, 0xff20_2020u32);
+    let ch = |p: u32, s: u32| ((p >> s) & 0xff) as f64;
+    for (r, b) in [
+        (6u32, 1u32),
+        (6, 2),
+        (8, 2),
+        (12, 2),
+        (12, 4),
+        (7, 1),
+        (15, 3),
+        (24, 2),
+        (3, 3),
+        (5, 0),
+    ] {
+        // 24 is clamped to the box's half height, 20
+        let r = clamp_radius(w, h, r);
+        for fill in [0u32, 0xff40_6040] {
+            for mask in [15u32, 6, 9, 1] {
+                let mut px = vec![bg; stride * h];
+                k.decor_corners(
+                    &mut PixelsMut {
+                        data: &mut px,
+                        stride,
+                    },
+                    w,
+                    h,
+                    r,
+                    b,
+                    fill,
+                    ring,
+                    beneath,
+                    mask,
+                );
+                let rr = r as usize;
+                let inside = if fill == 0 { bg } else { fill };
+                if fill != 0 {
+                    // the repaint of a run's end equals the box drawn over its background, bit for bit
+                    let mut over = vec![fill; stride * h];
+                    k.decor_corners(
+                        &mut PixelsMut {
+                            data: &mut over,
+                            stride,
+                        },
+                        w,
+                        h,
+                        r,
+                        b,
+                        0,
+                        ring,
+                        beneath,
+                        mask,
+                    );
+                    for (i, (&o, &p)) in over.iter().zip(&px).enumerate() {
+                        assert!(
+                            o == p || p == bg,
+                            "r {r} b {b} mask {mask}: pixel {i} {o:x} vs {p:x}"
+                        );
+                    }
+                }
+                for y in 0..h {
+                    for x in 0..stride {
+                        let left = x < rr;
+                        let top = y < rr;
+                        let corner = match (left, x >= w - rr && x < w, top, y >= h - rr) {
+                            (true, _, true, _) => Some(1),
+                            (_, true, true, _) => Some(2),
+                            (_, true, _, true) => Some(4),
+                            (true, _, _, true) => Some(8),
+                            _ => None,
+                        };
+                        let got = px[y * stride + x];
+                        let Some(bit) = corner.filter(|c| mask & c != 0) else {
+                            assert_eq!(got, bg, "r {r} b {b} mask {mask}: ({x}, {y}) changed");
+                            continue;
+                        };
+                        // the arcs' centre in this corner, and the samples per region
+                        let cx = if bit == 1 || bit == 8 {
+                            rr as f64
+                        } else {
+                            (w - rr) as f64
+                        };
+                        let cy = if bit < 4 { rr as f64 } else { (h - rr) as f64 };
+                        let (lo, hi) = ((r - b.min(r)) as f64, r as f64);
+                        let mut n = [0u32; 3];
+                        for sy in 0..16 {
+                            for sx in 0..16 {
+                                let dx = x as f64 + (sx as f64 + 0.5) / 16.0 - cx;
+                                let dy = y as f64 + (sy as f64 + 0.5) / 16.0 - cy;
+                                let d2 = dx * dx + dy * dy;
+                                n[if d2 > hi * hi {
+                                    0
+                                } else if b > 0 && d2 > lo * lo {
+                                    1
+                                } else {
+                                    2
+                                }] += 1;
+                            }
+                        }
+                        for s in [0, 8, 16, 24] {
+                            let want = (ch(beneath, s) * n[0] as f64
+                                + ch(ring, s) * n[1] as f64
+                                + ch(inside, s) * n[2] as f64)
+                                / 256.0;
+                            assert!(
+                                (ch(got, s) - want).abs() <= 1.0,
+                                "r {r} b {b} fill {fill:x} ({x}, {y}) channel {s}: {} vs {want:.2}",
+                                ch(got, s)
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        Arc::ptr_eq(
+            &decor_tile(6, 1, 0, ring, beneath),
+            &decor_tile(6, 1, 0, ring, beneath)
+        ),
+        "cached per (radius, border, colours)"
+    );
+}
+
 #[test]
 fn ring_leaves_straight_edges_untouched() {
     let mut rng = Rng(seed("ring"));
