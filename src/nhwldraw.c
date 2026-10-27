@@ -26,6 +26,7 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <cairo.h>
 #include <math.h>
 #include <string.h>
+#include <time.h>
 
 #include "lisp.h"
 #include "nhwlterm.h"
@@ -2316,6 +2317,7 @@ nhwl_glitnir_forget (struct frame *f)
     {
       glitnir_root_drop (out->glitnir_id);
       glitnir_damage_forget (out->glitnir_id);
+      glitnir_stats_forget (out->glitnir_id);
       out->glitnir_id = 0;
     }
 }
@@ -2354,6 +2356,16 @@ nhwl_backing_resize (struct frame *f)
   nhwl_glitnir_ensure (f);
 }
 
+/* Monotonic nanoseconds.  */
+uint64_t
+nhwl_now_ns (void)
+{
+  struct timespec ts;
+
+  clock_gettime (CLOCK_MONOTONIC, &ts);
+  return (uint64_t) ts.tv_sec * 1000000000 + ts.tv_nsec;
+}
+
 /* Take Glitnir's committed damage for F into the pending list.  Past the
    list's size the pending damage collapses to its bounding box.  */
 void
@@ -2364,6 +2376,8 @@ nhwl_glitnir_commit (struct frame *f)
   size_t i;
 
   nhwl_glitnir_ensure (f);
+  if (!out->t_commit_ns)
+    out->t_commit_ns = nhwl_now_ns ();
   if (glitnir_commit (out->glitnir_id, &co) != GLITNIR_OK)
     return;
   for (i = 0; i < co.n; i++)
@@ -2378,6 +2392,7 @@ nhwl_glitnir_commit (struct frame *f)
       r.h = y1 - r.y;
       if (r.w <= 0 || r.h <= 0)
 	continue;
+      out->damage_px += (uint64_t) r.w * r.h;
       if (out->npending == NHWL_PENDING_MAX)
 	{
 	  GlitnirRect b = out->pending[0];
@@ -2432,6 +2447,8 @@ nhwl_glitnir_compose (struct frame *f, const NhShellBuffer *buf)
       for (j = 0; j < out->nhistn[i]; j++)
 	clip[n++] = out->hist[i][j];
 
+  for (i = 0; i < out->npending; i++)
+    out->painted_px += (uint64_t) out->pending[i].w * out->pending[i].h;
   if (glitnir_compose (out->glitnir_id, &t, clip, n, &s, 1) != GLITNIR_OK)
     {
       /* The host draws it the stock way: a plain copy of the rows.  */
@@ -2449,7 +2466,19 @@ void
 nhwl_glitnir_presented (struct frame *f)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  GlitnirStatsEntry e = { 0 };
   int i;
+
+  /* From the key event the paint shows, else from its commit, to now.  */
+  e.t_commit_ns = out->t_key_ns ? out->t_key_ns : out->t_commit_ns;
+  e.t_draw_start_ns = out->t_commit_ns;
+  e.t_draw_end_ns = nhwl_now_ns ();
+  e.presented_us = -1;
+  e.damage_px = out->damage_px;
+  e.painted_px = out->painted_px;
+  e.backfill = 2;
+  glitnir_stats_record (out->glitnir_id, &e);
+  out->t_key_ns = out->t_commit_ns = out->damage_px = out->painted_px = 0;
 
   for (i = NHWL_HIST - 1; i > 0; i--)
     {
