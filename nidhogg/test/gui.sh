@@ -47,6 +47,9 @@ checkout=$(cd "$(dirname "$self")/../.." && pwd)
 # image pinned by digest (registry.fedoraproject.org/fedora:45 as of 2026-10-21)
 IMAGE_fedora_45=registry.fedoraproject.org/fedora@sha256:6430abb162172c052b6ac9c9d6a219b1b21352508c04b1b0ff2eb9292943d881
 
+# budgets.sh sources this file for the pinned image only: stop before any argument is read
+[ "${GUI_SH_SOURCE_ONLY:-}" = 1 ] && return 0
+
 usage() { sed -n '2,/^# Temp files/s/^# \{0,1\}//p' "$self" >&2; exit 2; }
 
 prefix= scale=1 size=2880x1800 monitors=1 select= tests= daemon=0 container= wdebug= timeout=300
