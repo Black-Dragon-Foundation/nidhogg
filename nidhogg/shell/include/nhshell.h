@@ -43,16 +43,18 @@ typedef struct
   bool force_csd;  /* client-side decorations are forced (a test switch) */
 } NhShellCaps;
 
-/* Event kinds.  KIND says which member of NhShellEvent.u is valid; CLOSE, POINTER_LEAVE and DISCONNECTED have none.
-   MODIFIERS uses u.key.mods; POINTER_ENTER, POINTER_MOTION and POINTER_LEAVE use u.pointer.x and y; BUTTON uses
-   u.pointer.button and state; OUTPUT_REMOVE uses u.output.id.  Positions are logical pixels; TIME_NS is the
-   compositor's clock.  */
+/* Event kinds.  KIND says which member of NhShellEvent.u is valid; CLOSE, POINTER_LEAVE, DISCONNECTED and BUFFER_FREE
+   have none.  MODIFIERS uses u.key.mods; POINTER_ENTER, POINTER_MOTION and POINTER_LEAVE use u.pointer.x and y;
+   BUTTON uses u.pointer.button and state; OUTPUT_REMOVE uses u.output.id.  Positions are logical pixels; TIME_NS is
+   the compositor's clock.  */
 enum
 {
   NHSHELL_EV_KEY = 1, NHSHELL_EV_MODIFIERS, NHSHELL_EV_POINTER_ENTER, NHSHELL_EV_POINTER_LEAVE,
   NHSHELL_EV_POINTER_MOTION, NHSHELL_EV_BUTTON, NHSHELL_EV_SCROLL, NHSHELL_EV_CONFIGURE, NHSHELL_EV_CLOSE,
   NHSHELL_EV_SCALE, NHSHELL_EV_FOCUS, NHSHELL_EV_FRAME_DONE, NHSHELL_EV_OUTPUT_ADD, NHSHELL_EV_OUTPUT_REMOVE,
-  NHSHELL_EV_DISCONNECTED
+  NHSHELL_EV_DISCONNECTED,
+  /* a buffer of the window came free after nhshell_present_begin found none: present what is owed */
+  NHSHELL_EV_BUFFER_FREE
 };
 
 /* u.key.mods */
@@ -202,9 +204,10 @@ int32_t nhshell_window_set_geometry (NhShell *sh, uint64_t window, int32_t x, in
 int32_t nhshell_window_ack_configure (NhShell *sh, uint64_t window, uint32_t serial);
 int32_t nhshell_window_set_cursor (NhShell *sh, uint64_t window, uint32_t shape);
 
-/* The window's preferred scale times 120 (120 until the compositor says), and its logical size.  */
+/* The window's preferred scale times 120 (120 until the compositor says), and whether the compositor decorates it
+   (*SSD 1 or 0; caps.ssd is the latest answer for any window).  */
 int32_t nhshell_window_scale (NhShell *sh, uint64_t window, uint32_t *scale120);
-int32_t nhshell_window_logical_size (NhShell *sh, uint64_t window, int32_t *w, int32_t *h);
+int32_t nhshell_window_ssd (NhShell *sh, uint64_t window, int32_t *ssd);
 
 /* The presenter.  begin returns a buffer of DEV_W x DEV_H device pixels in *OUT; commit shows it, with DAMAGE (N
    rectangles in device pixels; NULL only when N is 0, which presents with no damage).  */

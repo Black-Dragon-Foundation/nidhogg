@@ -1,6 +1,6 @@
 # nhshell
 
-Nidhogg's native shell layer: a Rust crate with a C ABI (`include/nhshell.h`, from Task 2 on), built as one static
+Nidhogg's native shell layer: a Rust crate with a C ABI (`include/nhshell.h`), built as one static
 library, `libnhshell.a`, that also carries every `glitnir_*` symbol. Under `--with-nidhogg-wayland` the Makefile links
 it instead of `libglitnir.a`; two Rust static libraries in one binary would collide on std's symbols.
 
@@ -26,8 +26,7 @@ a missing Wayland protocol, so it is "fits", not "needs change".
 
 ### API check (macOS and X11)
 
-macOS from the compositor design section 11 (CoreAnimation composites, so the CPU compose step is not used, and child
-frames are separate child `NSWindow`s, which are outside this API: W1 adds them). X11 with x11rb, with no fractional
+macOS with AppKit (CoreAnimation composites, so the CPU compose step is not used, and child frames are separate child `NSWindow`s, which are outside this API so far). X11 with x11rb, with no fractional
 scale: `scale120` = 120 x (Xft DPI / 96), and server-side decorations always (`ssd` true).
 
 | Call | macOS (AppKit, Core Animation) | X11 (x11rb) | Verdict |
@@ -50,11 +49,12 @@ scale: `scale120` = 120 x (Xft DPI / 96), and server-side decorations always (`s
 | `ack_configure` | no configure handshake: no-op (`CONFIGURE` events come from `windowDidResize:`) | answers `_NET_WM_SYNC_REQUEST` with that serial, or no-op | fits |
 | `set_cursor` | `NSCursor` set | cursor font via `ChangeWindowAttributes` | fits |
 | `window_scale` | `backingScaleFactor` x 120 (120 or 240) | 120 x Xft DPI ratio | fits |
-| `window_logical_size` | `contentView.bounds` | geometry divided by the scale | fits |
+| `window_ssd` | always true (the system draws the title bar) | true | fits |
 | `present_begin`, `present_commit` | a bitmap the layer shows (`CALayer.contents`); `age` 0 or 1; damage as `setNeedsDisplayInRect:` | MIT-SHM `XImage`, `XShmPutImage` per damage rectangle; `age` 0 or 2 | fits |
 | events: `KEY`, `MODIFIERS`, `BUTTON`, `POINTER_*`, `SCROLL` | `keyDown:` (`keyCode`, `characters`), `flagsChanged:`, mouse and `scrollWheel:` (`v120` 0, the precise deltas in `dx`, `dy`) | XInput2 key and button events through xkb (`v120` from wheel buttons) | fits |
 | events: `CONFIGURE`, `CLOSE`, `SCALE`, `FOCUS` | `windowDidResize:`, `windowShouldClose:`, `windowDidChangeBackingProperties:`, `windowDidBecomeKey:` | `ConfigureNotify`, `WM_DELETE_WINDOW`, an Xft DPI change, `FocusIn` | fits |
 | events: `FRAME_DONE` | the display link (`presented_ns` 0 unless known) | after `XShmPutImage` completes (`presented_ns` 0) | fits |
+| events: `BUFFER_FREE` | never sent (a layer's bitmap is never busy) | `XShmCompletion` of a busy image | fits |
 | events: `OUTPUT_ADD`, `OUTPUT_REMOVE` | `NSScreen` and `didChangeScreenParameters` | RandR monitors | fits |
 | events: `DISCONNECTED` | never sent | connection error | fits |
 

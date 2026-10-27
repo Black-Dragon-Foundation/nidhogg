@@ -445,7 +445,7 @@ extern void mark_nhwlterm (void);
 extern int nhwl_drain_events (struct nhwl_display_info *,
 			      struct input_event *);
 
-/* The backing (nhwlterm.c; Task 10 draws on it).  */
+/* The backing (nhwlterm.c; nhwldraw.c draws on it).  */
 extern void nhwl_cr_update_surface_desired_size (struct frame *, int, int,
 						 bool);
 extern cairo_t *nhwl_begin_cr_clip (struct frame *);

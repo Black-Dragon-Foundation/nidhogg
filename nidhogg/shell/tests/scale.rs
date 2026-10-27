@@ -1,101 +1,11 @@
-//! T1 tests of outputs and scale against nh-recorder (see `reader.rs` for the setup).
+//! T1 tests of outputs and scale against nh-recorder.
+//! The harness is `common/mod.rs`.
 
+mod common;
+
+use common::*;
 use nhshell::api::ShellBackend;
 use nhshell::event::{NHSHELL_EV_OUTPUT_ADD, NHSHELL_EV_SCALE, NhShellEvent};
-use nhshell::wayland::WaylandShell;
-use rustix::event::{PollFd, PollFlags, Timespec, poll};
-use rustix::fd::BorrowedFd;
-use std::ffi::CString;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
-
-struct Recorder {
-    child: Child,
-    dir: PathBuf,
-}
-
-impl Recorder {
-    fn start(profile: &str) -> Recorder {
-        let bin = std::env::var_os("NH_RECORDER")
-            .expect("NH_RECORDER is not set (the path of S0's nh-recorder binary)");
-        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("nhshell-scale-{}-{n}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let profile = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../test/recorder/profiles")
-            .join(format!("{profile}.json"));
-        let mut child = Command::new(bin)
-            .args(["--socket", "wl", "--control"])
-            .arg(dir.join("control"))
-            .arg("--profile")
-            .arg(&profile)
-            .env("XDG_RUNTIME_DIR", &dir)
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("spawn nh-recorder");
-        let mut line = String::new();
-        BufReader::new(child.stdout.take().unwrap())
-            .read_line(&mut line)
-            .unwrap();
-        assert_eq!(line, "READY\n");
-        Recorder { child, dir }
-    }
-
-    fn display(&self) -> CString {
-        CString::new(self.dir.join("wl").as_os_str().as_bytes()).unwrap()
-    }
-
-    fn open(&self) -> WaylandShell {
-        WaylandShell::open(Some(&self.display())).expect("open the shell on the recorder")
-    }
-
-    /// One control command; the reply line.
-    fn control(&self, req: &str) -> String {
-        let mut s = UnixStream::connect(self.dir.join("control")).unwrap();
-        writeln!(s, "{req}").unwrap();
-        let mut line = String::new();
-        BufReader::new(s).read_line(&mut line).unwrap();
-        line
-    }
-}
-
-impl Drop for Recorder {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
-
-fn readable_within(fd: i32, ms: i64) -> bool {
-    // SAFETY: the shell's wake descriptor stays open while the shell lives.
-    let fd = unsafe { BorrowedFd::borrow_raw(fd) };
-    let mut fds = [PollFd::new(&fd, PollFlags::IN)];
-    let t = Timespec {
-        tv_sec: ms / 1000,
-        tv_nsec: (ms % 1000) * 1_000_000,
-    };
-    matches!(poll(&mut fds, Some(&t)), Ok(n) if n > 0)
-}
-
-/// Dispatch until a record satisfying `want` arrives (returned), or fail after 5 s.
-fn wait_for(shell: &mut WaylandShell, want: impl Fn(&NhShellEvent) -> bool) -> NhShellEvent {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        while let Some(ev) = shell.next_event().unwrap() {
-            if want(&ev) {
-                return ev;
-            }
-        }
-        assert!(Instant::now() < deadline, "the awaited record never came");
-        readable_within(shell.wake_fd(), 100);
-    }
-}
 
 mod scale {
     use super::*;

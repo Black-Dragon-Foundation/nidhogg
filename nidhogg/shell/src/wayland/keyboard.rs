@@ -1,5 +1,5 @@
-//! The keyboard: xkb keymaps, compose, modifiers and key repeat (W0 Task 7).  Runs on the reader thread, so it never
-//! blocks and never calls into the host.
+//! The keyboard: xkb keymaps, compose, modifiers and key repeat.  Runs on the reader thread, so it never blocks and
+//! never calls into the host.
 //!
 //! - `Xkb` turns evdev scancodes into keysyms, UTF-8 and modifier bits.  Modifier bits come from xkb's named modifiers
 //!   (`Shift`, `Control`, `Mod1` as ALT, and the virtual `Super`, `Hyper`, `Meta`); a keymap without a virtual `Super`
@@ -287,8 +287,6 @@ pub struct KeyboardState {
     /// The press the compositor-less repeat replays.
     held: Option<KeyEv>,
     last_mods: u32,
-    /// The seat is version 10 or newer: the compositor sends `repeated` key states itself.
-    compositor_repeats: bool,
 }
 
 // SAFETY: the xkb objects are plain heap data with no thread affinity and are never shared.  `ReaderState` (with this
@@ -316,17 +314,12 @@ impl KeyboardState {
             focus: 0,
             held: None,
             last_mods: 0,
-            compositor_repeats: false,
         }
     }
 
     /// The timerfd the reader polls (`None` when the system could not make one: no repeat then).
     pub fn timer_fd(&self) -> Option<&OwnedFd> {
         self.timer.as_ref()
-    }
-
-    pub fn set_compositor_repeats(&mut self, on: bool) {
-        self.compositor_repeats = on;
     }
 
     pub fn set_keymap(&mut self, text: String) {
@@ -373,10 +366,10 @@ impl KeyboardState {
         }
     }
 
-    /// `wl_keyboard.key`: `state` 0 released, 1 pressed, 2 repeated (seat 10).
-    pub fn key(&mut self, time_ms: u32, evdev: u32, state: u32, out: &mut Vec<NhShellEvent>) {
+    /// `wl_keyboard.key`, pressed or released (the seat is bound at version 9: no `repeated` state, the repeat is
+    /// ours).
+    pub fn key(&mut self, time_ms: u32, evdev: u32, pressed: bool, out: &mut Vec<NhShellEvent>) {
         let Some(x) = self.xkb.as_mut() else { return };
-        let pressed = state != 0;
         let Some(k) = x.key(evdev, pressed) else {
             return;
         };
@@ -385,15 +378,12 @@ impl KeyboardState {
             keysym: k.keysym,
             mods: x.mods(),
             pressed: u8::from(pressed),
-            repeat: u8::from(state == 2),
+            repeat: 0,
             utf8: k.utf8,
         };
         let mut ev = NhShellEvent::new(NHSHELL_EV_KEY, self.focus, u64::from(time_ms) * 1_000_000);
         ev.u.key = key;
         out.push(ev);
-        if self.compositor_repeats {
-            return;
-        }
         if pressed && x.repeats(evdev) {
             self.repeat.press(evdev, now_ms());
             self.held = Some(key);

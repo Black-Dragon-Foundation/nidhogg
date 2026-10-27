@@ -33,7 +33,8 @@ fn page_size() -> usize {
 }
 
 impl ShmBuf {
-    /// A buffer of `w` x `h` ARGB8888 pixels.  `stride` is a multiple of 256 bytes.
+    /// A buffer of `w` x `h` ARGB8888 pixels.  `stride` is a multiple of 256 bytes.  `InvalidInput` when the buffer
+    /// would not fit the protocol's pool size (an int32: under 2 GiB).
     pub fn create(
         shm: &WlShm,
         qh: &QueueHandle<MainState>,
@@ -43,12 +44,17 @@ impl ShmBuf {
         data: BufData,
     ) -> std::io::Result<ShmBuf> {
         let bad = || std::io::Error::from(std::io::ErrorKind::InvalidInput);
-        if w <= 0 || h <= 0 {
+        // `stride_for` computes 4 w + 255 in an i32
+        if w <= 0 || h <= 0 || w > (i32::MAX - 255) / 4 {
             return Err(bad());
         }
         let stride = glitnir::pool::stride_for(w);
         let page = page_size();
-        let len = (stride as usize * h as usize).div_ceil(page) * page;
+        let len = (stride as usize)
+            .checked_mul(h as usize)
+            .map(|n| n.div_ceil(page) * page)
+            .filter(|&n| i32::try_from(n).is_ok())
+            .ok_or_else(bad)?;
         let fd = memfd_create(
             "nhshell-buffer",
             MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING,
