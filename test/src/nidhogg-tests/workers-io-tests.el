@@ -1101,6 +1101,80 @@ tramp-tests.el: a local `sh -i' over a pty, the same tramp-sh code)."
           (should (<= (apply #'max sizes) 4000))
           (should (>= (length sizes) 15)))))))
 
+(ert-deftest workers/pty-delivery-natural-read ()
+  ;; A pty's deliveries never exceed one pty read (4 KB), even to a
+  ;; filter that costs nothing.
+  (workers-io-tests--modes
+    (let ((proc (workers-io-tests--writer
+                 "ptynat" "head -c 20000 /dev/zero | tr '\\0' a; read x"
+                 :connection-type 'pty)))
+      (unwind-protect
+          (progn
+            (should (workers-io-tests--info proc :owned))
+            (should (nidhogg-workers--test-filter-cost proc 0))
+            (should (workers-io-tests--until
+                     (lambda () (= (workers-io-tests--got proc) 20000))))
+            (should (<= (apply #'max (workers-io-tests--sizes proc)) 4096)))
+        (delete-process proc)))))
+
+(ert-deftest workers/pty-read-ahead-cap ()
+  ;; The reader stays at most 16 KB ahead of a pty's filter: the child's
+  ;; writes then block in the kernel.  (Inline there is no FIFO.)
+  (let ((nidhogg-workers--mode 'threads)
+        (nidhogg-workers-process-reader t)
+        (nidhogg-workers-reader-ptys t))
+    (let ((proc (workers-io-tests--writer
+                 "ptyahead" "seq 1 100000; read x" :connection-type 'pty)))
+      (unwind-protect
+          (progn
+            (should (workers-io-tests--info proc :owned))
+            (should (= (workers-io-tests--info proc :ahead) 16384))
+            ;; The main thread serves no output: the FIFO fills to its cap.
+            (should (workers-io-tests--busy-until
+                     (lambda () (>= (workers-io-tests--info proc :queued) 12288))))
+            (dotimes (_ 300) (call-process "true"))
+            (should (<= (workers-io-tests--info proc :queued) (+ 16384 4096)))
+            ;; seq has 588 KB to write: it is blocked, not done.
+            (should (eq (process-status proc) 'run)))
+        (delete-process proc)))))
+
+(ert-deftest workers/pipe-delivery-never-grows ()
+  ;; A cheap pipe filter gets at most `read-process-output-max' a round.
+  (workers-io-tests--modes
+    (let ((proc (let ((read-process-output-max 8192))
+                  (make-process :name "wio-pnog" :command '("cat")
+                                :connection-type 'pipe :noquery t :coding 'binary
+                                :filter #'workers-io-tests--sizer))))
+      (unwind-protect
+          (progn
+            (should (nidhogg-workers--test-filter-cost proc 0))
+            (process-send-string proc (make-string 60000 ?c))
+            (should (workers-io-tests--until
+                     (lambda () (= (workers-io-tests--got proc) 60000))))
+            (should (<= (apply #'max (workers-io-tests--sizes proc)) 8192)))
+        (delete-process proc)))))
+
+(ert-deftest workers/delivery-cost-only-shrinks ()
+  ;; A costly filter's deliveries shrink to its time cap, but not below
+  ;; 512 bytes; the cost never makes a delivery larger than the read.
+  (workers-io-tests--modes
+    (let ((proc (let ((read-process-output-max 65536))
+                  (make-process :name "wio-dcos" :command '("cat")
+                                :connection-type 'pipe :noquery t :coding 'binary
+                                :filter #'workers-io-tests--sizer))))
+      (unwind-protect
+          (progn
+            ;; 100 µs per byte: 4 ms is 40 bytes, below the floor.
+            (should (nidhogg-workers--test-filter-cost proc 100000))
+            (process-send-string proc (make-string 20000 ?c))
+            (should (workers-io-tests--until
+                     (lambda () (= (workers-io-tests--got proc) 20000))))
+            (let ((sizes (workers-io-tests--sizes proc)))
+              (should (<= (apply #'max sizes) 512))
+              (should (<= (length sizes) 20000))
+              (should (>= (apply #'max sizes) 256))))
+        (delete-process proc)))))
+
 (defconst workers-io-tests--df-chunks
   (append workers-io-tests--recorded
           (list "crlf across\r" "\nnext\r" "mac line\r" "tail\n" "END\n"))
