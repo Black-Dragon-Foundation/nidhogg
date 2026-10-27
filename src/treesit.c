@@ -1436,6 +1436,8 @@ treesit_record_change_1 (ptrdiff_t start_byte, ptrdiff_t old_end_byte,
       /* A snapshot taken before this edit is stale (with or without a
 	 tree).  */
       XTS_PARSER (lisp_parser)->nh_gen++;
+      XTS_PARSER (lisp_parser)->nh_edited_bytes
+	+= max (new_end_byte, old_end_byte) - start_byte;
 
 #endif
 
@@ -2034,9 +2036,22 @@ treesit_ensure_parsed (Lisp_Object parser)
       XTS_PARSER (parser)->within_reparse = false;
       return Qnil;
     }
-  TSTree *new_tree = (nh_demand == NH_TS_TREE
-		      ? published
-		      : ts_parser_parse (treesit_parser, tree, input));
+  TSTree *new_tree = published;
+  if (nh_demand != NH_TS_TREE)
+    {
+      /* The synchronous parse is timed: it feeds the estimates.  */
+      struct timespec t0, t1;
+      clock_gettime (CLOCK_MONOTONIC, &t0);
+      new_tree = ts_parser_parse (treesit_parser, tree, input);
+      clock_gettime (CLOCK_MONOTONIC, &t1);
+      if (new_tree)
+	nh_ts_note_parse (XTS_PARSER (parser), tree != NULL,
+			  (int64_t) (t1.tv_sec - t0.tv_sec) * 1000000000
+			  + (t1.tv_nsec - t0.tv_nsec),
+			  BUF_ZV_BYTE (buffer) - BUF_BEGV_BYTE (buffer));
+    }
+  else
+    XTS_PARSER (parser)->nh_edited_bytes = 0;
 
 #else
   TSTree *new_tree = ts_parser_parse (treesit_parser, tree, input);
@@ -2160,6 +2175,9 @@ make_treesit_parser (Lisp_Object buffer, TSParser *parser,
   lisp_parser->nh_job = NULL;
   lisp_parser->nh_gen = 0;
   lisp_parser->nh_stat_timestamp = -1;
+  lisp_parser->nh_incr = (struct nh_wk_cost) { 0 };
+  lisp_parser->nh_full = (struct nh_wk_cost) { 0 };
+  lisp_parser->nh_edited_bytes = 0;
 
 #endif
   eassert (lisp_parser->visible_beg <= lisp_parser->visible_end);
