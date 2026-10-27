@@ -12,6 +12,7 @@ fn clock_manual_present_fires_callbacks() {
     let surface = env.surface();
     let buffer = env.buffer(64, 64);
     surface.attach(Some(&buffer), 0, 0);
+    surface.damage_buffer(0, 0, 64, 64);
     surface.frame(&env.qh, ());
     presentation.feedback(&surface, &env.qh, ());
     surface.commit();
@@ -29,6 +30,7 @@ fn clock_manual_present_fires_callbacks() {
     assert_eq!(env.client.presented.len(), 1);
 
     // the second present carries the clock 16 ms later
+    surface.damage_buffer(0, 0, 64, 64);
     surface.frame(&env.qh, ());
     presentation.feedback(&surface, &env.qh, ());
     surface.commit();

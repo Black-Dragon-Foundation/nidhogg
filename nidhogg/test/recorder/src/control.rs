@@ -76,6 +76,11 @@ pub fn handle(state: &mut State, line: &str, stream: &UnixStream) -> Option<Valu
         "decoration" => crate::shell::decoration(state, &req),
         "scale" => crate::scale::scale(state, &req),
         "present" => crate::clock::present(state, &req),
+        "mode" => crate::clock::mode(state, &req),
+        "occlude" => crate::clock::occlude(state, true),
+        "unocclude" => crate::clock::occlude(state, false),
+        "release" => crate::clock::release(state),
+        "outstanding" => crate::clock::outstanding(state),
         "globals" => json!({"ok": true, "globals": state.globals}),
         "clients" => {
             let list: Vec<Value> = state
