@@ -270,6 +270,10 @@ struct nhwl_output
   GlitnirRect hist[NHWL_HIST][NHWL_PENDING_MAX];
   int nhistn[NHWL_HIST];
   int nhist;
+  /* The frame-time record's entry in the making: the monotonic time of the
+     key event the next present shows (0: none), the commit's, and the
+     committed and composed areas.  */
+  uint64_t t_key_ns, t_commit_ns, damage_px, painted_px;
 
   /* Cursors (the shell's pointer shape plus one)  */
   Emacs_Cursor current_cursor;
@@ -471,6 +475,7 @@ extern void nhwl_fill_background_by_face (struct frame *, struct face *, int,
 extern void nhwl_damage (struct frame *, int, int, int, int);
 extern void nhwl_damage_internal_border (struct frame *);
 extern void nhwl_backing_resize (struct frame *);
+extern uint64_t nhwl_now_ns (void);
 extern void nhwl_glitnir_ensure (struct frame *);
 extern void nhwl_glitnir_forget (struct frame *);
 extern void nhwl_glitnir_commit (struct frame *);
