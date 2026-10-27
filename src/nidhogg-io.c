@@ -174,6 +174,9 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
 /* A FIFO's cap: at least this, else 4 reads' worth (MC-22).  */
 #define NH_IO_CAP_MIN (256 * 1024)
+/* A pty's cap instead: the reader stays this far ahead of the filter, so
+   the child's writes block in the kernel rather than pile up here.  */
+#define NH_IO_PTY_AHEAD (16 * 1024)
 
 /* How long a hand-back waits for nh-io: one 64 KB step is microseconds,
    so only a stuck nh-io reaches this.  */
@@ -1282,9 +1285,10 @@ nh_io_command (struct nh_io_cmd *c)
 #define NH_IO_CORE static __attribute__ ((unused))
 
 /* Handle ID for the real fd INFD (inline: read on the main thread), or
-   NULL with *WHY set.  */
+   NULL with *WHY set.  AHEAD > 0 replaces the FIFO's default cap.  */
 NH_IO_CORE struct nh_io_h *
-nh_io_attach (int64_t id, int infd, ptrdiff_t readmax, bool inl, int *why)
+nh_io_attach (int64_t id, int infd, ptrdiff_t readmax, bool inl,
+	      ptrdiff_t ahead, int *why)
 {
   *why = NH_IO_RF_BUDGET;
   if (!nh_wk_fd_budget_ok (NH_IO_FDS))
@@ -1303,7 +1307,8 @@ nh_io_attach (int64_t id, int infd, ptrdiff_t readmax, bool inl, int *why)
   h->id = id;
   h->inl = inl;
   h->readmax = readmax;
-  h->cap = h->rawcap = (readmax < NH_IO_CAP_MIN / 4 ? NH_IO_CAP_MIN
+  h->cap = h->rawcap = (ahead > 0 ? ahead
+			: readmax < NH_IO_CAP_MIN / 4 ? NH_IO_CAP_MIN
 			: 4 * readmax);
   h->wake = (struct nh_wk_wake) { -1, -1 };
   h->copy = fcntl (infd, F_DUPFD_CLOEXEC, 0);
@@ -1674,6 +1679,7 @@ nh_io_handover (struct Lisp_Process *p)
   int why = nh_io_eligible (p);
   struct nh_io_h *h = why ? NULL : nh_io_attach (nh_io_next_id + 1, fd,
 						  p->readmax, nh_wk_inline,
+						  p->pty_out ? NH_IO_PTY_AHEAD : 0,
 						  &why);
   if (!h)
     {
@@ -1897,9 +1903,8 @@ nh_io_release (struct Lisp_Process *p)
 
 /* Delivery (Task 19).  A filter's work per delivery: 4 ms (MC-3).  */
 #define NH_IO_FILTER_NS 4e6
-/* Before the filter's cost is known: a Linux pty master read returns at
-   most N_TTY_BUF_SIZE; a pipe's or a socket's, 64 KB.  */
-enum { NH_IO_PTY_READ = 4096, NH_IO_PIPE_READ = 64 * 1024 };
+/* A Linux pty master read returns at most N_TTY_BUF_SIZE.  */
+enum { NH_IO_PTY_READ = 4096 };
 /* The least a delivery to a filter takes, however costly its estimate:
    a filter whose cost is per call, not per byte, is not cut to a byte
    at a time.  */
@@ -1915,8 +1920,10 @@ nh_io_now (void)
 
 /* The most one delivery to P takes, SIZE being the read it replaces
    (read-process-output-max).  The default filter is C: SIZE.  Any other
-   filter: also its estimated 4 ms of work, at least NH_IO_DELIVER_MIN
-   bytes; before an estimate, the fd kind's natural read.  */
+   filter: the natural read (a pty's, else SIZE), and with a known cost
+   also what its estimated work fits in the inline budget, at least
+   NH_IO_DELIVER_MIN bytes.  A delivery never grows past the natural
+   read.  */
 static ptrdiff_t
 nh_io_limit (struct Lisp_Process *p, struct nh_io_h *h, ptrdiff_t size)
 {
@@ -1924,16 +1931,16 @@ nh_io_limit (struct Lisp_Process *p, struct nh_io_h *h, ptrdiff_t size)
       && EQ (p->filter, Qinternal_default_process_filter))
     return size;
   nh_wk_pressure_sample ();
-  double lim = (!h->cost_known ? (p->pty_out ? NH_IO_PTY_READ
-				  : NH_IO_PIPE_READ)
-		: h->cost > 0 ? (double) nh_wk_inline_ns () / h->cost
-		: size);
-  if (lim < NH_IO_DELIVER_MIN)
-    lim = NH_IO_DELIVER_MIN;
+  double lim = p->pty_out && NH_IO_PTY_READ < size ? NH_IO_PTY_READ : size;
   if (h->cost_known && h->cost > 0)
     {
-      bool shrunk = lim < size;
+      double fit = (double) nh_wk_inline_ns () / h->cost;
+      if (fit < NH_IO_DELIVER_MIN)
+	fit = NH_IO_DELIVER_MIN;
+      bool shrunk = fit < size;
       double base = (double) NH_WK_INLINE_NS / h->cost;
+      if (fit < lim)
+	lim = fit;
       nh_wk_count_decision (NH_WK_A_IO, !shrunk,
 			    shrunk && base >= size ? NH_WK_WHY_PRESSURE
 			    : NH_WK_WHY_ESTIMATE);
@@ -2792,7 +2799,7 @@ the pull function that returns them).  A `tls' refusal also means
   int fds = (h->copy >= 0) + (h->wake.rfd >= 0)
     + (h->wake.wfd >= 0 && h->wake.wfd != h->wake.rfd);
   uint64_t coding = atomic_load (&h->coding);
-  return listn (32, QCowned, h->detached ? Qnil : Qt,
+  return listn (34, QCowned, h->detached ? Qnil : Qt,
 		intern_c_string (":mode"), h->inl ? Qinline : Qthreads,
 		intern_c_string (":select"), make_int (h->sel),
 		intern_c_string (":copy"), h->copy >= 0 ? make_int (h->copy) : Qnil,
@@ -2801,6 +2808,8 @@ the pull function that returns them).  A `tls' refusal also means
 		intern_c_string (":fds"), make_int (fds),
 		intern_c_string (":queued"), make_int (queued),
 		intern_c_string (":cap"), make_int (h->cap),
+		intern_c_string (":ahead"),
+		make_int (h->rawcap == NH_IO_PTY_AHEAD ? NH_IO_PTY_AHEAD : 0),
 		intern_c_string (":paused"),
 		atomic_load (&h->paused) ? Qt : Qnil,
 		intern_c_string (":refused"), refused,
