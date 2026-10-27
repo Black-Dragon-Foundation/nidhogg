@@ -668,6 +668,15 @@ Return the two replies."
 (ert-deftest nhwl-gui/stats-after-typing ()
   "`glitnir-stats' answers on a shell frame with the keys budgets.sh reads."
   (skip-unless (nhwl-gui--live-p))
+  ;; A blinking cursor redisplays on its own timer; each such redisplay is a paint with no damage in the record, and
+  ;; the record's damage is a median, so the blink would outvote the one typed paint.
+  (let ((blink blink-cursor-mode))
+    (blink-cursor-mode -1)
+    (unwind-protect
+        (nhwl-gui--stats-after-typing)
+      (when blink (blink-cursor-mode 1)))))
+
+(defun nhwl-gui--stats-after-typing ()
   (switch-to-buffer "*scratch*")
   (erase-buffer)
   (redisplay t)
