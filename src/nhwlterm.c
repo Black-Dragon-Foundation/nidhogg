@@ -1335,6 +1335,9 @@ nhwl_key_event (struct frame *f, const NhShellEvent *ev,
   XSETFRAME (inev->ie.frame_or_window, f);
   inev->ie.modifiers = modifiers;
   inev->ie.timestamp = ev->time_ns / 1000000;
+  /* The frame-time record's start: our clock, not the compositor's.  */
+  if (!FRAME_NHWL_OUTPUT (f)->t_key_ns)
+    FRAME_NHWL_OUTPUT (f)->t_key_ns = nhwl_now_ns ();
 
   /* make_lispy_event turns characters into control characters: the
      keysym is the key's, not the control character's.  */
