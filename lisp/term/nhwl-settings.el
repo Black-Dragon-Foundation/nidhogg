@@ -31,7 +31,6 @@
 
 ;;; Code:
 
-(require 'cl-lib)
 (declare-function dbus-call-method "dbus")
 (declare-function dbus-register-signal "dbus")
 
@@ -88,20 +87,21 @@ list (R G B) of floats, or nil), `button-layout' (a string),
   ;; portal wraps it in a second variant, which shows as a 1-list.
   (while (and (consp value) (null (cdr value)) (consp (car value)))
     (setq value (car value)))
-  (pcase key
-    ('accent-color
-     (and (consp value) (= (length value) 3) (cl-every #'numberp value)
-          (cl-every (lambda (c) (<= 0.0 c 1.0)) value)
-          (mapcar #'float value)))
-    ('cursor-size
-     (when (and (consp value) (null (cdr value))) (setq value (car value)))
-     (and (integerp value) (> value 0) value))
-    ('color-scheme
-     (when (and (consp value) (null (cdr value))) (setq value (car value)))
-     (and (memq value '(0 1 2)) value))
-    (_
-     (when (and (consp value) (null (cdr value))) (setq value (car value)))
-     (and (stringp value) value))))
+  ;; `cond', not `pcase': this file is loaded while Emacs is dumped, before `pcase'.
+  (cond
+   ((eq key 'accent-color)
+    (and (consp value) (= (length value) 3) (seq-every-p #'numberp value)
+         (seq-every-p (lambda (c) (<= 0.0 c 1.0)) value)
+         (mapcar #'float value)))
+   ((eq key 'cursor-size)
+    (when (and (consp value) (null (cdr value))) (setq value (car value)))
+    (and (integerp value) (> value 0) value))
+   ((eq key 'color-scheme)
+    (when (and (consp value) (null (cdr value))) (setq value (car value)))
+    (and (memq value '(0 1 2)) value))
+   (t
+    (when (and (consp value) (null (cdr value))) (setq value (car value)))
+    (and (stringp value) value))))
 
 (defun nhwl-settings--read (namespace name)
   "Read NAME of NAMESPACE from the portal, or return nil."
@@ -146,7 +146,7 @@ list (R G B) of floats, or nil), `button-layout' (a string),
 
 (defun nhwl-settings--signal (namespace name value &rest _)
   "Handle the portal's `SettingChanged' for NAMESPACE, NAME and VALUE."
-  (let ((entry (cl-find-if (lambda (e) (and (equal (nth 1 e) namespace)
+  (let ((entry (seq-find (lambda (e) (and (equal (nth 1 e) namespace)
                                             (equal (nth 2 e) name)))
                            nhwl-settings--keys)))
     (when entry
