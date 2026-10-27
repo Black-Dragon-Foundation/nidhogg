@@ -1520,6 +1520,26 @@ DEFUN ("pgtk-use-im-context", Fpgtk_use_im_context, Spgtk_use_im_context,
   return Qnil;
 }
 
+DEFUN ("nhwl-set-cursor-theme", Fnhwl_set_cursor_theme,
+       Snhwl_set_cursor_theme, 2, 2, 0,
+       doc: /* Use the Xcursor theme NAME at SIZE logical pixels for the pointer.
+It matters where the compositor has no cursor-shape protocol: the shell
+draws the pointer from the theme then.  A pointer already shown from the
+theme is redrawn.  Return t when the shell took the theme.  */)
+  (Lisp_Object name, Lisp_Object size)
+{
+  CHECK_STRING (name);
+  CHECK_FIXNAT (size);
+  if (!x_display_list)
+    return Qnil;
+
+  block_input ();
+  int rc = nhshell_set_cursor_theme (x_display_list->shell, SSDATA (name),
+				     (uint32_t) min (XFIXNAT (size), 512));
+  unblock_input ();
+  return rc >= 0 ? Qt : Qnil;
+}
+
 void
 syms_of_nhwlfns (void)
 {
@@ -1581,4 +1601,5 @@ syms_of_nhwlfns (void)
   defsubr (&Spgtk_get_selection_internal);
   defsubr (&Spgtk_register_dnd_targets);
   defsubr (&Spgtk_use_im_context);
+  defsubr (&Snhwl_set_cursor_theme);
 }

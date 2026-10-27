@@ -856,3 +856,39 @@ Return the two replies."
     (should (>= (plist-get (plist-get s :latency-ms) :p95) 0))
     (should (> (plist-get s :damage-px) 0))
     (should (> (plist-get s :painted-px) 0))))
+
+;; The pointer while typing: hidden by a key, back with the mouse.
+
+(defun nhwl-gui--pointer-entries (mark)
+  "The recorder's cursor requests since MARK, oldest first."
+  (seq-filter (lambda (e) (member (plist-get e :req) '("set_cursor" "set_shape")))
+              (plist-get (gui-runner-recorder (list :cmd "input_log" :since mark)) :entries)))
+
+(defun nhwl-gui--cursor-hidden-p (e)
+  (and (equal (plist-get e :req) "set_cursor") (eq (plist-get e :surface) :null)))
+
+(ert-deftest nhwl-gui/pointer-hidden-while-typing ()
+  (skip-unless (nhwl-gui--on-p))
+  (nhwl-gui--windowed)
+  (let ((make-pointer-invisible t)
+        (buf (generate-new-buffer " *nhwl-pointer*"))
+        (mark (plist-get (gui-runner-recorder '(:cmd "input_log" :since 0)) :next)))
+    (unwind-protect
+        (progn
+          (switch-to-buffer buf)
+          (nhwl-gui--point 100 100)
+          (gui-runner-recorder '(:cmd "key" :text "a"))
+          (should (nhwl-gui--wait
+                   (lambda ()
+                     (let ((ev (read-event nil nil 0.1)))
+                       (when (characterp ev)
+                         (setq last-command-event ev)
+                         (command-execute (key-binding (vector ev)) nil (vector ev))))
+                     (nhwl-gui--cursor-hidden-p (car (last (nhwl-gui--pointer-entries mark)))))))
+          (nhwl-gui--point 120 110)
+          (should (nhwl-gui--wait
+                   (lambda ()
+                     (nhwl-gui--pump)
+                     (let ((e (car (last (nhwl-gui--pointer-entries mark)))))
+                       (and e (not (nhwl-gui--cursor-hidden-p e))))))))
+      (kill-buffer buf))))
