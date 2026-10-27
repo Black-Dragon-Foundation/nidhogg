@@ -5,6 +5,7 @@ mod input;
 mod log;
 mod render;
 mod scale;
+mod selection;
 mod shell;
 mod state;
 
