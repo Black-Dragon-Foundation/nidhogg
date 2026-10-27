@@ -140,9 +140,14 @@ pub fn take(frame: u64) -> (*const Rect, usize) {
 /// An unknown root has none (null, 0).
 pub fn commit(root: u64) -> (*const Rect, usize) {
     let mut st = crate::STATE.lock().unwrap_or_else(|p| p.into_inner());
-    let crate::State { damage, scenes, .. } = &mut *st;
+    let crate::State {
+        damage,
+        scenes,
+        sprites,
+        ..
+    } = &mut *st;
     let c = match scenes.get_mut(&root) {
-        Some(scene) => scene.commit(root, damage),
+        Some(scene) => scene.commit_with(root, damage, sprites),
         None => match damage.get_mut(&root) {
             Some(d) => d.commit(),
             None => return (std::ptr::null(), 0),
