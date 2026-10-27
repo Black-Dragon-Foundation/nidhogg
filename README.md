@@ -265,14 +265,76 @@ turns the finished spans into JSON Lines records, names function, file and packa
   protocol's steps); Lisp in `lisp/nidhogg-watchdog*.el` (preloaded; the feature is `nidhogg-watchdog`).
 - Tests: `watchdog/…` in `test/src/nidhogg-tests/watchdog-*-tests.el`, GUI rows `watchdog-gui/…` in `*-gui-tests.el`.
 
-<!-- wd: Task 7 -->
-<!-- wd: Task 8 -->
-<!-- wd: Task 9 -->
-<!-- wd: Task 10 -->
-<!-- wd: Task 11 -->
-<!-- wd: Task 12 -->
-<!-- wd: Task 13 -->
-<!-- wd: Task 14 -->
+- **Spans and records** (`nidhogg-watchdog.c`): the main thread times every busy span at the two edges of the select in
+  `really_call_select` (`thread.c`; also Android's non-threaded `android_select` and the tty `C-z` in `sys_suspend`).
+  A wait ends a span only when it is responsive: the main thread's own select (never a Lisp thread's), inside
+  `wait_reading_process_output` with `waiting_for_user_input_p` set, `inhibit-redisplay` nil and a non-zero timeout.
+  `sleep-for`, `accept-process-output` inside a command, waits under `inhibit-redisplay` and lock contention stay busy.
+  Every span ≥ the threshold becomes a record (`nidhogg-watchdog--take`; a ring of 32, the oldest dropped and counted),
+  with or without samples; every span goes into the histograms of `nidhogg-watchdog--stats` by its non-GC time.
+  `nidhogg-watchdog--test-clock` and `nidhogg-watchdog--test-idle-wait` drive the span rows on a virtual clock.
+- **The monitor** (`-monitor.c`): a thread named `nh-watchdog`, created with every signal blocked; it takes only its own
+  mutex. While Emacs waits it is parked on a condition variable and wakes for nothing; the main thread signals it when a
+  busy span starts. It sleeps to half the threshold of the span; if the span is still busy, it notes the main thread's
+  CPU clock and its own lateness, then every `max (threshold/10, 1 ms)` (1 ms in deep mode) raises a request and sends
+  the main thread the watchdog signal (`pthread_kill`, never `kill`); a request the handler has not taken after two
+  periods counts as missed. The park protocol (`-park.h`) is a Dekker pair of seq_cst stores and loads
+  (`NH_WD_PARK_ORDER`), so no busy span is missed: `watchdog/no-lost-wakeup` runs its steps through every interleaving
+  with store buffers modelled, and `nidhogg/test/watchdog-park-test.sh` runs them on real threads (ThreadSanitizer and a
+  10⁷-cycle stress run; it needs gcc and libtsan, nothing from a build). While `nidhogg-watchdog--test-clock` is set the
+  monitor never arms.
+- Samples (`src/nidhogg-watchdog-sample.c`): the signal handler is installed with `sigaction` and `SA_RESTART`
+  (interactive Emacs otherwise installs handlers without it), refuses to take a signal another library already handles,
+  and answers only a request for the current busy span on the main thread; any other signal (a stray `kill`, a late
+  request that lands in the idle wait) is counted as `:stale`. It calls nothing but `clock_gettime`, allocates nothing
+  and takes no lock. It copies raw specpdl words (24 innermost frames and 8 outermost, 56 + 8 in deep mode) and a hook
+  runner's hook name, and copies nothing while the specpdl is being reallocated (`grow_specpdl_allocation` brackets the
+  realloc) or while a Lisp thread holds the global lock. A stall keeps at most 64 samples (32 deep): the handler thins
+  them to every other one and doubles its stride. The words are never GC roots; `--take` turns a word into a function
+  object only when `valid_lisp_object_p` calls it a live symbol, closure or subr (a non-heap subr only when it is a
+  builtin's address), else into the symbol `nidhogg-watchdog--gone`.
+- GC (`-gc.c`, one call at the end of `garbage_collect` in `alloc.c`, one flag set in `garbage-collect`): while the
+  watchdog is on, every collection's pause is added to its span (a stall's `:gc-ms` and `:gcs`; `:nongc-ms` = wall −
+  GC, which is what the 100 ms goal judges) and written to a 64-entry GC ring, taken with the stalls by
+  `nidhogg-watchdog--take` as `(:gc ID :gcs-done N :start SECONDS :pause-ms F :span N :explicit BOOL :lisp-thread
+  BOOL)`; a full ring drops its oldest entry and counts `:gc-dropped`. The pause runs from `garbage_collect`'s start
+  to after `gcs_done` is incremented: it includes `run_finalizers` (Lisp finalizers) and
+  `image_prune_animation_caches`, but not `post-gc-hook`. `:gcs-done` is the `gcs-done` a `post-gc-hook` function
+  sees for the same collection, the key the Lisp GC row (and drgnx's GC census lines, `gcs_done`) joins on; never join
+  by order. `:explicit` is a `garbage-collect` call (other C callers, such as `garbage-collect-maybe`, are automatic).
+- Phases, felt input, typing (`-input.c`, `nidhogg-watchdog-phase.h`): a sample names the C phase on top of a small
+  phase stack, set by one-line hooks: `redisplay` (`redisplay_internal`), `filter` and `sentinel` (process.c),
+  `call-process`, `json` (parse, serialize, insert), `regex` (`re-search-*`, `looking-at`, `string-match`) and
+  `process-wait` (a wait that is not responsive: `accept-process-output` or `sleep-for` inside a command, a wait under
+  `inhibit-redisplay`); `lisp` when none is set. A responsive wait empties the stack, and a non-local exit
+  (`unwind_to_catch`) pops every phase pushed inside its catch target, so a `condition-case` around a failing
+  `json-parse-string` does not label the rest of the span `json`. Nothing goes on the specpdl. A stall is `:felt`
+  when a keyboard, button or wheel event was stored during it (a key pressed while Emacs was busy) or when it ran a
+  command; `:input-wait-ms` runs from that input's arrival (a pgtk event's own timestamp when it reads as
+  `CLOCK_MONOTONIC` within the last 2 s, else the time it was stored) to the stall's end. `:commands` counts the
+  commands in the span, and `:input-queued` says a second one ran in it (keys queued behind each other). The
+  commands named by `nidhogg-watchdog--set-typing-commands` (16 at most) are timed one by one, from their key's
+  arrival to the next key taken or the next wait, into the `:typing` histogram of `nidhogg-watchdog--stats`.
+An open popup menu or dialog counts as the user waiting, not as a stall: on pgtk a wrapper around GLib's poll
+function (`src/nidhogg-watchdog-gtk.c`) marks the wait. A Lisp timer that runs inside a menu or dialog is still
+busy time and is reported.
+The timing group (`watchdog-timing-tests.el`) runs on the real clock with wide margins (spins of 0.5 to 10 s
+against a 100 ms threshold) and asserts counts, never sample numbers ("at least one sample, or `:missed` counted"): a
+1 s spin from a timer (state CPU, the timer function on the stack), a blocked `call-process` (phase `call-process`),
+no sample requests before half the threshold, child Nidhoggs on a pty for the real keyboard hooks (a key during a
+spin makes the stall `:felt`), a Lisp thread that holds the global lock while the main thread idles (`:lisp-thread`),
+`suspend-emacs` and `sit-for` (waiting, no stall), and a 10 s deep-sampling stress run (allocation, byte code, native
+code, forced collections, a specpdl past 10⁵ entries) in which every sampled word is a live object or
+`nidhogg-watchdog--gone`. GUI rows (`watchdog-gui-tests.el`, `nidhogg/test/gui.sh`): `sit-for` on a pgtk frame is
+waiting, and a mode-line `:eval` that spins is a stall in the `redisplay` phase with the `:eval` function innermost.
+`M-x nidhogg-watchdog-mode` (global, off by default) starts the monitor with `nidhogg-watchdog-threshold` (100 ms)
+and `nidhogg-watchdog-hang-ms` (2000) and one repeating 1 s idle timer. The timer's drain returns at once (no
+allocation) when nothing is pending; otherwise it takes the rings at once and resolves records within 2 ms, the rest
+waiting for the next idle period (`nidhogg-watchdog-drain-now` drains everything). Each stall is one JSON line (schema
+`v` 1) in `YYYY-MM-DD.jsonl` under `nidhogg-watchdog-log-directory` (default `~/.emacs.d/watchdog/`); `nidhogg-watchdog-record-functions` sees each
+resolved record. At most 5,000 stall lines are written per day (the rest are only counted), day files older than 14
+days are deleted, and a `summary` line (histogram deltas, counters, monitor CPU, drain p95; `nidhogg-watchdog-stats`
+adds the drain's histogram) is appended at most every 10 minutes and when the mode is turned off or Emacs exits.
 <!-- wd: Task 15 -->
 <!-- wd: Task 16 -->
 <!-- wd: Task 17 -->

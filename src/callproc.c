@@ -96,6 +96,10 @@ extern char **environ;
 #include "android.h"
 #endif /* HAVE_ANDROID */
 
+#ifdef HAVE_NIDHOGG_WATCHDOG
+#include "nidhogg-watchdog-phase.h"
+
+#endif
 /* Pattern used by call-process-region to make temp files.  */
 static Lisp_Object Vtemp_file_name_pattern;
 
@@ -385,6 +389,9 @@ call_process (ptrdiff_t nargs, Lisp_Object *args, int filefd,
 
   if (synch_process_pid)
     error ("call-process invoked recursively");
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  int nh_wd_d = nh_wd_phase_push (NH_WD_PH_CALL_PROCESS);
+#endif
 
   /* Qt denotes that Ffind_operation_coding_system is not yet called.  */
   coding_systems = Qt;
@@ -716,6 +723,10 @@ call_process (ptrdiff_t nargs, Lisp_Object *args, int filefd,
 
 #endif /* not MSDOS */
 
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  if (FIXNUMP (buffer))
+    nh_wd_phase_pop_to (nh_wd_d);
+#endif
   if (FIXNUMP (buffer))
     return unbind_to (count, Qnil);
 
@@ -929,6 +940,9 @@ call_process (ptrdiff_t nargs, Lisp_Object *args, int filefd,
   synch_process_pid = 0;
 
   SAFE_FREE_UNBIND_TO (count, Qnil);
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  nh_wd_phase_pop_to (nh_wd_d);
+#endif
 
   if (!wait_ok)
     return build_unibyte_string ("internal error");

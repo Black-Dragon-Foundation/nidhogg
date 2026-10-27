@@ -30,6 +30,10 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "buffer.h"
 #include "pdumper.h"
 #include "atimer.h"
+#ifdef HAVE_NIDHOGG_WATCHDOG
+#include "nidhogg-watchdog.h"
+#include "nidhogg-watchdog-phase.h"
+#endif
 
 /* Non-nil means record all fset's and provide's, to be undone
    if the file being autoloaded is not fully loaded.
@@ -1427,6 +1431,10 @@ unwind_to_catch (struct handler *catch, enum nonlocal_exit type,
 
   eassert (catch->next);
 
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  nh_wd_unwind_phases (catch);
+
+#endif
   /* Save the value in the tag.  */
   catch->nonlocal_exit = type;
   catch->val = value;
@@ -2573,10 +2581,16 @@ grow_specpdl_allocation (void)
   ptrdiff_t size = specpdl_end - specpdl;
   ptrdiff_t pdlvecsize = size + 1;
   eassert (max_size > size);
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  nh_wd_specpdl_grow_begin ();
+#endif
   pdlvec = xpalloc (pdlvec, &pdlvecsize, 1, max_size + 1, sizeof *specpdl);
   specpdl = pdlvec + 1;
   specpdl_end = specpdl + pdlvecsize - 1;
   specpdl_ptr = specpdl_ref_to_ptr (count);
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  nh_wd_specpdl_grow_end ();
+#endif
 }
 
 /* Eval a sub-expression of the current expression (i.e. in the same
