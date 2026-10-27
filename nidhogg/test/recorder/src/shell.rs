@@ -1,6 +1,6 @@
 //! xdg-shell scripting: initial and scripted configures with states, the decoration mode, ping/pong.
 use crate::control::{err, write_reply};
-use crate::state::{PendingPing, State};
+use crate::state::{role_name, PendingPing, State};
 use serde_json::{json, Value};
 use smithay::delegate_xdg_decoration;
 use smithay::delegate_xdg_shell;
@@ -11,7 +11,11 @@ use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Resource;
+use smithay::backend::renderer::utils::RendererSurfaceStateUserData;
 use smithay::utils::{Logical, Point, Serial, SERIAL_COUNTER};
+use smithay::wayland::compositor::{self, RectangleKind, SubsurfaceCachedState, SurfaceAttributes};
+use smithay::wayland::shell::xdg::SurfaceCachedState as XdgCachedState;
+use smithay::wayland::shm::with_buffer_contents;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
 use smithay::wayland::shell::xdg::{
     Configure, PopupSurface, PositionerState, ShellClient, ToplevelSurface, XdgShellHandler,
@@ -371,4 +375,130 @@ pub fn ping(state: &mut State, reply_to: &UnixStream) -> Option<Value> {
         }
         Err(e) => Some(err(e.to_string())),
     }
+}
+
+/// `popup_done`: `{"cmd":"popup_done","surface":"newest"|ID}` sends `xdg_popup.popup_done`, as a compositor does when
+/// it dismisses a popup.
+pub fn popup_done(state: &mut State, req: &Value) -> Value {
+    state.popups.retain(|p| p.alive());
+    let popup = match req.get("surface") {
+        Some(Value::String(s)) if s == "newest" => state.popups.last(),
+        Some(Value::Number(n)) => {
+            let id = n.as_u64().unwrap_or(0) as u32;
+            state
+                .popups
+                .iter()
+                .find(|p| p.wl_surface().id().protocol_id() == id)
+        }
+        _ => return err("\"surface\" must be an id or \"newest\""),
+    };
+    match popup {
+        Some(p) => {
+            p.send_popup_done();
+            json!({"ok": true})
+        }
+        None => err("no such popup"),
+    }
+}
+
+/// `tree`: every live surface with its role, parent, place and stack.  `position` is the subsurface offset in its
+/// parent (a popup's, the positioner's), `above` the later siblings in stacking order (Smithay does not say where a
+/// parent sits among its children, so `children` lists a parent's subsurfaces bottom to top), `input_region` the
+/// added rectangles (null when the client set none).
+pub fn tree(state: &mut State) -> Value {
+    state.surfaces.retain(|s| s.is_alive());
+    state.popups.retain(|p| p.alive());
+    let nodes: Vec<Value> = state
+        .surfaces
+        .iter()
+        .map(|surface| {
+            let id = surface.id().protocol_id();
+            let role = role_name(surface);
+            let parent = compositor::get_parent(surface);
+            let children: Vec<u32> = compositor::get_children(surface)
+                .iter()
+                .map(|c| c.id().protocol_id())
+                .collect();
+            let above: Vec<u32> = match &parent {
+                Some(p) => {
+                    let siblings: Vec<u32> = compositor::get_children(p)
+                        .iter()
+                        .map(|c| c.id().protocol_id())
+                        .collect();
+                    siblings
+                        .iter()
+                        .position(|&s| s == id)
+                        .map(|i| siblings[i + 1..].to_vec())
+                        .unwrap_or_default()
+                }
+                None => Vec::new(),
+            };
+            let mut position = [0, 0];
+            let (mapped, buffer, input_region, geometry) =
+                compositor::with_states(surface, |states| {
+                    if role == "subsurface" {
+                        let l = states
+                            .cached_state
+                            .get::<SubsurfaceCachedState>()
+                            .current()
+                            .location;
+                        position = [l.x, l.y];
+                    }
+                    let (mapped, buffer) =
+                        match states.data_map.get::<RendererSurfaceStateUserData>() {
+                            Some(r) => match r.lock().unwrap().buffer() {
+                                Some(b) => (
+                                    true,
+                                    with_buffer_contents(
+                                        b,
+                                        |_, _, d| json!({"w": d.width, "h": d.height}),
+                                    )
+                                    .ok(),
+                                ),
+                                None => (false, None),
+                            },
+                            None => (false, None),
+                        };
+                    let input_region = states
+                        .cached_state
+                        .get::<SurfaceAttributes>()
+                        .current()
+                        .input_region
+                        .as_ref()
+                        .map(|r| {
+                            r.rects
+                                .iter()
+                                .filter(|(k, _)| matches!(k, RectangleKind::Add))
+                                .map(|(_, r)| [r.loc.x, r.loc.y, r.size.w, r.size.h])
+                                .collect::<Vec<_>>()
+                        });
+                    let geometry = states
+                        .cached_state
+                        .get::<XdgCachedState>()
+                        .current()
+                        .geometry
+                        .map(|g| [g.loc.x, g.loc.y, g.size.w, g.size.h]);
+                    (mapped, buffer, input_region, geometry)
+                });
+            if role == "popup" {
+                if let Some(p) = state.popups.iter().find(|p| p.wl_surface() == surface) {
+                    let l = p.with_pending_state(|s| s.geometry.loc);
+                    position = [l.x, l.y];
+                }
+            }
+            json!({
+                "id": id,
+                "role": role,
+                "parent": parent.map(|p| p.id().protocol_id()),
+                "position": position,
+                "above": above,
+                "children": children,
+                "mapped": mapped,
+                "input_region": input_region,
+                "geometry": geometry,
+                "buffer": buffer,
+            })
+        })
+        .collect();
+    json!({"ok": true, "surfaces": nodes})
 }
