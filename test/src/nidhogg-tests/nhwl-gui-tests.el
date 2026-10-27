@@ -18,6 +18,10 @@
   "KEY of commit C, nil for a JSON null or false (`json-parse-string' gives `:null' and `:false', both non-nil)."
   (let ((v (plist-get c key))) (unless (memq v '(:null :false)) v)))
 
+(defun nhwl-gui--damage (c)
+  "Commit C's damage rectangles (X Y W H), in buffer pixels: the shell sends `damage_buffer' only."
+  (mapcar (lambda (d) (plist-get d :rect)) (plist-get c :damage)))
+
 (defun nhwl-gui--commits ()
   (plist-get (gui-runner-recorder '(:cmd "log" :since 0)) :commits))
 
@@ -325,7 +329,7 @@ Return the two replies."
     (let ((commits (nhwl-gui--new mark)))
       (should commits)
       (dolist (c commits)
-        (dolist (r (plist-get c :damage))
+        (dolist (r (nhwl-gui--damage c))
           (should (or (nhwl-gui--rect-in-p r row0 (+ row0 lh))
                       (nhwl-gui--rect-in-p r mode0 mode1))))))))
 
@@ -345,7 +349,7 @@ Return the two replies."
     (redisplay t)
     (let* ((theirs (nhwl-gui--shown mark))
            (mine (glitnir-snapshot nil 'raw))
-           (rects (apply #'append (mapcar (lambda (c) (plist-get c :damage)) (nhwl-gui--new mark)))))
+           (rects (apply #'append (mapcar (lambda (c) (nhwl-gui--damage c)) (nhwl-gui--new mark)))))
       ;; the exposed rows and the mode line are damaged; the shm buffer cannot scroll, so the rows that moved are
       ;; damaged too (the plan's "less than half the frame" does not hold for a text-filled window)
       (let ((y (- mode0 (* 3 lh))))
@@ -407,9 +411,9 @@ Return the two replies."
     (sit-for 0.3)
     ;; one commit carries everything that accumulated; a cursor redraw may follow it, nothing else
     (let ((cs (nhwl-gui--new mark)))
-      (should (> (length (plist-get (car cs) :damage)) 10))
+      (should (> (length (nhwl-gui--damage (car cs))) 10))
       (dolist (c (cdr cs))
-        (should (<= (length (plist-get c :damage)) 3))))))
+        (should (<= (length (nhwl-gui--damage c)) 3))))))
 
 ;;; nhwl-gui-tests.el ends here
 
