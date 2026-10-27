@@ -179,6 +179,8 @@ pub trait ShellBackend {
     /// Whether the window's pacer lets the host begin a frame now.
     fn window_ready(&mut self, window: WindowId) -> ShellResult<bool>;
     fn set_cursor(&mut self, window: WindowId, shape: u32) -> ShellResult;
+    /// The Xcursor theme (`name`, logical `size`) used where the compositor has no cursor-shape protocol.
+    fn set_cursor_theme(&mut self, name: &str, size: u32) -> ShellResult;
 
     /// The window's preferred scale times 120 (120 when the compositor has not said).
     fn window_scale(&self, window: WindowId) -> ShellResult<u32>;

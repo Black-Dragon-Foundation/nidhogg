@@ -89,6 +89,7 @@ nhwl_cursor_for_shape (uint32_t shape)
 static void nhwl_new_focus_frame (struct nhwl_display_info *, struct frame *);
 static void nhwl_delete_display (struct nhwl_display_info *);
 static void nhwl_set_fullscreen_state (struct frame *);
+static void nhwl_toggle_invisible_pointer (struct frame *, bool);
 
 
 /***********************************************************************
@@ -1657,6 +1658,9 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	      Mouse_HLInfo *hlinfo = MOUSE_HL_INFO (f);
 	      int x, y;
 
+	      /* A pointer hidden while typing comes back with the mouse.  */
+	      if (f->pointer_invisible)
+		nhwl_toggle_invisible_pointer (f, false);
 	      if (nhwl_csd_pointer (f, ev.u.pointer.x, ev.u.pointer.y))
 		{
 		  clear_mouse_face (hlinfo);

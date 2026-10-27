@@ -13,6 +13,7 @@ pub mod child;
 pub mod clipboard;
 pub mod conn;
 pub mod cursor;
+pub mod cursor_theme;
 pub mod decor;
 pub mod keyboard;
 pub mod output;
@@ -76,6 +77,8 @@ pub struct MainState {
     force_csd: bool,
     /// The latest decoration mode the compositor granted a window.
     ssd: bool,
+    /// The Xcursor theme fallback and the latest shape request.
+    cursor: cursor_theme::ThemeCursor,
 }
 
 /// The main queue's waker: an event routed into the main queue (by the reader's read) marks it pending and wakes the

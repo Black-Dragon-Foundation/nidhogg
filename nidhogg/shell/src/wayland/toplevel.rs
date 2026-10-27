@@ -318,6 +318,10 @@ impl ShellBackend for WaylandShell {
         self.window_set_cursor(id, shape)
     }
 
+    fn set_cursor_theme(&mut self, name: &str, size: u32) -> ShellResult {
+        self.set_cursor_theme_impl(name, size)
+    }
+
     fn window_scale(&self, id: WindowId) -> ShellResult<u32> {
         Ok(self
             .main
