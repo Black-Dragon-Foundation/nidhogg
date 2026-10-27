@@ -6,7 +6,7 @@ use serde::Deserialize;
 use smithay::delegate_compositor;
 use smithay::delegate_output;
 use smithay::delegate_shm;
-use smithay::wayland::alpha_modifier::AlphaModifierState;
+use smithay::wayland::alpha_modifier::{AlphaModifierState, AlphaModifierSurfaceCachedState};
 use smithay::wayland::cursor_shape::CursorShapeManagerState;
 use smithay::input::{Seat, SeatState};
 use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
@@ -39,6 +39,9 @@ use smithay::utils::{Clock as SmClock, Monotonic};
 use smithay::wayland::fractional_scale::FractionalScaleManagerState;
 use smithay::wayland::presentation::{PresentationFeedbackCachedState, PresentationState};
 use smithay::wayland::selection::data_device::DataDeviceState;
+use smithay::wayland::selection::primary_selection::PrimarySelectionState;
+use smithay::wayland::xdg_activation::XdgActivationState;
+use smithay::reexports::wayland_server::backend::GlobalId;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::shell::xdg::{
     PopupSurface, ShellClient, SurfaceCachedState as XdgCachedState, ToplevelSurface, XdgShellState,
@@ -119,6 +122,15 @@ pub struct State {
     pub seat_state: SeatState<State>,
     pub seat: Seat<State>,
     pub data_device_state: DataDeviceState,
+    pub primary_selection_state: PrimarySelectionState,
+    pub activation_state: XdgActivationState,
+    /// What `offer` set, by clipboard (0) and primary (1); descriptors a silent offer holds open.
+    pub offers: [Option<crate::selection::Offer>; 2],
+    pub held_fds: Vec<std::os::fd::OwnedFd>,
+    /// The `xdg_activation_v1.activate` calls seen: `{token, surface}`.
+    pub activations: Vec<serde_json::Value>,
+    /// Every wl_output global served (the first is `output`), for the `output` command.
+    pub outputs: Vec<(Output, GlobalId)>,
     pub rmlvo: crate::input::Rmlvo,
     /// The keyboard focus (set by the `focus` command).
     pub focus: Option<WlSurface>,
@@ -182,6 +194,8 @@ fn max_version(name: &str) -> Option<u32> {
         "wl_shm" => 2,
         "wl_seat" => 9,
         "wl_data_device_manager" => 3,
+        "zwp_primary_selection_device_manager_v1" => 1,
+        "xdg_activation_v1" => 1,
         "zwp_text_input_manager_v3" => 1,
         "wp_cursor_shape_manager_v1" => 2,
         "wp_alpha_modifier_v1" => 1,
@@ -193,6 +207,18 @@ fn max_version(name: &str) -> Option<u32> {
         "wp_presentation" => 2,
         _ => return None,
     })
+}
+
+/// The role of a surface as the logs name it.
+pub fn role_name(surface: &WlSurface) -> String {
+    match compositor::get_role(surface) {
+        None => "none".to_string(),
+        Some("xdg_toplevel") => "toplevel".to_string(),
+        Some("xdg_popup") => "popup".to_string(),
+        Some("subsurface") => "subsurface".to_string(),
+        Some("cursor_image") => "cursor".to_string(),
+        Some(other) => other.to_string(),
+    }
 }
 
 impl State {
@@ -223,7 +249,14 @@ impl State {
         let seat_global = seat.global();
         // GTK 3 adds no seat until a wl_data_device_manager is bound, so every profile lists it
         let data_device_state = DataDeviceState::new::<State>(dh);
+        let primary_selection_state = PrimarySelectionState::new::<State>(dh);
+        let activation_state = XdgActivationState::new::<State>(dh);
         let extra = [
+            (
+                "zwp_primary_selection_device_manager_v1",
+                primary_selection_state.global(),
+            ),
+            ("xdg_activation_v1", activation_state.global()),
             ("wl_data_device_manager", data_device_state.global()),
             (
                 "zxdg_decoration_manager_v1",
@@ -277,6 +310,7 @@ impl State {
         out.set_preferred(mode);
 
         let mut globals = BTreeMap::new();
+        let mut outputs = Vec::new();
         for (name, &want) in &profile.globals {
             let Some(max) = max_version(name) else {
                 eprintln!(
@@ -310,7 +344,7 @@ impl State {
                 "wl_output" => {
                     // Smithay creates wl_output at its one version (4); `max_version` says so, and `globals` below
                     // reports it
-                    out.create_global::<State>(dh);
+                    outputs.push((out.clone(), out.create_global::<State>(dh)));
                 }
                 "xdg_wm_base" => {
                     dh.create_global::<State, smithay::reexports::wayland_protocols::xdg::shell::server::xdg_wm_base::XdgWmBase, _>(v, ());
@@ -320,6 +354,8 @@ impl State {
                 }
                 // created above
                 "wl_data_device_manager"
+                | "zwp_primary_selection_device_manager_v1"
+                | "xdg_activation_v1"
                 | "zxdg_decoration_manager_v1"
                 | "wp_fractional_scale_manager_v1"
                 | "wp_viewporter"
@@ -349,6 +385,12 @@ impl State {
             seat_state,
             seat,
             data_device_state,
+            primary_selection_state,
+            activation_state,
+            offers: [None, None],
+            held_fds: Vec::new(),
+            activations: Vec::new(),
+            outputs,
             rmlvo,
             focus: None,
             text_inputs: Vec::new(),
@@ -480,16 +522,9 @@ impl CompositorHandler for State {
             .client()
             .and_then(|c| c.get_data::<ClientState>().map(|d| d.id))
             .unwrap_or(0);
-        let role = match compositor::get_role(surface) {
-            None => "none".to_string(),
-            Some("xdg_toplevel") => "toplevel".to_string(),
-            Some("xdg_popup") => "popup".to_string(),
-            Some("subsurface") => "subsurface".to_string(),
-            Some("cursor_image") => "cursor".to_string(),
-            Some(other) => other.to_string(),
-        };
+        let role = role_name(surface);
         let parent = compositor::get_parent(surface).map(|p| p.id().protocol_id());
-        let (buffer, buffer_scale, request, viewport, presentation, pos, title, app_id) =
+        let (buffer, buffer_scale, request, viewport, presentation, pos, title, app_id, alpha) =
             compositor::with_states(surface, |states| {
                 let viewport = {
                     let mut cached = states.cached_state.get::<ViewportCachedState>();
@@ -499,6 +534,11 @@ impl CompositorHandler for State {
                         dst: v.dst.map(|s| [s.w, s.h]),
                     }
                 };
+                let alpha = states
+                    .cached_state
+                    .get::<AlphaModifierSurfaceCachedState>()
+                    .current()
+                    .multiplier_f64();
                 let presentation = !states
                     .cached_state
                     .get::<PresentationFeedbackCachedState>()
@@ -553,6 +593,7 @@ impl CompositorHandler for State {
                     pos,
                     title,
                     app_id,
+                    alpha,
                 )
             });
         let geometry = if role == "toplevel" || role == "popup" {
@@ -607,6 +648,7 @@ impl CompositorHandler for State {
             title,
             app_id,
             geometry,
+            alpha,
             t_ns: self.t_ns(),
         };
         self.log.push(commit);

@@ -23,7 +23,10 @@ use smithay::wayland::compositor::with_states;
 use smithay::wayland::selection::data_device::{
     ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
 };
-use smithay::wayland::selection::SelectionHandler;
+use smithay::wayland::selection::data_device::set_data_device_focus;
+use smithay::wayland::selection::primary_selection::set_primary_focus;
+use smithay::wayland::selection::{SelectionHandler, SelectionTarget};
+use std::os::fd::OwnedFd;
 use smithay::wayland::tablet_manager::TabletSeatHandler;
 use smithay::{delegate_alpha_modifier, delegate_cursor_shape, delegate_data_device, delegate_seat};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -145,7 +148,12 @@ impl SeatHandler for State {
     fn seat_state(&mut self) -> &mut SeatState<State> {
         &mut self.seat_state
     }
-    fn focus_changed(&mut self, _: &Seat<State>, _: Option<&WlSurface>) {}
+    fn focus_changed(&mut self, seat: &Seat<State>, focused: Option<&WlSurface>) {
+        // the focused client hears the selections (clipboard and primary)
+        let client = focused.and_then(|s| self.display.get_client(s.id()).ok());
+        set_data_device_focus::<State>(&self.display, seat, client.clone());
+        set_primary_focus::<State>(&self.display, seat, client);
+    }
     // Smithay hands over neither the request's serial nor the wl_pointer, so these entries carry `serial: null`.
     fn cursor_image(&mut self, _: &Seat<State>, image: CursorImageStatus) {
         let entry = match image {
@@ -175,9 +183,20 @@ impl SeatHandler for State {
 
 impl TabletSeatHandler for State {}
 
-// Selections and drag-and-drop are served but neither logged nor scripted.
+// Selections: `offer` and `read` (selection.rs) script them; drag-and-drop is served but not scripted.
 impl SelectionHandler for State {
     type SelectionUserData = ();
+
+    fn send_selection(
+        &mut self,
+        ty: SelectionTarget,
+        mime_type: String,
+        fd: OwnedFd,
+        _seat: Seat<State>,
+        _: &(),
+    ) {
+        crate::selection::send(self, ty, mime_type, fd);
+    }
 }
 impl DataDeviceHandler for State {
     fn data_device_state(&self) -> &DataDeviceState {
