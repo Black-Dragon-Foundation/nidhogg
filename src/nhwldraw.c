@@ -2116,8 +2116,9 @@ nhwl_scroll_run (struct window *w, struct run *run)
   {
     unsigned char *data = cairo_image_surface_get_data (out->cr_surface);
     ptrdiff_t stride = cairo_image_surface_get_stride (out->cr_surface);
-    int x0 = max (0, x), x1 = min (out->cr_width, x + width);
-    int rows = height, sy = from_y, dy = to_y, i;
+    int x0 = max (0, x) + out->csd.l;
+    int x1 = min (out->cr_width, x + width + out->csd.l);
+    int rows = height, sy = from_y + out->csd.t, dy = to_y + out->csd.t, i;
 
     /* Clip the copy to the backing, both ends.  */
     if (min (sy, dy) < 0)
@@ -2157,11 +2158,13 @@ nhwl_glitnir_scroll (struct frame *f, struct window *w, int x, int from_y,
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
   int top = min (from_y, to_y), bottom = max (from_y, to_y) + height;
-  GlitnirRect area = { x, top, width, bottom - top };
+  int ox = out->csd.l, oy = out->csd.t;
+  GlitnirRect area = { x + ox, top + oy, width, bottom - top };
   GlitnirRect exposed = (to_y < from_y
-			 ? (GlitnirRect) { x, to_y + height, width,
+			 ? (GlitnirRect) { x + ox, to_y + height + oy, width,
 					   from_y - to_y }
-			 : (GlitnirRect) { x, from_y, width, to_y - from_y });
+			 : (GlitnirRect) { x + ox, from_y + oy, width,
+					   to_y - from_y });
 
   nhwl_glitnir_ensure (f);
   glitnir_scroll (out->glitnir_id, (uint64_t) (uintptr_t) w, area,
@@ -2174,6 +2177,7 @@ nhwl_damage (struct frame *f, int x, int y, int w, int h)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
   GlitnirRect r;
+  struct nhwl_csd *c = &out->csd;
   int x1 = min (x + w, FRAME_PIXEL_WIDTH (f));
   int y1 = min (y + h, FRAME_PIXEL_HEIGHT (f));
 
@@ -2183,6 +2187,8 @@ nhwl_damage (struct frame *f, int x, int y, int w, int h)
   r.h = y1 - r.y;
   if (r.w <= 0 || r.h <= 0)
     return;
+  r.x += c->l;
+  r.y += c->t;
   nhwl_glitnir_ensure (f);
   glitnir_damage_add_n (out->glitnir_id, &r, 1);
   out->present_owed = true;
@@ -2275,7 +2281,8 @@ nhwl_glitnir_ensure (struct frame *f)
   static uint64_t last_id;
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
   uint32_t s120 = out->scale120 ? out->scale120 : 120;
-  int w = max (1, FRAME_PIXEL_WIDTH (f)), h = max (1, FRAME_PIXEL_HEIGHT (f));
+  int w = max (1, FRAME_PIXEL_WIDTH (f) + out->csd.l + out->csd.r);
+  int h = max (1, FRAME_PIXEL_HEIGHT (f) + out->csd.t + out->csd.b);
 
   if (!out->glitnir_id)
     {
@@ -2320,7 +2327,8 @@ void
 nhwl_backing_resize (struct frame *f)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
-  int w = max (1, FRAME_PIXEL_WIDTH (f)), h = max (1, FRAME_PIXEL_HEIGHT (f));
+  int w = max (1, FRAME_PIXEL_WIDTH (f) + out->csd.l + out->csd.r);
+  int h = max (1, FRAME_PIXEL_HEIGHT (f) + out->csd.t + out->csd.b);
   cairo_surface_t *old = out->cr_surface;
   cairo_t *old_cr = out->cr_context;
   cairo_t *cr;
@@ -2332,6 +2340,7 @@ nhwl_backing_resize (struct frame *f)
   cr = out->cr_context = cairo_create (out->cr_surface);
   out->cr_width = w;
   out->cr_height = h;
+  out->cr_gen++;
   nhwl_set_cr_source_with_color (f, out->background_color, true);
   cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
   cairo_paint (cr);

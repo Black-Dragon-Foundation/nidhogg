@@ -3999,7 +3999,7 @@ if test "${with_glitnir}" = yes; then
     GLITNIR_CRATE_INCLUDE="-I`cd "$srcdir/nidhogg/glitnir" && pwd`/include"
     GLITNIR_SRCDIR=`cd "$srcdir/nidhogg/shell" && pwd` ||
       AC_MSG_ERROR([nidhogg/shell is missing])
-    NHWL_OBJ="nhwlterm.o nhwlfns.o nhwldraw.o"
+    NHWL_OBJ="nhwlterm.o nhwlfns.o nhwldraw.o nhwlcsd.o"
   fi
   GLITNIR_LIBNAME=$glitnir_lib
   glitnir_home=`pwd`/src/glitnir-cargo-home

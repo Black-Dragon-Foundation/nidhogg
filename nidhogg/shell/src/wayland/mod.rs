@@ -327,6 +327,9 @@ impl ShellBackend for WaylandShell {
     fn show_menu(&mut self, w: WindowId, x: i32, y: i32) -> ShellResult {
         self.window_show_menu(w, x, y)
     }
+    fn set_geometry(&mut self, win: WindowId, x: i32, y: i32, w: i32, h: i32) -> ShellResult {
+        self.window_set_geometry(win, x, y, w, h)
+    }
     fn ack_configure(&mut self, w: WindowId, serial: u32) -> ShellResult {
         self.window_ack_configure(w, serial)
     }

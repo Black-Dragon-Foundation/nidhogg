@@ -318,6 +318,8 @@ nhwl_begin_cr_clip (struct frame *f)
   nhwl_backing_resize (f);
   cr = FRAME_NHWL_OUTPUT (f)->cr_context;
   cairo_save (cr);
+  /* Emacs draws in the native area; the title border lies around it.  */
+  cairo_translate (cr, FRAME_NHWL_OUTPUT (f)->csd.l, FRAME_NHWL_OUTPUT (f)->csd.t);
   return cr;
 }
 
@@ -429,6 +431,7 @@ nhwl_present (struct frame *f)
 
   block_input ();
   nhwl_backing_resize (f);
+  nhwl_csd_draw (f);
   nhwl_glitnir_commit (f);
 
   rc = nhshell_present_begin (dpyinfo->shell, out->window, out->cr_width,
@@ -443,6 +446,7 @@ nhwl_present (struct frame *f)
 
   nhwl_glitnir_compose (f, &buf);
 
+  nhwl_csd_send_geometry (f);
   if (out->serial_pending)
     {
       nhshell_window_ack_configure (dpyinfo->shell, out->window, out->serial);
@@ -740,7 +744,7 @@ nhwl_frame_scale_factor (struct frame *f)
 
 /* Logical size of DEV device pixels at scale S120/120, rounded the way
    the presenter rounds the viewport's destination.  */
-static int
+int
 nhwl_to_logical (int dev, uint32_t s120)
 {
   int64_t s = max (1, (int64_t) s120);
@@ -750,7 +754,7 @@ nhwl_to_logical (int dev, uint32_t s120)
 
 /* Device size of LOGICAL pixels at scale S120/120 (round half away
    from zero, in f32 like the presenter's mutter-compatible rounding).  */
-static int
+int
 nhwl_to_device (int logical, uint32_t s120)
 {
   return (int) roundf ((float) logical * (float) s120 / 120.0f);
@@ -803,6 +807,7 @@ nhwl_set_title_hint (struct frame *f)
       nhshell_window_set_title (FRAME_NHWL_SHELL (f), out->window,
 				SSDATA (encoded));
       unblock_input ();
+      nhwl_csd_changed (f);
     }
 }
 
@@ -1492,6 +1497,7 @@ nhwl_scale_changed (struct frame *f, uint32_t scale120)
 	    gui_set_font (f, font_object, get_frame_param (f, Qfont));
 	}
     }
+  nhwl_csd_layout (f);
   SET_FRAME_GARBAGED (f);
 }
 
@@ -1501,7 +1507,6 @@ static void
 nhwl_configure (struct frame *f, const NhShellEvent *ev)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
-  uint32_t s120 = out->scale120 ? out->scale120 : 120;
   uint32_t states = ev->u.configure.states;
   Lisp_Object fs = Qnil;
 
@@ -1519,20 +1524,25 @@ nhwl_configure (struct frame *f, const NhShellEvent *ev)
       & (NHSHELL_STATE_FULLSCREEN | NHSHELL_STATE_MAXIMIZED))
     store_frame_param (f, Qfullscreen, fs);
   out->states = states;
+  nhwl_csd_layout (f);
 
-  /* The compositor's size is a suggestion in logical pixels; the frame
-     keeps its own size when it already is that size once rounded.  */
-  if (ev->u.configure.w > 0 && ev->u.configure.h > 0
-      && (ev->u.configure.w != nhwl_to_logical (FRAME_PIXEL_WIDTH (f), s120)
-	  || ev->u.configure.h
-	  != nhwl_to_logical (FRAME_PIXEL_HEIGHT (f), s120)))
+  /* The compositor's size is a suggestion in logical pixels, for the window
+     geometry (the native area, and the title strip when we draw one); the
+     frame keeps its own size when it already is that size once rounded.  */
+  if (ev->u.configure.w > 0 && ev->u.configure.h > 0)
     {
-      int dw = nhwl_to_device (ev->u.configure.w, s120);
-      int dh = nhwl_to_device (ev->u.configure.h, s120);
+      int gw, gh, dw, dh;
+
+      nhwl_csd_geometry_size (f, &gw, &gh);
+      if (ev->u.configure.w == gw && ev->u.configure.h == gh)
+	goto done;
+      nhwl_csd_native_size (f, ev->u.configure.w, ev->u.configure.h,
+			    &dw, &dh);
 
       change_frame_size (f, dw, dh, false, true, false);
       SET_FRAME_GARBAGED (f);
     }
+ done:
 
   /* The ack goes with the next buffer: ask for a redisplay, which
      presents.  */
@@ -1561,6 +1571,7 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
       union buffered_input_event inev;
       struct frame *f;
       bool have = false;
+      bool csd_close = false;
 
       rc = nhshell_next_event (dpyinfo->shell, &ev);
       if (rc <= 0)
@@ -1590,8 +1601,14 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	    {
 	      struct nhwl_display_info *d = FRAME_DISPLAY_INFO (f);
 	      Mouse_HLInfo *hlinfo = MOUSE_HL_INFO (f);
-	      int x = (int) ev.u.pointer.x, y = (int) ev.u.pointer.y;
+	      int x, y;
 
+	      if (nhwl_csd_pointer (f, ev.u.pointer.x, ev.u.pointer.y))
+		{
+		  clear_mouse_face (hlinfo);
+		  break;
+		}
+	      nhwl_csd_native_pos (f, ev.u.pointer.x, ev.u.pointer.y, &x, &y);
 	      d->last_mouse_frame = f;
 	      previous_help_echo_string = help_echo_string;
 	      help_echo_string = Qnil;
@@ -1627,6 +1644,17 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	  break;
 
 	case NHSHELL_EV_BUTTON:
+	  if (f && nhwl_csd_button (f, &ev, &csd_close))
+	    {
+	      if (csd_close)
+		{
+		  inev.ie.kind = DELETE_WINDOW_EVENT;
+		  XSETFRAME (inev.ie.frame_or_window, f);
+		  have = true;
+		  csd_close = false;
+		}
+	      break;
+	    }
 	  if (f)
 	    {
 	      int code = nhwl_button_code (ev.u.pointer.button);
