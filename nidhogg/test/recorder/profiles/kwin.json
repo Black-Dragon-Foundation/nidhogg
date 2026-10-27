@@ -1,6 +1,7 @@
 {
   "name": "kwin",
   "decoration": "server",
+  "hold_buffers": 1,
   "globals": {
     "wl_compositor": 6,
     "wl_subcompositor": 1,

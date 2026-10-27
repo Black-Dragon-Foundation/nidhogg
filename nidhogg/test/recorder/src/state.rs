@@ -67,6 +67,18 @@ pub struct Profile {
     /// The decoration mode the compositor sends: `server`, or `none` (the default; client-side).
     #[serde(default)]
     pub decoration: String,
+    /// `all` (the default) answers the feedback of every commit; `damage-only` only that of commits with damage.
+    #[serde(default)]
+    pub frames: String,
+    /// A later commit discards feedback still waiting.
+    #[serde(default)]
+    pub discard_on_supersede: bool,
+    /// Replaced buffers kept unreleased (until the next replacement pushes them out, or `release`).
+    #[serde(default)]
+    pub hold_buffers: usize,
+    /// The `occlude` command is allowed.
+    #[serde(default)]
+    pub occlusion: bool,
     /// Globals whose version is below the real compositor's, with the reason (documentation only).
     #[serde(default)]
     #[allow(dead_code)]
@@ -139,6 +151,8 @@ pub struct State {
     pub mono_base: Duration,
     pub manual_ns: u64,
     pub present_seq: u64,
+    /// Frame pacing modes and what they hold back.
+    pub pacing: crate::clock::Pacing,
     /// The one renderer snapshots use (its buffer imports live as long as the surfaces).
     pub renderer: PixmanRenderer,
     /// The event loop, to queue a reply the control socket cannot take at once.
@@ -359,6 +373,7 @@ impl State {
             mono_base,
             manual_ns: 0,
             present_seq: 0,
+            pacing: crate::clock::Pacing::from_profile(profile),
             renderer: PixmanRenderer::new().expect("the pixman renderer"),
             handle,
         }
@@ -551,7 +566,9 @@ impl CompositorHandler for State {
         } else {
             None
         };
+        let old_buffer = self.pacing_before_commit(surface);
         on_commit_buffer_handler::<State>(surface);
+        self.pacing_after_commit(surface, old_buffer, !request.damage.is_empty());
         let ack_serial = self.acked.remove(&surface.id());
         let ack_stale = match (ack_serial, self.sent_serial.get(&surface.id())) {
             (Some(a), Some(&newest)) => a < newest,
@@ -599,6 +616,7 @@ impl CompositorHandler for State {
     fn destroyed(&mut self, surface: &WlSurface) {
         self.sent_serial.remove(&surface.id());
         self.acked.remove(&surface.id());
+        self.pacing_surface_gone(surface);
     }
 }
 
