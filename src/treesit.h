@@ -27,6 +27,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <tree_sitter/api.h>
 #include "lisp.h"
 #include "buffer.h"
+#ifdef HAVE_NIDHOGG_WORKERS
+#include "nidhogg-workers.h"
+#endif
 
 INLINE_HEADER_BEGIN
 
@@ -134,6 +137,11 @@ struct Lisp_TS_Parser
   ptrdiff_t nh_gen;
   ptrdiff_t nh_stat[3];
   ptrdiff_t nh_stat_timestamp;
+  /* What a reparse costs (§7.5): a synchronous parse over an old tree
+     (ns per parse), one without (ns per byte), and the bytes edited
+     since the last parse.  */
+  struct nh_wk_cost nh_incr, nh_full;
+  ptrdiff_t nh_edited_bytes;
 
 #endif
 };

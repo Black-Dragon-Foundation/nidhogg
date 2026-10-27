@@ -49,12 +49,13 @@
 (ert-deftest workers/ts-attempt-clock ()
   ;; §17.3 S1 against the real clock (`workers/ts-start-points' fixes the
   ;; bound): in a buffer that redisplay fontifies, a one-character edit's
-  ;; reparse finishes inside the demand's 1 ms attempt, and a 500 KB
-  ;; yank's does not.  A one-character reparse costs in proportion to the
+  ;; reparse stays on the main thread (its estimate is under the inline
+  ;; base, or its 16 ms attempt finishes), and a 500 KB yank's goes to a
+  ;; job.  A one-character reparse costs in proportion to the
   ;; siblings of the edited repetition, with the workers off too (desktop
   ;; dev build, 2026-10-23: 2 MB of one-line functions 19 ms, 2 MB of
   ;; 50-statement functions 0.6 ms, 200 KB of those 0.1 ms): the wide
-  ;; margin is that last buffer, 10 times under the bound.  Needs the C
+  ;; margin is that last buffer, far under the base.  Needs the C
   ;; grammar (fixtures/grammars.sh).
   (let* ((dir (or (getenv "NIDHOGG_TEST_GRAMMARS")
                   (expand-file-name "fixtures/grammars-cache"
@@ -79,21 +80,25 @@
                     (demand
                      (lambda (p)
                        (let ((t0 (float-time))
-                             (can (funcall stat :cancels)))
+                             (can (funcall stat :started-demand)))
                          (nidhogg-workers--test-fontifying (current-buffer)
                            (treesit-parser-changed-regions p))
                          (message "workers/ts-attempt-clock: %s: %.0f us"
                                   mode (* 1e6 (- (float-time) t0)))
-                         (- (funcall stat :cancels) can)))))
+                         (- (funcall stat :started-demand) can)))))
                 (treesit-parser-root-node p)
                 (ert-info ("one character" :prefix "")
                   (goto-char (/ (point-max) 2))
                   ;; Before a `;': the text stays valid C.
                   (skip-chars-forward "^;")
                   (insert " ")
-                  (should (= (funcall demand p) 0))
+                  ;; (Inline mode runs every offload decision as a job, done
+                  ;; at its start.)
+                  (should (= (funcall demand p) (if (eq mode 'threads) 0 1)))
                   (should (nidhogg-treesit-parser-ready-p p)))
                 (ert-info ("a 500 KB yank" :prefix "")
+                  ;; Its estimate: the edited bytes at a seeded rate.
+                  (nidhogg-workers--test-ts-cost p 100000 100)
                   (goto-char (/ (point-max) 2))
                   (forward-line 0)
                   (insert-for-yank (funcall text 500000))
