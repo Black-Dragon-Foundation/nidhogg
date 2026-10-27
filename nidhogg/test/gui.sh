@@ -158,7 +158,10 @@ if [ -n "$container" ]; then
   podman run --rm --name "$name" --memory "${GLITNIR_GUI_MEMORY:-6g}" --memory-swap "${GLITNIR_GUI_MEMORY:-6g}" \
     "${mounts[@]}" "$image" bash -c '
       set -eu
-      pkgs=$(sed "s/#.*//" "'"$inprefix"'/share/nidhogg/deps.runtime" 2>/dev/null || true)
+      # a plain install (not a packaged tarball) has no deps.runtime: the checkout'"'"'s list for this distro stands in
+      rt='"$inprefix"'/share/nidhogg/deps.runtime
+      [ -f "$rt" ] || rt=/src/nidhogg/deps/'"$container"'.runtime
+      pkgs=$(sed "s/#.*//" "$rt" 2>/dev/null || true)
       dnf -y -q --setopt=install_weak_deps=False install mutter dbus-daemon mesa-dri-drivers mesa-libEGL \
         mesa-libgbm python3-gobject-base dejavu-sans-mono-fonts procps-ng util-linux $pkgs > /tmp/dnf.log 2>&1 \
         || { cat /tmp/dnf.log; exit 1; }
