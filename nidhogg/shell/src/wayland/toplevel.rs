@@ -1,4 +1,5 @@
-//! Windows: `wl_surface` + `xdg_surface` + `xdg_toplevel` on the main queue, and their configure sequencing.
+//! Windows: `wl_surface` + `xdg_surface` + `xdg_toplevel` on the main queue, their configure sequencing, and the
+//! shell API's implementation (`ShellBackend`).
 //!
 //! The window id is the surface's protocol id (the same id the keyboard's `FOCUS` records carry).  The compositor's
 //! `xdg_toplevel.configure` only stores the size and states; the `xdg_surface.configure` that closes the group posts
@@ -7,10 +8,13 @@
 //! dispatch, and the host reads the records after it.
 
 use crate::api::*;
+use crate::caps::NhShellCaps;
 use crate::event::*;
 use crate::wayland::MainState;
 use crate::wayland::WaylandShell;
 use crate::wayland::serial::SerialKind;
+use glitnir::geom::Rect;
+use std::sync::atomic::Ordering;
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
 use wayland_protocols::xdg::decoration::zv1::client::zxdg_toplevel_decoration_v1::{
     Mode, ZxdgToplevelDecorationV1,
@@ -64,7 +68,65 @@ fn words(bytes: &[u8]) -> impl Iterator<Item = u32> + '_ {
 }
 
 impl WaylandShell {
-    pub(super) fn window_create(&mut self, desc: &WindowDesc) -> ShellResult<WindowId> {
+    fn window(&self, id: WindowId) -> ShellResult<&Window> {
+        self.main.windows.get(&id).ok_or(ShellError::State)
+    }
+
+    /// The latest input serial the move, resize and menu requests are sent with (0 before any input).
+    fn input_serial(&self) -> u32 {
+        self.shared
+            .serials
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(SerialKind::MousePress)
+            .as_raw()
+    }
+
+    /// The window's `xdg_toplevel.wm_capabilities` (`WM_CAP_*`; all set when the compositor never says).
+    pub fn window_wm_capabilities(&self, id: WindowId) -> ShellResult<u32> {
+        Ok(self.window(id)?.wm_capabilities)
+    }
+}
+
+impl ShellBackend for WaylandShell {
+    fn wake_fd(&self) -> i32 {
+        self.shared.wake.raw()
+    }
+
+    fn caps(&self) -> NhShellCaps {
+        let mut caps = self.main.globals.caps();
+        caps.ssd = self.main.ssd;
+        caps.force_csd = self.main.force_csd;
+        caps
+    }
+
+    /// The next record.  When the records are empty: drain the wake descriptor, dispatch the main queue if it is
+    /// pending, and look again, so nothing posted in between is lost.
+    fn next_event(&mut self) -> ShellResult<Option<NhShellEvent>> {
+        loop {
+            if let Some(ev) = self.shared.take()? {
+                return Ok(Some(ev));
+            }
+            self.shared.wake.drain();
+            if self.shared.main_pending.swap(false, Ordering::AcqRel) {
+                // an error here reaches the host as the reader's DISCONNECTED record
+                let _ = self.dispatch_main_queue();
+                continue;
+            }
+            return self.shared.take();
+        }
+    }
+
+    fn dispatch_main(&mut self) -> ShellResult {
+        if self.shared.is_closed() {
+            return Err(ShellError::Disconnected);
+        }
+        self.dispatch_main_queue()?;
+        self.present_housekeeping();
+        self.flush()
+    }
+
+    fn window_new(&mut self, desc: &WindowDesc) -> ShellResult<WindowId> {
         let qh = self.main_queue.handle();
         let m = &mut self.main;
         let compositor = m.compositor.as_ref().ok_or(ShellError::State)?;
@@ -90,7 +152,7 @@ impl WaylandShell {
                 d
             })
         };
-        // the window owns its surface's scale state (W0 Task 4), made before the first commit
+        // the window owns its surface's scale state, made before the first commit
         m.attach_scale(&surface, &qh);
         // the compositor sends the first configure only after this bare commit
         surface.commit();
@@ -111,31 +173,7 @@ impl WaylandShell {
         Ok(id)
     }
 
-    fn window(&self, id: WindowId) -> ShellResult<&Window> {
-        self.main.windows.get(&id).ok_or(ShellError::State)
-    }
-
-    /// The latest input serial the move, resize and menu requests are sent with (0 before any input).
-    fn input_serial(&self) -> u32 {
-        self.shared
-            .serials
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(SerialKind::MousePress)
-            .as_raw()
-    }
-
-    /// Whether server-side decorations were granted to window `id`.
-    pub fn window_ssd(&self, id: WindowId) -> ShellResult<bool> {
-        Ok(self.window(id)?.ssd)
-    }
-
-    /// The window's `xdg_toplevel.wm_capabilities` (`WM_CAP_*`; all set when the compositor never says).
-    pub fn window_wm_capabilities(&self, id: WindowId) -> ShellResult<u32> {
-        Ok(self.window(id)?.wm_capabilities)
-    }
-
-    pub(super) fn window_destroy_impl(&mut self, id: WindowId) -> ShellResult {
+    fn window_destroy(&mut self, id: WindowId) -> ShellResult {
         let w = self.main.windows.remove(&id).ok_or(ShellError::State)?;
         self.main.surfaces.remove(&id);
         self.main.detach_scale(id);
@@ -149,23 +187,23 @@ impl WaylandShell {
         self.flush()
     }
 
-    pub(super) fn window_set_title(&mut self, id: WindowId, title: &str) -> ShellResult {
+    fn set_title(&mut self, id: WindowId, title: &str) -> ShellResult {
         self.window(id)?.toplevel.set_title(title.to_owned());
         Ok(())
     }
 
-    pub(super) fn window_set_app_id(&mut self, id: WindowId, app_id: &str) -> ShellResult {
+    fn set_app_id(&mut self, id: WindowId, app_id: &str) -> ShellResult {
         self.window(id)?.toplevel.set_app_id(app_id.to_owned());
         Ok(())
     }
 
     /// Takes effect with the surface's next commit.
-    pub(super) fn window_set_min_size(&mut self, id: WindowId, w: i32, h: i32) -> ShellResult {
+    fn set_min_size(&mut self, id: WindowId, w: i32, h: i32) -> ShellResult {
         self.window(id)?.toplevel.set_min_size(w.max(0), h.max(0));
         Ok(())
     }
 
-    pub(super) fn window_set_fullscreen(&mut self, id: WindowId, on: bool) -> ShellResult {
+    fn set_fullscreen(&mut self, id: WindowId, on: bool) -> ShellResult {
         let t = &self.window(id)?.toplevel;
         if on {
             t.set_fullscreen(None);
@@ -175,7 +213,7 @@ impl WaylandShell {
         self.flush()
     }
 
-    pub(super) fn window_set_maximized(&mut self, id: WindowId, on: bool) -> ShellResult {
+    fn set_maximized(&mut self, id: WindowId, on: bool) -> ShellResult {
         let t = &self.window(id)?.toplevel;
         if on {
             t.set_maximized();
@@ -185,18 +223,18 @@ impl WaylandShell {
         self.flush()
     }
 
-    pub(super) fn window_minimize(&mut self, id: WindowId) -> ShellResult {
+    fn minimize(&mut self, id: WindowId) -> ShellResult {
         self.window(id)?.toplevel.set_minimized();
         self.flush()
     }
 
-    pub(super) fn window_move(&mut self, id: WindowId) -> ShellResult {
+    fn move_window(&mut self, id: WindowId) -> ShellResult {
         let seat = self.main.seat.as_ref().ok_or(ShellError::State)?;
         self.window(id)?.toplevel._move(seat, self.input_serial());
         self.flush()
     }
 
-    pub(super) fn window_resize(&mut self, id: WindowId, edges: u32) -> ShellResult {
+    fn resize(&mut self, id: WindowId, edges: u32) -> ShellResult {
         let edges = ResizeEdge::try_from(edges).map_err(|_| ShellError::Arg)?;
         let seat = self.main.seat.as_ref().ok_or(ShellError::State)?;
         self.window(id)?
@@ -205,7 +243,7 @@ impl WaylandShell {
         self.flush()
     }
 
-    pub(super) fn window_show_menu(&mut self, id: WindowId, x: i32, y: i32) -> ShellResult {
+    fn show_menu(&mut self, id: WindowId, x: i32, y: i32) -> ShellResult {
         let seat = self.main.seat.as_ref().ok_or(ShellError::State)?;
         self.window(id)?
             .toplevel
@@ -214,14 +252,7 @@ impl WaylandShell {
     }
 
     /// Takes effect with the surface's next commit.
-    pub(super) fn window_set_geometry(
-        &mut self,
-        id: WindowId,
-        x: i32,
-        y: i32,
-        w: i32,
-        h: i32,
-    ) -> ShellResult {
+    fn set_geometry(&mut self, id: WindowId, x: i32, y: i32, w: i32, h: i32) -> ShellResult {
         if w <= 0 || h <= 0 {
             return Err(ShellError::Arg);
         }
@@ -230,10 +261,39 @@ impl WaylandShell {
     }
 
     /// Ack configure `serial`; the host calls it right before the commit that carries the new size.
-    pub(super) fn window_ack_configure(&mut self, id: WindowId, serial: u32) -> ShellResult {
+    fn ack_configure(&mut self, id: WindowId, serial: u32) -> ShellResult {
         self.window(id)?.xdg_surface.ack_configure(serial);
-        self.present_force_next(id);
         Ok(())
+    }
+
+    fn set_cursor(&mut self, id: WindowId, shape: u32) -> ShellResult {
+        self.window_set_cursor(id, shape)
+    }
+
+    fn window_scale(&self, id: WindowId) -> ShellResult<u32> {
+        Ok(self
+            .main
+            .scales
+            .get(&id)
+            .ok_or(ShellError::State)?
+            .scale120())
+    }
+
+    fn window_ssd(&self, id: WindowId) -> ShellResult<bool> {
+        Ok(self.window(id)?.ssd)
+    }
+
+    fn present_begin(
+        &mut self,
+        id: WindowId,
+        dev_w: i32,
+        dev_h: i32,
+    ) -> ShellResult<NhShellBuffer> {
+        self.present_begin_impl(id, dev_w, dev_h)
+    }
+
+    fn present_commit(&mut self, id: WindowId, damage: &[Rect]) -> ShellResult {
+        self.present_commit_impl(id, damage)
     }
 }
 

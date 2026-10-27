@@ -1,91 +1,13 @@
 //! T1 tests of xdg toplevels against nh-recorder: configure sequencing, states, close and decoration negotiation.
-//! `NH_RECORDER` names the recorder binary; each test starts its own with a temporary `XDG_RUNTIME_DIR`.
+//! The harness is `common/mod.rs`.
 
+mod common;
+
+use common::*;
 use nhshell::api::{ShellBackend, WindowDesc};
 use nhshell::event::*;
 use nhshell::wayland::WaylandShell;
-use rustix::event::{PollFd, PollFlags, Timespec, poll};
-use rustix::fd::BorrowedFd;
-use std::ffi::CString;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
-
-/// `open` reads `NIDHOGG_SHELL_FORCE_CSD`; the test that sets it holds this lock, and every open takes it.
-static ENV: Mutex<()> = Mutex::new(());
-
-struct Recorder {
-    child: Child,
-    dir: PathBuf,
-}
-
-impl Recorder {
-    fn start(profile: &str) -> Recorder {
-        let bin = std::env::var_os("NH_RECORDER")
-            .expect("NH_RECORDER is not set (the path of S0's nh-recorder binary)");
-        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("nhshell-toplevel-{}-{n}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let profile = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../test/recorder/profiles")
-            .join(format!("{profile}.json"));
-        let mut child = Command::new(bin)
-            .args(["--socket", "wl", "--control"])
-            .arg(dir.join("control"))
-            .arg("--profile")
-            .arg(&profile)
-            .env("XDG_RUNTIME_DIR", &dir)
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("spawn nh-recorder");
-        let mut line = String::new();
-        BufReader::new(child.stdout.take().unwrap())
-            .read_line(&mut line)
-            .unwrap();
-        assert_eq!(line, "READY\n");
-        Recorder { child, dir }
-    }
-
-    fn open(&self) -> WaylandShell {
-        let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
-        self.open_locked()
-    }
-
-    fn open_locked(&self) -> WaylandShell {
-        let display = CString::new(self.dir.join("wl").as_os_str().as_bytes()).unwrap();
-        WaylandShell::open(Some(&display)).expect("open the shell on the recorder")
-    }
-
-    fn control(&self, req: &str) -> String {
-        let mut s = UnixStream::connect(self.dir.join("control")).unwrap();
-        writeln!(s, "{req}").unwrap();
-        let mut line = String::new();
-        BufReader::new(s).read_line(&mut line).unwrap();
-        line
-    }
-}
-
-impl Drop for Recorder {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
-
-fn number(json: &str, key: &str) -> Option<u64> {
-    let pat = format!("\"{key}\":");
-    let rest = json[json.find(&pat)? + pat.len()..].trim_start();
-    let end = rest
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(rest.len());
-    rest[..end].parse().ok()
-}
 
 /// The raw token after `"key":` (a string keeps its quotes).
 fn token<'a>(json: &'a str, key: &str) -> Option<&'a str> {
@@ -103,44 +25,6 @@ fn commits(rec: &Recorder, since: u64) -> Vec<String> {
         .skip(1)
         .map(|c| format!("{{\"ack_serial\":{c}"))
         .collect()
-}
-
-fn readable_within(fd: i32, ms: i64) -> bool {
-    // SAFETY: the shell's wake descriptor stays open while the shell lives.
-    let fd = unsafe { BorrowedFd::borrow_raw(fd) };
-    let mut fds = [PollFd::new(&fd, PollFlags::IN)];
-    let t = Timespec {
-        tv_sec: ms / 1000,
-        tv_nsec: (ms % 1000) * 1_000_000,
-    };
-    matches!(poll(&mut fds, Some(&t)), Ok(n) if n > 0)
-}
-
-/// The next record of `kind` within 3 s; other records are dropped.
-fn wait_event(shell: &mut WaylandShell, kind: u32) -> NhShellEvent {
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        while let Some(ev) = shell.next_event().unwrap() {
-            if ev.kind == kind {
-                return ev;
-            }
-        }
-        assert!(Instant::now() < deadline, "no record of kind {kind}");
-        readable_within(shell.wake_fd(), 50);
-    }
-}
-
-/// Every record that arrives within `ms` of quiet.
-fn collect(shell: &mut WaylandShell, ms: i64) -> Vec<NhShellEvent> {
-    let mut out = Vec::new();
-    loop {
-        while let Some(ev) = shell.next_event().unwrap() {
-            out.push(ev);
-        }
-        if !readable_within(shell.wake_fd(), ms) {
-            return out;
-        }
-    }
 }
 
 fn configure_of(ev: &NhShellEvent) -> ConfigureEv {
@@ -202,8 +86,10 @@ mod toplevel {
         assert_eq!(token(acked, "role"), Some("\"toplevel\""));
     }
 
+    /// Two configures reach the host in order, each with its own serial and size.  Which one the host acks is the
+    /// glue's policy (the newest), pinned by the GUI rows.
     #[test]
-    fn double_configure_acks_newest() {
+    fn double_configure_in_order() {
         let rec = Recorder::start("mutter");
         let mut shell = rec.open();
         let id = new_window(&mut shell);
@@ -212,7 +98,6 @@ mod toplevel {
         shell.surface_commit(id).unwrap();
         shell.flush().unwrap();
         collect(&mut shell, 50);
-        let before = number(&rec.control(r#"{"cmd":"log"}"#), "next").unwrap();
         // two configures before the client commits
         let r1 = rec.control(r#"{"cmd":"configure","surface":"focused","size":[300,200]}"#);
         let r2 = rec.control(r#"{"cmd":"configure","surface":"focused","size":[400,300]}"#);
@@ -234,18 +119,6 @@ mod toplevel {
             "first of the two"
         );
         assert_eq!((got[1].serial, got[1].w, got[1].h), (s2 as u32, 400, 300));
-        // the host acks only the newest, in the commit that follows
-        shell.ack_configure(id, got[1].serial).unwrap();
-        shell.surface_commit(id).unwrap();
-        shell.flush().unwrap();
-        let log = wait_commit(&rec, before, |c| token(c, "ack_serial") != Some("null"));
-        let acks: Vec<&String> = log
-            .iter()
-            .filter(|c| token(c, "ack_serial") != Some("null"))
-            .collect();
-        assert_eq!(acks.len(), 1, "{log:?}");
-        assert_eq!(number(acks[0], "ack_serial"), Some(s2));
-        assert_eq!(token(acks[0], "ack_stale"), Some("false"), "{}", acks[0]);
     }
 
     #[test]

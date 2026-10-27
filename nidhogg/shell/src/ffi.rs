@@ -256,29 +256,14 @@ pub unsafe extern "C" fn nhshell_window_scale(
     )
 }
 
-/// The window's logical size to `*w` and `*h`.
-///
-/// # Safety
-/// `sh` is a live handle; `w` and `h` are null or writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn nhshell_window_logical_size(
-    sh: *mut NhShell,
-    window: u64,
-    w: *mut i32,
-    h: *mut i32,
-) -> i32 {
-    guard(
-        sh,
-        |b| {
-            let (lw, lh) = b.window_logical_size(window)?;
-            // SAFETY: null or writable, by the contract.
-            unsafe { put(w, lw)? };
-            // SAFETY: as above.
-            unsafe { put(h, lh) }
-        },
-        |()| NHSHELL_OK,
-    )
-}
+ffi!(
+    /// Whether the compositor decorates the window: 1 or 0 to `*ssd`.
+    fn nhshell_window_ssd(window: u64, ssd: *mut i32) |b| {
+        let on = b.window_ssd(window)?;
+        // SAFETY: null or writable, by the contract.
+        unsafe { put(ssd, i32::from(on)) }
+    }
+);
 
 /// Begin a frame of `dev_w` x `dev_h` device pixels; the buffer to draw into goes to `*out`.
 ///

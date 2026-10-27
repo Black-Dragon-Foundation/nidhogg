@@ -126,7 +126,8 @@ pub trait ShellBackend {
 
     /// The window's preferred scale times 120 (120 when the compositor has not said).
     fn window_scale(&self, window: WindowId) -> ShellResult<u32>;
-    fn window_logical_size(&self, window: WindowId) -> ShellResult<(i32, i32)>;
+    /// Whether the compositor decorates the window (server-side decorations were granted to it).
+    fn window_ssd(&self, window: WindowId) -> ShellResult<bool>;
 
     /// Begin a frame of `dev_w` x `dev_h` device pixels.
     fn present_begin(
