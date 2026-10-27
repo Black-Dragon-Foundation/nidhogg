@@ -181,6 +181,9 @@ pub trait ShellBackend {
     fn set_cursor(&mut self, window: WindowId, shape: u32) -> ShellResult;
     /// The Xcursor theme (`name`, logical `size`) used where the compositor has no cursor-shape protocol.
     fn set_cursor_theme(&mut self, name: &str, size: u32) -> ShellResult;
+    /// Ask the compositor to activate the window with `token`; without one, request a token with the latest input
+    /// serial and the window's surface, and activate with it when it arrives (`State` before any input).
+    fn window_activate(&mut self, window: WindowId, token: Option<&str>) -> ShellResult;
 
     /// The window's preferred scale times 120 (120 when the compositor has not said).
     fn window_scale(&self, window: WindowId) -> ShellResult<u32>;
