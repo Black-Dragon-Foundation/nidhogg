@@ -36,7 +36,7 @@
     ;; Probed 2026-10-26 on the .2 prefix, sway, 2880x1800: scale 1 gives (frame-scale-factor) 1.0 and geometry
     ;; 2880x1800; 1.25 gives 2.0 and 4608x2880; 1.5 gives 2.0 and 3840x2400; 2 gives 2.0 and 2880x1800.  That is
     ;; mutter's rule too.  The recorder (profile sway) sends the same wl_output scale and xdg-output size.
-    ((or "sway" "mutter" "recorder") (glitnir-gui--gtk3-scale-ready-p))
+    ((or "sway" "mutter" "recorder" "kwin" "labwc") (glitnir-gui--gtk3-scale-ready-p))
     (c (error "gui-runner: unknown compositor %S" c))))
 
 (defun glitnir-gui--gtk3-scale-ready-p ()
@@ -182,7 +182,7 @@ Signals `error' when the reply's :ok is false."
 (byte-compile 'gui-runner--ppm-to-bgra)
 
 (defun gui-runner--sway-grab ()
-  "Grab the headless output with grim."
+  "Grab the headless output with grim (sway and labwc)."
   (let ((file (make-temp-file "gui-runner-grim-" nil ".ppm")))
     (unwind-protect
         (with-temp-buffer
@@ -206,9 +206,10 @@ Signals `error' when the reply's :ok is false."
 
 (defun gui-runner-screen-grab ()
   "Grab the compositor's output: a list (W H BYTES), BYTES a unibyte string of W*H BGRA pixels (Cairo ARGB32,
-little-endian), the shape of `glitnir-snapshot's `raw'.  Sway: grim; recorder: its `snapshot'; mutter: ScreenCast."
+little-endian), the shape of `glitnir-snapshot's `raw'.  Sway and labwc: grim; KWin: none (the row skips); recorder: its `snapshot'; mutter: ScreenCast."
   (pcase (glitnir-gui--compositor)
-    ("sway" (gui-runner--sway-grab))
+    ((or "sway" "labwc") (gui-runner--sway-grab))
+    ("kwin" (ert-skip "no headless grab on KWin"))
     ("recorder" (gui-runner--recorder-grab))
     ("mutter" (gui-runner--mutter-grab))
     (c (error "gui-runner-screen-grab: unknown compositor %S" c))))
