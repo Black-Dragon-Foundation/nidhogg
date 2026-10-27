@@ -10,6 +10,7 @@
 ;;   GLITNIR_GUI_TAG     when set, only rows tagged TAG: the selector is (and REGEXP (tag TAG))
 ;;   GLITNIR_GUI_COMPOSITOR  sway, mutter or recorder (selects the scale rule and the known differences)
 ;;   GLITNIR_GUI_RECORDER    the recorder's control socket (recorder only)
+;;   GLITNIR_GUI_RECORDER_BIN, GLITNIR_GUI_RECORDER_PROFILE  its binary and profile file, for a row's second recorder
 ;;   GLITNIR_GUI_KNOWN       the known-differences file (gui-known-differences.eld next to the tests)
 ;; Prints every result to `external-debugging-output', then `kill-emacs' 0 (all as expected) or 1.
 ;; The tests start only once the first frame is visible and has been redisplayed, never inside `command-line'.
@@ -343,7 +344,10 @@ with any channel differing by more than 2."
   (glitnir-gui--wait-for-first-paint)
   (glitnir-gui--load-tests)
   (glitnir-gui--apply-known-differences)
-  (let* ((stats (ert-run-tests (glitnir-gui--selector) #'glitnir-gui--report))
+  (let* ((tests (ert-select-tests (glitnir-gui--selector) t))
+         ;; rows tagged `runs-last' (one that ends the compositor, say) run after every other row
+         (last (seq-filter (lambda (test) (memq 'runs-last (ert-test-tags test))) tests))
+         (stats (ert-run-tests `(member ,@(seq-difference tests last) ,@last) #'glitnir-gui--report))
          (n (ert-stats-total stats)) (bad (ert-stats-completed-unexpected stats))
          (skipped (ert-stats-skipped stats)))
     (glitnir-gui--say "Ran %d tests, %d as expected (%d skipped), %d unexpected" n (- n bad) skipped bad)
