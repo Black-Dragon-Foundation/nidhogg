@@ -75,7 +75,7 @@ if [ "$mode" = host ]; then
   # the same container recipe as gui.sh, plus wtype (the typing) and procps
   podman run --rm --name "$name" --memory "${BUDGETS_MEMORY:-6g}" --memory-swap "${BUDGETS_MEMORY:-6g}" \
     ${BUDGETS_CPUSET:+--cpuset-cpus "$BUDGETS_CPUSET"} \
-    -v "$checkout:/src:ro,Z" -v "$pa:$inpa:ro,Z" -v "$pb:$inpb:ro,Z" -v "$outdir:/out:Z" "$IMAGE_fedora_45" bash -c '
+    -v "$checkout:/src:ro,z" -v "$pa:$inpa:ro,z" -v "$pb:$inpb:ro,z" -v "$outdir:/out:Z" "$IMAGE_fedora_45" bash -c '
       set -eu
       pkgs=$(cat "'"$inpa"'/share/nidhogg/deps.runtime" "'"$inpb"'/share/nidhogg/deps.runtime" 2>/dev/null | sed "s/#.*//" || true)
       dnf -y -q --setopt=install_weak_deps=False install sway wtype pixman libxkbcommon libcap dbus-daemon \

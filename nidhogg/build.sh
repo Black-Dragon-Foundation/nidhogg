@@ -337,14 +337,15 @@ if [ "$MODE" = container ]; then
   NAME=nidhogg-build-$$
   CACHE_ARGS=""
   # the caches are shared by builds running at once: :z (a shared label), since :Z relabels a directory for one container
-  # and a second build's :Z locks the first one out of it mid-build
+  # and a second build's :Z locks the first one out of it mid-build; the read-only source mount is :z for the same reason
+  # (builds, GUI runs and crate checks of one checkout run at once)
   if [ -n "${NIDHOGG_BUILD_PKG_CACHE:-}" ]; then
     case $DISTRO in ubuntu-*) CACHE_ARGS="-v $NIDHOGG_BUILD_PKG_CACHE/apt:/var/cache/apt/archives:z" ;;
       *) CACHE_ARGS="-v $NIDHOGG_BUILD_PKG_CACHE/dnf:/var/cache/libdnf5:z" ;; esac
   fi
   [ -z "${NIDHOGG_BUILD_CCACHE:-}" ] || CACHE_ARGS="$CACHE_ARGS -v $NIDHOGG_BUILD_CCACHE:/ccache:z"
   [ -z "$LISP_CACHE" ] || CACHE_ARGS="$CACHE_ARGS -v $LISP_CACHE:/lispcache:z"
-  CMD_HEAD="$PODMAN run --rm --name $NAME --memory $MEMORY --memory-swap $MEMORY -v $ROOT:/src:ro,Z -v $BUILD_DIR:/build:Z ${MOUNT:+-v $MOUNT} $CACHE_ARGS $IMAGE"
+  CMD_HEAD="$PODMAN run --rm --name $NAME --memory $MEMORY --memory-swap $MEMORY -v $ROOT:/src:ro,z -v $BUILD_DIR:/build:Z ${MOUNT:+-v $MOUNT} $CACHE_ARGS $IMAGE"
   if [ "$DRY" = 1 ]; then
     echo "$CMD_HEAD bash -euo pipefail -c '"
     script
@@ -368,7 +369,7 @@ if [ "$MODE" = container ]; then
   # in the background so that a signal reaches the trap at once
   # shellcheck disable=SC2086
   "$PODMAN" run --rm --name "$NAME" --memory "$MEMORY" --memory-swap "$MEMORY" \
-    -v "$ROOT:/src:ro,Z" -v "$BUILD_DIR:/build:Z" ${MOUNT:+-v} ${MOUNT:+"$MOUNT"} $CACHE_ARGS "$IMAGE" \
+    -v "$ROOT:/src:ro,z" -v "$BUILD_DIR:/build:Z" ${MOUNT:+-v} ${MOUNT:+"$MOUNT"} $CACHE_ARGS "$IMAGE" \
     bash -euo pipefail -c "$(script)" &
   RUN_PID=$!
   if wait "$RUN_PID"; then

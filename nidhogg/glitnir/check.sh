@@ -34,7 +34,7 @@ if [ -n "$DISTRO" ] && [ "$INNER" = 0 ]; then
   trap 'exit 143' TERM
   inner="dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install cargo rust clippy rustfmt pixman-devel diffutils >/dev/null && bash /crate/check.sh --inner${TEST:+ --test $TEST}"
   podman run --rm --name "$NAME" --memory 2g --memory-swap 2g \
-    -v "$HERE:/crate:ro,Z" -v "$CARGO_DIR:/cargo:Z" "${EXTRA[@]}" \
+    -v "$HERE:/crate:ro,z" -v "$CARGO_DIR:/cargo:Z" "${EXTRA[@]}" \
     -e CARGO_HOME=/cargo/home -e CARGO_TARGET_DIR=/cargo/target \
     "registry.fedoraproject.org/fedora:${DISTRO#fedora-}" bash -euo pipefail -c "$inner" &
   pid=$!
