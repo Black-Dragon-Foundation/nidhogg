@@ -53,6 +53,14 @@ until W5 (the C side is `#ifndef __linux__')."
   "The Emacs binary under test."
   (expand-file-name invocation-name invocation-directory))
 
+(defun workers-tests--client ()
+  "The emacsclient of the Emacs under test, or nil.
+A build tree has it in ../lib-src; an installed prefix has it next to
+the binary, named nidhoggclient."
+  (seq-find #'file-executable-p
+            (mapcar (lambda (f) (expand-file-name f invocation-directory))
+                    '("../lib-src/emacsclient" "nidhoggclient" "emacsclient"))))
+
 (defun workers-tests--child (form &rest args)
   "Run FORM in a child Nidhogg in threads mode; return what it printed, read.
 ARGS go before the --eval."
@@ -230,7 +238,7 @@ ARGS go before the --eval."
                  '(0 1 1)))
   ;; A background daemon: the threads start in the daemon, after its
   ;; fork, at the first job.
-  (let* ((client (expand-file-name "../lib-src/emacsclient" invocation-directory))
+  (let* ((client (workers-tests--client))
          (dir (make-temp-file "workers-daemon" t))
          (sock (expand-file-name "s" dir)))
     (should (file-executable-p client))
@@ -243,7 +251,12 @@ ARGS go before the --eval."
                                      0))
                         (car (read-from-string (buffer-string))))))
             (should (eql (call-process (workers-tests--emacs) nil nil nil
-                                       "-Q" (concat "--bg-daemon=" sock))
+                                       "-Q"
+                                       ;; The emacsclient connection is a socket the
+                                       ;; reader would own, starting nh-io: this row
+                                       ;; is about the first job.
+                                       "--eval" "(setq nidhogg-workers-reader-sockets nil)"
+                                       (concat "--bg-daemon=" sock))
                          0))
             (should (eql (ask workers-tests--count-form) 0))
             (should (eql (ask '(progn
