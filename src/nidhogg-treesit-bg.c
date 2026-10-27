@@ -314,13 +314,41 @@ static _Atomic int64_t nh_ts_count[NH_TS_C_N];
 
 /* The demand's synchronous attempt (§7.3 item 1), and the longest wait
    for a nearly done job whatever the estimate says.  */
-# define NH_TS_ATTEMPT_NS INT64_C (1000000)
+# define NH_TS_ATTEMPT_NS INT64_C (16000000)
 # define NH_TS_WAIT_MAX_NS INT64_C (2000000000)
-/* The synchronous estimate (§7.5): ns per KiB of the last full parse
-   of at least NH_TS_ESTIMATE_MIN bytes (a worker's, any language); 0
-   until one, when NH_TS_DEFAULT_NS_PER_KIB (100 ns a byte) stands in.  */
-static _Atomic int64_t nh_ts_ns_per_kib;
-enum { NH_TS_ESTIMATE_MIN = 4096, NH_TS_DEFAULT_NS_PER_KIB = 100 * 1024 };
+/* A full parse shorter than this says little of the parser's rate.  */
+enum { NH_TS_ESTIMATE_MIN = 4096 };
+
+/* Per-language fallback for a parser with no sample of its own: the
+   last values any parser of the language measured (§7.5).  */
+enum { NH_TS_LANGS = 16 };
+static struct
+{
+  _Atomic (const TSLanguage *) lang;
+  struct nh_wk_cost incr, full;
+} nh_ts_lang_cost[NH_TS_LANGS];
+
+static struct nh_wk_cost *
+nh_ts_lang_cost_of (const TSLanguage *lang, bool incr)
+{
+  for (int i = 0; i < NH_TS_LANGS; i++)
+    {
+      const TSLanguage *l = atomic_load (&nh_ts_lang_cost[i].lang);
+      if (!l)
+	{
+	  const TSLanguage *none = NULL;
+	  if (!atomic_compare_exchange_strong (&nh_ts_lang_cost[i].lang, &none,
+					       lang))
+	    l = none;
+	  else
+	    l = lang;
+	}
+      if (l == lang)
+	return incr ? &nh_ts_lang_cost[i].incr : &nh_ts_lang_cost[i].full;
+    }
+  return incr ? &nh_ts_lang_cost[0].incr : &nh_ts_lang_cost[0].full;
+}
+
 
 /* Jobs allocated and not yet freed; the condition variable is
    broadcast whenever one is freed.  */
@@ -477,9 +505,8 @@ nh_ts_job_run (struct nh_wk_job *job)
       if (!tree)
 	ts_parser_reset (p);
       else if (full && t->len >= NH_TS_ESTIMATE_MIN)
-	atomic_store_explicit (&nh_ts_ns_per_kib,
-			       (nh_ts_now () - t0) * 1024 / t->len,
-			       memory_order_relaxed);
+	nh_wk_cost_add (nh_ts_lang_cost_of (t->lang, false),
+			nh_ts_now () - t0, t->len);
     }
 #endif
   if (t->old)
@@ -638,17 +665,61 @@ nh_ts_job_behind (struct Lisp_TS_Parser *p, struct nh_ts_job *t)
   return t->gen < p->nh_gen && (total == 0 || 2 * done < total);
 }
 
-/* The synchronous estimate of parsing LEN bytes, in ns, within the
-   attempt's 1 ms and NH_TS_WAIT_MAX_NS.  */
+/* What a synchronous parse of P's edits would cost, in ns (§7.5): the
+   average incremental parse plus the edited bytes at the full-parse
+   rate; -1 without an incremental sample.  A parser's own samples come
+   first, then its language's.  */
 static int64_t
-nh_ts_estimate (uint32_t len)
+nh_ts_full_rate_estimate (struct Lisp_TS_Parser *p, int64_t bytes)
 {
-  int64_t per = atomic_load_explicit (&nh_ts_ns_per_kib,
-				      memory_order_relaxed);
-  if (per <= 0)
-    per = NH_TS_DEFAULT_NS_PER_KIB;
-  int64_t ns = per * len / 1024;
-  return max (NH_TS_ATTEMPT_NS, min (ns, NH_TS_WAIT_MAX_NS));
+  int64_t e = nh_wk_cost_estimate (&p->nh_full, bytes);
+  if (e < 0)
+    e = nh_wk_cost_estimate (nh_ts_lang_cost_of (ts_parser_language (p->parser),
+						 false), bytes);
+  return e;
+}
+
+static int64_t
+nh_ts_reparse_estimate (struct Lisp_TS_Parser *p)
+{
+  int64_t inc = nh_wk_cost_estimate (&p->nh_incr, 1);
+  if (inc < 0)
+    inc = nh_wk_cost_estimate (nh_ts_lang_cost_of (ts_parser_language
+						   (p->parser), true), 1);
+  if (inc < 0)
+    return -1;
+  int64_t full = nh_ts_full_rate_estimate (p, p->nh_edited_bytes);
+  return inc + (full > 0 ? full : 0);
+}
+
+/* What a parse of LEN bytes without a tree would cost, or -1.  */
+static int64_t
+nh_ts_full_estimate (struct Lisp_TS_Parser *p, int64_t len)
+{
+  return nh_ts_full_rate_estimate (p, len);
+}
+
+/* A synchronous parse of P that took NS: over a tree (HAD_TREE) it is
+   an incremental sample, net of the edited bytes' share; otherwise a
+   full one over LEN bytes.  The edits are parsed now.  */
+void
+nh_ts_note_parse (struct Lisp_TS_Parser *p, bool had_tree, int64_t ns,
+		  int64_t len)
+{
+  if (had_tree)
+    {
+      int64_t share = nh_ts_full_rate_estimate (p, p->nh_edited_bytes);
+      nh_wk_cost_add (&p->nh_incr, max (0, ns - max (0, share)), 1);
+      nh_wk_cost_add (nh_ts_lang_cost_of (ts_parser_language (p->parser), true),
+		      max (0, ns - max (0, share)), 1);
+    }
+  else if (len >= NH_TS_ESTIMATE_MIN)
+    {
+      nh_wk_cost_add (&p->nh_full, ns, len);
+      nh_wk_cost_add (nh_ts_lang_cost_of (ts_parser_language (p->parser),
+					  false), ns, len);
+    }
+  p->nh_edited_bytes = 0;
 }
 
 /* Cancel P's job and drop the parser's reference.  */
@@ -984,7 +1055,7 @@ nh_ts_attempt_progress (TSParseState *state)
 #endif
 
 /* The demand's attempt (§7.3 item 1): P's parse on this thread, as
-   treesit_ensure_parsed would run it, cancelled after 1 ms.  A
+   treesit_ensure_parsed would run it, cancelled after 16 ms.  A
    cancelled parse is reset, never resumed (§7.2).  Return the tree, or
    NULL if cancelled.  */
 static TSTree *
@@ -1011,6 +1082,10 @@ nh_ts_attempt (struct Lisp_TS_Parser *p)
     }
   NH_WK_PHASE_POP (depth);
   nh_wk_phase_ns_add (NH_WK_PH_TREESIT, 0, nh_ts_now () - t0);
+  if (tree)
+    nh_ts_note_parse (p, p->tree != NULL, nh_ts_now () - t0,
+		      BUF_ZV_BYTE (XBUFFER (p->buffer))
+		      - BUF_BEGV_BYTE (XBUFFER (p->buffer)));
   return tree;
 #else
   (void) p;
@@ -1033,12 +1108,25 @@ nh_ts_wait_or_cancel (Lisp_Object parser, void **tree)
   uint64_t total = atomic_load (&t->job.total);
   bool first_big = (t->tree_less && total > 0
 		    && 2 * atomic_load (&t->job.progress) >= total);
+  /* Own: what parsing it here would cost; the job's remainder is its
+     estimate over the part it has left.  Waiting pays only when the
+     remainder is the smaller.  */
+  int64_t own = (p->tree ? nh_ts_reparse_estimate (p)
+		 : nh_ts_full_estimate (p, t->len));
+  int64_t job_est = nh_ts_full_estimate (p, t->len);
+  int64_t remaining = (job_est < 0 || total == 0 ? job_est
+		       : (int64_t) ((double) job_est
+				    * (1.0 - (double) atomic_load
+				       (&t->job.progress) / total)));
+  bool pays = own < 0 || remaining < 0 || remaining <= own;
   if (atomic_load (&t->job.state) != NH_WK_J_QUEUED
-      && (first_big || !nh_ts_job_behind (p, t)))
+      && (first_big || (pays && !nh_ts_job_behind (p, t))))
     {
       nh_ts_counted (NH_TS_C_WAITED);
       if (nh_wk_wait (&t->job,
-		      first_big ? NH_TS_WAIT_MAX_NS : nh_ts_estimate (t->len),
+		      first_big ? NH_TS_WAIT_MAX_NS
+		      : own < 0 ? NH_TS_ATTEMPT_NS
+		      : max (NH_TS_ATTEMPT_NS, min (own, NH_TS_WAIT_MAX_NS)),
 		      NH_WK_PH_TREESIT_WAIT, 0) == 1
 	  && nh_ts_publish (parser, tree))
 	return NH_TS_TREE;
@@ -1077,11 +1165,23 @@ nh_ts_demand (Lisp_Object parser, bool may_defer, void **tree)
     }
   if (!defer)
     return NH_TS_SYNC;
-  TSTree *quick = nh_ts_attempt (p);
-  if (quick)
+  /* §7.3 item 1: a first parse goes to a job; an edit over a tree is
+     parsed here unless its estimate is over the inline base, and with
+     no estimate yet, by an attempt that seeds one.  */
+  if (p->tree)
     {
-      *tree = quick;
-      return NH_TS_TREE;
+      int64_t est = nh_ts_reparse_estimate (p);
+      if (est < 0)
+	{
+	  TSTree *quick = nh_ts_attempt (p);
+	  if (quick)
+	    {
+	      *tree = quick;
+	      return NH_TS_TREE;
+	    }
+	}
+      else if (nh_wk_decide (NH_WK_A_TS, est, true))
+	return NH_TS_SYNC;
     }
   nh_ts_maybe_start (parser, NH_TS_START_DEMAND);
   /* An inline job is done already.  */
@@ -1096,7 +1196,8 @@ static void
 nh_ts_select_one (struct Lisp_TS_Parser *p)
 {
   if (!p->deleted && !p->nh_job && p->need_reparse
-      && BUFFER_LIVE_P (XBUFFER (p->buffer)))
+      && BUFFER_LIVE_P (XBUFFER (p->buffer))
+      && (!p->tree || nh_ts_reparse_estimate (p) > NH_WK_INLINE_NS))
     nh_ts_maybe_start (make_lisp_ptr (p, Lisp_Vectorlike),
 		       NH_TS_START_SELECT);
 }
@@ -1305,6 +1406,42 @@ Only meaningful for a job parked before it reports its own.  */)
     {
       atomic_store (&t->job.total, 1000);
       atomic_store (&t->job.progress, 10 * XFIXNAT (pct));
+    }
+  return Qnil;
+}
+
+DEFUN ("nidhogg-workers--test-ts-cost", Fnidhogg_workers__test_ts_cost,
+       Snidhogg_workers__test_ts_cost, 3, 4, 0,
+       doc: /* Set PARSER's reparse cost estimates; for tests.
+INCR is the ns of a synchronous reparse over a tree, FULL the ns per
+byte of a parse without one; each nil leaves the estimate unknown.
+Both nil also forgets the language's.  With ADD, add one sample to the
+average instead of replacing it.  */)
+  (Lisp_Object parser, Lisp_Object incr, Lisp_Object full, Lisp_Object add)
+{
+  struct Lisp_TS_Parser *p = nh_ts_check_parser (parser);
+  struct nh_wk_cost *lc_i = nh_ts_lang_cost_of (ts_parser_language (p->parser),
+						true);
+  struct nh_wk_cost *lc_f = nh_ts_lang_cost_of (ts_parser_language (p->parser),
+						false);
+  struct nh_wk_cost *c[4] = { &p->nh_incr, &p->nh_full, lc_i, lc_f };
+  if (NILP (add))
+    for (int i = 0; i < 4; i++)
+      {
+	atomic_store (&c[i]->per_x1024, 0);
+	atomic_store (&c[i]->n, 0);
+      }
+  if (!NILP (incr))
+    {
+      CHECK_FIXNAT (incr);
+      nh_wk_cost_add (c[0], XFIXNAT (incr), 1);
+      nh_wk_cost_add (c[2], XFIXNAT (incr), 1);
+    }
+  if (!NILP (full))
+    {
+      CHECK_FIXNAT (full);
+      nh_wk_cost_add (c[1], XFIXNAT (full) * 1024, 1024);
+      nh_wk_cost_add (c[3], XFIXNAT (full) * 1024, 1024);
     }
   return Qnil;
 }
@@ -1564,6 +1701,7 @@ check); t never cancels it.  */);
   defsubr (&Snidhogg_workers__test_ts_await_idle);
   defsubr (&Snidhogg_workers__treesit_start_created);
   defsubr (&Snidhogg_workers__test_ts_select_entry);
+  defsubr (&Snidhogg_workers__test_ts_cost);
 #endif
 }
 
