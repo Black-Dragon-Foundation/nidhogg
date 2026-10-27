@@ -177,6 +177,9 @@ pub struct State {
 struct CommitRequest {
     damage: Vec<DamageRect>,
     frame_cb: bool,
+    /// The surface was a synchronised subsurface when the client committed: Smithay holds the commit and applies it
+    /// with the root's.
+    sync: bool,
 }
 
 /// A `ping` control command waiting for pongs.
@@ -478,6 +481,8 @@ impl CompositorHandler for State {
         self.surfaces.push(surface.clone());
         // a surface born at a scale above 1 hears it at once
         compositor::add_pre_commit_hook::<State, _>(surface, |_, _, surface| {
+            // outside `with_states`: it takes the surface's lock, which `with_states` holds
+            let sync = compositor::is_sync_subsurface(surface);
             compositor::with_states(surface, |states| {
                 let request = {
                     let mut cached = states.cached_state.get::<SurfaceAttributes>();
@@ -496,6 +501,7 @@ impl CompositorHandler for State {
                             })
                             .collect(),
                         frame_cb: !pending.frame_callbacks.is_empty(),
+                        sync,
                     }
                 };
                 states
@@ -649,9 +655,15 @@ impl CompositorHandler for State {
             app_id,
             geometry,
             alpha,
+            sync: request.sync,
+            applied_by: None,
             t_ns: self.t_ns(),
         };
+        let (seq, held_children) = (commit.seq, commit.role != "subsurface");
         self.log.push(commit);
+        if held_children {
+            self.log.mark_applied(seq);
+        }
         self.initial_configure(surface);
     }
 

@@ -105,6 +105,20 @@ pub fn handle(state: &mut State, line: &str, stream: &UnixStream) -> Option<Valu
             let commits: Vec<&crate::log::Commit> = state.log.since(since).collect();
             json!({"ok": true, "next": state.log.next_seq(), "commits": commits})
         }
+        // commits of toplevels, popups and subsurfaces (not cursors) that attach a new buffer and damage nothing
+        "empty_buffer_commits" => {
+            let since = req.get("since").and_then(Value::as_u64).unwrap_or(0);
+            let commits: Vec<&crate::log::Commit> = state
+                .log
+                .since(since)
+                .filter(|c| {
+                    matches!(c.role.as_str(), "toplevel" | "popup" | "subsurface")
+                        && c.buffer.is_some()
+                        && c.damage.is_empty()
+                })
+                .collect();
+            json!({"ok": true, "next": state.log.next_seq(), "commits": commits})
+        }
         "quit" => {
             state.quit();
             json!({"ok": true})

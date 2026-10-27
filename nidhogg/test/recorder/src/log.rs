@@ -64,6 +64,11 @@ pub struct Commit {
     /// The `wp_alpha_modifier_v1` multiplier as a float; absent when the client set none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alpha: Option<f64>,
+    /// The surface is a synchronised subsurface (its own, or an ancestor's, mode): the client's commit is held and
+    /// applied with its root's.
+    pub sync: bool,
+    /// The seq of the root commit that applied this held commit; null for a commit applied at once.
+    pub applied_by: Option<u64>,
     pub t_ns: u64,
 }
 
@@ -93,5 +98,18 @@ impl Log {
 
     pub fn since(&self, seq: u64) -> impl Iterator<Item = &Commit> {
         self.commits.iter().filter(move |c| c.seq >= seq)
+    }
+
+    /// A root surface just committed (the newest entry, seq `by`): the held subsurface commits applied with it are
+    /// the ones logged just before it, back to the previous non-subsurface commit.
+    pub fn mark_applied(&mut self, by: u64) {
+        for c in self.commits.iter_mut().rev().skip(1) {
+            if c.role != "subsurface" {
+                break;
+            }
+            if c.sync && c.applied_by.is_none() {
+                c.applied_by = Some(by);
+            }
+        }
     }
 }
