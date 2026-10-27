@@ -33,7 +33,7 @@ pub fn shape_request(serials: &SerialTracker, shape: u32) -> ShellResult<(u32, S
 impl WaylandShell {
     /// Show `shape` over the pointer.  Without `wp_cursor_shape_v1` this does nothing.
     pub(super) fn window_set_cursor(&mut self, id: WindowId, shape: u32) -> ShellResult {
-        if !self.main.windows.contains_key(&id) {
+        if !self.main.is_window(id) {
             return Err(ShellError::State);
         }
         let device = self

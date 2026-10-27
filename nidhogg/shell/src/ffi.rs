@@ -23,6 +23,15 @@ pub struct NhShellWindowDesc {
     pub title: *const c_char,
     pub app_id: *const c_char,
     pub flags: u32,
+    /// `NHSHELL_KIND_*`; 0 for a top-level window.
+    pub kind: u32,
+    /// Children and popups: the parent window.
+    pub parent: u64,
+    /// Children: the offset in the parent (logical pixels).
+    pub x: i32,
+    pub y: i32,
+    /// Popups: where to put it.
+    pub anchor: Anchor,
 }
 
 /// Connect to `display` (`None`: the environment's).  The backends are added here as they are written.
@@ -201,13 +210,25 @@ pub unsafe extern "C" fn nhshell_window_new(
                     unsafe { cstr(p) }.map(str::to_owned)
                 }
             };
-            let id = b.window_new(&WindowDesc {
-                w: d.w,
-                h: d.h,
-                title: text(d.title)?,
-                app_id: text(d.app_id)?,
-                flags: d.flags,
-            })?;
+            let id = if d.kind == NHSHELL_KIND_TOPLEVEL {
+                b.window_new(&WindowDesc {
+                    w: d.w,
+                    h: d.h,
+                    title: text(d.title)?,
+                    app_id: text(d.app_id)?,
+                    flags: d.flags,
+                })?
+            } else {
+                b.child_new(&ChildDesc {
+                    kind: d.kind,
+                    parent: d.parent,
+                    x: d.x,
+                    y: d.y,
+                    w: d.w,
+                    h: d.h,
+                    anchor: d.anchor,
+                })?
+            };
             // SAFETY: `out` is null or writable.
             unsafe { put(out, id) }
         },
@@ -243,6 +264,38 @@ ffi!(
     }
 );
 ffi!(fn nhshell_window_set_cursor(window: u64, shape: u32) |b| b.set_cursor(window, shape));
+
+ffi!(fn nhshell_window_set_position(window: u64, x: i32, y: i32) |b| b.set_position(window, x, y));
+ffi!(fn nhshell_window_stack(window: u64, sibling: u64, above: i32) |b| b.stack(window, sibling, above != 0));
+ffi!(fn nhshell_window_set_mapped(window: u64, on: i32) |b| b.set_mapped(window, on != 0));
+
+/// Set the part of the window that takes input: `n` rectangles in logical pixels (`n` 0: the whole surface).
+///
+/// # Safety
+/// `sh` is a live handle; `rects` is null (only with `n` 0) or points to `n` rectangles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nhshell_window_set_input_region(
+    sh: *mut NhShell,
+    window: u64,
+    rects: *const Rect,
+    n: usize,
+) -> i32 {
+    guard(
+        sh,
+        |b| {
+            let rects: &[Rect] = if n == 0 {
+                &[]
+            } else if rects.is_null() {
+                return Err(ShellError::Arg);
+            } else {
+                // SAFETY: `n` rectangles by the contract.
+                unsafe { std::slice::from_raw_parts(rects, n) }
+            };
+            b.set_input_region(window, rects)
+        },
+        |()| NHSHELL_OK,
+    )
+}
 
 /// The window's preferred scale times 120 to `*scale120`.
 ///

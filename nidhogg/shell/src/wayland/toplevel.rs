@@ -32,7 +32,7 @@ const WM_CAP_ALL: u32 = 0b1111;
 
 pub struct Window {
     pub surface: wayland_client::protocol::wl_surface::WlSurface,
-    xdg_surface: XdgSurface,
+    pub xdg_surface: XdgSurface,
     toplevel: XdgToplevel,
     decoration: Option<ZxdgToplevelDecorationV1>,
     /// Server-side decorations were granted to this window.
@@ -179,6 +179,15 @@ impl ShellBackend for WaylandShell {
     }
 
     fn window_destroy(&mut self, id: WindowId) -> ShellResult {
+        for dep in self.dependents_of(id) {
+            let _ = self.window_destroy(dep);
+        }
+        if self.main.children.contains_key(&id) {
+            return self.child_destroy(id);
+        }
+        if self.main.popups.contains_key(&id) {
+            return self.popup_destroy(id);
+        }
         let w = self.main.windows.remove(&id).ok_or(ShellError::State)?;
         self.main.surfaces.remove(&id);
         self.main.detach_scale(id);
@@ -190,6 +199,30 @@ impl ShellBackend for WaylandShell {
         w.xdg_surface.destroy();
         w.surface.destroy();
         self.flush()
+    }
+
+    fn child_new(&mut self, desc: &ChildDesc) -> ShellResult<WindowId> {
+        match desc.kind {
+            NHSHELL_KIND_CHILD => self.child_create(desc),
+            NHSHELL_KIND_POPUP => self.popup_create(desc),
+            _ => Err(ShellError::Arg),
+        }
+    }
+
+    fn set_position(&mut self, id: WindowId, x: i32, y: i32) -> ShellResult {
+        self.window_set_position(id, x, y)
+    }
+
+    fn stack(&mut self, id: WindowId, sibling: WindowId, above: bool) -> ShellResult {
+        self.window_stack(id, sibling, above)
+    }
+
+    fn set_input_region(&mut self, id: WindowId, rects: &[Rect]) -> ShellResult {
+        self.window_set_input_region(id, rects)
+    }
+
+    fn set_mapped(&mut self, id: WindowId, on: bool) -> ShellResult {
+        self.window_set_mapped(id, on)
     }
 
     fn set_title(&mut self, id: WindowId, title: &str) -> ShellResult {
@@ -314,12 +347,17 @@ impl ShellBackend for WaylandShell {
 impl Dispatch<XdgSurface, u64> for MainState {
     fn event(
         state: &mut Self,
-        _: &XdgSurface,
+        xdg: &XdgSurface,
         event: xdg_surface::Event,
         id: &u64,
         conn: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        if let xdg_surface::Event::Configure { serial } = event
+            && state.popup_ack(*id, xdg, serial)
+        {
+            return;
+        }
         if let xdg_surface::Event::Configure { serial } = event
             && let (Some(w), Some(shared)) = (state.windows.get(id), state.shared.as_ref())
         {
