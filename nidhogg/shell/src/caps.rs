@@ -157,7 +157,7 @@ mod tests {
             "/../test/recorder/profiles/mutter.json"
         );
         let json = std::fs::read_to_string(path)
-            .unwrap_or_else(|_| panic!("profiles/mutter.json not found (S0 Task 2)"));
+            .unwrap_or_else(|_| panic!("profiles/mutter.json not found (nidhogg/test/recorder)"));
         let keys = profile_globals(&json);
         assert!(!keys.is_empty(), "no globals parsed");
         let mut caps = NhShellCaps::default();

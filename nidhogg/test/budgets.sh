@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The W0 budgets (native shells spec section 3): Nidhogg's own Wayland shell (A) against pgtk (B), built from the same
+# The shell's budgets: Nidhogg's own Wayland shell (A) against pgtk (B), built from the same
 # commit, each in its own headless sway inside a memory-capped container, one plist per row.
 #
 #   nidhogg/test/budgets.sh --prefix-a SHELL --prefix-b PGTK [--compositor sway] [--scale S] [--size WxH] [--runs N]

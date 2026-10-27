@@ -1,108 +1,14 @@
 //! T1 tests of the presenter against nh-recorder (manual clock): damage, viewport, frame callbacks, idle trim.
-//! `NH_RECORDER` names the recorder binary; each test starts its own with a temporary `XDG_RUNTIME_DIR`.
+//! The harness is `common/mod.rs`.
 
+mod common;
+
+use common::*;
 use glitnir::geom::Rect;
 use nhshell::api::{ShellBackend, WindowDesc};
 use nhshell::event::*;
 use nhshell::wayland::WaylandShell;
-use rustix::event::{PollFd, PollFlags, Timespec, poll};
-use rustix::fd::BorrowedFd;
-use std::ffi::CString;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
-
-/// `open` reads `NIDHOGG_SHELL_FORCE_CSD`; the test that sets it holds this lock, and every open takes it.
-static ENV: Mutex<()> = Mutex::new(());
-
-struct Recorder {
-    child: Child,
-    dir: PathBuf,
-}
-
-impl Recorder {
-    fn start(profile: &str, clock: &str) -> Recorder {
-        let bin = std::env::var_os("NH_RECORDER")
-            .expect("NH_RECORDER is not set (the path of S0's nh-recorder binary)");
-        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("nhshell-present-{}-{n}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let profile = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../test/recorder/profiles")
-            .join(format!("{profile}.json"));
-        let mut child = Command::new(bin)
-            .args(["--socket", "wl", "--clock", clock, "--control"])
-            .arg(dir.join("control"))
-            .arg("--profile")
-            .arg(&profile)
-            .env("XDG_RUNTIME_DIR", &dir)
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("spawn nh-recorder");
-        let mut line = String::new();
-        BufReader::new(child.stdout.take().unwrap())
-            .read_line(&mut line)
-            .unwrap();
-        assert_eq!(line, "READY\n");
-        Recorder { child, dir }
-    }
-
-    fn open(&self) -> WaylandShell {
-        let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
-        self.open_locked()
-    }
-
-    fn open_locked(&self) -> WaylandShell {
-        let display = CString::new(self.dir.join("wl").as_os_str().as_bytes()).unwrap();
-        WaylandShell::open(Some(&display)).expect("open the shell on the recorder")
-    }
-
-    fn control(&self, req: &str) -> String {
-        let mut s = UnixStream::connect(self.dir.join("control")).unwrap();
-        writeln!(s, "{req}").unwrap();
-        let mut line = String::new();
-        BufReader::new(s).read_line(&mut line).unwrap();
-        line
-    }
-}
-
-impl Drop for Recorder {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
-
-fn readable_within(fd: i32, ms: i64) -> bool {
-    // SAFETY: the shell's wake descriptor stays open while the shell lives.
-    let fd = unsafe { BorrowedFd::borrow_raw(fd) };
-    let mut fds = [PollFd::new(&fd, PollFlags::IN)];
-    let t = Timespec {
-        tv_sec: ms / 1000,
-        tv_nsec: (ms % 1000) * 1_000_000,
-    };
-    matches!(poll(&mut fds, Some(&t)), Ok(n) if n > 0)
-}
-
-/// The next record satisfying `pred` within 3 s; other records are dropped.
-fn wait_for(shell: &mut WaylandShell, pred: impl Fn(&NhShellEvent) -> bool) -> NhShellEvent {
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        while let Some(ev) = shell.next_event().unwrap() {
-            if pred(&ev) {
-                return ev;
-            }
-        }
-        assert!(Instant::now() < deadline, "no matching record");
-        readable_within(shell.wake_fd(), 50);
-    }
-}
 
 /// Whether a matching record arrives within `ms`.
 fn arrives(shell: &mut WaylandShell, ms: u64, kind: u32) -> bool {
@@ -183,7 +89,7 @@ mod present {
 
     #[test]
     fn damage_is_logged() {
-        let rec = Recorder::start("sway", "manual");
+        let rec = Recorder::start_clock("sway", "manual");
         let mut shell = rec.open();
         let id = window(&mut shell);
         assert!(
@@ -199,42 +105,46 @@ mod present {
         draw(&mut shell, id, w, h, &[Rect::new(5, 6, 100, 20)]);
         let log = wait_buffer_commits(&rec, 1);
         let c = log.first().expect("a commit with a buffer");
-        assert!(c.contains("\"damage\":[[5,6,100,20]]"), "{c}");
+        assert!(c.contains("\"rect\":[5,6,100,20]}]"), "{c}");
         assert!(c.contains("\"dst\":[200,100]"), "{c}");
         assert!(c.contains("\"buffer_scale\":1"), "{c}");
     }
 
     #[test]
-    fn no_commit_while_callback_pending() {
-        let rec = Recorder::start("sway", "manual");
+    fn every_commit_is_made() {
+        // pacing is the host's: a commit while the previous frame is pending is made at once, with its own damage
+        let rec = Recorder::start_clock("sway", "manual");
         let mut shell = rec.open();
         let id = window(&mut shell);
-        assert_eq!(
-            draw(&mut shell, id, 200, 100, &[Rect::new(0, 0, 10, 10)]),
-            0
-        );
-        // the callback is pending: the second frame is held back and its damage kept
+        draw(&mut shell, id, 200, 100, &[Rect::new(0, 0, 10, 10)]);
         draw(&mut shell, id, 200, 100, &[Rect::new(50, 50, 10, 10)]);
-        wait_buffer_commits(&rec, 1);
-        std::thread::sleep(Duration::from_millis(150));
-        assert_eq!(buffer_commits(&rec).len(), 1);
-        present(&rec);
-        wait_for(&mut shell, |e| e.kind == NHSHELL_EV_FRAME_DONE);
-        // the held frame's buffer comes back as the previous frame, and its damage joins the new one
-        let age = draw(&mut shell, id, 200, 100, &[Rect::new(60, 60, 5, 5)]);
-        assert_eq!(age, 1);
         let log = wait_buffer_commits(&rec, 2);
         assert_eq!(log.len(), 2);
-        let c = &log[1];
         assert!(
-            c.contains("[50,50,10,10]") && c.contains("[60,60,5,5]"),
-            "{c}"
+            log[1].contains("[50,50,10,10]") && !log[1].contains("[0,0,10,10]"),
+            "{}",
+            log[1]
         );
     }
 
     #[test]
+    fn frame_done_without_presentation() {
+        let rec = Recorder::start_clock("no-presentation", "manual");
+        let mut shell = rec.open();
+        let id = window(&mut shell);
+        draw(&mut shell, id, 200, 100, &[Rect::new(0, 0, 10, 10)]);
+        wait_buffer_commits(&rec, 1);
+        present(&rec);
+        let ev = wait_for(&mut shell, |e| e.kind == NHSHELL_EV_FRAME_DONE);
+        assert_eq!(ev.window, id);
+        // SAFETY: FRAME_DONE records carry `frame_done`.
+        let fd = unsafe { ev.u.frame_done };
+        assert_eq!(fd.presented_ns, 0, "the frame callback's FRAME_DONE");
+    }
+
+    #[test]
     fn frame_done_after_present() {
-        let rec = Recorder::start("sway", "manual");
+        let rec = Recorder::start_clock("sway", "manual");
         let mut shell = rec.open();
         let id = window(&mut shell);
         draw(&mut shell, id, 200, 100, &[Rect::new(0, 0, 10, 10)]);
@@ -255,7 +165,7 @@ mod present {
     #[test]
     fn idle_frees_buffers() {
         // The recorder does not log buffer destruction: the shell's own count stands in for it.
-        let rec = Recorder::start("sway", "manual");
+        let rec = Recorder::start_clock("sway", "manual");
         let mut shell = rec.open();
         let id = window(&mut shell);
         for _ in 0..2 {
@@ -273,7 +183,7 @@ mod present {
 
     #[test]
     fn memfd_pages_aligned() {
-        let rec = Recorder::start("sway", "manual");
+        let rec = Recorder::start_clock("sway", "manual");
         let mut shell = rec.open();
         let id = window(&mut shell);
         draw(&mut shell, id, 201, 101, &[]);

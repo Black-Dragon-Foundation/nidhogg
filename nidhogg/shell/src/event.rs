@@ -1,7 +1,7 @@
 //! Event records: what the shell hands the host, `#[repr(C)]` twins of `NhShellEvent` in `include/nhshell.h`.
 //!
 //! One record type for every backend.  `kind` says which member of the union `u` is valid; kinds without a member
-//! (`CLOSE`, `DISCONNECTED`, `POINTER_LEAVE`) leave it zeroed.  `MODIFIERS` uses `key.mods`; `POINTER_ENTER`,
+//! (`CLOSE`, `DISCONNECTED`, `POINTER_LEAVE`, `BUFFER_FREE`) leave it zeroed.  `MODIFIERS` uses `key.mods`; `POINTER_ENTER`,
 //! `POINTER_MOTION` and `POINTER_LEAVE` use `pointer.x`/`y`; `BUTTON` uses `pointer.button`/`state`; `OUTPUT_REMOVE`
 //! uses `output.id`.  Window sizes are logical pixels; pointer positions are device pixels (logical x scale);
 //! `time_ns` is the compositor's clock in nanoseconds.
@@ -21,6 +21,8 @@ pub const NHSHELL_EV_FRAME_DONE: u32 = 12;
 pub const NHSHELL_EV_OUTPUT_ADD: u32 = 13;
 pub const NHSHELL_EV_OUTPUT_REMOVE: u32 = 14;
 pub const NHSHELL_EV_DISCONNECTED: u32 = 15;
+/// A buffer of the window came free after `present_begin` found none: the host presents what it owes.
+pub const NHSHELL_EV_BUFFER_FREE: u32 = 16;
 
 pub const NHSHELL_MOD_SHIFT: u32 = 1 << 0;
 pub const NHSHELL_MOD_CTRL: u32 = 1 << 1;

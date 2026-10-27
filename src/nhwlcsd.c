@@ -64,11 +64,14 @@ nhwl_csd_layout (struct frame *f)
   struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
   struct nhwl_csd *c = &out->csd;
   uint32_t s120 = nhwl_csd_s120 (f);
-  NhShellCaps caps;
+  int32_t ssd = 0;
   int m = 0, strip = 0;
 
-  c->on = (dpyinfo->shell && nhshell_caps (dpyinfo->shell, &caps) >= 0
-	   && !caps.ssd && !FRAME_UNDECORATED (f));
+  /* The window's own answer: the compositor may grant one window server
+     decorations and refuse another.  */
+  c->on = (dpyinfo->shell
+	   && nhshell_window_ssd (dpyinfo->shell, out->window, &ssd) >= 0
+	   && !ssd && !FRAME_UNDECORATED (f));
   if (c->on && !(out->states & NHSHELL_STATE_FULLSCREEN))
     {
       strip = nhwl_to_device (NHWL_CSD_STRIP, s120);

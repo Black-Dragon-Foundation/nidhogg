@@ -1,7 +1,9 @@
-//! T1 tests of the connection, the capabilities and the reader thread, against nh-recorder (S0's recording
-//! compositor).  `NH_RECORDER` names the recorder binary; each test starts its own with a temporary
-//! `XDG_RUNTIME_DIR` and connects by absolute socket path, never to the environment's display.
+//! T1 tests of the connection, the capabilities and the reader thread, against nh-recorder.
+//! The harness is `common/mod.rs`.
 
+mod common;
+
+use common::*;
 use nhshell::api::{NHSHELL_E_DISCONNECTED, ShellBackend};
 use nhshell::event::{NHSHELL_EV_DISCONNECTED, NHSHELL_EV_FOCUS, NhShellEvent};
 use nhshell::ffi::{
@@ -10,101 +12,8 @@ use nhshell::ffi::{
 };
 use nhshell::wayland::WaylandShell;
 use nhshell::wayland::registry::supported;
-use rustix::event::{PollFd, PollFlags, Timespec, poll};
-use rustix::fd::BorrowedFd;
-use rustix::process::{Pid, Signal, kill_process};
-use std::ffi::CString;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use rustix::process::Signal;
 use std::time::{Duration, Instant};
-
-struct Recorder {
-    child: Child,
-    dir: PathBuf,
-}
-
-impl Recorder {
-    fn start(profile: &str) -> Recorder {
-        let bin = std::env::var_os("NH_RECORDER")
-            .expect("NH_RECORDER is not set (the path of S0's nh-recorder binary)");
-        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("nhshell-reader-{}-{n}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let profile = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../test/recorder/profiles")
-            .join(format!("{profile}.json"));
-        let mut child = Command::new(bin)
-            .args(["--socket", "wl", "--control"])
-            .arg(dir.join("control"))
-            .arg("--profile")
-            .arg(&profile)
-            .env("XDG_RUNTIME_DIR", &dir)
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("spawn nh-recorder");
-        let mut line = String::new();
-        BufReader::new(child.stdout.take().unwrap())
-            .read_line(&mut line)
-            .unwrap();
-        assert_eq!(line, "READY\n");
-        Recorder { child, dir }
-    }
-
-    fn display(&self) -> CString {
-        CString::new(self.dir.join("wl").as_os_str().as_bytes()).unwrap()
-    }
-
-    fn open(&self) -> WaylandShell {
-        WaylandShell::open(Some(&self.display())).expect("open the shell on the recorder")
-    }
-
-    /// One control command; the reply line.
-    fn control(&self, req: &str) -> String {
-        let mut s = UnixStream::connect(self.dir.join("control")).unwrap();
-        writeln!(s, "{req}").unwrap();
-        let mut line = String::new();
-        BufReader::new(s).read_line(&mut line).unwrap();
-        line
-    }
-
-    fn signal(&self, sig: Signal) {
-        let pid = Pid::from_raw(self.child.id() as i32).unwrap();
-        kill_process(pid, sig).unwrap();
-    }
-}
-
-impl Drop for Recorder {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
-
-/// The number after `"key":` in a JSON reply (no JSON crate: nhshell takes no third-party crates).
-fn number(json: &str, key: &str) -> Option<u64> {
-    let pat = format!("\"{key}\":");
-    let rest = json[json.find(&pat)? + pat.len()..].trim_start();
-    let end = rest
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(rest.len());
-    rest[..end].parse().ok()
-}
-
-fn readable_within(fd: i32, ms: i64) -> bool {
-    // SAFETY: the shell's wake descriptor stays open while the shell lives.
-    let fd = unsafe { BorrowedFd::borrow_raw(fd) };
-    let mut fds = [PollFd::new(&fd, PollFlags::IN)];
-    let t = Timespec {
-        tv_sec: ms / 1000,
-        tv_nsec: (ms % 1000) * 1_000_000,
-    };
-    matches!(poll(&mut fds, Some(&t)), Ok(n) if n > 0)
-}
 
 /// Take every queued record.
 fn drain(shell: &mut WaylandShell) -> Vec<NhShellEvent> {
@@ -113,18 +22,6 @@ fn drain(shell: &mut WaylandShell) -> Vec<NhShellEvent> {
         out.push(ev);
     }
     out
-}
-
-/// Retry a control command until it succeeds (a request the shell just flushed may not be processed yet).
-fn control_ok(rec: &Recorder, req: &str) -> String {
-    let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        let reply = rec.control(req);
-        if reply.contains("\"ok\":true") || Instant::now() > deadline {
-            return reply;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
 }
 
 /// The plan names these `reader::…` (and `check.sh --test reader` selects them).
@@ -138,7 +35,7 @@ mod reader {
             let rec = Recorder::start(profile);
             let shell = rec.open();
             let caps = shell.caps();
-            // mutter 49 serves xdg_wm_base 7; the recorder (Smithay 0.7) serves at most 6 (S0 ledger)
+            // mutter 49 serves xdg_wm_base 7; the recorder (Smithay 0.7) serves at most 6
             assert_eq!(caps.xdg_wm_base, wm_base, "{profile}: xdg_wm_base");
             assert_eq!(caps.xdg_decoration, decoration, "{profile}: xdg_decoration");
             // every capability is min(what the recorder serves, what the shell supports); absent ones are 0
@@ -184,7 +81,7 @@ mod reader {
                 break;
             }
         }
-        let reply = control_ok(&rec, &format!(r#"{{"cmd":"focus","surface":{surface}}}"#));
+        let reply = rec.control_ok(&format!(r#"{{"cmd":"focus","surface":{surface}}}"#));
         assert!(reply.contains("\"ok\":true"), "{reply}");
         assert!(
             readable_within(shell.wake_fd(), 100),

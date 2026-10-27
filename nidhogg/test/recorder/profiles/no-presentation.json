@@ -1,0 +1,20 @@
+{
+  "name": "no-presentation",
+  "decoration": "server",
+  "globals": {
+    "wl_compositor": 6,
+    "wl_subcompositor": 1,
+    "wl_shm": 2,
+    "wl_output": 4,
+    "wl_seat": 9,
+    "wl_data_device_manager": 3,
+    "xdg_wm_base": 5,
+    "zxdg_decoration_manager_v1": 1,
+    "wp_fractional_scale_manager_v1": 1,
+    "wp_viewporter": 1,
+    "zwp_text_input_manager_v3": 1,
+    "wp_cursor_shape_manager_v1": 2,
+    "wp_alpha_modifier_v1": 1
+  },
+  "capped": {}
+}

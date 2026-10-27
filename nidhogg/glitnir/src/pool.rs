@@ -1,7 +1,7 @@
 //! Buffer pool policy for a shell that presents through shared-memory buffers.
 //!
-//! Wayland-free: the pool decides which buffer a frame is drawn into, how old its contents are and what must be
-//! repainted, and which buffers may go; the shell owns the memory and the protocol objects.  One buffer is enough
+//! Wayland-free: the pool decides which buffer a frame is drawn into, how old its contents are (the host repairs from
+//! the age), and which buffers may go; the shell owns the memory and the protocol objects.  One buffer is enough
 //! when idle and two are used in motion (a third only if a measurement says it helps); buffers idle for more than
 //! `IDLE_NS` are released, keeping one.
 //!
@@ -16,8 +16,6 @@ pub const IDLE_NS: u64 = 2_000_000_000;
 pub const MAX_BUFFERS: usize = 2;
 /// The damage of more rectangles than this becomes its bounding box (as the damage tracker's merge).
 pub const MAX_RECTS: usize = 32;
-/// Submissions whose damage is kept for repair regions.
-const HISTORY: usize = 16;
 
 /// A buffer the pool handed out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,7 +52,6 @@ pub struct Pool {
     next_id: usize,
     /// Submissions so far.
     seq: u64,
-    history: Vec<(u64, Vec<Rect>)>,
     /// Buffers the pool dropped on its own (wrong size); `trim` reports them.
     retired: Vec<BufferSlot>,
     /// The size of the latest `begin`.
@@ -144,17 +141,13 @@ impl Pool {
         self.slots.iter_mut().find(|s| s.id == slot.id)
     }
 
-    /// The begun slot goes to the compositor; its contents are now the newest frame, with `damage` changed.
-    pub fn submitted(&mut self, slot: BufferSlot, damage: &[Rect]) {
+    /// The begun slot goes to the compositor; its contents are now the newest frame.
+    pub fn submitted(&mut self, slot: BufferSlot) {
         self.seq += 1;
         let seq = self.seq;
         if let Some(s) = self.find(slot) {
             s.state = State::Held;
             s.written = seq;
-        }
-        self.history.push((seq, merged(damage)));
-        if self.history.len() > HISTORY {
-            self.history.remove(0);
         }
     }
 
@@ -181,30 +174,6 @@ impl Pool {
         {
             s.state = State::Free;
         }
-    }
-
-    /// The part of `slot` that is stale: the damage of every submission since it was written.  The whole buffer when
-    /// it was never written or the history no longer reaches back that far.
-    pub fn repair_region(&self, slot: BufferSlot) -> Vec<Rect> {
-        let Some(s) = self.slots.iter().find(|s| s.id == slot.id) else {
-            return Vec::new();
-        };
-        let full = vec![Rect::new(0, 0, s.w, s.h)];
-        if s.written == 0 {
-            return full;
-        }
-        let missing = self.seq - s.written;
-        let kept = self.history.iter().filter(|(g, _)| *g > s.written).count() as u64;
-        if kept < missing {
-            return full;
-        }
-        let all: Vec<Rect> = self
-            .history
-            .iter()
-            .filter(|(g, _)| *g > s.written)
-            .flat_map(|(_, d)| d.iter().copied())
-            .collect();
-        merged(&all)
     }
 
     /// The buffers to free: the retired ones, and, when nothing was begun or submitted for more than `IDLE_NS`, every
@@ -250,33 +219,31 @@ mod tests {
     }
 
     #[test]
-    fn age_and_repair() {
+    fn ages() {
         let mut p = Pool::new();
         let a = p.begin(100, 50, 0).unwrap();
         assert_eq!(a.age, 0);
-        p.submitted(a, &[Rect::new(0, 0, 100, 50)]);
+        p.submitted(a);
         let b = p.begin(100, 50, 0).unwrap();
         assert_ne!(a.id, b.id);
         assert_eq!(b.age, 0);
-        p.submitted(b, &[Rect::new(10, 10, 5, 5)]);
+        p.submitted(b);
         p.released(a);
         let a2 = p.begin(100, 50, 0).unwrap();
         assert_eq!((a2.id, a2.age), (a.id, 2));
-        assert_eq!(p.repair_region(a2), vec![Rect::new(10, 10, 5, 5)]);
-        p.submitted(a2, &[Rect::new(20, 20, 3, 3)]);
+        p.submitted(a2);
         p.released(b);
         let b2 = p.begin(100, 50, 0).unwrap();
         assert_eq!((b2.id, b2.age), (b.id, 2));
-        assert_eq!(p.repair_region(b2), vec![Rect::new(20, 20, 3, 3)]);
     }
 
     #[test]
     fn idle_trims_to_one_after_2s() {
         let mut p = Pool::new();
         let a = p.begin(8, 8, 0).unwrap();
-        p.submitted(a, &[]);
+        p.submitted(a);
         let b = p.begin(8, 8, 0).unwrap();
-        p.submitted(b, &[]);
+        p.submitted(b);
         p.released(a);
         assert!(p.trim(S).is_empty(), "not idle yet");
         assert!(p.trim(2 * S).is_empty(), "exactly 2 s is not more than 2 s");
@@ -291,9 +258,9 @@ mod tests {
     fn never_hands_out_a_held_buffer() {
         let mut p = Pool::new();
         let a = p.begin(8, 8, 0).unwrap();
-        p.submitted(a, &[]);
+        p.submitted(a);
         let b = p.begin(8, 8, 0).unwrap();
-        p.submitted(b, &[]);
+        p.submitted(b);
         assert!(p.begin(8, 8, 0).is_none(), "both are held");
         p.released(b);
         let c = p.begin(8, 8, 0).unwrap();
@@ -305,7 +272,7 @@ mod tests {
     fn a_new_size_retires_free_buffers() {
         let mut p = Pool::new();
         let a = p.begin(8, 8, 0).unwrap();
-        p.submitted(a, &[]);
+        p.submitted(a);
         p.released(a);
         let b = p.begin(16, 8, 0).unwrap();
         assert_eq!((b.age, b.w), (0, 16));
