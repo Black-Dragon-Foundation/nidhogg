@@ -271,15 +271,15 @@ if [ -n "$container" ]; then
   [ -z "$wdebug" ] || args+=(--wayland-debug /out/wayland-debug.txt)
   for kv in ${envs[@]+"${envs[@]}"}; do args+=(--env "$kv"); done
   out=
-  mounts=(-v "$checkout:/src:ro,Z" -v "$prefix:$inprefix:ro,Z")
-  [ "$compositor" != recorder ] || mounts+=(-v "$recorder:/opt/nh-recorder:ro,Z")
+  mounts=(-v "$checkout:/src:ro,z" -v "$prefix:$inprefix:ro,z")
+  [ "$compositor" != recorder ] || mounts+=(-v "$recorder:/opt/nh-recorder:ro,z")
   # a caller's GLITNIR_GUI_SOCKDIR (a host directory) is where the run's XDG_RUNTIME_DIR is made, so the caller can see it
   sockenv=()
   if [ -n "${GLITNIR_GUI_SOCKDIR:-}" ]; then
     mounts+=(-v "$GLITNIR_GUI_SOCKDIR:$GLITNIR_GUI_SOCKDIR:Z"); sockenv=(-e "GLITNIR_GUI_SOCKDIR=$GLITNIR_GUI_SOCKDIR")
     [ -z "${GLITNIR_GUI_LEFTOVER:-}" ] || sockenv+=(-e "GLITNIR_GUI_LEFTOVER=$GLITNIR_GUI_LEFTOVER")
   fi
-  [ "$tests" = "$checkout/test/src/nidhogg-tests" ] || mounts+=(-v "$tests:/src/test/src/nidhogg-tests:ro,Z")
+  [ "$tests" = "$checkout/test/src/nidhogg-tests" ] || mounts+=(-v "$tests:/src/test/src/nidhogg-tests:ro,z")
   if [ -n "$wdebug" ]; then
     out=$(mktemp -d "${TMPDIR:-/tmp}/glitnir-gui-out.XXXXXX")
     mounts+=(-v "$out:/out:Z")
