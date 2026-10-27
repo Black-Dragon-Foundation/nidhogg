@@ -218,6 +218,9 @@ XOBJ=@XOBJ@
 # xgselect.o if linking with GLib, else empty
 XGSELOBJ=@XGSELOBJ@
 
+# Nidhogg's stall watchdog objects (--with-nidhogg-watchdog), else empty
+NIDHOGG_WATCHDOG_OBJ=@NIDHOGG_WATCHDOG_OBJ@
+
 TOOLKIT_LIBW=@TOOLKIT_LIBW@
 
 ## Only used if HAVE_X11, in LIBX_OTHER.
@@ -457,7 +460,7 @@ ALL_CXX_CFLAGS = $(EMACS_CFLAGS) \
 .cc.o:
 	$(AM_V_CXX)$(CXX) -c $(CPPFLAGS) $(ALL_CXX_CFLAGS) $(PROFILING_CFLAGS) $<
 
-base_obj = dispnew.o frame.o scroll.o xdisp.o menu.o $(XMENU_OBJ) window.o     \
+base_obj = $(NIDHOGG_WATCHDOG_OBJ) dispnew.o frame.o scroll.o xdisp.o menu.o $(XMENU_OBJ) window.o     \
 	charset.o coding.o category.o ccl.o character.o chartab.o bidi.o       \
 	$(CM_OBJ) term.o terminal.o xfaces.o $(XOBJ) $(GTK_OBJ) $(DBUS_OBJ)    \
 	emacs.o keyboard.o macros.o keymap.o sysdep.o 			       \
