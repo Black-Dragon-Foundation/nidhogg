@@ -167,10 +167,12 @@ impl XdgShellHandler for State {
 
     fn reposition_request(
         &mut self,
-        _surface: PopupSurface,
-        _positioner: PositionerState,
-        _token: u32,
+        surface: PopupSurface,
+        positioner: PositionerState,
+        token: u32,
     ) {
+        surface.with_pending_state(|s| s.geometry = positioner.get_geometry());
+        surface.send_repositioned(token);
     }
 
     fn move_request(&mut self, surface: ToplevelSurface, _: WlSeat, serial: Serial) {
