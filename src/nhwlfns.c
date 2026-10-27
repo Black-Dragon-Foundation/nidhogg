@@ -967,6 +967,27 @@ DEFUN ("x-create-frame", Fx_create_frame, Sx_create_frame, 1, 1, 0,
     store_frame_param (f, Qvisibility, visibility);
   }
 
+  /* A client frame made by emacsclient carries the client's environment;
+     its XDG_ACTIVATION_TOKEN lets the compositor give the new window the
+     focus.  */
+  if (!nhwl_child_p (f) && FRAME_NHWL_OUTPUT (f)->window)
+    {
+      Lisp_Object env = Fcdr (Fassq (intern_c_string ("environment"), parms));
+      static const char prefix[] = "XDG_ACTIVATION_TOKEN=";
+
+      for (; CONSP (env); env = XCDR (env))
+	if (STRINGP (XCAR (env))
+	    && strncmp (SSDATA (XCAR (env)), prefix, sizeof prefix - 1) == 0
+	    && SDATA (XCAR (env))[sizeof prefix - 1])
+	  {
+	    block_input ();
+	    nhshell_window_activate (dpyinfo->shell, FRAME_NHWL_OUTPUT (f)->window,
+				     SSDATA (XCAR (env)) + sizeof prefix - 1);
+	    unblock_input ();
+	    break;
+	  }
+    }
+
   /* Works iff frame has been already mapped.  */
   gui_default_parameter (f, parms, Qskip_taskbar, Qnil,
 			 NULL, NULL, RES_TYPE_BOOLEAN);

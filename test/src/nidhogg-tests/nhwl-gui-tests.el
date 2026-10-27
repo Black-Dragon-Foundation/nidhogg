@@ -892,3 +892,36 @@ Return the two replies."
                      (let ((e (car (last (nhwl-gui--pointer-entries mark)))))
                        (and e (not (nhwl-gui--cursor-hidden-p e))))))))
       (kill-buffer buf))))
+
+;; The recorder honours only tokens it issued, so the row first has the frame ask for one (a click gives the input serial).
+(defun nhwl-gui--issued-token ()
+  (nhwl-gui--click 20 20)
+  (select-frame-set-input-focus (selected-frame))
+  (plist-get (nhwl-gui--wait
+              (lambda ()
+                (nhwl-gui--pump)
+                (car (last (plist-get (gui-runner-recorder '(:cmd "activation_log")) :activations))))
+              5)
+             :token))
+
+(ert-deftest nhwl-gui/client-frame-activates-with-its-token ()
+  (skip-unless (and (nhwl-gui--on-p) (daemonp)))
+  (let* ((token (nhwl-gui--issued-token))
+         (mark (nhwl-gui--mark))
+         (old-surface (plist-get (nhwl-gui--last-commit) :surface))
+         (new (make-frame `((environment . (,(concat "XDG_ACTIVATION_TOKEN=" token)))))))
+    (should (stringp token))
+    (unwind-protect
+        (let* ((entries (lambda ()
+                          (seq-filter (lambda (a) (equal (plist-get a :token) token))
+                                      (plist-get (gui-runner-recorder '(:cmd "activation_log")) :activations))))
+               (surfaces (lambda ()
+                           (seq-remove (lambda (id) (eql id old-surface))
+                                       (mapcar (lambda (c) (plist-get c :surface))
+                                               (plist-get (gui-runner-recorder (list :cmd "log" :since mark)) :commits))))))
+          ;; the new frame's surface carries the handed-in token
+          (should (nhwl-gui--wait
+                   (lambda ()
+                     (seq-find (lambda (a) (memql (plist-get a :surface) (funcall surfaces))) (funcall entries)))
+                   5)))
+      (when (frame-live-p new) (delete-frame new t)))))

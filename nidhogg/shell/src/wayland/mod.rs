@@ -9,6 +9,7 @@
 //! After `open` returns, the host's thread only sends requests, flushes and dispatches the main queue; it never reads
 //! the socket (no roundtrip, no `blocking_dispatch`).
 
+pub mod activation;
 pub mod child;
 pub mod clipboard;
 pub mod conn;
@@ -73,6 +74,7 @@ pub struct MainState {
     windows: HashMap<u64, toplevel::Window>,
     children: HashMap<u64, child::Child>,
     popups: HashMap<u64, popup::Popup>,
+    activation: Option<wayland_protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1>,
     /// `NIDHOGG_SHELL_FORCE_CSD` was set when the shell opened.
     force_csd: bool,
     /// The latest decoration mode the compositor granted a window.
@@ -150,6 +152,7 @@ impl WaylandShell {
             rstate.cursor_manager = g.bind(reg, &rqh, ());
             main.decoration_manager = g.bind(reg, &mqh, ());
             main.presentation = g.bind(reg, &mqh, ());
+            main.activation = g.bind(reg, &mqh, ());
             if let (Some(seat), Some(manager)) = (
                 &rstate.seat,
                 g.bind::<ZwpTextInputManagerV3, _, _>(reg, &rqh, ()),

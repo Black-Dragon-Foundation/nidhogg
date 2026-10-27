@@ -1185,10 +1185,19 @@ nhwl_get_focus_frame (struct frame *frame)
 }
 
 /* Adapted from pgtk_focus_frame.  Wayland gives a client no way to take
-   the focus: nothing to do but make the highlight follow.  */
+   the focus: the most it can do is ask the compositor to activate the
+   window (xdg-activation, with a token requested from the latest input
+   serial), which the compositor may refuse.  */
 void
 nhwl_focus_frame (struct frame *f, bool noactivate)
 {
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+
+  if (noactivate || !out->window)
+    return;
+  block_input ();
+  nhshell_window_activate (FRAME_NHWL_SHELL (f), out->window, NULL);
+  unblock_input ();
 }
 
 

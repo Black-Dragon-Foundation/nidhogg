@@ -48,6 +48,7 @@ scale: `scale120` = 120 x (Xft DPI / 96), and server-side decorations always (`s
 | `show_menu` | no window menu: no-op | `_GTK_SHOW_WINDOW_MENU`, or no-op | fits |
 | `ack_configure` | no configure handshake: no-op (`CONFIGURE` events come from `windowDidResize:`) | answers `_NET_WM_SYNC_REQUEST` with that serial, or no-op | fits |
 | `set_cursor` | `NSCursor` set | cursor font via `ChangeWindowAttributes` | fits |
+| `window_activate` | `activateIgnoringOtherApps:` (the token is ignored) | `_NET_ACTIVE_WINDOW` (the token is the startup id) | fits |
 | `window_scale` | `backingScaleFactor` x 120 (120 or 240) | 120 x Xft DPI ratio | fits |
 | `window_ssd` | always true (the system draws the title bar) | true | fits |
 | `window_new` kinds child / popup, `set_position`, `stack` | a child `NSWindow` (`addChildWindow:ordered:`, `setFrameOrigin:`); a popup is a borderless child panel placed by the host from the anchor | an override-redirect window (`XMoveWindow`, `XConfigureWindow` stack mode); `POPUP_DONE` never sent | fits |
