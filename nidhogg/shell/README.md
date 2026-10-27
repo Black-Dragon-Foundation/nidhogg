@@ -62,5 +62,6 @@ scale: `scale120` = 120 x (Xft DPI / 96), and server-side decorations always (`s
 | `selection_own`, `selection_disown`, `selection_owned` | `NSPasteboard` `declareTypes:owner:` with the copied bytes per type; no system primary selection, so `PRIMARY` stays inside the process | `SetSelectionOwner` on `CLIPBOARD` or `PRIMARY`, answering `SelectionRequest` from the copy (INCR for large data) | fits |
 | `selection_types`, `selection_read` | the pasteboard's `types` and `dataForType:` (synchronous, the timeout never runs out) | `ConvertSelection` to `TARGETS` or the type, waiting for `SelectionNotify` up to the timeout | fits |
 | events: `SELECTION` | the pasteboard's `changeCount`, checked when the app becomes active | `XFixesSelectionNotify` | fits |
+| `text_input_enable`, `text_input_cursor`, `text_input_surrounding`, `take_text`; events `PREEDIT`, `COMMIT_TEXT`, `DELETE_SURROUNDING` | `NSTextInputClient` (`setMarkedText:`, `insertText:`, `firstRectForCharacterRange:`); no delete record (macOS replaces ranges in `insertText:`) | XIM or ibus over D-Bus (preedit callbacks, `XIM_SET_IC_VALUES` for the spot) | fits |
 
 Result: every row fits; the API needed no change.

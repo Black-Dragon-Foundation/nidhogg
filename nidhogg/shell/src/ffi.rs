@@ -517,6 +517,86 @@ pub unsafe extern "C" fn nhshell_free_bytes(p: *mut u8) {
     unsafe { libc::free(p.cast()) };
 }
 
+ffi!(
+    /// Text input for `window` on (`on` non-zero) or off.  `NHSHELL_E_UNSUPPORTED` without text-input-v3.
+    fn nhshell_text_input_enable(window: u64, on: i32) |b| b.text_input_enable(window, on != 0)
+);
+ffi!(
+    /// The cursor rectangle in the window (logical pixels); sent to the input method only when it changed.
+    fn nhshell_text_input_cursor(window: u64, x: i32, y: i32, w: i32, h: i32)
+        |b| b.text_input_cursor(window, x, y, w, h)
+);
+
+/// The text around the cursor: `len` bytes of UTF-8 at `utf8`, `cursor` and `anchor` byte offsets in it.  At most 4000
+/// bytes go to the input method, cut around the cursor on a character boundary.
+///
+/// # Safety
+/// `sh` is a live handle; `utf8` points to `len` bytes (or is null with `len` 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nhshell_text_input_surrounding(
+    sh: *mut NhShell,
+    window: u64,
+    utf8: *const c_char,
+    len: usize,
+    cursor: i32,
+    anchor: i32,
+) -> i32 {
+    guard(
+        sh,
+        |b| {
+            let bytes: &[u8] = if len == 0 {
+                &[]
+            } else if utf8.is_null() {
+                return Err(ShellError::Arg);
+            } else {
+                // SAFETY: `len` bytes by the contract.
+                unsafe { std::slice::from_raw_parts(utf8.cast::<u8>(), len) }
+            };
+            let text = std::str::from_utf8(bytes).map_err(|_| ShellError::Arg)?;
+            let (cursor, anchor) = (
+                usize::try_from(cursor).map_err(|_| ShellError::Arg)?,
+                usize::try_from(anchor).map_err(|_| ShellError::Arg)?,
+            );
+            b.text_input_surrounding(window, text, cursor, anchor)
+        },
+        |()| NHSHELL_OK,
+    )
+}
+
+/// Copy the text of record `id` into `buf` (`cap` bytes, not NUL-terminated) and put its length in `*len`.  The id
+/// is single-use: a success forgets it.  `NHSHELL_E_TOO_SMALL` (with `*len` set, the text kept) if `cap` is short;
+/// `NHSHELL_E_STATE` for an unknown id.
+///
+/// # Safety
+/// `sh` is a live handle; `buf` is writable for `cap` bytes (null only with `cap` 0); `len` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nhshell_take_text(
+    sh: *mut NhShell,
+    id: u32,
+    buf: *mut c_char,
+    cap: usize,
+    len: *mut usize,
+) -> i32 {
+    guard(
+        sh,
+        |b| {
+            let n = b.text_len(id)?;
+            // SAFETY: null or writable, by the contract.
+            unsafe { put(len, n) }?;
+            if n > cap || (n > 0 && buf.is_null()) {
+                return Err(ShellError::TooSmall);
+            }
+            let text = b.take_text(id)?;
+            if n > 0 {
+                // SAFETY: `cap >= n` bytes are writable at `buf`.
+                unsafe { std::ptr::copy_nonoverlapping(text.as_ptr(), buf.cast::<u8>(), n) };
+            }
+            Ok(())
+        },
+        |()| NHSHELL_OK,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
