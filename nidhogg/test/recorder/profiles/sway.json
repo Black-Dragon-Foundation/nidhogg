@@ -1,6 +1,8 @@
 {
   "name": "sway",
   "decoration": "server",
+  "frames": "damage-only",
+  "discard_on_supersede": true,
   "globals": {
     "wl_compositor": 6,
     "wl_subcompositor": 1,

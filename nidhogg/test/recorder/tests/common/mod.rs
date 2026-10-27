@@ -119,6 +119,9 @@ pub struct Client {
     /// Seat, keyboard, pointer and text-input events (see `extra`).
     pub ev: extra::Events,
     pub presented: Vec<Duration>,
+    /// presentation feedbacks answered `discarded`, and wl_buffer.release events heard
+    pub discarded: u32,
+    pub released: u32,
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for Client {
@@ -297,6 +300,23 @@ impl Dispatch<wp_presentation_feedback::WpPresentationFeedback, ()> for Client {
         {
             let secs = (u64::from(tv_sec_hi) << 32) | u64::from(tv_sec_lo);
             s.presented.push(Duration::new(secs, tv_nsec));
+        } else if let wp_presentation_feedback::Event::Discarded = e {
+            s.discarded += 1;
+        }
+    }
+}
+
+impl Dispatch<wl_buffer::WlBuffer, ()> for Client {
+    fn event(
+        s: &mut Self,
+        _: &wl_buffer::WlBuffer,
+        e: wl_buffer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_buffer::Event::Release = e {
+            s.released += 1;
         }
     }
 }
@@ -313,7 +333,6 @@ ignore_events!(
     wl_compositor::WlCompositor,
     wl_shm::WlShm,
     wl_shm_pool::WlShmPool,
-    wl_buffer::WlBuffer,
     zxdg_decoration_manager_v1::ZxdgDecorationManagerV1,
     wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
     wp_viewporter::WpViewporter,
