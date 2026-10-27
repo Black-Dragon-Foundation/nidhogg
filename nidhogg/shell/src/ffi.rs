@@ -379,6 +379,144 @@ pub unsafe extern "C" fn nhshell_present_commit(
     )
 }
 
+/// Own selection `kind` (`NHSHELL_SEL_*`) with `n` MIME types: `mimes[i]` with the `lens[i]` bytes at `data[i]`,
+/// copied here.  `NHSHELL_E_STATE` without keyboard focus.
+///
+/// # Safety
+/// `sh` is a live handle; `mimes`, `data` and `lens` point to `n` entries each (any may be NULL when `n` is 0); each
+/// `mimes[i]` is NUL-terminated and each `data[i]` points to `lens[i]` bytes (NULL allowed when that is 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nhshell_selection_own(
+    sh: *mut NhShell,
+    kind: u32,
+    mimes: *const *const c_char,
+    data: *const *const u8,
+    lens: *const usize,
+    n: usize,
+) -> i32 {
+    guard(
+        sh,
+        |b| {
+            if n > 0 && (mimes.is_null() || data.is_null() || lens.is_null()) {
+                return Err(ShellError::Arg);
+            }
+            let mut items = Vec::with_capacity(n);
+            for i in 0..n {
+                // SAFETY: `n` entries each, by the contract.
+                let (m, d, len) = unsafe { (*mimes.add(i), *data.add(i), *lens.add(i)) };
+                // SAFETY: NUL-terminated by the contract.
+                let mime = unsafe { cstr(m) }?;
+                let bytes: &[u8] = match (len, d.is_null()) {
+                    (0, _) => &[],
+                    (_, true) => return Err(ShellError::Arg),
+                    // SAFETY: `len` bytes by the contract.
+                    (_, false) => unsafe { std::slice::from_raw_parts(d, len) },
+                };
+                items.push((mime, bytes));
+            }
+            b.selection_own(kind, &items)
+        },
+        |()| NHSHELL_OK,
+    )
+}
+
+ffi!(fn nhshell_selection_disown(kind: u32) |b| b.selection_disown(kind));
+
+/// 1 while our source is the current selection `kind`, else 0.
+///
+/// # Safety
+/// `sh` is a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nhshell_selection_owned(sh: *mut NhShell, kind: u32) -> i32 {
+    guard(sh, |b| b.selection_owned(kind), i32::from)
+}
+
+/// The current MIME types of selection `kind`, each followed by a NUL, into `buf` when `cap` holds them all; `*len`
+/// gets the bytes needed.  Returns the number of types.
+///
+/// # Safety
+/// `sh` is a live handle; `buf` is null or holds `cap` bytes; `len` is null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nhshell_selection_types(
+    sh: *mut NhShell,
+    kind: u32,
+    buf: *mut c_char,
+    cap: usize,
+    len: *mut usize,
+) -> i32 {
+    guard(
+        sh,
+        |b| {
+            let types = b.selection_types(kind)?;
+            let mut all = Vec::new();
+            for t in &types {
+                all.extend_from_slice(t.as_bytes());
+                all.push(0u8);
+            }
+            // SAFETY: `len` is null or writable.
+            unsafe { put(len, all.len()) }?;
+            if !all.is_empty() && all.len() <= cap {
+                if buf.is_null() {
+                    return Err(ShellError::Arg);
+                }
+                // SAFETY: `buf` holds `cap` >= `all.len()` bytes.
+                unsafe { std::ptr::copy_nonoverlapping(all.as_ptr(), buf.cast(), all.len()) };
+            }
+            Ok(types.len() as i32)
+        },
+        |n| n,
+    )
+}
+
+/// Selection `kind` as `mime` in a new buffer (`*out`, `*len`; free it with `nhshell_free_bytes`): our own bytes at
+/// once, another client's read until it finishes or `timeout_ms` passes (`NHSHELL_E_TIMEOUT`).
+///
+/// # Safety
+/// `sh` is a live handle; `mime` is NUL-terminated; `out` and `len` are null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nhshell_selection_read(
+    sh: *mut NhShell,
+    kind: u32,
+    mime: *const c_char,
+    timeout_ms: u32,
+    out: *mut *mut u8,
+    len: *mut usize,
+) -> i32 {
+    guard(
+        sh,
+        |b| {
+            if out.is_null() || len.is_null() {
+                return Err(ShellError::Arg);
+            }
+            // SAFETY: NUL-terminated by the contract.
+            let bytes = b.selection_read(kind, unsafe { cstr(mime) }?, timeout_ms)?;
+            // SAFETY: a plain allocation of at least one byte.
+            let p = unsafe { libc::malloc(bytes.len().max(1)) }.cast::<u8>();
+            if p.is_null() {
+                return Err(ShellError::NoMem);
+            }
+            // SAFETY: `p` holds `bytes.len()` bytes; `out` and `len` are writable (checked above).
+            unsafe {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), p, bytes.len());
+                out.write(p);
+                len.write(bytes.len());
+            }
+            Ok(())
+        },
+        |()| NHSHELL_OK,
+    )
+}
+
+/// Free a buffer from `nhshell_selection_read`.  NULL is accepted.
+///
+/// # Safety
+/// `p` is null or such a buffer, not used again.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nhshell_free_bytes(p: *mut u8) {
+    // SAFETY: null or from `libc::malloc`, by the contract.
+    unsafe { libc::free(p.cast()) };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

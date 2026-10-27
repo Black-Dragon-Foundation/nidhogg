@@ -11,9 +11,11 @@
 //! dispatch or a panic posts `DISCONNECTED` and ends the thread.
 
 use crate::event::{FocusEv, NHSHELL_EV_FOCUS, NhShellEvent};
+use crate::wayland::clipboard::SendBytes;
 use crate::wayland::conn::Shared;
 use crate::wayland::keyboard::KeyboardState;
 use crate::wayland::pointer::{self, PointerState};
+use crate::wayland::selection;
 use crate::wayland::serial::SerialKind;
 use rustix::event::{PollFd, PollFlags, poll};
 use std::os::fd::AsFd;
@@ -41,6 +43,8 @@ pub struct ReaderState {
     pub pointer: PointerState,
     /// A record was posted since the last wake.
     posted: bool,
+    /// Our selection bytes being written to other clients (`selection.rs`).
+    pub sends: Vec<SendBytes>,
 }
 
 impl ReaderState {
@@ -54,6 +58,7 @@ impl ReaderState {
             cursor_manager: None,
             pointer: PointerState::default(),
             posted: false,
+            sends: Vec::new(),
         }
     }
 
@@ -147,7 +152,7 @@ impl Reader {
             self.flush()?;
             // 3. wait for the compositor, a writable socket when a flush is pending, or the shell
             let want_out = shared.want_flush.load(Ordering::Acquire);
-            let (conn_rev, wake_rev, timer_rev) = {
+            let (conn_rev, wake_rev, timer_rev, send_revs) = {
                 let fd = guard.connection_fd();
                 let wake_fd = shared.reader_wake.fd();
                 let mut flags = PollFlags::IN;
@@ -163,17 +168,23 @@ impl Reader {
                 if let Some(t) = &timer_fd {
                     fds.push(PollFd::new(t, PollFlags::IN));
                 }
-                match poll(&mut fds, None) {
+                // selection bytes waiting for another client to read them, until the earliest one's deadline
+                let first_send = fds.len();
+                for s in &self.state.sends {
+                    fds.push(PollFd::new(s, PollFlags::OUT));
+                }
+                match poll(&mut fds, self.state.send_timeout().as_ref()) {
                     Ok(_) => {}
                     // signals are blocked here, but a cancelled read and another turn is always safe
                     Err(rustix::io::Errno::INTR) => continue,
                     Err(_) => return Err(Lost),
                 }
-                (
-                    fds[0].revents(),
-                    fds[1].revents(),
-                    fds.get(2).map_or(PollFlags::empty(), |f| f.revents()),
-                )
+                let timer = match timer_fd {
+                    Some(_) => fds[2].revents(),
+                    None => PollFlags::empty(),
+                };
+                let sends: Vec<_> = fds[first_send..].iter().map(PollFd::revents).collect();
+                (fds[0].revents(), fds[1].revents(), timer, sends)
             };
             if wake_rev.contains(PollFlags::IN) {
                 shared.reader_wake.drain();
@@ -183,6 +194,9 @@ impl Reader {
                 self.state.kbd.on_timer(&shared, &mut out);
                 self.state.post_all(out);
                 self.state.wake_host();
+            }
+            if !send_revs.is_empty() {
+                self.state.service_sends(&send_revs);
             }
             if conn_rev.contains(PollFlags::OUT) {
                 shared.want_flush.store(false, Ordering::Release);
@@ -289,11 +303,15 @@ impl Dispatch<WlKeyboard, ()> for ReaderState {
             ev
         };
         match event {
-            wl_keyboard::Event::Enter { surface, .. } => {
+            wl_keyboard::Event::Enter {
+                serial, surface, ..
+            } => {
+                selection::lock(&state.shared).enter(serial);
                 state.kbd.enter(surface.id().protocol_id().into());
                 state.post(focus(&surface, 1));
             }
             wl_keyboard::Event::Leave { surface, .. } => {
+                selection::lock(&state.shared).leave();
                 state.kbd.leave(surface.id().protocol_id().into());
                 state.post(focus(&surface, 0));
             }
@@ -336,6 +354,7 @@ impl Dispatch<WlKeyboard, ()> for ReaderState {
                         .lock()
                         .unwrap_or_else(|e| e.into_inner());
                     serials.update(SerialKind::KeyPress, serial);
+                    selection::lock(&state.shared).input(serial);
                 }
                 let mut out = Vec::new();
                 state.kbd.key(time, key, pressed, &mut out);
