@@ -37,6 +37,7 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <stdlib.h>
 #include <signal.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <c-ctype.h>
@@ -2396,9 +2397,111 @@ nhwl_display_pixel_height (struct nhwl_display_info *dpyinfo)
   return height ? height : 1080;
 }
 
+static int
+nhwl_bench_cmp (const void *a, const void *b)
+{
+  double x = *(const double *) a, y = *(const double *) b;
+
+  return (x > y) - (x < y);
+}
+
+static double
+nhwl_bench_ms (struct timespec t)
+{
+  return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
+}
+
+/* Sorted A of N values: the P-th percentile (nearest rank).  */
+static double
+nhwl_bench_pct (double *a, ptrdiff_t n, double p)
+{
+  ptrdiff_t k = (ptrdiff_t) ceil (p * n) - 1;
+
+  return a[max (k, 0)];
+}
+
+DEFUN ("nhwl--bench-full-redraw", Fnhwl__bench_full_redraw,
+       Snhwl__bench_full_redraw, 1, 1, 0,
+       doc: /* Present N frames of the selected frame, each damaged whole.
+Each frame waits for the previous one's frame callback.  Return
+(:frames N :compose-p50 MS :compose-p95 MS :present-interval-p95 MS):
+the time one present took (commit, buffer, compose, attach) and the time
+between two presents.  The motion bench of the W0 budgets.  */)
+  (Lisp_Object n)
+{
+  struct frame *f = SELECTED_FRAME ();
+  struct nhwl_output *out;
+  struct nhwl_display_info *dpyinfo;
+  struct timespec ts;
+  double *compose, *interval, prev = 0;
+  ptrdiff_t frames, i, done = 0;
+
+  CHECK_FIXNAT (n);
+  if (!FRAME_NHWL_P (f))
+    error ("Not a Nidhogg shell frame");
+  frames = XFIXNAT (n);
+  if (frames < 1 || frames > 100000)
+    error ("N must be 1 to 100000");
+  out = FRAME_NHWL_OUTPUT (f);
+  dpyinfo = FRAME_DISPLAY_INFO (f);
+  if (!out->glitnir_id || !out->configured)
+    error ("The frame is not shown yet");
+
+  compose = xnmalloc (frames, 2 * sizeof *compose);
+  interval = compose + frames;
+  for (i = 0; i < frames; i++)
+    {
+      double t0, t1;
+      int waits = 0;
+
+      /* The previous present's frame callback (about one refresh).  */
+      while (out->frame_pending > 0 && waits++ < 50)
+	{
+	  struct pollfd p = { dpyinfo->connection, POLLIN, 0 };
+
+	  poll (&p, 1, 100);
+	  nhwl_drain_events (dpyinfo, NULL);
+	}
+      if (out->frame_pending > 0)
+	break;
+      glitnir_damage_all (out->glitnir_id);
+      clock_gettime (CLOCK_MONOTONIC, &ts);
+      t0 = nhwl_bench_ms (ts);
+      nhwl_present (f);
+      clock_gettime (CLOCK_MONOTONIC, &ts);
+      t1 = nhwl_bench_ms (ts);
+      if (out->frame_pending == 0)
+	break;			/* nothing was committed */
+      compose[done] = t1 - t0;
+      if (done > 0)
+	interval[done - 1] = t1 - prev;
+      prev = t1;
+      done++;
+    }
+  if (done < 2)
+    {
+      xfree (compose);
+      error ("The bench presented %"pD"d frames", done);
+    }
+  qsort (compose, done, sizeof *compose, nhwl_bench_cmp);
+  qsort (interval, done - 1, sizeof *interval, nhwl_bench_cmp);
+  Lisp_Object r
+    = list (intern_c_string (":frames"), make_fixnum (done),
+	    intern_c_string (":compose-p50"),
+	    make_float (nhwl_bench_pct (compose, done, 0.5)),
+	    intern_c_string (":compose-p95"),
+	    make_float (nhwl_bench_pct (compose, done, 0.95)),
+	    intern_c_string (":present-interval-p95"),
+	    make_float (nhwl_bench_pct (interval, done - 1, 0.95)));
+  xfree (compose);
+  return r;
+}
+
 void
 syms_of_nhwlterm (void)
 {
+  defsubr (&Snhwl__bench_full_redraw);
+
   DEFSYM (Qmodifier_value, "modifier-value");
   DEFSYM (Qalt, "alt");
   DEFSYM (Qhyper, "hyper");
