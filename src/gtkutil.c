@@ -66,6 +66,12 @@ typedef struct pgtk_output xp_output;
 #ifdef HAVE_XDBE
 #include <X11/extensions/Xdbe.h>
 #endif
+#ifdef HAVE_NIDHOGG_WATCHDOG
+#ifdef HAVE_PGTK
+
+#include "nidhogg-watchdog.h"
+#endif
+#endif
 
 #ifdef HAVE_GTK3
 #define XG_TEXT_CANCEL "Cancel"
@@ -2551,7 +2557,17 @@ xg_dialog_run (struct frame *f, GtkWidget *w)
   record_unwind_protect_ptr (pop_down_dialog, &dd);
 
   (void) xg_maybe_add_timer (&dd);
+#ifdef HAVE_NIDHOGG_WATCHDOG
+#ifdef HAVE_PGTK
+  nh_wd_dialog_depth++;
+#endif
+#endif
   g_main_loop_run (dd.loop);
+#ifdef HAVE_NIDHOGG_WATCHDOG
+#ifdef HAVE_PGTK
+  nh_wd_dialog_depth--;
+#endif
+#endif
 
   dd.w = 0;
   unbind_to (count, Qnil);

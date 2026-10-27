@@ -161,8 +161,9 @@ struct nh_wd_cur
      raised with a CAS, cleared by the handler and by publish_waiting),
      mode (0 sample, 1 names), cpu_armed_ns, late_ns and armed_span (the
      span they belong to; a reader ignores them on a mismatch),
-     monitor_wakeups, monitor_cpu_ns, requests;
-   handler: stride, samples_taken, missed, stale;
+     monitor_wakeups, monitor_cpu_ns, requests, missed (a request the
+     handler has not cleared after two periods);
+   handler: stride, samples_taken, stale;
    the GC end hook, on whichever Lisp thread holds the global lock
      (serialised by the lock): gc_ns_total, gc_count, gc_dropped;
    Lisp (`--deep') sets deep_left; the main thread's finalise of a deep
@@ -220,6 +221,11 @@ struct nh_wd_input
   uint32_t felt;
   uint64_t arrival_ns;
   uint32_t queued;
+  /* Commands started (command_loop_1, before command-execute): Task 11
+     adds 1 per command on the main thread; never reset.  The edges
+     (Task 7) take the delta per span for `commands' and `kind' and the
+     span's histogram.  */
+  uint64_t commands;
 };
 
 extern struct nh_wd_shared nh_wd;
@@ -259,6 +265,28 @@ extern void nh_wd_wait_leave (struct thread_state *self);
 extern void nh_wd_suspend (bool);
 extern uint64_t nh_wd_now_ns (void);
 
+/* The histograms of `--stats' (design §6.4), one count per bucket of
+   NH_WD_BUCKETS.  Any thread may add (relaxed atomics): the edges add
+   every span by its non-GC time, Task 10 each collection's pause,
+   Task 11 each typing command.  [Task 7]  */
+enum nh_wd_hist
+{
+  NH_WD_H_COMMAND,
+  NH_WD_H_OTHER,
+  NH_WD_H_TYPING,
+  NH_WD_H_COLLECTIONS,
+  NH_WD_H_N
+};
+extern void nh_wd_hist_add (enum nh_wd_hist, uint64_t ns);
+
+/* True while `--test-clock' holds a virtual time; the monitor never
+   arms then (Task 8).  [Task 7]  */
+extern bool nh_wd_test_clock_p (void);
+
+/* `--start''s HANG-FILE, encoded, or NULL.  Set before the monitor
+   starts, freed after it stopped (Task 18 reads it).  [Task 7]  */
+extern char *nh_wd_hang_file;
+
 /* The monitor and the park protocol, both sides.
    [Task 8, nidhogg-watchdog-monitor.c]  */
 extern void nh_wd_publish_waiting (uint64_t now);
@@ -266,20 +294,39 @@ extern void nh_wd_publish_busy (uint64_t now);
 extern int nh_wd_monitor_start (void);
 extern void nh_wd_monitor_stop (void);
 extern void nh_wd_monitor_span_close (struct nh_wd_stall *);
+extern void nh_wd_monitor_syms (void);
 
 /* The handler, the raw ring and `--take'.
-   [Task 9, nidhogg-watchdog-sample.c]  */
+   [Task 9, nidhogg-watchdog-sample.c]
+   A sample's T_NS is nanoseconds since the span's busy start; WORDS
+   holds N_INNER words innermost first, then N_OUTER words of the
+   bottom of the stack, also innermost first; SKIPPED counts the frames
+   between them; HOOK_FRAME indexes WORDS; THREAD_NAME holds the raw
+   `struct thread_state *' of the Lisp thread that held the lock (its
+   name is read at `--take').  In a stall, SAMPLES is the number of
+   samples kept (S[0..SAMPLES) in time order once closed), THINNED the
+   number thinning dropped, STRIDE the final stride.
+   nh_wd_handler_install returns 0, or -1 off the main thread, when
+   another handler owns the signal, or when sigaction fails.  */
 extern int nh_wd_handler_install (void);
 extern void nh_wd_handler_uninstall (void);
 extern void nh_wd_sample_close (struct nh_wd_stall *out);
 extern Lisp_Object nh_wd_sample_to_lisp (const struct nh_wd_sample *);
+extern void nh_wd_syms_of_sample (void);
 
-/* The GC end hook and the GC ring.  [Task 10, nidhogg-watchdog-gc.c]  */
+/* The GC end hook and the GC ring.  [Task 10, nidhogg-watchdog-gc.c]
+   nh_wd_gc_pending is `--pending''s count of collections; each pause
+   goes into the NH_WD_H_COLLECTIONS histogram;
+   syms_of_nidhogg_watchdog calls syms_of_nidhogg_watchdog_gc.  */
 extern void nh_wd_gc_done (struct timespec start);
 extern Lisp_Object nh_wd_gc_take (void);
+extern uint32_t nh_wd_gc_pending (void);
+extern void syms_of_nidhogg_watchdog_gc (void);
 
 /* Phases, felt input, typing.  [Task 11, nidhogg-watchdog-input.c]
-   The inline phase push/pop are in nidhogg-watchdog-phase.h.  */
+   The inline phase push/pop are in nidhogg-watchdog-phase.h.
+   nh_wd_input_span_close runs at every span's end: ST is the stall to
+   fill, or NULL for a span below the threshold.  */
 extern void nh_wd_input_span_open (uint64_t now);
 extern void nh_wd_input_span_close (struct nh_wd_stall *, uint64_t now);
 extern void nh_wd_unwind_phases (struct handler *catch);
@@ -287,6 +334,7 @@ extern void nh_wd_unwind_phases (struct handler *catch);
 /* The GLib poll wrapper and the dialog depth (pgtk only).
    [Task 12, nidhogg-watchdog-gtk.c]  */
 extern void nh_wd_gtk_install (void);
+extern void nh_wd_gtk_syms (void);
 extern int nh_wd_dialog_depth;
 
 #endif /* HAVE_NIDHOGG_WATCHDOG */
