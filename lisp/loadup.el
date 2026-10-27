@@ -361,6 +361,7 @@
       (load "term/common-win")
       (load "term/pgtk-win")))
 (if (featurep 'glitnir) (load "glitnir"))
+(if (featurep 'nidhogg-wayland) (load "term/nhwl-settings"))
 (if (fboundp 'x-create-frame)
     ;; Do it after loading term/foo-win.el since the value of the
     ;; mouse-wheel-*-event vars depends on those files being loaded or not.
