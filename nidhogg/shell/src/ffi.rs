@@ -264,6 +264,10 @@ ffi!(
     }
 );
 ffi!(fn nhshell_window_set_cursor(window: u64, shape: u32) |b| b.set_cursor(window, shape));
+ffi!(fn nhshell_set_cursor_theme(name: *const c_char, size: u32) |b| {
+    // SAFETY: NUL-terminated by the contract.
+    b.set_cursor_theme(unsafe { cstr(name) }?, size)
+});
 
 ffi!(fn nhshell_window_set_position(window: u64, x: i32, y: i32) |b| b.set_position(window, x, y));
 ffi!(fn nhshell_window_stack(window: u64, sibling: u64, above: i32) |b| b.stack(window, sibling, above != 0));

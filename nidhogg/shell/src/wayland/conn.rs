@@ -25,6 +25,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use wayland_client::Connection;
 use wayland_client::backend::WaylandError;
+use wayland_client::protocol::wl_pointer::WlPointer;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::WpCursorShapeDeviceV1;
 
 /// Connect to `display`: a socket name in `$XDG_RUNTIME_DIR` or an absolute path; `None` (or empty) uses the
@@ -98,6 +99,8 @@ pub struct Shared {
     pub scale120: Mutex<std::collections::HashMap<u64, u32>>,
     /// The seat pointer's `wp_cursor_shape_device_v1`, when the compositor has the manager.
     pub cursor_device: Mutex<Option<WpCursorShapeDeviceV1>>,
+    /// The seat's `wl_pointer`, for the cursor requests the host thread sends (hidden, theme).
+    pub pointer: Mutex<Option<WlPointer>>,
     /// The clipboard and the primary selection (`selection.rs`): offers, our sources and the focus they need.
     pub selections: Mutex<Selections>,
 }
@@ -119,6 +122,7 @@ impl Shared {
             serials: Mutex::default(),
             scale120: Mutex::default(),
             cursor_device: Mutex::default(),
+            pointer: Mutex::default(),
             selections: Mutex::default(),
         })
     }

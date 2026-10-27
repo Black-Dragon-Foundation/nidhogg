@@ -1,4 +1,4 @@
-//! Cursor shapes through `wp_cursor_shape_v1` (no Xcursor fallback yet).
+//! Cursor shapes through `wp_cursor_shape_v1`, or the Xcursor theme (`cursor_theme.rs`) without it.
 
 use super::WaylandShell;
 use crate::api::*;
@@ -31,10 +31,46 @@ pub fn shape_request(serials: &SerialTracker, shape: u32) -> ShellResult<(u32, S
 }
 
 impl WaylandShell {
-    /// Show `shape` over the pointer.  Without `wp_cursor_shape_v1` this does nothing.
+    /// Show `shape` over the pointer: through `wp_cursor_shape_v1`, or the desktop's Xcursor theme without it.
+    /// `NHSHELL_CURSOR_HIDDEN` shows no cursor at all.
     pub(super) fn window_set_cursor(&mut self, id: WindowId, shape: u32) -> ShellResult {
         if !self.main.is_window(id) {
             return Err(ShellError::State);
+        }
+        self.apply_cursor(id, shape)?;
+        self.main.cursor.last = Some((id, shape));
+        Ok(())
+    }
+
+    /// Use the Xcursor theme `name` at logical `size`; a cursor shown from the theme is redrawn at once.
+    pub(super) fn set_cursor_theme_impl(&mut self, name: &str, size: u32) -> ShellResult {
+        self.main.cursor.set_theme(name, size);
+        match self.main.cursor.last {
+            Some((id, shape)) if self.main.is_window(id) => self.apply_cursor(id, shape),
+            _ => Ok(()),
+        }
+    }
+
+    fn apply_cursor(&mut self, id: WindowId, shape: u32) -> ShellResult {
+        let serial = self
+            .shared
+            .serials
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(SerialKind::MouseEnter)
+            .as_raw();
+        let pointer = self
+            .shared
+            .pointer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if shape == NHSHELL_CURSOR_HIDDEN {
+            if let Some(pointer) = pointer {
+                pointer.set_cursor(serial, None, 0, 0);
+                self.flush()?;
+            }
+            return Ok(());
         }
         let device = self
             .shared
@@ -42,19 +78,42 @@ impl WaylandShell {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        let (serial, shape) = {
-            let serials = self
-                .shared
-                .serials
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            shape_request(&serials, shape)?
-        };
         if let Some(device) = device {
+            let (serial, shape) = shape_request(
+                &self
+                    .shared
+                    .serials
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()),
+                shape,
+            )?;
             device.set_shape(serial, shape);
-            self.flush()?;
+            return self.flush();
         }
-        Ok(())
+        let names = super::cursor_theme::names_of(shape).ok_or(ShellError::Arg)?;
+        let (Some(pointer), Some(shm), Some(compositor)) =
+            (pointer, self.main.shm.clone(), self.main.compositor.clone())
+        else {
+            return Ok(());
+        };
+        let scale = self
+            .main
+            .scales
+            .get(&id)
+            .map_or(120, |s| s.scale120())
+            .div_ceil(120);
+        let qh = self.main_queue.handle();
+        self.main.cursor.show(
+            &self.conn,
+            &shm,
+            &compositor,
+            &qh,
+            &pointer,
+            serial,
+            names,
+            scale,
+        )?;
+        self.flush()
     }
 
     /// Test hook: the serial of the latest button press the reader saw.

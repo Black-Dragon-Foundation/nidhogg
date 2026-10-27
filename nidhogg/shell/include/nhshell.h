@@ -248,6 +248,9 @@ int32_t nhshell_window_set_geometry (NhShell *sh, uint64_t window, int32_t x, in
 /* Acks a configure at once; the next present_commit (which is made in any pacer state) carries the buffer.  */
 int32_t nhshell_window_ack_configure (NhShell *sh, uint64_t window, uint32_t serial);
 int32_t nhshell_window_set_cursor (NhShell *sh, uint64_t window, uint32_t shape);
+/* The Xcursor theme (NAME, logical SIZE) shown where the compositor lacks wp_cursor_shape_v1; a cursor already shown
+   from the theme is redrawn.  NHSHELL_CURSOR_HIDDEN shows no cursor.  */
+int32_t nhshell_set_cursor_theme (NhShell *sh, const char *name, uint32_t size);
 
 /* Children and popups.  set_position: a child moves with its parent's next commit; a popup's anchor rectangle moves to
    (X, Y) (xdg_popup.reposition).  stack: put a child above or below SIBLING (0: the parent), with the parent's next
