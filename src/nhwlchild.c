@@ -442,7 +442,8 @@ extreme_sibling (struct frame *f, bool top)
 }
 
 /* The terminal's frame_raise_lower_hook: among a child's siblings.  A
-   top-level cannot restack itself on Wayland.  */
+   top-level cannot restack itself on Wayland; raising one asks the
+   compositor to activate it.  */
 void
 nhwl_frame_raise_lower (struct frame *f, bool raise)
 {
@@ -450,7 +451,11 @@ nhwl_frame_raise_lower (struct frame *f, bool raise)
   struct frame *sib;
 
   if (!nhwl_child_p (f))
-    return;
+    {
+      if (raise)
+	nhwl_focus_frame (f, false);
+      return;
+    }
   out = FRAME_NHWL_OUTPUT (f);
   if (!out->window)
     return;
