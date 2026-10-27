@@ -216,7 +216,10 @@ mod pacer {
         draw(&mut shell, id, &[full()]);
         draw(&mut shell, id, &[full()]);
         assert!(waiting(&shell, id));
-        assert!(shell.present_begin(id, 200, 100).is_err(), "two busy, waiting");
+        assert!(
+            shell.present_begin(id, 200, 100).is_err(),
+            "two busy, waiting"
+        );
         assert!(starved(&shell, id));
         present(&rec);
         until(&mut shell, "the pacer idle", |s| !waiting(s, id));
