@@ -692,7 +692,11 @@ a spec makes the decoder read `:data` as base64 text (on `nh-img` and in the syn
   auto-save the keyboard loop triggers (after `auto-save-interval` events or `auto-save-timeout` idle seconds) copies
   each due buffer on the plain path (its auto-save file is not the visited file; no `write-region-annotate-functions`,
   formats, selective display or file name handler) and writes the copy on `nh-save`, encoded as `utf-8-emacs-unix`,
-  into a new file in the same directory (an unnamed `O_TMPFILE` on Linux, else `.#NAME#.nh-PID-N`). At the next timer
+  into a new file in the same directory (an unnamed `O_TMPFILE` on Linux, else `.#NAME#.nh-PID-N`). The copy of a
+  buffer of 4 MB or more stays allocated when its job lands and the next save copies into it: page faults dominate a
+  fresh 50 MB copy (20.9 ms, 12,800 faults, against 3.0 ms and none into the same memory), so the main thread's copy
+  takes a seventh of the time; the memory goes when the buffer is killed or the switch is off (it is RSS the size of
+  the buffer, kept per big buffer; `--test-save-snapshot` reports `:snapshot-ns`, `:snapshot-faults`, `:arena-bytes`). At the next timer
   check the file is renamed onto the buffer's current `buffer-auto-save-file-name`, unless the job was superseded: a
   save of the buffer, `delete-file` of the name, `rename-file` of it to another name, a newer auto-save, or a
   synchronous one. `do-auto-save` from Lisp, `kill-emacs`, the fatal path and the tty emergency escape stay
