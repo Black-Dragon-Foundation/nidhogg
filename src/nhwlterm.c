@@ -139,21 +139,28 @@ check_x_display_info (Lisp_Object frame)
   return check_nhwl_display_info (frame);
 }
 
-/* The compositor went away.  A non-daemon Emacs with no other display
-   exits with status 70 (as xterm does); otherwise the display's frames
-   and its terminal are deleted without running Lisp and the session
-   goes on.  Frees DPYINFO.  */
+/* The compositor went away.  The display's frames and its terminal are
+   deleted without running Lisp, and the session goes on on its other
+   frames (another display, a tty, the daemon's own frame).  With no
+   frame left Emacs exits with status 70, as xterm does: before the
+   deletion, since delete_frame would otherwise kill Emacs from inside
+   it.  Frees DPYINFO.  */
 static void
 nhwl_connection_lost (struct nhwl_display_info *dpyinfo)
 {
   struct terminal *t = dpyinfo->terminal, *p;
   Lisp_Object tail, frame;
   bool other = false;
-  struct nhwl_display_info *d;
 
-  for (d = x_display_list; d; d = d->next)
-    other |= d != dpyinfo;
-  if (!IS_DAEMON && !other)
+  FOR_EACH_FRAME (tail, frame)
+    {
+      struct frame *f = XFRAME (frame);
+
+      if (FRAME_LIVE_P (f) && !FRAME_TOOLTIP_P (f)
+	  && !(FRAME_NHWL_P (f) && FRAME_DISPLAY_INFO (f) == dpyinfo))
+	other = true;
+    }
+  if (!other)
     {
       fprintf (stderr, "nidhogg-wayland: connection to the display lost\n");
       shut_down_emacs (0, Qnil);
@@ -410,7 +417,10 @@ nhwl_set_cr_source_with_color (struct frame *f, unsigned long color,
    it answers.  Nothing is done while a frame callback is pending (the next
    FRAME_DONE presents what accumulated), while the frame is suspended, or
    before the compositor's first configure -- except that a configure's ack
-   must reach the compositor, so a pending serial always presents.  */
+   must reach the compositor, so a pending serial always presents.  A size
+   the frame has not taken yet (change_frame_size queued it for the next
+   redisplay) holds everything back, the ack included: the buffer would be
+   the old size, and its ack would say it is the new one.  */
 void
 nhwl_present (struct frame *f)
 {
@@ -421,9 +431,10 @@ nhwl_present (struct frame *f)
 
   if (!dpyinfo->shell || !out->window || !out->configured)
     return;
-  if (!out->serial_pending
-      && (out->frame_pending > 0
-	  || (out->states & NHSHELL_STATE_SUSPENDED)))
+  if (f->new_size_p
+      || (!out->serial_pending
+	  && (out->frame_pending > 0
+	      || (out->states & NHSHELL_STATE_SUSPENDED))))
     {
       out->present_owed = true;
       return;
@@ -438,7 +449,8 @@ nhwl_present (struct frame *f)
 			      out->cr_height, &buf);
   if (rc < 0)
     {
-      /* Both buffers busy: try again at the next FRAME_DONE.  */
+      /* Both buffers busy: try again at the next FRAME_DONE or
+	 BUFFER_FREE.  */
       out->present_owed = true;
       unblock_input ();
       return;
@@ -818,6 +830,23 @@ nhwl_set_undecorated_hint (struct frame *f, bool undecorated)
      (it needs the decoration negotiation redone).  */
 }
 
+/* The largest side of a frame's surface, in device pixels.  Cairo's
+   image surfaces stop at 32767 a side, and the shell's buffer is one
+   shared-memory pool whose size the protocol carries as an int32, so
+   4 x width x height must stay under 2 GiB: 16384 x 16384 x 4 is 1 GiB.  */
+#define NHWL_MAX_SIDE 16384
+
+/* Clamp the native size *W x *H of F so that its surface (the native
+   area and our decorations) stays within NHWL_MAX_SIDE.  */
+static void
+nhwl_clamp_native_size (struct frame *f, int *w, int *h)
+{
+  struct nhwl_csd *c = &FRAME_NHWL_OUTPUT (f)->csd;
+
+  *w = min (*w, NHWL_MAX_SIDE - c->l - c->r);
+  *h = min (*h, NHWL_MAX_SIDE - c->t - c->b);
+}
+
 /* Adapted from pgtk_set_window_size.  The window's size is the size of
    the buffer we present, so the frame takes the size it asks for at
    once (the compositor only suggests).  */
@@ -825,6 +854,7 @@ void
 nhwl_set_window_size (struct frame *f, bool change_gravity, int pixelwidth,
 		      int pixelheight)
 {
+  nhwl_clamp_native_size (f, &pixelwidth, &pixelheight);
   change_frame_size (f, pixelwidth, pixelheight, false, true, false);
   SET_FRAME_GARBAGED (f);
 }
@@ -1541,7 +1571,7 @@ nhwl_configure (struct frame *f, const NhShellEvent *ev)
 	goto done;
       nhwl_csd_native_size (f, ev->u.configure.w, ev->u.configure.h,
 			    &dw, &dh);
-
+      nhwl_clamp_native_size (f, &dw, &dh);
       change_frame_size (f, dw, dh, false, true, false);
       SET_FRAME_GARBAGED (f);
     }
@@ -1588,6 +1618,13 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
       switch (ev.kind)
 	{
 	case NHSHELL_EV_KEY:
+	  /* A key repeat behind input Lisp has not read yet is dropped.
+	     The shell holds back a repeat only while the previous one is
+	     in its own queue, and the input poll empties that queue into
+	     ours even while Lisp is busy, so without this a stalled Lisp
+	     would find one repeat per poll.  */
+	  if (ev.u.key.repeat && kbd_buffer_events_waiting ())
+	    break;
 	  if (!f)
 	    f = dpyinfo->x_focus_frame;
 	  if (f)
@@ -1759,11 +1796,12 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	  break;
 
 	case NHSHELL_EV_FRAME_DONE:
+	case NHSHELL_EV_BUFFER_FREE:
 	  if (f)
 	    {
 	      struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
 
-	      if (out->frame_pending > 0)
+	      if (ev.kind == NHSHELL_EV_FRAME_DONE && out->frame_pending > 0)
 		out->frame_pending--;
 	      if (out->present_owed && out->frame_pending == 0
 		  && FRAME_VISIBLE_P (f))
@@ -1857,7 +1895,13 @@ nhwl_read_socket (struct terminal *terminal, struct input_event *hold_quit)
     return 0;
   n = nhwl_drain_events (dpyinfo, hold_quit);
   if (dpyinfo->connection_lost)
-    nhwl_connection_lost (dpyinfo);	/* frees DPYINFO */
+    {
+      /* Frees DPYINFO and clears TERMINAL's pointer to it.  gobble_input
+	 calls this hook again while it returns more than 0, so the events
+	 this drain stored are not counted.  */
+      nhwl_connection_lost (dpyinfo);
+      return 0;
+    }
   return n;
 }
 
@@ -2149,7 +2193,7 @@ nhwl_change_tool_bar_height (struct frame *f, int height)
 }
 
 /* Adapted from pgtk_create_terminal; the scroll bar, menu and dialog
-   hooks stay NULL (W0-6).  */
+   hooks stay NULL: the shell has no scroll bars, menus or dialogs yet.  */
 static struct terminal *
 nhwl_create_terminal (struct nhwl_display_info *dpyinfo)
 {
@@ -2391,6 +2435,7 @@ nhwl_delete_terminal (struct terminal *terminal)
     }
 
   nhwl_delete_display (dpyinfo);
+  terminal->display_info.nhwl = NULL;
   unblock_input ();
 }
 

@@ -1,18 +1,21 @@
 ;;; nhwl-gui-tests.el --- GUI rows for Nidhogg's own Wayland shell  -*- lexical-binding: t -*-
 
-;; Run by nidhogg/test/gui.sh `--compositor recorder' (the rows need $GLITNIR_GUI_RECORDER, the recorder's control
-;; socket) in a build made with --with-nidhogg-wayland.  `gui-runner-recorder' lives in gui-runner.el.  The rows run
-;; from a timer, so input sits unread until a row calls `read-event'.
+;; Run by nidhogg/test/gui.sh in a build made with --with-nidhogg-wayland.  The rows that drive or read the compositor
+;; need `--compositor recorder' ($GLITNIR_GUI_RECORDER, the recorder's control socket); the others run on any
+;; compositor.  `gui-runner-recorder' lives in gui-runner.el.  The rows run from a timer, so input sits unread until a
+;; row calls `read-event'.  Rows tagged `runs-last' run after every other row (gui-runner.el).
 
 (require 'ert)
 (require 'json)
 (require 'seq)
 
-(defvar nhwl-gui--display-lost nil)
+(defun nhwl-gui--live-p ()
+  "Non-nil on Nidhogg's own Wayland shell."
+  (featurep 'nidhogg-wayland))
 
-(defun nhwl-gui--on-p ()
-  "Non-nil on the shell with the recorder up (`nhwl-gui/display-lost-daemon-survives' ends it)."
-  (and (featurep 'nidhogg-wayland) (getenv "GLITNIR_GUI_RECORDER") (not nhwl-gui--display-lost)))
+(defun nhwl-gui--recorder-p ()
+  "Non-nil on the shell with the recorder's control channel."
+  (and (nhwl-gui--live-p) (getenv "GLITNIR_GUI_RECORDER")))
 
 (defun nhwl-gui--get (c key)
   "KEY of commit C, nil for a JSON null or false (`json-parse-string' gives `:null' and `:false', both non-nil)."
@@ -40,15 +43,14 @@
               (nhwl-gui--commits)))
 
 (ert-deftest nhwl-gui/features ()
-  ;; after the daemon's display is lost the selected frame is the daemon's own, with no window system
-  (skip-unless (and (featurep 'nidhogg-wayland) (not nhwl-gui--display-lost)))
+  (skip-unless (nhwl-gui--live-p))
   (should (eq (window-system) 'pgtk))
   (should (featurep 'pgtk))
-  (should (featurep 'nidhogg-wayland))
-  (should (floatp (frame-scale-factor))))
+  ;; the shell takes the compositor's scale exactly
+  (should (< (abs (- (frame-scale-factor) (glitnir-gui--scale))) 0.001)))
 
 (ert-deftest nhwl-gui/frame-maps-on-recorder ()
-  (skip-unless (nhwl-gui--on-p))
+  (skip-unless (nhwl-gui--recorder-p))
   (let* ((s (frame-scale-factor))
          (hit (nhwl-gui--wait
                (lambda ()
@@ -65,7 +67,7 @@
     (should hit)))
 
 (ert-deftest nhwl-gui/typing-inserts ()
-  (skip-unless (nhwl-gui--on-p))
+  (skip-unless (nhwl-gui--recorder-p))
   (let ((buf (generate-new-buffer " *nhwl-typing*")))
     (unwind-protect
         (progn
@@ -87,7 +89,7 @@
 (ert-deftest nhwl-gui/kill-and-yank-without-selections ()
   "Selections are not in W0, yet killing and yanking work: the selection
 primitives answer nil instead of signalling."
-  (skip-unless (nhwl-gui--on-p))
+  (skip-unless (nhwl-gui--live-p))
   (with-temp-buffer
     (let ((select-enable-clipboard t))
       (insert "hello")
@@ -97,7 +99,7 @@ primitives answer nil instead of signalling."
       (should (equal (buffer-string) "hello")))))
 
 (ert-deftest nhwl-gui/keymap-option-gives-control ()
-  (skip-unless (nhwl-gui--on-p))
+  (skip-unless (nhwl-gui--recorder-p))
   (let ((buf (generate-new-buffer " *nhwl-keymap*")))
     (unwind-protect
         (progn
@@ -121,7 +123,7 @@ primitives answer nil instead of signalling."
       (kill-buffer buf))))
 
 (ert-deftest nhwl-gui/fullscreen-parameter ()
-  (skip-unless (nhwl-gui--on-p))
+  (skip-unless (nhwl-gui--recorder-p))
   (let* ((s (frame-scale-factor))
          (size (getenv "GLITNIR_GUI_SIZE"))
          (ow (string-to-number (car (split-string size "x"))))
@@ -156,14 +158,14 @@ primitives answer nil instead of signalling."
   (seq-filter (lambda (f) (and (frame-live-p f) (eq (framep f) 'pgtk))) (frame-list)))
 
 (ert-deftest nhwl-gui/daemon-frame-from-client ()
-  (skip-unless (and (nhwl-gui--on-p) (daemonp)))
+  (skip-unless (and (nhwl-gui--recorder-p) (daemonp)))
   (let ((f (car (nhwl-gui--nhwl-frames))))
     (should f)
     (should (equal (terminal-name (frame-terminal f)) (getenv "WAYLAND_DISPLAY")))
     (should (nhwl-gui--wait #'nhwl-gui--toplevel-commits))))
 
 (ert-deftest nhwl-gui/delete-and-reopen-frame ()
-  (skip-unless (and (nhwl-gui--on-p) (daemonp)))
+  (skip-unless (and (nhwl-gui--recorder-p) (daemonp)))
   (let* ((display (getenv "WAYLAND_DISPLAY"))
          (old (car (nhwl-gui--nhwl-frames)))
          (before (length (nhwl-gui--toplevel-commits)))
@@ -175,7 +177,7 @@ primitives answer nil instead of signalling."
     (should (nhwl-gui--wait (lambda () (> (length (nhwl-gui--toplevel-commits)) before))))))
 
 (ert-deftest nhwl-gui/ping-answered-while-a-lisp-thread-sleeps ()
-  (skip-unless (and (nhwl-gui--on-p) (daemonp) (not nhwl-gui--display-lost)))
+  (skip-unless (and (nhwl-gui--recorder-p) (daemonp)))
   (let ((buf (generate-new-buffer " *nhwl-ping*")))
     (unwind-protect
         (progn
@@ -200,7 +202,7 @@ primitives answer nil instead of signalling."
       (kill-buffer buf))))
 
 (ert-deftest nhwl-gui/no-such-display-leaves-the-daemon-up ()
-  (skip-unless (and (nhwl-gui--on-p) (daemonp) (not nhwl-gui--display-lost)))
+  (skip-unless (and (nhwl-gui--live-p) (daemonp)))
   (let ((frames (nhwl-gui--nhwl-frames)))
     (should-error (make-frame-on-display "wayland-nonexistent"))
     (should (daemonp))
@@ -208,25 +210,50 @@ primitives answer nil instead of signalling."
     (should (frame-live-p (car frames)))
     (with-selected-frame (car frames) (redisplay t))))
 
-;; ERT runs rows alphabetically and this row ends the recorder, so it first runs the two rows that need a live display; they
-;; skip afterwards.
-(ert-deftest nhwl-gui/display-lost-daemon-survives ()
-  (skip-unless (and (nhwl-gui--on-p) (daemonp)))
-  (dolist (name '(nhwl-gui/no-such-display-leaves-the-daemon-up
-                  nhwl-gui/ping-answered-while-a-lisp-thread-sleeps))
-    (let ((test (ert-get-test name)))
-      (should (ert-test-result-expected-p test (ert-run-test test)))))
-  (setq nhwl-gui--display-lost t)
-  (should (nhwl-gui--nhwl-frames))
-  (gui-runner-recorder '(:cmd "quit"))
-  (should (nhwl-gui--wait (lambda () (null (nhwl-gui--nhwl-frames))) 2))
-  (should (daemonp)))
+(defun nhwl-gui--second-recorder ()
+  "Start a second recorder on the display \"nhwl-second\"; return (PROCESS . CONTROL-SOCKET) once it is up."
+  (let* ((ctl (expand-file-name "nhwl-second.ctl" (getenv "XDG_RUNTIME_DIR")))
+         (out "")
+         (proc (make-process :name "nh-recorder-second" :noquery t :connection-type 'pipe
+                             :command (list (getenv "GLITNIR_GUI_RECORDER_BIN") "--output" "1600x1000@120"
+                                            "--profile" (getenv "GLITNIR_GUI_RECORDER_PROFILE")
+                                            "--socket" "nhwl-second" "--control" ctl)
+                             :filter (lambda (_p s) (setq out (concat out s))))))
+    (nhwl-gui--wait (lambda () (string-match-p "^READY" out)) 5)
+    (cons proc ctl)))
 
-;; Task 10: drawing
+;; The row ends the session's recorder, so it runs last (tag `runs-last').
+(ert-deftest nhwl-gui/display-lost-daemon-survives ()
+  :tags '(runs-last)
+  (skip-unless (and (nhwl-gui--recorder-p) (daemonp)))
+  (should (nhwl-gui--nhwl-frames))
+  (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
+  (nhwl-gui--pump)
+  ;; a key and the loss in one read: the drain that stores the key also finds the display gone
+  (nhwl-gui--recorder-twice '(:cmd "key" :keycode 30 :state "press") '(:cmd "quit"))
+  (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (null (nhwl-gui--nhwl-frames))) 3))
+  (should (daemonp))
+  ;; the daemon still opens frames, on another display
+  (when (getenv "GLITNIR_GUI_RECORDER_BIN")
+    (let* ((second (nhwl-gui--second-recorder)) (f nil))
+      (unwind-protect
+          (progn
+            (should (process-live-p (car second)))
+            (setq f (make-frame-on-display "nhwl-second"))
+            (should (frame-live-p f))
+            (should (equal (terminal-name (frame-terminal f)) "nhwl-second"))
+            (let ((process-environment (cons (concat "GLITNIR_GUI_RECORDER=" (cdr second)) process-environment)))
+              (should (nhwl-gui--wait (lambda () (with-selected-frame f (redisplay t)) (nhwl-gui--toplevel-commits))
+                                      5))))
+        (when (frame-live-p f) (delete-frame f t))
+        (delete-process (car second))))))
+
+;; Drawing
 
 (defun nhwl-gui--mark ()
-  "The recorder's next commit sequence number."
-  (plist-get (gui-runner-recorder '(:cmd "log" :since 0)) :next))
+  "The recorder's next commit sequence number (nil off the recorder)."
+  (when (getenv "GLITNIR_GUI_RECORDER")
+    (plist-get (gui-runner-recorder '(:cmd "log" :since 0)) :next)))
 
 (defun nhwl-gui--new (mark)
   "The toplevel's commits with a buffer since MARK."
@@ -234,13 +261,21 @@ primitives answer nil instead of signalling."
                 (and (equal (plist-get c :role) "toplevel") (nhwl-gui--get c :buffer)))
               (plist-get (gui-runner-recorder (list :cmd "log" :since mark)) :commits)))
 
+(defun nhwl-gui--native-top ()
+  "Where the native area starts in the toplevel's buffer, in buffer pixel rows: the client-side title bar and the
+margins sit around it (margins M on every side, the strip on top), 0 without them."
+  (let* ((b (plist-get (nhwl-gui--last-commit) :buffer))
+         (m (/ (- (plist-get b :w) (frame-pixel-width)) 2)))
+    (- (plist-get b :h) (frame-pixel-height) m)))
+
 (defun nhwl-gui--rect-in-p (r y0 y1)
   "Non-nil when the damage rectangle R (X Y W H) lies within rows Y0 to Y1."
   (and (>= (nth 1 r) y0) (<= (+ (nth 1 r) (nth 3 r)) y1)))
 
 (defun nhwl-gui--shown (mark)
-  "Wait until the recorder commits something since MARK, let it settle, and return its screen grab."
-  (nhwl-gui--wait (lambda () (nhwl-gui--new mark)) 5)
+  "Wait until the recorder commits something since MARK (nil: off the recorder, no wait), let the compositor settle,
+and return its screen grab."
+  (when mark (nhwl-gui--wait (lambda () (nhwl-gui--new mark)) 5))
   (gui-runner-wait-settled)
   (gui-runner-screen-grab))
 
@@ -262,14 +297,14 @@ Return the two replies."
       (delete-process proc))))
 
 (ert-deftest nhwl-gui/text-renders ()
-  (skip-unless (nhwl-gui--on-p))
+  (skip-unless (nhwl-gui--live-p))
   (switch-to-buffer "*scratch*")
   (erase-buffer)
   (insert "The quick brown fox jumps over the lazy dog 0123456789\n")
   (insert "Nidhogg draws this with pgtk's Cairo code on its own backing.\n")
   (let ((mark (nhwl-gui--mark)))
     (redisplay t)
-    ;; the frame's own picture first, then the recorder's
+    ;; the frame's own picture first, then the compositor's
     (let* ((mine (glitnir-snapshot nil 'raw))
            (theirs (nhwl-gui--shown mark))
            (diff (gui-runner-pixel-diff mine theirs)))
@@ -282,7 +317,7 @@ Return the two replies."
         (should found)))))
 
 (ert-deftest nhwl-gui/scale-150-buffer-exact ()
-  (skip-unless (nhwl-gui--on-p))
+  (skip-unless (nhwl-gui--recorder-p))
   (skip-unless (= (frame-scale-factor) 1.5))
   (let* ((size (getenv "GLITNIR_GUI_SIZE"))
          (w (string-to-number (car (split-string size "x"))))
@@ -307,7 +342,7 @@ Return the two replies."
                (aref (font-info (face-font 'default) (selected-frame)) 3)))))
 
 (ert-deftest nhwl-gui/typing-damages-rows-only ()
-  (skip-unless (nhwl-gui--on-p))
+  (skip-unless (nhwl-gui--recorder-p))
   (switch-to-buffer "*scratch*")
   (erase-buffer)
   (insert "one\ntwo\n")
@@ -315,11 +350,13 @@ Return the two replies."
   (message nil)
   (redisplay t)
   (gui-runner-wait-settled)
+  ;; damage is in buffer pixels; the edges are native ones
   (let* ((lh (frame-char-height))
+         (top (nhwl-gui--native-top))
          (edges (window-inside-pixel-edges))
-         (row0 (+ (nth 1 edges) (* 2 lh)))
-         (mode0 (nth 3 edges))
-         (mode1 (nth 3 (window-pixel-edges)))
+         (row0 (+ top (nth 1 edges) (* 2 lh)))
+         (mode0 (+ top (nth 3 edges)))
+         (mode1 (+ top (nth 3 (window-pixel-edges))))
          (mark (nhwl-gui--mark)))
     (dotimes (i 10)
       (insert (string (+ ?a i)))
@@ -328,13 +365,15 @@ Return the two replies."
     (gui-runner-wait-settled)
     (let ((commits (nhwl-gui--new mark)))
       (should commits)
-      (dolist (c commits)
-        (dolist (r (nhwl-gui--damage c))
-          (should (or (nhwl-gui--rect-in-p r row0 (+ row0 lh))
-                      (nhwl-gui--rect-in-p r mode0 mode1))))))))
+      ;; no rectangle outside the typed row and the mode line (a failure shows the rows, then the rectangles)
+      (let ((rows (list row0 (+ row0 lh) mode0 mode1)))
+        (should (equal (cons rows (seq-remove (lambda (r) (or (nhwl-gui--rect-in-p r row0 (+ row0 lh))
+                                                              (nhwl-gui--rect-in-p r mode0 mode1)))
+                                              (mapcan #'nhwl-gui--damage commits)))
+                       (list rows)))))))
 
 (ert-deftest nhwl-gui/scroll-run-damages-exposed-rows ()
-  (skip-unless (nhwl-gui--on-p))
+  (skip-unless (nhwl-gui--recorder-p))
   (switch-to-buffer "*scratch*")
   (erase-buffer)
   (dotimes (i 200) (insert (format "line %d of the scroll test\n" i)))
@@ -351,7 +390,7 @@ Return the two replies."
            (mine (glitnir-snapshot nil 'raw))
            (rects (apply #'append (mapcar (lambda (c) (nhwl-gui--damage c)) (nhwl-gui--new mark)))))
       ;; the exposed rows and the mode line are damaged; the shm buffer cannot scroll, so the rows that moved are
-      ;; damaged too (the plan's "less than half the frame" does not hold for a text-filled window)
+      ;; damaged too (a scroll of a text-filled window damages more than half the frame)
       (let ((y (- mode0 (* 3 lh))))
         (while (< y (nth 3 (window-pixel-edges)))
           (should (seq-find (lambda (r) (and (<= (nth 1 r) y) (< y (+ (nth 1 r) (nth 3 r))))) rects))
@@ -359,7 +398,7 @@ Return the two replies."
       (should (= (car (gui-runner-pixel-diff mine theirs)) 0)))))
 
 (ert-deftest nhwl-gui/resize-during-redisplay-acks-newest ()
-  (skip-unless (nhwl-gui--on-p))
+  (skip-unless (nhwl-gui--recorder-p))
   (let* ((s (frame-scale-factor))
          (mark (nhwl-gui--mark))
          (replies (nhwl-gui--recorder-twice
@@ -381,7 +420,7 @@ Return the two replies."
       (should-not (nhwl-gui--get c :ack_stale)))))
 
 (ert-deftest nhwl-gui/suspended-skips-redisplay ()
-  (skip-unless (nhwl-gui--on-p))
+  (skip-unless (nhwl-gui--recorder-p))
   ;; xdg_wm_base below 6 (the sway profile's 5) has no suspended state
   (skip-unless (>= (plist-get (plist-get (gui-runner-recorder '(:cmd "globals")) :globals) :xdg_wm_base) 6))
   (switch-to-buffer "*scratch*")
@@ -415,12 +454,82 @@ Return the two replies."
       (dolist (c (cdr cs))
         (should (<= (length (nhwl-gui--damage c)) 3))))))
 
+(ert-deftest nhwl-gui/configure-with-frame-done-acks-new-size ()
+  "A configure and a frame callback read in one drain: the ack goes out with a buffer of the configure's size."
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--windowed)
+  (switch-to-buffer "*scratch*")
+  (let* ((old (plist-get (nhwl-gui--last-commit) :buffer))
+         (mark (nhwl-gui--mark))
+         serial)
+    ;; a commit whose frame is still to be presented, a redisplay that waits for it (a present is owed), then the
+    ;; configure
+    (insert "x")
+    (redisplay t)
+    (insert "y")
+    (redisplay t)
+    (setq serial (plist-get (gui-runner-recorder
+                             '(:cmd "configure" :surface "focused" :size [700 500] :states ["activated"]))
+                            :serial))
+    ;; the frame is presented meanwhile; one read takes the configure and the FRAME_DONE, with no redisplay between
+    (sleep-for 0.1)
+    (input-pending-p)
+    (should (nhwl-gui--wait
+             (lambda ()
+               (redisplay t)
+               (seq-find (lambda (c) (eql (nhwl-gui--get c :ack_serial) serial)) (nhwl-gui--new mark)))
+             5))
+    (gui-runner-wait-settled)
+    (let ((new (plist-get (nhwl-gui--last-commit) :buffer)))
+      (should-not (equal (plist-get new :w) (plist-get old :w)))
+      (dolist (c (nhwl-gui--new mark))
+        (when (eql (nhwl-gui--get c :ack_serial) serial)
+          (should (equal (list (plist-get (plist-get c :buffer) :w) (plist-get (plist-get c :buffer) :h))
+                         (list (plist-get new :w) (plist-get new :h)))))))))
+
+(ert-deftest nhwl-gui/huge-size-clamped ()
+  "A size beyond what the backing can hold is clamped; the frame stays usable."
+  (skip-unless (nhwl-gui--live-p))
+  (switch-to-buffer "*scratch*")
+  (set-frame-parameter nil 'fullscreen nil)
+  (unwind-protect
+      (progn
+        (set-frame-size nil 40000 600 t)
+        (redisplay t)
+        (sit-for 0.3)
+        (insert "after the huge size\n")
+        (redisplay t)
+        (should (frame-live-p (selected-frame)))
+        (should (<= (frame-pixel-width) 16384))
+        (when (nhwl-gui--recorder-p)
+          (gui-runner-wait-settled)
+          (should (<= (plist-get (plist-get (nhwl-gui--last-commit) :buffer) :w) 16384))))
+    (set-frame-size nil 800 600 t)
+    (redisplay t)))
+
+(ert-deftest nhwl-gui/held-key-one-repeat-while-busy ()
+  "A key held while Lisp is busy (the input unread) queues at most one repeat."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((buf (generate-new-buffer " *nhwl-repeat*")) (n 0))
+    (unwind-protect
+        (progn
+          (switch-to-buffer buf)
+          (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
+          (nhwl-gui--pump)
+          ;; KEY_A held for 5 s (repeat after 600 ms at 25 Hz) while this row sleeps: the input poll runs meanwhile
+          (gui-runner-recorder '(:cmd "key" :keycode 30 :state "press"))
+          (sleep-for 5)
+          (gui-runner-recorder '(:cmd "key" :keycode 30 :state "release"))
+          (let ((deadline (+ (float-time) 1)))
+            (while (< (float-time) deadline)
+              (when (eq (read-event nil nil 0.1) ?a) (setq n (1+ n)))))
+          ;; the press and at most one repeat
+          (should (<= 1 n 2)))
+      (kill-buffer buf))))
+
 ;;; nhwl-gui-tests.el ends here
 
-;; Task 11: the bare client-side title bar (nhwlcsd.c).  Logical sizes: the strip is 32, the resize margins are 8.
-
-(defun nhwl-gui--live-p ()
-  (and (featurep 'nidhogg-wayland) (not nhwl-gui--display-lost)))
+;; The bare client-side title bar (nhwlcsd.c).  Logical sizes: the strip is 32, the resize margins are 8.
 
 (defun nhwl-gui--decoration ()
   "The decoration mode the recorder sent for the newest toplevel (nil: none; nil off the recorder)."
@@ -535,7 +644,7 @@ Return the two replies."
       (when (and new (frame-live-p new)) (delete-frame new t)))))
 
 (ert-deftest nhwl-gui/ssd-no-strip ()
-  (skip-unless (and (nhwl-gui--on-p) (equal (nhwl-gui--decoration) "server")))
+  (skip-unless (and (nhwl-gui--recorder-p) (equal (nhwl-gui--decoration) "server")))
   (nhwl-gui--windowed)
   (let* ((s (frame-scale-factor))
          (c (nhwl-gui--last-commit))
@@ -549,7 +658,7 @@ Return the two replies."
 
 (ert-deftest nhwl-gui/stats-after-typing ()
   "`glitnir-stats' answers on a shell frame with the keys budgets.sh reads."
-  (skip-unless (nhwl-gui--on-p))
+  (skip-unless (nhwl-gui--live-p))
   (switch-to-buffer "*scratch*")
   (erase-buffer)
   (redisplay t)

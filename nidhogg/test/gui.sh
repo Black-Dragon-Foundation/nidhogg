@@ -181,7 +181,8 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
 
   export GLITNIR_GUI_SCALE=$scale GLITNIR_GUI_SIZE=$size GLITNIR_GUI_TESTS=$tests GLITNIR_GUI_SELECT=$select
   export GLITNIR_GUI_COMPOSITOR=$compositor GLITNIR_GUI_KNOWN=$known GLITNIR_GUI_FILES=$files GLITNIR_GUI_TAG=$tag
-  [ -z "$ctl" ] || export GLITNIR_GUI_RECORDER=$ctl
+  [ -z "$ctl" ] || export GLITNIR_GUI_RECORDER=$ctl GLITNIR_GUI_RECORDER_BIN=$recorder \
+    GLITNIR_GUI_RECORDER_PROFILE="$(dirname "$self")/recorder/profiles/$rprofile.json"
   export GDK_BACKEND=wayland NO_AT_BRIDGE=1
   unset DISPLAY EMACS_SOCKET_NAME
   for kv in ${envs[@]+"${envs[@]}"}; do export "$kv"; done
