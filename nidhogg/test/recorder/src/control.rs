@@ -66,6 +66,9 @@ pub fn handle(state: &mut State, line: &str, stream: &UnixStream) -> Option<Valu
     if cmd == "ping" {
         return crate::shell::ping(state, stream);
     }
+    if cmd == "read" {
+        return crate::selection::read(state, &req, stream);
+    }
     if let Some(reply) = crate::input::command(state, cmd, &req) {
         return Some(reply);
     }
@@ -75,6 +78,11 @@ pub fn handle(state: &mut State, line: &str, stream: &UnixStream) -> Option<Valu
         "close" => crate::shell::close(state, &req),
         "decoration" => crate::shell::decoration(state, &req),
         "scale" => crate::scale::scale(state, &req),
+        "offer" => crate::selection::offer(state, &req),
+        "activation_log" => crate::selection::activation_log(state),
+        "output" => crate::scale::output(state, &req),
+        "tree" => crate::shell::tree(state),
+        "popup_done" => crate::shell::popup_done(state, &req),
         "present" => crate::clock::present(state, &req),
         "mode" => crate::clock::mode(state, &req),
         "occlude" => crate::clock::occlude(state, true),

@@ -2,14 +2,27 @@
 //! `Events` as short strings, so a test compares them as text.
 use super::Client;
 use std::io::Read;
-use wayland_client::protocol::{wl_keyboard, wl_pointer, wl_seat, wl_subcompositor, wl_subsurface};
-use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum};
+use wayland_client::protocol::{
+    wl_data_device, wl_data_device_manager, wl_data_offer, wl_data_source, wl_keyboard, wl_pointer,
+    wl_region, wl_seat, wl_subcompositor, wl_subsurface,
+};
+use wayland_client::{event_created_child, Connection, Dispatch, Proxy, QueueHandle, WEnum};
+use wayland_protocols::wp::alpha_modifier::v1::client::{
+    wp_alpha_modifier_surface_v1, wp_alpha_modifier_v1,
+};
 use wayland_protocols::wp::cursor_shape::v1::client::{
     wp_cursor_shape_device_v1, wp_cursor_shape_manager_v1,
+};
+use wayland_protocols::wp::primary_selection::zv1::client::{
+    zwp_primary_selection_device_manager_v1, zwp_primary_selection_device_v1,
+    zwp_primary_selection_offer_v1::{self, ZwpPrimarySelectionOfferV1},
+    zwp_primary_selection_source_v1,
 };
 use wayland_protocols::wp::text_input::zv3::client::{
     zwp_text_input_manager_v3, zwp_text_input_v3,
 };
+use wayland_protocols::xdg::activation::v1::client::{xdg_activation_token_v1, xdg_activation_v1};
+use wayland_protocols::xdg::shell::client::{xdg_popup, xdg_positioner};
 
 #[derive(Default)]
 pub struct Events {
@@ -20,6 +33,17 @@ pub struct Events {
     pub text: Vec<String>,
     /// The serial of the newest wl_pointer.enter.
     pub enter_serial: u32,
+    /// The names of the wl_output globals currently advertised.
+    pub outputs: Vec<u32>,
+    /// The MIME types of the newest clipboard and primary-selection offers the client heard.
+    pub clipboard: Option<(wl_data_offer::WlDataOffer, Vec<String>)>,
+    pub primary: Option<(ZwpPrimarySelectionOfferV1, Vec<String>)>,
+    /// `wl_data_source.send` requests heard; the data source writes `source_text` unless `source_mute`.
+    pub sends: Vec<String>,
+    pub source_text: String,
+    pub source_mute: bool,
+    pub activation_token: Option<String>,
+    pub popup_done: u32,
 }
 
 impl Dispatch<wl_seat::WlSeat, ()> for Client {
@@ -153,5 +177,139 @@ ignore!(
     wp_cursor_shape_manager_v1::WpCursorShapeManagerV1,
     wp_cursor_shape_device_v1::WpCursorShapeDeviceV1,
     wl_subcompositor::WlSubcompositor,
-    wl_subsurface::WlSubsurface
+    wl_subsurface::WlSubsurface,
+    wl_region::WlRegion,
+    wl_data_device_manager::WlDataDeviceManager,
+    zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1,
+    zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1,
+    xdg_activation_v1::XdgActivationV1,
+    xdg_positioner::XdgPositioner,
+    wp_alpha_modifier_v1::WpAlphaModifierV1,
+    wp_alpha_modifier_surface_v1::WpAlphaModifierSurfaceV1
 );
+
+impl Dispatch<wl_data_device::WlDataDevice, ()> for Client {
+    fn event(
+        s: &mut Self,
+        _: &wl_data_device::WlDataDevice,
+        e: wl_data_device::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match e {
+            wl_data_device::Event::DataOffer { id } => s.ev.clipboard = Some((id, Vec::new())),
+            wl_data_device::Event::Selection { id: None } => s.ev.clipboard = None,
+            _ => {}
+        }
+    }
+    event_created_child!(Client, wl_data_device::WlDataDevice, [
+        wl_data_device::EVT_DATA_OFFER_OPCODE => (wl_data_offer::WlDataOffer, ()),
+    ]);
+}
+
+impl Dispatch<wl_data_offer::WlDataOffer, ()> for Client {
+    fn event(
+        s: &mut Self,
+        _: &wl_data_offer::WlDataOffer,
+        e: wl_data_offer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let (wl_data_offer::Event::Offer { mime_type }, Some((_, types))) =
+            (e, &mut s.ev.clipboard)
+        {
+            types.push(mime_type);
+        }
+    }
+}
+
+impl Dispatch<wl_data_source::WlDataSource, ()> for Client {
+    fn event(
+        s: &mut Self,
+        _: &wl_data_source::WlDataSource,
+        e: wl_data_source::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_data_source::Event::Send { mime_type, fd } = e {
+            if !s.ev.source_mute {
+                std::io::Write::write_all(
+                    &mut std::fs::File::from(fd),
+                    s.ev.source_text.as_bytes(),
+                )
+                .unwrap();
+            } else {
+                std::mem::forget(fd); // held open: the reader neither gets data nor an end
+            }
+            s.ev.sends.push(mime_type);
+        }
+    }
+}
+
+impl Dispatch<zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1, ()> for Client {
+    fn event(
+        s: &mut Self,
+        _: &zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1,
+        e: zwp_primary_selection_device_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zwp_primary_selection_device_v1::Event::DataOffer { offer } = e {
+            s.ev.primary = Some((offer, Vec::new()));
+        }
+    }
+    event_created_child!(Client, zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1, [
+        zwp_primary_selection_device_v1::EVT_DATA_OFFER_OPCODE => (ZwpPrimarySelectionOfferV1, ()),
+    ]);
+}
+
+impl Dispatch<ZwpPrimarySelectionOfferV1, ()> for Client {
+    fn event(
+        s: &mut Self,
+        _: &ZwpPrimarySelectionOfferV1,
+        e: zwp_primary_selection_offer_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let (zwp_primary_selection_offer_v1::Event::Offer { mime_type }, Some((_, types))) =
+            (e, &mut s.ev.primary)
+        {
+            types.push(mime_type);
+        }
+    }
+}
+
+impl Dispatch<xdg_activation_token_v1::XdgActivationTokenV1, ()> for Client {
+    fn event(
+        s: &mut Self,
+        _: &xdg_activation_token_v1::XdgActivationTokenV1,
+        e: xdg_activation_token_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_activation_token_v1::Event::Done { token } = e {
+            s.ev.activation_token = Some(token);
+        }
+    }
+}
+
+impl Dispatch<xdg_popup::XdgPopup, ()> for Client {
+    fn event(
+        s: &mut Self,
+        _: &xdg_popup::XdgPopup,
+        e: xdg_popup::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_popup::Event::PopupDone = e {
+            s.ev.popup_done += 1;
+        }
+    }
+}

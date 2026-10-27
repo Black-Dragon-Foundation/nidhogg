@@ -61,6 +61,9 @@ pub struct Commit {
     /// `[x, y, w, h]`): where the window sits inside its buffer (GTK's client-side shadow lies outside it); null when
     /// the client never set one.
     pub geometry: Option<[i32; 4]>,
+    /// The `wp_alpha_modifier_v1` multiplier as a float; absent when the client set none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alpha: Option<f64>,
     pub t_ns: u64,
 }
 
