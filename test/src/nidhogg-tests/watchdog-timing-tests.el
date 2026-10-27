@@ -19,7 +19,7 @@
 
 ;;; Commentary:
 
-;; The timing group (design §12): real wall-clock spins, a blocked call,
+;; The timing group: real wall-clock spins, a blocked call,
 ;; and child Nidhoggs on a pty (the only way to drive the real keyboard
 ;; hooks, an interactive SA_RESTART default, `suspend-emacs' and a Lisp
 ;; thread that holds the global lock while the main thread idles).  The
@@ -422,5 +422,102 @@ result plist (:stalls :spans0 :stats :extra), or nil when it never wrote one."
   "Byte-compile FN, so the stress row runs byte code."
   (unless (byte-code-function-p (symbol-function fn))
     (byte-compile fn)))
+
+;;;; Hangs
+
+(defun watchdog-timing--hang-script (log body)
+  "A child script: the mode logs to LOG, hang-ms 1000, then BODY."
+  (format "(setq nidhogg-watchdog-log-directory %S
+      nidhogg-watchdog-threshold 100
+      nidhogg-watchdog-hang-ms 1000)
+%s"
+          (file-name-as-directory log) body))
+
+(defconst watchdog-timing--hang-spin
+  "(defun wdc--hang-spin () (wdc--spin 5000))
+(nidhogg-watchdog-mode 1)
+(run-at-time 0.5 nil (lambda ()
+                       (wdc--touch \"ready\")
+                       (wdc--hang-spin)
+                       (wdc--dump)))
+"
+  "A 5 s spin in a timer, with the mode on.")
+
+(defconst watchdog-timing--hang-reader
+  "(add-hook 'nidhogg-watchdog-record-functions
+          (lambda (r) (push r wdc--extra)))
+(nidhogg-watchdog-mode 1)
+(setq wdc--extra (list :records wdc--extra
+                       :left (directory-files nidhogg-watchdog-log-directory
+                                              nil \"\\\\`hang-\")))
+(wdc--dump)
+"
+  "Turn the mode on, keep the records its start made, then dump.")
+
+(defun watchdog-timing--await-hang-file (proc dir pid timeout)
+  "Wait up to TIMEOUT s for PID's hang file in DIR to name the spin.
+Return the file's text, or nil."
+  (let ((deadline (+ (float-time) timeout))
+        (re (format "\\`hang-%d-[0-9]+\\.txt\\'" pid))
+        text)
+    (while (and (not text) (process-live-p proc) (< (float-time) deadline))
+      (dolist (f (directory-files dir t re))
+        (let ((s (ignore-errors
+                   (with-temp-buffer (insert-file-contents f) (buffer-string)))))
+          (when (and s (string-search "wdc--hang-spin" s))
+            (setq text s))))
+      (unless text
+        (accept-process-output proc 0.05)))
+    text))
+
+(defun watchdog-timing--hang-killed-by (sig)
+  "End a child's hang with SIG; a fresh child must record it as killed.
+The child spins 5 s with hang-ms 1000 and gets SIG once its hang file
+names the spin function (within 4 s of the spin's start).  The fresh
+child's mode start turns the file into one `:killed' record with that
+name and deletes it."
+  (let ((log (make-temp-file "wdt-hang" t))
+        pid text)
+    (unwind-protect
+        (progn
+          (watchdog-timing--run-child
+           (watchdog-timing--hang-script log watchdog-timing--hang-spin)
+           (lambda (proc)
+             (setq pid (process-id proc)
+                   text (watchdog-timing--await-hang-file proc log pid 4))
+             (signal-process proc sig)))
+          (should pid)
+          (should text)
+          (should (string-search (format "pid %d\n" pid) text))
+          (let* ((result (watchdog-timing--run-child
+                          (watchdog-timing--hang-script
+                           log watchdog-timing--hang-reader)))
+                 (extra (plist-get result :extra))
+                 (killed (cl-remove-if-not (lambda (r) (plist-get r :killed))
+                                           (plist-get extra :records))))
+            (should result)
+            (should (= 1 (length killed)))
+            (should (= pid (plist-get (car killed) :hang-pid)))
+            (should (eq t (plist-get (car killed) :hang)))
+            (should (cl-some (lambda (st)
+                               (member "wdc--hang-spin"
+                                       (append (plist-get st :frames) nil)))
+                             (plist-get (car killed) :stacks)))
+            (should-not (plist-get extra :left))))
+      (delete-directory log t))))
+
+(ert-deftest watchdog/hang-file-survives-kill ()
+  ;; SIGKILL: nothing runs in the child; the file simply stays.
+  (watchdog-timing--hang-killed-by 'SIGKILL))
+
+(ert-deftest watchdog/hang-file-survives-sigterm ()
+  ;; SIGTERM (`kill PID', a service restart): Emacs runs `kill-emacs' from
+  ;; the signal handler while the main thread is still busy, so the mode is
+  ;; turned off inside the hang; that stop must keep the file.
+  (watchdog-timing--hang-killed-by 'SIGTERM))
+
+(ert-deftest watchdog/hang-file-survives-sighup ()
+  ;; SIGHUP (a logout, a closed terminal) takes the same path as SIGTERM.
+  (watchdog-timing--hang-killed-by 'SIGHUP))
 
 ;;; watchdog-timing-tests.el ends here

@@ -1,6 +1,5 @@
-/* Nidhogg's stall watchdog: the monitor thread and the park protocol.
-
-   Task 18 adds the hang file writer and deleter here.
+/* Nidhogg's stall watchdog: the monitor thread, the park protocol and
+   the hang files.
 
 Copyright (C) 2026 Black Dragon Foundation contributors.
 
@@ -33,7 +32,8 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
        mode is pending) raise a request for s and send the main thread
        NIDHOGG_WATCHDOG_SIGNAL, whose handler takes a sample and clears
        the request (nidhogg-watchdog-sample.c); a request still pending
-       after 2 P is missed; past the hang threshold, names mode.
+       after 2 P is missed; past the hang threshold, names mode and the
+       hang file (below).
 
    The main thread counts, so a monitor that never runs (a starved
    thread) costs samples, never a record.  While `--test-clock' is set
@@ -51,10 +51,16 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 # include <sched.h>
 # include <sys/syscall.h>
 # include <unistd.h>
+
+# include <fcntl.h>
+# include <stdio.h>
+# include <stdlib.h>
+# include <string.h>
 #endif
 
 #include "nidhogg-watchdog.h"
 #include "nidhogg-watchdog-park.h"
+#include "nidhogg-watchdog-phase.h"
 
 enum
 {
@@ -109,6 +115,9 @@ static pid_t nh_wd_mon_tid;	/* the monitor's task, for stop */
 static clockid_t nh_wd_main_cpu; /* the main thread's CPU clock */
 /* Requests of armed_span that the handler never took (atomic).  */
 static uint32_t nh_wd_mon_missed;
+
+static void nh_wd_hang_tick (uint64_t, uint64_t, uint64_t);
+static void nh_wd_hang_end (void);
 
 static uint64_t
 nh_wd_clock_ns (clockid_t clock)
@@ -198,6 +207,7 @@ nh_wd_mon_watch (uint64_t s, uint64_t t0)
       uint64_t hang = __atomic_load_n (&nh_wd.hang_ns, __ATOMIC_RELAXED);
       if (hang && now - t0 >= hang)
 	__atomic_store_n (&nh_wd.mode, 1, __ATOMIC_RELAXED);
+      nh_wd_hang_tick (s, t0, now);
 
       uint32_t req = __atomic_load_n (&nh_wd.request, __ATOMIC_ACQUIRE);
       if (req == tag)
@@ -239,6 +249,344 @@ nh_wd_mon_watch (uint64_t s, uint64_t t0)
 	}
       now = nh_wd_clock_ns (CLOCK_MONOTONIC);
     }
+}
+
+/* Hang files.  The monitor owns the file: past
+   the hang threshold it writes HANG-FILE (nh_wd_hang_file, from
+   `--start') through a temporary file, open/write/fsync/rename, first
+   once a names-mode copy is in (or 2 s into the hang) and then every
+   2 s, and deletes it when the span has ended, before it parks.  The
+   main thread never touches the file, so a delete cannot race a rename
+   and bring back a finished hang.  The identity (pid, the process start
+   time, the boot id) is read once at start, on the main thread; the
+   monitor never touches Lisp.
+
+   All of this state is the monitor's, or under nh_wd.m.  */
+
+enum
+{
+  NH_WD_HANG_EVERY = 2000 * NH_WD_MS,
+  NH_WD_HANG_STACKS = 4
+};
+
+static char *nh_wd_hang_tmp;	/* HANG-FILE.tmp */
+static int nh_wd_hang_dir = -1;	/* HANG-FILE's directory, for fsync */
+static char nh_wd_hang_ident[160]; /* pid, proc-start and boot-id lines */
+static bool nh_wd_hang_written;	/* HANG-FILE is ours and exists */
+/* The session stops inside a hang (`kill-emacs' from SIGTERM or SIGHUP
+   runs while the main thread is busy): the watch's end keeps
+   HANG-FILE, for the next start's `:killed' record.  */
+static bool nh_wd_hang_keep;
+static uint64_t nh_wd_hang_since, nh_wd_hang_next;
+static uint32_t nh_wd_hang_seen; /* the names_next copied last */
+/* The latest names-mode copies, newest at HEAD - 1.  */
+static struct nh_wd_names nh_wd_hang_stacks[NH_WD_HANG_STACKS];
+static int nh_wd_hang_head, nh_wd_hang_nstacks;
+static char nh_wd_hang_buf[NH_WD_HANG_STACKS * 32 * 65 + 512];
+
+/* Tests (`--test-hold-rename'), under nh_wd.m: HOLD holds the next
+   write between fsync and rename, HELD says one is held; WRITES counts
+   the finished writes, WATCHING is the span the monitor watches (0:
+   none).  An idle wait may hold several short busy spans the monitor
+   never watched, so "ended" is "no older span watched", not a count.  */
+static pthread_cond_t nh_wd_test_cv = PTHREAD_COND_INITIALIZER;
+static bool nh_wd_test_hold, nh_wd_test_held;
+static uint64_t nh_wd_test_writes, nh_wd_mon_watching;
+
+/* Read up to SIZE - 1 bytes of FILE into BUF, NUL ended; false if it
+   cannot be read.  */
+static bool
+nh_wd_read_small (const char *file, char *buf, size_t size)
+{
+  int fd = open (file, O_RDONLY | O_CLOEXEC);
+  if (fd < 0)
+    return false;
+  ssize_t n = read (fd, buf, size - 1);
+  close (fd);
+  if (n < 0)
+    return false;
+  buf[n] = 0;
+  return true;
+}
+
+/* At monitor start (main thread): this process's identity, and the
+   temporary file's name.  */
+static void
+nh_wd_hang_start (void)
+{
+  char stat[1024], boot[64] = "";
+  unsigned long long start = 0;
+  if (nh_wd_read_small ("/proc/self/stat", stat, sizeof stat))
+    {
+      /* Field 22, counted after the command's closing parenthesis
+	 (the command may hold spaces).  */
+      char *p = strrchr (stat, ')');
+      for (int field = 2; p && *p; p++)
+	if (*p == ' ' && ++field == 22)
+	  {
+	    start = strtoull (p + 1, NULL, 10);
+	    break;
+	  }
+    }
+  if (nh_wd_read_small ("/proc/sys/kernel/random/boot_id", boot, sizeof boot))
+    boot[strcspn (boot, "\n")] = 0;
+  snprintf (nh_wd_hang_ident, sizeof nh_wd_hang_ident,
+	    "pid %ld\nproc-start %llu\nboot-id %s\n",
+	    (long) getpid (), start, boot);
+
+  xfree (nh_wd_hang_tmp);
+  nh_wd_hang_tmp = NULL;
+  if (nh_wd_hang_dir >= 0)
+    close (nh_wd_hang_dir);
+  nh_wd_hang_dir = -1;
+  nh_wd_hang_keep = false;
+  if (nh_wd_hang_file)
+    {
+      size_t len = strlen (nh_wd_hang_file);
+      nh_wd_hang_tmp = xmalloc (len + sizeof ".tmp");
+      memcpy (nh_wd_hang_tmp, nh_wd_hang_file, len);
+      memcpy (nh_wd_hang_tmp + len, ".tmp", sizeof ".tmp");
+
+      /* The directory, opened once: a rename is durable only once the
+	 directory is synced too (a hard freeze often ends in a reset).  */
+      char *slash = strrchr (nh_wd_hang_tmp, '/');
+      if (slash)
+	{
+	  char *dir = xstrdup (nh_wd_hang_tmp);
+	  dir[slash > nh_wd_hang_tmp ? slash - nh_wd_hang_tmp : 1] = 0;
+	  nh_wd_hang_dir = open (dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	  xfree (dir);
+	}
+    }
+}
+
+/* After the monitor stopped (main thread).  */
+static void
+nh_wd_hang_stop (void)
+{
+  if (nh_wd_hang_dir >= 0)
+    close (nh_wd_hang_dir);
+  nh_wd_hang_dir = -1;
+  xfree (nh_wd_hang_tmp);
+  nh_wd_hang_tmp = NULL;
+  nh_wd_test_hold = nh_wd_test_held = false;
+}
+
+/* Copy the latest names-mode slot, if it is new and belongs to the
+   span busy since T0.  The handler fills a slot, then publishes
+   names_next with a release store; a names_next that changed while the
+   slot was copied means the copy may be torn, and it is dropped (a
+   seqlock).  */
+static void
+nh_wd_hang_copy_names (uint64_t t0)
+{
+  for (int tries = 0; tries < 3; tries++)
+    {
+      uint32_t k = __atomic_load_n (&nh_wd_cur.names_next, __ATOMIC_ACQUIRE);
+      if (k == 0 || k == nh_wd_hang_seen)
+	return;
+      struct nh_wd_names *dst = &nh_wd_hang_stacks[nh_wd_hang_head];
+      memcpy (dst, &nh_wd_cur.names[(k - 1) % 4], sizeof *dst);
+      __atomic_thread_fence (__ATOMIC_ACQUIRE);
+      if (__atomic_load_n (&nh_wd_cur.names_next, __ATOMIC_RELAXED) != k)
+	continue;
+      if (dst->t_ns < t0)
+	return;			/* an older span's */
+      nh_wd_hang_seen = k;
+      nh_wd_hang_head = (nh_wd_hang_head + 1) % NH_WD_HANG_STACKS;
+      if (nh_wd_hang_nstacks < NH_WD_HANG_STACKS)
+	nh_wd_hang_nstacks++;
+      return;
+    }
+}
+
+/* Append the names of ST (the innermost, which is empty, left out) as
+   one `stack' line to B at *N, at most SIZE bytes in all.  A tab or a
+   control character in a name becomes `?'.  */
+static void
+nh_wd_hang_put_stack (char *b, size_t *n, size_t size,
+		      const struct nh_wd_names *st)
+{
+  int m = st->n < 32 ? st->n : 32;
+  if (*n + 6 >= size)
+    return;
+  memcpy (b + *n, "stack", 5);
+  *n += 5;
+  for (int i = 1; i < m; i++)
+    {
+      const char *name = st->name[i];
+      if (!name[0] || *n + 66 >= size)
+	continue;
+      b[(*n)++] = '\t';
+      for (int j = 0; j < 63 && name[j]; j++)
+	b[(*n)++] = (unsigned char) name[j] < ' ' ? '?' : name[j];
+    }
+  b[(*n)++] = '\n';
+}
+
+/* Write HANG-FILE for span S, busy since T0, at NOW.  */
+static void
+nh_wd_hang_write (uint64_t s, uint64_t t0, uint64_t now)
+{
+  uint64_t real = nh_wd_clock_ns (CLOCK_REALTIME);
+  uint8_t phase, reason;
+  /* The main thread's phase stack, read from here: a racy but harmless
+     look at a few bytes.  */
+  nh_wd_phase_top (&phase, &reason);
+  char *b = nh_wd_hang_buf;
+  size_t size = sizeof nh_wd_hang_buf;
+  int len = snprintf (b, size,
+		      "nidhogg-watchdog-hang 1\n%sstart %.6f\nduration-ms %.1f\n"
+		      "phase %s\n",
+		      nh_wd_hang_ident, (real - (now - t0)) / 1e9,
+		      (now - t0) / 1e6,
+		      phase < NH_WD_PH_N ? nh_wd_phase_names[phase] : "lisp");
+  if (len < 0 || (size_t) len >= size)
+    return;
+  size_t n = len;
+  for (int i = 1; i <= nh_wd_hang_nstacks; i++)
+    nh_wd_hang_put_stack (b, &n, size,
+			  &nh_wd_hang_stacks[(nh_wd_hang_head - i
+					      + NH_WD_HANG_STACKS)
+					     % NH_WD_HANG_STACKS]);
+
+  int fd = open (nh_wd_hang_tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC,
+		 0600);
+  if (fd < 0)
+    return;
+  bool ok = true;
+  for (size_t off = 0; ok && off < n; )
+    {
+      ssize_t w = write (fd, b + off, n - off);
+      if (w > 0)
+	off += w;
+      else if (w < 0 && errno != EINTR)
+	ok = false;
+    }
+  ok = fsync (fd) == 0 && ok;
+  ok = close (fd) == 0 && ok;
+
+  /* Tests: hold here, between fsync and rename.  */
+  if (nh_wd_test_hold)
+    {
+      nh_wd_test_held = true;
+      pthread_cond_broadcast (&nh_wd_test_cv);
+      while (nh_wd_test_hold && !nh_wd_mon_stop)
+	pthread_cond_wait (&nh_wd_test_cv, &nh_wd.m);
+      nh_wd_test_held = false;
+    }
+
+  /* Still the hang's span (under nh_wd.m)?  A span that ended meanwhile
+     keeps no file.  */
+  if (ok && !nh_wd_mon_stop && nh_wd_mon_busy (s)
+      && rename (nh_wd_hang_tmp, nh_wd_hang_file) == 0)
+    {
+      /* The hang's first rename makes the directory entry: sync it.  */
+      if (!nh_wd_hang_written && nh_wd_hang_dir >= 0)
+	fsync (nh_wd_hang_dir);
+      nh_wd_hang_written = true;
+    }
+  else
+    unlink (nh_wd_hang_tmp);
+  nh_wd_test_writes++;
+  pthread_cond_broadcast (&nh_wd_test_cv);
+}
+
+/* In the watch of span S, busy since T0, at NOW: past the hang
+   threshold (names mode), copy the names and write when due.  */
+static void
+nh_wd_hang_tick (uint64_t s, uint64_t t0, uint64_t now)
+{
+  if (!nh_wd_hang_tmp || __atomic_load_n (&nh_wd.mode, __ATOMIC_RELAXED) != 1)
+    return;
+  if (!nh_wd_hang_since)
+    nh_wd_hang_since = now;
+  nh_wd_hang_copy_names (t0);
+  if (nh_wd_hang_next
+      ? now >= nh_wd_hang_next
+      : nh_wd_hang_nstacks > 0 || now - nh_wd_hang_since >= NH_WD_HANG_EVERY)
+    {
+      nh_wd_hang_write (s, t0, now);
+      nh_wd_hang_next = now + NH_WD_HANG_EVERY;
+    }
+}
+
+/* The watch of a span ended (the span ended, or the monitor stops):
+   delete its hang file, before parking, unless the session stops
+   inside the hang.  */
+static void
+nh_wd_hang_end (void)
+{
+  if (nh_wd_hang_written && !nh_wd_hang_keep)
+    unlink (nh_wd_hang_file);
+  nh_wd_hang_written = false;
+  nh_wd_hang_since = nh_wd_hang_next = 0;
+  nh_wd_hang_seen = 0;
+  nh_wd_hang_head = nh_wd_hang_nstacks = 0;
+  nh_wd_mon_watching = 0;
+  pthread_cond_broadcast (&nh_wd_test_cv);
+}
+
+/* Tests, main thread, with nh_wd.m held: wait (busy: no responsive
+   wait) on the test condition variable until PRED (ARG), at most 30 s.
+   Return PRED (ARG).  */
+static bool
+nh_wd_test_wait (bool (*pred) (uint64_t), uint64_t arg)
+{
+  struct timespec deadline;
+  clock_gettime (CLOCK_REALTIME, &deadline);
+  deadline.tv_sec += 30;
+  while (!pred (arg))
+    if (!nh_wd_mon_running
+	|| (pthread_cond_timedwait (&nh_wd_test_cv, &nh_wd.m, &deadline)
+	    == ETIMEDOUT))
+      return pred (arg);
+  return true;
+}
+
+static bool
+nh_wd_test_held_p (uint64_t arg)
+{
+  (void) arg;
+  return nh_wd_test_held;
+}
+
+static bool
+nh_wd_test_written_p (uint64_t writes)
+{
+  return nh_wd_test_writes > writes;
+}
+
+static bool
+nh_wd_test_ended_p (uint64_t span)
+{
+  return nh_wd_mon_watching == 0 || nh_wd_mon_watching >= span;
+}
+
+static Lisp_Object
+nh_wd_test_hold_rename (Lisp_Object arg)
+{
+  bool ok = false;
+  pthread_mutex_lock (&nh_wd.m);
+  if (EQ (arg, QCheld))
+    ok = nh_wd_test_wait (nh_wd_test_held_p, 0);
+  else if (EQ (arg, QCended))
+    ok = nh_wd_test_wait (nh_wd_test_ended_p,
+			  __atomic_load_n (&nh_wd.span, __ATOMIC_RELAXED));
+  else if (!NILP (arg))
+    nh_wd_test_hold = true;
+  else
+    {
+      nh_wd_test_hold = false;
+      if (nh_wd_test_held)
+	{
+	  uint64_t writes = nh_wd_test_writes;
+	  pthread_cond_broadcast (&nh_wd_test_cv);
+	  ok = nh_wd_test_wait (nh_wd_test_written_p, writes);
+	}
+    }
+  pthread_mutex_unlock (&nh_wd.m);
+  return ok ? Qt : Qnil;
 }
 
 static void *
@@ -285,7 +633,11 @@ nh_wd_monitor_main (void *arg)
 	continue;
       last = s;
       if (busy_ends && nh_wd_mon_busy (s))
-	nh_wd_mon_watch (s, t0);
+	{
+	  nh_wd_mon_watching = s;
+	  nh_wd_mon_watch (s, t0);
+	  nh_wd_hang_end ();
+	}
     }
   pthread_mutex_unlock (&nh_wd.m);
   return NULL;
@@ -305,6 +657,7 @@ nh_wd_monitor_start (void)
   if (err)
     return err;
   __atomic_store_n (&nh_wd.armed_span, UINT64_MAX, __ATOMIC_RELAXED);
+  nh_wd_hang_start ();
 
   /* The waits are timed on CLOCK_MONOTONIC.  Nobody waits on the
      condition variable while the monitor is not running.  */
@@ -341,9 +694,11 @@ nh_wd_monitor_stop (void)
   pthread_mutex_lock (&nh_wd.m);
   nh_wd_mon_stop = true;
   pthread_cond_broadcast (&nh_wd.cv);
+  pthread_cond_broadcast (&nh_wd_test_cv);
   pthread_mutex_unlock (&nh_wd.m);
   pthread_join (nh_wd_mon_thread, NULL);
   nh_wd_mon_running = false;
+  nh_wd_hang_stop ();
   /* pthread_join returns once the thread's tid is cleared, a moment
      before the kernel drops the task from /proc/self/task; wait for
      that (a few yields), so no caller still sees it.  */
@@ -351,6 +706,20 @@ nh_wd_monitor_stop (void)
        i < 10000 && syscall (SYS_tgkill, getpid (), nh_wd_mon_tid, 0) == 0;
        i++)
     sched_yield ();
+}
+
+/* Main thread, from `--stop' before it publishes waiting: the busy span
+   is a hang, so the watch's end keeps its hang file.  The flag is set
+   under nh_wd.m before the span ends, and the watch's end runs under
+   nh_wd.m after it sees the span end, so it always sees the flag.  */
+void
+nh_wd_monitor_keep_hang (void)
+{
+  if (!nh_wd_mon_running)
+    return;
+  pthread_mutex_lock (&nh_wd.m);
+  nh_wd_hang_keep = true;
+  pthread_mutex_unlock (&nh_wd.m);
 }
 
 /* The monitor's part of a stall that closes now (main thread, after
@@ -362,6 +731,9 @@ void
 nh_wd_monitor_span_close (struct nh_wd_stall *st)
 {
   uint64_t s = __atomic_load_n (&nh_wd.span, __ATOMIC_RELAXED);
+  /* A hang by the main thread's own clock, monitor or not.  */
+  uint64_t hang = __atomic_load_n (&nh_wd.hang_ns, __ATOMIC_RELAXED);
+  st->hang = hang && st->wall_ns >= hang;
   if (__atomic_load_n (&nh_wd.armed_span, __ATOMIC_ACQUIRE) == s)
     {
       st->late_ns = __atomic_load_n (&nh_wd.late_ns, __ATOMIC_RELAXED);
@@ -380,7 +752,7 @@ nh_wd_monitor_span_close (struct nh_wd_stall *st)
 
 #else  /* !__linux__ */
 
-/* Not on this platform yet (macOS: the next plan's run-loop observer).  */
+/* Not on this platform yet (macOS needs a run-loop observer).  */
 
 int
 nh_wd_monitor_start (void)
@@ -390,6 +762,11 @@ nh_wd_monitor_start (void)
 
 void
 nh_wd_monitor_stop (void)
+{
+}
+
+void
+nh_wd_monitor_keep_hang (void)
 {
 }
 
@@ -418,10 +795,35 @@ waiting through the busy span (a lost wake-up).  */)
 		intern_c_string (":lost"), make_fixnum (lost));
 }
 
+DEFUN ("nidhogg-watchdog--test-hold-rename",
+       Fnidhogg_watchdog__test_hold_rename,
+       Snidhogg_watchdog__test_hold_rename, 1, 1, 0,
+       doc: /* Test only: hold the monitor's hang-file write before its rename.
+HOLD t: the next write waits between `fsync' and `rename'.  nil: release
+it, and when one was held, wait until that write has finished (renamed,
+or, its span ended, its temporary file removed).  `:held': wait until a
+write is held.  `:ended': wait until the monitor watches no span before
+the current one (its watch of an older span ended, and that span's hang
+file is deleted).
+The waits keep the main thread busy (no responsive wait) and give up
+after 30 s.  Return t when a wait's condition was met, else nil.  */)
+  (Lisp_Object hold)
+{
+#ifdef __linux__
+  return nh_wd_test_hold_rename (hold);
+#else
+  (void) hold;
+  return Qnil;
+#endif
+}
+
 void
 nh_wd_monitor_syms (void)
 {
   defsubr (&Snidhogg_watchdog__test_interleavings);
+  DEFSYM (QCheld, ":held");
+  DEFSYM (QCended, ":ended");
+  defsubr (&Snidhogg_watchdog__test_hold_rename);
 }
 
 #endif /* HAVE_NIDHOGG_WATCHDOG */

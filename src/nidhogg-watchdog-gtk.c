@@ -60,7 +60,6 @@ nh_wd_gtk_poll (GPollFD *ufds, guint nfds, gint timeout)
       ts = make_timespec (timeout / 1000, (timeout % 1000) * 1000000L);
       tsp = &ts;
     }
-  nh_wd.wrapper_edges++;
   nh_wd_wait_enter_modal (tsp);
   gint r = nh_wd_real_poll (ufds, nfds, timeout);
   nh_wd_wait_leave (current_thread);

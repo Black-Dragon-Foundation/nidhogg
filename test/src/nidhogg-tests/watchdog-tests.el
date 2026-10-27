@@ -42,7 +42,7 @@
     (should-not (nidhogg-watchdog--stats))
     (should (= tasks (length (directory-files "/proc/self/task" nil "\\`[0-9]"))))))
 
-;;;; Edges, spans and records (Task 7)
+;;;; Edges, spans and records
 
 ;; The deterministic rows run on the virtual clock (`--test-clock'): time
 ;; moves only when a test sets it, and every idle wait is
@@ -123,7 +123,7 @@
       (should (= (length (plist-get h :collections)) 9)))))
 
 (ert-deftest watchdog/take-shape ()
-  ;; The §6.1 keys; `--take' empties the ring; `--pending' counts it.
+  ;; The record's keys; `--take' empties the ring; `--pending' counts it.
   (watchdog-test--running '(100 2000 nil :no-monitor)
     (watchdog-test--align)
     (watchdog-test--span 150)
@@ -164,7 +164,7 @@
       (should (eql (watchdog-test--stat :stalls) 33)))))
 
 (ert-deftest watchdog/responsive-flag-unwinds ()
-  ;; §12 (S5): a `throw' out of a nested responsive wait inside a filter
+  ;; A `throw' out of a nested responsive wait inside a filter
   ;; run by `accept-process-output'.  process.c restores
   ;; `waiting_for_user_input_p' on the way out, so the outer
   ;; `accept-process-output' wait stays busy: one 250 ms stall, not a
@@ -198,7 +198,8 @@
 (ert-deftest watchdog/inhibit-redisplay-wait-is-busy ()
   ;; In a timer, a 300 ms wait under `inhibit-redisplay' does not end the
   ;; span (`dbus-call-method', jsonrpc's cancel-on-input wait): one 300 ms
-  ;; stall, not two of 150.  Its phase (`process-wait') is Task 11's row.
+  ;; stall, not two of 150.  Its phase (`process-wait') has its own row
+  ;; in watchdog-phase-tests.el.
   (watchdog-test--running '(100 2000 nil)
     (watchdog-test--align)
     (run-at-time 0 nil (lambda ()

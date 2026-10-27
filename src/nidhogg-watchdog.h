@@ -17,14 +17,12 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
-/* The design is docs/specs/drgnx/2026-10-21-stall-watchdog-design.md
-   (in the Foundation's workspace, not in this tree); README.md,
-   "Stall watchdog", is the user-facing description.
+/* README.md, "Stall watchdog", describes the watchdog.
 
    This header is the contract between the six nidhogg-watchdog*.c
-   files.  Each later task owns one file and implements the prototypes
-   below that name it; a change here is a change for all of them.  The
-   per-file owner is in brackets next to each group of prototypes.  */
+   files.  Each file implements the prototypes below that name it; a
+   change here is a change for all of them.  The file is in brackets
+   next to each group of prototypes.  */
 
 #ifndef NIDHOGG_WATCHDOG_H
 #define NIDHOGG_WATCHDOG_H
@@ -139,10 +137,10 @@ struct nh_wd_names
   char name[32][64];
 };
 
-/* The span in progress, written by the handler only (Task 9).
+/* The span in progress, written by the handler only.
    NAMES_NEXT is published with a release store after its slot is
    filled; the monitor reads it with acquire and re-checks it after
-   copying (a seqlock, Task 18).  */
+   copying (a seqlock, for the hang file).  */
 struct nh_wd_cur
 {
   struct nh_wd_stall acc;
@@ -153,9 +151,9 @@ struct nh_wd_cur
 
 /* State shared by the main thread, the monitor thread and the signal
    handler.  Every word is accessed with __atomic_* (the handler only
-   with the orders its task names).  Writers:
+   with the orders its file names).  Writers:
 
-   main thread, only through nh_wd_publish_busy/_waiting (Task 8):
+   main thread, only through nh_wd_publish_busy/_waiting:
      span, waiting, busy_since_ns;
    monitor: parked, request (bit 31 = pending, low 31 bits = span;
      raised with a CAS, cleared by the handler and by publish_waiting),
@@ -213,18 +211,18 @@ struct nh_wd_shared
   uint32_t no_monitor;		/* test flag: `--start' with :no-monitor */
 };
 
-/* Input accounting (Task 11).  Atomics, relaxed: kbd_buffer_store_event
-   can run on a Lisp thread (maybe_quit -> gobble_input) while the main
-   thread's lock-free wait_leave resets them.  */
+/* Input accounting (nidhogg-watchdog-input.c).  Atomics, relaxed:
+   kbd_buffer_store_event can run on a Lisp thread (maybe_quit ->
+   gobble_input) while the main thread's lock-free wait_leave resets
+   them.  */
 struct nh_wd_input
 {
   uint32_t felt;
   uint64_t arrival_ns;
   uint32_t queued;
-  /* Commands started (command_loop_1, before command-execute): Task 11
-     adds 1 per command on the main thread; never reset.  The edges
-     (Task 7) take the delta per span for `commands' and `kind' and the
-     span's histogram.  */
+  /* Commands started (command_loop_1, before command-execute): 1 per
+     command on the main thread; never reset.  The edges take the delta
+     per span for `commands' and `kind' and the span's histogram.  */
   uint64_t commands;
 };
 
@@ -234,8 +232,8 @@ extern struct nh_wd_input nh_wd_input;
 extern volatile sig_atomic_t nh_wd_specpdl_unstable;
 extern bool nh_wd_on, nh_wd_gc_explicit;
 
-/* The specpdl growth bracket (Task 9 calls these around the realloc and
-   the pointer stores in grow_specpdl_allocation).  The handler
+/* The specpdl growth bracket (called around the realloc and the pointer
+   stores in grow_specpdl_allocation).  The handler
    interrupts the main thread, so the compiler is the only reorderer: a
    signal fence on both sides of the flag.  */
 INLINE void
@@ -257,7 +255,7 @@ nh_wd_specpdl_grow_end (void)
 /* syms_of_nidhogg_watchdog, called from emacs.c.  [nidhogg-watchdog.c]  */
 extern void syms_of_nidhogg_watchdog (void);
 
-/* Edges and spans.  [Task 7, nidhogg-watchdog.c]  */
+/* Edges and spans.  [nidhogg-watchdog.c]  */
 extern void nh_wd_wait_enter (struct thread_state *self,
 			      const struct timespec *timeout);
 extern void nh_wd_wait_enter_modal (const struct timespec *timeout);
@@ -265,10 +263,10 @@ extern void nh_wd_wait_leave (struct thread_state *self);
 extern void nh_wd_suspend (bool);
 extern uint64_t nh_wd_now_ns (void);
 
-/* The histograms of `--stats' (design §6.4), one count per bucket of
-   NH_WD_BUCKETS.  Any thread may add (relaxed atomics): the edges add
-   every span by its non-GC time, Task 10 each collection's pause,
-   Task 11 each typing command.  [Task 7]  */
+/* The histograms of `--stats', one count per bucket of NH_WD_BUCKETS.
+   Any thread may add (relaxed atomics): the edges add every span by its
+   non-GC time, the GC end hook each collection's pause, the input hooks
+   each typing command.  [nidhogg-watchdog.c]  */
 enum nh_wd_hist
 {
   NH_WD_H_COMMAND,
@@ -280,24 +278,26 @@ enum nh_wd_hist
 extern void nh_wd_hist_add (enum nh_wd_hist, uint64_t ns);
 
 /* True while `--test-clock' holds a virtual time; the monitor never
-   arms then (Task 8).  [Task 7]  */
+   arms then.  [nidhogg-watchdog.c]  */
 extern bool nh_wd_test_clock_p (void);
 
 /* `--start''s HANG-FILE, encoded, or NULL.  Set before the monitor
-   starts, freed after it stopped (Task 18 reads it).  [Task 7]  */
+   starts, freed after it stopped (the monitor reads it).
+   [nidhogg-watchdog.c]  */
 extern char *nh_wd_hang_file;
 
 /* The monitor and the park protocol, both sides.
-   [Task 8, nidhogg-watchdog-monitor.c]  */
+   [nidhogg-watchdog-monitor.c]  */
 extern void nh_wd_publish_waiting (uint64_t now);
 extern void nh_wd_publish_busy (uint64_t now);
 extern int nh_wd_monitor_start (void);
 extern void nh_wd_monitor_stop (void);
+extern void nh_wd_monitor_keep_hang (void);
 extern void nh_wd_monitor_span_close (struct nh_wd_stall *);
 extern void nh_wd_monitor_syms (void);
 
 /* The handler, the raw ring and `--take'.
-   [Task 9, nidhogg-watchdog-sample.c]
+   [nidhogg-watchdog-sample.c]
    A sample's T_NS is nanoseconds since the span's busy start; WORDS
    holds N_INNER words innermost first, then N_OUTER words of the
    bottom of the stack, also innermost first; SKIPPED counts the frames
@@ -314,16 +314,17 @@ extern void nh_wd_sample_close (struct nh_wd_stall *out);
 extern Lisp_Object nh_wd_sample_to_lisp (const struct nh_wd_sample *);
 extern void nh_wd_syms_of_sample (void);
 
-/* The GC end hook and the GC ring.  [Task 10, nidhogg-watchdog-gc.c]
+/* The GC end hook and the GC ring.  [nidhogg-watchdog-gc.c]
    nh_wd_gc_pending is `--pending''s count of collections; each pause
    goes into the NH_WD_H_COLLECTIONS histogram;
    syms_of_nidhogg_watchdog calls syms_of_nidhogg_watchdog_gc.  */
 extern void nh_wd_gc_done (struct timespec start);
 extern Lisp_Object nh_wd_gc_take (void);
 extern uint32_t nh_wd_gc_pending (void);
+extern void nh_wd_gc_reset (void);
 extern void syms_of_nidhogg_watchdog_gc (void);
 
-/* Phases, felt input, typing.  [Task 11, nidhogg-watchdog-input.c]
+/* Phases, felt input, typing.  [nidhogg-watchdog-input.c]
    The inline phase push/pop are in nidhogg-watchdog-phase.h.
    nh_wd_input_span_close runs at every span's end: ST is the stall to
    fill, or NULL for a span below the threshold.  */
@@ -332,7 +333,7 @@ extern void nh_wd_input_span_close (struct nh_wd_stall *, uint64_t now);
 extern void nh_wd_unwind_phases (struct handler *catch);
 
 /* The GLib poll wrapper and the dialog depth (pgtk only).
-   [Task 12, nidhogg-watchdog-gtk.c]  */
+   [nidhogg-watchdog-gtk.c]  */
 extern void nh_wd_gtk_install (void);
 extern void nh_wd_gtk_syms (void);
 extern int nh_wd_dialog_depth;
