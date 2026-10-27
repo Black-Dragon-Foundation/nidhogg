@@ -67,6 +67,12 @@ nhwl_csd_layout (struct frame *f)
   int32_t ssd = 0;
   int m = 0, strip = 0;
 
+  /* A child frame's offsets are its shadow margin (nhwlchild.c).  */
+  if (nhwl_child_p (f))
+    {
+      nhwl_child_layout (f);
+      return;
+    }
   /* The window's own answer: the compositor may grant one window server
      decorations and refuse another.  */
   c->on = (dpyinfo->shell
@@ -87,6 +93,7 @@ nhwl_csd_layout (struct frame *f)
       c->sig_valid = false;
       SET_FRAME_GARBAGED (f);
       nhwl_dirty (f);
+      nhwl_child_parent_layout (f);
     }
 }
 

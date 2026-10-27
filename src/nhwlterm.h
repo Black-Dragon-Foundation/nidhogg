@@ -230,6 +230,25 @@ struct nhwl_csd
   uint64_t click_ns;
 };
 
+/* A child frame's state (nhwlchild.c).  The chrome is in logical pixels as `glitnir--resolve' gave it; its margin
+   (the room the shadow needs around the native area) is held in the output's CSD offsets, so the backing, the damage
+   and the pointer all use the native-area offset they already have.  */
+struct nhwl_child
+{
+  bool chrome, chrome_dirty;
+  float radius, blur, ox, oy, spread, opacity;
+  uint32_t rgb;
+  int z;			/* stacking order among siblings: larger is higher */
+  uint32_t chrome_s120;		/* the scale the chrome was last handed over at */
+  bool layer_set;
+  GlitnirRect layer;		/* the Glitnir layer's rectangle as last handed over */
+  bool pos_sent;
+  int pos[2];			/* the surface offset in the parent, logical, as last sent */
+  bool region_sent;
+  int region[4];		/* the input region, logical, as last sent */
+  bool mapped;			/* the shell window is shown (not set_mapped off) */
+};
+
 struct nhwl_output
 {
   struct frame *frame;
@@ -255,6 +274,7 @@ struct nhwl_output
   int cr_width, cr_height;
   uint64_t cr_gen;		/* counts the backing's creations */
   struct nhwl_csd csd;
+  struct nhwl_child child;
 
   /* Glitnir's scene of this frame: its id (0: none yet), the size and scale
      it was told, the damage committed but not yet presented, and the
@@ -499,6 +519,27 @@ extern int nhwl_to_logical (int, uint32_t);
 extern int nhwl_to_device (int, uint32_t);
 extern bool nhwl_csd_pointer (struct frame *, double, double);
 extern bool nhwl_csd_button (struct frame *, const NhShellEvent *, bool *);
+
+/* nhwlchild.c: child frames (subsurfaces of the parent frame's window).  */
+extern uint64_t nhwl_frame_window (struct frame *);
+extern struct frame *nhwl_window_frame (uint64_t);
+extern bool nhwl_child_p (struct frame *);
+extern void nhwl_child_describe (struct frame *, NhShellWindowDesc *);
+extern void nhwl_child_created (struct frame *);
+extern void nhwl_child_layout (struct frame *);
+extern void nhwl_child_sync (struct frame *);
+extern void nhwl_child_set_visible (struct frame *, bool);
+extern void nhwl_child_reposition (struct frame *);
+extern void nhwl_child_parent_layout (struct frame *);
+extern void nhwl_child_params_changed (struct frame *);
+extern bool nhwl_child_layer_update (struct frame *, GlitnirRect *);
+extern void nhwl_child_apply_chrome (struct frame *);
+extern void nhwl_child_source (struct frame *, GlitnirSource *);
+extern void nhwl_frame_raise_lower (struct frame *, bool);
+extern void nhwl_set_parent_frame (struct frame *, Lisp_Object, Lisp_Object);
+extern void nhwl_set_z_group (struct frame *, Lisp_Object, Lisp_Object);
+extern void nhwl_set_no_accept_focus (struct frame *, Lisp_Object,
+				      Lisp_Object);
 
 /* The names ftcrfont.c and the other Cairo code shared with pgtk use.  */
 #define FRAME_CR_CONTEXT(f) (FRAME_NHWL_OUTPUT (f)->cr_context)
