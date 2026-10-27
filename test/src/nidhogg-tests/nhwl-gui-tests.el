@@ -36,7 +36,8 @@
               (nhwl-gui--commits)))
 
 (ert-deftest nhwl-gui/features ()
-  (skip-unless (featurep 'nidhogg-wayland))
+  ;; after the daemon's display is lost the selected frame is the daemon's own, with no window system
+  (skip-unless (and (featurep 'nidhogg-wayland) (not nhwl-gui--display-lost)))
   (should (eq (window-system) 'pgtk))
   (should (featurep 'pgtk))
   (should (featurep 'nidhogg-wayland))
@@ -306,6 +307,8 @@ Return the two replies."
   (switch-to-buffer "*scratch*")
   (erase-buffer)
   (insert "one\ntwo\n")
+  ;; an echo-area message (the startup one, "Mark set") gets one cell redrawn at its end on the first change after it
+  (message nil)
   (redisplay t)
   (gui-runner-wait-settled)
   (let* ((lh (frame-char-height))
