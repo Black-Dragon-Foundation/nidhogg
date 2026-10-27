@@ -103,6 +103,32 @@ Signals `error' when the reply's :ok is false."
             parsed))
       (delete-process proc))))
 
+;; The empty-commit invariant: a row of a recorder run fails when the recorder logged a commit that attached a new buffer
+;; with no damage while the row ran.  Off unless NHWL_GUI_STRICT_COMMITS is non-empty (gui.sh --env).
+(defun gui-runner--strict-commits-p ()
+  (let ((v (getenv "NHWL_GUI_STRICT_COMMITS")))
+    (and v (not (string-empty-p v)) (getenv "GLITNIR_GUI_RECORDER"))))
+
+(defun gui-runner--strict-commits (run test &rest args)
+  "`ert-run-test' advice: add the empty-buffer-commit check to the end of TEST's body."
+  (if (not (gui-runner--strict-commits-p))
+      (apply run test args)
+    (let ((body (ert-test-body test)))
+      (setf (ert-test-body test)
+            (lambda ()
+              (let ((since (plist-get (gui-runner-recorder '(:cmd "log" :since 1000000000)) :next)))
+                (funcall body)
+                (let ((empty (plist-get (gui-runner-recorder (list :cmd "empty_buffer_commits" :since since))
+                                        :commits)))
+                  (when empty
+                    (ert-fail (list "buffer commits with no damage"
+                                    (mapcar (lambda (c) (list :seq (plist-get c :seq) :role (plist-get c :role)))
+                                            empty))))))))
+      (unwind-protect (apply run test args)
+        (setf (ert-test-body test) body)))))
+
+(advice-add 'ert-run-test :around #'gui-runner--strict-commits)
+
 (defvar gui-runner--pw-procs nil "The pipewire and wireplumber processes this session started.")
 (defvar gui-runner--cast-session nil "The ScreenCast session's D-Bus path, held by Emacs's own connection.")
 
