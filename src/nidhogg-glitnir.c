@@ -74,7 +74,7 @@ Glitnir does not draw FRAME.  */)
 #endif
 }
 
-#ifdef HAVE_PGTK
+#if defined HAVE_PGTK || defined HAVE_NHWL
 
 static Lisp_Object
 pctl (const char *key, const GlitnirPercentiles *p)
@@ -85,7 +85,7 @@ pctl (const char *key, const GlitnirPercentiles *p)
 		       intern_c_string (":max"), make_float (p->max)));
 }
 
-#endif /* HAVE_PGTK */
+#endif /* HAVE_PGTK || HAVE_NHWL */
 
 DEFUN ("glitnir-stats", Fglitnir_stats, Sglitnir_stats, 0, 2, 0,
        doc: /* Return the frame-time record of FRAME's root frame, or nil.
@@ -98,22 +98,35 @@ milliseconds; :latency-ms is the time from the commit of a redisplay to the
 end of the paint that shows it, :freeze-ms the time the root was frozen
 before that commit.  :backfill-rate is nil: GDK's back-fills cannot be
 seen from the draw handler.  FRAME defaults to the selected frame; it
-returns nil for a frame that is not a graphical pgtk frame.  Non-nil RESET
+returns nil for a frame that is not a graphical pgtk or nhwl frame.  On a
+nhwl frame :latency-ms runs from the key event the paint shows (else from
+the commit) to the buffer's commit, and :painted-px is the area composed.
+Non-nil RESET
 empties the record after reading it.  */)
   (Lisp_Object frame, Lisp_Object reset)
 {
   struct frame *f = decode_live_frame (frame);
-#ifdef HAVE_PGTK
-  if (!FRAME_PGTK_P (f) || glitnir_pgtk_dead)
+#if defined HAVE_PGTK || defined HAVE_NHWL
+  uint64_t id = 0;
+# ifdef HAVE_PGTK
+  if (FRAME_PGTK_P (f) && !glitnir_pgtk_dead)
+    id = glitnir_pgtk_frame_id (f);
+# endif
+# ifdef HAVE_NHWL
+  if (FRAME_NHWL_P (f))
+    id = FRAME_NHWL_OUTPUT (f)->glitnir_id;
+# endif
+  if (!id)
     return Qnil;
   GlitnirStatsSummary s;
-  int32_t rc = GLITNIR_CALL_UNCOUNTED (glitnir_stats_summary
-				       (glitnir_pgtk_frame_id (f),
-					!NILP (reset), &s));
+  int32_t rc = glitnir_stats_summary (id, !NILP (reset), &s);
   if (rc != GLITNIR_OK)
     return Qnil;
+# ifdef HAVE_PGTK
   /* Violations not yet in an entry (the next paint records them).  */
-  s.violations += glitnir_pgtk_violations (f, !NILP (reset));
+  if (FRAME_PGTK_P (f))
+    s.violations += glitnir_pgtk_violations (f, !NILP (reset));
+# endif
   Lisp_Object plist
     = list2 (intern_c_string (":count"), make_uint (s.count));
   plist = nconc2 (plist, pctl (":compose-ms", &s.compose_ms));
