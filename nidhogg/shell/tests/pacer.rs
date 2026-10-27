@@ -205,6 +205,27 @@ mod pacer {
         assert!(shell.window_ready(id).unwrap());
     }
 
+    /// Path 4, waiting: two buffers busy while the pacer waits (an ack's commit went out in the middle of a wait)
+    /// starve it, and the frame callback ends that: it is idle, and the pool grows.
+    #[test]
+    fn frame_callback_ends_starvation_by_growing() {
+        let rec = Recorder::start_clock("kwin", "manual");
+        rec.control(r#"{"cmd":"mode","hold_buffers":2}"#);
+        let mut shell = rec.open();
+        let id = window(&mut shell);
+        draw(&mut shell, id, &[full()]);
+        draw(&mut shell, id, &[full()]);
+        assert!(waiting(&shell, id));
+        assert!(shell.present_begin(id, 200, 100).is_err(), "two busy, waiting");
+        assert!(starved(&shell, id));
+        present(&rec);
+        until(&mut shell, "the pacer idle", |s| !waiting(s, id));
+        assert!(!starved(&shell, id));
+        shell.window_dirty(id).unwrap();
+        assert!(shell.window_ready(id).unwrap());
+        draw(&mut shell, id, &[full()]);
+    }
+
     /// Path 5: there is no count of commits to drift: two commits before the first callback end the wait together.
     #[test]
     fn commits_are_not_counted() {
