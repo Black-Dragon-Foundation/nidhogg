@@ -104,6 +104,8 @@ EL
 }
 
 kill_case gui-sh-cleans-up-after-a-killed-client sway sway
+kill_case kwin_starts_and_stops kwin kwin_wayland
+kill_case labwc_starts_and_stops labwc labwc
 if [ -x "${GUI_TEST_RECORDER:-}" ]; then
   kill_case gui-sh-cleans-up-after-a-killed-recorder-client recorder nh-recorder --recorder "$GUI_TEST_RECORDER"
   lost_case

@@ -3,14 +3,16 @@
 # display), a Nidhogg pgtk frame on it, and the *-gui-tests.el files run by test/src/nidhogg-tests/gui-runner.el.
 # Never touches the caller's display, session bus or Emacs server: everything it starts is private and stopped on exit.
 #
-#   nidhogg/test/gui.sh --prefix DIR [--compositor sway|mutter|recorder] [--recorder BIN]
+#   nidhogg/test/gui.sh --prefix DIR [--compositor sway|mutter|kwin|labwc|recorder] [--recorder BIN]
 #                       [--recorder-profile sway|kwin|mutter] [--scale S] [--size WxH] [--monitors N]
 #                       [--select REGEXP] [--tests DIR] [--daemon] [--container DISTRO] [--wayland-debug FILE]
 #                       [--env K=V]... [--force-csd] [--timeout SEC] [--smoke] [--files GLOB] [--tag TAG]
 #
 #   --prefix DIR        an unpacked Nidhogg (DIR/bin/nidhogg)
 #   --compositor C      sway (default: headless sway, wlroots pixman renderer), mutter (headless mutter) or recorder
-#                       (nh-recorder, our own recording compositor, one output)
+#                       (nh-recorder, our own recording compositor, one output).  The T3 compositors: kwin (KWin's
+#                       --virtual backend, one output, scale by kscreen-doctor) and labwc (wlroots headless, pixman,
+#                       scale by wlr-randr).  Every compositor binary runs as a copy without file capabilities.
 #   --recorder BIN      the nh-recorder binary (default $REC); mounted at /opt/nh-recorder in a container
 #   --recorder-profile  what the recorder imitates: sway (default), kwin or mutter
 #   GLITNIR_GUI_DRY=1   print the commands a run would start and exit 0 (nothing is started)
@@ -88,7 +90,8 @@ case $size in [0-9]*x[0-9]*) ;; *) echo "gui.sh: --size is WxH" >&2; exit 2 ;; e
 [ -n "$tests" ] || tests=$checkout/test/src/nidhogg-tests
 tests=$(cd "$tests" && pwd) || exit 2
 W=${size%x*} H=${size#*x}
-case $compositor in sway|mutter|recorder) ;; *) echo "gui.sh: --compositor is sway, mutter or recorder" >&2; exit 2 ;; esac
+case $compositor in sway|mutter|kwin|labwc|recorder) ;; *) echo "gui.sh: --compositor is sway, mutter, kwin, labwc or recorder" >&2; exit 2 ;; esac
+[ "$compositor" != kwin ] || [ "$monitors" = 1 ] || { echo "gui.sh: KWin's virtual backend has one output (--monitors 1)" >&2; exit 2; }
 case $rprofile in sway|kwin|mutter) ;; *) echo "gui.sh: --recorder-profile is sway, kwin or mutter" >&2; exit 2 ;; esac
 if [ "$compositor" = recorder ]; then
   [ -n "$recorder" ] && [ -x "$recorder" ] || { echo "gui.sh: nh-recorder not built (--recorder BIN or \$REC: '$recorder')" >&2; exit 2; }
@@ -138,6 +141,15 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
         sway -c "$GLITNIR_GUI_RUN/sway.conf" > "$clog" 2>&1 &
       mpid=$!
       ;;
+    kwin)
+      kwin_wayland --virtual --width "$W" --height "$H" --scale 1 --socket "$display" --no-lockscreen --no-global-shortcuts \
+        --no-kactivities > "$clog" 2>&1 &
+      mpid=$!
+      ;;
+    labwc)
+      WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=$monitors labwc > "$clog" 2>&1 &
+      mpid=$!
+      ;;
     recorder)
       ctl=$XDG_RUNTIME_DIR/nh-recorder.ctl
       # the recorder takes a profile file; they sit next to its source (the checkout is /src in a container)
@@ -146,7 +158,7 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
       ;;
   esac
   for _ in $(seq 150); do
-    if [ "$compositor" = sway ]; then
+    if [ "$compositor" = sway ] || [ "$compositor" = labwc ]; then
       sock=$(compgen -G "$XDG_RUNTIME_DIR/wayland-*" | grep -v '\.lock$' | head -n 1)
       [ -n "$sock" ] && [ -S "$sock" ] && { display=${sock##*/}; break; }
     elif [ "$compositor" = recorder ]; then
@@ -170,6 +182,14 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
       first=; x=$((x + lw))
     done
     gdctl set "${args[@]}" || { echo "gui.sh: gdctl could not set scale $scale"; exit 1; }
+  elif [ "$compositor" = kwin ]; then
+    kscreen-doctor "output.Virtual-0.scale.$scale" > /dev/null || { echo "gui.sh: kscreen-doctor could not set scale $scale"; exit 1; }
+  elif [ "$compositor" = labwc ]; then
+    args=()
+    for ((i = 1; i <= monitors; i++)); do
+      args+=(--output "HEADLESS-$i" --custom-mode "$size" --pos "$(((i - 1) * lw)),0" --scale "$scale")
+    done
+    wlr-randr "${args[@]}" || { echo "gui.sh: wlr-randr could not set scale $scale"; exit 1; }
   elif [ "$compositor" = sway ]; then
     export SWAYSOCK=$XDG_RUNTIME_DIR/sway-ipc.sock
     for ((i = 2; i <= monitors; i++)); do
@@ -242,6 +262,8 @@ if [ "${GLITNIR_GUI_DRY:-}" = 1 ]; then
   case $compositor in
     sway) echo "sway -c RUN/sway.conf   (output HEADLESS-1 mode $size scale $scale; $monitors output(s))" ;;
     mutter) echo "mutter --headless --wayland --no-x11 --wayland-display NAME ($monitors x --virtual-monitor $size; scale $scale)" ;;
+    kwin) echo "kwin_wayland --virtual --width $W --height $H --socket NAME   (scale $scale by kscreen-doctor)" ;;
+    labwc) echo "labwc   (WLR_BACKENDS=headless; $monitors output(s) of $size, scale $scale by wlr-randr)" ;;
     recorder) echo "$recorder --output ${size}@${s120} --profile $(dirname "$self")/recorder/profiles/$rprofile.json --socket NAME --control CTL" ;;
   esac
   echo "$prefix/bin/nidhogg -Q --fullscreen -l $checkout/test/src/nidhogg-tests/gui-runner.el"
@@ -292,9 +314,12 @@ if [ -n "$container" ]; then
       dnf -y -q --setopt=install_weak_deps=False install mutter sway grim pixman libxkbcommon libcap dbus-daemon \
         mesa-dri-drivers mesa-libEGL mesa-libgbm python3-gobject-base dejavu-sans-mono-fonts procps-ng util-linux \
         $(case " $* " in *" mutter "*) echo pipewire wireplumber gstreamer1-plugins-base pipewire-gstreamer pipewire-utils ;; esac) \
+        $(case " $* " in *" kwin "*) echo kwin kscreen ;; *" labwc "*) echo labwc wlr-randr ;; esac) \
         $pkgs > /tmp/dnf.log 2>&1 || { cat /tmp/dnf.log; exit 1; }
       # sway ships with file capabilities a container refuses to exec: a copy without them
-      cp /usr/bin/sway /usr/local/bin/sway; setcap -r /usr/local/bin/sway 2>/dev/null || true
+      for c in sway kwin_wayland labwc; do
+        [ ! -x /usr/bin/$c ] || { cp /usr/bin/$c /usr/local/bin/$c; setcap -r /usr/local/bin/$c 2>/dev/null || true; }
+      done
       # glycin (GTK 3 loads its icons through it) sandboxes its image loaders with bwrap --dev /dev, which a podman
       # container refuses (it cannot mount a devpts); the loaders get the container'"'"'s own /dev instead
       printf "%s\n" "#!/bin/bash" "a=(); while [ \$# -gt 0 ]; do if [ \"\$1\" = --dev ]; then a+=(--dev-bind \"\$2\" \"\$2\"); shift 2; else a+=(\"\$1\"); shift; fi; done" \
@@ -311,6 +336,8 @@ fi
 case $compositor in
   sway) need="sway swaymsg dbus-run-session" ;;
   mutter) need="mutter gdctl dbus-run-session" ;;
+  kwin) need="kwin_wayland kscreen-doctor dbus-run-session" ;;
+  labwc) need="labwc wlr-randr dbus-run-session" ;;
   *) need="dbus-run-session" ;;
 esac
 for t in $need; do
