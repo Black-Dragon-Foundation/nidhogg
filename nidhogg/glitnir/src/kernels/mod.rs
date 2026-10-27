@@ -14,7 +14,7 @@ mod ring;
 mod tests;
 
 pub use corner::corner_coverage;
-pub use ring::{RingCoverage, clamp_radius, ring_coverage};
+pub use ring::{RingCoverage, clamp_radius, decor_tile, ring_coverage};
 
 use std::sync::{Mutex, MutexGuard, OnceLock};
 

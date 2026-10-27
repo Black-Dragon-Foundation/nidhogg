@@ -14,6 +14,7 @@
 //! commit cancel. Ids are unique within a root, whatever their kind.
 
 use crate::damage::{Damage, Frames};
+use crate::decor::{Anchor, Anchors, Label, Sprites};
 use crate::ffi::{GLITNIR_E_ARG, GLITNIR_E_STATE};
 use crate::geom::Rect;
 use crate::stack::Stack;
@@ -153,6 +154,10 @@ pub struct Scene {
     restacked: BTreeSet<u64>,
     committed: Vec<Placed>,
     listed: Vec<u64>,
+    /// Each window layer's label anchors, layer-local.
+    anchors: BTreeMap<u64, Anchors>,
+    /// The labels of the committed scene.
+    labels: Vec<Label>,
 }
 
 impl Scene {
@@ -189,6 +194,7 @@ impl Scene {
     pub fn remove(&mut self, id: u64) {
         for c in self.stack.remove_subtree(id) {
             self.layers.remove(&c);
+            self.anchors.remove(&c);
             self.restacked.remove(&c);
         }
     }
@@ -197,6 +203,71 @@ impl Scene {
     pub fn set_chrome(&mut self, id: u64, chrome: Option<Chrome>) -> Result<(), i32> {
         self.layers.get_mut(&id).ok_or(GLITNIR_E_ARG)?.chrome = chrome;
         Ok(())
+    }
+
+    /// Record anchor A on LAYER (`GLITNIR_E_ARG` for an unknown layer).
+    pub fn decor_put(&mut self, layer: u64, a: &Anchor) -> Result<(), i32> {
+        self.known(layer)?;
+        self.anchors.entry(layer).or_default().put(a);
+        Ok(())
+    }
+
+    /// Drop LAYER's anchors whose glyph meets EXTENT.
+    pub fn decor_drop_extent(&mut self, layer: u64, extent: Rect) -> Result<(), i32> {
+        self.known(layer)?;
+        if let Some(a) = self.anchors.get_mut(&layer) {
+            a.drop_extent(extent);
+        }
+        Ok(())
+    }
+
+    /// Drop LAYER's anchors whose glyph lies wholly in R.
+    pub fn decor_drop_rect(&mut self, layer: u64, r: Rect) -> Result<(), i32> {
+        self.known(layer)?;
+        if let Some(a) = self.anchors.get_mut(&layer) {
+            a.drop_rect(r);
+        }
+        Ok(())
+    }
+
+    /// Drop LAYER's anchors (0: every layer's).
+    pub fn decor_drop_all(&mut self, layer: u64) -> Result<(), i32> {
+        if layer == 0 {
+            self.anchors.clear();
+            return Ok(());
+        }
+        self.known(layer)?;
+        self.anchors.remove(&layer);
+        Ok(())
+    }
+
+    /// Move LAYER's anchors in BAND by DY; those that leave the band or the layer go.
+    pub fn decor_scroll(&mut self, layer: u64, band: Rect, dy: i32) -> Result<(), i32> {
+        self.known(layer)?;
+        let extent = self
+            .layers
+            .get(&layer)
+            .map_or(Rect::default(), |l| Rect::new(0, 0, l.rect.w, l.rect.h));
+        if let Some(a) = self.anchors.get_mut(&layer) {
+            a.scroll(band, dy, extent);
+        }
+        Ok(())
+    }
+
+    /// The labels of the committed scene, in paint order within each window layer.
+    pub fn labels(&self) -> &[Label] {
+        &self.labels
+    }
+
+    /// The labels the visible window layers of PLACED have now.
+    fn placed_labels(&self, placed: &[Placed], sprites: &Sprites) -> Vec<Label> {
+        let mut out = Vec::new();
+        for p in placed.iter().filter(|p| p.kind == Kind::Window) {
+            if let Some(a) = self.anchors.get(&p.id) {
+                crate::decor::place(p.id, p.rect, a.as_slice(), sprites, &mut out);
+            }
+        }
+        out
     }
 
     fn known(&self, id: u64) -> Result<(), i32> {
@@ -293,7 +364,20 @@ impl Scene {
     /// Commit ROOT's scene: take its frames' damage from FRAMES, damage what changed since the last commit, clipped
     /// to the root's frame layer, and return it (ROOT's committed damage, kept in FRAMES until the next commit).
     pub fn commit<'a>(&mut self, root: u64, frames: &'a mut Frames) -> &'a [Rect] {
+        self.commit_with(root, frames, &Sprites::new())
+    }
+
+    /// [`Scene::commit`] with the sprite cache the labels are placed from: a label that appeared, moved, changed
+    /// sprite or went adds its old and new sprite bounds to the damage.
+    pub fn commit_with<'a>(
+        &mut self,
+        root: u64,
+        frames: &'a mut Frames,
+        sprites: &Sprites,
+    ) -> &'a [Rect] {
         let new = self.placed();
+        let new_labels = self.placed_labels(&new, sprites);
+        let old_labels = std::mem::replace(&mut self.labels, new_labels);
         let old = std::mem::take(&mut self.committed);
         let mut out: Vec<Rect> = Vec::new();
         {
@@ -340,6 +424,20 @@ impl Scene {
                     out.extend(n.map(|p| p.bounds));
                 }
             }
+            // Labels: the sprite bounds of every label that is not the same in both.
+            let (new_l, old_l) = (&self.labels, &old_labels);
+            out.extend(
+                new_l
+                    .iter()
+                    .filter(|l| !old_l.contains(l))
+                    .map(Label::visible),
+            );
+            out.extend(
+                old_l
+                    .iter()
+                    .filter(|l| !new_l.contains(l))
+                    .map(Label::visible),
+            );
             if let Some(clip) = new_by.get(&root).map(|p| p.rect) {
                 for r in &mut out {
                     *r = r.intersect(&clip);
