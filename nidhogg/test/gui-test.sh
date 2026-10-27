@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Checks of nidhogg/test/gui.sh itself.  The first three run on the host and start no compositor (GLITNIR_GUI_DRY=1);
-# the last runs a real run in a container.  Needs GUI_TEST_PREFIX, an unpacked Nidhogg (the third also needs podman).
+# the others are real runs in a container.  Needs GUI_TEST_PREFIX, an unpacked Nidhogg (the third also needs podman).
 #   GUI_TEST_PREFIX=DIR [GUI_TEST_RECORDER=nh-recorder] bash nidhogg/test/gui-test.sh [--container]
-# GUI_TEST_RECORDER (a built nh-recorder) adds the recorder's kill case.
+# GUI_TEST_RECORDER (a built nh-recorder) adds the recorder's cases (its kill case, and the lost display's exit 70).
 # (--container is ignored: it tells the slot scripts that this script starts its own container.)
 set -u
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -81,10 +81,32 @@ EL
   else bad "$test" "rc=$rc, left: $left"; fi
 }
 
+# lost_case: the recorder quits under a non-daemon Nidhogg whose only frame is on it; Nidhogg exits 70 (as on X) and
+# gui.sh reports it.  Needs the shell (a prefix built with --with-nidhogg-wayland).
+lost_case() {
+  local test=gui-sh-display-lost-exits-70 work rc
+  work=$(mktemp -d "${TMPDIR:-/tmp}/gui-test.XXXXXX")
+  works+=("$work"); names+=("gui-test-lost-$$")
+  mkdir "$work/tests"
+  cat > "$work/tests/lost-gui-tests.el" <<'EL'
+;;; lost-gui-tests.el --- end the compositor under Nidhogg for gui-test.sh  -*- lexical-binding: t -*-
+(require 'ert)
+(ert-deftest lost/quit () (gui-runner-recorder '(:cmd "quit")) (sleep-for 30))
+EL
+  GLITNIR_GUI_NAME=gui-test-lost-$$ bash "$gui" --prefix "$prefix" --container fedora-45 --compositor recorder \
+    --recorder "$GUI_TEST_RECORDER" --tests "$work/tests" --timeout 300 > "$work/out.log" 2>&1
+  rc=$?
+  if [ $rc = 1 ] && grep -q 'nidhogg exited with 70' "$work/out.log" \
+     && grep -q 'connection to the display lost' "$work/out.log"; then ok $test
+  else bad $test "rc=$rc: $(tail -n 15 "$work/out.log")"; fi
+}
+
 kill_case gui-sh-cleans-up-after-a-killed-client sway sway
 if [ -x "${GUI_TEST_RECORDER:-}" ]; then
   kill_case gui-sh-cleans-up-after-a-killed-recorder-client recorder nh-recorder --recorder "$GUI_TEST_RECORDER"
+  lost_case
 else
   echo "skipped gui-sh-cleans-up-after-a-killed-recorder-client (GUI_TEST_RECORDER is not a built nh-recorder)"
+  echo "skipped gui-sh-display-lost-exits-70 (GUI_TEST_RECORDER is not a built nh-recorder)"
 fi
 exit $fail
