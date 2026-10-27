@@ -521,11 +521,11 @@ frame_parm_handler nhwl_frame_parm_handlers[] =
     0,				/* tool-bar-position */
     0,				/* inhibit-double-buffering */
     nhwl_set_undecorated,
-    0,				/* parent-frame */
+    nhwl_set_parent_frame,
     0,				/* skip-taskbar */
     0,				/* no-focus-on-map */
-    0,				/* no-accept-focus */
-    0,				/* z-group */
+    nhwl_set_no_accept_focus,
+    nhwl_set_z_group,
     0,				/* override-redirect */
     gui_set_no_special_glyphs,
     nhwl_set_alpha_background,
@@ -610,16 +610,21 @@ DEFUN ("x-create-frame", Fx_create_frame, Sx_create_frame, 1, 1, 0,
   if (STRINGP (name))
     Vx_resource_name = name;
 
-  /* Child frames: not in W0.  */
+  /* Child frames are subsurfaces of another frame's window (nhwlchild.c);
+     a foreign parent window (parent-id) has no meaning on Wayland.  */
   parent = gui_display_get_arg (dpyinfo, parms, Qparent_id, NULL, NULL,
 				RES_TYPE_NUMBER);
   if (BASE_EQ (parent, Qunbound))
     parent = Qnil;
+  if (!NILP (parent))
+    error ("nidhogg-wayland: parent-id is not supported");
   parent_frame = gui_display_get_arg (dpyinfo, parms, Qparent_frame, NULL,
 				      NULL, RES_TYPE_SYMBOL);
-  if (!NILP (parent)
-      || (!BASE_EQ (parent_frame, Qunbound) && !NILP (parent_frame)))
-    error ("nidhogg-wayland: child frames arrive in W1");
+  if (BASE_EQ (parent_frame, Qunbound) || NILP (parent_frame)
+      || !FRAMEP (parent_frame) || !FRAME_LIVE_P (XFRAME (parent_frame))
+      || !FRAME_NHWL_P (XFRAME (parent_frame))
+      || FRAME_DISPLAY_INFO (XFRAME (parent_frame)) != dpyinfo)
+    parent_frame = Qnil;
 
   frame = Qnil;
   tem = gui_display_get_arg (dpyinfo, parms, Qminibuffer, "minibuffer",
@@ -636,8 +641,8 @@ DEFUN ("x-create-frame", Fx_create_frame, Sx_create_frame, 1, 1, 0,
   else
     f = make_frame (true);
 
-  fset_parent_frame (f, Qnil);
-  store_frame_param (f, Qparent_frame, Qnil);
+  fset_parent_frame (f, parent_frame);
+  store_frame_param (f, Qparent_frame, parent_frame);
 
   if (!NILP (tem = gui_display_get_arg (dpyinfo, parms, Qundecorated, NULL,
 					NULL, RES_TYPE_BOOLEAN))
@@ -860,6 +865,7 @@ DEFUN ("x-create-frame", Fx_create_frame, Sx_create_frame, 1, 1, 0,
 
   /* The shell's window, at the size the frame will have.  */
   nhwl_create_frame_window (f);
+  nhwl_child_created (f);
   out->next_output = dpyinfo->outputs;
   dpyinfo->outputs = out;
 
@@ -985,6 +991,9 @@ DEFUN ("x-create-frame", Fx_create_frame, Sx_create_frame, 1, 1, 0,
   /* Make sure windows on this frame appear in calls to next-window
      and similar functions.  */
   Vwindow_list = Qnil;
+
+  /* A child frame's chrome, now that all its parameters are in the alist.  */
+  nhwl_child_params_changed (f);
 
   return unbind_to (count, frame);
 }

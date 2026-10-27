@@ -2290,14 +2290,21 @@ nhwl_glitnir_ensure (struct frame *f)
       out->glitnir_id = ++last_id;
       glitnir_root_new (out->glitnir_id);
     }
-  if (out->glitnir_w != w || out->glitnir_h != h || out->glitnir_s120 != s120)
+  /* A child frame with chrome has its layer inside the shadow margin.  */
+  GlitnirRect rect = { 0, 0, w, h };
+  bool layer_changed = nhwl_child_layer_update (f, &rect);
+
+  if (out->glitnir_w != w || out->glitnir_h != h || out->glitnir_s120 != s120
+      || layer_changed)
     {
       GlitnirLayerDesc d = { .id = out->glitnir_id, .parent = 0,
 			     .kind = GLITNIR_LAYER_FRAME,
-			     .rect = { 0, 0, w, h }, .scale = s120 / 120.0,
+			     .rect = rect, .scale = s120 / 120.0,
 			     .visible = 1 };
 
       glitnir_layer_upsert (out->glitnir_id, &d);
+      if (nhwl_child_p (f))
+	nhwl_child_apply_chrome (f);
       glitnir_damage_all (out->glitnir_id);
       out->glitnir_w = w;
       out->glitnir_h = h;
@@ -2437,6 +2444,7 @@ nhwl_glitnir_compose (struct frame *f, const NhShellBuffer *buf)
   s.width = out->cr_width;
   s.height = out->cr_height;
   s.scale = scale;
+  nhwl_child_source (f, &s);
 
   for (i = 0; i < out->npending; i++)
     clip[n++] = out->pending[i];

@@ -535,6 +535,171 @@ Return the two replies."
           (should (<= 1 n 2)))
       (kill-buffer buf))))
 
+;; Task 10: child frames (nhwlchild.c).  A child frame is a subsurface of its parent's window; the recorder's `tree'
+;; shows each surface's role, parent, position (logical), input region and buffer.
+
+(defun nhwl-gui--tree ()
+  (plist-get (gui-runner-recorder '(:cmd "tree")) :surfaces))
+
+(defun nhwl-gui--subs ()
+  (seq-filter (lambda (n) (equal (plist-get n :role) "subsurface")) (nhwl-gui--tree)))
+
+(defun nhwl-gui--sub-ids ()
+  (mapcar (lambda (n) (plist-get n :id)) (nhwl-gui--subs)))
+
+(defun nhwl-gui--node (id)
+  (seq-find (lambda (n) (eql (plist-get n :id) id)) (nhwl-gui--tree)))
+
+(defun nhwl-gui--new-sub (before)
+  "The subsurface node that is not in the id list BEFORE (the newest), once it has a buffer."
+  (seq-find (lambda (n) (and (not (memq (plist-get n :id) before)) (nhwl-gui--get n :buffer)))
+            (nhwl-gui--subs)))
+
+(defun nhwl-gui--child (&rest params)
+  "A child frame of the selected frame at left 40, top 30 (device px), 20 x 5 characters; PARAMS first."
+  (make-frame `(,@params (parent-frame . ,(selected-frame)) (left . 40) (top . 30) (width . 20) (height . 5)
+                (undecorated . t) (minibuffer . nil))))
+
+(defun nhwl-gui--child-node (before)
+  (nhwl-gui--wait (lambda () (nhwl-gui--new-sub before)) 5))
+
+(defun nhwl-gui--parent-offset (node)
+  "The native area's offset (L T) in NODE's parent surface, device px: the margin and the title bar."
+  (let* ((b (plist-get (nhwl-gui--node (plist-get node :parent)) :buffer))
+         (l (/ (- (plist-get b :w) (frame-pixel-width (selected-frame))) 2)))
+    (list l (- (plist-get b :h) (frame-pixel-height (selected-frame)) l))))
+
+(ert-deftest nhwl-gui/child-frame-is-a-subsurface ()
+  (skip-unless (nhwl-gui--on-p))
+  (let* ((s (frame-scale-factor)) (before (nhwl-gui--sub-ids)) (c nil))
+    (unwind-protect
+        (progn
+          (setq c (nhwl-gui--child))
+          (should (eq (frame-parent c) (selected-frame)))
+          (let* ((n (nhwl-gui--child-node before))
+                 (off (and n (nhwl-gui--parent-offset n))))
+            (should n)
+            (should (equal (plist-get n :role) "subsurface"))
+            (should (equal (plist-get n :position)
+                           (list (round (/ (+ (car off) 40) s)) (round (/ (+ (cadr off) 30) s)))))))
+      (when (frame-live-p c) (delete-frame c t)))))
+
+(ert-deftest nhwl-gui/child-frame-move-is-a-position-change ()
+  (skip-unless (nhwl-gui--on-p))
+  (let* ((s (frame-scale-factor)) (before (nhwl-gui--sub-ids)) (c nil))
+    (unwind-protect
+        (progn
+          (setq c (nhwl-gui--child))
+          (let* ((n (nhwl-gui--child-node before))
+                 (id (plist-get n :id))
+                 (off (nhwl-gui--parent-offset n))
+                 (mark (nhwl-gui--mark)))
+            (set-frame-position c 80 60)
+            (should (nhwl-gui--wait
+                     (lambda ()
+                       (equal (plist-get (nhwl-gui--node id) :position)
+                              (list (round (/ (+ (car off) 80) s)) (round (/ (+ (cadr off) 60) s)))))
+                     5))
+            (should-not (seq-filter (lambda (cm) (and (eql (plist-get cm :surface) id) (nhwl-gui--get cm :buffer)))
+                                    (plist-get (gui-runner-recorder (list :cmd "log" :since mark)) :commits)))))
+      (when (frame-live-p c) (delete-frame c t)))))
+
+(ert-deftest nhwl-gui/child-frame-corners-and-shadow ()
+  (skip-unless (and (nhwl-gui--on-p) (boundp 'child-frame-chrome)))
+  (let* ((s (frame-scale-factor)) (before (nhwl-gui--sub-ids)) (c nil)
+         (old child-frame-chrome))
+    (unwind-protect
+        (progn
+          (setq child-frame-chrome '((corner-radius . 8) (shadow :blur 6 :offset (0 . 2) :opacity 0.3)))
+          (setq c (nhwl-gui--child))
+          (glitnir-refresh c)
+          (let* ((fw (frame-pixel-width c)) (fh (frame-pixel-height c))
+                 (n (nhwl-gui--wait
+                     (lambda ()
+                       (let ((n (nhwl-gui--new-sub before)))
+                         (and n (> (plist-get (plist-get n :buffer) :w) fw) n)))
+                     5))
+                 (b (plist-get n :buffer))
+                 (r (car (nhwl-gui--get n :input_region))))
+            (should n)
+            (should (> (plist-get b :h) fh))
+            ;; the input region is the frame's rectangle, inside the shadow margin
+            (should r)
+            (should (= (nth 2 r) (round (/ fw s))))
+            (should (= (nth 3 r) (round (/ fh s))))
+            (should (> (nth 0 r) 0))
+            (should (> (nth 1 r) 0))
+            (should (<= (+ (nth 0 r) (nth 2 r)) (round (/ (plist-get b :w) s))))))
+      (setq child-frame-chrome old)
+      (when (frame-live-p c) (delete-frame c t)))))
+
+(ert-deftest nhwl-gui/child-frame-churn-leaves-no-surface ()
+  (skip-unless (nhwl-gui--on-p))
+  (let ((before (nhwl-gui--sub-ids)) (c nil))
+    (unwind-protect
+        (progn
+          (setq c (nhwl-gui--child))
+          (should (nhwl-gui--child-node before))
+          (dotimes (_ 100)
+            (make-frame-invisible c t)
+            (make-frame-visible c)
+            (accept-process-output nil 0.001))
+          (redisplay t)
+          (dotimes (_ 20)
+            (delete-frame (nhwl-gui--child) t))
+          ;; delete while shown
+          (should (frame-visible-p c))
+          (delete-frame c t)
+          (setq c nil)
+          (should (nhwl-gui--wait (lambda () (null (nhwl-gui--subs))) 5))
+          (should (frame-live-p (selected-frame))))
+      (when (and c (frame-live-p c)) (delete-frame c t)))))
+
+(ert-deftest nhwl-gui/child-frame-click-goes-to-the-child ()
+  (skip-unless (nhwl-gui--on-p))
+  (let ((before (nhwl-gui--sub-ids)) (c nil) (events nil))
+    (unwind-protect
+        (progn
+          (setq c (nhwl-gui--child))
+          (let ((id (plist-get (nhwl-gui--child-node before) :id)))
+            (should id)
+            (gui-runner-recorder (list :cmd "focus" :surface id))
+            (gui-runner-recorder '(:cmd "pointer" :pos [10 10]))
+            (gui-runner-recorder '(:cmd "button" :button 272 :state "press"))
+            (gui-runner-recorder '(:cmd "button" :button 272 :state "release"))
+            (let ((deadline (+ (float-time) 1)))
+              (while (< (float-time) deadline)
+                (let ((e (read-event nil nil 0.05)))
+                  (when e (push e events)))))
+            (let ((click (seq-find (lambda (e) (and (consp e) (memq (car e) '(down-mouse-1 mouse-1)))) events)))
+              (should click)
+              ;; a click outside every window of the frame names the frame itself
+              (let* ((w (posn-window (event-start click)))
+                     (fr (if (framep w) w (window-frame w))))
+                (unless (eq fr c)
+                  (ert-fail (format "click %S: frame %S, child %S (live %S), selected %S, all %S"
+                                    click fr c (frame-live-p c) (selected-frame) events)))))))
+      (ignore-errors (gui-runner-recorder '(:cmd "focus" :surface "toplevel")))
+      (when (frame-live-p c) (delete-frame c t)))))
+
+(ert-deftest nhwl-gui/child-frames-stack ()
+  (skip-unless (nhwl-gui--on-p))
+  (let ((a nil) (b nil))
+    (unwind-protect
+        (let* ((before (nhwl-gui--sub-ids))
+               (ia (progn (setq a (nhwl-gui--child '(left . 10))) (plist-get (nhwl-gui--child-node before) :id)))
+               (ib (progn (setq b (nhwl-gui--child '(left . 20))) (plist-get (nhwl-gui--child-node (cons ia before)) :id)))
+               (parent (plist-get (nhwl-gui--node ia) :parent))
+               (order (lambda ()
+                        (seq-filter (lambda (i) (memq i (list ia ib)))
+                                    (plist-get (nhwl-gui--node parent) :children)))))
+          (should (equal (funcall order) (list ia ib)))
+          (raise-frame a)
+          (should (nhwl-gui--wait (lambda () (equal (funcall order) (list ib ia))) 5))
+          (lower-frame a)
+          (should (nhwl-gui--wait (lambda () (equal (funcall order) (list ia ib))) 5)))
+      (dolist (f (list a b)) (when (and f (frame-live-p f)) (delete-frame f t))))))
+
 ;;; nhwl-gui-tests.el ends here
 
 ;; The bare client-side title bar (nhwlcsd.c).  Logical sizes: the strip is 32, the resize margins are 8.

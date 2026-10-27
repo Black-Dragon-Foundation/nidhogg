@@ -445,12 +445,14 @@ nhwl_present (struct frame *f)
     return false;
   /* Asking is what lets the pacer say FRAME_READY again, so ask first.  */
   if (nhshell_window_ready (dpyinfo->shell, out->window, &ready) < 0
-      || !ready || !out->configured || !FRAME_VISIBLE_P (f) || f->new_size_p)
+      || !ready || !out->configured || !FRAME_VISIBLE_P (f) || f->new_size_p
+      || (nhwl_child_p (f) && !out->child.mapped))
     return false;
 
   block_input ();
   nhwl_backing_resize (f);
   nhwl_csd_draw (f);
+  nhwl_child_sync (f);
   nhwl_glitnir_commit (f);
 
   rc = nhshell_present_begin (dpyinfo->shell, out->window, out->cr_width,
@@ -794,6 +796,15 @@ nhwl_create_frame_window (struct frame *f)
   desc.title = STRINGP (encoded) ? SSDATA (encoded) : "";
   desc.app_id = "nidhogg";
   desc.flags = FRAME_UNDECORATED (f) ? NHSHELL_WIN_UNDECORATED : 0;
+  if (nhwl_child_p (f))
+    {
+      /* A child frame starts at its parent's scale.  */
+      out->scale120 = FRAME_NHWL_OUTPUT (FRAME_PARENT_FRAME (f))->scale120
+	? FRAME_NHWL_OUTPUT (FRAME_PARENT_FRAME (f))->scale120 : out->scale120;
+      desc.w = max (1, nhwl_to_logical (FRAME_PIXEL_WIDTH (f), out->scale120));
+      desc.h = max (1, nhwl_to_logical (FRAME_PIXEL_HEIGHT (f), out->scale120));
+      nhwl_child_describe (f, &desc);
+    }
 
   block_input ();
   rc = nhshell_window_new (dpyinfo->shell, &desc, &id);
@@ -872,6 +883,8 @@ nhwl_set_offset (struct frame *f, int xoff, int yoff, int change_gravity)
 	f->size_hint_flags |= YNegative;
       f->win_gravity = NorthWestGravity;
     }
+  /* A child frame has a position: in its parent.  */
+  nhwl_child_reposition (f);
 }
 
 /* Adapted from pgtk_new_font.  */
@@ -974,6 +987,7 @@ nhwl_make_frame_visible (struct frame *f)
 
   if (!FRAME_VISIBLE_P (f))
     {
+      nhwl_child_set_visible (f, true);
       if (!out->configured)
 	nhwl_wait_for_configure (f);
       if (out->configured)
@@ -994,6 +1008,7 @@ nhwl_make_frame_visible (struct frame *f)
 void
 nhwl_make_frame_invisible (struct frame *f)
 {
+  nhwl_child_set_visible (f, false);
   SET_FRAME_VISIBLE (f, 0);
   SET_FRAME_ICONIFIED (f, false);
 }
@@ -2227,6 +2242,7 @@ nhwl_create_terminal (struct nhwl_display_info *dpyinfo)
   terminal->get_focus_frame = nhwl_get_focus_frame;
   terminal->focus_frame_hook = nhwl_focus_frame;
   terminal->set_frame_offset_hook = nhwl_set_offset;
+  terminal->frame_raise_lower_hook = nhwl_frame_raise_lower;
   terminal->free_pixmap = nhwl_free_pixmap;
 
   /* Other hooks are NULL by default.  */

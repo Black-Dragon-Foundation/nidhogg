@@ -56,6 +56,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #if defined HAVE_GLITNIR && defined HAVE_PGTK
 #include "glitnir-pgtk.h"
 #endif
+#if defined HAVE_GLITNIR && defined HAVE_NHWL
+extern void nhwl_child_params_changed (struct frame *);
+#endif
 
 /* The currently selected frame.  */
 Lisp_Object selected_frame;
@@ -4270,6 +4273,11 @@ list, but are otherwise ignored.  */)
     {
       gui_set_frame_parameters (f, alist);
       glitnir_pgtk_params_changed (f);
+    }
+#elif defined HAVE_GLITNIR && defined HAVE_NHWL
+    {
+      gui_set_frame_parameters (f, alist);
+      nhwl_child_params_changed (f);
     }
 #else
     gui_set_frame_parameters (f, alist);
