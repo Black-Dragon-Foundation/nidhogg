@@ -1,7 +1,8 @@
 //! Decoration negotiation (`zxdg_decoration_manager_v1`).
 //!
 //! A window asks for server-side decorations when the compositor offers the protocol and neither the window
-//! (`NHSHELL_WIN_UNDECORATED`) nor the host (`NIDHOGG_SHELL_FORCE_CSD=1`) opts out.  The compositor's answer arrives
+//! (`NHSHELL_WIN_UNDECORATED`, which asks for client-side mode) nor the host (`NIDHOGG_SHELL_FORCE_CSD=1`, which
+//! makes no decoration object) opts out; `set_decorated` asks again at run time.  The compositor's answer arrives
 //! on the main queue before the surface's configure; the window keeps it, and `caps().ssd` follows the latest one.
 
 use crate::wayland::MainState;
