@@ -309,7 +309,7 @@ impl Dispatch<ZwpTextInputV3, Arc<TiData>> for State {
 }
 
 /// The surface a `focus` command names.
-fn find_surface(state: &mut State, v: &Value) -> Result<WlSurface, String> {
+pub(crate) fn find_surface(state: &mut State, v: &Value) -> Result<WlSurface, String> {
     state.surfaces.retain(|s| s.is_alive());
     state.toplevels.retain(|t| t.alive());
     match v {

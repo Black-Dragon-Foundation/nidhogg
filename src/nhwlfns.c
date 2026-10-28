@@ -1275,7 +1275,7 @@ In addition to the standard attribute keys listed in
 the attributes:
 
  source -- String describing the source from which multi-monitor
-	   information is obtained, \"Nhwl\"
+	   information is obtained, \"Wayland\"
 
 Internal use only, use `display-monitor-attributes-list' instead.  */)
   (Lisp_Object terminal)
@@ -1284,7 +1284,7 @@ Internal use only, use `display-monitor-attributes-list' instead.  */)
   Lisp_Object attributes_list = Qnil;
   int i, n_monitors = dpyinfo->n_monitors;
   Lisp_Object monitor_frames, rest, frame;
-  static const char *source = "Nhwl";
+  static const char *source = "Wayland";
   struct MonitorInfo *monitors;
 
   if (n_monitors == 0)
@@ -1300,8 +1300,26 @@ Internal use only, use `display-monitor-attributes-list' instead.  */)
 
       if (FRAME_NHWL_P (f) && FRAME_DISPLAY_INFO (f) == dpyinfo
 	  && !FRAME_TOOLTIP_P (f))
-	/* The shell does not say which output a window is on: the first.  */
-	ASET (monitor_frames, 0, Fcons (frame, AREF (monitor_frames, 0)));
+	{
+	  /* Each output the compositor says the frame is on; the first when
+	     it has not said (before the first enter, or after its output
+	     went away).  */
+	  struct nhwl_output *o = FRAME_NHWL_OUTPUT (f);
+	  bool listed = false;
+	  int j, k;
+
+	  for (j = 0; j < n_monitors; j++)
+	    for (k = 0; k < o->n_entered; k++)
+	      if (dpyinfo->monitors[j].id == o->entered[k])
+		{
+		  ASET (monitor_frames, j,
+			Fcons (frame, AREF (monitor_frames, j)));
+		  listed = true;
+		  break;
+		}
+	  if (!listed)
+	    ASET (monitor_frames, 0, Fcons (frame, AREF (monitor_frames, 0)));
+	}
     }
 
   for (i = 0; i < n_monitors; ++i)

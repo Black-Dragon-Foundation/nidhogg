@@ -271,6 +271,10 @@ struct nhwl_output
   bool configured;		/* a configure has been seen (the toplevel is mapped) */
   uint32_t serial;
 
+  /* The outputs the window is on (ids of the monitors; enter and leave).  */
+  uint64_t entered[NHWL_MAX_OUTPUTS];
+  int n_entered;
+
   /* The retained backing: the frame's pixels, device size.  */
   cairo_surface_t *cr_surface;
   cairo_t *cr_context;
