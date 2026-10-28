@@ -182,3 +182,25 @@ The frame is the root of its own tree (its pacer and acks are its own).
   the menu as the focus went elsewhere), and C sends Emacs the focus-out then.
 - **Dismissal:** `POPUP_DONE` gives `DELETE` with `NHG_DEL_POPUP`. Popups get no Glitnir shadow, and C refuses to
   reparent, raise or focus them.
+
+## Window layers
+
+An Emacs window that scrolls whole gets a surface of its own (`src/layers.rs`): the glue makes its Glitnir window
+layer an own output, and the shell shows it as a content layer whose viewport source moves with each scroll, so the
+compositor uploads only the exposed rows. The glue decides; C passes facts.
+
+- **Scroll:** `nhg_scroll_window` replaces `nhg_scroll` in `nhwl_scroll_run`, with the window's box
+  (`window_box (w, ANY_AREA)`) and `nhwl-scroll-layers` plus the frame's `alpha-background` as flags. A full-window
+  run (it moves every row of the box but the exposed ones) on an opaque root promotes the window: a WINDOW layer with
+  id `sequence_number | WINDOW_TAG` (the scroll's id too) at the box plus the title strip and margins, made an own
+  output (Glitnir snaps it). At most four per frame. The backing still moves its rows: it is Emacs's picture, and the
+  shell's front relies on it.
+- **Opaque root:** a top-level window (not a child, tip or popup), alpha 1 applied by the compositor, `alpha-background`
+  1, `wp_viewporter` and `wl_subcompositor`, and a scale `nhwl-scroll-layers` allows (`integer-scales`: whole ones).
+- **Demotion:** at a publish, `nhg_layers_sync` gets the root's windows and their boxes (only while it has layers,
+  `nhg_layers_count`) and demotes each layer whose window is gone or has another box, whose last full-window scroll is
+  2 s old, or every one at a scale or border change or when the frame is no longer an opaque root; a scroll with a new
+  box demotes first. Demotion is `set_output (…, 0)` and the layer's removal, in that publish: Glitnir damages the
+  window on the frame and the shell unmaps the layer with the root's buffer. A quiet window with nothing published
+  keeps its layer until the next publish (a redisplay), as no timer runs for it. `layers::drop_all` demotes every
+  frame's (for a reconnect).
