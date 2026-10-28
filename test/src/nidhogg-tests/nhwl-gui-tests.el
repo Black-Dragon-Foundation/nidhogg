@@ -1395,3 +1395,145 @@ serial is never acked early, with the old buffer)."
      (should-not (seq-intersection on-1 on-0)))
    (gui-runner-recorder '(:cmd "output" :op "leave" :name "nh-1" :surface "toplevel"))
    (should (nhwl-gui--wait-ev (lambda () (null (alist-get 'frames (nhwl-gui--monitor "nh-1"))))))))
+
+;; Input methods (text-input-v3): the recorder plays the input method, Emacs draws the preedit.
+
+(defun nhwl-gui--ime-pump ()
+  "Read pending events and run the characters an input method commits (special events run as they are read)."
+  (let ((deadline (+ (float-time) 0.2)) ev)
+    (while (< (float-time) deadline)
+      (setq ev (read-event nil nil 0.05))
+      (when (characterp ev)
+        (setq last-command-event ev)
+        (command-execute (key-binding (vector ev)) nil (vector ev))))))
+
+(defun nhwl-gui--preedit-string ()
+  "The text of the preedit overlay `pgtk-preedit-text' keeps, \"\" for none."
+  (if (and pgtk-preedit-overlay (overlay-buffer pgtk-preedit-overlay))
+      (substring-no-properties (or (overlay-get pgtk-preedit-overlay 'before-string) ""))
+    ""))
+
+(defun nhwl-gui--ime-ready (buf)
+  "Show BUF, give the toplevel the keyboard focus and wait until the shell enabled text input.  Return the log mark
+taken before."
+  (nhwl-gui--windowed)
+  (blink-cursor-mode -1)
+  (let ((mark (plist-get (gui-runner-recorder '(:cmd "input_log" :since 0)) :next)))
+    (switch-to-buffer buf)
+    (redisplay t)
+    (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
+    (should (nhwl-gui--wait (lambda () (nhwl-gui--ime-pump) (nhwl-gui--input-since mark "text_input.enable")) 5))
+    mark))
+
+(defun nhwl-gui--ime-entries (mark req)
+  (seq-filter (lambda (e) (equal (plist-get e :req) req))
+              (plist-get (gui-runner-recorder (list :cmd "input_log" :since mark)) :entries)))
+
+(ert-deftest nhwl-gui/preedit-shown-then-committed ()
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((buf (generate-new-buffer " *nhwl-ime*")))
+    (unwind-protect
+        (progn
+          (nhwl-gui--ime-ready buf)
+          (gui-runner-recorder '(:cmd "text_input" :preedit "ni" :cursor [2 2]))
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--ime-pump) (equal (nhwl-gui--preedit-string) "ni"))))
+          (should (equal (buffer-string) ""))
+          (gui-runner-recorder (list :cmd "text_input" :commit "你"))
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--ime-pump) (equal (buffer-string) "你"))))
+          (should (equal (nhwl-gui--preedit-string) "")))
+      (kill-buffer buf))))
+
+(ert-deftest nhwl-gui/cursor-rectangle-follows-point ()
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((buf (generate-new-buffer " *nhwl-ime*")))
+    (unwind-protect
+        (let* ((mark (nhwl-gui--ime-ready buf))
+               (s (frame-scale-factor))
+               (rect (lambda ()
+                       (nhwl-gui--ime-pump)
+                       (append (plist-get (car (last (nhwl-gui--ime-entries mark "text_input.set_cursor_rectangle")))
+                                          :rect)
+                               nil)))
+               r0 r1 r2)
+          (should (setq r0 (nhwl-gui--wait rect 5)))
+          (insert "abc")
+          (redisplay t)
+          (should (nhwl-gui--wait (lambda () (setq r1 (funcall rect)) (not (equal r1 r0))) 5))
+          ;; three columns to the right, in logical pixels
+          (should (<= (abs (- (- (nth 0 r1) (nth 0 r0)) (/ (* 3 (frame-char-width)) s))) 1.01))
+          (should (<= (abs (- (nth 3 r1) (/ (frame-char-height) s))) 1.01))
+          (insert "\n")
+          (redisplay t)
+          (should (nhwl-gui--wait (lambda () (setq r2 (funcall rect)) (not (equal r2 r1))) 5))
+          (should (= (nth 0 r2) (nth 0 r0)))
+          (should (> (nth 1 r2) (nth 1 r1))))
+      (kill-buffer buf))))
+
+(ert-deftest nhwl-gui/preedit-cleared-on-focus-loss ()
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((buf (generate-new-buffer " *nhwl-ime*")))
+    (unwind-protect
+        (progn
+          (nhwl-gui--ime-ready buf)
+          (insert "x")
+          (gui-runner-recorder '(:cmd "text_input" :preedit "ni" :cursor [2 2]))
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--ime-pump) (equal (nhwl-gui--preedit-string) "ni"))))
+          (gui-runner-recorder '(:cmd "focus" :surface :null))
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--ime-pump) (equal (nhwl-gui--preedit-string) ""))))
+          (should (equal (buffer-string) "x"))
+          ;; the recorder no longer sees an enabled text input
+          (should-error (gui-runner-recorder '(:cmd "text_input" :commit "y"))))
+      (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
+      (kill-buffer buf))))
+
+(ert-deftest nhwl-gui/delete-surrounding-deletes-around-point ()
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((buf (generate-new-buffer " *nhwl-ime*")))
+    (unwind-protect
+        (let ((mark (nhwl-gui--ime-ready buf)))
+          (insert "abcdef")
+          (goto-char 4)
+          (redisplay t)
+          ;; the input method is told the line and the cursor in it
+          (should (nhwl-gui--wait
+                   (lambda ()
+                     (nhwl-gui--ime-pump)
+                     (seq-find (lambda (e) (and (equal (plist-get e :text) "abcdef") (= (plist-get e :cursor) 3)))
+                               (nhwl-gui--ime-entries mark "text_input.set_surrounding_text")))
+                   5))
+          (gui-runner-recorder '(:cmd "text_input" :delete [1 1]))
+          (nhwl-gui--wait (lambda () (nhwl-gui--ime-pump) (equal (buffer-string) "abef")) 5)
+          (should (equal (list (buffer-string) (point)) '("abef" 3))))
+      (kill-buffer buf))))
+
+(ert-deftest nhwl-gui/delete-surrounding-ignores-key-bindings ()
+  "DEL and <delete> bound to `ignore', an active region and `delete-selection-mode': still exactly the requested
+characters go, the mark stays."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((buf (generate-new-buffer " *nhwl-ime*"))
+        (dsm delete-selection-mode)
+        (map (make-sparse-keymap)))
+    (define-key map (kbd "DEL") #'ignore)
+    (define-key map [delete] #'ignore)
+    (define-key map [deletechar] #'ignore)
+    (unwind-protect
+        (let ((mark (nhwl-gui--ime-ready buf)))
+          (use-local-map map)
+          (delete-selection-mode 1)
+          (insert "abcdef")
+          (push-mark 1 t t)
+          (goto-char 4)
+          (redisplay t)
+          (should mark-active)
+          (should (nhwl-gui--wait
+                   (lambda ()
+                     (nhwl-gui--ime-pump)
+                     (seq-find (lambda (e) (and (equal (plist-get e :text) "abcdef") (= (plist-get e :cursor) 3)))
+                               (nhwl-gui--ime-entries mark "text_input.set_surrounding_text")))
+                   5))
+          (gui-runner-recorder '(:cmd "text_input" :delete [1 1]))
+          (nhwl-gui--wait (lambda () (nhwl-gui--ime-pump) (equal (buffer-string) "abef")) 5)
+          (should (equal (list (buffer-string) (point) (mark) mark-active) '("abef" 3 1 t))))
+      (delete-selection-mode (if dsm 1 -1))
+      (use-local-map nil)
+      (kill-buffer buf))))
