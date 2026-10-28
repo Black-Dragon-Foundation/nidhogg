@@ -18,6 +18,7 @@ pub mod conn;
 pub mod cursor;
 pub mod cursor_theme;
 pub mod decor;
+pub mod dnd;
 pub mod foreign;
 pub mod gesture;
 pub mod idle;
