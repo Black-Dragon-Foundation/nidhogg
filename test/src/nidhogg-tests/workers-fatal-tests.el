@@ -231,6 +231,31 @@ would for a user at the terminal."
         (should (equal (workers-fatal-tests--auto-saved dir "e.txt")
                        "nh-save under lock"))
         (should-not (directory-files dir nil "\\.nh-")))))
+  ;; Task 47 review: the same with nh-save's arena mutex held too.  The
+  ;; emergency auto-save of a buffer that has an arena frees nothing on
+  ;; the fatal path (it took the mutex and deadlocked).
+  (workers-fatal-tests--in-dir dir
+    (let* ((file (expand-file-name "g.txt" dir))
+           (r (workers-fatal-tests--batch
+               `(progn
+                  ,(workers-fatal-tests--edit file "arena under lock")
+                  (setq nidhogg-workers-autosave t)
+                  ;; A first save leaves the buffer an arena.
+                  (nidhogg-workers--test-keyboard-auto-save t)
+                  (unless (nidhogg-workers--test-save-await 5000)
+                    (kill-emacs 3))
+                  (insert " more")
+                  (nidhogg-workers--pause-at 'before-write)
+                  (nidhogg-workers--test-keyboard-auto-save t)
+                  (unless (nidhogg-workers--test-await-paused 'before-write 5000)
+                    (kill-emacs 3))
+                  (princ "nh-wk: ready\n")
+                  (nidhogg-workers--test-fatal-under-lock 'nh-save 'arena))
+               :pty t :mark "nh-wk: ready")))
+      (ert-info ((format "%S" r) :prefix "child: ")
+        (workers-fatal-tests--should-die r '(SIGSEGV . 11) "Segmentation fault")
+        (should (equal (workers-fatal-tests--auto-saved dir "g.txt")
+                       "arena under lock more")))))
   ;; Review S15: the SIGINT escape arrives while a keyboard-triggered
   ;; auto-save holds its flag (its auto-save-hook holds nh-save's mutex,
   ;; with an earlier job parked).  The escape's auto-save runs in signal
