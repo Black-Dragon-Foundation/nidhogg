@@ -210,7 +210,7 @@ impl ShellBackend for WaylandShell {
         }
     }
 
-    fn set_position(&mut self, id: WindowId, x: i32, y: i32) -> ShellResult {
+    fn set_position(&mut self, id: WindowId, x: i32, y: i32) -> ShellResult<bool> {
         self.window_set_position(id, x, y)
     }
 
@@ -300,9 +300,10 @@ impl ShellBackend for WaylandShell {
     }
 
     /// Ack configure `serial`; the host calls it right before the commit that carries the new size.
-    fn ack_configure(&mut self, id: WindowId, serial: u32) -> ShellResult {
-        self.window(id)?.xdg_surface.ack_configure(serial);
-        self.ack_sent(id);
+    fn ack_configure(&mut self, id: WindowId, serial: u32, flags: u32) -> ShellResult {
+        self.window(id)?;
+        self.main
+            .present_ack(id, serial, flags & NHSHELL_ACK_CONTENT != 0);
         Ok(())
     }
 
@@ -310,8 +311,12 @@ impl ShellBackend for WaylandShell {
         self.window_dirty_impl(id)
     }
 
-    fn window_ready(&mut self, id: WindowId) -> ShellResult<bool> {
+    fn window_ready(&mut self, id: WindowId) -> ShellResult<u32> {
         self.window_ready_impl(id)
+    }
+
+    fn present_bare(&mut self, id: WindowId) -> ShellResult {
+        self.present_bare_impl(id)
     }
 
     fn set_cursor(&mut self, id: WindowId, shape: u32) -> ShellResult {
@@ -423,14 +428,14 @@ impl WaylandShell {
 impl Dispatch<XdgSurface, u64> for MainState {
     fn event(
         state: &mut Self,
-        xdg: &XdgSurface,
+        _: &XdgSurface,
         event: xdg_surface::Event,
         id: &u64,
         conn: &Connection,
         _: &QueueHandle<Self>,
     ) {
         if let xdg_surface::Event::Configure { serial } = event
-            && state.popup_ack(*id, xdg, serial)
+            && state.popup_ack(*id, serial)
         {
             return;
         }
