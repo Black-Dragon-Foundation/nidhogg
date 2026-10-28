@@ -518,6 +518,26 @@ impl ShellBackend for WaylandShell {
         self.live()?;
         self.sel_read(kind, mime, timeout_ms)
     }
+
+    fn dnd_status(&mut self, mime: Option<&str>, actions: u32, preferred: u32) -> ShellResult {
+        self.live()?;
+        self.dnd_status_impl(mime, actions, preferred)
+    }
+
+    fn dnd_finish(&mut self, success: bool) -> ShellResult {
+        self.live()?;
+        self.dnd_finish_impl(success)
+    }
+
+    fn drag_start(&mut self, w: WindowId, items: &[(&str, &[u8])], actions: u32) -> ShellResult {
+        self.live()?;
+        self.drag_start_impl(w, items, actions)
+    }
+
+    fn drag_cancel(&mut self) -> ShellResult {
+        self.live()?;
+        self.drag_cancel_impl()
+    }
 }
 
 /// The host-driven presenter, which the host no longer uses (it publishes, and `present_tree` presents): kept outside

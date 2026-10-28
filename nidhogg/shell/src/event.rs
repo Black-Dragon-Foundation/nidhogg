@@ -41,6 +41,23 @@ pub const NHSHELL_EV_OUTPUT_CHANGE: u32 = 22;
 pub const NHSHELL_EV_ENTER_OUTPUT: u32 = 23;
 /// The window left output `u.output.id`.
 pub const NHSHELL_EV_LEAVE_OUTPUT: u32 = 24;
+// Drag and drop (`u.dnd`; Rust only, no C twin in `nhshell.h`).  The drop target's records name the window under the
+// pointer (a child or popup too); the drag source's name the window the drag started from.
+/// A drag entered one of our windows; its offer is `NHSHELL_SEL_DND` from now on.
+pub const NHSHELL_EV_DND_ENTER: u32 = 32;
+/// The drag moved over the window.
+pub const NHSHELL_EV_DND_MOTION: u32 = 33;
+/// The drag left the window (no drop): the offer is gone.
+pub const NHSHELL_EV_DND_LEAVE: u32 = 34;
+/// The drag was dropped on the window with `u.dnd.action`: read the offer, then `dnd_finish`.
+pub const NHSHELL_EV_DND_DROP: u32 = 35;
+/// Our drag: the action the compositor chose with the target changed (`u.dnd.action`, 0: none).
+pub const NHSHELL_EV_DRAG_ACTION: u32 = 36;
+/// Our drag: the user dropped it on a target that accepted it; `DRAG_DONE` comes when the target is finished.
+pub const NHSHELL_EV_DRAG_DROPPED: u32 = 37;
+/// Our drag ended: `u.dnd.ok` 1 when the target finished with `u.dnd.action`, 0 when it was cancelled (dropped on
+/// nothing, refused, or the display was lost: then before `DISCONNECTED`).  Comes once per drag.
+pub const NHSHELL_EV_DRAG_DONE: u32 = 38;
 /// A touch point went down, moved, lifted or was cancelled (`u.touch`), on the window it went down on.  The records
 /// of one touch frame are posted together when the frame ends; a cancel posts `NHSHELL_TOUCH_CANCEL` for every live
 /// point at once.
@@ -235,6 +252,29 @@ pub struct SessionEv {
     pub state: u32,
 }
 
+/// A drag-and-drop record (`NHSHELL_EV_DND_*`, `NHSHELL_EV_DRAG_*`).  Rust only: it fits inside the union's C size, and
+/// `nhshell.h` has no member for it.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DndEv {
+    /// The pointer's position in the window, device pixels (target records).
+    pub x: f64,
+    pub y: f64,
+    /// The actions the drag's source offers (`NHSHELL_DND_*`; target records).
+    pub source_actions: u32,
+    /// The action to suggest: the compositor's choice when it made one, else the first of the source's in copy, move,
+    /// ask order (target records).
+    pub preferred: u32,
+    /// The action the compositor chose with the target (0: none yet).
+    pub action: u32,
+    /// The compositor's time of the latest motion, milliseconds (target records).
+    pub time_ms: u32,
+    /// 1 when the drag is our own (target records).
+    pub own: u8,
+    /// `DRAG_DONE`: 1 finished, 0 cancelled.
+    pub ok: u8,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub union NhShellEventData {
@@ -251,6 +291,7 @@ pub union NhShellEventData {
     pub touch: TouchEv,
     pub pinch: PinchEv,
     pub session: SessionEv,
+    pub dnd: DndEv,
 }
 
 #[repr(C)]
