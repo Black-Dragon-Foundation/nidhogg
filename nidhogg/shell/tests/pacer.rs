@@ -167,7 +167,8 @@ mod pacer {
     }
 
     /// Path 2: a commit on a surface that is not shown is never answered.  A configure re-arms the wait with a new
-    /// callback and an empty commit, and when the surface is shown again everything is answered.
+    /// callback and an empty commit (sent with the tree's next commit), and when the surface is shown again
+    /// everything is answered.
     #[test]
     fn hidden_surface_is_asked_again_on_configure() {
         let rec = Recorder::start_clock("mutter", "manual");
@@ -179,6 +180,9 @@ mod pacer {
         assert!(waiting(&shell, id));
         assert_eq!(outstanding(&rec).0, 1);
         reconfigure(&mut shell, &rec, id, "");
+        wait_for(&mut shell, |e| e.kind == NHSHELL_EV_FRAME_READY);
+        assert!(!shell.present_tree(id).unwrap());
+        shell.flush().unwrap();
         until(&mut shell, "the re-armed callback", |_| {
             outstanding(&rec).0 == 2
         });
@@ -353,7 +357,8 @@ mod pacer {
         assert!(acked(&commit_log(&rec), serial), "{}", commit_log(&rec));
     }
 
-    /// A waiting pacer re-arms at a configure (a frame callback and an empty commit); that commit carries no ack.
+    /// A waiting pacer re-arms at a configure (a frame callback and an empty commit).  The re-arm waits for the
+    /// tree's commit and goes after it, as a commit of its own: it carries no ack, and the bare commit no callback.
     #[test]
     fn rearm_never_carries_an_ack() {
         let rec = Recorder::start_clock("sway", "manual");
@@ -362,14 +367,20 @@ mod pacer {
         draw(&mut shell, id, &[full()]);
         assert!(waiting(&shell, id));
         let serial = reconfigure(&mut shell, &rec, id, "");
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(outstanding(&rec).0, 1, "recorded, not sent");
+        let seq = next_seq(&rec);
+        shell.present_bare(id).unwrap();
         until(&mut shell, "the re-armed callback", |_| {
             outstanding(&rec).0 == 2
         });
-        std::thread::sleep(Duration::from_millis(100));
-        assert!(!acked(&commit_log(&rec), serial), "{}", commit_log(&rec));
-        shell.present_bare(id).unwrap();
-        std::thread::sleep(Duration::from_millis(100));
-        assert!(acked(&commit_log(&rec), serial), "{}", commit_log(&rec));
+        let log = log_since(&rec, seq);
+        let commits: Vec<&str> = log.split("{\"ack_serial\":").skip(1).collect();
+        assert_eq!(commits.len(), 2, "{log}");
+        assert!(commits[0].starts_with(&serial.to_string()), "{log}");
+        assert!(commits[0].contains("\"frame_cb\":false"), "{log}");
+        assert!(commits[1].starts_with("null"), "{log}");
+        assert!(commits[1].contains("\"frame_cb\":true"), "{log}");
     }
 
     /// Three buffers busy and a new size acked: nothing is owed that could go bare, a bare commit carries no ack, and
