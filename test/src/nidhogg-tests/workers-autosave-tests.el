@@ -649,6 +649,17 @@ in a multibyte string, and `string' of ASCII alone is unibyte."
           (set-buffer-modified-p nil)
           (let ((kill-buffer-query-functions nil))
             (kill-buffer buf))
+          (should (zerop (workers-autosave-tests--snapshot :arena-bytes)))))
+      ;; Auto-saving turned off in the buffer: the next keyboard
+      ;; auto-save frees its arena (Task 47 review).
+      (let ((buf (workers-autosave-tests--visit
+                  (expand-file-name "off.txt" dir) "")))
+        (with-current-buffer buf
+          (insert (make-string 40000000 ?a))
+          (workers-autosave-tests--save-once t)
+          (should (>= (workers-autosave-tests--snapshot :arena-bytes) 40000000))
+          (auto-save-mode -1)
+          (nidhogg-workers--test-keyboard-auto-save t)
           (should (zerop (workers-autosave-tests--snapshot :arena-bytes))))))))
 
 ;;; workers-autosave-tests.el ends here
