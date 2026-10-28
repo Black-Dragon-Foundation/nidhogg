@@ -1537,3 +1537,91 @@ characters go, the mark stays."
       (delete-selection-mode (if dsm 1 -1))
       (use-local-map nil)
       (kill-buffer buf))))
+
+(defun nhwl-gui--undecorated ()
+  "A new undecorated toplevel frame whose internal border drags, the recorder's newest toplevel."
+  (let ((f (make-frame '((undecorated . t) (drag-internal-border . t) (internal-border-width . 8)
+                         (drag-with-header-line . t) (width . 40) (height . 10)))))
+    (with-current-buffer (window-buffer (frame-selected-window f))
+      (setq-local header-line-format " drag me"))
+    (redisplay t)
+    (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (frame-visible-p f)) 5)
+    (nhwl-gui--pump 0.3)
+    f))
+
+(defun nhwl-gui--press-event (area)
+  "Read events until a `down-mouse-1' on AREA arrives; return it."
+  (let ((deadline (+ (float-time) 2)) ev)
+    (while (and (not ev) (< (float-time) deadline))
+      (let ((e (read-event nil nil 0.05)))
+        (when (and (consp e) (eq (car e) 'down-mouse-1) (eq (posn-area (event-start e)) area))
+          (setq ev e))))
+    ev))
+
+(defun nhwl-gui--point-at (x y)
+  "Put the pointer at logical X, Y of the newest toplevel."
+  (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
+  (gui-runner-recorder (list :cmd "pointer" :pos (vector x y)))
+  (nhwl-gui--pump 0.3))
+
+(defun nhwl-gui--press-at (area x y)
+  "Press the left button at logical X, Y of the newest toplevel and run AREA's `down-mouse-1' binding on it."
+  (nhwl-gui--point-at x y)
+  (gui-runner-recorder '(:cmd "button" :button 272 :state "press"))
+  (let ((ev (nhwl-gui--press-event area)))
+    (should ev)
+    (funcall (key-binding (vector area 'down-mouse-1)) ev)
+    (nhwl-gui--pump 0.3)))
+
+(defun nhwl-gui--input-wait (mark req)
+  (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (nhwl-gui--input-since mark req))))
+
+(ert-deftest nhwl-gui/undecorated-drag-moves ()
+  (skip-unless (nhwl-gui--recorder-p))
+  (let* ((f (nhwl-gui--undecorated))
+         (mark (plist-get (gui-runner-recorder '(:cmd "input_log" :since 0)) :next)))
+    (unwind-protect
+        (progn
+          ;; a real press gives the shell its serial; `mouse-drag-frame-move' is what a header-line, mode-line or
+          ;; tab-line drag runs
+          (nhwl-gui--point-at 100 100)
+          (gui-runner-recorder '(:cmd "button" :button 272 :state "press"))
+          (nhwl-gui--pump 0.3)
+          (mouse-drag-frame-move (list 'down-mouse-1 (posn-at-x-y 10 10 f)))
+          (nhwl-gui--pump 0.3)
+          (let ((e (nhwl-gui--input-wait mark "xdg_toplevel.move")))
+            (should e)
+            (should (integerp (plist-get e :serial)))))
+      (gui-runner-recorder '(:cmd "button" :button 272 :state "release"))
+      (delete-frame f))))
+
+(ert-deftest nhwl-gui/undecorated-edge-resizes ()
+  (skip-unless (nhwl-gui--recorder-p))
+  (let* ((f (nhwl-gui--undecorated))
+         (s (frame-scale-factor f))
+         (mark (plist-get (gui-runner-recorder '(:cmd "input_log" :since 0)) :next)))
+    (unwind-protect
+        (progn
+          (nhwl-gui--press-at 'right-edge (/ (- (frame-pixel-width f) 3) s) (/ (frame-pixel-height f) 2 s))
+          (let ((e (nhwl-gui--input-wait mark "xdg_toplevel.resize")))
+            (should e)
+            (should (equal (plist-get e :edges) "right"))))
+      (gui-runner-recorder '(:cmd "button" :button 272 :state "release"))
+      (delete-frame f))))
+
+(ert-deftest nhwl-gui/window-menu-from-lisp ()
+  (skip-unless (nhwl-gui--recorder-p))
+  (let* ((f (nhwl-gui--undecorated))
+         (s (frame-scale-factor f))
+         (mark (plist-get (gui-runner-recorder '(:cmd "input_log" :since 0)) :next)))
+    (unwind-protect
+        (progn
+          (nhwl-gui--point-at 100 100)
+          (gui-runner-recorder '(:cmd "button" :button 272 :state "press"))
+          (gui-runner-recorder '(:cmd "button" :button 272 :state "release"))
+          (nhwl-gui--pump 0.3)
+          (should (nhwl-frame-show-window-menu f 40 24))
+          (let ((e (nhwl-gui--input-wait mark "xdg_toplevel.show_window_menu")))
+            (should e)
+            (should (equal (plist-get e :location) (list (round (/ 40 s)) (round (/ 24 s)))))))
+      (delete-frame f))))
