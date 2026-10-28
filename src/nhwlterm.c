@@ -1156,6 +1156,7 @@ nhwl_make_frame_visible (struct frame *f)
 void
 nhwl_make_frame_invisible (struct frame *f)
 {
+  nhwl_child_focus_gone (f, false);
   nhwl_child_set_visible (f, false);
   SET_FRAME_VISIBLE (f, 0);
   SET_FRAME_ICONIFIED (f, false);
@@ -1254,6 +1255,9 @@ nhwl_free_frame_resources (struct frame *f)
 
   block_input ();
 
+  /* Its tree's keys go to its parent (while its faces still exist, for
+     the cursor's unhighlight).  */
+  nhwl_child_focus_gone (f, true);
   free_frame_faces (f);
 
 #define CLEAR_IF_EQ(FIELD)	\
@@ -1337,13 +1341,23 @@ nhwl_get_focus_frame (struct frame *frame)
 /* Adapted from pgtk_focus_frame.  Wayland gives a client no way to take
    the focus: the most it can do is ask the compositor to activate the
    window (xdg-activation, with a token requested from the latest input
-   serial), which the compositor may refuse.  */
+   serial), which the compositor may refuse.  Within a window, a child
+   frame takes its top-level's keys (nhwl_child_focus).  */
 void
 nhwl_focus_frame (struct frame *f, bool noactivate)
 {
-  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  nhwl_child_focus (f);
+  if (!noactivate)
+    nhwl_activate_frame (f);
+}
 
-  if (noactivate || !out->window)
+/* Ask the compositor to activate the top-level window of F.  */
+void
+nhwl_activate_frame (struct frame *f)
+{
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (nhwl_tree_root (f));
+
+  if (!out->window)
     return;
   block_input ();
   nhshell_window_activate (FRAME_NHWL_SHELL (f), out->window, NULL);
@@ -1451,6 +1465,42 @@ nhwl_focus_changed (bool is_enter, int state,
     }
 }
 
+static void nhwl_im_update (struct frame *);
+
+/* TO, a frame of root R's tree, takes the keys of R's window from now on
+   (W1-7).  While R's window has the keyboard, Emacs's focus moves with
+   them, as on X11 when a child frame takes the input focus: a focus-out
+   for the frame that had it, unless that frame is being deleted (GONE),
+   and a focus-in for TO.  */
+void
+nhwl_focus_route (struct frame *r, struct frame *to, bool gone)
+{
+  struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (r);
+  struct frame *from = dpyinfo->x_focus_event_frame;
+  union buffered_input_event ev;
+
+  FRAME_NHWL_OUTPUT (r)->focus_window
+    = to == r ? 0 : FRAME_NHWL_OUTPUT (to)->window;
+  if (!from || from == to || nhwl_tree_root (from) != r)
+    return;
+  EVENT_INIT (ev.ie);
+  ev.ie.kind = NO_EVENT;
+  ev.ie.arg = Qnil;
+  if (gone)
+    dpyinfo->x_focus_event_frame = NULL;
+  else
+    nhwl_focus_changed (false, FOCUS_EXPLICIT, dpyinfo, from, &ev);
+  if (ev.ie.kind != NO_EVENT)
+    kbd_buffer_store_event (&ev.ie);
+  EVENT_INIT (ev.ie);
+  ev.ie.kind = NO_EVENT;
+  ev.ie.arg = Qnil;
+  nhwl_focus_changed (true, FOCUS_EXPLICIT, dpyinfo, to, &ev);
+  if (ev.ie.kind != NO_EVENT)
+    kbd_buffer_store_event (&ev.ie);
+  nhwl_im_update (to);
+}
+
 
 /***********************************************************************
 				Events
@@ -1538,12 +1588,17 @@ nhwl_key_event (struct frame *f, const NhShellEvent *ev,
   XSETFRAME (inev->ie.frame_or_window, f);
   inev->ie.modifiers = modifiers;
   inev->ie.timestamp = ev->time_ns / 1000000;
-  /* The frame-time record's start: our clock, not the compositor's.  */
-  if (!FRAME_NHWL_OUTPUT (f)->t_key_ns)
-    {
-      FRAME_NHWL_OUTPUT (f)->t_key_ns = nhwl_now_ns ();
-      FRAME_NHWL_OUTPUT (f)->key_redisplay = redisplay_counter;
-    }
+  /* The frame-time record's start: our clock, not the compositor's.  It
+     is the root's, also for a key routed to a child frame.  */
+  {
+    struct nhwl_output *ro = FRAME_NHWL_OUTPUT (nhwl_tree_root (f));
+
+    if (!ro->t_key_ns)
+      {
+	ro->t_key_ns = nhwl_now_ns ();
+	ro->key_redisplay = redisplay_counter;
+      }
+  }
 
   /* make_lispy_event turns characters into control characters: the
      keysym is the key's, not the control character's.  */
@@ -1891,7 +1946,7 @@ static bool nhwl_im_on = true;
 static void
 nhwl_im_enable (struct frame *f, bool on)
 {
-  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (nhwl_tree_root (f));
   struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
 
   if (dpyinfo->shell && out->window)
@@ -1904,17 +1959,18 @@ nhwl_im_enable (struct frame *f, bool on)
 #define NHWL_IM_SPAN 2000
 
 /* Tell the input method where point is in F's selected window (the
-   cursor rectangle, logical pixels in the surface) and what surrounds
-   it (the current line).  The shell sends only what changed.  */
+   cursor rectangle, logical pixels in the surface of F's top-level, which
+   has the keyboard) and what surrounds it (the current line).  The shell
+   sends only what changed.  */
 static void
 nhwl_im_update (struct frame *f)
 {
   struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
-  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (nhwl_tree_root (f));
   uint32_t s120 = out->scale120 ? out->scale120 : 120;
   struct window *w;
   struct buffer *b;
-  int x, y;
+  int x, y, ox, oy;
 
   if (!nhwl_im_on || !dpyinfo->shell || !out->window
       || f != dpyinfo->x_focus_frame || !WINDOWP (f->selected_window))
@@ -1926,10 +1982,11 @@ nhwl_im_update (struct frame *f)
   x = (WINDOW_TO_FRAME_PIXEL_X (w, w->phys_cursor.x)
        + WINDOW_LEFT_FRINGE_WIDTH (w) + WINDOW_LEFT_MARGIN_WIDTH (w));
   y = WINDOW_TO_FRAME_PIXEL_Y (w, w->phys_cursor.y);
+  nhwl_native_origin (f, &ox, &oy);
   nhshell_text_input_cursor
     (dpyinfo->shell, out->window,
-     nhwl_to_logical (x + out->csd.l, s120),
-     nhwl_to_logical (y + out->csd.t, s120),
+     nhwl_to_logical (x + ox, s120),
+     nhwl_to_logical (y + oy, s120),
      max (1, nhwl_to_logical (w->phys_cursor_width, s120)),
      max (1, nhwl_to_logical (w->phys_cursor_height, s120)));
 
@@ -2069,6 +2126,14 @@ nhwl_use_im_context (bool on)
       nhwl_im_enable (d->x_focus_frame, true);
 }
 
+/* The frame a key or input-method event of F's window goes to: the frame
+   of F's tree that Emacs focused (W1-7); for no window, the focus frame.  */
+static struct frame *
+nhwl_key_frame (struct nhwl_display_info *dpyinfo, struct frame *f)
+{
+  return f ? nhwl_focus_target (nhwl_tree_root (f)) : dpyinfo->x_focus_frame;
+}
+
 /* Drain DPYINFO's shell events into the keyboard buffer (through
    HOLD_QUIT where Emacs gave one); return the number of events stored.
    Callers hold block_input.  */
@@ -2110,8 +2175,8 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	     would find one repeat per poll.  */
 	  if (ev.u.key.repeat && kbd_buffer_events_waiting ())
 	    break;
-	  if (!f)
-	    f = dpyinfo->x_focus_frame;
+	  /* The frame of the window's tree that Emacs focused.  */
+	  f = nhwl_key_frame (dpyinfo, f);
 	  if (f)
 	    have = nhwl_key_event (f, &ev, &inev);
 	  break;
@@ -2188,6 +2253,18 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	      int code = nhwl_button_code (ev.u.pointer.button);
 	      bool down = ev.u.pointer.state == NHSHELL_BUTTON_PRESSED;
 
+	      /* A press in a child frame, or in an ancestor of the frame
+		 with the focus, focuses the frame pressed (as
+		 x_construct_mouse_click's caller does on X11).  */
+	      if (down && !FRAME_NO_ACCEPT_FOCUS (f)
+		  && !gui_mouse_grabbed (dpyinfo))
+		{
+		  struct frame *hf = dpyinfo->highlight_frame;
+
+		  if (FRAME_PARENT_FRAME (f)
+		      || (hf && frame_ancestor_p (f, hf)))
+		    nhwl_child_focus (f);
+		}
 	      if (code >= 0)
 		{
 		  int x = FRAME_DISPLAY_INFO (f)->last_mouse_motion_x;
@@ -2235,18 +2312,24 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	case NHSHELL_EV_FOCUS:
 	  if (f)
 	    {
+	      /* A top-level's keyboard focus is Emacs's focus on the frame
+		 of its tree that takes its keys.  */
+	      struct frame *r = nhwl_tree_root (f);
+	      struct frame *e = dpyinfo->x_focus_event_frame;
+	      struct frame *t = (!ev.u.focus.in && e && nhwl_tree_root (e) == r
+				 ? e : nhwl_focus_target (r));
+
 	      nhwl_focus_changed (ev.u.focus.in != 0, FOCUS_EXPLICIT, dpyinfo,
-				  f, &inev);
+				  t, &inev);
 	      have = inev.ie.kind != NO_EVENT;
-	      nhwl_im_enable (f, ev.u.focus.in != 0);
+	      nhwl_im_enable (r, ev.u.focus.in != 0);
 	      if (ev.u.focus.in)
-		nhwl_im_update (f);
+		nhwl_im_update (t);
 	    }
 	  break;
 
 	case NHSHELL_EV_PREEDIT:
-	  if (!f)
-	    f = dpyinfo->x_focus_frame;
+	  f = nhwl_key_frame (dpyinfo, f);
 	  if (f)
 	    {
 	      /* pgtk's event: ((TEXT (ul . t))), nil when cleared.  */
@@ -2263,15 +2346,13 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	  break;
 
 	case NHSHELL_EV_COMMIT_TEXT:
-	  if (!f)
-	    f = dpyinfo->x_focus_frame;
+	  f = nhwl_key_frame (dpyinfo, f);
 	  if (f)
 	    count += nhwl_im_commit (f, nhwl_im_text (dpyinfo, &ev), hold_quit);
 	  break;
 
 	case NHSHELL_EV_DELETE_SURROUNDING:
-	  if (!f)
-	    f = dpyinfo->x_focus_frame;
+	  f = nhwl_key_frame (dpyinfo, f);
 	  if (f)
 	    count += nhwl_im_delete (f, ev.u.text.before, ev.u.text.after,
 				     hold_quit);
