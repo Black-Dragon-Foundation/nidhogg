@@ -271,6 +271,18 @@ Return the insertion path of the block."
             nidhogg-blk--insert-path))
       (delete-file file))))
 
+(ert-deftest workers/file-block-html-meta-past-head ()
+  ;; Into an empty buffer `insert-file-contents' shows set-auto-coding
+  ;; the whole text, and `sgml-html-meta-auto-coding-function' searches
+  ;; all of it: a meta charset past the first KiB, with 3 KiB after it,
+  ;; picks the coding for the block too.
+  (workers-blk-tests--compare
+   (concat "<!DOCTYPE html>\n<html><head>\n<style>\n"
+           (make-string 2000 ?x)
+           "\n</style>\n<meta charset=\"iso-8859-1\">\n</head><body>\n"
+           "caf\351\n" (make-string 4000 ?y) "\n</body></html>\n")
+   ".html"))
+
 (ert-deftest workers/file-block ()
   (let ((utf8-first (eq (coding-system-get
                          (car (coding-system-priority-list)) :coding-type)
