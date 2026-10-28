@@ -217,6 +217,125 @@ rules (errors, acks, unconfigured, popup, grab, popup-order) judge what was sent
           (should (frame-live-p (selected-frame))))
       (dolist (f (reverse frames)) (when (frame-live-p f) (delete-frame f))))))
 
+;; The bell, idle inhibition, export handles and activation tokens.  The system bell, the idle inhibitor and the
+;; exporter are protocols of the recorder's profile (mutter has all three; sway has no system bell), and the recorder
+;; logs what a client asked of them: `bell_log', `idle_inhibitors' and `exports'.
+
+(defun nhwl-gui--has-global-p (name)
+  "Non-nil when the recorder's profile offers the global NAME (a keyword such as `:xdg_system_bell_v1')."
+  (plist-get (plist-get (gui-runner-recorder '(:cmd "globals")) :globals) name))
+
+(defun nhwl-gui--toplevel-id ()
+  "The id of the recorder's toplevel surface."
+  (plist-get (seq-find (lambda (n) (equal (plist-get n :role) "toplevel")) (nhwl-gui--tree)) :id))
+
+(defun nhwl-gui--bells ()
+  "The recorder's bell log, a list of surface ids (nil for a ring without a surface)."
+  (mapcar (lambda (b) (nhwl-gui--get b :surface)) (plist-get (gui-runner-recorder '(:cmd "bell_log")) :bells)))
+
+(defun nhwl-gui--live-inhibitors ()
+  "How many idle inhibitors the recorder has that are alive."
+  (length (seq-filter (lambda (i) (eq (plist-get i :alive) t))
+                      (plist-get (gui-runner-recorder '(:cmd "idle_inhibitors")) :inhibitors))))
+
+(ert-deftest nhwl-gui/visible-bell-flashes-and-restores ()
+  "`visible-bell' t and `ding': a commit with damage on the top and bottom lines, then within 200 ms another that
+restores them; the recorder's composite equals the pre-bell composite."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((visible-bell t) (ring-bell-function nil) (before nil) (mark nil) (flash nil) (restore nil))
+    (redisplay t)
+    (gui-runner-wait-settled)
+    (setq before (gui-runner-screen-grab))
+    (setq mark (nhwl-gui--mark))
+    (ding)
+    (let* ((h (nth 1 before))
+           (line (frame-char-height))
+           (top (lambda (c) (seq-some (lambda (r) (< (nth 1 r) (* 3 line))) (nhwl-gui--damage c))))
+           (bottom (lambda (c) (seq-some (lambda (r) (> (+ (nth 1 r) (nth 3 r)) (- h (* 4 line))))
+                                         (nhwl-gui--damage c)))))
+      (setq flash (nhwl-gui--wait (lambda ()
+                                    (nhwl-gui--pump 0.05)
+                                    (seq-find (lambda (c) (and (funcall top c) (funcall bottom c)))
+                                              (nhwl-gui--toplevel-all-commits mark)))
+                                  3))
+      (should flash)
+      ;; the restore follows the flash by about 50 ms, in a commit of its own
+      (setq restore (nhwl-gui--wait (lambda ()
+                                      (nhwl-gui--pump 0.05)
+                                      (seq-find (lambda (c) (and (> (plist-get c :seq) (plist-get flash :seq))
+                                                                 (funcall top c)))
+                                                (nhwl-gui--toplevel-all-commits mark)))
+                                    1))
+      (should restore))
+    (gui-runner-wait-settled)
+    (should (<= (car (gui-runner-pixel-diff before (gui-runner-screen-grab))) 2))))
+
+(ert-deftest nhwl-gui/bell-rings-the-system-bell ()
+  "Mutter profile (xdg_system_bell_v1): `ding' without `visible-bell' logs a ring on the toplevel's surface."
+  (skip-unless (and (nhwl-gui--recorder-p) (nhwl-gui--has-global-p :xdg_system_bell_v1)))
+  (let ((visible-bell nil) (ring-bell-function nil) (id (nhwl-gui--toplevel-id)))
+    (should id)
+    (ding)
+    (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.05) (member id (nhwl-gui--bells))) 3))))
+
+(ert-deftest nhwl-gui/bell-without-protocol-does-nothing ()
+  "Sway profile (no xdg_system_bell_v1): `ding' logs no ring, and the connection stays up."
+  (skip-unless (and (nhwl-gui--recorder-p) (not (nhwl-gui--has-global-p :xdg_system_bell_v1))))
+  (let ((visible-bell nil) (ring-bell-function nil))
+    (ding)
+    (nhwl-gui--pump 0.3)
+    (should-not (nhwl-gui--bells))
+    (should (nhwl-gui--connected-p))))
+
+(ert-deftest nhwl-gui/inhibit-idle-parameter ()
+  "The `inhibit-idle' frame parameter t holds one idle inhibitor, nil releases it, and a second t holds one again."
+  (skip-unless (and (nhwl-gui--recorder-p) (nhwl-gui--has-global-p :zwp_idle_inhibit_manager_v1)))
+  (unwind-protect
+      (progn
+        (should (zerop (nhwl-gui--live-inhibitors)))
+        (set-frame-parameter nil 'inhibit-idle t)
+        (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.05) (= (nhwl-gui--live-inhibitors) 1)) 3))
+        ;; set again: still one
+        (set-frame-parameter nil 'inhibit-idle t)
+        (nhwl-gui--pump 0.2)
+        (should (= (nhwl-gui--live-inhibitors) 1))
+        (set-frame-parameter nil 'inhibit-idle nil)
+        (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.05) (zerop (nhwl-gui--live-inhibitors))) 3))
+        (set-frame-parameter nil 'inhibit-idle t)
+        (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.05) (= (nhwl-gui--live-inhibitors) 1)) 3)))
+    (set-frame-parameter nil 'inhibit-idle nil)))
+
+(ert-deftest nhwl-gui/export-handle-matches-the-compositor ()
+  "`nhwl-frame-export-handle' is \"wayland:\" and the handle the compositor made for the toplevel, and asking again
+gives the same one."
+  (skip-unless (and (nhwl-gui--recorder-p) (nhwl-gui--has-global-p :zxdg_exporter_v2)))
+  (let ((handle (nhwl-frame-export-handle)))
+    (should (stringp handle))
+    (should (string-prefix-p "wayland:" handle))
+    (let ((exports (plist-get (gui-runner-recorder '(:cmd "exports")) :exports)))
+      (should (= (length exports) 1))
+      (should (equal (substring handle (length "wayland:")) (plist-get (seq-first exports) :handle))))
+    (should (equal (nhwl-frame-export-handle) handle))))
+
+(ert-deftest nhwl-gui/activation-token-from-a-click ()
+  "Before any input there is no token; after a click `nhwl-activation-token' returns one, and every call a fresh one."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((second (and (getenv "GLITNIR_GUI_RECORDER_BIN") (nhwl-gui--second-recorder))) (f nil))
+    ;; a connection that has seen no input has no serial to make a token with
+    (when second
+      (let ((process-environment (cons (concat "GLITNIR_GUI_RECORDER=" (cdr second)) process-environment)))
+        (unwind-protect
+            (progn
+              (setq f (make-frame-on-display "nhwl-second"))
+              (should-not (nhwl-activation-token f)))
+          (when (frame-live-p f) (delete-frame f t))
+          (delete-process (car second)))))
+    (nhwl-gui--press-serial)
+    (let ((token (nhwl-activation-token)))
+      (should (stringp token))
+      (should (> (length token) 0))
+      (should-not (equal (nhwl-activation-token) token)))))
+
 (provide 'nhwl-gui-w2-tests)
 
 ;;; nhwl-gui-w2-tests.el ends here

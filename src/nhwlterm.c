@@ -1683,6 +1683,9 @@ nhwl_free_frame_resources (struct frame *f)
     }
   out->window = 0;
 
+  if (out->bell_timer)
+    cancel_atimer (out->bell_timer);
+  out->bell_timer = NULL;
   nhwl_cr_destroy_frame_context (f);
   nhwl_glitnir_forget (f);
 
@@ -3265,12 +3268,70 @@ nhwl_buffer_flipping_unblocked_hook (struct frame *f)
     nhwl_publish (f);
 }
 
+/* The visible bell's 50 ms are up: the glue puts the inverted rows back
+   (except what a draw replaced) and damages them.  The rows publish like
+   any draw outside a redisplay; nothing presents here.  */
+static void
+nhwl_bell_restore (struct atimer *timer)
+{
+  struct frame *f = timer->client_data;
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  int32_t rc = 0;
+
+  out->bell_timer = NULL;
+  if (!out->glitnir_id || !out->cr_surface)
+    return;
+  block_input ();
+  cairo_surface_flush (out->cr_surface);
+  rc = nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		     NHG (nhg_bell_restore (FRAME_NHG (f), out->glitnir_id)));
+  cairo_surface_mark_dirty (out->cr_surface);
+  unblock_input ();
+  if (rc > 0)
+    nhwl_publish (f);
+}
+
+/* The visible bell: the glue inverts pgtk_flash's rows in the backing and
+   damages them, and a timer puts them back.  */
+static void
+nhwl_flash (struct frame *f)
+{
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  NhgBellGeom g = { FRAME_PIXEL_WIDTH (f), FRAME_PIXEL_HEIGHT (f),
+		    FRAME_LINE_HEIGHT (f), FRAME_INTERNAL_BORDER_WIDTH (f),
+		    FRAME_TOP_MARGIN_HEIGHT (f), FRAME_BOTTOM_MARGIN_HEIGHT (f) };
+  int32_t rc;
+
+  if (!out->window || !FRAME_NHG (f))
+    return;
+  block_input ();
+  nhwl_backing_resize (f);
+  nhwl_glitnir_ensure (f);
+  cairo_surface_flush (out->cr_surface);
+  rc = nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		     NHG (nhg_bell_flash (FRAME_NHG (f), out->glitnir_id, &g)));
+  cairo_surface_mark_dirty (out->cr_surface);
+  if (rc > 0)
+    {
+      if (out->bell_timer)
+	cancel_atimer (out->bell_timer);
+      out->bell_timer = start_atimer (ATIMER_RELATIVE,
+				      make_timespec (0, 50 * 1000 * 1000),
+				      nhwl_bell_restore, f);
+    }
+  unblock_input ();
+  if (rc > 0)
+    nhwl_publish (f);
+}
+
 static void
 nhwl_ring_bell (struct frame *f)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
 
-  if (out->window)
+  if (visible_bell)
+    nhwl_flash (f);
+  else if (out->window)
     nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
 		  NHG (nhg_bell (FRAME_NHG (f), out->window)));
 }
