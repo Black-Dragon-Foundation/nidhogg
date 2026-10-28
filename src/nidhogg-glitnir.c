@@ -99,8 +99,10 @@ end of the paint that shows it, :freeze-ms the time the root was frozen
 before that commit.  :backfill-rate is nil: GDK's back-fills cannot be
 seen from the draw handler.  FRAME defaults to the selected frame; it
 returns nil for a frame that is not a graphical pgtk or nhwl frame.  On a
-nhwl frame :latency-ms runs from the key event the paint shows (else from
-the commit) to the buffer's commit, and :painted-px is the area composed.
+nhwl frame :key-to-commit-ms replaces :latency-ms: the time from a key
+event to the commit of the buffer that shows it, over the paints that
+show a key only; :draw-ms runs from the start of the draw to the
+buffer's commit, and :painted-px is the area composed.
 Non-nil RESET
 empties the record after reading it.  */)
   (Lisp_Object frame, Lisp_Object reset)
@@ -131,7 +133,12 @@ empties the record after reading it.  */)
     = list2 (intern_c_string (":count"), make_uint (s.count));
   plist = nconc2 (plist, pctl (":compose-ms", &s.compose_ms));
   plist = nconc2 (plist, pctl (":draw-ms", &s.draw_ms));
-  plist = nconc2 (plist, pctl (":latency-ms", &s.latency_ms));
+# ifdef HAVE_NHWL
+  if (FRAME_NHWL_P (f))
+    plist = nconc2 (plist, pctl (":key-to-commit-ms", &s.update_ms));
+  else
+# endif
+    plist = nconc2 (plist, pctl (":latency-ms", &s.latency_ms));
   plist = nconc2 (plist, pctl (":freeze-ms", &s.freeze_ms));
   return nconc2 (plist,
 		 listn (14, intern_c_string (":damage-px"),

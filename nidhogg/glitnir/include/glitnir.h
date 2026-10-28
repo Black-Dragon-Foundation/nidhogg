@@ -47,6 +47,8 @@ typedef struct
   uint64_t damage_px_p50, painted_px_p50;
   double backfill_rate;		/* -1: no entry knows (backfill 2 everywhere) */
   uint64_t ticks, late_ticks, violations, scale_mismatch;
+  /* From t_update_ns to the end of the paint, over the entries with an update time only.  */
+  GlitnirPercentiles update_ms;
 } GlitnirStatsSummary;
 
 /* Append ENTRY to ROOT's ring (allocated at the first record).  An entry whose t_compose_start_ns and
