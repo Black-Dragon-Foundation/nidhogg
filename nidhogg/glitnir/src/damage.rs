@@ -5,9 +5,11 @@
 //! sizes).  A rectangle that an earlier one already contains adds nothing, and a new rectangle drops the ones it
 //! contains, so a frame cleared whole reads back as one rectangle.
 
+use crate::committed::Committed;
 use crate::geom::Rect;
 use crate::region::Region;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// Whole-frame damage: contains every rectangle a frame can have.
 pub const ALL: Rect = Rect::new(0, 0, i32::MAX, i32::MAX);
@@ -118,14 +120,13 @@ pub type Frames = BTreeMap<u64, Damage>;
 
 /// Run `f` on FRAME's damage (allocated at the first use).
 pub fn with<R>(frame: u64, f: impl FnOnce(&mut Damage) -> R) -> R {
-    let mut st = crate::STATE.lock().unwrap_or_else(|p| p.into_inner());
-    f(st.damage.entry(frame).or_default())
+    f(crate::state().damage.entry(frame).or_default())
 }
 
 /// Take FRAME's pending damage: a pointer to its rectangles and their number, valid until FRAME's next take or
 /// forget.  An unknown frame has none (null, 0).
 pub fn take(frame: u64) -> (*const Rect, usize) {
-    let mut st = crate::STATE.lock().unwrap_or_else(|p| p.into_inner());
+    let mut st = crate::state();
     match st.damage.get_mut(&frame) {
         Some(d) => {
             let t = d.take();
@@ -139,12 +140,11 @@ pub fn take(frame: u64) -> (*const Rect, usize) {
 /// its pending damage (the host has moved its children's damage into it).  Valid until ROOT's next commit or forget.
 /// An unknown root has none (null, 0).
 pub fn commit(root: u64) -> (*const Rect, usize) {
-    let mut st = crate::STATE.lock().unwrap_or_else(|p| p.into_inner());
+    let mut st = crate::state();
     let crate::State {
         damage,
         scenes,
         sprites,
-        ..
     } = &mut *st;
     let c = match scenes.get_mut(&root) {
         Some(scene) => scene.commit_with(root, damage, sprites),
@@ -156,10 +156,23 @@ pub fn commit(root: u64) -> (*const Rect, usize) {
     (c.as_ptr(), c.len())
 }
 
+/// Commit ROOT, which has a scene, at a consistency point: its scene damage, and the committed scene as a snapshot
+/// that any thread may compose.  `None`, with nothing committed, when ROOT has no scene.
+pub fn commit_snapshot(root: u64) -> Option<(Vec<Rect>, Arc<Committed>)> {
+    let mut st = crate::state();
+    let crate::State {
+        damage,
+        scenes,
+        sprites,
+    } = &mut *st;
+    let scene = scenes.get_mut(&root)?;
+    let rects = scene.commit_with(root, damage, sprites).to_vec();
+    Some((rects, scene.snapshot()))
+}
+
 /// Drop FRAME's damage (the frame is gone).
 pub fn forget(frame: u64) {
-    let mut st = crate::STATE.lock().unwrap_or_else(|p| p.into_inner());
-    st.damage.remove(&frame);
+    crate::state().damage.remove(&frame);
 }
 
 #[cfg(test)]
