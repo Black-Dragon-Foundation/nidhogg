@@ -61,11 +61,24 @@ if command -v cargo-deny >/dev/null 2>&1; then
 else
   echo "check.sh: cargo-deny not on PATH, skipping the licence check"
 fi
-# vendor drift: vendor a copy, compare with vendor/
+# vendor drift: every vendored file is the one its .cargo-checksum.json lists, and no file is unlisted; then a copy
+# vendored offline from vendor/ itself is compared with it, which shows a locked crate missing or a directory no
+# lock entry needs.  Re-vendoring a directory source drops the dot files and Cargo.toml.orig and rewrites the
+# checksum lists (it does not check them), so those are not compared.
+SHA256="sha256sum"
+command -v sha256sum >/dev/null 2>&1 || SHA256="shasum -a 256"
+for d in vendor/*/; do
+  sums=$(grep -o '"[^"]*":"[0-9a-f]\{64\}"' "$d.cargo-checksum.json" | grep -v '^"package":' |
+           sed 's/^"\(.*\)":"\(.*\)"$/\2  \1/')
+  ( cd "$d" && printf '%s\n' "$sums" | $SHA256 -c - >/dev/null )   || fail "vendor-checksum $d"
+  [ "$(printf '%s\n' "$sums" | cut -c67- | sort)" = \
+    "$(cd "$d" && find . -type f ! -name .cargo-checksum.json | sed 's|^\./||' | sort)" ] || fail "vendor-files $d"
+done
 copy="$CARGO_TARGET_DIR/vendor-check"
 rm -rf "$copy" && mkdir -p "$copy"
-for f in Cargo.toml Cargo.lock .cargo build.rs src include; do cp -r "$f" "$copy/" || fail vendor; done
-mkdir "$copy/vendor"
-( cd "$copy" && cargo vendor --locked --offline vendor >/dev/null ) || fail vendor
-diff -r -x .keep "$copy/vendor" vendor                              || fail vendor-drift
+for f in Cargo.toml Cargo.lock build.rs src include; do cp -r "$f" "$copy/" || fail vendor; done
+( cd "$copy" && cargo vendor --locked --offline --respect-source-config \
+    --config "source.crates-io.replace-with='vendored-sources'" \
+    --config "source.vendored-sources.directory='$HERE/vendor'" vendor >/dev/null ) || fail vendor
+diff -r -x '.*' -x Cargo.toml.orig "$copy/vendor" vendor              || fail vendor-drift
 echo "check.sh: ok"
