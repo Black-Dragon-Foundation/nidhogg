@@ -7,7 +7,7 @@
 use crate::event::*;
 use crate::wayland::reader::ReaderState;
 use crate::wayland::selection;
-use crate::wayland::serial::SerialKind;
+use crate::wayland::serial::{Held, SerialKind};
 use wayland_client::protocol::wl_pointer::{self, Axis, AxisSource, ButtonState, WlPointer};
 use wayland_client::protocol::wl_seat::{Capability, WlSeat};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum, delegate_noop};
@@ -131,6 +131,12 @@ pub fn seat_capabilities(
                 d.destroy();
             }
             state.pointer.surface = 0;
+            state
+                .shared
+                .serials
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .release_all(false);
             if ptr.version() >= 3 {
                 ptr.release();
             }
@@ -196,16 +202,27 @@ impl Dispatch<WlPointer, ()> for ReaderState {
                 surface_x,
                 surface_y,
             } => {
+                {
+                    let mut serials = state
+                        .shared
+                        .serials
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    serials.update(SerialKind::MouseEnter, serial);
+                    // a press is held only within one surface's implicit grab
+                    serials.release_all(false);
+                }
+                state.pointer.surface = u64::from(surface.id().protocol_id());
+                state.post_pointer(NHSHELL_EV_POINTER_ENTER, 0, surface_x, surface_y);
+            }
+            wl_pointer::Event::Leave { .. } => {
+                // the implicit grab ended (or a drag took the pointer): no release will come for a held button
                 state
                     .shared
                     .serials
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .update(SerialKind::MouseEnter, serial);
-                state.pointer.surface = u64::from(surface.id().protocol_id());
-                state.post_pointer(NHSHELL_EV_POINTER_ENTER, 0, surface_x, surface_y);
-            }
-            wl_pointer::Event::Leave { .. } => {
+                    .release_all(false);
                 state.post_pointer(NHSHELL_EV_POINTER_LEAVE, 0, 0.0, 0.0);
                 state.pointer.surface = 0;
             }
@@ -221,13 +238,20 @@ impl Dispatch<WlPointer, ()> for ReaderState {
                 state: WEnum::Value(bs),
             } => {
                 let pressed = bs == ButtonState::Pressed;
-                if pressed {
-                    state
+                {
+                    let mut serials = state
                         .shared
                         .serials
                         .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .update(SerialKind::MousePress, serial);
+                        .unwrap_or_else(|e| e.into_inner());
+                    if pressed {
+                        serials.update(SerialKind::MousePress, serial);
+                        serials.press(Held::Button(button), serial);
+                    } else {
+                        serials.release(Held::Button(button));
+                    }
+                }
+                if pressed {
                     selection::lock(&state.shared).input(serial);
                 }
                 let mut ev =

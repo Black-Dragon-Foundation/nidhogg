@@ -106,6 +106,16 @@ pub const NHSHELL_CURSOR_HIDDEN: u32 = 12;
 /// The selections, for the `selection_*` calls and `NHSHELL_EV_SELECTION`.
 pub const NHSHELL_SEL_CLIPBOARD: u32 = 0;
 pub const NHSHELL_SEL_PRIMARY: u32 = 1;
+/// The offer of the drag over one of our windows, for `selection_types` and `selection_read` only: valid from
+/// `DND_ENTER` until `DND_LEAVE` or `dnd_finish`.  When it is our own drag's (`own` 1), or after our own drag's offer
+/// is gone, the reads answer from our latest drag's bytes without a round trip.  `selection_owned` says whether our
+/// drag runs.
+pub const NHSHELL_SEL_DND: u32 = 2;
+
+/// Drag-and-drop actions, OR-ed into a set (`DndEv`, `dnd_status`, `drag_start`).
+pub const NHSHELL_DND_COPY: u32 = 1;
+pub const NHSHELL_DND_MOVE: u32 = 2;
+pub const NHSHELL_DND_ASK: u32 = 4;
 
 /// What to open a window with.  Strings are copied by the callee.
 #[derive(Clone, Debug)]
@@ -291,6 +301,28 @@ pub trait ShellBackend {
     /// The selection's bytes as `mime`: our own without a round trip, another client's within `timeout_ms` or
     /// `Timeout`.  `State` when there is no selection or it has no such type.
     fn selection_read(&mut self, kind: u32, mime: &str, timeout_ms: u32) -> ShellResult<Vec<u8>>;
+
+    /// Answer the drag over our window: accept `mime` (None: nothing) with the actions we take (`NHSHELL_DND_*`) and
+    /// the one we prefer (0 or one of them).  None with 0 actions rejects the drop.  `State` without a drag over us;
+    /// `Arg` for bits outside the set or a preferred action that is not one of `actions`.
+    fn dnd_status(&mut self, mime: Option<&str>, actions: u32, preferred: u32) -> ShellResult;
+    /// Done with the dropped offer: on `success`, tell the source the drop is finished, which needs a dropped offer,
+    /// an accepted type and an action both sides agreed on (else `State`); then, in every case, let the offer go.
+    fn dnd_finish(&mut self, success: bool) -> ShellResult;
+    /// Start dragging `items` (MIME type, bytes; copied) out of `window` with the actions it allows.  It needs the
+    /// newest button press or touch down whose release has not come (`State` without one); there is no drag icon.  The
+    /// bytes are written to targets from the shell's own thread, and stay readable as `NHSHELL_SEL_DND` until the next
+    /// drag starts.  `DRAG_ACTION`, `DRAG_DROPPED` and one `DRAG_DONE` follow; a drag that was running is dropped
+    /// without one.
+    fn drag_start(
+        &mut self,
+        window: WindowId,
+        items: &[(&str, &[u8])],
+        actions: u32,
+    ) -> ShellResult;
+    /// Give up our drag: its source goes, and no `DRAG_DONE` follows.  Nothing when no drag runs.
+    fn drag_cancel(&mut self) -> ShellResult;
+
     /// Text input for `window` on or off; the state survives the window losing and regaining text-input focus.
     fn text_input_enable(&mut self, window: WindowId, on: bool) -> ShellResult;
     /// The cursor rectangle in the window (logical pixels); sent to the input method only when it changed.
