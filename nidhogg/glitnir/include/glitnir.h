@@ -195,6 +195,49 @@ typedef struct
 int32_t glitnir_compose (uint64_t root, const GlitnirTarget *target, const GlitnirRect *clip, size_t nclip,
 			 const GlitnirSource *sources, size_t nsrc);
 
+/* Image decoders (the crate's `images' feature).  Stateless: callable from any thread, concurrently; no lock, no
+   global state, no thread, no callback.  The result's buffers come from the C library's calloc (the host may keep
+   them and free them with free) and are bounded by the image's size, checked against the limits and 2^27 pixels
+   before anything is allocated.  */
+
+#define GLITNIR_IMG_PNG 0u
+
+#define GLITNIR_IMG_E_NOT_IMAGE 1	/* the data is not of the format (PNG: the signature) */
+#define GLITNIR_IMG_E_DECODE    2	/* malformed or truncated; errmsg says how */
+#define GLITNIR_IMG_E_SIZE      3	/* beyond the limits */
+#define GLITNIR_IMG_E_NOMEM     4
+#define GLITNIR_IMG_E_HOST      5	/* the host's own decoder must decode it (PNG: libpng's gamma composition) */
+#define GLITNIR_IMG_E_FORMAT    6	/* no decoder for the format */
+
+typedef struct
+{
+  int64_t limit_w, limit_h;	/* the largest width and height; negative: no limit */
+  uint8_t bg_set;		/* non-zero: composite a real alpha channel over bg_* */
+  uint16_t bg_r, bg_g, bg_b;	/* 16 bits per channel */
+} GlitnirImgParams;
+
+typedef struct
+{
+  uint32_t *pixels;		/* width * height words 0x00RRGGBB */
+  uint8_t *mask;		/* width * height bytes, 255 draw, 0 transparent; NULL: no mask */
+  int32_t width, height;
+  uint8_t bkgd_valid;		/* PNG: the bKGD chunk as libpng returns it */
+  uint16_t bkgd[3];
+  int32_t err;			/* the return value */
+  char errmsg[128];		/* GLITNIR_IMG_E_DECODE's text */
+} GlitnirImgOut;
+
+/* Decode LEN bytes at DATA of FORMAT (GLITNIR_IMG_*) into OUT (every field written), as a host built on the C
+   libraries decodes them: PNG as libpng with png_set_strip_16, png_set_expand, png_set_gray_to_rgb and, unless the
+   transparency is all-or-nothing, png_set_background at gamma 1.0 over PARAMS's background; a mask where the
+   transparency is all-or-nothing.  Returns GLITNIR_OK, a GLITNIR_IMG_E_* code, GLITNIR_E_PANIC (a decode error:
+   nothing is allocated), or GLITNIR_E_ARG if PARAMS or OUT is NULL, or DATA is NULL with a non-zero LEN.  */
+int32_t glitnir_img_decode (uint32_t format, const uint8_t *data, size_t len, const GlitnirImgParams *params,
+			    GlitnirImgOut *out);
+
+/* Free OUT's pixels and mask and clear them.  OUT may be NULL.  */
+void glitnir_img_free (GlitnirImgOut *out);
+
 #ifdef __cplusplus
 }
 #endif

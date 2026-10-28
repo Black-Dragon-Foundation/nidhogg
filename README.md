@@ -663,6 +663,13 @@ synchronous loaders in `image.c` (Cairo frames) use the same cores, so a picture
 cache (by file name and modification time, or a hash of the data), so frame N of a GIF or WebP decodes from frame N-1.
 Test primitives: `nidhogg-workers--test-image-decode`, `--test-image-decode-finish`, `--test-decode-count`,
 `--test-image-cache-clear`, `--test-image-pixels`.
+**Rust decoders (Glitnir).** With Glitnir built in, `src/glitnir-images.c` puts an entry in front of the PNG core at
+load time; the formats in `nidhogg-workers-image-rust` (default nil; `png`) decode through Glitnir's stateless
+`glitnir_img_decode` (the `png` crate, libpng's transformations redone sample by sample, `png_composite`'s rounding),
+the others through the C core, on whichever thread decodes, from the next decode on. The pixels are the core's; a PNG
+whose alpha libpng would composite through gamma tables (a `gAMA`, `sRGB`, `iCCP` or `cICP` chunk) goes back to the
+C core with the bytes already read; error texts are the crate's. Test primitive: `nidhogg-workers--test-image-rust`
+(the Rust formats, decodes and hand-backs).
 **Images decode on `nh-img` during redisplay.** With `nidhogg-workers-images` and `nidhogg-image-defer` on (both are by default), a PNG,
 JPEG, GIF or WebP that redisplay meets for the first time (on a Cairo frame) is decoded on `nh-img` (up to two
 threads, one per two cores) from a copy of its `:data` or its file name, with the frame's and face's colours resolved

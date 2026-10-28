@@ -25,6 +25,8 @@ pub const EXPORTS: &[&str] = &[
     "glitnir_damage_forget",
     "glitnir_damage_pending",
     "glitnir_debug_panic",
+    "glitnir_img_decode",
+    "glitnir_img_free",
     "glitnir_layer_remove",
     "glitnir_layer_set_chrome",
     "glitnir_layer_upsert",

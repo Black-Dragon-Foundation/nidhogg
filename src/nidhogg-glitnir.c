@@ -28,6 +28,10 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #ifdef HAVE_PGTK
 #include "glitnir-pgtk.h"
 #endif
+#ifdef HAVE_NIDHOGG_WORKERS
+/* glitnir-images.c: the image decoders on the image worker.  */
+extern void syms_of_glitnir_images (void);
+#endif
 
 DEFUN ("glitnir-active-p", Fglitnir_active_p, Sglitnir_active_p, 0, 1, 0,
        doc: /* Return non-nil if Glitnir (the compositor) draws FRAME.
@@ -641,6 +645,9 @@ whole frame.  `damage-hold' (for tests) keeps each frame's damage until
 point; the points then present whole frames.  */);
   Vglitnir_debug = Qnil;
 
+#ifdef HAVE_NIDHOGG_WORKERS
+  syms_of_glitnir_images ();
+#endif
   Fprovide (intern_c_string ("glitnir"), Qnil);
 }
 

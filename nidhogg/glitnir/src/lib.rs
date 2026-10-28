@@ -8,6 +8,8 @@ pub mod compose;
 pub mod damage;
 pub mod ffi;
 pub mod geom;
+#[cfg(feature = "images")]
+pub mod images;
 pub mod kernels;
 #[cfg(all(test, feature = "pixman-oracle"))]
 mod oracle;
