@@ -453,7 +453,7 @@ nhg_export! {
     }
 }
 
-// ---- The keyboard (`keys.rs`, `focus.rs`) --------------------------------------------------------------------------
+// ---- The keyboard (`keys.rs`, `focus.rs`)--------------------------------------------------------------------------
 
 nhg_export! {
     /// The window that has the keyboard focus, as the last focus event said, into `*out` (0: none of ours).  Neither
@@ -468,5 +468,212 @@ nhg_export! {
         // SAFETY: non-null and writable (the caller's promise).
         unsafe { out.write(state.keyboard().window) };
         Ok(NHG_OK)
+    }
+}
+
+// ---- Selections, display queries, the bench, the bell and the pointer (`select.rs`, `query.rs`, `bench.rs`) --------
+//
+// KIND is `NHSHELL_SEL_CLIPBOARD` 0 or `NHSHELL_SEL_PRIMARY` 1.  A buffer a call lends (`nhg_selection_types`, `_read`)
+// stays valid until the next call of the same entry point on the display.
+
+use crate::bench::{NhgBenchOut, full_redraw};
+use crate::query::{self, NhgDisplayInfo, NhgMonitor};
+use crate::select;
+use nhshell::api::NHSHELL_CURSOR_HIDDEN;
+use std::ffi::CStr;
+
+nhg_export! {
+    /// Offer `n` types as selection `kind`: `mimes[i]` with the `lens[i]` bytes at `data[i]` (copied).  `NHG_E_STATE`
+    /// without keyboard focus.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `mimes`, `data` and `lens` hold `n` entries each (any may be null when `n` is
+    /// 0), each `mimes[i]` is NUL-terminated and each `data[i]` holds `lens[i]` bytes (null allowed when that is 0).
+    fn nhg_selection_set(d: *mut NhgDisplay, kind: u32, mimes: *const *const c_char, data: *const *const u8,
+                         lens: *const usize, n: usize) -> i32 |state| {
+        if n > 0 && (mimes.is_null() || data.is_null() || lens.is_null()) {
+            return Err(GlueError::Arg);
+        }
+        let mut items: Vec<(&str, &[u8])> = Vec::new();
+        items.try_reserve(n).map_err(|_| GlueError::NoMem)?;
+        for i in 0..n {
+            // SAFETY: `n` entries each (the caller's promise).
+            let (m, p, len) = unsafe { (*mimes.add(i), *data.add(i), *lens.add(i)) };
+            if m.is_null() {
+                return Err(GlueError::Arg);
+            }
+            // SAFETY: NUL-terminated (the caller's promise).
+            let mime = unsafe { CStr::from_ptr(m) }.to_str().map_err(|_| GlueError::Arg)?;
+            let bytes: &[u8] = match (len, p.is_null()) {
+                (0, _) => &[],
+                (_, true) => return Err(GlueError::Arg),
+                // SAFETY: `len` bytes (the caller's promise).
+                (_, false) => unsafe { std::slice::from_raw_parts(p, len) },
+            };
+            items.push((mime, bytes));
+        }
+        select::set(state, kind, &items)?;
+        Ok(0)
+    }
+}
+
+nhg_export! {
+    /// Give selection `kind` up.  1 when this process owned it, 0 when it did not.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_selection_disown(d: *mut NhgDisplay, kind: u32) -> i32 |state| {
+        Ok(i32::from(select::disown(state, kind)?))
+    }
+}
+
+nhg_export! {
+    /// 1 while this process's source is the current selection `kind`, else 0.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_selection_owned(d: *mut NhgDisplay, kind: u32) -> i32 |state| {
+        Ok(i32::from(select::owned(state, kind)?))
+    }
+}
+
+nhg_export! {
+    /// The current MIME types of selection `kind`: their number is returned (0: no selection), and `*out`/`*len` get
+    /// the types, each followed by a NUL, and their byte count.  Either may be null to ask for the number alone.
+    /// Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `out` and `len` are null or writable.
+    fn nhg_selection_types(d: *mut NhgDisplay, kind: u32, out: *mut *const c_char, len: *mut usize) -> i32 |state| {
+        let (n, bytes) = select::types(state, kind)?;
+        if !out.is_null() {
+            // SAFETY: non-null and writable (the caller's promise).
+            unsafe { out.write(bytes.as_ptr().cast()) };
+        }
+        if !len.is_null() {
+            // SAFETY: non-null and writable (the caller's promise).
+            unsafe { len.write(bytes.len()) };
+        }
+        i32::try_from(n).map_err(|_| GlueError::NoMem)
+    }
+}
+
+nhg_export! {
+    /// Selection `kind` as `mime`: our own bytes at once, another client's within `timeout_ms` (`NHG_E_TIMEOUT`;
+    /// `NHG_E_DISCONNECTED` within 100 ms of the connection's loss).  `NHG_E_STATE` without a selection or without
+    /// that type.  The bytes go to `*out` and `*len`.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `mime` is NUL-terminated; `out` and `len` are null or writable.
+    fn nhg_selection_read(d: *mut NhgDisplay, kind: u32, mime: *const c_char, timeout_ms: u32, out: *mut *const u8,
+                          len: *mut usize) -> i32 |state| {
+        if mime.is_null() || out.is_null() || len.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: non-null and NUL-terminated (the caller's promise).
+        let mime = unsafe { CStr::from_ptr(mime) }.to_str().map_err(|_| GlueError::Arg)?;
+        let bytes = select::read(state, kind, mime, timeout_ms)?;
+        // SAFETY: non-null and writable (checked above and the caller's promise).
+        unsafe {
+            out.write(bytes.as_ptr());
+            len.write(bytes.len());
+        }
+        Ok(0)
+    }
+}
+
+nhg_export! {
+    /// An output the shell reported (`OUTPUT_ADD` or `OUTPUT_CHANGE`): add it, or replace the one with its id.  1 when
+    /// it is kept, 0 when the list is full.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `m` is null or readable.
+    fn nhg_monitor_set(d: *mut NhgDisplay, m: *const NhgMonitor) -> i32 |state| {
+        // SAFETY: null or readable (the caller's promise).
+        let m = unsafe { m.as_ref() }.ok_or(GlueError::Arg)?;
+        Ok(i32::from(state.monitors.set(m)))
+    }
+}
+
+nhg_export! {
+    /// An output went (`OUTPUT_REMOVE`).  1 when it was known, 0 when not.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_monitor_remove(d: *mut NhgDisplay, id: u64) -> i32 |state| {
+        Ok(i32::from(state.monitors.remove(id)))
+    }
+}
+
+nhg_export! {
+    /// The display as `x-display-*` reads it, in `out`.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `out` is null or writable.
+    fn nhg_display_info(d: *mut NhgDisplay, out: *mut NhgDisplayInfo) -> i32 |state| {
+        if out.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe { out.write(query::info(state)) };
+        Ok(0)
+    }
+}
+
+nhg_export! {
+    /// Present `frames` frames of the tree `s` (`n` surfaces as `nhg_present` takes them, bottom to top, the root
+    /// first), each damaged whole and presented through the presenter, and time them (`out`).  `NHG_E_ARG` for
+    /// `frames` outside 1 to 100000 or no surface; `NHG_E_STATE` when the root is not registered, has no backing, or
+    /// fewer than two frames committed (`out->frames` says how many did).  Waits at most 5 s for each frame.  Reads
+    /// pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `s` holds `n` readable surfaces; `out` is null or writable.
+    fn nhg_bench_full_redraw(d: *mut NhgDisplay, s: *const NhgSurface, n: usize, frames: u32, out: *mut NhgBenchOut) -> i32 |state| {
+        if out.is_null() || s.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: non-null, with `n` readable surfaces (the caller's promise).
+        let list = unsafe { std::slice::from_raw_parts(s, n) };
+        let r = full_redraw(state, list, frames)?;
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe { out.write(r) };
+        if r.frames < 2 {
+            return Err(GlueError::State);
+        }
+        Ok(0)
+    }
+}
+
+nhg_export! {
+    /// Ring the system bell on `window`'s surface (0: none), at most once per 20 ms.  `NHG_E_UNSUPPORTED` without the
+    /// protocol.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_bell(d: *mut NhgDisplay, window: u64) -> i32 |state| {
+        if window != 0 {
+            state.frame(window)?;
+        }
+        let sh = state.shell();
+        // SAFETY: the display's handle, used by this call only.
+        unsafe { query::backend(sh) }.bell(window)?;
+        Ok(0)
+    }
+}
+
+nhg_export! {
+    /// Show (`on`) the pointer over `window` as `shape` (`NHSHELL_CURSOR_*`), or hide it.  Neither reads nor writes
+    /// pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_pointer_visible(d: *mut NhgDisplay, window: u64, on: i32, shape: u32) -> i32 |state| {
+        state.frame(window)?;
+        let sh = state.shell();
+        // SAFETY: the display's handle, used by this call only.
+        let backend = unsafe { query::backend(sh) };
+        backend.set_cursor(window, if on != 0 { shape } else { NHSHELL_CURSOR_HIDDEN })?;
+        Ok(0)
     }
 }
