@@ -630,6 +630,40 @@ int32_t nhg_layers_sync (NhgDisplay *d, uint64_t window, uint64_t frame, const N
 /* How many of FRAME's windows are their own outputs.  */
 int32_t nhg_layers_count (NhgDisplay *d, uint64_t frame);
 
+/* ---- The visible bell, idle inhibition, export handles and activation tokens ------------------------------------ */
+
+/* The frame facts the visible bell's rows come from (pgtk_flash's): the native area, the line height, the internal
+   border and the top and bottom margins, in device pixels.  */
+typedef struct
+{
+  int32_t width, height, line_h, border, top_margin, bottom_margin;
+} NhgBellGeom;
+
+/* The visible bell: invert the rows G names (the top and bottom line of a tall frame, all of a short one) in the
+   backing of the frame with key KEY, keep what they held and damage them.  Returns the rows inverted.  A flash still
+   showing is put back first.  NHG_E_STATE for a frame without a backing.  Writes pixels: flush the surface before and
+   mark it dirty after.  */
+int32_t nhg_bell_flash (NhgDisplay *d, uint64_t key, const NhgBellGeom *g);
+
+/* Put back what nhg_bell_flash inverted, except the pixels a draw has replaced since (damage and scroll release
+   them), and damage the rows.  Returns the rows written, 0 when none were left.  Writes pixels: flush before, mark
+   dirty after.  C calls it from its 50 ms atimer, and cancels the timer when the frame goes.  */
+int32_t nhg_bell_restore (NhgDisplay *d, uint64_t key);
+
+/* Hold (ON non-zero) or release an idle inhibitor on WINDOW's surface.  1 when that changed it, 0 when it was so
+   already.  NHG_E_UNSUPPORTED without the protocol.  */
+int32_t nhg_inhibit_idle (NhgDisplay *d, uint64_t window, int32_t on);
+
+/* The xdg-foreign handle of WINDOW's top-level (a child frame's root), without a scheme prefix, exported at the first
+   call and kept until the window goes; waits at most TIMEOUT_MS.  NUL-terminated into BUF (CAP bytes), the length
+   into *LEN (may be NULL).  NHG_E_TIMEOUT, NHG_E_UNSUPPORTED without the exporter, NHG_E_TOO_SMALL.  */
+int32_t nhg_window_export (NhgDisplay *d, uint64_t window, uint32_t timeout_ms, char *buf, size_t cap, size_t *len);
+
+/* A fresh activation token made on WINDOW's top-level with the newest input serial, within TIMEOUT_MS, into BUF as
+   above.  NHG_E_STATE before any input, NHG_E_TIMEOUT, NHG_E_UNSUPPORTED, NHG_E_TOO_SMALL.  */
+int32_t nhg_activation_token (NhgDisplay *d, uint64_t window, uint32_t timeout_ms, char *buf, size_t cap,
+                              size_t *len);
+
 #ifdef __cplusplus
 }
 #endif

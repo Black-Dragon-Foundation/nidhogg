@@ -84,6 +84,8 @@ pub struct Frame {
     /// A top-level: it lost the keyboard to a grabbing popup frame of its own, and keeps Emacs's focus meanwhile
     /// (`popup.rs`).
     pub focus_lent: bool,
+    /// The window holds an idle inhibitor (`bell.rs`).
+    pub idle_inhibited: bool,
 }
 
 impl Frame {
