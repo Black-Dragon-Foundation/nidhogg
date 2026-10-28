@@ -521,8 +521,8 @@ pub unsafe extern "C" fn glitnir_decor_sprite_put(
         let px: Vec<u32> = (0..hu)
             .flat_map(|r| src[r * row..][..wu].iter().copied())
             .collect();
-        let mut st = crate::STATE.lock().unwrap_or_else(|p| p.into_inner());
-        st.sprites.put(key, px, w, h);
+        // a snapshot still holding the cache keeps its own copy
+        std::sync::Arc::make_mut(&mut crate::state().sprites).put(key, px, w, h);
         GLITNIR_OK
     })
 }
@@ -530,10 +530,7 @@ pub unsafe extern "C" fn glitnir_decor_sprite_put(
 /// 1 if KEY is cached (counts as a use), else 0.
 #[unsafe(no_mangle)]
 pub extern "C" fn glitnir_decor_sprite_has(key: u64) -> i32 {
-    ffi_guard(|| {
-        let mut st = crate::STATE.lock().unwrap_or_else(|p| p.into_inner());
-        i32::from(st.sprites.has(key))
-    })
+    ffi_guard(|| i32::from(crate::state().sprites.has(key)))
 }
 
 /// Remove layer ID, and every layer under it, from ROOT's scene.
