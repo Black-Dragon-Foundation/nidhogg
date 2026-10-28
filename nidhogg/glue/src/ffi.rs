@@ -606,18 +606,13 @@ nhg_export! {
 }
 
 nhg_export! {
-    /// Ring the system bell on `window`'s surface (0: none), at most once per 20 ms.  `NHG_E_UNSUPPORTED` without the
-    /// protocol.  Neither reads nor writes pixels.
+    /// Ring the system bell on the root surface of `window`'s tree (a child frame rings on its top-level; 0: no
+    /// surface), at most once per 20 ms.  `NHG_E_UNSUPPORTED` without the protocol.  Neither reads nor writes pixels.
     ///
     /// # Safety
     /// `d` is null or a live display.
     fn nhg_bell(d: *mut NhgDisplay, window: u64) -> i32 |state| {
-        if window != 0 {
-            state.frame(window)?;
-        }
-        let sh = state.shell();
-        // SAFETY: the display's handle, used by this call only.
-        unsafe { query::backend(sh) }.bell(window)?;
+        crate::bell::ring(state, window)?;
         Ok(0)
     }
 }
@@ -1198,5 +1193,72 @@ nhg_export! {
     fn nhg_layers_count(d: *mut NhgDisplay, frame: u64) -> i32 |state| {
         let n = crate::layers::count(&mut state.backings, frame);
         Ok(i32::try_from(n).unwrap_or(i32::MAX))
+    }
+}
+
+// ---- The visible bell, idle inhibition, export handles and activation tokens (`bell.rs`) ---------------------------
+
+nhg_export! {
+    /// The visible bell: invert the rows `g` names (the top and bottom line, or all of a short frame) in the backing
+    /// of the frame with key `key`, and damage them.  Returns how many rows were inverted.  C puts them back with
+    /// `nhg_bell_restore` 50 ms later.  Writes pixels: C flushes the surface before and marks it dirty after.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `g` is null or points to a readable `NhgBellGeom`.
+    fn nhg_bell_flash(d: *mut NhgDisplay, key: u64, g: *const crate::bell::NhgBellGeom) -> i32 |state| {
+        // SAFETY: null or readable (the caller's promise).
+        let g = unsafe { g.as_ref() }.ok_or(GlueError::Arg)?;
+        crate::bell::flash(state, key, g)
+    }
+}
+
+nhg_export! {
+    /// Put back what `nhg_bell_flash` inverted, except the pixels a draw has replaced since, and damage the rows.
+    /// Returns how many rows were written (0: nothing was left to put back).  Writes pixels: C flushes the surface
+    /// before and marks it dirty after.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_bell_restore(d: *mut NhgDisplay, key: u64) -> i32 |state| {
+        Ok(state.backings.unflash(key)?)
+    }
+}
+
+nhg_export! {
+    /// Hold (`on` non-zero) or release an idle inhibitor on `window`'s surface.  Returns 1 when that changed it, 0
+    /// when it was so already.  `NHG_E_UNSUPPORTED` without the protocol.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_inhibit_idle(d: *mut NhgDisplay, window: u64, on: i32) -> i32 |state| {
+        Ok(i32::from(crate::bell::inhibit_idle(state, window, on != 0)?))
+    }
+}
+
+nhg_export! {
+    /// The xdg-foreign handle of `window`'s top-level (no scheme prefix), exported at the first call and kept until
+    /// the window goes, waiting at most `timeout_ms`: NUL-terminated into `buf` (`cap` bytes), its length into `*len`.
+    /// `NHG_E_TIMEOUT`, `NHG_E_UNSUPPORTED` without the exporter, `NHG_E_TOO_SMALL`.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `buf` is null or holds `cap` writable bytes; `len` is null or writable.
+    fn nhg_window_export(d: *mut NhgDisplay, window: u64, timeout_ms: u32, buf: *mut c_char, cap: usize, len: *mut usize) -> i32 |state| {
+        let handle = crate::bell::export(state, window, timeout_ms)?;
+        // SAFETY: `buf` and `len` are null or valid (the caller's promise).
+        unsafe { crate::bell::put(&handle, buf, cap, len) }
+    }
+}
+
+nhg_export! {
+    /// A fresh activation token made on `window`'s top-level with the newest input serial, within `timeout_ms`:
+    /// NUL-terminated into `buf` (`cap` bytes), its length into `*len`.  `NHG_E_STATE` before any input,
+    /// `NHG_E_TIMEOUT`, `NHG_E_UNSUPPORTED` without the protocol, `NHG_E_TOO_SMALL`.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `buf` is null or holds `cap` writable bytes; `len` is null or writable.
+    fn nhg_activation_token(d: *mut NhgDisplay, window: u64, timeout_ms: u32, buf: *mut c_char, cap: usize, len: *mut usize) -> i32 |state| {
+        let token = crate::bell::token(state, window, timeout_ms)?;
+        // SAFETY: `buf` and `len` are null or valid (the caller's promise).
+        unsafe { crate::bell::put(&token, buf, cap, len) }
     }
 }
