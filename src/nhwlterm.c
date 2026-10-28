@@ -145,9 +145,9 @@ check_x_display_info (Lisp_Object frame)
    frames (another display, a tty, the daemon's own frame).  With no
    frame left Emacs exits with status 70, as xterm does: before the
    deletion, since delete_frame would otherwise kill Emacs from inside
-   it.  Frees DPYINFO.  */
+   it.  WHY says what happened.  Frees DPYINFO.  */
 static void
-nhwl_connection_lost (struct nhwl_display_info *dpyinfo)
+nhwl_connection_lost (struct nhwl_display_info *dpyinfo, const char *why)
 {
   struct terminal *t = dpyinfo->terminal, *p;
   Lisp_Object tail, frame;
@@ -163,7 +163,7 @@ nhwl_connection_lost (struct nhwl_display_info *dpyinfo)
     }
   if (!other)
     {
-      fprintf (stderr, "nidhogg-wayland: connection to the display lost\n");
+      fprintf (stderr, "nidhogg-wayland: %s\n", why);
       shut_down_emacs (0, Qnil);
       exit (70);
     }
@@ -931,6 +931,39 @@ nhwl_to_device (int logical, uint32_t s120)
   return (int) roundf ((float) logical * (float) s120 / 120.0f);
 }
 
+/* Make a shell window from DESC and register it with the glue as a frame
+   of kind FLAGS (NHG_FRAME_*); its id goes to *ID.  The shell's code, or
+   0.  Until windows are made through the glue, every window is made and
+   destroyed here (nhwl_window_destroy), so the glue's frame registry
+   follows them.  */
+int
+nhwl_window_new (struct nhwl_display_info *dpyinfo, NhShellWindowDesc *desc,
+		 uint32_t flags, uint64_t *id)
+{
+  int rc = nhshell_window_new (dpyinfo->shell, desc, id);
+
+  if (rc >= 0)
+    nhwl_glue_rc (dpyinfo, NHG (nhg_frame_register (dpyinfo->glue, *id, flags)));
+  return rc;
+}
+
+/* The glue forgets WINDOW, whose shell window is gone or going.  A
+   poisoned glue answers NHG_E_PANIC, which is ignored here: the display
+   is going already.  */
+void
+nhwl_window_forget (struct nhwl_display_info *dpyinfo, uint64_t window)
+{
+  nhwl_glue_rc (dpyinfo, NHG (nhg_frame_forget (dpyinfo->glue, window)));
+}
+
+/* Destroy shell window WINDOW, and forget it in the glue.  */
+void
+nhwl_window_destroy (struct nhwl_display_info *dpyinfo, uint64_t window)
+{
+  nhshell_window_destroy (dpyinfo->shell, window);
+  nhwl_window_forget (dpyinfo, window);
+}
+
 /* Create frame F's shell window at its current pixel size.  Adapted from
    xg_create_frame_widgets' role in pgtk.  */
 void
@@ -966,7 +999,8 @@ nhwl_create_frame_window (struct frame *f)
     }
 
   block_input ();
-  rc = nhshell_window_new (dpyinfo->shell, &desc, &id);
+  rc = nhwl_window_new (dpyinfo, &desc,
+			nhwl_child_p (f) ? NHG_FRAME_CHILD : 0, &id);
   unblock_input ();
   if (rc < 0)
     error ("nidhogg-wayland: cannot create a window (%d)", rc);
@@ -1428,7 +1462,7 @@ nhwl_free_frame_resources (struct frame *f)
   if (out->window && dpyinfo->shell)
     {
       nhshell_text_input_enable (dpyinfo->shell, out->window, 0);
-      nhshell_window_destroy (dpyinfo->shell, out->window);
+      nhwl_window_destroy (dpyinfo, out->window);
     }
   out->window = 0;
 
@@ -2654,6 +2688,38 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
   return count;
 }
 
+/* The reports of the glue's panics, newest first, for
+   (nhwl-glue-panics).  */
+static Lisp_Object nhwl_glue_panic_list;
+
+/* The glue poisoned DPYINFO's display (a panic inside it, or a call that
+   found the display's state locked).  Its report goes to stderr and to
+   (nhwl-glue-panics), and the display goes as if the compositor had: its
+   frames are deleted, Emacs and a daemon stay.  No reconnect is tried,
+   because a panic is a bug.  Frees DPYINFO.  */
+static void
+nhwl_glue_lost (struct nhwl_display_info *dpyinfo)
+{
+  Lisp_Object report = build_string ("(the glue kept no report)");
+  size_t len = 0;
+
+  if (NHG (nhg_panic_message (dpyinfo->glue, NULL, 0, &len)) == NHG_OK
+      && len > 0)
+    {
+      char *buf = xmalloc (len + 1);
+
+      if (NHG (nhg_panic_message (dpyinfo->glue, buf, len + 1, &len)) == NHG_OK)
+	{
+	  fprintf (stderr, "nidhogg-wayland: internal error in the shell glue:\n%s\n",
+		   buf);
+	  report = build_string_from_utf8 (buf);
+	}
+      xfree (buf);
+    }
+  nhwl_glue_panic_list = Fcons (report, nhwl_glue_panic_list);
+  nhwl_connection_lost (dpyinfo, "internal error in the shell glue");
+}
+
 /* The terminal's read_socket_hook.  */
 static int
 nhwl_read_socket (struct terminal *terminal, struct input_event *hold_quit)
@@ -2663,13 +2729,23 @@ nhwl_read_socket (struct terminal *terminal, struct input_event *hold_quit)
 
   if (!dpyinfo || !dpyinfo->shell)
     return 0;
+  /* A call whose code went unchecked (the drawing calls) may have poisoned
+     the glue: any call answers NHG_E_PANIC then, and nhg_fd is a cheap
+     one.  */
+  if (dpyinfo->glue_broken
+      || NHG (nhg_fd (dpyinfo->glue)) == NHG_E_PANIC)
+    {
+      /* Frees DPYINFO, as below.  */
+      nhwl_glue_lost (dpyinfo);
+      return 0;
+    }
   n = nhwl_drain_events (dpyinfo, hold_quit);
   if (dpyinfo->connection_lost)
     {
       /* Frees DPYINFO and clears TERMINAL's pointer to it.  gobble_input
 	 calls this hook again while it returns more than 0, so the events
 	 this drain stored are not counted.  */
-      nhwl_connection_lost (dpyinfo);
+      nhwl_connection_lost (dpyinfo, "connection to the display lost");
       return 0;
     }
   return n;
@@ -3043,13 +3119,13 @@ nhwl_term_init (Lisp_Object display_name)
       x_initialized = true;
     }
 
-  glue = nhg_open (strlen (dpy_name) ? dpy_name : NULL, NULL, 0);
+  glue = NHG (nhg_open (strlen (dpy_name) ? dpy_name : NULL, NULL, 0));
   if (!glue)
     {
       unblock_input ();
       return 0;
     }
-  shell = nhg_shell (glue);
+  shell = NHG (nhg_shell (glue));
 
   if (strlen (dpy_name) == 0)
     {
@@ -3062,7 +3138,7 @@ nhwl_term_init (Lisp_Object display_name)
   dpyinfo = xzalloc (sizeof *dpyinfo);
   dpyinfo->glue = glue;
   dpyinfo->shell = shell;
-  dpyinfo->connection = nhg_fd (glue);
+  dpyinfo->connection = nhwl_glue_rc (dpyinfo, NHG (nhg_fd (glue)));
   nhshell_caps (shell, &dpyinfo->caps);
   terminal = nhwl_create_terminal (dpyinfo);
 
@@ -3202,7 +3278,9 @@ nhwl_delete_terminal (struct terminal *terminal)
 	delete_keyboard_wait_descriptor (dpyinfo->connection);
       dpyinfo->connection = -1;
 
-      nhg_close (dpyinfo->glue);
+      /* On a poisoned display this shuts the connection down and leaks
+	 the rest.  */
+      NHG (nhg_close (dpyinfo->glue));
       dpyinfo->glue = NULL;
       dpyinfo->shell = NULL;
     }
@@ -3344,10 +3422,47 @@ between two presents.  The motion bench of the W0 budgets.  */)
   return r;
 }
 
+DEFUN ("nhwl-glue-panics", Fnhwl_glue_panics, Snhwl_glue_panics, 0, 0, 0,
+       doc: /* Return the reports of the shell glue's panics, newest first.
+Each is a string: the panic's message and location, then a backtrace.  A
+panic inside the glue drops the display it happened on; Emacs keeps
+running.  */)
+  (void)
+{
+  return Fcopy_sequence (nhwl_glue_panic_list);
+}
+
+#ifdef ENABLE_CHECKING
+DEFUN ("nhwl--test-glue-panic", Fnhwl__test_glue_panic,
+       Snhwl__test_glue_panic, 0, 1, 0,
+       doc: /* Make the shell glue panic on FRAME's display.
+FRAME defaults to the selected frame.  The display is dropped at the
+next read of input.  Return the glue's code (-1 for a panic).  For
+tests; only in builds with checking.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+  struct nhwl_display_info *dpyinfo;
+  int32_t rc;
+
+  if (!FRAME_NHWL_P (f))
+    error ("Not a Nidhogg shell frame");
+  dpyinfo = FRAME_DISPLAY_INFO (f);
+  rc = NHG (nhg_test_panic (dpyinfo->glue));
+  return make_fixnum (nhwl_glue_rc (dpyinfo, rc));
+}
+#endif
+
 void
 syms_of_nhwlterm (void)
 {
   defsubr (&Snhwl__bench_full_redraw);
+  defsubr (&Snhwl_glue_panics);
+#ifdef ENABLE_CHECKING
+  defsubr (&Snhwl__test_glue_panic);
+#endif
+  nhwl_glue_panic_list = Qnil;
+  staticpro (&nhwl_glue_panic_list);
 
   DEFSYM (Qmodifier_value, "modifier-value");
   DEFSYM (Qalt, "alt");

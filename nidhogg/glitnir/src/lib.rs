@@ -49,6 +49,11 @@ pub fn mark_compose_thread() {
     COMPOSE_THREAD.set(true);
 }
 
+/// Whether the calling thread is a compose thread (the shell glue refuses to run there).
+pub fn is_compose_thread() -> bool {
+    COMPOSE_THREAD.get()
+}
+
 /// Lock the global state (a poisoned lock is taken as it is).  Debug builds check that the caller is not a compose
 /// thread.
 pub(crate) fn state() -> MutexGuard<'static, State> {

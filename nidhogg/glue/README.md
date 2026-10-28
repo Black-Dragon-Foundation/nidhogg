@@ -47,4 +47,28 @@ Without `rust-gdb`, load the printers by hand: `gdb -iex "add-auto-load-safe-pat
 applies to the C frames.
 
 A panic inside the glue is caught at the entry point and reported as `NHG_E_PANIC`; the display it happened on is
-dropped and Emacs keeps running. `(nhwl-glue-panics)` returns the first panic's message, location and backtrace.
+dropped and Emacs keeps running. `(nhwl-glue-panics)` returns the reports of the dropped displays, newest first: each
+panic's message, location and backtrace, which also go to stderr when the display is dropped.
+
+## The guard
+
+Every entry point is written with `nhg_export!` (`src/guard.rs`), which runs its body in `guard` (or `unlocked`, for
+the calls that take no display lock); `tests/ffi.rs` (`ffi::every_extern_comes_from_nhg_export`) fails on any
+`extern "C"` function written by hand. The guard, in order:
+
+1. **Stack headroom.** With less than 256 KiB of stack left (`pthread_getattr_np`, read once per thread) the call
+   returns `NHG_E_NOMEM` and nothing is poisoned: a stack probe near the end of the stack would land in Emacs's
+   SIGSEGV handler, which `siglongjmp`s.
+2. **`try_lock`** on the display's state. A held lock means a call re-entered, or a `longjmp` abandoned one: the
+   display is poisoned instead of hanging Emacs.
+3. **`catch_unwind`.** A panic poisons the display and keeps its first report; the backtrace is captured at once and
+   resolved when the report is read, so the call returns at once.
+
+A poisoned display answers `NHG_E_PANIC` to everything but `nhg_panic_message` and `nhg_close`. C sets
+`glue_broken`, and the next `read_socket_hook` drops the display as if the compositor had gone. `nhg_close` then
+touches nothing behind the lock: it shuts the connection's socket down (the compositor destroys our windows), stops
+the shell's threads (`ShellBackend::abandon`), waits at most 100 ms for each and leaks the rest.
+
+C makes every call through `NHG (…)` (`src/nhwlterm.h`), which clears `waiting_for_input` around it, so that SIGINT's
+`longjmp` to `read_char` never crosses a Rust frame; `nm-check.sh` fails on a call outside it. The tests and the
+`--full` archive build with the feature `test-hooks`.

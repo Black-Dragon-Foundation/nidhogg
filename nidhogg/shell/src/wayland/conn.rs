@@ -10,7 +10,7 @@
 //!   and flushes;
 //! - when the connection fails the reader posts one `DISCONNECTED` record and closes the records.
 
-use crate::api::{ShellError, ShellResult};
+use crate::api::{ShellError, ShellResult, ThreadDone};
 use crate::event::{NHSHELL_EV_DISCONNECTED, NHSHELL_EV_KEY, NhShellEvent};
 use crate::wayland::selection::Selections;
 use crate::wayland::serial::SerialTracker;
@@ -190,6 +190,8 @@ pub struct Shared {
     /// A drag is in progress on the seat (another client's over our surfaces, or our own source's): the compositor
     /// holds the pointer, so a popup takes no grab.
     pub dragging: AtomicBool,
+    /// The reader thread has finished (its last act).
+    pub reader_done: ThreadDone,
 }
 
 fn relock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -213,6 +215,7 @@ impl Shared {
             pointer: Mutex::default(),
             selections: Mutex::default(),
             dragging: AtomicBool::new(false),
+            reader_done: ThreadDone::default(),
         })
     }
 
