@@ -1017,6 +1017,31 @@ nhwl_window_visible (struct frame *f, bool on)
 		  NHG (nhg_window_visible (FRAME_NHG (f), window, on)));
 }
 
+/* F's name in the compositor's session, or nil: no session restore, a
+   replaced session, or a switch that is off.  Lisp decides (the first
+   frame on a display is "initial", the others keep their `session-name'
+   parameter or get a generated one) and opens the session at the
+   display's first frame, before its window exists, so the window can join
+   it before its first commit.  The name is kept in F's parameters, where
+   frameset saves it.  */
+static Lisp_Object
+nhwl_session_name (struct frame *f)
+{
+  struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
+  bool first = !dpyinfo->session_first_done;
+  Lisp_Object frame, name;
+
+  XSETFRAME (frame, f);
+  dpyinfo->session_first_done = true;
+  if (first)
+    safe_calln (Qnhwl_session_start, frame);
+  name = safe_calln (Qnhwl_session_name, frame, first ? Qt : Qnil);
+  if (!STRINGP (name))
+    return Qnil;
+  store_in_alist (&f->param_alist, Qsession_name, name);
+  return name;
+}
+
 /* Create frame F's shell window at its current pixel size.  Adapted from
    xg_create_frame_widgets' role in pgtk.  */
 void
@@ -1027,6 +1052,7 @@ nhwl_create_frame_window (struct frame *f)
   NhShellWindowDesc desc;
   Lisp_Object title;
   Lisp_Object encoded = Qnil;
+  Lisp_Object encoded_name = Qnil;
   uint64_t id = 0;
   int rc;
 
@@ -1049,6 +1075,16 @@ nhwl_create_frame_window (struct frame *f)
       desc.w = max (1, nhwl_to_logical (FRAME_PIXEL_WIDTH (f), out->scale120));
       desc.h = max (1, nhwl_to_logical (FRAME_PIXEL_HEIGHT (f), out->scale120));
       nhwl_child_describe (f, &desc);
+    }
+  else
+    {
+      Lisp_Object name = nhwl_session_name (f);
+
+      if (STRINGP (name))
+	{
+	  encoded_name = ENCODE_UTF_8 (name);
+	  desc.session_name = SSDATA (encoded_name);
+	}
     }
 
   block_input ();
@@ -2967,6 +3003,30 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
       XSETTERMINAL (ie.arg, dpyinfo->terminal);
       kbd_buffer_store_event_hold (&ie, hold_quit);
       return 1;
+
+    case NHG_ACT_SESSION:
+      /* The compositor answered the session request, or another client
+	 took the session over: Lisp keeps the id and stops naming.  */
+      {
+	char buf[256];
+	size_t len = 0;
+	Lisp_Object state = (a->code == NHG_SESSION_CREATED
+			     ? Qnhwl_session_created
+			     : a->code == NHG_SESSION_RESTORED
+			     ? Qnhwl_session_restored : Qnhwl_session_replaced);
+	Lisp_Object id = Qnil;
+
+	if (a->code != NHG_SESSION_REPLACED
+	    && nhwl_glue_rc (dpyinfo, NHG (nhg_session_id (dpyinfo->glue, buf,
+							    sizeof buf, &len)))
+	       >= 0)
+	  id = make_string (buf, len);
+	EVENT_INIT (ie);
+	ie.kind = NHWL_SESSION_EVENT;
+	ie.arg = Fcons (state, id);
+	kbd_buffer_store_event_hold (&ie, hold_quit);
+	return 1;
+      }
 
     case NHG_ACT_SELECTION_CLEAR:
       /* Another client took a selection we owned.  */
