@@ -17,6 +17,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 xkbcommon = { version = "0.8", features = ["wayland"] }
 png = "0.17"
+# the xdg session-management protocol, which Smithay 0.7 lacks, is generated from protocols/ (src/extras.rs)
+wayland-backend = "0.3"
+wayland-scanner = "0.31"
 
 [dev-dependencies]
 wayland-client = "0.31"

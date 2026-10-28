@@ -191,4 +191,153 @@
           (should (= (cdr (assoc "trace lines" wl-trace-check-counts)) 4)))
       (delete-file file))))
 
+(defconst wl-trace-check-test--grab
+  '((1000.0 "> xdg_wm_base@10.get_xdg_surface(new id xdg_surface@20, wl_surface@5)")
+    (1000.1 "> xdg_surface@20.get_toplevel(new id xdg_toplevel@21)")
+    (1000.2 "> xdg_surface@22.get_popup(new id xdg_popup@23, xdg_surface@20, xdg_positioner@24)")
+    (1000.3 "> xdg_surface@25.get_popup(new id xdg_popup@26, xdg_surface@22, xdg_positioner@24)")
+    (1000.4 "> xdg_surface@27.get_popup(new id xdg_popup@28, xdg_surface@22, xdg_positioner@24)")
+    (1001.0 "wl_pointer@8.button(9, 1000, 272, 1)"))
+  "Toplevel xdg_surface 20, popups 23 (on it), 26 and 28 (both on popup 23), and a press with serial 9.")
+
+(ert-deftest wl-trace-check/grab-rule ()
+  ;; a grab with a seen press, on a toplevel, then a child of the grabbing popup: clean
+  (should-not (wl-trace-check-test--run
+               '("grab")
+               wl-trace-check-test--grab
+               '(1002.0 "> xdg_popup@23.grab(wl_seat@6, 9)")
+               '(1002.1 "> xdg_popup@26.grab(wl_seat@6, 9)")))
+  ;; a serial no press carried
+  (let ((v (wl-trace-check-test--run
+            '("grab")
+            wl-trace-check-test--grab
+            '(1002.0 "> xdg_popup@23.grab(wl_seat@6, 77)"))))
+    (should (= (length v) 1))
+    (should (string-match-p "\\`grab line [0-9]+: xdg_popup 23 grabs with serial 77" (car v))))
+  ;; a key press is a press too; a grab under a popup that does not grab is not under the topmost grabbing popup
+  (should-not (wl-trace-check-test--run
+               '("grab")
+               wl-trace-check-test--grab
+               '(1001.5 "wl_keyboard@7.key(11, 1000, 30, 1)")
+               '(1002.0 "> xdg_popup@23.grab(wl_seat@6, 11)")))
+  (let ((v (wl-trace-check-test--run
+            '("grab")
+            wl-trace-check-test--grab
+            '(1002.0 "> xdg_popup@26.grab(wl_seat@6, 9)"))))
+    (should (= (length v) 1))
+    (should (string-match-p "neither a toplevel nor the topmost grabbing popup" (car v))))
+  ;; the second child of popup 23 is not under the topmost grabbing popup (26) either
+  (let ((v (wl-trace-check-test--run
+            '("grab")
+            wl-trace-check-test--grab
+            '(1002.0 "> xdg_popup@23.grab(wl_seat@6, 9)")
+            '(1002.1 "> xdg_popup@26.grab(wl_seat@6, 9)")
+            '(1002.2 "> xdg_popup@28.grab(wl_seat@6, 9)"))))
+    (should (= (length v) 1))
+    (should (string-match-p "xdg_popup 28" (car v))))
+  ;; a grabbing popup that was destroyed no longer counts
+  (should-not (wl-trace-check-test--run
+               '("grab")
+               wl-trace-check-test--grab
+               '(1002.0 "> xdg_popup@23.grab(wl_seat@6, 9)")
+               '(1002.1 "> xdg_popup@23.destroy()")
+               '(1002.2 "> xdg_surface@29.get_popup(new id xdg_popup@30, xdg_surface@20, xdg_positioner@24)")
+               '(1002.3 "> xdg_popup@30.grab(wl_seat@6, 9)"))))
+
+(ert-deftest wl-trace-check/popup-order-rule ()
+  (should-not (wl-trace-check-test--run
+               '("popup-order")
+               wl-trace-check-test--grab
+               '(1002.0 "> xdg_popup@26.destroy()")
+               '(1002.1 "> xdg_popup@28.destroy()")
+               '(1002.2 "> xdg_popup@23.destroy()")))
+  (let ((v (wl-trace-check-test--run
+            '("popup-order")
+            wl-trace-check-test--grab
+            '(1002.0 "> xdg_popup@23.destroy()")
+            '(1002.1 "> xdg_popup@26.destroy()"))))
+    (should (= (length v) 1))
+    (should (string-match-p "\\`popup-order line [0-9]+: xdg_popup 23 destroyed before its child popup" (car v))))
+  ;; an unselected rule reports nothing
+  (should-not (wl-trace-check-test--run
+               '("grab")
+               wl-trace-check-test--grab
+               '(1002.0 "> xdg_popup@23.destroy()"))))
+
+(defconst wl-trace-check-test--dnd
+  '((1000.0 "wl_pointer@8.button(9, 1000, 272, 1)")
+    (1001.0 "wl_data_device@12.enter(14, wl_surface@5, 10.0, 12.0, wl_data_offer@40)"))
+  "A press (serial 9) and a drag entering with offer 40.")
+
+(ert-deftest wl-trace-check/dnd-rule ()
+  ;; set_actions before the finish
+  (should-not (wl-trace-check-test--run
+               '("dnd")
+               wl-trace-check-test--dnd
+               '(1002.0 "> wl_data_offer@40.set_actions(1, 1)")
+               '(1003.0 "> wl_data_offer@40.receive(\"text/plain\", fd 7)")
+               '(1004.0 "> wl_data_offer@40.finish()")
+               '(1004.1 "> wl_data_offer@40.destroy()")))
+  ;; a finish with no set_actions, or with a zero one
+  (let ((v (wl-trace-check-test--run
+            '("dnd")
+            wl-trace-check-test--dnd
+            '(1004.0 "> wl_data_offer@40.finish()"))))
+    (should (= (length v) 1))
+    (should (string-match-p "\\`dnd line [0-9]+: wl_data_offer 40 finish without a non-zero set_actions" (car v))))
+  (should (wl-trace-check-test--run
+           '("dnd")
+           wl-trace-check-test--dnd
+           '(1002.0 "> wl_data_offer@40.set_actions(0, 0)")
+           '(1004.0 "> wl_data_offer@40.finish()")))
+  ;; a new enter wants new actions
+  (should (wl-trace-check-test--run
+           '("dnd")
+           wl-trace-check-test--dnd
+           '(1002.0 "> wl_data_offer@40.set_actions(1, 1)")
+           '(1003.0 "wl_data_device@12.enter(15, wl_surface@5, 1.0, 2.0, wl_data_offer@40)")
+           '(1004.0 "> wl_data_offer@40.finish()")))
+  ;; no receive after finish or destroy
+  (let ((v (wl-trace-check-test--run
+            '("dnd")
+            wl-trace-check-test--dnd
+            '(1002.0 "> wl_data_offer@40.set_actions(1, 1)")
+            '(1004.0 "> wl_data_offer@40.finish()")
+            '(1005.0 "> wl_data_offer@40.receive(\"text/plain\", fd 7)"))))
+    (should (= (length v) 1))
+    (should (string-match-p "receive after finish or destroy" (car v))))
+  (should (wl-trace-check-test--run
+           '("dnd")
+           wl-trace-check-test--dnd
+           '(1004.0 "> wl_data_offer@40.destroy()")
+           '(1005.0 "> wl_data_offer@40.receive(\"text/plain\", fd 7)")))
+  ;; start_drag: the press serial, before its release
+  (should-not (wl-trace-check-test--run
+               '("dnd")
+               wl-trace-check-test--dnd
+               '(1002.0 "> wl_data_device@12.start_drag(wl_data_source@50, wl_surface@5, nil, 9)")))
+  (let ((v (wl-trace-check-test--run
+            '("dnd")
+            wl-trace-check-test--dnd
+            '(1002.0 "wl_pointer@8.button(10, 1100, 272, 0)")
+            '(1003.0 "> wl_data_device@12.start_drag(wl_data_source@50, wl_surface@5, nil, 9)"))))
+    (should (= (length v) 1))
+    (should (string-match-p "start_drag with serial 9: its press was released" (car v))))
+  (let ((v (wl-trace-check-test--run
+            '("dnd")
+            wl-trace-check-test--dnd
+            '(1003.0 "> wl_data_device@12.start_drag(wl_data_source@50, wl_surface@5, nil, 31)"))))
+    (should (= (length v) 1))
+    (should (string-match-p "start_drag with serial 31, which is no press" (car v))))
+  ;; a touch down counts, until its up
+  (should-not (wl-trace-check-test--run
+               '("dnd")
+               '(1000.0 "wl_touch@9.down(21, 1000, wl_surface@5, 2, 5.0, 6.0)")
+               '(1001.0 "> wl_data_device@12.start_drag(wl_data_source@50, wl_surface@5, nil, 21)")))
+  (should (wl-trace-check-test--run
+           '("dnd")
+           '(1000.0 "wl_touch@9.down(21, 1000, wl_surface@5, 2, 5.0, 6.0)")
+           '(1000.5 "wl_touch@9.up(22, 1010, 2)")
+           '(1001.0 "> wl_data_device@12.start_drag(wl_data_source@50, wl_surface@5, nil, 21)"))))
+
 ;;; wl-trace-check-gui-tests.el ends here
