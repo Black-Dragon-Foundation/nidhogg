@@ -1,0 +1,30 @@
+[package]
+name = "nhglue"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+license = "GPL-3.0-or-later"
+description = "nhglue, the glue between Emacs's C hooks and Nidhogg's native shell: the one Rust static library Emacs links"
+publish = false
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[features]
+default = ["wayland"]
+# the shell's Wayland backend (Linux); `check.sh --android` builds without it
+wayland = ["nhshell/wayland"]
+# entry points that exist only for tests; configure turns this on under --enable-checking (GLITNIR_CARGO_FLAGS)
+test-hooks = []
+
+[dependencies]
+nhshell = { path = "../shell", version = "0.1.0", default-features = false }
+glitnir = { path = "../glitnir", version = "0.1.0" }
+libc = "0.2"
+
+# debug = 2: gdb shows the glue's locals (README, "Debugging"); there is no cross-language LTO (Emacs builds with GCC)
+[profile.release]
+panic = "unwind"
+lto = true
+codegen-units = 1
+debug = 2

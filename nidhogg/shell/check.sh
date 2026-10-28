@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# nhshell's checks: fmt, clippy, tests, licence policy, vendor drift, and the exports of libnhshell.a.
+# nhshell's checks: fmt, clippy, tests, licence policy, vendor drift, and the release build.
 # Usage: check.sh [--container DISTRO] [--test NAME] [--full] [--revendor] [--tsan]   Exit 0 ok, 1 "check.sh: FAIL <check>",
 # 2 usage, 3 the TSan lane is unavailable.
 # --full adds the slow checks (vendor drift, which needs the network, and the LTO release build with its exports); a
@@ -163,12 +163,6 @@ cp -r ../glitnir/Cargo.toml ../glitnir/Cargo.lock ../glitnir/build.rs ../glitnir
 ( cd "$copy/shell" && cargo vendor-filterer "${PLATFORMS[@]}" vendor >/dev/null ) || fail vendor
 diff Cargo.lock "$copy/shell/Cargo.lock" || fail lock-drift  # the filterer has no --locked: an unchanged lock is the same
 diff -r -x .keep "$copy/shell/vendor" vendor                        || fail vendor-drift
-# the archive: one static library with every Glitnir symbol and the shell's own
+# the release build (an rlib; the archive Emacs links, with this crate's exports, is nidhogg/glue's: its check.sh --full)
 cargo build --release --offline --locked                            || fail build
-lib=$CARGO_TARGET_DIR/release/libnhshell.a
-[ -f "$lib" ] || fail "build (no libnhshell.a)"
-exports=$(nm -g --defined-only "$lib" 2>/dev/null | awk '$2 ~ /^[TDBR]$/ {print $3}')
-for sym in nhshell_abi_version $(grep -o 'glitnir_[a-z0-9_]*(' ../glitnir/include/glitnir.h | tr -d '(' | sort -u); do
-  printf '%s\n' "$exports" | grep -qx "$sym" || fail "exports $sym"
-done
 echo "check.sh: ok"

@@ -1,9 +1,9 @@
-/* nhshell.h -- the C ABI of Nidhogg's native shell layer (crate nhshell, libnhshell.a).
+/* nhshell.h -- the C ABI of Nidhogg's native shell layer (crate nhshell, linked through nidhogg/glue's libnhglue.a).
 
    One shell API for every windowing backend: connection, capabilities, windows, events and the presenter.  Every call
    returns 0 (or a count, where said) or a negative NHSHELL_E_* code; a panic inside the library is caught at the
    boundary and reported as NHSHELL_E_PANIC.  Call everything from one thread (the host's main thread).  Sizes are
-   logical pixels; names with DEV are device pixels.  libnhshell.a also carries every glitnir_* symbol.  */
+   logical pixels; names with DEV are device pixels.  libnhglue.a also carries every glitnir_* symbol.  */
 
 #ifndef NHSHELL_H
 #define NHSHELL_H

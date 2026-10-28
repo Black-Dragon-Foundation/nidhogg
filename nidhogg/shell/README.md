@@ -1,14 +1,19 @@
 # nhshell
 
-Nidhogg's native shell layer: a Rust crate with a C ABI (`include/nhshell.h`), built as one static
-library, `libnhshell.a`, that also carries every `glitnir_*` symbol. Under `--with-nidhogg-wayland` the Makefile links
-it instead of `libglitnir.a`; two Rust static libraries in one binary would collide on std's symbols.
+Nidhogg's native shell layer: a Rust crate with a C ABI (`include/nhshell.h`), built as an rlib. Under
+`--with-nidhogg-wayland` the Makefile links `nidhogg/glue`'s `libnhglue.a` instead of `libglitnir.a`: the one Rust
+static library in the binary (two would collide on std's symbols), carrying this crate's `nhshell_*` and every
+`glitnir_*` symbol too. The Wayland backend (`src/wayland/` and its dependencies) sits behind the default feature
+`wayland`. New shell calls go into `trait ShellBackend` and this README only: no new entries in `nhshell.h` or
+`src/ffi.rs`, which retire once the glue makes every call in Rust.
 
 - Dependencies are vendored in `vendor/` (`cargo vendor-filterer`, Linux and macOS, x86_64 and aarch64) and the build
   runs offline and locked (`.cargo/config.toml`). Third-party crates are limited to wayland-client, wayland-backend,
   wayland-protocols, xkbcommon, rustix and their dependencies.
-- `check.sh [--container DISTRO] [--test NAME]` runs fmt, clippy `-D warnings`, tests, cargo-deny, the vendor-drift
-  check and an `nm` check that every Glitnir export and `nhshell_abi_version` are in the archive.
+- `check.sh [--container DISTRO] [--test NAME]` runs fmt, clippy `-D warnings`, tests and cargo-deny; `--full` adds
+  the vendor-drift check and the release build. The archive's exports are checked by `nidhogg/glue/check.sh --full`.
+  The glue builds from this `vendor/`; after a revendor, its `Cargo.lock` takes this one's packages (its check says
+  so).
   `check.sh --container DISTRO --revendor` regenerates `Cargo.lock` and `vendor/` (needs the network).
 
 ## The shell API

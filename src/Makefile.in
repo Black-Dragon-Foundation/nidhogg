@@ -335,10 +335,11 @@ GLITNIR_OBJ=@GLITNIR_OBJ@
 GLITNIR_LIBS=@GLITNIR_LIBS@
 GLITNIR_SRCDIR=@GLITNIR_SRCDIR@
 GLITNIR_ENV=@GLITNIR_ENV@
-## Under --with-nidhogg-wayland the library is libnhshell.a (nidhogg/shell, which carries every glitnir_* symbol) and
-## GLITNIR_CRATE_DEPS is the glitnir crate it builds on.
+## Under --with-nidhogg-wayland the library is libnhglue.a (nidhogg/glue, which carries every nhshell_* and glitnir_*
+## symbol) and GLITNIR_CRATE_DEPS lists the crates whose sources rebuild it (the glue, the shell, glitnir).
 GLITNIR_CRATE_DEPS=@GLITNIR_CRATE_DEPS@
 GLITNIR_CRATE_INCLUDE=@GLITNIR_CRATE_INCLUDE@
+GLITNIR_CARGO_FLAGS=@GLITNIR_CARGO_FLAGS@
 GLITNIR_A=glitnir-target/release/@GLITNIR_LIBNAME@
 GLITNIR_CFLAGS=$(if $(GLITNIR_SRCDIR),-I$(GLITNIR_SRCDIR)/include) $(GLITNIR_CRATE_INCLUDE)
 NHWL_OBJ=@NHWL_OBJ@
@@ -735,12 +736,14 @@ endif
 ## to start if Vinstallation_directory has the wrong value.
 ifeq ($(HAVE_GLITNIR),yes)
 GLITNIR_DEPS = $(wildcard $(GLITNIR_SRCDIR)/Cargo.toml $(GLITNIR_SRCDIR)/Cargo.lock $(GLITNIR_SRCDIR)/build.rs \
-  $(GLITNIR_SRCDIR)/src/*.rs $(GLITNIR_SRCDIR)/src/*/*.rs \
-  $(if $(GLITNIR_CRATE_DEPS),$(GLITNIR_CRATE_DEPS)/Cargo.toml $(GLITNIR_CRATE_DEPS)/src/*.rs $(GLITNIR_CRATE_DEPS)/src/*/*.rs))
+  $(GLITNIR_SRCDIR)/src/*.rs $(GLITNIR_SRCDIR)/src/*/*.rs) \
+  $(foreach d,$(GLITNIR_CRATE_DEPS),$(wildcard $(d)/Cargo.toml $(d)/build.rs $(d)/src/*.rs $(d)/src/*/*.rs))
 ## cargo runs offline and locked, with its home and target directory in the build tree (never ~/.cargo).
+## GLITNIR_CARGO_FLAGS: the glue's features (--features test-hooks under --enable-checking).
 $(GLITNIR_A): $(GLITNIR_DEPS)
 	cd $(GLITNIR_SRCDIR) && env CARGO_HOME=$(abs_top_builddir)/src/glitnir-cargo-home $(GLITNIR_ENV) \
-	  cargo build --release --offline --locked --target-dir $(abs_top_builddir)/src/glitnir-target
+	  cargo build --release --offline --locked $(GLITNIR_CARGO_FLAGS) \
+	  --target-dir $(abs_top_builddir)/src/glitnir-target
 endif
 
 temacs$(EXEEXT): $(LIBXMENU) $(ALLOBJS) $(LIBEGNU_ARCHIVE) $(EMACSRES) \
