@@ -28,6 +28,12 @@
 ;;
 ;; The settings are read once, when the first graphical frame is made,
 ;; never when this file is loaded.
+;;
+;; The shell's client-side title bar takes its button layout, its
+;; colours (the two `nidhogg-title-bar' faces) and its font from here:
+;; `nhwl-settings-apply-title-bar' hands them to C when the settings
+;; are read, when the layout or the colour scheme changes and when a
+;; theme is enabled or disabled.
 
 ;;; Code:
 
@@ -174,6 +180,49 @@ list (R G B) of floats, or nil), `button-layout' (a string),
 
 (add-hook 'nhwl-settings-changed-functions #'nhwl-settings--cursor-changed)
 
+(declare-function nhwl--set-title-bar-style "nhwlcsd.c")
+
+(defun nhwl-settings--face-colour (face attribute)
+  "FACE's colour ATTRIBUTE as a string, or nil when it has none."
+  (let ((v (face-attribute face attribute nil t)))
+    (and (stringp v) v)))
+
+(defun nhwl-settings--title-bar-font ()
+  "The title bar's font as (FAMILY . PIXELS), from the `nidhogg-title-bar' face.
+FAMILY is nil when the face has none, PIXELS (logical pixels, 96 per
+inch) nil when the face has no absolute height."
+  (let ((family (face-attribute 'nidhogg-title-bar :family nil t))
+        (height (face-attribute 'nidhogg-title-bar :height nil t)))
+    (cons (and (stringp family) family)
+          ;; :height is in 1/10 pt; a point is 4/3 logical pixels.
+          (and (integerp height) (> height 0) (/ (* height 4) 30.0)))))
+
+(defun nhwl-settings-apply-title-bar ()
+  "Give the shell's title bars the desktop's layout and the faces' colours and font."
+  (when (fboundp 'nhwl--set-title-bar-style)
+    (let ((layout (nhwl-settings-button-layout)))
+      (nhwl--set-title-bar-style
+       (car layout) (cdr layout)
+       (nhwl-settings--face-colour 'nidhogg-title-bar :foreground)
+       (nhwl-settings--face-colour 'nidhogg-title-bar :background)
+       (nhwl-settings--face-colour 'nidhogg-title-bar-inactive :foreground)
+       (nhwl-settings--face-colour 'nidhogg-title-bar-inactive :background)
+       (nhwl-settings--title-bar-font)))))
+
+(defun nhwl-settings--title-bar-changed (key _value)
+  "Restyle the title bars when the setting KEY is the layout or the scheme."
+  (when (memq key '(button-layout color-scheme))
+    (nhwl-settings-apply-title-bar)))
+
+(defun nhwl-settings--theme-changed (_theme)
+  "Restyle the title bars: a theme may set the title-bar faces."
+  (when nhwl-settings--initialized
+    (nhwl-settings-apply-title-bar)))
+
+(add-hook 'nhwl-settings-changed-functions #'nhwl-settings--title-bar-changed)
+(add-hook 'enable-theme-functions #'nhwl-settings--theme-changed)
+(add-hook 'disable-theme-functions #'nhwl-settings--theme-changed)
+
 (defun nhwl-settings-init ()
   "Read the desktop settings from the portal and follow their changes.
 Without a portal the defaults stay.  Does nothing the second time."
@@ -193,7 +242,8 @@ Without a portal the defaults stay.  Does nothing the second time."
            "/org/freedesktop/portal/desktop"
            "org.freedesktop.portal.Settings" "SettingChanged"
            #'nhwl-settings--signal)
-        (error nil)))))
+        (error nil)))
+    (nhwl-settings-apply-title-bar)))
 
 (defun nhwl-settings--first-frame (frame)
   "Read the settings at the first graphical FRAME, then stop listening."
