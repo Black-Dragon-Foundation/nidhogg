@@ -2498,9 +2498,10 @@ nhwl_glitnir_presented (struct frame *f)
   GlitnirStatsEntry e = { 0 };
   int i;
 
-  /* From the key event the paint shows, else from its commit, to now.  */
-  e.t_commit_ns = out->t_key_ns ? out->t_key_ns : out->t_commit_ns;
-  e.t_draw_start_ns = out->t_commit_ns;
+  /* The key event the paint shows (0: none, and the entry stays out of
+     the key series), and the draw: from its start to the commit, now.  */
+  e.t_update_ns = out->t_key_ns;
+  e.t_commit_ns = e.t_draw_start_ns = out->t_commit_ns;
   e.t_draw_end_ns = nhwl_now_ns ();
   e.presented_us = -1;
   e.damage_px = out->damage_px;
