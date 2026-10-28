@@ -52,6 +52,36 @@ After that the read gives nil and Emacs goes on."
   :version "31.1"
   :group 'nhwl-settings)
 
+(defcustom nhwl-reconnect t
+  "Non-nil means frames survive a restart of the compositor.
+When the compositor goes away (not after a protocol error), Emacs
+connects to it again on the same socket and the display's frames come
+back with their contents; menus and tooltips close.  If it does not
+come back within `nhwl-reconnect-timeout' seconds, the display's
+frames are deleted, as they are when this is nil.  The value counts
+when a display opens and when its compositor goes.  The environment
+variable NHWL_RECONNECT=0 turns reconnecting off as well."
+  :type 'boolean
+  :version "31.1"
+  :group 'nhwl-settings)
+
+(defcustom nhwl-reconnect-timeout 10.0
+  "Seconds to wait for a restarted compositor before giving up.
+See `nhwl-reconnect'."
+  :type 'number
+  :version "31.1"
+  :group 'nhwl-settings)
+
+(defvar nhwl-display-connection-functions nil
+  "Functions run when a display's connection changes.
+Each is called with two arguments: the display's name and the new
+state, one of
+  `reconnecting'  the compositor went away and Emacs connects again;
+  `reconnected'   it is back and the frames show again;
+  `lost'          the display is gone and its frames are about to be
+                  deleted.
+The functions run from a timer, never while input is read.")
+
 (defface nidhogg-title-bar
   '((t :background "#ebebeb" :foreground "#2e3436"))
   "Face whose colours are those of an active window's title bar.

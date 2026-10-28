@@ -57,7 +57,12 @@ impl From<i32> for GlueError {
 
 impl From<nhshell::api::ShellError> for GlueError {
     fn from(e: nhshell::api::ShellError) -> GlueError {
-        GlueError::Shell(e.code())
+        match e {
+            nhshell::api::ShellError::Reconnecting => {
+                GlueError::Code(crate::abi::NHG_E_RECONNECTING)
+            }
+            e => GlueError::Shell(e.code()),
+        }
     }
 }
 

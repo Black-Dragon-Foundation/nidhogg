@@ -25,6 +25,8 @@ use crate::select;
 use crate::session;
 use crate::tip;
 use crate::touch;
+
+use crate::reconnect;
 use nhshell::event::*;
 
 /// Take one event: `Ok(1)` with its actions in `state.actions` (none, possibly), `Ok(0)` when none is queued.  The
@@ -78,9 +80,13 @@ pub fn next(state: &mut Display, input: NhgNextIn) -> Result<i32, GlueError> {
         NHSHELL_EV_SESSION => session::event(state, &ev),
         NHSHELL_EV_TOUCH => touch::touch(state, &ev),
         NHSHELL_EV_PINCH => touch::pinch(state, &ev),
+        // a popup closed by the reconnect came as an ordinary dismissal above
+        NHSHELL_EV_RECONNECTING => reconnect::lost(state, &ev),
+        NHSHELL_EV_RECONNECTED => reconnect::reconnected(state, &ev),
         // kinds C did nothing with
         _ => {}
     }
+    reconnect::after(state, &ev);
     Ok(1)
 }
 
