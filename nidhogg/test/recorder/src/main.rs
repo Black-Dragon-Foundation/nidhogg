@@ -2,6 +2,7 @@
 mod clock;
 mod control;
 mod dnd;
+mod extras;
 mod input;
 mod log;
 mod render;
@@ -29,11 +30,12 @@ struct Args {
     profile: PathBuf,
     clock: Clock,
     output: (i32, i32, u32),
+    session_store: Option<PathBuf>,
 }
 
 fn usage() -> ! {
     eprintln!(
-        "usage: nh-recorder --socket NAME --control PATH --profile FILE [--clock auto|manual] [--output WxH@SCALE120]"
+        "usage: nh-recorder --socket NAME --control PATH --profile FILE [--clock auto|manual] [--output WxH@SCALE120] [--session-store FILE]"
     );
     std::process::exit(2)
 }
@@ -49,6 +51,7 @@ fn parse_args() -> Args {
     let (mut socket, mut control, mut profile) = (None, None, None);
     let mut clock = Clock::Auto;
     let mut output = (1920, 1080, 120);
+    let mut session_store = None;
     while let Some(a) = it.next() {
         let v = it.next().unwrap_or_else(|| usage());
         match a.as_str() {
@@ -63,6 +66,7 @@ fn parse_args() -> Args {
                 }
             }
             "--output" => output = parse_output(&v).unwrap_or_else(|| usage()),
+            "--session-store" => session_store = Some(PathBuf::from(v)),
             _ => usage(),
         }
     }
@@ -73,6 +77,7 @@ fn parse_args() -> Args {
             profile,
             clock,
             output,
+            session_store,
         },
         _ => usage(),
     }
@@ -99,6 +104,9 @@ fn main() {
         event_loop.get_signal(),
         handle.clone(),
     );
+    if let Some(path) = args.session_store.clone() {
+        state.extras.use_store(path).unwrap_or_else(|e| die(e));
+    }
 
     // the Wayland display and its listening socket
     handle
