@@ -68,7 +68,7 @@ pub enum Clock {
 }
 
 /// A capability record: which globals a real compositor advertises, at which versions.
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct Profile {
     pub name: String,
     pub globals: BTreeMap<String, u32>,
@@ -186,6 +186,8 @@ pub struct State {
     pub renderer: PixmanRenderer,
     /// The event loop, to queue a reply the control socket cannot take at once.
     pub handle: LoopHandle<'static, State>,
+    /// Restart in place and the connection counters (restart.rs).
+    pub restart: crate::restart::Restart,
 }
 
 /// What one commit asked for, taken from the pending state before it is merged into the surface's current one
@@ -349,9 +351,12 @@ impl State {
                 IdleInhibitManagerState::new::<State>(dh).global(),
             ),
         ];
+        let mut ids: Vec<GlobalId> = Vec::new();
         for (name, id) in extra {
             if !profile.globals.contains_key(name) || name == "wp_presentation" {
                 dh.remove_global::<State>(id);
+            } else {
+                ids.push(id);
             }
         }
 
@@ -394,37 +399,39 @@ impl State {
             };
             match name.as_str() {
                 "wl_compositor" => {
-                    dh.create_global::<State, WlCompositor, _>(v, ());
+                    ids.push(dh.create_global::<State, WlCompositor, _>(v, ()));
                 }
                 "wl_subcompositor" => {
-                    dh.create_global::<State, WlSubcompositor, _>(v, ());
+                    ids.push(dh.create_global::<State, WlSubcompositor, _>(v, ()));
                 }
                 "wl_shm" => {
-                    dh.create_global::<State, WlShm, _>(v, ());
+                    ids.push(dh.create_global::<State, WlShm, _>(v, ()));
                 }
                 "wl_seat" if v >= 9 => {}
                 "wl_seat" => {
-                    dh.create_global::<State, WlSeat, _>(v, ());
+                    ids.push(dh.create_global::<State, WlSeat, _>(v, ()));
                 }
                 "zwp_text_input_manager_v3" => {
-                    dh.create_global::<State, ZwpTextInputManagerV3, _>(v, ());
+                    ids.push(dh.create_global::<State, ZwpTextInputManagerV3, _>(v, ()));
                 }
                 "wl_output" => {
                     // Smithay creates wl_output at its one version (4); `max_version` says so, and `globals` below
                     // reports it
-                    outputs.push((out.clone(), out.create_global::<State>(dh)));
+                    let gid = out.create_global::<State>(dh);
+                    ids.push(gid.clone());
+                    outputs.push((out.clone(), gid));
                 }
                 "xdg_wm_base" => {
-                    dh.create_global::<State, smithay::reexports::wayland_protocols::xdg::shell::server::xdg_wm_base::XdgWmBase, _>(v, ());
+                    ids.push(dh.create_global::<State, smithay::reexports::wayland_protocols::xdg::shell::server::xdg_wm_base::XdgWmBase, _>(v, ()));
                 }
                 "wp_presentation" => {
-                    dh.create_global::<State, WpPresentation, u32>(v, 1);
+                    ids.push(dh.create_global::<State, WpPresentation, u32>(v, 1));
                 }
                 "zxdg_exporter_v2" => {
-                    dh.create_global::<State, ZxdgExporterV2, _>(v, ());
+                    ids.push(dh.create_global::<State, ZxdgExporterV2, _>(v, ()));
                 }
                 "xdg_session_manager_v1" => {
-                    dh.create_global::<State, XdgSessionManagerV1, _>(v, ());
+                    ids.push(dh.create_global::<State, XdgSessionManagerV1, _>(v, ()));
                 }
                 // created above
                 "xdg_system_bell_v1"
@@ -446,6 +453,8 @@ impl State {
             if let Some(id) = seat_global {
                 dh.remove_global::<State>(id);
             }
+        } else if let Some(id) = seat_global {
+            ids.push(id);
         }
         let decoration_mode = if profile.decoration == "server" {
             DecoMode::ServerSide
@@ -500,7 +509,36 @@ impl State {
             pacing: crate::clock::Pacing::from_profile(profile, refresh_mhz),
             renderer: PixmanRenderer::new().expect("the pixman renderer"),
             handle,
+            restart: crate::restart::Restart {
+                globals: ids,
+                ..Default::default()
+            },
         }
+    }
+
+    /// Replace everything with a fresh instance of `profile`: the globals, the surfaces, the seat, the logs.  What
+    /// stays is the commit log (with a marker), the session store, the connection counters and the client numbers.
+    pub fn reset(&mut self, profile: &Profile) {
+        for id in std::mem::take(&mut self.restart.globals) {
+            self.display.remove_global::<State>(id);
+        }
+        let mut new = State::new(
+            &self.display,
+            profile,
+            self.clock,
+            self.restart.output,
+            self.restart.refresh_mhz,
+            self.signal.clone(),
+            self.handle.clone(),
+        );
+        new.extras = std::mem::take(&mut self.extras).restarted();
+        new.log = std::mem::replace(&mut self.log, Log::new());
+        new.next_client = self.next_client;
+        let mut restart = std::mem::take(&mut self.restart);
+        restart.globals = std::mem::take(&mut new.restart.globals);
+        restart.profile = Some(profile.clone());
+        new.restart = restart;
+        *self = new;
     }
 
     pub fn quit(&self) {

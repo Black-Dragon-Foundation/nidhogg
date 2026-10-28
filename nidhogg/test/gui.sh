@@ -26,8 +26,9 @@
 #                       scale by wlr-randr).  Every compositor binary runs as a copy without file capabilities.
 #   --recorder BIN      the nh-recorder binary (default $REC); mounted at /opt/nh-recorder in a container
 #   --recorder-profile  what the recorder imitates: sway (default), kwin, mutter or xdg-v2 (xdg_wm_base at version 2)
-#   NHWL_GUI_RESTART    (set for the rows, recorder and sway only) a script that stops the compositor and starts it again
-#                       on the same socket (the recorder with the same --session-store); it prints READY and exits 0
+#   NHWL_GUI_RESTART    (set for the rows; recorder, sway and kwin) a script that stops the compositor and starts it again
+#                       on the same socket (the recorder with the same --session-store; for kwin it kills the
+#                       kwin_wayland child of kwin_wayland_wrapper, which starts it again); it prints READY and exits 0
 #   --trace-check RULES after the session, check the --wayland-debug trace against RULES (a comma list of errors, acks,
 #                       unconfigured, subsurface, popup, sync, grab, popup-order, dnd, held-reuse, viewport; see nidhogg/test/wl-trace-check.el), in the same
 #                       container; the violations are printed and make the exit status 1.  Needs --wayland-debug
@@ -185,7 +186,9 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
       mpid=$!
       ;;
     kwin)
-      kwin_wayland --virtual --width "$W" --height "$H" --scale 1 --socket "$display" --no-lockscreen --no-global-shortcuts \
+      # through the wrapper: it holds the socket, so a KWin that dies and comes back keeps the name (and the clients
+      # that connect meanwhile wait)
+      kwin_wayland_wrapper --virtual --width "$W" --height "$H" --scale 1 --socket "$display" --no-lockscreen --no-global-shortcuts \
         --no-kactivities > "$clog" 2>&1 &
       mpid=$!
       ;;
@@ -256,7 +259,8 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
   fi
 
   # NHWL_GUI_RESTART: a script that stops the compositor and starts it again on the same socket (the recorder with its
-  # session store, sway headless again), prints READY and exits 0.  mutter, KWin and labwc have none: rows that need it skip.
+  # session store, sway headless again, KWin's child killed and restarted by its wrapper), prints READY and exits 0.
+  # mutter and labwc have none: rows that need it skip.
   echo "$mpid" > "$GLITNIR_GUI_RUN/compositor.pid"
   restart=
   if [ "$compositor" = recorder ] || [ "$compositor" = sway ]; then
@@ -288,6 +292,27 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
       echo '  sleep 0.1'
       echo 'done'
       echo 'echo "restart: the compositor did not come up" >&2; exit 1'
+    } > "$restart"
+    chmod +x "$restart"
+  elif [ "$compositor" = kwin ]; then
+    # KWin dies (SIGKILL) and the wrapper starts it again on the same socket; READY once a new child answers
+    restart=$GLITNIR_GUI_RUN/restart.sh
+    {
+      echo '#!/usr/bin/env bash'
+      echo "export WAYLAND_DISPLAY='$display' XDG_RUNTIME_DIR='$XDG_RUNTIME_DIR'"
+      echo "wrapper=\$(cat '$GLITNIR_GUI_RUN/compositor.pid')"
+      echo 'old=$(pgrep -P "$wrapper" -x kwin_wayland | head -n 1)'
+      echo '[ -n "$old" ] || { echo "restart: no kwin_wayland child" >&2; exit 1; }'
+      echo 'kill -KILL "$old"'
+      echo 'for _ in $(seq 150); do'
+      echo '  new=$(pgrep -P "$wrapper" -x kwin_wayland | head -n 1)'
+      echo '  if [ -n "$new" ] && [ "$new" != "$old" ] && kscreen-doctor -o > /dev/null 2>&1; then'
+      echo "    kscreen-doctor 'output.Virtual-0.scale.$scale' > /dev/null 2>&1; echo READY; exit 0"
+      echo '  fi'
+      echo '  kill -0 "$wrapper" 2> /dev/null || { echo "restart: the wrapper exited" >&2; exit 1; }'
+      echo '  sleep 0.1'
+      echo 'done'
+      echo 'echo "restart: KWin did not come back" >&2; exit 1'
     } > "$restart"
     chmod +x "$restart"
   fi
@@ -371,7 +396,7 @@ if [ "${GLITNIR_GUI_DRY:-}" = 1 ]; then
   case $compositor in
     sway) echo "sway -c RUN/sway.conf   (output HEADLESS-1 mode $size scale $scale; $monitors output(s))" ;;
     mutter) echo "mutter --headless --wayland --no-x11 --wayland-display NAME ($monitors x --virtual-monitor $size; scale $scale)" ;;
-    kwin) echo "kwin_wayland --virtual --width $W --height $H --socket NAME   (scale $scale by kscreen-doctor)" ;;
+    kwin) echo "kwin_wayland_wrapper --virtual --width $W --height $H --socket NAME   (scale $scale by kscreen-doctor; NHWL_GUI_RESTART kills the kwin_wayland child)" ;;
     labwc) echo "labwc   (WLR_BACKENDS=headless; $monitors output(s) of $size, scale $scale by wlr-randr)" ;;
     recorder) echo "$recorder --output ${size}@${s120} --profile $(dirname "$self")/recorder/profiles/$rprofile.json --socket NAME --control CTL --session-store RUN/session-store.json${rargs[*]:+ ${rargs[*]}}" ;;
   esac
@@ -436,7 +461,7 @@ if [ -n "$container" ]; then
         $(case " $* " in *" fcitx5 "*) echo fcitx5 fcitx5-chinese-addons wtype ;; *" ibus "*) echo ibus ibus-libpinyin ;; esac) \
         $pkgs > /tmp/dnf.log 2>&1 || { cat /tmp/dnf.log; exit 1; }
       # sway ships with file capabilities a container refuses to exec: a copy without them
-      for c in sway kwin_wayland labwc; do
+      for c in sway kwin_wayland kwin_wayland_wrapper labwc; do
         [ ! -x /usr/bin/$c ] || { cp /usr/bin/$c /usr/local/bin/$c; setcap -r /usr/local/bin/$c 2>/dev/null || true; }
       done
       # glycin (GTK 3 loads its icons through it) sandboxes its image loaders with bwrap --dev /dev, which a podman
@@ -455,7 +480,7 @@ fi
 case $compositor in
   sway) need="sway swaymsg dbus-run-session" ;;
   mutter) need="mutter gdctl dbus-run-session" ;;
-  kwin) need="kwin_wayland kscreen-doctor dbus-run-session" ;;
+  kwin) need="kwin_wayland kwin_wayland_wrapper kscreen-doctor dbus-run-session" ;;
   labwc) need="labwc wlr-randr dbus-run-session" ;;
   *) need="dbus-run-session" ;;
 esac
