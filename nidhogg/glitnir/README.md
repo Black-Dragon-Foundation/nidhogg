@@ -51,6 +51,15 @@ layer covers are left alone. A pixel's value never depends on how the rectangles
 equals composing everything. A source whose device scale is not the target's is refused (`GLITNIR_E_STATE`) and the
 host draws that root the stock way. The time taken and the layers drawn fill the root's next frame-time entry.
 
+**Threads.** The scenes, the damage and the sprite cache belong to the host's main thread, behind one lock; a thread
+that calls `glitnir::mark_compose_thread` and then touches them panics in a debug build. A commit through the Rust
+API (`damage::commit_snapshot`) also returns the committed scene as an immutable `Arc<Committed>`: the layers in paint
+order, their labels and the sprites those labels were placed from (the sprite cache is copied on write, so a later
+`glitnir_decor_sprite_put` leaves a snapshot alone). `compose::compose_committed` composes a snapshot with a
+caller-owned `Composer` (shadow tiles and per-root tallies) and takes no lock, so another thread can compose while the
+host goes on drawing. Frame-time records have their own lock, and any thread may record. `glitnir_compose` composes
+the root's latest snapshot with one composer for the process.
+
 The `pixman-oracle` feature (Linux; `build.rs` links the system's `pixman-1`) adds the test that compares the
 kernels with pixman; `check.sh` runs it on Linux.
 

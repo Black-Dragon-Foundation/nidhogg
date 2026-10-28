@@ -17,6 +17,8 @@
 
 use crate::geom::Rect;
 use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
 /// How many sprites the cache keeps.
 pub const SPRITE_CAP: usize = 64;
@@ -103,15 +105,15 @@ impl Label {
     }
 }
 
-/// A cached sprite.
+/// A cached sprite.  The pixels are shared by the copies a committed snapshot holds.
 #[derive(Debug)]
 pub struct Sprite {
     pub w: i32,
     pub h: i32,
     /// Premultiplied ARGB, `w` pixels a row.
-    pub px: Vec<u32>,
+    pub px: Arc<[u32]>,
     generation: u64,
-    used: u64,
+    used: AtomicU64,
 }
 
 impl Sprite {
@@ -120,18 +122,42 @@ impl Sprite {
     }
 }
 
-/// The sprite cache, least recently used out first.
+impl Clone for Sprite {
+    fn clone(&self) -> Sprite {
+        Sprite {
+            px: Arc::clone(&self.px),
+            used: AtomicU64::new(self.used.load(Relaxed)),
+            ..*self
+        }
+    }
+}
+
+/// The labels of a committed scene, in paint order within each window layer.
+pub type Labels = Vec<Label>;
+
+/// The sprite cache, least recently used out first.  A commit shares it with its snapshot (`Arc<Sprites>`), and a
+/// put copies it on write, so a snapshot keeps the sprites its labels were placed from.  Uses are counted through
+/// `&self`, so a lookup never copies the cache.
 #[derive(Debug, Default)]
 pub struct Sprites {
     map: BTreeMap<u64, Sprite>,
-    clock: u64,
+    clock: AtomicU64,
+}
+
+impl Clone for Sprites {
+    fn clone(&self) -> Sprites {
+        Sprites {
+            map: self.map.clone(),
+            clock: AtomicU64::new(self.clock.load(Relaxed)),
+        }
+    }
 }
 
 impl Sprites {
     pub const fn new() -> Sprites {
         Sprites {
             map: BTreeMap::new(),
-            clock: 0,
+            clock: AtomicU64::new(0),
         }
     }
 
@@ -146,16 +172,16 @@ impl Sprites {
     /// Store KEY's pixels (W×H, `w` pixels a row), replacing an earlier sprite of that key, and evict the least
     /// recently used beyond [`SPRITE_CAP`].
     pub fn put(&mut self, key: u64, px: Vec<u32>, w: i32, h: i32) {
-        self.clock += 1;
-        let generation = self.clock;
+        let generation = *self.clock.get_mut() + 1;
+        *self.clock.get_mut() = generation;
         self.map.insert(
             key,
             Sprite {
                 w,
                 h,
-                px,
+                px: px.into(),
                 generation,
-                used: generation,
+                used: AtomicU64::new(generation),
             },
         );
         while self.map.len() > SPRITE_CAP {
@@ -163,7 +189,7 @@ impl Sprites {
                 .map
                 .iter()
                 .filter(|(k, _)| **k != key)
-                .min_by_key(|(_, s)| s.used)
+                .min_by_key(|(_, s)| s.used.load(Relaxed))
                 .map(|(k, _)| *k);
             match oldest {
                 Some(k) => self.map.remove(&k),
@@ -173,17 +199,21 @@ impl Sprites {
     }
 
     /// Whether KEY is cached; counts as a use.
-    pub fn has(&mut self, key: u64) -> bool {
+    pub fn has(&self, key: u64) -> bool {
         self.get(key).is_some()
     }
 
     /// KEY's sprite; counts as a use.
-    pub fn get(&mut self, key: u64) -> Option<&Sprite> {
-        self.clock += 1;
-        let c = self.clock;
-        let s = self.map.get_mut(&key)?;
-        s.used = c;
+    pub fn get(&self, key: u64) -> Option<&Sprite> {
+        let c = self.clock.fetch_add(1, Relaxed) + 1;
+        let s = self.map.get(&key)?;
+        s.used.store(c, Relaxed);
         Some(s)
+    }
+
+    /// KEY's sprite, without counting a use (compose reads a snapshot's sprites).
+    pub fn lookup(&self, key: u64) -> Option<&Sprite> {
+        self.map.get(&key)
     }
 
     /// KEY's size and generation, without counting a use.
@@ -399,13 +429,13 @@ mod tests {
             .collect()
     }
 
-    fn sprites_of(sizes: &[(u64, i32, i32)]) -> Sprites {
+    fn sprites_of(sizes: &[(u64, i32, i32)]) -> Arc<Sprites> {
         let mut s = Sprites::new();
         let mut g = XorShift::new(5);
         for &(k, w, h) in sizes {
             s.put(k, sprite_px(&mut g, (w * h) as usize), w, h);
         }
-        s
+        Arc::new(s)
     }
 
     fn labels(layer_rect: Rect, anchors: &[Anchor], sprites: &Sprites) -> Vec<Label> {
@@ -523,7 +553,7 @@ mod tests {
         px: Vec<u32>,
     }
 
-    fn compose_into(s: &Scene, sp: &mut Sprites, src: &Img, out: &mut Img, clips: &[Rect]) {
+    fn compose_into(s: &Scene, sp: &Sprites, src: &Img, out: &mut Img, clips: &[Rect]) {
         let h = src.px.len() as i32 / src.w;
         let sv = SourceView {
             layer: ROOT,
@@ -563,7 +593,7 @@ mod tests {
                     .map(|_| 0xff00_0000 | g.below(1 << 24))
                     .collect(),
             };
-            let mut sp = sprites_of(&[(1, 30, 10), (2, 20, 8), (3, 44, 12)]);
+            let sp = sprites_of(&[(1, 30, 10), (2, 20, 8), (3, 44, 12)]);
             let (mut s, mut f) = win_scene();
             let random = |g: &mut XorShift, s: &mut Scene| {
                 for _ in 0..1 + g.below(3) {
@@ -586,16 +616,16 @@ mod tests {
                 w,
                 px: vec![0; (w * h) as usize],
             };
-            compose_into(&s, &mut sp, &src, &mut inc, &[Rect::new(0, 0, w, h)]);
+            compose_into(&s, &sp, &src, &mut inc, &[Rect::new(0, 0, w, h)]);
             for round in 0..6 {
                 random(&mut g, &mut s);
                 let d = s.commit_with(ROOT, &mut f, &sp).to_vec();
-                compose_into(&s, &mut sp, &src, &mut inc, &d);
+                compose_into(&s, &sp, &src, &mut inc, &d);
                 let mut full = Img {
                     w,
                     px: vec![0; (w * h) as usize],
                 };
-                compose_into(&s, &mut sp, &src, &mut full, &[Rect::new(0, 0, w, h)]);
+                compose_into(&s, &sp, &src, &mut full, &[Rect::new(0, 0, w, h)]);
                 assert!(inc.px == full.px, "seed {seed} round {round}");
             }
         }

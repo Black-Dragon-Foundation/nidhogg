@@ -1,7 +1,8 @@
 /* glitnir.h -- the C ABI of the Glitnir compositor library.
 
    Every function returns a status code.  Ids and numbers cross the boundary, never pointers to the library's
-   memory.  A panic inside the library is caught at the boundary and reported as GLITNIR_E_PANIC.  */
+   memory.  A panic inside the library is caught at the boundary and reported as GLITNIR_E_PANIC.  The calls that keep
+   state (damage, scenes, decorations, compose, stats) are made from the host's main thread.  */
 
 #ifndef GLITNIR_H
 #define GLITNIR_H
