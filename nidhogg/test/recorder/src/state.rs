@@ -30,7 +30,7 @@ use smithay::backend::renderer::utils::on_commit_buffer_handler;
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
     self, BufferAssignment, CompositorClientState, CompositorHandler, CompositorState, Damage,
-    SubsurfaceCachedState, SurfaceAttributes,
+    RectangleKind, RegionAttributes, SubsurfaceCachedState, SurfaceAttributes,
 };
 use smithay::wayland::output::OutputHandler;
 use smithay::reexports::wayland_protocols::wp::text_input::zv3::server::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
@@ -235,6 +235,17 @@ fn max_version(name: &str) -> Option<u32> {
 }
 
 /// The objects of `interface` that the client owning `surface` holds.
+/// A region's added rectangles `[x, y, w, h]`; None when the client set no region.
+fn region_rects(region: &Option<RegionAttributes>) -> Option<Vec<[i32; 4]>> {
+    region.as_ref().map(|r| {
+        r.rects
+            .iter()
+            .filter(|(k, _)| matches!(k, RectangleKind::Add))
+            .map(|(_, r)| [r.loc.x, r.loc.y, r.size.w, r.size.h])
+            .collect()
+    })
+}
+
 pub fn objects_of(dh: &DisplayHandle, surface: &WlSurface, interface: &str) -> Vec<ObjectId> {
     let Ok(client) = dh.get_client(surface.id()) else {
         return Vec::new();
@@ -268,6 +279,7 @@ impl State {
         profile: &Profile,
         clock: Clock,
         output: (i32, i32, u32),
+        refresh_mhz: i32,
         signal: LoopSignal,
         handle: LoopHandle<'static, State>,
     ) -> State {
@@ -355,7 +367,7 @@ impl State {
         );
         let mode = Mode {
             size: (w, h).into(),
-            refresh: 60_000,
+            refresh: refresh_mhz,
         };
         out.change_current_state(
             Some(mode),
@@ -485,7 +497,7 @@ impl State {
             mono_base,
             manual_ns: 0,
             present_seq: 0,
-            pacing: crate::clock::Pacing::from_profile(profile),
+            pacing: crate::clock::Pacing::from_profile(profile, refresh_mhz),
             renderer: PixmanRenderer::new().expect("the pixman renderer"),
             handle,
         }
@@ -669,6 +681,14 @@ impl CompositorHandler for State {
                     alpha,
                 )
             });
+        let (opaque, input) = compositor::with_states(surface, |states| {
+            let mut cached = states.cached_state.get::<SurfaceAttributes>();
+            let attrs = cached.current();
+            (
+                region_rects(&attrs.opaque_region),
+                region_rects(&attrs.input_region),
+            )
+        });
         let geometry = if role == "toplevel" || role == "popup" {
             compositor::with_states(surface, |states| {
                 let mut cached = states.cached_state.get::<XdgCachedState>();
@@ -734,7 +754,15 @@ impl CompositorHandler for State {
             sync: request.sync,
             applied_by: None,
             t_ns: self.t_ns(),
+            opaque,
+            input,
         };
+        self.held_attach(
+            surface,
+            commit.buffer.is_some(),
+            commit.viewport.src,
+            commit.seq,
+        );
         let (seq, held_children) = (commit.seq, commit.role != "subsurface");
         self.log.push(commit);
         if held_children {

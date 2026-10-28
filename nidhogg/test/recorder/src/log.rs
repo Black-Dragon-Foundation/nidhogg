@@ -70,12 +70,26 @@ pub struct Commit {
     /// The seq of the root commit that applied this held commit; null for a commit applied at once.
     pub applied_by: Option<u64>,
     pub t_ns: u64,
+    /// The opaque region's added rectangles `[x, y, w, h]`; null when the client set none.
+    pub opaque: Option<Vec<[i32; 4]>>,
+    /// The input region's added rectangles; null = infinite (never set), `[]` = empty.
+    pub input: Option<Vec<[i32; 4]>>,
+}
+
+/// A buffer whose bytes inside the viewport source differed at its release from what they were at its attach.
+#[derive(Serialize, Clone, Debug)]
+pub struct HeldWrite {
+    pub surface: u32,
+    pub buffer: u32,
+    pub attached_seq: u64,
+    pub released_seq: u64,
 }
 
 #[derive(Default)]
 pub struct Log {
     commits: Vec<Commit>,
     next: u64,
+    writes: Vec<HeldWrite>,
 }
 
 impl Log {
@@ -83,7 +97,17 @@ impl Log {
         Log {
             commits: Vec::new(),
             next: 1,
+            writes: Vec::new(),
         }
+    }
+
+    pub fn push_write(&mut self, w: HeldWrite) {
+        self.writes.push(w);
+    }
+
+    /// The held-buffer writes found at a release in commit `seq` or later.
+    pub fn writes_since(&self, seq: u64) -> impl Iterator<Item = &HeldWrite> {
+        self.writes.iter().filter(move |w| w.released_seq >= seq)
     }
 
     /// The seq the next commit gets.
