@@ -21,6 +21,7 @@ use crate::monitors;
 use crate::pointer;
 use crate::scroll;
 use crate::select;
+use crate::tip;
 use nhshell::event::*;
 
 /// Take one event: `Ok(1)` with its actions in `state.actions` (none, possibly), `Ok(0)` when none is queued.  The
@@ -63,6 +64,8 @@ pub fn next(state: &mut Display, input: NhgNextIn) -> Result<i32, GlueError> {
                 pointer::event(state, &ev)
             }
         }
+        // a tip's dismissal; a popup frame's is still C's
+        NHSHELL_EV_POPUP_DONE if tip::popup_done(state, &ev) => {}
         _ => raw(state, ev),
     }
     Ok(1)

@@ -170,8 +170,9 @@ int32_t nhg_presenter_stats (NhgDisplay *d, NhgPresenterStats *out);
 /* ---- The window registry ------------------------------------------------------------------------------------------
 
    Each shell window C makes, with its kind, keyed by the window's id; a frame's pixel state above is keyed by its
-   Glitnir root id instead, because a popup, tip or child frame gets a new window each time it is shown.  C registers
-   each window it makes and forgets it when the window goes (until windows are made through the glue).  A forgotten
+   Glitnir root id instead, because a popup, tip or child frame gets a new window each time it is shown.  Windows are
+   made and destroyed through the glue (nhg_window_new, nhg_window_destroy), which registers and forgets them; C
+   forgets a window the shell dropped with its parent's (nhg_frame_forget).  A forgotten
    window's calls are refused until it is registered again (the shell's ids are reused).  Register: NHG_E_STATE if
    registered, NHG_E_ARG for window 0 or an unknown flag; forget: NHG_E_STATE if not registered.  Neither reads nor
    writes pixels, nor do the calls below.  */
@@ -444,6 +445,86 @@ int32_t nhg_monitors (NhgDisplay *d, NhgMonitor *out, size_t cap, size_t *n);
 /* Copy the ids of the outputs WINDOW is on, up to CAP, into OUT; their number goes to *N (may be NULL) and is
    returned.  NHG_E_STATE for an unknown window.  */
 int32_t nhg_frame_outputs (NhgDisplay *d, uint64_t window, uint64_t *out, size_t cap, size_t *n);
+
+/* ---- Window operations and tips ------------------------------------------------------------------------------------
+
+   WINDOW is a shell window id; a window the glue does not know (or forgot) gives NHG_E_STATE.  Every window C makes
+   goes through nhg_window_new (or nhg_tip_show), which registers it with the facts its frame starts from, so a tip,
+   popup or child frame's new window (each show makes one) starts from Emacs's values, and its alpha starts over.
+   Texts are UTF-8 with their lengths, valid for the call.  Neither reads nor writes pixels, nor do the calls below.  */
+
+/* Layout equals NhShellAnchor: a rectangle in the parent's surface (logical pixels), the gravity, NHSHELL_ADJUST_*.  */
+typedef struct { int32_t x, y, w, h; uint32_t gravity, adjust; } NhgAnchor;
+
+typedef struct
+{
+  int32_t w, h;                 /* logical pixels */
+  const char *title; size_t title_len;
+  const char *app_id; size_t app_id_len;
+  const char *session_name; size_t session_name_len;   /* top-levels; empty: none */
+  uint32_t flags;               /* NHSHELL_WIN_* */
+  uint32_t kind;                /* NHSHELL_KIND_* */
+  uint64_t parent;              /* children and popups */
+  int32_t x, y;                 /* children: the offset in the parent (logical) */
+  NhgAnchor anchor;             /* popups */
+  uint32_t role;                /* NHG_FRAME_* */
+  uint32_t facts;               /* NHG_FACT_VISIBLE, NHG_FACT_ICONIFIED, NHG_FACT_CSD: Emacs's, now */
+  int32_t native_w, native_h;   /* the frame's native size as Emacs has it (device pixels) */
+  uint32_t scale120;            /* the scale C gives the window (times 120) */
+} NhgWindowDesc;
+
+/* Make the window W describes and register it (it replaces nhg_frame_register for new windows), seeded with W's facts;
+   its id into *OUT.  A shell error is its code.  */
+int32_t nhg_window_new (NhgDisplay *d, const NhgWindowDesc *w, uint64_t *out);
+/* The title, LEN bytes (up to a NUL).  */
+int32_t nhg_window_title (NhgDisplay *d, uint64_t window, const char *title, size_t len);
+/* `undecorated' changed at run time (ON non-zero): a top-level asks the compositor again; a child has nothing to ask.  */
+int32_t nhg_window_undecorated (NhgDisplay *d, uint64_t window, int32_t on);
+
+/* nhg_window_alpha's result bits.  DAMAGE: C damages the whole frame.  HOST: the compositor cannot apply the alpha,
+   so the shell multiplies the pixels (NHG_SURF_ALPHA_HOST, with *CUT as the surface's ALPHA_CUT).  */
+#define NHG_ALPHA_DAMAGE 1
+#define NHG_ALPHA_HOST   2
+/* Apply the frame's effective alpha ALPHA (0 to 1: C chose the active or inactive value and applied
+   frame-alpha-lower-limit) and its alpha-background ALPHA_BG (C paints that into the backing).  NHG_ALPHA_* bits; the
+   alpha's cut (what it takes off opaque) into *CUT (may be NULL).  */
+int32_t nhg_window_alpha (NhgDisplay *d, uint64_t window, double alpha, double alpha_bg, uint32_t *cut);
+/* Push: C resized the frame itself to W x H device pixels (as nhg_frame_resized: a configure being applied gets a
+   content ack).  */
+int32_t nhg_window_size (NhgDisplay *d, uint64_t window, int32_t w, int32_t h);
+/* The frame's smallest size, W x H device pixels (a child's window has none).  */
+int32_t nhg_window_min_size (NhgDisplay *d, uint64_t window, int32_t w, int32_t h);
+/* Push: Emacs made the frame visible (ON non-zero) or invisible, not iconified.  Checked (nhg_debug_check_frame).  */
+int32_t nhg_window_visible (NhgDisplay *d, uint64_t window, int32_t on);
+/* Iconify: the compositor minimizes the window; a push too (iconified, not visible).  */
+int32_t nhg_window_iconify (NhgDisplay *d, uint64_t window);
+
+/* nhg_window_fullscreen's modes (Emacs's fullscreen_type values; WIDTH and HEIGHT ask for maximized).  */
+#define NHG_FULLSCREEN_NONE      0
+#define NHG_FULLSCREEN_WIDTH     1
+#define NHG_FULLSCREEN_HEIGHT    2
+#define NHG_FULLSCREEN_BOTH      3
+#define NHG_FULLSCREEN_MAXIMIZED 4
+int32_t nhg_window_fullscreen (NhgDisplay *d, uint64_t window, uint32_t mode);
+/* Destroy the window and forget its frame (forgotten even when the shell refuses, after a lost connection: C ignores
+   the code while it tears down).  */
+int32_t nhg_window_destroy (NhgDisplay *d, uint64_t window);
+/* One round of the bounded wait for a top-level's first configure: 1 when it is configured; else the work due on this
+   thread is done and the shell's descriptor waited on for at most TIMEOUT_MS: 0 when something is queued (C drains,
+   then calls again), NHG_E_TIMEOUT when nothing came.  */
+int32_t nhg_window_wait_configured (NhgDisplay *d, uint64_t window, uint32_t timeout_ms);
+
+/* A tip on PARENT's window at ANCHOR_DEV (device pixels in the parent's surface: the pointer, or the tip's left and
+   top) moved by DX, DY.  *WINDOW 0: make the tip's popup, NATIVE_W x NATIVE_H device pixels at the parent's scale, a
+   visible tip frame, its id into *WINDOW, and return 1 (draw it whole).  Otherwise only the offsets changed: the popup
+   moves with a bare commit, and 1 says the whole tip must be drawn again (below xdg_wm_base 3 the popup is made
+   again), 0 that it need not.  */
+int32_t nhg_tip_show (NhgDisplay *d, uint64_t *window, uint64_t parent, NhgRect anchor_dev, int32_t dx, int32_t dy,
+		      int32_t native_w, int32_t native_h);
+/* The tip's popup goes and its frame is forgotten; NHG_E_STATE for a window that is not a tip's.  */
+int32_t nhg_tip_hide (NhgDisplay *d, uint64_t window);
+/* DELETE flags: the compositor dismissed a tip's popup; C calls nhg_tip_hide and hides the frame (Lisp deletes it).  */
+#define NHG_DEL_TIP 1
 
 #ifdef __cplusplus
 }

@@ -228,6 +228,7 @@ nhwl_popup_show (struct frame *f)
 
   SET_FRAME_VISIBLE (f, 1);
   SET_FRAME_ICONIFIED (f, false);
+  nhwl_window_visible (f, true);
   out->has_been_visible = true;
   nhwl_damage_all (f);
   SET_FRAME_GARBAGED (f);

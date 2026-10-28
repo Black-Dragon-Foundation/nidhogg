@@ -623,6 +623,7 @@ extern int nhwl_window_new (struct frame *, NhShellWindowDesc *, uint32_t,
 			    uint64_t *);
 extern void nhwl_window_destroy (struct nhwl_display_info *, uint64_t);
 extern void nhwl_window_forget (struct nhwl_display_info *, uint64_t);
+extern void nhwl_window_visible (struct frame *, bool);
 
 #endif /* HAVE_NHWL */
 #endif /* _NHWLTERM_H_ */
