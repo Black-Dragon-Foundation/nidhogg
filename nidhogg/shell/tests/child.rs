@@ -232,6 +232,8 @@ mod child {
         let before = rec.frames_of(c);
         assert_eq!(before, 1);
         shell.set_position(c, 70, 10).unwrap();
+        // the tree's commits: the child (it owes one), then the parent
+        shell.present_bare(c).unwrap();
         commit(&mut shell, parent);
         rec.wait_node(c, |n| n.contains("\"position\":[70,10]"));
         assert_eq!(rec.frames_of(c), before, "a move is not a new frame");
@@ -268,11 +270,12 @@ mod child {
         shell
             .set_input_region(c, &[Rect::new(10, 10, 80, 40)])
             .unwrap();
-        shell.flush().unwrap();
+        // a sync child's commit applies with its parent's
+        commit(&mut shell, parent);
         rec.wait_node(c, |n| n.contains("\"input_region\":[[10,10,80,40]]"));
         // none at all: the whole surface again
         shell.set_input_region(c, &[]).unwrap();
-        shell.flush().unwrap();
+        commit(&mut shell, parent);
         rec.wait_node(c, |n| n.contains("\"input_region\":null"));
     }
 
@@ -283,9 +286,10 @@ mod child {
         let parent = window(&mut shell);
         let c = child(&mut shell, parent, 0, 0);
         draw(&mut shell, c, 100, 60);
+        commit(&mut shell, parent);
         rec.wait_node(c, |n| n.contains("\"mapped\":true"));
         shell.set_mapped(c, false).unwrap();
-        shell.flush().unwrap();
+        commit(&mut shell, parent);
         let n = rec.wait_node(c, |n| n.contains("\"mapped\":false"));
         assert!(n.contains("\"buffer\":null"), "{n}");
     }
@@ -369,7 +373,10 @@ mod child {
             e.kind == NHSHELL_EV_FRAME_READY && e.window == parent
         });
         assert_ne!(shell.window_ready(parent).unwrap() & NHSHELL_READY_OWED, 0);
-        // a bare commit of the parent clears it, and applies the move
+        // bare commits of the child (it owes one too), then the parent, clear it and apply the move
+        assert_eq!(shell.window_ready(c).unwrap(), NHSHELL_READY_OWED);
+        shell.present_bare(c).unwrap();
+        assert_eq!(shell.window_ready(c).unwrap(), 0);
         shell.present_bare(parent).unwrap();
         rec.wait_node(c, |n| n.contains("\"position\":[70,10]"));
         assert_eq!(shell.window_ready(parent).unwrap(), 0);
@@ -451,5 +458,160 @@ mod child {
         rec.wait_surfaces(2);
         shell.window_destroy(c).unwrap();
         rec.wait_surfaces(1);
+    }
+
+    /// Records until the queue is empty, after the recorder had time to answer.
+    fn drain(shell: &mut WaylandShell) -> Vec<NhShellEvent> {
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            while let Some(ev) = shell.next_event().unwrap() {
+                seen.push(ev);
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        seen
+    }
+
+    /// Surface `id`'s tree entry still matches `pred` 100 ms on: nothing applied it meanwhile.
+    fn still(rec: &Recorder, id: u64, pred: impl Fn(&str) -> bool) {
+        std::thread::sleep(Duration::from_millis(100));
+        let key = format!("\"id\":{id},");
+        let node = rec.tree().into_iter().find(|n| n.contains(&key));
+        assert!(
+            node.as_deref().is_some_and(&pred),
+            "applied too early: {node:?}"
+        );
+    }
+
+    /// S5: a child is a sync subsurface (no `set_desync`).
+    #[test]
+    fn child_is_sync() {
+        let rec = Recorder::start();
+        let mut shell = rec.open();
+        let parent = window(&mut shell);
+        let c = child(&mut shell, parent, 0, 0);
+        rec.wait_node(c, |n| n.contains("\"sync\":true"));
+    }
+
+    /// B3: each change of a child is cached until the root commits, and makes the root owe that commit.
+    #[test]
+    fn child_state_marks_the_root_owed() {
+        let rec = Recorder::start();
+        let mut shell = rec.open();
+        let root = window(&mut shell);
+        let a = child(&mut shell, root, 0, 0);
+        let b = child(&mut shell, root, 10, 10);
+        draw(&mut shell, a, 100, 60);
+        shell.present_bare(root).unwrap();
+        rec.wait_node(a, |n| n.contains("\"mapped\":true"));
+        drain(&mut shell);
+        let owed =
+            |shell: &mut WaylandShell| shell.window_ready(root).unwrap() & NHSHELL_READY_OWED != 0;
+        assert!(!owed(&mut shell));
+
+        // position: the child and the root owe a commit
+        shell.set_position(a, 70, 10).unwrap();
+        assert!(owed(&mut shell));
+        still(&rec, a, |n| n.contains("\"position\":[0,0]"));
+        shell.present_bare(a).unwrap();
+        still(&rec, a, |n| n.contains("\"position\":[0,0]"));
+        shell.present_bare(root).unwrap();
+        rec.wait_node(a, |n| n.contains("\"position\":[70,10]"));
+        assert!(!owed(&mut shell));
+
+        // stacking
+        let order = |first: u64, second: u64| format!("\"children\":[{first},{second}]");
+        rec.wait_node(root, |n| n.contains(&order(a, b)));
+        shell.stack(a, b, true).unwrap();
+        assert!(owed(&mut shell));
+        still(&rec, root, |n| n.contains(&order(a, b)));
+        shell.present_bare(root).unwrap();
+        rec.wait_node(root, |n| n.contains(&order(b, a)));
+
+        // input region (the child commits it itself; the root's commit applies it)
+        shell
+            .set_input_region(a, &[Rect::new(10, 10, 80, 40)])
+            .unwrap();
+        assert!(owed(&mut shell));
+        still(&rec, a, |n| n.contains("\"input_region\":null"));
+        shell.present_bare(root).unwrap();
+        rec.wait_node(a, |n| n.contains("\"input_region\":[[10,10,80,40]]"));
+
+        // unmap
+        shell.set_mapped(a, false).unwrap();
+        assert!(owed(&mut shell));
+        still(&rec, a, |n| n.contains("\"mapped\":true"));
+        shell.present_bare(root).unwrap();
+        rec.wait_node(a, |n| n.contains("\"mapped\":false"));
+        assert!(!owed(&mut shell));
+    }
+
+    /// A grandchild's move: its parent (a child) and the root owe commits, made deepest first; the move applies once.
+    #[test]
+    fn grandchild_move_owes_its_parent_and_root() {
+        let rec = Recorder::start();
+        let mut shell = rec.open();
+        let root = window(&mut shell);
+        let c = child(&mut shell, root, 20, 20);
+        let g = child(&mut shell, c, 5, 5);
+        draw(&mut shell, g, 100, 60);
+        draw(&mut shell, c, 100, 60);
+        shell.present_bare(root).unwrap();
+        rec.wait_node(g, |n| {
+            n.contains("\"mapped\":true") && n.contains("\"position\":[5,5]")
+        });
+        drain(&mut shell);
+        shell.set_position(g, 30, 25).unwrap();
+        wait_for(&mut shell, |e| {
+            e.kind == NHSHELL_EV_FRAME_READY && e.window == root
+        });
+        assert_eq!(shell.window_ready(g).unwrap(), NHSHELL_READY_OWED);
+        assert_eq!(shell.window_ready(c).unwrap(), NHSHELL_READY_OWED);
+        assert_ne!(shell.window_ready(root).unwrap() & NHSHELL_READY_OWED, 0);
+        // deepest first: the grandchild, its parent, then the root
+        shell.present_bare(g).unwrap();
+        shell.present_bare(c).unwrap();
+        still(&rec, g, |n| n.contains("\"position\":[5,5]"));
+        shell.present_bare(root).unwrap();
+        rec.wait_node(g, |n| n.contains("\"position\":[30,25]"));
+        for id in [g, c, root] {
+            assert_eq!(shell.window_ready(id).unwrap() & NHSHELL_READY_OWED, 0);
+        }
+    }
+
+    /// A child's drawing wakes its tree's root: `FRAME_READY` comes for the root, never for the child.
+    #[test]
+    fn child_damage_wakes_the_root() {
+        let rec = Recorder::start();
+        let mut shell = rec.open();
+        let root = window(&mut shell);
+        let c = child(&mut shell, root, 0, 0);
+        // the root's first frame is shown: its pacer is idle
+        rec.wait_node(root, |n| n.contains("\"mapped\":true"));
+        drain(&mut shell);
+        shell.window_dirty(c).unwrap();
+        let seen = drain(&mut shell);
+        let ready: Vec<u64> = seen
+            .iter()
+            .filter(|e| e.kind == NHSHELL_EV_FRAME_READY)
+            .map(|e| e.window)
+            .collect();
+        assert_eq!(ready, vec![root]);
+        assert_ne!(shell.window_ready(root).unwrap() & NHSHELL_READY_CONTENT, 0);
+        assert_eq!(shell.window_ready(c).unwrap(), 0);
+        // the tree presents: the child's buffer, then the root's paced commit, which applies it
+        draw(&mut shell, c, 100, 60);
+        shell.present_bare(root).unwrap();
+        rec.wait_node(c, |n| n.contains("\"mapped\":true"));
+        let log = rec.control(r#"{"cmd":"log","since":1}"#);
+        let last = log
+            .split("{\"ack_serial\":")
+            .filter(|c| c.contains(&format!("\"surface\":{root},")))
+            .last()
+            .unwrap()
+            .to_string();
+        // no buffer of its own, but paced: it shows the child's
+        assert!(last.contains("\"buffer\":null"), "{last}");
+        assert!(last.contains("\"frame_cb\":true"), "{last}");
     }
 }
