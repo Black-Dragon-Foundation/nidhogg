@@ -158,7 +158,6 @@ nhwl_child_layout (struct frame *f)
     {
       d->l = l, d->t = t, d->r = r, d->b = b;
       SET_FRAME_GARBAGED (f);
-      nhwl_dirty (f);
     }
 }
 
@@ -218,7 +217,6 @@ nhwl_child_params_changed (struct frame *f)
   c->chrome_dirty = true;
   nhwl_child_layout (f);
   SET_FRAME_GARBAGED (f);
-  nhwl_dirty (f);
 }
 
 /* The layer's rectangle in the root: the native area inside the margin when
@@ -389,10 +387,8 @@ nhwl_child_set_visible (struct frame *f, bool on)
     {
       nhshell_window_set_mapped (sh, out->window, 1);
       c->mapped = true;
-      nhwl_glitnir_ensure (f);
-      glitnir_damage_all (out->glitnir_id);
       out->nhist = 0;
-      nhwl_dirty (f);
+      nhwl_damage_all (f);
     }
   else if (!on && c->mapped)
     {
@@ -505,10 +501,8 @@ create_tree (struct frame *f)
   nhwl_child_created (f);
   if (FRAME_VISIBLE_P (f))
     {
-      nhwl_glitnir_ensure (f);
-      glitnir_damage_all (out->glitnir_id);
       out->nhist = 0;
-      nhwl_dirty (f);
+      nhwl_damage_all (f);
       SET_FRAME_GARBAGED (f);
     }
   FOR_EACH_FRAME (tail, frame)
