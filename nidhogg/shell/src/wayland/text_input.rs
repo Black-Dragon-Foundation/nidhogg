@@ -260,6 +260,15 @@ impl TextInput {
         }
     }
 
+    /// The connection is gone: focus goes (a shown preedit is cleared into `out`) and so does the object; what the
+    /// host asked for each window stays, so a window is enabled again at its next keyboard enter.
+    pub fn lost(&self, out: &mut Vec<NhShellEvent>) {
+        self.leave(out);
+        let mut i = lock(&self.inner);
+        i.obj = None;
+        i.commits = 0;
+    }
+
     /// The length of text `id`.
     pub fn text_len(&self, id: u32) -> ShellResult<usize> {
         lock(&self.inner)

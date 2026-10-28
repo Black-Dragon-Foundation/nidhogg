@@ -31,6 +31,7 @@ pub mod present;
 pub mod presenter;
 pub mod publish;
 pub mod reader;
+pub mod reconnect;
 pub mod registry;
 pub mod scale;
 pub mod selection;
@@ -135,6 +136,13 @@ pub struct WaylandShell {
     tree_commits: present::TreeCommits,
     /// The presenter thread's wake, mode and roots (`presenter.rs`).
     link: Arc<presenter::Link>,
+    /// The socket the shell connected to, for reconnecting (`None`: an inherited socket).
+    socket_path: Option<std::path::PathBuf>,
+    /// A duplicate of the connection's socket, made to refer to each new connection's: the descriptor `abandon`
+    /// hands the host stays valid across reconnects.
+    socket_dup: Option<std::os::fd::OwnedFd>,
+    /// Reconnecting since the host took `RECONNECTING` (`reconnect.rs`).
+    reconnect: Option<reconnect::Reconnecting>,
 }
 
 impl MainState {
@@ -143,6 +151,71 @@ impl MainState {
         self.windows.contains_key(&id)
             || self.children.contains_key(&id)
             || self.popups.contains_key(&id)
+    }
+
+    /// Bind what the registry announced at `min(advertised, supported)`: the main queue's globals here, the seat,
+    /// `xdg_wm_base`, the pointer's managers, text input and the selections' devices on the reader's queue (`rstate`).
+    /// Open and a reconnect share it, so a capability follows the compositor of the moment.
+    fn bind_globals(
+        &mut self,
+        rstate: &mut ReaderState,
+        mqh: &QueueHandle<MainState>,
+        rqh: &QueueHandle<ReaderState>,
+        shared: &Arc<Shared>,
+    ) -> ShellResult {
+        let g = &self.globals;
+        let reg = self.registry.as_ref().ok_or(ShellError::Unsupported)?;
+        self.compositor = g.bind(reg, mqh, ());
+        self.subcompositor = g.bind(reg, mqh, ());
+        self.shm = g.bind(reg, mqh, ());
+        self.fractional = g.bind(reg, mqh, ());
+        self.viewporter = g.bind(reg, mqh, ());
+        rstate.seat = g.bind(reg, rqh, ());
+        rstate.wm_base = g.bind(reg, rqh, ());
+        rstate.cursor_manager = g.bind(reg, rqh, ());
+        rstate.gestures = g.bind(reg, rqh, ());
+        self.decoration_manager = g.bind(reg, mqh, ());
+        self.presentation = g.bind(reg, mqh, ());
+        self.activation = g.bind(reg, mqh, ());
+        self.alpha_modifier = g.bind(reg, mqh, ());
+        self.bell.manager = g.bind(reg, mqh, ());
+        self.idle.manager = g.bind(reg, mqh, ());
+        self.foreign.exporter = g.bind(reg, mqh, ());
+        self.session.manager = g.bind(reg, mqh, ());
+        if let (Some(seat), Some(manager)) = (
+            &rstate.seat,
+            g.bind::<ZwpTextInputManagerV3, _, _>(reg, rqh, ()),
+        ) {
+            rstate
+                .text_input
+                .set_object(manager.get_text_input(seat, rqh, ()));
+        }
+        self.reader_qh = Some(rqh.clone());
+        self.seat = rstate.seat.clone();
+        self.wm_base = rstate.wm_base.clone();
+        selection::bind(g, reg, rqh, shared, rstate.seat.as_ref());
+        Ok(())
+    }
+
+    /// What presenting sends with on `conn`.
+    fn wire(
+        &self,
+        conn: &Connection,
+        shared: &Arc<Shared>,
+        mqh: &QueueHandle<MainState>,
+        rqh: &QueueHandle<ReaderState>,
+    ) -> presenter::Wire {
+        presenter::Wire {
+            conn: conn.clone(),
+            shared: shared.clone(),
+            compositor: self.compositor.clone(),
+            presentation: self.presentation.clone(),
+            shm: self.shm.clone(),
+            subcompositor: self.subcompositor.clone(),
+            viewporter: self.viewporter.clone(),
+            mqh: mqh.clone(),
+            rqh: rqh.clone(),
+        }
     }
 }
 
@@ -154,6 +227,8 @@ impl WaylandShell {
             ShellError::Unsupported
         }
         let conn = conn::connect(display)?;
+        let socket_path = conn::socket_path(display);
+        let socket_dup = rustix::io::fcntl_dupfd_cloexec(conn.backend().poll_fd(), 0).ok();
         let shared = Arc::new(Shared::new()?);
         let mut main_queue = conn.new_event_queue::<MainState>();
         let mqh = main_queue.handle();
@@ -171,39 +246,7 @@ impl WaylandShell {
         let mut reader_queue = conn.new_event_queue::<ReaderState>();
         let rqh = reader_queue.handle();
         let mut rstate = ReaderState::new(shared.clone());
-        {
-            let g = &main.globals;
-            let reg = main.registry.as_ref().ok_or(ShellError::Unsupported)?;
-            main.compositor = g.bind(reg, &mqh, ());
-            main.subcompositor = g.bind(reg, &mqh, ());
-            main.shm = g.bind(reg, &mqh, ());
-            main.fractional = g.bind(reg, &mqh, ());
-            main.viewporter = g.bind(reg, &mqh, ());
-            rstate.seat = g.bind(reg, &rqh, ());
-            rstate.wm_base = g.bind(reg, &rqh, ());
-            rstate.cursor_manager = g.bind(reg, &rqh, ());
-            rstate.gestures = g.bind(reg, &rqh, ());
-            main.decoration_manager = g.bind(reg, &mqh, ());
-            main.presentation = g.bind(reg, &mqh, ());
-            main.activation = g.bind(reg, &mqh, ());
-            main.alpha_modifier = g.bind(reg, &mqh, ());
-            main.bell.manager = g.bind(reg, &mqh, ());
-            main.idle.manager = g.bind(reg, &mqh, ());
-            main.foreign.exporter = g.bind(reg, &mqh, ());
-            main.session.manager = g.bind(reg, &mqh, ());
-            if let (Some(seat), Some(manager)) = (
-                &rstate.seat,
-                g.bind::<ZwpTextInputManagerV3, _, _>(reg, &rqh, ()),
-            ) {
-                rstate
-                    .text_input
-                    .set_object(manager.get_text_input(seat, &rqh, ()));
-            }
-            main.reader_qh = Some(rqh.clone());
-            main.seat = rstate.seat.clone();
-            main.wm_base = rstate.wm_base.clone();
-            selection::bind(g, reg, &rqh, &shared, rstate.seat.as_ref());
-        }
+        main.bind_globals(&mut rstate, &mqh, &rqh, &shared)?;
         // Before the reader owns its queue, this thread may still read: two round trips let the seat announce its
         // capabilities and the keyboard bind, so the shell opens with its input objects in place.
         for _ in 0..2 {
@@ -213,17 +256,7 @@ impl WaylandShell {
         let text_input = rstate.text_input.clone();
         let main_waker = Waker::from(Arc::new(MainWaker(Arc::downgrade(&shared))));
         let link = Arc::new(presenter::Link::new()?);
-        link.set_wire(presenter::Wire {
-            conn: conn.clone(),
-            shared: shared.clone(),
-            compositor: main.compositor.clone(),
-            presentation: main.presentation.clone(),
-            shm: main.shm.clone(),
-            subcompositor: main.subcompositor.clone(),
-            viewporter: main.viewporter.clone(),
-            mqh: mqh.clone(),
-            rqh: rqh.clone(),
-        });
+        link.set_wire(main.wire(&conn, &shared, &mqh, &rqh));
         main.link = Some(link.clone());
         let reader =
             reader::spawn(conn.clone(), reader_queue, rstate).map_err(|_| ShellError::NoMem)?;
@@ -238,6 +271,9 @@ impl WaylandShell {
             presenting: publish::Presenting::new(link.counters.clone()),
             tree_commits: present::TreeCommits::default(),
             link,
+            socket_path,
+            socket_dup,
+            reconnect: None,
         };
         // dispatches the setup's main-queue events and registers the waker
         shell.dispatch_main().map_err(|_| ShellError::Unsupported)?;
@@ -246,6 +282,9 @@ impl WaylandShell {
 
     /// Dispatch the main queue and register its waker; does not flush.
     fn dispatch_main_queue(&mut self) -> ShellResult {
+        if !self.main_queue_live() {
+            return Ok(());
+        }
         let mut cx = Context::from_waker(&self.main_waker);
         match self
             .main_queue
@@ -265,11 +304,13 @@ impl WaylandShell {
         self.shared.host_flush(&self.conn)
     }
 
-    /// `Disconnected` once the host has taken `DISCONNECTED`: every call but the wake descriptor, the capabilities and
-    /// the error text starts here.
+    /// `Disconnected` once the host has taken `DISCONNECTED`, `Reconnecting` from its taking `RECONNECTING` until a
+    /// reconnect succeeds: every call but the wake descriptor, the capabilities and the error text starts here.
     fn live(&self) -> ShellResult {
         if self.shared.lost() {
             Err(ShellError::Disconnected)
+        } else if self.reconnect.is_some() {
+            Err(ShellError::Reconnecting)
         } else {
             Ok(())
         }
@@ -366,7 +407,11 @@ impl WaylandShell {
     pub(super) fn abandon_impl(&self) -> Abandon {
         use std::os::fd::AsRawFd;
         Abandon {
-            conn_fd: self.conn.backend().poll_fd().as_raw_fd(),
+            // the duplicate follows every reconnect; the connection's own descriptor changes with it
+            conn_fd: self.socket_dup.as_ref().map_or_else(
+                || self.conn.backend().poll_fd().as_raw_fd(),
+                |d| d.as_raw_fd(),
+            ),
             threads: vec![
                 Arc::new(reader::ReaderThread(self.shared.clone())) as Arc<dyn BackendThread>,
                 self.link.clone(),
