@@ -478,8 +478,6 @@ extern int nhwl_parse_color (struct frame *, const char *, Emacs_Color *);
 extern void nhwl_query_color (struct frame *, Emacs_Color *);
 extern void nhwl_query_colors (struct frame *, Emacs_Color *, int);
 extern void nhwl_implicitly_set_name (struct frame *, Lisp_Object, Lisp_Object);
-extern int nhwl_display_pixel_height (struct nhwl_display_info *);
-extern int nhwl_display_pixel_width (struct nhwl_display_info *);
 extern void nhwl_set_window_size (struct frame *, bool, int, int);
 extern void nhwl_set_scroll_bar_default_width (struct frame *);
 extern void nhwl_set_scroll_bar_default_height (struct frame *);
@@ -621,8 +619,7 @@ extern void syms_of_nhwlterm (void);
 extern void syms_of_nhwlfns (void);
 extern void syms_of_nhwlselect (void);
 extern void syms_of_nhwlcsd (void);
-extern bool nhwl_selection_changed (struct nhwl_display_info *, uint32_t,
-				    struct input_event *);
+extern void nhwl_selection_clear_event (uint32_t, struct input_event *);
 extern void nhwl_handle_selection_clear (struct input_event *);
 extern frame_parm_handler nhwl_frame_parm_handlers[];
 extern Emacs_Cursor nhwl_cursor_for_shape (uint32_t);

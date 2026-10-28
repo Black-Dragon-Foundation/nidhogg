@@ -10,6 +10,7 @@ pub mod abi;
 pub mod guard;
 pub mod action;
 pub mod backing;
+pub mod bench;
 pub mod configure;
 pub mod display;
 pub mod drain;
@@ -18,6 +19,8 @@ pub mod focus;
 pub mod frame;
 pub mod keys;
 pub mod present;
+pub mod query;
+pub mod select;
 
 /// Glitnir's C ABI under another name, because this crate's own `ffi` shadows the glob below.
 pub use glitnir::ffi as glitnir_ffi;
