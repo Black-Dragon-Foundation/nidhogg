@@ -39,6 +39,10 @@ required-features = ["test-hooks"]
 name = "drain"
 required-features = ["test-hooks"]
 
+[[test]]
+name = "keys"
+required-features = ["test-hooks"]
+
 # debug = 2: gdb shows the glue's locals (README, "Debugging"); there is no cross-language LTO (Emacs builds with GCC)
 [profile.release]
 panic = "unwind"

@@ -184,9 +184,6 @@ struct nhwl_display_info
   /* The scroll bar in which the last motion event occurred.  */
   void *last_mouse_scroll_bar;
 
-  /* The modifier mask (NHSHELL_MOD_*) after the newest key event.  */
-  uint32_t mods;
-
   /* Accumulated wheel motion that has not made a step yet.  */
   struct
   {
@@ -212,10 +209,6 @@ struct nhwl_display_info
   /* A glue call answered NHG_E_PANIC: the glue's display is poisoned, and
      the next read drops this display (nhwl_read_socket).  */
   bool glue_broken;
-
-  /* The window that has the keyboard focus, as the last focus event said
-     (0: none of ours).  */
-  uint64_t kbd_window;
 };
 
 /* This is a chain of structures for all the displays currently in use.  */

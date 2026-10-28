@@ -5,6 +5,7 @@ use crate::action::Actions;
 use crate::backing::Backings;
 use crate::frame::{Frame, NHG_FRAME_KINDS};
 use crate::guard::{GlueError, PanicReport};
+use crate::keys::Keyboard;
 use crate::present::Presenting;
 use nhshell::api::{BackendThread, ShellBackend};
 use nhshell::ffi::{NhShell, nhshell_close};
@@ -45,6 +46,8 @@ pub struct Display {
     pub(crate) acks_due: Vec<u64>,
     /// The presenting mode (`present.rs`).
     pub(crate) presenting: Presenting,
+    /// The modifier mask and the window with the keyboard (`keys.rs`, `focus.rs`).
+    pub(crate) keyboard: Keyboard,
 }
 
 impl Drop for Display {
@@ -75,6 +78,7 @@ impl NhgDisplay {
                 actions: Actions::default(),
                 acks_due: Vec::new(),
                 presenting: Presenting::default(),
+                keyboard: Keyboard::default(),
             }),
         }
     }
@@ -186,6 +190,11 @@ impl Display {
 
     pub fn is_forgotten(&self, window: u64) -> bool {
         self.forgotten.contains(&window)
+    }
+
+    /// The keyboard's modifier mask and the window that has it.
+    pub fn keyboard(&self) -> Keyboard {
+        self.keyboard
     }
 
     /// The number of registered frames.
