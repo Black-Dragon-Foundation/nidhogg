@@ -1,6 +1,7 @@
 {
   "name": "kwin",
   "decoration": "server",
+  "touch": true,
   "hold_buffers": 1,
   "globals": {
     "wl_compositor": 6,
@@ -17,6 +18,7 @@
     "wp_viewporter": 1,
     "wp_presentation": 2,
     "zwp_text_input_manager_v3": 2,
+    "zwp_pointer_gestures_v1": 3,
     "wp_cursor_shape_manager_v1": 2,
     "wp_alpha_modifier_v1": 1
   },

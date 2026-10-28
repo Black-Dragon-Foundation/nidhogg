@@ -1,6 +1,7 @@
 {
   "name": "sway",
   "decoration": "server",
+  "touch": true,
   "frames": "damage-only",
   "discard_on_supersede": true,
   "globals": {
@@ -18,6 +19,7 @@
     "wp_viewporter": 1,
     "wp_presentation": 2,
     "zwp_text_input_manager_v3": 1,
+    "zwp_pointer_gestures_v1": 3,
     "wp_cursor_shape_manager_v1": 2,
     "wp_alpha_modifier_v1": 1
   },
