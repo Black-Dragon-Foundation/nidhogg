@@ -546,6 +546,37 @@ meanwhile, while a SIGCHLD still reaches its handler and
             (delete-process p)))
         (should (< worst 0.5))))))
 
+(ert-deftest workers/sigchld-vs-lisp-thread-handback ()
+  ;; A Lisp thread hands reader-owned processes back and frees their
+  ;; handles while SIGCHLDs arrive on the main thread, whose handler
+  ;; pauses readers through the lock-free table: the handler must never
+  ;; use a handle the thread freed.  A stress row for the sanitizer jobs
+  ;; (ASan reports the use after free); elsewhere it must not crash.
+  (skip-unless (featurep 'threads))
+  (workers-io-tests--modes
+    (when (eq mode 'threads)
+      (let* ((stop nil)
+             (churn (make-thread
+                     (lambda ()
+                       (dotimes (i 300)
+                         (let ((p (make-process
+                                   :name (format "wio-lt-%d" i) :noquery t
+                                   :connection-type 'pipe
+                                   :command '("cat") :filter #'ignore)))
+                           (thread-yield)
+                           (delete-process p)))
+                       (setq stop t))
+                     "wio-churn")))
+        (while (not stop)
+          (let ((p (make-process :name "wio-exit" :noquery t
+                                 :connection-type 'pipe
+                                 :command '("true") :sentinel #'ignore)))
+            (accept-process-output nil 0.001)
+            (when (process-live-p p)
+              (accept-process-output p 0.05))))
+        (thread-join churn)
+        (should stop)))))
+
 (ert-deftest workers/raw-flow-control ()
   ;; A stream far past the queue cap (MC-22, max (4 × readmax, 256 KB)):
   ;; the queue never holds more than the cap, nh-io stops reading at it
