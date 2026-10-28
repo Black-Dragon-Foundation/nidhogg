@@ -180,11 +180,12 @@ finalise (uint64_t now, uint64_t wall, uint64_t gc, uint64_t gcs,
 
 #ifdef HAVE_NIDHOGG_WORKERS
 /* How long the last busy span lasted, for the workers' pressure
-   sample (main thread).  */
+   sample (main thread); 0 while the watchdog is off, since no span
+   closes then and the last one would count as pressure for good.  */
 uint64_t
 nh_wd_last_span_ns (void)
 {
-  return wd_last_wall;
+  return nh_wd_on ? wd_last_wall : 0;
 }
 
 #endif
