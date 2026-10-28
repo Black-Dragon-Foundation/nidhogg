@@ -3099,8 +3099,23 @@ nh_img_cache_frame (const void *cache)
   return NULL;
 }
 
+/* Queue the callbacks of every prefetch of generation GEN.  */
+static void
+nh_img_prefetch_call (uint64_t gen, bool ok)
+{
+  Lisp_Object cell;
+  while (!NILP (cell = Fassq (make_int (gen), nh_img_prefetch_cbs)))
+    {
+      nh_img_prefetch_cbs = Fdelq (cell, nh_img_prefetch_cbs);
+      pending_funcalls = Fcons (list3 (XCDR (XCDR (cell)), XCAR (XCDR (cell)),
+				       ok ? Qready : Qfailed),
+				pending_funcalls);
+    }
+}
+
 /* Land R (unlinked) into IMG on F: from its job's result, or with SYNC
-   (the job could not finish) by the loader.  */
+   (the job could not finish) by the loader.  Every landing path comes
+   here, so the prefetches of R's generation are answered here.  */
 static void
 nh_img_land_pend (struct frame *f, struct image *img, struct nh_img_pend *r,
 		  bool sync)
@@ -3108,6 +3123,7 @@ nh_img_land_pend (struct frame *f, struct image *img, struct nh_img_pend *r,
   struct nh_img_job *j = r->j;
   ptrdiff_t id = r->id;
   const void *cache = r->cache;
+  uint64_t gen = r->gen;
   j->consumed = true;
   int64_t t0;
   int depth = nh_img_phase_begin (&t0);
@@ -3120,6 +3136,7 @@ nh_img_land_pend (struct frame *f, struct image *img, struct nh_img_pend *r,
     nh_img_failed_add (img->hash);
   nh_img_n_landed++;
   nh_img_mark (cache, id);
+  nh_img_prefetch_call (gen, !img->load_failed_p);
 }
 
 /* The top of redisplay_internal: every landed entry is finished at once.  */
@@ -3171,16 +3188,22 @@ nh_img_redisplay_begin (void)
 void
 nh_img_hit (struct frame *f, struct image *img)
 {
-  if (nh_img_in_redisplay || !nh_img_pends || img->pixmap
-      || img->load_failed_p)
+  /* A prefetch of a pending spec only adds its callback (it never
+     waits).  */
+  if (nh_img_in_redisplay || nh_img_prefetching || !nh_img_pends
+      || img->pixmap || img->load_failed_p)
     return;
   struct nh_img_pend *r = nh_img_pend_find (FRAME_IMAGE_CACHE (f), img->id);
   if (!r)
     return;
   bool sync = false;
+  /* Redisplay never waits (§7.1a): a hit from inside it that is not the
+     iterator's (the tool bar, Lisp a mode line's `:eval' runs) cancels
+     the job and loads the image now, as today.  */
   if (!r->landed
-      && nh_wk_wait (&r->j->job, NH_IMG_PIXELS_WAIT_NS, NH_WK_PH_WORKER_WAIT,
-		     NH_WK_RS_IMAGE_PIXELS) != 1)
+      && (redisplaying_p
+	  || nh_wk_wait (&r->j->job, NH_IMG_PIXELS_WAIT_NS,
+			 NH_WK_PH_WORKER_WAIT, NH_WK_RS_IMAGE_PIXELS) != 1))
     {
       nh_wk_cancel (&r->j->job);
       sync = true;
@@ -3235,27 +3258,17 @@ nh_img_prefetch_land (struct nh_img_pend *r)
   uint64_t gen = r->gen;
   ptrdiff_t id = r->id;
   const void *cache = r->cache;
-  bool ok = false;
   nh_img_pend_unlink (r);
   struct frame *f = nh_img_cache_frame (cache);
   struct image *img = f ? IMAGE_OPT_FROM_ID (f, id) : NULL;
   if (img && !img->pixmap && !img->load_failed_p)
-    {
-      nh_img_land_pend (f, img, r, false);
-      ok = !img->load_failed_p;
-    }
+    /* Answers the callbacks.  */
+    nh_img_land_pend (f, img, r, false);
   else
     {
       nh_img_n_dropped++;
       nh_img_pend_free (r);
-    }
-  Lisp_Object cell = Fassq (make_int (gen), nh_img_prefetch_cbs);
-  if (!NILP (cell))
-    {
-      nh_img_prefetch_cbs = Fdelq (cell, nh_img_prefetch_cbs);
-      pending_funcalls = Fcons (list3 (XCDR (XCDR (cell)), XCAR (XCDR (cell)),
-				       ok ? Qready : Qfailed),
-				pending_funcalls);
+      nh_img_prefetch_call (gen, false);
     }
 }
 
@@ -3288,6 +3301,15 @@ the decode runs drops it, and CALLBACK is not called.  Value nil.  */)
   unbind_to (count, Qnil);
   struct image *img = IMAGE_OPT_FROM_ID (f, id);
   uint64_t gen = nh_img_prefetch_gen;
+  if (!gen && img && nh_img_pending_p (f, img))
+    {
+      /* Already pending (shown, or prefetched before): answer with
+	 that entry's landing.  */
+      struct nh_img_pend *r = nh_img_pend_find (FRAME_IMAGE_CACHE (f),
+						img->id);
+      if (r)
+	gen = r->gen;
+    }
   if (gen && img && nh_img_pending_p (f, img))
     nh_img_prefetch_cbs
       = Fcons (Fcons (make_int (gen), Fcons (spec, callback)),
