@@ -88,7 +88,15 @@ sees what the earlier events changed, as the C drain did; before each call it sa
 - **Scale:** a `SCALE` action when the window's preferred scale differs from the one C last applied.
 - **Pushed facts** are keyed by the shell window, as the events are, and C seeds them when it makes a window: the
   native size, the scale and whether the frame draws its own title bar.
+- **Keys** (`src/keys.rs`): a press or a repeat gives a `KEY` action with the keysym, its text and the modifier mask;
+  the shell has already run it through xkb and compose. It names the window with the keyboard, and C sends it to the
+  frame of that window's tree that Emacs focused, after running the keysym cascade. A repeat taken by a call with
+  `NHG_IN_INPUT_WAITING` set is dropped, so a key stored earlier in the same drain counts. The glue keeps the modifier
+  mask (`MODIFIERS` events give no action).
+- **Focus** (`src/focus.rs`): a keyboard focus event gives `FOCUS_IN` or `FOCUS_OUT` for its window, and the glue
+  keeps the window that has the keyboard (`nhg_keyboard_window`). Emacs's focus frame and highlighting stay C.
 - **Transitional `NHG_ACT_RAW`** carries each event whose kind is not ported yet; C handles it on its old path
-  (`nhg_raw_event` gives the event), and a `PREEDIT`'s or `COMMIT_TEXT`'s text comes as the action's text. Each port
-  task takes its kinds out.
-- An event naming a forgotten window gives no action, except the keyboard's, which C sends to the focus frame.
+  (`nhg_raw_event` gives the event), a `PREEDIT`'s or `COMMIT_TEXT`'s text comes as the action's text, and `mods` is
+  the keyboard's modifier mask. Each port task takes its kinds out.
+- An event naming a forgotten window gives no action, except keys and the input method's, which C sends to the focus
+  frame.

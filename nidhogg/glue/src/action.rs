@@ -34,7 +34,7 @@ pub const NHG_ACT_IM_SURROUNDING: u32 = 20;
 pub const NHG_ACT_SELECTION_CLEAR: u32 = 21;
 /// Transitional: a shell event whose kind is not ported yet, which C handles on its old path (`nhg_raw_event` gives
 /// it).  A `PREEDIT` or `COMMIT_TEXT` event's text comes with it as the action's text.  Each port task takes its kinds
-/// out (4b keys and focus, 5 pointer, IME and outputs, 6 selections, 9b popups); the kind goes when none is left.
+/// out (the pointer, the input method, outputs, selections, popups); the kind goes when none is left.
 pub const NHG_ACT_RAW: u32 = 31;
 
 /// `RESIZE` flags: fullscreen or maximized changed (C stores the frame's `fullscreen` parameter).
@@ -49,12 +49,16 @@ pub struct NhgNextIn {
 }
 
 /// One action.  The fields' meaning depends on the kind:
+/// - `KEY` (a press or a repeat): `window` the window with the keyboard (C resolves the frame of its tree that Emacs
+///   focused), `code` the keysym, `text` its UTF-8 (possibly empty), `mods` the `NHSHELL_MOD_*` mask, `flags`
+///   `NHG_KEY_REPEAT` for a repeat;
+/// - `FOCUS_IN`, `FOCUS_OUT`: the window whose keyboard focus changed (C resolves Emacs's focus frame);
 /// - `RESIZE`: `w`, `h` the compositor's suggestion in logical pixels (0: the frame's own), `code` the toplevel's
 ///   `NHSHELL_STATE_*`, `flags` `NHG_RESIZE_*`;
 /// - `SCALE`: `code` the scale times 120, `scale` the factor;
 /// - `DELETE`, `READY`, `LOST`: the window only (`LOST`: none);
 /// - `RAW`: the shell event (`nhg_raw_event`), with a `PREEDIT`'s or `COMMIT_TEXT`'s text in `text`, `len` (null
-///   when it could not be taken).
+///   when it could not be taken), and the keyboard's `NHSHELL_MOD_*` mask in `mods`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct NhgAction {

@@ -14,7 +14,9 @@ pub mod configure;
 pub mod display;
 pub mod drain;
 pub mod ffi;
+pub mod focus;
 pub mod frame;
+pub mod keys;
 pub mod present;
 
 /// Glitnir's C ABI under another name, because this crate's own `ffi` shadows the glob below.
