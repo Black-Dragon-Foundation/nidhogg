@@ -1,10 +1,15 @@
 //! Outputs: `wl_output` (v4, with names) on the main queue; `OUTPUT_ADD` when an output is complete (each `done`) and
 //! `OUTPUT_REMOVE` when its global goes away.  An output's id is its registry name.
 
-use crate::event::{NHSHELL_EV_OUTPUT_ADD, NHSHELL_EV_OUTPUT_REMOVE, NhShellEvent};
+use crate::event::{
+    NHSHELL_EV_OUTPUT_ADD, NHSHELL_EV_OUTPUT_CHANGE, NHSHELL_EV_OUTPUT_REMOVE, NhShellEvent,
+};
 use crate::wayland::MainState;
 use wayland_client::protocol::wl_output::{self, Mode, WlOutput};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum};
+
+/// x, y, w, h, mm_w, mm_h, scale, name.
+type Announced = (i32, i32, i32, i32, i32, i32, i32, String);
 
 pub struct Output {
     proxy: WlOutput,
@@ -16,6 +21,8 @@ pub struct Output {
     mm_h: i32,
     scale: i32,
     name: String,
+    /// What the last `OUTPUT_ADD` or `OUTPUT_CHANGE` carried (none before the first `done`).
+    announced: Option<Announced>,
 }
 
 impl Output {
@@ -30,6 +37,7 @@ impl Output {
             mm_h: 0,
             scale: 1,
             name: String::new(),
+            announced: None,
         }
     }
 
@@ -109,7 +117,26 @@ impl Dispatch<WlOutput, u32> for MainState {
             wl_output::Event::Scale { factor } => out.scale = factor,
             wl_output::Event::Name { name } => out.name = name,
             wl_output::Event::Done => {
-                let mut ev = NhShellEvent::new(NHSHELL_EV_OUTPUT_ADD, 0, 0);
+                let key = (
+                    out.x,
+                    out.y,
+                    out.w,
+                    out.h,
+                    out.mm_w,
+                    out.mm_h,
+                    out.scale,
+                    out.name.clone(),
+                );
+                if out.announced.as_ref() == Some(&key) {
+                    return;
+                }
+                let kind = if out.announced.is_some() {
+                    NHSHELL_EV_OUTPUT_CHANGE
+                } else {
+                    NHSHELL_EV_OUTPUT_ADD
+                };
+                out.announced = Some(key);
+                let mut ev = NhShellEvent::new(kind, 0, 0);
                 ev.u.output.id = u64::from(*name);
                 ev.u.output.x = out.x;
                 ev.u.output.y = out.y;
