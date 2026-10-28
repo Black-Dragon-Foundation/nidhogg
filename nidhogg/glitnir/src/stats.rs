@@ -57,6 +57,8 @@ pub struct Summary {
     pub late_ticks: u64,
     pub violations: u64,
     pub scale_mismatch: u64,
+    /// From the update to the end of the paint, over the entries with an update time only.
+    pub update_ms: Percentiles,
 }
 
 /// The last `RING` entries of one root, and the totals since the last reset.
@@ -160,6 +162,12 @@ fn summarise(r: &Ring) -> Summary {
         late_ticks: r.late_ticks,
         violations: r.violations,
         scale_mismatch: r.scale_mismatch,
+        update_ms: percentiles(
+            b.iter()
+                .filter(|e| e.t_update_ns != 0)
+                .map(|e| ms(e.t_update_ns, e.t_draw_end_ns))
+                .collect(),
+        ),
     }
 }
 
@@ -279,6 +287,34 @@ mod tests {
         let filled = all.iter().filter(|e| e.backfill == 1).count();
         assert_eq!(s.backfill_rate, filled as f64 / known as f64);
         assert_eq!(s.ticks, all.iter().map(|e| u64::from(e.ticks)).sum::<u64>());
+        forget(root);
+    }
+
+    #[test]
+    fn update_series_skips_entries_without_an_update() {
+        let root = 9005;
+        let mut rng = Rng(seed());
+        for i in 0..40u64 {
+            let e = random_entry(&mut rng);
+            let t_update_ns = if i % 4 == 0 {
+                e.t_draw_end_ns - 2_000_000
+            } else {
+                0
+            };
+            record(
+                root,
+                StatsEntry {
+                    t_update_ns,
+                    t_commit_ns: e.t_draw_end_ns - 1_000_000,
+                    ..e
+                },
+            );
+        }
+        let s = summary(root, false);
+        assert_eq!(s.count, 40);
+        // ten keyed entries, each 2 ms; the other thirty would pull the median to 0
+        assert_eq!(s.update_ms.p50, 2.0);
+        assert_eq!(s.update_ms.max, 2.0);
         forget(root);
     }
 
