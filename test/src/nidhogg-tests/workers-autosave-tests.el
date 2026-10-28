@@ -532,6 +532,34 @@ Return (STATUS CODE AUTO-SAVED-BYTES)."
                                  "long\n"))
                   (should-not (directory-files dir nil "\\.nh-")))))))))))
 
+(ert-deftest workers/autosave-kill-nothing-to-save ()
+  ;; Killing a buffer whose job still runs, after the buffer was saved
+  ;; or its auto-saving turned off: the job is dropped and nothing is
+  ;; written (no auto-save file of a saved buffer, no warning).
+  (let ((nidhogg-workers--mode 'threads)
+        (nidhogg-workers-autosave t))
+    (dolist (how '(saved off))
+      (ert-info ((symbol-name how) :prefix "")
+        (workers-autosave-tests--in-dir dir
+          (let* ((file (expand-file-name "k.txt" dir))
+                 (auto (expand-file-name "#k.txt#" dir))
+                 (buf (workers-autosave-tests--visit file "text\n"))
+                 (warnings nil))
+            (workers-autosave-tests--warnings warnings
+              (with-current-buffer buf
+                (workers-autosave-tests--autosave t)
+                (if (eq how 'saved)
+                    (save-buffer)
+                  (auto-save-mode -1)
+                  (set-buffer-modified-p nil)))
+              (let ((kill-buffer-query-functions nil))
+                (kill-buffer buf))
+              (nidhogg-workers--release 'before-write)
+              (should (nidhogg-workers--test-save-await 5000))
+              (should-not warnings)
+              (should-not (file-exists-p auto))
+              (should-not (directory-files dir nil "\\.nh-")))))))))
+
 (defun workers-autosave-tests--random-string (n)
   "A random multibyte string of N characters, raw bytes included.
 Built from a list of characters: `aset' refuses a non-ASCII character
