@@ -816,6 +816,34 @@ PROTO (nhg_session_remove, int32_t (NhgDisplay *, uint64_t));";
     }
 
     #[test]
+    fn touch_header_matches() {
+        use nhglue::touch::*;
+        let rows: &[(&str, i64)] = &[
+            ("NHG_ACT_TOUCH", NHG_ACT_TOUCH.into()),
+            ("NHG_ACT_PINCH", NHG_ACT_PINCH.into()),
+            ("NHG_TOUCH_BEGIN", NHG_TOUCH_BEGIN.into()),
+            ("NHG_TOUCH_UPDATE", NHG_TOUCH_UPDATE.into()),
+            ("NHG_TOUCH_END", NHG_TOUCH_END.into()),
+            ("NHG_TOUCH_CANCEL", NHG_TOUCH_CANCEL.into()),
+            ("sizeof (NhgTouchPoint)", size_of::<NhgTouchPoint>() as i64),
+            (
+                "offsetof (NhgTouchPoint, y)",
+                offset_of!(NhgTouchPoint, y) as i64,
+            ),
+            (
+                "offsetof (NhgTouchPoint, id)",
+                offset_of!(NhgTouchPoint, id) as i64,
+            ),
+        ];
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe("", &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+    }
+
+    #[test]
     fn version_is_one_and_null_is_refused() {
         let mut v = 0u32;
         // SAFETY: `v` is a writable u32.
