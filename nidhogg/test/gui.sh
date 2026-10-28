@@ -7,7 +7,10 @@
 #                       [--recorder-profile sway|kwin|mutter] [--scale S] [--size WxH] [--monitors N]
 #                       [--select REGEXP] [--tests DIR] [--daemon] [--container DISTRO] [--wayland-debug FILE]
 #                       [--env K=V]... [--force-csd] [--timeout SEC] [--smoke] [--files GLOB] [--tag TAG]
-#                       [--trace-check RULES] [--portal fake|none]
+#                       [--trace-check RULES] [--portal fake|none] [--recorder-arg ARG]...
+#
+#   --recorder-arg ARG  an extra command-line argument for the recorder (repeatable), e.g. --refresh-mhz=120000
+#   --env K=V           (below) is how NHWL_PRESENTER=0 (the kill switch) and NHWL_GUI_STRICT_HELD=0 reach the run
 #
 #   --portal fake|none  fake: a scripted org.freedesktop.portal.Desktop (FileChooser) on the run's session bus, served
 #                       by a second (daemon) Nidhogg running test/src/nidhogg-tests/fake-portal.el; the rows set its
@@ -23,7 +26,7 @@
 #   NHWL_GUI_RESTART    (set for the rows, recorder and sway only) a script that stops the compositor and starts it again
 #                       on the same socket (the recorder with the same --session-store); it prints READY and exits 0
 #   --trace-check RULES after the session, check the --wayland-debug trace against RULES (a comma list of errors, acks,
-#                       unconfigured, subsurface, popup, sync, grab, popup-order, dnd; see nidhogg/test/wl-trace-check.el), in the same
+#                       unconfigured, subsurface, popup, sync, grab, popup-order, dnd, held-reuse, viewport; see nidhogg/test/wl-trace-check.el), in the same
 #                       container; the violations are printed and make the exit status 1.  Needs --wayland-debug
 #   GLITNIR_GUI_DRY=1   print the commands a run would start and exit 0 (nothing is started)
 #   --scale S           the monitors' scale, integer or fractional (default 1)
@@ -66,7 +69,7 @@ usage() { sed -n '2,/^# Temp files/s/^# \{0,1\}//p' "$self" >&2; exit 2; }
 
 prefix= scale=1 size=2880x1800 monitors=1 select= tests= daemon=0 container= wdebug= timeout=300
 compositor=sway recorder=${REC:-} rprofile=sway tracecheck= portal=none
-envs=() csd=0 smoke=0 files=${GLITNIR_GUI_FILES:-} tag=${GLITNIR_GUI_TAG:-}
+envs=() rargs=() csd=0 smoke=0 files=${GLITNIR_GUI_FILES:-} tag=${GLITNIR_GUI_TAG:-}
 while [ $# -gt 0 ]; do
   case $1 in
     --prefix) prefix=${2:-}; shift 2 ;;
@@ -83,6 +86,7 @@ while [ $# -gt 0 ]; do
     --wayland-debug) wdebug=${2:-}; shift 2 ;;
     --trace-check) tracecheck=${2:-}; shift 2 ;;
     --env) envs+=("${2:-}"); shift 2 ;;
+    --recorder-arg) rargs+=("${2:-}"); shift 2 ;;
     --force-csd) csd=1; shift ;;
     --timeout) timeout=${2:-}; shift 2 ;;
     --smoke) smoke=1; shift ;;
@@ -170,7 +174,7 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
       ctl=$XDG_RUNTIME_DIR/nh-recorder.ctl
       # the recorder takes a profile file; they sit next to its source (the checkout is /src in a container)
       "$recorder" --output "${size}@${s120}" --profile "$(dirname "$self")/recorder/profiles/$rprofile.json" --socket "$display" --control "$ctl" \
-        --session-store "$GLITNIR_GUI_RUN/session-store.json" > "$clog" 2>&1 &
+        --session-store "$GLITNIR_GUI_RUN/session-store.json" ${rargs[@]+"${rargs[@]}"} > "$clog" 2>&1 &
       mpid=$!
       ;;
   esac
@@ -225,7 +229,7 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
     csock=$XDG_RUNTIME_DIR/$display
     if [ "$compositor" = recorder ]; then
       startcmd=$(printf '%q ' "$recorder" --output "${size}@${s120}" --profile "$(dirname "$self")/recorder/profiles/$rprofile.json" \
-        --socket "$display" --control "$ctl" --session-store "$GLITNIR_GUI_RUN/session-store.json")
+        --socket "$display" --control "$ctl" --session-store "$GLITNIR_GUI_RUN/session-store.json" ${rargs[@]+"${rargs[@]}"})
       ready="grep -q '^READY' '$clog' && [ -S '$csock' ]"
     else
       startcmd=$(printf '%q ' env WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 \
@@ -334,7 +338,7 @@ if [ "${GLITNIR_GUI_DRY:-}" = 1 ]; then
     mutter) echo "mutter --headless --wayland --no-x11 --wayland-display NAME ($monitors x --virtual-monitor $size; scale $scale)" ;;
     kwin) echo "kwin_wayland --virtual --width $W --height $H --socket NAME   (scale $scale by kscreen-doctor)" ;;
     labwc) echo "labwc   (WLR_BACKENDS=headless; $monitors output(s) of $size, scale $scale by wlr-randr)" ;;
-    recorder) echo "$recorder --output ${size}@${s120} --profile $(dirname "$self")/recorder/profiles/$rprofile.json --socket NAME --control CTL --session-store RUN/session-store.json" ;;
+    recorder) echo "$recorder --output ${size}@${s120} --profile $(dirname "$self")/recorder/profiles/$rprofile.json --socket NAME --control CTL --session-store RUN/session-store.json${rargs[*]:+ ${rargs[*]}}" ;;
   esac
   [ "$portal" != fake ] || echo "$prefix/bin/nidhogg -Q --fg-daemon=XDG_RUNTIME_DIR/portal-sock -l $checkout/test/src/nidhogg-tests/fake-portal.el -f fake-portal-serve   (the portal)"
   echo "$prefix/bin/nidhogg -Q --fullscreen -l $checkout/test/src/nidhogg-tests/gui-runner.el"
@@ -365,6 +369,7 @@ if [ -n "$container" ]; then
   [ -z "$wdebug" ] || args+=(--wayland-debug /out/wayland-debug.txt)
   [ -z "$tracecheck" ] || args+=(--trace-check "$tracecheck")
   for kv in ${envs[@]+"${envs[@]}"}; do args+=(--env "$kv"); done
+  for ra in ${rargs[@]+"${rargs[@]}"}; do args+=(--recorder-arg "$ra"); done
   out=
   mounts=(-v "$checkout:/src:ro,z" -v "$prefix:$inprefix:ro,z")
   [ "$compositor" != recorder ] || mounts+=(-v "$recorder:/opt/nh-recorder:ro,z")
@@ -430,7 +435,7 @@ env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u EMACS_SOCKET_NA
   dbus-run-session -- bash "$self" --prefix "$prefix" --compositor "$compositor" --recorder-profile "$rprofile" ${recorder:+--recorder "$recorder"} --scale "$scale" --size "$size" --monitors "$monitors" \
     --tests "$tests" --timeout "$timeout" ${select:+--select "$select"} ${wdebug:+--wayland-debug "$wdebug"} \
     ${files:+--files "$files"} ${tag:+--tag "$tag"} --portal "$portal" \
-    $([ "$daemon" = 0 ] || echo --daemon) $([ "$csd" = 0 ] || echo --force-csd) $(for kv in ${envs[@]+"${envs[@]}"}; do echo --env "$kv"; done)
+    $([ "$daemon" = 0 ] || echo --daemon) $([ "$csd" = 0 ] || echo --force-csd) $(for kv in ${envs[@]+"${envs[@]}"}; do echo --env "$kv"; done) $(for ra in ${rargs[@]+"${rargs[@]}"}; do echo --recorder-arg "$ra"; done)
 rc=$?
 if [ -n "$tracecheck" ]; then
   grep -E '^(Ran |FAILED)' "$wdebug"   # the rows' own result: the checker judges only the trace

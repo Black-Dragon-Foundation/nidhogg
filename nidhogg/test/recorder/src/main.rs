@@ -30,12 +30,13 @@ struct Args {
     profile: PathBuf,
     clock: Clock,
     output: (i32, i32, u32),
+    refresh_mhz: i32,
     session_store: Option<PathBuf>,
 }
 
 fn usage() -> ! {
     eprintln!(
-        "usage: nh-recorder --socket NAME --control PATH --profile FILE [--clock auto|manual] [--output WxH@SCALE120] [--session-store FILE]"
+        "usage: nh-recorder --socket NAME --control PATH --profile FILE [--clock auto|manual] [--output WxH@SCALE120] [--refresh-mhz N] [--session-store FILE]"
     );
     std::process::exit(2)
 }
@@ -51,9 +52,14 @@ fn parse_args() -> Args {
     let (mut socket, mut control, mut profile) = (None, None, None);
     let mut clock = Clock::Auto;
     let mut output = (1920, 1080, 120);
+    let mut refresh_mhz = 60_000;
     let mut session_store = None;
     while let Some(a) = it.next() {
-        let v = it.next().unwrap_or_else(|| usage());
+        // `--name=value` or `--name value`
+        let (a, v) = match a.split_once('=') {
+            Some((k, v)) if k.starts_with("--") => (k.to_string(), v.to_string()),
+            _ => (a, it.next().unwrap_or_else(|| usage())),
+        };
         match a.as_str() {
             "--socket" => socket = Some(v),
             "--control" => control = Some(PathBuf::from(v)),
@@ -66,6 +72,9 @@ fn parse_args() -> Args {
                 }
             }
             "--output" => output = parse_output(&v).unwrap_or_else(|| usage()),
+            "--refresh-mhz" => {
+                refresh_mhz = v.parse().ok().filter(|n| *n > 0).unwrap_or_else(|| usage())
+            }
             "--session-store" => session_store = Some(PathBuf::from(v)),
             _ => usage(),
         }
@@ -77,6 +86,7 @@ fn parse_args() -> Args {
             profile,
             clock,
             output,
+            refresh_mhz,
             session_store,
         },
         _ => usage(),
@@ -101,6 +111,7 @@ fn main() {
         &profile,
         args.clock,
         args.output,
+        args.refresh_mhz,
         event_loop.get_signal(),
         handle.clone(),
     );
@@ -157,10 +168,11 @@ fn main() {
         .unwrap_or_else(|e| die(e.to_string()));
 
     // frame clock tick and ping timeouts
+    let frame = state.pacing.frame;
     handle
-        .insert_source(Timer::from_duration(clock::FRAME), |_, _, state| {
+        .insert_source(Timer::from_duration(frame), move |_, _, state| {
             state.tick();
-            TimeoutAction::ToDuration(clock::FRAME)
+            TimeoutAction::ToDuration(frame)
         })
         .unwrap_or_else(|e| die(e.to_string()));
 
