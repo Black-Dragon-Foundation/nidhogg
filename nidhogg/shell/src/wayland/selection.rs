@@ -17,6 +17,7 @@ use crate::wayland::reader::ReaderState;
 use crate::wayland::registry::Globals;
 use rustix::event::{PollFlags, Timespec};
 use rustix::fd::OwnedFd;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, MutexGuard};
 use std::time::{Duration, Instant};
 use wayland_client::backend::ObjectId;
@@ -357,10 +358,16 @@ impl Dispatch<WlDataDevice, ()> for ReaderState {
             wl_data_device::Event::Selection { id } => {
                 new_offer(state, NHSHELL_SEL_CLIPBOARD, id.map(Offer::Data))
             }
-            // drag and drop is W2's: an offer that enters is not taken
-            wl_data_device::Event::Enter {
-                id: Some(offer), ..
-            } => offer.destroy(),
+            // drag and drop is W2's: an offer that enters is not taken, but the drag is noted (popups take no grab)
+            wl_data_device::Event::Enter { id, .. } => {
+                state.shared.dragging.store(true, Ordering::Release);
+                if let Some(offer) = id {
+                    offer.destroy();
+                }
+            }
+            wl_data_device::Event::Leave | wl_data_device::Event::Drop => {
+                state.shared.dragging.store(false, Ordering::Release)
+            }
             _ => {}
         }
     }

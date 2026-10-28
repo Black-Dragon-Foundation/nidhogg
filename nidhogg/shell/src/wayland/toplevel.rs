@@ -232,6 +232,14 @@ impl ShellBackend for WaylandShell {
         self.window_set_mapped(id, on)
     }
 
+    fn window_grabbed(&self, id: WindowId) -> ShellResult<bool> {
+        self.popup_grabbed(id)
+    }
+
+    fn set_size(&mut self, id: WindowId, w: i32, h: i32) -> ShellResult<bool> {
+        self.popup_set_size(id, w, h)
+    }
+
     fn set_title(&mut self, id: WindowId, title: &str) -> ShellResult {
         self.window(id)?.toplevel.set_title(title.to_owned());
         Ok(())

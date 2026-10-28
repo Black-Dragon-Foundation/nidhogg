@@ -2,7 +2,8 @@
 // Copyright 2022-2026 Zed Industries, Inc.
 // Adapted-from: https://github.com/zed-industries/zed@347f171a3fd00a3b672382d78348b37bd969d17c crates/gpui_linux/src/linux/wayland/serial.rs
 // Modified for Nidhogg: std's HashMap instead of Zed's `collections` crate, `pub` visibility for the shell's crate
-// layout, and this header.  The logic and the tests are Zed's.
+// layout, this header, and the touch-down kind with the grab serial (the newest press of any kind) and its tests.
+// The rest of the logic and the other tests are Zed's.
 
 //! The latest input serial of each kind: requests such as an interactive move or a selection need the serial of the
 //! input event that caused them.
@@ -16,6 +17,7 @@ pub enum SerialKind {
     MouseEnter,
     MousePress,
     KeyPress,
+    TouchDown,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -41,6 +43,7 @@ impl SelectionSerial {
 pub struct SerialTracker {
     serials: HashMap<SerialKind, Serial>,
     selection_serial: Option<SelectionSerial>,
+    grab_serial: Option<Serial>,
 }
 
 impl SerialTracker {
@@ -48,6 +51,7 @@ impl SerialTracker {
         Self {
             serials: HashMap::default(),
             selection_serial: None,
+            grab_serial: None,
         }
     }
 
@@ -56,6 +60,12 @@ impl SerialTracker {
 
         if matches!(&kind, SerialKind::KeyPress | SerialKind::MousePress) {
             self.selection_serial = Some(SelectionSerial(serial));
+        }
+        if matches!(
+            &kind,
+            SerialKind::KeyPress | SerialKind::MousePress | SerialKind::TouchDown
+        ) {
+            self.grab_serial = Some(serial);
         }
 
         self.serials.insert(kind, serial);
@@ -70,6 +80,11 @@ impl SerialTracker {
 
     pub fn selection_serial(&self) -> Option<SelectionSerial> {
         self.selection_serial
+    }
+
+    /// The serial a popup grab is made with: the newest button press, key press or touch down, in arrival order.
+    pub fn grab_serial(&self) -> Option<u32> {
+        self.grab_serial.map(Serial::as_raw)
     }
 }
 
@@ -131,5 +146,20 @@ mod tests {
         serial_tracker.update(SerialKind::KeyPress, 0);
 
         assert_eq!(raw_selection_serial(&serial_tracker), Some(0));
+    }
+
+    #[test]
+    fn grab_serial_is_the_newest_press_of_any_kind() {
+        let mut serial_tracker = SerialTracker::new();
+        assert_eq!(serial_tracker.grab_serial(), None);
+        serial_tracker.update(SerialKind::MouseEnter, 5);
+        serial_tracker.update(SerialKind::InputMethod, 6);
+        assert_eq!(serial_tracker.grab_serial(), None);
+        serial_tracker.update(SerialKind::MousePress, 10);
+        serial_tracker.update(SerialKind::KeyPress, 11);
+        assert_eq!(serial_tracker.grab_serial(), Some(11));
+        serial_tracker.update(SerialKind::TouchDown, 12);
+        assert_eq!(serial_tracker.grab_serial(), Some(12));
+        assert_eq!(raw_selection_serial(&serial_tracker), Some(11));
     }
 }

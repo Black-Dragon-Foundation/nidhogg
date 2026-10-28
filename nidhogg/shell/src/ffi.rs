@@ -227,6 +227,7 @@ pub unsafe extern "C" fn nhshell_window_new(
                     w: d.w,
                     h: d.h,
                     anchor: d.anchor,
+                    flags: d.flags,
                 })?
             };
             // SAFETY: `out` is null or writable.
@@ -293,6 +294,30 @@ pub unsafe extern "C" fn nhshell_window_set_position(
 }
 ffi!(fn nhshell_window_stack(window: u64, sibling: u64, above: i32) |b| b.stack(window, sibling, above != 0));
 ffi!(fn nhshell_window_set_mapped(window: u64, on: i32) |b| b.set_mapped(window, on != 0));
+
+/// Whether popup `window` holds a grab: 1 or 0, or a negative `NHSHELL_E_*` code.
+///
+/// # Safety
+/// `sh` is a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nhshell_window_grabbed(sh: *mut NhShell, window: u64) -> i32 {
+    guard(sh, |b| b.window_grabbed(window), i32::from)
+}
+
+/// A popup's new size (logical pixels).  Returns 1 when the whole window must be redrawn (a popup that was made
+/// again), 0 otherwise, or a negative `NHSHELL_E_*` code.
+///
+/// # Safety
+/// `sh` is a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nhshell_window_set_size(
+    sh: *mut NhShell,
+    window: u64,
+    w: i32,
+    h: i32,
+) -> i32 {
+    guard(sh, |b| b.set_size(window, w, h), i32::from)
+}
 
 /// Set the part of the window that takes input: `n` rectangles in logical pixels (`n` 0: the whole surface).
 ///
