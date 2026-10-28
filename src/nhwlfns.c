@@ -1768,8 +1768,8 @@ nhwl_tip_map (struct frame *tip_f, struct frame *pf, int width, int height,
   if (rc < 0)
     error ("nidhogg-wayland: cannot create a tooltip window (%d)", rc);
   out->window = id;
-  /* A popup has no configure the host waits for.  */
-  out->configured = true;
+  /* A popup has no configure the host waits for: its first buffer waits in
+     the shell (the pacer is not ready before the first configure).  */
   out->next_output = dpyinfo->outputs;
   dpyinfo->outputs = out;
 
@@ -1844,15 +1844,24 @@ DEFUN ("x-show-tip", Fx_show_tip, Sx_show_tip, 1, 6, 0,
       && !NILP (Fequal (tip_last_parms, parms)))
     {
       /* Only DX and DY have changed.  */
+      struct frame *tf = XFRAME (tip_frame);
+
       if (!NILP (tip_timer))
 	{
 	  calln (Qcancel_timer, tip_timer);
 	  tip_timer = Qnil;
 	}
       block_input ();
-      nhshell_window_set_position (FRAME_NHWL_SHELL (f),
-				   FRAME_NHWL_OUTPUT (XFRAME (tip_frame))->window,
-				   ax, ay);
+      /* The move is a bare commit (the shell owes the reposition's ack).
+	 Below xdg_wm_base 3 the popup is made again, and only a buffer
+	 maps it: the whole tip is drawn again.  */
+      if (nhshell_window_set_position (FRAME_NHWL_SHELL (f),
+				       FRAME_NHWL_OUTPUT (tf)->window,
+				       ax, ay) == 1)
+	{
+	  glitnir_damage_all (FRAME_NHWL_OUTPUT (tf)->glitnir_id);
+	  nhwl_dirty (tf);
+	}
       unblock_input ();
       goto start_timer;
     }

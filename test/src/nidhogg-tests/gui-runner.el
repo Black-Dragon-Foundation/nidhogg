@@ -104,10 +104,9 @@ Signals `error' when the reply's :ok is false."
       (delete-process proc))))
 
 ;; The empty-commit invariant: a row of a recorder run fails when the recorder logged a commit that attached a new buffer
-;; with no damage while the row ran.  Off unless NHWL_GUI_STRICT_COMMITS is non-empty (gui.sh --env).
+;; with no damage while the row ran.  On unless NHWL_GUI_STRICT_COMMITS is 0 (gui.sh --env).
 (defun gui-runner--strict-commits-p ()
-  (let ((v (getenv "NHWL_GUI_STRICT_COMMITS")))
-    (and v (not (string-empty-p v)) (getenv "GLITNIR_GUI_RECORDER"))))
+  (and (not (equal (getenv "NHWL_GUI_STRICT_COMMITS") "0")) (getenv "GLITNIR_GUI_RECORDER")))
 
 (defun gui-runner--strict-commits (run test &rest args)
   "`ert-run-test' advice: add the empty-buffer-commit check to the end of TEST's body."

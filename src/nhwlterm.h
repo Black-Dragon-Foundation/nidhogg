@@ -298,6 +298,12 @@ struct nhwl_output
      key event the next present shows (0: none), the commit's, and the
      committed and composed areas.  */
   uint64_t t_key_ns, t_commit_ns, damage_px, painted_px;
+  /* The redisplay_counter when that key was read: a later redisplay that
+     drew nothing drops the key's time.  */
+  unsigned int key_redisplay;
+  /* A FRAME_READY came while buffer flips were blocked: the unblocked hook
+     wakes the pacer again.  */
+  bool ready_held;
 
   /* Cursors (the shell's pointer shape plus one)  */
   Emacs_Cursor current_cursor;
@@ -480,7 +486,6 @@ extern void nhwl_set_cr_source_with_gc_background (struct frame *, Emacs_GC *,
 						   bool);
 extern void nhwl_set_cr_source_with_color (struct frame *, unsigned long,
 					   bool);
-extern bool nhwl_present (struct frame *);
 extern void nhwl_dirty (struct frame *);
 
 /* nhwldraw.c: drawing, the backing and Glitnir.  */
