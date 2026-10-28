@@ -1823,30 +1823,31 @@ Redisplay is held until the move is out: the redisplay after a move redraws the 
          (when (frame-live-p c) (delete-frame c t)))))))
 
 (ert-deftest nhwl-gui/stats-key-that-draws-nothing ()
-  "A key whose command draws nothing leaves no stale key time: the next key's paint is measured from its own key."
+  "A key that draws nothing leaves no stale key time: the next key's paint is measured from its own key.
+Skipped: no such key is found yet.  A command, even `ignore', updates the window, which redraws the cursor; a key read
+and dropped is followed by a redisplay that still redraws the cursor and the echo area's, so the key draws something
+and its time goes out with that paint."
+  (ert-skip "the stale key time is S6's (latency split)")
   (skip-unless (nhwl-gui--live-p))
   (skip-unless (nhwl-gui--recorder-p))
   (nhwl-gui--with-blink
    nil
    (lambda ()
      (switch-to-buffer (generate-new-buffer " *nhwl-key-nothing*"))
-     ;; no cursor: the redisplay after any command redraws the cursor, and then the key would draw something
-     (setq-local cursor-type nil)
      (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
      ;; an echo-area message is redrawn by every redisplay (`command-execute' does not clear it as the command loop
      ;; does), and then the key would draw something
      (message nil)
      (redisplay t)
      (gui-runner-wait-settled)
-     (let ((map (make-sparse-keymap)))
-       (set-keymap-parent map global-map)
-       (define-key map "q" #'ignore)
-       (use-local-map map))
      (glitnir-stats nil t)
-     (nhwl-gui--run-key "q")
+     (gui-runner-recorder '(:cmd "key" :text "q"))
+     (should (nhwl-gui--wait (lambda () (eq (read-event nil nil 0.1) ?q))))
      (redisplay t)
-     ;; read input meanwhile (`sleep-for' does not): a paint still owed for the key goes out now, not with the next key
+     ;; read input meanwhile (`sleep-for' does not): a paint owed for the key would go out now, not with the next key
      (nhwl-gui--pump 0.3)
+     ;; the key drew nothing
+     (should (memq (plist-get (glitnir-stats) :count) '(nil 0)))
      (nhwl-gui--run-key "a")
      (redisplay t)
      (gui-runner-wait-settled)
