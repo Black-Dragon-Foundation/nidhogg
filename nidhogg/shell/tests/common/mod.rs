@@ -2,6 +2,8 @@
 //! temporary `XDG_RUNTIME_DIR` and connects by absolute socket path, never to the environment's display.
 #![allow(dead_code)]
 
+pub mod backing;
+
 use nhshell::api::ShellBackend;
 use nhshell::event::NhShellEvent;
 use nhshell::wayland::WaylandShell;
@@ -92,6 +94,23 @@ impl Recorder {
             }
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    /// The output as the compositor shows it now: (width, its BGRA pixels, 4 bytes each, rows packed).
+    pub fn snapshot(&self) -> (usize, Vec<u8>) {
+        let path = self.dir.join("snap.bgra");
+        let r = self.control(&format!(
+            r#"{{"cmd":"snapshot","path":"{}","format":"bgra"}}"#,
+            path.display()
+        ));
+        let w = number(&r, "w").unwrap_or_else(|| panic!("snapshot: {r}")) as usize;
+        (w, std::fs::read(&path).unwrap())
+    }
+
+    /// The pixel at (`x`, `y`) of a snapshot, as premultiplied ARGB.
+    pub fn snapshot_pixel(snap: &(usize, Vec<u8>), x: usize, y: usize) -> u32 {
+        let at = (y * snap.0 + x) * 4;
+        u32::from_le_bytes(snap.1[at..at + 4].try_into().unwrap())
     }
 
     pub fn signal(&self, sig: Signal) {
