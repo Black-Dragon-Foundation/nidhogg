@@ -32,6 +32,8 @@ pub struct NhShellWindowDesc {
     pub y: i32,
     /// Popups: where to put it.
     pub anchor: Anchor,
+    /// Top-level windows: the session name (NULL: none).
+    pub session_name: *const c_char,
 }
 
 /// Connect to `display` (`None`: the environment's).  The backends are added here as they are written.
@@ -211,13 +213,17 @@ pub unsafe extern "C" fn nhshell_window_new(
                 }
             };
             let id = if d.kind == NHSHELL_KIND_TOPLEVEL {
-                b.window_new(&WindowDesc {
-                    w: d.w,
-                    h: d.h,
-                    title: text(d.title)?,
-                    app_id: text(d.app_id)?,
-                    flags: d.flags,
-                })?
+                let session_name = text(d.session_name)?;
+                b.window_new_named(
+                    &WindowDesc {
+                        w: d.w,
+                        h: d.h,
+                        title: text(d.title)?,
+                        app_id: text(d.app_id)?,
+                        flags: d.flags,
+                    },
+                    Some(session_name.as_str()),
+                )?
             } else {
                 b.child_new(&ChildDesc {
                     kind: d.kind,
@@ -277,6 +283,102 @@ ffi!(fn nhshell_window_activate(window: u64, token: *const c_char) |b| {
     let token = if token.is_null() { None } else { Some(unsafe { cstr(token) }?) };
     b.window_activate(window, token)
 });
+
+ffi!(fn nhshell_bell(window: u64) |b| b.bell(window));
+ffi!(fn nhshell_window_inhibit_idle(window: u64, on: i32) |b| b.inhibit_idle(window, on != 0));
+ffi!(fn nhshell_window_session_remove(window: u64) |b| b.window_session_remove(window));
+ffi!(fn nhshell_session_open(id: *const c_char, reason: u32) |b| {
+    // SAFETY: null or NUL-terminated by the contract.
+    let id = if id.is_null() { None } else { Some(unsafe { cstr(id) }?) };
+    b.session_open(id, reason)
+});
+
+/// Copy `text` into `buf` (`cap` bytes, not NUL-terminated) and put its length in `*len`; `TooSmall` (with `*len` set)
+/// when it does not fit.
+///
+/// # Safety
+/// `buf` is writable for `cap` bytes (null only with `cap` 0); `len` is null or writable.
+unsafe fn put_text(buf: *mut c_char, cap: usize, len: *mut usize, text: &str) -> ShellResult {
+    // SAFETY: null or writable, by the contract.
+    unsafe { put(len, text.len()) }?;
+    if text.len() > cap || (!text.is_empty() && buf.is_null()) {
+        return Err(ShellError::TooSmall);
+    }
+    // SAFETY: `cap >= text.len()` bytes are writable at `buf`.
+    unsafe { std::ptr::copy_nonoverlapping(text.as_ptr(), buf.cast::<u8>(), text.len()) };
+    Ok(())
+}
+
+/// The window's xdg-foreign handle (no `wayland:` prefix) into `buf`; waits at most `timeout_ms` for it
+/// (`NHSHELL_E_TIMEOUT`).  `NHSHELL_E_TOO_SMALL` leaves `*len` set and the handle cached.
+///
+/// # Safety
+/// `sh` is a live handle; `buf` is writable for `cap` bytes; `len` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nhshell_window_export(
+    sh: *mut NhShell,
+    window: u64,
+    timeout_ms: u32,
+    buf: *mut c_char,
+    cap: usize,
+    len: *mut usize,
+) -> i32 {
+    guard(
+        sh,
+        |b| {
+            let handle = b.window_export(window, timeout_ms)?;
+            // SAFETY: by the contract.
+            unsafe { put_text(buf, cap, len, &handle) }
+        },
+        |()| NHSHELL_OK,
+    )
+}
+
+/// A fresh activation token for `window` into `buf`, with the same wait and size rules as `nhshell_window_export`.
+///
+/// # Safety
+/// `sh` is a live handle; `buf` is writable for `cap` bytes; `len` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nhshell_activation_token(
+    sh: *mut NhShell,
+    window: u64,
+    timeout_ms: u32,
+    buf: *mut c_char,
+    cap: usize,
+    len: *mut usize,
+) -> i32 {
+    guard(
+        sh,
+        |b| {
+            let token = b.activation_token(window, timeout_ms)?;
+            // SAFETY: by the contract.
+            unsafe { put_text(buf, cap, len, &token) }
+        },
+        |()| NHSHELL_OK,
+    )
+}
+
+/// The open session's id into `buf`.  `NHSHELL_E_STATE` before the compositor has answered.
+///
+/// # Safety
+/// `sh` is a live handle; `buf` is writable for `cap` bytes; `len` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nhshell_session_id(
+    sh: *mut NhShell,
+    buf: *mut c_char,
+    cap: usize,
+    len: *mut usize,
+) -> i32 {
+    guard(
+        sh,
+        |b| {
+            let id = b.session_id()?;
+            // SAFETY: by the contract.
+            unsafe { put_text(buf, cap, len, &id) }
+        },
+        |()| NHSHELL_OK,
+    )
+}
 
 /// Move a child (with its parent's next commit) or a popup (its anchor rectangle).  Returns 1 when the whole window
 /// must be redrawn (a popup that was made again), 0 otherwise, or a negative `NHSHELL_E_*` code.
