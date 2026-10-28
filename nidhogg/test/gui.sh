@@ -7,11 +7,14 @@
 #                       [--recorder-profile sway|kwin|mutter] [--scale S] [--size WxH] [--monitors N]
 #                       [--select REGEXP] [--tests DIR] [--daemon] [--container DISTRO] [--wayland-debug FILE]
 #                       [--env K=V]... [--force-csd] [--timeout SEC] [--smoke] [--files GLOB] [--tag TAG]
-#                       [--trace-check RULES] [--portal fake|none] [--recorder-arg ARG]...
+#                       [--trace-check RULES] [--portal fake|none] [--ime fcitx5|ibus|none] [--recorder-arg ARG]...
 #
 #   --recorder-arg ARG  an extra command-line argument for the recorder (repeatable), e.g. --refresh-mhz=120000
 #   --env K=V           (below) is how NHWL_PRESENTER=0 (the kill switch) and NHWL_GUI_STRICT_HELD=0 reach the run
 #
+#   --ime IM            an input method with a pinyin profile on the run's bus, for test/src/nidhogg-tests/nhwl-ime-tests.el
+#                       (nidhogg/test/ime-matrix.sh drives it): fcitx5 (sway: started here; KWin: launched by KWin through
+#                       its kwinrc) or ibus (ibus-daemon with libpinyin, for mutter).  Sets NHWL_IME for the rows.  none (default)
 #   --portal fake|none  fake: a scripted org.freedesktop.portal.Desktop (FileChooser) on the run's session bus, served
 #                       by a second (daemon) Nidhogg running test/src/nidhogg-tests/fake-portal.el; the rows set its
 #                       replies and read its log with gui-runner-portal-script / gui-runner-portal-log.  none
@@ -68,7 +71,7 @@ IMAGE_fedora_45=registry.fedoraproject.org/fedora@sha256:6430abb162172c052b6ac9c
 usage() { sed -n '2,/^# Temp files/s/^# \{0,1\}//p' "$self" >&2; exit 2; }
 
 prefix= scale=1 size=2880x1800 monitors=1 select= tests= daemon=0 container= wdebug= timeout=300
-compositor=sway recorder=${REC:-} rprofile=sway tracecheck= portal=none
+compositor=sway recorder=${REC:-} rprofile=sway tracecheck= portal=none ime=none
 envs=() rargs=() csd=0 smoke=0 files=${GLITNIR_GUI_FILES:-} tag=${GLITNIR_GUI_TAG:-}
 while [ $# -gt 0 ]; do
   case $1 in
@@ -93,6 +96,7 @@ while [ $# -gt 0 ]; do
     --files) files=${2:-}; shift 2 ;;
     --tag) tag=${2:-}; shift 2 ;;
     --portal) portal=${2:-}; shift 2 ;;
+    --ime) ime=${2:-}; shift 2 ;;
     --inner) shift ;;   # internal: the part that runs under dbus-run-session
     -h|--help) usage ;;
     *) echo "gui.sh: unknown argument $1" >&2; usage ;;
@@ -110,6 +114,7 @@ case $compositor in sway|mutter|kwin|labwc|recorder) ;; *) echo "gui.sh: --compo
 [ "$compositor" != kwin ] || [ "$monitors" = 1 ] || { echo "gui.sh: KWin's virtual backend has one output (--monitors 1)" >&2; exit 2; }
 case $rprofile in sway|kwin|mutter|xdg-v2) ;; *) echo "gui.sh: --recorder-profile is sway, kwin, mutter or xdg-v2" >&2; exit 2 ;; esac
 case $portal in fake|none) ;; *) echo "gui.sh: --portal is fake or none" >&2; exit 2 ;; esac
+case $ime in fcitx5|ibus|none) ;; *) echo "gui.sh: --ime is fcitx5, ibus or none" >&2; exit 2 ;; esac
 [ -z "$tracecheck" ] || [ -n "$wdebug" ] || { echo "gui.sh: --trace-check needs --wayland-debug" >&2; exit 2; }
 if [ "$compositor" = recorder ]; then
   [ -n "$recorder" ] && [ -x "$recorder" ] || { echo "gui.sh: nh-recorder not built (--recorder BIN or \$REC: '$recorder')" >&2; exit 2; }
@@ -123,15 +128,15 @@ s120=$(awk -v s="$scale" 'BEGIN { printf "%d", s * 120 + 0.5 }')
 # ---------------------------------------------------------------- in the session (private bus)
 if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
   display=glitnir-gui-$GLITNIR_GUI_PID
-  mpid= epid= ppid=
+  mpid= epid= ppid= ipid=
   cleanup() {
     # a restart script (below) may have started a new compositor
     [ ! -f "$GLITNIR_GUI_RUN/compositor.pid" ] || mpid=$(cat "$GLITNIR_GUI_RUN/compositor.pid")
     # the compositor's peak resident set (VmHWM) while it is still alive
     [ -z "$mpid" ] || \
       echo "gui.sh: $compositor peak RSS: $(sed -n 's/^VmHWM:[[:space:]]*\(.*\)$/\1/p' "/proc/$mpid/status" 2>/dev/null) (scale $scale)"
-    for p in $epid $ppid $mpid; do kill "$p" 2>/dev/null; done
-    for p in $epid $ppid $mpid; do wait "$p" 2>/dev/null; done
+    for p in $epid $ppid $ipid $mpid; do kill "$p" 2>/dev/null; done
+    for p in $epid $ppid $ipid $mpid; do wait "$p" 2>/dev/null; done
     # the sockets and files the run left in its XDG dir (dbus makes an empty dbus-1/services), listed after the compositor is gone and before the outer trap removes it
     [ -z "${GLITNIR_GUI_LEFTOVER:-}" ] || find "$XDG_RUNTIME_DIR" -mindepth 1 -not -type d > "$GLITNIR_GUI_LEFTOVER" 2>&1
   }
@@ -141,6 +146,24 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
   clog=$GLITNIR_GUI_RUN/$compositor.log
   lw=$(awk -v w="$W" -v s="$scale" 'BEGIN { printf "%d", w / s + 0.5 }')
   ctl=
+  # --ime, before the compositor: the config the input method reads, and (ibus) the daemon mutter finds by IBUS_ADDRESS
+  if [ "$ime" = fcitx5 ]; then
+    mkdir -p "$XDG_CONFIG_HOME/fcitx5"
+    printf '%s\n' '[Groups/0]' 'Name=Default' 'Default Layout=us' 'DefaultIM=pinyin' '' '[Groups/0/Items/0]' 'Name=pinyin' \
+      'Layout=' '' '[GroupOrder]' '0=Default' > "$XDG_CONFIG_HOME/fcitx5/profile"
+    # KWin launches the input method itself, with its own socket
+    if [ "$compositor" = kwin ]; then
+      for d in org.fcitx.Fcitx5 fcitx5-wayland-launcher; do
+        [ ! -f "/usr/share/applications/$d.desktop" ] || printf '%s\n' '[Wayland]' \
+          "InputMethod=/usr/share/applications/$d.desktop" > "$XDG_CONFIG_HOME/kwinrc"
+      done
+    fi
+  elif [ "$ime" = ibus ]; then
+    export IBUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/ibus.sock
+    ibus-daemon --address "$IBUS_ADDRESS" --panel disable > "$GLITNIR_GUI_RUN/ibus.log" 2>&1 &
+    ipid=$!
+    for _ in $(seq 50); do [ -S "$XDG_RUNTIME_DIR/ibus.sock" ] && break; sleep 0.1; done
+  fi
   case $compositor in
     mutter)
       vm=()
@@ -194,6 +217,18 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
 
   # the scale (WAYLAND_DISPLAY is set only for the commands below)
   export WAYLAND_DISPLAY=$display
+  # --ime, after the compositor: fcitx5 as a client of sway, ibus's pinyin engine for mutter (KWin launched fcitx5 itself)
+  if [ "$ime" != none ]; then
+    export NHWL_IME=$ime
+    if [ "$ime" = fcitx5 ] && [ "$compositor" != kwin ]; then
+      fcitx5 > "$GLITNIR_GUI_RUN/fcitx5.log" 2>&1 &
+      ipid=$!
+    elif [ "$ime" = ibus ]; then
+      # the first call can time out while the engine process loads its dictionary: ask again
+      for _ in 1 2 3; do ibus engine libpinyin > "$GLITNIR_GUI_RUN/ibus-engine.log" 2>&1 && break; done
+    fi
+    sleep 2   # the input method binds its protocol globals and loads the engine
+  fi
   if [ "$compositor" = mutter ]; then
     # gdctl on the session's own mutter
     names=$(gdctl show | grep -o 'Monitor Meta-[0-9]*' | sed 's/Monitor //')
@@ -341,6 +376,10 @@ if [ "${GLITNIR_GUI_DRY:-}" = 1 ]; then
     recorder) echo "$recorder --output ${size}@${s120} --profile $(dirname "$self")/recorder/profiles/$rprofile.json --socket NAME --control CTL --session-store RUN/session-store.json${rargs[*]:+ ${rargs[*]}}" ;;
   esac
   [ "$portal" != fake ] || echo "$prefix/bin/nidhogg -Q --fg-daemon=XDG_RUNTIME_DIR/portal-sock -l $checkout/test/src/nidhogg-tests/fake-portal.el -f fake-portal-serve   (the portal)"
+  case $ime in
+    fcitx5) echo "fcitx5   (profile: pinyin; sway: started here, KWin: launched by KWin through kwinrc; container adds fcitx5 fcitx5-chinese-addons wtype)" ;;
+    ibus) echo "ibus-daemon --address unix:path=XDG_RUNTIME_DIR/ibus.sock, then ibus engine libpinyin   (before mutter; container adds ibus ibus-libpinyin)" ;;
+  esac
   echo "$prefix/bin/nidhogg -Q --fullscreen -l $checkout/test/src/nidhogg-tests/gui-runner.el"
   exit 0
 fi
@@ -366,6 +405,7 @@ if [ -n "$container" ]; then
   [ -z "$files" ] || args+=(--files "$files")
   [ -z "$tag" ] || args+=(--tag "$tag")
   [ "$portal" = none ] || args+=(--portal "$portal")
+  [ "$ime" = none ] || args+=(--ime "$ime")
   [ -z "$wdebug" ] || args+=(--wayland-debug /out/wayland-debug.txt)
   [ -z "$tracecheck" ] || args+=(--trace-check "$tracecheck")
   for kv in ${envs[@]+"${envs[@]}"}; do args+=(--env "$kv"); done
@@ -393,6 +433,7 @@ if [ -n "$container" ]; then
         mesa-dri-drivers mesa-libEGL mesa-libgbm python3-gobject-base dejavu-sans-mono-fonts procps-ng util-linux \
         $(case " $* " in *" mutter "*) echo pipewire wireplumber gstreamer1-plugins-base pipewire-gstreamer pipewire-utils ;; esac) \
         $(case " $* " in *" kwin "*) echo kwin kscreen ;; *" labwc "*) echo labwc wlr-randr ;; esac) \
+        $(case " $* " in *" fcitx5 "*) echo fcitx5 fcitx5-chinese-addons wtype ;; *" ibus "*) echo ibus ibus-libpinyin ;; esac) \
         $pkgs > /tmp/dnf.log 2>&1 || { cat /tmp/dnf.log; exit 1; }
       # sway ships with file capabilities a container refuses to exec: a copy without them
       for c in sway kwin_wayland labwc; do
@@ -434,7 +475,7 @@ env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u EMACS_SOCKET_NA
   GLITNIR_GUI_INNER=1 GLITNIR_GUI_PID=$$ GLITNIR_GUI_RUN="$run" \
   dbus-run-session -- bash "$self" --prefix "$prefix" --compositor "$compositor" --recorder-profile "$rprofile" ${recorder:+--recorder "$recorder"} --scale "$scale" --size "$size" --monitors "$monitors" \
     --tests "$tests" --timeout "$timeout" ${select:+--select "$select"} ${wdebug:+--wayland-debug "$wdebug"} \
-    ${files:+--files "$files"} ${tag:+--tag "$tag"} --portal "$portal" \
+    ${files:+--files "$files"} ${tag:+--tag "$tag"} --portal "$portal" --ime "$ime" \
     $([ "$daemon" = 0 ] || echo --daemon) $([ "$csd" = 0 ] || echo --force-csd) $(for kv in ${envs[@]+"${envs[@]}"}; do echo --env "$kv"; done) $(for ra in ${rargs[@]+"${rargs[@]}"}; do echo --recorder-arg "$ra"; done)
 rc=$?
 if [ -n "$tracecheck" ]; then
