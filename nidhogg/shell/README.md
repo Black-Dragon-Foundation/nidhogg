@@ -52,6 +52,9 @@ scale: `scale120` = 120 x (Xft DPI / 96), and server-side decorations always (`s
 | `window_scale` | `backingScaleFactor` x 120 (120 or 240) | 120 x Xft DPI ratio | fits |
 | `window_ssd` | always true (the system draws the title bar) | true | fits |
 | `window_new` kinds child / popup, `set_position`, `stack` | a child `NSWindow` (`addChildWindow:ordered:`, `setFrameOrigin:`); a popup is a borderless child panel placed by the host from the anchor | an override-redirect window (`XMoveWindow`, `XConfigureWindow` stack mode); `POPUP_DONE` never sent | fits |
+| popup flag `WIN_GRAB`, `window_grabbed`, popup destroy order (descendants and grabbing popups above, topmost first) | a menu panel run modally (`NSMenu`-style tracking: the app takes every event until it closes); destroy order is free | `XGrabPointer` and `XGrabKeyboard` on the override-redirect window (a failed grab is "not grabbed"); destroy order is free | fits |
+| `set_size` (popups) | `setFrame:display:` on the panel, placed again from the anchor; never "redraw all" | `XMoveResizeWindow`, placed again from the anchor; never "redraw all" | fits |
+| events: `TOUCH` (39; down, motion, up, cancel per point, posted per touch frame), `PINCH` (40; begin, update, end; cumulative scale) | no touch screens (`TOUCH` never sent); `magnifyWithEvent:` (`magnification` summed into the scale) | XInput2 2.2 `XI_TouchBegin`/`Update`/`End` (no frames: one record each); XInput2 2.4 `XI_GesturePinchBegin`/`Update`/`End` | fits |
 | `set_input_region`, `set_mapped` | `ignoresMouseEvents` for an empty region (a hit-test override otherwise); `orderOut:` / `orderFront:` | `XShapeCombineRectangles` (input); `XUnmapWindow` / `XMapWindow` | fits |
 | `present_begin`, `present_commit` (the host-driven presenter, kept until the glue publishes) | a bitmap the layer shows (`CALayer.contents`); `age` 0 or 1; damage as `setNeedsDisplayInRect:` | MIT-SHM `XImage`, `XShmPutImage` per damage rectangle; `age` 0 or 2 | fits |
 | `publish` (per tree: each drawable surface's damage, its copied pixels, the scene snapshot, the key time) | the same packets; fronts per surface, composed per tree | the same packets and fronts | fits |
@@ -63,6 +66,11 @@ scale: `scale120` = 120 x (Xft DPI / 96), and server-side decorations always (`s
 | events: `OUTPUT_ADD`, `OUTPUT_CHANGE`, `OUTPUT_REMOVE`, `ENTER_OUTPUT`, `LEAVE_OUTPUT` | `NSScreen`, `didChangeScreenParameters`, `windowDidChangeScreen:` | RandR monitors (a window's monitor from its position) | fits |
 | events: `DISCONNECTED` | never sent | connection error | fits |
 | `set_decorated` | `styleMask` with or without the title bar | `_MOTIF_WM_HINTS` decorations | fits |
+| `bell` | `NSBeep` | `XkbBell` | fits |
+| `inhibit_idle` | an `IOPMAssertion` (`PreventUserIdleDisplaySleep`) | the XScreenSaver `Suspend`/DPMS request | fits |
+| `window_export` | none (sandbox handles do not exist) | the window's XID as text | fits |
+| `activation_token` | none: an empty token | a `_NET_STARTUP_ID` for the window | fits |
+| `session_open`, `window_session_remove` | state restoration (`NSWindowRestoration`) | `XSMP` session management | fits |
 | `set_alpha` | `alphaValue` | `_NET_WM_WINDOW_OPACITY` | fits |
 | `selection_own`, `selection_disown`, `selection_owned` | `NSPasteboard` `declareTypes:owner:` with the copied bytes per type; no system primary selection, so `PRIMARY` stays inside the process | `SetSelectionOwner` on `CLIPBOARD` or `PRIMARY`, answering `SelectionRequest` from the copy (INCR for large data) | fits |
 | `selection_types`, `selection_read` | the pasteboard's `types` and `dataForType:` (synchronous, the timeout never runs out) | `ConvertSelection` to `TARGETS` or the type, waiting for `SelectionNotify` up to the timeout | fits |
@@ -88,6 +96,7 @@ listed here as a no-op with its reason (`frame-parameter` returns what was set e
 | `name`, `title` | the window's title (`xdg_toplevel.set_title`) and our title bar |
 | `visibility` | shown or hidden; `icon` minimizes |
 | `parent-frame`, `z-group` (child frames), `no-accept-focus` | child frames (sync subsurfaces) and their stacking; a `no-accept-focus` child never takes its tree's keys |
+| `nhwl-popup` (Nidhogg's own, with `parent-frame`, at creation) | the frame is a popup frame, the window of a menu level: an `xdg_popup` of the parent's window, made when the frame is shown and destroyed when it is hidden (its popup frames first). The value is `(X Y W H . PLIST)`, the rectangle it sits beside in device pixels of the parent's native area; PLIST has `:gravity` (`bottom-right` by default, or `top`, `bottom`, `left`, `right`, `top-left`, `bottom-left`, `top-right`), `:adjust` (a list of `flip-x`, `flip-y`, `slide-x`, `slide-y`; all by default) and `:grab` (it takes the keyboard and pointer, so a click elsewhere dismisses it). A new X or Y moves the shown popup; the other fields apply when it is shown next. A resize gives the popup the new size. Keys and pointer events on it go to its frame; the keyboard moving between a top-level and its own popups is no focus change for Emacs. The compositor dismissing it is a `delete-frame` event for the frame |
 | `auto-raise`, `auto-lower`, `unsplittable` | generic |
 | `mouse-color` | no-op: a compositor's cursor (`wp_cursor_shape_v1`) has no colour |
 | `icon-name` | no-op: Wayland has no icon title |

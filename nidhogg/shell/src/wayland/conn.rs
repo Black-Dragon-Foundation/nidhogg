@@ -103,6 +103,9 @@ pub struct Shared {
     pub pointer: Mutex<Option<WlPointer>>,
     /// The clipboard and the primary selection (`selection.rs`): offers, our sources and the focus they need.
     pub selections: Mutex<Selections>,
+    /// A drag is in progress on the seat (another client's over our surfaces, or our own source's): the compositor
+    /// holds the pointer, so a popup takes no grab.
+    pub dragging: AtomicBool,
 }
 
 fn relock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -124,6 +127,7 @@ impl Shared {
             cursor_device: Mutex::default(),
             pointer: Mutex::default(),
             selections: Mutex::default(),
+            dragging: AtomicBool::new(false),
         })
     }
 

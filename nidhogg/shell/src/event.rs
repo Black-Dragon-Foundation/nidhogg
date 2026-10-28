@@ -41,6 +41,19 @@ pub const NHSHELL_EV_OUTPUT_CHANGE: u32 = 22;
 pub const NHSHELL_EV_ENTER_OUTPUT: u32 = 23;
 /// The window left output `u.output.id`.
 pub const NHSHELL_EV_LEAVE_OUTPUT: u32 = 24;
+/// A touch point went down, moved, lifted or was cancelled (`u.touch`), on the window it went down on.  The records
+/// of one touch frame are posted together when the frame ends; a cancel posts `NHSHELL_TOUCH_CANCEL` for every live
+/// point at once.
+pub const NHSHELL_EV_TOUCH: u32 = 39;
+/// A touchpad pinch began, changed or ended (`u.pinch`), on the window under the pointer.
+pub const NHSHELL_EV_PINCH: u32 = 40;
+/// The compositor answered `nhshell_session_open` (or took the session over): `u.session.state`.
+pub const NHSHELL_EV_SESSION: u32 = 41;
+
+/// `session.state`.
+pub const NHSHELL_SESSION_CREATED: u32 = 0;
+pub const NHSHELL_SESSION_RESTORED: u32 = 1;
+pub const NHSHELL_SESSION_REPLACED: u32 = 2;
 
 pub const NHSHELL_MOD_SHIFT: u32 = 1 << 0;
 pub const NHSHELL_MOD_CTRL: u32 = 1 << 1;
@@ -68,6 +81,17 @@ pub const NHSHELL_BUTTON_PRESSED: u32 = 1;
 pub const NHSHELL_SCROLL_WHEEL: u32 = 0;
 pub const NHSHELL_SCROLL_FINGER: u32 = 1;
 pub const NHSHELL_SCROLL_CONTINUOUS: u32 = 2;
+
+/// `touch.op`.
+pub const NHSHELL_TOUCH_DOWN: u32 = 0;
+pub const NHSHELL_TOUCH_MOTION: u32 = 1;
+pub const NHSHELL_TOUCH_UP: u32 = 2;
+pub const NHSHELL_TOUCH_CANCEL: u32 = 3;
+
+/// `pinch.phase`.
+pub const NHSHELL_PINCH_BEGIN: u32 = 0;
+pub const NHSHELL_PINCH_UPDATE: u32 = 1;
+pub const NHSHELL_PINCH_END: u32 = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -172,6 +196,45 @@ pub struct SelectionEv {
     pub kind: u32,
 }
 
+/// One touch point.  Positions are device pixels in the window the point went down on; UP and CANCEL carry the
+/// point's last position.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TouchEv {
+    /// The point's id, unique while it is down.
+    pub id: i32,
+    /// `NHSHELL_TOUCH_*`.
+    pub op: u32,
+    pub x: f64,
+    pub y: f64,
+}
+
+/// A touchpad pinch.  `dx`, `dy` are this update's motion of the fingers' centre (device pixels); `scale` is
+/// cumulative since BEGIN (1.0 at BEGIN; END repeats the last); `rotation` is this update's angle in degrees,
+/// clockwise; `x`, `y` are the pointer's position (device pixels).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PinchEv {
+    /// `NHSHELL_PINCH_*`.
+    pub phase: u32,
+    pub fingers: u32,
+    pub dx: f64,
+    pub dy: f64,
+    pub scale: f64,
+    pub rotation: f64,
+    pub x: f64,
+    pub y: f64,
+    /// END only: the gesture was cancelled.
+    pub cancelled: u8,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SessionEv {
+    /// `NHSHELL_SESSION_*`.
+    pub state: u32,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub union NhShellEventData {
@@ -185,6 +248,9 @@ pub union NhShellEventData {
     pub output: OutputEv,
     pub selection: SelectionEv,
     pub text: TextEv,
+    pub touch: TouchEv,
+    pub pinch: PinchEv,
+    pub session: SessionEv,
 }
 
 #[repr(C)]
