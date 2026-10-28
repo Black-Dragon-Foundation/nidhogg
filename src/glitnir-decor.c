@@ -858,7 +858,7 @@ glitnir_decor_clear (struct frame *f, int x, int y, int w, int h)
     clear_windows (f, f->root_window, x, y, w, h);
 }
 
-/* W's rows X, Y, WIDTH, HEIGHT moved by DY (nhwl_glitnir_scroll): their
+/* W's rows X, Y, WIDTH, HEIGHT moved by DY (nhwl_scroll_run): their
    anchors move with them.  */
 
 void
