@@ -54,6 +54,8 @@ pub struct Display {
     pub(crate) monitors: crate::query::Monitors,
     /// The title bars' style (`csd.rs`).
     pub(crate) csd_style: crate::csd::Style,
+    /// The wheel's accumulator (`scroll.rs`).
+    pub(crate) scroll: crate::scroll::Scroll,
 }
 
 impl Drop for Display {
@@ -88,6 +90,7 @@ impl NhgDisplay {
                 select: Default::default(),
                 monitors: Default::default(),
                 csd_style: Default::default(),
+                scroll: Default::default(),
             }),
         }
     }
@@ -209,6 +212,18 @@ impl Display {
     /// The number of registered frames.
     pub fn frame_count(&self) -> usize {
         self.frames.len()
+    }
+
+    // ---- the pointer, wheel, input method and outputs (`pointer.rs`, `scroll.rs`, `ime.rs`, `monitors.rs`) ----
+
+    /// Every registered frame.
+    pub(crate) fn frames_mut(&mut self) -> impl Iterator<Item = &mut Frame> {
+        self.frames.values_mut()
+    }
+
+    /// The outputs the shell reported.
+    pub fn monitors(&self) -> &crate::query::Monitors {
+        &self.monitors
     }
 }
 

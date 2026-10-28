@@ -15,7 +15,11 @@ use crate::csd;
 use crate::display::Display;
 use crate::focus;
 use crate::guard::GlueError;
+use crate::ime;
 use crate::keys;
+use crate::monitors;
+use crate::pointer;
+use crate::scroll;
 use crate::select;
 use nhshell::event::*;
 
@@ -38,16 +42,25 @@ pub fn next(state: &mut Display, input: NhgNextIn) -> Result<i32, GlueError> {
         NHSHELL_EV_FRAME_READY => window_action(state, &ev, NHG_ACT_READY),
         NHSHELL_EV_FRAME_DONE => {}
         NHSHELL_EV_SELECTION => selection(state, &ev),
+        NHSHELL_EV_SCROLL => scroll::scroll(state, &ev, input),
+        NHSHELL_EV_PREEDIT | NHSHELL_EV_COMMIT_TEXT | NHSHELL_EV_DELETE_SURROUNDING => {
+            ime::event(state, &ev)
+        }
+        NHSHELL_EV_OUTPUT_ADD | NHSHELL_EV_OUTPUT_CHANGE => monitors::output(state, &ev),
+        NHSHELL_EV_OUTPUT_REMOVE => monitors::removed(state, &ev),
+        NHSHELL_EV_ENTER_OUTPUT => monitors::entered(state, &ev),
+        NHSHELL_EV_LEAVE_OUTPUT => monitors::left(state, &ev),
         NHSHELL_EV_DISCONNECTED => state
             .actions
             .push(NhgAction::new(NHG_ACT_LOST, 0, ev.time_ns)),
-        // through the title bar first: what it does not consume goes on raw
+        // through the title bar first: what it does not consume goes on as the pointer's own action, after the title
+        // bar's (the event's own action is its last)
         NHSHELL_EV_POINTER_ENTER
         | NHSHELL_EV_POINTER_MOTION
         | NHSHELL_EV_POINTER_LEAVE
         | NHSHELL_EV_BUTTON => {
             if !csd::pointer(state, &ev) {
-                raw(state, ev)
+                pointer::event(state, &ev)
             }
         }
         _ => raw(state, ev),
@@ -76,30 +89,14 @@ fn window_action(state: &mut Display, ev: &NhShellEvent, kind: u32) {
     }
 }
 
-/// Whether `kind` is the keyboard's: C resolves its frame from the focus, not from the event's window.
-fn keyboard_kind(kind: u32) -> bool {
-    matches!(
-        kind,
-        NHSHELL_EV_PREEDIT | NHSHELL_EV_COMMIT_TEXT | NHSHELL_EV_DELETE_SURROUNDING
-    )
-}
-
 /// An event whose kind is not ported yet: a `RAW` action, which C handles on its old path, with the keyboard's
-/// modifier mask (a click and a wheel step read it).
+/// modifier mask.
 fn raw(state: &mut Display, ev: NhShellEvent) {
-    if ev.window != 0 && state.is_forgotten(ev.window) && !keyboard_kind(ev.kind) {
+    if ev.window != 0 && state.is_forgotten(ev.window) {
         return;
     }
     let mut a = NhgAction::new(NHG_ACT_RAW, ev.window, ev.time_ns);
     a.mods = state.keyboard.mods;
-    let text = match ev.kind {
-        // SAFETY: these events carry `text`.
-        NHSHELL_EV_PREEDIT | NHSHELL_EV_COMMIT_TEXT => match unsafe { ev.u.text } {
-            t if t.len == 0 => Some(Vec::new()),
-            t => state.backend().take_text(t.id).ok(),
-        },
-        _ => None,
-    };
     state.actions.set_raw(ev);
-    state.actions.push_text(a, text);
+    state.actions.push(a);
 }
