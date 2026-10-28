@@ -247,7 +247,7 @@ measure() {
     for rr in cpu-typing power-typing latency-typing pixels-per-char; do rec "$rr" "$side" "SKIP $SKIP_TYPING"; done
   else
     win "$side" typing "$s1" "$s2"
-    st=$(cl '(let ((s (glitnir-stats))) (if s (format "%s %s" (plist-get (plist-get s :latency-ms) :p95) (plist-get s :damage-px)) "none"))' | tr -d '"')
+    st=$(cl '(let ((s (glitnir-stats))) (if s (format "%s %s" (plist-get (or (plist-get s :key-to-commit-ms) (plist-get s :latency-ms)) :p95) (plist-get s :damage-px)) "none"))' | tr -d '"')
     case $st in
       none|"") rec latency-typing "$side" "SKIP no glitnir-stats record on this frame (the record is pgtk-only at this commit)"
                rec pixels-per-char "$side" "SKIP no glitnir-stats record on this frame (the record is pgtk-only at this commit)" ;;
