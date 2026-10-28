@@ -22,6 +22,7 @@ pub mod foreign;
 pub mod gesture;
 pub mod idle;
 pub mod keyboard;
+pub mod layers;
 pub mod output;
 pub mod pointer;
 pub mod popup;
@@ -217,6 +218,8 @@ impl WaylandShell {
             compositor: main.compositor.clone(),
             presentation: main.presentation.clone(),
             shm: main.shm.clone(),
+            subcompositor: main.subcompositor.clone(),
+            viewporter: main.viewporter.clone(),
             mqh: mqh.clone(),
             rqh: rqh.clone(),
         });
