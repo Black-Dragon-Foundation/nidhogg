@@ -77,6 +77,24 @@ enum
   NHSHELL_EV_OUTPUT_CHANGE = 22, NHSHELL_EV_ENTER_OUTPUT = 23, NHSHELL_EV_LEAVE_OUTPUT = 24
 };
 
+/* Touch and pinch.  TOUCH (u.touch): a point went down, moved, lifted or was cancelled, on the window it went down on;
+   the records of one touch frame are posted together when the frame ends, and a cancel posts NHSHELL_TOUCH_CANCEL for
+   every live point at once.  Positions are device pixels; UP and CANCEL carry the point's last position.  PINCH
+   (u.pinch): a touchpad pinch on the window under the pointer; dx and dy are this update's motion (device pixels),
+   scale is cumulative since BEGIN (1.0 at BEGIN; END repeats the last), rotation this update's angle in degrees
+   (clockwise), x and y the pointer's position (device pixels), cancelled is set on a cancelled END.  */
+enum
+{
+  NHSHELL_EV_TOUCH = 39, NHSHELL_EV_PINCH = 40
+};
+#define NHSHELL_TOUCH_DOWN   0u
+#define NHSHELL_TOUCH_MOTION 1u
+#define NHSHELL_TOUCH_UP     2u
+#define NHSHELL_TOUCH_CANCEL 3u
+#define NHSHELL_PINCH_BEGIN  0u
+#define NHSHELL_PINCH_UPDATE 1u
+#define NHSHELL_PINCH_END    2u
+
 /* u.key.mods */
 #define NHSHELL_MOD_SHIFT (1u << 0)
 #define NHSHELL_MOD_CTRL  (1u << 1)
@@ -161,6 +179,19 @@ typedef struct
       int32_t cursor_begin, cursor_end;
       uint32_t before, after;
     } text;
+    struct
+    {
+      int32_t id;           /* unique while the point is down */
+      uint32_t op;          /* NHSHELL_TOUCH_* */
+      double x, y;
+    } touch;
+    struct
+    {
+      uint32_t phase;       /* NHSHELL_PINCH_* */
+      uint32_t fingers;
+      double dx, dy, scale, rotation, x, y;
+      uint8_t cancelled;
+    } pinch;
   } u;
 } NhShellEvent;
 
@@ -168,6 +199,11 @@ typedef struct
 #define NHSHELL_WIN_UNDECORATED (1u << 0)
 #define NHSHELL_WIN_FULLSCREEN  (1u << 1)
 #define NHSHELL_WIN_MAXIMIZED   (1u << 2)
+/* A popup that takes the keyboard and pointer (a menu): it grabs with the newest button press, key press or touch
+   down serial, unless a drag is in progress, there is no serial, or it would not become the topmost grab (its parent
+   must be a top-level window while no popup holds a grab, or the popup holding the topmost grab).  Without the grab
+   it still works by keys through its parent's focus, but an outside click does not dismiss it.  */
+#define NHSHELL_WIN_GRAB        (1u << 3)
 
 #define NHSHELL_EDGE_TOP    1u
 #define NHSHELL_EDGE_BOTTOM 2u
@@ -209,8 +245,8 @@ typedef struct
 {
   int32_t w, h;                    /* logical pixels */
   const char *title, *app_id;      /* NULL: "" */
-  uint32_t flags;                  /* NHSHELL_WIN_* */
-  uint32_t kind;                   /* NHSHELL_KIND_*; 0 for a top-level window (the fields below are for the others) */
+  uint32_t flags;                  /* NHSHELL_WIN_* (a popup: NHSHELL_WIN_GRAB only) */
+  uint32_t kind;                  /* NHSHELL_KIND_*; 0 for a top-level window (the fields below are for the others) */
   uint64_t parent;                 /* children and popups: the parent window */
   int32_t x, y;                    /* children: offset in the parent, logical pixels */
   NhShellAnchor anchor;            /* popups: where to put it (x, y are ignored) */
@@ -291,6 +327,15 @@ int32_t nhshell_window_set_position (NhShell *sh, uint64_t window, int32_t x, in
 int32_t nhshell_window_stack (NhShell *sh, uint64_t window, uint64_t sibling, int32_t above);
 int32_t nhshell_window_set_input_region (NhShell *sh, uint64_t window, const GlitnirRect *rects, size_t n);
 int32_t nhshell_window_set_mapped (NhShell *sh, uint64_t window, int32_t on);
+/* Popups that grab.  grabbed returns 1 while popup WINDOW holds a grab (asked with NHSHELL_WIN_GRAB, granted, not
+   dismissed by the compositor), else 0.  Destroying a popup first destroys its popup descendants and every grabbing
+   popup above it, topmost first.  set_size gives a popup a new size (logical pixels), placed again by its anchor; it
+   returns 1 when the whole window must be redrawn (a popup made again below xdg_popup v3), 0 otherwise, and the next
+   configure asks for a buffer of the new size.  Below v3, set_size and set_position refuse (NHSHELL_E_STATE) a popup
+   that has popups of its own.  NHSHELL_E_STATE for a window that is not a popup.  Key, pointer and focus events on a
+   popup carry its id.  */
+int32_t nhshell_window_grabbed (NhShell *sh, uint64_t window);
+int32_t nhshell_window_set_size (NhShell *sh, uint64_t window, int32_t w, int32_t h);
 
 /* The window's preferred scale times 120 (120 until the compositor says), and whether the compositor decorates it
    (*SSD 1 or 0; caps.ssd is the latest answer for any window).  */

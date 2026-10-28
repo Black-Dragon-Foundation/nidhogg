@@ -127,6 +127,16 @@ mod tests {
             size_of::<TextEv>(),
             align_of::<TextEv>(),
         );
+        ty(
+            "__typeof__(((NhShellEvent *)0)->u.touch)",
+            size_of::<TouchEv>(),
+            align_of::<TouchEv>(),
+        );
+        ty(
+            "__typeof__(((NhShellEvent *)0)->u.pinch)",
+            size_of::<PinchEv>(),
+            align_of::<PinchEv>(),
+        );
         let mut off = |c: &str, o: usize| rows.push((format!("offsetof(NhShellEvent, {c})"), o));
         off("kind", offset_of!(E, kind));
         off("window", offset_of!(E, window));
@@ -152,6 +162,10 @@ mod tests {
             cursor_end,
             before,
             after
+        );
+        members!(touch, TouchEv, id, op, x, y);
+        members!(
+            pinch, PinchEv, phase, fingers, dx, dy, scale, rotation, x, y, cancelled
         );
         off(
             "u.scale.scale120",
