@@ -282,6 +282,10 @@ struct nhwl_output
   uint64_t cr_gen;		/* counts the backing's creations */
   struct nhwl_csd csd;
   struct nhwl_child child;
+  /* On a top-level (a tree's root): the shell window of the frame of its
+     tree that Emacs focused (0: the root itself).  The root's keys and
+     input-method events go to that frame (W1-7).  */
+  uint64_t focus_window;
 
   /* Glitnir's scene of this frame: its id (0: none yet), the size and scale
      it was told, the damage committed but not yet presented, and the
@@ -444,6 +448,8 @@ extern void nhwl_make_frame_visible (struct frame *);
 extern void nhwl_make_frame_invisible (struct frame *);
 extern void nhwl_iconify_frame (struct frame *);
 extern void nhwl_focus_frame (struct frame *, bool);
+extern void nhwl_activate_frame (struct frame *);
+extern void nhwl_focus_route (struct frame *, struct frame *, bool);
 extern Lisp_Object nhwl_get_focus_frame (struct frame *);
 extern void nhwl_frame_rehighlight (struct nhwl_display_info *);
 extern void nhwl_clear_frame (struct frame *);
@@ -556,6 +562,10 @@ extern void nhwl_set_parent_frame (struct frame *, Lisp_Object, Lisp_Object);
 extern void nhwl_set_z_group (struct frame *, Lisp_Object, Lisp_Object);
 extern void nhwl_set_no_accept_focus (struct frame *, Lisp_Object,
 				      Lisp_Object);
+extern struct frame *nhwl_focus_target (struct frame *);
+extern void nhwl_child_focus (struct frame *);
+extern void nhwl_child_focus_gone (struct frame *, bool);
+extern void nhwl_native_origin (struct frame *, int *, int *);
 
 /* The names ftcrfont.c and the other Cairo code shared with pgtk use.  */
 #define FRAME_CR_CONTEXT(f) (FRAME_NHWL_OUTPUT (f)->cr_context)

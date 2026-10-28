@@ -449,7 +449,7 @@ nhwl_frame_raise_lower (struct frame *f, bool raise)
   if (!nhwl_child_p (f))
     {
       if (raise)
-	nhwl_focus_frame (f, false);
+	nhwl_activate_frame (f);
       return;
     }
   out = FRAME_NHWL_OUTPUT (f);
@@ -489,12 +489,74 @@ nhwl_set_z_group (struct frame *f, Lisp_Object new_value, Lisp_Object old_value)
     }
 }
 
-/* Stored for the focus work of Task 17.  */
+/* A `no-accept-focus' child never takes its tree's keys
+   (nhwl_child_focus).  */
 void
 nhwl_set_no_accept_focus (struct frame *f, Lisp_Object new_value,
 			  Lisp_Object old_value)
 {
   FRAME_NO_ACCEPT_FOCUS (f) = !NILP (new_value);
+}
+
+
+/***********************************************************************
+			   Keyboard focus (W1-7)
+ ***********************************************************************/
+
+/* Wayland gives the keyboard to top-levels only: the keys and
+   input-method events of a top-level's window go to the frame of its tree
+   that Emacs focused, as X11's focus redirection does for child frames.  */
+
+/* Where F's native area starts in its tree root's surface, device
+   pixels.  The frames of a tree share one scale.  */
+void
+nhwl_native_origin (struct frame *f, int *x, int *y)
+{
+  if (!nhwl_child_p (f))
+    {
+      *x = FRAME_NHWL_OUTPUT (f)->csd.l;
+      *y = FRAME_NHWL_OUTPUT (f)->csd.t;
+      return;
+    }
+  nhwl_native_origin (FRAME_PARENT_FRAME (f), x, y);
+  *x += f->left_pos;
+  *y += f->top_pos;
+}
+
+/* The frame the keys of root R's window go to: the frame of R's tree
+   Emacs focused, while it is shown; else R.  */
+struct frame *
+nhwl_focus_target (struct frame *r)
+{
+  struct frame *t = nhwl_window_frame (FRAME_NHWL_OUTPUT (r)->focus_window);
+
+  return (t && t != r && nhwl_tree_root (t) == r && FRAME_VISIBLE_P (t)
+	  ? t : r);
+}
+
+/* Emacs focuses F (x-focus-frame, or a click in it): F takes the keys of
+   its tree, unless it is a `no-accept-focus' child.  */
+void
+nhwl_child_focus (struct frame *f)
+{
+  if (nhwl_child_p (f) && FRAME_NO_ACCEPT_FOCUS (f))
+    return;
+  nhwl_focus_route (nhwl_tree_root (f), f, false);
+}
+
+/* Child frame F is being hidden, or deleted (GONE): when it, or a frame
+   under it, takes its tree's keys, they go to F's parent.  */
+void
+nhwl_child_focus_gone (struct frame *f, bool gone)
+{
+  struct frame *r, *t;
+
+  if (!nhwl_child_p (f))
+    return;
+  r = nhwl_tree_root (f);
+  t = nhwl_window_frame (FRAME_NHWL_OUTPUT (r)->focus_window);
+  if (t && (t == f || frame_ancestor_p (f, t)))
+    nhwl_focus_route (r, FRAME_PARENT_FRAME (f), gone);
 }
 
 
