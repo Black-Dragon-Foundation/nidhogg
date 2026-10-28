@@ -39,7 +39,7 @@ typedef struct
   uint32_t compositor, subcompositor, seat, xdg_wm_base, xdg_decoration, fractional_scale, viewporter, cursor_shape,
     text_input_v3, primary_selection, data_device, presentation, fifo, commit_timing, alpha_modifier, activation,
     pointer_warp, system_bell, session_management, background_effect, pointer_gestures, idle_inhibit,
-    single_pixel_buffer, dmabuf;
+    single_pixel_buffer, dmabuf, xdg_foreign;
   bool ssd;        /* server-side decorations were granted, after negotiation */
   bool force_csd;  /* client-side decorations are forced (a test switch) */
 } NhShellCaps;
@@ -87,6 +87,16 @@ enum
 {
   NHSHELL_EV_TOUCH = 39, NHSHELL_EV_PINCH = 40
 };
+/* Session.  SESSION (u.session): the compositor answered nhshell_session_open (CREATED: a new id, see
+   nhshell_session_id; RESTORED: the saved session) or another client took the session over (REPLACED: window names are
+   ignored from then on).  */
+enum
+{
+  NHSHELL_EV_SESSION = 41
+};
+#define NHSHELL_SESSION_CREATED  0u
+#define NHSHELL_SESSION_RESTORED 1u
+#define NHSHELL_SESSION_REPLACED 2u
 #define NHSHELL_TOUCH_DOWN   0u
 #define NHSHELL_TOUCH_MOTION 1u
 #define NHSHELL_TOUCH_UP     2u
@@ -192,6 +202,7 @@ typedef struct
       double dx, dy, scale, rotation, x, y;
       uint8_t cancelled;
     } pinch;
+    struct { uint32_t state; } session;  /* NHSHELL_SESSION_CREATED, _RESTORED or _REPLACED */
   } u;
 } NhShellEvent;
 
@@ -204,6 +215,8 @@ typedef struct
    must be a top-level window while no popup holds a grab, or the popup holding the topmost grab).  Without the grab
    it still works by keys through its parent's focus, but an outside click does not dismiss it.  */
 #define NHSHELL_WIN_GRAB        (1u << 3)
+/* With a session name: ask the session to restore the window (before its first commit) instead of just adding it.  */
+#define NHSHELL_WIN_RESTORE     (1u << 4)
 
 #define NHSHELL_EDGE_TOP    1u
 #define NHSHELL_EDGE_BOTTOM 2u
@@ -250,6 +263,7 @@ typedef struct
   uint64_t parent;                 /* children and popups: the parent window */
   int32_t x, y;                    /* children: offset in the parent, logical pixels */
   NhShellAnchor anchor;            /* popups: where to put it (x, y are ignored) */
+  const char *session_name;        /* top-levels: the session name (NULL: none); see nhshell_session_open */
 } NhShellWindowDesc;
 
 /* A pixel buffer to draw into until the next nhshell_present_commit.  AGE is how many presents ago these pixels were
@@ -314,6 +328,36 @@ int32_t nhshell_set_cursor_theme (NhShell *sh, const char *name, uint32_t size);
    XDG_ACTIVATION_TOKEN); NULL requests one with the latest input serial and the window's surface, and activates when
    it arrives (NHSHELL_E_STATE before any input; NHSHELL_E_UNSUPPORTED without xdg_activation_v1).  */
 int32_t nhshell_window_activate (NhShell *sh, uint64_t window, const char *token);
+/* A fresh activation token made with the newest input serial and WINDOW's surface, copied to BUF (CAP bytes, no NUL)
+   with its length in *LEN.  Waits at most TIMEOUT_MS (NHSHELL_E_TIMEOUT); NHSHELL_E_STATE before any input;
+   NHSHELL_E_UNSUPPORTED without xdg_activation_v1; NHSHELL_E_TOO_SMALL when CAP is short (*LEN is the size).  Queued
+   input records stay queued while it waits.  */
+int32_t nhshell_activation_token (NhShell *sh, uint64_t window, uint32_t timeout_ms, char *buf, size_t cap,
+                                  size_t *len);
+
+/* The system bell on WINDOW's surface (0: no surface), at most once per 20 ms; extra rings are dropped.
+   NHSHELL_E_UNSUPPORTED without xdg_system_bell_v1.  The visible bell is the host's drawing.  */
+int32_t nhshell_bell (NhShell *sh, uint64_t window);
+/* ON non-zero: hold an idle inhibitor on WINDOW's surface (one per window); zero: release it.  NHSHELL_E_UNSUPPORTED
+   without zwp_idle_inhibit_manager_v1.  */
+int32_t nhshell_window_inhibit_idle (NhShell *sh, uint64_t window, int32_t on);
+/* WINDOW's xdg-foreign handle (the zxdg_exported_v2 string, without a "wayland:" prefix) into BUF, as above.  It is
+   exported at the first call and cached until the window is destroyed.  NHSHELL_E_UNSUPPORTED without
+   zxdg_exporter_v2.  */
+int32_t nhshell_window_export (NhShell *sh, uint64_t window, uint32_t timeout_ms, char *buf, size_t cap, size_t *len);
+
+/* Sessions (xdg_session_manager_v1; NHSHELL_E_UNSUPPORTED without it).  open: ID NULL for a new session, REASON
+   NHSHELL_SESSION_LAUNCH, _RECOVER or _RESTORE (0, 1, 2); an open session is dropped first.  NHSHELL_EV_SESSION
+   answers, and session_id then gives the id (NHSHELL_E_STATE before).  A window with a session_name in its descriptor
+   joins the session before its first commit, as a restore with NHSHELL_WIN_RESTORE; a name already held by a live
+   window is NHSHELL_E_STATE.  With no session, or a REPLACED one, names are ignored.  session_remove takes WINDOW out of
+   the session (NHSHELL_E_STATE for an unnamed window).  */
+#define NHSHELL_SESSION_LAUNCH  0u
+#define NHSHELL_SESSION_RECOVER 1u
+#define NHSHELL_SESSION_RESTORE 2u
+int32_t nhshell_session_open (NhShell *sh, const char *id, uint32_t reason);
+int32_t nhshell_session_id (NhShell *sh, char *buf, size_t cap, size_t *len);
+int32_t nhshell_window_session_remove (NhShell *sh, uint64_t window);
 
 /* Children and popups.  set_position: a child moves with its parent's next commit; a popup's anchor rectangle moves to
    (X, Y) (xdg_popup.reposition).  stack: put a child above or below SIBLING (0: the parent), with the parent's next
