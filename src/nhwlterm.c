@@ -2970,6 +2970,38 @@ nhwl_focus_apply (struct nhwl_display_info *dpyinfo, struct frame *f,
   return 1;
 }
 
+/* Apply the glue's drop-target action A (NHG_ACT_DND_*) of frame F (NULL:
+   the window has no frame): a DRAG_N_DROP_EVENT in pgtk's forms, at the
+   position in F's native area.  Return the number of events stored.  */
+static int
+nhwl_dnd_apply (struct nhwl_display_info *dpyinfo, struct frame *f,
+		const NhgAction *a, struct input_event *hold_quit)
+{
+  union buffered_input_event inev;
+  int x = 0, y = 0;
+
+  if (!f)
+    {
+      /* Nothing will answer the drop: finish it, or the offer stays.  */
+      if (a->kind == NHG_ACT_DND_DROP)
+	nhwl_glue_rc (dpyinfo, NHG (nhg_dnd_finish (dpyinfo->glue, 0,
+						    a->time_ms)));
+      return 0;
+    }
+  if (a->kind != NHG_ACT_DND_LEAVE)
+    nhwl_csd_native_pos (f, a->dx, a->dy, &x, &y);
+  EVENT_INIT (inev.ie);
+  inev.ie.kind = DRAG_N_DROP_EVENT;
+  inev.ie.modifiers = 0;
+  inev.ie.arg = nhwl_dnd_event_arg (a);
+  inev.ie.timestamp = a->time_ms;
+  XSETINT (inev.ie.x, x);
+  XSETINT (inev.ie.y, y);
+  XSETFRAME (inev.ie.frame_or_window, f);
+  kbd_buffer_store_event_hold (&inev.ie, hold_quit);
+  return 1;
+}
+
 /* Apply action A of the glue's event step, one whose kind is ported: the
    Emacs calls the glue's decision needs.  An action whose window maps to
    no frame is skipped.  Return the number of events stored (through
@@ -3037,6 +3069,8 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
     }
 
   f = a->window ? nhwl_window_to_frame (dpyinfo, a->window) : NULL;
+  if (a->kind >= NHG_ACT_DND_ENTER && a->kind <= NHG_ACT_DND_DROP)
+    return nhwl_dnd_apply (dpyinfo, f, a, hold_quit);
   if (a->kind == NHG_ACT_KEY)
     return nhwl_key_apply (dpyinfo, f, a, hold_quit);
   if (a->kind == NHG_ACT_PREEDIT || a->kind == NHG_ACT_COMMIT

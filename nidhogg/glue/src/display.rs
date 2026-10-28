@@ -56,6 +56,8 @@ pub struct Display {
     pub(crate) csd_style: crate::csd::Style,
     /// The wheel's accumulator (`scroll.rs`).
     pub(crate) scroll: crate::scroll::Scroll,
+    /// The drop target (`dnd.rs`).
+    pub(crate) dnd: crate::dnd::Dnd,
 }
 
 impl Drop for Display {
@@ -91,6 +93,7 @@ impl NhgDisplay {
                 monitors: Default::default(),
                 csd_style: Default::default(),
                 scroll: Default::default(),
+                dnd: Default::default(),
             }),
         }
     }
@@ -177,6 +180,7 @@ impl Display {
     pub fn forget(&mut self, window: u64) -> Result<(), GlueError> {
         self.frames.remove(&window).ok_or(GlueError::State)?;
         self.forgotten.insert(window);
+        self.dnd.forget(window);
         Ok(())
     }
 
