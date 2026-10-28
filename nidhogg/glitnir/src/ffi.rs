@@ -40,6 +40,7 @@ pub const EXPORTS: &[&str] = &[
     "glitnir_probe_rule",
     "glitnir_probe_seams",
     "glitnir_layer_set_chrome",
+    "glitnir_layer_set_output",
     "glitnir_layer_upsert",
     "glitnir_mask_to_device",
     "glitnir_root_drop",
@@ -328,7 +329,8 @@ pub extern "C" fn glitnir_damage_all(frame: u64) -> i32 {
     })
 }
 
-/// WINDOW's pixels in AREA moved by DY on FRAME; EXPOSED is what the move left stale.
+/// WINDOW's pixels in AREA moved by DY on FRAME; EXPOSED is what the move left stale.  A full-window move of an own
+/// output becomes its scroll; any other is damage over the window's layer.
 #[unsafe(no_mangle)]
 pub extern "C" fn glitnir_scroll(
     frame: u64,
@@ -337,15 +339,16 @@ pub extern "C" fn glitnir_scroll(
     dy: i32,
     exposed: Rect,
 ) -> i32 {
-    // P1 composes a scroll as damage over the window's layer; the distance is for a backing with overscan later.
-    let _ = dy;
     ffi_guard(|| {
-        crate::damage::with(frame, |d| {
-            d.scroll(area, exposed);
-            d.scrolled(window);
-        });
+        crate::damage::scroll(frame, window, area, dy, exposed);
         GLITNIR_OK
     })
+}
+
+/// Make window layer LAYER of ROOT its own output (OWN non-zero), or a part of its frame's again.
+#[unsafe(no_mangle)]
+pub extern "C" fn glitnir_layer_set_output(root: u64, layer: u64, own: u32) -> i32 {
+    ffi_guard(|| code(crate::scene::with(root, |s| s.set_output(layer, own != 0))))
 }
 
 /// Take FRAME's pending damage: `*out` points to `*n` rectangles, valid until FRAME's next take or forget.
@@ -979,6 +982,59 @@ mod tests {
         assert!(list().is_empty());
         assert_eq!(glitnir_root_drop(r), GLITNIR_OK);
         assert_eq!(glitnir_stack_raise(r, 20), GLITNIR_E_STATE);
+        assert_eq!(glitnir_damage_forget(r), GLITNIR_OK);
+    }
+
+    #[test]
+    fn set_output_round_trips_through_the_abi() {
+        let r = 8201;
+        // window layer ids as a host may tag them, high bit set
+        let w = |i: u64| (1u64 << 63) | i;
+        let d = |id, kind, rect| LayerDesc {
+            id,
+            parent: if id == r { 0 } else { r },
+            kind,
+            rect,
+            scale: 1.0,
+            visible: 1,
+        };
+        assert_eq!(glitnir_layer_set_output(r, w(1), 1), GLITNIR_E_STATE);
+        assert_eq!(glitnir_root_new(r), GLITNIR_OK);
+        assert_eq!(
+            unsafe { glitnir_layer_upsert(r, &d(r, 1, Rect::new(0, 0, 800, 600))) },
+            GLITNIR_OK
+        );
+        assert_eq!(
+            glitnir_layer_set_output(r, w(1), 1),
+            GLITNIR_E_ARG,
+            "unknown"
+        );
+        assert_eq!(
+            glitnir_layer_set_output(r, r, 1),
+            GLITNIR_E_ARG,
+            "not a window"
+        );
+        for i in 1..=5 {
+            let l = d(w(i), 2, Rect::new(0, 100 * i as i32, 800, 100));
+            assert_eq!(unsafe { glitnir_layer_upsert(r, &l) }, GLITNIR_OK);
+        }
+        for i in 1..=4 {
+            assert_eq!(glitnir_layer_set_output(r, w(i), 1), GLITNIR_OK);
+        }
+        assert_eq!(glitnir_layer_set_output(r, w(4), 1), GLITNIR_OK, "again");
+        assert_eq!(
+            glitnir_layer_set_output(r, w(5), 1),
+            GLITNIR_E_STATE,
+            "past 4"
+        );
+        assert_eq!(glitnir_layer_set_output(r, w(1), 0), GLITNIR_OK);
+        assert_eq!(glitnir_layer_set_output(r, w(5), 1), GLITNIR_OK);
+        let (_, c) = crate::damage::commit_snapshot(r).unwrap();
+        let mut own: Vec<u64> = c.outputs.iter().map(|o| o.layer).collect();
+        own.sort();
+        assert_eq!(own, vec![w(2), w(3), w(4), w(5)]);
+        assert!(c.outputs.iter().all(|o| o.full));
+        assert_eq!(glitnir_root_drop(r), GLITNIR_OK);
         assert_eq!(glitnir_damage_forget(r), GLITNIR_OK);
     }
 

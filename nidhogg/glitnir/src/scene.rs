@@ -12,8 +12,15 @@
 //!
 //! Comparing with the committed scene, rather than logging changes, makes a hide and a show of a layer within one
 //! commit cancel. Ids are unique within a root, whatever their kind.
+//!
+//! A window layer right under the root's frame layer may be its own output ([`Scene::set_output`]): the shell shows
+//! it on a surface of its own, over the frame's.  Its rectangle is then snapped outward to the device rows and
+//! columns a subsurface can be placed on ([`crate::snap::outward`]).  The commit routes the scene damage in that
+//! rectangle to the output, in the output's coordinates ([`crate::committed::OutputFrame`]); the frame keeps the rest,
+//! and the part of the snapped rectangle outside the window (the overlap with its neighbours) goes to both.  A
+//! full-window scroll of an own output is a scroll distance and its exposed rows, not damage over the window.
 
-use crate::committed::Committed;
+use crate::committed::{Committed, OutputFrame};
 use crate::damage::{Damage, Frames};
 use crate::decor::{Anchor, Anchors, Label, Sprites};
 use crate::ffi::{GLITNIR_E_ARG, GLITNIR_E_STATE};
@@ -24,6 +31,15 @@ use std::sync::Arc;
 
 /// Every root's scene.
 pub type Scenes = BTreeMap<u64, Scene>;
+
+/// The most window layers of one root that are their own outputs at once.
+pub const MAX_OUTPUTS: usize = 4;
+
+/// An own output's rectangle: the window's R snapped outward at the root's SCALE (root device px).
+fn snapped(r: Rect, scale: f64) -> Rect {
+    let s120 = (scale * 120.0).round() as u32;
+    crate::snap::stable_rect(crate::snap::outward(r, s120), 0, 0, s120)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -123,6 +139,8 @@ struct Layer {
     scale: f64,
     visible: bool,
     chrome: Option<Chrome>,
+    /// A window layer that is its own output.
+    own: bool,
 }
 
 /// A layer of a committed scene.
@@ -177,7 +195,10 @@ impl Scene {
                 self.mark_restacked(d.id);
             }
         }
-        let chrome = self.layers.get(&d.id).and_then(|l| l.chrome);
+        let (chrome, own) = self
+            .layers
+            .get(&d.id)
+            .map_or((None, false), |l| (l.chrome, l.own));
         self.layers.insert(
             d.id,
             Layer {
@@ -186,9 +207,63 @@ impl Scene {
                 scale: d.scale,
                 visible: d.visible != 0,
                 chrome,
+                own: own && kind == Kind::Window,
             },
         );
         Ok(())
+    }
+
+    /// Make window layer ID its own output (OWN), or a part of its frame's again.  It is an output at a commit only
+    /// while it is visible and right under the root's frame layer.  `GLITNIR_E_ARG` for an unknown id or a layer that
+    /// is not a window; `GLITNIR_E_STATE` for a window past [`MAX_OUTPUTS`].
+    pub fn set_output(&mut self, id: u64, own: bool) -> Result<(), i32> {
+        match self.layers.get(&id) {
+            Some(l) if l.kind == Kind::Window => {}
+            _ => return Err(GLITNIR_E_ARG),
+        }
+        let others = self
+            .layers
+            .iter()
+            .filter(|(i, l)| **i != id && l.own)
+            .count();
+        if own && others >= MAX_OUTPUTS {
+            return Err(GLITNIR_E_STATE);
+        }
+        if let Some(l) = self.layers.get_mut(&id) {
+            l.own = own;
+        }
+        Ok(())
+    }
+
+    /// WINDOW's pixels in AREA moved by DY on ROOT's frame, EXPOSED left stale; D is the frame's damage.  When WINDOW
+    /// is a visible own output right under ROOT's frame layer and AREA holds its whole rectangle, the move is its
+    /// scroll ([`Damage::scroll_own`]); otherwise both rectangles are damaged and the window's layer is damaged at the
+    /// commit, as for any window.
+    pub fn scroll(
+        &self,
+        root: u64,
+        d: &mut Damage,
+        window: u64,
+        area: Rect,
+        dy: i32,
+        exposed: Rect,
+    ) {
+        let root_scale = self.layers.get(&root).map(|l| l.scale);
+        match (self.layers.get(&window), root_scale) {
+            (Some(l), Some(scale))
+                if l.own
+                    && l.visible
+                    && self.stack.parent_of(window) == Some(root)
+                    && !l.rect.is_empty()
+                    && area.intersect(&l.rect) == l.rect =>
+            {
+                d.scroll_own(window, area, dy, exposed, l.rect, snapped(l.rect, scale))
+            }
+            _ => {
+                d.scroll(area, exposed);
+                d.scrolled(window);
+            }
+        }
     }
 
     /// Remove ID and every layer under it (an unknown id is no change).
@@ -390,17 +465,20 @@ impl Scene {
         let old_labels = Arc::clone(&self.snapshot.labels);
         let old = self.snapshot.layers.as_slice();
         let mut out: Vec<Rect> = Vec::new();
+        let mut outputs: Vec<OutputFrame> = Vec::new();
         {
             let new_by: BTreeMap<u64, &Placed> = new.iter().map(|p| (p.id, p)).collect();
             let old_by: BTreeMap<u64, &Placed> = old.iter().map(|p| (p.id, p)).collect();
+            let mut offsets: BTreeMap<u64, i32> = BTreeMap::new();
             // Layer damage: a frame's own, in its coordinates.  A hidden layer's is dropped.
             for (&id, l) in &self.layers {
                 if l.kind == Kind::Window {
                     continue;
                 }
-                let Some((rects, scrolls)) = frames.get_mut(&id).map(Damage::drain) else {
+                let Some((rects, scrolls, moved)) = frames.get_mut(&id).map(Damage::drain) else {
                     continue;
                 };
+                offsets.extend(moved);
                 let Some(p) = new_by.get(&id) else {
                     continue;
                 };
@@ -448,10 +526,64 @@ impl Scene {
                     .filter(|l| !new_l.contains(l))
                     .map(Label::visible),
             );
-            if let Some(clip) = new_by.get(&root).map(|p| p.rect) {
+            let clip = new_by.get(&root).map(|p| p.rect);
+            if let Some(clip) = clip {
                 for r in &mut out {
                     *r = r.intersect(&clip);
                 }
+            }
+            // Own outputs: the damage in each snapped rectangle, in its coordinates; the whole of a new one, a moved
+            // one, or every one at a new scale.
+            let scale = new_by.get(&root).map_or(0.0, |p| p.scale);
+            let mut windows: Vec<Rect> = Vec::new();
+            for p in new.iter().filter(|p| {
+                scale > 0.0
+                    && p.kind == Kind::Window
+                    && p.parent == root
+                    && self.layers.get(&p.id).is_some_and(|l| l.own)
+            }) {
+                let rect = snapped(p.rect, scale);
+                let before = self.snapshot.outputs.iter().find(|o| o.layer == p.id);
+                let full = rescaled || before.is_none_or(|o| o.rect != rect);
+                let damage = if full {
+                    vec![Rect::new(0, 0, rect.w, rect.h)]
+                } else {
+                    out.iter()
+                        .map(|r| r.intersect(&rect))
+                        .filter(|r| !r.is_empty())
+                        .map(|r| r.translate(-rect.x, -rect.y))
+                        .collect()
+                };
+                let scroll = if full {
+                    0
+                } else {
+                    offsets.get(&p.id).copied().unwrap_or(0)
+                };
+                windows.push(p.rect);
+                outputs.push(OutputFrame {
+                    layer: p.id,
+                    rect,
+                    scroll,
+                    damage,
+                    full,
+                });
+            }
+            // An output that went or moved: the frame shows its old rectangle again.
+            for o in &self.snapshot.outputs {
+                if outputs
+                    .iter()
+                    .find(|n| n.layer == o.layer)
+                    .is_none_or(|n| n.rect != o.rect)
+                {
+                    out.push(clip.map_or(o.rect, |c| o.rect.intersect(&c)));
+                }
+            }
+            // The frame's damage: all but the own outputs' windows (their overlap stays).
+            for w in &windows {
+                out = out
+                    .iter()
+                    .flat_map(|r| crate::compose::subtract(*r, *w))
+                    .collect();
             }
         }
         let labels = if new_labels == *old_labels {
@@ -464,7 +596,7 @@ impl Scene {
             layers: new,
             labels,
             sprites: Arc::clone(sprites),
-            outputs: Vec::new(),
+            outputs,
         });
         self.restacked.clear();
         let d = frames.entry(root).or_default();
@@ -833,6 +965,222 @@ mod tests {
         assert!(s.committed().iter().all(|p| p.id == ROOT));
         // and its damage is still the frame's own
         assert!(!f.entry(c).or_default().is_empty());
+    }
+
+    /// A window layer id as a host may tag it (high bit set).
+    const WIN: u64 = (1 << 63) | 7;
+
+    /// An 800x600 root at SCALE with window WIN at R, its own output, committed once.
+    fn own(scale: f64, r: Rect) -> (Scene, Frames) {
+        let (mut s, mut f) = scene(800, 600, scale);
+        s.upsert(&desc(WIN, ROOT, 2, r, scale, true)).unwrap();
+        s.set_output(WIN, true).unwrap();
+        commit(&mut s, &mut f);
+        (s, f)
+    }
+
+    fn output(s: &Scene) -> OutputFrame {
+        s.snapshot
+            .outputs
+            .iter()
+            .find(|o| o.layer == WIN)
+            .cloned()
+            .unwrap()
+    }
+
+    /// WIN's run, as `glitnir_scroll` reports it.
+    fn run(s: &Scene, f: &mut Frames, area: Rect, dy: i32, exposed: Rect) {
+        s.scroll(ROOT, f.entry(ROOT).or_default(), WIN, area, dy, exposed);
+    }
+
+    fn add(f: &mut Frames, r: Rect) {
+        f.entry(ROOT).or_default().add(r);
+    }
+
+    /// No rectangle of D meets R.
+    fn misses(d: &[Rect], r: Rect) -> bool {
+        d.iter().all(|x| x.intersect(&r).is_empty())
+    }
+
+    #[test]
+    fn own_output_takes_its_window_damage() {
+        let r = Rect::new(10, 20, 400, 300);
+        let (mut s, mut f) = own(1.0, r);
+        let o = output(&s);
+        assert!(o.full);
+        assert_eq!((o.rect, o.damage), (r, vec![Rect::new(0, 0, 400, 300)]));
+        // inside the window: the output's, in its coordinates; outside: the frame's
+        add(&mut f, Rect::new(50, 50, 10, 10));
+        add(&mut f, Rect::new(600, 500, 10, 10));
+        let d = commit(&mut s, &mut f);
+        let o = output(&s);
+        assert_eq!((o.full, o.scroll), (false, 0));
+        assert_eq!(o.damage, vec![Rect::new(40, 30, 10, 10)]);
+        assert!(
+            covers(&d, Rect::new(600, 500, 10, 10)) && misses(&d, r),
+            "{d:?}"
+        );
+        // across the window's edge: split
+        add(&mut f, Rect::new(400, 100, 20, 10));
+        let d = commit(&mut s, &mut f);
+        assert_eq!(output(&s).damage, vec![Rect::new(390, 80, 10, 10)]);
+        assert!(
+            covers(&d, Rect::new(410, 100, 10, 10)) && misses(&d, r),
+            "{d:?}"
+        );
+        // nothing changed: nothing on either
+        assert!(commit(&mut s, &mut f).is_empty() && output(&s).damage.is_empty());
+        // a new scale: drawn whole again
+        s.upsert(&desc(ROOT, 0, 1, Rect::new(0, 0, 800, 600), 2.0, true))
+            .unwrap();
+        commit(&mut s, &mut f);
+        assert!(output(&s).full);
+        // a window under a child frame is never an output; a hidden one is none while hidden
+        let (mut s, mut f) = own(1.0, r);
+        child(&mut s, 30, ROOT, Rect::new(500, 0, 200, 200));
+        s.upsert(&desc(31, 30, 2, Rect::new(510, 10, 100, 100), 1.0, true))
+            .unwrap();
+        s.set_output(31, true).unwrap();
+        s.upsert(&desc(WIN, ROOT, 2, r, 1.0, false)).unwrap();
+        commit(&mut s, &mut f);
+        assert!(s.snapshot.outputs.is_empty());
+        s.upsert(&desc(WIN, ROOT, 2, r, 1.0, true)).unwrap();
+        commit(&mut s, &mut f);
+        assert!(output(&s).full);
+        assert_eq!(s.snapshot.outputs.len(), 1);
+    }
+
+    #[test]
+    fn own_output_scroll_is_an_offset() {
+        let r = Rect::new(10, 20, 400, 300);
+        let (mut s, mut f) = own(1.0, r);
+        // drawn before the scroll: it moves with the pixels
+        add(&mut f, Rect::new(50, 100, 10, 10));
+        // the content moves up 40 rows, the whole window
+        run(&s, &mut f, r, -40, Rect::new(10, 280, 400, 40));
+        let d = commit(&mut s, &mut f);
+        let o = output(&s);
+        assert_eq!((o.scroll, o.full), (-40, false));
+        assert!(
+            covers(&o.damage, Rect::new(0, 260, 400, 40)),
+            "{:?}",
+            o.damage
+        );
+        assert!(
+            covers(&o.damage, Rect::new(40, 40, 10, 10)),
+            "{:?}",
+            o.damage
+        );
+        // the rows that only moved are not damage
+        assert!(!covered(&o.damage, 200, 100) && !covered(&o.damage, 45, 85));
+        assert!(misses(&d, r), "{d:?}");
+        // runs in one commit add up; rows exposed by the first move with the second
+        run(&s, &mut f, r, -10, Rect::new(10, 310, 400, 10));
+        run(&s, &mut f, r, 25, Rect::new(10, 20, 400, 25));
+        commit(&mut s, &mut f);
+        let o = output(&s);
+        assert_eq!(o.scroll, 15);
+        assert!(
+            covers(&o.damage, Rect::new(0, 0, 400, 25)),
+            "{:?}",
+            o.damage
+        );
+        assert!(!covered(&o.damage, 0, 295), "{:?}", o.damage);
+        // a run wider than the window: the frame takes the columns beside it
+        let wide = Rect::new(0, 20, 420, 300);
+        run(&s, &mut f, wide, -20, Rect::new(0, 300, 420, 20));
+        let d = commit(&mut s, &mut f);
+        assert_eq!(output(&s).scroll, -20);
+        assert!(covers(&d, Rect::new(0, 20, 10, 300)) && covers(&d, Rect::new(410, 20, 10, 300)));
+        assert!(misses(&d, r), "{d:?}");
+        assert!(covers(&output(&s).damage, Rect::new(0, 280, 400, 20)));
+    }
+
+    #[test]
+    fn partial_scroll_stays_damage() {
+        let r = Rect::new(10, 20, 400, 300);
+        let (mut s, mut f) = own(1.0, r);
+        // rows 100..220 move up 20: a run inside the window
+        let area = Rect::new(10, 100, 400, 120);
+        run(&s, &mut f, area, -20, Rect::new(10, 200, 400, 20));
+        let d = commit(&mut s, &mut f);
+        let o = output(&s);
+        assert_eq!((o.scroll, o.full), (0, false));
+        assert!(
+            covers(&o.damage, area.translate(-10, -20)),
+            "{:?}",
+            o.damage
+        );
+        assert!(misses(&d, r), "{d:?}");
+        // a full-window run of a window that is no output is damage too
+        s.set_output(WIN, false).unwrap();
+        commit(&mut s, &mut f);
+        run(&s, &mut f, r, -40, Rect::new(10, 280, 400, 40));
+        let d = commit(&mut s, &mut f);
+        assert!(covers(&d, r) && s.snapshot.outputs.is_empty(), "{d:?}");
+    }
+
+    #[test]
+    fn overlap_damage_goes_to_both_outputs() {
+        // at 1.5 the window's left and top edges fall between the rows and columns a subsurface can take
+        let r = Rect::new(31, 31, 301, 151);
+        let (mut s, mut f) = own(1.5, r);
+        let o = output(&s);
+        assert_eq!(o.rect, Rect::new(30, 30, 302, 152));
+        // a pixel of the neighbour the snapped rectangle covers, and one of the window
+        add(&mut f, Rect::new(30, 100, 1, 1));
+        add(&mut f, Rect::new(100, 100, 5, 5));
+        let d = commit(&mut s, &mut f);
+        let o = output(&s);
+        assert!(
+            covered(&o.damage, 0, 70) && covered(&d, 30, 100),
+            "{d:?} {o:?}"
+        );
+        assert!(covers(&o.damage, Rect::new(70, 70, 5, 5)) && !covered(&d, 100, 100));
+        // the frame's damage stops at the window, not at the snapped rectangle
+        assert!(misses(&d, r), "{d:?}");
+        // a full-window scroll moves the overlap with the view though its pixels stayed: it is damage
+        run(&s, &mut f, r, -10, Rect::new(31, 172, 301, 10));
+        let d = commit(&mut s, &mut f);
+        let o = output(&s);
+        assert_eq!(o.scroll, -10);
+        assert!(covers(&o.damage, Rect::new(0, 0, 1, 152)), "{:?}", o.damage);
+        assert!(covers(&o.damage, Rect::new(0, 0, 302, 1)), "{:?}", o.damage);
+        assert!(
+            covers(&o.damage, Rect::new(1, 142, 301, 10)),
+            "{:?}",
+            o.damage
+        );
+        assert!(!covered(&o.damage, 100, 50) && misses(&d, r), "{d:?} {o:?}");
+    }
+
+    #[test]
+    fn demote_damages_the_window_rect_on_the_frame() {
+        let r = Rect::new(31, 31, 301, 151);
+        let (mut s, mut f) = own(1.5, r);
+        let snapped = output(&s).rect;
+        assert!(commit(&mut s, &mut f).is_empty());
+        s.set_output(WIN, false).unwrap();
+        let d = commit(&mut s, &mut f);
+        assert!(s.snapshot.outputs.is_empty());
+        assert!(covers(&d, snapped), "{d:?}");
+        assert!(commit(&mut s, &mut f).is_empty());
+        // a removed output: the same
+        s.set_output(WIN, true).unwrap();
+        commit(&mut s, &mut f);
+        assert!(output(&s).full);
+        s.remove(WIN);
+        assert!(covers(&commit(&mut s, &mut f), snapped));
+        // a resized one starts over, and the frame gets back what it no longer covers
+        s.upsert(&desc(WIN, ROOT, 2, r, 1.5, true)).unwrap();
+        s.set_output(WIN, true).unwrap();
+        commit(&mut s, &mut f);
+        s.upsert(&desc(WIN, ROOT, 2, Rect::new(31, 31, 301, 100), 1.5, true))
+            .unwrap();
+        let d = commit(&mut s, &mut f);
+        let o = output(&s);
+        assert_eq!((o.full, o.rect), (true, Rect::new(30, 30, 302, 101)));
+        assert!(covers(&d, Rect::new(30, 131, 302, 51)), "{d:?}");
     }
 
     #[test]
