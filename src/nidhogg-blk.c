@@ -2262,6 +2262,15 @@ nh_save_keyboard_auto_save (Lisp_Object no_message)
   nh_save_kbd_depth = lisp_eval_depth;
   Fdo_auto_save (no_message, Qnil);
   unbind_to (count, Qnil);
+  /* A buffer whose auto-saving is off never reaches auto_save_1 to
+     free its snapshot memory: free it here.  */
+  if (atomic_load (&nh_save_arena_bytes) > 0)
+    {
+      Lisp_Object tail, buf;
+      FOR_EACH_LIVE_BUFFER (tail, buf)
+	if (!STRINGP (BVAR (XBUFFER (buf), auto_save_file_name)))
+	  nh_save_arena_free (XBUFFER (buf));
+    }
 }
 
 /* Drop the jobs whose current auto-save name is FROM, unless they keep
