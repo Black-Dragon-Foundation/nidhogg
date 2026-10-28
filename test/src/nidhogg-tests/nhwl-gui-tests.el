@@ -1122,15 +1122,7 @@ The shell's records reach Lisp (the monitors-changed hook) only through the inpu
 (ert-deftest nhwl-gui/stats-after-typing ()
   "`glitnir-stats' answers on a shell frame with the keys budgets.sh reads."
   (skip-unless (nhwl-gui--live-p))
-  ;; A blinking cursor redisplays on its own timer; each such redisplay is a paint with no damage in the record, and
-  ;; the record's damage is a median, so the blink would outvote the one typed paint.
-  (let ((blink blink-cursor-mode))
-    (blink-cursor-mode -1)
-    (unwind-protect
-        (nhwl-gui--stats-after-typing)
-      (when blink (blink-cursor-mode 1)))))
-
-(defun nhwl-gui--stats-after-typing ()
+  ;; the cursor blinks on: its paints draw the cursor (damage), and stay out of the key series
   (switch-to-buffer "*scratch*")
   (erase-buffer)
   (redisplay t)
@@ -1142,9 +1134,35 @@ The shell's records reach Lisp (the monitors-changed hook) only through the inpu
   (let ((s (glitnir-stats)))
     (should s)
     (should (> (plist-get s :count) 0))
-    (should (>= (plist-get (plist-get s :latency-ms) :p95) 0))
+    (should (>= (plist-get (plist-get s :key-to-commit-ms) :p95) 0))
+    (should-not (plist-member s :latency-ms))
     (should (> (plist-get s :damage-px) 0))
     (should (> (plist-get s :painted-px) 0))))
+
+(ert-deftest nhwl-gui/stats-key-series-only-keys ()
+  "S6: `:key-to-commit-ms' counts the paints that show a key only: the cursor's blinks stay out of it."
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--with-blink
+   0.1
+   (lambda ()
+     (switch-to-buffer (generate-new-buffer " *nhwl-key-series*"))
+     (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
+     (message nil)
+     (redisplay t)
+     (gui-runner-wait-settled)
+     (glitnir-stats nil t)
+     ;; the blink paints, no key
+     (nhwl-gui--pump 0.6)
+     (let ((s (glitnir-stats)))
+       (should (> (plist-get s :count) 0))
+       (should (= (plist-get (plist-get s :key-to-commit-ms) :max) 0)))
+     (nhwl-gui--run-key "a")
+     (redisplay t)
+     (gui-runner-wait-settled)
+     (let ((s (glitnir-stats)))
+       (should (> (plist-get (plist-get s :key-to-commit-ms) :max) 0))
+       (should (< (plist-get (plist-get s :key-to-commit-ms) :max) 100)))
+     (kill-buffer (current-buffer)))))
 
 ;; The pointer while typing: hidden by a key, back with the mouse.
 
@@ -1836,10 +1854,8 @@ Redisplay is held until the move is out: the redisplay after a move redraws the 
 
 (ert-deftest nhwl-gui/stats-key-that-draws-nothing ()
   "A key that draws nothing leaves no stale key time: the next key's paint is measured from its own key.
-Skipped: no such key is found yet.  A command, even `ignore', updates the window, which redraws the cursor; a key read
-and dropped is followed by a redisplay that still redraws the cursor and the echo area's, so the key draws something
-and its time goes out with that paint."
-  (ert-skip "the stale key time is S6's (latency split)")
+The key is read and dropped (no command, which would update the window and redraw the cursor), with blink off and the
+echo area empty."
   (skip-unless (nhwl-gui--live-p))
   (skip-unless (nhwl-gui--recorder-p))
   (nhwl-gui--with-blink
@@ -1866,7 +1882,7 @@ and its time goes out with that paint."
      (let ((s (glitnir-stats)))
        (should s)
        (should (> (plist-get s :count) 0))
-       (should (< (plist-get (plist-get s :latency-ms) :max) 100))))))
+       (should (< (plist-get (plist-get s :key-to-commit-ms) :max) 100))))))
 
 ;; Present path S4: only damage wakes the pacer.  A draw outside redisplay (the drain's mouse highlight) still shows.
 
