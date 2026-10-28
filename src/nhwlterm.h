@@ -556,6 +556,10 @@ extern void nhwl_set_no_accept_focus (struct frame *, Lisp_Object,
 /* nhwlfns.c */
 extern void syms_of_nhwlterm (void);
 extern void syms_of_nhwlfns (void);
+extern void syms_of_nhwlselect (void);
+extern bool nhwl_selection_changed (struct nhwl_display_info *, uint32_t,
+				    struct input_event *);
+extern void nhwl_handle_selection_clear (struct input_event *);
 extern frame_parm_handler nhwl_frame_parm_handlers[];
 extern Emacs_Cursor nhwl_cursor_for_shape (uint32_t);
 
