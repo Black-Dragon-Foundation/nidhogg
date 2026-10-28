@@ -74,11 +74,12 @@ NhShell *nhg_shell (NhgDisplay *d);
 /* A rectangle in device pixels; empty when w <= 0 or h <= 0.  Layout equals GlitnirRect.  */
 typedef struct { int32_t x, y, w, h; } NhgRect;
 
-#define NHG_GEOM_LAYER_CHANGED  1   /* the layer's rectangle or chrome changed (a child frame's) */
+#define NHG_GEOM_LAYER_CHANGED  1   /* the layer's rectangle or chrome changed (the glue sets it for a child frame) */
 #define NHG_GEOM_FRESH          2   /* the backing starts over in BG_ARGB, keeping nothing */
 
 /* A frame's geometry as C reads it before a call.  The backing is the native area plus the border L, T, R, B (the
-   title strip and the margins), at least 1 x 1.  */
+   title strip and the margins), at least 1 x 1.  WINDOW is the frame's shell window (0: none): for a child frame,
+   nhg_layer_ensure puts the layer inside the shadow margin and hands the layer the child's chrome (child.rs).  */
 typedef struct
 {
   int32_t native_w, native_h;   /* the frame's pixel size */
@@ -87,6 +88,7 @@ typedef struct
   uint32_t scale120;            /* the window's scale times 120 (0: 120) */
   uint32_t flags;               /* NHG_GEOM_* */
   NhgRect layer;                /* the Glitnir layer in the backing */
+  uint64_t window;
 } NhgFrameGeom;
 
 /* A backing's pixels, borrowed: ARGB32, STRIDE = 4 * W.  GEN counts the backing's creations.  */
@@ -327,14 +329,15 @@ typedef struct
 int32_t nhg_csd_style (NhgDisplay *d, const uint32_t *left, size_t nleft, const uint32_t *right, size_t nright);
 /* Lay WINDOW's border out again from the compositor's decoration answer, the toplevel's states, SCALE120 (0: 120)
    and FLAGS: 1 when it changed (C garbages the frame), 0 when not, the layout in *OUT (OUT may be NULL).  Sets the
-   frame's CSD fact.  */
+   frame's CSD fact.  A child frame's border is its shadow margin instead, from its chrome and SCALE120 (no strip).
+   When a top-level's border changes, its child frames are placed again.  */
 int32_t nhg_csd_layout (NhgDisplay *d, uint64_t window, uint32_t scale120, uint32_t flags, NhgCsdLayout *out);
-/* WINDOW's offsets around its native area: OUT gets L, T, R, B.  */
+/* WINDOW's offsets around its native area: OUT gets L, T, R, B (a child frame's: its shadow margin).  */
 int32_t nhg_frame_offsets (NhgDisplay *d, uint64_t window, int32_t out[4]);
-/* The publish step of a drawable WINDOW, with its native size, before nhg_present: sends the window geometry if it
-   changed, then 1 with the draw list in *OUT when C must paint the strip and damage the border, 0 when the backing
-   already shows it.  LOOK hashes what C paints from and the glue does not see (the title, the colours, the font, the
-   backing's generation).  */
+/* The publish step of a drawable WINDOW, with its native size, before nhg_present: a child frame's position and input
+   region go to the shell if they changed, the window geometry if it changed, then 1 with the draw list in *OUT when C
+   must paint the strip and damage the border, 0 when the backing already shows it.  LOOK hashes what C paints from
+   and the glue does not see (the title, the colours, the font, the backing's generation).  */
 int32_t nhg_csd_paint (NhgDisplay *d, uint64_t window, int32_t native_w, int32_t native_h, uint64_t look,
 		       NhgCsdPaint *out);
 /* WINDOW's strip as laid out for that native size (nhwl--title-bar): 1 with it in *OUT, 0 when it draws none.  */
@@ -525,6 +528,46 @@ int32_t nhg_tip_show (NhgDisplay *d, uint64_t *window, uint64_t parent, NhgRect 
 int32_t nhg_tip_hide (NhgDisplay *d, uint64_t window);
 /* DELETE flags: the compositor dismissed a tip's popup; C calls nhg_tip_hide and hides the frame (Lisp deletes it).  */
 #define NHG_DEL_TIP 1
+
+/* ---- Child frames --------------------------------------------------------------------------------------------------
+
+   A child frame's window (registered with NHG_FRAME_CHILD) is a sync subsurface of its parent frame's: its position,
+   stacking, input region and mapping take effect with the tree's commit.  The glue holds the child's layout: the
+   shadow margin its chrome needs (its offsets, nhg_frame_offsets), its surface's position in the parent's surface,
+   its input region (the native area, without the margin), whether it is mapped, and its stacking.  C pushes the
+   child's facts when they change and again for a window made anew; the keyboard focus redirect stays C.  None of
+   these reads or writes pixels.  */
+
+#define NHG_CHILD_VISIBLE    1   /* nhg_child_set flags: the child is shown (its surface is mapped) */
+#define NHG_CHILD_NO_FOCUS   2   /* the frame is no-accept-focus */
+
+/* The chrome glitnir--resolve gives a child frame, in logical pixels: ON 0 for none (the rest 0 then), the corner
+   radius, the shadow's blur, offset (OX, OY), spread and opacity (0 to 1), and its colour RGB (0xRRGGBB).  */
+typedef struct
+{
+  uint32_t on;
+  float radius, blur, ox, oy, spread, opacity;
+  uint32_t rgb;
+} NhgChrome;
+
+/* Push: WINDOW is a child of PARENT's window, its native area at X, Y (device pixels of the parent's native area:
+   the frame's left and top), with FLAGS NHG_CHILD_*.  The first push after the window is made records where the
+   window was made; a later one sends the position if it changed, and maps or unmaps the surface as
+   NHG_CHILD_VISIBLE says.  1 when the surface was mapped again (C damages the frame whole), else 0.  NHG_E_STATE for a
+   window that is not a registered child, or an unknown parent.  */
+int32_t nhg_child_set (NhgDisplay *d, uint64_t window, uint64_t parent, int32_t x, int32_t y, uint32_t flags);
+
+/* WINDOW's chrome as glitnir--resolve gave it now: 1 when it changed (C lays the frame out again, nhg_csd_layout,
+   and garbages it), 0 when not.  The layer takes it at the next nhg_layer_ensure.  */
+int32_t nhg_child_chrome (NhgDisplay *d, uint64_t window, const NhgChrome *c);
+
+/* WINDOW was raised or lowered among its siblings: SIBLINGS holds the parent's child windows bottom to top as C now
+   stacks them, WINDOW among them, and Z_GROUP is the frame's z-group (Emacs's enum z_group: 0 none, 1 above, 2
+   below, 3 above-suspended; C ordered SIBLINGS, the glue keeps the value).
+   The glue puts WINDOW right above the sibling below it, or below the one above it when it is the lowest; the
+   parent and its ancestors owe a commit.  NHG_E_ARG when WINDOW is not in SIBLINGS.  */
+int32_t nhg_child_stack (NhgDisplay *d, uint64_t window, const uint64_t *siblings_bottom_to_top, size_t n,
+                         int32_t z_group);
 
 #ifdef __cplusplus
 }
