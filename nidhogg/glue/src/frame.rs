@@ -77,6 +77,8 @@ pub struct Frame {
     /// multiplies it because the compositor cannot (`window.rs`).
     pub alpha_cut: u32,
     pub alpha_host: bool,
+    /// A child frame's layout, chrome and sync state (`child.rs`).
+    pub child: crate::child::Child,
 }
 
 impl Frame {

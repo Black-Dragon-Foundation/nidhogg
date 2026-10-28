@@ -283,6 +283,10 @@ nhg_export! {
             (f.native_w, f.native_h, flags, f.col_w, f.line_h)
         };
         debug_assert_eq!(seen(&pushed), seen(emacs), "the facts pushed for window {window} drifted from Emacs's");
+        // a child frame's parent (`nhg_child_set`)
+        if state.frame(window)?.flags & crate::frame::NHG_FRAME_CHILD != 0 {
+            debug_assert_eq!(pushed.parent, emacs.parent, "the parent pushed for window {window} drifted from Emacs's");
+        }
         Ok(NHG_OK)
     }
 }
@@ -304,15 +308,24 @@ nhg_export! {
 
 nhg_export! {
     /// Make the frame's Glitnir layer match `g`; a frame without a key (`*frame` 0) gets one.  1 when the layer was
-    /// made or changed (the frame is damaged whole and its pending damage dropped), 0 when it already matched.
-    /// Neither reads nor writes pixels.
+    /// made or changed (the frame is damaged whole and its pending damage dropped), 0 when it already matched.  A
+    /// child frame's layer (`g.window`) sits inside its shadow margin and takes its chrome (`child.rs`).  Neither
+    /// reads nor writes pixels.
     ///
     /// # Safety
     /// `d` is null or a live display; `frame` and `g` are null or valid for the call.
     fn nhg_layer_ensure(d: *mut NhgDisplay, frame: *mut u64, g: *const NhgFrameGeom) -> i32 |state| {
         // SAFETY: null or valid for the call (the caller's promise).
         match unsafe { (frame.as_mut(), g.as_ref()) } {
-            (Some(frame), Some(g)) => Ok(i32::from(state.backings.ensure(frame, g))),
+            (Some(frame), Some(g)) => {
+                let mut g = *g;
+                let child = crate::child::layer(state, &mut g);
+                let changed = state.backings.ensure(frame, &g);
+                if let (true, Some(window)) = (changed, child) {
+                    crate::child::apply_chrome(state, window, *frame, g.scale120);
+                }
+                Ok(i32::from(changed))
+            }
             _ => Err(GlueError::Arg),
         }
     }
@@ -697,7 +710,8 @@ nhg_export! {
     /// Lay `window`'s border out again (C calls it when it applies a configure or a scale, and when `undecorated`
     /// changes): from the compositor's decoration answer, the toplevel's states, `scale120` (0: 120) and `flags`
     /// (`NHG_CSD_UNDECORATED`).  1 when the offsets or the strip changed (C garbages the frame), 0 when not; the
-    /// layout in `*out`.  Sets the frame's CSD fact.  Neither reads nor writes pixels.
+    /// layout in `*out`.  Sets the frame's CSD fact.  A child frame's border is its shadow margin (`child.rs`).
+    /// Neither reads nor writes pixels.
     ///
     /// # Safety
     /// `d` is null or a live display; `out` is null or writable.
@@ -713,7 +727,7 @@ nhg_export! {
 
 nhg_export! {
     /// `window`'s backing around its native area, `out[0..4]` = L, T, R, B (device pixels; T includes the strip), as
-    /// the title bar lays it out.  Neither reads nor writes pixels.
+    /// the title bar lays it out, or a child frame's shadow margin.  Neither reads nor writes pixels.
     ///
     /// # Safety
     /// `d` is null or a live display; `out` is null or holds 4 writable values.
@@ -729,9 +743,9 @@ nhg_export! {
 }
 
 nhg_export! {
-    /// The publish step of `window`, before `nhg_present`, with its native size: sends the window geometry if it
-    /// changed, then 1 with the strip's draw list in `*out` when C must paint the strip (and damage the border), 0
-    /// when the backing already shows it.  `look` hashes what C paints from that the glue does not see: the title,
+    /// The publish step of `window`, before `nhg_present`, with its native size: sends a child frame's position and
+    /// input region and the window geometry if they changed, then 1 with the strip's draw list in `*out` when C must
+    /// paint the strip (and damage the border), 0 when the backing already shows it.  `look` hashes what C paints from that the glue does not see: the title,
     /// the colours, the font and the backing's generation.  Neither reads nor writes pixels.
     ///
     /// # Safety
@@ -1062,6 +1076,54 @@ nhg_export! {
     /// `d` is null or a live display.
     fn nhg_tip_hide(d: *mut NhgDisplay, window: u64) -> i32 |state| {
         tip::hide(state, window)?;
+        Ok(NHG_OK)
+    }
+}
+
+// ---- Child frames (`child.rs`) -------------------------------------------------------------------------------------
+//
+// C pushes a child frame's facts when its window is made, moved, shown or hidden, and its chrome when its parameters
+// change; it hands the siblings' order over on raise and lower.  The child's publish step runs in `nhg_csd_paint`, its
+// margin is laid out by `nhg_csd_layout`, and its layer and chrome go to Glitnir in `nhg_layer_ensure`.
+
+nhg_export! {
+    /// Push: `window` is a child of `parent`'s window, its native area at (`x`, `y`) in the parent's native area
+    /// (device pixels), with `flags` (`NHG_CHILD_*`).  1 when its surface was mapped again (C damages the frame
+    /// whole), else 0.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_child_set(d: *mut NhgDisplay, window: u64, parent: u64, x: i32, y: i32, flags: u32) -> i32 |state| {
+        Ok(i32::from(crate::child::set(state, window, parent, x, y, flags)?))
+    }
+}
+
+nhg_export! {
+    /// `window`'s chrome as `glitnir--resolve` gave it now: 1 when it changed (C lays the frame out again and
+    /// garbages it), 0 when not.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `c` is null or points to a readable `NhgChrome`.
+    fn nhg_child_chrome(d: *mut NhgDisplay, window: u64, c: *const crate::child::NhgChrome) -> i32 |state| {
+        // SAFETY: null or readable (the caller's promise).
+        let c = unsafe { c.as_ref() }.ok_or(GlueError::Arg)?;
+        Ok(i32::from(crate::child::chrome(state, window, c)?))
+    }
+}
+
+nhg_export! {
+    /// `window` was raised or lowered: `siblings` holds its parent's `n` child windows bottom to top as C now stacks
+    /// them, `window` among them; `z_group` is the frame's z-group.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `siblings` holds `n` readable window ids.
+    fn nhg_child_stack(d: *mut NhgDisplay, window: u64, siblings: *const u64, n: usize, z_group: i32) -> i32 |state| {
+        if siblings.is_null() || n == 0 {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: non-null, with `n` readable ids (the caller's promise).
+        let s = unsafe { std::slice::from_raw_parts(siblings, n) };
+        crate::child::stack(state, window, s, z_group)?;
         Ok(NHG_OK)
     }
 }

@@ -471,6 +471,215 @@ nhwl_set_undecorated (struct frame *f, Lisp_Object new_value,
     }
 }
 
+
+/***********************************************************************
+		    Child frames: parameters and chrome
+ ***********************************************************************/
+
+/* A child frame's layout, margin, position and stacking are the glue's
+   (child.rs; nhwlterm.c pushes its facts).  Here: its parameters, and the
+   chrome `glitnir--resolve' gives it.  */
+
+static float
+nhwl_chrome_num (Lisp_Object v)
+{
+  return NUMBERP (v) ? (float) max (XFLOATINT (v), 0.0) : 0;
+}
+
+static Lisp_Object
+nhwl_chrome_key (Lisp_Object plist, const char *name)
+{
+  return Fplist_get (plist, intern_c_string (name), Qnil);
+}
+
+/* Take the chrome from `glitnir--resolve' (called after the frame's
+   parameters changed) and hand it to the glue; adapted from Nidhogg's
+   glitnir_pgtk_params_changed.  A change lays the frame out again (the
+   shadow's margin) and draws it again.  The chrome is kept for the
+   window's next making (nhwl_child_created).  */
+void
+nhwl_child_params_changed (struct frame *f)
+{
+  static bool busy;		/* the resolver changed parameters itself */
+  struct nhwl_output *out;
+  NhgChrome n;
+  Lisp_Object frame, res;
+
+  nhwl_popup_params_changed (f);
+  if (busy || !nhwl_child_p (f) || NILP (Ffboundp (Qglitnir__resolve)))
+    return;
+  out = FRAME_NHWL_OUTPUT (f);
+  XSETFRAME (frame, f);
+  busy = true;
+  res = safe_calln (Qglitnir__resolve, frame);
+  busy = false;
+
+  memset (&n, 0, sizeof n);
+  n.on = CONSP (res);
+  if (n.on)
+    {
+      Lisp_Object sh = nhwl_chrome_key (res, ":shadow");
+
+      n.radius = nhwl_chrome_num (nhwl_chrome_key (res, ":radius"));
+      if (CONSP (sh))
+	{
+	  Lisp_Object off = nhwl_chrome_key (sh, ":offset");
+	  Lisp_Object col = nhwl_chrome_key (sh, ":color");
+	  uint32_t rgb = 0;
+	  int i;
+
+	  n.blur = nhwl_chrome_num (nhwl_chrome_key (sh, ":blur"));
+	  if (CONSP (off))
+	    {
+	      n.ox = NUMBERP (XCAR (off)) ? XFLOATINT (XCAR (off)) : 0;
+	      n.oy = NUMBERP (XCDR (off)) ? XFLOATINT (XCDR (off)) : 0;
+	    }
+	  n.spread = NUMBERP (nhwl_chrome_key (sh, ":spread"))
+	    ? XFLOATINT (nhwl_chrome_key (sh, ":spread")) : 0;
+	  n.opacity = min (nhwl_chrome_num (nhwl_chrome_key (sh, ":opacity")),
+			   1);
+	  for (i = 0; i < 3; i++, col = CONSP (col) ? XCDR (col) : Qnil)
+	    rgb = rgb << 8 | (CONSP (col) && FIXNATP (XCAR (col))
+			      ? min (XFIXNAT (XCAR (col)), 255) : 0);
+	  n.rgb = rgb;
+	}
+    }
+  out->chrome = n;
+  if (out->window
+      && nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		       NHG (nhg_child_chrome (FRAME_NHG (f), out->window, &n)))
+	 == 1)
+    {
+      nhwl_csd_layout (f);
+      SET_FRAME_GARBAGED (f);
+    }
+}
+
+/* Adapted from pgtk_set_z_group (emacs-31.1): stored, and for a child
+   frame acted on among its siblings.  */
+void
+nhwl_set_z_group (struct frame *f, Lisp_Object new_value,
+		  Lisp_Object old_value)
+{
+  if (NILP (new_value))
+    FRAME_Z_GROUP (f) = z_group_none;
+  else if (EQ (new_value, Qabove))
+    FRAME_Z_GROUP (f) = z_group_above;
+  else if (EQ (new_value, Qabove_suspended))
+    FRAME_Z_GROUP (f) = z_group_above_suspended;
+  else if (EQ (new_value, Qbelow))
+    FRAME_Z_GROUP (f) = z_group_below;
+  else
+    error ("Invalid z-group specification");
+
+  if (nhwl_child_p (f) && !EQ (new_value, old_value))
+    {
+      if (EQ (new_value, Qabove))
+	nhwl_frame_raise_lower (f, true);
+      else if (EQ (new_value, Qbelow))
+	nhwl_frame_raise_lower (f, false);
+    }
+}
+
+/* A `no-accept-focus' child never takes its tree's keys
+   (nhwl_child_focus); the glue gets the fact.  */
+void
+nhwl_set_no_accept_focus (struct frame *f, Lisp_Object new_value,
+			  Lisp_Object old_value)
+{
+  FRAME_NO_ACCEPT_FOCUS (f) = !NILP (new_value);
+  nhwl_child_reposition (f);
+}
+
+/* Make F's window (and those of the child frames under it) again, under
+   F's current parent.  The old window of F is gone (its dependents with
+   it).  */
+static void
+nhwl_create_tree (struct frame *f)
+{
+  Lisp_Object tail, frame;
+
+  nhwl_create_frame_window (f);
+  nhwl_child_created (f);
+  if (FRAME_VISIBLE_P (f))
+    {
+      nhwl_damage_all (f);
+      SET_FRAME_GARBAGED (f);
+    }
+  FOR_EACH_FRAME (tail, frame)
+    if (FRAME_NHWL_P (XFRAME (frame)) && FRAME_PARENT_FRAME (XFRAME (frame)) == f)
+      nhwl_create_tree (XFRAME (frame));
+}
+
+static void
+nhwl_forget_windows_under (struct frame *f)
+{
+  Lisp_Object tail, frame;
+
+  FOR_EACH_FRAME (tail, frame)
+    if (FRAME_NHWL_P (XFRAME (frame)) && FRAME_PARENT_FRAME (XFRAME (frame)) == f)
+      {
+	struct nhwl_output *out = FRAME_NHWL_OUTPUT (XFRAME (frame));
+
+	/* Its window is dropped with the parent's: the glue forgets it.  */
+	if (out->window)
+	  nhwl_window_forget (FRAME_DISPLAY_INFO (f), out->window);
+	out->window = 0;
+	nhwl_forget_windows_under (XFRAME (frame));
+      }
+}
+
+/* The `parent-frame' parameter changed at run time.  A top-level cannot
+   become a child frame or back in W1; a child changes parent by getting a
+   new window under the new one.  */
+void
+nhwl_set_parent_frame (struct frame *f, Lisp_Object new_value,
+		       Lisp_Object old_value)
+{
+  struct frame *p = NULL, *a;
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+
+  if (!NILP (new_value)
+      && (!FRAMEP (new_value) || !FRAME_LIVE_P (p = XFRAME (new_value))
+	  || !FRAME_NHWL_P (p)))
+    {
+      store_frame_param (f, Qparent_frame, old_value);
+      error ("Invalid specification of `parent-frame'");
+    }
+  if (p == FRAME_PARENT_FRAME (f))
+    return;
+  if (nhwl_popup_frame_p (f))
+    {
+      store_frame_param (f, Qparent_frame, old_value);
+      error ("nidhogg-wayland: a popup frame keeps its parent");
+    }
+  if (!p || !FRAME_PARENT_FRAME (f))
+    {
+      store_frame_param (f, Qparent_frame, old_value);
+      error ("nidhogg-wayland: a top-level frame cannot become a child frame, or back, in W1");
+    }
+  if (FRAME_DISPLAY_INFO (f) != FRAME_DISPLAY_INFO (p))
+    {
+      store_frame_param (f, Qparent_frame, old_value);
+      error ("Cross display reparent");
+    }
+  for (a = p; a; a = FRAME_PARENT_FRAME (a))
+    if (a == f)
+      {
+	store_frame_param (f, Qparent_frame, old_value);
+	error ("Cannot make a frame its own ancestor");
+      }
+
+  block_input ();
+  if (out->window)
+    nhwl_window_destroy (FRAME_DISPLAY_INFO (f), out->window);
+  out->window = 0;
+  nhwl_forget_windows_under (f);
+  fset_parent_frame (f, new_value);
+  nhwl_create_tree (f);
+  unblock_input ();
+}
+
 /* Adapted from pgtk_default_font_parameter: the font is opened at the
    display's resolution, which is 96 times the scale, so that its size is
    in device pixels.  */
@@ -659,7 +868,7 @@ DEFUN ("x-create-frame", Fx_create_frame, Sx_create_frame, 1, 1, 0,
   if (STRINGP (name))
     Vx_resource_name = name;
 
-  /* Child frames are subsurfaces of another frame's window (nhwlchild.c);
+  /* Child frames are subsurfaces of another frame's window (child.rs);
      a foreign parent window (parent-id) has no meaning on Wayland.  */
   parent = gui_display_get_arg (dpyinfo, parms, Qparent_id, NULL, NULL,
 				RES_TYPE_NUMBER);

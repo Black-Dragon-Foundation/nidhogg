@@ -111,8 +111,8 @@ The client-side title bar (`src/csd.rs`, from `nhwlcsd.c`) is laid out, hit-test
 - **Layout:** C calls `nhg_csd_layout` when it applies a configure or a scale and when `undecorated` changes, with the
   scale and the flag (pulled). The glue asks the shell whether the compositor decorates the window, reads the
   toplevel's states from its own configure state, and sets the frame's CSD fact itself (C no longer pushes it). C keeps
-  a copy of the offsets for its drawing (`struct nhwl_csd`), and a child frame's shadow margin stays C's until child
-  frames move.
+  a copy of the offsets for its drawing (`struct nhwl_csd`). A child frame's border is its shadow margin
+  (`src/child.rs`).
 - **Painting:** at each publish C calls `nhg_csd_paint` with the native size and a hash of what it paints from that
   the glue does not see (the title, the colours, the font, the backing's generation). The glue sends the window
   geometry if it changed, and answers 1 with the draw list (`NhgCsdPaint`: the strip, the title's box, the buttons
@@ -146,3 +146,20 @@ a lost connection makes the shell refuse).
   the offsets, or at `left`/`top`, flipped and slid by the compositor) or moves it when only the offsets changed; 1
   asks C to draw the whole tip (a new tip, or a popup made again below `xdg_wm_base` 3). The tip frame itself and the
   frame it hangs on stay C.
+
+## Child frames
+
+A child frame's window is a sync subsurface of its parent's (`src/child.rs`, from `nhwlchild.c`); its position,
+stacking, input region and mapping go out with its tree's commit.
+
+- **Facts:** C pushes the child's parent, its position (the frame's left and top, device pixels of the parent's native
+  area), whether it is shown and whether it is no-accept-focus (`nhg_child_set`) when its window is made, moved, shown
+  or hidden, and the chrome `glitnir--resolve` gives it (`nhg_child_chrome`, a pull of the Lisp call's result) when its
+  parameters change. A window made again (a reparent) gets both again; the debug check compares the parent.
+- **Margin:** the shadow needs room around the native area (spread, three sigma of blur, the offset). It is the frame's
+  border, laid out by `nhg_csd_layout` like a title bar, so `nhg_frame_offsets`, the backing, the damage and the
+  pointer use it. `nhg_layer_ensure` puts a child's Glitnir layer inside it and hands the layer the chrome.
+- **Publish:** `nhg_csd_paint` sends the child's position and its input region (the native area) when they changed;
+  a top-level whose border changed places its children again at once.
+- **Stacking:** C keeps the siblings' order (its tree walk lists children by it) and hands it to `nhg_child_stack` on
+  raise and lower; the glue stacks the child against its neighbour. The keyboard focus redirect stays C.
