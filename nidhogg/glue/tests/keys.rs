@@ -6,7 +6,6 @@ mod common;
 mod step;
 
 use common::{Recorder, readable_within};
-use nhglue::abi::*;
 use nhglue::action::*;
 use nhglue::ffi::*;
 use nhglue::keys::NHG_KEY_REPEAT;
@@ -62,10 +61,8 @@ fn step_keys(d: *mut NhgDisplay, flags: u32) -> (i32, Vec<(NhgAction, Vec<u8>)>)
 
 /// The window with the keyboard, as the glue keeps it.
 fn keyboard_window(d: *mut NhgDisplay) -> u64 {
-    let mut w = u64::MAX;
-    // SAFETY: a live display; `w` is writable.
-    assert_eq!(unsafe { nhg_keyboard_window(d, &mut w) }, NHG_OK);
-    w
+    // SAFETY: a live display.
+    unsafe { &*d }.lock_for_test().keyboard().window
 }
 
 /// The plan names these `keys::…`.

@@ -2207,6 +2207,284 @@ DEFUN ("x-hide-tip", Fx_hide_tip, Sx_hide_tip, 0, 0, 0,
   return nhwl_hide_tip ();
 }
 
+/* Popup frames for Emacs-drawn menus.
+
+   A menu level is a frame whose `nhwl-popup' parameter, given at
+   creation with `parent-frame', makes its window an xdg popup of the
+   parent's window: (X Y W H . PLIST), the rectangle it sits beside in
+   device pixels of the parent's native area, and PLIST's `:gravity'
+   (the side or corner it grows toward, `bottom-right' by default),
+   `:adjust' (how the compositor keeps it on the output: `flip-x',
+   `flip-y', `slide-x', `slide-y'; all by default) and `:grab' (it takes
+   the keyboard and pointer, and a click elsewhere dismisses it).
+
+   A popup frame is the root of its own tree (its pacer and its acks are
+   its own) and is published by nhwl_publish like any frame.  Its
+   window exists while it is shown: made by `make-frame-visible' at the
+   current parameter, destroyed by `make-frame-invisible', its popup
+   frames first.  The window, its place and size, its grab, the focus a
+   top-level lends it, and its dismissal (a `delete-frame' event) are the
+   glue's (popup.rs); this decodes the parameter and does what Emacs
+   sees.  The menus themselves are Lisp (nhwl-menu.el), reached from
+   `x-popup-menu' through nhwl_popup_menu.  */
+
+/* The `:gravity' names, NhgAnchor's gravity numbers 1 to 8.  */
+static const char *const popup_gravity_names[] = {
+  "top", "bottom", "left", "right", "top-left", "bottom-left", "top-right",
+  "bottom-right"
+};
+
+/* The `:adjust' names and their NHSHELL_ADJUST_* bits.  */
+static const struct { const char *name; uint32_t bit; } popup_adjust_names[] = {
+  { "flip-x", NHSHELL_ADJUST_FLIP_X }, { "flip-y", NHSHELL_ADJUST_FLIP_Y },
+  { "slide-x", NHSHELL_ADJUST_SLIDE_X }, { "slide-y", NHSHELL_ADJUST_SLIDE_Y }
+};
+
+#define POPUP_ADJUST_ALL (NHSHELL_ADJUST_FLIP_X | NHSHELL_ADJUST_FLIP_Y \
+			  | NHSHELL_ADJUST_SLIDE_X | NHSHELL_ADJUST_SLIDE_Y)
+
+/* The `nhwl-popup' parameter decoded: what the glue's popup calls
+   take.  */
+struct nhwl_popup_parm
+{
+  NhgRect anchor;		/* device pixels of the parent's native area */
+  uint32_t gravity, adjust;	/* NhgAnchor's gravity, NHSHELL_ADJUST_* */
+  uint32_t flags;		/* NHG_POPUP_GRAB */
+};
+
+bool
+nhwl_popup_frame_p (struct frame *f)
+{
+  return (FRAME_NHWL_P (f) && f->output_data.nhwl
+	  && f->output_data.nhwl->popup_frame);
+}
+
+/* The top-level frame popup or child frame F hangs from.  */
+static struct frame *
+popup_owner (struct frame *f)
+{
+  while (nhwl_popup_frame_p (f) || nhwl_child_p (f))
+    f = FRAME_PARENT_FRAME (f);
+  return f;
+}
+
+static AVOID
+popup_invalid (Lisp_Object value)
+{
+  xsignal2 (Qerror, build_string ("Invalid `nhwl-popup' parameter"), value);
+}
+
+/* Read the value V of `nhwl-popup' into P (its anchor, gravity, adjust
+   and grab).  */
+static void
+popup_parse (Lisp_Object v, struct nhwl_popup_parm *p)
+{
+  Lisp_Object tail = v, plist, g, adj;
+  int xywh[4], i;
+  size_t k;
+
+  for (i = 0; i < 4; i++, tail = XCDR (tail))
+    {
+      if (!CONSP (tail) || !RANGED_FIXNUMP (-0x3fffffff, XCAR (tail), 0x3fffffff))
+	popup_invalid (v);
+      xywh[i] = XFIXNUM (XCAR (tail));
+    }
+  plist = tail;
+  p->anchor.x = xywh[0];
+  p->anchor.y = xywh[1];
+  p->anchor.w = max (xywh[2], 0);
+  p->anchor.h = max (xywh[3], 0);
+
+  g = Fplist_get (plist, QCgravity, Qnil);
+  p->gravity = NILP (g) ? 8 : 0;
+  for (k = 0; SYMBOLP (g) && !NILP (g) && k < ARRAYELTS (popup_gravity_names); k++)
+    if (!strcmp (SSDATA (SYMBOL_NAME (g)), popup_gravity_names[k]))
+      p->gravity = k + 1;
+  if (!p->gravity)
+    popup_invalid (v);
+
+  if (NILP (Fplist_member (plist, QCadjust, Qnil)))
+    p->adjust = POPUP_ADJUST_ALL;
+  else
+    {
+      p->adjust = 0;
+      for (adj = Fplist_get (plist, QCadjust, Qnil); CONSP (adj); adj = XCDR (adj))
+	{
+	  uint32_t bit = 0;
+
+	  for (k = 0; SYMBOLP (XCAR (adj)) && k < ARRAYELTS (popup_adjust_names); k++)
+	    if (!strcmp (SSDATA (SYMBOL_NAME (XCAR (adj))), popup_adjust_names[k].name))
+	      bit = popup_adjust_names[k].bit;
+	  if (!bit)
+	    popup_invalid (v);
+	  p->adjust |= bit;
+	}
+    }
+  p->flags = NILP (Fplist_get (plist, QCgrab, Qnil)) ? 0 : NHG_POPUP_GRAB;
+}
+
+/* Frame F is being made (x-create-frame, with PARMS): a popup frame when
+   PARMS has `nhwl-popup'.  The parameter goes into F's parameters at
+   once (a show while x-create-frame runs reads it there), and is not
+   left over for x-create-frame's end.  */
+void
+nhwl_popup_init (struct frame *f, Lisp_Object parms)
+{
+  Lisp_Object tem = Fassq (Qnhwl_popup, parms);
+  struct nhwl_popup_parm p;
+
+  if (NILP (tem) || NILP (XCDR (tem)))
+    return;
+  if (!FRAME_PARENT_FRAME (f))
+    error ("nidhogg-wayland: a popup frame needs a `parent-frame'");
+  popup_parse (XCDR (tem), &p);
+  FRAME_NHWL_OUTPUT (f)->popup_frame = true;
+  store_frame_param (f, Qnhwl_popup, XCDR (tem));
+  XSETCAR (tem, Qnil);
+}
+
+/* Show popup frame F: a new popup of its parent's window, at the current
+   parameter and F's size.  */
+void
+nhwl_popup_show (struct frame *f)
+{
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
+  struct frame *pf = FRAME_PARENT_FRAME (f);
+  struct nhwl_output *po;
+  struct nhwl_popup_parm p;
+  uint64_t id = 0, owner;
+  int w, h, rc;
+
+  if (out->window || !dpyinfo->glue)
+    return;
+  if (!pf || !FRAME_LIVE_P (pf) || !FRAME_NHWL_P (pf)
+      || !(po = FRAME_NHWL_OUTPUT (pf))->window)
+    error ("nidhogg-wayland: the parent of a popup frame is not shown");
+  popup_parse (get_frame_param (f, Qnhwl_popup), &p);
+  owner = FRAME_NHWL_OUTPUT (popup_owner (f))->window;
+
+  /* A popup starts at its parent's scale, and at the size the frame is
+     about to take.  */
+  out->scale120 = po->scale120 ? po->scale120 : 120;
+  w = f->new_size_p ? f->new_width : FRAME_PIXEL_WIDTH (f);
+  h = f->new_size_p ? f->new_height : FRAME_PIXEL_HEIGHT (f);
+
+  block_input ();
+  rc = nhwl_glue_rc (dpyinfo,
+		     NHG (nhg_popup_show (dpyinfo->glue, &id, po->window, owner,
+					  p.anchor, p.gravity, p.adjust,
+					  p.flags, max (1, w), max (1, h))));
+  if (rc >= 0 && FRAME_COLUMN_WIDTH (f) > 0 && FRAME_LINE_HEIGHT (f) > 0)
+    nhwl_glue_rc (dpyinfo, NHG (nhg_frame_units (dpyinfo->glue, id,
+						 FRAME_COLUMN_WIDTH (f),
+						 FRAME_LINE_HEIGHT (f))));
+  unblock_input ();
+  if (rc < 0)
+    error ("nidhogg-wayland: cannot create a popup window (%d)", rc);
+  out->window = id;
+  /* `alpha' goes to the new window.  */
+  out->alpha_cut = 0;
+  out->alpha_host = false;
+  nhwl_set_frame_alpha (f);
+
+  SET_FRAME_VISIBLE (f, 1);
+  SET_FRAME_ICONIFIED (f, false);
+  nhwl_window_visible (f, true);
+  out->has_been_visible = true;
+  nhwl_damage_all (f);
+  SET_FRAME_GARBAGED (f);
+}
+
+/* Hide popup frame F: its window goes, after those of the popup frames
+   hanging from it (the compositor wants the topmost popup destroyed
+   first).  When F's top-level had lent its keyboard focus to a grabbing
+   popup and has lost it now (the glue says so), Emacs sees the
+   focus-out.  */
+void
+nhwl_popup_hide (struct frame *f)
+{
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
+  struct nhwl_output *o;
+  struct frame *r = popup_owner (f);
+  int rc = 0;
+
+  for (o = dpyinfo->outputs; o; o = o->next_output)
+    if (o->popup_frame && o->window && FRAME_PARENT_FRAME (o->frame) == f)
+      nhwl_popup_hide (o->frame);
+  if (dpyinfo->glue)
+    {
+      block_input ();
+      rc = nhwl_glue_rc (dpyinfo,
+			 NHG (nhg_popup_hide (dpyinfo->glue, out->window,
+					      FRAME_NHWL_OUTPUT (r)->window)));
+      unblock_input ();
+    }
+  out->window = 0;
+  SET_FRAME_VISIBLE (f, 0);
+  SET_FRAME_ICONIFIED (f, false);
+  if (rc == 1)
+    nhwl_focus_lost (r);
+}
+
+/* Popup frame F's size is now WIDTH x HEIGHT device pixels: the popup
+   takes the new size, placed again by its anchor.  The whole frame is
+   drawn again when the shell made the popup again (below xdg_popup 3).  */
+void
+nhwl_popup_set_size (struct frame *f, int width, int height)
+{
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  int rc;
+
+  if (!nhwl_popup_frame_p (f) || !out->window)
+    return;
+  block_input ();
+  rc = nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		     NHG (nhg_popup_size (FRAME_NHG (f), out->window, width,
+					  height)));
+  unblock_input ();
+  if (rc == 1)
+    nhwl_damage_all (f);
+}
+
+/* F's parameters changed: a new `nhwl-popup' moves the shown popup
+   (xdg_popup.reposition).  Its size, gravity, adjust and grab take
+   effect when it is shown next.  */
+void
+nhwl_popup_params_changed (struct frame *f)
+{
+  struct nhwl_output *out;
+  struct nhwl_popup_parm p;
+  Lisp_Object v;
+  int rc;
+
+  if (!nhwl_popup_frame_p (f) || NILP (v = get_frame_param (f, Qnhwl_popup)))
+    return;
+  popup_parse (v, &p);
+  out = FRAME_NHWL_OUTPUT (f);
+  if (!out->window)
+    return;
+  block_input ();
+  rc = nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		     NHG (nhg_popup_place (FRAME_NHG (f), out->window,
+					   p.anchor, p.gravity, p.adjust,
+					   p.flags)));
+  unblock_input ();
+  if (rc == 1)
+    nhwl_damage_all (f);
+}
+
+/* `x-popup-menu' on frame F: the Lisp menu (nhwl-menu.el) shows MENU at
+   POSITION and returns the choice.  */
+Lisp_Object
+nhwl_popup_menu (struct frame *f, Lisp_Object position, Lisp_Object menu)
+{
+  if (NILP (Ffboundp (Qnhwl_menu_popup)))
+    error ("No popup menus: nhwl-menu.el is not loaded");
+  return calln (Qnhwl_menu_popup, position, menu);
+}
+
 /* The font settings the shared Lisp reads (xsettings.c does not exist
    here): none.  */
 DEFUN ("font-get-system-font", Ffont_get_system_font, Sfont_get_system_font,
@@ -2590,7 +2868,12 @@ syms_of_nhwlfns (void)
   DEFSYM (Qcancel_timer, "cancel-timer");
   DEFSYM (Qrun_at_time, "run-at-time");
   DEFSYM (Qx_hide_tip, "x-hide-tip");
-  syms_of_nhwlmenu ();
+  /* Popup frames for menus.  */
+  DEFSYM (Qnhwl_popup, "nhwl-popup");
+  DEFSYM (Qnhwl_menu_popup, "nhwl-menu-popup");
+  DEFSYM (QCgravity, ":gravity");
+  DEFSYM (QCadjust, ":adjust");
+  DEFSYM (QCgrab, ":grab");
   tip_timer = tip_frame = tip_last_frame = tip_last_string = tip_last_parms
     = Qnil;
   staticpro (&tip_timer);

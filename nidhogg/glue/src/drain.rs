@@ -7,8 +7,7 @@
 //! which C sends to the focus frame as before; every other kind did nothing in C without a frame.
 
 use crate::action::{
-    NHG_ACT_DELETE, NHG_ACT_LOST, NHG_ACT_RAW, NHG_ACT_READY, NHG_ACT_SELECTION_CLEAR, NhgAction,
-    NhgNextIn,
+    NHG_ACT_DELETE, NHG_ACT_LOST, NHG_ACT_READY, NHG_ACT_SELECTION_CLEAR, NhgAction, NhgNextIn,
 };
 use crate::configure;
 use crate::csd;
@@ -19,6 +18,7 @@ use crate::ime;
 use crate::keys;
 use crate::monitors;
 use crate::pointer;
+use crate::popup;
 use crate::scroll;
 use crate::select;
 use crate::tip;
@@ -64,9 +64,12 @@ pub fn next(state: &mut Display, input: NhgNextIn) -> Result<i32, GlueError> {
                 pointer::event(state, &ev)
             }
         }
-        // a tip's dismissal; a popup frame's is still C's
-        NHSHELL_EV_POPUP_DONE if tip::popup_done(state, &ev) => {}
-        _ => raw(state, ev),
+        // a popup frame's dismissal (a tip's is taken in the guard)
+        NHSHELL_EV_POPUP_DONE if !tip::popup_done(state, &ev) => {
+            popup::popup_done(state, &ev);
+        }
+        // kinds C did nothing with
+        _ => {}
     }
     Ok(1)
 }
@@ -90,16 +93,4 @@ fn window_action(state: &mut Display, ev: &NhShellEvent, kind: u32) {
             .actions
             .push(NhgAction::new(kind, ev.window, ev.time_ns));
     }
-}
-
-/// An event whose kind is not ported yet: a `RAW` action, which C handles on its old path, with the keyboard's
-/// modifier mask.
-fn raw(state: &mut Display, ev: NhShellEvent) {
-    if ev.window != 0 && state.is_forgotten(ev.window) {
-        return;
-    }
-    let mut a = NhgAction::new(NHG_ACT_RAW, ev.window, ev.time_ns);
-    a.mods = state.keyboard.mods;
-    state.actions.set_raw(ev);
-    state.actions.push(a);
 }
