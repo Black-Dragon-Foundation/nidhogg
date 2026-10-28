@@ -133,4 +133,33 @@
                 :type 'args-out-of-range)
   (should-error (glitnir--probe 'blur (list 4 4 (make-string 64 0)) '(0 0 4 4))))
 
+;; PD's box keys (:corner-radius, :open, :label), taken over for the shell (W1 Task 16).
+(ert-deftest glitnir/box-keys-accepted ()
+  (skip-unless (featurep 'glitnir))
+  (let ((face (make-symbol "glitnir-box-keys-face")))
+    (custom-declare-face face nil "Test face.")
+    (set-face-attribute face nil :box '(:line-width 2 :color "red" :corner-radius 6
+                                        :open (top left) :label "x"))
+    (should (= (plist-get (face-attribute face :box) :corner-radius) 6))
+    (set-face-attribute face nil :box '(:corner-radius 2.5 :open nil))
+    (set-face-attribute face nil :box '(:corner-radius 0 :open (top bottom left right)))))
+
+(ert-deftest glitnir/box-keys-bad-values-signal ()
+  (skip-unless (featurep 'glitnir))
+  (dolist (box '((:corner-radius -1) (:corner-radius "6") (:open (diagonal)) (:open top)
+                 (:label 5) (:label nil)))
+    (should-error (set-face-attribute 'default nil :box box) :type 'error)
+    (should (equal (cadr (should-error (set-face-attribute 'default nil :box box)))
+                   "Invalid face box"))))
+
+(ert-deftest glitnir/box-keys-ignored-on-tty-frame ()
+  (skip-unless (featurep 'glitnir))
+  (let ((face (make-symbol "glitnir-box-tty-face")))
+    (custom-declare-face face nil "Test face.")
+    (set-face-attribute face nil :box '(:corner-radius 6 :open (left) :label "x"))
+    (should (stringp (format "%S" (face-attribute face :box nil t))))
+    (with-temp-buffer
+      (insert (propertize "abc" 'face face))
+      (should (equal (buffer-string) "abc")))))
+
 ;;; glitnir-tests.el ends here

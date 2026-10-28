@@ -525,6 +525,20 @@ extern void nhwl_damage_cursor (struct window *, struct glyph_row *, bool);
 extern void nhwl_damage_fringe (struct window *,
 				struct draw_fringe_bitmap_params *);
 extern cairo_surface_t *nhwl_snapshot (struct frame *);
+extern bool nhwl_glitnir_active_p (struct frame *);
+extern void nhwl_layer_origin (struct frame *, int *, int *);
+extern bool nhwl_decor_target (struct frame *, struct window *, uint64_t *,
+			       uint64_t *, double *, double *);
+
+/* glitnir-decor.c: PD's decorations (rounded and open boxes, labels).  */
+extern bool glitnir_decor_draw_box (struct glyph_string *, int, int, int, int,
+				    int, int, bool, bool, XRectangle *);
+extern unsigned long glitnir_decor_colour_beneath (struct glyph_string *, int);
+extern void glitnir_decor_after_glyphs (struct glyph_string *);
+extern void glitnir_decor_record (struct glyph_string *);
+extern void glitnir_decor_clear (struct frame *, int, int, int, int);
+extern void glitnir_decor_scrolled (struct frame *, struct window *, int, int,
+				    int, int, int);
 
 /* nhwlcsd.c: the bare client-side title bar.  */
 extern void nhwl_csd_layout (struct frame *);
