@@ -183,8 +183,9 @@ enum
   NHSHELL_CURSOR_HIDDEN
 };
 
-/* Window kinds: a child is a subsurface of its parent (moves and stacks with the parent's next commit); a popup is
-   placed by the compositor beside an anchor rectangle.  */
+/* Window kinds: a child is a sync subsurface of its parent, presented with its tree (what it shows, and its position,
+   stacking, input region and unmap, take effect once every ancestor has committed after it, the root last); a popup
+   is placed by the compositor beside an anchor rectangle, and is a tree of its own.  */
 #define NHSHELL_KIND_TOPLEVEL 0u
 #define NHSHELL_KIND_CHILD    1u
 #define NHSHELL_KIND_POPUP    2u
@@ -259,8 +260,9 @@ int32_t nhshell_window_set_geometry (NhShell *sh, uint64_t window, int32_t x, in
    buffer carries it.  Without the flag a bare commit may carry it.  */
 #define NHSHELL_ACK_CONTENT 1u
 int32_t nhshell_window_ack_configure (NhShell *sh, uint64_t window, uint32_t serial, uint32_t flags);
-/* A commit with no buffer, frame callback, presentation feedback or viewport: it carries a bare ack and the surface
-   state the window owes (a child's position or stacking).  */
+/* A commit with no buffer or viewport: it carries a bare ack and the surface state the window owes (a child's
+   position, stacking, input region or unmap).  No frame callback or presentation feedback either, except on a root
+   whose children committed buffers since its last commit: that commit shows them, and is paced like a buffer.  */
 int32_t nhshell_present_bare (NhShell *sh, uint64_t window);
 int32_t nhshell_window_set_cursor (NhShell *sh, uint64_t window, uint32_t shape);
 /* The Xcursor theme (NAME, logical SIZE) shown where the compositor lacks wp_cursor_shape_v1; a cursor already shown
@@ -274,7 +276,9 @@ int32_t nhshell_window_activate (NhShell *sh, uint64_t window, const char *token
 /* Children and popups.  set_position: a child moves with its parent's next commit; a popup's anchor rectangle moves to
    (X, Y) (xdg_popup.reposition).  stack: put a child above or below SIBLING (0: the parent), with the parent's next
    commit.  set_position returns 1 when the whole window must be redrawn (a popup made again below xdg_popup v3),
-   0 otherwise; a child's position and stacking make its parent owe a commit.  set_input_region: the part that takes input, N rectangles in logical pixels (N 0: the whole surface).
+   0 otherwise; a child's position, stacking, input region and unmap make each ancestor up to the root owe a commit
+   (its position the child too).  set_input_region: the part that takes input, N rectangles in logical pixels (N 0:
+   the whole surface).
    set_mapped: off shows nothing (a null buffer); on lets the next present show the window.  Pointer events over a child
    or popup carry its id.  destroy of a window also destroys its children and popups.  */
 int32_t nhshell_window_set_position (NhShell *sh, uint64_t window, int32_t x, int32_t y);
@@ -295,7 +299,10 @@ int32_t nhshell_window_ssd (NhShell *sh, uint64_t window, int32_t *ssd);
    owed: a bare ack or surface state; nhshell_present_bare or a buffer), 0 for neither; reporting CONTENT takes the draw
    (not ready again until the next window_dirty; a begin that finds every buffer busy gives it back).  With CONTENT,
    NHSHELL_READY_ACK says a content ack waits: present a buffer even with nothing drawn.  All are 0 until the window's
-   first configure.  */
+   first configure.  One pacer per tree: a child's window_dirty and buffer releases wake its root, FRAME_READY comes
+   for roots only, and window_ready on a child reports only NHSHELL_READY_OWED (its surface owes a commit).  The host
+   presents a tree at its root's FRAME_READY: the children deepest first (a buffer with CONTENT and damage, else a bare
+   commit when owed or when a child of theirs committed), then the root.  */
 #define NHSHELL_READY_CONTENT 1
 #define NHSHELL_READY_OWED    2
 #define NHSHELL_READY_ACK     4
