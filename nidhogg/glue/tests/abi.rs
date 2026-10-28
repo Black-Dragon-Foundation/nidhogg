@@ -687,6 +687,72 @@ PROTO (nhg_popup_hide, int32_t (NhgDisplay *, uint64_t, uint64_t));";
         }
     }
 
+    /// The bell's part of the header (its own table).
+    #[test]
+    fn bell_header_matches() {
+        use nhglue::bell::NhgBellGeom;
+        use nhglue::ffi::{
+            nhg_activation_token, nhg_bell_flash, nhg_bell_restore, nhg_inhibit_idle,
+            nhg_window_export,
+        };
+        type B = NhgBellGeom;
+        let rows: &[(&str, i64)] = &[
+            ("sizeof (NhgBellGeom)", size_of::<B>() as i64),
+            (
+                "offsetof (NhgBellGeom, height)",
+                offset_of!(B, height) as i64,
+            ),
+            (
+                "offsetof (NhgBellGeom, line_h)",
+                offset_of!(B, line_h) as i64,
+            ),
+            (
+                "offsetof (NhgBellGeom, border)",
+                offset_of!(B, border) as i64,
+            ),
+            (
+                "offsetof (NhgBellGeom, top_margin)",
+                offset_of!(B, top_margin) as i64,
+            ),
+            (
+                "offsetof (NhgBellGeom, bottom_margin)",
+                offset_of!(B, bottom_margin) as i64,
+            ),
+        ];
+        let decls = "\
+#define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
+PROTO (nhg_bell_flash, int32_t (NhgDisplay *, uint64_t, const NhgBellGeom *));
+PROTO (nhg_bell_restore, int32_t (NhgDisplay *, uint64_t));
+PROTO (nhg_inhibit_idle, int32_t (NhgDisplay *, uint64_t, int32_t));
+PROTO (nhg_window_export, int32_t (NhgDisplay *, uint64_t, uint32_t, char *, size_t, size_t *));
+PROTO (nhg_activation_token, int32_t (NhgDisplay *, uint64_t, uint32_t, char *, size_t, size_t *));";
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *const B) -> i32 = nhg_bell_flash;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_bell_restore;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32) -> i32 = nhg_inhibit_idle;
+        let _: unsafe extern "C" fn(
+            *mut NhgDisplay,
+            u64,
+            u32,
+            *mut c_char,
+            usize,
+            *mut usize,
+        ) -> i32 = nhg_window_export;
+        let _: unsafe extern "C" fn(
+            *mut NhgDisplay,
+            u64,
+            u32,
+            *mut c_char,
+            usize,
+            *mut usize,
+        ) -> i32 = nhg_activation_token;
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe(decls, &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+    }
+
     #[test]
     fn version_is_one_and_null_is_refused() {
         let mut v = 0u32;
