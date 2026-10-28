@@ -1633,6 +1633,22 @@ nh_save_age_ns (struct nh_save_job *j)
 
 /* ---- The worker ----------------------------------------------------- */
 
+/* The bytes of BASE the temporary names keep: at most 200, so that
+   `.#BASE#.nh-PID-SERIAL' fits a 255-byte name whatever the auto-save
+   name's length, cut at a UTF-8 character's start (macOS refuses a
+   name that is not UTF-8).  */
+static int
+nh_save_base_len (const char *base)
+{
+  size_t n = strlen (base);
+  if (n <= 200)
+    return n;
+  n = 200;
+  while (n > 0 && ((unsigned char) base[n] & 0xc0) == 0x80)
+    n--;
+  return n;
+}
+
 /* `DIR/.#BASE#.nh-PID-SERIAL' for TARGET = DIR/BASE.  */
 static char *
 nh_save_tmpname (const char *target, uintmax_t serial)
@@ -1642,7 +1658,8 @@ nh_save_tmpname (const char *target, uintmax_t serial)
   size_t size = strlen (target) + 64;
   char *s = malloc (size);
   NH_WK_ASSERT (s);
-  snprintf (s, size, "%.*s.#%s#.nh-%jd-%ju", dirlen, target, target + dirlen,
+  snprintf (s, size, "%.*s.#%.*s#.nh-%jd-%ju", dirlen, target,
+	    nh_save_base_len (target + dirlen), target + dirlen,
 	    (intmax_t) getpid (), serial);
   return s;
 }
@@ -1672,10 +1689,11 @@ nh_save_clean_leftovers (const char *target)
   char *dir = nh_save_dirname (target);
   const char *slash = strrchr (target, '/');
   const char *base = slash ? slash + 1 : target;
-  size_t plen = strlen (base) + sizeof ".##.nh-" - 1;
+  int blen = nh_save_base_len (base);
+  size_t plen = blen + sizeof ".##.nh-" - 1;
   char *prefix = malloc (plen + 1);
   NH_WK_ASSERT (prefix);
-  snprintf (prefix, plen + 1, ".#%s#.nh-", base);
+  snprintf (prefix, plen + 1, ".#%.*s#.nh-", blen, base);
   int fd = open (dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
   DIR *d = fd < 0 ? NULL : fdopendir (fd);
   if (!d && fd >= 0)
