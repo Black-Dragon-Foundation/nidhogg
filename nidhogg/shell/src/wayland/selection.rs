@@ -8,22 +8,24 @@
 //!
 //! Locks: `Selections` is taken before libwayland's (requests are sent while holding it), never the other way round.
 
-use crate::api::{NHSHELL_SEL_CLIPBOARD, NHSHELL_SEL_PRIMARY, ShellError, ShellResult};
+use crate::api::{
+    NHSHELL_SEL_CLIPBOARD, NHSHELL_SEL_DND, NHSHELL_SEL_PRIMARY, ShellError, ShellResult,
+};
 use crate::event::{NHSHELL_EV_SELECTION, NhShellEvent, SelectionEv};
 use crate::wayland::WaylandShell;
 use crate::wayland::clipboard::{OfferTypes, SendBytes, read_with_timeout, receive_pipe, timespec};
 use crate::wayland::conn::Shared;
+use crate::wayland::dnd::{DataOfferData, Dnd};
 use crate::wayland::reader::ReaderState;
 use crate::wayland::registry::Globals;
 use rustix::event::{PollFlags, Timespec};
 use rustix::fd::OwnedFd;
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, MutexGuard};
 use std::time::{Duration, Instant};
 use wayland_client::backend::ObjectId;
 use wayland_client::protocol::wl_data_device::{self, WlDataDevice};
 use wayland_client::protocol::wl_data_device_manager::WlDataDeviceManager;
-use wayland_client::protocol::wl_data_offer::{self, WlDataOffer};
+use wayland_client::protocol::wl_data_offer::WlDataOffer;
 use wayland_client::protocol::wl_data_source::{self, WlDataSource};
 use wayland_client::protocol::wl_registry::WlRegistry;
 use wayland_client::protocol::wl_seat::WlSeat;
@@ -48,7 +50,7 @@ enum Offer {
 impl Offer {
     fn types(&self) -> Vec<String> {
         let types = match self {
-            Offer::Data(o) => o.data::<OfferTypes>(),
+            Offer::Data(o) => o.data::<DataOfferData>().map(|d| &d.types),
             Offer::Primary(o) => o.data::<OfferTypes>(),
         };
         types.map(OfferTypes::list).unwrap_or_default()
@@ -120,10 +122,12 @@ pub struct Selections {
     focus: bool,
     /// The newest keyboard-enter or input serial.
     serial: u32,
-    data_manager: Option<WlDataDeviceManager>,
-    data_device: Option<WlDataDevice>,
+    pub(super) data_manager: Option<WlDataDeviceManager>,
+    pub(super) data_device: Option<WlDataDevice>,
     primary_manager: Option<ZwpPrimarySelectionDeviceManagerV1>,
     primary_device: Option<ZwpPrimarySelectionDeviceV1>,
+    /// Drag and drop on the same data device (`dnd.rs`).
+    pub(super) dnd: Dnd,
 }
 
 impl Selections {
@@ -296,12 +300,18 @@ impl WaylandShell {
     }
 
     pub(super) fn sel_owned(&self, kind: u32) -> ShellResult<bool> {
+        if kind == NHSHELL_SEL_DND {
+            return Ok(lock(&self.shared).dnd.dragging_ours());
+        }
         let i = slot(kind)?;
         Ok(lock(&self.shared).slots[i].owned.is_some())
     }
 
     /// Our MIME types while we own the selection, else the current offer's.
     pub(super) fn sel_types(&self, kind: u32) -> ShellResult<Vec<String>> {
+        if kind == NHSHELL_SEL_DND {
+            return Ok(lock(&self.shared).dnd.types());
+        }
         let i = slot(kind)?;
         let sel = lock(&self.shared);
         let cur = &sel.slots[i];
@@ -320,6 +330,9 @@ impl WaylandShell {
         mime_type: &str,
         timeout_ms: u32,
     ) -> ShellResult<Vec<u8>> {
+        if kind == NHSHELL_SEL_DND {
+            return self.dnd_read(mime_type, timeout_ms);
+        }
         let i = slot(kind)?;
         let fd = {
             let sel = lock(&self.shared);
@@ -362,38 +375,24 @@ impl Dispatch<WlDataDevice, ()> for ReaderState {
             wl_data_device::Event::Selection { id } => {
                 new_offer(state, NHSHELL_SEL_CLIPBOARD, id.map(Offer::Data))
             }
-            // drag and drop is W2's: an offer that enters is not taken, but the drag is noted (popups take no grab)
-            wl_data_device::Event::Enter { id, .. } => {
-                state.shared.dragging.store(true, Ordering::Release);
-                if let Some(offer) = id {
-                    offer.destroy();
-                }
-            }
-            wl_data_device::Event::Leave | wl_data_device::Event::Drop => {
-                state.shared.dragging.store(false, Ordering::Release)
-            }
+            // drag and drop (`dnd.rs`)
+            wl_data_device::Event::Enter {
+                serial,
+                surface,
+                x,
+                y,
+                id,
+            } => state.dnd_enter(serial, &surface, x, y, id),
+            wl_data_device::Event::Motion { time, x, y } => state.dnd_motion(time, x, y),
+            wl_data_device::Event::Leave => state.dnd_leave(),
+            wl_data_device::Event::Drop => state.dnd_drop(),
             _ => {}
         }
     }
 
     event_created_child!(ReaderState, WlDataDevice, [
-        wl_data_device::EVT_DATA_OFFER_OPCODE => (WlDataOffer, OfferTypes::default()),
+        wl_data_device::EVT_DATA_OFFER_OPCODE => (WlDataOffer, DataOfferData::default()),
     ]);
-}
-
-impl Dispatch<WlDataOffer, OfferTypes> for ReaderState {
-    fn event(
-        _: &mut Self,
-        _: &WlDataOffer,
-        event: wl_data_offer::Event,
-        types: &OfferTypes,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let wl_data_offer::Event::Offer { mime_type } = event {
-            types.add(mime_type);
-        }
-    }
 }
 
 impl Dispatch<WlDataSource, ()> for ReaderState {
