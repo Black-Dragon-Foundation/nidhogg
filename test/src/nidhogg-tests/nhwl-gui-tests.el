@@ -2056,3 +2056,130 @@ commit applies the move."
                  (should (eql (nhwl-gui--get (car gs) :applied_by) (plist-get (car roots) :seq)))
                  (should (eql (nhwl-gui--get (car cs) :applied_by) (plist-get (car roots) :seq))))))
          (when (frame-live-p g) (delete-frame g t)))))))
+
+;; Task 17: keyboard focus in child frames (W1-7).  Wayland gives the keyboard to the top-level only; the glue routes
+;; its keys to the frame of its tree that Emacs focused.  `last-event-frame' names the frame a key was read in, the
+;; frame whose selected window the command loop inserts into.
+
+(defun nhwl-gui--key-frame (char)
+  "Type CHAR on the recorder's keyboard; the frame Emacs read it in, or nil when it never came."
+  (gui-runner-recorder (list :cmd "key" :text (string char)))
+  (let ((deadline (+ (float-time) 2)) (got nil))
+    (while (and (not got) (< (float-time) deadline))
+      (when (eql (read-event nil nil 0.05) char)
+        (setq got last-event-frame)))
+    got))
+
+(defun nhwl-gui--with-focused-child (fn &rest params)
+  "Call FN with a shown child frame (PARAMS first) and its parent, after `select-frame-set-input-focus' on the child
+while the top-level has the keyboard.  Delete the child and focus the parent after."
+  (let ((parent (selected-frame)) (before (nhwl-gui--sub-ids)) (buf (generate-new-buffer " *nhwl-focus*")) (c nil))
+    (unwind-protect
+        (progn
+          (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
+          (setq c (apply #'nhwl-gui--child params))
+          (set-window-buffer (frame-root-window c) buf)
+          (should (nhwl-gui--child-node before))
+          (nhwl-gui--pump)
+          (select-frame-set-input-focus c)
+          (nhwl-gui--pump)
+          (funcall fn c parent))
+      (when (frame-live-p c) (delete-frame c t))
+      (when (frame-live-p parent) (select-frame-set-input-focus parent))
+      (kill-buffer buf))))
+
+(ert-deftest nhwl-gui/keys-go-to-the-focused-child ()
+  "W1-7: the top-level's keys go to the child frame Emacs focused."
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--with-focused-child
+   (lambda (c _parent)
+     (should (eq (nhwl-gui--key-frame ?x) c)))))
+
+(ert-deftest nhwl-gui/child-focus-returns-on-delete ()
+  "Review Focus 5: keys go to the focused child, and once it is deleted to its parent, never to a dead frame."
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--with-focused-child
+   (lambda (c parent)
+     (should (eq (nhwl-gui--key-frame ?x) c))
+     (delete-frame c t)
+     (let ((f (nhwl-gui--key-frame ?y)))
+       (should (eq f parent))
+       (should (frame-live-p f))))))
+
+(ert-deftest nhwl-gui/child-focus-returns-on-hide ()
+  "Hiding the focused child frame gives its keys back to its parent."
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--with-focused-child
+   (lambda (c parent)
+     (should (eq (nhwl-gui--key-frame ?x) c))
+     (make-frame-invisible c t)
+     (should (eq (nhwl-gui--key-frame ?y) parent)))))
+
+(ert-deftest nhwl-gui/no-accept-focus-child-never-takes-keys ()
+  "A `no-accept-focus' child frame takes no keys: not when focused, not when clicked."
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--with-focused-child
+   (lambda (c parent)
+     (should (eq (nhwl-gui--key-frame ?x) parent))
+     ;; the recorder's pointer moves over the surface with the keyboard
+     (let ((id (plist-get (car (last (nhwl-gui--subs))) :id)))
+       (gui-runner-recorder (list :cmd "focus" :surface id))
+       (gui-runner-recorder '(:cmd "pointer" :pos [10 10]))
+       (gui-runner-recorder '(:cmd "button" :button 272 :state "press"))
+       (gui-runner-recorder '(:cmd "button" :button 272 :state "release"))
+       (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
+       (nhwl-gui--pump))
+     (should-not (eq (nhwl-gui--key-frame ?y) c)))
+   '(no-accept-focus . t)))
+
+(ert-deftest nhwl-gui/click-focuses-the-child ()
+  "As on X11 and pgtk: a press in a child frame gives it the top-level's keys."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((parent (selected-frame)) (before (nhwl-gui--sub-ids)) (c nil))
+    (unwind-protect
+        (progn
+          (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
+          (setq c (nhwl-gui--child))
+          (let ((id (plist-get (nhwl-gui--child-node before) :id)))
+            (should id)
+            (nhwl-gui--pump)
+            (should (eq (nhwl-gui--key-frame ?x) parent))
+            (gui-runner-recorder (list :cmd "focus" :surface id))
+            (gui-runner-recorder '(:cmd "pointer" :pos [10 10]))
+            (gui-runner-recorder '(:cmd "button" :button 272 :state "press"))
+            (gui-runner-recorder '(:cmd "button" :button 272 :state "release"))
+            (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
+            (nhwl-gui--pump)
+            (should (eq (nhwl-gui--key-frame ?y) c))))
+      (when (frame-live-p c) (delete-frame c t))
+      (when (frame-live-p parent) (select-frame-set-input-focus parent)))))
+
+(ert-deftest nhwl-gui/vertico-posframe-pattern ()
+  "A minibuffer-only child frame focused during `read-string': the keys reach its minibuffer, RET returns the string."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let* ((parent (selected-frame))
+         (before (nhwl-gui--sub-ids))
+         (mf (make-frame `((parent-frame . ,parent) (minibuffer . only) (left . 40) (top . 30) (width . 40)
+                           (height . 1) (undecorated . t))))
+         (frames nil) (result nil)
+         (setup (lambda ()
+                  (select-frame-set-input-focus mf)
+                  (dolist (ch '("a" "b" "c")) (gui-runner-recorder (list :cmd "key" :text ch)))
+                  (gui-runner-recorder '(:cmd "key" :keycode 28 :state "press"))
+                  (gui-runner-recorder '(:cmd "key" :keycode 28 :state "release"))))
+         (post (lambda () (push last-event-frame frames))))
+    (unwind-protect
+        (progn
+          (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
+          (should (nhwl-gui--child-node before))
+          (nhwl-gui--pump)
+          (add-hook 'minibuffer-setup-hook setup)
+          (add-hook 'post-command-hook post)
+          (setq result (with-timeout (5 'timeout) (with-selected-frame mf (read-string "nhwl: "))))
+          (should (equal result "abc"))
+          (should frames)
+          (should (seq-every-p (lambda (f) (eq f mf)) frames)))
+      (remove-hook 'minibuffer-setup-hook setup)
+      (remove-hook 'post-command-hook post)
+      (when (frame-live-p mf) (delete-frame mf t))
+      (when (frame-live-p parent) (select-frame-set-input-focus parent)))))
