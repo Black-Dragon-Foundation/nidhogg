@@ -46,7 +46,7 @@ scale: `scale120` = 120 x (Xft DPI / 96), and server-side decorations always (`s
 | `move` | `performWindowDragWithEvent:` with the last mouse event | `_NET_WM_MOVERESIZE` | fits |
 | `resize` | no client-started edge resize: no-op (the system border resizes) | `_NET_WM_MOVERESIZE` with the edge | fits |
 | `show_menu` | no window menu: no-op | `_GTK_SHOW_WINDOW_MENU`, or no-op | fits |
-| `ack_configure` | no configure handshake: no-op (`CONFIGURE` events come from `windowDidResize:`) | answers `_NET_WM_SYNC_REQUEST` with that serial, or no-op | fits |
+| `ack_configure` (serial, flags: `ACK_CONTENT` for an ack that changes what the window shows), `present_bare` | no configure handshake: no-op (`CONFIGURE` events come from `windowDidResize:`) | answers `_NET_WM_SYNC_REQUEST` with that serial, or no-op | fits |
 | `set_cursor` | `NSCursor` set | cursor font via `ChangeWindowAttributes` | fits |
 | `window_activate` | `activateIgnoringOtherApps:` (the token is ignored) | `_NET_ACTIVE_WINDOW` (the token is the startup id) | fits |
 | `window_scale` | `backingScaleFactor` x 120 (120 or 240) | 120 x Xft DPI ratio | fits |
@@ -57,7 +57,7 @@ scale: `scale120` = 120 x (Xft DPI / 96), and server-side decorations always (`s
 | events: `KEY`, `MODIFIERS`, `BUTTON`, `POINTER_*`, `SCROLL` | `keyDown:` (`keyCode`, `characters`), `flagsChanged:`, mouse and `scrollWheel:` (`v120` 0, the precise deltas in `dx`, `dy`) | XInput2 key and button events through xkb (`v120` from wheel buttons) | fits |
 | events: `CONFIGURE`, `CLOSE`, `SCALE`, `FOCUS` | `windowDidResize:`, `windowShouldClose:`, `windowDidChangeBackingProperties:`, `windowDidBecomeKey:` | `ConfigureNotify`, `WM_DELETE_WINDOW`, an Xft DPI change, `FocusIn` | fits |
 | events: `FRAME_DONE` | the display link (`presented_ns` 0 unless known) | after `XShmPutImage` completes (`presented_ns` 0) | fits |
-| events: `FRAME_READY` (21), `window_dirty`, `window_ready` | the display link: ready when the layer may show the next bitmap (always, once drawn) | idle after `XShmCompletion` of the last put | fits |
+| events: `FRAME_READY` (21), `window_dirty`, `window_ready` (bits `READY_CONTENT`, `READY_OWED`) | the display link: ready when the layer may show the next bitmap (always, once drawn) | idle after `XShmCompletion` of the last put | fits |
 | events: `OUTPUT_ADD`, `OUTPUT_REMOVE` | `NSScreen` and `didChangeScreenParameters` | RandR monitors | fits |
 | events: `DISCONNECTED` | never sent | connection error | fits |
 | `selection_own`, `selection_disown`, `selection_owned` | `NSPasteboard` `declareTypes:owner:` with the copied bytes per type; no system primary selection, so `PRIMARY` stays inside the process | `SetSelectionOwner` on `CLIPBOARD` or `PRIMARY`, answering `SelectionRequest` from the copy (INCR for large data) | fits |
