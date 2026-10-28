@@ -12,6 +12,10 @@ parameters only, so it knows nothing of the program that embeds it.
     libpng. It brings `fdeflate`, `flate2` (with `miniz_oxide`), `crc32fast`, `bitflags`, `adler2`, `simd-adler32`
     and `cfg-if`; none starts a thread. `zlib-rs` is locked and vendored as an optional dependency of `flate2` but
     not built.
+  - `gif =0.14.2` (feature `images`, no default features but `std`, without which it is empty): GIF's LZW rasters
+    in safe Rust, instead of giflib. It brings `weezl`; no thread.
+  - `image-webp =0.2.4` (feature `images`, no default features): VP8, VP8L and ALPH decoding in safe Rust, instead
+    of libwebp. It brings `byteorder-lite` and `quick-error`; no thread.
 - Builds are offline and locked: `cargo build --release --offline --locked`, with `CARGO_HOME` inside the build
   directory, never `~/.cargo`.
 - `panic = "unwind"`: every `extern "C"` body runs inside `ffi_guard` and returns `GLITNIR_E_PANIC` (-1) on a panic.
@@ -94,6 +98,24 @@ alphas are all 0 or 255 makes a mask, any other alpha is composited over the cal
 the 16-bit strip. `tRNS` and `bKGD` are read as libpng reads them (lengths, order, CRC). libpng composites in linear
 light when the file carries `gAMA`, `sRGB`, `iCCP` or `cICP`; such an image with alpha to composite returns
 `GLITNIR_IMG_E_HOST`, and the host decodes it itself. Error texts are the crate's.
+
+GIF (`images/gif.rs`) reads the file's records as giflib's `DGifSlurp` does (its error texts and quirks: an
+extension's continuation sub-blocks, a code size over 8, a missing trailer, a frame outside the screen checked after
+the whole file is read) with a walker of its own, and decodes each frame's raster with the `gif` crate's `Decoder`
+over a one-frame file built from the frame's bytes: the crate's `FrameDecoder` loops forever on LZW data that ends
+early, so it is not used. Frames are composed by a port of the host's GIF loader: the frame background outside frame
+0, disposal (none, background, previous), transparency, the delay and the extension blocks (returned as
+function, length, bytes triples). WebP (`images/webp.rs`) decodes a still with `image-webp` and composites it over
+the background with the host's single-precision formula; an animation's container is read as `WebPDemux` reads it,
+each frame's chunks are decoded as a still image of their own (`image-webp`'s own animation path composites with
+the file's background hint, libwebp's does not), and the canvas is built by a port of libwebp's `anim_decode.c`
+(key frames, `BlendPixelNonPremult` checked against every alpha pair, dispose to background; `images/anim.rs`).
+
+Animations: the crate keeps no state between calls. When the caller sets `keep`, the decode returns its animation
+state (`out.anim`, an opaque pointer with its size in `anim_bytes`) and the next call may hand it back in
+`params.anim` (the call then owns it, also when it fails; `data` may be NULL) to decode the next frame from the
+current one, as the C cores' caches do; `glitnir_img_anim_free` frees one the caller drops. An animation has at most
+`MAX_FRAMES` (2^18) frames; more fail as an allocation would.
 
 ## Limits
 

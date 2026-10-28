@@ -24,6 +24,29 @@
 
 ;; Run by nidhogg/test/gui.sh (gui-runner.el loads every *-gui-tests.el).
 
+;; Gate 53 (OT7) runs the image suites twice: as they are, and with
+;; NH_IMAGE_RUST=1 (gui.sh --env), which turns Glitnir's Rust decoders on
+;; for the whole session: `nidhogg-workers-image-rust' becomes every type
+;; the build has one for.  The flagged loaders then decode in Rust, and
+;; the rows that compare them with today's loaders compare the Rust
+;; decoders with libpng, giflib and libwebp.
+(defvar nidhogg-workers-image-rust)
+(when (and (getenv "NH_IMAGE_RUST")
+           (fboundp 'nidhogg-workers--test-image-rust))
+  (setq nidhogg-workers-image-rust
+        (plist-get (nidhogg-workers--test-image-rust) :formats)))
+
+(defun workers-image-gui--error-key (file log)
+  "What of the loader's LOG for FILE must match between the decoders.
+The text, except where the Rust PNG decoder is on: its error texts are
+the `png' crate's, so a \"PNG error: \" line keeps only that prefix."
+  (if (and (eq (workers-image-gui--type file) 'png)
+           (boundp 'nidhogg-workers-image-rust)
+           (memq 'png nidhogg-workers-image-rust)
+           (string-prefix-p "PNG error: " log))
+      "PNG error: "
+    log))
+
 (defvar workers-image-gui--dir
   (file-name-as-directory
    (or (getenv "NH_WORKERS_FIXTURES")
@@ -124,7 +147,8 @@ Value: (DIGEST LISP-DATA CORNERS FAILED LOG)."
                (f (workers-image-gui--load spec nil)))
           (should (nth 3 l))
           (should (nth 3 f))
-          (should (equal (nth 4 l) (nth 4 f)))
+          (should (equal (workers-image-gui--error-key file (nth 4 l))
+                         (workers-image-gui--error-key file (nth 4 f))))
           (push (cons (list file bg index) (nth 4 l)) texts))))
     (when-let ((out (getenv "NH_RECORD_ORACLE")))
       (let ((golden
@@ -152,6 +176,23 @@ Value: (DIGEST LISP-DATA CORNERS FAILED LOG)."
             (insert golden))
           (with-temp-file (expand-file-name "oracle-errors-golden.eld" out)
             (insert errors-golden)))))))
+
+(ert-deftest workers-gui/image-rust-in-use ()
+  ;; Gate 53's second run: the loaders really decode in Rust (PNG, GIF
+  ;; and WebP from the corpus), and nothing goes back to the C cores.
+  (skip-unless (and (display-graphic-p) (getenv "NH_IMAGE_RUST")
+                    (fboundp 'nidhogg-workers--test-image-rust)))
+  (let ((types (plist-get (nidhogg-workers--test-image-rust) :formats)))
+    (should (equal types nidhogg-workers-image-rust))
+    (nidhogg-workers--test-image-rust t)
+    (dolist (file '("oracle-rgba-alpha.png" "oracle-anim-transparent.gif"
+                    "oracle-lossy-alpha.webp"))
+      (when (memq (workers-image-gui--type file) types)
+        (should-not (nth 3 (workers-image-gui--load
+                            (workers-image-gui--spec file nil nil) nil)))))
+    (let ((stats (nidhogg-workers--test-image-rust)))
+      (should (= (plist-get stats :decoded) (length types)))
+      (should (= (plist-get stats :handed-back) 0)))))
 
 ;;; Task 29: pending entries, the display path, landing.  The rows wait
 ;;; on events (pause points, `--test-await-landed'), never on time.

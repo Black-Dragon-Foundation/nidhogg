@@ -316,11 +316,9 @@ pub fn decode(data: &[u8], p: &Params) -> Result<Image, Error> {
         }
     });
     Ok(Image {
-        pixels,
         mask,
-        width: w as i32,
-        height: h as i32,
         bkgd,
+        ..Image::still(pixels, w as i32, h as i32)
     })
 }
 
