@@ -2349,6 +2349,7 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	      clear_mouse_face (hlinfo);
 	      if (FRAME_DISPLAY_INFO (f)->last_mouse_frame == f)
 		FRAME_DISPLAY_INFO (f)->last_mouse_frame = NULL;
+	      nhwl_csd_leave (f);
 	    }
 	  break;
 
