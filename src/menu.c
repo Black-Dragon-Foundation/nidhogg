@@ -1408,6 +1408,11 @@ x_popup_menu_1 (Lisp_Object position, Lisp_Object menu)
      such a frame cannot display menus.  */
   if (!FRAME_INITIAL_P (f))
     {
+#ifdef HAVE_NHWL
+      if (FRAME_NHWL_P (f))
+	selection = nhwl_popup_menu (f, position, menu);
+      else
+#endif
       if (FRAME_TERMCAP_P (f) && !NILP (Vx_popup_menu_function))
 	selection  = calln (Vx_popup_menu_function, position, menu);
       else

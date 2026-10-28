@@ -89,6 +89,7 @@ listed here as a no-op with its reason (`frame-parameter` returns what was set e
 | `name`, `title` | the window's title (`xdg_toplevel.set_title`) and our title bar |
 | `visibility` | shown or hidden; `icon` minimizes |
 | `parent-frame`, `z-group` (child frames), `no-accept-focus` | child frames (sync subsurfaces) and their stacking; a `no-accept-focus` child never takes its tree's keys |
+| `nhwl-popup` (Nidhogg's own, with `parent-frame`, at creation) | the frame is a popup frame, the window of a menu level: an `xdg_popup` of the parent's window, made when the frame is shown and destroyed when it is hidden (its popup frames first). The value is `(X Y W H . PLIST)`, the rectangle it sits beside in device pixels of the parent's native area; PLIST has `:gravity` (`bottom-right` by default, or `top`, `bottom`, `left`, `right`, `top-left`, `bottom-left`, `top-right`), `:adjust` (a list of `flip-x`, `flip-y`, `slide-x`, `slide-y`; all by default) and `:grab` (it takes the keyboard and pointer, so a click elsewhere dismisses it). A new X or Y moves the shown popup; the other fields apply when it is shown next. A resize gives the popup the new size. Keys and pointer events on it go to its frame; the keyboard moving between a top-level and its own popups is no focus change for Emacs. The compositor dismissing it is a `delete-frame` event for the frame |
 | `auto-raise`, `auto-lower`, `unsplittable` | generic |
 | `mouse-color` | no-op: a compositor's cursor (`wp_cursor_shape_v1`) has no colour |
 | `icon-name` | no-op: Wayland has no icon title |
