@@ -871,6 +871,12 @@ nhwl_draw_glyph_string_box (struct glyph_string *s)
 
   get_glyph_string_clip_rect (s, &clip_rect);
 
+  /* PD's keys (:corner-radius, :open): Glitnir's box.  */
+  if (s->face->box != FACE_SIMPLE_BOX)
+    nhwl_setup_relief_colors (s);
+  if (glitnir_decor_draw_box (s, left_x, top_y, right_x, bottom_y, hwidth,
+			      vwidth, left_p, right_p, &clip_rect))
+    return;
   if (s->face->box == FACE_SIMPLE_BOX)
     nhwl_draw_box_rect (s, left_x, top_y, right_x, bottom_y, hwidth,
 			vwidth, left_p, right_p, &clip_rect);
@@ -2015,6 +2021,125 @@ nhwl_clip_to_row (struct window *w, struct glyph_row *row,
   cairo_clip (cr);
 }
 
+/* The device-grid mask of a fringe bitmap pattern at one scale, kept on the
+   pattern (cairo_pattern_set_user_data), so that destroying the pattern
+   frees it.  From P1.5 Task 26 (glitnir-pgtk.c, gl15-i2f3).  */
+struct fringe_mask
+{
+  uint32_t scale120;
+  cairo_surface_t *surface;	/* A8, the bitmap's size at the scale */
+};
+
+static cairo_user_data_key_t fringe_mask_key;
+
+static void
+fringe_mask_free (void *p)
+{
+  struct fringe_mask *m = p;
+
+  cairo_surface_destroy (m->surface);
+  xfree (m);
+}
+
+/* The A8 mask of PATTERN's A1 bitmap at SCALE120, from the pattern's cache
+   or made now; NULL on failure.  */
+static cairo_surface_t *
+fringe_mask_get (cairo_pattern_t *pattern, uint32_t scale120)
+{
+  struct fringe_mask *m = cairo_pattern_get_user_data (pattern,
+						       &fringe_mask_key);
+  cairo_surface_t *src, *mask;
+  int w, h, dw, dh;
+
+  if (m && m->scale120 == scale120)
+    return m->surface;
+  if (cairo_pattern_get_surface (pattern, &src) != CAIRO_STATUS_SUCCESS)
+    return NULL;
+  w = cairo_image_surface_get_width (src);
+  h = cairo_image_surface_get_height (src);
+  dw = glitnir_stable_origin (w, scale120);
+  dh = glitnir_stable_origin (h, scale120);
+  if (dw <= 0 || dh <= 0)
+    return NULL;
+  mask = cairo_image_surface_create (CAIRO_FORMAT_A8, dw, dh);
+  cairo_surface_flush (src);
+  if (cairo_surface_status (mask) != CAIRO_STATUS_SUCCESS
+      || (glitnir_mask_to_device
+	  (cairo_image_surface_get_data (src),
+	   cairo_image_surface_get_stride (src), w, h,
+	   cairo_image_surface_get_format (src) == CAIRO_FORMAT_A1, scale120,
+	   cairo_image_surface_get_data (mask),
+	   cairo_image_surface_get_stride (mask)) != GLITNIR_OK))
+    {
+      cairo_surface_destroy (mask);
+      return NULL;
+    }
+  cairo_surface_mark_dirty (mask);
+  /* Replacing the user data frees the mask of the former scale.  */
+  m = xmalloc (sizeof *m);
+  m->scale120 = scale120;
+  m->surface = mask;
+  if (cairo_pattern_set_user_data (pattern, &fringe_mask_key, m,
+				   fringe_mask_free) != CAIRO_STATUS_SUCCESS)
+    {
+      fringe_mask_free (m);
+      return NULL;
+    }
+  return mask;
+}
+
+/* Draw bitmap P (after its background) at the frame's scale s, centred
+   where the stock code would draw it at 1 to 1: a device-pixel frame's
+   bitmap is s times as many pixels, on the device grid (P1.5 Task 26).
+   Only while it fits its fringe (a fringe as wide as the bitmap keeps it
+   1 to 1, as X11 does at a high DPI); false then, and the stock code
+   draws.  CR is clipped to the row.  */
+static bool
+nhwl_draw_fringe_scaled (struct window *w, struct draw_fringe_bitmap_params *p,
+			 cairo_t *cr, unsigned long fg, unsigned long bg)
+{
+  struct frame *f = XFRAME (WINDOW_FRAME (w));
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  bool left = p->x < window_box_left (w, TEXT_AREA);
+  int fw = left ? WINDOW_LEFT_FRINGE_WIDTH (w) : WINDOW_RIGHT_FRINGE_WIDTH (w);
+  double s = (out->scale120 ? out->scale120 : 120) / 120.0;
+  double k = p->wd > 0 ? min (s, (double) fw / p->wd) : 1;
+  uint32_t k120 = lround (k * 120);
+  cairo_surface_t *mask;
+  int bh, x0, y0, col;
+
+  if (k120 <= 120 || !fringe_bmp[p->which])
+    return false;
+  mask = fringe_mask_get (fringe_bmp[p->which], k120);
+  if (!mask)
+    return false;
+  /* The bitmap's whole height, its top at P's first row less the rows
+     cut off above (dh), and its centre kept.  */
+  bh = p->h + p->dh;
+  {
+    cairo_surface_t *src;
+
+    if (cairo_pattern_get_surface (fringe_bmp[p->which], &src)
+	== CAIRO_STATUS_SUCCESS)
+      bh = cairo_image_surface_get_height (src);
+  }
+  x0 = p->x + (p->wd - cairo_image_surface_get_width (mask)) / 2;
+  y0 = p->y - p->dh + (bh - cairo_image_surface_get_height (mask)) / 2;
+  col = left ? p->x - (fw - p->wd) / 2 : p->x - (fw - p->wd + 1) / 2;
+  cairo_rectangle (cr, col, p->y, fw, p->h);
+  cairo_clip (cr);
+  if (!p->overlay_p)
+    {
+      /* The stock code fills the bitmap's cell in the background.  */
+      nhwl_set_cr_source_with_color (f, bg, true);
+      cairo_paint (cr);
+    }
+  nhwl_set_cr_source_with_color (f, fg, false);
+  cairo_mask_surface (cr, mask, x0, y0);
+  nhwl_damage (f, col, p->y, fw, p->h);
+  return true;
+}
+
 void
 nhwl_draw_fringe_bitmap (struct window *w, struct glyph_row *row,
 			 struct draw_fringe_bitmap_params *p)
@@ -2053,8 +2178,9 @@ nhwl_draw_fringe_bitmap (struct window *w, struct glyph_row *row,
 			   : FRAME_X_OUTPUT (f)->cursor_color)
 			: face->foreground);
       gcv.background = face->background;
-      nhwl_cr_draw_image (f, &gcv, fringe_bmp[p->which], 0, p->dh,
-			  p->wd, p->h, p->x, p->y, p->overlay_p);
+      if (!nhwl_draw_fringe_scaled (w, p, cr, gcv.foreground, gcv.background))
+	nhwl_cr_draw_image (f, &gcv, fringe_bmp[p->which], 0, p->dh,
+			    p->wd, p->h, p->x, p->y, p->overlay_p);
     }
 
   nhwl_end_cr_clip (f);
@@ -2178,6 +2304,7 @@ nhwl_glitnir_scroll (struct frame *f, struct window *w, int x, int from_y,
 					   to_y - from_y });
 
   nhwl_glitnir_ensure (f);
+  glitnir_decor_scrolled (f, w, x, top, width, bottom - top, to_y - from_y);
   glitnir_scroll (out->glitnir_id, (uint64_t) (uintptr_t) w, area,
 		  to_y - from_y, exposed);
 }
@@ -2239,6 +2366,9 @@ nhwl_damage_glyphs (struct glyph_string *s)
   if (s->extends_to_end_of_line_p)
     x1 = max (x1, clip.x + (int) clip.width);
   nhwl_damage (s->f, x0, clip.y, x1 - x0, clip.height);
+  /* PD: rounded neighbours' corners, and the label anchors S covers.  */
+  glitnir_decor_after_glyphs (s);
+  glitnir_decor_record (s);
 }
 
 /* Adapted from glitnir_pgtk_damage_cursor: a hollow, bar or hbar cursor
@@ -2331,6 +2461,43 @@ nhwl_glitnir_ensure (struct frame *f)
       out->nhist = 0;
       out->npending = 0;
     }
+}
+
+/* Whether Glitnir's decorations draw on F: a frame of the shell with a
+   scene, not a tooltip, while `glitnir-enable' is on.  */
+bool
+nhwl_glitnir_active_p (struct frame *f)
+{
+  return (glitnir_enable && FRAME_NHWL_P (f) && f->output_data.nhwl
+	  && !FRAME_TOOLTIP_P (f) && FRAME_NHWL_OUTPUT (f)->glitnir_id);
+}
+
+/* Where F's Glitnir layer starts, in F's pixels (device pixels): the
+   backing's top-left, before the title bar or margins, or the native
+   area for a child frame with chrome (nhwl_child_layer_update).  */
+void
+nhwl_layer_origin (struct frame *f, int *x, int *y)
+{
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+
+  if (nhwl_child_p (f) && out->child.chrome)
+    *x = *y = 0;
+  else
+    *x = -out->csd.l, *y = -out->csd.t;
+}
+
+/* The scene and layer window W's decorations go to (glitnir-decor.c):
+   F's root and its one layer, at scale 1 (F's pixels are the device's).
+   False when Glitnir's decorations do not draw on F.  */
+bool
+nhwl_decor_target (struct frame *f, struct window *w, uint64_t *root,
+		   uint64_t *layer, double *sx, double *sy)
+{
+  if (!nhwl_glitnir_active_p (f))
+    return false;
+  *root = *layer = FRAME_NHWL_OUTPUT (f)->glitnir_id;
+  *sx = *sy = 1;
+  return true;
 }
 
 /* F is gone: Glitnir forgets its scene and damage.  */

@@ -21,6 +21,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #ifdef HAVE_GLITNIR
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "lisp.h"
@@ -32,17 +33,43 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "nhwlterm.h"
 #endif
 
+/* True when the :box plist entry KEY VALUE is one of Glitnir's decoration keys
+   (:corner-radius, :open, :label) with a valid value.  Built on every Glitnir
+   build, so the other displays accept the keys (and ignore them).  */
+
+bool
+glitnir_box_key_ok (Lisp_Object key, Lisp_Object value)
+{
+  if (EQ (key, QCcorner_radius))
+    return (FIXNUMP (value) ? XFIXNUM (value) >= 0
+	    : FLOATP (value) && XFLOAT_DATA (value) >= 0);
+  if (EQ (key, QCopen))
+    {
+      Lisp_Object tem = value;
+      for (; CONSP (tem); tem = XCDR (tem))
+	if (!(EQ (XCAR (tem), Qtop) || EQ (XCAR (tem), Qbottom)
+	      || EQ (XCAR (tem), Qleft) || EQ (XCAR (tem), Qright)))
+	  return false;
+      return NILP (tem);
+    }
+  if (EQ (key, QClabel))
+    return STRINGP (value);
+  return false;
+}
+
 DEFUN ("glitnir-active-p", Fglitnir_active_p, Sglitnir_active_p, 0, 1, 0,
        doc: /* Return non-nil if Glitnir (the compositor) draws FRAME.
 FRAME defaults to the selected frame.  Only graphical frames of the pgtk
-build that draw on an image surface can be drawn by Glitnir, and only
-while `glitnir-enable' is non-nil; batch, terminal and tooltip frames
-never are.  */)
+build that draw on an image surface, and frames of the native Wayland
+shell, can be drawn by Glitnir, and only while `glitnir-enable' is
+non-nil; batch, terminal and tooltip frames never are.  */)
   (Lisp_Object frame)
 {
   struct frame *f = decode_live_frame (frame);
 #ifdef HAVE_PGTK
   return glitnir_pgtk_active_p (f) ? Qt : Qnil;
+#elif defined HAVE_NHWL
+  return nhwl_glitnir_active_p (f) ? Qt : Qnil;
 #else
   (void) f;
   return Qnil;
@@ -625,9 +652,148 @@ disarms.  Refused unless `glitnir-debug' is non-nil.  Return non-nil.  */)
 #endif
 }
 
+DEFUN ("glitnir--probe", Fglitnir__probe, Sglitnir__probe, 3, 4, 0,
+       doc: /* Measure a picture; KIND is `edges', `rule' or `seams'.
+RAW is (WIDTH HEIGHT BYTES) as (glitnir-snapshot FRAME 'raw) returns it;
+REGION is (X Y WIDTH HEIGHT) inside it.  ARG is the rule's orientation
+(`vertical' or `horizontal') for `rule', and for `seams' the fill colour
+as an integer 0xAARRGGBB, or (COLOUR . INSET) to leave INSET pixels at
+the region's edges out.  Return a plist: (:spread :contrast :runs) for
+`edges', (:width :peak :mass) for `rule', (:count) for `seams'.  */)
+  (Lisp_Object kind, Lisp_Object raw, Lisp_Object region, Lisp_Object arg)
+{
+  if (!SYMBOLP (kind)
+      || !(EQ (kind, intern_c_string ("edges"))
+	   || EQ (kind, intern_c_string ("rule"))
+	   || EQ (kind, intern_c_string ("seams"))))
+    error ("glitnir--probe: KIND must be `edges', `rule' or `seams'");
+  CHECK_CONS (raw);
+  Lisp_Object lw = XCAR (raw), rest = XCDR (raw);
+  CHECK_FIXNUM (lw);
+  CHECK_CONS (rest);
+  Lisp_Object lh = XCAR (rest), bytes = XCAR (XCDR (rest));
+  CHECK_FIXNUM (lh);
+  CHECK_STRING (bytes);
+  EMACS_INT w = XFIXNUM (lw), h = XFIXNUM (lh);
+  if (w <= 0 || h <= 0 || w > INT32_MAX / 4 || h > INT32_MAX / 4
+      || w * h > INT32_MAX / 4)
+    args_out_of_range (lw, lh);
+  if (SBYTES (bytes) < 4 * w * h)
+    args_out_of_range (bytes, make_fixnum (4 * w * h));
+  CHECK_CONS (region);
+  EMACS_INT rv[4];
+  Lisp_Object tail = region;
+  for (int i = 0; i < 4; i++)
+    {
+      CHECK_CONS (tail);
+      CHECK_FIXNUM (XCAR (tail));
+      rv[i] = XFIXNUM (XCAR (tail));
+      tail = XCDR (tail);
+    }
+  if (rv[2] <= 0 || rv[3] <= 0 || rv[0] < 0 || rv[1] < 0
+      || rv[0] + rv[2] > w || rv[1] + rv[3] > h)
+    args_out_of_range (region, raw);
+#ifdef HAVE_NHWL
+  /* The shell links the crate: the probes are plain calls.  */
+  GlitnirRect r = { rv[0], rv[1], rv[2], rv[3] };
+  const uint8_t *px = (const uint8_t *) SDATA (bytes);
+  int32_t rc;
+  if (EQ (kind, intern_c_string ("edges")))
+    {
+      GlitnirEdgeStats s;
+      rc = glitnir_probe_edges (px, 4 * w, w, h, r, &s);
+      if (rc != GLITNIR_OK)
+	error ("glitnir--probe: failed (%d)", rc);
+      return listn (6, intern_c_string (":spread"), make_float (s.spread_px),
+		    intern_c_string (":contrast"), make_float (s.contrast),
+		    intern_c_string (":runs"), make_uint (s.runs));
+    }
+  if (EQ (kind, intern_c_string ("rule")))
+    {
+      bool vertical;
+      if (EQ (arg, intern_c_string ("vertical")))
+	vertical = true;
+      else if (EQ (arg, intern_c_string ("horizontal")))
+	vertical = false;
+      else
+	error ("glitnir--probe: ARG must be `vertical' or `horizontal'");
+      GlitnirRuleStats s;
+      rc = glitnir_probe_rule (px, 4 * w, w, h, r, vertical, &s);
+      if (rc != GLITNIR_OK)
+	error ("glitnir--probe: failed (%d)", rc);
+      return listn (6, intern_c_string (":width"), make_float (s.width),
+		    intern_c_string (":peak"), make_float (s.peak),
+		    intern_c_string (":mass"), make_float (s.mass));
+    }
+  Lisp_Object colour = CONSP (arg) ? XCAR (arg) : arg;
+  Lisp_Object inset = CONSP (arg) ? XCDR (arg) : make_fixnum (0);
+  CHECK_FIXNUM (colour);
+  CHECK_FIXNAT (inset);
+  uint32_t count;
+  rc = glitnir_probe_seams (px, 4 * w, w, h, r, (uint32_t) XFIXNUM (colour),
+			    (uint32_t) XFIXNUM (inset), &count);
+  if (rc != GLITNIR_OK)
+    error ("glitnir--probe: failed (%d)", rc);
+  return list2 (intern_c_string (":count"), make_uint (count));
+#else
+  (void) arg;
+  error ("glitnir--probe: no Glitnir library");
+#endif
+}
+
+#ifdef HAVE_NHWL
+static int
+glitnir_bench_cmp (const void *a, const void *b)
+{
+  uint64_t x = *(const uint64_t *) a, y = *(const uint64_t *) b;
+  return x < y ? -1 : x > y;
+}
+#endif
+
+DEFUN ("glitnir--decor-bench", Fglitnir__decor_bench, Sglitnir__decor_bench,
+       1, 2, 0,
+       doc: /* Time N full redraws of the selected frame; return per-string microseconds.
+Each redraw garbages the frame and redisplays it at once.  STRINGS is the
+number of decorated strings the redraw draws (default 1); the result is
+\(:n N :p50-us A :p95-us B), the redraw times divided by STRINGS, in
+microseconds.  For the decoration cost bench (PD R-D1).  */)
+  (Lisp_Object n, Lisp_Object strings)
+{
+  CHECK_FIXNAT (n);
+  EMACS_INT count = XFIXNUM (n);
+  double per = NILP (strings) ? 1.0 : XFLOATINT (strings);
+  if (count < 1 || count > 100000 || per < 1.0)
+    error ("glitnir--decor-bench: N in 1..100000, STRINGS >= 1");
+#ifdef HAVE_NHWL
+  struct frame *f = SELECTED_FRAME ();
+  uint64_t *t = xmalloc (count * sizeof *t);
+  for (EMACS_INT i = 0; i < count; i++)
+    {
+      SET_FRAME_GARBAGED (f);
+      uint64_t t0 = nhwl_now_ns ();
+      Fredisplay (Qt);
+      t[i] = nhwl_now_ns () - t0;
+    }
+  qsort (t, count, sizeof *t, glitnir_bench_cmp);
+  double p50 = t[(count - 1) / 2] / 1000.0 / per;
+  double p95 = t[(count - 1) * 95 / 100] / 1000.0 / per;
+  xfree (t);
+  return list (intern_c_string (":n"), make_fixnum (count),
+	       intern_c_string (":p50-us"), make_float (p50),
+	       intern_c_string (":p95-us"), make_float (p95));
+#else
+  return Qnil;
+#endif
+}
+
 void
 syms_of_nidhogg_glitnir (void)
 {
+  DEFSYM (QCcorner_radius, ":corner-radius");
+  DEFSYM (QCopen, ":open");
+
+  defsubr (&Sglitnir__probe);
+  defsubr (&Sglitnir__decor_bench);
   defsubr (&Sglitnir__debug_panic);
   defsubr (&Sglitnir__draw_undamaged);
   defsubr (&Sglitnir__compose_with_pending);
