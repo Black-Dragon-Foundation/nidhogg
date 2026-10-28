@@ -1573,6 +1573,9 @@ struct nh_save_job
   struct timespec modtime;	/* the buffer's modtime at the snapshot */
   struct timespec started;	/* CLOCK_MONOTONIC, at the snapshot */
   bool landed;
+  /* A later auto-save skipped the buffer for this hung job, and
+     do-auto-save then counted the buffer's whole text as saved.  */
+  bool skipped_over;
   struct nh_save_job *next;
 };
 
@@ -2021,6 +2024,10 @@ nh_save_land (struct nh_save_job *j)
   /* As a write that took over 60 s does today.  */
   if (nh_save_age_ns (j) > NH_SAVE_HUNG_NS)
     b->auto_save_failure_time = current_timespec ().tv_sec;
+  /* At most the snapshot's text is saved: the next auto-save after the
+     20 minutes writes what the skipped one did not.  */
+  if (j->skipped_over && BUF_AUTOSAVE_MODIFF (b) > j->modiff)
+    BUF_AUTOSAVE_MODIFF (b) = j->modiff;
   if (atomic_load (&j->dropped)
       || (BUF_SAVE_MODIFF (b) >= j->modiff
 	  && timespec_cmp (b->modtime, j->modtime) != 0)
@@ -2181,8 +2188,11 @@ nh_save_auto_save_1 (struct buffer *b, int mode)
       bool live = !atomic_load (&prev->dropped);
       if (live && nh_save_age_ns (prev) > NH_SAVE_HUNG_NS)
 	{
-	  /* As a 60 s write does today: skipped for 20 minutes.  */
+	  /* As a 60 s write does today: skipped for 20 minutes.  But
+	     unlike that write, nothing past the job's snapshot is on its
+	     way: the landing takes back do-auto-save's claim that it is.  */
 	  b->auto_save_failure_time = current_timespec ().tv_sec;
+	  prev->skipped_over = true;
 	  nh_save_warn (b, list2 (Qerror,
 				  build_string ("The previous auto-save has"
 						" not finished in 60 seconds")));
