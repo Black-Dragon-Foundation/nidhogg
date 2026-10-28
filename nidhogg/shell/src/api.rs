@@ -178,10 +178,17 @@ pub trait ShellBackend {
     fn caps(&self) -> NhShellCaps;
 
     /// The next queued event, or `None` when the queue is empty.  After the connection is lost, one `DISCONNECTED`
-    /// event comes out, then `ShellError::Disconnected`.
+    /// event comes out, then `ShellError::Disconnected`.  Once `DISCONNECTED` has been taken, every call but
+    /// `wake_fd`, `caps` and `last_error` returns `Disconnected`, at once; `window_destroy` still frees the window's
+    /// local state.  A bounded wait in progress (a selection read) gives up with `Disconnected` when the loss comes.
     fn next_event(&mut self) -> ShellResult<Option<NhShellEvent>>;
     /// Run the work that must happen on the host's thread (configure and surface events).
     fn dispatch_main(&mut self) -> ShellResult;
+    /// Why the connection ended: a protocol error's text, `INTERFACE@ID: error CODE: MESSAGE`; empty while it lives
+    /// or after a plain hangup.
+    fn last_error(&self) -> String {
+        String::new()
+    }
 
     fn window_new(&mut self, desc: &WindowDesc) -> ShellResult<WindowId> {
         self.window_new_named(desc, None)

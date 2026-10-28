@@ -44,8 +44,8 @@ use reader::ReaderState;
 use registry::Globals;
 use std::collections::HashMap;
 use std::ffi::CStr;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Weak};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::JoinHandle;
 use wayland_client::protocol::wl_compositor::WlCompositor;
@@ -102,13 +102,16 @@ pub struct MainState {
 }
 
 /// The main queue's waker: an event routed into the main queue (by the reader's read) marks it pending and wakes the
-/// host through the same eventfd as the records.
-struct MainWaker(Arc<Shared>);
+/// host through the same eventfd as the records.  It holds the shared state weakly: the queue outlives the shell when
+/// a queued event's object data refers back to the queue, and the shared state's descriptors must not stay with it.
+struct MainWaker(Weak<Shared>);
 
 impl Wake for MainWaker {
     fn wake(self: Arc<Self>) {
-        self.0.main_pending.store(true, Ordering::Release);
-        self.0.wake.signal();
+        if let Some(shared) = self.0.upgrade() {
+            shared.main_pending.store(true, Ordering::Release);
+            shared.wake.signal();
+        }
     }
 }
 
@@ -201,7 +204,7 @@ impl WaylandShell {
             reader_queue.dispatch_pending(&mut rstate).map_err(lost)?;
         }
         let text_input = rstate.text_input.clone();
-        let main_waker = Waker::from(Arc::new(MainWaker(shared.clone())));
+        let main_waker = Waker::from(Arc::new(MainWaker(Arc::downgrade(&shared))));
         let reader =
             reader::spawn(conn.clone(), reader_queue, rstate).map_err(|_| ShellError::NoMem)?;
         let mut shell = WaylandShell {
@@ -239,6 +242,21 @@ impl WaylandShell {
     /// Send the queued requests; a full socket is retried by the reader when it becomes writable.
     pub fn flush(&self) -> ShellResult {
         self.shared.host_flush(&self.conn)
+    }
+
+    /// `Disconnected` once the host has taken `DISCONNECTED`: every call but the wake descriptor, the capabilities and
+    /// the error text starts here.
+    fn live(&self) -> ShellResult {
+        if self.shared.lost() {
+            Err(ShellError::Disconnected)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// `ShellBackend::last_error`.
+    fn last_error_impl(&self) -> String {
+        conn::error_text(&self.conn)
     }
 
     /// A bare surface on the main queue, for tests that need no window; its id is the protocol id.
@@ -293,6 +311,14 @@ impl WaylandShell {
         Ok(())
     }
 
+    /// Test hook: the connection's socket (to drop the connection under a waiting call, as a compositor that goes
+    /// while other clients live on).
+    #[doc(hidden)]
+    pub fn connection_fd(&self) -> i32 {
+        use std::os::fd::AsRawFd;
+        self.conn.backend().poll_fd().as_raw_fd()
+    }
+
     /// Test hook: a flush hit EAGAIN and waits for the reader to retry it.
     #[doc(hidden)]
     pub fn flush_pending(&self) -> bool {
@@ -314,12 +340,19 @@ impl WaylandShell {
     }
 }
 
+/// Closing: the reader is joined, and then what the object graph would keep in a cycle is freed by hand.  A window's
+/// buffers hold their `wl_buffer`s, whose user data holds the window's presenter, and a queued event that no dispatch
+/// will take holds its object's data; so each presenter drops its buffers (unmapped) and its links to the shared state
+/// and its root.  The descriptors (the connection, the eventfds) close with the last owner of each.
 impl Drop for WaylandShell {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Release);
         self.shared.reader_wake.signal();
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
+        }
+        for p in self.main.presents.values() {
+            present::lock(p).release();
         }
     }
 }
