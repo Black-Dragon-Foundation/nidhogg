@@ -1608,6 +1608,87 @@ nhwl_configure (struct frame *f, const NhShellEvent *ev)
     fset_redisplay (f);
 }
 
+/* One scroll record of frame F, as pgtk's scroll_event turns GDK's:
+   wheel records add up to whole 120-unit notches (the fraction stays in
+   the display's accumulator, which a new frame, source or direction
+   resets); finger and continuous records carry their pixel delta in device
+   pixels, for `pixel-scroll-precision-mode'; with
+   `mwheel-coalesce-scroll-events' they add up to whole lines instead; a
+   stop record is a TOUCH_END_EVENT (momentum).  Return the number of
+   events stored.  */
+static int
+nhwl_scroll_record (struct frame *f, const NhShellEvent *ev,
+		    struct input_event *hold_quit)
+{
+  struct nhwl_display_info *d = FRAME_DISPLAY_INFO (f);
+  double scale = nhwl_frame_scale (f);
+  double px = ev->u.scroll.dx * scale, py = ev->u.scroll.dy * scale;
+  bool wheel = ev->u.scroll.v120x || ev->u.scroll.v120y;
+  bool horizontal = wheel ? ev->u.scroll.v120x != 0 : fabs (px) > fabs (py);
+  double *acc = horizontal ? &d->scroll.acc_x : &d->scroll.acc_y;
+  double *other = horizontal ? &d->scroll.acc_y : &d->scroll.acc_x;
+  double delta = wheel ? (horizontal ? ev->u.scroll.v120x : ev->u.scroll.v120y)
+		       : (horizontal ? px : py);
+  double unit = wheel ? 120.0
+    : (horizontal ? FRAME_COLUMN_WIDTH (f) : FRAME_LINE_HEIGHT (f));
+  union buffered_input_event inev;
+  int n, i;
+
+  EVENT_INIT (inev.ie);
+  inev.ie.arg = Qnil;
+  inev.ie.modifiers = nhwl_emacs_modifiers (d->mods);
+  XSETINT (inev.ie.x, (int) d->last_mouse_motion_x);
+  XSETINT (inev.ie.y, (int) d->last_mouse_motion_y);
+  XSETFRAME (inev.ie.frame_or_window, f);
+  inev.ie.timestamp = ev->time_ns / 1000000;
+
+  if (ev->u.scroll.stop)
+    {
+      d->scroll.acc_x = d->scroll.acc_y = 0;
+      inev.ie.kind = TOUCH_END_EVENT;
+      kbd_buffer_store_event_hold (&inev.ie, hold_quit);
+      return 1;
+    }
+  if (delta == 0)
+    return 0;
+
+  if (d->scroll.frame != f || d->scroll.source != ev->u.scroll.source
+      || (*acc != 0 && (*acc < 0) != (delta < 0)))
+    *acc = *other = 0;
+  d->scroll.frame = f;
+  d->scroll.source = ev->u.scroll.source;
+  inev.ie.kind = horizontal ? HORIZ_WHEEL_EVENT : WHEEL_EVENT;
+  inev.ie.modifiers |= delta < 0 ? up_modifier : down_modifier;
+
+  if (!wheel && !mwheel_coalesce_scroll_events)
+    {
+      /* This record's pixel delta, for `pixel-scroll-precision', which
+	 (as on X) takes a negative delta for wheel-down.  */
+      inev.ie.arg = list3 (Qnil, make_float (-px), make_float (-py));
+      kbd_buffer_store_event_hold (&inev.ie, hold_quit);
+      return 1;
+    }
+
+  *acc += delta;
+  n = (int) (fabs (*acc) / unit);
+  if (n == 0)
+    return 0;
+  *acc -= (delta < 0 ? -n : n) * unit;
+  if (mwheel_coalesce_scroll_events)
+    {
+      inev.ie.arg = list3 (make_fixnum (n), make_float (-px), make_float (-py));
+      kbd_buffer_store_event_hold (&inev.ie, hold_quit);
+      return 1;
+    }
+  /* A wheel without coalescing: one event per notch.  */
+  for (i = 0; i < n; i++)
+    {
+      inev.ie.arg = list3 (Qnil, make_float (-px / n), make_float (-py / n));
+      kbd_buffer_store_event_hold (&inev.ie, hold_quit);
+    }
+  return n;
+}
+
 /* Drain DPYINFO's shell events into the keyboard buffer (through
    HOLD_QUIT where Emacs gave one); return the number of events stored.
    Callers hold block_input.  */
@@ -1749,49 +1830,7 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 
 	case NHSHELL_EV_SCROLL:
 	  if (f)
-	    {
-	      struct nhwl_display_info *d = FRAME_DISPLAY_INFO (f);
-	      bool horizontal = ev.u.scroll.v120x != 0
-		|| (ev.u.scroll.v120y == 0 && ev.u.scroll.dx != 0
-		    && fabs (ev.u.scroll.dx) > fabs (ev.u.scroll.dy));
-	      double steps;
-
-	      if (ev.u.scroll.v120x || ev.u.scroll.v120y)
-		steps = horizontal ? ev.u.scroll.v120x / 120.0
-				   : ev.u.scroll.v120y / 120.0;
-	      else
-		steps = horizontal ? ev.u.scroll.dx / 15.0
-				   : ev.u.scroll.dy / 15.0;
-
-	      if (horizontal)
-		d->scroll.acc_x += steps;
-	      else
-		d->scroll.acc_y += steps;
-
-	      {
-		double *acc = horizontal ? &d->scroll.acc_x : &d->scroll.acc_y;
-
-		if (fabs (*acc) >= 1.0)
-		  {
-		    int n = (int) trunc (*acc);
-		    int x = (int) d->last_mouse_motion_x;
-		    int y = (int) d->last_mouse_motion_y;
-
-		    *acc -= n;
-		    inev.ie.kind = horizontal ? HORIZ_WHEEL_EVENT : WHEEL_EVENT;
-		    inev.ie.code = 0;
-		    inev.ie.modifiers
-		      = (nhwl_emacs_modifiers (d->mods)
-			 | (n < 0 ? up_modifier : down_modifier));
-		    XSETINT (inev.ie.x, x);
-		    XSETINT (inev.ie.y, y);
-		    XSETFRAME (inev.ie.frame_or_window, f);
-		    inev.ie.arg = Qnil;
-		    inev.ie.timestamp = ev.time_ns / 1000000;
-		    have = true;
-		  }
-	      }
-	    }
+	    count += nhwl_scroll_record (f, &ev, hold_quit);
 	  break;
 
 	case NHSHELL_EV_CONFIGURE:
