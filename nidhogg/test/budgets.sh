@@ -13,10 +13,21 @@
 #   --resize-steps N  `swaymsg resize' steps (default 200)
 #   --motion-frames N frames of the motion bench (default 600), on --motion-size (default 3840x2160) at scale 1.5 and
 #                     120 Hz; shell only (pgtk has no bench primitive)
+#   --refresh N       the speed sessions' sway output runs at N Hz (default 120; the scroll bar is a 120 Hz bar)
+#   --container fedora-45  accepted and ignored: the script always runs in its own container, and the slot wrappers
+#                     (drgnx-heavy-slot.sh) only start the command on the host, not inside a dev container, when they see this
 #   --out FILE        the plists, one per line (default budgets.eld in the current directory)
 #   --self-test       --runs 1, 1280x720, 3 s windows, 10 resize steps, 30 motion frames; then every line must read
 #                     back as a plist and none may be nil
 #   BUDGETS_MEMORY    the container's memory cap (default 6g); BUDGETS_CPUSET pins it (podman --cpuset-cpus)
+#
+# The speed sessions (V2's three bars, C1, C4) run each side with WAYLAND_DEBUG=client and read the traces with
+# wl-latency.el, so A, B and C are measured alike: key-to-commit and frame intervals.  C is the shell with
+# NHWL_PRESENTER=0 (inline presenting) and only exists on a build with the presenter thread; on an older build the
+# rows that need it are :skipped.  Rows: typing-stall-max, typing-stall-p99, latency-typing, latency-typing-inline,
+# scroll-120-dropped, scroll-120-dropped-inline, scroll-120-presenter-late, main-wait-max, freeze-watchdog,
+# cpu-typing-inline; cpu-scroll is fixed work (CPU seconds).  The -inline rows compare A with C (:c), the rest A with B.
+# The workload runs in the shell's own configuration (-Q); a config cell is the caller's to add.
 #
 # idle-wakeups-blink repeats the idle window with the cursor blinking, so redisplays run.
 # A row is (:row NAME :unit U :a (MEDIAN SD) :b (MEDIAN SD) :verdict pass|fail|equal), lower is better: pass when A is
@@ -32,7 +43,7 @@ checkout=$(cd "$(dirname "$self")/../.." && pwd)
 GUI_SH_SOURCE_ONLY=1; . "$(dirname "$self")/gui.sh"; GUI_SH_SOURCE_ONLY=
 self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")   # gui.sh set its own
 
-pa= pb= scale=1 size=1920x1080 runs=5 out=budgets.eld window=60 steps=200 mframes=600 msize=3840x2160 selftest=0 mode=host
+pa= pb= scale=1 size=1920x1080 runs=5 out=budgets.eld window=60 steps=200 mframes=600 msize=3840x2160 selftest=0 mode=host refresh=120 sscroll=10 fixed=2000 nh_env=() HAS_W3=0
 while [ $# -gt 0 ]; do
   case $1 in
     --prefix-a) pa=${2:-}; shift 2 ;;
@@ -46,6 +57,8 @@ while [ $# -gt 0 ]; do
     --resize-steps) steps=${2:-}; shift 2 ;;
     --motion-frames) mframes=${2:-}; shift 2 ;;
     --motion-size) msize=${2:-}; shift 2 ;;
+    --refresh) refresh=${2:-}; shift 2 ;;
+    --container) [ "${2:-}" = fedora-45 ] || { echo "budgets.sh: only --container fedora-45" >&2; exit 2; }; shift 2 ;;
     --self-test) selftest=1; shift ;;
     --in-container) mode=container; shift ;;
     --session) mode=session; shift ;;
@@ -53,11 +66,12 @@ while [ $# -gt 0 ]; do
     *) echo "budgets.sh: unknown argument $1" >&2; exit 2 ;;
   esac
 done
-if [ "$selftest" = 1 ]; then runs=1 size=1280x720 window=3 steps=10 mframes=30 msize=1280x720; fi
+if [ "$selftest" = 1 ]; then runs=1 size=1280x720 window=3 steps=10 mframes=30 msize=1280x720 sscroll=2 fixed=100; fi
+case $refresh in ''|*[!0-9]*) echo "budgets.sh: --refresh is a whole number of Hz" >&2; exit 2 ;; esac
 [ -x "$pa/bin/nidhogg" ] && [ -x "$pb/bin/nidhogg" ] || { echo "budgets.sh: --prefix-a and --prefix-b must be unpacked Nidhoggs" >&2; exit 2; }
 case $size$msize in *x*x*) ;; *) echo "budgets.sh: sizes are WxH" >&2; exit 2 ;; esac
 sargs=(--prefix-a "$pa" --prefix-b "$pb" --scale "$scale" --size "$size" --runs "$runs" --window "$window"
-       --resize-steps "$steps" --motion-frames "$mframes" --motion-size "$msize")
+       --resize-steps "$steps" --motion-frames "$mframes" --motion-size "$msize" --refresh "$refresh")
 
 # ---------------------------------------------------------------- on the host: the container
 if [ "$mode" = host ]; then
@@ -68,7 +82,7 @@ if [ "$mode" = host ]; then
   inpb=$(sed -n 's/^prefix=//p' "$pb/share/nidhogg/BUILDINFO" 2>/dev/null); [ -n "$inpb" ] || inpb=$(cd "$pb" && pwd)
   pa=$(cd "$pa" && pwd) pb=$(cd "$pb" && pwd)
   sargs=(--prefix-a "$inpa" --prefix-b "$inpb" --scale "$scale" --size "$size" --runs "$runs" --window "$window"
-         --resize-steps "$steps" --motion-frames "$mframes" --motion-size "$msize" --out "/out/$outfile")
+         --resize-steps "$steps" --motion-frames "$mframes" --motion-size "$msize" --refresh "$refresh" --out "/out/$outfile")
   [ "$selftest" = 0 ] || sargs+=(--self-test)
   name=budgets-$$
   trap 'podman rm -f "$name" > /dev/null 2>&1' EXIT
@@ -103,15 +117,19 @@ if [ "$mode" = container ]; then
     # every line reads back as a plist with a verdict or a skip, and none is nil
     HOME="$run/home" "$pa/bin/nidhogg" -Q --batch --eval '(with-temp-buffer
       (insert-file-contents (car command-line-args-left)) (goto-char (point-min))
-      (let ((n 0) (blink nil))
+      (let ((n 0) (blink nil) (seen nil))
         (while (progn (skip-chars-forward " \n\t") (not (eobp)))
           (let ((r (read (current-buffer))))
             (unless (and (consp r) (eq (car r) :row) (symbolp (cadr r)) (cadr r)
                          (or (plist-get r :skipped) (plist-get r :verdict)))
               (error "bad row: %S" r))
             (when (eq (cadr r) (quote idle-wakeups-blink)) (setq blink t))
+            (push (cadr r) seen)
             (setq n (1+ n))))
         (unless blink (error "no idle-wakeups-blink row"))
+        (dolist (want (quote (typing-stall-max typing-stall-p99 latency-typing scroll-120-dropped
+                              scroll-120-presenter-late main-wait-max cpu-scroll latency-typing-inline)))
+          (unless (memq want seen) (error "no %s row" want)))
         (when (< n 10) (error "only %d rows" n))
         (princ (format "budgets self-test: %d rows read back\n" n))))' "$out" || rc=1
   fi
@@ -171,7 +189,8 @@ cl() { timeout 600 "$prefix/bin/nidhoggclient" -s "$xdg/srv" -e "$1" 2> /dev/nul
 # start_nidhogg PREFIX: the frame, fullscreen, with the 10k-line buffer and a server (no timers: the idle rows count)
 start_nidhogg() {
   prefix=$1
-  BUDGETS_SRV=$xdg/srv BUDGETS_FILE=$run/big.txt timeout --kill-after=10 3000 "$prefix/bin/nidhogg" -Q --fullscreen \
+  env ${nh_env[@]+"${nh_env[@]}"} BUDGETS_SRV=$xdg/srv BUDGETS_FILE=$run/big.txt \
+    timeout --kill-after=10 3000 "$prefix/bin/nidhogg" -Q --fullscreen \
     -l "$run/driver.el" 2> "$run/nh.err" &
   epid=$!
   for _ in $(seq 300); do
@@ -244,22 +263,27 @@ measure() {
   got=$(cl '(with-current-buffer (window-buffer (selected-window)) (- (buffer-size) budgets--n))')
   if [ "$wrc" != 0 ] || [ "${got:-0}" -lt $((n / 2)) ] 2> /dev/null; then
     SKIP_TYPING="wtype did not reach the frame (exit $wrc, $got of $n chars typed): $(head -c 120 "$run/wtype.err" | tr '"\n' "' ")"
-    for rr in cpu-typing power-typing latency-typing pixels-per-char; do rec "$rr" "$side" "SKIP $SKIP_TYPING"; done
+    for rr in cpu-typing power-typing latency-typing-stats pixels-per-char; do rec "$rr" "$side" "SKIP $SKIP_TYPING"; done
   else
     win "$side" typing "$s1" "$s2"
     st=$(cl '(let ((s (glitnir-stats))) (if s (format "%s %s" (plist-get (or (plist-get s :key-to-commit-ms) (plist-get s :latency-ms)) :p95) (plist-get s :damage-px)) "none"))' | tr -d '"')
     case $st in
-      none|"") rec latency-typing "$side" "SKIP no glitnir-stats record on this frame (the record is pgtk-only at this commit)"
+      none|"") rec latency-typing-stats "$side" "SKIP no glitnir-stats record on this frame (the record is pgtk-only at this commit)"
                rec pixels-per-char "$side" "SKIP no glitnir-stats record on this frame (the record is pgtk-only at this commit)" ;;
-      *) rec latency-typing "$side" "${st% *}"; rec pixels-per-char "$side" "${st#* }" ;;
+      *) rec latency-typing-stats "$side" "${st% *}"; rec pixels-per-char "$side" "${st#* }" ;;
     esac
   fi
 
-  # scroll: scroll-up over the 10k-line file for one window
+  # scroll (C4, fixed work): the same $fixed scroll steps over the 10k-line file on every side; the cost is the CPU
+  # seconds of Nidhogg and the compositor together, and the energy
   s1=$(snap)
-  cl "(let ((end (+ (float-time) $window))) (goto-char (point-min)) (while (< (float-time) end) (condition-case nil (scroll-up 5) (end-of-buffer (goto-char (point-min)))) (redisplay t)) t)" > /dev/null
+  cl "(budgets--scroll-fixed $fixed)" > /dev/null
   s2=$(snap)
-  win "$side" scroll "$s1" "$s2"
+  rec cpu-scroll "$side" "$(awk -v ck="$clk" -v s1="$s1" -v s2="$s2" 'BEGIN { split(s1, a, " "); split(s2, b, " "); printf "%.4f", ((b[1] + b[2]) - (a[1] + a[2])) / ck }')"
+  case $s1$s2 in
+    *" -1 "*) rec power-scroll "$side" "SKIP energy_uj unreadable here (RAPL needs root on the host)" ;;
+    *) rec power-scroll "$side" "$(awk -v s1="$s1" -v s2="$s2" 'BEGIN { split(s1, a, " "); split(s2, b, " "); printf "%.4f", (b[3] - a[3]) / 1e6 }')" ;;
+  esac
   rec pss-scroll "$side" "$(pss)"
 
   # resize: each step must change the frame's size (a step that leaves it alone is a stale frame)
@@ -300,6 +324,97 @@ motion() {
   stop_all
 }
 
+# do_typing: wtype window*10 characters (10 per second) into the frame; sets ts1 ts2 (snaps around it), twrc, tgot
+do_typing() {
+  local n=$((window * 10)) str
+  str=$(awk -v n="$n" 'BEGIN { for (i = 0; i < n; i++) printf "%c", 97 + i % 26 }')
+  cl '(with-current-buffer (window-buffer (selected-window)) (goto-char (point-min)) (setq budgets--n (buffer-size)) t)' > /dev/null
+  ts1=$(snap)
+  wtype -d 100 -- "$str" 2> "$run/wtype.err"; twrc=$?
+  ts2=$(snap)
+  tgot=$(cl '(with-current-buffer (window-buffer (selected-window)) (- (buffer-size) budgets--n))')
+  [ "$twrc" = 0 ] && [ "${tgot:-0}" -ge $((n / 2)) ] 2> /dev/null
+}
+
+# cputype SIDE PFX: typing alone, no trace (the trace costs CPU); cpu-typing-inline, power-typing-inline.  SIDE is A or C.
+cputype() {
+  local side=$1
+  nh_env=(); [ "$side" != C ] || nh_env=(NHWL_PRESENTER=0)
+  start_sway "$size" "$scale" "" && start_nidhogg "$2" || { nh_env=(); return 1; }
+  nh_env=()
+  if do_typing; then win "$side" typing-inline "$ts1" "$ts2"
+  else for rr in cpu-typing-inline power-typing-inline; do rec "$rr" "$side" "SKIP wtype did not reach the frame (exit $twrc)"; done; fi
+  stop_all
+}
+
+# plval KEY: the number after KEY in a printed plist on stdin
+plval() { awk -v k="$1" '{ for (i = 1; i < NF; i++) if ($i == k) { v = $(i + 1); gsub(/[()]/, "", v); print v } }'; }
+
+# rep ARGS...: wl-latency.el over this session's trace
+rep() { "$prefix/bin/nidhogg" -Q --batch -l "$checkout/nidhogg/test/wl-latency.el" -f wl-latency-batch "$run/nh.err" "$@" 2> /dev/null; }
+
+# speed SIDE PFX: one session with WAYLAND_DEBUG=client: typing, then 120 Hz scrolling of a fontified src/xdisp.c.  Side
+# C is the shell with the presenter thread off; it records only the -inline rows, side A their A halves.
+speed() {
+  local side=$1 pfx=$2 o1 o2 r period sfx="" v mw pl
+  period=$(awk -v hz="$refresh" 'BEGIN { printf "%.4f", 1000 / hz }')
+  nh_env=(WAYLAND_DEBUG=client); [ "$side" != C ] || nh_env+=(NHWL_PRESENTER=0)
+  start_sway "$size" "$scale" "$refresh" && start_nidhogg "$pfx" || { nh_env=(); return 1; }
+  nh_env=()
+  [ "$side" != C ] || sfx=-inline
+  # typing: key to commit, from the trace, the first 5 keys dropped
+  o1=$(stat -c %s "$run/nh.err")
+  if do_typing; then
+    o2=$(stat -c %s "$run/nh.err")
+    r=$(rep typing "$o1" "$o2" 5)
+    case $r in
+      "(:n "*)
+        if [ "$side" = C ]; then rec latency-typing-inline C "$(plval :p95 <<< "$r")"
+        else
+          rec typing-stall-max "$side" "$(plval :max <<< "$r")"
+          rec typing-stall-p99 "$side" "$(plval :p99 <<< "$r")"
+          rec latency-typing "$side" "$(plval :p95 <<< "$r")"
+          [ "$HAS_W3$side" != 1A ] || rec latency-typing-inline A "$(plval :p95 <<< "$r")"
+        fi ;;
+      *) for rr in typing-stall-max typing-stall-p99 latency-typing; do rec "$rr" "$side" "SKIP no key-to-commit pair in the trace"; done ;;
+    esac
+  else
+    for rr in typing-stall-max typing-stall-p99 latency-typing; do rec "$rr" "$side" "SKIP wtype did not reach the frame (exit $twrc)"; done
+  fi
+  # scroll: 120 steps a second for sscroll seconds, intervals between damaged commits from the trace
+  cl "(budgets--show \"$checkout/src/xdisp.c\")" > /dev/null
+  sleep 1
+  [ "$HAS_W3$side" != 1A ] || cl '(progn (glitnir-stats nil t) t)' > /dev/null
+  o1=$(stat -c %s "$run/nh.err")
+  cl "(budgets--scroll-paced $sscroll $refresh)" > /dev/null
+  o2=$(stat -c %s "$run/nh.err")
+  r=$(rep scroll "$o1" "$o2" 0 "$period")
+  case $r in
+    "(:frames "*)
+      v=$(plval :per1000 <<< "$r")
+      rec "scroll-120-dropped$sfx" "$side" "$v"
+      [ "$HAS_W3$side" != 1A ] || rec scroll-120-dropped-inline A "$v" ;;
+    *) rec "scroll-120-dropped$sfx" "$side" "SKIP fewer than two damaged commits in the trace" ;;
+  esac
+  # the presenter's own numbers (the shell with the thread only).  main-wait-max is the ns the host thread waited at
+  # most on the tree mutex or the mailbox, over the whole session.  presenter-late: the trace cannot say whose fault a
+  # missed vblank was, so the row is the dropped-interval count when the presenter's publish-to-commit time ever
+  # reached 2 ms, else 0 (the stricter reading: a slow presenter blocks even when the drop was the main thread's).
+  if [ "$HAS_W3$side" = 1A ]; then
+    mw=$(cl '(format "%s" (plist-get (nhwl-presenter-stats) :main-wait-max-ns))' | tr -d '" ')
+    case $mw in
+      ''|*[!0-9]*) rec main-wait-max A "SKIP nhwl-presenter-stats has no :main-wait-max-ns ($mw)" ;;
+      *) rec main-wait-max A "$(awk -v n="$mw" 'BEGIN { printf "%.4f", n / 1e6 }')" ;;
+    esac
+    pl=$(cl '(format "%s" (plist-get (plist-get (glitnir-stats) :publish-to-commit-ms) :max))' | tr -d '" ')
+    case $pl in
+      ''|*[!0-9.]*) rec scroll-120-presenter-late A "SKIP glitnir-stats has no :publish-to-commit-ms ($pl)" ;;
+      *) rec scroll-120-presenter-late A "$(awk -v p="$pl" -v late="$(plval :late <<< "$r")" 'BEGIN { print (p >= 2 ? late + 0 : 0) }')" ;;
+    esac
+  fi
+  stop_all
+}
+
 # ---- inputs: the driver, the 10k-line file
 cat > "$run/driver.el" <<'EOF'
 ;;; budgets driver: no timers, so idle really is idle.
@@ -309,21 +424,67 @@ cat > "$run/driver.el" <<'EOF'
 (setq-default cursor-in-non-selected-windows nil)
 (require 'server)
 (server-start)
+
+;; the workloads of the speed rows; emacsclient -e runs in the server buffer, so they act on the selected window's
+(defun budgets--scroll-fixed (n)
+  "N scroll steps (5 lines each) with a redisplay after each, as fast as the build goes: the C4 fixed work."
+  (with-current-buffer (window-buffer (selected-window))
+    (goto-char (point-min))
+    (dotimes (_ n)
+      (condition-case nil (scroll-up 5) (end-of-buffer (goto-char (point-min))))
+      (redisplay t)))
+  t)
+(defun budgets--show (file)
+  "Show FILE fontified in the selected window."
+  (set-window-buffer (selected-window) (find-file-noselect file))
+  (with-current-buffer (window-buffer (selected-window))
+    (font-lock-mode 1) (font-lock-ensure) (goto-char (point-min)))
+  (redisplay t)
+  t)
+(defun budgets--scroll-paced (secs hz)
+  "One line a step, HZ steps a second for SECS seconds, each with a forced redisplay."
+  (with-current-buffer (window-buffer (selected-window))
+    (goto-char (point-min))
+    (let ((per (/ 1.0 hz)) (end (+ (float-time) secs)) (next (float-time)) d)
+      (while (< (float-time) end)
+        (condition-case nil (scroll-up 1) (end-of-buffer (goto-char (point-min))))
+        (redisplay t)
+        (setq next (+ next per) d (- next (float-time)))
+        (if (> d 0) (sleep-for d) (setq next (float-time))))))
+  t)
 EOF
 awk 'BEGIN { for (i = 1; i <= 10000; i++) printf "line %05d the quick brown fox jumps over the lazy dog, again and again\n", i }' > "$run/big.txt"
 
+# the presenter thread (and so side C, and the rows that read its numbers) exists only on a build that has its stats
+[ "$("$pa/bin/nidhogg" -Q --batch --eval '(princ (if (fboundp (quote nhwl-presenter-stats)) 1 0))' 2> /dev/null)" != 1 ] || HAS_W3=1
+if [ "$HAS_W3" = 0 ]; then
+  for rr in latency-typing-inline scroll-120-dropped-inline cpu-typing-inline scroll-120-presenter-late main-wait-max; do
+    rec "$rr" A "SKIP needs the presenter thread (W3 Task 8): this build has no nhwl-presenter-stats"
+  done
+fi
+rec freeze-watchdog A "SKIP the freeze watchdog is not in the shell build"
+
 for ((ri = 1; ri <= runs; ri++)); do
-  # alternate which side goes first, so a drifting machine does not favour one
+  # alternate which side goes first, so a drifting machine does not favour one (ABBA; ACCA for the inline rows)
   if [ $((ri % 2)) = 1 ]; then order="A B"; else order="B A"; fi
   for side in $order; do
     if [ "$side" = A ]; then p=$pa; else p=$pb; fi
     measure "$side" "$p" || { echo "budgets.sh: the $side session failed"; exit 1; }
+    if [ "$side" = A ]; then p=$pa; else p=$pb; fi   # stop_all's loop variable is this one
+    speed "$side" "$p" || { echo "budgets.sh: the $side speed session failed"; exit 1; }
   done
+  if [ "$HAS_W3" = 1 ]; then
+    if [ $((ri % 2)) = 1 ]; then order="A C"; else order="C A"; fi
+    for side in $order; do
+      cputype "$side" "$pa" || { echo "budgets.sh: the $side typing session failed"; exit 1; }
+    done
+    speed C "$pa" || { echo "budgets.sh: the C speed session failed"; exit 1; }
+  fi
   motion || { echo "budgets.sh: the motion session failed"; exit 1; }
 done
 
 # ---- aggregate: median and SD per row and side, then the verdict
-awk -F'|' '
+awk -F'|' -v cell="${size}@${scale}" '
   function med(row, side,   n, i, j, t, v) {
     n = cnt[row, side]
     for (i = 1; i <= n; i++) v[i] = val[row, side, i]
@@ -347,7 +508,18 @@ awk -F'|' '
   END {
     unit["idle-wakeups"] = "switches/s"; unit["idle-wakeups-blink"] = "switches/s (cursor blinking, 0.1 s)"; unit["idle-wakeups-threads"] = "switches/s (all but the main thread)"
     unit["pixels-per-char"] = "device px"; unit["resize-stuck"] = "steps"
-    unit["latency-typing"] = "ms p95"; unit["motion-compose-p95"] = "ms"; unit["motion-interval-p95"] = "ms"
+    unit["latency-typing"] = "ms p95 (WAYLAND_DEBUG trace)"; unit["latency-typing-inline"] = "ms p95 (A thread, C inline)"
+    unit["latency-typing-stats"] = "ms p95 (glitnir-stats, shell only)"
+    unit["typing-stall-max"] = "ms (key to commit)"; unit["typing-stall-p99"] = "ms (key to commit)"
+    unit["scroll-120-dropped"] = "late frames per 1000"; unit["scroll-120-dropped-inline"] = "late frames per 1000 (A thread, C inline)"
+    unit["scroll-120-presenter-late"] = "late frames per 1000, presenter at fault"; unit["main-wait-max"] = "ms"
+    unit["cpu-scroll"] = "CPU s, fixed work"; unit["power-scroll"] = "J, fixed work"; unit["freeze-watchdog"] = "-"
+    unit["cpu-typing-inline"] = "% of one core (A thread, C inline)"
+    # absolute budgets: the speed bars (V2 section 1) and the motion bench
+    bud["motion-compose-p95"] = 8.33; bud["motion-cores"] = 1; bud["motion-interval-p95"] = 9.2
+    bud["scroll-120-presenter-late"] = 0; bud["main-wait-max"] = 1
+    absb["typing-stall-max"] = 16; absb["typing-stall-p99"] = 8.33
+    unit["motion-compose-p95"] = "ms"; unit["motion-interval-p95"] = "ms"
     unit["motion-cores"] = "cores"
     for (k = 1; k <= nrows; k++) {
       row = order[k]; u = unit[row]
@@ -357,23 +529,32 @@ awk -F'|' '
         reason = ""
         if ((row, "A") in why) reason = "A: " why[row, "A"]
         if ((row, "B") in why) reason = reason (reason == "" ? "" : "; ") "B: " why[row, "B"]
+        if ((row, "C") in why) reason = reason (reason == "" ? "" : "; ") "C: " why[row, "C"]
         gsub(/"/, "\047", reason)
         line = line " :skipped \"" reason "\""
         if (cnt[row, "A"]) line = line " :a " pair(row, "A")
         if (cnt[row, "B"]) line = line " :b " pair(row, "B")
+        if (cnt[row, "C"]) line = line " :c " pair(row, "C")
         print line ")"; continue
       }
-      if (row ~ /^motion-/) {
+      if (row ~ /^(typing-stall|latency-typing|scroll-120|main-wait|cpu-typing-inline)/) line = line " :cell \"" cell "\""
+      if (row ~ /^motion-/ || row in bud) {
         line = line " :a " pair(row, "A")
-        budget = (row == "motion-compose-p95") ? 8.33 : (row == "motion-cores") ? 1 : -1
+        budget = (row in bud) ? bud[row] : -1
         if (budget < 0) verdict = "info"
         else verdict = (med(row, "A") <= budget) ? "pass" : "fail"
         print line " :budget " (budget < 0 ? "nil" : budget) " :verdict " verdict ")"; continue
       }
-      a = med(row, "A"); b = med(row, "B")
-      tol = 0.05 * b; t2 = 2 * (sd(row, "A") > sd(row, "B") ? sd(row, "A") : sd(row, "B")); if (t2 > tol) tol = t2
+      # the -inline rows compare A (the thread) with C (inline), the others A with B
+      cmp = (row ~ /-inline$/) ? "C" : "B"
+      a = med(row, "A"); b = med(row, cmp)
+      tol = 0.05 * b; t2 = 2 * (sd(row, "A") > sd(row, cmp) ? sd(row, "A") : sd(row, cmp)); if (t2 > tol) tol = t2
       verdict = (a <= b) ? "pass" : (a - b <= tol) ? "equal" : "fail"
-      print line " :a " pair(row, "A") " :b " pair(row, "B") " :verdict " verdict ")"
+      extra = ""
+      if (row in absb) { extra = " :budget " absb[row]; if (a > absb[row]) verdict = "fail" }
+      # the reported (not gating) target: no dropped frame at 1080p x 1
+      if (row == "scroll-120-dropped" && cell == "1920x1080@1") extra = extra " :target0 \"" ((a == 0) ? "met" : "missed") "\""
+      print line " :a " pair(row, "A") " :" tolower(cmp) " " pair(row, cmp) extra " :verdict " verdict ")"
     }
   }' "$raw" > "$out"
 cat "$out"
