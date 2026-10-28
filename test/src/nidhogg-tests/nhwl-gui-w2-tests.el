@@ -336,6 +336,120 @@ gives the same one."
       (should (> (length token) 0))
       (should-not (equal (nhwl-activation-token) token)))))
 
+;; Session restore (lisp/term/nhwl-session.el).  The recorder's mutter profile offers xdg_session_manager_v1 and keeps
+;; sessions in the `--session-store' file gui.sh gives it; its `session_log' lists what a client asked of the
+;; session.  The first frame is made before these rows run, so they read what it asked for and make more frames.
+
+(defun nhwl-gui--session-p ()
+  "Non-nil on the recorder with session management."
+  (and (nhwl-gui--recorder-p) (nhwl-gui--has-global-p :xdg_session_manager_v1)))
+
+(defun nhwl-gui--session-log (op)
+  "The recorder's session log entries whose :op is OP."
+  (seq-filter (lambda (e) (equal (plist-get e :op) op))
+              (plist-get (gui-runner-recorder '(:cmd "session_log")) :session_log)))
+
+(ert-deftest nhwl-gui/session-opened-once-per-display ()
+  "One session was asked for at the display's first frame, as a launch; more frames do not ask again, and the first
+frame joined it as \"initial\"."
+  (skip-unless (nhwl-gui--session-p))
+  (should (= (length (nhwl-gui--session-log "get_session")) 1))
+  (should (equal (plist-get (car (nhwl-gui--session-log "get_session")) :reason) "launch"))
+  (let ((f (make-frame '(( minibuffer . nil)))))
+    (unwind-protect
+        (progn
+          (nhwl-gui--pump 0.3)
+          (should (= (length (nhwl-gui--session-log "get_session")) 1))
+          (should (stringp (frame-parameter f 'session-name)))
+          (should-not (equal (frame-parameter f 'session-name) "initial"))
+          (should (seq-some (lambda (fr) (equal (frame-parameter fr 'session-name) "initial")) (frame-list))))
+      (when (frame-live-p f) (delete-frame f)))))
+
+(ert-deftest nhwl-gui/frame-restores-before-its-first-commit ()
+  "A frame made with a `session-name' the session knows is restored, and the restore went out before the frame's
+first commit.  The name is one an earlier frame left in the session."
+  (skip-unless (nhwl-gui--session-p))
+  (let ((f (make-frame '((session-name . "row-restore") (minibuffer . nil)))))
+    (unwind-protect
+        (progn
+          (nhwl-gui--pump 0.3)
+          (should (nhwl-gui--wait (lambda ()
+                                    (nhwl-gui--pump 0.05)
+                                    (seq-find (lambda (e) (equal (plist-get e :name) "row-restore"))
+                                              (nhwl-gui--session-log "add")))
+                                  3))
+          (should (eq (plist-get (seq-find (lambda (e) (equal (plist-get e :name) "row-restore"))
+                                           (nhwl-gui--session-log "add"))
+                                 :before_first_commit)
+                      t))
+          ;; deleted and made again under the same name: it left the session with the frame, so it is an add again,
+          ;; and the compositor raises no protocol error
+          (delete-frame f)
+          (setq f (make-frame '((session-name . "row-restore") (minibuffer . nil))))
+          (nhwl-gui--pump 0.3)
+          (should (nhwl-gui--connected-p)))
+      (when (frame-live-p f) (delete-frame f)))))
+
+(ert-deftest nhwl-gui/user-deleted-frame-leaves-the-session ()
+  "A frame deleted before Emacs exits is removed from the session (a `remove' with its name)."
+  (skip-unless (nhwl-gui--session-p))
+  (let ((f (make-frame '((session-name . "row-deleted") (minibuffer . nil)))))
+    (nhwl-gui--pump 0.3)
+    (delete-frame f)
+    (should (nhwl-gui--wait (lambda ()
+                              (nhwl-gui--pump 0.05)
+                              (seq-find (lambda (e) (equal (plist-get e :name) "row-deleted"))
+                                        (nhwl-gui--session-log "remove")))
+                            3))))
+
+(ert-deftest nhwl-gui/session-replaced-stops-naming ()
+  "After the answer `replaced' (another client took the session over) new frames get no name and send nothing to
+the session, and the connection stays up.  The takeover itself is the glue's and the shell's tests; the answer
+is delivered here as the special event C makes of it."
+  (skip-unless (nhwl-gui--session-p))
+  (let ((adds (length (nhwl-gui--session-log "add"))) (f nil) (old nhwl-session--state))
+    (unwind-protect
+        (progn
+          (nhwl-session '(nhwl-session (replaced)))
+          (setq f (make-frame '((minibuffer . nil))))
+          (nhwl-gui--pump 0.3)
+          (should-not (frame-parameter f 'session-name))
+          (should (= (length (nhwl-gui--session-log "add")) adds))
+          (should (nhwl-gui--connected-p)))
+      (setq nhwl-session--state old)
+      (when (frame-live-p f) (delete-frame f)))))
+
+(ert-deftest nhwl-gui/no-session-manager-does-nothing ()
+  "Sway profile (no xdg_session_manager_v1): frames get no session name and the connection stays up."
+  (skip-unless (and (nhwl-gui--recorder-p) (not (nhwl-gui--has-global-p :xdg_session_manager_v1))))
+  (should (eq nhwl-session--state 'none))
+  (let ((f (make-frame '((minibuffer . nil)))))
+    (unwind-protect
+        (progn
+          (nhwl-gui--pump 0.3)
+          (should-not (frame-parameter f 'session-name))
+          (should (nhwl-gui--connected-p)))
+      (when (frame-live-p f) (delete-frame f)))))
+
+(ert-deftest nhwl-gui/live-session ()
+  "Session restore on a real compositor (mutter): frames made, deleted and made again under their names.  The trace
+rule `errors' judges what was sent."
+  :tags '(runs-last)
+  (skip-unless (and (nhwl-gui--live-p) (nhwl-gui--nhwl-frames)))
+  (let ((frames nil))
+    (unwind-protect
+        (progn
+          (dotimes (_ 2) (push (make-frame '((minibuffer . nil))) frames))
+          (nhwl-gui--live-settle 0.5)
+          (let ((name (frame-parameter (car frames) 'session-name)))
+            (delete-frame (car frames))
+            (setq frames (cdr frames))
+            (nhwl-gui--live-settle 0.3)
+            (push (make-frame `((session-name . ,name) (minibuffer . nil))) frames)
+            (nhwl-gui--live-settle 0.5))
+          (should (frame-live-p (selected-frame))))
+      (dolist (f frames) (when (frame-live-p f) (delete-frame f))))))
+
 (provide 'nhwl-gui-w2-tests)
 
 ;;; nhwl-gui-w2-tests.el ends here

@@ -90,6 +90,10 @@ struct nhwl_display_info
   int connection;
   NhShellCaps caps;
 
+  /* Set when the display's first top-level frame has been given its
+     session name (and Lisp has opened the session).  */
+  bool session_first_done;
+
   /* This is a cons cell of the form (NAME . FONT-LIST-CACHE).  */
   Lisp_Object name_list_element;
 

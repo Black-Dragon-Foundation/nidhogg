@@ -4331,6 +4331,7 @@ kbd_buffer_get_event (KBOARD **kbp,
 #endif
 #ifdef HAVE_NHWL
       case NHWL_DELETE_SURROUNDING_EVENT:
+      case NHWL_SESSION_EVENT:
 #endif
       case PREEDIT_TEXT_EVENT:
 #ifdef HAVE_NTGUI
@@ -7353,6 +7354,8 @@ make_lispy_event (struct input_event *event)
 #ifdef HAVE_NHWL
     case NHWL_DELETE_SURROUNDING_EVENT:
       return list2 (Qnhwl_delete_surrounding, event->arg);
+    case NHWL_SESSION_EVENT:
+      return list2 (Qnhwl_session, event->arg);
 #endif
       /* The 'kind' field of the event is something we don't recognize.  */
     default:
@@ -13683,6 +13686,7 @@ This is effective only in `noninteractive' sessions.  */);
   DEFSYM (Qpreedit_text, "preedit-text");
 #ifdef HAVE_NHWL
   DEFSYM (Qnhwl_delete_surrounding, "nhwl-delete-surrounding");
+  DEFSYM (Qnhwl_session, "nhwl-session");
 #endif
 
   button_down_location = make_nil_vector (5);

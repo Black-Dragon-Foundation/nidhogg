@@ -21,6 +21,7 @@ use crate::pointer;
 use crate::popup;
 use crate::scroll;
 use crate::select;
+use crate::session;
 use crate::tip;
 use nhshell::event::*;
 
@@ -68,6 +69,7 @@ pub fn next(state: &mut Display, input: NhgNextIn) -> Result<i32, GlueError> {
         NHSHELL_EV_POPUP_DONE if !tip::popup_done(state, &ev) => {
             popup::popup_done(state, &ev);
         }
+        NHSHELL_EV_SESSION => session::event(state, &ev),
         // kinds C did nothing with
         _ => {}
     }

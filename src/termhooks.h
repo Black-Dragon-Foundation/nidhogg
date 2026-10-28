@@ -305,6 +305,11 @@ enum event_kind
      (BEFORE AFTER FRAME): characters before and after point in the
      selected window of FRAME.  Lisp's special-event-map handles it.  */
   , NHWL_DELETE_SURROUNDING_EVENT
+  /* The compositor answered the session request, or another client took
+     the session over.  .arg is (STATE . ID): STATE `created', `restored'
+     or `replaced', ID the session's id (a string) or nil.  Lisp's
+     special-event-map handles it.  */
+  , NHWL_SESSION_EVENT
 #endif
   /* Either the mouse wheel has been released without it being
      clicked, or the user has lifted his finger from a touchpad.
