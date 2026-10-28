@@ -219,16 +219,20 @@ extern struct nhwl_display_info *x_display_list;
 struct nhwl_csd
 {
   bool on;			/* the compositor offers no server decorations */
+  /* M: the resize margin of a side that has one (none when maximized, and
+     none on a tiled side); L, R, B the sides', T the top margin and the
+     strip.  */
   int m, strip, l, t, r, b;
   /* What the border was last drawn for, and that backing's generation.  */
-  struct { int w, h, l, t; uint32_t title; bool active; unsigned long fg, bg; uint64_t gen; } sig;
+  struct { int w, h, l, t, r, b; uint32_t title, states; int hover, down; unsigned style;
+    unsigned long fg, bg; uint64_t gen; } sig;
   bool sig_valid;
   /* The window geometry last sent (logical), if any.  */
   int geom[4];
   bool geom_sent;
   /* The pointer in the surface (device px), the region a consumed press began in, and the last strip click.  */
   double px, py;
-  int down;
+  int down, hover;		/* the armed button, the button under the pointer */
   bool grab, in_border;
   uint64_t click_ns;
 };
@@ -561,6 +565,7 @@ extern int nhwl_to_logical (int, uint32_t);
 extern int nhwl_to_device (int, uint32_t);
 extern bool nhwl_csd_pointer (struct frame *, double, double);
 extern bool nhwl_csd_button (struct frame *, const NhShellEvent *, bool *);
+extern void nhwl_csd_leave (struct frame *);
 
 /* nhwlchild.c: child frames (subsurfaces of the parent frame's window).  */
 extern uint64_t nhwl_frame_window (struct frame *);
@@ -601,6 +606,7 @@ extern void nhwl_native_origin (struct frame *, int *, int *);
 extern void syms_of_nhwlterm (void);
 extern void syms_of_nhwlfns (void);
 extern void syms_of_nhwlselect (void);
+extern void syms_of_nhwlcsd (void);
 extern bool nhwl_selection_changed (struct nhwl_display_info *, uint32_t,
 				    struct input_event *);
 extern void nhwl_handle_selection_clear (struct input_event *);

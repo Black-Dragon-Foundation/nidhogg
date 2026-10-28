@@ -2295,3 +2295,117 @@ while the top-level has the keyboard.  Delete the child and focus the parent aft
       (should-not bad)
       (should-not (plist-get (gui-runner-recorder (list :cmd "empty_buffer_commits" :since mark)) :commits)))
     (nhwl-gui--windowed)))
+
+;; Task 19: the full title bar (nhwlcsd.c): GNOME's button layout, the title-bar faces' colours for an active and an
+;; inactive window, no margin on a tiled side, rounded top corners, the scale.  `nhwl--title-bar' gives the layout in
+;; device pixels of the surface.
+
+(declare-function nhwl--title-bar "nhwlcsd.c")
+(defvar nhwl-settings--values)
+
+(defun nhwl-gui--strip-rgb ()
+  "The (R G B) of the title strip 2 device rows below its top, at the middle column (above the title and buttons)."
+  (let* ((strip (plist-get (nhwl--title-bar) :strip))
+         (snap (glitnir-snapshot nil 'raw))
+         (w (nth 0 snap)) (bytes (nth 2 snap))
+         (i (* 4 (+ (* (+ (nth 1 strip) 2) w) (/ w 2)))))
+    (list (aref bytes (+ i 2)) (aref bytes (+ i 1)) (aref bytes i))))
+
+(defun nhwl-gui--rgb-near (a b)
+  (seq-every-p (lambda (d) (<= (abs d) 2)) (seq-mapn #'- a b)))
+
+(defun nhwl-gui--face-rgb (face attribute)
+  (mapcar (lambda (v) (/ v 257)) (color-values (face-attribute face attribute nil t))))
+
+(defun nhwl-gui--strip-becomes (rgb)
+  "Wait until the strip shows RGB; return non-nil if it did."
+  (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (redisplay t) (nhwl-gui--rgb-near (nhwl-gui--strip-rgb) rgb)) 5))
+
+(ert-deftest nhwl-gui/csd-layout-follows-gnome ()
+  ;; GNOME's "close:minimize": close at the left edge, minimize at the right, no maximize; a click on minimize
+  ;; minimizes (recorder).
+  (skip-unless (nhwl-gui--csd-p))
+  (nhwl-gui--windowed)
+  (let ((old (gethash 'button-layout nhwl-settings--values)))
+    (unwind-protect
+        (progn
+          (nhwl-settings--set 'button-layout "close:minimize")
+          (let* ((tb (nhwl--title-bar)) (strip (plist-get tb :strip)) (buttons (plist-get tb :buttons))
+                 (close (assq 'close buttons)) (min (assq 'minimize buttons)))
+            (should (= (length buttons) 2))
+            (should close)
+            (should min)
+            (should (= (nth 1 close) (nth 0 strip)))
+            (should (= (+ (nth 1 min) (nth 3 min)) (+ (nth 0 strip) (nth 2 strip))))
+            (when (getenv "GLITNIR_GUI_RECORDER")
+              (let ((s (frame-scale-factor))
+                    (mark (plist-get (gui-runner-recorder '(:cmd "input_log" :since 0)) :next)))
+                (nhwl-gui--click (/ (+ (nth 1 min) (/ (nth 3 min) 2.0)) s) (/ (+ (nth 2 min) (/ (nth 4 min) 2.0)) s))
+                (should (nhwl-gui--wait
+                         (lambda () (nhwl-gui--pump) (nhwl-gui--input-since mark "xdg_toplevel.set_minimized"))))))))
+      (nhwl-settings--set 'button-layout old)
+      (nhwl-gui--windowed))))
+
+(ert-deftest nhwl-gui/csd-inactive-colours ()
+  ;; A configure without `activated' draws the strip in the inactive face's colours; activated again, the active's.
+  (skip-unless (and (nhwl-gui--recorder-p) (nhwl-gui--csd-p)))
+  (nhwl-gui--windowed)
+  (unwind-protect
+      (progn
+        (gui-runner-recorder '(:cmd "configure" :surface "focused" :size [800 600] :states []))
+        (should (nhwl-gui--strip-becomes (nhwl-gui--face-rgb 'nidhogg-title-bar-inactive :background)))
+        (nhwl-gui--windowed)
+        (should (nhwl-gui--strip-becomes (nhwl-gui--face-rgb 'nidhogg-title-bar :background))))
+    (nhwl-gui--windowed)))
+
+(ert-deftest nhwl-gui/csd-tiled-edge-has-no-margin ()
+  ;; Tiled on the left: no left margin, the window geometry starts at the surface's left edge, and a press 2 px inside
+  ;; that edge is not a resize.
+  (skip-unless (and (nhwl-gui--recorder-p) (nhwl-gui--csd-p)))
+  (nhwl-gui--windowed)
+  (unwind-protect
+      (progn
+        (gui-runner-recorder '(:cmd "configure" :surface "focused" :size [800 600] :states ["activated" "tiled_left"]))
+        (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (redisplay t)
+                                  (eql (nth 0 (plist-get (nhwl--title-bar) :margins)) 0))
+                                5))
+        (should (nhwl-gui--wait (lambda () (redisplay t) (eql (car (nhwl-gui--get (nhwl-gui--last-commit) :geometry)) 0))))
+        (let ((mark (plist-get (gui-runner-recorder '(:cmd "input_log" :since 0)) :next)))
+          (nhwl-gui--click 2 300)
+          (nhwl-gui--pump 0.5)
+          (should-not (nhwl-gui--input-since mark "xdg_toplevel.resize"))))
+    (nhwl-gui--windowed)))
+
+(ert-deftest nhwl-gui/csd-colours-follow-the-scheme ()
+  ;; The desktop's dark scheme gives the strip the dark default; the light one brings the light default back.
+  (skip-unless (nhwl-gui--csd-p))
+  (nhwl-gui--windowed)
+  (let ((old (gethash 'color-scheme nhwl-settings--values)))
+    (unwind-protect
+        (progn
+          (nhwl-settings--set 'color-scheme 1)
+          (should (nhwl-gui--strip-becomes '(#x30 #x30 #x30)))
+          (nhwl-settings--set 'color-scheme 2)
+          (should (nhwl-gui--strip-becomes '(#xeb #xeb #xeb))))
+      (nhwl-settings--set 'color-scheme old))))
+
+(ert-deftest nhwl-gui/csd-at-fractional-scale ()
+  ;; At 1.5 the strip is round(32 x 1.5) = 48 device rows and the top margin round(8 x 1.5) = 12; the strip's last row
+  ;; is drawn and the margin above it is transparent.
+  (skip-unless (and (nhwl-gui--recorder-p) (nhwl-gui--csd-p)))
+  (unwind-protect
+      (progn
+        (gui-runner-recorder '(:cmd "scale" :value120 180))
+        (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (redisplay t) (= (frame-scale-factor) 1.5)) 5))
+        (nhwl-gui--windowed)
+        (should (nhwl-gui--wait (lambda () (redisplay t) (eql (nth 3 (plist-get (nhwl--title-bar) :strip)) 48))))
+        (let* ((tb (nhwl--title-bar)) (strip (plist-get tb :strip))
+               (snap (glitnir-snapshot nil 'raw)) (w (nth 0 snap)) (bytes (nth 2 snap))
+               (alpha (lambda (y) (aref bytes (+ 3 (* 4 (+ (* y w) (/ w 2))))))))
+          (should (= (nth 1 strip) 12))
+          (should (= (nth 1 (plist-get tb :margins)) 12))
+          (should (= (funcall alpha (+ (nth 1 strip) 47)) 255))
+          (should (= (funcall alpha (1- (nth 1 strip))) 0))))
+    (gui-runner-recorder '(:cmd "scale" :value120 120))
+    (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (redisplay t) (= (frame-scale-factor) 1.0)) 5)
+    (nhwl-gui--windowed)))
