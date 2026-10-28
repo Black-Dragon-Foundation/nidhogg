@@ -308,7 +308,7 @@ int32_t nhshell_window_move (NhShell *sh, uint64_t window);
 int32_t nhshell_window_resize (NhShell *sh, uint64_t window, uint32_t edges);
 int32_t nhshell_window_show_menu (NhShell *sh, uint64_t window, int32_t x, int32_t y);
 /* The window geometry (surface-local logical pixels): where the window sits inside the surface, for a client that
-   draws its own decorations and resize margins.  Takes effect with the next commit.  */
+   draws its own decorations and resize margins.  Takes effect with the next commit that carries a buffer.  */
 int32_t nhshell_window_set_geometry (NhShell *sh, uint64_t window, int32_t x, int32_t y, int32_t w, int32_t h);
 /* Records a configure's ack; it goes out right before the commit that carries it, exactly once (the newest serial
    wins).  FLAGS NHSHELL_ACK_CONTENT says the ack changes what the window shows (a new size, the first configure, a
@@ -363,7 +363,8 @@ int32_t nhshell_window_session_remove (NhShell *sh, uint64_t window);
    (X, Y) (xdg_popup.reposition).  stack: put a child above or below SIBLING (0: the parent), with the parent's next
    commit.  set_position returns 1 when the whole window must be redrawn (a popup made again below xdg_popup v3),
    0 otherwise; a child's position, stacking, input region and unmap make each ancestor up to the root owe a commit
-   (its position the child too).  set_input_region: the part that takes input, N rectangles in logical pixels (N 0:
+   (all but stacking the child too), and go out with the tree's next commits.  set_input_region: the part that takes
+   input, N rectangles in logical pixels (N 0:
    the whole surface).
    set_mapped: off shows nothing (a null buffer); on lets the next present show the window.  Pointer events over a child
    or popup carry its id.  destroy of a window also destroys its children and popups.  */

@@ -86,11 +86,6 @@ pub struct MainState {
     grabs: Vec<u64>,
     activation: Option<wayland_protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1>,
     alpha_modifier: Option<wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_v1::WpAlphaModifierV1>,
-    /// Each window's `wp_alpha_modifier_surface_v1`, made at its first `set_alpha`.
-    alphas: HashMap<
-        u64,
-        wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_surface_v1::WpAlphaModifierSurfaceV1,
-    >,
     /// `NIDHOGG_SHELL_FORCE_CSD` was set when the shell opened.
     force_csd: bool,
     /// The latest decoration mode the compositor granted a window.
@@ -128,6 +123,8 @@ pub struct WaylandShell {
     text_input: Arc<text_input::TextInput>,
     /// Publishing, and the presenter's fronts while it runs inline.
     presenting: publish::Presenting,
+    /// Who committed the registered trees (a test hook's count).
+    tree_commits: present::TreeCommits,
 }
 
 impl MainState {
@@ -216,6 +213,7 @@ impl WaylandShell {
             reader: Some(reader),
             text_input,
             presenting: publish::Presenting::default(),
+            tree_commits: present::TreeCommits::default(),
         };
         // dispatches the setup's main-queue events and registers the waker
         shell.dispatch_main().map_err(|_| ShellError::Unsupported)?;
@@ -339,7 +337,7 @@ impl Dispatch<WlSurface, ()> for MainState {
         surface: &WlSurface,
         event: wl_surface::Event,
         _: &(),
-        conn: &Connection,
+        _: &Connection,
         _: &QueueHandle<Self>,
     ) {
         // the surface may be shown again, or its scale changed: a waiting pacer asks again
@@ -347,7 +345,7 @@ impl Dispatch<WlSurface, ()> for MainState {
             event,
             wl_surface::Event::Enter { .. } | wl_surface::Event::PreferredBufferScale { .. }
         ) {
-            state.present_rearm(u64::from(surface.id().protocol_id()), conn);
+            state.present_rearm(u64::from(surface.id().protocol_id()));
         }
         scale::surface_event(state, surface, event);
     }

@@ -52,6 +52,11 @@ impl SurfaceScale {
         self.current
     }
 
+    /// The surface's viewport (none without `wp_viewporter`), for its presenter state.
+    pub(crate) fn viewport(&self) -> Option<WpViewport> {
+        self.viewport.clone()
+    }
+
     /// Set the viewport's destination to the logical size (a no-op without `wp_viewporter`).
     pub fn set_destination(&self, logical_w: i32, logical_h: i32) {
         if let Some(v) = &self.viewport {
@@ -134,6 +139,7 @@ impl MainState {
         if let Some(s) = self.scales.get_mut(&id) {
             s.current = new;
         }
+        self.present_scale(id, new);
         if let Some(shared) = &self.shared {
             shared
                 .scale120
@@ -206,11 +212,11 @@ impl Dispatch<WpFractionalScaleV1, u64> for MainState {
         _: &WpFractionalScaleV1,
         event: wp_fractional_scale_v1::Event,
         id: &u64,
-        conn: &Connection,
+        _: &Connection,
         _: &QueueHandle<Self>,
     ) {
         if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
-            state.present_rearm(*id, conn);
+            state.present_rearm(*id);
             if let Some(s) = state.scales.get_mut(id) {
                 s.frac120 = Some(scale);
             }
