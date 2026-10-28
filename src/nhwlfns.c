@@ -1776,7 +1776,7 @@ nhwl_tip_dismissed (struct frame *f)
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
 
   if (out->window)
-    nhshell_window_destroy (FRAME_NHWL_SHELL (f), out->window);
+    nhwl_window_destroy (FRAME_DISPLAY_INFO (f), out->window);
   out->window = 0;
   SET_FRAME_VISIBLE (f, 0);
 }
@@ -1816,7 +1816,7 @@ nhwl_tip_map (struct frame *tip_f, struct frame *pf, int width, int height,
     | NHSHELL_ADJUST_SLIDE_X | NHSHELL_ADJUST_SLIDE_Y;
 
   block_input ();
-  rc = nhshell_window_new (dpyinfo->shell, &desc, &id);
+  rc = nhwl_window_new (dpyinfo, &desc, NHG_FRAME_TIP, &id);
   unblock_input ();
   if (rc < 0)
     error ("nidhogg-wayland: cannot create a tooltip window (%d)", rc);

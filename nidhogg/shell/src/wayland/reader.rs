@@ -247,6 +247,20 @@ pub fn is_reader_thread() -> bool {
     READER_THREAD.get()
 }
 
+/// The reader as a host abandoning the shell sees it: the stop flag, the reader's wake-up and its done report.
+pub struct ReaderThread(pub Arc<Shared>);
+
+impl crate::api::BackendThread for ReaderThread {
+    fn stop(&self) {
+        self.0.stop.store(true, Ordering::Release);
+        self.0.reader_wake.signal();
+    }
+
+    fn wait_done(&self, deadline: std::time::Instant) -> bool {
+        self.0.reader_done.wait(deadline)
+    }
+}
+
 /// Start the reader on `queue` (already holding the setup's events) with every signal blocked: the host's signal
 /// handlers run on the host's threads only.
 pub fn spawn(
@@ -287,6 +301,7 @@ pub fn spawn(
             if !matches!(outcome, Ok(Ok(()))) {
                 shared.close();
             }
+            shared.reader_done.set();
         });
     // SAFETY: restores the mask saved above.
     unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &old, std::ptr::null_mut()) };

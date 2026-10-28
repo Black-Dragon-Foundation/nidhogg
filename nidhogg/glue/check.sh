@@ -33,7 +33,7 @@ if [ -n "$DISTRO" ] && [ "$INNER" = 0 ]; then
   EXTRA=()
   if [ -n "${NIDHOGG_BUILD_PKG_CACHE:-}" ]; then
     mkdir -p "$NIDHOGG_BUILD_PKG_CACHE/dnf"
-    EXTRA=(-v "$NIDHOGG_BUILD_PKG_CACHE/dnf:/var/cache/libdnf5:Z")
+    EXTRA=(-v "$NIDHOGG_BUILD_PKG_CACHE/dnf:/var/cache/libdnf5:z")
   fi
   if [ -n "${NH_RECORDER:-}" ]; then
     [ -x "$NH_RECORDER" ] || { echo "check.sh: NH_RECORDER is not an executable: $NH_RECORDER" >&2; exit 2; }
@@ -52,9 +52,9 @@ if [ -n "$DISTRO" ] && [ "$INNER" = 0 ]; then
   # the Android target's std, where the distro packages it (Fedora does not: --android then exits 3)
   android_std=""
   [ "$ANDROID" = 1 ] && android_std="(dnf -y install rust-std-static-$ANDROID_TARGET >/dev/null 2>&1 || true) && "
-  inner="dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install cargo rust clippy rustfmt gcc binutils diffutils gawk pkgconf-pkg-config wayland-devel libxkbcommon-devel xkeyboard-config >/dev/null && (dnf -y install cargo-deny >/dev/null 2>&1 || true) && ${android_std}bash /nh/glue/check.sh --inner$args"
+  inner="dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install cargo rust clippy rustfmt gcc binutils diffutils gawk pkgconf-pkg-config wayland-devel libxkbcommon-devel xkeyboard-config libX11-common pixman-devel >/dev/null && (dnf -y install cargo-deny >/dev/null 2>&1 || true) && ${android_std}bash /nh/glue/check.sh --inner$args"
   podman run --rm --name "$NAME" --memory 2g --memory-swap 2g \
-    -v "$NH:/nh:ro,Z" -v "$CARGO_DIR:/cargo:Z" "${EXTRA[@]}" \
+    -v "$NH:/nh:ro,z" -v "$CARGO_DIR:/cargo:z" "${EXTRA[@]}" \
     -e CARGO_HOME=/cargo/home -e CARGO_TARGET_DIR=/cargo/target -e CARGO_BUILD_JOBS=2 \
     "registry.fedoraproject.org/fedora:${DISTRO#fedora-}" bash -euo pipefail -c "$inner" &
   pid=$!
@@ -87,23 +87,25 @@ drop_self() { awk 'BEGIN { RS = ""; ORS = "\n\n" } !/^\[\[package\]\]\nname = "n
 diff <(drop_self Cargo.lock) <(drop_self ../shell/Cargo.lock) >/dev/null ||
   fail "lock (Cargo.lock must be ../shell/Cargo.lock plus the nhglue package)"
 cargo fmt --check                                                   || fail fmt
-cargo clippy --all-targets --offline --locked -- -D warnings        || fail clippy
-cargo clippy --lib --offline --locked --features test-hooks -- -D warnings || fail clippy-test-hooks
+# the tests drive the test hooks (tests/ffi.rs and tests/display.rs require them), so they build with the feature
+cargo clippy --all-targets --offline --locked --features test-hooks -- -D warnings || fail clippy-test-hooks
+cargo clippy --lib --offline --locked -- -D warnings                || fail clippy
 # NAME may list several filters separated by '|' or '\|' (cargo's filter is a substring, not a regexp)
 filters=()
 if [ -n "$TEST" ]; then
   IFS='|' read -ra parts <<< "${TEST//\\/}"
   for p in "${parts[@]}"; do [ -n "$p" ] && filters+=("$p"); done
 fi
-cargo test --offline --locked -- ${filters[@]+"${filters[@]}"}       || fail test
+cargo test --offline --locked --no-fail-fast --features test-hooks -- ${filters[@]+"${filters[@]}"} || fail test
 if command -v cargo-deny >/dev/null 2>&1; then
   cargo deny check licenses bans sources                            || fail deny
 else
   echo "check.sh: cargo-deny not on PATH, skipping the licence check"
 fi
 [ "$FULL" = 1 ] || { echo "check.sh: ok (without --full: no release archive)"; exit 0; }
-# the archive Emacs links: every nhg_*, nhshell_* and glitnir_* function of the three headers is exported
-cargo build --release --offline --locked                            || fail build
+# the archive Emacs links: every nhg_*, nhshell_* and glitnir_* function of the three headers is exported (built with
+# the test hooks, as an --enable-checking Emacs links it, so that the hooks' exports are checked too)
+cargo build --release --offline --locked --features test-hooks      || fail build
 lib=$CARGO_TARGET_DIR/release/libnhglue.a
 [ -f "$lib" ] || fail "build (no libnhglue.a)"
 exports=$(nm -g --defined-only "$lib" 2>/dev/null | awk '$2 ~ /^[TDBR]$/ {print $3}')

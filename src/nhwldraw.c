@@ -37,6 +37,7 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "dispextern.h"
 #include "fontset.h"
 #include "font.h"
+#include "keyboard.h"
 #include "termhooks.h"
 #include "window.h"
 

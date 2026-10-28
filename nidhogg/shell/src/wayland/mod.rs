@@ -338,6 +338,17 @@ impl WaylandShell {
         rustix::net::sockopt::set_socket_send_buffer_size(backend.poll_fd(), bytes)
             .map_err(|_| ShellError::Arg)
     }
+
+    /// `ShellBackend::abandon`: the connection's socket and the shell's threads, each as a `BackendThread` (stop it,
+    /// wait for it with a deadline).  The glue asks once, at open, so a thread started later must be listed here
+    /// from the start (the presenter thread: a handle whose `stop` and `wait_done` cover it once it runs).
+    pub(super) fn abandon_impl(&self) -> Abandon {
+        use std::os::fd::AsRawFd;
+        Abandon {
+            conn_fd: self.conn.backend().poll_fd().as_raw_fd(),
+            threads: vec![Arc::new(reader::ReaderThread(self.shared.clone()))],
+        }
+    }
 }
 
 /// Closing: the reader is joined, and then what the object graph would keep in a cycle is freed by hand.  A window's
@@ -351,6 +362,7 @@ impl Drop for WaylandShell {
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
+        // (the presenter thread, when it exists, is stopped and joined here and listed in `abandon_impl`)
         for p in self.main.presents.values() {
             present::lock(p).release();
         }
