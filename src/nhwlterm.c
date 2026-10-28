@@ -335,7 +335,6 @@ void
 nhwl_end_cr_clip (struct frame *f)
 {
   cairo_restore (FRAME_NHWL_OUTPUT (f)->cr_context);
-  nhwl_dirty (f);
 }
 
 /* Adapted from pgtk_cr_destroy_frame_context.  */
@@ -1048,7 +1047,6 @@ nhwl_make_frame_visible (struct frame *f)
 	  SET_FRAME_ICONIFIED (f, false);
 	  out->has_been_visible = true;
 	  SET_FRAME_GARBAGED (f);
-	  nhwl_dirty (f);
 	}
     }
 }
@@ -1665,10 +1663,10 @@ nhwl_configure (struct frame *f, const NhShellEvent *ev)
     }
  done:
 
-  /* The shell records the ack and sends it with the commit that carries it.  */
+  /* The shell records the ack, sends it with the commit that carries it,
+     and wakes the pacer itself.  */
   nhshell_window_ack_configure (FRAME_DISPLAY_INFO (f)->shell, out->window,
 				out->serial, ack_flags);
-  nhwl_dirty (f);
   if (FRAME_VISIBLE_P (f))
     fset_redisplay (f);
 }
@@ -2946,8 +2944,7 @@ between two presents.  The motion bench of the W0 budgets.  */)
       /* The previous present's frame callback (about one refresh): the
 	 pacer is ready again.  Asking takes the draw, so the present asks
 	 itself, until it commits; the try that commits is timed.  */
-      glitnir_damage_all (out->glitnir_id);
-      nhwl_dirty (f);
+      nhwl_damage_all (f);
       do
 	{
 	  if (waits)
