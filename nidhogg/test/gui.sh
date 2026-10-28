@@ -20,8 +20,10 @@
 #                       scale by wlr-randr).  Every compositor binary runs as a copy without file capabilities.
 #   --recorder BIN      the nh-recorder binary (default $REC); mounted at /opt/nh-recorder in a container
 #   --recorder-profile  what the recorder imitates: sway (default), kwin, mutter or xdg-v2 (xdg_wm_base at version 2)
+#   NHWL_GUI_RESTART    (set for the rows, recorder and sway only) a script that stops the compositor and starts it again
+#                       on the same socket (the recorder with the same --session-store); it prints READY and exits 0
 #   --trace-check RULES after the session, check the --wayland-debug trace against RULES (a comma list of errors, acks,
-#                       unconfigured, subsurface, popup, sync; see nidhogg/test/wl-trace-check.el), in the same
+#                       unconfigured, subsurface, popup, sync, grab, popup-order, dnd; see nidhogg/test/wl-trace-check.el), in the same
 #                       container; the violations are printed and make the exit status 1.  Needs --wayland-debug
 #   GLITNIR_GUI_DRY=1   print the commands a run would start and exit 0 (nothing is started)
 #   --scale S           the monitors' scale, integer or fractional (default 1)
@@ -119,6 +121,8 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
   display=glitnir-gui-$GLITNIR_GUI_PID
   mpid= epid= ppid=
   cleanup() {
+    # a restart script (below) may have started a new compositor
+    [ ! -f "$GLITNIR_GUI_RUN/compositor.pid" ] || mpid=$(cat "$GLITNIR_GUI_RUN/compositor.pid")
     # the compositor's peak resident set (VmHWM) while it is still alive
     [ -z "$mpid" ] || \
       echo "gui.sh: $compositor peak RSS: $(sed -n 's/^VmHWM:[[:space:]]*\(.*\)$/\1/p' "/proc/$mpid/status" 2>/dev/null) (scale $scale)"
@@ -165,7 +169,8 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
     recorder)
       ctl=$XDG_RUNTIME_DIR/nh-recorder.ctl
       # the recorder takes a profile file; they sit next to its source (the checkout is /src in a container)
-      "$recorder" --output "${size}@${s120}" --profile "$(dirname "$self")/recorder/profiles/$rprofile.json" --socket "$display" --control "$ctl" > "$clog" 2>&1 &
+      "$recorder" --output "${size}@${s120}" --profile "$(dirname "$self")/recorder/profiles/$rprofile.json" --socket "$display" --control "$ctl" \
+        --session-store "$GLITNIR_GUI_RUN/session-store.json" > "$clog" 2>&1 &
       mpid=$!
       ;;
   esac
@@ -211,6 +216,43 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
     done
   fi
 
+  # NHWL_GUI_RESTART: a script that stops the compositor and starts it again on the same socket (the recorder with its
+  # session store, sway headless again), prints READY and exits 0.  mutter, KWin and labwc have none: rows that need it skip.
+  echo "$mpid" > "$GLITNIR_GUI_RUN/compositor.pid"
+  restart=
+  if [ "$compositor" = recorder ] || [ "$compositor" = sway ]; then
+    restart=$GLITNIR_GUI_RUN/restart.sh
+    csock=$XDG_RUNTIME_DIR/$display
+    if [ "$compositor" = recorder ]; then
+      startcmd=$(printf '%q ' "$recorder" --output "${size}@${s120}" --profile "$(dirname "$self")/recorder/profiles/$rprofile.json" \
+        --socket "$display" --control "$ctl" --session-store "$GLITNIR_GUI_RUN/session-store.json")
+      ready="grep -q '^READY' '$clog' && [ -S '$csock' ]"
+    else
+      startcmd=$(printf '%q ' env WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 \
+        "SWAYSOCK=$XDG_RUNTIME_DIR/sway-ipc.sock" sway -c "$GLITNIR_GUI_RUN/sway.conf")
+      ready="[ -S '$csock' ]"
+    fi
+    {
+      echo '#!/usr/bin/env bash'
+      echo "pidfile='$GLITNIR_GUI_RUN/compositor.pid'"
+      echo 'pid=$(cat "$pidfile")'
+      echo 'kill -TERM "$pid" 2> /dev/null'
+      echo 'for _ in $(seq 100); do kill -0 "$pid" 2> /dev/null || break; sleep 0.1; done'
+      echo 'if kill -0 "$pid" 2> /dev/null; then echo "restart: the compositor did not stop" >&2; exit 1; fi'
+      echo "rm -f '$csock' '$csock.lock' '$XDG_RUNTIME_DIR/sway-ipc.sock'"
+      echo ": > '$clog'"
+      echo "$startcmd > '$clog' 2>&1 < /dev/null &"
+      echo 'new=$!; echo "$new" > "$pidfile"'
+      echo 'for _ in $(seq 150); do'
+      echo "  if $ready; then echo READY; exit 0; fi"
+      echo '  kill -0 "$new" 2> /dev/null || { echo "restart: the compositor exited early" >&2; exit 1; }'
+      echo '  sleep 0.1'
+      echo 'done'
+      echo 'echo "restart: the compositor did not come up" >&2; exit 1'
+    } > "$restart"
+    chmod +x "$restart"
+  fi
+  export NHWL_GUI_RESTART=$restart
   export GLITNIR_GUI_SCALE=$scale GLITNIR_GUI_SIZE=$size GLITNIR_GUI_TESTS=$tests GLITNIR_GUI_SELECT=$select
   export GLITNIR_GUI_COMPOSITOR=$compositor GLITNIR_GUI_KNOWN=$known GLITNIR_GUI_FILES=$files GLITNIR_GUI_TAG=$tag
   [ -z "$ctl" ] || export GLITNIR_GUI_RECORDER=$ctl GLITNIR_GUI_RECORDER_BIN=$recorder \
@@ -292,7 +334,7 @@ if [ "${GLITNIR_GUI_DRY:-}" = 1 ]; then
     mutter) echo "mutter --headless --wayland --no-x11 --wayland-display NAME ($monitors x --virtual-monitor $size; scale $scale)" ;;
     kwin) echo "kwin_wayland --virtual --width $W --height $H --socket NAME   (scale $scale by kscreen-doctor)" ;;
     labwc) echo "labwc   (WLR_BACKENDS=headless; $monitors output(s) of $size, scale $scale by wlr-randr)" ;;
-    recorder) echo "$recorder --output ${size}@${s120} --profile $(dirname "$self")/recorder/profiles/$rprofile.json --socket NAME --control CTL" ;;
+    recorder) echo "$recorder --output ${size}@${s120} --profile $(dirname "$self")/recorder/profiles/$rprofile.json --socket NAME --control CTL --session-store RUN/session-store.json" ;;
   esac
   [ "$portal" != fake ] || echo "$prefix/bin/nidhogg -Q --fg-daemon=XDG_RUNTIME_DIR/portal-sock -l $checkout/test/src/nidhogg-tests/fake-portal.el -f fake-portal-serve   (the portal)"
   echo "$prefix/bin/nidhogg -Q --fullscreen -l $checkout/test/src/nidhogg-tests/gui-runner.el"

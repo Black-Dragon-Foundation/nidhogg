@@ -37,7 +37,11 @@ use smithay::reexports::wayland_protocols::wp::text_input::zv3::server::zwp_text
 use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation::WpPresentation;
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecoMode;
 use smithay::utils::{Clock as SmClock, Monotonic};
+use smithay::reexports::wayland_protocols::xdg::foreign::zv2::server::zxdg_exporter_v2::ZxdgExporterV2;
+use crate::extras::proto::xdg_session_manager_v1::XdgSessionManagerV1;
 use smithay::wayland::fractional_scale::FractionalScaleManagerState;
+use smithay::wayland::idle_inhibit::IdleInhibitManagerState;
+use smithay::wayland::xdg_system_bell::XdgSystemBellState;
 use smithay::wayland::presentation::{PresentationFeedbackCachedState, PresentationState};
 use smithay::wayland::selection::data_device::DataDeviceState;
 use smithay::wayland::selection::primary_selection::PrimarySelectionState;
@@ -134,6 +138,8 @@ pub struct State {
     /// Drag and drop, both ways (dnd.rs), and the touch surface (touch.rs).
     pub dnd: crate::dnd::Dnd,
     pub touch: crate::touch::Touch,
+    /// The bell, idle inhibitors, exports and sessions (extras.rs).
+    pub extras: crate::extras::Extras,
     /// The popups holding a grab, bottom to top, with the kind of serial each grabbed with.
     pub grabs: Vec<(PopupSurface, &'static str)>,
     /// The newest serial sent with a button press, a key press and a touch down: what a grab may name.
@@ -220,6 +226,10 @@ fn max_version(name: &str) -> Option<u32> {
         "wp_fractional_scale_manager_v1" => 1,
         "wp_viewporter" => 1,
         "wp_presentation" => 2,
+        "xdg_system_bell_v1" => 1,
+        "zwp_idle_inhibit_manager_v1" => 1,
+        "zxdg_exporter_v2" => 1,
+        "xdg_session_manager_v1" => 1,
         _ => return None,
     })
 }
@@ -318,6 +328,14 @@ impl State {
                 "wp_presentation",
                 PresentationState::new::<State>(dh, 1).global(),
             ),
+            (
+                "xdg_system_bell_v1",
+                XdgSystemBellState::new::<State>(dh).global(),
+            ),
+            (
+                "zwp_idle_inhibit_manager_v1",
+                IdleInhibitManagerState::new::<State>(dh).global(),
+            ),
         ];
         for (name, id) in extra {
             if !profile.globals.contains_key(name) || name == "wp_presentation" {
@@ -390,8 +408,16 @@ impl State {
                 "wp_presentation" => {
                     dh.create_global::<State, WpPresentation, u32>(v, 1);
                 }
+                "zxdg_exporter_v2" => {
+                    dh.create_global::<State, ZxdgExporterV2, _>(v, ());
+                }
+                "xdg_session_manager_v1" => {
+                    dh.create_global::<State, XdgSessionManagerV1, _>(v, ());
+                }
                 // created above
-                "wl_data_device_manager"
+                "xdg_system_bell_v1"
+                | "zwp_idle_inhibit_manager_v1"
+                | "wl_data_device_manager"
                 | "zwp_primary_selection_device_manager_v1"
                 | "xdg_activation_v1"
                 | "zxdg_decoration_manager_v1"
@@ -430,6 +456,7 @@ impl State {
             held_fds: Vec::new(),
             dnd: Default::default(),
             touch: Default::default(),
+            extras: Default::default(),
             grabs: Vec::new(),
             serials: [None; 3],
             activations: Vec::new(),
@@ -674,6 +701,15 @@ impl CompositorHandler for State {
                 }
                 .to_string()
             });
+        // a toplevel's logical size, for the session store
+        let session_size = (role == "toplevel")
+            .then(|| {
+                geometry.map(|g| [g[2], g[3]]).or_else(|| {
+                    let scale = buffer_scale.max(1);
+                    buffer.as_ref().map(|b| [b.w / scale, b.h / scale])
+                })
+            })
+            .flatten();
         let commit = Commit {
             seq: self.log.next_seq(),
             client,
@@ -704,6 +740,7 @@ impl CompositorHandler for State {
         if held_children {
             self.log.mark_applied(seq);
         }
+        self.session_commit(surface, session_size);
         self.initial_configure(surface);
     }
 

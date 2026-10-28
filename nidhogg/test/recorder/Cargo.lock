@@ -343,8 +343,10 @@ dependencies = [
  "serde",
  "serde_json",
  "smithay",
+ "wayland-backend",
  "wayland-client",
  "wayland-protocols",
+ "wayland-scanner",
  "xkbcommon",
 ]
 

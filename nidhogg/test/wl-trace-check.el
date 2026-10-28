@@ -6,15 +6,22 @@
 ;;
 ;;   nidhogg -Q --batch -l wl-trace-check.el -f wl-trace-check-batch TRACE RULES
 ;;
-;; RULES is a comma list of: errors acks unconfigured subsurface popup sync.  Exit 0 no violation, 1 violations,
-;; 2 usage.  Lines that are not trace lines (the test output shares the file) are ignored, except by `errors'.
+;; RULES is a comma list of: errors acks unconfigured subsurface popup sync grab popup-order dnd.  Exit 0 no
+;; violation, 1 violations, 2 usage.  Lines that are not trace lines (the test output shares the file) are ignored,
+;; except by `errors'.
+;;
+;;   grab         every xdg_popup.grab serial came from a press (button, key, touch down) the client saw, and the
+;;                popup's parent is a toplevel or the topmost grabbing popup
+;;   popup-order  popups are destroyed topmost first: none before a popup that was made on it
+;;   dnd          no wl_data_offer.finish without a non-zero set_actions since the offer's last enter; no receive
+;;                after finish or destroy; wl_data_device.start_drag names a press serial whose release was not seen
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'subr-x)
 
-(defconst wl-trace-check-rules '("errors" "acks" "unconfigured" "subsurface" "popup" "sync")
+(defconst wl-trace-check-rules '("errors" "acks" "unconfigured" "subsurface" "popup" "sync" "grab" "popup-order" "dnd")
   "The rule names `wl-trace-check-file' knows.")
 
 (defvar wl-trace-check-counts nil
@@ -52,6 +59,13 @@ message, arguments.  The time is `HH:MM:SS.microseconds' (libwayland 1.24 and la
       (setq pos (match-end 0)))
     (nreverse refs)))
 
+(defun wl-trace-check--press (press released serial key down kind)
+  "Note in PRESS the press of KEY (of KIND, with SERIAL) when DOWN; otherwise mark every press of KEY in RELEASED."
+  (if down
+      (progn (puthash serial (cons kind key) press)
+             (remhash serial released))
+    (maphash (lambda (s v) (when (equal (cdr v) key) (puthash s t released))) press)))
+
 (defun wl-trace-check-file (file rules)
   "Check FILE (a WAYLAND_DEBUG=client trace) against RULES (a list of names).
 Returns a list of strings \"RULE line N: what\", empty when the trace is clean."
@@ -77,6 +91,14 @@ Returns a list of strings \"RULE line N: what\", empty when the trace is clean."
         (acked-once (make-hash-table))    ; xdg_surface id -> t
         (need-buffer (make-hash-table))   ; wl_surface id -> line of the ack that wants a buffer
         (attached (make-hash-table))      ; wl_surface id -> :buffer, :null or nil since its last commit
+        ;; popups and drags
+        (popup-parent (make-hash-table))  ; xdg_popup id -> the xdg_surface id it was made on, or nil
+        (popup-live (make-hash-table))    ; xdg_popup id -> t until it is destroyed
+        (grabbing nil)                    ; the xdg_popup ids that grab, topmost first
+        (press (make-hash-table))         ; serial -> (KIND . KEY) of a press the client saw
+        (released (make-hash-table))      ; serial -> t once its button, key or touch point was let go
+        (offer-state (make-hash-table))   ; wl_data_offer id -> :entered or :acted
+        (offer-dead (make-hash-table))    ; wl_data_offer id -> t after finish or destroy
         ;; deadline rules: each entry is a list, see the rule
         (sub-pending nil)                 ; (DEADLINE PARENT LINE WHAT)
         (popup-pending nil)               ; (DEADLINE XDG WL LINE ACKED)
@@ -127,8 +149,10 @@ Returns a list of strings \"RULE line N: what\", empty when the trace is clean."
                     (let ((child (gethash gone sub-child)) (w (gethash gone xdg-wl)))
                       (when child (remhash child parent-of) (remhash child sub-of))
                       (when w (remhash w wl-xdg)))
+                    (setq grabbing (delq gone grabbing))
                     (dolist (tab (list xdg-wl wl-xdg top-xdg popup-xdg sub-child sub-parent parent-of sub-of
-                                       cfg-size acked-size acked-once need-buffer attached))
+                                       cfg-size acked-size acked-once need-buffer attached
+                                       popup-parent popup-live offer-state offer-dead))
                       (remhash gone tab))))
                  ;; ---- object graph
                  ((and request (equal msg "get_xdg_surface"))
@@ -138,7 +162,10 @@ Returns a list of strings \"RULE line N: what\", empty when the trace is clean."
                  ((and request (equal msg "get_toplevel"))
                   (puthash (cdr (nth 0 refs)) id top-xdg))
                  ((and request (equal msg "get_popup"))
-                  (puthash (cdr (nth 0 refs)) id popup-xdg))
+                  (let ((parent (nth 1 refs)))
+                    (puthash (cdr (nth 0 refs)) id popup-xdg)
+                    (puthash (cdr (nth 0 refs)) (and (equal (car parent) "xdg_surface") (cdr parent)) popup-parent)
+                    (puthash (cdr (nth 0 refs)) t popup-live)))
                  ((and request (equal msg "get_subsurface"))
                   (let ((s (cdr (nth 0 refs))) (child (cdr (nth 1 refs))) (parent (cdr (nth 2 refs))))
                     (puthash s child sub-child)
@@ -213,7 +240,71 @@ Returns a list of strings \"RULE line N: what\", empty when the trace is clean."
                   (let ((parent (gethash id sub-parent)))
                     (when parent
                       (push (list (+ time wl-trace-check-window) parent n (format "%s(%s)" msg args) id)
-                            sub-pending)))))))
+                            sub-pending))))
+                 ;; ---- the presses the client saw (button, key, touch down) and what let them go
+                 ((and (not request) (equal iface "wl_pointer") (equal msg "button")
+                       (string-match "\\`\\([0-9]+\\), [0-9]+, \\([0-9]+\\), \\([0-9]+\\)" args))
+                  (wl-trace-check--press press released (string-to-number (match-string 1 args))
+                                         (format "b%s" (match-string 2 args)) (equal (match-string 3 args) "1") 'button))
+                 ((and (not request) (equal iface "wl_keyboard") (equal msg "key")
+                       (string-match "\\`\\([0-9]+\\), [0-9]+, \\([0-9]+\\), \\([0-9]+\\)" args))
+                  (wl-trace-check--press press released (string-to-number (match-string 1 args))
+                                         (format "k%s" (match-string 2 args)) (equal (match-string 3 args) "1") 'key))
+                 ((and (not request) (equal iface "wl_touch") (equal msg "down")
+                       (string-match "\\`\\([0-9]+\\), [0-9]+, [a-z_0-9]+[@#][0-9]+, \\(-?[0-9]+\\)" args))
+                  (wl-trace-check--press press released (string-to-number (match-string 1 args))
+                                         (format "t%s" (match-string 2 args)) t 'touch))
+                 ((and (not request) (equal iface "wl_touch") (equal msg "up")
+                       (string-match "\\`[0-9]+, [0-9]+, \\(-?[0-9]+\\)" args))
+                  (wl-trace-check--press press released nil (format "t%s" (match-string 1 args)) nil 'touch))
+                 ;; ---- grab and popup order
+                 ((and request (equal iface "xdg_popup") (equal msg "grab")
+                       (string-match "[a-z_0-9]+[@#][0-9]+, \\([0-9]+\\)\\'" args))
+                  (let* ((serial (string-to-number (match-string 1 args)))
+                         (parent (gethash id popup-parent))
+                         (top (car grabbing)))
+                    (cond
+                     ((not (gethash serial press))
+                      (bad "grab" n "xdg_popup %d grabs with serial %d, which no press the client saw carried" id serial))
+                     ((and parent
+                           (not (cl-loop for x being the hash-values of top-xdg thereis (eq x parent)))
+                           (not (and top (eq parent (gethash top popup-xdg)))))
+                      (bad "grab" n "xdg_popup %d grabs on xdg_surface %d, neither a toplevel nor the topmost grabbing popup"
+                           id parent)))
+                    (push id grabbing)))
+                 ((and request (equal iface "xdg_popup") (equal msg "destroy"))
+                  (let* ((x (gethash id popup-xdg))
+                         (child (and x (cl-loop for c being the hash-keys of popup-parent
+                                                thereis (and (not (eq c id)) (gethash c popup-live)
+                                                             (eq (gethash c popup-parent) x) c)))))
+                    (when child
+                      (bad "popup-order" n "xdg_popup %d destroyed before its child popup %d" id child)))
+                  (remhash id popup-live)
+                  (setq grabbing (delq id grabbing)))
+                 ;; ---- drag and drop
+                 ((and (not request) (equal iface "wl_data_device") (equal msg "enter"))
+                  (let ((offer (cl-find "wl_data_offer" refs :key #'car :test #'equal)))
+                    (when offer (puthash (cdr offer) :entered offer-state))))
+                 ((and request (equal iface "wl_data_offer") (equal msg "set_actions")
+                       (string-match "\\`\\([0-9]+\\)" args))
+                  (puthash id (if (equal (match-string 1 args) "0") :entered :acted) offer-state))
+                 ((and request (equal iface "wl_data_offer") (equal msg "finish"))
+                  (unless (eq (gethash id offer-state) :acted)
+                    (bad "dnd" n "wl_data_offer %d finish without a non-zero set_actions since its enter" id))
+                  (puthash id t offer-dead))
+                 ((and request (equal iface "wl_data_offer") (equal msg "receive"))
+                  (when (gethash id offer-dead)
+                    (bad "dnd" n "wl_data_offer %d receive after finish or destroy" id)))
+                 ((and request (equal iface "wl_data_offer") (equal msg "destroy"))
+                  (puthash id t offer-dead))
+                 ((and request (equal iface "wl_data_device") (equal msg "start_drag")
+                       (string-match ", \\([0-9]+\\)\\'" args))
+                  (let* ((serial (string-to-number (match-string 1 args)))
+                         (p (gethash serial press)))
+                    (cond ((or (null p) (eq (car p) 'key))
+                           (bad "dnd" n "start_drag with serial %d, which is no press (button or touch down) the client saw" serial))
+                          ((gethash serial released)
+                           (bad "dnd" n "start_drag with serial %d: its press was released" serial))))))))
             (forward-line 1))))
       ;; the trace ended: only what had its whole window inside the trace is a violation
       (dolist (p sub-pending)
@@ -229,7 +320,8 @@ Returns a list of strings \"RULE line N: what\", empty when the trace is clean."
     (setq wl-trace-check-counts
           (mapcar (lambda (k) (cons k (gethash k counts 0)))
                   '("trace lines" "wl_surface.commit" "xdg_surface.ack_configure" "wl_subsurface.set_position"
-                    "wl_subsurface.place_above" "wl_subsurface.place_below" "xdg_popup.repositioned")))
+                    "wl_subsurface.place_above" "wl_subsurface.place_below" "xdg_popup.repositioned"
+                    "xdg_popup.grab" "xdg_popup.destroy" "wl_data_offer.finish" "wl_data_device.start_drag")))
     (nreverse out)))
 
 (defun wl-trace-check-batch ()
