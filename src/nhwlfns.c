@@ -1092,40 +1092,31 @@ DEFUN ("x-display-screens", Fx_display_screens, Sx_display_screens, 0, 1, 0,
   return make_fixnum (1);
 }
 
-/* The size of the display in millimetres: the same arithmetic as pgtk's
-   (outputs at the origin count the largest, others add up).  */
-static int
-nhwl_display_mm (struct nhwl_display_info *dpyinfo, bool width)
+/* What the x-display-* functions ask of the display: its extent in
+   pixels and millimetres, from the glue (the same arithmetic as pgtk's).  */
+static NhgDisplayInfo
+nhwl_display_info (Lisp_Object terminal)
 {
-  int at_0 = 0, at_other = 0, i;
+  struct nhwl_display_info *dpyinfo = check_nhwl_display_info (terminal);
+  NhgDisplayInfo info;
 
-  for (i = 0; i < dpyinfo->n_monitors; i++)
-    {
-      struct nhwl_monitor *m = &dpyinfo->monitors[i];
-      int mm = width ? m->mm_w : m->mm_h;
-
-      if ((width ? m->x : m->y) == 0)
-	at_0 = max (at_0, mm);
-      else
-	at_other += mm;
-    }
-  return at_0 + at_other;
+  memset (&info, 0, sizeof info);
+  nhwl_glue_rc (dpyinfo, NHG (nhg_display_info (dpyinfo->glue, &info)));
+  return info;
 }
 
 DEFUN ("x-display-mm-height", Fx_display_mm_height, Sx_display_mm_height, 0, 1,
        0, doc: /* SKIP: real doc in xfns.c.  */)
   (Lisp_Object terminal)
 {
-  return make_fixnum (nhwl_display_mm (check_nhwl_display_info (terminal),
-				       false));
+  return make_fixnum (nhwl_display_info (terminal).mm_h);
 }
 
 DEFUN ("x-display-mm-width", Fx_display_mm_width, Sx_display_mm_width, 0, 1, 0,
        doc: /* SKIP: real doc in xfns.c.  */)
   (Lisp_Object terminal)
 {
-  return make_fixnum (nhwl_display_mm (check_nhwl_display_info (terminal),
-				       true));
+  return make_fixnum (nhwl_display_info (terminal).mm_w);
 }
 
 DEFUN ("x-display-backing-store", Fx_display_backing_store,
@@ -1175,17 +1166,7 @@ DEFUN ("x-display-pixel-width", Fx_display_pixel_width,
        doc: /* SKIP: real doc in xfns.c.  */)
   (Lisp_Object terminal)
 {
-  struct nhwl_display_info *dpyinfo = check_nhwl_display_info (terminal);
-  int i, width = 0;
-
-  for (i = 0; i < dpyinfo->n_monitors; i++)
-    {
-      struct nhwl_monitor *m = &dpyinfo->monitors[i];
-      int x = (int) roundf (m->x * m->scale120 / 120.0f);
-
-      width = max (width, x + m->w);
-    }
-  return make_fixnum (width ? width : nhwl_display_pixel_width (dpyinfo));
+  return make_fixnum (nhwl_display_info (terminal).w);
 }
 
 DEFUN ("x-display-pixel-height", Fx_display_pixel_height,
@@ -1193,17 +1174,7 @@ DEFUN ("x-display-pixel-height", Fx_display_pixel_height,
        doc: /* SKIP: real doc in xfns.c.  */)
   (Lisp_Object terminal)
 {
-  struct nhwl_display_info *dpyinfo = check_nhwl_display_info (terminal);
-  int i, height = 0;
-
-  for (i = 0; i < dpyinfo->n_monitors; i++)
-    {
-      struct nhwl_monitor *m = &dpyinfo->monitors[i];
-      int y = (int) roundf (m->y * m->scale120 / 120.0f);
-
-      height = max (height, y + m->h);
-    }
-  return make_fixnum (height ? height : nhwl_display_pixel_height (dpyinfo));
+  return make_fixnum (nhwl_display_info (terminal).h);
 }
 
 DEFUN ("xw-color-defined-p", Fxw_color_defined_p, Sxw_color_defined_p, 1, 2, 0,

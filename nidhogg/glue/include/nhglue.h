@@ -288,6 +288,73 @@ int32_t nhg_test_panic (NhgDisplay *d);
 /* The window that has the keyboard focus, as the last focus event said, into *OUT (0: none of ours).  */
 int32_t nhg_keyboard_window (NhgDisplay *d, uint64_t *out);
 
+/* ---- Selections, display queries, the bench, the bell and the pointer -------------------------------------------
+   None of these reads or writes pixels except nhg_bench_full_redraw, which reads them.  KIND is NHSHELL_SEL_CLIPBOARD
+   or NHSHELL_SEL_PRIMARY.  A buffer a call lends stays valid until the next call of the same entry point.  */
+
+/* Offer N types as selection KIND: MIMES[i] with the LENS[i] bytes at DATA[i], copied.  NHG_E_STATE without keyboard
+   focus; the glue then owns nothing.  */
+int32_t nhg_selection_set (NhgDisplay *d, uint32_t kind, const char *const *mimes, const uint8_t *const *data,
+                           const size_t *lens, size_t n);
+
+/* Give selection KIND up: 1 when this process owned it, 0 when it did not.  */
+int32_t nhg_selection_disown (NhgDisplay *d, uint32_t kind);
+
+/* 1 while this process's source is the current selection KIND, else 0.  */
+int32_t nhg_selection_owned (NhgDisplay *d, uint32_t kind);
+
+/* The number of MIME types of selection KIND (0: no selection).  *OUT and *LEN get the types, each followed by a NUL,
+   and their byte count; either may be NULL.  */
+int32_t nhg_selection_types (NhgDisplay *d, uint32_t kind, const char **out, size_t *len);
+
+/* Selection KIND as MIME into *OUT, *LEN: our own bytes at once, another client's within TIMEOUT_MS
+   (NHG_E_TIMEOUT).  NHG_E_DISCONNECTED within 100 ms of the connection's loss.  NHG_E_STATE without a selection or
+   without that type.  */
+int32_t nhg_selection_read (NhgDisplay *d, uint32_t kind, const char *mime, uint32_t timeout_ms, const uint8_t **out,
+                            size_t *len);
+
+/* A change of selection KIND that took it from us comes out of nhg_next as a SELECTION_CLEAR action (code: KIND; the
+   ownership is cleared).  */
+
+/* One output, as the shell reports it: X and Y in logical pixels, W and H the mode in device pixels.  */
+typedef struct
+{
+  uint64_t id;
+  int32_t x, y, w, h, mm_w, mm_h;
+  uint32_t scale120;
+  char name[32];
+} NhgMonitor;
+
+/* An output was added or changed (replacing the one with its id): 1 when it is kept, 0 when 16 are known.  An output
+   went: 1 when it was known.  */
+int32_t nhg_monitor_set (NhgDisplay *d, const NhgMonitor *m);
+int32_t nhg_monitor_remove (NhgDisplay *d, uint64_t id);
+
+/* The display as x-display-* reads it: its extent in device pixels (1920 x 1080 with no output) and in millimetres,
+   the first output's scale times 120 (0: none yet) and the shell's capabilities.  */
+typedef struct
+{
+  int32_t w, h, mm_w, mm_h;
+  uint32_t scale120;
+  NhShellCaps caps;
+} NhgDisplayInfo;
+int32_t nhg_display_info (NhgDisplay *d, NhgDisplayInfo *out);
+
+/* Present FRAMES frames (1 to 100000) of the tree of the N surfaces S (as nhg_present takes them: bottom to top, the
+   root first), each damaged whole and presented through the presenter, and time them: the frames that committed, the
+   median and 95th percentile of one present in milliseconds (the publish, and the try that committed), and the 95th
+   percentile of the time between two commits.  NHG_E_STATE when the root is not registered, has no backing, or fewer
+   than two frames committed (OUT->frames says how many).  Waits at most 5 s for each frame.  Reads pixels.  */
+typedef struct { uint64_t frames; double compose_p50, compose_p95, interval_p95; } NhgBenchOut;
+int32_t nhg_bench_full_redraw (NhgDisplay *d, const NhgSurface *s, size_t n, uint32_t frames, NhgBenchOut *out);
+
+/* Ring the system bell on WINDOW's surface (0: none), at most once per 20 ms.  NHG_E_UNSUPPORTED without the
+   protocol.  */
+int32_t nhg_bell (NhgDisplay *d, uint64_t window);
+
+/* Show (ON) the pointer over WINDOW as SHAPE (NHSHELL_CURSOR_*), or hide it.  */
+int32_t nhg_pointer_visible (NhgDisplay *d, uint64_t window, int32_t on, uint32_t shape);
+
 #ifdef __cplusplus
 }
 #endif

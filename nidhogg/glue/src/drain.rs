@@ -7,13 +7,15 @@
 //! which C sends to the focus frame as before; every other kind did nothing in C without a frame.
 
 use crate::action::{
-    NHG_ACT_DELETE, NHG_ACT_LOST, NHG_ACT_RAW, NHG_ACT_READY, NhgAction, NhgNextIn,
+    NHG_ACT_DELETE, NHG_ACT_LOST, NHG_ACT_RAW, NHG_ACT_READY, NHG_ACT_SELECTION_CLEAR, NhgAction,
+    NhgNextIn,
 };
 use crate::configure;
 use crate::display::Display;
 use crate::focus;
 use crate::guard::GlueError;
 use crate::keys;
+use crate::select;
 use nhshell::event::*;
 
 /// Take one event: `Ok(1)` with its actions in `state.actions` (none, possibly), `Ok(0)` when none is queued.  The
@@ -34,12 +36,25 @@ pub fn next(state: &mut Display, input: NhgNextIn) -> Result<i32, GlueError> {
         // the present step runs on every FRAME_READY, drawn or not (the shell owes the commit)
         NHSHELL_EV_FRAME_READY => window_action(state, &ev, NHG_ACT_READY),
         NHSHELL_EV_FRAME_DONE => {}
+        NHSHELL_EV_SELECTION => selection(state, &ev),
         NHSHELL_EV_DISCONNECTED => state
             .actions
             .push(NhgAction::new(NHG_ACT_LOST, 0, ev.time_ns)),
         _ => raw(state, ev),
     }
     Ok(1)
+}
+
+/// A selection changed: a `SELECTION_CLEAR` (the kind in `code`) when it was ours and another client has it now.
+/// From `nhwl_selection_changed`.
+fn selection(state: &mut Display, ev: &NhShellEvent) {
+    // SAFETY: a SELECTION record's valid member is `selection`.
+    let kind = unsafe { ev.u.selection }.kind;
+    if select::changed(state, kind) {
+        let mut a = NhgAction::new(NHG_ACT_SELECTION_CLEAR, 0, ev.time_ns);
+        a.code = kind as i32;
+        state.actions.push(a);
+    }
 }
 
 /// An action of `kind` for a registered window; nothing for another.
