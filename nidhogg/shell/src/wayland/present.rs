@@ -4,10 +4,12 @@
 //! `buffer_scale` 1 (the integer scale without a viewporter), requests a frame callback (and presentation feedback
 //! for the statistics) and commits.
 //!
-//! One pacer per window decides when the host may draw: the host calls `window_dirty` and draws when it gets
-//! `FRAME_READY` (or `window_ready` says so).  The pacer is `Idle` or `Waiting` for the frame callback of the last
-//! commit that carried content; a commit without new content (an ack, empty damage) requests no callback and
-//! leaves the state alone.  An ack never waits: it makes the pacer ready at once, in any state but starved.  A pacer
+//! One pacer per tree decides when the host may draw: a tree is a root (a top-level window or a popup) and its child
+//! windows, which are sync subsurfaces committed before their parents, the root last.  Children have buffers but no
+//! pacer: their drawing, their owed state and their buffer releases wake the root.  The host calls `window_dirty` and
+//! draws when it gets `FRAME_READY` (or `window_ready` says so).  The pacer is `Idle` or `Waiting` for the frame
+//! callback of the last commit that carried content; a commit without new content (an ack, empty damage) requests no
+//! callback and leaves the state alone.  An ack never waits: it makes the pacer ready at once, in any state but starved.  A pacer
 //! is starved when `present_begin` found every buffer busy and leaves that state on a release; when it is idle and
 //! the two buffers are busy, the pool grows to three first.  A suspended window only acks.  A pacer that waits
 //! re-arms (a callback and an empty commit) when a configure, the end of suspension, `wl_surface.enter` or a scale
@@ -56,6 +58,11 @@ pub struct Present {
     ack_content: bool,
     /// Surface state (a child's position or stacking) that waits for a commit.
     owed: bool,
+    /// A child's tree root: the root paces the tree, so a child posts nothing itself (`None` for a root).
+    root: Option<Arc<Mutex<Present>>>,
+    /// A root: a child committed a buffer since the root's last commit, so the root's next commit is paced (frame
+    /// callback and feedback) even without a buffer of its own.
+    tree_content: bool,
     /// The root's first configure came (children are configured at creation).
     configured: bool,
     /// `FRAME_READY` was posted and the host has not asked `window_ready` since.
@@ -83,7 +90,7 @@ fn now_ns() -> u64 {
 }
 
 impl Present {
-    fn new(window: u64, shared: Option<Arc<Shared>>, configured: bool) -> Present {
+    fn new(window: u64, shared: Option<Arc<Shared>>, root: Option<Arc<Mutex<Present>>>) -> Present {
         Present {
             window,
             pool: Pool::new(),
@@ -95,7 +102,10 @@ impl Present {
             ack: None,
             ack_content: false,
             owed: false,
-            configured,
+            // a child needs no configure
+            configured: root.is_some(),
+            root,
+            tree_content: false,
             suspended: false,
             notified: false,
             shared,
@@ -145,21 +155,45 @@ impl Present {
 
 impl MainState {
     fn present_of(&mut self, id: u64) -> Arc<Mutex<Present>> {
-        let shared = self.shared.clone();
-        // a child needs no configure
-        let configured = self.children.contains_key(&id);
-        self.presents
-            .entry(id)
-            .or_insert_with(|| Arc::new(Mutex::new(Present::new(id, shared, configured))))
-            .clone()
+        if let Some(p) = self.presents.get(&id) {
+            return p.clone();
+        }
+        // a child (a sync subsurface) is paced by its tree's root, and posts nothing itself
+        let p = if self.children.contains_key(&id) {
+            let root = self.tree_root(id);
+            Present::new(id, None, Some(self.present_of(root)))
+        } else {
+            Present::new(id, self.shared.clone(), None)
+        };
+        let p = Arc::new(Mutex::new(p));
+        self.presents.insert(id, p.clone());
+        p
     }
 
-    /// Window `id` owes a commit (surface state changed): wake its pacer.
-    pub(crate) fn present_owe(&mut self, id: u64) {
-        let present = self.present_of(id);
-        let mut p = lock(&present);
-        p.owed = true;
-        p.notify();
+    /// The root of window `id`'s tree: the nearest ancestor (or `id` itself) that is not a child.
+    pub(crate) fn tree_root(&self, mut id: u64) -> u64 {
+        while let Some(c) = self.children.get(&id) {
+            id = c.parent;
+        }
+        id
+    }
+
+    /// Child `id`'s state waits for commits (B3: sync subsurfaces): `id`'s own when `own`, and every ancestor's up to
+    /// the root, since a sync child's commit applies only with its parent's.  With `wake`, the root's pacer wakes.
+    pub(crate) fn present_owe(&mut self, id: u64, own: bool, wake: bool) {
+        if own {
+            lock(&self.present_of(id)).owed = true;
+        }
+        let mut cur = id;
+        while let Some(parent) = self.children.get(&cur).map(|c| c.parent) {
+            cur = parent;
+            let present = self.present_of(cur);
+            let mut p = lock(&present);
+            p.owed = true;
+            if wake && !self.children.contains_key(&cur) {
+                p.notify();
+            }
+        }
     }
 
     /// Record `serial`'s ack for window `id` (sent with the next commit) and wake the pacer.
@@ -343,9 +377,11 @@ impl WaylandShell {
         for r in &all {
             surface.damage_buffer(r.x, r.y, r.w, r.h);
         }
-        // only a commit with content is paced: the frame callback releases the pacer, feedback is statistics
+        // only a root's commit with content (its own, or a child's it applies) is paced: the frame callback releases
+        // the pacer, feedback is statistics
         let rqh = self.main.reader_qh.as_ref().ok_or(ShellError::State)?;
-        if !all.is_empty() {
+        let child = p.root.is_some();
+        if !child && (!all.is_empty() || p.tree_content) {
             surface.frame(rqh, present.clone());
             if let Some(pres) = &self.main.presentation {
                 pres.feedback(surface, rqh, present.clone());
@@ -354,26 +390,36 @@ impl WaylandShell {
         }
         p.ack_content = false;
         p.owed = false;
+        p.tree_content = false;
         surface.commit();
         p.pool.submitted(slot);
+        let root = p.root.clone();
         drop(p);
+        if let Some(root) = root {
+            // a sync child's buffer shows when every ancestor has committed after it, the root last
+            lock(&root).tree_content = true;
+            self.main.present_owe(id, false, false);
+        }
         self.flush()
     }
 
-    /// The host has drawn into window `id`: `FRAME_READY` comes when the pacer lets it present.
+    /// The host has drawn into window `id`: `FRAME_READY` comes when the pacer lets it present.  A child's drawing
+    /// wakes its tree's root, which presents the tree.
     pub(super) fn window_dirty_impl(&mut self, id: WindowId) -> ShellResult {
         if !self.main.is_window(id) {
             return Err(ShellError::State);
         }
-        let present = self.main.present_of(id);
+        let root = self.main.tree_root(id);
+        let present = self.main.present_of(root);
         let mut p = lock(&present);
         p.dirty = true;
         p.notify();
         Ok(())
     }
 
-    /// A commit with no buffer, callback, feedback, viewport or scale: a bare ack goes with it (a content ack waits
-    /// for a buffer), and the owed surface state.
+    /// A commit with no buffer, viewport or scale: a bare ack goes with it (a content ack waits for a buffer), and the
+    /// owed surface state.  No frame callback or feedback either, unless it is a root's commit that applies a child's
+    /// buffer: that commit shows content, and paces the tree.  A child's bare commit makes its ancestors owe one.
     pub(super) fn present_bare_impl(&mut self, id: WindowId) -> ShellResult {
         let present = self
             .main
@@ -389,9 +435,21 @@ impl WaylandShell {
         {
             xdg.ack_configure(serial);
         }
+        if std::mem::take(&mut p.tree_content) {
+            let rqh = self.main.reader_qh.as_ref().ok_or(ShellError::State)?;
+            surface.frame(rqh, present.clone());
+            if let Some(pres) = &self.main.presentation {
+                pres.feedback(surface, rqh, present.clone());
+            }
+            p.waiting = true;
+        }
         p.owed = false;
         surface.commit();
+        let child = p.root.is_some();
         drop(p);
+        if child {
+            self.main.present_owe(id, false, false);
+        }
         self.flush()
     }
 
@@ -404,13 +462,17 @@ impl WaylandShell {
         }
     }
 
-    /// Whether the host may draw and present window `id` now.
+    /// Whether the host may draw and present window `id` now.  A child is presented with its tree: it reports only
+    /// `OWED`, its own surface owes a commit (before its parent's).
     pub(super) fn window_ready_impl(&mut self, id: WindowId) -> ShellResult<u32> {
         if !self.main.is_window(id) {
             return Err(ShellError::State);
         }
         Ok(self.main.presents.get(&id).map_or(0, |p| {
             let mut p = lock(p);
+            if p.root.is_some() {
+                return u32::from(p.owed) * NHSHELL_READY_OWED;
+            }
             p.notified = false;
             let bits = p.ready();
             if bits & NHSHELL_READY_CONTENT != 0 {
@@ -541,9 +603,18 @@ impl Dispatch<WlBuffer, BufData> for ReaderState {
                 };
                 p.pool.released(slot);
             }
-            // a starved pacer leaves its state on a release
+            // a starved pacer leaves its state on a release; a starved child's draw waits in the host, so its root
+            // presents the tree again
             if std::mem::take(&mut p.starved) {
-                p.notify();
+                match p.root.clone() {
+                    Some(root) => {
+                        drop(p);
+                        let mut r = lock(&root);
+                        r.dirty = true;
+                        r.notify();
+                    }
+                    None => p.notify(),
+                }
             }
         }
     }
