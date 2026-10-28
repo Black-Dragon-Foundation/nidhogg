@@ -420,7 +420,9 @@ nhg_export! {
             _ => unsafe { std::slice::from_raw_parts(s, n) },
         };
         let (backend, backings, presenting) = state.presenting();
-        present::present(backend, backings, presenting, root, list, flags, t_key_ns)
+        let out = present::present(backend, backings, presenting, root, list, flags, t_key_ns)?;
+        crate::reconnect::presented(state, root, out);
+        Ok(out)
     }
 }
 
@@ -1355,5 +1357,60 @@ nhg_export! {
     /// `d` is null or a live display.
     fn nhg_dnd_finish(d: *mut NhgDisplay, success: i32, time_ms: u32) -> i32 |state| {
         Ok(i32::from(crate::dnd::finish(state, success != 0, time_ms)?))
+    }
+}
+
+// ---- Reconnecting in place (`reconnect.rs`) -------------------------------------------------------------------------
+
+nhg_export! {
+    /// Reconnect in place when the display goes (`on` non-zero; off at open): a hangup then gives
+    /// `NHG_ACT_RECONNECTING`, not `NHG_ACT_LOST`.  `NHG_E_UNSUPPORTED` when the connection cannot be made again (an
+    /// inherited socket).  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_set_reconnect(d: *mut NhgDisplay, on: i32) -> i32 |state| {
+        state.backend().set_reconnect(on != 0)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// One tick of C's reconnect timer: a step of at most 50 ms, given up `timeout_ms` after the loss.  `NHG_OK` once
+    /// connected (`NHG_ACT_RECONNECTED` comes out of `nhg_next`) or when not reconnecting; `NHG_E_TIMEOUT` with the
+    /// next tick's delay in `*next_ms`; `NHG_E_DISCONNECTED` when the glue gave up (C drops the display).  Neither
+    /// reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `next_ms` is null or writable.
+    fn nhg_reconnect_step(d: *mut NhgDisplay, timeout_ms: u32, next_ms: *mut u32) -> i32 |state| {
+        let (rc, next) = crate::reconnect::step(state, timeout_ms);
+        if !next_ms.is_null() {
+            // SAFETY: non-null and writable (the caller's promise).
+            unsafe { *next_ms = next };
+        }
+        Ok(rc)
+    }
+}
+
+nhg_export! {
+    /// After `NHG_ACT_RECONNECTED`, what is due now: `NHG_SETTLE_*` bits, with `*window` the window that loses the
+    /// keyboard for `NHG_SETTLE_FOCUS_OUT`, and `*next_ms` when to ask again (0: nothing is pending).  Neither reads
+    /// nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `window` and `next_ms` are null or writable.
+    fn nhg_reconnect_settle(d: *mut NhgDisplay, window: *mut u64, next_ms: *mut u32) -> i32 |state| {
+        let (bits, w, next) = crate::reconnect::settle(state, std::time::Instant::now());
+        // SAFETY: each is null or writable (the caller's promise).
+        unsafe {
+            if !window.is_null() {
+                *window = w;
+            }
+            if !next_ms.is_null() {
+                *next_ms = next;
+            }
+        }
+        Ok(bits)
     }
 }

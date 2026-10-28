@@ -713,6 +713,302 @@ nothing."
       (advice-remove 'text-scale-pinch count)
       (with-current-buffer (window-buffer (selected-window)) (text-scale-set 0)))))
 
+;; W2 Task 24: frames survive a compositor restart.  The recorder's `restart' drops every client and serves again on
+;; the same socket (`keep-socket': the connection waits in the backlog for `down_ms'; `rebind': the name is bound
+;; again after `down_ms'; `gone': until `restart_up'), and the shell connects again on its backoff timer.  Lisp hears
+;; of it through `nhwl-display-connection-functions'.  The rows end the first connection, so they run last; the gate
+;; runs them with `--daemon' and with the trace rule `unconfigured' on the second connection.
+
+(defvar nhwl-gui--connection-log nil
+  "The STATE of each `nhwl-display-connection-functions' call, oldest first.")
+
+(defun nhwl-gui--connection-note (_display state)
+  (setq nhwl-gui--connection-log (append nhwl-gui--connection-log (list state))))
+
+(defmacro nhwl-gui--with-connection-log (&rest body)
+  "Run BODY with the connection hook's states logged in `nhwl-gui--connection-log' (emptied first)."
+  `(progn
+     (setq nhwl-gui--connection-log nil)
+     (add-hook 'nhwl-display-connection-functions #'nhwl-gui--connection-note)
+     (unwind-protect (progn ,@body)
+       (remove-hook 'nhwl-display-connection-functions #'nhwl-gui--connection-note))))
+
+(defun nhwl-gui--restart (mode &rest args)
+  "Restart the recorder in place in MODE (\"keep-socket\", \"rebind\" or \"gone\"), with ARGS (`:down_ms', `:profile')."
+  (gui-runner-recorder `(:cmd "restart" :mode ,mode ,@args)))
+
+(defun nhwl-gui--reconnected (&optional seconds)
+  "Read events for up to SECONDS (default 10) until the connection hook has run with `reconnected'."
+  (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (memq 'reconnected nhwl-gui--connection-log)) (or seconds 10)))
+
+(defun nhwl-gui--restart-and-reconnect (&rest args)
+  "A keep-socket restart with ARGS, then the wait for `reconnected'; non-nil when it came."
+  (apply #'nhwl-gui--restart "keep-socket" args)
+  (nhwl-gui--reconnected))
+
+(defun nhwl-gui--accepted ()
+  "How many connections the recorder has accepted since it started."
+  (plist-get (gui-runner-recorder '(:cmd "connections")) :accepted))
+
+(defun nhwl-gui--proc-counts ()
+  "This process's (FDS TASKS RSS-KB)."
+  (list (length (directory-files "/proc/self/fd" nil "\\`[0-9]"))
+        (length (directory-files "/proc/self/task" nil "\\`[0-9]"))
+        (with-temp-buffer
+          (insert-file-contents "/proc/self/status")
+          (and (re-search-forward "^VmRSS:[ \t]+\\([0-9]+\\)" nil t)
+               (string-to-number (match-string 1))))))
+
+(ert-deftest nhwl-gui/compositor-restart-keeps-frames ()
+  "A keep-socket restart with the compositor down 1 s: the same frame stays live with its native size and title, and
+the hook runs `reconnecting', then `reconnected'."
+  :tags '(runs-last)
+  (skip-unless (nhwl-gui--recorder-p))
+  (let* ((f (selected-frame)) (w (frame-native-width f)) (h (frame-native-height f))
+         (title (frame-parameter f 'title)) (accepted (nhwl-gui--accepted)))
+    (nhwl-gui--with-connection-log
+     (should (nhwl-gui--restart-and-reconnect :down_ms 1000))
+     (should (equal nhwl-gui--connection-log '(reconnecting reconnected))))
+    (should (frame-live-p f))
+    (should (eq (selected-frame) f))
+    (should (= (frame-native-width f) w))
+    (should (= (frame-native-height f) h))
+    (should (equal (frame-parameter f 'title) title))
+    (should (> (nhwl-gui--accepted) accepted))
+    (should (nhwl-gui--connected-p))))
+
+(ert-deftest nhwl-gui/compositor-restart-keeps-buffer-text-and-point ()
+  "Buffer text, point and `window-start' are unchanged, and the picture after `reconnected' is the one before."
+  :tags '(runs-last)
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((buf (generate-new-buffer " *nhwl-reconnect*")) (before nil))
+    (unwind-protect
+        (progn
+          (switch-to-buffer buf)
+          (dotimes (i 200) (insert (format "line %d of the text that stays\n" i)))
+          (goto-char (point-min))
+          (forward-line 50)
+          (recenter 3)
+          (redisplay t)
+          (gui-runner-wait-settled)
+          (setq before (gui-runner-screen-grab))
+          (let ((text (buffer-string)) (pt (point)) (start (window-start)))
+            (nhwl-gui--with-connection-log
+             (should (nhwl-gui--restart-and-reconnect :down_ms 300)))
+            (should (equal (buffer-string) text))
+            (should (= (point) pt))
+            (should (= (window-start) start)))
+          (gui-runner-wait-settled)
+          (should (<= (car (gui-runner-pixel-diff before (gui-runner-screen-grab))) 2)))
+      (kill-buffer buf))))
+
+(ert-deftest nhwl-gui/compositor-restart-falls-back-after-timeout ()
+  "The compositor stays gone and `nhwl-reconnect-timeout' is 1.0: the display's frames are deleted within 2 s, the
+daemon stays, and the hook runs `reconnecting', then `lost'."
+  :tags '(runs-last)
+  (skip-unless (and (nhwl-gui--recorder-p) (daemonp)))
+  (let ((nhwl-reconnect-timeout 1.0) (frames (nhwl-gui--nhwl-frames)) (t0 nil))
+    (unwind-protect
+        (nhwl-gui--with-connection-log
+         (setq t0 (float-time))
+         (nhwl-gui--restart "gone")
+         (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (not (seq-some #'frame-live-p frames))) 4))
+         (should (< (- (float-time) t0) 2.5))
+         (should (daemonp))
+         (should (equal nhwl-gui--connection-log '(reconnecting lost))))
+      (ignore-errors (gui-runner-recorder '(:cmd "restart_up"))))))
+
+(ert-deftest nhwl-gui/compositor-restart-socket-reappears ()
+  "The socket name is bound again after 1.5 s: the shell finds it on its backoff and the frame stays."
+  :tags '(runs-last)
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((f (selected-frame)))
+    (nhwl-gui--with-connection-log
+     (nhwl-gui--restart "rebind" :down_ms 1500)
+     (should (nhwl-gui--reconnected))
+     (should (equal nhwl-gui--connection-log '(reconnecting reconnected))))
+    (should (frame-live-p f))
+    (should (nhwl-gui--connected-p))))
+
+(ert-deftest nhwl-gui/compositor-restart-closes-popups-and-menus ()
+  "A menu open from a timer and a tooltip when the compositor restarts: `x-popup-menu' returns nil, the tooltip is
+hidden, and a child frame stays, a subsurface of the new connection's tree."
+  :tags '(runs-last)
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((c nil) (result 'unset) (timer nil))
+    (unwind-protect
+        (nhwl-gui--with-connection-log
+         (setq c (nhwl-gui--child))
+         (should (nhwl-gui--child-node nil))
+         (x-show-tip "a tip" nil nil 60)
+         (nhwl-gui--press-serial)
+         (setq timer (run-at-time 0.5 nil (lambda () (nhwl-gui--restart "keep-socket" :down_ms 300))))
+         (setq result (x-popup-menu (list '(40 40) (selected-frame))
+                                    '("Menu" ("Pane" ("one" . 1) ("two" . 2)))))
+         (should-not result)
+         (should (nhwl-gui--reconnected))
+         (should-not (seq-some (lambda (f) (and (frame-live-p f) (frame-visible-p f) (frame-parameter f 'tooltip)))
+                               (frame-list)))
+         (should (frame-live-p c))
+         (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (nhwl-gui--subs)) 5)))
+      (when timer (cancel-timer timer))
+      (x-hide-tip)
+      (when (and c (frame-live-p c)) (delete-frame c t)))))
+
+(ert-deftest nhwl-gui/compositor-restart-stops-key-repeat ()
+  "A key held across the restart does not repeat afterwards: no key event in the second after `reconnected'."
+  :tags '(runs-last)
+  (skip-unless (nhwl-gui--recorder-p))
+  (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
+  (gui-runner-recorder '(:cmd "key" :keycode 30 :state "press"))
+  (nhwl-gui--with-connection-log
+   (should (nhwl-gui--restart-and-reconnect)))
+  (let ((deadline (+ (float-time) 1.0)) (keys 0) ev)
+    (while (< (float-time) deadline)
+      (setq ev (read-event nil nil 0.05))
+      (when (eq ev ?a) (setq keys (1+ keys))))
+    (should (= keys 0))))
+
+(ert-deftest nhwl-gui/compositor-restart-reoffers-the-clipboard ()
+  "Text copied before the restart is offered again on the new connection: after a focus, another client reads it."
+  :tags '(runs-last)
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((text "reconnect clipboard text"))
+    (nhwl-gui--focus-toplevel)
+    (with-temp-buffer
+      (insert text)
+      (kill-ring-save (point-min) (point-max)))
+    (should (equal (nhwl-gui--recorder-read "clipboard" "text/plain;charset=utf-8") text))
+    (nhwl-gui--with-connection-log
+     (should (nhwl-gui--restart-and-reconnect)))
+    (nhwl-gui--focus-toplevel)
+    (should (equal (nhwl-gui--recorder-read "clipboard" "text/plain;charset=utf-8") text))))
+
+(ert-deftest nhwl-gui/compositor-restart-monitors-hook-only-on-change ()
+  "With the same outputs after the restart `display-monitors-changed-functions' does not run; with an output added
+while the compositor is down, it runs once."
+  :tags '(runs-last)
+  (skip-unless (nhwl-gui--recorder-p))
+  (let* ((runs 0) (count (lambda (_) (setq runs (1+ runs)))))
+    (add-hook 'display-monitors-changed-functions count)
+    (unwind-protect
+        (progn
+          (nhwl-gui--with-connection-log
+           (should (nhwl-gui--restart-and-reconnect)))
+          (nhwl-gui--pump 0.5)
+          (should (= runs 0))
+          (nhwl-gui--with-connection-log
+           (nhwl-gui--restart "keep-socket" :down_ms 800)
+           (gui-runner-recorder '(:cmd "output" :op "add" :name "nh-rc24" :size [800 600]))
+           (should (nhwl-gui--reconnected)))
+          (nhwl-gui--pump 0.5)
+          (should (= runs 1)))
+      (remove-hook 'display-monitors-changed-functions count)
+      (ignore-errors (gui-runner-recorder '(:cmd "output" :op "remove" :name "nh-rc24"))))))
+
+(ert-deftest nhwl-gui/compositor-restart-during-drag-and-preedit ()
+  "A preedit shown and a drag out in flight when the compositor restarts: `x-begin-drag' returns nil and the preedit
+overlay is gone."
+  :tags '(runs-last)
+  (skip-unless (and (nhwl-gui--recorder-p) (fboundp 'x-begin-drag)))
+  (let ((buf (generate-new-buffer " *nhwl-reconnect-ime*")) (timer nil) (result 'unset))
+    (unwind-protect
+        (progn
+          (nhwl-gui--ime-ready buf)
+          (gui-runner-recorder '(:cmd "text_input" :preedit "ni" :cursor [2 2]))
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--ime-pump) (equal (nhwl-gui--preedit-string) "ni"))))
+          (nhwl-gui--point 100 100)
+          (gui-runner-recorder '(:cmd "button" :button 272 :state "press"))
+          (nhwl-gui--with-connection-log
+           (setq timer (run-at-time 0.3 nil (lambda () (nhwl-gui--restart "keep-socket" :down_ms 300))))
+           (setq result (x-begin-drag '("text/plain;charset=utf-8") 'XdndActionCopy nil nil t))
+           (should-not result)
+           (should (nhwl-gui--reconnected)))
+          (should (equal (nhwl-gui--preedit-string) "")))
+      (when timer (cancel-timer timer))
+      (kill-buffer buf))))
+
+(ert-deftest nhwl-gui/make-frame-while-reconnecting-signals ()
+  "`make-frame' on a display that is reconnecting signals \"Display is reconnecting\"; once it is back, it works."
+  :tags '(runs-last)
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((err nil) (f nil))
+    (unwind-protect
+        (nhwl-gui--with-connection-log
+         (nhwl-gui--restart "gone")
+         (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (memq 'reconnecting nhwl-gui--connection-log)) 5))
+         (setq err (condition-case e (progn (setq f (make-frame)) nil) (error (cadr e))))
+         (should (equal err "Display is reconnecting"))
+         (gui-runner-recorder '(:cmd "restart_up"))
+         (should (nhwl-gui--reconnected))
+         (setq f (make-frame '((minibuffer . nil))))
+         (should (frame-live-p f)))
+      (ignore-errors (gui-runner-recorder '(:cmd "restart_up")))
+      (when (and f (frame-live-p f)) (delete-frame f)))))
+
+(ert-deftest nhwl-gui/compositor-restart-twenty-cycles-keeps-frames ()
+  "Twenty keep-socket restarts with a frame, a child frame and a tooltip: after the last the same frames live, the
+descriptor and thread counts equal cycle 5's, VmRSS grew less than 8 MiB since cycle 5, and the recorder accepted one
+connection per cycle."
+  :tags '(runs-last)
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((f (selected-frame)) (c nil) (at5 nil) (accepted nil))
+    (unwind-protect
+        (progn
+          (setq c (nhwl-gui--child))
+          (should (nhwl-gui--child-node nil))
+          (setq accepted (nhwl-gui--accepted))
+          (dotimes (i 20)
+            (x-show-tip (format "cycle %d" i) nil nil 60)
+            (nhwl-gui--pump 0.2)
+            (nhwl-gui--with-connection-log
+             (should (nhwl-gui--restart-and-reconnect)))
+            (should (= (nhwl-gui--accepted) (+ accepted i 1)))
+            (when (= i 4)
+              (garbage-collect)
+              (setq at5 (nhwl-gui--proc-counts))))
+          (garbage-collect)
+          (let ((at20 (nhwl-gui--proc-counts)))
+            (should (frame-live-p f))
+            (should (frame-live-p c))
+            (should (= (nth 0 at20) (nth 0 at5)))
+            (should (= (nth 1 at20) (nth 1 at5)))
+            (should (< (- (nth 2 at20) (nth 2 at5)) (* 8 1024)))))
+      (x-hide-tip)
+      (when (and c (frame-live-p c)) (delete-frame c t)))))
+
+(ert-deftest nhwl-gui/live-kwin-restart-keeps-frames ()
+  "KWin through its wrapper: its child is killed and started again (`NHWL_GUI_RESTART'), and the frames stay.  The
+trace rules `errors,acks,unconfigured,subsurface' judge the second connection."
+  :tags '(runs-last)
+  (skip-unless (and (nhwl-gui--live-p) (gui-runner-restart-available-p)
+                    (equal (getenv "GLITNIR_GUI_COMPOSITOR") "kwin")))
+  (let ((frames (nhwl-gui--nhwl-frames)) (c nil))
+    (unwind-protect
+        (nhwl-gui--with-connection-log
+         (setq c (nhwl-gui--child))
+         (nhwl-gui--live-settle 0.5)
+         (gui-runner-restart-compositor)
+         (should (nhwl-gui--reconnected))
+         (nhwl-gui--live-settle 0.5)
+         (should (seq-every-p #'frame-live-p frames))
+         (should (frame-live-p c)))
+      (when (and c (frame-live-p c)) (delete-frame c t)))))
+
+(ert-deftest nhwl-gui/live-sway-restart-reconnects ()
+  "sway restarted on the same socket name within the timeout: the frames stay.  The trace rules `errors,unconfigured'
+judge the second connection."
+  :tags '(runs-last)
+  (skip-unless (and (nhwl-gui--live-p) (gui-runner-restart-available-p)
+                    (equal (getenv "GLITNIR_GUI_COMPOSITOR") "sway")))
+  (let ((frames (nhwl-gui--nhwl-frames)))
+    (nhwl-gui--with-connection-log
+     (nhwl-gui--live-settle 0.5)
+     (gui-runner-restart-compositor)
+     (should (nhwl-gui--reconnected))
+     (nhwl-gui--live-settle 0.5)
+     (should (seq-every-p #'frame-live-p frames)))))
+
 (provide 'nhwl-gui-w2-tests)
 
 ;;; nhwl-gui-w2-tests.el ends here

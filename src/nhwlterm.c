@@ -3087,6 +3087,195 @@ nhwl_dnd_apply (struct nhwl_display_info *dpyinfo, struct frame *f,
   return 1;
 }
 
+/***********************************************************************
+			 Reconnecting in place
+ ***********************************************************************/
+
+/* Frames survive a compositor restart: when the compositor goes (a
+   hangup, not a protocol error) the glue connects to it again, and the
+   frames come back with their contents.  The schedule and the decisions
+   are the glue's (nidhogg/glue/src/reconnect.rs); C keeps the timer and
+   the Lisp side.  Lisp hears of it through
+   `nhwl-display-connection-functions', run from a timer.  When the
+   compositor does not come back within `nhwl-reconnect-timeout', the
+   display goes as without reconnecting (nhwl_connection_lost).  */
+
+/* Reconnecting is wanted: `nhwl-reconnect' is non-nil (or not defined
+   yet) and the environment has no NHWL_RECONNECT=0.  */
+static bool
+nhwl_reconnect_wanted (void)
+{
+  const char *env = getenv ("NHWL_RECONNECT");
+
+  if (env && !strcmp (env, "0"))
+    return false;
+  return (NILP (Fboundp (Qnhwl_reconnect))
+	  || !NILP (Fsymbol_value (Qnhwl_reconnect)));
+}
+
+/* `nhwl-reconnect-timeout' in milliseconds (10 s when not a number).  */
+static uint32_t
+nhwl_reconnect_timeout (void)
+{
+  double secs = 10.0;
+
+  if (!NILP (Fboundp (Qnhwl_reconnect_timeout))
+      && NUMBERP (Fsymbol_value (Qnhwl_reconnect_timeout)))
+    secs = XFLOATINT (Fsymbol_value (Qnhwl_reconnect_timeout));
+  return secs <= 0 ? 0 : secs > 3600 ? 3600 * 1000 : (uint32_t) (secs * 1000);
+}
+
+/* Run `nhwl-display-connection-functions' with DPYINFO's name and STATE
+   at the next timer check, after the hooks queued before it: never from
+   here, where no Lisp may run.  */
+static void
+nhwl_connection_hook (struct nhwl_display_info *dpyinfo, Lisp_Object state)
+{
+  pending_funcalls
+    = nconc2 (pending_funcalls,
+	      list1 (list4 (Qrun_hook_with_args,
+			    Qnhwl_display_connection_functions,
+			    XCAR (dpyinfo->name_list_element), state)));
+}
+
+static void nhwl_reconnect_tick (struct atimer *);
+
+/* Fire DPYINFO's reconnect timer MS milliseconds from now.  */
+static void
+nhwl_reconnect_arm (struct nhwl_display_info *dpyinfo, uint32_t ms)
+{
+  if (dpyinfo->reconnect_timer)
+    cancel_atimer (dpyinfo->reconnect_timer);
+  dpyinfo->reconnect_timer
+    = start_atimer (ATIMER_RELATIVE,
+		    make_timespec (ms / 1000, ms % 1000 * 1000 * 1000),
+		    nhwl_reconnect_tick, dpyinfo);
+}
+
+/* Stop DPYINFO's reconnect timer (the display is going, or is back).  */
+static void
+nhwl_reconnect_disarm (struct nhwl_display_info *dpyinfo)
+{
+  if (dpyinfo->reconnect_timer)
+    cancel_atimer (dpyinfo->reconnect_timer);
+  dpyinfo->reconnect_timer = NULL;
+}
+
+/* The reconnect timer.  While reconnecting: one step of connecting again
+   (at most 50 ms on this thread), then the next tick at the glue's
+   backoff; when the glue gives up (the timeout passed, or the new
+   display failed) the display goes at the next read.  On success the
+   shell's descriptor wakes the drain, which takes RECONNECTED.  While
+   settling it does nothing: firing wakes the event loop, whose read asks
+   the glue what is due.  It never presents and never runs Lisp.  */
+static void
+nhwl_reconnect_tick (struct atimer *timer)
+{
+  struct nhwl_display_info *dpyinfo = timer->client_data;
+  uint32_t next = 0;
+  int32_t rc;
+
+  dpyinfo->reconnect_timer = NULL;
+  if (!dpyinfo->reconnecting || !dpyinfo->glue || dpyinfo->glue_broken)
+    return;
+  block_input ();
+  rc = nhwl_glue_rc (dpyinfo,
+		     NHG (nhg_reconnect_step (dpyinfo->glue,
+					      dpyinfo->reconnect_timeout_ms,
+					      &next)));
+  if (rc == NHG_E_TIMEOUT)
+    nhwl_reconnect_arm (dpyinfo, next);
+  else if (rc < 0)
+    dpyinfo->connection_lost = true;
+  unblock_input ();
+}
+
+/* The compositor went and the shell reconnects (NHG_ACT_RECONNECTING A):
+   start the timer, its first tick A->code ms from now, and tell Lisp.  A
+   display without a frame left, or with reconnecting turned off since
+   it opened, goes at once.  */
+static void
+nhwl_reconnecting (struct nhwl_display_info *dpyinfo, const NhgAction *a)
+{
+  Lisp_Object tail, frame;
+  bool live = false;
+
+  FOR_EACH_FRAME (tail, frame)
+    {
+      struct frame *f = XFRAME (frame);
+
+      if (FRAME_NHWL_P (f) && FRAME_DISPLAY_INFO (f) == dpyinfo
+	  && !FRAME_TOOLTIP_P (f))
+	live = true;
+    }
+  if (!live || !nhwl_reconnect_wanted ())
+    {
+      dpyinfo->connection_lost = true;
+      return;
+    }
+  dpyinfo->reconnecting = true;
+  dpyinfo->reconnect_settling = false;
+  dpyinfo->reconnect_timeout_ms = nhwl_reconnect_timeout ();
+  nhwl_reconnect_arm (dpyinfo, a->code);
+  nhwl_connection_hook (dpyinfo, Qnhwl_reconnecting);
+}
+
+/* The display is back (NHG_ACT_RECONNECTED): every frame, child frames
+   included, is damaged whole, so the redraw at its first configure on
+   the new connection publishes its whole picture; nothing presents
+   here.  The reads ask the glue what is due from now on.  */
+static void
+nhwl_reconnected (struct nhwl_display_info *dpyinfo)
+{
+  struct nhwl_output *o;
+
+  nhwl_reconnect_disarm (dpyinfo);
+  dpyinfo->reconnecting = false;
+  dpyinfo->reconnect_settling = true;
+  for (o = dpyinfo->outputs; o; o = o->next_output)
+    if (o->window && o->glitnir_id)
+      nhwl_damage_all (o->frame);
+}
+
+/* What is due after a reconnect (nhg_reconnect_settle): `reconnected'
+   for Lisp, the monitors hook when the list changed, and the focus-out
+   of the frame that had the keyboard when no keyboard enter came.
+   Return the number of events stored.  */
+static int
+nhwl_reconnect_settle (struct nhwl_display_info *dpyinfo,
+		       struct input_event *hold_quit)
+{
+  uint64_t window = 0;
+  uint32_t next = 0;
+  struct input_event ie;
+  struct frame *f;
+  int n = 0;
+  int32_t rc;
+
+  block_input ();
+  rc = nhwl_glue_rc (dpyinfo, NHG (nhg_reconnect_settle (dpyinfo->glue,
+							  &window, &next)));
+  if (rc > 0 && (rc & NHG_SETTLE_REPORT))
+    nhwl_connection_hook (dpyinfo, Qnhwl_reconnected);
+  if (rc > 0 && (rc & NHG_SETTLE_MONITORS))
+    {
+      EVENT_INIT (ie);
+      ie.kind = MONITORS_CHANGED_EVENT;
+      XSETTERMINAL (ie.arg, dpyinfo->terminal);
+      kbd_buffer_store_event_hold (&ie, hold_quit);
+      n++;
+    }
+  if (rc > 0 && (rc & NHG_SETTLE_FOCUS_OUT)
+      && (f = nhwl_window_to_frame (dpyinfo, window)))
+    n += nhwl_focus_apply (dpyinfo, f, false, hold_quit);
+  if (rc < 0 || next == 0)
+    dpyinfo->reconnect_settling = false;
+  else if (!dpyinfo->reconnect_timer)
+    nhwl_reconnect_arm (dpyinfo, next);
+  unblock_input ();
+  return n;
+}
+
 /* Apply action A of the glue's event step, one whose kind is ported: the
    Emacs calls the glue's decision needs.  An action whose window maps to
    no frame is skipped.  Return the number of events stored (through
@@ -3103,6 +3292,14 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
     case NHG_ACT_LOST:
       /* Handled when the drain is over.  */
       dpyinfo->connection_lost = true;
+      return 0;
+
+    case NHG_ACT_RECONNECTING:
+      nhwl_reconnecting (dpyinfo, a);
+      return 0;
+
+    case NHG_ACT_RECONNECTED:
+      nhwl_reconnected (dpyinfo);
       return 0;
 
     case NHG_ACT_MONITORS:
@@ -3339,6 +3536,9 @@ nhwl_read_socket (struct terminal *terminal, struct input_event *hold_quit)
       return 0;
     }
   n = nhwl_drain_events (dpyinfo, hold_quit);
+  if (dpyinfo->reconnect_settling && !dpyinfo->connection_lost
+      && !dpyinfo->glue_broken)
+    n += nhwl_reconnect_settle (dpyinfo, hold_quit);
   if (dpyinfo->connection_lost)
     {
       /* Frees DPYINFO and clears TERMINAL's pointer to it.  gobble_input
@@ -3812,6 +4012,11 @@ nhwl_term_init (Lisp_Object display_name)
     if (nhwl_presenter_thread && !(env && !strcmp (env, "0")))
       NHG (nhg_presenter_thread (glue, 1));
   }
+  /* Frames survive a compositor restart unless that is turned off; a
+     connection that cannot be made again (an inherited socket) stays
+     without.  */
+  if (nhwl_reconnect_wanted ())
+    NHG (nhg_set_reconnect (glue, 1));
   /* The title bars' style Lisp gave so far.  */
   nhwl_csd_push_style (dpyinfo);
   nhshell_caps (shell, &dpyinfo->caps);
@@ -3940,6 +4145,9 @@ nhwl_delete_terminal (struct terminal *terminal)
     return;
 
   block_input ();
+
+  /* Its client data is DPYINFO, freed below.  */
+  nhwl_reconnect_disarm (dpyinfo);
 
   if (dpyinfo->shell)
     {
@@ -4118,6 +4326,14 @@ syms_of_nhwlterm (void)
 #endif
   nhwl_glue_panic_list = Qnil;
   staticpro (&nhwl_glue_panic_list);
+
+  /* Reconnecting in place; the variables are nhwl-settings.el's.  */
+  DEFSYM (Qnhwl_reconnect, "nhwl-reconnect");
+  DEFSYM (Qnhwl_reconnect_timeout, "nhwl-reconnect-timeout");
+  DEFSYM (Qnhwl_display_connection_functions,
+	  "nhwl-display-connection-functions");
+  DEFSYM (Qnhwl_reconnecting, "reconnecting");
+  DEFSYM (Qnhwl_reconnected, "reconnected");
 
   DEFSYM (QCpackets, ":packets");
   DEFSYM (QCsuperseded, ":superseded");

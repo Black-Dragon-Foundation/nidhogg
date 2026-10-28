@@ -60,6 +60,15 @@ impl Dnd {
         self.targets.remove(&window);
     }
 
+    /// The connection went (a reconnect): the drag and its offer went with it, unfinished; the registered types stay
+    /// (window ids survive).
+    pub fn lost(&mut self) {
+        self.over = false;
+        self.refused = false;
+        self.dropped = false;
+        self.mime = None;
+    }
+
     /// Lisp read `mime` from the offer: it is the type this drag is accepted with.
     pub fn note_read(&mut self, mime: &str) {
         if self.over && !self.dropped {
