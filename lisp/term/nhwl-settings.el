@@ -39,6 +39,13 @@
   :group 'frames
   :version "31.1")
 
+(defcustom nhwl-selection-timeout 1.0
+  "Seconds to wait for another program to hand over a selection.
+After that the read gives nil and Emacs goes on."
+  :type 'number
+  :version "31.1"
+  :group 'nhwl-settings)
+
 (defface nidhogg-title-bar
   '((t :background "#ebebeb" :foreground "#2e3436"))
   "Face whose colours are those of an active window's title bar.

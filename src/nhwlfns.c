@@ -21,8 +21,8 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
    unchanged (the Lisp-level window system is `pgtk', and `nidhogg-wayland'
    is provided too).  Functions adapted from pgtkfns.c name their origin.
    The frame parameters with a handler in nhwl_frame_parm_handlers have
-   effects; every other parameter is accepted and stored.  Not in W0:
-   selections (they answer nil).  */
+   effects; every other parameter is accepted and stored.  The
+   selection primitives are in nhwlselect.c.  */
 
 #include <config.h>
 
@@ -1966,53 +1966,6 @@ DEFUN ("tool-bar-get-system-style", Ftool_bar_get_system_style,
   return Qnil;
 }
 
-/* The selection primitives of pgtk-win.el (not in W0, they arrive in
-   W1).  Until then nothing is owned and nothing exists, quietly: every kill
-   calls `gui-select-text', so an error here would break editing.  */
-
-#define NHWL_NO_SELECTIONS return Qnil
-
-DEFUN ("pgtk-own-selection-internal", Fpgtk_own_selection_internal,
-       Spgtk_own_selection_internal, 2, 3, 0,
-       doc: /* Assert an X selection of type SELECTION and value VALUE.  */)
-  (Lisp_Object selection, Lisp_Object value, Lisp_Object frame)
-{
-  NHWL_NO_SELECTIONS;
-}
-
-DEFUN ("pgtk-disown-selection-internal", Fpgtk_disown_selection_internal,
-       Spgtk_disown_selection_internal, 1, 2, 0,
-       doc: /* If we own the selection SELECTION, disown it.  */)
-  (Lisp_Object selection, Lisp_Object terminal)
-{
-  NHWL_NO_SELECTIONS;
-}
-
-DEFUN ("pgtk-selection-owner-p", Fpgtk_selection_owner_p,
-       Spgtk_selection_owner_p, 0, 2, 0,
-       doc: /* Whether the current Emacs process owns the selection SELECTION.  */)
-  (Lisp_Object selection, Lisp_Object terminal)
-{
-  NHWL_NO_SELECTIONS;
-}
-
-DEFUN ("pgtk-selection-exists-p", Fpgtk_selection_exists_p,
-       Spgtk_selection_exists_p, 0, 2, 0,
-       doc: /* Whether there is an owner for the given selection.  */)
-  (Lisp_Object selection, Lisp_Object terminal)
-{
-  NHWL_NO_SELECTIONS;
-}
-
-DEFUN ("pgtk-get-selection-internal", Fpgtk_get_selection_internal,
-       Spgtk_get_selection_internal, 2, 3, 0,
-       doc: /* Return text selected from some X window.  */)
-  (Lisp_Object selection_symbol, Lisp_Object target_type,
-   Lisp_Object terminal)
-{
-  NHWL_NO_SELECTIONS;
-}
-
 /* Drag and drop and input methods are not in W0: nothing happens, and the
    Lisp that registers them runs on.  */
 
@@ -2117,11 +2070,6 @@ syms_of_nhwlfns (void)
   defsubr (&Sfont_get_system_font);
   defsubr (&Sfont_get_system_normal_font);
   defsubr (&Stool_bar_get_system_style);
-  defsubr (&Spgtk_own_selection_internal);
-  defsubr (&Spgtk_disown_selection_internal);
-  defsubr (&Spgtk_selection_owner_p);
-  defsubr (&Spgtk_selection_exists_p);
-  defsubr (&Spgtk_get_selection_internal);
   defsubr (&Spgtk_register_dnd_targets);
   defsubr (&Spgtk_use_im_context);
   defsubr (&Snhwl_set_cursor_theme);
