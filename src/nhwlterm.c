@@ -2942,6 +2942,91 @@ nhwl_click_apply (struct nhwl_display_info *dpyinfo, struct frame *f,
   return 1;
 }
 
+/* Apply the glue's TOUCH action A of frame F, as pgtk's touch_event_cb
+   builds the events (the glue tracks the points and picks the local
+   ids): a begin or end carries the point and its position, an update the
+   frame's live points as ((X Y ID) ...), and an end's modifiers are 1 when
+   the compositor cancelled the point.  Positions are moved to the native
+   area.  Return the number of events stored.  */
+static int
+nhwl_touch_apply (struct frame *f, const NhgAction *a,
+		  struct input_event *hold_quit)
+{
+  struct input_event ie;
+  int x, y;
+
+  EVENT_INIT (ie);
+  ie.arg = Qnil;
+  XSETFRAME (ie.frame_or_window, f);
+  ie.timestamp = a->time_ms;
+  nhwl_csd_native_pos (f, a->x, a->y, &x, &y);
+  switch (a->flags)
+    {
+    case NHG_TOUCH_BEGIN:
+      ie.kind = TOUCHSCREEN_BEGIN_EVENT;
+      XSETINT (ie.arg, a->code);
+      XSETINT (ie.x, x);
+      XSETINT (ie.y, y);
+      break;
+
+    case NHG_TOUCH_UPDATE:
+      {
+	Lisp_Object arg = Qnil;
+
+	ie.kind = TOUCHSCREEN_UPDATE_EVENT;
+	/* Oldest point first in the text, and in the list (as pgtk's).  */
+	for (size_t i = a->len / sizeof (NhgTouchPoint); i-- > 0; )
+	  {
+	    NhgTouchPoint p;
+
+	    memcpy (&p, a->text + i * sizeof p, sizeof p);
+	    nhwl_csd_native_pos (f, p.x, p.y, &x, &y);
+	    arg = Fcons (list3i (x, y, p.id), arg);
+	  }
+	ie.arg = arg;
+	break;
+      }
+
+    default:
+      ie.kind = TOUCHSCREEN_END_EVENT;
+      ie.modifiers = a->flags == NHG_TOUCH_CANCEL;
+      XSETINT (ie.arg, a->code);
+      XSETINT (ie.x, x);
+      XSETINT (ie.y, y);
+      break;
+    }
+  kbd_buffer_store_event_hold (&ie, hold_quit);
+  return 1;
+}
+
+/* Apply the glue's PINCH action A of frame F, as pgtk_handle_event builds
+   the event: (DX DY SCALE ANGLE-DELTA) as floats, the pointer's position
+   in the native area and the keyboard's modifiers.  Return the number of
+   events stored.  */
+static int
+nhwl_pinch_apply (struct frame *f, const NhgAction *a,
+		  struct input_event *hold_quit)
+{
+  struct input_event ie;
+  double angle = 0;
+  int x, y;
+
+  if (a->len >= sizeof angle)
+    memcpy (&angle, a->text, sizeof angle);
+  nhwl_csd_native_pos (f, a->x, a->y, &x, &y);
+  EVENT_INIT (ie);
+  ie.kind = PINCH_EVENT;
+  XSETFRAME (ie.frame_or_window, f);
+  XSETINT (ie.x, x);
+  XSETINT (ie.y, y);
+  ie.arg = list4 (make_float (a->dx), make_float (a->dy),
+		  make_float (a->scale), make_float (angle));
+  ie.modifiers = nhwl_emacs_modifiers (a->mods);
+  ie.timestamp = a->time_ms;
+  kbd_buffer_store_event_hold (&ie, hold_quit);
+  return 1;
+}
+
 /* Apply the glue's FOCUS_IN (IN) or FOCUS_OUT action for F's window: a
    top-level's keyboard focus is Emacs's focus on the frame of its tree
    that takes its keys.  Return the number of events stored.  */
@@ -3093,6 +3178,12 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
 
     case NHG_ACT_WHEEL:
       return nhwl_wheel_apply (f, a, hold_quit);
+
+    case NHG_ACT_TOUCH:
+      return nhwl_touch_apply (f, a, hold_quit);
+
+    case NHG_ACT_PINCH:
+      return nhwl_pinch_apply (f, a, hold_quit);
 
     case NHG_ACT_RESIZE:
       nhwl_configure (f, a);

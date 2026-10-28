@@ -600,6 +600,119 @@ of the drop, answers at once after it, and the next, normal drop inserts."
           (nhwl-gui--pump 0.3))
       (kill-buffer b))))
 
+;; W2 Task 15: touch screens and touchpad pinch.  The recorder's `touch' and `pinch' commands stand in for the
+;; compositor; the events Lisp sees are pgtk's: `touchscreen-begin', `touchscreen-update', `touchscreen-end', `pinch'.
+
+(defvar nhwl-gui--touch-log nil "The events `touch-screen-handle-touch' saw, newest first.")
+
+(defun nhwl-gui--touch-note (event &rest _)
+  (push event nhwl-gui--touch-log))
+
+(defmacro nhwl-gui--with-touch-log (&rest body)
+  "Run BODY with the touch events Lisp sees collected in `nhwl-gui--touch-log'."
+  (declare (indent 0))
+  `(progn
+     (setq nhwl-gui--touch-log nil)
+     (advice-add 'touch-screen-handle-touch :before #'nhwl-gui--touch-note)
+     (unwind-protect (progn ,@body)
+       (advice-remove 'touch-screen-handle-touch #'nhwl-gui--touch-note))))
+
+(defun nhwl-gui--touch (op id at &optional surface)
+  "Send a touch OP for point ID at logical AT (X Y), ending its frame; SURFACE names the target of a down."
+  (gui-runner-recorder `(:cmd "touch" :op ,op :id ,id :at ,(vector (car at) (cadr at))
+                              ,@(and surface (list :surface surface))))
+  (nhwl-gui--pump 0.2))
+
+(defun nhwl-gui--touch-kinds ()
+  "The kinds of the logged events, oldest first."
+  (mapcar #'car (reverse nhwl-gui--touch-log)))
+
+(ert-deftest nhwl-gui/touch-begin-update-end ()
+  "A down, a motion and a lift reach Lisp as a begin with the point's id and position, an update listing the
+point, and an end."
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--with-touch-log
+    (nhwl-gui--touch "down" 0 '(30 40))
+    (nhwl-gui--touch "motion" 0 '(50 60))
+    (nhwl-gui--touch "up" 0 '(0 0))
+    (should (equal (nhwl-gui--touch-kinds) '(touchscreen-begin touchscreen-update touchscreen-end)))
+    (let ((begin (car (last nhwl-gui--touch-log))))
+      (should (integerp (car (cadr begin)))))
+    (let ((update (cadr (nth 1 nhwl-gui--touch-log))))
+      (should (= (length update) 1)))))
+
+(ert-deftest nhwl-gui/touch-cancel-ends-all-points ()
+  "A compositor cancel ends every live point (two ends), and a later motion of a cancelled point reports
+nothing."
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--with-touch-log
+    (nhwl-gui--touch "down" 0 '(30 40))
+    (nhwl-gui--touch "down" 1 '(60 70))
+    (setq nhwl-gui--touch-log nil)
+    ;; the recorder sends a cancel only while a point has an event its frame has not closed yet
+    (gui-runner-recorder '(:cmd "touch" :op "motion" :id 0 :at [30 40] :frame :false))
+    (gui-runner-recorder '(:cmd "touch" :op "cancel"))
+    (nhwl-gui--pump 0.3)
+    (should (= (seq-count (lambda (e) (eq (car e) 'touchscreen-end)) nhwl-gui--touch-log) 2))
+    (setq nhwl-gui--touch-log nil)
+    (nhwl-gui--touch "motion" 0 '(31 41))
+    (should-not nhwl-gui--touch-log)))
+
+(ert-deftest nhwl-gui/touch-on-a-child-frame ()
+  "A touch that goes down on a child frame is that frame's: the begin's position is in the child's coordinates."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((before (nhwl-gui--sub-ids)) (c nil))
+    (unwind-protect
+        (progn
+          (setq c (nhwl-gui--child))
+          (let ((n (nhwl-gui--child-node before)))
+            (should n)
+            (nhwl-gui--with-touch-log
+              (nhwl-gui--touch "down" 0 '(10 10) (plist-get n :id))
+              (nhwl-gui--touch "up" 0 '(0 0))
+              (should (equal (nhwl-gui--touch-kinds) '(touchscreen-begin touchscreen-end)))
+              (let ((posn (cdr (cadr (car (last nhwl-gui--touch-log))))))
+                (should (eq (posn-window posn) (frame-root-window c)))))))
+      (when (frame-live-p c) (delete-frame c t)))))
+
+(defvar nhwl-gui--pinches 0)
+
+(defun nhwl-gui--pinch (&rest args)
+  "Send a pinch command with ARGS (a plist) and let Lisp read its event."
+  (gui-runner-recorder (cons :cmd (cons "pinch" args)))
+  (nhwl-gui--pump 0.2))
+
+(ert-deftest nhwl-gui/pinch-scales-text ()
+  "A pinch begin and an update to scale 1.5 make `text-scale-pinch' scale the text up."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((buf (window-buffer (selected-window))))
+    (nhwl-gui--point 100 100)
+    (unwind-protect
+        (progn
+          (nhwl-gui--pinch :op "begin" :fingers 2)
+          (nhwl-gui--pinch :op "update" :dx 0 :dy 0 :scale 1.5 :rotation 0)
+          (with-current-buffer buf
+            (should (> (or (bound-and-true-p text-scale-mode-amount) 0) 0))))
+      (nhwl-gui--pinch :op "end")
+      (with-current-buffer buf (text-scale-set 0)))))
+
+(ert-deftest nhwl-gui/pinch-end-sends-nothing ()
+  "Begin and update each make one `pinch' event; the end makes none."
+  (skip-unless (nhwl-gui--recorder-p))
+  (setq nhwl-gui--pinches 0)
+  (let ((count (lambda (&rest _) (setq nhwl-gui--pinches (1+ nhwl-gui--pinches)))))
+    (nhwl-gui--point 100 100)
+    (advice-add 'text-scale-pinch :before count)
+    (unwind-protect
+        (progn
+          (nhwl-gui--pinch :op "begin" :fingers 2)
+          (nhwl-gui--pinch :op "update" :dx 0 :dy 0 :scale 1.2 :rotation 0)
+          (should (= nhwl-gui--pinches 2))
+          (nhwl-gui--pinch :op "end")
+          (should (= nhwl-gui--pinches 2)))
+      (advice-remove 'text-scale-pinch count)
+      (with-current-buffer (window-buffer (selected-window)) (text-scale-set 0)))))
+
 (provide 'nhwl-gui-w2-tests)
 
 ;;; nhwl-gui-w2-tests.el ends here
