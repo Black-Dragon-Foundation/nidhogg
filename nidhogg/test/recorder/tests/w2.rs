@@ -709,3 +709,156 @@ fn quit_frees_the_socket_name() {
     let _ = b.wait();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// --- restart in place ---------------------------------------------------------------------------------------
+
+/// The path of a recorder's Wayland socket (the harness names it like its directory).
+fn socket_path(env: &Env) -> std::path::PathBuf {
+    env.rec.dir.join(env.rec.dir.file_name().unwrap())
+}
+
+/// A new client's registry listing, read with a roundtrip (which waits until the recorder serves it).
+fn list_globals(env: &Env) -> common::Client {
+    let conn = env.rec.connect();
+    let mut queue = conn.new_event_queue::<common::Client>();
+    let _registry = conn.display().get_registry(&queue.handle(), ());
+    let mut client = common::Client::default();
+    queue.roundtrip(&mut client).unwrap();
+    client
+}
+
+fn restart(env: &Env, mode: &str, down_ms: u64) -> Value {
+    ok(env
+        .rec
+        .control(json!({"cmd": "restart", "mode": mode, "down_ms": down_ms})))
+}
+
+#[test]
+fn connections_counted() {
+    let env = Env::new("sway", &[]);
+    let _other = env.join();
+    let n = ok(env.rec.control(json!({"cmd": "connections"})));
+    assert_eq!(
+        (n["accepted"].as_u64(), n["live"].as_u64()),
+        (Some(2), Some(2))
+    );
+    restart(&env, "keep-socket", 0);
+    let n = ok(env.rec.control(json!({"cmd": "connections"})));
+    assert_eq!(
+        (n["accepted"].as_u64(), n["live"].as_u64()),
+        (Some(2), Some(0))
+    );
+    let _again = list_globals(&env);
+    let n = ok(env.rec.control(json!({"cmd": "connections"})));
+    assert_eq!(n["accepted"], 3);
+}
+
+#[test]
+fn restart_keep_socket_queues_connections() {
+    let mut env = Env::new("sway", &[]);
+    let _ = env.toplevel(100, 100);
+    let started = Instant::now();
+    restart(&env, "keep-socket", 400);
+    // the connect succeeds at once; the registry answer comes after the recorder listens again
+    assert!(UnixStream::connect(socket_path(&env)).is_ok());
+    let client = list_globals(&env);
+    assert!(
+        started.elapsed() >= Duration::from_millis(350),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(client.names.contains_key("xdg_wm_base"));
+    // the old client is gone
+    assert!(env.queue.roundtrip(&mut env.client).is_err());
+}
+
+#[test]
+fn restart_rebind_frees_and_reuses_the_name() {
+    let env = Env::new("sway", &[]);
+    restart(&env, "rebind", 300);
+    assert!(!socket_path(&env).exists());
+    assert!(UnixStream::connect(socket_path(&env)).is_err());
+    let end = Instant::now() + Duration::from_secs(5);
+    while !socket_path(&env).exists() {
+        assert!(Instant::now() < end, "the name was not bound again");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(list_globals(&env).names.contains_key("wl_compositor"));
+}
+
+#[test]
+fn restart_gone_refuses_until_up() {
+    let env = Env::new("sway", &[]);
+    restart(&env, "gone", 0);
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(UnixStream::connect(socket_path(&env)).is_err());
+    ok(env.rec.control(json!({"cmd": "restart_up"})));
+    assert!(list_globals(&env).names.contains_key("wl_compositor"));
+}
+
+#[test]
+fn restart_resets_state_but_keeps_the_session_store() {
+    let dir = std::env::temp_dir().join(format!("nh-session-{}-c", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = dir.join("store.json");
+    let mut env = Env::new("mutter", &["--session-store", store.to_str().unwrap()]);
+    let (session, heard) = get_session(&mut env, Reason::Launch, None);
+    let id = created_id(&heard);
+    session_toplevel(&mut env, &session, "main", false, 300, 200);
+    assert!(!ok(env.rec.control(json!({"cmd": "tree"})))["surfaces"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let marker = ok(env.rec.control(json!({"cmd": "log", "since": 0})))["next"].clone();
+    restart(&env, "keep-socket", 0);
+    // compositor state is fresh: no surfaces, no session log, no clients
+    let tree = ok(env.rec.control(json!({"cmd": "tree"})));
+    assert!(tree["surfaces"].as_array().unwrap().is_empty(), "{tree}");
+    assert_eq!(
+        ok(env.rec.control(json!({"cmd": "session_log"})))["session_log"],
+        json!([])
+    );
+    assert_eq!(
+        ok(env.rec.control(json!({"cmd": "clients"})))["clients"],
+        json!([])
+    );
+    let log = ok(env.rec.control(json!({"cmd": "log", "since": 0})));
+    assert_eq!(log["restarts"], json!([{"restart": 1, "seq": marker}]));
+    // the store survived: a new client recovers the session and gets its toplevel back at its size
+    let mut again = env.join();
+    let (taken, heard) = get_session(&mut again, Reason::Recover, Some(&id));
+    assert_eq!(*heard.lock().unwrap(), ["restored"]);
+    again.client.configures.clear();
+    let ts = session_toplevel(&mut again, &taken, "main", true, 300, 200);
+    assert_eq!(*ts.lock().unwrap(), ["restored"]);
+    assert_eq!(
+        again.client.configures.first().map(|c| (c.0, c.1)),
+        Some((300, 200))
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn restart_with_another_profile() {
+    let mut env = Env::new("mutter", &[]);
+    assert_eq!(env.client.versions["xdg_wm_base"], 6);
+    ok(env
+        .rec
+        .control(json!({"cmd": "restart", "mode": "keep-socket", "profile": "sway"})));
+    let client = list_globals(&env);
+    assert_eq!(client.versions["xdg_wm_base"], 5);
+    assert!(!client.names.contains_key("xdg_session_manager_v1"));
+    assert!(client.names.contains_key("wp_alpha_modifier_v1"));
+    assert_eq!(
+        ok(env.rec.control(json!({"cmd": "globals"})))["globals"]["xdg_wm_base"],
+        5
+    );
+    // and a later restart without a profile keeps the new one
+    restart(&env, "keep-socket", 0);
+    assert_eq!(list_globals(&env).versions["xdg_wm_base"], 5);
+    assert!(env.queue.roundtrip(&mut env.client).is_err());
+    let bad = env
+        .rec
+        .control(json!({"cmd": "restart", "profile": "nope"}));
+    assert_eq!(bad["ok"], false);
+}
