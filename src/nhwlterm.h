@@ -259,6 +259,9 @@ struct nhwl_output
   /* The redisplay_counter when that key was read: a later redisplay that
      drew nothing drops the key's time.  */
   unsigned int key_redisplay;
+  /* The visible bell's 50 ms timer, which has the glue put the inverted
+     rows back (NULL: none pending).  */
+  struct atimer *bell_timer;
 
   /* Cursors (the shell's pointer shape plus one)  */
   Emacs_Cursor current_cursor;

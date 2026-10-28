@@ -497,6 +497,8 @@ nhwl_chrome_key (Lisp_Object plist, const char *name)
    glitnir_pgtk_params_changed.  A change lays the frame out again (the
    shadow's margin) and draws it again.  The chrome is kept for the
    window's next making (nhwl_child_created).  */
+static void nhwl_idle_param_changed (struct frame *);
+
 void
 nhwl_child_params_changed (struct frame *f)
 {
@@ -506,6 +508,7 @@ nhwl_child_params_changed (struct frame *f)
   Lisp_Object frame, res;
 
   nhwl_popup_params_changed (f);
+  nhwl_idle_param_changed (f);
   if (busy || !nhwl_child_p (f) || NILP (Ffboundp (Qglitnir__resolve)))
     return;
   out = FRAME_NHWL_OUTPUT (f);
@@ -2639,6 +2642,81 @@ press triggers it.  Return t when the request was sent.  */)
 }
 
 /***********************************************************************
+	 Idle inhibition, export handles and activation tokens
+ ***********************************************************************/
+
+/* The `inhibit-idle' parameter, read after every change of the frame's
+   parameters (nhwl_child_params_changed): the glue holds or releases the
+   window's idle inhibitor, and does nothing when it is so already.  */
+static void
+nhwl_idle_param_changed (struct frame *f)
+{
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+
+  if (out && out->window && FRAME_NHG (f))
+    nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		  NHG (nhg_inhibit_idle (FRAME_NHG (f), out->window,
+					 !NILP (Fcdr (assq_no_quit
+						      (Qinhibit_idle,
+						       f->param_alist))))));
+}
+
+/* How long a handle or a token may take.  */
+#define NHWL_HANDLE_TIMEOUT_MS 500
+
+DEFUN ("nhwl-frame-export-handle", Fnhwl_frame_export_handle,
+       Snhwl_frame_export_handle, 0, 1, 0,
+       doc: /* Return FRAME's xdg-foreign handle as "wayland:HANDLE", or nil.
+The handle names the top-level of FRAME's tree for other programs (a portal
+parents its dialog to it).  It is nil without the exporter or when the
+compositor does not answer in 500 ms.  FRAME defaults to the selected
+frame.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f;
+  struct nhwl_output *out = nhwl_interactive_target (frame, &f);
+  char buf[128];
+  size_t len = 0;
+  int32_t rc;
+
+  if (!out || !FRAME_NHG (f))
+    return Qnil;
+  block_input ();
+  rc = nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		     NHG (nhg_window_export (FRAME_NHG (f), out->window,
+					     NHWL_HANDLE_TIMEOUT_MS, buf,
+					     sizeof buf, &len)));
+  unblock_input ();
+  return rc >= 0 ? concat2 (build_string ("wayland:"),
+			    make_string (buf, len)) : Qnil;
+}
+
+DEFUN ("nhwl-activation-token", Fnhwl_activation_token,
+       Snhwl_activation_token, 0, 1, 0,
+       doc: /* Return a fresh xdg-activation token made on FRAME, or nil.
+The token carries the newest input serial, so it is nil before any input,
+without the protocol, or when the compositor does not answer in 500 ms.
+FRAME defaults to the selected frame.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f;
+  struct nhwl_output *out = nhwl_interactive_target (frame, &f);
+  char buf[512];
+  size_t len = 0;
+  int32_t rc;
+
+  if (!out || !FRAME_NHG (f))
+    return Qnil;
+  block_input ();
+  rc = nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		     NHG (nhg_activation_token (FRAME_NHG (f), out->window,
+						NHWL_HANDLE_TIMEOUT_MS, buf,
+						sizeof buf, &len)));
+  unblock_input ();
+  return rc >= 0 ? make_string (buf, len) : Qnil;
+}
+
+/***********************************************************************
 			The title bars' style
  ***********************************************************************/
 
@@ -2931,6 +3009,9 @@ syms_of_nhwlfns (void)
   defsubr (&Snhwl_frame_begin_move);
   defsubr (&Snhwl_frame_begin_resize);
   defsubr (&Snhwl_frame_show_window_menu);
+  DEFSYM (Qinhibit_idle, "inhibit-idle");
+  defsubr (&Snhwl_frame_export_handle);
+  defsubr (&Snhwl_activation_token);
 }
 
 /* The title bars' symbols and functions (the name is the one emacs.c

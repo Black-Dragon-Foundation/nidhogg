@@ -138,6 +138,8 @@ pub struct Frame {
     generation: u64,
     /// The frame's windows that are their own outputs (`layers.rs`).
     pub(crate) layers: crate::layers::Layers,
+    /// The rows the visible bell inverted, until they are put back (`bell.rs`).
+    flash: Vec<Saved>,
 }
 
 impl Frame {
@@ -265,6 +267,8 @@ impl Backings {
                 px[y * w as usize..][..cw].copy_from_slice(&f.pixels[src..src + cw]);
             }
         }
+        // the rows the bell inverted are not where they were
+        f.flash.clear();
         f.pixels = px;
         f.w = w;
         f.h = h;
@@ -286,6 +290,7 @@ impl Backings {
                 w: r.w,
                 h: r.h,
             };
+            f.release(moved);
             // SAFETY: `moved` is one readable rectangle for the call.
             unsafe { glitnir_damage_add_n(key, &moved, 1) };
             added += 1;
@@ -295,7 +300,8 @@ impl Backings {
 
     /// Damage the whole frame, its margins and title strip included.  From `nhwl_damage_all`.
     pub fn damage_all(&mut self, key: u64) -> Result<(), i32> {
-        self.get(key)?;
+        // all of it is drawn again: nothing of the bell's rows is left to put back
+        self.get(key)?.flash.clear();
         glitnir_damage_all(key);
         Ok(())
     }
@@ -359,6 +365,7 @@ impl Backings {
                 h: to_y - from_y,
             }
         };
+        f.release(area);
         glitnir_scroll(key, w_seq | WINDOW_TAG, area, to_y - from_y, exposed);
         Ok(())
     }
@@ -408,5 +415,133 @@ impl Backings {
     /// Every frame, with its key.
     pub fn frames_mut(&mut self) -> impl Iterator<Item = (u64, &mut Frame)> {
         self.frames.iter_mut().map(|(k, f)| (*k, &mut **f))
+    }
+}
+
+// ---- The visible bell (`bell.rs`) ----------------------------------------------------------------------------------
+
+/// Rows the visible bell inverted: where they are in the backing, what they held, and which pixels of them are still
+/// the bell's (a draw since has made the others its own).
+#[derive(Debug)]
+struct Saved {
+    rect: Rect,
+    px: Vec<u32>,
+    keep: Vec<bool>,
+}
+
+impl Saved {
+    /// A draw damaged `r`: the pixels inside it are not the bell's to put back any more.
+    fn release(&mut self, r: Rect) {
+        let (x0, y0) = (r.x.max(self.rect.x), r.y.max(self.rect.y));
+        let x1 = r.x.saturating_add(r.w).min(self.rect.x + self.rect.w);
+        let y1 = r.y.saturating_add(r.h).min(self.rect.y + self.rect.h);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let i = ((y - self.rect.y) * self.rect.w + (x - self.rect.x)) as usize;
+                self.keep[i] = false;
+            }
+        }
+    }
+
+    fn any(&self) -> bool {
+        self.keep.iter().any(|k| *k)
+    }
+}
+
+impl Frame {
+    /// A draw damaged `r` (backing coordinates).
+    fn release(&mut self, r: Rect) {
+        if self.flash.is_empty() {
+            return;
+        }
+        for s in &mut self.flash {
+            s.release(r);
+        }
+        self.flash.retain(Saved::any);
+    }
+
+    /// Put the inverted rows back, last first, except what a draw has replaced.  The rectangles written, in backing
+    /// coordinates.
+    fn unflash(&mut self) -> Vec<Rect> {
+        let w = self.w as usize;
+        let mut out = Vec::new();
+        for s in self.flash.drain(..).rev() {
+            let rw = s.rect.w as usize;
+            let mut any = false;
+            for (i, (p, keep)) in s.px.iter().zip(&s.keep).enumerate() {
+                if *keep {
+                    let (x, y) = (s.rect.x as usize + i % rw, s.rect.y as usize + i / rw);
+                    self.pixels[y * w + x] = *p;
+                    any = true;
+                }
+            }
+            if any {
+                out.push(s.rect);
+            }
+        }
+        out
+    }
+}
+
+/// Glitnir learns that `rects` (backing coordinates) changed.
+fn damage_backing(key: u64, rects: &[Rect]) {
+    for r in rects {
+        // SAFETY: `r` is one readable rectangle for the call.
+        unsafe { glitnir_damage_add_n(key, r, 1) };
+    }
+}
+
+impl Backings {
+    /// Invert `rects` (device pixels, with the native area's origin, clipped to the backing) the way Cairo's
+    /// DIFFERENCE with opaque white does on premultiplied pixels (each channel `255 - c`, alpha 255), keep what they
+    /// held and damage them.  A flash still showing is put back first.  Returns how many rectangles were inverted.
+    /// Writes pixels.
+    ///
+    /// The rows of `pgtk_flash` (emacs-31.1), inverted in the backing instead of in a copy of the surface.
+    pub fn flash(&mut self, key: u64, rects: &[NhgRect]) -> Result<i32, i32> {
+        let f = self.get(key)?;
+        if f.pixels.is_empty() {
+            return Err(NHG_E_STATE);
+        }
+        let mut changed = f.unflash();
+        let (bw, bh) = (f.w, f.h);
+        let mut n = 0;
+        for r in rects {
+            let x0 = r.x.saturating_add(f.l).max(0);
+            let y0 = r.y.saturating_add(f.t).max(0);
+            let x1 = r.x.saturating_add(f.l).saturating_add(r.w).min(bw);
+            let y1 = r.y.saturating_add(f.t).saturating_add(r.h).min(bh);
+            if x1 <= x0 || y1 <= y0 {
+                continue;
+            }
+            let rect = Rect {
+                x: x0,
+                y: y0,
+                w: x1 - x0,
+                h: y1 - y0,
+            };
+            let mut px = Vec::with_capacity((rect.w * rect.h) as usize);
+            for y in y0..y1 {
+                let row = &mut f.pixels[(y * bw + x0) as usize..(y * bw + x1) as usize];
+                px.extend_from_slice(row);
+                for p in row {
+                    *p = 0xff00_0000 | (!*p & 0x00ff_ffff);
+                }
+            }
+            let keep = vec![true; px.len()];
+            f.flash.push(Saved { rect, px, keep });
+            changed.push(rect);
+            n += 1;
+        }
+        damage_backing(key, &changed);
+        Ok(n)
+    }
+
+    /// Put the rows the bell inverted back, except pixels a draw has replaced since, and damage them.  Returns how
+    /// many rectangles were written (0: nothing to put back).  Writes pixels.
+    pub fn unflash(&mut self, key: u64) -> Result<i32, i32> {
+        let rects = self.get(key)?.unflash();
+        damage_backing(key, &rects);
+        Ok(rects.len() as i32)
     }
 }
