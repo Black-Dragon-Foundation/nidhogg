@@ -40,7 +40,8 @@
 #   :verdict pass|fail|report|skip), lower is better.  gate: a V2 section 1 bar; budget: a number the plans gave; report:
 #   no verdict.  A row that cannot be measured here is (:row NAME :skipped "REASON" ... :verdict skip): never nil, never
 #   a made-up number.  scroll-120-dropped carries :presenter-late and :main-late, the split of its late frames per 1000
-#   (the presenter-late row is the proxy, the rest the main thread's).
+#   (the presenter-late row is the presenter's own count, or the proxy on a build without it; the rest is the main
+#   thread's).
 # Exit 0 when the rows were produced (verdicts are the caller's to read), 1 when a session did not come up, 2 usage.
 set -u
 
@@ -430,6 +431,9 @@ speed() {
   sleep 1
   [ "$wd" != t ] || cl '(progn (nidhogg-watchdog-stats t) t)' > /dev/null   # fontifying the file is setup, not scrolling
   [ "$HAS_W3$side" != 1A ] || cl '(progn (glitnir-stats nil t) t)' > /dev/null
+  # the presenter's own late and frame counts (since open) before the scroll
+  pt='(let ((s (nhwl-presenter-stats))) (format "%s %s" (plist-get s :presenter-late) (plist-get s :presenter-frames)))'
+  [ "$HAS_W3$side" != 1A ] || pt1=$(cl "$pt" | tr -d '"')
   o1=$(stat -c %s "$run/nh.err")
   cl "(budgets--scroll-paced $sscroll $refresh)" > /dev/null
   o2=$(stat -c %s "$run/nh.err")
@@ -449,20 +453,28 @@ speed() {
     *) rec "scroll-120-dropped$sfx" "$side" "SKIP fewer than two damaged commits in the trace" ;;
   esac
   # the presenter's own numbers (the shell with the thread only).  main-wait-max is the ns the host thread waited at
-  # most on the tree mutex or the mailbox, over the whole session.  presenter-late: the trace cannot say whose fault a
-  # missed vblank was, so the row is the dropped-interval count when the presenter's publish-to-commit time ever
-  # reached 2 ms, else 0 (the stricter reading: a slow presenter blocks even when the drop was the main thread's).
+  # most on the tree mutex or the mailbox, over the whole session.  presenter-late: the presenter counts its own misses
+  # (`:presenter-late' of `:presenter-frames': a root buffer committed more than one refresh period after its tree
+  # could commit it, the later of its first publish and the frame callback), per 1000 of its frames during the scroll.
+  # A build without those keys falls back to the proxy: the dropped-interval count when the presenter's
+  # publish-to-commit time ever reached 2 ms, else 0.
   if [ "$HAS_W3$side" = 1A ]; then
     mw=$(cl '(format "%s" (plist-get (nhwl-presenter-stats) :main-wait-max-ns))' | tr -d '" ')
     case $mw in
       ''|*[!0-9]*) rec main-wait-max A "SKIP nhwl-presenter-stats has no :main-wait-max-ns ($mw)" ;;
       *) rec main-wait-max A "$(awk -v n="$mw" 'BEGIN { printf "%.4f", n / 1e6 }')" ;;
     esac
-    pl=$(cl '(format "%s" (plist-get (plist-get (glitnir-stats) :publish-to-commit-ms) :max))' | tr -d '" ')
-    case $pl in
-      ''|*[!0-9.]*) rec scroll-120-presenter-late A "SKIP glitnir-stats has no :publish-to-commit-ms ($pl)" ;;
-      *) rec scroll-120-presenter-late A "$(awk -v p="$pl" -v late="$(plval :late <<< "$r")" 'BEGIN { print (p >= 2 ? late + 0 : 0) }')" ;;
-    esac
+    pt2=$(cl "$pt" | tr -d '"')
+    if [[ "$pt1 $pt2" =~ ^[0-9]+\ [0-9]+\ [0-9]+\ [0-9]+$ ]]; then
+      rec scroll-120-presenter-late A "$(awk -v a="$pt1" -v b="$pt2" 'BEGIN { split(a, x, " "); split(b, y, " ");
+        f = y[2] - x[2]; printf "%.2f", f > 0 ? (y[1] - x[1]) * 1000 / f : 0 }')"
+    else
+      pl=$(cl '(format "%s" (plist-get (plist-get (glitnir-stats) :publish-to-commit-ms) :max))' | tr -d '" ')
+      case $pl in
+        ''|*[!0-9.]*) rec scroll-120-presenter-late A "SKIP glitnir-stats has no :publish-to-commit-ms ($pl)" ;;
+        *) rec scroll-120-presenter-late A "$(awk -v p="$pl" -v late="$(plval :late <<< "$r")" 'BEGIN { print (p >= 2 ? late + 0 : 0) }')" ;;
+      esac
+    fi
   fi
   stop_all
 }
