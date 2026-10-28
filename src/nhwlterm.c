@@ -963,6 +963,9 @@ nhwl_create_frame_window (struct frame *f)
   if (rc < 0)
     error ("nidhogg-wayland: cannot create a window (%d)", rc);
   out->window = id;
+  /* `alpha' was set before the window existed.  */
+  nhwl_set_frame_alpha (f);
+  nhwl_set_min_size (f);
 }
 
 void
@@ -983,11 +986,86 @@ nhwl_set_title_hint (struct frame *f)
     }
 }
 
+static void nhwl_clamp_native_size (struct frame *, int *, int *);
+
+/* F's `undecorated' changed at run time (at creation the shell takes the
+   flag with the window).  A top-level asks the compositor again (server
+   decorations or none), and our title bar and margins come or go at once
+   (nhwl_csd_layout).  A maximized, fullscreen or tiled window keeps the
+   compositor's size, so its native area takes the title bar's rows or
+   gives them back; a floating one keeps its native size, as on X11, and
+   its surface grows or shrinks.  The redraw that follows presents it.  */
 void
 nhwl_set_undecorated_hint (struct frame *f, bool undecorated)
 {
-  /* The shell takes the flag at creation (W0); a change later is W1's
-     (it needs the decoration negotiation redone).  */
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  int dw, dh;
+
+  if (!out->window)
+    return;
+  if (!nhwl_child_p (f))
+    {
+      block_input ();
+      nhshell_window_set_decorated (FRAME_NHWL_SHELL (f), out->window,
+				    !undecorated);
+      unblock_input ();
+    }
+  nhwl_csd_layout (f);
+  if (!nhwl_child_p (f) && out->logical_w > 0 && out->logical_h > 0
+      && (out->states & (NHSHELL_STATE_MAXIMIZED | NHSHELL_STATE_FULLSCREEN
+			 | NHSHELL_STATE_TILED_L | NHSHELL_STATE_TILED_R
+			 | NHSHELL_STATE_TILED_T | NHSHELL_STATE_TILED_B)))
+    {
+      nhwl_csd_native_size (f, out->logical_w, out->logical_h, &dw, &dh);
+      nhwl_clamp_native_size (f, &dw, &dh);
+      if (dw != FRAME_PIXEL_WIDTH (f) || dh != FRAME_PIXEL_HEIGHT (f))
+	change_frame_size (f, dw, dh, false, true, false);
+    }
+  nhwl_set_min_size (f);
+  SET_FRAME_GARBAGED (f);
+}
+
+/* Apply F's `alpha', by pgtk_set_frame_alpha's rule: the active value
+   while F is the highlight frame, else the inactive one, never below
+   `frame-alpha-lower-limit'.  The compositor multiplies when it can
+   (wp_alpha_modifier_v1, surface state the window then owes a commit for:
+   the shell wakes its pacer); otherwise nhwl_glitnir_compose multiplies
+   the pixels, and the whole frame is damaged for it.  */
+void
+nhwl_set_frame_alpha (struct frame *f)
+{
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  double alpha = (FRAME_DISPLAY_INFO (f)->highlight_frame == f
+		  ? f->alpha[0] : f->alpha[1]);
+  double alpha_min = 1.0;
+  uint32_t cut;
+  bool host;
+  int rc;
+
+  if (!out || !out->window)
+    return;
+  if (FLOATP (Vframe_alpha_lower_limit))
+    alpha_min = XFLOAT_DATA (Vframe_alpha_lower_limit);
+  else if (FIXNUMP (Vframe_alpha_lower_limit))
+    alpha_min = XFIXNUM (Vframe_alpha_lower_limit) / 100.0;
+  /* A negative alpha is none: opaque.  */
+  if (alpha < 0.0 || alpha > 1.0)
+    alpha = 1.0;
+  else if (alpha < alpha_min && alpha_min <= 1.0)
+    alpha = alpha_min;
+  cut = alpha >= 1.0 ? 0 : UINT32_MAX - (uint32_t) (alpha * UINT32_MAX);
+  if (cut == out->alpha_cut)
+    return;
+
+  block_input ();
+  rc = nhshell_window_set_alpha (FRAME_NHWL_SHELL (f), out->window,
+				 UINT32_MAX - cut);
+  unblock_input ();
+  host = rc == NHSHELL_E_UNSUPPORTED;
+  if (host || out->alpha_host)
+    nhwl_damage_all (f);
+  out->alpha_cut = cut;
+  out->alpha_host = host && cut;
 }
 
 /* The largest side of a frame's surface, in device pixels.  Cairo's
@@ -1092,11 +1170,36 @@ nhwl_new_font (struct frame *f, Lisp_Object font_object, int fontset)
 
   /* Now make the frame display the given font.  */
   if (FRAME_NHWL_OUTPUT (f)->window)
-    adjust_frame_size (f, FRAME_COLS (f) * FRAME_COLUMN_WIDTH (f),
-		       FRAME_LINES (f) * FRAME_LINE_HEIGHT (f), 3,
-		       false, Qfont);
+    {
+      adjust_frame_size (f, FRAME_COLS (f) * FRAME_COLUMN_WIDTH (f),
+			 FRAME_LINES (f) * FRAME_LINE_HEIGHT (f), 3,
+			 false, Qfont);
+      nhwl_set_min_size (f);
+    }
 
   return font_object;
+}
+
+/* Tell the compositor F's smallest size (xdg_toplevel.set_min_size, with
+   the next commit): one column and one line of text with the bars, as
+   GTK's size hints say (xg_wm_set_size_hint), and our title bar.  */
+void
+nhwl_set_min_size (struct frame *f)
+{
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  uint32_t s120 = out->scale120 ? out->scale120 : 120;
+  int w, h;
+
+  if (!out->window || nhwl_child_p (f) || !FRAME_FONT (f))
+    return;
+  w = FRAME_TEXT_COLS_TO_PIXEL_WIDTH (f, 1);
+  h = (FRAME_TEXT_LINES_TO_PIXEL_HEIGHT (f, 1) + FRAME_MENUBAR_HEIGHT (f)
+       + FRAME_TOOLBAR_HEIGHT (f) + out->csd.strip);
+  block_input ();
+  nhshell_window_set_min_size (FRAME_NHWL_SHELL (f), out->window,
+			       nhwl_to_logical (w, s120),
+			       nhwl_to_logical (h, s120));
+  unblock_input ();
 }
 
 /* Wait for the compositor's first configure of frame F, handling the
@@ -1228,7 +1331,11 @@ nhwl_set_fullscreen_state (struct frame *f)
 
     case FULLSCREEN_WIDTH:
     case FULLSCREEN_HEIGHT:
+      /* Wayland fills one direction only by tiling, which only the
+	 compositor does: the nearest a client can ask is maximized (the
+	 configure then stores `maximized').  */
       nhshell_window_set_fullscreen (sh, out->window, 0);
+      nhshell_window_set_maximized (sh, out->window, 1);
       break;
     }
   unblock_input ();
@@ -1372,17 +1479,20 @@ nhwl_activate_frame (struct frame *f)
  ***********************************************************************/
 
 /* Adapted from frame_highlight and frame_unhighlight (pgtkterm.c): the
-   frame has no border to colour, only the cursor changes.  */
+   frame has no border to colour; the cursor changes, and `alpha' takes
+   its active or inactive value.  */
 static void
 frame_highlight (struct frame *f)
 {
   gui_update_cursor (f, true);
+  nhwl_set_frame_alpha (f);
 }
 
 static void
 frame_unhighlight (struct frame *f)
 {
   gui_update_cursor (f, true);
+  nhwl_set_frame_alpha (f);
 }
 
 /* Adapted from pgtk_frame_rehighlight.  */
@@ -2835,6 +2945,7 @@ nhwl_create_terminal (struct nhwl_display_info *dpyinfo)
   terminal->focus_frame_hook = nhwl_focus_frame;
   terminal->set_frame_offset_hook = nhwl_set_offset;
   terminal->frame_raise_lower_hook = nhwl_frame_raise_lower;
+  terminal->set_frame_alpha_hook = nhwl_set_frame_alpha;
   terminal->free_pixmap = nhwl_free_pixmap;
 
   /* Other hooks are NULL by default.  */

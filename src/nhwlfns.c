@@ -411,7 +411,8 @@ nhwl_set_internal_border_width (struct frame *f, Lisp_Object arg,
     }
 }
 
-/* The shell takes the flag when the window is made.  */
+/* The shell takes the flag when the window is made, and
+   nhwl_set_undecorated_hint changes it later.  */
 static void
 nhwl_set_undecorated (struct frame *f, Lisp_Object new_value,
 		      Lisp_Object old_value)
@@ -476,7 +477,8 @@ nhwl_default_font_parameter (struct frame *f, Lisp_Object parms)
 }
 
 /* The parameter handlers, in the order of frame.c's table.  Entries that
-   are 0 are accepted and stored only.  */
+   are 0 are accepted and stored only: each is a no-op the shell's README
+   lists ("Frame parameters"), with the reason.  */
 extern frame_parm_handler nhwl_frame_parm_handlers[];
 frame_parm_handler nhwl_frame_parm_handlers[] =
   {
@@ -489,8 +491,8 @@ frame_parm_handler nhwl_frame_parm_handlers[] =
     nhwl_set_cursor_type,
     gui_set_font,		/* generic OK */
     nhwl_set_foreground_color,
-    0,				/* icon-name */
-    0,				/* icon-type */
+    0,				/* icon-name: Wayland has no icon title */
+    0,				/* icon-type: the desktop file's icon */
     nhwl_set_child_frame_border_width,
     nhwl_set_internal_border_width,
     gui_set_right_divider_width,
@@ -498,7 +500,7 @@ frame_parm_handler nhwl_frame_parm_handlers[] =
     nhwl_set_menu_bar_lines,
     nhwl_set_mouse_color,
     nhwl_explicitly_set_name,
-    0,				/* scroll-bar-width: no scroll bars in W0 */
+    0,				/* scroll-bar-width: no scroll bars */
     0,				/* scroll-bar-height */
     nhwl_set_title,
     gui_set_unsplittable,	/* generic OK */
@@ -513,20 +515,20 @@ frame_parm_handler nhwl_frame_parm_handlers[] =
     gui_set_line_spacing,	/* generic OK, sets f->extra_line_spacing to int */
     gui_set_left_fringe,	/* generic OK */
     gui_set_right_fringe,	/* generic OK */
-    0,				/* wait-for-wm */
+    0,				/* wait-for-wm: the first configure is awaited */
     gui_set_fullscreen,		/* generic OK */
     gui_set_font_backend,	/* generic OK */
-    0,				/* alpha */
-    0,				/* sticky */
-    0,				/* tool-bar-position */
-    0,				/* inhibit-double-buffering */
+    gui_set_alpha,		/* generic; nhwl_set_frame_alpha applies it */
+    0,				/* sticky: no protocol */
+    0,				/* tool-bar-position: the tool bar is Emacs's */
+    0,				/* inhibit-double-buffering: one backing */
     nhwl_set_undecorated,
     nhwl_set_parent_frame,
-    0,				/* skip-taskbar */
-    0,				/* no-focus-on-map */
+    0,				/* skip-taskbar: no protocol */
+    0,				/* no-focus-on-map: the compositor decides */
     nhwl_set_no_accept_focus,
     nhwl_set_z_group,
-    0,				/* override-redirect */
+    0,				/* override-redirect: child frames only */
     gui_set_no_special_glyphs,
     nhwl_set_alpha_background,
     gui_set_borders_respect_alpha_background,

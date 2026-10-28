@@ -148,12 +148,17 @@ impl ShellBackend for WaylandShell {
         if desc.flags & NHSHELL_WIN_MAXIMIZED != 0 {
             toplevel.set_maximized();
         }
-        let decoration = if m.force_csd || desc.flags & NHSHELL_WIN_UNDECORATED != 0 {
+        // an undecorated window asks for client-side mode (it draws none), so that `set_decorated` can change it
+        let decoration = if m.force_csd {
             None
         } else {
             m.decoration_manager.as_ref().map(|manager| {
                 let d = manager.get_toplevel_decoration(&toplevel, &qh, id);
-                d.set_mode(Mode::ServerSide);
+                d.set_mode(if desc.flags & NHSHELL_WIN_UNDECORATED != 0 {
+                    Mode::ClientSide
+                } else {
+                    Mode::ServerSide
+                });
                 d
             })
         };
@@ -180,6 +185,7 @@ impl ShellBackend for WaylandShell {
 
     fn window_destroy(&mut self, id: WindowId) -> ShellResult {
         self.text_input.forget(id);
+        self.alpha_forget(id);
         for dep in self.dependents_of(id) {
             let _ = self.window_destroy(dep);
         }
@@ -342,6 +348,24 @@ impl ShellBackend for WaylandShell {
 
     fn window_ssd(&self, id: WindowId) -> ShellResult<bool> {
         Ok(self.window(id)?.ssd)
+    }
+
+    /// Every top-level has its decoration object from the start (an undecorated one asks for client-side mode), so
+    /// the mode can change after a buffer: version 1 forbids making the object then.
+    fn set_decorated(&mut self, id: WindowId, on: bool) -> ShellResult {
+        let force_csd = self.main.force_csd;
+        if let Some(d) = &self.window(id)?.decoration {
+            d.set_mode(if on && !force_csd {
+                Mode::ServerSide
+            } else {
+                Mode::ClientSide
+            });
+        }
+        self.flush()
+    }
+
+    fn set_alpha(&mut self, id: WindowId, factor: u32) -> ShellResult {
+        self.window_set_alpha(id, factor)
     }
 
     fn present_begin(

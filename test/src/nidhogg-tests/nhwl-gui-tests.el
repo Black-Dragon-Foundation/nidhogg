@@ -2183,3 +2183,115 @@ while the top-level has the keyboard.  Delete the child and focus the parent aft
       (remove-hook 'post-command-hook post)
       (when (frame-live-p mf) (delete-frame mf t))
       (when (frame-live-p parent) (select-frame-set-input-focus parent)))))
+
+;; Task 18: every frame parameter has its effect or a listed no-op (nidhogg/shell/README.md, "Frame parameters").
+
+(defconst nhwl-gui--handled-parameters
+  '(auto-raise auto-lower background-color border-color border-width cursor-color cursor-type font
+    foreground-color icon-name icon-type child-frame-border-width internal-border-width right-divider-width
+    bottom-divider-width menu-bar-lines mouse-color name scroll-bar-width scroll-bar-height title unsplittable
+    vertical-scroll-bars horizontal-scroll-bars visibility tab-bar-lines tool-bar-lines scroll-bar-foreground
+    scroll-bar-background screen-gamma line-spacing left-fringe right-fringe wait-for-wm fullscreen font-backend
+    alpha sticky tool-bar-position inhibit-double-buffering undecorated parent-frame skip-taskbar no-focus-on-map
+    no-accept-focus z-group override-redirect no-special-glyphs alpha-background borders-respect-alpha-background)
+  "The names of frame.c's handler table, in its order.")
+
+(defconst nhwl-gui--fixed-parameters
+  '(minibuffer window-id outer-window-id parent-id display terminal window-system buffer-list buried-buffer-list
+    explicit-name font-parameter)
+  "Parameters Emacs sets itself and a program never sets back.")
+
+(ert-deftest nhwl-gui/every-parameter-settable ()
+  (skip-unless (nhwl-gui--live-p))
+  (let ((names (seq-uniq (append (mapcar #'car (frame-parameters)) nhwl-gui--handled-parameters)))
+        bad)
+    (dolist (name names)
+      (unless (memq name nhwl-gui--fixed-parameters)
+        (let ((value (frame-parameter nil name)))
+          (condition-case err
+              (progn
+                (set-frame-parameter nil name value)
+                (redisplay t)
+                (unless (equal (frame-parameter nil name) value)
+                  (push (list name value (frame-parameter nil name)) bad)))
+            (error (push (list name value err) bad))))))
+    (should-not bad)))
+
+(ert-deftest nhwl-gui/alpha-reaches-the-compositor ()
+  ;; With wp_alpha_modifier_v1 (the sway profile) the multiplier rides the window's commits; without it (mutter's)
+  ;; the glue multiplies the pixels, so the output's composite shows the frame half transparent.
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((modifier (plist-get (plist-get (gui-runner-recorder '(:cmd "globals")) :globals) :wp_alpha_modifier_v1))
+        (mark (nhwl-gui--mark)))
+    (unwind-protect
+        (progn
+          (set-frame-parameter nil 'alpha 0.5)
+          (if modifier
+              (should (nhwl-gui--wait
+                       (lambda ()
+                         (redisplay t)
+                         (seq-find (lambda (c) (let ((a (nhwl-gui--get c :alpha))) (and a (< (abs (- a 0.5)) 0.01))))
+                                   (nhwl-gui--toplevel-all-commits mark)))
+                       5))
+            (let* ((g (nhwl-gui--shown mark))
+                   (w (nth 0 g)) (h (nth 1 g))
+                   (a (aref (nth 2 g) (+ 3 (* 4 (+ (/ w 2) (* w (/ h 2))))))))
+              (should (<= 100 a 160)))))
+      (set-frame-parameter nil 'alpha nil)
+      (redisplay t))))
+
+(ert-deftest nhwl-gui/undecorated-toggles-the-title-bar ()
+  ;; mutter profile (no server decorations): t takes our title bar and margins away (the window geometry is the
+  ;; whole surface); nil brings them back.
+  (skip-unless (and (nhwl-gui--recorder-p) (not (equal (nhwl-gui--decoration) "server"))))
+  (nhwl-gui--windowed)
+  (unwind-protect
+      (progn
+        (should (> (nhwl-gui--native-top) 0))
+        (let ((mark (nhwl-gui--mark)))
+          (set-frame-parameter nil 'undecorated t)
+          (should (nhwl-gui--wait
+                   (lambda ()
+                     (redisplay t)
+                     (let ((c (car (last (nhwl-gui--new mark)))))
+                       (and c (= (nhwl-gui--native-top) 0)
+                            (let ((g (nhwl-gui--get c :geometry)))
+                              (or (null g) (and (= (nth 0 g) 0) (= (nth 1 g) 0)))))))
+                   5)))
+        (let ((mark (nhwl-gui--mark)))
+          (set-frame-parameter nil 'undecorated nil)
+          (should (nhwl-gui--wait
+                   (lambda ()
+                     (redisplay t)
+                     (and (nhwl-gui--new mark) (> (nhwl-gui--native-top) 0)))
+                   5))))
+    (set-frame-parameter nil 'undecorated nil)
+    (redisplay t)))
+
+(ert-deftest nhwl-gui/200-resizes-no-flash ()
+  ;; W1-2, from P1.5 Task 15: 200 configures of alternating sizes; every commit with a buffer shows the size of
+  ;; the newest configure it acked (no old-size buffer), and no commit attaches a buffer that damages nothing.
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--windowed)
+  (let ((mark (nhwl-gui--mark)) (sizes (make-hash-table)) commits)
+    (dotimes (i 200)
+      (let* ((size (if (= (% i 2) 0) [900 640] [800 600]))
+             (serial (plist-get (gui-runner-recorder (list :cmd "configure" :surface "focused" :size size
+                                                           :states ["activated"]))
+                                :serial)))
+        (puthash serial (append size nil) sizes)
+        (redisplay t)
+        (sit-for 0.01)))
+    (nhwl-gui--wait (lambda () (redisplay t) nil) 1)
+    (setq commits (nhwl-gui--toplevel-all-commits mark))
+    (let (size bad)
+      (dolist (c commits)
+        (let ((ack (nhwl-gui--get c :ack_serial)))
+          (when ack (setq size (gethash ack sizes size)))
+          (when (and size (nhwl-gui--get c :buffer)
+                     (not (equal (nhwl-gui--logical-size c) size)))
+            (push (list ack size (nhwl-gui--logical-size c)) bad))))
+      (should (> (length (seq-filter (lambda (c) (nhwl-gui--get c :buffer)) commits)) 10))
+      (should-not bad)
+      (should-not (plist-get (gui-runner-recorder (list :cmd "empty_buffer_commits" :since mark)) :commits)))
+    (nhwl-gui--windowed)))
