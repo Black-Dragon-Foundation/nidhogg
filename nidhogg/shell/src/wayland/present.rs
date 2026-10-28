@@ -94,6 +94,14 @@ pub(crate) struct Recorded {
     pub(crate) rearm: bool,
 }
 
+/// The newest of the recorded state that went out: what a surface made again after a reconnect sends again.
+#[derive(Default)]
+pub(crate) struct Sent {
+    input: Option<Vec<Rect>>,
+    alpha: Option<u32>,
+    geometry: Option<Rect>,
+}
+
 /// Commits of registered trees made outside `present_tree`, for the test hook `commits_off_presenter`.
 #[derive(Default)]
 pub struct TreeCommits {
@@ -153,6 +161,9 @@ pub struct Present {
     published: u64,
     pub(crate) commit: Commit,
     pub(crate) rec: Recorded,
+    sent: Sent,
+    /// The window was made again after a reconnect: its next configure is a content ack, whatever the host's flag.
+    content_next: bool,
     /// The window was destroyed (under the tree's mutex): nothing commits it any more.
     retired: bool,
     /// A root: its child windows, each with its parent.
@@ -202,6 +213,8 @@ impl Present {
         Present {
             commit,
             rec: Recorded::default(),
+            sent: Sent::default(),
+            content_next: false,
             retired: false,
             window,
             pool: Pool::new(),
@@ -411,7 +424,7 @@ impl Present {
         compositor: Option<&WlCompositor>,
         rqh: &QueueHandle<ReaderState>,
     ) {
-        let (c, r) = (&self.commit, &mut self.rec);
+        let (c, r, sent) = (&self.commit, &mut self.rec, &mut self.sent);
         for (sub, sibling, above) in r.stack.drain(..) {
             if sub.is_alive() && sibling.is_alive() {
                 if above {
@@ -435,9 +448,11 @@ impl Present {
                 c.surface.set_input_region(Some(&region));
                 region.destroy();
             }
+            sent.input = Some(rects);
         }
         if let (Some(factor), Some(alpha)) = (r.alpha.take(), &c.alpha) {
             alpha.set_multiplier(factor);
+            sent.alpha = Some(factor);
         }
         if std::mem::take(&mut r.unmap) && !buffer {
             c.surface.attach(None, 0, 0);
@@ -447,6 +462,7 @@ impl Present {
             && let Some(xdg) = &c.xdg
         {
             xdg.set_window_geometry(g.x, g.y, g.w, g.h);
+            sent.geometry = Some(g);
         }
     }
 
@@ -570,6 +586,33 @@ impl Present {
         self.ack = None;
         self.ack_content = false;
         self.configured = false;
+        self.epoch += 1;
+    }
+
+    /// The window was made again on a new connection with the proxies in `commit` (a reconnect): it is back at its
+    /// state at creation (unconfigured, unless a child; no ready bits, frame callback, feedback or ack owed), so
+    /// nothing commits it before the new compositor's first configure, which is a content ack.  Its buffers, fronts
+    /// and recorded state stay; what the old surface had been sent (input region, alpha, window geometry) is recorded
+    /// again unless something newer is, and a child owes the commit that carries it.
+    pub(crate) fn remade(&mut self, commit: Commit) {
+        self.commit = commit;
+        let (r, sent) = (&mut self.rec, &self.sent);
+        r.stack.clear();
+        r.rearm = false;
+        r.input = r.input.take().or_else(|| sent.input.clone());
+        r.alpha = r.alpha.or(sent.alpha);
+        r.geometry = r.geometry.or(sent.geometry);
+        let child = self.root.is_some();
+        self.configured = child;
+        self.owed = child;
+        self.ack = None;
+        self.ack_content = false;
+        self.content_next = !child;
+        self.waiting = false;
+        self.starved = false;
+        self.notified = false;
+        self.suspended = false;
+        self.tree_content = false;
         self.epoch += 1;
     }
 }
@@ -999,6 +1042,38 @@ impl MainState {
         }
     }
 
+    /// Window `id` was made again on the new connection (`xdg` for a top-level, `subsurface` for a child): its
+    /// presenter state takes the new proxies and goes back to its state at creation (`Present::remade`).  Its scale
+    /// stays, and an alpha object it had is made again when the compositor still has the protocol.
+    pub(crate) fn present_again(
+        &mut self,
+        id: u64,
+        xdg: Option<XdgSurface>,
+        subsurface: Option<WlSubsurface>,
+        qh: &QueueHandle<MainState>,
+    ) {
+        let (Some(surface), Some(present)) =
+            (self.surfaces.get(&id).cloned(), self.presents.get(&id))
+        else {
+            return;
+        };
+        let viewport = self.scales.get(&id).and_then(|s| s.viewport());
+        let mut p = lock(present);
+        let alpha = match (&p.commit.alpha, &self.alpha_modifier) {
+            (Some(_), Some(m)) => Some(m.get_surface(&surface, qh, ())),
+            _ => None,
+        };
+        let commit = Commit {
+            surface,
+            xdg,
+            subsurface,
+            viewport,
+            alpha,
+            scale120: p.commit.scale120,
+        };
+        p.remade(commit);
+    }
+
     fn present_of(&self, id: u64) -> Option<Arc<Mutex<Present>>> {
         self.presents.get(&id).cloned()
     }
@@ -1052,7 +1127,9 @@ impl MainState {
         let mut p = lock(&present);
         p.configured = true;
         p.ack = Some(serial);
-        p.ack_content |= content;
+        // the first configure after a reconnect brings the picture back
+        let remade = std::mem::take(&mut p.content_next);
+        p.ack_content |= content || remade;
         p.ack_seq = self.mailbox.seq();
         p.notify();
     }

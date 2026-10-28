@@ -235,7 +235,7 @@ impl Dispatch<WlPointer, ()> for ReaderState {
                     // a press is held only within one surface's implicit grab
                     serials.release_all(false);
                 }
-                state.pointer.surface = u64::from(surface.id().protocol_id());
+                state.pointer.surface = crate::wayland::window_of(&surface);
                 state.post_pointer(NHSHELL_EV_POINTER_ENTER, 0, surface_x, surface_y);
             }
             wl_pointer::Event::Leave { .. } => {

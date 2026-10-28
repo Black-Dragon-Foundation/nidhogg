@@ -386,9 +386,9 @@ impl Dispatch<WlKeyboard, ()> for ReaderState {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        // The window id is the surface's protocol id.
+        // The window id is the surface's protocol id, unless a reconnect made the surface again (`window_of`).
         let focus = |surface: &wayland_client::protocol::wl_surface::WlSurface, on: u8| {
-            let mut ev = NhShellEvent::new(NHSHELL_EV_FOCUS, surface.id().protocol_id().into(), 0);
+            let mut ev = NhShellEvent::new(NHSHELL_EV_FOCUS, crate::wayland::window_of(surface), 0);
             ev.u.focus = FocusEv { r#in: on };
             ev
         };
@@ -397,12 +397,12 @@ impl Dispatch<WlKeyboard, ()> for ReaderState {
                 serial, surface, ..
             } => {
                 selection::lock(&state.shared).enter(serial);
-                state.kbd.enter(surface.id().protocol_id().into());
+                state.kbd.enter(crate::wayland::window_of(&surface));
                 state.post(focus(&surface, 1));
             }
             wl_keyboard::Event::Leave { surface, .. } => {
                 selection::lock(&state.shared).leave();
-                state.kbd.leave(surface.id().protocol_id().into());
+                state.kbd.leave(crate::wayland::window_of(&surface));
                 state.post(focus(&surface, 0));
             }
             wl_keyboard::Event::Keymap {

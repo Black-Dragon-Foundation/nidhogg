@@ -48,7 +48,7 @@ use reader::ReaderState;
 use registry::Globals;
 use std::collections::HashMap;
 use std::ffi::CStr;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::JoinHandle;
@@ -105,6 +105,11 @@ pub struct MainState {
     foreign: foreign::Foreign,
     session: session::Session,
     tokens: activation::Tokens,
+    /// The newest window id given out above the protocol's range (`window_surface`).
+    next_id: u64,
+    /// Each parent's child windows bottom to top, the parent itself among them, for making the stacking again after
+    /// a reconnect (`child.rs`).
+    stacking: HashMap<u64, Vec<u64>>,
 }
 
 /// The main queue's waker: an event routed into the main queue (by the reader's read) marks it pending and wakes the
@@ -393,6 +398,13 @@ impl WaylandShell {
         self.shared.dragging.load(Ordering::Acquire)
     }
 
+    /// Test hook: the protocol id of window `id`'s surface now (it changes when a reconnect makes the window again;
+    /// the window id does not).
+    #[doc(hidden)]
+    pub fn surface_protocol_id(&self, id: WindowId) -> Option<u32> {
+        self.main.surfaces.get(&id).map(|s| s.id().protocol_id())
+    }
+
     /// Test hook: shrink the socket's send buffer (`SO_SNDBUF`), so that a flush meets EAGAIN early.
     #[doc(hidden)]
     pub fn set_send_buffer(&self, bytes: usize) -> ShellResult {
@@ -456,13 +468,72 @@ impl Dispatch<WlSurface, ()> for MainState {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        state.surface_event(surface, event);
+    }
+}
+
+impl Dispatch<WlSurface, SurfaceTag> for MainState {
+    fn event(
+        state: &mut Self,
+        surface: &WlSurface,
+        event: wl_surface::Event,
+        _: &SurfaceTag,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        state.surface_event(surface, event);
+    }
+}
+
+/// A window surface's user data: the window id when it is not the surface's protocol id (0: it is).  A window made
+/// again after a reconnect keeps its id on a surface with a new protocol id, and a window made after that whose
+/// protocol id a live window holds gets a fresh id above the protocol's range.
+#[derive(Default)]
+pub struct SurfaceTag(AtomicU64);
+
+/// The window whose surface `surface` is: what every event naming a surface reports (`FOCUS`, pointer, touch, drops,
+/// text input, scale).
+pub(crate) fn window_of(surface: &WlSurface) -> u64 {
+    match surface
+        .data::<SurfaceTag>()
+        .map(|t| t.0.load(Ordering::Acquire))
+    {
+        Some(id) if id != 0 => id,
+        _ => u64::from(surface.id().protocol_id()),
+    }
+}
+
+impl MainState {
+    fn surface_event(&mut self, surface: &WlSurface, event: wl_surface::Event) {
         // the surface may be shown again, or its scale changed: a waiting pacer asks again
         if matches!(
             event,
             wl_surface::Event::Enter { .. } | wl_surface::Event::PreferredBufferScale { .. }
         ) {
-            state.present_rearm(u64::from(surface.id().protocol_id()));
+            self.present_rearm(window_of(surface));
         }
-        scale::surface_event(state, surface, event);
+        scale::surface_event(self, surface, event);
+    }
+
+    /// A new window's surface and its id: the protocol id, unless a live window holds that id (only after a
+    /// reconnect), then a fresh one.
+    fn window_surface(&mut self, qh: &QueueHandle<MainState>) -> ShellResult<(WlSurface, u64)> {
+        let compositor = self.compositor.as_ref().ok_or(ShellError::State)?;
+        let surface = compositor.create_surface(qh, SurfaceTag::default());
+        let mut id = u64::from(surface.id().protocol_id());
+        if self.is_window(id) || self.surfaces.contains_key(&id) {
+            self.next_id = self.next_id.max(1 << 32) + 1;
+            id = self.next_id;
+            if let Some(t) = surface.data::<SurfaceTag>() {
+                t.0.store(id, Ordering::Release);
+            }
+        }
+        Ok((surface, id))
+    }
+
+    /// Window `id`'s surface made again on the new connection, keeping its id.
+    fn window_surface_again(&self, id: u64, qh: &QueueHandle<MainState>) -> Option<WlSurface> {
+        let compositor = self.compositor.as_ref()?;
+        Some(compositor.create_surface(qh, SurfaceTag(AtomicU64::new(id))))
     }
 }
