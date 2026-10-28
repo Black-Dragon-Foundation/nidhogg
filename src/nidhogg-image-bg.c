@@ -105,6 +105,9 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 /* Pixels the cores refuse whatever the limits say (512 MiB of words).  */
 #define NH_IMG_MAX_PIXELS ((int64_t) 1 << 27)
 
+/* The largest image file the cores read (encoded bytes).  */
+#define NH_IMG_FILE_MAX ((off_t) 1 << 30)
+
 static _Atomic int64_t nh_img_decodes;
 
 int64_t
@@ -215,30 +218,21 @@ nh_img_input (const uint8_t *data, size_t len, const struct nh_img_params *p,
   int fd = open (p->file, O_RDONLY | O_CLOEXEC);
   if (fd < 0)
     return nh_img_fail (out, NH_IMG_E_OPEN);
+  /* Only a regular file, read up to the size it had when opened and at
+     most NH_IMG_FILE_MAX: a name that leads to /dev/zero or a FIFO, or a
+     huge file, must not grow the buffer until memory runs out.  */
   struct stat st;
-  size_t cap = fstat (fd, &st) == 0 && st.st_size > 0 ? st.st_size : 4096;
+  if (fstat (fd, &st) != 0 || !S_ISREG (st.st_mode)
+      || st.st_size > NH_IMG_FILE_MAX)
+    {
+      close (fd);
+      return nh_img_fail (out, NH_IMG_E_OPEN);
+    }
+  size_t cap = st.st_size > 0 ? st.st_size : 1;
   uint8_t *buf = malloc (cap);
   size_t n = 0;
-  while (buf)
+  while (buf && n < cap)
     {
-      if (n == cap)
-	{
-	  if (cap > SIZE_MAX / 2)
-	    {
-	      free (buf);
-	      buf = NULL;
-	      break;
-	    }
-	  cap *= 2;
-	  uint8_t *nb = realloc (buf, cap);
-	  if (!nb)
-	    {
-	      free (buf);
-	      buf = NULL;
-	      break;
-	    }
-	  buf = nb;
-	}
       ssize_t r = read (fd, buf + n, cap - n);
       if (r < 0 && errno == EINTR)
 	continue;

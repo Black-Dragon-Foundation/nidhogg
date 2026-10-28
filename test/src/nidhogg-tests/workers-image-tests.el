@@ -111,6 +111,35 @@ GOLDEN-HEADER is the corpus' recorded frame background colour."
           (cl-incf n))))
     (should (= n (length results)))))
 
+(ert-deftest workers/image-core-refuses-nonregular-file ()
+  ;; A spec whose file leads to /dev/zero: the cores refuse it at once
+  ;; (before the fix they grew a buffer until memory ran out).  Run in a
+  ;; child under a memory limit, so a regression fails instead of taking
+  ;; the runner down.
+  (skip-unless (and (file-exists-p "/dev/zero")
+                    (workers-image-tests--core-p (quote png))))
+  (let* ((dir (make-temp-file "nh-img-zero" t))
+         (link (expand-file-name "zero.png" dir)))
+    (unwind-protect
+        (progn
+          (make-symbolic-link "/dev/zero" link)
+          (with-temp-buffer
+            (let ((status
+                   (call-process
+                    "/bin/sh" nil t nil "-c"
+                    "ulimit -v 2000000; exec \"$@\"" "sh"
+                    (expand-file-name invocation-name invocation-directory)
+                    "-Q" "--batch" "--eval"
+                    (prin1-to-string
+                     `(princ (if (plist-get (nidhogg-workers--test-image-decode
+                                             '(image :type png :file ,link)
+                                             '(:limit 10000))
+                                            :error)
+                                 "refused" "decoded"))))))
+              (should (eql status 0))
+              (should (string-search "refused" (buffer-string))))))
+      (delete-directory dir t))))
+
 (ert-deftest workers/image-animation-cache ()
   ;; Frame N decodes from the cached state at N-1: one frame decoded.
   (let ((golden (workers-image-tests--golden)))
