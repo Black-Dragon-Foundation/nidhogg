@@ -133,15 +133,15 @@ nhwl_csd_native_size (struct frame *f, int lw, int lh, int *dw, int *dh)
   *dh = max (1, nhwl_to_device (lh, s120) - FRAME_NHWL_OUTPUT (f)->csd.strip);
 }
 
-/* The native-area position of the surface-local logical point LX, LY.  */
+/* The native-area position of the surface point LX, LY, which the shell
+   reports in device pixels already (logical times scale).  */
 void
 nhwl_csd_native_pos (struct frame *f, double lx, double ly, int *x, int *y)
 {
   struct nhwl_csd *c = &FRAME_NHWL_OUTPUT (f)->csd;
-  double s = nhwl_csd_s120 (f) / 120.0;
 
-  *x = (int) lround (lx * s) - c->l;
-  *y = (int) lround (ly * s) - c->t;
+  *x = (int) lround (lx) - c->l;
+  *y = (int) lround (ly) - c->t;
 }
 
 /* Tell the compositor where the window sits inside the surface (before the
@@ -376,7 +376,7 @@ nhwl_csd_cursor (uint32_t e)
   return NHSHELL_CURSOR_DEFAULT;
 }
 
-/* The pointer is at the surface-local logical point LX, LY.  Return true
+/* The pointer is at the surface point LX, LY in device pixels.  Return true
    when that is over the border (the pointer shape follows it), false for
    the native area.  */
 bool
@@ -384,11 +384,10 @@ nhwl_csd_pointer (struct frame *f, double lx, double ly)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
   struct nhwl_csd *c = &out->csd;
-  double s = nhwl_csd_s120 (f) / 120.0;
   uint32_t edges, shape;
 
-  c->px = lx * s;
-  c->py = ly * s;
+  c->px = lx;
+  c->py = ly;
   if (nhwl_csd_hit (f, c->px, c->py, &edges) == R_NONE)
     {
       if (c->in_border)
