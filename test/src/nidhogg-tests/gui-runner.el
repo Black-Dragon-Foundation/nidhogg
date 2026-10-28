@@ -104,9 +104,11 @@ Signals `error' when the reply's :ok is false."
       (delete-process proc))))
 
 ;; The empty-commit invariant: a row of a recorder run fails when the recorder logged a commit that attached a new buffer
-;; with no damage while the row ran.  On unless NHWL_GUI_STRICT_COMMITS is 0 (gui.sh --env).
+;; with no damage while the row ran.  On unless NHWL_GUI_STRICT_COMMITS is 0 (gui.sh --env).  A row that stops the
+;; recorder (`display-lost-daemon-survives', and the rows after it) leaves nothing to ask: no control socket, no check.
 (defun gui-runner--strict-commits-p ()
-  (and (not (equal (getenv "NHWL_GUI_STRICT_COMMITS") "0")) (getenv "GLITNIR_GUI_RECORDER")))
+  (let ((ctl (getenv "GLITNIR_GUI_RECORDER")))
+    (and (not (equal (getenv "NHWL_GUI_STRICT_COMMITS") "0")) ctl (file-exists-p ctl))))
 
 (defun gui-runner--strict-commits (run test &rest args)
   "`ert-run-test' advice: add the empty-buffer-commit check to the end of TEST's body."
@@ -117,8 +119,9 @@ Signals `error' when the reply's :ok is false."
             (lambda ()
               (let ((since (plist-get (gui-runner-recorder '(:cmd "log" :since 1000000000)) :next)))
                 (funcall body)
-                (let ((empty (plist-get (gui-runner-recorder (list :cmd "empty_buffer_commits" :since since))
-                                        :commits)))
+                (let ((empty (and (gui-runner--strict-commits-p)
+                                  (plist-get (gui-runner-recorder (list :cmd "empty_buffer_commits" :since since))
+                                             :commits))))
                   (when empty
                     (ert-fail (list "buffer commits with no damage"
                                     (mapcar (lambda (c) (list :seq (plist-get c :seq) :role (plist-get c :role)))
