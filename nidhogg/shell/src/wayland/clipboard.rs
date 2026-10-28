@@ -2,8 +2,8 @@
 // Copyright 2022-2026 Zed Industries, Inc.
 // Adapted-from: https://github.com/zed-industries/zed@347f171a3fd00a3b672382d78348b37bd969d17c crates/gpui_linux/src/linux/wayland/clipboard.rs
 // Modified for Nidhogg: only the descriptor handling is kept.  `ReceiveData` and the MIME list per offer are Zed's;
-// `read_bytes` became `receive_pipe` + `read_with_timeout` (rustix's pipe and poll, a caller's timeout, errors as
-// `ShellError`); `send_bytes` became `SendBytes`, written from the reader thread's poll loop instead of a calloop
+// `read_bytes` became `receive_pipe` + `read_with_timeout` (rustix's pipe and poll, a caller's timeout, the display's
+// loss, errors as `ShellError`); `send_bytes` became `SendBytes`, written from the reader thread's poll loop instead of a calloop
 // source, with the descriptor made non-blocking and a 5 s limit.  Zed's item types, image formats, text
 // normalisation and self-MIME check are not taken (the glue converts; ownership is tracked by our source).
 
@@ -69,8 +69,13 @@ pub fn receive_pipe<T: ReceiveData>(offer: &T, mime_type: &str) -> ShellResult<O
     Ok(read)
 }
 
-/// Read `fd` to end of file, giving up with `Timeout` once `timeout` has passed.  Signals do not shorten the wait.
-pub fn read_with_timeout(fd: OwnedFd, timeout: Duration) -> ShellResult<Vec<u8>> {
+/// Read `fd` to end of file, giving up with `Timeout` once `timeout` has passed, or with `Disconnected` as soon as
+/// `gone` is readable (the display went: the bytes may never come).  Signals do not shorten the wait.
+pub fn read_with_timeout(
+    fd: OwnedFd,
+    timeout: Duration,
+    gone: BorrowedFd<'_>,
+) -> ShellResult<Vec<u8>> {
     let deadline = Instant::now() + timeout;
     let mut out = Vec::new();
     let mut chunk = vec![0u8; 64 * 1024];
@@ -80,10 +85,16 @@ pub fn read_with_timeout(fd: OwnedFd, timeout: Duration) -> ShellResult<Vec<u8>>
             return Err(ShellError::Timeout);
         }
         let t = timespec(left);
-        let mut fds = [PollFd::new(&fd, PollFlags::IN)];
+        let mut fds = [
+            PollFd::new(&fd, PollFlags::IN),
+            PollFd::new(&gone, PollFlags::IN),
+        ];
         match poll(&mut fds, Some(&t)) {
             Ok(_) | Err(Errno::INTR) => {}
             Err(_) => return Err(ShellError::State),
+        }
+        if !fds[1].revents().is_empty() {
+            return Err(ShellError::Disconnected);
         }
         if fds[0].revents().is_empty() {
             continue;

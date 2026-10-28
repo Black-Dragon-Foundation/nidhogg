@@ -261,6 +261,14 @@ impl Present {
         self.begun = None;
     }
 
+    /// The shell closes: the buffers go (unmapped), and so do the links that a reference cycle through a buffer's or
+    /// callback's user data would keep alive (the shared state's descriptors, the root presenter).
+    pub(crate) fn release(&mut self) {
+        self.clear();
+        self.shared = None;
+        self.root = None;
+    }
+
     /// Send the recorded state this surface's next commit carries, right before it.  A commit with a `buffer` also
     /// takes the window geometry, and maps the surface instead of unmapping it; a bare one leaves the geometry
     /// recorded.  Objects destroyed since (a stacked child, its sibling) are skipped.
