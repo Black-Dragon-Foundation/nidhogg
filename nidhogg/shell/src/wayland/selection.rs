@@ -338,7 +338,11 @@ impl WaylandShell {
             offer.receive(mime_type)?
         };
         self.flush()?;
-        read_with_timeout(fd, Duration::from_millis(timeout_ms.into()))
+        read_with_timeout(
+            fd,
+            Duration::from_millis(timeout_ms.into()),
+            self.shared.gone.fd(),
+        )
     }
 }
 
