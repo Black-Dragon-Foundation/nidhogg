@@ -86,17 +86,127 @@
                      (equal (buffer-string) "abc")))))
       (kill-buffer buf))))
 
-(ert-deftest nhwl-gui/kill-and-yank-without-selections ()
-  "Selections are not in W0, yet killing and yanking work: the selection
-primitives answer nil instead of signalling."
-  (skip-unless (nhwl-gui--live-p))
-  (with-temp-buffer
-    (let ((select-enable-clipboard t))
-      (insert "hello")
-      (kill-region (point-min) (point-max))
-      (should (equal (buffer-string) ""))
+(defun nhwl-gui--recorder-read (kind type)
+  "What the recorder reads from the selection KIND (\"clipboard\" or \"primary\") as TYPE, retrying for up to 3 s."
+  (let ((data nil))
+    (nhwl-gui--wait
+     (lambda ()
+       (setq data (condition-case nil
+                      (plist-get (gui-runner-recorder (list :cmd "read" :kind kind :type type)) :data)
+                    (error nil)))))
+    data))
+
+(defun nhwl-gui--focus-toplevel ()
+  "Give the toplevel keyboard focus (a selection needs it to be owned)."
+  (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
+  (sit-for 0.3))
+
+(ert-deftest nhwl-gui/kill-reaches-another-client ()
+  :tags '(selection)
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--focus-toplevel)
+  (let ((select-enable-clipboard t) (kill-ring nil) (kill-ring-yank-pointer nil))
+    (kill-new "abc")
+    (should (equal (nhwl-gui--recorder-read "clipboard" "text/plain;charset=utf-8") "abc"))
+    (should (gui-backend-selection-owner-p 'CLIPBOARD))))
+
+(ert-deftest nhwl-gui/kill-reaches-wl-paste ()
+  "On a real compositor another client (wl-paste) reads what was killed."
+  :tags '(selection)
+  (skip-unless (and (nhwl-gui--live-p) (not (nhwl-gui--recorder-p))))
+  (skip-unless (executable-find "wl-paste"))
+  (let ((select-enable-clipboard t) (kill-ring nil) (kill-ring-yank-pointer nil) (got nil))
+    (select-frame-set-input-focus (selected-frame))
+    (sit-for 0.5)
+    (kill-new "from emacs")
+    (should (nhwl-gui--wait
+             (lambda ()
+               (setq got (with-temp-buffer
+                           (call-process "wl-paste" nil t nil "--no-newline" "--type" "text/plain")
+                           (buffer-string)))
+               (equal got "from emacs"))))))
+
+(ert-deftest nhwl-gui/losing-the-clipboard-runs-the-hook ()
+  "Another client taking the clipboard from us runs `pgtk-lost-selection-functions' once and Emacs goes on."
+  :tags '(selection)
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--focus-toplevel)
+  (let ((lost nil)
+        (pgtk-lost-selection-functions nil)
+        (select-enable-clipboard t) (kill-ring nil) (kill-ring-yank-pointer nil))
+    (add-hook 'pgtk-lost-selection-functions (lambda (sel) (push sel lost)))
+    (kill-new "abc")
+    (should (nhwl-gui--recorder-read "clipboard" "text/plain;charset=utf-8"))
+    (should (pgtk-selection-owner-p 'CLIPBOARD))
+    (gui-runner-recorder '(:cmd "offer" :kind "clipboard"
+                           :types (:text/plain\;charset=utf-8 "theirs")))
+    ;; the clear event sits in the input queue until Emacs reads input
+    (should (nhwl-gui--wait (lambda () (read-event nil nil 0.05) lost)))
+    (sit-for 0.3)
+    (should (equal lost '(CLIPBOARD)))
+    (should-not (pgtk-selection-owner-p 'CLIPBOARD))
+    (redisplay t)
+    (with-temp-buffer
       (yank)
-      (should (equal (buffer-string) "hello")))))
+      (should (equal (buffer-string) "theirs")))))
+
+(ert-deftest nhwl-gui/yank-from-another-client ()
+  :tags '(selection)
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--focus-toplevel)
+  (gui-runner-recorder '(:cmd "offer" :kind "clipboard"
+                         :types (:text/plain\;charset=utf-8 "from elsewhere")))
+  (should (nhwl-gui--wait (lambda () (equal (gui-get-selection 'CLIPBOARD 'UTF8_STRING) "from elsewhere"))))
+  (should-not (gui-backend-selection-owner-p 'CLIPBOARD))
+  (with-temp-buffer
+    (let ((select-enable-clipboard t) (kill-ring nil) (kill-ring-yank-pointer nil))
+      (yank)
+      (should (equal (buffer-string) "from elsewhere")))))
+
+(ert-deftest nhwl-gui/primary-from-region ()
+  :tags '(selection)
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--focus-toplevel)
+  (with-temp-buffer
+    (let ((select-enable-primary t) (select-active-regions t) (transient-mark-mode t)
+          (saved-region-selection nil) (deactivate-mark nil))
+      (insert "region text")
+      (push-mark (point-min) t t)
+      (should (region-active-p))
+      (deactivate-mark)
+      (should (equal (nhwl-gui--recorder-read "primary" "text/plain;charset=utf-8") "region text")))))
+
+(ert-deftest nhwl-gui/selection-read-from-a-silent-source-times-out ()
+  :tags '(selection)
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--focus-toplevel)
+  (gui-runner-recorder '(:cmd "offer" :kind "clipboard" :silent t
+                         :types (:text/plain\;charset=utf-8 "never sent")))
+  (sit-for 0.3)
+  (let ((t0 (float-time)))
+    (should-not (gui-get-selection 'CLIPBOARD 'UTF8_STRING))
+    (should (< (- (float-time) t0) 1.5)))
+  ;; the next read works
+  (gui-runner-recorder '(:cmd "offer" :kind "clipboard"
+                         :types (:text/plain\;charset=utf-8 "after the silence")))
+  (should (nhwl-gui--wait (lambda () (equal (gui-get-selection 'CLIPBOARD 'UTF8_STRING) "after the silence"))))
+  (with-temp-buffer
+    (let ((select-enable-clipboard t) (kill-ring nil) (kill-ring-yank-pointer nil))
+      (yank)
+      (should (equal (buffer-string) "after the silence")))))
+
+(ert-deftest nhwl-gui/targets-lists-offer-types ()
+  :tags '(selection)
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--focus-toplevel)
+  (gui-runner-recorder '(:cmd "offer" :kind "clipboard"
+                         :types (:text/plain\;charset=utf-8 "x" :text/html "<b>x</b>")))
+  (let ((targets (nhwl-gui--wait
+                  (lambda ()
+                    (let ((v (gui-get-selection 'CLIPBOARD 'TARGETS)))
+                      (and (memq 'text/html (append v nil)) v))))))
+    (should targets)
+    (should (memq 'text/plain\;charset=utf-8 (append targets nil)))))
 
 (ert-deftest nhwl-gui/keymap-option-gives-control ()
   (skip-unless (nhwl-gui--recorder-p))

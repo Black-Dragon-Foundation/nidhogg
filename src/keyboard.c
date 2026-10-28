@@ -45,6 +45,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "process.h"
 #include "menu.h"
 
+#ifdef HAVE_NHWL
+extern void nhwl_handle_selection_clear (struct input_event *);
+#endif
 #ifdef HAVE_TEXT_CONVERSION
 #include "textconv.h"
 #endif /* HAVE_TEXT_CONVERSION */
@@ -4232,6 +4235,12 @@ kbd_buffer_get_event (KBOARD **kbp,
 #else
 	  pgtk_handle_selection_event (&copy);
 #endif
+#elif defined HAVE_NHWL
+	  /* Nidhogg's shell only reports that we lost a selection.  */
+	  struct input_event copy = event->ie;
+	  kbd_fetch_ptr = next_kbd_event (event);
+	  input_pending = readable_events (0);
+	  nhwl_handle_selection_clear (&copy);
 #else
 	  /* We're getting selection request events, but we don't have
              a window system.  */
@@ -4599,6 +4608,9 @@ process_special_events (void)
   struct input_event copy;
 #endif
   int moved_events;
+#elif defined HAVE_NHWL
+  struct input_event copy;
+  int moved_events;
 #endif
 
   for (event = kbd_fetch_ptr;  event != kbd_store_ptr;
@@ -4659,6 +4671,27 @@ process_special_events (void)
 	  kbd_fetch_ptr = next_kbd_event (kbd_fetch_ptr);
 	  input_pending = readable_events (0);
 	  haiku_handle_selection_clear (&copy);
+#elif defined HAVE_NHWL
+	  if (event->ie.kind != SELECTION_CLEAR_EVENT)
+	    emacs_abort ();
+
+	  copy = event->ie;
+
+	  if (event < kbd_fetch_ptr)
+	    {
+	      memmove (kbd_buffer + 1, kbd_buffer,
+		       (event - kbd_buffer) * sizeof *kbd_buffer);
+	      kbd_buffer[0] = kbd_buffer[KBD_BUFFER_SIZE - 1];
+	      moved_events = kbd_buffer + KBD_BUFFER_SIZE - 1 - kbd_fetch_ptr;
+	    }
+	  else
+	    moved_events = event - kbd_fetch_ptr;
+
+	  memmove (kbd_fetch_ptr + 1, kbd_fetch_ptr,
+		   moved_events * sizeof *kbd_fetch_ptr);
+	  kbd_fetch_ptr = next_kbd_event (kbd_fetch_ptr);
+	  input_pending = readable_events (0);
+	  nhwl_handle_selection_clear (&copy);
 #else
 	  /* We're getting selection request events, but we don't have
              a window system.  */

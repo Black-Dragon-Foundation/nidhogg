@@ -1869,6 +1869,11 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	case NHSHELL_EV_FRAME_DONE:
 	  break;
 
+	case NHSHELL_EV_SELECTION:
+	  have = nhwl_selection_changed (dpyinfo, ev.u.selection.kind,
+					 &inev.ie);
+	  break;
+
 	case NHSHELL_EV_POPUP_DONE:
 	  /* Only tip frames are popups.  */
 	  if (f && FRAME_TOOLTIP_P (f))
