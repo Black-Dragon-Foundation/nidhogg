@@ -26,6 +26,7 @@ pub mod output;
 pub mod pointer;
 pub mod popup;
 pub mod present;
+pub mod presenter;
 pub mod publish;
 pub mod reader;
 pub mod registry;
@@ -94,6 +95,8 @@ pub struct MainState {
     cursor: cursor_theme::ThemeCursor,
     /// Published packets on their way to the presenter.
     mailbox: Arc<publish::Mailbox>,
+    /// The presenter's link (set at open), which each window's presenter state holds.
+    link: Option<Arc<presenter::Link>>,
     bell: bell::Bell,
     idle: idle::Idle,
     foreign: foreign::Foreign,
@@ -128,6 +131,8 @@ pub struct WaylandShell {
     presenting: publish::Presenting,
     /// Who committed the registered trees (a test hook's count).
     tree_commits: present::TreeCommits,
+    /// The presenter thread's wake, mode and roots (`presenter.rs`).
+    link: Arc<presenter::Link>,
 }
 
 impl MainState {
@@ -205,6 +210,17 @@ impl WaylandShell {
         }
         let text_input = rstate.text_input.clone();
         let main_waker = Waker::from(Arc::new(MainWaker(Arc::downgrade(&shared))));
+        let link = Arc::new(presenter::Link::new()?);
+        link.set_wire(presenter::Wire {
+            conn: conn.clone(),
+            shared: shared.clone(),
+            compositor: main.compositor.clone(),
+            presentation: main.presentation.clone(),
+            shm: main.shm.clone(),
+            mqh: mqh.clone(),
+            rqh: rqh.clone(),
+        });
+        main.link = Some(link.clone());
         let reader =
             reader::spawn(conn.clone(), reader_queue, rstate).map_err(|_| ShellError::NoMem)?;
         let mut shell = WaylandShell {
@@ -215,8 +231,9 @@ impl WaylandShell {
             main_waker,
             reader: Some(reader),
             text_input,
-            presenting: publish::Presenting::default(),
+            presenting: publish::Presenting::new(link.counters.clone()),
             tree_commits: present::TreeCommits::default(),
+            link,
         };
         // dispatches the setup's main-queue events and registers the waker
         shell.dispatch_main().map_err(|_| ShellError::Unsupported)?;
@@ -346,7 +363,10 @@ impl WaylandShell {
         use std::os::fd::AsRawFd;
         Abandon {
             conn_fd: self.conn.backend().poll_fd().as_raw_fd(),
-            threads: vec![Arc::new(reader::ReaderThread(self.shared.clone()))],
+            threads: vec![
+                Arc::new(reader::ReaderThread(self.shared.clone())) as Arc<dyn BackendThread>,
+                self.link.clone(),
+            ],
         }
     }
 }
@@ -357,15 +377,17 @@ impl WaylandShell {
 /// and its root.  The descriptors (the connection, the eventfds) close with the last owner of each.
 impl Drop for WaylandShell {
     fn drop(&mut self) {
+        // the presenter first: it sends on the connection and holds the presenters (at most one compose)
+        self.presenter_stop();
         self.shared.stop.store(true, Ordering::Release);
         self.shared.reader_wake.signal();
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
-        // (the presenter thread, when it exists, is stopped and joined here and listed in `abandon_impl`)
         for p in self.main.presents.values() {
             present::lock(p).release();
         }
+        self.link.release();
     }
 }
 
