@@ -608,11 +608,12 @@ Return the two replies."
          (serial (plist-get (gui-runner-recorder
                              '(:cmd "configure" :surface "focused" :states ["suspended" "activated"]))
                             :serial)))
-    ;; the configure's ack reaches the compositor even while suspended
+    ;; the configure's ack reaches the compositor even while suspended (with no buffer: nothing new is drawn)
     (should (nhwl-gui--wait
              (lambda ()
                (redisplay t)
-               (seq-find (lambda (c) (eql (nhwl-gui--get c :ack_serial) serial)) (nhwl-gui--new m0)))
+               (seq-find (lambda (c) (eql (nhwl-gui--get c :ack_serial) serial))
+                         (nhwl-gui--toplevel-all-commits m0)))
              5)))
   (gui-runner-wait-settled)
   (let ((mark (nhwl-gui--mark)))
@@ -625,11 +626,17 @@ Return the two replies."
     (gui-runner-recorder '(:cmd "configure" :surface "focused" :states ["activated"]))
     (should (nhwl-gui--wait (lambda () (redisplay t) (nhwl-gui--new mark)) 5))
     (sit-for 0.3)
-    ;; one commit carries everything that accumulated; a cursor redraw may follow it, nothing else
-    (let ((cs (nhwl-gui--new mark)))
-      (should (> (length (nhwl-gui--damage (car cs))) 10))
+    ;; one commit carries everything that accumulated (the 20 new lines' rows; past 32 rectangles the damage
+    ;; collapses to their bounding box); cursor redraws may follow it, nothing else
+    (let* ((cs (nhwl-gui--new mark))
+           (lh (frame-char-height))
+           (top (+ (nhwl-gui--native-top) (nth 1 (window-inside-pixel-edges))))
+           (first (nhwl-gui--damage (car cs))))
+      (dotimes (k (* 20 lh))
+        (should (seq-find (lambda (r) (and (<= (nth 1 r) (+ top k)) (< (+ top k) (+ (nth 1 r) (nth 3 r))))) first)))
       (dolist (c (cdr cs))
-        (should (<= (length (nhwl-gui--damage c)) 3))))))
+        (dolist (r (nhwl-gui--damage c))
+          (should (and (<= (nth 3 r) lh) (<= (nth 2 r) (* 2 (frame-char-width))))))))))
 
 (ert-deftest nhwl-gui/configure-with-frame-done-acks-new-size ()
   "A configure and a frame callback read in one drain: the ack goes out with a buffer of the configure's size."
@@ -1627,6 +1634,8 @@ characters go, the mark stays."
 (defun nhwl-gui--line-frame ()
   "A new ordinary frame whose only window has a header line and a mode line, drawn."
   (let ((f (make-frame '((width . 40) (height . 10)))))
+    ;; its own buffer: the lines stay out of the buffer the old frame shows (*scratch*, for the rows after this one)
+    (set-window-buffer (frame-selected-window f) (get-buffer-create " *nhwl-lines*"))
     (with-current-buffer (window-buffer (frame-selected-window f))
       (setq-local header-line-format " header")
       (setq-local mode-line-format " mode"))
@@ -1643,7 +1652,15 @@ characters go, the mark stays."
     (unwind-protect
         (let* ((w (frame-selected-window f))
                (e (window-pixel-edges w))
-               (b (plist-get (nhwl-gui--last-commit) :buffer))
+               ;; F's last buffer, not the last toplevel commit: the old frame redraws its cursor (inactive now) after
+               ;; F's first buffer.  F's buffer is its native area plus the margins and strip, far below the old frame's.
+               (b (plist-get (car (last (seq-filter
+                                         (lambda (c)
+                                           (let ((b (plist-get c :buffer)))
+                                             (and (<= 0 (- (plist-get b :w) (frame-pixel-width f)) (* 100 s))
+                                                  (<= 0 (- (plist-get b :h) (frame-pixel-height f)) (* 100 s)))))
+                                         (nhwl-gui--toplevel-commits))))
+                             :buffer))
                (offx (/ (- (plist-get b :w) (frame-pixel-width f)) 2))
                (offy (- (plist-get b :h) (frame-pixel-height f) offx))
                (nx (/ (+ (nth 0 e) (nth 2 e)) 2))
@@ -1776,8 +1793,9 @@ without the blink nothing at all."
          (should (equal (seq-filter (lambda (c) (car c)) cs) (list (list serial nil 0)))))))))
 
 (ert-deftest nhwl-gui/child-move-commits-parent-bare ()
-  "A child frame's move reaches the parent first as a commit with no buffer, and the child is at the new place.
-\(Damage the parent had pending follows with a buffer.)"
+  "A child frame's move reaches the parent's next commit, and the child is at the new place.  That commit has no
+buffer, unless the parent had drawn something meanwhile: then it is a buffer with that damage, never an empty one.
+Redisplay is held until the move is out: the redisplay after a move redraws the parent's cursor, which is content."
   (skip-unless (nhwl-gui--recorder-p))
   (nhwl-gui--with-blink
    nil
@@ -1789,17 +1807,19 @@ without the blink nothing at all."
              (let* ((n (nhwl-gui--child-node before))
                     (id (plist-get n :id))
                     (off (nhwl-gui--parent-offset n)))
+               (message nil)
                (gui-runner-wait-settled)
-               (let ((mark (nhwl-gui--mark)))
+               (let ((mark (nhwl-gui--mark)) (inhibit-redisplay t))
                  (set-frame-position c 80 60)
                  (should (nhwl-gui--wait
                           (lambda ()
                             (equal (plist-get (nhwl-gui--node id) :position)
                                    (list (round (/ (+ (car off) 80) s)) (round (/ (+ (cadr off) 60) s)))))
                           5))
-                 (sit-for 0.3)
+                 (nhwl-gui--wait #'ignore 0.3)
                  (let ((cs (nhwl-gui--commit-summary (nhwl-gui--toplevel-all-commits mark))))
-                   (should (equal (car cs) '(nil nil 0)))))))
+                   (should cs)
+                   (should (if (nth 1 (car cs)) (> (nth 2 (car cs)) 0) (= (nth 2 (car cs)) 0)))))))
          (when (frame-live-p c) (delete-frame c t)))))))
 
 (ert-deftest nhwl-gui/stats-key-that-draws-nothing ()
@@ -1810,7 +1830,12 @@ without the blink nothing at all."
    nil
    (lambda ()
      (switch-to-buffer (generate-new-buffer " *nhwl-key-nothing*"))
+     ;; no cursor: the redisplay after any command redraws the cursor, and then the key would draw something
+     (setq-local cursor-type nil)
      (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
+     ;; an echo-area message is redrawn by every redisplay (`command-execute' does not clear it as the command loop
+     ;; does), and then the key would draw something
+     (message nil)
      (redisplay t)
      (gui-runner-wait-settled)
      (let ((map (make-sparse-keymap)))
@@ -1820,7 +1845,8 @@ without the blink nothing at all."
      (glitnir-stats nil t)
      (nhwl-gui--run-key "q")
      (redisplay t)
-     (sleep-for 0.3)
+     ;; read input meanwhile (`sleep-for' does not): a paint still owed for the key goes out now, not with the next key
+     (nhwl-gui--pump 0.3)
      (nhwl-gui--run-key "a")
      (redisplay t)
      (gui-runner-wait-settled)
