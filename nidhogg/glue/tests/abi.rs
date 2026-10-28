@@ -17,14 +17,13 @@ mod abi {
         nhg_selection_disown, nhg_selection_owned, nhg_selection_read, nhg_selection_set,
         nhg_selection_types,
     };
-    use nhglue::ffi::{nhg_frame_csd, nhg_frame_resized, nhg_frame_scale, nhg_next, nhg_raw_event};
+    use nhglue::ffi::{nhg_frame_csd, nhg_frame_resized, nhg_frame_scale, nhg_next};
     use nhglue::ffi::{nhg_frame_forget, nhg_frame_register, nhg_panic_message};
     use nhglue::ffi::{nhg_present, nhg_presenter_stats, nhg_presenter_thread};
     use nhglue::frame::*;
     use nhglue::keys::NHG_KEY_REPEAT;
     use nhglue::present::*;
     use nhglue::query::{NhgDisplayInfo, NhgMonitor};
-    use nhshell::event::NhShellEvent;
     use nhshell::ffi::NhShell;
     use std::ffi::c_char;
     use std::mem::offset_of;
@@ -205,7 +204,6 @@ mod abi {
             ("NHG_ACT_IM_DELETE", NHG_ACT_IM_DELETE.into()),
             ("NHG_ACT_IM_SURROUNDING", NHG_ACT_IM_SURROUNDING.into()),
             ("NHG_ACT_SELECTION_CLEAR", NHG_ACT_SELECTION_CLEAR.into()),
-            ("NHG_ACT_RAW", NHG_ACT_RAW.into()),
             ("NHG_WHEEL_HIRES", nhglue::scroll::NHG_WHEEL_HIRES.into()),
             ("NHG_WHEEL_STOP", nhglue::scroll::NHG_WHEEL_STOP.into()),
             (
@@ -289,7 +287,6 @@ PROTO (nhg_frame_resized, int32_t (NhgDisplay *, uint64_t, int32_t, int32_t));
 PROTO (nhg_frame_scale, int32_t (NhgDisplay *, uint64_t, uint32_t));
 PROTO (nhg_frame_csd, int32_t (NhgDisplay *, uint64_t, int32_t));
 PROTO (nhg_next, int32_t (NhgDisplay *, const NhgNextIn *, NhgActionList *));
-PROTO (nhg_raw_event, int32_t (NhgDisplay *, NhShellEvent *));
 PROTO (nhg_abi_version, int32_t (uint32_t *));
 PROTO (nhg_open, NhgDisplay *(const char *, char *, size_t));
 PROTO (nhg_close, int32_t (NhgDisplay *));
@@ -310,7 +307,6 @@ PROTO (nhg_frame_forget, int32_t (NhgDisplay *, uint64_t));
 PROTO (nhg_panic_message, int32_t (NhgDisplay *, char *, size_t, size_t *));
 PROTO (nhg_debug_check_frame, int32_t (NhgDisplay *, uint64_t, const NhgFrameFacts *));
 PROTO (nhg_test_panic, int32_t (NhgDisplay *));
-PROTO (nhg_keyboard_window, int32_t (NhgDisplay *, uint64_t *));
 PROTO (nhg_selection_set, int32_t (NhgDisplay *, uint32_t, const char *const *, const uint8_t *const *, const size_t *, size_t));
 PROTO (nhg_selection_disown, int32_t (NhgDisplay *, uint32_t));
 PROTO (nhg_selection_owned, int32_t (NhgDisplay *, uint32_t));
@@ -371,18 +367,12 @@ PROTO (nhg_frame_outputs, int32_t (NhgDisplay *, uint64_t, uint64_t *, size_t, s
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32) -> i32 = nhg_frame_csd;
         let _: unsafe extern "C" fn(*mut NhgDisplay, *const NhgNextIn, *mut NhgActionList) -> i32 =
             nhg_next;
-        let _: unsafe extern "C" fn(*mut NhgDisplay, *mut NhShellEvent) -> i32 = nhg_raw_event;
         #[cfg(feature = "test-hooks")]
         {
             use nhglue::ffi::{nhg_debug_check_frame, nhg_test_panic};
             let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *const NhgFrameFacts) -> i32 =
                 nhg_debug_check_frame;
             let _: unsafe extern "C" fn(*mut NhgDisplay) -> i32 = nhg_test_panic;
-        }
-        // the keyboard
-        {
-            use nhglue::ffi::nhg_keyboard_window;
-            let _: unsafe extern "C" fn(*mut NhgDisplay, *mut u64) -> i32 = nhg_keyboard_window;
         }
         // selections, display queries, the bench, the bell and the pointer
         let _: unsafe extern "C" fn(
@@ -649,6 +639,46 @@ PROTO (nhg_child_stack, int32_t (NhgDisplay *, uint64_t, const uint64_t *, size_
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *const C) -> i32 = nhg_child_chrome;
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *const u64, usize, i32) -> i32 =
             nhg_child_stack;
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe(decls, &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+    }
+
+    /// The menu popups' part of the header (its own table, so the tasks' additions merge apart).
+    #[test]
+    fn popup_header_matches() {
+        use nhglue::ffi::{nhg_popup_hide, nhg_popup_place, nhg_popup_show, nhg_popup_size};
+        use nhglue::popup::{NHG_DEL_POPUP, NHG_POPUP_GRAB};
+        let rows: &[(&str, i64)] = &[
+            ("NHG_POPUP_GRAB", NHG_POPUP_GRAB.into()),
+            ("NHG_DEL_POPUP", NHG_DEL_POPUP.into()),
+            ("NHG_FRAME_POPUP", NHG_FRAME_POPUP.into()),
+        ];
+        let decls = "\
+#define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
+PROTO (nhg_popup_show, int32_t (NhgDisplay *, uint64_t *, uint64_t, uint64_t, NhgRect, uint32_t, uint32_t, uint32_t, int32_t, int32_t));
+PROTO (nhg_popup_place, int32_t (NhgDisplay *, uint64_t, NhgRect, uint32_t, uint32_t, uint32_t));
+PROTO (nhg_popup_size, int32_t (NhgDisplay *, uint64_t, int32_t, int32_t));
+PROTO (nhg_popup_hide, int32_t (NhgDisplay *, uint64_t, uint64_t));";
+        let _: unsafe extern "C" fn(
+            *mut NhgDisplay,
+            *mut u64,
+            u64,
+            u64,
+            NhgRect,
+            u32,
+            u32,
+            u32,
+            i32,
+            i32,
+        ) -> i32 = nhg_popup_show;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, NhgRect, u32, u32, u32) -> i32 =
+            nhg_popup_place;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32, i32) -> i32 = nhg_popup_size;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u64) -> i32 = nhg_popup_hide;
         let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
         let got = probe(decls, &exprs);
         assert_eq!(got.len(), rows.len());

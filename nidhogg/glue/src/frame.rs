@@ -79,6 +79,11 @@ pub struct Frame {
     pub alpha_host: bool,
     /// A child frame's layout, chrome and sync state (`child.rs`).
     pub child: crate::child::Child,
+    /// A shown popup frame's place, owner and size (`popup.rs`).
+    pub popup: Option<crate::popup::Popup>,
+    /// A top-level: it lost the keyboard to a grabbing popup frame of its own, and keeps Emacs's focus meanwhile
+    /// (`popup.rs`).
+    pub focus_lent: bool,
 }
 
 impl Frame {

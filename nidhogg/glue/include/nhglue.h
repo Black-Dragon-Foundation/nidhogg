@@ -212,7 +212,7 @@ int32_t nhg_frame_csd (NhgDisplay *d, uint64_t window, int32_t on);
    read_socket_hook loops on nhg_next, which takes exactly one shell event and answers with its actions; C applies
    them (the Emacs calls) before it asks again, so each decision sees what the earlier events changed.  Before each
    call C samples NHG_IN_* again.  An action whose window maps to no frame is skipped.  Neither reads nor writes
-   pixels, nor does nhg_raw_event.  */
+   pixels.  */
 
 #define NHG_IN_INPUT_WAITING   1   /* kbd_buffer_events_waiting () */
 #define NHG_IN_COALESCE_WHEEL  2   /* mwheel-coalesce-scroll-events */
@@ -228,7 +228,8 @@ typedef struct { uint32_t flags; } NhgNextIn;
 				        FLAGS NHG_RESIZE_*; C pushes the frame's new size if it changes it */
 #define NHG_ACT_SCALE            7   /* CODE the scale times 120, SCALE the factor */
 #define NHG_ACT_GARBAGE          8
-#define NHG_ACT_DELETE           9   /* the compositor asks to close the window */
+#define NHG_ACT_DELETE           9   /* the compositor asks to close the window, or dismissed its popup (FLAGS
+					NHG_DEL_TIP, NHG_DEL_POPUP) */
 #define NHG_ACT_FOCUS_IN        10
 #define NHG_ACT_FOCUS_OUT       11
 #define NHG_ACT_VISIBLE         12
@@ -244,9 +245,6 @@ typedef struct { uint32_t flags; } NhgNextIn;
 #define NHG_ACT_TITLE_BAR       22   /* a pointer event went through the title bar: FLAGS NHG_TB_*, CODE the pointer
 					shape (NHSHELL_CURSOR_*) with NHG_TB_POINTER; the event's own action (MOTION,
 					LEAVE, CLICK), if any, comes after it */
-/* Transitional: an event whose kind is not ported yet, handled on C's old path (nhg_raw_event gives it); MODS is the
-   keyboard's NHSHELL_MOD_* mask.  */
-#define NHG_ACT_RAW             31
 
 #define NHG_RESIZE_FULLSCREEN    1   /* fullscreen or maximized changed: C stores the fullscreen parameter */
 
@@ -283,9 +281,6 @@ typedef struct { const NhgAction *v; size_t n; } NhgActionList;
    The actions and their texts stay valid until the next nhg_next on D; no other call frees them.  The acks of the
    configures applied since the last call are recorded first.  IN may be NULL (no flags).  */
 int32_t nhg_next (NhgDisplay *d, const NhgNextIn *in, NhgActionList *out);
-
-/* The shell event behind the last NHG_ACT_RAW action into OUT; NHG_E_STATE when the last event gave none.  */
-int32_t nhg_raw_event (NhgDisplay *d, NhShellEvent *out);
 
 /* The first panic's report on D (message, location, backtrace): up to CAP - 1 bytes and a NUL into BUF, its full
    length into *LEN (0: no panic).  Works on a poisoned display.  */
@@ -355,12 +350,10 @@ int32_t nhg_test_panic (NhgDisplay *d);
    that Emacs focused, or to the focus frame when no frame has that window), CODE the keysym, TEXT its UTF-8 (possibly
    empty), MODS the NHSHELL_MOD_* mask, FLAGS NHG_KEY_*.  A repeat taken by a call with NHG_IN_INPUT_WAITING set gives
    no action.  FOCUS_IN and FOCUS_OUT name the window whose keyboard focus changed; C resolves Emacs's focus frame
-   and its highlighting.  Neither reads nor writes pixels, nor does nhg_keyboard_window.  */
+   and its highlighting.  A popup frame's focus, and the focus a top-level lends a grabbing popup frame of its own,
+   give none (nhg_popup_hide says when a lent focus is lost).  */
 
 #define NHG_KEY_REPEAT           1   /* the key is a repeat */
-
-/* The window that has the keyboard focus, as the last focus event said, into *OUT (0: none of ours).  */
-int32_t nhg_keyboard_window (NhgDisplay *d, uint64_t *out);
 
 /* ---- Selections, display queries, the bench, the bell and the pointer -------------------------------------------
    None of these reads or writes pixels except nhg_bench_full_redraw, which reads them.  KIND is NHSHELL_SEL_CLIPBOARD
@@ -568,6 +561,39 @@ int32_t nhg_child_chrome (NhgDisplay *d, uint64_t window, const NhgChrome *c);
    parent and its ancestors owe a commit.  NHG_E_ARG when WINDOW is not in SIBLINGS.  */
 int32_t nhg_child_stack (NhgDisplay *d, uint64_t window, const uint64_t *siblings_bottom_to_top, size_t n,
                          int32_t z_group);
+
+/* ---- Menu popups ---------------------------------------------------------------------------------------------------
+
+   A popup frame's window (registered with NHG_FRAME_POPUP) is an xdg popup of its parent frame's window, made when
+   the frame is shown and destroyed when it is hidden; the frame is the root of its own tree.  C decodes the frame's
+   `nhwl-popup' parameter (X Y W H . PLIST): ANCHOR_DEV is the rectangle in device pixels of the parent's native area,
+   GRAVITY NhgAnchor's (1 to 8), ADJUST NHSHELL_ADJUST_*, FLAGS NHG_POPUP_*.  The glue places it in the parent's
+   surface (after its border) at the parent's scale.  Size, gravity, adjust and grab apply at the next show; a new
+   parameter moves the shown popup.  A grab needs a recent press's serial: without one the popup grabs nothing.  The
+   compositor dismissing it is a DELETE action with NHG_DEL_POPUP: C stores a delete-frame event, and the frame stays
+   until Lisp deletes or hides it.  Keyboard focus moving between a top-level and its own popup frames gives no
+   FOCUS_IN or FOCUS_OUT.  None of these reads or writes pixels.  */
+
+#define NHG_POPUP_GRAB 1   /* the popup takes the keyboard and pointer; a click elsewhere dismisses it */
+#define NHG_DEL_POPUP  2   /* DELETE flags: the compositor dismissed a popup frame's popup */
+
+/* Show a popup frame: a new popup of PARENT's window at ANCHOR_DEV, NATIVE_W x NATIVE_H device pixels at the parent's
+   scale, hanging from top-level OWNER (whose keyboard focus is kept while the popup grabs); registered as a visible
+   popup frame, its id into *WINDOW.  A shell error is its code.  */
+int32_t nhg_popup_show (NhgDisplay *d, uint64_t *window, uint64_t parent, uint64_t owner, NhgRect anchor_dev,
+                        uint32_t gravity, uint32_t adjust, uint32_t flags, int32_t native_w, int32_t native_h);
+/* The popup frame's parameter changed: 0 when it did not; otherwise the shown popup moves to the new anchor
+   (xdg_popup.reposition), and 1 says the whole frame must be drawn again (below xdg_wm_base 3 the popup is made
+   again).  */
+int32_t nhg_popup_place (NhgDisplay *d, uint64_t window, NhgRect anchor_dev, uint32_t gravity, uint32_t adjust,
+                         uint32_t flags);
+/* Push: the popup frame's size is now W x H device pixels; the popup takes it, placed again by its anchor.  1 when
+   the whole frame must be drawn again (below xdg_wm_base 3), else 0.  */
+int32_t nhg_popup_size (NhgDisplay *d, uint64_t window, int32_t w, int32_t h);
+/* Hide a popup frame: WINDOW (0: none) goes and is forgotten (also when the shell refuses).  1 when top-level OWNER
+   had lent its keyboard focus to a grabbing popup, none of its popups grabs now, and the keyboard is on none of our
+   windows: C sends Emacs the focus-out (nhwl_focus_lost).  NHG_E_STATE for a window that is not a popup frame's.  */
+int32_t nhg_popup_hide (NhgDisplay *d, uint64_t window, uint64_t owner);
 
 #ifdef __cplusplus
 }

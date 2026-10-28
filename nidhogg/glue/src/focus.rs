@@ -1,7 +1,8 @@
 //! Keyboard focus: which window has the keyboard, and the `FOCUS_IN`/`FOCUS_OUT` actions.  Moved from the C drain's
-//! `FOCUS` case (`src/nhwlterm.c`).  What the focus means to Emacs stays C, because it reads live Emacs state: the
-//! popup frames that keep their top-level's focus, the frame of the tree that takes the keys, `x_focus_frame` and the
-//! highlighting (`nhwl_focus_changed`, adapted from pgtk's `pgtk_focus_changed`, emacs-31.1).
+//! `FOCUS` case (`src/nhwlterm.c`).  A popup frame's focus, and the focus a top-level lends a grabbing popup frame, give
+//! no action (`popup.rs`).  What the focus means to Emacs stays C, because it reads live Emacs state: the frame of the
+//! tree that takes the keys, `x_focus_frame` and the highlighting (`nhwl_focus_changed`, adapted from pgtk's
+//! `pgtk_focus_changed`, emacs-31.1).
 
 use crate::action::{NHG_ACT_FOCUS_IN, NHG_ACT_FOCUS_OUT, NhgAction};
 use crate::display::Display;
@@ -17,7 +18,8 @@ pub fn focus(state: &mut Display, ev: &NhShellEvent) {
     } else if state.keyboard.window == ev.window {
         state.keyboard.window = 0;
     }
-    if state.frame(ev.window).is_ok() {
+    // the keyboard moving between a top-level and its own popup frames is no focus change for Emacs
+    if state.frame(ev.window).is_ok() && !crate::popup::focus_kept(state, ev.window, on) {
         let kind = if on {
             NHG_ACT_FOCUS_IN
         } else {
