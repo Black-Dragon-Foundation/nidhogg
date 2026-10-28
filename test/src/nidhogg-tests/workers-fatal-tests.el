@@ -472,6 +472,55 @@ holds the text.  Waits 20 s at most for the child."
                   '(nidhogg-workers--test-io-crash))
                  '(signal t))))
 
+(ert-deftest workers/fatal-hups-reader-owned-children ()
+  ;; A reader-owned subprocess (pipes) gets its SIGHUP on the fatal path,
+  ;; as upstream's kill_buffer_processes sends it: the reader's fds close
+  ;; after the signal, not before it.
+  (skip-unless (fboundp 'nidhogg-workers--test-fatal-under-lock))
+  (let* ((dir (make-temp-file "wfatal-hup-" t))
+         (pidfile (expand-file-name "pid" dir))
+         (form
+          `(progn
+             (setq nidhogg-workers--mode 'threads
+                   nidhogg-workers-process-reader t
+                   nidhogg-workers-reader-pipes t)
+             (let ((p (make-process
+                       :name "sleeper" :connection-type 'pipe :noquery t
+                       :command (list "sh" "-c"
+                                      ,(format "echo $$ > %s; exec sleep 300"
+                                               (shell-quote-argument pidfile))))))
+               (while (not (file-exists-p ,pidfile))
+                 (accept-process-output nil 0.02))
+               (unless (plist-get (nidhogg-workers--test-io-info p) :owned)
+                 (kill-emacs 3)))
+             (nidhogg-workers--test-io-crash)
+             (sleep-for 30)
+             (kill-emacs 4)))
+         (child (make-process
+                 :name "wfatal-hup-child" :noquery t :buffer nil
+                 :command (list (expand-file-name invocation-name
+                                                  invocation-directory)
+                                "-Q" "--batch" "--eval" (prin1-to-string form)))))
+    (unwind-protect
+        (let ((i 0) pid)
+          (while (and (process-live-p child) (< i 1000))
+            (accept-process-output child 0.02)
+            (setq i (1+ i)))
+          (should (eq (process-status child) 'signal))
+          (setq pid (with-temp-buffer
+                      (insert-file-contents pidfile)
+                      (string-to-number (buffer-string))))
+          (should (> pid 0))
+          (setq i 0)
+          (while (and (process-attributes pid) (< i 100))
+            (sleep-for 0.02)
+            (setq i (1+ i)))
+          (prog1 (should-not (process-attributes pid))
+            (ignore-errors (signal-process pid 'SIGKILL))))
+      (when (process-live-p child)
+        (delete-process child))
+      (delete-directory dir t))))
+
 (ert-deftest workers/fatal-under-io-lock ()
   ;; The main thread holds nh-io's queue mutex with reader-owned pipes
   ;; alive when SIGSEGV arrives: the fatal path takes no reader lock and
