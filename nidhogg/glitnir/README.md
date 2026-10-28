@@ -7,7 +7,11 @@ parameters only, so it knows nothing of the program that embeds it.
 ## Crate rules
 
 - Standard library only. A third-party crate needs a reason, and every one is vendored (`vendor/`), locked
-  (`Cargo.lock`), licence-checked (`deny.toml`) and listed here with that reason. None today.
+  (`Cargo.lock`), licence-checked (`deny.toml`) and listed here with that reason:
+  - `png =0.18.1` (feature `images`, no default features): PNG decoding in safe Rust, so untrusted PNGs never reach
+    libpng. It brings `fdeflate`, `flate2` (with `miniz_oxide`), `crc32fast`, `bitflags`, `adler2`, `simd-adler32`
+    and `cfg-if`; none starts a thread. `zlib-rs` is locked and vendored as an optional dependency of `flate2` but
+    not built.
 - Builds are offline and locked: `cargo build --release --offline --locked`, with `CARGO_HOME` inside the build
   directory, never `~/.cargo`.
 - `panic = "unwind"`: every `extern "C"` body runs inside `ffi_guard` and returns `GLITNIR_E_PANIC` (-1) on a panic.
@@ -70,6 +74,26 @@ the root's pending damage, into which the host has first moved its child frames'
 hands it back for invalidation; the rectangles stay valid until the root's next commit, apart from any debug take.
 
 The frame-time record's `backfill_rate` is -1 when no entry knows whether its paint back-filled (`backfill` 2).
+
+## Image decoders
+
+Feature `images` (on by default): `glitnir_img_decode (format, data, len, params, out)` decodes encoded bytes into
+`width * height` words `0x00RRGGBB` and an optional mask (255 draw, 0 transparent), both from the C library's
+`calloc`, so the host frees them with `free` or `glitnir_img_free`. The ABI is stateless: no lock, no global state,
+no thread, no callback, so the host calls it on any thread (its image worker) and outside `ffi_guard`; a panic is
+caught at the boundary and returns `GLITNIR_E_PANIC`, freeing whatever the decode had allocated.
+
+Every allocation is bounded: the header's width and height are checked against the caller's limits and
+`MAX_PIXELS` (2^27) before the result is allocated, rows are decoded one at a time (no whole raw image), and the
+`png` crate's own limit (64 MiB for its buffers and chunks) stays at its default.
+
+PNG (`images/png.rs`) gives libpng's pixels for the host's transformations: 16-bit samples keep their high byte,
+palettes and low-depth gray expand (gray scaled ×255, ×85, ×17), gray becomes RGB; a `tRNS` key or a palette whose
+alphas are all 0 or 255 makes a mask, any other alpha is composited over the caller's background with
+`png_composite`'s rounding (`images/composite.rs`, checked against every 8-bit case) at the file's depth, before
+the 16-bit strip. `tRNS` and `bKGD` are read as libpng reads them (lengths, order, CRC). libpng composites in linear
+light when the file carries `gAMA`, `sRGB`, `iCCP` or `cICP`; such an image with alpha to composite returns
+`GLITNIR_IMG_E_HOST`, and the host decodes it itself. Error texts are the crate's.
 
 ## Limits
 

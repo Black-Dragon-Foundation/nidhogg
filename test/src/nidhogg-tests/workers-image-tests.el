@@ -22,6 +22,10 @@
 (require 'ert)
 (require 'cl-lib)
 
+;; Glitnir's Rust decoders (glitnir-images.c): the rows of the C cores bind
+;; it to nil, so they keep testing the cores whatever its default.
+(defvar nidhogg-workers-image-rust)
+
 (defconst workers-image-tests--dir
   (expand-file-name "fixtures/images/"
                     (file-name-directory (or load-file-name buffer-file-name)))
@@ -91,7 +95,8 @@ GOLDEN-HEADER is the corpus' recorded frame background colour."
   ;; produce (the recorded results; workers-gui/image-oracle holds the
   ;; loaders, the synchronous loaders under the flag and the core equal
   ;; live and re-records them).
-  (let* ((golden (workers-image-tests--golden))
+  (let* ((nidhogg-workers-image-rust nil)
+         (golden (workers-image-tests--golden))
          (results (cl-remove-if-not
                    (lambda (r) (workers-image-tests--core-p (caar r)))
                    (cdr (assq 'results golden))))
@@ -110,6 +115,221 @@ GOLDEN-HEADER is the corpus' recorded frame background colour."
                          (cdr (assoc case results))))
           (cl-incf n))))
     (should (= n (length results)))))
+
+;; Glitnir's Rust decoders (glitnir-images.c, nidhogg/glitnir/src/images).
+
+(defun workers-image-tests--rust-types ()
+  "The image types this build decodes in Rust, or nil."
+  (and (fboundp 'nidhogg-workers--test-image-rust)
+       (plist-get (nidhogg-workers--test-image-rust) :formats)))
+
+(ert-deftest workers/image-oracle-rust ()
+  ;; The Rust step of the oracle: every corpus image of a type Glitnir
+  ;; decodes gives, in Rust, the recorded results of today's loaders;
+  ;; none goes back to the C core.
+  (let ((types (workers-image-tests--rust-types)))
+    (skip-unless types)
+    (let* ((nidhogg-workers-image-rust types)
+           (golden (workers-image-tests--golden))
+           (results (cdr (assq 'results golden)))
+           (cases (cl-remove-if-not
+                   (lambda (c) (memq (workers-image-tests--type (car c)) types))
+                   (workers-image-tests--read "oracle-cases.eld"))))
+      (should cases)
+      (nidhogg-workers--test-image-cache-clear)
+      (nidhogg-workers--test-image-rust t)
+      (dolist (case cases)
+        (pcase-let ((`(,file ,bg ,index) case))
+          (let ((r (nidhogg-workers--test-image-decode
+                    (workers-image-tests--core-spec file index)
+                    (workers-image-tests--params file bg golden))))
+            (should (equal (list case (plist-get r :error))
+                           (list case nil)))
+            (should (equal (cons case (workers-image-tests--digest r))
+                           (cons case (cdr (assoc case results))))))))
+      (let ((stats (nidhogg-workers--test-image-rust)))
+        (should (= (plist-get stats :decoded) (length cases)))
+        (should (= (plist-get stats :handed-back) 0))))))
+
+(ert-deftest workers/image-rust-switch ()
+  ;; The switch takes effect at the next decode, and a let-binding ends.
+  (skip-unless (memq 'png (workers-image-tests--rust-types)))
+  (let ((spec (workers-image-tests--core-spec "oracle-rgb8.png" nil))
+        (decoded (lambda () (plist-get (nidhogg-workers--test-image-rust)
+                                       :decoded))))
+    (let ((nidhogg-workers-image-rust nil))
+      (nidhogg-workers--test-image-rust t)
+      (nidhogg-workers--test-image-decode spec '(:limit 10000))
+      (should (= (funcall decoded) 0))
+      (let ((nidhogg-workers-image-rust '(png)))
+        (nidhogg-workers--test-image-decode spec '(:limit 10000))
+        (should (= (funcall decoded) 1)))
+      (nidhogg-workers--test-image-decode spec '(:limit 10000))
+      (should (= (funcall decoded) 1))
+      ;; a buffer-local value counts for nothing
+      (with-temp-buffer
+        (setq-local nidhogg-workers-image-rust '(png))
+        (nidhogg-workers--test-image-decode spec '(:limit 10000))
+        (should (= (funcall decoded) 1))))))
+
+;; PNGs built here, byte by byte (stored deflate blocks), for the rows
+;; libpng decides sample by sample.
+
+(defun workers-image-tests--be32 (n)
+  "N as 4 big-endian bytes."
+  (unibyte-string (logand (ash n -24) 255) (logand (ash n -16) 255)
+                  (logand (ash n -8) 255) (logand n 255)))
+
+(defun workers-image-tests--crc32 (s)
+  "The CRC-32 of the unibyte string S."
+  (let ((c #xffffffff))
+    (dotimes (i (length s))
+      (setq c (logxor c (aref s i)))
+      (dotimes (_ 8)
+        (setq c (if (= (logand c 1) 1)
+                    (logxor #xedb88320 (ash c -1))
+                  (ash c -1)))))
+    (logxor c #xffffffff)))
+
+(defun workers-image-tests--chunk (type body)
+  "A PNG chunk of TYPE (4 letters) holding BODY."
+  (let ((tb (concat (encode-coding-string type 'binary) body)))
+    (concat (workers-image-tests--be32 (length body)) tb
+            (workers-image-tests--be32 (workers-image-tests--crc32 tb)))))
+
+(defun workers-image-tests--zlib (raw)
+  "RAW in a zlib stream of stored blocks."
+  (let ((a 1) (b 0) (pos 0) (n (length raw)) (parts (list (unibyte-string #x78 #x01))))
+    (dotimes (i n)
+      (setq a (% (+ a (aref raw i)) 65521)
+            b (% (+ b a) 65521)))
+    (while (progn
+             (let* ((len (min 65535 (- n pos)))
+                    (nlen (logand (lognot len) #xffff)))
+               (push (unibyte-string (if (= (+ pos len) n) 1 0)
+                                     (logand len 255) (ash len -8)
+                                     (logand nlen 255) (ash nlen -8))
+                     parts)
+               (push (substring raw pos (+ pos len)) parts)
+               (setq pos (+ pos len)))
+             (< pos n)))
+    (push (workers-image-tests--be32 (logior (ash b 16) a)) parts)
+    (apply #'concat (nreverse parts))))
+
+(defun workers-image-tests--png (w h color depth rows &rest chunks)
+  "A PNG of W×H, COLOR (0 gray, 2 RGB, 3 palette, 4 gray-alpha, 6 RGBA)
+and DEPTH, whose scanlines (without filter bytes) are ROWS, a list of
+unibyte strings; CHUNKS, each (TYPE . BODY), go before the image data."
+  (concat (unibyte-string #x89 ?P ?N ?G 13 10 26 10)
+          (workers-image-tests--chunk
+           "IHDR" (concat (workers-image-tests--be32 w)
+                          (workers-image-tests--be32 h)
+                          (unibyte-string depth color 0 0 0)))
+          (mapconcat (lambda (c) (workers-image-tests--chunk (car c) (cdr c)))
+                     chunks "")
+          (workers-image-tests--chunk
+           "IDAT" (workers-image-tests--zlib
+                   (mapconcat (lambda (r) (concat (unibyte-string 0) r)) rows "")))
+          (workers-image-tests--chunk "IEND" "")))
+
+(defun workers-image-tests--bytes (&rest bytes)
+  "BYTES as a unibyte string."
+  (apply #'unibyte-string bytes))
+
+(defconst workers-image-tests--built-pngs
+  (let ((b #'workers-image-tests--bytes)
+        (rgba16 (lambda (&rest vs)
+                  (apply #'unibyte-string
+                         (mapcan (lambda (v) (list (ash v -8) (logand v 255))) vs)))))
+    `((rgba8 6 8 2 2 (,(funcall b 10 20 30 0 200 100 50 128)
+                      ,(funcall b 1 2 3 255 90 80 70 1)))
+      (rgba16 6 16 2 1 (,(funcall rgba16 #x12ff #x8000 #xfffe #x8000
+                                  #x0101 #x0202 #x0303 #x00ff)))
+      (gray-alpha8 4 8 3 1 (,(funcall b 0 0 128 127 255 254)))
+      (gray-alpha16 4 16 2 1 (,(funcall rgba16 #x7fff #x1234 #xffff #x0001)))
+      (gray1-key 0 1 8 1 (,(funcall b #b10110010)) ("tRNS" . ,(funcall b 0 1)))
+      (gray2-key-masked 0 2 4 1 (,(funcall b #b00011011)) ("tRNS" . ,(funcall b 0 6)))
+      (gray4-key 0 4 4 1 (,(funcall b #x0f #x5a)) ("tRNS" . ,(funcall b 0 5)))
+      (gray8-key 0 8 3 1 (,(funcall b 7 8 9)) ("tRNS" . ,(funcall b 1 8)))
+      (gray16-key 0 16 2 1 (,(funcall rgba16 #x0102 #x0103)) ("tRNS" . ,(funcall b 1 2)))
+      (rgb8-key 2 8 2 1 (,(funcall b 1 2 3 4 5 6)) ("tRNS" . ,(funcall b 9 4 9 5 9 6)))
+      (rgb16-key 2 16 2 1 (,(funcall rgba16 1 2 3 1 2 4)) ("tRNS" . ,(funcall rgba16 1 2 3)))
+      (palette-partial 3 2 4 1 (,(funcall b #b00011011))
+                       ("PLTE" . ,(funcall b 255 0 0 0 255 0 0 0 255))
+                       ("tRNS" . ,(funcall b 0 100)))
+      (palette-binary 3 8 3 1 (,(funcall b 0 1 2))
+                      ("PLTE" . ,(funcall b 255 0 0 0 255 0 0 0 255))
+                      ("tRNS" . ,(funcall b 255 0)))
+      (palette-trns-too-long 3 8 2 1 (,(funcall b 0 1))
+                             ("PLTE" . ,(funcall b 1 2 3 4 5 6))
+                             ("tRNS" . ,(funcall b 0 0 0)))
+      (rgba-trns-ignored 6 8 1 1 (,(funcall b 9 9 9 77)) ("tRNS" . ,(funcall b 0 9 0 9 0 9)))
+      (bkgd-rgb 2 8 1 1 (,(funcall b 1 2 3)) ("bKGD" . ,(funcall b 0 7 0 8 0 9)))
+      (bkgd-gray-invalid 0 4 2 1 (,(funcall b #x12)) ("bKGD" . ,(funcall b 0 16)))
+      (bkgd-palette 3 8 1 1 (,(funcall b 0))
+                    ("PLTE" . ,(funcall b 1 2 3 4 5 6)) ("bKGD" . ,(funcall b 1)))
+      (gamma-alpha 6 8 1 1 (,(funcall b 200 100 50 128))
+                   ("gAMA" . ,(workers-image-tests--be32 45455)))
+      (srgb-alpha 6 8 1 1 (,(funcall b 200 100 50 128)) ("sRGB" . ,(funcall b 0)))))
+  "(NAME COLOR DEPTH W H ROWS . CHUNKS) of the built PNGs.")
+
+(ert-deftest workers/image-rust-equals-c ()
+  ;; Built PNGs that exercise libpng's rules sample by sample (expansion
+  ;; of low-depth gray, tRNS keys at full and masked depth, palette
+  ;; alphas composited or masked, invalid tRNS, bKGD, 16-bit composition
+  ;; before the strip): the Rust decoder gives what the C core gives,
+  ;; over two backgrounds and none.  An image libpng composites through
+  ;; gamma tables goes back to the C core.
+  (skip-unless (and (memq 'png (workers-image-tests--rust-types))
+                    (workers-image-tests--core-p 'png)))
+  (let ((keys '(:width :height :pixels :mask :bkgd :frames :delay :corners)))
+    (dolist (png workers-image-tests--built-pngs)
+      (pcase-let ((`(,name ,color ,depth ,w ,h ,rows . ,chunks) png))
+        (let ((spec `(image :type png
+                            :data ,(apply #'workers-image-tests--png
+                                          w h color depth rows chunks))))
+          (dolist (bg '(nil (65535 32768 0) (4096 8192 12288)))
+            (let* ((params (append '(:limit 10000) (and bg (list :bg bg))))
+                   (c (let ((nidhogg-workers-image-rust nil))
+                        (nidhogg-workers--test-image-decode spec params)))
+                   (r (let ((nidhogg-workers-image-rust '(png)))
+                        (nidhogg-workers--test-image-rust t)
+                        (nidhogg-workers--test-image-decode spec params)))
+                   (stats (nidhogg-workers--test-image-rust)))
+              (should (equal (list name bg (plist-get c :error))
+                             (list name bg nil)))
+              (should (equal (list name bg (plist-get r :error))
+                             (list name bg nil)))
+              (should (equal (cons name (mapcar (lambda (k) (plist-get r k)) keys))
+                             (cons name (mapcar (lambda (k) (plist-get c k)) keys))))
+              (should (equal (list name bg (plist-get stats :handed-back))
+                             (list name bg
+                                   (if (and bg (memq name '(gamma-alpha srgb-alpha)))
+                                       1 0)))))))))))
+
+(ert-deftest workers/image-rust-errors ()
+  ;; Truncated, corrupt and oversized PNGs fail in Rust as they fail in
+  ;; the C core, with the same kind of error (the text is the crate's).
+  (skip-unless (and (memq 'png (workers-image-tests--rust-types))
+                    (workers-image-tests--core-p 'png)))
+  (let* ((good (workers-image-tests--png
+                2 2 2 8 (list (workers-image-tests--bytes 1 2 3 4 5 6)
+                              (workers-image-tests--bytes 7 8 9 10 11 12))))
+         (cases `((truncated ,(substring good 0 (- (length good) 20)) nil)
+                  (no-iend ,(substring good 0 (- (length good) 12)) nil)
+                  (not-png ,(concat "GIF89a" (substring good 6)) nil)
+                  (too-big ,good (:limit 1)))))
+    (pcase-dolist (`(,name ,data ,extra) cases)
+      (let* ((spec `(image :type png :data ,data))
+             (params (append extra '(:limit 10000)))
+             (c (let ((nidhogg-workers-image-rust nil))
+                  (nidhogg-workers--test-image-decode spec params)))
+             (r (let ((nidhogg-workers-image-rust '(png)))
+                  (nidhogg-workers--test-image-decode spec params))))
+        (should (equal (list name (plist-get r :error))
+                       (list name (plist-get c :error))))
+        (should (plist-get r :error))
+        (should-not (plist-get r :pixels))))))
 
 (ert-deftest workers/image-core-refuses-nonregular-file ()
   ;; A spec whose file leads to /dev/zero: the cores refuse it at once
@@ -142,7 +362,8 @@ GOLDEN-HEADER is the corpus' recorded frame background colour."
 
 (ert-deftest workers/image-animation-cache ()
   ;; Frame N decodes from the cached state at N-1: one frame decoded.
-  (let ((golden (workers-image-tests--golden)))
+  (let ((nidhogg-workers-image-rust nil)
+        (golden (workers-image-tests--golden)))
     (dolist (file (cl-remove-if-not #'workers-image-tests--core-p
                                     '("oracle-anim-200.gif" "oracle-anim-200.webp")))
       (nidhogg-workers--test-image-cache-clear)
@@ -197,7 +418,8 @@ GOLDEN-HEADER is the corpus' recorded frame background colour."
 
 (ert-deftest workers/image-errors ()
   ;; Truncated and corrupt images fail with the loaders' text.
-  (let ((golden (workers-image-tests--golden))
+  (let ((nidhogg-workers-image-rust nil)
+        (golden (workers-image-tests--golden))
         (texts (workers-image-tests--read "oracle-errors-golden.eld")))
     (should texts)
     (dolist (entry (cl-remove-if-not
