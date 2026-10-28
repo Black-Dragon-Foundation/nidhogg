@@ -59,7 +59,7 @@ fn record(window: u64, time: u32, id: i32, op: u32, x: f64, y: f64) -> NhShellEv
 }
 
 /// Drop the frame in progress and end every live point the host has heard of as cancelled.
-fn cancel(state: &mut ReaderState) {
+pub(super) fn cancel(state: &mut ReaderState) {
     state
         .shared
         .serials

@@ -177,6 +177,29 @@ impl ReaderState {
         };
         self.post(ev);
     }
+
+    /// The connection is gone and no release will come: a release for every button still held, on the window the
+    /// pointer is over, at its last position.
+    pub(super) fn release_held_buttons(&mut self) {
+        let held = self
+            .shared
+            .serials
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .held_buttons();
+        let id = self.pointer.surface;
+        let (x, y) = self.to_device(id, self.pointer.x, self.pointer.y);
+        for button in held {
+            let mut ev = NhShellEvent::new(NHSHELL_EV_BUTTON, id, 0);
+            ev.u.pointer = PointerEv {
+                x,
+                y,
+                button,
+                state: NHSHELL_BUTTON_RELEASED,
+            };
+            self.post(ev);
+        }
+    }
 }
 
 impl PointerState {

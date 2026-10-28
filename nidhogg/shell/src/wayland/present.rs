@@ -312,6 +312,27 @@ impl Present {
         self.layers.clear();
     }
 
+    /// The connection was made again (`me` is this state's own handle): each buffer gets a new `wl_buffer` from its
+    /// own memfd, so what it holds stays, and every slot counts as released, as the old compositor will never say.
+    /// The content layers go; presenting promotes them again.
+    pub(crate) fn reconnected(&mut self, me: &Arc<Mutex<Present>>, wire: &Wire) {
+        self.layers.clear();
+        let Some(shm) = &wire.shm else {
+            self.clear();
+            return;
+        };
+        for (&id, buf) in &mut self.bufs {
+            buf.remake(shm, &wire.mqh, &wire.rqh, (me.clone(), id));
+            self.pool.released(BufferSlot {
+                id,
+                age: 0,
+                w: buf.w,
+                h: buf.h,
+            });
+        }
+        self.starved = false;
+    }
+
     /// A content layer's buffer came back: a layer starved for buffers presents the tree again.
     pub(crate) fn layer_released(&mut self, layer: u64, slot: usize) {
         let Some(l) = self.layers.iter_mut().find(|l| l.id == layer) else {

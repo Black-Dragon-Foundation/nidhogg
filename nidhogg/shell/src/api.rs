@@ -36,6 +36,8 @@ pub const NHSHELL_E_NOMEM: i32 = -6;
 pub const NHSHELL_E_TIMEOUT: i32 = -7;
 /// The buffer is smaller than the text (`take_text`); the text stays and `*len` says how big it is.
 pub const NHSHELL_E_TOO_SMALL: i32 = -8;
+/// The display is reconnecting (`ShellBackend::reconnect`): the call sent nothing.
+pub const NHSHELL_E_RECONNECTING: i32 = -9;
 
 /// Why a call failed; `code` is the C ABI's value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,6 +49,7 @@ pub enum ShellError {
     NoMem,
     Timeout,
     TooSmall,
+    Reconnecting,
 }
 
 impl ShellError {
@@ -59,11 +62,33 @@ impl ShellError {
             ShellError::NoMem => NHSHELL_E_NOMEM,
             ShellError::Timeout => NHSHELL_E_TIMEOUT,
             ShellError::TooSmall => NHSHELL_E_TOO_SMALL,
+            ShellError::Reconnecting => NHSHELL_E_RECONNECTING,
         }
     }
 }
 
 pub type ShellResult<T = ()> = Result<T, ShellError>;
+
+/// The connection's state (`ShellBackend::connection_state`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectionState {
+    Up,
+    /// The host took `RECONNECTING`; `reconnect` has not succeeded yet.
+    Reconnecting,
+    /// The host took `DISCONNECTED`.
+    Lost,
+}
+
+impl ConnectionState {
+    /// `NHSHELL_CONN_UP` 0, `_RECONNECTING` 1, `_LOST` 2.
+    pub fn code(self) -> u32 {
+        match self {
+            ConnectionState::Up => 0,
+            ConnectionState::Reconnecting => 1,
+            ConnectionState::Lost => 2,
+        }
+    }
+}
 
 pub const NHSHELL_WIN_UNDECORATED: u32 = 1 << 0;
 pub const NHSHELL_WIN_FULLSCREEN: u32 = 1 << 1;
@@ -202,6 +227,27 @@ pub trait ShellBackend {
     /// or after a plain hangup.
     fn last_error(&self) -> String {
         String::new()
+    }
+    /// Reconnect in place when the display goes (`on`; off at open).  With it on, a hangup posts `RECONNECTING`
+    /// instead of `DISCONNECTED`; a protocol error still posts `DISCONNECTED`.  `Unsupported` when the connection
+    /// cannot be made again (an inherited socket).
+    fn set_reconnect(&mut self, on: bool) -> ShellResult {
+        let _ = on;
+        Err(ShellError::Unsupported)
+    }
+    /// Up; reconnecting from the moment the host takes `RECONNECTING` until `reconnect` succeeds; lost once the host
+    /// takes `DISCONNECTED`.  While reconnecting, every call that would send returns `Reconnecting`; `window_destroy`
+    /// frees the window's local state and succeeds.
+    fn connection_state(&self) -> ConnectionState {
+        ConnectionState::Up
+    }
+    /// One bounded step of reconnecting, at most `timeout_ms`: `Ok` once connected again (the globals, input and
+    /// buffers are back, and `RECONNECTED` is posted), `Timeout` while the display is not there yet (call again
+    /// later), `Disconnected` when the new display failed (a protocol error, a required global missing).  `Ok` when
+    /// the connection is up; `State` while `RECONNECTING` waits to be taken.
+    fn reconnect(&mut self, timeout_ms: u32) -> ShellResult {
+        let _ = timeout_ms;
+        Err(ShellError::Unsupported)
     }
 
     fn window_new(&mut self, desc: &WindowDesc) -> ShellResult<WindowId> {
@@ -403,6 +449,11 @@ impl ThreadDone {
         if let Some(t) = waiter {
             t.unpark();
         }
+    }
+
+    /// A new thread takes the report over (the old one has finished).
+    pub fn reset(&self) {
+        self.done.store(false, Ordering::Release);
     }
 
     /// Wait until `set`, at most until `deadline`; whether it was set.
