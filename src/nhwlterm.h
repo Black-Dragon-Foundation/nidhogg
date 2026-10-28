@@ -189,6 +189,9 @@ struct nhwl_display_info
   {
     double acc_x, acc_y;
     double x_per_char, y_per_line;
+    /* Whose fractions acc_x and acc_y are (compared, never used).  */
+    struct frame *frame;
+    uint32_t source;
   } scroll;
 
   /* The monitors the shell reported (w and h in device pixels).  */
