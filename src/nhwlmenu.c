@@ -213,7 +213,7 @@ nhwl_popup_show (struct frame *f)
   popup_anchor (f, &desc.anchor);
 
   block_input ();
-  rc = nhshell_window_new (dpyinfo->shell, &desc, &id);
+  rc = nhwl_window_new (dpyinfo, &desc, NHG_FRAME_POPUP, &id);
   unblock_input ();
   if (rc < 0)
     error ("nidhogg-wayland: cannot create a popup window (%d)", rc);
@@ -253,7 +253,7 @@ nhwl_popup_hide (struct frame *f)
   if (out->window && dpyinfo->shell)
     {
       block_input ();
-      nhshell_window_destroy (dpyinfo->shell, out->window);
+      nhwl_window_destroy (dpyinfo, out->window);
       unblock_input ();
     }
   out->window = 0;

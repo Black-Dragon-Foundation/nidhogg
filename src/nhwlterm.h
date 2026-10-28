@@ -209,6 +209,10 @@ struct nhwl_display_info
   /* The shell reported DISCONNECTED.  */
   bool connection_lost;
 
+  /* A glue call answered NHG_E_PANIC: the glue's display is poisoned, and
+     the next read drops this display (nhwl_read_socket).  */
+  bool glue_broken;
+
   /* The window that has the keyboard focus, as the last focus event said
      (0: none of ours).  */
   uint64_t kbd_window;
@@ -466,14 +470,6 @@ enum
 #define FRAME_NHWL_SHELL(f) (FRAME_DISPLAY_INFO (f)->shell)
 #define FRAME_NHG(f) (FRAME_DISPLAY_INFO (f)->glue)
 
-/* Temporary, until the glue's own NHG macro (which clears
-   waiting_for_input around the call) is in this file; delete these lines
-   then.  Every glue call is written NHG (call); this one only makes it.  */
-#ifndef NHG
-# define NHG nhwl_plain_glue_call
-# define nhwl_plain_glue_call(call) (call)
-#endif
-
 /* Nidhogg's own parameters that map to nothing outside the shell: the
    modifier names for the shell's modifier bits.  */
 
@@ -653,6 +649,47 @@ extern bool nhwl_selection_changed (struct nhwl_display_info *, uint32_t,
 extern void nhwl_handle_selection_clear (struct input_event *);
 extern frame_parm_handler nhwl_frame_parm_handlers[];
 extern Emacs_Cursor nhwl_cursor_for_shape (uint32_t);
+
+/* Every call into the glue (nhg_*) goes through NHG (CALL); nm-check.sh
+   fails on one that does not.  While waiting_for_input is set, SIGINT
+   longjmps out of its handler to read_char (handle_interrupt,
+   quit_throw_to_read_char) across whatever is running, and a Rust frame
+   must never be on that path.  So the flag is cleared around the call
+   and set again afterwards; set_waiting_for_input then throws a C-g that
+   came meanwhile, from here, with no Rust frame on the stack.  When the
+   flag is clear (redisplay, parameter handlers) this costs a load and a
+   branch.  The value is CALL's.  A file that uses it includes
+   keyboard.h.  */
+#define NHG(call)							\
+  __extension__								\
+  ({									\
+    bool nhg_waiting_ = waiting_for_input;				\
+    struct timespec *nhg_clear_time_ = NULL;				\
+    if (nhg_waiting_)							\
+      {									\
+	nhg_clear_time_ = input_available_clear_time;			\
+	clear_waiting_for_input ();					\
+      }									\
+    __typeof__ (call) nhg_value_ = (call);				\
+    if (nhg_waiting_)							\
+      set_waiting_for_input (nhg_clear_time_);				\
+    nhg_value_;								\
+  })
+
+/* RC from a glue call on DPYINFO: NHG_E_PANIC means the glue poisoned its
+   display, which goes at the next read (nhwl_read_socket).  Returns RC.  */
+static inline int32_t
+nhwl_glue_rc (struct nhwl_display_info *dpyinfo, int32_t rc)
+{
+  if (rc == NHG_E_PANIC)
+    dpyinfo->glue_broken = true;
+  return rc;
+}
+
+extern int nhwl_window_new (struct nhwl_display_info *, NhShellWindowDesc *,
+			    uint32_t, uint64_t *);
+extern void nhwl_window_destroy (struct nhwl_display_info *, uint64_t);
+extern void nhwl_window_forget (struct nhwl_display_info *, uint64_t);
 
 #endif /* HAVE_NHWL */
 #endif /* _NHWLTERM_H_ */

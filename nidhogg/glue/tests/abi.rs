@@ -10,6 +10,8 @@ mod abi {
         nhg_alpha_multiply, nhg_backing, nhg_backing_forget, nhg_commit, nhg_damage,
         nhg_damage_all, nhg_layer_ensure, nhg_pending, nhg_presented, nhg_scroll, nhg_snapshot,
     };
+    use nhglue::ffi::{nhg_frame_forget, nhg_frame_register, nhg_panic_message};
+    use nhglue::frame::*;
     use nhshell::ffi::NhShell;
     use std::ffi::c_char;
     use std::mem::offset_of;
@@ -58,6 +60,7 @@ mod abi {
     /// prototypes have the types the Rust entry points have (each side is pinned to the table below).
     #[test]
     fn header_matches_records() {
+        type F = NhgFrameFacts;
         let rows: &[(&str, i64)] = &[
             ("NHG_ABI_VERSION", NHG_ABI_VERSION.into()),
             ("NHG_OK", NHG_OK.into()),
@@ -113,10 +116,27 @@ mod abi {
                 "offsetof (NhgPending, damage_px)",
                 offset_of!(NhgPending, damage_px) as i64,
             ),
+            // the window registry
+            ("NHG_FRAME_CHILD", NHG_FRAME_CHILD.into()),
+            ("NHG_FRAME_TIP", NHG_FRAME_TIP.into()),
+            ("NHG_FRAME_POPUP", NHG_FRAME_POPUP.into()),
+            ("NHG_FACT_VISIBLE", NHG_FACT_VISIBLE.into()),
+            ("NHG_FACT_ICONIFIED", NHG_FACT_ICONIFIED.into()),
+            // NhgFrameFacts (F; FOFF is its offsetof, defined in the probe)
+            ("sizeof (F)", size_of::<F>() as i64),
+            ("_Alignof (F)", align_of::<F>() as i64),
+            ("FOFF (native_w)", offset_of!(F, native_w) as i64),
+            ("FOFF (native_h)", offset_of!(F, native_h) as i64),
+            ("FOFF (col_w)", offset_of!(F, col_w) as i64),
+            ("FOFF (line_h)", offset_of!(F, line_h) as i64),
+            ("FOFF (parent)", offset_of!(F, parent) as i64),
+            ("FOFF (flags)", offset_of!(F, flags) as i64),
         ];
         // the prototypes, C side (checked at compile time: the probe references no function, so it links alone)
         let decls = "\
 #define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
+typedef NhgFrameFacts F;
+#define FOFF(m) offsetof (F, m)
 PROTO (nhg_abi_version, int32_t (uint32_t *));
 PROTO (nhg_open, NhgDisplay *(const char *, char *, size_t));
 PROTO (nhg_close, int32_t (NhgDisplay *));
@@ -132,7 +152,12 @@ PROTO (nhg_pending, int32_t (NhgDisplay *, uint64_t, NhgPending *));
 PROTO (nhg_presented, int32_t (NhgDisplay *, uint64_t));
 PROTO (nhg_snapshot, int32_t (NhgDisplay *, uint64_t, NhgBacking *));
 PROTO (nhg_backing_forget, int32_t (NhgDisplay *, uint64_t));
-PROTO (nhg_alpha_multiply, int32_t (NhgDisplay *, uint8_t *, int32_t, int32_t, int32_t, uint32_t));";
+PROTO (nhg_alpha_multiply, int32_t (NhgDisplay *, uint8_t *, int32_t, int32_t, int32_t, uint32_t));
+PROTO (nhg_frame_register, int32_t (NhgDisplay *, uint64_t, uint32_t));
+PROTO (nhg_frame_forget, int32_t (NhgDisplay *, uint64_t));
+PROTO (nhg_panic_message, int32_t (NhgDisplay *, char *, size_t, size_t *));
+PROTO (nhg_debug_check_frame, int32_t (NhgDisplay *, uint64_t, const NhgFrameFacts *));
+PROTO (nhg_test_panic, int32_t (NhgDisplay *));";
         // the same table, Rust side
         let _: unsafe extern "C" fn(*mut u32) -> i32 = nhg_abi_version;
         let _: unsafe extern "C" fn(*const c_char, *mut c_char, usize) -> *mut NhgDisplay =
@@ -160,6 +185,18 @@ PROTO (nhg_alpha_multiply, int32_t (NhgDisplay *, uint8_t *, int32_t, int32_t, i
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_backing_forget;
         let _: unsafe extern "C" fn(*mut NhgDisplay, *mut u8, i32, i32, i32, u32) -> i32 =
             nhg_alpha_multiply;
+        // the window registry and the guard
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u32) -> i32 = nhg_frame_register;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_frame_forget;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, *mut c_char, usize, *mut usize) -> i32 =
+            nhg_panic_message;
+        #[cfg(feature = "test-hooks")]
+        {
+            use nhglue::ffi::{nhg_debug_check_frame, nhg_test_panic};
+            let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *const NhgFrameFacts) -> i32 =
+                nhg_debug_check_frame;
+            let _: unsafe extern "C" fn(*mut NhgDisplay) -> i32 = nhg_test_panic;
+        }
 
         let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
         let got = probe(decls, &exprs);
