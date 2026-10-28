@@ -148,6 +148,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <sched.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/select.h>
@@ -1574,6 +1575,11 @@ nh_io_test_crash (void)
    cleared when the fd closes.  */
 static struct nh_io_h *nh_io_tab[FD_SETSIZE];
 static struct nh_io_h *_Atomic nh_io_live[FD_SETSIZE];
+/* nh_io_pause calls between their nh_io_live load and their last use of
+   the handle.  The SIGCHLD handler runs on the main thread, but a Lisp
+   thread may hand a handle back and free it meanwhile: it waits for
+   this to drop to 0 after clearing the entry (nh_io_unlive).  */
+static atomic_int nh_io_pausing;
 static bool nh_io_optout[FD_SETSIZE];
 static bool nh_io_ended[FD_SETSIZE];
 static unsigned char nh_io_refused[FD_SETSIZE];
@@ -1794,6 +1800,18 @@ nh_io_tls_pull_timeout (gnutls_transport_ptr_t ptr, unsigned int ms)
 # endif
 #endif
 
+/* Clear FD's nh_io_live entry, then wait out any nh_io_pause that may
+   have loaded it (the SIGCHLD handler on the main thread while a Lisp
+   thread hands back): the handle may be freed after.  On the main
+   thread the wait never spins, its handler having returned.  */
+static void
+nh_io_unlive (int fd)
+{
+  atomic_store (&nh_io_live[fd], NULL);
+  while (atomic_load (&nh_io_pausing) != 0)
+    sched_yield ();
+}
+
 void
 nh_io_handback (struct Lisp_Process *p, int reason)
 {
@@ -1816,7 +1834,7 @@ nh_io_handback (struct Lisp_Process *p, int reason)
   struct nh_io_h *h = nh_io_tab[fd];
   if (!h)
     return;
-  atomic_store (&nh_io_live[fd], NULL);
+  nh_io_unlive (fd);
   if (reason == NH_IO_CLOSE)
     {
       /* The framing goes with the process (Task 24).  */
@@ -2260,19 +2278,25 @@ nh_io_read (struct Lisp_Process *p, int channel, char *buf, ptrdiff_t size,
    reader owns it.  Async-signal-safe (the SIGCHLD handler's
    delete_read_fd, §4 item 11): the lock-free table, an atomic flag and
    one write to the command fd, errno kept; no mutex, no malloc.  The
-   handler runs on the main thread, which frees a handle only after
-   clearing its nh_io_live entry.  */
+   handler runs on the main thread; whichever thread frees a handle
+   clears its nh_io_live entry first and waits out the calls in here
+   (nh_io_pausing).  */
 int
 nh_io_pause (int infd)
 {
   if (infd < 0 || infd >= FD_SETSIZE)
     return infd;
+  atomic_fetch_add (&nh_io_pausing, 1);
   struct nh_io_h *h = atomic_load (&nh_io_live[infd]);
-  if (!h)
-    return infd;
-  if (!atomic_exchange (&h->paused, true) && !h->inl)
-    nh_io_poke ();
-  return h->sel;
+  int sel = infd;
+  if (h)
+    {
+      if (!atomic_exchange (&h->paused, true) && !h->inl)
+	nh_io_poke ();
+      sel = h->sel;
+    }
+  atomic_fetch_sub (&nh_io_pausing, 1);
+  return sel;
 }
 
 /* Undo nh_io_pause (add_process_read_fd, main thread).  */
