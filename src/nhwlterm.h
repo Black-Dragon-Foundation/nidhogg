@@ -292,10 +292,11 @@ struct nhwl_output
   uint64_t window;
   Window parent_desc;		/* always the display's root (0) */
   uint32_t scale120;		/* the window's preferred scale times 120 */
+  /* Copies of the glue's configure state that C still reads, set when C
+     applies a RESIZE action.  */
   int logical_w, logical_h;	/* the compositor's last suggestion, logical px */
   uint32_t states;		/* NHSHELL_STATE_* of the last configure */
   bool configured;		/* a configure has been seen (the toplevel is mapped) */
-  uint32_t serial;
 
   /* The outputs the window is on (ids of the monitors; enter and leave).  */
   uint64_t entered[NHWL_MAX_OUTPUTS];
@@ -686,8 +687,8 @@ nhwl_glue_rc (struct nhwl_display_info *dpyinfo, int32_t rc)
   return rc;
 }
 
-extern int nhwl_window_new (struct nhwl_display_info *, NhShellWindowDesc *,
-			    uint32_t, uint64_t *);
+extern int nhwl_window_new (struct frame *, NhShellWindowDesc *, uint32_t,
+			    uint64_t *);
 extern void nhwl_window_destroy (struct nhwl_display_info *, uint64_t);
 extern void nhwl_window_forget (struct nhwl_display_info *, uint64_t);
 
