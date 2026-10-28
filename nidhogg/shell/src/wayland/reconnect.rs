@@ -16,13 +16,18 @@
 //! - **On success:** the globals are bound again (`bind_globals`, the same code as open, so capabilities follow the
 //!   new compositor), the seat and its devices come back on a new reader queue, every pool's buffers are made again
 //!   from their own memfds with every slot released, the presenter's wire is replaced, a new reader starts, the windows
-//!   are made again (`remake_windows`) and `RECONNECTED` is posted.
+//!   are made again (`remake_windows`: popups closed, top-levels and children made again with their state, owned
+//!   selections offered again at the first serial) and `RECONNECTED` is posted.  A drag over us that had not dropped
+//!   left at the loss (`DND_LEAVE`, before `RECONNECTING`).
 
 use crate::api::*;
-use crate::event::{NHSHELL_EV_RECONNECTED, NHSHELL_EV_RECONNECTING, NhShellEvent};
+use crate::event::{
+    NHSHELL_EV_RECONNECTED, NHSHELL_EV_RECONNECTING, NHSHELL_EV_SELECTION, NhShellEvent,
+    SelectionEv,
+};
 use crate::wayland::conn::{self, Refused};
 use crate::wayland::reader::{self, ReaderState};
-use crate::wayland::{MainState, WaylandShell, present};
+use crate::wayland::{MainState, WaylandShell, present, selection};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
@@ -360,9 +365,38 @@ impl WaylandShell {
         }
     }
 
-    /// The windows, made again on the new connection before `RECONNECTED` is posted.  Their records, ids and buffers
-    /// are kept; their protocol objects belong to the old connection until this makes them again.
+    /// The windows, made again on the new connection before `RECONNECTED` is posted.  Their records, ids, buffers and
+    /// fronts are kept; their protocol objects belonged to the old connection.
+    /// - Another client's selection that went posts an empty `SELECTION`; what we own is offered again at the first
+    ///   serial (`Selections::reconnected`).
+    /// - Popups close, topmost first: `POPUP_DONE` each, and their records go.
+    /// - An open session is opened again with reason `recover` and its id.
+    /// - Top-levels are made again with what they asked for (title, app id, min size, maximized or fullscreen, the
+    ///   decoration mode), each restored under its session name before its role-setup commit; then the children,
+    ///   parents first, as sync subsurfaces at their offsets and in their stacking order.
+    /// - Each window is back at its state at creation (`Present::remade`): nothing commits it before the new
+    ///   compositor's configure, which is a content ack.  Window ids do not change (`window_of`).
+    /// - Idle inhibitors are held again; export handles and activation tokens are forgotten.
     pub(super) fn remake_windows(&mut self) -> ShellResult {
-        Ok(())
+        for kind in selection::lock(&self.shared).take_lost() {
+            let mut ev = NhShellEvent::new(NHSHELL_EV_SELECTION, 0, 0);
+            ev.u.selection = SelectionEv { kind };
+            self.shared.post(ev);
+        }
+        self.popups_closed();
+        let qh = self.main_queue.handle();
+        let names = self.main.session.reconnected(&qh);
+        let mut tops: Vec<WindowId> = self.main.windows.keys().copied().collect();
+        tops.sort_unstable();
+        for id in tops {
+            // only a missing core global fails, and `bind_globals` checked those
+            let _ = self.toplevel_again(id, names.get(&id).map(String::as_str));
+        }
+        self.children_again();
+        let m = &mut self.main;
+        m.idle.again(&m.surfaces, &qh);
+        m.foreign.reconnected();
+        m.tokens.reconnected();
+        self.flush()
     }
 }

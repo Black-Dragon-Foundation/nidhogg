@@ -470,7 +470,7 @@ pub fn click_outside(state: &mut State) -> Value {
 /// `tree`: every live surface with its role, parent, place and stack.  `position` is the subsurface offset in its
 /// parent (a popup's, the one its last acked commit applied), `sync` whether a subsurface is synchronised, `above` the later siblings in stacking order (Smithay does not say where a
 /// parent sits among its children, so `children` lists a parent's subsurfaces bottom to top), `input_region` the
-/// added rectangles (null when the client set none).
+/// added rectangles (null when the client set none), `min_size` a top-level's committed minimum size (0 0: none).
 pub fn tree(state: &mut State) -> Value {
     state.surfaces.retain(|s| s.is_alive());
     state.popups.retain(|p| p.alive());
@@ -500,7 +500,7 @@ pub fn tree(state: &mut State) -> Value {
                 None => Vec::new(),
             };
             let mut position = [0, 0];
-            let (mapped, buffer, input_region, geometry) =
+            let (mapped, buffer, input_region, geometry, min_size) =
                 compositor::with_states(surface, |states| {
                     if role == "subsurface" {
                         let l = states
@@ -538,13 +538,12 @@ pub fn tree(state: &mut State) -> Value {
                                 .map(|(_, r)| [r.loc.x, r.loc.y, r.size.w, r.size.h])
                                 .collect::<Vec<_>>()
                         });
-                    let geometry = states
-                        .cached_state
-                        .get::<XdgCachedState>()
-                        .current()
-                        .geometry
-                        .map(|g| [g.loc.x, g.loc.y, g.size.w, g.size.h]);
-                    (mapped, buffer, input_region, geometry)
+                    let mut xdg = states.cached_state.get::<XdgCachedState>();
+                    let xdg = xdg.current();
+                    let geometry = xdg.geometry.map(|g| [g.loc.x, g.loc.y, g.size.w, g.size.h]);
+                    // a top-level's xdg_toplevel.set_min_size, as committed
+                    let min_size = [xdg.min_size.w, xdg.min_size.h];
+                    (mapped, buffer, input_region, geometry, min_size)
                 });
             // a popup's position is the one the client acked and committed, as in a compositor: not the one the
             // latest configure carries
@@ -573,6 +572,7 @@ pub fn tree(state: &mut State) -> Value {
                 "mapped": mapped,
                 "input_region": input_region,
                 "geometry": geometry,
+                "min_size": min_size,
                 "buffer": buffer,
             })
         })

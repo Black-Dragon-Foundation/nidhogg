@@ -60,6 +60,11 @@ mod reconnect {
     /// Drive `reconnect` as the host's backoff timer would (a 50 ms step every 10 ms) until it succeeds, within
     /// `secs`; then take `RECONNECTED`.
     fn reconnect_within(shell: &mut WaylandShell, secs: u64) {
+        reconnect_records(shell, secs);
+    }
+
+    /// `reconnect_within`, returning every record up to and including `RECONNECTED`.
+    fn reconnect_records(shell: &mut WaylandShell, secs: u64) -> Vec<NhShellEvent> {
         let deadline = Instant::now() + Duration::from_secs(secs);
         loop {
             match shell.reconnect(50) {
@@ -72,7 +77,65 @@ mod reconnect {
             }
         }
         assert_eq!(shell.connection_state(), ConnectionState::Up);
-        wait_event(shell, NHSHELL_EV_RECONNECTED);
+        let mut out = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            while let Some(ev) = shell.next_event().unwrap() {
+                out.push(ev);
+                if ev.kind == NHSHELL_EV_RECONNECTED {
+                    return out;
+                }
+            }
+            assert!(Instant::now() < deadline, "no RECONNECTED");
+            readable_within(shell.wake_fd(), 50);
+        }
+    }
+
+    /// A keep-socket restart, and the reconnect after it: the records up to `RECONNECTED`.
+    fn restart_and_reconnect(rec: &Recorder, shell: &mut WaylandShell) -> Vec<NhShellEvent> {
+        restart(rec, r#"{"cmd":"restart","mode":"keep-socket"}"#);
+        until_reconnecting(shell);
+        reconnect_records(shell, 3)
+    }
+
+    /// The recorder's next commit number: the commits from it on are the new connection's.
+    fn next_seq(rec: &Recorder) -> u64 {
+        number(&rec.control(r#"{"cmd":"log","since":1}"#), "next").expect("next")
+    }
+
+    /// Surface `pid`'s commits from recorder commit `seq` on, one JSON text each (sorted keys: `ack_serial` opens
+    /// each).
+    fn commits(rec: &Recorder, seq: u64, pid: u32) -> Vec<String> {
+        let log = rec.control(&format!(r#"{{"cmd":"log","since":{seq}}}"#));
+        log.split("{\"ack_serial\":")
+            .skip(1)
+            .map(|c| format!("{{\"ack_serial\":{c}"))
+            .filter(|c| c.contains(&format!("\"surface\":{pid},")))
+            .collect()
+    }
+
+    /// The next `CONFIGURE` of window `w`.
+    fn configure_of(shell: &mut WaylandShell, w: u64) -> ConfigureEv {
+        let ev = wait_for(shell, |e| e.kind == NHSHELL_EV_CONFIGURE && e.window == w);
+        // SAFETY: a CONFIGURE record carries `configure`.
+        unsafe { ev.u.configure }
+    }
+
+    /// The string after `"data":` in a recorder reply (plain text without escapes).
+    fn data_of(reply: &str) -> Option<&str> {
+        let start = reply.find("\"data\":\"")? + 8;
+        let len = reply[start..].find('"')?;
+        Some(&reply[start..start + len])
+    }
+
+    /// Give window `w` keyboard focus (its surface now: `pid`) and take the `FOCUS` record, which names `w`.
+    fn focus(rec: &Recorder, shell: &mut WaylandShell, w: u64) {
+        let pid = shell.surface_protocol_id(w).unwrap();
+        rec.control_ok(&format!(r#"{{"cmd":"focus","surface":{pid}}}"#));
+        wait_for(shell, |e| {
+            // SAFETY: a FOCUS record carries `focus`.
+            e.kind == NHSHELL_EV_FOCUS && e.window == w && unsafe { e.u.focus.r#in } == 1
+        });
     }
 
     #[test]
@@ -313,9 +376,7 @@ mod reconnect {
         );
     }
 
-    /// Needs the windows made again on the new connection, which `remake_windows` does not do yet.
     #[test]
-    #[ignore = "needs the windows made again after a reconnect"]
     fn pools_remade_from_the_same_memfds() {
         let _g = shared();
         let rec = Recorder::start("sway");
@@ -366,6 +427,469 @@ mod reconnect {
         assert_eq!(after.fractional_scale, 0, "the new compositor has none");
         assert_eq!(after.compositor, before.compositor);
         assert!(after.seat >= 1);
+    }
+
+    /// A top-level comes back with its title, app id, min size and the fullscreen state the compositor granted, all
+    /// on the new surface's role setup; its id stays.  (Top-levels have no parent in the shell's API.)
+    #[test]
+    fn toplevels_remade_with_their_state() {
+        let _g = shared();
+        let rec = Recorder::start("sway");
+        let mut shell = open(&rec);
+        let w = mapped_window(&mut shell, 200, 100);
+        shell.set_title(w, "kept title").unwrap();
+        shell.set_app_id(w, "nidhogg.kept").unwrap();
+        shell.set_min_size(w, 120, 80).unwrap();
+        rec.control_ok(&format!(
+            r#"{{"cmd":"configure","surface":{w},"size":[300,200],"states":["fullscreen"]}}"#
+        ));
+        let c = configure_of(&mut shell, w);
+        assert_ne!(c.states & NHSHELL_STATE_FULLSCREEN, 0);
+        shell
+            .ack_configure(w, c.serial, NHSHELL_ACK_CONTENT)
+            .unwrap();
+        draw(&mut shell, w, 300, 200);
+        restart(&rec, r#"{"cmd":"restart","mode":"keep-socket"}"#);
+        until_reconnecting(&mut shell);
+        let seq = next_seq(&rec);
+        reconnect_within(&mut shell, 3);
+        let pid = shell.surface_protocol_id(w).expect("the window is kept");
+        // the new surface's configure names the same window id
+        let c = configure_of(&mut shell, w);
+        shell.ack_configure(w, c.serial, 0).unwrap();
+        let (cw, ch) = if c.w > 0 { (c.w, c.h) } else { (300, 200) };
+        draw(&mut shell, w, cw, ch);
+        rec.wait_node(u64::from(pid), |n| {
+            n.contains("\"role\":\"toplevel\"") && n.contains("\"min_size\":[120,80]")
+        });
+        let log = commits(&rec, seq, pid);
+        assert!(!log.is_empty(), "no commit on the new surface");
+        assert!(
+            log.iter().all(|c| c.contains("\"title\":\"kept title\"")
+                && c.contains("\"app_id\":\"nidhogg.kept\"")),
+            "{log:?}"
+        );
+        // fullscreen was asked for again on the new connection (its input log starts at the restart)
+        let input = rec.control(r#"{"cmd":"input_log"}"#);
+        assert!(
+            input
+                .split('{')
+                .any(|e| e.contains("\"req\":\"xdg_toplevel.set_fullscreen\"")
+                    && e.contains(&format!("\"surface\":{pid},"))),
+            "{input}"
+        );
+    }
+
+    /// Children come back as sync subsurfaces of their parents' new surfaces, at their offsets and in their stacking
+    /// order (a grandchild under its own parent).
+    #[test]
+    fn children_remade_as_sync_subsurfaces() {
+        let _g = shared();
+        let rec = Recorder::start("sway");
+        let mut shell = open(&rec);
+        let top = mapped_window(&mut shell, 200, 100);
+        let child = |shell: &mut WaylandShell, parent: u64, x: i32, y: i32| {
+            shell
+                .child_new(&ChildDesc {
+                    kind: NHSHELL_KIND_CHILD,
+                    parent,
+                    x,
+                    y,
+                    w: 40,
+                    h: 30,
+                    anchor: Anchor::default(),
+                    flags: 0,
+                })
+                .unwrap()
+        };
+        let low = child(&mut shell, top, 0, 0);
+        let c2 = child(&mut shell, top, 30, 5);
+        let c1 = child(&mut shell, top, 10, 20);
+        let c3 = child(&mut shell, c1, 2, 3);
+        // c1 below c2 (bottom to top: low, c1, c2), then c1 back above c2, and low below the parent
+        shell.stack(c1, c2, false).unwrap();
+        shell.stack(c1, c2, true).unwrap();
+        shell.stack(low, 0, false).unwrap();
+        restart_and_reconnect(&rec, &mut shell);
+        let c = configure_of(&mut shell, top);
+        shell
+            .ack_configure(top, c.serial, NHSHELL_ACK_CONTENT)
+            .unwrap();
+        // deepest first: a sync child's state applies with its own commit and then its parent's
+        for id in [c3, c1, c2, low] {
+            shell.present_bare(id).unwrap();
+        }
+        draw(&mut shell, top, 200, 100);
+        let pid = |id: u64| shell.surface_protocol_id(id).expect("kept");
+        let (ptop, plow, p1, p2, p3) = (pid(top), pid(low), pid(c1), pid(c2), pid(c3));
+        rec.wait_node(u64::from(ptop), |n| {
+            n.contains(&format!("\"children\":[{plow},{p2},{p1}]"))
+        });
+        for (p, parent, pos) in [
+            (p1, ptop, [10, 20]),
+            (p2, ptop, [30, 5]),
+            (plow, ptop, [0, 0]),
+            (p3, p1, [2, 3]),
+        ] {
+            rec.wait_node(u64::from(p), |n| {
+                n.contains("\"role\":\"subsurface\"")
+                    && n.contains("\"sync\":true")
+                    && n.contains(&format!("\"parent\":{parent},"))
+                    && n.contains(&format!("\"position\":[{},{}]", pos[0], pos[1]))
+            });
+        }
+        // the ids are the host's as before
+        assert_eq!(shell.window_ready(c3), Ok(0));
+        assert_eq!(shell.last_error(), "");
+    }
+
+    /// Popups close at the reconnect, topmost first, before `RECONNECTED`; their records go, nothing is sent for
+    /// them, and a new popup works.
+    #[test]
+    fn popups_done_topmost_first() {
+        let _g = shared();
+        let rec = Recorder::start("sway");
+        let mut shell = open(&rec);
+        let top = mapped_window(&mut shell, 200, 100);
+        let popup = |shell: &mut WaylandShell, parent: u64| {
+            shell
+                .child_new(&ChildDesc {
+                    kind: NHSHELL_KIND_POPUP,
+                    parent,
+                    x: 0,
+                    y: 0,
+                    w: 60,
+                    h: 30,
+                    anchor: Anchor {
+                        x: 10,
+                        y: 10,
+                        w: 4,
+                        h: 4,
+                        gravity: 8,
+                        adjust: 0,
+                    },
+                    flags: 0,
+                })
+                .unwrap()
+        };
+        let a = popup(&mut shell, top);
+        let b = popup(&mut shell, a);
+        let c = popup(&mut shell, b);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while rec.surfaces("popup") < 3 {
+            assert!(Instant::now() < deadline, "the popups never arrived");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let evs = restart_and_reconnect(&rec, &mut shell);
+        let done: Vec<u64> = evs
+            .iter()
+            .filter(|e| e.kind == NHSHELL_EV_POPUP_DONE)
+            .map(|e| e.window)
+            .collect();
+        assert_eq!(done, [c, b, a], "topmost first");
+        assert_eq!(evs.last().unwrap().kind, NHSHELL_EV_RECONNECTED);
+        // the records are gone: destroying one has nothing to do
+        assert_eq!(shell.window_destroy(a), Err(ShellError::State));
+        let cfg = configure_of(&mut shell, top);
+        shell
+            .ack_configure(top, cfg.serial, NHSHELL_ACK_CONTENT)
+            .unwrap();
+        draw(&mut shell, top, 200, 100);
+        assert_eq!(rec.surfaces("popup"), 0);
+        let again = popup(&mut shell, top);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while rec.surfaces("popup") < 1 {
+            assert!(Instant::now() < deadline, "the new popup never arrived");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        for ev in collect(&mut shell, 200) {
+            assert_ne!(ev.kind, NHSHELL_EV_DISCONNECTED, "a protocol error");
+        }
+        assert_eq!(shell.last_error(), "");
+        assert_eq!(
+            shell.window_grabbed(again),
+            Ok(false),
+            "the new popup is known"
+        );
+    }
+
+    /// A top-level published before the loss, with its tree presented; made again and reconnected.  The records up
+    /// to `RECONNECTED`, the recorder's first commit of the new connection, and the backing.
+    fn published_then_reconnected(
+        rec: &Recorder,
+        shell: &mut WaylandShell,
+    ) -> (u64, u64, backing::Backing) {
+        let mut b = backing::Backing::new(200, 100);
+        let w = shell
+            .window_new(&WindowDesc {
+                w: 200,
+                h: 100,
+                title: "t".into(),
+                app_id: "nidhogg.test".into(),
+                flags: 0,
+            })
+            .unwrap();
+        let c = configure_of(shell, w);
+        shell
+            .ack_configure(w, c.serial, NHSHELL_ACK_CONTENT)
+            .unwrap();
+        b.fill_all(0xff20_4060);
+        backing::publish(shell, w, &[(&b, w)], 0);
+        assert!(shell.present_tree(w).unwrap(), "the first picture");
+        shell.flush().unwrap();
+        restart(rec, r#"{"cmd":"restart","mode":"keep-socket"}"#);
+        until_reconnecting(shell);
+        let seq = next_seq(rec);
+        reconnect_within(shell, 3);
+        (w, seq, b)
+    }
+
+    /// Review Focus 5: a window made again is not presented before the new compositor's configure: the tree's
+    /// present and a legacy begin are refused, and on the new connection no buffer is attached before the first
+    /// `ack_configure` (the trace rule `unconfigured`).
+    #[test]
+    fn no_commit_before_the_new_configure() {
+        let _g = shared();
+        let rec = Recorder::start("sway");
+        let mut shell = open(&rec);
+        let (w, seq, mut b) = published_then_reconnected(&rec, &mut shell);
+        // redisplay drew meanwhile: the packet is taken, and nothing is committed
+        b.fill_all(0xff00_ff00);
+        backing::publish(&mut shell, w, &[(&b, w)], 0);
+        assert!(
+            !shell.present_tree(w).unwrap(),
+            "presented before the configure"
+        );
+        assert_eq!(
+            shell.present_begin(w, 200, 100).err(),
+            Some(ShellError::State)
+        );
+        assert_eq!(shell.window_ready(w), Ok(0));
+        shell.flush().unwrap();
+        let c = configure_of(&mut shell, w);
+        shell
+            .ack_configure(w, c.serial, NHSHELL_ACK_CONTENT)
+            .unwrap();
+        b.fill_all(0xff00_00ff);
+        backing::publish(&mut shell, w, &[(&b, w)], 0);
+        assert!(shell.present_tree(w).unwrap(), "the configure's picture");
+        shell.flush().unwrap();
+        let pid = shell.surface_protocol_id(w).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let log = loop {
+            let log = commits(&rec, seq, pid);
+            if log.iter().any(|c| c.contains("\"buffer\":{")) {
+                break log;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no buffer on the new surface: {log:?}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let first_buffer = log.iter().position(|c| c.contains("\"buffer\":{")).unwrap();
+        let first_ack = log
+            .iter()
+            .position(|c| !c.starts_with("{\"ack_serial\":null"))
+            .expect("an ack on the new surface");
+        assert!(
+            first_ack <= first_buffer,
+            "a buffer before the first ack: {log:?}"
+        );
+    }
+
+    /// The first configure after a reconnect is a content ack even when the host acks it bare: its ack goes with
+    /// the tree's next buffer, once a packet published after it is there.
+    #[test]
+    fn first_configure_is_a_content_ack() {
+        let _g = shared();
+        let rec = Recorder::start("sway");
+        let mut shell = open(&rec);
+        let (w, seq, mut b) = published_then_reconnected(&rec, &mut shell);
+        let c = configure_of(&mut shell, w);
+        // the host's flag says bare (the same size as before)
+        shell.ack_configure(w, c.serial, 0).unwrap();
+        assert!(
+            !shell.present_tree(w).unwrap(),
+            "the ack waits for a packet after it"
+        );
+        b.fill_all(0xff00_ff00);
+        backing::publish(&mut shell, w, &[(&b, w)], 0);
+        assert!(shell.present_tree(w).unwrap(), "the ack goes with a buffer");
+        shell.flush().unwrap();
+        let pid = shell.surface_protocol_id(w).unwrap();
+        let acked = format!("{{\"ack_serial\":{},", c.serial);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let log = commits(&rec, seq, pid);
+            if let Some(commit) = log.iter().find(|c| c.starts_with(&acked)) {
+                assert!(commit.contains("\"buffer\":{"), "a bare commit: {commit}");
+                break;
+            }
+            assert!(Instant::now() < deadline, "the ack never went: {log:?}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// What we owned is ours across the restart, and is offered again at the first serial on the new connection
+    /// (the keyboard enter): another client then pastes it.
+    #[test]
+    fn owned_clipboard_offered_again_at_the_first_serial() {
+        let _g = shared();
+        let rec = Recorder::start("sway");
+        let mut shell = open(&rec);
+        let w = mapped_window(&mut shell, 200, 100);
+        focus(&rec, &mut shell, w);
+        let text: &[u8] = b"kept across the restart";
+        shell
+            .selection_own(NHSHELL_SEL_CLIPBOARD, &[("text/plain;charset=utf-8", text)])
+            .unwrap();
+        restart_and_reconnect(&rec, &mut shell);
+        assert!(shell.selection_owned(NHSHELL_SEL_CLIPBOARD).unwrap());
+        // our own bytes still read without a round trip
+        assert_eq!(
+            shell
+                .selection_read(NHSHELL_SEL_CLIPBOARD, "text/plain;charset=utf-8", 0)
+                .as_deref(),
+            Ok(text)
+        );
+        focus(&rec, &mut shell, w);
+        let reply = rec
+            .control_ok(r#"{"cmd":"read","kind":"clipboard","type":"text/plain;charset=utf-8"}"#);
+        assert_eq!(data_of(&reply), Some("kept across the restart"), "{reply}");
+    }
+
+    /// The host's own calls between the reconnect and the first serial win: a selection given up is not offered
+    /// again, and one owned after the serial replaces the old one.
+    #[test]
+    fn newer_selection_wins() {
+        let _g = shared();
+        let rec = Recorder::start("sway");
+        let mut shell = open(&rec);
+        let w = mapped_window(&mut shell, 200, 100);
+        focus(&rec, &mut shell, w);
+        let plain = "text/plain;charset=utf-8";
+        shell
+            .selection_own(NHSHELL_SEL_CLIPBOARD, &[(plain, b"old")])
+            .unwrap();
+        shell
+            .selection_own(NHSHELL_SEL_PRIMARY, &[(plain, b"given up")])
+            .unwrap();
+        restart_and_reconnect(&rec, &mut shell);
+        shell.selection_disown(NHSHELL_SEL_PRIMARY).unwrap();
+        focus(&rec, &mut shell, w);
+        shell
+            .selection_own(NHSHELL_SEL_CLIPBOARD, &[(plain, b"new")])
+            .unwrap();
+        let reply = rec.control_ok(&format!(
+            r#"{{"cmd":"read","kind":"clipboard","type":"{plain}"}}"#
+        ));
+        assert_eq!(data_of(&reply), Some("new"), "{reply}");
+        assert!(!shell.selection_owned(NHSHELL_SEL_PRIMARY).unwrap());
+        std::thread::sleep(Duration::from_millis(100));
+        let reply = rec.control(&format!(
+            r#"{{"cmd":"read","kind":"primary","type":"{plain}"}}"#
+        ));
+        assert_eq!(
+            data_of(&reply),
+            None,
+            "the given-up primary came back: {reply}"
+        );
+    }
+
+    /// With a session, the reconnect opens it again with reason `recover` and its id, and the window is restored
+    /// under its name before its role-setup commit.
+    #[test]
+    fn session_recovered_by_name() {
+        let _g = shared();
+        let rec = Recorder::start("mutter");
+        let mut shell = open(&rec);
+        shell.session_open(None, NHSHELL_SESSION_LAUNCH).unwrap();
+        let ev = wait_event(&mut shell, NHSHELL_EV_SESSION);
+        // SAFETY: a SESSION record carries `session`.
+        assert_eq!(unsafe { ev.u.session }.state, NHSHELL_SESSION_CREATED);
+        let id = shell.session_id().unwrap();
+        let w = shell
+            .window_new_named(
+                &WindowDesc {
+                    w: 300,
+                    h: 200,
+                    title: "t".into(),
+                    app_id: "nidhogg.test".into(),
+                    flags: 0,
+                },
+                Some("initial"),
+            )
+            .unwrap();
+        let c = configure_of(&mut shell, w);
+        shell
+            .ack_configure(w, c.serial, NHSHELL_ACK_CONTENT)
+            .unwrap();
+        draw(&mut shell, w, 300, 200);
+        restart_and_reconnect(&rec, &mut shell);
+        let ev = wait_event(&mut shell, NHSHELL_EV_SESSION);
+        // SAFETY: as above.
+        assert_eq!(unsafe { ev.u.session }.state, NHSHELL_SESSION_RESTORED);
+        assert_eq!(shell.session_id().unwrap(), id);
+        let log = rec.control(r#"{"cmd":"session_log"}"#);
+        // the reply's keys are sorted: an entry's fields before its "op" and its "reason" after it
+        let get = log.find("\"op\":\"get_session\"").expect("get_session");
+        let rest = &log[get..];
+        assert!(
+            rest[..rest.find('}').unwrap()].contains("\"reason\":\"recover\""),
+            "{log}"
+        );
+        assert!(log[..get].contains(&format!("\"id\":\"{id}\"")), "{log}");
+        let op = log.rfind("\"op\":\"restore\"").expect("restore");
+        let entry = &log[log[..op].rfind('{').unwrap()..op];
+        assert!(entry.contains("\"before_first_commit\":true"), "{log}");
+        assert!(entry.contains("\"name\":\"initial\""), "{log}");
+        assert!(
+            op > get,
+            "restored after the session was opened again: {log}"
+        );
+    }
+
+    /// At the loss our drag ends (`DRAG_DONE`, not ok) and the drop it was making on our own window leaves
+    /// (`DND_LEAVE`), both before `RECONNECTING`; after the reconnect nothing of either is left.
+    #[test]
+    fn drag_done_and_leave_posted() {
+        let _g = shared();
+        let rec = Recorder::start("mutter");
+        let mut shell = open(&rec);
+        let w = mapped_window(&mut shell, 200, 150);
+        focus(&rec, &mut shell, w);
+        rec.control_ok(r#"{"cmd":"pointer","pos":[5,5]}"#);
+        wait_event(&mut shell, NHSHELL_EV_POINTER_ENTER);
+        rec.control_ok(r#"{"cmd":"button","button":272,"state":"press"}"#);
+        wait_for(&mut shell, |e| {
+            // SAFETY: a BUTTON record carries `pointer`.
+            e.kind == NHSHELL_EV_BUTTON && unsafe { e.u.pointer }.state == NHSHELL_BUTTON_PRESSED
+        });
+        shell
+            .drag_start(
+                w,
+                &[("text/plain;charset=utf-8", b"dragged")],
+                NHSHELL_DND_COPY,
+            )
+            .unwrap();
+        rec.control_ok(r#"{"cmd":"pointer","pos":[30,30]}"#);
+        let enter = wait_event(&mut shell, NHSHELL_EV_DND_ENTER);
+        assert_eq!(enter.window, w);
+        restart(&rec, r#"{"cmd":"restart","mode":"keep-socket"}"#);
+        let evs = until_reconnecting(&mut shell);
+        let at = |kind: u32| evs.iter().position(|e| e.kind == kind);
+        let leave = at(NHSHELL_EV_DND_LEAVE).expect("the drop leaves");
+        let done = at(NHSHELL_EV_DRAG_DONE).expect("the drag ends");
+        assert_eq!(evs[leave].window, w);
+        // SAFETY: drag-and-drop records carry `dnd`.
+        assert_eq!(unsafe { evs[done].u.dnd }.ok, 0);
+        assert!(leave < done && done < evs.len() - 1);
+        reconnect_within(&mut shell, 3);
+        assert!(!shell.selection_owned(NHSHELL_SEL_DND).unwrap());
+        assert!(shell.selection_types(NHSHELL_SEL_DND).unwrap().is_empty());
+        assert_eq!(shell.dnd_finish(true), Err(ShellError::State));
+        assert!(!shell.dragging());
     }
 
     fn fds() -> usize {

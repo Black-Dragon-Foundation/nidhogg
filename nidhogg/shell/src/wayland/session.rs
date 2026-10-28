@@ -79,6 +79,19 @@ impl Session {
         Ok(name.map(str::to_owned))
     }
 
+    /// A reconnect: a session that was open, and not taken over, is opened again on the new compositor with reason
+    /// `recover` and its id.  The names its windows held come back, for each window to be restored under its name
+    /// before its role-setup commit.  Without the global, or after a takeover, the session is gone.
+    pub fn reconnected(&mut self, qh: &QueueHandle<MainState>) -> HashMap<u64, String> {
+        let names: HashMap<u64, String> = self.named.drain().map(|(w, (n, _))| (w, n)).collect();
+        let open = self.session.take().is_some() && !std::mem::take(&mut self.replaced);
+        let Some(manager) = self.manager.as_ref().filter(|_| open) else {
+            return HashMap::new();
+        };
+        self.session = Some(manager.get_session(Reason::Recover, self.id.clone(), qh, ()));
+        names
+    }
+
     /// Put `toplevel` (window `id`) in the session under `name`, as `restore_toplevel` or `add_toplevel`.
     pub fn attach(
         &mut self,

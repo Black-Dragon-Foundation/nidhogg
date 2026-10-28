@@ -32,8 +32,8 @@ pub fn buffer_size(logical_w: i32, logical_h: i32, scale120: u32) -> (i32, i32) 
     (one(logical_w, scale120), one(logical_h, scale120))
 }
 
-/// The scale state of one `wl_surface`.  The shell keeps it in `MainState::scales`, keyed by the surface's protocol
-/// id (which is the window id); a window attaches one with `WaylandShell::scale_attach` and detaches it on destroy.
+/// The scale state of one `wl_surface`.  The shell keeps it in `MainState::scales`, keyed by the window id (the
+/// surface's protocol id until a reconnect makes the surface again, `window_of`); a window attaches one with `WaylandShell::scale_attach` and detaches it on destroy.
 pub struct SurfaceScale {
     fractional: Option<WpFractionalScaleV1>,
     viewport: Option<WpViewport>,
@@ -75,13 +75,13 @@ impl SurfaceScale {
 }
 
 impl MainState {
-    /// Create the scale objects for `surface` on the main queue and register them under its protocol id.
+    /// Create the scale objects for `surface` on the main queue and register them under its window id.
     pub(crate) fn attach_scale(
         &mut self,
         surface: &wl_surface::WlSurface,
         qh: &QueueHandle<Self>,
     ) -> u64 {
-        let id = u64::from(surface.id().protocol_id());
+        let id = crate::wayland::window_of(surface);
         let fractional = self
             .fractional
             .as_ref()
@@ -102,6 +102,25 @@ impl MainState {
             },
         );
         id
+    }
+
+    /// The window's surface was made again (a reconnect): new scale objects on it, no output entered yet, and the
+    /// scale kept until the new compositor says otherwise, so a `SCALE` comes only for a real change.
+    pub(crate) fn reattach_scale(
+        &mut self,
+        surface: &wl_surface::WlSurface,
+        qh: &QueueHandle<Self>,
+    ) {
+        let id = crate::wayland::window_of(surface);
+        let current = self.scales.remove(&id).map(|s| {
+            let c = s.current;
+            s.destroy();
+            c
+        });
+        self.attach_scale(surface, qh);
+        if let (Some(c), Some(s)) = (current, self.scales.get_mut(&id)) {
+            s.current = c;
+        }
     }
 
     pub(crate) fn detach_scale(&mut self, id: u64) {
@@ -172,7 +191,7 @@ pub fn surface_event(
     surface: &wl_surface::WlSurface,
     event: wl_surface::Event,
 ) {
-    let id = u64::from(surface.id().protocol_id());
+    let id = crate::wayland::window_of(surface);
     match event {
         wl_surface::Event::Enter { output } => {
             if let (Some(&name), Some(s)) = (output.data::<u32>(), state.scales.get_mut(&id))

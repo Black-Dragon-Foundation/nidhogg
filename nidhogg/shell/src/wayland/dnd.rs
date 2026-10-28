@@ -187,6 +187,29 @@ impl Dnd {
     }
 }
 
+impl Dnd {
+    /// The connection was made again: the old compositor's offer and drag are gone (their records went at the loss),
+    /// and a later drag over us is a new one.
+    pub fn reconnected(&mut self) {
+        self.offer = None;
+        self.drag = None;
+        self.over = false;
+        self.own_last = false;
+    }
+}
+
+/// The connection hung up and the shell reconnects: a drag over one of our surfaces leaves, as the compositor would
+/// have said, unless it already dropped (the host finishes that one, and its finish fails).  `Shared::reconnecting`
+/// posts the record before `RECONNECTING`.
+pub fn drop_lost(shared: &Shared) -> Option<NhShellEvent> {
+    let mut sel = selection::lock(shared);
+    let dnd = &mut sel.dnd;
+    dnd.over = false;
+    dnd.sync_dragging(shared);
+    let o = dnd.offer.take_if(|o| !o.dropped)?;
+    Some(o.record(NHSHELL_EV_DND_LEAVE))
+}
+
 /// The display is lost: our drag ends as cancelled.  `Shared::close` posts the record before `DISCONNECTED`.
 pub fn drag_lost(shared: &Shared) -> Option<NhShellEvent> {
     let mut sel = selection::lock(shared);
@@ -205,7 +228,7 @@ impl ReaderState {
         y: f64,
         offer: Option<WlDataOffer>,
     ) {
-        let window = u64::from(surface.id().protocol_id());
+        let window = crate::wayland::window_of(surface);
         let (x, y) = self.to_device(window, x, y);
         let shared = self.shared.clone();
         let mut sel = selection::lock(&shared);
