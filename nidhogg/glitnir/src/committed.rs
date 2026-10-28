@@ -10,14 +10,19 @@ use crate::geom::Rect;
 use crate::scene::Placed;
 use std::sync::Arc;
 
-/// A window layer that is its own output: its rectangle, the scroll since the last commit and its damage in layer
-/// coordinates.  None exist yet; [`Committed::outputs`] stays empty.
+/// A window layer that is its own output ([`crate::scene::Scene::set_output`]) as a commit left it.  To bring the
+/// output's picture up to date: move its content by `scroll` rows ([`crate::pool::Ring::scroll`]), then redraw
+/// `damage`; with `full`, redraw the whole of it instead.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OutputFrame {
     pub layer: u64,
+    /// The window's rectangle snapped outward to device rows and columns a subsurface can take (root device px).
     pub rect: Rect,
+    /// How far the content moved since the last commit (negative: up), by full-window scrolls.
     pub scroll: i32,
+    /// What changed, after the scroll, in the output's coordinates (its top-left is 0, 0).
     pub damage: Vec<Rect>,
+    /// A new output, a moved or resized one, or a new scale: nothing of its last picture can be kept.
     pub full: bool,
 }
 
@@ -31,6 +36,7 @@ pub struct Committed {
     pub labels: Arc<Labels>,
     /// The sprite cache as it was at the commit.
     pub sprites: Arc<Sprites>,
+    /// The window layers that are their own outputs, in paint order.
     pub outputs: Vec<OutputFrame>,
 }
 

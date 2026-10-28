@@ -212,6 +212,70 @@ impl Pool {
     }
 }
 
+/// The tallest ring buffer, in rows (a GPU texture limit some compositors hit past it).
+pub const RING_MAX_ROWS: i32 = 8192;
+
+/// The rows of an own-output layer's buffers: each is `height` rows tall and shows the `view_h` rows from `offset`
+/// (the viewport's source).  A full-window scroll moves the offset instead of the pixels, so rows keep their place in
+/// the buffer and only the exposed ones are drawn.  Every buffer of the layer shares these row coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ring {
+    pub height: i32,
+    pub offset: i32,
+}
+
+/// What a scroll did to a ring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RingStep {
+    /// The view moved within the buffer: draw the exposed rows.
+    Moved,
+    /// The view would have left the buffer, so it went back to the middle: draw the whole view there.
+    Rebased,
+}
+
+impl Ring {
+    /// A ring for a view of `view_h` rows: `min(2 * view_h, RING_MAX_ROWS)` rows (never fewer than the view), the view
+    /// in the middle.
+    pub fn new(view_h: i32) -> Ring {
+        let v = view_h.max(0);
+        let height = v.saturating_mul(2).min(RING_MAX_ROWS).max(v);
+        Ring {
+            height,
+            offset: (height - v) / 2,
+        }
+    }
+
+    /// The content moved by `dy` rows (negative: up); the view's offset moves by `-dy`.  When the view would leave the
+    /// buffer, the offset goes back to the middle.
+    pub fn scroll(&mut self, dy: i32, view_h: i32) -> RingStep {
+        let v = view_h.max(0);
+        let to = self.offset as i64 - dy as i64;
+        if to >= 0 && to + v as i64 <= self.height as i64 {
+            self.offset = to as i32;
+            RingStep::Moved
+        } else {
+            self.offset = (self.height - v).max(0) / 2;
+            RingStep::Rebased
+        }
+    }
+
+    /// `r`, in the view's coordinates, in the buffer's.
+    pub fn to_buffer(&self, r: Rect) -> Rect {
+        r.translate(0, self.offset)
+    }
+
+    /// The row ranges, `start..end` (empty when `start == end`), more than `view_h / 2` rows above and below the view:
+    /// the shell may release their pages.
+    pub fn punch_rows(&self, view_h: i32) -> [(i32, i32); 2] {
+        let v = view_h.max(0);
+        let margin = v / 2;
+        let above = (self.offset - margin).clamp(0, self.height);
+        let below =
+            (self.offset as i64 + v as i64 + margin as i64).clamp(0, self.height as i64) as i32;
+        [(0, above), (below, self.height)]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,5 +356,67 @@ mod tests {
     fn many_rects_merge_to_the_bounding_box() {
         let rs: Vec<Rect> = (0..40).map(|i| Rect::new(i, 0, 1, 1)).collect();
         assert_eq!(merged(&rs), vec![Rect::new(0, 0, 40, 1)]);
+    }
+
+    #[test]
+    fn ring_rebases_at_its_end() {
+        let mut r = Ring::new(100);
+        assert_eq!((r.height, r.offset), (200, 50));
+        // the content moves up: the view moves down the buffer
+        assert_eq!(r.scroll(-30, 100), RingStep::Moved);
+        assert_eq!(r.offset, 80);
+        assert_eq!(
+            r.to_buffer(Rect::new(0, 70, 10, 30)),
+            Rect::new(0, 150, 10, 30)
+        );
+        assert_eq!(r.scroll(-20, 100), RingStep::Moved);
+        assert_eq!(r.offset, 100, "the view ends at the buffer's last row");
+        assert_eq!(r.scroll(-1, 100), RingStep::Rebased);
+        assert_eq!(r.offset, 50, "back to the middle");
+        // and the other way
+        assert_eq!(r.scroll(50, 100), RingStep::Moved);
+        assert_eq!(r.offset, 0);
+        assert_eq!(r.scroll(1, 100), RingStep::Rebased);
+        assert_eq!(r.offset, 50);
+        // a jump past the whole buffer rebases too
+        assert_eq!(r.scroll(i32::MIN, 100), RingStep::Rebased);
+        assert_eq!(r.scroll(i32::MAX, 100), RingStep::Rebased);
+        assert_eq!(r.offset, 50);
+    }
+
+    #[test]
+    fn ring_punch_rows_outside_the_view() {
+        let mut r = Ring::new(100);
+        // centred: nothing is more than 50 rows away from the view
+        assert_eq!(r.punch_rows(100), [(0, 0), (200, 200)]);
+        r.scroll(-40, 100);
+        assert_eq!(r.offset, 90);
+        assert_eq!(r.punch_rows(100), [(0, 40), (200, 200)]);
+        r.scroll(80, 100);
+        assert_eq!(r.offset, 10);
+        assert_eq!(r.punch_rows(100), [(0, 0), (160, 200)]);
+        // a view at most half the buffer: both sides
+        let mut big = Ring::new(1000);
+        big.height = 4000;
+        big.offset = 1500;
+        assert_eq!(big.punch_rows(1000), [(0, 1000), (3000, 4000)]);
+    }
+
+    #[test]
+    fn ring_caps_at_8192() {
+        let r = Ring::new(5000);
+        assert_eq!((r.height, r.offset), (8192, 1596));
+        assert_eq!(Ring::new(4096).height, 8192);
+        // a view taller than the cap gets a buffer its own height: every scroll rebases
+        let mut tall = Ring::new(9000);
+        assert_eq!((tall.height, tall.offset), (9000, 0));
+        assert_eq!(tall.scroll(-1, 9000), RingStep::Rebased);
+        assert_eq!(
+            Ring::new(0),
+            Ring {
+                height: 0,
+                offset: 0
+            }
+        );
     }
 }
