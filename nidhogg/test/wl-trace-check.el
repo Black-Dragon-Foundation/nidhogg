@@ -6,7 +6,7 @@
 ;;
 ;;   nidhogg -Q --batch -l wl-trace-check.el -f wl-trace-check-batch TRACE RULES
 ;;
-;; RULES is a comma list of: errors acks unconfigured subsurface popup sync grab popup-order dnd.  Exit 0 no
+;; RULES is a comma list of: errors acks unconfigured subsurface popup sync grab popup-order dnd held-reuse viewport.  Exit 0 no
 ;; violation, 1 violations, 2 usage.  Lines that are not trace lines (the test output shares the file) are ignored,
 ;; except by `errors'.
 ;;
@@ -15,13 +15,19 @@
 ;;   popup-order  popups are destroyed topmost first: none before a popup that was made on it
 ;;   dnd          no wl_data_offer.finish without a non-zero set_actions since the offer's last enter; no receive
 ;;                after finish or destroy; wl_data_device.start_drag names a press serial whose release was not seen
+;;   held-reuse   no wl_surface.attach of a wl_buffer that was attached before and has had no release (or destroy)
+;;                since
+;;   viewport     every wp_viewport.set_source standing at a commit lies inside the buffer attached by that commit
+;;                (measured in the buffer's pixels: the buffer scale and transform are not applied, so this is the
+;;                lenient reading)
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'subr-x)
 
-(defconst wl-trace-check-rules '("errors" "acks" "unconfigured" "subsurface" "popup" "sync" "grab" "popup-order" "dnd")
+(defconst wl-trace-check-rules '("errors" "acks" "unconfigured" "subsurface" "popup" "sync" "grab" "popup-order" "dnd"
+    "held-reuse" "viewport")
   "The rule names `wl-trace-check-file' knows.")
 
 (defvar wl-trace-check-counts nil
@@ -99,6 +105,13 @@ Returns a list of strings \"RULE line N: what\", empty when the trace is clean."
         (released (make-hash-table))      ; serial -> t once its button, key or touch point was let go
         (offer-state (make-hash-table))   ; wl_data_offer id -> :entered or :acted
         (offer-dead (make-hash-table))    ; wl_data_offer id -> t after finish or destroy
+        ;; buffers and viewports
+        (buf-held (make-hash-table))      ; wl_buffer id -> t from its attach until its release or destroy
+        (buf-size (make-hash-table))      ; wl_buffer id -> (W . H) of a shm buffer
+        (vp-surface (make-hash-table))    ; wp_viewport id -> wl_surface id
+        (vp-src (make-hash-table))        ; wl_surface id -> (X Y W H) of its standing source rectangle
+        (surf-pending (make-hash-table))  ; wl_surface id -> the wl_buffer id (or :null) attached since its last commit
+        (surf-buf (make-hash-table))      ; wl_surface id -> the wl_buffer id it shows
         ;; deadline rules: each entry is a list, see the rule
         (sub-pending nil)                 ; (DEADLINE PARENT LINE WHAT)
         (popup-pending nil)               ; (DEADLINE XDG WL LINE ACKED)
@@ -152,7 +165,8 @@ Returns a list of strings \"RULE line N: what\", empty when the trace is clean."
                     (setq grabbing (delq gone grabbing))
                     (dolist (tab (list xdg-wl wl-xdg top-xdg popup-xdg sub-child sub-parent parent-of sub-of
                                        cfg-size acked-size acked-once need-buffer attached
-                                       popup-parent popup-live offer-state offer-dead))
+                                       popup-parent popup-live offer-state offer-dead
+                                       buf-held buf-size vp-surface vp-src surf-pending surf-buf))
                       (remhash gone tab))))
                  ;; ---- object graph
                  ((and request (equal msg "get_xdg_surface"))
@@ -203,8 +217,14 @@ Returns a list of strings \"RULE line N: what\", empty when the trace is clean."
                       (when (eq (nth 1 p) id) (setf (nth 4 p) t)))))
                  ;; ---- wl_surface
                  ((and request (equal iface "wl_surface") (equal msg "attach"))
-                  (let ((buf (if (string-prefix-p "nil" args) :null :buffer)))
+                  (let ((buf (if (string-prefix-p "nil" args) :null :buffer))
+                        (bid (cdr (assoc "wl_buffer" refs))))
                     (puthash id buf attached)
+                    (puthash id (or bid :null) surf-pending)
+                    (when bid
+                      (when (gethash bid buf-held)
+                        (bad "held-reuse" n "wl_buffer %d attached again with no release since its last attach" bid))
+                      (puthash bid t buf-held))
                     (when (and (eq buf :buffer) (gethash id wl-xdg)
                                (not (gethash (gethash id wl-xdg) acked-once)))
                       (bad "unconfigured" n "buffer attached to wl_surface %d before its first ack_configure" id))))
@@ -216,6 +236,18 @@ Returns a list of strings \"RULE line N: what\", empty when the trace is clean."
                              id line))
                       (remhash id need-buffer)))
                   (remhash id attached)
+                  ;; viewport: the standing source lies inside the buffer this commit leaves attached
+                  (let ((pending (gethash id surf-pending)))
+                    (when pending
+                      (if (eq pending :null) (remhash id surf-buf) (puthash id pending surf-buf))
+                      (remhash id surf-pending)))
+                  (let ((src (gethash id vp-src)) (size (gethash (gethash id surf-buf) buf-size)))
+                    (when (and src size
+                               (or (< (nth 0 src) -0.001) (< (nth 1 src) -0.001)
+                                   (> (+ (nth 0 src) (nth 2 src)) (+ (car size) 0.001))
+                                   (> (+ (nth 1 src) (nth 3 src)) (+ (cdr size) 0.001))))
+                      (bad "viewport" n "wl_surface %d commits a source %S outside its %dx%d buffer"
+                           id src (car size) (cdr size))))
                   ;; subsurface: the parent committed
                   (setq sub-pending (cl-remove-if (lambda (p) (eq (nth 1 p) id)) sub-pending))
                   ;; popup: acked, then committed
@@ -232,6 +264,27 @@ Returns a list of strings \"RULE line N: what\", empty when the trace is clean."
                     (let (chain (s id))
                       (while (setq s (gethash s parent-of)) (push s chain))
                       (push (list (+ time wl-trace-check-window) (nreverse chain) n id) sync-pending))))
+                 ;; ---- buffers and viewports
+                 ((and (not request) (equal iface "wl_buffer") (equal msg "release"))
+                  (remhash id buf-held))
+                 ((and request (equal iface "wl_buffer") (equal msg "destroy"))
+                  (remhash id buf-held))
+                 ((and request (equal msg "create_buffer")
+                       (string-match "new id wl_buffer[@#]\\([0-9]+\\), -?[0-9]+, \\([0-9]+\\), \\([0-9]+\\)" args))
+                  (puthash (string-to-number (match-string 1 args))
+                           (cons (string-to-number (match-string 2 args)) (string-to-number (match-string 3 args)))
+                           buf-size))
+                 ((and request (equal msg "get_viewport"))
+                  (puthash (cdr (assoc "wp_viewport" refs)) (cdr (assoc "wl_surface" refs)) vp-surface))
+                 ((and request (equal iface "wp_viewport") (equal msg "set_source"))
+                  (let ((s (gethash id vp-surface))
+                        (v (mapcar #'string-to-number (split-string args ", " t))))
+                    (when (and s (= (length v) 4))
+                      (if (< (nth 2 v) 0) (remhash s vp-src) (puthash s v vp-src)))))
+                 ((and request (equal iface "wp_viewport") (equal msg "destroy"))
+                  (let ((s (gethash id vp-surface)))
+                    (when s (remhash s vp-src))
+                    (remhash id vp-surface)))
                  ;; ---- subsurface state
                  ((and request (equal iface "wl_subsurface") (equal msg "set_desync"))
                   (bad "sync" n "wl_subsurface %d set_desync" id))
