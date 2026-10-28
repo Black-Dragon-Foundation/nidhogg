@@ -378,6 +378,46 @@ mod present {
         number(&rec.control(r#"{"cmd":"log","since":1}"#), "next").expect("next")
     }
 
+    /// A waiting pacer's re-arm is recorded, and `present_tree` sends it: a frame callback and an empty commit with
+    /// nothing else (no ack, no buffer), when nothing else is owed.
+    #[test]
+    fn rearm_is_sent_by_present_tree() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let mut shell = rec.open();
+        let id = window(&mut shell);
+        draw(&mut shell, id, 200, 100, &[Rect::new(0, 0, 200, 100)]);
+        wait_buffer_commits(&rec, 1);
+        assert_eq!(shell.present_pacer(id).map(|p| p.0), Some(true), "waits");
+        let callbacks =
+            || number(&rec.control(r#"{"cmd":"outstanding"}"#), "callbacks").expect("callbacks");
+        assert_eq!(callbacks(), 1);
+        let off = shell.commits_off_presenter();
+        let seq = next_seq(&rec);
+        // the window may be shown again: a waiting pacer asks again
+        shell.set_mapped(id, true).unwrap();
+        shell.flush().unwrap();
+        wait_for(&mut shell, |e| {
+            e.kind == NHSHELL_EV_FRAME_READY && e.window == id
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(callbacks(), 1, "recorded, not sent");
+        assert_eq!(next_seq(&rec), seq, "no commit yet");
+        assert!(!shell.present_tree(id).unwrap());
+        shell.flush().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while callbacks() < 2 {
+            assert!(Instant::now() < deadline, "no re-armed callback");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let log = rec.control(&format!(r#"{{"cmd":"log","since":{seq}}}"#));
+        let commits: Vec<&str> = log.split("{\"ack_serial\":").skip(1).collect();
+        assert_eq!(commits.len(), 1, "{log}");
+        assert!(commits[0].starts_with("null"), "no ack: {log}");
+        assert!(commits[0].contains("\"buffer\":null"), "{log}");
+        assert!(commits[0].contains("\"frame_cb\":true"), "{log}");
+        assert_eq!(shell.commits_off_presenter(), off);
+    }
+
     /// The present path's rule, one case per row of its table (content, the content ack and its eligibility, owed
     /// state, the gate, the publish condition, and the three branches), on a three-level tree.
     #[test]

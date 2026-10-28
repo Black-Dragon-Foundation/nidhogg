@@ -204,6 +204,42 @@ fn commit(shell: &mut WaylandShell, id: u64) {
     shell.flush().unwrap();
 }
 
+/// Present root `id`'s tree: the recorded state goes out with its commits.
+fn present(shell: &mut WaylandShell, id: u64) {
+    shell.present_tree(id).unwrap();
+    shell.flush().unwrap();
+}
+
+/// The recorder's next commit number.
+fn next_seq(rec: &Recorder) -> u64 {
+    let log = rec.control(r#"{"cmd":"log","since":1}"#);
+    let at = log.find("\"next\":").expect("next") + "\"next\":".len();
+    log[at..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .unwrap()
+}
+
+/// The commits the recorder logged from `seq` on, one text each (sorted keys: `ack_serial` opens each).
+fn commits_since(rec: &Recorder, seq: u64) -> Vec<String> {
+    rec.control(&format!(r#"{{"cmd":"log","since":{seq}}}"#))
+        .split("{\"ack_serial\":")
+        .skip(1)
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The commits of surface `id` from `seq` on.
+fn commits_of(rec: &Recorder, seq: u64, id: u64) -> Vec<String> {
+    let key = format!("\"surface\":{id},");
+    commits_since(rec, seq)
+        .into_iter()
+        .filter(|c| c.contains(&key))
+        .collect()
+}
+
 #[allow(clippy::module_inception)]
 mod child {
     use super::*;
@@ -251,14 +287,14 @@ mod child {
         let order = |first: u64, second: u64| format!("\"children\":[{first},{second}]");
         rec.wait_node(parent, |n| n.contains(&order(a, b)));
         shell.stack(a, b, true).unwrap();
-        commit(&mut shell, parent);
+        present(&mut shell, parent);
         rec.wait_node(parent, |n| n.contains(&order(b, a)));
         shell.stack(a, b, false).unwrap();
-        commit(&mut shell, parent);
+        present(&mut shell, parent);
         rec.wait_node(parent, |n| n.contains(&order(a, b)));
         // sibling 0 is the parent: below it is the bottom
         shell.stack(b, 0, false).unwrap();
-        commit(&mut shell, parent);
+        present(&mut shell, parent);
         rec.wait_node(parent, |n| n.contains(&order(b, a)));
     }
 
@@ -272,11 +308,11 @@ mod child {
             .set_input_region(c, &[Rect::new(10, 10, 80, 40)])
             .unwrap();
         // a sync child's commit applies with its parent's
-        commit(&mut shell, parent);
+        present(&mut shell, parent);
         rec.wait_node(c, |n| n.contains("\"input_region\":[[10,10,80,40]]"));
         // none at all: the whole surface again
         shell.set_input_region(c, &[]).unwrap();
-        commit(&mut shell, parent);
+        present(&mut shell, parent);
         rec.wait_node(c, |n| n.contains("\"input_region\":null"));
     }
 
@@ -290,7 +326,7 @@ mod child {
         commit(&mut shell, parent);
         rec.wait_node(c, |n| n.contains("\"mapped\":true"));
         shell.set_mapped(c, false).unwrap();
-        commit(&mut shell, parent);
+        present(&mut shell, parent);
         let n = rec.wait_node(c, |n| n.contains("\"mapped\":false"));
         assert!(n.contains("\"buffer\":null"), "{n}");
     }
@@ -529,11 +565,13 @@ mod child {
         shell.present_bare(root).unwrap();
         rec.wait_node(root, |n| n.contains(&order(b, a)));
 
-        // input region (the child commits it itself; the root's commit applies it)
+        // input region (recorded: the child's commit carries it, the root's applies it)
         shell
             .set_input_region(a, &[Rect::new(10, 10, 80, 40)])
             .unwrap();
         assert!(owed(&mut shell));
+        still(&rec, a, |n| n.contains("\"input_region\":null"));
+        shell.present_bare(a).unwrap();
         still(&rec, a, |n| n.contains("\"input_region\":null"));
         shell.present_bare(root).unwrap();
         rec.wait_node(a, |n| n.contains("\"input_region\":[[10,10,80,40]]"));
@@ -542,6 +580,7 @@ mod child {
         shell.set_mapped(a, false).unwrap();
         assert!(owed(&mut shell));
         still(&rec, a, |n| n.contains("\"mapped\":true"));
+        shell.present_bare(a).unwrap();
         shell.present_bare(root).unwrap();
         rec.wait_node(a, |n| n.contains("\"mapped\":false"));
         assert!(!owed(&mut shell));
@@ -614,5 +653,162 @@ mod child {
         // no buffer of its own, but paced: it shows the child's
         assert!(last.contains("\"buffer\":null"), "{last}");
         assert!(last.contains("\"frame_cb\":true"), "{last}");
+    }
+
+    /// A child's move is recorded: nothing goes out until the tree presents, and then it applies with that commit.
+    #[test]
+    fn recorded_position_applies_with_the_tree_commit() {
+        let rec = Recorder::start();
+        let mut shell = rec.open();
+        let root = window(&mut shell);
+        let c = child(&mut shell, root, 40, 30);
+        draw(&mut shell, c, 100, 60);
+        shell.present_bare(root).unwrap();
+        rec.wait_node(c, |n| {
+            n.contains("\"mapped\":true") && n.contains("\"position\":[40,30]")
+        });
+        let seq = next_seq(&rec);
+        shell.set_position(c, 70, 10).unwrap();
+        shell.flush().unwrap();
+        still(&rec, c, |n| n.contains("\"position\":[40,30]"));
+        assert!(commits_since(&rec, seq).is_empty(), "recorded, not sent");
+        assert!(!shell.present_tree(root).unwrap(), "bare commits only");
+        shell.flush().unwrap();
+        rec.wait_node(c, |n| n.contains("\"position\":[70,10]"));
+        assert_eq!(commits_of(&rec, seq, c).len(), 1, "the child's commit");
+        assert!(!commits_of(&rec, seq, root).is_empty(), "the root's");
+    }
+
+    /// Moves, raises, regions, hides and alpha send nothing on their own: every commit of the tree is
+    /// `present_tree`'s, and it applies all of them.
+    #[test]
+    fn no_commit_outside_present_tree() {
+        let rec = Recorder::start();
+        let mut shell = rec.open();
+        let root = window(&mut shell);
+        let a = child(&mut shell, root, 0, 0);
+        let b = child(&mut shell, root, 10, 10);
+        draw(&mut shell, a, 100, 60);
+        draw(&mut shell, b, 100, 60);
+        shell.present_bare(root).unwrap();
+        rec.wait_node(b, |n| n.contains("\"mapped\":true"));
+        rec.wait_node(root, |n| n.contains(&format!("\"children\":[{a},{b}]")));
+        // the setup's own commits went through the host-driven calls
+        let off = shell.commits_off_presenter();
+        let seq = next_seq(&rec);
+        shell.set_position(a, 30, 20).unwrap();
+        shell.stack(a, b, true).unwrap();
+        shell.set_input_region(b, &[Rect::new(5, 5, 9, 9)]).unwrap();
+        shell.set_mapped(b, false).unwrap();
+        shell.set_alpha(a, u32::MAX / 2).unwrap();
+        shell.set_alpha(root, u32::MAX / 2).unwrap();
+        shell
+            .set_input_region(root, &[Rect::new(0, 0, 150, 80)])
+            .unwrap();
+        shell.set_geometry(root, 0, 0, 200, 100).unwrap();
+        shell.set_mapped(root, true).unwrap();
+        shell.flush().unwrap();
+        drain(&mut shell);
+        assert!(commits_since(&rec, seq).is_empty(), "recorded, not sent");
+        assert_eq!(shell.commits_off_presenter(), off);
+        assert!(!shell.present_tree(root).unwrap());
+        shell.flush().unwrap();
+        rec.wait_node(a, |n| n.contains("\"position\":[30,20]"));
+        rec.wait_node(root, |n| {
+            n.contains(&format!("\"children\":[{b},{a}]"))
+                && n.contains("\"input_region\":[[0,0,150,80]]")
+        });
+        rec.wait_node(b, |n| {
+            n.contains("\"mapped\":false") && n.contains("\"input_region\":[[5,5,9,9]]")
+        });
+        assert_eq!(shell.commits_off_presenter(), off, "all present_tree's");
+        assert!(shell.next_event().is_ok(), "no protocol error");
+    }
+
+    /// Review Focus 4: a destroy takes the tree's mutex.  While another thread holds it (as a presenter between its
+    /// decision and its commit), destroying a child waits for that thread only; nothing is committed on the destroyed
+    /// surfaces after, though their state was recorded, and the root's record that names them is skipped.
+    #[test]
+    fn destroy_under_the_tree_lock() {
+        let rec = Recorder::start();
+        let mut shell = rec.open();
+        let root = window(&mut shell);
+        let c = child(&mut shell, root, 0, 0);
+        let g = child(&mut shell, c, 5, 5);
+        draw(&mut shell, g, 40, 30);
+        draw(&mut shell, c, 100, 60);
+        shell.present_bare(root).unwrap();
+        rec.wait_node(g, |n| n.contains("\"mapped\":true"));
+        shell.set_position(g, 9, 9).unwrap();
+        shell
+            .set_input_region(c, &[Rect::new(1, 1, 10, 10)])
+            .unwrap();
+        shell.stack(c, 0, false).unwrap();
+        shell.flush().unwrap();
+        let seq = next_seq(&rec);
+        let held = shell.hold_tree(c, 200).expect("the tree");
+        let t0 = Instant::now();
+        shell.window_destroy(c).unwrap();
+        let waited = t0.elapsed();
+        held.join().unwrap();
+        assert!(
+            waited >= Duration::from_millis(150),
+            "the destroy waited for the hook: {waited:?}"
+        );
+        assert!(
+            waited < Duration::from_millis(600),
+            "and for nothing else: {waited:?}"
+        );
+        assert!(!shell.present_tree(root).unwrap());
+        shell.flush().unwrap();
+        rec.wait_surfaces(1);
+        drain(&mut shell);
+        for id in [c, g] {
+            assert!(
+                commits_of(&rec, seq, id).is_empty(),
+                "a commit on destroyed {id}: {:?}",
+                commits_since(&rec, seq)
+            );
+        }
+        assert!(!commits_of(&rec, seq, root).is_empty(), "the root's");
+        assert!(matches!(shell.present_bare(c), Err(ShellError::State)));
+    }
+}
+
+mod alpha {
+    use super::*;
+
+    /// The multiplier is recorded: nothing goes out until the tree presents, and a bare commit carries it.
+    #[test]
+    fn recorded_multiplier_applies_bare() {
+        let rec = Recorder::start();
+        let mut shell = rec.open();
+        let root = window(&mut shell);
+        rec.wait_node(root, |n| n.contains("\"mapped\":true"));
+        let seq = next_seq(&rec);
+        shell.set_alpha(root, u32::MAX / 2).unwrap();
+        shell.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(commits_since(&rec, seq).is_empty(), "recorded, not sent");
+        assert!(!shell.present_tree(root).unwrap(), "a bare commit");
+        shell.flush().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let first = loop {
+            if let Some(c) = commits_of(&rec, seq, root).into_iter().next() {
+                break c;
+            }
+            assert!(Instant::now() < deadline, "no commit");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(first.contains("\"buffer\":null"), "{first}");
+        assert!(first.contains("\"frame_cb\":false"), "{first}");
+        let at = first.find("\"alpha\":").expect("an alpha") + "\"alpha\":".len();
+        let alpha: f64 = first[at..]
+            .split([',', '}'])
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!((alpha - 0.5).abs() < 0.01, "alpha {alpha}");
     }
 }
