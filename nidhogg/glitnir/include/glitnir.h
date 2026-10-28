@@ -119,7 +119,9 @@ int32_t glitnir_damage_all (uint64_t frame);
 
 /* WINDOW's pixels in AREA moved vertically by DY on FRAME (the host copied them); EXPOSED is the part of AREA the move
    left stale.  Both rectangles are damaged, and a scene with a window layer WINDOW damages that layer's rectangle at
-   the next commit.  */
+   the next commit.  When FRAME is a root and WINDOW its own output (glitnir_layer_set_output) and AREA holds the whole
+   window, the move is instead the output's scroll: EXPOSED is damaged, damage drawn before moves with the pixels, and
+   only the part of AREA outside the window is damaged.  */
 int32_t glitnir_scroll (uint64_t frame, uint64_t window, GlitnirRect area, int32_t dy, GlitnirRect exposed);
 
 /* Take FRAME's damage: *OUT points to *N rectangles, valid until FRAME's next glitnir_damage_pending or
@@ -193,6 +195,14 @@ int32_t glitnir_layer_remove (uint64_t root, uint64_t id);
 
 /* Set layer ID's chrome; NULL: none.  GLITNIR_E_ARG for an unknown id.  */
 int32_t glitnir_layer_set_chrome (uint64_t root, uint64_t id, const GlitnirChrome *chrome);
+
+/* Make window layer LAYER its own output (OWN non-zero: the shell shows it on a surface of its own), or a part of its
+   frame's again.  It is an output at a commit while it is visible and right under ROOT's frame layer.  Its rectangle
+   is snapped outward to the device rows and columns a subsurface can take; scene damage inside the window goes to the
+   output only, and the snapped overlap with its neighbours to both.  An output that goes or moves damages its old
+   rectangle on the frame.  The outputs reach the shell through the Rust API's snapshot.  GLITNIR_E_ARG for an unknown
+   layer or one that is not a window; GLITNIR_E_STATE for a fifth output of ROOT.  */
+int32_t glitnir_layer_set_output (uint64_t root, uint64_t layer, uint32_t own);
 
 /* Raise (lower) layer ID to the top (bottom) of its parent's children.  GLITNIR_E_ARG for an unknown id.  */
 int32_t glitnir_stack_raise (uint64_t root, uint64_t id);

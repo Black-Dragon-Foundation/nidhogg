@@ -173,7 +173,7 @@ impl TargetView<'_> {
 }
 
 /// A − B: up to four rectangles (the rows above and below B, then the columns beside it), empty ones dropped.
-fn subtract(a: Rect, b: Rect) -> impl Iterator<Item = Rect> {
+pub(crate) fn subtract(a: Rect, b: Rect) -> impl Iterator<Item = Rect> {
     let i = a.intersect(&b);
     let parts = if i.is_empty() {
         [a, Rect::default(), Rect::default(), Rect::default()]

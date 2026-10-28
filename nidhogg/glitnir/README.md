@@ -60,6 +60,18 @@ caller-owned `Composer` (shadow tiles and per-root tallies) and takes no lock, s
 host goes on drawing. Frame-time records have their own lock, and any thread may record. `glitnir_compose` composes
 the root's latest snapshot with one composer for the process.
 
+**Own outputs.** `glitnir_layer_set_output` makes a window layer right under the root's frame layer its own output
+(at most 4 per root): the shell shows it on a surface of its own. The host gives the window's exact rectangle; the
+commit snaps it outward to the rows and columns a subsurface can take at the root's scale (`snap::outward`, stable
+rounding) and lists the output in the snapshot (`Committed::outputs`: rectangle, scroll, damage in its own
+coordinates, `full` when nothing of its last picture can be kept). Scene damage inside the window goes to the output
+only; the snapped rectangle's overlap with the neighbours goes to both. A `glitnir_scroll` whose area holds the whole
+window becomes the output's scroll distance plus its exposed rows, and damage drawn before it moves with the pixels;
+any other scroll stays damage. An output that goes (demoted, hidden, removed) or moves damages its old rectangle on
+the frame. `pool::Ring` is the output buffers' row arithmetic: buffers `min(2·view, 8192)` rows tall, a scroll moves
+the view's offset and rebases to the middle at the buffer's end, and `punch_rows` names the rows more than half a
+view away, whose pages the shell may release.
+
 The `pixman-oracle` feature (Linux; `build.rs` links the system's `pixman-1`) adds the test that compares the
 kernels with pixman; `check.sh` runs it on Linux.
 
