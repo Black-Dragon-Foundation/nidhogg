@@ -1262,3 +1262,44 @@ nhg_export! {
         unsafe { crate::bell::put(&token, buf, cap, len) }
     }
 }
+
+// ---- Session restore (`session.rs`) ---------------------------------------------------------------------------------
+
+nhg_export! {
+    /// Open the compositor's session for `reason` (`NHG_SESSION_LAUNCH`, `_RECOVER` or `_RESTORE`): `id` (`id_len`
+    /// bytes, empty or null for none) is the saved session's id, else a new session is asked for.  An open session is
+    /// dropped first.  The answer comes as an `NHG_ACT_SESSION`.  `NHG_E_UNSUPPORTED` without the protocol.  Neither
+    /// reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `id` is null (with `id_len` 0) or holds `id_len` readable bytes.
+    fn nhg_session_open(d: *mut NhgDisplay, id: *const c_char, id_len: usize, reason: u32) -> i32 |state| {
+        // SAFETY: null or `id_len` readable bytes, valid for the call (the caller's promise).
+        let id = unsafe { window::text(id, id_len) }?;
+        crate::session::open(state, id, reason)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// The open session's id: NUL-terminated into `buf` (`cap` bytes), its length into `*len`.  `NHG_E_STATE` before
+    /// the compositor has answered, `NHG_E_TOO_SMALL`.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `buf` is null or holds `cap` writable bytes; `len` is null or writable.
+    fn nhg_session_id(d: *mut NhgDisplay, buf: *mut c_char, cap: usize, len: *mut usize) -> i32 |state| {
+        let id = crate::session::id(state)?;
+        // SAFETY: `buf` and `len` are null or valid (the caller's promise).
+        unsafe { crate::bell::put(&id, buf, cap, len) }
+    }
+}
+
+nhg_export! {
+    /// Take `window` out of the session, so the compositor forgets its name.  1 when it was named, else 0.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_session_remove(d: *mut NhgDisplay, window: u64) -> i32 |state| {
+        Ok(i32::from(crate::session::remove(state, window)?))
+    }
+}

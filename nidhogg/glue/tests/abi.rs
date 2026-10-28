@@ -754,6 +754,37 @@ PROTO (nhg_activation_token, int32_t (NhgDisplay *, uint64_t, uint32_t, char *, 
     }
 
     #[test]
+    fn session_header_matches() {
+        use nhglue::ffi::{nhg_session_id, nhg_session_open, nhg_session_remove};
+        use nhglue::session::*;
+        let rows: &[(&str, i64)] = &[
+            ("NHG_SESSION_LAUNCH", NHG_SESSION_LAUNCH.into()),
+            ("NHG_SESSION_RECOVER", NHG_SESSION_RECOVER.into()),
+            ("NHG_SESSION_RESTORE", NHG_SESSION_RESTORE.into()),
+            ("NHG_ACT_SESSION", NHG_ACT_SESSION.into()),
+            ("NHG_SESSION_CREATED", NHG_SESSION_CREATED.into()),
+            ("NHG_SESSION_RESTORED", NHG_SESSION_RESTORED.into()),
+            ("NHG_SESSION_REPLACED", NHG_SESSION_REPLACED.into()),
+        ];
+        let decls = "\
+#define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
+PROTO (nhg_session_open, int32_t (NhgDisplay *, const char *, size_t, uint32_t));
+PROTO (nhg_session_id, int32_t (NhgDisplay *, char *, size_t, size_t *));
+PROTO (nhg_session_remove, int32_t (NhgDisplay *, uint64_t));";
+        let _: unsafe extern "C" fn(*mut NhgDisplay, *const c_char, usize, u32) -> i32 =
+            nhg_session_open;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, *mut c_char, usize, *mut usize) -> i32 =
+            nhg_session_id;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_session_remove;
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe(decls, &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+    }
+
+    #[test]
     fn version_is_one_and_null_is_refused() {
         let mut v = 0u32;
         // SAFETY: `v` is a writable u32.
