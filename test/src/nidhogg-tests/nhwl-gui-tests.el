@@ -1121,6 +1121,7 @@ The shell's records reach Lisp (the monitors-changed hook) only through the inpu
 
 (ert-deftest nhwl-gui/stats-after-typing ()
   "`glitnir-stats' answers on a shell frame with the keys budgets.sh reads."
+  :tags '(both-modes)
   (skip-unless (nhwl-gui--live-p))
   ;; the cursor blinks on: its paints draw the cursor (damage), and stay out of the key series
   (switch-to-buffer "*scratch*")
@@ -1141,6 +1142,7 @@ The shell's records reach Lisp (the monitors-changed hook) only through the inpu
 
 (ert-deftest nhwl-gui/stats-key-series-only-keys ()
   "S6: `:key-to-commit-ms' counts the paints that show a key only: the cursor's blinks stay out of it."
+  :tags '(both-modes)
   (skip-unless (nhwl-gui--recorder-p))
   (nhwl-gui--with-blink
    0.1
@@ -1856,6 +1858,7 @@ Redisplay is held until the move is out: the redisplay after a move redraws the 
   "A key that draws nothing leaves no stale key time: the next key's paint is measured from its own key.
 The key is read and dropped (no command, which would update the window and redraw the cursor), with blink off and the
 echo area empty."
+  :tags '(both-modes)
   (skip-unless (nhwl-gui--live-p))
   (skip-unless (nhwl-gui--recorder-p))
   (nhwl-gui--with-blink
