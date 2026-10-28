@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::abi::{NHG_E_NOMEM, NHG_E_STATE};
 
-/// [`NhgFrameGeom::flags`]: the layer's rectangle or chrome changed (a child frame's, as C's layer update says).
+/// [`NhgFrameGeom::flags`]: the layer's rectangle or chrome changed (a child frame's, as `child::layer` says).
 pub const NHG_GEOM_LAYER_CHANGED: u32 = 1;
 /// [`NhgFrameGeom::flags`]: the backing starts over, in the background colour, keeping nothing (C has no surface).
 pub const NHG_GEOM_FRESH: u32 = 2;
@@ -85,6 +85,8 @@ pub struct NhgFrameGeom {
     pub flags: u32,
     /// The Glitnir layer in the backing: all of it, or a child frame's native area inside its shadow margin.
     pub layer: NhgRect,
+    /// The frame's shell window (0: none): `nhg_layer_ensure` lays a child frame's layer out from it (`child.rs`).
+    pub window: u64,
 }
 
 impl NhgFrameGeom {

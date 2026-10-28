@@ -13,11 +13,14 @@
 //! and what else C paints from is pulled as one hash (`nhg_csd_paint`), the native size is pulled at each paint, and
 //! the toplevel's states are the glue's own configure state.  Hit tests use the native size of the last paint, the
 //! size the surface shows.
+//!
+//! A child frame has no title bar: its border is the shadow margin its chrome needs (`child.rs` lays it out through
+//! `nhg_csd_layout`, and its publish step runs inside `nhg_csd_paint`).
 
 use crate::action::{NHG_ACT_DELETE, NHG_ACT_TITLE_BAR, NhgAction};
 use crate::backing::NhgRect;
 use crate::display::Display;
-use crate::frame::NHG_FACT_CSD;
+use crate::frame::{NHG_FACT_CSD, NHG_FRAME_CHILD};
 use crate::guard::GlueError;
 use nhshell::api::{
     NHSHELL_CURSOR_DEFAULT, NHSHELL_CURSOR_RESIZE_EW, NHSHELL_CURSOR_RESIZE_NESW,
@@ -372,6 +375,10 @@ pub fn layout(
     if s120 > MAX_S120 {
         return Err(GlueError::Arg);
     }
+    // a child frame's border is its shadow margin
+    if state.frame(window)?.flags & NHG_FRAME_CHILD != 0 {
+        return crate::child::layout(state, window, s120);
+    }
     // the window's own answer: the compositor may grant one window server decorations and refuse another
     let ssd = state.backend().window_ssd(window);
     let f = state.frame_mut(window)?;
@@ -406,17 +413,19 @@ pub fn layout(
         (c.m, c.strip, c.l, c.t, c.r, c.b) = new;
         c.painted = None;
     }
-    Ok((
-        changed,
-        NhgCsdLayout {
-            l: c.l,
-            t: c.t,
-            r: c.r,
-            b: c.b,
-            strip: c.strip,
-            on: u32::from(c.on),
-        },
-    ))
+    let lay = NhgCsdLayout {
+        l: c.l,
+        t: c.t,
+        r: c.r,
+        b: c.b,
+        strip: c.strip,
+        on: u32::from(c.on),
+    };
+    // the native area moved inside the surface: the child frames follow
+    if changed {
+        crate::child::follow_parent(state, window);
+    }
+    Ok((changed, lay))
 }
 
 /// `window`'s offsets around the native area: L, T, R, B.
@@ -435,6 +444,8 @@ pub fn paint(
     look: u64,
 ) -> Result<Option<NhgCsdPaint>, GlueError> {
     check_size(native_w, native_h)?;
+    // a child frame's position and input region (`child.rs`)
+    crate::child::sync(state, window, native_w, native_h);
     let (backend, style, f) = state.csd_parts(window)?;
     let states = f.cfg.states;
     let c = &mut f.csd;
@@ -672,5 +683,26 @@ impl Csd {
     /// The button under the pointer and the armed one (`NHG_CSD_*`, 0: none).
     pub fn buttons_state(&self) -> (u32, u32) {
         (self.hover, self.down)
+    }
+}
+
+impl Csd {
+    /// The border around the native area (L, T, R, B) and the scale times 120 of the last layout (0: none yet).
+    pub(crate) fn border(&self) -> ([i32; 4], u32) {
+        (self.offsets(), self.s120)
+    }
+
+    /// A child frame's border (`child.rs`): its shadow margin `m` (L, T, R, B) at `s120`, and no title bar.  Whether
+    /// it changed.
+    pub(crate) fn set_margins(&mut self, s120: u32, m: [i32; 4]) -> bool {
+        self.s120 = s120;
+        self.on = false;
+        let changed = m != self.offsets() || self.strip != 0 || self.m != 0;
+        if changed {
+            (self.m, self.strip) = (0, 0);
+            [self.l, self.t, self.r, self.b] = m;
+            self.painted = None;
+        }
+        changed
     }
 }
