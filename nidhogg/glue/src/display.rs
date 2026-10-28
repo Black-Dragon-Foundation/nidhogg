@@ -58,6 +58,8 @@ pub struct Display {
     pub(crate) scroll: crate::scroll::Scroll,
     /// The drop target (`dnd.rs`).
     pub(crate) dnd: crate::dnd::Dnd,
+    /// The live touch points (`touch.rs`).
+    pub(crate) touch: crate::touch::Touch,
 }
 
 impl Drop for Display {
@@ -94,6 +96,7 @@ impl NhgDisplay {
                 csd_style: Default::default(),
                 scroll: Default::default(),
                 dnd: Default::default(),
+                touch: Default::default(),
             }),
         }
     }
@@ -179,6 +182,7 @@ impl Display {
     /// Forget `window`: its frame goes, and calls naming it are refused until it is registered again.
     pub fn forget(&mut self, window: u64) -> Result<(), GlueError> {
         self.frames.remove(&window).ok_or(GlueError::State)?;
+        self.touch.forget(window);
         self.forgotten.insert(window);
         self.dnd.forget(window);
         Ok(())

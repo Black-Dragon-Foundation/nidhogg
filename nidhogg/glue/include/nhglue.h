@@ -721,6 +721,22 @@ int32_t nhg_dnd_status (NhgDisplay *d, uint32_t action, uint32_t time_ms);
    DROP, whatever happened to the data.  */
 int32_t nhg_dnd_finish (NhgDisplay *d, int32_t success, uint32_t time_ms);
 
+/* Touch and pinch.  NHG_ACT_TOUCH: CODE the point's local id (the glue counts them; they identify a point to Lisp),
+   FLAGS NHG_TOUCH_*, X, Y the point's position in device pixels in the window's surface (a BEGIN, an END, a CANCEL).
+   An UPDATE (sent only when the point moved by a whole pixel) has no position: its TEXT holds the window's live points,
+   oldest first, as LEN / sizeof (NhgTouchPoint) NhgTouchPoint values (copy them out; the text is not aligned).  The
+   glue forgets a forgotten window's points without an action.
+   NHG_ACT_PINCH (begin and update; the end gives none): DX, DY this update's motion of the fingers' centre in device
+   pixels, SCALE the cumulative scale since the begin (1.0 at the begin), X, Y the pointer's position, MODS the
+   keyboard's, TEXT an unaligned double, this update's angle in radians, clockwise.  */
+#define NHG_ACT_TOUCH         39
+#define NHG_ACT_PINCH         40
+#define NHG_TOUCH_BEGIN       0
+#define NHG_TOUCH_UPDATE      1
+#define NHG_TOUCH_END         2
+#define NHG_TOUCH_CANCEL      3
+typedef struct { int32_t x, y, id; } NhgTouchPoint;
+
 #ifdef __cplusplus
 }
 #endif
