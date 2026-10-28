@@ -35,6 +35,14 @@ if [ $rc = 0 ] && [ "$nfiles" -ge 2 ] && [ "$nstart" = $((nfiles * 2)) ] && grep
   ok gui-sh-smoke-restarts-per-file
 else bad gui-sh-smoke-restarts-per-file "rc=$rc files=$nfiles starts=$nstart: $out"; fi
 
+# gui-sh-portal-fake-and-none: a dry run starts the fake portal only with --portal fake; another value is refused
+out=$(GLITNIR_GUI_DRY=1 bash "$gui" --prefix "$prefix" --portal fake 2>&1); rc=$?
+out2=$(GLITNIR_GUI_DRY=1 bash "$gui" --prefix "$prefix" --portal none 2>&1); rc2=$?
+out3=$(GLITNIR_GUI_DRY=1 bash "$gui" --prefix "$prefix" --portal bogus 2>&1); rc3=$?
+if [ $rc = 0 ] && grep -q 'fake-portal-serve' <<< "$out" && [ $rc2 = 0 ] && ! grep -q 'fake-portal' <<< "$out2" \
+   && [ $rc3 = 2 ] && grep -q -- '--portal is fake or none' <<< "$out3"; then ok gui-sh-portal-fake-and-none
+else bad gui-sh-portal-fake-and-none "rc=$rc/$rc2/$rc3: $out / $out2 / $out3"; fi
+
 # kill_case TEST COMPOSITOR PROCESS [GUI.SH ARGS]: SIGKILL Nidhogg in a run on COMPOSITOR; gui.sh exits 1 within 10 s and
 # leaves no socket under the run's XDG_RUNTIME_DIR (GLITNIR_GUI_SOCKDIR, a host directory mounted into the container).
 # The compositor (PROCESS) is waited for by gui.sh's own cleanup before it exits, so none outlives the run.  gui.sh's

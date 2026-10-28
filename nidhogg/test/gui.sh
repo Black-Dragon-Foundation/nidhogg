@@ -7,8 +7,12 @@
 #                       [--recorder-profile sway|kwin|mutter] [--scale S] [--size WxH] [--monitors N]
 #                       [--select REGEXP] [--tests DIR] [--daemon] [--container DISTRO] [--wayland-debug FILE]
 #                       [--env K=V]... [--force-csd] [--timeout SEC] [--smoke] [--files GLOB] [--tag TAG]
-#                       [--trace-check RULES]
+#                       [--trace-check RULES] [--portal fake|none]
 #
+#   --portal fake|none  fake: a scripted org.freedesktop.portal.Desktop (FileChooser) on the run's session bus, served
+#                       by a second (daemon) Nidhogg running test/src/nidhogg-tests/fake-portal.el; the rows set its
+#                       replies and read its log with gui-runner-portal-script / gui-runner-portal-log.  none
+#                       (default): no portal, as before
 #   --prefix DIR        an unpacked Nidhogg (DIR/bin/nidhogg)
 #   --compositor C      sway (default: headless sway, wlroots pixman renderer), mutter (headless mutter) or recorder
 #                       (nh-recorder, our own recording compositor, one output).  The T3 compositors: kwin (KWin's
@@ -59,7 +63,7 @@ IMAGE_fedora_45=registry.fedoraproject.org/fedora@sha256:6430abb162172c052b6ac9c
 usage() { sed -n '2,/^# Temp files/s/^# \{0,1\}//p' "$self" >&2; exit 2; }
 
 prefix= scale=1 size=2880x1800 monitors=1 select= tests= daemon=0 container= wdebug= timeout=300
-compositor=sway recorder=${REC:-} rprofile=sway tracecheck=
+compositor=sway recorder=${REC:-} rprofile=sway tracecheck= portal=none
 envs=() csd=0 smoke=0 files=${GLITNIR_GUI_FILES:-} tag=${GLITNIR_GUI_TAG:-}
 while [ $# -gt 0 ]; do
   case $1 in
@@ -82,6 +86,7 @@ while [ $# -gt 0 ]; do
     --smoke) smoke=1; shift ;;
     --files) files=${2:-}; shift 2 ;;
     --tag) tag=${2:-}; shift 2 ;;
+    --portal) portal=${2:-}; shift 2 ;;
     --inner) shift ;;   # internal: the part that runs under dbus-run-session
     -h|--help) usage ;;
     *) echo "gui.sh: unknown argument $1" >&2; usage ;;
@@ -98,6 +103,7 @@ W=${size%x*} H=${size#*x}
 case $compositor in sway|mutter|kwin|labwc|recorder) ;; *) echo "gui.sh: --compositor is sway, mutter, kwin, labwc or recorder" >&2; exit 2 ;; esac
 [ "$compositor" != kwin ] || [ "$monitors" = 1 ] || { echo "gui.sh: KWin's virtual backend has one output (--monitors 1)" >&2; exit 2; }
 case $rprofile in sway|kwin|mutter|xdg-v2) ;; *) echo "gui.sh: --recorder-profile is sway, kwin, mutter or xdg-v2" >&2; exit 2 ;; esac
+case $portal in fake|none) ;; *) echo "gui.sh: --portal is fake or none" >&2; exit 2 ;; esac
 [ -z "$tracecheck" ] || [ -n "$wdebug" ] || { echo "gui.sh: --trace-check needs --wayland-debug" >&2; exit 2; }
 if [ "$compositor" = recorder ]; then
   [ -n "$recorder" ] && [ -x "$recorder" ] || { echo "gui.sh: nh-recorder not built (--recorder BIN or \$REC: '$recorder')" >&2; exit 2; }
@@ -111,13 +117,13 @@ s120=$(awk -v s="$scale" 'BEGIN { printf "%d", s * 120 + 0.5 }')
 # ---------------------------------------------------------------- in the session (private bus)
 if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
   display=glitnir-gui-$GLITNIR_GUI_PID
-  mpid= epid=
+  mpid= epid= ppid=
   cleanup() {
     # the compositor's peak resident set (VmHWM) while it is still alive
     [ -z "$mpid" ] || \
       echo "gui.sh: $compositor peak RSS: $(sed -n 's/^VmHWM:[[:space:]]*\(.*\)$/\1/p' "/proc/$mpid/status" 2>/dev/null) (scale $scale)"
-    for p in $epid $mpid; do kill "$p" 2>/dev/null; done
-    for p in $epid $mpid; do wait "$p" 2>/dev/null; done
+    for p in $epid $ppid $mpid; do kill "$p" 2>/dev/null; done
+    for p in $epid $ppid $mpid; do wait "$p" 2>/dev/null; done
     # the sockets and files the run left in its XDG dir (dbus makes an empty dbus-1/services), listed after the compositor is gone and before the outer trap removes it
     [ -z "${GLITNIR_GUI_LEFTOVER:-}" ] || find "$XDG_RUNTIME_DIR" -mindepth 1 -not -type d > "$GLITNIR_GUI_LEFTOVER" 2>&1
   }
@@ -217,6 +223,22 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
   runner=$checkout/test/src/nidhogg-tests/gui-runner.el
   err=/dev/stderr; [ -z "$wdebug" ] || err=$wdebug
 
+  if [ "$portal" = fake ]; then
+    # the portal is a daemon Nidhogg on this session bus; the rows (in the frame's Nidhogg) share its script and log
+    export NHWL_FAKE_PORTAL_SCRIPT=$GLITNIR_GUI_RUN/portal-script NHWL_FAKE_PORTAL_LOG=$GLITNIR_GUI_RUN/portal-log \
+      NHWL_FAKE_PORTAL_READY=$GLITNIR_GUI_RUN/portal-ready
+    : > "$NHWL_FAKE_PORTAL_SCRIPT"; : > "$NHWL_FAKE_PORTAL_LOG"
+    env -u WAYLAND_DISPLAY "$prefix/bin/nidhogg" -Q --fg-daemon="$XDG_RUNTIME_DIR/portal-sock" -l "$checkout/test/src/nidhogg-tests/fake-portal.el" \
+      -f fake-portal-serve > "$GLITNIR_GUI_RUN/portal.log" 2>&1 &
+    ppid=$!
+    for _ in $(seq 100); do
+      [ -e "$NHWL_FAKE_PORTAL_READY" ] && break
+      kill -0 "$ppid" 2>/dev/null || break
+      sleep 0.1
+    done
+    [ -e "$NHWL_FAKE_PORTAL_READY" ] || { echo "gui.sh: the fake portal did not own its name:"; cat "$GLITNIR_GUI_RUN/portal.log"; exit 1; }
+  fi
+
   if [ "$daemon" = 1 ]; then
     sock=$XDG_RUNTIME_DIR/emacs/glitnir-gui
     timeout --kill-after=10 "$timeout" "$prefix/bin/nidhogg" -Q --fg-daemon="$sock" -l "$runner" 2> "$err" &
@@ -272,6 +294,7 @@ if [ "${GLITNIR_GUI_DRY:-}" = 1 ]; then
     labwc) echo "labwc   (WLR_BACKENDS=headless; $monitors output(s) of $size, scale $scale by wlr-randr)" ;;
     recorder) echo "$recorder --output ${size}@${s120} --profile $(dirname "$self")/recorder/profiles/$rprofile.json --socket NAME --control CTL" ;;
   esac
+  [ "$portal" != fake ] || echo "$prefix/bin/nidhogg -Q --fg-daemon=XDG_RUNTIME_DIR/portal-sock -l $checkout/test/src/nidhogg-tests/fake-portal.el -f fake-portal-serve   (the portal)"
   echo "$prefix/bin/nidhogg -Q --fullscreen -l $checkout/test/src/nidhogg-tests/gui-runner.el"
   exit 0
 fi
@@ -296,6 +319,7 @@ if [ -n "$container" ]; then
   [ "$csd" = 0 ] || args+=(--force-csd)
   [ -z "$files" ] || args+=(--files "$files")
   [ -z "$tag" ] || args+=(--tag "$tag")
+  [ "$portal" = none ] || args+=(--portal "$portal")
   [ -z "$wdebug" ] || args+=(--wayland-debug /out/wayland-debug.txt)
   [ -z "$tracecheck" ] || args+=(--trace-check "$tracecheck")
   for kv in ${envs[@]+"${envs[@]}"}; do args+=(--env "$kv"); done
@@ -363,7 +387,7 @@ env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u EMACS_SOCKET_NA
   GLITNIR_GUI_INNER=1 GLITNIR_GUI_PID=$$ GLITNIR_GUI_RUN="$run" \
   dbus-run-session -- bash "$self" --prefix "$prefix" --compositor "$compositor" --recorder-profile "$rprofile" ${recorder:+--recorder "$recorder"} --scale "$scale" --size "$size" --monitors "$monitors" \
     --tests "$tests" --timeout "$timeout" ${select:+--select "$select"} ${wdebug:+--wayland-debug "$wdebug"} \
-    ${files:+--files "$files"} ${tag:+--tag "$tag"} \
+    ${files:+--files "$files"} ${tag:+--tag "$tag"} --portal "$portal" \
     $([ "$daemon" = 0 ] || echo --daemon) $([ "$csd" = 0 ] || echo --force-csd) $(for kv in ${envs[@]+"${envs[@]}"}; do echo --env "$kv"; done)
 rc=$?
 if [ -n "$tracecheck" ]; then
