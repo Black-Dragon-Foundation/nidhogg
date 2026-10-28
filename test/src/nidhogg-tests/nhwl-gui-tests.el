@@ -997,9 +997,10 @@ Return the two replies."
 (defun nhwl-gui--last-commit ()
   (car (last (nhwl-gui--toplevel-commits))))
 
-(defun nhwl-gui--pump ()
-  "Let the shell's input events be read and the keyboard queue drained."
-  (let ((deadline (+ (float-time) 0.3)))
+(defun nhwl-gui--pump (&optional seconds)
+  "Let the shell's input events be read and the keyboard queue drained, for SECONDS (default 0.3).
+The shell's records reach Lisp (the monitors-changed hook) only through the input loop."
+  (let ((deadline (+ (float-time) (or seconds 0.3))))
     (while (< (float-time) deadline) (read-event nil nil 0.05))))
 
 (defun nhwl-gui--point (x y)
@@ -1312,11 +1313,6 @@ serial is never acked early, with the old buffer)."
 
 ;;; Monitors (native shells W1 Task 14)
 
-(defun nhwl-gui--pump (seconds)
-  "Read events for SECONDS: the shell's records reach Lisp (the monitors-changed hook) only through the input loop."
-  (let ((end (+ (float-time) seconds)))
-    (while (< (float-time) end) (read-event nil nil 0.05))))
-
 (defun nhwl-gui--wait-ev (pred)
   "Like `nhwl-gui--wait' with PRED, reading events between the tries."
   (nhwl-gui--wait (lambda () (read-event nil nil 0.05) (funcall pred))))
@@ -1625,3 +1621,59 @@ characters go, the mark stays."
             (should e)
             (should (equal (plist-get e :location) (list (round (/ 40 s)) (round (/ 24 s)))))))
       (delete-frame f))))
+
+;;; A real press on a header line or mode line arrives with that posn area (native shells W1, after Task 20)
+
+(defun nhwl-gui--line-frame ()
+  "A new ordinary frame whose only window has a header line and a mode line, drawn."
+  (let ((f (make-frame '((width . 40) (height . 10)))))
+    (with-current-buffer (window-buffer (frame-selected-window f))
+      (setq-local header-line-format " header")
+      (setq-local mode-line-format " mode"))
+    (redisplay t)
+    (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (frame-visible-p f)) 5)
+    (nhwl-gui--pump 0.3)
+    (redisplay t)
+    f))
+
+(defun nhwl-gui--click-line (line area)
+  "Click the middle of LINE (`header' or `mode') of a new frame and check that `down-mouse-1' arrives on AREA."
+  (let* ((f (nhwl-gui--line-frame))
+         (s (frame-scale-factor f)))
+    (unwind-protect
+        (let* ((w (frame-selected-window f))
+               (e (window-pixel-edges w))
+               (b (plist-get (nhwl-gui--last-commit) :buffer))
+               (offx (/ (- (plist-get b :w) (frame-pixel-width f)) 2))
+               (offy (- (plist-get b :h) (frame-pixel-height f) offx))
+               (nx (/ (+ (nth 0 e) (nth 2 e)) 2))
+               (ny (if (eq line 'header)
+                       (+ (nth 1 e) (/ (window-header-line-height w) 2))
+                     (- (nth 3 e) (/ (window-mode-line-height w) 2))))
+               (lx (/ (+ nx offx) s))
+               (ly (/ (+ ny offy) s))
+               (p (posn-at-x-y nx ny f)))
+          ;; Emacs itself puts that point on the line
+          (should (eq (posn-area p) area))
+          (nhwl-gui--point-at lx ly)
+          (gui-runner-recorder '(:cmd "button" :button 272 :state "press"))
+          (let ((seen nil) (deadline (+ (float-time) 2)) ev)
+            (while (and (not ev) (< (float-time) deadline))
+              (let ((x (read-event nil nil 0.05)))
+                (when x (push x seen))
+                (when (and (consp x) (eq (car x) 'down-mouse-1) (eq (posn-area (event-start x)) area))
+                  (setq ev x))))
+            (gui-runner-recorder '(:cmd "button" :button 272 :state "release"))
+            (nhwl-gui--pump 0.3)
+            (unless ev (ert-fail (format "no down-mouse-1 on %S at %S,%S (native %S,%S, offsets %S,%S, scale %S), saw %S"
+                                         area lx ly nx ny offx offy s seen)))
+            (should ev)))
+      (delete-frame f))))
+
+(ert-deftest nhwl-gui/header-line-click-arrives ()
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--click-line 'header 'header-line))
+
+(ert-deftest nhwl-gui/mode-line-click-arrives ()
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--click-line 'mode 'mode-line))
