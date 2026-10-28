@@ -1677,3 +1677,154 @@ characters go, the mark stays."
 (ert-deftest nhwl-gui/mode-line-click-arrives ()
   (skip-unless (nhwl-gui--recorder-p))
   (nhwl-gui--click-line 'mode 'mode-line))
+
+;; Present path S3: the rule at FRAME_READY.  A buffer needs damage or a content ack, a bare commit needs something
+;; owed, and a redisplay that draws nothing commits nothing.
+
+(defun nhwl-gui--toplevel-all-commits (mark)
+  "Every commit of the toplevel since MARK, with or without a buffer."
+  (seq-filter (lambda (c) (equal (plist-get c :role) "toplevel"))
+              (plist-get (gui-runner-recorder (list :cmd "log" :since mark)) :commits)))
+
+(defun nhwl-gui--with-blink (on fn)
+  "Call FN with `blink-cursor-mode' set to ON (a number: the interval), restoring it after."
+  (let ((blink blink-cursor-mode) (interval blink-cursor-interval))
+    (if on
+        (progn (setq blink-cursor-interval on) (blink-cursor-mode 1))
+      (blink-cursor-mode -1))
+    (unwind-protect (funcall fn)
+      (setq blink-cursor-interval interval)
+      (blink-cursor-mode (if blink 1 -1)))))
+
+(defun nhwl-gui--run-key (key)
+  "Send KEY (a string) to the toplevel and run its binding."
+  (gui-runner-recorder (list :cmd "key" :text key))
+  (nhwl-gui--wait (lambda ()
+                    (let ((ev (read-event nil nil 0.1)))
+                      (when (characterp ev)
+                        (setq last-command-event ev)
+                        (command-execute (key-binding (vector ev)) nil (vector ev))
+                        t)))))
+
+(defun nhwl-gui--commit-summary (cs)
+  "Commits CS as (ACK-SERIAL BUFFER-P DAMAGE-COUNT) lists, for assertions that show what went out."
+  (mapcar (lambda (c) (list (nhwl-gui--get c :ack_serial) (and (nhwl-gui--get c :buffer) t)
+                            (length (nhwl-gui--damage c))))
+          cs))
+
+(ert-deftest nhwl-gui/idle-redisplay-commits-nothing ()
+  "Two seconds of forced redisplays that draw nothing commit nothing (each one ends at the backstop)."
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--with-blink
+   nil
+   (lambda ()
+     (switch-to-buffer "*scratch*")
+     (message nil)
+     (redisplay t)
+     (gui-runner-wait-settled)
+     (let ((mark (nhwl-gui--mark)) (end (+ (float-time) 2)))
+       (while (< (float-time) end)
+         (redisplay t)
+         (accept-process-output nil 0.05))
+       (should-not (nhwl-gui--commit-summary (nhwl-gui--toplevel-all-commits mark)))))))
+
+(ert-deftest nhwl-gui/idle-in-the-red-daemon-state-commits-nothing ()
+  "A reopened frame in a daemon with a live Lisp thread: a blinking cursor commits only what it draws, and
+without the blink nothing at all."
+  (skip-unless (and (nhwl-gui--recorder-p) (daemonp)))
+  (let* ((display (getenv "WAYLAND_DISPLAY"))
+         (old (car (nhwl-gui--nhwl-frames)))
+         (new (progn (make-frame-on-display display)
+                     (delete-frame old t)
+                     (car (nhwl-gui--nhwl-frames)))))
+    (select-frame new)
+    (make-thread (lambda () (sleep-for 10)))
+    (gui-runner-wait-settled)
+    (nhwl-gui--with-blink
+     0.1
+     (lambda ()
+       (let ((mark (nhwl-gui--mark)))
+         (sit-for 1.5)
+         (should-not (plist-get (gui-runner-recorder (list :cmd "empty_buffer_commits" :since mark)) :commits)))))
+    (nhwl-gui--with-blink
+     nil
+     (lambda ()
+       (gui-runner-wait-settled)
+       (let ((mark (nhwl-gui--mark)))
+         (sit-for 1.5)
+         (should-not (nhwl-gui--toplevel-all-commits mark)))))))
+
+(ert-deftest nhwl-gui/focus-change-commits-bare ()
+  "A configure that only deactivates the window, under server-side decorations, is acked by a commit with no buffer.
+\(The redisplay the configure asks for redraws the cursor, which is content and may follow with a buffer.)"
+  (skip-unless (and (nhwl-gui--recorder-p) (not (nhwl-gui--csd-p))))
+  (nhwl-gui--with-blink
+   nil
+   (lambda ()
+     (nhwl-gui--windowed)
+     (let* ((size (nhwl-gui--logical-size (nhwl-gui--last-commit)))
+            (mark (nhwl-gui--mark))
+            (serial (plist-get (gui-runner-recorder
+                                (list :cmd "configure" :surface "focused" :size (vconcat size) :states []))
+                               :serial)))
+       (should (nhwl-gui--wait
+                (lambda () (seq-find (lambda (c) (eql (nhwl-gui--get c :ack_serial) serial))
+                                     (nhwl-gui--toplevel-all-commits mark)))
+                3))
+       (sit-for 0.5)
+       (let ((cs (nhwl-gui--commit-summary (nhwl-gui--toplevel-all-commits mark))))
+         (should (equal (seq-filter (lambda (c) (car c)) cs) (list (list serial nil 0)))))))))
+
+(ert-deftest nhwl-gui/child-move-commits-parent-bare ()
+  "A child frame's move reaches the parent first as a commit with no buffer, and the child is at the new place.
+\(Damage the parent had pending follows with a buffer.)"
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--with-blink
+   nil
+   (lambda ()
+     (let* ((s (frame-scale-factor)) (before (nhwl-gui--sub-ids)) (c nil))
+       (unwind-protect
+           (progn
+             (setq c (nhwl-gui--child))
+             (let* ((n (nhwl-gui--child-node before))
+                    (id (plist-get n :id))
+                    (off (nhwl-gui--parent-offset n)))
+               (gui-runner-wait-settled)
+               (let ((mark (nhwl-gui--mark)))
+                 (set-frame-position c 80 60)
+                 (should (nhwl-gui--wait
+                          (lambda ()
+                            (equal (plist-get (nhwl-gui--node id) :position)
+                                   (list (round (/ (+ (car off) 80) s)) (round (/ (+ (cadr off) 60) s)))))
+                          5))
+                 (sit-for 0.3)
+                 (let ((cs (nhwl-gui--commit-summary (nhwl-gui--toplevel-all-commits mark))))
+                   (should (equal (car cs) '(nil nil 0)))))))
+         (when (frame-live-p c) (delete-frame c t)))))))
+
+(ert-deftest nhwl-gui/stats-key-that-draws-nothing ()
+  "A key whose command draws nothing leaves no stale key time: the next key's paint is measured from its own key."
+  (skip-unless (nhwl-gui--live-p))
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--with-blink
+   nil
+   (lambda ()
+     (switch-to-buffer (generate-new-buffer " *nhwl-key-nothing*"))
+     (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
+     (redisplay t)
+     (gui-runner-wait-settled)
+     (let ((map (make-sparse-keymap)))
+       (set-keymap-parent map global-map)
+       (define-key map "q" #'ignore)
+       (use-local-map map))
+     (glitnir-stats nil t)
+     (nhwl-gui--run-key "q")
+     (redisplay t)
+     (sleep-for 0.3)
+     (nhwl-gui--run-key "a")
+     (redisplay t)
+     (gui-runner-wait-settled)
+     (let ((s (glitnir-stats)))
+       (should s)
+       (should (> (plist-get s :count) 0))
+       (should (< (plist-get (plist-get s :latency-ms) :max) 100))))))
