@@ -340,4 +340,88 @@
            '(1000.5 "wl_touch@9.up(22, 1010, 2)")
            '(1001.0 "> wl_data_device@12.start_drag(wl_data_source@50, wl_surface@5, nil, 21)"))))
 
+(ert-deftest wl-trace-check/held-reuse-rule ()
+  ;; a buffer released before it is attached again
+  (should-not (wl-trace-check-test--run
+               '("held-reuse")
+               '(1000.0 "> wl_surface@5.attach(wl_buffer@30, 0, 0)")
+               '(1000.1 "> wl_surface@5.commit()")
+               '(1001.0 "> wl_surface@5.attach(wl_buffer@31, 0, 0)")
+               '(1001.1 "> wl_surface@5.commit()")
+               '(1001.5 "wl_buffer@30.release()")
+               '(1002.0 "> wl_surface@5.attach(wl_buffer@30, 0, 0)")))
+  ;; attached again with no release between
+  (let ((v (wl-trace-check-test--run
+            '("held-reuse")
+            '(1000.0 "> wl_surface@5.attach(wl_buffer@30, 0, 0)")
+            '(1000.1 "> wl_surface@5.commit()")
+            '(1001.0 "> wl_surface@5.attach(wl_buffer@31, 0, 0)")
+            '(1002.0 "> wl_surface@5.attach(wl_buffer@30, 0, 0)"))))
+    (should (= (length v) 1))
+    (should (string-match-p "\\`held-reuse line [0-9]+: wl_buffer 30 attached again" (car v))))
+  ;; a destroyed buffer (its id may come back) and an unselected rule are not flagged
+  (should-not (wl-trace-check-test--run
+               '("held-reuse")
+               '(1000.0 "> wl_surface@5.attach(wl_buffer@30, 0, 0)")
+               '(1000.5 "> wl_buffer@30.destroy()")
+               '(1000.6 "wl_display@1.delete_id(30)")
+               '(1001.0 "> wl_surface@5.attach(wl_buffer@30, 0, 0)")))
+  (should-not (wl-trace-check-test--run
+               '("errors")
+               '(1000.0 "> wl_surface@5.attach(wl_buffer@30, 0, 0)")
+               '(1001.0 "> wl_surface@5.attach(wl_buffer@30, 0, 0)")))
+  ;; a null attach holds nothing
+  (should-not (wl-trace-check-test--run
+               '("held-reuse")
+               '(1000.0 "> wl_surface@5.attach(nil, 0, 0)")
+               '(1001.0 "> wl_surface@5.attach(nil, 0, 0)"))))
+
+(defconst wl-trace-check-test--viewport
+  '((1000.0 "> wl_shm_pool@12.create_buffer(new id wl_buffer@30, 0, 100, 50, 400, 0)")
+    (1000.1 "> wp_viewporter@13.get_viewport(new id wp_viewport@40, wl_surface@5)"))
+  "A 100 x 50 buffer and a viewport on wl_surface 5.")
+
+(ert-deftest wl-trace-check/viewport-rule ()
+  ;; a source inside the buffer attached by the commit
+  (should-not (wl-trace-check-test--run
+               '("viewport")
+               wl-trace-check-test--viewport
+               '(1001.0 "> wp_viewport@40.set_source(10.000000, 5.500000, 90.000000, 44.500000)")
+               '(1001.1 "> wl_surface@5.attach(wl_buffer@30, 0, 0)")
+               '(1001.2 "> wl_surface@5.commit()")))
+  ;; outside it
+  (let ((v (wl-trace-check-test--run
+            '("viewport")
+            wl-trace-check-test--viewport
+            '(1001.0 "> wp_viewport@40.set_source(10.000000, 5.000000, 91.000000, 45.000000)")
+            '(1001.1 "> wl_surface@5.attach(wl_buffer@30, 0, 0)")
+            '(1001.2 "> wl_surface@5.commit()"))))
+    (should (= (length v) 1))
+    (should (string-match-p "\\`viewport line [0-9]+: wl_surface 5 commits a source" (car v))))
+  ;; the buffer changes under a standing source: the next commit is the one that is wrong
+  (let ((v (wl-trace-check-test--run
+            '("viewport")
+            wl-trace-check-test--viewport
+            '(1000.2 "> wl_shm_pool@12.create_buffer(new id wl_buffer@31, 0, 20, 20, 80, 0)")
+            '(1001.0 "> wp_viewport@40.set_source(0.000000, 0.000000, 100.000000, 50.000000)")
+            '(1001.1 "> wl_surface@5.attach(wl_buffer@30, 0, 0)")
+            '(1001.2 "> wl_surface@5.commit()")
+            '(1002.0 "> wl_surface@5.attach(wl_buffer@31, 0, 0)")
+            '(1002.1 "> wl_surface@5.commit()"))))
+    (should (= (length v) 1)))
+  ;; unset (-1) and a destroyed viewport leave nothing to check
+  (should-not (wl-trace-check-test--run
+               '("viewport")
+               wl-trace-check-test--viewport
+               '(1001.0 "> wp_viewport@40.set_source(-1.000000, -1.000000, -1.000000, -1.000000)")
+               '(1001.1 "> wl_surface@5.attach(wl_buffer@30, 0, 0)")
+               '(1001.2 "> wl_surface@5.commit()")))
+  (should-not (wl-trace-check-test--run
+               '("viewport")
+               wl-trace-check-test--viewport
+               '(1001.0 "> wp_viewport@40.set_source(0.000000, 0.000000, 500.000000, 500.000000)")
+               '(1001.05 "> wp_viewport@40.destroy()")
+               '(1001.1 "> wl_surface@5.attach(wl_buffer@30, 0, 0)")
+               '(1001.2 "> wl_surface@5.commit()"))))
+
 ;;; wl-trace-check-gui-tests.el ends here

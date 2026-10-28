@@ -89,7 +89,7 @@ pub fn output(state: &mut State, req: &Value) -> Value {
             );
             let mode = Mode {
                 size: (w, h).into(),
-                refresh: 60_000,
+                refresh: state.pacing.refresh_mhz,
             };
             let ceil = scale120.unwrap_or(120).div_ceil(120) as i32;
             out.change_current_state(
