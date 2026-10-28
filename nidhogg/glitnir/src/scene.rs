@@ -13,12 +13,14 @@
 //! Comparing with the committed scene, rather than logging changes, makes a hide and a show of a layer within one
 //! commit cancel. Ids are unique within a root, whatever their kind.
 
+use crate::committed::Committed;
 use crate::damage::{Damage, Frames};
 use crate::decor::{Anchor, Anchors, Label, Sprites};
 use crate::ffi::{GLITNIR_E_ARG, GLITNIR_E_STATE};
 use crate::geom::Rect;
 use crate::stack::Stack;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// Every root's scene.
 pub type Scenes = BTreeMap<u64, Scene>;
@@ -152,12 +154,11 @@ pub struct Scene {
     stack: Stack,
     /// Layers whose place in the stacking changed since the last commit.
     restacked: BTreeSet<u64>,
-    committed: Vec<Placed>,
+    /// The committed scene, with its labels.
+    snapshot: Arc<Committed>,
     listed: Vec<u64>,
     /// Each window layer's label anchors, layer-local.
     anchors: BTreeMap<u64, Anchors>,
-    /// The labels of the committed scene.
-    labels: Vec<Label>,
 }
 
 impl Scene {
@@ -256,7 +257,12 @@ impl Scene {
 
     /// The labels of the committed scene, in paint order within each window layer.
     pub fn labels(&self) -> &[Label] {
-        &self.labels
+        &self.snapshot.labels
+    }
+
+    /// The committed scene as a snapshot that later changes leave alone.
+    pub fn snapshot(&self) -> Arc<Committed> {
+        Arc::clone(&self.snapshot)
     }
 
     /// The labels the visible window layers of PLACED have now.
@@ -358,27 +364,31 @@ impl Scene {
 
     /// The committed scene's visible layers in paint order.
     pub fn committed(&self) -> &[Placed] {
-        &self.committed
+        &self.snapshot.layers
     }
 
     /// Commit ROOT's scene: take its frames' damage from FRAMES, damage what changed since the last commit, clipped
     /// to the root's frame layer, and return it (ROOT's committed damage, kept in FRAMES until the next commit).
     pub fn commit<'a>(&mut self, root: u64, frames: &'a mut Frames) -> &'a [Rect] {
-        self.commit_with(root, frames, &Sprites::new())
+        self.commit_with(root, frames, &Arc::new(Sprites::new()))
     }
 
     /// [`Scene::commit`] with the sprite cache the labels are placed from: a label that appeared, moved, changed
-    /// sprite or went adds its old and new sprite bounds to the damage.
+    /// sprite or went adds its old and new sprite bounds to the damage.  The new snapshot keeps SPRITES; every placed
+    /// label's sprite counts as used.
     pub fn commit_with<'a>(
         &mut self,
         root: u64,
         frames: &'a mut Frames,
-        sprites: &Sprites,
+        sprites: &Arc<Sprites>,
     ) -> &'a [Rect] {
         let new = self.placed();
         let new_labels = self.placed_labels(&new, sprites);
-        let old_labels = std::mem::replace(&mut self.labels, new_labels);
-        let old = std::mem::take(&mut self.committed);
+        for l in &new_labels {
+            sprites.get(l.sprite);
+        }
+        let old_labels = Arc::clone(&self.snapshot.labels);
+        let old = self.snapshot.layers.as_slice();
         let mut out: Vec<Rect> = Vec::new();
         {
             let new_by: BTreeMap<u64, &Placed> = new.iter().map(|p| (p.id, p)).collect();
@@ -425,7 +435,7 @@ impl Scene {
                 }
             }
             // Labels: the sprite bounds of every label that is not the same in both.
-            let (new_l, old_l) = (&self.labels, &old_labels);
+            let (new_l, old_l) = (&new_labels, &*old_labels);
             out.extend(
                 new_l
                     .iter()
@@ -444,7 +454,18 @@ impl Scene {
                 }
             }
         }
-        self.committed = new;
+        let labels = if new_labels == *old_labels {
+            old_labels
+        } else {
+            Arc::new(new_labels)
+        };
+        self.snapshot = Arc::new(Committed {
+            root,
+            layers: new,
+            labels,
+            sprites: Arc::clone(sprites),
+            outputs: Vec::new(),
+        });
         self.restacked.clear();
         let d = frames.entry(root).or_default();
         for r in out {
@@ -456,20 +477,23 @@ impl Scene {
 
 /// Run `f` on ROOT's scene; `GLITNIR_E_STATE` when ROOT has none.
 pub fn with<R>(root: u64, f: impl FnOnce(&mut Scene) -> Result<R, i32>) -> Result<R, i32> {
-    let mut st = crate::STATE.lock().unwrap_or_else(|p| p.into_inner());
+    let mut st = crate::state();
     st.scenes.get_mut(&root).ok_or(GLITNIR_E_STATE).and_then(f)
+}
+
+/// ROOT's committed scene as its last commit left it; `None` when ROOT has no scene.
+pub fn committed(root: u64) -> Option<Arc<Committed>> {
+    crate::state().scenes.get(&root).map(Scene::snapshot)
 }
 
 /// Give ROOT a scene (an existing one is kept).
 pub fn root_new(root: u64) {
-    let mut st = crate::STATE.lock().unwrap_or_else(|p| p.into_inner());
-    st.scenes.entry(root).or_default();
+    crate::state().scenes.entry(root).or_default();
 }
 
 /// Drop ROOT's scene; its commits fall back to its own damage.
 pub fn root_drop(root: u64) {
-    let mut st = crate::STATE.lock().unwrap_or_else(|p| p.into_inner());
-    st.scenes.remove(&root);
+    crate::state().scenes.remove(&root);
 }
 
 #[cfg(test)]

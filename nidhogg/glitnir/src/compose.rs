@@ -16,7 +16,11 @@
 //! shadow beneath a layer's copied part is skipped. A pixel's value depends only on the scene and the sources, never
 //! on how the rectangles cut it, so composing the damage equals composing everything wherever the damage covers what
 //! changed.
+//!
+//! [`compose_committed`] composes a commit's snapshot with a caller-owned [`Composer`] and takes no lock, so the
+//! host's thread can go on drawing while another thread composes.
 
+use crate::committed::Committed;
 use crate::decor::{Label, Sprites};
 use crate::ffi::{GLITNIR_E_ARG, GLITNIR_E_STATE};
 use crate::geom::Rect;
@@ -27,7 +31,7 @@ use crate::scene::{Kind, Placed};
 use crate::shadow::{ShadowCache, ShadowSpec, ShadowTiles};
 use crate::stats::StatsEntry;
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 /// One layer's pixels, borrowed for one call.  Layout equals `GlitnirSource`.
@@ -368,22 +372,14 @@ pub fn compose(
     sources: &[SourceView],
     shadows: &mut ShadowCache,
 ) -> Result<u32, i32> {
-    compose_with(
-        k,
-        scene,
-        &[],
-        t,
-        clips,
-        sources,
-        shadows,
-        &mut Sprites::new(),
-    )
+    compose_with(k, scene, &[], t, clips, sources, shadows, &Sprites::new())
 }
 
 /// Draw LABEL's sprite within PIECES (disjoint, inside the target).  A sprite replaced or evicted since the label was
-/// placed is skipped; the next commit damages the label.
-fn draw_label(k: &Kernels, t: &mut TargetView, pieces: &[Rect], l: &Label, sprites: &mut Sprites) {
-    let Some(sp) = sprites.get(l.sprite) else {
+/// placed is skipped; the next commit damages the label.  (A snapshot's sprites are those its labels were placed
+/// from.)
+fn draw_label(k: &Kernels, t: &mut TargetView, pieces: &[Rect], l: &Label, sprites: &Sprites) {
+    let Some(sp) = sprites.lookup(l.sprite) else {
         return;
     };
     if sp.generation() != l.generation {
@@ -414,7 +410,7 @@ pub fn compose_with(
     clips: &[Rect],
     sources: &[SourceView],
     shadows: &mut ShadowCache,
-    sprites: &mut Sprites,
+    sprites: &Sprites,
 ) -> Result<u32, i32> {
     if sources.iter().any(|s| s.scale != t.scale) {
         return Err(GLITNIR_E_STATE);
@@ -450,19 +446,50 @@ struct Tally {
     layers: u32,
 }
 
-/// The compose state: the shadow tiles, and each root's composes since its last record.
+/// What composing keeps between calls: the shadow tiles, and each root's composes since its last frame-time record.
+/// The thread that composes owns it; the C ABI has one for the process.
 #[derive(Default)]
-pub(crate) struct Composer {
+pub struct Composer {
     shadows: Option<ShadowCache>,
     tallies: BTreeMap<u64, Tally>,
+    /// A pause at the start of each compose, so tests can catch a compose in progress.
+    #[cfg(test)]
+    delay: std::time::Duration,
 }
 
 impl Composer {
-    pub(crate) const fn new() -> Composer {
+    pub const fn new() -> Composer {
         Composer {
             shadows: None,
             tallies: BTreeMap::new(),
+            #[cfg(test)]
+            delay: std::time::Duration::ZERO,
         }
+    }
+
+    /// Fill ROOT's entry from its composes since its last record, which are then forgotten: compose times when the
+    /// entry has none (the summed time, ending at the draw's end), the layers drawn when it has none.
+    pub fn fill_stats(&mut self, root: u64, e: &mut StatsEntry) {
+        let Some(t) = self.tallies.remove(&root) else {
+            return;
+        };
+        if e.t_compose_start_ns == 0 && e.t_compose_end_ns == 0 && t.ns > 0 {
+            let end = if e.t_draw_end_ns > t.ns {
+                e.t_draw_end_ns
+            } else {
+                t.ns + 1
+            };
+            e.t_compose_start_ns = end - t.ns;
+            e.t_compose_end_ns = end;
+        }
+        if e.layers == 0 {
+            e.layers = t.layers;
+        }
+    }
+
+    /// Forget ROOT's composes (the root is gone).
+    pub fn forget(&mut self, root: u64) {
+        self.tallies.remove(&root);
     }
 }
 
@@ -475,81 +502,87 @@ impl std::fmt::Debug for Composer {
     }
 }
 
-/// Compose ROOT's committed scene (`glitnir_compose`).  `GLITNIR_E_STATE` when ROOT has no scene.
+// A composer moves to the thread that composes.
+const _: fn() = || {
+    fn sendable<T: Send>() {}
+    sendable::<Composer>();
+};
+
+/// Compose snapshot C into T within CLIPS (root px), from SOURCES, with K's shadow tiles; the number of layers drawn.
+/// That number and the time taken go to K's tally for C's root.  `GLITNIR_E_STATE`, with nothing drawn, when a
+/// source's scale is not the target's.  It takes no lock, so any thread may compose a snapshot while the host goes on
+/// changing the scene.
+pub fn compose_committed(
+    c: &Committed,
+    k: &mut Composer,
+    t: &mut TargetView,
+    clips: &[Rect],
+    sources: &[SourceView],
+) -> Result<u32, i32> {
+    let start = Instant::now();
+    #[cfg(test)]
+    std::thread::sleep(k.delay);
+    let shadows = k.shadows.get_or_insert_with(ShadowCache::new);
+    let layers = compose_with(
+        crate::kernels::kernels(),
+        &c.layers,
+        &c.labels,
+        t,
+        clips,
+        sources,
+        shadows,
+        &c.sprites,
+    )?;
+    let tally = k.tallies.entry(c.root).or_default();
+    let ns = u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
+    tally.ns = tally.ns.saturating_add(ns);
+    tally.layers = tally.layers.saturating_add(layers);
+    Ok(layers)
+}
+
+/// The C ABI's composer: the host composes on its main thread.
+static PROCESS: Mutex<Composer> = Mutex::new(Composer::new());
+
+fn process() -> MutexGuard<'static, Composer> {
+    PROCESS.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Compose ROOT's committed scene (`glitnir_compose`) with the C ABI's composer.  `GLITNIR_E_STATE` when ROOT has no
+/// scene.
 pub fn compose_root(
     root: u64,
     t: &mut TargetView,
     clips: &[Rect],
     sources: &[SourceView],
 ) -> Result<(), i32> {
-    let start = Instant::now();
-    let mut st = crate::STATE.lock().unwrap_or_else(|p| p.into_inner());
-    let crate::State {
-        scenes,
-        composer,
-        sprites,
-        ..
-    } = &mut *st;
-    let scene = scenes.get(&root).ok_or(GLITNIR_E_STATE)?;
-    let shadows = composer.shadows.get_or_insert_with(ShadowCache::new);
-    let layers = compose_with(
-        crate::kernels::kernels(),
-        scene.committed(),
-        scene.labels(),
-        t,
-        clips,
-        sources,
-        shadows,
-        sprites,
-    )?;
-    let tally = composer.tallies.entry(root).or_default();
-    let ns = u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
-    tally.ns = tally.ns.saturating_add(ns);
-    tally.layers = tally.layers.saturating_add(layers);
-    Ok(())
+    let c = crate::scene::committed(root).ok_or(GLITNIR_E_STATE)?;
+    compose_committed(&c, &mut process(), t, clips, sources).map(|_| ())
 }
 
-/// Fill ROOT's entry from its composes since its last record, which are then forgotten: compose times when the entry
-/// has none (the summed time, ending at the draw's end), the layers drawn when it has none.
+/// [`Composer::fill_stats`] from the C ABI's composer (`glitnir_stats_record`).
 pub fn fill_stats(root: u64, e: &mut StatsEntry) {
-    let tally = {
-        let mut st = crate::STATE.lock().unwrap_or_else(|p| p.into_inner());
-        st.composer.tallies.remove(&root)
-    };
-    let Some(t) = tally else {
-        return;
-    };
-    if e.t_compose_start_ns == 0 && e.t_compose_end_ns == 0 && t.ns > 0 {
-        let end = if e.t_draw_end_ns > t.ns {
-            e.t_draw_end_ns
-        } else {
-            t.ns + 1
-        };
-        e.t_compose_start_ns = end - t.ns;
-        e.t_compose_end_ns = end;
-    }
-    if e.layers == 0 {
-        e.layers = t.layers;
-    }
+    process().fill_stats(root, e);
 }
 
-/// Forget ROOT's composes (the root is gone).
+/// Forget ROOT's composes in the C ABI's composer (the root is gone).
 pub fn forget(root: u64) {
-    let mut st = crate::STATE.lock().unwrap_or_else(|p| p.into_inner());
-    st.composer.tallies.remove(&root);
+    process().forget(root);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::damage::Frames;
+    use crate::decor::Anchor;
     use crate::ffi::{
-        GLITNIR_OK, glitnir_commit, glitnir_compose, glitnir_damage_forget, glitnir_layer_upsert,
-        glitnir_root_drop, glitnir_root_new,
+        GLITNIR_OK, glitnir_commit, glitnir_compose, glitnir_damage_forget, glitnir_decor_drop_all,
+        glitnir_decor_put, glitnir_decor_sprite_put, glitnir_layer_set_chrome,
+        glitnir_layer_upsert, glitnir_root_drop, glitnir_root_new,
     };
     use crate::kernels::kernels;
     use crate::rng::XorShift;
     use crate::scene::{Chrome, LayerDesc, Scene};
+    use std::time::Duration;
 
     const ROOT: u64 = 1;
 
@@ -664,7 +697,8 @@ mod tests {
         }
     }
 
-    /// Compose S's committed scene into OUT within CLIPS, from SOURCES (by layer id).
+    /// Compose S's committed scene into OUT within CLIPS, from SOURCES (by layer id): its snapshot through
+    /// [`compose_committed`], which must draw what composing the scene's committed layers draws.
     fn run(
         s: &Scene,
         out: &mut Buf,
@@ -674,15 +708,21 @@ mod tests {
         shadows: &mut ShadowCache,
     ) -> u32 {
         let views: Vec<SourceView> = sources.iter().map(|(&id, b)| b.source(id, scale)).collect();
-        compose(
+        let mut locked = out.clone();
+        let n = compose(
             kernels(),
             s.committed(),
-            &mut out.target(scale),
+            &mut locked.target(scale),
             clips,
             &views,
             shadows,
         )
-        .unwrap()
+        .unwrap();
+        let mut k = Composer::new();
+        let got = compose_committed(&s.snapshot(), &mut k, &mut out.target(scale), clips, &views);
+        assert_eq!(got, Ok(n));
+        assert_eq!(first_difference(out, &locked), None);
+        n
     }
 
     fn covers(damage: &[Rect], r: Rect) -> bool {
@@ -1086,6 +1126,191 @@ mod tests {
         assert_eq!(glitnir_root_drop(r), GLITNIR_OK);
         assert_eq!(glitnir_damage_forget(r), GLITNIR_OK);
         forget(r);
+    }
+
+    fn put_sprite(key: u64, b: &Buf) {
+        let rc = unsafe { glitnir_decor_sprite_put(key, b.px.as_ptr().cast(), b.w * 4, b.w, b.h) };
+        assert_eq!(rc, GLITNIR_OK);
+    }
+
+    fn ffi_sources(sources: &BTreeMap<u64, Buf>) -> Vec<Source> {
+        sources
+            .iter()
+            .map(|(&layer, b)| Source {
+                layer,
+                pixels: b.px.as_ptr().cast(),
+                stride: b.w * 4,
+                width: b.w,
+                height: b.h,
+                scale: 1.0,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn committed_compose_equals_locked_compose() {
+        // Random scenes with chrome and labels, built through the C ABI.  What `glitnir_compose` draws right after a
+        // commit (the host composing under its own thread, as pgtk does) equals what the commit's snapshot draws
+        // after the host has moved on: layers moved and re-chromed, anchors dropped, sprites replaced.
+        const W: i32 = 96;
+        const H: i32 = 72;
+        let all = Rect::new(0, 0, W, H);
+        for seed in 1..=60u64 {
+            let mut g = XorShift::new(seed);
+            let root = 870_000 + seed * 100;
+            let win = root + 1;
+            // two keys for every seed, so the shared sprite cache keeps the other tests' sprites
+            let keys = [0x8700_0001, 0x8700_0002];
+            assert_eq!(glitnir_root_new(root), GLITNIR_OK);
+            let upsert = |id, parent, kind, rect| {
+                let d = desc(id, parent, kind, rect, 1.0, true);
+                assert_eq!(unsafe { glitnir_layer_upsert(root, &d) }, GLITNIR_OK);
+            };
+            upsert(root, 0, 1, all);
+            upsert(win, root, 2, Rect::new(4, 4, W - 8, H - 16));
+            let mut src: BTreeMap<u64, Buf> = BTreeMap::new();
+            src.insert(root, Buf::random(&mut g, W, H));
+            let mut kids: Vec<(u64, Rect)> = Vec::new();
+            for i in 0..1 + g.below(3) as u64 {
+                let id = root + 10 + i;
+                let r = Rect::new(
+                    g.below(W as u32) as i32 - 8,
+                    g.below(H as u32) as i32 - 8,
+                    8 + g.below(40) as i32,
+                    8 + g.below(30) as i32,
+                );
+                upsert(id, root, 3, r);
+                src.insert(id, Buf::random(&mut g, r.w, r.h));
+                kids.push((id, r));
+            }
+            let change = |g: &mut XorShift, kids: &[(u64, Rect)]| {
+                for _ in 0..1 + g.below(4) {
+                    let (id, r) = kids[g.below(kids.len() as u32) as usize];
+                    match g.below(5) {
+                        // a move keeps the size, so the sources stay valid
+                        0 => upsert(id, root, 3, r.translate(g.below(9) as i32 - 4, 3)),
+                        1 => {
+                            let c = rand_chrome(g);
+                            let rc = unsafe { glitnir_layer_set_chrome(root, id, &c) };
+                            assert_eq!(rc, GLITNIR_OK);
+                        }
+                        2 => {
+                            let key = keys[g.below(2) as usize];
+                            let (sw, sh) = (4 + g.below(12) as i32, 3 + g.below(6) as i32);
+                            put_sprite(key, &Buf::random(g, sw, sh));
+                        }
+                        3 => {
+                            let cell =
+                                |c: u32, r: u32| Rect::new(c as i32 * 8, r as i32 * 12, 8, 12);
+                            let a = Anchor {
+                                glyph: cell(g.below(10), 1 + g.below(4)),
+                                clip: Rect::new(0, 0, W - 8, H - 16),
+                                sprite: keys[g.below(2) as usize],
+                                row_top: 0,
+                            };
+                            assert_eq!(unsafe { glitnir_decor_put(root, win, &a) }, GLITNIR_OK);
+                        }
+                        _ => assert_eq!(glitnir_decor_drop_all(root, win), GLITNIR_OK),
+                    }
+                }
+            };
+            for key in keys {
+                put_sprite(key, &Buf::random(&mut g, 10, 5));
+            }
+            let sources = ffi_sources(&src);
+            let views: Vec<SourceView> = src.iter().map(|(&id, b)| b.source(id, 1.0)).collect();
+            let mut k = Composer::new();
+            for round in 0..4 {
+                change(&mut g, &kids);
+                let mut out = crate::ffi::CommitOut {
+                    rects: std::ptr::null(),
+                    n: 0,
+                };
+                assert_eq!(unsafe { glitnir_commit(root, &mut out) }, GLITNIR_OK);
+                let mut locked = Buf::new(W, H, 0);
+                let t = Target {
+                    pixels: locked.px.as_mut_ptr().cast(),
+                    stride: W * 4,
+                    width: W,
+                    height: H,
+                    origin_x: 0,
+                    origin_y: 0,
+                    scale: 1.0,
+                };
+                let rc =
+                    unsafe { glitnir_compose(root, &t, &all, 1, sources.as_ptr(), sources.len()) };
+                assert_eq!(rc, GLITNIR_OK);
+                let snap = crate::scene::committed(root).unwrap();
+                change(&mut g, &kids);
+                let mut later = Buf::new(W, H, 0);
+                compose_committed(&snap, &mut k, &mut later.target(1.0), &[all], &views).unwrap();
+                if let Some((x, y, a, b)) = first_difference(&later, &locked) {
+                    panic!(
+                        "seed {seed} round {round}: pixel {x},{y} is {a:08x}, composed at the commit {b:08x}"
+                    );
+                }
+            }
+            assert_eq!(glitnir_root_drop(root), GLITNIR_OK);
+            for id in std::iter::once(root).chain(kids.iter().map(|k| k.0)) {
+                assert_eq!(glitnir_damage_forget(id), GLITNIR_OK);
+            }
+            forget(root);
+        }
+    }
+
+    #[test]
+    fn no_global_lock_during_compose() {
+        // a 4K root with a chromed popup, committed; thread A composes it with a 50 ms pause inside the compose
+        let (w, h) = (3840, 2160);
+        let root = 8801;
+        let pop = Rect::new(800, 500, 1280, 800);
+        assert_eq!(glitnir_root_new(root), GLITNIR_OK);
+        for (id, kind, r) in [(root, 1, Rect::new(0, 0, w, h)), (root + 1, 3, pop)] {
+            let d = desc(id, if id == root { 0 } else { root }, kind, r, 1.0, true);
+            assert_eq!(unsafe { glitnir_layer_upsert(root, &d) }, GLITNIR_OK);
+        }
+        let mut g = XorShift::new(11);
+        let c = rand_chrome(&mut g);
+        assert_eq!(
+            unsafe { glitnir_layer_set_chrome(root, root + 1, &c) },
+            GLITNIR_OK
+        );
+        let (_, snap) = crate::damage::commit_snapshot(root).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let a = std::thread::spawn(move || {
+            crate::mark_compose_thread();
+            let root_px = Buf::new(w, h, 0xfff0_f0f0);
+            let popup = Buf::new(pop.w, pop.h, 0xff20_2428);
+            let sources = [root_px.source(root, 1.0), popup.source(root + 1, 1.0)];
+            let mut out = Buf::new(w, h, 0);
+            let mut k = Composer::new();
+            k.delay = Duration::from_millis(50);
+            tx.send(()).unwrap();
+            compose_committed(
+                &snap,
+                &mut k,
+                &mut out.target(1.0),
+                &[Rect::new(0, 0, w, h)],
+                &sources,
+            )
+        });
+        rx.recv().unwrap();
+        // A is inside its compose; the host goes on drawing into the same root
+        std::thread::sleep(Duration::from_millis(5));
+        let t0 = Instant::now();
+        for i in 0..1000 {
+            crate::damage::with(root, |d| d.add(Rect::new(i % 640, i / 640, 1, 1)));
+        }
+        let took = t0.elapsed();
+        assert_eq!(a.join().unwrap(), Ok(2));
+        assert_eq!(glitnir_root_drop(root), GLITNIR_OK);
+        for id in [root, root + 1] {
+            assert_eq!(glitnir_damage_forget(id), GLITNIR_OK);
+        }
+        assert!(
+            took < Duration::from_millis(5),
+            "1000 damage calls took {took:?}"
+        );
     }
 
     #[test]

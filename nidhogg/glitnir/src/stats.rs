@@ -1,6 +1,7 @@
 //! The frame-time record: a ring of 1024 entries per root, and its summary.
 
 use std::collections::BTreeMap;
+use std::sync::{Mutex, MutexGuard};
 
 /// Entries kept per root.
 pub const RING: usize = 1024;
@@ -171,17 +172,26 @@ fn summarise(r: &Ring) -> Summary {
     }
 }
 
-/// Append one entry to ROOT's ring (allocated on the first record).
+/// The rings of every root.
+pub type Rings = BTreeMap<u64, Ring>;
+
+/// The rings, under their own lock: a compose thread records while the host holds the global state.
+static STATS: Mutex<Rings> = Mutex::new(BTreeMap::new());
+
+fn rings() -> MutexGuard<'static, Rings> {
+    STATS.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Append one entry to ROOT's ring (allocated on the first record).  Any thread may record.
 pub fn record(root: u64, e: StatsEntry) {
-    let mut st = crate::STATE.lock().unwrap_or_else(|p| p.into_inner());
-    st.rings.entry(root).or_insert_with(Ring::new).push(e);
+    rings().entry(root).or_insert_with(Ring::new).push(e);
 }
 
 /// ROOT's summary, then empty its ring when `reset`.  A root with no record yet summarises as an empty ring (zeros,
 /// no back-fill rate).
 pub fn summary(root: u64, reset: bool) -> Summary {
-    let mut st = crate::STATE.lock().unwrap_or_else(|p| p.into_inner());
-    let Some(r) = st.rings.get_mut(&root) else {
+    let mut rs = rings();
+    let Some(r) = rs.get_mut(&root) else {
         return summarise(&Ring::new());
     };
     let s = summarise(r);
@@ -193,12 +203,8 @@ pub fn summary(root: u64, reset: bool) -> Summary {
 
 /// Drop ROOT's ring (the root is gone).
 pub fn forget(root: u64) {
-    let mut st = crate::STATE.lock().unwrap_or_else(|p| p.into_inner());
-    st.rings.remove(&root);
+    rings().remove(&root);
 }
-
-/// The rings of every root.
-pub type Rings = BTreeMap<u64, Ring>;
 
 #[cfg(test)]
 mod tests {
@@ -248,8 +254,8 @@ mod tests {
         for e in &all {
             record(root, *e);
         }
-        let st = crate::STATE.lock().unwrap();
-        let ring = &st.rings[&root];
+        let rs = rings();
+        let ring = &rs[&root];
         assert_eq!(ring.buf.len(), RING);
         assert_eq!(ring.count, (RING + 77) as u64);
         // every one of the last RING entries is in the ring, none older
@@ -257,7 +263,28 @@ mod tests {
             assert!(ring.buf.contains(e));
         }
         assert!(!ring.buf.contains(&all[0]) || all[0] == all[77]);
-        drop(st);
+        drop(rs);
+        forget(root);
+    }
+
+    #[test]
+    fn record_without_state_lock() {
+        let root = 9006;
+        // the host holds the global state; a compose thread records and reads its summary meanwhile
+        let held = crate::state();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let compose = std::thread::spawn(move || {
+            crate::mark_compose_thread();
+            let mut rng = Rng(seed());
+            for _ in 0..10 {
+                record(root, random_entry(&mut rng));
+            }
+            tx.send(summary(root, false).count).unwrap();
+        });
+        let got = rx.recv_timeout(std::time::Duration::from_secs(10));
+        drop(held);
+        compose.join().unwrap();
+        assert_eq!(got, Ok(10));
         forget(root);
     }
 
