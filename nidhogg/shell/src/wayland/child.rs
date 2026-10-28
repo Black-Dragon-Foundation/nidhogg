@@ -1,8 +1,11 @@
-//! Child windows: desynchronised `wl_subsurface`s of another window's surface, and the requests every window kind
+//! Child windows: synchronised `wl_subsurface`s of another window's surface, and the requests every window kind
 //! shares (input region, mapped).
 //!
-//! A child presents on its own (its buffers and frame callbacks are the presenter's, per window).  Its position and
-//! stacking are the parent's state: they take effect with the parent's next commit (Wayland's rule).
+//! A child has its own buffers but no pacer: it is presented with its tree (the root's pacer, see `present`).  A sync
+//! child's commit is cached until its parent commits, so every change of a child (position, stacking, input region,
+//! unmap) makes each ancestor up to the root owe a commit, and the host commits the tree deepest first.  Its position
+//! and stacking are the parent's state (Wayland's rule); Smithay keeps the position in the child's own cached state, so
+//! a move makes the child owe a commit too.
 
 use crate::api::*;
 use crate::wayland::WaylandShell;
@@ -29,8 +32,8 @@ impl WaylandShell {
         let sub = m.subcompositor.as_ref().ok_or(ShellError::State)?;
         let surface = compositor.create_surface(&qh, ());
         let id = u64::from(surface.id().protocol_id());
+        // sync (the default): the child shows with its parent's commit
         let subsurface = sub.get_subsurface(&surface, &parent, &qh, ());
-        subsurface.set_desync();
         subsurface.set_position(d.x, d.y);
         m.attach_scale(&surface, &qh);
         m.surfaces.insert(id, surface.clone());
@@ -75,12 +78,9 @@ impl WaylandShell {
             c.x = x;
             c.y = y;
             c.subsurface.set_position(x, y);
-            let parent = c.parent;
-            // The protocol applies the position with the parent's commit.  Some compositors (Smithay) apply a
-            // desync subsurface's position only with the child's own commit, so send one: it carries no new buffer.
-            c.surface.commit();
-            // the position is the parent's state: the parent owes a commit
-            self.main.present_owe(parent);
+            // The protocol applies the position with the parent's commit; Smithay with the child's own (cached until
+            // the parent's): the child and every ancestor owe a commit, made with the tree's next present.
+            self.main.present_owe(id, true, true);
             return self.flush().map(|()| false);
         }
         self.popup_reposition(id, x, y)
@@ -93,15 +93,15 @@ impl WaylandShell {
         above: bool,
     ) -> ShellResult {
         let c = self.main.children.get(&id).ok_or(ShellError::State)?;
-        let parent = c.parent;
-        let sibling = if sibling == 0 { parent } else { sibling };
+        let sibling = if sibling == 0 { c.parent } else { sibling };
         let other = self.main.surfaces.get(&sibling).ok_or(ShellError::Arg)?;
         if above {
             c.subsurface.place_above(other);
         } else {
             c.subsurface.place_below(other);
         }
-        self.main.present_owe(parent);
+        // the parent's state: the parent and every ancestor above it owe a commit
+        self.main.present_owe(id, false, true);
         Ok(())
     }
 
@@ -118,18 +118,24 @@ impl WaylandShell {
             surface.set_input_region(Some(&region));
             region.destroy();
         }
-        // the region is double-buffered: it counts from the surface's next commit
+        // the region is double-buffered: it counts from the surface's next commit (a child's: once its ancestors
+        // have committed after it)
         surface.commit();
+        self.main.present_owe(id, false, true);
         self.flush()
     }
 
     pub(super) fn window_set_mapped(&mut self, id: WindowId, on: bool) -> ShellResult {
         if on {
-            // a frame callback the compositor dropped while the window was hidden must not hold the pacer back: a
-            // waiting pacer asks again (frame callback and an empty commit)
             if !self.main.surfaces.contains_key(&id) {
                 return Err(ShellError::State);
             }
+            // a child has no pacer to re-arm: its next buffer goes out with its tree
+            if self.main.children.contains_key(&id) {
+                return Ok(());
+            }
+            // a frame callback the compositor dropped while the window was hidden must not hold the pacer back: a
+            // waiting pacer asks again (frame callback and an empty commit)
             let conn = self.conn.clone();
             self.main.present_rearm(id, &conn);
             return self.flush();
@@ -137,6 +143,8 @@ impl WaylandShell {
         let surface = self.main.surfaces.get(&id).ok_or(ShellError::State)?;
         surface.attach(None, 0, 0);
         surface.commit();
+        // a child's unmap applies once its ancestors have committed after it
+        self.main.present_owe(id, false, true);
         self.flush()
     }
 }
