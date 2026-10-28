@@ -15,6 +15,9 @@
 //! re-arms (a callback and an empty commit) when a configure, the end of suspension, `wl_surface.enter` or a scale
 //! change shows the surface may be visible again.  Presentation feedback never gates anything.  Callbacks, feedback
 //! and releases run on the reader queue.  The buffer policy is `glitnir::pool`.
+//!
+//! A host that publishes (`publish.rs`) has the shell decide: `present_tree` is the present path's one rule, run at
+//! the root's `FRAME_READY`.  For it a content ack counts only once a packet was published after the ack.
 
 use crate::api::*;
 use crate::event::*;
@@ -75,6 +78,10 @@ pub struct Present {
     discarded: u32,
     /// Buffers freed by trimming or a resize.
     freed: usize,
+    /// The mailbox's sequence number when the ack was recorded: a content ack goes with a packet published after it.
+    ack_seq: u64,
+    /// A root: the newest packet published for its tree.
+    published: u64,
 }
 
 /// The user data of a `wl_buffer`: its window's presenter and its slot.
@@ -112,6 +119,8 @@ impl Present {
             presented: 0,
             discarded: 0,
             freed: 0,
+            ack_seq: 0,
+            published: 0,
         }
     }
 
@@ -119,8 +128,31 @@ impl Present {
     /// ack, which never waits), with `ACK` when a content ack is what waits, and `OWED` (a commit is owed: a bare ack
     /// or surface state, starved or not).
     fn ready(&self) -> u32 {
+        self.ready_with(self.ack_content)
+    }
+
+    /// The recorded content ack waits for a packet published after it: until then the tree's picture is not drawn
+    /// for that configure (the C gate's `!new_size_p`, moved to the publish).
+    fn ack_held(&self) -> bool {
+        self.ack_content && self.published <= self.ack_seq
+    }
+
+    /// `ready` for a published tree: a content ack counts once a packet came after it, and while it waits no content
+    /// goes (the configure's picture is not published yet); owed state may still go bare.
+    fn ready_published(&self) -> u32 {
+        let held = self.ack_held();
+        let bits = self.ready_with(self.ack_content && !held);
+        if held {
+            bits & NHSHELL_READY_OWED
+        } else {
+            bits
+        }
+    }
+
+    /// The ready bits, with `content_ack` saying whether a recorded content ack may go now.
+    fn ready_with(&self, content_ack: bool) -> u32 {
         let open = self.configured && !self.starved;
-        let content_ack = open && self.ack_content;
+        let content_ack = open && content_ack;
         let content = content_ack || (open && self.dirty && !self.waiting && !self.suspended);
         let owed = self.configured && (self.owed || (self.ack.is_some() && !self.ack_content));
         u32::from(content) * NHSHELL_READY_CONTENT
@@ -209,6 +241,21 @@ impl MainState {
         p.configured = true;
         p.ack = Some(serial);
         p.ack_content |= content;
+        p.ack_seq = self.mailbox.seq();
+        p.notify();
+    }
+
+    /// Root `root`'s recorded content ack waits for a packet published after it.
+    pub(crate) fn present_wants_packet(&mut self, root: u64) -> bool {
+        lock(&self.present_of(root)).ack_held()
+    }
+
+    /// Packet `seq` of root `root`'s tree is published (`damaged`: it shows something new): the pacer wakes.
+    pub(crate) fn present_published(&mut self, root: u64, seq: u64, damaged: bool) {
+        let present = self.present_of(root);
+        let mut p = lock(&present);
+        p.published = seq;
+        p.dirty |= damaged;
         p.notify();
     }
 
@@ -340,6 +387,11 @@ impl WaylandShell {
 
     /// Show the begun buffer of window `id`; `damage` is in device pixels.
     pub(super) fn present_commit_impl(&mut self, id: WindowId, damage: &[Rect]) -> ShellResult {
+        self.commit_buffer(id, damage, false)
+    }
+
+    /// `present_commit`; for a `published` tree a content ack that still waits for its packet stays recorded.
+    fn commit_buffer(&mut self, id: WindowId, damage: &[Rect], published: bool) -> ShellResult {
         let present = self
             .main
             .presents
@@ -354,7 +406,8 @@ impl WaylandShell {
             _ => merged(damage),
         };
         let surface = self.main.surfaces.get(&id).ok_or(ShellError::State)?;
-        let ack = p.ack.take();
+        let send_ack = !(published && p.ack_held());
+        let ack = if send_ack { p.ack.take() } else { None };
         let buf = p.bufs.get(&slot.id).ok_or(ShellError::State)?;
         let scale = self
             .main
@@ -394,7 +447,9 @@ impl WaylandShell {
             }
             p.waiting = true;
         }
-        p.ack_content = false;
+        if send_ack {
+            p.ack_content = false;
+        }
         p.owed = false;
         p.tree_content = false;
         surface.commit();
@@ -488,6 +543,127 @@ impl WaylandShell {
         }))
     }
 
+    /// Present root `root`'s tree by the present path's rule, at its `FRAME_READY` (inline mode).  Buffers when a
+    /// published packet left damage on a drawable surface or an eligible content ack waits, and the gate is open
+    /// (configured, a buffer free, and idle and shown unless the ack waives that): the child windows first, deepest
+    /// first, then the root, which composes its whole picture when the ack came with nothing drawn.  Otherwise bare
+    /// commits where one is owed (a bare ack, or surface state), deepest first, the root last.  Otherwise nothing.  A
+    /// content ack never rides a bare commit.  `true` when the root committed a buffer.
+    pub(super) fn present_tree_impl(&mut self, root: WindowId) -> ShellResult<bool> {
+        if self.presenting.thread_on {
+            return Err(ShellError::State);
+        }
+        if !self.main.is_window(root) || self.main.children.contains_key(&root) {
+            return Err(ShellError::State);
+        }
+        let mail = self.main.mailbox.clone();
+        self.presenting.stage.drain(&mail);
+        let Some(present) = self.main.presents.get(&root).cloned() else {
+            return Ok(false);
+        };
+        let bits = {
+            let mut p = lock(&present);
+            p.notified = false;
+            let bits = p.ready_published();
+            // reporting content takes the draw
+            if bits & NHSHELL_READY_CONTENT != 0 {
+                p.dirty = false;
+            }
+            bits
+        };
+        if bits == 0 {
+            return Ok(false);
+        }
+        if bits & NHSHELL_READY_ACK != 0 {
+            self.presenting.stage.damage_all_if_clean(root);
+        }
+        let content = bits & NHSHELL_READY_CONTENT != 0 && self.tree_damaged(root);
+        self.present_children(root, content);
+        let shown = content && self.present_surface(root);
+        if !shown && self.owes(root) {
+            self.present_bare_counted(root);
+        }
+        Ok(shown)
+    }
+
+    /// The child windows of `id`, in a stable order.
+    fn kids(&self, id: WindowId) -> Vec<WindowId> {
+        let mut v: Vec<WindowId> = self
+            .main
+            .children
+            .iter()
+            .filter(|(_, c)| c.parent == id)
+            .map(|(&k, _)| k)
+            .collect();
+        v.sort_unstable();
+        v
+    }
+
+    /// `id` or a drawable child window under it has damage waiting.
+    fn tree_damaged(&self, id: WindowId) -> bool {
+        let stage = &self.presenting.stage;
+        stage.damaged(id)
+            || self
+                .kids(id)
+                .into_iter()
+                .any(|c| stage.drawable(c) && self.tree_damaged(c))
+    }
+
+    /// Commit the child windows under `id`, deepest first (a sync child shows once every ancestor committed after
+    /// it): each with a buffer when `content` and it is drawable and damaged, else bare when it owes a commit.
+    fn present_children(&mut self, id: WindowId, content: bool) {
+        for c in self.kids(id) {
+            let draw = content && self.presenting.stage.drawable(c);
+            self.present_children(c, draw);
+            if !(draw && self.present_surface(c)) && self.owes(c) {
+                self.present_bare_counted(c);
+            }
+        }
+    }
+
+    /// Show surface `id`'s waiting damage in a buffer composed from its front; `true` when committed.  A begin that
+    /// finds every buffer busy starves the tree (the release brings the draw back); the damage keeps waiting.
+    fn present_surface(&mut self, id: WindowId) -> bool {
+        let Some((w, h, damage)) = self.presenting.stage.next_frame(id) else {
+            return false;
+        };
+        let Ok(buf) = self.present_begin_impl(id, w, h) else {
+            return false;
+        };
+        self.presenting.stage.compose(id, &buf);
+        if self.commit_buffer(id, &damage, true).is_err() {
+            let _ = self.window_dirty_impl(id);
+            return false;
+        }
+        self.presenting.stage.presented(id);
+        true
+    }
+
+    /// Window `id` owes a commit: a root's owed state or bare ack, a child's own surface state.
+    fn owes(&self, id: WindowId) -> bool {
+        self.main.presents.get(&id).is_some_and(|p| {
+            let p = lock(p);
+            if p.root.is_some() {
+                p.owed
+            } else {
+                p.ready() & NHSHELL_READY_OWED != 0
+            }
+        })
+    }
+
+    fn present_bare_counted(&mut self, id: WindowId) {
+        if self.present_bare_impl(id).is_ok() {
+            self.presenting.stage.stats.bare_commits += 1;
+        }
+    }
+
+    /// Present on a thread of the shell's (`on`) or inline (the host calls `present_tree`).  The mode is stored here;
+    /// until the thread exists, publishing applies its packets on the host's thread either way.
+    pub(super) fn set_presenter_thread_impl(&mut self, on: bool) -> ShellResult {
+        self.presenting.thread_on = on;
+        Ok(())
+    }
+
     /// Test hook: (waiting for a frame callback, starved, feedback presented, feedback discarded) of window `id`.
     #[doc(hidden)]
     pub fn present_pacer(&self, id: WindowId) -> Option<(bool, bool, u32, u32)> {
@@ -501,13 +677,15 @@ impl WaylandShell {
         for p in self.main.presents.values() {
             lock(p).reap(now);
         }
+        self.publish_trim(crate::wayland::publish::now_ns());
     }
 
-    /// Window `id` is going away: its buffers go with it.
+    /// Window `id` is going away: its buffers go with it, and its front.
     pub(super) fn present_drop(&mut self, id: u64) {
         if let Some(p) = self.main.presents.remove(&id) {
             lock(&p).clear();
         }
+        self.publish_forget(id);
     }
 
     /// Test hook: (live buffers, buffers freed so far, the size of the newest buffer's memfd) of window `id`.

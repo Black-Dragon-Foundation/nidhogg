@@ -381,6 +381,27 @@ impl ShellBackend for WaylandShell {
         self.present_commit_impl(id, damage)
     }
 
+    fn publish(
+        &mut self,
+        root: WindowId,
+        frames: &[SurfaceFrame],
+        t_key_ns: u64,
+    ) -> ShellResult<bool> {
+        self.publish_impl(root, frames, t_key_ns)
+    }
+
+    fn present_tree(&mut self, root: WindowId) -> ShellResult<bool> {
+        self.present_tree_impl(root)
+    }
+
+    fn set_presenter_thread(&mut self, on: bool) -> ShellResult {
+        self.set_presenter_thread_impl(on)
+    }
+
+    fn presenter_stats(&self) -> ShellResult<NhShellPresenterStats> {
+        Ok(self.presenter_stats_impl())
+    }
+
     fn text_input_enable(&mut self, w: WindowId, on: bool) -> ShellResult {
         self.text_input_flush(self.main.surfaces.contains_key(&w), |t| t.enable(w, on))
     }

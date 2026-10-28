@@ -26,10 +26,10 @@ pub unsafe extern "C" fn nhshell_abi_version(out: *mut u32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::NhShellBuffer;
+    use crate::api::{NhShellBuffer, NhShellPresenterStats};
     use crate::caps::NhShellCaps;
     use crate::event::*;
-    use crate::ffi::NhShellWindowDesc;
+    use crate::ffi::{NhShellSurfaceFrame, NhShellWindowDesc};
     use std::mem::{align_of, offset_of, size_of};
     use std::process::Command;
 
@@ -162,6 +162,28 @@ mod tests {
             "u.selection.kind",
             offset_of!(E, u) + offset_of!(SelectionEv, kind),
         );
+        // the publishing records
+        type F = NhShellSurfaceFrame;
+        type P = NhShellPresenterStats;
+        for (c, size, align) in [
+            ("NhShellSurfaceFrame", size_of::<F>(), align_of::<F>()),
+            ("NhShellPresenterStats", size_of::<P>(), align_of::<P>()),
+        ] {
+            rows.push((format!("sizeof({c})"), size));
+            rows.push((format!("_Alignof({c})"), align));
+        }
+        for (c, o) in [
+            ("NhShellSurfaceFrame, pixels", offset_of!(F, pixels)),
+            ("NhShellSurfaceFrame, src_y", offset_of!(F, src_y)),
+            ("NhShellSurfaceFrame, alpha_cut", offset_of!(F, alpha_cut)),
+            (
+                "NhShellPresenterStats, front_trims",
+                offset_of!(P, front_trims),
+            ),
+            ("NhShellPresenterStats, thread_on", offset_of!(P, thread_on)),
+        ] {
+            rows.push((format!("offsetof({c})"), o));
+        }
 
         let dir = std::env::temp_dir().join(format!("nhshell-layout-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

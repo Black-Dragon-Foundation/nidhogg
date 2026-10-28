@@ -404,6 +404,92 @@ pub unsafe extern "C" fn nhshell_present_commit(
     )
 }
 
+/// One surface of `nhshell_publish` (`SurfaceFrame` with a raw pointer).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct NhShellSurfaceFrame {
+    pub window: u64,
+    pub glitnir_root: u64,
+    pub pixels: *const u8,
+    pub w: i32,
+    pub h: i32,
+    pub stride: i32,
+    pub src_x: i32,
+    pub src_y: i32,
+    pub flags: u32,
+    pub alpha_cut: u32,
+}
+
+/// Publish the tree of `root`: `n` surfaces at `s`.  1 when a packet was queued, 0 when there was nothing.
+///
+/// # Safety
+/// `sh` is a live handle; `s` is null only with `n` 0, else it points to `n` frames, each with `h` rows of `stride`
+/// readable bytes at `pixels` (the last row `4 * w`), read during the call only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nhshell_publish(
+    sh: *mut NhShell,
+    root: u64,
+    s: *const NhShellSurfaceFrame,
+    n: usize,
+    t_key_ns: u64,
+) -> i32 {
+    guard(
+        sh,
+        |b| {
+            let raw: &[NhShellSurfaceFrame] = if n == 0 {
+                &[]
+            } else if s.is_null() {
+                return Err(ShellError::Arg);
+            } else {
+                // SAFETY: `n` frames by the contract.
+                unsafe { std::slice::from_raw_parts(s, n) }
+            };
+            let mut frames = Vec::with_capacity(n);
+            for f in raw {
+                if f.pixels.is_null() || f.w <= 0 || f.h <= 0 || f.stride < 4 * f.w {
+                    return Err(ShellError::Arg);
+                }
+                let len = f.stride as usize * (f.h as usize - 1) + 4 * f.w as usize;
+                frames.push(SurfaceFrame {
+                    window: f.window,
+                    glitnir_root: f.glitnir_root,
+                    // SAFETY: `len` readable bytes by the contract, for the call.
+                    pixels: unsafe { std::slice::from_raw_parts(f.pixels, len) },
+                    w: f.w,
+                    h: f.h,
+                    stride: f.stride,
+                    src_x: f.src_x,
+                    src_y: f.src_y,
+                    flags: f.flags,
+                    alpha_cut: f.alpha_cut,
+                });
+            }
+            b.publish(root, &frames, t_key_ns)
+        },
+        i32::from,
+    )
+}
+
+/// Inline mode: present `root`'s tree.  1 when the root committed a buffer, 0 otherwise; `NHSHELL_E_STATE` in thread
+/// mode.
+///
+/// # Safety
+/// `sh` is a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nhshell_present_tree(sh: *mut NhShell, root: u64) -> i32 {
+    guard(sh, |b| b.present_tree(root), i32::from)
+}
+
+ffi!(fn nhshell_set_presenter_thread(on: i32) |b| b.set_presenter_thread(on != 0));
+ffi!(
+    /// The presenter's counters to `*out`.
+    fn nhshell_presenter_stats(out: *mut NhShellPresenterStats) |b| {
+        let st = b.presenter_stats()?;
+        // SAFETY: null or writable, by the contract.
+        unsafe { put(out, st) }
+    }
+);
+
 /// Own selection `kind` (`NHSHELL_SEL_*`) with `n` MIME types: `mimes[i]` with the `lens[i]` bytes at `data[i]`,
 /// copied here.  `NHSHELL_E_STATE` without keyboard focus.
 ///

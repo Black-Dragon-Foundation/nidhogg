@@ -22,6 +22,7 @@ pub mod output;
 pub mod pointer;
 pub mod popup;
 pub mod present;
+pub mod publish;
 pub mod reader;
 pub mod registry;
 pub mod scale;
@@ -88,6 +89,8 @@ pub struct MainState {
     ssd: bool,
     /// The Xcursor theme fallback and the latest shape request.
     cursor: cursor_theme::ThemeCursor,
+    /// Published packets on their way to the presenter.
+    mailbox: Arc<publish::Mailbox>,
 }
 
 /// The main queue's waker: an event routed into the main queue (by the reader's read) marks it pending and wakes the
@@ -110,6 +113,8 @@ pub struct WaylandShell {
     reader: Option<JoinHandle<()>>,
     /// text-input-v3's state, shared with the reader's handlers.
     text_input: Arc<text_input::TextInput>,
+    /// Publishing, and the presenter's fronts while it runs inline.
+    presenting: publish::Presenting,
 }
 
 impl MainState {
@@ -192,6 +197,7 @@ impl WaylandShell {
             main_waker,
             reader: Some(reader),
             text_input,
+            presenting: publish::Presenting::default(),
         };
         // dispatches the setup's main-queue events and registers the waker
         shell.dispatch_main().map_err(|_| ShellError::Unsupported)?;
