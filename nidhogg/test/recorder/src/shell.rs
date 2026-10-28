@@ -57,6 +57,7 @@ impl State {
             .cloned();
         if let Some(t) = toplevel {
             if !t.is_initial_configure_sent() {
+                self.session_before_configure(&t);
                 let serial = t.send_configure();
                 self.note_sent(surface, serial);
             }

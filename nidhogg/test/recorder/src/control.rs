@@ -83,6 +83,9 @@ pub fn handle(state: &mut State, line: &str, stream: &UnixStream) -> Option<Valu
         "scale" => crate::scale::scale(state, &req),
         "offer" => crate::selection::offer(state, &req),
         "activation_log" => crate::selection::activation_log(state),
+        "bell_log" | "idle_inhibitors" | "exports" | "session_log" => {
+            crate::extras::command(state, cmd).unwrap_or_else(|| err("no such query"))
+        }
         "output" => crate::scale::output(state, &req),
         "tree" => crate::shell::tree(state),
         "popup_done" => crate::shell::popup_done(state, &req),

@@ -348,6 +348,23 @@ Each is (:response N [:uris (URI...)]) or (:never t)."
       (insert-file-contents file)
       (mapcar #'read (split-string (buffer-string) "\n" t)))))
 
+;;; Restarting the session's compositor (gui.sh sets NHWL_GUI_RESTART on the recorder and on sway only)
+
+(defun gui-runner-restart-available-p ()
+  "Non-nil when the run's compositor can be stopped and started again on the same socket."
+  (let ((script (getenv "NHWL_GUI_RESTART")))
+    (and script (not (string-empty-p script)) (file-executable-p script))))
+
+(defun gui-runner-restart-compositor ()
+  "Stop the compositor and start it again on the same socket; returns when it serves (the script printed READY).
+The recorder keeps its session store.  Signals an error when the script fails or the run has none."
+  (unless (gui-runner-restart-available-p)
+    (error "gui-runner: this compositor has no restart script (NHWL_GUI_RESTART)"))
+  (with-temp-buffer
+    (let ((rc (call-process (getenv "NHWL_GUI_RESTART") nil t nil)))
+      (unless (and (eq rc 0) (string-match-p "^READY$" (buffer-string)))
+        (error "gui-runner: the restart script failed (%S): %s" rc (buffer-string))))))
+
 (defun glitnir-gui--load-tests ()
   (let ((dir (or (getenv "GLITNIR_GUI_TESTS") glitnir-gui--dir)))
     (dolist (f (let ((glob (getenv "GLITNIR_GUI_FILES")))
