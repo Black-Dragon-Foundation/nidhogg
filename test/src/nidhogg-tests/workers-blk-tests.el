@@ -193,6 +193,30 @@ Like a remote one, it answers `expand-file-name', which
         (inhibit-file-name-operation operation))
     (apply operation args)))
 
+(ert-deftest workers/dir-recursive-unsearchable-subdir ()
+  ;; A subdirectory that can be listed but not searched (r, no x): its
+  ;; entries' attributes fail.  It is unreadable, so the recursive read
+  ;; skips it, as the Lisp walk does, instead of ending with an error.
+  (skip-unless (not (zerop (user-uid))))
+  (let* ((root (file-name-as-directory (make-temp-file "workers-blk" t)))
+         (dir (directory-file-name root))
+         (sub (expand-file-name "noexec" root)))
+    (unwind-protect
+        (progn
+          (write-region "x" nil (expand-file-name "a.txt" root) nil 'silent)
+          (make-directory sub)
+          (write-region "x" nil (expand-file-name "in.txt" sub) nil 'silent)
+          (set-file-modes sub #o400)
+          (dolist (mode '(threads inline))
+            (let ((nidhogg-workers--mode mode))
+              (ert-info ((format "mode %s" mode) :prefix "")
+                (let ((got (workers-blk--read dir nil :recursive t)))
+                  (should-not (cadr got))
+                  (should (equal (mapcar #'car (apply #'append (car got)))
+                                 (mapcar #'car (workers-blk--walk root nil)))))))))
+      (set-file-modes sub #o700)
+      (delete-directory root t))))
+
 (ert-deftest workers/dir-remote ()
   (let ((file-name-handler-alist
          ;; Not Tramp's syntax: a "/method:" name would reach Tramp's
