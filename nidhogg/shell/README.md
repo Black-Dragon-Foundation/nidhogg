@@ -60,9 +60,41 @@ scale: `scale120` = 120 x (Xft DPI / 96), and server-side decorations always (`s
 | events: `FRAME_READY` (21, roots only: a child presents with its tree, deepest first), `window_dirty`, `window_ready` (bits `READY_CONTENT`, `READY_OWED`, `READY_ACK`) | the display link: ready when the layer may show the next bitmap (always, once drawn); child windows show in the root's walk | idle after `XShmCompletion` of the last put; children's puts in the root's walk | fits |
 | events: `OUTPUT_ADD`, `OUTPUT_CHANGE`, `OUTPUT_REMOVE`, `ENTER_OUTPUT`, `LEAVE_OUTPUT` | `NSScreen`, `didChangeScreenParameters`, `windowDidChangeScreen:` | RandR monitors (a window's monitor from its position) | fits |
 | events: `DISCONNECTED` | never sent | connection error | fits |
+| `set_decorated` | `styleMask` with or without the title bar | `_MOTIF_WM_HINTS` decorations | fits |
+| `set_alpha` | `alphaValue` | `_NET_WM_WINDOW_OPACITY` | fits |
 | `selection_own`, `selection_disown`, `selection_owned` | `NSPasteboard` `declareTypes:owner:` with the copied bytes per type; no system primary selection, so `PRIMARY` stays inside the process | `SetSelectionOwner` on `CLIPBOARD` or `PRIMARY`, answering `SelectionRequest` from the copy (INCR for large data) | fits |
 | `selection_types`, `selection_read` | the pasteboard's `types` and `dataForType:` (synchronous, the timeout never runs out) | `ConvertSelection` to `TARGETS` or the type, waiting for `SelectionNotify` up to the timeout | fits |
 | events: `SELECTION` | the pasteboard's `changeCount`, checked when the app becomes active | `XFixesSelectionNotify` | fits |
 | `text_input_enable`, `text_input_cursor`, `text_input_surrounding`, `take_text`; events `PREEDIT`, `COMMIT_TEXT`, `DELETE_SURROUNDING` | `NSTextInputClient` (`setMarkedText:`, `insertText:`, `firstRectForCharacterRange:`); no delete record (macOS replaces ranges in `insertText:`) | XIM or ibus over D-Bus (preedit callbacks, `XIM_SET_IC_VALUES` for the spot) | fits |
 
 Result: every row fits; the API needed no change.
+
+## Frame parameters
+
+Every frame parameter of Emacs's table either has its effect on a frame of the shell or is accepted, stored and
+listed here as a no-op with its reason (`frame-parameter` returns what was set either way).
+
+| Parameter | On the shell |
+|---|---|
+| `alpha` | `wp_alpha_modifier_v1` on the window's surface (a child's too): the multiplier is surface state, so the window owes a commit and a bare one carries it. Without the protocol the glue multiplies the composed pixels. The active value while the frame is the highlighted one, the inactive one otherwise, never below `frame-alpha-lower-limit` (as pgtk) |
+| `alpha-background` | the backing is drawn with it |
+| `undecorated` | at creation the window asks for no decorations (client-side mode, and our title bar is not drawn); changed later, the window asks the compositor again and our title bar and margins come or go at once. A maximized, fullscreen or tiled window keeps the compositor's size; a floating one keeps its native size (as X11) |
+| `fullscreen` | `fullboth` and `maximized` as asked; `fullwidth` and `fullheight` maximize (a client cannot fill one direction) |
+| `width`, `height`, `min-width`, `min-height` | the size; the compositor is told the smallest size (one column and one line, the bars and our title bar: `xdg_toplevel.set_min_size`), as GTK's size hints |
+| `border-width`, `internal-border-width`, `child-frame-border-width`, `right-divider-width`, `bottom-divider-width`, `left-fringe`, `right-fringe`, `line-spacing`, `tab-bar-lines`, `menu-bar-lines`, `tool-bar-lines` | Emacs's own layout, redrawn |
+| `font`, `font-backend`, colours (`foreground-color`, `background-color`, `cursor-color`, `border-color`), `cursor-type`, `screen-gamma`, `no-special-glyphs`, `borders-respect-alpha-background` | Emacs's drawing |
+| `name`, `title` | the window's title (`xdg_toplevel.set_title`) and our title bar |
+| `visibility` | shown or hidden; `icon` minimizes |
+| `parent-frame`, `z-group` (child frames), `no-accept-focus` | child frames (sync subsurfaces) and their stacking; a `no-accept-focus` child never takes its tree's keys |
+| `auto-raise`, `auto-lower`, `unsplittable` | generic |
+| `mouse-color` | no-op: a compositor's cursor (`wp_cursor_shape_v1`) has no colour |
+| `icon-name` | no-op: Wayland has no icon title |
+| `icon-type` | no-op: the icon comes from the desktop file |
+| `left`, `top` on a top-level | no-op: Wayland gives a top-level no position (a child frame's are its position) |
+| `z-group` on a top-level, `sticky`, `skip-taskbar`, `shaded` | no-op: no protocol for them |
+| `no-focus-on-map` | no-op: the compositor decides whether a new window takes the focus |
+| `override-redirect` | no-op: child frames are subsurfaces already |
+| `inhibit-double-buffering` | no-op: the backing is single, and the shell's buffers are its own |
+| `wait-for-wm` | no-op: the first configure is always awaited |
+| `tool-bar-position` | no-op: the tool bar is Emacs-drawn, on top |
+| `scroll-bar-width`, `scroll-bar-height`, `vertical-scroll-bars`, `horizontal-scroll-bars`, `scroll-bar-foreground`, `scroll-bar-background` | no-op: the shell has no toolkit scroll bars |

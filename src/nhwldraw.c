@@ -2614,6 +2614,31 @@ nhwl_glitnir_commit (struct frame *f)
    BUF that is stale (BUF's age: the damage of the last AGE - 1 presents).
    The pending damage stays in OUT->pending, as the buffer's new damage,
    until nhwl_glitnir_presented.  */
+/* Multiply every pixel of BUF (premultiplied ARGB) by the frame's alpha,
+   1 - CUT / UINT32_MAX: what wp_alpha_modifier_v1 would have the
+   compositor do.  */
+static void
+nhwl_alpha_multiply (const NhShellBuffer *buf, uint32_t cut)
+{
+  uint32_t a = 255 - (uint32_t) ((uint64_t) cut * 255 / UINT32_MAX);
+  int x, y;
+
+  for (y = 0; y < buf->h; y++)
+    {
+      uint32_t *p = (uint32_t *) (buf->pixels + (ptrdiff_t) y * buf->stride);
+
+      for (x = 0; x < buf->w; x++)
+	{
+	  uint32_t v = p[x];
+
+	  p[x] = (((v >> 24) * a / 255) << 24
+		  | (((v >> 16) & 0xff) * a / 255) << 16
+		  | (((v >> 8) & 0xff) * a / 255) << 8
+		  | ((v & 0xff) * a / 255));
+	}
+    }
+}
+
 void
 nhwl_glitnir_compose (struct frame *f, const NhShellBuffer *buf)
 {
@@ -2636,7 +2661,12 @@ nhwl_glitnir_compose (struct frame *f, const NhShellBuffer *buf)
 
   for (i = 0; i < out->npending; i++)
     clip[n++] = out->pending[i];
-  if (buf->age == 0 || buf->age - 1 > (uint32_t) out->nhist)
+  /* The host multiplies `alpha' (no wp_alpha_modifier_v1): the whole
+     buffer is composed, so that every pixel is multiplied once.  */
+  if (out->alpha_host)
+    n = 0;
+  if (out->alpha_host || buf->age == 0
+      || buf->age - 1 > (uint32_t) out->nhist)
     clip[n++] = (GlitnirRect) { 0, 0, buf->w, buf->h };
   else
     for (i = 0; i < (int) buf->age - 1; i++)
@@ -2655,6 +2685,8 @@ nhwl_glitnir_compose (struct frame *f, const NhShellBuffer *buf)
 	memcpy (buf->pixels + (ptrdiff_t) i * buf->stride,
 		s.pixels + (ptrdiff_t) i * s.stride, row);
     }
+  if (out->alpha_host)
+    nhwl_alpha_multiply (buf, out->alpha_cut);
 }
 
 /* The composed buffer was committed: its damage joins the history.  */

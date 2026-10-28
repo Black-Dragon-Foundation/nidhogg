@@ -249,6 +249,8 @@ ffi!(fn nhshell_window_set_min_size(window: u64, w: i32, h: i32) |b| b.set_min_s
 ffi!(fn nhshell_window_set_fullscreen(window: u64, on: i32) |b| b.set_fullscreen(window, on != 0));
 ffi!(fn nhshell_window_set_maximized(window: u64, on: i32) |b| b.set_maximized(window, on != 0));
 ffi!(fn nhshell_window_minimize(window: u64) |b| b.minimize(window));
+ffi!(fn nhshell_window_set_decorated(window: u64, on: i32) |b| b.set_decorated(window, on != 0));
+ffi!(fn nhshell_window_set_alpha(window: u64, factor: u32) |b| b.set_alpha(window, factor));
 ffi!(fn nhshell_window_move(window: u64) |b| b.move_window(window));
 ffi!(fn nhshell_window_resize(window: u64, edges: u32) |b| b.resize(window, edges));
 ffi!(fn nhshell_window_show_menu(window: u64, x: i32, y: i32) |b| b.show_menu(window, x, y));

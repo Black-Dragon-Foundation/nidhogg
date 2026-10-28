@@ -202,6 +202,12 @@ pub trait ShellBackend {
     fn window_scale(&self, window: WindowId) -> ShellResult<u32>;
     /// Whether the compositor decorates the window (server-side decorations were granted to it).
     fn window_ssd(&self, window: WindowId) -> ShellResult<bool>;
+    /// Ask again for server-side decorations (`on`) or for none: a top-level's `undecorated` changed at run time.
+    /// The compositor's answer comes with a configure; nothing when decorations are forced client-side.
+    fn set_decorated(&mut self, window: WindowId, on: bool) -> ShellResult;
+    /// The window's opacity, a multiplier of its pixels' alpha (`u32::MAX` is opaque).  The window owes a commit
+    /// (its ancestors too, for a child).  `Unsupported` when the compositor cannot apply it: the host multiplies.
+    fn set_alpha(&mut self, window: WindowId, factor: u32) -> ShellResult;
 
     /// Create a child (`NHSHELL_KIND_CHILD`) or popup (`NHSHELL_KIND_POPUP`) window.
     fn child_new(&mut self, desc: &ChildDesc) -> ShellResult<WindowId>;

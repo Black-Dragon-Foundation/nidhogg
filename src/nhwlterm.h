@@ -287,6 +287,12 @@ struct nhwl_output
      input-method events go to that frame (W1-7).  */
   uint64_t focus_window;
 
+  /* The `alpha' applied, as what it takes off opaque: UINT32_MAX minus the
+     multiplier (0: opaque, the default).  ALPHA_HOST: the compositor cannot
+     apply it, and nhwl_glitnir_compose multiplies the pixels.  */
+  uint32_t alpha_cut;
+  bool alpha_host;
+
   /* Glitnir's scene of this frame: its id (0: none yet), the size and scale
      it was told, the damage committed but not yet presented, and the
      damage of the last presents (to repair an older buffer).  */
@@ -474,6 +480,8 @@ extern const char *nhwl_get_string_resource (XrmDatabase, const char *,
 extern void nhwl_create_frame_window (struct frame *);
 extern void nhwl_set_title_hint (struct frame *);
 extern void nhwl_set_undecorated_hint (struct frame *, bool);
+extern void nhwl_set_frame_alpha (struct frame *);
+extern void nhwl_set_min_size (struct frame *);
 extern void nhwl_wait_for_configure (struct frame *);
 extern struct nhwl_display_info *check_nhwl_display_info (Lisp_Object);
 extern struct nhwl_display_info *nhwl_display_info_for_name (Lisp_Object);
