@@ -309,6 +309,7 @@ impl WaylandShell {
             _ => merged(damage),
         };
         let surface = self.main.surfaces.get(&id).ok_or(ShellError::State)?;
+        let ack = p.ack.take();
         let buf = p.bufs.get(&slot.id).ok_or(ShellError::State)?;
         let scale = self
             .main
@@ -327,6 +328,12 @@ impl WaylandShell {
         } else {
             surface.set_buffer_scale(((scale + 60) / 120).max(1) as i32);
         }
+        // the ack goes before anything the commit carries (a checker, and a compositor, read the order)
+        if let Some(serial) = ack
+            && let Some(xdg) = self.main.xdg_of(id)
+        {
+            xdg.ack_configure(serial);
+        }
         surface.attach(Some(&buf.buffer), 0, 0);
         for r in &all {
             surface.damage_buffer(r.x, r.y, r.w, r.h);
@@ -339,11 +346,6 @@ impl WaylandShell {
                 pres.feedback(surface, rqh, present.clone());
             }
             p.waiting = true;
-        }
-        if let Some(serial) = p.ack.take()
-            && let Some(xdg) = self.main.xdg_of(id)
-        {
-            xdg.ack_configure(serial);
         }
         p.ack_content = false;
         p.owed = false;
