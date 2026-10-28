@@ -4,6 +4,7 @@
 
 use crate::api::*;
 use crate::wayland::{MainState, WaylandShell};
+use std::collections::HashMap;
 use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols::xdg::activation::v1::client::xdg_activation_token_v1::{
     self, XdgActivationTokenV1,
@@ -51,6 +52,71 @@ impl WaylandShell {
             }
         }
         self.flush()
+    }
+}
+
+/// Tokens asked for by `activation_token`: request number -> the token once it arrived.  A request that timed out is
+/// removed, so its late answer is dropped.
+#[derive(Default)]
+pub struct Tokens {
+    next: u64,
+    wanted: HashMap<u64, Option<String>>,
+}
+
+/// The user data of a token request made for the host (it activates nothing).
+pub struct Fetch(u64);
+
+impl WaylandShell {
+    /// A fresh activation token for window `id`, made with the newest input serial: within `timeout_ms` or `Timeout`
+    /// (`State` before any input, `Unsupported` without `xdg_activation_v1`).
+    pub(super) fn activation_token_impl(
+        &mut self,
+        id: WindowId,
+        timeout_ms: u32,
+    ) -> ShellResult<String> {
+        let m = &mut self.main;
+        let manager = m.activation.as_ref().ok_or(ShellError::Unsupported)?;
+        let surface = m.surfaces.get(&id).ok_or(ShellError::State)?;
+        let seat = m.seat.as_ref().ok_or(ShellError::State)?;
+        let serial = self
+            .shared
+            .serials
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .selection_serial()
+            .ok_or(ShellError::State)?
+            .as_raw();
+        let n = m.tokens.next;
+        m.tokens.next += 1;
+        m.tokens.wanted.insert(n, None);
+        let request = manager.get_activation_token(&self.main_queue.handle(), Fetch(n));
+        request.set_serial(serial, seat);
+        request.set_surface(surface);
+        request.commit();
+        let r = self.wait_main(timeout_ms, |m| {
+            m.tokens.wanted.get(&n).is_some_and(Option::is_some)
+        });
+        let token = self.main.tokens.wanted.remove(&n).flatten();
+        r?;
+        token.ok_or(ShellError::State)
+    }
+}
+
+impl Dispatch<XdgActivationTokenV1, Fetch> for MainState {
+    fn event(
+        state: &mut Self,
+        request: &XdgActivationTokenV1,
+        event: xdg_activation_token_v1::Event,
+        fetch: &Fetch,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_activation_token_v1::Event::Done { token } = event {
+            if let Some(slot) = state.tokens.wanted.get_mut(&fetch.0) {
+                *slot = Some(token);
+            }
+            request.destroy();
+        }
     }
 }
 

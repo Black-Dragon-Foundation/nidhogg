@@ -64,6 +64,11 @@ scale: `scale120` = 120 x (Xft DPI / 96), and server-side decorations always (`s
 | events: `OUTPUT_ADD`, `OUTPUT_CHANGE`, `OUTPUT_REMOVE`, `ENTER_OUTPUT`, `LEAVE_OUTPUT` | `NSScreen`, `didChangeScreenParameters`, `windowDidChangeScreen:` | RandR monitors (a window's monitor from its position) | fits |
 | events: `DISCONNECTED` | never sent | connection error | fits |
 | `set_decorated` | `styleMask` with or without the title bar | `_MOTIF_WM_HINTS` decorations | fits |
+| `bell` | `NSBeep` | `XkbBell` | fits |
+| `inhibit_idle` | an `IOPMAssertion` (`PreventUserIdleDisplaySleep`) | the XScreenSaver `Suspend`/DPMS request | fits |
+| `window_export` | none (sandbox handles do not exist) | the window's XID as text | fits |
+| `activation_token` | none: an empty token | a `_NET_STARTUP_ID` for the window | fits |
+| `session_open`, `window_session_remove` | state restoration (`NSWindowRestoration`) | `XSMP` session management | fits |
 | `set_alpha` | `alphaValue` | `_NET_WM_WINDOW_OPACITY` | fits |
 | `selection_own`, `selection_disown`, `selection_owned` | `NSPasteboard` `declareTypes:owner:` with the copied bytes per type; no system primary selection, so `PRIMARY` stays inside the process | `SetSelectionOwner` on `CLIPBOARD` or `PRIMARY`, answering `SelectionRequest` from the copy (INCR for large data) | fits |
 | `selection_types`, `selection_read` | the pasteboard's `types` and `dataForType:` (synchronous, the timeout never runs out) | `ConvertSelection` to `TARGETS` or the type, waiting for `SelectionNotify` up to the timeout | fits |

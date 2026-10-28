@@ -47,6 +47,13 @@ pub const NHSHELL_EV_LEAVE_OUTPUT: u32 = 24;
 pub const NHSHELL_EV_TOUCH: u32 = 39;
 /// A touchpad pinch began, changed or ended (`u.pinch`), on the window under the pointer.
 pub const NHSHELL_EV_PINCH: u32 = 40;
+/// The compositor answered `nhshell_session_open` (or took the session over): `u.session.state`.
+pub const NHSHELL_EV_SESSION: u32 = 41;
+
+/// `session.state`.
+pub const NHSHELL_SESSION_CREATED: u32 = 0;
+pub const NHSHELL_SESSION_RESTORED: u32 = 1;
+pub const NHSHELL_SESSION_REPLACED: u32 = 2;
 
 pub const NHSHELL_MOD_SHIFT: u32 = 1 << 0;
 pub const NHSHELL_MOD_CTRL: u32 = 1 << 1;
@@ -223,6 +230,13 @@ pub struct PinchEv {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+pub struct SessionEv {
+    /// `NHSHELL_SESSION_*`.
+    pub state: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub union NhShellEventData {
     pub key: KeyEv,
     pub pointer: PointerEv,
@@ -236,6 +250,7 @@ pub union NhShellEventData {
     pub text: TextEv,
     pub touch: TouchEv,
     pub pinch: PinchEv,
+    pub session: SessionEv,
 }
 
 #[repr(C)]
