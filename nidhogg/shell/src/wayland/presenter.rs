@@ -173,6 +173,11 @@ impl Link {
         *locked(&self.wire) = Some(Arc::new(w));
     }
 
+    /// The connection went for a reconnect: the wire's clone of it goes too (the new one comes with `set_wire`).
+    pub(crate) fn clear_wire(&self) {
+        *locked(&self.wire) = None;
+    }
+
     pub(crate) fn wire(&self) -> Option<Arc<Wire>> {
         locked(&self.wire).clone()
     }

@@ -342,12 +342,20 @@ mod reader {
         ("present_tree", |s, w| s.present_tree(w).map(drop)),
         ("set_presenter_thread", |s, _| s.set_presenter_thread(false)),
         ("presenter_stats", |s, _| s.presenter_stats().map(drop)),
+        ("set_reconnect", |s, _| s.set_reconnect(true)),
+        ("reconnect", |s, _| s.reconnect(50)),
         ("window_destroy", |s, w| s.window_destroy(w)),
     ];
 
     /// Calls that cannot fail: the wake descriptor (the host may still be waiting on it), the capabilities, and the
     /// error text itself.  `abandon` is the glue's teardown handle.
-    const NO_ERROR: &[&str] = &["wake_fd", "caps", "last_error", "abandon"];
+    const NO_ERROR: &[&str] = &[
+        "wake_fd",
+        "caps",
+        "last_error",
+        "abandon",
+        "connection_state",
+    ];
 
     /// The names of `ShellBackend`'s methods, read from its source.
     fn trait_methods() -> Vec<String> {

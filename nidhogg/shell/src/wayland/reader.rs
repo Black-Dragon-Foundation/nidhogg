@@ -8,7 +8,8 @@
 //!
 //! The loop: `prepare_read` (dispatching what is queued until it succeeds) → flush → `poll(fd, POLLIN | (want_flush ?
 //! POLLOUT : 0))` together with `reader_wake` → read, or cancel → dispatch the reader queue.  A failed read, a failed
-//! dispatch or a panic posts `DISCONNECTED` and ends the thread.
+//! dispatch or a panic posts `DISCONNECTED` and ends the thread; a hangup (EPIPE, ECONNRESET) with reconnecting on
+//! posts what the loss ends and `RECONNECTING` instead.
 
 use crate::event::{FocusEv, NHSHELL_EV_FOCUS, NhShellEvent};
 use crate::wayland::clipboard::SendBytes;
@@ -123,7 +124,42 @@ struct Reader {
 /// The connection failed (or the reader may not go on).
 struct Lost;
 
+/// How the reader's loop ended.
+enum End {
+    /// The shell asked it to stop.
+    Stopped,
+    /// The connection hung up and the shell reconnects: `RECONNECTING` is posted.
+    Reconnecting,
+    /// Anything else: the host hears `DISCONNECTED`.
+    Lost,
+}
+
 impl Reader {
+    /// The loss is a hangup the shell reconnects after: reconnecting is on, the compositor sent no protocol error, and
+    /// the connection ended with EPIPE or ECONNRESET.
+    fn reconnectable(&self) -> bool {
+        if !self.state.shared.reconnect.load(Ordering::Acquire)
+            || self.conn.protocol_error().is_some()
+        {
+            return false;
+        }
+        matches!(
+            self.conn.backend().last_error(),
+            Some(WaylandError::Io(e)) if matches!(e.raw_os_error(), Some(libc::EPIPE | libc::ECONNRESET))
+        )
+    }
+
+    /// Post what the loss ends, in this order: key repeat stops (this thread's timer goes with it), every held button
+    /// is released, live touch points are cancelled, a shown preedit is cleared; then `RECONNECTING`.
+    fn post_reconnecting(&mut self) {
+        self.state.release_held_buttons();
+        touch::cancel(&mut self.state);
+        let mut preedit = Vec::new();
+        self.state.text_input.lost(&mut preedit);
+        self.state.post_all(preedit);
+        self.state.shared.reconnecting();
+    }
+
     /// Dispatch the reader queue (and register the waker), then wake the host for what was posted.
     fn dispatch(&mut self) -> Result<(), Lost> {
         let mut cx = Context::from_waker(&self.waker);
@@ -289,16 +325,24 @@ pub fn spawn(
                     shared: Arc::downgrade(&state.shared),
                     me: std::thread::current().id(),
                 }));
-                Reader {
+                let mut reader = Reader {
                     conn,
                     queue,
                     state,
                     waker,
+                };
+                match reader.run() {
+                    Ok(()) => End::Stopped,
+                    Err(Lost) if reader.reconnectable() => {
+                        reader.post_reconnecting();
+                        End::Reconnecting
+                    }
+                    Err(Lost) => End::Lost,
                 }
-                .run()
+                // the reader, its queue and its clone of the connection go here, before `reader_done`
             }));
             // a lost connection or a panic: the host hears DISCONNECTED once
-            if !matches!(outcome, Ok(Ok(()))) {
+            if !matches!(outcome, Ok(End::Stopped | End::Reconnecting)) {
                 shared.close();
             }
             shared.reader_done.set();
