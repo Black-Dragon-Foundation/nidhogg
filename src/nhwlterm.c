@@ -869,38 +869,52 @@ nhwl_to_device (int logical, uint32_t s120)
   return (int) roundf ((float) logical * (float) s120 / 120.0f);
 }
 
-/* Make frame F's shell window from DESC and register it with the glue as
-   a frame of kind FLAGS (NHG_FRAME_*), with the facts it starts from (the
-   scale F's window starts at, F's native size); its id goes to *ID.  The
-   shell's code, or 0.  Until windows are made through the glue, every
-   window is made and destroyed here (nhwl_window_destroy), so the glue's
-   frame registry follows them.  */
+/* F's facts the glue keeps for its window: visible, iconified, our own
+   title bar.  */
+static uint32_t
+nhwl_window_facts (struct frame *f)
+{
+  return ((FRAME_VISIBLE_P (f) ? NHG_FACT_VISIBLE : 0)
+	  | (FRAME_ICONIFIED_P (f) ? NHG_FACT_ICONIFIED : 0)
+	  | (FRAME_NHWL_OUTPUT (f)->csd.on ? NHG_FACT_CSD : 0));
+}
+
+/* Make frame F's shell window from DESC through the glue, which registers
+   it as a frame of kind FLAGS (NHG_FRAME_*) with the facts it starts from
+   (the scale F's window starts at, F's native size, its visibility and
+   title bar); its id goes to *ID.  The glue's code, or 0.  */
 int
 nhwl_window_new (struct frame *f, NhShellWindowDesc *desc, uint32_t flags,
 		 uint64_t *id)
 {
   struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
-  int rc = nhshell_window_new (dpyinfo->shell, desc, id);
+  int w = f->new_size_p ? f->new_width : FRAME_PIXEL_WIDTH (f);
+  int h = f->new_size_p ? f->new_height : FRAME_PIXEL_HEIGHT (f);
+  NhgWindowDesc d = {
+    .w = desc->w, .h = desc->h,
+    .title = desc->title,
+    .title_len = desc->title ? strlen (desc->title) : 0,
+    .app_id = desc->app_id,
+    .app_id_len = desc->app_id ? strlen (desc->app_id) : 0,
+    .session_name = desc->session_name,
+    .session_name_len = desc->session_name ? strlen (desc->session_name) : 0,
+    .flags = desc->flags, .kind = desc->kind, .parent = desc->parent,
+    .x = desc->x, .y = desc->y,
+    .anchor = { desc->anchor.x, desc->anchor.y, desc->anchor.w,
+		desc->anchor.h, desc->anchor.gravity, desc->anchor.adjust },
+    .role = flags,
+    .facts = nhwl_window_facts (f),
+    .native_w = max (1, w), .native_h = max (1, h),
+    .scale120 = out->scale120,
+  };
 
-  if (rc >= 0)
-    {
-      int w = f->new_size_p ? f->new_width : FRAME_PIXEL_WIDTH (f);
-      int h = f->new_size_p ? f->new_height : FRAME_PIXEL_HEIGHT (f);
-
-      nhwl_glue_rc (dpyinfo, NHG (nhg_frame_register (dpyinfo->glue, *id,
-						      flags)));
-      nhwl_glue_rc (dpyinfo, NHG (nhg_frame_scale (dpyinfo->glue, *id,
-						   out->scale120)));
-      nhwl_glue_rc (dpyinfo, NHG (nhg_frame_resized (dpyinfo->glue, *id,
-						     max (1, w),
-						     max (1, h))));
-      if (FRAME_COLUMN_WIDTH (f) > 0 && FRAME_LINE_HEIGHT (f) > 0)
-	nhwl_glue_rc (dpyinfo,
-		      NHG (nhg_frame_units (dpyinfo->glue, *id,
-					    FRAME_COLUMN_WIDTH (f),
-					    FRAME_LINE_HEIGHT (f))));
-    }
+  int rc = nhwl_glue_rc (dpyinfo, NHG (nhg_window_new (dpyinfo->glue, &d,
+							   id)));
+  if (rc >= 0 && FRAME_COLUMN_WIDTH (f) > 0 && FRAME_LINE_HEIGHT (f) > 0)
+    nhwl_glue_rc (dpyinfo, NHG (nhg_frame_units (dpyinfo->glue, *id,
+						 FRAME_COLUMN_WIDTH (f),
+						 FRAME_LINE_HEIGHT (f))));
   return rc;
 }
 
@@ -913,12 +927,24 @@ nhwl_window_forget (struct nhwl_display_info *dpyinfo, uint64_t window)
   nhwl_glue_rc (dpyinfo, NHG (nhg_frame_forget (dpyinfo->glue, window)));
 }
 
-/* Destroy shell window WINDOW, and forget it in the glue.  */
+/* Destroy shell window WINDOW, and forget it in the glue.  Errors are
+   ignored: the window is forgotten all the same, and a lost or poisoned
+   display is going already.  */
 void
 nhwl_window_destroy (struct nhwl_display_info *dpyinfo, uint64_t window)
 {
-  nhshell_window_destroy (dpyinfo->shell, window);
-  nhwl_window_forget (dpyinfo, window);
+  nhwl_glue_rc (dpyinfo, NHG (nhg_window_destroy (dpyinfo->glue, window)));
+}
+
+/* Push F's visibility (ON: visible, not iconified) to the glue.  */
+void
+nhwl_window_visible (struct frame *f, bool on)
+{
+  uint64_t window = FRAME_NHWL_OUTPUT (f)->window;
+
+  if (window)
+    nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		  NHG (nhg_window_visible (FRAME_NHG (f), window, on)));
 }
 
 /* Create frame F's shell window at its current pixel size.  Adapted from
@@ -1109,8 +1135,10 @@ nhwl_set_title_hint (struct frame *f)
       Lisp_Object encoded = ENCODE_UTF_8 (title);
 
       block_input ();
-      nhshell_window_set_title (FRAME_NHWL_SHELL (f), out->window,
-				SSDATA (encoded));
+      nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		    NHG (nhg_window_title (FRAME_NHG (f), out->window,
+					   SSDATA (encoded),
+					   SBYTES (encoded))));
       unblock_input ();
       nhwl_csd_changed (f);
     }
@@ -1145,13 +1173,11 @@ nhwl_set_undecorated_hint (struct frame *f, bool undecorated)
 
   if (!out->window)
     return;
-  if (!nhwl_child_p (f))
-    {
-      block_input ();
-      nhshell_window_set_decorated (FRAME_NHWL_SHELL (f), out->window,
-				    !undecorated);
-      unblock_input ();
-    }
+  block_input ();
+  nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		NHG (nhg_window_undecorated (FRAME_NHG (f), out->window,
+					     undecorated)));
+  unblock_input ();
   nhwl_csd_layout (f);
   if (!nhwl_child_p (f) && out->logical_w > 0 && out->logical_h > 0
       && (out->states & (NHSHELL_STATE_MAXIMIZED | NHSHELL_STATE_FULLSCREEN
@@ -1172,10 +1198,9 @@ nhwl_set_undecorated_hint (struct frame *f, bool undecorated)
 
 /* Apply F's `alpha', by pgtk_set_frame_alpha's rule: the active value
    while F is the highlight frame, else the inactive one, never below
-   `frame-alpha-lower-limit'.  The compositor multiplies when it can
-   (wp_alpha_modifier_v1, surface state the window then owes a commit for:
-   the shell wakes its pacer); otherwise nhwl_glitnir_compose multiplies
-   the pixels, and the whole frame is damaged for it.  */
+   `frame-alpha-lower-limit'.  The glue applies it (the compositor
+   multiplies when it can; otherwise the shell multiplies the pixels, and
+   the whole frame is damaged for it).  */
 void
 nhwl_set_frame_alpha (struct frame *f)
 {
@@ -1183,8 +1208,7 @@ nhwl_set_frame_alpha (struct frame *f)
   double alpha = (FRAME_DISPLAY_INFO (f)->highlight_frame == f
 		  ? f->alpha[0] : f->alpha[1]);
   double alpha_min = 1.0;
-  uint32_t cut;
-  bool host;
+  uint32_t cut = 0;
   int rc;
 
   if (!out || !out->window)
@@ -1198,19 +1222,19 @@ nhwl_set_frame_alpha (struct frame *f)
     alpha = 1.0;
   else if (alpha < alpha_min && alpha_min <= 1.0)
     alpha = alpha_min;
-  cut = alpha >= 1.0 ? 0 : UINT32_MAX - (uint32_t) (alpha * UINT32_MAX);
-  if (cut == out->alpha_cut)
-    return;
 
   block_input ();
-  rc = nhshell_window_set_alpha (FRAME_NHWL_SHELL (f), out->window,
-				 UINT32_MAX - cut);
+  rc = nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		     NHG (nhg_window_alpha (FRAME_NHG (f), out->window, alpha,
+					    f->alpha_background, &cut)));
   unblock_input ();
-  host = rc == NHSHELL_E_UNSUPPORTED;
-  if (host || out->alpha_host)
+  if (rc < 0)
+    return;
+  if (rc & NHG_ALPHA_DAMAGE)
     nhwl_damage_all (f);
+  /* The surface list's copies.  */
   out->alpha_cut = cut;
-  out->alpha_host = host && cut;
+  out->alpha_host = rc & NHG_ALPHA_HOST;
 }
 
 /* The largest side of a frame's surface, in device pixels.  Cairo's
@@ -1237,11 +1261,17 @@ void
 nhwl_set_window_size (struct frame *f, bool change_gravity, int pixelwidth,
 		      int pixelheight)
 {
+  uint64_t window = FRAME_NHWL_OUTPUT (f)->window;
+
   nhwl_clamp_native_size (f, &pixelwidth, &pixelheight);
   nhwl_popup_set_size (f, pixelwidth, pixelheight);
   change_frame_size (f, pixelwidth, pixelheight, false, true, false);
   SET_FRAME_GARBAGED (f);
-  nhwl_frame_resized (f, pixelwidth, pixelheight);
+  if (window)
+    nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		  NHG (nhg_window_size (FRAME_NHG (f), window,
+					max (1, pixelwidth),
+					max (1, pixelheight))));
 }
 
 /* Adapted from pgtk_set_offset: Wayland clients have no position.  */
@@ -1335,29 +1365,28 @@ nhwl_new_font (struct frame *f, Lisp_Object font_object, int fontset)
 
 /* Tell the compositor F's smallest size (xdg_toplevel.set_min_size, with
    the next commit): one column and one line of text with the bars, as
-   GTK's size hints say (xg_wm_set_size_hint), and our title bar.  */
+   GTK's size hints say (xg_wm_set_size_hint), and our title bar (the glue
+   gives a child frame's window none).  */
 void
 nhwl_set_min_size (struct frame *f)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
-  uint32_t s120 = out->scale120 ? out->scale120 : 120;
   int w, h;
 
-  if (!out->window || nhwl_child_p (f) || !FRAME_FONT (f))
+  if (!out->window || !FRAME_FONT (f))
     return;
   w = FRAME_TEXT_COLS_TO_PIXEL_WIDTH (f, 1);
   h = (FRAME_TEXT_LINES_TO_PIXEL_HEIGHT (f, 1) + FRAME_MENUBAR_HEIGHT (f)
        + FRAME_TOOLBAR_HEIGHT (f) + out->csd.strip);
   block_input ();
-  nhshell_window_set_min_size (FRAME_NHWL_SHELL (f), out->window,
-			       nhwl_to_logical (w, s120),
-			       nhwl_to_logical (h, s120));
+  nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		NHG (nhg_window_min_size (FRAME_NHG (f), out->window, w, h)));
   unblock_input ();
 }
 
 /* Wait for the compositor's first configure of frame F, handling the
-   events that arrive meanwhile.  Adapted in role from
-   pgtk_wait_for_map_event.  */
+   events that arrive meanwhile: the glue waits up to 20 ms a round for
+   something to drain.  Adapted in role from pgtk_wait_for_map_event.  */
 void
 nhwl_wait_for_configure (struct frame *f)
 {
@@ -1372,16 +1401,20 @@ nhwl_wait_for_configure (struct frame *f)
   while (!out->configured && dpyinfo->shell && waited_ms < limit * 1000
 	 && rounds++ < 4000)
     {
-      struct pollfd pfd = { .fd = dpyinfo->connection, .events = POLLIN };
+      int rc;
 
       block_input ();
-      nhshell_dispatch_main (dpyinfo->shell);
+      rc = nhwl_glue_rc (dpyinfo,
+			 NHG (nhg_window_wait_configured (dpyinfo->glue,
+							  out->window, 20)));
       unblock_input ();
-      nhwl_drain_events (dpyinfo, NULL);
-      if (out->configured)
+      if (rc == 1)
 	break;
-      if (poll (&pfd, 1, 20) == 0)
+      if (rc == NHG_E_TIMEOUT)
 	waited_ms += 20;
+      else if (rc < 0)
+	break;
+      nhwl_drain_events (dpyinfo, NULL);
     }
 }
 
@@ -1409,6 +1442,7 @@ nhwl_make_frame_visible (struct frame *f)
 	    nhwl_set_fullscreen_state (f);
 	  SET_FRAME_VISIBLE (f, 1);
 	  SET_FRAME_ICONIFIED (f, false);
+	  nhwl_window_visible (f, true);
 	  out->has_been_visible = true;
 	  SET_FRAME_GARBAGED (f);
 	}
@@ -1430,6 +1464,7 @@ nhwl_make_frame_invisible (struct frame *f)
   nhwl_child_set_visible (f, false);
   SET_FRAME_VISIBLE (f, 0);
   SET_FRAME_ICONIFIED (f, false);
+  nhwl_window_visible (f, false);
 }
 
 static void
@@ -1456,53 +1491,60 @@ nhwl_iconify_frame (struct frame *f)
   if (FRAME_NHWL_OUTPUT (f)->window)
     {
       block_input ();
-      nhshell_window_minimize (dpyinfo->shell, FRAME_NHWL_OUTPUT (f)->window);
+      nhwl_glue_rc (dpyinfo,
+		    NHG (nhg_window_iconify (dpyinfo->glue,
+					     FRAME_NHWL_OUTPUT (f)->window)));
       unblock_input ();
     }
   SET_FRAME_VISIBLE (f, 0);
   SET_FRAME_ICONIFIED (f, true);
 }
 
-/* Adapted from set_fullscreen_state (pgtkterm.c).  */
+/* Adapted from set_fullscreen_state (pgtkterm.c, emacs-31.1): the glue
+   asks the compositor (`fullwidth' and `fullheight' ask for maximized,
+   and the configure then stores `maximized').  */
 static void
 nhwl_set_fullscreen_state (struct frame *f)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
-  NhShell *sh = FRAME_NHWL_SHELL (f);
+  uint32_t mode;
 
   if (!out->window)
     return;
 
-  block_input ();
   switch (f->want_fullscreen)
     {
     case FULLSCREEN_NONE:
-      nhshell_window_set_fullscreen (sh, out->window, 0);
-      nhshell_window_set_maximized (sh, out->window, 0);
+      mode = NHG_FULLSCREEN_NONE;
       store_frame_param (f, Qfullscreen, Qnil);
       break;
 
     case FULLSCREEN_BOTH:
-      nhshell_window_set_maximized (sh, out->window, 0);
-      nhshell_window_set_fullscreen (sh, out->window, 1);
+      mode = NHG_FULLSCREEN_BOTH;
       store_frame_param (f, Qfullscreen, Qfullboth);
       break;
 
     case FULLSCREEN_MAXIMIZED:
-      nhshell_window_set_fullscreen (sh, out->window, 0);
-      nhshell_window_set_maximized (sh, out->window, 1);
+      mode = NHG_FULLSCREEN_MAXIMIZED;
       store_frame_param (f, Qfullscreen, Qmaximized);
       break;
 
     case FULLSCREEN_WIDTH:
-    case FULLSCREEN_HEIGHT:
-      /* Wayland fills one direction only by tiling, which only the
-	 compositor does: the nearest a client can ask is maximized (the
-	 configure then stores `maximized').  */
-      nhshell_window_set_fullscreen (sh, out->window, 0);
-      nhshell_window_set_maximized (sh, out->window, 1);
+      mode = NHG_FULLSCREEN_WIDTH;
       break;
+
+    case FULLSCREEN_HEIGHT:
+      mode = NHG_FULLSCREEN_HEIGHT;
+      break;
+
+    default:
+      f->want_fullscreen = FULLSCREEN_NONE;
+      return;
     }
+  block_input ();
+  nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		NHG (nhg_window_fullscreen (FRAME_NHG (f), out->window,
+					    mode)));
   unblock_input ();
 
   f->want_fullscreen = FULLSCREEN_NONE;
@@ -2635,6 +2677,14 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
       break;
 
     case NHG_ACT_DELETE:
+      /* A tip's popup goes at once; its frame when the tip's timer, the
+	 next x-hide-tip or the next x-show-tip deletes it.  */
+      if (a->flags & NHG_DEL_TIP)
+	{
+	  if (FRAME_TOOLTIP_P (f))
+	    nhwl_tip_dismissed (f);
+	  return 0;
+	}
       EVENT_INIT (ie);
       ie.kind = DELETE_WINDOW_EVENT;
       ie.arg = Qnil;
@@ -2716,11 +2766,9 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
       switch (ev.kind)
 	{
 	case NHSHELL_EV_POPUP_DONE:
-	  /* A tip's popup goes at once; a popup frame stays until Lisp
-	     deletes or hides it, on the `delete-frame' event.  */
-	  if (f && FRAME_TOOLTIP_P (f))
-	    nhwl_tip_dismissed (f);
-	  else if (f && nhwl_popup_frame_p (f))
+	  /* A popup frame stays until Lisp deletes or hides it, on the
+	     `delete-frame' event (a tip's is a DELETE action).  */
+	  if (f && nhwl_popup_frame_p (f))
 	    {
 	      inev.ie.kind = DELETE_WINDOW_EVENT;
 	      XSETFRAME (inev.ie.frame_or_window, f);

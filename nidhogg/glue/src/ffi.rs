@@ -13,6 +13,7 @@ pub use crate::display::NhgDisplay;
 use crate::guard::GlueError;
 use crate::present::{self, NhgPresenterStats, NhgSurface};
 use crate::{configure, drain};
+use crate::{tip, window};
 use nhshell::event::NhShellEvent;
 use nhshell::ffi::{NhShell, nhshell_close, nhshell_open, nhshell_wake_fd};
 use std::ffi::c_char;
@@ -275,10 +276,11 @@ nhg_export! {
         // SAFETY: null or readable (the caller's promise).
         let emacs = unsafe { f.as_ref() }.ok_or(GlueError::Arg)?;
         let pushed = state.frame(window)?.facts;
-        // the facts C pushes so far: the native size it asked for, and whether it draws its own title bar (the rest
-        // join as the tasks that read them push them)
+        // the facts C pushes so far: the native size it asked for, whether it draws its own title bar, whether it is
+        // visible or iconified, and its wheel units (the rest join as the tasks that read them push them)
         let seen = |f: &crate::frame::NhgFrameFacts| {
-            (f.native_w, f.native_h, f.flags & crate::frame::NHG_FACT_CSD, f.col_w, f.line_h)
+            let flags = f.flags & crate::window::NHG_WINDOW_FACTS;
+            (f.native_w, f.native_h, flags, f.col_w, f.line_h)
         };
         debug_assert_eq!(seen(&pushed), seen(emacs), "the facts pushed for window {window} drifted from Emacs's");
         Ok(NHG_OK)
@@ -879,5 +881,187 @@ nhg_export! {
             unsafe { n.write(got) };
         }
         i32::try_from(got).map_err(|_| GlueError::NoMem)
+    }
+}
+
+// ---- Window operations and tips (`window.rs`, `tip.rs`) ------------------------------------------------------------
+//
+// WINDOW is a shell window id; a window the glue does not know (or forgot) gives NHG_E_STATE.  None of these reads or
+// writes pixels.
+
+nhg_export! {
+    /// Make the window `w` describes and register it as a frame of kind `w->role`, with the facts it starts from (its
+    /// native size, scale, visibility and title bar); its id goes to `*out`.  A shell error is its code.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `w` is null or readable, its texts null or holding their lengths' bytes; `out`
+    /// is null or writable.
+    fn nhg_window_new(d: *mut NhgDisplay, w: *const window::NhgWindowDesc, out: *mut u64) -> i32 |state| {
+        // SAFETY: null or readable (the caller's promise).
+        let desc = unsafe { w.as_ref() }.ok_or(GlueError::Arg)?;
+        if out.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: each text is null or holds its length's bytes, valid for the call (the caller's promise).
+        let (title, app_id, session) = unsafe {
+            (
+                window::text(desc.title, desc.title_len)?,
+                window::text(desc.app_id, desc.app_id_len)?,
+                window::text(desc.session_name, desc.session_name_len)?,
+            )
+        };
+        let id = window::new(state, desc, title, app_id, session)?;
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe { out.write(id) };
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// The window's title, `len` bytes of UTF-8 at `title` (up to a NUL).
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `title` is null (with `len` 0) or holds `len` readable bytes.
+    fn nhg_window_title(d: *mut NhgDisplay, window: u64, title: *const c_char, len: usize) -> i32 |state| {
+        // SAFETY: null or `len` readable bytes, valid for the call (the caller's promise).
+        let title = unsafe { window::text(title, len) }?;
+        window::title(state, window, title)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// The frame's `undecorated` changed at run time (`on` non-zero: undecorated): a top-level asks the compositor
+    /// again; a child frame's window has nothing to ask.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_window_undecorated(d: *mut NhgDisplay, window: u64, on: i32) -> i32 |state| {
+        window::undecorated(state, window, on != 0)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Apply the frame's effective alpha `alpha` (0 to 1; C applied the highlight and `frame-alpha-lower-limit`) with
+    /// its `alpha-background` `alpha_bg`.  Returns `NHG_ALPHA_*` bits: `DAMAGE` (C damages the whole frame) and `HOST`
+    /// (the shell multiplies the pixels); the alpha's cut goes to `*cut` for C's surface list.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `cut` is null or writable.
+    fn nhg_window_alpha(d: *mut NhgDisplay, window: u64, alpha: f64, alpha_bg: f64, cut: *mut u32) -> i32 |state| {
+        let (bits, c) = window::alpha(state, window, alpha, alpha_bg)?;
+        if !cut.is_null() {
+            // SAFETY: non-null and writable (the caller's promise).
+            unsafe { cut.write(c) };
+        }
+        Ok(bits)
+    }
+}
+
+nhg_export! {
+    /// Push: C resized the frame itself to `w` x `h` device pixels; a configure being applied gets a content ack.
+    /// `NHG_E_ARG` for an empty size.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_window_size(d: *mut NhgDisplay, window: u64, w: i32, h: i32) -> i32 |state| {
+        window::size(state, window, w, h)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// The frame's smallest size, `w` x `h` device pixels, for the compositor (a child frame's window has none).
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_window_min_size(d: *mut NhgDisplay, window: u64, w: i32, h: i32) -> i32 |state| {
+        window::min_size(state, window, w, h)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Push: Emacs made the frame visible (`on` non-zero) or invisible, not iconified.  Checked in checking builds.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_window_visible(d: *mut NhgDisplay, window: u64, on: i32) -> i32 |state| {
+        window::visible(state, window, on != 0)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Iconify the frame: the compositor minimizes the window (a push too: iconified, not visible).
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_window_iconify(d: *mut NhgDisplay, window: u64) -> i32 |state| {
+        window::iconify(state, window)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// The frame's `fullscreen`, `mode` an `NHG_FULLSCREEN_*` (`fullwidth` and `fullheight` ask for maximized).
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_window_fullscreen(d: *mut NhgDisplay, window: u64, mode: u32) -> i32 |state| {
+        window::fullscreen(state, window, mode)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Destroy the window and forget its frame; calls naming it are refused from now on.  The frame is forgotten even
+    /// when the shell refuses (a lost connection): C ignores the code while it tears down.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_window_destroy(d: *mut NhgDisplay, window: u64) -> i32 |state| {
+        window::destroy(state, window)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// One round of the bounded wait for a top-level's first configure: 1 when it is configured; else the work due on
+    /// this thread is done and the shell's descriptor waited on for at most `timeout_ms`: 0 when something is queued
+    /// (C drains, then calls again), `NHG_E_TIMEOUT` when nothing came.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_window_wait_configured(d: *mut NhgDisplay, window: u64, timeout_ms: u32) -> i32 |state| {
+        window::wait_configured(state, window, timeout_ms)
+    }
+}
+
+nhg_export! {
+    /// Show a tip on `parent`'s window at `anchor_dev` (device pixels in the parent's surface: the pointer, or the
+    /// tip's `left` and `top`) moved by `dx`, `dy`.  `*window` 0: make the tip's popup, `native_w` x `native_h` device
+    /// pixels, its id into `*window`, and return 1 (draw it whole).  Otherwise move it: 1 when the whole tip must be
+    /// drawn again (the popup was made again, below `xdg_wm_base` 3), 0 when not.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `window` is null or readable and writable.
+    fn nhg_tip_show(d: *mut NhgDisplay, window: *mut u64, parent: u64, anchor_dev: NhgRect, dx: i32, dy: i32, native_w: i32, native_h: i32) -> i32 |state| {
+        // SAFETY: null or readable and writable (the caller's promise).
+        let w = unsafe { window.as_mut() }.ok_or(GlueError::Arg)?;
+        tip::show(state, w, parent, anchor_dev, (dx, dy), (native_w, native_h))
+    }
+}
+
+nhg_export! {
+    /// The tip's popup goes (the compositor dismissed it: a `DELETE` action with `NHG_DEL_TIP`), and its frame is
+    /// forgotten.  `NHG_E_STATE` for a window that is not a tip's.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_tip_hide(d: *mut NhgDisplay, window: u64) -> i32 |state| {
+        tip::hide(state, window)?;
+        Ok(NHG_OK)
     }
 }
