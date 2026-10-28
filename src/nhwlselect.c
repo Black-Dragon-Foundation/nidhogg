@@ -47,6 +47,9 @@ nhwl_selection_kind (Lisp_Object sel)
     return NHSHELL_SEL_PRIMARY;
   if (EQ (sel, QCLIPBOARD))
     return NHSHELL_SEL_CLIPBOARD;
+  /* The offer of the drag over our windows (nhwl_dnd_event_arg).  */
+  if (EQ (sel, Qnhwl_dnd_selection))
+    return NHG_SEL_DND;
   return -1;
 }
 
@@ -234,9 +237,147 @@ nhwl_handle_selection_clear (struct input_event *ie)
   redisplay_preserve_echo_area (20);
 }
 
+/* Drag and drop onto our windows, with pgtk-dnd.el's semantics.  The glue
+   (dnd.rs) reports the drag; nhwl_apply makes a DRAG_N_DROP_EVENT of each
+   action, and pgtk-dnd.el answers with the two functions below.  */
+
+/* The action symbol of the glue's action code CODE (NHG_DND_*).  */
+static Lisp_Object
+nhwl_dnd_action_symbol (int code)
+{
+  switch (code)
+    {
+    case NHG_DND_COPY:
+      return Qnhwl_dnd_copy;
+    case NHG_DND_MOVE:
+      return Qnhwl_dnd_move;
+    case NHG_DND_ASK:
+      return Qnhwl_dnd_ask;
+    default:
+      return Qnil;
+    }
+}
+
+/* The glue's action code of the Lisp action ACT.  Wayland has no link or
+   private action: they are copies.  */
+static uint32_t
+nhwl_dnd_action_code (Lisp_Object act)
+{
+  if (NILP (act))
+    return 0;
+  if (EQ (act, Qnhwl_dnd_copy) || EQ (act, Qnhwl_dnd_link)
+      || EQ (act, Qnhwl_dnd_private))
+    return NHG_DND_COPY;
+  if (EQ (act, Qnhwl_dnd_move))
+    return NHG_DND_MOVE;
+  if (EQ (act, Qnhwl_dnd_ask))
+    return NHG_DND_ASK;
+  signal_error ("Invalid drag action", act);
+}
+
+/* The argument of the DRAG_N_DROP_EVENT for the glue's DND action A: motion
+   (and the enter) (lambda XdndSelection TIME ACTION), drop
+   (quote XdndSelection TIME), leave nil.  */
+Lisp_Object
+nhwl_dnd_event_arg (const NhgAction *a)
+{
+  Lisp_Object time = make_uint (a->time_ms);
+
+  switch (a->kind)
+    {
+    case NHG_ACT_DND_ENTER:
+    case NHG_ACT_DND_MOTION:
+      return list4 (Qlambda, Qnhwl_dnd_selection, time,
+		    nhwl_dnd_action_symbol (a->code));
+    case NHG_ACT_DND_DROP:
+      return list3 (Qquote, Qnhwl_dnd_selection, time);
+    default:
+      return Qnil;
+    }
+}
+
+DEFUN ("pgtk-register-dnd-targets", Fpgtk_register_dnd_targets,
+       Spgtk_register_dnd_targets, 2, 2, 0,
+       doc: /* Register TARGETS on FRAME.
+TARGETS should be a list of strings describing data types (selection
+targets) that can be dropped on top of FRAME.  A drag that offers none
+of them is refused.  */)
+  (Lisp_Object frame, Lisp_Object targets)
+{
+  struct frame *f = decode_window_system_frame (frame);
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  ptrdiff_t n = 0;
+  USE_SAFE_ALLOCA;
+
+  CHECK_LIST (targets);
+  ptrdiff_t length = list_length (targets);
+  const char **mimes;
+  SAFE_NALLOCA (mimes, 1, length);
+  Lisp_Object tem = targets;
+  FOR_EACH_TAIL (tem)
+    {
+      CHECK_STRING (XCAR (tem));
+      SAFE_ALLOCA_STRING (mimes[n], XCAR (tem));
+      n++;
+    }
+  CHECK_LIST_END (tem, targets);
+
+  if (out && out->window && FRAME_NHG (f))
+    nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		  NHG (nhg_dnd_register (FRAME_NHG (f), out->window, mimes,
+					 n)));
+  SAFE_FREE ();
+  return Qnil;
+}
+
+DEFUN ("pgtk-drop-finish", Fpgtk_drop_finish, Spgtk_drop_finish, 3, 3, 0,
+       doc: /* Finish the drag-n-drop event that happened at TIMESTAMP.
+SUCCESS is whether or not the drop was successful, i.e. the action
+chosen in the last call to `pgtk-update-drop-status' was performed.
+TIMESTAMP is the time associated with the drag-n-drop event that is
+being finished.  A call with an older TIMESTAMP than the current drag's
+is ignored.  The source is told only when an action was set.  DELETE is
+ignored: a move is the source's job on Wayland.  */)
+  (Lisp_Object success, Lisp_Object timestamp, Lisp_Object delete)
+{
+  uint32_t time;
+
+  if (!x_display_list)
+    return Qnil;
+  CONS_TO_INTEGER (timestamp, uint32_t, time);
+  nhwl_glue_rc (x_display_list,
+		NHG (nhg_dnd_finish (x_display_list->glue, !NILP (success),
+				     time)));
+  return Qnil;
+}
+
+DEFUN ("pgtk-update-drop-status", Fpgtk_update_drop_status,
+       Spgtk_update_drop_status, 2, 2, 0,
+       doc: /* Update the status of the current drag-and-drop operation.
+ACTION is the action the drop source should take: copy, move, ask, or
+nil to accept nothing.  TIMESTAMP is the same as in `pgtk-drop-finish'.  */)
+  (Lisp_Object action, Lisp_Object timestamp)
+{
+  uint32_t time;
+
+  if (!x_display_list)
+    return Qnil;
+  CONS_TO_INTEGER (timestamp, uint32_t, time);
+  nhwl_glue_rc (x_display_list,
+		NHG (nhg_dnd_status (x_display_list->glue,
+				     nhwl_dnd_action_code (action), time)));
+  return Qnil;
+}
+
 void
 syms_of_nhwlselect (void)
 {
+  DEFSYM (Qnhwl_dnd_selection, "XdndSelection");
+  DEFSYM (Qnhwl_dnd_copy, "copy");
+  DEFSYM (Qnhwl_dnd_move, "move");
+  DEFSYM (Qnhwl_dnd_ask, "ask");
+  DEFSYM (Qnhwl_dnd_link, "link");
+  DEFSYM (Qnhwl_dnd_private, "private");
   DEFSYM (QCLIPBOARD, "CLIPBOARD");
   DEFSYM (Qnhwl_selection_timeout, "nhwl-selection-timeout");
   DEFSYM (Qpgtk_lost_selection_functions, "pgtk-lost-selection-functions");
@@ -258,4 +399,7 @@ Each is called with the selection (a symbol) as its argument.  */);
   defsubr (&Spgtk_selection_owner_p);
   defsubr (&Spgtk_selection_exists_p);
   defsubr (&Spgtk_get_selection_internal);
+  defsubr (&Spgtk_register_dnd_targets);
+  defsubr (&Spgtk_drop_finish);
+  defsubr (&Spgtk_update_drop_status);
 }

@@ -2515,17 +2515,6 @@ DEFUN ("tool-bar-get-system-style", Ftool_bar_get_system_style,
   return Qnil;
 }
 
-/* Drag and drop and input methods are not in W0: nothing happens, and the
-   Lisp that registers them runs on.  */
-
-DEFUN ("pgtk-register-dnd-targets", Fpgtk_register_dnd_targets,
-       Spgtk_register_dnd_targets, 2, 2, 0,
-       doc: /* Register the drop targets of FRAME: not in W0.  */)
-  (Lisp_Object frame, Lisp_Object targets)
-{
-  return Qnil;
-}
-
 DEFUN ("pgtk-use-im-context", Fpgtk_use_im_context, Spgtk_use_im_context,
        1, 1, 0,
        doc: /* Set whether to use an input method (text-input-v3); on by default.  */)
@@ -3066,7 +3055,6 @@ syms_of_nhwlfns (void)
   defsubr (&Sfont_get_system_font);
   defsubr (&Sfont_get_system_normal_font);
   defsubr (&Stool_bar_get_system_style);
-  defsubr (&Spgtk_register_dnd_targets);
   defsubr (&Spgtk_use_im_context);
   defsubr (&Snhwl_set_cursor_theme);
   defsubr (&Snhwl_frame_begin_move);
