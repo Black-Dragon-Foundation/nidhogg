@@ -60,6 +60,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "treesit.h"
 #endif
 
+#ifdef HAVE_NIDHOGG_WATCHDOG
+#include "nidhogg-watchdog.h"
+#endif
 #include <flexmember.h>
 #include <verify.h>
 #include <execinfo.h>           /* For backtrace.  */
@@ -5978,6 +5981,9 @@ garbage_collect (void)
 
   gcs_done++;
 
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  nh_wd_gc_done (start);
+#endif
   /* Collect profiling data.  */
   if (tot_before != (byte_ct) -1)
     {
@@ -6013,6 +6019,9 @@ For further details, see Info node `(elisp)Garbage Collection'.  */)
 
   specpdl_ref count = SPECPDL_INDEX ();
   specbind (Qsymbols_with_pos_enabled, Qnil);
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  nh_wd_gc_explicit = true;
+#endif
   garbage_collect ();
   unbind_to (count, Qnil);
   return Fgarbage_collect_heapsize ();
