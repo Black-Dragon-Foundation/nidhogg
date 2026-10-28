@@ -192,7 +192,9 @@ nhg_export! {
 }
 
 nhg_export! {
-    /// Push: whether `window`'s frame draws its own title bar (`on` non-zero).  Neither reads nor writes pixels.
+    /// Set whether `window`'s frame draws its own title bar (`on` non-zero).  C no longer calls it: the title bar's
+    /// layout (`nhg_csd_layout`) sets the fact itself; the tests use it for a window they lay out no title bar for.
+    /// Neither reads nor writes pixels.
     ///
     /// # Safety
     /// `d` is null or a live display.
@@ -675,5 +677,116 @@ nhg_export! {
         let backend = unsafe { query::backend(sh) };
         backend.set_cursor(window, if on != 0 { shape } else { NHSHELL_CURSOR_HIDDEN })?;
         Ok(0)
+    }
+}
+
+// ---- The title bar (`csd.rs`) --------------------------------------------------------------------------------------
+//
+// C lays a frame's border out through the glue when the states, the scale or `undecorated` change, keeps a copy of
+// the offsets for its drawing, and at each publish asks whether to paint the strip; the painting is C's.
+
+/// `n` codes at `p` (null only when `n` is 0).
+///
+/// # Safety
+/// `p` holds `n` readable codes, or `n` is 0.
+unsafe fn codes<'a>(p: *const u32, n: usize) -> Result<&'a [u32], GlueError> {
+    match (n, p.is_null()) {
+        (0, _) => Ok(&[]),
+        (_, true) => Err(GlueError::Arg),
+        // SAFETY: non-null, with `n` readable codes (the caller's promise).
+        _ => Ok(unsafe { std::slice::from_raw_parts(p, n) }),
+    }
+}
+
+nhg_export! {
+    /// The title bars' style from Lisp: the buttons of the left and right sides in order (`NHG_CSD_*`; other codes
+    /// are ignored).  Every title bar is painted again.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `left` and `right` hold `nleft` and `nright` readable codes (null when 0).
+    fn nhg_csd_style(d: *mut NhgDisplay, left: *const u32, nleft: usize, right: *const u32, nright: usize) -> i32 |state| {
+        // SAFETY: as the caller promises.
+        let (left, right) = unsafe { (codes(left, nleft)?, codes(right, nright)?) };
+        crate::csd::style(state, left, right);
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Lay `window`'s border out again (C calls it when it applies a configure or a scale, and when `undecorated`
+    /// changes): from the compositor's decoration answer, the toplevel's states, `scale120` (0: 120) and `flags`
+    /// (`NHG_CSD_UNDECORATED`).  1 when the offsets or the strip changed (C garbages the frame), 0 when not; the
+    /// layout in `*out`.  Sets the frame's CSD fact.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `out` is null or writable.
+    fn nhg_csd_layout(d: *mut NhgDisplay, window: u64, scale120: u32, flags: u32, out: *mut crate::csd::NhgCsdLayout) -> i32 |state| {
+        let (changed, lay) = crate::csd::layout(state, window, scale120, flags)?;
+        if !out.is_null() {
+            // SAFETY: non-null and writable (the caller's promise).
+            unsafe { out.write(lay) };
+        }
+        Ok(i32::from(changed))
+    }
+}
+
+nhg_export! {
+    /// `window`'s backing around its native area, `out[0..4]` = L, T, R, B (device pixels; T includes the strip), as
+    /// the title bar lays it out.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `out` is null or holds 4 writable values.
+    fn nhg_frame_offsets(d: *mut NhgDisplay, window: u64, out: *mut i32) -> i32 |state| {
+        if out.is_null() {
+            return Err(GlueError::Arg);
+        }
+        let o = crate::csd::offsets(state, window)?;
+        // SAFETY: 4 writable values (the caller's promise), not overlapping `o`.
+        unsafe { ptr::copy_nonoverlapping(o.as_ptr(), out, 4) };
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// The publish step of `window`, before `nhg_present`, with its native size: sends the window geometry if it
+    /// changed, then 1 with the strip's draw list in `*out` when C must paint the strip (and damage the border), 0
+    /// when the backing already shows it.  `look` hashes what C paints from that the glue does not see: the title,
+    /// the colours, the font and the backing's generation.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `out` is writable.
+    fn nhg_csd_paint(d: *mut NhgDisplay, window: u64, native_w: i32, native_h: i32, look: u64, out: *mut crate::csd::NhgCsdPaint) -> i32 |state| {
+        if out.is_null() {
+            return Err(GlueError::Arg);
+        }
+        match crate::csd::paint(state, window, native_w, native_h, look)? {
+            Some(p) => {
+                // SAFETY: non-null and writable (the caller's promise).
+                unsafe { out.write(p) };
+                Ok(1)
+            }
+            None => Ok(0),
+        }
+    }
+}
+
+nhg_export! {
+    /// `window`'s strip as laid out for the native size `native_w` x `native_h` (`nhwl--title-bar`): 1 with it in
+    /// `*out`, 0 when the frame draws none.  Changes nothing.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `out` is writable.
+    fn nhg_csd_title_bar(d: *mut NhgDisplay, window: u64, native_w: i32, native_h: i32, out: *mut crate::csd::NhgCsdPaint) -> i32 |state| {
+        if out.is_null() {
+            return Err(GlueError::Arg);
+        }
+        match crate::csd::title_bar(state, window, native_w, native_h)? {
+            Some(p) => {
+                // SAFETY: non-null and writable (the caller's promise).
+                unsafe { out.write(p) };
+                Ok(1)
+            }
+            None => Ok(0),
+        }
     }
 }

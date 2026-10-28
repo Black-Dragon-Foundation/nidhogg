@@ -502,6 +502,61 @@ its old size after the resize: it keeps its last buffer until its own redisplay,
       (should (nhwl-gui--run-key "z"))
       (should (null (nhwl-glue-panics))))))
 
+;; Port Task 7: the title bar's layout, hit tests and buttons' state are the glue's, which says at each publish whether
+;; the strip must be painted again; C paints it from the glue's draw list.  Run on a client-side title bar (the
+;; recorder's `--force-csd', or a profile without server decorations).
+
+(declare-function nhwl--title-bar "nhwlfns.c")
+
+(defun nhwl-gui--snapshot-pixel (x y)
+  "The backing's pixel at device X, Y, as (B G R A)."
+  (pcase-let* ((`(,w ,_h ,bytes) (glitnir-snapshot nil 'raw))
+               (i (* 4 (+ x (* y w)))))
+    (list (aref bytes i) (aref bytes (1+ i)) (aref bytes (+ i 2)) (aref bytes (+ i 3)))))
+
+(ert-deftest nhwl-gui/csd-hover-while-typing-composite-matches-backing ()
+  "The close button hovered while 50 characters are typed, then the pointer back in the native area: each time, once
+settled, the recorder's composite equals the backing.  The hover shows in the backing (the glue asked C to paint the
+strip again), and goes again when the pointer leaves the button."
+  :tags '(both-modes)
+  (skip-unless (and (nhwl-gui--recorder-p) (nhwl-gui--csd-p) (fboundp 'nhwl--title-bar)))
+  (nhwl-gui--with-blink
+   nil
+   (lambda ()
+     (let ((buf (generate-new-buffer " *nhwl-csd-hover*")))
+       (unwind-protect
+           (progn
+             (nhwl-gui--windowed)
+             (switch-to-buffer buf)
+             (redisplay t)
+             (gui-runner-wait-settled)
+             (let* ((close (assq 'close (plist-get (nhwl--title-bar) :buttons)))
+                    (s (frame-scale-factor))
+                    ;; the button's middle: device pixels of the surface, and logical for the recorder
+                    (cx (+ (nth 1 close) (/ (nth 3 close) 2)))
+                    (cy (+ (nth 2 close) (/ (nth 4 close) 2)))
+                    ;; a point of the circle drawn under a hovered glyph, off the glyph's cross
+                    (hx cx) (hy (+ (nth 2 close) (/ (nth 4 close) 4)))
+                    (before (nhwl-gui--snapshot-pixel hx hy)))
+               (should close)
+               (nhwl-gui--point-at (/ cx s) (/ cy s))
+               (should (nhwl-gui--wait (lambda () (redisplay t)
+                                         (not (equal (nhwl-gui--snapshot-pixel hx hy) before)))
+                                       5))
+               (dotimes (i 50)
+                 (insert (char-to-string (+ ?a (% i 26))))
+                 (redisplay t))
+               (gui-runner-wait-settled)
+               (should (equal (nhwl-gui--grab-matches-snapshot) '(0 . 0)))
+               ;; back in the native area: the hover goes
+               (nhwl-gui--point-at 400 300)
+               (should (nhwl-gui--wait (lambda () (redisplay t)
+                                         (equal (nhwl-gui--snapshot-pixel hx hy) before))
+                                       5))
+               (gui-runner-wait-settled)
+               (should (equal (nhwl-gui--grab-matches-snapshot) '(0 . 0)))))
+         (kill-buffer buf))))))
+
 (provide 'nhwl-gui-rg-tests)
 
 ;;; nhwl-gui-rg-tests.el ends here

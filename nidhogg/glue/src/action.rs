@@ -32,6 +32,9 @@ pub const NHG_ACT_COMMIT: u32 = 18;
 pub const NHG_ACT_IM_DELETE: u32 = 19;
 pub const NHG_ACT_IM_SURROUNDING: u32 = 20;
 pub const NHG_ACT_SELECTION_CLEAR: u32 = 21;
+/// A pointer event went through the window's title bar or its margins (`csd.rs`): `flags` `NHG_TB_*`, `code` the
+/// pointer shape (`NHSHELL_CURSOR_*`) with `NHG_TB_POINTER`.  A raw action of the same event, if any, comes after it.
+pub const NHG_ACT_TITLE_BAR: u32 = 22;
 /// Transitional: a shell event whose kind is not ported yet, which C handles on its old path (`nhg_raw_event` gives
 /// it).  A `PREEDIT` or `COMMIT_TEXT` event's text comes with it as the action's text.  Each port task takes its kinds
 /// out (the pointer, the input method, outputs, selections, popups); the kind goes when none is left.

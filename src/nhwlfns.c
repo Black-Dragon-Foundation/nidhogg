@@ -2141,6 +2141,222 @@ press triggers it.  Return t when the request was sent.  */)
   return rc >= 0 ? Qt : Qnil;
 }
 
+/***********************************************************************
+			The title bars' style
+ ***********************************************************************/
+
+/* Moved from nhwlcsd.c.  The title bar's layout and buttons are the
+   glue's (csd.rs); its colours and font stay here, as Lisp gave them, for
+   the painting (nhwl_csd_draw).  */
+
+#define NHWL_CSD_TITLE_PX 13	/* logical px */
+#define NHWL_CSD_MAX_SIDE 8	/* buttons kept per side (NHG_CSD_MAX_BUTTONS) */
+
+/* The style from Lisp (nhwl--set-title-bar-style): each side's buttons
+   (NHG_CSD_*), kept to hand them to a display opened later; the colours of
+   an active and an inactive window (strings, or nil for the frame's own),
+   and the font (FAMILY . PIXELS); STYLE_GEN counts the changes.  Before
+   Lisp says, the buttons are W0's.  */
+static uint32_t csd_left[NHWL_CSD_MAX_SIDE], csd_right[NHWL_CSD_MAX_SIDE];
+static size_t csd_nleft, csd_nright;
+static bool csd_styled;
+static Lisp_Object csd_colours, csd_font;
+static unsigned csd_style_gen;
+
+/* The button kind of a style's symbol (`close', `maximize', `minimize',
+   `appmenu'), 0 for any other.  */
+static uint32_t
+nhwl_csd_kind (Lisp_Object sym)
+{
+  const char *n;
+
+  if (!SYMBOLP (sym))
+    return 0;
+  n = SSDATA (SYMBOL_NAME (sym));
+  return (!strcmp (n, "close") ? NHG_CSD_CLOSE
+	  : !strcmp (n, "maximize") ? NHG_CSD_MAX
+	  : !strcmp (n, "minimize") ? NHG_CSD_MIN
+	  : !strcmp (n, "appmenu") ? NHG_CSD_MENU : 0);
+}
+
+/* The first NHWL_CSD_MAX_SIDE button kinds of LIST into V; how many.  */
+static size_t
+nhwl_csd_kinds (Lisp_Object list, uint32_t *v)
+{
+  size_t n = 0;
+  uint32_t k;
+
+  for (; CONSP (list) && n < NHWL_CSD_MAX_SIDE; list = XCDR (list))
+    if ((k = nhwl_csd_kind (XCAR (list))))
+      v[n++] = k;
+  return n;
+}
+
+/* Hand the title bars' style to DPYINFO's glue (once Lisp gave one).  */
+void
+nhwl_csd_push_style (struct nhwl_display_info *dpyinfo)
+{
+  if (csd_styled && dpyinfo->glue)
+    nhwl_glue_rc (dpyinfo, NHG (nhg_csd_style (dpyinfo->glue, csd_left,
+					       csd_nleft, csd_right,
+					       csd_nright)));
+}
+
+/* The pixel of the colour named NAME on F in *PIXEL; false (and *PIXEL
+   untouched) for nil or a name F cannot show.  */
+static bool
+nhwl_csd_colour (struct frame *f, Lisp_Object name, unsigned long *pixel)
+{
+  Emacs_Color c;
+
+  if (!STRINGP (name) || !nhwl_defined_color (f, SSDATA (name), &c, false, 0))
+    return false;
+  *pixel = c.pixel;
+  return true;
+}
+
+/* The title bar's colours for F now: the style's for an active or an
+   inactive window, else W0's mix of the frame's colours.  */
+void
+nhwl_csd_colours (struct frame *f, bool active, unsigned long *fg,
+		  unsigned long *bg)
+{
+  unsigned long ffg = FRAME_FOREGROUND_PIXEL (f);
+  unsigned long fbg = FRAME_BACKGROUND_PIXEL (f);
+  Lisp_Object vfg = Qnil, vbg = Qnil;
+  bool own_fg;
+
+  if (VECTORP (csd_colours) && ASIZE (csd_colours) == 4)
+    {
+      vfg = AREF (csd_colours, active ? 0 : 2);
+      vbg = AREF (csd_colours, active ? 1 : 3);
+    }
+  *fg = ffg;
+  own_fg = !nhwl_csd_colour (f, vfg, fg);
+  if (!nhwl_csd_colour (f, vbg, bg))
+    {
+      /* W0's: the background 12% toward the foreground.  */
+      *bg = ((unsigned long) (RED_FROM_ULONG (fbg) * 0.88
+			      + RED_FROM_ULONG (ffg) * 0.12) << 16
+	     | (unsigned long) (GREEN_FROM_ULONG (fbg) * 0.88
+				+ GREEN_FROM_ULONG (ffg) * 0.12) << 8
+	     | (unsigned long) (BLUE_FROM_ULONG (fbg) * 0.88
+				+ BLUE_FROM_ULONG (ffg) * 0.12));
+      if (own_fg && !active)
+	*fg = ((unsigned long) (RED_FROM_ULONG (*bg) * 0.45
+				+ RED_FROM_ULONG (ffg) * 0.55) << 16
+	       | (unsigned long) (GREEN_FROM_ULONG (*bg) * 0.45
+				  + GREEN_FROM_ULONG (ffg) * 0.55) << 8
+	       | (unsigned long) (BLUE_FROM_ULONG (*bg) * 0.45
+				  + BLUE_FROM_ULONG (ffg) * 0.55));
+    }
+}
+
+/* The title's font: *FAMILY (sans-serif when the style names none) and
+   *PX its size in logical pixels (13 when it names none).  Return the
+   style's generation.  */
+unsigned
+nhwl_csd_font (const char **family, double *px)
+{
+  Lisp_Object fam = CONSP (csd_font) ? XCAR (csd_font) : Qnil;
+  Lisp_Object size = CONSP (csd_font) ? XCDR (csd_font) : Qnil;
+
+  *family = STRINGP (fam) ? SSDATA (fam) : "sans-serif";
+  *px = (NUMBERP (size) && XFLOATINT (size) > 0
+	 ? XFLOATINT (size) : NHWL_CSD_TITLE_PX);
+  return csd_style_gen;
+}
+
+DEFUN ("nhwl--set-title-bar-style", Fnhwl__set_title_bar_style,
+       Snhwl__set_title_bar_style, 7, 7, 0,
+       doc: /* Give the shell's title bars their style.
+LEFT and RIGHT are the buttons of each side, lists of `close',
+`maximize', `minimize' and `appmenu' in their order; other elements are
+ignored.  ACTIVE-FG and ACTIVE-BG are the colours of an active window's
+title bar, INACTIVE-FG and INACTIVE-BG an inactive one's (colour names,
+or nil for colours from the frame's).  FONT is (FAMILY . PIXELS): the
+title's font family (nil: sans-serif) and its size in logical pixels
+(nil: 13).  Every title bar is drawn again.  Internal: called by
+lisp/term/nhwl-settings.el when the desktop's settings or the title-bar
+faces change.  */)
+  (Lisp_Object left, Lisp_Object right, Lisp_Object active_fg,
+   Lisp_Object active_bg, Lisp_Object inactive_fg, Lisp_Object inactive_bg,
+   Lisp_Object font)
+{
+  struct nhwl_display_info *dpyinfo;
+  Lisp_Object tail, frame;
+
+  CHECK_LIST (left);
+  CHECK_LIST (right);
+  csd_nleft = nhwl_csd_kinds (left, csd_left);
+  csd_nright = nhwl_csd_kinds (right, csd_right);
+  csd_colours = CALLN (Fvector, STRINGP (active_fg) ? active_fg : Qnil,
+		       STRINGP (active_bg) ? active_bg : Qnil,
+		       STRINGP (inactive_fg) ? inactive_fg : Qnil,
+		       STRINGP (inactive_bg) ? inactive_bg : Qnil);
+  csd_font = (CONSP (font)
+	      ? Fcons (STRINGP (XCAR (font)) ? XCAR (font) : Qnil,
+		       NUMBERP (XCDR (font)) ? XCDR (font) : Qnil)
+	      : Qnil);
+  csd_styled = true;
+  csd_style_gen++;
+  for (dpyinfo = x_display_list; dpyinfo; dpyinfo = dpyinfo->next)
+    nhwl_csd_push_style (dpyinfo);
+  FOR_EACH_FRAME (tail, frame)
+    if (FRAME_NHWL_P (XFRAME (frame)) && FRAME_NHWL_OUTPUT (XFRAME (frame)))
+      nhwl_csd_changed (XFRAME (frame));
+  return Qnil;
+}
+
+DEFUN ("nhwl--title-bar", Fnhwl__title_bar, Snhwl__title_bar, 0, 1, 0,
+       doc: /* Return FRAME's title bar as the shell lays it out, or nil.
+A plist in device pixels of the surface: `:strip' (X Y W H), `:margins'
+\(LEFT TOP RIGHT BOTTOM), and `:buttons', a list of (NAME X Y W H) with
+NAME one of `close', `maximize', `minimize' and `appmenu'.  nil when the
+frame draws no title bar.  For tests.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+  struct nhwl_display_info *dpyinfo;
+  struct nhwl_output *out;
+  NhgCsdPaint p;
+  int32_t off[4];
+  Lisp_Object buttons = Qnil;
+  static const char *const names[] =
+    { "", "close", "maximize", "minimize", "appmenu" };
+
+  if (!FRAME_NHWL_P (f) || !FRAME_NHWL_OUTPUT (f))
+    return Qnil;
+  out = FRAME_NHWL_OUTPUT (f);
+  dpyinfo = FRAME_DISPLAY_INFO (f);
+  if (!out->window
+      || (nhwl_glue_rc (dpyinfo,
+			NHG (nhg_csd_title_bar (dpyinfo->glue, out->window,
+						FRAME_PIXEL_WIDTH (f),
+						FRAME_PIXEL_HEIGHT (f), &p)))
+	  != 1)
+      || (nhwl_glue_rc (dpyinfo,
+			NHG (nhg_frame_offsets (dpyinfo->glue, out->window,
+						off)))
+	  < 0))
+    return Qnil;
+  for (int i = (int) min (p.nbuttons, NHG_CSD_MAX_BUTTONS) - 1; i >= 0; i--)
+    if (p.button[i].kind < ARRAYELTS (names))
+      buttons = Fcons (list5 (intern (names[p.button[i].kind]),
+			      make_fixnum (p.button[i].r.x),
+			      make_fixnum (p.button[i].r.y),
+			      make_fixnum (p.button[i].r.w),
+			      make_fixnum (p.button[i].r.h)),
+		       buttons);
+  return CALLN (Flist, QCstrip, list4 (make_fixnum (p.strip.x),
+				       make_fixnum (p.strip.y),
+				       make_fixnum (p.strip.w),
+				       make_fixnum (p.strip.h)),
+		QCmargins, list4 (make_fixnum (off[0]), make_fixnum (p.strip.y),
+				  make_fixnum (off[2]), make_fixnum (off[3])),
+		QCbuttons, buttons);
+}
+
 void
 syms_of_nhwlfns (void)
 {
@@ -2213,4 +2429,19 @@ syms_of_nhwlfns (void)
   defsubr (&Snhwl_frame_begin_move);
   defsubr (&Snhwl_frame_begin_resize);
   defsubr (&Snhwl_frame_show_window_menu);
+}
+
+/* The title bars' symbols and functions (the name is the one emacs.c
+   calls, from when they lived in nhwlcsd.c).  */
+void
+syms_of_nhwlcsd (void)
+{
+  DEFSYM (QCstrip, ":strip");
+  DEFSYM (QCmargins, ":margins");
+  DEFSYM (QCbuttons, ":buttons");
+  csd_colours = csd_font = Qnil;
+  staticpro (&csd_colours);
+  staticpro (&csd_font);
+  defsubr (&Snhwl__set_title_bar_style);
+  defsubr (&Snhwl__title_bar);
 }
