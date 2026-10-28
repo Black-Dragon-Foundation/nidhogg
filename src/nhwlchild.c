@@ -16,8 +16,10 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 
-/* A child frame is a subsurface of its parent frame's window (shell kind
-   NHSHELL_KIND_CHILD).  It has its own backing and its own Glitnir root,
+/* A child frame is a sync subsurface of its parent frame's window (shell
+   kind NHSHELL_KIND_CHILD), presented with its tree: the root frame's
+   pacer commits the child frames deepest first, then the root
+   (nhwl_present_tree).  It has its own backing and its own Glitnir root,
    like any frame; the root's one layer carries the frame's chrome (rounded
    corners, shadow).  The shadow needs room around the native area: that
    margin is held in the output's CSD offsets (csd.l/t/r/b), so the backing,
@@ -64,6 +66,16 @@ bool
 nhwl_child_p (struct frame *f)
 {
   return FRAME_NHWL_P (f) && f->output_data.nhwl && FRAME_PARENT_FRAME (f);
+}
+
+/* The root of F's tree: the top-level (or tip) frame whose window's pacer
+   presents F with it.  */
+struct frame *
+nhwl_tree_root (struct frame *f)
+{
+  while (nhwl_child_p (f))
+    f = FRAME_PARENT_FRAME (f);
+  return f;
 }
 
 /* Device pixels to logical, rounded to nearest (also for negatives).  */
@@ -290,8 +302,9 @@ nhwl_child_source (struct frame *f, GlitnirSource *s)
  ***********************************************************************/
 
 /* A child's position and stacking take effect with its parent's next commit
-   (Wayland's rule): the shell marks the parent owed, and its pacer gives it
-   a bare commit when nothing else is drawn.  */
+   (Wayland's rule): the shell marks the child and every ancestor owed, and
+   the tree's pacer commits them, deepest first, bare when nothing else is
+   drawn.  */
 static void
 send_position (struct frame *f)
 {
@@ -444,7 +457,8 @@ nhwl_frame_raise_lower (struct frame *f, bool raise)
     return;
   sib = extreme_sibling (f, raise);
   out->child.z = raise ? ++z_top : --z_bottom;
-  /* The shell marks the parent owed (stacking is the parent's state).  */
+  /* The shell marks the parent and its ancestors owed (stacking is the
+     parent's state).  */
   if (sib)
     nhshell_window_stack (FRAME_NHWL_SHELL (f), out->window,
 			  FRAME_NHWL_OUTPUT (sib)->window, raise ? 1 : 0);
