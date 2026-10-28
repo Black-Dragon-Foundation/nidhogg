@@ -196,6 +196,233 @@
         (redisplay t))
       (should (nhwl-gui--wait (lambda () (> (length (nhwl-gui--commits)) mark)))))))
 
+;; Port Task 3b: presenting from the glue.  Emacs publishes each tree at a consistency point (after a redisplay, or a
+;; draw outside one), and the shell presents it: on its own thread (`nhwl-presenter-thread', the default), or inline at
+;; the tree's FRAME_READY (NHWL_PRESENTER=0).  Rows tagged `both-modes' run in both at the gate.
+
+(defun nhwl-gui--thread-on-p ()
+  "Non-nil when this Emacs presents on the shell's thread."
+  (and (fboundp 'nhwl-presenter-stats) (eql (plist-get (nhwl-presenter-stats) :thread-on) 1)))
+
+(defun nhwl-gui--since (mark)
+  "Every commit since MARK."
+  (plist-get (gui-runner-recorder (list :cmd "log" :since mark)) :commits))
+
+(defun nhwl-gui--commit-kind (c)
+  "Commit C's kind: `buffer', `ack' (an ack with a buffer), `bare-ack' (an ack without one) or `bare'."
+  (let ((ack (nhwl-gui--get c :ack_serial)) (buf (nhwl-gui--get c :buffer)))
+    (cond ((and ack buf) 'ack) (ack 'bare-ack) (buf 'buffer) (t 'bare))))
+
+(defun nhwl-gui--toplevel-kinds (mark)
+  "The kinds of the toplevel's commits since MARK, in order."
+  (mapcar #'nhwl-gui--commit-kind
+          (seq-filter (lambda (c) (equal (plist-get c :role) "toplevel")) (nhwl-gui--since mark))))
+
+(defun nhwl-gui--grab-matches-snapshot ()
+  "(MAX-CHANNEL-DIFF . PIXELS-OVER-2) between the recorder's composite and the selected frame's backing: the backing
+sits at the toplevel's top-left, or at its native area when the snapshot is the native area only."
+  (pcase-let* ((`(,w ,h ,bytes) (glitnir-snapshot nil 'raw))
+               (b (plist-get (nhwl-gui--last-commit) :buffer))
+               (whole (= w (plist-get b :w)))
+               (x (if whole 0 (/ (- (plist-get b :w) w) 2)))
+               (y (if whole 0 (nhwl-gui--native-top)))
+               (`(,gw ,gh ,gbytes) (gui-runner-screen-grab))
+               (sub (make-string (* 4 w h) 0 nil)))
+    ;; the grab's part under the backing, as a W x H grab of its own
+    (dotimes (row h)
+      (let ((from (* 4 (+ x (* (+ y row) gw)))))
+        (when (<= (+ y row) (1- gh))
+          (store-substring sub (* 4 row w) (substring gbytes from (+ from (* 4 (min w (- gw x)))))))))
+    (gui-runner-pixel-diff (list w h bytes) (list w h sub))))
+
+(ert-deftest nhwl-gui/presenter-final-picture-matches-backing ()
+  "Review Focus 2: 300 typed characters and 40 scrolls, each at a random point of the frame clock (a random wait of
+0 to 20 ms before it) → once settled, the recorder's composite equals the backing (`glitnir-snapshot'): the last
+published picture is the one shown, whichever packets were superseded."
+  :tags '(both-modes)
+  (skip-unless (and (nhwl-gui--recorder-p) (fboundp 'nhwl-presenter-stats)))
+  (nhwl-gui--with-blink
+   nil
+   (lambda ()
+     (let ((buf (generate-new-buffer " *nhwl-final*")))
+       (random "nhwl-final")              ; the same waits every run
+       (unwind-protect
+           (progn
+             (switch-to-buffer buf)
+             (dotimes (i 120) (insert (format "line %d of the final-picture row\n" i)))
+             (goto-char (point-min))
+             (redisplay t)
+             (dotimes (i 300)
+               (insert (char-to-string (+ ?a (% i 26))))
+               (when (zerop (% i 60)) (insert "\n"))
+               (redisplay t)
+               (sleep-for (/ (random 21) 1000.0)))
+             (dotimes (i 40)
+               (if (< (% i 10) 5) (scroll-up 3) (scroll-down 2))
+               (redisplay t)
+               (sleep-for (/ (random 21) 1000.0)))
+             (redisplay t)
+             (gui-runner-wait-settled)
+             (should (equal (nhwl-gui--grab-matches-snapshot) '(0 . 0))))
+         (kill-buffer buf))))))
+
+(ert-deftest nhwl-gui/inline-and-thread-commit-the-same ()
+  "A scripted session gives the same sequence of commit kinds in both modes (the gate runs it with and without
+NHWL_PRESENTER=0): a typed character is one buffer commit; a configure of a new size, one ack with a buffer; a
+configure of the same size and states, one bare ack; with nothing drawn, nothing."
+  :tags '(both-modes)
+  (skip-unless (and (nhwl-gui--recorder-p) (fboundp 'nhwl-presenter-stats)))
+  (nhwl-gui--with-blink
+   nil
+   (lambda ()
+     (let ((buf (generate-new-buffer " *nhwl-kinds*")))
+       (unwind-protect
+           (progn
+             (nhwl-gui--windowed)
+             (switch-to-buffer buf)
+             (redisplay t)
+             (gui-runner-wait-settled)
+             (let ((mark (nhwl-gui--mark)))
+               (insert "a")
+               (redisplay t)
+               (gui-runner-wait-settled)
+               (should (equal (nhwl-gui--toplevel-kinds mark) '(buffer))))
+             (let ((mark (nhwl-gui--mark)))
+               (gui-runner-recorder '(:cmd "configure" :surface "focused" :size [760 540] :states ["activated"]))
+               (should (nhwl-gui--wait (lambda () (redisplay t) (nhwl-gui--toplevel-kinds mark)) 5))
+               (gui-runner-wait-settled)
+               (should (equal (nhwl-gui--toplevel-kinds mark) '(ack))))
+             (let ((mark (nhwl-gui--mark)))
+               (gui-runner-recorder '(:cmd "configure" :surface "focused" :size [760 540] :states ["activated"]))
+               (should (nhwl-gui--wait (lambda () (redisplay t) (nhwl-gui--toplevel-kinds mark)) 5))
+               (gui-runner-wait-settled)
+               (should (equal (nhwl-gui--toplevel-kinds mark) '(bare-ack))))
+             (let ((mark (nhwl-gui--mark)))
+               (redisplay t)
+               (sit-for 0.5)
+               (should (equal (nhwl-gui--toplevel-kinds mark) nil))))
+         (kill-buffer buf)
+         (nhwl-gui--windowed))))))
+
+(ert-deftest nhwl-gui/resize-acks-ride-new-size-buffers ()
+  "50 configures of random sizes at random intervals, presenting on the shell's thread: every commit that carries an
+ack attaches a buffer of that configure's size (logical pixels), and the newest is acked."
+  (skip-unless (and (nhwl-gui--recorder-p) (nhwl-gui--thread-on-p)))
+  (let ((mark (nhwl-gui--mark)) (sizes nil) (last nil))
+    (unwind-protect
+        (progn
+          (set-frame-parameter nil 'fullscreen nil)
+          (dotimes (_ 50)
+            (let* ((size (vector (+ 600 (random 300)) (+ 400 (random 300))))
+                   (serial (plist-get (gui-runner-recorder
+                                       (list :cmd "configure" :surface "focused" :size size
+                                             :states ["activated"]))
+                                      :serial)))
+              (push (cons serial (append size nil)) sizes)
+              (setq last serial)
+              (insert "x")
+              (redisplay t)
+              (sleep-for (/ (random 31) 1000.0))))
+          (should (nhwl-gui--wait
+                   (lambda ()
+                     (redisplay t)
+                     (seq-find (lambda (c) (eql (nhwl-gui--get c :ack_serial) last)) (nhwl-gui--since mark)))
+                   5))
+          (gui-runner-wait-settled)
+          (dolist (c (nhwl-gui--since mark))
+            (let ((ack (nhwl-gui--get c :ack_serial)))
+              (when (and ack (equal (plist-get c :role) "toplevel"))
+                (should (nhwl-gui--get c :buffer))
+                (should (equal (nhwl-gui--logical-size c) (cdr (assq ack sizes))))))))
+      (nhwl-gui--windowed))))
+
+(ert-deftest nhwl-gui/live-resize-thread ()
+  "The live twin of `nhwl-gui/resize-acks-ride-new-size-buffers': resizes at random intervals while typing, on a
+real compositor; the trace checker's rule `acks' judges that every ack rides a buffer of its configure's size."
+  :tags '(runs-last)
+  (skip-unless (and (nhwl-gui--live-p) (nhwl-gui--nhwl-frames) (nhwl-gui--thread-on-p)))
+  (let ((old (frame-parameter nil 'fullscreen)))
+    (unwind-protect
+        (progn
+          (set-frame-parameter nil 'fullscreen nil)
+          (nhwl-gui--live-settle 0.5)
+          (dotimes (_ 30)
+            (set-frame-size nil (+ 50 (random 30)) (+ 15 (random 15)))
+            (insert "x")
+            (redisplay t)
+            (sleep-for (/ (random 31) 1000.0)))
+          (nhwl-gui--live-settle 0.5)
+          (should (frame-live-p (selected-frame))))
+      (set-frame-parameter nil 'fullscreen old)
+      (nhwl-gui--live-settle 0.5))))
+
+(ert-deftest nhwl-gui/idle-publishes-nothing ()
+  "With the cursor's blink off, 2 s of idle redisplays publish no packet."
+  :tags '(both-modes)
+  (skip-unless (and (nhwl-gui--recorder-p) (fboundp 'nhwl-presenter-stats)))
+  (nhwl-gui--with-blink
+   nil
+   (lambda ()
+     (redisplay t)
+     (gui-runner-wait-settled)
+     (let ((packets (plist-get (nhwl-presenter-stats) :packets)))
+       (sit-for 2)
+       (redisplay t)
+       (should (= (plist-get (nhwl-presenter-stats) :packets) packets))))))
+
+(ert-deftest nhwl-gui/bench-runs-through-the-presenter ()
+  "`nhwl--bench-full-redraw' publishes each frame and waits for the presenter's commit, in both modes; on the thread
+the presenter's own count of buffer commits rises by the frames presented."
+  :tags '(both-modes)
+  (skip-unless (and (nhwl-gui--recorder-p) (fboundp 'nhwl-presenter-stats)))
+  (let* ((before (nhwl-presenter-stats))
+         (r (nhwl--bench-full-redraw 30))
+         (after (nhwl-presenter-stats)))
+    (should (= (plist-get r :frames) 30))
+    (should (> (plist-get r :present-interval-p95) 0))
+    (should (>= (- (plist-get after :packets) (plist-get before :packets)) 30))
+    (when (nhwl-gui--thread-on-p)
+      (should (>= (- (plist-get after :commits) (plist-get before :commits)) 30)))))
+
+(ert-deftest nhwl-gui/child-resize-while-typing-no-old-size-buffer ()
+  "Review Focus 5: a child frame resized in the redisplay that also shows typing in its parent shows no buffer of
+its old size after the resize: it keeps its last buffer until its own redisplay, then shows the new size only."
+  :tags '(both-modes)
+  (skip-unless (nhwl-gui--recorder-p))
+  (let* ((before (nhwl-gui--sub-ids))
+         (c (nhwl-gui--child))
+         (buf (generate-new-buffer " *nhwl-child-typing*"))
+         (prev nil))
+    (unwind-protect
+        (let ((id (plist-get (nhwl-gui--child-node before) :id)))
+          (should id)
+          (switch-to-buffer buf)
+          (dotimes (i 20)
+            (let ((mark (nhwl-gui--mark)))
+              (set-frame-size c (+ 12 (* 2 (% i 5))) (+ 3 (% i 3)))
+              (insert "y")
+              (redisplay t)
+              (should (nhwl-gui--wait
+                       (lambda ()
+                         (redisplay t)
+                         (seq-find (lambda (x) (and (eql (plist-get x :surface) id) (nhwl-gui--get x :buffer)))
+                                   (nhwl-gui--since mark)))
+                       5))
+              (gui-runner-wait-settled)
+              (let ((sizes (seq-uniq
+                            (mapcar (lambda (x) (let ((b (plist-get x :buffer)))
+                                                  (list (plist-get b :w) (plist-get b :h))))
+                                    (seq-filter (lambda (x) (and (eql (plist-get x :surface) id)
+                                                                 (nhwl-gui--get x :buffer)))
+                                                (nhwl-gui--since mark))))))
+                ;; one size per step, and a step that changed the size shows none of the old one
+                (should (= (length sizes) 1))
+                (when (and prev (not (equal (car sizes) prev)))
+                  (should-not (member prev sizes)))
+                (setq prev (car sizes))))))
+      (when (frame-live-p c) (delete-frame c t))
+      (kill-buffer buf))))
+
 (provide 'nhwl-gui-rg-tests)
 
 ;;; nhwl-gui-rg-tests.el ends here
