@@ -32,10 +32,6 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "keyboard.h"
 #include "termhooks.h"
 
-/* Which selections this process owns, to tell "we lost it" from "we
-   gave it up" when the shell reports a change.  */
-static bool nhwl_sel_ours[2];
-
 /* The MIME types we offer for text, in the order of preference.  */
 static const char *const nhwl_text_mimes[] = {
   "text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "STRING", "TEXT",
@@ -66,24 +62,18 @@ nhwl_text_target_p (Lisp_Object target)
 static Lisp_Object
 nhwl_offer_types (struct nhwl_display_info *dpyinfo, int kind)
 {
-  for (int attempt = 0; attempt < 3; attempt++)
-    {
-      size_t need = 0;
-      int n = nhshell_selection_types (dpyinfo->shell, kind, NULL, 0, &need);
-      if (n <= 0)
-	return Qnil;
-      char *buf = xmalloc (need);
-      size_t got = 0;
-      n = nhshell_selection_types (dpyinfo->shell, kind, buf, need, &got);
-      Lisp_Object list = Qnil;
-      if (n > 0 && got <= need)
-	for (size_t i = 0; i < got; i += strlen (buf + i) + 1)
-	  list = Fcons (build_string (buf + i), list);
-      xfree (buf);
-      if (!NILP (list))
-	return Fnreverse (list);
-    }
-  return Qnil;
+  const char *buf = NULL;
+  size_t got = 0;
+  Lisp_Object list = Qnil;
+
+  if (nhwl_glue_rc (dpyinfo, NHG (nhg_selection_types (dpyinfo->glue, kind,
+						       &buf, &got))) <= 0)
+    return Qnil;
+  /* BUF is the glue's, valid until its next call; the list is built
+     before any.  */
+  for (size_t i = 0; i < got; i += strlen (buf + i) + 1)
+    list = Fcons (build_string (buf + i), list);
+  return Fnreverse (list);
 }
 
 DEFUN ("pgtk-own-selection-internal", Fpgtk_own_selection_internal,
@@ -106,12 +96,13 @@ compositor refuses (no keyboard focus).  */)
       lens[i] = SBYTES (bytes);
     }
   block_input ();
-  int rc = nhshell_selection_own (x_display_list->shell, kind,
-				  nhwl_text_mimes, data, lens, N_TEXT_MIMES);
+  int rc = nhwl_glue_rc (x_display_list,
+			 NHG (nhg_selection_set (x_display_list->glue, kind,
+						 nhwl_text_mimes, data, lens,
+						 N_TEXT_MIMES)));
   unblock_input ();
   if (rc < 0)
     return Qnil;
-  nhwl_sel_ours[kind] = true;
   return value;
 }
 
@@ -121,13 +112,14 @@ DEFUN ("pgtk-disown-selection-internal", Fpgtk_disown_selection_internal,
   (Lisp_Object selection, Lisp_Object terminal)
 {
   int kind = nhwl_selection_kind (selection);
-  if (kind < 0 || !x_display_list || !nhwl_sel_ours[kind])
+  if (kind < 0 || !x_display_list)
     return Qnil;
-  nhwl_sel_ours[kind] = false;
   block_input ();
-  nhshell_selection_disown (x_display_list->shell, kind);
+  int rc = nhwl_glue_rc (x_display_list,
+			 NHG (nhg_selection_disown (x_display_list->glue,
+						    kind)));
   unblock_input ();
-  return Qt;
+  return rc > 0 ? Qt : Qnil;
 }
 
 DEFUN ("pgtk-selection-owner-p", Fpgtk_selection_owner_p,
@@ -138,7 +130,9 @@ DEFUN ("pgtk-selection-owner-p", Fpgtk_selection_owner_p,
   int kind = nhwl_selection_kind (selection);
   if (kind < 0 || !x_display_list)
     return Qnil;
-  return nhshell_selection_owned (x_display_list->shell, kind) > 0 ? Qt : Qnil;
+  return nhwl_glue_rc (x_display_list,
+		       NHG (nhg_selection_owned (x_display_list->glue, kind)))
+	 > 0 ? Qt : Qnil;
 }
 
 DEFUN ("pgtk-selection-exists-p", Fpgtk_selection_exists_p,
@@ -149,7 +143,9 @@ DEFUN ("pgtk-selection-exists-p", Fpgtk_selection_exists_p,
   int kind = nhwl_selection_kind (selection);
   if (kind < 0 || !x_display_list)
     return Qnil;
-  return nhshell_selection_types (x_display_list->shell, kind, NULL, 0, NULL)
+  return nhwl_glue_rc (x_display_list,
+		       NHG (nhg_selection_types (x_display_list->glue, kind,
+						 NULL, NULL)))
 	 > 0 ? Qt : Qnil;
 }
 
@@ -202,15 +198,17 @@ the text, any other the bytes of the type of that name.  Waits at most
     secs = XFLOATINT (Fsymbol_value (Qnhwl_selection_timeout));
   uint32_t ms = secs <= 0 ? 0 : secs > 60 ? 60000 : (uint32_t) (secs * 1000);
 
-  uint8_t *out = NULL;
+  const uint8_t *out = NULL;
   size_t len = 0;
-  int rc = nhshell_selection_read (x_display_list->shell, kind,
-				   SSDATA (mime), ms, &out, &len);
+  int rc = nhwl_glue_rc (x_display_list,
+			 NHG (nhg_selection_read (x_display_list->glue, kind,
+						  SSDATA (mime), ms, &out,
+						  &len)));
   if (rc < 0)
     return Qnil;
 
-  Lisp_Object str = make_unibyte_string ((char *) out, len);
-  nhshell_free_bytes (out);
+  /* OUT is the glue's, valid until its next call; the string copies it.  */
+  Lisp_Object str = make_unibyte_string ((const char *) out, len);
   if (text)
     return code_convert_string_norecord (str, Qutf_8, false);
   /* Raw bytes: gui-get-selection decodes them from the property.  */
@@ -219,19 +217,13 @@ the text, any other the bytes of the type of that name.  Waits at most
   return str;
 }
 
-/* The shell says selection KIND changed.  Fill IE and return true when
-   it was ours and another client took it.  */
-bool
-nhwl_selection_changed (struct nhwl_display_info *dpyinfo, uint32_t kind,
-			struct input_event *ie)
+/* The glue says another client took selection KIND from us (a
+   SELECTION_CLEAR action): fill IE with the event.  */
+void
+nhwl_selection_clear_event (uint32_t kind, struct input_event *ie)
 {
-  if (kind > NHSHELL_SEL_PRIMARY || !nhwl_sel_ours[kind]
-      || nhshell_selection_owned (dpyinfo->shell, kind) > 0)
-    return false;
-  nhwl_sel_ours[kind] = false;
   ie->kind = SELECTION_CLEAR_EVENT;
   ie->arg = kind == NHSHELL_SEL_PRIMARY ? QPRIMARY : QCLIPBOARD;
-  return true;
 }
 
 /* Called by the command loop for a SELECTION_CLEAR_EVENT.  */

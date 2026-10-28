@@ -6,10 +6,16 @@ mod abi {
     use nhglue::backing::{
         NHG_GEOM_FRESH, NHG_GEOM_LAYER_CHANGED, NhgBacking, NhgFrameGeom, NhgRect,
     };
+    use nhglue::bench::NhgBenchOut;
     use nhglue::ffi::{NhgDisplay, nhg_abi_version, nhg_close, nhg_fd, nhg_open, nhg_shell};
     use nhglue::ffi::{
         nhg_backing, nhg_backing_forget, nhg_damage, nhg_damage_all, nhg_layer_ensure, nhg_scroll,
         nhg_snapshot,
+    };
+    use nhglue::ffi::{
+        nhg_bell, nhg_bench_full_redraw, nhg_display_info, nhg_monitor_remove, nhg_monitor_set,
+        nhg_pointer_visible, nhg_selection_disown, nhg_selection_owned, nhg_selection_read,
+        nhg_selection_set, nhg_selection_types,
     };
     use nhglue::ffi::{nhg_frame_csd, nhg_frame_resized, nhg_frame_scale, nhg_next, nhg_raw_event};
     use nhglue::ffi::{nhg_frame_forget, nhg_frame_register, nhg_panic_message};
@@ -17,6 +23,7 @@ mod abi {
     use nhglue::frame::*;
     use nhglue::keys::NHG_KEY_REPEAT;
     use nhglue::present::*;
+    use nhglue::query::{NhgDisplayInfo, NhgMonitor};
     use nhshell::event::NhShellEvent;
     use nhshell::ffi::NhShell;
     use std::ffi::c_char;
@@ -217,6 +224,46 @@ mod abi {
             ),
             // the keyboard
             ("NHG_KEY_REPEAT", NHG_KEY_REPEAT.into()),
+            // selections, display queries and the bench
+            ("sizeof (NhgMonitor)", size_of::<NhgMonitor>() as i64),
+            ("offsetof (NhgMonitor, x)", offset_of!(NhgMonitor, x) as i64),
+            (
+                "offsetof (NhgMonitor, mm_h)",
+                offset_of!(NhgMonitor, mm_h) as i64,
+            ),
+            (
+                "offsetof (NhgMonitor, scale120)",
+                offset_of!(NhgMonitor, scale120) as i64,
+            ),
+            (
+                "offsetof (NhgMonitor, name)",
+                offset_of!(NhgMonitor, name) as i64,
+            ),
+            (
+                "sizeof (NhgDisplayInfo)",
+                size_of::<NhgDisplayInfo>() as i64,
+            ),
+            (
+                "offsetof (NhgDisplayInfo, mm_h)",
+                offset_of!(NhgDisplayInfo, mm_h) as i64,
+            ),
+            (
+                "offsetof (NhgDisplayInfo, scale120)",
+                offset_of!(NhgDisplayInfo, scale120) as i64,
+            ),
+            (
+                "offsetof (NhgDisplayInfo, caps)",
+                offset_of!(NhgDisplayInfo, caps) as i64,
+            ),
+            ("sizeof (NhgBenchOut)", size_of::<NhgBenchOut>() as i64),
+            (
+                "offsetof (NhgBenchOut, compose_p50)",
+                offset_of!(NhgBenchOut, compose_p50) as i64,
+            ),
+            (
+                "offsetof (NhgBenchOut, interval_p95)",
+                offset_of!(NhgBenchOut, interval_p95) as i64,
+            ),
         ];
         // the prototypes, C side (checked at compile time: the probe references no function, so it links alone)
         let decls = "\
@@ -250,7 +297,18 @@ PROTO (nhg_frame_forget, int32_t (NhgDisplay *, uint64_t));
 PROTO (nhg_panic_message, int32_t (NhgDisplay *, char *, size_t, size_t *));
 PROTO (nhg_debug_check_frame, int32_t (NhgDisplay *, uint64_t, const NhgFrameFacts *));
 PROTO (nhg_test_panic, int32_t (NhgDisplay *));
-PROTO (nhg_keyboard_window, int32_t (NhgDisplay *, uint64_t *));";
+PROTO (nhg_keyboard_window, int32_t (NhgDisplay *, uint64_t *));
+PROTO (nhg_selection_set, int32_t (NhgDisplay *, uint32_t, const char *const *, const uint8_t *const *, const size_t *, size_t));
+PROTO (nhg_selection_disown, int32_t (NhgDisplay *, uint32_t));
+PROTO (nhg_selection_owned, int32_t (NhgDisplay *, uint32_t));
+PROTO (nhg_selection_types, int32_t (NhgDisplay *, uint32_t, const char **, size_t *));
+PROTO (nhg_selection_read, int32_t (NhgDisplay *, uint32_t, const char *, uint32_t, const uint8_t **, size_t *));
+PROTO (nhg_monitor_set, int32_t (NhgDisplay *, const NhgMonitor *));
+PROTO (nhg_monitor_remove, int32_t (NhgDisplay *, uint64_t));
+PROTO (nhg_display_info, int32_t (NhgDisplay *, NhgDisplayInfo *));
+PROTO (nhg_bench_full_redraw, int32_t (NhgDisplay *, const NhgSurface *, size_t, uint32_t, NhgBenchOut *));
+PROTO (nhg_bell, int32_t (NhgDisplay *, uint64_t));
+PROTO (nhg_pointer_visible, int32_t (NhgDisplay *, uint64_t, int32_t, uint32_t));";
         // the same table, Rust side
         let _: unsafe extern "C" fn(*mut u32) -> i32 = nhg_abi_version;
         let _: unsafe extern "C" fn(*const c_char, *mut c_char, usize) -> *mut NhgDisplay =
@@ -309,6 +367,39 @@ PROTO (nhg_keyboard_window, int32_t (NhgDisplay *, uint64_t *));";
             use nhglue::ffi::nhg_keyboard_window;
             let _: unsafe extern "C" fn(*mut NhgDisplay, *mut u64) -> i32 = nhg_keyboard_window;
         }
+        // selections, display queries, the bench, the bell and the pointer
+        let _: unsafe extern "C" fn(
+            *mut NhgDisplay,
+            u32,
+            *const *const c_char,
+            *const *const u8,
+            *const usize,
+            usize,
+        ) -> i32 = nhg_selection_set;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u32) -> i32 = nhg_selection_disown;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u32) -> i32 = nhg_selection_owned;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u32, *mut *const c_char, *mut usize) -> i32 =
+            nhg_selection_types;
+        let _: unsafe extern "C" fn(
+            *mut NhgDisplay,
+            u32,
+            *const c_char,
+            u32,
+            *mut *const u8,
+            *mut usize,
+        ) -> i32 = nhg_selection_read;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, *const NhgMonitor) -> i32 = nhg_monitor_set;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_monitor_remove;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, *mut NhgDisplayInfo) -> i32 = nhg_display_info;
+        let _: unsafe extern "C" fn(
+            *mut NhgDisplay,
+            *const NhgSurface,
+            usize,
+            u32,
+            *mut NhgBenchOut,
+        ) -> i32 = nhg_bench_full_redraw;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_bell;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32, u32) -> i32 = nhg_pointer_visible;
 
         let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
         let got = probe(decls, &exprs);

@@ -48,6 +48,10 @@ pub struct Display {
     pub(crate) presenting: Presenting,
     /// The modifier mask and the window with the keyboard (`keys.rs`, `focus.rs`).
     pub(crate) keyboard: Keyboard,
+    /// Which selections we own (`select.rs`).
+    pub(crate) select: crate::select::Select,
+    /// The outputs C pushed (`query.rs`).
+    pub(crate) monitors: crate::query::Monitors,
 }
 
 impl Drop for Display {
@@ -79,6 +83,8 @@ impl NhgDisplay {
                 acks_due: Vec::new(),
                 presenting: Presenting::default(),
                 keyboard: Keyboard::default(),
+                select: Default::default(),
+                monitors: Default::default(),
             }),
         }
     }

@@ -2344,6 +2344,13 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
       /* Handled when the drain is over.  */
       dpyinfo->connection_lost = true;
       return 0;
+
+    case NHG_ACT_SELECTION_CLEAR:
+      /* Another client took a selection we owned.  */
+      EVENT_INIT (ie);
+      nhwl_selection_clear_event (a->code, &ie);
+      kbd_buffer_store_event_hold (&ie, hold_quit);
+      return 1;
     }
 
   f = a->window ? nhwl_window_to_frame (dpyinfo, a->window) : NULL;
@@ -2587,11 +2594,6 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 				     hold_quit);
 	  break;
 
-	case NHSHELL_EV_SELECTION:
-	  have = nhwl_selection_changed (dpyinfo, ev.u.selection.kind,
-					 &inev.ie);
-	  break;
-
 	case NHSHELL_EV_POPUP_DONE:
 	  /* A tip's popup goes at once; a popup frame stays until Lisp
 	     deletes or hides it, on the `delete-frame' event.  */
@@ -2632,6 +2634,15 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 		    sizeof dpyinfo->monitors[i].name);
 	    dpyinfo->monitors[i].name[sizeof dpyinfo->monitors[i].name - 1]
 	      = '\0';
+	    {
+	      struct nhwl_monitor *m = &dpyinfo->monitors[i];
+	      NhgMonitor g = { m->id, m->x, m->y, m->w, m->h, m->mm_w,
+			       m->mm_h, m->scale120, { 0 } };
+
+	      memcpy (g.name, m->name, sizeof g.name);
+	      nhwl_glue_rc (dpyinfo,
+			    NHG (nhg_monitor_set (dpyinfo->glue, &g)));
+	    }
 	    if (dpyinfo->scale120 == 0 && ev.u.output.scale120)
 	      {
 		dpyinfo->scale120 = ev.u.output.scale120;
@@ -2653,6 +2664,9 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 
 		  dpyinfo->monitors[i]
 		    = dpyinfo->monitors[--dpyinfo->n_monitors];
+		  nhwl_glue_rc (dpyinfo,
+				NHG (nhg_monitor_remove (dpyinfo->glue,
+							 ev.u.output.id)));
 		  for (o = dpyinfo->outputs; o; o = o->next_output)
 		    nhwl_output_left (o, ev.u.output.id);
 		  have = nhwl_monitors_changed (dpyinfo, &inev);
@@ -2871,6 +2885,11 @@ nhwl_buffer_flipping_unblocked_hook (struct frame *f)
 static void
 nhwl_ring_bell (struct frame *f)
 {
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+
+  if (out->window)
+    nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		  NHG (nhg_bell (FRAME_NHG (f), out->window)));
 }
 
 static void
@@ -2881,13 +2900,14 @@ nhwl_toggle_invisible_pointer (struct frame *f, bool invisible)
   if (out->window)
     {
       block_input ();
-      nhshell_window_set_cursor (FRAME_NHWL_SHELL (f), out->window,
-				 invisible
-				 ? NHSHELL_CURSOR_HIDDEN
-				 : (out->current_cursor
-				    ? (uint32_t) ((intptr_t) out->current_cursor
-						  - 1)
-				    : NHSHELL_CURSOR_DEFAULT));
+      nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		    NHG (nhg_pointer_visible (FRAME_NHG (f), out->window,
+					      !invisible,
+					      out->current_cursor
+					      ? (uint32_t) ((intptr_t)
+							    out->current_cursor
+							    - 1)
+					      : NHSHELL_CURSOR_DEFAULT)));
       unblock_input ();
     }
   f->pointer_invisible = invisible;
@@ -3326,51 +3346,6 @@ mark_nhwlterm (void)
     }
 }
 
-/* Adapted from pgtk_display_pixel_width/height: the output with the
-   largest extent, in device pixels.  */
-int
-nhwl_display_pixel_width (struct nhwl_display_info *dpyinfo)
-{
-  int i, width = 0;
-
-  for (i = 0; i < dpyinfo->n_monitors; i++)
-    width = max (width, dpyinfo->monitors[i].w);
-  return width ? width : 1920;
-}
-
-int
-nhwl_display_pixel_height (struct nhwl_display_info *dpyinfo)
-{
-  int i, height = 0;
-
-  for (i = 0; i < dpyinfo->n_monitors; i++)
-    height = max (height, dpyinfo->monitors[i].h);
-  return height ? height : 1080;
-}
-
-static int
-nhwl_bench_cmp (const void *a, const void *b)
-{
-  double x = *(const double *) a, y = *(const double *) b;
-
-  return (x > y) - (x < y);
-}
-
-static double
-nhwl_bench_ms (struct timespec t)
-{
-  return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
-}
-
-/* Sorted A of N values: the P-th percentile (nearest rank).  */
-static double
-nhwl_bench_pct (double *a, ptrdiff_t n, double p)
-{
-  ptrdiff_t k = (ptrdiff_t) ceil (p * n) - 1;
-
-  return a[max (k, 0)];
-}
-
 DEFUN ("nhwl--bench-full-redraw", Fnhwl__bench_full_redraw,
        Snhwl__bench_full_redraw, 1, 1, 0,
        doc: /* Present N frames of the selected frame, each damaged whole.
@@ -3385,10 +3360,8 @@ its thread or inline.  */)
   struct frame *f = SELECTED_FRAME ();
   struct nhwl_output *out;
   struct nhwl_display_info *dpyinfo;
-  struct timespec ts;
-  double *compose, *interval, prev = 0;
-  ptrdiff_t frames, i, done = 0;
-  NhgPresenterStats st;
+  NhgBenchOut r;
+  ptrdiff_t frames;
 
   CHECK_FIXNAT (n);
   if (!FRAME_NHWL_P (f))
@@ -3402,68 +3375,21 @@ its thread or inline.  */)
   if (!out->glitnir_id || !out->configured || !dpyinfo->glue)
     error ("The frame is not shown yet");
 
-  compose = xnmalloc (frames, 2 * sizeof *compose);
-  interval = compose + frames;
-  for (i = 0; i < frames; i++)
-    {
-      double t0, t1, publish;
-      int waits = 0;
-      bool committed;
-      uint64_t commits;
-
-      /* Publish the frame damaged whole, then wait for its commit: on the
-	 presenter's thread (its count of buffer commits rises), or inline,
-	 where the present asks itself until the pacer lets it go (the
-	 previous present's frame callback, about one refresh); the try
-	 that commits is timed.  */
-      st = (NhgPresenterStats) { 0 };
-      NHG (nhg_presenter_stats (dpyinfo->glue, &st));
-      commits = st.counters.commits;
-      nhwl_damage_all (f);
-      clock_gettime (CLOCK_MONOTONIC, &ts);
-      t0 = nhwl_bench_ms (ts);
-      nhwl_publish (f);
-      clock_gettime (CLOCK_MONOTONIC, &ts);
-      publish = nhwl_bench_ms (ts) - t0;
-      do
-	{
-	  if (waits)
-	    poll (NULL, 0, 1);
-	  clock_gettime (CLOCK_MONOTONIC, &ts);
-	  t0 = nhwl_bench_ms (ts);
-	  committed = nhwl_present_ready (dpyinfo, out->window);
-	  if (!committed
-	      && NHG (nhg_presenter_stats (dpyinfo->glue, &st)) == NHG_OK)
-	    committed = st.counters.commits > commits;
-	}
-      while (!committed && waits++ < 5000);
-      clock_gettime (CLOCK_MONOTONIC, &ts);
-      t1 = nhwl_bench_ms (ts);
-      if (!committed)
-	break;
-      compose[done] = publish + (t1 - t0);
-      if (done > 0)
-	interval[done - 1] = t1 - prev;
-      prev = t1;
-      done++;
-    }
-  if (done < 2)
-    {
-      xfree (compose);
-      error ("The bench presented %"pD"d frames", done);
-    }
-  qsort (compose, done, sizeof *compose, nhwl_bench_cmp);
-  qsort (interval, done - 1, sizeof *interval, nhwl_bench_cmp);
-  Lisp_Object r
-    = list (intern_c_string (":frames"), make_fixnum (done),
-	    intern_c_string (":compose-p50"),
-	    make_float (nhwl_bench_pct (compose, done, 0.5)),
-	    intern_c_string (":compose-p95"),
-	    make_float (nhwl_bench_pct (compose, done, 0.95)),
-	    intern_c_string (":present-interval-p95"),
-	    make_float (nhwl_bench_pct (interval, done - 1, 0.95)));
-  xfree (compose);
-  return r;
+  /* The tree, as nhwl_publish lists it; the glue damages, publishes and
+     presents it, frame by frame.  */
+  r.frames = 0;
+  nhwl_nsurfaces = 0;
+  nhwl_surface_add (f, 0, true);
+  if (nhwl_glue_rc (dpyinfo,
+		    NHG (nhg_bench_full_redraw (dpyinfo->glue, nhwl_surfaces,
+						nhwl_nsurfaces, frames, &r)))
+      < 0)
+    error ("The bench presented %"pD"d frames", (ptrdiff_t) r.frames);
+  return list (intern_c_string (":frames"), make_fixnum (r.frames),
+	       intern_c_string (":compose-p50"), make_float (r.compose_p50),
+	       intern_c_string (":compose-p95"), make_float (r.compose_p95),
+	       intern_c_string (":present-interval-p95"),
+	       make_float (r.interval_p95));
 }
 
 DEFUN ("nhwl-presenter-stats", Fnhwl_presenter_stats, Snhwl_presenter_stats,
