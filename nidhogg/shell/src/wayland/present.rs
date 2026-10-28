@@ -195,10 +195,12 @@ impl MainState {
         let present = self.present_of(id);
         let mut p = lock(&present);
         p.configured = true;
-        p.suspended = suspended;
+        let was = std::mem::replace(&mut p.suspended, suspended);
         drop(p);
         self.present_rearm(id, conn);
-        lock(&present).notify();
+        if was && !suspended {
+            lock(&present).notify();
+        }
     }
 
     /// A waiting pacer asks again: a frame callback and an empty commit.  The surface may have become visible, and
