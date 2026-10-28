@@ -1,0 +1,2 @@
+# the root .gitignore ignores dot-files: .cargo/config.toml (the offline vendored source) must be tracked
+!/.cargo/

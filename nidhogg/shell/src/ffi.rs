@@ -37,9 +37,16 @@ pub struct NhShellWindowDesc {
 }
 
 /// Connect to `display` (`None`: the environment's).  The backends are added here as they are written.
+#[cfg(feature = "wayland")]
 fn open_backend(display: Option<&CStr>) -> ShellResult<Box<dyn ShellBackend>> {
     let shell = crate::wayland::WaylandShell::open(display)?;
     Ok(Box::new(shell))
+}
+
+/// Without a backend (the Android check builds without `wayland`), nothing can connect.
+#[cfg(not(feature = "wayland"))]
+fn open_backend(_display: Option<&CStr>) -> ShellResult<Box<dyn ShellBackend>> {
+    Err(ShellError::Unsupported)
 }
 
 /// # Safety
