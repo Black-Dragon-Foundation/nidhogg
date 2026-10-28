@@ -104,6 +104,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "systime.h"
 #include "systty.h"
 #include "syswait.h"
+#ifdef HAVE_NIDHOGG_WATCHDOG
+#include "nidhogg-watchdog.h"
+#endif
 
 #ifdef HAVE_SYS_RESOURCE_H
 # include <sys/resource.h>
@@ -629,7 +632,13 @@ void
 sys_suspend (void)
 {
 #ifndef DOS_NT
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  nh_wd_suspend (true);
+#endif
   kill (0, SIGTSTP);
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  nh_wd_suspend (false);
+#endif
 #else
 /* On a system where suspending is not implemented,
    instead fork a subshell and let it talk directly to the terminal

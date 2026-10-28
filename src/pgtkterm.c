@@ -71,6 +71,10 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #ifdef GDK_WINDOWING_WAYLAND
 #include <gdk/gdkwayland.h>
 #endif
+#ifdef HAVE_NIDHOGG_WATCHDOG
+
+#include "nidhogg-watchdog.h"
+#endif
 
 #define FRAME_CR_CONTEXT(f)		((f)->output_data.pgtk->cr_context)
 #define FRAME_CR_ACTIVE_CONTEXT(f)	((f)->output_data.pgtk->cr_active)
@@ -7226,6 +7230,9 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
       any_help_event_p = false;
 
       Fset_input_interrupt_mode (Qt);
+#ifdef HAVE_NIDHOGG_WATCHDOG
+      nh_wd_gtk_install ();
+#endif
       baud_rate = 19200;
 
 #ifdef USE_CAIRO
