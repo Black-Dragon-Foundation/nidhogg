@@ -1699,6 +1699,31 @@ nhwl_scroll_record (struct frame *f, const NhShellEvent *ev,
   return n;
 }
 
+/* The window of O is no longer on the output ID.  */
+static void
+nhwl_output_left (struct nhwl_output *o, uint64_t id)
+{
+  int i;
+
+  for (i = 0; i < o->n_entered; i++)
+    if (o->entered[i] == id)
+      {
+	o->entered[i] = o->entered[--o->n_entered];
+	break;
+      }
+}
+
+/* Make INEV the MONITORS_CHANGED_EVENT of DPYINFO's terminal (one per
+   change: Lisp runs display-monitors-changed-functions for it).  */
+static bool
+nhwl_monitors_changed (struct nhwl_display_info *dpyinfo,
+		       union buffered_input_event *inev)
+{
+  inev->ie.kind = MONITORS_CHANGED_EVENT;
+  XSETTERMINAL (inev->ie.arg, dpyinfo->terminal);
+  return true;
+}
+
 /* Drain DPYINFO's shell events into the keyboard buffer (through
    HOLD_QUIT where Emacs gave one); return the number of events stored.
    Callers hold block_input.  */
@@ -1891,6 +1916,7 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	  break;
 
 	case NHSHELL_EV_OUTPUT_ADD:
+	case NHSHELL_EV_OUTPUT_CHANGE:
 	  {
 	    int i;
 
@@ -1922,6 +1948,7 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 		dpyinfo->resx = dpyinfo->resy
 		  = 96.0 * dpyinfo->scale120 / 120.0;
 	      }
+	    have = nhwl_monitors_changed (dpyinfo, &inev);
 	  }
 	  break;
 
@@ -1932,11 +1959,35 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	    for (i = 0; i < dpyinfo->n_monitors; i++)
 	      if (dpyinfo->monitors[i].id == ev.u.output.id)
 		{
+		  struct nhwl_output *o;
+
 		  dpyinfo->monitors[i]
 		    = dpyinfo->monitors[--dpyinfo->n_monitors];
+		  for (o = dpyinfo->outputs; o; o = o->next_output)
+		    nhwl_output_left (o, ev.u.output.id);
+		  have = nhwl_monitors_changed (dpyinfo, &inev);
 		  break;
 		}
 	  }
+	  break;
+
+	case NHSHELL_EV_ENTER_OUTPUT:
+	  if (f && FRAME_NHWL_OUTPUT (f)->n_entered < NHWL_MAX_OUTPUTS)
+	    {
+	      struct nhwl_output *o = FRAME_NHWL_OUTPUT (f);
+	      int i;
+
+	      for (i = 0; i < o->n_entered; i++)
+		if (o->entered[i] == ev.u.output.id)
+		  break;
+	      if (i == o->n_entered)
+		o->entered[o->n_entered++] = ev.u.output.id;
+	    }
+	  break;
+
+	case NHSHELL_EV_LEAVE_OUTPUT:
+	  if (f)
+	    nhwl_output_left (FRAME_NHWL_OUTPUT (f), ev.u.output.id);
 	  break;
 
 	case NHSHELL_EV_DISCONNECTED:

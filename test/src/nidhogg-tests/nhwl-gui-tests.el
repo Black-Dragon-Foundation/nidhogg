@@ -1309,3 +1309,89 @@ serial is never acked early, with the old buffer)."
               (should (equal (nhwl-gui--logical-size c)
                              (if (eql (nhwl-gui--get c :ack_serial) a) '(700 500) '(760 540))))))))
     (gui-runner-recorder '(:cmd "unocclude"))))
+
+;;; Monitors (native shells W1 Task 14)
+
+(defun nhwl-gui--pump (seconds)
+  "Read events for SECONDS: the shell's records reach Lisp (the monitors-changed hook) only through the input loop."
+  (let ((end (+ (float-time) seconds)))
+    (while (< (float-time) end) (read-event nil nil 0.05))))
+
+(defun nhwl-gui--wait-ev (pred)
+  "Like `nhwl-gui--wait' with PRED, reading events between the tries."
+  (nhwl-gui--wait (lambda () (read-event nil nil 0.05) (funcall pred))))
+
+(defun nhwl-gui--monitor (name)
+  "The `display-monitor-attributes-list' entry called NAME."
+  (seq-find (lambda (m) (equal (alist-get 'name m) name)) (display-monitor-attributes-list)))
+
+(defvar nhwl-gui--hook-runs 0)
+
+(defmacro nhwl-gui--with-second-output (&rest body)
+  "Run BODY with a second output, nh-1 (800x600 at 2x), counting the monitors-changed hook in `nhwl-gui--hook-runs'."
+  `(let* ((nhwl-gui--hook-runs 0)
+          (fn (lambda (_terminal) (setq nhwl-gui--hook-runs (1+ nhwl-gui--hook-runs)))))
+     (add-hook 'display-monitors-changed-functions fn)
+     (unwind-protect
+         (progn
+           (gui-runner-recorder '(:cmd "output" :op "add" :name "nh-1" :size [800 600] :scale120 240))
+           (should (nhwl-gui--wait-ev (lambda () (nhwl-gui--monitor "nh-1"))))
+           (nhwl-gui--pump 0.3)
+           ,@body)
+       ;; the removal's own record must be read before the next row counts the hook
+       (ignore-errors (gui-runner-recorder '(:cmd "output" :op "remove" :name "nh-1")))
+       (nhwl-gui--wait-ev (lambda () (null (nhwl-gui--monitor "nh-1"))))
+       (nhwl-gui--pump 0.3)
+       (remove-hook 'display-monitors-changed-functions fn))))
+
+(ert-deftest nhwl-gui/monitor-list-has-the-output ()
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((m (nhwl-gui--monitor "nh-0")))
+    (should m)
+    (should (equal (alist-get 'geometry m) (alist-get 'workarea m)))
+    (should (consp (alist-get 'mm-size m)))
+    (should (numberp (alist-get 'scale-factor m)))
+    (should (equal (alist-get 'source m) "Wayland"))
+    (should (memq (selected-frame) (alist-get 'frames m)))))
+
+(ert-deftest nhwl-gui/output-added-runs-the-hook-once ()
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--with-second-output
+   (should (= nhwl-gui--hook-runs 1))
+   (let ((m (nhwl-gui--monitor "nh-1")))
+     (should (= (alist-get 'scale-factor m) 2.0))
+     (should (equal (nthcdr 2 (alist-get 'geometry m)) '(800 600))))
+   (should (= (length (display-monitor-attributes-list)) 2))))
+
+(ert-deftest nhwl-gui/output-removed-under-a-frame ()
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--with-second-output
+   (gui-runner-recorder '(:cmd "output" :op "enter" :name "nh-1" :surface "toplevel"))
+   (should (nhwl-gui--wait-ev (lambda () (alist-get 'frames (nhwl-gui--monitor "nh-1")))))
+   (setq nhwl-gui--hook-runs 0)
+   (let ((seq (plist-get (gui-runner-recorder '(:cmd "log" :since 0)) :next))
+         (f (selected-frame)))
+     (gui-runner-recorder '(:cmd "output" :op "remove" :name "nh-1"))
+     (should (nhwl-gui--wait-ev (lambda () (null (nhwl-gui--monitor "nh-1")))))
+     (nhwl-gui--pump 0.3)
+     (should (= (length (display-monitor-attributes-list)) 1))
+     (should (= nhwl-gui--hook-runs 1))
+     (should (frame-live-p f))
+     (with-temp-buffer
+       (insert "after the output went away")
+       (set-window-buffer (frame-selected-window f) (current-buffer))
+       (redisplay t)
+       (should (nhwl-gui--wait
+                (lambda ()
+                  (plist-get (gui-runner-recorder `(:cmd "log" :since ,seq)) :commits))))))))
+
+(ert-deftest nhwl-gui/frame-lists-its-monitor ()
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--with-second-output
+   (gui-runner-recorder '(:cmd "output" :op "enter" :name "nh-1" :surface "toplevel"))
+   (should (nhwl-gui--wait-ev (lambda () (alist-get 'frames (nhwl-gui--monitor "nh-1")))))
+   (let ((on-1 (alist-get 'frames (nhwl-gui--monitor "nh-1")))
+         (on-0 (alist-get 'frames (nhwl-gui--monitor "nh-0"))))
+     (should-not (seq-intersection on-1 on-0)))
+   (gui-runner-recorder '(:cmd "output" :op "leave" :name "nh-1" :surface "toplevel"))
+   (should (nhwl-gui--wait-ev (lambda () (null (alist-get 'frames (nhwl-gui--monitor "nh-1"))))))))
