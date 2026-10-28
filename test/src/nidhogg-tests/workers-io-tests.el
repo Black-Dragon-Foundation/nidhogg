@@ -522,6 +522,30 @@ meanwhile, while a SIGCHLD still reaches its handler and
                  (lambda () (equal (workers-io-tests--out cat) "polled\n")))))
       (should (equal (workers-io-tests--out cat) "polled\n")))))
 
+(ert-deftest workers/zero-timeout-paused-no-wait ()
+  ;; A zero-timeout poll never waits for a paused reader: the SIGCHLD
+  ;; handler pauses an exiting process's reader after the wait copied
+  ;; its select mask, and nh-io reads no paused handle, so waiting for
+  ;; its output only reached the 1 s bound.  Many short processes that
+  ;; write as they exit, polled with a zero timeout: no poll takes near
+  ;; the bound.  (A stress row: the window is the SIGCHLD between the
+  ;; mask copy and the select.)
+  (workers-io-tests--modes
+    (when (eq mode 'threads)
+      (let ((worst 0.0))
+        (dotimes (i 200)
+          (let ((p (make-process
+                    :name (format "wio-zp-%d" i) :noquery t
+                    :connection-type 'pipe
+                    :command '("sh" "-c" "head -c 65536 /dev/zero")
+                    :filter #'ignore :sentinel #'ignore)))
+            (while (process-live-p p)
+              (let ((t0 (float-time)))
+                (accept-process-output nil 0)
+                (setq worst (max worst (- (float-time) t0)))))
+            (delete-process p)))
+        (should (< worst 0.5))))))
+
 (ert-deftest workers/raw-flow-control ()
   ;; A stream far past the queue cap (MC-22, max (4 × readmax, 256 KB)):
   ;; the queue never holds more than the cap, nh-io stops reading at it
