@@ -772,6 +772,31 @@ fn restart_keep_socket_queues_connections() {
     assert!(env.queue.roundtrip(&mut env.client).is_err());
 }
 
+/// A restart closes an idle client's socket at once: the client sees the hangup without sending a request.
+#[test]
+fn restart_closes_idle_clients_at_once() {
+    let env = Env::new("sway", &[]);
+    let backend = env.registry.backend().upgrade().unwrap();
+    let mut sock = UnixStream::from(backend.poll_fd().try_clone_to_owned().unwrap());
+    sock.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    restart(&env, "keep-socket", 0);
+    let started = Instant::now();
+    let mut buf = [0u8; 4096];
+    loop {
+        match sock.read(&mut buf) {
+            Ok(0) => break,
+            // events sent before the restart
+            Ok(_) => {}
+            Err(e) => panic!("no hangup after {:?}: {e}", started.elapsed()),
+        }
+    }
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
 #[test]
 fn restart_rebind_frees_and_reuses_the_name() {
     let env = Env::new("sway", &[]);
