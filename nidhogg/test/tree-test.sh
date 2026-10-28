@@ -192,8 +192,9 @@ hits=$(git ls-files nidhogg .github README.md ':!nidhogg/*/vendor/*' | while IFS
 
 flag_rule
 
-# the shell API names no backend: no 'wayland_' identifier in nhshell's source outside src/wayland/
-wl=$(git ls-files nidhogg/shell/src | grep -v '^nidhogg/shell/src/wayland/' |
+# the shell API and the glue name no backend: no 'wayland_' identifier in nhshell's source outside src/wayland/, nor
+# in the glue's source
+wl=$(git ls-files nidhogg/shell/src nidhogg/glue/src | grep -v '^nidhogg/shell/src/wayland/' |
   while IFS= read -r f; do # (the test api::no_wayland_names_in_ffi has the name in its own fn line)
     [ -f "$f" ] && grep 'wayland_' "$f" | grep -v 'fn no_' | grep -q . && echo "$f"; done)
 [ -z "$wl" ] || fail "wayland_ named outside nidhogg/shell/src/wayland/: $(echo "$wl" | tr '\n' ' ')"

@@ -3016,9 +3016,9 @@ nhwl_term_init (Lisp_Object display_name)
   char *dpy_name = SSDATA (display_name);
   Lisp_Object lisp_dpy_name;
   Lisp_Object color_file, system_name;
-  NhShell *shell = NULL;
+  NhgDisplay *glue;
+  NhShell *shell;
   ptrdiff_t nbytes;
-  int rc;
 
   block_input ();
 
@@ -3035,12 +3035,13 @@ nhwl_term_init (Lisp_Object display_name)
       x_initialized = true;
     }
 
-  rc = nhshell_open (strlen (dpy_name) ? dpy_name : NULL, &shell);
-  if (rc < 0 || !shell)
+  glue = nhg_open (strlen (dpy_name) ? dpy_name : NULL, NULL, 0);
+  if (!glue)
     {
       unblock_input ();
       return 0;
     }
+  shell = nhg_shell (glue);
 
   if (strlen (dpy_name) == 0)
     {
@@ -3051,8 +3052,9 @@ nhwl_term_init (Lisp_Object display_name)
   lisp_dpy_name = build_string (dpy_name);
 
   dpyinfo = xzalloc (sizeof *dpyinfo);
+  dpyinfo->glue = glue;
   dpyinfo->shell = shell;
-  dpyinfo->connection = nhshell_wake_fd (shell);
+  dpyinfo->connection = nhg_fd (glue);
   nhshell_caps (shell, &dpyinfo->caps);
   terminal = nhwl_create_terminal (dpyinfo);
 
@@ -3192,7 +3194,8 @@ nhwl_delete_terminal (struct terminal *terminal)
 	delete_keyboard_wait_descriptor (dpyinfo->connection);
       dpyinfo->connection = -1;
 
-      nhshell_close (dpyinfo->shell);
+      nhg_close (dpyinfo->glue);
+      dpyinfo->glue = NULL;
       dpyinfo->shell = NULL;
     }
 

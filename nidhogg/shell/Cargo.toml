@@ -4,21 +4,35 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.93"
 license = "GPL-3.0-or-later"
-description = "nhshell, Nidhogg's native Wayland shell layer with a C ABI (one static library with Glitnir)"
+description = "nhshell, Nidhogg's native Wayland shell layer (linked into Emacs through nidhogg/glue's libnhglue.a)"
 publish = false
 
+# an rlib only: nidhogg/glue's libnhglue.a is the one Rust static library Emacs links
 [lib]
-crate-type = ["staticlib", "rlib"]
+crate-type = ["rlib"]
+
+[features]
+default = ["wayland"]
+# the Wayland backend (`mod wayland`) and its dependencies; off for the Android check
+wayland = [
+    "dep:wayland-client",
+    "dep:wayland-cursor",
+    "dep:wayland-backend",
+    "dep:wayland-protocols",
+    "dep:wayland-scanner",
+    "dep:xkbcommon",
+    "dep:rustix",
+]
 
 [dependencies]
 glitnir = { path = "../glitnir", version = "0.1.0" }
-wayland-client = "0.31"
-wayland-cursor = "0.31"
-wayland-backend = { version = "0.3", features = ["client_system"] }
-wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
-wayland-scanner = "0.31"
-xkbcommon = { version = "0.9", default-features = false }
-rustix = { version = "1", features = ["fs", "mm", "event", "pipe", "net", "process"] }
+wayland-client = { version = "0.31", optional = true }
+wayland-cursor = { version = "0.31", optional = true }
+wayland-backend = { version = "0.3", features = ["client_system"], optional = true }
+wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"], optional = true }
+wayland-scanner = { version = "0.31", optional = true }
+xkbcommon = { version = "0.9", default-features = false, optional = true }
+rustix = { version = "1", features = ["fs", "mm", "event", "pipe", "net", "process"], optional = true }
 libc = "0.2"
 
 [profile.release]

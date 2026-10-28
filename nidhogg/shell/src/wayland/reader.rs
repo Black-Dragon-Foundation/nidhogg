@@ -232,6 +232,16 @@ impl Reader {
     }
 }
 
+thread_local! {
+    /// Set on a reader thread when it starts.
+    static READER_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the calling thread is a reader thread (the glue refuses to run there).
+pub fn is_reader_thread() -> bool {
+    READER_THREAD.get()
+}
+
 /// Start the reader on `queue` (already holding the setup's events) with every signal blocked: the host's signal
 /// handlers run on the host's threads only.
 pub fn spawn(
@@ -254,6 +264,7 @@ pub fn spawn(
     let spawned = std::thread::Builder::new()
         .name("nhshell-reader".into())
         .spawn(move || {
+            READER_THREAD.set(true);
             let outcome = catch_unwind(AssertUnwindSafe(move || {
                 let waker = Waker::from(Arc::new(ReaderWaker {
                     shared: state.shared.clone(),
@@ -406,5 +417,24 @@ impl Dispatch<XdgWmBase, ()> for ReaderState {
         if let xdg_wm_base::Event::Ping { serial } = event {
             wm_base.pong(serial);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The marker belongs to the thread that set it, as the reader sets it at its start.
+    #[test]
+    fn reader_marker_is_per_thread() {
+        assert!(!is_reader_thread() && !crate::is_reader_thread());
+        let on_reader = std::thread::spawn(|| {
+            READER_THREAD.set(true);
+            crate::is_reader_thread()
+        })
+        .join()
+        .unwrap();
+        assert!(on_reader);
+        assert!(!crate::is_reader_thread());
     }
 }
