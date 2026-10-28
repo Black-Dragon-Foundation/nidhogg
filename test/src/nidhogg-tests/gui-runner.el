@@ -412,7 +412,10 @@ The recorder keeps its session store.  Signals an error when the script fails or
                          (ert-test-name test))
        (unless expected
          (when (ert-test-result-with-condition-p result)
-           (glitnir-gui--say "  %S" (ert-test-result-with-condition-condition result))))))))
+           (glitnir-gui--say "  %S" (ert-test-result-with-condition-condition result))
+           ;; the `ert-info' lines, innermost first
+           (dolist (info (ert-test-result-with-condition-infos result))
+             (glitnir-gui--say "  %s%s" (car info) (cdr info)))))))))
 
 (defun glitnir-gui--selector ()
   "The ERT selector: GLITNIR_GUI_SELECT (an Emacs regexp, default every test), and with GLITNIR_GUI_TAG set

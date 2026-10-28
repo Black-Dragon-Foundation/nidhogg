@@ -37,6 +37,10 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include "regex-emacs.h"
 
+#ifdef HAVE_NIDHOGG_WATCHDOG
+#include "nidhogg-watchdog-phase.h"
+
+#endif
 #define REGEXP_CACHE_SIZE 20
 
 /* If the regexp is non-nil, then the buffer contains the compiled form
@@ -315,10 +319,16 @@ looking_at_1 (Lisp_Object string, bool posix, bool modify_data)
   freeze_buffer_relocation ();
   freeze_pattern (cache_entry);
   re_match_object = Qnil;
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  int nh_wd_d = nh_wd_phase_push (NH_WD_PH_REGEX);
+#endif
   i = re_match_2 (&cache_entry->buf, (char *) p1, s1, (char *) p2, s2,
 		  PT_BYTE - BEGV_BYTE,
 		  modify_match_data ? &search_regs : NULL,
 		  ZV_BYTE - BEGV_BYTE);
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  nh_wd_phase_pop_to (nh_wd_d);
+#endif
 
   if (i == -2)
     {
@@ -412,10 +422,16 @@ string_match_1 (Lisp_Object regexp, Lisp_Object string, Lisp_Object start,
 		       STRING_MULTIBYTE (string));
   freeze_pattern (cache_entry);
   re_match_object = string;
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  int nh_wd_d = nh_wd_phase_push (NH_WD_PH_REGEX);
+#endif
   val = re_search (&cache_entry->buf, SSDATA (string),
 		   SBYTES (string), pos_byte,
 		   SBYTES (string) - pos_byte,
 		   (modify_match_data ? &search_regs : NULL));
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  nh_wd_phase_pop_to (nh_wd_d);
+#endif
   unbind_to (count, Qnil);
 
   /* Set last_thing_searched only when match data is changed.  */
@@ -1530,12 +1546,18 @@ search_buffer (Lisp_Object string, ptrdiff_t pos, ptrdiff_t pos_byte,
       return pos;
     }
 
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  int nh_wd_d = RE ? nh_wd_phase_push (NH_WD_PH_REGEX) : NH_WD_PHASE_NONE;
+#endif
   if (RE && !(trivial_regexp_p (string) && NILP (Vsearch_spaces_regexp)))
     pos = search_buffer_re (string, pos, pos_byte, lim, lim_byte,
                             n, trt, inverse_trt, posix);
   else
     pos = search_buffer_non_re (string, pos, pos_byte, lim, lim_byte,
                                 n, RE, trt, inverse_trt, posix);
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  nh_wd_phase_pop_to (nh_wd_d);
+#endif
 
   return pos;
 }
