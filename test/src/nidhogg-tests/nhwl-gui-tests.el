@@ -2303,7 +2303,7 @@ while the top-level has the keyboard.  Delete the child and focus the parent aft
 ;; inactive window, no margin on a tiled side, rounded top corners, the scale.  `nhwl--title-bar' gives the layout in
 ;; device pixels of the surface.
 
-(declare-function nhwl--title-bar "nhwlcsd.c")
+(declare-function nhwl--title-bar "nhwlfns.c")
 (defvar nhwl-settings--values)
 
 (defun nhwl-gui--strip-rgb ()

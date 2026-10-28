@@ -33,6 +33,7 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "blockinput.h"
 #include "frame.h"
 #include "character.h"
+#include "coding.h"
 #include "composite.h"
 #include "dispextern.h"
 #include "fontset.h"
@@ -2562,4 +2563,205 @@ nhwl_snapshot (struct frame *f)
 	    b.pixels + (ptrdiff_t) i * b.stride, (size_t) b.w * 4);
   cairo_surface_mark_dirty (copy);
   return copy;
+}
+
+
+/***********************************************************************
+			   The title strip
+ ***********************************************************************/
+
+/* The client-side title bar's painting, moved from nhwlcsd.c (foot's
+   render.c CSD was the reference; this was written fresh).  The glue lays
+   the strip out, keeps its buttons' state and says at each publish whether
+   the strip must be painted again (nhg_csd_paint, which gives the draw
+   list); C resolves the colours and the font from the style Lisp gave
+   (nhwlfns.c) and paints: the strip in the desktop's colours for an active
+   or an inactive window, the frame's title, the buttons hovered and
+   pressed, and rounded top corners on a floating window (Glitnir's corner
+   kernel).  Device pixels; the corners' 12 is logical.  */
+
+#define NHWL_CSD_RADIUS 12
+#define NHWL_CSD_TILED (NHSHELL_STATE_TILED_L | NHSHELL_STATE_TILED_R \
+			| NHSHELL_STATE_TILED_T | NHSHELL_STATE_TILED_B)
+
+static void
+nhwl_csd_source (cairo_t *cr, unsigned long fg, unsigned long bg, double mix)
+{
+  cairo_set_source_rgb (cr,
+			(RED_FROM_ULONG (bg) * (1 - mix) + RED_FROM_ULONG (fg) * mix) / 255.0,
+			(GREEN_FROM_ULONG (bg) * (1 - mix) + GREEN_FROM_ULONG (fg) * mix) / 255.0,
+			(BLUE_FROM_ULONG (bg) * (1 - mix) + BLUE_FROM_ULONG (fg) * mix) / 255.0);
+}
+
+/* H with the N bytes at P mixed in (FNV-1a).  */
+static uint64_t
+nhwl_csd_mix (uint64_t h, const void *p, size_t n)
+{
+  const unsigned char *b = p;
+
+  for (size_t i = 0; i < n; i++)
+    h = (h ^ b[i]) * 1099511628211u;
+  return h;
+}
+
+/* One button's glyph in a cell at X (the strip's top at Y, side SIDE),
+   over a 10% foreground-tinted circle while hovered (20% pressed), as
+   Adwaita draws them.  */
+static void
+nhwl_csd_draw_button (cairo_t *cr, uint32_t kind, double x, double y,
+		      double side, unsigned long fg, unsigned long bg,
+		      uint32_t state, double s)
+{
+  double cx = x + side / 2, cy = y + side / 2, g = side * 0.14;
+
+  if (state)
+    {
+      nhwl_csd_source (cr, fg, bg, state == NHG_BTN_PRESS ? 0.2 : 0.1);
+      cairo_arc (cr, cx, cy, side * 0.36, 0, 2 * M_PI);
+      cairo_fill (cr);
+    }
+  nhwl_csd_source (cr, fg, bg, 1.0);
+  cairo_set_line_width (cr, max (1.0, s));
+  switch (kind)
+    {
+    case NHG_CSD_CLOSE:
+      cairo_move_to (cr, cx - g, cy - g);
+      cairo_line_to (cr, cx + g, cy + g);
+      cairo_move_to (cr, cx + g, cy - g);
+      cairo_line_to (cr, cx - g, cy + g);
+      break;
+    case NHG_CSD_MAX:
+      cairo_rectangle (cr, cx - g, cy - g, 2 * g, 2 * g);
+      break;
+    case NHG_CSD_MIN:
+      cairo_move_to (cr, cx - g, cy + g);
+      cairo_line_to (cr, cx + g, cy + g);
+      break;
+    case NHG_CSD_MENU:
+      for (int i = -1; i <= 1; i++)
+	{
+	  cairo_move_to (cr, cx - g, cy + i * g * 0.8);
+	  cairo_line_to (cr, cx + g, cy + i * g * 0.8);
+	}
+      break;
+    }
+  cairo_stroke (cr);
+}
+
+/* F's publish step for its title bar (the backing at its current size):
+   the glue sends the window geometry if it changed, and when the strip is
+   not what the backing shows, the border is painted (margins clear, the
+   strip, its title and buttons) and damaged.  */
+void
+nhwl_csd_draw (struct frame *f)
+{
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  struct nhwl_csd *c = &out->csd;
+  int W = out->cr_width, H = out->cr_height;
+  Lisp_Object title = !NILP (f->title) ? f->title : f->name;
+  const char *name = STRINGP (title) ? SSDATA (ENCODE_UTF_8 (title)) : "";
+  bool active = (out->states & NHSHELL_STATE_ACTIVATED) != 0;
+  bool round = !(out->states & (NHSHELL_STATE_MAXIMIZED
+				| NHSHELL_STATE_FULLSCREEN | NHWL_CSD_TILED));
+  double s = (out->scale120 ? out->scale120 : 120) / 120.0;
+  unsigned long fg = 0, bg = 0;
+  uint64_t look = 0;
+  const char *family = NULL;
+  double px = 0;
+  cairo_t *cr;
+  cairo_text_extents_t te;
+  cairo_font_extents_t fe;
+  GlitnirRect r[4];
+  NhgCsdPaint p;
+  int n = 0, i, mbar, tl;
+
+  if (!out->window)
+    return;
+  /* What the glue does not see goes in as one hash: the title, the
+     colours, the font (the style's generation) and the backing.  */
+  if (c->on)
+    {
+      unsigned gen = nhwl_csd_font (&family, &px);
+
+      nhwl_csd_colours (f, active, &fg, &bg);
+      look = nhwl_csd_mix (14695981039346656037u, name, strlen (name) + 1);
+      look = nhwl_csd_mix (look, &fg, sizeof fg);
+      look = nhwl_csd_mix (look, &bg, sizeof bg);
+      look = nhwl_csd_mix (look, &gen, sizeof gen);
+      look = nhwl_csd_mix (look, &out->cr_gen, sizeof out->cr_gen);
+    }
+  if (nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		    NHG (nhg_csd_paint (FRAME_NHG (f), out->window,
+					FRAME_PIXEL_WIDTH (f),
+					FRAME_PIXEL_HEIGHT (f), look, &p)))
+      != 1)
+    return;
+  mbar = p.strip.y;
+
+  cr = out->cr_context;
+  cairo_save (cr);
+  /* The margins are transparent, and so is the strip's corners' outside.  */
+  cairo_set_operator (cr, CAIRO_OPERATOR_CLEAR);
+  cairo_rectangle (cr, 0, 0, W, mbar);
+  cairo_rectangle (cr, 0, H - c->b, W, c->b);
+  cairo_rectangle (cr, 0, mbar, c->l, H - mbar - c->b);
+  cairo_rectangle (cr, W - c->r, mbar, c->r, H - mbar - c->b);
+  cairo_fill (cr);
+  cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
+  nhwl_csd_source (cr, fg, bg, 0.0);
+  cairo_rectangle (cr, p.strip.x, p.strip.y, p.strip.w, p.strip.h);
+  cairo_fill (cr);
+  nhwl_csd_source (cr, fg, bg, 0.15);
+  cairo_rectangle (cr, p.strip.x, p.strip.y + p.strip.h - 1, p.strip.w, 1);
+  cairo_fill (cr);
+  cairo_restore (cr);
+
+  /* A floating window's top corners are rounded: Glitnir's corner kernel
+     replaces the strip's corner squares, transparent outside the arc.  */
+  if (round && p.strip.w > 0)
+    {
+      uint32_t fill = (0xff000000u | (RED_FROM_ULONG (bg) << 16)
+		       | (GREEN_FROM_ULONG (bg) << 8) | BLUE_FROM_ULONG (bg));
+      GlitnirRect run = { p.strip.x, p.strip.y, p.strip.w, p.strip.h };
+
+      cairo_surface_flush (out->cr_surface);
+      glitnir_decor_corners (cairo_image_surface_get_data (out->cr_surface),
+			     cairo_image_surface_get_stride (out->cr_surface),
+			     run, NHWL_CSD_RADIUS, fill, fill, 0, 0, 1 | 2, s);
+      cairo_surface_mark_dirty (out->cr_surface);
+    }
+
+  cairo_save (cr);
+  cairo_set_operator (cr, CAIRO_OPERATOR_OVER);
+  for (i = 0; i < (int) min (p.nbuttons, NHG_CSD_MAX_BUTTONS); i++)
+    nhwl_csd_draw_button (cr, p.button[i].kind, p.button[i].r.x,
+			  p.button[i].r.y, p.button[i].r.w, fg, bg,
+			  p.button[i].state, s);
+
+  /* The title, centred between the buttons (GNOME's place), in the style's
+     font at the device size.  */
+  tl = p.title.x;
+  cairo_rectangle (cr, p.title.x, p.title.y, p.title.w, p.title.h);
+  cairo_clip (cr);
+  cairo_select_font_face (cr, family, CAIRO_FONT_SLANT_NORMAL,
+			  CAIRO_FONT_WEIGHT_BOLD);
+  cairo_set_font_size (cr, px * s);
+  cairo_font_extents (cr, &fe);
+  cairo_text_extents (cr, name, &te);
+  nhwl_csd_source (cr, fg, bg, 1.0);
+  cairo_move_to (cr, max (tl + 8 * s, (W - te.x_advance) / 2),
+		 mbar + (p.strip.h - (fe.ascent + fe.descent)) / 2 + fe.ascent);
+  cairo_show_text (cr, name);
+  cairo_restore (cr);
+  cairo_surface_mark_dirty (out->cr_surface);
+
+  r[n++] = (GlitnirRect) { 0, 0, W, c->t };
+  if (c->b)
+    r[n++] = (GlitnirRect) { 0, H - c->b, W, c->b };
+  if (c->l)
+    r[n++] = (GlitnirRect) { 0, c->t, c->l, H - c->t - c->b };
+  if (c->r)
+    r[n++] = (GlitnirRect) { W - c->r, c->t, c->r, H - c->t - c->b };
+  nhwl_glitnir_ensure (f);
+  glitnir_damage_add_n (out->glitnir_id, r, n);
 }

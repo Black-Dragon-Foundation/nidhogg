@@ -97,6 +97,28 @@ sees what the earlier events changed, as the C drain did; before each call it sa
   keeps the window that has the keyboard (`nhg_keyboard_window`). Emacs's focus frame and highlighting stay C.
 - **Transitional `NHG_ACT_RAW`** carries each event whose kind is not ported yet; C handles it on its old path
   (`nhg_raw_event` gives the event), a `PREEDIT`'s or `COMMIT_TEXT`'s text comes as the action's text, and `mods` is
-  the keyboard's modifier mask. Each port task takes its kinds out.
+  the keyboard's modifier mask. It is its event's last action (a title bar's may come before it). Each port task takes
+  its kinds out.
 - An event naming a forgotten window gives no action, except keys and the input method's, which C sends to the focus
   frame.
+
+## The title bar
+
+The client-side title bar (`src/csd.rs`, from `nhwlcsd.c`) is laid out, hit-tested and kept here; C paints it.
+
+- **Layout:** C calls `nhg_csd_layout` when it applies a configure or a scale and when `undecorated` changes, with the
+  scale and the flag (pulled). The glue asks the shell whether the compositor decorates the window, reads the
+  toplevel's states from its own configure state, and sets the frame's CSD fact itself (C no longer pushes it). C keeps
+  a copy of the offsets for its drawing (`struct nhwl_csd`), and a child frame's shadow margin stays C's until child
+  frames move.
+- **Painting:** at each publish C calls `nhg_csd_paint` with the native size and a hash of what it paints from that
+  the glue does not see (the title, the colours, the font, the backing's generation). The glue sends the window
+  geometry if it changed, and answers 1 with the draw list (`NhgCsdPaint`: the strip, the title's box, the buttons
+  with their state) only when the strip shows something new; C paints it with Cairo and damages the border.
+- **Pointer:** the event step routes pointer events through the title bar first. Over the border it consumes them and
+  gives an `NHG_ACT_TITLE_BAR` (the pointer shape, a repaint); a press moves, resizes, maximizes (a double click on the
+  strip too), minimizes or shows the window menu through the shell, and a click on close gives `NHG_ACT_DELETE`.
+  Back in the native area the title bar's action comes first and the event goes on raw, last. Hit tests use the native
+  size of the last paint, which is what the surface shows.
+- **Style:** `nhwl--set-title-bar-style` hands the buttons of each side to every display (`nhg_csd_style`), and to a
+  display opened later; the colours and the font stay C's.
