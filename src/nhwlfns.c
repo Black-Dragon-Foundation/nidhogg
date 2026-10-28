@@ -1112,6 +1112,8 @@ DEFUN ("x-create-frame", Fx_create_frame, Sx_create_frame, 1, 1, 0,
 			 RES_TYPE_SYMBOL);
   gui_default_parameter (f, parms, Qtitle, Qnil,
 			 "title", "Title", RES_TYPE_STRING);
+  gui_default_parameter (f, parms, Qsession_name, Qnil, NULL, NULL,
+			 RES_TYPE_STRING);
   gui_default_parameter (f, parms, Qwait_for_wm, Qt,
 			 "waitForWM", "WaitForWM", RES_TYPE_BOOLEAN);
   gui_default_parameter (f, parms, Qtool_bar_position,
@@ -2717,6 +2719,67 @@ FRAME defaults to the selected frame.  */)
 }
 
 /***********************************************************************
+			   Session restore
+ ***********************************************************************/
+
+DEFUN ("nhwl--session-open", Fnhwl__session_open, Snhwl__session_open, 3, 3, 0,
+       doc: /* Open the compositor's session for FRAME's display.
+ID is the saved session's id (a string), or nil to ask for a new session.
+REASON is `launch', `recover' or `restore'.  Return t when the request went
+out, nil without session management.  The answer arrives as an
+`nhwl-session' special event.  Frames made after this with a
+`session-name' join the session before their first commit.  */)
+  (Lisp_Object frame, Lisp_Object id, Lisp_Object reason)
+{
+  struct frame *f = decode_window_system_frame (frame);
+  uint32_t r;
+  int32_t rc;
+
+  if (!FRAME_NHG (f))
+    return Qnil;
+  if (EQ (reason, Qnhwl_session_launch))
+    r = NHG_SESSION_LAUNCH;
+  else if (EQ (reason, Qnhwl_session_recover))
+    r = NHG_SESSION_RECOVER;
+  else if (EQ (reason, Qnhwl_session_restore))
+    r = NHG_SESSION_RESTORE;
+  else
+    signal_error ("Unknown session reason", reason);
+  if (!NILP (id))
+    CHECK_STRING (id);
+  if (STRINGP (id))
+    id = ENCODE_UTF_8 (id);
+  block_input ();
+  rc = nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		     NHG (nhg_session_open (FRAME_NHG (f),
+					    STRINGP (id) ? SSDATA (id) : NULL,
+					    STRINGP (id) ? SBYTES (id) : 0,
+					    r)));
+  unblock_input ();
+  return rc >= 0 ? Qt : Qnil;
+}
+
+DEFUN ("nhwl--session-remove", Fnhwl__session_remove, Snhwl__session_remove,
+       1, 1, 0,
+       doc: /* Take FRAME out of the compositor's session.
+The compositor forgets the frame's name.  Return t when the frame was in
+the session.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_window_system_frame (frame);
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  int32_t rc;
+
+  if (!out || !out->window || !FRAME_NHG (f))
+    return Qnil;
+  block_input ();
+  rc = nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		     NHG (nhg_session_remove (FRAME_NHG (f), out->window)));
+  unblock_input ();
+  return rc > 0 ? Qt : Qnil;
+}
+
+/***********************************************************************
 			The title bars' style
  ***********************************************************************/
 
@@ -3012,6 +3075,17 @@ syms_of_nhwlfns (void)
   DEFSYM (Qinhibit_idle, "inhibit-idle");
   defsubr (&Snhwl_frame_export_handle);
   defsubr (&Snhwl_activation_token);
+  DEFSYM (Qsession_name, "session-name");
+  DEFSYM (Qnhwl_session_start, "nhwl-session-start");
+  DEFSYM (Qnhwl_session_name, "nhwl-session-name");
+  DEFSYM (Qnhwl_session_launch, "launch");
+  DEFSYM (Qnhwl_session_recover, "recover");
+  DEFSYM (Qnhwl_session_restore, "restore");
+  DEFSYM (Qnhwl_session_created, "created");
+  DEFSYM (Qnhwl_session_restored, "restored");
+  DEFSYM (Qnhwl_session_replaced, "replaced");
+  defsubr (&Snhwl__session_open);
+  defsubr (&Snhwl__session_remove);
 }
 
 /* The title bars' symbols and functions (the name is the one emacs.c

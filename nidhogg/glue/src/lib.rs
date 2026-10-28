@@ -41,6 +41,9 @@ pub mod layers;
 // the bell, idle inhibition, export handles and activation tokens
 pub mod bell;
 
+// session restore
+pub mod session;
+
 /// Glitnir's C ABI under another name, because this crate's own `ffi` shadows the glob below.
 pub use glitnir::ffi as glitnir_ffi;
 /// Glitnir's whole API, re-exported so its `#[no_mangle]` functions stay in this archive (`nidhogg-glitnir.c` calls

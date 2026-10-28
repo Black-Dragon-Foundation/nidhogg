@@ -664,6 +664,33 @@ int32_t nhg_window_export (NhgDisplay *d, uint64_t window, uint32_t timeout_ms, 
 int32_t nhg_activation_token (NhgDisplay *d, uint64_t window, uint32_t timeout_ms, char *buf, size_t cap,
                               size_t *len);
 
+/* ---- Session restore ---------------------------------------------------------------------------------------------- */
+
+/* nhg_session_open reasons: a fresh launch, a recovery after the compositor restarted, a restore of a saved session.  */
+#define NHG_SESSION_LAUNCH   0
+#define NHG_SESSION_RECOVER  1
+#define NHG_SESSION_RESTORE  2
+
+/* NHG_ACT_SESSION: the compositor answered nhg_session_open or took the session over.  CODE: */
+#define NHG_ACT_SESSION       41
+#define NHG_SESSION_CREATED   0   /* a new session: nhg_session_id gives its id */
+#define NHG_SESSION_RESTORED  1   /* the saved one */
+#define NHG_SESSION_REPLACED  2   /* another client has the session: names are ignored from now on */
+
+/* Open the compositor's session for REASON.  ID (ID_LEN bytes; NULL or empty: none) is the saved session's id, else a
+   new session is asked for.  An open session is dropped first.  NHG_ACT_SESSION answers.  NHG_E_UNSUPPORTED without
+   xdg_session_manager_v1.  A window whose NhgWindowDesc has a session_name joins the session before its first commit
+   (see nhg_window_new).  */
+int32_t nhg_session_open (NhgDisplay *d, const char *id, size_t id_len, uint32_t reason);
+
+/* The open session's id, NUL-terminated into BUF (CAP bytes), the length into *LEN (may be NULL).  NHG_E_STATE before
+   the compositor has answered, NHG_E_TOO_SMALL.  */
+int32_t nhg_session_id (NhgDisplay *d, char *buf, size_t cap, size_t *len);
+
+/* Take WINDOW out of the session: the compositor forgets its name.  1 when it was named, 0 when not (no session, a
+   replaced one, an unnamed or unknown window).  */
+int32_t nhg_session_remove (NhgDisplay *d, uint64_t window);
+
 #ifdef __cplusplus
 }
 #endif
