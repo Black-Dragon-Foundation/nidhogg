@@ -214,28 +214,15 @@ struct nhwl_display_info
 /* This is a chain of structures for all the displays currently in use.  */
 extern struct nhwl_display_info *x_display_list;
 
-/* The bare client-side title bar (nhwlcsd.c): device pixels, in the backing.  The backing is the native area plus
-   this border: L, T, R and B are the native area's offsets (T includes the strip); M is the resize margin and STRIP
-   the title strip's height now in effect (0 when hidden).  */
+/* The border around the native area, device pixels, in the backing: the backing is the native area plus this border.
+   L, T, R and B are the native area's offsets (T includes the strip), STRIP the title strip's height now in effect
+   (0 when hidden), ON whether the frame draws its own title bar.  C's copy, for its drawing and the code shared with
+   pgtk that reads it at every glyph: of the glue's title-bar layout (nhwl_csd_layout, from nhg_csd_layout), or of a
+   child frame's shadow margin (nhwlchild.c).  The title bar's state and decisions are the glue's (csd.rs).  */
 struct nhwl_csd
 {
-  bool on;			/* the compositor offers no server decorations */
-  /* M: the resize margin of a side that has one (none when maximized, and
-     none on a tiled side); L, R, B the sides', T the top margin and the
-     strip.  */
-  int m, strip, l, t, r, b;
-  /* What the border was last drawn for, and that backing's generation.  */
-  struct { int w, h, l, t, r, b; uint32_t title, states; int hover, down; unsigned style;
-    unsigned long fg, bg; uint64_t gen; } sig;
-  bool sig_valid;
-  /* The window geometry last sent (logical), if any.  */
-  int geom[4];
-  bool geom_sent;
-  /* The pointer in the surface (device px), the region a consumed press began in, and the last strip click.  */
-  double px, py;
-  int down, hover;		/* the armed button, the button under the pointer */
-  bool grab, in_border;
-  uint64_t click_ns;
+  bool on;
+  int strip, l, t, r, b;
 };
 
 /* A child frame's state (nhwlchild.c).  The chrome is in logical pixels as `glitnir--resolve' gave it; its margin
@@ -552,20 +539,18 @@ extern void glitnir_decor_clear (struct frame *, int, int, int, int);
 extern void glitnir_decor_scrolled (struct frame *, struct window *, int, int,
 				    int, int, int);
 
-/* nhwlcsd.c: the bare client-side title bar.  */
+/* The client-side title bar: its layout, state and decisions are the glue's (csd.rs); nhwlterm.c lays it out and
+   applies its actions, nhwldraw.c paints it, nhwlfns.c takes its style from Lisp.  */
 extern void nhwl_csd_layout (struct frame *);
 extern void nhwl_csd_draw (struct frame *);
-extern void nhwl_csd_send_geometry (struct frame *);
 extern void nhwl_csd_changed (struct frame *);
-extern void nhwl_csd_geometry_size (struct frame *, int *, int *);
-extern void nhwl_csd_native_size (struct frame *, int, int, int *, int *);
-extern void nhwl_csd_native_pos (struct frame *, double, double, int *, int *);
+extern void nhwl_csd_colours (struct frame *, bool, unsigned long *,
+			      unsigned long *);
+extern unsigned nhwl_csd_font (const char **, double *);
+extern void nhwl_csd_push_style (struct nhwl_display_info *);
 extern void nhwl_use_im_context (bool);
 extern int nhwl_to_logical (int, uint32_t);
 extern int nhwl_to_device (int, uint32_t);
-extern bool nhwl_csd_pointer (struct frame *, double, double);
-extern bool nhwl_csd_button (struct frame *, const NhShellEvent *, bool *);
-extern void nhwl_csd_leave (struct frame *);
 
 /* nhwlchild.c: child frames (subsurfaces of the parent frame's window).  */
 extern uint64_t nhwl_frame_window (struct frame *);

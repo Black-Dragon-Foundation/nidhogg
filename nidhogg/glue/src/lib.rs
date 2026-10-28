@@ -22,6 +22,8 @@ pub mod present;
 pub mod query;
 pub mod select;
 
+pub mod csd;
+
 /// Glitnir's C ABI under another name, because this crate's own `ffi` shadows the glob below.
 pub use glitnir::ffi as glitnir_ffi;
 /// Glitnir's whole API, re-exported so its `#[no_mangle]` functions stay in this archive (`nidhogg-glitnir.c` calls
