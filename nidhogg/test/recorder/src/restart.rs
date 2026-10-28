@@ -3,10 +3,11 @@
 //! listening socket follows the mode: `keep-socket` queues connections in the backlog for a while (as
 //! `kwin_wayland_wrapper` does), `rebind` closes and binds the name again, `gone` stays closed until `restart_up`.
 use crate::state::{Profile, State};
+use calloop::ping::Ping;
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::RegistrationToken;
 use serde_json::{json, Value};
-use smithay::reexports::wayland_server::backend::{DisconnectReason, GlobalId};
+use smithay::reexports::wayland_server::backend::{ClientId, DisconnectReason, GlobalId};
 use smithay::wayland::socket::ListeningSocketSource;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,6 +27,9 @@ pub struct Restart {
     pub globals: Vec<GlobalId>,
     pub accepted: u64,
     pub count: u64,
+    /// Wakes the loop to clean the killed clients up (`main.rs`), and one of them to dispatch for it.
+    pub kick: Option<Ping>,
+    pub killed: Option<ClientId>,
 }
 
 impl Restart {
@@ -121,10 +125,16 @@ fn restart(state: &mut State, req: &Value) -> Value {
         None => state.restart.profile.clone().expect("configured at start"),
     };
 
-    // every client goes; the objects they held are cleaned up at the next dispatch
+    // every client goes; the objects they held, and their sockets, are cleaned up at the dispatch the kick starts
     let backend = state.display.backend_handle();
     let mut ids = Vec::new();
     backend.with_all_clients(|id| ids.push(id));
+    if let Some(first) = ids.first() {
+        state.restart.killed = Some(first.clone());
+        if let Some(kick) = &state.restart.kick {
+            kick.ping();
+        }
+    }
     for id in ids {
         backend.kill_client(id, DisconnectReason::ConnectionClosed);
     }

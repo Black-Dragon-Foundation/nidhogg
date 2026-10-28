@@ -118,17 +118,39 @@ fn main() {
         state.extras.use_store(path).unwrap_or_else(|e| die(e));
     }
 
-    // the Wayland display and its listening socket
+    // the Wayland display and its listening socket; the display is shared with the restart's kick below
+    let display = std::rc::Rc::new(std::cell::RefCell::new(display));
+    let display_fd = {
+        use std::os::fd::{AsFd, AsRawFd};
+        display.borrow().as_fd().as_raw_fd()
+    };
+    let d = display.clone();
     handle
         .insert_source(
-            Generic::new(display, Interest::READ, Mode::Level),
-            |_, display, state| {
-                // SAFETY: the display is not dropped while the source is registered
-                unsafe { display.get_mut().dispatch_clients(state).unwrap() };
+            // SAFETY: the display's poll descriptor lives as long as the display, which this source's closure keeps
+            Generic::new(
+                unsafe { std::os::fd::BorrowedFd::borrow_raw(display_fd) },
+                Interest::READ,
+                Mode::Level,
+            ),
+            move |_, _, state| {
+                d.borrow_mut().dispatch_clients(state).unwrap();
                 Ok(PostAction::Continue)
             },
         )
         .unwrap_or_else(|e| die(e.to_string()));
+    // a restart's killed clients are cleaned up (their sockets closed) at once, not at the next dispatch that some
+    // client's request starts
+    let (kick, kick_source) = calloop::ping::make_ping().unwrap_or_else(|e| die(e.to_string()));
+    let d = display.clone();
+    handle
+        .insert_source(kick_source, move |_, _, state| {
+            if let Some(id) = state.restart.killed.take() {
+                let _ = d.borrow_mut().backend().dispatch_single_client(state, id);
+            }
+        })
+        .unwrap_or_else(|e| die(e.to_string()));
+    state.restart.kick = Some(kick);
     state.restart.configure(
         &args.socket,
         &args.profile,
