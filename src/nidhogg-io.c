@@ -2320,7 +2320,11 @@ nh_io_settle (fd_set *mask, struct timespec timeout)
   for (int fd = 0; fd < FD_SETSIZE; fd++)
     {
       struct nh_io_h *h = nh_io_tab[fd];
-      if (h && !h->inl && !h->detached && FD_ISSET (h->sel, mask))
+      /* A paused handle (stopped, or paused by the SIGCHLD handler
+	 after the caller copied its mask) is not read by nh-io: waiting
+	 for it would only reach the bound.  */
+      if (h && !h->inl && !h->detached && !atomic_load (&h->paused)
+	  && FD_ISSET (h->sel, mask))
 	{
 	  real[n] = (struct pollfd) { .fd = fd, .events = POLLIN };
 	  wake[n] = (struct pollfd) { .fd = h->sel, .events = POLLIN };
