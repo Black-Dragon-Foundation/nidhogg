@@ -248,6 +248,12 @@ int32_t nhshell_window_set_min_size (NhShell *sh, uint64_t window, int32_t w, in
 int32_t nhshell_window_set_fullscreen (NhShell *sh, uint64_t window, int32_t on);
 int32_t nhshell_window_set_maximized (NhShell *sh, uint64_t window, int32_t on);
 int32_t nhshell_window_minimize (NhShell *sh, uint64_t window);
+/* A top-level's `undecorated' changed at run time: ON asks again for server-side decorations, off for none (the
+   compositor answers with a configure; nothing when client-side decorations are forced).  */
+int32_t nhshell_window_set_decorated (NhShell *sh, uint64_t window, int32_t on);
+/* The window's opacity (wp_alpha_modifier_v1): FACTOR multiplies its pixels' alpha, UINT32_MAX is opaque.  The window
+   owes a commit (a child's ancestors too).  NHSHELL_E_UNSUPPORTED without the protocol: the host multiplies.  */
+int32_t nhshell_window_set_alpha (NhShell *sh, uint64_t window, uint32_t factor);
 int32_t nhshell_window_move (NhShell *sh, uint64_t window);
 int32_t nhshell_window_resize (NhShell *sh, uint64_t window, uint32_t edges);
 int32_t nhshell_window_show_menu (NhShell *sh, uint64_t window, int32_t x, int32_t y);

@@ -4,7 +4,9 @@
 mod common;
 
 use common::*;
-use nhshell::api::{ShellBackend, WindowDesc};
+use nhshell::api::{
+    NHSHELL_READY_OWED, NHSHELL_WIN_UNDECORATED, ShellBackend, ShellError, WindowDesc,
+};
 use nhshell::event::*;
 use nhshell::wayland::WaylandShell;
 use std::time::{Duration, Instant};
@@ -231,5 +233,71 @@ mod toplevel {
         assert!(reply.contains("\"ok\":true"), "{reply}");
         let ev = wait_event(&mut shell, NHSHELL_EV_CLOSE);
         assert_eq!(ev.window, id);
+    }
+
+    /// W1 Task 18: `alpha` is surface state; the window owes a commit, and a bare one carries the multiplier.
+    #[test]
+    fn alpha_rides_a_bare_commit() {
+        let rec = Recorder::start("sway");
+        let mut shell = rec.open();
+        let id = new_window(&mut shell);
+        let first = configure_of(&wait_event(&mut shell, NHSHELL_EV_CONFIGURE));
+        shell.ack_configure(id, first.serial, 0).unwrap();
+        shell.present_bare(id).unwrap();
+        shell.set_alpha(id, u32::MAX / 2).unwrap();
+        assert_ne!(shell.window_ready(id).unwrap() & NHSHELL_READY_OWED, 0);
+        shell.present_bare(id).unwrap();
+        shell.flush().unwrap();
+        let alpha = |c: &str| {
+            token(c, "alpha")
+                .filter(|t| *t != "null")
+                .and_then(|t| t.parse::<f64>().ok())
+        };
+        let log = wait_commit(&rec, 0, |c| alpha(c).is_some());
+        let a = log
+            .iter()
+            .rev()
+            .find_map(|c| alpha(c))
+            .expect("a commit with an alpha");
+        assert!((a - 0.5).abs() < 0.01, "alpha {a}");
+    }
+
+    #[test]
+    fn alpha_unsupported_without_the_protocol() {
+        let rec = Recorder::start("mutter");
+        let mut shell = rec.open();
+        let id = new_window(&mut shell);
+        assert!(matches!(
+            shell.set_alpha(id, 0),
+            Err(ShellError::Unsupported)
+        ));
+    }
+
+    /// An undecorated window has its decoration object from the start, so `set_decorated` changes the mode after a
+    /// buffer without a protocol error (version 1 forbids making the object then).
+    #[test]
+    fn undecorated_window_can_be_decorated_later() {
+        let rec = Recorder::start("sway");
+        let mut shell = rec.open();
+        let id = shell
+            .window_new(&WindowDesc {
+                w: 200,
+                h: 100,
+                title: "t".into(),
+                app_id: "nidhogg.test".into(),
+                flags: NHSHELL_WIN_UNDECORATED,
+            })
+            .unwrap();
+        let logged = decoration_logged(&rec, &mut shell, id);
+        assert!(
+            logged.is_some(),
+            "the recorder answered the decoration object"
+        );
+        shell.set_decorated(id, true).unwrap();
+        shell.set_decorated(id, false).unwrap();
+        shell.present_bare(id).unwrap();
+        shell.flush().unwrap();
+        shell.dispatch_main().unwrap();
+        assert!(shell.window_ssd(id).is_ok());
     }
 }

@@ -10,6 +10,7 @@
 //! the socket (no roundtrip, no `blocking_dispatch`).
 
 pub mod activation;
+pub mod alpha;
 pub mod child;
 pub mod clipboard;
 pub mod conn;
@@ -75,6 +76,12 @@ pub struct MainState {
     children: HashMap<u64, child::Child>,
     popups: HashMap<u64, popup::Popup>,
     activation: Option<wayland_protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1>,
+    alpha_modifier: Option<wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_v1::WpAlphaModifierV1>,
+    /// Each window's `wp_alpha_modifier_surface_v1`, made at its first `set_alpha`.
+    alphas: HashMap<
+        u64,
+        wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_surface_v1::WpAlphaModifierSurfaceV1,
+    >,
     /// `NIDHOGG_SHELL_FORCE_CSD` was set when the shell opened.
     force_csd: bool,
     /// The latest decoration mode the compositor granted a window.
@@ -153,6 +160,7 @@ impl WaylandShell {
             main.decoration_manager = g.bind(reg, &mqh, ());
             main.presentation = g.bind(reg, &mqh, ());
             main.activation = g.bind(reg, &mqh, ());
+            main.alpha_modifier = g.bind(reg, &mqh, ());
             if let (Some(seat), Some(manager)) = (
                 &rstate.seat,
                 g.bind::<ZwpTextInputManagerV3, _, _>(reg, &rqh, ()),

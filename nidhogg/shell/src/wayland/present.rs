@@ -179,10 +179,16 @@ impl MainState {
     }
 
     /// Child `id`'s state waits for commits (B3: sync subsurfaces): `id`'s own when `own`, and every ancestor's up to
-    /// the root, since a sync child's commit applies only with its parent's.  With `wake`, the root's pacer wakes.
+    /// the root, since a sync child's commit applies only with its parent's.  With `wake`, the root's pacer wakes
+    /// (a root's own state too: its alpha).
     pub(crate) fn present_owe(&mut self, id: u64, own: bool, wake: bool) {
         if own {
-            lock(&self.present_of(id)).owed = true;
+            let present = self.present_of(id);
+            let mut p = lock(&present);
+            p.owed = true;
+            if wake && !self.children.contains_key(&id) {
+                p.notify();
+            }
         }
         let mut cur = id;
         while let Some(parent) = self.children.get(&cur).map(|c| c.parent) {
