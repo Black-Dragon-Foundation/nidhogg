@@ -61,6 +61,13 @@ impl ThemeCursor {
         }
     }
 
+    /// The connection was made again: the theme and the surface belonged to the old one (the name, size and latest
+    /// shape stay).
+    pub fn forget_connection(&mut self) {
+        self.loaded = None;
+        self.surface = None;
+    }
+
     /// Show the first of `names` the theme has over `pointer`, with `serial`, at the integer `scale`.  A theme with
     /// none of them leaves the cursor as it was.
     #[allow(clippy::too_many_arguments)]
