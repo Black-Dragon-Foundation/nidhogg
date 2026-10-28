@@ -227,13 +227,20 @@ impl Shared {
         }
     }
 
-    /// Post the one `DISCONNECTED` record and wake the host.
+    /// Post the one `DISCONNECTED` record and wake the host.  Our drag, if one runs, ends first: its `DRAG_DONE`
+    /// (cancelled) comes right before.
     pub fn close(&self) {
+        if relock(&self.records).closed {
+            return;
+        }
+        // the selections' lock is never taken while the records' is held
+        let drag_done = crate::wayland::dnd::drag_lost(self);
         {
             let mut r = relock(&self.records);
             if r.closed {
                 return;
             }
+            r.queue.extend(drag_done);
             r.queue
                 .push_back(NhShellEvent::new(NHSHELL_EV_DISCONNECTED, 0, 0));
             r.closed = true;

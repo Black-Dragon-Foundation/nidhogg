@@ -7,7 +7,7 @@
 
 use crate::event::*;
 use crate::wayland::reader::ReaderState;
-use crate::wayland::serial::SerialKind;
+use crate::wayland::serial::{Held, SerialKind};
 use wayland_client::protocol::wl_seat::{Capability, WlSeat};
 use wayland_client::protocol::wl_touch::{self, WlTouch};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
@@ -60,6 +60,12 @@ fn record(window: u64, time: u32, id: i32, op: u32, x: f64, y: f64) -> NhShellEv
 
 /// Drop the frame in progress and end every live point the host has heard of as cancelled.
 fn cancel(state: &mut ReaderState) {
+    state
+        .shared
+        .serials
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .release_all(true);
     state.touch.queued.clear();
     for p in std::mem::take(&mut state.touch.points) {
         if p.posted {
@@ -86,12 +92,15 @@ impl Dispatch<WlTouch, ()> for ReaderState {
                 x,
                 y,
             } => {
-                state
-                    .shared
-                    .serials
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .update(SerialKind::TouchDown, serial);
+                {
+                    let mut serials = state
+                        .shared
+                        .serials
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    serials.update(SerialKind::TouchDown, serial);
+                    serials.press(Held::Touch(id), serial);
+                }
                 let window = u64::from(surface.id().protocol_id());
                 let (x, y) = state.to_device(window, x, y);
                 state.touch.points.retain(|p| p.id != id);
@@ -116,6 +125,12 @@ impl Dispatch<WlTouch, ()> for ReaderState {
                 state.touch.queued.push(ev);
             }
             wl_touch::Event::Up { time, id, .. } => {
+                state
+                    .shared
+                    .serials
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .release(Held::Touch(id));
                 let Some(i) = state.touch.points.iter().position(|p| p.id == id) else {
                     return;
                 };
