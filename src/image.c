@@ -3657,6 +3657,23 @@ nh_img_displayed_size (struct frame *f, Lisp_Object spec, int native_w,
   return true;
 }
 
+/* The entry lookup_image (F, SPEC, -1) would find in F's cache, or NULL:
+   the same search, without loading.  */
+struct image *
+nh_img_cache_find (struct frame *f, Lisp_Object spec)
+{
+  if (!FRAME_IMAGE_CACHE (f) || !FRAME_FACE_CACHE (f)
+      || FRAME_FACE_CACHE (f)->used == 0)
+    return NULL;
+  struct face *face = FACE_FROM_ID (f, DEFAULT_FACE_ID);
+  if (!face->font)
+    return NULL;
+  return search_image_cache (f, spec, sxhash (filter_image_spec (spec)),
+			     face->foreground, face->background,
+			     face->font->pixel_size,
+			     SSDATA (face->lface[LFACE_FAMILY_INDEX]), false);
+}
+
 
 #endif /* HAVE_NIDHOGG_WORKERS */
 
