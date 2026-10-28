@@ -65,7 +65,10 @@ nhwl_window_frame (uint64_t window)
 bool
 nhwl_child_p (struct frame *f)
 {
-  return FRAME_NHWL_P (f) && f->output_data.nhwl && FRAME_PARENT_FRAME (f);
+  /* A popup frame (nhwlmenu.c) has a parent too, but is a tree of its
+     own.  */
+  return (FRAME_NHWL_P (f) && f->output_data.nhwl && FRAME_PARENT_FRAME (f)
+	  && !f->output_data.nhwl->popup.on);
 }
 
 /* The root of F's tree: the top-level (or tip) frame whose window's pacer
@@ -182,6 +185,7 @@ nhwl_child_params_changed (struct frame *f)
   struct nhwl_child n, *c;
   Lisp_Object frame, res;
 
+  nhwl_popup_params_changed (f);
   if (busy || !nhwl_child_p (f) || NILP (Ffboundp (Qglitnir__resolve)))
     return;
   c = &FRAME_NHWL_OUTPUT (f)->child;
@@ -446,6 +450,9 @@ nhwl_frame_raise_lower (struct frame *f, bool raise)
   struct nhwl_output *out;
   struct frame *sib;
 
+  /* The compositor stacks popups.  */
+  if (nhwl_popup_frame_p (f))
+    return;
   if (!nhwl_child_p (f))
     {
       if (raise)
@@ -618,6 +625,11 @@ nhwl_set_parent_frame (struct frame *f, Lisp_Object new_value,
     }
   if (p == FRAME_PARENT_FRAME (f))
     return;
+  if (nhwl_popup_frame_p (f))
+    {
+      store_frame_param (f, Qparent_frame, old_value);
+      error ("nidhogg-wayland: a popup frame keeps its parent");
+    }
   if (!p || !FRAME_PARENT_FRAME (f))
     {
       store_frame_param (f, Qparent_frame, old_value);

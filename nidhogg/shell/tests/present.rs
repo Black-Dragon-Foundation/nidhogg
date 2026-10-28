@@ -287,6 +287,7 @@ mod present {
                         w,
                         h,
                         anchor: Anchor::default(),
+                        flags: 0,
                     })
                     .unwrap()
             };

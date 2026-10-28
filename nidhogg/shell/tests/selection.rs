@@ -246,6 +246,7 @@ mod selection {
                 x: 0,
                 y: 0,
                 anchor: Anchor::default(),
+                session_name: std::ptr::null(),
             };
             let mut win = 0u64;
             assert_eq!(nhshell_window_new(sh, &desc, &mut win), NHSHELL_OK);
