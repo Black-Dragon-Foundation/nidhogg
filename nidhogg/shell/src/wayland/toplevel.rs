@@ -484,6 +484,11 @@ impl ShellBackend for WaylandShell {
         self.abandon_impl()
     }
 
+    fn presenter_timing(&self) -> ShellResult<PresenterTiming> {
+        self.live()?;
+        Ok(self.presenting.stats.timing())
+    }
+
     fn text_input_enable(&mut self, w: WindowId, on: bool) -> ShellResult {
         self.live()?;
         self.text_input_flush(self.main.surfaces.contains_key(&w), |t| t.enable(w, on))
