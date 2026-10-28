@@ -277,7 +277,9 @@ nhg_export! {
         let pushed = state.frame(window)?.facts;
         // the facts C pushes so far: the native size it asked for, and whether it draws its own title bar (the rest
         // join as the tasks that read them push them)
-        let seen = |f: &crate::frame::NhgFrameFacts| (f.native_w, f.native_h, f.flags & crate::frame::NHG_FACT_CSD);
+        let seen = |f: &crate::frame::NhgFrameFacts| {
+            (f.native_w, f.native_h, f.flags & crate::frame::NHG_FACT_CSD, f.col_w, f.line_h)
+        };
         debug_assert_eq!(seen(&pushed), seen(emacs), "the facts pushed for window {window} drifted from Emacs's");
         Ok(NHG_OK)
     }
@@ -585,29 +587,6 @@ nhg_export! {
 }
 
 nhg_export! {
-    /// An output the shell reported (`OUTPUT_ADD` or `OUTPUT_CHANGE`): add it, or replace the one with its id.  1 when
-    /// it is kept, 0 when the list is full.  Neither reads nor writes pixels.
-    ///
-    /// # Safety
-    /// `d` is null or a live display; `m` is null or readable.
-    fn nhg_monitor_set(d: *mut NhgDisplay, m: *const NhgMonitor) -> i32 |state| {
-        // SAFETY: null or readable (the caller's promise).
-        let m = unsafe { m.as_ref() }.ok_or(GlueError::Arg)?;
-        Ok(i32::from(state.monitors.set(m)))
-    }
-}
-
-nhg_export! {
-    /// An output went (`OUTPUT_REMOVE`).  1 when it was known, 0 when not.  Neither reads nor writes pixels.
-    ///
-    /// # Safety
-    /// `d` is null or a live display.
-    fn nhg_monitor_remove(d: *mut NhgDisplay, id: u64) -> i32 |state| {
-        Ok(i32::from(state.monitors.remove(id)))
-    }
-}
-
-nhg_export! {
     /// The display as `x-display-*` reads it, in `out`.  Neither reads nor writes pixels.
     ///
     /// # Safety
@@ -788,5 +767,117 @@ nhg_export! {
             }
             None => Ok(0),
         }
+    }
+}
+
+// ---- Wheel units, the input method and outputs (`scroll.rs`, `ime.rs`, `monitors.rs`) ---------------------------------
+//
+// None of these reads or writes pixels.
+
+nhg_export! {
+    /// Push: `window`'s column width and line height in device pixels (`FRAME_COLUMN_WIDTH`, `FRAME_LINE_HEIGHT`),
+    /// the size of a wheel step in a finger record.  C calls it when it makes the window and when the font changes;
+    /// a checking build compares it with Emacs's values.  `NHG_E_ARG` for a size under 1, `NHG_E_STATE` for an
+    /// unknown window.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_frame_units(d: *mut NhgDisplay, window: u64, col_w: i32, line_h: i32) -> i32 |state| {
+        crate::scroll::set_units(state, window, col_w, line_h)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Text input for `window` on (`on` non-zero) or off.  `NHG_E_UNSUPPORTED` without text-input-v3.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_im_enable(d: *mut NhgDisplay, window: u64, on: i32) -> i32 |state| {
+        crate::ime::enable(state, window, on != 0)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// The cursor rectangle `r` in `window`, in logical pixels of its surface.  The compositor is told only when it
+    /// changed.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_im_cursor(d: *mut NhgDisplay, window: u64, r: NhgRect) -> i32 |state| {
+        crate::ime::cursor(state, window, r.x, r.y, r.w, r.h)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// The `len` bytes of UTF-8 at `text` around point in `window`, with point at byte `cursor` and the mark at byte
+    /// `anchor` of them.  The compositor is told only when they changed (at most 4000 bytes go to it, cut around
+    /// point).  `NHG_E_ARG` for text that is not UTF-8 or offsets under 0.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `text` holds `len` readable bytes (null allowed when `len` is 0).
+    fn nhg_im_surrounding(d: *mut NhgDisplay, window: u64, text: *const c_char, len: usize, cursor: i32, anchor: i32) -> i32 |state| {
+        let bytes: &[u8] = match (len, text.is_null()) {
+            (0, _) => &[],
+            (_, true) => return Err(GlueError::Arg),
+            // SAFETY: `len` bytes (the caller's promise).
+            (_, false) => unsafe { std::slice::from_raw_parts(text.cast::<u8>(), len) },
+        };
+        let text = std::str::from_utf8(bytes).map_err(|_| GlueError::Arg)?;
+        let cursor = usize::try_from(cursor).map_err(|_| GlueError::Arg)?;
+        let anchor = usize::try_from(anchor).map_err(|_| GlueError::Arg)?;
+        crate::ime::surrounding(state, window, text, cursor, anchor)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Copy up to `cap` outputs into `out`; their number goes to `*n` (when `n` is not null) and is returned.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `out` holds `cap` writable monitors (null allowed when `cap` is 0); `n` is null
+    /// or writable.
+    fn nhg_monitors(d: *mut NhgDisplay, out: *mut NhgMonitor, cap: usize, n: *mut usize) -> i32 |state| {
+        let buf: &mut [NhgMonitor] = if cap == 0 {
+            &mut []
+        } else if out.is_null() {
+            return Err(GlueError::Arg);
+        } else {
+            // SAFETY: `cap` writable monitors (the caller's promise).
+            unsafe { std::slice::from_raw_parts_mut(out, cap) }
+        };
+        let got = crate::monitors::list(state, buf);
+        if !n.is_null() {
+            // SAFETY: non-null and writable (the caller's promise).
+            unsafe { n.write(got) };
+        }
+        i32::try_from(got).map_err(|_| GlueError::NoMem)
+    }
+}
+
+nhg_export! {
+    /// Copy the ids of the outputs `window` is on, up to `cap`, into `out`; their number goes to `*n` (when `n` is not
+    /// null) and is returned.  `NHG_E_STATE` for an unknown window.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `out` holds `cap` writable ids (null allowed when `cap` is 0); `n` is null or
+    /// writable.
+    fn nhg_frame_outputs(d: *mut NhgDisplay, window: u64, out: *mut u64, cap: usize, n: *mut usize) -> i32 |state| {
+        let buf: &mut [u64] = if cap == 0 {
+            &mut []
+        } else if out.is_null() {
+            return Err(GlueError::Arg);
+        } else {
+            // SAFETY: `cap` writable ids (the caller's promise).
+            unsafe { std::slice::from_raw_parts_mut(out, cap) }
+        };
+        let got = crate::monitors::frame_outputs(state, window, buf)?;
+        if !n.is_null() {
+            // SAFETY: non-null and writable (the caller's promise).
+            unsafe { n.write(got) };
+        }
+        i32::try_from(got).map_err(|_| GlueError::NoMem)
     }
 }

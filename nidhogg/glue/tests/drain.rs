@@ -73,12 +73,8 @@ mod drain {
                 // SAFETY: a live display; `list` is writable.
                 let rc = unsafe { nhg_next(d, ptr::null(), &mut list) };
                 assert!(rc >= 0);
-                let mut ev = NhShellEvent::new(0, 0, 0);
-                // SAFETY: `n` actions, valid until the next nhg_next; `ev` is writable.
-                let commit = list.n == 1
-                    && unsafe { (*list.v).kind } == NHG_ACT_RAW
-                    && unsafe { nhg_raw_event(d, &mut ev) } == NHG_OK
-                    && ev.kind == NHSHELL_EV_COMMIT_TEXT;
+                // SAFETY: `n` actions, valid until the next nhg_next.
+                let commit = list.n == 1 && unsafe { (*list.v).kind } == NHG_ACT_COMMIT;
                 if commit {
                     break 'found;
                 }
@@ -97,7 +93,11 @@ mod drain {
             assert_eq!(nhg_frame_register(d, id + 1000, 0), NHG_OK);
             assert_eq!(nhg_frame_forget(d, id + 1000), NHG_OK);
             let mut ev = NhShellEvent::new(0, 0, 0);
-            assert_eq!(nhg_raw_event(d, &mut ev), NHG_OK);
+            assert_eq!(
+                nhg_raw_event(d, &mut ev),
+                NHG_E_STATE,
+                "a commit is no raw event"
+            );
         }
         // SAFETY: the action and its text are valid until the next nhg_next.
         let a = unsafe { *list.v };
@@ -126,8 +126,15 @@ mod drain {
         // window
         let seen = settle(d);
         assert!(
-            seen.iter()
-                .all(|a| a.window != id || a.kind == NHG_ACT_RAW || a.kind == NHG_ACT_KEY),
+            seen.iter().all(|a| a.window != id
+                || [
+                    NHG_ACT_RAW,
+                    NHG_ACT_KEY,
+                    NHG_ACT_PREEDIT,
+                    NHG_ACT_COMMIT,
+                    NHG_ACT_IM_DELETE
+                ]
+                .contains(&a.kind)),
             "actions for a forgotten window: {seen:?}"
         );
         // SAFETY: a live display.
@@ -188,15 +195,8 @@ mod drain {
             assert!(rc >= 0, "nhg_next failed: {rc}");
             for a in &v {
                 match a.kind {
-                    NHG_ACT_RAW => {
-                        let mut ev = NhShellEvent::new(0, 0, 0);
-                        // SAFETY: a live display; `ev` is writable.
-                        assert_eq!(unsafe { nhg_raw_event(d, &mut ev) }, NHG_OK);
-                        // SAFETY: a BUTTON record's valid member is `pointer`.
-                        if ev.kind == NHSHELL_EV_BUTTON
-                            && unsafe { ev.u.pointer }.state == NHSHELL_BUTTON_PRESSED
-                            && ev.window == child
-                        {
+                    NHG_ACT_CLICK => {
+                        if a.flags == NHSHELL_BUTTON_PRESSED && a.window == child {
                             redirect = Some((root, child));
                         }
                     }

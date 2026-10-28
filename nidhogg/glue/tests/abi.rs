@@ -13,9 +13,9 @@ mod abi {
         nhg_snapshot,
     };
     use nhglue::ffi::{
-        nhg_bell, nhg_bench_full_redraw, nhg_display_info, nhg_monitor_remove, nhg_monitor_set,
-        nhg_pointer_visible, nhg_selection_disown, nhg_selection_owned, nhg_selection_read,
-        nhg_selection_set, nhg_selection_types,
+        nhg_bell, nhg_bench_full_redraw, nhg_display_info, nhg_pointer_visible,
+        nhg_selection_disown, nhg_selection_owned, nhg_selection_read, nhg_selection_set,
+        nhg_selection_types,
     };
     use nhglue::ffi::{nhg_frame_csd, nhg_frame_resized, nhg_frame_scale, nhg_next, nhg_raw_event};
     use nhglue::ffi::{nhg_frame_forget, nhg_frame_register, nhg_panic_message};
@@ -203,6 +203,16 @@ mod abi {
             ("NHG_ACT_IM_SURROUNDING", NHG_ACT_IM_SURROUNDING.into()),
             ("NHG_ACT_SELECTION_CLEAR", NHG_ACT_SELECTION_CLEAR.into()),
             ("NHG_ACT_RAW", NHG_ACT_RAW.into()),
+            ("NHG_WHEEL_HIRES", nhglue::scroll::NHG_WHEEL_HIRES.into()),
+            ("NHG_WHEEL_STOP", nhglue::scroll::NHG_WHEEL_STOP.into()),
+            (
+                "NHG_WHEEL_COALESCED",
+                nhglue::scroll::NHG_WHEEL_COALESCED.into(),
+            ),
+            ("NHG_WHEEL_UP", nhglue::scroll::NHG_WHEEL_UP.into()),
+            ("NHG_WHEEL_DOWN", nhglue::scroll::NHG_WHEEL_DOWN.into()),
+            ("NHG_WHEEL_LEFT", nhglue::scroll::NHG_WHEEL_LEFT.into()),
+            ("NHG_WHEEL_RIGHT", nhglue::scroll::NHG_WHEEL_RIGHT.into()),
             ("NHG_RESIZE_FULLSCREEN", NHG_RESIZE_FULLSCREEN.into()),
             ("sizeof (NhgNextIn)", size_of::<NhgNextIn>() as i64),
             ("sizeof (A)", size_of::<A>() as i64),
@@ -303,12 +313,16 @@ PROTO (nhg_selection_disown, int32_t (NhgDisplay *, uint32_t));
 PROTO (nhg_selection_owned, int32_t (NhgDisplay *, uint32_t));
 PROTO (nhg_selection_types, int32_t (NhgDisplay *, uint32_t, const char **, size_t *));
 PROTO (nhg_selection_read, int32_t (NhgDisplay *, uint32_t, const char *, uint32_t, const uint8_t **, size_t *));
-PROTO (nhg_monitor_set, int32_t (NhgDisplay *, const NhgMonitor *));
-PROTO (nhg_monitor_remove, int32_t (NhgDisplay *, uint64_t));
 PROTO (nhg_display_info, int32_t (NhgDisplay *, NhgDisplayInfo *));
 PROTO (nhg_bench_full_redraw, int32_t (NhgDisplay *, const NhgSurface *, size_t, uint32_t, NhgBenchOut *));
 PROTO (nhg_bell, int32_t (NhgDisplay *, uint64_t));
-PROTO (nhg_pointer_visible, int32_t (NhgDisplay *, uint64_t, int32_t, uint32_t));";
+PROTO (nhg_pointer_visible, int32_t (NhgDisplay *, uint64_t, int32_t, uint32_t));
+PROTO (nhg_frame_units, int32_t (NhgDisplay *, uint64_t, int32_t, int32_t));
+PROTO (nhg_im_enable, int32_t (NhgDisplay *, uint64_t, int32_t));
+PROTO (nhg_im_cursor, int32_t (NhgDisplay *, uint64_t, NhgRect));
+PROTO (nhg_im_surrounding, int32_t (NhgDisplay *, uint64_t, const char *, size_t, int32_t, int32_t));
+PROTO (nhg_monitors, int32_t (NhgDisplay *, NhgMonitor *, size_t, size_t *));
+PROTO (nhg_frame_outputs, int32_t (NhgDisplay *, uint64_t, uint64_t *, size_t, size_t *));";
         // the same table, Rust side
         let _: unsafe extern "C" fn(*mut u32) -> i32 = nhg_abi_version;
         let _: unsafe extern "C" fn(*const c_char, *mut c_char, usize) -> *mut NhgDisplay =
@@ -388,8 +402,6 @@ PROTO (nhg_pointer_visible, int32_t (NhgDisplay *, uint64_t, int32_t, uint32_t))
             *mut *const u8,
             *mut usize,
         ) -> i32 = nhg_selection_read;
-        let _: unsafe extern "C" fn(*mut NhgDisplay, *const NhgMonitor) -> i32 = nhg_monitor_set;
-        let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_monitor_remove;
         let _: unsafe extern "C" fn(*mut NhgDisplay, *mut NhgDisplayInfo) -> i32 = nhg_display_info;
         let _: unsafe extern "C" fn(
             *mut NhgDisplay,
@@ -400,6 +412,32 @@ PROTO (nhg_pointer_visible, int32_t (NhgDisplay *, uint64_t, int32_t, uint32_t))
         ) -> i32 = nhg_bench_full_redraw;
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_bell;
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32, u32) -> i32 = nhg_pointer_visible;
+        // wheel units, the input method and outputs
+        {
+            use nhglue::ffi::{
+                nhg_frame_outputs, nhg_frame_units, nhg_im_cursor, nhg_im_enable,
+                nhg_im_surrounding, nhg_monitors,
+            };
+            let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32, i32) -> i32 = nhg_frame_units;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32) -> i32 = nhg_im_enable;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, u64, NhgRect) -> i32 = nhg_im_cursor;
+            let _: unsafe extern "C" fn(
+                *mut NhgDisplay,
+                u64,
+                *const c_char,
+                usize,
+                i32,
+                i32,
+            ) -> i32 = nhg_im_surrounding;
+            let _: unsafe extern "C" fn(
+                *mut NhgDisplay,
+                *mut NhgMonitor,
+                usize,
+                *mut usize,
+            ) -> i32 = nhg_monitors;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *mut u64, usize, *mut usize) -> i32 =
+                nhg_frame_outputs;
+        }
 
         let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
         let got = probe(decls, &exprs);
