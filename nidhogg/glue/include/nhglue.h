@@ -200,7 +200,8 @@ typedef struct
 int32_t nhg_frame_resized (NhgDisplay *d, uint64_t window, int32_t native_w, int32_t native_h);
 /* The scale (times 120) C gave the window when it made it.  */
 int32_t nhg_frame_scale (NhgDisplay *d, uint64_t window, uint32_t scale120);
-/* Whether the frame draws its own title bar (ON non-zero), after each layout of it.  */
+/* Whether the frame draws its own title bar (ON non-zero).  C no longer calls it: nhg_csd_layout sets the fact; the
+   tests use it.  */
 int32_t nhg_frame_csd (NhgDisplay *d, uint64_t window, int32_t on);
 
 /* ---- The event step ------------------------------------------------------------------------------------------------
@@ -237,6 +238,9 @@ typedef struct { uint32_t flags; } NhgNextIn;
 #define NHG_ACT_IM_DELETE       19
 #define NHG_ACT_IM_SURROUNDING  20
 #define NHG_ACT_SELECTION_CLEAR 21
+#define NHG_ACT_TITLE_BAR       22   /* a pointer event went through the title bar: FLAGS NHG_TB_*, CODE the pointer
+					shape (NHSHELL_CURSOR_*) with NHG_TB_POINTER; the event's raw action, if any,
+					comes after it */
 /* Transitional: an event whose kind is not ported yet, handled on C's old path (nhg_raw_event gives it); a PREEDIT's
    or COMMIT_TEXT's text comes as the action's text (null: it could not be taken), and MODS is the keyboard's
    NHSHELL_MOD_* mask.  */
@@ -268,6 +272,57 @@ int32_t nhg_raw_event (NhgDisplay *d, NhShellEvent *out);
 /* The first panic's report on D (message, location, backtrace): up to CAP - 1 bytes and a NUL into BUF, its full
    length into *LEN (0: no panic).  Works on a poisoned display.  */
 int32_t nhg_panic_message (NhgDisplay *d, char *buf, size_t cap, size_t *len);
+
+/* ---- The title bar -------------------------------------------------------------------------------------------------
+
+   The client-side title bar's layout, hit tests, buttons' state and window geometry are the glue's; C paints the
+   strip from the draw list nhg_csd_paint gives, with the colours and the font it resolves itself.  Pointer events
+   over the border are taken in the event step: a press moves, resizes, maximizes, minimizes or shows the window menu
+   through the shell, and a click on close gives an NHG_ACT_DELETE.  Device pixels of the backing.  Neither reads nor
+   writes pixels.  */
+
+#define NHG_CSD_CLOSE        1   /* button kinds */
+#define NHG_CSD_MAX          2
+#define NHG_CSD_MIN          3
+#define NHG_CSD_MENU         4
+#define NHG_CSD_MAX_BUTTONS  8
+#define NHG_BTN_HOVER        1   /* a button's state: under the pointer */
+#define NHG_BTN_PRESS        2   /* pressed (armed) and under the pointer */
+#define NHG_CSD_UNDECORATED  1   /* nhg_csd_layout flags: the frame is undecorated */
+#define NHG_TB_REDRAW        1   /* NHG_ACT_TITLE_BAR flags: the strip's look changed (C redisplays the frame) */
+#define NHG_TB_POINTER       2   /* the pointer is over the border: C clears the mouse face, shows CODE's shape */
+#define NHG_TB_LEFT          4   /* the pointer left the border for the native area: C forgets its pointer shape */
+
+/* The native area's offsets in the backing (T includes the strip), the strip's height (0: none), and ON whether the
+   frame draws its own title bar.  */
+typedef struct { int32_t l, t, r, b, strip; uint32_t on; } NhgCsdLayout;
+
+/* The strip's draw list: the strip, the box the title is centred in, whether the window is active, and the buttons
+   (NHG_CSD_* kind, NHG_BTN_* state, cell).  */
+typedef struct
+{
+  NhgRect strip, title;
+  uint32_t active, nbuttons;
+  struct { uint32_t kind, state; NhgRect r; } button[NHG_CSD_MAX_BUTTONS];
+} NhgCsdPaint;
+
+/* The title bars' style from Lisp: each side's buttons in order (other codes are ignored); every strip is painted
+   again.  */
+int32_t nhg_csd_style (NhgDisplay *d, const uint32_t *left, size_t nleft, const uint32_t *right, size_t nright);
+/* Lay WINDOW's border out again from the compositor's decoration answer, the toplevel's states, SCALE120 (0: 120)
+   and FLAGS: 1 when it changed (C garbages the frame), 0 when not, the layout in *OUT (OUT may be NULL).  Sets the
+   frame's CSD fact.  */
+int32_t nhg_csd_layout (NhgDisplay *d, uint64_t window, uint32_t scale120, uint32_t flags, NhgCsdLayout *out);
+/* WINDOW's offsets around its native area: OUT gets L, T, R, B.  */
+int32_t nhg_frame_offsets (NhgDisplay *d, uint64_t window, int32_t out[4]);
+/* The publish step of a drawable WINDOW, with its native size, before nhg_present: sends the window geometry if it
+   changed, then 1 with the draw list in *OUT when C must paint the strip and damage the border, 0 when the backing
+   already shows it.  LOOK hashes what C paints from and the glue does not see (the title, the colours, the font, the
+   backing's generation).  */
+int32_t nhg_csd_paint (NhgDisplay *d, uint64_t window, int32_t native_w, int32_t native_h, uint64_t look,
+		       NhgCsdPaint *out);
+/* WINDOW's strip as laid out for that native size (nhwl--title-bar): 1 with it in *OUT, 0 when it draws none.  */
+int32_t nhg_csd_title_bar (NhgDisplay *d, uint64_t window, int32_t native_w, int32_t native_h, NhgCsdPaint *out);
 
 /* Test hooks: only in a library built with the feature test-hooks (configure's --enable-checking, so C calls them
    under ENABLE_CHECKING).  nhg_debug_check_frame compares the facts C pushed for WINDOW with Emacs's values F, and a

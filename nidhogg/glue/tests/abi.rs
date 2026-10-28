@@ -409,6 +409,79 @@ PROTO (nhg_pointer_visible, int32_t (NhgDisplay *, uint64_t, int32_t, uint32_t))
         }
     }
 
+    /// The title bar's part of the header (its own table, so the tasks' additions merge apart).
+    #[test]
+    fn title_bar_header_matches() {
+        use nhglue::csd::*;
+        use nhglue::ffi::{
+            nhg_csd_layout, nhg_csd_paint, nhg_csd_style, nhg_csd_title_bar, nhg_frame_offsets,
+        };
+        type L = NhgCsdLayout;
+        type P = NhgCsdPaint;
+        let rows: &[(&str, i64)] = &[
+            ("NHG_ACT_TITLE_BAR", NHG_ACT_TITLE_BAR.into()),
+            ("NHG_CSD_CLOSE", NHG_CSD_CLOSE.into()),
+            ("NHG_CSD_MAX", NHG_CSD_MAX.into()),
+            ("NHG_CSD_MIN", NHG_CSD_MIN.into()),
+            ("NHG_CSD_MENU", NHG_CSD_MENU.into()),
+            ("NHG_CSD_MAX_BUTTONS", NHG_CSD_MAX_BUTTONS as i64),
+            ("NHG_BTN_HOVER", NHG_BTN_HOVER.into()),
+            ("NHG_BTN_PRESS", NHG_BTN_PRESS.into()),
+            ("NHG_CSD_UNDECORATED", NHG_CSD_UNDECORATED.into()),
+            ("NHG_TB_REDRAW", NHG_TB_REDRAW.into()),
+            ("NHG_TB_POINTER", NHG_TB_POINTER.into()),
+            ("NHG_TB_LEFT", NHG_TB_LEFT.into()),
+            ("sizeof (L)", size_of::<L>() as i64),
+            ("offsetof (L, t)", offset_of!(L, t) as i64),
+            ("offsetof (L, strip)", offset_of!(L, strip) as i64),
+            ("offsetof (L, on)", offset_of!(L, on) as i64),
+            ("sizeof (P)", size_of::<P>() as i64),
+            ("_Alignof (P)", align_of::<P>() as i64),
+            ("offsetof (P, title)", offset_of!(P, title) as i64),
+            ("offsetof (P, active)", offset_of!(P, active) as i64),
+            ("offsetof (P, nbuttons)", offset_of!(P, nbuttons) as i64),
+            ("offsetof (P, button)", offset_of!(P, button) as i64),
+            (
+                "sizeof (((P *) 0)->button[0])",
+                size_of::<NhgCsdButton>() as i64,
+            ),
+            (
+                "offsetof (P, button[1].state)",
+                (offset_of!(P, button)
+                    + size_of::<NhgCsdButton>()
+                    + offset_of!(NhgCsdButton, state)) as i64,
+            ),
+            (
+                "offsetof (P, button[1].r)",
+                (offset_of!(P, button) + size_of::<NhgCsdButton>() + offset_of!(NhgCsdButton, r))
+                    as i64,
+            ),
+        ];
+        let decls = "\
+#define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
+typedef NhgCsdLayout L;
+typedef NhgCsdPaint P;
+PROTO (nhg_csd_style, int32_t (NhgDisplay *, const uint32_t *, size_t, const uint32_t *, size_t));
+PROTO (nhg_csd_layout, int32_t (NhgDisplay *, uint64_t, uint32_t, uint32_t, NhgCsdLayout *));
+PROTO (nhg_frame_offsets, int32_t (NhgDisplay *, uint64_t, int32_t *));
+PROTO (nhg_csd_paint, int32_t (NhgDisplay *, uint64_t, int32_t, int32_t, uint64_t, NhgCsdPaint *));
+PROTO (nhg_csd_title_bar, int32_t (NhgDisplay *, uint64_t, int32_t, int32_t, NhgCsdPaint *));";
+        let _: unsafe extern "C" fn(*mut NhgDisplay, *const u32, usize, *const u32, usize) -> i32 =
+            nhg_csd_style;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u32, u32, *mut L) -> i32 = nhg_csd_layout;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *mut i32) -> i32 = nhg_frame_offsets;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32, i32, u64, *mut P) -> i32 =
+            nhg_csd_paint;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32, i32, *mut P) -> i32 =
+            nhg_csd_title_bar;
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe(decls, &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+    }
+
     #[test]
     fn version_is_one_and_null_is_refused() {
         let mut v = 0u32;

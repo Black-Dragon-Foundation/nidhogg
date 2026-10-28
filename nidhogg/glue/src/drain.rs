@@ -11,6 +11,7 @@ use crate::action::{
     NhgNextIn,
 };
 use crate::configure;
+use crate::csd;
 use crate::display::Display;
 use crate::focus;
 use crate::guard::GlueError;
@@ -40,6 +41,15 @@ pub fn next(state: &mut Display, input: NhgNextIn) -> Result<i32, GlueError> {
         NHSHELL_EV_DISCONNECTED => state
             .actions
             .push(NhgAction::new(NHG_ACT_LOST, 0, ev.time_ns)),
+        // through the title bar first: what it does not consume goes on raw
+        NHSHELL_EV_POINTER_ENTER
+        | NHSHELL_EV_POINTER_MOTION
+        | NHSHELL_EV_POINTER_LEAVE
+        | NHSHELL_EV_BUTTON => {
+            if !csd::pointer(state, &ev) {
+                raw(state, ev)
+            }
+        }
         _ => raw(state, ev),
     }
     Ok(1)
