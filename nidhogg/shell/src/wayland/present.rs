@@ -34,6 +34,7 @@ use wayland_protocols::wp::presentation_time::client::wp_presentation::WpPresent
 use wayland_protocols::wp::presentation_time::client::wp_presentation_feedback::{
     self, WpPresentationFeedback,
 };
+use wayland_protocols::xdg::shell::client::xdg_surface::XdgSurface;
 
 /// A window's presenter state, shared with the reader thread's handlers.
 pub struct Present {
@@ -48,8 +49,15 @@ pub struct Present {
     starved: bool,
     /// The host drew something since its last frame.
     dirty: bool,
-    /// An ack went out and the commit that carries its buffer has not.
-    ack_owed: bool,
+    /// The newest configure serial the host acked, recorded until the commit that carries it.
+    ack: Option<u32>,
+    /// The recorded ack changes what the window shows (a new size, first configure, a CSD state change): only a
+    /// buffer carries it.  Sticky until a buffer does.
+    ack_content: bool,
+    /// Surface state (a child's position or stacking) that waits for a commit.
+    owed: bool,
+    /// The root's first configure came (children are configured at creation).
+    configured: bool,
     /// `FRAME_READY` was posted and the host has not asked `window_ready` since.
     notified: bool,
     /// The compositor says the window is not shown (xdg_toplevel `suspended`).
@@ -75,7 +83,7 @@ fn now_ns() -> u64 {
 }
 
 impl Present {
-    fn new(window: u64, shared: Option<Arc<Shared>>) -> Present {
+    fn new(window: u64, shared: Option<Arc<Shared>>, configured: bool) -> Present {
         Present {
             window,
             pool: Pool::new(),
@@ -84,7 +92,10 @@ impl Present {
             waiting: false,
             starved: false,
             dirty: false,
-            ack_owed: false,
+            ack: None,
+            ack_content: false,
+            owed: false,
+            configured,
             suspended: false,
             notified: false,
             shared,
@@ -94,14 +105,19 @@ impl Present {
         }
     }
 
-    /// The host may draw now: an owed ack goes out whatever the state, drawn content only when idle and shown.
-    fn ready(&self) -> bool {
-        !self.starved && (self.ack_owed || (self.dirty && !self.waiting && !self.suspended))
+    /// What the host may do now: `CONTENT` (draw and present a buffer: drawn content when idle and shown, or a content
+    /// ack, which never waits) and `OWED` (a commit is owed: a bare ack or surface state, starved or not).
+    fn ready(&self) -> u32 {
+        let content = self.configured
+            && !self.starved
+            && ((self.dirty && !self.waiting && !self.suspended) || self.ack_content);
+        let owed = self.configured && (self.owed || (self.ack.is_some() && !self.ack_content));
+        u32::from(content) * NHSHELL_READY_CONTENT + u32::from(owed) * NHSHELL_READY_OWED
     }
 
     /// Post `FRAME_READY` when the pacer is ready, once until the host asks `window_ready`.
     fn notify(&mut self) {
-        if let (true, false, Some(shared)) = (self.ready(), self.notified, &self.shared) {
+        if let (true, false, Some(shared)) = (self.ready() != 0, self.notified, &self.shared) {
             self.notified = true;
             shared.post(NhShellEvent::new(NHSHELL_EV_FRAME_READY, self.window, 0));
             shared.wake.signal();
@@ -127,10 +143,48 @@ impl Present {
 impl MainState {
     fn present_of(&mut self, id: u64) -> Arc<Mutex<Present>> {
         let shared = self.shared.clone();
+        // a child needs no configure
+        let configured = self.children.contains_key(&id);
         self.presents
             .entry(id)
-            .or_insert_with(|| Arc::new(Mutex::new(Present::new(id, shared))))
+            .or_insert_with(|| Arc::new(Mutex::new(Present::new(id, shared, configured))))
             .clone()
+    }
+
+    /// Window `id` owes a commit (surface state changed): wake its pacer.
+    pub(crate) fn present_owe(&mut self, id: u64) {
+        let present = self.present_of(id);
+        let mut p = lock(&present);
+        p.owed = true;
+        p.notify();
+    }
+
+    /// Record `serial`'s ack for window `id` (sent with the next commit) and wake the pacer.
+    pub(crate) fn present_ack(&mut self, id: u64, serial: u32, content: bool) {
+        let present = self.present_of(id);
+        let mut p = lock(&present);
+        p.configured = true;
+        p.ack = Some(serial);
+        p.ack_content |= content;
+        p.notify();
+    }
+
+    /// Popup `id` was made again on the same surface: the recorded ack belongs to the destroyed `xdg_surface`, and
+    /// the new one has had no configure.
+    pub(crate) fn present_reset(&mut self, id: u64) {
+        let present = self.present_of(id);
+        let mut p = lock(&present);
+        p.ack = None;
+        p.ack_content = false;
+        p.configured = false;
+    }
+
+    /// The `xdg_surface` that `id`'s acks go to.
+    fn xdg_of(&self, id: u64) -> Option<&XdgSurface> {
+        self.windows
+            .get(&id)
+            .map(|w| &w.xdg_surface)
+            .or_else(|| self.popups.get(&id).map(|p| p.xdg_surface()))
     }
 
     /// The compositor configured window `id`: note whether it is suspended, and re-arm a waiting pacer.
@@ -140,12 +194,11 @@ impl MainState {
         }
         let present = self.present_of(id);
         let mut p = lock(&present);
-        let was = std::mem::replace(&mut p.suspended, suspended);
+        p.configured = true;
+        p.suspended = suspended;
         drop(p);
         self.present_rearm(id, conn);
-        if was && !suspended {
-            lock(&present).notify();
-        }
+        lock(&present).notify();
     }
 
     /// A waiting pacer asks again: a frame callback and an empty commit.  The surface may have become visible, and
@@ -180,6 +233,9 @@ impl WaylandShell {
         }
         let present = self.main.present_of(id);
         let mut p = lock(&present);
+        if !p.configured {
+            return Err(ShellError::State);
+        }
         let now = now_ns();
         p.reap(now);
         let slot = match p.begun.take() {
@@ -190,8 +246,9 @@ impl WaylandShell {
                     p.pool.abandon(s);
                 }
                 let mut s = p.pool.begin(dev_w, dev_h, now);
-                if s.is_none() && !p.waiting {
-                    // idle with every buffer busy: the compositor holds them, so the pool grows
+                if s.is_none() && (!p.waiting || p.ack_content) {
+                    // idle (or carrying a content ack) with every buffer busy: the compositor holds them, so the
+                    // pool grows
                     s = p.pool.begin_with(dev_w, dev_h, now, GROWN_BUFFERS);
                 }
                 let Some(s) = s else {
@@ -281,7 +338,13 @@ impl WaylandShell {
             }
             p.waiting = true;
         }
-        p.ack_owed = false;
+        if let Some(serial) = p.ack.take()
+            && let Some(xdg) = self.main.xdg_of(id)
+        {
+            xdg.ack_configure(serial);
+        }
+        p.ack_content = false;
+        p.owed = false;
         surface.commit();
         p.pool.submitted(slot);
         drop(p);
@@ -300,12 +363,27 @@ impl WaylandShell {
         Ok(())
     }
 
-    /// An ack went out for window `id`: a commit must follow, and it never waits for the frame callback.
-    pub(super) fn ack_sent(&mut self, id: WindowId) {
-        let present = self.main.present_of(id);
+    /// A commit with no buffer, callback, feedback, viewport or scale: a bare ack goes with it (a content ack waits
+    /// for a buffer), and the owed surface state.
+    pub(super) fn present_bare_impl(&mut self, id: WindowId) -> ShellResult {
+        let present = self
+            .main
+            .presents
+            .get(&id)
+            .ok_or(ShellError::State)?
+            .clone();
         let mut p = lock(&present);
-        p.ack_owed = true;
-        p.notify();
+        let surface = self.main.surfaces.get(&id).ok_or(ShellError::State)?;
+        if !p.ack_content
+            && let Some(serial) = p.ack.take()
+            && let Some(xdg) = self.main.xdg_of(id)
+        {
+            xdg.ack_configure(serial);
+        }
+        p.owed = false;
+        surface.commit();
+        drop(p);
+        self.flush()
     }
 
     /// The host took a `FRAME_READY` record: the pacer may post the next one.
@@ -318,14 +396,18 @@ impl WaylandShell {
     }
 
     /// Whether the host may draw and present window `id` now.
-    pub(super) fn window_ready_impl(&mut self, id: WindowId) -> ShellResult<bool> {
+    pub(super) fn window_ready_impl(&mut self, id: WindowId) -> ShellResult<u32> {
         if !self.main.is_window(id) {
             return Err(ShellError::State);
         }
-        Ok(self.main.presents.get(&id).is_some_and(|p| {
+        Ok(self.main.presents.get(&id).map_or(0, |p| {
             let mut p = lock(p);
             p.notified = false;
-            p.ready()
+            let bits = p.ready();
+            if bits & NHSHELL_READY_CONTENT != 0 {
+                p.dirty = false;
+            }
+            bits
         }))
     }
 

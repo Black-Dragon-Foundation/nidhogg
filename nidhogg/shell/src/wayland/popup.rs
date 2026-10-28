@@ -27,6 +27,14 @@ pub struct Popup {
     anchor: Anchor,
     size: (i32, i32),
     token: u32,
+    /// The next configure is the popup's first (or the first after it was made again): a content ack.
+    first: bool,
+}
+
+impl Popup {
+    pub(super) fn xdg_surface(&self) -> &XdgSurface {
+        &self.xdg_surface
+    }
 }
 
 fn positioner(
@@ -105,6 +113,7 @@ impl WaylandShell {
                 anchor: d.anchor,
                 size: (d.w, d.h),
                 token: 0,
+                first: true,
             },
         );
         self.flush()?;
@@ -124,7 +133,8 @@ impl WaylandShell {
 
     /// Move popup `id`'s anchor rectangle to (`x`, `y`): `xdg_popup.reposition` (v3+), else the popup is destroyed
     /// and made again on the same surface.
-    pub(super) fn popup_reposition(&mut self, id: WindowId, x: i32, y: i32) -> ShellResult {
+    /// Returns whether the popup was made again (it shows nothing until a buffer maps it: redraw all).
+    pub(super) fn popup_reposition(&mut self, id: WindowId, x: i32, y: i32) -> ShellResult<bool> {
         let qh = self.main_queue.handle();
         let m = &mut self.main;
         let wm_base = m.wm_base.as_ref().ok_or(ShellError::State)?;
@@ -132,10 +142,12 @@ impl WaylandShell {
         p.anchor.x = x;
         p.anchor.y = y;
         let pos = positioner(wm_base, &qh, p.size, &p.anchor, p.offset)?;
-        if p.popup.version() >= 3 {
+        let recreate = p.popup.version() < 3;
+        if !recreate {
             p.token = p.token.wrapping_add(1);
             p.popup.reposition(&pos, p.token);
         } else {
+            p.first = true;
             p.popup.destroy();
             p.xdg_surface.destroy();
             p.surface.attach(None, 0, 0);
@@ -145,18 +157,24 @@ impl WaylandShell {
             p.surface.commit();
         }
         pos.destroy();
-        self.flush()
+        if recreate {
+            self.main.present_reset(id);
+        }
+        self.flush()?;
+        Ok(recreate)
     }
 }
 
 impl MainState {
-    /// Ack a popup's configure at once; false when `id` is not a popup.
-    pub(super) fn popup_ack(&self, id: u64, xdg: &XdgSurface, serial: u32) -> bool {
-        let is = self.popups.contains_key(&id);
-        if is {
-            xdg.ack_configure(serial);
-        }
-        is
+    /// Record a popup's configure ack (sent with the next commit); false when `id` is not a popup.  The first
+    /// configure changes what the popup shows (a buffer maps it); a configure after `repositioned` is a bare ack.
+    pub(super) fn popup_ack(&mut self, id: u64, serial: u32) -> bool {
+        let Some(p) = self.popups.get_mut(&id) else {
+            return false;
+        };
+        let content = std::mem::take(&mut p.first);
+        self.present_ack(id, serial, content);
+        true
     }
 }
 

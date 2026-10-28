@@ -253,14 +253,15 @@ ffi!(fn nhshell_window_move(window: u64) |b| b.move_window(window));
 ffi!(fn nhshell_window_resize(window: u64, edges: u32) |b| b.resize(window, edges));
 ffi!(fn nhshell_window_show_menu(window: u64, x: i32, y: i32) |b| b.show_menu(window, x, y));
 ffi!(fn nhshell_window_set_geometry(window: u64, x: i32, y: i32, w: i32, h: i32) |b| b.set_geometry(window, x, y, w, h));
-ffi!(fn nhshell_window_ack_configure(window: u64, serial: u32) |b| b.ack_configure(window, serial));
+ffi!(fn nhshell_window_ack_configure(window: u64, serial: u32, flags: u32) |b| b.ack_configure(window, serial, flags));
+ffi!(fn nhshell_present_bare(window: u64) |b| b.present_bare(window));
 ffi!(fn nhshell_window_dirty(window: u64) |b| b.window_dirty(window));
 ffi!(
-    /// Whether the window's pacer lets the host present now: 1 or 0 to `*ready`.
+    /// What the window's pacer lets the host do now: `NHSHELL_READY_*` bits (0: nothing) to `*ready`.
     fn nhshell_window_ready(window: u64, ready: *mut i32) |b| {
         let r = b.window_ready(window)?;
         // SAFETY: null or writable, by the contract.
-        unsafe { put(ready, i32::from(r)) }
+        unsafe { put(ready, r as i32) }
     }
 );
 ffi!(fn nhshell_window_set_cursor(window: u64, shape: u32) |b| b.set_cursor(window, shape));
@@ -274,7 +275,20 @@ ffi!(fn nhshell_window_activate(window: u64, token: *const c_char) |b| {
     b.window_activate(window, token)
 });
 
-ffi!(fn nhshell_window_set_position(window: u64, x: i32, y: i32) |b| b.set_position(window, x, y));
+/// Move a child (with its parent's next commit) or a popup (its anchor rectangle).  Returns 1 when the whole window
+/// must be redrawn (a popup that was made again), 0 otherwise, or a negative `NHSHELL_E_*` code.
+///
+/// # Safety
+/// `sh` is a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nhshell_window_set_position(
+    sh: *mut NhShell,
+    window: u64,
+    x: i32,
+    y: i32,
+) -> i32 {
+    guard(sh, |b| b.set_position(window, x, y), i32::from)
+}
 ffi!(fn nhshell_window_stack(window: u64, sibling: u64, above: i32) |b| b.stack(window, sibling, above != 0));
 ffi!(fn nhshell_window_set_mapped(window: u64, on: i32) |b| b.set_mapped(window, on != 0));
 

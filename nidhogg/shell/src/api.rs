@@ -9,6 +9,12 @@ use glitnir::geom::Rect;
 
 pub type WindowId = u64;
 
+/// `ack_configure` flag: the ack changes what the window shows, so only a buffer carries it.
+pub const NHSHELL_ACK_CONTENT: u32 = 1;
+/// `window_ready` bits: the host may draw and present a buffer; the window owes a commit (bare or with a buffer).
+pub const NHSHELL_READY_CONTENT: u32 = 1;
+pub const NHSHELL_READY_OWED: u32 = 2;
+
 pub const NHSHELL_OK: i32 = 0;
 pub const NHSHELL_E_PANIC: i32 = -1;
 pub const NHSHELL_E_ARG: i32 = -2;
@@ -172,12 +178,17 @@ pub trait ShellBackend {
     /// Set the window geometry (`xdg_surface.set_window_geometry`, surface-local logical pixels), which takes effect
     /// with the next commit.
     fn set_geometry(&mut self, window: WindowId, x: i32, y: i32, w: i32, h: i32) -> ShellResult;
-    /// Ack configure `serial` now; the commit that follows is the host's next `present_commit`.
-    fn ack_configure(&mut self, window: WindowId, serial: u32) -> ShellResult;
+    /// Record configure `serial`'s ack; it goes out right before the commit that carries it.  `flags`
+    /// `NHSHELL_ACK_CONTENT` says the ack changes what the window shows (a new size, the first configure, a client
+    /// side state change): it is sent only with a buffer.  The flag is sticky until a buffer carries the ack.
+    fn ack_configure(&mut self, window: WindowId, serial: u32, flags: u32) -> ShellResult;
     /// The host drew something: `FRAME_READY` follows when the window's pacer lets it present.
     fn window_dirty(&mut self, window: WindowId) -> ShellResult;
-    /// Whether the window's pacer lets the host begin a frame now.
-    fn window_ready(&mut self, window: WindowId) -> ShellResult<bool>;
+    /// The `NHSHELL_READY_*` bits: what the pacer lets the host do now (0: nothing).  Reporting `CONTENT` takes the
+    /// draw (the pacer is not ready again until `window_dirty`, unless a content ack is held).
+    fn window_ready(&mut self, window: WindowId) -> ShellResult<u32>;
+    /// A commit without a buffer, frame callback or feedback: a bare ack, and the surface state the window owes.
+    fn present_bare(&mut self, window: WindowId) -> ShellResult;
     fn set_cursor(&mut self, window: WindowId, shape: u32) -> ShellResult;
     /// The Xcursor theme (`name`, logical `size`) used where the compositor has no cursor-shape protocol.
     fn set_cursor_theme(&mut self, name: &str, size: u32) -> ShellResult;
@@ -193,7 +204,8 @@ pub trait ShellBackend {
     /// Create a child (`NHSHELL_KIND_CHILD`) or popup (`NHSHELL_KIND_POPUP`) window.
     fn child_new(&mut self, desc: &ChildDesc) -> ShellResult<WindowId>;
     /// Move a child (applied with its parent's next commit) or a popup (its anchor rectangle's origin).
-    fn set_position(&mut self, window: WindowId, x: i32, y: i32) -> ShellResult;
+    /// `true` when the whole window must be redrawn (a popup that was made again).
+    fn set_position(&mut self, window: WindowId, x: i32, y: i32) -> ShellResult<bool>;
     /// Put a child above or below `sibling` (0: its parent), applied with the parent's next commit.
     fn stack(&mut self, window: WindowId, sibling: WindowId, above: bool) -> ShellResult;
     /// The part of the window that takes input (logical pixels); none at all means the whole surface.
