@@ -1,12 +1,26 @@
 //! Backings, damage and scroll, against Glitnir itself (no display needed).
 
 mod backing {
-    use glitnir::geom::Rect;
+    use glitnir::ffi::{CommitOut, glitnir_commit};
     use nhglue::abi::{NHG_E_ARG, NHG_E_STATE};
-    use nhglue::backing::{
-        Backings, NHG_GEOM_FRESH, NhgBacking, NhgFrameGeom, NhgRect, PENDING_MAX, alpha_multiply,
-    };
-    use nhglue::ffi::{nhg_backing_forget, nhg_commit, nhg_damage, nhg_layer_ensure, nhg_scroll};
+    use nhglue::backing::{Backings, NHG_GEOM_FRESH, NhgBacking, NhgFrameGeom, NhgRect};
+    use nhglue::ffi::{nhg_backing_forget, nhg_damage, nhg_layer_ensure, nhg_scroll};
+
+    /// Glitnir's damage for frame `key` since the last call (publishing commits it the same way).
+    fn committed(key: u64) -> Vec<NhgRect> {
+        let mut co = CommitOut {
+            rects: std::ptr::null(),
+            n: 0,
+        };
+        // SAFETY: `co` is a writable CommitOut for the call.
+        unsafe { glitnir_commit(key, &mut co) };
+        if co.n == 0 || co.rects.is_null() {
+            return Vec::new();
+        }
+        // SAFETY: Glitnir hands back `co.n` rectangles, valid until the root's next commit.
+        let rs = unsafe { std::slice::from_raw_parts(co.rects, co.n) };
+        rs.iter().map(|r| NhgRect::from(*r)).collect()
+    }
 
     fn geom(native_w: i32, native_h: i32, l: i32, t: i32, bg: u32) -> NhgFrameGeom {
         let mut g = NhgFrameGeom {
@@ -90,89 +104,13 @@ mod backing {
         b.forget(key);
     }
 
-    /// Committed damage is clipped to the layer; the 33rd rectangle collapses the 32 before it to their bounding box.
-    #[test]
-    fn pending_rects_collapse_to_a_bounding_box_past_32() {
-        let mut b = Backings::default();
-        let mut key = 0;
-        b.ensure(&mut key, &geom(100, 100, 0, 0, 0));
-        let ones: Vec<Rect> = (0..PENDING_MAX as i32)
-            .map(|i| Rect {
-                x: 2 * i,
-                y: 0,
-                w: 1,
-                h: 1,
-            })
-            .collect();
-        assert_eq!(b.take(key, &ones), Ok(32));
-        assert_eq!(b.frame(key).unwrap().pending().len(), 32);
-        let more = [
-            Rect {
-                x: 0,
-                y: 50,
-                w: 1,
-                h: 1,
-            },
-            Rect {
-                x: -5,
-                y: -5,
-                w: 10,
-                h: 10,
-            },
-            Rect {
-                x: 200,
-                y: 0,
-                w: 5,
-                h: 5,
-            },
-        ];
-        assert_eq!(
-            b.take(key, &more),
-            Ok(2),
-            "the one outside the layer is dropped"
-        );
-        let p = b.frame(key).unwrap().pending().to_vec();
-        assert_eq!(
-            p,
-            [
-                NhgRect {
-                    x: 0,
-                    y: 0,
-                    w: 63,
-                    h: 1
-                },
-                NhgRect {
-                    x: 0,
-                    y: 50,
-                    w: 1,
-                    h: 1
-                },
-                NhgRect {
-                    x: 0,
-                    y: 0,
-                    w: 5,
-                    h: 5
-                },
-            ]
-        );
-        assert_eq!(b.pending(key).damage_px, 32 + 1 + 25);
-        b.presented(key).unwrap();
-        assert_eq!((b.pending(key).n, b.pending(key).damage_px), (0, 0));
-        // a changed layer drops the pending damage
-        b.take(key, &ones[..3]).unwrap();
-        assert!(b.ensure(&mut key, &geom(90, 100, 0, 0, 0)));
-        assert_eq!(b.pending(key).n, 0);
-        b.forget(key);
-    }
-
     /// Damage gets the border's offset; the whole frame is damaged on the layer's creation.
     #[test]
     fn damage_is_offset_by_the_border() {
         let mut b = Backings::default();
         let mut key = 0;
         b.ensure(&mut key, &geom(20, 10, 2, 3, 0));
-        b.commit(key).unwrap();
-        b.presented(key).unwrap();
+        committed(key);
         let r = [
             NhgRect {
                 x: 1,
@@ -188,10 +126,8 @@ mod backing {
             },
         ];
         assert_eq!(b.damage(key, &r), Ok(1));
-        assert_eq!(b.commit(key), Ok(1));
-        let p = b.frame(key).unwrap().pending().to_vec();
         assert_eq!(
-            p,
+            committed(key),
             [NhgRect {
                 x: 3,
                 y: 4,
@@ -200,9 +136,8 @@ mod backing {
             }]
         );
         b.damage_all(key).unwrap();
-        b.commit(key).unwrap();
         assert_eq!(
-            bbox(b.frame(key).unwrap().pending()),
+            bbox(&committed(key)),
             NhgRect {
                 x: 0,
                 y: 0,
@@ -228,8 +163,7 @@ mod backing {
                 put(&v, x, y, (y * 100 + x) as u32);
             }
         }
-        b.commit(key).unwrap();
-        b.presented(key).unwrap();
+        committed(key);
         // native rows 3..5 move up to row 1 (backing rows 5..7 to 3..5), columns 0..8 (backing 1..9)
         let run = NhgRect {
             x: 0,
@@ -243,9 +177,8 @@ mod backing {
         assert_eq!(px(&v, 0, 3), 300, "left of the window");
         assert_eq!(px(&v, 9, 4), 409, "right of the window");
         assert_eq!(px(&v, 1, 5), 501, "the source rows stay until redrawn");
-        b.commit(key).unwrap();
         assert_eq!(
-            bbox(b.frame(key).unwrap().pending()),
+            bbox(&committed(key)),
             NhgRect {
                 x: 1,
                 y: 3,
@@ -285,17 +218,33 @@ mod backing {
         assert_eq!(b.scroll(key, 7, run, 1), Err(NHG_E_STATE));
     }
 
-    /// The host's alpha multiplies each channel once, by 1 - cut / u32::MAX in 255ths.
+    /// The layer's origin in the backing is what publishing names as the source: a child frame's native area inside
+    /// its shadow margin, else the backing's top-left.
     #[test]
-    fn alpha_host_multiplies_once() {
-        let mut row = [0xff80_4020, 0x0000_0000, 0xffff_ffff];
-        alpha_multiply(&mut row, u32::MAX / 2);
-        assert_eq!(row, [0x8040_2010, 0, 0x8080_8080]);
-        let mut row = [0xff80_4020];
-        alpha_multiply(&mut row, 0);
-        assert_eq!(row, [0xff80_4020], "opaque leaves the pixels");
-        alpha_multiply(&mut row, u32::MAX);
-        assert_eq!(row, [0]);
+    fn published_view_starts_at_the_layer() {
+        let mut b = Backings::default();
+        let mut key = 0;
+        let mut g = geom(30, 20, 4, 4, 9);
+        g.b = 4;
+        g.layer = NhgRect {
+            x: 4,
+            y: 4,
+            w: 30,
+            h: 20,
+        };
+        b.ensure(&mut key, &g);
+        assert!(
+            b.frame(key).unwrap().published().is_none(),
+            "no backing yet"
+        );
+        let v = b.backing(key, &g).unwrap();
+        let p = b.frame(key).unwrap().published().unwrap();
+        assert_eq!((p.w, p.h, p.src), (38, 28, (4, 4)));
+        assert_eq!(
+            (p.pixels.as_ptr(), p.pixels.len()),
+            (v.pixels.cast_const(), 38 * 28 * 4)
+        );
+        b.forget(key);
     }
 
     /// A snapshot borrows the backing: the same pixels, size and generation, no copy.
@@ -327,7 +276,6 @@ mod backing {
         unsafe {
             assert_eq!(nhg_layer_ensure(d, &mut key, &g), NHG_E_ARG);
             assert_eq!(nhg_damage(d, 1, std::ptr::null(), 0), NHG_E_ARG);
-            assert_eq!(nhg_commit(d, 1), NHG_E_ARG);
             assert_eq!(nhg_scroll(d, 1, 1, NhgRect::default(), 0), NHG_E_ARG);
             assert_eq!(nhg_backing_forget(d, 0), NHG_E_ARG);
         }

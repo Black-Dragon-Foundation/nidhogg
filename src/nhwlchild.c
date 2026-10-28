@@ -17,9 +17,9 @@ You should have received a copy of the GNU General Public License
 along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 
 /* A child frame is a sync subsurface of its parent frame's window (shell
-   kind NHSHELL_KIND_CHILD), presented with its tree: the root frame's
-   pacer commits the child frames deepest first, then the root
-   (nhwl_present_tree).  It has its own backing and its own Glitnir root,
+   kind NHSHELL_KIND_CHILD), published and presented with its tree: the
+   shell commits the child frames deepest first, then the root
+   (nhwl_publish).  It has its own backing and its own Glitnir root,
    like any frame; the root's one layer carries the frame's chrome (rounded
    corners, shadow).  The shadow needs room around the native area: that
    margin is held in the output's CSD offsets (csd.l/t/r/b), so the backing,
@@ -286,20 +286,6 @@ nhwl_child_apply_chrome (struct frame *f)
   glitnir_layer_set_chrome (out->glitnir_id, out->glitnir_id, &g);
 }
 
-/* The source of the root's layer starts at the layer's top-left, which is
-   inside the backing when the frame has a margin.  */
-void
-nhwl_child_source (struct frame *f, GlitnirSource *s)
-{
-  struct nhwl_child *c = &FRAME_NHWL_OUTPUT (f)->child;
-
-  if (!nhwl_child_p (f) || !c->chrome || !c->layer_set)
-    return;
-  s->pixels += (ptrdiff_t) c->layer.y * s->stride + (ptrdiff_t) c->layer.x * 4;
-  s->width = min (c->layer.w, s->width - c->layer.x);
-  s->height = min (c->layer.h, s->height - c->layer.y);
-}
-
 
 /***********************************************************************
 		     Position, input region, visibility
@@ -404,7 +390,6 @@ nhwl_child_set_visible (struct frame *f, bool on)
     {
       nhshell_window_set_mapped (sh, out->window, 1);
       c->mapped = true;
-      out->nhist = 0;
       nhwl_damage_all (f);
     }
   else if (!on && c->mapped)
@@ -577,14 +562,12 @@ nhwl_child_focus_gone (struct frame *f, bool gone)
 static void
 create_tree (struct frame *f)
 {
-  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
   Lisp_Object tail, frame;
 
   nhwl_create_frame_window (f);
   nhwl_child_created (f);
   if (FRAME_VISIBLE_P (f))
     {
-      out->nhist = 0;
       nhwl_damage_all (f);
       SET_FRAME_GARBAGED (f);
     }

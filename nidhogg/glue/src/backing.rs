@@ -1,17 +1,17 @@
 //! Backings, damage and scroll: each frame's pixels (C draws on them with Cairo, through
-//! `cairo_image_surface_create_for_data`), its Glitnir scene and layer, and the damage committed but not yet presented.
+//! `cairo_image_surface_create_for_data`), its Glitnir scene and layer.  Publishing (`present.rs`) hands the pixels to
+//! the shell, which commits the scene's damage itself.
 //!
-//! Moved from `src/nhwldraw.c` (`nhwl_backing_resize`, `nhwl_glitnir_ensure`, `nhwl_glitnir_commit`, the damage and
-//! scroll calls, `nhwl_alpha_multiply`, `nhwl_snapshot`'s copy) without a change in behaviour.  C still decides when to
-//! call: it reads the frame's geometry and passes it as [`NhgFrameGeom`].
+//! Moved from `src/nhwldraw.c` (`nhwl_backing_resize`, `nhwl_glitnir_ensure`, the damage and scroll calls,
+//! `nhwl_snapshot`'s copy) without a change in behaviour.  C still decides when to call: it reads the frame's geometry
+//! and passes it as [`NhgFrameGeom`].
 //!
 //! **A frame's key** is its Glitnir root id, which [`Backings::ensure`] gives it (C keeps it in `glitnir_id`).  A shell
 //! window id is not stable for a frame: popup, tip and child frames get a new window each time they are shown.
 
 use glitnir::ffi::{
-    CommitOut, GLITNIR_OK, glitnir_commit, glitnir_damage_add_n, glitnir_damage_all,
-    glitnir_damage_forget, glitnir_layer_upsert, glitnir_root_drop, glitnir_root_new,
-    glitnir_scroll, glitnir_stats_forget,
+    glitnir_damage_add_n, glitnir_damage_all, glitnir_damage_forget, glitnir_layer_upsert,
+    glitnir_root_drop, glitnir_root_new, glitnir_scroll, glitnir_stats_forget,
 };
 use glitnir::geom::Rect;
 use glitnir::scene::LayerDesc;
@@ -20,8 +20,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::abi::{NHG_E_NOMEM, NHG_E_STATE};
 
-/// Damage rectangles kept per present; past this many they collapse to their bounding box.
-pub const PENDING_MAX: usize = 32;
 /// [`NhgFrameGeom::flags`]: the layer's rectangle or chrome changed (a child frame's, as C's layer update says).
 pub const NHG_GEOM_LAYER_CHANGED: u32 = 1;
 /// [`NhgFrameGeom::flags`]: the backing starts over, in the background colour, keeping nothing (C has no surface).
@@ -119,17 +117,7 @@ pub struct NhgBacking {
     pub generation: u64,
 }
 
-/// A frame's damage committed but not yet presented, borrowed.  Layout equals `NhgPending`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct NhgPending {
-    pub rects: *const NhgRect,
-    pub n: usize,
-    /// The committed area, for the frame-time record.
-    pub damage_px: u64,
-}
-
-/// One frame's backing, layer and pending damage.
+/// One frame's backing and layer.
 #[derive(Debug, Default)]
 pub struct Frame {
     /// The layer's size and scale as Glitnir was last told (0: not yet).
@@ -139,9 +127,9 @@ pub struct Frame {
     /// The native area's offset in the backing, as of the last ensure.
     l: i32,
     t: i32,
-    pending: [NhgRect; PENDING_MAX],
-    npending: usize,
-    damage_px: u64,
+    /// Where the layer starts in the backing, as of the last ensure (a child frame's shadow margin): the source
+    /// publishing names.
+    src: (i32, i32),
     pixels: Vec<u32>,
     w: i32,
     h: i32,
@@ -159,14 +147,36 @@ impl Frame {
         }
     }
 
-    /// The damage committed but not yet presented.
-    pub fn pending(&self) -> &[NhgRect] {
-        &self.pending[..self.npending]
+    /// The backing for publishing.  None before the first `backing`.
+    pub fn published(&self) -> Option<Published<'_>> {
+        if self.pixels.is_empty() {
+            return None;
+        }
+        // SAFETY: the bytes of the `u32`s, read-only, for as long as `self` is borrowed (u8 needs no alignment).
+        let pixels = unsafe {
+            std::slice::from_raw_parts(self.pixels.as_ptr().cast::<u8>(), self.pixels.len() * 4)
+        };
+        Some(Published {
+            pixels,
+            w: self.w,
+            h: self.h,
+            src: self.src,
+        })
     }
 }
 
-/// Every frame of one display, by key.  Boxed, so that a borrowed pending list stays put while other frames come and
-/// go.
+/// A frame's backing as publishing reads it.
+#[derive(Debug, Clone, Copy)]
+pub struct Published<'a> {
+    /// Premultiplied ARGB32, `4 * w` bytes per row.
+    pub pixels: &'a [u8],
+    pub w: i32,
+    pub h: i32,
+    /// Where the layer starts in the backing.
+    pub src: (i32, i32),
+}
+
+/// Every frame of one display, by key.
 #[derive(Debug, Default)]
 pub struct Backings {
     frames: BTreeMap<u64, Box<Frame>>,
@@ -186,8 +196,8 @@ impl Backings {
     }
 
     /// Make the frame's Glitnir scene match `g`: one frame layer, the backing's size, at the window's scale.  A frame
-    /// without a key (`*key` 0) gets one and a scene.  A new or changed layer damages the whole frame and drops the
-    /// pending damage; true then (C hands a child's chrome over and forgets its own damage history).
+    /// without a key (`*key` 0) gets one and a scene.  A new or changed layer damages the whole frame; true then (C
+    /// hands a child's chrome over).
     ///
     /// From `nhwl_glitnir_ensure`.
     pub fn ensure(&mut self, key: &mut u64, g: &NhgFrameGeom) -> bool {
@@ -201,6 +211,7 @@ impl Backings {
         let s120 = g.s120();
         f.l = g.l;
         f.t = g.t;
+        f.src = (g.layer.x, g.layer.y);
         if f.layer_w == w
             && f.layer_h == h
             && f.layer_s120 == s120
@@ -222,7 +233,6 @@ impl Backings {
         f.layer_w = w;
         f.layer_h = h;
         f.layer_s120 = s120;
-        f.npending = 0;
         true
     }
 
@@ -349,90 +359,6 @@ impl Backings {
         Ok(())
     }
 
-    /// Take Glitnir's committed damage for the frame into the pending list, clipped to the layer.  Past
-    /// [`PENDING_MAX`] rectangles the list collapses to its bounding box first.  Returns how many rectangles were taken
-    /// (C starts the frame-time record's draw at the first).
-    ///
-    /// From `nhwl_glitnir_commit`.
-    pub fn commit(&mut self, key: u64) -> Result<i32, i32> {
-        self.get(key)?;
-        let mut co = CommitOut {
-            rects: std::ptr::null(),
-            n: 0,
-        };
-        // SAFETY: `co` is a writable CommitOut for the call.
-        if unsafe { glitnir_commit(key, &mut co) } != GLITNIR_OK || co.n == 0 || co.rects.is_null()
-        {
-            return Ok(0);
-        }
-        // SAFETY: Glitnir hands back `co.n` rectangles, valid until the root's next commit (none happens here).
-        let committed = unsafe { std::slice::from_raw_parts(co.rects, co.n) };
-        self.take(key, committed)
-    }
-
-    /// [`Backings::commit`]'s second half: `committed` (layer pixels) joins the pending list.
-    pub fn take(&mut self, key: u64, committed: &[Rect]) -> Result<i32, i32> {
-        let f = self.get(key)?;
-        let mut took = 0;
-        for c in committed {
-            let x1 = c.x.saturating_add(c.w).min(f.layer_w);
-            let y1 = c.y.saturating_add(c.h).min(f.layer_h);
-            let mut r = NhgRect {
-                x: c.x.max(0),
-                y: c.y.max(0),
-                w: 0,
-                h: 0,
-            };
-            r.w = x1 - r.x;
-            r.h = y1 - r.y;
-            if r.w <= 0 || r.h <= 0 {
-                continue;
-            }
-            took += 1;
-            f.damage_px += r.w as u64 * r.h as u64;
-            if f.npending == PENDING_MAX {
-                let mut b = f.pending[0];
-                for p in &f.pending[1..f.npending] {
-                    let bx1 = (b.x + b.w).max(p.x + p.w);
-                    let by1 = (b.y + b.h).max(p.y + p.h);
-                    b.x = b.x.min(p.x);
-                    b.y = b.y.min(p.y);
-                    b.w = bx1 - b.x;
-                    b.h = by1 - b.y;
-                }
-                f.pending[0] = b;
-                f.npending = 1;
-            }
-            f.pending[f.npending] = r;
-            f.npending += 1;
-        }
-        Ok(took)
-    }
-
-    /// The frame's pending damage, borrowed until the next call that changes it; none for an unknown key.
-    pub fn pending(&self, key: u64) -> NhgPending {
-        match self.frames.get(&key) {
-            Some(f) => NhgPending {
-                rects: f.pending.as_ptr(),
-                n: f.npending,
-                damage_px: f.damage_px,
-            },
-            None => NhgPending {
-                rects: std::ptr::null(),
-                n: 0,
-                damage_px: 0,
-            },
-        }
-    }
-
-    /// The pending damage was presented: it and its area start again from nothing.  From `nhwl_glitnir_presented`.
-    pub fn presented(&mut self, key: u64) -> Result<(), i32> {
-        let f = self.get(key)?;
-        f.npending = 0;
-        f.damage_px = 0;
-        Ok(())
-    }
-
     /// The backing as it is, borrowed (C copies it).  Reads pixels.  From `nhwl_snapshot`.
     pub fn snapshot(&mut self, key: u64) -> Result<NhgBacking, i32> {
         let f = self.get(key)?;
@@ -452,18 +378,5 @@ impl Backings {
         glitnir_damage_forget(key);
         glitnir_stats_forget(key);
         self.frames.remove(&key);
-    }
-}
-
-/// Multiply every pixel of `row` (premultiplied ARGB) by the frame's alpha, 1 - `cut` / `u32::MAX`: what
-/// `wp_alpha_modifier_v1` would have the compositor do.  From `nhwl_alpha_multiply`.
-pub fn alpha_multiply(row: &mut [u32], cut: u32) {
-    let a = 255 - (u64::from(cut) * 255 / u64::from(u32::MAX)) as u32;
-    for p in row {
-        let v = *p;
-        *p = ((v >> 24) * a / 255) << 24
-            | (((v >> 16) & 0xff) * a / 255) << 16
-            | (((v >> 8) & 0xff) * a / 255) << 8
-            | ((v & 0xff) * a / 255);
     }
 }

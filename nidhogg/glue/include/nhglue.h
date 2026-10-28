@@ -92,11 +92,8 @@ typedef struct
 /* A backing's pixels, borrowed: ARGB32, STRIDE = 4 * W.  GEN counts the backing's creations.  */
 typedef struct { uint8_t *pixels; int32_t stride, w, h; uint64_t gen; } NhgBacking;
 
-/* A frame's damage committed but not yet presented, borrowed, and its area.  */
-typedef struct { const NhgRect *rects; size_t n; uint64_t damage_px; } NhgPending;
-
 /* Make the frame's Glitnir layer match G; *FRAME 0 gets a key and a scene.  1 when the layer was made or changed (the
-   frame is damaged whole and its pending damage dropped), 0 when it matched.  Neither reads nor writes pixels.  */
+   frame is damaged whole), 0 when it matched.  Neither reads nor writes pixels.  */
 int32_t nhg_layer_ensure (NhgDisplay *d, uint64_t *frame, const NhgFrameGeom *g);
 
 /* Make the frame's backing G's size and describe it in OUT.  A resize keeps the pixels where the old and new sizes
@@ -115,26 +112,60 @@ int32_t nhg_damage_all (NhgDisplay *d, uint64_t frame);
    the backing, and Glitnir damages the moved area and the rows it left stale.  Writes pixels.  */
 int32_t nhg_scroll (NhgDisplay *d, uint64_t frame, uint64_t w_seq, NhgRect run, int32_t to_y);
 
-/* Take Glitnir's committed damage for the frame into its pending list (past 32 rectangles the list collapses to its
-   bounding box).  Returns how many rectangles it took.  Neither.  */
-int32_t nhg_commit (NhgDisplay *d, uint64_t frame);
-
-/* The frame's pending damage in OUT, valid until the next call that changes it; none for an unknown frame.
-   Neither.  */
-int32_t nhg_pending (NhgDisplay *d, uint64_t frame, NhgPending *out);
-
-/* The frame's pending damage was presented: the list and its area start again.  Neither.  */
-int32_t nhg_presented (NhgDisplay *d, uint64_t frame);
-
 /* The frame's backing in OUT, borrowed until the next call on the frame.  NHG_E_STATE without one.  Reads pixels.  */
 int32_t nhg_snapshot (NhgDisplay *d, uint64_t frame, NhgBacking *out);
 
 /* The frame is gone: its Glitnir scene, damage and statistics, and its backing.  FRAME 0 is accepted.  Neither.  */
 int32_t nhg_backing_forget (NhgDisplay *d, uint64_t frame);
 
-/* Multiply every pixel of a W x H premultiplied ARGB32 buffer (rows STRIDE bytes apart, 4-byte aligned) by the alpha
-   1 - CUT / UINT32_MAX.  Writes the buffer's pixels (a shell buffer, not a backing).  */
-int32_t nhg_alpha_multiply (NhgDisplay *d, uint8_t *pixels, int32_t stride, int32_t w, int32_t h, uint32_t cut);
+/* ---- Presenting ---------------------------------------------------------------------------------------------------
+
+   The shell presents (it commits, composing from what was published); the glue decides when a tree's picture is
+   complete.  A tree is a root window (a top-level, tip or popup frame's) and the child frames' windows under it.  C
+   lists the tree's surfaces bottom to top, the root first and each parent before its children: the window, its
+   parent's window (0 for the root), the frame's key, and the flags.  NHG_SURF_DRAWABLE: the frame may show a buffer
+   by itself (FRAME_VISIBLE_P and not new_size_p, and a child frame's window mapped); a surface shows one only when
+   its ancestors may too, and an undrawable one keeps its last buffer.  NHG_SURF_ALPHA_HOST: the compositor cannot
+   apply the frame's alpha, so the shell multiplies the pixels by 1 - ALPHA_CUT / UINT32_MAX.  */
+#define NHG_SURF_DRAWABLE    1
+#define NHG_SURF_ALPHA_HOST  2
+typedef struct
+{
+  uint64_t window, parent, frame;
+  uint32_t flags;		/* NHG_SURF_* */
+  uint32_t alpha_cut;
+} NhgSurface;
+
+/* nhg_present's FLAGS.  BACKSTOP: a consistency point (not redisplaying, buffer flips not blocked; C has brought
+   every drawable frame up to date): the tree is published when its root may show a buffer, with the root's key time
+   T_KEY_NS (0: none).  READY: the root's FRAME_READY: in inline mode the shell presents the tree, drawn or not (a
+   tree that owes a commit gets it).  KEY_SEEN: T_KEY_NS was read before the redisplay that just ended.  */
+#define NHG_PRESENT_BACKSTOP 1
+#define NHG_PRESENT_READY    2
+#define NHG_PRESENT_KEY_SEEN 4
+/* nhg_present's result bits.  PUBLISHED: a packet was queued.  COMMITTED: the root committed a buffer (inline).
+   KEY_DONE: the key time is done (a packet carries it, or a redisplay after it drew nothing): C clears it.  */
+#define NHG_PRESENTED_PUBLISHED 1
+#define NHG_PRESENTED_COMMITTED 2
+#define NHG_PRESENTED_KEY_DONE  4
+
+/* Publish and present the tree of root window ROOT: S holds its N surfaces (NULL only when N is 0, which READY alone
+   allows).  Returns NHG_PRESENTED_* bits, NHG_E_ARG for a list that is not ROOT's tree.  Reads pixels: C flushes
+   every listed frame's surface first.  */
+int32_t nhg_present (NhgDisplay *d, uint64_t root, const NhgSurface *s, size_t n, uint32_t flags, uint64_t t_key_ns);
+
+/* Present on the shell's own thread (ON nonzero; FRAME_READY no longer comes) or inline, at each root's FRAME_READY
+   (the default at open).  A thread that cannot start leaves the display inline (NHG_E_NOMEM).  Neither.  */
+int32_t nhg_presenter_thread (NhgDisplay *d, int32_t on);
+
+/* The presenter's counters since open, and its timing: FRAMES root buffers that showed published drawing, LATE of
+   them committed more than a refresh after they were ready, and the longest wait from ready to commit.  Neither.  */
+typedef struct
+{
+  NhShellPresenterStats counters;
+  uint64_t frames, late, ready_to_commit_max_ns;
+} NhgPresenterStats;
+int32_t nhg_presenter_stats (NhgDisplay *d, NhgPresenterStats *out);
 
 /* ---- The window registry ------------------------------------------------------------------------------------------
 

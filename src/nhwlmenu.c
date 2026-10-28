@@ -27,7 +27,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
    the keyboard and pointer, and a click elsewhere dismisses it).
 
    A popup frame is the root of its own tree (its pacer and its acks are
-   its own) and is presented by nhwl_present_tree like any frame.  Its
+   its own) and is published by nhwl_publish like any frame.  Its
    window exists while it is shown: made by `make-frame-visible' at the
    current anchor, destroyed by `make-frame-invisible', its popup frames
    first.  Keys and pointer events on the popup go to its frame; keyboard
@@ -228,7 +228,6 @@ nhwl_popup_show (struct frame *f)
   SET_FRAME_VISIBLE (f, 1);
   SET_FRAME_ICONIFIED (f, false);
   out->has_been_visible = true;
-  out->nhist = 0;
   nhwl_damage_all (f);
   SET_FRAME_GARBAGED (f);
 }

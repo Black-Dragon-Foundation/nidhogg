@@ -277,16 +277,6 @@ ffi!(fn nhshell_window_resize(window: u64, edges: u32) |b| b.resize(window, edge
 ffi!(fn nhshell_window_show_menu(window: u64, x: i32, y: i32) |b| b.show_menu(window, x, y));
 ffi!(fn nhshell_window_set_geometry(window: u64, x: i32, y: i32, w: i32, h: i32) |b| b.set_geometry(window, x, y, w, h));
 ffi!(fn nhshell_window_ack_configure(window: u64, serial: u32, flags: u32) |b| b.ack_configure(window, serial, flags));
-ffi!(fn nhshell_present_bare(window: u64) |b| b.present_bare(window));
-ffi!(fn nhshell_window_dirty(window: u64) |b| b.window_dirty(window));
-ffi!(
-    /// What the window's pacer lets the host do now: `NHSHELL_READY_*` bits (0: nothing) to `*ready`.
-    fn nhshell_window_ready(window: u64, ready: *mut i32) |b| {
-        let r = b.window_ready(window)?;
-        // SAFETY: null or writable, by the contract.
-        unsafe { put(ready, r as i32) }
-    }
-);
 ffi!(fn nhshell_window_set_cursor(window: u64, shape: u32) |b| b.set_cursor(window, shape));
 ffi!(fn nhshell_set_cursor_theme(name: *const c_char, size: u32) |b| {
     // SAFETY: NUL-terminated by the contract.
@@ -492,58 +482,6 @@ ffi!(
         unsafe { put(ssd, i32::from(on)) }
     }
 );
-
-/// Begin a frame of `dev_w` x `dev_h` device pixels; the buffer to draw into goes to `*out`.
-///
-/// # Safety
-/// `sh` is a live handle; `out` is null or writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn nhshell_present_begin(
-    sh: *mut NhShell,
-    window: u64,
-    dev_w: i32,
-    dev_h: i32,
-    out: *mut NhShellBuffer,
-) -> i32 {
-    guard(
-        sh,
-        |b| {
-            let buf = b.present_begin(window, dev_w, dev_h)?;
-            // SAFETY: null or writable, by the contract.
-            unsafe { put(out, buf) }
-        },
-        |()| NHSHELL_OK,
-    )
-}
-
-/// Show the begun buffer; `damage` points to `n` rectangles in device pixels (NULL only when `n` is 0, which damages
-/// nothing and still presents).
-///
-/// # Safety
-/// `sh` is a live handle; `damage` is null or points to `n` rectangles.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn nhshell_present_commit(
-    sh: *mut NhShell,
-    window: u64,
-    damage: *const Rect,
-    n: usize,
-) -> i32 {
-    guard(
-        sh,
-        |b| {
-            let rects: &[Rect] = if n == 0 {
-                &[]
-            } else if damage.is_null() {
-                return Err(ShellError::Arg);
-            } else {
-                // SAFETY: `n` rectangles by the contract.
-                unsafe { std::slice::from_raw_parts(damage, n) }
-            };
-            b.present_commit(window, rects)
-        },
-        |()| NHSHELL_OK,
-    )
-}
 
 /// One surface of `nhshell_publish` (`SurfaceFrame` with a raw pointer).
 #[repr(C)]
