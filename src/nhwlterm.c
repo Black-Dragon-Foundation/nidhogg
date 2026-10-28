@@ -518,6 +518,75 @@ nhwl_surface_add (struct frame *f, uint64_t parent, bool prepare)
     }
 }
 
+/* nhwl-scroll-layers and F's alpha-background, as the glue's window
+   layers take them (NHG_LAYERS_*).  */
+uint32_t
+nhwl_layer_flags (struct frame *f)
+{
+  uint32_t flags = 0;
+
+  if (!NILP (Vnhwl_scroll_layers))
+    flags |= NHG_LAYERS_ON;
+  if (EQ (Vnhwl_scroll_layers, Qinteger_scales))
+    flags |= NHG_LAYERS_INTEGER_SCALES;
+  if (f->alpha_background >= 1.0)
+    flags |= NHG_LAYERS_OPAQUE_BG;
+  return flags;
+}
+
+/* The window list nhg_layers_sync takes, kept between publishes.  */
+static NhgLayerWindow *nhwl_layer_windows;
+static ptrdiff_t nhwl_nlayer_windows, nhwl_layer_windows_cap;
+
+/* List WINDOW's leaf windows and its next siblings' (the root window's
+   next sibling is the minibuffer window), each with the box the scroll
+   passes (nhwl_scroll_run).  */
+static void
+nhwl_layer_windows_add (Lisp_Object window)
+{
+  for (; !NILP (window); window = XWINDOW (window)->next)
+    {
+      struct window *w = XWINDOW (window);
+      int x, y, width, height;
+
+      if (WINDOWP (w->contents))
+	{
+	  nhwl_layer_windows_add (w->contents);
+	  continue;
+	}
+      window_box (w, ANY_AREA, &x, &y, &width, &height);
+      if (nhwl_nlayer_windows == nhwl_layer_windows_cap)
+	nhwl_layer_windows = xpalloc (nhwl_layer_windows,
+				      &nhwl_layer_windows_cap, 1, -1,
+				      sizeof *nhwl_layer_windows);
+      nhwl_layer_windows[nhwl_nlayer_windows++]
+	= (NhgLayerWindow) { w->sequence_number, { x, y, width, height } };
+    }
+}
+
+/* Before root R is published: the glue makes the windows of R with a
+   layer of their own that are gone, resized or quiet part of the frame
+   again, or all of them when R is no longer an opaque root, in this
+   publish.  Nothing to do while R has none.  */
+static void
+nhwl_layers_sync (struct frame *r)
+{
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (r);
+  struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (r);
+
+  if (!out->glitnir_id
+      || nhwl_glue_rc (dpyinfo, NHG (nhg_layers_count (dpyinfo->glue,
+							 out->glitnir_id))) <= 0)
+    return;
+  nhwl_nlayer_windows = 0;
+  nhwl_layer_windows_add (FRAME_ROOT_WINDOW (r));
+  nhwl_glue_rc (dpyinfo,
+		NHG (nhg_layers_sync (dpyinfo->glue, out->window,
+				      out->glitnir_id, nhwl_layer_windows,
+				      nhwl_nlayer_windows,
+				      nhwl_layer_flags (r))));
+}
+
 /* A consistency point for F's tree (F, its root, a top-level, tip or popup
    frame, and the child frames under it, sync subsurfaces): Emacs is not
    redisplaying and buffer flips are not blocked, so every frame of the tree
@@ -546,6 +615,7 @@ nhwl_publish (struct frame *f)
   block_input ();
   nhwl_nsurfaces = 0;
   nhwl_surface_add (r, 0, true);
+  nhwl_layers_sync (r);
   rc = nhwl_glue_rc (dpyinfo,
 		     NHG (nhg_present (dpyinfo->glue, out->window,
 				       nhwl_surfaces, nhwl_nsurfaces, flags,
@@ -3748,6 +3818,27 @@ running.  */)
   return Fcopy_sequence (nhwl_glue_panic_list);
 }
 
+DEFUN ("nhwl--scroll-layers", Fnhwl__scroll_layers, Snhwl__scroll_layers,
+       0, 1, 0,
+       doc: /* Return how many windows of FRAME have a layer of their own.
+FRAME defaults to the selected frame.  Such a window scrolls by moving
+its layer's view (`nhwl-scroll-layers').  For tests.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+  struct nhwl_output *out;
+  int32_t rc;
+
+  if (!FRAME_NHWL_P (f))
+    error ("Not a Nidhogg shell frame");
+  out = FRAME_NHWL_OUTPUT (f);
+  if (!out->glitnir_id || !FRAME_NHG (f))
+    return make_fixnum (0);
+  rc = nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		     NHG (nhg_layers_count (FRAME_NHG (f), out->glitnir_id)));
+  return make_fixnum (max (rc, 0));
+}
+
 #ifdef ENABLE_CHECKING
 DEFUN ("nhwl--test-glue-panic", Fnhwl__test_glue_panic,
        Snhwl__test_glue_panic, 0, 1, 0,
@@ -3775,6 +3866,7 @@ syms_of_nhwlterm (void)
   defsubr (&Snhwl__bench_full_redraw);
   defsubr (&Snhwl_presenter_stats);
   defsubr (&Snhwl_glue_panics);
+  defsubr (&Snhwl__scroll_layers);
 #ifdef ENABLE_CHECKING
   defsubr (&Snhwl__test_glue_panic);
 #endif
@@ -3801,6 +3893,19 @@ drew.  Nil means Emacs presents on its own thread, when its event loop
 learns the compositor is ready.  Read when a display opens; the
 environment variable NHWL_PRESENTER=0 turns it off as well.  */);
   nhwl_presenter_thread = true;
+
+  DEFSYM (Qinteger_scales, "integer-scales");
+  DEFVAR_LISP ("nhwl-scroll-layers", Vnhwl_scroll_layers,
+    doc: /* Non-nil means a window that scrolls whole gets a layer of its own.
+The compositor then shows each scroll by moving the layer's view, and
+uploads only the rows the scroll exposed instead of the whole window.
+Only a top-level frame that is opaque (`alpha' and `alpha-background'
+1) gets layers, at most four windows each; a window's layer goes after
+2 seconds without such a scroll, and when the window is resized, split
+or deleted, the frame's scale changes or it becomes translucent.  The
+symbol `integer-scales' means only at a whole scale (1, 2, ...).  Nil
+means never.  Takes effect at the next redisplay.  */);
+  Vnhwl_scroll_layers = Qt;
 
   DEFSYM (Qmodifier_value, "modifier-value");
   DEFSYM (Qalt, "alt");

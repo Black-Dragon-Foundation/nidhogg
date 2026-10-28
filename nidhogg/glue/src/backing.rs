@@ -136,6 +136,8 @@ pub struct Frame {
     w: i32,
     h: i32,
     generation: u64,
+    /// The frame's windows that are their own outputs (`layers.rs`).
+    pub(crate) layers: crate::layers::Layers,
 }
 
 impl Frame {
@@ -380,5 +382,31 @@ impl Backings {
         glitnir_damage_forget(key);
         glitnir_stats_forget(key);
         self.frames.remove(&key);
+    }
+}
+
+// ---- Window layers (`layers.rs`) -----------------------------------------------------------------------------------
+
+impl Frame {
+    /// The native area's offset in the backing, as of the last ensure.
+    pub fn origin(&self) -> (i32, i32) {
+        (self.l, self.t)
+    }
+
+    /// The layer's scale times 120 as Glitnir was last told (0: not yet).
+    pub fn scale120(&self) -> u32 {
+        self.layer_s120
+    }
+}
+
+impl Backings {
+    /// The frame with key `key`.  `NHG_E_STATE` when it has none.
+    pub fn frame_mut(&mut self, key: u64) -> Result<&mut Frame, i32> {
+        self.get(key)
+    }
+
+    /// Every frame, with its key.
+    pub fn frames_mut(&mut self) -> impl Iterator<Item = (u64, &mut Frame)> {
+        self.frames.iter_mut().map(|(k, f)| (*k, &mut **f))
     }
 }

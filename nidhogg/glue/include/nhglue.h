@@ -595,6 +595,41 @@ int32_t nhg_popup_size (NhgDisplay *d, uint64_t window, int32_t w, int32_t h);
    windows: C sends Emacs the focus-out (nhwl_focus_lost).  NHG_E_STATE for a window that is not a popup frame's.  */
 int32_t nhg_popup_hide (NhgDisplay *d, uint64_t window, uint64_t owner);
 
+/* ---- Window layers -------------------------------------------------------------------------------------------------
+   An Emacs window that scrolls whole gets a surface of its own (the shell's content layer), whose viewport moves with
+   the scroll, so the compositor uploads only the rows the scroll exposed.  The glue decides: a window's first
+   full-window scroll (its run moves every row of the window but the exposed ones) on an opaque root (a top-level,
+   alpha 1 applied by the compositor, alpha-background 1, wp_viewporter present, a scale nhwl-scroll-layers allows)
+   promotes it, at most four per frame; two seconds without a full-window scroll, a resize, split or delete of the
+   window, a scale change, or the frame no longer an opaque root demotes it.  The backing still moves its rows.
+   WINDOW is the frame's shell window, FRAME its key; FLAGS are NHG_LAYERS_*.  */
+
+#define NHG_LAYERS_ON              1   /* nhwl-scroll-layers is not nil */
+#define NHG_LAYERS_INTEGER_SCALES  2   /* it is `integer-scales': only at a whole scale */
+#define NHG_LAYERS_OPAQUE_BG       4   /* the frame's alpha-background is 1 */
+
+/* One Emacs window of a frame: its sequence_number and window_box (w, ANY_AREA), with the native area's origin.  */
+typedef struct
+{
+  uint64_t seq;
+  NhgRect rect;
+} NhgLayerWindow;
+
+/* nhg_scroll for window W_SEQ at RECT (as NhgLayerWindow's): a full-window scroll on an opaque root makes the window
+   its own output first; a changed RECT or a frame no longer eligible makes it part of the frame again.  1 when the
+   window is its own output now, else 0.  */
+int32_t nhg_scroll_window (NhgDisplay *d, uint64_t window, uint64_t frame, uint64_t w_seq, NhgRect rect, NhgRect run,
+                           int32_t to_y, uint32_t flags);
+
+/* FRAME is about to be published and its windows are the N at WINDOWS: own outputs that are gone, resized or idle,
+   or all of them when the frame is no longer an opaque root, become part of the frame again (in this publish).
+   Returns how many stay own outputs.  */
+int32_t nhg_layers_sync (NhgDisplay *d, uint64_t window, uint64_t frame, const NhgLayerWindow *windows, size_t n,
+                         uint32_t flags);
+
+/* How many of FRAME's windows are their own outputs.  */
+int32_t nhg_layers_count (NhgDisplay *d, uint64_t frame);
+
 #ifdef __cplusplus
 }
 #endif

@@ -2210,16 +2210,19 @@ nhwl_fill_rectangle (struct frame *f, unsigned long color, int x, int y,
 
 /* Adapted from pgtk_scroll_run (emacs-31.1): the glue moves the rows
    inside the backing (no temporary surface), and Glitnir learns the move
-   and the rows it exposed; the decorations' anchors move with them.  */
+   and the rows it exposed; the decorations' anchors move with them.  A
+   run that moves the whole window may give it a layer of its own (the
+   glue decides from the window's box, nhwl_layer_flags).  */
 void
 nhwl_scroll_run (struct window *w, struct run *run)
 {
   struct frame *f = XFRAME (w->frame);
   int x, y, width, height, from_y, to_y, bottom_y;
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
-  NhgRect band;
+  NhgRect band, box;
 
   window_box (w, ANY_AREA, &x, &y, &width, &height);
+  box = (NhgRect) { x, y, width, height };
 
   from_y = WINDOW_TO_FRAME_PIXEL_Y (w, run->current_y);
   to_y = WINDOW_TO_FRAME_PIXEL_Y (w, run->desired_y);
@@ -2252,7 +2255,10 @@ nhwl_scroll_run (struct window *w, struct run *run)
 			  max (from_y, to_y) + height - min (from_y, to_y),
 			  to_y - from_y);
   band = (NhgRect) { x, from_y, width, height };
-  NHG (nhg_scroll (FRAME_NHG (f), out->glitnir_id, w->sequence_number, band, to_y));
+  nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		NHG (nhg_scroll_window (FRAME_NHG (f), out->window,
+					out->glitnir_id, w->sequence_number,
+					box, band, to_y, nhwl_layer_flags (f))));
   cairo_surface_mark_dirty (out->cr_surface);
 
   unblock_input ();

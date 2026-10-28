@@ -110,5 +110,256 @@ and the main thread never waited 1 ms for the presenter.  Under gui.sh `--daemon
          (sleep-for 3)
          (should (equal (nhwl-gui--presenter-switches) before)))))))
 
+;; Window layers.  On an opaque top-level frame, a window's full-window scroll gives it a layer of its own (a
+;; subsurface of the root whose viewport source moves with the scroll); two quiet seconds, a resize, split or delete of
+;; the window, a scale change or translucency take it away at the next publish.  `(nhwl--scroll-layers)' counts the
+;; selected frame's.  The recorder logs the layer's commits as a subsurface's, with a viewport source.
+
+(declare-function nhwl--scroll-layers "nhwlterm.c")
+
+(defun nhwl-gui--layers-p ()
+  "Non-nil when this Emacs has window layers and they are on."
+  (and (nhwl-gui--recorder-p) (fboundp 'nhwl--scroll-layers) (boundp 'nhwl-scroll-layers) nhwl-scroll-layers))
+
+(defun nhwl-gui--with-layer-buffer (fn)
+  "Call FN in one window showing 400 numbered lines from the top, with the cursor not blinking; clean up after."
+  (nhwl-gui--with-blink
+   nil
+   (lambda ()
+     (let ((buf (generate-new-buffer " *nhwl-layers*")))
+       (unwind-protect
+           (progn
+             (delete-other-windows)
+             (switch-to-buffer buf)
+             (dotimes (i 400) (insert (format "line %03d of the window-layer rows, wide enough to fill columns\n" i)))
+             (goto-char (point-min))
+             (redisplay t)
+             (gui-runner-wait-settled)
+             (funcall fn))
+         (kill-buffer buf)
+         (delete-other-windows)
+         (redisplay t))))))
+
+(defun nhwl-gui--layer-commits (mark)
+  "The subsurface commits since MARK that set a viewport source: the window layers'."
+  (seq-filter (lambda (c) (and (equal (plist-get c :role) "subsurface")
+                               (nhwl-gui--get (plist-get c :viewport) :src)))
+              (nhwl-gui--log-since mark)))
+
+(defun nhwl-gui--layer-ids (mark)
+  "The surface ids of the window layers that committed since MARK."
+  (seq-uniq (mapcar (lambda (c) (plist-get c :surface)) (nhwl-gui--layer-commits mark))))
+
+(defun nhwl-gui--scroll-promote ()
+  "Scroll the selected window one line up and down again; return the number of window layers after it."
+  (scroll-up 1)
+  (redisplay t)
+  (scroll-down 1)
+  (redisplay t)
+  (nhwl--scroll-layers))
+
+(defun nhwl-gui--area (rects)
+  (apply #'+ (mapcar (lambda (r) (* (nth 2 r) (nth 3 r))) rects)))
+
+(ert-deftest nhwl-gui/scroll-layer-composite-matches-backing ()
+  "At the run's scale (the gate runs this at `--scale' 1, 1.25, 1.5 and 2): 50 scrolls each way with typing between
+them, in a window with a layer of its own → once settled, the recorder's composite equals the backing.  The layer's
+view of its ring and the frame around it line up with no seam."
+  (skip-unless (nhwl-gui--layers-p))
+  (nhwl-gui--with-layer-buffer
+   (lambda ()
+     (let ((layered 0))
+       (dotimes (i 50)
+         (scroll-up 1)
+         (redisplay t)
+         (setq layered (max layered (nhwl--scroll-layers)))
+         (when (zerop (% i 7))
+           (insert "t")
+           (redisplay t)))
+       (dotimes (i 50)
+         (scroll-down 1)
+         (redisplay t)
+         (when (zerop (% i 7))
+           (insert "u")
+           (redisplay t)))
+       (should (= layered 1))
+       (redisplay t)
+       (gui-runner-wait-settled)
+       (should (equal (nhwl-gui--grab-matches-snapshot) '(0 . 0)))))))
+
+(ert-deftest nhwl-gui/scroll-layer-promotes-on-scroll-and-demotes-when-quiet ()
+  "No layer before the first scroll; a full-window scroll makes one (a subsurface with a viewport source); two quiet
+seconds later the next publish takes it away, and its unmap is applied by a root commit (one tree commit)."
+  (skip-unless (nhwl-gui--layers-p))
+  (nhwl-gui--with-layer-buffer
+   (lambda ()
+     (should (= (nhwl--scroll-layers) 0))
+     (let ((mark (nhwl-gui--mark)))
+       (should (= (nhwl-gui--scroll-promote) 1))
+       (gui-runner-wait-settled)
+       (let ((ids (nhwl-gui--layer-ids mark)))
+         (should (= (length ids) 1))
+         (sleep-for 2.2)
+         (let ((quiet (nhwl-gui--mark)))
+           (insert "q")
+           (redisplay t)
+           (should (= (nhwl--scroll-layers) 0))
+           (gui-runner-wait-settled)
+           (let ((unmap (seq-find (lambda (c) (not (nhwl-gui--get c :buffer)))
+                                  (nhwl-gui--surface-commits (car ids) quiet))))
+             (should unmap)
+             (should (nhwl-gui--get unmap :applied_by)))
+           (should (equal (nhwl-gui--grab-matches-snapshot) '(0 . 0)))))))))
+
+(ert-deftest nhwl-gui/scroll-layer-not-for-translucent-frames ()
+  "A frame with `alpha' 0.9, or `alpha-background' 0.8, gets no layer; a layered window loses its layer at the next
+publish once its frame turns translucent."
+  (skip-unless (nhwl-gui--layers-p))
+  (let ((alpha (frame-parameter nil 'alpha)) (bg (frame-parameter nil 'alpha-background)))
+    (unwind-protect
+        (nhwl-gui--with-layer-buffer
+         (lambda ()
+           (set-frame-parameter nil 'alpha 0.9)
+           (redisplay t)
+           (should (= (nhwl-gui--scroll-promote) 0))
+           (set-frame-parameter nil 'alpha alpha)
+           (set-frame-parameter nil 'alpha-background 0.8)
+           (redisplay t)
+           (should (= (nhwl-gui--scroll-promote) 0))
+           (set-frame-parameter nil 'alpha-background bg)
+           (redisplay t)
+           (should (= (nhwl-gui--scroll-promote) 1))
+           (set-frame-parameter nil 'alpha 0.9)
+           (redisplay t)
+           (should (= (nhwl--scroll-layers) 0))))
+      (set-frame-parameter nil 'alpha alpha)
+      (set-frame-parameter nil 'alpha-background bg)
+      (redisplay t))))
+
+(ert-deftest nhwl-gui/scroll-layer-partial-scroll-is-damage ()
+  "`open-line' in the middle of the window moves the rows below it only: no layer, and the frame's commit damages
+the moved rows."
+  (skip-unless (nhwl-gui--layers-p))
+  (nhwl-gui--with-layer-buffer
+   (lambda ()
+     (forward-line (/ (window-body-height) 2))
+     (redisplay t)
+     (gui-runner-wait-settled)
+     (let ((mark (nhwl-gui--mark)))
+       (open-line 1)
+       (redisplay t)
+       (gui-runner-wait-settled)
+       (should (= (nhwl--scroll-layers) 0))
+       (should-not (nhwl-gui--layer-commits mark))
+       (let ((damage (apply #'append (mapcar #'nhwl-gui--damage (nhwl-gui--new mark))))
+             (half (+ (nhwl-gui--native-top) (/ (window-body-height nil t) 2))))
+         ;; the rows below the new line moved: damage reaches past the middle
+         (should (seq-some (lambda (r) (> (+ (nth 1 r) (nth 3 r)) half)) damage)))))))
+
+(ert-deftest nhwl-gui/scroll-layer-window-split-and-delete ()
+  "Splitting a layered window takes its layer away at the next publish; a scroll in one half layers that half; deleting
+the other window (the half grows) takes it away again."
+  (skip-unless (nhwl-gui--layers-p))
+  (nhwl-gui--with-layer-buffer
+   (lambda ()
+     (should (= (nhwl-gui--scroll-promote) 1))
+     (split-window-below)
+     (redisplay t)
+     (should (= (nhwl--scroll-layers) 0))
+     (should (= (nhwl-gui--scroll-promote) 1))
+     (delete-other-windows)
+     (redisplay t)
+     (should (= (nhwl--scroll-layers) 0))
+     (gui-runner-wait-settled)
+     (should (equal (nhwl-gui--grab-matches-snapshot) '(0 . 0))))))
+
+(ert-deftest nhwl-gui/scroll-layer-under-child-frame ()
+  "A posframe-style child frame over a layered window stays above the layer: among the root's subsurfaces, bottom to
+top, the layer comes before the child, and stays there while the window scrolls on."
+  (skip-unless (nhwl-gui--layers-p))
+  (nhwl-gui--with-layer-buffer
+   (lambda ()
+     (let ((mark (nhwl-gui--mark)) (before (nhwl-gui--sub-ids)) (c nil))
+       (should (= (nhwl-gui--scroll-promote) 1))
+       (unwind-protect
+           (progn
+             (setq c (nhwl-gui--child))
+             (let* ((child (nhwl-gui--child-node before))
+                    (layer (car (nhwl-gui--layer-ids mark))))
+               (should (and child layer))
+               (dotimes (_ 10) (scroll-up 1) (redisplay t))
+               (gui-runner-wait-settled)
+               (let* ((root (plist-get child :parent))
+                      (kids (append (plist-get (nhwl-gui--node root) :children) nil)))
+                 (should (< (seq-position kids layer) (seq-position kids (plist-get child :id)))))))
+         (when (frame-live-p c) (delete-frame c)))))))
+
+(ert-deftest nhwl-gui/scroll-upload-is-exposed-rows-only ()
+  "Per one-line scroll of a layered window: the layer's damage is at most the exposed line and the cursor's two lines,
+and the root's damage stays in the mode line (and the one-row overlap a fractional scale snaps in)."
+  (skip-unless (nhwl-gui--layers-p))
+  (nhwl-gui--with-layer-buffer
+   (lambda ()
+     (should (= (nhwl-gui--scroll-promote) 1))
+     (gui-runner-wait-settled)
+     ;; frame pixels are device pixels here; the layer is the window's box snapped outward (one row or column more)
+     (let* ((top (nhwl-gui--native-top))
+            (line (frame-char-height))
+            (width (window-pixel-width))
+            (mode-y0 (+ top (nth 3 (window-inside-pixel-edges)) -1))
+            (mode-y1 (+ top (nth 3 (window-pixel-edges)) 1)))
+       (dotimes (_ 20)
+         (let ((mark (nhwl-gui--mark)))
+           (scroll-up 1)
+           (redisplay t)
+           (gui-runner-wait-settled)
+           (let ((layer (apply #'append (mapcar #'nhwl-gui--damage (nhwl-gui--layer-commits mark))))
+                 (root (apply #'append (mapcar #'nhwl-gui--damage (nhwl-gui--new mark)))))
+             (should (<= (nhwl-gui--area layer) (* 3 (1+ line) (1+ width))))
+             (should (seq-every-p (lambda (r) (nhwl-gui--rect-in-p r mode-y0 mode-y1)) root)))))))))
+
+(ert-deftest nhwl-gui/presenter-scroll-never-writes-a-held-buffer ()
+  "Under the recorder's kwin profile (it holds buffers): 200 one-line scrolls back to back, without waiting for the
+compositor, in a layered window → no buffer, the layer's ring buffers included, is written while the compositor holds
+it."
+  (skip-unless (nhwl-gui--layers-p))
+  (nhwl-gui--with-layer-buffer
+   (lambda ()
+     (let ((since (plist-get (gui-runner-recorder '(:cmd "held_buffer_writes" :since 1000000000)) :next)))
+       (should (= (nhwl-gui--scroll-promote) 1))
+       (dotimes (i 200)
+         (if (< (% i 40) 25) (scroll-up 1) (scroll-down 1))
+         (redisplay t))
+       (gui-runner-wait-settled)
+       (should-not (plist-get (gui-runner-recorder (list :cmd "held_buffer_writes" :since since)) :writes))
+       (should (equal (nhwl-gui--grab-matches-snapshot) '(0 . 0)))))))
+
+(ert-deftest nhwl-gui/live-scroll-layers ()
+  "Window layers on a real compositor (sway and mutter at 1 and 1.25, KWin at the gate): scrolls each way, a split, a
+quiet period and scrolling again.  The trace rules (errors, acks, sync, viewport, held-reuse) judge what was sent."
+  :tags '(gnome-smoke)
+  (skip-unless (and (nhwl-gui--live-p) (not (getenv "GLITNIR_GUI_RECORDER")) (nhwl-gui--nhwl-frames)
+                    (boundp 'nhwl-scroll-layers) nhwl-scroll-layers))
+  (let ((buf (generate-new-buffer " *nhwl-live-layers*")))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buf)
+          (dotimes (i 400) (insert (format "line %03d of the live window-layer row\n" i)))
+          (goto-char (point-min))
+          (nhwl-gui--live-settle 0.5)
+          (dotimes (i 60)
+            (if (< (% i 20) 12) (scroll-up 1) (scroll-down 1))
+            (nhwl-gui--live-settle 0.02))
+          (split-window-below)
+          (nhwl-gui--live-settle 0.3)
+          (dotimes (_ 20) (scroll-up 1) (nhwl-gui--live-settle 0.02))
+          (delete-other-windows)
+          (nhwl-gui--live-settle 2.5)
+          (dotimes (_ 20) (scroll-down 1) (nhwl-gui--live-settle 0.02))
+          (nhwl-gui--live-settle 0.5))
+      (kill-buffer buf)
+      (delete-other-windows))))
+
 (provide 'nhwl-gui-w3-tests)
 ;;; nhwl-gui-w3-tests.el ends here
