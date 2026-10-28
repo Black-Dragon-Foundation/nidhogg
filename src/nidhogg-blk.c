@@ -334,7 +334,10 @@ nh_dir_one (struct nh_dir_job *j, const char *rel, ptrdiff_t depth,
       struct stat s;
       if (fstatat (fd, nm, &s, AT_SYMLINK_NOFOLLOW) != 0)
 	{
-	  if (errno == ENOENT || errno == ENOTDIR)
+	  /* Gone, or in a subdirectory (one that can be listed but not
+	     searched is unreadable, and unreadable subdirectories are
+	     skipped): no entry.  */
+	  if (errno == ENOENT || errno == ENOTDIR || !top)
 	    continue;
 	  nh_dir_fail (j, NH_DIR_E_ATTR, errno, nm);
 	  ok = false;
@@ -354,7 +357,7 @@ nh_dir_one (struct nh_dir_job *j, const char *rel, ptrdiff_t depth,
 		  int e = errno;
 		  free (link);
 		  link = NULL;
-		  if (e != EINVAL && e != ENOENT && e != ENOTDIR)
+		  if (top && e != EINVAL && e != ENOENT && e != ENOTDIR)
 		    {
 		      nh_dir_fail (j, NH_DIR_E_LINK, e, nm);
 		      ok = false;
