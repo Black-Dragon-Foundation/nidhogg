@@ -104,6 +104,15 @@ impl Extras {
         Ok(())
     }
 
+    /// What a restart keeps: the store and where it is written; the live sessions and pending restores go.
+    pub fn restarted(self) -> Extras {
+        Extras {
+            store: self.store,
+            store_path: self.store_path,
+            ..Default::default()
+        }
+    }
+
     fn save(&self) {
         if let Some(path) = &self.store_path {
             if let Ok(text) = serde_json::to_string(&self.store) {

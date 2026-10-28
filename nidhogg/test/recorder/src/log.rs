@@ -85,11 +85,20 @@ pub struct HeldWrite {
     pub released_seq: u64,
 }
 
+/// Where a restart fell in the commit sequence: the commits with `seq` below `seq` came before restart number
+/// `restart`.
+#[derive(Serialize, Clone, Debug)]
+pub struct RestartMark {
+    pub restart: u64,
+    pub seq: u64,
+}
+
 #[derive(Default)]
 pub struct Log {
     commits: Vec<Commit>,
     next: u64,
     writes: Vec<HeldWrite>,
+    restarts: Vec<RestartMark>,
 }
 
 impl Log {
@@ -98,7 +107,19 @@ impl Log {
             commits: Vec::new(),
             next: 1,
             writes: Vec::new(),
+            restarts: Vec::new(),
         }
+    }
+
+    pub fn mark_restart(&mut self, restart: u64) {
+        self.restarts.push(RestartMark {
+            restart,
+            seq: self.next,
+        });
+    }
+
+    pub fn restarts(&self) -> &[RestartMark] {
+        &self.restarts
     }
 
     pub fn push_write(&mut self, w: HeldWrite) {

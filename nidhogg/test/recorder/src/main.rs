@@ -6,6 +6,7 @@ mod extras;
 mod input;
 mod log;
 mod render;
+mod restart;
 mod scale;
 mod selection;
 mod shell;
@@ -17,12 +18,10 @@ use calloop::signals::{Signal, Signals};
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{EventLoop, Interest, Mode, PostAction};
 use smithay::reexports::wayland_server::Display;
-use smithay::wayland::socket::ListeningSocketSource;
 use state::{Clock, Profile, State};
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::Arc;
 
 struct Args {
     socket: String,
@@ -130,16 +129,14 @@ fn main() {
             },
         )
         .unwrap_or_else(|e| die(e.to_string()));
-    let listening =
-        ListeningSocketSource::with_name(&args.socket).unwrap_or_else(|e| die(e.to_string()));
-    handle
-        .insert_source(listening, |stream, _, state| {
-            let data = state.new_client_data();
-            if let Ok(client) = state.display.insert_client(stream, Arc::new(data)) {
-                state.note_client_pid(&client);
-            }
-        })
-        .unwrap_or_else(|e| die(e.to_string()));
+    state.restart.configure(
+        &args.socket,
+        &args.profile,
+        profile,
+        args.output,
+        args.refresh_mhz,
+    );
+    restart::listen(&mut state).unwrap_or_else(|e| die(e));
 
     // the control socket
     let _ = std::fs::remove_file(&args.control);
