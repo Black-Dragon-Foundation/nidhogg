@@ -21,3 +21,5 @@ pub const NHG_E_TIMEOUT: i32 = NHSHELL_E_TIMEOUT;
 pub const NHG_E_TOO_SMALL: i32 = NHSHELL_E_TOO_SMALL;
 /// Called from a thread the backend refuses (a backend may require the main thread).
 pub const NHG_E_THREAD: i32 = -9;
+/// The display is reconnecting: the call sent nothing (the shell's `NHSHELL_E_RECONNECTING`, whose -9 is taken here).
+pub const NHG_E_RECONNECTING: i32 = -10;

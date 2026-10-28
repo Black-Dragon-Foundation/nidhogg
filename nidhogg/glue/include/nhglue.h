@@ -42,6 +42,7 @@ extern "C" {
 #define NHG_E_TIMEOUT       -7
 #define NHG_E_TOO_SMALL     -8
 #define NHG_E_THREAD        -9   /* called from a thread the backend refuses */
+#define NHG_E_RECONNECTING  -10  /* the display is reconnecting: the call sent nothing */
 
 /* One display: a shell connection and the glue's state for it.  */
 typedef struct NhgDisplay NhgDisplay;
@@ -736,6 +737,31 @@ int32_t nhg_dnd_finish (NhgDisplay *d, int32_t success, uint32_t time_ms);
 #define NHG_TOUCH_END         2
 #define NHG_TOUCH_CANCEL      3
 typedef struct { int32_t x, y, id; } NhgTouchPoint;
+
+/* ---- Reconnecting in place ---------------------------------------------------------------------------------------
+   With nhg_set_reconnect on, a compositor that goes away (a hangup, not a protocol error) gives NHG_ACT_RECONNECTING
+   instead of NHG_ACT_LOST: C starts its timer, whose first tick comes CODE milliseconds later, and each tick calls
+   nhg_reconnect_step.  NHG_ACT_RECONNECTED (no window) says the display is back: C damages every frame whole, and asks
+   nhg_reconnect_settle at each read until it says nothing is pending.  Window ids do not change.  */
+#define NHG_ACT_RECONNECTING  42
+#define NHG_ACT_RECONNECTED   43
+#define NHG_SETTLE_REPORT     1   /* every shown frame presented again, or 2 s passed: run `reconnected' */
+#define NHG_SETTLE_MONITORS   2   /* the monitor list differs from before the loss (ids aside) */
+#define NHG_SETTLE_FOCUS_OUT  4   /* no keyboard enter 1 s after the report: *WINDOW loses the focus */
+
+/* Reconnect in place when the display goes (ON non-zero; off at open).  NHG_E_UNSUPPORTED when the connection cannot
+   be made again (an inherited socket).  */
+int32_t nhg_set_reconnect (NhgDisplay *d, int32_t on);
+
+/* One tick of the reconnect timer: a step of at most 50 ms, given up TIMEOUT_MS after the loss.  NHG_OK once connected
+   (NHG_ACT_RECONNECTED follows from nhg_next) or when not reconnecting; NHG_E_TIMEOUT with the next tick's delay in
+   *NEXT_MS (50, 100, 200, 400, 800 ms, then every second, never past the timeout); NHG_E_DISCONNECTED when the glue
+   gave up: drop the display.  */
+int32_t nhg_reconnect_step (NhgDisplay *d, uint32_t timeout_ms, uint32_t *next_ms);
+
+/* After NHG_ACT_RECONNECTED: what is due now (NHG_SETTLE_* bits), *WINDOW the window for NHG_SETTLE_FOCUS_OUT, and
+   *NEXT_MS when to ask again (0: nothing is pending).  */
+int32_t nhg_reconnect_settle (NhgDisplay *d, uint64_t *window, uint32_t *next_ms);
 
 #ifdef __cplusplus
 }

@@ -60,6 +60,9 @@ pub struct Display {
     pub(crate) dnd: crate::dnd::Dnd,
     /// The live touch points (`touch.rs`).
     pub(crate) touch: crate::touch::Touch,
+
+    /// Reconnecting in place (`reconnect.rs`).
+    pub(crate) reconnect: crate::reconnect::Reconnect,
 }
 
 impl Drop for Display {
@@ -97,6 +100,8 @@ impl NhgDisplay {
                 scroll: Default::default(),
                 dnd: Default::default(),
                 touch: Default::default(),
+
+                reconnect: Default::default(),
             }),
         }
     }
