@@ -101,7 +101,7 @@ impl Dispatch<WlTouch, ()> for ReaderState {
                     serials.update(SerialKind::TouchDown, serial);
                     serials.press(Held::Touch(id), serial);
                 }
-                let window = u64::from(surface.id().protocol_id());
+                let window = crate::wayland::window_of(&surface);
                 let (x, y) = state.to_device(window, x, y);
                 state.touch.points.retain(|p| p.id != id);
                 state.touch.points.push(Point {

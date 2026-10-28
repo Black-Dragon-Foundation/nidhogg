@@ -19,8 +19,7 @@ use crate::event::{
 use crate::wayland::reader::ReaderState;
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
-use wayland_client::protocol::wl_surface::WlSurface;
-use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
+use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
     self, ChangeCause, ContentHint, ContentPurpose, ZwpTextInputV3,
@@ -365,7 +364,7 @@ impl Dispatch<ZwpTextInputV3, ()> for ReaderState {
     ) {
         use zwp_text_input_v3::Event as E;
         let ti = state.text_input.clone();
-        let window = |s: &WlSurface| u64::from(s.id().protocol_id());
+        let window = crate::wayland::window_of;
         let mut out = Vec::new();
         match event {
             E::Enter { surface } => ti.enter(window(&surface)),

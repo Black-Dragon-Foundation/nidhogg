@@ -1,7 +1,8 @@
 //! Windows: `wl_surface` + `xdg_surface` + `xdg_toplevel` on the main queue, their configure sequencing, and the
 //! shell API's implementation (`ShellBackend`).
 //!
-//! The window id is the surface's protocol id (the same id the keyboard's `FOCUS` records carry).  The compositor's
+//! The window id is the surface's protocol id (the same id the keyboard's `FOCUS` records carry); a window made again
+//! after a reconnect keeps its id on its new surface (`window_of`).  The compositor's
 //! `xdg_toplevel.configure` only stores the size and states; the `xdg_surface.configure` that closes the group posts
 //! one `CONFIGURE` record.  Nothing here acks: the host does, through `ack_configure`, right before the commit that
 //! carries a buffer of the new size.  Records are posted without a wake: these handlers run inside the host's own
@@ -15,7 +16,8 @@ use crate::wayland::WaylandShell;
 use crate::wayland::serial::SerialKind;
 use glitnir::geom::Rect;
 use std::sync::atomic::Ordering;
-use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
+use wayland_client::protocol::wl_surface::WlSurface;
+use wayland_client::{Connection, Dispatch, QueueHandle};
 use wayland_protocols::xdg::decoration::zv1::client::zxdg_toplevel_decoration_v1::{
     Mode, ZxdgToplevelDecorationV1,
 };
@@ -31,7 +33,7 @@ pub const WM_CAP_MINIMIZE: u32 = 1 << 3;
 const WM_CAP_ALL: u32 = 0b1111;
 
 pub struct Window {
-    pub surface: wayland_client::protocol::wl_surface::WlSurface,
+    pub surface: WlSurface,
     pub xdg_surface: XdgSurface,
     toplevel: XdgToplevel,
     decoration: Option<ZxdgToplevelDecorationV1>,
@@ -41,6 +43,76 @@ pub struct Window {
     pub wm_capabilities: u32,
     /// The size and states of the configure group in progress.
     pending: (i32, i32, u32),
+    /// What the window asked of its `xdg_toplevel`, which a reconnect asks again.
+    asked: Asked,
+}
+
+/// What a top-level asked for that its role objects carry.
+#[derive(Clone)]
+struct Asked {
+    title: String,
+    app_id: String,
+    min: (i32, i32),
+    /// `NHSHELL_STATE_MAXIMIZED` and `_FULLSCREEN`: asked for, or what the newest configure granted.
+    states: u32,
+    /// Server-side decorations asked for (`NHSHELL_WIN_UNDECORATED`, `set_decorated`).
+    decorated: bool,
+}
+
+/// The states a top-level asks for again after a reconnect.
+const ASKED_STATES: u32 = NHSHELL_STATE_MAXIMIZED | NHSHELL_STATE_FULLSCREEN;
+
+/// The objects of a top-level's role.
+type Role = (XdgSurface, XdgToplevel, Option<ZxdgToplevelDecorationV1>);
+
+impl MainState {
+    /// Give `surface` (window `id`) the top-level role with what `asked` says and its session entry (`name`, restored
+    /// when the flag says so), then the bare commit after which the compositor configures it.  The window's scale state
+    /// is made before (the caller's).
+    fn toplevel_role(
+        &mut self,
+        surface: &WlSurface,
+        id: u64,
+        asked: &Asked,
+        name: Option<(&str, bool)>,
+        qh: &QueueHandle<MainState>,
+    ) -> ShellResult<Role> {
+        let wm_base = self.wm_base.as_ref().ok_or(ShellError::State)?;
+        let xdg_surface = wm_base.get_xdg_surface(surface, qh, id);
+        let toplevel = xdg_surface.get_toplevel(qh, id);
+        toplevel.set_title(asked.title.clone());
+        toplevel.set_app_id(asked.app_id.clone());
+        if asked.min != (0, 0) {
+            toplevel.set_min_size(asked.min.0, asked.min.1);
+        }
+        if asked.states & NHSHELL_STATE_FULLSCREEN != 0 {
+            toplevel.set_fullscreen(None);
+        }
+        if asked.states & NHSHELL_STATE_MAXIMIZED != 0 {
+            toplevel.set_maximized();
+        }
+        // an undecorated window asks for client-side mode (it draws none), so that `set_decorated` can change it
+        let decoration = if self.force_csd {
+            None
+        } else {
+            self.decoration_manager.as_ref().map(|manager| {
+                let d = manager.get_toplevel_decoration(&toplevel, qh, id);
+                d.set_mode(if asked.decorated {
+                    Mode::ServerSide
+                } else {
+                    Mode::ClientSide
+                });
+                d
+            })
+        };
+        // the session entry goes before the commit that sets the role up
+        if let Some((name, restore)) = name {
+            self.session.attach(&toplevel, id, name, restore, qh);
+        }
+        // the compositor sends the first configure only after this bare commit
+        surface.commit();
+        Ok((xdg_surface, toplevel, decoration))
+    }
 }
 
 fn state_bit(s: State) -> u32 {
@@ -70,6 +142,21 @@ fn words(bytes: &[u8]) -> impl Iterator<Item = u32> + '_ {
 impl WaylandShell {
     fn window(&self, id: WindowId) -> ShellResult<&Window> {
         self.main.windows.get(&id).ok_or(ShellError::State)
+    }
+
+    fn window_mut(&mut self, id: WindowId) -> ShellResult<&mut Window> {
+        self.main.windows.get_mut(&id).ok_or(ShellError::State)
+    }
+
+    /// Ask for state `bit` (`ASKED_STATES`) on or off.
+    fn ask_state(&mut self, id: WindowId, bit: u32, on: bool) -> ShellResult<&XdgToplevel> {
+        let w = self.window_mut(id)?;
+        w.asked.states = if on {
+            w.asked.states | bit
+        } else {
+            w.asked.states & !bit
+        };
+        Ok(&w.toplevel)
     }
 
     /// The latest input serial the move, resize and menu requests are sent with (0 before any input).
@@ -160,43 +247,25 @@ impl ShellBackend for WaylandShell {
         let qh = self.main_queue.handle();
         let session_name = self.main.session.name_for(session_name)?;
         let m = &mut self.main;
-        let compositor = m.compositor.as_ref().ok_or(ShellError::State)?;
-        let wm_base = m.wm_base.as_ref().ok_or(ShellError::State)?;
-        let surface = compositor.create_surface(&qh, ());
-        let id = u64::from(surface.id().protocol_id());
-        let xdg_surface = wm_base.get_xdg_surface(&surface, &qh, id);
-        let toplevel = xdg_surface.get_toplevel(&qh, id);
-        toplevel.set_title(desc.title.clone());
-        toplevel.set_app_id(desc.app_id.clone());
-        if desc.flags & NHSHELL_WIN_FULLSCREEN != 0 {
-            toplevel.set_fullscreen(None);
+        if m.wm_base.is_none() {
+            return Err(ShellError::State);
         }
-        if desc.flags & NHSHELL_WIN_MAXIMIZED != 0 {
-            toplevel.set_maximized();
-        }
-        // an undecorated window asks for client-side mode (it draws none), so that `set_decorated` can change it
-        let decoration = if m.force_csd {
-            None
-        } else {
-            m.decoration_manager.as_ref().map(|manager| {
-                let d = manager.get_toplevel_decoration(&toplevel, &qh, id);
-                d.set_mode(if desc.flags & NHSHELL_WIN_UNDECORATED != 0 {
-                    Mode::ClientSide
-                } else {
-                    Mode::ServerSide
-                });
-                d
-            })
+        let (surface, id) = m.window_surface(&qh)?;
+        let flag = |f: u32, state: u32| if desc.flags & f != 0 { state } else { 0 };
+        let asked = Asked {
+            title: desc.title.clone(),
+            app_id: desc.app_id.clone(),
+            min: (0, 0),
+            states: flag(NHSHELL_WIN_FULLSCREEN, NHSHELL_STATE_FULLSCREEN)
+                | flag(NHSHELL_WIN_MAXIMIZED, NHSHELL_STATE_MAXIMIZED),
+            decorated: desc.flags & NHSHELL_WIN_UNDECORATED == 0,
         };
         // the window owns its surface's scale state, made before the first commit
         m.attach_scale(&surface, &qh);
-        // the session entry goes before the commit that sets the role up
-        if let Some(name) = &session_name {
-            let restore = desc.flags & NHSHELL_WIN_RESTORE != 0;
-            m.session.attach(&toplevel, id, name, restore, &qh);
-        }
-        // the compositor sends the first configure only after this bare commit
-        surface.commit();
+        let restore = desc.flags & NHSHELL_WIN_RESTORE != 0;
+        let name = session_name.as_deref().map(|n| (n, restore));
+        let (xdg_surface, toplevel, decoration) =
+            m.toplevel_role(&surface, id, &asked, name, &qh)?;
         m.surfaces.insert(id, surface.clone());
         m.windows.insert(
             id,
@@ -208,6 +277,7 @@ impl ShellBackend for WaylandShell {
                 ssd: false,
                 wm_capabilities: WM_CAP_ALL,
                 pending: (0, 0, 0),
+                asked,
             },
         );
         m.present_register(id, Some(xdg_surface), None);
@@ -267,26 +337,32 @@ impl ShellBackend for WaylandShell {
 
     fn set_title(&mut self, id: WindowId, title: &str) -> ShellResult {
         self.live()?;
-        self.window(id)?.toplevel.set_title(title.to_owned());
+        let w = self.window_mut(id)?;
+        w.asked.title = title.to_owned();
+        w.toplevel.set_title(title.to_owned());
         Ok(())
     }
 
     fn set_app_id(&mut self, id: WindowId, app_id: &str) -> ShellResult {
         self.live()?;
-        self.window(id)?.toplevel.set_app_id(app_id.to_owned());
+        let w = self.window_mut(id)?;
+        w.asked.app_id = app_id.to_owned();
+        w.toplevel.set_app_id(app_id.to_owned());
         Ok(())
     }
 
     /// Takes effect with the surface's next commit.
     fn set_min_size(&mut self, id: WindowId, w: i32, h: i32) -> ShellResult {
         self.live()?;
-        self.window(id)?.toplevel.set_min_size(w.max(0), h.max(0));
+        let win = self.window_mut(id)?;
+        win.asked.min = (w.max(0), h.max(0));
+        win.toplevel.set_min_size(w.max(0), h.max(0));
         Ok(())
     }
 
     fn set_fullscreen(&mut self, id: WindowId, on: bool) -> ShellResult {
         self.live()?;
-        let t = &self.window(id)?.toplevel;
+        let t = self.ask_state(id, NHSHELL_STATE_FULLSCREEN, on)?;
         if on {
             t.set_fullscreen(None);
         } else {
@@ -297,7 +373,7 @@ impl ShellBackend for WaylandShell {
 
     fn set_maximized(&mut self, id: WindowId, on: bool) -> ShellResult {
         self.live()?;
-        let t = &self.window(id)?.toplevel;
+        let t = self.ask_state(id, NHSHELL_STATE_MAXIMIZED, on)?;
         if on {
             t.set_maximized();
         } else {
@@ -431,7 +507,9 @@ impl ShellBackend for WaylandShell {
     fn set_decorated(&mut self, id: WindowId, on: bool) -> ShellResult {
         self.live()?;
         let force_csd = self.main.force_csd;
-        if let Some(d) = &self.window(id)?.decoration {
+        let w = self.window_mut(id)?;
+        w.asked.decorated = on;
+        if let Some(d) = &w.decoration {
             d.set_mode(if on && !force_csd {
                 Mode::ServerSide
             } else {
@@ -605,7 +683,7 @@ impl WaylandShell {
 
 impl WaylandShell {
     /// `window_destroy` without the connection's check: the window and its dependents go, popups topmost first.
-    fn window_destroy_local(&mut self, id: WindowId) -> ShellResult {
+    pub(super) fn window_destroy_local(&mut self, id: WindowId) -> ShellResult {
         self.text_input.forget(id);
         self.extras_forget(id);
         for dep in self.dependents_of(id) {
@@ -633,6 +711,35 @@ impl WaylandShell {
             }
         });
         self.flush()
+    }
+
+    /// Make top-level `id` again on the new connection (a reconnect): a surface that keeps the id, its scale state, the
+    /// role with everything it asked for, and its session entry restored under `name`, before the bare commit.  Its
+    /// old objects went with the old connection.
+    pub(super) fn toplevel_again(&mut self, id: WindowId, name: Option<&str>) -> ShellResult {
+        let qh = self.main_queue.handle();
+        let m = &mut self.main;
+        let asked = m.windows.get(&id).ok_or(ShellError::State)?.asked.clone();
+        let surface = m.window_surface_again(id, &qh).ok_or(ShellError::State)?;
+        m.reattach_scale(&surface, &qh);
+        let (xdg_surface, toplevel, decoration) =
+            m.toplevel_role(&surface, id, &asked, name.map(|n| (n, true)), &qh)?;
+        m.surfaces.insert(id, surface.clone());
+        m.windows.insert(
+            id,
+            Window {
+                surface,
+                xdg_surface: xdg_surface.clone(),
+                toplevel,
+                decoration,
+                ssd: false,
+                wm_capabilities: WM_CAP_ALL,
+                pending: (0, 0, 0),
+                asked,
+            },
+        );
+        m.present_again(id, Some(xdg_surface), None, &qh);
+        Ok(())
     }
 
     /// Run a text-input request for a known window and flush it if it sent anything.
@@ -666,9 +773,11 @@ impl Dispatch<XdgSurface, u64> for MainState {
             return;
         }
         if let xdg_surface::Event::Configure { serial } = event
-            && let (Some(w), Some(shared)) = (state.windows.get(id), state.shared.as_ref())
+            && let (Some(w), Some(shared)) = (state.windows.get_mut(id), state.shared.as_ref())
         {
             let (cw, ch, states) = w.pending;
+            // what the compositor granted is what a reconnect asks for again
+            w.asked.states = states & ASKED_STATES;
             let suspended = states & NHSHELL_STATE_SUSPENDED != 0;
             let mut ev = NhShellEvent::new(NHSHELL_EV_CONFIGURE, *id, 0);
             ev.u.configure = ConfigureEv {

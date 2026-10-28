@@ -4,7 +4,8 @@
 use crate::api::*;
 use crate::wayland::{MainState, WaylandShell};
 use std::collections::HashMap;
-use wayland_client::delegate_noop;
+use wayland_client::protocol::wl_surface::WlSurface;
+use wayland_client::{QueueHandle, delegate_noop};
 use wayland_protocols::wp::idle_inhibit::zv1::client::zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1;
 use wayland_protocols::wp::idle_inhibit::zv1::client::zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1;
 
@@ -22,6 +23,19 @@ impl Idle {
     pub fn forget(&mut self, id: u64) {
         if let Some(i) = self.inhibitors.remove(&id) {
             i.destroy();
+        }
+    }
+
+    /// The windows were made again on a new connection (a reconnect): each window that held an inhibitor holds one
+    /// again on its new surface, when the compositor still has the protocol.
+    pub fn again(&mut self, surfaces: &HashMap<u64, WlSurface>, qh: &QueueHandle<MainState>) {
+        let held: Vec<u64> = self.inhibitors.drain().map(|(id, _)| id).collect();
+        let Some(manager) = &self.manager else { return };
+        for id in held {
+            if let Some(surface) = surfaces.get(&id) {
+                self.inhibitors
+                    .insert(id, manager.create_inhibitor(surface, qh, ()));
+            }
         }
     }
 }
