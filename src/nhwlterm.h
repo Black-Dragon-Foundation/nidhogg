@@ -522,6 +522,7 @@ extern void nhwl_csd_changed (struct frame *);
 extern void nhwl_csd_geometry_size (struct frame *, int *, int *);
 extern void nhwl_csd_native_size (struct frame *, int, int, int *, int *);
 extern void nhwl_csd_native_pos (struct frame *, double, double, int *, int *);
+extern void nhwl_use_im_context (bool);
 extern int nhwl_to_logical (int, uint32_t);
 extern int nhwl_to_device (int, uint32_t);
 extern bool nhwl_csd_pointer (struct frame *, double, double);

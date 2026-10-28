@@ -224,6 +224,35 @@ syntax); unknown names are dropped."
 
 (add-hook 'after-make-frame-functions #'nhwl-settings--first-frame)
 
+;; Input methods: the shell reports `delete_surrounding_text' as a
+;; special event, (nhwl-delete-surrounding (BEFORE AFTER FRAME)), with
+;; the counts in characters.
+
+(defun nhwl-delete-surrounding (event)
+  "Delete the characters an input method asked to delete around point.
+EVENT is (nhwl-delete-surrounding (BEFORE AFTER FRAME)): delete exactly
+BEFORE characters before point and AFTER after it in the selected window
+of FRAME.  Key bindings and the region play no part, and a read-only
+buffer or text is left alone."
+  (interactive "e")
+  (let* ((args (nth 1 event))
+         (before (nth 0 args))
+         (after (nth 1 args))
+         (frame (nth 2 args))
+         (win (and (frame-live-p frame) (frame-selected-window frame))))
+    (when (window-live-p win)
+      (with-current-buffer (window-buffer win)
+        (unless buffer-read-only
+          (let ((pt (min (point-max) (max (point-min) (window-point win))))
+                (deactivate-mark nil))
+            (condition-case nil
+                (progn
+                  (delete-region pt (min (point-max) (+ pt after)))
+                  (delete-region (max (point-min) (- pt before)) pt))
+              (text-read-only nil))))))))
+
+(define-key special-event-map [nhwl-delete-surrounding] #'nhwl-delete-surrounding)
+
 (provide 'nhwl-settings)
 
 ;;; nhwl-settings.el ends here
