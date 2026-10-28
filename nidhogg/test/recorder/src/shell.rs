@@ -5,7 +5,9 @@ use serde_json::{json, Value};
 use smithay::delegate_xdg_decoration;
 use smithay::delegate_xdg_shell;
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_popup;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as TState;
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_wm_base::{self, XdgWmBase};
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
@@ -164,7 +166,55 @@ impl XdgShellHandler for State {
         self.popups.push(surface);
     }
 
-    fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: Serial) {}
+    fn grab(&mut self, surface: PopupSurface, _seat: WlSeat, serial: Serial) {
+        self.grabs.retain(|(p, _)| p.alive());
+        let kind = ["button", "key", "touch"]
+            .into_iter()
+            .zip(self.serials)
+            .find(|(_, s)| *s == Some(u32::from(serial)))
+            .map(|(k, _)| k);
+        // a serial that no press, key or touch down sent is stale: the popup is dismissed at once
+        let Some(kind) = kind else {
+            surface.send_popup_done();
+            return;
+        };
+        // the parent of a grabbing popup is a toplevel or the topmost grabbing popup
+        let parent = surface.get_parent_surface();
+        let under_popup = self
+            .popups
+            .iter()
+            .any(|p| Some(p.wl_surface()) == parent.as_ref());
+        let on_top = self.grabs.last().map(|(p, _)| p.wl_surface()) == parent.as_ref();
+        if under_popup && !on_top {
+            surface.xdg_popup().post_error(
+                xdg_popup::Error::InvalidGrab,
+                "the parent of a grabbing popup is not the topmost grabbing popup",
+            );
+            return;
+        }
+        self.grabs.push((surface, kind));
+    }
+
+    fn popup_destroyed(&mut self, surface: PopupSurface) {
+        let Some(i) = self
+            .grabs
+            .iter()
+            .position(|(p, _)| p.wl_surface() == surface.wl_surface())
+        else {
+            return;
+        };
+        if i + 1 != self.grabs.len() {
+            for id in crate::state::objects_of(&self.display, surface.wl_surface(), "xdg_wm_base") {
+                if let Ok(base) = XdgWmBase::from_id(&self.display, id) {
+                    base.post_error(
+                        xdg_wm_base::Error::NotTheTopmostPopup,
+                        "a popup under a grabbing popup was destroyed first",
+                    );
+                }
+            }
+        }
+        self.grabs.remove(i);
+    }
 
     fn reposition_request(
         &mut self,
@@ -404,6 +454,18 @@ pub fn popup_done(state: &mut State, req: &Value) -> Value {
     }
 }
 
+/// `click_outside`: the user clicks away from the grabbing popups; the compositor dismisses them, topmost first.
+pub fn click_outside(state: &mut State) -> Value {
+    state.grabs.retain(|(p, _)| p.alive());
+    if state.grabs.is_empty() {
+        return err("no popup holds a grab");
+    }
+    for (p, _) in state.grabs.iter().rev() {
+        p.send_popup_done();
+    }
+    json!({"ok": true, "dismissed": state.grabs.len()})
+}
+
 /// `tree`: every live surface with its role, parent, place and stack.  `position` is the subsurface offset in its
 /// parent (a popup's, the one its last acked commit applied), `sync` whether a subsurface is synchronised, `above` the later siblings in stacking order (Smithay does not say where a
 /// parent sits among its children, so `children` lists a parent's subsurfaces bottom to top), `input_region` the
@@ -493,9 +555,15 @@ pub fn tree(state: &mut State) -> Value {
                     }
                 });
             }
+            let grab = state
+                .grabs
+                .iter()
+                .find(|(p, _)| p.wl_surface() == surface)
+                .map(|(_, kind)| json!({"serial_kind": kind}));
             json!({
                 "id": id,
                 "role": role,
+                "grab": grab,
                 "parent": parent.map(|p| p.id().protocol_id()),
                 "position": position,
                 "sync": role == "subsurface" && compositor::is_sync_subsurface(surface),

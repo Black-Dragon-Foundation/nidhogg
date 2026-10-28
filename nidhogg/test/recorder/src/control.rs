@@ -69,6 +69,9 @@ pub fn handle(state: &mut State, line: &str, stream: &UnixStream) -> Option<Valu
     if cmd == "read" {
         return crate::selection::read(state, &req, stream);
     }
+    if cmd == "drag_drop" {
+        return crate::dnd::drag_drop(state, &req, stream);
+    }
     if let Some(reply) = crate::input::command(state, cmd, &req) {
         return Some(reply);
     }
@@ -83,6 +86,7 @@ pub fn handle(state: &mut State, line: &str, stream: &UnixStream) -> Option<Valu
         "output" => crate::scale::output(state, &req),
         "tree" => crate::shell::tree(state),
         "popup_done" => crate::shell::popup_done(state, &req),
+        "click_outside" => crate::shell::click_outside(state),
         "present" => crate::clock::present(state, &req),
         "mode" => crate::clock::mode(state, &req),
         "occlude" => crate::clock::occlude(state, true),
