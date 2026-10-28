@@ -471,14 +471,15 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   job for a parser copies the buffer's visible text (two copies around the gap, the watchdog's `treesit` phase with
   reason `snapshot`), a copy of the parser's tree, the ranges a demand would parse with and the parser's edit
   generation; `nh-parse` parses that with a parser of its own (cancellable at any point; a cancelled parse is reset,
-  never resumed) and computes the tree's subtree statistics. Nothing is published early: the next demand
-  (`treesit_ensure_parsed`) takes the tree when the job is done and its language, visible range, ranges and
+  never resumed) and, for a first parse, computes the tree's subtree statistics (treesit.el asks for them once per
+  buffer, and on a large tree the walk costs more than an incremental reparse). Nothing is published early: the next
+  demand (`treesit_ensure_parsed`) takes the tree when the job is done and its language, visible range, ranges and
   generation are still the parser's, then runs today's tail (timestamp, changed ranges, notifiers), so notifiers run
   only at demands and nodes go out of date only there; any other job is dropped and today's synchronous parse runs.
   No job starts under a temporary narrowing, and a start never changes the parser's visible range or ranges. One job
   per parser, the latest snapshot wins; deleting the parser, killing its buffer or GC cancels it, and whichever of
   the parser and the worker lets go last frees it. `(nidhogg-treesit-parser-ready-p PARSER)` says whether a demand
-  would not parse on the main thread; `treesit-subtree-stat` on a published root answers from the worker's count. Test
+  would not parse on the main thread; `treesit-subtree-stat` on a first parse's published root answers from the worker's count. Test
   primitives: `nidhogg-workers--test-ts-start`, `--test-ts-wait`, `--test-ts-info`, `--test-ts-stats`,
   `--test-ts-await-idle`.
 - Edits during a parse job: every edit made to a parser's tree while it has a job (the changes Lisp makes, and the
