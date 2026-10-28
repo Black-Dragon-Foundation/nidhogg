@@ -2374,7 +2374,9 @@ nhwl_now_ns (void)
 }
 
 /* Take Glitnir's committed damage for F into the pending list.  Past the
-   list's size the pending damage collapses to its bounding box.  */
+   list's size the pending damage collapses to its bounding box.  The first
+   commit with damage since the last present starts the frame-time
+   record's draw.  */
 void
 nhwl_glitnir_commit (struct frame *f)
 {
@@ -2383,8 +2385,6 @@ nhwl_glitnir_commit (struct frame *f)
   size_t i;
 
   nhwl_glitnir_ensure (f);
-  if (!out->t_commit_ns)
-    out->t_commit_ns = nhwl_now_ns ();
   if (glitnir_commit (out->glitnir_id, &co) != GLITNIR_OK)
     return;
   for (i = 0; i < co.n; i++)
@@ -2399,6 +2399,8 @@ nhwl_glitnir_commit (struct frame *f)
       r.h = y1 - r.y;
       if (r.w <= 0 || r.h <= 0)
 	continue;
+      if (!out->t_commit_ns)
+	out->t_commit_ns = nhwl_now_ns ();
       out->damage_px += (uint64_t) r.w * r.h;
       if (out->npending == NHWL_PENDING_MAX)
 	{
