@@ -611,3 +611,49 @@ Return the window."
         (should (= 0 (workers-image-gui--info :pending))))
       (should (= jobs (workers-image-gui--img-jobs)))
       (should (zerop (workers-image-gui--display-wait))))))
+
+;;; Review fixes (Task 47).
+
+(defun workers-image-gui--pixels-wait ()
+  (plist-get (plist-get (plist-get (nidhogg-workers-stats) :phase-ms)
+                        'worker-wait)
+             'image-pixels))
+
+(ert-deftest workers-gui/image-eval-in-redisplay-no-wait ()
+  ;; A mode line's `:eval' needs the pixels of a pending image while
+  ;; redisplay runs: redisplay never waits, so the decode is cancelled
+  ;; and the image loads at once, as without workers.
+  (workers-image-gui--skip)
+  (workers-image-gui--with-defer
+    (let ((spec (workers-image-gui--spec "palette.png" nil nil)))
+      (nidhogg-workers-stats t)
+      (workers-image-gui--pend (list spec))
+      (should (= 1 (workers-image-gui--info :pending)))
+      (let ((mode-line-format `(:eval (progn (image-mask-p ',spec) "m"))))
+        (force-mode-line-update t)
+        (redisplay t))
+      (should (zerop (workers-image-gui--pixels-wait)))
+      (should (= 0 (workers-image-gui--info :pending))))))
+
+(ert-deftest workers-gui/image-prefetch-twice-calls-both ()
+  ;; Two prefetches of one spec while its decode runs: both callbacks
+  ;; run once it lands, the second prefetch did not wait, and no
+  ;; callback is left behind.
+  (workers-image-gui--skip)
+  (workers-image-gui--with-defer
+    (let ((spec (workers-image-gui--spec "palette.png" nil nil))
+          (called nil))
+      (clear-image-cache t)
+      (nidhogg-workers-stats t)
+      (nidhogg-workers--pause-at 'after-header)
+      (nidhogg-image-prefetch spec (lambda (_ r) (push (cons 1 r) called)))
+      (should (nidhogg-workers--test-await-paused 'after-header 5000 1))
+      (nidhogg-image-prefetch spec (lambda (_ r) (push (cons 2 r) called)))
+      (should (zerop (workers-image-gui--pixels-wait)))
+      (should-not called)
+      (nidhogg-workers--release 'after-header)
+      (should (nidhogg-workers--test-await-landed 'nh-img 5000))
+      (with-timeout (5 (ert-fail "no callback"))
+        (while (< (length called) 2) (accept-process-output nil 0.05)))
+      (should (equal (sort called (lambda (a b) (< (car a) (car b))))
+                     '((1 . ready) (2 . ready)))))))
