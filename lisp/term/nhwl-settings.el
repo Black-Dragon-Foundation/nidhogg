@@ -180,7 +180,7 @@ list (R G B) of floats, or nil), `button-layout' (a string),
 
 (add-hook 'nhwl-settings-changed-functions #'nhwl-settings--cursor-changed)
 
-(declare-function nhwl--set-title-bar-style "nhwlcsd.c")
+(declare-function nhwl--set-title-bar-style "nhwlfns.c")
 
 (defun nhwl-settings--face-colour (face attribute)
   "FACE's colour ATTRIBUTE as a string, or nil when it has none."

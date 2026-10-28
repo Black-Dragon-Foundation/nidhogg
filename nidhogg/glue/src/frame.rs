@@ -15,7 +15,7 @@ pub const NHG_FRAME_KINDS: u32 = NHG_FRAME_CHILD | NHG_FRAME_TIP | NHG_FRAME_POP
 /// `NhgFrameFacts` flags.
 pub const NHG_FACT_VISIBLE: u32 = 1;
 pub const NHG_FACT_ICONIFIED: u32 = 2;
-/// The frame draws its own title bar (`out->csd.on`; pushed by `nhwl_csd_layout` until the title bar is the glue's).
+/// The frame draws its own title bar (the glue's title-bar layout sets it, `nhg_csd_layout`).
 pub const NHG_FACT_CSD: u32 = 4;
 
 /// The Emacs facts a frame's decisions read, as C pushes them (design §3.3); `nhg_debug_check_frame` compares them with
@@ -69,6 +69,8 @@ pub struct Frame {
     pub ack: Option<Ack>,
     /// The last ack recorded with the shell: serial and `NHSHELL_ACK_*` flags (for the tests).
     pub last_ack: Option<(u32, u32)>,
+    /// The title bar (`csd.rs`).
+    pub csd: crate::csd::Csd,
 }
 
 impl Frame {

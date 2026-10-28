@@ -52,6 +52,8 @@ pub struct Display {
     pub(crate) select: crate::select::Select,
     /// The outputs C pushed (`query.rs`).
     pub(crate) monitors: crate::query::Monitors,
+    /// The title bars' style (`csd.rs`).
+    pub(crate) csd_style: crate::csd::Style,
 }
 
 impl Drop for Display {
@@ -85,6 +87,7 @@ impl NhgDisplay {
                 keyboard: Keyboard::default(),
                 select: Default::default(),
                 monitors: Default::default(),
+                csd_style: Default::default(),
             }),
         }
     }
@@ -206,5 +209,19 @@ impl Display {
     /// The number of registered frames.
     pub fn frame_count(&self) -> usize {
         self.frames.len()
+    }
+}
+
+impl Display {
+    /// The shell's backend, the title bars' style and the frame of `window`, borrowed at once (`csd.rs`).
+    pub(crate) fn csd_parts(
+        &mut self,
+        window: u64,
+    ) -> Result<(&mut dyn ShellBackend, &crate::csd::Style, &mut Frame), GlueError> {
+        let f = self.frames.get_mut(&window).ok_or(GlueError::State)?;
+        // SAFETY: the handle is live until the display is dropped, and the display's lock is held; the frame and
+        // the style are other fields.
+        let backend = unsafe { self.shell.as_mut() }.backend_mut();
+        Ok((backend, &self.csd_style, f))
     }
 }

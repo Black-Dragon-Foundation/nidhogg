@@ -454,9 +454,9 @@ nhwl_surface_add (struct frame *f, uint64_t parent, bool prepare)
   if (drawable)
     {
       nhwl_backing_resize (f);
+      /* The title strip, and the window geometry (the glue sends it).  */
       nhwl_csd_draw (f);
       nhwl_child_sync (f);
-      nhwl_csd_send_geometry (f);
       nhwl_glitnir_ensure (f);
       if (out->cr_surface)
 	cairo_surface_flush (out->cr_surface);
@@ -960,6 +960,137 @@ nhwl_create_frame_window (struct frame *f)
   /* `alpha' was set before the window existed.  */
   nhwl_set_frame_alpha (f);
   nhwl_set_min_size (f);
+}
+
+/***********************************************************************
+		 The client-side title bar (the glue's)
+ ***********************************************************************/
+
+/* The title bar's layout, hit tests, buttons and window geometry are the
+   glue's (csd.rs, moved from nhwlcsd.c); C keeps a copy of the border
+   (struct nhwl_csd) for its drawing, applies the title bar's actions and
+   paints the strip (nhwldraw.c).  */
+
+static uint32_t
+nhwl_csd_s120 (struct frame *f)
+{
+  uint32_t s = FRAME_NHWL_OUTPUT (f)->scale120;
+
+  return s ? s : 120;
+}
+
+/* Lay F's border out again: the glue's title bar from the compositor's
+   decoration answer, the toplevel's states and the scale, or a child
+   frame's shadow margin.  When it changes, the frame is drawn again and
+   its child frames placed again.  */
+void
+nhwl_csd_layout (struct frame *f)
+{
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
+  struct nhwl_csd *c = &out->csd;
+  NhgCsdLayout lay;
+  int rc;
+
+  /* A child frame's offsets are its shadow margin (nhwlchild.c).  */
+  if (nhwl_child_p (f))
+    {
+      nhwl_child_layout (f);
+      return;
+    }
+  /* A popup frame has neither title bar nor margins.  */
+  if (nhwl_popup_frame_p (f) || !out->window)
+    return;
+  rc = nhwl_glue_rc (dpyinfo,
+		     NHG (nhg_csd_layout (dpyinfo->glue, out->window,
+					  out->scale120,
+					  (FRAME_UNDECORATED (f)
+					   ? NHG_CSD_UNDECORATED : 0),
+					  &lay)));
+  if (rc < 0)
+    return;
+  c->on = lay.on != 0;
+  if (rc == 1)
+    {
+      c->strip = lay.strip;
+      c->l = lay.l, c->t = lay.t, c->r = lay.r, c->b = lay.b;
+      SET_FRAME_GARBAGED (f);
+      nhwl_child_parent_layout (f);
+    }
+}
+
+/* The title or the title bars' style changed: F is redisplayed, and the
+   glue says at the publish whether the strip shows something new.  */
+void
+nhwl_csd_changed (struct frame *f)
+{
+  if (FRAME_NHWL_OUTPUT (f)->csd.on)
+    fset_redisplay (f);
+}
+
+/* The logical size of F's window geometry (the native area and the strip),
+   and the native device size a compositor-suggested geometry of LW x LH
+   gives.  */
+static void
+nhwl_csd_geometry_size (struct frame *f, int *w, int *h)
+{
+  uint32_t s120 = nhwl_csd_s120 (f);
+
+  *w = nhwl_to_logical (FRAME_PIXEL_WIDTH (f), s120);
+  *h = nhwl_to_logical (FRAME_PIXEL_HEIGHT (f) + FRAME_NHWL_OUTPUT (f)->csd.strip,
+			s120);
+}
+
+static void
+nhwl_csd_native_size (struct frame *f, int lw, int lh, int *dw, int *dh)
+{
+  uint32_t s120 = nhwl_csd_s120 (f);
+
+  *dw = max (1, nhwl_to_device (lw, s120));
+  *dh = max (1, nhwl_to_device (lh, s120) - FRAME_NHWL_OUTPUT (f)->csd.strip);
+}
+
+/* The native-area position of the surface point LX, LY, which the shell
+   reports in device pixels already (logical times scale).  */
+static void
+nhwl_csd_native_pos (struct frame *f, double lx, double ly, int *x, int *y)
+{
+  struct nhwl_csd *c = &FRAME_NHWL_OUTPUT (f)->csd;
+
+  *x = (int) lround (lx) - c->l;
+  *y = (int) lround (ly) - c->t;
+}
+
+/* Apply a TITLE_BAR action A to F: the glue took a pointer event over F's
+   title bar or margins (or the pointer left them).  */
+static void
+nhwl_title_bar_action (struct frame *f, const NhgAction *a)
+{
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+
+  /* A pointer hidden while typing comes back with the mouse.  */
+  if ((a->flags & (NHG_TB_POINTER | NHG_TB_LEFT)) && f->pointer_invisible)
+    nhwl_toggle_invisible_pointer (f, false);
+  /* A button's hover or press changed.  */
+  if (a->flags & NHG_TB_REDRAW)
+    nhwl_csd_changed (f);
+  if (a->flags & NHG_TB_LEFT)
+    {
+      /* Emacs sets its own shape again at the next glyph.  */
+      out->current_cursor = NULL;
+      FRAME_DISPLAY_INFO (f)->last_mouse_glyph_frame = NULL;
+    }
+  if (a->flags & NHG_TB_POINTER)
+    {
+      /* The border's shape there; the event goes no further.  */
+      if (out->current_cursor != nhwl_cursor_for_shape (a->code))
+	{
+	  nhshell_window_set_cursor (FRAME_NHWL_SHELL (f), out->window,
+				     a->code);
+	  out->current_cursor = nhwl_cursor_for_shape (a->code);
+	}
+      clear_mouse_face (MOUSE_HL_INFO (f));
+    }
 }
 
 void
@@ -2375,6 +2506,10 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
 			  FRAME_NHWL_OUTPUT (nhwl_tree_root (f))->window);
       break;
 
+    case NHG_ACT_TITLE_BAR:
+      nhwl_title_bar_action (f, a);
+      break;
+
     case NHG_ACT_DELETE:
       EVENT_INIT (ie);
       ie.kind = DELETE_WINDOW_EVENT;
@@ -2426,7 +2561,6 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
       const NhgAction *raw;
       struct frame *f;
       bool have = false;
-      bool csd_close = false;
       size_t i;
 
       /* The facts the step reads, sampled again for each event.  */
@@ -2443,13 +2577,14 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 
       for (i = 0; i < list.n; i++)
 	count += nhwl_apply (dpyinfo, &list.v[i], hold_quit);
-      /* A raw action is its event's only one.  */
-      if (list.n != 1 || list.v[0].kind != NHG_ACT_RAW
+      /* A raw action is its event's last one (a title bar's comes before
+	 it).  */
+      if (list.n == 0 || list.v[list.n - 1].kind != NHG_ACT_RAW
 	  || (nhwl_glue_rc (dpyinfo,
 			    NHG (nhg_raw_event (dpyinfo->glue, &ev)))
 	      != NHG_OK))
 	continue;
-      raw = &list.v[0];
+      raw = &list.v[list.n - 1];
 
       EVENT_INIT (inev.ie);
       inev.ie.kind = NO_EVENT;
@@ -2466,14 +2601,11 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	      Mouse_HLInfo *hlinfo = MOUSE_HL_INFO (f);
 	      int x, y;
 
-	      /* A pointer hidden while typing comes back with the mouse.  */
+	      /* A pointer hidden while typing comes back with the mouse.  A
+		 motion over the title bar or the margins went to the glue
+		 (NHG_ACT_TITLE_BAR) and does not come here.  */
 	      if (f->pointer_invisible)
 		nhwl_toggle_invisible_pointer (f, false);
-	      if (nhwl_csd_pointer (f, ev.u.pointer.x, ev.u.pointer.y))
-		{
-		  clear_mouse_face (hlinfo);
-		  break;
-		}
 	      nhwl_csd_native_pos (f, ev.u.pointer.x, ev.u.pointer.y, &x, &y);
 	      d->last_mouse_frame = f;
 	      previous_help_echo_string = help_echo_string;
@@ -2506,22 +2638,11 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	      clear_mouse_face (hlinfo);
 	      if (FRAME_DISPLAY_INFO (f)->last_mouse_frame == f)
 		FRAME_DISPLAY_INFO (f)->last_mouse_frame = NULL;
-	      nhwl_csd_leave (f);
 	    }
 	  break;
 
 	case NHSHELL_EV_BUTTON:
-	  if (f && nhwl_csd_button (f, &ev, &csd_close))
-	    {
-	      if (csd_close)
-		{
-		  inev.ie.kind = DELETE_WINDOW_EVENT;
-		  XSETFRAME (inev.ie.frame_or_window, f);
-		  have = true;
-		  csd_close = false;
-		}
-	      break;
-	    }
+	  /* A button in the title bar or the margins went to the glue.  */
 	  if (f)
 	    {
 	      int code = nhwl_button_code (ev.u.pointer.button);
@@ -3183,6 +3304,8 @@ nhwl_term_init (Lisp_Object display_name)
     if (nhwl_presenter_thread && !(env && !strcmp (env, "0")))
       NHG (nhg_presenter_thread (glue, 1));
   }
+  /* The title bars' style Lisp gave so far.  */
+  nhwl_csd_push_style (dpyinfo);
   nhshell_caps (shell, &dpyinfo->caps);
   terminal = nhwl_create_terminal (dpyinfo);
 
