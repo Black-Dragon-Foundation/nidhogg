@@ -17,12 +17,12 @@ for upstreaming.
 
 - Command: `nidhogg` (and `nidhoggclient`). Feature: `nidhogg` (`(require 'nidhogg)`). Variable: `nidhogg-version`.
 - `emacs-version` stays GNU Emacs's own (`"31.1"`): packages call `version<` on it, and `version-to-list` rejects
-  `"31.1-nidhogg.2"`. Nidhogg's version lives in `nidhogg-version` and is appended to `M-x emacs-version` output.
+  `"31.1-nidhogg.4"`. Nidhogg's version lives in `nidhogg-version` and is appended to `M-x emacs-version` output.
 
 ## Version scheme
 
 `<GNU Emacs version>-nidhogg.<N>`. N counts Nidhogg releases on one upstream release and restarts at 1 on the next
-(31.2 gives `31.2-nidhogg.1`). The git tag is `v31.1-nidhogg.2`. The single source is the file `nidhogg/version`.
+(31.2 gives `31.2-nidhogg.1`). The git tag is `v31.1-nidhogg.4`. The single source is the file `nidhogg/version`.
 
 ## Branches and the patch series
 
@@ -245,6 +245,161 @@ in `DRGNX_REF`, never drgnx's moving `main`: a drgnx push cannot turn Nidhogg re
     pull request reuses what `nidhogg-31` saved. Unused caches are evicted after 7 days and the oldest go first above 10 GB
     ([GitHub: dependency caching](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)).
 - Actions are pinned to commit SHAs. `bash nidhogg/test/ci-test.sh` checks these rules.
+
+## Stall watchdog
+
+An always-on measurement of the stalls (busy spans of the main thread at least as long as a threshold, 100 ms by
+default): a C monitor thread asks the main thread, by signal, for samples of what it is running, and Nidhogg's Lisp
+turns the finished spans into JSON Lines records, names function, file and package, and ranks them.
+
+- Build flag: `--with-nidhogg-watchdog` (defines `HAVE_NIDHOGG_WATCHDOG`; `build.sh` passes it on every target unless
+  given `--without-nidhogg-watchdog`). `--with-nidhogg-watchdog-signal=NAME` picks the signal (default `SIGURG`).
+  Linux (pgtk and terminal) first; elsewhere the flag builds and starting the watchdog signals an error.
+- Off unless something turns it on (drgnx does). With the flag built in and nothing started there is no thread and no
+  signal handler.
+- With the flag off the build equals upstream's for every file the watchdog touches (checked by
+  `nidhogg/test/tree-test.sh`).
+- Files: `src/nidhogg-watchdog.h` (the shared layout and every cross-file prototype), `src/nidhogg-watchdog.c` (edges,
+  spans, records), `-monitor.c` (monitor thread, park protocol), `-sample.c` (signal handler, raw ring), `-gc.c` (GC end
+  hook), `-input.c` and `-phase.h` (phases, felt input), `-gtk.c` (GLib poll wrapper, pgtk only), `-park.h` (the park
+  protocol's steps); Lisp in `lisp/nidhogg-watchdog*.el` (preloaded; the feature is `nidhogg-watchdog`).
+- Tests: `watchdog/…` in `test/src/nidhogg-tests/watchdog-*-tests.el`, GUI rows `watchdog-gui/…` in `*-gui-tests.el`.
+
+- **Spans and records** (`nidhogg-watchdog.c`): the main thread times every busy span at the two edges of the select in
+  `really_call_select` (`thread.c`; also Android's non-threaded `android_select` and the tty `C-z` in `sys_suspend`).
+  A wait ends a span only when it is responsive: the main thread's own select (never a Lisp thread's), inside
+  `wait_reading_process_output` with `waiting_for_user_input_p` set, `inhibit-redisplay` nil and a non-zero timeout.
+  `sleep-for`, `accept-process-output` inside a command, waits under `inhibit-redisplay` and lock contention stay busy.
+  Every span ≥ the threshold becomes a record (`nidhogg-watchdog--take`; a ring of 32, the oldest dropped and counted),
+  with or without samples; every span goes into the histograms of `nidhogg-watchdog--stats` by its non-GC time.
+  `nidhogg-watchdog--test-clock` and `nidhogg-watchdog--test-idle-wait` drive the span rows on a virtual clock.
+- **The monitor** (`-monitor.c`): a thread named `nh-watchdog`, created with every signal blocked; it takes only its own
+  mutex. While Emacs waits it is parked on a condition variable and wakes for nothing; the main thread signals it when a
+  busy span starts. It sleeps to half the threshold of the span; if the span is still busy, it notes the main thread's
+  CPU clock and its own lateness, then every `max (threshold/10, 1 ms)` (1 ms in deep mode) raises a request and sends
+  the main thread the watchdog signal (`pthread_kill`, never `kill`); a request the handler has not taken after two
+  periods counts as missed. The park protocol (`-park.h`) is a Dekker pair of seq_cst stores and loads
+  (`NH_WD_PARK_ORDER`), so no busy span is missed: `watchdog/no-lost-wakeup` runs its steps through every interleaving
+  with store buffers modelled, and `nidhogg/test/watchdog-park-test.sh` runs them on real threads (ThreadSanitizer and a
+  10⁷-cycle stress run; it needs gcc and libtsan, nothing from a build). While `nidhogg-watchdog--test-clock` is set the
+  monitor never arms.
+- Samples (`src/nidhogg-watchdog-sample.c`): the signal handler is installed with `sigaction` and `SA_RESTART`
+  (interactive Emacs otherwise installs handlers without it), refuses to take a signal another library already handles,
+  and answers only a request for the current busy span on the main thread; any other signal (a stray `kill`, a late
+  request that lands in the idle wait) is counted as `:stale`. It calls nothing but `clock_gettime`, allocates nothing
+  and takes no lock. It copies raw specpdl words (24 innermost frames and 8 outermost, 56 + 8 in deep mode) and a hook
+  runner's hook name, and copies nothing while the specpdl is being reallocated (`grow_specpdl_allocation` brackets the
+  realloc) or while a Lisp thread holds the global lock. A stall keeps at most 64 samples (32 deep): the handler thins
+  them to every other one and doubles its stride. The words are never GC roots; `--take` turns a word into a function
+  object only when `valid_lisp_object_p` calls it a live symbol, closure or subr (a non-heap subr only when it is a
+  builtin's address), else into the symbol `nidhogg-watchdog--gone`.
+- GC (`-gc.c`, one call at the end of `garbage_collect` in `alloc.c`, one flag set in `garbage-collect`): while the
+  watchdog is on, every collection's pause is added to its span (a stall's `:gc-ms` and `:gcs`; `:nongc-ms` = wall −
+  GC, which is what the 100 ms goal judges) and written to a 64-entry GC ring, taken with the stalls by
+  `nidhogg-watchdog--take` as `(:gc ID :gcs-done N :start SECONDS :pause-ms F :span N :explicit BOOL :lisp-thread
+  BOOL)`; a full ring drops its oldest entry and counts `:gc-dropped`. The pause runs from `garbage_collect`'s start
+  to after `gcs_done` is incremented: it includes `run_finalizers` (Lisp finalizers) and
+  `image_prune_animation_caches`, but not `post-gc-hook`. `:gcs-done` is the `gcs-done` a `post-gc-hook` function
+  sees for the same collection, the key the Lisp GC row (and drgnx's GC census lines, `gcs_done`) joins on; never join
+  by order. `:explicit` is a `garbage-collect` call (other C callers, such as `garbage-collect-maybe`, are automatic).
+- Phases, felt input, typing (`-input.c`, `nidhogg-watchdog-phase.h`): a sample names the C phase on top of a small
+  phase stack, set by one-line hooks: `redisplay` (`redisplay_internal`), `filter` and `sentinel` (process.c),
+  `call-process`, `json` (parse, serialize, insert), `regex` (`re-search-*`, `looking-at`, `string-match`) and
+  `process-wait` (a wait that is not responsive: `accept-process-output` or `sleep-for` inside a command, a wait under
+  `inhibit-redisplay`); `lisp` when none is set. A responsive wait empties the stack, and a non-local exit
+  (`unwind_to_catch`) pops every phase pushed inside its catch target, so a `condition-case` around a failing
+  `json-parse-string` does not label the rest of the span `json`. Nothing goes on the specpdl. A stall is `:felt`
+  when a keyboard, button or wheel event was stored during it (a key pressed while Emacs was busy) or when it ran a
+  command; `:input-wait-ms` runs from that input's arrival (a pgtk event's own timestamp when it reads as
+  `CLOCK_MONOTONIC` within the last 2 s, else the time it was stored) to the stall's end. `:commands` counts the
+  commands in the span, and `:input-queued` says a second one ran in it (keys queued behind each other). The
+  commands named by `nidhogg-watchdog--set-typing-commands` (16 at most) are timed one by one, from their key's
+  arrival to the next key taken or the next wait, into the `:typing` histogram of `nidhogg-watchdog--stats`.
+An open popup menu or dialog counts as the user waiting, not as a stall: on pgtk a wrapper around GLib's poll
+function (`src/nidhogg-watchdog-gtk.c`) marks the wait. A Lisp timer that runs inside a menu or dialog is still
+busy time and is reported.
+The timing group (`watchdog-timing-tests.el`) runs on the real clock with wide margins (spins of 0.5 to 10 s
+against a 100 ms threshold) and asserts counts, never sample numbers ("at least one sample, or `:missed` counted"): a
+1 s spin from a timer (state CPU, the timer function on the stack), a blocked `call-process` (phase `call-process`),
+no sample requests before half the threshold, child Nidhoggs on a pty for the real keyboard hooks (a key during a
+spin makes the stall `:felt`), a Lisp thread that holds the global lock while the main thread idles (`:lisp-thread`),
+`suspend-emacs` and `sit-for` (waiting, no stall), and a 10 s deep-sampling stress run (allocation, byte code, native
+code, forced collections, a specpdl past 10⁵ entries) in which every sampled word is a live object or
+`nidhogg-watchdog--gone`. GUI rows (`watchdog-gui-tests.el`, `nidhogg/test/gui.sh`): `sit-for` on a pgtk frame is
+waiting, and a mode-line `:eval` that spins is a stall in the `redisplay` phase with the `:eval` function innermost.
+`M-x nidhogg-watchdog-mode` (global, off by default) starts the monitor with `nidhogg-watchdog-threshold` (100 ms)
+and `nidhogg-watchdog-hang-ms` (2000) and one repeating 1 s idle timer; a start that fails after the C side started
+(too many typing commands, an unreadable log directory) stops it again and leaves the mode off. The timer's drain returns at once (no
+allocation) when nothing is pending; otherwise it takes the rings at once and resolves records within 2 ms, the rest
+waiting for the next idle period (`nidhogg-watchdog-drain-now` drains everything). Each stall is one JSON line (schema
+`v` 1) in `YYYY-MM-DD.jsonl` under `nidhogg-watchdog-log-directory` (default `~/.emacs.d/watchdog/`); `nidhogg-watchdog-record-functions` sees each
+resolved record. An append never prompts, even while a buffer visits the day file (it locks under a name no buffer
+visits, with lock files off). At most 5,000 stall lines are written per day (the rest are only counted), day files older than 14
+days are deleted, and a `summary` line (histogram deltas, counters, monitor CPU, the drain's histograms, p95 and
+drains over budget) is appended at most every 10 minutes and when the mode is turned off or Emacs exits. A summary
+never resets a counter: it subtracts the values it kept at the last line (`nidhogg-watchdog--stats-delta`, which a
+perf probe can use the same way), so any number of readers can measure a stretch side by side.
+`nidhogg-watchdog-stats` adds the drain's numbers to the C counters: `:drain`, the budgeted drains by duration in
+buckets that start at 1 and 2 ms (<1 <2 <4 <8 <16 <33 <50 <100 ≥100), `:drain-take`, the part of each that takes the
+rings and writes the collection lines (it runs before the budget's resolve loop), `:drain-over-budget` and
+`:drain-p95-ms`; `nidhogg-watchdog-drain-now` (no budget: tests, perf, mode off) is not counted. The C counters
+include `:samples` (samples the handler kept), to set `:missed` against; the summary line carries it too. A stall
+record and its line say `deep` when the stall was sampled in deep mode (`nidhogg-watchdog--deep`).
+Records are resolved at idle (`lisp/nidhogg-watchdog-resolve.el`): each function gets a name, file and package (native
+subrs through their `.eln` unit, symbols through `function-history` or a `load-history` index built in 2 ms slices, a
+record waiting until its symbols are indexed; closures are `<lambda>` and credited to the nearest named frame, native
+lambdas are `<lambda in FILE>`). The stall line carries `entry` (command, timer, filter, sentinel, hook, redisplay,
+gc, lisp-thread), `culprit` (innermost non-`emacs` Lisp frame in at least half the non-GC samples, with package, file,
+share and dominant phase), `state` (`gc`, `cpu`, `blocked`, `mixed`), `phases`, `stacks` and a `signature`
+(`entry.kind:entry.fn>culprit.fn/phase`) that byte code and native code share. `nidhogg-watchdog-package-functions`
+(each called with a file name) can name a file's package before the defaults.
+The GC row (`lisp/nidhogg-watchdog-gc.el`): GC pauses are judged by their own target, not the 100 ms goal. While
+the mode is on, a `post-gc-hook` function only notes `gcs-done`, `garbage-collect-heapsize`, the origin and the
+threshold in a 64-slot ring (no I/O); the drain joins those notes with the C GC ring's collections on `gcs-done`,
+never by order, and writes one `gc` line per collection: `pause_ms` (exact, from C), `origin` (`idle`, `gap`,
+`audit`, `explicit` or `auto`: the binding of `nidhogg-watchdog-gc-origin` around `garbage-collect`, else the C
+side's explicit flag), `felt`, `span_wall_ms` and `span_nongc_ms` (when the collection's span is a stall; else
+null), `gcs_done`, `heap` (live MB by type and free MB), `rss_mb` (at write) and `threshold_mb`. A collection or a
+note whose partner was dropped by the other ring is written with the fields it has and counted.
+`(nidhogg-watchdog-gc-row &key days)` reads the `gc` lines back (drgnx's GC census writes the same lines): per day
+the count, total seconds, max, p50/p95/p99 from the histogram buckets, felt count and the last live heap; over the 7
+days ending on a day the p95 (only from 20 collections on), the slope of pause against live heap (ms per 100 MB) and
+the live-heap trend (MB per day). A day meets the row when that p95 is at most `nidhogg-watchdog-gc-target-p95`
+(50 ms; unknown under 20 collections, then only the max judges) and no collection reaches `nidhogg-watchdog-gc-max`
+(250 ms). The row reads only the files its windows need (the newest DAYS + 6) and keeps a small digest of each,
+made again only when the file's size or time changed, so asking for it at idle every half hour costs no re-parse
+of closed days.
+The ranking (`lisp/nidhogg-watchdog-report.el`) reads the day files only when asked, never on a timer.
+`(nidhogg-watchdog-ranking &key since felt-only)` returns the GC row first (`:gc t`, the collections' count, felt,
+total, max and p50, the lines themselves and `nidhogg-watchdog-gc-row`'s numbers), then one row per package (the
+culprit's package, `unsampled` when a stall has none), biggest score first. A package's score is the sum, over its
+stalls whose non-GC time reaches the threshold, of that time minus the threshold, so many slightly slow stalls and
+one long one weigh alike. Each row has the count, felt count, total, max and p50 of non-GC ms, the mix of states and
+of phases (weighted by non-GC ms), the first and last time, a merged call tree of its stacks, and the same rows per
+signature under it. `:since` (a time) limits it to lines from then on, `:felt-only` to felt stalls and
+collections. `M-x nidhogg-watchdog-report` shows today's ranking in `*Nidhogg Watchdog*`: a header line (stalls,
+felt, the longest, collections and their max, the share of typing commands at 16 ms or more), the GC row and the
+packages with their signatures indented; RET opens a row's call tree, or on the GC row the day's collections; a
+prefix argument shows felt stalls only.
+Hangs (`-monitor.c`, `-sample.c`): past `nidhogg-watchdog-hang-ms` a stall is a hang, and its record says `:hang t`.
+The monitor switches the handler to names mode: outside a collection it also copies the symbol names (64 bytes at
+most, closures as `<lambda>`) of up to 32 frames below the innermost one, which stays a raw word, and publishes them
+to the monitor through a small seqlock. The monitor owns the hang file, `hang-PID-START.txt` in the log directory
+(START is the session's start in ns): it writes it through a temporary file (`open`, `write`, `fsync`, `rename`, and
+an `fsync` of the directory, held open while the monitor runs, after the hang's first rename) once a names-mode copy is
+in, then every 2 s, with the pid, the process start time (`/proc/self/stat` field 22) and the boot
+id (both read once at start), the hang's start, its duration, its phase and its latest stacks; it skips the rename
+when the span ended meanwhile, and deletes the file when the span has ended, before it parks. The main thread never
+touches the file. A stop inside a hang keeps it: SIGTERM, SIGHUP and SIGINT make Emacs run `kill-emacs` from the
+signal handler while Lisp is still busy, which turns the mode off, so `nidhogg-watchdog--stop` tells the monitor to
+keep the file when the span in progress is past the hang threshold. When `nidhogg-watchdog-mode` starts, every hang
+file whose process is gone (no such pid, or a pid with another start time or boot id) becomes a record with `:killed
+t`, `:hang-pid` and its stacks (names), run through `nidhogg-watchdog-record-functions` and written to the log, and
+is deleted; the session's own file (the mode turned off inside a hang without exiting) is only deleted. Rows:
+`watchdog-hang-tests.el` (names mode, the identity, the file's schema and its deletion, a span that ends during a
+write, using `nidhogg-watchdog--test-hang-now`, `--test-names` and `--test-hold-rename`) and
+`watchdog/hang-file-survives-kill`, `-sigterm` and `-sighup` in the timing group (a child killed by that signal during
+a 5 s hang; a fresh child records it).
 
 ## Reporting issues
 

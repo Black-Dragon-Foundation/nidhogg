@@ -91,6 +91,10 @@ extern void nhwl_handle_selection_clear (struct input_event *);
 #include TERM_HEADER
 #endif /* HAVE_WINDOW_SYSTEM */
 
+#ifdef HAVE_NIDHOGG_WATCHDOG
+#include "nidhogg-watchdog-phase.h"
+
+#endif
 #ifdef WINDOWSNT
 char const DEV_TTY[] = "CONOUT$";
 #else
@@ -1545,6 +1549,9 @@ command_loop_1 (void)
 	    update_redisplay_ticks (0, NULL);
 	    display_working_on_window_p = false;
 
+#ifdef HAVE_NIDHOGG_WATCHDOG
+	    nh_wd_command_start (Vthis_command);
+#endif
             calln (Qcommand_execute, Vthis_command);
 	    display_working_on_window_p = false;
 
@@ -3776,6 +3783,10 @@ kbd_buffer_store_buffered_event (union buffered_input_event *event,
   if (hold_quit && hold_quit->kind != NO_EVENT)
     return;
 
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  nh_wd_input_stored (&event->ie);
+
+#endif
   if (event->kind == ASCII_KEYSTROKE_EVENT)
     {
       int c = event->ie.code & 0377;
@@ -3853,6 +3864,9 @@ kbd_buffer_store_buffered_event (union buffered_input_event *event,
   if (kbd_fetch_ptr != next_slot)
     {
       *kbd_store_ptr = *event;
+#ifdef HAVE_NIDHOGG_WATCHDOG
+      nh_wd_input_buffered (&kbd_store_ptr->ie);
+#endif
       kbd_store_ptr = next_slot;
 #ifdef subprocesses
       if (kbd_buffer_nr_stored () > KBD_BUFFER_SIZE / 2
@@ -4199,6 +4213,9 @@ kbd_buffer_get_event (KBOARD **kbp,
   if (kbd_fetch_ptr != kbd_store_ptr)
     {
       union buffered_input_event *event = kbd_fetch_ptr;
+#ifdef HAVE_NIDHOGG_WATCHDOG
+      nh_wd_input_taken (&event->ie);
+#endif
 
       *kbp = event_to_kboard (&event->ie);
       if (*kbp == 0)

@@ -27,6 +27,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "syssignal.h"
 #include "pdumper.h"
 #include "keyboard.h"
+#ifdef HAVE_NIDHOGG_WATCHDOG
+#include "nidhogg-watchdog.h"
+#endif
 
 #ifdef HAVE_NS
 #include "nsterm.h"
@@ -615,6 +618,9 @@ really_call_select (void *arg)
   struct select_args *sa = arg;
   struct thread_state *self = current_thread;
   sigset_t oldset;
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  nh_wd_wait_enter (self, sa->timeout);
+#endif
 
   block_interrupt_signal (&oldset);
   self->not_holding_lock = 1;
@@ -623,6 +629,9 @@ really_call_select (void *arg)
 
   sa->result = (sa->func) (sa->max_fds, sa->rfds, sa->wfds, sa->efds,
 			   sa->timeout, sa->sigmask);
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  nh_wd_wait_leave (self);
+#endif
 
   release_select_lock ();
 

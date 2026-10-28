@@ -500,6 +500,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #ifdef HAVE_WINDOW_SYSTEM
 #include TERM_HEADER
 #endif /* HAVE_WINDOW_SYSTEM */
+#ifdef HAVE_NIDHOGG_WATCHDOG
+#include "nidhogg-watchdog-phase.h"
+#endif
 
 #ifndef FRAME_OUTPUT_DATA
 #define FRAME_OUTPUT_DATA(f) (NULL)
@@ -17421,6 +17424,9 @@ redisplay_internal (void)
   specpdl_ref count = SPECPDL_INDEX ();
   record_unwind_protect_void (unwind_redisplay);
   redisplaying_p = true;
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  nh_wd_redisplay_depth = nh_wd_phase_push (NH_WD_PH_REDISPLAY);
+#endif
   block_buffer_flips ();
   specbind (Qinhibit_free_realized_faces, Qnil);
 
@@ -18279,6 +18285,9 @@ redisplay_preserve_echo_area (int from_where)
 static void
 unwind_redisplay (void)
 {
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  nh_wd_phase_pop_to (nh_wd_redisplay_depth);
+#endif
   redisplaying_p = false;
   unblock_buffer_flips ();
 }

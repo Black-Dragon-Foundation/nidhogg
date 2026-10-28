@@ -28,7 +28,7 @@ run -- --dry-run --container fedora-44 --without-glitnir
 rcis 0; hasnt "--with-glitnir"; has "grep -vxE 'cargo|rust|rustc'"
 # low-memory-shrinks-or-refuses
 run NIDHOGG_BUILD_NPROC=16 NIDHOGG_BUILD_MEMORY_KB=$((5*1024*1024)) -- --dry-run --container fedora-45
-rcis 0; has "--memory 4g --memory-swap 4g"; has "make -j2"; has "/opt/nidhogg/31.1-nidhogg.2"
+rcis 0; has "--memory 4g --memory-swap 4g"; has "make -j2"; has "/opt/nidhogg/31.1-nidhogg.4"
 # the floor is 3 GiB available (MiB precision); cap and jobs are max(2, min(6, available - 1)) GiB
 run NIDHOGG_BUILD_NPROC=16 NIDHOGG_BUILD_MEMORY_KB=$((2969*1024)) -- --dry-run --container fedora-45   # 2.9 GiB
 rcis 1; has "needs 3072 MiB"; has "only 2969 MiB are available"
@@ -58,6 +58,13 @@ rcis 0; has "DESTDIR=/build/stage"; has "BUILDINFO"; has "/out:Z"; has "/src:ro,
 has 'lic=$pk/share/nidhogg/licenses'; has 'cp -a "$S/nidhogg/licenses/." "$lic/"'; has 'cp "$S/nidhogg/THIRD_PARTY.md" "$lic/"'
 run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --out dist/x.tar.xz
 rcis 0; has "Nidhogg.app"; has "BUILDINFO"
+# the stall watchdog is built in on every target unless --without-nidhogg-watchdog
+run -- --dry-run --container fedora-45
+rcis 0; has "--with-nidhogg-watchdog"
+run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n
+rcis 0; has "--with-nidhogg-watchdog"
+run -- --dry-run --container fedora-45 --without-nidhogg-watchdog
+rcis 0; hasnt "--with-nidhogg-watchdog"
 # --dev: native-compilation=yes, no JIT in the image, never packed, cache stamp carries the mode
 run -- --dry-run --container fedora-44 --dev
 rcis 0; has "--with-native-compilation=yes"; hasnt "--with-native-compilation=aot"; has "site-init.el"; has "MODE_ID=yes"; has "--with-tree-sitter"
