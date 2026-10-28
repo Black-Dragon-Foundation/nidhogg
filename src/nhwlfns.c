@@ -1829,7 +1829,6 @@ nhwl_tip_map (struct frame *tip_f, struct frame *pf, int width, int height,
   SET_FRAME_VISIBLE (tip_f, 1);
   out->has_been_visible = true;
   nhwl_backing_resize (tip_f);
-  out->nhist = 0;
   nhwl_damage_all (tip_f);
 }
 
@@ -1998,6 +1997,7 @@ DEFUN ("x-show-tip", Fx_show_tip, Sx_show_tip, 1, 6, 0,
   nhwl_tip_map (tip_f, pf, width, height, ax, ay);
   w->must_be_updated_p = true;
   update_single_window (w);
+  nhwl_publish (tip_f);
   flush_frame (tip_f);
   set_buffer_internal_1 (old_buffer);
   unbind_to (count_1, Qnil);

@@ -224,15 +224,6 @@ pub trait ShellBackend {
     /// `NHSHELL_ACK_CONTENT` says the ack changes what the window shows (a new size, the first configure, a client
     /// side state change): it is sent only with a buffer.  The flag is sticky until a buffer carries the ack.
     fn ack_configure(&mut self, window: WindowId, serial: u32, flags: u32) -> ShellResult;
-    /// The host drew something: `FRAME_READY` follows when the window's pacer lets it present.
-    fn window_dirty(&mut self, window: WindowId) -> ShellResult;
-    /// The `NHSHELL_READY_*` bits: what the pacer lets the host do now (0: nothing).  Reporting `CONTENT` takes the
-    /// draw (the pacer is not ready again until `window_dirty`, unless a content ack is held).
-    fn window_ready(&mut self, window: WindowId) -> ShellResult<u32>;
-    /// A commit without a buffer, frame callback or feedback: a bare ack, and the surface state the window owes.
-    /// This call, `window_dirty`, `window_ready`, `present_begin` and `present_commit` are the host-driven presenter,
-    /// kept until the host publishes (`publish`, `present_tree`).
-    fn present_bare(&mut self, window: WindowId) -> ShellResult;
     fn set_cursor(&mut self, window: WindowId, shape: u32) -> ShellResult;
     /// The Xcursor theme (`name`, logical `size`) used where the compositor has no cursor-shape protocol.
     fn set_cursor_theme(&mut self, name: &str, size: u32) -> ShellResult;
@@ -289,16 +280,6 @@ pub trait ShellBackend {
     /// for windows that are not popups (their buffers set their sizes).
     fn set_size(&mut self, window: WindowId, w: i32, h: i32) -> ShellResult<bool>;
 
-    /// Begin a frame of `dev_w` x `dev_h` device pixels.
-    fn present_begin(
-        &mut self,
-        window: WindowId,
-        dev_w: i32,
-        dev_h: i32,
-    ) -> ShellResult<NhShellBuffer>;
-    /// Show the begun buffer; `damage` is in device pixels.
-    fn present_commit(&mut self, window: WindowId, damage: &[Rect]) -> ShellResult;
-
     /// Own selection `kind` (`NHSHELL_SEL_*`) with these MIME types and bytes (copied); other clients' pastes are
     /// answered from the copy.  `State` without keyboard focus.
     fn selection_own(&mut self, kind: u32, items: &[(&str, &[u8])]) -> ShellResult;
@@ -335,7 +316,8 @@ pub trait ShellBackend {
     fn take_text(&mut self, id: u32) -> ShellResult<Vec<u8>>;
 
     /// Publish the tree of root `root` at a consistency point: one frame per drawable surface, the root first, then
-    /// its child windows deepest first.  Each surface's scene is committed and its damaged pixels copied; nothing is
+    /// its child windows deepest first.  The shell presents: `FRAME_READY` comes for roots only, when the tree's pacer
+    /// lets it present (inline mode), and the host answers with `present_tree`.  Each surface's scene is committed and its damaged pixels copied; nothing is
     /// read after the call.  `true` when a packet was queued (damage, or a content ack that waits for a picture drawn
     /// after it).  `t_key_ns` is the key the picture answers (0: none).
     fn publish(

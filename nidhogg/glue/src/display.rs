@@ -5,6 +5,7 @@ use crate::action::Actions;
 use crate::backing::Backings;
 use crate::frame::{Frame, NHG_FRAME_KINDS};
 use crate::guard::{GlueError, PanicReport};
+use crate::present::Presenting;
 use nhshell::api::{BackendThread, ShellBackend};
 use nhshell::ffi::{NhShell, nhshell_close};
 use std::collections::{BTreeMap, BTreeSet};
@@ -36,12 +37,14 @@ pub struct Display {
     frames: BTreeMap<u64, Frame>,
     /// Windows forgotten since they were last registered: calls naming them are refused.
     forgotten: BTreeSet<u64>,
-    /// Each frame's backing, layer and pending damage, keyed by its Glitnir root id (`backing.rs`).
+    /// Each frame's backing and layer, keyed by its Glitnir root id (`backing.rs`).
     pub(crate) backings: Backings,
     /// The last `nhg_next`'s actions, kept until the next one (`action.rs`).
     pub(crate) actions: Actions,
     /// Windows whose configure ack waits for C to apply the configure (`configure.rs`).
     pub(crate) acks_due: Vec<u64>,
+    /// The presenting mode (`present.rs`).
+    pub(crate) presenting: Presenting,
 }
 
 impl Drop for Display {
@@ -71,6 +74,7 @@ impl NhgDisplay {
                 backings: Backings::default(),
                 actions: Actions::default(),
                 acks_due: Vec::new(),
+                presenting: Presenting::default(),
             }),
         }
     }
@@ -128,6 +132,14 @@ impl Display {
     /// The shell handle (valid until the display is dropped).
     pub fn shell(&mut self) -> *mut NhShell {
         self.shell.as_ptr()
+    }
+
+    /// The shell's backend, the backings and the presenting mode, borrowed at once.
+    pub(crate) fn presenting(&mut self) -> (&mut dyn ShellBackend, &Backings, &mut Presenting) {
+        // SAFETY: the handle came from `nhshell_open` and lives as long as the display; C reaches it through
+        // `nhg_shell` only between glue calls, so this is its one borrow while `self` is borrowed.
+        let backend = unsafe { self.shell.as_mut() }.backend_mut();
+        (backend, &self.backings, &mut self.presenting)
     }
 
     /// Register `window` (a shell window id) as a frame of kind `flags`.  A window forgotten earlier may be
