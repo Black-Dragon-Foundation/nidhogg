@@ -456,6 +456,35 @@ Return (STATUS CODE AUTO-SAVED-BYTES)."
                            "one\ntwo\nthree\nfour\nfive\nsix\n"))
             (nidhogg-workers--release 'before-done)))))))
 
+(ert-deftest workers/autosave-hung-skip-not-saved ()
+  ;; The auto-save skipped for a hung job writes nothing, though
+  ;; do-auto-save counts it as done: once the job lands and the 20
+  ;; minutes are over, the next auto-save writes the skipped text, with
+  ;; no edit after it.
+  (let ((nidhogg-workers--mode 'threads)
+        (nidhogg-workers-autosave t))
+    (workers-autosave-tests--in-dir dir
+      (let* ((file (expand-file-name "s.txt" dir))
+             (auto (expand-file-name "#s.txt#" dir))
+             (buf (workers-autosave-tests--visit file "one\n"))
+             (warnings nil))
+        (with-current-buffer buf
+          (workers-autosave-tests--warnings warnings
+            (workers-autosave-tests--autosave t)
+            (nidhogg-workers--test-save-age 61)
+            (insert "two\n")
+            (nidhogg-workers--test-keyboard-auto-save t)
+            (should (string-match-p "not finished in 60 seconds"
+                                    (cadr (car warnings))))
+            (nidhogg-workers--release 'before-write)
+            (should (nidhogg-workers--test-save-await 5000))
+            (should (equal (workers-autosave-tests--bytes auto) "one\n"))
+            (clear-buffer-auto-save-failure)
+            (let ((nidhogg-workers-autosave nil))
+              (do-auto-save t))
+            (should (equal (workers-autosave-tests--bytes auto)
+                           "one\ntwo\n"))))))))
+
 (defun workers-autosave-tests--random-string (n)
   "A random multibyte string of N characters, raw bytes included.
 Built from a list of characters: `aset' refuses a non-ASCII character
