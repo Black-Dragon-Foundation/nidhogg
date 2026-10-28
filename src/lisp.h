@@ -4316,6 +4316,7 @@ extern void syms_of_image (void);
 extern void syms_of_json (void);
 #ifdef HAVE_GLITNIR
 extern void syms_of_nidhogg_glitnir (void);
+extern bool glitnir_box_key_ok (Lisp_Object, Lisp_Object);
 #endif
 
 /* Defined in insdel.c.  */
