@@ -281,6 +281,7 @@ struct nh_ts_job
   TSTree *result;		/* the worker's parse; NULL if cancelled */
   ptrdiff_t gen, visible_beg, visible_end;
   ptrdiff_t stat[3];		/* (treesit-subtree-stat) of the result's root */
+  bool stat_valid;		/* STAT was computed (full parses only) */
   /* The edit log: its entries (malloc), how many, the room, and the
      parser's edit generation it brings the job's tree to.  */
   struct nh_ts_edit *log;
@@ -482,6 +483,9 @@ nh_ts_job_run (struct nh_wk_job *job)
 {
   struct nh_ts_job *t = (struct nh_ts_job *) job;
   TSTree *tree = NULL;
+  /* A full parse: the first of a buffer, the only one whose statistics
+     anybody asks for (`treesit-subtree-stat' at mode setup).  */
+  bool full = !t->old;
 
 #ifdef __linux__
   t->policy = sched_getscheduler (0);
@@ -498,7 +502,6 @@ nh_ts_job_run (struct nh_wk_job *job)
 			.encoding = TSInputEncodingUTF8 };
       TSParseOptions opts = { .payload = t,
 			      .progress_callback = nh_ts_progress };
-      bool full = !t->old;
       int64_t t0 = nh_ts_now ();
       tree = ts_parser_parse_with_options (p, t->old, input, opts);
       /* A cancelled parse is never resumed (§7.2).  */
@@ -512,7 +515,8 @@ nh_ts_job_run (struct nh_wk_job *job)
   if (t->old)
     ts_tree_delete (t->old);
   t->old = NULL;
-  if (tree)
+  t->stat_valid = tree && full;
+  if (t->stat_valid)
     nh_ts_stat_walk (ts_tree_root_node (tree), t->stat);
   t->result = tree;
   nh_wk_pause_point (NH_WK_P_BEFORE_DONE);
@@ -1035,6 +1039,8 @@ nh_ts_publish (Lisp_Object parser, void **tree)
       /* The worker's statistics are of the tree before the edits.  */
       p->nh_stat_timestamp = -1;
     }
+  else if (!t->stat_valid)
+    p->nh_stat_timestamp = -1;
   else
     {
       memcpy (p->nh_stat, t->stat, sizeof p->nh_stat);
