@@ -8394,6 +8394,11 @@ nh_img_sync_load (struct frame *f, struct image *img, int fmt, bool *ok)
 	return false;
       encoded = ENCODE_FILE (file);
       p.file = SSDATA (encoded);
+      /* The cores read whole regular files only: anything else (a
+	 device, a FIFO) keeps upstream's loader and its errors.  */
+      struct stat st;
+      if (stat (p.file, &st) != 0 || !S_ISREG (st.st_mode))
+	return false;
     }
   else if (STRINGP (spec_data))
     {
