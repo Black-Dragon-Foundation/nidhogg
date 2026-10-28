@@ -691,6 +691,36 @@ int32_t nhg_session_id (NhgDisplay *d, char *buf, size_t cap, size_t *len);
    replaced one, an unnamed or unknown window).  */
 int32_t nhg_session_remove (NhgDisplay *d, uint64_t window);
 
+/* ---- The drop target -------------------------------------------------------------------------------------------
+   A drag from another client comes out of nhg_next as NHG_ACT_DND_* actions for the window under the pointer: DX, DY
+   the position in device pixels, TIME_MS the compositor's drag time (hand it back to nhg_dnd_status and
+   nhg_dnd_finish), CODE the action (NHSHELL_DND_*; 0: none), the source's preferred one for ENTER and MOTION, the
+   chosen one for DROP.  LEAVE has the window only.  The offer is read as selection NHSHELL_SEL_DND (2) with
+   nhg_selection_types and nhg_selection_read, from the enter until the leave or the finish.  The shell sends no LEAVE
+   after a DROP.  */
+#define NHG_ACT_DND_ENTER       32
+#define NHG_ACT_DND_MOTION      33
+#define NHG_ACT_DND_LEAVE       34
+#define NHG_ACT_DND_DROP        35
+
+#define NHG_SEL_DND              2   /* the offer's KIND for nhg_selection_types, _owned and _read (NHSHELL_SEL_DND) */
+#define NHG_DND_COPY             1   /* the actions (NHSHELL_DND_*) */
+#define NHG_DND_MOVE             2
+#define NHG_DND_ASK              4
+
+/* Register the N types a drop on WINDOW takes, replacing its list (none: any).  NHG_E_STATE for a window that is not a
+   frame.  */
+int32_t nhg_dnd_register (NhgDisplay *d, uint64_t window, const char *const *mimes, size_t n);
+
+/* Accept the current drag for ACTION (NHSHELL_DND_*, one bit; 0 accepts nothing) with the type last read from the offer
+   (else its first).  1 when the shell was told, 0 for a call older than the drag's enter or without a drag.  */
+int32_t nhg_dnd_status (NhgDisplay *d, uint32_t action, uint32_t time_ms);
+
+/* Finish the drop: SUCCESS non-zero when its action was performed.  The offer is destroyed either way.  1 when the
+   source was told, 0 for a stale call, without a dropped offer, or with nothing to tell the source.  Call it after every
+   DROP, whatever happened to the data.  */
+int32_t nhg_dnd_finish (NhgDisplay *d, int32_t success, uint32_t time_ms);
+
 #ifdef __cplusplus
 }
 #endif

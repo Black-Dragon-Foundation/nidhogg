@@ -12,6 +12,7 @@ use crate::action::{
 use crate::configure;
 use crate::csd;
 use crate::display::Display;
+use crate::dnd;
 use crate::focus;
 use crate::guard::GlueError;
 use crate::ime;
@@ -65,6 +66,10 @@ pub fn next(state: &mut Display, input: NhgNextIn) -> Result<i32, GlueError> {
                 pointer::event(state, &ev)
             }
         }
+        NHSHELL_EV_DND_ENTER
+        | NHSHELL_EV_DND_MOTION
+        | NHSHELL_EV_DND_LEAVE
+        | NHSHELL_EV_DND_DROP => dnd::event(state, &ev),
         // a popup frame's dismissal (a tip's is taken in the guard)
         NHSHELL_EV_POPUP_DONE if !tip::popup_done(state, &ev) => {
             popup::popup_done(state, &ev);
