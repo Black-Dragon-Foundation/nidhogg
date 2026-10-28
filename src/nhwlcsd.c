@@ -94,6 +94,9 @@ nhwl_csd_layout (struct frame *f)
       nhwl_child_layout (f);
       return;
     }
+  /* A popup frame has neither title bar nor margins.  */
+  if (nhwl_popup_frame_p (f))
+    return;
   /* The window's own answer: the compositor may grant one window server
      decorations and refuse another.  */
   c->on = (dpyinfo->shell

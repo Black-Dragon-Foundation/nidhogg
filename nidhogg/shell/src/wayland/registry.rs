@@ -12,7 +12,7 @@ use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
 /// The highest version of each global this crate's code is written against.  A newer version can change what an
 /// event means (wl_seat 10's repeated key state, wl_compositor 7), so these are raised by the task that handles it,
 /// not by a protocol update.
-pub const SUPPORTED: [(&str, u32); 26] = [
+pub const SUPPORTED: [(&str, u32); 27] = [
     ("wl_compositor", 6),
     ("wl_subcompositor", 1),
     ("wl_shm", 2),
@@ -39,6 +39,7 @@ pub const SUPPORTED: [(&str, u32); 26] = [
     ("zwp_idle_inhibit_manager_v1", 1),
     ("wp_single_pixel_buffer_manager_v1", 1),
     ("zwp_linux_dmabuf_v1", 4),
+    ("zxdg_exporter_v2", 1),
 ];
 
 pub fn supported(interface: &str) -> Option<u32> {
