@@ -1009,6 +1009,108 @@ judge the second connection."
      (nhwl-gui--live-settle 0.5)
      (should (seq-every-p #'frame-live-p frames)))))
 
+;; W2 Task 13: the Lisp menu (lisp/term/nhwl-menu.el).  `x-popup-menu' runs its own loop, so the keys are typed by
+;; a timer once the menu's popup shows.  The recorder gives a grabbing popup the keyboard when told (`focus'), as a
+;; compositor does; special keys go by evdev code (Down 108, Up 103, Enter 28, Esc 1, Space 57), characters by text.
+
+(defun nhwl-gui--menu-keymap ()
+  "A menu of Alpha, Beta (disabled) and Gamma."
+  (let ((map (make-sparse-keymap "Menu")))
+    (define-key map [alpha] '(menu-item "Alpha" ignore))
+    (define-key map [beta] '(menu-item "Beta" ignore :enable nil))
+    (define-key map [gamma] '(menu-item "Gamma" ignore))
+    map))
+
+(defun nhwl-gui--menu-send (key)
+  "Type KEY on the recorder's keyboard: a string is text, a number an evdev code."
+  (if (stringp key)
+      (gui-runner-recorder (list :cmd "key" :text key))
+    (gui-runner-recorder (list :cmd "key" :keycode key :state "press"))
+    (gui-runner-recorder (list :cmd "key" :keycode key :state "release"))))
+
+(defun nhwl-gui--menu-run (menu on-open)
+  "Open MENU at the pointer after a click and return what `x-popup-menu' returns, or `timeout' after 10 s.
+Once its popup shows, the keyboard goes to it and ON-OPEN is called with the popup's id (from a timer: it must not
+read events).  The popup is gone afterwards."
+  (let ((before (nhwl-gui--popup-ids)) (timer nil) (result nil))
+    (nhwl-gui--press-serial)
+    (setq timer (run-at-time 0.1 0.1
+                             (lambda ()
+                               (let ((new (seq-difference (nhwl-gui--popup-ids) before)))
+                                 (when new
+                                   (cancel-timer timer)
+                                   (gui-runner-recorder (list :cmd "focus" :surface (car new)))
+                                   (funcall on-open (car new)))))))
+    (unwind-protect
+        (setq result (with-timeout (10 'timeout) (x-popup-menu t menu)))
+      (cancel-timer timer))
+    (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (equal (nhwl-gui--popup-ids) before)) 5))
+    result))
+
+(defun nhwl-gui--menu-typing (menu keys)
+  "Open MENU and type KEYS (see `nhwl-gui--menu-send') once it shows; the result."
+  (nhwl-gui--menu-run menu (lambda (_id) (dolist (k keys) (nhwl-gui--menu-send k)))))
+
+(ert-deftest nhwl-gui/menu-keyboard-select ()
+  "Down then Return chooses the first item: the result is the list of keys, one here."
+  :tags '(gnome-smoke)
+  (skip-unless (nhwl-gui--recorder-p))
+  (should (equal (nhwl-gui--menu-typing (nhwl-gui--menu-keymap) '(108 28)) '(alpha)))
+  ;; the same menu opens again after it closed
+  (should (equal (nhwl-gui--menu-typing (nhwl-gui--menu-keymap) '(103 28)) '(gamma))))
+
+(ert-deftest nhwl-gui/menu-escape-returns-nil ()
+  (skip-unless (nhwl-gui--recorder-p))
+  (should-not (nhwl-gui--menu-typing (nhwl-gui--menu-keymap) '(108 1)))
+  (should (nhwl-gui--connected-p)))
+
+(ert-deftest nhwl-gui/menu-type-ahead-jumps ()
+  "A letter selects the next item that starts with it (either case); Return chooses it."
+  (skip-unless (nhwl-gui--recorder-p))
+  (should (equal (nhwl-gui--menu-typing (nhwl-gui--menu-keymap) '("g" 28)) '(gamma)))
+  (should (equal (nhwl-gui--menu-typing (nhwl-gui--menu-keymap) '("G" 28)) '(gamma))))
+
+(ert-deftest nhwl-gui/menu-disabled-item-skipped ()
+  "Down from Alpha lands on Gamma, not the disabled Beta; typing b selects nothing, so Return chooses nothing."
+  (skip-unless (nhwl-gui--recorder-p))
+  (should (equal (nhwl-gui--menu-typing (nhwl-gui--menu-keymap) '(108 108 28)) '(gamma)))
+  (should-not (nhwl-gui--menu-typing (nhwl-gui--menu-keymap) '("b" 28 1))))
+
+(ert-deftest nhwl-gui/menu-keys-never-reach-the-buffer ()
+  "Keys typed while the menu is open leave the buffer unchanged and cause no focus-out of the frame under it; once
+the menu has closed, a key arrives in the frame again."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((buf (generate-new-buffer " *nhwl-menu-keys*")) (outs 0) (parent (selected-frame))
+        (count (lambda () (setq outs (1+ outs)))))
+    (unwind-protect
+        (progn
+          (set-window-buffer (selected-window) buf)
+          (nhwl-gui--focus-toplevel)
+          (nhwl-gui--pump)
+          (add-hook 'focus-out-hook count)
+          (should-not (nhwl-gui--menu-typing (nhwl-gui--menu-keymap) '("x" "y" 108 "z" 1)))
+          (should (equal (with-current-buffer buf (buffer-string)) ""))
+          (should (= outs 0))
+          (should (eq (frame-focus-state parent) t))
+          (nhwl-gui--focus-toplevel)
+          (should (eq (nhwl-gui--key-frame ?x) parent)))
+      (remove-hook 'focus-out-hook count)
+      (kill-buffer buf))))
+
+(ert-deftest nhwl-gui/menu-open-commits-nothing-while-idle ()
+  "An open menu that nobody touches commits nothing on its popup (strict): 0.5 s after it shows to 2.5 s."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((mark nil) (commits :unset))
+    (should-not
+     (nhwl-gui--menu-run
+      (nhwl-gui--menu-keymap)
+      (lambda (_id)
+        (run-at-time 0.5 nil (lambda () (setq mark (nhwl-gui--mark))))
+        (run-at-time 2.5 nil (lambda ()
+                               (setq commits (and mark (length (nhwl-gui--popup-commits mark))))
+                               (nhwl-gui--menu-send 1))))))
+    (should (eql commits 0))))
+
 (provide 'nhwl-gui-w2-tests)
 
 ;;; nhwl-gui-w2-tests.el ends here
