@@ -1151,3 +1151,52 @@ nhg_export! {
         crate::popup::hide(state, window, owner)
     }
 }
+
+// ---- Window layers (`layers.rs`) -----------------------------------------------------------------------------------
+//
+// WINDOW is the frame's shell window (the opaque-root check reads it), FRAME its key.  FLAGS are `NHG_LAYERS_*`:
+// `nhwl-scroll-layers` and the frame's `alpha-background`.
+
+nhg_export! {
+    /// `nhg_scroll` for Emacs window `w_seq` at `rect` (`window_box (w, ANY_AREA)`, with the native area's origin): a
+    /// full-window scroll on an opaque root makes the window its own output first, a changed rectangle or a frame no
+    /// longer eligible makes it part of the frame again.  1 when the window is its own output now, else 0.  Writes
+    /// pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_scroll_window(d: *mut NhgDisplay, window: u64, frame: u64, w_seq: u64, rect: NhgRect, run: NhgRect, to_y: i32, flags: u32) -> i32 |state| {
+        let own = crate::layers::scroll(state, window, frame, w_seq, rect, run, to_y, flags)?;
+        Ok(i32::from(own))
+    }
+}
+
+nhg_export! {
+    /// The frame is about to be published and its Emacs windows are the `n` at `windows`: own outputs that are gone,
+    /// resized or idle, or all of them when the frame is no longer an opaque root, become part of the frame again.
+    /// Returns how many stay own outputs.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `windows` holds `n` readable records, or is null when `n` is 0.
+    fn nhg_layers_sync(d: *mut NhgDisplay, window: u64, frame: u64, windows: *const crate::layers::NhgLayerWindow, n: usize, flags: u32) -> i32 |state| {
+        let w = match (n, windows.is_null()) {
+            (0, _) => &[][..],
+            (_, true) => return Err(GlueError::Arg),
+            // SAFETY: non-null, with `n` readable records (the caller's promise).
+            _ => unsafe { std::slice::from_raw_parts(windows, n) },
+        };
+        let left = crate::layers::sync(state, window, frame, w, flags)?;
+        Ok(i32::try_from(left).unwrap_or(i32::MAX))
+    }
+}
+
+nhg_export! {
+    /// How many of the frame's Emacs windows are their own outputs (0 for a frame without a backing).
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_layers_count(d: *mut NhgDisplay, frame: u64) -> i32 |state| {
+        let n = crate::layers::count(&mut state.backings, frame);
+        Ok(i32::try_from(n).unwrap_or(i32::MAX))
+    }
+}
