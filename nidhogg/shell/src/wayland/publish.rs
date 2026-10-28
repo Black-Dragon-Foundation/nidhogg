@@ -15,9 +15,14 @@
 //! presenter thread (`presenter.rs`) owns the stage and drains the mailbox when woken.  The host learns which fronts the
 //! presenter dropped through the mailbox, at its next publish: the presenter drops fronts only while the mailbox is
 //! empty and no publish is between its copy decision and its push.
+//!
+//! A window that is its own output (a content layer, `layers.rs`) is left out of its frame's damage.  The patch
+//! carries its damage too, and a full-window scroll moves the front's rows as it moved the backing's, so the front
+//! stays the whole picture; the output's changes wait, merged, for its layer's next commit.
 
 use crate::api::*;
 use crate::wayland::WaylandShell;
+use crate::wayland::layers::Pending;
 use crate::wayland::presenter::Counters;
 use crate::wayland::scale::SCALE_ONE;
 use glitnir::committed::Committed;
@@ -25,7 +30,7 @@ use glitnir::compose::{Composer, SourceView, TargetView, compose_committed};
 use glitnir::geom::Rect;
 use glitnir::pool::IDLE_NS;
 use glitnir::stats::StatsEntry;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -220,16 +225,36 @@ impl Front {
         }
     }
 
+    /// Move the rows of `r` by `dy` (negative: up) within the front, as the host's backing moved them; a row whose
+    /// source lies outside the front keeps its pixels (it is damage).
+    fn scroll(&mut self, r: &Rect, dy: i32) {
+        let r = r.intersect(&Rect::new(0, 0, self.w, self.h));
+        if r.is_empty() || dy == 0 {
+            return;
+        }
+        let (fw, x, w) = (self.w as usize, r.x as usize, r.w as usize);
+        for i in 0..r.h {
+            // rows are moved away from the direction of travel first, so no source is overwritten before it is read
+            let y = if dy > 0 { r.y + r.h - 1 - i } else { r.y + i };
+            let from = y - dy;
+            if (0..self.h).contains(&from) {
+                let at = from as usize * fw + x;
+                self.data.copy_within(at..at + w, y as usize * fw + x);
+            }
+        }
+    }
+
     /// The plain copy when there is nothing to compose with: each pixel at its own place, within `clips`.
     fn copy_to(&self, t: &mut TargetView, clips: &[Rect]) {
         let bounds = Rect::new(0, 0, self.w, self.h).intersect(&t.rect);
+        let (ox, oy) = (t.rect.x, t.rect.y);
         for r in clips.iter().map(|r| r.intersect(&bounds)) {
             if r.is_empty() {
                 continue;
             }
             for y in r.y..r.y + r.h {
                 let from = y as usize * self.w as usize + r.x as usize;
-                let to = y as usize * t.stride + r.x as usize;
+                let to = (y - oy) as usize * t.stride + (r.x - ox) as usize;
                 t.data[to..to + r.w as usize]
                     .copy_from_slice(&self.data[from..from + r.w as usize]);
             }
@@ -274,6 +299,8 @@ struct Surface {
     hist: VecDeque<Vec<Rect>>,
     /// The latest publish that listed it.
     last_ns: u64,
+    /// Each own output's changes since its layer's last commit, by layer id.
+    outs: BTreeMap<u64, Pending>,
 }
 
 /// The presenter's side: fronts, merged packets, the display's composer and the counters.
@@ -321,7 +348,7 @@ impl Stage {
     pub fn next_trim(&self) -> Option<u64> {
         self.surfaces
             .values()
-            .filter(|s| s.front.is_some() && s.damage.is_empty())
+            .filter(|s| s.front.is_some() && s.damage.is_empty() && s.outs.is_empty())
             .map(|s| s.last_ns + IDLE_NS)
             .min()
     }
@@ -351,8 +378,17 @@ impl Stage {
                 .front
                 .as_ref()
                 .is_some_and(|f| (f.w, f.h) == (part.w, part.h));
+            let outputs = part
+                .scene
+                .as_ref()
+                .map_or(&[][..], |c| c.outputs.as_slice());
             if part.full || !size_ok {
                 s.front = Some(Front::new(part.w, part.h));
+            } else if let Some(front) = &mut s.front {
+                // the backing's rows moved before the host drew the ones a scroll exposed
+                for o in outputs.iter().filter(|o| !o.full) {
+                    front.scroll(&o.rect, o.scroll);
+                }
             }
             if let Some(front) = &mut s.front {
                 let mut at = 0;
@@ -360,6 +396,13 @@ impl Stage {
                     let n = r.w as usize * r.h as usize;
                     front.write(r, &part.patch[at..at + n]);
                     at += n;
+                }
+            }
+            let outs_changed = Pending::merge_all(&mut s.outs, outputs);
+            if part.window != p.root {
+                // only a root's windows get layers: a child's own outputs are its damage
+                for o in std::mem::take(&mut s.outs).into_values() {
+                    s.damage.extend(o.root_rects());
                 }
             }
             patches.give(part.patch);
@@ -372,7 +415,7 @@ impl Stage {
             s.alpha_cut = part.alpha_cut;
             s.scale = part.scale;
             s.last_ns = p.t_publish_ns;
-            if !part.damage.is_empty() && s.draw_start_ns == 0 {
+            if (!part.damage.is_empty() || outs_changed) && s.draw_start_ns == 0 {
                 s.draw_start_ns = p.t_publish_ns;
             }
             s.damage_px += part.damage.iter().map(Rect::area).sum::<u64>();
@@ -462,6 +505,24 @@ impl Stage {
     /// Surface `id`'s buffer was committed: its stats entry (with the tree's key time when it is the root), and its
     /// damage joins the history.
     pub fn presented(&mut self, id: u64) {
+        self.record(id);
+        if let Some(s) = self.surfaces.get_mut(&id) {
+            s.hist.push_front(std::mem::take(&mut s.damage));
+            s.hist.truncate(HIST);
+        }
+        Counters::add(&self.stats.commits, 1);
+    }
+
+    /// Root `root`'s tree showed new pixels on its content layers alone: its stats entry and key time, unless the
+    /// root's own damage still waits (its buffer's commit records them).
+    pub fn presented_layers(&mut self, root: u64) {
+        if !self.damaged(root) {
+            self.record(root);
+        }
+    }
+
+    /// Surface `id`'s stats entry for a commit that showed what waited (with the tree's key time when it is the root).
+    fn record(&mut self, id: u64) {
         let Some(s) = self.surfaces.get_mut(&id) else {
             return;
         };
@@ -483,19 +544,93 @@ impl Stage {
         };
         self.composer.fill_stats(s.glitnir_root, &mut e);
         glitnir::stats::record(s.glitnir_root, e);
-        s.hist.push_front(std::mem::take(&mut s.damage));
-        s.hist.truncate(HIST);
         s.draw_start_ns = 0;
         s.damage_px = 0;
         s.painted_px = 0;
+    }
+
+    /// The own outputs of root `root`'s newest scene: layer id and rectangle (root device px), in paint order.
+    pub fn outputs(&self, root: u64) -> Vec<(u64, Rect)> {
+        self.surfaces
+            .get(&root)
+            .and_then(|s| s.scene.as_ref())
+            .map_or_else(Vec::new, |c| {
+                c.outputs.iter().map(|o| (o.layer, o.rect)).collect()
+            })
+    }
+
+    /// Root `root`'s own outputs have changes waiting for their layers.
+    pub fn outputs_pending(&self, root: u64) -> bool {
+        self.surfaces.get(&root).is_some_and(|s| !s.outs.is_empty())
+    }
+
+    /// What waits for layer `layer` of root `root`.
+    pub fn pending(&self, root: u64, layer: u64) -> Option<&Pending> {
+        self.surfaces.get(&root)?.outs.get(&layer)
+    }
+
+    /// Layer `layer` of root `root` committed what waited for it.
+    pub fn take_pending(&mut self, root: u64, layer: u64) {
+        if let Some(s) = self.surfaces.get_mut(&root) {
+            s.outs.remove(&layer);
+        }
         Counters::add(&self.stats.commits, 1);
+    }
+
+    /// No layer can show root `root`'s own outputs (no subcompositor or viewporter): what waits for them becomes the
+    /// frame's damage, composed from the front like the rest.
+    pub fn fold_outputs(&mut self, root: u64) {
+        if let Some(s) = self.surfaces.get_mut(&root) {
+            for p in std::mem::take(&mut s.outs).into_values() {
+                s.damage.extend(p.root_rects());
+            }
+        }
+    }
+
+    /// Compose root `root`'s picture within `clips` (root device px) from the root's front into `data` (`stride`
+    /// pixels a row): a content layer's view, which lies at `rect` in the root.
+    pub fn compose_output(
+        &mut self,
+        root: u64,
+        data: &mut [u32],
+        stride: usize,
+        rect: Rect,
+        clips: &[Rect],
+    ) {
+        let Stage {
+            surfaces, composer, ..
+        } = self;
+        let Some(s) = surfaces.get(&root) else {
+            return;
+        };
+        let Some(front) = &s.front else {
+            return;
+        };
+        let mut t = TargetView {
+            data,
+            stride,
+            rect,
+            scale: s.scale,
+        };
+        let src = front.view(s.glitnir_root, s.src, s.scale);
+        let composed = s
+            .scene
+            .as_ref()
+            .is_some_and(|c| compose_committed(c, composer, &mut t, clips, &[src]).is_ok());
+        if !composed {
+            front.copy_to(&mut t, clips);
+        }
     }
 
     /// Drop the fronts of surfaces with no publish for the pool's quiet period and nothing waiting; their windows.
     pub fn trim(&mut self, now: u64) -> Vec<u64> {
         let mut out = Vec::new();
         for (id, s) in &mut self.surfaces {
-            if s.front.is_some() && s.damage.is_empty() && now.saturating_sub(s.last_ns) > IDLE_NS {
+            if s.front.is_some()
+                && s.damage.is_empty()
+                && s.outs.is_empty()
+                && now.saturating_sub(s.last_ns) > IDLE_NS
+            {
                 s.front = None;
                 out.push(*id);
             }
@@ -608,7 +743,13 @@ impl WaylandShell {
             .filter(|f| f.flags & NHSHELL_SF_DRAWABLE != 0)
             .map(|f| (f, commit_scene(f.glitnir_root, f.w, f.h)))
             .collect();
-        let damaged = committed.iter().any(|(_, (r, _))| !r.is_empty());
+        // a content layer's scroll or drawing is something new too, though its frame's damage leaves it out
+        let damaged = committed.iter().any(|(_, (r, scene))| {
+            !r.is_empty()
+                || scene
+                    .as_ref()
+                    .is_some_and(|c| c.outputs.iter().any(Pending::changes))
+        });
         if !damaged && !self.main.present_wants_packet(root) {
             return Ok(false);
         }
@@ -621,10 +762,21 @@ impl WaylandShell {
         let mut parts = Vec::with_capacity(committed.len());
         for (f, (damage, scene)) in committed {
             let full = self.presenting.fronts.get(&f.window) != Some(&(f.w, f.h));
+            let all = Rect::new(0, 0, f.w, f.h);
             let rects = if full {
-                vec![Rect::new(0, 0, f.w, f.h)]
+                vec![all]
             } else {
-                damage.clone()
+                // the own outputs' damage goes into the front too: it is the whole picture
+                let outputs = scene.as_ref().map_or(&[][..], |c| c.outputs.as_slice());
+                let mut v = damage.clone();
+                v.extend(
+                    outputs
+                        .iter()
+                        .flat_map(|o| Pending::from_frame(o).root_rects())
+                        .map(|r| r.intersect(&all))
+                        .filter(|r| !r.is_empty()),
+                );
+                v
             };
             let mut patch = mail.patches.take();
             for r in &rects {

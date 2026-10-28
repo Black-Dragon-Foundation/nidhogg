@@ -26,11 +26,13 @@
 //! `Commit` record; only presenting commits a registered tree.  The host's thread keeps creating objects, setting
 //! roles up, immediate requests and destroying, which happens under the tree's mutex (the root's `Present`) and
 //! retires the window.  The root's `Present` also lists the tree's child windows, so that presenting needs nothing of
-//! the host's state; the lock order is the root's mutex, then a child's.
+//! the host's state; the lock order is the root's mutex, then a child's.  It holds the root's content layers too
+//! (`layers.rs`), committed with the descendants, before the root.
 
 use crate::api::*;
 use crate::event::*;
 use crate::wayland::conn::Shared;
+use crate::wayland::layers::{ContentLayer, LayerJob};
 use crate::wayland::presenter::{Counters, DEFAULT_REFRESH_NS, Link, Wire};
 use crate::wayland::publish::Stage;
 use crate::wayland::reader::ReaderState;
@@ -161,6 +163,8 @@ pub struct Present {
     t_open_ns: u64,
     /// The refresh period presentation feedback reported (0: none yet).
     refresh_ns: u32,
+    /// A root: its windows that are their own outputs, each on a content layer (`layers.rs`).
+    pub(crate) layers: Vec<ContentLayer>,
 }
 
 /// The user data of a `wl_buffer`: its window's presenter and its slot.
@@ -226,6 +230,7 @@ impl Present {
             epoch: 0,
             t_open_ns: 0,
             refresh_ns: 0,
+            layers: Vec::new(),
         }
     }
 
@@ -300,10 +305,23 @@ impl Present {
         }
     }
 
-    /// Destroy every buffer (the buffers hold this state through their user data).
+    /// Destroy every buffer and content layer (the buffers hold this state through their user data).
     pub fn clear(&mut self) {
         self.bufs.clear();
         self.begun = None;
+        self.layers.clear();
+    }
+
+    /// A content layer's buffer came back: a layer starved for buffers presents the tree again.
+    pub(crate) fn layer_released(&mut self, layer: u64, slot: usize) {
+        let Some(l) = self.layers.iter_mut().find(|l| l.id == layer) else {
+            return;
+        };
+        if l.released(slot) {
+            self.dirty = true;
+            self.t_open_ns = crate::wayland::publish::now_ns();
+            self.notify();
+        }
     }
 
     /// The shell closes: the buffers go (unmapped), and so do the links that a reference cycle through a buffer's or
@@ -616,6 +634,109 @@ fn take_job(jobs: &mut Vec<Job>, me: &Arc<Mutex<Present>>) -> Option<Job> {
     Some(jobs.swap_remove(at))
 }
 
+/// Take buffers for root `root`'s content layers (`p`, the root's state, locked): a layer for each own output of the
+/// newest scene that has none, the others marked leaving, then a buffer for each layer whose output has changes
+/// waiting.
+fn begin_layers(
+    stage: &Stage,
+    wire: &Wire,
+    root: u64,
+    me: &Arc<Mutex<Present>>,
+    p: &mut Present,
+) -> Vec<LayerJob> {
+    if p.retired || !p.configured {
+        return Vec::new();
+    }
+    let outs = stage.outputs(root);
+    for l in &mut p.layers {
+        l.leaving = !outs.iter().any(|(id, _)| *id == l.id);
+    }
+    for (id, _) in &outs {
+        if !p.layers.iter().any(|l| l.id == *id)
+            && let Some(l) = ContentLayer::new(*id, wire, &p.commit.surface)
+        {
+            p.layers.push(l);
+        }
+    }
+    let (grow, now) = (!p.waiting, now_ns());
+    let mut jobs = Vec::new();
+    for l in p.layers.iter_mut().filter(|l| !l.leaving) {
+        if let Some(pending) = stage.pending(root, l.id) {
+            jobs.extend(l.begin(me, wire, pending, grow, now));
+        }
+    }
+    jobs
+}
+
+/// Commit root `root`'s layer jobs before the root's commit (sync children apply with it), unmap the leaving layers
+/// when the root's buffer goes in the same tree commit (`root_shows`: it shows their windows in the frame again), and
+/// keep the layers right above the root, below its child windows, whenever the root's children are restacked.
+/// `true` when a layer committed a buffer.
+fn send_layers(
+    stage: &mut Stage,
+    wire: &Wire,
+    root: u64,
+    r: &mut Present,
+    jobs: Vec<LayerJob>,
+    root_shows: bool,
+) -> bool {
+    let scale = r.commit.scale120;
+    let mut shown = false;
+    for j in jobs {
+        let Some(l) = r.layers.iter_mut().find(|l| l.id == j.layer) else {
+            continue;
+        };
+        if l.leaving {
+            l.put_back(j);
+            continue;
+        }
+        let id = l.id;
+        l.commit(j, wire, scale);
+        stage.take_pending(root, id);
+        shown = true;
+    }
+    let mut owed = shown;
+    if root_shows {
+        for l in r.layers.iter().filter(|l| l.leaving) {
+            l.unmap();
+            owed = true;
+        }
+    }
+    let Present {
+        layers,
+        rec,
+        commit,
+        ..
+    } = r;
+    if !rec.stack.is_empty() || layers.iter().any(|l| !l.placed) {
+        // after the children's moves: right above the root is below every child
+        for l in layers.iter_mut().filter(|l| !l.leaving) {
+            rec.stack
+                .push((l.subsurface().clone(), commit.surface.clone(), true));
+            l.placed = true;
+            owed = true;
+        }
+    }
+    r.tree_content |= shown;
+    r.owed |= owed;
+    shown
+}
+
+/// A commit of root `root`'s tree (`r`) showed published drawing: a frame for the presenter's timing.
+fn count_frame(stage: &Stage, root: u64, r: &Present) {
+    let start = stage.draw_start(root);
+    if start == 0 {
+        return;
+    }
+    let ready = start.max(r.t_open_ns);
+    let refresh = match r.refresh_ns {
+        0 => DEFAULT_REFRESH_NS,
+        n => u64::from(n),
+    };
+    let now = crate::wayland::publish::now_ns();
+    stage.stats.frame(now.saturating_sub(ready), refresh);
+}
+
 /// Commit the child windows under `id`, deepest first (a sync child shows once every ancestor committed after it):
 /// each with its composed buffer, else bare when it owes a commit.  Each commit makes its ancestors owe one, and a
 /// buffer makes the root's commit paced.  `r` is the locked root.
@@ -684,6 +805,7 @@ pub(crate) fn present_tree(
 ) -> bool {
     let applied = stage.applied(root);
     let mut jobs = Vec::new();
+    let mut layer_jobs = Vec::new();
     {
         let mut r = lock(tree);
         if r.retired {
@@ -691,8 +813,12 @@ pub(crate) fn present_tree(
         }
         r.notified = false;
         let kids = r.kids.clone();
-        // damage in the fronts is drawn content, whenever its packet arrived
-        if tree_damaged(stage, &kids, root) {
+        if !ContentLayer::can(wire) {
+            // no layer can show a window apart: the frame shows it
+            stage.fold_outputs(root);
+        }
+        // damage in the fronts, or a content layer's change, is drawn content, whenever its packet arrived
+        if tree_damaged(stage, &kids, root) || stage.outputs_pending(root) {
             r.dirty = true;
         }
         let bits = r.ready_published(applied);
@@ -706,12 +832,15 @@ pub(crate) fn present_tree(
         if bits & NHSHELL_READY_ACK != 0 {
             stage.damage_all_if_clean(root);
         }
-        if bits & NHSHELL_READY_CONTENT != 0 && tree_damaged(stage, &kids, root) {
+        if bits & NHSHELL_READY_CONTENT != 0
+            && (tree_damaged(stage, &kids, root) || stage.outputs_pending(root))
+        {
             begin_kids(stage, wire, &kids, root, true, &mut jobs);
             jobs.extend(begin(stage, wire, root, tree, &mut r));
+            layer_jobs = begin_layers(stage, wire, root, tree, &mut r);
         }
-        if jobs.is_empty() {
-            return send(stage, wire, root, tree, &mut r, applied, jobs);
+        if jobs.is_empty() && layer_jobs.is_empty() {
+            return send(stage, wire, root, tree, &mut r, applied, jobs, layer_jobs);
         }
     }
     for j in &jobs {
@@ -724,14 +853,19 @@ pub(crate) fn present_tree(
         };
         stage.compose(j.id, &buf);
     }
+    for j in &layer_jobs {
+        j.draw(stage, root);
+    }
     if !delay.is_zero() {
         std::thread::sleep(delay);
     }
     let mut r = lock(tree);
-    send(stage, wire, root, tree, &mut r, applied, jobs)
+    send(stage, wire, root, tree, &mut r, applied, jobs, layer_jobs)
 }
 
-/// `present_tree`'s send phase, under the tree's mutex: the child windows, then the root.
+/// `present_tree`'s send phase, under the tree's mutex: the child windows and the content layers, then the root.  A
+/// tree retired meanwhile commits nothing; its layers' buffers went with it.
+#[allow(clippy::too_many_arguments)]
 fn send(
     stage: &mut Stage,
     wire: &Wire,
@@ -740,32 +874,36 @@ fn send(
     r: &mut Present,
     applied: u64,
     mut jobs: Vec<Job>,
+    layer_jobs: Vec<LayerJob>,
 ) -> bool {
     if r.retired {
         return false;
     }
     let kids = r.kids.clone();
     send_kids(stage, wire, &kids, root, r, &mut jobs);
+    let root_shows = r.configured
+        && jobs
+            .iter()
+            .any(|j| Arc::ptr_eq(&j.present, tree) && j.epoch == r.epoch);
+    let layered = send_layers(stage, wire, root, r, layer_jobs, root_shows);
     let mut shown = false;
     if let Some(j) = take_job(&mut jobs, tree) {
         if j.epoch == r.epoch && r.configured {
-            let ready = stage.draw_start(root).max(r.t_open_ns);
             let held = r.ack_held_at(applied);
             r.commit_buffer(tree, wire, j.slot, &j.buf, &j.damage, held);
             r.bufs.insert(j.slot.id, j.buf);
-            if stage.draw_start(root) != 0 {
-                let refresh = match r.refresh_ns {
-                    0 => DEFAULT_REFRESH_NS,
-                    n => u64::from(n),
-                };
-                let now = crate::wayland::publish::now_ns();
-                stage.stats.frame(now.saturating_sub(ready), refresh);
-            }
+            count_frame(stage, root, r);
             stage.presented(root);
+            // the leaving layers' unmaps applied with this commit: their objects go now
+            r.layers.retain(|l| !l.leaving);
             shown = true;
         } else {
             j.put_back(r);
         }
+    }
+    if !shown && layered {
+        count_frame(stage, root, r);
+        stage.presented_layers(root);
     }
     if !shown && r.owes() {
         r.commit_bare(tree, wire);
@@ -1194,6 +1332,15 @@ impl WaylandShell {
     pub fn present_stats(&self, id: WindowId) -> Option<(usize, usize, usize)> {
         let p = lock(self.main.presents.get(&id)?);
         Some((p.bufs.len(), p.freed, p.bufs.values().map(|b| b.len).max()?))
+    }
+
+    /// Test hook: root `id`'s content layers, each as (surface id, view offset, ring height, each buffer's resident
+    /// 512-byte blocks).
+    #[doc(hidden)]
+    pub fn content_layers(&self, id: WindowId) -> Vec<(u64, i32, i32, Vec<u64>)> {
+        self.main.presents.get(&id).map_or_else(Vec::new, |p| {
+            lock(p).layers.iter().map(ContentLayer::info).collect()
+        })
     }
 
     /// The buffer size for a logical size at window `id`'s current scale.
