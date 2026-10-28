@@ -181,7 +181,7 @@ impl ShellBackend for WaylandShell {
             id,
             Window {
                 surface,
-                xdg_surface,
+                xdg_surface: xdg_surface.clone(),
                 toplevel,
                 decoration,
                 ssd: false,
@@ -189,13 +189,13 @@ impl ShellBackend for WaylandShell {
                 pending: (0, 0, 0),
             },
         );
+        m.present_register(id, Some(xdg_surface), None);
         self.flush()?;
         Ok(id)
     }
 
     fn window_destroy(&mut self, id: WindowId) -> ShellResult {
         self.text_input.forget(id);
-        self.alpha_forget(id);
         self.extras_forget(id);
         for dep in self.dependents_of(id) {
             let _ = self.window_destroy(dep);
@@ -206,16 +206,21 @@ impl ShellBackend for WaylandShell {
         if self.main.popups.contains_key(&id) {
             return self.popup_destroy(id);
         }
-        let w = self.main.windows.remove(&id).ok_or(ShellError::State)?;
-        self.main.surfaces.remove(&id);
-        self.main.detach_scale(id);
-        self.present_drop(id);
-        if let Some(d) = &w.decoration {
-            d.destroy();
+        if !self.main.windows.contains_key(&id) {
+            return Err(ShellError::State);
         }
-        w.toplevel.destroy();
-        w.xdg_surface.destroy();
-        w.surface.destroy();
+        self.present_retire(id, |m| {
+            m.surfaces.remove(&id);
+            m.detach_scale(id);
+            if let Some(w) = m.windows.remove(&id) {
+                if let Some(d) = &w.decoration {
+                    d.destroy();
+                }
+                w.toplevel.destroy();
+                w.xdg_surface.destroy();
+                w.surface.destroy();
+            }
+        });
         self.flush()
     }
 
@@ -315,12 +320,14 @@ impl ShellBackend for WaylandShell {
         self.flush()
     }
 
-    /// Takes effect with the surface's next commit.
+    /// Recorded: it goes with the window's next commit that carries a buffer.
     fn set_geometry(&mut self, id: WindowId, x: i32, y: i32, w: i32, h: i32) -> ShellResult {
         if w <= 0 || h <= 0 {
             return Err(ShellError::Arg);
         }
-        self.window(id)?.xdg_surface.set_window_geometry(x, y, w, h);
+        self.window(id)?;
+        self.main
+            .present_record(id, |p| p.rec.geometry = Some(Rect::new(x, y, w, h)));
         Ok(())
     }
 
@@ -523,7 +530,7 @@ impl Dispatch<XdgSurface, u64> for MainState {
         _: &XdgSurface,
         event: xdg_surface::Event,
         id: &u64,
-        conn: &Connection,
+        _: &Connection,
         _: &QueueHandle<Self>,
     ) {
         if let xdg_surface::Event::Configure { serial } = event
@@ -544,7 +551,7 @@ impl Dispatch<XdgSurface, u64> for MainState {
                 serial,
             };
             shared.post(ev);
-            state.present_configured(*id, suspended, conn);
+            state.present_configured(*id, suspended);
         }
     }
 }

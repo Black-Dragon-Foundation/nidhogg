@@ -18,6 +18,13 @@
 //!
 //! A host that publishes (`publish.rs`) has the shell decide: `present_tree` is the present path's one rule, run at
 //! the root's `FRAME_READY`.  For it a content ack counts only once a packet was published after the ack.
+//!
+//! **The tree owns its commit-time state.**  Once a window's role is set up (`present_register`), every request
+//! whose effect waits for `wl_surface.commit` is recorded on its `Present` (position, stacking, input region, unmap,
+//! alpha, window geometry, the re-arm) and sent right before the commit it belongs to, through the proxies in its
+//! `Commit` record; only presenting commits a registered tree.  The host's thread keeps creating objects, setting
+//! roles up, immediate requests and destroying, which happens under the tree's mutex (the root's `Present`) and
+//! retires the window.
 
 use crate::api::*;
 use crate::event::*;
@@ -30,16 +37,73 @@ use glitnir::geom::Rect;
 use glitnir::pool::{BufferSlot, GROWN_BUFFERS, Pool, merged};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use wayland_client::protocol::wl_buffer::{self, WlBuffer};
 use wayland_client::protocol::wl_callback::{self, WlCallback};
+use wayland_client::protocol::wl_compositor::WlCompositor;
+use wayland_client::protocol::wl_region::WlRegion;
 use wayland_client::protocol::wl_shm_pool::WlShmPool;
-use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+use wayland_client::protocol::wl_subsurface::WlSubsurface;
+use wayland_client::protocol::wl_surface::WlSurface;
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
+use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_surface_v1::WpAlphaModifierSurfaceV1;
 use wayland_protocols::wp::presentation_time::client::wp_presentation::WpPresentation;
 use wayland_protocols::wp::presentation_time::client::wp_presentation_feedback::{
     self, WpPresentationFeedback,
 };
+use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use wayland_protocols::xdg::shell::client::xdg_surface::XdgSurface;
+
+/// The proxies a window's commits go through, so that whoever presents needs nothing of the host's state.
+pub(crate) struct Commit {
+    pub(crate) surface: WlSurface,
+    /// A top-level's or popup's (acks, window geometry); a popup made again gets a new one.
+    pub(crate) xdg: Option<XdgSurface>,
+    /// A child's (its position, and its stacking in its parent's record).
+    pub(crate) subsurface: Option<WlSubsurface>,
+    pub(crate) viewport: Option<WpViewport>,
+    /// Made at the window's first `set_alpha`.
+    pub(crate) alpha: Option<WpAlphaModifierSurfaceV1>,
+    /// The surface's scale now, times 120 (the viewport destination and the buffer scale follow it).
+    pub(crate) scale120: u32,
+}
+
+/// Double-buffered state the host asked for, waiting for the commit that carries it.
+#[derive(Default)]
+pub(crate) struct Recorded {
+    /// A child's offset in its parent.  It applies with the parent's commit (Smithay's: the child's own, so a move
+    /// makes the child owe one too); it goes right before the child's.
+    pub(crate) position: Option<(i32, i32)>,
+    /// This surface's children's stacking, in the order asked (child, sibling, above): it applies with this surface's
+    /// commit.
+    pub(crate) stack: Vec<(WlSubsurface, WlSurface, bool)>,
+    /// The input region (logical pixels); empty: the whole surface.
+    pub(crate) input: Option<Vec<Rect>>,
+    /// Show nothing: the commit attaches no buffer (a commit with one maps the surface again instead).
+    pub(crate) unmap: bool,
+    pub(crate) alpha: Option<u32>,
+    /// A top-level's window geometry: it goes only with a buffer (present path §3.1).
+    pub(crate) geometry: Option<Rect>,
+    /// A waiting pacer asks again: a frame callback and an empty commit, unless the tree's commit is paced anyway.
+    pub(crate) rearm: bool,
+}
+
+/// The commits of registered trees, for the test hook `commits_off_presenter`.
+#[derive(Default)]
+pub struct TreeCommits {
+    /// `present_tree` is running.
+    in_tree: bool,
+    /// Commits made outside it.
+    off: u64,
+}
+
+impl TreeCommits {
+    fn count(&mut self, n: u64) {
+        if !self.in_tree {
+            self.off += n;
+        }
+    }
+}
 
 /// A window's presenter state, shared with the reader thread's handlers.
 pub struct Present {
@@ -82,12 +146,16 @@ pub struct Present {
     ack_seq: u64,
     /// A root: the newest packet published for its tree.
     published: u64,
+    pub(crate) commit: Commit,
+    pub(crate) rec: Recorded,
+    /// The window was destroyed (under the tree's mutex): nothing commits it any more.
+    retired: bool,
 }
 
 /// The user data of a `wl_buffer`: its window's presenter and its slot.
 pub type BufData = (Arc<Mutex<Present>>, usize);
 
-fn lock(p: &Mutex<Present>) -> MutexGuard<'_, Present> {
+pub(crate) fn lock(p: &Mutex<Present>) -> MutexGuard<'_, Present> {
     p.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -97,8 +165,16 @@ fn now_ns() -> u64 {
 }
 
 impl Present {
-    fn new(window: u64, shared: Option<Arc<Shared>>, root: Option<Arc<Mutex<Present>>>) -> Present {
+    fn new(
+        window: u64,
+        commit: Commit,
+        shared: Option<Arc<Shared>>,
+        root: Option<Arc<Mutex<Present>>>,
+    ) -> Present {
         Present {
+            commit,
+            rec: Recorded::default(),
+            retired: false,
             window,
             pool: Pool::new(),
             bufs: HashMap::new(),
@@ -154,7 +230,8 @@ impl Present {
         let open = self.configured && !self.starved;
         let content_ack = open && content_ack;
         let content = content_ack || (open && self.dirty && !self.waiting && !self.suspended);
-        let owed = self.configured && (self.owed || (self.ack.is_some() && !self.ack_content));
+        let owed = self.configured
+            && (self.owed || self.rec.rearm || (self.ack.is_some() && !self.ack_content));
         u32::from(content) * NHSHELL_READY_CONTENT
             + u32::from(content_ack) * NHSHELL_READY_ACK
             + u32::from(owed) * NHSHELL_READY_OWED
@@ -183,23 +260,121 @@ impl Present {
         self.bufs.clear();
         self.begun = None;
     }
+
+    /// Send the recorded state this surface's next commit carries, right before it.  A commit with a `buffer` also
+    /// takes the window geometry, and maps the surface instead of unmapping it; a bare one leaves the geometry
+    /// recorded.  Objects destroyed since (a stacked child, its sibling) are skipped.
+    fn send_recorded(
+        &mut self,
+        buffer: bool,
+        compositor: Option<&WlCompositor>,
+        rqh: &QueueHandle<ReaderState>,
+    ) {
+        let (c, r) = (&self.commit, &mut self.rec);
+        for (sub, sibling, above) in r.stack.drain(..) {
+            if sub.is_alive() && sibling.is_alive() {
+                if above {
+                    sub.place_above(&sibling);
+                } else {
+                    sub.place_below(&sibling);
+                }
+            }
+        }
+        if let (Some((x, y)), Some(sub)) = (r.position.take(), &c.subsurface) {
+            sub.set_position(x, y);
+        }
+        if let Some(rects) = r.input.take() {
+            if rects.is_empty() {
+                c.surface.set_input_region(None);
+            } else if let Some(compositor) = compositor {
+                let region = compositor.create_region(rqh, ());
+                for r in &rects {
+                    region.add(r.x, r.y, r.w, r.h);
+                }
+                c.surface.set_input_region(Some(&region));
+                region.destroy();
+            }
+        }
+        if let (Some(factor), Some(alpha)) = (r.alpha.take(), &c.alpha) {
+            alpha.set_multiplier(factor);
+        }
+        if std::mem::take(&mut r.unmap) && !buffer {
+            c.surface.attach(None, 0, 0);
+        }
+        if buffer
+            && let Some(g) = r.geometry.take()
+            && let Some(xdg) = &c.xdg
+        {
+            xdg.set_window_geometry(g.x, g.y, g.w, g.h);
+        }
+    }
+
+    /// A root's re-arm, after a commit that asked for no frame callback: a callback and an empty commit, carrying
+    /// nothing else.  `true` when sent.
+    fn send_rearm(&mut self, me: &Arc<Mutex<Present>>, rqh: &QueueHandle<ReaderState>) -> bool {
+        if !std::mem::take(&mut self.rec.rearm) || !self.waiting || self.root.is_some() {
+            return false;
+        }
+        self.commit.surface.frame(rqh, me.clone());
+        self.commit.surface.commit();
+        true
+    }
+
+    /// The popup was made again on the same surface with `xdg`: the recorded ack belongs to the destroyed
+    /// `xdg_surface`, and the new one has had no configure.
+    pub(crate) fn reset(&mut self, xdg: XdgSurface) {
+        self.commit.xdg = Some(xdg);
+        self.ack = None;
+        self.ack_content = false;
+        self.configured = false;
+    }
 }
 
 impl MainState {
-    fn present_of(&mut self, id: u64) -> Arc<Mutex<Present>> {
-        if let Some(p) = self.presents.get(&id) {
-            return p.clone();
-        }
+    /// Window `id`'s role is set up (`xdg` for a top-level or popup, `subsurface` for a child): its presenter state
+    /// takes the commit-time proxies, and from now on only presenting commits it.
+    pub(crate) fn present_register(
+        &mut self,
+        id: u64,
+        xdg: Option<XdgSurface>,
+        subsurface: Option<WlSubsurface>,
+    ) {
+        let Some(surface) = self.surfaces.get(&id).cloned() else {
+            return;
+        };
+        let (viewport, scale120) = self
+            .scales
+            .get(&id)
+            .map_or((None, SCALE_ONE), |s| (s.viewport(), s.scale120()));
+        let commit = Commit {
+            surface,
+            xdg,
+            subsurface,
+            viewport,
+            alpha: None,
+            scale120,
+        };
         // a child (a sync subsurface) is paced by its tree's root, and posts nothing itself
         let p = if self.children.contains_key(&id) {
-            let root = self.tree_root(id);
-            Present::new(id, None, Some(self.present_of(root)))
+            let Some(root) = self.presents.get(&self.tree_root(id)).cloned() else {
+                return;
+            };
+            Present::new(id, commit, None, Some(root))
         } else {
-            Present::new(id, self.shared.clone(), None)
+            Present::new(id, commit, self.shared.clone(), None)
         };
-        let p = Arc::new(Mutex::new(p));
-        self.presents.insert(id, p.clone());
-        p
+        self.presents.insert(id, Arc::new(Mutex::new(p)));
+    }
+
+    fn present_of(&self, id: u64) -> Option<Arc<Mutex<Present>>> {
+        self.presents.get(&id).cloned()
+    }
+
+    /// Record `f` on window `id`'s presenter state (nothing when `id` has none).
+    pub(crate) fn present_record(&self, id: u64, f: impl FnOnce(&mut Present)) {
+        if let Some(p) = self.presents.get(&id) {
+            f(&mut lock(p));
+        }
     }
 
     /// The root of window `id`'s tree: the nearest ancestor (or `id` itself) that is not a child.
@@ -214,8 +389,8 @@ impl MainState {
     /// the root, since a sync child's commit applies only with its parent's.  With `wake`, the root's pacer wakes
     /// (a root's own state too: its alpha).
     pub(crate) fn present_owe(&mut self, id: u64, own: bool, wake: bool) {
-        if own {
-            let present = self.present_of(id);
+        let present = if own { self.present_of(id) } else { None };
+        if let Some(present) = present {
             let mut p = lock(&present);
             p.owed = true;
             if wake && !self.children.contains_key(&id) {
@@ -225,7 +400,9 @@ impl MainState {
         let mut cur = id;
         while let Some(parent) = self.children.get(&cur).map(|c| c.parent) {
             cur = parent;
-            let present = self.present_of(cur);
+            let Some(present) = self.present_of(cur) else {
+                continue;
+            };
             let mut p = lock(&present);
             p.owed = true;
             if wake && !self.children.contains_key(&cur) {
@@ -236,7 +413,9 @@ impl MainState {
 
     /// Record `serial`'s ack for window `id` (sent with the next commit) and wake the pacer.
     pub(crate) fn present_ack(&mut self, id: u64, serial: u32, content: bool) {
-        let present = self.present_of(id);
+        let Some(present) = self.present_of(id) else {
+            return;
+        };
         let mut p = lock(&present);
         p.configured = true;
         p.ack = Some(serial);
@@ -247,68 +426,53 @@ impl MainState {
 
     /// Root `root`'s recorded content ack waits for a packet published after it.
     pub(crate) fn present_wants_packet(&mut self, root: u64) -> bool {
-        lock(&self.present_of(root)).ack_held()
+        self.present_of(root).is_some_and(|p| lock(&p).ack_held())
     }
 
     /// Packet `seq` of root `root`'s tree is published (`damaged`: it shows something new): the pacer wakes.
     pub(crate) fn present_published(&mut self, root: u64, seq: u64, damaged: bool) {
-        let present = self.present_of(root);
+        let Some(present) = self.present_of(root) else {
+            return;
+        };
         let mut p = lock(&present);
         p.published = seq;
         p.dirty |= damaged;
         p.notify();
     }
 
-    /// Popup `id` was made again on the same surface: the recorded ack belongs to the destroyed `xdg_surface`, and
-    /// the new one has had no configure.
-    pub(crate) fn present_reset(&mut self, id: u64) {
-        let present = self.present_of(id);
-        let mut p = lock(&present);
-        p.ack = None;
-        p.ack_content = false;
-        p.configured = false;
-    }
-
-    /// The `xdg_surface` that `id`'s acks go to.
-    fn xdg_of(&self, id: u64) -> Option<&XdgSurface> {
-        self.windows
-            .get(&id)
-            .map(|w| &w.xdg_surface)
-            .or_else(|| self.popups.get(&id).map(|p| p.xdg_surface()))
-    }
-
     /// The compositor configured window `id`: note whether it is suspended, and re-arm a waiting pacer.
-    pub(crate) fn present_configured(&mut self, id: u64, suspended: bool, conn: &Connection) {
+    pub(crate) fn present_configured(&mut self, id: u64, suspended: bool) {
         if !self.windows.contains_key(&id) {
             return;
         }
-        let present = self.present_of(id);
+        let Some(present) = self.present_of(id) else {
+            return;
+        };
         let mut p = lock(&present);
         p.configured = true;
         let was = std::mem::replace(&mut p.suspended, suspended);
         drop(p);
-        self.present_rearm(id, conn);
+        self.present_rearm(id);
         if was && !suspended {
             lock(&present).notify();
         }
     }
 
-    /// A waiting pacer asks again: a frame callback and an empty commit.  The surface may have become visible, and
-    /// the callback of the commit that waits may never have been answered.
-    pub(crate) fn present_rearm(&mut self, id: u64, conn: &Connection) {
-        let Some(present) = self.presents.get(&id).cloned() else {
-            return;
-        };
-        if !lock(&present).waiting {
-            return;
-        }
-        if let (Some(surface), Some(rqh)) = (self.surfaces.get(&id), self.reader_qh.as_ref()) {
-            surface.frame(rqh, present);
-            surface.commit();
-            if let Some(shared) = &self.shared {
-                let _ = shared.host_flush(conn);
+    /// A waiting pacer asks again (a frame callback and an empty commit, sent with its tree's next commit): the
+    /// surface may have become visible, and the callback of the commit that waits may never have been answered.
+    pub(crate) fn present_rearm(&mut self, id: u64) {
+        if let Some(present) = self.presents.get(&id) {
+            let mut p = lock(present);
+            if p.waiting {
+                p.rec.rearm = true;
+                p.notify();
             }
         }
+    }
+
+    /// Window `id`'s scale changed: its next buffer's viewport and buffer scale follow.
+    pub(crate) fn present_scale(&self, id: u64, scale120: u32) {
+        self.present_record(id, |p| p.commit.scale120 = scale120);
     }
 }
 
@@ -323,7 +487,7 @@ impl WaylandShell {
         if !self.main.is_window(id) || dev_w <= 0 || dev_h <= 0 {
             return Err(ShellError::State);
         }
-        let present = self.main.present_of(id);
+        let present = self.main.present_of(id).ok_or(ShellError::State)?;
         let mut p = lock(&present);
         if !p.configured {
             return Err(ShellError::State);
@@ -390,47 +554,40 @@ impl WaylandShell {
         self.commit_buffer(id, damage, false)
     }
 
-    /// `present_commit`; for a `published` tree a content ack that still waits for its packet stays recorded.
+    /// `present_commit`; for a `published` tree a content ack that still waits for its packet stays recorded.  The
+    /// surface's recorded state goes right before the commit.
     fn commit_buffer(&mut self, id: WindowId, damage: &[Rect], published: bool) -> ShellResult {
-        let present = self
-            .main
-            .presents
-            .get(&id)
-            .ok_or(ShellError::State)?
-            .clone();
-        let mut p = lock(&present);
+        let present = self.main.present_of(id).ok_or(ShellError::State)?;
+        let rqh = self.main.reader_qh.clone().ok_or(ShellError::State)?;
+        let mut guard = lock(&present);
+        let p = &mut *guard;
+        if p.retired {
+            return Err(ShellError::State);
+        }
         let slot = p.begun.take().ok_or(ShellError::State)?;
         // a buffer that was never written has no age: the whole of it is new
         let all = match p.bufs.get(&slot.id) {
             Some(b) if slot.age == 0 => vec![Rect::new(0, 0, b.w, b.h)],
             _ => merged(damage),
         };
-        let surface = self.main.surfaces.get(&id).ok_or(ShellError::State)?;
         let send_ack = !(published && p.ack_held());
         let ack = if send_ack { p.ack.take() } else { None };
+        // the ack goes before anything the commit carries (a checker, and a compositor, read the order)
+        if let Some(serial) = ack
+            && let Some(xdg) = &p.commit.xdg
+        {
+            xdg.ack_configure(serial);
+        }
+        p.send_recorded(true, self.main.compositor.as_ref(), &rqh);
         let buf = p.bufs.get(&slot.id).ok_or(ShellError::State)?;
-        let scale = self
-            .main
-            .scales
-            .get(&id)
-            .map_or(SCALE_ONE, |s| s.scale120());
-        if self.main.viewporter.is_some() {
+        let (surface, scale) = (&p.commit.surface, p.commit.scale120);
+        if let Some(viewport) = &p.commit.viewport {
             let s = i64::from(scale.max(1));
             let logical = |d: i32| ((i64::from(d) * 120 + s / 2) / s) as i32;
-            self.main
-                .scales
-                .get(&id)
-                .ok_or(ShellError::State)?
-                .set_destination(logical(buf.w), logical(buf.h));
+            viewport.set_destination(logical(buf.w), logical(buf.h));
             surface.set_buffer_scale(1);
         } else {
             surface.set_buffer_scale(((scale + 60) / 120).max(1) as i32);
-        }
-        // the ack goes before anything the commit carries (a checker, and a compositor, read the order)
-        if let Some(serial) = ack
-            && let Some(xdg) = self.main.xdg_of(id)
-        {
-            xdg.ack_configure(serial);
         }
         surface.attach(Some(&buf.buffer), 0, 0);
         for r in &all {
@@ -438,24 +595,29 @@ impl WaylandShell {
         }
         // only a root's commit with content (its own, or a child's it applies) is paced: the frame callback releases
         // the pacer, feedback is statistics
-        let rqh = self.main.reader_qh.as_ref().ok_or(ShellError::State)?;
         let child = p.root.is_some();
-        if !child && (!all.is_empty() || p.tree_content) {
-            surface.frame(rqh, present.clone());
+        let paced = !child && (!all.is_empty() || p.tree_content);
+        if paced {
+            surface.frame(&rqh, present.clone());
             if let Some(pres) = &self.main.presentation {
-                pres.feedback(surface, rqh, present.clone());
+                pres.feedback(surface, &rqh, present.clone());
             }
             p.waiting = true;
+            p.rec.rearm = false;
         }
         if send_ack {
             p.ack_content = false;
         }
         p.owed = false;
         p.tree_content = false;
-        surface.commit();
+        p.commit.surface.commit();
+        self.tree_commits.count(1);
+        if p.send_rearm(&present, &rqh) {
+            self.tree_commits.count(1);
+        }
         p.pool.submitted(slot);
         let root = p.root.clone();
-        drop(p);
+        drop(guard);
         if let Some(root) = root {
             // a sync child's buffer shows when every ancestor has committed after it, the root last
             lock(&root).tree_content = true;
@@ -471,7 +633,7 @@ impl WaylandShell {
             return Err(ShellError::State);
         }
         let root = self.main.tree_root(id);
-        let present = self.main.present_of(root);
+        let present = self.main.present_of(root).ok_or(ShellError::State)?;
         let mut p = lock(&present);
         p.dirty = true;
         p.notify();
@@ -479,34 +641,46 @@ impl WaylandShell {
     }
 
     /// A commit with no buffer, viewport or scale: a bare ack goes with it (a content ack waits for a buffer), and the
-    /// owed surface state.  No frame callback or feedback either, unless it is a root's commit that applies a child's
-    /// buffer: that commit shows content, and paces the tree.  A child's bare commit makes its ancestors owe one.
+    /// recorded surface state.  No frame callback or feedback either, unless it is a root's commit that applies a
+    /// child's buffer: that commit shows content, and paces the tree.  A root's re-arm goes after it, as a commit of
+    /// its own, or is the only commit when nothing else is owed.  A child's bare commit makes its ancestors owe one.
     pub(super) fn present_bare_impl(&mut self, id: WindowId) -> ShellResult {
-        let present = self
-            .main
-            .presents
-            .get(&id)
-            .ok_or(ShellError::State)?
-            .clone();
+        let present = self.main.present_of(id).ok_or(ShellError::State)?;
+        let rqh = self.main.reader_qh.clone().ok_or(ShellError::State)?;
         let mut p = lock(&present);
-        let surface = self.main.surfaces.get(&id).ok_or(ShellError::State)?;
-        if !p.ack_content
+        if p.retired {
+            return Err(ShellError::State);
+        }
+        let child = p.root.is_some();
+        let bare_ack = p.ack.is_some() && !p.ack_content;
+        if !child && p.rec.rearm && p.waiting && !(p.owed || bare_ack || p.tree_content) {
+            p.send_rearm(&present, &rqh);
+            self.tree_commits.count(1);
+            drop(p);
+            return self.flush();
+        }
+        if bare_ack
             && let Some(serial) = p.ack.take()
-            && let Some(xdg) = self.main.xdg_of(id)
+            && let Some(xdg) = &p.commit.xdg
         {
             xdg.ack_configure(serial);
         }
+        p.send_recorded(false, self.main.compositor.as_ref(), &rqh);
         if std::mem::take(&mut p.tree_content) {
-            let rqh = self.main.reader_qh.as_ref().ok_or(ShellError::State)?;
-            surface.frame(rqh, present.clone());
+            let surface = &p.commit.surface;
+            surface.frame(&rqh, present.clone());
             if let Some(pres) = &self.main.presentation {
-                pres.feedback(surface, rqh, present.clone());
+                pres.feedback(surface, &rqh, present.clone());
             }
             p.waiting = true;
+            p.rec.rearm = false;
         }
         p.owed = false;
-        surface.commit();
-        let child = p.root.is_some();
+        p.commit.surface.commit();
+        self.tree_commits.count(1);
+        if p.send_rearm(&present, &rqh) {
+            self.tree_commits.count(1);
+        }
         drop(p);
         if child {
             self.main.present_owe(id, false, false);
@@ -556,6 +730,14 @@ impl WaylandShell {
         if !self.main.is_window(root) || self.main.children.contains_key(&root) {
             return Err(ShellError::State);
         }
+        self.tree_commits.in_tree = true;
+        let shown = self.present_tree_pass(root);
+        self.tree_commits.in_tree = false;
+        shown
+    }
+
+    /// `present_tree`'s decision and commits.
+    fn present_tree_pass(&mut self, root: WindowId) -> ShellResult<bool> {
         let mail = self.main.mailbox.clone();
         self.presenting.stage.drain(&mail);
         let Some(present) = self.main.presents.get(&root).cloned() else {
@@ -680,12 +862,53 @@ impl WaylandShell {
         self.publish_trim(crate::wayland::publish::now_ns());
     }
 
-    /// Window `id` is going away: its buffers go with it, and its front.
-    pub(super) fn present_drop(&mut self, id: u64) {
-        if let Some(p) = self.main.presents.remove(&id) {
-            lock(&p).clear();
+    /// Window `id` goes: `destroy` runs holding its tree's mutex (the root's), so whoever presents the tree is never
+    /// between its decision and its commit meanwhile, and finds `id` retired after.  Its alpha object goes first, its
+    /// buffers and its front with it.
+    pub(super) fn present_retire(&mut self, id: WindowId, destroy: impl FnOnce(&mut MainState)) {
+        let root = self.main.tree_root(id);
+        let tree = self.main.present_of(root);
+        let own = self.main.presents.remove(&id);
+        {
+            let mut tree = tree.as_ref().map(|t| lock(t));
+            let mut own = own.as_ref().filter(|_| root != id).map(|p| lock(p));
+            let p = if root == id {
+                tree.as_deref_mut()
+            } else {
+                own.as_deref_mut()
+            };
+            if let Some(p) = p {
+                p.retired = true;
+                if let Some(a) = p.commit.alpha.take() {
+                    a.destroy();
+                }
+                p.clear();
+            }
+            destroy(&mut self.main);
         }
         self.publish_forget(id);
+    }
+
+    /// Test hook: commits of registered trees made outside `present_tree` (by `present_commit`, `present_bare`, or
+    /// anything that sends on its own).
+    #[doc(hidden)]
+    pub fn commits_off_presenter(&self) -> u64 {
+        self.tree_commits.off
+    }
+
+    /// Test hook: hold window `id`'s tree mutex on another thread for `ms`, as a presenter between its decision and
+    /// its commit does; returns once it is held, with the thread to join.
+    #[doc(hidden)]
+    pub fn hold_tree(&self, id: WindowId, ms: u64) -> Option<std::thread::JoinHandle<()>> {
+        let tree = self.main.present_of(self.main.tree_root(id))?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let held = std::thread::spawn(move || {
+            let _held = lock(&tree);
+            let _ = tx.send(());
+            std::thread::sleep(Duration::from_millis(ms));
+        });
+        let _ = rx.recv();
+        Some(held)
     }
 
     /// Test hook: (live buffers, buffers freed so far, the size of the newest buffer's memfd) of window `id`.
@@ -728,6 +951,8 @@ impl Dispatch<WlCallback, Arc<Mutex<Present>>> for ReaderState {
         if let wl_callback::Event::Done { .. } = event {
             let mut p = lock(present);
             p.waiting = false;
+            // nothing waits any more: a re-arm not sent yet has no callback to replace
+            p.rec.rearm = false;
             // starved while waiting: the pacer is idle now, and an idle pacer grows the pool
             p.starved = false;
             p.notify();
@@ -806,3 +1031,5 @@ impl Dispatch<WlBuffer, BufData> for ReaderState {
 
 delegate_noop!(MainState: WlShmPool);
 delegate_noop!(MainState: ignore WpPresentation);
+// input regions made where the recorded state is sent
+delegate_noop!(ReaderState: WlRegion);

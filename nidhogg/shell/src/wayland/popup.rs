@@ -17,7 +17,7 @@
 
 use crate::api::*;
 use crate::event::*;
-use crate::wayland::{MainState, WaylandShell};
+use crate::wayland::{MainState, WaylandShell, present};
 use std::sync::atomic::Ordering;
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
@@ -48,12 +48,6 @@ pub struct Popup {
     wants_grab: bool,
     /// The popup holds a grab: one was sent, and the compositor has not dismissed the popup since.
     grabbed: bool,
-}
-
-impl Popup {
-    pub(super) fn xdg_surface(&self) -> &XdgSurface {
-        &self.xdg_surface
-    }
 }
 
 fn positioner(
@@ -175,7 +169,7 @@ impl WaylandShell {
             id,
             Popup {
                 surface: surface.clone(),
-                xdg_surface,
+                xdg_surface: xdg_surface.clone(),
                 popup,
                 parent: d.parent,
                 base_window,
@@ -192,6 +186,7 @@ impl WaylandShell {
         self.popup_grab(id);
         // the compositor sends the first configure only after this bare commit
         surface.commit();
+        self.main.present_register(id, Some(xdg_surface), None);
         self.flush()?;
         Ok(id)
     }
@@ -204,14 +199,19 @@ impl WaylandShell {
                 let _ = self.window_destroy(a);
             }
         }
-        let p = self.main.popups.remove(&id).ok_or(ShellError::State)?;
-        self.main.grabs.retain(|g| *g != id);
-        self.main.surfaces.remove(&id);
-        self.main.detach_scale(id);
-        self.present_drop(id);
-        p.popup.destroy();
-        p.xdg_surface.destroy();
-        p.surface.destroy();
+        if !self.main.popups.contains_key(&id) {
+            return Err(ShellError::State);
+        }
+        self.present_retire(id, |m| {
+            m.grabs.retain(|g| *g != id);
+            m.surfaces.remove(&id);
+            m.detach_scale(id);
+            if let Some(p) = m.popups.remove(&id) {
+                p.popup.destroy();
+                p.xdg_surface.destroy();
+                p.surface.destroy();
+            }
+        });
         self.flush()
     }
 
@@ -250,6 +250,9 @@ impl WaylandShell {
             return Err(ShellError::State);
         }
         let qh = self.main_queue.handle();
+        // making it again is role setup, done under the tree's mutex like a destroy
+        let tree = self.main.presents.get(&id).cloned().filter(|_| recreate);
+        let mut tree = tree.as_ref().map(|t| present::lock(t));
         let m = &mut self.main;
         let wm_base = m.wm_base.as_ref().ok_or(ShellError::State)?;
         let p = m.popups.get_mut(&id).ok_or(ShellError::State)?;
@@ -271,13 +274,16 @@ impl WaylandShell {
         p.xdg_surface = wm_base.get_xdg_surface(&p.surface, &qh, id);
         p.popup = p.xdg_surface.get_popup(Some(&p.base), &pos, &qh, id);
         pos.destroy();
-        let surface = p.surface.clone();
+        let (surface, xdg) = (p.surface.clone(), p.xdg_surface.clone());
         m.grabs.retain(|g| *g != id);
         if held {
             self.popup_grab(id);
         }
         surface.commit();
-        self.main.present_reset(id);
+        if let Some(t) = tree.as_deref_mut() {
+            t.reset(xdg);
+        }
+        drop(tree);
         self.flush()?;
         Ok(true)
     }

@@ -207,7 +207,7 @@ pub trait ShellBackend {
     /// Show the window menu at (`x`, `y`) in the window; the backend uses the latest input serial.
     fn show_menu(&mut self, window: WindowId, x: i32, y: i32) -> ShellResult;
     /// Set the window geometry (`xdg_surface.set_window_geometry`, surface-local logical pixels), which takes effect
-    /// with the next commit.
+    /// with the next commit that carries a buffer.
     fn set_geometry(&mut self, window: WindowId, x: i32, y: i32, w: i32, h: i32) -> ShellResult;
     /// Record configure `serial`'s ack; it goes out right before the commit that carries it.  `flags`
     /// `NHSHELL_ACK_CONTENT` says the ack changes what the window shows (a new size, the first configure, a client
