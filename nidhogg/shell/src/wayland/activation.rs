@@ -63,6 +63,13 @@ pub struct Tokens {
     wanted: HashMap<u64, Option<String>>,
 }
 
+impl Tokens {
+    /// A reconnect: no request of the old connection is answered any more.
+    pub fn reconnected(&mut self) {
+        self.wanted.clear();
+    }
+}
+
 /// The user data of a token request made for the host (it activates nothing).
 pub struct Fetch(u64);
 

@@ -31,6 +31,11 @@ impl Foreign {
             e.object.destroy();
         }
     }
+
+    /// A reconnect: the handles were the old compositor's; the next request exports the window again.
+    pub fn reconnected(&mut self) {
+        self.exports.clear();
+    }
 }
 
 impl WaylandShell {
