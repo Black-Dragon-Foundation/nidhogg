@@ -3977,6 +3977,7 @@ GLITNIR_ENV=
 GLITNIR_LIBNAME=libglitnir.a
 GLITNIR_CRATE_DEPS=
 GLITNIR_CRATE_INCLUDE=
+GLITNIR_CARGO_FLAGS=
 NHWL_OBJ=
 if test "${with_glitnir}" = yes; then
   AC_PATH_PROG([GLITNIR_CARGO], [cargo])
@@ -3996,27 +3997,36 @@ if test "${with_glitnir}" = yes; then
   glitnir_lib=libglitnir.a
   GLITNIR_CRATE_DEPS=
   GLITNIR_CRATE_INCLUDE=
-  dnl Nidhogg's own Wayland shell: libnhshell.a replaces libglitnir.a (it carries every glitnir_* symbol; two Rust
-  dnl static libraries in one binary would collide on std's symbols).
+  dnl Nidhogg's own Wayland shell: the glue's libnhglue.a replaces libglitnir.a (it carries every nhshell_* and
+  dnl glitnir_* symbol; two Rust static libraries in one binary would collide on std's symbols).  GLITNIR_CRATE_DEPS
+  dnl lists the crates whose sources rebuild it.
   if test "$HAVE_NHWL" = yes; then
     EMACS_CHECK_MODULES([NHWL_WAYLAND], [wayland-client >= 1.26])
     EMACS_CHECK_MODULES([NHWL_XKBCOMMON], [xkbcommon >= 1.13])
     test "$HAVE_NHWL_WAYLAND" = yes && test "$HAVE_NHWL_XKBCOMMON" = yes ||
       AC_MSG_ERROR([--with-nidhogg-wayland needs wayland-client >= 1.26 and xkbcommon >= 1.13 (packages: nidhogg/deps/*.build)])
-    glitnir_lib=libnhshell.a
-    GLITNIR_CRATE_DEPS="$srcdir/nidhogg/glitnir"
-    GLITNIR_CRATE_INCLUDE="-I`cd "$srcdir/nidhogg/glitnir" && pwd`/include"
-    GLITNIR_SRCDIR=`cd "$srcdir/nidhogg/shell" && pwd` ||
+    glitnir_lib=libnhglue.a
+    nhwl_shell_dir=`cd "$srcdir/nidhogg/shell" && pwd` ||
       AC_MSG_ERROR([nidhogg/shell is missing])
+    GLITNIR_SRCDIR=`cd "$srcdir/nidhogg/glue" && pwd` ||
+      AC_MSG_ERROR([nidhogg/glue is missing])
+    GLITNIR_CRATE_DEPS="$GLITNIR_SRCDIR $nhwl_shell_dir `cd "$srcdir/nidhogg/glitnir" && pwd`"
+    GLITNIR_CRATE_INCLUDE="-I$nhwl_shell_dir/include -I`cd "$srcdir/nidhogg/glitnir" && pwd`/include"
     NHWL_OBJ="nhwlterm.o nhwlfns.o nhwldraw.o nhwlcsd.o nhwlchild.o nhwlselect.o nhwlmenu.o glitnir-decor.o"
   fi
   GLITNIR_LIBNAME=$glitnir_lib
   glitnir_home=`pwd`/src/glitnir-cargo-home
   glitnir_target=`pwd`/src/glitnir-target
   test -z "$MACOSX_DEPLOYMENT_TARGET" || GLITNIR_ENV="MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET"
+  dnl Under --enable-checking the glue gets its test hooks and Rust's debug assertions.  Cargo has no environment
+  dnl variable that turns on a feature, hence GLITNIR_CARGO_FLAGS; the profile setting does have one.
+  if test "$HAVE_NHWL" = yes && test "x$ac_enable_checking" != x; then
+    GLITNIR_CARGO_FLAGS="--features test-hooks"
+    GLITNIR_ENV="$GLITNIR_ENV CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true"
+  fi
   AC_MSG_CHECKING([the native libraries Glitnir links])
   rm -rf "$glitnir_target"
-  glitnir_native=`cd "$GLITNIR_SRCDIR" && env CARGO_HOME="$glitnir_home" $GLITNIR_ENV "$GLITNIR_CARGO" rustc --release --offline --locked --target-dir "$glitnir_target" -- --print native-static-libs 2>&1 | sed -n 's/.*native-static-libs: *//p' | tail -n 1`
+  glitnir_native=`cd "$GLITNIR_SRCDIR" && env CARGO_HOME="$glitnir_home" $GLITNIR_ENV "$GLITNIR_CARGO" rustc --release --offline --locked $GLITNIR_CARGO_FLAGS --target-dir "$glitnir_target" -- --print native-static-libs 2>&1 | sed -n 's/.*native-static-libs: *//p' | tail -n 1`
   if test ! -f "$glitnir_target/release/$glitnir_lib" || test -z "$glitnir_native"; then
     AC_MSG_RESULT([failed])
     AC_MSG_ERROR([cannot build $GLITNIR_SRCDIR with cargo (see $glitnir_target)])
@@ -4036,6 +4046,7 @@ AC_SUBST([GLITNIR_ENV])
 AC_SUBST([GLITNIR_LIBNAME])
 AC_SUBST([GLITNIR_CRATE_DEPS])
 AC_SUBST([GLITNIR_CRATE_INCLUDE])
+AC_SUBST([GLITNIR_CARGO_FLAGS])
 AC_SUBST([NHWL_OBJ])
 
 AC_CHECK_FUNCS([malloc_trim])
