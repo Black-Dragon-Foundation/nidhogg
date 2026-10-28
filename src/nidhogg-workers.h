@@ -488,6 +488,8 @@ extern size_t nh_dec_autosave_encode (const unsigned char *in, size_t n,
 #ifndef NH_WK_HARNESS
 
 extern void nh_blk_file_syms (void);
+/* nidhogg-blk.c: lock nh-save's arena mutex for good (a fatal test).  */
+extern void nh_save_test_arena_hold (void);
 /* image.c: the entry lookup_image (F, SPEC, -1) would find, without
    loading; NULL if none.  */
 extern struct image *nh_img_cache_find (struct frame *, Lisp_Object spec);
