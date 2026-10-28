@@ -204,17 +204,6 @@ struct nhwl_csd
   int strip, l, t, r, b;
 };
 
-/* A popup frame's state (nhwlmenu.c): its `nhwl-popup' parameter.  The anchor is in device pixels of the parent's
-   native area; the window exists while the frame is shown.  */
-struct nhwl_popup
-{
-  bool on;			/* the frame is a popup frame */
-  bool grab;			/* it grabs the keyboard and pointer */
-  int x, y, w, h;		/* the rectangle it sits beside */
-  uint32_t gravity, adjust;	/* NhShellAnchor's gravity, NHSHELL_ADJUST_* */
-  int sent_w, sent_h;		/* the window's size, logical, as last sent */
-};
-
 struct nhwl_output
 {
   struct frame *frame;
@@ -247,14 +236,13 @@ struct nhwl_output
      layout, margin, position and mapping are the glue's (child.rs).  */
   int child_z;
   NhgChrome chrome;
-  struct nhwl_popup popup;
+  /* The frame is a popup frame (its `nhwl-popup' parameter, given at creation): its window is a popup of its
+     parent's, made while it is shown; the popup's state is the glue's (popup.rs).  */
+  bool popup_frame;
   /* On a top-level (a tree's root): the shell window of the frame of its
      tree that Emacs focused (0: the root itself).  The root's keys and
      input-method events go to that frame (W1-7).  */
   uint64_t focus_window;
-  /* On a top-level: it lost the keyboard to a grabbing popup frame of its
-     own, and keeps Emacs's focus meanwhile.  */
-  bool focus_lent;
 
   /* The `alpha' applied, as what it takes off opaque: UINT32_MAX minus the
      multiplier (0: opaque, the default).  ALPHA_HOST: the compositor cannot
@@ -536,17 +524,14 @@ extern void nhwl_child_focus (struct frame *);
 extern void nhwl_child_focus_gone (struct frame *, bool);
 extern void nhwl_native_origin (struct frame *, int *, int *);
 
-/* nhwlmenu.c: popup frames for menus.  */
+/* nhwlfns.c: popup frames for menus (their windows are the glue's, popup.rs).  */
 extern bool nhwl_popup_frame_p (struct frame *);
 extern void nhwl_popup_init (struct frame *, Lisp_Object);
-extern bool nhwl_popup_grabbing (struct frame *);
 extern void nhwl_popup_show (struct frame *);
 extern void nhwl_popup_hide (struct frame *);
 extern void nhwl_popup_set_size (struct frame *, int, int);
 extern void nhwl_popup_params_changed (struct frame *);
-extern bool nhwl_popup_focus_kept (struct frame *, bool);
 extern Lisp_Object nhwl_popup_menu (struct frame *, Lisp_Object, Lisp_Object);
-extern void syms_of_nhwlmenu (void);
 extern void nhwl_focus_lost (struct frame *);
 
 /* The names ftcrfont.c and the other Cairo code shared with pgtk use.  */

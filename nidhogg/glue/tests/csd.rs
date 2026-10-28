@@ -221,8 +221,12 @@ fn last_title_bar(events: &[Vec<NhgAction>]) -> Option<NhgAction> {
         .copied()
 }
 
-fn any_raw(events: &[Vec<NhgAction>]) -> bool {
-    events.iter().flatten().any(|a| a.kind == NHG_ACT_RAW)
+/// Whether a pointer event went on past the title bar, as the pointer's own action.
+fn any_pointer(events: &[Vec<NhgAction>]) -> bool {
+    events
+        .iter()
+        .flatten()
+        .any(|a| [NHG_ACT_MOTION, NHG_ACT_LEAVE, NHG_ACT_CLICK].contains(&a.kind))
 }
 
 /// A mapped CSD window on `mutter`, painted at 200 x 100, with the pointer's focus on it.
@@ -351,7 +355,7 @@ mod csd {
 
     /// Margins, strip and buttons each hit as `nhwl_csd_hit` did: the border consumes the motion and gives its pointer
     /// shape; a button under the pointer is hovered; back in the native area, the border is left and the motion goes
-    /// on raw, after the title bar's action.
+    /// on as the pointer's own action, after the title bar's.
     #[test]
     fn hit_test_edges_strip_buttons() {
         let rec = Recorder::start("mutter");
@@ -373,7 +377,10 @@ mod csd {
         ] {
             let ev = point(&rec, d, x, y);
             assert_eq!(shape(&ev), want, "at {x}, {y}");
-            assert!(!any_raw(&ev), "the border passed a motion on at {x}, {y}");
+            assert!(
+                !any_pointer(&ev),
+                "the border passed a motion on at {x}, {y}"
+            );
         }
         assert_eq!(buttons_state(d, id), (0, 0));
         // the close button: hovered, and the strip is painted again
@@ -381,17 +388,17 @@ mod csd {
         let a = last_title_bar(&ev).unwrap();
         assert_eq!(a.flags & NHG_TB_REDRAW, NHG_TB_REDRAW);
         assert_eq!(buttons_state(d, id), (NHG_CSD_CLOSE, 0));
-        // into the native area: the border is left, the hover goes, and the motion goes on raw, last
+        // into the native area: the border is left, the hover goes, and the motion goes on, last
         let ev = point(&rec, d, 100, 80);
         let last = ev.last().expect("no event");
-        assert_eq!(last.last().map(|a| a.kind), Some(NHG_ACT_RAW));
+        assert_eq!(last.last().map(|a| a.kind), Some(NHG_ACT_MOTION));
         let a = last_title_bar(&ev).unwrap();
         assert_eq!(a.flags, NHG_TB_LEFT | NHG_TB_REDRAW);
         assert_eq!(buttons_state(d, id), (0, 0));
         // inside the native area nothing of the title bar's
         let ev = point(&rec, d, 110, 90);
         assert!(last_title_bar(&ev).is_none(), "{ev:?}");
-        assert!(any_raw(&ev));
+        assert!(any_pointer(&ev));
         close(d);
     }
 
@@ -512,7 +519,7 @@ mod csd {
         rec.control_ok(r#"{"cmd":"button","button":272,"state":"press"}"#);
         rec.control_ok(r#"{"cmd":"button","button":272,"state":"release"}"#);
         ev.extend(settle(d));
-        assert!(!any_raw(&ev), "a strip click went on raw: {ev:?}");
+        assert!(!any_pointer(&ev), "a strip click went on: {ev:?}");
         assert!(logged(&rec, "xdg_toplevel.move"));
         assert!(logged(&rec, "xdg_toplevel.set_maximized"));
         close(d);
@@ -527,12 +534,12 @@ mod csd {
         let ev = button(&rec, d, true);
         assert_eq!(buttons_state(d, id), (NHG_CSD_CLOSE, NHG_CSD_CLOSE));
         assert_eq!(last_title_bar(&ev).map(|a| a.flags), Some(NHG_TB_REDRAW));
-        assert!(!any_raw(&ev));
+        assert!(!any_pointer(&ev));
         // released over the strip: disarmed, nothing fires, the release is consumed
         point(&rec, d, 50, 20);
         let ev = button(&rec, d, false);
         assert!(ev.iter().flatten().all(|a| a.kind != NHG_ACT_DELETE));
-        assert!(!any_raw(&ev));
+        assert!(!any_pointer(&ev));
         assert_eq!(buttons_state(d, id).1, 0);
         // pressed and released over close: DELETE
         point(&rec, d, 180, 20);
@@ -549,7 +556,7 @@ mod csd {
         // a press in the native area is not the title bar's
         point(&rec, d, 100, 80);
         let ev = button(&rec, d, true);
-        assert!(any_raw(&ev));
+        assert!(any_pointer(&ev));
         assert!(last_title_bar(&ev).is_none());
         close(d);
     }
