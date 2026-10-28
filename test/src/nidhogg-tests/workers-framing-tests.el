@@ -272,6 +272,53 @@ Batches go to `workers-fr-tests--collect', raw output to the property
                 (signal-process pid 'KILL)))
             (delete-file pidfile)))))))
 
+(ert-deftest workers/inline-framed-drain-selects-real-fd ()
+  ;; Inline, a framed process's exit drain hands it back while a
+  ;; grandchild still holds its stdout: the handle keeps its framer, and
+  ;; its copy is closed.  It must be selected on the real fd, never on
+  ;; the closed copy's number (EBADF aborts in select; an fd that reuses
+  ;; the number would be read as this process): the grandchild's later
+  ;; message arrives, after a file took the free fd number.
+  (let ((nidhogg-workers--mode 'inline)
+        (nidhogg-workers-process-reader t)
+        (nidhogg-workers-reader-pipes t)
+        (pidfile (make-temp-file "wfr-pid"))
+        (taken nil)
+        (exited nil))
+    (unwind-protect
+        (let ((proc (make-process
+                     :name "wfr-inline-drain" :connection-type 'pipe
+                     :noquery t :coding 'binary
+                     :command
+                     (list "sh" "-c"
+                           (format "read x; (sleep 0.5; echo two) & echo $! > %s; echo one"
+                                   (shell-quote-argument pidfile)))
+                     :sentinel (lambda (_p _e) (setq exited t)))))
+          (should (workers-fr-tests--info proc :owned))
+          (nidhogg-set-process-framing proc 'lines
+                                       :batch-function #'workers-fr-tests--collect)
+          (process-send-string proc "go\n")
+          (should (workers-fr-tests--until (lambda () exited)))
+          ;; Take the lowest free fd numbers, the closed copy's among them.
+          (dotimes (i 4)
+            (push (make-pipe-process :name (format "wfr-taker-%d" i) :noquery t)
+                  taken))
+          (should (workers-fr-tests--until
+                   (lambda () (= 2 (length (workers-fr-tests--got proc))))
+                   5))
+          (should (equal (mapcar #'cadr (workers-fr-tests--got proc))
+                         '("one" "two"))))
+      (mapc #'delete-process taken)
+      (dolist (p (process-list))
+        (when (string-prefix-p "wfr-" (process-name p))
+          (delete-process p)))
+      (let ((pid (with-temp-buffer
+                   (insert-file-contents pidfile)
+                   (string-to-number (buffer-string)))))
+        (when (> pid 0)
+          (signal-process pid 'KILL)))
+      (delete-file pidfile))))
+
 (ert-deftest workers/accept-process-output ()
   ;; `accept-process-output' on a framed process (§5.4): non-nil once a
   ;; batch from PROC was delivered, nil on a timeout with only an
