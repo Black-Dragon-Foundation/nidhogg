@@ -89,6 +89,7 @@ mod abi {
             ("NHG_E_TIMEOUT", NHG_E_TIMEOUT.into()),
             ("NHG_E_TOO_SMALL", NHG_E_TOO_SMALL.into()),
             ("NHG_E_THREAD", NHG_E_THREAD.into()),
+            ("NHG_E_RECONNECTING", NHG_E_RECONNECTING.into()),
             ("NHSHELL_E_PANIC", NHG_E_PANIC.into()),
             ("NHSHELL_E_ARG", NHG_E_ARG.into()),
             ("NHSHELL_E_STATE", NHG_E_STATE.into()),
@@ -837,6 +838,34 @@ PROTO (nhg_session_remove, int32_t (NhgDisplay *, uint64_t));";
         ];
         let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
         let got = probe("", &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+    }
+
+    #[test]
+    fn reconnect_header_matches() {
+        use nhglue::ffi::{nhg_reconnect_settle, nhg_reconnect_step, nhg_set_reconnect};
+        use nhglue::reconnect::*;
+        let rows: &[(&str, i64)] = &[
+            ("NHG_ACT_RECONNECTING", NHG_ACT_RECONNECTING.into()),
+            ("NHG_ACT_RECONNECTED", NHG_ACT_RECONNECTED.into()),
+            ("NHG_SETTLE_REPORT", NHG_SETTLE_REPORT.into()),
+            ("NHG_SETTLE_MONITORS", NHG_SETTLE_MONITORS.into()),
+            ("NHG_SETTLE_FOCUS_OUT", NHG_SETTLE_FOCUS_OUT.into()),
+        ];
+        let decls = "\
+#define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
+PROTO (nhg_set_reconnect, int32_t (NhgDisplay *, int32_t));
+PROTO (nhg_reconnect_step, int32_t (NhgDisplay *, uint32_t, uint32_t *));
+PROTO (nhg_reconnect_settle, int32_t (NhgDisplay *, uint64_t *, uint32_t *));";
+        let _: unsafe extern "C" fn(*mut NhgDisplay, i32) -> i32 = nhg_set_reconnect;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u32, *mut u32) -> i32 = nhg_reconnect_step;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, *mut u64, *mut u32) -> i32 =
+            nhg_reconnect_settle;
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe(decls, &exprs);
         assert_eq!(got.len(), rows.len());
         for ((expr, rust), c) in rows.iter().zip(got) {
             assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
