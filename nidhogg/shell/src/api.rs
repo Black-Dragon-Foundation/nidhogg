@@ -64,6 +64,11 @@ pub type ShellResult<T = ()> = Result<T, ShellError>;
 pub const NHSHELL_WIN_UNDECORATED: u32 = 1 << 0;
 pub const NHSHELL_WIN_FULLSCREEN: u32 = 1 << 1;
 pub const NHSHELL_WIN_MAXIMIZED: u32 = 1 << 2;
+/// A popup that takes the keyboard and pointer (a menu): it grabs with the newest press, key or touch-down serial,
+/// unless a drag is in progress, there is no serial, or it would not become the topmost grab (its parent must be a
+/// top-level window while no popup holds a grab, or the popup holding the topmost grab).
+/// Without the grab it still works by keys through its parent's focus, but an outside click does not dismiss it.
+pub const NHSHELL_WIN_GRAB: u32 = 1 << 3;
 
 /// Edges for `resize`, OR-ed for a corner.
 pub const NHSHELL_EDGE_TOP: u32 = 1;
@@ -137,6 +142,8 @@ pub struct ChildDesc {
     pub w: i32,
     pub h: i32,
     pub anchor: Anchor,
+    /// `NHSHELL_WIN_GRAB` for a popup; 0 otherwise.
+    pub flags: u32,
 }
 
 /// A pixel buffer to draw into until the next `present_commit`.  `age` is how many presents ago these pixels were
@@ -220,6 +227,13 @@ pub trait ShellBackend {
     fn set_input_region(&mut self, window: WindowId, rects: &[Rect]) -> ShellResult;
     /// Off: show nothing (a null buffer); on: the next present shows the window again.
     fn set_mapped(&mut self, window: WindowId, on: bool) -> ShellResult;
+    /// Whether popup `window` holds a grab (asked with `NHSHELL_WIN_GRAB`, granted, not dismissed); false for other
+    /// windows.
+    fn window_grabbed(&self, window: WindowId) -> ShellResult<bool>;
+    /// A popup's new size (logical pixels), placed again by its anchor.  `true` when the whole window must be redrawn
+    /// (a popup made again), as for `set_position`; the next configure asks for a buffer of the new size.  `State`
+    /// for windows that are not popups (their buffers set their sizes).
+    fn set_size(&mut self, window: WindowId, w: i32, h: i32) -> ShellResult<bool>;
 
     /// Begin a frame of `dev_w` x `dev_h` device pixels.
     fn present_begin(

@@ -1,8 +1,8 @@
 //! The Wayland backend of the shell API.
 //!
 //! Queue ownership is fixed, so that one thread reads the socket and no handler runs on a thread it does not expect:
-//! - the reader queue (`reader.rs`, the reader thread): `wl_seat`, `wl_keyboard`, `xdg_wm_base` (pings), and later
-//!   the pointer, key repeat and frame callbacks;
+//! - the reader queue (`reader.rs`, the reader thread): `wl_seat`, `wl_keyboard`, `xdg_wm_base` (pings), the
+//!   pointer and its pinch gesture, touch, key repeat and frame callbacks;
 //! - the main queue (`MainState`, the host's thread): `wl_registry`, `wl_compositor`, `wl_subcompositor`, `wl_shm`
 //!   and the surfaces, and later configures, outputs and scale.
 //!
@@ -17,6 +17,7 @@ pub mod conn;
 pub mod cursor;
 pub mod cursor_theme;
 pub mod decor;
+pub mod gesture;
 pub mod keyboard;
 pub mod output;
 pub mod pointer;
@@ -30,6 +31,7 @@ pub mod serial;
 pub mod shm;
 pub mod text_input;
 pub mod toplevel;
+pub mod touch;
 
 use crate::api::*;
 use conn::Shared;
@@ -75,6 +77,8 @@ pub struct MainState {
     windows: HashMap<u64, toplevel::Window>,
     children: HashMap<u64, child::Child>,
     popups: HashMap<u64, popup::Popup>,
+    /// The popups that sent a grab, bottom to top, dismissed or not, until they are destroyed (`popup.rs`).
+    grabs: Vec<u64>,
     activation: Option<wayland_protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1>,
     alpha_modifier: Option<wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_v1::WpAlphaModifierV1>,
     /// Each window's `wp_alpha_modifier_surface_v1`, made at its first `set_alpha`.
@@ -157,6 +161,7 @@ impl WaylandShell {
             rstate.seat = g.bind(reg, &rqh, ());
             rstate.wm_base = g.bind(reg, &rqh, ());
             rstate.cursor_manager = g.bind(reg, &rqh, ());
+            rstate.gestures = g.bind(reg, &rqh, ());
             main.decoration_manager = g.bind(reg, &mqh, ());
             main.presentation = g.bind(reg, &mqh, ());
             main.activation = g.bind(reg, &mqh, ());
@@ -275,6 +280,12 @@ impl WaylandShell {
     #[doc(hidden)]
     pub fn flush_pending(&self) -> bool {
         self.shared.want_flush.load(Ordering::Acquire)
+    }
+
+    /// Test hook: a drag is in progress on the seat (popups take no grab).
+    #[doc(hidden)]
+    pub fn dragging(&self) -> bool {
+        self.shared.dragging.load(Ordering::Acquire)
     }
 
     /// Test hook: shrink the socket's send buffer (`SO_SNDBUF`), so that a flush meets EAGAIN early.
