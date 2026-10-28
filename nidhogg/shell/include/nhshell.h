@@ -46,8 +46,8 @@ typedef struct
 
 /* Event kinds.  KIND says which member of NhShellEvent.u is valid; CLOSE, POINTER_LEAVE, DISCONNECTED and FRAME_READY
    have none.  MODIFIERS uses u.key.mods; POINTER_ENTER, POINTER_MOTION and POINTER_LEAVE use u.pointer.x and y;
-   BUTTON uses u.pointer.button and state; OUTPUT_REMOVE uses u.output.id.  Positions are logical pixels; TIME_NS is
-   the compositor's clock.  */
+   BUTTON uses u.pointer.button and state; OUTPUT_REMOVE uses u.output.id.  Pointer positions are device pixels
+   (surface-local logical times the window's scale); TIME_NS is the compositor's clock.  */
 enum
 {
   NHSHELL_EV_KEY = 1, NHSHELL_EV_MODIFIERS, NHSHELL_EV_POINTER_ENTER, NHSHELL_EV_POINTER_LEAVE,
