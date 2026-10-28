@@ -110,8 +110,9 @@ pub fn handle(state: &mut State, line: &str, stream: &UnixStream) -> Option<Valu
         "log" => {
             let since = req.get("since").and_then(Value::as_u64).unwrap_or(0);
             let commits: Vec<&crate::log::Commit> = state.log.since(since).collect();
-            json!({"ok": true, "next": state.log.next_seq(), "commits": commits})
+            json!({"ok": true, "next": state.log.next_seq(), "commits": commits, "restarts": state.log.restarts()})
         }
+        "restart" | "restart_up" | "connections" => crate::restart::command(state, cmd, &req),
         // buffers whose bytes changed between their attach and their release, released in commit `since` or later
         "held_buffer_writes" => {
             let since = req.get("since").and_then(Value::as_u64).unwrap_or(0);
