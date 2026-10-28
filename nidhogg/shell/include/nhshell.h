@@ -317,6 +317,40 @@ int32_t nhshell_window_ready (NhShell *sh, uint64_t window, int32_t *ready);
 int32_t nhshell_present_begin (NhShell *sh, uint64_t window, int32_t dev_w, int32_t dev_h, NhShellBuffer *out);
 int32_t nhshell_present_commit (NhShell *sh, uint64_t window, const GlitnirRect *damage, size_t n);
 
+/* Publishing: the shell presents.  (The calls above are the host-driven presenter, kept until the host publishes.)
+   At a consistency point the host publishes a tree (a root and its child windows): one NhShellSurfaceFrame per
+   drawable surface, the root first, then its child windows deepest first.  publish commits each surface's Glitnir
+   scene (GLITNIR_ROOT), copies the damaged pixels of its backing (PIXELS: H rows of STRIDE bytes, W x H device pixels,
+   premultiplied ARGB32, read during the call only) and queues one packet for the tree.  It returns 1 when a packet
+   was queued (damage, or a recorded content ack that waits for a picture drawn after it), 0 when there was nothing.
+   (SRC_X, SRC_Y) is where the surface's layer starts in its backing (a child frame's shadow margin).  Flags:
+   NHSHELL_SF_DRAWABLE, the surface may show a buffer (without it, its damage waits in Glitnir); NHSHELL_SF_ALPHA_HOST,
+   the shell multiplies the surface by 1 - ALPHA_CUT / UINT32_MAX (no wp_alpha_modifier_v1).  T_KEY_NS is the
+   CLOCK_MONOTONIC time of the key the picture answers (0: none); the earliest one not yet shown is kept.
+   present_tree presents ROOT's tree by the present path's rule at its FRAME_READY: buffers when a packet left damage
+   or a content ack (eligible once a packet was published after it) waits, the child windows deepest first and the
+   root last; else bare commits where one is owed; else nothing.  It returns 1 when the root committed a buffer, 0
+   otherwise, NHSHELL_E_STATE in thread mode.  set_presenter_thread: ON presents on the shell's own thread, off
+   (the default at open) inline, when the host calls present_tree.  presenter_stats fills *OUT.  */
+#define NHSHELL_SF_DRAWABLE   1u
+#define NHSHELL_SF_ALPHA_HOST 2u
+typedef struct
+{
+  uint64_t window, glitnir_root;
+  const uint8_t *pixels;
+  int32_t w, h, stride, src_x, src_y;
+  uint32_t flags, alpha_cut;
+} NhShellSurfaceFrame;
+typedef struct
+{
+  uint64_t packets, superseded, commits, bare_commits, main_wait_max_ns, publish_copy_max_ns, front_trims;
+  uint32_t thread_on;
+} NhShellPresenterStats;
+int32_t nhshell_publish (NhShell *sh, uint64_t root, const NhShellSurfaceFrame *s, size_t n, uint64_t t_key_ns);
+int32_t nhshell_present_tree (NhShell *sh, uint64_t root);
+int32_t nhshell_set_presenter_thread (NhShell *sh, int32_t on);
+int32_t nhshell_presenter_stats (NhShell *sh, NhShellPresenterStats *out);
+
 /* Selections.  KIND is NHSHELL_SEL_CLIPBOARD or NHSHELL_SEL_PRIMARY.  own copies N types (MIMES[i] with the LENS[i]
    bytes at DATA[i]); other clients' pastes are answered from the copy by the shell's own thread.  It needs keyboard
    focus (NHSHELL_E_STATE without).  owned returns 1 while our source is the current selection, else 0.  types writes

@@ -190,6 +190,8 @@ pub trait ShellBackend {
     /// draw (the pacer is not ready again until `window_dirty`, unless a content ack is held).
     fn window_ready(&mut self, window: WindowId) -> ShellResult<u32>;
     /// A commit without a buffer, frame callback or feedback: a bare ack, and the surface state the window owes.
+    /// This call, `window_dirty`, `window_ready`, `present_begin` and `present_commit` are the host-driven presenter,
+    /// kept until the host publishes (`publish`, `present_tree`).
     fn present_bare(&mut self, window: WindowId) -> ShellResult;
     fn set_cursor(&mut self, window: WindowId, shape: u32) -> ShellResult;
     /// The Xcursor theme (`name`, logical `size`) used where the compositor has no cursor-shape protocol.
@@ -265,6 +267,61 @@ pub trait ShellBackend {
     fn text_len(&self, id: u32) -> ShellResult<usize>;
     /// Take text `id` (single-use).
     fn take_text(&mut self, id: u32) -> ShellResult<Vec<u8>>;
+
+    /// Publish the tree of root `root` at a consistency point: one frame per drawable surface, the root first, then
+    /// its child windows deepest first.  Each surface's scene is committed and its damaged pixels copied; nothing is
+    /// read after the call.  `true` when a packet was queued (damage, or a content ack that waits for a picture drawn
+    /// after it).  `t_key_ns` is the key the picture answers (0: none).
+    fn publish(
+        &mut self,
+        root: WindowId,
+        frames: &[SurfaceFrame],
+        t_key_ns: u64,
+    ) -> ShellResult<bool>;
+    /// Inline mode: present root `root`'s tree by the present path's rule; `true` when the root committed a buffer.
+    /// `State` in thread mode.
+    fn present_tree(&mut self, root: WindowId) -> ShellResult<bool>;
+    /// Present on the shell's own thread (`on`) or inline, when the host calls `present_tree` (off at open).
+    fn set_presenter_thread(&mut self, on: bool) -> ShellResult;
+    fn presenter_stats(&self) -> ShellResult<NhShellPresenterStats>;
+}
+
+/// `SurfaceFrame` flags: the surface may show a buffer (without it, its damage waits); the presenter multiplies the
+/// surface's pixels by its alpha (the compositor cannot).
+pub const NHSHELL_SF_DRAWABLE: u32 = 1;
+pub const NHSHELL_SF_ALPHA_HOST: u32 = 2;
+
+/// One surface of a published tree.  `pixels` is the host's backing, `h` rows of `stride` bytes (`w` x `h` device
+/// pixels, premultiplied ARGB32), borrowed for the call.  `glitnir_root` is the surface's scene; `(src_x, src_y)`
+/// is where its layer starts in the backing.  `alpha_cut`: with `NHSHELL_SF_ALPHA_HOST`, the pixels are multiplied
+/// by `1 - alpha_cut / u32::MAX`.
+#[derive(Clone, Copy, Debug)]
+pub struct SurfaceFrame<'a> {
+    pub window: WindowId,
+    pub glitnir_root: u64,
+    pub pixels: &'a [u8],
+    pub w: i32,
+    pub h: i32,
+    pub stride: i32,
+    pub src_x: i32,
+    pub src_y: i32,
+    pub flags: u32,
+    pub alpha_cut: u32,
+}
+
+/// The presenter's counters since open: packets published and merged into one still waiting (`superseded`), buffer
+/// and bare commits, the longest wait of the host's thread and the longest publish copy, and fronts dropped idle.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NhShellPresenterStats {
+    pub packets: u64,
+    pub superseded: u64,
+    pub commits: u64,
+    pub bare_commits: u64,
+    pub main_wait_max_ns: u64,
+    pub publish_copy_max_ns: u64,
+    pub front_trims: u64,
+    pub thread_on: u32,
 }
 
 #[cfg(test)]
