@@ -2038,14 +2038,27 @@ nh_img_size_1 (Lisp_Object spec, struct frame *f, bool pixels, bool *answered)
 		make_float ((double) dh / FRAME_LINE_HEIGHT (f)));
 }
 
+/* Whether SPEC has an entry in F's cache that is not pending: the
+   upstream path then answers from it (a hash lookup) and the header path
+   must not read and scan the file again (an animation asks
+   `image-multi-frame-p' on every frame for that cache hit).  */
+static bool
+nh_img_cached_ready (struct frame *f, Lisp_Object spec)
+{
+  struct image *img = nh_img_cache_find (f, spec);
+  return img && !nh_img_pending_p (f, img);
+}
+
 Lisp_Object
 nh_img_size (Lisp_Object spec, Lisp_Object frame, bool pixels, bool *answered)
 {
   *answered = false;
   if (!nh_img_on () || !valid_image_p (spec))
     return Qnil;
-  return nh_img_size_1 (spec, decode_window_system_frame (frame), pixels,
-			answered);
+  struct frame *f = decode_window_system_frame (frame);
+  if (nh_img_cached_ready (f, spec))
+    return Qnil;
+  return nh_img_size_1 (spec, f, pixels, answered);
 }
 
 /* image-metadata from the frame scan: what the loaders record.  PNG
@@ -2108,8 +2121,10 @@ nh_img_metadata (Lisp_Object spec, Lisp_Object frame, bool *answered)
   *answered = false;
   if (!nh_img_on () || !valid_image_p (spec))
     return Qnil;
-  return nh_img_metadata_1 (spec, decode_window_system_frame (frame),
-			    answered);
+  struct frame *f = decode_window_system_frame (frame);
+  if (nh_img_cached_ready (f, spec))
+    return Qnil;
+  return nh_img_metadata_1 (spec, f, answered);
 }
 
 DEFUN ("nidhogg-workers--test-image-answer", Fnidhogg_workers__test_image_answer,

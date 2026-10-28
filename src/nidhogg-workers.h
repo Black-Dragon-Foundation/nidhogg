@@ -488,6 +488,9 @@ extern size_t nh_dec_autosave_encode (const unsigned char *in, size_t n,
 #ifndef NH_WK_HARNESS
 
 extern void nh_blk_file_syms (void);
+/* image.c: the entry lookup_image (F, SPEC, -1) would find, without
+   loading; NULL if none.  */
+extern struct image *nh_img_cache_find (struct frame *, Lisp_Object spec);
 /* A demand that must reparse (treesit_ensure_parsed, after the
    narrowing sync) [10, 11, 12]: NH_TS_TREE when *TREE (now the
    caller's) is the parse of the current text (a finished job's, a 1 ms
