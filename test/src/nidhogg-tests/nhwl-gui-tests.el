@@ -775,7 +775,9 @@ Return the two replies."
           (let* ((n (nhwl-gui--child-node before))
                  (id (plist-get n :id))
                  (off (nhwl-gui--parent-offset n))
-                 (mark (nhwl-gui--mark)))
+                 (mark (progn (message nil) (redisplay t) (gui-runner-wait-settled) (nhwl-gui--mark)))
+                 ;; redisplay is held: the move alone commits (a redisplay would redraw the parent's cursor)
+                 (inhibit-redisplay t))
             (set-frame-position c 80 60)
             (should (nhwl-gui--wait
                      (lambda ()
@@ -783,7 +785,9 @@ Return the two replies."
                               (list (round (/ (+ (car off) 80) s)) (round (/ (+ (cadr off) 60) s)))))
                      5))
             (should-not (seq-filter (lambda (cm) (and (eql (plist-get cm :surface) id) (nhwl-gui--get cm :buffer)))
-                                    (plist-get (gui-runner-recorder (list :cmd "log" :since mark)) :commits)))))
+                                    (plist-get (gui-runner-recorder (list :cmd "log" :since mark)) :commits)))
+            ;; S5: the sync child's move is applied by a bare commit of the parent
+            (should (equal (car (nhwl-gui--commit-summary (nhwl-gui--toplevel-all-commits mark))) '(nil nil 0)))))
       (when (frame-live-p c) (delete-frame c t)))))
 
 (ert-deftest nhwl-gui/child-frame-corners-and-shadow ()
@@ -1909,3 +1913,130 @@ alone wakes the pacer, and a commit with damage follows within 200 ms."
                    (should hit)
                    (should (< (- (float-time) t0) 0.2))))))
          (kill-buffer buf))))))
+
+;; Present path S5: child frames are sync subsurfaces, presented with their tree (children deepest first, the root
+;; last).  The recorder logs a sync child's commit when its root's commit applies it, with that commit's seq in
+;; `applied_by'.
+
+(defun nhwl-gui--log-since (mark)
+  (plist-get (gui-runner-recorder (list :cmd "log" :since mark)) :commits))
+
+(defun nhwl-gui--surface-commits (id mark)
+  "Surface ID's commits since MARK."
+  (seq-filter (lambda (c) (eql (plist-get c :surface) id)) (nhwl-gui--log-since mark)))
+
+(defun nhwl-gui--with-child (fn &rest params)
+  "Call FN with a shown child frame (PARAMS first, see `nhwl-gui--child') showing a buffer of its own, and its node id;
+delete the frame after.  Blink is off and the parent's echo area is empty, so only what FN does draws."
+  (nhwl-gui--with-blink
+   nil
+   (lambda ()
+     (let ((before (nhwl-gui--sub-ids)) (c nil) (buf (generate-new-buffer " *nhwl-child*")))
+       (unwind-protect
+           (progn
+             (setq c (apply #'nhwl-gui--child params))
+             (set-window-buffer (frame-root-window c) buf)
+             (with-current-buffer buf (insert "child"))
+             (let ((id (plist-get (nhwl-gui--child-node before) :id)))
+               (should id)
+               (message nil)
+               (redisplay t)
+               (gui-runner-wait-settled)
+               (funcall fn c id)))
+         (when (frame-live-p c) (delete-frame c t))
+         (kill-buffer buf))))))
+
+(ert-deftest nhwl-gui/child-and-parent-in-one-frame ()
+  "A redisplay that draws in a child frame and its parent: one root commit applies both buffers."
+  (skip-unless (nhwl-gui--recorder-p))
+  (switch-to-buffer "*scratch*")
+  (nhwl-gui--with-child
+   (lambda (c id)
+     (let ((mark (nhwl-gui--mark)))
+       (insert "p")
+       (with-current-buffer (window-buffer (frame-root-window c)) (insert "c"))
+       (redisplay t)
+       (should (nhwl-gui--wait
+                (lambda () (seq-find (lambda (cm) (nhwl-gui--get cm :buffer)) (nhwl-gui--surface-commits id mark)))
+                3))
+       (gui-runner-wait-settled)
+       (let* ((cs (nhwl-gui--log-since mark))
+              (child (seq-find (lambda (cm) (and (eql (plist-get cm :surface) id) (nhwl-gui--get cm :buffer))) cs))
+              (by (nhwl-gui--get child :applied_by))
+              (root (seq-find (lambda (cm) (eql (plist-get cm :seq) by)) cs)))
+         (should (nhwl-gui--get child :sync))
+         (should by)
+         (should (equal (plist-get root :role) "toplevel"))
+         ;; the parent's own drawing went out with the same commit
+         (should (nhwl-gui--damage root)))))))
+
+(ert-deftest nhwl-gui/child-hide-commits-root ()
+  "B3: hiding a child frame is its own commit (a null buffer), applied by a root commit within 200 ms."
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--with-child
+   (lambda (c id)
+     (let ((mark (nhwl-gui--mark)) (t0 (float-time)) (inhibit-redisplay t))
+       (make-frame-invisible c t)
+       (should (nhwl-gui--wait (lambda () (nhwl-gui--toplevel-all-commits mark)) 1))
+       (should (< (- (float-time) t0) 0.2))
+       (should (nhwl-gui--wait (lambda () (not (nhwl-gui--get (nhwl-gui--node id) :buffer))) 1))))))
+
+(ert-deftest nhwl-gui/child-input-region-applies ()
+  "B3: chrome on gives the child a shadow margin and an input region inside it, which the root's commit applies."
+  (skip-unless (and (nhwl-gui--recorder-p) (boundp 'child-frame-chrome)))
+  (let ((old child-frame-chrome))
+    (unwind-protect
+        (nhwl-gui--with-child
+         (lambda (c id)
+           (let ((s (frame-scale-factor)) (mark (nhwl-gui--mark)))
+             (should-not (nhwl-gui--get (nhwl-gui--node id) :input_region))
+             (setq child-frame-chrome '((corner-radius . 8) (shadow :blur 6 :offset (0 . 2) :opacity 0.3)))
+             (glitnir-refresh c)
+             (redisplay t)
+             (let ((r (car (nhwl-gui--wait (lambda () (nhwl-gui--get (nhwl-gui--node id) :input_region)) 3))))
+               (should r)
+               (should (> (nth 0 r) 0))
+               (should (> (nth 1 r) 0))
+               (should (= (nth 2 r) (round (/ (frame-pixel-width c) s)))))
+             ;; applied by the root's commit
+             (should (nhwl-gui--toplevel-all-commits mark)))))
+      (setq child-frame-chrome old))))
+
+(ert-deftest nhwl-gui/nested-child-moves ()
+  "A child frame of a child frame moves: the grandchild, its parent and the root commit, deepest first, and one root
+commit applies the move."
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--with-child
+   (lambda (c cid)
+     (let* ((s (frame-scale-factor))
+            (before (nhwl-gui--sub-ids))
+            (g (make-frame `((parent-frame . ,c) (left . 4) (top . 4) (width . 8) (height . 2)
+                             (undecorated . t) (minibuffer . nil))))
+            (gid (plist-get (nhwl-gui--child-node before) :id)))
+       (unwind-protect
+           (progn
+             (should gid)
+             (should (eql (plist-get (nhwl-gui--node gid) :parent) cid))
+             (message nil)
+             (redisplay t)
+             (gui-runner-wait-settled)
+             (let ((p0 (plist-get (nhwl-gui--node gid) :position))
+                   (mark (nhwl-gui--mark))
+                   (inhibit-redisplay t))
+               (set-frame-position g 20 10)
+               (should (nhwl-gui--wait (lambda () (not (equal (plist-get (nhwl-gui--node gid) :position) p0))) 3))
+               ;; 16 device px further right, 6 down, in the child's logical pixels (each end rounded)
+               (let ((p1 (plist-get (nhwl-gui--node gid) :position)))
+                 (should (<= (abs (- (- (car p1) (car p0)) (/ 16 s))) 1))
+                 (should (<= (abs (- (- (cadr p1) (cadr p0)) (/ 6 s))) 1)))
+               (nhwl-gui--wait #'ignore 0.3)
+               (let* ((gs (nhwl-gui--surface-commits gid mark))
+                      (cs (nhwl-gui--surface-commits cid mark))
+                      (roots (nhwl-gui--toplevel-all-commits mark)))
+                 ;; one commit of each, the grandchild's applied with its parent's, both by the root's
+                 (should (= (length gs) 1))
+                 (should (= (length cs) 1))
+                 (should (= (length roots) 1))
+                 (should (eql (nhwl-gui--get (car gs) :applied_by) (plist-get (car roots) :seq)))
+                 (should (eql (nhwl-gui--get (car cs) :applied_by) (plist-get (car roots) :seq))))))
+         (when (frame-live-p g) (delete-frame g t)))))))
