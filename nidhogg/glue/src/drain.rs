@@ -3,15 +3,17 @@
 //! C drain did (design §4, review B1).  Moved from `nhwl_drain_events` (`src/nhwlterm.c`), whose apply side stays
 //! C.
 //!
-//! An event that names a window the glue forgot gives no action, except the keyboard's (keys, focus and the input
-//! method's), which C sends to the focus frame as before; every other kind did nothing in C without a frame.
+//! An event that names a window the glue forgot gives no action, except the keyboard's (keys and the input method's),
+//! which C sends to the focus frame as before; every other kind did nothing in C without a frame.
 
 use crate::action::{
     NHG_ACT_DELETE, NHG_ACT_LOST, NHG_ACT_RAW, NHG_ACT_READY, NhgAction, NhgNextIn,
 };
 use crate::configure;
 use crate::display::Display;
+use crate::focus;
 use crate::guard::GlueError;
+use crate::keys;
 use nhshell::event::*;
 
 /// Take one event: `Ok(1)` with its actions in `state.actions` (none, possibly), `Ok(0)` when none is queued.  The
@@ -19,12 +21,13 @@ use nhshell::event::*;
 pub fn next(state: &mut Display, input: NhgNextIn) -> Result<i32, GlueError> {
     state.actions.clear();
     configure::record_due(state);
-    // the flags are read by the ports of keys (a repeat behind waiting input) and the wheel (coalescing)
-    let _ = input;
     let Some(ev) = state.backend().next_event()? else {
         return Ok(0);
     };
     match ev.kind {
+        NHSHELL_EV_KEY => keys::key(state, &ev, input),
+        NHSHELL_EV_MODIFIERS => keys::modifiers(state, &ev),
+        NHSHELL_EV_FOCUS => focus::focus(state, &ev),
         NHSHELL_EV_CONFIGURE => configure::configure(state, &ev),
         NHSHELL_EV_SCALE => configure::scale(state, &ev),
         NHSHELL_EV_CLOSE => window_action(state, &ev, NHG_ACT_DELETE),
@@ -52,21 +55,18 @@ fn window_action(state: &mut Display, ev: &NhShellEvent, kind: u32) {
 fn keyboard_kind(kind: u32) -> bool {
     matches!(
         kind,
-        NHSHELL_EV_KEY
-            | NHSHELL_EV_MODIFIERS
-            | NHSHELL_EV_FOCUS
-            | NHSHELL_EV_PREEDIT
-            | NHSHELL_EV_COMMIT_TEXT
-            | NHSHELL_EV_DELETE_SURROUNDING
+        NHSHELL_EV_PREEDIT | NHSHELL_EV_COMMIT_TEXT | NHSHELL_EV_DELETE_SURROUNDING
     )
 }
 
-/// An event whose kind is not ported yet: a `RAW` action, which C handles on its old path.
+/// An event whose kind is not ported yet: a `RAW` action, which C handles on its old path, with the keyboard's
+/// modifier mask (a click and a wheel step read it).
 fn raw(state: &mut Display, ev: NhShellEvent) {
     if ev.window != 0 && state.is_forgotten(ev.window) && !keyboard_kind(ev.kind) {
         return;
     }
-    let a = NhgAction::new(NHG_ACT_RAW, ev.window, ev.time_ns);
+    let mut a = NhgAction::new(NHG_ACT_RAW, ev.window, ev.time_ns);
+    a.mods = state.keyboard.mods;
     let text = match ev.kind {
         // SAFETY: these events carry `text`.
         NHSHELL_EV_PREEDIT | NHSHELL_EV_COMMIT_TEXT => match unsafe { ev.u.text } {
