@@ -725,4 +725,49 @@ PROTO (nhg_popup_hide, int32_t (NhgDisplay *, uint64_t, uint64_t));";
         let d = unsafe { nhg_open(name.as_ptr(), std::ptr::null_mut(), 0) };
         assert!(d.is_null());
     }
+
+    /// The window layers' part of the header (its own table, so the tasks' additions merge apart).
+    #[test]
+    fn layers_header_matches() {
+        use nhglue::ffi::{nhg_layers_count, nhg_layers_sync, nhg_scroll_window};
+        use nhglue::layers::*;
+        type L = NhgLayerWindow;
+        let rows: &[(&str, i64)] = &[
+            ("NHG_LAYERS_ON", NHG_LAYERS_ON.into()),
+            (
+                "NHG_LAYERS_INTEGER_SCALES",
+                NHG_LAYERS_INTEGER_SCALES.into(),
+            ),
+            ("NHG_LAYERS_OPAQUE_BG", NHG_LAYERS_OPAQUE_BG.into()),
+            ("sizeof (L)", size_of::<L>() as i64),
+            ("_Alignof (L)", align_of::<L>() as i64),
+            ("offsetof (L, seq)", offset_of!(L, seq) as i64),
+            ("offsetof (L, rect)", offset_of!(L, rect) as i64),
+        ];
+        let decls = "\
+#define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
+typedef NhgLayerWindow L;
+PROTO (nhg_scroll_window, int32_t (NhgDisplay *, uint64_t, uint64_t, uint64_t, NhgRect, NhgRect, int32_t, uint32_t));
+PROTO (nhg_layers_sync, int32_t (NhgDisplay *, uint64_t, uint64_t, const NhgLayerWindow *, size_t, uint32_t));
+PROTO (nhg_layers_count, int32_t (NhgDisplay *, uint64_t));";
+        let _: unsafe extern "C" fn(
+            *mut NhgDisplay,
+            u64,
+            u64,
+            u64,
+            NhgRect,
+            NhgRect,
+            i32,
+            u32,
+        ) -> i32 = nhg_scroll_window;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u64, *const L, usize, u32) -> i32 =
+            nhg_layers_sync;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_layers_count;
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe(decls, &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+    }
 }

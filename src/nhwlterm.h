@@ -594,5 +594,8 @@ extern void nhwl_window_destroy (struct nhwl_display_info *, uint64_t);
 extern void nhwl_window_forget (struct nhwl_display_info *, uint64_t);
 extern void nhwl_window_visible (struct frame *, bool);
 
+/* Window layers (nhwlterm.c).  */
+extern uint32_t nhwl_layer_flags (struct frame *);
+
 #endif /* HAVE_NHWL */
 #endif /* _NHWLTERM_H_ */
