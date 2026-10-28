@@ -157,7 +157,11 @@ pub fn present(
         if drawable.first() == Some(&true) {
             let frames = frames(backings, s, &drawable);
             let published = match frames.first() {
-                Some(f) if f.window == root => backend.publish(root, &frames, t_key_ns)?,
+                // while reconnecting the damage waits (the whole frame is damaged again when the display is back)
+                Some(f) if f.window == root => match backend.publish(root, &frames, t_key_ns) {
+                    Err(ShellError::Reconnecting) => false,
+                    r => r?,
+                },
                 _ => false,
             };
             if published {
@@ -171,8 +175,8 @@ pub fn present(
     if flags & NHG_PRESENT_READY != 0 && !presenting.thread_on {
         match backend.present_tree(root) {
             Ok(true) => out |= NHG_PRESENTED_COMMITTED,
-            // nothing to present, or not a tree's root (any more)
-            Ok(false) | Err(ShellError::State) => {}
+            // nothing to present, not a tree's root (any more), or not ready while reconnecting
+            Ok(false) | Err(ShellError::State | ShellError::Reconnecting) => {}
             Err(e) => return Err(e.into()),
         }
     }

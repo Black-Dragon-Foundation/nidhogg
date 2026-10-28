@@ -191,6 +191,15 @@ struct nhwl_display_info
   /* A glue call answered NHG_E_PANIC: the glue's display is poisoned, and
      the next read drops this display (nhwl_read_socket).  */
   bool glue_broken;
+
+  /* Reconnecting in place (nhwlterm.c): the compositor went and the glue
+     is connecting again (make-frame refuses), or it is back and each read
+     asks the glue what is due (settling).  The timer drives the steps
+     while reconnecting and wakes the reads while settling; the timeout
+     is nhwl-reconnect-timeout's, read at the loss.  */
+  bool reconnecting, reconnect_settling;
+  struct atimer *reconnect_timer;
+  uint32_t reconnect_timeout_ms;
 };
 
 /* This is a chain of structures for all the displays currently in use.  */

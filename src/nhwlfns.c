@@ -862,6 +862,9 @@ DEFUN ("x-create-frame", Fx_create_frame, Sx_create_frame, 1, 1, 0,
 
   if (!dpyinfo->terminal->name)
     error ("Terminal is not live, can't create new frames on it");
+  /* No window can be made until the compositor is back.  */
+  if (dpyinfo->reconnecting)
+    error ("Display is reconnecting");
 
   name = gui_display_get_arg (dpyinfo, parms, Qname, "name", "Name",
 			      RES_TYPE_STRING);
