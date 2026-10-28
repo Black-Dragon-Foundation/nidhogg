@@ -1,6 +1,7 @@
 //! nh-recorder: a recording Wayland compositor for Nidhogg's client tests.  Test-only; never shipped.
 mod clock;
 mod control;
+mod dnd;
 mod input;
 mod log;
 mod render;
@@ -8,6 +9,7 @@ mod scale;
 mod selection;
 mod shell;
 mod state;
+mod touch;
 
 use calloop::generic::Generic;
 use calloop::signals::{Signal, Signals};

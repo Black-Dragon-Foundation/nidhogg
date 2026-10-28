@@ -14,21 +14,23 @@ use smithay::reexports::wayland_protocols::wp::text_input::zv3::server::zwp_text
 use smithay::reexports::wayland_protocols::wp::text_input::zv3::server::zwp_text_input_v3::{
     self, ZwpTextInputV3,
 };
+use smithay::reexports::wayland_server::protocol::wl_data_device_manager::DndAction;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
 };
 use smithay::utils::SERIAL_COUNTER;
 use smithay::wayland::compositor::with_states;
-use smithay::wayland::selection::data_device::{
-    ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
-};
+use smithay::wayland::selection::data_device::{DataDeviceHandler, DataDeviceState};
 use smithay::wayland::selection::data_device::set_data_device_focus;
 use smithay::wayland::selection::primary_selection::set_primary_focus;
 use smithay::wayland::selection::{SelectionHandler, SelectionTarget};
 use std::os::fd::OwnedFd;
 use smithay::wayland::tablet_manager::TabletSeatHandler;
-use smithay::{delegate_alpha_modifier, delegate_cursor_shape, delegate_data_device, delegate_seat};
+use smithay::{
+    delegate_alpha_modifier, delegate_cursor_shape, delegate_data_device, delegate_pointer_gestures,
+    delegate_seat,
+};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -115,7 +117,7 @@ impl State {
         self.input_log.push(entry);
     }
 
-    fn time_ms(&self) -> u32 {
+    pub(crate) fn time_ms(&self) -> u32 {
         (self.t_ns() / 1_000_000) as u32
     }
 
@@ -202,12 +204,15 @@ impl DataDeviceHandler for State {
     fn data_device_state(&self) -> &DataDeviceState {
         &self.data_device_state
     }
+
+    fn action_choice(&mut self, available: DndAction, preferred: DndAction) -> DndAction {
+        crate::dnd::choose_action(self, available, preferred)
+    }
 }
-impl ClientDndGrabHandler for State {}
-impl ServerDndGrabHandler for State {}
 
 delegate_seat!(State);
 delegate_data_device!(State);
+delegate_pointer_gestures!(State);
 delegate_cursor_shape!(State);
 delegate_alpha_modifier!(State);
 
@@ -353,11 +358,15 @@ fn key_event(state: &mut State, code: u32, press: bool) {
         KeyState::Released
     };
     let time = state.time_ms();
+    let serial = SERIAL_COUNTER.next_serial();
+    if press {
+        state.serials[1] = Some(u32::from(serial));
+    }
     kb.input::<(), _>(
         state,
         Keycode::new(code + 8),
         ks,
-        SERIAL_COUNTER.next_serial(),
+        serial,
         time,
         |_, _, _| FilterResult::Forward,
     );
@@ -373,6 +382,16 @@ pub fn command(state: &mut State, cmd: &str, req: &Value) -> Option<Value> {
         "button" => button(state, req),
         "axis" => axis(state, req),
         "text_input" => text_input(state, req),
+        "touch" => crate::touch::touch(state, req),
+        "pinch" => crate::touch::pinch(state, req),
+        "dnd_offer" => crate::dnd::offer(state, req),
+        "dnd_motion" => crate::dnd::motion(state, req),
+        "dnd_leave" => crate::dnd::leave(state),
+        "dnd_drop" => crate::dnd::dropped(state),
+        "dnd_log" => crate::dnd::log(state),
+        "drag_log" => crate::dnd::drag_log(state),
+        "drag_target" => crate::dnd::drag_target(state, req),
+        "drag_cancel" => crate::dnd::drag_cancel(state),
         "input_log" => {
             let since = req.get("since").and_then(Value::as_u64).unwrap_or(0);
             let entries: Vec<&Value> = state
@@ -512,10 +531,14 @@ fn button(state: &mut State, req: &Value) -> Value {
         Err(e) => return err(e),
     };
     let time = state.time_ms();
+    let serial = SERIAL_COUNTER.next_serial();
+    if press {
+        state.serials[0] = Some(u32::from(serial));
+    }
     ptr.button(
         state,
         &ButtonEvent {
-            serial: SERIAL_COUNTER.next_serial(),
+            serial,
             time,
             button: button as u32,
             state: if press {

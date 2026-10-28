@@ -4,7 +4,7 @@ use super::Client;
 use std::io::Read;
 use wayland_client::protocol::{
     wl_data_device, wl_data_device_manager, wl_data_offer, wl_data_source, wl_keyboard, wl_pointer,
-    wl_region, wl_seat, wl_subcompositor, wl_subsurface,
+    wl_region, wl_seat, wl_subcompositor, wl_subsurface, wl_touch,
 };
 use wayland_client::{event_created_child, Connection, Dispatch, Proxy, QueueHandle, WEnum};
 use wayland_protocols::wp::alpha_modifier::v1::client::{
@@ -12,6 +12,9 @@ use wayland_protocols::wp::alpha_modifier::v1::client::{
 };
 use wayland_protocols::wp::cursor_shape::v1::client::{
     wp_cursor_shape_device_v1, wp_cursor_shape_manager_v1,
+};
+use wayland_protocols::wp::pointer_gestures::zv1::client::{
+    zwp_pointer_gesture_pinch_v1, zwp_pointer_gestures_v1,
 };
 use wayland_protocols::wp::primary_selection::zv1::client::{
     zwp_primary_selection_device_manager_v1, zwp_primary_selection_device_v1,
@@ -44,6 +47,17 @@ pub struct Events {
     pub source_mute: bool,
     pub activation_token: Option<String>,
     pub popup_done: u32,
+    /// The protocol ids of the popups that heard `popup_done`, in order.
+    pub popup_done_ids: Vec<u32>,
+    /// The serials of the newest button press, key press and touch down.
+    pub button_serial: u32,
+    pub key_serial: u32,
+    pub touch_serial: u32,
+    pub touch: Vec<String>,
+    pub pinch: Vec<String>,
+    /// wl_data_device enter/motion/leave/drop and the offer's events, and the source's, as text.
+    pub dnd: Vec<String>,
+    pub source_events: Vec<String>,
 }
 
 impl Dispatch<wl_seat::WlSeat, ()> for Client {
@@ -76,7 +90,10 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {
                     .unwrap();
                 s.ev.keymap = Some(text.trim_end_matches('\0').to_string());
             }
-            wl_keyboard::Event::Key { key, state, .. } => {
+            wl_keyboard::Event::Key {
+                key, state, serial, ..
+            } => {
+                s.ev.key_serial = serial;
                 s.ev.keyboard.push(format!("key {key} {}", name(state)))
             }
             wl_keyboard::Event::Modifiers { mods_depressed, .. } => {
@@ -111,7 +128,13 @@ impl Dispatch<wl_pointer::WlPointer, ()> for Client {
                 surface_y,
                 ..
             } => format!("motion {surface_x} {surface_y}"),
-            wl_pointer::Event::Button { button, state, .. } => {
+            wl_pointer::Event::Button {
+                button,
+                state,
+                serial,
+                ..
+            } => {
+                s.ev.button_serial = serial;
                 format!("button {button} {}", name(state))
             }
             wl_pointer::Event::AxisSource { axis_source } => {
@@ -160,6 +183,57 @@ impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for Client {
     }
 }
 
+impl Dispatch<wl_touch::WlTouch, ()> for Client {
+    fn event(
+        s: &mut Self,
+        _: &wl_touch::WlTouch,
+        e: wl_touch::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        use wl_touch::Event as E;
+        s.ev.touch.push(match e {
+            E::Down {
+                serial, id, x, y, ..
+            } => {
+                s.ev.touch_serial = serial;
+                format!("down {id} {x} {y}")
+            }
+            E::Motion { id, x, y, .. } => format!("motion {id} {x} {y}"),
+            E::Up { id, .. } => format!("up {id}"),
+            E::Frame => "frame".into(),
+            E::Cancel => "cancel".into(),
+            _ => return,
+        });
+    }
+}
+
+impl Dispatch<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1, ()> for Client {
+    fn event(
+        s: &mut Self,
+        _: &zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1,
+        e: zwp_pointer_gesture_pinch_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        use zwp_pointer_gesture_pinch_v1::Event as E;
+        s.ev.pinch.push(match e {
+            E::Begin { fingers, .. } => format!("begin {fingers}"),
+            E::Update {
+                dx,
+                dy,
+                scale,
+                rotation,
+                ..
+            } => format!("update {dx} {dy} {scale} {rotation}"),
+            E::End { cancelled, .. } => format!("end {cancelled}"),
+            _ => return,
+        });
+    }
+}
+
 /// A protocol enum value's name (or `?N` for one this client does not know).
 fn name<T: std::fmt::Debug>(v: WEnum<T>) -> String {
     match v {
@@ -189,7 +263,8 @@ ignore!(
     xdg_activation_v1::XdgActivationV1,
     xdg_positioner::XdgPositioner,
     wp_alpha_modifier_v1::WpAlphaModifierV1,
-    wp_alpha_modifier_surface_v1::WpAlphaModifierSurfaceV1
+    wp_alpha_modifier_surface_v1::WpAlphaModifierSurfaceV1,
+    zwp_pointer_gestures_v1::ZwpPointerGesturesV1
 );
 
 impl Dispatch<wl_data_device::WlDataDevice, ()> for Client {
@@ -204,6 +279,10 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for Client {
         match e {
             wl_data_device::Event::DataOffer { id } => s.ev.clipboard = Some((id, Vec::new())),
             wl_data_device::Event::Selection { id: None } => s.ev.clipboard = None,
+            wl_data_device::Event::Enter { x, y, .. } => s.ev.dnd.push(format!("enter {x} {y}")),
+            wl_data_device::Event::Motion { x, y, .. } => s.ev.dnd.push(format!("motion {x} {y}")),
+            wl_data_device::Event::Leave => s.ev.dnd.push("leave".into()),
+            wl_data_device::Event::Drop => s.ev.dnd.push("drop".into()),
             _ => {}
         }
     }
@@ -221,10 +300,16 @@ impl Dispatch<wl_data_offer::WlDataOffer, ()> for Client {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let (wl_data_offer::Event::Offer { mime_type }, Some((_, types))) =
-            (e, &mut s.ev.clipboard)
-        {
-            types.push(mime_type);
+        match (e, &mut s.ev.clipboard) {
+            (wl_data_offer::Event::Offer { mime_type }, Some((_, types))) => types.push(mime_type),
+            (wl_data_offer::Event::SourceActions { source_actions }, _) => {
+                s.ev.dnd
+                    .push(format!("source_actions {}", name(source_actions)))
+            }
+            (wl_data_offer::Event::Action { dnd_action }, _) => {
+                s.ev.dnd.push(format!("action {}", name(dnd_action)))
+            }
+            _ => {}
         }
     }
 }
@@ -238,17 +323,30 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for Client {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let wl_data_source::Event::Send { mime_type, fd } = e {
-            if !s.ev.source_mute {
-                std::io::Write::write_all(
-                    &mut std::fs::File::from(fd),
-                    s.ev.source_text.as_bytes(),
-                )
-                .unwrap();
-            } else {
-                std::mem::forget(fd); // held open: the reader neither gets data nor an end
+        match e {
+            wl_data_source::Event::Send { mime_type, fd } => {
+                if !s.ev.source_mute {
+                    std::io::Write::write_all(
+                        &mut std::fs::File::from(fd),
+                        s.ev.source_text.as_bytes(),
+                    )
+                    .unwrap();
+                } else {
+                    std::mem::forget(fd); // held open: the reader neither gets data nor an end
+                }
+                s.ev.sends.push(mime_type);
             }
-            s.ev.sends.push(mime_type);
+            wl_data_source::Event::Target { mime_type } => {
+                s.ev.source_events.push(format!("target {mime_type:?}"))
+            }
+            wl_data_source::Event::Action { dnd_action } => {
+                s.ev.source_events
+                    .push(format!("action {}", name(dnd_action)))
+            }
+            wl_data_source::Event::DndDropPerformed => s.ev.source_events.push("drop".into()),
+            wl_data_source::Event::DndFinished => s.ev.source_events.push("finished".into()),
+            wl_data_source::Event::Cancelled => s.ev.source_events.push("cancelled".into()),
+            _ => {}
         }
     }
 }
@@ -306,7 +404,7 @@ impl Dispatch<xdg_activation_token_v1::XdgActivationTokenV1, ()> for Client {
 impl Dispatch<xdg_popup::XdgPopup, ()> for Client {
     fn event(
         s: &mut Self,
-        _: &xdg_popup::XdgPopup,
+        p: &xdg_popup::XdgPopup,
         e: xdg_popup::Event,
         _: &(),
         _: &Connection,
@@ -314,6 +412,7 @@ impl Dispatch<xdg_popup::XdgPopup, ()> for Client {
     ) {
         if let xdg_popup::Event::PopupDone = e {
             s.ev.popup_done += 1;
+            s.ev.popup_done_ids.push(p.id().protocol_id());
         }
     }
 }

@@ -8,6 +8,7 @@ use smithay::delegate_output;
 use smithay::delegate_shm;
 use smithay::wayland::alpha_modifier::{AlphaModifierState, AlphaModifierSurfaceCachedState};
 use smithay::wayland::cursor_shape::CursorShapeManagerState;
+use smithay::wayland::pointer_gestures::PointerGesturesState;
 use smithay::input::{Seat, SeatState};
 use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::backend::renderer::pixman::PixmanRenderer;
@@ -82,6 +83,9 @@ pub struct Profile {
     /// The `occlude` command is allowed.
     #[serde(default)]
     pub occlusion: bool,
+    /// The seat has a touch device (the `touch` command is allowed).
+    #[serde(default)]
+    pub touch: bool,
     /// Globals whose version is below the real compositor's, with the reason (documentation only).
     #[serde(default)]
     #[allow(dead_code)]
@@ -127,6 +131,13 @@ pub struct State {
     /// What `offer` set, by clipboard (0) and primary (1); descriptors a silent offer holds open.
     pub offers: [Option<crate::selection::Offer>; 2],
     pub held_fds: Vec<std::os::fd::OwnedFd>,
+    /// Drag and drop, both ways (dnd.rs), and the touch surface (touch.rs).
+    pub dnd: crate::dnd::Dnd,
+    pub touch: crate::touch::Touch,
+    /// The popups holding a grab, bottom to top, with the kind of serial each grabbed with.
+    pub grabs: Vec<(PopupSurface, &'static str)>,
+    /// The newest serial sent with a button press, a key press and a touch down: what a grab may name.
+    pub serials: [Option<u32>; 3],
     /// The `xdg_activation_v1.activate` calls seen: `{token, surface}`.
     pub activations: Vec<serde_json::Value>,
     /// Every wl_output global served (the first is `output`), for the `output` command.
@@ -202,6 +213,7 @@ fn max_version(name: &str) -> Option<u32> {
         "zwp_text_input_manager_v3" => 1,
         "wp_cursor_shape_manager_v1" => 2,
         "wp_alpha_modifier_v1" => 1,
+        "zwp_pointer_gestures_v1" => 3,
         "wl_output" => 4, // Smithay's fixed version: a lower profile value is served as 4 (and reported as 4)
         "xdg_wm_base" => 6,
         "zxdg_decoration_manager_v1" => 1,
@@ -210,6 +222,22 @@ fn max_version(name: &str) -> Option<u32> {
         "wp_presentation" => 2,
         _ => return None,
     })
+}
+
+/// The objects of `interface` that the client owning `surface` holds.
+pub fn objects_of(dh: &DisplayHandle, surface: &WlSurface, interface: &str) -> Vec<ObjectId> {
+    let Ok(client) = dh.get_client(surface.id()) else {
+        return Vec::new();
+    };
+    let handle = dh.backend_handle();
+    let mut all = Vec::new();
+    let _ = handle.with_all_objects_for(client.id(), |id| all.push(id));
+    all.retain(|id| {
+        handle
+            .object_info(id.clone())
+            .is_ok_and(|i| i.interface.name == interface)
+    });
+    all
 }
 
 /// The role of a surface as the logs name it.
@@ -249,6 +277,9 @@ impl State {
         seat.add_keyboard(rmlvo.xkb_config(), 600, 25)
             .expect("the default keymap compiles");
         seat.add_pointer();
+        if profile.touch {
+            seat.add_touch();
+        }
         let seat_global = seat.global();
         // GTK 3 adds no seat until a wl_data_device_manager is bound, so every profile lists it
         let data_device_state = DataDeviceState::new::<State>(dh);
@@ -277,6 +308,10 @@ impl State {
             (
                 "wp_alpha_modifier_v1",
                 AlphaModifierState::new::<State>(dh).global(),
+            ),
+            (
+                "zwp_pointer_gestures_v1",
+                PointerGesturesState::new::<State>(dh).global(),
             ),
             // wp_presentation is recreated below at the profile's version, on CLOCK_MONOTONIC (1)
             (
@@ -363,7 +398,8 @@ impl State {
                 | "wp_fractional_scale_manager_v1"
                 | "wp_viewporter"
                 | "wp_cursor_shape_manager_v1"
-                | "wp_alpha_modifier_v1" => {}
+                | "wp_alpha_modifier_v1"
+                | "zwp_pointer_gestures_v1" => {}
                 _ => unreachable!(),
             }
             globals.insert(name.clone(), v);
@@ -392,6 +428,10 @@ impl State {
             activation_state,
             offers: [None, None],
             held_fds: Vec::new(),
+            dnd: Default::default(),
+            touch: Default::default(),
+            grabs: Vec::new(),
+            serials: [None; 3],
             activations: Vec::new(),
             outputs,
             rmlvo,
