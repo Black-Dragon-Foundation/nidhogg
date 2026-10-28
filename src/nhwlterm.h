@@ -556,6 +556,7 @@ extern void syms_of_nhwlselect (void);
 extern void syms_of_nhwlcsd (void);
 extern void nhwl_selection_clear_event (uint32_t, struct input_event *);
 extern void nhwl_handle_selection_clear (struct input_event *);
+extern Lisp_Object nhwl_dnd_event_arg (const NhgAction *);
 extern frame_parm_handler nhwl_frame_parm_handlers[];
 extern Emacs_Cursor nhwl_cursor_for_shape (uint32_t);
 

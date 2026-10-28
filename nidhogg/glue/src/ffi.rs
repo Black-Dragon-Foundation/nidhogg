@@ -1303,3 +1303,57 @@ nhg_export! {
         Ok(i32::from(crate::session::remove(state, window)?))
     }
 }
+
+// ---- The drop target (`dnd.rs`) ------------------------------------------------------------------------------------
+
+nhg_export! {
+    /// Register the types a drop on `window` takes: `mimes[i]` for `i < n`, replacing the window's earlier list (an
+    /// empty list takes any type).  `NHG_E_STATE` for a window that is not a registered frame.  Neither reads nor
+    /// writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `mimes` holds `n` NUL-terminated strings (null allowed when `n` is 0).
+    fn nhg_dnd_register(d: *mut NhgDisplay, window: u64, mimes: *const *const c_char, n: usize) -> i32 |state| {
+        if n > 0 && mimes.is_null() {
+            return Err(GlueError::Arg);
+        }
+        let mut list = Vec::new();
+        list.try_reserve(n).map_err(|_| GlueError::NoMem)?;
+        for i in 0..n {
+            // SAFETY: `n` entries (the caller's promise).
+            let m = unsafe { *mimes.add(i) };
+            if m.is_null() {
+                return Err(GlueError::Arg);
+            }
+            // SAFETY: NUL-terminated (the caller's promise).
+            let m = unsafe { CStr::from_ptr(m) }.to_str().map_err(|_| GlueError::Arg)?;
+            list.push(m.to_owned());
+        }
+        crate::dnd::register(state, window, list)?;
+        Ok(0)
+    }
+}
+
+nhg_export! {
+    /// Answer the drag over our window: accept it for `action` (`NHSHELL_DND_*`, one bit; 0 accepts nothing), with
+    /// the type last read from the offer or else its first.  `time_ms` is the time of the `DND_*` action Lisp answers.
+    /// 1 when the shell was told, 0 for a stale call or without a drag.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_dnd_status(d: *mut NhgDisplay, action: u32, time_ms: u32) -> i32 |state| {
+        Ok(i32::from(crate::dnd::status(state, action, time_ms)?))
+    }
+}
+
+nhg_export! {
+    /// Finish the drop at `time_ms`: `success` non-zero when its action was performed.  The offer is destroyed in
+    /// every case.  1 when the source was told it finished, 0 for a stale call, without a dropped offer, or when there
+    /// was nothing to tell the source.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_dnd_finish(d: *mut NhgDisplay, success: i32, time_ms: u32) -> i32 |state| {
+        Ok(i32::from(crate::dnd::finish(state, success != 0, time_ms)?))
+    }
+}

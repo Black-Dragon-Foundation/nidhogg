@@ -753,6 +753,37 @@ PROTO (nhg_activation_token, int32_t (NhgDisplay *, uint64_t, uint32_t, char *, 
         }
     }
 
+    /// The drop target's part of the header (its own table).
+    #[test]
+    fn dnd_header_matches() {
+        use nhglue::ffi::{nhg_dnd_finish, nhg_dnd_register, nhg_dnd_status};
+        let rows: &[(&str, i64)] = &[
+            ("NHG_ACT_DND_ENTER", NHG_ACT_DND_ENTER.into()),
+            ("NHG_ACT_DND_MOTION", NHG_ACT_DND_MOTION.into()),
+            ("NHG_ACT_DND_LEAVE", NHG_ACT_DND_LEAVE.into()),
+            ("NHG_ACT_DND_DROP", NHG_ACT_DND_DROP.into()),
+            ("NHG_SEL_DND", nhshell::api::NHSHELL_SEL_DND.into()),
+            ("NHG_DND_COPY", nhshell::api::NHSHELL_DND_COPY.into()),
+            ("NHG_DND_MOVE", nhshell::api::NHSHELL_DND_MOVE.into()),
+            ("NHG_DND_ASK", nhshell::api::NHSHELL_DND_ASK.into()),
+        ];
+        let decls = "\
+#define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
+PROTO (nhg_dnd_register, int32_t (NhgDisplay *, uint64_t, const char *const *, size_t));
+PROTO (nhg_dnd_status, int32_t (NhgDisplay *, uint32_t, uint32_t));
+PROTO (nhg_dnd_finish, int32_t (NhgDisplay *, int32_t, uint32_t));";
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *const *const c_char, usize) -> i32 =
+            nhg_dnd_register;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u32, u32) -> i32 = nhg_dnd_status;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, i32, u32) -> i32 = nhg_dnd_finish;
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe(decls, &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+    }
+
     #[test]
     fn session_header_matches() {
         use nhglue::ffi::{nhg_session_id, nhg_session_open, nhg_session_remove};
