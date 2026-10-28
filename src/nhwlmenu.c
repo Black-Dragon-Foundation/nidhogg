@@ -42,6 +42,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "nhwlterm.h"
 #include "blockinput.h"
 #include "frame.h"
+#include "keyboard.h"
 
 /* The `:gravity' names, NhShellAnchor's gravity numbers 1 to 8.  */
 static const char *const gravity_names[] = {
@@ -245,6 +246,7 @@ nhwl_popup_hide (struct frame *f)
   struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
   struct nhwl_output *o;
   struct frame *r;
+  uint64_t kbd = 0;
 
   for (o = dpyinfo->outputs; o; o = o->next_output)
     if (o->popup.on && o->window && FRAME_PARENT_FRAME (o->frame) == f)
@@ -260,8 +262,11 @@ nhwl_popup_hide (struct frame *f)
   SET_FRAME_ICONIFIED (f, false);
 
   r = popup_owner (f);
-  if (FRAME_NHWL_OUTPUT (r)->focus_lent && !dpyinfo->kbd_window
-      && !nhwl_popup_grabbing (r))
+  if (FRAME_NHWL_OUTPUT (r)->focus_lent && !nhwl_popup_grabbing (r)
+      && (nhwl_glue_rc (dpyinfo,
+			NHG (nhg_keyboard_window (dpyinfo->glue, &kbd)))
+	  == NHG_OK)
+      && !kbd)
     {
       FRAME_NHWL_OUTPUT (r)->focus_lent = false;
       nhwl_focus_lost (r);
