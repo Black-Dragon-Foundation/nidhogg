@@ -3537,6 +3537,12 @@ FRAME 0 means change the face on all frames, and change the default
 		      && !EQ (v, Qflat_button))
 		    break;
 		}
+#ifdef HAVE_GLITNIR
+	      else if (glitnir_box_key_ok (k, v))
+		{
+		  /* A Glitnir decoration key; the shell reads it back.  */
+		}
+#endif
 	      else
 		break;
 

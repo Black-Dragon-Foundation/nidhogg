@@ -80,6 +80,28 @@
 (require 'dbus)
 (require 'json)
 (require 'seq)
+(require 'cl-lib)
+
+(defun gui-runner-grab-find-block (grab pixel bw bh)
+  "The (X . Y) of the first BW x BH block of PIXEL in GRAB (a `gui-runner-screen-grab' result), or nil.
+PIXEL is a list of the colour's B, G, R bytes; alpha is ignored.  First means first in row-major order, so the
+position is the block's top-left corner when the colour forms one rectangle.  (From P1.5's runner, gl15-i2f3.)"
+  (let* ((w (nth 0 grab)) (h (nth 1 grab)) (bytes (nth 2 grab))
+         (needle (apply #'unibyte-string pixel)) (start 0) found)
+    (while (and (not found) (setq start (string-search needle bytes start)))
+      (if (/= (% start 4) 0)
+          (setq start (1+ start))
+        (let* ((i (/ start 4)) (x (% i w)) (y (/ i w)))
+          (if (and (<= (+ x bw) w) (<= (+ y bh) h)
+                   (cl-loop for dy below bh
+                            always (cl-loop for dx below bw
+                                            always (let ((o (* 4 (+ x dx (* w (+ y dy))))))
+                                                     (and (= (aref bytes o) (nth 0 pixel))
+                                                          (= (aref bytes (+ o 1)) (nth 1 pixel))
+                                                          (= (aref bytes (+ o 2)) (nth 2 pixel)))))))
+              (setq found (cons x y))
+            (setq start (1+ start))))))
+    found))
 
 (defun gui-runner-recorder (plist)
   "Send PLIST as one JSON line to the recorder at $GLITNIR_GUI_RECORDER; return the parsed reply (a plist).

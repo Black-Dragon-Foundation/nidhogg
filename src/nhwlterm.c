@@ -637,6 +637,8 @@ nhwl_clear_area (struct frame *f, int x, int y, int width, int height)
 
   cr = nhwl_begin_cr_clip (f);
   nhwl_damage (f, x, y, width, height);
+  /* The label anchors under the clear go with it (PD).  */
+  glitnir_decor_clear (f, x, y, width, height);
   nhwl_set_cr_source_with_color (f, FRAME_NHWL_OUTPUT (f)->background_color,
 				 true);
   cairo_rectangle (cr, x, y, width, height);
@@ -1761,6 +1763,10 @@ nhwl_scale_changed (struct frame *f, uint32_t scale120)
 	    gui_set_font (f, font_object, get_frame_param (f, Qfont));
 	}
     }
+  /* Images were made for the old device size (P1.5 Task 27): they are
+     made again at the new one.  Like the fonts above, from the drain, not
+     inside redisplay.  */
+  clear_image_cache (f, Qnil);
   nhwl_csd_layout (f);
   SET_FRAME_GARBAGED (f);
 }
