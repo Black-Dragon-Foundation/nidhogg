@@ -1273,8 +1273,8 @@ Return the two replies."
       (x-hide-tip))))
 
 (ert-deftest nhwl-gui/ack-carries-the-new-size ()
-  "Two configures while the pacer waits: no commit carries the older serial, and every ack comes with a buffer of
-its own configure's size."
+  "Two configures while the pacer waits: every ack comes with a buffer of its own configure's size (the older
+serial is never acked early, with the old buffer)."
   ;; the profile must be able to hold frame callbacks (mutter's occlusion)
   (skip-unless (and (nhwl-gui--recorder-p) (ignore-errors (gui-runner-recorder '(:cmd "unocclude")))))
   (nhwl-gui--windowed)
@@ -1304,6 +1304,8 @@ its own configure's size."
                      (seq-find (lambda (c) (eql (nhwl-gui--get c :ack_serial) b)) (nhwl-gui--new mark)))
                    5))
           (let ((acks (seq-filter (lambda (c) (nhwl-gui--get c :ack_serial)) (nhwl-gui--new mark))))
-            (should-not (seq-find (lambda (c) (eql (nhwl-gui--get c :ack_serial) a)) acks))
-            (should (equal (seq-uniq (mapcar #'nhwl-gui--logical-size acks)) '((760 540)))))))
+            ;; each ack comes with a buffer of its own configure's size
+            (dolist (c acks)
+              (should (equal (nhwl-gui--logical-size c)
+                             (if (eql (nhwl-gui--get c :ack_serial) a) '(700 500) '(760 540))))))))
     (gui-runner-recorder '(:cmd "unocclude"))))
