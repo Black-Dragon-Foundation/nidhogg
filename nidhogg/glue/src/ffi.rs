@@ -452,3 +452,21 @@ nhg_export! {
         Ok(NHG_OK)
     }
 }
+
+// ---- The keyboard (`keys.rs`, `focus.rs`) --------------------------------------------------------------------------
+
+nhg_export! {
+    /// The window that has the keyboard focus, as the last focus event said, into `*out` (0: none of ours).  Neither
+    /// reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `out` is writable.
+    fn nhg_keyboard_window(d: *mut NhgDisplay, out: *mut u64) -> i32 |state| {
+        if out.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe { out.write(state.keyboard().window) };
+        Ok(NHG_OK)
+    }
+}

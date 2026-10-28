@@ -238,7 +238,8 @@ typedef struct { uint32_t flags; } NhgNextIn;
 #define NHG_ACT_IM_SURROUNDING  20
 #define NHG_ACT_SELECTION_CLEAR 21
 /* Transitional: an event whose kind is not ported yet, handled on C's old path (nhg_raw_event gives it); a PREEDIT's
-   or COMMIT_TEXT's text comes as the action's text (null: it could not be taken).  */
+   or COMMIT_TEXT's text comes as the action's text (null: it could not be taken), and MODS is the keyboard's
+   NHSHELL_MOD_* mask.  */
 #define NHG_ACT_RAW             31
 
 #define NHG_RESIZE_FULLSCREEN    1   /* fullscreen or maximized changed: C stores the fullscreen parameter */
@@ -273,6 +274,19 @@ int32_t nhg_panic_message (NhgDisplay *d, char *buf, size_t cap, size_t *len);
    mismatch poisons D (a debug assertion).  nhg_test_panic panics inside the glue.  */
 int32_t nhg_debug_check_frame (NhgDisplay *d, uint64_t window, const NhgFrameFacts *f);
 int32_t nhg_test_panic (NhgDisplay *d);
+
+/* ---- The keyboard --------------------------------------------------------------------------------------------------
+
+   A KEY action is a press or a repeat: WINDOW the window with the keyboard (C sends the key to the frame of its tree
+   that Emacs focused, or to the focus frame when no frame has that window), CODE the keysym, TEXT its UTF-8 (possibly
+   empty), MODS the NHSHELL_MOD_* mask, FLAGS NHG_KEY_*.  A repeat taken by a call with NHG_IN_INPUT_WAITING set gives
+   no action.  FOCUS_IN and FOCUS_OUT name the window whose keyboard focus changed; C resolves Emacs's focus frame
+   and its highlighting.  Neither reads nor writes pixels, nor does nhg_keyboard_window.  */
+
+#define NHG_KEY_REPEAT           1   /* the key is a repeat */
+
+/* The window that has the keyboard focus, as the last focus event said, into *OUT (0: none of ours).  */
+int32_t nhg_keyboard_window (NhgDisplay *d, uint64_t *out);
 
 #ifdef __cplusplus
 }

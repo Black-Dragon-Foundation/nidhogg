@@ -15,6 +15,7 @@ mod abi {
     use nhglue::ffi::{nhg_frame_forget, nhg_frame_register, nhg_panic_message};
     use nhglue::ffi::{nhg_present, nhg_presenter_stats, nhg_presenter_thread};
     use nhglue::frame::*;
+    use nhglue::keys::NHG_KEY_REPEAT;
     use nhglue::present::*;
     use nhshell::event::NhShellEvent;
     use nhshell::ffi::NhShell;
@@ -214,6 +215,8 @@ mod abi {
                 "offsetof (NhgActionList, n)",
                 offset_of!(NhgActionList, n) as i64,
             ),
+            // the keyboard
+            ("NHG_KEY_REPEAT", NHG_KEY_REPEAT.into()),
         ];
         // the prototypes, C side (checked at compile time: the probe references no function, so it links alone)
         let decls = "\
@@ -246,7 +249,8 @@ PROTO (nhg_frame_register, int32_t (NhgDisplay *, uint64_t, uint32_t));
 PROTO (nhg_frame_forget, int32_t (NhgDisplay *, uint64_t));
 PROTO (nhg_panic_message, int32_t (NhgDisplay *, char *, size_t, size_t *));
 PROTO (nhg_debug_check_frame, int32_t (NhgDisplay *, uint64_t, const NhgFrameFacts *));
-PROTO (nhg_test_panic, int32_t (NhgDisplay *));";
+PROTO (nhg_test_panic, int32_t (NhgDisplay *));
+PROTO (nhg_keyboard_window, int32_t (NhgDisplay *, uint64_t *));";
         // the same table, Rust side
         let _: unsafe extern "C" fn(*mut u32) -> i32 = nhg_abi_version;
         let _: unsafe extern "C" fn(*const c_char, *mut c_char, usize) -> *mut NhgDisplay =
@@ -299,6 +303,11 @@ PROTO (nhg_test_panic, int32_t (NhgDisplay *));";
             let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *const NhgFrameFacts) -> i32 =
                 nhg_debug_check_frame;
             let _: unsafe extern "C" fn(*mut NhgDisplay) -> i32 = nhg_test_panic;
+        }
+        // the keyboard
+        {
+            use nhglue::ffi::nhg_keyboard_window;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, *mut u64) -> i32 = nhg_keyboard_window;
         }
 
         let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();

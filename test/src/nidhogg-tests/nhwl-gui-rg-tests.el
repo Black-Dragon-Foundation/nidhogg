@@ -423,6 +423,85 @@ its old size after the resize: it keeps its last buffer until its own redisplay,
       (when (frame-live-p c) (delete-frame c t))
       (kill-buffer buf))))
 
+;; Port Task 4b: the keyboard's state, its repeats and the focus are the glue's; the key's target frame, the keysym
+;; cascade and Emacs's focus stay C.
+
+;; Review Focus 2: a press on a child frame and a key, queued in one burst and taken in one drain.  C applies the press
+;; (the child takes its top-level's keys) before the glue takes the key, so the key reaches the child.  The recorder
+;; moves the pointer over the surface with the keyboard: the burst focuses the child's surface for the press and the
+;; top-level's again for the key.
+(ert-deftest nhwl-gui/click-child-then-type-same-burst ()
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((parent (selected-frame)) (before (nhwl-gui--sub-ids)) (c nil) (got nil))
+    (unwind-protect
+        (progn
+          (nhwl-gui--focus-toplevel)
+          (select-frame-set-input-focus parent)
+          (setq c (nhwl-gui--child))
+          (let ((id (plist-get (nhwl-gui--child-node before) :id)))
+            (should id)
+            (nhwl-gui--pump)
+            ;; the keys go to the parent before the click
+            (should (eq (nhwl-gui--key-frame ?w) parent))
+            ;; the burst, sent without reading in between
+            (gui-runner-recorder (list :cmd "focus" :surface id))
+            (gui-runner-recorder '(:cmd "pointer" :pos [10 10]))
+            (gui-runner-recorder '(:cmd "button" :button 272 :state "press"))
+            (gui-runner-recorder '(:cmd "button" :button 272 :state "release"))
+            (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
+            (gui-runner-recorder '(:cmd "key" :text "x"))
+            (let ((deadline (+ (float-time) 3)))
+              (while (and (not got) (< (float-time) deadline))
+                (when (eql (read-event nil nil 0.05) ?x)
+                  (setq got last-event-frame))))
+            (unless (eq got c)
+              (ert-fail (format "the key reached %S, the child is %S, the parent %S" got c parent)))))
+      (ignore-errors (gui-runner-recorder '(:cmd "focus" :surface "toplevel")))
+      (when (frame-live-p c) (delete-frame c t))
+      (when (frame-live-p parent) (select-frame-set-input-focus parent)))))
+
+;; A Lisp thread that redisplays and reads input while the user types: the glue runs in whichever Lisp thread holds the
+;; global lock, so the drain and the presents move between threads.  No deadlock (the thread finishes), no panic, and
+;; every key reaches a reader once, in order; once the thread is done, keys reach the command loop.
+(ert-deftest nhwl-gui/lisp-thread-redisplay-and-input ()
+  (skip-unless (and (nhwl-gui--recorder-p) (fboundp 'make-thread) (fboundp 'nhwl-glue-panics)))
+  (let ((f (car (nhwl-gui--nhwl-frames))) (done nil) (in-thread nil) (in-main nil) (th nil))
+    (should f)
+    (with-selected-frame f
+      (nhwl-gui--focus-toplevel)
+      (nhwl-gui--pump 0.2)
+      (setq th (make-thread
+                (lambda ()
+                  (dotimes (_ 100)
+                    (redisplay t)
+                    (let ((e (read-event nil nil 0.01)))
+                      (when (characterp e) (push e in-thread))))
+                  (setq done t))
+                "nhwl-rg-thread"))
+      (dotimes (i 20)
+        (gui-runner-recorder (list :cmd "key" :text (string (+ ?a i))))
+        (sleep-for 0.01))
+      (let ((deadline (+ (float-time) 20)))
+        (while (and (not done) (< (float-time) deadline))
+          (let ((e (read-event nil nil 0.05)))
+            (when (characterp e) (push e in-main)))))
+      (should done)
+      (thread-join th)
+      ;; what the thread left unread
+      (let ((deadline (+ (float-time) 1)))
+        (while (< (float-time) deadline)
+          (let ((e (read-event nil nil 0.05)))
+            (when (characterp e) (push e in-main)))))
+      (should (null (nhwl-glue-panics)))
+      ;; each reader saw its keys in order, and together they saw all 20 once
+      (should (equal (sort (append in-thread in-main nil) #'<)
+                     (number-sequence ?a (+ ?a 19))))
+      (should (equal (reverse in-thread) (sort (copy-sequence in-thread) #'<)))
+      (should (equal (reverse in-main) (sort (copy-sequence in-main) #'<)))
+      ;; the command loop's reads work afterwards
+      (should (nhwl-gui--run-key "z"))
+      (should (null (nhwl-glue-panics))))))
+
 (provide 'nhwl-gui-rg-tests)
 
 ;;; nhwl-gui-rg-tests.el ends here

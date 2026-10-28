@@ -1691,23 +1691,20 @@ nhwl_emacs_modifiers (uint32_t mods)
    || ((keysym) == 0xff7e)						\
    || ((keysym) == 0xff7f))
 
-/* Convert the key event EV on frame F into an input event.  Adapted
-   from key_press_event (pgtkterm.c): the shell has already run the
-   keysym through xkb and compose, so EV carries the keysym and the text
-   the key produced.  Return true if INEV holds an event.  */
+/* Convert the glue's KEY action A (a press or a repeat) on frame F into
+   an input event.  Adapted from key_press_event (pgtkterm.c): the shell
+   has already run the keysym through xkb and compose, so A carries the
+   keysym and the text the key produced.  Return true if INEV holds an
+   event.  */
 static bool
-nhwl_key_event (struct frame *f, const NhShellEvent *ev,
+nhwl_key_event (struct frame *f, const NhgAction *a,
 		union buffered_input_event *inev)
 {
-  struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
-  uint32_t keysym = ev->u.key.keysym;
+  uint32_t keysym = (uint32_t) a->code;
   Mouse_HLInfo *hlinfo = MOUSE_HL_INFO (f);
   Lisp_Object c;
-  size_t nbytes = strlen (ev->u.key.utf8);
+  size_t nbytes = a->text ? a->len : 0;
   int modifiers;
-
-  if (!ev->u.key.pressed)
-    return false;
 
   /* If mouse-highlight is an integer, input clears out mouse
      highlighting.  */
@@ -1717,15 +1714,14 @@ nhwl_key_event (struct frame *f, const NhShellEvent *ev,
       hlinfo->mouse_face_hidden = true;
     }
 
-  dpyinfo->mods = ev->u.key.mods;
-  modifiers = nhwl_emacs_modifiers (ev->u.key.mods);
+  modifiers = nhwl_emacs_modifiers (a->mods);
   modifiers |= extra_keyboard_modifiers & (shift_modifier | ctrl_modifier
 					   | meta_modifier | alt_modifier
 					   | super_modifier | hyper_modifier);
 
   XSETFRAME (inev->ie.frame_or_window, f);
   inev->ie.modifiers = modifiers;
-  inev->ie.timestamp = ev->time_ns / 1000000;
+  inev->ie.timestamp = a->time_ms;
   /* The frame-time record's start: our clock, not the compositor's.  It
      is the root's, also for a key routed to a child frame.  */
   {
@@ -1799,7 +1795,7 @@ nhwl_key_event (struct frame *f, const NhShellEvent *ev,
 
   /* A key that produced text: one multibyte character.  */
   {
-    const unsigned char *p = (const unsigned char *) ev->u.key.utf8;
+    const unsigned char *p = (const unsigned char *) a->text;
     int len;
     int ch = string_char_and_length (p, &len);
 
@@ -1960,10 +1956,10 @@ nhwl_configure (struct frame *f, const NhgAction *a)
    resets); finger and continuous records carry their pixel delta in device
    pixels, for `pixel-scroll-precision-mode'; with
    `mwheel-coalesce-scroll-events' they add up to whole lines instead; a
-   stop record is a TOUCH_END_EVENT (momentum).  Return the number of
-   events stored.  */
+   stop record is a TOUCH_END_EVENT (momentum).  MODS is the keyboard's
+   modifier mask (NHSHELL_MOD_*).  Return the number of events stored.  */
 static int
-nhwl_scroll_record (struct frame *f, const NhShellEvent *ev,
+nhwl_scroll_record (struct frame *f, const NhShellEvent *ev, uint32_t mods,
 		    struct input_event *hold_quit)
 {
   struct nhwl_display_info *d = FRAME_DISPLAY_INFO (f);
@@ -1982,7 +1978,7 @@ nhwl_scroll_record (struct frame *f, const NhShellEvent *ev,
 
   EVENT_INIT (inev.ie);
   inev.ie.arg = Qnil;
-  inev.ie.modifiers = nhwl_emacs_modifiers (d->mods);
+  inev.ie.modifiers = nhwl_emacs_modifiers (mods);
   XSETINT (inev.ie.x, (int) d->last_mouse_motion_x);
   XSETINT (inev.ie.y, (int) d->last_mouse_motion_y);
   XSETFRAME (inev.ie.frame_or_window, f);
@@ -2276,6 +2272,57 @@ nhwl_key_frame (struct nhwl_display_info *dpyinfo, struct frame *f)
   return f ? nhwl_focus_target (nhwl_tree_root (f)) : dpyinfo->x_focus_frame;
 }
 
+/* Apply the glue's KEY action A, whose window is F's (NULL: none): the
+   key goes to the frame of F's tree that Emacs focused.  Return the
+   number of events stored.  */
+static int
+nhwl_key_apply (struct nhwl_display_info *dpyinfo, struct frame *f,
+		const NhgAction *a, struct input_event *hold_quit)
+{
+  union buffered_input_event inev;
+
+  f = nhwl_key_frame (dpyinfo, f);
+  if (!f)
+    return 0;
+  EVENT_INIT (inev.ie);
+  inev.ie.kind = NO_EVENT;
+  inev.ie.arg = Qnil;
+  if (!nhwl_key_event (f, a, &inev) || inev.ie.kind == NO_EVENT)
+    return 0;
+  kbd_buffer_store_event_hold (&inev.ie, hold_quit);
+  return 1;
+}
+
+/* Apply the glue's FOCUS_IN (IN) or FOCUS_OUT action for F's window: a
+   top-level's keyboard focus is Emacs's focus on the frame of its tree
+   that takes its keys.  Return the number of events stored.  */
+static int
+nhwl_focus_apply (struct nhwl_display_info *dpyinfo, struct frame *f,
+		  bool in, struct input_event *hold_quit)
+{
+  union buffered_input_event inev;
+  struct frame *r, *e, *t;
+
+  /* The keyboard moving between a top-level and its own popup frames is
+     no focus change for Emacs (nhwlmenu.c).  */
+  if (nhwl_popup_focus_kept (f, in))
+    return 0;
+  r = nhwl_tree_root (f);
+  e = dpyinfo->x_focus_event_frame;
+  t = !in && e && nhwl_tree_root (e) == r ? e : nhwl_focus_target (r);
+  EVENT_INIT (inev.ie);
+  inev.ie.kind = NO_EVENT;
+  inev.ie.arg = Qnil;
+  nhwl_focus_changed (in, FOCUS_EXPLICIT, dpyinfo, t, &inev);
+  nhwl_im_enable (r, in);
+  if (in)
+    nhwl_im_update (t);
+  if (inev.ie.kind == NO_EVENT)
+    return 0;
+  kbd_buffer_store_event_hold (&inev.ie, hold_quit);
+  return 1;
+}
+
 /* Apply action A of the glue's event step, one whose kind is ported: the
    Emacs calls the glue's decision needs.  An action whose window maps to
    no frame is skipped.  Return the number of events stored (through
@@ -2300,6 +2347,8 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
     }
 
   f = a->window ? nhwl_window_to_frame (dpyinfo, a->window) : NULL;
+  if (a->kind == NHG_ACT_KEY)
+    return nhwl_key_apply (dpyinfo, f, a, hold_quit);
   if (!f)
     return 0;
   switch (a->kind)
@@ -2326,6 +2375,11 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
       XSETFRAME (ie.frame_or_window, f);
       kbd_buffer_store_event_hold (&ie, hold_quit);
       return 1;
+
+    case NHG_ACT_FOCUS_IN:
+    case NHG_ACT_FOCUS_OUT:
+      return nhwl_focus_apply (dpyinfo, f, a->kind == NHG_ACT_FOCUS_IN,
+			       hold_quit);
 
     default:
       break;
@@ -2397,24 +2451,6 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 
       switch (ev.kind)
 	{
-	case NHSHELL_EV_KEY:
-	  /* A key repeat behind input Lisp has not read yet is dropped.
-	     The shell holds back a repeat only while the previous one is
-	     in its own queue, and the input poll empties that queue into
-	     ours even while Lisp is busy, so without this a stalled Lisp
-	     would find one repeat per poll.  */
-	  if (ev.u.key.repeat && kbd_buffer_events_waiting ())
-	    break;
-	  /* The frame of the window's tree that Emacs focused.  */
-	  f = nhwl_key_frame (dpyinfo, f);
-	  if (f)
-	    have = nhwl_key_event (f, &ev, &inev);
-	  break;
-
-	case NHSHELL_EV_MODIFIERS:
-	  dpyinfo->mods = ev.u.key.mods;
-	  break;
-
 	case NHSHELL_EV_POINTER_ENTER:
 	case NHSHELL_EV_POINTER_MOTION:
 	  if (f)
@@ -2504,7 +2540,7 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 		  inev.ie.kind = MOUSE_CLICK_EVENT;
 		  inev.ie.code = code;
 		  inev.ie.modifiers
-		    = (nhwl_emacs_modifiers (FRAME_DISPLAY_INFO (f)->mods)
+		    = (nhwl_emacs_modifiers (raw->mods)
 		       | (down ? down_modifier : up_modifier));
 		  XSETINT (inev.ie.x, x);
 		  XSETINT (inev.ie.y, y);
@@ -2518,34 +2554,7 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 
 	case NHSHELL_EV_SCROLL:
 	  if (f)
-	    count += nhwl_scroll_record (f, &ev, hold_quit);
-	  break;
-
-	case NHSHELL_EV_FOCUS:
-	  if (ev.u.focus.in)
-	    dpyinfo->kbd_window = ev.window;
-	  else if (dpyinfo->kbd_window == ev.window)
-	    dpyinfo->kbd_window = 0;
-	  /* The keyboard moving between a top-level and its own popup
-	     frames is no focus change for Emacs (nhwlmenu.c).  */
-	  if (f && nhwl_popup_focus_kept (f, ev.u.focus.in != 0))
-	    break;
-	  if (f)
-	    {
-	      /* A top-level's keyboard focus is Emacs's focus on the frame
-		 of its tree that takes its keys.  */
-	      struct frame *r = nhwl_tree_root (f);
-	      struct frame *e = dpyinfo->x_focus_event_frame;
-	      struct frame *t = (!ev.u.focus.in && e && nhwl_tree_root (e) == r
-				 ? e : nhwl_focus_target (r));
-
-	      nhwl_focus_changed (ev.u.focus.in != 0, FOCUS_EXPLICIT, dpyinfo,
-				  t, &inev);
-	      have = inev.ie.kind != NO_EVENT;
-	      nhwl_im_enable (r, ev.u.focus.in != 0);
-	      if (ev.u.focus.in)
-		nhwl_im_update (t);
-	    }
+	    count += nhwl_scroll_record (f, &ev, raw->mods, hold_quit);
 	  break;
 
 	case NHSHELL_EV_PREEDIT:
