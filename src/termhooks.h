@@ -300,6 +300,12 @@ enum event_kind
   /* Pre-edit text was changed. */
   , PREEDIT_TEXT_EVENT
 
+#ifdef HAVE_NHWL
+  /* An input method asks to delete text around point.  .arg is
+     (BEFORE AFTER FRAME): characters before and after point in the
+     selected window of FRAME.  Lisp's special-event-map handles it.  */
+  , NHWL_DELETE_SURROUNDING_EVENT
+#endif
   /* Either the mouse wheel has been released without it being
      clicked, or the user has lifted his finger from a touchpad.
 

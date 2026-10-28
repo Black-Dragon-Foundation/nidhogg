@@ -4312,6 +4312,9 @@ kbd_buffer_get_event (KBOARD **kbp,
 	  *used_mouse_menu = true;
 	FALLTHROUGH;
 #endif
+#ifdef HAVE_NHWL
+      case NHWL_DELETE_SURROUNDING_EVENT:
+#endif
       case PREEDIT_TEXT_EVENT:
 #ifdef HAVE_NTGUI
       case END_SESSION_EVENT:
@@ -7330,6 +7333,10 @@ make_lispy_event (struct input_event *event)
     case PREEDIT_TEXT_EVENT:
       return list2 (Qpreedit_text, event->arg);
 
+#ifdef HAVE_NHWL
+    case NHWL_DELETE_SURROUNDING_EVENT:
+      return list2 (Qnhwl_delete_surrounding, event->arg);
+#endif
       /* The 'kind' field of the event is something we don't recognize.  */
     default:
       emacs_abort ();
@@ -13657,6 +13664,9 @@ This is effective only in `noninteractive' sessions.  */);
   DEFSYM (Qencoded, "encoded");
 
   DEFSYM (Qpreedit_text, "preedit-text");
+#ifdef HAVE_NHWL
+  DEFSYM (Qnhwl_delete_surrounding, "nhwl-delete-surrounding");
+#endif
 
   button_down_location = make_nil_vector (5);
   staticpro (&button_down_location);
