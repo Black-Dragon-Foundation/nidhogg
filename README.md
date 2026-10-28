@@ -664,12 +664,16 @@ cache (by file name and modification time, or a hash of the data), so frame N of
 Test primitives: `nidhogg-workers--test-image-decode`, `--test-image-decode-finish`, `--test-decode-count`,
 `--test-image-cache-clear`, `--test-image-pixels`.
 **Rust decoders (Glitnir).** With Glitnir built in, `src/glitnir-images.c` puts an entry in front of the PNG core at
-load time; the formats in `nidhogg-workers-image-rust` (default nil; `png`) decode through Glitnir's stateless
-`glitnir_img_decode` (the `png` crate, libpng's transformations redone sample by sample, `png_composite`'s rounding),
-the others through the C core, on whichever thread decodes, from the next decode on. The pixels are the core's; a PNG
-whose alpha libpng would composite through gamma tables (a `gAMA`, `sRGB`, `iCCP` or `cICP` chunk) goes back to the
-C core with the bytes already read; error texts are the crate's. Test primitive: `nidhogg-workers--test-image-rust`
-(the Rust formats, decodes and hand-backs).
+load time, and in front of the GIF and WebP cores; the formats in `nidhogg-workers-image-rust` (default nil; `png`,
+`gif`, `webp`) decode through Glitnir's stateless `glitnir_img_decode` (the `png` crate, libpng's transformations
+redone sample by sample, `png_composite`'s rounding; the `gif` crate under a port of giflib's reader and the GIF
+loader's disposal; `image-webp` under a port of libwebp's animation decoder and blend), the others through the C
+core, on whichever thread decodes, from the next decode on. The pixels are the core's; a PNG whose alpha libpng would
+composite through gamma tables (a `gAMA`, `sRGB`, `iCCP` or `cICP` chunk) goes back to the C core with the bytes
+already read; PNG error texts are the crate's, GIF's are giflib's. An animation's state comes back from each decode
+and is kept by `src/glitnir-images.c` as the cores keep theirs (8 entries, 256 MB), so frame N continues from N-1.
+Test primitive: `nidhogg-workers--test-image-rust` (the Rust formats, decodes, hand-backs and continued decodes;
+RESET also empties the kept states).
 **Images decode on `nh-img` during redisplay.** With `nidhogg-workers-images` and `nidhogg-image-defer` on (both are by default), a PNG,
 JPEG, GIF or WebP that redisplay meets for the first time (on a Cairo frame) is decoded on `nh-img` (up to two
 threads, one per two cores) from a copy of its `:data` or its file name, with the frame's and face's colours resolved
