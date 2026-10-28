@@ -24,6 +24,7 @@ use crate::scroll;
 use crate::select;
 use crate::session;
 use crate::tip;
+use crate::touch;
 use nhshell::event::*;
 
 /// Take one event: `Ok(1)` with its actions in `state.actions` (none, possibly), `Ok(0)` when none is queued.  The
@@ -75,6 +76,8 @@ pub fn next(state: &mut Display, input: NhgNextIn) -> Result<i32, GlueError> {
             popup::popup_done(state, &ev);
         }
         NHSHELL_EV_SESSION => session::event(state, &ev),
+        NHSHELL_EV_TOUCH => touch::touch(state, &ev),
+        NHSHELL_EV_PINCH => touch::pinch(state, &ev),
         // kinds C did nothing with
         _ => {}
     }
