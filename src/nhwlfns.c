@@ -1776,8 +1776,8 @@ nhwl_tip_map (struct frame *tip_f, struct frame *pf, int width, int height,
   SET_FRAME_VISIBLE (tip_f, 1);
   out->has_been_visible = true;
   nhwl_backing_resize (tip_f);
-  glitnir_damage_all (out->glitnir_id);
   out->nhist = 0;
+  nhwl_damage_all (tip_f);
 }
 
 /* The frame a tip of F hangs on: the frame under the pointer when there
@@ -1858,10 +1858,7 @@ DEFUN ("x-show-tip", Fx_show_tip, Sx_show_tip, 1, 6, 0,
       if (nhshell_window_set_position (FRAME_NHWL_SHELL (f),
 				       FRAME_NHWL_OUTPUT (tf)->window,
 				       ax, ay) == 1)
-	{
-	  glitnir_damage_all (FRAME_NHWL_OUTPUT (tf)->glitnir_id);
-	  nhwl_dirty (tf);
-	}
+	nhwl_damage_all (tf);
       unblock_input ();
       goto start_timer;
     }
@@ -1949,7 +1946,6 @@ DEFUN ("x-show-tip", Fx_show_tip, Sx_show_tip, 1, 6, 0,
   w->must_be_updated_p = true;
   update_single_window (w);
   flush_frame (tip_f);
-  nhwl_dirty (tip_f);
   set_buffer_internal_1 (old_buffer);
   unbind_to (count_1, Qnil);
   windows_or_buffers_changed = old_windows_or_buffers_changed;

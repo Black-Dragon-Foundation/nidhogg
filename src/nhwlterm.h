@@ -503,6 +503,7 @@ extern void nhwl_draw_window_divider (struct window *, int, int, int, int);
 extern void nhwl_fill_background_by_face (struct frame *, struct face *, int,
 					  int, int, int);
 extern void nhwl_damage (struct frame *, int, int, int, int);
+extern void nhwl_damage_all (struct frame *);
 extern void nhwl_damage_internal_border (struct frame *);
 extern void nhwl_backing_resize (struct frame *);
 extern uint64_t nhwl_now_ns (void);

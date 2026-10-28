@@ -2076,6 +2076,16 @@ nhwl_fill_rectangle (struct frame *f, unsigned long color, int x, int y,
 		      Scrolling and Glitnir's damage
  ***********************************************************************/
 
+/* The one wake for drawing: Glitnir holds new damage for F, so its pacer
+   answers with FRAME_READY when it may present.  Drawing damages through
+   nhwl_damage, nhwl_damage_all or the scroll; nothing else wakes the pacer
+   for a draw.  */
+static void
+nhwl_damaged (struct frame *f)
+{
+  nhwl_dirty (f);
+}
+
 /* Adapted from pgtk_scroll_run: the rows move inside the backing (one
    memmove per row band, no temporary surface), and Glitnir learns the
    move and the rows it exposed.  */
@@ -2144,7 +2154,7 @@ nhwl_scroll_run (struct window *w, struct run *run)
     cairo_surface_mark_dirty (out->cr_surface);
   }
   nhwl_glitnir_scroll (f, w, x, from_y, to_y, width, height);
-  nhwl_dirty (f);
+  nhwl_damaged (f);
 
   unblock_input ();
 }
@@ -2192,7 +2202,16 @@ nhwl_damage (struct frame *f, int x, int y, int w, int h)
   r.y += c->t;
   nhwl_glitnir_ensure (f);
   glitnir_damage_add_n (out->glitnir_id, &r, 1);
-  nhwl_dirty (f);
+  nhwl_damaged (f);
+}
+
+/* Damage the whole of F, its margins and title strip included.  */
+void
+nhwl_damage_all (struct frame *f)
+{
+  nhwl_glitnir_ensure (f);
+  glitnir_damage_all (FRAME_NHWL_OUTPUT (f)->glitnir_id);
+  nhwl_damaged (f);
 }
 
 /* Adapted from glitnir_pgtk_damage_glyphs: a glyph string covers its row's

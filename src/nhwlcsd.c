@@ -92,7 +92,6 @@ nhwl_csd_layout (struct frame *f)
       c->t = m + strip;
       c->sig_valid = false;
       SET_FRAME_GARBAGED (f);
-      nhwl_dirty (f);
       nhwl_child_parent_layout (f);
     }
 }
