@@ -174,6 +174,7 @@ fn child_desc(kind: u32, parent: u64, x: i32, y: i32, w: i32, h: i32) -> ChildDe
         w,
         h,
         anchor: Anchor::default(),
+        flags: 0,
     }
 }
 
