@@ -4012,7 +4012,7 @@ if test "${with_glitnir}" = yes; then
       AC_MSG_ERROR([nidhogg/glue is missing])
     GLITNIR_CRATE_DEPS="$GLITNIR_SRCDIR $nhwl_shell_dir `cd "$srcdir/nidhogg/glitnir" && pwd`"
     GLITNIR_CRATE_INCLUDE="-I$nhwl_shell_dir/include -I`cd "$srcdir/nidhogg/glitnir" && pwd`/include"
-    NHWL_OBJ="nhwlterm.o nhwlfns.o nhwldraw.o nhwlchild.o nhwlselect.o nhwlmenu.o glitnir-decor.o"
+    NHWL_OBJ="nhwlterm.o nhwlfns.o nhwldraw.o nhwlselect.o nhwlmenu.o glitnir-decor.o"
   fi
   GLITNIR_LIBNAME=$glitnir_lib
   glitnir_home=`pwd`/src/glitnir-cargo-home
