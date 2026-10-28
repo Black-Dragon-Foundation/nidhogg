@@ -642,6 +642,23 @@ the wait begins, and a finished job pushes no phase."
     (should-not (plist-get (plist-get (nidhogg-workers-stats) :pressure) :now))
     (should (eq (nidhogg-workers--decide 'ts 2000000) 'inline))))
 
+(ert-deftest workers/pressure-forgets-watchdog-off ()
+  ;; A 50 ms span closes, then the watchdog stops: no span closes any
+  ;; more, so its last one must not keep the threshold lowered.
+  (skip-unless (workers-tests--wd-runs-p))
+  (workers-tests--policy
+    (workers-tests--wd
+      (let ((t0 1000000000000))
+        (nidhogg-watchdog--test-clock t0)
+        (nidhogg-watchdog--test-idle-wait 0.001)
+        (nidhogg-watchdog--test-clock (+ t0 50000000))
+        (nidhogg-watchdog--test-idle-wait 0.001)))
+    (nidhogg-workers--test-pressure nil)
+    (dotimes (_ 3)
+      (nidhogg-workers--test-redisplay-begin))
+    (should-not (plist-get (plist-get (nidhogg-workers-stats) :pressure) :now))
+    (should (eq (nidhogg-workers--decide 'ts 2000000) 'inline))))
+
 (ert-deftest workers/pressure-never-raises ()
   (workers-tests--policy
     (should (eq (nidhogg-workers--decide 'ts 5000000) 'offload))
