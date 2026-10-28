@@ -615,7 +615,12 @@ nh_io_back (Lisp_Object proc, int reason)
       fd = p->infd;
     }
   else
-    chan_process[sel] = proc;
+    {
+      /* An inline handle's copy is closed now: it selects on the real
+	 fd.  */
+      fd = nh_io_select_fd (p);
+      chan_process[fd] = proc;
+    }
   if (d.flags & FOR_READ)
     {
       add_process_read_fd (fd);
