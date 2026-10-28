@@ -2211,7 +2211,8 @@ DEFUN ("nidhogg-workers--test-fatal-under-lock",
        doc: /* Hold WORKER's queue mutex while a job runs, then die; for tests.
 WORKER must have a job running (one parked at a pause point).  With HOW
 nil or `segv', write through a null pointer: the SIGSEGV takes the fatal
-path while this thread holds the mutex.  With `sigint', wait for
+path while this thread holds the mutex.  With `arena', the same while it
+also holds nh-save's arena mutex.  With `sigint', wait for
 signals instead: write "nh-wk: holding" to standard output, then
 "nh-wk: quit" once `quit-flag' is set, so that a second C-g on the
 controlling tty reaches the emergency escape (auto-save, then abort).
@@ -2255,6 +2256,8 @@ Never returns.  */)
 	  sigsuspend (&waitmask);
 	}
     }
+  if (!NILP (how) && strcmp (SSDATA (SYMBOL_NAME (how)), "arena") == 0)
+    nh_save_test_arena_hold ();
   *nh_wk_null = 1;
   emacs_abort ();
 }

@@ -1494,6 +1494,14 @@ nh_save_arena_unlink (struct nh_save_arena *a)
   free (a);
 }
 
+/* `nidhogg-workers--test-fatal-under-lock' with `arena': the main
+   thread dies holding the arena mutex.  */
+void
+nh_save_test_arena_hold (void)
+{
+  pthread_mutex_lock (&nh_save_arena_m);
+}
+
 /* Free B's arena (a busy one when its job is freed).  */
 static void
 nh_save_arena_free (struct buffer *b)
@@ -2160,7 +2168,11 @@ nh_save_auto_save_1 (struct buffer *b, int mode)
       || !nh_save_switch_on () || !nh_save_plain_path (b))
     {
       nh_save_drop_buffer (b);
-      nh_save_arena_free (b);
+      /* Not in a signal handler or on the fatal path (an emergency
+	 auto-save): the arena's mutex may be held by the code it
+	 interrupted, and free may be where it crashed.  */
+      if (!nh_wk_signal_context () && !fatal_error_in_progress)
+	nh_save_arena_free (b);
       return false;
     }
   struct nh_save_job *prev = nh_save_running (b);
