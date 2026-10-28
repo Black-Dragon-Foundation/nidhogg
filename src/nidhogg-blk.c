@@ -2320,6 +2320,16 @@ nh_save_settle (struct buffer *b)
 	  }
 	write = true;
       }
+  /* A running job of a buffer that has nothing to auto-save any more
+     (saved since, or auto-saving turned off) is dropped, not replaced
+     by a write: that write would leave an auto-save file of a saved
+     buffer, or warn about a missing name.  */
+  if (write && (BUF_SAVE_MODIFF (b) >= BUF_MODIFF (b)
+		|| !STRINGP (BVAR (b, auto_save_file_name))))
+    {
+      nh_save_drop_buffer (b);
+      write = false;
+    }
   if (write)
     {
       /* auto_save_1 drops the running job: this write supersedes it.  */
