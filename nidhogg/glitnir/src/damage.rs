@@ -15,14 +15,19 @@ use std::sync::Arc;
 pub const ALL: Rect = Rect::new(0, 0, i32::MAX, i32::MAX);
 
 /// The pending damage of one frame, the last damage taken and the last committed (each borrowed by the caller until
-/// the next take, or the next commit), and the windows scrolled since the damage was last taken.
+/// the next take, or the next commit), the windows scrolled since the damage was last taken, and how far each own
+/// output's content moved since then.
 #[derive(Debug, Default)]
 pub struct Damage {
     region: Region,
     taken: Vec<Rect>,
     committed: Vec<Rect>,
     scrolls: Vec<u64>,
+    offsets: Vec<(u64, i32)>,
 }
+
+/// What [`Damage::drain`] moves out: the rectangles, the windows scrolled and each own output's scroll.
+pub type Drained = (Vec<Rect>, Vec<u64>, Vec<(u64, i32)>);
 
 fn contains(outer: &Rect, inner: &Rect) -> bool {
     !outer.is_empty()
@@ -85,20 +90,61 @@ impl Damage {
         }
     }
 
+    /// A full-window scroll of own output WINDOW, whose layer is at RECT and whose output is at SNAPPED: the pending
+    /// damage in AREA moves by DY with the pixels (clipped to AREA), and WINDOW's scroll grows by DY.  AREA itself is
+    /// not damaged: the output shows the move by its offset.  Damaged: EXPOSED, the part of AREA outside RECT (its
+    /// pixels moved on the frame), and the part of SNAPPED outside AREA (the output moves it, its pixels did not move).
+    pub fn scroll_own(
+        &mut self,
+        window: u64,
+        area: Rect,
+        dy: i32,
+        exposed: Rect,
+        rect: Rect,
+        snapped: Rect,
+    ) {
+        let mut moved: Vec<Rect> = Vec::new();
+        for r in self.region.iter() {
+            let inside = r.intersect(&area);
+            if inside.is_empty() {
+                moved.push(*r);
+                continue;
+            }
+            moved.extend(crate::compose::subtract(*r, area));
+            moved.push(inside.translate(0, dy).intersect(&area));
+        }
+        self.rebuild(moved.into_iter().filter(|r| !r.is_empty()).collect());
+        self.add(exposed);
+        for r in crate::compose::subtract(area, rect).chain(crate::compose::subtract(snapped, area))
+        {
+            self.add(r);
+        }
+        match self.offsets.iter_mut().find(|(w, _)| *w == window) {
+            Some((_, d)) => *d = d.saturating_add(dy),
+            None => self.offsets.push((window, dy)),
+        }
+    }
+
     /// Move the pending damage out (the frame then has none) and return it.
     pub fn take(&mut self) -> &[Rect] {
         self.taken.clear();
         self.taken.extend(self.region.iter().copied());
         self.region = Region::new();
         self.scrolls.clear();
+        self.offsets.clear();
         &self.taken
     }
 
-    /// Move the pending damage and the scrolled windows out, leaving the last taken and committed lists alone.
-    pub fn drain(&mut self) -> (Vec<Rect>, Vec<u64>) {
+    /// Move the pending damage, the scrolled windows and the own outputs' scrolls out, leaving the last taken and
+    /// committed lists alone.
+    pub fn drain(&mut self) -> Drained {
         let rects = self.region.iter().copied().collect();
         self.region = Region::new();
-        (rects, std::mem::take(&mut self.scrolls))
+        (
+            rects,
+            std::mem::take(&mut self.scrolls),
+            std::mem::take(&mut self.offsets),
+        )
     }
 
     /// Commit: move the pending damage into the committed list (the frame then has none) and return it.
@@ -107,6 +153,7 @@ impl Damage {
         self.committed.extend(self.region.iter().copied());
         self.region = Region::new();
         self.scrolls.clear();
+        self.offsets.clear();
         &self.committed
     }
 
@@ -121,6 +168,21 @@ pub type Frames = BTreeMap<u64, Damage>;
 /// Run `f` on FRAME's damage (allocated at the first use).
 pub fn with<R>(frame: u64, f: impl FnOnce(&mut Damage) -> R) -> R {
     f(crate::state().damage.entry(frame).or_default())
+}
+
+/// WINDOW's pixels in AREA moved by DY on FRAME, EXPOSED left stale ([`crate::scene::Scene::scroll`] when FRAME is a
+/// root with a scene, else damage over both rectangles).
+pub fn scroll(frame: u64, window: u64, area: Rect, dy: i32, exposed: Rect) {
+    let mut st = crate::state();
+    let crate::State { damage, scenes, .. } = &mut *st;
+    let d = damage.entry(frame).or_default();
+    match scenes.get(&frame) {
+        Some(s) => s.scroll(frame, d, window, area, dy, exposed),
+        None => {
+            d.scroll(area, exposed);
+            d.scrolled(window);
+        }
+    }
 }
 
 /// Take FRAME's pending damage: a pointer to its rectangles and their number, valid until FRAME's next take or

@@ -43,6 +43,41 @@ pub fn stable_rect(logical: Rect, ox: i32, oy: i32, scale120: u32) -> Rect {
     )
 }
 
+/// The smallest logical rectangle on a surface's grid (its origin at logical 0) whose stable device rectangle
+/// (`stable_rect(_, 0, 0, scale120)`) holds the device rectangle `r`: `r`'s edges moved outward to device rows and
+/// columns a compositor can place a subsurface on.  Empty for an empty `r` or a zero scale.
+pub fn outward(r: Rect, scale120: u32) -> Rect {
+    if r.is_empty() || scale120 == 0 {
+        return Rect::default();
+    }
+    let guess = |d: i32| (d as f64 * 120.0 / scale120 as f64) as i32;
+    // the last logical position whose device origin is at or before d
+    let before = |d: i32| {
+        let mut l = guess(d);
+        while stable_origin(l, scale120) > d {
+            l -= 1;
+        }
+        while stable_origin(l + 1, scale120) <= d {
+            l += 1;
+        }
+        l
+    };
+    // the first logical position whose device origin is at or after d
+    let after = |d: i32| {
+        let mut l = guess(d);
+        while stable_origin(l, scale120) < d {
+            l += 1;
+        }
+        while stable_origin(l - 1, scale120) >= d {
+            l -= 1;
+        }
+        l
+    };
+    let (x0, y0) = (before(r.x), before(r.y));
+    let (x1, y1) = (after(r.x + r.w), after(r.y + r.h));
+    Rect::new(x0, y0, x1 - x0, y1 - y0)
+}
+
 fn identity_scale(scale: f64) -> bool {
     !scale.is_finite() || scale <= 0.0 || scale.fract() == 0.0
 }
@@ -193,6 +228,45 @@ mod tests {
         assert_eq!(r.x, stable_origin(36, 150) - stable_origin(26, 150));
         assert_eq!(r.w, stable_extent(36, 20, 150));
         assert_eq!((r.y, r.h), (5, 10));
+    }
+
+    #[test]
+    fn outward_is_the_smallest_placeable_cover() {
+        let mut g = XorShift::new(0x5EED);
+        for scale120 in [120u32, 150, 180, 210, 240, 300] {
+            for _ in 0..500 {
+                let r = Rect::new(
+                    g.below(2000) as i32 - 100,
+                    g.below(2000) as i32 - 100,
+                    1 + g.below(900) as i32,
+                    1 + g.below(900) as i32,
+                );
+                let l = outward(r, scale120);
+                let d = stable_rect(l, 0, 0, scale120);
+                assert_eq!(d.intersect(&r), r, "{r:?} at {scale120}: {d:?}");
+                // one logical unit in from any side no longer holds it
+                for (dx, dy, dw, dh) in [(1, 0, -1, 0), (0, 1, 0, -1), (0, 0, -1, 0), (0, 0, 0, -1)]
+                {
+                    let s = Rect::new(l.x + dx, l.y + dy, l.w + dw, l.h + dh);
+                    let sd = stable_rect(s, 0, 0, scale120);
+                    assert_ne!(
+                        sd.intersect(&r),
+                        r,
+                        "{r:?} at {scale120}: {l:?} not the smallest"
+                    );
+                }
+            }
+        }
+        // an integer scale's cover of an aligned rectangle is that rectangle
+        assert_eq!(
+            outward(Rect::new(10, 20, 30, 40), 120),
+            Rect::new(10, 20, 30, 40)
+        );
+        assert_eq!(
+            outward(Rect::new(11, 20, 30, 40), 240),
+            Rect::new(5, 10, 16, 20)
+        );
+        assert_eq!(outward(Rect::default(), 150), Rect::default());
     }
 
     #[test]
