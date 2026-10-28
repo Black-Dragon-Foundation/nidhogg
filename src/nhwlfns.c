@@ -133,6 +133,53 @@ nhwl_set_alpha_background (struct frame *f, Lisp_Object arg,
     SET_FRAME_GARBAGED (f);
 }
 
+/* The `alpha' parameter: (ACTIVE . INACTIVE) or one value for both, a
+   float from 0 to 1, an integer percentage, or nil (opaque).  Adapted
+   from frame.c's gui_set_alpha, which is not built for this window
+   system; nhwl_set_frame_alpha applies the values.  */
+static void
+nhwl_set_alpha (struct frame *f, Lisp_Object arg, Lisp_Object oldval)
+{
+  double newval[2];
+  int i;
+  Lisp_Object item;
+
+  for (i = 0; i < 2; i++)
+    {
+      if (CONSP (arg))
+	{
+	  item = XCAR (arg);
+	  arg = XCDR (arg);
+	}
+      else
+	item = arg;
+
+      if (NILP (item))
+	newval[i] = -1.0;
+      else if (FLOATP (item))
+	{
+	  newval[i] = XFLOAT_DATA (item);
+	  if (! (0 <= newval[i] && newval[i] <= 1.0))
+	    args_out_of_range (make_float (0.0), make_float (1.0));
+	}
+      else if (FIXNUMP (item))
+	{
+	  EMACS_INT ialpha = XFIXNUM (item);
+	  if (! (0 <= ialpha && ialpha <= 100))
+	    args_out_of_range (make_fixnum (0), make_fixnum (100));
+	  newval[i] = ialpha / 100.0;
+	}
+      else
+	wrong_type_argument (Qnumberp, item);
+    }
+
+  for (i = 0; i < 2; i++)
+    f->alpha[i] = newval[i];
+  block_input ();
+  nhwl_set_frame_alpha (f);
+  unblock_input ();
+}
+
 /* Adapted from pgtk_set_border_color.  */
 static void
 nhwl_set_border_color (struct frame *f, Lisp_Object arg, Lisp_Object oldval)
@@ -518,7 +565,7 @@ frame_parm_handler nhwl_frame_parm_handlers[] =
     0,				/* wait-for-wm: the first configure is awaited */
     gui_set_fullscreen,		/* generic OK */
     gui_set_font_backend,	/* generic OK */
-    gui_set_alpha,		/* generic; nhwl_set_frame_alpha applies it */
+    nhwl_set_alpha,		/* nhwl_set_frame_alpha applies it */
     0,				/* sticky: no protocol */
     0,				/* tool-bar-position: the tool bar is Emacs's */
     0,				/* inhibit-double-buffering: one backing */
