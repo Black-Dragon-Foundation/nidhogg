@@ -3,6 +3,9 @@
   "decoration": "server",
   "globals": {
     "wl_compositor": 6,
+    "xdg_system_bell_v1": 1,
+    "zwp_idle_inhibit_manager_v1": 1,
+    "zxdg_exporter_v2": 1,
     "zwp_primary_selection_device_manager_v1": 1,
     "xdg_activation_v1": 1,
     "wl_subcompositor": 1,

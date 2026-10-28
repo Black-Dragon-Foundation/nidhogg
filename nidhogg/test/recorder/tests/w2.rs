@@ -394,3 +394,318 @@ fn pinch_begin_update_end() {
         ["begin 2", "update 1 2 1.5 10", "end 0"]
     );
 }
+
+// --- bell, idle inhibit, export, sessions, restart -------------------------------------------------------------
+
+/// The client side of xdg session management, generated from the XML the recorder serves.
+#[allow(
+    clippy::all,
+    dead_code,
+    unused_imports,
+    non_camel_case_types,
+    missing_docs
+)]
+mod session_client {
+    use wayland_client;
+    use wayland_client::protocol::*;
+    use wayland_protocols::xdg::shell::client::*;
+
+    pub mod __interfaces {
+        use wayland_client::protocol::__interfaces::*;
+        use wayland_protocols::xdg::shell::client::__interfaces::*;
+        wayland_scanner::generate_interfaces!("./protocols/xdg-session-management-v1.xml");
+    }
+    use self::__interfaces::*;
+
+    wayland_scanner::generate_client_code!("./protocols/xdg-session-management-v1.xml");
+}
+use session_client::xdg_session_manager_v1::{Reason, XdgSessionManagerV1};
+use session_client::xdg_session_v1::{self, XdgSessionV1};
+use session_client::xdg_toplevel_session_v1::{self, XdgToplevelSessionV1};
+use std::sync::{Arc, Mutex};
+use wayland_client::{Connection, Dispatch, QueueHandle};
+use wayland_protocols::wp::idle_inhibit::zv1::client::{
+    zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1, zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1,
+};
+use wayland_protocols::xdg::foreign::zv2::client::{
+    zxdg_exported_v2::{self, ZxdgExportedV2},
+    zxdg_exporter_v2::ZxdgExporterV2,
+};
+use wayland_protocols::xdg::system_bell::v1::client::xdg_system_bell_v1::XdgSystemBellV1;
+
+/// What a session object or a toplevel's session object heard, as text.
+type Heard = Arc<Mutex<Vec<String>>>;
+
+macro_rules! no_events {
+    ($($t:ty),*) => {$(
+        impl Dispatch<$t, ()> for common::Client {
+            fn event(
+                _: &mut Self,
+                _: &$t,
+                _: <$t as wayland_client::Proxy>::Event,
+                _: &(),
+                _: &Connection,
+                _: &QueueHandle<Self>,
+            ) {
+            }
+        }
+    )*};
+}
+no_events!(
+    XdgSystemBellV1,
+    ZwpIdleInhibitManagerV1,
+    ZwpIdleInhibitorV1,
+    ZxdgExporterV2,
+    XdgSessionManagerV1
+);
+
+impl Dispatch<ZxdgExportedV2, Arc<Mutex<Option<String>>>> for common::Client {
+    fn event(
+        _: &mut Self,
+        _: &ZxdgExportedV2,
+        e: zxdg_exported_v2::Event,
+        handle: &Arc<Mutex<Option<String>>>,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let zxdg_exported_v2::Event::Handle { handle: h } = e else {
+            return;
+        };
+        *handle.lock().unwrap() = Some(h);
+    }
+}
+
+impl Dispatch<XdgSessionV1, Heard> for common::Client {
+    fn event(
+        _: &mut Self,
+        _: &XdgSessionV1,
+        e: xdg_session_v1::Event,
+        heard: &Heard,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let text = match e {
+            xdg_session_v1::Event::Created { session_id } => format!("created {session_id}"),
+            xdg_session_v1::Event::Restored => "restored".to_string(),
+            xdg_session_v1::Event::Replaced => "replaced".to_string(),
+        };
+        heard.lock().unwrap().push(text);
+    }
+}
+
+impl Dispatch<XdgToplevelSessionV1, Heard> for common::Client {
+    fn event(
+        _: &mut Self,
+        _: &XdgToplevelSessionV1,
+        e: xdg_toplevel_session_v1::Event,
+        heard: &Heard,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let xdg_toplevel_session_v1::Event::Restored = e;
+        heard.lock().unwrap().push("restored".to_string());
+    }
+}
+
+/// A session of `reason` (`id` None: a new one) on a client; what it hears lands in the returned list.
+fn get_session(env: &mut Env, reason: Reason, id: Option<&str>) -> (XdgSessionV1, Heard) {
+    let manager: XdgSessionManagerV1 = env.bind("xdg_session_manager_v1", 1);
+    let heard = Heard::default();
+    let session = manager.get_session(reason, id.map(String::from), &env.qh, heard.clone());
+    env.roundtrip();
+    (session, heard)
+}
+
+/// The id a new session was created with.
+fn created_id(heard: &Heard) -> String {
+    let all = heard.lock().unwrap();
+    all.iter()
+        .find_map(|l| l.strip_prefix("created ").map(String::from))
+        .unwrap_or_else(|| panic!("no created event: {all:?}"))
+}
+
+/// An xdg_toplevel that is added to or restored in `session` as `name` before its first commit, then mapped at
+/// `w` x `h`.  Returns what the toplevel's session object heard.
+fn session_toplevel(
+    env: &mut Env,
+    session: &XdgSessionV1,
+    name: &str,
+    restore: bool,
+    w: i32,
+    h: i32,
+) -> Heard {
+    let wm: XdgWmBase = env.bind("xdg_wm_base", 6);
+    let surface = env.surface();
+    let xs = wm.get_xdg_surface(&surface, &env.qh, ());
+    let top = xs.get_toplevel(&env.qh, ());
+    let heard = Heard::default();
+    if restore {
+        session.restore_toplevel(&top, name.into(), &env.qh, heard.clone());
+    } else {
+        session.add_toplevel(&top, name.into(), &env.qh, heard.clone());
+    }
+    surface.commit();
+    env.roundtrip();
+    xs.ack_configure(env.client.xdg_serial);
+    let buffer = env.buffer(w, h);
+    surface.attach(Some(&buffer), 0, 0);
+    surface.commit();
+    env.roundtrip();
+    heard
+}
+
+#[test]
+fn bell_logged() {
+    let mut env = Env::new("mutter", &[]);
+    let bell: XdgSystemBellV1 = env.bind("xdg_system_bell_v1", 1);
+    let (surface, _xs, _top) = env.toplevel(100, 100);
+    bell.ring(Some(&surface));
+    bell.ring(None);
+    env.roundtrip();
+    let id = surface.id().protocol_id();
+    let log = ok(env.rec.control(json!({"cmd": "bell_log"})));
+    assert_eq!(log["bells"], json!([{"surface": id}, {"surface": null}]));
+}
+
+#[test]
+fn idle_inhibitor_tracked() {
+    let mut env = Env::new("sway", &[]);
+    let manager: ZwpIdleInhibitManagerV1 = env.bind("zwp_idle_inhibit_manager_v1", 1);
+    let (surface, _xs, _top) = env.toplevel(100, 100);
+    let inhibitor = manager.create_inhibitor(&surface, &env.qh, ());
+    env.roundtrip();
+    let id = surface.id().protocol_id();
+    let list = ok(env.rec.control(json!({"cmd": "idle_inhibitors"})));
+    assert_eq!(list["inhibitors"], json!([{"surface": id, "alive": true}]));
+    inhibitor.destroy();
+    env.roundtrip();
+    let list = ok(env.rec.control(json!({"cmd": "idle_inhibitors"})));
+    assert_eq!(list["inhibitors"], json!([{"surface": id, "alive": false}]));
+}
+
+#[test]
+fn export_returns_a_handle() {
+    let mut env = Env::new("sway", &[]);
+    let exporter: ZxdgExporterV2 = env.bind("zxdg_exporter_v2", 1);
+    let (surface, _xs, _top) = env.toplevel(100, 100);
+    let handle = Arc::new(Mutex::new(None));
+    let _exported = exporter.export_toplevel(&surface, &env.qh, handle.clone());
+    env.roundtrip();
+    assert_eq!(handle.lock().unwrap().as_deref(), Some("rec-1"));
+    let id = surface.id().protocol_id();
+    let list = ok(env.rec.control(json!({"cmd": "exports"})));
+    assert_eq!(list["exports"], json!([{"surface": id, "handle": "rec-1"}]));
+}
+
+#[test]
+fn session_restore_before_first_commit() {
+    let dir = std::env::temp_dir().join(format!("nh-session-{}-a", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = dir.join("store.json");
+    let mut first = Env::new("mutter", &["--session-store", store.to_str().unwrap()]);
+    let (old, old_heard) = get_session(&mut first, Reason::Launch, None);
+    let id = created_id(&old_heard);
+    session_toplevel(&mut first, &old, "main", false, 300, 200);
+    // another client takes the session over: the first one is told, and the toplevel comes back at its size
+    let mut second = first.join();
+    let (taken, new_heard) = get_session(&mut second, Reason::Recover, Some(&id));
+    assert_eq!(*new_heard.lock().unwrap(), ["restored"]);
+    second.client.configures.clear();
+    let ts = session_toplevel(&mut second, &taken, "main", true, 300, 200);
+    first.roundtrip();
+    assert_eq!(old_heard.lock().unwrap().last().unwrap(), "replaced");
+    assert_eq!(*ts.lock().unwrap(), ["restored"]);
+    let (w, h, _) = second.client.configures.first().cloned().unwrap();
+    assert_eq!((w, h), (300, 200));
+    let log = ok(second.rec.control(json!({"cmd": "session_log"})));
+    let last = log["session_log"].as_array().unwrap().last().unwrap();
+    assert_eq!(last["op"], "restore");
+    assert_eq!(last["name"], "main");
+    assert_eq!(last["before_first_commit"], true);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn session_restore_after_commit_is_already_mapped() {
+    let mut env = Env::new("mutter", &[]);
+    let (session, _heard) = get_session(&mut env, Reason::Launch, None);
+    let (_surface, _xs, top) = env.toplevel(100, 100);
+    session.restore_toplevel(&top, "late".into(), &env.qh, Heard::default());
+    let result = env.queue.roundtrip(&mut env.client);
+    assert!(result.is_err(), "already_mapped is a protocol error");
+    let log = ok(env.rec.control(json!({"cmd": "session_log"})));
+    let last = log["session_log"].as_array().unwrap().last().unwrap();
+    assert_eq!(last["op"], "restore");
+    assert_eq!(last["before_first_commit"], false);
+}
+
+/// Wait for a recorder's control socket to go: it has quit and cleaned up.
+fn wait_until_gone(path: &std::path::Path) {
+    let end = Instant::now() + Duration::from_secs(5);
+    while path.exists() {
+        assert!(Instant::now() < end, "the recorder did not quit");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn session_persists_across_instances() {
+    let dir = std::env::temp_dir().join(format!("nh-session-{}-b", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = dir.join("store.json");
+    let args = ["--session-store", store.to_str().unwrap()];
+    let id = {
+        let mut env = Env::new("mutter", &args);
+        let (session, heard) = get_session(&mut env, Reason::Launch, None);
+        session_toplevel(&mut env, &session, "main", false, 320, 240);
+        let control = env.rec.control_path();
+        ok(env.rec.control(json!({"cmd": "quit"})));
+        wait_until_gone(&control);
+        created_id(&heard)
+    };
+    let mut env = Env::new("mutter", &args);
+    let (session, heard) = get_session(&mut env, Reason::Recover, Some(&id));
+    assert_eq!(*heard.lock().unwrap(), ["restored"]);
+    env.client.configures.clear();
+    let ts = session_toplevel(&mut env, &session, "main", true, 320, 240);
+    assert_eq!(*ts.lock().unwrap(), ["restored"]);
+    let (w, h, _) = env.client.configures.first().cloned().unwrap();
+    assert_eq!((w, h), (320, 240));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn quit_frees_the_socket_name() {
+    let dir = std::env::temp_dir().join(format!("nh-quit-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let profile = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("profiles/sway.json");
+    let start = || {
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_nh-recorder"))
+            .args(["--socket", "nh-quit-sock", "--control"])
+            .arg(dir.join("control"))
+            .arg("--profile")
+            .arg(&profile)
+            .env("XDG_RUNTIME_DIR", &dir)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        std::io::BufRead::read_line(
+            &mut std::io::BufReader::new(child.stdout.take().unwrap()),
+            &mut line,
+        )
+        .unwrap();
+        assert_eq!(line, "READY\n");
+        child
+    };
+    let mut a = start();
+    ok(send(&dir.join("control"), json!({"cmd": "quit"})));
+    assert!(a.wait().unwrap().success());
+    assert!(!dir.join("nh-quit-sock").exists());
+    assert!(!dir.join("nh-quit-sock.lock").exists());
+    let mut b = start();
+    assert!(UnixStream::connect(dir.join("nh-quit-sock")).is_ok());
+    let _ = b.kill();
+    let _ = b.wait();
+    let _ = std::fs::remove_dir_all(&dir);
+}
