@@ -293,9 +293,12 @@ int32_t nhshell_window_ssd (NhShell *sh, uint64_t window, int32_t *ssd);
    present (frame callbacks pace, a content ack never waits, a starved window waits for a buffer release).  window_ready
    asks the same: *READY holds NHSHELL_READY_CONTENT (draw and present a buffer) and NHSHELL_READY_OWED (a commit is
    owed: a bare ack or surface state; nhshell_present_bare or a buffer), 0 for neither; reporting CONTENT takes the draw
-   (not ready again until the next window_dirty).  Both are 0 until the window's first configure.  */
+   (not ready again until the next window_dirty; a begin that finds every buffer busy gives it back).  With CONTENT,
+   NHSHELL_READY_ACK says a content ack waits: present a buffer even with nothing drawn.  All are 0 until the window's
+   first configure.  */
 #define NHSHELL_READY_CONTENT 1
 #define NHSHELL_READY_OWED    2
+#define NHSHELL_READY_ACK     4
 int32_t nhshell_window_dirty (NhShell *sh, uint64_t window);
 int32_t nhshell_window_ready (NhShell *sh, uint64_t window, int32_t *ready);
 int32_t nhshell_present_begin (NhShell *sh, uint64_t window, int32_t dev_w, int32_t dev_h, NhShellBuffer *out);
