@@ -37,6 +37,7 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <cairo.h>
 
 #include "nhshell.h"
+#include "nhglue.h"
 
 /* Adapted from pgtk_bitmap_record (image.c uses this one under the same
    field names).  */
@@ -89,8 +90,10 @@ struct nhwl_display_info
   /* The generic display parameters corresponding to this display.  */
   struct terminal *terminal;
 
-  /* The shell connection (NULL once the display is gone) and the
-     descriptor that is readable when it has events for us.  */
+  /* The glue's display (NULL once the display is gone), the shell
+     connection inside it (for the calls not yet made through the glue)
+     and the descriptor that is readable when it has events for us.  */
+  NhgDisplay *glue;
   NhShell *shell;
   int connection;
   NhShellCaps caps;

@@ -167,6 +167,11 @@ pub struct NhShellBuffer {
 }
 
 /// A windowing backend: connection, windows, events and the presenter.
+///
+/// **Threads.** The glue (`nidhogg/glue`) calls a backend on the Lisp thread that holds Emacs's global lock, which is
+/// usually the main thread but may be another Lisp thread.  A backend may require the main thread (AppKit is main-thread
+/// only); the glue then defers or refuses other Lisp threads' calls with `NHG_E_THREAD`, as `nsterm.m`'s `ns_select`
+/// falls back off the main thread.  The Wayland backend does not require it.
 pub trait ShellBackend {
     /// A descriptor that becomes readable when `next_event` has something; the host adds it to its wait set.
     fn wake_fd(&self) -> i32;
