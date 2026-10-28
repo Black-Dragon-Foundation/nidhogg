@@ -1093,6 +1093,7 @@ nhwl_set_window_size (struct frame *f, bool change_gravity, int pixelwidth,
 		      int pixelheight)
 {
   nhwl_clamp_native_size (f, &pixelwidth, &pixelheight);
+  nhwl_popup_set_size (f, pixelwidth, pixelheight);
   change_frame_size (f, pixelwidth, pixelheight, false, true, false);
   SET_FRAME_GARBAGED (f);
 }
@@ -1239,6 +1240,12 @@ nhwl_make_frame_visible (struct frame *f)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
 
+  /* A popup frame's window is made now (nhwlmenu.c).  */
+  if (nhwl_popup_frame_p (f))
+    {
+      nhwl_popup_show (f);
+      return;
+    }
   if (!FRAME_VISIBLE_P (f))
     {
       nhwl_child_set_visible (f, true);
@@ -1261,6 +1268,12 @@ nhwl_make_frame_visible (struct frame *f)
 void
 nhwl_make_frame_invisible (struct frame *f)
 {
+  /* A popup frame's window goes (nhwlmenu.c).  */
+  if (nhwl_popup_frame_p (f))
+    {
+      nhwl_popup_hide (f);
+      return;
+    }
   nhwl_child_focus_gone (f, false);
   nhwl_child_set_visible (f, false);
   SET_FRAME_VISIBLE (f, 0);
@@ -1455,6 +1468,9 @@ nhwl_get_focus_frame (struct frame *frame)
 void
 nhwl_focus_frame (struct frame *f, bool noactivate)
 {
+  /* Focus on our own popup is its top-level's.  */
+  if (nhwl_popup_frame_p (f))
+    return;
   nhwl_child_focus (f);
   if (!noactivate)
     nhwl_activate_frame (f);
@@ -2070,6 +2086,26 @@ nhwl_im_enable (struct frame *f, bool on)
 			       on && nhwl_im_on);
 }
 
+/* Top-level R lost the keyboard it had lent to a grabbing popup frame:
+   the frame of its tree that Emacs focused gets its focus-out now.  */
+void
+nhwl_focus_lost (struct frame *r)
+{
+  struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (r);
+  struct frame *e = dpyinfo->x_focus_event_frame;
+  union buffered_input_event ev;
+
+  if (!e || nhwl_tree_root (e) != r)
+    return;
+  EVENT_INIT (ev.ie);
+  ev.ie.kind = NO_EVENT;
+  ev.ie.arg = Qnil;
+  nhwl_focus_changed (false, FOCUS_EXPLICIT, dpyinfo, e, &ev);
+  if (ev.ie.kind != NO_EVENT)
+    kbd_buffer_store_event (&ev.ie);
+  nhwl_im_enable (r, false);
+}
+
 /* Bytes of the line kept on each side of point for the surrounding
    text (the shell cuts the whole to 4000).  */
 #define NHWL_IM_SPAN 2000
@@ -2427,6 +2463,14 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	  break;
 
 	case NHSHELL_EV_FOCUS:
+	  if (ev.u.focus.in)
+	    dpyinfo->kbd_window = ev.window;
+	  else if (dpyinfo->kbd_window == ev.window)
+	    dpyinfo->kbd_window = 0;
+	  /* The keyboard moving between a top-level and its own popup
+	     frames is no focus change for Emacs (nhwlmenu.c).  */
+	  if (f && nhwl_popup_focus_kept (f, ev.u.focus.in != 0))
+	    break;
 	  if (f)
 	    {
 	      /* A top-level's keyboard focus is Emacs's focus on the frame
@@ -2489,9 +2533,16 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	  break;
 
 	case NHSHELL_EV_POPUP_DONE:
-	  /* Only tip frames are popups.  */
+	  /* A tip's popup goes at once; a popup frame stays until Lisp
+	     deletes or hides it, on the `delete-frame' event.  */
 	  if (f && FRAME_TOOLTIP_P (f))
 	    nhwl_tip_dismissed (f);
+	  else if (f && nhwl_popup_frame_p (f))
+	    {
+	      inev.ie.kind = DELETE_WINDOW_EVENT;
+	      XSETFRAME (inev.ie.frame_or_window, f);
+	      have = true;
+	    }
 	  break;
 
 	case NHSHELL_EV_OUTPUT_ADD:

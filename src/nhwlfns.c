@@ -728,6 +728,9 @@ DEFUN ("x-create-frame", Fx_create_frame, Sx_create_frame, 1, 1, 0,
   /* With FRAME_DISPLAY_INFO set up, this unwind-protect is safe.  */
   record_unwind_protect (do_unwind_create_frame, frame);
 
+  /* A menu's frame: its window is a popup, made when it is shown.  */
+  nhwl_popup_init (f, parms);
+
   /* These colors will be set anyway later, but it's important
      to get the color reference counts right, so initialize them!  */
   {
@@ -913,7 +916,8 @@ DEFUN ("x-create-frame", Fx_create_frame, Sx_create_frame, 1, 1, 0,
   f->no_split = minibuffer_only || EQ (tem, Qt);
 
   /* The shell's window, at the size the frame will have.  */
-  nhwl_create_frame_window (f);
+  if (!nhwl_popup_frame_p (f))
+    nhwl_create_frame_window (f);
   nhwl_child_created (f);
   out->next_output = dpyinfo->outputs;
   dpyinfo->outputs = out;
@@ -2180,6 +2184,7 @@ syms_of_nhwlfns (void)
   DEFSYM (Qcancel_timer, "cancel-timer");
   DEFSYM (Qrun_at_time, "run-at-time");
   DEFSYM (Qx_hide_tip, "x-hide-tip");
+  syms_of_nhwlmenu ();
   tip_timer = tip_frame = tip_last_frame = tip_last_string = tip_last_parms
     = Qnil;
   staticpro (&tip_timer);
