@@ -38,6 +38,7 @@ scale: `scale120` = 120 x (Xft DPI / 96), and server-side decorations always (`s
 |---|---|---|---|
 | `open`, `close` | `NSApplication` set-up; the display name is ignored | `connect(DISPLAY)` | fits |
 | `wake_fd` | a pipe the main-thread event hook writes when it queues an event | the connection's fd | fits |
+| after `DISCONNECTED`: every other call returns `DISCONNECTED`, a waiting read gives up, `close` frees everything; `last_error` (a protocol error's text, empty for a hangup) | the window server does not go while the app runs: never `DISCONNECTED`, `last_error` empty | the I/O error handler (`XSetIOErrorExitHandler`) posts `DISCONNECTED` instead of exiting; `last_error` is the `XGetErrorText` of a fatal X error, empty for an I/O error | fits |
 | `caps` | fixed record: no optional protocols (fields 0), `ssd` true | fixed record: `ssd` true, no Wayland-only fields | fits |
 | `next_event`, `dispatch_main` | `NSEvent`s from `sendEvent:` become records; dispatch pumps the run loop once | `poll_for_event` and the XInput2 and RandR events become records; dispatch is a no-op | fits |
 | `window_new` | `NSWindow initWithContentRect:`, style mask from the flags | `CreateWindow` plus `WM_PROTOCOLS`, `_NET_WM_STATE` | fits |

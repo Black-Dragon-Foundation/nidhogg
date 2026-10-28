@@ -131,11 +131,16 @@ impl ShellBackend for WaylandShell {
         self.flush()
     }
 
+    fn last_error(&self) -> String {
+        self.last_error_impl()
+    }
+
     fn window_new_named(
         &mut self,
         desc: &WindowDesc,
         session_name: Option<&str>,
     ) -> ShellResult<WindowId> {
+        self.live()?;
         let qh = self.main_queue.handle();
         let session_name = self.main.session.name_for(session_name)?;
         let m = &mut self.main;
@@ -194,11 +199,354 @@ impl ShellBackend for WaylandShell {
         Ok(id)
     }
 
+    /// After the loss the window's local state still goes (its buffers are unmapped), and the call reports the loss.
     fn window_destroy(&mut self, id: WindowId) -> ShellResult {
+        let live = self.live();
+        let done = self.window_destroy_local(id);
+        live.and(done)
+    }
+
+    fn child_new(&mut self, desc: &ChildDesc) -> ShellResult<WindowId> {
+        self.live()?;
+        match desc.kind {
+            NHSHELL_KIND_CHILD => self.child_create(desc),
+            NHSHELL_KIND_POPUP => self.popup_create(desc),
+            _ => Err(ShellError::Arg),
+        }
+    }
+
+    fn set_position(&mut self, id: WindowId, x: i32, y: i32) -> ShellResult<bool> {
+        self.live()?;
+        self.window_set_position(id, x, y)
+    }
+
+    fn stack(&mut self, id: WindowId, sibling: WindowId, above: bool) -> ShellResult {
+        self.live()?;
+        self.window_stack(id, sibling, above)
+    }
+
+    fn set_input_region(&mut self, id: WindowId, rects: &[Rect]) -> ShellResult {
+        self.live()?;
+        self.window_set_input_region(id, rects)
+    }
+
+    fn set_mapped(&mut self, id: WindowId, on: bool) -> ShellResult {
+        self.live()?;
+        self.window_set_mapped(id, on)
+    }
+
+    fn window_grabbed(&self, id: WindowId) -> ShellResult<bool> {
+        self.live()?;
+        self.popup_grabbed(id)
+    }
+
+    fn set_size(&mut self, id: WindowId, w: i32, h: i32) -> ShellResult<bool> {
+        self.live()?;
+        self.popup_set_size(id, w, h)
+    }
+
+    fn set_title(&mut self, id: WindowId, title: &str) -> ShellResult {
+        self.live()?;
+        self.window(id)?.toplevel.set_title(title.to_owned());
+        Ok(())
+    }
+
+    fn set_app_id(&mut self, id: WindowId, app_id: &str) -> ShellResult {
+        self.live()?;
+        self.window(id)?.toplevel.set_app_id(app_id.to_owned());
+        Ok(())
+    }
+
+    /// Takes effect with the surface's next commit.
+    fn set_min_size(&mut self, id: WindowId, w: i32, h: i32) -> ShellResult {
+        self.live()?;
+        self.window(id)?.toplevel.set_min_size(w.max(0), h.max(0));
+        Ok(())
+    }
+
+    fn set_fullscreen(&mut self, id: WindowId, on: bool) -> ShellResult {
+        self.live()?;
+        let t = &self.window(id)?.toplevel;
+        if on {
+            t.set_fullscreen(None);
+        } else {
+            t.unset_fullscreen();
+        }
+        self.flush()
+    }
+
+    fn set_maximized(&mut self, id: WindowId, on: bool) -> ShellResult {
+        self.live()?;
+        let t = &self.window(id)?.toplevel;
+        if on {
+            t.set_maximized();
+        } else {
+            t.unset_maximized();
+        }
+        self.flush()
+    }
+
+    fn minimize(&mut self, id: WindowId) -> ShellResult {
+        self.live()?;
+        self.window(id)?.toplevel.set_minimized();
+        self.flush()
+    }
+
+    fn move_window(&mut self, id: WindowId) -> ShellResult {
+        self.live()?;
+        let seat = self.main.seat.as_ref().ok_or(ShellError::State)?;
+        self.window(id)?.toplevel._move(seat, self.input_serial());
+        self.flush()
+    }
+
+    fn resize(&mut self, id: WindowId, edges: u32) -> ShellResult {
+        self.live()?;
+        let edges = ResizeEdge::try_from(edges).map_err(|_| ShellError::Arg)?;
+        let seat = self.main.seat.as_ref().ok_or(ShellError::State)?;
+        self.window(id)?
+            .toplevel
+            .resize(seat, self.input_serial(), edges);
+        self.flush()
+    }
+
+    fn show_menu(&mut self, id: WindowId, x: i32, y: i32) -> ShellResult {
+        self.live()?;
+        let seat = self.main.seat.as_ref().ok_or(ShellError::State)?;
+        self.window(id)?
+            .toplevel
+            .show_window_menu(seat, self.input_serial(), x, y);
+        self.flush()
+    }
+
+    /// Recorded: it goes with the window's next commit that carries a buffer.
+    fn set_geometry(&mut self, id: WindowId, x: i32, y: i32, w: i32, h: i32) -> ShellResult {
+        self.live()?;
+        if w <= 0 || h <= 0 {
+            return Err(ShellError::Arg);
+        }
+        self.window(id)?;
+        self.main
+            .present_record(id, |p| p.rec.geometry = Some(Rect::new(x, y, w, h)));
+        Ok(())
+    }
+
+    /// Ack configure `serial`; the host calls it right before the commit that carries the new size.
+    fn ack_configure(&mut self, id: WindowId, serial: u32, flags: u32) -> ShellResult {
+        self.live()?;
+        self.window(id)?;
+        self.main
+            .present_ack(id, serial, flags & NHSHELL_ACK_CONTENT != 0);
+        Ok(())
+    }
+
+    fn window_dirty(&mut self, id: WindowId) -> ShellResult {
+        self.live()?;
+        self.window_dirty_impl(id)
+    }
+
+    fn window_ready(&mut self, id: WindowId) -> ShellResult<u32> {
+        self.live()?;
+        self.window_ready_impl(id)
+    }
+
+    fn present_bare(&mut self, id: WindowId) -> ShellResult {
+        self.live()?;
+        self.present_bare_impl(id)
+    }
+
+    fn set_cursor(&mut self, id: WindowId, shape: u32) -> ShellResult {
+        self.live()?;
+        self.window_set_cursor(id, shape)
+    }
+
+    fn set_cursor_theme(&mut self, name: &str, size: u32) -> ShellResult {
+        self.live()?;
+        self.set_cursor_theme_impl(name, size)
+    }
+
+    fn window_activate(&mut self, w: WindowId, token: Option<&str>) -> ShellResult {
+        self.live()?;
+        self.window_activate_impl(w, token)
+    }
+
+    fn activation_token(&mut self, id: WindowId, timeout_ms: u32) -> ShellResult<String> {
+        self.live()?;
+        self.activation_token_impl(id, timeout_ms)
+    }
+
+    fn bell(&mut self, id: WindowId) -> ShellResult {
+        self.live()?;
+        self.bell_impl(id)
+    }
+
+    fn inhibit_idle(&mut self, id: WindowId, on: bool) -> ShellResult {
+        self.live()?;
+        self.inhibit_idle_impl(id, on)
+    }
+
+    fn window_export(&mut self, id: WindowId, timeout_ms: u32) -> ShellResult<String> {
+        self.live()?;
+        self.export_impl(id, timeout_ms)
+    }
+
+    fn session_open(&mut self, id: Option<&str>, reason: u32) -> ShellResult {
+        self.live()?;
+        self.session_open_impl(id, reason)
+    }
+
+    fn session_id(&self) -> ShellResult<String> {
+        self.live()?;
+        self.session_id_impl()
+    }
+
+    fn window_session_remove(&mut self, id: WindowId) -> ShellResult {
+        self.live()?;
+        self.session_remove_impl(id)
+    }
+
+    fn window_scale(&self, id: WindowId) -> ShellResult<u32> {
+        self.live()?;
+        Ok(self
+            .main
+            .scales
+            .get(&id)
+            .ok_or(ShellError::State)?
+            .scale120())
+    }
+
+    fn window_ssd(&self, id: WindowId) -> ShellResult<bool> {
+        self.live()?;
+        Ok(self.window(id)?.ssd)
+    }
+
+    /// Every top-level has its decoration object from the start (an undecorated one asks for client-side mode), so
+    /// the mode can change after a buffer: version 1 forbids making the object then.
+    fn set_decorated(&mut self, id: WindowId, on: bool) -> ShellResult {
+        self.live()?;
+        let force_csd = self.main.force_csd;
+        if let Some(d) = &self.window(id)?.decoration {
+            d.set_mode(if on && !force_csd {
+                Mode::ServerSide
+            } else {
+                Mode::ClientSide
+            });
+        }
+        self.flush()
+    }
+
+    fn set_alpha(&mut self, id: WindowId, factor: u32) -> ShellResult {
+        self.live()?;
+        self.window_set_alpha(id, factor)
+    }
+
+    fn present_begin(
+        &mut self,
+        id: WindowId,
+        dev_w: i32,
+        dev_h: i32,
+    ) -> ShellResult<NhShellBuffer> {
+        self.live()?;
+        self.present_begin_impl(id, dev_w, dev_h)
+    }
+
+    fn present_commit(&mut self, id: WindowId, damage: &[Rect]) -> ShellResult {
+        self.live()?;
+        self.present_commit_impl(id, damage)
+    }
+
+    fn publish(
+        &mut self,
+        root: WindowId,
+        frames: &[SurfaceFrame],
+        t_key_ns: u64,
+    ) -> ShellResult<bool> {
+        self.live()?;
+        self.publish_impl(root, frames, t_key_ns)
+    }
+
+    fn present_tree(&mut self, root: WindowId) -> ShellResult<bool> {
+        self.live()?;
+        self.present_tree_impl(root)
+    }
+
+    fn set_presenter_thread(&mut self, on: bool) -> ShellResult {
+        self.live()?;
+        self.set_presenter_thread_impl(on)
+    }
+
+    fn presenter_stats(&self) -> ShellResult<NhShellPresenterStats> {
+        self.live()?;
+        Ok(self.presenter_stats_impl())
+    }
+
+    fn text_input_enable(&mut self, w: WindowId, on: bool) -> ShellResult {
+        self.live()?;
+        self.text_input_flush(self.main.surfaces.contains_key(&w), |t| t.enable(w, on))
+    }
+
+    fn text_input_cursor(&mut self, w: WindowId, x: i32, y: i32, cw: i32, ch: i32) -> ShellResult {
+        self.live()?;
+        self.text_input_flush(self.main.surfaces.contains_key(&w), |t| {
+            t.cursor(w, [x, y, cw, ch])
+        })
+    }
+
+    fn text_input_surrounding(
+        &mut self,
+        w: WindowId,
+        text: &str,
+        cursor: usize,
+        anchor: usize,
+    ) -> ShellResult {
+        self.live()?;
+        self.text_input_flush(self.main.surfaces.contains_key(&w), |t| {
+            t.surrounding(w, text, cursor, anchor)
+        })
+    }
+
+    fn text_len(&self, id: u32) -> ShellResult<usize> {
+        self.live()?;
+        self.text_input.text_len(id)
+    }
+
+    fn take_text(&mut self, id: u32) -> ShellResult<Vec<u8>> {
+        self.live()?;
+        self.text_input.take_text(id)
+    }
+
+    fn selection_own(&mut self, kind: u32, items: &[(&str, &[u8])]) -> ShellResult {
+        self.live()?;
+        self.sel_own(kind, items)
+    }
+
+    fn selection_disown(&mut self, kind: u32) -> ShellResult {
+        self.live()?;
+        self.sel_disown(kind)
+    }
+
+    fn selection_owned(&self, kind: u32) -> ShellResult<bool> {
+        self.live()?;
+        self.sel_owned(kind)
+    }
+
+    fn selection_types(&self, kind: u32) -> ShellResult<Vec<String>> {
+        self.live()?;
+        self.sel_types(kind)
+    }
+
+    fn selection_read(&mut self, kind: u32, mime: &str, timeout_ms: u32) -> ShellResult<Vec<u8>> {
+        self.live()?;
+        self.sel_read(kind, mime, timeout_ms)
+    }
+}
+
+impl WaylandShell {
+    /// `window_destroy` without the connection's check: the window and its dependents go, popups topmost first.
+    fn window_destroy_local(&mut self, id: WindowId) -> ShellResult {
         self.text_input.forget(id);
         self.extras_forget(id);
         for dep in self.dependents_of(id) {
-            let _ = self.window_destroy(dep);
+            let _ = self.window_destroy_local(dep);
         }
         if self.main.children.contains_key(&id) {
             return self.child_destroy(id);
@@ -224,290 +572,6 @@ impl ShellBackend for WaylandShell {
         self.flush()
     }
 
-    fn child_new(&mut self, desc: &ChildDesc) -> ShellResult<WindowId> {
-        match desc.kind {
-            NHSHELL_KIND_CHILD => self.child_create(desc),
-            NHSHELL_KIND_POPUP => self.popup_create(desc),
-            _ => Err(ShellError::Arg),
-        }
-    }
-
-    fn set_position(&mut self, id: WindowId, x: i32, y: i32) -> ShellResult<bool> {
-        self.window_set_position(id, x, y)
-    }
-
-    fn stack(&mut self, id: WindowId, sibling: WindowId, above: bool) -> ShellResult {
-        self.window_stack(id, sibling, above)
-    }
-
-    fn set_input_region(&mut self, id: WindowId, rects: &[Rect]) -> ShellResult {
-        self.window_set_input_region(id, rects)
-    }
-
-    fn set_mapped(&mut self, id: WindowId, on: bool) -> ShellResult {
-        self.window_set_mapped(id, on)
-    }
-
-    fn window_grabbed(&self, id: WindowId) -> ShellResult<bool> {
-        self.popup_grabbed(id)
-    }
-
-    fn set_size(&mut self, id: WindowId, w: i32, h: i32) -> ShellResult<bool> {
-        self.popup_set_size(id, w, h)
-    }
-
-    fn set_title(&mut self, id: WindowId, title: &str) -> ShellResult {
-        self.window(id)?.toplevel.set_title(title.to_owned());
-        Ok(())
-    }
-
-    fn set_app_id(&mut self, id: WindowId, app_id: &str) -> ShellResult {
-        self.window(id)?.toplevel.set_app_id(app_id.to_owned());
-        Ok(())
-    }
-
-    /// Takes effect with the surface's next commit.
-    fn set_min_size(&mut self, id: WindowId, w: i32, h: i32) -> ShellResult {
-        self.window(id)?.toplevel.set_min_size(w.max(0), h.max(0));
-        Ok(())
-    }
-
-    fn set_fullscreen(&mut self, id: WindowId, on: bool) -> ShellResult {
-        let t = &self.window(id)?.toplevel;
-        if on {
-            t.set_fullscreen(None);
-        } else {
-            t.unset_fullscreen();
-        }
-        self.flush()
-    }
-
-    fn set_maximized(&mut self, id: WindowId, on: bool) -> ShellResult {
-        let t = &self.window(id)?.toplevel;
-        if on {
-            t.set_maximized();
-        } else {
-            t.unset_maximized();
-        }
-        self.flush()
-    }
-
-    fn minimize(&mut self, id: WindowId) -> ShellResult {
-        self.window(id)?.toplevel.set_minimized();
-        self.flush()
-    }
-
-    fn move_window(&mut self, id: WindowId) -> ShellResult {
-        let seat = self.main.seat.as_ref().ok_or(ShellError::State)?;
-        self.window(id)?.toplevel._move(seat, self.input_serial());
-        self.flush()
-    }
-
-    fn resize(&mut self, id: WindowId, edges: u32) -> ShellResult {
-        let edges = ResizeEdge::try_from(edges).map_err(|_| ShellError::Arg)?;
-        let seat = self.main.seat.as_ref().ok_or(ShellError::State)?;
-        self.window(id)?
-            .toplevel
-            .resize(seat, self.input_serial(), edges);
-        self.flush()
-    }
-
-    fn show_menu(&mut self, id: WindowId, x: i32, y: i32) -> ShellResult {
-        let seat = self.main.seat.as_ref().ok_or(ShellError::State)?;
-        self.window(id)?
-            .toplevel
-            .show_window_menu(seat, self.input_serial(), x, y);
-        self.flush()
-    }
-
-    /// Recorded: it goes with the window's next commit that carries a buffer.
-    fn set_geometry(&mut self, id: WindowId, x: i32, y: i32, w: i32, h: i32) -> ShellResult {
-        if w <= 0 || h <= 0 {
-            return Err(ShellError::Arg);
-        }
-        self.window(id)?;
-        self.main
-            .present_record(id, |p| p.rec.geometry = Some(Rect::new(x, y, w, h)));
-        Ok(())
-    }
-
-    /// Ack configure `serial`; the host calls it right before the commit that carries the new size.
-    fn ack_configure(&mut self, id: WindowId, serial: u32, flags: u32) -> ShellResult {
-        self.window(id)?;
-        self.main
-            .present_ack(id, serial, flags & NHSHELL_ACK_CONTENT != 0);
-        Ok(())
-    }
-
-    fn window_dirty(&mut self, id: WindowId) -> ShellResult {
-        self.window_dirty_impl(id)
-    }
-
-    fn window_ready(&mut self, id: WindowId) -> ShellResult<u32> {
-        self.window_ready_impl(id)
-    }
-
-    fn present_bare(&mut self, id: WindowId) -> ShellResult {
-        self.present_bare_impl(id)
-    }
-
-    fn set_cursor(&mut self, id: WindowId, shape: u32) -> ShellResult {
-        self.window_set_cursor(id, shape)
-    }
-
-    fn set_cursor_theme(&mut self, name: &str, size: u32) -> ShellResult {
-        self.set_cursor_theme_impl(name, size)
-    }
-
-    fn window_activate(&mut self, w: WindowId, token: Option<&str>) -> ShellResult {
-        self.window_activate_impl(w, token)
-    }
-
-    fn activation_token(&mut self, id: WindowId, timeout_ms: u32) -> ShellResult<String> {
-        self.activation_token_impl(id, timeout_ms)
-    }
-
-    fn bell(&mut self, id: WindowId) -> ShellResult {
-        self.bell_impl(id)
-    }
-
-    fn inhibit_idle(&mut self, id: WindowId, on: bool) -> ShellResult {
-        self.inhibit_idle_impl(id, on)
-    }
-
-    fn window_export(&mut self, id: WindowId, timeout_ms: u32) -> ShellResult<String> {
-        self.export_impl(id, timeout_ms)
-    }
-
-    fn session_open(&mut self, id: Option<&str>, reason: u32) -> ShellResult {
-        self.session_open_impl(id, reason)
-    }
-
-    fn session_id(&self) -> ShellResult<String> {
-        self.session_id_impl()
-    }
-
-    fn window_session_remove(&mut self, id: WindowId) -> ShellResult {
-        self.session_remove_impl(id)
-    }
-
-    fn window_scale(&self, id: WindowId) -> ShellResult<u32> {
-        Ok(self
-            .main
-            .scales
-            .get(&id)
-            .ok_or(ShellError::State)?
-            .scale120())
-    }
-
-    fn window_ssd(&self, id: WindowId) -> ShellResult<bool> {
-        Ok(self.window(id)?.ssd)
-    }
-
-    /// Every top-level has its decoration object from the start (an undecorated one asks for client-side mode), so
-    /// the mode can change after a buffer: version 1 forbids making the object then.
-    fn set_decorated(&mut self, id: WindowId, on: bool) -> ShellResult {
-        let force_csd = self.main.force_csd;
-        if let Some(d) = &self.window(id)?.decoration {
-            d.set_mode(if on && !force_csd {
-                Mode::ServerSide
-            } else {
-                Mode::ClientSide
-            });
-        }
-        self.flush()
-    }
-
-    fn set_alpha(&mut self, id: WindowId, factor: u32) -> ShellResult {
-        self.window_set_alpha(id, factor)
-    }
-
-    fn present_begin(
-        &mut self,
-        id: WindowId,
-        dev_w: i32,
-        dev_h: i32,
-    ) -> ShellResult<NhShellBuffer> {
-        self.present_begin_impl(id, dev_w, dev_h)
-    }
-
-    fn present_commit(&mut self, id: WindowId, damage: &[Rect]) -> ShellResult {
-        self.present_commit_impl(id, damage)
-    }
-
-    fn publish(
-        &mut self,
-        root: WindowId,
-        frames: &[SurfaceFrame],
-        t_key_ns: u64,
-    ) -> ShellResult<bool> {
-        self.publish_impl(root, frames, t_key_ns)
-    }
-
-    fn present_tree(&mut self, root: WindowId) -> ShellResult<bool> {
-        self.present_tree_impl(root)
-    }
-
-    fn set_presenter_thread(&mut self, on: bool) -> ShellResult {
-        self.set_presenter_thread_impl(on)
-    }
-
-    fn presenter_stats(&self) -> ShellResult<NhShellPresenterStats> {
-        Ok(self.presenter_stats_impl())
-    }
-
-    fn text_input_enable(&mut self, w: WindowId, on: bool) -> ShellResult {
-        self.text_input_flush(self.main.surfaces.contains_key(&w), |t| t.enable(w, on))
-    }
-
-    fn text_input_cursor(&mut self, w: WindowId, x: i32, y: i32, cw: i32, ch: i32) -> ShellResult {
-        self.text_input_flush(self.main.surfaces.contains_key(&w), |t| {
-            t.cursor(w, [x, y, cw, ch])
-        })
-    }
-
-    fn text_input_surrounding(
-        &mut self,
-        w: WindowId,
-        text: &str,
-        cursor: usize,
-        anchor: usize,
-    ) -> ShellResult {
-        self.text_input_flush(self.main.surfaces.contains_key(&w), |t| {
-            t.surrounding(w, text, cursor, anchor)
-        })
-    }
-
-    fn text_len(&self, id: u32) -> ShellResult<usize> {
-        self.text_input.text_len(id)
-    }
-
-    fn take_text(&mut self, id: u32) -> ShellResult<Vec<u8>> {
-        self.text_input.take_text(id)
-    }
-
-    fn selection_own(&mut self, kind: u32, items: &[(&str, &[u8])]) -> ShellResult {
-        self.sel_own(kind, items)
-    }
-
-    fn selection_disown(&mut self, kind: u32) -> ShellResult {
-        self.sel_disown(kind)
-    }
-
-    fn selection_owned(&self, kind: u32) -> ShellResult<bool> {
-        self.sel_owned(kind)
-    }
-
-    fn selection_types(&self, kind: u32) -> ShellResult<Vec<String>> {
-        self.sel_types(kind)
-    }
-
-    fn selection_read(&mut self, kind: u32, mime: &str, timeout_ms: u32) -> ShellResult<Vec<u8>> {
-        self.sel_read(kind, mime, timeout_ms)
-    }
-}
-
-impl WaylandShell {
     /// Run a text-input request for a known window and flush it if it sent anything.
     fn text_input_flush(
         &self,

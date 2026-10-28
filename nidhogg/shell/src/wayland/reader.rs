@@ -22,8 +22,8 @@ use crate::wayland::touch::{self, TouchState};
 use rustix::event::{PollFd, PollFlags, poll};
 use std::os::fd::AsFd;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Weak};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::{JoinHandle, ThreadId};
 use wayland_client::backend::WaylandError;
@@ -97,16 +97,18 @@ impl ReaderState {
 
 /// The reader queue's waker: an event routed into the reader's queue by another thread (the host's dispatch of the
 /// shared libwayland queue) wakes the reader's poll.  On the reader thread itself it does nothing: the loop dispatches
-/// after every read anyway.
+/// after every read anyway.  The shared state is held weakly, as the main queue's waker holds it.
 struct ReaderWaker {
-    shared: Arc<Shared>,
+    shared: Weak<Shared>,
     me: ThreadId,
 }
 
 impl Wake for ReaderWaker {
     fn wake(self: Arc<Self>) {
-        if std::thread::current().id() != self.me {
-            self.shared.reader_wake.signal();
+        if std::thread::current().id() != self.me
+            && let Some(shared) = self.shared.upgrade()
+        {
+            shared.reader_wake.signal();
         }
     }
 }
@@ -149,6 +151,9 @@ impl Reader {
         let shared = self.state.shared.clone();
         loop {
             if shared.stop.load(Ordering::Acquire) {
+                // take what is queued for these handlers: an event left in a queue nobody dispatches keeps its
+                // object's data, and any descriptor it carries, for good
+                let _ = self.dispatch();
                 return Ok(());
             }
             // 1. prepare; a non-empty libwayland queue is routed and dispatched first
@@ -267,7 +272,7 @@ pub fn spawn(
             READER_THREAD.set(true);
             let outcome = catch_unwind(AssertUnwindSafe(move || {
                 let waker = Waker::from(Arc::new(ReaderWaker {
-                    shared: state.shared.clone(),
+                    shared: Arc::downgrade(&state.shared),
                     me: std::thread::current().id(),
                 }));
                 Reader {
