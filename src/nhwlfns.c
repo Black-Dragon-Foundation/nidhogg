@@ -1306,11 +1306,16 @@ Internal use only, use `display-monitor-attributes-list' instead.  */)
 {
   struct nhwl_display_info *dpyinfo = check_nhwl_display_info (terminal);
   Lisp_Object attributes_list = Qnil;
-  int i, n_monitors = dpyinfo->n_monitors;
+  int i, n_monitors;
+  size_t n_listed = 0;
+  NhgMonitor list[NHWL_MAX_OUTPUTS];
   Lisp_Object monitor_frames, rest, frame;
   static const char *source = "Wayland";
   struct MonitorInfo *monitors;
 
+  nhwl_glue_rc (dpyinfo, NHG (nhg_monitors (dpyinfo->glue, list,
+					    NHWL_MAX_OUTPUTS, &n_listed)));
+  n_monitors = n_listed;
   if (n_monitors == 0)
     return Qnil;
 
@@ -1329,12 +1334,20 @@ Internal use only, use `display-monitor-attributes-list' instead.  */)
 	     it has not said (before the first enter, or after its output
 	     went away).  */
 	  struct nhwl_output *o = FRAME_NHWL_OUTPUT (f);
+	  uint64_t entered[NHWL_MAX_OUTPUTS];
+	  size_t n_entered = 0;
 	  bool listed = false;
-	  int j, k;
+	  int j;
+	  size_t k;
 
+	  if (o->window)
+	    nhwl_glue_rc (dpyinfo,
+			  NHG (nhg_frame_outputs (dpyinfo->glue, o->window,
+						  entered, NHWL_MAX_OUTPUTS,
+						  &n_entered)));
 	  for (j = 0; j < n_monitors; j++)
-	    for (k = 0; k < o->n_entered; k++)
-	      if (dpyinfo->monitors[j].id == o->entered[k])
+	    for (k = 0; k < n_entered; k++)
+	      if (list[j].id == entered[k])
 		{
 		  ASET (monitor_frames, j,
 			Fcons (frame, AREF (monitor_frames, j)));
@@ -1348,7 +1361,7 @@ Internal use only, use `display-monitor-attributes-list' instead.  */)
 
   for (i = 0; i < n_monitors; ++i)
     {
-      struct nhwl_monitor *m = &dpyinfo->monitors[i];
+      NhgMonitor *m = &list[i];
       struct MonitorInfo *mi = &monitors[i];
 
       mi->geom.x = (int) roundf (m->x * m->scale120 / 120.0f);

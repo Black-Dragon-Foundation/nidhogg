@@ -17,9 +17,13 @@ pub mod drain;
 pub mod ffi;
 pub mod focus;
 pub mod frame;
+pub mod ime;
 pub mod keys;
+pub mod monitors;
+pub mod pointer;
 pub mod present;
 pub mod query;
+pub mod scroll;
 pub mod select;
 
 pub mod csd;
