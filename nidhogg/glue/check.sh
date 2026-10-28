@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # nhglue's checks: the lock against the shell's, fmt, clippy, tests, licence policy; --full adds the release archive and
 # its exports; --android only checks that the crate builds for Android without the Wayland backend.
-# Usage: check.sh [--container DISTRO] [--test NAME] [--full] [--android]
+# Usage: check.sh [--container DISTRO] [--test NAME] [--full] [--android] [--no-run]
+# --no-run compiles the tests without running them (the compile-only author check).
 # Exit 0 ok, 1 "check.sh: FAIL <check>", 2 usage, 3 --android skipped (the target's std is not installed; says why).
 # Without --container the host's cargo runs (CI, macOS).  With it, podman runs a memory-capped container (2 GiB) that
 # installs cargo, clippy, rustfmt and the -devel packages the shell needs; CARGO_HOME and CARGO_TARGET_DIR live under
@@ -11,14 +12,15 @@
 # The link check against a built Emacs is nm-check.sh (it needs the build tree).
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-DISTRO="" TEST="" INNER=0 FULL=0 ANDROID=0
+DISTRO="" TEST="" INNER=0 FULL=0 ANDROID=0 NORUN=0
 ANDROID_TARGET=aarch64-linux-android
-usage() { echo "usage: check.sh [--container DISTRO] [--test NAME] [--full] [--android]" >&2; exit 2; }
+usage() { echo "usage: check.sh [--container DISTRO] [--test NAME] [--full] [--android] [--no-run]" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case $1 in
     --container) [ $# -ge 2 ] || usage; DISTRO=$2; shift 2 ;;
     --test) [ $# -ge 2 ] || usage; TEST=$2; shift 2 ;;
     --full) FULL=1; shift ;;
+    --no-run) NORUN=1; shift ;;
     --android) ANDROID=1; shift ;;
     --inner) INNER=1; shift ;;
     *) usage ;;
@@ -48,6 +50,7 @@ if [ -n "$DISTRO" ] && [ "$INNER" = 0 ]; then
   args=""
   [ -n "$TEST" ] && args="$args --test $(printf %q "$TEST")"
   [ "$FULL" = 1 ] && args="$args --full"
+  [ "$NORUN" = 1 ] && args="$args --no-run"
   [ "$ANDROID" = 1 ] && args="$args --android"
   # the Android target's std, where the distro packages it (Fedora does not: --android then exits 3)
   android_std=""
@@ -96,7 +99,11 @@ if [ -n "$TEST" ]; then
   IFS='|' read -ra parts <<< "${TEST//\\/}"
   for p in "${parts[@]}"; do [ -n "$p" ] && filters+=("$p"); done
 fi
-cargo test --offline --locked --no-fail-fast --features test-hooks -- ${filters[@]+"${filters[@]}"} || fail test
+if [ "$NORUN" = 1 ]; then
+  cargo test --offline --locked --features test-hooks --no-run       || fail test-build
+else
+  cargo test --offline --locked --no-fail-fast --features test-hooks -- ${filters[@]+"${filters[@]}"} || fail test
+fi
 if command -v cargo-deny >/dev/null 2>&1; then
   cargo deny check licenses bans sources                            || fail deny
 else
