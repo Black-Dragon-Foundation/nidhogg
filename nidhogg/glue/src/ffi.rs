@@ -7,9 +7,12 @@ use crate::abi::{
     NHG_ABI_VERSION, NHG_E_ARG, NHG_E_DISCONNECTED, NHG_E_NOMEM, NHG_E_PANIC, NHG_E_STATE,
     NHG_E_UNSUPPORTED, NHG_OK,
 };
+use crate::action::{NhgActionList, NhgNextIn};
 use crate::backing::{NhgBacking, NhgFrameGeom, NhgPending, NhgRect, alpha_multiply};
 pub use crate::display::NhgDisplay;
 use crate::guard::GlueError;
+use crate::{configure, drain};
+use nhshell::event::NhShellEvent;
 use nhshell::ffi::{NhShell, nhshell_close, nhshell_open, nhshell_wake_fd};
 use std::ffi::c_char;
 use std::ptr::{self, NonNull};
@@ -158,6 +161,82 @@ nhg_export! {
     /// `d` is null or a live display.
     fn nhg_frame_forget(d: *mut NhgDisplay, window: u64) -> i32 |state| {
         state.forget(window)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Push: `window`'s frame has the native size `native_w` x `native_h` (device pixels) as Emacs has it.  C calls it
+    /// when it makes the window, when it applies a `RESIZE` that changes the frame's size, and when it resizes the
+    /// frame itself; a configure being applied then gets a content ack.  `NHG_E_STATE` for an unknown window,
+    /// `NHG_E_ARG` for an empty size.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_frame_resized(d: *mut NhgDisplay, window: u64, native_w: i32, native_h: i32) -> i32 |state| {
+        configure::resized(state, window, native_w, native_h)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Push: the scale (times 120) C gave `window` when it made it.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_frame_scale(d: *mut NhgDisplay, window: u64, scale120: u32) -> i32 |state| {
+        configure::set_scale(state, window, scale120)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Push: whether `window`'s frame draws its own title bar (`on` non-zero).  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_frame_csd(d: *mut NhgDisplay, window: u64, on: i32) -> i32 |state| {
+        configure::set_csd(state, window, on != 0)?;
+        Ok(NHG_OK)
+    }
+}
+
+// ---- The event step (`drain.rs`, `action.rs`) ----------------------------------------------------------------------
+
+nhg_export! {
+    /// Take exactly one shell event: 1 when one was taken, with its zero or more actions in `*out`; 0 when none is
+    /// queued (`*out` empty).  The actions and their texts stay valid until the next `nhg_next` on `d`; no other call
+    /// frees them.  The acks of the configures C applied since the last call are recorded first.  Neither reads nor
+    /// writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `input` is null (no flags) or readable; `out` is writable.
+    fn nhg_next(d: *mut NhgDisplay, input: *const NhgNextIn, out: *mut NhgActionList) -> i32 |state| {
+        if out.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: null or readable (the caller's promise).
+        let input = unsafe { input.as_ref() }.copied().unwrap_or_default();
+        let taken = drain::next(state, input);
+        // SAFETY: non-null and writable (the caller's promise); an error leaves the list empty.
+        unsafe { out.write(state.actions().as_list()) };
+        taken
+    }
+}
+
+nhg_export! {
+    /// The shell event behind the last `nhg_next`'s `NHG_ACT_RAW` action, into `*out`.  `NHG_E_STATE` when the last
+    /// event gave none.  Transitional, until every event kind is ported.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `out` is writable.
+    fn nhg_raw_event(d: *mut NhgDisplay, out: *mut NhShellEvent) -> i32 |state| {
+        if out.is_null() {
+            return Err(GlueError::Arg);
+        }
+        let ev = *state.actions().raw().ok_or(GlueError::State)?;
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe { out.write(ev) };
         Ok(NHG_OK)
     }
 }

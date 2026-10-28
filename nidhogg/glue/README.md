@@ -22,7 +22,7 @@ the hook tables, `DEFUN`s) and all Cairo drawing, and calls in here through `inc
 ## Checks
 
 - `check.sh [--container DISTRO] [--test NAME]`: the lock against the shell's, fmt, clippy `-D warnings` (also with
-  `test-hooks`), tests and cargo-deny. `--full` adds the release archive and checks that it exports every function of
+  `test-hooks`), tests and cargo-deny. `--no-run` builds the tests without running them. `--full` adds the release archive and checks that it exports every function of
   `nhglue.h`, `nhshell.h` and `glitnir.h`. `--android` runs `cargo check --no-default-features --target
   aarch64-linux-android` (no NDK, no link) and exits 3 when the toolchain has no std for that target.
 - `tests/abi.rs` (`abi::header_matches_records`) compiles `nhglue.h` with `cc` and compares its constants and
@@ -72,3 +72,23 @@ the shell's threads (`ShellBackend::abandon`), waits at most 100 ms for each and
 C makes every call through `NHG (…)` (`src/nhwlterm.h`), which clears `waiting_for_input` around it, so that SIGINT's
 `longjmp` to `read_char` never crosses a Rust frame; `nm-check.sh` fails on a call outside it. The tests and the
 `--full` archive build with the feature `test-hooks`.
+
+## The event step
+
+`read_socket_hook` (`nhwl_drain_events`) loops on `nhg_next`, which takes exactly one shell event and answers with its
+actions (`src/action.rs`, `src/drain.rs`). C applies them (the Emacs calls) before it asks again, so every decision
+sees what the earlier events changed, as the C drain did; before each call it samples `NHG_IN_*` again
+(`kbd_buffer_events_waiting ()`, `mwheel-coalesce-scroll-events`). The actions and their texts live until the next
+`nhg_next`, so the calls C makes while applying them cannot free them. Kinds 1–31 are the port's, 32–63 W2's and W3's.
+
+- **Configure** (`src/configure.rs`): a toplevel's configure gives a `RESIZE` action and an ack. The ack is a content
+  ack for the window's first configure, for a change of activated, maximized or tiled under a client-side title bar,
+  and when applying `RESIZE` changes the frame's size: C pushes the new size (`nhg_frame_resized`) and the ack is
+  recorded then. Otherwise it is recorded at the start of the next `nhg_next`.
+- **Scale:** a `SCALE` action when the window's preferred scale differs from the one C last applied.
+- **Pushed facts** are keyed by the shell window, as the events are, and C seeds them when it makes a window: the
+  native size, the scale and whether the frame draws its own title bar.
+- **Transitional `NHG_ACT_RAW`** carries each event whose kind is not ported yet; C handles it on its old path
+  (`nhg_raw_event` gives the event), and a `PREEDIT`'s or `COMMIT_TEXT`'s text comes as the action's text. Each port
+  task takes its kinds out.
+- An event naming a forgotten window gives no action, except the keyboard's, which C sends to the focus frame.

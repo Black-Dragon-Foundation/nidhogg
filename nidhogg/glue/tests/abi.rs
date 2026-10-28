@@ -2,6 +2,7 @@
 
 mod abi {
     use nhglue::abi::*;
+    use nhglue::action::*;
     use nhglue::backing::{
         NHG_GEOM_FRESH, NHG_GEOM_LAYER_CHANGED, NhgBacking, NhgFrameGeom, NhgPending, NhgRect,
     };
@@ -10,8 +11,10 @@ mod abi {
         nhg_alpha_multiply, nhg_backing, nhg_backing_forget, nhg_commit, nhg_damage,
         nhg_damage_all, nhg_layer_ensure, nhg_pending, nhg_presented, nhg_scroll, nhg_snapshot,
     };
+    use nhglue::ffi::{nhg_frame_csd, nhg_frame_resized, nhg_frame_scale, nhg_next, nhg_raw_event};
     use nhglue::ffi::{nhg_frame_forget, nhg_frame_register, nhg_panic_message};
     use nhglue::frame::*;
+    use nhshell::event::NhShellEvent;
     use nhshell::ffi::NhShell;
     use std::ffi::c_char;
     use std::mem::offset_of;
@@ -61,6 +64,7 @@ mod abi {
     #[test]
     fn header_matches_records() {
         type F = NhgFrameFacts;
+        type A = NhgAction;
         let rows: &[(&str, i64)] = &[
             ("NHG_ABI_VERSION", NHG_ABI_VERSION.into()),
             ("NHG_OK", NHG_OK.into()),
@@ -131,12 +135,64 @@ mod abi {
             ("FOFF (line_h)", offset_of!(F, line_h) as i64),
             ("FOFF (parent)", offset_of!(F, parent) as i64),
             ("FOFF (flags)", offset_of!(F, flags) as i64),
+            ("NHG_FACT_CSD", NHG_FACT_CSD.into()),
+            // the event step
+            ("NHG_IN_INPUT_WAITING", NHG_IN_INPUT_WAITING.into()),
+            ("NHG_IN_COALESCE_WHEEL", NHG_IN_COALESCE_WHEEL.into()),
+            ("NHG_ACT_KEY", NHG_ACT_KEY.into()),
+            ("NHG_ACT_CLICK", NHG_ACT_CLICK.into()),
+            ("NHG_ACT_WHEEL", NHG_ACT_WHEEL.into()),
+            ("NHG_ACT_MOTION", NHG_ACT_MOTION.into()),
+            ("NHG_ACT_LEAVE", NHG_ACT_LEAVE.into()),
+            ("NHG_ACT_RESIZE", NHG_ACT_RESIZE.into()),
+            ("NHG_ACT_SCALE", NHG_ACT_SCALE.into()),
+            ("NHG_ACT_GARBAGE", NHG_ACT_GARBAGE.into()),
+            ("NHG_ACT_DELETE", NHG_ACT_DELETE.into()),
+            ("NHG_ACT_FOCUS_IN", NHG_ACT_FOCUS_IN.into()),
+            ("NHG_ACT_FOCUS_OUT", NHG_ACT_FOCUS_OUT.into()),
+            ("NHG_ACT_VISIBLE", NHG_ACT_VISIBLE.into()),
+            ("NHG_ACT_ICONIFIED", NHG_ACT_ICONIFIED.into()),
+            ("NHG_ACT_READY", NHG_ACT_READY.into()),
+            ("NHG_ACT_MONITORS", NHG_ACT_MONITORS.into()),
+            ("NHG_ACT_LOST", NHG_ACT_LOST.into()),
+            ("NHG_ACT_PREEDIT", NHG_ACT_PREEDIT.into()),
+            ("NHG_ACT_COMMIT", NHG_ACT_COMMIT.into()),
+            ("NHG_ACT_IM_DELETE", NHG_ACT_IM_DELETE.into()),
+            ("NHG_ACT_IM_SURROUNDING", NHG_ACT_IM_SURROUNDING.into()),
+            ("NHG_ACT_SELECTION_CLEAR", NHG_ACT_SELECTION_CLEAR.into()),
+            ("NHG_ACT_RAW", NHG_ACT_RAW.into()),
+            ("NHG_RESIZE_FULLSCREEN", NHG_RESIZE_FULLSCREEN.into()),
+            ("sizeof (NhgNextIn)", size_of::<NhgNextIn>() as i64),
+            ("sizeof (A)", size_of::<A>() as i64),
+            ("_Alignof (A)", align_of::<A>() as i64),
+            ("AOFF (window)", offset_of!(A, window) as i64),
+            ("AOFF (time_ms)", offset_of!(A, time_ms) as i64),
+            ("AOFF (x)", offset_of!(A, x) as i64),
+            ("AOFF (code)", offset_of!(A, code) as i64),
+            ("AOFF (mods)", offset_of!(A, mods) as i64),
+            ("AOFF (flags)", offset_of!(A, flags) as i64),
+            ("AOFF (dx)", offset_of!(A, dx) as i64),
+            ("AOFF (scale)", offset_of!(A, scale) as i64),
+            ("AOFF (text)", offset_of!(A, text) as i64),
+            ("AOFF (len)", offset_of!(A, len) as i64),
+            ("sizeof (NhgActionList)", size_of::<NhgActionList>() as i64),
+            (
+                "offsetof (NhgActionList, n)",
+                offset_of!(NhgActionList, n) as i64,
+            ),
         ];
         // the prototypes, C side (checked at compile time: the probe references no function, so it links alone)
         let decls = "\
 #define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
 typedef NhgFrameFacts F;
 #define FOFF(m) offsetof (F, m)
+typedef NhgAction A;
+#define AOFF(m) offsetof (A, m)
+PROTO (nhg_frame_resized, int32_t (NhgDisplay *, uint64_t, int32_t, int32_t));
+PROTO (nhg_frame_scale, int32_t (NhgDisplay *, uint64_t, uint32_t));
+PROTO (nhg_frame_csd, int32_t (NhgDisplay *, uint64_t, int32_t));
+PROTO (nhg_next, int32_t (NhgDisplay *, const NhgNextIn *, NhgActionList *));
+PROTO (nhg_raw_event, int32_t (NhgDisplay *, NhShellEvent *));
 PROTO (nhg_abi_version, int32_t (uint32_t *));
 PROTO (nhg_open, NhgDisplay *(const char *, char *, size_t));
 PROTO (nhg_close, int32_t (NhgDisplay *));
@@ -190,6 +246,13 @@ PROTO (nhg_test_panic, int32_t (NhgDisplay *));";
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_frame_forget;
         let _: unsafe extern "C" fn(*mut NhgDisplay, *mut c_char, usize, *mut usize) -> i32 =
             nhg_panic_message;
+        // the pushes and the event step
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32, i32) -> i32 = nhg_frame_resized;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u32) -> i32 = nhg_frame_scale;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32) -> i32 = nhg_frame_csd;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, *const NhgNextIn, *mut NhgActionList) -> i32 =
+            nhg_next;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, *mut NhShellEvent) -> i32 = nhg_raw_event;
         #[cfg(feature = "test-hooks")]
         {
             use nhglue::ffi::{nhg_debug_check_frame, nhg_test_panic};

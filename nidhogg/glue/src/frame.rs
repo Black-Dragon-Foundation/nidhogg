@@ -1,5 +1,10 @@
-//! One frame as the glue sees it: its shell window's kind and the Emacs facts C pushed for it.  Later tasks add the
-//! decision state (sizes, scale, configure, CSD, child, timing).
+//! One shell window as the glue sees it: its kind, the Emacs facts C pushed for its frame, and the decision state of
+//! its configures and scale.  Later tasks add the rest (CSD, child, timing).
+//!
+//! This state is keyed by the shell window, as the events that drive it are: a window's configure state starts with
+//! the window (a new toplevel is unconfigured), and C seeds the frame's facts (`nhg_frame_resized`, `nhg_frame_scale`,
+//! `nhg_frame_csd`) each time it makes a window for the frame.  A frame's pixel state is keyed by its Glitnir root id
+//! instead (`backing.rs`), which a frame gets only at its first draw, after its first configure.
 
 /// `nhg_frame_register` flags: what kind of window the frame has (none of them: a top-level).
 pub const NHG_FRAME_CHILD: u32 = 1;
@@ -10,13 +15,15 @@ pub const NHG_FRAME_KINDS: u32 = NHG_FRAME_CHILD | NHG_FRAME_TIP | NHG_FRAME_POP
 /// `NhgFrameFacts` flags.
 pub const NHG_FACT_VISIBLE: u32 = 1;
 pub const NHG_FACT_ICONIFIED: u32 = 2;
+/// The frame draws its own title bar (`out->csd.on`; pushed by `nhwl_csd_layout` until the title bar is the glue's).
+pub const NHG_FACT_CSD: u32 = 4;
 
 /// The Emacs facts a frame's decisions read, as C pushes them (design §3.3); `nhg_debug_check_frame` compares them with
 /// Emacs's own values in a checking build.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct NhgFrameFacts {
-    /// The frame's native size as Emacs has it (device pixels).
+    /// The frame's native size as Emacs has it (device pixels): the size C last asked for.
     pub native_w: i32,
     pub native_h: i32,
     /// `FRAME_COLUMN_WIDTH`, `FRAME_LINE_HEIGHT`.
@@ -28,19 +35,47 @@ pub struct NhgFrameFacts {
     pub flags: u32,
 }
 
-/// A registered frame.
+/// A toplevel's configure state (moved from `struct nhwl_output`'s `configured`, `logical_w`, `logical_h`, `serial`
+/// and `states`; C keeps copies of what its own code still reads, set when it applies `RESIZE`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Configure {
+    pub configured: bool,
+    /// The compositor's last suggestion in logical pixels (0: the frame's own size).
+    pub logical_w: i32,
+    pub logical_h: i32,
+    pub serial: u32,
+    /// `NHSHELL_STATE_*`.
+    pub states: u32,
+}
+
+/// A configure's ack, held until C has applied the configure's `RESIZE`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ack {
+    pub serial: u32,
+    /// Only a buffer carries it (`NHSHELL_ACK_CONTENT`).
+    pub content: bool,
+}
+
+/// A registered window.
 #[derive(Debug, Default)]
 pub struct Frame {
     /// `NHG_FRAME_*`.
     pub flags: u32,
     pub facts: NhgFrameFacts,
+    pub cfg: Configure,
+    /// The window's scale times 120 as C last applied it (0: not pushed yet).
+    pub scale120: u32,
+    /// The ack of the configure C is applying.
+    pub ack: Option<Ack>,
+    /// The last ack recorded with the shell: serial and `NHSHELL_ACK_*` flags (for the tests).
+    pub last_ack: Option<(u32, u32)>,
 }
 
 impl Frame {
     pub fn new(flags: u32) -> Frame {
         Frame {
             flags,
-            facts: NhgFrameFacts::default(),
+            ..Frame::default()
         }
     }
 }
