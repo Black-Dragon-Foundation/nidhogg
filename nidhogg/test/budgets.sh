@@ -18,6 +18,7 @@
 #                     back as a plist and none may be nil
 #   BUDGETS_MEMORY    the container's memory cap (default 6g); BUDGETS_CPUSET pins it (podman --cpuset-cpus)
 #
+# idle-wakeups-blink repeats the idle window with the cursor blinking, so redisplays run.
 # A row is (:row NAME :unit U :a (MEDIAN SD) :b (MEDIAN SD) :verdict pass|fail|equal), lower is better: pass when A is
 # not above B, equal when within the larger of 5 % or two SD of B (spec section 3), else fail.  A row that cannot be
 # measured here is (:row NAME :skipped "REASON" ...): never nil, never a made-up number.  The motion rows have no B and
@@ -102,13 +103,15 @@ if [ "$mode" = container ]; then
     # every line reads back as a plist with a verdict or a skip, and none is nil
     HOME="$run/home" "$pa/bin/nidhogg" -Q --batch --eval '(with-temp-buffer
       (insert-file-contents (car command-line-args-left)) (goto-char (point-min))
-      (let ((n 0))
+      (let ((n 0) (blink nil))
         (while (progn (skip-chars-forward " \n\t") (not (eobp)))
           (let ((r (read (current-buffer))))
             (unless (and (consp r) (eq (car r) :row) (symbolp (cadr r)) (cadr r)
                          (or (plist-get r :skipped) (plist-get r :verdict)))
               (error "bad row: %S" r))
+            (when (eq (cadr r) (quote idle-wakeups-blink)) (setq blink t))
             (setq n (1+ n))))
+        (unless blink (error "no idle-wakeups-blink row"))
         (when (< n 10) (error "only %d rows" n))
         (princ (format "budgets self-test: %d rows read back\n" n))))' "$out" || rc=1
   fi
@@ -223,6 +226,13 @@ measure() {
   win "$side" idle "$s1" "$s2"
   rec pss-idle "$side" "$(pss)"
 
+  # idle with the timers on: the cursor blinks (0.1 s), so redisplays run; one that draws nothing must cost nothing
+  cl '(progn (setq blink-cursor-interval 0.1 blink-cursor-delay 0) (blink-cursor-mode 1) t)' > /dev/null
+  sleep 1
+  s1=$(snap); sleep "$window"; s2=$(snap)
+  rate "$side" idle-wakeups-blink 5 "$s1" "$s2"
+  cl '(progn (blink-cursor-mode 0) t)' > /dev/null
+
   # typing: 10 chars/s through zwp_virtual_keyboard
   n=$((window * 10))
   str=$(awk -v n="$n" 'BEGIN { for (i = 0; i < n; i++) printf "%c", 97 + i % 26 }')
@@ -335,7 +345,7 @@ awk -F'|' '
     cnt[row, side]++; val[row, side, cnt[row, side]] = v + 0
   }
   END {
-    unit["idle-wakeups"] = "switches/s"; unit["idle-wakeups-threads"] = "switches/s (all but the main thread)"
+    unit["idle-wakeups"] = "switches/s"; unit["idle-wakeups-blink"] = "switches/s (cursor blinking, 0.1 s)"; unit["idle-wakeups-threads"] = "switches/s (all but the main thread)"
     unit["pixels-per-char"] = "device px"; unit["resize-stuck"] = "steps"
     unit["latency-typing"] = "ms p95"; unit["motion-compose-p95"] = "ms"; unit["motion-interval-p95"] = "ms"
     unit["motion-cores"] = "cores"
