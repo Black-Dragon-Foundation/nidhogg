@@ -253,3 +253,10 @@ impl Display {
             .collect()
     }
 }
+
+impl Display {
+    /// Every registered frame with its window (`popup.rs`).
+    pub(crate) fn frames(&self) -> impl Iterator<Item = (u64, &Frame)> {
+        self.frames.iter().map(|(&w, f)| (w, f))
+    }
+}

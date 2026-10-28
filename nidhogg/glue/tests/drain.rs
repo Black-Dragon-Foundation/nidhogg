@@ -92,12 +92,6 @@ mod drain {
             assert!(nhg_fd(d) >= 0);
             assert_eq!(nhg_frame_register(d, id + 1000, 0), NHG_OK);
             assert_eq!(nhg_frame_forget(d, id + 1000), NHG_OK);
-            let mut ev = NhShellEvent::new(0, 0, 0);
-            assert_eq!(
-                nhg_raw_event(d, &mut ev),
-                NHG_E_STATE,
-                "a commit is no raw event"
-            );
         }
         // SAFETY: the action and its text are valid until the next nhg_next.
         let a = unsafe { *list.v };
@@ -128,7 +122,6 @@ mod drain {
         assert!(
             seen.iter().all(|a| a.window != id
                 || [
-                    NHG_ACT_RAW,
                     NHG_ACT_KEY,
                     NHG_ACT_PREEDIT,
                     NHG_ACT_COMMIT,

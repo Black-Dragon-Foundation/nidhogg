@@ -94,15 +94,13 @@ sees what the earlier events changed, as the C drain did; before each call it sa
   `NHG_IN_INPUT_WAITING` set is dropped, so a key stored earlier in the same drain counts. The glue keeps the modifier
   mask (`MODIFIERS` events give no action).
 - **Focus** (`src/focus.rs`): a keyboard focus event gives `FOCUS_IN` or `FOCUS_OUT` for its window, and the glue
-  keeps the window that has the keyboard (`nhg_keyboard_window`). Emacs's focus frame and highlighting stay C.
-- **Transitional `NHG_ACT_RAW`** carries each event whose kind is not ported yet; C handles it on its old path
-  (`nhg_raw_event` gives the event), a `PREEDIT`'s or `COMMIT_TEXT`'s text comes as the action's text, and `mods` is
-  the keyboard's modifier mask. It is its event's last action (a title bar's may come before it). Each port task takes
-  its kinds out.
-- An event naming a forgotten window gives no action, except keys and the input method's, which C sends to the focus
-  frame.
+  keeps the window that has the keyboard. A popup frame's focus events give none, and neither does a top-level losing
+  the keyboard while a popup frame of its own grabs (`src/popup.rs`). Emacs's focus frame and highlighting stay C.
+- Every event kind is ported: one C did nothing with gives no action. An event naming a forgotten window gives no
+  action, except keys and the input method's, which C sends to the focus frame.
 - **A tip's dismissal** (`POPUP_DONE` of a tip's window) gives `DELETE` with `NHG_DEL_TIP`: C calls `nhg_tip_hide` and
-  hides the frame, which Lisp deletes later. A popup frame's `POPUP_DONE` is still raw.
+  hides the frame, which Lisp deletes later. A popup frame's gives `DELETE` with `NHG_DEL_POPUP`: C stores a
+  `delete-frame` event, and the frame stays until Lisp deletes or hides it.
 
 ## The title bar
 
@@ -120,7 +118,7 @@ The client-side title bar (`src/csd.rs`, from `nhwlcsd.c`) is laid out, hit-test
 - **Pointer:** the event step routes pointer events through the title bar first. Over the border it consumes them and
   gives an `NHG_ACT_TITLE_BAR` (the pointer shape, a repaint); a press moves, resizes, maximizes (a double click on the
   strip too), minimizes or shows the window menu through the shell, and a click on close gives `NHG_ACT_DELETE`.
-  Back in the native area the title bar's action comes first and the event goes on raw, last. Hit tests use the native
+  Back in the native area the title bar's action comes first and the pointer's own action last. Hit tests use the native
   size of the last paint, which is what the surface shows.
 - **Style:** `nhwl--set-title-bar-style` hands the buttons of each side to every display (`nhg_csd_style`), and to a
   display opened later; the colours and the font stay C's.
@@ -163,3 +161,24 @@ stacking, input region and mapping go out with its tree's commit.
   a top-level whose border changed places its children again at once.
 - **Stacking:** C keeps the siblings' order (its tree walk lists children by it) and hands it to `nhg_child_stack` on
   raise and lower; the glue stacks the child against its neighbour. The keyboard focus redirect stays C.
+
+## Menu popups
+
+A popup frame (`src/popup.rs`, from `nhwlmenu.c`) is a frame whose `nhwl-popup` parameter, given at creation with
+`parent-frame`, makes its window an xdg popup of the parent's window; the menus themselves are Lisp (`nhwl-menu.el`).
+The frame is the root of its own tree (its pacer and acks are its own).
+
+- **Parameter:** C decodes `(X Y W H . PLIST)` (the rectangle in device pixels of the parent's native area, `:gravity`,
+  `:adjust`, `:grab`) and hands it to each call; the glue places it in the parent's surface after its border, at the
+  parent's scale.
+- **Show and hide:** `nhg_popup_show` makes the popup at the current parameter and the frame's size, registered as a
+  visible popup frame, when Emacs makes the frame visible; `nhg_popup_hide` destroys it (C hides the popup frames
+  hanging from it first: the compositor wants the topmost destroyed first). Size, gravity, adjust and grab apply at
+  the next show; `nhg_popup_place` moves a shown popup when the parameter changes, and `nhg_popup_size` resizes it
+  when C sets the frame's size (1 from either: the popup was made again below `xdg_wm_base` 3, C draws it whole).
+- **Grab and focus:** `NHG_POPUP_GRAB` asks for a grab, which the shell sends only with a recent press's serial. While
+  a popup of its own grabs, a top-level that loses the keyboard has lent it: no `FOCUS_OUT`, and Emacs's focus stays.
+  `nhg_popup_hide` answers 1 when the loan ended with the keyboard on none of our windows (the compositor dismissed
+  the menu as the focus went elsewhere), and C sends Emacs the focus-out then.
+- **Dismissal:** `POPUP_DONE` gives `DELETE` with `NHG_DEL_POPUP`. Popups get no Glitnir shadow, and C refuses to
+  reparent, raise or focus them.

@@ -1419,7 +1419,7 @@ nhwl_make_frame_visible (struct frame *f)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
 
-  /* A popup frame's window is made now (nhwlmenu.c).  */
+  /* A popup frame's window is made now (nhwl_popup_show).  */
   if (nhwl_popup_frame_p (f))
     {
       nhwl_popup_show (f);
@@ -1448,7 +1448,7 @@ nhwl_make_frame_visible (struct frame *f)
 void
 nhwl_make_frame_invisible (struct frame *f)
 {
-  /* A popup frame's window goes (nhwlmenu.c).  */
+  /* A popup frame's window goes (nhwl_popup_hide).  */
   if (nhwl_popup_frame_p (f))
     {
       nhwl_popup_hide (f);
@@ -1861,10 +1861,9 @@ nhwl_window_frame (uint64_t window)
 bool
 nhwl_child_p (struct frame *f)
 {
-  /* A popup frame (nhwlmenu.c) has a parent too, but is a tree of its
-     own.  */
+  /* A popup frame has a parent too, but is a tree of its own.  */
   return (FRAME_NHWL_P (f) && f->output_data.nhwl && FRAME_PARENT_FRAME (f)
-	  && !f->output_data.nhwl->popup.on);
+	  && !f->output_data.nhwl->popup_frame);
 }
 
 /* The root of F's tree: the top-level (or tip) frame whose window's pacer
@@ -2844,10 +2843,8 @@ nhwl_focus_apply (struct nhwl_display_info *dpyinfo, struct frame *f,
   union buffered_input_event inev;
   struct frame *r, *e, *t;
 
-  /* The keyboard moving between a top-level and its own popup frames is
-     no focus change for Emacs (nhwlmenu.c).  */
-  if (nhwl_popup_focus_kept (f, in))
-    return 0;
+  /* The keyboard moving between a top-level and its own popup frames
+     gives no action (the glue's popup.rs).  */
   r = nhwl_tree_root (f);
   e = dpyinfo->x_focus_event_frame;
   t = !in && e && nhwl_tree_root (e) == r ? e : nhwl_focus_target (r);
@@ -2877,10 +2874,6 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
 
   switch (a->kind)
     {
-    case NHG_ACT_RAW:
-      /* nhwl_drain_events handles it.  */
-      return 0;
-
     case NHG_ACT_LOST:
       /* Handled when the drain is over.  */
       dpyinfo->connection_lost = true;
@@ -2962,6 +2955,8 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
 	    nhwl_tip_dismissed (f);
 	  return 0;
 	}
+      /* A popup frame's (NHG_DEL_POPUP) stays until Lisp deletes or hides
+	 it, on the `delete-frame' event.  */
       EVENT_INIT (ie);
       ie.kind = DELETE_WINDOW_EVENT;
       ie.arg = Qnil;
@@ -2988,14 +2983,11 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
    HOLD_QUIT where Emacs gave one); return the number of events stored.
    The glue takes one event per step and answers with its actions, and
    each is applied before the next step, so every decision sees what the
-   earlier events changed.  The glue's raw actions (kinds it has not
-   ported yet) are handled here on the old path.  Callers hold
-   block_input.  */
+   earlier events changed.  Callers hold block_input.  */
 int
 nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 		   struct input_event *hold_quit)
 {
-  NhShellEvent ev;
   NhgNextIn in;
   NhgActionList list;
   int count = 0;
@@ -3008,9 +3000,6 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
   block_input ();
   while (n < NHWL_DRAIN_MAX)
     {
-      union buffered_input_event inev;
-      struct frame *f;
-      bool have = false;
       size_t i;
 
       /* The facts the step reads, sampled again for each event.  */
@@ -3027,41 +3016,6 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 
       for (i = 0; i < list.n; i++)
 	count += nhwl_apply (dpyinfo, &list.v[i], hold_quit);
-      /* A raw action is its event's last one (a title bar's comes before
-	 it).  */
-      if (list.n == 0 || list.v[list.n - 1].kind != NHG_ACT_RAW
-	  || (nhwl_glue_rc (dpyinfo,
-			    NHG (nhg_raw_event (dpyinfo->glue, &ev)))
-	      != NHG_OK))
-	continue;
-
-      EVENT_INIT (inev.ie);
-      inev.ie.kind = NO_EVENT;
-      inev.ie.arg = Qnil;
-      f = ev.window ? nhwl_window_to_frame (dpyinfo, ev.window) : NULL;
-
-      switch (ev.kind)
-	{
-	case NHSHELL_EV_POPUP_DONE:
-	  /* A popup frame stays until Lisp deletes or hides it, on the
-	     `delete-frame' event (a tip's is a DELETE action).  */
-	  if (f && nhwl_popup_frame_p (f))
-	    {
-	      inev.ie.kind = DELETE_WINDOW_EVENT;
-	      XSETFRAME (inev.ie.frame_or_window, f);
-	      have = true;
-	    }
-	  break;
-
-	default:
-	  break;
-	}
-
-      if (have && inev.ie.kind != NO_EVENT)
-	{
-	  kbd_buffer_store_event_hold (&inev.ie, hold_quit);
-	  count++;
-	}
     }
 
   if (rc == NHG_E_DISCONNECTED)

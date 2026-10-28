@@ -14,7 +14,6 @@ use crate::guard::GlueError;
 use crate::present::{self, NhgPresenterStats, NhgSurface};
 use crate::{configure, drain};
 use crate::{tip, window};
-use nhshell::event::NhShellEvent;
 use nhshell::ffi::{NhShell, nhshell_close, nhshell_open, nhshell_wake_fd};
 use std::ffi::c_char;
 use std::ptr::{self, NonNull};
@@ -225,23 +224,6 @@ nhg_export! {
         // SAFETY: non-null and writable (the caller's promise); an error leaves the list empty.
         unsafe { out.write(state.actions().as_list()) };
         taken
-    }
-}
-
-nhg_export! {
-    /// The shell event behind the last `nhg_next`'s `NHG_ACT_RAW` action, into `*out`.  `NHG_E_STATE` when the last
-    /// event gave none.  Transitional, until every event kind is ported.  Neither reads nor writes pixels.
-    ///
-    /// # Safety
-    /// `d` is null or a live display; `out` is writable.
-    fn nhg_raw_event(d: *mut NhgDisplay, out: *mut NhShellEvent) -> i32 |state| {
-        if out.is_null() {
-            return Err(GlueError::Arg);
-        }
-        let ev = *state.actions().raw().ok_or(GlueError::State)?;
-        // SAFETY: non-null and writable (the caller's promise).
-        unsafe { out.write(ev) };
-        Ok(NHG_OK)
     }
 }
 
@@ -468,24 +450,6 @@ nhg_export! {
         let st = present::stats(backend)?;
         // SAFETY: non-null and writable (the caller's promise).
         unsafe { out.write(st) };
-        Ok(NHG_OK)
-    }
-}
-
-// ---- The keyboard (`keys.rs`, `focus.rs`)--------------------------------------------------------------------------
-
-nhg_export! {
-    /// The window that has the keyboard focus, as the last focus event said, into `*out` (0: none of ours).  Neither
-    /// reads nor writes pixels.
-    ///
-    /// # Safety
-    /// `d` is null or a live display; `out` is writable.
-    fn nhg_keyboard_window(d: *mut NhgDisplay, out: *mut u64) -> i32 |state| {
-        if out.is_null() {
-            return Err(GlueError::Arg);
-        }
-        // SAFETY: non-null and writable (the caller's promise).
-        unsafe { out.write(state.keyboard().window) };
         Ok(NHG_OK)
     }
 }
@@ -1125,5 +1089,65 @@ nhg_export! {
         let s = unsafe { std::slice::from_raw_parts(siblings, n) };
         crate::child::stack(state, window, s, z_group)?;
         Ok(NHG_OK)
+    }
+}
+
+// ---- Menu popups (`popup.rs`) ---------------------------------------------------------------------------------------
+//
+// A popup frame's window exists while the frame is shown.  ANCHOR_DEV is the `nhwl-popup` parameter's rectangle, in
+// device pixels of the parent's native area; GRAVITY is 1 to 8 (`NhgAnchor`'s), ADJUST `NHSHELL_ADJUST_*`, FLAGS
+// `NHG_POPUP_*`.  None of these reads or writes pixels.
+
+nhg_export! {
+    /// Show a popup frame: a new popup of `parent`'s window at `anchor_dev`, growing toward `gravity`, `native_w` x
+    /// `native_h` device pixels at the parent's scale, hanging from top-level `owner` (its keyboard focus is kept
+    /// while the popup grabs); registered as a visible popup frame, its id into `*window`.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `window` is null or writable.
+    fn nhg_popup_show(d: *mut NhgDisplay, window: *mut u64, parent: u64, owner: u64, anchor_dev: NhgRect, gravity: u32, adjust: u32, flags: u32, native_w: i32, native_h: i32) -> i32 |state| {
+        if window.is_null() {
+            return Err(GlueError::Arg);
+        }
+        let place = crate::popup::Place { anchor: anchor_dev, gravity, adjust, flags };
+        let id = crate::popup::show(state, parent, owner, &place, (native_w, native_h))?;
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe { window.write(id) };
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// The popup frame's parameter changed: unchanged, 0; otherwise the shown popup moves to the new anchor, and 1
+    /// when the whole frame must be drawn again (the popup was made again, below `xdg_wm_base` 3).  Size, gravity,
+    /// adjust and grab apply at the next show.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_popup_place(d: *mut NhgDisplay, window: u64, anchor_dev: NhgRect, gravity: u32, adjust: u32, flags: u32) -> i32 |state| {
+        let place = crate::popup::Place { anchor: anchor_dev, gravity, adjust, flags };
+        crate::popup::place(state, window, &place)
+    }
+}
+
+nhg_export! {
+    /// The popup frame's size is now `w` x `h` device pixels: the popup takes it; 1 when the whole frame must be drawn
+    /// again (below `xdg_wm_base` 3), 0 when not.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_popup_size(d: *mut NhgDisplay, window: u64, w: i32, h: i32) -> i32 |state| {
+        crate::popup::size(state, window, w, h)
+    }
+}
+
+nhg_export! {
+    /// Hide a popup frame: its window (0: none) goes and is forgotten.  1 when top-level `owner` has lost the keyboard
+    /// focus it had lent to a grabbing popup (C sends Emacs the focus-out), else 0.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_popup_hide(d: *mut NhgDisplay, window: u64, owner: u64) -> i32 |state| {
+        crate::popup::hide(state, window, owner)
     }
 }

@@ -2,7 +2,6 @@
 //! §4, review B1).  The actions and their texts stay valid until the next `nhg_next` on the display: only that call
 //! frees them, so no other call C makes while it applies them can.
 
-use nhshell::event::NhShellEvent;
 use std::ffi::c_char;
 
 /// `NhgNextIn` flags, sampled by C before each `nhg_next`: `kbd_buffer_events_waiting ()` and
@@ -33,11 +32,9 @@ pub const NHG_ACT_IM_DELETE: u32 = 19;
 pub const NHG_ACT_IM_SURROUNDING: u32 = 20;
 pub const NHG_ACT_SELECTION_CLEAR: u32 = 21;
 /// A pointer event went through the window's title bar or its margins (`csd.rs`): `flags` `NHG_TB_*`, `code` the
-/// pointer shape (`NHSHELL_CURSOR_*`) with `NHG_TB_POINTER`.  A raw action of the same event, if any, comes after it.
+/// pointer shape (`NHSHELL_CURSOR_*`) with `NHG_TB_POINTER`.  The pointer's own action of the same event, if any,
+/// comes after it.
 pub const NHG_ACT_TITLE_BAR: u32 = 22;
-/// Transitional: a shell event whose kind is not ported yet, which C handles on its old path (`nhg_raw_event` gives
-/// it).  Each port task takes its kinds out (popups are left); the kind goes when none is.
-pub const NHG_ACT_RAW: u32 = 31;
 
 /// `RESIZE` flags: fullscreen or maximized changed (C stores the frame's `fullscreen` parameter).
 pub const NHG_RESIZE_FULLSCREEN: u32 = 1;
@@ -58,7 +55,8 @@ pub struct NhgNextIn {
 /// - `RESIZE`: `w`, `h` the compositor's suggestion in logical pixels (0: the frame's own), `code` the toplevel's
 ///   `NHSHELL_STATE_*`, `flags` `NHG_RESIZE_*`;
 /// - `SCALE`: `code` the scale times 120, `scale` the factor;
-/// - `DELETE`, `READY`, `LOST`: the window only (`LOST`: none);
+/// - `DELETE`: the window, `flags` `NHG_DEL_TIP` (a tip's popup was dismissed) or `NHG_DEL_POPUP` (a popup frame's);
+/// - `READY`, `LOST`: the window only (`LOST`: none);
 /// - `MOTION` (an enter is one): `dx`, `dy` the position in device pixels in the window's surface;
 /// - `LEAVE`: the window only;
 /// - `CLICK`: `code` the evdev button, `flags` the `NHSHELL_BUTTON_*` state, `dx`, `dy` the position, `mods` the
@@ -68,8 +66,7 @@ pub struct NhgNextIn {
 /// - `MONITORS`: the output list changed (no window); `code` the added or changed output's scale times 120 (0 for a
 ///   removal);
 /// - `PREEDIT`, `COMMIT`: `text`, `len` (null when it could not be taken; empty clears a preedit), `window` as the
-///   event came, forgotten or none; `IM_DELETE`: `x` bytes before point, `y` after;
-/// - `RAW`: the shell event (`nhg_raw_event`) and the keyboard's `NHSHELL_MOD_*` mask in `mods`.
+///   event came, forgotten or none; `IM_DELETE`: `x` bytes before point, `y` after.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct NhgAction {
@@ -124,13 +121,12 @@ pub struct NhgActionList {
     pub n: usize,
 }
 
-/// One event's actions, their texts and (for a `RAW` action) the event, kept until the next `nhg_next`.
+/// One event's actions and their texts, kept until the next `nhg_next`.
 #[derive(Default)]
 pub struct Actions {
     list: Vec<NhgAction>,
     /// Each text's bytes and a NUL; a text's heap buffer does not move when this list grows.
     texts: Vec<Vec<u8>>,
-    raw: Option<NhShellEvent>,
 }
 
 impl Actions {
@@ -138,7 +134,6 @@ impl Actions {
     pub fn clear(&mut self) {
         self.list.clear();
         self.texts.clear();
-        self.raw = None;
     }
 
     pub fn push(&mut self, a: NhgAction) {
@@ -154,15 +149,6 @@ impl Actions {
             self.texts.push(t);
         }
         self.list.push(a);
-    }
-
-    /// Keep `ev` for `nhg_raw_event`.
-    pub fn set_raw(&mut self, ev: NhShellEvent) {
-        self.raw = Some(ev);
-    }
-
-    pub fn raw(&self) -> Option<&NhShellEvent> {
-        self.raw.as_ref()
     }
 
     pub fn as_slice(&self) -> &[NhgAction] {

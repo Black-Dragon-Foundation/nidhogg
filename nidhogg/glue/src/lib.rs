@@ -28,6 +28,8 @@ pub mod select;
 // window operations and tips
 pub mod tip;
 pub mod window;
+// menu popups
+pub mod popup;
 
 pub mod csd;
 
