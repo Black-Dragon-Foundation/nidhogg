@@ -69,6 +69,14 @@ enum
   NHSHELL_EV_PREEDIT = 18, NHSHELL_EV_COMMIT_TEXT = 19, NHSHELL_EV_DELETE_SURROUNDING = 20
 };
 
+/* Monitors.  OUTPUT_CHANGE: an output already announced by OUTPUT_ADD changed (same payload as ADD; sent only when a
+   field differs).  ENTER_OUTPUT and LEAVE_OUTPUT: the window (NhShellEvent.window) is now on / no longer on the
+   output u.output.id (the other u.output members are zero).  A removed output leaves every window without a LEAVE.  */
+enum
+{
+  NHSHELL_EV_OUTPUT_CHANGE = 22, NHSHELL_EV_ENTER_OUTPUT = 23, NHSHELL_EV_LEAVE_OUTPUT = 24
+};
+
 /* u.key.mods */
 #define NHSHELL_MOD_SHIFT (1u << 0)
 #define NHSHELL_MOD_CTRL  (1u << 1)

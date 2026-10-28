@@ -58,7 +58,7 @@ scale: `scale120` = 120 x (Xft DPI / 96), and server-side decorations always (`s
 | events: `CONFIGURE`, `CLOSE`, `SCALE`, `FOCUS` | `windowDidResize:`, `windowShouldClose:`, `windowDidChangeBackingProperties:`, `windowDidBecomeKey:` | `ConfigureNotify`, `WM_DELETE_WINDOW`, an Xft DPI change, `FocusIn` | fits |
 | events: `FRAME_DONE` | the display link (`presented_ns` 0 unless known) | after `XShmPutImage` completes (`presented_ns` 0) | fits |
 | events: `FRAME_READY` (21), `window_dirty`, `window_ready` (bits `READY_CONTENT`, `READY_OWED`) | the display link: ready when the layer may show the next bitmap (always, once drawn) | idle after `XShmCompletion` of the last put | fits |
-| events: `OUTPUT_ADD`, `OUTPUT_REMOVE` | `NSScreen` and `didChangeScreenParameters` | RandR monitors | fits |
+| events: `OUTPUT_ADD`, `OUTPUT_CHANGE`, `OUTPUT_REMOVE`, `ENTER_OUTPUT`, `LEAVE_OUTPUT` | `NSScreen`, `didChangeScreenParameters`, `windowDidChangeScreen:` | RandR monitors (a window's monitor from its position) | fits |
 | events: `DISCONNECTED` | never sent | connection error | fits |
 | `selection_own`, `selection_disown`, `selection_owned` | `NSPasteboard` `declareTypes:owner:` with the copied bytes per type; no system primary selection, so `PRIMARY` stays inside the process | `SetSelectionOwner` on `CLIPBOARD` or `PRIMARY`, answering `SelectionRequest` from the copy (INCR for large data) | fits |
 | `selection_types`, `selection_read` | the pasteboard's `types` and `dataForType:` (synchronous, the timeout never runs out) | `ConvertSelection` to `TARGETS` or the type, waiting for `SelectionNotify` up to the timeout | fits |

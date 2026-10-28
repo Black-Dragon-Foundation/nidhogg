@@ -35,6 +35,12 @@ pub const NHSHELL_EV_PREEDIT: u32 = 18;
 pub const NHSHELL_EV_COMMIT_TEXT: u32 = 19;
 /// Delete `u.text.before` bytes before and `u.text.after` bytes after the cursor.
 pub const NHSHELL_EV_DELETE_SURROUNDING: u32 = 20;
+/// An output announced by `OUTPUT_ADD` changed (same payload; sent only when a field differs).
+pub const NHSHELL_EV_OUTPUT_CHANGE: u32 = 22;
+/// The window is now on output `u.output.id` (other members zero).
+pub const NHSHELL_EV_ENTER_OUTPUT: u32 = 23;
+/// The window left output `u.output.id`.
+pub const NHSHELL_EV_LEAVE_OUTPUT: u32 = 24;
 
 pub const NHSHELL_MOD_SHIFT: u32 = 1 << 0;
 pub const NHSHELL_MOD_CTRL: u32 = 1 << 1;

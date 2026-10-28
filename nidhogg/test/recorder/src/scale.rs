@@ -124,6 +124,25 @@ pub fn output(state: &mut State, req: &Value) -> Value {
                 .change_current_state(None, None, Some(Scale::Integer(ceil)), None);
             json!({"ok": true})
         }
-        _ => err("\"op\" must be \"add\", \"remove\" or \"scale\""),
+        // `wl_surface.enter` / `leave` for the named output and `"surface"` (an id or "toplevel")
+        Some(op @ ("enter" | "leave")) => {
+            let Some(i) = at else {
+                return err("no such output");
+            };
+            let Some(v) = req.get("surface") else {
+                return err("\"surface\" is required");
+            };
+            let surface = match crate::input::find_surface(state, v) {
+                Ok(s) => s,
+                Err(e) => return err(e),
+            };
+            if op == "enter" {
+                state.outputs[i].0.enter(&surface);
+            } else {
+                state.outputs[i].0.leave(&surface);
+            }
+            json!({"ok": true})
+        }
+        _ => err("\"op\" must be \"add\", \"remove\", \"scale\", \"enter\" or \"leave\""),
     }
 }
