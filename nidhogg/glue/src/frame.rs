@@ -2,8 +2,8 @@
 //! its configures and scale.  Later tasks add the rest (CSD, child, timing).
 //!
 //! This state is keyed by the shell window, as the events that drive it are: a window's configure state starts with
-//! the window (a new toplevel is unconfigured), and C seeds the frame's facts (`nhg_frame_resized`, `nhg_frame_scale`,
-//! `nhg_frame_csd`) each time it makes a window for the frame.  A frame's pixel state is keyed by its Glitnir root id
+//! the window (a new toplevel is unconfigured), and C seeds the frame's facts each time it makes a window for the frame
+//! (`nhg_window_new`'s descriptor, `nhg_tip_show`).  A frame's pixel state is keyed by its Glitnir root id
 //! instead (`backing.rs`), which a frame gets only at its first draw, after its first configure.
 
 /// `nhg_frame_register` flags: what kind of window the frame has (none of them: a top-level).
@@ -73,6 +73,10 @@ pub struct Frame {
     pub csd: crate::csd::Csd,
     /// The outputs the window is on, as the compositor's enter and leave events said (`monitors.rs`).
     pub outputs: Vec<u64>,
+    /// What the window's alpha takes off opaque (`u32::MAX` minus the multiplier; 0: opaque), and whether the shell
+    /// multiplies it because the compositor cannot (`window.rs`).
+    pub alpha_cut: u32,
+    pub alpha_host: bool,
 }
 
 impl Frame {
