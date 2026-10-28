@@ -354,6 +354,8 @@ pub trait ShellBackend {
     /// What a host needs to abandon this backend without touching its state again: the glue calls it once at open and
     /// uses it only after a panic left the backend's state in doubt.  Every thread the backend runs is in the list.
     fn abandon(&self) -> Abandon;
+    /// The presenter's own timing since open (Rust only): which frames it committed late.
+    fn presenter_timing(&self) -> ShellResult<PresenterTiming>;
 }
 
 /// A backend's connection and threads, as a host that abandons the backend sees them (`ShellBackend::abandon`).  The
@@ -403,6 +405,17 @@ impl ThreadDone {
             std::thread::park_timeout(deadline - now);
         }
     }
+}
+
+/// The presenter's timing.  A frame is a root buffer that shows published drawing; it was ready when its tree could
+/// first commit it (the later of its first publish and the pacer's opening: a frame callback, the end of starvation).
+/// It is late when committed more than one refresh period after that (the period presentation feedback reports, else
+/// 1/120 s): a vblank the presenter missed, whatever the host's thread did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PresenterTiming {
+    pub frames: u64,
+    pub late: u64,
+    pub ready_to_commit_max_ns: u64,
 }
 
 /// `SurfaceFrame` flags: the surface may show a buffer (without it, its damage waits); the presenter multiplies the
