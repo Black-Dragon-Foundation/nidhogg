@@ -601,7 +601,12 @@ forget_windows_under (struct frame *f)
   FOR_EACH_FRAME (tail, frame)
     if (FRAME_NHWL_P (XFRAME (frame)) && FRAME_PARENT_FRAME (XFRAME (frame)) == f)
       {
-	FRAME_NHWL_OUTPUT (XFRAME (frame))->window = 0;
+	struct nhwl_output *out = FRAME_NHWL_OUTPUT (XFRAME (frame));
+
+	/* Its window is dropped with the parent's: the glue forgets it.  */
+	if (out->window)
+	  nhwl_window_forget (FRAME_DISPLAY_INFO (f), out->window);
+	out->window = 0;
 	forget_windows_under (XFRAME (frame));
       }
 }
@@ -649,7 +654,7 @@ nhwl_set_parent_frame (struct frame *f, Lisp_Object new_value,
 
   block_input ();
   if (out->window)
-    nhshell_window_destroy (FRAME_NHWL_SHELL (f), out->window);
+    nhwl_window_destroy (FRAME_DISPLAY_INFO (f), out->window);
   out->window = 0;
   forget_windows_under (f);
   fset_parent_frame (f, new_value);

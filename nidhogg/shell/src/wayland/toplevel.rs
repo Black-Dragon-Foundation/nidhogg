@@ -479,6 +479,11 @@ impl ShellBackend for WaylandShell {
         Ok(self.presenter_stats_impl())
     }
 
+    /// Works on a lost connection too: it touches nothing.
+    fn abandon(&self) -> Abandon {
+        self.abandon_impl()
+    }
+
     fn text_input_enable(&mut self, w: WindowId, on: bool) -> ShellResult {
         self.live()?;
         self.text_input_flush(self.main.surfaces.contains_key(&w), |t| t.enable(w, on))

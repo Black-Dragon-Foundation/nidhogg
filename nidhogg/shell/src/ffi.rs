@@ -15,6 +15,13 @@ pub struct NhShell {
     backend: Box<dyn ShellBackend>,
 }
 
+impl NhShell {
+    /// The backend behind the handle, for the glue, which owns the handle until this C ABI retires.
+    pub fn backend_mut(&mut self) -> &mut dyn ShellBackend {
+        &mut *self.backend
+    }
+}
+
 /// The window descriptor of `nhshell_window_new`.
 #[repr(C)]
 pub struct NhShellWindowDesc {

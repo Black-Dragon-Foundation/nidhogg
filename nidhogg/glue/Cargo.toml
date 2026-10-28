@@ -22,6 +22,19 @@ nhshell = { path = "../shell", version = "0.1.0", default-features = false }
 glitnir = { path = "../glitnir", version = "0.1.0" }
 libc = "0.2"
 
+# the T1 tests reuse the shell's recorder harness (../shell/tests/common), which polls and signals through rustix
+[dev-dependencies]
+rustix = { version = "1", features = ["event", "process"] }
+
+# the guard's and the display's tests drive the test hooks (check.sh runs the tests with them)
+[[test]]
+name = "ffi"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "display"
+required-features = ["test-hooks"]
+
 # debug = 2: gdb shows the glue's locals (README, "Debugging"); there is no cross-language LTO (Emacs builds with GCC)
 [profile.release]
 panic = "unwind"

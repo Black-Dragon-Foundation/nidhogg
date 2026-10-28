@@ -6,6 +6,10 @@
 use crate::caps::NhShellCaps;
 use crate::event::NhShellEvent;
 use glitnir::geom::Rect;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::Thread;
+use std::time::Instant;
 
 pub type WindowId = u64;
 
@@ -346,6 +350,59 @@ pub trait ShellBackend {
     /// Present on the shell's own thread (`on`) or inline, when the host calls `present_tree` (off at open).
     fn set_presenter_thread(&mut self, on: bool) -> ShellResult;
     fn presenter_stats(&self) -> ShellResult<NhShellPresenterStats>;
+
+    /// What a host needs to abandon this backend without touching its state again: the glue calls it once at open and
+    /// uses it only after a panic left the backend's state in doubt.  Every thread the backend runs is in the list.
+    fn abandon(&self) -> Abandon;
+}
+
+/// A backend's connection and threads, as a host that abandons the backend sees them (`ShellBackend::abandon`).  The
+/// host shuts the connection down, stops the threads, waits a bounded time and leaks the backend.
+pub struct Abandon {
+    /// The connection's socket (-1: none).  `shutdown` on it makes the compositor drop every object of ours.
+    pub conn_fd: i32,
+    pub threads: Vec<Arc<dyn BackendThread>>,
+}
+
+/// A thread a backend runs.  Both calls touch only atomics and the thread's wake-up, never the backend's state.
+pub trait BackendThread: Send + Sync {
+    /// Ask the thread to leave its loop, and wake it so that it does.
+    fn stop(&self);
+    /// Wait until the thread has finished, at most until `deadline`; whether it has.
+    fn wait_done(&self, deadline: Instant) -> bool;
+}
+
+/// A thread's "finished" report: the thread sets it last, and a host waits for it with a deadline.
+#[derive(Default)]
+pub struct ThreadDone {
+    done: AtomicBool,
+    waiter: Mutex<Option<Thread>>,
+}
+
+impl ThreadDone {
+    /// Called by the thread as the last thing it does.
+    pub fn set(&self) {
+        self.done.store(true, Ordering::Release);
+        let waiter = self.waiter.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(t) = waiter {
+            t.unpark();
+        }
+    }
+
+    /// Wait until `set`, at most until `deadline`; whether it was set.
+    pub fn wait(&self, deadline: Instant) -> bool {
+        *self.waiter.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::thread::current());
+        loop {
+            if self.done.load(Ordering::Acquire) {
+                return true;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            std::thread::park_timeout(deadline - now);
+        }
+    }
 }
 
 /// `SurfaceFrame` flags: the surface may show a buffer (without it, its damage waits); the presenter multiplies the
