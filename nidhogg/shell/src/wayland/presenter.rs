@@ -34,8 +34,10 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use wayland_client::protocol::wl_compositor::WlCompositor;
 use wayland_client::protocol::wl_shm::WlShm;
+use wayland_client::protocol::wl_subcompositor::WlSubcompositor;
 use wayland_client::{Connection, QueueHandle};
 use wayland_protocols::wp::presentation_time::client::wp_presentation::WpPresentation;
+use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 
 /// A trim that could not run (a publish was in progress) is tried again this much later.
 const TRIM_RETRY_NS: u64 = 10_000_000;
@@ -49,6 +51,9 @@ pub(crate) struct Wire {
     pub(crate) compositor: Option<WlCompositor>,
     pub(crate) presentation: Option<WpPresentation>,
     pub(crate) shm: Option<WlShm>,
+    /// Content layers' subsurfaces and viewports (none: windows are never their own layers).
+    pub(crate) subcompositor: Option<WlSubcompositor>,
+    pub(crate) viewporter: Option<WpViewporter>,
     pub(crate) mqh: QueueHandle<MainState>,
     pub(crate) rqh: QueueHandle<ReaderState>,
 }
