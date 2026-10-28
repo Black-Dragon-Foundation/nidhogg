@@ -11,10 +11,14 @@
 //! front is dropped when its surface had no publish for the pool's quiet period; the next publish copies the whole
 //! surface again.
 //!
-//! In inline mode the host's thread is the presenter: `publish` applies its packet at once.
+//! In inline mode the host's thread is the presenter: `publish` applies its packet at once.  In thread mode the
+//! presenter thread (`presenter.rs`) owns the stage and drains the mailbox when woken.  The host learns which fronts the
+//! presenter dropped through the mailbox, at its next publish: the presenter drops fronts only while the mailbox is
+//! empty and no publish is between its copy decision and its push.
 
 use crate::api::*;
 use crate::wayland::WaylandShell;
+use crate::wayland::presenter::Counters;
 use crate::wayland::scale::SCALE_ONE;
 use glitnir::committed::Committed;
 use glitnir::compose::{Composer, SourceView, TargetView, compose_committed};
@@ -94,12 +98,38 @@ pub struct Packet {
     pub parts: Vec<Part>,
 }
 
-/// Packets on their way to the presenter.  The lock is held for a push or a take only.
+/// What the host's thread hands the presenter, in order: a packet, or a window that is gone (a surface id may be
+/// reused for a new window after it).
+pub enum Mail {
+    Packet(Packet),
+    Forget(u64),
+}
+
+#[derive(Default)]
+struct Inbox {
+    mail: VecDeque<Mail>,
+    /// A publish decided which surfaces it copies whole and has not pushed yet: no front may go meanwhile.
+    busy: bool,
+    /// Surfaces whose fronts the presenter dropped, until the host's next publish learns it.
+    trimmed: Vec<u64>,
+}
+
+/// Packets on their way to the presenter.  The lock is held for a push, a take or a trim only.
 #[derive(Default)]
 pub struct Mailbox {
-    queue: Mutex<VecDeque<Packet>>,
+    inbox: Mutex<Inbox>,
     seq: AtomicU64,
     pub patches: PatchPool,
+}
+
+/// Lock `m` from the host's thread; the nanoseconds spent waiting for it.
+fn timed<T>(m: &Mutex<T>) -> (MutexGuard<'_, T>, u64) {
+    if let Ok(g) = m.try_lock() {
+        return (g, 0);
+    }
+    let t = now_ns();
+    let g = locked(m);
+    (g, now_ns().saturating_sub(t))
 }
 
 impl Mailbox {
@@ -112,17 +142,43 @@ impl Mailbox {
         self.seq.fetch_add(1, Ordering::AcqRel) + 1
     }
 
-    /// Queue `p`; the nanoseconds spent waiting for the lock.
+    /// A publish starts deciding what it copies: the fronts the presenter dropped since the last one, and the
+    /// nanoseconds spent waiting for the lock.  `push` ends it.
+    fn begin_publish(&self) -> (Vec<u64>, u64) {
+        let (mut b, waited) = timed(&self.inbox);
+        b.busy = true;
+        (std::mem::take(&mut b.trimmed), waited)
+    }
+
+    /// Queue `p` and end the publish; the nanoseconds spent waiting for the lock.
     pub fn push(&self, p: Packet) -> u64 {
-        let t = now_ns();
-        let mut q = locked(&self.queue);
-        let waited = now_ns().saturating_sub(t);
-        q.push_back(p);
+        let (mut b, waited) = timed(&self.inbox);
+        b.mail.push_back(Mail::Packet(p));
+        b.busy = false;
         waited
     }
 
-    pub fn take(&self) -> VecDeque<Packet> {
-        std::mem::take(&mut *locked(&self.queue))
+    /// Queue `m` outside a publish; the nanoseconds spent waiting for the lock.
+    pub fn post(&self, m: Mail) -> u64 {
+        let (mut b, waited) = timed(&self.inbox);
+        b.mail.push_back(m);
+        waited
+    }
+
+    pub fn take(&self) -> VecDeque<Mail> {
+        std::mem::take(&mut locked(&self.inbox).mail)
+    }
+
+    /// Run the presenter's front trim `f` when nothing is on its way (no mail, no publish in progress), and tell the
+    /// host which fronts went.  `false` when it could not run now.
+    pub fn trim(&self, f: impl FnOnce() -> Vec<u64>) -> bool {
+        let mut b = locked(&self.inbox);
+        if b.busy || !b.mail.is_empty() {
+            return false;
+        }
+        let gone = f();
+        b.trimmed.extend(gone);
+        true
     }
 }
 
@@ -226,20 +282,53 @@ pub struct Stage {
     surfaces: HashMap<u64, Surface>,
     /// Each root's earliest key time that no commit has shown yet.
     keys: HashMap<u64, u64>,
+    /// Each root's newest packet applied to the fronts (its sequence number): a content ack recorded before it may
+    /// ride a buffer composed now.
+    applied: HashMap<u64, u64>,
     composer: Composer,
-    pub stats: NhShellPresenterStats,
+    pub stats: Arc<Counters>,
 }
 
 impl Stage {
-    /// Apply every packet the mailbox holds.
-    pub fn drain(&mut self, mail: &Mailbox) {
-        for p in mail.take() {
-            self.apply(p, &mail.patches);
+    pub fn new(stats: Arc<Counters>) -> Stage {
+        Stage {
+            stats,
+            ..Stage::default()
         }
+    }
+
+    /// Apply everything the mailbox holds, in order.
+    pub fn drain(&mut self, mail: &Mailbox) {
+        for m in mail.take() {
+            match m {
+                Mail::Packet(p) => self.apply(p, &mail.patches),
+                Mail::Forget(id) => self.forget(id),
+            }
+        }
+    }
+
+    /// Root `root`'s newest packet in the fronts (0: none).
+    pub fn applied(&self, root: u64) -> u64 {
+        self.applied.get(&root).copied().unwrap_or(0)
+    }
+
+    /// When surface `id`'s waiting damage was first published (0: nothing waits).
+    pub fn draw_start(&self, id: u64) -> u64 {
+        self.surfaces.get(&id).map_or(0, |s| s.draw_start_ns)
+    }
+
+    /// When the next front may be dropped idle: the earliest quiet period's end among fronts with nothing waiting.
+    pub fn next_trim(&self) -> Option<u64> {
+        self.surfaces
+            .values()
+            .filter(|s| s.front.is_some() && s.damage.is_empty())
+            .map(|s| s.last_ns + IDLE_NS)
+            .min()
     }
 
     /// Write `p`'s patches into the fronts and merge it into what waits for its tree's commit.
     fn apply(&mut self, p: Packet, patches: &PatchPool) {
+        self.applied.insert(p.root, p.seq);
         let waiting = self
             .surfaces
             .values_mut()
@@ -250,7 +339,7 @@ impl Stage {
                 w || !s.damage.is_empty()
             });
         if waiting {
-            self.stats.superseded += 1;
+            Counters::add(&self.stats.superseded, 1);
         }
         let key = self.keys.entry(p.root).or_insert(0);
         if *key == 0 {
@@ -399,7 +488,7 @@ impl Stage {
         s.draw_start_ns = 0;
         s.damage_px = 0;
         s.painted_px = 0;
-        self.stats.commits += 1;
+        Counters::add(&self.stats.commits, 1);
     }
 
     /// Drop the fronts of surfaces with no publish for the pool's quiet period and nothing waiting; their windows.
@@ -411,7 +500,7 @@ impl Stage {
                 out.push(*id);
             }
         }
-        self.stats.front_trims += out.len() as u64;
+        Counters::add(&self.stats.front_trims, out.len() as u64);
         out
     }
 
@@ -421,18 +510,42 @@ impl Stage {
             self.composer.forget(s.glitnir_root);
         }
         self.keys.remove(&id);
+        self.applied.remove(&id);
     }
 }
 
 /// The publishing side of a display (the host's thread), and the presenter's stage while it runs inline.
-#[derive(Default)]
 pub struct Presenting {
-    pub stage: Stage,
+    /// The stage while presenting is inline; the presenter thread owns it while it runs.
+    pub stage: Option<Stage>,
+    /// The presenter thread; it hands the stage back when it stops (`None` after a panic).
+    pub thread: Option<std::thread::JoinHandle<Option<Stage>>>,
     /// The size of each surface's front as the last publish left it (absent: the next publish copies it whole).
     fronts: HashMap<u64, (i32, i32)>,
-    pub thread_on: bool,
+    pub stats: Arc<Counters>,
     /// Bytes the latest publish copied.
     pub copied: usize,
+}
+
+impl Presenting {
+    pub fn new(stats: Arc<Counters>) -> Presenting {
+        Presenting {
+            stage: Some(Stage::new(stats.clone())),
+            thread: None,
+            fronts: HashMap::new(),
+            stats,
+            copied: 0,
+        }
+    }
+
+    /// The presenter thread stopped and handed `stage` back (a fresh one after a panic: every front is then copied
+    /// whole again).
+    pub fn restage(&mut self, stage: Option<Stage>) {
+        if stage.is_none() {
+            self.fronts.clear();
+        }
+        self.stage = Some(stage.unwrap_or_else(|| Stage::new(self.stats.clone())));
+    }
 }
 
 /// Glitnir's damage of scene `g` clipped to a `w` x `h` surface, and the snapshot (none for a surface without a
@@ -500,6 +613,10 @@ impl WaylandShell {
             return Ok(false);
         }
         let mail = self.main.mailbox.clone();
+        let (gone, waited) = mail.begin_publish();
+        for id in gone {
+            self.presenting.fronts.remove(&id);
+        }
         let mut copied = 0;
         let mut parts = Vec::with_capacity(committed.len());
         for (f, (damage, scene)) in committed {
@@ -538,21 +655,24 @@ impl WaylandShell {
         }
         let seq = mail.next_seq();
         let t_publish_ns = now_ns();
-        let st = &mut self.presenting.stage.stats;
-        st.publish_copy_max_ns = st.publish_copy_max_ns.max(t_publish_ns - start);
-        let waited = mail.push(Packet {
+        let st = &self.presenting.stats;
+        Counters::max(&st.publish_copy_max_ns, t_publish_ns - start);
+        let pushed = mail.push(Packet {
             root,
             seq,
             t_key_ns,
             t_publish_ns,
             parts,
         });
-        let st = &mut self.presenting.stage.stats;
-        st.main_wait_max_ns = st.main_wait_max_ns.max(waited);
-        st.packets += 1;
+        Counters::max(&st.main_wait_max_ns, waited.max(pushed));
+        Counters::add(&st.packets, 1);
         self.presenting.copied = copied;
-        // no presenter thread runs yet: this thread applies what it published
-        self.presenting.stage.drain(&mail);
+        match self.presenting.stage.as_mut() {
+            // inline: this thread applies what it published
+            Some(stage) => stage.drain(&mail),
+            // the presenter applies it now, whether or not the tree may present yet
+            None => self.link.wake(),
+        }
         self.main.present_published(root, seq, damaged);
         Ok(true)
     }
@@ -564,22 +684,26 @@ impl WaylandShell {
     }
 
     pub(super) fn presenter_stats_impl(&self) -> NhShellPresenterStats {
-        NhShellPresenterStats {
-            thread_on: u32::from(self.presenting.thread_on),
-            ..self.presenting.stage.stats
-        }
+        self.presenting.stats.stats(self.link.on())
     }
 
-    /// Drop idle fronts; the next publish of those surfaces copies them whole.
+    /// Drop idle fronts (inline; the presenter thread trims its own); the next publish of those surfaces copies them
+    /// whole.
     pub(super) fn publish_trim(&mut self, now: u64) {
-        for id in self.presenting.stage.trim(now) {
-            self.presenting.fronts.remove(&id);
+        if let Some(stage) = self.presenting.stage.as_mut() {
+            self.main.mailbox.trim(|| stage.trim(now));
         }
     }
 
-    /// Window `id` is gone: its front and what waited for it go too.
+    /// Window `id` is gone: its front and what waited for it go too, after the packets published before.
     pub(super) fn publish_forget(&mut self, id: u64) {
-        self.presenting.stage.forget(id);
         self.presenting.fronts.remove(&id);
+        let mail = &self.main.mailbox;
+        let waited = mail.post(Mail::Forget(id));
+        Counters::max(&self.presenting.stats.main_wait_max_ns, waited);
+        match self.presenting.stage.as_mut() {
+            Some(stage) => stage.drain(mail),
+            None => self.link.wake(),
+        }
     }
 }
