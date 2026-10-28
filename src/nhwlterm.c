@@ -3276,6 +3276,38 @@ nhwl_reconnect_settle (struct nhwl_display_info *dpyinfo,
   return n;
 }
 
+/* The drag out of a frame that nhwl_drag_run waits for: what the glue's
+   NHG_ACT_DRAG_* actions said so far.  One drag runs at a time.  */
+static struct
+{
+  bool live, dropped, done;
+  int action;
+  struct frame *frame;
+} nhwl_drag;
+
+/* Apply the glue's drag-source action A (NHG_ACT_DRAG_*).  */
+static void
+nhwl_drag_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a)
+{
+  switch (a->kind)
+    {
+    case NHG_ACT_DRAG_ACTION:
+      nhwl_drag.live = true;
+      break;
+
+    case NHG_ACT_DRAG_DROPPED:
+      nhwl_drag.live = nhwl_drag.dropped = true;
+      break;
+
+    default:
+      nhwl_drag.done = true;
+      nhwl_drag.action = a->code;
+      nhwl_drag.frame = ((a->flags & NHG_DRAG_FRAME)
+			 ? nhwl_window_to_frame (dpyinfo, a->window) : NULL);
+      break;
+    }
+}
+
 /* Apply action A of the glue's event step, one whose kind is ported: the
    Emacs calls the glue's decision needs.  An action whose window maps to
    no frame is skipped.  Return the number of events stored (through
@@ -3348,6 +3380,12 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
       nhwl_selection_clear_event (a->code, &ie);
       kbd_buffer_store_event_hold (&ie, hold_quit);
       return 1;
+
+    case NHG_ACT_DRAG_ACTION:
+    case NHG_ACT_DRAG_DROPPED:
+    case NHG_ACT_DRAG_DONE:
+      nhwl_drag_apply (dpyinfo, a);
+      return 0;
     }
 
   f = a->window ? nhwl_window_to_frame (dpyinfo, a->window) : NULL;
@@ -3482,6 +3520,81 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
     nhshell_dispatch_main (dpyinfo->shell);
   unblock_input ();
   return count;
+}
+
+/* Give up the drag of DPYINFO (PTR) if the glue still runs it: the
+   unwind of nhwl_drag_run, on a quit, an error or its own end.  */
+static void
+nhwl_drag_unwind (void *ptr)
+{
+  struct nhwl_display_info *dpyinfo = ptr;
+
+  if (!dpyinfo->glue || dpyinfo->glue_broken)
+    return;
+  block_input ();
+  nhwl_glue_rc (dpyinfo, NHG (nhg_drag_cancel (dpyinfo->glue)));
+  unblock_input ();
+}
+
+/* Run the drag out of a frame of DPYINFO that the glue has just started
+   (x-begin-drag): a nested loop of drains, which present at FRAME_READY
+   and store every other event for after the loop, and waits of 100 ms
+   at most on the glue's descriptor.  It never prompts and never runs
+   Lisp.  It ends:
+   - at the glue's DONE;
+   - when the compositor showed nothing of the drag within TIMEOUT
+     seconds (it ignores a drag with a stale serial);
+   - when the target it was dropped on did not finish within TIMEOUT;
+   - at C-g, which gives the drag up and quits;
+   - when the display is lost (the glue's DONE comes first).
+   Return the action performed (NHG_DND_*; 0: none), and in *FRAME the
+   frame to return for RETURN-FRAME, else NULL.  */
+int
+nhwl_drag_run (struct nhwl_display_info *dpyinfo, double timeout,
+	       struct frame **frame)
+{
+  specpdl_ref count = SPECPDL_INDEX ();
+  struct timespec limit = dtotimespec (timeout);
+  struct timespec since = current_timespec ();
+  bool dropped = false;
+
+  memset (&nhwl_drag, 0, sizeof nhwl_drag);
+  *frame = NULL;
+  record_unwind_protect_ptr (nhwl_drag_unwind, dpyinfo);
+  for (;;)
+    {
+      struct input_event hold;
+      struct pollfd pfd;
+
+      EVENT_INIT (hold);
+      nhwl_drain_events (dpyinfo, &hold);
+      if (hold.kind != NO_EVENT)
+	Vquit_flag = Qt;
+      if (nhwl_drag.done || !NILP (Vquit_flag) || dpyinfo->connection_lost
+	  || dpyinfo->glue_broken || !dpyinfo->shell)
+	break;
+      /* The finish timeout counts from the drop.  */
+      if (nhwl_drag.dropped && !dropped)
+	{
+	  dropped = true;
+	  since = current_timespec ();
+	}
+      if ((dropped || !nhwl_drag.live)
+	  && timespec_cmp (timespec_sub (current_timespec (), since),
+			   limit) >= 0)
+	break;
+      pfd.fd = NHG (nhg_fd (dpyinfo->glue));
+      pfd.events = POLLIN;
+      pfd.revents = 0;
+      poll (&pfd, 1, 100);
+    }
+  /* Gives a drag the glue still runs up: no DONE follows.  */
+  unbind_to (count, Qnil);
+  maybe_quit ();
+  if (!nhwl_drag.done)
+    return 0;
+  *frame = nhwl_drag.frame;
+  return nhwl_drag.action;
 }
 
 /* The reports of the glue's panics, newest first, for
