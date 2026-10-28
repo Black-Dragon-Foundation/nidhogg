@@ -1,39 +1,46 @@
 #!/usr/bin/env bash
-# The shell's budgets: Nidhogg's own Wayland shell (A) against pgtk (B), built from the same
-# commit, each in its own headless sway inside a memory-capped container, one plist per row.
+# The shell's budgets: Nidhogg's own Wayland shell with the presenter thread (A) and with presenting inline (C), in its
+# own headless sway inside a memory-capped container, one plist per row, each judged on an absolute target.
 #
-#   nidhogg/test/budgets.sh --prefix-a SHELL --prefix-b PGTK [--compositor sway] [--scale S] [--size WxH] [--runs N]
+#   nidhogg/test/budgets.sh --prefix-a SHELL [--compositor sway] [--scale S] [--size WxH] [--runs N] [--refresh 120]
 #                           [--out FILE.eld] [--window SEC] [--resize-steps N] [--motion-frames N] [--motion-size WxH]
-#   nidhogg/test/budgets.sh --self-test --prefix-a SHELL --prefix-b PGTK [--out FILE.eld]
+#   nidhogg/test/budgets.sh --self-test --prefix-a SHELL [--out FILE.eld]
+#   nidhogg/test/budgets.sh --reference --prefix-a PGTK [--runs N] [--out FILE.eld]
 #
-#   --prefix-a / -b   unpacked Nidhogg builds: A with --nidhogg-wayland, B (pgtk) without
+#   --prefix-a        an unpacked Nidhogg build with --nidhogg-wayland.  Side C is the same prefix with NHWL_PRESENTER=0
+#   --reference       the pgtk reference run: --prefix-a is a pgtk build, only the idle, typing, scroll and resize
+#                     sessions run on it, and every row is :kind report.  Its cpu-scroll and pss-scroll at 1920x1080 x 1
+#                     are frozen into REF_CPU_SCROLL and REF_PSS_SCROLL below
 #   --scale, --size   the output of the row sessions (defaults 1, 1920x1080)
 #   --runs N          sessions per side; a row's value is the median over them (default 5)
 #   --window SEC      the idle, typing and scroll windows (default 60)
 #   --resize-steps N  `swaymsg resize' steps (default 200)
 #   --motion-frames N frames of the motion bench (default 600), on --motion-size (default 3840x2160) at scale 1.5 and
-#                     120 Hz; shell only (pgtk has no bench primitive)
+#                     120 Hz
 #   --refresh N       the speed sessions' sway output runs at N Hz (default 120; the scroll bar is a 120 Hz bar)
 #   --container fedora-45  accepted and ignored: the script always runs in its own container, and the slot wrappers
 #                     (drgnx-heavy-slot.sh) only start the command on the host, not inside a dev container, when they see this
 #   --out FILE        the plists, one per line (default budgets.eld in the current directory)
 #   --self-test       --runs 1, 1280x720, 3 s windows, 10 resize steps, 30 motion frames; then every line must read
-#                     back as a plist and none may be nil
+#                     back as a plist with :target, :kind and :verdict, none may be nil, and freeze-watchdog may not be
+#                     skipped
 #   BUDGETS_MEMORY    the container's memory cap (default 6g); BUDGETS_CPUSET pins it (podman --cpuset-cpus)
 #
 # The speed sessions (V2's three bars, C1, C4) run each side with WAYLAND_DEBUG=client and read the traces with
-# wl-latency.el, so A, B and C are measured alike: key-to-commit and frame intervals.  C is the shell with
-# NHWL_PRESENTER=0 (inline presenting) and only exists on a build with the presenter thread; on an older build the
-# rows that need it are :skipped.  Rows: typing-stall-max, typing-stall-p99, latency-typing, latency-typing-inline,
+# wl-latency.el: key-to-commit and frame intervals.  They also run the stall watchdog (threshold 100 ms) and count its
+# stalls over the typing and the scroll.  C only exists on a build with the presenter thread; on an older build the rows
+# that need it are skipped.  Rows: typing-stall-max, typing-stall-p99, latency-typing, latency-typing-inline,
 # scroll-120-dropped, scroll-120-dropped-inline, scroll-120-presenter-late, main-wait-max, freeze-watchdog,
-# cpu-typing-inline; cpu-scroll is fixed work (CPU seconds).  The -inline rows compare A with C (:c), the rest A with B.
+# cpu-typing-inline; cpu-scroll is fixed work (CPU seconds).  The -inline rows compare A with C (:c), the rest are judged
+# on the targets below.
 # The workload runs in the shell's own configuration (-Q); a config cell is the caller's to add.
 #
 # idle-wakeups-blink repeats the idle window with the cursor blinking, so redisplays run.
-# A row is (:row NAME :unit U :a (MEDIAN SD) :b (MEDIAN SD) :verdict pass|fail|equal), lower is better: pass when A is
-# not above B, equal when within the larger of 5 % or two SD of B (spec section 3), else fail.  A row that cannot be
-# measured here is (:row NAME :skipped "REASON" ...): never nil, never a made-up number.  The motion rows have no B and
-# their verdict is the absolute budget (compose p95 <= 8.33 ms; whole-system CPU under one core).
+# A row is (:row NAME :unit U :a (MEDIAN SD) [:c (MEDIAN SD)] :target T :kind gate|budget|report :source S
+#   :verdict pass|fail|report|skip), lower is better.  gate: a V2 section 1 bar; budget: a number the plans gave; report:
+#   no verdict.  A row that cannot be measured here is (:row NAME :skipped "REASON" ... :verdict skip): never nil, never
+#   a made-up number.  scroll-120-dropped carries :presenter-late and :main-late, the split of its late frames per 1000
+#   (the presenter-late row is the proxy, the rest the main thread's).
 # Exit 0 when the rows were produced (verdicts are the caller's to read), 1 when a session did not come up, 2 usage.
 set -u
 
@@ -43,11 +50,34 @@ checkout=$(cd "$(dirname "$self")/../.." && pwd)
 GUI_SH_SOURCE_ONLY=1; . "$(dirname "$self")/gui.sh"; GUI_SH_SOURCE_ONLY=
 self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")   # gui.sh set its own
 
-pa= pb= scale=1 size=1920x1080 runs=5 out=budgets.eld window=60 steps=200 mframes=600 msize=3840x2160 selftest=0 mode=host refresh=120 sscroll=10 fixed=2000 nh_env=() HAS_W3=0
+# ---------------------------------------------------------------- the targets, all in one place
+# The pgtk reference run's values (see --reference): empty until the gate fills them.  While empty the two rows are report.
+REF_CPU_SCROLL=${BUDGETS_REF_CPU_SCROLL:-}   # CPU s for the 2000 fixed scroll steps at 1920x1080 x 1
+REF_PSS_SCROLL=${BUDGETS_REF_PSS_SCROLL:-}   # kB after that work, at 1920x1080 x 1
+# ROW|TARGET|KIND|SOURCE|CELL (CELL: the only cell the target applies to; other cells are report).  Units are the rows':
+# ms, per 1000 frames, % of one core, kB (120 MB = 122880, 50 MB = 51200), counts.  A row not listed is report.
+TARGETS="typing-stall-max|16|gate|V2 section 1 line 26: typing never stalls longer than ~16 ms
+latency-typing|16|gate|V2 section 1 line 26 (key to commit p95)
+scroll-120-presenter-late|0|gate|V2 section 1 line 25: no dropped frame at 120 Hz, presenter misses only
+freeze-watchdog|0|gate|V2 section 1 lines 27 and 61: no freeze over 100 ms (stalls the watchdog counted)
+typing-stall-p99|8.33|report|W3 budgets table; not a V2 bar
+main-wait-max|1|budget|W3
+idle-wakeups-threads|0|budget|shells section 3: no wake-ups from the shell's threads
+motion-compose-p95|8.33|budget|shells section 3, W3
+motion-interval-p95|9.2|budget|shells section 3, W3
+motion-cores|1|budget|W3: under one core
+resize-stuck|0|budget|shells section 3: no stuck resize
+pss-compositor|51200|budget|shells section 3: the test compositor at 50 MB
+pss-idle|122880|budget|W0 gate 2026-10-27 (pgtk), 120 MB|1920x1080@1
+cpu-typing|8.59|budget|W0 gate 2026-10-27 (pgtk)|1920x1080@1
+cpu-scroll|$REF_CPU_SCROLL|budget|pgtk reference run|1920x1080@1
+pss-scroll|$REF_PSS_SCROLL|budget|pgtk reference run|1920x1080@1"
+
+pa= scale=1 size=1920x1080 runs=5 out=budgets.eld window=60 steps=200 mframes=600 msize=3840x2160 selftest=0 mode=host refresh=120 sscroll=10 fixed=2000 nh_env=() HAS_W3=0 reference=0
 while [ $# -gt 0 ]; do
   case $1 in
     --prefix-a) pa=${2:-}; shift 2 ;;
-    --prefix-b) pb=${2:-}; shift 2 ;;
+    --reference) reference=1; shift ;;
     --compositor) [ "${2:-}" = sway ] || { echo "budgets.sh: only --compositor sway" >&2; exit 2; }; shift 2 ;;
     --scale) scale=${2:-}; shift 2 ;;
     --size) size=${2:-}; shift 2 ;;
@@ -68,31 +98,33 @@ while [ $# -gt 0 ]; do
 done
 if [ "$selftest" = 1 ]; then runs=1 size=1280x720 window=3 steps=10 mframes=30 msize=1280x720 sscroll=2 fixed=100; fi
 case $refresh in ''|*[!0-9]*) echo "budgets.sh: --refresh is a whole number of Hz" >&2; exit 2 ;; esac
-[ -x "$pa/bin/nidhogg" ] && [ -x "$pb/bin/nidhogg" ] || { echo "budgets.sh: --prefix-a and --prefix-b must be unpacked Nidhoggs" >&2; exit 2; }
+[ -x "$pa/bin/nidhogg" ] || { echo "budgets.sh: --prefix-a must be an unpacked Nidhogg" >&2; exit 2; }
+[ "$reference$selftest" != 11 ] || { echo "budgets.sh: --reference and --self-test do not combine" >&2; exit 2; }
 case $size$msize in *x*x*) ;; *) echo "budgets.sh: sizes are WxH" >&2; exit 2 ;; esac
-sargs=(--prefix-a "$pa" --prefix-b "$pb" --scale "$scale" --size "$size" --runs "$runs" --window "$window"
+sargs=(--prefix-a "$pa" --scale "$scale" --size "$size" --runs "$runs" --window "$window"
        --resize-steps "$steps" --motion-frames "$mframes" --motion-size "$msize" --refresh "$refresh")
+[ "$reference" = 0 ] || sargs+=(--reference)
 
 # ---------------------------------------------------------------- on the host: the container
 if [ "$mode" = host ]; then
   command -v podman > /dev/null || { echo "budgets.sh: podman not found" >&2; exit 1; }
   outdir=$(cd "$(dirname "$out")" && pwd) && outfile=$(basename "$out")
-  # a tarball runs at the prefix it was built for (BUILDINFO), so each is mounted there
+  # a tarball runs at the prefix it was built for (BUILDINFO), so it is mounted there
   inpa=$(sed -n 's/^prefix=//p' "$pa/share/nidhogg/BUILDINFO" 2>/dev/null); [ -n "$inpa" ] || inpa=$(cd "$pa" && pwd)
-  inpb=$(sed -n 's/^prefix=//p' "$pb/share/nidhogg/BUILDINFO" 2>/dev/null); [ -n "$inpb" ] || inpb=$(cd "$pb" && pwd)
-  pa=$(cd "$pa" && pwd) pb=$(cd "$pb" && pwd)
-  sargs=(--prefix-a "$inpa" --prefix-b "$inpb" --scale "$scale" --size "$size" --runs "$runs" --window "$window"
+  pa=$(cd "$pa" && pwd)
+  sargs=(--prefix-a "$inpa" --scale "$scale" --size "$size" --runs "$runs" --window "$window"
          --resize-steps "$steps" --motion-frames "$mframes" --motion-size "$msize" --refresh "$refresh" --out "/out/$outfile")
   [ "$selftest" = 0 ] || sargs+=(--self-test)
+  [ "$reference" = 0 ] || sargs+=(--reference)
   name=budgets-$$
   trap 'podman rm -f "$name" > /dev/null 2>&1' EXIT
   trap 'exit 1' INT TERM
   # the same container recipe as gui.sh, plus wtype (the typing) and procps
   podman run --rm --name "$name" --memory "${BUDGETS_MEMORY:-6g}" --memory-swap "${BUDGETS_MEMORY:-6g}" \
     ${BUDGETS_CPUSET:+--cpuset-cpus "$BUDGETS_CPUSET"} \
-    -v "$checkout:/src:ro,z" -v "$pa:$inpa:ro,z" -v "$pb:$inpb:ro,z" -v "$outdir:/out:Z" "$IMAGE_fedora_45" bash -c '
+    -v "$checkout:/src:ro,z" -v "$pa:$inpa:ro,z" -v "$outdir:/out:Z" "$IMAGE_fedora_45" bash -c '
       set -eu
-      pkgs=$(cat "'"$inpa"'/share/nidhogg/deps.runtime" "'"$inpb"'/share/nidhogg/deps.runtime" 2>/dev/null | sed "s/#.*//" || true)
+      pkgs=$(cat "'"$inpa"'/share/nidhogg/deps.runtime" 2>/dev/null | sed "s/#.*//" || true)
       dnf -y -q --setopt=install_weak_deps=False install sway wtype pixman libxkbcommon libcap dbus-daemon \
         mesa-dri-drivers mesa-libEGL mesa-libgbm dejavu-sans-mono-fonts procps-ng util-linux \
         $pkgs > /tmp/dnf.log 2>&1 || { cat /tmp/dnf.log; exit 1; }
@@ -114,21 +146,26 @@ if [ "$mode" = container ]; then
     dbus-run-session -- bash "$self" --session "${sargs[@]}" --out "$out" $([ "$selftest" = 0 ] || echo --self-test)
   rc=$?
   if [ "$rc" = 0 ] && [ "$selftest" = 1 ]; then
-    # every line reads back as a plist with a verdict or a skip, and none is nil
+    # every line reads back as a plist with :target, :kind and :verdict, none is nil, and the freeze row is measured
     HOME="$run/home" "$pa/bin/nidhogg" -Q --batch --eval '(with-temp-buffer
       (insert-file-contents (car command-line-args-left)) (goto-char (point-min))
       (let ((n 0) (blink nil) (seen nil))
         (while (progn (skip-chars-forward " \n\t") (not (eobp)))
           (let ((r (read (current-buffer))))
             (unless (and (consp r) (eq (car r) :row) (symbolp (cadr r)) (cadr r)
-                         (or (plist-get r :skipped) (plist-get r :verdict)))
+                         (plist-member r :target) (memq (plist-get r :kind) (quote (gate budget report)))
+                         (memq (plist-get r :verdict) (quote (pass fail report skip)))
+                         (or (plist-get r :skipped) (plist-get r :a)))
               (error "bad row: %S" r))
+            (when (and (eq (cadr r) (quote freeze-watchdog)) (plist-get r :skipped))
+              (error "freeze-watchdog skipped: %S" r))
             (when (eq (cadr r) (quote idle-wakeups-blink)) (setq blink t))
             (push (cadr r) seen)
             (setq n (1+ n))))
         (unless blink (error "no idle-wakeups-blink row"))
         (dolist (want (quote (typing-stall-max typing-stall-p99 latency-typing scroll-120-dropped
-                              scroll-120-presenter-late main-wait-max cpu-scroll latency-typing-inline)))
+                              scroll-120-presenter-late main-wait-max cpu-scroll latency-typing-inline
+                              freeze-watchdog pss-compositor)))
           (unless (memq want seen) (error "no %s row" want)))
         (when (< n 10) (error "only %d rows" n))
         (princ (format "budgets self-test: %d rows read back\n" n))))' "$out" || rc=1
@@ -244,6 +281,7 @@ measure() {
   rate "$side" idle-wakeups-threads 6 "$s1" "$s2"
   win "$side" idle "$s1" "$s2"
   rec pss-idle "$side" "$(pss)"
+  rec pss-compositor "$side" "$(awk '/^Pss:/ {s += $2} END {print s + 0}' "/proc/$mpid/smaps_rollup")"
 
   # idle with the timers on: the cursor blinks (0.1 s), so redisplays run; one that draws nothing must cost nothing
   cl '(progn (setq blink-cursor-interval 0.1 blink-cursor-delay 0) (blink-cursor-mode 1) t)' > /dev/null
@@ -356,12 +394,17 @@ rep() { "$prefix/bin/nidhogg" -Q --batch -l "$checkout/nidhogg/test/wl-latency.e
 # speed SIDE PFX: one session with WAYLAND_DEBUG=client: typing, then 120 Hz scrolling of a fontified src/xdisp.c.  Side
 # C is the shell with the presenter thread off; it records only the -inline rows, side A their A halves.
 speed() {
-  local side=$1 pfx=$2 o1 o2 r period sfx="" v mw pl
+  local side=$1 pfx=$2 o1 o2 r period sfx="" v mw pl wd st1=0 st2=0
   period=$(awk -v hz="$refresh" 'BEGIN { printf "%.4f", 1000 / hz }')
   nh_env=(WAYLAND_DEBUG=client); [ "$side" != C ] || nh_env+=(NHWL_PRESENTER=0)
   start_sway "$size" "$scale" "$refresh" && start_nidhogg "$pfx" || { nh_env=(); return 1; }
   nh_env=()
   [ "$side" != C ] || sfx=-inline
+  # the stall watchdog (V2's freeze bar): threshold 100 ms, its log in the run directory; the counters start at zero
+  wd=$(cl "(if (fboundp 'nidhogg-watchdog-mode)
+             (progn (setq nidhogg-watchdog-log-directory \"$run/wd/\" nidhogg-watchdog-threshold 100)
+                    (nidhogg-watchdog-mode 1) (nidhogg-watchdog-stats t) (format \"%s\" (and nidhogg-watchdog-mode t)))
+           \"none\")" | tr -d '" ')
   # typing: key to commit, from the trace, the first 5 keys dropped
   o1=$(stat -c %s "$run/nh.err")
   if do_typing; then
@@ -381,13 +424,22 @@ speed() {
   else
     for rr in typing-stall-max typing-stall-p99 latency-typing; do rec "$rr" "$side" "SKIP wtype did not reach the frame (exit $twrc)"; done
   fi
+  [ "$wd" != t ] || st1=$(cl '(format "%s" (plist-get (nidhogg-watchdog-stats t) :stalls))' | tr -d '" ')
   # scroll: 120 steps a second for sscroll seconds, intervals between damaged commits from the trace
   cl "(budgets--show \"$checkout/src/xdisp.c\")" > /dev/null
   sleep 1
+  [ "$wd" != t ] || cl '(progn (nidhogg-watchdog-stats t) t)' > /dev/null   # fontifying the file is setup, not scrolling
   [ "$HAS_W3$side" != 1A ] || cl '(progn (glitnir-stats nil t) t)' > /dev/null
   o1=$(stat -c %s "$run/nh.err")
   cl "(budgets--scroll-paced $sscroll $refresh)" > /dev/null
   o2=$(stat -c %s "$run/nh.err")
+  if [ "$wd" = t ]; then
+    st2=$(cl '(format "%s" (plist-get (nidhogg-watchdog-stats t) :stalls))' | tr -d '" ')
+    case $st1$st2 in
+      ''|*[!0-9]*) rec freeze-watchdog "$side" "SKIP the watchdog counters did not read back ($st1 $st2)" ;;
+      *) rec freeze-watchdog "$side" "$((st1 + st2))" ;;
+    esac
+  else rec freeze-watchdog "$side" "SKIP this build has no nidhogg-watchdog-mode ($wd)"; fi
   r=$(rep scroll "$o1" "$o2" 0 "$period")
   case $r in
     "(:frames "*)
@@ -457,23 +509,18 @@ awk 'BEGIN { for (i = 1; i <= 10000; i++) printf "line %05d the quick brown fox 
 
 # the presenter thread (and so side C, and the rows that read its numbers) exists only on a build that has its stats
 [ "$("$pa/bin/nidhogg" -Q --batch --eval '(princ (if (fboundp (quote nhwl-presenter-stats)) 1 0))' 2> /dev/null)" != 1 ] || HAS_W3=1
-if [ "$HAS_W3" = 0 ]; then
+if [ "$HAS_W3" = 0 ] && [ "$reference" = 0 ]; then
   for rr in latency-typing-inline scroll-120-dropped-inline cpu-typing-inline scroll-120-presenter-late main-wait-max; do
     rec "$rr" A "SKIP needs the presenter thread (W3 Task 8): this build has no nhwl-presenter-stats"
   done
 fi
-rec freeze-watchdog A "SKIP the freeze watchdog is not in the shell build"
 
 for ((ri = 1; ri <= runs; ri++)); do
-  # alternate which side goes first, so a drifting machine does not favour one (ABBA; ACCA for the inline rows)
-  if [ $((ri % 2)) = 1 ]; then order="A B"; else order="B A"; fi
-  for side in $order; do
-    if [ "$side" = A ]; then p=$pa; else p=$pb; fi
-    measure "$side" "$p" || { echo "budgets.sh: the $side session failed"; exit 1; }
-    if [ "$side" = A ]; then p=$pa; else p=$pb; fi   # stop_all's loop variable is this one
-    speed "$side" "$p" || { echo "budgets.sh: the $side speed session failed"; exit 1; }
-  done
+  measure A "$pa" || { echo "budgets.sh: the A session failed"; exit 1; }
+  [ "$reference" = 0 ] || continue   # the pgtk reference run: the idle, typing, scroll and resize sessions only
+  speed A "$pa" || { echo "budgets.sh: the A speed session failed"; exit 1; }
   if [ "$HAS_W3" = 1 ]; then
+    # alternate which of A and C goes first, so a drifting machine does not favour one
     if [ $((ri % 2)) = 1 ]; then order="A C"; else order="C A"; fi
     for side in $order; do
       cputype "$side" "$pa" || { echo "budgets.sh: the $side typing session failed"; exit 1; }
@@ -483,8 +530,8 @@ for ((ri = 1; ri <= runs; ri++)); do
   motion || { echo "budgets.sh: the motion session failed"; exit 1; }
 done
 
-# ---- aggregate: median and SD per row and side, then the verdict
-awk -F'|' -v cell="${size}@${scale}" '
+# ---- aggregate: median and SD per row and side, then the verdict against the row's target
+TBL=$TARGETS awk -F'|' -v cell="${size}@${scale}" -v ref="$reference" '
   function med(row, side,   n, i, j, t, v) {
     n = cnt[row, side]
     for (i = 1; i <= n; i++) v[i] = val[row, side, i]
@@ -497,8 +544,18 @@ awk -F'|' -v cell="${size}@${scale}" '
     for (i = 1; i <= n; i++) s += (val[row, side, i] - m) ^ 2
     return sqrt(s / (n - 1))
   }
-  function fmt(x) { return sprintf("%.4g", x) }
+  function fmt(x) { return sprintf("%.6g", x) }
   function pair(row, side) { return "(" fmt(med(row, side)) " " fmt(sd(row, side)) ")" }
+  function quote(s) { gsub(/"/, "\047", s); return "\"" s "\"" }
+  # TARGETS: ROW|TARGET|KIND|SOURCE[|CELL]
+  function load(   n, i, f, L) {
+    n = split(ENVIRON["TBL"], L, "\n")
+    for (i = 1; i <= n; i++) {
+      if (L[i] == "") continue
+      split(L[i], f, "|")
+      tg[f[1]] = f[2]; kd[f[1]] = f[3]; sc[f[1]] = f[4]; tc[f[1]] = f[5]
+    }
+  }
   {
     row = $1; side = $2; v = $3
     if (!(row in seen)) { seen[row] = 1; order[++nrows] = row }
@@ -506,55 +563,53 @@ awk -F'|' -v cell="${size}@${scale}" '
     cnt[row, side]++; val[row, side, cnt[row, side]] = v + 0
   }
   END {
+    load()
     unit["idle-wakeups"] = "switches/s"; unit["idle-wakeups-blink"] = "switches/s (cursor blinking, 0.1 s)"; unit["idle-wakeups-threads"] = "switches/s (all but the main thread)"
     unit["pixels-per-char"] = "device px"; unit["resize-stuck"] = "steps"
     unit["latency-typing"] = "ms p95 (WAYLAND_DEBUG trace)"; unit["latency-typing-inline"] = "ms p95 (A thread, C inline)"
-    unit["latency-typing-stats"] = "ms p95 (glitnir-stats, shell only)"
+    unit["latency-typing-stats"] = "ms p95 (glitnir-stats)"
     unit["typing-stall-max"] = "ms (key to commit)"; unit["typing-stall-p99"] = "ms (key to commit)"
     unit["scroll-120-dropped"] = "late frames per 1000"; unit["scroll-120-dropped-inline"] = "late frames per 1000 (A thread, C inline)"
     unit["scroll-120-presenter-late"] = "late frames per 1000, presenter at fault"; unit["main-wait-max"] = "ms"
-    unit["cpu-scroll"] = "CPU s, fixed work"; unit["power-scroll"] = "J, fixed work"; unit["freeze-watchdog"] = "-"
+    unit["cpu-scroll"] = "CPU s, fixed work"; unit["power-scroll"] = "J, fixed work"; unit["freeze-watchdog"] = "stalls over 100 ms"
     unit["cpu-typing-inline"] = "% of one core (A thread, C inline)"
-    # absolute budgets: the speed bars (V2 section 1) and the motion bench
-    bud["motion-compose-p95"] = 8.33; bud["motion-cores"] = 1; bud["motion-interval-p95"] = 9.2
-    bud["scroll-120-presenter-late"] = 0; bud["main-wait-max"] = 1
-    absb["typing-stall-max"] = 16; absb["typing-stall-p99"] = 8.33
-    unit["motion-compose-p95"] = "ms"; unit["motion-interval-p95"] = "ms"
-    unit["motion-cores"] = "cores"
+    unit["motion-compose-p95"] = "ms"; unit["motion-interval-p95"] = "ms"; unit["motion-cores"] = "cores"
     for (k = 1; k <= nrows; k++) {
       row = order[k]; u = unit[row]
       if (u == "") u = (row ~ /^cpu-/) ? "% of one core" : (row ~ /^power-/) ? "W" : (row ~ /^pss-/) ? "kB" : "-"
-      line = "(:row " row " :unit \"" u "\""
+      # the target: a row judged at one cell only is report elsewhere; a budget with no value yet is report; -inline rows
+      # compare the shell with itself (A against C); the reference run judges nothing
+      kind = (row in kd) ? kd[row] : "report"; target = tg[row]; source = sc[row]
+      if (tc[row] != "" && tc[row] != cell) { kind = "report"; target = ""; source = source " (judged at " tc[row] " only)" }
+      if (kind == "budget" && target == "") kind = "report"
+      if (row ~ /-inline$/) { kind = cnt[row, "C"] ? "budget" : "report"; source = "A <= C: the shell against itself"; target = cnt[row, "C"] ? med(row, "C") : "" }
+      if (ref) { kind = "report"; target = "" }
+      if (kind == "report") target = ""
+      line = "(:row " row " :unit " quote(u)
       if (skip[row]) {
         reason = ""
         if ((row, "A") in why) reason = "A: " why[row, "A"]
-        if ((row, "B") in why) reason = reason (reason == "" ? "" : "; ") "B: " why[row, "B"]
         if ((row, "C") in why) reason = reason (reason == "" ? "" : "; ") "C: " why[row, "C"]
-        gsub(/"/, "\047", reason)
-        line = line " :skipped \"" reason "\""
+        line = line " :skipped " quote(reason)
         if (cnt[row, "A"]) line = line " :a " pair(row, "A")
-        if (cnt[row, "B"]) line = line " :b " pair(row, "B")
         if (cnt[row, "C"]) line = line " :c " pair(row, "C")
-        print line ")"; continue
+        print line " :target " (target == "" ? "nil" : target) " :kind " kind " :source " quote(source) " :verdict skip)"; continue
       }
-      if (row ~ /^(typing-stall|latency-typing|scroll-120|main-wait|cpu-typing-inline)/) line = line " :cell \"" cell "\""
-      if (row ~ /^motion-/ || row in bud) {
-        line = line " :a " pair(row, "A")
-        budget = (row in bud) ? bud[row] : -1
-        if (budget < 0) verdict = "info"
-        else verdict = (med(row, "A") <= budget) ? "pass" : "fail"
-        print line " :budget " (budget < 0 ? "nil" : budget) " :verdict " verdict ")"; continue
+      if (row ~ /^(typing-stall|latency-typing|scroll-120|main-wait|cpu-typing-inline)/) line = line " :cell " quote(cell)
+      a = med(row, "A")
+      line = line " :a " pair(row, "A")
+      if (cnt[row, "C"]) line = line " :c " pair(row, "C")
+      if (row == "scroll-120-dropped") {
+        # the late frames per 1000 split: the presenter-late row is the proxy for the presenter, the rest is the main thread
+        pl = cnt["scroll-120-presenter-late", "A"] ? med("scroll-120-presenter-late", "A") : -1
+        if (pl >= 0) line = line " :presenter-late " fmt(pl) " :main-late " fmt(a > pl ? a - pl : 0)
       }
-      # the -inline rows compare A (the thread) with C (inline), the others A with B
-      cmp = (row ~ /-inline$/) ? "C" : "B"
-      a = med(row, "A"); b = med(row, cmp)
-      tol = 0.05 * b; t2 = 2 * (sd(row, "A") > sd(row, cmp) ? sd(row, "A") : sd(row, cmp)); if (t2 > tol) tol = t2
-      verdict = (a <= b) ? "pass" : (a - b <= tol) ? "equal" : "fail"
-      extra = ""
-      if (row in absb) { extra = " :budget " absb[row]; if (a > absb[row]) verdict = "fail" }
-      # the reported (not gating) target: no dropped frame at 1080p x 1
-      if (row == "scroll-120-dropped" && cell == "1920x1080@1") extra = extra " :target0 \"" ((a == 0) ? "met" : "missed") "\""
-      print line " :a " pair(row, "A") " :" tolower(cmp) " " pair(row, cmp) extra " :verdict " verdict ")"
+      if (kind == "report") verdict = "report"
+      else if (row ~ /-inline$/) {
+        b = med(row, "C"); tol = 0.05 * b; t2 = 2 * (sd(row, "A") > sd(row, "C") ? sd(row, "A") : sd(row, "C")); if (t2 > tol) tol = t2
+        verdict = (a - b <= tol) ? "pass" : "fail"
+      } else verdict = (a <= target) ? "pass" : "fail"
+      print line " :target " (target == "" ? "nil" : target) " :kind " kind " :source " quote(source) " :verdict " verdict ")"
     }
   }' "$raw" > "$out"
 cat "$out"

@@ -1,7 +1,7 @@
 ;;; wl-latency.el --- key-to-commit latency and frame intervals from a WAYLAND_DEBUG=client trace  -*- lexical-binding: t -*-
 
-;; budgets.sh measures the shell (A, C) and pgtk (B) alike: both clients run with WAYLAND_DEBUG=client, and this file
-;; reads the same events on each side at the trace's microsecond resolution.
+;; budgets.sh measures the shell with the presenter thread (A) and without (C) alike: both clients run with
+;; WAYLAND_DEBUG=client, and this file reads the same events on each side at the trace's microsecond resolution.
 ;;
 ;;   key-to-commit  the dispatch of `wl_keyboard.key' (pressed) -> the next `wl_surface.commit' on the toplevel tree
 ;;                  (an xdg_toplevel's surface and its subsurfaces) that carries damage
