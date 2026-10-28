@@ -2,9 +2,17 @@
 
 mod abi {
     use nhglue::abi::*;
+    use nhglue::backing::{
+        NHG_GEOM_FRESH, NHG_GEOM_LAYER_CHANGED, NhgBacking, NhgFrameGeom, NhgPending, NhgRect,
+    };
     use nhglue::ffi::{NhgDisplay, nhg_abi_version, nhg_close, nhg_fd, nhg_open, nhg_shell};
+    use nhglue::ffi::{
+        nhg_alpha_multiply, nhg_backing, nhg_backing_forget, nhg_commit, nhg_damage,
+        nhg_damage_all, nhg_layer_ensure, nhg_pending, nhg_presented, nhg_scroll, nhg_snapshot,
+    };
     use nhshell::ffi::NhShell;
     use std::ffi::c_char;
+    use std::mem::offset_of;
     use std::process::Command;
 
     /// Compile a probe that includes `nhglue.h` and prints each of `exprs` as a signed integer; return the values.
@@ -70,6 +78,41 @@ mod abi {
             ("NHSHELL_E_NOMEM", NHG_E_NOMEM.into()),
             ("NHSHELL_E_TIMEOUT", NHG_E_TIMEOUT.into()),
             ("NHSHELL_E_TOO_SMALL", NHG_E_TOO_SMALL.into()),
+            // backings, damage and scroll
+            ("NHG_GEOM_LAYER_CHANGED", NHG_GEOM_LAYER_CHANGED.into()),
+            ("NHG_GEOM_FRESH", NHG_GEOM_FRESH.into()),
+            ("sizeof (NhgRect)", size_of::<NhgRect>() as i64),
+            ("sizeof (GlitnirRect)", size_of::<NhgRect>() as i64),
+            ("offsetof (NhgRect, h)", offset_of!(NhgRect, h) as i64),
+            ("sizeof (NhgFrameGeom)", size_of::<NhgFrameGeom>() as i64),
+            (
+                "offsetof (NhgFrameGeom, b)",
+                offset_of!(NhgFrameGeom, b) as i64,
+            ),
+            (
+                "offsetof (NhgFrameGeom, bg_argb)",
+                offset_of!(NhgFrameGeom, bg_argb) as i64,
+            ),
+            (
+                "offsetof (NhgFrameGeom, flags)",
+                offset_of!(NhgFrameGeom, flags) as i64,
+            ),
+            (
+                "offsetof (NhgFrameGeom, layer)",
+                offset_of!(NhgFrameGeom, layer) as i64,
+            ),
+            ("sizeof (NhgBacking)", size_of::<NhgBacking>() as i64),
+            ("offsetof (NhgBacking, h)", offset_of!(NhgBacking, h) as i64),
+            (
+                "offsetof (NhgBacking, gen)",
+                offset_of!(NhgBacking, generation) as i64,
+            ),
+            ("sizeof (NhgPending)", size_of::<NhgPending>() as i64),
+            ("offsetof (NhgPending, n)", offset_of!(NhgPending, n) as i64),
+            (
+                "offsetof (NhgPending, damage_px)",
+                offset_of!(NhgPending, damage_px) as i64,
+            ),
         ];
         // the prototypes, C side (checked at compile time: the probe references no function, so it links alone)
         let decls = "\
@@ -78,7 +121,18 @@ PROTO (nhg_abi_version, int32_t (uint32_t *));
 PROTO (nhg_open, NhgDisplay *(const char *, char *, size_t));
 PROTO (nhg_close, int32_t (NhgDisplay *));
 PROTO (nhg_fd, int32_t (NhgDisplay *));
-PROTO (nhg_shell, NhShell *(NhgDisplay *));";
+PROTO (nhg_shell, NhShell *(NhgDisplay *));
+PROTO (nhg_layer_ensure, int32_t (NhgDisplay *, uint64_t *, const NhgFrameGeom *));
+PROTO (nhg_backing, int32_t (NhgDisplay *, uint64_t, const NhgFrameGeom *, NhgBacking *));
+PROTO (nhg_damage, int32_t (NhgDisplay *, uint64_t, const NhgRect *, size_t));
+PROTO (nhg_damage_all, int32_t (NhgDisplay *, uint64_t));
+PROTO (nhg_scroll, int32_t (NhgDisplay *, uint64_t, uint64_t, NhgRect, int32_t));
+PROTO (nhg_commit, int32_t (NhgDisplay *, uint64_t));
+PROTO (nhg_pending, int32_t (NhgDisplay *, uint64_t, NhgPending *));
+PROTO (nhg_presented, int32_t (NhgDisplay *, uint64_t));
+PROTO (nhg_snapshot, int32_t (NhgDisplay *, uint64_t, NhgBacking *));
+PROTO (nhg_backing_forget, int32_t (NhgDisplay *, uint64_t));
+PROTO (nhg_alpha_multiply, int32_t (NhgDisplay *, uint8_t *, int32_t, int32_t, int32_t, uint32_t));";
         // the same table, Rust side
         let _: unsafe extern "C" fn(*mut u32) -> i32 = nhg_abi_version;
         let _: unsafe extern "C" fn(*const c_char, *mut c_char, usize) -> *mut NhgDisplay =
@@ -86,6 +140,26 @@ PROTO (nhg_shell, NhShell *(NhgDisplay *));";
         let _: unsafe extern "C" fn(*mut NhgDisplay) -> i32 = nhg_close;
         let _: unsafe extern "C" fn(*mut NhgDisplay) -> i32 = nhg_fd;
         let _: unsafe extern "C" fn(*mut NhgDisplay) -> *mut NhShell = nhg_shell;
+        // backings, damage and scroll
+        let _: unsafe extern "C" fn(*mut NhgDisplay, *mut u64, *const NhgFrameGeom) -> i32 =
+            nhg_layer_ensure;
+        let _: unsafe extern "C" fn(
+            *mut NhgDisplay,
+            u64,
+            *const NhgFrameGeom,
+            *mut NhgBacking,
+        ) -> i32 = nhg_backing;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *const NhgRect, usize) -> i32 =
+            nhg_damage;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_damage_all;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u64, NhgRect, i32) -> i32 = nhg_scroll;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_commit;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *mut NhgPending) -> i32 = nhg_pending;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_presented;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *mut NhgBacking) -> i32 = nhg_snapshot;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_backing_forget;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, *mut u8, i32, i32, i32, u32) -> i32 =
+            nhg_alpha_multiply;
 
         let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
         let got = probe(decls, &exprs);

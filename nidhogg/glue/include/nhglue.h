@@ -7,7 +7,9 @@
    code; a panic inside the glue is caught at the boundary and reported as NHG_E_PANIC.  libnhglue.a also carries every
    nhshell_* and glitnir_* symbol: it is the one Rust library Emacs links.
 
-   Pixels: none of the calls below reads or writes a backing's pixels.  */
+   Pixels: a frame's backing belongs to the glue, and C draws on it through a Cairo surface over the same memory
+   (cairo_image_surface_create_for_data).  C calls cairo_surface_flush before a call that "reads pixels" and
+   cairo_surface_mark_dirty after one that "writes pixels"; each call's comment says which, or neither.  */
 
 #ifndef NHGLUE_H
 #define NHGLUE_H
@@ -53,6 +55,78 @@ int32_t nhg_fd (NhgDisplay *d);
 
 /* The shell handle inside D, for the nhshell_* calls not yet ported; valid until nhg_close.  NULL if D is NULL.  */
 NhShell *nhg_shell (NhgDisplay *d);
+
+/* ---- Backings, damage and scroll ----------------------------------------------------------------------------------
+
+   FRAME is a frame's key: its Glitnir root id, which nhg_layer_ensure gives it (a shell window id is not stable for
+   a frame: popup, tip and child frames get a new window each time they are shown).  Rectangles are device pixels;
+   damage and scroll take them with the native area's origin, and the glue adds the border the last
+   nhg_layer_ensure was given.  */
+
+/* A rectangle in device pixels; empty when w <= 0 or h <= 0.  Layout equals GlitnirRect.  */
+typedef struct { int32_t x, y, w, h; } NhgRect;
+
+#define NHG_GEOM_LAYER_CHANGED  1   /* the layer's rectangle or chrome changed (a child frame's) */
+#define NHG_GEOM_FRESH          2   /* the backing starts over in BG_ARGB, keeping nothing */
+
+/* A frame's geometry as C reads it before a call.  The backing is the native area plus the border L, T, R, B (the
+   title strip and the margins), at least 1 x 1.  */
+typedef struct
+{
+  int32_t native_w, native_h;   /* the frame's pixel size */
+  int32_t l, t, r, b;
+  uint32_t bg_argb;             /* a fresh backing's colour, premultiplied ARGB as Cairo stores it */
+  uint32_t scale120;            /* the window's scale times 120 (0: 120) */
+  uint32_t flags;               /* NHG_GEOM_* */
+  NhgRect layer;                /* the Glitnir layer in the backing */
+} NhgFrameGeom;
+
+/* A backing's pixels, borrowed: ARGB32, STRIDE = 4 * W.  GEN counts the backing's creations.  */
+typedef struct { uint8_t *pixels; int32_t stride, w, h; uint64_t gen; } NhgBacking;
+
+/* A frame's damage committed but not yet presented, borrowed, and its area.  */
+typedef struct { const NhgRect *rects; size_t n; uint64_t damage_px; } NhgPending;
+
+/* Make the frame's Glitnir layer match G; *FRAME 0 gets a key and a scene.  1 when the layer was made or changed (the
+   frame is damaged whole and its pending damage dropped), 0 when it matched.  Neither reads nor writes pixels.  */
+int32_t nhg_layer_ensure (NhgDisplay *d, uint64_t *frame, const NhgFrameGeom *g);
+
+/* Make the frame's backing G's size and describe it in OUT.  A resize keeps the pixels where the old and new sizes
+   overlap and leaves the rest transparent; a new backing, or one with NHG_GEOM_FRESH, is all BG_ARGB.  OUT->pixels
+   stays valid until the next nhg_backing or nhg_backing_forget of the frame.  NHG_E_STATE before nhg_layer_ensure.
+   Reads and writes pixels.  */
+int32_t nhg_backing (NhgDisplay *d, uint64_t frame, const NhgFrameGeom *g, NhgBacking *out);
+
+/* Damage N rectangles of the frame (native-area origin).  Returns how many were not empty.  Neither.  */
+int32_t nhg_damage (NhgDisplay *d, uint64_t frame, const NhgRect *r, size_t n);
+
+/* Damage the whole frame, its border included.  Neither.  */
+int32_t nhg_damage_all (NhgDisplay *d, uint64_t frame);
+
+/* Emacs window W_SEQ's rows RUN (native-area origin: its columns, the run's first row and height) move to TO_Y in
+   the backing, and Glitnir damages the moved area and the rows it left stale.  Writes pixels.  */
+int32_t nhg_scroll (NhgDisplay *d, uint64_t frame, uint64_t w_seq, NhgRect run, int32_t to_y);
+
+/* Take Glitnir's committed damage for the frame into its pending list (past 32 rectangles the list collapses to its
+   bounding box).  Returns how many rectangles it took.  Neither.  */
+int32_t nhg_commit (NhgDisplay *d, uint64_t frame);
+
+/* The frame's pending damage in OUT, valid until the next call that changes it; none for an unknown frame.
+   Neither.  */
+int32_t nhg_pending (NhgDisplay *d, uint64_t frame, NhgPending *out);
+
+/* The frame's pending damage was presented: the list and its area start again.  Neither.  */
+int32_t nhg_presented (NhgDisplay *d, uint64_t frame);
+
+/* The frame's backing in OUT, borrowed until the next call on the frame.  NHG_E_STATE without one.  Reads pixels.  */
+int32_t nhg_snapshot (NhgDisplay *d, uint64_t frame, NhgBacking *out);
+
+/* The frame is gone: its Glitnir scene, damage and statistics, and its backing.  FRAME 0 is accepted.  Neither.  */
+int32_t nhg_backing_forget (NhgDisplay *d, uint64_t frame);
+
+/* Multiply every pixel of a W x H premultiplied ARGB32 buffer (rows STRIDE bytes apart, 4-byte aligned) by the alpha
+   1 - CUT / UINT32_MAX.  Writes the buffer's pixels (a shell buffer, not a backing).  */
+int32_t nhg_alpha_multiply (NhgDisplay *d, uint8_t *pixels, int32_t stride, int32_t w, int32_t h, uint32_t cut);
 
 #ifdef __cplusplus
 }

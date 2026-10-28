@@ -6,6 +6,7 @@
 //! binary would collide on std's symbols: it carries the shell's and Glitnir's C ABIs too, re-exported below.
 
 pub mod abi;
+pub mod backing;
 pub mod ffi;
 
 /// Glitnir's C ABI under another name, because this crate's own `ffi` shadows the glob below.
