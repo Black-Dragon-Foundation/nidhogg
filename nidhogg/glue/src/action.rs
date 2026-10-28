@@ -45,6 +45,14 @@ pub const NHG_ACT_DND_MOTION: u32 = 33;
 pub const NHG_ACT_DND_LEAVE: u32 = 34;
 pub const NHG_ACT_DND_DROP: u32 = 35;
 
+/// Our drag out of a frame (`x-begin-drag`, `dnd.rs`), numbered as the shell's source records; only while it runs.
+/// `DRAG_ACTION`: the compositor took the drag, or the action it chose with the target changed (`code`, 0: none).
+/// `DRAG_DROPPED`: dropped on another client's window, which has to finish it.  `DRAG_DONE`, once: the drag is over,
+/// `code` the action performed (0: none), and with `flags` `NHG_DRAG_FRAME` `window` the frame to return.
+pub const NHG_ACT_DRAG_ACTION: u32 = 36;
+pub const NHG_ACT_DRAG_DROPPED: u32 = 37;
+pub const NHG_ACT_DRAG_DONE: u32 = 38;
+
 /// `RESIZE` flags: fullscreen or maximized changed (C stores the frame's `fullscreen` parameter).
 pub const NHG_RESIZE_FULLSCREEN: u32 = 1;
 
