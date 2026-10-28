@@ -411,31 +411,6 @@ nhwl_set_cr_source_with_color (struct frame *f, unsigned long color,
     }
 }
 
-/* The frame has something to show: the window's pacer answers with
-   FRAME_READY when the frame may be presented.  */
-void
-nhwl_dirty (struct frame *f)
-{
-  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
-  struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
-
-  if (dpyinfo->shell && out->window)
-    nhshell_window_dirty (dpyinfo->shell, out->window);
-}
-
-/* Whether the tree of root F can be presented at all: F is shown and has
-   the size change_frame_size queued for the next redisplay (that redisplay
-   draws, and the backstop asks again).  The shell's ready bits gate the
-   rest, the compositor's first configure included.  */
-static bool
-nhwl_presentable (struct frame *f)
-{
-  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
-
-  return (FRAME_DISPLAY_INFO (f)->shell && out->window && FRAME_VISIBLE_P (f)
-	  && !f->new_size_p);
-}
-
 /* Whether C is a child frame of F with a window.  */
 static bool
 nhwl_child_of (struct frame *c, struct frame *f)
@@ -444,195 +419,158 @@ nhwl_child_of (struct frame *c, struct frame *f)
 	  && FRAME_NHWL_OUTPUT (c)->window);
 }
 
-/* Whether child frame C may show a buffer: shown, mapped, and at the size
-   its next redisplay draws.  A hidden child gets no buffer, which would map
-   it, and neither do the child frames under it.  */
+/* Whether F may show a buffer by itself: shown, at the size its next
+   redisplay draws (a size change_frame_size queued is drawn by that
+   redisplay, which publishes again), and for a child frame, mapped (a
+   buffer would map it).  The glue asks the same of every ancestor.  */
 static bool
-nhwl_child_drawable (struct frame *c)
+nhwl_frame_drawable (struct frame *f)
 {
-  return (FRAME_VISIBLE_P (c) && FRAME_NHWL_OUTPUT (c)->child.mapped
-	  && !c->new_size_p);
+  return (FRAME_VISIBLE_P (f) && !f->new_size_p
+	  && (!nhwl_child_p (f) || FRAME_NHWL_OUTPUT (f)->child.mapped));
 }
 
-/* Bring what F's window shows up to date with what was drawn: the backing's
-   size, the title strip, the child frame's position and input region, and
-   Glitnir's damage, which joins the pending list.  The same for the
-   drawable child frames under F.  */
+/* The surface list nhg_present takes, kept between publishes.  */
+static NhgSurface *nhwl_surfaces;
+static ptrdiff_t nhwl_nsurfaces, nhwl_surfaces_cap;
+
+/* List F's surface after its parent's (PARENT: the parent's window, 0 for
+   the root), then the child frames under it, lowest first, each followed by
+   its own.  When PREPARE and F may show a buffer, F is brought up to date
+   with what was drawn first: its backing's size, the title strip, a child
+   frame's position and input region, the window geometry (all of which go
+   with the tree's next commit), and its surface is flushed, because the
+   glue reads its pixels.  The child frames under an undrawable frame are
+   not prepared.  */
 static void
-nhwl_prepare (struct frame *f)
-{
-  Lisp_Object tail, frame;
-
-  nhwl_backing_resize (f);
-  nhwl_csd_draw (f);
-  nhwl_child_sync (f);
-  nhwl_glitnir_commit (f);
-  FOR_EACH_FRAME (tail, frame)
-    if (nhwl_child_of (XFRAME (frame), f)
-	&& nhwl_child_drawable (XFRAME (frame)))
-      nhwl_prepare (XFRAME (frame));
-}
-
-/* Whether F or a drawable child frame under it holds damage.  */
-static bool
-nhwl_tree_pending (struct frame *f)
-{
-  Lisp_Object tail, frame;
-  NhgPending p;
-
-  if (nhwl_pending (f, &p))
-    return true;
-  FOR_EACH_FRAME (tail, frame)
-    if (nhwl_child_of (XFRAME (frame), f)
-	&& nhwl_child_drawable (XFRAME (frame))
-	&& nhwl_tree_pending (XFRAME (frame)))
-      return true;
-  return false;
-}
-
-/* Show F's pending damage in a buffer; true when committed.  A failed
-   begin starves the window (the tree's pacer keeps the draw for the next
-   buffer release).  */
-static bool
-nhwl_present_buffer (struct frame *f)
+nhwl_surface_add (struct frame *f, uint64_t parent, bool prepare)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
-  NhShell *sh = FRAME_DISPLAY_INFO (f)->shell;
-  NhShellBuffer buf;
-  NhgPending p;
-  GlitnirRect damage[NHWL_PENDING_MAX];
-  size_t i, n;
-  bool shown;
-
-  if (!nhwl_pending (f, &p)
-      || nhshell_present_begin (sh, out->window, out->cr_width,
-				out->cr_height, &buf) < 0)
-    return false;
-  nhwl_glitnir_compose (f, &buf);
-  nhwl_csd_send_geometry (f);
-  n = nhwl_pending (f, &p);
-  for (i = 0; i < n; i++)
-    damage[i] = (GlitnirRect) { p.rects[i].x, p.rects[i].y, p.rects[i].w,
-				p.rects[i].h };
-  shown = nhshell_present_commit (sh, out->window, damage, n) >= 0;
-  if (shown)
-    nhwl_glitnir_presented (f);
-  else
-    nhwl_dirty (f);
-  return shown;
-}
-
-/* Whether the window of F owes a commit (for a child frame: its own
-   surface; the shell marks every ancestor of a child that committed).  */
-static bool
-nhwl_owed (struct frame *f)
-{
-  int ready = 0;
-
-  return (nhshell_window_ready (FRAME_DISPLAY_INFO (f)->shell,
-				FRAME_NHWL_OUTPUT (f)->window, &ready) >= 0
-	  && (ready & NHSHELL_READY_OWED));
-}
-
-/* Commit the child frames under F, deepest first (a sync child shows once
-   every ancestor has committed after it): each with a buffer when CONTENT
-   and it has damage, else a bare commit when it owes one.  */
-static void
-nhwl_present_children (struct frame *f, bool content)
-{
+  bool drawable = prepare && nhwl_frame_drawable (f);
   Lisp_Object tail, frame;
+  bool first = true;
+  int last = 0;
 
-  FOR_EACH_FRAME (tail, frame)
+  if (drawable)
     {
-      struct frame *c = XFRAME (frame);
-      bool draw;
+      nhwl_backing_resize (f);
+      nhwl_csd_draw (f);
+      nhwl_child_sync (f);
+      nhwl_csd_send_geometry (f);
+      nhwl_glitnir_ensure (f);
+      if (out->cr_surface)
+	cairo_surface_flush (out->cr_surface);
+    }
+#ifdef ENABLE_CHECKING
+  {
+    /* Emacs's values; the native size is the one C asked for.  */
+    struct frame *p = FRAME_PARENT_FRAME (f);
+    NhgFrameFacts facts
+      = { max (1, f->new_size_p ? f->new_width : FRAME_PIXEL_WIDTH (f)),
+	  max (1, f->new_size_p ? f->new_height : FRAME_PIXEL_HEIGHT (f)),
+	  FRAME_COLUMN_WIDTH (f), FRAME_LINE_HEIGHT (f),
+	  p && FRAME_NHWL_P (p) ? FRAME_NHWL_OUTPUT (p)->window : 0,
+	  ((FRAME_VISIBLE_P (f) ? NHG_FACT_VISIBLE : 0)
+	   | (FRAME_ICONIFIED_P (f) ? NHG_FACT_ICONIFIED : 0)
+	   | (out->csd.on ? NHG_FACT_CSD : 0)) };
 
-      if (!nhwl_child_of (c, f))
-	continue;
-      draw = content && nhwl_child_drawable (c);
-      nhwl_present_children (c, draw);
-      if (!(draw && nhwl_present_buffer (c)) && nhwl_owed (c))
-	nhshell_present_bare (FRAME_NHWL_SHELL (c),
-			      FRAME_NHWL_OUTPUT (c)->window);
+    nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		  NHG (nhg_debug_check_frame (FRAME_NHG (f), out->window,
+					      &facts)));
+  }
+#endif
+  if (nhwl_nsurfaces == nhwl_surfaces_cap)
+    nhwl_surfaces = xpalloc (nhwl_surfaces, &nhwl_surfaces_cap, 1, -1,
+			     sizeof *nhwl_surfaces);
+  nhwl_surfaces[nhwl_nsurfaces++]
+    = (NhgSurface) { out->window, parent, out->glitnir_id,
+		     ((drawable ? NHG_SURF_DRAWABLE : 0)
+		      | (out->alpha_host ? NHG_SURF_ALPHA_HOST : 0)),
+		     out->alpha_cut };
+
+  /* The child frames, a pass per stacking level, lowest first.  */
+  for (;;)
+    {
+      bool any = false;
+      int z = 0;
+
+      FOR_EACH_FRAME (tail, frame)
+	{
+	  struct frame *c = XFRAME (frame);
+	  int cz;
+
+	  if (!nhwl_child_of (c, f))
+	    continue;
+	  cz = FRAME_NHWL_OUTPUT (c)->child.z;
+	  if ((first || cz > last) && (!any || cz < z))
+	    z = cz, any = true;
+	}
+      if (!any)
+	break;
+      FOR_EACH_FRAME (tail, frame)
+	{
+	  struct frame *c = XFRAME (frame);
+
+	  if (nhwl_child_of (c, f) && FRAME_NHWL_OUTPUT (c)->child.z == z)
+	    nhwl_surface_add (c, out->window, drawable);
+	}
+      last = z, first = false;
     }
 }
 
-/* The pacer of F's tree (F, a top-level or tip frame, and the child frames
-   under it, sync subsurfaces) says FRAME_READY: the one place the tree
-   commits.  Buffers when something was drawn (pending damage) or a content
-   ack waits, and the pacer lets them go (a content ack with nothing drawn
-   shows the whole frame): the child frames first, deepest first, then the
-   root.  Else bare commits (no buffer, frame callback, feedback or stats)
-   where one is owed: a bare ack, or surface state.  Else nothing.  A
-   content ack never goes out bare: the shell holds it.  The root commits
-   last, bare when it drew nothing but owes one or a child committed (the
-   shell paces that commit when it shows a child's buffer).  Nothing is
-   decided while buffer flips are blocked (redisplay is drawing); the
-   unblocked hook asks again.  Return true when the root committed a
-   buffer.  */
-static bool
-nhwl_present_tree (struct frame *f)
-{
-  struct nhwl_output *out;
-  NhShell *sh = FRAME_DISPLAY_INFO (f)->shell;
-  int ready = 0;
-  bool content, shown = false;
-  NhgPending p;
-
-  f = nhwl_tree_root (f);
-  out = FRAME_NHWL_OUTPUT (f);
-  if (!nhwl_presentable (f))
-    return false;
-  if (redisplaying_p || buffer_flipping_blocked_p ())
-    {
-      out->ready_held = true;
-      return false;
-    }
-  out->ready_held = false;
-  if (nhshell_window_ready (sh, out->window, &ready) < 0 || !ready)
-    return false;
-
-  block_input ();
-  nhwl_prepare (f);
-  if ((ready & NHSHELL_READY_ACK) && !nhwl_pending (f, &p))
-    {
-      glitnir_damage_all (out->glitnir_id);
-      nhwl_glitnir_commit (f);
-    }
-  content = (ready & NHSHELL_READY_CONTENT) && nhwl_tree_pending (f);
-  nhwl_present_children (f, content);
-  if (content)
-    shown = nhwl_present_buffer (f);
-  if (!shown && nhwl_owed (f))
-    nhshell_present_bare (sh, out->window);
-  unblock_input ();
-  return shown;
-}
-
-/* After a redisplay, or a draw outside one: wake the pacer of F's tree when
-   Glitnir holds damage for a frame of it, or when a FRAME_READY came while
-   buffer flips were blocked.  A redisplay that drew nothing anywhere in the
-   tree wakes nothing, and a key read before it (one that drew nothing)
-   stops waiting for a paint to be timed by, held FRAME_READY or not.  The
-   key time is the root's: keyboard focus is a top-level window's.  */
-static void
-nhwl_backstop (struct frame *f)
+/* A consistency point for F's tree (F, its root, a top-level, tip or popup
+   frame, and the child frames under it, sync subsurfaces): Emacs is not
+   redisplaying and buffer flips are not blocked, so every frame of the tree
+   is drawn completely.  Bring the tree up to date and publish it; the shell
+   presents it (on its thread, or at the root's FRAME_READY).  The glue
+   publishes nothing when the root may not show a buffer, or when nothing
+   was drawn.  The key time is the root's (keyboard focus is a top-level
+   window's): a packet carries it, and a key read before a redisplay that
+   drew nothing anywhere in the tree stops waiting for a paint to be timed
+   by.  Called after every redisplay (the buffer flips unblocked) and after
+   a draw outside one.  */
+void
+nhwl_publish (struct frame *f)
 {
   struct frame *r = nhwl_tree_root (f);
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (r);
-  bool pending;
+  struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (r);
+  uint32_t flags = NHG_PRESENT_BACKSTOP;
+  int32_t rc;
 
-  if (!nhwl_presentable (r))
+  if (!dpyinfo->glue || !out->window || redisplaying_p
+      || buffer_flipping_blocked_p ())
     return;
-  nhwl_prepare (r);
-  pending = nhwl_tree_pending (r);
-  if (!pending && out->t_key_ns && out->key_redisplay != redisplay_counter)
+  if (out->t_key_ns && out->key_redisplay != redisplay_counter)
+    flags |= NHG_PRESENT_KEY_SEEN;
+  block_input ();
+  nhwl_nsurfaces = 0;
+  nhwl_surface_add (r, 0, true);
+  rc = nhwl_glue_rc (dpyinfo,
+		     NHG (nhg_present (dpyinfo->glue, out->window,
+				       nhwl_surfaces, nhwl_nsurfaces, flags,
+				       out->t_key_ns)));
+  if (rc > 0 && (rc & NHG_PRESENTED_KEY_DONE))
     out->t_key_ns = 0;
-  if (pending || out->ready_held)
-    {
-      out->ready_held = false;
-      nhwl_dirty (r);
-    }
+  unblock_input ();
+}
+
+/* The pacer of root window ROOT's tree lets it present (inline mode): the
+   shell presents what was published.  It needs nothing of Emacs, so it runs
+   whatever Emacs is doing, drawn or not: a tree that owes a commit (a bare
+   ack, surface state, the re-arm of a hidden window's pacer) gets it here.
+   True when the root committed a buffer.  */
+static bool
+nhwl_present_ready (struct nhwl_display_info *dpyinfo, uint64_t root)
+{
+  int32_t rc;
+
+  if (!dpyinfo->glue || !root)
+    return false;
+  rc = nhwl_glue_rc (dpyinfo,
+		     NHG (nhg_present (dpyinfo->glue, root, NULL, 0,
+				       NHG_PRESENT_READY, 0)));
+  return rc > 0 && (rc & NHG_PRESENTED_COMMITTED);
 }
 
 /* Adapted from pgtk_clear_area.  */
@@ -2375,7 +2313,10 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
       break;
 
     case NHG_ACT_READY:
-      nhwl_present_tree (f);
+      /* Whatever Emacs is doing, drawn or not: the pacer re-arms through
+	 here.  */
+      nhwl_present_ready (dpyinfo,
+			  FRAME_NHWL_OUTPUT (nhwl_tree_root (f))->window);
       break;
 
     case NHG_ACT_DELETE:
@@ -2897,22 +2838,25 @@ nhwl_update_end (struct frame *f)
   MOUSE_HL_INFO (f)->mouse_face_defer = false;
 }
 
-/* Present what the redisplay drew.  Adapted from pgtk_frame_up_to_date.  */
+/* Publish what was drawn, at a consistency point (nhwl_publish asks).
+   Adapted from pgtk_frame_up_to_date.  */
 static void
 nhwl_frame_up_to_date (struct frame *f)
 {
   block_input ();
   FRAME_MOUSE_UPDATE (f);
   nhwl_im_update (f);
-  if (!buffer_flipping_blocked_p ())
-    nhwl_backstop (f);
+  nhwl_publish (f);
   unblock_input ();
 }
 
+/* The end of every redisplay, for every frame: the consistency point.
+   A tree is published once, from its root.  */
 static void
 nhwl_buffer_flipping_unblocked_hook (struct frame *f)
 {
-  nhwl_backstop (f);
+  if (!nhwl_child_p (f))
+    nhwl_publish (f);
 }
 
 static void
@@ -3203,6 +3147,13 @@ nhwl_term_init (Lisp_Object display_name)
   dpyinfo->glue = glue;
   dpyinfo->shell = shell;
   dpyinfo->connection = nhwl_glue_rc (dpyinfo, NHG (nhg_fd (glue)));
+  {
+    const char *env = getenv ("NHWL_PRESENTER");
+
+    /* A thread that cannot start leaves the display inline.  */
+    if (nhwl_presenter_thread && !(env && !strcmp (env, "0")))
+      NHG (nhg_presenter_thread (glue, 1));
+  }
   nhshell_caps (shell, &dpyinfo->caps);
   terminal = nhwl_create_terminal (dpyinfo);
 
@@ -3416,15 +3367,19 @@ DEFUN ("nhwl--bench-full-redraw", Fnhwl__bench_full_redraw,
        doc: /* Present N frames of the selected frame, each damaged whole.
 Each frame waits for the previous one's frame callback.  Return
 (:frames N :compose-p50 MS :compose-p95 MS :present-interval-p95 MS):
-the time one present took (commit, buffer, compose, attach) and the time
-between two presents.  The motion bench of the W0 budgets.  */)
+the time one present took on Emacs's thread (the publish, and inline the
+commit, buffer, compose and attach) and the time between two presents.
+The motion bench of the W0 budgets; it runs through the presenter, on
+its thread or inline.  */)
   (Lisp_Object n)
 {
   struct frame *f = SELECTED_FRAME ();
   struct nhwl_output *out;
+  struct nhwl_display_info *dpyinfo;
   struct timespec ts;
   double *compose, *interval, prev = 0;
   ptrdiff_t frames, i, done = 0;
+  NhgPresenterStats st;
 
   CHECK_FIXNAT (n);
   if (!FRAME_NHWL_P (f))
@@ -3432,36 +3387,52 @@ between two presents.  The motion bench of the W0 budgets.  */)
   frames = XFIXNAT (n);
   if (frames < 1 || frames > 100000)
     error ("N must be 1 to 100000");
+  f = nhwl_tree_root (f);
   out = FRAME_NHWL_OUTPUT (f);
-  if (!out->glitnir_id || !out->configured)
+  dpyinfo = FRAME_DISPLAY_INFO (f);
+  if (!out->glitnir_id || !out->configured || !dpyinfo->glue)
     error ("The frame is not shown yet");
 
   compose = xnmalloc (frames, 2 * sizeof *compose);
   interval = compose + frames;
   for (i = 0; i < frames; i++)
     {
-      double t0, t1;
+      double t0, t1, publish;
       int waits = 0;
       bool committed;
+      uint64_t commits;
 
-      /* The previous present's frame callback (about one refresh): the
-	 pacer is ready again.  Asking takes the draw, so the present asks
-	 itself, until it commits; the try that commits is timed.  */
+      /* Publish the frame damaged whole, then wait for its commit: on the
+	 presenter's thread (its count of buffer commits rises), or inline,
+	 where the present asks itself until the pacer lets it go (the
+	 previous present's frame callback, about one refresh); the try
+	 that commits is timed.  */
+      st = (NhgPresenterStats) { 0 };
+      NHG (nhg_presenter_stats (dpyinfo->glue, &st));
+      commits = st.counters.commits;
       nhwl_damage_all (f);
+      clock_gettime (CLOCK_MONOTONIC, &ts);
+      t0 = nhwl_bench_ms (ts);
+      nhwl_publish (f);
+      clock_gettime (CLOCK_MONOTONIC, &ts);
+      publish = nhwl_bench_ms (ts) - t0;
       do
 	{
 	  if (waits)
 	    poll (NULL, 0, 1);
 	  clock_gettime (CLOCK_MONOTONIC, &ts);
 	  t0 = nhwl_bench_ms (ts);
-	  committed = nhwl_present_tree (f);
+	  committed = nhwl_present_ready (dpyinfo, out->window);
+	  if (!committed
+	      && NHG (nhg_presenter_stats (dpyinfo->glue, &st)) == NHG_OK)
+	    committed = st.counters.commits > commits;
 	}
       while (!committed && waits++ < 5000);
       clock_gettime (CLOCK_MONOTONIC, &ts);
       t1 = nhwl_bench_ms (ts);
       if (!committed)
 	break;
-      compose[done] = t1 - t0;
+      compose[done] = publish + (t1 - t0);
       if (done > 0)
 	interval[done - 1] = t1 - prev;
       prev = t1;
@@ -3484,6 +3455,41 @@ between two presents.  The motion bench of the W0 budgets.  */)
 	    make_float (nhwl_bench_pct (interval, done - 1, 0.95)));
   xfree (compose);
   return r;
+}
+
+DEFUN ("nhwl-presenter-stats", Fnhwl_presenter_stats, Snhwl_presenter_stats,
+       0, 1, 0,
+       doc: /* Return the presenter's counters on DISPLAY since it opened.
+DISPLAY is a display name, a frame or a terminal; nil means the selected
+frame's.  A plist: `:packets' published, `:superseded' by a newer one
+before they were presented, `:commits' with a buffer and `:bare-commits'
+without, `:main-wait-max-ns' (the longest Emacs's thread waited for the
+presenter), `:publish-copy-max-ns' (the longest copy into the front
+buffers), `:front-trims' (front buffers dropped after the quiet period),
+`:thread-on' (1 when it presents on its own thread, 0 inline), and its
+timing: `:presenter-frames' root buffers that showed published drawing,
+`:presenter-late' of them committed more than a refresh after they were
+ready, and `:ready-to-commit-max-ns'.  */)
+  (Lisp_Object display)
+{
+  struct nhwl_display_info *dpyinfo = check_nhwl_display_info (display);
+  NhgPresenterStats s = { 0 };
+
+  if (nhwl_glue_rc (dpyinfo, NHG (nhg_presenter_stats (dpyinfo->glue, &s)))
+      < 0)
+    error ("The display is gone");
+  return list (QCpackets, make_uint (s.counters.packets),
+	       QCsuperseded, make_uint (s.counters.superseded),
+	       QCcommits, make_uint (s.counters.commits),
+	       QCbare_commits, make_uint (s.counters.bare_commits),
+	       QCmain_wait_max_ns, make_uint (s.counters.main_wait_max_ns),
+	       QCpublish_copy_max_ns,
+	       make_uint (s.counters.publish_copy_max_ns),
+	       QCfront_trims, make_uint (s.counters.front_trims),
+	       QCthread_on, make_fixnum (s.counters.thread_on),
+	       QCpresenter_frames, make_uint (s.frames),
+	       QCpresenter_late, make_uint (s.late),
+	       QCready_to_commit_max_ns, make_uint (s.ready_to_commit_max_ns));
 }
 
 DEFUN ("nhwl-glue-panics", Fnhwl_glue_panics, Snhwl_glue_panics, 0, 0, 0,
@@ -3521,12 +3527,34 @@ void
 syms_of_nhwlterm (void)
 {
   defsubr (&Snhwl__bench_full_redraw);
+  defsubr (&Snhwl_presenter_stats);
   defsubr (&Snhwl_glue_panics);
 #ifdef ENABLE_CHECKING
   defsubr (&Snhwl__test_glue_panic);
 #endif
   nhwl_glue_panic_list = Qnil;
   staticpro (&nhwl_glue_panic_list);
+
+  DEFSYM (QCpackets, ":packets");
+  DEFSYM (QCsuperseded, ":superseded");
+  DEFSYM (QCcommits, ":commits");
+  DEFSYM (QCbare_commits, ":bare-commits");
+  DEFSYM (QCmain_wait_max_ns, ":main-wait-max-ns");
+  DEFSYM (QCpublish_copy_max_ns, ":publish-copy-max-ns");
+  DEFSYM (QCfront_trims, ":front-trims");
+  DEFSYM (QCthread_on, ":thread-on");
+  DEFSYM (QCpresenter_frames, ":presenter-frames");
+  DEFSYM (QCpresenter_late, ":presenter-late");
+  DEFSYM (QCready_to_commit_max_ns, ":ready-to-commit-max-ns");
+
+  DEFVAR_BOOL ("nhwl-presenter-thread", nhwl_presenter_thread,
+    doc: /* Non-nil means a thread of the shell presents each window.
+It composes and commits a window's picture when the compositor is ready
+for it, whatever Emacs is doing; Emacs's thread only publishes what it
+drew.  Nil means Emacs presents on its own thread, when its event loop
+learns the compositor is ready.  Read when a display opens; the
+environment variable NHWL_PRESENTER=0 turns it off as well.  */);
+  nhwl_presenter_thread = true;
 
   DEFSYM (Qmodifier_value, "modifier-value");
   DEFSYM (Qalt, "alt");

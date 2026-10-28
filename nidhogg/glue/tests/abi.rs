@@ -4,16 +4,18 @@ mod abi {
     use nhglue::abi::*;
     use nhglue::action::*;
     use nhglue::backing::{
-        NHG_GEOM_FRESH, NHG_GEOM_LAYER_CHANGED, NhgBacking, NhgFrameGeom, NhgPending, NhgRect,
+        NHG_GEOM_FRESH, NHG_GEOM_LAYER_CHANGED, NhgBacking, NhgFrameGeom, NhgRect,
     };
     use nhglue::ffi::{NhgDisplay, nhg_abi_version, nhg_close, nhg_fd, nhg_open, nhg_shell};
     use nhglue::ffi::{
-        nhg_alpha_multiply, nhg_backing, nhg_backing_forget, nhg_commit, nhg_damage,
-        nhg_damage_all, nhg_layer_ensure, nhg_pending, nhg_presented, nhg_scroll, nhg_snapshot,
+        nhg_backing, nhg_backing_forget, nhg_damage, nhg_damage_all, nhg_layer_ensure, nhg_scroll,
+        nhg_snapshot,
     };
     use nhglue::ffi::{nhg_frame_csd, nhg_frame_resized, nhg_frame_scale, nhg_next, nhg_raw_event};
     use nhglue::ffi::{nhg_frame_forget, nhg_frame_register, nhg_panic_message};
+    use nhglue::ffi::{nhg_present, nhg_presenter_stats, nhg_presenter_thread};
     use nhglue::frame::*;
+    use nhglue::present::*;
     use nhshell::event::NhShellEvent;
     use nhshell::ffi::NhShell;
     use std::ffi::c_char;
@@ -114,11 +116,43 @@ mod abi {
                 "offsetof (NhgBacking, gen)",
                 offset_of!(NhgBacking, generation) as i64,
             ),
-            ("sizeof (NhgPending)", size_of::<NhgPending>() as i64),
-            ("offsetof (NhgPending, n)", offset_of!(NhgPending, n) as i64),
+            // presenting
+            ("NHG_SURF_DRAWABLE", NHG_SURF_DRAWABLE.into()),
+            ("NHG_SURF_ALPHA_HOST", NHG_SURF_ALPHA_HOST.into()),
+            ("NHG_PRESENT_BACKSTOP", NHG_PRESENT_BACKSTOP.into()),
+            ("NHG_PRESENT_READY", NHG_PRESENT_READY.into()),
+            ("NHG_PRESENT_KEY_SEEN", NHG_PRESENT_KEY_SEEN.into()),
+            ("NHG_PRESENTED_PUBLISHED", NHG_PRESENTED_PUBLISHED.into()),
+            ("NHG_PRESENTED_COMMITTED", NHG_PRESENTED_COMMITTED.into()),
+            ("NHG_PRESENTED_KEY_DONE", NHG_PRESENTED_KEY_DONE.into()),
+            ("sizeof (NhgSurface)", size_of::<NhgSurface>() as i64),
             (
-                "offsetof (NhgPending, damage_px)",
-                offset_of!(NhgPending, damage_px) as i64,
+                "offsetof (NhgSurface, parent)",
+                offset_of!(NhgSurface, parent) as i64,
+            ),
+            (
+                "offsetof (NhgSurface, frame)",
+                offset_of!(NhgSurface, frame) as i64,
+            ),
+            (
+                "offsetof (NhgSurface, flags)",
+                offset_of!(NhgSurface, flags) as i64,
+            ),
+            (
+                "offsetof (NhgSurface, alpha_cut)",
+                offset_of!(NhgSurface, alpha_cut) as i64,
+            ),
+            (
+                "sizeof (NhgPresenterStats)",
+                size_of::<NhgPresenterStats>() as i64,
+            ),
+            (
+                "offsetof (NhgPresenterStats, frames)",
+                offset_of!(NhgPresenterStats, frames) as i64,
+            ),
+            (
+                "offsetof (NhgPresenterStats, ready_to_commit_max_ns)",
+                offset_of!(NhgPresenterStats, ready_to_commit_max_ns) as i64,
             ),
             // the window registry
             ("NHG_FRAME_CHILD", NHG_FRAME_CHILD.into()),
@@ -203,12 +237,11 @@ PROTO (nhg_backing, int32_t (NhgDisplay *, uint64_t, const NhgFrameGeom *, NhgBa
 PROTO (nhg_damage, int32_t (NhgDisplay *, uint64_t, const NhgRect *, size_t));
 PROTO (nhg_damage_all, int32_t (NhgDisplay *, uint64_t));
 PROTO (nhg_scroll, int32_t (NhgDisplay *, uint64_t, uint64_t, NhgRect, int32_t));
-PROTO (nhg_commit, int32_t (NhgDisplay *, uint64_t));
-PROTO (nhg_pending, int32_t (NhgDisplay *, uint64_t, NhgPending *));
-PROTO (nhg_presented, int32_t (NhgDisplay *, uint64_t));
 PROTO (nhg_snapshot, int32_t (NhgDisplay *, uint64_t, NhgBacking *));
 PROTO (nhg_backing_forget, int32_t (NhgDisplay *, uint64_t));
-PROTO (nhg_alpha_multiply, int32_t (NhgDisplay *, uint8_t *, int32_t, int32_t, int32_t, uint32_t));
+PROTO (nhg_present, int32_t (NhgDisplay *, uint64_t, const NhgSurface *, size_t, uint32_t, uint64_t));
+PROTO (nhg_presenter_thread, int32_t (NhgDisplay *, int32_t));
+PROTO (nhg_presenter_stats, int32_t (NhgDisplay *, NhgPresenterStats *));
 PROTO (nhg_frame_register, int32_t (NhgDisplay *, uint64_t, uint32_t));
 PROTO (nhg_frame_forget, int32_t (NhgDisplay *, uint64_t));
 PROTO (nhg_panic_message, int32_t (NhgDisplay *, char *, size_t, size_t *));
@@ -234,13 +267,20 @@ PROTO (nhg_test_panic, int32_t (NhgDisplay *));";
             nhg_damage;
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_damage_all;
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u64, NhgRect, i32) -> i32 = nhg_scroll;
-        let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_commit;
-        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *mut NhgPending) -> i32 = nhg_pending;
-        let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_presented;
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *mut NhgBacking) -> i32 = nhg_snapshot;
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_backing_forget;
-        let _: unsafe extern "C" fn(*mut NhgDisplay, *mut u8, i32, i32, i32, u32) -> i32 =
-            nhg_alpha_multiply;
+        // presenting
+        let _: unsafe extern "C" fn(
+            *mut NhgDisplay,
+            u64,
+            *const NhgSurface,
+            usize,
+            u32,
+            u64,
+        ) -> i32 = nhg_present;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, i32) -> i32 = nhg_presenter_thread;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, *mut NhgPresenterStats) -> i32 =
+            nhg_presenter_stats;
         // the window registry and the guard
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u32) -> i32 = nhg_frame_register;
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_frame_forget;

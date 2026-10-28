@@ -2203,15 +2203,9 @@ nhwl_fill_rectangle (struct frame *f, unsigned long color, int x, int y,
 		      Scrolling and Glitnir's damage
  ***********************************************************************/
 
-/* The one wake for drawing: Glitnir holds new damage for F, so its pacer
-   answers with FRAME_READY when it may present.  Drawing damages through
-   nhwl_damage, nhwl_damage_all or the scroll; nothing else wakes the pacer
-   for a draw.  */
-static void
-nhwl_damaged (struct frame *f)
-{
-  nhwl_dirty (f);
-}
+/* Drawing damages through nhwl_damage, nhwl_damage_all or the scroll, and
+   the damage waits in Glitnir until the tree is published
+   (nhwl_publish).  */
 
 /* Adapted from pgtk_scroll_run (emacs-31.1): the glue moves the rows
    inside the backing (no temporary surface), and Glitnir learns the move
@@ -2259,7 +2253,6 @@ nhwl_scroll_run (struct window *w, struct run *run)
   band = (NhgRect) { x, from_y, width, height };
   NHG (nhg_scroll (FRAME_NHG (f), out->glitnir_id, w->sequence_number, band, to_y));
   cairo_surface_mark_dirty (out->cr_surface);
-  nhwl_damaged (f);
 
   unblock_input ();
 }
@@ -2281,7 +2274,6 @@ nhwl_damage (struct frame *f, int x, int y, int w, int h)
     return;
   nhwl_glitnir_ensure (f);
   NHG (nhg_damage (FRAME_NHG (f), FRAME_NHWL_OUTPUT (f)->glitnir_id, &r, 1));
-  nhwl_damaged (f);
 }
 
 /* Damage the whole of F, its margins and title strip included.  */
@@ -2290,7 +2282,6 @@ nhwl_damage_all (struct frame *f)
 {
   nhwl_glitnir_ensure (f);
   NHG (nhg_damage_all (FRAME_NHG (f), FRAME_NHWL_OUTPUT (f)->glitnir_id));
-  nhwl_damaged (f);
 }
 
 /* Adapted from glitnir_pgtk_damage_glyphs: a glyph string covers its row's
@@ -2415,22 +2406,9 @@ nhwl_glitnir_ensure (struct frame *f)
   NhgFrameGeom g;
 
   nhwl_frame_geom (f, &g);
-  if (NHG (nhg_layer_ensure (FRAME_NHG (f), &out->glitnir_id, &g)) > 0)
-    {
-      if (nhwl_child_p (f))
-	nhwl_child_apply_chrome (f);
-      out->nhist = 0;
-    }
-}
-
-/* F's damage committed but not yet presented, in P; return how many
-   rectangles it has.  */
-size_t
-nhwl_pending (struct frame *f, NhgPending *p)
-{
-  memset (p, 0, sizeof *p);
-  NHG (nhg_pending (FRAME_NHG (f), FRAME_NHWL_OUTPUT (f)->glitnir_id, p));
-  return p->n;
+  if (NHG (nhg_layer_ensure (FRAME_NHG (f), &out->glitnir_id, &g)) > 0
+      && nhwl_child_p (f))
+    nhwl_child_apply_chrome (f);
 }
 
 /* Whether Glitnir's decorations draw on F: a frame of the shell with a
@@ -2560,115 +2538,6 @@ nhwl_now_ns (void)
 
   clock_gettime (CLOCK_MONOTONIC, &ts);
   return (uint64_t) ts.tv_sec * 1000000000 + ts.tv_nsec;
-}
-
-/* Take Glitnir's committed damage for F into the pending list.  Past the
-   list's size the pending damage collapses to its bounding box.  The first
-   commit with damage since the last present starts the frame-time
-   record's draw.  */
-void
-nhwl_glitnir_commit (struct frame *f)
-{
-  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
-
-  nhwl_glitnir_ensure (f);
-  if (NHG (nhg_commit (FRAME_NHG (f), out->glitnir_id)) > 0
-      && !out->t_commit_ns)
-    out->t_commit_ns = nhwl_now_ns ();
-}
-
-/* Compose F's backing into BUF within the pending damage and the part of
-   BUF that is stale (BUF's age: the damage of the last AGE - 1 presents).
-   The pending damage stays in the glue, as the buffer's new damage, until
-   nhwl_glitnir_presented.  When the host applies `alpha', every pixel is
-   multiplied by it, as wp_alpha_modifier_v1 would have the compositor
-   do.  */
-void
-nhwl_glitnir_compose (struct frame *f, const NhShellBuffer *buf)
-{
-  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
-  GlitnirRect clip[NHWL_PENDING_MAX * (NHWL_HIST + 1)];
-  size_t n = 0;
-  double scale = (out->scale120 ? out->scale120 : 120) / 120.0;
-  GlitnirTarget t = { buf->pixels, buf->stride, buf->w, buf->h, 0, 0, scale };
-  GlitnirSource s;
-  NhgPending p;
-  size_t np = nhwl_pending (f, &p);
-  int i, j;
-
-  cairo_surface_flush (out->cr_surface);
-  s.layer = out->glitnir_id;
-  s.pixels = cairo_image_surface_get_data (out->cr_surface);
-  s.stride = cairo_image_surface_get_stride (out->cr_surface);
-  s.width = out->cr_width;
-  s.height = out->cr_height;
-  s.scale = scale;
-  nhwl_child_source (f, &s);
-
-  for (i = 0; i < (int) np; i++)
-    clip[n++] = (GlitnirRect) { p.rects[i].x, p.rects[i].y, p.rects[i].w,
-				p.rects[i].h };
-  /* The host multiplies `alpha' (no wp_alpha_modifier_v1): the whole
-     buffer is composed, so that every pixel is multiplied once.  */
-  if (out->alpha_host)
-    n = 0;
-  if (out->alpha_host || buf->age == 0
-      || buf->age - 1 > (uint32_t) out->nhist)
-    clip[n++] = (GlitnirRect) { 0, 0, buf->w, buf->h };
-  else
-    for (i = 0; i < (int) buf->age - 1; i++)
-      for (j = 0; j < out->nhistn[i]; j++)
-	clip[n++] = out->hist[i][j];
-
-  for (i = 0; i < (int) np; i++)
-    out->painted_px += (uint64_t) p.rects[i].w * p.rects[i].h;
-  if (glitnir_compose (out->glitnir_id, &t, clip, n, &s, 1) != GLITNIR_OK)
-    {
-      /* The host draws it the stock way: a plain copy of the rows.  */
-      int rows = min (buf->h, out->cr_height);
-      size_t row = min (buf->w, out->cr_width) * 4;
-
-      for (i = 0; i < rows; i++)
-	memcpy (buf->pixels + (ptrdiff_t) i * buf->stride,
-		s.pixels + (ptrdiff_t) i * s.stride, row);
-    }
-  if (out->alpha_host)
-    NHG (nhg_alpha_multiply (FRAME_NHG (f), buf->pixels, buf->stride, buf->w, buf->h, out->alpha_cut));
-}
-
-/* The composed buffer was committed: its damage joins the history.  */
-void
-nhwl_glitnir_presented (struct frame *f)
-{
-  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
-  GlitnirStatsEntry e = { 0 };
-  NhgPending p;
-  size_t np = nhwl_pending (f, &p);
-  int i;
-
-  /* The key event the paint shows (0: none, and the entry stays out of
-     the key series), and the draw: from its start to the commit, now.  */
-  e.t_update_ns = out->t_key_ns;
-  e.t_commit_ns = e.t_draw_start_ns = out->t_commit_ns;
-  e.t_draw_end_ns = nhwl_now_ns ();
-  e.presented_us = -1;
-  e.damage_px = p.damage_px;
-  e.painted_px = out->painted_px;
-  e.backfill = 2;
-  glitnir_stats_record (out->glitnir_id, &e);
-  out->t_key_ns = out->t_commit_ns = out->painted_px = 0;
-
-  for (i = NHWL_HIST - 1; i > 0; i--)
-    {
-      memcpy (out->hist[i], out->hist[i - 1], sizeof out->hist[i]);
-      out->nhistn[i] = out->nhistn[i - 1];
-    }
-  for (i = 0; i < (int) np; i++)
-    out->hist[0][i] = (GlitnirRect) { p.rects[i].x, p.rects[i].y,
-				      p.rects[i].w, p.rects[i].h };
-  out->nhistn[0] = np;
-  out->nhist = min (out->nhist + 1, NHWL_HIST);
-  NHG (nhg_presented (FRAME_NHG (f), out->glitnir_id));
 }
 
 /* A copy of F's backing, for glitnir-snapshot.  */
