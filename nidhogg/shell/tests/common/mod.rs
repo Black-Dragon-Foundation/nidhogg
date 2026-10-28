@@ -113,6 +113,38 @@ impl Recorder {
         u32::from_le_bytes(snap.1[at..at + 4].try_into().unwrap())
     }
 
+    /// Surface `id`'s entry in the `tree` reply once `pred` holds for it, within 3 s.  The reply's keys are sorted, so
+    /// each surface's object opens with `{"above":`.
+    pub fn wait_node(&self, id: u64, pred: impl Fn(&str) -> bool) -> String {
+        let key = format!("\"id\":{id},");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let r = self.control(r#"{"cmd":"tree"}"#);
+            let node = r
+                .split("{\"above\":")
+                .skip(1)
+                .find(|n| n.contains(&key))
+                .map(|n| format!("{{\"above\":{n}"));
+            if let Some(n) = &node
+                && pred(n)
+            {
+                return n.clone();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "surface {id} never matched; last: {node:?}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// The number of surfaces of `role` (`toplevel`, `popup`, `subsurface`) in the `tree` reply.
+    pub fn surfaces(&self, role: &str) -> usize {
+        self.control(r#"{"cmd":"tree"}"#)
+            .matches(&format!("\"role\":\"{role}\""))
+            .count()
+    }
+
     pub fn signal(&self, sig: Signal) {
         let pid = Pid::from_raw(self.child.id() as i32).unwrap();
         kill_process(pid, sig).unwrap();
@@ -164,6 +196,39 @@ pub fn wait_for(shell: &mut WaylandShell, want: impl Fn(&NhShellEvent) -> bool) 
 
 pub fn wait_event(shell: &mut WaylandShell, kind: u32) -> NhShellEvent {
     wait_for(shell, |e| e.kind == kind)
+}
+
+/// A top-level window of `w` x `h` logical pixels, mapped: its first configure acked with the buffer that carries it.
+pub fn mapped_window(shell: &mut WaylandShell, w: i32, h: i32) -> u64 {
+    use nhshell::api::{NHSHELL_ACK_CONTENT, WindowDesc};
+    let id = shell
+        .window_new(&WindowDesc {
+            w,
+            h,
+            title: "t".into(),
+            app_id: "nidhogg.test".into(),
+            flags: 0,
+        })
+        .unwrap();
+    let ev = wait_event(shell, nhshell::event::NHSHELL_EV_CONFIGURE);
+    // SAFETY: a CONFIGURE record carries `configure`.
+    let serial = unsafe { ev.u.configure }.serial;
+    shell
+        .ack_configure(id, serial, NHSHELL_ACK_CONTENT)
+        .unwrap();
+    draw(shell, id, w, h);
+    id
+}
+
+/// Present a buffer of `w` x `h` device pixels on window `id`, all of it damaged.
+pub fn draw(shell: &mut WaylandShell, id: u64, w: i32, h: i32) {
+    let b = shell.present_begin(id, w, h).unwrap();
+    // SAFETY: the buffer is `stride * h` writable bytes.
+    unsafe { std::ptr::write_bytes(b.pixels, 0x80, (b.stride * b.h) as usize) };
+    shell
+        .present_commit(id, &[glitnir::geom::Rect::new(0, 0, w, h)])
+        .unwrap();
+    shell.flush().unwrap();
 }
 
 /// Every record that arrives within `ms` of quiet.

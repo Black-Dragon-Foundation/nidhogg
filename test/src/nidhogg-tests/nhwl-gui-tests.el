@@ -2409,3 +2409,5 @@ while the top-level has the keyboard.  Delete the child and focus the parent aft
     (gui-runner-recorder '(:cmd "scale" :value120 120))
     (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (redisplay t) (= (frame-scale-factor) 1.0)) 5)
     (nhwl-gui--windowed)))
+
+(provide 'nhwl-gui-tests)

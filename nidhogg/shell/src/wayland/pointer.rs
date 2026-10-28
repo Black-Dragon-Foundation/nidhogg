@@ -20,6 +20,9 @@ pub struct PointerState {
     pointer: Option<WlPointer>,
     /// The window (surface id) the pointer is over; 0 when none.
     surface: u64,
+    /// The pointer's latest position on that window (surface-local logical).
+    x: f64,
+    y: f64,
     frame: ScrollFrame,
 }
 
@@ -107,9 +110,11 @@ pub fn seat_capabilities(
                 .pointer
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) = Some(ptr.clone());
+            crate::wayland::gesture::pointer_added(state, &ptr, qh);
             state.pointer.pointer = Some(ptr);
         }
         (false, Some(ptr)) => {
+            crate::wayland::gesture::pointer_removed(state);
             state
                 .shared
                 .pointer
@@ -140,7 +145,7 @@ fn time_ns(ms: u32) -> u64 {
 
 impl ReaderState {
     /// Surface-local logical -> device pixels, at the scale of window `id`.
-    fn to_device(&self, id: u64, x: f64, y: f64) -> (f64, f64) {
+    pub(super) fn to_device(&self, id: u64, x: f64, y: f64) -> (f64, f64) {
         let s = self
             .shared
             .scale120
@@ -155,6 +160,7 @@ impl ReaderState {
 
     fn post_pointer(&mut self, kind: u32, time: u32, x: f64, y: f64) {
         let id = self.pointer.surface;
+        (self.pointer.x, self.pointer.y) = (x, y);
         let (x, y) = self.to_device(id, x, y);
         let mut ev = NhShellEvent::new(kind, id, time_ns(time));
         ev.u.pointer = PointerEv {
@@ -164,6 +170,13 @@ impl ReaderState {
             state: 0,
         };
         self.post(ev);
+    }
+}
+
+impl PointerState {
+    /// The window the pointer is over (0: none) and its position there (surface-local logical).
+    pub fn position(&self) -> (u64, f64, f64) {
+        (self.surface, self.x, self.y)
     }
 }
 

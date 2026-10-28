@@ -13,10 +13,12 @@
 use crate::event::{FocusEv, NHSHELL_EV_FOCUS, NhShellEvent};
 use crate::wayland::clipboard::SendBytes;
 use crate::wayland::conn::Shared;
+use crate::wayland::gesture::PinchState;
 use crate::wayland::keyboard::KeyboardState;
 use crate::wayland::pointer::{self, PointerState};
 use crate::wayland::selection;
 use crate::wayland::serial::SerialKind;
+use crate::wayland::touch::{self, TouchState};
 use rustix::event::{PollFd, PollFlags, poll};
 use std::os::fd::AsFd;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -29,6 +31,7 @@ use wayland_client::protocol::wl_keyboard::{self, KeyState, WlKeyboard};
 use wayland_client::protocol::wl_seat::{self, Capability, WlSeat};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1::WpCursorShapeManagerV1;
+use wayland_protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gestures_v1::ZwpPointerGesturesV1;
 use wayland_protocols::xdg::shell::client::xdg_wm_base::{self, XdgWmBase};
 
 /// What the reader's handlers own.  Objects created with this queue's handle run their events on the reader thread.
@@ -41,6 +44,11 @@ pub struct ReaderState {
     pub kbd: KeyboardState,
     pub cursor_manager: Option<WpCursorShapeManagerV1>,
     pub pointer: PointerState,
+    /// Pointer gestures (`gesture.rs`): the global and the pointer's pinch.
+    pub gestures: Option<ZwpPointerGesturesV1>,
+    pub pinch: PinchState,
+    /// Touch points (`touch.rs`).
+    pub touch: TouchState,
     /// text-input-v3 (`text_input.rs`).
     pub text_input: Arc<crate::wayland::text_input::TextInput>,
     /// A record was posted since the last wake.
@@ -59,6 +67,9 @@ impl ReaderState {
             kbd: KeyboardState::new(),
             cursor_manager: None,
             pointer: PointerState::default(),
+            gestures: None,
+            pinch: PinchState::default(),
+            touch: TouchState::default(),
             text_input: Arc::default(),
             posted: false,
             sends: Vec::new(),
@@ -286,6 +297,7 @@ impl Dispatch<WlSeat, ()> for ReaderState {
                 (_, kb) => state.keyboard = kb,
             }
             pointer::seat_capabilities(state, seat, caps, qh);
+            touch::seat_capabilities(state, seat, caps, qh);
         }
     }
 }
