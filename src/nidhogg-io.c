@@ -1835,6 +1835,12 @@ nh_io_handback (struct Lisp_Process *p, int reason)
   else if (reason != NH_IO_CLOSE && nh_io_tls[fd])
     nh_io_tls_reclaim (h, fd);
 #endif
+  /* An inline handle's copy, which it selected on, is closed: one that
+     keeps bytes (a framed one's messages) is selected on the real fd,
+     which its reads then take as a drain's, never on a closed fd
+     number.  */
+  if (h && h->inl)
+    h->sel = fd;
   if (reason == NH_IO_CLOSE)
     {
       /* The real fd closes next (deactivate_process).  */
