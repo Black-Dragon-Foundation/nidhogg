@@ -41,6 +41,7 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "nhwlterm.h"
 #include "blockinput.h"
 #include "coding.h"
+#include "keyboard.h"
 
 #ifdef HAVE_NHWL
 
@@ -102,6 +103,11 @@ nhwl_csd_layout (struct frame *f)
   c->on = (dpyinfo->shell
 	   && nhshell_window_ssd (dpyinfo->shell, out->window, &ssd) >= 0
 	   && !ssd && !FRAME_UNDECORATED (f));
+  /* The glue's configure step reads it (a state change under our own title
+     bar gives a content ack).  */
+  if (out->window)
+    nhwl_glue_rc (dpyinfo, NHG (nhg_frame_csd (dpyinfo->glue, out->window,
+					       c->on)));
   if (c->on && !(out->states & NHSHELL_STATE_FULLSCREEN))
     {
       strip = nhwl_to_device (NHWL_CSD_STRIP, s120);
