@@ -245,8 +245,15 @@ int32_t nhshell_window_show_menu (NhShell *sh, uint64_t window, int32_t x, int32
 /* The window geometry (surface-local logical pixels): where the window sits inside the surface, for a client that
    draws its own decorations and resize margins.  Takes effect with the next commit.  */
 int32_t nhshell_window_set_geometry (NhShell *sh, uint64_t window, int32_t x, int32_t y, int32_t w, int32_t h);
-/* Acks a configure at once; the next present_commit (which is made in any pacer state) carries the buffer.  */
-int32_t nhshell_window_ack_configure (NhShell *sh, uint64_t window, uint32_t serial);
+/* Records a configure's ack; it goes out right before the commit that carries it, exactly once (the newest serial
+   wins).  FLAGS NHSHELL_ACK_CONTENT says the ack changes what the window shows (a new size, the first configure, a
+   client-side state change): it is sent only with a buffer, never with nhshell_present_bare, and stays marked until a
+   buffer carries it.  Without the flag a bare commit may carry it.  */
+#define NHSHELL_ACK_CONTENT 1u
+int32_t nhshell_window_ack_configure (NhShell *sh, uint64_t window, uint32_t serial, uint32_t flags);
+/* A commit with no buffer, frame callback, presentation feedback or viewport: it carries a bare ack and the surface
+   state the window owes (a child's position or stacking).  */
+int32_t nhshell_present_bare (NhShell *sh, uint64_t window);
 int32_t nhshell_window_set_cursor (NhShell *sh, uint64_t window, uint32_t shape);
 /* The Xcursor theme (NAME, logical SIZE) shown where the compositor lacks wp_cursor_shape_v1; a cursor already shown
    from the theme is redrawn.  NHSHELL_CURSOR_HIDDEN shows no cursor.  */
@@ -258,7 +265,8 @@ int32_t nhshell_window_activate (NhShell *sh, uint64_t window, const char *token
 
 /* Children and popups.  set_position: a child moves with its parent's next commit; a popup's anchor rectangle moves to
    (X, Y) (xdg_popup.reposition).  stack: put a child above or below SIBLING (0: the parent), with the parent's next
-   commit.  set_input_region: the part that takes input, N rectangles in logical pixels (N 0: the whole surface).
+   commit.  set_position returns 1 when the whole window must be redrawn (a popup made again below xdg_popup v3),
+   0 otherwise; a child's position and stacking make its parent owe a commit.  set_input_region: the part that takes input, N rectangles in logical pixels (N 0: the whole surface).
    set_mapped: off shows nothing (a null buffer); on lets the next present show the window.  Pointer events over a child
    or popup carry its id.  destroy of a window also destroys its children and popups.  */
 int32_t nhshell_window_set_position (NhShell *sh, uint64_t window, int32_t x, int32_t y);
@@ -274,8 +282,12 @@ int32_t nhshell_window_ssd (NhShell *sh, uint64_t window, int32_t *ssd);
 /* The presenter.  begin returns a buffer of DEV_W x DEV_H device pixels in *OUT; commit shows it, with DAMAGE (N
    rectangles in device pixels; NULL only when N is 0, which presents with no damage).  */
 /* Pacing.  window_dirty says the host drew something; NHSHELL_EV_FRAME_READY follows when the window's pacer lets it
-   present (frame callbacks pace, an ack never waits, a starved window waits for a buffer release).  window_ready
-   asks the same: *READY is 1 when the host may begin a frame now.  */
+   present (frame callbacks pace, a content ack never waits, a starved window waits for a buffer release).  window_ready
+   asks the same: *READY holds NHSHELL_READY_CONTENT (draw and present a buffer) and NHSHELL_READY_OWED (a commit is
+   owed: a bare ack or surface state; nhshell_present_bare or a buffer), 0 for neither; reporting CONTENT takes the draw
+   (not ready again until the next window_dirty).  Both are 0 until the window's first configure.  */
+#define NHSHELL_READY_CONTENT 1
+#define NHSHELL_READY_OWED    2
 int32_t nhshell_window_dirty (NhShell *sh, uint64_t window);
 int32_t nhshell_window_ready (NhShell *sh, uint64_t window, int32_t *ready);
 int32_t nhshell_present_begin (NhShell *sh, uint64_t window, int32_t dev_w, int32_t dev_h, NhShellBuffer *out);

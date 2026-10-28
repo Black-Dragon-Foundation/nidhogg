@@ -65,15 +65,23 @@ impl WaylandShell {
         kids.map(|(k, _)| *k).chain(pops.map(|(k, _)| *k)).collect()
     }
 
-    pub(super) fn window_set_position(&mut self, id: WindowId, x: i32, y: i32) -> ShellResult {
+    pub(super) fn window_set_position(
+        &mut self,
+        id: WindowId,
+        x: i32,
+        y: i32,
+    ) -> ShellResult<bool> {
         if let Some(c) = self.main.children.get_mut(&id) {
             c.x = x;
             c.y = y;
             c.subsurface.set_position(x, y);
+            let parent = c.parent;
             // The protocol applies the position with the parent's commit.  Some compositors (Smithay) apply a
             // desync subsurface's position only with the child's own commit, so send one: it carries no new buffer.
             c.surface.commit();
-            return self.flush();
+            // the position is the parent's state: the parent owes a commit
+            self.main.present_owe(parent);
+            return self.flush().map(|()| false);
         }
         self.popup_reposition(id, x, y)
     }
@@ -85,13 +93,15 @@ impl WaylandShell {
         above: bool,
     ) -> ShellResult {
         let c = self.main.children.get(&id).ok_or(ShellError::State)?;
-        let sibling = if sibling == 0 { c.parent } else { sibling };
+        let parent = c.parent;
+        let sibling = if sibling == 0 { parent } else { sibling };
         let other = self.main.surfaces.get(&sibling).ok_or(ShellError::Arg)?;
         if above {
             c.subsurface.place_above(other);
         } else {
             c.subsurface.place_below(other);
         }
+        self.main.present_owe(parent);
         Ok(())
     }
 

@@ -1566,10 +1566,20 @@ nhwl_configure (struct frame *f, const NhShellEvent *ev)
   uint32_t states = ev->u.configure.states;
   Lisp_Object fs = Qnil;
 
+  /* A content ack (only a buffer carries it): the first configure, a new
+     size, a client-side title bar's state change.  */
+  uint32_t ack_flags = out->configured ? 0 : NHSHELL_ACK_CONTENT;
+
   out->logical_w = ev->u.configure.w;
   out->logical_h = ev->u.configure.h;
   out->serial = ev->u.configure.serial;
   out->configured = true;
+  if (out->csd.on
+      && ((out->states ^ states)
+	  & (NHSHELL_STATE_ACTIVATED | NHSHELL_STATE_MAXIMIZED
+	     | NHSHELL_STATE_TILED_L | NHSHELL_STATE_TILED_R
+	     | NHSHELL_STATE_TILED_T | NHSHELL_STATE_TILED_B)))
+    ack_flags = NHSHELL_ACK_CONTENT;
 
   if (states & NHSHELL_STATE_FULLSCREEN)
     fs = Qfullboth;
@@ -1596,13 +1606,13 @@ nhwl_configure (struct frame *f, const NhShellEvent *ev)
       nhwl_clamp_native_size (f, &dw, &dh);
       change_frame_size (f, dw, dh, false, true, false);
       SET_FRAME_GARBAGED (f);
+      ack_flags = NHSHELL_ACK_CONTENT;
     }
  done:
 
-  /* The ack never waits for the pacer or for Lisp: it goes out now, and the
-     buffer that follows it with the next present.  */
+  /* The shell records the ack and sends it with the commit that carries it.  */
   nhshell_window_ack_configure (FRAME_DISPLAY_INFO (f)->shell, out->window,
-				out->serial);
+				out->serial, ack_flags);
   nhwl_dirty (f);
   if (FRAME_VISIBLE_P (f))
     fset_redisplay (f);
