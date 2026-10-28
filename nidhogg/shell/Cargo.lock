@@ -104,6 +104,7 @@ dependencies = [
  "wayland-client",
  "wayland-cursor",
  "wayland-protocols",
+ "wayland-scanner",
  "xkbcommon",
 ]
 

@@ -131,8 +131,13 @@ impl ShellBackend for WaylandShell {
         self.flush()
     }
 
-    fn window_new(&mut self, desc: &WindowDesc) -> ShellResult<WindowId> {
+    fn window_new_named(
+        &mut self,
+        desc: &WindowDesc,
+        session_name: Option<&str>,
+    ) -> ShellResult<WindowId> {
         let qh = self.main_queue.handle();
+        let session_name = self.main.session.name_for(session_name)?;
         let m = &mut self.main;
         let compositor = m.compositor.as_ref().ok_or(ShellError::State)?;
         let wm_base = m.wm_base.as_ref().ok_or(ShellError::State)?;
@@ -164,6 +169,11 @@ impl ShellBackend for WaylandShell {
         };
         // the window owns its surface's scale state, made before the first commit
         m.attach_scale(&surface, &qh);
+        // the session entry goes before the commit that sets the role up
+        if let Some(name) = &session_name {
+            let restore = desc.flags & NHSHELL_WIN_RESTORE != 0;
+            m.session.attach(&toplevel, id, name, restore, &qh);
+        }
         // the compositor sends the first configure only after this bare commit
         surface.commit();
         m.surfaces.insert(id, surface.clone());
@@ -186,6 +196,7 @@ impl ShellBackend for WaylandShell {
     fn window_destroy(&mut self, id: WindowId) -> ShellResult {
         self.text_input.forget(id);
         self.alpha_forget(id);
+        self.extras_forget(id);
         for dep in self.dependents_of(id) {
             let _ = self.window_destroy(dep);
         }
@@ -343,6 +354,34 @@ impl ShellBackend for WaylandShell {
 
     fn window_activate(&mut self, w: WindowId, token: Option<&str>) -> ShellResult {
         self.window_activate_impl(w, token)
+    }
+
+    fn activation_token(&mut self, id: WindowId, timeout_ms: u32) -> ShellResult<String> {
+        self.activation_token_impl(id, timeout_ms)
+    }
+
+    fn bell(&mut self, id: WindowId) -> ShellResult {
+        self.bell_impl(id)
+    }
+
+    fn inhibit_idle(&mut self, id: WindowId, on: bool) -> ShellResult {
+        self.inhibit_idle_impl(id, on)
+    }
+
+    fn window_export(&mut self, id: WindowId, timeout_ms: u32) -> ShellResult<String> {
+        self.export_impl(id, timeout_ms)
+    }
+
+    fn session_open(&mut self, id: Option<&str>, reason: u32) -> ShellResult {
+        self.session_open_impl(id, reason)
+    }
+
+    fn session_id(&self) -> ShellResult<String> {
+        self.session_id_impl()
+    }
+
+    fn window_session_remove(&mut self, id: WindowId) -> ShellResult {
+        self.session_remove_impl(id)
     }
 
     fn window_scale(&self, id: WindowId) -> ShellResult<u32> {

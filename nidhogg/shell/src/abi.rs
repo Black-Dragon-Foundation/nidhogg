@@ -137,6 +137,11 @@ mod tests {
             size_of::<PinchEv>(),
             align_of::<PinchEv>(),
         );
+        ty(
+            "__typeof__(((NhShellEvent *)0)->u.session)",
+            size_of::<SessionEv>(),
+            align_of::<SessionEv>(),
+        );
         let mut off = |c: &str, o: usize| rows.push((format!("offsetof(NhShellEvent, {c})"), o));
         off("kind", offset_of!(E, kind));
         off("window", offset_of!(E, window));
@@ -171,6 +176,7 @@ mod tests {
             "u.scale.scale120",
             offset_of!(E, u) + offset_of!(ScaleEv, scale120),
         );
+        members!(session, SessionEv, state);
         off("u.focus.in", offset_of!(E, u) + offset_of!(FocusEv, r#in));
         off(
             "u.selection.kind",

@@ -31,6 +31,7 @@ pub struct NhShellCaps {
     pub idle_inhibit: u32,
     pub single_pixel_buffer: u32,
     pub dmabuf: u32,
+    pub xdg_foreign: u32,
     /// Server-side decorations were granted, after negotiation.
     pub ssd: bool,
     /// The host forces client-side decorations (a test switch; the recorder's `--force-csd`).
@@ -40,7 +41,7 @@ pub struct NhShellCaps {
 type Field = fn(&mut NhShellCaps) -> &mut u32;
 
 /// Registry global (the protocol's interface name) -> the field that holds its version.
-pub const GLOBAL_FIELDS: [(&str, Field); 24] = [
+pub const GLOBAL_FIELDS: [(&str, Field); 25] = [
     ("wl_compositor", |c| &mut c.compositor),
     ("wl_subcompositor", |c| &mut c.subcompositor),
     ("wl_seat", |c| &mut c.seat),
@@ -73,6 +74,7 @@ pub const GLOBAL_FIELDS: [(&str, Field); 24] = [
         &mut c.single_pixel_buffer
     }),
     ("zwp_linux_dmabuf_v1", |c| &mut c.dmabuf),
+    ("zxdg_exporter_v2", |c| &mut c.xdg_foreign),
 ];
 
 /// Globals a profile lists that have no field: `wl_shm` is required (opening fails without it) and `wl_output` is
@@ -143,7 +145,7 @@ mod tests {
             .map(|(_, f)| f(&mut caps) as *mut u32 as usize)
             .collect();
         assert_eq!(addrs.len(), GLOBAL_FIELDS.len(), "two names share a field");
-        // all 24 u32 fields are covered: the record is those plus the two flags
+        // all 25 u32 fields are covered: the record is those plus the two flags
         assert_eq!(
             std::mem::size_of::<NhShellCaps>(),
             4 * GLOBAL_FIELDS.len() + 4
