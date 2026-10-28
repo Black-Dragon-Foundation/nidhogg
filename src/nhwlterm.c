@@ -931,19 +931,33 @@ nhwl_to_device (int logical, uint32_t s120)
   return (int) roundf ((float) logical * (float) s120 / 120.0f);
 }
 
-/* Make a shell window from DESC and register it with the glue as a frame
-   of kind FLAGS (NHG_FRAME_*); its id goes to *ID.  The shell's code, or
-   0.  Until windows are made through the glue, every window is made and
-   destroyed here (nhwl_window_destroy), so the glue's frame registry
-   follows them.  */
+/* Make frame F's shell window from DESC and register it with the glue as
+   a frame of kind FLAGS (NHG_FRAME_*), with the facts it starts from (the
+   scale F's window starts at, F's native size); its id goes to *ID.  The
+   shell's code, or 0.  Until windows are made through the glue, every
+   window is made and destroyed here (nhwl_window_destroy), so the glue's
+   frame registry follows them.  */
 int
-nhwl_window_new (struct nhwl_display_info *dpyinfo, NhShellWindowDesc *desc,
-		 uint32_t flags, uint64_t *id)
+nhwl_window_new (struct frame *f, NhShellWindowDesc *desc, uint32_t flags,
+		 uint64_t *id)
 {
+  struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
   int rc = nhshell_window_new (dpyinfo->shell, desc, id);
 
   if (rc >= 0)
-    nhwl_glue_rc (dpyinfo, NHG (nhg_frame_register (dpyinfo->glue, *id, flags)));
+    {
+      int w = f->new_size_p ? f->new_width : FRAME_PIXEL_WIDTH (f);
+      int h = f->new_size_p ? f->new_height : FRAME_PIXEL_HEIGHT (f);
+
+      nhwl_glue_rc (dpyinfo, NHG (nhg_frame_register (dpyinfo->glue, *id,
+						      flags)));
+      nhwl_glue_rc (dpyinfo, NHG (nhg_frame_scale (dpyinfo->glue, *id,
+						   out->scale120)));
+      nhwl_glue_rc (dpyinfo, NHG (nhg_frame_resized (dpyinfo->glue, *id,
+						     max (1, w),
+						     max (1, h))));
+    }
   return rc;
 }
 
@@ -999,7 +1013,7 @@ nhwl_create_frame_window (struct frame *f)
     }
 
   block_input ();
-  rc = nhwl_window_new (dpyinfo, &desc,
+  rc = nhwl_window_new (f, &desc,
 			nhwl_child_p (f) ? NHG_FRAME_CHILD : 0, &id);
   unblock_input ();
   if (rc < 0)
@@ -1029,6 +1043,18 @@ nhwl_set_title_hint (struct frame *f)
 }
 
 static void nhwl_clamp_native_size (struct frame *, int *, int *);
+
+/* Push F's native size W x H (the size it asked for) to the glue.  */
+static void
+nhwl_frame_resized (struct frame *f, int w, int h)
+{
+  struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
+  uint64_t window = FRAME_NHWL_OUTPUT (f)->window;
+
+  if (window)
+    nhwl_glue_rc (dpyinfo, NHG (nhg_frame_resized (dpyinfo->glue, window,
+						   max (1, w), max (1, h))));
+}
 
 /* F's `undecorated' changed at run time (at creation the shell takes the
    flag with the window).  A top-level asks the compositor again (server
@@ -1061,7 +1087,10 @@ nhwl_set_undecorated_hint (struct frame *f, bool undecorated)
       nhwl_csd_native_size (f, out->logical_w, out->logical_h, &dw, &dh);
       nhwl_clamp_native_size (f, &dw, &dh);
       if (dw != FRAME_PIXEL_WIDTH (f) || dh != FRAME_PIXEL_HEIGHT (f))
-	change_frame_size (f, dw, dh, false, true, false);
+	{
+	  change_frame_size (f, dw, dh, false, true, false);
+	  nhwl_frame_resized (f, dw, dh);
+	}
     }
   nhwl_set_min_size (f);
   SET_FRAME_GARBAGED (f);
@@ -1138,6 +1167,7 @@ nhwl_set_window_size (struct frame *f, bool change_gravity, int pixelwidth,
   nhwl_popup_set_size (f, pixelwidth, pixelheight);
   change_frame_size (f, pixelwidth, pixelheight, false, true, false);
   SET_FRAME_GARBAGED (f);
+  nhwl_frame_resized (f, pixelwidth, pixelheight);
 }
 
 /* Adapted from pgtk_set_offset: Wayland clients have no position.  */
@@ -1893,9 +1923,10 @@ nhwl_note_mouse_movement (struct frame *frame, int x, int y, Time time)
   return false;
 }
 
-/* The shell reported a new preferred scale for frame F: the display's
-   resolution follows (96 dpi times the scale), and the fonts are
-   re-opened at the device size as on a move between monitors.  */
+/* Apply a SCALE action: the shell reported a new preferred scale for
+   frame F (the glue decided it is new).  The display's resolution follows
+   (96 dpi times the scale), and the fonts are re-opened at the device
+   size as on a move between monitors.  */
 static void
 nhwl_scale_changed (struct frame *f, uint32_t scale120)
 {
@@ -1903,9 +1934,6 @@ nhwl_scale_changed (struct frame *f, uint32_t scale120)
   struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
 
   uint32_t old = out->scale120 ? out->scale120 : 120;
-
-  if (!scale120 || scale120 == out->scale120)
-    return;
 
   out->scale120 = scale120;
   dpyinfo->scale120 = scale120;
@@ -1939,36 +1967,28 @@ nhwl_scale_changed (struct frame *f, uint32_t scale120)
   SET_FRAME_GARBAGED (f);
 }
 
-/* Handle CONFIGURE for frame F: the compositor's suggestion of a size
-   (0: ours), the toplevel's states, and the serial to ack.  */
+/* Apply a RESIZE action A to frame F: a configure, with the compositor's
+   suggestion of a size A->w x A->h (0: ours) and the toplevel's states
+   A->code.  The glue holds the configure and records its ack: a content
+   ack when the frame's size changes here (the push below), and for the
+   cases the glue decides itself (the first configure, a client-side title
+   bar's state change).  */
 static void
-nhwl_configure (struct frame *f, const NhShellEvent *ev)
+nhwl_configure (struct frame *f, const NhgAction *a)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
-  uint32_t states = ev->u.configure.states;
+  uint32_t states = a->code;
   Lisp_Object fs = Qnil;
 
-  /* A content ack (only a buffer carries it): the first configure, a new
-     size, a client-side title bar's state change.  */
-  uint32_t ack_flags = out->configured ? 0 : NHSHELL_ACK_CONTENT;
-
-  out->logical_w = ev->u.configure.w;
-  out->logical_h = ev->u.configure.h;
-  out->serial = ev->u.configure.serial;
+  out->logical_w = a->w;
+  out->logical_h = a->h;
   out->configured = true;
-  if (out->csd.on
-      && ((out->states ^ states)
-	  & (NHSHELL_STATE_ACTIVATED | NHSHELL_STATE_MAXIMIZED
-	     | NHSHELL_STATE_TILED_L | NHSHELL_STATE_TILED_R
-	     | NHSHELL_STATE_TILED_T | NHSHELL_STATE_TILED_B)))
-    ack_flags = NHSHELL_ACK_CONTENT;
 
   if (states & NHSHELL_STATE_FULLSCREEN)
     fs = Qfullboth;
   else if (states & NHSHELL_STATE_MAXIMIZED)
     fs = Qmaximized;
-  if ((out->states ^ states)
-      & (NHSHELL_STATE_FULLSCREEN | NHSHELL_STATE_MAXIMIZED))
+  if (a->flags & NHG_RESIZE_FULLSCREEN)
     store_frame_param (f, Qfullscreen, fs);
   out->states = states;
   nhwl_csd_layout (f);
@@ -1976,26 +1996,22 @@ nhwl_configure (struct frame *f, const NhShellEvent *ev)
   /* The compositor's size is a suggestion in logical pixels, for the window
      geometry (the native area, and the title strip when we draw one); the
      frame keeps its own size when it already is that size once rounded.  */
-  if (ev->u.configure.w > 0 && ev->u.configure.h > 0)
+  if (a->w > 0 && a->h > 0)
     {
       int gw, gh, dw, dh;
 
       nhwl_csd_geometry_size (f, &gw, &gh);
-      if (ev->u.configure.w == gw && ev->u.configure.h == gh)
-	goto done;
-      nhwl_csd_native_size (f, ev->u.configure.w, ev->u.configure.h,
-			    &dw, &dh);
-      nhwl_clamp_native_size (f, &dw, &dh);
-      change_frame_size (f, dw, dh, false, true, false);
-      SET_FRAME_GARBAGED (f);
-      ack_flags = NHSHELL_ACK_CONTENT;
+      if (a->w != gw || a->h != gh)
+	{
+	  nhwl_csd_native_size (f, a->w, a->h, &dw, &dh);
+	  nhwl_clamp_native_size (f, &dw, &dh);
+	  change_frame_size (f, dw, dh, false, true, false);
+	  SET_FRAME_GARBAGED (f);
+	  /* The glue records the ack now, as a content ack.  */
+	  nhwl_frame_resized (f, dw, dh);
+	}
     }
- done:
 
-  /* The shell records the ack, sends it with the commit that carries it,
-     and wakes the pacer itself.  */
-  nhshell_window_ack_configure (FRAME_DISPLAY_INFO (f)->shell, out->window,
-				out->serial, ack_flags);
   if (FRAME_VISIBLE_P (f))
     fset_redisplay (f);
 }
@@ -2214,23 +2230,17 @@ nhwl_im_update (struct frame *f)
   }
 }
 
-/* The text of a PREEDIT or COMMIT_TEXT record as a Lisp string.  */
+/* The text of a PREEDIT or COMMIT_TEXT record as a Lisp string, from the
+   glue's action A (which took it from the shell); nil if it could not be
+   taken.  */
 static Lisp_Object
-nhwl_im_text (struct nhwl_display_info *dpyinfo, const NhShellEvent *ev)
+nhwl_im_text (const NhgAction *a)
 {
-  USE_SAFE_ALLOCA;
-  size_t len = 0;
-  char *buf;
-  Lisp_Object str = Qnil;
-
-  if (!ev->u.text.len)
+  if (!a->text)
+    return Qnil;
+  if (!a->len)
     return empty_unibyte_string;
-  buf = SAFE_ALLOCA (ev->u.text.len);
-  if (nhshell_take_text (dpyinfo->shell, ev->u.text.id, buf,
-			 ev->u.text.len, &len) == 0)
-    str = make_string (buf, len);
-  SAFE_FREE ();
-  return str;
+  return make_string (a->text, a->len);
 }
 
 static void
@@ -2328,31 +2338,116 @@ nhwl_key_frame (struct nhwl_display_info *dpyinfo, struct frame *f)
   return f ? nhwl_focus_target (nhwl_tree_root (f)) : dpyinfo->x_focus_frame;
 }
 
+/* Apply action A of the glue's event step, one whose kind is ported: the
+   Emacs calls the glue's decision needs.  An action whose window maps to
+   no frame is skipped.  Return the number of events stored (through
+   HOLD_QUIT where Emacs gave one).  */
+static int
+nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
+	    struct input_event *hold_quit)
+{
+  struct frame *f;
+  struct input_event ie;
+
+  switch (a->kind)
+    {
+    case NHG_ACT_RAW:
+      /* nhwl_drain_events handles it.  */
+      return 0;
+
+    case NHG_ACT_LOST:
+      /* Handled when the drain is over.  */
+      dpyinfo->connection_lost = true;
+      return 0;
+    }
+
+  f = a->window ? nhwl_window_to_frame (dpyinfo, a->window) : NULL;
+  if (!f)
+    return 0;
+  switch (a->kind)
+    {
+    case NHG_ACT_RESIZE:
+      nhwl_configure (f, a);
+      break;
+
+    case NHG_ACT_SCALE:
+      nhwl_scale_changed (f, a->code);
+      break;
+
+    case NHG_ACT_READY:
+      nhwl_present_tree (f);
+      break;
+
+    case NHG_ACT_DELETE:
+      EVENT_INIT (ie);
+      ie.kind = DELETE_WINDOW_EVENT;
+      ie.arg = Qnil;
+      XSETFRAME (ie.frame_or_window, f);
+      kbd_buffer_store_event_hold (&ie, hold_quit);
+      return 1;
+
+    default:
+      break;
+    }
+  return 0;
+}
+
+/* The most events one drain takes; the rest wait in the shell's queue,
+   whose descriptor stays readable.  */
+#define NHWL_DRAIN_MAX 256
+
 /* Drain DPYINFO's shell events into the keyboard buffer (through
    HOLD_QUIT where Emacs gave one); return the number of events stored.
-   Callers hold block_input.  */
+   The glue takes one event per step and answers with its actions, and
+   each is applied before the next step, so every decision sees what the
+   earlier events changed.  The glue's raw actions (kinds it has not
+   ported yet) are handled here on the old path.  Callers hold
+   block_input.  */
 int
 nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 		   struct input_event *hold_quit)
 {
   NhShellEvent ev;
+  NhgNextIn in;
+  NhgActionList list;
   int count = 0;
-  int rc;
+  int n = 0;
+  int rc = 0;
 
-  if (!dpyinfo->shell)
+  if (!dpyinfo->shell || dpyinfo->glue_broken)
     return 0;
 
   block_input ();
-  for (;;)
+  while (n < NHWL_DRAIN_MAX)
     {
       union buffered_input_event inev;
+      const NhgAction *raw;
       struct frame *f;
       bool have = false;
       bool csd_close = false;
+      size_t i;
 
-      rc = nhshell_next_event (dpyinfo->shell, &ev);
+      /* The facts the step reads, sampled again for each event.  */
+      in.flags = ((kbd_buffer_events_waiting () ? NHG_IN_INPUT_WAITING : 0)
+		  | (mwheel_coalesce_scroll_events
+		     ? NHG_IN_COALESCE_WHEEL : 0));
+      list.v = NULL;
+      list.n = 0;
+      rc = nhwl_glue_rc (dpyinfo,
+			 NHG (nhg_next (dpyinfo->glue, &in, &list)));
       if (rc <= 0)
 	break;
+      n++;
+
+      for (i = 0; i < list.n; i++)
+	count += nhwl_apply (dpyinfo, &list.v[i], hold_quit);
+      /* A raw action is its event's only one.  */
+      if (list.n != 1 || list.v[0].kind != NHG_ACT_RAW
+	  || (nhwl_glue_rc (dpyinfo,
+			    NHG (nhg_raw_event (dpyinfo->glue, &ev)))
+	      != NHG_OK))
+	continue;
+      raw = &list.v[0];
 
       EVENT_INIT (inev.ie);
       inev.ie.kind = NO_EVENT;
@@ -2485,25 +2580,6 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	    count += nhwl_scroll_record (f, &ev, hold_quit);
 	  break;
 
-	case NHSHELL_EV_CONFIGURE:
-	  if (f)
-	    nhwl_configure (f, &ev);
-	  break;
-
-	case NHSHELL_EV_CLOSE:
-	  if (f)
-	    {
-	      inev.ie.kind = DELETE_WINDOW_EVENT;
-	      XSETFRAME (inev.ie.frame_or_window, f);
-	      have = true;
-	    }
-	  break;
-
-	case NHSHELL_EV_SCALE:
-	  if (f)
-	    nhwl_scale_changed (f, ev.u.scale.scale120);
-	  break;
-
 	case NHSHELL_EV_FOCUS:
 	  if (ev.u.focus.in)
 	    dpyinfo->kbd_window = ev.window;
@@ -2536,7 +2612,7 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	  if (f)
 	    {
 	      /* pgtk's event: ((TEXT (ul . t))), nil when cleared.  */
-	      Lisp_Object str = nhwl_im_text (dpyinfo, &ev);
+	      Lisp_Object str = nhwl_im_text (raw);
 
 	      inev.ie.kind = PREEDIT_TEXT_EVENT;
 	      inev.ie.arg = (STRINGP (str) && SCHARS (str)
@@ -2551,7 +2627,7 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	case NHSHELL_EV_COMMIT_TEXT:
 	  f = nhwl_key_frame (dpyinfo, f);
 	  if (f)
-	    count += nhwl_im_commit (f, nhwl_im_text (dpyinfo, &ev), hold_quit);
+	    count += nhwl_im_commit (f, nhwl_im_text (raw), hold_quit);
 	  break;
 
 	case NHSHELL_EV_DELETE_SURROUNDING:
@@ -2559,14 +2635,6 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	  if (f)
 	    count += nhwl_im_delete (f, ev.u.text.before, ev.u.text.after,
 				     hold_quit);
-	  break;
-
-	case NHSHELL_EV_FRAME_READY:
-	  if (f)
-	    nhwl_present_tree (f);
-	  break;
-
-	case NHSHELL_EV_FRAME_DONE:
 	  break;
 
 	case NHSHELL_EV_SELECTION:
@@ -2662,11 +2730,6 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	    nhwl_output_left (FRAME_NHWL_OUTPUT (f), ev.u.output.id);
 	  break;
 
-	case NHSHELL_EV_DISCONNECTED:
-	  /* Handled after the loop, once the queue is empty.  */
-	  dpyinfo->connection_lost = true;
-	  break;
-
 	default:
 	  break;
 	}
@@ -2678,11 +2741,12 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	}
     }
 
-  if (rc == NHSHELL_E_DISCONNECTED)
+  if (rc == NHG_E_DISCONNECTED)
     dpyinfo->connection_lost = true;
 
-  /* Flush what we sent while handling the events.  */
-  if (rc != NHSHELL_E_DISCONNECTED)
+  /* Flush what we sent while handling the events.  A broken glue is
+     handled by the caller.  */
+  if (rc != NHG_E_DISCONNECTED && !dpyinfo->glue_broken)
     nhshell_dispatch_main (dpyinfo->shell);
   unblock_input ();
   return count;

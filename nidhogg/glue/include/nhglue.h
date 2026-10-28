@@ -154,12 +154,84 @@ int32_t nhg_frame_forget (NhgDisplay *d, uint64_t window);
    for none).  */
 #define NHG_FACT_VISIBLE     1
 #define NHG_FACT_ICONIFIED   2
+#define NHG_FACT_CSD         4   /* the frame draws its own title bar */
 typedef struct
 {
   int32_t native_w, native_h, col_w, line_h;
   uint64_t parent;
   uint32_t flags;		/* NHG_FACT_* */
 } NhgFrameFacts;
+
+/* Pushes, keyed by the window (C seeds them each time it makes a window for a frame).  NHG_E_STATE for a window not
+   registered.  The native size as Emacs has it (the size C last asked for, device pixels): C pushes it when it makes
+   the window, when applying a RESIZE action changes the frame's size, and when it resizes the frame itself; a
+   configure being applied then gets a content ack.  NHG_E_ARG for an empty size.  */
+int32_t nhg_frame_resized (NhgDisplay *d, uint64_t window, int32_t native_w, int32_t native_h);
+/* The scale (times 120) C gave the window when it made it.  */
+int32_t nhg_frame_scale (NhgDisplay *d, uint64_t window, uint32_t scale120);
+/* Whether the frame draws its own title bar (ON non-zero), after each layout of it.  */
+int32_t nhg_frame_csd (NhgDisplay *d, uint64_t window, int32_t on);
+
+/* ---- The event step ------------------------------------------------------------------------------------------------
+
+   read_socket_hook loops on nhg_next, which takes exactly one shell event and answers with its actions; C applies
+   them (the Emacs calls) before it asks again, so each decision sees what the earlier events changed.  Before each
+   call C samples NHG_IN_* again.  An action whose window maps to no frame is skipped.  Neither reads nor writes
+   pixels, nor does nhg_raw_event.  */
+
+#define NHG_IN_INPUT_WAITING   1   /* kbd_buffer_events_waiting () */
+#define NHG_IN_COALESCE_WHEEL  2   /* mwheel-coalesce-scroll-events */
+typedef struct { uint32_t flags; } NhgNextIn;
+
+/* Kinds 1-31 are the port's, 32-63 W2's and W3's.  */
+#define NHG_ACT_KEY              1
+#define NHG_ACT_CLICK            2
+#define NHG_ACT_WHEEL            3
+#define NHG_ACT_MOTION           4
+#define NHG_ACT_LEAVE            5
+#define NHG_ACT_RESIZE           6   /* W, H the suggestion (logical; 0: the frame's own), CODE the NHSHELL_STATE_*,
+				        FLAGS NHG_RESIZE_*; C pushes the frame's new size if it changes it */
+#define NHG_ACT_SCALE            7   /* CODE the scale times 120, SCALE the factor */
+#define NHG_ACT_GARBAGE          8
+#define NHG_ACT_DELETE           9   /* the compositor asks to close the window */
+#define NHG_ACT_FOCUS_IN        10
+#define NHG_ACT_FOCUS_OUT       11
+#define NHG_ACT_VISIBLE         12
+#define NHG_ACT_ICONIFIED       13
+#define NHG_ACT_READY           14   /* the window may present: C runs the present step, drawn or not */
+#define NHG_ACT_MONITORS        15
+#define NHG_ACT_LOST            16   /* the connection is gone */
+#define NHG_ACT_PREEDIT         17
+#define NHG_ACT_COMMIT          18
+#define NHG_ACT_IM_DELETE       19
+#define NHG_ACT_IM_SURROUNDING  20
+#define NHG_ACT_SELECTION_CLEAR 21
+/* Transitional: an event whose kind is not ported yet, handled on C's old path (nhg_raw_event gives it); a PREEDIT's
+   or COMMIT_TEXT's text comes as the action's text (null: it could not be taken).  */
+#define NHG_ACT_RAW             31
+
+#define NHG_RESIZE_FULLSCREEN    1   /* fullscreen or maximized changed: C stores the fullscreen parameter */
+
+typedef struct
+{
+  uint32_t kind;		/* NHG_ACT_* */
+  uint64_t window;		/* the shell window the event belongs to (0: none) */
+  uint64_t time_ms;
+  int32_t x, y, w, h, code;	/* per kind */
+  uint32_t mods, flags;
+  double dx, dy, scale;
+  const char *text;		/* UTF-8, NUL-terminated after LEN bytes; NULL: none */
+  size_t len;
+} NhgAction;
+typedef struct { const NhgAction *v; size_t n; } NhgActionList;
+
+/* Take exactly one shell event: 1 when it took one (OUT holds its 0..n actions), 0 when none is queued (OUT empty).
+   The actions and their texts stay valid until the next nhg_next on D; no other call frees them.  The acks of the
+   configures applied since the last call are recorded first.  IN may be NULL (no flags).  */
+int32_t nhg_next (NhgDisplay *d, const NhgNextIn *in, NhgActionList *out);
+
+/* The shell event behind the last NHG_ACT_RAW action into OUT; NHG_E_STATE when the last event gave none.  */
+int32_t nhg_raw_event (NhgDisplay *d, NhShellEvent *out);
 
 /* The first panic's report on D (message, location, backtrace): up to CAP - 1 bytes and a NUL into BUF, its full
    length into *LEN (0: no panic).  Works on a poisoned display.  */

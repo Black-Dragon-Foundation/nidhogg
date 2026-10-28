@@ -1,10 +1,11 @@
 //! A display: the shell connection, the frame registry, and what outlives a panic (the poisoned flag, the first
 //! panic's report, the connection's socket and the shell's threads, all outside the state's lock).
 
+use crate::action::Actions;
 use crate::backing::Backings;
 use crate::frame::{Frame, NHG_FRAME_KINDS};
 use crate::guard::{GlueError, PanicReport};
-use nhshell::api::BackendThread;
+use nhshell::api::{BackendThread, ShellBackend};
 use nhshell::ffi::{NhShell, nhshell_close};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -37,6 +38,10 @@ pub struct Display {
     forgotten: BTreeSet<u64>,
     /// Each frame's backing, layer and pending damage, keyed by its Glitnir root id (`backing.rs`).
     pub(crate) backings: Backings,
+    /// The last `nhg_next`'s actions, kept until the next one (`action.rs`).
+    pub(crate) actions: Actions,
+    /// Windows whose configure ack waits for C to apply the configure (`configure.rs`).
+    pub(crate) acks_due: Vec<u64>,
 }
 
 impl Drop for Display {
@@ -64,6 +69,8 @@ impl NhgDisplay {
                 frames: BTreeMap::new(),
                 forgotten: BTreeSet::new(),
                 backings: Backings::default(),
+                actions: Actions::default(),
+                acks_due: Vec::new(),
             }),
         }
     }
@@ -148,6 +155,21 @@ impl Display {
     /// The frame of `window`.
     pub fn frame(&self, window: u64) -> Result<&Frame, GlueError> {
         self.frames.get(&window).ok_or(GlueError::State)
+    }
+
+    pub fn frame_mut(&mut self, window: u64) -> Result<&mut Frame, GlueError> {
+        self.frames.get_mut(&window).ok_or(GlueError::State)
+    }
+
+    /// The shell's backend.
+    pub fn backend(&mut self) -> &mut dyn ShellBackend {
+        // SAFETY: the handle is live until the display is dropped, and the display's lock is held.
+        unsafe { self.shell.as_mut() }.backend_mut()
+    }
+
+    /// The last `nhg_next`'s actions.
+    pub fn actions(&self) -> &Actions {
+        &self.actions
     }
 
     pub fn is_forgotten(&self, window: u64) -> bool {

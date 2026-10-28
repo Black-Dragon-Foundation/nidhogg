@@ -8,8 +8,11 @@
 pub mod abi;
 #[macro_use]
 pub mod guard;
+pub mod action;
 pub mod backing;
+pub mod configure;
 pub mod display;
+pub mod drain;
 pub mod ffi;
 pub mod frame;
 
