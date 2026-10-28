@@ -332,6 +332,22 @@ with any channel differing by more than 2."
     (cons worst over)))
 (byte-compile 'gui-runner--pixel-diff)
 
+;;; The fake portal (gui.sh --portal fake; see fake-portal.el)
+
+(defun gui-runner-portal-script (replies)
+  "Replace the fake portal's script with REPLIES, a list of plists, one per coming call.
+Each is (:response N [:uris (URI...)]) or (:never t)."
+  (let ((file (or (getenv "NHWL_FAKE_PORTAL_SCRIPT") (error "gui-runner: the run has no fake portal (--portal fake)"))))
+    (with-temp-file file
+      (dolist (r replies) (insert (prin1-to-string r) "\n")))))
+
+(defun gui-runner-portal-log ()
+  "The fake portal's log so far: a list of (:method ... ) and (:close PATH) plists, oldest first."
+  (let ((file (or (getenv "NHWL_FAKE_PORTAL_LOG") (error "gui-runner: the run has no fake portal (--portal fake)"))))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (mapcar #'read (split-string (buffer-string) "\n" t)))))
+
 (defun glitnir-gui--load-tests ()
   (let ((dir (or (getenv "GLITNIR_GUI_TESTS") glitnir-gui--dir)))
     (dolist (f (let ((glob (getenv "GLITNIR_GUI_FILES")))
