@@ -104,7 +104,7 @@ impl ShellBackend for WaylandShell {
     /// pending, and look again, so nothing posted in between is lost.
     fn next_event(&mut self) -> ShellResult<Option<NhShellEvent>> {
         loop {
-            if let Some(ev) = self.shared.take()? {
+            if let Some(ev) = self.take_record()? {
                 self.frame_ready_taken(&ev);
                 return Ok(Some(ev));
             }
@@ -114,7 +114,7 @@ impl ShellBackend for WaylandShell {
                 let _ = self.dispatch_main_queue();
                 continue;
             }
-            let ev = self.shared.take()?;
+            let ev = self.take_record()?;
             if let Some(ev) = &ev {
                 self.frame_ready_taken(ev);
             }
@@ -126,6 +126,10 @@ impl ShellBackend for WaylandShell {
         if self.shared.is_closed() {
             return Err(ShellError::Disconnected);
         }
+        // nothing to do while reconnecting: `reconnect` reads the new connection
+        if self.reconnect.is_some() || self.shared.reconnect_pending() {
+            return Ok(());
+        }
         self.dispatch_main_queue()?;
         self.present_housekeeping();
         self.flush()
@@ -133,6 +137,18 @@ impl ShellBackend for WaylandShell {
 
     fn last_error(&self) -> String {
         self.last_error_impl()
+    }
+
+    fn set_reconnect(&mut self, on: bool) -> ShellResult {
+        self.set_reconnect_impl(on)
+    }
+
+    fn connection_state(&self) -> ConnectionState {
+        self.connection_state_impl()
+    }
+
+    fn reconnect(&mut self, timeout_ms: u32) -> ShellResult {
+        self.reconnect_impl(timeout_ms)
     }
 
     fn window_new_named(
@@ -200,10 +216,14 @@ impl ShellBackend for WaylandShell {
     }
 
     /// After the loss the window's local state still goes (its buffers are unmapped), and the call reports the loss.
+    /// While reconnecting the record is dropped and the call succeeds.
     fn window_destroy(&mut self, id: WindowId) -> ShellResult {
         let live = self.live();
         let done = self.window_destroy_local(id);
-        live.and(done)
+        match live {
+            Err(ShellError::Reconnecting) => done,
+            live => live.and(done),
+        }
     }
 
     fn child_new(&mut self, desc: &ChildDesc) -> ShellResult<WindowId> {
@@ -356,7 +376,8 @@ impl ShellBackend for WaylandShell {
 
     fn activation_token(&mut self, id: WindowId, timeout_ms: u32) -> ShellResult<String> {
         self.live()?;
-        self.activation_token_impl(id, timeout_ms)
+        let r = self.activation_token_impl(id, timeout_ms);
+        self.waited(r)
     }
 
     fn bell(&mut self, id: WindowId) -> ShellResult {
@@ -371,7 +392,8 @@ impl ShellBackend for WaylandShell {
 
     fn window_export(&mut self, id: WindowId, timeout_ms: u32) -> ShellResult<String> {
         self.live()?;
-        self.export_impl(id, timeout_ms)
+        let r = self.export_impl(id, timeout_ms);
+        self.waited(r)
     }
 
     fn session_open(&mut self, id: Option<&str>, reason: u32) -> ShellResult {
@@ -516,7 +538,8 @@ impl ShellBackend for WaylandShell {
 
     fn selection_read(&mut self, kind: u32, mime: &str, timeout_ms: u32) -> ShellResult<Vec<u8>> {
         self.live()?;
-        self.sel_read(kind, mime, timeout_ms)
+        let r = self.sel_read(kind, mime, timeout_ms);
+        self.waited(r)
     }
 
     fn dnd_status(&mut self, mime: Option<&str>, actions: u32, preferred: u32) -> ShellResult {

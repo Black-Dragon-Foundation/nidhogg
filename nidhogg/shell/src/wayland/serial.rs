@@ -84,6 +84,17 @@ impl SerialTracker {
             .retain(|(h, _)| matches!(h, Held::Touch(_)) != touch);
     }
 
+    /// The pointer buttons still held, oldest first.
+    pub fn held_buttons(&self) -> Vec<u32> {
+        self.held
+            .iter()
+            .filter_map(|(h, _)| match h {
+                Held::Button(b) => Some(*b),
+                Held::Touch(_) => None,
+            })
+            .collect()
+    }
+
     /// The serial a drag starts with: the newest press whose release has not come, and whether it is a touch point.
     pub fn drag_serial(&self) -> Option<(u32, bool)> {
         self.held

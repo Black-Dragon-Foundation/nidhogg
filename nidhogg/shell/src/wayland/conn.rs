@@ -8,10 +8,14 @@
 //!   when it finds the flag;
 //! - a host flush that returns EAGAIN sets `want_flush` and signals `reader_wake`; the reader then polls for POLLOUT
 //!   and flushes;
-//! - when the connection fails the reader posts one `DISCONNECTED` record and closes the records.
+//! - when the connection fails the reader posts one `DISCONNECTED` record and closes the records;
+//! - when it hangs up with reconnecting on, the reader posts `RECONNECTING` instead and holds the records: nothing
+//!   from the old connection is queued after it, until a reconnect resumes them (`reconnect.rs`).
 
 use crate::api::{ShellError, ShellResult, ThreadDone};
-use crate::event::{NHSHELL_EV_DISCONNECTED, NHSHELL_EV_KEY, NhShellEvent};
+use crate::event::{
+    NHSHELL_EV_DISCONNECTED, NHSHELL_EV_KEY, NHSHELL_EV_RECONNECTING, NhShellEvent,
+};
 use crate::wayland::selection::Selections;
 use crate::wayland::serial::SerialTracker;
 use rustix::event::{EventfdFlags, eventfd};
@@ -44,6 +48,61 @@ pub fn connect(display: Option<&CStr>) -> ShellResult<Connection> {
     };
     let stream = UnixStream::connect(path).map_err(|_| ShellError::Unsupported)?;
     Connection::from_socket(stream).map_err(|_| ShellError::Unsupported)
+}
+
+/// The absolute path of the socket `connect(display)` reaches, for connecting again; `None` for an inherited socket
+/// (`WAYLAND_SOCKET`), which cannot be.
+pub fn socket_path(display: Option<&CStr>) -> Option<PathBuf> {
+    let given = display
+        .map(|d| OsStr::from_bytes(d.to_bytes()).to_os_string())
+        .filter(|n| !n.is_empty());
+    let name = match given {
+        Some(n) => n,
+        None if std::env::var_os("WAYLAND_SOCKET").is_some() => return None,
+        None => std::env::var_os("WAYLAND_DISPLAY")
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "wayland-0".into()),
+    };
+    let name = Path::new(&name);
+    if name.is_absolute() {
+        Some(name.to_path_buf())
+    } else {
+        Some(PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?).join(name))
+    }
+}
+
+/// Why connecting again did not work.
+pub enum Refused {
+    /// The display is not there yet (no socket, refused, a full backlog): try again later.
+    NotYet,
+    /// Anything else: give up.
+    Failed,
+}
+
+/// Connect to `path` without waiting: a compositor that keeps its socket (`kwin_wayland_wrapper`) has the connection
+/// wait in the backlog, and one that binds the name again refuses or has no socket until it does.
+pub fn connect_again(path: &Path) -> Result<UnixStream, Refused> {
+    use rustix::io::Errno;
+    use rustix::net::{
+        AddressFamily, SocketAddrUnix, SocketFlags, SocketType, connect, socket_with,
+    };
+    let not_yet = |e: Errno| match e {
+        Errno::NOENT | Errno::CONNREFUSED | Errno::AGAIN => Refused::NotYet,
+        _ => Refused::Failed,
+    };
+    let fd = socket_with(
+        AddressFamily::UNIX,
+        SocketType::STREAM,
+        SocketFlags::CLOEXEC | SocketFlags::NONBLOCK,
+        None,
+    )
+    .map_err(|_| Refused::Failed)?;
+    let addr = SocketAddrUnix::new(path).map_err(|_| Refused::Failed)?;
+    connect(&fd, &addr).map_err(not_yet)?;
+    let stream = UnixStream::from(fd);
+    // as `connect` makes it: libwayland passes MSG_DONTWAIT itself
+    stream.set_nonblocking(false).map_err(|_| Refused::Failed)?;
+    Ok(stream)
 }
 
 /// A protocol error as libwayland logged it.
@@ -160,6 +219,8 @@ struct Records {
     queue: VecDeque<NhShellEvent>,
     /// `DISCONNECTED` was posted: nothing more is queued, and once it is taken the records report the loss.
     closed: bool,
+    /// `RECONNECTING` was posted: nothing more is queued until the reconnect resumes the records.
+    held: bool,
 }
 
 pub struct Shared {
@@ -174,9 +235,11 @@ pub struct Shared {
     pub main_pending: AtomicBool,
     /// The shell is closing; the reader leaves its loop without posting `DISCONNECTED`.
     pub stop: AtomicBool,
-    /// Readable from the moment the connection is lost, for good (never drained): the host's bounded waits (a
-    /// selection read) poll it and give up at once.
+    /// Readable from the moment the connection is lost, until a reconnect drains it: the host's bounded waits (a
+    /// selection read) and the presenter thread poll it and give up at once.
     pub gone: Wake,
+    /// A hangup posts `RECONNECTING` instead of `DISCONNECTED` (`set_reconnect`).
+    pub reconnect: AtomicBool,
     /// Input serials, written by the reader's handlers and read by the host's requests (move, resize, menus).
     pub serials: Mutex<SerialTracker>,
     /// The scale (times 120) of each surface, mirrored from the main queue for the pointer's device pixels.
@@ -209,6 +272,7 @@ impl Shared {
             main_pending: AtomicBool::new(false),
             stop: AtomicBool::new(false),
             gone: Wake::new()?,
+            reconnect: AtomicBool::new(false),
             serials: Mutex::default(),
             scale120: Mutex::default(),
             cursor_device: Mutex::default(),
@@ -222,9 +286,55 @@ impl Shared {
     /// Queue a record; the poster signals `wake` once per batch.
     pub fn post(&self, ev: NhShellEvent) {
         let mut r = relock(&self.records);
-        if !r.closed {
+        if !r.closed && !r.held {
             r.queue.push_back(ev);
         }
+    }
+
+    /// The connection hung up and the shell reconnects (the reader has posted what the loss ends: held buttons, touch
+    /// points, a preedit): queue our drag's `DRAG_DONE` (cancelled) as `close` does, and `RECONNECTING`; hold the
+    /// records, and wake the host and every bounded wait.
+    pub fn reconnecting(&self) {
+        // the selections' lock is never taken while the records' is held
+        let drag_done = crate::wayland::dnd::drag_lost(self);
+        {
+            let mut r = relock(&self.records);
+            if r.closed || r.held {
+                return;
+            }
+            r.queue.extend(drag_done);
+            r.queue
+                .push_back(NhShellEvent::new(NHSHELL_EV_RECONNECTING, 0, 0));
+            r.held = true;
+        }
+        self.gone.signal();
+        self.wake.signal();
+    }
+
+    /// `RECONNECTING` was posted and no reconnect has resumed the records since.
+    pub fn reconnect_pending(&self) -> bool {
+        relock(&self.records).held
+    }
+
+    /// Put `evs` before every queued record (the host's thread adds what the loss ends on its side).
+    pub fn push_front(&self, evs: Vec<NhShellEvent>) {
+        let mut r = relock(&self.records);
+        for ev in evs.into_iter().rev() {
+            r.queue.push_front(ev);
+        }
+    }
+
+    /// A new connection is in place: the records flow again, and the state of the old connection is forgotten (the
+    /// loss signal, flushes, input serials and the pointer's objects).
+    pub fn resume(&self) {
+        relock(&self.records).held = false;
+        self.gone.drain();
+        self.want_flush.store(false, Ordering::Release);
+        // the held presses go with the serials
+        *relock(&self.serials) = SerialTracker::default();
+        *relock(&self.cursor_device) = None;
+        *relock(&self.pointer) = None;
+        relock(&self.selections).leave();
     }
 
     /// Post the one `DISCONNECTED` record and wake the host.  Our drag, if one runs, ends first: its `DRAG_DONE`

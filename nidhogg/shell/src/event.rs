@@ -66,6 +66,12 @@ pub const NHSHELL_EV_TOUCH: u32 = 39;
 pub const NHSHELL_EV_PINCH: u32 = 40;
 /// The compositor answered `nhshell_session_open` (or took the session over): `u.session.state`.
 pub const NHSHELL_EV_SESSION: u32 = 41;
+/// The display went with reconnecting on (`ShellBackend::set_reconnect`): from the moment it is taken the shell is
+/// reconnecting, and the host drives `reconnect`.  The releases of held buttons, an empty `PREEDIT` and each
+/// window's `LEAVE_OUTPUT` come before it.  No payload.
+pub const NHSHELL_EV_RECONNECTING: u32 = 42;
+/// `reconnect` succeeded: the shell is connected again.  No payload.
+pub const NHSHELL_EV_RECONNECTED: u32 = 43;
 
 /// `session.state`.
 pub const NHSHELL_SESSION_CREATED: u32 = 0;
