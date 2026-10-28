@@ -8889,12 +8889,18 @@ kill_buffer_processes (Lisp_Object buffer)
       {
 #ifdef HAVE_NIDHOGG_WORKERS
 
-	nh_io_dead_close (XPROCESS (proc));
+	/* A connection's fds close before its deletion; a subprocess's
+	   after its SIGHUP below, which needs its infd.  */
+	if (NETCONN_P (proc) || SERIALCONN_P (proc) || PIPECONN_P (proc))
+	  nh_io_dead_close (XPROCESS (proc));
 #endif
 	if (NETCONN_P (proc) || SERIALCONN_P (proc) || PIPECONN_P (proc))
 	  Fdelete_process (proc);
 	else if (XPROCESS (proc)->infd >= 0)
 	  process_send_signal (proc, SIGHUP, Qnil, 1);
+#ifdef HAVE_NIDHOGG_WORKERS
+	nh_io_dead_close (XPROCESS (proc));
+#endif
       }
 #else  /* subprocesses */
   /* Since we have no subprocesses, this does nothing.  */
