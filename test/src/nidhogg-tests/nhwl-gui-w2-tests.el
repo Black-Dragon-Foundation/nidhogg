@@ -450,6 +450,156 @@ rule `errors' judges what was sent."
           (should (frame-live-p (selected-frame))))
       (dolist (f frames) (when (frame-live-p f) (delete-frame f))))))
 
+;; W2 Task 10: the drop target.  The recorder is a foreign source (`dnd_offer', `dnd_motion', `dnd_drop', read back
+;; with `dnd_log'); `pgtk-dnd.el' decides what a drop does.  Positions are logical surface pixels of the toplevel.
+
+(defun nhwl-gui--dnd-offer (types &rest args)
+  "A foreign drag enters the toplevel at (100, 100) offering TYPES, a plist of MIME keyword and text; ARGS override."
+  (let ((req (list :cmd "dnd_offer" :types types :actions ["copy" "move"] :preferred "copy"
+                   :surface "toplevel" :at [100 100])))
+    (while args (setq req (plist-put req (pop args) (pop args))))
+    (gui-runner-recorder req)
+    (nhwl-gui--pump 0.3)))
+
+(defun nhwl-gui--dnd-log ()
+  "The newest offer the recorder has logged."
+  (car (last (plist-get (gui-runner-recorder '(:cmd "dnd_log")) :offers))))
+
+(defun nhwl-gui--dnd-drop-on (buffer &optional at)
+  "Show BUFFER (emptied) in the selected window, drag text onto it (at AT, a vector, else (100, 100)) and drop."
+  (switch-to-buffer buffer)
+  (let ((inhibit-read-only t)) (erase-buffer))
+  (nhwl-gui--dnd-offer '(:text/plain "dropped text") :at (or at [100 100]))
+  (gui-runner-recorder `(:cmd "dnd_motion" :at ,(or at [100 100])))
+  (nhwl-gui--pump 0.3)
+  (gui-runner-recorder '(:cmd "dnd_drop"))
+  (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1)
+                    (with-current-buffer buffer (> (buffer-size) 0)))
+                  3))
+
+(ert-deftest nhwl-gui/drop-text-inserts-at-the-drop-point ()
+  "Dropping text on a window inserts it, and the source is told the drop finished."
+  :tags '(gnome-smoke)
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((b (generate-new-buffer " *dnd*")))
+    (unwind-protect
+        (progn
+          (should (nhwl-gui--dnd-drop-on b))
+          (should (equal (with-current-buffer b (buffer-string)) "dropped text"))
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1)
+                                    (nhwl-gui--get (nhwl-gui--dnd-log) :finished))
+                                  3)))
+      (kill-buffer b))))
+
+(ert-deftest nhwl-gui/drop-uri-list-opens-the-file ()
+  "Dropping a `text/uri-list' of one file visits it."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let* ((file (make-temp-file "nhwl-dnd-" nil ".txt" "from a file\n")) (b nil))
+    (unwind-protect
+        (progn
+          (switch-to-buffer (get-buffer-create " *dnd-host*"))
+          (nhwl-gui--dnd-offer (list :text/uri-list (concat "file://" file "\r\n")))
+          (gui-runner-recorder '(:cmd "dnd_motion" :at [100 100]))
+          (nhwl-gui--pump 0.3)
+          (gui-runner-recorder '(:cmd "dnd_drop"))
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (setq b (find-buffer-visiting file))) 3)))
+      (when b (kill-buffer b))
+      (kill-buffer " *dnd-host*")
+      (delete-file file))))
+
+(ert-deftest nhwl-gui/drop-on-the-mode-line-inserts-at-point ()
+  "A drop on the mode line has no buffer position: the text goes in at point."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((b (generate-new-buffer " *dnd*")))
+    (unwind-protect
+        (progn
+          (switch-to-buffer b)
+          (insert "abc")
+          (goto-char 2)
+          (let ((y (+ (nth 3 (window-inside-pixel-edges)) 3)))
+            (nhwl-gui--dnd-offer '(:text/plain "X") :at (vector 60 y))
+            (gui-runner-recorder `(:cmd "dnd_motion" :at [60 ,y]))
+            (nhwl-gui--pump 0.3)
+            (gui-runner-recorder '(:cmd "dnd_drop")))
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (> (buffer-size) 3)) 3))
+          (should (equal (buffer-string) "aXbc")))
+      (kill-buffer b))))
+
+(ert-deftest nhwl-gui/drop-on-a-child-frame-goes-to-the-child ()
+  "A drop over a child frame is the child's: its window gets the text and the toplevel's does not."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let* ((parent (selected-frame)) (b (generate-new-buffer " *dnd-child*")) (child nil)
+         (host (get-buffer-create " *dnd-host*")))
+    (unwind-protect
+        (progn
+          (switch-to-buffer host)
+          (setq child (make-frame `((parent-frame . ,parent) (left . 20) (top . 20) (width . 30) (height . 8)
+                                    (minibuffer . nil) (no-other-frame . t))))
+          (with-selected-frame child (switch-to-buffer b))
+          (nhwl-gui--pump 0.5)
+          (nhwl-gui--dnd-offer '(:text/plain "to the child") :surface "newest" :at [40 40])
+          (gui-runner-recorder '(:cmd "dnd_motion" :at [40 40] :surface "newest"))
+          (nhwl-gui--pump 0.3)
+          (gui-runner-recorder '(:cmd "dnd_drop"))
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (> (buffer-size b) 0)) 3))
+          (should (equal (with-current-buffer b (buffer-string)) "to the child"))
+          (should (zerop (buffer-size host))))
+      (when (frame-live-p child) (delete-frame child))
+      (kill-buffer b)
+      (kill-buffer host))))
+
+(ert-deftest nhwl-gui/drop-unknown-type-is-refused ()
+  "A drag that offers only `image/png' is not accepted and is never finished."
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--dnd-offer '(:image/png "PNGDATA"))
+  (gui-runner-recorder '(:cmd "dnd_motion" :at [101 101]))
+  (nhwl-gui--pump 0.5)
+  (let ((log (nhwl-gui--dnd-log)))
+    (should-not (stringp (nhwl-gui--get log :accepted)))
+    (should-not (nhwl-gui--get log :finished)))
+  (gui-runner-recorder '(:cmd "dnd_leave"))
+  (nhwl-gui--pump 0.3))
+
+(ert-deftest nhwl-gui/drop-from-a-silent-source-times-out ()
+  "A source that never sends its data: Emacs gives up at `nhwl-selection-timeout', destroys the offer within 1.5 s
+of the drop, answers at once after it, and the next, normal drop inserts."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((b (generate-new-buffer " *dnd*")))
+    (unwind-protect
+        (progn
+          (switch-to-buffer b)
+          (nhwl-gui--dnd-offer '(:text/plain "never read") :silent t)
+          (gui-runner-recorder '(:cmd "dnd_motion" :at [101 101]))
+          (nhwl-gui--pump 0.3)
+          (gui-runner-recorder '(:cmd "dnd_drop"))
+          (let ((t0 (float-time)))
+            (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.05)
+                                      (nhwl-gui--get (nhwl-gui--dnd-log) :destroyed))
+                                    1.5))
+            (should (= (+ 1 1) 2))
+            (should (< (- (float-time) t0) 1.6)))
+          (should (zerop (buffer-size b)))
+          (should (nhwl-gui--dnd-drop-on b))
+          (should (equal (with-current-buffer b (buffer-string)) "dropped text")))
+      (kill-buffer b))))
+
+(ert-deftest nhwl-gui/drop-motion-shows-the-insertion-point ()
+  "With `dnd-indicate-insertion-point', a drag moving over the text moves point to where the drop would go."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((b (generate-new-buffer " *dnd*")) (dnd-indicate-insertion-point t))
+    (unwind-protect
+        (progn
+          (switch-to-buffer b)
+          (insert (mapconcat #'identity (make-list 10 "0123456789") "\n"))
+          (goto-char (point-min))
+          (let ((y (+ (nth 1 (window-inside-pixel-edges)) (* 4 (default-line-pixel-height)) 2)))
+            (nhwl-gui--dnd-offer '(:text/plain "x") :at (vector 30 y))
+            (gui-runner-recorder `(:cmd "dnd_motion" :at [32 ,y])))
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (= (line-number-at-pos) 5)) 3))
+          (gui-runner-recorder '(:cmd "dnd_leave"))
+          (nhwl-gui--pump 0.3))
+      (kill-buffer b))))
+
 (provide 'nhwl-gui-w2-tests)
 
 ;;; nhwl-gui-w2-tests.el ends here

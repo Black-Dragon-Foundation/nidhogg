@@ -36,6 +36,15 @@ pub const NHG_ACT_SELECTION_CLEAR: u32 = 21;
 /// comes after it.
 pub const NHG_ACT_TITLE_BAR: u32 = 22;
 
+/// The drop target's actions (`dnd.rs`), numbered as the shell's events.  The window is the one under the pointer; `dx`,
+/// `dy` the position in device pixels; `time_ms` the compositor's drag time (not the event's), which Lisp hands back to
+/// `nhg_dnd_status` and `nhg_dnd_finish`; `code` the action (`NHSHELL_DND_*`, 0: none): the source's preferred one for
+/// an enter or a motion, the chosen one for a drop.  `DND_LEAVE` has the window only.  36–38 are the drag source's.
+pub const NHG_ACT_DND_ENTER: u32 = 32;
+pub const NHG_ACT_DND_MOTION: u32 = 33;
+pub const NHG_ACT_DND_LEAVE: u32 = 34;
+pub const NHG_ACT_DND_DROP: u32 = 35;
+
 /// `RESIZE` flags: fullscreen or maximized changed (C stores the frame's `fullscreen` parameter).
 pub const NHG_RESIZE_FULLSCREEN: u32 = 1;
 

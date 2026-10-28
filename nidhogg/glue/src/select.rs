@@ -14,7 +14,7 @@
 
 use crate::display::Display;
 use crate::guard::GlueError;
-use nhshell::api::{NHSHELL_SEL_PRIMARY, ShellBackend};
+use nhshell::api::{NHSHELL_SEL_DND, NHSHELL_SEL_PRIMARY, ShellBackend};
 
 /// The selections the shell knows: `NHSHELL_SEL_CLIPBOARD` and `NHSHELL_SEL_PRIMARY`.
 const KINDS: usize = 2;
@@ -34,6 +34,14 @@ pub struct Select {
 fn index(kind: u32) -> Result<usize, GlueError> {
     match kind {
         k if k <= NHSHELL_SEL_PRIMARY => Ok(k as usize),
+        _ => Err(GlueError::Arg),
+    }
+}
+
+/// `kind` for a call that only reads: also the offer of the drag over our windows, `NHSHELL_SEL_DND` (`dnd.rs`).
+fn readable(kind: u32) -> Result<(), GlueError> {
+    match kind {
+        k if k <= NHSHELL_SEL_DND => Ok(()),
         _ => Err(GlueError::Arg),
     }
 }
@@ -67,7 +75,7 @@ impl Select {
 
     /// Whether our source is the current selection `kind`.
     pub fn owned(backend: &dyn ShellBackend, kind: u32) -> Result<bool, GlueError> {
-        index(kind)?;
+        readable(kind)?;
         Ok(backend.selection_owned(kind)?)
     }
 
@@ -78,7 +86,7 @@ impl Select {
         backend: &dyn ShellBackend,
         kind: u32,
     ) -> Result<(usize, &[u8]), GlueError> {
-        index(kind)?;
+        readable(kind)?;
         let types = backend.selection_types(kind)?;
         self.types.clear();
         for t in &types {
@@ -100,7 +108,7 @@ impl Select {
         mime: &str,
         timeout_ms: u32,
     ) -> Result<&[u8], GlueError> {
-        index(kind)?;
+        readable(kind)?;
         self.bytes = Vec::new();
         self.bytes = backend.selection_read(kind, mime, timeout_ms)?;
         Ok(&self.bytes)
@@ -162,6 +170,10 @@ pub fn read<'a>(
     mime: &str,
     timeout_ms: u32,
 ) -> Result<&'a [u8], GlueError> {
+    if kind == NHSHELL_SEL_DND {
+        // the drop target accepts with the type Lisp read
+        state.dnd.note_read(mime);
+    }
     let sh = state.shell();
     // SAFETY: as in `split`.
     let backend = unsafe { &mut *sh }.backend_mut();

@@ -38,6 +38,9 @@ pub mod child;
 // window layers
 pub mod layers;
 
+// the drop target
+pub mod dnd;
+
 // the bell, idle inhibition, export handles and activation tokens
 pub mod bell;
 
