@@ -398,13 +398,41 @@ mod pacer {
         assert!(!acked(&log_since(&rec, seq), serial), "no bare ack");
         rec.control(r#"{"cmd":"release"}"#);
         wait_for(&mut shell, |e| e.kind == NHSHELL_EV_FRAME_READY);
-        assert_ne!(bits(&mut shell, id) & NHSHELL_READY_CONTENT, 0);
+        let b = bits(&mut shell, id);
+        assert_ne!(b & NHSHELL_READY_CONTENT, 0);
+        assert_ne!(
+            b & nhshell::api::NHSHELL_READY_ACK,
+            0,
+            "a content ack waits"
+        );
         draw(&mut shell, id, &[full()]);
         std::thread::sleep(Duration::from_millis(100));
         assert!(
             acked(&log_since(&rec, seq), serial),
             "the buffer carries it"
         );
+    }
+
+    /// A begin that finds every buffer busy does not take the draw that `window_ready` reported: the release brings
+    /// `FRAME_READY` and `CONTENT` with no new `window_dirty`.
+    #[test]
+    fn starved_begin_keeps_the_draw() {
+        let rec = Recorder::start_clock("kwin", "manual");
+        rec.control(r#"{"cmd":"mode","hold_buffers":2}"#);
+        let mut shell = rec.open();
+        let id = window(&mut shell);
+        for _ in 0..3 {
+            draw(&mut shell, id, &[full()]);
+            present(&rec);
+            until(&mut shell, "the frame callback", |s| !waiting(s, id));
+        }
+        shell.window_dirty(id).unwrap();
+        assert_eq!(bits(&mut shell, id), NHSHELL_READY_CONTENT);
+        assert!(shell.present_begin(id, 200, 100).is_err(), "all three busy");
+        while shell.next_event().unwrap().is_some() {}
+        rec.control(r#"{"cmd":"release"}"#);
+        wait_for(&mut shell, |e| e.kind == NHSHELL_EV_FRAME_READY);
+        assert_eq!(bits(&mut shell, id), NHSHELL_READY_CONTENT);
     }
 
     /// A content ack waives the wait: the pool grows to three buffers where two are busy and the pacer waits.

@@ -424,59 +424,108 @@ nhwl_dirty (struct frame *f)
     nhshell_window_dirty (dpyinfo->shell, out->window);
 }
 
-/* Show the backing when the window's pacer says so (FRAME_READY): Glitnir
-   commits the frame's damage, the shell hands out a buffer, Glitnir
-   composes the damage (and what the buffer's age leaves stale) into it, and
-   the buffer is committed.  The pacer owns when: frame callbacks, the
-   suspended state and a lack of buffers are its states, not ours.  Nothing
-   is done before the compositor's first configure, while the frame is
-   invisible, or while the frame has not taken the size change_frame_size
-   queued for the next redisplay (the next redisplay draws, and
-   nhwl_frame_up_to_date asks again).  Return true when a buffer was
-   committed.  */
-bool
-nhwl_present (struct frame *f)
+/* Whether F's window can be presented at all: it is shown, it has the size
+   change_frame_size queued for the next redisplay (that redisplay draws,
+   and the backstop asks again), and a child frame is mapped.  The shell's
+   ready bits gate the rest, the compositor's first configure included.  */
+static bool
+nhwl_presentable (struct frame *f)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
-  struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
-  NhShellBuffer buf;
-  int rc, ready = 0;
 
-  if (!dpyinfo->shell || !out->window)
-    return false;
-  /* Asking is what lets the pacer say FRAME_READY again, so ask first.  */
-  if (nhshell_window_ready (dpyinfo->shell, out->window, &ready) < 0
-      || !ready || !out->configured || !FRAME_VISIBLE_P (f) || f->new_size_p
-      || (nhwl_child_p (f) && !out->child.mapped))
-    return false;
+  return (FRAME_DISPLAY_INFO (f)->shell && out->window && FRAME_VISIBLE_P (f)
+	  && !f->new_size_p && !(nhwl_child_p (f) && !out->child.mapped));
+}
 
-  block_input ();
+/* Bring what F's window shows up to date with what was drawn: the backing's
+   size, the title strip, the child frame's position and input region, and
+   Glitnir's damage, which joins the pending list.  */
+static void
+nhwl_prepare (struct frame *f)
+{
   nhwl_backing_resize (f);
   nhwl_csd_draw (f);
   nhwl_child_sync (f);
   nhwl_glitnir_commit (f);
+}
 
-  rc = nhshell_present_begin (dpyinfo->shell, out->window, out->cr_width,
-			      out->cr_height, &buf);
-  if (rc < 0)
+/* The window's pacer says FRAME_READY: the one place its surface commits.
+   A buffer when something was drawn (pending damage) or a content ack
+   waits, and the pacer lets a buffer go (a content ack with nothing drawn
+   shows the whole frame); else a bare commit (no buffer, frame callback,
+   feedback or stats) when one is owed: a bare ack, or surface state; else
+   nothing.  A content ack never goes out bare: the shell holds it.  Nothing
+   is decided while buffer flips are blocked (redisplay is drawing); the
+   unblocked hook asks again.  Return true when a buffer was committed.  */
+static bool
+nhwl_present_tree (struct frame *f)
+{
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  NhShell *sh = FRAME_DISPLAY_INFO (f)->shell;
+  NhShellBuffer buf;
+  int ready = 0;
+  bool shown = false;
+
+  if (!nhwl_presentable (f))
+    return false;
+  if (redisplaying_p || buffer_flipping_blocked_p ())
     {
-      /* Every buffer is busy: the pacer is starved and says FRAME_READY
-	 again at a buffer release.  */
-      unblock_input ();
+      out->ready_held = true;
       return false;
     }
+  out->ready_held = false;
+  if (nhshell_window_ready (sh, out->window, &ready) < 0 || !ready)
+    return false;
 
-  nhwl_glitnir_compose (f, &buf);
-
-  nhwl_csd_send_geometry (f);
-  rc = nhshell_present_commit (dpyinfo->shell, out->window, out->pending,
-			       out->npending);
-  if (rc >= 0)
-    nhwl_glitnir_presented (f);
-  else
-    nhwl_dirty (f);
+  block_input ();
+  nhwl_prepare (f);
+  if ((ready & NHSHELL_READY_ACK) && !out->npending)
+    {
+      glitnir_damage_all (out->glitnir_id);
+      nhwl_glitnir_commit (f);
+    }
+  /* A failed begin starves the pacer, which keeps the draw for the next
+     buffer release.  */
+  if ((ready & NHSHELL_READY_CONTENT) && out->npending
+      && nhshell_present_begin (sh, out->window, out->cr_width,
+				out->cr_height, &buf) >= 0)
+    {
+      nhwl_glitnir_compose (f, &buf);
+      nhwl_csd_send_geometry (f);
+      shown = nhshell_present_commit (sh, out->window, out->pending,
+				      out->npending) >= 0;
+      if (shown)
+	nhwl_glitnir_presented (f);
+      else
+	nhwl_dirty (f);
+    }
+  if (!shown && (ready & NHSHELL_READY_OWED))
+    nhshell_present_bare (sh, out->window);
   unblock_input ();
-  return rc >= 0;
+  return shown;
+}
+
+/* After a redisplay, or a draw outside one: wake the pacer when Glitnir
+   holds damage, or when a FRAME_READY came while buffer flips were blocked.
+   A redisplay that drew nothing wakes nothing, and a key read before it
+   (one that drew nothing) stops waiting for a paint to be timed by, held
+   FRAME_READY or not.  */
+static void
+nhwl_backstop (struct frame *f)
+{
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+
+  if (!nhwl_presentable (f))
+    return;
+  nhwl_prepare (f);
+  if (!out->npending && out->t_key_ns
+      && out->key_redisplay != redisplay_counter)
+    out->t_key_ns = 0;
+  if (out->npending || out->ready_held)
+    {
+      out->ready_held = false;
+      nhwl_dirty (f);
+    }
 }
 
 /* Adapted from pgtk_clear_area.  */
@@ -1393,7 +1442,10 @@ nhwl_key_event (struct frame *f, const NhShellEvent *ev,
   inev->ie.timestamp = ev->time_ns / 1000000;
   /* The frame-time record's start: our clock, not the compositor's.  */
   if (!FRAME_NHWL_OUTPUT (f)->t_key_ns)
-    FRAME_NHWL_OUTPUT (f)->t_key_ns = nhwl_now_ns ();
+    {
+      FRAME_NHWL_OUTPUT (f)->t_key_ns = nhwl_now_ns ();
+      FRAME_NHWL_OUTPUT (f)->key_redisplay = redisplay_counter;
+    }
 
   /* make_lispy_event turns characters into control characters: the
      keysym is the key's, not the control character's.  */
@@ -2129,7 +2181,7 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 
 	case NHSHELL_EV_FRAME_READY:
 	  if (f)
-	    nhwl_present (f);
+	    nhwl_present_tree (f);
 	  break;
 
 	case NHSHELL_EV_FRAME_DONE:
@@ -2357,16 +2409,15 @@ nhwl_frame_up_to_date (struct frame *f)
   block_input ();
   FRAME_MOUSE_UPDATE (f);
   nhwl_im_update (f);
-  if (!buffer_flipping_blocked_p () && FRAME_VISIBLE_P (f))
-    nhwl_dirty (f);
+  if (!buffer_flipping_blocked_p ())
+    nhwl_backstop (f);
   unblock_input ();
 }
 
 static void
 nhwl_buffer_flipping_unblocked_hook (struct frame *f)
 {
-  if (FRAME_VISIBLE_P (f))
-    nhwl_dirty (f);
+  nhwl_backstop (f);
 }
 
 static void
@@ -2870,7 +2921,6 @@ between two presents.  The motion bench of the W0 budgets.  */)
 {
   struct frame *f = SELECTED_FRAME ();
   struct nhwl_output *out;
-  struct nhwl_display_info *dpyinfo;
   struct timespec ts;
   double *compose, *interval, prev = 0;
   ptrdiff_t frames, i, done = 0;
@@ -2882,7 +2932,6 @@ between two presents.  The motion bench of the W0 budgets.  */)
   if (frames < 1 || frames > 100000)
     error ("N must be 1 to 100000");
   out = FRAME_NHWL_OUTPUT (f);
-  dpyinfo = FRAME_DISPLAY_INFO (f);
   if (!out->glitnir_id || !out->configured)
     error ("The frame is not shown yet");
 
@@ -2895,21 +2944,19 @@ between two presents.  The motion bench of the W0 budgets.  */)
       bool committed;
 
       /* The previous present's frame callback (about one refresh): the
-	 pacer is ready again.  */
+	 pacer is ready again.  Asking takes the draw, so the present asks
+	 itself, until it commits; the try that commits is timed.  */
       glitnir_damage_all (out->glitnir_id);
       nhwl_dirty (f);
-      while (waits++ < 5000)
+      do
 	{
-	  int ready = 0;
-
-	  if (nhshell_window_ready (dpyinfo->shell, out->window, &ready) < 0
-	      || ready)
-	    break;
-	  poll (NULL, 0, 1);
+	  if (waits)
+	    poll (NULL, 0, 1);
+	  clock_gettime (CLOCK_MONOTONIC, &ts);
+	  t0 = nhwl_bench_ms (ts);
+	  committed = nhwl_present_tree (f);
 	}
-      clock_gettime (CLOCK_MONOTONIC, &ts);
-      t0 = nhwl_bench_ms (ts);
-      committed = nhwl_present (f);
+      while (!committed && waits++ < 5000);
       clock_gettime (CLOCK_MONOTONIC, &ts);
       t1 = nhwl_bench_ms (ts);
       if (!committed)
