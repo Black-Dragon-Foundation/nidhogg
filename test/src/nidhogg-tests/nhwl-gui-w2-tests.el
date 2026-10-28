@@ -1111,6 +1111,322 @@ the menu has closed, a key arrives in the frame again."
                                (nhwl-gui--menu-send 1))))))
     (should (eql commits 0))))
 
+;; Dragging out of Emacs (`x-begin-drag').  The recorder is the foreign target (`drag_target', `drag_drop',
+;; `drag_cancel', read back with `drag_log').  `x-begin-drag' blocks until the drag ends, so the target's part is sent
+;; by a batch Nidhogg started just before the call (`nhwl-gui--recorder-later'), whose output holds the replies.
+;; Positions are logical surface pixels of the toplevel.
+
+(defun nhwl-gui--recorder-later (steps)
+  "Send STEPS to the recorder from a batch Nidhogg, one after another; return its process.
+Each step is (SECONDS . PLIST): wait SECONDS, send PLIST and wait for the reply, which goes to the process's buffer
+as one line."
+  (let ((form `(let ((path ,(getenv "GLITNIR_GUI_RECORDER")))
+                 (dolist (step ',steps)
+                   (sleep-for (car step))
+                   (let* ((reply "")
+                          (p (make-network-process
+                              :name "later" :family 'local :service path :coding 'utf-8
+                              :filter (lambda (_p out) (setq reply (concat reply out))))))
+                     (process-send-string p (concat (json-serialize (cdr step)) "\n"))
+                     (let ((deadline (+ (float-time) 10)))
+                       (while (and (not (string-suffix-p "\n" reply)) (< (float-time) deadline))
+                         (accept-process-output p 0.1)))
+                     (delete-process p)
+                     (princ reply))))))
+    (make-process :name "nhwl-gui-later" :noquery t :connection-type 'pipe
+                  :buffer (generate-new-buffer " *nhwl-gui-later*")
+                  :command (list (expand-file-name invocation-name invocation-directory)
+                                 "-Q" "--batch" "--eval" (prin1-to-string form)))))
+
+(defun nhwl-gui--later-output (later)
+  "The replies LATER (from `nhwl-gui--recorder-later') printed, once it has exited (10 s at most)."
+  (nhwl-gui--wait (lambda () (not (process-live-p later))) 10)
+  (with-current-buffer (process-buffer later) (buffer-string)))
+
+(defun nhwl-gui--drag-cleanup (later)
+  "Stop LATER, release the button and read what is left, so the next row starts clean."
+  (when later
+    (when (process-live-p later) (delete-process later))
+    (kill-buffer (process-buffer later)))
+  (ignore-errors (gui-runner-recorder '(:cmd "button" :button 272 :state "release")))
+  (nhwl-gui--pump))
+
+(defun nhwl-gui--drag-press (&optional x y)
+  "Press the left button over the toplevel at X, Y (default 100, 100) and keep it held; the press is read and dropped."
+  (nhwl-gui--point (or x 100) (or y 100))
+  (gui-runner-recorder '(:cmd "button" :button 272 :state "press"))
+  (nhwl-gui--pump))
+
+(defun nhwl-gui--drags ()
+  "The drags the recorder has logged, oldest first."
+  (plist-get (gui-runner-recorder '(:cmd "drag_log")) :drags))
+
+(defun nhwl-gui--drag-log ()
+  "The newest drag the recorder has logged."
+  (car (last (nhwl-gui--drags))))
+
+(defun nhwl-gui--mouse-event-p (e)
+  "Non-nil when E is a mouse button event."
+  (and (consp e) (memq (event-basic-type e) '(mouse-1 down-mouse-1))))
+
+(ert-deftest nhwl-gui/drag-text-out-copy ()
+  "Text dragged out starts with the held button's serial and offers text/plain;charset=utf-8; the target reads
+\"hello\", and the call returns `copy'."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((later nil))
+    (unwind-protect
+        (progn
+          (nhwl-gui--drag-press)
+          (setq later (nhwl-gui--recorder-later
+                       '((0.8 :cmd "drag_target" :accept "text/plain;charset=utf-8" :action "copy")
+                         (0.2 :cmd "drag_drop" :finish t))))
+          (should (eq (dnd-begin-text-drag "hello") 'copy))
+          (should (string-search "\"data\":\"hello\"" (nhwl-gui--later-output later)))
+          (let ((log (nhwl-gui--drag-log)))
+            (should (equal (plist-get log :serial_kind) "button"))
+            (should (member "text/plain;charset=utf-8" (plist-get log :mimes)))
+            (should (equal (plist-get log :result) "finished"))))
+      (nhwl-gui--drag-cleanup later))))
+
+(ert-deftest nhwl-gui/drag-file-out-move ()
+  "A file dragged out with `move', which the target picks: the call returns `move', and the bytes are its
+file:// URI."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((file (make-temp-file "nhwl-drag-" nil ".txt" "dragged file\n")) (later nil))
+    (unwind-protect
+        (progn
+          (nhwl-gui--drag-press)
+          (setq later (nhwl-gui--recorder-later
+                       '((0.8 :cmd "drag_target" :accept "text/uri-list" :action "move")
+                         (0.2 :cmd "drag_drop" :finish t))))
+          (should (eq (dnd-begin-file-drag file nil 'move) 'move))
+          (let ((out (nhwl-gui--later-output later)))
+            (should (string-search "\"data\":\"file:///" out))
+            (should (string-search (file-name-nondirectory file) out)))
+          (should (member "text/uri-list" (plist-get (nhwl-gui--drag-log) :mimes))))
+      (nhwl-gui--drag-cleanup later)
+      (delete-file file))))
+
+(ert-deftest nhwl-gui/drag-out-cancelled-returns-nil ()
+  "A drag cancelled over nothing returns nil within 1 s of the cancel, the buffer is unchanged, and the next click
+arrives."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((b (generate-new-buffer " *drag*")) (later nil) (r 'unset) (t0 nil))
+    (unwind-protect
+        (progn
+          (switch-to-buffer b)
+          (insert "keep this text")
+          (nhwl-gui--drag-press)
+          (setq later (nhwl-gui--recorder-later '((0.8 :cmd "drag_cancel"))))
+          (setq t0 (float-time))
+          (setq r (dnd-begin-text-drag "keep this text" nil 'move))
+          (should-not r)
+          ;; the batch Nidhogg's start and its 0.8 s wait, then at most 1 s
+          (should (< (- (float-time) t0) 2.5))
+          (should (equal (buffer-string) "keep this text"))
+          (nhwl-gui--point 120 100)
+          (gui-runner-recorder '(:cmd "button" :button 272 :state "press"))
+          (gui-runner-recorder '(:cmd "button" :button 272 :state "release"))
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--mouse-event-p (read-event nil nil 0.1))) 3)))
+      (nhwl-gui--drag-cleanup later)
+      (kill-buffer b))))
+
+(ert-deftest nhwl-gui/drag-out-target-never-finishes ()
+  "A target that takes the drop as a move but never finishes: the call returns nil within
+`nhwl-dnd-finish-timeout' + 1 s of the drop, and the region a move would delete stays."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((b (generate-new-buffer " *drag*")) (later nil) (t0 nil) (nhwl-dnd-finish-timeout 1.0))
+    (unwind-protect
+        (progn
+          (switch-to-buffer b)
+          (insert "moved text")
+          (nhwl-gui--drag-press)
+          (setq later (nhwl-gui--recorder-later
+                       '((0.8 :cmd "drag_target" :accept "text/plain;charset=utf-8" :action "move")
+                         (0.2 :cmd "drag_drop" :finish :false))))
+          (setq t0 (float-time))
+          (let ((r (dnd-begin-text-drag "moved text" nil 'move)))
+            (should-not r)
+            ;; the batch Nidhogg's start, its 1 s of waits, the timeout and 1 s
+            (should (< (- (float-time) t0) 4.0))
+            ;; what `mouse-drag-and-drop-region' does with the result
+            (when (eq r 'move) (delete-region (point-min) (point-max))))
+          (should (equal (buffer-string) "moved text")))
+      (nhwl-gui--drag-cleanup later)
+      (kill-buffer b))))
+
+(ert-deftest nhwl-gui/drag-out-without-a-button-returns-nil ()
+  "Without a held button the call returns nil at once, and no drag starts."
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--click 100 100)
+  (let ((before (length (nhwl-gui--drags))) (t0 (float-time)))
+    (should-not (dnd-begin-text-drag "x"))
+    (should (< (- (float-time) t0) 0.5))
+    (should (= (length (nhwl-gui--drags)) before))))
+
+(ert-deftest nhwl-gui/quit-during-drag-cancels ()
+  "C-g during a drag gives it up and quits, at once; the display stays, and the next click arrives."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((later nil) (t0 nil))
+    (unwind-protect
+        (progn
+          (nhwl-gui--drag-press)
+          (setq later (nhwl-gui--recorder-later
+                       '((0.8 :cmd "key" :keycode 29 :state "press")
+                         (0 :cmd "key" :text "g")
+                         (0 :cmd "key" :keycode 29 :state "release"))))
+          (setq t0 (float-time))
+          (should (eq (condition-case nil
+                          (progn (dnd-begin-text-drag "x") 'returned)
+                        (quit 'quit))
+                      'quit))
+          (should (< (- (float-time) t0) 3.0))
+          (should (nhwl-gui--connected-p))
+          (nhwl-gui--drag-cleanup later)
+          (setq later nil)
+          (nhwl-gui--point 120 100)
+          (gui-runner-recorder '(:cmd "button" :button 272 :state "press"))
+          (gui-runner-recorder '(:cmd "button" :button 272 :state "release"))
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--mouse-event-p (read-event nil nil 0.1))) 3)))
+      (nhwl-gui--drag-cleanup later))))
+
+(ert-deftest nhwl-gui/drag-region-cross-program ()
+  "With `mouse-drag-and-drop-region-cross-program', the region dragged out of the frame reaches the other client."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((b (generate-new-buffer " *drag-region*")) (later nil)
+        (mouse-drag-and-drop-region t) (mouse-drag-and-drop-region-cross-program t))
+    (unwind-protect
+        (progn
+          (switch-to-buffer b)
+          (delete-other-windows)
+          (insert "the dragged region")
+          (set-mark (point-min))
+          (goto-char (point-max))
+          (activate-mark)
+          (redisplay t)
+          (let* ((e (window-inside-pixel-edges))
+                 (x (+ (nth 0 e) 10))
+                 (y (+ (nth 1 e) 3))
+                 (out (+ (frame-pixel-width) 40)))
+            (nhwl-gui--point x y)
+            (gui-runner-recorder '(:cmd "button" :button 272 :state "press"))
+            (setq later (nhwl-gui--recorder-later
+                         `((0.6 :cmd "pointer" :pos [,(+ x 20) ,y])
+                           (0.3 :cmd "pointer" :pos [,out ,y])
+                           (1.0 :cmd "drag_target" :accept "text/plain;charset=utf-8" :action "copy")
+                           (0.2 :cmd "drag_drop" :finish t))))
+            (let ((ev (nhwl-gui--press-event nil)))
+              (should ev)
+              (funcall (key-binding (vector 'down-mouse-1)) ev)))
+          (should (string-search "\"data\":\"the dragged region\"" (nhwl-gui--later-output later)))
+          (should (equal (buffer-string) "the dragged region")))
+      (nhwl-gui--drag-cleanup later)
+      (kill-buffer b))))
+
+(ert-deftest nhwl-gui/drag-back-over-emacs-returns-the-frame ()
+  "With RETURN-FRAME, a drag that leaves the frame and comes back over it is given up, and the call returns the
+frame."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((later nil) (out (+ (frame-pixel-width) 40)))
+    (unwind-protect
+        (progn
+          (gui-set-selection 'XdndSelection "x")
+          (nhwl-gui--drag-press)
+          (setq later (nhwl-gui--recorder-later
+                       `((0.8 :cmd "pointer" :pos [,out 100])
+                         (0.3 :cmd "pointer" :pos [120 100]))))
+          (should (eq (x-begin-drag '("text/plain;charset=utf-8") 'XdndActionCopy nil t) (selected-frame)))
+          (should (nhwl-gui--connected-p)))
+      (nhwl-gui--drag-cleanup later))))
+
+(ert-deftest nhwl-gui/drag-onto-own-frame-drops ()
+  "With ALLOW-CURRENT-FRAME, text dragged onto another window of the same frame is inserted there, and the call
+returns `copy'."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((src (generate-new-buffer " *drag-src*")) (dst (generate-new-buffer " *drag-dst*")) (later nil))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer src)
+          (insert "source")
+          (let ((w (split-window-right)))
+            (set-window-buffer w dst)
+            (redisplay t)
+            (let* ((se (window-inside-pixel-edges))
+                   (de (window-inside-pixel-edges w)))
+              (nhwl-gui--drag-press (+ (nth 0 se) 10) (+ (nth 1 se) 3))
+              (setq later (nhwl-gui--recorder-later
+                           `((0.8 :cmd "pointer" :pos [,(+ (nth 0 de) 10) ,(+ (nth 1 de) 3)])
+                             (0.4 :cmd "button" :button 272 :state "release"))))))
+          (should (eq (dnd-begin-text-drag "dragged in" nil 'copy t) 'copy))
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (> (buffer-size dst) 0)) 3))
+          (should (equal (with-current-buffer dst (buffer-string)) "dragged in"))
+          (should (equal (with-current-buffer src (buffer-string)) "source")))
+      (nhwl-gui--drag-cleanup later)
+      (delete-other-windows)
+      (kill-buffer src)
+      (kill-buffer dst))))
+
+(defun nhwl-gui--sway-node (node pid)
+  "The node of sway's tree NODE (an alist), or one below it, whose process is PID."
+  (if (eql (alist-get 'pid node) pid)
+      node
+    (seq-some (lambda (n) (nhwl-gui--sway-node n pid))
+              (append (alist-get 'nodes node) (alist-get 'floating_nodes node)))))
+
+(defun nhwl-gui--sway-centre (pid)
+  "The centre (X . Y), in sway's layout pixels, of the window of process PID, or nil."
+  (with-temp-buffer
+    (when (eq 0 (call-process "swaymsg" nil t nil "-t" "get_tree"))
+      (let* ((tree (json-parse-string (buffer-string) :object-type 'alist :array-type 'list
+                                      :false-object nil :null-object nil))
+             (r (alist-get 'rect (nhwl-gui--sway-node tree pid))))
+        (when r
+          (cons (+ (alist-get 'x r) (/ (alist-get 'width r) 2))
+                (+ (alist-get 'y r) (/ (alist-get 'height r) 2))))))))
+
+(ert-deftest nhwl-gui/live-drag-between-two-nidhoggs ()
+  "On sway, text dragged out of this Nidhogg onto a second `nidhogg -Q' is inserted there, and the call returns
+`copy'.  The pointer is driven by `swaymsg seat - cursor'; the trace rules (errors, dnd) judge what was sent."
+  :tags '(runs-last)
+  (skip-unless (and (nhwl-gui--live-p) (equal (glitnir-gui--compositor) "sway") (executable-find "swaymsg")))
+  (let* ((file (make-temp-file "nhwl-drag-target-"))
+         (second (make-process
+                  :name "nhwl-drag-target" :noquery t :buffer nil
+                  :command (list (expand-file-name invocation-name invocation-directory) "-Q"
+                                 "--eval" (prin1-to-string
+                                           `(run-at-time 10 nil
+                                                         (lambda ()
+                                                           (write-region (point-min) (point-max) ,file)
+                                                           (kill-emacs)))))))
+         (driver nil))
+    (unwind-protect
+        (let ((from nil) (to nil))
+          (should (nhwl-gui--wait (lambda ()
+                                    (nhwl-gui--live-settle 0.2)
+                                    (setq from (nhwl-gui--sway-centre (emacs-pid))
+                                          to (nhwl-gui--sway-centre (process-id second)))
+                                    (and from to))
+                                  8))
+          (call-process "swaymsg" nil nil nil "seat" "-" "cursor" "set"
+                        (number-to-string (car from)) (number-to-string (cdr from)))
+          (call-process "swaymsg" nil nil nil "seat" "-" "cursor" "press" "button1")
+          (nhwl-gui--pump 0.3)
+          (setq driver (make-process
+                        :name "nhwl-drag-driver" :noquery t :buffer nil
+                        :command (list "sh" "-c"
+                                       (format "sleep 1; swaymsg seat - cursor set %d %d; sleep 0.5; \
+swaymsg seat - cursor set %d %d; sleep 0.5; swaymsg seat - cursor release button1"
+                                               (car to) (cdr to) (+ 5 (car to)) (cdr to)))))
+          (should (eq (dnd-begin-text-drag "from the first Nidhogg") 'copy))
+          (should (nhwl-gui--wait (lambda () (not (process-live-p second))) 15))
+          (should (string-search "from the first Nidhogg"
+                                 (with-temp-buffer (insert-file-contents file) (buffer-string)))))
+      (when (and driver (process-live-p driver)) (delete-process driver))
+      (when (process-live-p second) (delete-process second))
+      (call-process "swaymsg" nil nil nil "seat" "-" "cursor" "release" "button1")
+      (delete-file file))))
+
 (provide 'nhwl-gui-w2-tests)
 
 ;;; nhwl-gui-w2-tests.el ends here

@@ -448,6 +448,8 @@ extern struct nhwl_display_info *nhwl_display_info_for_name (Lisp_Object);
 extern void mark_nhwlterm (void);
 extern int nhwl_drain_events (struct nhwl_display_info *,
 			      struct input_event *);
+extern int nhwl_drag_run (struct nhwl_display_info *, double,
+			  struct frame **);
 
 /* The backing (nhwlterm.c; nhwldraw.c draws on it).  */
 extern void nhwl_cr_update_surface_desired_size (struct frame *, int, int,

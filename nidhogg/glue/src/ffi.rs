@@ -476,30 +476,48 @@ nhg_export! {
     /// 0), each `mimes[i]` is NUL-terminated and each `data[i]` holds `lens[i]` bytes (null allowed when that is 0).
     fn nhg_selection_set(d: *mut NhgDisplay, kind: u32, mimes: *const *const c_char, data: *const *const u8,
                          lens: *const usize, n: usize) -> i32 |state| {
-        if n > 0 && (mimes.is_null() || data.is_null() || lens.is_null()) {
-            return Err(GlueError::Arg);
-        }
-        let mut items: Vec<(&str, &[u8])> = Vec::new();
-        items.try_reserve(n).map_err(|_| GlueError::NoMem)?;
-        for i in 0..n {
-            // SAFETY: `n` entries each (the caller's promise).
-            let (m, p, len) = unsafe { (*mimes.add(i), *data.add(i), *lens.add(i)) };
-            if m.is_null() {
-                return Err(GlueError::Arg);
-            }
-            // SAFETY: NUL-terminated (the caller's promise).
-            let mime = unsafe { CStr::from_ptr(m) }.to_str().map_err(|_| GlueError::Arg)?;
-            let bytes: &[u8] = match (len, p.is_null()) {
-                (0, _) => &[],
-                (_, true) => return Err(GlueError::Arg),
-                // SAFETY: `len` bytes (the caller's promise).
-                (_, false) => unsafe { std::slice::from_raw_parts(p, len) },
-            };
-            items.push((mime, bytes));
-        }
+        // SAFETY: the caller's promise, as this entry point's.
+        let items = unsafe { typed_items(mimes, data, lens, n) }?;
         select::set(state, kind, &items)?;
         Ok(0)
     }
+}
+
+/// The `n` (MIME type, bytes) pairs C passes as `mimes[i]` with the `lens[i]` bytes at `data[i]`, borrowed.
+///
+/// # Safety
+/// `mimes`, `data` and `lens` hold `n` entries each (any may be null when `n` is 0), each `mimes[i]` is NUL-terminated
+/// and each `data[i]` holds `lens[i]` bytes (null allowed when that is 0), all alive for `'a`.
+unsafe fn typed_items<'a>(
+    mimes: *const *const c_char,
+    data: *const *const u8,
+    lens: *const usize,
+    n: usize,
+) -> Result<Vec<(&'a str, &'a [u8])>, GlueError> {
+    if n > 0 && (mimes.is_null() || data.is_null() || lens.is_null()) {
+        return Err(GlueError::Arg);
+    }
+    let mut items: Vec<(&str, &[u8])> = Vec::new();
+    items.try_reserve(n).map_err(|_| GlueError::NoMem)?;
+    for i in 0..n {
+        // SAFETY: `n` entries each (the caller's promise).
+        let (m, p, len) = unsafe { (*mimes.add(i), *data.add(i), *lens.add(i)) };
+        if m.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: NUL-terminated (the caller's promise).
+        let mime = unsafe { CStr::from_ptr(m) }
+            .to_str()
+            .map_err(|_| GlueError::Arg)?;
+        let bytes: &[u8] = match (len, p.is_null()) {
+            (0, _) => &[],
+            (_, true) => return Err(GlueError::Arg),
+            // SAFETY: `len` bytes (the caller's promise).
+            (_, false) => unsafe { std::slice::from_raw_parts(p, len) },
+        };
+        items.push((mime, bytes));
+    }
+    Ok(items)
 }
 
 nhg_export! {
@@ -1412,5 +1430,35 @@ nhg_export! {
             }
         }
         Ok(bits)
+    }
+}
+
+// ---- The drag source, `x-begin-drag` (`dnd.rs`) --------------------------------------------------------------------
+
+nhg_export! {
+    /// Drag `n` types out of `window`: `mimes[i]` with the `lens[i]` bytes at `data[i]` (copied), offering `actions`
+    /// (`NHSHELL_DND_*`), our own windows preferring `preferred` (one of them), with `NHG_DRAG_*` `flags`.
+    /// `NHG_E_STATE` without a held button press or touch down, or for a window that is not a frame; `NHG_E_ARG`
+    /// without types or for bad actions.  The `NHG_ACT_DRAG_*` actions follow.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `mimes`, `data` and `lens` as for `nhg_selection_set`.
+    fn nhg_drag_start(d: *mut NhgDisplay, window: u64, mimes: *const *const c_char, data: *const *const u8,
+                      lens: *const usize, n: usize, actions: u32, preferred: u32, flags: u32) -> i32 |state| {
+        // SAFETY: the caller's promise, as this entry point's.
+        let items = unsafe { typed_items(mimes, data, lens, n) }?;
+        crate::dnd::drag_start(state, window, &items, actions, preferred, flags)?;
+        Ok(0)
+    }
+}
+
+nhg_export! {
+    /// Give our drag up: its source goes, and no `NHG_ACT_DRAG_DONE` follows.  1 when it ran, else 0.  Neither reads
+    /// nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_drag_cancel(d: *mut NhgDisplay) -> i32 |state| {
+        Ok(i32::from(crate::dnd::drag_cancel(state)))
     }
 }

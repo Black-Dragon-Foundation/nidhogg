@@ -844,6 +844,46 @@ PROTO (nhg_session_remove, int32_t (NhgDisplay *, uint64_t));";
         }
     }
 
+    /// The drag source's part of the header (`x-begin-drag`).
+    #[test]
+    fn drag_header_matches() {
+        use nhglue::dnd::{
+            NHG_DRAG_ALLOW_CURRENT, NHG_DRAG_FRAME, NHG_DRAG_RETURN_FRAME, NHG_DRAG_RETURN_NOW,
+        };
+        use nhglue::ffi::{nhg_drag_cancel, nhg_drag_start};
+        let rows: &[(&str, i64)] = &[
+            ("NHG_ACT_DRAG_ACTION", NHG_ACT_DRAG_ACTION.into()),
+            ("NHG_ACT_DRAG_DROPPED", NHG_ACT_DRAG_DROPPED.into()),
+            ("NHG_ACT_DRAG_DONE", NHG_ACT_DRAG_DONE.into()),
+            ("NHG_DRAG_ALLOW_CURRENT", NHG_DRAG_ALLOW_CURRENT.into()),
+            ("NHG_DRAG_RETURN_FRAME", NHG_DRAG_RETURN_FRAME.into()),
+            ("NHG_DRAG_RETURN_NOW", NHG_DRAG_RETURN_NOW.into()),
+            ("NHG_DRAG_FRAME", NHG_DRAG_FRAME.into()),
+        ];
+        let decls = "\
+#define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
+PROTO (nhg_drag_start, int32_t (NhgDisplay *, uint64_t, const char *const *, const uint8_t *const *, const size_t *, size_t, uint32_t, uint32_t, uint32_t));
+PROTO (nhg_drag_cancel, int32_t (NhgDisplay *));";
+        let _: unsafe extern "C" fn(
+            *mut NhgDisplay,
+            u64,
+            *const *const c_char,
+            *const *const u8,
+            *const usize,
+            usize,
+            u32,
+            u32,
+            u32,
+        ) -> i32 = nhg_drag_start;
+        let _: unsafe extern "C" fn(*mut NhgDisplay) -> i32 = nhg_drag_cancel;
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe(decls, &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+    }
+
     #[test]
     fn reconnect_header_matches() {
         use nhglue::ffi::{nhg_reconnect_settle, nhg_reconnect_step, nhg_set_reconnect};
