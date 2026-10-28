@@ -106,13 +106,16 @@ impl Present {
     }
 
     /// What the host may do now: `CONTENT` (draw and present a buffer: drawn content when idle and shown, or a content
-    /// ack, which never waits) and `OWED` (a commit is owed: a bare ack or surface state, starved or not).
+    /// ack, which never waits), with `ACK` when a content ack is what waits, and `OWED` (a commit is owed: a bare ack
+    /// or surface state, starved or not).
     fn ready(&self) -> u32 {
-        let content = self.configured
-            && !self.starved
-            && ((self.dirty && !self.waiting && !self.suspended) || self.ack_content);
+        let open = self.configured && !self.starved;
+        let content_ack = open && self.ack_content;
+        let content = content_ack || (open && self.dirty && !self.waiting && !self.suspended);
         let owed = self.configured && (self.owed || (self.ack.is_some() && !self.ack_content));
-        u32::from(content) * NHSHELL_READY_CONTENT + u32::from(owed) * NHSHELL_READY_OWED
+        u32::from(content) * NHSHELL_READY_CONTENT
+            + u32::from(content_ack) * NHSHELL_READY_ACK
+            + u32::from(owed) * NHSHELL_READY_OWED
     }
 
     /// Post `FRAME_READY` when the pacer is ready, once until the host asks `window_ready`.
@@ -254,7 +257,9 @@ impl WaylandShell {
                     s = p.pool.begin_with(dev_w, dev_h, now, GROWN_BUFFERS);
                 }
                 let Some(s) = s else {
+                    // the draw is not taken: the release that ends starvation brings it
                     p.starved = true;
+                    p.dirty = true;
                     return Err(ShellError::State);
                 };
                 s

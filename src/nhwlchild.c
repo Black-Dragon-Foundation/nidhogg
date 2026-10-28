@@ -292,21 +292,10 @@ nhwl_child_source (struct frame *f, GlitnirSource *s)
  ***********************************************************************/
 
 /* A child's position and stacking take effect with its parent's next commit
-   (Wayland's rule): give the parent one now, with no new damage.  */
+   (Wayland's rule): the shell marks the parent owed, and its pacer gives it
+   a bare commit when nothing else is drawn.  */
 static void
-parent_commit (struct frame *f)
-{
-  struct frame *p = FRAME_PARENT_FRAME (f);
-
-  if (p && FRAME_VISIBLE_P (p))
-    {
-      nhwl_dirty (p);
-      nhwl_present (p);
-    }
-}
-
-static void
-send_position (struct frame *f, bool commit)
+send_position (struct frame *f)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
   struct nhwl_child *c = &out->child;
@@ -319,8 +308,6 @@ send_position (struct frame *f, bool commit)
     {
       c->pos[0] = x, c->pos[1] = y;
       c->pos_sent = true;
-      if (commit)
-	parent_commit (f);
     }
 }
 
@@ -336,7 +323,7 @@ nhwl_child_sync (struct frame *f)
 
   if (!nhwl_child_p (f) || !out->window)
     return;
-  send_position (f, true);
+  send_position (f);
   if (out->csd.l || out->csd.t || out->csd.r || out->csd.b)
     {
       reg[0] = dev_to_log (out->csd.l, s120);
@@ -368,7 +355,7 @@ void
 nhwl_child_reposition (struct frame *f)
 {
   if (nhwl_child_p (f) && FRAME_NHWL_OUTPUT (f)->window)
-    send_position (f, true);
+    send_position (f);
 }
 
 /* F's native area moved inside its surface (its title bar or margins
@@ -384,7 +371,7 @@ nhwl_child_parent_layout (struct frame *f)
 
       if (nhwl_child_p (g) && FRAME_PARENT_FRAME (g) == f
 	  && FRAME_NHWL_OUTPUT (g)->window)
-	send_position (g, false);
+	send_position (g);
     }
 }
 
@@ -461,12 +448,10 @@ nhwl_frame_raise_lower (struct frame *f, bool raise)
     return;
   sib = extreme_sibling (f, raise);
   out->child.z = raise ? ++z_top : --z_bottom;
+  /* The shell marks the parent owed (stacking is the parent's state).  */
   if (sib)
-    {
-      nhshell_window_stack (FRAME_NHWL_SHELL (f), out->window,
-			    FRAME_NHWL_OUTPUT (sib)->window, raise ? 1 : 0);
-      parent_commit (f);
-    }
+    nhshell_window_stack (FRAME_NHWL_SHELL (f), out->window,
+			  FRAME_NHWL_OUTPUT (sib)->window, raise ? 1 : 0);
 }
 
 /* Adapted from pgtk_set_z_group: stored, and for a child frame acted on

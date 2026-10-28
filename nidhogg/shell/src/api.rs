@@ -11,9 +11,11 @@ pub type WindowId = u64;
 
 /// `ack_configure` flag: the ack changes what the window shows, so only a buffer carries it.
 pub const NHSHELL_ACK_CONTENT: u32 = 1;
-/// `window_ready` bits: the host may draw and present a buffer; the window owes a commit (bare or with a buffer).
+/// `window_ready` bits: the host may draw and present a buffer; the window owes a commit (bare or with a buffer); with
+/// `CONTENT`, a content ack waits (present a buffer even with nothing drawn).
 pub const NHSHELL_READY_CONTENT: u32 = 1;
 pub const NHSHELL_READY_OWED: u32 = 2;
+pub const NHSHELL_READY_ACK: u32 = 4;
 
 pub const NHSHELL_OK: i32 = 0;
 pub const NHSHELL_E_PANIC: i32 = -1;
