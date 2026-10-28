@@ -422,6 +422,32 @@ BODY sees `mode' and `dir' (the grammar directory)."
                                   (treesit-parser-root-node
                                    (treesit-parser-create 'c nil t))))))))))))))
 
+(ert-deftest workers/ts-subtree-stat-first-parse-only ()
+  ;; Only a first parse's job walks the tree for the statistics (gate 14:
+  ;; on an incremental job the walk cost three times the parse): after an
+  ;; incremental job `treesit-subtree-stat' is walked (not cached) and
+  ;; still right.
+  (workers-ts-tests--modes
+    (with-temp-buffer
+      (insert (workers-ts-tests--c-text 200000))
+      (let ((p (treesit-parser-create 'c nil t)))
+        (should (nidhogg-workers--test-ts-start p))
+        (workers-ts-tests--done p)
+        (goto-char (point-max))
+        (insert "int w;\n")
+        (should (nidhogg-workers--test-ts-start p))
+        (workers-ts-tests--done p)
+        (let* ((hits (workers-ts-tests--stat :stat-cached))
+               (walked (treesit-subtree-stat (treesit-parser-root-node p))))
+          (should (= (workers-ts-tests--stat :stat-cached) hits))
+          (should (equal walked
+                         (let ((now (buffer-string)))
+                           (with-temp-buffer
+                             (insert now)
+                             (treesit-subtree-stat
+                              (treesit-parser-root-node
+                               (treesit-parser-create 'c nil t))))))))))))
+
 ;;; The edit log and replay (Task 11).
 
 (defun workers-ts-tests--sexp (parser)
