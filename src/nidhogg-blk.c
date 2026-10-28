@@ -1100,12 +1100,24 @@ nh_blk_work_buffer (bool multibyte)
   bset_enable_multibyte_characters (buf, multibyte ? Qt : Qnil);
 }
 
-/* set-auto-coding over the block's head and tail, as
-   insert-file-contents reads them for a non-empty buffer: the first
-   1 KiB and the last 3 KiB (all of a file of 4 KiB or less).  */
+/* set-auto-coding over what insert-file-contents shows it: into an
+   empty buffer (WHOLE) the whole text, as it reads it all first;
+   otherwise the block's head and tail, the first 1 KiB and the last
+   3 KiB (all of a file of 4 KiB or less).  An `auto-coding-functions'
+   member may search all of it (an HTML meta charset past 1 KiB).  */
 static Lisp_Object
-nh_blk_auto_coding (struct nh_blk_block *b, Lisp_Object name)
+nh_blk_auto_coding (struct nh_blk_block *b, Lisp_Object name, bool whole)
 {
+  if (whole)
+    {
+      specpdl_ref count = SPECPDL_INDEX ();
+      nh_blk_work_buffer (false);
+      insert_1_both ((char *) b->bytes, b->n, b->n, 0, 0, 0);
+      TEMP_SET_PT_BOTH (BEG, BEG_BYTE);
+      Lisp_Object val = calln (Vset_auto_coding_function, name,
+			       make_fixnum (b->n));
+      return unbind_to (count, val);
+    }
   unsigned char text[4096];
   size_t nread;
   if (b->n <= 4096)
@@ -1210,7 +1222,7 @@ worker found; everything else is decoded.  Return (FILE CHARS) as
       else
 	{
 	  if (b->regular && b->n > 0 && !NILP (Vset_auto_coding_function))
-	    coding_system = nh_blk_auto_coding (b, name);
+	    coding_system = nh_blk_auto_coding (b, name, BEG == Z);
 	  if (NILP (coding_system))
 	    {
 	      coding_system = CALLN (Ffind_operation_coding_system,
