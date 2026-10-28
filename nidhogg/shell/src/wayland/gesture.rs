@@ -7,7 +7,7 @@
 use crate::event::*;
 use crate::wayland::reader::ReaderState;
 use wayland_client::protocol::wl_pointer::WlPointer;
-use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
+use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gesture_pinch_v1::{
     self, ZwpPointerGesturePinchV1,
 };
@@ -78,7 +78,7 @@ impl Dispatch<ZwpPointerGesturePinchV1, ()> for ReaderState {
                 fingers,
                 ..
             } => {
-                state.pinch.window = u64::from(surface.id().protocol_id());
+                state.pinch.window = crate::wayland::window_of(&surface);
                 state.pinch.fingers = fingers;
                 state.pinch.scale = 1.0;
                 state.post_pinch(NHSHELL_PINCH_BEGIN, time, (0.0, 0.0, 0.0), false);

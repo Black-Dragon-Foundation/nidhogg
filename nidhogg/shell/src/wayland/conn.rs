@@ -292,16 +292,19 @@ impl Shared {
     }
 
     /// The connection hung up and the shell reconnects (the reader has posted what the loss ends: held buttons, touch
-    /// points, a preedit): queue our drag's `DRAG_DONE` (cancelled) as `close` does, and `RECONNECTING`; hold the
+    /// points, a preedit): queue the `DND_LEAVE` of a drag over us that has not dropped, our drag's `DRAG_DONE`
+    /// (cancelled) as `close` does, and `RECONNECTING`; hold the
     /// records, and wake the host and every bounded wait.
     pub fn reconnecting(&self) {
         // the selections' lock is never taken while the records' is held
+        let drop_leave = crate::wayland::dnd::drop_lost(self);
         let drag_done = crate::wayland::dnd::drag_lost(self);
         {
             let mut r = relock(&self.records);
             if r.closed || r.held {
                 return;
             }
+            r.queue.extend(drop_leave);
             r.queue.extend(drag_done);
             r.queue
                 .push_back(NhShellEvent::new(NHSHELL_EV_RECONNECTING, 0, 0));
@@ -325,7 +328,7 @@ impl Shared {
     }
 
     /// A new connection is in place: the records flow again, and the state of the old connection is forgotten (the
-    /// loss signal, flushes, input serials and the pointer's objects).
+    /// loss signal, flushes, input serials, the pointer's objects, other clients' offers and our sources).
     pub fn resume(&self) {
         relock(&self.records).held = false;
         self.gone.drain();
@@ -334,7 +337,8 @@ impl Shared {
         *relock(&self.serials) = SerialTracker::default();
         *relock(&self.cursor_device) = None;
         *relock(&self.pointer) = None;
-        relock(&self.selections).leave();
+        relock(&self.selections).reconnected();
+        self.dragging.store(false, Ordering::Release);
     }
 
     /// Post the one `DISCONNECTED` record and wake the host.  Our drag, if one runs, ends first: its `DRAG_DONE`

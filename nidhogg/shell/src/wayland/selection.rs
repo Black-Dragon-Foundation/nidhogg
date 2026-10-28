@@ -93,13 +93,18 @@ impl Source {
     }
 }
 
-/// What we own: our source and a copy of the bytes of each MIME type.
+/// What we own: our source and a copy of the bytes of each MIME type.  No source: a reconnect took it, and the bytes
+/// wait to be offered again at the first serial on the new connection.
 struct Owned {
-    source: Source,
+    source: Option<Source>,
     items: Vec<(String, Arc<[u8]>)>,
 }
 
 impl Owned {
+    fn is(&self, source: &ObjectId) -> bool {
+        self.source.as_ref().is_some_and(|s| s.id() == *source)
+    }
+
     fn bytes(&self, mime_type: &str) -> Option<Arc<[u8]>> {
         self.items
             .iter()
@@ -126,6 +131,10 @@ pub struct Selections {
     pub(super) data_device: Option<WlDataDevice>,
     primary_manager: Option<ZwpPrimarySelectionDeviceManagerV1>,
     primary_device: Option<ZwpPrimarySelectionDeviceV1>,
+    /// The reader's queue, where our sources live.
+    qh: Option<QueueHandle<ReaderState>>,
+    /// The selections whose other client's offer a reconnect dropped: each gets an empty `SELECTION`.
+    lost: Vec<u32>,
     /// Drag and drop on the same data device (`dnd.rs`).
     pub(super) dnd: Dnd,
 }
@@ -135,6 +144,7 @@ impl Selections {
     pub fn enter(&mut self, serial: u32) {
         self.focus = true;
         self.serial = serial;
+        self.offer_again();
     }
 
     pub fn leave(&mut self) {
@@ -144,6 +154,65 @@ impl Selections {
     /// A key or button press with `serial`.
     pub fn input(&mut self, serial: u32) {
         self.serial = serial;
+        self.offer_again();
+    }
+
+    /// The connection was made again (before the new devices are made): another client's offers went with the old
+    /// compositor, and so did our sources, whose bytes stay ours, to be offered again at the first serial; a drop in
+    /// progress is over (its leave was posted at the loss).
+    pub fn reconnected(&mut self) {
+        self.leave();
+        self.serial = 0;
+        for (kind, slot) in self.slots.iter_mut().enumerate() {
+            if let Some(o) = &mut slot.owned {
+                o.source = None;
+            }
+            if slot.offer.take().is_some() && slot.owned.is_none() {
+                self.lost.push(kind as u32);
+            }
+        }
+        self.dnd.reconnected();
+    }
+
+    /// The selections whose offers a reconnect dropped, once.
+    pub fn take_lost(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.lost)
+    }
+
+    /// Offer what we own again with the first serial on a new connection (`reconnected`).  A selection the host owned
+    /// or gave up in between has its own source, or none.
+    fn offer_again(&mut self) {
+        let Some(qh) = self.qh.clone() else { return };
+        for i in 0..self.slots.len() {
+            let Some(owned) = self.slots[i].owned.as_ref().filter(|o| o.source.is_none()) else {
+                continue;
+            };
+            let mimes: Vec<String> = owned.items.iter().map(|(m, _)| m.clone()).collect();
+            let source = match (
+                i,
+                &self.data_manager,
+                &self.data_device,
+                &self.primary_manager,
+                &self.primary_device,
+            ) {
+                (0, Some(m), Some(d), _, _) => {
+                    let s = m.create_data_source(&qh, ());
+                    mimes.into_iter().for_each(|t| s.offer(t));
+                    d.set_selection(Some(&s), self.serial);
+                    Source::Data(s)
+                }
+                (1, _, _, Some(m), Some(d)) => {
+                    let s = m.create_source(&qh, ());
+                    mimes.into_iter().for_each(|t| s.offer(t));
+                    d.set_selection(Some(&s), self.serial);
+                    Source::Primary(s)
+                }
+                _ => continue,
+            };
+            if let Some(o) = &mut self.slots[i].owned {
+                o.source = Some(source);
+            }
+        }
     }
 }
 
@@ -177,6 +246,10 @@ pub fn bind(
     let s = &mut *guard;
     s.data_manager = globals.bind(registry, qh, ());
     s.primary_manager = globals.bind(registry, qh, ());
+    s.qh = Some(qh.clone());
+    // a reconnect binds again: the old connection's devices go
+    s.data_device = None;
+    s.primary_device = None;
     let Some(seat) = seat else { return };
     if let Some(m) = &s.data_manager {
         s.data_device = Some(m.get_data_device(seat, qh, ()));
@@ -203,7 +276,7 @@ impl ReaderState {
         let sel = lock(&self.shared);
         let owned = sel.slots[kind as usize].owned.as_ref();
         let bytes = owned
-            .filter(|o| o.source.id() == source)
+            .filter(|o| o.is(&source))
             .and_then(|o| o.bytes(mime_type));
         drop(sel);
         if let Some(send) = bytes.and_then(|b| SendBytes::start(fd, b)) {
@@ -215,7 +288,7 @@ impl ReaderState {
     fn source_cancelled(&mut self, kind: u32, source: ObjectId) {
         let mut sel = lock(&self.shared);
         let cur = &mut sel.slots[kind as usize];
-        let ours = cur.owned.as_ref().is_some_and(|o| o.source.id() == source);
+        let ours = cur.owned.as_ref().is_some_and(|o| o.is(&source));
         if ours {
             cur.owned = None;
         }
@@ -281,10 +354,13 @@ impl WaylandShell {
             d.set_selection(Some(&source), s.serial);
             Source::Primary(source)
         };
-        let old = s.slots[i].owned.replace(Owned { source, items });
+        let old = s.slots[i].owned.replace(Owned {
+            source: Some(source),
+            items,
+        });
         drop(guard);
-        if let Some(old) = old {
-            old.source.destroy();
+        if let Some(source) = old.and_then(|o| o.source) {
+            source.destroy();
         }
         self.flush()
     }
@@ -293,8 +369,8 @@ impl WaylandShell {
     pub(super) fn sel_disown(&mut self, kind: u32) -> ShellResult {
         let i = slot(kind)?;
         let old = lock(&self.shared).slots[i].owned.take();
-        if let Some(old) = old {
-            old.source.destroy();
+        if let Some(source) = old.and_then(|o| o.source) {
+            source.destroy();
         }
         self.flush()
     }

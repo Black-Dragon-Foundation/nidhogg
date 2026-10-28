@@ -152,14 +152,12 @@ impl WaylandShell {
         let (base_window, base, offset) = self.popup_base(d.parent)?;
         let qh = self.main_queue.handle();
         let m = &mut self.main;
-        let wm_base = m.wm_base.as_ref().ok_or(ShellError::State)?;
-        let pos = positioner(wm_base, &qh, (d.w, d.h), &d.anchor, offset)?;
-        let surface = m
-            .compositor
-            .as_ref()
-            .ok_or(ShellError::State)?
-            .create_surface(&qh, ());
-        let id = u64::from(surface.id().protocol_id());
+        let wm_base = m.wm_base.clone().ok_or(ShellError::State)?;
+        if m.compositor.is_none() {
+            return Err(ShellError::State);
+        }
+        let pos = positioner(&wm_base, &qh, (d.w, d.h), &d.anchor, offset)?;
+        let (surface, id) = m.window_surface(&qh)?;
         let xdg_surface = wm_base.get_xdg_surface(&surface, &qh, id);
         let popup = xdg_surface.get_popup(Some(&base), &pos, &qh, id);
         pos.destroy();
@@ -286,6 +284,40 @@ impl WaylandShell {
         drop(tree);
         self.flush()?;
         Ok(true)
+    }
+
+    /// A reconnect closes every popup, topmost first (the deepest, then the newest grab): each posts `POPUP_DONE`, and
+    /// its record goes with what hangs on it.  Its objects went with the old connection; a popup shown again is a new
+    /// one.
+    pub(super) fn popups_closed(&mut self) {
+        let m = &self.main;
+        let depth = |mut id: WindowId| {
+            let mut d = 0;
+            loop {
+                if let Some(p) = m.popups.get(&id) {
+                    d += 1;
+                    id = p.parent;
+                } else if let Some(c) = m.children.get(&id) {
+                    id = c.parent;
+                } else {
+                    return d;
+                }
+            }
+        };
+        let grab = |id: WindowId| m.grabs.iter().position(|g| *g == id).map_or(0, |i| i + 1);
+        let mut order: Vec<(usize, usize, WindowId)> = m
+            .popups
+            .keys()
+            .map(|&id| (depth(id), grab(id), id))
+            .collect();
+        order.sort_unstable_by(|a, b| b.cmp(a));
+        for &(_, _, id) in &order {
+            self.shared
+                .post(NhShellEvent::new(NHSHELL_EV_POPUP_DONE, id, 0));
+        }
+        for (_, _, id) in order {
+            let _ = self.window_destroy_local(id);
+        }
     }
 
     /// Whether window `id` is a popup that holds a grab.
