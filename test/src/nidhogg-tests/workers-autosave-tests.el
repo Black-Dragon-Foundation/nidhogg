@@ -485,6 +485,24 @@ Return (STATUS CODE AUTO-SAVED-BYTES)."
             (should (equal (workers-autosave-tests--bytes auto)
                            "one\ntwo\n"))))))))
 
+(ert-deftest workers/autosave-land-onto-visited ()
+  ;; The buffer's auto-save name becomes its visited file while a job
+  ;; runs: the landing never renames the snapshot onto the user's file,
+  ;; and the next auto-save writes as the buffer now asks.
+  (let ((nidhogg-workers--mode 'threads)
+        (nidhogg-workers-autosave t))
+    (workers-autosave-tests--in-dir dir
+      (let* ((file (expand-file-name "v.txt" dir))
+             (buf (progn (with-temp-file file (insert "on disk\n"))
+                         (workers-autosave-tests--visit file "typed\n"))))
+        (with-current-buffer buf
+          (workers-autosave-tests--autosave t)
+          (setq buffer-auto-save-file-name buffer-file-name)
+          (nidhogg-workers--release 'before-write)
+          (should (nidhogg-workers--test-save-await 5000))
+          (should (equal (workers-autosave-tests--bytes file) "on disk\n"))
+          (should-not (directory-files dir nil "\\.nh-")))))))
+
 (defun workers-autosave-tests--random-string (n)
   "A random multibyte string of N characters, raw bytes included.
 Built from a list of characters: `aset' refuses a non-ASCII character
