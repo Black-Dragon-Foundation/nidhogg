@@ -412,6 +412,63 @@ Return the two replies."
           (setq y (1+ y))))
       (should (= (car (gui-runner-pixel-diff mine theirs)) 0)))))
 
+(defun nhwl-gui--scroll-events (record &optional regexp)
+  "Send the recorder's axis RECORD(s) (one plist or a list of them); return the events whose symbol matches REGEXP."
+  (nhwl-gui--point 100 50)
+  (dolist (r (if (keywordp (car record)) (list record) record))
+    (gui-runner-recorder r))
+  (let ((deadline (+ (float-time) 0.6)) (events nil))
+    (while (< (float-time) deadline)
+      (let ((e (read-event nil nil 0.05)))
+        (when (and (consp e) (string-match-p (or regexp "wheel-\\|touch-end") (symbol-name (car e))))
+          (push e events))))
+    (nreverse events)))
+
+(ert-deftest nhwl-gui/wheel-v120-halves-accumulate ()
+  (skip-unless (nhwl-gui--recorder-p))
+  (switch-to-buffer "*scratch*")
+  (let ((mwheel-coalesce-scroll-events t))
+    (let ((events (nhwl-gui--scroll-events
+                   '((:cmd "axis" :source "wheel" :v120 60) (:cmd "axis" :source "wheel" :v120 60)))))
+      (should (= (length events) 1))
+      (should (string-match-p "wheel-down" (symbol-name (car (car events)))))
+      (should (eql (nth 3 (car events)) 1)))
+    ;; a change of direction drops the fraction: -60 then +60 is nothing
+    (should-not (nhwl-gui--scroll-events
+                 '((:cmd "axis" :source "wheel" :v120 -60) (:cmd "axis" :source "wheel" :v120 60))))
+    (should (= (length (nhwl-gui--scroll-events '((:cmd "axis" :source "wheel" :v120 -120)))) 1))))
+
+(ert-deftest nhwl-gui/finger-scroll-gives-pixel-deltas ()
+  (skip-unless (nhwl-gui--recorder-p))
+  (switch-to-buffer "*scratch*")
+  (erase-buffer)
+  (dotimes (i 200) (insert (format "line %d of the finger test\n" i)))
+  (goto-char (point-min))
+  (redisplay t)
+  (let ((pixel-scroll-precision-mode nil) (mwheel-coalesce-scroll-events nil))
+    (pixel-scroll-precision-mode 1)
+    (unwind-protect
+        (progn
+          (set-window-vscroll nil 0 t)
+          ;; 80/8 = 10 logical px
+          (let* ((events (nhwl-gui--scroll-events '(:cmd "axis" :source "finger" :v120 80) "wheel-down"))
+                 (ev (car events))
+                 (want (* 10 (frame-scale-factor))))
+            (should (= (length events) 1))
+            (should (= (cdr (nth 4 ev)) (- want)))
+            (pixel-scroll-precision ev)
+            (should (< want (frame-char-height)))
+            (should (= (window-vscroll nil t) want))))
+      (pixel-scroll-precision-mode -1)
+      (set-window-vscroll nil 0 t))))
+
+(ert-deftest nhwl-gui/scroll-stop-sends-touch-end ()
+  (skip-unless (nhwl-gui--recorder-p))
+  (switch-to-buffer "*scratch*")
+  (let ((events (nhwl-gui--scroll-events '(:cmd "axis" :source "finger" :stop t) "touch-end")))
+    (should (= (length events) 1))
+    (should (eq (car (car events)) 'touch-end))))
+
 (ert-deftest nhwl-gui/resize-during-redisplay-acks-newest ()
   (skip-unless (nhwl-gui--recorder-p))
   (let* ((mark (nhwl-gui--mark))
