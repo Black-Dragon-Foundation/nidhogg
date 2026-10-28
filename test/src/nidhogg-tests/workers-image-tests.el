@@ -331,6 +331,71 @@ unibyte strings; CHUNKS, each (TYPE . BODY), go before the image data."
         (should (plist-get r :error))
         (should-not (plist-get r :pixels))))))
 
+(ert-deftest workers/image-rust-animation-cache ()
+  ;; In Rust too, frame N continues from the state kept at N-1 (the C
+  ;; side keeps it), with the pixels of a decode from frame 0.
+  (let ((types (workers-image-tests--rust-types))
+        (golden (workers-image-tests--golden)))
+    (skip-unless (or (memq 'gif types) (memq 'webp types)))
+    (let ((nidhogg-workers-image-rust types))
+      (dolist (file (cl-remove-if-not
+                     (lambda (f) (memq (workers-image-tests--type f) types))
+                     '("oracle-anim-200.gif" "oracle-anim-200.webp")))
+        (nidhogg-workers--test-image-rust t)
+        (let ((params (workers-image-tests--params file nil golden)))
+          (dotimes (i 151)
+            (should-not (plist-get (nidhogg-workers--test-image-decode
+                                    (workers-image-tests--core-spec file i) params)
+                                   :error)))
+          (let ((stats (nidhogg-workers--test-image-rust))
+                (r (nidhogg-workers--test-image-decode
+                    (workers-image-tests--core-spec file 150) params)))
+            (should (equal (list file (plist-get stats :continued))
+                           (list file 150)))
+            (should (equal (workers-image-tests--digest r)
+                           (cdr (assoc (list file nil 150)
+                                       (cdr (assq 'results golden))))))
+            ;; without the kept state: from frame 0, the same pixels
+            (nidhogg-workers--test-image-rust t)
+            (should (equal (workers-image-tests--digest
+                            (nidhogg-workers--test-image-decode
+                             (workers-image-tests--core-spec file 150) params))
+                           (workers-image-tests--digest r)))
+            (should (= 0 (plist-get (nidhogg-workers--test-image-rust)
+                                    :continued)))))))))
+
+(ert-deftest workers/image-rust-corpus-errors ()
+  ;; The corpus' broken files fail in Rust with the C core's kind of
+  ;; error; for GIF and WebP the loader's text is the recorded one too
+  ;; (giflib's texts are reproduced; WebP's have none).
+  (let* ((types (workers-image-tests--rust-types))
+         (golden (workers-image-tests--golden))
+         (texts (workers-image-tests--read "oracle-errors-golden.eld")))
+    (skip-unless types)
+    (dolist (entry (workers-image-tests--read "oracle-errors.eld"))
+      (pcase-let ((`(,file ,bg ,index) (if (consp entry) entry
+                                         (list entry nil nil))))
+        (when (and (memq (workers-image-tests--type file) types)
+                   (workers-image-tests--core-p file))
+          (let* ((spec (workers-image-tests--core-spec file index))
+                 (params (workers-image-tests--params file bg golden))
+                 (c (let ((nidhogg-workers-image-rust nil))
+                      (nidhogg-workers--test-image-decode spec params)))
+                 (r (let ((nidhogg-workers-image-rust types))
+                      (nidhogg-workers--test-image-decode spec params))))
+            (should (equal (list file (plist-get r :error))
+                           (list file (plist-get c :error))))
+            (should-not (plist-get r :pixels))
+            (unless (eq (workers-image-tests--type file) 'png)
+              (should (equal (list file (string-replace
+                                         workers-image-tests--dir "@DIR@/"
+                                         (workers-image-tests--error-text file r index)))
+                             (list file (string-replace
+                                         "’" "'"
+                                         (string-replace
+                                          "‘" "`"
+                                          (cdr (assoc (list file bg index) texts))))))))))))))
+
 (ert-deftest workers/image-core-refuses-nonregular-file ()
   ;; A spec whose file leads to /dev/zero: the cores refuse it at once
   ;; (before the fix they grew a buffer until memory ran out).  Run in a

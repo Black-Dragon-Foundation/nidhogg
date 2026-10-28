@@ -198,22 +198,34 @@ int32_t glitnir_compose (uint64_t root, const GlitnirTarget *target, const Glitn
 /* Image decoders (the crate's `images' feature).  Stateless: callable from any thread, concurrently; no lock, no
    global state, no thread, no callback.  The result's buffers come from the C library's calloc (the host may keep
    them and free them with free) and are bounded by the image's size, checked against the limits and 2^27 pixels
-   before anything is allocated.  */
+   before anything is allocated.  An animation's state between frames is the host's to keep (anim below).  */
 
-#define GLITNIR_IMG_PNG 0u
+#define GLITNIR_IMG_PNG  0u
+#define GLITNIR_IMG_GIF  1u
+#define GLITNIR_IMG_WEBP 2u
 
-#define GLITNIR_IMG_E_NOT_IMAGE 1	/* the data is not of the format (PNG: the signature) */
+#define GLITNIR_IMG_E_NOT_IMAGE 1	/* the data is not of the format (its signature or headers) */
 #define GLITNIR_IMG_E_DECODE    2	/* malformed or truncated; errmsg says how */
 #define GLITNIR_IMG_E_SIZE      3	/* beyond the limits */
 #define GLITNIR_IMG_E_NOMEM     4
 #define GLITNIR_IMG_E_HOST      5	/* the host's own decoder must decode it (PNG: libpng's gamma composition) */
 #define GLITNIR_IMG_E_FORMAT    6	/* no decoder for the format */
+#define GLITNIR_IMG_E_SUBIMAGE  7	/* GIF: a frame does not fit in the screen */
+#define GLITNIR_IMG_E_INDEX     8	/* GIF: no frame err_arg */
+#define GLITNIR_IMG_E_FRAME     9	/* WebP: frame err_arg of an animation does not decode */
+#define GLITNIR_IMG_E_PARSE    10	/* WebP: the animation's container does not parse */
 
 typedef struct
 {
   int64_t limit_w, limit_h;	/* the largest width and height; negative: no limit */
   uint8_t bg_set;		/* non-zero: composite a real alpha channel over bg_* */
   uint16_t bg_r, bg_g, bg_b;	/* 16 bits per channel */
+  int32_t frame_index;		/* GIF, WebP: the frame wanted; negative: none (the first) */
+  uint32_t frame_bg;		/* GIF: 0x00RRGGBB outside the first frame and for transparency */
+  uint8_t gif_bg_set;		/* GIF: non-zero: transparency shows gif_bg instead */
+  uint32_t gif_bg;
+  uint8_t keep;			/* non-zero: hand the animation state back in OUT's anim */
+  void *anim;			/* an earlier decode's anim for the same data, or NULL; the decode owns it */
 } GlitnirImgParams;
 
 typedef struct
@@ -224,19 +236,37 @@ typedef struct
   uint8_t bkgd_valid;		/* PNG: the bKGD chunk as libpng returns it */
   uint16_t bkgd[3];
   int32_t err;			/* the return value */
+  int32_t err_arg;		/* GLITNIR_IMG_E_INDEX's and _FRAME's frame */
   char errmsg[128];		/* GLITNIR_IMG_E_DECODE's text */
+  int32_t frame_count;		/* GIF, WebP animation: the frames; 0 otherwise */
+  uint8_t animated;		/* WebP: an animation */
+  uint8_t has_delay;		/* GIF: the frame has extension blocks; WebP animation: always */
+  int32_t delay;		/* GIF: the graphic control delay (1/100 s); WebP: the frame's duration (ms) */
+  uint8_t has_corners;
+  int32_t corners[4];		/* top, left, bottom, right */
+  uint8_t *ext;			/* GIF: the frame's extension blocks as giflib keeps them, each a function byte, a
+				   length byte and that many bytes (function 0: a continuation); from calloc */
+  size_t ext_len;
+  void *anim;			/* with PARAMS's keep: the state to hand back for the next frame, or NULL */
+  size_t anim_bytes;		/* the memory it holds */
 } GlitnirImgOut;
 
 /* Decode LEN bytes at DATA of FORMAT (GLITNIR_IMG_*) into OUT (every field written), as a host built on the C
    libraries decodes them: PNG as libpng with png_set_strip_16, png_set_expand, png_set_gray_to_rgb and, unless the
-   transparency is all-or-nothing, png_set_background at gamma 1.0 over PARAMS's background; a mask where the
-   transparency is all-or-nothing.  Returns GLITNIR_OK, a GLITNIR_IMG_E_* code, GLITNIR_E_PANIC (a decode error:
-   nothing is allocated), or GLITNIR_E_ARG if PARAMS or OUT is NULL, or DATA is NULL with a non-zero LEN.  */
+   transparency is all-or-nothing, png_set_background at gamma 1.0 over PARAMS's background, a mask where the
+   transparency is all-or-nothing; GIF as giflib's DGifSlurp, the frames composed as a host on giflib composes
+   them; WebP as libwebp (an animation through WebPAnimDecoder's blend), alpha composited over the background.
+   With PARAMS's anim the data may be NULL: the state holds it.  Returns GLITNIR_OK, a GLITNIR_IMG_E_* code,
+   GLITNIR_E_PANIC (a decode error: nothing is allocated), or GLITNIR_E_ARG if PARAMS or OUT is NULL, or DATA is
+   NULL with a non-zero LEN (PARAMS's anim is freed whatever the result).  */
 int32_t glitnir_img_decode (uint32_t format, const uint8_t *data, size_t len, const GlitnirImgParams *params,
 			    GlitnirImgOut *out);
 
-/* Free OUT's pixels and mask and clear them.  OUT may be NULL.  */
+/* Free OUT's pixels, mask and extension blocks and clear them (not its anim).  OUT may be NULL.  */
 void glitnir_img_free (GlitnirImgOut *out);
+
+/* Free an animation state from OUT's anim.  ANIM may be NULL.  */
+void glitnir_img_anim_free (void *anim);
 
 #ifdef __cplusplus
 }
