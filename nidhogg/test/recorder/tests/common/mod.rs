@@ -425,6 +425,11 @@ impl Env {
         pool.create_buffer(0, w, h, w * 4, wl_shm::Format::Argb8888, &self.qh, ())
     }
 
+    /// The file behind the buffer `buffer` made last: writing to it changes the buffer's pixels.
+    pub fn pool_path(&self) -> PathBuf {
+        self.rec.dir.join(format!("pool{}", self.pools))
+    }
+
     pub fn surface(&mut self) -> wl_surface::WlSurface {
         let compositor: wl_compositor::WlCompositor = self.bind("wl_compositor", 6);
         compositor.create_surface(&self.qh, ())

@@ -153,6 +153,35 @@ Signals `error' when the reply's :ok is false."
 
 (advice-add 'ert-run-test :around #'gui-runner--strict-commits)
 
+;; The held-buffer invariant: a row of a recorder run fails when the recorder found a buffer whose bytes changed between
+;; its attach and its release, with the release during the row.  On unless NHWL_GUI_STRICT_HELD is 0 (gui.sh --env).
+(defun gui-runner--strict-held-p ()
+  (let ((ctl (getenv "GLITNIR_GUI_RECORDER")))
+    (and (not (equal (getenv "NHWL_GUI_STRICT_HELD") "0")) ctl (file-exists-p ctl))))
+
+(defun gui-runner--strict-held (run test &rest args)
+  "`ert-run-test' advice: add the held-buffer-write check to the end of TEST's body."
+  (if (not (gui-runner--strict-held-p))
+      (apply run test args)
+    (let ((body (ert-test-body test)))
+      (setf (ert-test-body test)
+            (lambda ()
+              (let ((since (plist-get (gui-runner-recorder '(:cmd "held_buffer_writes" :since 1000000000)) :next)))
+                (funcall body)
+                (let ((writes (and (gui-runner--strict-held-p)
+                                   (plist-get (gui-runner-recorder (list :cmd "held_buffer_writes" :since since))
+                                              :writes))))
+                  (when writes
+                    (ert-fail (list "buffers written to while attached"
+                                    (mapcar (lambda (w) (list :surface (plist-get w :surface) :buffer (plist-get w :buffer)
+                                                              :attached (plist-get w :attached_seq)
+                                                              :released (plist-get w :released_seq)))
+                                            writes))))))))
+      (unwind-protect (apply run test args)
+        (setf (ert-test-body test) body)))))
+
+(advice-add 'ert-run-test :around #'gui-runner--strict-held)
+
 (defvar gui-runner--pw-procs nil "The pipewire and wireplumber processes this session started.")
 (defvar gui-runner--cast-session nil "The ScreenCast session's D-Bus path, held by Emacs's own connection.")
 
