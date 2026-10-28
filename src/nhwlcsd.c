@@ -139,7 +139,6 @@ nhwl_csd_changed (struct frame *f)
   if (out->csd.on)
     {
       out->csd.sig_valid = false;
-      nhwl_dirty (f);
       fset_redisplay (f);
     }
 }

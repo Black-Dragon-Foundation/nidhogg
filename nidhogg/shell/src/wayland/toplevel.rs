@@ -339,21 +339,6 @@ impl ShellBackend for WaylandShell {
         Ok(())
     }
 
-    fn window_dirty(&mut self, id: WindowId) -> ShellResult {
-        self.live()?;
-        self.window_dirty_impl(id)
-    }
-
-    fn window_ready(&mut self, id: WindowId) -> ShellResult<u32> {
-        self.live()?;
-        self.window_ready_impl(id)
-    }
-
-    fn present_bare(&mut self, id: WindowId) -> ShellResult {
-        self.live()?;
-        self.present_bare_impl(id)
-    }
-
     fn set_cursor(&mut self, id: WindowId, shape: u32) -> ShellResult {
         self.live()?;
         self.window_set_cursor(id, shape)
@@ -437,21 +422,6 @@ impl ShellBackend for WaylandShell {
     fn set_alpha(&mut self, id: WindowId, factor: u32) -> ShellResult {
         self.live()?;
         self.window_set_alpha(id, factor)
-    }
-
-    fn present_begin(
-        &mut self,
-        id: WindowId,
-        dev_w: i32,
-        dev_h: i32,
-    ) -> ShellResult<NhShellBuffer> {
-        self.live()?;
-        self.present_begin_impl(id, dev_w, dev_h)
-    }
-
-    fn present_commit(&mut self, id: WindowId, damage: &[Rect]) -> ShellResult {
-        self.live()?;
-        self.present_commit_impl(id, damage)
     }
 
     fn publish(
@@ -547,6 +517,46 @@ impl ShellBackend for WaylandShell {
     fn selection_read(&mut self, kind: u32, mime: &str, timeout_ms: u32) -> ShellResult<Vec<u8>> {
         self.live()?;
         self.sel_read(kind, mime, timeout_ms)
+    }
+}
+
+/// The host-driven presenter, which the host no longer uses (it publishes, and `present_tree` presents): kept outside
+/// `ShellBackend` for the T1 tests that drive a window's pacer and buffers directly.
+impl WaylandShell {
+    /// The host drew something: `FRAME_READY` follows when the window's pacer lets it present.
+    pub fn window_dirty(&mut self, id: WindowId) -> ShellResult {
+        self.live()?;
+        self.window_dirty_impl(id)
+    }
+
+    /// The `NHSHELL_READY_*` bits: what the pacer lets the host do now (0: nothing).  Reporting `CONTENT` takes the
+    /// draw (the pacer is not ready again until `window_dirty`, unless a content ack is held).
+    pub fn window_ready(&mut self, id: WindowId) -> ShellResult<u32> {
+        self.live()?;
+        self.window_ready_impl(id)
+    }
+
+    /// A commit without a buffer, frame callback or feedback: a bare ack, and the surface state the window owes.
+    pub fn present_bare(&mut self, id: WindowId) -> ShellResult {
+        self.live()?;
+        self.present_bare_impl(id)
+    }
+
+    /// Begin a frame of `dev_w` x `dev_h` device pixels.
+    pub fn present_begin(
+        &mut self,
+        id: WindowId,
+        dev_w: i32,
+        dev_h: i32,
+    ) -> ShellResult<NhShellBuffer> {
+        self.live()?;
+        self.present_begin_impl(id, dev_w, dev_h)
+    }
+
+    /// Show the begun buffer; `damage` is in device pixels.
+    pub fn present_commit(&mut self, id: WindowId, damage: &[Rect]) -> ShellResult {
+        self.live()?;
+        self.present_commit_impl(id, damage)
     }
 }
 

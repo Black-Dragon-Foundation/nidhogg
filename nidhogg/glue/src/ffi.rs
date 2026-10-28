@@ -8,9 +8,10 @@ use crate::abi::{
     NHG_E_UNSUPPORTED, NHG_OK,
 };
 use crate::action::{NhgActionList, NhgNextIn};
-use crate::backing::{NhgBacking, NhgFrameGeom, NhgPending, NhgRect, alpha_multiply};
+use crate::backing::{NhgBacking, NhgFrameGeom, NhgRect};
 pub use crate::display::NhgDisplay;
 use crate::guard::GlueError;
+use crate::present::{self, NhgPresenterStats, NhgSurface};
 use crate::{configure, drain};
 use nhshell::event::NhShellEvent;
 use nhshell::ffi::{NhShell, nhshell_close, nhshell_open, nhshell_wake_fd};
@@ -272,7 +273,10 @@ nhg_export! {
         // SAFETY: null or readable (the caller's promise).
         let emacs = unsafe { f.as_ref() }.ok_or(GlueError::Arg)?;
         let pushed = state.frame(window)?.facts;
-        debug_assert_eq!(pushed, *emacs, "the facts pushed for window {window} drifted from Emacs's");
+        // the facts C pushes so far: the native size it asked for, and whether it draws its own title bar (the rest
+        // join as the tasks that read them push them)
+        let seen = |f: &crate::frame::NhgFrameFacts| (f.native_w, f.native_h, f.flags & crate::frame::NHG_FACT_CSD);
+        debug_assert_eq!(seen(&pushed), seen(emacs), "the facts pushed for window {window} drifted from Emacs's");
         Ok(NHG_OK)
     }
 }
@@ -367,45 +371,6 @@ nhg_export! {
 }
 
 nhg_export! {
-    /// Take Glitnir's committed damage for the frame into its pending list.  Returns how many rectangles it took.
-    /// Neither reads nor writes pixels.
-    ///
-    /// # Safety
-    /// `d` is null or a live display.
-    fn nhg_commit(d: *mut NhgDisplay, frame: u64) -> i32 |state| {
-        Ok(state.backings.commit(frame)?)
-    }
-}
-
-nhg_export! {
-    /// The frame's pending damage in `out`, valid until the next call that changes it (none for an unknown frame).
-    /// Neither reads nor writes pixels.
-    ///
-    /// # Safety
-    /// `d` is null or a live display; `out` is null or writable.
-    fn nhg_pending(d: *mut NhgDisplay, frame: u64, out: *mut NhgPending) -> i32 |state| {
-        if out.is_null() {
-            return Err(GlueError::Arg);
-        }
-        // SAFETY: non-null and writable (the caller's promise).
-        unsafe { out.write(state.backings.pending(frame)) };
-        Ok(0)
-    }
-}
-
-nhg_export! {
-    /// The frame's pending damage was presented: the list and its area start again.  Neither reads nor writes
-    /// pixels.
-    ///
-    /// # Safety
-    /// `d` is null or a live display.
-    fn nhg_presented(d: *mut NhgDisplay, frame: u64) -> i32 |state| {
-        state.backings.presented(frame)?;
-        Ok(0)
-    }
-}
-
-nhg_export! {
     /// The frame's backing in `out`, borrowed until the next call on the frame.  Reads pixels.
     ///
     /// # Safety
@@ -433,33 +398,57 @@ nhg_export! {
     }
 }
 
+// ---- Presenting (`present.rs`) -------------------------------------------------------------------------------------
+//
+// ROOT is a tree's root window (a shell window id); the surface list names frames by their keys.
+
 nhg_export! {
-    /// Multiply every pixel of a `w` x `h` buffer (premultiplied ARGB32, rows `stride` bytes apart, 4-byte aligned)
-    /// by the alpha 1 - `cut` / `UINT32_MAX`.  Writes the buffer's pixels (a shell buffer, not a backing).
+    /// Publish and present the tree of root window `root`.  `s` holds its `n` surfaces bottom to top, the root first
+    /// and each parent before its children (null only when `n` is 0, which `NHG_PRESENT_READY` alone allows).  With
+    /// `NHG_PRESENT_BACKSTOP` (a consistency point) the tree is published when its root may show a buffer, with the
+    /// root's key time `t_key_ns` (0: none); with `NHG_PRESENT_READY` (its `FRAME_READY`) the shell presents it, in
+    /// inline mode.  Returns `NHG_PRESENTED_*` bits.  Reads pixels.
     ///
     /// # Safety
-    /// `d` is null or a live display; `pixels` holds `h` rows of `stride` writable bytes, or is null when `w` or `h`
-    /// is 0.
-    fn nhg_alpha_multiply(d: *mut NhgDisplay, pixels: *mut u8, stride: i32, w: i32, h: i32, cut: u32) -> i32 |_state| {
-        if w <= 0 || h <= 0 {
-            return Ok(0);
-        }
-        let (Ok(wu), Ok(su)) = (usize::try_from(w), usize::try_from(stride)) else {
-            return Err(GlueError::Arg);
+    /// `d` is null or a live display; `s` holds `n` readable surfaces, or is null when `n` is 0.
+    fn nhg_present(d: *mut NhgDisplay, root: u64, s: *const NhgSurface, n: usize, flags: u32, t_key_ns: u64) -> i32 |state| {
+        let list = match (n, s.is_null()) {
+            (0, _) => &[][..],
+            (_, true) => return Err(GlueError::Arg),
+            // SAFETY: non-null, with `n` readable surfaces (the caller's promise).
+            _ => unsafe { std::slice::from_raw_parts(s, n) },
         };
-        if pixels.is_null()
-            || su < wu.saturating_mul(4)
-            || !su.is_multiple_of(4)
-            || !pixels.cast::<u32>().is_aligned()
-        {
+        let (backend, backings, presenting) = state.presenting();
+        present::present(backend, backings, presenting, root, list, flags, t_key_ns)
+    }
+}
+
+nhg_export! {
+    /// Present on the shell's own thread (`on` nonzero) or inline, at each root's `FRAME_READY`.  A thread that cannot
+    /// start leaves the display inline (`NHG_E_NOMEM`).  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_presenter_thread(d: *mut NhgDisplay, on: i32) -> i32 |state| {
+        let (backend, _, presenting) = state.presenting();
+        presenting.set_thread(backend, on != 0)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// The presenter's counters and timing since open in `out`.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `out` is null or writable.
+    fn nhg_presenter_stats(d: *mut NhgDisplay, out: *mut NhgPresenterStats) -> i32 |state| {
+        if out.is_null() {
             return Err(GlueError::Arg);
         }
-        for y in 0..h as usize {
-            // SAFETY: row `y` lies inside the buffer and holds `w` aligned pixels (the caller's promise, checked for
-            // alignment above); rows do not overlap.
-            let row = unsafe { std::slice::from_raw_parts_mut(pixels.add(y * su).cast::<u32>(), wu) };
-            alpha_multiply(row, cut);
-        }
-        Ok(0)
+        let (backend, _, _) = state.presenting();
+        let st = present::stats(backend)?;
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe { out.write(st) };
+        Ok(NHG_OK)
     }
 }
