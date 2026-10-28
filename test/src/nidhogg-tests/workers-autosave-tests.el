@@ -503,6 +503,35 @@ Return (STATUS CODE AUTO-SAVED-BYTES)."
           (should (equal (workers-autosave-tests--bytes file) "on disk\n"))
           (should-not (directory-files dir nil "\\.nh-")))))))
 
+(ert-deftest workers/autosave-long-name ()
+  ;; An auto-save name near the 255-byte limit: the temporary file's
+  ;; longer name is cut, so the job writes and lands as the synchronous
+  ;; write would, named or unnamed, with a multibyte name cut at a
+  ;; character boundary.
+  (let ((nidhogg-workers--mode 'threads)
+        (nidhogg-workers-autosave t))
+    (dolist (unnamed '(t nil))
+      (dolist (stem (list (make-string 240 ?a)
+                          (concat (make-string 99 ?a) (make-string 70 ?é))))
+        (ert-info ((format "unnamed %s, %d bytes" unnamed
+                           (string-bytes stem))
+                   :prefix "")
+          (workers-autosave-tests--in-dir dir
+            (let* ((nidhogg-workers--save-unnamed unnamed)
+                   (name (concat stem ".txt"))
+                   (file (expand-file-name name dir))
+                   (auto (expand-file-name (concat "#" name "#") dir))
+                   (buf (workers-autosave-tests--visit file "long\n"))
+                   (warnings nil))
+              (with-current-buffer buf
+                (workers-autosave-tests--warnings warnings
+                  (nidhogg-workers--test-keyboard-auto-save t)
+                  (should (nidhogg-workers--test-save-await 5000))
+                  (should-not warnings)
+                  (should (equal (workers-autosave-tests--bytes auto)
+                                 "long\n"))
+                  (should-not (directory-files dir nil "\\.nh-")))))))))))
+
 (defun workers-autosave-tests--random-string (n)
   "A random multibyte string of N characters, raw bytes included.
 Built from a list of characters: `aset' refuses a non-ASCII character
