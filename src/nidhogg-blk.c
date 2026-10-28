@@ -2039,7 +2039,15 @@ nh_save_land (struct nh_save_job *j)
       return;
     }
   Lisp_Object target = nh_save_name (b);
-  if (!NILP (Ffind_file_name_handler (target, Qwrite_region)))
+  /* The name changed under the job to one the plain path never writes
+     (the visited file itself, or auto-saving there): renaming the
+     snapshot onto it would replace the user's file with older text.
+     The next auto-save writes, the way the buffer asks for now.  */
+  if (!NILP (Ffind_file_name_handler (target, Qwrite_region))
+      || !NILP (Vauto_save_visited_file_name)
+      || (STRINGP (BVAR (b, filename))
+	  && !NILP (Fstring_equal (Fexpand_file_name (BVAR (b, filename), Qnil),
+				   target))))
     {
       nh_save_redue (b, j);
       return;
