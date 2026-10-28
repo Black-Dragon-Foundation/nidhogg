@@ -1696,13 +1696,14 @@ nhwl_create_tip_frame (struct nhwl_display_info *dpyinfo, Lisp_Object parms)
   return unbind_to (count, frame);
 }
 
-/* Where a tip hanging on PF goes: the pointer plus DX and DY, or the
-   `left' and `top' of PARMS (native pixels in PF), as logical pixels of
-   PF's surface.  Adapted from compute_tip_xy (pgtkfns.c); the
+/* Where a tip hanging on PF goes, in device pixels of PF's surface: the
+   pointer, moved by *ADX and *ADY (DX and DY), or the `left' and `top' of
+   PARMS (native pixels in PF), unmoved; the glue makes it PF's logical
+   pixels.  Adapted from compute_tip_xy (pgtkfns.c, emacs-31.1); the
    compositor's flip and slide replace its fitting to the monitor.  */
 static void
 nhwl_tip_anchor (struct frame *pf, Lisp_Object parms, Lisp_Object dx,
-		 Lisp_Object dy, int *ax, int *ay)
+		 Lisp_Object dy, NhgRect *anchor, int *adx, int *ady)
 {
   struct nhwl_output *po = FRAME_NHWL_OUTPUT (pf);
   struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (pf);
@@ -1715,10 +1716,11 @@ nhwl_tip_anchor (struct frame *pf, Lisp_Object parms, Lisp_Object dx,
       x = dpyinfo->last_mouse_motion_x;
       y = dpyinfo->last_mouse_motion_y;
     }
-  x = FIXNUMP (left) ? XFIXNUM (left) : x + XFIXNUM (dx);
-  y = FIXNUMP (top) ? XFIXNUM (top) : y + XFIXNUM (dy);
-  *ax = nhwl_to_logical (po->csd.l + x, po->scale120);
-  *ay = nhwl_to_logical (po->csd.t + y, po->scale120);
+  *adx = FIXNUMP (left) ? 0 : XFIXNUM (dx);
+  *ady = FIXNUMP (top) ? 0 : XFIXNUM (dy);
+  x = FIXNUMP (left) ? XFIXNUM (left) : x;
+  y = FIXNUMP (top) ? XFIXNUM (top) : y;
+  *anchor = (NhgRect) { po->csd.l + x, po->csd.t + y, 1, 1 };
 }
 
 /* Hide the tooltip: its frame is deleted, as pgtk_hide_tip does while
@@ -1758,25 +1760,25 @@ void
 nhwl_tip_dismissed (struct frame *f)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
 
   if (out->window)
-    nhwl_window_destroy (FRAME_DISPLAY_INFO (f), out->window);
+    nhwl_glue_rc (dpyinfo, NHG (nhg_tip_hide (dpyinfo->glue, out->window)));
   out->window = 0;
   SET_FRAME_VISIBLE (f, 0);
 }
 
-/* Make tip frame TIP_F's popup, WIDTH x HEIGHT device pixels, anchored
-   at (AX, AY) in the surface of PF.  Takes the place of the end of
-   Fx_show_tip (pgtkfns.c), where GTK resizes, moves and shows the
-   widget.  */
+/* Make tip frame TIP_F's popup, WIDTH x HEIGHT device pixels, at ANCHOR
+   moved by DX, DY (nhwl_tip_anchor) in the surface of PF: the glue makes
+   and places it.  Takes the place of the end of Fx_show_tip (pgtkfns.c,
+   emacs-31.1), where GTK resizes, moves and shows the widget.  */
 static void
 nhwl_tip_map (struct frame *tip_f, struct frame *pf, int width, int height,
-	      int ax, int ay)
+	      NhgRect anchor, int dx, int dy)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (tip_f);
   struct nhwl_output *po = FRAME_NHWL_OUTPUT (pf);
   struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (tip_f);
-  NhShellWindowDesc desc;
   uint64_t id = 0;
   int rc;
 
@@ -1784,29 +1786,20 @@ nhwl_tip_map (struct frame *tip_f, struct frame *pf, int width, int height,
   tip_f->pixel_width = width;
   tip_f->pixel_height = height;
 
-  memset (&desc, 0, sizeof desc);
-  desc.w = max (1, nhwl_to_logical (width, out->scale120));
-  desc.h = max (1, nhwl_to_logical (height, out->scale120));
-  desc.title = "";
-  desc.app_id = "nidhogg";
-  desc.flags = NHSHELL_WIN_UNDECORATED;
-  desc.kind = NHSHELL_KIND_POPUP;
-  desc.parent = po->window;
-  desc.anchor.x = ax;
-  desc.anchor.y = ay;
-  desc.anchor.w = desc.anchor.h = 1;
-  desc.anchor.gravity = 8;	/* bottom-right */
-  desc.anchor.adjust = NHSHELL_ADJUST_FLIP_X | NHSHELL_ADJUST_FLIP_Y
-    | NHSHELL_ADJUST_SLIDE_X | NHSHELL_ADJUST_SLIDE_Y;
-
   block_input ();
-  rc = nhwl_window_new (tip_f, &desc, NHG_FRAME_TIP, &id);
+  rc = nhwl_glue_rc (dpyinfo,
+		     NHG (nhg_tip_show (dpyinfo->glue, &id, po->window, anchor,
+					dx, dy, max (1, width),
+					max (1, height))));
   unblock_input ();
   if (rc < 0)
     error ("nidhogg-wayland: cannot create a tooltip window (%d)", rc);
   out->window = id;
-  /* A popup has no configure the host waits for: its first buffer waits in
-     the shell (the pacer is not ready before the first configure).  */
+  /* The tip's new window starts from its wheel units too.  */
+  if (FRAME_COLUMN_WIDTH (tip_f) > 0 && FRAME_LINE_HEIGHT (tip_f) > 0)
+    nhwl_glue_rc (dpyinfo, NHG (nhg_frame_units (dpyinfo->glue, id,
+						 FRAME_COLUMN_WIDTH (tip_f),
+						 FRAME_LINE_HEIGHT (tip_f))));
   out->next_output = dpyinfo->outputs;
   dpyinfo->outputs = out;
 
@@ -1840,7 +1833,8 @@ DEFUN ("x-show-tip", Fx_show_tip, Sx_show_tip, 1, 6, 0,
   struct window *w;
   struct buffer *old_buffer;
   struct text_pos pos;
-  int width, height, ax, ay;
+  int width, height, adx, ady;
+  NhgRect anchor;
   int old_windows_or_buffers_changed = windows_or_buffers_changed;
   specpdl_ref count = SPECPDL_INDEX ();
   Lisp_Object window, size, tip_buf;
@@ -1871,7 +1865,7 @@ DEFUN ("x-show-tip", Fx_show_tip, Sx_show_tip, 1, 6, 0,
     CHECK_FIXNUM (dy);
 
   pf = nhwl_tip_parent (f);
-  nhwl_tip_anchor (pf, parms, dx, dy, &ax, &ay);
+  nhwl_tip_anchor (pf, parms, dx, dy, &anchor, &adx, &ady);
 
   if (FRAMEP (tip_frame) && FRAME_LIVE_P (XFRAME (tip_frame))
       && FRAME_VISIBLE_P (XFRAME (tip_frame))
@@ -1881,6 +1875,7 @@ DEFUN ("x-show-tip", Fx_show_tip, Sx_show_tip, 1, 6, 0,
     {
       /* Only DX and DY have changed.  */
       struct frame *tf = XFRAME (tip_frame);
+      uint64_t tw = FRAME_NHWL_OUTPUT (tf)->window;
 
       if (!NILP (tip_timer))
 	{
@@ -1888,12 +1883,14 @@ DEFUN ("x-show-tip", Fx_show_tip, Sx_show_tip, 1, 6, 0,
 	  tip_timer = Qnil;
 	}
       block_input ();
-      /* The move is a bare commit (the shell owes the reposition's ack).
-	 Below xdg_wm_base 3 the popup is made again, and only a buffer
-	 maps it: the whole tip is drawn again.  */
-      if (nhshell_window_set_position (FRAME_NHWL_SHELL (f),
-				       FRAME_NHWL_OUTPUT (tf)->window,
-				       ax, ay) == 1)
+      /* The move is a bare commit; below xdg_wm_base 3 the popup is made
+	 again, and the whole tip is drawn again.  */
+      if (tw
+	  && (nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+			    NHG (nhg_tip_show (FRAME_NHG (f), &tw,
+					       FRAME_NHWL_OUTPUT (pf)->window,
+					       anchor, adx, ady, 0, 0)))
+	      == 1))
 	nhwl_damage_all (tf);
       unblock_input ();
       goto start_timer;
@@ -1978,7 +1975,7 @@ DEFUN ("x-show-tip", Fx_show_tip, Sx_show_tip, 1, 6, 0,
   width += FRAME_COLUMN_WIDTH (tip_f);
 
   /* Show the tip: its popup, then its text.  */
-  nhwl_tip_map (tip_f, pf, width, height, ax, ay);
+  nhwl_tip_map (tip_f, pf, width, height, anchor, adx, ady);
   w->must_be_updated_p = true;
   update_single_window (w);
   nhwl_publish (tip_f);

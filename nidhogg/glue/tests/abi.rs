@@ -33,7 +33,10 @@ mod abi {
     /// Compile a probe that includes `nhglue.h` and prints each of `exprs` as a signed integer; return the values.
     /// `decls` go before `main` (they must compile against the header, with every warning an error).
     fn probe(decls: &str, exprs: &[&str]) -> Vec<i64> {
-        let dir = std::env::temp_dir().join(format!("nhglue-layout-{}", std::process::id()));
+        // one directory per probe: the tests run in parallel
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("nhglue-layout-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut c = format!(
             "#include <stdio.h>\n#include <stddef.h>\n#include \"nhglue.h\"\n{decls}\nint main(void) {{\n"
@@ -512,6 +515,101 @@ PROTO (nhg_csd_title_bar, int32_t (NhgDisplay *, uint64_t, int32_t, int32_t, Nhg
             nhg_csd_paint;
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32, i32, *mut P) -> i32 =
             nhg_csd_title_bar;
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe(decls, &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+    }
+
+    /// Window operations and tips: the header's records, constants and prototypes against the Rust side.
+    #[test]
+    fn window_header_matches_records() {
+        use nhglue::tip::NHG_DEL_TIP;
+        use nhglue::window::*;
+        type W = NhgWindowDesc;
+        let rows: &[(&str, i64)] = &[
+            ("NHG_ALPHA_DAMAGE", NHG_ALPHA_DAMAGE.into()),
+            ("NHG_ALPHA_HOST", NHG_ALPHA_HOST.into()),
+            ("NHG_FULLSCREEN_NONE", NHG_FULLSCREEN_NONE.into()),
+            ("NHG_FULLSCREEN_WIDTH", NHG_FULLSCREEN_WIDTH.into()),
+            ("NHG_FULLSCREEN_HEIGHT", NHG_FULLSCREEN_HEIGHT.into()),
+            ("NHG_FULLSCREEN_BOTH", NHG_FULLSCREEN_BOTH.into()),
+            ("NHG_FULLSCREEN_MAXIMIZED", NHG_FULLSCREEN_MAXIMIZED.into()),
+            ("NHG_DEL_TIP", NHG_DEL_TIP.into()),
+            ("sizeof (NhgAnchor)", size_of::<NhgAnchor>() as i64),
+            ("sizeof (NhShellAnchor)", size_of::<NhgAnchor>() as i64),
+            (
+                "offsetof (NhgAnchor, adjust)",
+                offset_of!(NhgAnchor, adjust) as i64,
+            ),
+            ("sizeof (W)", size_of::<W>() as i64),
+            ("_Alignof (W)", align_of::<W>() as i64),
+            ("WOFF (title)", offset_of!(W, title) as i64),
+            ("WOFF (title_len)", offset_of!(W, title_len) as i64),
+            ("WOFF (app_id_len)", offset_of!(W, app_id_len) as i64),
+            (
+                "WOFF (session_name_len)",
+                offset_of!(W, session_name_len) as i64,
+            ),
+            ("WOFF (flags)", offset_of!(W, flags) as i64),
+            ("WOFF (kind)", offset_of!(W, kind) as i64),
+            ("WOFF (parent)", offset_of!(W, parent) as i64),
+            ("WOFF (y)", offset_of!(W, y) as i64),
+            ("WOFF (anchor)", offset_of!(W, anchor) as i64),
+            ("WOFF (role)", offset_of!(W, role) as i64),
+            ("WOFF (facts)", offset_of!(W, facts) as i64),
+            ("WOFF (native_h)", offset_of!(W, native_h) as i64),
+            ("WOFF (scale120)", offset_of!(W, scale120) as i64),
+        ];
+        let decls = "\
+#define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
+typedef NhgWindowDesc W;
+#define WOFF(m) offsetof (W, m)
+PROTO (nhg_window_new, int32_t (NhgDisplay *, const NhgWindowDesc *, uint64_t *));
+PROTO (nhg_window_title, int32_t (NhgDisplay *, uint64_t, const char *, size_t));
+PROTO (nhg_window_undecorated, int32_t (NhgDisplay *, uint64_t, int32_t));
+PROTO (nhg_window_alpha, int32_t (NhgDisplay *, uint64_t, double, double, uint32_t *));
+PROTO (nhg_window_size, int32_t (NhgDisplay *, uint64_t, int32_t, int32_t));
+PROTO (nhg_window_min_size, int32_t (NhgDisplay *, uint64_t, int32_t, int32_t));
+PROTO (nhg_window_visible, int32_t (NhgDisplay *, uint64_t, int32_t));
+PROTO (nhg_window_iconify, int32_t (NhgDisplay *, uint64_t));
+PROTO (nhg_window_fullscreen, int32_t (NhgDisplay *, uint64_t, uint32_t));
+PROTO (nhg_window_destroy, int32_t (NhgDisplay *, uint64_t));
+PROTO (nhg_window_wait_configured, int32_t (NhgDisplay *, uint64_t, uint32_t));
+PROTO (nhg_tip_show, int32_t (NhgDisplay *, uint64_t *, uint64_t, NhgRect, int32_t, int32_t, int32_t, int32_t));
+PROTO (nhg_tip_hide, int32_t (NhgDisplay *, uint64_t));";
+        {
+            use nhglue::ffi::*;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, *const W, *mut u64) -> i32 =
+                nhg_window_new;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *const c_char, usize) -> i32 =
+                nhg_window_title;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32) -> i32 = nhg_window_undecorated;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, u64, f64, f64, *mut u32) -> i32 =
+                nhg_window_alpha;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32, i32) -> i32 = nhg_window_size;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32, i32) -> i32 =
+                nhg_window_min_size;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32) -> i32 = nhg_window_visible;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_window_iconify;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u32) -> i32 = nhg_window_fullscreen;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_window_destroy;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u32) -> i32 =
+                nhg_window_wait_configured;
+            let _: unsafe extern "C" fn(
+                *mut NhgDisplay,
+                *mut u64,
+                u64,
+                NhgRect,
+                i32,
+                i32,
+                i32,
+                i32,
+            ) -> i32 = nhg_tip_show;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_tip_hide;
+        }
         let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
         let got = probe(decls, &exprs);
         assert_eq!(got.len(), rows.len());

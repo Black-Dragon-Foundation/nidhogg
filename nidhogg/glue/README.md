@@ -101,6 +101,8 @@ sees what the earlier events changed, as the C drain did; before each call it sa
   its kinds out.
 - An event naming a forgotten window gives no action, except keys and the input method's, which C sends to the focus
   frame.
+- **A tip's dismissal** (`POPUP_DONE` of a tip's window) gives `DELETE` with `NHG_DEL_TIP`: C calls `nhg_tip_hide` and
+  hides the frame, which Lisp deletes later. A popup frame's `POPUP_DONE` is still raw.
 
 ## The title bar
 
@@ -122,3 +124,25 @@ The client-side title bar (`src/csd.rs`, from `nhwlcsd.c`) is laid out, hit-test
   size of the last paint, which is what the surface shows.
 - **Style:** `nhwl--set-title-bar-style` hands the buttons of each side to every display (`nhg_csd_style`), and to a
   display opened later; the colours and the font stay C's.
+
+## Windows and tips
+
+Every shell window C makes goes through `nhg_window_new` (`src/window.rs`), whose descriptor carries the facts the
+frame starts from (native size, scale, visible, iconified, our own title bar): the glue registers the window seeded
+with them. Tip, popup and child frames get a new window each time they are shown, so each new window starts from
+Emacs's values, and its alpha starts over. `nhg_window_destroy` destroys and forgets (the frame is forgotten even when
+a lost connection makes the shell refuse).
+
+- **Operations:** title, `undecorated` (a child's window has nothing to ask), alpha, the size C sets itself (a push,
+  as `nhg_frame_resized`), the smallest size (none for a child), visibility and iconify (checked pushes), fullscreen
+  (`fullwidth`/`fullheight` ask for maximized) and one bounded round of the wait for the first configure
+  (`nhg_window_wait_configured`: C drains between rounds). What reads Emacs stays C: the title's encoding, the
+  `alpha` parameter with the highlight frame and `frame-alpha-lower-limit`, sizes from fonts, the `fullscreen`
+  parameter.
+- **Alpha:** C passes the effective alpha; the glue asks the compositor and falls back to the shell multiplying
+  (`NHG_ALPHA_HOST`), and says when C must damage the whole frame (`NHG_ALPHA_DAMAGE`). C keeps copies of the cut and
+  the host flag for its surface list.
+- **Tips** (`src/tip.rs`): `nhg_tip_show` makes the tip's popup (below and right of a 1 x 1 point at the pointer plus
+  the offsets, or at `left`/`top`, flipped and slid by the compositor) or moves it when only the offsets changed; 1
+  asks C to draw the whole tip (a new tip, or a popup made again below `xdg_wm_base` 3). The tip frame itself and the
+  frame it hangs on stay C.
