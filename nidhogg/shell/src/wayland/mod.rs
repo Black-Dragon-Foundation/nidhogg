@@ -11,13 +11,16 @@
 
 pub mod activation;
 pub mod alpha;
+pub mod bell;
 pub mod child;
 pub mod clipboard;
 pub mod conn;
 pub mod cursor;
 pub mod cursor_theme;
 pub mod decor;
+pub mod foreign;
 pub mod gesture;
+pub mod idle;
 pub mod keyboard;
 pub mod output;
 pub mod pointer;
@@ -28,6 +31,7 @@ pub mod registry;
 pub mod scale;
 pub mod selection;
 pub mod serial;
+pub mod session;
 pub mod shm;
 pub mod text_input;
 pub mod toplevel;
@@ -92,6 +96,11 @@ pub struct MainState {
     ssd: bool,
     /// The Xcursor theme fallback and the latest shape request.
     cursor: cursor_theme::ThemeCursor,
+    bell: bell::Bell,
+    idle: idle::Idle,
+    foreign: foreign::Foreign,
+    session: session::Session,
+    tokens: activation::Tokens,
 }
 
 /// The main queue's waker: an event routed into the main queue (by the reader's read) marks it pending and wakes the
@@ -166,6 +175,10 @@ impl WaylandShell {
             main.presentation = g.bind(reg, &mqh, ());
             main.activation = g.bind(reg, &mqh, ());
             main.alpha_modifier = g.bind(reg, &mqh, ());
+            main.bell.manager = g.bind(reg, &mqh, ());
+            main.idle.manager = g.bind(reg, &mqh, ());
+            main.foreign.exporter = g.bind(reg, &mqh, ());
+            main.session.manager = g.bind(reg, &mqh, ());
             if let (Some(seat), Some(manager)) = (
                 &rstate.seat,
                 g.bind::<ZwpTextInputManagerV3, _, _>(reg, &rqh, ()),

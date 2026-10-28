@@ -69,6 +69,14 @@ pub const NHSHELL_WIN_MAXIMIZED: u32 = 1 << 2;
 /// top-level window while no popup holds a grab, or the popup holding the topmost grab).
 /// Without the grab it still works by keys through its parent's focus, but an outside click does not dismiss it.
 pub const NHSHELL_WIN_GRAB: u32 = 1 << 3;
+/// With a session name: ask the session to restore the window (before its first commit) instead of just adding it.
+pub const NHSHELL_WIN_RESTORE: u32 = 1 << 4;
+
+/// Why a session is opened (`session_open`): a fresh launch, a recovery after the compositor restarted, a restore of
+/// a saved session.
+pub const NHSHELL_SESSION_LAUNCH: u32 = 0;
+pub const NHSHELL_SESSION_RECOVER: u32 = 1;
+pub const NHSHELL_SESSION_RESTORE: u32 = 2;
 
 /// Edges for `resize`, OR-ed for a corner.
 pub const NHSHELL_EDGE_TOP: u32 = 1;
@@ -170,7 +178,16 @@ pub trait ShellBackend {
     /// Run the work that must happen on the host's thread (configure and surface events).
     fn dispatch_main(&mut self) -> ShellResult;
 
-    fn window_new(&mut self, desc: &WindowDesc) -> ShellResult<WindowId>;
+    fn window_new(&mut self, desc: &WindowDesc) -> ShellResult<WindowId> {
+        self.window_new_named(desc, None)
+    }
+    /// `window_new` with a session name: sent to the session (`NHSHELL_WIN_RESTORE`: as a restore) before the window's
+    /// first commit.  The name is ignored without a session, or when it was replaced.
+    fn window_new_named(
+        &mut self,
+        desc: &WindowDesc,
+        session_name: Option<&str>,
+    ) -> ShellResult<WindowId>;
     fn window_destroy(&mut self, window: WindowId) -> ShellResult;
     fn set_title(&mut self, window: WindowId, title: &str) -> ShellResult;
     fn set_app_id(&mut self, window: WindowId, app_id: &str) -> ShellResult;
@@ -204,6 +221,25 @@ pub trait ShellBackend {
     /// Ask the compositor to activate the window with `token`; without one, request a token with the latest input
     /// serial and the window's surface, and activate with it when it arrives (`State` before any input).
     fn window_activate(&mut self, window: WindowId, token: Option<&str>) -> ShellResult;
+    /// A fresh activation token made with the newest input serial and the window's surface, within `timeout_ms`
+    /// (`Timeout`; `State` before any input; `Unsupported` without the protocol).
+    fn activation_token(&mut self, window: WindowId, timeout_ms: u32) -> ShellResult<String>;
+
+    /// Ring the system bell on the window's root surface (window 0: no surface), at most once per 20 ms.
+    /// `Unsupported` without the protocol.  The visible bell is the host's.
+    fn bell(&mut self, window: WindowId) -> ShellResult;
+    /// Hold (`on`) or release an idle inhibitor on the window's surface.  `Unsupported` without the protocol.
+    fn inhibit_idle(&mut self, window: WindowId, on: bool) -> ShellResult;
+    /// The window's xdg-foreign handle (no scheme prefix), exported at the first call and cached until the window
+    /// goes; waits at most `timeout_ms` for it (`Timeout`).  `Unsupported` without the exporter.
+    fn window_export(&mut self, window: WindowId, timeout_ms: u32) -> ShellResult<String>;
+    /// Open the session (`id` None: a new one) for `reason` (`NHSHELL_SESSION_*`); `NHSHELL_EV_SESSION` answers.
+    /// `Unsupported` without session management.
+    fn session_open(&mut self, id: Option<&str>, reason: u32) -> ShellResult;
+    /// The open session's id (`State` before the compositor has said).
+    fn session_id(&self) -> ShellResult<String>;
+    /// Take the window out of the session: the compositor forgets its name.  `State` for an unnamed window.
+    fn window_session_remove(&mut self, window: WindowId) -> ShellResult;
 
     /// The window's preferred scale times 120 (120 when the compositor has not said).
     fn window_scale(&self, window: WindowId) -> ShellResult<u32>;
