@@ -231,7 +231,7 @@ typedef struct { uint32_t flags; } NhgNextIn;
 #define NHG_ACT_VISIBLE         12
 #define NHG_ACT_ICONIFIED       13
 #define NHG_ACT_READY           14   /* the window may present: C runs the present step, drawn or not */
-#define NHG_ACT_MONITORS        15
+#define NHG_ACT_MONITORS        15   /* CODE the added or changed output's scale times 120 (0: one went) */
 #define NHG_ACT_LOST            16   /* the connection is gone */
 #define NHG_ACT_PREEDIT         17
 #define NHG_ACT_COMMIT          18
@@ -239,14 +239,29 @@ typedef struct { uint32_t flags; } NhgNextIn;
 #define NHG_ACT_IM_SURROUNDING  20
 #define NHG_ACT_SELECTION_CLEAR 21
 #define NHG_ACT_TITLE_BAR       22   /* a pointer event went through the title bar: FLAGS NHG_TB_*, CODE the pointer
-					shape (NHSHELL_CURSOR_*) with NHG_TB_POINTER; the event's raw action, if any,
-					comes after it */
-/* Transitional: an event whose kind is not ported yet, handled on C's old path (nhg_raw_event gives it); a PREEDIT's
-   or COMMIT_TEXT's text comes as the action's text (null: it could not be taken), and MODS is the keyboard's
-   NHSHELL_MOD_* mask.  */
+					shape (NHSHELL_CURSOR_*) with NHG_TB_POINTER; the event's own action (MOTION,
+					LEAVE, CLICK), if any, comes after it */
+/* Transitional: an event whose kind is not ported yet, handled on C's old path (nhg_raw_event gives it); MODS is the
+   keyboard's NHSHELL_MOD_* mask.  */
 #define NHG_ACT_RAW             31
 
 #define NHG_RESIZE_FULLSCREEN    1   /* fullscreen or maximized changed: C stores the fullscreen parameter */
+
+/* MOTION (an enter is one): DX, DY the pointer's position in device pixels in the window's surface.  LEAVE: the
+   window.  CLICK: CODE the evdev button, FLAGS the NHSHELL_BUTTON_* state, DX, DY the position, MODS the keyboard's.
+   WHEEL: CODE NHG_WHEEL_UP, _DOWN, _LEFT or _RIGHT (as pgtk's buttons 4 to 7), W the whole steps, DX, DY the
+   record's pixel delta in device pixels, MODS the keyboard's, FLAGS NHG_WHEEL_*: none (W events, one step each),
+   HIRES (one event with the pixel delta, no steps), STOP (a gesture ended; momentum begins) or COALESCED (W steps in
+   one event).  PREEDIT and COMMIT: TEXT, LEN (NULL: it could not be taken; empty: the preedit is cleared), WINDOW as
+   the event came, even one that is not a frame, or 0; C sends them to the frame of its tree that Emacs focused.
+   IM_DELETE: X bytes before point, Y after.  */
+#define NHG_WHEEL_HIRES          1
+#define NHG_WHEEL_STOP           2
+#define NHG_WHEEL_COALESCED      4
+#define NHG_WHEEL_UP             4
+#define NHG_WHEEL_DOWN           5
+#define NHG_WHEEL_LEFT           6
+#define NHG_WHEEL_RIGHT          7
 
 typedef struct
 {
@@ -380,10 +395,7 @@ typedef struct
   char name[32];
 } NhgMonitor;
 
-/* An output was added or changed (replacing the one with its id): 1 when it is kept, 0 when 16 are known.  An output
-   went: 1 when it was known.  */
-int32_t nhg_monitor_set (NhgDisplay *d, const NhgMonitor *m);
-int32_t nhg_monitor_remove (NhgDisplay *d, uint64_t id);
+/* The outputs come from nhg_next (a MONITORS action says the list changed); nhg_monitors gives the list.  */
 
 /* The display as x-display-* reads it: its extent in device pixels (1920 x 1080 with no output) and in millimetres,
    the first output's scale times 120 (0: none yet) and the shell's capabilities.  */
@@ -409,6 +421,29 @@ int32_t nhg_bell (NhgDisplay *d, uint64_t window);
 
 /* Show (ON) the pointer over WINDOW as SHAPE (NHSHELL_CURSOR_*), or hide it.  */
 int32_t nhg_pointer_visible (NhgDisplay *d, uint64_t window, int32_t on, uint32_t shape);
+
+/* ---- Wheel units, the input method and outputs ---------------------------------------------------------------------
+   None of these reads or writes pixels.  */
+
+/* Push: WINDOW's column width and line height in device pixels (FRAME_COLUMN_WIDTH, FRAME_LINE_HEIGHT), the size of a
+   wheel step in a finger record.  Call it when the window is made and when its font changes; a checking build compares
+   it with Emacs's values.  NHG_E_ARG for a size under 1, NHG_E_STATE for an unknown window.  */
+int32_t nhg_frame_units (NhgDisplay *d, uint64_t window, int32_t col_w, int32_t line_h);
+
+/* Text input for WINDOW on or off (NHG_E_UNSUPPORTED without text-input-v3); the cursor rectangle R in logical pixels
+   of its surface; the LEN bytes of UTF-8 at TEXT around point, with point at byte CURSOR and the mark at byte ANCHOR of
+   them (at most 4000 bytes go to the input method, cut around point).  The compositor is told only what changed.  */
+int32_t nhg_im_enable (NhgDisplay *d, uint64_t window, int32_t on);
+int32_t nhg_im_cursor (NhgDisplay *d, uint64_t window, NhgRect r);
+int32_t nhg_im_surrounding (NhgDisplay *d, uint64_t window, const char *text, size_t len, int32_t cursor,
+                            int32_t anchor);
+
+/* Copy up to CAP outputs into OUT; their number goes to *N (may be NULL) and is returned.  At most 16 are known.  */
+int32_t nhg_monitors (NhgDisplay *d, NhgMonitor *out, size_t cap, size_t *n);
+
+/* Copy the ids of the outputs WINDOW is on, up to CAP, into OUT; their number goes to *N (may be NULL) and is
+   returned.  NHG_E_STATE for an unknown window.  */
+int32_t nhg_frame_outputs (NhgDisplay *d, uint64_t window, uint64_t *out, size_t cap, size_t *n);
 
 #ifdef __cplusplus
 }

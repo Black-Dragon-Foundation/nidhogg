@@ -557,6 +557,55 @@ strip again), and goes again when the pointer leaves the button."
                (should (equal (nhwl-gui--grab-matches-snapshot) '(0 . 0)))))
          (kill-buffer buf))))))
 
+;; Port Task 5: the pointer, the wheel, the input method's events and the outputs are the glue's; the title bar's hit
+;; tests, the mouse highlight and the buffer reads stay C.
+
+;; The wheel accumulator is the glue's: a wheel notch is one `wheel-down' event, the other way `wheel-up', and half a
+;; notch is none (the fraction waits for the next record).  Without `mwheel-coalesce-scroll-events', one event per
+;; notch.
+(ert-deftest nhwl-gui/wheel-notches-are-wheel-events ()
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((f (car (nhwl-gui--nhwl-frames))) (mwheel-coalesce-scroll-events nil))
+    (should f)
+    (with-selected-frame f
+      (nhwl-gui--focus-toplevel)
+      (gui-runner-recorder '(:cmd "pointer" :pos [40 40]))
+      (nhwl-gui--pump 0.3)
+      (let ((wheel (lambda (v120)
+                     (gui-runner-recorder (list :cmd "axis" :source "wheel" :v120 v120))
+                     (let ((got nil) (deadline (+ (float-time) 1.5)))
+                       (while (< (float-time) deadline)
+                         (let ((e (read-event nil nil 0.05)))
+                           (when (and (consp e) (memq (car e) '(wheel-up wheel-down)))
+                             (push (car e) got))))
+                       (nreverse got)))))
+        (should (equal (funcall wheel 120) '(wheel-down)))
+        (should (equal (funcall wheel -120) '(wheel-up)))
+        ;; half a notch: nothing yet; the other half: one
+        (should (null (funcall wheel 60)))
+        (should (equal (funcall wheel 60) '(wheel-down)))))))
+
+;; The outputs are the glue's: an output that comes or goes runs `display-monitors-changed-functions' once, and
+;; `display-monitor-attributes-list' lists it.
+(ert-deftest nhwl-gui/output-changes-run-the-monitors-hook ()
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((runs 0) (before (length (display-monitor-attributes-list))))
+    (let ((fn (lambda (&rest _) (setq runs (1+ runs)))))
+      (add-hook 'display-monitors-changed-functions fn)
+      (unwind-protect
+          (progn
+            (gui-runner-recorder '(:cmd "output" :op "add" :name "nh-rg5" :size [800 600]))
+            (nhwl-gui--pump 0.5)
+            (should (> runs 0))
+            (should (= (length (display-monitor-attributes-list)) (1+ before)))
+            (setq runs 0)
+            (gui-runner-recorder '(:cmd "output" :op "remove" :name "nh-rg5"))
+            (nhwl-gui--pump 0.5)
+            (should (> runs 0))
+            (should (= (length (display-monitor-attributes-list)) before)))
+        (ignore-errors (gui-runner-recorder '(:cmd "output" :op "remove" :name "nh-rg5")))
+        (remove-hook 'display-monitors-changed-functions fn)))))
+
 (provide 'nhwl-gui-rg-tests)
 
 ;;; nhwl-gui-rg-tests.el ends here

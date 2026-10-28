@@ -4,8 +4,8 @@
 //! (`nhwl_display_pixel_width`, `-height`).  The arithmetic is pgtk's (`pgtk_display_pixel_*`, `pgtk_display_mm`,
 //! emacs-31.1): the outputs at the origin count the largest in millimetres and the others add up.
 //!
-//! The outputs are pushed by C for now, from the shell's `OUTPUT_ADD`, `OUTPUT_CHANGE` and `OUTPUT_REMOVE` records
-//! ([`Monitors::set`], [`Monitors::remove`]); the monitor list moves into the drain with the input state.
+//! The outputs come from the drain, from the shell's `OUTPUT_ADD`, `OUTPUT_CHANGE` and `OUTPUT_REMOVE` records
+//! (`monitors.rs`).
 
 use crate::display::Display;
 use nhshell::api::ShellBackend;
@@ -84,6 +84,11 @@ impl Monitors {
             }
             None => false,
         }
+    }
+
+    /// The outputs, in the order the list keeps them.
+    pub fn all(&self) -> &[NhgMonitor] {
+        &self.list
     }
 
     /// The extent of the outputs in device pixels: each output's far corner, its position scaled to device pixels.

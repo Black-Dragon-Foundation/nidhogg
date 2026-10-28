@@ -895,6 +895,11 @@ nhwl_window_new (struct frame *f, NhShellWindowDesc *desc, uint32_t flags,
       nhwl_glue_rc (dpyinfo, NHG (nhg_frame_resized (dpyinfo->glue, *id,
 						     max (1, w),
 						     max (1, h))));
+      if (FRAME_COLUMN_WIDTH (f) > 0 && FRAME_LINE_HEIGHT (f) > 0)
+	nhwl_glue_rc (dpyinfo,
+		      NHG (nhg_frame_units (dpyinfo->glue, *id,
+					    FRAME_COLUMN_WIDTH (f),
+					    FRAME_LINE_HEIGHT (f))));
     }
   return rc;
 }
@@ -1313,6 +1318,12 @@ nhwl_new_font (struct frame *f, Lisp_Object font_object, int fontset)
   /* Now make the frame display the given font.  */
   if (FRAME_NHWL_OUTPUT (f)->window)
     {
+      /* The size of a wheel step in a finger record.  */
+      nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		    NHG (nhg_frame_units (FRAME_NHG (f),
+					  FRAME_NHWL_OUTPUT (f)->window,
+					  max (1, FRAME_COLUMN_WIDTH (f)),
+					  max (1, FRAME_LINE_HEIGHT (f)))));
       adjust_frame_size (f, FRAME_COLS (f) * FRAME_COLUMN_WIDTH (f),
 			 FRAME_LINES (f) * FRAME_LINE_HEIGHT (f), 3,
 			 false, Qfont);
@@ -1560,7 +1571,8 @@ nhwl_free_frame_resources (struct frame *f)
 
   if (out->window && dpyinfo->shell)
     {
-      nhshell_text_input_enable (dpyinfo->shell, out->window, 0);
+      nhwl_glue_rc (dpyinfo, NHG (nhg_im_enable (dpyinfo->glue, out->window,
+						 0)));
       nhwl_window_destroy (dpyinfo, out->window);
     }
   out->window = 0;
@@ -2081,59 +2093,41 @@ nhwl_configure (struct frame *f, const NhgAction *a)
     fset_redisplay (f);
 }
 
-/* One scroll record of frame F, as pgtk's scroll_event turns GDK's:
-   wheel records add up to whole 120-unit notches (the fraction stays in
-   the display's accumulator, which a new frame, source or direction
-   resets); finger and continuous records carry their pixel delta in device
-   pixels, for `pixel-scroll-precision-mode'; with
-   `mwheel-coalesce-scroll-events' they add up to whole lines instead; a
-   stop record is a TOUCH_END_EVENT (momentum).  MODS is the keyboard's
-   modifier mask (NHSHELL_MOD_*).  Return the number of events stored.  */
+/* Apply the glue's WHEEL action A of frame F, from one scroll record as
+   pgtk's scroll_event turns GDK's (the glue adds the records up).  A stop
+   is a TOUCH_END_EVENT (momentum); a finger or continuous record's own
+   pixel delta goes to `pixel-scroll-precision-mode'; whole steps are one
+   event with their number (`mwheel-coalesce-scroll-events') or one event
+   each.  Return the number of events stored.  */
 static int
-nhwl_scroll_record (struct frame *f, const NhShellEvent *ev, uint32_t mods,
-		    struct input_event *hold_quit)
+nhwl_wheel_apply (struct frame *f, const NhgAction *a,
+		  struct input_event *hold_quit)
 {
   struct nhwl_display_info *d = FRAME_DISPLAY_INFO (f);
-  double scale = nhwl_frame_scale (f);
-  double px = ev->u.scroll.dx * scale, py = ev->u.scroll.dy * scale;
-  bool wheel = ev->u.scroll.v120x || ev->u.scroll.v120y;
-  bool horizontal = wheel ? ev->u.scroll.v120x != 0 : fabs (px) > fabs (py);
-  double *acc = horizontal ? &d->scroll.acc_x : &d->scroll.acc_y;
-  double *other = horizontal ? &d->scroll.acc_y : &d->scroll.acc_x;
-  double delta = wheel ? (horizontal ? ev->u.scroll.v120x : ev->u.scroll.v120y)
-		       : (horizontal ? px : py);
-  double unit = wheel ? 120.0
-    : (horizontal ? FRAME_COLUMN_WIDTH (f) : FRAME_LINE_HEIGHT (f));
+  double px = a->dx, py = a->dy;
+  int n = a->w, i;
   union buffered_input_event inev;
-  int n, i;
 
   EVENT_INIT (inev.ie);
   inev.ie.arg = Qnil;
-  inev.ie.modifiers = nhwl_emacs_modifiers (mods);
+  inev.ie.modifiers = nhwl_emacs_modifiers (a->mods);
   XSETINT (inev.ie.x, (int) d->last_mouse_motion_x);
   XSETINT (inev.ie.y, (int) d->last_mouse_motion_y);
   XSETFRAME (inev.ie.frame_or_window, f);
-  inev.ie.timestamp = ev->time_ns / 1000000;
+  inev.ie.timestamp = a->time_ms;
 
-  if (ev->u.scroll.stop)
+  if (a->flags & NHG_WHEEL_STOP)
     {
-      d->scroll.acc_x = d->scroll.acc_y = 0;
       inev.ie.kind = TOUCH_END_EVENT;
       kbd_buffer_store_event_hold (&inev.ie, hold_quit);
       return 1;
     }
-  if (delta == 0)
-    return 0;
+  inev.ie.kind = (a->code == NHG_WHEEL_LEFT || a->code == NHG_WHEEL_RIGHT
+		  ? HORIZ_WHEEL_EVENT : WHEEL_EVENT);
+  inev.ie.modifiers |= (a->code == NHG_WHEEL_UP || a->code == NHG_WHEEL_LEFT
+			? up_modifier : down_modifier);
 
-  if (d->scroll.frame != f || d->scroll.source != ev->u.scroll.source
-      || (*acc != 0 && (*acc < 0) != (delta < 0)))
-    *acc = *other = 0;
-  d->scroll.frame = f;
-  d->scroll.source = ev->u.scroll.source;
-  inev.ie.kind = horizontal ? HORIZ_WHEEL_EVENT : WHEEL_EVENT;
-  inev.ie.modifiers |= delta < 0 ? up_modifier : down_modifier;
-
-  if (!wheel && !mwheel_coalesce_scroll_events)
+  if (a->flags & NHG_WHEEL_HIRES)
     {
       /* This record's pixel delta, for `pixel-scroll-precision', which
 	 (as on X) takes a negative delta for wheel-down.  */
@@ -2141,13 +2135,7 @@ nhwl_scroll_record (struct frame *f, const NhShellEvent *ev, uint32_t mods,
       kbd_buffer_store_event_hold (&inev.ie, hold_quit);
       return 1;
     }
-
-  *acc += delta;
-  n = (int) (fabs (*acc) / unit);
-  if (n == 0)
-    return 0;
-  *acc -= (delta < 0 ? -n : n) * unit;
-  if (mwheel_coalesce_scroll_events)
+  if (a->flags & NHG_WHEEL_COALESCED)
     {
       inev.ie.arg = list3 (make_fixnum (n), make_float (-px), make_float (-py));
       kbd_buffer_store_event_hold (&inev.ie, hold_quit);
@@ -2160,31 +2148,6 @@ nhwl_scroll_record (struct frame *f, const NhShellEvent *ev, uint32_t mods,
       kbd_buffer_store_event_hold (&inev.ie, hold_quit);
     }
   return n;
-}
-
-/* The window of O is no longer on the output ID.  */
-static void
-nhwl_output_left (struct nhwl_output *o, uint64_t id)
-{
-  int i;
-
-  for (i = 0; i < o->n_entered; i++)
-    if (o->entered[i] == id)
-      {
-	o->entered[i] = o->entered[--o->n_entered];
-	break;
-      }
-}
-
-/* Make INEV the MONITORS_CHANGED_EVENT of DPYINFO's terminal (one per
-   change: Lisp runs display-monitors-changed-functions for it).  */
-static bool
-nhwl_monitors_changed (struct nhwl_display_info *dpyinfo,
-		       union buffered_input_event *inev)
-{
-  inev->ie.kind = MONITORS_CHANGED_EVENT;
-  XSETTERMINAL (inev->ie.arg, dpyinfo->terminal);
-  return true;
 }
 
 /***********************************************************************
@@ -2204,9 +2167,9 @@ nhwl_im_enable (struct frame *f, bool on)
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (nhwl_tree_root (f));
   struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
 
-  if (dpyinfo->shell && out->window)
-    nhshell_text_input_enable (dpyinfo->shell, out->window,
-			       on && nhwl_im_on);
+  if (dpyinfo->glue && out->window)
+    nhwl_glue_rc (dpyinfo, NHG (nhg_im_enable (dpyinfo->glue, out->window,
+					       on && nhwl_im_on)));
 }
 
 /* Top-level R lost the keyboard it had lent to a grabbing popup frame:
@@ -2247,7 +2210,7 @@ nhwl_im_update (struct frame *f)
   struct buffer *b;
   int x, y, ox, oy;
 
-  if (!nhwl_im_on || !dpyinfo->shell || !out->window
+  if (!nhwl_im_on || !dpyinfo->glue || !out->window
       || f != dpyinfo->x_focus_frame || !WINDOWP (f->selected_window))
     return;
   w = XWINDOW (f->selected_window);
@@ -2258,12 +2221,15 @@ nhwl_im_update (struct frame *f)
        + WINDOW_LEFT_FRINGE_WIDTH (w) + WINDOW_LEFT_MARGIN_WIDTH (w));
   y = WINDOW_TO_FRAME_PIXEL_Y (w, w->phys_cursor.y);
   nhwl_native_origin (f, &ox, &oy);
-  nhshell_text_input_cursor
-    (dpyinfo->shell, out->window,
-     nhwl_to_logical (x + ox, s120),
-     nhwl_to_logical (y + oy, s120),
-     max (1, nhwl_to_logical (w->phys_cursor_width, s120)),
-     max (1, nhwl_to_logical (w->phys_cursor_height, s120)));
+  {
+    NhgRect r = { nhwl_to_logical (x + ox, s120),
+		  nhwl_to_logical (y + oy, s120),
+		  max (1, nhwl_to_logical (w->phys_cursor_width, s120)),
+		  max (1, nhwl_to_logical (w->phys_cursor_height, s120)) };
+
+    nhwl_glue_rc (dpyinfo,
+		  NHG (nhg_im_cursor (dpyinfo->glue, out->window, r)));
+  }
 
   b = XBUFFER (w->contents);
   {
@@ -2290,8 +2256,10 @@ nhwl_im_update (struct frame *f)
 	for (ptrdiff_t i = s; i < e; i++)
 	  text[n++] = *BUF_BYTE_ADDRESS (b, i);
       }
-    nhshell_text_input_surrounding (dpyinfo->shell, out->window, text, n,
-				    n ? pt_b - s : 0, n ? pt_b - s : 0);
+    nhwl_glue_rc (dpyinfo,
+		  NHG (nhg_im_surrounding (dpyinfo->glue, out->window, text, n,
+					   n ? pt_b - s : 0,
+					   n ? pt_b - s : 0)));
   }
 }
 
@@ -2424,6 +2392,129 @@ nhwl_key_apply (struct nhwl_display_info *dpyinfo, struct frame *f,
   return 1;
 }
 
+/* Apply the glue's PREEDIT, COMMIT or IM_DELETE action A, whose window is
+   F's (NULL: none): the input method's events go to the frame of F's tree
+   that Emacs focused, as keys do.  Return the number of events stored.  */
+static int
+nhwl_im_apply (struct nhwl_display_info *dpyinfo, struct frame *f,
+	       const NhgAction *a, struct input_event *hold_quit)
+{
+  f = nhwl_key_frame (dpyinfo, f);
+  if (!f)
+    return 0;
+  switch (a->kind)
+    {
+    case NHG_ACT_PREEDIT:
+      {
+	/* pgtk's event: ((TEXT (ul . t))), nil when cleared.  */
+	Lisp_Object str = nhwl_im_text (a);
+	struct input_event ie;
+
+	EVENT_INIT (ie);
+	ie.kind = PREEDIT_TEXT_EVENT;
+	ie.arg = (STRINGP (str) && SCHARS (str)
+		  ? list1 (list2 (str, Fcons (intern_c_string ("ul"), Qt)))
+		  : Qnil);
+	XSETFRAME (ie.frame_or_window, f);
+	kbd_buffer_store_event_hold (&ie, hold_quit);
+	return 1;
+      }
+
+    case NHG_ACT_COMMIT:
+      return nhwl_im_commit (f, nhwl_im_text (a), hold_quit);
+
+    default:
+      return nhwl_im_delete (f, a->x, a->y, hold_quit);
+    }
+}
+
+/* Apply the glue's MOTION action A of frame F (an enter or a motion):
+   the position is in device pixels in F's surface.  */
+static void
+nhwl_motion_apply (struct frame *f, const NhgAction *a)
+{
+  struct nhwl_display_info *d = FRAME_DISPLAY_INFO (f);
+  Mouse_HLInfo *hlinfo = MOUSE_HL_INFO (f);
+  int x, y;
+
+  /* A pointer hidden while typing comes back with the mouse.  */
+  if (f->pointer_invisible)
+    nhwl_toggle_invisible_pointer (f, false);
+  /* A motion over the title bar or the margins went to the glue
+     (NHG_ACT_TITLE_BAR) and does not come here.  */
+  nhwl_csd_native_pos (f, a->dx, a->dy, &x, &y);
+  d->last_mouse_frame = f;
+  previous_help_echo_string = help_echo_string;
+  help_echo_string = Qnil;
+  if (hlinfo->mouse_face_hidden)
+    {
+      hlinfo->mouse_face_hidden = false;
+      clear_mouse_face (hlinfo);
+    }
+  if (!nhwl_note_mouse_movement (f, x, y, a->time_ms))
+    help_echo_string = previous_help_echo_string;
+  if (!NILP (help_echo_string) || !NILP (previous_help_echo_string))
+    {
+      Lisp_Object frame;
+
+      XSETFRAME (frame, f);
+      any_help_event_p = true;
+      gen_help_event (help_echo_string, frame, help_echo_window,
+		      help_echo_object, help_echo_pos);
+    }
+}
+
+/* Apply the glue's LEAVE action of frame F.  */
+static void
+nhwl_leave_apply (struct frame *f)
+{
+  Mouse_HLInfo *hlinfo = MOUSE_HL_INFO (f);
+
+  clear_mouse_face (hlinfo);
+  if (FRAME_DISPLAY_INFO (f)->last_mouse_frame == f)
+    FRAME_DISPLAY_INFO (f)->last_mouse_frame = NULL;
+}
+
+/* Apply the glue's CLICK action A of frame F, a button the title bar and
+   the margins did not take: a mouse click event.  Return the number of
+   events stored.  */
+static int
+nhwl_click_apply (struct nhwl_display_info *dpyinfo, struct frame *f,
+		  const NhgAction *a, struct input_event *hold_quit)
+{
+  union buffered_input_event inev;
+  int code = nhwl_button_code (a->code);
+  bool down = a->flags == NHSHELL_BUTTON_PRESSED;
+
+  EVENT_INIT (inev.ie);
+  inev.ie.kind = NO_EVENT;
+  inev.ie.arg = Qnil;
+
+  /* A press in a child frame, or in an ancestor of the frame with the
+     focus, focuses the frame pressed (as x_construct_mouse_click's caller
+     does on X11).  */
+  if (down && !FRAME_NO_ACCEPT_FOCUS (f) && !gui_mouse_grabbed (dpyinfo))
+    {
+      struct frame *hf = dpyinfo->highlight_frame;
+
+      if (FRAME_PARENT_FRAME (f) || (hf && frame_ancestor_p (f, hf)))
+	nhwl_child_focus (f);
+    }
+  if (code < 0)
+    return 0;
+  inev.ie.kind = MOUSE_CLICK_EVENT;
+  inev.ie.code = code;
+  inev.ie.modifiers = (nhwl_emacs_modifiers (a->mods)
+		       | (down ? down_modifier : up_modifier));
+  XSETINT (inev.ie.x, FRAME_DISPLAY_INFO (f)->last_mouse_motion_x);
+  XSETINT (inev.ie.y, FRAME_DISPLAY_INFO (f)->last_mouse_motion_y);
+  XSETFRAME (inev.ie.frame_or_window, f);
+  inev.ie.timestamp = a->time_ms;
+  FRAME_DISPLAY_INFO (f)->last_mouse_frame = f;
+  kbd_buffer_store_event_hold (&inev.ie, hold_quit);
+  return 1;
+}
+
 /* Apply the glue's FOCUS_IN (IN) or FOCUS_OUT action for F's window: a
    top-level's keyboard focus is Emacs's focus on the frame of its tree
    that takes its keys.  Return the number of events stored.  */
@@ -2476,6 +2567,22 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
       dpyinfo->connection_lost = true;
       return 0;
 
+    case NHG_ACT_MONITORS:
+      /* The output list changed (the glue keeps it).  The first scale an
+	 output reports is the display's, and its resolution's.  */
+      if (a->code > 0 && dpyinfo->scale120 == 0)
+	{
+	  dpyinfo->scale120 = a->code;
+	  dpyinfo->resx = dpyinfo->resy = 96.0 * dpyinfo->scale120 / 120.0;
+	}
+      /* One event per change: Lisp runs display-monitors-changed-functions
+	 for it.  */
+      EVENT_INIT (ie);
+      ie.kind = MONITORS_CHANGED_EVENT;
+      XSETTERMINAL (ie.arg, dpyinfo->terminal);
+      kbd_buffer_store_event_hold (&ie, hold_quit);
+      return 1;
+
     case NHG_ACT_SELECTION_CLEAR:
       /* Another client took a selection we owned.  */
       EVENT_INIT (ie);
@@ -2487,10 +2594,27 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
   f = a->window ? nhwl_window_to_frame (dpyinfo, a->window) : NULL;
   if (a->kind == NHG_ACT_KEY)
     return nhwl_key_apply (dpyinfo, f, a, hold_quit);
+  if (a->kind == NHG_ACT_PREEDIT || a->kind == NHG_ACT_COMMIT
+      || a->kind == NHG_ACT_IM_DELETE)
+    return nhwl_im_apply (dpyinfo, f, a, hold_quit);
   if (!f)
     return 0;
   switch (a->kind)
     {
+    case NHG_ACT_MOTION:
+      nhwl_motion_apply (f, a);
+      break;
+
+    case NHG_ACT_LEAVE:
+      nhwl_leave_apply (f);
+      break;
+
+    case NHG_ACT_CLICK:
+      return nhwl_click_apply (dpyinfo, f, a, hold_quit);
+
+    case NHG_ACT_WHEEL:
+      return nhwl_wheel_apply (f, a, hold_quit);
+
     case NHG_ACT_RESIZE:
       nhwl_configure (f, a);
       break;
@@ -2558,7 +2682,6 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
   while (n < NHWL_DRAIN_MAX)
     {
       union buffered_input_event inev;
-      const NhgAction *raw;
       struct frame *f;
       bool have = false;
       size_t i;
@@ -2584,7 +2707,6 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 			    NHG (nhg_raw_event (dpyinfo->glue, &ev)))
 	      != NHG_OK))
 	continue;
-      raw = &list.v[list.n - 1];
 
       EVENT_INIT (inev.ie);
       inev.ie.kind = NO_EVENT;
@@ -2593,128 +2715,6 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 
       switch (ev.kind)
 	{
-	case NHSHELL_EV_POINTER_ENTER:
-	case NHSHELL_EV_POINTER_MOTION:
-	  if (f)
-	    {
-	      struct nhwl_display_info *d = FRAME_DISPLAY_INFO (f);
-	      Mouse_HLInfo *hlinfo = MOUSE_HL_INFO (f);
-	      int x, y;
-
-	      /* A pointer hidden while typing comes back with the mouse.  A
-		 motion over the title bar or the margins went to the glue
-		 (NHG_ACT_TITLE_BAR) and does not come here.  */
-	      if (f->pointer_invisible)
-		nhwl_toggle_invisible_pointer (f, false);
-	      nhwl_csd_native_pos (f, ev.u.pointer.x, ev.u.pointer.y, &x, &y);
-	      d->last_mouse_frame = f;
-	      previous_help_echo_string = help_echo_string;
-	      help_echo_string = Qnil;
-	      if (hlinfo->mouse_face_hidden)
-		{
-		  hlinfo->mouse_face_hidden = false;
-		  clear_mouse_face (hlinfo);
-		}
-	      if (!nhwl_note_mouse_movement (f, x, y, ev.time_ns / 1000000))
-		help_echo_string = previous_help_echo_string;
-	      if (!NILP (help_echo_string)
-		  || !NILP (previous_help_echo_string))
-		{
-		  Lisp_Object frame;
-
-		  XSETFRAME (frame, f);
-		  any_help_event_p = true;
-		  gen_help_event (help_echo_string, frame, help_echo_window,
-				  help_echo_object, help_echo_pos);
-		}
-	    }
-	  break;
-
-	case NHSHELL_EV_POINTER_LEAVE:
-	  if (f)
-	    {
-	      Mouse_HLInfo *hlinfo = MOUSE_HL_INFO (f);
-
-	      clear_mouse_face (hlinfo);
-	      if (FRAME_DISPLAY_INFO (f)->last_mouse_frame == f)
-		FRAME_DISPLAY_INFO (f)->last_mouse_frame = NULL;
-	    }
-	  break;
-
-	case NHSHELL_EV_BUTTON:
-	  /* A button in the title bar or the margins went to the glue.  */
-	  if (f)
-	    {
-	      int code = nhwl_button_code (ev.u.pointer.button);
-	      bool down = ev.u.pointer.state == NHSHELL_BUTTON_PRESSED;
-
-	      /* A press in a child frame, or in an ancestor of the frame
-		 with the focus, focuses the frame pressed (as
-		 x_construct_mouse_click's caller does on X11).  */
-	      if (down && !FRAME_NO_ACCEPT_FOCUS (f)
-		  && !gui_mouse_grabbed (dpyinfo))
-		{
-		  struct frame *hf = dpyinfo->highlight_frame;
-
-		  if (FRAME_PARENT_FRAME (f)
-		      || (hf && frame_ancestor_p (f, hf)))
-		    nhwl_child_focus (f);
-		}
-	      if (code >= 0)
-		{
-		  int x = FRAME_DISPLAY_INFO (f)->last_mouse_motion_x;
-		  int y = FRAME_DISPLAY_INFO (f)->last_mouse_motion_y;
-
-		  inev.ie.kind = MOUSE_CLICK_EVENT;
-		  inev.ie.code = code;
-		  inev.ie.modifiers
-		    = (nhwl_emacs_modifiers (raw->mods)
-		       | (down ? down_modifier : up_modifier));
-		  XSETINT (inev.ie.x, x);
-		  XSETINT (inev.ie.y, y);
-		  XSETFRAME (inev.ie.frame_or_window, f);
-		  inev.ie.timestamp = ev.time_ns / 1000000;
-		  FRAME_DISPLAY_INFO (f)->last_mouse_frame = f;
-		  have = true;
-		}
-	    }
-	  break;
-
-	case NHSHELL_EV_SCROLL:
-	  if (f)
-	    count += nhwl_scroll_record (f, &ev, raw->mods, hold_quit);
-	  break;
-
-	case NHSHELL_EV_PREEDIT:
-	  f = nhwl_key_frame (dpyinfo, f);
-	  if (f)
-	    {
-	      /* pgtk's event: ((TEXT (ul . t))), nil when cleared.  */
-	      Lisp_Object str = nhwl_im_text (raw);
-
-	      inev.ie.kind = PREEDIT_TEXT_EVENT;
-	      inev.ie.arg = (STRINGP (str) && SCHARS (str)
-			     ? list1 (list2 (str, Fcons (intern_c_string ("ul"),
-							 Qt)))
-			     : Qnil);
-	      XSETFRAME (inev.ie.frame_or_window, f);
-	      have = true;
-	    }
-	  break;
-
-	case NHSHELL_EV_COMMIT_TEXT:
-	  f = nhwl_key_frame (dpyinfo, f);
-	  if (f)
-	    count += nhwl_im_commit (f, nhwl_im_text (raw), hold_quit);
-	  break;
-
-	case NHSHELL_EV_DELETE_SURROUNDING:
-	  f = nhwl_key_frame (dpyinfo, f);
-	  if (f)
-	    count += nhwl_im_delete (f, ev.u.text.before, ev.u.text.after,
-				     hold_quit);
-	  break;
-
 	case NHSHELL_EV_POPUP_DONE:
 	  /* A tip's popup goes at once; a popup frame stays until Lisp
 	     deletes or hides it, on the `delete-frame' event.  */
@@ -2726,93 +2726,6 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	      XSETFRAME (inev.ie.frame_or_window, f);
 	      have = true;
 	    }
-	  break;
-
-	case NHSHELL_EV_OUTPUT_ADD:
-	case NHSHELL_EV_OUTPUT_CHANGE:
-	  {
-	    int i;
-
-	    for (i = 0; i < dpyinfo->n_monitors; i++)
-	      if (dpyinfo->monitors[i].id == ev.u.output.id)
-		break;
-	    if (i == dpyinfo->n_monitors)
-	      {
-		if (i == NHWL_MAX_OUTPUTS)
-		  break;
-		dpyinfo->n_monitors++;
-	      }
-	    dpyinfo->monitors[i].id = ev.u.output.id;
-	    dpyinfo->monitors[i].x = ev.u.output.x;
-	    dpyinfo->monitors[i].y = ev.u.output.y;
-	    /* The output's mode, in device pixels.  */
-	    dpyinfo->monitors[i].w = ev.u.output.w;
-	    dpyinfo->monitors[i].h = ev.u.output.h;
-	    dpyinfo->monitors[i].mm_w = ev.u.output.mm_w;
-	    dpyinfo->monitors[i].mm_h = ev.u.output.mm_h;
-	    dpyinfo->monitors[i].scale120 = ev.u.output.scale120;
-	    memcpy (dpyinfo->monitors[i].name, ev.u.output.name,
-		    sizeof dpyinfo->monitors[i].name);
-	    dpyinfo->monitors[i].name[sizeof dpyinfo->monitors[i].name - 1]
-	      = '\0';
-	    {
-	      struct nhwl_monitor *m = &dpyinfo->monitors[i];
-	      NhgMonitor g = { m->id, m->x, m->y, m->w, m->h, m->mm_w,
-			       m->mm_h, m->scale120, { 0 } };
-
-	      memcpy (g.name, m->name, sizeof g.name);
-	      nhwl_glue_rc (dpyinfo,
-			    NHG (nhg_monitor_set (dpyinfo->glue, &g)));
-	    }
-	    if (dpyinfo->scale120 == 0 && ev.u.output.scale120)
-	      {
-		dpyinfo->scale120 = ev.u.output.scale120;
-		dpyinfo->resx = dpyinfo->resy
-		  = 96.0 * dpyinfo->scale120 / 120.0;
-	      }
-	    have = nhwl_monitors_changed (dpyinfo, &inev);
-	  }
-	  break;
-
-	case NHSHELL_EV_OUTPUT_REMOVE:
-	  {
-	    int i;
-
-	    for (i = 0; i < dpyinfo->n_monitors; i++)
-	      if (dpyinfo->monitors[i].id == ev.u.output.id)
-		{
-		  struct nhwl_output *o;
-
-		  dpyinfo->monitors[i]
-		    = dpyinfo->monitors[--dpyinfo->n_monitors];
-		  nhwl_glue_rc (dpyinfo,
-				NHG (nhg_monitor_remove (dpyinfo->glue,
-							 ev.u.output.id)));
-		  for (o = dpyinfo->outputs; o; o = o->next_output)
-		    nhwl_output_left (o, ev.u.output.id);
-		  have = nhwl_monitors_changed (dpyinfo, &inev);
-		  break;
-		}
-	  }
-	  break;
-
-	case NHSHELL_EV_ENTER_OUTPUT:
-	  if (f && FRAME_NHWL_OUTPUT (f)->n_entered < NHWL_MAX_OUTPUTS)
-	    {
-	      struct nhwl_output *o = FRAME_NHWL_OUTPUT (f);
-	      int i;
-
-	      for (i = 0; i < o->n_entered; i++)
-		if (o->entered[i] == ev.u.output.id)
-		  break;
-	      if (i == o->n_entered)
-		o->entered[o->n_entered++] = ev.u.output.id;
-	    }
-	  break;
-
-	case NHSHELL_EV_LEAVE_OUTPUT:
-	  if (f)
-	    nhwl_output_left (FRAME_NHWL_OUTPUT (f), ev.u.output.id);
 	  break;
 
 	default:
@@ -3380,10 +3293,6 @@ nhwl_term_init (Lisp_Object display_name)
   if (dpyinfo->scale120 == 0)
     dpyinfo->scale120 = 120;
   dpyinfo->resx = dpyinfo->resy = 96.0 * dpyinfo->scale120 / 120.0;
-
-  /* Set up scrolling increments.  */
-  dpyinfo->scroll.x_per_char = 1;
-  dpyinfo->scroll.y_per_line = 1;
 
   if (dpyinfo->connection >= 0)
     add_keyboard_wait_descriptor (dpyinfo->connection);

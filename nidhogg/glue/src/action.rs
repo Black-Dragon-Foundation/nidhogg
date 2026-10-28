@@ -36,8 +36,7 @@ pub const NHG_ACT_SELECTION_CLEAR: u32 = 21;
 /// pointer shape (`NHSHELL_CURSOR_*`) with `NHG_TB_POINTER`.  A raw action of the same event, if any, comes after it.
 pub const NHG_ACT_TITLE_BAR: u32 = 22;
 /// Transitional: a shell event whose kind is not ported yet, which C handles on its old path (`nhg_raw_event` gives
-/// it).  A `PREEDIT` or `COMMIT_TEXT` event's text comes with it as the action's text.  Each port task takes its kinds
-/// out (the pointer, the input method, outputs, selections, popups); the kind goes when none is left.
+/// it).  Each port task takes its kinds out (popups are left); the kind goes when none is.
 pub const NHG_ACT_RAW: u32 = 31;
 
 /// `RESIZE` flags: fullscreen or maximized changed (C stores the frame's `fullscreen` parameter).
@@ -60,8 +59,17 @@ pub struct NhgNextIn {
 ///   `NHSHELL_STATE_*`, `flags` `NHG_RESIZE_*`;
 /// - `SCALE`: `code` the scale times 120, `scale` the factor;
 /// - `DELETE`, `READY`, `LOST`: the window only (`LOST`: none);
-/// - `RAW`: the shell event (`nhg_raw_event`), with a `PREEDIT`'s or `COMMIT_TEXT`'s text in `text`, `len` (null
-///   when it could not be taken), and the keyboard's `NHSHELL_MOD_*` mask in `mods`.
+/// - `MOTION` (an enter is one): `dx`, `dy` the position in device pixels in the window's surface;
+/// - `LEAVE`: the window only;
+/// - `CLICK`: `code` the evdev button, `flags` the `NHSHELL_BUTTON_*` state, `dx`, `dy` the position, `mods` the
+///   keyboard's `NHSHELL_MOD_*`;
+/// - `WHEEL`: `code` 4 up, 5 down, 6 left or 7 right (as pgtk's buttons), `w` the whole steps, `dx`, `dy` the
+///   record's pixel delta in device pixels, `mods` the keyboard's, `flags` `NHG_WHEEL_*`;
+/// - `MONITORS`: the output list changed (no window); `code` the added or changed output's scale times 120 (0 for a
+///   removal);
+/// - `PREEDIT`, `COMMIT`: `text`, `len` (null when it could not be taken; empty clears a preedit), `window` as the
+///   event came, forgotten or none; `IM_DELETE`: `x` bytes before point, `y` after;
+/// - `RAW`: the shell event (`nhg_raw_event`) and the keyboard's `NHSHELL_MOD_*` mask in `mods`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct NhgAction {
