@@ -657,3 +657,28 @@ Return the window."
         (while (< (length called) 2) (accept-process-output nil 0.05)))
       (should (equal (sort called (lambda (a b) (< (car a) (car b))))
                      '((1 . ready) (2 . ready)))))))
+
+(ert-deftest workers-gui/image-animate-no-rescan ()
+  ;; A spec already in the cache (not pending) answers `image-metadata'
+  ;; from its entry, as upstream does, instead of reading and scanning the
+  ;; file again on every animation frame.  Changing the file under a
+  ;; cached spec shows which path answered.
+  (workers-image-gui--skip)
+  (let* ((dir (make-temp-file "nh-img-anim" t))
+         (file (expand-file-name "a.gif" dir))
+         (spec `(image :type gif :file ,file)))
+    (unwind-protect
+        (workers-image-gui--with-defer
+          (copy-file (expand-file-name "anim.gif" workers-image-gui--dir) file)
+          (clear-image-cache t)
+          (workers-image-gui--show (list spec))
+          (redisplay t)
+          (should (nidhogg-workers--test-await-landed 'nh-img 5000))
+          (redisplay t)
+          (should (= 0 (workers-image-gui--info :pending)))
+          (let ((before (image-multi-frame-p spec)))
+            (should (car before))
+            (copy-file (expand-file-name "one.gif" workers-image-gui--dir)
+                       file t)
+            (should (equal (image-multi-frame-p spec) before))))
+      (delete-directory dir t))))
