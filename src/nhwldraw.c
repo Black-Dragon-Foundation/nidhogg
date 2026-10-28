@@ -2212,15 +2212,16 @@ nhwl_damaged (struct frame *f)
   nhwl_dirty (f);
 }
 
-/* Adapted from pgtk_scroll_run: the rows move inside the backing (one
-   memmove per row band, no temporary surface), and Glitnir learns the
-   move and the rows it exposed.  */
+/* Adapted from pgtk_scroll_run (emacs-31.1): the glue moves the rows
+   inside the backing (no temporary surface), and Glitnir learns the move
+   and the rows it exposed; the decorations' anchors move with them.  */
 void
 nhwl_scroll_run (struct window *w, struct run *run)
 {
   struct frame *f = XFRAME (w->frame);
   int x, y, width, height, from_y, to_y, bottom_y;
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  NhgRect band;
 
   window_box (w, ANY_AREA, &x, &y, &width, &height);
 
@@ -2250,72 +2251,24 @@ nhwl_scroll_run (struct window *w, struct run *run)
 
   nhwl_backing_resize (f);
   cairo_surface_flush (out->cr_surface);
-  {
-    unsigned char *data = cairo_image_surface_get_data (out->cr_surface);
-    ptrdiff_t stride = cairo_image_surface_get_stride (out->cr_surface);
-    int x0 = max (0, x) + out->csd.l;
-    int x1 = min (out->cr_width, x + width + out->csd.l);
-    int rows = height, sy = from_y + out->csd.t, dy = to_y + out->csd.t, i;
-
-    /* Clip the copy to the backing, both ends.  */
-    if (min (sy, dy) < 0)
-      {
-	int cut = -min (sy, dy);
-
-	sy += cut, dy += cut, rows -= cut;
-      }
-    if (max (sy, dy) + rows > out->cr_height)
-      rows = out->cr_height - max (sy, dy);
-    if (x1 > x0)
-      /* Row by row, in the direction that does not overwrite a source
-	 row before it is copied: only the window's columns move.  */
-      for (i = 0; i < rows; i++)
-	{
-	  int r = dy < sy ? i : rows - 1 - i;
-
-	  memmove (data + (dy + r) * stride + (ptrdiff_t) x0 * 4,
-		   data + (sy + r) * stride + (ptrdiff_t) x0 * 4,
-		   (ptrdiff_t) (x1 - x0) * 4);
-	}
-    cairo_surface_mark_dirty (out->cr_surface);
-  }
-  nhwl_glitnir_scroll (f, w, x, from_y, to_y, width, height);
+  nhwl_glitnir_ensure (f);
+  glitnir_decor_scrolled (f, w, x, min (from_y, to_y), width,
+			  max (from_y, to_y) + height - min (from_y, to_y),
+			  to_y - from_y);
+  band = (NhgRect) { x, from_y, width, height };
+  NHG (nhg_scroll (FRAME_NHG (f), out->glitnir_id, w->sequence_number, band, to_y));
+  cairo_surface_mark_dirty (out->cr_surface);
   nhwl_damaged (f);
 
   unblock_input ();
 }
 
-
-/* Adapted from glitnir_pgtk_scroll: the pixels of AREA moved by DY, and
-   EXPOSED is what the move left stale.  Both are damaged (the shm buffer
-   cannot scroll, so the whole moved area is new to it).  */
-void
-nhwl_glitnir_scroll (struct frame *f, struct window *w, int x, int from_y,
-		     int to_y, int width, int height)
-{
-  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
-  int top = min (from_y, to_y), bottom = max (from_y, to_y) + height;
-  int ox = out->csd.l, oy = out->csd.t;
-  GlitnirRect area = { x + ox, top + oy, width, bottom - top };
-  GlitnirRect exposed = (to_y < from_y
-			 ? (GlitnirRect) { x + ox, to_y + height + oy, width,
-					   from_y - to_y }
-			 : (GlitnirRect) { x + ox, from_y + oy, width,
-					   to_y - from_y });
-
-  nhwl_glitnir_ensure (f);
-  glitnir_decor_scrolled (f, w, x, top, width, bottom - top, to_y - from_y);
-  glitnir_scroll (out->glitnir_id, (uint64_t) (uintptr_t) w, area,
-		  to_y - from_y, exposed);
-}
-
-/* Damage the rectangle X, Y, W, H (device pixels) of F.  */
+/* Damage the rectangle X, Y, W, H (device pixels) of F, clipped to F's
+   native area.  */
 void
 nhwl_damage (struct frame *f, int x, int y, int w, int h)
 {
-  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
-  GlitnirRect r;
-  struct nhwl_csd *c = &out->csd;
+  NhgRect r;
   int x1 = min (x + w, FRAME_PIXEL_WIDTH (f));
   int y1 = min (y + h, FRAME_PIXEL_HEIGHT (f));
 
@@ -2325,10 +2278,8 @@ nhwl_damage (struct frame *f, int x, int y, int w, int h)
   r.h = y1 - r.y;
   if (r.w <= 0 || r.h <= 0)
     return;
-  r.x += c->l;
-  r.y += c->t;
   nhwl_glitnir_ensure (f);
-  glitnir_damage_add_n (out->glitnir_id, &r, 1);
+  NHG (nhg_damage (FRAME_NHG (f), FRAME_NHWL_OUTPUT (f)->glitnir_id, &r, 1));
   nhwl_damaged (f);
 }
 
@@ -2337,7 +2288,7 @@ void
 nhwl_damage_all (struct frame *f)
 {
   nhwl_glitnir_ensure (f);
-  glitnir_damage_all (FRAME_NHWL_OUTPUT (f)->glitnir_id);
+  NHG (nhg_damage_all (FRAME_NHG (f), FRAME_NHWL_OUTPUT (f)->glitnir_id));
   nhwl_damaged (f);
 }
 
@@ -2419,48 +2370,66 @@ nhwl_damage_internal_border (struct frame *f)
 	      The backing, and Glitnir's commit and compose
  ***********************************************************************/
 
-/* The backing is a cairo image surface the glue owns: Glitnir composes
-   from borrowed pixels (GlitnirSource), so it needs no allocation call,
-   and glitnir_compose reads this surface into the shell's buffer.  */
+/* The backing's pixels are the glue's; OUT->cr_surface draws on them, and
+   Glitnir composes from them (GlitnirSource), reading this surface into
+   the shell's buffer.  */
+
+/* F's size for the glue: its native area, the border around it, and its
+   scale.  */
+static void
+nhwl_frame_size (struct frame *f, NhgFrameGeom *g)
+{
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+
+  memset (g, 0, sizeof *g);
+  g->native_w = FRAME_PIXEL_WIDTH (f);
+  g->native_h = FRAME_PIXEL_HEIGHT (f);
+  g->l = out->csd.l, g->t = out->csd.t, g->r = out->csd.r, g->b = out->csd.b;
+  g->scale120 = out->scale120;
+}
+
+/* F's geometry for the glue: its size, and its Glitnir layer (a child
+   frame with chrome has its layer inside the shadow margin).  Only for
+   nhg_layer_ensure: the child's layer update is taken here.  */
+static void
+nhwl_frame_geom (struct frame *f, NhgFrameGeom *g)
+{
+  GlitnirRect rect;
+
+  nhwl_frame_size (f, g);
+  rect = (GlitnirRect) { 0, 0, max (1, g->native_w + g->l + g->r),
+			 max (1, g->native_h + g->t + g->b) };
+  if (nhwl_child_layer_update (f, &rect))
+    g->flags |= NHG_GEOM_LAYER_CHANGED;
+  g->layer = (NhgRect) { rect.x, rect.y, rect.w, rect.h };
+}
 
 /* Make F's Glitnir scene match the frame: one frame layer, device size,
-   at the window's scale.  A new or resized layer damages the frame.  */
+   at the window's scale.  A new or resized layer damages the frame; a
+   child frame's chrome goes with it.  */
 void
 nhwl_glitnir_ensure (struct frame *f)
 {
-  static uint64_t last_id;
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
-  uint32_t s120 = out->scale120 ? out->scale120 : 120;
-  int w = max (1, FRAME_PIXEL_WIDTH (f) + out->csd.l + out->csd.r);
-  int h = max (1, FRAME_PIXEL_HEIGHT (f) + out->csd.t + out->csd.b);
+  NhgFrameGeom g;
 
-  if (!out->glitnir_id)
+  nhwl_frame_geom (f, &g);
+  if (NHG (nhg_layer_ensure (FRAME_NHG (f), &out->glitnir_id, &g)) > 0)
     {
-      out->glitnir_id = ++last_id;
-      glitnir_root_new (out->glitnir_id);
-    }
-  /* A child frame with chrome has its layer inside the shadow margin.  */
-  GlitnirRect rect = { 0, 0, w, h };
-  bool layer_changed = nhwl_child_layer_update (f, &rect);
-
-  if (out->glitnir_w != w || out->glitnir_h != h || out->glitnir_s120 != s120
-      || layer_changed)
-    {
-      GlitnirLayerDesc d = { .id = out->glitnir_id, .parent = 0,
-			     .kind = GLITNIR_LAYER_FRAME,
-			     .rect = rect, .scale = s120 / 120.0,
-			     .visible = 1 };
-
-      glitnir_layer_upsert (out->glitnir_id, &d);
       if (nhwl_child_p (f))
 	nhwl_child_apply_chrome (f);
-      glitnir_damage_all (out->glitnir_id);
-      out->glitnir_w = w;
-      out->glitnir_h = h;
-      out->glitnir_s120 = s120;
       out->nhist = 0;
-      out->npending = 0;
     }
+}
+
+/* F's damage committed but not yet presented, in P; return how many
+   rectangles it has.  */
+size_t
+nhwl_pending (struct frame *f, NhgPending *p)
+{
+  memset (p, 0, sizeof *p);
+  NHG (nhg_pending (FRAME_NHG (f), FRAME_NHWL_OUTPUT (f)->glitnir_id, p));
+  return p->n;
 }
 
 /* Whether Glitnir's decorations draw on F: a frame of the shell with a
@@ -2500,7 +2469,8 @@ nhwl_decor_target (struct frame *f, struct window *w, uint64_t *root,
   return true;
 }
 
-/* F is gone: Glitnir forgets its scene and damage.  */
+/* F is gone: Glitnir forgets its scene and damage, and the glue its
+   backing (F's surface over it is gone already).  */
 void
 nhwl_glitnir_forget (struct frame *f)
 {
@@ -2508,44 +2478,76 @@ nhwl_glitnir_forget (struct frame *f)
 
   if (out->glitnir_id)
     {
-      glitnir_root_drop (out->glitnir_id);
-      glitnir_damage_forget (out->glitnir_id);
-      glitnir_stats_forget (out->glitnir_id);
+      NHG (nhg_backing_forget (FRAME_NHG (f), out->glitnir_id));
       out->glitnir_id = 0;
     }
 }
 
+/* The frame's background as the backing stores it: premultiplied ARGB,
+   as Cairo paints it (nhwl_set_cr_source_with_color with the background
+   alpha).  */
+static uint32_t
+nhwl_background_argb (struct frame *f)
+{
+  cairo_surface_t *s = cairo_image_surface_create (CAIRO_FORMAT_ARGB32, 1, 1);
+  cairo_t *cr = cairo_create (s);
+  Emacs_Color col;
+  uint32_t argb;
+
+  col.pixel = FRAME_NHWL_OUTPUT (f)->background_color;
+  nhwl_query_color (f, &col);
+  cairo_set_source_rgba (cr, col.red / 65535.0, col.green / 65535.0,
+			 col.blue / 65535.0, f->alpha_background);
+  cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
+  cairo_paint (cr);
+  cairo_destroy (cr);
+  cairo_surface_flush (s);
+  argb = *(uint32_t *) cairo_image_surface_get_data (s);
+  cairo_surface_destroy (s);
+  return argb;
+}
+
 /* Make the backing F's size (the frame's pixel size, which is device
    pixels), keeping what it shows; a new one starts in the frame's
-   background.  Adapted in role from pgtk_cr_update_surface_desired_size.  */
+   background.  Adapted in role from pgtk_cr_update_surface_desired_size
+   (emacs-31.1).  */
 void
 nhwl_backing_resize (struct frame *f)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
   int w = max (1, FRAME_PIXEL_WIDTH (f) + out->csd.l + out->csd.r);
   int h = max (1, FRAME_PIXEL_HEIGHT (f) + out->csd.t + out->csd.b);
-  cairo_surface_t *old = out->cr_surface;
-  cairo_t *old_cr = out->cr_context;
-  cairo_t *cr;
+  NhgFrameGeom g;
+  NhgBacking b;
 
-  if (old_cr && out->cr_width == w && out->cr_height == h)
+  if (out->cr_context && out->cr_width == w && out->cr_height == h)
     return;
 
-  out->cr_surface = cairo_image_surface_create (CAIRO_FORMAT_ARGB32, w, h);
-  cr = out->cr_context = cairo_create (out->cr_surface);
-  out->cr_width = w;
-  out->cr_height = h;
-  out->cr_gen++;
-  nhwl_set_cr_source_with_color (f, out->background_color, true);
-  cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
-  cairo_paint (cr);
-  if (old)
+  if (!out->glitnir_id)
+    nhwl_glitnir_ensure (f);
+  nhwl_frame_size (f, &g);
+  /* No surface (or the empty one a failed try left): a new backing.  */
+  if (!out->cr_context || !out->cr_width)
     {
-      cairo_set_source_surface (cr, old, 0, 0);
-      cairo_paint (cr);
-      cairo_destroy (old_cr);
-      cairo_surface_destroy (old);
+      g.flags = NHG_GEOM_FRESH;
+      g.bg_argb = nhwl_background_argb (f);
     }
+  if (out->cr_context)
+    {
+      cairo_surface_flush (out->cr_surface);
+      cairo_destroy (out->cr_context);
+      cairo_surface_destroy (out->cr_surface);
+    }
+  if (NHG (nhg_backing (FRAME_NHG (f), out->glitnir_id, &g, &b)) < 0)
+    /* No backing: drawing does nothing until the next try.  */
+    b = (NhgBacking) { NULL, 0, 0, 0, out->cr_gen };
+  out->cr_surface
+    = cairo_image_surface_create_for_data (b.pixels, CAIRO_FORMAT_ARGB32,
+					   b.w, b.h, b.stride);
+  out->cr_context = cairo_create (out->cr_surface);
+  out->cr_width = b.w;
+  out->cr_height = b.h;
+  out->cr_gen = b.gen;
   nhwl_glitnir_ensure (f);
 }
 
@@ -2567,78 +2569,19 @@ void
 nhwl_glitnir_commit (struct frame *f)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
-  GlitnirCommitOut co;
-  size_t i;
 
   nhwl_glitnir_ensure (f);
-  if (glitnir_commit (out->glitnir_id, &co) != GLITNIR_OK)
-    return;
-  for (i = 0; i < co.n; i++)
-    {
-      GlitnirRect r = co.rects[i];
-      int x1 = min (r.x + r.w, out->glitnir_w);
-      int y1 = min (r.y + r.h, out->glitnir_h);
-
-      r.x = max (r.x, 0);
-      r.y = max (r.y, 0);
-      r.w = x1 - r.x;
-      r.h = y1 - r.y;
-      if (r.w <= 0 || r.h <= 0)
-	continue;
-      if (!out->t_commit_ns)
-	out->t_commit_ns = nhwl_now_ns ();
-      out->damage_px += (uint64_t) r.w * r.h;
-      if (out->npending == NHWL_PENDING_MAX)
-	{
-	  GlitnirRect b = out->pending[0];
-	  int j;
-
-	  for (j = 1; j < out->npending; j++)
-	    {
-	      int bx1 = max (b.x + b.w, out->pending[j].x + out->pending[j].w);
-	      int by1 = max (b.y + b.h, out->pending[j].y + out->pending[j].h);
-
-	      b.x = min (b.x, out->pending[j].x);
-	      b.y = min (b.y, out->pending[j].y);
-	      b.w = bx1 - b.x;
-	      b.h = by1 - b.y;
-	    }
-	  out->pending[0] = b;
-	  out->npending = 1;
-	}
-      out->pending[out->npending++] = r;
-    }
+  if (NHG (nhg_commit (FRAME_NHG (f), out->glitnir_id)) > 0
+      && !out->t_commit_ns)
+    out->t_commit_ns = nhwl_now_ns ();
 }
 
 /* Compose F's backing into BUF within the pending damage and the part of
    BUF that is stale (BUF's age: the damage of the last AGE - 1 presents).
-   The pending damage stays in OUT->pending, as the buffer's new damage,
-   until nhwl_glitnir_presented.  */
-/* Multiply every pixel of BUF (premultiplied ARGB) by the frame's alpha,
-   1 - CUT / UINT32_MAX: what wp_alpha_modifier_v1 would have the
-   compositor do.  */
-static void
-nhwl_alpha_multiply (const NhShellBuffer *buf, uint32_t cut)
-{
-  uint32_t a = 255 - (uint32_t) ((uint64_t) cut * 255 / UINT32_MAX);
-  int x, y;
-
-  for (y = 0; y < buf->h; y++)
-    {
-      uint32_t *p = (uint32_t *) (buf->pixels + (ptrdiff_t) y * buf->stride);
-
-      for (x = 0; x < buf->w; x++)
-	{
-	  uint32_t v = p[x];
-
-	  p[x] = (((v >> 24) * a / 255) << 24
-		  | (((v >> 16) & 0xff) * a / 255) << 16
-		  | (((v >> 8) & 0xff) * a / 255) << 8
-		  | ((v & 0xff) * a / 255));
-	}
-    }
-}
-
+   The pending damage stays in the glue, as the buffer's new damage, until
+   nhwl_glitnir_presented.  When the host applies `alpha', every pixel is
+   multiplied by it, as wp_alpha_modifier_v1 would have the compositor
+   do.  */
 void
 nhwl_glitnir_compose (struct frame *f, const NhShellBuffer *buf)
 {
@@ -2648,6 +2591,8 @@ nhwl_glitnir_compose (struct frame *f, const NhShellBuffer *buf)
   double scale = (out->scale120 ? out->scale120 : 120) / 120.0;
   GlitnirTarget t = { buf->pixels, buf->stride, buf->w, buf->h, 0, 0, scale };
   GlitnirSource s;
+  NhgPending p;
+  size_t np = nhwl_pending (f, &p);
   int i, j;
 
   cairo_surface_flush (out->cr_surface);
@@ -2659,8 +2604,9 @@ nhwl_glitnir_compose (struct frame *f, const NhShellBuffer *buf)
   s.scale = scale;
   nhwl_child_source (f, &s);
 
-  for (i = 0; i < out->npending; i++)
-    clip[n++] = out->pending[i];
+  for (i = 0; i < (int) np; i++)
+    clip[n++] = (GlitnirRect) { p.rects[i].x, p.rects[i].y, p.rects[i].w,
+				p.rects[i].h };
   /* The host multiplies `alpha' (no wp_alpha_modifier_v1): the whole
      buffer is composed, so that every pixel is multiplied once.  */
   if (out->alpha_host)
@@ -2673,8 +2619,8 @@ nhwl_glitnir_compose (struct frame *f, const NhShellBuffer *buf)
       for (j = 0; j < out->nhistn[i]; j++)
 	clip[n++] = out->hist[i][j];
 
-  for (i = 0; i < out->npending; i++)
-    out->painted_px += (uint64_t) out->pending[i].w * out->pending[i].h;
+  for (i = 0; i < (int) np; i++)
+    out->painted_px += (uint64_t) p.rects[i].w * p.rects[i].h;
   if (glitnir_compose (out->glitnir_id, &t, clip, n, &s, 1) != GLITNIR_OK)
     {
       /* The host draws it the stock way: a plain copy of the rows.  */
@@ -2686,7 +2632,7 @@ nhwl_glitnir_compose (struct frame *f, const NhShellBuffer *buf)
 		s.pixels + (ptrdiff_t) i * s.stride, row);
     }
   if (out->alpha_host)
-    nhwl_alpha_multiply (buf, out->alpha_cut);
+    NHG (nhg_alpha_multiply (FRAME_NHG (f), buf->pixels, buf->stride, buf->w, buf->h, out->alpha_cut));
 }
 
 /* The composed buffer was committed: its damage joins the history.  */
@@ -2695,6 +2641,8 @@ nhwl_glitnir_presented (struct frame *f)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
   GlitnirStatsEntry e = { 0 };
+  NhgPending p;
+  size_t np = nhwl_pending (f, &p);
   int i;
 
   /* The key event the paint shows (0: none, and the entry stays out of
@@ -2703,21 +2651,23 @@ nhwl_glitnir_presented (struct frame *f)
   e.t_commit_ns = e.t_draw_start_ns = out->t_commit_ns;
   e.t_draw_end_ns = nhwl_now_ns ();
   e.presented_us = -1;
-  e.damage_px = out->damage_px;
+  e.damage_px = p.damage_px;
   e.painted_px = out->painted_px;
   e.backfill = 2;
   glitnir_stats_record (out->glitnir_id, &e);
-  out->t_key_ns = out->t_commit_ns = out->damage_px = out->painted_px = 0;
+  out->t_key_ns = out->t_commit_ns = out->painted_px = 0;
 
   for (i = NHWL_HIST - 1; i > 0; i--)
     {
       memcpy (out->hist[i], out->hist[i - 1], sizeof out->hist[i]);
       out->nhistn[i] = out->nhistn[i - 1];
     }
-  memcpy (out->hist[0], out->pending, sizeof out->hist[0]);
-  out->nhistn[0] = out->npending;
+  for (i = 0; i < (int) np; i++)
+    out->hist[0][i] = (GlitnirRect) { p.rects[i].x, p.rects[i].y,
+				      p.rects[i].w, p.rects[i].h };
+  out->nhistn[0] = np;
   out->nhist = min (out->nhist + 1, NHWL_HIST);
-  out->npending = 0;
+  NHG (nhg_presented (FRAME_NHG (f), out->glitnir_id));
 }
 
 /* A copy of F's backing, for glitnir-snapshot.  */
@@ -2726,16 +2676,20 @@ nhwl_snapshot (struct frame *f)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
   cairo_surface_t *copy;
-  cairo_t *cr;
+  NhgBacking b;
+  int i;
 
   if (!out->cr_surface)
     return NULL;
-  copy = cairo_image_surface_create (CAIRO_FORMAT_ARGB32, out->cr_width,
-				     out->cr_height);
-  cr = cairo_create (copy);
-  cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
-  cairo_set_source_surface (cr, out->cr_surface, 0, 0);
-  cairo_paint (cr);
-  cairo_destroy (cr);
+  cairo_surface_flush (out->cr_surface);
+  if (NHG (nhg_snapshot (FRAME_NHG (f), out->glitnir_id, &b)) < 0)
+    return NULL;
+  copy = cairo_image_surface_create (CAIRO_FORMAT_ARGB32, b.w, b.h);
+  cairo_surface_flush (copy);
+  for (i = 0; i < b.h; i++)
+    memcpy (cairo_image_surface_get_data (copy)
+	    + (ptrdiff_t) i * cairo_image_surface_get_stride (copy),
+	    b.pixels + (ptrdiff_t) i * b.stride, (size_t) b.w * 4);
+  cairo_surface_mark_dirty (copy);
   return copy;
 }

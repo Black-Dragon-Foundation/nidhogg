@@ -297,7 +297,8 @@ struct nhwl_output
   uint64_t entered[NHWL_MAX_OUTPUTS];
   int n_entered;
 
-  /* The retained backing: the frame's pixels, device size.  */
+  /* The retained backing: the frame's pixels, device size.  The glue owns
+     the pixels (nhg_backing); this surface draws on them.  */
   cairo_surface_t *cr_surface;
   cairo_t *cr_context;
   int cr_width, cr_height;
@@ -319,21 +320,18 @@ struct nhwl_output
   uint32_t alpha_cut;
   bool alpha_host;
 
-  /* Glitnir's scene of this frame: its id (0: none yet), the size and scale
-     it was told, the damage committed but not yet presented, and the
-     damage of the last presents (to repair an older buffer).  */
+  /* Glitnir's scene of this frame: its id (0: none yet), which is the
+     frame's key in the glue (the glue holds its layer, backing and the
+     damage committed but not yet presented), and the damage of the last
+     presents (to repair an older buffer).  */
   uint64_t glitnir_id;
-  int glitnir_w, glitnir_h;
-  uint32_t glitnir_s120;
-  GlitnirRect pending[NHWL_PENDING_MAX];
-  int npending;
   GlitnirRect hist[NHWL_HIST][NHWL_PENDING_MAX];
   int nhistn[NHWL_HIST];
   int nhist;
   /* The frame-time record's entry in the making: the monotonic time of the
      key event the next present shows (0: none), the commit's, and the
-     committed and composed areas.  */
-  uint64_t t_key_ns, t_commit_ns, damage_px, painted_px;
+     composed area.  */
+  uint64_t t_key_ns, t_commit_ns, painted_px;
   /* The redisplay_counter when that key was read: a later redisplay that
      drew nothing drops the key's time.  */
   unsigned int key_redisplay;
@@ -466,6 +464,15 @@ enum
 /* The shell's window (a 64-bit id) of frame F, and its display's shell.  */
 #define FRAME_NHWL_WINDOW(f) (FRAME_NHWL_OUTPUT (f)->window)
 #define FRAME_NHWL_SHELL(f) (FRAME_DISPLAY_INFO (f)->shell)
+#define FRAME_NHG(f) (FRAME_DISPLAY_INFO (f)->glue)
+
+/* Temporary, until the glue's own NHG macro (which clears
+   waiting_for_input around the call) is in this file; delete these lines
+   then.  Every glue call is written NHG (call); this one only makes it.  */
+#ifndef NHG
+# define NHG nhwl_plain_glue_call
+# define nhwl_plain_glue_call(call) (call)
+#endif
 
 /* Nidhogg's own parameters that map to nothing outside the shell: the
    modifier names for the shell's modifier bits.  */
@@ -552,8 +559,7 @@ extern void nhwl_glitnir_forget (struct frame *);
 extern void nhwl_glitnir_commit (struct frame *);
 extern void nhwl_glitnir_compose (struct frame *, const NhShellBuffer *);
 extern void nhwl_glitnir_presented (struct frame *);
-extern void nhwl_glitnir_scroll (struct frame *, struct window *, int, int,
-				 int, int, int);
+extern size_t nhwl_pending (struct frame *, NhgPending *);
 extern void nhwl_damage_glyphs (struct glyph_string *);
 extern void nhwl_damage_cursor (struct window *, struct glyph_row *, bool);
 extern void nhwl_damage_fringe (struct window *,
