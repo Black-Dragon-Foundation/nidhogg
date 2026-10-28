@@ -478,8 +478,9 @@ static bool
 nhwl_tree_pending (struct frame *f)
 {
   Lisp_Object tail, frame;
+  NhgPending p;
 
-  if (FRAME_NHWL_OUTPUT (f)->npending)
+  if (nhwl_pending (f, &p))
     return true;
   FOR_EACH_FRAME (tail, frame)
     if (nhwl_child_of (XFRAME (frame), f)
@@ -498,16 +499,22 @@ nhwl_present_buffer (struct frame *f)
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
   NhShell *sh = FRAME_DISPLAY_INFO (f)->shell;
   NhShellBuffer buf;
+  NhgPending p;
+  GlitnirRect damage[NHWL_PENDING_MAX];
+  size_t i, n;
   bool shown;
 
-  if (!out->npending
+  if (!nhwl_pending (f, &p)
       || nhshell_present_begin (sh, out->window, out->cr_width,
 				out->cr_height, &buf) < 0)
     return false;
   nhwl_glitnir_compose (f, &buf);
   nhwl_csd_send_geometry (f);
-  shown = nhshell_present_commit (sh, out->window, out->pending,
-				  out->npending) >= 0;
+  n = nhwl_pending (f, &p);
+  for (i = 0; i < n; i++)
+    damage[i] = (GlitnirRect) { p.rects[i].x, p.rects[i].y, p.rects[i].w,
+				p.rects[i].h };
+  shown = nhshell_present_commit (sh, out->window, damage, n) >= 0;
   if (shown)
     nhwl_glitnir_presented (f);
   else
@@ -570,6 +577,7 @@ nhwl_present_tree (struct frame *f)
   NhShell *sh = FRAME_DISPLAY_INFO (f)->shell;
   int ready = 0;
   bool content, shown = false;
+  NhgPending p;
 
   f = nhwl_tree_root (f);
   out = FRAME_NHWL_OUTPUT (f);
@@ -586,7 +594,7 @@ nhwl_present_tree (struct frame *f)
 
   block_input ();
   nhwl_prepare (f);
-  if ((ready & NHSHELL_READY_ACK) && !out->npending)
+  if ((ready & NHSHELL_READY_ACK) && !nhwl_pending (f, &p))
     {
       glitnir_damage_all (out->glitnir_id);
       nhwl_glitnir_commit (f);
