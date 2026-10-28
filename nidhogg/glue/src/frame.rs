@@ -71,6 +71,8 @@ pub struct Frame {
     pub last_ack: Option<(u32, u32)>,
     /// The title bar (`csd.rs`).
     pub csd: crate::csd::Csd,
+    /// The outputs the window is on, as the compositor's enter and leave events said (`monitors.rs`).
+    pub outputs: Vec<u64>,
 }
 
 impl Frame {

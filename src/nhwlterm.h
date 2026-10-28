@@ -71,16 +71,8 @@ struct scroll_bar
   bool horizontal;
 };
 
+/* The most outputs the glue keeps (nhg_monitors, nhg_frame_outputs).  */
 #define NHWL_MAX_OUTPUTS 16
-
-/* One monitor, as the shell reported it (logical pixels, like the protocol).  */
-struct nhwl_monitor
-{
-  uint64_t id;
-  int x, y, w, h, mm_w, mm_h;
-  uint32_t scale120;
-  char name[32];
-};
 
 struct nhwl_display_info
 {
@@ -184,20 +176,6 @@ struct nhwl_display_info
   /* The scroll bar in which the last motion event occurred.  */
   void *last_mouse_scroll_bar;
 
-  /* Accumulated wheel motion that has not made a step yet.  */
-  struct
-  {
-    double acc_x, acc_y;
-    double x_per_char, y_per_line;
-    /* Whose fractions acc_x and acc_y are (compared, never used).  */
-    struct frame *frame;
-    uint32_t source;
-  } scroll;
-
-  /* The monitors the shell reported (w and h in device pixels).  */
-  struct nhwl_monitor monitors[NHWL_MAX_OUTPUTS];
-  int n_monitors;
-
   /* The frames of this display, from the creation of their shell window
      to their deletion: the compositor's first events for a frame come
      before it is on Vframe_list.  */
@@ -274,10 +252,6 @@ struct nhwl_output
   int logical_w, logical_h;	/* the compositor's last suggestion, logical px */
   uint32_t states;		/* NHSHELL_STATE_* of the last configure */
   bool configured;		/* a configure has been seen (the toplevel is mapped) */
-
-  /* The outputs the window is on (ids of the monitors; enter and leave).  */
-  uint64_t entered[NHWL_MAX_OUTPUTS];
-  int n_entered;
 
   /* The retained backing: the frame's pixels, device size.  The glue owns
      the pixels (nhg_backing); this surface draws on them.  */

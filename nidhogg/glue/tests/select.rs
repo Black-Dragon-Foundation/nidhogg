@@ -12,7 +12,7 @@ use nhglue::bench::{NhgBenchOut, Redraw, percentile, run};
 use nhglue::ffi::*;
 use nhglue::guard::GlueError;
 use nhglue::present::{NHG_SURF_DRAWABLE, NhgSurface};
-use nhglue::query::{Monitors, NhgDisplayInfo, NhgMonitor};
+use nhglue::query::{Monitors, NhgMonitor};
 use nhshell::api::{NHSHELL_ACK_CONTENT, NHSHELL_SEL_CLIPBOARD};
 use nhshell::caps::NhShellCaps;
 use nhshell::event::{NHSHELL_EV_CONFIGURE, NHSHELL_EV_FOCUS, NhShellEvent};
@@ -234,43 +234,40 @@ mod query {
     /// reach the far corner of the output farthest out, in device pixels.  Without outputs: 1920 x 1080.
     #[test]
     fn display_info_follows_monitors() {
+        // the list the drain keeps (`input.rs` feeds it from the shell's records); a display is not needed
+        let mut list = Monitors::default();
+        let get = |m: &Monitors| {
+            let i = m.info(NhShellCaps::default());
+            (i.w, i.h, i.mm_w, i.mm_h, i.scale120)
+        };
+        assert_eq!(get(&list), (1920, 1080, 0, 0, 0));
+        let a = monitor(1, 0, 0, 2560, 1440, (600, 340), 240);
+        let b = monitor(2, 1280, 0, 1920, 1080, (500, 280), 120);
+        assert!(list.set(&a));
+        assert_eq!(get(&list), (2560, 1440, 600, 340, 240));
+        assert!(list.set(&b));
+        // b starts at 1280 logical pixels, which is 1280 device pixels at its scale of 1
+        assert_eq!(get(&list), (3200, 1440, 1100, 340, 240));
+        let a2 = monitor(1, 0, 0, 3840, 2160, (600, 340), 240);
+        assert!(list.set(&a2), "a change replaces");
+        assert!(list.remove(2));
+        assert!(!list.remove(2));
+        assert_eq!(get(&list), (3840, 2160, 600, 340, 240));
+        assert!(list.remove(1));
+        assert_eq!(get(&list), (1920, 1080, 0, 0, 240), "the scale is kept");
+    }
+
+    /// `nhg_display_info` refuses a null `out`.
+    #[test]
+    fn display_info_refuses_null() {
         let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let rec = Recorder::start("sway");
         let d = open(&rec);
-        let mut info = std::mem::MaybeUninit::<NhgDisplayInfo>::zeroed();
-        // SAFETY: a live display; `info` is writable.
-        let mut get = |d: *mut NhgDisplay| unsafe {
-            assert_eq!(nhg_display_info(d, info.as_mut_ptr()), NHG_OK);
-            let i = info.assume_init_ref();
-            (i.w, i.h, i.mm_w, i.mm_h, i.scale120)
-        };
-        assert_eq!(get(d), (1920, 1080, 0, 0, 0));
-        let a = monitor(1, 0, 0, 2560, 1440, (600, 340), 240);
-        let b = monitor(2, 1280, 0, 1920, 1080, (500, 280), 120);
-        // SAFETY: a live display; the records are readable.
+        // SAFETY: a live display; null is allowed and reported.
         unsafe {
-            assert_eq!(nhg_monitor_set(d, &a), 1);
-            assert_eq!(get(d), (2560, 1440, 600, 340, 240));
-            assert_eq!(nhg_monitor_set(d, &b), 1);
-        }
-        // b starts at 1280 logical pixels, which is 1280 device pixels at its scale of 1
-        assert_eq!(get(d), (3200, 1440, 1100, 340, 240));
-        let a2 = monitor(1, 0, 0, 3840, 2160, (600, 340), 240);
-        // SAFETY: as above.
-        unsafe {
-            assert_eq!(nhg_monitor_set(d, &a2), 1, "a change replaces");
-            assert_eq!(nhg_monitor_remove(d, 2), 1);
-            assert_eq!(nhg_monitor_remove(d, 2), 0);
-        }
-        assert_eq!(get(d), (3840, 2160, 600, 340, 240));
-        // SAFETY: as above.
-        unsafe {
-            assert_eq!(nhg_monitor_remove(d, 1), 1);
             assert_eq!(nhg_display_info(d, ptr::null_mut()), NHG_E_ARG);
+            assert_eq!(nhg_close(d), NHG_OK);
         }
-        assert_eq!(get(d), (1920, 1080, 0, 0, 240), "the scale is kept");
-        // SAFETY: a live display, not used again.
-        assert_eq!(unsafe { nhg_close(d) }, NHG_OK);
     }
 
     /// The list holds sixteen outputs, and a name that fills its field is cut and terminated.
