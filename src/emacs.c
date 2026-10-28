@@ -2449,6 +2449,7 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
       syms_of_nhwlterm ();
       syms_of_nhwlfns ();
       syms_of_nhwlselect ();
+      syms_of_nhwlcsd ();
       syms_of_fontset ();
 #endif /* HAVE_NHWL */
 #ifdef HAVE_HAIKU
