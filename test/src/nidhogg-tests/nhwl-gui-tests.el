@@ -1863,3 +1863,49 @@ and its time goes out with that paint."
        (should s)
        (should (> (plist-get s :count) 0))
        (should (< (plist-get (plist-get s :latency-ms) :max) 100))))))
+
+;; Present path S4: only damage wakes the pacer.  A draw outside redisplay (the drain's mouse highlight) still shows.
+
+(defun nhwl-gui--native-to-logical (x y)
+  "The surface position, in logical pixels, of the selected frame's native pixel X, Y (past the margins and strip)."
+  (let ((left (/ (- (plist-get (plist-get (nhwl-gui--last-commit) :buffer) :w) (frame-pixel-width)) 2))
+        (s (frame-scale-factor)))
+    (list (/ (+ left x) s) (/ (+ (nhwl-gui--native-top) y) s))))
+
+(ert-deftest nhwl-gui/mouse-face-from-the-drain-shows ()
+  "Moving the pointer onto a button draws its mouse face from the event drain, outside redisplay: that draw's damage
+alone wakes the pacer, and a commit with damage follows within 200 ms."
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--with-blink
+   nil
+   (lambda ()
+     (let ((buf (generate-new-buffer " *nhwl-hover*")))
+       (unwind-protect
+           (progn
+             (switch-to-buffer buf)
+             (insert "\n\n  ")
+             (let ((b (point)))
+               (insert-button "a button-faced link" 'face 'button 'mouse-face 'highlight)
+               (insert "\n")
+               (goto-char (point-min))
+               (message nil)
+               (redisplay t)
+               (let* ((edges (window-inside-pixel-edges))
+                      (lh (frame-char-height))
+                      (xy (posn-x-y (posn-at-point (+ b 3))))
+                      (off (nhwl-gui--native-to-logical (+ (nth 0 edges) 2) (+ (nth 1 edges) (/ lh 2))))
+                      (on (nhwl-gui--native-to-logical (+ (nth 0 edges) (car xy) 2)
+                                                       (+ (nth 1 edges) (cdr xy) (/ lh 2)))))
+                 ;; the pointer starts on the empty first line, off the link
+                 (nhwl-gui--point (nth 0 off) (nth 1 off))
+                 (redisplay t)
+                 (gui-runner-wait-settled)
+                 (let ((mark (nhwl-gui--mark)) (t0 (float-time)) (hit nil) (inhibit-redisplay t))
+                   (gui-runner-recorder (list :cmd "pointer" :pos (vector (nth 0 on) (nth 1 on))))
+                   ;; read input (the drain runs), never redisplay (`read-event' would redisplay while it waits)
+                   (while (and (not hit) (< (float-time) (+ t0 1)))
+                     (read-event nil nil 0.01)
+                     (setq hit (seq-find #'nhwl-gui--damage (nhwl-gui--new mark))))
+                   (should hit)
+                   (should (< (- (float-time) t0) 0.2))))))
+         (kill-buffer buf))))))
