@@ -763,6 +763,32 @@ int32_t nhg_reconnect_step (NhgDisplay *d, uint32_t timeout_ms, uint32_t *next_m
    *NEXT_MS when to ask again (0: nothing is pending).  */
 int32_t nhg_reconnect_settle (NhgDisplay *d, uint64_t *window, uint32_t *next_ms);
 
+/* ---- The drag source (x-begin-drag) ----------------------------------------------------------------------------
+   nhg_drag_start drags N types out of WINDOW (MIMES[i] with the LENS[i] bytes at DATA[i], copied), offering ACTIONS
+   (NHG_DND_*), our own windows preferring PREFERRED (one of them), with FLAGS NHG_DRAG_*.  It needs the newest button
+   press or touch down whose release has not come: NHG_E_STATE without one (x-begin-drag returns nil at once) or for a
+   window that is not a frame.  While the drag runs, nhg_next answers with:
+   - NHG_ACT_DRAG_ACTION: the compositor took the drag, or the action it chose with the target changed (CODE; 0: none);
+   - NHG_ACT_DRAG_DROPPED: dropped on another client's window, which has to finish it (wait nhwl-dnd-finish-timeout);
+   - NHG_ACT_DRAG_DONE, once: the drag is over, CODE the action performed (0: none), and with FLAGS NHG_DRAG_FRAME
+     WINDOW the frame to return (RETURN-FRAME; the drag was given up).
+   A button release or touch up that reaches us ends the drag with no action: the compositor did not take it.  A drop on
+   our own window comes as NHG_ACT_DND_ENTER and NHG_ACT_DND_DROP for pgtk-dnd.el (the glue answered and finished the
+   offer, which reads the drag's own bytes), with DONE for its action.  nhg_drag_cancel gives the drag up (no DONE).  */
+#define NHG_ACT_DRAG_ACTION     36
+#define NHG_ACT_DRAG_DROPPED    37
+#define NHG_ACT_DRAG_DONE       38
+#define NHG_DRAG_ALLOW_CURRENT   1   /* ALLOW-CURRENT-FRAME: drops on WINDOW are taken */
+#define NHG_DRAG_RETURN_FRAME    2   /* RETURN-FRAME: give up for our frame under the pointer once it left WINDOW */
+#define NHG_DRAG_RETURN_NOW      4   /* RETURN-FRAME `now': give up for the first of our frames under the pointer */
+#define NHG_DRAG_FRAME           1   /* DONE's FLAGS: WINDOW is the frame to return */
+
+int32_t nhg_drag_start (NhgDisplay *d, uint64_t window, const char *const *mimes, const uint8_t *const *data,
+                        const size_t *lens, size_t n, uint32_t actions, uint32_t preferred, uint32_t flags);
+
+/* Give our drag up: its source goes, and no NHG_ACT_DRAG_DONE follows.  1 when it ran, else 0.  */
+int32_t nhg_drag_cancel (NhgDisplay *d);
+
 #ifdef __cplusplus
 }
 #endif

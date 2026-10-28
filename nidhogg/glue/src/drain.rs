@@ -37,6 +37,9 @@ pub fn next(state: &mut Display, input: NhgNextIn) -> Result<i32, GlueError> {
     let Some(ev) = state.backend().next_event()? else {
         return Ok(0);
     };
+    // our drag out (`x-begin-drag`) reads the source's records and the input that shows whether it began; the input
+    // goes on as usual below
+    dnd::drag_input(state, &ev);
     match ev.kind {
         NHSHELL_EV_KEY => keys::key(state, &ev, input),
         NHSHELL_EV_MODIFIERS => keys::modifiers(state, &ev),
