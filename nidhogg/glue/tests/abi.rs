@@ -618,6 +618,45 @@ PROTO (nhg_tip_hide, int32_t (NhgDisplay *, uint64_t));";
         }
     }
 
+    /// The child frames' part of the header (its own table, so the tasks' additions merge apart).
+    #[test]
+    fn child_header_matches() {
+        use nhglue::child::*;
+        use nhglue::ffi::{nhg_child_chrome, nhg_child_set, nhg_child_stack};
+        type C = NhgChrome;
+        let rows: &[(&str, i64)] = &[
+            ("NHG_CHILD_VISIBLE", NHG_CHILD_VISIBLE.into()),
+            ("NHG_CHILD_NO_FOCUS", NHG_CHILD_NO_FOCUS.into()),
+            ("sizeof (C)", size_of::<C>() as i64),
+            ("offsetof (C, radius)", offset_of!(C, radius) as i64),
+            ("offsetof (C, oy)", offset_of!(C, oy) as i64),
+            ("offsetof (C, opacity)", offset_of!(C, opacity) as i64),
+            ("offsetof (C, rgb)", offset_of!(C, rgb) as i64),
+            ("sizeof (NhgFrameGeom)", size_of::<NhgFrameGeom>() as i64),
+            (
+                "offsetof (NhgFrameGeom, window)",
+                offset_of!(NhgFrameGeom, window) as i64,
+            ),
+        ];
+        let decls = "\
+#define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
+typedef NhgChrome C;
+PROTO (nhg_child_set, int32_t (NhgDisplay *, uint64_t, uint64_t, int32_t, int32_t, uint32_t));
+PROTO (nhg_child_chrome, int32_t (NhgDisplay *, uint64_t, const NhgChrome *));
+PROTO (nhg_child_stack, int32_t (NhgDisplay *, uint64_t, const uint64_t *, size_t, int32_t));";
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u64, i32, i32, u32) -> i32 =
+            nhg_child_set;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *const C) -> i32 = nhg_child_chrome;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *const u64, usize, i32) -> i32 =
+            nhg_child_stack;
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe(decls, &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+    }
+
     #[test]
     fn version_is_one_and_null_is_refused() {
         let mut v = 0u32;

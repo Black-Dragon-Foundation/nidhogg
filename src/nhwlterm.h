@@ -195,31 +195,13 @@ extern struct nhwl_display_info *x_display_list;
 /* The border around the native area, device pixels, in the backing: the backing is the native area plus this border.
    L, T, R and B are the native area's offsets (T includes the strip), STRIP the title strip's height now in effect
    (0 when hidden), ON whether the frame draws its own title bar.  C's copy, for its drawing and the code shared with
-   pgtk that reads it at every glyph: of the glue's title-bar layout (nhwl_csd_layout, from nhg_csd_layout), or of a
-   child frame's shadow margin (nhwlchild.c).  The title bar's state and decisions are the glue's (csd.rs).  */
+   pgtk that reads it at every glyph, of the glue's layout (nhwl_csd_layout, from nhg_csd_layout): a top-level's
+   title bar, or a child frame's shadow margin.  The title bar's and the child's state and decisions are the glue's
+   (csd.rs, child.rs).  */
 struct nhwl_csd
 {
   bool on;
   int strip, l, t, r, b;
-};
-
-/* A child frame's state (nhwlchild.c).  The chrome is in logical pixels as `glitnir--resolve' gave it; its margin
-   (the room the shadow needs around the native area) is held in the output's CSD offsets, so the backing, the damage
-   and the pointer all use the native-area offset they already have.  */
-struct nhwl_child
-{
-  bool chrome, chrome_dirty;
-  float radius, blur, ox, oy, spread, opacity;
-  uint32_t rgb;
-  int z;			/* stacking order among siblings: larger is higher */
-  uint32_t chrome_s120;		/* the scale the chrome was last handed over at */
-  bool layer_set;
-  GlitnirRect layer;		/* the Glitnir layer's rectangle as last handed over */
-  bool pos_sent;
-  int pos[2];			/* the surface offset in the parent, logical, as last sent */
-  bool region_sent;
-  int region[4];		/* the input region, logical, as last sent */
-  bool mapped;			/* the shell window is shown (not set_mapped off) */
 };
 
 /* A popup frame's state (nhwlmenu.c): its `nhwl-popup' parameter.  The anchor is in device pixels of the parent's
@@ -260,7 +242,11 @@ struct nhwl_output
   int cr_width, cr_height;
   uint64_t cr_gen;		/* counts the backing's creations */
   struct nhwl_csd csd;
-  struct nhwl_child child;
+  /* On a child frame: its stacking among its siblings (larger is higher; the tree walk lists children by it), and
+     the chrome `glitnir--resolve' last gave it (logical pixels), pushed again when its window is made anew.  Its
+     layout, margin, position and mapping are the glue's (child.rs).  */
+  int child_z;
+  NhgChrome chrome;
   struct nhwl_popup popup;
   /* On a top-level (a tree's root): the shell window of the frame of its
      tree that Emacs focused (0: the root itself).  The root's keys and
@@ -526,7 +512,10 @@ extern void nhwl_use_im_context (bool);
 extern int nhwl_to_logical (int, uint32_t);
 extern int nhwl_to_device (int, uint32_t);
 
-/* nhwlchild.c: child frames (subsurfaces of the parent frame's window).  */
+/* Child frames (subsurfaces of the parent frame's window): their layout,
+   margin, position, mapping and stacking are the glue's (child.rs);
+   nhwlterm.c pushes their facts and keeps the tree and the keyboard focus
+   redirect, nhwlfns.c their parameters and chrome.  */
 extern uint64_t nhwl_frame_window (struct frame *);
 extern struct frame *nhwl_window_frame (uint64_t);
 extern bool nhwl_child_p (struct frame *);
@@ -534,14 +523,9 @@ extern struct frame *nhwl_tree_root (struct frame *);
 extern void nhwl_tip_dismissed (struct frame *);
 extern void nhwl_child_describe (struct frame *, NhShellWindowDesc *);
 extern void nhwl_child_created (struct frame *);
-extern void nhwl_child_layout (struct frame *);
-extern void nhwl_child_sync (struct frame *);
 extern void nhwl_child_set_visible (struct frame *, bool);
 extern void nhwl_child_reposition (struct frame *);
-extern void nhwl_child_parent_layout (struct frame *);
 extern void nhwl_child_params_changed (struct frame *);
-extern bool nhwl_child_layer_update (struct frame *, GlitnirRect *);
-extern void nhwl_child_apply_chrome (struct frame *);
 extern void nhwl_frame_raise_lower (struct frame *, bool);
 extern void nhwl_set_parent_frame (struct frame *, Lisp_Object, Lisp_Object);
 extern void nhwl_set_z_group (struct frame *, Lisp_Object, Lisp_Object);

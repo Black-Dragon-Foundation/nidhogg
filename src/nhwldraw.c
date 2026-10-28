@@ -2379,27 +2379,22 @@ nhwl_frame_size (struct frame *f, NhgFrameGeom *g)
   g->native_h = FRAME_PIXEL_HEIGHT (f);
   g->l = out->csd.l, g->t = out->csd.t, g->r = out->csd.r, g->b = out->csd.b;
   g->scale120 = out->scale120;
+  g->window = out->window;
 }
 
-/* F's geometry for the glue: its size, and its Glitnir layer (a child
-   frame with chrome has its layer inside the shadow margin).  Only for
-   nhg_layer_ensure: the child's layer update is taken here.  */
+/* F's geometry for the glue: its size, and its Glitnir layer, all of the
+   backing (the glue puts a child frame's inside its shadow margin).  */
 static void
 nhwl_frame_geom (struct frame *f, NhgFrameGeom *g)
 {
-  GlitnirRect rect;
-
   nhwl_frame_size (f, g);
-  rect = (GlitnirRect) { 0, 0, max (1, g->native_w + g->l + g->r),
+  g->layer = (NhgRect) { 0, 0, max (1, g->native_w + g->l + g->r),
 			 max (1, g->native_h + g->t + g->b) };
-  if (nhwl_child_layer_update (f, &rect))
-    g->flags |= NHG_GEOM_LAYER_CHANGED;
-  g->layer = (NhgRect) { rect.x, rect.y, rect.w, rect.h };
 }
 
 /* Make F's Glitnir scene match the frame: one frame layer, device size,
    at the window's scale.  A new or resized layer damages the frame; a
-   child frame's chrome goes with it.  */
+   child frame's chrome goes with it (the glue's).  */
 void
 nhwl_glitnir_ensure (struct frame *f)
 {
@@ -2407,9 +2402,7 @@ nhwl_glitnir_ensure (struct frame *f)
   NhgFrameGeom g;
 
   nhwl_frame_geom (f, &g);
-  if (NHG (nhg_layer_ensure (FRAME_NHG (f), &out->glitnir_id, &g)) > 0
-      && nhwl_child_p (f))
-    nhwl_child_apply_chrome (f);
+  NHG (nhg_layer_ensure (FRAME_NHG (f), &out->glitnir_id, &g));
 }
 
 /* Whether Glitnir's decorations draw on F: a frame of the shell with a
@@ -2422,14 +2415,15 @@ nhwl_glitnir_active_p (struct frame *f)
 }
 
 /* Where F's Glitnir layer starts, in F's pixels (device pixels): the
-   backing's top-left, before the title bar or margins, or the native
-   area for a child frame with chrome (nhwl_child_layer_update).  */
+   backing's top-left, before the title bar or margins, or the native area
+   for a child frame (the glue puts a child's layer inside its shadow
+   margin; one without chrome has no margin, so both are the same).  */
 void
 nhwl_layer_origin (struct frame *f, int *x, int *y)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
 
-  if (nhwl_child_p (f) && out->child.chrome)
+  if (nhwl_child_p (f))
     *x = *y = 0;
   else
     *x = -out->csd.l, *y = -out->csd.t;

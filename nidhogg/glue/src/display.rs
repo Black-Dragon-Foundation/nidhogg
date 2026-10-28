@@ -240,3 +240,16 @@ impl Display {
         Ok((backend, &self.csd_style, f))
     }
 }
+
+impl Display {
+    /// The child frames whose pushed facts name `parent` as their parent (`child.rs`).
+    pub(crate) fn child_windows(&self, parent: u64) -> Vec<u64> {
+        self.frames
+            .iter()
+            .filter(|(_, f)| {
+                f.flags & crate::frame::NHG_FRAME_CHILD != 0 && f.child.parent() == parent
+            })
+            .map(|(&w, _)| w)
+            .collect()
+    }
+}
