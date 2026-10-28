@@ -221,9 +221,6 @@ struct nhwl_display_info
 /* This is a chain of structures for all the displays currently in use.  */
 extern struct nhwl_display_info *x_display_list;
 
-#define NHWL_PENDING_MAX 32	/* damage rectangles kept per present */
-#define NHWL_HIST 4		/* presents whose damage repairs an old buffer */
-
 /* The bare client-side title bar (nhwlcsd.c): device pixels, in the backing.  The backing is the native area plus
    this border: L, T, R and B are the native area's offsets (T includes the strip); M is the resize margin and STRIP
    the title strip's height now in effect (0 when hidden).  */
@@ -321,28 +318,19 @@ struct nhwl_output
 
   /* The `alpha' applied, as what it takes off opaque: UINT32_MAX minus the
      multiplier (0: opaque, the default).  ALPHA_HOST: the compositor cannot
-     apply it, and nhwl_glitnir_compose multiplies the pixels.  */
+     apply it, and the shell multiplies the pixels.  */
   uint32_t alpha_cut;
   bool alpha_host;
 
   /* Glitnir's scene of this frame: its id (0: none yet), which is the
-     frame's key in the glue (the glue holds its layer, backing and the
-     damage committed but not yet presented), and the damage of the last
-     presents (to repair an older buffer).  */
+     frame's key in the glue (the glue holds its layer and backing).  */
   uint64_t glitnir_id;
-  GlitnirRect hist[NHWL_HIST][NHWL_PENDING_MAX];
-  int nhistn[NHWL_HIST];
-  int nhist;
-  /* The frame-time record's entry in the making: the monotonic time of the
-     key event the next present shows (0: none), the commit's, and the
-     composed area.  */
-  uint64_t t_key_ns, t_commit_ns, painted_px;
+  /* The monotonic time of the key event the next published picture shows
+     (0: none); the frame-time record's entry gets it.  */
+  uint64_t t_key_ns;
   /* The redisplay_counter when that key was read: a later redisplay that
      drew nothing drops the key's time.  */
   unsigned int key_redisplay;
-  /* A FRAME_READY came while buffer flips were blocked: the unblocked hook
-     wakes the pacer again.  */
-  bool ready_held;
 
   /* Cursors (the shell's pointer shape plus one)  */
   Emacs_Cursor current_cursor;
@@ -530,7 +518,7 @@ extern void nhwl_set_cr_source_with_gc_background (struct frame *, Emacs_GC *,
 						   bool);
 extern void nhwl_set_cr_source_with_color (struct frame *, unsigned long,
 					   bool);
-extern void nhwl_dirty (struct frame *);
+extern void nhwl_publish (struct frame *);
 
 /* nhwldraw.c: drawing, the backing and Glitnir.  */
 extern void nhwl_scroll_run (struct window *, struct run *);
@@ -553,10 +541,6 @@ extern void nhwl_backing_resize (struct frame *);
 extern uint64_t nhwl_now_ns (void);
 extern void nhwl_glitnir_ensure (struct frame *);
 extern void nhwl_glitnir_forget (struct frame *);
-extern void nhwl_glitnir_commit (struct frame *);
-extern void nhwl_glitnir_compose (struct frame *, const NhShellBuffer *);
-extern void nhwl_glitnir_presented (struct frame *);
-extern size_t nhwl_pending (struct frame *, NhgPending *);
 extern void nhwl_damage_glyphs (struct glyph_string *);
 extern void nhwl_damage_cursor (struct window *, struct glyph_row *, bool);
 extern void nhwl_damage_fringe (struct window *,
@@ -608,7 +592,6 @@ extern void nhwl_child_parent_layout (struct frame *);
 extern void nhwl_child_params_changed (struct frame *);
 extern bool nhwl_child_layer_update (struct frame *, GlitnirRect *);
 extern void nhwl_child_apply_chrome (struct frame *);
-extern void nhwl_child_source (struct frame *, GlitnirSource *);
 extern void nhwl_frame_raise_lower (struct frame *, bool);
 extern void nhwl_set_parent_frame (struct frame *, Lisp_Object, Lisp_Object);
 extern void nhwl_set_z_group (struct frame *, Lisp_Object, Lisp_Object);

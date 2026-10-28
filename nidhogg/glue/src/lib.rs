@@ -15,6 +15,7 @@ pub mod display;
 pub mod drain;
 pub mod ffi;
 pub mod frame;
+pub mod present;
 
 /// Glitnir's C ABI under another name, because this crate's own `ffi` shadows the glob below.
 pub use glitnir::ffi as glitnir_ffi;

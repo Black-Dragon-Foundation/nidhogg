@@ -55,8 +55,7 @@ enum
   NHSHELL_EV_SCALE, NHSHELL_EV_FOCUS, NHSHELL_EV_FRAME_DONE, NHSHELL_EV_OUTPUT_ADD, NHSHELL_EV_OUTPUT_REMOVE,
   NHSHELL_EV_DISCONNECTED,
   NHSHELL_EV_POPUP_DONE = 16,      /* the compositor dismissed a popup; no payload */
-  /* the window's pacer lets the host present what it drew (see nhshell_window_dirty); 16-20 belong to popups and
-     children */
+  /* the tree's pacer lets the host present it (see nhshell_present_tree); 16-20 belong to popups and children */
   NHSHELL_EV_FRAME_READY = 21
 };
 
@@ -266,8 +265,8 @@ typedef struct
   const char *session_name;        /* top-levels: the session name (NULL: none); see nhshell_session_open */
 } NhShellWindowDesc;
 
-/* A pixel buffer to draw into until the next nhshell_present_commit.  AGE is how many presents ago these pixels were
-   last shown (0: contents undefined, draw everything).  */
+/* A pixel buffer of the shell's presenter (its layout is the Rust side's).  AGE is how many presents ago these pixels
+   were last shown (0: contents undefined, draw everything).  */
 typedef struct
 {
   uint8_t *pixels;
@@ -312,14 +311,10 @@ int32_t nhshell_window_show_menu (NhShell *sh, uint64_t window, int32_t x, int32
 int32_t nhshell_window_set_geometry (NhShell *sh, uint64_t window, int32_t x, int32_t y, int32_t w, int32_t h);
 /* Records a configure's ack; it goes out right before the commit that carries it, exactly once (the newest serial
    wins).  FLAGS NHSHELL_ACK_CONTENT says the ack changes what the window shows (a new size, the first configure, a
-   client-side state change): it is sent only with a buffer, never with nhshell_present_bare, and stays marked until a
+   client-side state change): it is sent only with a buffer, never with a bare commit, and stays marked until a
    buffer carries it.  Without the flag a bare commit may carry it.  */
 #define NHSHELL_ACK_CONTENT 1u
 int32_t nhshell_window_ack_configure (NhShell *sh, uint64_t window, uint32_t serial, uint32_t flags);
-/* A commit with no buffer or viewport: it carries a bare ack and the surface state the window owes (a child's
-   position, stacking, input region or unmap).  No frame callback or presentation feedback either, except on a root
-   whose children committed buffers since its last commit: that commit shows them, and is paced like a buffer.  */
-int32_t nhshell_present_bare (NhShell *sh, uint64_t window);
 int32_t nhshell_window_set_cursor (NhShell *sh, uint64_t window, uint32_t shape);
 /* The Xcursor theme (NAME, logical SIZE) shown where the compositor lacks wp_cursor_shape_v1; a cursor already shown
    from the theme is redrawn.  NHSHELL_CURSOR_HIDDEN shows no cursor.  */
@@ -387,27 +382,9 @@ int32_t nhshell_window_set_size (NhShell *sh, uint64_t window, int32_t w, int32_
 int32_t nhshell_window_scale (NhShell *sh, uint64_t window, uint32_t *scale120);
 int32_t nhshell_window_ssd (NhShell *sh, uint64_t window, int32_t *ssd);
 
-/* The presenter.  begin returns a buffer of DEV_W x DEV_H device pixels in *OUT; commit shows it, with DAMAGE (N
-   rectangles in device pixels; NULL only when N is 0, which presents with no damage).  */
-/* Pacing.  window_dirty says the host drew something; NHSHELL_EV_FRAME_READY follows when the window's pacer lets it
-   present (frame callbacks pace, a content ack never waits, a starved window waits for a buffer release).  window_ready
-   asks the same: *READY holds NHSHELL_READY_CONTENT (draw and present a buffer) and NHSHELL_READY_OWED (a commit is
-   owed: a bare ack or surface state; nhshell_present_bare or a buffer), 0 for neither; reporting CONTENT takes the draw
-   (not ready again until the next window_dirty; a begin that finds every buffer busy gives it back).  With CONTENT,
-   NHSHELL_READY_ACK says a content ack waits: present a buffer even with nothing drawn.  All are 0 until the window's
-   first configure.  One pacer per tree: a child's window_dirty and buffer releases wake its root, FRAME_READY comes
-   for roots only, and window_ready on a child reports only NHSHELL_READY_OWED (its surface owes a commit).  The host
-   presents a tree at its root's FRAME_READY: the children deepest first (a buffer with CONTENT and damage, else a bare
-   commit when owed or when a child of theirs committed), then the root.  */
-#define NHSHELL_READY_CONTENT 1
-#define NHSHELL_READY_OWED    2
-#define NHSHELL_READY_ACK     4
-int32_t nhshell_window_dirty (NhShell *sh, uint64_t window);
-int32_t nhshell_window_ready (NhShell *sh, uint64_t window, int32_t *ready);
-int32_t nhshell_present_begin (NhShell *sh, uint64_t window, int32_t dev_w, int32_t dev_h, NhShellBuffer *out);
-int32_t nhshell_present_commit (NhShell *sh, uint64_t window, const GlitnirRect *damage, size_t n);
-
-/* Publishing: the shell presents.  (The calls above are the host-driven presenter, kept until the host publishes.)
+/* Publishing: the shell presents.  One pacer per tree (a root and its child windows): NHSHELL_EV_FRAME_READY comes for
+   roots only, when the pacer lets the tree present (frame callbacks pace, a content ack never waits, a starved tree
+   waits for a buffer release, and a commit owed for surface state or a re-arm wakes it too).
    At a consistency point the host publishes a tree (a root and its child windows): one NhShellSurfaceFrame per
    drawable surface, the root first, then its child windows deepest first.  publish commits each surface's Glitnir
    scene (GLITNIR_ROOT), copies the damaged pixels of its backing (PIXELS: H rows of STRIDE bytes, W x H device pixels,
