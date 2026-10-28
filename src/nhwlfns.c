@@ -1997,9 +1997,10 @@ DEFUN ("pgtk-register-dnd-targets", Fpgtk_register_dnd_targets,
 
 DEFUN ("pgtk-use-im-context", Fpgtk_use_im_context, Spgtk_use_im_context,
        1, 1, 0,
-       doc: /* Set whether to use an input method context: not in W0.  */)
+       doc: /* Set whether to use an input method (text-input-v3); on by default.  */)
   (Lisp_Object use_p)
 {
+  nhwl_use_im_context (!NILP (use_p));
   return Qnil;
 }
 
@@ -2056,7 +2057,7 @@ syms_of_nhwlfns (void)
   DEFVAR_LISP ("pgtk-use-im-context-on-new-connection",
 	       Vpgtk_use_im_context_on_new_connection,
     doc: /* SKIP: real doc in pgtkim.c.  */);
-  Vpgtk_use_im_context_on_new_connection = Qnil;
+  Vpgtk_use_im_context_on_new_connection = Qt;
 
   defsubr (&Sxw_display_color_p);
   defsubr (&Sx_display_grayscale_p);

@@ -1145,7 +1145,10 @@ nhwl_free_frame_resources (struct frame *f)
   }
 
   if (out->window && dpyinfo->shell)
-    nhshell_window_destroy (dpyinfo->shell, out->window);
+    {
+      nhshell_text_input_enable (dpyinfo->shell, out->window, 0);
+      nhshell_window_destroy (dpyinfo->shell, out->window);
+    }
   out->window = 0;
 
   nhwl_cr_destroy_frame_context (f);
@@ -1724,6 +1727,198 @@ nhwl_monitors_changed (struct nhwl_display_info *dpyinfo,
   return true;
 }
 
+/***********************************************************************
+			   Input methods
+ ***********************************************************************/
+
+/* `pgtk-use-im-context': whether input methods are on (they are by
+   default).  */
+static bool nhwl_im_on = true;
+
+/* Text-input is on for F's window while F has the keyboard focus (and
+   input methods are on); the shell sends the requests when the
+   compositor has entered the text input.  */
+static void
+nhwl_im_enable (struct frame *f, bool on)
+{
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
+
+  if (dpyinfo->shell && out->window)
+    nhshell_text_input_enable (dpyinfo->shell, out->window,
+			       on && nhwl_im_on);
+}
+
+/* Bytes of the line kept on each side of point for the surrounding
+   text (the shell cuts the whole to 4000).  */
+#define NHWL_IM_SPAN 2000
+
+/* Tell the input method where point is in F's selected window (the
+   cursor rectangle, logical pixels in the surface) and what surrounds
+   it (the current line).  The shell sends only what changed.  */
+static void
+nhwl_im_update (struct frame *f)
+{
+  struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  uint32_t s120 = out->scale120 ? out->scale120 : 120;
+  struct window *w;
+  struct buffer *b;
+  int x, y;
+
+  if (!nhwl_im_on || !dpyinfo->shell || !out->window
+      || f != dpyinfo->x_focus_frame || !WINDOWP (f->selected_window))
+    return;
+  w = XWINDOW (f->selected_window);
+  if (!BUFFERP (w->contents) || w->phys_cursor.vpos < 0)
+    return;
+
+  x = (WINDOW_TO_FRAME_PIXEL_X (w, w->phys_cursor.x)
+       + WINDOW_LEFT_FRINGE_WIDTH (w) + WINDOW_LEFT_MARGIN_WIDTH (w));
+  y = WINDOW_TO_FRAME_PIXEL_Y (w, w->phys_cursor.y);
+  nhshell_text_input_cursor
+    (dpyinfo->shell, out->window,
+     nhwl_to_logical (x + out->csd.l, s120),
+     nhwl_to_logical (y + out->csd.t, s120),
+     max (1, nhwl_to_logical (w->phys_cursor_width, s120)),
+     max (1, nhwl_to_logical (w->phys_cursor_height, s120)));
+
+  b = XBUFFER (w->contents);
+  {
+    char text[2 * NHWL_IM_SPAN + 1];
+    ptrdiff_t pt = clip_to_bounds (BUF_BEGV (b), window_point (w),
+				   BUF_ZV (b));
+    ptrdiff_t pt_b = buf_charpos_to_bytepos (b, pt);
+    ptrdiff_t s = pt_b, e = pt_b, n = 0;
+
+    if (BVAR (b, enable_multibyte_characters))
+      {
+	while (s > BUF_BEGV_BYTE (b) && pt_b - s < NHWL_IM_SPAN
+	       && *BUF_BYTE_ADDRESS (b, s - 1) != '\n')
+	  s--;
+	while (e < BUF_ZV_BYTE (b) && e - pt_b < NHWL_IM_SPAN
+	       && *BUF_BYTE_ADDRESS (b, e) != '\n')
+	  e++;
+	/* Both ends on character boundaries.  */
+	while (s < pt_b && !CHAR_HEAD_P (*BUF_BYTE_ADDRESS (b, s)))
+	  s++;
+	while (e > pt_b && e < BUF_ZV_BYTE (b)
+	       && !CHAR_HEAD_P (*BUF_BYTE_ADDRESS (b, e)))
+	  e--;
+	for (ptrdiff_t i = s; i < e; i++)
+	  text[n++] = *BUF_BYTE_ADDRESS (b, i);
+      }
+    nhshell_text_input_surrounding (dpyinfo->shell, out->window, text, n,
+				    n ? pt_b - s : 0, n ? pt_b - s : 0);
+  }
+}
+
+/* The text of a PREEDIT or COMMIT_TEXT record as a Lisp string.  */
+static Lisp_Object
+nhwl_im_text (struct nhwl_display_info *dpyinfo, const NhShellEvent *ev)
+{
+  USE_SAFE_ALLOCA;
+  size_t len = 0;
+  char *buf;
+  Lisp_Object str = Qnil;
+
+  if (!ev->u.text.len)
+    return empty_unibyte_string;
+  buf = SAFE_ALLOCA (ev->u.text.len);
+  if (nhshell_take_text (dpyinfo->shell, ev->u.text.id, buf,
+			 ev->u.text.len, &len) == 0)
+    str = make_string (buf, len);
+  SAFE_FREE ();
+  return str;
+}
+
+static void
+nhwl_im_store_key (struct frame *f, int kind, int code,
+		   struct input_event *hold_quit)
+{
+  struct input_event ie;
+
+  EVENT_INIT (ie);
+  ie.kind = kind;
+  ie.code = code;
+  XSETFRAME (ie.frame_or_window, f);
+  ie.arg = Qnil;
+  kbd_buffer_store_event_hold (&ie, hold_quit);
+}
+
+/* Insert committed text: its characters as keystrokes, in order.
+   Return the number of events stored.  */
+static int
+nhwl_im_commit (struct frame *f, Lisp_Object str,
+		struct input_event *hold_quit)
+{
+  ptrdiff_t i = 0, ib = 0;
+  int n = 0;
+
+  if (!STRINGP (str))
+    return 0;
+  while (i < SCHARS (str))
+    {
+      int c = fetch_string_char_advance (str, &i, &ib);
+
+      nhwl_im_store_key (f, c < 128 ? ASCII_KEYSTROKE_EVENT
+			 : MULTIBYTE_CHAR_KEYSTROKE_EVENT, c, hold_quit);
+      n++;
+    }
+  return n;
+}
+
+/* Delete BEFORE bytes before and AFTER bytes after point in F's
+   selected window: count the characters they cover and queue one
+   special event, (nhwl-delete-surrounding (BEFORE AFTER FRAME)), whose
+   Lisp handler does the deletion.  Return the number of events stored.  */
+static int
+nhwl_im_delete (struct frame *f, uint32_t before, uint32_t after,
+		struct input_event *hold_quit)
+{
+  struct window *w;
+  struct buffer *b;
+  ptrdiff_t pt_b, i;
+  int nb = 0, na = 0;
+  struct input_event ie;
+
+  if (!WINDOWP (f->selected_window))
+    return 0;
+  w = XWINDOW (f->selected_window);
+  if (!BUFFERP (w->contents))
+    return 0;
+  b = XBUFFER (w->contents);
+  pt_b = buf_charpos_to_bytepos (b, clip_to_bounds (BUF_BEGV (b),
+						    window_point (w),
+						    BUF_ZV (b)));
+  /* Characters whose first byte lies in the span.  */
+  for (i = max (BUF_BEGV_BYTE (b), pt_b - (ptrdiff_t) before); i < pt_b; i++)
+    nb += CHAR_HEAD_P (*BUF_BYTE_ADDRESS (b, i));
+  for (i = pt_b; i < min (BUF_ZV_BYTE (b), pt_b + (ptrdiff_t) after); i++)
+    na += CHAR_HEAD_P (*BUF_BYTE_ADDRESS (b, i));
+
+  if (!nb && !na)
+    return 0;
+  EVENT_INIT (ie);
+  ie.kind = NHWL_DELETE_SURROUNDING_EVENT;
+  XSETFRAME (ie.frame_or_window, f);
+  ie.arg = list3 (make_fixnum (nb), make_fixnum (na), ie.frame_or_window);
+  kbd_buffer_store_event_hold (&ie, hold_quit);
+  return 1;
+}
+
+/* `pgtk-use-im-context'.  */
+void
+nhwl_use_im_context (bool on)
+{
+  struct nhwl_display_info *d;
+
+  nhwl_im_on = on;
+  for (d = x_display_list; d; d = d->next)
+    if (d->x_focus_frame)
+      nhwl_im_enable (d->x_focus_frame, true);
+}
+
 /* Drain DPYINFO's shell events into the keyboard buffer (through
    HOLD_QUIT where Emacs gave one); return the number of events stored.
    Callers hold block_input.  */
@@ -1893,7 +2088,43 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	      nhwl_focus_changed (ev.u.focus.in != 0, FOCUS_EXPLICIT, dpyinfo,
 				  f, &inev);
 	      have = inev.ie.kind != NO_EVENT;
+	      nhwl_im_enable (f, ev.u.focus.in != 0);
+	      if (ev.u.focus.in)
+		nhwl_im_update (f);
 	    }
+	  break;
+
+	case NHSHELL_EV_PREEDIT:
+	  if (!f)
+	    f = dpyinfo->x_focus_frame;
+	  if (f)
+	    {
+	      /* pgtk's event: ((TEXT (ul . t))), nil when cleared.  */
+	      Lisp_Object str = nhwl_im_text (dpyinfo, &ev);
+
+	      inev.ie.kind = PREEDIT_TEXT_EVENT;
+	      inev.ie.arg = (STRINGP (str) && SCHARS (str)
+			     ? list1 (list2 (str, Fcons (intern_c_string ("ul"),
+							 Qt)))
+			     : Qnil);
+	      XSETFRAME (inev.ie.frame_or_window, f);
+	      have = true;
+	    }
+	  break;
+
+	case NHSHELL_EV_COMMIT_TEXT:
+	  if (!f)
+	    f = dpyinfo->x_focus_frame;
+	  if (f)
+	    count += nhwl_im_commit (f, nhwl_im_text (dpyinfo, &ev), hold_quit);
+	  break;
+
+	case NHSHELL_EV_DELETE_SURROUNDING:
+	  if (!f)
+	    f = dpyinfo->x_focus_frame;
+	  if (f)
+	    count += nhwl_im_delete (f, ev.u.text.before, ev.u.text.after,
+				     hold_quit);
 	  break;
 
 	case NHSHELL_EV_FRAME_READY:
@@ -2125,6 +2356,7 @@ nhwl_frame_up_to_date (struct frame *f)
 {
   block_input ();
   FRAME_MOUSE_UPDATE (f);
+  nhwl_im_update (f);
   if (!buffer_flipping_blocked_p () && FRAME_VISIBLE_P (f))
     nhwl_dirty (f);
   unblock_input ();
