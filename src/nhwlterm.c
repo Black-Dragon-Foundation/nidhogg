@@ -650,21 +650,21 @@ nhwl_publish (struct frame *f)
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (r);
   struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (r);
   uint32_t flags = NHG_PRESENT_BACKSTOP;
-  int32_t rc;
 
   if (!dpyinfo->glue || !out->window || redisplaying_p
       || buffer_flipping_blocked_p ())
     return;
-  if (out->t_key_ns && out->key_redisplay != redisplay_counter)
+  if (out->t_key_ns && out->key_redisplay != redisplay_counter
+      && !kbd_buffer_events_waiting ())
     flags |= NHG_PRESENT_KEY_SEEN;
   block_input ();
   nhwl_nsurfaces = 0;
   nhwl_surface_add (r, 0, true);
   nhwl_layers_sync (r);
-  rc = nhwl_glue_rc (dpyinfo,
-		     NHG (nhg_present (dpyinfo->glue, out->window,
-				       nhwl_surfaces, nhwl_nsurfaces, flags,
-				       out->t_key_ns)));
+  int32_t rc = nhwl_glue_rc (dpyinfo,
+			     NHG (nhg_present (dpyinfo->glue, out->window,
+					       nhwl_surfaces, nhwl_nsurfaces,
+					       flags, out->t_key_ns)));
   if (rc > 0 && (rc & NHG_PRESENTED_KEY_DONE))
     out->t_key_ns = 0;
   unblock_input ();
