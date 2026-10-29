@@ -2328,21 +2328,12 @@ nhwl_emacs_modifiers (uint32_t mods)
   return mod;
 }
 
-#define IsCursorKey(keysym)       (0xff50 <= (keysym) && (keysym) < 0xff60)
-#define IsMiscFunctionKey(keysym) (0xff60 <= (keysym) && (keysym) < 0xff6c)
-#define IsKeypadKey(keysym)       (0xff80 <= (keysym) && (keysym) < 0xffbe)
-#define IsFunctionKey(keysym)     (0xffbe <= (keysym) && (keysym) < 0xffe1)
-#define IsModifierKey(keysym)						\
-  ((((keysym) >= 0xffe1) && ((keysym) <= 0xffee))			\
-   || (((keysym) >= 0xfe01) && ((keysym) <= 0xfe13))			\
-   || ((keysym) == 0xff7e)						\
-   || ((keysym) == 0xff7f))
-
 /* Convert the glue's KEY action A (a press or a repeat) on frame F into
    an input event.  Adapted from key_press_event (pgtkterm.c): the shell
-   has already run the keysym through xkb and compose, so A carries the
-   keysym and the text the key produced.  Return true if INEV holds an
-   event.  */
+   has already run the keysym through xkb and compose, and the glue has
+   classified it (keys.rs), so A carries the keysym, its class and
+   character, and the text the key produced.  Return true if INEV holds
+   an event.  */
 static bool
 nhwl_key_event (struct frame *f, const NhgAction *a,
 		union buffered_input_event *inev)
@@ -2350,7 +2341,6 @@ nhwl_key_event (struct frame *f, const NhgAction *a,
   uint32_t keysym = (uint32_t) a->code;
   Mouse_HLInfo *hlinfo = MOUSE_HL_INFO (f);
   Lisp_Object c;
-  size_t nbytes = a->text ? a->len : 0;
   int modifiers;
 
   /* If mouse-highlight is an integer, input clears out mouse
@@ -2384,27 +2374,10 @@ nhwl_key_event (struct frame *f, const NhgAction *a,
   /* make_lispy_event turns characters into control characters: the
      keysym is the key's, not the control character's.  */
 
-  /* First deal with keysyms which have defined translations to
-     characters.  */
-  if (keysym >= 32 && keysym < 128)
-    {
-      inev->ie.kind = ASCII_KEYSTROKE_EVENT;
-      inev->ie.code = keysym;
-      return true;
-    }
-
-  /* Keysyms directly mapped to Unicode characters.  */
-  if (keysym >= 0x01000000 && keysym <= 0x0110FFFF)
-    {
-      if (keysym < 0x01000080)
-	inev->ie.kind = ASCII_KEYSTROKE_EVENT;
-      else
-	inev->ie.kind = MULTIBYTE_CHAR_KEYSTROKE_EVENT;
-      inev->ie.code = keysym & 0xFFFFFF;
-      return true;
-    }
-
-  /* Now non-ASCII.  */
+  /* A keysym that names a character, then the keysym table, then a
+     function key or the text's character.  */
+  if (a->flags & NHG_KEY_CHAR)
+    goto character;
   if (HASH_TABLE_P (Vnhwl_keysym_table)
       && (c = Fgethash (make_fixnum (keysym), Vnhwl_keysym_table, Qnil),
 	  FIXNATP (c)))
@@ -2416,57 +2389,20 @@ nhwl_key_event (struct frame *f, const NhgAction *a,
       return true;
     }
 
-  /* Random non-modifier sorts of keysyms.  */
-  if (((keysym >= 0xff08 && keysym <= 0xff1b)	/* BackSpace .. Escape */
-       || keysym == 0xffff			/* Delete */
-       || (keysym >= 0xfe20 && keysym <= 0xfe34) /* ISO_Left_Tab .. ISO_Enter */
-       || IsCursorKey (keysym)
-       || IsMiscFunctionKey (keysym)
-       || (keysym >= 0xfe50 && keysym <= 0xfe5c) /* the dead keys Emacs knows */
-       || IsKeypadKey (keysym)
-       || IsFunctionKey (keysym)
-       /* Any "vendor-specific" key is ok.  */
-       || (keysym & (1 << 28))
-       || (keysym != 0xffffff && nbytes == 0))
-      && !(IsModifierKey (keysym)
-	   || (keysym >= 0xfe01 && keysym <= 0xfe13)))
+  if (a->flags & NHG_KEY_SYMBOL)
     {
       /* make_lispy_event will convert this to a symbolic key.  */
       inev->ie.kind = NON_ASCII_KEYSTROKE_EVENT;
       inev->ie.code = keysym;
       return true;
     }
-
-  if (nbytes == 0)
+  if (!(a->flags & NHG_KEY_TEXT))
     return false;
-
-  /* A key that produced text: one multibyte character.  */
-  {
-    const unsigned char *p = (const unsigned char *) a->text;
-    int len;
-    int ch = string_char_and_length (p, &len);
-
-    inev->ie.kind = (ch < 128 ? ASCII_KEYSTROKE_EVENT
-		     : MULTIBYTE_CHAR_KEYSTROKE_EVENT);
-    inev->ie.code = ch;
-  }
+ character:
+  inev->ie.kind = (a->x < 128 ? ASCII_KEYSTROKE_EVENT
+		   : MULTIBYTE_CHAR_KEYSTROKE_EVENT);
+  inev->ie.code = a->x;
   return true;
-}
-
-/* evdev button codes to Emacs mouse button numbers (0 left, 1 middle,
-   2 right, 7 back, 8 forward).  */
-static int
-nhwl_button_code (uint32_t button)
-{
-  switch (button)
-    {
-    case 0x110: return 0;	/* BTN_LEFT */
-    case 0x112: return 1;	/* BTN_MIDDLE */
-    case 0x111: return 2;	/* BTN_RIGHT */
-    case 0x113: case 0x116: return 7;	/* BTN_SIDE, BTN_BACK */
-    case 0x114: case 0x115: return 8;	/* BTN_EXTRA, BTN_FORWARD */
-    default: return -1;
-    }
 }
 
 /* Whether the mouse moved off the glyph it was on at the last sighting.
@@ -2992,7 +2928,7 @@ nhwl_click_apply (struct nhwl_display_info *dpyinfo, struct frame *f,
 		  const NhgAction *a, struct input_event *hold_quit)
 {
   union buffered_input_event inev;
-  int code = nhwl_button_code (a->code);
+  int code = a->code;
   bool down = a->flags == NHG_BUTTON_PRESSED;
 
   EVENT_INIT (inev.ie);

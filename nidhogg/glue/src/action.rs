@@ -67,7 +67,8 @@ pub struct NhgNextIn {
 /// One action.  The fields' meaning depends on the kind:
 /// - `KEY` (a press or a repeat): `window` the window with the keyboard (C resolves the frame of its tree that Emacs
 ///   focused), `code` the keysym, `text` its UTF-8 (possibly empty), `mods` the `NHSHELL_MOD_*` mask, `flags`
-///   `NHG_KEY_REPEAT` for a repeat;
+///   `NHG_KEY_REPEAT` for a repeat and the keysym's class (`NHG_KEY_CHAR`, `NHG_KEY_SYMBOL`, `NHG_KEY_TEXT`), `x` the
+///   class's character;
 /// - `FOCUS_IN`, `FOCUS_OUT`: the window whose keyboard focus changed (C resolves Emacs's focus frame);
 /// - `RESIZE`: `w`, `h` the compositor's suggestion in logical pixels (0: the frame's own), `code` the toplevel's
 ///   `NHSHELL_STATE_*`, `flags` `NHG_RESIZE_*`;
@@ -76,7 +77,7 @@ pub struct NhgNextIn {
 /// - `READY`, `LOST`: the window only (`LOST`: none);
 /// - `MOTION` (an enter is one): `dx`, `dy` the position in device pixels in the window's surface;
 /// - `LEAVE`: the window only;
-/// - `CLICK`: `code` the evdev button, `flags` the `NHSHELL_BUTTON_*` state, `dx`, `dy` the position, `mods` the
+/// - `CLICK`: `code` the Emacs button (0 left, 1 middle, 2 right, 7 back, 8 forward; -1 none), `flags` the `NHSHELL_BUTTON_*` state, `dx`, `dy` the position, `mods` the
 ///   keyboard's `NHSHELL_MOD_*`;
 /// - `WHEEL`: `code` 4 up, 5 down, 6 left or 7 right (as pgtk's buttons), `w` the whole steps, `dx`, `dy` the
 ///   record's pixel delta in device pixels, `mods` the keyboard's, `flags` `NHG_WHEEL_*`;
