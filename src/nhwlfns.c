@@ -2237,21 +2237,6 @@ DEFUN ("x-hide-tip", Fx_hide_tip, Sx_hide_tip, 0, 0, 0,
    sees.  The menus themselves are Lisp (nhwl-menu.el), reached from
    `x-popup-menu' through nhwl_popup_menu.  */
 
-/* The `:gravity' names, NhgAnchor's gravity numbers 1 to 8.  */
-static const char *const popup_gravity_names[] = {
-  "top", "bottom", "left", "right", "top-left", "bottom-left", "top-right",
-  "bottom-right"
-};
-
-/* The `:adjust' names and their NHG_ADJUST_* bits.  */
-static const struct { const char *name; uint32_t bit; } popup_adjust_names[] = {
-  { "flip-x", NHG_ADJUST_FLIP_X }, { "flip-y", NHG_ADJUST_FLIP_Y },
-  { "slide-x", NHG_ADJUST_SLIDE_X }, { "slide-y", NHG_ADJUST_SLIDE_Y }
-};
-
-#define POPUP_ADJUST_ALL (NHG_ADJUST_FLIP_X | NHG_ADJUST_FLIP_Y \
-			  | NHG_ADJUST_SLIDE_X | NHG_ADJUST_SLIDE_Y)
-
 /* The `nhwl-popup' parameter decoded: what the glue's popup calls
    take.  */
 struct nhwl_popup_parm
@@ -2277,59 +2262,29 @@ popup_owner (struct frame *f)
   return f;
 }
 
-static AVOID
-popup_invalid (Lisp_Object value)
-{
-  xsignal2 (Qerror, build_string ("Invalid `nhwl-popup' parameter"), value);
-}
-
 /* Read the value V of `nhwl-popup' into P (its anchor, gravity, adjust
-   and grab).  */
+   and grab): `nhwl-popup-decode' (nhwl-win.el) checks it, signals
+   `error' for an invalid one, and returns (X Y W H GRAVITY ADJUST FLAGS),
+   all integers.  */
 static void
 popup_parse (Lisp_Object v, struct nhwl_popup_parm *p)
 {
-  Lisp_Object tail = v, plist, g, adj;
-  int xywh[4], i;
-  size_t k;
+  Lisp_Object r = calln (Qnhwl_popup_decode, v);
+  int32_t n[7];
 
-  for (i = 0; i < 4; i++, tail = XCDR (tail))
+  for (int i = 0; i < 7; i++, r = XCDR (r))
     {
-      if (!CONSP (tail) || !RANGED_FIXNUMP (-0x3fffffff, XCAR (tail), 0x3fffffff))
-	popup_invalid (v);
-      xywh[i] = XFIXNUM (XCAR (tail));
+      CHECK_CONS (r);
+      CHECK_FIXNUM (XCAR (r));
+      n[i] = XFIXNUM (XCAR (r));
     }
-  plist = tail;
-  p->anchor.x = xywh[0];
-  p->anchor.y = xywh[1];
-  p->anchor.w = max (xywh[2], 0);
-  p->anchor.h = max (xywh[3], 0);
-
-  g = Fplist_get (plist, QCgravity, Qnil);
-  p->gravity = NILP (g) ? 8 : 0;
-  for (k = 0; SYMBOLP (g) && !NILP (g) && k < ARRAYELTS (popup_gravity_names); k++)
-    if (!strcmp (SSDATA (SYMBOL_NAME (g)), popup_gravity_names[k]))
-      p->gravity = k + 1;
-  if (!p->gravity)
-    popup_invalid (v);
-
-  if (NILP (Fplist_member (plist, QCadjust, Qnil)))
-    p->adjust = POPUP_ADJUST_ALL;
-  else
-    {
-      p->adjust = 0;
-      for (adj = Fplist_get (plist, QCadjust, Qnil); CONSP (adj); adj = XCDR (adj))
-	{
-	  uint32_t bit = 0;
-
-	  for (k = 0; SYMBOLP (XCAR (adj)) && k < ARRAYELTS (popup_adjust_names); k++)
-	    if (!strcmp (SSDATA (SYMBOL_NAME (XCAR (adj))), popup_adjust_names[k].name))
-	      bit = popup_adjust_names[k].bit;
-	  if (!bit)
-	    popup_invalid (v);
-	  p->adjust |= bit;
-	}
-    }
-  p->flags = NILP (Fplist_get (plist, QCgrab, Qnil)) ? 0 : NHG_POPUP_GRAB;
+  p->anchor.x = n[0];
+  p->anchor.y = n[1];
+  p->anchor.w = n[2];
+  p->anchor.h = n[3];
+  p->gravity = n[4];
+  p->adjust = n[5];
+  p->flags = n[6];
 }
 
 /* Frame F is being made (x-create-frame, with PARMS): a popup frame when
@@ -2794,32 +2749,16 @@ static bool csd_styled;
 static Lisp_Object csd_colours, csd_font;
 static unsigned csd_style_gen;
 
-/* The button kind of a style's symbol (`close', `maximize', `minimize',
-   `appmenu'), 0 for any other.  */
-static uint32_t
-nhwl_csd_kind (Lisp_Object sym)
-{
-  const char *n;
-
-  if (!SYMBOLP (sym))
-    return 0;
-  n = SSDATA (SYMBOL_NAME (sym));
-  return (!strcmp (n, "close") ? NHG_CSD_CLOSE
-	  : !strcmp (n, "maximize") ? NHG_CSD_MAX
-	  : !strcmp (n, "minimize") ? NHG_CSD_MIN
-	  : !strcmp (n, "appmenu") ? NHG_CSD_MENU : 0);
-}
-
-/* The first NHWL_CSD_MAX_SIDE button kinds of LIST into V; how many.  */
+/* The first NHWL_CSD_MAX_SIDE button kinds (NHG_CSD_*) of LIST into V,
+   other elements skipped; how many.  */
 static size_t
 nhwl_csd_kinds (Lisp_Object list, uint32_t *v)
 {
   size_t n = 0;
-  uint32_t k;
 
   for (; CONSP (list) && n < NHWL_CSD_MAX_SIDE; list = XCDR (list))
-    if ((k = nhwl_csd_kind (XCAR (list))))
-      v[n++] = k;
+    if (RANGED_FIXNUMP (NHG_CSD_CLOSE, XCAR (list), NHG_CSD_MENU))
+      v[n++] = XFIXNUM (XCAR (list));
   return n;
 }
 
@@ -2901,9 +2840,9 @@ nhwl_csd_font (const char **family, double *px)
 DEFUN ("nhwl--set-title-bar-style", Fnhwl__set_title_bar_style,
        Snhwl__set_title_bar_style, 7, 7, 0,
        doc: /* Give the shell's title bars their style.
-LEFT and RIGHT are the buttons of each side, lists of `close',
-`maximize', `minimize' and `appmenu' in their order; other elements are
-ignored.  ACTIVE-FG and ACTIVE-BG are the colours of an active window's
+LEFT and RIGHT are the buttons of each side in their order, lists of
+numbers: 1 close, 2 maximize, 3 minimize and 4 appmenu (other elements
+are ignored).  ACTIVE-FG and ACTIVE-BG are the colours of an active window's
 title bar, INACTIVE-FG and INACTIVE-BG an inactive one's (colour names,
 or nil for colours from the frame's).  FONT is (FAMILY . PIXELS): the
 title's font family (nil: sans-serif) and its size in logical pixels
@@ -3005,9 +2944,7 @@ syms_of_nhwlfns (void)
   /* Popup frames for menus.  */
   DEFSYM (Qnhwl_popup, "nhwl-popup");
   DEFSYM (Qnhwl_menu_popup, "nhwl-menu-popup");
-  DEFSYM (QCgravity, ":gravity");
-  DEFSYM (QCadjust, ":adjust");
-  DEFSYM (QCgrab, ":grab");
+  DEFSYM (Qnhwl_popup_decode, "nhwl-popup-decode");
   tip_timer = tip_frame = tip_last_frame = tip_last_string = tip_last_parms
     = Qnil;
   staticpro (&tip_timer);

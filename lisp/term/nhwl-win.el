@@ -61,6 +61,54 @@
           (nhwl-frame-begin-resize part frame)))
     (funcall orig start-event part)))
 
+;;; The `nhwl-popup' frame parameter
+
+(defconst nhwl-win--popup-gravities
+  '("top" "bottom" "left" "right" "top-left" "bottom-left" "top-right"
+    "bottom-right")
+  "The `:gravity' names; their positions from 1 are the shell's gravity numbers.")
+
+(defconst nhwl-win--popup-adjusts
+  '(("slide-x" . 1) ("slide-y" . 2) ("flip-x" . 4) ("flip-y" . 8))
+  "The `:adjust' names and their bits (NHG_ADJUST_*).")
+
+(defun nhwl-popup-decode (value)
+  "Check the `nhwl-popup' parameter VALUE and decode it into integers.
+VALUE is (X Y W H . PLIST), X and Y and W and H device pixels of the
+parent's native area, PLIST with `:gravity' (default `bottom-right'),
+`:adjust' (a list of `flip-x', `flip-y', `slide-x' and `slide-y'; all
+by default) and `:grab'.  Return (X Y W H GRAVITY ADJUST FLAGS): a
+negative W or H is 0, GRAVITY is 1 to 8, ADJUST the bits of the names
+and FLAGS 1 for a grab.  Signal an `error' for an invalid VALUE.
+Called by the shell (nhwlfns.c) whenever it reads the parameter."
+  (let ((tail value) (xywh nil))
+    (dotimes (_ 4)
+      (unless (and (consp tail) (integerp (car tail))
+                   (<= -1073741823 (car tail) 1073741823))
+        (signal 'error (list "Invalid `nhwl-popup' parameter" value)))
+      (push (car tail) xywh)
+      (setq tail (cdr tail)))
+    (setq xywh (nreverse xywh))
+    (let* ((gravity (plist-get tail :gravity))
+           (rest (and gravity (symbolp gravity)
+                      (member (symbol-name gravity) nhwl-win--popup-gravities)))
+           (adjust (if (plist-member tail :adjust) 0 15)))
+      (unless (or rest (null gravity))
+        (signal 'error (list "Invalid `nhwl-popup' parameter" value)))
+      (let ((adj (plist-get tail :adjust)))
+        (while (consp adj)
+          (let ((bit (and (symbolp (car adj))
+                          (cdr (assoc (symbol-name (car adj))
+                                      nhwl-win--popup-adjusts)))))
+            (unless bit
+              (signal 'error (list "Invalid `nhwl-popup' parameter" value)))
+            (setq adjust (logior adjust bit)
+                  adj (cdr adj)))))
+      (list (nth 0 xywh) (nth 1 xywh) (max (nth 2 xywh) 0) (max (nth 3 xywh) 0)
+            (if rest (- 9 (length rest)) 8)
+            adjust
+            (if (plist-get tail :grab) 1 0)))))
+
 (advice-add 'mouse-drag-frame-move :around #'nhwl-win--drag-move)
 (advice-add 'mouse-drag-frame-resize :around #'nhwl-win--drag-resize)
 
