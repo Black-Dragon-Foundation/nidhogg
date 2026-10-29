@@ -21,7 +21,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
    glue (nidhogg/glue/include/nhglue.h).  The shell owns the Wayland
    connection and the reader thread; nothing here calls Wayland.  The frame's
    pixel unit is the device pixel: logical sizes appear only at the protocol.
-   Adapted from pgtkterm.h, without GDK.  */
+   Adapted from pgtkterm.h, without GDK.  Upstream commit:
+   a360712c9d272d950d8d8255ef74570f7e90b7d9 (GNU Emacs emacs-31.1), for every
+   "Adapted from" note in this file.  */
 
 #ifndef _NHWLTERM_H_
 #define _NHWLTERM_H_
@@ -57,8 +59,8 @@ struct nhwl_bitmap_record
 #define GREEN_FROM_ULONG(color) (((color) >> 8) & 0xff)
 #define BLUE_FROM_ULONG(color)	((color) & 0xff)
 
-/* Scroll bars are not drawn by W0 (the parameter is ignored); the type is
-   here because shared code names it.  */
+/* Scroll bars are not drawn (the parameter is ignored); the type is here
+   because shared code names it.  */
 struct scroll_bar
 {
   union vectorlike_header header;
@@ -215,6 +217,37 @@ struct nhwl_csd
   int strip, l, t, r, b;
 };
 
+/* What a frame's C output record holds.  Decisions are the glue's (nidhogg/glue); C keeps what Emacs's shared code
+   reads through macros, and the Emacs objects Rust never sees.  `glue/check.sh --c-fields BUILD_DIR' compares the
+   lists below with the struct's members, one `@fields' or `@extra' tag per line.
+
+   Fields the shared code expects on every window system:
+   @fields frame next_output window parent_desc display_info
+   @fields foreground_color background_color border_pixel mouse_color cursor_color cursor_foreground_color cursor_xgcv
+   @fields font fontset baseline_offset icon_bitmap
+   @fields current_cursor text_cursor nontext_cursor modeline_cursor hand_cursor hourglass_cursor
+   @fields horizontal_drag_cursor vertical_drag_cursor left_edge_cursor top_left_corner_cursor top_edge_cursor
+   @fields top_right_corner_cursor right_edge_cursor bottom_right_corner_cursor bottom_edge_cursor
+   @fields bottom_left_corner_cursor current_pointer
+   @fields black_relief white_relief relief_background relief_background_valid_p
+   @fields menubar_height toolbar_top_height toolbar_bottom_height toolbar_left_width toolbar_right_width
+   @fields vertical_scroll_bar_extra
+   @fields cr_surface cr_context cr_gen
+   @fields has_been_visible focus_state
+
+   Kept beyond that list, each with its reason (moving it needs a new glue call, so it stays until one is wanted):
+   @extra scale120: read at every glyph by the drawing, which needs the scale without a glue call
+   @extra logical_w logical_h states: the last configure's size and state bits, passed back when C applies a resize
+   @extra configured: frame creation waits on it and the reconnect resets it; C's view of the glue's configure
+   @extra cr_width cr_height: the backing's device size, checked on every draw before the context is reused
+   @extra csd: C's copy of the glue's title-bar layout, read at every glyph by code shared with pgtk
+   @extra chrome: pushed to the glue again when a child frame's window is made anew
+   @extra popup_frame: given at creation from the `nhwl-popup' parameter, read before the glue knows the frame
+   @extra focus_window: the shell window Emacs focused in a tree; Emacs's focus routing reads it
+   @extra alpha_cut alpha_host: the applied alpha and whether the shell multiplies it, put in every publish
+   @extra glitnir_id: the frame's key in the glue, passed with every damage call
+   @extra t_key_ns key_redisplay: the key's time and Emacs's redisplay_counter, for the frame-time record
+   @extra bell_timer: the visible bell's atimer, an Emacs object that Rust cannot hold  */
 struct nhwl_output
 {
   struct frame *frame;
@@ -222,7 +255,6 @@ struct nhwl_output
 
   unsigned long foreground_color;
   unsigned long background_color;
-  void *toolbar;
 
   /* The shell's window id (0: none yet) and what the shell last told us
      about it.  */
@@ -250,7 +282,7 @@ struct nhwl_output
   bool popup_frame;
   /* On a top-level (a tree's root): the shell window of the frame of its
      tree that Emacs focused (0: the root itself).  The root's keys and
-     input-method events go to that frame (W1-7).  */
+     input-method events go to that frame.  */
   uint64_t focus_window;
 
   /* The `alpha' applied, as what it takes off opaque: UINT32_MAX minus the
@@ -394,16 +426,11 @@ enum
   (! (FRAME_HAS_VERTICAL_SCROLL_BARS_ON_LEFT (f)) ? 0	\
    : FRAME_SCROLL_BAR_COLS (f))
 
-/* The shell's window (a 64-bit id) of frame F, and its display's glue.  */
-#define FRAME_NHWL_WINDOW(f) (FRAME_NHWL_OUTPUT (f)->window)
+/* The frame's display's glue.  */
 #define FRAME_NHG(f) (FRAME_DISPLAY_INFO (f)->glue)
-
-/* Nidhogg's own parameters that map to nothing outside the shell: the
-   modifier names for the shell's modifier bits.  */
 
 /* nhwlterm.c */
 extern struct nhwl_display_info *nhwl_term_init (Lisp_Object);
-extern void nhwl_term_shutdown (int);
 extern void nhwl_delete_terminal (struct terminal *);
 extern void nhwl_free_frame_resources (struct frame *);
 extern void nhwl_destroy_window (struct frame *);
@@ -429,7 +456,6 @@ extern void nhwl_set_scroll_bar_default_width (struct frame *);
 extern void nhwl_set_scroll_bar_default_height (struct frame *);
 extern void nhwl_default_font_parameter (struct frame *, Lisp_Object);
 extern double nhwl_frame_scale_factor (struct frame *);
-extern const char *nhwl_get_defaults_value (const char *);
 extern const char *nhwl_get_string_resource (XrmDatabase, const char *,
 					     const char *);
 extern void nhwl_create_frame_window (struct frame *);
@@ -447,8 +473,6 @@ extern int nhwl_drag_run (struct nhwl_display_info *, double,
 			  struct frame **);
 
 /* The backing (nhwlterm.c; nhwldraw.c draws on it).  */
-extern void nhwl_cr_update_surface_desired_size (struct frame *, int, int,
-						 bool);
 extern cairo_t *nhwl_begin_cr_clip (struct frame *);
 extern void nhwl_end_cr_clip (struct frame *);
 extern void nhwl_set_cr_source_with_gc_foreground (struct frame *, Emacs_GC *,
@@ -555,7 +579,6 @@ extern void nhwl_focus_lost (struct frame *);
 /* nhwlfns.c */
 extern void syms_of_nhwlterm (void);
 extern void syms_of_nhwlfns (void);
-extern void syms_of_nhwlselect (void);
 extern void syms_of_nhwlcsd (void);
 extern void nhwl_selection_clear_event (uint32_t, struct input_event *);
 extern void nhwl_handle_selection_clear (struct input_event *);

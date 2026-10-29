@@ -3,6 +3,11 @@
    v31.1-nidhogg.2 (each function keeps its pgtk name with the prefix
    changed), minus the GTK widget, the GSettings and the X paths.  Damage goes
    to Glitnir; nhwlterm.c composes and presents it.
+
+   Upstream commit: a360712c9d272d950d8d8255ef74570f7e90b7d9 (GNU Emacs
+   emacs-31.1), the source of every "Adapted from" note in this file.  The
+   glitnir_pgtk_* functions it names are Nidhogg's own, in pgtkterm.c.
+
    Copyright (C) 1989, 1993, 2005, 2008-2026 Free Software Foundation,
    Inc.
 
@@ -1854,7 +1859,7 @@ nhwl_draw_window_cursor (struct window *w, struct glyph_row *glyph_row, int x,
 	      emacs_abort ();
 	    }
 	}
-      /* The input method's cursor rectangle is W1's.  */
+      /* The input method's cursor rectangle is set elsewhere.  */
     }
 
   nhwl_damage_cursor (w, glyph_row, on_p);
@@ -2025,7 +2030,7 @@ nhwl_clip_to_row (struct window *w, struct glyph_row *row,
 
 /* The device-grid mask of a fringe bitmap pattern at one scale, kept on the
    pattern (cairo_pattern_set_user_data), so that destroying the pattern
-   frees it.  From P1.5 Task 26 (glitnir-pgtk.c, gl15-i2f3).  */
+   frees it.  From Nidhogg's own glitnir-pgtk.c.  */
 struct fringe_mask
 {
   uint32_t scale120;
@@ -2092,7 +2097,7 @@ fringe_mask_get (cairo_pattern_t *pattern, uint32_t scale120)
 
 /* Draw bitmap P (after its background) at the frame's scale s, centred
    where the stock code would draw it at 1 to 1: a device-pixel frame's
-   bitmap is s times as many pixels, on the device grid (P1.5 Task 26).
+   bitmap is s times as many pixels, on the device grid.
    Only while it fits its fringe (a fringe as wide as the bitmap keeps it
    1 to 1, as X11 does at a high DPI); false then, and the stock code
    draws.  CR is clipped to the row.  */

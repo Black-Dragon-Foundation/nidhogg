@@ -191,10 +191,6 @@ int32_t nhg_damage (NhgDisplay *d, uint64_t frame, const NhgRect *r, size_t n);
 /* Damage the whole frame, its border included.  Neither.  */
 int32_t nhg_damage_all (NhgDisplay *d, uint64_t frame);
 
-/* Emacs window W_SEQ's rows RUN (native-area origin: its columns, the run's first row and height) move to TO_Y in
-   the backing, and Glitnir damages the moved area and the rows it left stale.  Writes pixels.  */
-int32_t nhg_scroll (NhgDisplay *d, uint64_t frame, uint64_t w_seq, NhgRect run, int32_t to_y);
-
 /* The frame's backing in OUT, borrowed until the next call on the frame.  NHG_E_STATE without one.  Reads pixels.  */
 int32_t nhg_snapshot (NhgDisplay *d, uint64_t frame, NhgBacking *out);
 
@@ -307,7 +303,7 @@ int32_t nhg_frame_csd (NhgDisplay *d, uint64_t window, int32_t on);
 #define NHG_IN_COALESCE_WHEEL  2   /* mwheel-coalesce-scroll-events */
 typedef struct { uint32_t flags; } NhgNextIn;
 
-/* Kinds 1-31 are the port's, 32-63 W2's and W3's.  */
+/* Kinds 1-31 are the original set, 32-63 the later ones.  */
 #define NHG_ACT_KEY              1
 #define NHG_ACT_CLICK            2
 #define NHG_ACT_WHEEL            3
@@ -750,7 +746,9 @@ typedef struct
   NhgRect rect;
 } NhgLayerWindow;
 
-/* nhg_scroll for window W_SEQ at RECT (as NhgLayerWindow's): a full-window scroll on an opaque root makes the window
+/* Emacs window W_SEQ's rows RUN (native-area origin: its columns, the run's first row and height) move to TO_Y in
+   the backing, and Glitnir damages the moved area and the rows it left stale.  RECT is the window (as
+   NhgLayerWindow's): a full-window scroll on an opaque root makes the window
    its own output first; a changed RECT or a frame no longer eligible makes it part of the frame again.  1 when the
    window is its own output now, else 0.  */
 int32_t nhg_scroll_window (NhgDisplay *d, uint64_t window, uint64_t frame, uint64_t w_seq, NhgRect rect, NhgRect run,
