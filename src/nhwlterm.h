@@ -93,6 +93,8 @@ struct nhwl_display_info
   /* Set when the display's first top-level frame has been given its
      session name (and Lisp has opened the session).  */
   bool session_first_done;
+  /* The session was opened with a saved id: its windows are restored.  */
+  bool session_saved;
 
   /* This is a cons cell of the form (NAME . FONT-LIST-CACHE).  */
   Lisp_Object name_list_element;

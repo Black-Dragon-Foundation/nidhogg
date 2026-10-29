@@ -1118,6 +1118,8 @@ nhwl_create_frame_window (struct frame *f)
 	{
 	  encoded_name = ENCODE_UTF_8 (name);
 	  desc.session_name = SSDATA (encoded_name);
+	  if (dpyinfo->session_saved)
+	    desc.flags |= NHG_WIN_RESTORE;
 	}
     }
 
