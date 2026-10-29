@@ -239,12 +239,26 @@ inch) nil when the face has no absolute height."
           ;; :height is in 1/10 pt; a point is 4/3 logical pixels.
           (and (integerp height) (> height 0) (/ (* height 4) 30.0)))))
 
+(defconst nhwl-settings--button-kinds
+  '(("close" . 1) ("maximize" . 2) ("minimize" . 3) ("appmenu" . 4))
+  "The title-bar buttons' names and the numbers (NHG_CSD_*) the shell takes.")
+
+(defun nhwl-settings--button-kinds (names)
+  "The numbers of the title-bar button symbols in NAMES, others left out."
+  (let (kinds)
+    (dolist (name names)
+      (let ((kind (and (symbolp name)
+                       (cdr (assoc (symbol-name name) nhwl-settings--button-kinds)))))
+        (when kind (push kind kinds))))
+    (nreverse kinds)))
+
 (defun nhwl-settings-apply-title-bar ()
   "Give the shell's title bars the desktop's layout and the faces' colours and font."
   (when (fboundp 'nhwl--set-title-bar-style)
     (let ((layout (nhwl-settings-button-layout)))
       (nhwl--set-title-bar-style
-       (car layout) (cdr layout)
+       (nhwl-settings--button-kinds (car layout))
+       (nhwl-settings--button-kinds (cdr layout))
        (nhwl-settings--face-colour 'nidhogg-title-bar :foreground)
        (nhwl-settings--face-colour 'nidhogg-title-bar :background)
        (nhwl-settings--face-colour 'nidhogg-title-bar-inactive :foreground)
