@@ -131,6 +131,23 @@ mod backing {
         assert_eq!(committed(key), []);
         b.published(key);
 
+        // damage C gives Glitnir itself (the title strip) is not the drawing's: it stays
+        let strip = glitnir::geom::Rect::new(0, 5, 8, 1);
+        // SAFETY: `strip` is one readable rectangle for the call.
+        unsafe { glitnir::ffi::glitnir_damage_add_n(key, &strip, 1) };
+        b.damage(key, &[cursor]).unwrap();
+        b.drop_unchanged(key);
+        assert_eq!(
+            committed(key),
+            [NhgRect {
+                x: 0,
+                y: 5,
+                w: 8,
+                h: 1
+            }]
+        );
+        b.published(key);
+
         // a blink: one pixel differs
         put(&v, 2, 3, 0xffff_ffff);
         let other = NhgRect {
