@@ -38,11 +38,6 @@ static const char *const nhwl_text_mimes[] = {
 };
 #define N_TEXT_MIMES ARRAYELTS (nhwl_text_mimes)
 
-/* The XdndSelection value Lisp set (`gui-set-selection'), which
-   x-begin-drag converts when a drag starts; no other client sees it
-   before.  The drag's bytes stay in the shell until the next drag.  */
-static Lisp_Object nhwl_xdnd_value;
-
 /* The shell's selection kind for SEL, or -1 when there is none.  NIL
    means PRIMARY, as in pgtk.  */
 static int
@@ -93,7 +88,7 @@ is kept for `x-begin-drag', which converts it.  */)
   (Lisp_Object selection, Lisp_Object value, Lisp_Object frame)
 {
   if (EQ (selection, Qnhwl_dnd_selection))
-    return nhwl_xdnd_value = value;
+    return Vnhwl_xdnd_value = value;
   int kind = nhwl_selection_kind (selection);
   if (kind < 0 || !x_display_list || !STRINGP (value))
     return Qnil;
@@ -124,8 +119,8 @@ DEFUN ("pgtk-disown-selection-internal", Fpgtk_disown_selection_internal,
 {
   if (EQ (selection, Qnhwl_dnd_selection))
     {
-      Lisp_Object owned = NILP (nhwl_xdnd_value) ? Qnil : Qt;
-      nhwl_xdnd_value = Qnil;
+      Lisp_Object owned = NILP (Vnhwl_xdnd_value) ? Qnil : Qt;
+      Vnhwl_xdnd_value = Qnil;
       return owned;
     }
   int kind = nhwl_selection_kind (selection);
@@ -145,7 +140,7 @@ DEFUN ("pgtk-selection-owner-p", Fpgtk_selection_owner_p,
   (Lisp_Object selection, Lisp_Object terminal)
 {
   if (EQ (selection, Qnhwl_dnd_selection))
-    return NILP (nhwl_xdnd_value) ? Qnil : Qt;
+    return NILP (Vnhwl_xdnd_value) ? Qnil : Qt;
   int kind = nhwl_selection_kind (selection);
   if (kind < 0 || !x_display_list)
     return Qnil;
@@ -390,146 +385,6 @@ nil to accept nothing.  TIMESTAMP is the same as in `pgtk-drop-finish'.  */)
    the drag starts; the glue (dnd.rs) runs the drag, and nhwl_drag_run
    (nhwlterm.c) waits for its end.  */
 
-/* x-begin-drag's ACTION as the actions offered (NHG_DND_*) and the one
-   our own frames prefer.  Wayland has no link or private action: they
-   are copies.  A move also offers copy, so a target that only copies
-   still takes the drop (the result says which it did).  A list asks.  */
-static void
-nhwl_drag_actions (Lisp_Object action, uint32_t *offered,
-		   uint32_t *preferred)
-{
-  *offered = *preferred = NHG_DND_COPY;
-  if (EQ (action, Qnhwl_xdnd_move))
-    {
-      *offered = NHG_DND_MOVE | NHG_DND_COPY;
-      *preferred = NHG_DND_MOVE;
-    }
-  else if (EQ (action, Qnhwl_xdnd_ask))
-    {
-      *offered = NHG_DND_ASK | NHG_DND_COPY | NHG_DND_MOVE;
-      *preferred = NHG_DND_ASK;
-    }
-  else if (CONSP (action))
-    {
-      Lisp_Object tail = action;
-
-      *offered = *preferred = NHG_DND_ASK;
-      FOR_EACH_TAIL (tail)
-	{
-	  Lisp_Object item = XCAR (tail);
-
-	  CHECK_CONS (item);
-	  CHECK_SYMBOL (XCAR (item));
-	  CHECK_STRING (XCDR (item));
-	  *offered |= (EQ (XCAR (item), Qnhwl_xdnd_move) ? NHG_DND_MOVE
-		       : NHG_DND_COPY);
-	}
-      CHECK_LIST_END (tail, action);
-    }
-  /* Any other symbol is one of X's own protocols' (such as XDS),
-     which Wayland does not have: a copy.  */
-  else if (!SYMBOLP (action))
-    signal_error ("Invalid drag-and-drop action", action);
-}
-
-/* x-begin-drag's result for the action the target performed (NHG_DND_*;
-   0: none).  */
-static Lisp_Object
-nhwl_drag_result (int action)
-{
-  switch (action)
-    {
-    case NHG_DND_COPY:
-      return Qnhwl_xdnd_copy;
-    case NHG_DND_MOVE:
-      return Qnhwl_xdnd_move;
-    case NHG_DND_ASK:
-      return Qnhwl_xdnd_private;
-    default:
-      return Qnil;
-    }
-}
-
-static Lisp_Object
-nhwl_drag_convert_failed (Lisp_Object err, ptrdiff_t nargs,
-			  Lisp_Object *args)
-{
-  return Qnil;
-}
-
-/* The XdndSelection value VALUE converted for TARGET (a symbol) as X
-   converts a selection it owns, through `selection-converter-alist': a
-   unibyte string, or nil when no converter makes a string (or it
-   signals).  A string VALUE's text property named TARGET stands for it.  */
-static Lisp_Object
-nhwl_drag_convert (Lisp_Object value, Lisp_Object target)
-{
-  Lisp_Object alist = (NILP (Fboundp (Qnhwl_selection_converter_alist))
-		       ? Qnil
-		       : Fsymbol_value (Qnhwl_selection_converter_alist));
-  Lisp_Object handler = CDR_SAFE (Fassq (target, alist));
-
-  /* (AVAILABLE-P . CONVERTER): X's local conversion skips the test.  */
-  if (CONSP (handler))
-    handler = XCDR (handler);
-  if (NILP (handler))
-    return Qnil;
-  if (STRINGP (value))
-    {
-      Lisp_Object alt = Fget_text_property (make_fixnum (0), target, value);
-
-      if (!NILP (alt))
-	value = alt;
-    }
-
-  Lisp_Object args[] = { handler, Qnhwl_dnd_selection, target, value };
-  Lisp_Object r = internal_condition_case_n (Ffuncall, ARRAYELTS (args),
-					     args, Qerror,
-					     nhwl_drag_convert_failed);
-  /* (TYPE . DATA) */
-  if (CONSP (r) && SYMBOLP (XCAR (r)))
-    r = XCDR (r);
-  if (!STRINGP (r))
-    return Qnil;
-  if (STRING_MULTIBYTE (r))
-    r = code_convert_string_norecord (r, Qutf_8, true);
-  return r;
-}
-
-/* The bytes VALUE offers for TARGETS (a list of strings), as a list of
-   (MIME . BYTES) in TARGETS' order: every target that converts, plus
-   text/plain;charset=utf-8 when a text target converted and TARGETS
-   lacks it.  */
-static Lisp_Object
-nhwl_drag_items (Lisp_Object value, Lisp_Object targets)
-{
-  Lisp_Object items = Qnil;
-  Lisp_Object utf8 = SYMBOL_NAME (Qtext_plain_utf8);
-  bool text = false;
-
-  for (Lisp_Object tail = targets; CONSP (tail); tail = XCDR (tail))
-    {
-      Lisp_Object mime = XCAR (tail);
-      Lisp_Object target = Fintern (mime, Qnil);
-
-      if (!NILP (Fassoc (mime, items, Qnil)))
-	continue;
-      Lisp_Object bytes = nhwl_drag_convert (value, target);
-      if (NILP (bytes))
-	continue;
-      items = Fcons (Fcons (mime, bytes), items);
-      text |= nhwl_text_target_p (target);
-    }
-  if (text && NILP (Fassoc (utf8, items, Qnil)))
-    {
-      Lisp_Object bytes = nhwl_drag_convert (value, Qtext_plain_utf8);
-
-      if (!NILP (bytes))
-	items = Fcons (Fcons (utf8, bytes), items);
-    }
-  return Fnreverse (items);
-}
-
 /* `nhwl-dnd-finish-timeout' in seconds, from 0 to 60.  */
 static double
 nhwl_dnd_finish_secs (void)
@@ -539,72 +394,20 @@ nhwl_dnd_finish_secs (void)
   return secs < 0 ? 0 : secs > 60 ? 60 : secs;
 }
 
-DEFUN ("x-begin-drag", Fx_begin_drag, Sx_begin_drag, 1, 6, 0,
-       doc: /* Begin dragging contents on FRAME, with targets TARGETS.
-TARGETS is a list of strings, which defines the selection targets that
-will be available to the drop target.  Block until the mouse buttons
-are released, then return the action chosen by the target, or `nil' if
-the drop was not accepted by the drop target.  Dragging starts when the
-mouse is pressed on FRAME, and the contents of the selection
-`XdndSelection' will be sent to the client underneath the mouse
-pointer (the drop target) when the mouse button is released.  Each
-target is converted when the drag starts, through
-`selection-converter-alist'; the ones that convert are offered, and
-text is also offered as text/plain;charset=utf-8.
-
-ACTION is a symbol which tells the target what it should do, and can
-be one of the following:
-
- - `XdndActionCopy', which means to copy the contents from the drag
-   source (FRAME) to the drop target.
-
- - `XdndActionMove', which means to first take the contents of
-   `XdndSelection', and to delete whatever was saved into that
-   selection afterwards.  A target that only copies may still copy.
-
-`XdndActionPrivate' is also a valid return value, and means that the
-drop target chose to perform an unspecified or unknown action (on
-Wayland, the target asked the user and did not say what it did).
-
-The source is also expected to cooperate with the target to perform
-the action chosen by the target.  For example, callers should delete
-the buffer text that was dragged if `XdndActionMove' is returned.
-
-`XdndActionLink' and other actions are copies here: Wayland has only
-copy, move and ask.
-
-If RETURN-FRAME is non-nil, this function will return the frame if the
-mouse pointer moves onto an Emacs frame, after first moving out of
-FRAME.  If RETURN-FRAME is the symbol `now', any frame underneath the
-mouse pointer will be returned immediately.  The drag is given up
-then.
-
-If ACTION is a list and not nil, its elements are assumed to be a cons
-of (ITEM . STRING), where ITEM is the name of an action, and STRING is
-a string describing ITEM to the user.  The drop target is expected to
-prompt the user to choose between any of the actions in the list.
-
-If ACTION is not specified or nil, `XdndActionCopy' is used
-instead.
-
-If ALLOW-CURRENT-FRAME is nil, a drop on FRAME itself is refused.
-Otherwise it is taken: a drop on one of our own frames is handled by
-`pgtk-dnd.el' after this function returns.
-
-FOLLOW-TOOLTIP is ignored.
-
-When the target was dropped on but does not finish within
-`nhwl-dnd-finish-timeout' seconds, the drag is given up and nil is
-returned, so a move never deletes text the target may not have taken.
-C-g gives the drag up and quits.
-
-This function returns nil immediately if no mouse button is held
-down.  It should only be called when it is known that mouse buttons
-are being held down, such as immediately after a `down-mouse-1' (or
-similar) event.  */)
-  (Lisp_Object targets, Lisp_Object action, Lisp_Object frame,
-   Lisp_Object return_frame, Lisp_Object allow_current_frame,
-   Lisp_Object follow_tooltip)
+DEFUN ("nhwl--drag-start", Fnhwl__drag_start, Snhwl__drag_start, 6, 6, 0,
+       doc: /* Drag the items ITEMS-FN returns out of FRAME; internal.
+Called by `x-begin-drag' (lisp/term/nhwl-dnd.el).  ITEMS-FN is called
+with no arguments once the drag may start (FRAME is shown, the glue is
+up and Lisp owns `XdndSelection') and returns a list of (MIME . BYTES),
+BYTES unibyte.  OFFERED is the bit set of the actions offered and
+PREFERRED the one our own frames prefer (1 copy, 2 move, 4 ask).
+ALLOW-CURRENT-FRAME is as for `x-begin-drag', and RETURN-FRAME is nil, t
+or `now'.  Block until the drag ends.  Return nil when it did not start,
+a frame when the call is to return it, else the action performed (the
+bit, 0: none).  */)
+  (Lisp_Object frame, Lisp_Object items_fn, Lisp_Object offered_arg,
+   Lisp_Object preferred_arg, Lisp_Object allow_current_frame,
+   Lisp_Object return_frame)
 {
   struct frame *f = decode_window_system_frame (frame);
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
@@ -615,12 +418,10 @@ similar) event.  */)
   int rc, done;
   USE_SAFE_ALLOCA;
 
-  CHECK_LIST (targets);
-  tail = targets;
-  FOR_EACH_TAIL (tail)
-    CHECK_STRING (XCAR (tail));
-  CHECK_LIST_END (tail, targets);
-  nhwl_drag_actions (action, &offered, &preferred);
+  CHECK_FIXNAT (offered_arg);
+  CHECK_FIXNAT (preferred_arg);
+  offered = XFIXNAT (offered_arg);
+  preferred = XFIXNAT (preferred_arg);
   if (!NILP (allow_current_frame))
     flags |= NHG_DRAG_ALLOW_CURRENT;
   if (EQ (return_frame, Qnhwl_now))
@@ -628,9 +429,10 @@ similar) event.  */)
   else if (!NILP (return_frame))
     flags |= NHG_DRAG_RETURN_FRAME;
 
-  if (!out || !out->window || !FRAME_NHG (f) || NILP (nhwl_xdnd_value))
+  if (!out || !out->window || !FRAME_NHG (f) || NILP (Vnhwl_xdnd_value))
     return Qnil;
-  items = nhwl_drag_items (nhwl_xdnd_value, targets);
+  items = calln (items_fn);
+  CHECK_LIST (items);
   n = list_length (items);
   if (n == 0)
     return Qnil;
@@ -643,6 +445,9 @@ similar) event.  */)
   SAFE_NALLOCA (lens, 1, n);
   for (tail = items; CONSP (tail); tail = XCDR (tail), i++)
     {
+      CHECK_CONS (XCAR (tail));
+      CHECK_STRING (XCAR (XCAR (tail)));
+      CHECK_STRING (XCDR (XCAR (tail)));
       mimes[i] = SSDATA (XCAR (XCAR (tail)));
       data[i] = SDATA (XCDR (XCAR (tail)));
       lens[i] = SBYTES (XCDR (XCAR (tail)));
@@ -666,7 +471,7 @@ similar) event.  */)
       XSETFRAME (value, to);
       return value;
     }
-  return nhwl_drag_result (done);
+  return make_fixnum (done);
 }
 
 void
@@ -694,21 +499,20 @@ syms_of_nhwlselect (void)
 Each is called with the selection (a symbol) as its argument.  */);
   Vpgtk_lost_selection_functions = Qnil;
 
-  DEFSYM (Qnhwl_xdnd_copy, "XdndActionCopy");
-  DEFSYM (Qnhwl_xdnd_move, "XdndActionMove");
-  DEFSYM (Qnhwl_xdnd_ask, "XdndActionAsk");
-  DEFSYM (Qnhwl_xdnd_private, "XdndActionPrivate");
   DEFSYM (Qnhwl_now, "now");
-  DEFSYM (Qnhwl_selection_converter_alist, "selection-converter-alist");
-  nhwl_xdnd_value = Qnil;
-  staticpro (&nhwl_xdnd_value);
+  DEFVAR_LISP ("nhwl--xdnd-value", Vnhwl_xdnd_value,
+    doc: /* The XdndSelection value Lisp set (`gui-set-selection'), or nil.
+`x-begin-drag' converts it when a drag starts; no other client sees it
+before.  The drag's bytes stay in the shell until the next drag.
+Internal.  */);
+  Vnhwl_xdnd_value = Qnil;
   DEFVAR_LISP ("nhwl-dnd-finish-timeout", Vnhwl_dnd_finish_timeout,
     doc: /* Seconds `x-begin-drag' waits for a target to finish a drop.
 After this long without a word from the drag, or after the drop without
 the target's finish, the drag is given up and `x-begin-drag' returns
 nil.  At most 60.  */);
   Vnhwl_dnd_finish_timeout = make_float (5.0);
-  defsubr (&Sx_begin_drag);
+  defsubr (&Snhwl__drag_start);
 
   defsubr (&Spgtk_own_selection_internal);
   defsubr (&Spgtk_disown_selection_internal);
