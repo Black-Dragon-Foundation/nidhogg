@@ -1851,6 +1851,93 @@ connection."
     (nhwl-gui--live-settle 0.5)
     (should (frame-live-p f))))
 
+;; The file chooser portal and activation tokens for xdg-open (lisp/term/nhwl-portal.el).  Rows that need the
+;; portal run with gui.sh --portal fake (its script and log files are in the environment); the minibuffer row runs
+;; with --portal none.
+
+(defun nhwl-gui--fake-portal-p ()
+  "Non-nil on the recorder when the run has the fake portal."
+  (and (nhwl-gui--recorder-p) (getenv "NHWL_FAKE_PORTAL_SCRIPT") t))
+
+(defun nhwl-gui--portal-calls ()
+  "The fake portal's logged calls (not the closes), oldest first."
+  (seq-filter (lambda (e) (plist-get e :method)) (gui-runner-portal-log)))
+
+(ert-deftest nhwl-gui/file-dialog-uses-the-portal ()
+  "`x-file-dialog' calls the portal parented by the toplevel's export handle, and returns the scripted file."
+  (skip-unless (and (nhwl-gui--fake-portal-p) (nhwl-gui--has-global-p :zxdg_exporter_v2)))
+  (gui-runner-portal-script '((:response 0 :uris ("file:///tmp/nhwl-chosen%20file"))))
+  (let ((before (length (nhwl-gui--portal-calls))))
+    (should (equal (x-file-dialog "Open a file" "/tmp/" nil t) "/tmp/nhwl-chosen file"))
+    (let* ((calls (nhwl-gui--portal-calls))
+           (call (car (last calls)))
+           (exports (plist-get (gui-runner-recorder '(:cmd "exports")) :exports)))
+      (should (= (length calls) (1+ before)))
+      (should (equal (plist-get call :method) "OpenFile"))
+      (should (equal (plist-get call :title) "Open a file"))
+      (should (equal (plist-get call :parent_window)
+                     (concat "wayland:" (plist-get (seq-first exports) :handle))))
+      (should (cdr (assoc "modal" (plist-get call :options)))))))
+
+(ert-deftest nhwl-gui/file-dialog-cancel-quits ()
+  "A cancelled portal dialog (response 1) quits."
+  (skip-unless (nhwl-gui--fake-portal-p))
+  (gui-runner-portal-script '((:response 1)))
+  (should (eq (condition-case nil (progn (x-file-dialog "Save as" "/tmp/" "/tmp/a.txt") 'returned)
+                (quit 'quit))
+              'quit))
+  (should (equal (plist-get (car (last (nhwl-gui--portal-calls))) :method) "SaveFile")))
+
+(ert-deftest nhwl-gui/file-dialog-c-g-closes-the-request ()
+  "C-g while the dialog waits sends Close to its request and quits."
+  (skip-unless (nhwl-gui--fake-portal-p))
+  (gui-runner-portal-script '((:never t)))
+  (nhwl-gui--point 100 100)
+  (let ((later (nhwl-gui--recorder-later
+                '((0.8 :cmd "key" :keycode 29 :state "press")
+                  (0 :cmd "key" :text "g")
+                  (0 :cmd "key" :keycode 29 :state "release")))))
+    (unwind-protect
+        (progn
+          (should (eq (condition-case nil (progn (x-file-dialog "Open" "/tmp/" nil t) 'returned)
+                        (quit 'quit))
+                      'quit))
+          (should (nhwl-gui--wait (lambda () (seq-find (lambda (e) (plist-get e :close)) (gui-runner-portal-log)))
+                                  3))
+          (should (nhwl-gui--connected-p)))
+      (nhwl-gui--drag-cleanup later))))
+
+(ert-deftest nhwl-gui/file-dialog-without-portal-uses-the-minibuffer ()
+  "Without the file chooser interface `x-file-dialog' asks in the minibuffer."
+  :tags '(gnome-smoke)
+  (skip-unless (and (nhwl-gui--live-p) (not (getenv "NHWL_FAKE_PORTAL_SCRIPT"))))
+  (let ((unread-command-events (append "/tmp/nhwl-typed" '(return))))
+    (should (equal (x-file-dialog "Open: " "/tmp/" nil t) "/tmp/nhwl-typed"))))
+
+(ert-deftest nhwl-gui/browse-url-passes-an-activation-token ()
+  "`browse-url-xdg-open' runs xdg-open with an XDG_ACTIVATION_TOKEN the compositor issued."
+  (skip-unless (nhwl-gui--recorder-p))
+  (require 'browse-url)
+  (let* ((dir (make-temp-file "nhwl-xdg" t))
+         (out (expand-file-name "env" dir))
+         (script (expand-file-name "xdg-open" dir))
+         (exec-path (cons dir exec-path)))
+    (unwind-protect
+        (progn
+          (with-temp-file script (insert "#!/bin/sh\nenv > '" out "'\n"))
+          (set-file-modes script #o755)
+          (nhwl-gui--press-serial)
+          (browse-url-xdg-open "https://example.org/")
+          (should (nhwl-gui--wait (lambda () (and (file-exists-p out) (> (file-attribute-size (file-attributes out)) 0)))
+                                  5))
+          (let ((token (with-temp-buffer
+                         (insert-file-contents out)
+                         (and (re-search-forward "^XDG_ACTIVATION_TOKEN=\\(.+\\)$" nil t) (match-string 1)))))
+            (should (stringp token))
+            (should (seq-find (lambda (a) (equal (plist-get a :token) token))
+                              (plist-get (gui-runner-recorder '(:cmd "activation_log")) :activations)))))
+      (delete-directory dir t))))
+
 (provide 'nhwl-gui-w2-tests)
 
 ;;; nhwl-gui-w2-tests.el ends here
