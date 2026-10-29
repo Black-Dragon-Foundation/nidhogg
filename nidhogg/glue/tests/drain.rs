@@ -230,8 +230,9 @@ mod configure {
         configured(d, id);
         // SAFETY: a live display.
         assert_eq!(unsafe { nhg_frame_csd(d, id, 1) }, NHG_OK);
-        // activated under CSD, same size: content, recorded at the next step
-        configure(&rec, [200, 100], r#""activated""#);
+        // deactivated under CSD (the recorder's first configure activates), same size: content, recorded at the next
+        // step
+        configure(&rec, [200, 100], "");
         until(d, |a| a.kind == NHG_ACT_RESIZE && a.window == id);
         step(d, 0);
         assert_eq!(last_ack(d, id).map(|(_, f)| f), Some(NHSHELL_ACK_CONTENT));
