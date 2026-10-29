@@ -1,6 +1,6 @@
 //! Selections: the clipboard (`wl_data_device`) and the primary selection (`zwp_primary_selection_device_v1`).
 //!
-//! Threads (spec §2.3): the managers, the devices, the offers and our sources are reader-queue objects, so the reader
+//! Threads: the managers, the devices, the offers and our sources are reader-queue objects, so the reader
 //! thread tracks the offers and answers another client's `send` whatever the host's thread is doing.  `Selections`
 //! (`Shared::selections`) is what both threads see.  The host's thread only sends requests (own, disown, `receive`)
 //! and reads its pipe with a timeout; the reader writes our bytes from its poll loop with non-blocking writes

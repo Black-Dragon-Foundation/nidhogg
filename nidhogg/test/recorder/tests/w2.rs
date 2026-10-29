@@ -1,4 +1,4 @@
-//! T0 tests of the W2 recorder additions: drag and drop both ways, popup grabs and their order, touch, pinch.
+//! T0 tests of the recorder's input and drag additions: drag and drop both ways, popup grabs and their order, touch, pinch.
 mod common;
 use common::{send, Env};
 use serde_json::{json, Value};

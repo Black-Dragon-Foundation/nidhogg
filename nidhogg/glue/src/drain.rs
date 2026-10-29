@@ -1,6 +1,6 @@
 //! The event step: `nhg_next` takes exactly one shell event and answers with its actions, which C applies before it
 //! asks for the next one, so every decision C makes while it applies them sees what the earlier ones changed, as the
-//! C drain did (design §4, review B1).  Moved from `nhwl_drain_events` (`src/nhwlterm.c`), whose apply side stays
+//! C drain did.  Moved from `nhwl_drain_events` (`src/nhwlterm.c`), whose apply side stays
 //! C.
 //!
 //! An event that names a window the glue forgot gives no action, except the keyboard's (keys and the input method's),

@@ -1,15 +1,15 @@
 ;;; glitnir-decor-gui-tests.el --- GUI tests for Glitnir decorations (PD)  -*- lexical-binding: t -*-
 
-;; Run by nidhogg/test/gui.sh (gui-runner.el loads every *-gui-tests.el).  From P1.5/PD's pgtk rows (gl15-i2f3),
-;; taken over for the native Wayland shell (W1 Task 16): the rows run only there.  The shell's frame pixels are device
-;; pixels (W0-2), so a frame pixel is one pixel of the grab whatever the monitor scale (`glitnir-decor-gui--scale').
+;; Run by nidhogg/test/gui.sh (gui-runner.el loads every *-gui-tests.el).  From the pgtk rows of the same
+;; decorations, taken over for the native Wayland shell: the rows run only there.  The shell's frame pixels are device
+;; pixels, so a frame pixel is one pixel of the grab whatever the monitor scale (`glitnir-decor-gui--scale').
 ;; No row's assertion is about GDK or GTK, so none is dropped.
 
 (require 'ert)
 (require 'cl-lib)
 
 (defun glitnir-decor-gui--scale ()
-  "Device pixels per frame pixel: 1 on the shell, whose frame pixels are the device's (W0-2)."
+  "Device pixels per frame pixel: 1 on the shell, whose frame pixels are the device's."
   1)
 
 (defun glitnir-decor-gui--grab (box &optional enable)
@@ -130,7 +130,7 @@ window's body edges and POS's position are added to that."
          (at (cdr r)))
     (should (equal (glitnir-decor-gui--px (car r) (car at) (cdr at)) '(255 128 0)))))
 
-;; The neighbour corner repaint (Task 9): a chip's rounded ends stay right when the glyph string beside it is redrawn alone.
+;; The neighbour corner repaint: a chip's rounded ends stay right when the glyph string beside it is redrawn alone.
 
 (defun glitnir-decor-gui--chip (before edit &optional face-props)
   "Draw BEFORE then a rounded chip \" ab \" under `verify'; call EDIT with the start of BEFORE's end (a marker) to redraw
@@ -231,7 +231,7 @@ only the neighbour; return (VIOLATIONS TOP-LEFT-PX TOP-RIGHT-PX FULL-GRAB) with 
               (cl-incf bad))))
         (should (= bad 0))))))
 
-;; Labels (Task 10): a face whose :box has :label floats a pill above the run's first glyph (below it on the window's first row).
+;; Labels: a face whose :box has :label floats a pill above the run's first glyph (below it on the window's first row).
 
 (defconst glitnir-decor-gui--orange '(255 128 0))
 
@@ -368,7 +368,7 @@ buffer empty (a label test's first line is not empty, so the text area's corner 
      (should (glitnir-decor-gui--above-p 10))
      (should-not (glitnir-decor-gui--above-p 7)))))
 
-;;; PD cost and construction spike (R-D1 .. R-D3).  The numbers are written to stderr as "GLITNIR-PD ..." lines.
+;;; PD cost and construction spike (corner cost, violations, tag softness).  The numbers are written to stderr as "GLITNIR-PD ..." lines.
 
 (defun glitnir-decor-gui--board (radius)
   "Fill the current buffer with 300 decorated runs (chips, buttons, card rows) of box RADIUS.
@@ -403,21 +403,21 @@ Return the number of runs."
         (glitnir--decor-bench runs n)))))
 
 (ert-deftest glitnir-decor-gui/decor-bench ()
-  "R-D1 (MP-31): 300 x (p95 radius 6 - p95 radius 0) <= 2 ms, at the run's scale (1, 2 or 1.25)."
+  "Corner cost: 300 x (p95 radius 6 - p95 radius 0) <= 2 ms, at the run's scale (1, 2 or 1.25)."
   (skip-unless (featurep 'nidhogg-wayland))
   ;; A timing row: judged only in a pinned step (the runner sets GLITNIR_GUI_PINNED=1 under perf-exclusive.sh); an
   ;; unpinned GUI sweep's p95 measures the host's noise, not the code.
-  (skip-unless (equal (getenv "GLITNIR_GUI_PINNED") "1")) ; reason: R-D1 is judged pinned only (GLITNIR_GUI_PINNED=1)
+  (skip-unless (equal (getenv "GLITNIR_GUI_PINNED") "1")) ; reason: the corner cost is judged pinned only (GLITNIR_GUI_PINNED=1)
   (let* ((r0 (glitnir-decor-gui--bench 0 200))
          (r6 (glitnir-decor-gui--bench 6 200))
          (delta (* 300 (- (plist-get r6 :p95-us) (plist-get r0 :p95-us)))))
-    (message "GLITNIR-PD R-D1 scale=%s radius0=%S radius6=%S delta-us=%.0f (limit 2000)"
+    (message "GLITNIR-PD corner-cost scale=%s radius0=%S radius6=%S delta-us=%.0f (limit 2000)"
              (or (getenv "GLITNIR_GUI_SCALE") "1") r0 r6 delta)
     (when (> delta 2000)
-      (ert-fail (format "R-D1 over the limit: radius0 %S radius6 %S delta %.0f us (limit 2000)" r0 r6 delta)))))
+      (ert-fail (format "corner cost over the limit: radius0 %S radius6 %S delta %.0f us (limit 2000)" r0 r6 delta)))))
 
 (ert-deftest glitnir-decor-gui/decor-verify-no-violations ()
-  "R-D2: card rows and the corner repaint under `verify' leave 0 violations."
+  "Violations: card rows and the corner repaint under `verify' leave 0 violations."
   (skip-unless (featurep 'nidhogg-wayland))
   (let ((glitnir-enable t) (glitnir-debug 'verify))
     (with-temp-buffer
@@ -432,12 +432,12 @@ Return the number of runs."
           (insert "x") (redisplay t) (delete-char -1) (redisplay t)
           (set-window-start nil (point-min)) (redisplay t))
         (sit-for 0.3)
-        (message "GLITNIR-PD R-D2 scale=%s violations=%s" (or (getenv "GLITNIR_GUI_SCALE") "1")
+        (message "GLITNIR-PD violations scale=%s violations=%s" (or (getenv "GLITNIR_GUI_SCALE") "1")
                  (- (plist-get (glitnir-stats) :violations) before))
         (should (= 0 (- (plist-get (glitnir-stats) :violations) before)))))))
 
 (ert-deftest glitnir-decor-gui/decor-svg-tag-softness-record ()
-  "R-D3 (record only): an svg-lib style tag image at the run's scale; write a crop to look at softness."
+  "Tag softness (record only): an svg-lib style tag image at the run's scale; write a crop to look at softness."
   (skip-unless (featurep 'nidhogg-wayland))
   (skip-unless (image-type-available-p 'svg))
   (let ((glitnir-enable t)
@@ -454,7 +454,7 @@ Return the number of runs."
           (dotimes (i 6)                ; the 6 pixels left of the tag's left edge, at mid height
             (let ((px (glitnir-decor-gui--px grab (- (car o) 1 i) (+ (cdr o) 4))))
               (unless (member px '((32 32 32) (48 48 96))) (cl-incf soft)))))
-        (message "GLITNIR-PD R-D3 scale=%s tag-found=%s edge-intermediate-pixels=%s"
+        (message "GLITNIR-PD tag-softness scale=%s tag-found=%s edge-intermediate-pixels=%s"
                  (or (getenv "GLITNIR_GUI_SCALE") "1") (and o t) soft)
         (should o)))))
 
