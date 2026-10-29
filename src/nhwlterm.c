@@ -1639,19 +1639,17 @@ nhwl_free_frame_resources (struct frame *f)
 
   block_input ();
 
-  /* Its tree's keys go to its parent (while its faces still exist, for
-     the cursor's unhighlight).  */
-  nhwl_child_focus_gone (f, true);
-  free_frame_faces (f);
-
 #define CLEAR_IF_EQ(FIELD)	\
   do { if (f == dpyinfo->FIELD) dpyinfo->FIELD = 0; } while (false)
 
+  /* F is never unhighlighted: delete_frame has already removed its
+     windows.  Its tree's keys go to its parent.  */
+  CLEAR_IF_EQ (highlight_frame);
+  nhwl_child_focus_gone (f, true);
+  free_frame_faces (f);
+
   if (f == dpyinfo->x_focus_frame)
     {
-      /* Clear the highlight first: the faces are gone.  */
-      if (dpyinfo->highlight_frame == f)
-	dpyinfo->highlight_frame = NULL;
       dpyinfo->x_focus_frame = NULL;
       nhwl_frame_rehighlight (dpyinfo);
     }
@@ -3153,7 +3151,7 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
 	char buf[256];
 	size_t len = 0;
 	Lisp_Object state = (a->code == NHG_SESSION_CREATED
-			     ? Qnhwl_session_created
+			     ? Qcreated
 			     : a->code == NHG_SESSION_RESTORED
 			     ? Qnhwl_session_restored : Qnhwl_session_replaced);
 	Lisp_Object id = Qnil;
