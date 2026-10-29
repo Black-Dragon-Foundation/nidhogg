@@ -1462,3 +1462,35 @@ nhg_export! {
         Ok(i32::from(crate::dnd::drag_cancel(state)))
     }
 }
+
+// ---- Giving the display up -----------------------------------------------------------------------------------------
+
+nhg_export! {
+    /// The display is given up (the compositor went and is not waited for): what the glue held for the connection goes
+    /// (`Display::give_up`), before C deletes the display's frames.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_give_up(d: *mut NhgDisplay) -> i32 |state| {
+        state.give_up();
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Why the connection ended: a protocol error's text (`INTERFACE@ID: error CODE: MESSAGE`), up to `cap` - 1 bytes
+    /// and a NUL into `buf`, its full length into `*len` (0: the connection lives, or ended with a plain hangup).
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `buf` is null or holds `cap` writable bytes; `len` is null or writable.
+    fn nhg_last_error(d: *mut NhgDisplay, buf: *mut c_char, cap: usize, len: *mut usize) -> i32 |state| {
+        let text = state.backend().last_error();
+        // SAFETY: `buf` is null or holds `cap` writable bytes.
+        unsafe { put_text(buf, cap, &text) };
+        if !len.is_null() {
+            // SAFETY: non-null and writable (the caller's promise).
+            unsafe { len.write(text.len()) };
+        }
+        Ok(NHG_OK)
+    }
+}

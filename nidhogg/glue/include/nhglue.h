@@ -789,6 +789,16 @@ int32_t nhg_drag_start (NhgDisplay *d, uint64_t window, const char *const *mimes
 /* Give our drag up: its source goes, and no NHG_ACT_DRAG_DONE follows.  1 when it ran, else 0.  */
 int32_t nhg_drag_cancel (NhgDisplay *d);
 
+/* ---- Giving the display up ---------------------------------------------------------------------------------------
+   When the compositor went and nothing waits for it (reconnecting is off, failed or timed out), C calls nhg_give_up
+   before it deletes the display's frames: reconnecting stops, a drag over us ends unfinished, and the touch points and
+   owed acks go.  Each frame's deletion frees its backing; nhg_close frees what is left.  */
+int32_t nhg_give_up (NhgDisplay *d);
+
+/* Why the connection ended: a protocol error's text (INTERFACE@ID: error CODE: MESSAGE), up to CAP - 1 bytes and a
+   NUL into BUF, its full length into *LEN (0: the connection lives, or ended with a plain hangup).  */
+int32_t nhg_last_error (NhgDisplay *d, char *buf, size_t cap, size_t *len);
+
 #ifdef __cplusplus
 }
 #endif

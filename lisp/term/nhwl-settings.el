@@ -78,9 +78,21 @@ Each is called with two arguments: the display's name and the new
 state, one of
   `reconnecting'  the compositor went away and Emacs connects again;
   `reconnected'   it is back and the frames show again;
-  `lost'          the display is gone and its frames are about to be
-                  deleted.
+  `lost'          the display is gone (the compositor did not come
+                  back, or reconnecting is off) and its frames have
+                  been deleted; it runs once per display.
 The functions run from a timer, never while input is read.")
+
+(defvar pgtk-dnd-current-state)
+
+(defun nhwl-settings--display-lost (display state)
+  "Forget what a drag over DISPLAY held once STATE is `lost'.
+The drop in progress, if any, ended with the connection."
+  (when (and (eq state 'lost) (boundp 'pgtk-dnd-current-state))
+    (setq pgtk-dnd-current-state
+          (assoc-delete-all display pgtk-dnd-current-state))))
+
+(add-hook 'nhwl-display-connection-functions #'nhwl-settings--display-lost)
 
 (defface nidhogg-title-bar
   '((t :background "#ebebeb" :foreground "#2e3436"))
