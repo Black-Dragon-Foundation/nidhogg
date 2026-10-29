@@ -71,7 +71,7 @@ pub struct Display {
 impl Drop for Display {
     fn drop(&mut self) {
         let shell = self.shell.as_ptr();
-        // SAFETY: the backend came from `Box::into_raw` in `new` and is released only here.  A panic in its drop is
+        // SAFETY: the backend came from `Box::leak` in `new` and is released only here.  A panic in its drop is
         // caught, as the close always was.
         let _ = catch_unwind(AssertUnwindSafe(|| drop(unsafe { Box::from_raw(shell) })));
         // A backing C never forgot leaves no Glitnir root behind.  After the close, which stops the shell's threads,

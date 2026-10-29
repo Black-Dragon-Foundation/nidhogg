@@ -16,7 +16,6 @@ use crate::{configure, drain};
 use crate::{tip, window};
 use nhshell::caps::NhShellCaps;
 use std::ffi::c_char;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 
 /// Why opening failed, for the caller's message.
@@ -54,9 +53,14 @@ unsafe fn put_text(buf: *mut c_char, cap: usize, text: &str) {
 unsafe fn open(display: *const c_char) -> Result<*mut NhgDisplay, i32> {
     // SAFETY: `display` is null or NUL-terminated (the caller's promise).
     let display = (!display.is_null()).then(|| unsafe { CStr::from_ptr(display) });
-    // a panic in the backend's open is the shell's (NHG_E_PANIC), and poisons nothing: there is no display yet
-    let shell = catch_unwind(AssertUnwindSafe(|| nhshell::open(display)))
-        .map_err(|_| NHG_E_PANIC)?
+    // a panic in the backend's open is the shell's (NHG_E_PANIC), and poisons nothing: there is no display yet.  Its
+    // report goes to stderr (inside the guard the panic hook keeps it instead of printing it).
+    let shell = crate::guard::catching(|| nhshell::open(display))
+        .map_err(|report| {
+            use std::io::Write as _;
+            let _ = writeln!(std::io::stderr(), "nhglue: {}", report.text());
+            NHG_E_PANIC
+        })?
         .map_err(|e| e.code())?;
     Ok(Box::into_raw(Box::new(NhgDisplay::new(shell))))
 }

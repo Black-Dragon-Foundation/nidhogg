@@ -188,7 +188,7 @@ fn install_hook() {
 }
 
 /// Run `body` inside `IN_GUARD`, catching a panic; `Err` holds its report.
-fn catching<R>(body: impl FnOnce() -> R) -> Result<R, PanicReport> {
+pub(crate) fn catching<R>(body: impl FnOnce() -> R) -> Result<R, PanicReport> {
     install_hook();
     IN_GUARD.set(IN_GUARD.get() + 1);
     let caught = catch_unwind(AssertUnwindSafe(body));
@@ -311,4 +311,24 @@ macro_rules! nhg_export {
             $crate::guard::unlocked(|| -> Result<$ret, $crate::guard::GlueError> { $body })
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A panic caught by `catching` (as `nhg_open`'s backend open is) gives its report to the caller, which prints
+    /// it, and leaves none behind for the next panic's.
+    #[test]
+    fn catching_hands_the_report_over() {
+        let r = catching(|| -> i32 { panic!("the backend's open") });
+        let report = r.expect_err("the panic is caught");
+        assert!(
+            report.head.contains("the backend's open"),
+            "{}",
+            report.head
+        );
+        assert!(REPORT.take().is_none());
+        assert_eq!(catching(|| 7).ok(), Some(7));
+    }
 }
