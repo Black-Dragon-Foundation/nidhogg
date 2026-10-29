@@ -526,11 +526,13 @@ int32_t nhg_pointer_visible (NhgDisplay *d, uint64_t window, int32_t on, uint32_
    it with Emacs's values.  NHG_E_ARG for a size under 1, NHG_E_STATE for an unknown window.  */
 int32_t nhg_frame_units (NhgDisplay *d, uint64_t window, int32_t col_w, int32_t line_h);
 
-/* Text input for WINDOW on or off (NHG_E_UNSUPPORTED without text-input-v3); the cursor rectangle R in logical pixels
-   of its surface; the LEN bytes of UTF-8 at TEXT around point, with point at byte CURSOR and the mark at byte ANCHOR of
-   them (at most 4000 bytes go to the input method, cut around point).  The compositor is told only what changed.  */
+/* Text input for WINDOW on or off (NHG_E_UNSUPPORTED without text-input-v3); the cursor rectangle R of WINDOW's frame
+   in device pixels of its native area, which the glue gives its tree's root in logical pixels of the root's surface
+   at SCALE120 (C's scale of the root; at least 1 x 1; NHG_E_STATE for an unknown WINDOW); the LEN bytes of UTF-8 at
+   TEXT around point, with point at byte CURSOR and the mark at byte ANCHOR of them (at most 4000 bytes go to the
+   input method, cut around point).  The compositor is told only what changed.  */
 int32_t nhg_im_enable (NhgDisplay *d, uint64_t window, int32_t on);
-int32_t nhg_im_cursor (NhgDisplay *d, uint64_t window, NhgRect r);
+int32_t nhg_im_cursor (NhgDisplay *d, uint64_t window, uint32_t scale120, NhgRect r);
 int32_t nhg_im_surrounding (NhgDisplay *d, uint64_t window, const char *text, size_t len, int32_t cursor,
                             int32_t anchor);
 
@@ -562,7 +564,9 @@ typedef struct
   uint32_t flags;               /* NHG_WIN_* */
   uint32_t kind;                /* NHG_KIND_* */
   uint64_t parent;              /* children and popups */
-  int32_t x, y;                 /* children: the offset in the parent (logical) */
+  int32_t x, y;                 /* children: where the surface starts in the parent's native area (device pixels:
+                                   the frame's left and top less its own margin); the glue adds the parent's
+                                   border and rounds to logical pixels at SCALE120 */
   NhgAnchor anchor;             /* popups */
   uint32_t role;                /* NHG_FRAME_* */
   uint32_t facts;               /* NHG_FACT_VISIBLE, NHG_FACT_ICONIFIED, NHG_FACT_CSD: Emacs's, now */
@@ -670,13 +674,13 @@ int32_t nhg_child_set (NhgDisplay *d, uint64_t window, uint64_t parent, int32_t 
    and garbages it), 0 when not.  The layer takes it at the next nhg_layer_ensure.  */
 int32_t nhg_child_chrome (NhgDisplay *d, uint64_t window, const NhgChrome *c);
 
-/* WINDOW was raised or lowered among its siblings: SIBLINGS holds the parent's child windows bottom to top as C now
-   stacks them, WINDOW among them, and Z_GROUP is the frame's z-group (Emacs's enum z_group: 0 none, 1 above, 2
-   below, 3 above-suspended; C ordered SIBLINGS, the glue keeps the value).
-   The glue puts WINDOW right above the sibling below it, or below the one above it when it is the lowest; the
-   parent and its ancestors owe a commit.  NHG_E_ARG when WINDOW is not in SIBLINGS.  */
-int32_t nhg_child_stack (NhgDisplay *d, uint64_t window, const uint64_t *siblings_bottom_to_top, size_t n,
-                         int32_t z_group);
+/* WINDOW was raised (RAISE nonzero) or lowered among its siblings, the other child windows of its parent; Z_GROUP is
+   the frame's z-group (Emacs's enum z_group: 0 none, 1 above, 2 below, 3 above-suspended; the glue keeps the value).
+   The glue keeps the stacking order: a child goes above its siblings when its window is first pushed
+   (nhg_child_set) and when raised, below them when lowered.  WINDOW goes right above the highest sibling, or below
+   the lowest; the parent and its ancestors owe a commit.  nhg_present lists each surface's children in that order,
+   whatever order C gave them in.  NHG_E_STATE when WINDOW is not a registered child.  */
+int32_t nhg_child_raise (NhgDisplay *d, uint64_t window, int32_t raise, int32_t z_group);
 
 /* ---- Menu popups ---------------------------------------------------------------------------------------------------
 

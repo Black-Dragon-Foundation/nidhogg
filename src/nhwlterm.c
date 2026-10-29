@@ -519,8 +519,8 @@ static NhgSurface *nhwl_surfaces;
 static ptrdiff_t nhwl_nsurfaces, nhwl_surfaces_cap;
 
 /* List F's surface after its parent's (PARENT: the parent's window, 0 for
-   the root), then the child frames under it, lowest first, each followed by
-   its own.  When PREPARE and F may show a buffer, F is brought up to date
+   the root), then the child frames under it, each followed by its own.
+   When PREPARE and F may show a buffer, F is brought up to date
    with what was drawn first: its backing's size, the title strip, a child
    frame's position and input region, the window geometry (all of which go
    with the tree's next commit; the glue sends them in nhwl_csd_draw's
@@ -532,8 +532,6 @@ nhwl_surface_add (struct frame *f, uint64_t parent, bool prepare)
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
   bool drawable = prepare && nhwl_frame_drawable (f);
   Lisp_Object tail, frame;
-  bool first = true;
-  int last = 0;
 
   if (drawable)
     {
@@ -572,34 +570,10 @@ nhwl_surface_add (struct frame *f, uint64_t parent, bool prepare)
 		      | (out->alpha_host ? NHG_SURF_ALPHA_HOST : 0)),
 		     out->alpha_cut };
 
-  /* The child frames, a pass per stacking level, lowest first.  */
-  for (;;)
-    {
-      bool any = false;
-      int z = 0;
-
-      FOR_EACH_FRAME (tail, frame)
-	{
-	  struct frame *c = XFRAME (frame);
-	  int cz;
-
-	  if (!nhwl_child_of (c, f))
-	    continue;
-	  cz = FRAME_NHWL_OUTPUT (c)->child_z;
-	  if ((first || cz > last) && (!any || cz < z))
-	    z = cz, any = true;
-	}
-      if (!any)
-	break;
-      FOR_EACH_FRAME (tail, frame)
-	{
-	  struct frame *c = XFRAME (frame);
-
-	  if (nhwl_child_of (c, f) && FRAME_NHWL_OUTPUT (c)->child_z == z)
-	    nhwl_surface_add (c, out->window, drawable);
-	}
-      last = z, first = false;
-    }
+  /* The child frames (the glue puts them in stacking order).  */
+  FOR_EACH_FRAME (tail, frame)
+    if (nhwl_child_of (XFRAME (frame), f))
+      nhwl_surface_add (XFRAME (frame), out->window, drawable);
 }
 
 /* nhwl-scroll-layers and F's alpha-background, as the glue's window
@@ -1152,7 +1126,12 @@ nhwl_create_frame_window (struct frame *f)
 	? FRAME_NHWL_OUTPUT (FRAME_PARENT_FRAME (f))->scale120 : out->scale120;
       desc.w = max (1, nhwl_to_logical (FRAME_PIXEL_WIDTH (f), out->scale120));
       desc.h = max (1, nhwl_to_logical (FRAME_PIXEL_HEIGHT (f), out->scale120));
-      nhwl_child_describe (f, &desc);
+      /* The surface starts its shadow margin before the native area; the
+	 glue places it in the parent's surface (logical pixels).  */
+      desc.kind = NHG_KIND_CHILD;
+      desc.parent = FRAME_NHWL_OUTPUT (FRAME_PARENT_FRAME (f))->window;
+      desc.x = f->left_pos - out->csd.l;
+      desc.y = f->top_pos - out->csd.t;
     }
   else
     {
@@ -2019,8 +1998,8 @@ nhwl_focus_route (struct frame *r, struct frame *to, bool gone)
    border (so the backing, the damage and the pointer use the offset they
    have for a top-level's title bar), the surface's position in its
    parent's, its input region (the native area), its mapping and its
-   stacking.  C pushes the frame's facts, keeps the tree's order (child_z)
-   and redirects the keyboard focus.  */
+   stacking.  C pushes the frame's facts and redirects the keyboard
+   focus.  */
 
 uint64_t
 nhwl_frame_window (struct frame *f)
@@ -2062,39 +2041,6 @@ nhwl_tree_root (struct frame *f)
   return f;
 }
 
-/* Stacking order counters: a raised child gets a number above all, a
-   lowered one below all.  */
-static int nhwl_z_top, nhwl_z_bottom;
-
-/* Device pixels to logical, rounded to nearest (also for negatives).  */
-static int
-nhwl_dev_to_log (int dev, uint32_t s120)
-{
-  return (int) lround (dev * 120.0 / (s120 ? s120 : 120));
-}
-
-/* Fill DESC for F's window when F is a child frame: the surface's offset
-   in its parent's surface, logical pixels (the frame's left and top are
-   device pixels from the parent's native area, and the surface starts the
-   shadow margin before the child's native area).  The glue keeps it from
-   then on.  */
-void
-nhwl_child_describe (struct frame *f, NhgWindowDesc *desc)
-{
-  struct nhwl_output *out, *po;
-
-  if (!nhwl_child_p (f))
-    return;
-  out = FRAME_NHWL_OUTPUT (f);
-  po = FRAME_NHWL_OUTPUT (FRAME_PARENT_FRAME (f));
-  desc->kind = NHG_KIND_CHILD;
-  desc->parent = po->window;
-  desc->x = nhwl_dev_to_log (po->csd.l + f->left_pos - out->csd.l,
-			     po->scale120);
-  desc->y = nhwl_dev_to_log (po->csd.t + f->top_pos - out->csd.t,
-			     po->scale120);
-}
-
 /* Whether child frame F's surface stays mapped when what changed is not
    its visibility: shown, or iconified (only the visibility hooks map and
    unmap it).  */
@@ -2126,9 +2072,9 @@ nhwl_child_push (struct frame *f, bool shown)
 }
 
 /* F's shell window exists (made, or made again under a new parent).  A
-   subsurface has no configure: it is ready.  It goes above its siblings,
-   and the glue gets its chrome, the margin that gives, and where it
-   sits.  */
+   subsurface has no configure: it is ready.  The glue gets its chrome, the
+   margin that gives, and where it sits (and puts it above its
+   siblings).  */
 void
 nhwl_child_created (struct frame *f)
 {
@@ -2137,7 +2083,6 @@ nhwl_child_created (struct frame *f)
   if (!nhwl_child_p (f))
     return;
   out->configured = true;
-  out->child_z = ++nhwl_z_top;
   if (!out->window)
     return;
   nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
@@ -2170,13 +2115,7 @@ nhwl_child_reposition (struct frame *f)
 void
 nhwl_frame_raise_lower (struct frame *f, bool raise)
 {
-  struct nhwl_output *out;
-  struct frame *p;
-  Lisp_Object tail, frame;
-  uint64_t *ids, w;
-  int *zs, z;
-  ptrdiff_t n = 0, m = 0, i, j;
-  USE_SAFE_ALLOCA;
+  uint64_t window;
 
   /* The compositor stacks popups.  */
   if (nhwl_popup_frame_p (f))
@@ -2187,68 +2126,19 @@ nhwl_frame_raise_lower (struct frame *f, bool raise)
 	nhwl_activate_frame (f);
       return;
     }
-  out = FRAME_NHWL_OUTPUT (f);
-  if (!out->window)
-    return;
-  out->child_z = raise ? ++nhwl_z_top : --nhwl_z_bottom;
-
-  /* F's siblings with a window, bottom to top, and F at the top or the
-     bottom: the glue stacks F against its neighbour (stacking is the
-     parent's state, so the parent and its ancestors owe a commit).  */
-  p = FRAME_PARENT_FRAME (f);
-  FOR_EACH_FRAME (tail, frame)
-    if (XFRAME (frame) != f && nhwl_child_of (XFRAME (frame), p))
-      n++;
-  SAFE_NALLOCA (ids, 1, n + 1);
-  SAFE_NALLOCA (zs, 1, n + 1);
-  FOR_EACH_FRAME (tail, frame)
-    {
-      struct frame *g = XFRAME (frame);
-
-      if (m < n && g != f && nhwl_child_of (g, p))
-	{
-	  zs[m] = FRAME_NHWL_OUTPUT (g)->child_z;
-	  ids[m++] = FRAME_NHWL_OUTPUT (g)->window;
-	}
-    }
-  for (i = 1; i < m; i++)
-    for (j = i; j > 0 && zs[j - 1] > zs[j]; j--)
-      {
-	z = zs[j], zs[j] = zs[j - 1], zs[j - 1] = z;
-	w = ids[j], ids[j] = ids[j - 1], ids[j - 1] = w;
-      }
-  if (raise)
-    ids[m] = out->window;
-  else
-    {
-      memmove (ids + 1, ids, m * sizeof *ids);
-      ids[0] = out->window;
-    }
-  nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
-		NHG (nhg_child_stack (FRAME_NHG (f), out->window, ids, m + 1,
-				      FRAME_Z_GROUP (f))));
-  SAFE_FREE ();
+  /* The glue keeps the siblings' order and stacks F against its
+     neighbour (stacking is the parent's state, so the parent and its
+     ancestors owe a commit).  */
+  window = FRAME_NHWL_OUTPUT (f)->window;
+  if (window)
+    nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		  NHG (nhg_child_raise (FRAME_NHG (f), window, raise,
+					FRAME_Z_GROUP (f))));
 }
 
 /* Wayland gives the keyboard to top-levels only: the keys and
    input-method events of a top-level's window go to the frame of its tree
    that Emacs focused, as X11's focus redirection does for child frames.  */
-
-/* Where F's native area starts in its tree root's surface, device
-   pixels.  The frames of a tree share one scale.  */
-void
-nhwl_native_origin (struct frame *f, int *x, int *y)
-{
-  if (!nhwl_child_p (f))
-    {
-      *x = FRAME_NHWL_OUTPUT (f)->csd.l;
-      *y = FRAME_NHWL_OUTPUT (f)->csd.t;
-      return;
-    }
-  nhwl_native_origin (FRAME_PARENT_FRAME (f), x, y);
-  *x += f->left_pos;
-  *y += f->top_pos;
-}
 
 /* The frame the keys of root R's window go to: the frame of R's tree
    Emacs focused, while it is shown; else R.  */
@@ -2653,7 +2543,6 @@ nhwl_im_update (struct frame *f)
   uint32_t s120 = out->scale120 ? out->scale120 : 120;
   struct window *w;
   struct buffer *b;
-  int x, y, ox, oy;
 
   if (!nhwl_im_on || !dpyinfo->glue || !out->window
       || f != dpyinfo->x_focus_frame || !WINDOWP (f->selected_window))
@@ -2662,18 +2551,19 @@ nhwl_im_update (struct frame *f)
   if (!BUFFERP (w->contents) || w->phys_cursor.vpos < 0)
     return;
 
-  x = (WINDOW_TO_FRAME_PIXEL_X (w, w->phys_cursor.x)
-       + WINDOW_LEFT_FRINGE_WIDTH (w) + WINDOW_LEFT_MARGIN_WIDTH (w));
-  y = WINDOW_TO_FRAME_PIXEL_Y (w, w->phys_cursor.y);
-  nhwl_native_origin (f, &ox, &oy);
   {
-    NhgRect r = { nhwl_to_logical (x + ox, s120),
-		  nhwl_to_logical (y + oy, s120),
-		  max (1, nhwl_to_logical (w->phys_cursor_width, s120)),
-		  max (1, nhwl_to_logical (w->phys_cursor_height, s120)) };
+    /* Device pixels in F's native area; the glue places them in the
+       root's surface.  */
+    NhgRect r = { (WINDOW_TO_FRAME_PIXEL_X (w, w->phys_cursor.x)
+		   + WINDOW_LEFT_FRINGE_WIDTH (w)
+		   + WINDOW_LEFT_MARGIN_WIDTH (w)),
+		  WINDOW_TO_FRAME_PIXEL_Y (w, w->phys_cursor.y),
+		  w->phys_cursor_width, w->phys_cursor_height };
 
     nhwl_glue_rc (dpyinfo,
-		  NHG (nhg_im_cursor (dpyinfo->glue, out->window, r)));
+		  NHG (nhg_im_cursor (dpyinfo->glue,
+				      FRAME_NHWL_OUTPUT (f)->window, s120,
+				      r)));
   }
 
   b = XBUFFER (w->contents);

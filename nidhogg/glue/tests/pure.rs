@@ -196,6 +196,70 @@ mod monitors {
     }
 }
 
+mod stacking {
+    use nhglue::child::{neighbour, new_offset, stacked};
+    use nhglue::ime::cursor_rect;
+    use nhglue::present::NhgSurface;
+
+    fn s(window: u64, parent: u64) -> NhgSurface {
+        NhgSurface {
+            window,
+            parent,
+            frame: window * 10,
+            ..Default::default()
+        }
+    }
+
+    /// `nhwl_surface_add`'s order: the root, then each surface's children lowest first (equals in the list's
+    /// order), each followed by its own.
+    #[test]
+    fn surface_list_order() {
+        let z = |w: u64| match w {
+            2 => 5,
+            3 | 5 => 3,
+            4 => 1,
+            _ => 0,
+        };
+        let list = [s(1, 0), s(2, 1), s(3, 1), s(4, 2), s(5, 1)];
+        let got: Vec<u64> = stacked(&list, z).iter().map(|x| x.window).collect();
+        assert_eq!(got, [1, 3, 5, 2, 4]);
+        assert_eq!(stacked(&list, z)[3], list[1], "whole entries");
+        assert!(stacked(&[], z).is_empty());
+        assert_eq!(stacked(&[s(1, 0)], z), [s(1, 0)]);
+    }
+
+    /// `nhwl_frame_raise_lower`'s neighbour: above the highest sibling (the last of equals), below the lowest (the
+    /// first of equals); none alone.
+    #[test]
+    fn raise_lower_neighbour() {
+        let sib = [(10, 1), (11, 4), (12, 4), (13, -2), (14, -2)];
+        assert_eq!(neighbour(&sib, true), Some((12, true)));
+        assert_eq!(neighbour(&sib, false), Some((13, false)));
+        assert_eq!(neighbour(&[(10, 0)], false), Some((10, false)));
+        assert_eq!(neighbour(&[], true), None);
+    }
+
+    /// `nhwl_child_describe`: `lround ((parent border + left - own margin) * 120.0 / s)`, 0 as 120.
+    #[test]
+    fn new_child_offset() {
+        assert_eq!(new_offset(0, 30, 10, 20, 120), (10, 50));
+        assert_eq!(new_offset(12, 0, 33, -1, 180), (30, -1));
+        // halves away from zero
+        assert_eq!(new_offset(0, 0, 3, -3, 240), (2, -2));
+        assert_eq!(new_offset(5, 0, 0, 7, 0), (5, 7));
+    }
+
+    /// `nhwl_im_update`'s rectangle: `nhwl_to_logical` of the origin-shifted position (`(dev * 120 + s / 2) / s`,
+    /// truncated toward zero, so a negative half rounds up) and of the size, at least 1.
+    #[test]
+    fn im_cursor_rect() {
+        assert_eq!(cursor_rect([10, 20, 3, 4], 0, 0, 120), [10, 20, 3, 4]);
+        assert_eq!(cursor_rect([30, 15, 1, 0], 6, 3, 180), [24, 12, 1, 1]);
+        assert_eq!(cursor_rect([-3, -2, 8, 8], 0, 0, 240), [-1, 0, 4, 4]);
+        assert_eq!(cursor_rect([1, 2, 3, 4], 10, 20, 0), [11, 22, 3, 4]);
+    }
+}
+
 mod snapshot {
     use nhglue::abi::NHG_E_ARG;
     use nhglue::backing::copy_rows;

@@ -11,14 +11,16 @@
 //! The facts it reads (design §3.3): the parent, the position (the frame's left and top), visibility and
 //! `no-accept-focus` are pushed (`nhg_child_set`, when the window is made, moved, shown or hidden); the chrome is
 //! pulled from C's `glitnir--resolve` call (`nhg_child_chrome`); the native size at each publish (`nhg_csd_paint`);
-//! the siblings' order on raise and lower (`nhg_child_stack`).  The scale is the one of the frame's last layout.  The
-//! keyboard focus redirect stays C.
+//! a raise or lower (`nhg_child_raise`).  The stacking order among siblings is the glue's (`Stacking`, moved from C's
+//! `child_z`): the surface list C passes to `nhg_present` is put in it.  The scale is the one of the frame's last
+//! layout.  The keyboard focus redirect stays C.
 
 use crate::backing::{NHG_GEOM_LAYER_CHANGED, NhgFrameGeom, NhgRect};
 use crate::csd::NhgCsdLayout;
 use crate::display::Display;
 use crate::frame::{Frame, NHG_FRAME_CHILD};
 use crate::guard::GlueError;
+use crate::present::NhgSurface;
 use glitnir::ffi::glitnir_layer_set_chrome;
 use glitnir::geom::Rect;
 use glitnir::scene::Chrome;
@@ -59,6 +61,9 @@ pub struct Child {
     /// The frame's z-group as of the last raise or lower (Emacs's `enum z_group`: 0 none, 1 above, 2 below, 3
     /// above-suspended).
     z_group: i32,
+    /// Its place among its siblings (moved from `struct nhwl_output`'s `child_z`): above all when made or raised,
+    /// below all when lowered (`Stacking`); 0 before the first push.
+    z: i32,
     /// The surface is shown (not unmapped).
     mapped: bool,
     chrome: NhgChrome,
@@ -93,12 +98,95 @@ impl Child {
     pub fn mapped(&self) -> bool {
         self.mapped
     }
+
+    /// Its place among its siblings: higher is above.
+    pub fn z(&self) -> i32 {
+        self.z
+    }
+}
+
+/// The display's stacking counters (moved from `nhwl_z_top` and `nhwl_z_bottom`): a child made or raised takes a
+/// number above all, a lowered one below all.
+#[derive(Debug, Default)]
+pub struct Stacking {
+    top: i32,
+    bottom: i32,
+}
+
+impl Stacking {
+    fn above_all(&mut self) -> i32 {
+        self.top = self.top.wrapping_add(1);
+        self.top
+    }
+
+    fn below_all(&mut self) -> i32 {
+        self.bottom = self.bottom.wrapping_sub(1);
+        self.bottom
+    }
+}
+
+/// `s`, a tree's surface list as `present::drawable` accepts it (the root first, each parent before its children, no
+/// window twice), in stacking order: each surface followed by its children lowest first by `z` (equals in the list's
+/// order), each followed by its own.  Moved from `nhwl_surface_add`'s pass per stacking level; C lists the children
+/// unsorted.
+pub fn stacked(s: &[NhgSurface], z: impl Fn(u64) -> i32) -> Vec<NhgSurface> {
+    let mut out = Vec::with_capacity(s.len());
+    let mut todo = if s.is_empty() { vec![] } else { vec![0] };
+    while let Some(i) = todo.pop() {
+        out.push(s[i]);
+        let mut kids: Vec<usize> = (1..s.len())
+            .filter(|&j| s[j].parent == s[i].window)
+            .collect();
+        kids.sort_by_key(|&j| z(s[j].window));
+        todo.extend(kids.into_iter().rev());
+    }
+    out
+}
+
+/// The surface list `s` (checked by `present::drawable`) in stacking order, from the children's places the glue
+/// keeps.
+pub fn stack_order(state: &Display, s: &[NhgSurface]) -> Vec<NhgSurface> {
+    stacked(s, |w| state.frame(w).map_or(0, |f| f.child.z))
 }
 
 /// Device pixels to logical at `s120`/120 (0: 1), rounded to nearest, half away from zero (C's `lround`).
 fn to_logical(dev: f64, s120: u32) -> i32 {
     let s = if s120 == 0 { 120 } else { s120 };
     (dev * 120.0 / f64::from(s)).round() as i32
+}
+
+/// A new child window's offset in its parent's surface for the shell, logical pixels at `s120`: (`x`, `y`) is where
+/// the surface starts in the parent's native area (device pixels: the frame's left and top less its own margin), and
+/// the parent's native area starts at (`pl`, `pt`) in its surface.  Rounded to nearest, also for negatives.  Moved
+/// from `nhwl_child_describe`.
+pub fn new_offset(pl: i32, pt: i32, x: i32, y: i32, s120: u32) -> (i32, i32) {
+    let at = |p: i32, v: i32| to_logical(f64::from(p.wrapping_add(v)), s120);
+    (at(pl, x), at(pt, y))
+}
+
+/// `new_offset` for the window `d` describes, whose parent the glue knows (an unknown parent has no border; the shell
+/// refuses it).
+pub(crate) fn new_window_offset(state: &Display, d: &crate::window::NhgWindowDesc) -> (i32, i32) {
+    let [pl, pt, ..] = state.frame(d.parent).map_or([0; 4], |p| p.csd.border().0);
+    new_offset(pl, pt, d.x, d.y, d.scale120)
+}
+
+/// The root of `window`'s tree and where `window`'s native area starts in the root's surface, device pixels: the
+/// root's border plus each child's position on the way up (the frames of a tree share one scale).  Moved from
+/// `nhwl_native_origin`.  `State` for a window the glue does not know, or a chain that does not end.
+pub fn native_origin(state: &Display, window: u64) -> Result<(u64, i32, i32), GlueError> {
+    let (mut w, mut x, mut y) = (window, 0i32, 0i32);
+    for _ in 0..=state.frames().count() {
+        let f = state.frame(w)?;
+        if f.flags & NHG_FRAME_CHILD == 0 || f.child.parent == 0 {
+            let ([l, t, ..], _) = f.csd.border();
+            return Ok((w, x.wrapping_add(l), y.wrapping_add(t)));
+        }
+        x = x.wrapping_add(f.child.x);
+        y = y.wrapping_add(f.child.y);
+        w = f.child.parent;
+    }
+    Err(GlueError::State)
 }
 
 /// The frame's scale times 120: its last layout's, or the one its window was made at (0: none known, as 120).
@@ -195,8 +283,8 @@ fn send_position(state: &mut Display, window: u64) {
 }
 
 /// C pushed child `window`'s facts: its parent's window, its native area's place in the parent's (device pixels) and
-/// `NHG_CHILD_*` flags.  The first push after the window is made records where it was made (C made it at this
-/// position, `nhwl_child_describe`) and that it is mapped; a later one sends the position if it changed, and maps or
+/// `NHG_CHILD_*` flags.  The first push after the window is made records where it was made (`new_offset` placed it
+/// at this position), that it is mapped, and its place above its siblings; a later one sends the position if it changed, and maps or
 /// unmaps the surface as `NHG_CHILD_VISIBLE` says.  `true` when the surface was mapped again: all of it is drawn
 /// again.
 pub fn set(
@@ -218,8 +306,11 @@ pub fn set(
     (c.parent, c.x, c.y, c.flags) = (parent, x, y, flags);
     if first {
         c.mapped = true;
+        // a window made goes above its siblings
+        let z = state.stacking.above_all();
         let pos = position(state, window).ok();
-        child_mut(state, window)?.child.pos = pos;
+        let c = &mut child_mut(state, window)?.child;
+        (c.z, c.pos) = (z, pos);
         return Ok(false);
     }
     send_position(state, window);
@@ -252,30 +343,39 @@ pub fn chrome(state: &mut Display, window: u64, c: &NhgChrome) -> Result<bool, G
     Ok(true)
 }
 
-/// Child `window` was raised or lowered: `siblings` are its parent's child windows bottom to top as C now stacks them,
-/// `window` among them.  It goes right above the sibling below it, or below the one above it when it is the lowest
-/// (stacking is the parent's state: the parent and its ancestors owe a commit); alone, nothing changes.
-pub fn stack(
-    state: &mut Display,
-    window: u64,
-    siblings: &[u64],
-    z_group: i32,
-) -> Result<(), GlueError> {
-    if siblings.contains(&0) {
-        return Err(GlueError::Arg);
-    }
-    let i = siblings
-        .iter()
-        .position(|&w| w == window)
-        .ok_or(GlueError::Arg)?;
-    child_mut(state, window)?;
-    let (backend, _, f) = state.csd_parts(window)?;
-    f.child.z_group = z_group;
-    let next = if i > 0 {
-        Some((siblings[i - 1], true))
+/// The sibling a raised (`raise`) or lowered child is stacked against, and whether it goes above it: the highest of
+/// its `siblings` (window, place) for a raise, the lowest for a lower (None: alone).  Moved from
+/// `nhwl_frame_raise_lower`, whose sorted list put the child at its top or bottom and stacked it against its
+/// neighbour there (the last of equal highest, the first of equal lowest, as its stable sort left them).
+pub fn neighbour(siblings: &[(u64, i32)], raise: bool) -> Option<(u64, bool)> {
+    let it = siblings.iter().copied();
+    let w = if raise {
+        it.max_by_key(|s| s.1)
     } else {
-        siblings.get(1).map(|&s| (s, false))
+        it.min_by_key(|s| s.1)
     };
+    w.map(|(w, _)| (w, raise))
+}
+
+/// Child `window` was raised (`raise`) or lowered, with its frame's `z_group`: it takes a place above or below all its
+/// siblings, and goes right above the highest of them, or below the lowest (stacking is the parent's state: the
+/// parent and its ancestors owe a commit); alone, only its place changes.
+pub fn raise(state: &mut Display, window: u64, raise: bool, z_group: i32) -> Result<(), GlueError> {
+    let parent = child_mut(state, window)?.child.parent;
+    let z = if raise {
+        state.stacking.above_all()
+    } else {
+        state.stacking.below_all()
+    };
+    let siblings: Vec<(u64, i32)> = state
+        .child_windows(parent)
+        .into_iter()
+        .filter(|&w| w != window && parent != 0)
+        .map(|w| (w, state.frame(w).map_or(0, |f| f.child.z)))
+        .collect();
+    let next = neighbour(&siblings, raise);
+    let (backend, _, f) = state.csd_parts(window)?;
+    (f.child.z, f.child.z_group) = (z, z_group);
     if let Some((sibling, above)) = next {
         // as C did, a refused request changes nothing else
         let _ = backend.stack(window, sibling, above);
