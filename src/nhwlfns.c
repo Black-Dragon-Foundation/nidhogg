@@ -1550,30 +1550,17 @@ Internal use only, use `display-monitor-attributes-list' instead.  */)
 	{
 	  /* Each output the compositor says the frame is on; the first when
 	     it has not said (before the first enter, or after its output
-	     went away).  */
-	  struct nhwl_output *o = FRAME_NHWL_OUTPUT (f);
-	  uint64_t entered[NHWL_MAX_OUTPUTS];
-	  size_t n_entered = 0;
-	  bool listed = false;
+	     went away).  The glue matches them with the list.  */
+	  uint64_t window = FRAME_NHWL_OUTPUT (f)->window;
+	  uint32_t on = 1;
 	  int j;
-	  size_t k;
 
-	  if (o->window)
-	    nhwl_glue_rc (dpyinfo,
-			  NHG (nhg_frame_outputs (dpyinfo->glue, o->window,
-						  entered, NHWL_MAX_OUTPUTS,
-						  &n_entered)));
+	  if (window)
+	    nhwl_glue_rc (dpyinfo, NHG (nhg_frame_monitors (dpyinfo->glue,
+							    window, &on)));
 	  for (j = 0; j < n_monitors; j++)
-	    for (k = 0; k < n_entered; k++)
-	      if (list[j].id == entered[k])
-		{
-		  ASET (monitor_frames, j,
-			Fcons (frame, AREF (monitor_frames, j)));
-		  listed = true;
-		  break;
-		}
-	  if (!listed)
-	    ASET (monitor_frames, 0, Fcons (frame, AREF (monitor_frames, 0)));
+	    if (on & (1u << j))
+	      ASET (monitor_frames, j, Fcons (frame, AREF (monitor_frames, j)));
 	}
     }
 
@@ -1582,8 +1569,8 @@ Internal use only, use `display-monitor-attributes-list' instead.  */)
       NhgMonitor *m = &list[i];
       struct MonitorInfo *mi = &monitors[i];
 
-      mi->geom.x = (int) roundf (m->x * m->scale120 / 120.0f);
-      mi->geom.y = (int) roundf (m->y * m->scale120 / 120.0f);
+      NHG (nhg_monitor_origin (m->x, m->y, m->scale120, &mi->geom.x,
+			       &mi->geom.y));
       mi->geom.width = m->w;
       mi->geom.height = m->h;
       mi->work = mi->geom;
@@ -2805,20 +2792,14 @@ nhwl_csd_colours (struct frame *f, bool active, unsigned long *fg,
   own_fg = !nhwl_csd_colour (f, vfg, fg);
   if (!nhwl_csd_colour (f, vbg, bg))
     {
-      /* W0's: the background 12% toward the foreground.  */
-      *bg = ((unsigned long) (RED_FROM_ULONG (fbg) * 0.88
-			      + RED_FROM_ULONG (ffg) * 0.12) << 16
-	     | (unsigned long) (GREEN_FROM_ULONG (fbg) * 0.88
-				+ GREEN_FROM_ULONG (ffg) * 0.12) << 8
-	     | (unsigned long) (BLUE_FROM_ULONG (fbg) * 0.88
-				+ BLUE_FROM_ULONG (ffg) * 0.12));
+      /* W0's: the background 12% toward the foreground, and an inactive
+	 window's own foreground toward that (the glue's mix).  */
+      uint32_t mfg = 0, mbg = 0;
+
+      NHG (nhg_csd_mix (ffg & 0xffffff, fbg & 0xffffff, &mfg, &mbg));
+      *bg = mbg;
       if (own_fg && !active)
-	*fg = ((unsigned long) (RED_FROM_ULONG (*bg) * 0.45
-				+ RED_FROM_ULONG (ffg) * 0.55) << 16
-	       | (unsigned long) (GREEN_FROM_ULONG (*bg) * 0.45
-				  + GREEN_FROM_ULONG (ffg) * 0.55) << 8
-	       | (unsigned long) (BLUE_FROM_ULONG (*bg) * 0.45
-				  + BLUE_FROM_ULONG (ffg) * 0.55));
+	*fg = mfg;
     }
 }
 

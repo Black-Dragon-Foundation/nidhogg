@@ -79,6 +79,31 @@ pub fn list(state: &Display, out: &mut [NhgMonitor]) -> usize {
     n
 }
 
+/// The monitors `window` is on, as a mask of their places in the list (bit J: the Jth monitor; the first when the
+/// compositor named none of them), for `display-monitor-attributes-list`'s frames (moved from
+/// `Fpgtk_display_monitor_attributes_list`).
+pub fn frame_monitors(state: &Display, window: u64) -> Result<u32, GlueError> {
+    let ids = &state.frame(window)?.outputs;
+    let mask = state
+        .monitors()
+        .all()
+        .iter()
+        .take(MAX_OUTPUTS.min(32))
+        .enumerate()
+        .filter(|(_, m)| ids.contains(&m.id))
+        .fold(0u32, |acc, (j, _)| acc | 1 << j);
+    Ok(if mask == 0 { 1 } else { mask })
+}
+
+/// A monitor's position in device pixels from its logical `x`, `y` and `s120`, as `display-monitor-attributes-list`
+/// gives it (moved from `Fpgtk_display_monitor_attributes_list`).  The C multiplied the int position by the unsigned
+/// scale, so a negative position wraps as an unsigned product before the float division and `roundf`; kept as it
+/// was.
+pub fn device_origin(x: i32, y: i32, s120: u32) -> (i32, i32) {
+    let dev = |v: i32| ((v as u32).wrapping_mul(s120) as f32 / 120.0f32).round() as i32;
+    (dev(x), dev(y))
+}
+
 /// Copy the ids of the outputs `window` is on into `out` (as many as fit); the number written.
 pub fn frame_outputs(state: &Display, window: u64, out: &mut [u64]) -> Result<usize, GlueError> {
     let ids = &state.frame(window)?.outputs;

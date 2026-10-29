@@ -18,7 +18,7 @@ use glitnir::scene::LayerDesc;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::abi::{NHG_E_NOMEM, NHG_E_STATE};
+use crate::abi::{NHG_E_ARG, NHG_E_NOMEM, NHG_E_STATE};
 
 /// [`NhgFrameGeom::flags`]: the layer's rectangle or chrome changed (a child frame's, as `child::layer` says).
 pub const NHG_GEOM_LAYER_CHANGED: u32 = 1;
@@ -140,6 +140,51 @@ pub struct Frame {
     pub(crate) layers: crate::layers::Layers,
     /// The rows the visible bell inverted, until they are put back (`bell.rs`).
     flash: Vec<Saved>,
+}
+
+/// Copy `h` rows of `w` pixels from `src` (rows `w` apart) into `dst` (rows `stride` bytes apart), each pixel's bytes
+/// as they lie in memory.  `NHG_E_ARG` when either side is too short.
+pub fn copy_rows(
+    src: &[u32],
+    w: usize,
+    h: usize,
+    dst: &mut [u8],
+    stride: usize,
+) -> Result<(), i32> {
+    let row = w.checked_mul(4).ok_or(NHG_E_ARG)?;
+    let need = match h {
+        0 => 0,
+        _ => (h - 1)
+            .checked_mul(stride)
+            .and_then(|n| n.checked_add(row))
+            .ok_or(NHG_E_ARG)?,
+    };
+    if stride < row || dst.len() < need || src.len() < w.saturating_mul(h) {
+        return Err(NHG_E_ARG);
+    }
+    for (i, s) in src.chunks_exact(w.max(1)).take(h).enumerate() {
+        let d = &mut dst[i * stride..i * stride + row];
+        for (px, out) in s.iter().zip(d.as_chunks_mut::<4>().0) {
+            out.copy_from_slice(&px.to_ne_bytes());
+        }
+    }
+    Ok(())
+}
+
+/// The frame's background as the backing stores it: `rgb` (0xRRGGBB) at `alpha`, premultiplied ARGB, exactly as
+/// Cairo 1.18 paints a solid source with `CAIRO_OPERATOR_SOURCE` on an ARGB32 image (moved from
+/// `nhwl_background_argb`'s 1x1 paint): `cairo_pattern_create_rgba` clamps to [0, 1], `_cairo_color_compute_shorts`
+/// premultiplies and rounds each channel to 16 bits (`d * 65535.0 + 0.5`, truncated), and the image compositor's
+/// `color_to_uint32` keeps each short's high byte.  The colour's 16-bit channels are `nhwl_query_color`'s (8 bits
+/// times 257).
+pub fn premultiply(rgb: u32, alpha: f64) -> u32 {
+    // Cairo's `_cairo_restrict_value`: a NaN stays NaN
+    let clamp = |v: f64| v.clamp(0.0, 1.0);
+    // a NaN gives 0, as the C conversion did on x86-64
+    let short = |d: f64| u32::from((d * 65535.0 + 0.5) as u16);
+    let a = clamp(alpha);
+    let channel = |s: u32| short(clamp(f64::from(((rgb >> s) & 0xff) * 257) / 65535.0) * a);
+    (short(a) >> 8 << 24) | (channel(16) >> 8 << 16) | (channel(8) & 0xff00) | (channel(0) >> 8)
 }
 
 impl Frame {
@@ -377,6 +422,23 @@ impl Backings {
             return Err(NHG_E_STATE);
         }
         Ok(f.view())
+    }
+
+    /// Copy the frame's `w` x `h` backing into `dst`, rows `stride` bytes apart (`glitnir-snapshot`'s copy, moved
+    /// from `nhwl_snapshot`).  `NHG_E_STATE` without a backing of that size.
+    pub fn snapshot_into(
+        &mut self,
+        key: u64,
+        dst: &mut [u8],
+        stride: usize,
+        w: i32,
+        h: i32,
+    ) -> Result<(), i32> {
+        let f = self.get(key)?;
+        if f.pixels.is_empty() || (f.w, f.h) != (w, h) {
+            return Err(NHG_E_STATE);
+        }
+        copy_rows(&f.pixels, w as usize, h as usize, dst, stride)
     }
 
     /// The frame is gone: its scene, damage and statistics go, and its backing is freed.  From

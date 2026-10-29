@@ -569,6 +569,44 @@ nhg_export! {
 }
 
 nhg_export! {
+    /// The type to read the selection of the last `nhg_selection_types` call as: `name` (`len` bytes) when the offer
+    /// has it, else the first of the `nprefs` NUL-terminated `prefs` it has.  1 and the type in `*out`
+    /// (NUL-terminated, valid until the next `nhg_selection_types`), or 0 for none.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `name` holds `len` readable bytes (null with 0); `prefs` holds `nprefs`
+    /// NUL-terminated strings (null with 0); `out` is null or writable.
+    fn nhg_selection_pick(d: *mut NhgDisplay, name: *const c_char, len: usize, prefs: *const *const c_char,
+                          nprefs: usize, out: *mut *const c_char) -> i32 |state| {
+        if out.is_null() || (name.is_null() && len != 0) || (prefs.is_null() && nprefs != 0) {
+            return Err(GlueError::Arg);
+        }
+        let name: &[u8] = if len == 0 {
+            &[]
+        } else {
+            // SAFETY: non-null with `len` readable bytes (the caller's promise).
+            unsafe { std::slice::from_raw_parts(name.cast::<u8>(), len) }
+        };
+        let mut want = Vec::with_capacity(nprefs);
+        for i in 0..nprefs {
+            // SAFETY: `prefs` holds `nprefs` pointers (the caller's promise), and `i < nprefs`.
+            let p = unsafe { prefs.add(i).read() };
+            if p.is_null() {
+                return Err(GlueError::Arg);
+            }
+            // SAFETY: non-null and NUL-terminated (the caller's promise).
+            want.push(unsafe { CStr::from_ptr(p) }.to_bytes());
+        }
+        let Some(t) = select::pick(state, name, &want) else {
+            return Ok(0);
+        };
+        // SAFETY: non-null and writable (checked above and the caller's promise).
+        unsafe { out.write(t.as_ptr().cast()) };
+        Ok(1)
+    }
+}
+
+nhg_export! {
     /// Selection `kind` as `mime`: our own bytes at once, another client's within `timeout_ms` (`NHG_E_TIMEOUT`;
     /// `NHG_E_DISCONNECTED` within 100 ms of the connection's loss).  `NHG_E_STATE` without a selection or without
     /// that type.  The bytes go to `*out` and `*len`.  Neither reads nor writes pixels.
@@ -580,9 +618,10 @@ nhg_export! {
         if mime.is_null() || out.is_null() || len.is_null() {
             return Err(GlueError::Arg);
         }
-        // SAFETY: non-null and NUL-terminated (the caller's promise).
-        let mime = unsafe { CStr::from_ptr(mime) }.to_str().map_err(|_| GlueError::Arg)?;
-        let bytes = select::read(state, kind, mime, timeout_ms)?;
+        // SAFETY: non-null and NUL-terminated (the caller's promise).  Copied: it may be nhg_selection_pick's
+        // answer, which lies in the glue's own buffer.
+        let mime = unsafe { CStr::from_ptr(mime) }.to_str().map_err(|_| GlueError::Arg)?.to_owned();
+        let bytes = select::read(state, kind, &mime, timeout_ms)?;
         // SAFETY: non-null and writable (checked above and the caller's promise).
         unsafe {
             out.write(bytes.as_ptr());
@@ -1602,6 +1641,110 @@ nhg_export! {
         if !len.is_null() {
             // SAFETY: non-null and writable (the caller's promise).
             unsafe { len.write(text.len()) };
+        }
+        Ok(NHG_OK)
+    }
+}
+
+// ---- Small pure functions moved from C: colours, a monitor's place, the snapshot's copy ----------------------------
+
+nhg_export! {
+    /// The title bar's mixed colours (`csd::title_bar_mix`) from the frame's foreground `fg` and background `bg`
+    /// (0xRRGGBB): the inactive foreground into `*out_fg`, the background into `*out_bg`.  Neither reads nor writes
+    /// pixels.
+    ///
+    /// # Safety
+    /// `out_fg` and `out_bg` are null or writable.
+    unlocked fn nhg_csd_mix(fg: u32, bg: u32, out_fg: *mut u32, out_bg: *mut u32) -> i32 {
+        if out_fg.is_null() || out_bg.is_null() {
+            return Err(GlueError::Arg);
+        }
+        let (f, b) = crate::csd::title_bar_mix(fg, bg);
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe {
+            out_fg.write(f);
+            out_bg.write(b);
+        }
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// `rgb` (0xRRGGBB) at `alpha` as a backing stores it: premultiplied ARGB, as Cairo paints it
+    /// (`backing::premultiply`), into `*out`.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `out` is null or writable.
+    unlocked fn nhg_premultiply(rgb: u32, alpha: f64, out: *mut u32) -> i32 {
+        if out.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe { out.write(crate::backing::premultiply(rgb, alpha)) };
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Copy the frame's `w` x `h` backing (the size `nhg_snapshot` gave) into `dst`, rows `stride` bytes apart.
+    /// `NHG_E_STATE` without a backing of that size.  Reads pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `dst` is null or holds `stride` x (`h` - 1) + 4 x `w` writable bytes.
+    fn nhg_snapshot_copy(d: *mut NhgDisplay, frame: u64, dst: *mut u8, stride: i32, w: i32, h: i32) -> i32 |state| {
+        let (Ok(su), Ok(wu), Ok(hu)) = (usize::try_from(stride), usize::try_from(w), usize::try_from(h)) else {
+            return Err(GlueError::Arg);
+        };
+        if dst.is_null() {
+            return Err(GlueError::Arg);
+        }
+        let n = match hu {
+            0 => 0,
+            _ => (hu - 1)
+                .checked_mul(su)
+                .and_then(|n| n.checked_add(wu.checked_mul(4)?))
+                .ok_or(GlueError::Arg)?,
+        };
+        // SAFETY: `dst` holds `n` writable bytes (the caller's promise), not the backing's.
+        let out = unsafe { std::slice::from_raw_parts_mut(dst, n) };
+        state.backings.snapshot_into(frame, out, su, w, h)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// The monitors `window` is on as a mask of their places in `nhg_monitors`' list (bit J for the Jth; the first
+    /// when the compositor named none), into `*out`.  `NHG_E_STATE` for an unknown window.  Neither reads nor writes
+    /// pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `out` is null or writable.
+    fn nhg_frame_monitors(d: *mut NhgDisplay, window: u64, out: *mut u32) -> i32 |state| {
+        if out.is_null() {
+            return Err(GlueError::Arg);
+        }
+        let mask = crate::monitors::frame_monitors(state, window)?;
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe { out.write(mask) };
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// A monitor's position in device pixels (`monitors::device_origin`) from its logical `x`, `y` and `scale120`,
+    /// into `*dx`, `*dy`.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `dx` and `dy` are null or writable.
+    unlocked fn nhg_monitor_origin(x: i32, y: i32, scale120: u32, dx: *mut i32, dy: *mut i32) -> i32 {
+        if dx.is_null() || dy.is_null() {
+            return Err(GlueError::Arg);
+        }
+        let (ox, oy) = crate::monitors::device_origin(x, y, scale120);
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe {
+            dx.write(ox);
+            dy.write(oy);
         }
         Ok(NHG_OK)
     }

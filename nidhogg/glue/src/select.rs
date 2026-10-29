@@ -99,6 +99,12 @@ impl Select {
         Ok((types.len(), &self.types))
     }
 
+    /// The type to read the last query's selection as (`types`' buffer, from its NUL-terminated entry): `name` when
+    /// the offer has it, else the first of `prefs` it has; `None` for neither.
+    pub fn pick(&self, name: &[u8], prefs: &[&[u8]]) -> Option<&[u8]> {
+        pick_at(&self.types, name, prefs).map(|at| &self.types[at..])
+    }
+
     /// Selection `kind` as `mime`, within `timeout_ms` (`Timeout`), in a buffer that stays valid until the next call:
     /// our own bytes at once, another client's after a round trip.  `State` without a selection or without that type.
     pub fn read(
@@ -127,6 +133,22 @@ impl Select {
         self.ours[k] = false;
         true
     }
+}
+
+/// Where in `types` (MIME types, each followed by a NUL) the type to read starts: `name` when it is one of them, else
+/// the first of `prefs` that is.  Moved from `Fpgtk_get_selection_internal` (`src/nhwlselect.c`), whose `member`
+/// compared the strings' bytes.
+pub fn pick_at(types: &[u8], name: &[u8], prefs: &[&[u8]]) -> Option<usize> {
+    let find = |want: &[u8]| {
+        let mut at = 0;
+        types.split(|&b| b == 0).find_map(|t| {
+            let start = at;
+            at += t.len() + 1;
+            // the last split is the empty tail after the final NUL
+            (start < types.len() && t == want).then_some(start)
+        })
+    };
+    find(name).or_else(|| prefs.iter().find_map(|&p| find(p)))
 }
 
 /// The display's backend and its selection state, split so that both can be borrowed at once.
@@ -178,6 +200,11 @@ pub fn read<'a>(
     // SAFETY: as in `split`.
     let backend = unsafe { &mut *sh };
     state.select.read(backend, kind, mime, timeout_ms)
+}
+
+/// The type to read the last `types` query's selection as: `name`, or the first of `prefs` it offers.
+pub fn pick<'a>(state: &'a Display, name: &[u8], prefs: &[&[u8]]) -> Option<&'a [u8]> {
+    state.select.pick(name, prefs)
 }
 
 /// Whether the shell's change of selection `kind` was a loss of ours.
