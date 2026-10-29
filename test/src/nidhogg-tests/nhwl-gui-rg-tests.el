@@ -132,9 +132,10 @@
         (delete-process proc))
       (delete-directory dir t))))
 
-;; A C-g inside a burst of keys quits once, and the other keys arrive in order: the drain stores the keys after C-g
-;; while C-g waits in `hold_quit', as the C drain did.  The burst is sent with quitting inhibited: a quit drained while
-;; the test waits for the recorder's answer would otherwise stop the test sending the rest of the burst.
+;; A C-g inside a burst of keys quits once; the keys before it arrive in order.  The keys after it that the same drain
+;; reads are discarded while C-g waits in `hold_quit' (keyboard.c's rule for every read_socket_hook); a later drain's
+;; keys arrive, so what arrives of the second half is its tail.  The burst is sent with quitting inhibited: a quit
+;; drained while the test waits for the recorder's answer would otherwise stop the test sending the rest of the burst.
 (ert-deftest nhwl-gui/quit-in-a-key-burst ()
   (skip-unless (nhwl-gui--recorder-p))
   (let ((f (car (nhwl-gui--nhwl-frames)))
@@ -160,7 +161,9 @@
                       ((characterp ev) (push ev got))))
             (quit (setq quits (1+ quits)))))))
     (should (= quits 1))
-    (should (equal (concat (nreverse got)) "abcdefghijklmnopqrstABCDEFGHIJKLMNOPQRST"))))
+    (setq got (concat (nreverse got)))
+    (should (string-prefix-p "abcdefghijklmnopqrst" got))
+    (should (string-suffix-p (substring got 20) "ABCDEFGHIJKLMNOPQRST"))))
 
 ;; A frame deleted while its input and a configure are still queued in the shell, and one deleted from a timer during
 ;; redisplay: their events give nothing, nothing touches a freed frame, and the display keeps working.
