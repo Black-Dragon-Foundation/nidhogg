@@ -971,7 +971,11 @@ PROTO (nhg_session_remove, int32_t (NhgDisplay *, uint64_t));";
         use nhglue::dnd::{
             NHG_DRAG_ALLOW_CURRENT, NHG_DRAG_FRAME, NHG_DRAG_RETURN_FRAME, NHG_DRAG_RETURN_NOW,
         };
-        use nhglue::ffi::{nhg_drag_cancel, nhg_drag_start};
+        use nhglue::dnd::{
+            NHG_DRAG_PHASE_DONE, NHG_DRAG_PHASE_DROPPED, NHG_DRAG_PHASE_LIVE,
+            NHG_DRAG_PHASE_WAITING,
+        };
+        use nhglue::ffi::{nhg_drag_cancel, nhg_drag_start, nhg_drag_state};
         let rows: &[(&str, i64)] = &[
             ("NHG_ACT_DRAG_ACTION", NHG_ACT_DRAG_ACTION.into()),
             ("NHG_ACT_DRAG_DROPPED", NHG_ACT_DRAG_DROPPED.into()),
@@ -980,11 +984,16 @@ PROTO (nhg_session_remove, int32_t (NhgDisplay *, uint64_t));";
             ("NHG_DRAG_RETURN_FRAME", NHG_DRAG_RETURN_FRAME.into()),
             ("NHG_DRAG_RETURN_NOW", NHG_DRAG_RETURN_NOW.into()),
             ("NHG_DRAG_FRAME", NHG_DRAG_FRAME.into()),
+            ("NHG_DRAG_PHASE_WAITING", NHG_DRAG_PHASE_WAITING.into()),
+            ("NHG_DRAG_PHASE_LIVE", NHG_DRAG_PHASE_LIVE.into()),
+            ("NHG_DRAG_PHASE_DROPPED", NHG_DRAG_PHASE_DROPPED.into()),
+            ("NHG_DRAG_PHASE_DONE", NHG_DRAG_PHASE_DONE.into()),
         ];
         let decls = "\
 #define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
 PROTO (nhg_drag_start, int32_t (NhgDisplay *, uint64_t, const char *const *, const uint8_t *const *, const size_t *, size_t, uint32_t, uint32_t, uint32_t));
-PROTO (nhg_drag_cancel, int32_t (NhgDisplay *));";
+PROTO (nhg_drag_cancel, int32_t (NhgDisplay *));
+PROTO (nhg_drag_state, int32_t (NhgDisplay *, uint32_t *, uint64_t *));";
         let _: unsafe extern "C" fn(
             *mut NhgDisplay,
             u64,
@@ -997,6 +1006,7 @@ PROTO (nhg_drag_cancel, int32_t (NhgDisplay *));";
             u32,
         ) -> i32 = nhg_drag_start;
         let _: unsafe extern "C" fn(*mut NhgDisplay) -> i32 = nhg_drag_cancel;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, *mut u32, *mut u64) -> i32 = nhg_drag_state;
         let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
         let got = probe(decls, &exprs);
         assert_eq!(got.len(), rows.len());
