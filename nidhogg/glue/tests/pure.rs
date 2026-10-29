@@ -260,6 +260,86 @@ mod stacking {
     }
 }
 
+mod geometry {
+    use nhglue::csd::{NHG_FIT_CONFIGURE, NHG_FIT_UNDECORATED, clamp, fit_size, to_device};
+    use nhshell::event::{NHSHELL_STATE_ACTIVATED, NHSHELL_STATE_MAXIMIZED, NHSHELL_STATE_TILED_L};
+
+    /// `nhwl_to_device`: `roundf ((float) l * (float) s / 120.0f)`, halves away from zero, in single precision.
+    #[test]
+    fn device_rounding() {
+        assert_eq!(to_device(100, 180), 150);
+        assert_eq!(to_device(1, 180), 2);
+        assert_eq!(to_device(3, 140), 4);
+        assert_eq!(to_device(-1, 180), -2);
+        // 16777217 is 16777216 as a float
+        assert_eq!(to_device(16_777_217, 120), 16_777_216);
+    }
+
+    /// `nhwl_clamp_native_size`: the surface (native area and border) within 16384 a side.
+    #[test]
+    fn surface_clamp() {
+        assert_eq!(clamp(20_000, 100, [8, 38, 8, 8]), (16_368, 100));
+        assert_eq!(clamp(16_384, 16_384, [0; 4]), (16_384, 16_384));
+        assert_eq!(clamp(16_384, 16_384, [0, 40, 0, 0]), (16_384, 16_344));
+    }
+
+    fn configure(s120: u32, l: (i32, i32), native: (i32, i32), strip: i32) -> Option<(i32, i32)> {
+        fit_size(s120, l, 0, native, [0; 4], strip, false, NHG_FIT_CONFIGURE)
+    }
+
+    /// `nhwl_configure`'s size branch: the frame keeps its size when its window geometry (native area and strip)
+    /// rounds to the compositor's; else the device size less the strip, at least 1, clamped.
+    #[test]
+    fn configure_fit() {
+        assert_eq!(configure(120, (300, 150), (200, 100), 0), Some((300, 150)));
+        assert_eq!(configure(120, (300, 150), (300, 150), 0), None);
+        assert_eq!(configure(0, (300, 150), (300, 150), 0), None, "0 as 120");
+        // the strip is the window geometry's, not the native area's
+        assert_eq!(configure(120, (300, 150), (300, 120), 30), None);
+        assert_eq!(configure(120, (300, 200), (300, 120), 30), Some((300, 170)));
+        assert_eq!(configure(120, (10, 10), (300, 120), 30), Some((10, 1)));
+        // 450 x 225 at 1.5 is 300.5 x 150.5, truncated: 300 x 150
+        assert_eq!(configure(180, (300, 150), (450, 225), 0), None);
+        assert_eq!(configure(180, (301, 150), (450, 225), 0), Some((452, 225)));
+        assert_eq!(configure(120, (0, 150), (1, 1), 0), None);
+        assert_eq!(configure(120, (150, -1), (1, 1), 0), None);
+        let big = fit_size(
+            120,
+            (20_000, 100),
+            0,
+            (10, 10),
+            [8, 38, 8, 8],
+            30,
+            false,
+            NHG_FIT_CONFIGURE,
+        );
+        assert_eq!(big, Some((16_368, 70)));
+    }
+
+    /// `nhwl_set_undecorated_hint`'s size branch: a top-level that is maximized, fullscreen or tiled fits its native
+    /// area to the compositor's size again when that differs; a floating one or a child keeps its size.
+    #[test]
+    fn undecorated_fit() {
+        let fit = |states: u32, strip: i32, child: bool| {
+            fit_size(
+                120,
+                (300, 150),
+                states,
+                (300, 150),
+                [0; 4],
+                strip,
+                child,
+                NHG_FIT_UNDECORATED,
+            )
+        };
+        assert_eq!(fit(NHSHELL_STATE_MAXIMIZED, 0, false), None);
+        assert_eq!(fit(NHSHELL_STATE_MAXIMIZED, 30, false), Some((300, 120)));
+        assert_eq!(fit(NHSHELL_STATE_TILED_L, 30, false), Some((300, 120)));
+        assert_eq!(fit(NHSHELL_STATE_ACTIVATED, 30, false), None);
+        assert_eq!(fit(NHSHELL_STATE_MAXIMIZED, 30, true), None);
+    }
+}
+
 mod snapshot {
     use nhglue::abi::NHG_E_ARG;
     use nhglue::backing::copy_rows;

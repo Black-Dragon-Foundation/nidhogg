@@ -989,14 +989,6 @@ nhwl_to_logical (int dev, uint32_t s120)
   return (int) (((int64_t) dev * 120 + s / 2) / s);
 }
 
-/* Device size of LOGICAL pixels at scale S120/120 (round half away
-   from zero, in f32 like the presenter's mutter-compatible rounding).  */
-int
-nhwl_to_device (int logical, uint32_t s120)
-{
-  return (int) roundf ((float) logical * (float) s120 / 120.0f);
-}
-
 /* F's facts the glue keeps for its window: visible, iconified, our own
    title bar.  */
 static uint32_t
@@ -1165,14 +1157,6 @@ nhwl_create_frame_window (struct frame *f)
    (struct nhwl_csd) for its drawing, applies the title bar's actions and
    paints the strip (nhwldraw.c).  */
 
-static uint32_t
-nhwl_csd_s120 (struct frame *f)
-{
-  uint32_t s = FRAME_NHWL_OUTPUT (f)->scale120;
-
-  return s ? s : 120;
-}
-
 /* Lay F's border out again: the glue's title bar from the compositor's
    decoration answer, the toplevel's states and the scale, or a child
    frame's shadow margin from its chrome and the scale.  When it changes,
@@ -1214,28 +1198,6 @@ nhwl_csd_changed (struct frame *f)
 {
   if (FRAME_NHWL_OUTPUT (f)->csd.on)
     fset_redisplay (f);
-}
-
-/* The logical size of F's window geometry (the native area and the strip),
-   and the native device size a compositor-suggested geometry of LW x LH
-   gives.  */
-static void
-nhwl_csd_geometry_size (struct frame *f, int *w, int *h)
-{
-  uint32_t s120 = nhwl_csd_s120 (f);
-
-  *w = nhwl_to_logical (FRAME_PIXEL_WIDTH (f), s120);
-  *h = nhwl_to_logical (FRAME_PIXEL_HEIGHT (f) + FRAME_NHWL_OUTPUT (f)->csd.strip,
-			s120);
-}
-
-static void
-nhwl_csd_native_size (struct frame *f, int lw, int lh, int *dw, int *dh)
-{
-  uint32_t s120 = nhwl_csd_s120 (f);
-
-  *dw = max (1, nhwl_to_device (lw, s120));
-  *dh = max (1, nhwl_to_device (lh, s120) - FRAME_NHWL_OUTPUT (f)->csd.strip);
 }
 
 /* The native-area position of the surface point LX, LY, which the shell
@@ -1300,20 +1262,6 @@ nhwl_set_title_hint (struct frame *f)
     }
 }
 
-static void nhwl_clamp_native_size (struct frame *, int *, int *);
-
-/* Push F's native size W x H (the size it asked for) to the glue.  */
-static void
-nhwl_frame_resized (struct frame *f, int w, int h)
-{
-  struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
-  uint64_t window = FRAME_NHWL_OUTPUT (f)->window;
-
-  if (window)
-    nhwl_glue_rc (dpyinfo, NHG (nhg_frame_resized (dpyinfo->glue, window,
-						   max (1, w), max (1, h))));
-}
-
 /* F's `undecorated' changed at run time (at creation the shell takes the
    flag with the window).  A top-level asks the compositor again (server
    decorations or none), and our title bar and margins come or go at once
@@ -1335,19 +1283,15 @@ nhwl_set_undecorated_hint (struct frame *f, bool undecorated)
 					     undecorated)));
   unblock_input ();
   nhwl_csd_layout (f);
-  if (!nhwl_child_p (f) && out->logical_w > 0 && out->logical_h > 0
-      && (out->states & (NHG_STATE_MAXIMIZED | NHG_STATE_FULLSCREEN
-			 | NHG_STATE_TILED_L | NHG_STATE_TILED_R
-			 | NHG_STATE_TILED_T | NHG_STATE_TILED_B)))
-    {
-      nhwl_csd_native_size (f, out->logical_w, out->logical_h, &dw, &dh);
-      nhwl_clamp_native_size (f, &dw, &dh);
-      if (dw != FRAME_PIXEL_WIDTH (f) || dh != FRAME_PIXEL_HEIGHT (f))
-	{
-	  change_frame_size (f, dw, dh, false, true, false);
-	  nhwl_frame_resized (f, dw, dh);
-	}
-    }
+  if (nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		    NHG (nhg_frame_fit (FRAME_NHG (f), out->window,
+					out->scale120, out->logical_w,
+					out->logical_h, out->states,
+					FRAME_PIXEL_WIDTH (f),
+					FRAME_PIXEL_HEIGHT (f),
+					NHG_FIT_UNDECORATED, &dw, &dh)))
+      == 1)
+    change_frame_size (f, dw, dh, false, true, false);
   nhwl_set_min_size (f);
   SET_FRAME_GARBAGED (f);
 }
@@ -1393,33 +1337,17 @@ nhwl_set_frame_alpha (struct frame *f)
   out->alpha_host = rc & NHG_ALPHA_HOST;
 }
 
-/* The largest side of a frame's surface, in device pixels.  Cairo's
-   image surfaces stop at 32767 a side, and the shell's buffer is one
-   shared-memory pool whose size the protocol carries as an int32, so
-   4 x width x height must stay under 2 GiB: 16384 x 16384 x 4 is 1 GiB.  */
-#define NHWL_MAX_SIDE 16384
-
-/* Clamp the native size *W x *H of F so that its surface (the native
-   area and our decorations) stays within NHWL_MAX_SIDE.  */
-static void
-nhwl_clamp_native_size (struct frame *f, int *w, int *h)
-{
-  struct nhwl_csd *c = &FRAME_NHWL_OUTPUT (f)->csd;
-
-  *w = min (*w, NHWL_MAX_SIDE - c->l - c->r);
-  *h = min (*h, NHWL_MAX_SIDE - c->t - c->b);
-}
-
 /* Adapted from pgtk_set_window_size.  The window's size is the size of
    the buffer we present, so the frame takes the size it asks for at
-   once (the compositor only suggests).  */
+   once (the compositor only suggests), within what a surface may be
+   (the glue clamps it).  */
 void
 nhwl_set_window_size (struct frame *f, bool change_gravity, int pixelwidth,
 		      int pixelheight)
 {
   uint64_t window = FRAME_NHWL_OUTPUT (f)->window;
 
-  nhwl_clamp_native_size (f, &pixelwidth, &pixelheight);
+  NHG (nhg_frame_clamp (FRAME_NHG (f), window, &pixelwidth, &pixelheight));
   nhwl_popup_set_size (f, pixelwidth, pixelheight);
   change_frame_size (f, pixelwidth, pixelheight, false, true, false);
   SET_FRAME_GARBAGED (f);
@@ -2407,22 +2335,23 @@ nhwl_configure (struct frame *f, const NhgAction *a)
 
   /* The compositor's size is a suggestion in logical pixels, for the window
      geometry (the native area, and the title strip when we draw one); the
-     frame keeps its own size when it already is that size once rounded.  */
-  if (a->w > 0 && a->h > 0)
-    {
-      int gw, gh, dw, dh;
+     frame keeps its own size when it already is that size once rounded.
+     The glue fits it and records the ack now, as a content ack.  */
+  {
+    int dw, dh;
 
-      nhwl_csd_geometry_size (f, &gw, &gh);
-      if (a->w != gw || a->h != gh)
-	{
-	  nhwl_csd_native_size (f, a->w, a->h, &dw, &dh);
-	  nhwl_clamp_native_size (f, &dw, &dh);
-	  change_frame_size (f, dw, dh, false, true, false);
-	  SET_FRAME_GARBAGED (f);
-	  /* The glue records the ack now, as a content ack.  */
-	  nhwl_frame_resized (f, dw, dh);
-	}
-    }
+    if (nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		      NHG (nhg_frame_fit (FRAME_NHG (f), out->window,
+					  out->scale120, a->w, a->h, states,
+					  FRAME_PIXEL_WIDTH (f),
+					  FRAME_PIXEL_HEIGHT (f),
+					  NHG_FIT_CONFIGURE, &dw, &dh)))
+	== 1)
+      {
+	change_frame_size (f, dw, dh, false, true, false);
+	SET_FRAME_GARBAGED (f);
+      }
+  }
 
   if (FRAME_VISIBLE_P (f))
     fset_redisplay (f);
