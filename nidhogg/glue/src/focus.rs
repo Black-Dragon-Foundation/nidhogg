@@ -1,3 +1,4 @@
+// Upstream commit: a360712c9d272d950d8d8255ef74570f7e90b7d9 (GNU Emacs emacs-31.1), for the "adapted from" notes below.
 //! Keyboard focus: which window has the keyboard, and the `FOCUS_IN`/`FOCUS_OUT` actions.  Moved from the C drain's
 //! `FOCUS` case (`src/nhwlterm.c`).  A popup frame's focus, and the focus a top-level lends a grabbing popup frame, give
 //! no action (`popup.rs`).  What the focus means to Emacs stays C, because it reads live Emacs state: the frame of the

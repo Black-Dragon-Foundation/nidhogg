@@ -26,6 +26,10 @@ the hook tables, `DEFUN`s) and all Cairo drawing, and calls in here through `inc
   `test-hooks`), tests and cargo-deny. `--no-run` builds the tests without running them. `--full` adds the release archive and checks that it exports every function of
   `nhglue.h` and `glitnir.h`. `--android` runs `cargo check --no-default-features --target
   aarch64-linux-android` (no NDK, no link) and exits 3 when the toolchain has no std for that target.
+- `check.sh --c-fields BUILD_DIR`: the members of `struct nhwl_output` (`src/nhwlterm.h`) are exactly the ones the
+  comment above it lists (`@fields` for the shared set, `@extra NAME: reason` for each other member). `check.sh
+  --provenance`: every file with an "adapted from" note names the upstream commit (`Upstream commit:` line, or a
+  40-digit hash on the note). Both are text checks that need neither cargo nor a container.
 - `tests/abi.rs` (`abi::header_matches_records`) compiles `nhglue.h` with `cc` and compares its constants and
   prototypes with the Rust side.
 - `nm-check.sh BUILD_DIR`, on a `--nidhogg-wayland` build: the archive's undefined symbols minus the ones it defines
@@ -80,7 +84,7 @@ C makes every call through `NHG (…)` (`src/nhwlterm.h`), which clears `waiting
 actions (`src/action.rs`, `src/drain.rs`). C applies them (the Emacs calls) before it asks again, so every decision
 sees what the earlier events changed, as the C drain did; before each call it samples `NHG_IN_*` again
 (`kbd_buffer_events_waiting ()`, `mwheel-coalesce-scroll-events`). The actions and their texts live until the next
-`nhg_next`, so the calls C makes while applying them cannot free them. Kinds 1–31 are the port's, 32–63 W2's and W3's.
+`nhg_next`, so the calls C makes while applying them cannot free them. Kinds 1–31 are the original set, 32–63 the later ones (DnD, touch, session, reconnect, layers).
 
 - **Configure** (`src/configure.rs`): a toplevel's configure gives a `RESIZE` action and an ack. The ack is a content
   ack for the window's first configure, for a change of activated, maximized or tiled under a client-side title bar,
@@ -190,7 +194,7 @@ An Emacs window that scrolls whole gets a surface of its own (`src/layers.rs`): 
 layer an own output, and the shell shows it as a content layer whose viewport source moves with each scroll, so the
 compositor uploads only the exposed rows. The glue decides; C passes facts.
 
-- **Scroll:** `nhg_scroll_window` replaces `nhg_scroll` in `nhwl_scroll_run`, with the window's box
+- **Scroll:** `nhwl_scroll_run` calls `nhg_scroll_window` with the window's box
   (`window_box (w, ANY_AREA)`) and `nhwl-scroll-layers` plus the frame's `alpha-background` as flags. A full-window
   run (it moves every row of the box but the exposed ones) on an opaque root promotes the window: a WINDOW layer with
   id `sequence_number | WINDOW_TAG` (the scroll's id too) at the box plus the title strip and margins, made an own
@@ -205,3 +209,57 @@ compositor uploads only the exposed rows. The glue decides; C passes facts.
   window on the frame and the shell unmaps the layer with the root's buffer. A quiet window with nothing published
   keeps its layer until the next publish (a redisplay), as no timer runs for it. `layers::drop_all` demotes every
   frame's (for a reconnect).
+
+## The calls
+
+Every `nhg_*` entry point of `include/nhglue.h`. **Pixels** says whether the call reads (R) or writes (W) a frame's
+backing pixels; the rest touch none (-). **macOS** is what a macOS backend would do for the same call; "same" means
+the glue's own logic carries over and only the shell's request changes. A call the platform has no counterpart for is
+accepted and does nothing, as for a missing Wayland protocol.
+
+| Call | Pixels | What it does | On macOS |
+| --- | --- | --- | --- |
+| `nhg_abi_version` | - | the ABI version | same |
+| `nhg_open` / `nhg_close` | - | connect through the shell; close and free | open an `NSApplication` connection; close it |
+| `nhg_fd` | - | descriptor readable when events are queued | a pipe the run loop writes to |
+| `nhg_dispatch_main` | - | the shell's host-thread work, then flush | pump the main run loop once |
+| `nhg_caps` | - | the shell's capabilities | fill what AppKit has (no fractional-scale protocol, scale from the screen) |
+| `nhg_frame_register` / `nhg_frame_forget` | - | add or drop a frame in the glue's table | same |
+| `nhg_frame_resized` / `nhg_frame_scale` / `nhg_frame_units` / `nhg_frame_csd` | - | push the facts a frame's decisions read | same |
+| `nhg_next` | - | take one shell event as actions | same |
+| `nhg_panic_message` / `nhg_test_panic` / `nhg_last_error` / `nhg_give_up` / `nhg_debug_check_frame` | - | panic, error and checking-build helpers | same |
+| `nhg_layer_ensure` | - | make the frame's Glitnir layer match a geometry | same (Glitnir is the compositor-independent scene) |
+| `nhg_backing` | R W | size the frame's backing and describe it | same; CoreAnimation layers could use an IOSurface instead |
+| `nhg_damage` / `nhg_damage_all` | - | damage rectangles of the frame | same |
+| `nhg_snapshot` / `nhg_snapshot_copy` | R | borrow or copy the backing | same |
+| `nhg_backing_forget` | - | drop a frame's scene and backing | same |
+| `nhg_present` | R | publish and present a tree | hand the backing to a `CALayer`; no CPU compose |
+| `nhg_presenter_thread` / `nhg_presenter_stats` | - | presenter thread switch and counters | not used (CoreAnimation composites) |
+| `nhg_bench_full_redraw` | R | time full redraws of a tree | same, with the layer commit as the end mark |
+| `nhg_selection_set` / `nhg_selection_disown` / `nhg_selection_owned` / `nhg_selection_types` / `nhg_selection_pick` / `nhg_selection_read` | - | clipboard and primary selection | `NSPasteboard` general; no primary selection |
+| `nhg_display_info` | - | what `x-display-*` reads | `NSScreen` values |
+| `nhg_bell` | - | the system bell on a window's root surface | `NSBeep` |
+| `nhg_pointer_visible` / `nhg_window_set_cursor` / `nhg_set_cursor_theme` | - | pointer shape, visibility, theme | `NSCursor`; the theme call does nothing |
+| `nhg_csd_style` / `nhg_csd_layout` / `nhg_csd_paint` / `nhg_csd_title_bar` / `nhg_csd_mix` | - | the client-side title bar: style, layout, paint record, strip, colours | not used (native title bar); `nhg_csd_mix` same |
+| `nhg_frame_offsets` | - | the backing's border around the native area | same (zero border without a title bar) |
+| `nhg_im_enable` / `nhg_im_cursor` / `nhg_im_surrounding` | - | the input method's requests | `NSTextInputClient` |
+| `nhg_monitors` / `nhg_frame_outputs` / `nhg_frame_monitors` / `nhg_monitor_origin` | - | outputs, the ones a frame is on, a monitor's device origin | `NSScreen` list |
+| `nhg_window_new` / `nhg_window_destroy` | - | make or destroy a frame's shell window | `NSWindow` |
+| `nhg_window_title` / `nhg_window_undecorated` / `nhg_window_alpha` / `nhg_window_min_size` / `nhg_window_size` | - | title, decoration, alpha, smallest size, pushed size | the matching `NSWindow` properties |
+| `nhg_window_move` / `nhg_window_resize` / `nhg_window_show_menu` / `nhg_window_activate` | - | interactive move and resize, window menu, activation | `performWindowDrag`, `NSWindow` resize, no window menu, `makeKeyAndOrderFront` |
+| `nhg_window_visible` / `nhg_window_iconify` / `nhg_window_fullscreen` | - | visibility, minimize, fullscreen | `orderFront`/`orderOut`, `miniaturize`, `toggleFullScreen` |
+| `nhg_window_wait_configured` | - | one round of the wait for the first configure | returns configured at once |
+| `nhg_frame_clamp` / `nhg_frame_fit` | - | size fitting and the surface clamp | same |
+| `nhg_tip_show` / `nhg_tip_hide` | - | tooltip popups | a borderless `NSPanel` |
+| `nhg_child_set` / `nhg_child_chrome` / `nhg_child_raise` | - | child frames: place, chrome, stacking | a child `NSWindow`, via `addChildWindow` |
+| `nhg_popup_show` / `nhg_popup_place` / `nhg_popup_size` / `nhg_popup_hide` | - | popup frames for menus | a borderless `NSPanel` with a grab |
+| `nhg_scroll_window` | W | scroll a window's rows; promote or demote its layer | same; a layer is a `CALayer` |
+| `nhg_layers_sync` / `nhg_layers_count` | - | demote layers that are gone, resized or idle; count them | same |
+| `nhg_bell_flash` / `nhg_bell_restore` | W | the visible bell's rows inverted and put back | same |
+| `nhg_inhibit_idle` | - | hold or release an idle inhibitor | `IOPMAssertion` |
+| `nhg_window_export` / `nhg_activation_token` | - | xdg-foreign handle; activation token | no counterpart (nothing, error) |
+| `nhg_session_open` / `nhg_session_id` / `nhg_session_remove` | - | the compositor's session for frame restore | state restoration, or nothing |
+| `nhg_dnd_register` / `nhg_dnd_status` / `nhg_dnd_finish` | - | drop target: types, acceptance, finish | `NSDraggingDestination` |
+| `nhg_drag_start` / `nhg_drag_cancel` / `nhg_drag_state` | - | drag source | `NSDraggingSource` |
+| `nhg_set_reconnect` / `nhg_reconnect_step` / `nhg_reconnect_settle` | - | reconnect in place after the compositor goes | not used (no compositor to lose) |
+| `nhg_premultiply` | - | a colour as a backing stores it | same |

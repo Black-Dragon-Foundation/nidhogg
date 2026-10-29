@@ -1,3 +1,4 @@
+// Upstream commit: a360712c9d272d950d8d8255ef74570f7e90b7d9 (GNU Emacs emacs-31.1), for the "adapted from" notes below.
 //! Window operations: a frame's shell window made and registered with the facts it starts from, its title,
 //! decorations, alpha, size and smallest size, its visibility, iconifying, fullscreen, destroying it, and the bounded
 //! wait for a top-level's first configure.  Moved from `src/nhwlterm.c` (`nhwl_window_new`, `nhwl_set_title_hint`,
