@@ -487,8 +487,25 @@ fn running(state: &mut State) -> Result<&mut DragRec, Value> {
 }
 
 /// `{"cmd":"drag_target","accept":MIME|null,"action":"copy"|"move"|"none"}`: the foreign target's answer, sent to the
-/// client's source now and used by `drag_drop`.
+/// client's source now and used by `drag_drop`.  The pointer drag is over the foreign target, so it leaves the
+/// client's surface first (a target of the client's own would answer the source too).
 pub fn drag_target(state: &mut State, req: &Value) -> Value {
+    if let Err(e) = running(state) {
+        return e;
+    }
+    if let Some(ptr) = state.seat.get_pointer().filter(|p| p.is_grabbed()) {
+        let time = state.time_ms();
+        ptr.motion(
+            state,
+            None,
+            &MotionEvent {
+                location: ptr.current_location(),
+                serial: SERIAL_COUNTER.next_serial(),
+                time,
+            },
+        );
+        ptr.frame(state);
+    }
     let drag = match running(state) {
         Ok(d) => d,
         Err(e) => return e,
