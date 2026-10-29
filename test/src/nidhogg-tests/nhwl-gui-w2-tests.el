@@ -1028,12 +1028,18 @@ judge the second connection."
     (gui-runner-recorder (list :cmd "key" :keycode key :state "press"))
     (gui-runner-recorder (list :cmd "key" :keycode key :state "release"))))
 
-(defun nhwl-gui--menu-run (menu on-open)
-  "Open MENU at the pointer after a click and return what `x-popup-menu' returns, or `timeout' after 10 s.
+(defun nhwl-gui--menu-run (menu on-open &optional position hold)
+  "Open MENU at POSITION (default the pointer) after a click; return what `x-popup-menu' returns, or `timeout' after 10 s.
+MENU can also be a function, called instead of `x-popup-menu', whose value is returned.
 Once its popup shows, the keyboard goes to it and ON-OPEN is called with the popup's id (from a timer: it must not
-read events).  The popup is gone afterwards."
+read events).  The popup is gone afterwards.  With HOLD the right button is pressed over the toplevel and held
+while the menu opens, as for a menu opened by a `down-mouse-3' event."
   (let ((before (nhwl-gui--popup-ids)) (timer nil) (result nil))
     (nhwl-gui--press-serial)
+    (when hold
+      (nhwl-gui--point 100 100)
+      (gui-runner-recorder '(:cmd "button" :button 273 :state "press"))
+      (nhwl-gui--pump 0.1))
     (setq timer (run-at-time 0.1 0.1
                              (lambda ()
                                (let ((new (seq-difference (nhwl-gui--popup-ids) before)))
@@ -1042,7 +1048,8 @@ read events).  The popup is gone afterwards."
                                    (gui-runner-recorder (list :cmd "focus" :surface (car new)))
                                    (funcall on-open (car new)))))))
     (unwind-protect
-        (setq result (with-timeout (10 'timeout) (x-popup-menu t menu)))
+        (setq result (with-timeout (10 'timeout)
+                       (if (functionp menu) (funcall menu) (x-popup-menu (or position t) menu))))
       (cancel-timer timer))
     (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (equal (nhwl-gui--popup-ids) before)) 5))
     result))
@@ -1426,6 +1433,288 @@ swaymsg seat - cursor set %d %d; sleep 0.5; swaymsg seat - cursor release button
       (when (process-live-p second) (delete-process second))
       (call-process "swaymsg" nil nil nil "seat" "-" "cursor" "release" "button1")
       (delete-file file))))
+
+;; Menus by pointer and touch, submenus, dialogs and the menu bar.  The pointer goes to the surface that has the
+;; keyboard (`focus'), in its own logical pixels, so a row is at x 10 and y (row + 1/2) times the character height.
+;; The steps after a menu opened run from timers (the menu's loop is reading): they send recorder commands only.
+
+(defun nhwl-gui--menu-over (id depth row)
+  "Move the pointer over row ROW of the menu level DEPTH, whose popup is ID, giving that popup the keyboard."
+  (let ((height (frame-char-height (cdr (assq depth nhwl-menu--frames)))))
+    (gui-runner-recorder (list :cmd "focus" :surface id))
+    (gui-runner-recorder (list :cmd "pointer" :pos (vector 10 (floor (* (+ row 0.5) height)))))))
+
+(defun nhwl-gui--menu-button (button &optional release-only)
+  "Press and release BUTTON (an evdev code) on the pointer's surface; only release it with RELEASE-ONLY."
+  (unless release-only
+    (gui-runner-recorder (list :cmd "button" :button button :state "press")))
+  (gui-runner-recorder (list :cmd "button" :button button :state "release")))
+
+(defun nhwl-gui--submenu-keymap ()
+  "A menu of Top and More; More holds Inner1 and Inner2.  Rows: title, separator, Top, More."
+  (let ((map (make-sparse-keymap "Menu")) (sub (make-sparse-keymap)))
+    (define-key sub [inner1] '(menu-item "Inner1" ignore))
+    (define-key sub [inner2] '(menu-item "Inner2" ignore))
+    (define-key map [top] '(menu-item "Top" ignore))
+    (define-key map [more] (list 'menu-item "More" sub))
+    map))
+
+(defun nhwl-gui--submenu-run (on-sub)
+  "Open the submenu keymap and hover More; 0.6 s later, when the submenu's popup shows, ON-SUB is called with its id
+and the parent's (from a timer).  With no submenu popup the menu is dismissed.  The result of `x-popup-menu'."
+  (let ((before (nhwl-gui--popup-ids)) (timers nil))
+    (prog1
+        (nhwl-gui--menu-run
+         (nhwl-gui--submenu-keymap)
+         (lambda (id)
+           (nhwl-gui--menu-over id 0 3)
+           (push (run-at-time 0.6 nil
+                              (lambda ()
+                                (let ((sub (car (seq-difference (nhwl-gui--popup-ids) (cons id before)))))
+                                  (if sub
+                                      (funcall on-sub sub id)
+                                    (gui-runner-recorder '(:cmd "click_outside"))))))
+                 timers)))
+      (mapc #'cancel-timer timers))))
+
+(ert-deftest nhwl-gui/context-menu-press-drag-release ()
+  "A menu opened by a `down-mouse-3' event, with the button still held, chooses the item under the release."
+  :tags '(gnome-smoke)
+  (skip-unless (nhwl-gui--recorder-p))
+  (should (equal (nhwl-gui--menu-run
+                  (nhwl-gui--menu-keymap)
+                  (lambda (id)
+                    (nhwl-gui--menu-over id 0 4)
+                    (nhwl-gui--menu-button 273 t))
+                  (list 'down-mouse-3 (posn-at-x-y 100 100 (selected-frame) t))
+                  t)
+                 '(gamma))))
+
+(ert-deftest nhwl-gui/context-menu-click-keeps-it-open ()
+  "The first click on an item of a menu opened with the button held, without a drag, only keeps the menu open;
+the second chooses."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((before (nhwl-gui--popup-ids)) (open-after-first :unset) (timers nil))
+    (unwind-protect
+        (should (equal (nhwl-gui--menu-run
+                        (nhwl-gui--menu-keymap)
+                        (lambda (id)
+                          (nhwl-gui--menu-over id 0 4)
+                          (nhwl-gui--menu-button 272)
+                          (push (run-at-time 0.4 nil
+                                             (lambda ()
+                                               (setq open-after-first
+                                                     (and (seq-difference (nhwl-gui--popup-ids) before) t))
+                                               (nhwl-gui--menu-button 272)))
+                                timers))
+                        (list 'down-mouse-3 (posn-at-x-y 100 100 (selected-frame) t))
+                        t)
+                       '(gamma)))
+      (mapc #'cancel-timer timers))
+    (should (eq open-after-first t))))
+
+(ert-deftest nhwl-gui/menu-click-outside-returns-nil ()
+  "A click outside the popup dismisses it: `x-popup-menu' returns nil and the connection is intact."
+  (skip-unless (nhwl-gui--recorder-p))
+  (should-not (nhwl-gui--menu-run (nhwl-gui--menu-keymap)
+                                  (lambda (_id) (gui-runner-recorder '(:cmd "click_outside")))))
+  (should (nhwl-gui--connected-p)))
+
+(ert-deftest nhwl-gui/menu-hover-highlights-and-help-is-echoed ()
+  "The row under the pointer is the selected one, and its :help is in the echo area."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((map (make-sparse-keymap "Menu")) (seen nil) (timers nil))
+    (define-key map [alpha] '(menu-item "Alpha" ignore :help "Alpha does nothing"))
+    (define-key map [gamma] '(menu-item "Gamma" ignore))
+    (unwind-protect
+        (nhwl-gui--menu-run
+         map
+         (lambda (id)
+           (nhwl-gui--menu-over id 0 2)
+           (push (run-at-time 0.4 nil
+                              (lambda ()
+                                (setq seen (list (buffer-local-value 'nhwl-menu--index
+                                                                     (get-buffer " *nhwl-menu-0*"))
+                                                 (current-message)))
+                                (gui-runner-recorder '(:cmd "click_outside"))))
+                 timers)))
+      (mapc #'cancel-timer timers))
+    (should (equal seen '(2 "Alpha does nothing")))
+    (should-not (current-message))))
+
+(ert-deftest nhwl-gui/menu-wheel-scrolls-a-tall-menu ()
+  "A menu taller than the display is cut to it, and the wheel scrolls its rows."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((map (make-sparse-keymap "Tall")) (seen nil) (timers nil))
+    (dotimes (i 200)
+      (define-key map (vector (intern (format "item%d" i))) (list 'menu-item (format "Item %d" i) 'ignore)))
+    (unwind-protect
+        (nhwl-gui--menu-run
+         map
+         (lambda (id)
+           (let* ((frame (cdr (assq 0 nhwl-menu--frames))) (window (frame-root-window frame)))
+             (setq seen (list (<= (frame-pixel-height frame) (display-pixel-height frame))
+                              (count-lines 1 (window-start window))))
+             (gui-runner-recorder (list :cmd "focus" :surface id))
+             (gui-runner-recorder (list :cmd "pointer" :pos (vector 10 20)))
+             (gui-runner-recorder '(:cmd "axis" :source "wheel" :v120 120))
+             (push (run-at-time 0.4 nil
+                                (lambda ()
+                                  (setq seen (append seen (list (count-lines 1 (window-start window)))))
+                                  (gui-runner-recorder '(:cmd "click_outside"))))
+                   timers))))
+      (mapc #'cancel-timer timers))
+    (should (eq (car seen) t))
+    (should (= (nth 1 seen) 0))
+    (should (> (nth 2 seen) 0))))
+
+(ert-deftest nhwl-gui/submenu-opens-and-selects ()
+  "Resting on More opens its submenu beside the row; choosing Inner2 there returns both keys."
+  :tags '(gnome-smoke)
+  (skip-unless (nhwl-gui--recorder-p))
+  (should (equal (nhwl-gui--submenu-run
+                  (lambda (sub _parent)
+                    (nhwl-gui--menu-over sub 1 1)
+                    (nhwl-gui--menu-button 272)))
+                 '(more inner2)))
+  (should (nhwl-gui--connected-p)))
+
+(ert-deftest nhwl-gui/submenu-keys-open-and-close-a-level ()
+  "Right opens the submenu of the selected row, Left closes only that level, and Escape then cancels the menu."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((before (nhwl-gui--popup-ids)) (levels nil) (timers nil))
+    (unwind-protect
+        (should-not
+         (nhwl-gui--menu-run
+          (nhwl-gui--submenu-keymap)
+          (lambda (_id)
+            (dolist (k '(108 108 106))          ; Down Down Right
+              (nhwl-gui--menu-send k))
+            (push (run-at-time 0.5 nil
+                               (lambda ()
+                                 (push (length (seq-difference (nhwl-gui--popup-ids) before)) levels)
+                                 (nhwl-gui--menu-send 105)   ; Left
+                                 (push (run-at-time 0.5 nil
+                                                    (lambda ()
+                                                      (push (length (seq-difference (nhwl-gui--popup-ids) before))
+                                                            levels)
+                                                      (nhwl-gui--menu-send 1)))
+                                       timers)))
+                  timers))))
+      (mapc #'cancel-timer timers))
+    (should (equal (reverse levels) '(2 1)))))
+
+(ert-deftest nhwl-gui/submenu-parent-deleted-closes-all ()
+  "The menu frame a submenu hangs from is deleted from a timer while the submenu shows: the menu returns nil, only the
+toplevel remains in the tree, and the connection has no protocol error."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((deleted nil))
+    (should-not (nhwl-gui--submenu-run
+                 (lambda (_sub _parent)
+                   (setq deleted t)
+                   (delete-frame (cdr (assq 0 nhwl-menu--frames)) t))))
+    (should deleted)
+    (should (nhwl-gui--connected-p))
+    (should (frame-live-p (selected-frame)))
+    (should-not (nhwl-gui--popup-ids))))
+
+(ert-deftest nhwl-gui/menu-bar-click-opens-menu ()
+  "A click on an item of the Emacs-drawn menu bar opens that item's menu below the bar."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((menu-bar-mode-was menu-bar-mode) (seen nil) (timers nil)
+        (before (nhwl-gui--popup-ids)))
+    (unwind-protect
+        (progn
+          (menu-bar-mode 1)
+          (redisplay t)
+          (nhwl-gui--menu-run
+           (lambda ()
+             (push (run-at-time 0.2 nil
+                                (lambda ()
+                                  (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
+                                  (gui-runner-recorder (list :cmd "pointer" :pos (vector 5 5)))
+                                  (nhwl-gui--menu-button 272)))
+                   timers)
+             (read-key-sequence nil))
+           (lambda (_id)
+             (let ((frame (cdr (assq 0 nhwl-menu--frames))))
+               (setq seen (list (nth 1 (frame-parameter frame 'nhwl-popup))
+                                (frame-char-height (selected-frame)))))
+             (gui-runner-recorder '(:cmd "click_outside")))))
+      (mapc #'cancel-timer timers)
+      (menu-bar-mode (if menu-bar-mode-was 1 -1)))
+    (should seen)
+    (should (>= (car seen) (cadr seen)))
+    (should (equal (nhwl-gui--popup-ids) before))))
+
+(ert-deftest nhwl-gui/f10-opens-the-menu-bar-menu ()
+  "F10 (`menu-bar-open') shows `mouse-menu-bar-map' as a menu whose rows are the menu bar's items."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((seen nil))
+    (should-not (nhwl-gui--menu-run
+                 (lambda () (menu-bar-open) nil)
+                 (lambda (_id)
+                   (setq seen (with-current-buffer (get-buffer " *nhwl-menu-0*") (buffer-string)))
+                   (nhwl-gui--menu-send 1))))
+    (should (string-match-p "File" seen))
+    (should (string-match-p "Edit" seen))))
+
+(ert-deftest nhwl-gui/dialog-box-yes-or-no ()
+  "`y-or-n-p' from a mouse command with `use-dialog-box' shows a dialog (a menu centred on the frame, the prompt as
+its title); choosing Yes returns t."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((centred nil) (title nil))
+    (should (eq t (nhwl-gui--menu-run
+                   (lambda ()
+                     (let ((use-dialog-box t)
+                           (last-nonmenu-event (list 'mouse-1 (posn-at-x-y 10 10 (selected-frame) t)))
+                           (last-input-event (list 'mouse-1 (posn-at-x-y 10 10 (selected-frame) t))))
+                       (y-or-n-p "Proceed? ")))
+                   (lambda (id)
+                     (let* ((frame (cdr (assq 0 nhwl-menu--frames))) (parent (frame-parent frame))
+                            (anchor (frame-parameter frame 'nhwl-popup)))
+                       (setq centred (and (< (abs (- (+ (nth 0 anchor) (/ (frame-pixel-width frame) 2))
+                                                     (/ (frame-pixel-width parent) 2)))
+                                             3)
+                                          (< (abs (- (+ (nth 1 anchor) (/ (frame-pixel-height frame) 2))
+                                                     (/ (frame-pixel-height parent) 2)))
+                                             3))
+                             title (with-current-buffer (get-buffer " *nhwl-menu-0*")
+                                     (buffer-substring 1 (line-end-position))))
+                       (nhwl-gui--menu-over id 0 2)
+                       (nhwl-gui--menu-button 272))))))
+    (should centred)
+    (should (string-match-p "Proceed" title))))
+
+(ert-deftest nhwl-gui/menu-touch-tap-selects ()
+  "A touch that begins and ends on one item chooses it."
+  (skip-unless (nhwl-gui--recorder-p))
+  (should (equal (nhwl-gui--menu-run
+                  (nhwl-gui--menu-keymap)
+                  (lambda (id)
+                    (let* ((height (frame-char-height (cdr (assq 0 nhwl-menu--frames))))
+                           (at (vector 10 (floor (* 4.5 height)))))
+                      (gui-runner-recorder (list :cmd "touch" :op "down" :id 0 :at at :surface id))
+                      (gui-runner-recorder (list :cmd "touch" :op "up" :id 0 :at [0 0])))))
+                 '(gamma))))
+
+(ert-deftest nhwl-gui/live-menus ()
+  "Menus on a real compositor: one opened and chosen from, a submenu opened and chosen from, one dismissed with a
+submenu open, all driven by queued events.  The trace rules (errors, popup, grab, popup-order) judge what was sent."
+  :tags '(runs-last)
+  (skip-unless (and (nhwl-gui--live-p) (nhwl-gui--nhwl-frames)))
+  (let ((map (nhwl-gui--submenu-keymap)))
+    (nhwl-gui--live-settle 0.3)
+    ;; Down Down Right Down Return: Top, More, the submenu, Inner1
+    (let ((unread-command-events (list 'down 'down 'right 'down 'return)))
+      (should (equal (x-popup-menu t map) '(more inner1))))
+    (nhwl-gui--live-settle 0.3)
+    ;; the same menus again: the frames are shown again; the compositor dismisses the stack with a submenu open
+    (let ((unread-command-events (list 'down 'down 'right
+                                       (list 'delete-frame (list (cdr (assq 0 nhwl-menu--frames)))))))
+      (should-not (x-popup-menu t map)))
+    (nhwl-gui--live-settle 0.3)
+    (should (frame-live-p (selected-frame)))))
 
 (provide 'nhwl-gui-w2-tests)
 

@@ -148,6 +148,99 @@
     (should (equal (nhwl-menu--return menu (list (nth 1 items))) '(x y)))
     (should-not (nhwl-menu--return menu nil))))
 
+;;; Submenus, the pointer and dialogs
+
+(defun nhwl-menu-test--two-levels ()
+  "A menu with an item `Top' and a submenu `More' that holds `Inner'."
+  (let ((map (make-sparse-keymap "Title"))
+        (sub (make-sparse-keymap)))
+    (define-key sub [inner] '(menu-item "Inner" ignore))
+    (define-key map [top] '(menu-item "Top" ignore))
+    (define-key map [more] (list 'menu-item "More" sub))
+    map))
+
+(ert-deftest nhwl-menu/submenu-path-return-value ()
+  "The path of a two-level choice is the key of the submenu, then the item's."
+  (let* ((map (nhwl-menu-test--two-levels))
+         (items (nhwl-menu--items map))
+         (more (nhwl-menu-test--item items "More"))
+         (inner (car (nhwl-menu--keymap-items (cdr (aref more 8))))))
+    (should (equal (nhwl-menu--return map (list more inner)) '(more inner)))))
+
+(ert-deftest nhwl-menu/activating-a-submenu-row-opens-it ()
+  "A submenu row activates as `open', an item as `choose', a title as nothing."
+  (let* ((map (nhwl-menu-test--two-levels))
+         (rows (nhwl-menu--make-rows (nhwl-menu--title map)
+                                     (nhwl-menu--items map)))
+         (buffer (nhwl-menu--buffer 90 rows)))
+    (unwind-protect
+        (with-current-buffer buffer
+          ;; rows: title, separator, Top, More
+          (nhwl-menu--select-row 2)
+          (should (eq (car (nhwl-menu--activate)) 'choose))
+          (nhwl-menu--select-row 3)
+          (should (eq (car (nhwl-menu--activate)) 'open))
+          (should (equal (nhwl-menu--label (cdr (nhwl-menu--activate)))
+                         "More"))
+          (nhwl-menu--select-row 0)
+          (should-not (nhwl-menu--activate)))
+      (kill-buffer buffer))))
+
+(ert-deftest nhwl-menu/hover-on-a-submenu-row-arms-the-delay ()
+  "Hovering a submenu row sets the time it opens; an item or a title does
+not, and selecting by key clears it."
+  (let* ((map (nhwl-menu-test--two-levels))
+         (rows (nhwl-menu--make-rows (nhwl-menu--title map)
+                                     (nhwl-menu--items map)))
+         (buffer (nhwl-menu--buffer 91 rows))
+         (nhwl-menu-submenu-delay 0.2))
+    (unwind-protect
+        (with-current-buffer buffer
+          (nhwl-menu--hover 2)
+          (should (eql nhwl-menu--index 2))
+          (should-not nhwl-menu--due)
+          (nhwl-menu--hover 3)
+          (should (eql nhwl-menu--index 3))
+          (should (> nhwl-menu--due (float-time)))
+          (should (< nhwl-menu--due (+ (float-time) 0.3)))
+          ;; a title row selects nothing
+          (nhwl-menu--hover 0)
+          (should-not nhwl-menu--index)
+          (should-not nhwl-menu--due)
+          (nhwl-menu--hover 3)
+          (nhwl-menu--move nhwl-menu--index -1)
+          (should-not nhwl-menu--due))
+      (kill-buffer buffer))))
+
+(ert-deftest nhwl-menu/pointer-and-touch-events-are-told-apart ()
+  (should (eq (nhwl-menu--mouse-kind '(down-mouse-3 nil)) 'down))
+  (should (eq (nhwl-menu--mouse-kind '(C-down-mouse-1 nil)) 'down))
+  (should (eq (nhwl-menu--mouse-kind '(drag-mouse-1 nil nil)) 'drag))
+  (should (eq (nhwl-menu--mouse-kind '(mouse-1 nil)) 'click))
+  (should (eq (nhwl-menu--mouse-kind '(double-mouse-1 nil)) 'click))
+  (should (eq (nhwl-menu--mouse-kind '(mouse-movement nil)) 'move))
+  (should (eq (nhwl-menu--mouse-kind '(wheel-up nil)) 'wheel))
+  (should (eq (nhwl-menu--mouse-kind '(wheel-down nil)) 'wheel))
+  (should (eq (nhwl-menu--mouse-kind '(touchscreen-begin (0 . nil))) 'touch-begin))
+  (should (eq (nhwl-menu--mouse-kind '(touchscreen-end (0 . nil) nil)) 'touch-end))
+  ;; keys, characters and other events are not
+  (should-not (nhwl-menu--mouse-kind 'down))
+  (should-not (nhwl-menu--mouse-kind ?a))
+  (should-not (nhwl-menu--mouse-kind '(delete-frame (nil))))
+  (should-not (nhwl-menu--mouse-kind '(touchscreen-update nil))))
+
+(ert-deftest nhwl-menu/menu-opened-by-a-held-button ()
+  "Only a `down-mouse' event opens a menu with the button held: the event given
+as the position, or for coordinates the event that ran the command."
+  (should (nhwl-menu--down-p '(down-mouse-3 nil)))
+  (should-not (nhwl-menu--down-p '(mouse-3 nil)))
+  (let ((last-nonmenu-event '(down-mouse-1 nil)))
+    (should (nhwl-menu--down-p '((0 0) nil)))
+    (should-not (nhwl-menu--down-p '(mouse-1 nil))))
+  (let ((last-nonmenu-event ?x))
+    (should-not (nhwl-menu--down-p '((0 0) nil)))
+    (should-not (nhwl-menu--down-p t))))
+
 (provide 'nhwl-menu-tests)
 
 ;;; nhwl-menu-tests.el ends here
