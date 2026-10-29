@@ -142,7 +142,7 @@ mod colours {
     use nhglue::backing::premultiply;
     use nhglue::csd::title_bar_mix;
 
-    /// W0's mix: each channel in double, truncated; (inactive foreground, background).
+    /// The original mix: each channel in double, truncated; (inactive foreground, background).
     #[test]
     fn title_bar_mix_truncates() {
         assert_eq!(title_bar_mix(0xffffff, 0x000000), (0x999999, 0x1e1e1e));
@@ -183,16 +183,18 @@ mod colours {
 mod monitors {
     use nhglue::monitors::device_origin;
 
-    /// `roundf (x * scale120 / 120.0f)` with C's types: the int position times the unsigned scale is an unsigned
-    /// product, so a negative position wraps (kept as the C had it).
+    /// `roundf (x * scale120 / 120.0f)` with a signed product: a monitor left of or above the primary has a negative
+    /// origin.
     #[test]
-    fn device_origin_as_c() {
+    fn device_origin_is_signed() {
         assert_eq!(device_origin(1920, 0, 180), (2880, 0));
         assert_eq!(device_origin(1, 3, 180), (2, 5));
         assert_eq!(device_origin(3, 1, 140), (4, 1));
         assert_eq!(device_origin(100, 100, 0), (0, 0));
-        assert_eq!(device_origin(-1920, 0, 120), (35_789_476, 0));
-        assert_eq!(device_origin(0, -1, 120), (0, 35_791_396));
+        assert_eq!(device_origin(-1920, 0, 120), (-1920, 0));
+        assert_eq!(device_origin(-1920, 0, 180), (-2880, 0));
+        assert_eq!(device_origin(0, -1080, 120), (0, -1080));
+        assert_eq!(device_origin(0, -1, 180), (0, -2));
     }
 }
 
