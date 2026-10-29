@@ -275,10 +275,13 @@ Batches go to `workers-fr-tests--collect', raw output to the property
 (ert-deftest workers/inline-framed-drain-selects-real-fd ()
   ;; Inline, a framed process's exit drain hands it back while a
   ;; grandchild still holds its stdout: the handle keeps its framer, and
-  ;; its copy is closed.  It must be selected on the real fd, never on
-  ;; the closed copy's number (EBADF aborts in select; an fd that reuses
-  ;; the number would be read as this process): the grandchild's later
-  ;; message arrives, after a file took the free fd number.
+  ;; its copy is closed.  The process is gone at its exit (as in any
+  ;; Emacs: its channel closes, so the grandchild's later message is not
+  ;; read), but the handle must never be selected on the closed copy's
+  ;; number (EBADF aborts in select; an fd that reuses the number would
+  ;; be read as this process).  A file takes the free fd numbers, the
+  ;; grandchild writes, and Emacs stays up with only the message that
+  ;; came before the exit.
   (let ((nidhogg-workers--mode 'inline)
         (nidhogg-workers-process-reader t)
         (nidhogg-workers-reader-pipes t)
@@ -303,11 +306,13 @@ Batches go to `workers-fr-tests--collect', raw output to the property
           (dotimes (i 4)
             (push (make-pipe-process :name (format "wfr-taker-%d" i) :noquery t)
                   taken))
-          (should (workers-fr-tests--until
-                   (lambda () (= 2 (length (workers-fr-tests--got proc))))
-                   5))
+          ;; Past the grandchild's write (0.5 s after the start).
+          (let ((end (+ (float-time) 1.5)))
+            (while (< (float-time) end)
+              (accept-process-output nil 0.05)))
+          (should-not (process-live-p proc))
           (should (equal (mapcar #'cadr (workers-fr-tests--got proc))
-                         '("one" "two"))))
+                         '("one"))))
       (mapc #'delete-process taken)
       (dolist (p (process-list))
         (when (string-prefix-p "wfr-" (process-name p))
