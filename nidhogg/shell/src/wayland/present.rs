@@ -330,6 +330,10 @@ impl Present {
     /// The content layers go; presenting promotes them again.
     pub(crate) fn reconnected(&mut self, me: &Arc<Mutex<Present>>, wire: &Wire) {
         self.layers.clear();
+        // a buffer handed out and never committed goes back unused
+        if let Some(s) = self.begun.take() {
+            self.pool.abandon(s);
+        }
         let Some(shm) = &wire.shm else {
             self.clear();
             return;
@@ -613,6 +617,8 @@ impl Present {
         self.notified = false;
         self.suspended = false;
         self.tree_content = false;
+        // the new compositor reports its own refresh
+        self.refresh_ns = 0;
         self.epoch += 1;
     }
 }
@@ -872,7 +878,7 @@ pub(crate) fn present_tree(
     let mut layer_jobs = Vec::new();
     {
         let mut r = lock(tree);
-        if r.retired {
+        if r.retired || wire.gone() {
             return false;
         }
         r.notified = false;
@@ -943,6 +949,11 @@ fn send(
     if r.retired {
         return false;
     }
+    if wire.gone() {
+        // the connection went during the compose: nothing goes on it, and the damage waits for the new one
+        put_back_all(tree, r, jobs, layer_jobs);
+        return false;
+    }
     let kids = r.kids.clone();
     send_kids(stage, wire, &kids, root, r, &mut jobs);
     let root_shows = r.configured
@@ -974,14 +985,36 @@ fn send(
         Counters::add(&stage.stats.bare_commits, 1);
     }
     // a child's job left over (the child went meanwhile, or its buffer could not be committed) goes back or drops
+    put_back_all(tree, r, jobs, Vec::new());
+    shown
+}
+
+/// Jobs that are not committed go back to their windows unused (`r` is the locked root, `tree` its handle), unless
+/// the window went or was made again meanwhile; the content layers' too.
+fn put_back_all(
+    tree: &Arc<Mutex<Present>>,
+    r: &mut Present,
+    jobs: Vec<Job>,
+    layer_jobs: Vec<LayerJob>,
+) {
+    for j in layer_jobs {
+        if let Some(l) = r.layers.iter_mut().find(|l| l.id == j.layer) {
+            l.put_back(j);
+        }
+    }
     for j in jobs {
+        if Arc::ptr_eq(&j.present, tree) {
+            if j.epoch == r.epoch {
+                j.put_back(r);
+            }
+            continue;
+        }
         let present = j.present.clone();
         let mut p = lock(&present);
         if !p.retired && p.epoch == j.epoch {
             j.put_back(&mut p);
         }
     }
-    shown
 }
 
 impl MainState {
@@ -1130,6 +1163,10 @@ impl MainState {
         // the first configure after a reconnect brings the picture back
         let remade = std::mem::take(&mut p.content_next);
         p.ack_content |= content || remade;
+        if remade {
+            // the tree could not commit before this configure: its frames are timed from here, not from their publish
+            p.t_open_ns = crate::wayland::publish::now_ns();
+        }
         p.ack_seq = self.mailbox.seq();
         p.notify();
     }

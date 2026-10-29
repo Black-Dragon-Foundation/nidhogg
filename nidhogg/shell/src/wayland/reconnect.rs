@@ -5,7 +5,10 @@
 //!   touch cancels, an empty `PREEDIT`, our drag's `DRAG_DONE` and then `RECONNECTING`, holds the records (nothing of
 //!   the old connection is queued after it), signals `Shared::gone` and ends the reader.  Its key repeat ends with it.
 //! - **The host takes `RECONNECTING`** (`take_record`): each window's `LEAVE_OUTPUT` goes right before it, the
-//!   presenter thread is joined, and from then on every call that would send returns `Reconnecting`.
+//!   presenter thread is joined, and from then on every call that would send returns `Reconnecting`.  The thread left
+//!   at the loss; a compose that ended after it sent nothing (`Wire::gone`) and gave its buffers back, so the stage it
+//!   hands back keeps every front, the damage waiting in them and the packets still queued.  Begun buffers, waiting
+//!   pacers and content layers belong to the old connection and go when the windows are made again.
 //! - **Each `reconnect` step** is bounded by its timeout.  One attempt lives across steps: a non-blocking connect to
 //!   the socket path saved at open (a missing, refusing or full socket waits for the next step), then `get_registry`
 //!   and `sync` on the new connection, read here until the `sync` is done.  A compositor that keeps its socket
@@ -17,7 +20,9 @@
 //!   new compositor), the seat and its devices come back on a new reader queue, every pool's buffers are made again
 //!   from their own memfds with every slot released, the presenter's wire is replaced, a new reader starts, the windows
 //!   are made again (`remake_windows`: popups closed, top-levels and children made again with their state, owned
-//!   selections offered again at the first serial) and `RECONNECTED` is posted.  A drag over us that had not dropped
+//!   selections offered again at the first serial), the presenter thread starts again if it ran (nothing presents a
+//!   tree before its new configure, whose content ack takes a packet published after it) and `RECONNECTED` is
+//!   posted.  A drag over us that had not dropped
 //!   left at the loss (`DND_LEAVE`, before `RECONNECTING`).
 
 use crate::api::*;
@@ -128,10 +133,14 @@ impl WaylandShell {
         Ok(ev)
     }
 
-    /// The host took `RECONNECTING`: the presenter thread, which left at the loss, is joined.
+    /// The host took `RECONNECTING`: the presenter thread, which left at the loss, is joined, and its stage keeps
+    /// every front for the new connection, whole.
     fn loss_taken(&mut self) {
         let presenter_was_on = self.presenting.thread.is_some();
         self.presenter_stop();
+        if let Some(stage) = self.presenting.stage.as_mut() {
+            stage.connection_lost();
+        }
         self.reconnect = Some(Reconnecting {
             attempt: None,
             presenter_was_on,

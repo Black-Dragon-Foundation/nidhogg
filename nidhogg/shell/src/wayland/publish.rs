@@ -444,6 +444,16 @@ impl Stage {
         }
     }
 
+    /// The connection went: the next compositor has none of the pictures, so the whole of every front waits for its
+    /// surface's first commit there (composed whole, and damaged whole on the new surface).
+    pub fn connection_lost(&mut self) {
+        for s in self.surfaces.values_mut() {
+            if let Some(f) = &s.front {
+                s.damage = vec![Rect::new(0, 0, f.w, f.h)];
+            }
+        }
+    }
+
     /// What surface `id`'s next buffer is: its front's size and the damage that waits.
     pub fn next_frame(&self, id: u64) -> Option<(i32, i32, Vec<Rect>)> {
         let s = self.surfaces.get(&id)?;

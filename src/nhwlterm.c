@@ -2560,7 +2560,10 @@ nhwl_scale_changed (struct frame *f, uint32_t scale120)
    A->code.  The glue holds the configure and records its ack: a content
    ack when the frame's size changes here (the push below), and for the
    cases the glue decides itself (the first configure, a client-side title
-   bar's state change).  */
+   bar's state change).  The first configure on a connection (at
+   creation, or after a reconnect) redraws the frame: its content ack
+   goes with a packet published after it, and nothing else asks for a
+   redisplay when the size stays.  */
 static void
 nhwl_configure (struct frame *f, const NhgAction *a)
 {
@@ -2568,6 +2571,8 @@ nhwl_configure (struct frame *f, const NhgAction *a)
   uint32_t states = a->code;
   Lisp_Object fs = Qnil;
 
+  if (!out->configured)
+    SET_FRAME_GARBAGED (f);
   out->logical_w = a->w;
   out->logical_h = a->h;
   out->configured = true;
@@ -3305,9 +3310,11 @@ nhwl_reconnecting (struct nhwl_display_info *dpyinfo, const NhgAction *a)
 }
 
 /* The display is back (NHG_ACT_RECONNECTED): every frame, child frames
-   included, is damaged whole, so the redraw at its first configure on
-   the new connection publishes its whole picture; nothing presents
-   here.  The reads ask the glue what is due from now on.  */
+   included, is damaged whole, and every top-level waits for its first
+   configure on the new connection, which redraws it (nhwl_configure), so
+   the publish after that configure's ack carries the tree's whole
+   picture; nothing presents here.  The reads ask the glue what is due
+   from now on.  */
 static void
 nhwl_reconnected (struct nhwl_display_info *dpyinfo)
 {
@@ -3317,8 +3324,13 @@ nhwl_reconnected (struct nhwl_display_info *dpyinfo)
   dpyinfo->reconnecting = false;
   dpyinfo->reconnect_settling = true;
   for (o = dpyinfo->outputs; o; o = o->next_output)
-    if (o->window && o->glitnir_id)
-      nhwl_damage_all (o->frame);
+    {
+      if (o->window && o->glitnir_id)
+	nhwl_damage_all (o->frame);
+      if (o->window && !nhwl_child_p (o->frame)
+	  && !nhwl_popup_frame_p (o->frame) && !FRAME_TOOLTIP_P (o->frame))
+	o->configured = false;
+    }
 }
 
 /* What is due after a reconnect (nhg_reconnect_settle): `reconnected'
