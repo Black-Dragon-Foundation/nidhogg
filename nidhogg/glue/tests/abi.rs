@@ -23,7 +23,7 @@ mod abi {
     use nhglue::ffi::{nhg_frame_forget, nhg_frame_register, nhg_panic_message};
     use nhglue::ffi::{nhg_present, nhg_presenter_stats, nhg_presenter_thread};
     use nhglue::frame::*;
-    use nhglue::keys::NHG_KEY_REPEAT;
+    use nhglue::keys::{NHG_KEY_CHAR, NHG_KEY_REPEAT, NHG_KEY_SYMBOL, NHG_KEY_TEXT};
     use nhglue::present::*;
     use nhglue::query::{NhgDisplayInfo, NhgMonitor};
     use std::ffi::c_char;
@@ -244,6 +244,9 @@ mod abi {
             ),
             // the keyboard
             ("NHG_KEY_REPEAT", NHG_KEY_REPEAT.into()),
+            ("NHG_KEY_CHAR", NHG_KEY_CHAR.into()),
+            ("NHG_KEY_SYMBOL", NHG_KEY_SYMBOL.into()),
+            ("NHG_KEY_TEXT", NHG_KEY_TEXT.into()),
             // selections, display queries and the bench
             ("sizeof (NhgMonitor)", size_of::<NhgMonitor>() as i64),
             ("offsetof (NhgMonitor, x)", offset_of!(NhgMonitor, x) as i64),
