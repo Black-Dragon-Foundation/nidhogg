@@ -511,7 +511,6 @@ extern unsigned nhwl_csd_font (const char **, double *);
 extern void nhwl_csd_push_style (struct nhwl_display_info *);
 extern void nhwl_use_im_context (bool);
 extern int nhwl_to_logical (int, uint32_t);
-extern int nhwl_to_device (int, uint32_t);
 
 /* Child frames (subsurfaces of the parent frame's window): their layout,
    margin, position, mapping and stacking are the glue's (child.rs);
