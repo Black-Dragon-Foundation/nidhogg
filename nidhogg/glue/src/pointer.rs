@@ -41,14 +41,27 @@ fn leave(state: &mut Display, ev: &Record) {
     }
 }
 
-/// A `BUTTON`: a `CLICK` action, `code` the evdev button, `flags` the `NHSHELL_BUTTON_*` state, `dx` and `dy` the
-/// position, `mods` the keyboard's.
+/// The Emacs mouse button of evdev button `button` (0 left, 1 middle, 2 right, 7 back, 8 forward; -1: none).  Moved
+/// from `nhwl_button_code` (`src/nhwlterm.c`).
+pub fn button_code(button: u32) -> i32 {
+    match button {
+        0x110 => 0,         // BTN_LEFT
+        0x112 => 1,         // BTN_MIDDLE
+        0x111 => 2,         // BTN_RIGHT
+        0x113 | 0x116 => 7, // BTN_SIDE, BTN_BACK
+        0x114 | 0x115 => 8, // BTN_EXTRA, BTN_FORWARD
+        _ => -1,
+    }
+}
+
+/// A `BUTTON`: a `CLICK` action, `code` the Emacs button (`button_code`; -1: none, whose press still focuses), `flags`
+/// the `NHSHELL_BUTTON_*` state, `dx` and `dy` the position, `mods` the keyboard's.
 fn button(state: &mut Display, ev: &Record, p: &PointerEv) {
     if state.frame(ev.window).is_err() {
         return;
     }
     let mut a = NhgAction::new(NHG_ACT_CLICK, ev.window, ev.time_ns);
-    a.code = p.button as i32;
+    a.code = button_code(p.button);
     a.flags = p.state;
     a.dx = p.x;
     a.dy = p.y;
