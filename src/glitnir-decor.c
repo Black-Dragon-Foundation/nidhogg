@@ -24,8 +24,8 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
    glitnir_snap_rect / glitnir_snap_line at the surface's device scale
    (1 on the shell, whose frames are device pixels).
 
-   From P1.5/PD's pgtk file (gl15-i2f3), re-pointed to the shell (W1
-   Task 16): the backing is nhwl's, damage goes through nhwl_damage, and a
+   From Nidhogg's own pgtk file for the same drawing, re-pointed to the
+   shell: the backing is nhwl's, damage goes through nhwl_damage, and a
    frame has one Glitnir layer, so a window's label anchors live in its
    frame's layer, clipped to the window's box.  */
 
@@ -253,8 +253,8 @@ premul (struct frame *f, unsigned long pixel)
    kernel (glitnir_decor_corners) for the CORNERS (1 top left, then
    clockwise) and Cairo rectangles on the device grid for the ring's straight
    EDGES (1 top, 2 right, 4 bottom, 8 left): a Cairo fill along a curve costs
-   several microseconds, the kernel's cached tile one OVER or copy pass
-   (R-D1).  BENEATH[SIDE] is the colour outside the arcs on each side.  FILL
+   several microseconds, the kernel's cached tile one OVER or copy pass.
+   BENEATH[SIDE] is the colour outside the arcs on each side.  FILL
    0 composes over the box just drawn; else the corner squares are repainted,
    FILL inside the ring.  False, with nothing drawn, when the kernel cannot
    draw it the way draw_ring would: a raised or sunken box, unequal line

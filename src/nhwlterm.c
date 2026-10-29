@@ -19,7 +19,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 
 /* This file implements Emacs's terminal hooks against the shell glue
    (nhglue.h) once; it never calls Wayland.  Functions adapted from
-   pgtkterm.c name their origin in their comment.  The frame's pixel unit
+   pgtkterm.c name their origin in their comment; the upstream commit is
+   a360712c9d272d950d8d8255ef74570f7e90b7d9 (GNU Emacs emacs-31.1), for
+   every "Adapted from" note in this file.  The frame's pixel unit
    is the device pixel, so a scale change re-fonts the frame as a move
    between monitors does, and no drawing happens at a fractional scale.
 
@@ -436,23 +438,6 @@ nhwl_cr_destroy_frame_context (struct frame *f)
     {
       cairo_surface_destroy (out->cr_surface);
       out->cr_surface = NULL;
-    }
-}
-
-/* Adapted from pgtk_cr_update_surface_desired_size: the backing is
-   re-created at the new size on its next use, and the frame redrawn.  */
-void
-nhwl_cr_update_surface_desired_size (struct frame *f, int width, int height,
-				     bool force)
-{
-  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
-
-  if (out->cr_width != width || out->cr_height != height || force)
-    {
-      nhwl_cr_destroy_frame_context (f);
-      out->cr_width = width;
-      out->cr_height = height;
-      SET_FRAME_GARBAGED (f);
     }
 }
 
@@ -1533,8 +1518,7 @@ nhwl_make_frame_visible (struct frame *f)
     }
 }
 
-/* Adapted from pgtk_make_frame_invisible.  The shell has no unmap in W0:
-   the frame stops being presented.  */
+/* Adapted from pgtk_make_frame_invisible.  */
 void
 nhwl_make_frame_invisible (struct frame *f)
 {
@@ -1877,8 +1861,8 @@ nhwl_focus_changed (bool is_enter, int state,
 
 static void nhwl_im_update (struct frame *);
 
-/* TO, a frame of root R's tree, takes the keys of R's window from now on
-   (W1-7).  While R's window has the keyboard, Emacs's focus moves with
+/* TO, a frame of root R's tree, takes the keys of R's window from now on.
+   While R's window has the keyboard, Emacs's focus moves with
    them, as on X11 when a child frame takes the input focus: a focus-out
    for the frame that had it, unless that frame is being deleted (GONE),
    and a focus-in for TO.  */
@@ -2294,7 +2278,7 @@ nhwl_scale_changed (struct frame *f, uint32_t scale120)
 	    gui_set_font (f, font_object, get_frame_param (f, Qfont));
 	}
     }
-  /* Images were made for the old device size (P1.5 Task 27): they are
+  /* Images were made for the old device size: they are
      made again at the new one.  Like the fonts above, from the drain, not
      inside redisplay.  */
   clear_image_cache (f, Qnil);
@@ -2628,7 +2612,7 @@ nhwl_use_im_context (bool on)
 }
 
 /* The frame a key or input-method event of F's window goes to: the frame
-   of F's tree that Emacs focused (W1-7); for no window, the focus frame.  */
+   of F's tree that Emacs focused; for no window, the focus frame.  */
 static struct frame *
 nhwl_key_frame (struct nhwl_display_info *dpyinfo, struct frame *f)
 {
@@ -3486,7 +3470,7 @@ nhwl_read_socket (struct terminal *terminal, struct input_event *hold_quit)
   return n;
 }
 
-/* No popup menus in W0 (nil hooks).  */
+/* No toolkit menu is ever active: menus are popup frames.  */
 int
 popup_activated (void)
 {
@@ -4120,7 +4104,7 @@ Each frame waits for the previous one's frame callback.  Return
 (:frames N :compose-p50 MS :compose-p95 MS :present-interval-p95 MS):
 the time one present took on Emacs's thread (the publish, and inline the
 commit, buffer, compose and attach) and the time between two presents.
-The motion bench of the W0 budgets; it runs through the presenter, on
+The motion bench of the budgets table; it runs through the presenter, on
 its thread or inline.  */)
   (Lisp_Object n)
 {
