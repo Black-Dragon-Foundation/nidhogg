@@ -3,7 +3,7 @@
 //! A root's scene holds frame layers (the root's own surface), window layers (a window's rectangle on its frame's
 //! surface) and child nodes (a child frame's surface, with its windows and nested children under it). Every
 //! rectangle is in the root's device pixels. The host changes the scene at any time; a commit compares it with the
-//! last committed scene and returns the scene damage (§6.2):
+//! last committed scene and returns the scene damage:
 //!
 //! - each frame's (or child frame's) own damage, clipped to its layer and moved into the root's coordinates;
 //! - a scroll operation: its window layer's rectangle (P1 composes a scroll as damage);
@@ -769,7 +769,7 @@ mod tests {
         let c = shadow();
         s.upsert(&desc(10, ROOT, 3, r, 2.0, true)).unwrap();
         s.set_chrome(10, Some(c)).unwrap();
-        // the image Task 30's tiles draw: pad above and left of the layer, then the offset
+        // the image the shadow tiles draw: pad above and left of the layer, then the offset
         let tiles = ShadowCache::new().get(
             r.w as u32,
             r.h as u32,

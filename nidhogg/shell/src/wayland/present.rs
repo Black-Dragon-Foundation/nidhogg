@@ -88,7 +88,7 @@ pub(crate) struct Recorded {
     /// Show nothing: the commit attaches no buffer (a commit with one maps the surface again instead).
     pub(crate) unmap: bool,
     pub(crate) alpha: Option<u32>,
-    /// A top-level's window geometry: it goes only with a buffer (present path §3.1).
+    /// A top-level's window geometry: it goes only with a buffer.
     pub(crate) geometry: Option<Rect>,
     /// A waiting pacer asks again: a frame callback and an empty commit, unless the tree's commit is paced anyway.
     pub(crate) rearm: bool,

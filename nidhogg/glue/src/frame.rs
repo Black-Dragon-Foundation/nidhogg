@@ -18,7 +18,7 @@ pub const NHG_FACT_ICONIFIED: u32 = 2;
 /// The frame draws its own title bar (the glue's title-bar layout sets it, `nhg_csd_layout`).
 pub const NHG_FACT_CSD: u32 = 4;
 
-/// The Emacs facts a frame's decisions read, as C pushes them (design §3.3); `nhg_debug_check_frame` compares them with
+/// The Emacs facts a frame's decisions read, as C pushes them; `nhg_debug_check_frame` compares them with
 /// Emacs's own values in a checking build.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

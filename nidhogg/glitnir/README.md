@@ -32,7 +32,7 @@ views (`kernels::{Pixels, PixelsMut, Mask}`).
 - `decor_corners` (C: `glitnir_decor_corners`) draws a decorated box's rounded corners (PD) from one premultiplied
   tile per (radius, border, colours) built from those masks (`decor_tile`, the 32 most recently used): OVER the
   pixels for a box just drawn, replacing the corner squares for the repaint of a run's end. A Cairo fill along a
-  curve costs several µs per call; the tile is a copy or one OVER pass (R-D1, Task 14).
+  curve costs several µs per call; the tile is a copy or one OVER pass.
 - `shadow::ShadowCache` holds nine-slice shadow tiles (one corner tile mirrored four ways, two 1-D edge profiles and
   the middle value) of the Gaussian-blurred rounded rectangle in closed form (Evan Wallace's method, 8 samples), keyed
   by size class, radius, blur, spread, colour and scale, the 64 most recently used. σ = blur / 2; the shadow reaches

@@ -1,5 +1,5 @@
 //! The client-side title bar: its layout, hit tests and buttons' state, the window geometry, and the strip's draw
-//! list.  Moved from `src/nhwlcsd.c` (W0, and W1 Task 19's full title bar; foot's render.c CSD was the reference, the
+//! list.  Moved from `src/nhwlcsd.c` (the title bar with the full button set; foot's render.c CSD was the reference, the
 //! code was written fresh).  Its painting stays C: `nhwl_csd_draw` (`src/nhwldraw.c`) paints the `NhgCsdPaint` record
 //! with Cairo, in the colours and font it resolves from Lisp.
 //!
@@ -9,7 +9,7 @@
 //! frame has no border, a maximized one only the strip, and a tiled side no margin.  Everything is device pixels
 //! except the protocol (the strip's 32 and the margin's 8 are logical).
 //!
-//! The facts it reads (design §3.3): the scale and `undecorated` are pulled (arguments of `nhg_csd_layout`), the title
+//! The facts it reads: the scale and `undecorated` are pulled (arguments of `nhg_csd_layout`), the title
 //! and what else C paints from is pulled as one hash (`nhg_csd_paint`), the native size is pulled at each paint, and
 //! the toplevel's states are the glue's own configure state.  Hit tests use the native size of the last paint, the
 //! size the surface shows.
@@ -95,7 +95,7 @@ pub struct NhgCsdPaint {
 }
 
 /// The title bars' style, from Lisp (`nhwl--set-title-bar-style`): the buttons of each side in order.  Before Lisp
-/// says, the buttons are W0's.  `generation` counts the changes.
+/// says, the buttons are minimize, maximize and close on the right.  `generation` counts the changes.
 #[derive(Debug, Default)]
 pub struct Style {
     styled: bool,
@@ -199,7 +199,7 @@ fn buttons(style: &Style, c: &Csd, w: i32) -> ([(u32, i32); NHG_CSD_MAX_BUTTONS]
     let mut v = [(0, 0); NHG_CSD_MAX_BUTTONS];
     let mut n = 0;
     if !style.styled {
-        // W0's: minimize, maximize, close on the right
+        // the default: minimize, maximize, close on the right
         for (k, kind) in [NHG_CSD_MIN, NHG_CSD_MAX, NHG_CSD_CLOSE]
             .into_iter()
             .enumerate()
@@ -352,7 +352,7 @@ fn check_size(w: i32, h: i32) -> Result<(), GlueError> {
     }
 }
 
-/// The title bar's colours when the style names no background (W0's mix, moved from `nhwl_csd_colours`): the frame's
+/// The title bar's colours when the style names no background (the original mix, moved from `nhwl_csd_colours`): the frame's
 /// background `bg` 12% toward its foreground `fg`, and the foreground of an inactive window whose style names none,
 /// the mixed background 55% toward the frame's foreground.  0xRRGGBB each; every channel is mixed in `double` and
 /// truncated, as C did.  `(fg, bg)`.

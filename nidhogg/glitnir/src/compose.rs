@@ -1314,7 +1314,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "a bench: Task 39 runs it on the bench machine; never a CI gate"]
+    #[ignore = "a bench: it runs on the bench machine; never a CI gate"]
     fn compose_bench_fits_budget() {
         // a 640×400 logical popup at scale 2 with the default look (radius 8, blur 16, offset (0, 6), opacity 0.35;
         // a 1 px border) shows on a 2880×1800 root: the damage is its bounds, composed with the baseline kernels

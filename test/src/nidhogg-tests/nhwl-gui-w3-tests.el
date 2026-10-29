@@ -1,14 +1,14 @@
-;;; nhwl-gui-w3-tests.el --- GUI rows for the native shell's W3 (the presenter)  -*- lexical-binding: t -*-
+;;; nhwl-gui-w3-tests.el --- GUI rows for the native shell's presenter  -*- lexical-binding: t -*-
 
-;; Run by nidhogg/test/gui.sh with the W1 rows (nhwl-gui-tests.el, loaded first: its helpers are used here).  Rows
+;; Run by nidhogg/test/gui.sh with the base rows (nhwl-gui-tests.el, loaded first: its helpers are used here).  Rows
 ;; that drive the compositor need `--compositor recorder'; rows named `nhwl-gui/live-*' run on real compositors and
-;; are judged by the trace checker.  Each W3 task appends its rows under its own heading.
+;; are judged by the trace checker.  Each feature appends its rows under its own heading.
 
 (require 'ert)
 (require 'nhwl-gui-tests)
 (require 'nhwl-gui-w2-tests)                ; nhwl-gui--connected-p
 
-;; W3 Task 8: the presenter thread.  With `nhwl-presenter-thread' on, a thread of the shell composes and commits each
+;; The presenter thread.  With `nhwl-presenter-thread' on, a thread of the shell composes and commits each
 ;; tree when its pacer opens; the main thread only publishes.  `(nhwl-presenter-stats)' carries `:main-wait-max-ns',
 ;; the longest the main thread waited for the presenter.
 

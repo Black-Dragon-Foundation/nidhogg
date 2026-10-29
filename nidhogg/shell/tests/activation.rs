@@ -22,7 +22,7 @@ struct Recorder {
 impl Recorder {
     fn start(profile: &str) -> Recorder {
         let bin = std::env::var_os("NH_RECORDER")
-            .expect("NH_RECORDER is not set (the path of S0's nh-recorder binary)");
+            .expect("NH_RECORDER is not set (the path of the nh-recorder binary)");
         static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let dir =

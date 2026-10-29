@@ -1,7 +1,7 @@
-//! Popup windows: `xdg_popup`s placed by an `xdg_positioner`, for tips that must stay on screen (plan call W1-3) and
-//! for menus, which grab the keyboard and pointer (W2-5).
+//! Popup windows: `xdg_popup`s placed by an `xdg_positioner`, for tips that must stay on screen and
+//! for menus, which grab the keyboard and pointer.
 //!
-//! A popup's configures are recorded acks (present path §3.1): the first, the first after it was made again and the
+//! A popup's configures are recorded acks (see `present.rs`): the first, the first after it was made again and the
 //! first after a new size are content acks; one after `repositioned` is a bare ack.  The compositor dismissing it
 //! posts `POPUP_DONE`.
 //!
@@ -104,7 +104,7 @@ impl WaylandShell {
         Err(ShellError::State)
     }
 
-    /// The serial a new grabbing popup on window `base` grabs with, or `None` when it must not grab (W2-5).
+    /// The serial a new grabbing popup on window `base` grabs with, or `None` when it must not grab.
     fn grab_serial(&self, base: WindowId) -> Option<u32> {
         if self.shared.dragging.load(Ordering::Acquire) {
             return None;
