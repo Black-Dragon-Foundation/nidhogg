@@ -158,10 +158,10 @@ impl Monitors {
 /// The display's backend, for the calls that need no state of ours.
 ///
 /// # Safety
-/// `sh` is the display's live handle (`Display::shell`), and nothing else uses the backend while the result lives.
-pub(crate) unsafe fn backend<'a>(sh: *mut nhshell::ffi::NhShell) -> &'a mut dyn ShellBackend {
-    // SAFETY: a live handle (the caller's promise).
-    unsafe { &mut *sh }.backend_mut()
+/// `sh` is the display's live backend (`Display::shell`), and nothing else uses it while the result lives.
+pub(crate) unsafe fn backend<'a>(sh: *mut dyn ShellBackend) -> &'a mut dyn ShellBackend {
+    // SAFETY: a live backend (the caller's promise).
+    unsafe { &mut *sh }
 }
 
 /// The display as `x-display-*` reads it now.

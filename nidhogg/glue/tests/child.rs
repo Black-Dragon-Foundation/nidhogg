@@ -50,8 +50,8 @@ fn close(d: *mut NhgDisplay) {
 
 /// The shell inside `d`, for what the glue does not wrap yet (making windows, records).
 fn shell<'a>(d: *mut NhgDisplay) -> &'a mut dyn ShellBackend {
-    // SAFETY: a live display's shell handle, used only between glue calls.
-    unsafe { (*nhg_shell(d)).backend_mut() }
+    // SAFETY: a live display's backend, used only between glue calls.
+    unsafe { &mut *(*d).backend_ptr() }
 }
 
 /// The next record satisfying `want` within 5 s; other records are dropped.

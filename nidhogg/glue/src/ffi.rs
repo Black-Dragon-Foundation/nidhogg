@@ -4,8 +4,8 @@
 //! display, `catch_unwind`.  A panic poisons its display and returns `NHG_E_PANIC`; the glue never aborts Emacs.
 
 use crate::abi::{
-    NHG_ABI_VERSION, NHG_E_ARG, NHG_E_DISCONNECTED, NHG_E_NOMEM, NHG_E_PANIC, NHG_E_STATE,
-    NHG_E_UNSUPPORTED, NHG_OK,
+    NHG_ABI_VERSION, NHG_E_ARG, NHG_E_DISCONNECTED, NHG_E_NOMEM, NHG_E_PANIC, NHG_E_UNSUPPORTED,
+    NHG_OK,
 };
 use crate::action::{NhgActionList, NhgNextIn};
 use crate::backing::{NhgBacking, NhgFrameGeom, NhgRect};
@@ -14,9 +14,10 @@ use crate::guard::GlueError;
 use crate::present::{self, NhgPresenterStats, NhgSurface};
 use crate::{configure, drain};
 use crate::{tip, window};
-use nhshell::ffi::{NhShell, nhshell_close, nhshell_open, nhshell_wake_fd};
+use nhshell::caps::NhShellCaps;
 use std::ffi::c_char;
-use std::ptr::{self, NonNull};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::ptr;
 
 /// Why opening failed, for the caller's message.
 fn reason(rc: i32) -> String {
@@ -51,22 +52,13 @@ unsafe fn put_text(buf: *mut c_char, cap: usize, text: &str) {
 /// # Safety
 /// `display` is null or NUL-terminated.
 unsafe fn open(display: *const c_char) -> Result<*mut NhgDisplay, i32> {
-    let mut sh: *mut NhShell = ptr::null_mut();
-    // SAFETY: `display` is null or NUL-terminated (the caller's promise); `sh` is a writable local.
-    let rc = unsafe { nhshell_open(display, &mut sh) };
-    match NonNull::new(sh) {
-        Some(shell) if rc >= 0 => {
-            // SAFETY: the open succeeded, and the handle goes nowhere else.
-            let d = unsafe { NhgDisplay::new(shell) };
-            Ok(Box::into_raw(Box::new(d)))
-        }
-        Some(shell) => {
-            // SAFETY: a handle the failed open left behind is released here (none is expected).
-            unsafe { nhshell_close(shell.as_ptr()) };
-            Err(rc)
-        }
-        None => Err(if rc < 0 { rc } else { NHG_E_STATE }),
-    }
+    // SAFETY: `display` is null or NUL-terminated (the caller's promise).
+    let display = (!display.is_null()).then(|| unsafe { CStr::from_ptr(display) });
+    // a panic in the backend's open is the shell's (NHG_E_PANIC), and poisons nothing: there is no display yet
+    let shell = catch_unwind(AssertUnwindSafe(|| nhshell::open(display)))
+        .map_err(|_| NHG_E_PANIC)?
+        .map_err(|e| e.code())?;
+    Ok(Box::into_raw(Box::new(NhgDisplay::new(shell))))
 }
 
 nhg_export! {
@@ -129,18 +121,33 @@ nhg_export! {
     /// # Safety
     /// `d` is null or a live display.
     fn nhg_fd(d: *mut NhgDisplay) -> i32 |state| {
-        // SAFETY: the shell handle lives as long as the display.
-        Ok(unsafe { nhshell_wake_fd(state.shell()) })
+        Ok(state.backend().wake_fd())
     }
 }
 
 nhg_export! {
-    /// The shell handle inside `d`, for the `nhshell_*` calls not yet ported; null if `d` is null or poisoned.
+    /// Run the shell's work that must happen on the host's thread (configure and surface events) and flush.
     ///
     /// # Safety
-    /// `d` is null or a live display.  The handle is valid until `nhg_close (d)`.
-    fn nhg_shell(d: *mut NhgDisplay) -> *mut NhShell |state| {
-        Ok(state.shell())
+    /// `d` is null or a live display.
+    fn nhg_dispatch_main(d: *mut NhgDisplay) -> i32 |state| {
+        state.backend().dispatch_main()?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Copy the shell's capabilities to `*out` (`NhgCaps`).
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `out` is null or writable.
+    fn nhg_caps(d: *mut NhgDisplay, out: *mut NhShellCaps) -> i32 |state| {
+        if out.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe { out.write(state.backend().caps()) };
+        Ok(NHG_OK)
     }
 }
 
@@ -931,6 +938,90 @@ nhg_export! {
     /// `d` is null or a live display.
     fn nhg_window_undecorated(d: *mut NhgDisplay, window: u64, on: i32) -> i32 |state| {
         window::undecorated(state, window, on != 0)?;
+        Ok(NHG_OK)
+    }
+}
+
+/// `p` as UTF-8, or `Arg` (also for null).
+///
+/// # Safety
+/// `p` is null or NUL-terminated, valid for `'a`.
+unsafe fn c_text<'a>(p: *const c_char) -> Result<&'a str, GlueError> {
+    if p.is_null() {
+        return Err(GlueError::Arg);
+    }
+    // SAFETY: non-null and NUL-terminated (the caller's promise).
+    unsafe { CStr::from_ptr(p) }
+        .to_str()
+        .map_err(|_| GlueError::Arg)
+}
+
+nhg_export! {
+    /// Start an interactive move of `window` with the latest input serial.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_window_move(d: *mut NhgDisplay, window: u64) -> i32 |state| {
+        state.backend().move_window(window)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Start an interactive resize of `window` from `edges` (`NHSHELL_EDGE_*`) with the latest input serial.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_window_resize(d: *mut NhgDisplay, window: u64, edges: u32) -> i32 |state| {
+        state.backend().resize(window, edges)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Show the window menu of `window` at `x`, `y` (logical pixels in its surface) with the latest input serial.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_window_show_menu(d: *mut NhgDisplay, window: u64, x: i32, y: i32) -> i32 |state| {
+        state.backend().show_menu(window, x, y)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// The pointer shape over `window` (`NHSHELL_CURSOR_*`).
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_window_set_cursor(d: *mut NhgDisplay, window: u64, shape: u32) -> i32 |state| {
+        state.backend().set_cursor(window, shape)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Ask the compositor to activate `window` with `token` (null: one the shell requests).
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `token` is null or NUL-terminated.
+    fn nhg_window_activate(d: *mut NhgDisplay, window: u64, token: *const c_char) -> i32 |state| {
+        // SAFETY: null or NUL-terminated, valid for the call (the caller's promise).
+        let token = if token.is_null() { None } else { Some(unsafe { c_text(token) }?) };
+        state.backend().window_activate(window, token)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// The Xcursor theme `name` and logical `size`, for a compositor without cursor shapes.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `name` is NUL-terminated.
+    fn nhg_set_cursor_theme(d: *mut NhgDisplay, name: *const c_char, size: u32) -> i32 |state| {
+        // SAFETY: null or NUL-terminated, valid for the call (the caller's promise).
+        let name = unsafe { c_text(name) }?;
+        state.backend().set_cursor_theme(name, size)?;
         Ok(NHG_OK)
     }
 }

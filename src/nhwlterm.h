@@ -17,8 +17,8 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 
-/* The glue between Emacs's terminal and redisplay interfaces and the shell
-   API (nidhogg/shell/include/nhshell.h).  The shell owns the Wayland
+/* The hooks between Emacs's terminal and redisplay interfaces and the shell
+   glue (nidhogg/glue/include/nhglue.h).  The shell owns the Wayland
    connection and the reader thread; nothing here calls Wayland.  The frame's
    pixel unit is the device pixel: logical sizes appear only at the protocol.
    Adapted from pgtkterm.h, without GDK.  */
@@ -36,7 +36,7 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include <cairo.h>
 
-#include "nhshell.h"
+#include "glitnir.h"
 #include "nhglue.h"
 
 /* Adapted from pgtk_bitmap_record (image.c uses this one under the same
@@ -82,13 +82,11 @@ struct nhwl_display_info
   /* The generic display parameters corresponding to this display.  */
   struct terminal *terminal;
 
-  /* The glue's display (NULL once the display is gone), the shell
-     connection inside it (for the calls not yet made through the glue)
-     and the descriptor that is readable when it has events for us.  */
+  /* The glue's display (NULL once the display is gone) and the
+     descriptor that is readable when it has events for us.  */
   NhgDisplay *glue;
-  NhShell *shell;
   int connection;
-  NhShellCaps caps;
+  NhgCaps caps;
 
   /* Set when the display's first top-level frame has been given its
      session name (and Lisp has opened the session).  */
@@ -145,7 +143,7 @@ struct nhwl_display_info
   /* Xism */
   XrmDatabase rdb;
 
-  /* Cursors for the shared code: the shape's NHSHELL_CURSOR_* plus one.  */
+  /* Cursors for the shared code: the shape's NHG_CURSOR_* plus one.  */
   Emacs_Cursor vertical_scroll_bar_cursor;
   Emacs_Cursor horizontal_scroll_bar_cursor;
   Emacs_Cursor invisible_cursor;
@@ -234,7 +232,7 @@ struct nhwl_output
   /* Copies of the glue's configure state that C still reads, set when C
      applies a RESIZE action.  */
   int logical_w, logical_h;	/* the compositor's last suggestion, logical px */
-  uint32_t states;		/* NHSHELL_STATE_* of the last configure */
+  uint32_t states;		/* NHG_STATE_* of the last configure */
   bool configured;		/* a configure has been seen (the toplevel is mapped) */
 
   /* The retained backing: the frame's pixels, device size.  The glue owns
@@ -398,9 +396,8 @@ enum
   (! (FRAME_HAS_VERTICAL_SCROLL_BARS_ON_LEFT (f)) ? 0	\
    : FRAME_SCROLL_BAR_COLS (f))
 
-/* The shell's window (a 64-bit id) of frame F, and its display's shell.  */
+/* The shell's window (a 64-bit id) of frame F, and its display's glue.  */
 #define FRAME_NHWL_WINDOW(f) (FRAME_NHWL_OUTPUT (f)->window)
-#define FRAME_NHWL_SHELL(f) (FRAME_DISPLAY_INFO (f)->shell)
 #define FRAME_NHG(f) (FRAME_DISPLAY_INFO (f)->glue)
 
 /* Nidhogg's own parameters that map to nothing outside the shell: the
@@ -527,7 +524,7 @@ extern struct frame *nhwl_window_frame (uint64_t);
 extern bool nhwl_child_p (struct frame *);
 extern struct frame *nhwl_tree_root (struct frame *);
 extern void nhwl_tip_dismissed (struct frame *);
-extern void nhwl_child_describe (struct frame *, NhShellWindowDesc *);
+extern void nhwl_child_describe (struct frame *, NhgWindowDesc *);
 extern void nhwl_child_created (struct frame *);
 extern void nhwl_child_set_visible (struct frame *, bool);
 extern void nhwl_child_reposition (struct frame *);
@@ -607,7 +604,7 @@ nhwl_glue_rc (struct nhwl_display_info *dpyinfo, int32_t rc)
   return rc;
 }
 
-extern int nhwl_window_new (struct frame *, NhShellWindowDesc *, uint32_t,
+extern int nhwl_window_new (struct frame *, NhgWindowDesc *, uint32_t,
 			    uint64_t *);
 extern void nhwl_window_destroy (struct nhwl_display_info *, uint64_t);
 extern void nhwl_window_forget (struct nhwl_display_info *, uint64_t);

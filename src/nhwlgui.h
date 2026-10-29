@@ -44,7 +44,7 @@ typedef unichar XChar2b;
 #define XCHAR2B_BYTE2(chp) \
   (*(chp) & 0x00ff)
 
-/* The pointer shape of a frame: an NHSHELL_CURSOR_* value plus one, so that NULL is "none".  */
+/* The pointer shape of a frame: an NHG_CURSOR_* value plus one, so that NULL is "none".  */
 typedef void *Emacs_Cursor;
 
 typedef void *Color;

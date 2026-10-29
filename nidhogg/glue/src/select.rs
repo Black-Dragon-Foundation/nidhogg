@@ -132,8 +132,8 @@ impl Select {
 /// The display's backend and its selection state, split so that both can be borrowed at once.
 fn split(state: &mut Display) -> (&mut Select, &mut dyn ShellBackend) {
     let sh = state.shell();
-    // SAFETY: the handle lives as long as the display, and `select` is a field it does not touch.
-    let backend = unsafe { &mut *sh }.backend_mut();
+    // SAFETY: the backend lives as long as the display, and `select` is a field it does not touch.
+    let backend = unsafe { &mut *sh };
     (&mut state.select, backend)
 }
 
@@ -159,7 +159,7 @@ pub fn owned(state: &mut Display, kind: u32) -> Result<bool, GlueError> {
 pub fn types(state: &mut Display, kind: u32) -> Result<(usize, &[u8]), GlueError> {
     let sh = state.shell();
     // SAFETY: as in `split`.
-    let backend = unsafe { &mut *sh }.backend_mut();
+    let backend = unsafe { &mut *sh };
     state.select.types(backend, kind)
 }
 
@@ -176,7 +176,7 @@ pub fn read<'a>(
     }
     let sh = state.shell();
     // SAFETY: as in `split`.
-    let backend = unsafe { &mut *sh }.backend_mut();
+    let backend = unsafe { &mut *sh };
     state.select.read(backend, kind, mime, timeout_ms)
 }
 

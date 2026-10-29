@@ -4,6 +4,7 @@
 //! required ones are `compositor` >= 4, `subcompositor`, `seat`, `xdg_wm_base` >= 2 and the shm global, which has no
 //! field because opening fails without it.
 
+/// C reads it as `NhgCaps` (`nhglue.h`, `nhg_caps` and the glue's `NhgDisplayInfo`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct NhShellCaps {

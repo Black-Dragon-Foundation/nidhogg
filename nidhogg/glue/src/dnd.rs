@@ -130,8 +130,8 @@ pub fn event(state: &mut Display, ev: &Record) {
     }
     let known = state.frame(ev.window).is_ok();
     let sh = state.shell();
-    // SAFETY: the handle lives as long as the display, and `dnd` and `actions` are fields it does not touch.
-    let backend = unsafe { &mut *sh }.backend_mut();
+    // SAFETY: the backend lives as long as the display, and `dnd` and `actions` are fields it does not touch.
+    let backend = unsafe { &mut *sh };
     let (dnd, actions) = (&mut state.dnd, &mut state.actions);
     match ev.kind() {
         Kind::DndEnter => {
@@ -185,8 +185,8 @@ pub fn register(state: &mut Display, window: u64, mimes: Vec<String>) -> Result<
 /// `time_ms`.  True when the shell was told, false for a stale call or without a drag to answer.
 pub fn status(state: &mut Display, action: u32, time_ms: u32) -> Result<bool, GlueError> {
     let sh = state.shell();
-    // SAFETY: the handle lives as long as the display, and `dnd` is a field it does not touch.
-    let backend = unsafe { &mut *sh }.backend_mut();
+    // SAFETY: the backend lives as long as the display, and `dnd` is a field it does not touch.
+    let backend = unsafe { &mut *sh };
     let dnd = &mut state.dnd;
     if !dnd.over || dnd.refused || dnd.dropped || older(time_ms, dnd.enter_ms) {
         return Ok(false);
@@ -217,7 +217,7 @@ pub fn status(state: &mut Display, action: u32, time_ms: u32) -> Result<bool, Gl
 pub fn finish(state: &mut Display, success: bool, time_ms: u32) -> Result<bool, GlueError> {
     let sh = state.shell();
     // SAFETY: as in `status`.
-    let backend = unsafe { &mut *sh }.backend_mut();
+    let backend = unsafe { &mut *sh };
     let dnd = &mut state.dnd;
     if !dnd.dropped || older(time_ms, dnd.enter_ms) {
         return Ok(false);
@@ -403,8 +403,8 @@ pub fn drag_input(state: &mut Display, ev: &Record) {
 fn own_drag(state: &mut Display, ev: &Record, d: &DndEv) {
     let known = state.frame(ev.window).is_ok();
     let sh = state.shell();
-    // SAFETY: the handle lives as long as the display, and `dnd` and `actions` are fields it does not touch.
-    let backend = unsafe { &mut *sh }.backend_mut();
+    // SAFETY: the backend lives as long as the display, and `dnd` and `actions` are fields it does not touch.
+    let backend = unsafe { &mut *sh };
     let (out, actions) = (&mut state.dnd.out, &mut state.actions);
     match ev.kind() {
         Kind::DndEnter => {

@@ -335,7 +335,7 @@ GLITNIR_OBJ=@GLITNIR_OBJ@
 GLITNIR_LIBS=@GLITNIR_LIBS@
 GLITNIR_SRCDIR=@GLITNIR_SRCDIR@
 GLITNIR_ENV=@GLITNIR_ENV@
-## Under --with-nidhogg-wayland the library is libnhglue.a (nidhogg/glue, which carries every nhshell_* and glitnir_*
+## Under --with-nidhogg-wayland the library is libnhglue.a (nidhogg/glue, which carries the shell and every glitnir_*
 ## symbol) and GLITNIR_CRATE_DEPS lists the crates whose sources rebuild it (the glue, the shell, glitnir).
 GLITNIR_CRATE_DEPS=@GLITNIR_CRATE_DEPS@
 GLITNIR_CRATE_INCLUDE=@GLITNIR_CRATE_INCLUDE@
