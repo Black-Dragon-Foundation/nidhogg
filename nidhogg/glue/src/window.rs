@@ -16,7 +16,9 @@ use crate::configure;
 use crate::display::Display;
 use crate::frame::{Frame, NHG_FACT_CSD, NHG_FACT_ICONIFIED, NHG_FACT_VISIBLE, NHG_FRAME_CHILD};
 use crate::guard::GlueError;
-use nhshell::api::{Anchor, ChildDesc, NHSHELL_KIND_TOPLEVEL, ShellError, WindowDesc};
+use nhshell::api::{
+    Anchor, ChildDesc, NHSHELL_KIND_CHILD, NHSHELL_KIND_TOPLEVEL, ShellError, WindowDesc,
+};
 use std::ffi::c_char;
 
 /// Where a popup goes (the shell's `Anchor`: a rectangle in the parent's surface in logical pixels, a gravity and
@@ -59,7 +61,9 @@ pub struct NhgWindowDesc {
     pub kind: u32,
     /// Children and popups: the parent window.
     pub parent: u64,
-    /// Children: the offset in the parent (logical pixels).
+    /// Children: where the surface starts in the parent's native area (device pixels: the frame's left and top less
+    /// its own margin); the glue adds the parent's border and gives the shell logical pixels at `scale120`
+    /// (`child::new_offset`).
     pub x: i32,
     pub y: i32,
     /// Popups: where to put it.
@@ -150,11 +154,16 @@ pub fn new(
             .backend()
             .window_new_named(&desc, Some(session_name))?
     } else {
+        let (x, y) = if d.kind == NHSHELL_KIND_CHILD {
+            crate::child::new_window_offset(state, d)
+        } else {
+            (d.x, d.y)
+        };
         state.backend().child_new(&ChildDesc {
             kind: d.kind,
             parent: d.parent,
-            x: d.x,
-            y: d.y,
+            x,
+            y,
             w: d.w,
             h: d.h,
             anchor: d.anchor,

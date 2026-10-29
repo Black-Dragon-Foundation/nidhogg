@@ -1,5 +1,5 @@
 //! T1 tests of child frames through the glue (`child.rs`) against nh-recorder (manual clock).  Each test stands in for
-//! C: it makes the windows as `nhwl_create_frame_window` does (a child at the position `nhwl_child_describe` gives),
+//! C: it makes the windows as `nhwl_create_frame_window` does (a child at the position `child::new_offset` gives),
 //! pushes the child's facts and chrome where C does, lays the border out (`nhg_csd_layout`), runs the publish step
 //! (`nhg_csd_paint`) and the layer step (`nhg_layer_ensure`) for each drawable frame, and presents the tree.  The
 //! recorder's `tree` reply shows what the compositor applied; a child's state applies with its root's commit.
@@ -156,9 +156,9 @@ fn offsets(d: *mut NhgDisplay, id: u64) -> [i32; 4] {
     o
 }
 
-fn stack(d: *mut NhgDisplay, id: u64, siblings: &[u64], z_group: i32) -> i32 {
-    // SAFETY: a live display; `siblings` is readable for the call.
-    unsafe { nhg_child_stack(d, id, siblings.as_ptr(), siblings.len(), z_group) }
+fn raise(d: *mut NhgDisplay, id: u64, raise: i32, z_group: i32) -> i32 {
+    // SAFETY: a live display.
+    unsafe { nhg_child_raise(d, id, raise, z_group) }
 }
 
 /// A frame's backing in the glue, as C keeps it: its window, its key, its native size and its border.
@@ -447,11 +447,11 @@ mod child {
         close(d);
     }
 
-    /// A raise or lower stacks the child against its neighbour in the order C gives (bottom to top), whatever its
-    /// z-group (C ordered the list); it applies with the root's commit.  A window that is not in the list, or a list
-    /// with no window, is refused; a child alone changes nothing.
+    /// A child made goes above its siblings; a raise puts it above the highest, a lower below the lowest, whatever its
+    /// z-group (the glue keeps the order); it applies with the root's commit.  A window that is not a child is
+    /// refused; a child alone changes nothing.
     #[test]
-    fn stack_follows_sibling_order_and_z_group() {
+    fn raise_and_lower_follow_the_glues_order() {
         let rec = Recorder::start_clock("sway", "manual");
         let d = open(&rec);
         let root = toplevel(d, 200, 100);
@@ -463,31 +463,28 @@ mod child {
         rec.wait_node(root, |n| n.contains(&order(a, b)));
 
         // a raised (z-group above)
-        assert_eq!(stack(d, a, &[b, a], 1), NHG_OK);
+        assert_eq!(raise(d, a, 1, 1), NHG_OK);
         still(&rec, root, |n| n.contains(&order(a, b)));
         ready(d, root);
         rec.wait_node(root, |n| n.contains(&order(b, a)));
         tick(&rec, d);
 
         // a lowered (z-group below)
-        assert_eq!(stack(d, a, &[a, b], 2), NHG_OK);
+        assert_eq!(raise(d, a, 0, 2), NHG_OK);
         ready(d, root);
         rec.wait_node(root, |n| n.contains(&order(a, b)));
         tick(&rec, d);
 
         // b raised with no z-group: above a
-        assert_eq!(stack(d, b, &[a, b], 0), NHG_OK);
+        assert_eq!(raise(d, b, 1, 0), NHG_OK);
         rec.wait_node(root, |n| n.contains(&order(a, b)));
 
-        assert_eq!(stack(d, a, &[b], 0), NHG_E_ARG);
-        assert_eq!(stack(d, a, &[0, a], 0), NHG_E_ARG);
-        // SAFETY: a live display; a null list.
-        assert_eq!(
-            unsafe { nhg_child_stack(d, a, ptr::null(), 0, 0) },
-            NHG_E_ARG
-        );
-        assert_eq!(stack(d, root, &[root], 0), NHG_E_STATE, "not a child");
-        assert_eq!(stack(d, a, &[a], 0), NHG_OK, "alone");
+        assert_eq!(raise(d, root, 1, 0), NHG_E_STATE, "not a child");
+        assert_eq!(raise(d, 0, 1, 0), NHG_E_STATE, "no window");
+        let lone = toplevel(d, 100, 100);
+        let c = child(d, lone, 0, 0, 10, 10);
+        assert_eq!(raise(d, c, 1, 0), NHG_OK, "alone");
+        assert_eq!(raise(d, c, 0, 0), NHG_OK, "alone");
         close(d);
     }
 
