@@ -303,6 +303,9 @@ and the root's damage stays in the mode line (and the one-row overlap a fraction
   (skip-unless (nhwl-gui--layers-p))
   (nhwl-gui--with-layer-buffer
    (lambda ()
+     ;; an echo-area message (the startup one) has its last cell drawn again by each scroll's redisplay, outside the
+     ;; mode line
+     (message nil)
      (should (= (nhwl-gui--scroll-promote) 1))
      (gui-runner-wait-settled)
      ;; frame pixels are device pixels here; the layer is the window's box snapped outward (one row or column more)
@@ -310,16 +313,34 @@ and the root's damage stays in the mode line (and the one-row overlap a fraction
             (line (frame-char-height))
             (width (window-pixel-width))
             (mode-y0 (+ top (nth 3 (window-inside-pixel-edges)) -1))
-            (mode-y1 (+ top (nth 3 (window-pixel-edges)) 1)))
+            (mode-y1 (+ top (nth 3 (window-pixel-edges)) 1))
+            (rebases 0) (last-y nil))
        (dotimes (_ 20)
-         (let ((mark (nhwl-gui--mark)))
+         (let ((mark (nhwl-gui--mark)) (cs nil))
            (scroll-up 1)
            (redisplay t)
            (gui-runner-wait-settled)
-           (let ((layer (apply #'append (mapcar #'nhwl-gui--damage (nhwl-gui--layer-commits mark))))
+           ;; the ring's view going back to the middle of its buffers (it would have left them) draws the whole view
+           ;; there, by design: once in (ring rows - view rows) / 2 rows of scrolling, at most once here
+           (dolist (c (nhwl-gui--layer-commits mark))
+             (let ((y (nhwl-gui--ring-middle-y c)))
+               (if (and y (car y) (not (equal last-y y)))
+                   (setq rebases (1+ rebases))
+                 (push c cs))
+               (setq last-y y)))
+           (let ((layer (apply #'append (mapcar #'nhwl-gui--damage cs)))
                  (root (apply #'append (mapcar #'nhwl-gui--damage (nhwl-gui--new mark)))))
              (should (<= (nhwl-gui--area layer) (* 3 (1+ line) (1+ width))))
-             (should (seq-every-p (lambda (r) (nhwl-gui--rect-in-p r mode-y0 mode-y1)) root)))))))))
+             (should (seq-every-p (lambda (r) (nhwl-gui--rect-in-p r mode-y0 mode-y1)) root)))))
+       (should (<= rebases 1))))))
+
+(defun nhwl-gui--ring-middle-y (c)
+  "Layer commit C's view: (MIDDLE-P . Y), Y its row in the buffer, MIDDLE-P when that is the middle (where a new or
+rebased ring shows its view); nil without a buffer and viewport source."
+  (let ((h (plist-get (plist-get c :buffer) :h)) (src (nhwl-gui--get (plist-get c :viewport) :src)))
+    (when (and h src)
+      (let ((y (round (nth 1 src))))
+        (cons (= y (/ (- h (round (nth 3 src))) 2)) y)))))
 
 (ert-deftest nhwl-gui/presenter-scroll-never-writes-a-held-buffer ()
   "Under the recorder's kwin profile (it holds buffers): 200 one-line scrolls back to back, without waiting for the
