@@ -1716,6 +1716,141 @@ submenu open, all driven by queued events.  The trace rules (errors, popup, grab
     (nhwl-gui--live-settle 0.3)
     (should (frame-live-p (selected-frame)))))
 
+;; Losing the display.  When the compositor goes and nothing waits for it (here `nhwl-reconnect' is nil), the
+;; display's frames are deleted, every loop waiting on the display ends, and the daemon stays.  The recorder's
+;; `restart' in mode `gone' drops every client until `restart_up', as a compositor that quits does.  The rows end the
+;; session's connection, so they run last and only under `--daemon' (Emacs outlives its last display there); each opens
+;; a frame on the display again at its end, so the rows after it find one.
+
+(defun nhwl-gui--lose-display (&optional delay)
+  "End the session's connection for good; from a timer DELAY seconds later when DELAY is non-nil (the timer)."
+  (if delay
+      (run-at-time delay nil (lambda () (nhwl-gui--restart "gone")))
+    (nhwl-gui--restart "gone")
+    nil))
+
+(defun nhwl-gui--display-gone-p ()
+  "Read events for up to 3 s until no frame of the session's display is left; non-nil then."
+  (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (null (nhwl-gui--nhwl-frames))) 3))
+
+(defun nhwl-gui--display-terminal-p (display)
+  "Non-nil when a live terminal is named DISPLAY."
+  (seq-some (lambda (term) (equal (terminal-name term) display)) (terminal-list)))
+
+(defun nhwl-gui--reopen-display ()
+  "Serve the session's display again and select a new frame on it, once it has drawn; the frame."
+  (ignore-errors (gui-runner-recorder '(:cmd "restart_up")))
+  (let ((f (make-frame-on-display (getenv "WAYLAND_DISPLAY"))))
+    (select-frame f)
+    (nhwl-gui--wait (lambda () (with-selected-frame f (redisplay t)) (nhwl-gui--toplevel-commits)) 5)
+    f))
+
+(ert-deftest nhwl-gui/display-lost-with-everything-open ()
+  "A child frame, a tooltip and a menu are open when the compositor goes for good: `x-popup-menu' returns nil and
+signals nothing, no frame and no terminal of the display is left, the daemon stays, and the connection hook runs
+`lost' once, with the display's name."
+  :tags '(runs-last)
+  (skip-unless (and (nhwl-gui--recorder-p) (daemonp)))
+  (let ((nhwl-reconnect nil) (display (getenv "WAYLAND_DISPLAY")) (names nil) (timer nil) (result 'unset) (err nil))
+    (unwind-protect
+        (nhwl-gui--with-connection-log
+         (let ((note (lambda (name _state) (push name names))))
+           (add-hook 'nhwl-display-connection-functions note)
+           (unwind-protect
+               (progn
+                 (nhwl-gui--child)
+                 (x-show-tip "a tip" nil nil 60)
+                 (nhwl-gui--press-serial)
+                 (setq timer (nhwl-gui--lose-display 0.5))
+                 (setq result (condition-case e
+                                  (with-timeout (10 'timeout)
+                                    (x-popup-menu (list '(40 40) (selected-frame))
+                                                  '("Menu" ("Pane" ("one" . 1) ("two" . 2)))))
+                                (error (setq err e) 'error)))
+                 (should-not err)
+                 (should-not result)
+                 (should (nhwl-gui--display-gone-p))
+                 (should-not (nhwl-gui--display-terminal-p display))
+                 (should (daemonp))
+                 (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) nhwl-gui--connection-log) 2))
+                 (nhwl-gui--pump 0.3)
+                 (should (equal nhwl-gui--connection-log '(lost)))
+                 (should (equal names (list display))))
+             (remove-hook 'nhwl-display-connection-functions note))))
+      (when timer (cancel-timer timer))
+      (nhwl-gui--reopen-display))))
+
+(ert-deftest nhwl-gui/display-lost-during-drag-out ()
+  "A drag out of Emacs is in flight when the compositor goes for good: `x-begin-drag' returns nil and signals nothing,
+no frame of the display is left, and the daemon stays."
+  :tags '(runs-last)
+  (skip-unless (and (nhwl-gui--recorder-p) (daemonp) (fboundp 'x-begin-drag)))
+  (let ((nhwl-reconnect nil) (timer nil) (result 'unset) (err nil))
+    (unwind-protect
+        (nhwl-gui--with-connection-log
+         (ignore-errors (gui-set-selection 'XdndSelection "dragged text"))
+         (nhwl-gui--point 100 100)
+         (gui-runner-recorder '(:cmd "button" :button 272 :state "press"))
+         (nhwl-gui--pump 0.2)
+         (setq timer (nhwl-gui--lose-display 0.3))
+         (setq result (condition-case e
+                          (with-timeout (10 'timeout)
+                            (x-begin-drag '("text/plain;charset=utf-8") 'XdndActionCopy nil nil t))
+                        (error (setq err e) 'error)))
+         (should-not err)
+         (should-not result)
+         (should (nhwl-gui--display-gone-p))
+         (should (daemonp))
+         (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (memq 'lost nhwl-gui--connection-log)) 2)))
+      (when timer (cancel-timer timer))
+      (nhwl-gui--reopen-display))))
+
+(ert-deftest nhwl-gui/display-restart-twenty-cycles ()
+  "Twenty cycles of a frame, a child frame and a tooltip, then a compositor restart (`NHWL_GUI_RESTART') with
+reconnecting off: each time the display's frames are deleted and the daemon stays.  After cycle 20 the descriptor and
+thread counts equal cycle 5's, VmRSS grew less than 8 MiB since cycle 5, and `make-frame-on-display' works."
+  :tags '(runs-last)
+  (skip-unless (and (nhwl-gui--recorder-p) (daemonp) (gui-runner-restart-available-p)))
+  (let ((nhwl-reconnect nil) (display (getenv "WAYLAND_DISPLAY")) (at5 nil) (f nil))
+    (unwind-protect
+        (progn
+          (dotimes (i 20)
+            (setq f (or (car (nhwl-gui--nhwl-frames)) (make-frame-on-display display)))
+            (select-frame f)
+            (nhwl-gui--child)
+            (x-show-tip (format "cycle %d" i) nil nil 60)
+            (nhwl-gui--pump 0.2)
+            (gui-runner-restart-compositor)
+            (should (nhwl-gui--display-gone-p))
+            (should (daemonp))
+            (x-hide-tip)
+            (when (= i 4)
+              (garbage-collect)
+              (setq at5 (nhwl-gui--proc-counts))))
+          (garbage-collect)
+          (let ((at20 (nhwl-gui--proc-counts)))
+            (should (= (nth 0 at20) (nth 0 at5)))
+            (should (= (nth 1 at20) (nth 1 at5)))
+            (should (< (- (nth 2 at20) (nth 2 at5)) (* 8 1024)))))
+      (should (frame-live-p (nhwl-gui--reopen-display))))))
+
+(ert-deftest nhwl-gui/live-sway-restart ()
+  "sway is killed and started again on the same socket (`NHWL_GUI_RESTART') with reconnecting off: the display's
+frames are deleted, the daemon stays, and a new frame opens on the new sway.  The trace rule `errors' judges the second
+connection."
+  :tags '(runs-last)
+  (skip-unless (and (nhwl-gui--live-p) (daemonp) (gui-runner-restart-available-p)
+                    (equal (getenv "GLITNIR_GUI_COMPOSITOR") "sway")))
+  (let ((nhwl-reconnect nil) (f nil))
+    (nhwl-gui--live-settle 0.5)
+    (gui-runner-restart-compositor)
+    (should (nhwl-gui--display-gone-p))
+    (should (daemonp))
+    (setq f (make-frame-on-display (getenv "WAYLAND_DISPLAY")))
+    (select-frame f)
+    (nhwl-gui--live-settle 0.5)
+    (should (frame-live-p f))))
+
 (provide 'nhwl-gui-w2-tests)
 
 ;;; nhwl-gui-w2-tests.el ends here

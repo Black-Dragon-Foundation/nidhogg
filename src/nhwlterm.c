@@ -140,12 +140,75 @@ check_x_display_info (Lisp_Object frame)
   return check_nhwl_display_info (frame);
 }
 
-/* The compositor went away.  The display's frames and its terminal are
-   deleted without running Lisp, and the session goes on on its other
-   frames (another display, a tty, the daemon's own frame).  With no
-   frame left Emacs exits with status 70, as xterm does: before the
-   deletion, since delete_frame would otherwise kill Emacs from inside
-   it.  WHY says what happened.  Frees DPYINFO.  */
+static void nhwl_connection_hook (struct nhwl_display_info *, Lisp_Object);
+static void nhwl_reconnect_disarm (struct nhwl_display_info *);
+
+/* The text of the protocol error that ended DPYINFO's connection, into
+   BUF (CAP bytes); empty after a plain hangup, or when the glue is
+   poisoned.  */
+static void
+nhwl_last_error (struct nhwl_display_info *dpyinfo, char *buf, size_t cap)
+{
+  size_t len = 0;
+
+  buf[0] = 0;
+  if (dpyinfo->glue && !dpyinfo->glue_broken
+      && NHG (nhg_last_error (dpyinfo->glue, buf, cap, &len)) != NHG_OK)
+    buf[0] = 0;
+}
+
+/* How deep F hangs when it is a shown popup frame of DPYINFO (1: the
+   popup of a frame that has no parent), else 0.  */
+static int
+nhwl_lost_popup_depth (struct frame *f, struct nhwl_display_info *dpyinfo)
+{
+  int depth = 1;
+
+  if (!FRAME_LIVE_P (f) || !nhwl_popup_frame_p (f)
+      || FRAME_DISPLAY_INFO (f) != dpyinfo || !FRAME_VISIBLE_P (f))
+    return 0;
+  for (f = FRAME_PARENT_FRAME (f); f; f = FRAME_PARENT_FRAME (f))
+    depth++;
+  return depth;
+}
+
+/* A `delete-frame' event for each shown popup frame of DPYINFO, the
+   deepest first, as a compositor dismisses them: a menu waiting in its
+   loop reads them and returns nil.  Its frames are dead by then.  */
+static void
+nhwl_lost_popups (struct nhwl_display_info *dpyinfo)
+{
+  Lisp_Object tail, frame;
+  struct input_event ie;
+  int depth, deepest = 0;
+
+  FOR_EACH_FRAME (tail, frame)
+    {
+      depth = nhwl_lost_popup_depth (XFRAME (frame), dpyinfo);
+      if (depth > deepest)
+	deepest = depth;
+    }
+  for (depth = deepest; depth > 0; depth--)
+    FOR_EACH_FRAME (tail, frame)
+      if (nhwl_lost_popup_depth (XFRAME (frame), dpyinfo) == depth)
+	{
+	  EVENT_INIT (ie);
+	  ie.kind = DELETE_WINDOW_EVENT;
+	  ie.arg = Qnil;
+	  ie.frame_or_window = frame;
+	  kbd_buffer_store_event (&ie);
+	}
+}
+
+/* The compositor went away, and nothing waits for it to come back
+   (reconnecting is off, failed or timed out), or the glue panicked.  The
+   display's frames and its terminal are deleted without running Lisp,
+   and the session goes on on its other frames (another display, a tty,
+   the daemon's own frame).  With no frame left Emacs exits with status
+   70, as xterm does: before the deletion, since delete_frame would
+   otherwise kill Emacs from inside it.  WHY says what happened; the
+   message adds the protocol error's text when there was one.  This is
+   the one way a display goes when its compositor does.  Frees DPYINFO.  */
 static void
 nhwl_connection_lost (struct nhwl_display_info *dpyinfo, const char *why)
 {
@@ -163,10 +226,31 @@ nhwl_connection_lost (struct nhwl_display_info *dpyinfo, const char *why)
     }
   if (!other)
     {
-      fprintf (stderr, "nidhogg-wayland: %s\n", why);
+      char detail[512];
+
+      nhwl_last_error (dpyinfo, detail, sizeof detail);
+      if (detail[0])
+	fprintf (stderr, "nidhogg-wayland: %s: %s\n", why, detail);
+      else
+	fprintf (stderr, "nidhogg-wayland: %s\n", why);
       shut_down_emacs (0, Qnil);
       exit (70);
     }
+
+  /* Before the frames go: no reconnect tick or settle is due any more;
+     the glue lets go of what it held for the connection (a poisoned glue
+     is not asked); a menu waiting in its loop is told that its popups
+     went; and Lisp hears `lost', from a timer, so after the deletion.
+     Each frame's deletion then cancels its bell's timer and frees its
+     backing, and with it its Glitnir root.  A selection or drop read
+     that waited on the display has already returned nil: the shell
+     ended it when the connection went.  */
+  nhwl_reconnect_disarm (dpyinfo);
+  dpyinfo->reconnecting = dpyinfo->reconnect_settling = false;
+  if (dpyinfo->glue && !dpyinfo->glue_broken)
+    nhwl_glue_rc (dpyinfo, NHG (nhg_give_up (dpyinfo->glue)));
+  nhwl_lost_popups (dpyinfo);
+  nhwl_connection_hook (dpyinfo, Qnhwl_lost);
 
   FOR_EACH_FRAME (tail, frame)
     if (FRAME_NHWL_P (XFRAME (frame))
@@ -4447,6 +4531,8 @@ syms_of_nhwlterm (void)
 	  "nhwl-display-connection-functions");
   DEFSYM (Qnhwl_reconnecting, "reconnecting");
   DEFSYM (Qnhwl_reconnected, "reconnected");
+  /* The display is given up (nhwl_connection_lost).  */
+  DEFSYM (Qnhwl_lost, "lost");
 
   DEFSYM (QCpackets, ":packets");
   DEFSYM (QCsuperseded, ":superseded");

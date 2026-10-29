@@ -913,6 +913,20 @@ PROTO (nhg_reconnect_settle, int32_t (NhgDisplay *, uint64_t *, uint32_t *));";
     }
 
     #[test]
+    fn give_up_header_matches() {
+        use nhglue::ffi::{nhg_give_up, nhg_last_error};
+        let decls = "\
+#define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
+PROTO (nhg_give_up, int32_t (NhgDisplay *));
+PROTO (nhg_last_error, int32_t (NhgDisplay *, char *, size_t, size_t *));";
+        let _: unsafe extern "C" fn(*mut NhgDisplay) -> i32 = nhg_give_up;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, *mut c_char, usize, *mut usize) -> i32 =
+            nhg_last_error;
+        let got = probe(decls, &["NHG_OK"]);
+        assert_eq!(got, [i64::from(NHG_OK)]);
+    }
+
+    #[test]
     fn version_is_one_and_null_is_refused() {
         let mut v = 0u32;
         // SAFETY: `v` is a writable u32.

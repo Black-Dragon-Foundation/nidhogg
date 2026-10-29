@@ -69,6 +69,12 @@ impl Drop for Display {
     fn drop(&mut self) {
         // SAFETY: the handle came from `nhshell_open` and is released only here.
         unsafe { nhshell_close(self.shell.as_ptr()) };
+        // A backing C never forgot leaves no Glitnir root behind.  After the close, which stops the shell's threads,
+        // so that no presenter composes a root while it goes.
+        let keys: Vec<u64> = self.backings.frames_mut().map(|(k, _)| k).collect();
+        for key in keys {
+            self.backings.forget(key);
+        }
     }
 }
 
@@ -264,6 +270,25 @@ impl Display {
             })
             .map(|(&w, _)| w)
             .collect()
+    }
+}
+
+impl Display {
+    /// The display is given up (`nhg_give_up`): the compositor went and nothing waits for it to come back (reconnecting
+    /// is off, failed or timed out), and C deletes the display's frames next.  What the glue held for the connection
+    /// goes first, in this order:
+    /// 1. reconnecting: no step or settle is due any more;
+    /// 2. the drop target: a drag over us ends unfinished (Lisp drops the display's `pgtk-dnd-current-state` entry);
+    /// 3. input: the touch points and the configure acks still owed.
+    ///
+    /// Each frame's deletion then forgets its window and frees its backing, and with it its Glitnir root and layers;
+    /// the close frees whatever is left (`Drop`).  C itself cancels the bell's timers and dismisses the popup frames, so
+    /// that a menu's loop ends, because it must do so on a poisoned display too, where this is never called.
+    pub(crate) fn give_up(&mut self) {
+        self.reconnect.give_up();
+        self.dnd.lost();
+        self.touch.clear();
+        self.acks_due.clear();
     }
 }
 
