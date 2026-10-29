@@ -4,7 +4,7 @@ mod backing {
     use glitnir::ffi::{CommitOut, glitnir_commit};
     use nhglue::abi::{NHG_E_ARG, NHG_E_STATE};
     use nhglue::backing::{Backings, NHG_GEOM_FRESH, NhgBacking, NhgFrameGeom, NhgRect};
-    use nhglue::ffi::{nhg_backing_forget, nhg_damage, nhg_layer_ensure, nhg_scroll};
+    use nhglue::ffi::{nhg_backing_forget, nhg_damage, nhg_layer_ensure, nhg_scroll_window};
 
     /// Glitnir's damage for frame `key` since the last call (publishing commits it the same way).
     fn committed(key: u64) -> Vec<NhgRect> {
@@ -276,7 +276,10 @@ mod backing {
         unsafe {
             assert_eq!(nhg_layer_ensure(d, &mut key, &g), NHG_E_ARG);
             assert_eq!(nhg_damage(d, 1, std::ptr::null(), 0), NHG_E_ARG);
-            assert_eq!(nhg_scroll(d, 1, 1, NhgRect::default(), 0), NHG_E_ARG);
+            assert_eq!(
+                nhg_scroll_window(d, 1, 1, 1, NhgRect::default(), NhgRect::default(), 0, 0),
+                NHG_E_ARG
+            );
             assert_eq!(nhg_backing_forget(d, 0), NHG_E_ARG);
         }
     }

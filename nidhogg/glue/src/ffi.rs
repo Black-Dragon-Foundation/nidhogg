@@ -95,7 +95,7 @@ nhg_export! {
 nhg_export! {
     /// Close the connection and free `d`.  Null is accepted.  On a poisoned display (or one whose lock is held) it
     /// touches nothing behind the lock: it shuts the connection down, waits at most 100 ms for each of the shell's
-    /// threads and leaks the rest (design §5).
+    /// threads and leaks the rest.
     ///
     /// # Safety
     /// `d` is null or a display from `nhg_open`, not used again.
@@ -362,18 +362,6 @@ nhg_export! {
     /// `d` is null or a live display.
     fn nhg_damage_all(d: *mut NhgDisplay, frame: u64) -> i32 |state| {
         state.backings.damage_all(frame)?;
-        Ok(0)
-    }
-}
-
-nhg_export! {
-    /// Emacs window `w_seq`'s rows `run` (device pixels, with the native area's origin: its columns, the run's first
-    /// row and its height) move to `to_y` in the backing, and Glitnir damages the move.  Writes pixels.
-    ///
-    /// # Safety
-    /// `d` is null or a live display.
-    fn nhg_scroll(d: *mut NhgDisplay, frame: u64, w_seq: u64, run: NhgRect, to_y: i32) -> i32 |state| {
-        state.backings.scroll(frame, w_seq, run, to_y)?;
         Ok(0)
     }
 }
@@ -1350,8 +1338,9 @@ nhg_export! {
 // `nhwl-scroll-layers` and the frame's `alpha-background`.
 
 nhg_export! {
-    /// `nhg_scroll` for Emacs window `w_seq` at `rect` (`window_box (w, ANY_AREA)`, with the native area's origin): a
-    /// full-window scroll on an opaque root makes the window its own output first, a changed rectangle or a frame no
+    /// Emacs window `w_seq`'s rows `run` (device pixels, with the native area's origin: its columns, the run's first
+    /// row and its height) move to `to_y` in the backing, and Glitnir damages the move.  `rect` is the window
+    /// (`window_box (w, ANY_AREA)`, with the native area's origin): a full-window scroll on an opaque root makes the window its own output first, a changed rectangle or a frame no
     /// longer eligible makes it part of the frame again.  1 when the window is its own output now, else 0.  Writes
     /// pixels.
     ///
