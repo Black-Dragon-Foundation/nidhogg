@@ -1,14 +1,14 @@
 ;;; nhwl-gui-rg-tests.el --- GUI rows for the native shell's glue in Rust  -*- lexical-binding: t -*-
 
-;; Run by nidhogg/test/gui.sh with the W1 rows (nhwl-gui-tests.el, whose helpers are used here).  The runner's default
+;; Run by nidhogg/test/gui.sh with the base rows (nhwl-gui-tests.el, whose helpers are used here).  The runner's default
 ;; file pattern (`-gui-tests.el') does not match this file's name: load it with `--files 'nhwl-gui*-tests.el''.  Each
-;; port task appends its rows under `;; Port Task N:'.
+;; part of the glue has its rows under its own heading.
 
 (require 'ert)
 (require 'nhwl-gui-tests
          (expand-file-name "nhwl-gui-tests" (file-name-directory (or load-file-name buffer-file-name))))
 
-;; Port Task 1b: a panic inside the glue drops its display, never Emacs.  `nhwl--test-glue-panic' exists only in a
+;; Panics: a panic inside the glue drops its display, never Emacs.  `nhwl--test-glue-panic' exists only in a
 ;; build with checking (the glue's `test-hooks').
 
 (defun nhwl-gui--clients ()
@@ -43,7 +43,7 @@
       (should (nhwl-gui--wait (lambda () (with-selected-frame new (redisplay t)) (nhwl-gui--toplevel-commits))
                               5)))))
 
-;; Port Task 4a: the event drain is a step in the glue (one shell event per call), applied by C before the next.
+;; The event drain is a step in the glue (one shell event per call), applied by C before the next.
 
 (defun nhwl-gui--ctrl-key (text)
   "Type C-TEXT on the focused window (KEY_LEFTCTRL is evdev 29)."
@@ -196,7 +196,7 @@
         (redisplay t))
       (should (nhwl-gui--wait (lambda () (> (length (nhwl-gui--commits)) mark)))))))
 
-;; Port Task 3b: presenting from the glue.  Emacs publishes each tree at a consistency point (after a redisplay, or a
+;; Presenting from the glue.  Emacs publishes each tree at a consistency point (after a redisplay, or a
 ;; draw outside one), and the shell presents it: on its own thread (`nhwl-presenter-thread', the default), or inline at
 ;; the tree's FRAME_READY (NHWL_PRESENTER=0).  Rows tagged `both-modes' run in both at the gate.
 
@@ -423,7 +423,7 @@ its old size after the resize: it keeps its last buffer until its own redisplay,
       (when (frame-live-p c) (delete-frame c t))
       (kill-buffer buf))))
 
-;; Port Task 4b: the keyboard's state, its repeats and the focus are the glue's; the key's target frame, the keysym
+;; Keyboard: the keyboard's state, its repeats and the focus are the glue's; the key's target frame, the keysym
 ;; cascade and Emacs's focus stay C.
 
 ;; Review Focus 2: a press on a child frame and a key, queued in one burst and taken in one drain.  C applies the press
@@ -502,7 +502,7 @@ its old size after the resize: it keeps its last buffer until its own redisplay,
       (should (nhwl-gui--run-key "z"))
       (should (null (nhwl-glue-panics))))))
 
-;; Port Task 7: the title bar's layout, hit tests and buttons' state are the glue's, which says at each publish whether
+;; Title bar: the title bar's layout, hit tests and buttons' state are the glue's, which says at each publish whether
 ;; the strip must be painted again; C paints it from the glue's draw list.  Run on a client-side title bar (the
 ;; recorder's `--force-csd', or a profile without server decorations).
 
@@ -557,7 +557,7 @@ strip again), and goes again when the pointer leaves the button."
                (should (equal (nhwl-gui--grab-matches-snapshot) '(0 . 0)))))
          (kill-buffer buf))))))
 
-;; Port Task 5: the pointer, the wheel, the input method's events and the outputs are the glue's; the title bar's hit
+;; Pointer: the pointer, the wheel, the input method's events and the outputs are the glue's; the title bar's hit
 ;; tests, the mouse highlight and the buffer reads stay C.
 
 ;; The wheel accumulator is the glue's: a wheel notch is one `wheel-down' event, the other way `wheel-up', and half a

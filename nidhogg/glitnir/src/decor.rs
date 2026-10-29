@@ -1,4 +1,4 @@
-//! Decorations: label anchors, label placement and the sprite cache (MP-28).
+//! Decorations: label anchors, label placement and the sprite cache.
 //!
 //! An anchor states something about a window layer's retained pixels: where the first glyph of a `:label` run sits
 //! (layer-local device px), the clip the label is limited to, and the key of the sprite (a name tag, rendered once

@@ -1,4 +1,4 @@
-//! T0 tests of the W1 recorder additions: selections, primary selection, runtime outputs, xdg-activation, the surface
+//! T0 tests of the recorder's selections and surface additions: selections, primary selection, runtime outputs, xdg-activation, the surface
 //! tree, popup dismissal and the alpha multiplier.
 mod common;
 use common::{send, Env};
