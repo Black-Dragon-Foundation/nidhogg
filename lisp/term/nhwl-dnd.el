@@ -216,6 +216,22 @@ similar) event."
              (car actions) (cdr actions) allow-current-frame return-frame)))
     (if (integerp r) (nhwl-dnd--result r) r)))
 
+;; A drop goes in at the current buffer (pgtk-dnd.el inserts where it
+;; runs): a drop on a window that is not selected, a child frame's say,
+;; runs in that window.
+(declare-function pgtk-dnd-handle-drag-n-drop-event "pgtk-dnd" (event))
+
+(defun nhwl-dnd-handle-drag-n-drop-event (event)
+  "`pgtk-dnd-handle-drag-n-drop-event' in the window EVENT is over."
+  (interactive "e")
+  (let ((window (posn-window (event-start event))))
+    (if (window-live-p window)
+        (with-selected-window window
+          (pgtk-dnd-handle-drag-n-drop-event event))
+      (pgtk-dnd-handle-drag-n-drop-event event))))
+
+(define-key special-event-map [drag-n-drop] #'nhwl-dnd-handle-drag-n-drop-event)
+
 (provide 'nhwl-dnd)
 (provide 'term/nhwl-dnd)
 
