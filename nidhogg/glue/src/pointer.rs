@@ -1,3 +1,4 @@
+// Upstream commit: a360712c9d272d950d8d8255ef74570f7e90b7d9 (GNU Emacs emacs-31.1), for the "adapted from" notes below.
 //! The pointer's actions: `MOTION` (an enter is a motion), `LEAVE` and `CLICK`, for a window the glue knows.  Moved
 //! from the C drain's pointer cases (`src/nhwlterm.c`, adapted from pgtk's `motion_notify_event`,
 //! `enter_notify_event`, `leave_notify_event` and `button_event`, emacs-31.1).

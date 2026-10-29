@@ -1,3 +1,4 @@
+// Upstream commit: a360712c9d272d950d8d8255ef74570f7e90b7d9 (GNU Emacs emacs-31.1), for the "adapted from" notes below.
 //! The wheel: a `SCROLL` record becomes a `WHEEL` action, with the accumulator that turns small records into whole
 //! steps.  Moved from `nhwl_scroll_record` (`src/nhwlterm.c`, adapted from pgtk's `scroll_event`, emacs-31.1): wheel
 //! records add up to whole 120-unit notches (the fraction stays in the accumulator, which a new window, source or

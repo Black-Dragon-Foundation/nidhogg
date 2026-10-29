@@ -1,3 +1,4 @@
+// Upstream commit: a360712c9d272d950d8d8255ef74570f7e90b7d9 (GNU Emacs emacs-31.1), for the "adapted from" notes below.
 //! The input method: the compositor's text-input events as actions, and C's three requests (on or off, the cursor
 //! rectangle, the text around point).  Moved from the C drain's input-method cases and `nhwl_im_*`
 //! (`src/nhwlterm.c`, adapted from pgtk's `im_context` callbacks, emacs-31.1).
