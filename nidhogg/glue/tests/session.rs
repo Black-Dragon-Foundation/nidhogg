@@ -15,7 +15,7 @@ use nhglue::session::{
     NHG_SESSION_RESTORED,
 };
 use nhglue::window::NhgWindowDesc;
-use nhshell::api::NHSHELL_KIND_TOPLEVEL;
+use nhshell::api::{NHSHELL_KIND_TOPLEVEL, NHSHELL_WIN_RESTORE};
 use std::ffi::c_char;
 use std::ptr;
 use step::*;
@@ -129,7 +129,12 @@ fn a_saved_session_restores_the_name_and_replaces_the_old_holder() {
     assert_eq!(answer(b), NHG_SESSION_RESTORED);
     assert_eq!(session_id(b).unwrap(), id);
     assert_eq!(answer(a), NHG_SESSION_REPLACED);
-    let (rc, w2) = named(b, "initial");
+    // a name the saved session holds is restored (an add of it is `name_in_use`)
+    let mut restore = desc("initial");
+    restore.flags = NHSHELL_WIN_RESTORE;
+    let mut w2 = 0;
+    // SAFETY: a live display; the descriptor and its texts are readable, `w2` writable.
+    let rc = unsafe { nhg_window_new(b, &restore, &mut w2) };
     assert_eq!(rc, NHG_OK);
     configured(b, w2);
     let log = session_log(&rec);
