@@ -44,10 +44,13 @@ if [ -n "$CFIELDS" ]; then
     /\nstruct nhwl_output\n\{(.*?)\n\};/s or exit 1;
     $b = $1;
     $b =~ s{/\*.*?\*/}{}gs;
+    $b =~ s/^\s*#.*$//mg;
     $b =~ s/struct relief\s*\{[^}]*\}//s;
     for $d (split /;/, $b) {
       $d =~ s/:\s*\d+\s*$//;
-      for $p (split /,/, $d) { print "$1\n" if $p =~ /(\w+)\s*$/ }
+      # a function pointer names its member inside (*NAME); an array ends in [N]
+      if ($d =~ /\(\s*\*\s*(\w+)\s*\)/) { print "$1\n"; next }
+      for $p (split /,/, $d) { $p =~ s/(\s*\[[^\]]*\])+\s*$//; print "$1\n" if $p =~ /(\w+)\s*$/ }
     }' "$hdr" | sort)
   [ -n "$actual" ] || { echo "check.sh: FAIL c-fields: struct nhwl_output not found in $hdr" >&2; exit 1; }
   if [ "$listed" != "$actual" ]; then
