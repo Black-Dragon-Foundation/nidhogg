@@ -96,11 +96,10 @@ pub fn frame_monitors(state: &Display, window: u64) -> Result<u32, GlueError> {
 }
 
 /// A monitor's position in device pixels from its logical `x`, `y` and `s120`, as `display-monitor-attributes-list`
-/// gives it (moved from `Fpgtk_display_monitor_attributes_list`).  The C multiplied the int position by the unsigned
-/// scale, so a negative position wraps as an unsigned product before the float division and `roundf`; kept as it
-/// was.
+/// gives it (moved from `Fpgtk_display_monitor_attributes_list`).  The product is signed, so a monitor left of or
+/// above the primary has a negative origin, as pgtk and GDK report it.
 pub fn device_origin(x: i32, y: i32, s120: u32) -> (i32, i32) {
-    let dev = |v: i32| ((v as u32).wrapping_mul(s120) as f32 / 120.0f32).round() as i32;
+    let dev = |v: i32| ((i64::from(v) * i64::from(s120)) as f32 / 120.0f32).round() as i32;
     (dev(x), dev(y))
 }
 
