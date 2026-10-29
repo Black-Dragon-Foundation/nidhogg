@@ -403,17 +403,18 @@ nhwl_query_frame_background_color (struct frame *f, Emacs_Color *bgcolor)
  ***********************************************************************/
 
 /* Adapted from pgtk_begin_cr_clip: the frame's retained backing, device
-   size (the frame's pixel size), made or resized on use.  */
+   size, made or resized on use.  NHWL_CR_DEPTH counts the open calls.  */
+static int nhwl_cr_depth;
 cairo_t *
 nhwl_begin_cr_clip (struct frame *f)
 {
-  cairo_t *cr;
-
   nhwl_backing_resize (f);
-  cr = FRAME_NHWL_OUTPUT (f)->cr_context;
+  cairo_t *cr = FRAME_NHWL_OUTPUT (f)->cr_context;
   cairo_save (cr);
-  /* Emacs draws in the native area; the title border lies around it.  */
-  cairo_translate (cr, FRAME_NHWL_OUTPUT (f)->csd.l, FRAME_NHWL_OUTPUT (f)->csd.t);
+  /* Emacs draws in the native area, inside the title border: moved once,
+     as a glyph string's fills and font drawing nest these calls.  */
+  if (!nhwl_cr_depth++)
+    cairo_translate (cr, FRAME_NHWL_OUTPUT (f)->csd.l, FRAME_NHWL_OUTPUT (f)->csd.t);
   return cr;
 }
 
@@ -421,6 +422,7 @@ void
 nhwl_end_cr_clip (struct frame *f)
 {
   cairo_restore (FRAME_NHWL_OUTPUT (f)->cr_context);
+  nhwl_cr_depth--;
 }
 
 /* Adapted from pgtk_cr_destroy_frame_context.  */
