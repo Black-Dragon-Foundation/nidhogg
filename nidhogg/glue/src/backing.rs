@@ -686,6 +686,14 @@ impl Frame {
     }
 }
 
+/// `inner` lies inside `outer`.
+fn inside(outer: &Rect, inner: &Rect) -> bool {
+    inner.x >= outer.x
+        && inner.y >= outer.y
+        && inner.x as i64 + inner.w as i64 <= outer.x as i64 + outer.w as i64
+        && inner.y as i64 + inner.h as i64 <= outer.y as i64 + outer.h as i64
+}
+
 impl Backings {
     /// Before frame `key` is published: the drawing's damage whose pixels are what the last publish showed goes (a
     /// redisplay that drew the same pixels again, such as the cursor in its place).  Only when the frame had no damage
@@ -706,9 +714,22 @@ impl Backings {
         if changed.len() == f.since.plain.len() {
             return;
         }
-        // the pending damage is the drawing's rectangles and nothing else: it is given again without the unchanged
+        // the pending damage goes again without what lies inside an unchanged rectangle; damage C gave Glitnir itself
+        // (the title strip) stays
+        let dropped: Vec<Rect> = f
+            .since
+            .plain
+            .iter()
+            .filter(|r| !changed.contains(r))
+            .copied()
+            .collect();
         glitnir::damage::with(key, |d| {
-            d.drain();
+            let (rects, _, _) = d.drain();
+            for r in rects {
+                if !dropped.iter().any(|x| inside(x, &r)) {
+                    d.add(r);
+                }
+            }
         });
         damage_backing(key, &changed);
         f.since.plain = changed;
