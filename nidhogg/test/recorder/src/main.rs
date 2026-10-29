@@ -135,6 +135,7 @@ fn main() {
             ),
             move |_, _, state| {
                 d.borrow_mut().dispatch_clients(state).unwrap();
+                crate::dnd::enter_origin(state);
                 Ok(PostAction::Continue)
             },
         )
