@@ -279,13 +279,16 @@ top, the layer comes before the child, and stays there while the window scrolls 
   (skip-unless (nhwl-gui--layers-p))
   (nhwl-gui--with-layer-buffer
    (lambda ()
-     (let ((mark (nhwl-gui--mark)) (before (nhwl-gui--sub-ids)) (c nil))
+     (let ((mark (nhwl-gui--mark)) (before nil) (layer nil) (c nil))
        (should (= (nhwl-gui--scroll-promote) 1))
+       (gui-runner-wait-settled)
+       ;; the layer is a new subsurface too: note it, and the subsurfaces, before the child comes
+       (setq layer (car (nhwl-gui--layer-ids mark))
+             before (nhwl-gui--sub-ids))
        (unwind-protect
            (progn
              (setq c (nhwl-gui--child))
-             (let* ((child (nhwl-gui--child-node before))
-                    (layer (car (nhwl-gui--layer-ids mark))))
+             (let ((child (nhwl-gui--child-node before)))
                (should (and child layer))
                (dotimes (_ 10) (scroll-up 1) (redisplay t))
                (gui-runner-wait-settled)

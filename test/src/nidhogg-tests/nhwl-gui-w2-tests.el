@@ -242,7 +242,9 @@ rules (errors, acks, unconfigured, popup, grab, popup-order) judge what was sent
   "`visible-bell' t and `ding': a commit with damage on the top and bottom lines, then within 200 ms another that
 restores them; the recorder's composite equals the pre-bell composite."
   (skip-unless (nhwl-gui--recorder-p))
-  (let ((visible-bell t) (ring-bell-function nil) (before nil) (mark nil) (flash nil) (restore nil))
+  ;; no window layer (an earlier scroll's): the flash's rows would be the layer's damage, not the toplevel's
+  (let ((nhwl-scroll-layers nil) (visible-bell t) (ring-bell-function nil) (before nil) (mark nil) (flash nil)
+        (restore nil))
     (redisplay t)
     (gui-runner-wait-settled)
     (setq before (gui-runner-screen-grab))
@@ -250,7 +252,9 @@ restores them; the recorder's composite equals the pre-bell composite."
     (ding)
     (let* ((h (nth 1 before))
            (line (frame-char-height))
-           (top (lambda (c) (seq-some (lambda (r) (< (nth 1 r) (* 3 line))) (nhwl-gui--damage c))))
+           ;; the flash's top rows start below the menu and tool bars (the frame's top margin), as pgtk's do
+           (y0 (+ (nhwl-gui--native-top) (nth 1 (window-pixel-edges (frame-root-window)))))
+           (top (lambda (c) (seq-some (lambda (r) (< (nth 1 r) (+ y0 (* 3 line)))) (nhwl-gui--damage c))))
            (bottom (lambda (c) (seq-some (lambda (r) (> (+ (nth 1 r) (nth 3 r)) (- h (* 4 line))))
                                          (nhwl-gui--damage c)))))
       (setq flash (nhwl-gui--wait (lambda ()

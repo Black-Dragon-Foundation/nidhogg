@@ -133,7 +133,8 @@
       (delete-directory dir t))))
 
 ;; A C-g inside a burst of keys quits once, and the other keys arrive in order: the drain stores the keys after C-g
-;; while C-g waits in `hold_quit', as the C drain did.
+;; while C-g waits in `hold_quit', as the C drain did.  The burst is sent with quitting inhibited: a quit drained while
+;; the test waits for the recorder's answer would otherwise stop the test sending the rest of the burst.
 (ert-deftest nhwl-gui/quit-in-a-key-burst ()
   (skip-unless (nhwl-gui--recorder-p))
   (let ((f (car (nhwl-gui--nhwl-frames)))
@@ -144,9 +145,12 @@
       (nhwl-gui--pump 0.2)
       (condition-case nil
           (progn
-            (dotimes (i 20) (gui-runner-recorder (list :cmd "key" :text (string (+ ?a i)))))
-            (nhwl-gui--ctrl-key "g")
-            (dotimes (i 20) (gui-runner-recorder (list :cmd "key" :text (string (+ ?A i))))))
+            (let ((inhibit-quit t))
+              (dotimes (i 20) (gui-runner-recorder (list :cmd "key" :text (string (+ ?a i)))))
+              (nhwl-gui--ctrl-key "g")
+              (dotimes (i 20) (gui-runner-recorder (list :cmd "key" :text (string (+ ?A i))))))
+            ;; a quit drained meanwhile fires here, once (reading no event)
+            (sit-for 0))
         (quit (setq quits (1+ quits))))
       (let ((deadline (+ (float-time) 5)))
         (while (and (< (length got) 40) (< (float-time) deadline))
