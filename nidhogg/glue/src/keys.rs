@@ -1,3 +1,4 @@
+// Upstream commit: a360712c9d272d950d8d8255ef74570f7e90b7d9 (GNU Emacs emacs-31.1), for the "adapted from" notes below.
 //! The keyboard's state and its `KEY` actions.  Moved from `nhwl_key_event` (`src/nhwlterm.c`, adapted from pgtk's
 //! `key_press_event`, emacs-31.1) and from the C drain's `KEY` and `MODIFIERS` cases: the modifier mask, the window
 //! with the keyboard, and the repeat drop.  The shell has already run each key through xkb and compose, so a key

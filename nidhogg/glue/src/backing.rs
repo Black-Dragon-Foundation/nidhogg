@@ -1,3 +1,4 @@
+// Upstream commit: a360712c9d272d950d8d8255ef74570f7e90b7d9 (GNU Emacs emacs-31.1), for the "adapted from" notes below.
 //! Backings, damage and scroll: each frame's pixels (C draws on them with Cairo, through
 //! `cairo_image_surface_create_for_data`), its Glitnir scene and layer.  Publishing (`present.rs`) hands the pixels to
 //! the shell, which commits the scene's damage itself.
