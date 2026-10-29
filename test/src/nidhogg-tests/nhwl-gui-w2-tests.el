@@ -250,7 +250,8 @@ restores them; the recorder's composite equals the pre-bell composite."
     (setq before (gui-runner-screen-grab))
     (setq mark (nhwl-gui--mark))
     (ding)
-    (let* ((h (nth 1 before))
+    ;; damage is in the toplevel's buffer rows: the native area's bottom is the flash's bottom, not the screen's
+    (let* ((h (+ (nhwl-gui--native-top) (frame-pixel-height)))
            (line (frame-char-height))
            ;; the flash's top rows start below the menu and tool bars (the frame's top margin), as pgtk's do
            (y0 (+ (nhwl-gui--native-top) (nth 1 (window-pixel-edges (frame-root-window)))))

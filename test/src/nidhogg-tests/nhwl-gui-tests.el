@@ -1156,6 +1156,8 @@ The shell's records reach Lisp (the monitors-changed hook) only through the inpu
      (message nil)
      (redisplay t)
      (gui-runner-wait-settled)
+     ;; the blink as it runs once Emacs is idle: its start is an idle timer, which a read with a timeout never runs
+     (blink-cursor-start)
      (glitnir-stats nil t)
      ;; the blink paints, no key
      (nhwl-gui--pump 0.6)
