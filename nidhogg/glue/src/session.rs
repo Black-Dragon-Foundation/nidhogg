@@ -9,7 +9,7 @@ use crate::action::NhgAction;
 use crate::display::Display;
 use crate::guard::GlueError;
 use nhshell::api::ShellError;
-use nhshell::event::{NHSHELL_EV_SESSION, NhShellEvent};
+use nhshell::event::{Record, SessionEv};
 
 /// `nhg_session_open` reasons (the shell's `NHSHELL_SESSION_*`): a fresh launch, a recovery after the compositor
 /// restarted, a restore of a session saved earlier.
@@ -52,10 +52,8 @@ pub fn remove(state: &mut Display, window: u64) -> Result<bool, GlueError> {
 }
 
 /// The session event: an `NHG_ACT_SESSION` with the answer in `code`.
-pub fn event(state: &mut Display, ev: &NhShellEvent) {
-    debug_assert_eq!(ev.kind, NHSHELL_EV_SESSION);
-    // SAFETY: a SESSION record's valid member is `session`.
-    let answer = unsafe { ev.u.session }.state;
+pub fn event(state: &mut Display, ev: &Record, s: &SessionEv) {
+    let answer = s.state;
     let mut a = NhgAction::new(NHG_ACT_SESSION, 0, ev.time_ns);
     a.code = i32::try_from(answer).unwrap_or(NHG_SESSION_REPLACED);
     state.actions.push(a);

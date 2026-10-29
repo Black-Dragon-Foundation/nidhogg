@@ -28,7 +28,6 @@ mod tests {
     use super::*;
     use crate::api::{NhShellBuffer, NhShellPresenterStats};
     use crate::caps::NhShellCaps;
-    use crate::event::*;
     use crate::ffi::{NhShellSurfaceFrame, NhShellWindowDesc};
     use std::mem::{align_of, offset_of, size_of};
     use std::process::Command;
@@ -48,15 +47,13 @@ mod tests {
 
     /// Sizes, alignments and offsets of the records equal what a C compiler makes of `nhshell.h`.
     #[test]
-    fn event_layout() {
-        type E = NhShellEvent;
-        // (C expression, Rust value); `S(x)` is sizeof, `A(x)` alignof, `O(x)` offsetof.
+    fn record_layout() {
+        // (C expression, Rust value)
         let mut rows: Vec<(String, usize)> = Vec::new();
         let mut ty = |c: &str, size: usize, align: usize| {
             rows.push((format!("sizeof({c})"), size));
             rows.push((format!("_Alignof({c})"), align));
         };
-        ty("NhShellEvent", size_of::<E>(), align_of::<E>());
         ty(
             "NhShellCaps",
             size_of::<NhShellCaps>(),
@@ -71,116 +68,6 @@ mod tests {
             "NhShellWindowDesc",
             size_of::<NhShellWindowDesc>(),
             align_of::<NhShellWindowDesc>(),
-        );
-        ty(
-            "__typeof__(((NhShellEvent *)0)->u)",
-            size_of::<NhShellEventData>(),
-            align_of::<NhShellEventData>(),
-        );
-        ty(
-            "__typeof__(((NhShellEvent *)0)->u.key)",
-            size_of::<KeyEv>(),
-            align_of::<KeyEv>(),
-        );
-        ty(
-            "__typeof__(((NhShellEvent *)0)->u.pointer)",
-            size_of::<PointerEv>(),
-            align_of::<PointerEv>(),
-        );
-        ty(
-            "__typeof__(((NhShellEvent *)0)->u.scroll)",
-            size_of::<ScrollEv>(),
-            align_of::<ScrollEv>(),
-        );
-        ty(
-            "__typeof__(((NhShellEvent *)0)->u.configure)",
-            size_of::<ConfigureEv>(),
-            align_of::<ConfigureEv>(),
-        );
-        ty(
-            "__typeof__(((NhShellEvent *)0)->u.scale)",
-            size_of::<ScaleEv>(),
-            align_of::<ScaleEv>(),
-        );
-        ty(
-            "__typeof__(((NhShellEvent *)0)->u.focus)",
-            size_of::<FocusEv>(),
-            align_of::<FocusEv>(),
-        );
-        ty(
-            "__typeof__(((NhShellEvent *)0)->u.frame_done)",
-            size_of::<FrameDoneEv>(),
-            align_of::<FrameDoneEv>(),
-        );
-        ty(
-            "__typeof__(((NhShellEvent *)0)->u.output)",
-            size_of::<OutputEv>(),
-            align_of::<OutputEv>(),
-        );
-        ty(
-            "__typeof__(((NhShellEvent *)0)->u.selection)",
-            size_of::<SelectionEv>(),
-            align_of::<SelectionEv>(),
-        );
-        ty(
-            "__typeof__(((NhShellEvent *)0)->u.text)",
-            size_of::<TextEv>(),
-            align_of::<TextEv>(),
-        );
-        ty(
-            "__typeof__(((NhShellEvent *)0)->u.touch)",
-            size_of::<TouchEv>(),
-            align_of::<TouchEv>(),
-        );
-        ty(
-            "__typeof__(((NhShellEvent *)0)->u.pinch)",
-            size_of::<PinchEv>(),
-            align_of::<PinchEv>(),
-        );
-        ty(
-            "__typeof__(((NhShellEvent *)0)->u.session)",
-            size_of::<SessionEv>(),
-            align_of::<SessionEv>(),
-        );
-        let mut off = |c: &str, o: usize| rows.push((format!("offsetof(NhShellEvent, {c})"), o));
-        off("kind", offset_of!(E, kind));
-        off("window", offset_of!(E, window));
-        off("time_ns", offset_of!(E, time_ns));
-        off("u", offset_of!(E, u));
-        macro_rules! members {
-            ($m:ident, $t:ty, $($f:ident),*) => {
-                $( off(concat!("u.", stringify!($m), ".", stringify!($f)), offset_of!(E, u) + offset_of!($t, $f)); )*
-            };
-        }
-        members!(key, KeyEv, keycode, keysym, mods, pressed, repeat, utf8);
-        members!(pointer, PointerEv, x, y, button, state);
-        members!(scroll, ScrollEv, dx, dy, v120x, v120y, source, stop);
-        members!(configure, ConfigureEv, w, h, states, serial);
-        members!(frame_done, FrameDoneEv, presented_ns, refresh_ns);
-        members!(output, OutputEv, id, x, y, w, h, mm_w, mm_h, scale120, name);
-        members!(
-            text,
-            TextEv,
-            id,
-            len,
-            cursor_begin,
-            cursor_end,
-            before,
-            after
-        );
-        members!(touch, TouchEv, id, op, x, y);
-        members!(
-            pinch, PinchEv, phase, fingers, dx, dy, scale, rotation, x, y, cancelled
-        );
-        off(
-            "u.scale.scale120",
-            offset_of!(E, u) + offset_of!(ScaleEv, scale120),
-        );
-        members!(session, SessionEv, state);
-        off("u.focus.in", offset_of!(E, u) + offset_of!(FocusEv, r#in));
-        off(
-            "u.selection.kind",
-            offset_of!(E, u) + offset_of!(SelectionEv, kind),
         );
         // the publishing records
         type F = NhShellSurfaceFrame;

@@ -13,9 +13,7 @@
 //!   from the old connection is queued after it, until a reconnect resumes them (`reconnect.rs`).
 
 use crate::api::{ShellError, ShellResult, ThreadDone};
-use crate::event::{
-    NHSHELL_EV_DISCONNECTED, NHSHELL_EV_KEY, NHSHELL_EV_RECONNECTING, NhShellEvent,
-};
+use crate::event::{Record, ShellEvent};
 use crate::wayland::selection::Selections;
 use crate::wayland::serial::SerialTracker;
 use rustix::event::{EventfdFlags, eventfd};
@@ -216,7 +214,7 @@ impl Wake {
 
 #[derive(Default)]
 struct Records {
-    queue: VecDeque<NhShellEvent>,
+    queue: VecDeque<Record>,
     /// `DISCONNECTED` was posted: nothing more is queued, and once it is taken the records report the loss.
     closed: bool,
     /// `RECONNECTING` was posted: nothing more is queued until the reconnect resumes the records.
@@ -284,7 +282,7 @@ impl Shared {
     }
 
     /// Queue a record; the poster signals `wake` once per batch.
-    pub fn post(&self, ev: NhShellEvent) {
+    pub fn post(&self, ev: Record) {
         let mut r = relock(&self.records);
         if !r.closed && !r.held {
             r.queue.push_back(ev);
@@ -307,7 +305,7 @@ impl Shared {
             r.queue.extend(drop_leave);
             r.queue.extend(drag_done);
             r.queue
-                .push_back(NhShellEvent::new(NHSHELL_EV_RECONNECTING, 0, 0));
+                .push_back(Record::new(ShellEvent::Reconnecting, 0, 0));
             r.held = true;
         }
         self.gone.signal();
@@ -320,7 +318,7 @@ impl Shared {
     }
 
     /// Put `evs` before every queued record (the host's thread adds what the loss ends on its side).
-    pub fn push_front(&self, evs: Vec<NhShellEvent>) {
+    pub fn push_front(&self, evs: Vec<Record>) {
         let mut r = relock(&self.records);
         for ev in evs.into_iter().rev() {
             r.queue.push_front(ev);
@@ -356,7 +354,7 @@ impl Shared {
             }
             r.queue.extend(drag_done);
             r.queue
-                .push_back(NhShellEvent::new(NHSHELL_EV_DISCONNECTED, 0, 0));
+                .push_back(Record::new(ShellEvent::Disconnected, 0, 0));
             r.closed = true;
         }
         self.gone.signal();
@@ -364,7 +362,7 @@ impl Shared {
     }
 
     /// The next record; `Disconnected` once `DISCONNECTED` has been taken.
-    pub fn take(&self) -> ShellResult<Option<NhShellEvent>> {
+    pub fn take(&self) -> ShellResult<Option<Record>> {
         let mut r = relock(&self.records);
         match r.queue.pop_front() {
             Some(ev) => Ok(Some(ev)),
@@ -375,10 +373,10 @@ impl Shared {
 
     /// A repeat of `keycode` is queued and not yet taken (the reader's repeat coalescing).
     pub fn has_unread_repeat(&self, keycode: u32) -> bool {
-        relock(&self.records).queue.iter().any(|e| {
-            // SAFETY: a KEY record's valid member is `key`.
-            e.kind == NHSHELL_EV_KEY && unsafe { e.u.key.repeat == 1 && e.u.key.keycode == keycode }
-        })
+        relock(&self.records)
+            .queue
+            .iter()
+            .any(|e| matches!(e.event, ShellEvent::Key(k) if k.repeat == 1 && k.keycode == keycode))
     }
 
     pub fn is_closed(&self) -> bool {

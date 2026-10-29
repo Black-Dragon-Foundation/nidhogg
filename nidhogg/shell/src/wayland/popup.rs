@@ -312,8 +312,7 @@ impl WaylandShell {
             .collect();
         order.sort_unstable_by(|a, b| b.cmp(a));
         for &(_, _, id) in &order {
-            self.shared
-                .post(NhShellEvent::new(NHSHELL_EV_POPUP_DONE, id, 0));
+            self.shared.post(Record::new(ShellEvent::PopupDone, id, 0));
         }
         for (_, _, id) in order {
             let _ = self.window_destroy_local(id);
@@ -362,7 +361,7 @@ impl Dispatch<XdgPopup, u64> for MainState {
                 p.grabbed = false;
             }
             if let Some(shared) = state.shared.as_ref() {
-                shared.post(NhShellEvent::new(NHSHELL_EV_POPUP_DONE, *id, 0));
+                shared.post(Record::new(ShellEvent::PopupDone, *id, 0));
             }
         }
     }

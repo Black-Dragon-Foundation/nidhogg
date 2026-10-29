@@ -29,12 +29,6 @@ fn commits(rec: &Recorder, since: u64) -> Vec<String> {
         .collect()
 }
 
-fn configure_of(ev: &NhShellEvent) -> ConfigureEv {
-    assert_eq!(ev.kind, NHSHELL_EV_CONFIGURE);
-    // SAFETY: a CONFIGURE record's valid member is `configure`.
-    unsafe { ev.u.configure }
-}
-
 fn new_window(shell: &mut WaylandShell) -> u64 {
     shell
         .window_new(&WindowDesc {
@@ -68,7 +62,7 @@ mod toplevel {
         let rec = Recorder::start("mutter");
         let mut shell = rec.open();
         let id = new_window(&mut shell);
-        let first = configure_of(&wait_event(&mut shell, NHSHELL_EV_CONFIGURE));
+        let first = configure_of(&wait_event(&mut shell, Kind::Configure));
         // the initial bare commit carries no ack and no buffer: the window is not mapped yet
         let log = wait_commit(&rec, 1, |c| token(c, "role") == Some("\"toplevel\""));
         let initial = &log[0];
@@ -95,7 +89,7 @@ mod toplevel {
         let rec = Recorder::start("mutter");
         let mut shell = rec.open();
         let id = new_window(&mut shell);
-        let first = configure_of(&wait_event(&mut shell, NHSHELL_EV_CONFIGURE));
+        let first = configure_of(&wait_event(&mut shell, Kind::Configure));
         shell.ack_configure(id, first.serial, 0).unwrap();
         shell.present_bare(id).unwrap();
         shell.flush().unwrap();
@@ -111,7 +105,7 @@ mod toplevel {
         let got: Vec<ConfigureEv> = {
             let mut v = Vec::new();
             while v.len() < 2 {
-                v.push(configure_of(&wait_event(&mut shell, NHSHELL_EV_CONFIGURE)));
+                v.push(configure_of(&wait_event(&mut shell, Kind::Configure)));
             }
             v
         };
@@ -128,14 +122,14 @@ mod toplevel {
         let rec = Recorder::start("mutter");
         let mut shell = rec.open();
         new_window(&mut shell);
-        wait_event(&mut shell, NHSHELL_EV_CONFIGURE);
+        wait_event(&mut shell, Kind::Configure);
         let reply = rec.control(
             r#"{"cmd":"configure","surface":"focused","size":[0,0],"states":["maximized","fullscreen","tiled_left","suspended"]}"#,
         );
         assert!(reply.contains("\"ok\":true"), "{reply}");
         let ev = collect(&mut shell, 100)
             .into_iter()
-            .rfind(|e| e.kind == NHSHELL_EV_CONFIGURE)
+            .rfind(|e| e.kind() == Kind::Configure)
             .expect("a configure");
         assert_eq!(
             configure_of(&ev).states,
@@ -148,7 +142,7 @@ mod toplevel {
             r#"{"cmd":"configure","surface":"focused","states":["activated","resizing","tiled_right","tiled_top","tiled_bottom"]}"#,
         );
         assert!(reply.contains("\"ok\":true"), "{reply}");
-        let ev = wait_event(&mut shell, NHSHELL_EV_CONFIGURE);
+        let ev = wait_event(&mut shell, Kind::Configure);
         assert_eq!(
             configure_of(&ev).states,
             NHSHELL_STATE_ACTIVATED
@@ -163,7 +157,7 @@ mod toplevel {
     fn decoration_logged(rec: &Recorder, shell: &mut WaylandShell, id: u64) -> Option<String> {
         let first = collect(shell, 100)
             .into_iter()
-            .rfind(|e| e.kind == NHSHELL_EV_CONFIGURE)
+            .rfind(|e| e.kind() == Kind::Configure)
             .expect("a configure");
         shell
             .ack_configure(id, configure_of(&first).serial, 0)
@@ -228,10 +222,10 @@ mod toplevel {
         let rec = Recorder::start("mutter");
         let mut shell = rec.open();
         let id = new_window(&mut shell);
-        wait_event(&mut shell, NHSHELL_EV_CONFIGURE);
+        wait_event(&mut shell, Kind::Configure);
         let reply = rec.control(r#"{"cmd":"close","surface":"focused"}"#);
         assert!(reply.contains("\"ok\":true"), "{reply}");
-        let ev = wait_event(&mut shell, NHSHELL_EV_CLOSE);
+        let ev = wait_event(&mut shell, Kind::Close);
         assert_eq!(ev.window, id);
     }
 
@@ -241,7 +235,7 @@ mod toplevel {
         let rec = Recorder::start("sway");
         let mut shell = rec.open();
         let id = new_window(&mut shell);
-        let first = configure_of(&wait_event(&mut shell, NHSHELL_EV_CONFIGURE));
+        let first = configure_of(&wait_event(&mut shell, Kind::Configure));
         shell.ack_configure(id, first.serial, 0).unwrap();
         shell.present_bare(id).unwrap();
         shell.set_alpha(id, u32::MAX / 2).unwrap();

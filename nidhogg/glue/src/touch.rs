@@ -70,7 +70,7 @@ fn lrint(v: f64) -> i32 {
     v.round_ties_even() as i32
 }
 
-fn push(state: &mut Display, ev: &NhShellEvent, flags: u32, local: i32, x: i32, y: i32) {
+fn push(state: &mut Display, ev: &Record, flags: u32, local: i32, x: i32, y: i32) {
     let mut a = NhgAction::new(NHG_ACT_TOUCH, ev.window, ev.time_ns);
     a.flags = flags;
     a.code = local;
@@ -82,9 +82,7 @@ fn push(state: &mut Display, ev: &NhShellEvent, flags: u32, local: i32, x: i32, 
 /// A `TOUCH` record.  A point already down is not begun again; a motion of an unknown point, or one that rounds to
 /// where the point already is, gives nothing; a lift or cancel of an unknown point gives nothing.  A window the glue
 /// does not know gets no points.
-pub fn touch(state: &mut Display, ev: &NhShellEvent) {
-    // SAFETY: a TOUCH record's valid member is `touch`.
-    let t = unsafe { ev.u.touch };
+pub fn touch(state: &mut Display, ev: &Record, t: &TouchEv) {
     let (x, y) = (lrint(t.x), lrint(t.y));
     let known = state.frame(ev.window).is_ok();
     let at = state.touch.points.iter().position(|p| p.shell_id == t.id);
@@ -141,9 +139,7 @@ pub fn touch(state: &mut Display, ev: &NhShellEvent) {
 }
 
 /// A `PINCH` record: begin and update give a `PINCH` action for a window the glue knows; the end gives none.
-pub fn pinch(state: &mut Display, ev: &NhShellEvent) {
-    // SAFETY: a PINCH record's valid member is `pinch`.
-    let p = unsafe { ev.u.pinch };
+pub fn pinch(state: &mut Display, ev: &Record, p: &PinchEv) {
     if p.phase == NHSHELL_PINCH_END || state.frame(ev.window).is_err() {
         return;
     }

@@ -12,28 +12,26 @@
 use crate::action::{NHG_ACT_COMMIT, NHG_ACT_IM_DELETE, NHG_ACT_PREEDIT, NhgAction};
 use crate::display::Display;
 use crate::guard::GlueError;
-use nhshell::event::*;
+use nhshell::event::{Record, ShellEvent};
 
 /// A `PREEDIT`, `COMMIT_TEXT` or `DELETE_SURROUNDING`: a `PREEDIT` or `COMMIT` action with the text (null when the
 /// shell could not give it; empty clears a preedit), or an `IM_DELETE` with the bytes to delete before (`x`) and
 /// after (`y`) point.
-pub fn event(state: &mut Display, ev: &NhShellEvent) {
-    let kind = match ev.kind {
-        NHSHELL_EV_PREEDIT => NHG_ACT_PREEDIT,
-        NHSHELL_EV_COMMIT_TEXT => NHG_ACT_COMMIT,
-        _ => NHG_ACT_IM_DELETE,
+pub fn event(state: &mut Display, ev: &Record) {
+    let (kind, t) = match ev.event {
+        ShellEvent::Preedit(t) => (NHG_ACT_PREEDIT, t),
+        ShellEvent::CommitText(t) => (NHG_ACT_COMMIT, t),
+        ShellEvent::DeleteSurrounding(t) => (NHG_ACT_IM_DELETE, t),
+        _ => return,
     };
     let mut a = NhgAction::new(kind, ev.window, ev.time_ns);
     if kind == NHG_ACT_IM_DELETE {
-        // SAFETY: a DELETE_SURROUNDING record carries `text`.
-        let t = unsafe { ev.u.text };
         a.x = i32::try_from(t.before).unwrap_or(i32::MAX);
         a.y = i32::try_from(t.after).unwrap_or(i32::MAX);
         state.actions.push(a);
         return;
     }
-    // SAFETY: PREEDIT and COMMIT_TEXT records carry `text`.
-    let text = match unsafe { ev.u.text } {
+    let text = match t {
         t if t.len == 0 => Some(Vec::new()),
         t => state.backend().take_text(t.id).ok(),
     };

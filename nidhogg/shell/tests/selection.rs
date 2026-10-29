@@ -3,12 +3,7 @@
 //! `offer` stands in for another client that owns a selection, its `read` for another client that pastes.
 
 use nhshell::api::*;
-use nhshell::event::*;
-use nhshell::ffi::{
-    NhShell, NhShellWindowDesc, nhshell_close, nhshell_free_bytes, nhshell_next_event,
-    nhshell_open, nhshell_selection_own, nhshell_selection_owned, nhshell_selection_read,
-    nhshell_wake_fd, nhshell_window_new,
-};
+use nhshell::event::{Record, ShellEvent};
 use nhshell::wayland::WaylandShell;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fd::BorrowedFd;
@@ -103,11 +98,7 @@ fn readable_within(fd: i32, ms: i64) -> bool {
 }
 
 /// Take records until one satisfies `want` (`ms` at most).
-fn wait_event(
-    shell: &mut WaylandShell,
-    ms: u64,
-    want: impl Fn(&NhShellEvent) -> bool,
-) -> Option<NhShellEvent> {
+fn wait_event(shell: &mut WaylandShell, ms: u64, want: impl Fn(&Record) -> bool) -> Option<Record> {
     let deadline = Instant::now() + Duration::from_millis(ms);
     while Instant::now() < deadline {
         readable_within(shell.wake_fd(), 20);
@@ -120,14 +111,12 @@ fn wait_event(
     None
 }
 
-fn is_selection(ev: &NhShellEvent, kind: u32) -> bool {
-    // SAFETY: a SELECTION record's valid member is `selection`.
-    ev.kind == NHSHELL_EV_SELECTION && unsafe { ev.u.selection.kind } == kind
+fn is_selection(ev: &Record, kind: u32) -> bool {
+    matches!(ev.event, ShellEvent::Selection(s) if s.kind == kind)
 }
 
-fn is_focus(ev: &NhShellEvent, on: u8) -> bool {
-    // SAFETY: a FOCUS record's valid member is `focus`.
-    ev.kind == NHSHELL_EV_FOCUS && unsafe { ev.u.focus.r#in } == on
+fn is_focus(ev: &Record, on: u8) -> bool {
+    matches!(ev.event, ShellEvent::Focus(f) if f.r#in == on)
 }
 
 /// Take records until selection `kind` has the MIME types `want` (sorted) and a SELECTION record for it came (2 s at
@@ -224,92 +213,48 @@ mod selection {
         );
     }
 
-    /// Through the C ABI: own, then read our own bytes while the compositor is stopped (SIGSTOP), which a `receive`
-    /// round trip could not survive.  (The recorder keeps no log of `receive` requests; a stopped compositor shows
-    /// the same thing.)
+    /// Own, then read our own bytes while the compositor is stopped (SIGSTOP), which a `receive` round trip could
+    /// not survive.  (The recorder keeps no log of `receive` requests; a stopped compositor shows the same thing.)
     #[test]
     fn read_our_own_without_a_round_trip() {
         let rec = Recorder::start();
-        let display = rec.display();
-        let mut sh: *mut NhShell = std::ptr::null_mut();
-        // SAFETY: valid string and out pointer; every call below uses the live handle.
-        unsafe {
-            assert_eq!(nhshell_open(display.as_ptr(), &mut sh), NHSHELL_OK);
-            let desc = NhShellWindowDesc {
+        let mut shell = WaylandShell::open(Some(&rec.display())).expect("open the shell");
+        let win = shell
+            .window_new(&WindowDesc {
                 w: 200,
                 h: 100,
-                title: c"selection".as_ptr(),
-                app_id: std::ptr::null(),
+                title: "selection".into(),
+                app_id: String::new(),
                 flags: 0,
-                kind: 0,
-                parent: 0,
-                x: 0,
-                y: 0,
-                anchor: Anchor::default(),
-                session_name: std::ptr::null(),
-            };
-            let mut win = 0u64;
-            assert_eq!(nhshell_window_new(sh, &desc, &mut win), NHSHELL_OK);
-            assert_eq!(
-                nhshell_selection_own(
-                    sh,
-                    NHSHELL_SEL_CLIPBOARD,
-                    std::ptr::null(),
-                    std::ptr::null(),
-                    std::ptr::null(),
-                    0
-                ),
-                NHSHELL_E_STATE,
-                "no focus yet"
-            );
-            let reply = rec.control_ok(&format!(r#"{{"cmd":"focus","surface":{win}}}"#));
-            assert!(reply.contains("\"ok\":true"), "{reply}");
-            let deadline = Instant::now() + Duration::from_secs(2);
-            let mut focused = false;
-            while !focused && Instant::now() < deadline {
-                readable_within(nhshell_wake_fd(sh), 20);
-                let mut ev = NhShellEvent::new(0, 0, 0);
-                while nhshell_next_event(sh, &mut ev) == 1 {
-                    focused |= is_focus(&ev, 1);
-                }
-            }
-            assert!(focused, "keyboard focus");
-            let mimes = [c"text/plain".as_ptr(), c"UTF8_STRING".as_ptr()];
-            let (a, b): (&[u8], &[u8]) = (b"plain bytes", b"utf8 bytes");
-            let data = [a.as_ptr(), b.as_ptr()];
-            let lens = [a.len(), b.len()];
-            assert_eq!(
-                nhshell_selection_own(
-                    sh,
-                    NHSHELL_SEL_CLIPBOARD,
-                    mimes.as_ptr(),
-                    data.as_ptr(),
-                    lens.as_ptr(),
-                    2
-                ),
-                NHSHELL_OK
-            );
-            assert_eq!(nhshell_selection_owned(sh, NHSHELL_SEL_CLIPBOARD), 1);
-            rec.signal(Signal::STOP);
-            let started = Instant::now();
-            let mut out: *mut u8 = std::ptr::null_mut();
-            let mut len = 0usize;
-            let r = nhshell_selection_read(
-                sh,
+            })
+            .unwrap();
+        assert_eq!(
+            shell.selection_own(NHSHELL_SEL_CLIPBOARD, &[]),
+            Err(ShellError::State),
+            "no focus yet"
+        );
+        let reply = rec.control_ok(&format!(r#"{{"cmd":"focus","surface":{win}}}"#));
+        assert!(reply.contains("\"ok\":true"), "{reply}");
+        assert!(
+            wait_event(&mut shell, 2000, |e| is_focus(e, 1)).is_some(),
+            "keyboard focus"
+        );
+        let (a, b): (&[u8], &[u8]) = (b"plain bytes", b"utf8 bytes");
+        shell
+            .selection_own(
                 NHSHELL_SEL_CLIPBOARD,
-                c"UTF8_STRING".as_ptr(),
-                1000,
-                &mut out,
-                &mut len,
-            );
-            let took = started.elapsed();
-            rec.signal(Signal::CONT);
-            assert_eq!(r, NHSHELL_OK);
-            assert!(took < Duration::from_millis(100), "{took:?}: a round trip");
-            assert_eq!(std::slice::from_raw_parts(out, len), b"utf8 bytes");
-            nhshell_free_bytes(out);
-            assert_eq!(nhshell_close(sh), NHSHELL_OK);
-        }
+                &[("text/plain", a), ("UTF8_STRING", b)],
+            )
+            .unwrap();
+        assert!(shell.selection_owned(NHSHELL_SEL_CLIPBOARD).unwrap());
+        rec.signal(Signal::STOP);
+        let started = Instant::now();
+        let r = shell.selection_read(NHSHELL_SEL_CLIPBOARD, "UTF8_STRING", 1000);
+        let took = started.elapsed();
+        rec.signal(Signal::CONT);
+        assert!(took < Duration::from_millis(100), "{took:?}: a round trip");
+        assert_eq!(r.as_deref(), Ok(&b"utf8 bytes"[..]));
+        drop(shell);
     }
 
     /// Review Focus 1: a source that takes the `receive` and never writes.  The read gives up after its timeout, and
