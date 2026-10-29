@@ -2936,11 +2936,9 @@ nhwl_reconnect_wanted (void)
 static uint32_t
 nhwl_reconnect_timeout (void)
 {
-  double secs = 10.0;
+  double secs = (NUMBERP (Vnhwl_reconnect_timeout)
+		 ? XFLOATINT (Vnhwl_reconnect_timeout) : 10.0);
 
-  if (!NILP (Fboundp (Qnhwl_reconnect_timeout))
-      && NUMBERP (Fsymbol_value (Qnhwl_reconnect_timeout)))
-    secs = XFLOATINT (Fsymbol_value (Qnhwl_reconnect_timeout));
   return secs <= 0 ? 0 : secs > 3600 ? 3600 * 1000 : (uint32_t) (secs * 1000);
 }
 
@@ -4241,9 +4239,11 @@ syms_of_nhwlterm (void)
   nhwl_glue_panic_list = Qnil;
   staticpro (&nhwl_glue_panic_list);
 
-  /* Reconnecting in place; the variables are nhwl-settings.el's.  */
+  /* Reconnecting in place; nhwl-settings.el has the options.  */
   DEFSYM (Qnhwl_reconnect, "nhwl-reconnect");
-  DEFSYM (Qnhwl_reconnect_timeout, "nhwl-reconnect-timeout");
+  DEFVAR_LISP ("nhwl-reconnect-timeout", Vnhwl_reconnect_timeout,
+    doc: /* Seconds to wait for a restarted compositor.  */);
+  Vnhwl_reconnect_timeout = make_float (10.0);
   DEFSYM (Qnhwl_display_connection_functions,
 	  "nhwl-display-connection-functions");
   DEFSYM (Qnhwl_reconnecting, "reconnecting");

@@ -3112,10 +3112,8 @@ the text, any other the bytes of the type of that name.  Waits at most
       <= 0)
     return Qnil;
 
-  double secs = 1.0;
-  if (!NILP (Fboundp (Qnhwl_selection_timeout))
-      && NUMBERP (Fsymbol_value (Qnhwl_selection_timeout)))
-    secs = XFLOATINT (Fsymbol_value (Qnhwl_selection_timeout));
+  double secs = (NUMBERP (Vnhwl_selection_timeout)
+		 ? XFLOATINT (Vnhwl_selection_timeout) : 1.0);
   uint32_t ms = secs <= 0 ? 0 : secs > 60 ? 60000 : (uint32_t) (secs * 1000);
 
   const uint8_t *out = NULL;
@@ -3477,7 +3475,9 @@ syms_of_nhwlfns (void)
   DEFSYM (Qlink, "link");
   DEFSYM (Qprivate, "private");
   DEFSYM (QCLIPBOARD, "CLIPBOARD");
-  DEFSYM (Qnhwl_selection_timeout, "nhwl-selection-timeout");
+  DEFVAR_LISP ("nhwl-selection-timeout", Vnhwl_selection_timeout,
+    doc: /* Seconds to wait for another client's selection.  */);
+  Vnhwl_selection_timeout = make_float (1.0);
   DEFSYM (Qpgtk_lost_selection_functions, "pgtk-lost-selection-functions");
   DEFSYM (QUTF8_STRING, "UTF8_STRING");
   DEFSYM (QTARGETS, "TARGETS");
