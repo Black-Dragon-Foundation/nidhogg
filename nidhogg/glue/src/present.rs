@@ -13,7 +13,9 @@
 //! - **The consistency point** (`NHG_PRESENT_BACKSTOP`): Emacs is not redisplaying and buffer flips are not blocked,
 //!   so every frame of the tree is drawn completely.  The glue publishes the tree there if its root may show a
 //!   buffer: the drawable surfaces' backings go to the shell, which commits their scenes and copies what changed.  An
-//!   undrawable surface is left out, so its damage waits in Glitnir and its last buffer stays on screen.
+//!   undrawable surface is left out, so its damage waits in Glitnir and its last buffer stays on screen.  Drawing
+//!   whose pixels are what the frame's last publish showed is dropped first (`Backings::drop_unchanged`: a redisplay
+//!   that drew the cursor again in its place publishes nothing).
 //! - **`FRAME_READY`** (`NHG_PRESENT_READY`): the shell presents the tree from what was published, whatever Emacs is
 //!   doing (a packet is a complete picture by construction).  A tree that drew nothing but owes a commit (a bare
 //!   ack, surface state, a re-arm of a waiting pacer) gets that commit here too.
@@ -143,7 +145,7 @@ fn frames<'a>(
 /// Returns `NHG_PRESENTED_*` bits.  Reads pixels.
 pub fn present(
     backend: &mut dyn ShellBackend,
-    backings: &Backings,
+    backings: &mut Backings,
     presenting: &Presenting,
     root: u64,
     s: &[NhgSurface],
@@ -155,15 +157,28 @@ pub fn present(
         let drawable = drawable(root, s)?;
         // a root that may not show a buffer publishes nothing, and its key waits for the redisplay that draws it
         if drawable.first() == Some(&true) {
+            let keys: Vec<u64> = s
+                .iter()
+                .zip(&drawable)
+                .filter(|(_, d)| **d)
+                .map(|(x, _)| x.frame)
+                .collect();
+            // drawing that left the pixels as they were shown is nothing new
+            keys.iter().for_each(|&k| backings.drop_unchanged(k));
             let frames = frames(backings, s, &drawable);
             let published = match frames.first() {
                 // while reconnecting the damage waits (the whole frame is damaged again when the display is back)
                 Some(f) if f.window == root => match backend.publish(root, &frames, t_key_ns) {
-                    Err(ShellError::Reconnecting) => false,
-                    r => r?,
+                    Err(ShellError::Reconnecting) => None,
+                    r => Some(r?),
                 },
-                _ => false,
+                _ => None,
             };
+            // the publish committed the drawable frames' damage, whether or not a packet went out
+            if published.is_some() {
+                keys.iter().for_each(|&k| backings.published(k));
+            }
+            let published = published == Some(true);
             if published {
                 out |= NHG_PRESENTED_PUBLISHED;
             }
