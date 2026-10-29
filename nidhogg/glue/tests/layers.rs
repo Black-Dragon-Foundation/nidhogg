@@ -162,6 +162,12 @@ mod layers {
         // down: rows 0..70 to 10..80
         assert!(full_window(win(), NhgRect { h: 70, ..win() }, LINE));
         assert!(!full_window(win(), NhgRect { h: 70, ..win() }, 0));
+        // a partly visible last row is drawn again, not moved: up rows 10..70 to 0..60, down 0..60 to 10..70
+        let short = NhgRect { h: 60, ..win() };
+        assert!(full_window(win(), NhgRect { y: LINE, ..short }, 0));
+        assert!(full_window(win(), short, LINE));
+        // reaching past the window is not this window's scroll
+        assert!(!full_window(win(), NhgRect { h: 80, ..win() }, LINE));
     }
 
     /// A frame that is not an opaque root never promotes: a child frame, a tip or a popup; an alpha below 1, or one
