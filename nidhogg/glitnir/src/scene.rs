@@ -41,6 +41,11 @@ fn snapped(r: Rect, scale: f64) -> Rect {
     crate::snap::stable_rect(crate::snap::outward(r, s120), 0, 0, s120)
 }
 
+/// `part` (a part of `rect`) holds `rect`'s columns from its first row.
+fn from_top(part: Rect, rect: Rect) -> bool {
+    !part.is_empty() && part.x == rect.x && part.w == rect.w && part.y == rect.y
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     /// A frame's surface (the root's own).
@@ -236,9 +241,10 @@ impl Scene {
     }
 
     /// WINDOW's pixels in AREA moved by DY on ROOT's frame, EXPOSED left stale; D is the frame's damage.  When WINDOW
-    /// is a visible own output right under ROOT's frame layer and AREA holds its whole rectangle, the move is its
-    /// scroll ([`Damage::scroll_own`]); otherwise both rectangles are damaged and the window's layer is damaged at the
-    /// commit, as for any window.
+    /// is a visible own output right under ROOT's frame layer and AREA holds its rectangle's columns from its first row
+    /// (its last rows may lie below AREA: a partly visible last row is drawn again, not moved), the move is its scroll
+    /// ([`Damage::scroll_own`], which damages the rows AREA leaves out); otherwise both rectangles are damaged and the
+    /// window's layer is damaged at the commit, as for any window.
     pub fn scroll(
         &self,
         root: u64,
@@ -255,7 +261,7 @@ impl Scene {
                     && l.visible
                     && self.stack.parent_of(window) == Some(root)
                     && !l.rect.is_empty()
-                    && area.intersect(&l.rect) == l.rect =>
+                    && from_top(area.intersect(&l.rect), l.rect) =>
             {
                 d.scroll_own(window, area, dy, exposed, l.rect, snapped(l.rect, scale))
             }
@@ -1094,6 +1100,22 @@ mod tests {
         assert!(covers(&d, Rect::new(0, 20, 10, 300)) && covers(&d, Rect::new(410, 20, 10, 300)));
         assert!(misses(&d, r), "{d:?}");
         assert!(covers(&output(&s).damage, Rect::new(0, 280, 400, 20)));
+    }
+
+    #[test]
+    fn scroll_above_a_partial_last_row_is_an_offset() {
+        let r = Rect::new(10, 20, 400, 300);
+        let (mut s, mut f) = own(1.0, r);
+        // the run stops 10 rows above the window's bottom (a partly visible last row is drawn again)
+        let (area, exposed) = (Rect::new(10, 20, 400, 290), Rect::new(10, 270, 400, 40));
+        run(&s, &mut f, area, -40, exposed);
+        commit(&mut s, &mut f);
+        let o = output(&s);
+        assert_eq!((o.scroll, o.full), (-40, false));
+        // the exposed rows and the rows below the run are damage; the rows that only moved are not
+        let below = Rect::new(0, 250, 400, 50);
+        assert!(covers(&o.damage, below), "{:?}", o.damage);
+        assert!(!covered(&o.damage, 200, 100), "{:?}", o.damage);
     }
 
     #[test]
