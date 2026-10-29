@@ -826,12 +826,14 @@ Return the two replies."
           (setq child-frame-chrome '((corner-radius . 8) (shadow :blur 6 :offset (0 . 2) :opacity 0.3)))
           (setq c (nhwl-gui--child))
           (glitnir-refresh c)
-          (let* ((fw (frame-pixel-width c)) (fh (frame-pixel-height c))
-                 (n (nhwl-gui--wait
+          ;; the frame's size once it is shown: its first redisplay adds the menu and tool bar lines
+          (let* ((n (nhwl-gui--wait
                      (lambda ()
+                       (redisplay t)
                        (let ((n (nhwl-gui--new-sub before)))
-                         (and n (> (plist-get (plist-get n :buffer) :w) fw) n)))
+                         (and n (> (plist-get (plist-get n :buffer) :w) (frame-pixel-width c)) n)))
                      5))
+                 (fw (frame-pixel-width c)) (fh (frame-pixel-height c))
                  (b (plist-get n :buffer))
                  (r (car (nhwl-gui--get n :input_region))))
             (should n)
