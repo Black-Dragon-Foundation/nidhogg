@@ -49,9 +49,9 @@ static int
 nhwl_selection_kind (Lisp_Object sel)
 {
   if (NILP (sel) || EQ (sel, QPRIMARY))
-    return NHSHELL_SEL_PRIMARY;
+    return NHG_SEL_PRIMARY;
   if (EQ (sel, QCLIPBOARD))
-    return NHSHELL_SEL_CLIPBOARD;
+    return NHG_SEL_CLIPBOARD;
   /* The offer of the drag over our windows (nhwl_dnd_event_arg).  */
   if (EQ (sel, Qnhwl_dnd_selection))
     return NHG_SEL_DND;
@@ -242,7 +242,7 @@ void
 nhwl_selection_clear_event (uint32_t kind, struct input_event *ie)
 {
   ie->kind = SELECTION_CLEAR_EVENT;
-  ie->arg = kind == NHSHELL_SEL_PRIMARY ? QPRIMARY : QCLIPBOARD;
+  ie->arg = kind == NHG_SEL_PRIMARY ? QPRIMARY : QCLIPBOARD;
 }
 
 /* Called by the command loop for a SELECTION_CLEAR_EVENT.  */

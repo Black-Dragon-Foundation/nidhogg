@@ -19,7 +19,7 @@ use crate::guard::GlueError;
 use nhshell::api::{Anchor, ChildDesc, NHSHELL_KIND_TOPLEVEL, ShellError, WindowDesc};
 use std::ffi::c_char;
 
-/// Where a popup goes (`NhShellAnchor`'s layout: a rectangle in the parent's surface in logical pixels, a gravity and
+/// Where a popup goes (the shell's `Anchor`: a rectangle in the parent's surface in logical pixels, a gravity and
 /// what the compositor may adjust).
 pub type NhgAnchor = Anchor;
 
@@ -145,7 +145,7 @@ pub fn new(
             app_id: app_id.into(),
             flags: d.flags,
         };
-        // as `nhshell_window_new` did: an empty name is none
+        // an empty name is none
         state
             .backend()
             .window_new_named(&desc, Some(session_name))?

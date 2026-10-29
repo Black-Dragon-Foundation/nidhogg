@@ -1140,19 +1140,19 @@ DEFUN ("x-create-frame", Fx_create_frame, Sx_create_frame, 1, 1, 0,
   dpyinfo->outputs = out;
 
   out->current_cursor = out->nontext_cursor
-    = nhwl_cursor_for_shape (NHSHELL_CURSOR_DEFAULT);
+    = nhwl_cursor_for_shape (NHG_CURSOR_DEFAULT);
   out->text_cursor = out->modeline_cursor
-    = nhwl_cursor_for_shape (NHSHELL_CURSOR_TEXT);
-  out->hand_cursor = nhwl_cursor_for_shape (NHSHELL_CURSOR_POINTER);
-  out->hourglass_cursor = nhwl_cursor_for_shape (NHSHELL_CURSOR_WAIT);
+    = nhwl_cursor_for_shape (NHG_CURSOR_TEXT);
+  out->hand_cursor = nhwl_cursor_for_shape (NHG_CURSOR_POINTER);
+  out->hourglass_cursor = nhwl_cursor_for_shape (NHG_CURSOR_WAIT);
   out->horizontal_drag_cursor = out->left_edge_cursor = out->right_edge_cursor
-    = nhwl_cursor_for_shape (NHSHELL_CURSOR_RESIZE_EW);
+    = nhwl_cursor_for_shape (NHG_CURSOR_RESIZE_EW);
   out->vertical_drag_cursor = out->top_edge_cursor = out->bottom_edge_cursor
-    = nhwl_cursor_for_shape (NHSHELL_CURSOR_RESIZE_NS);
+    = nhwl_cursor_for_shape (NHG_CURSOR_RESIZE_NS);
   out->top_left_corner_cursor = out->bottom_right_corner_cursor
-    = nhwl_cursor_for_shape (NHSHELL_CURSOR_RESIZE_NWSE);
+    = nhwl_cursor_for_shape (NHG_CURSOR_RESIZE_NWSE);
   out->top_right_corner_cursor = out->bottom_left_corner_cursor
-    = nhwl_cursor_for_shape (NHSHELL_CURSOR_RESIZE_NESW);
+    = nhwl_cursor_for_shape (NHG_CURSOR_RESIZE_NESW);
 
   /* Now consider the frame official.  */
   f->terminal->reference_count++;
@@ -1251,8 +1251,9 @@ DEFUN ("x-create-frame", Fx_create_frame, Sx_create_frame, 1, 1, 0,
 	    && SDATA (XCAR (env))[sizeof prefix - 1])
 	  {
 	    block_input ();
-	    nhshell_window_activate (dpyinfo->shell, FRAME_NHWL_OUTPUT (f)->window,
-				     SSDATA (XCAR (env)) + sizeof prefix - 1);
+	    NHG (nhg_window_activate (dpyinfo->glue,
+				      FRAME_NHWL_OUTPUT (f)->window,
+				      SSDATA (XCAR (env)) + sizeof prefix - 1));
 	    unblock_input ();
 	    break;
 	  }
@@ -1856,7 +1857,7 @@ nhwl_create_tip_frame (struct nhwl_display_info *dpyinfo, Lisp_Object parms)
   gui_figure_window_size (f, parms, false, false);
 
   out->current_cursor = out->text_cursor
-    = nhwl_cursor_for_shape (NHSHELL_CURSOR_TEXT);
+    = nhwl_cursor_for_shape (NHG_CURSOR_TEXT);
 
   gui_default_parameter (f, parms, Qauto_raise, Qnil,
 			 "autoRaise", "AutoRaiseLower", RES_TYPE_BOOLEAN);
@@ -2242,21 +2243,21 @@ static const char *const popup_gravity_names[] = {
   "bottom-right"
 };
 
-/* The `:adjust' names and their NHSHELL_ADJUST_* bits.  */
+/* The `:adjust' names and their NHG_ADJUST_* bits.  */
 static const struct { const char *name; uint32_t bit; } popup_adjust_names[] = {
-  { "flip-x", NHSHELL_ADJUST_FLIP_X }, { "flip-y", NHSHELL_ADJUST_FLIP_Y },
-  { "slide-x", NHSHELL_ADJUST_SLIDE_X }, { "slide-y", NHSHELL_ADJUST_SLIDE_Y }
+  { "flip-x", NHG_ADJUST_FLIP_X }, { "flip-y", NHG_ADJUST_FLIP_Y },
+  { "slide-x", NHG_ADJUST_SLIDE_X }, { "slide-y", NHG_ADJUST_SLIDE_Y }
 };
 
-#define POPUP_ADJUST_ALL (NHSHELL_ADJUST_FLIP_X | NHSHELL_ADJUST_FLIP_Y \
-			  | NHSHELL_ADJUST_SLIDE_X | NHSHELL_ADJUST_SLIDE_Y)
+#define POPUP_ADJUST_ALL (NHG_ADJUST_FLIP_X | NHG_ADJUST_FLIP_Y \
+			  | NHG_ADJUST_SLIDE_X | NHG_ADJUST_SLIDE_Y)
 
 /* The `nhwl-popup' parameter decoded: what the glue's popup calls
    take.  */
 struct nhwl_popup_parm
 {
   NhgRect anchor;		/* device pixels of the parent's native area */
-  uint32_t gravity, adjust;	/* NhgAnchor's gravity, NHSHELL_ADJUST_* */
+  uint32_t gravity, adjust;	/* NhgAnchor's gravity, NHG_ADJUST_* */
   uint32_t flags;		/* NHG_POPUP_GRAB */
 };
 
@@ -2541,8 +2542,8 @@ theme is redrawn.  Return t when the shell took the theme.  */)
     return Qnil;
 
   block_input ();
-  int rc = nhshell_set_cursor_theme (x_display_list->shell, SSDATA (name),
-				     (uint32_t) min (XFIXNAT (size), 512));
+  int rc = NHG (nhg_set_cursor_theme (x_display_list->glue, SSDATA (name),
+				      (uint32_t) min (XFIXNAT (size), 512)));
   unblock_input ();
   return rc >= 0 ? Qt : Qnil;
 }
@@ -2554,7 +2555,7 @@ nhwl_interactive_target (Lisp_Object frame, struct frame **fp)
 {
   struct frame *f = decode_window_system_frame (frame);
   *fp = f;
-  return FRAME_NHWL_DISPLAY_INFO (f)->shell ? FRAME_NHWL_OUTPUT (f) : NULL;
+  return FRAME_NHWL_DISPLAY_INFO (f)->glue ? FRAME_NHWL_OUTPUT (f) : NULL;
 }
 
 DEFUN ("nhwl-frame-begin-move", Fnhwl_frame_begin_move,
@@ -2569,8 +2570,8 @@ from then on.  Return t when the request was sent.  */)
   if (!out)
     return Qnil;
   block_input ();
-  int rc = nhshell_window_move (FRAME_NHWL_DISPLAY_INFO (f)->shell,
-				out->window);
+  int rc = NHG (nhg_window_move (FRAME_NHWL_DISPLAY_INFO (f)->glue,
+				 out->window));
   unblock_input ();
   return rc >= 0 ? Qt : Qnil;
 }
@@ -2584,14 +2585,14 @@ Return t when the request was sent.  */)
   (Lisp_Object edge, Lisp_Object frame)
 {
   static const struct { const char *name; uint32_t edges; } table[] = {
-    { "top", NHSHELL_EDGE_TOP },
-    { "bottom", NHSHELL_EDGE_BOTTOM },
-    { "left", NHSHELL_EDGE_LEFT },
-    { "right", NHSHELL_EDGE_RIGHT },
-    { "top-left", NHSHELL_EDGE_TOP | NHSHELL_EDGE_LEFT },
-    { "top-right", NHSHELL_EDGE_TOP | NHSHELL_EDGE_RIGHT },
-    { "bottom-left", NHSHELL_EDGE_BOTTOM | NHSHELL_EDGE_LEFT },
-    { "bottom-right", NHSHELL_EDGE_BOTTOM | NHSHELL_EDGE_RIGHT },
+    { "top", NHG_EDGE_TOP },
+    { "bottom", NHG_EDGE_BOTTOM },
+    { "left", NHG_EDGE_LEFT },
+    { "right", NHG_EDGE_RIGHT },
+    { "top-left", NHG_EDGE_TOP | NHG_EDGE_LEFT },
+    { "top-right", NHG_EDGE_TOP | NHG_EDGE_RIGHT },
+    { "bottom-left", NHG_EDGE_BOTTOM | NHG_EDGE_LEFT },
+    { "bottom-right", NHG_EDGE_BOTTOM | NHG_EDGE_RIGHT },
   };
   CHECK_SYMBOL (edge);
   uint32_t edges = 0;
@@ -2606,8 +2607,8 @@ Return t when the request was sent.  */)
   if (!out)
     return Qnil;
   block_input ();
-  int rc = nhshell_window_resize (FRAME_NHWL_DISPLAY_INFO (f)->shell,
-				  out->window, edges);
+  int rc = NHG (nhg_window_resize (FRAME_NHWL_DISPLAY_INFO (f)->glue,
+				   out->window, edges));
   unblock_input ();
   return rc >= 0 ? Qt : Qnil;
 }
@@ -2628,9 +2629,9 @@ press triggers it.  Return t when the request was sent.  */)
   /* Device pixels in, logical pixels out, once, at the call.  */
   double s = nhwl_frame_scale_factor (f);
   block_input ();
-  int rc = nhshell_window_show_menu (FRAME_NHWL_DISPLAY_INFO (f)->shell,
-				     out->window, (int) round (px / s),
-				     (int) round (py / s));
+  int rc = NHG (nhg_window_show_menu (FRAME_NHWL_DISPLAY_INFO (f)->glue,
+				      out->window, (int) round (px / s),
+				      (int) round (py / s)));
   unblock_input ();
   return rc >= 0 ? Qt : Qnil;
 }

@@ -33,8 +33,8 @@ fn open(rec: &Recorder) -> *mut NhgDisplay {
 }
 
 fn backend<'a>(d: *mut NhgDisplay) -> &'a mut dyn ShellBackend {
-    // SAFETY: a live display; its shell handle lives as long as it does, and no glue call runs meanwhile.
-    unsafe { &mut *nhg_shell(d) }.backend_mut()
+    // SAFETY: a live display; its backend lives as long as it does, and no glue call runs meanwhile.
+    unsafe { &mut *(*d).backend_ptr() }
 }
 
 fn close(d: *mut NhgDisplay) {

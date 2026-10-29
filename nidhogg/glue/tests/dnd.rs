@@ -40,8 +40,8 @@ fn open(rec: &Recorder) -> *mut NhgDisplay {
 
 /// The shell inside `d`, for what the glue does not wrap (windows, records).
 fn shell<'a>(d: *mut NhgDisplay) -> &'a mut dyn ShellBackend {
-    // SAFETY: a live display's shell handle, used only between glue calls.
-    unsafe { (*nhg_shell(d)).backend_mut() }
+    // SAFETY: a live display's backend, used only between glue calls.
+    unsafe { &mut *(*d).backend_ptr() }
 }
 
 /// Take the shell's records until one satisfies `want` (3 s at most).

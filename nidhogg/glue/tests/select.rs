@@ -38,8 +38,8 @@ fn d_ref<'a>(d: *mut NhgDisplay) -> &'a NhgDisplay {
 
 /// The shell inside `d`, for what the glue does not wrap (windows, records).
 fn shell<'a>(d: *mut NhgDisplay) -> &'a mut dyn ShellBackend {
-    // SAFETY: a live display's shell handle, used only between glue calls.
-    unsafe { (*nhg_shell(d)).backend_mut() }
+    // SAFETY: a live display's backend, used only between glue calls.
+    unsafe { &mut *(*d).backend_ptr() }
 }
 
 /// Take the shell's records until one satisfies `want` (3 s at most); false when none did.
@@ -372,9 +372,7 @@ mod bench {
         }));
         {
             let mut state = d_ref(d).lock_for_test();
-            let sh = state.shell();
-            // SAFETY: the display's live handle, used here only.
-            let b = unsafe { &mut *sh }.backend_mut();
+            let b = state.backend();
             b.ack_configure(win, serial.unwrap(), NHSHELL_ACK_CONTENT)
                 .unwrap();
         }
