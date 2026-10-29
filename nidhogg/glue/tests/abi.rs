@@ -7,7 +7,9 @@ mod abi {
         NHG_GEOM_FRESH, NHG_GEOM_LAYER_CHANGED, NhgBacking, NhgFrameGeom, NhgRect,
     };
     use nhglue::bench::NhgBenchOut;
-    use nhglue::ffi::{NhgDisplay, nhg_abi_version, nhg_close, nhg_fd, nhg_open, nhg_shell};
+    use nhglue::ffi::{
+        NhgDisplay, nhg_abi_version, nhg_close, nhg_dispatch_main, nhg_fd, nhg_open,
+    };
     use nhglue::ffi::{
         nhg_backing, nhg_backing_forget, nhg_damage, nhg_damage_all, nhg_layer_ensure, nhg_scroll,
         nhg_snapshot,
@@ -24,13 +26,13 @@ mod abi {
     use nhglue::keys::NHG_KEY_REPEAT;
     use nhglue::present::*;
     use nhglue::query::{NhgDisplayInfo, NhgMonitor};
-    use nhshell::ffi::NhShell;
     use std::ffi::c_char;
     use std::mem::offset_of;
     use std::process::Command;
 
-    /// Compile a probe that includes `nhglue.h` and prints each of `exprs` as a signed integer; return the values.
-    /// `decls` go before `main` (they must compile against the header, with every warning an error).
+    /// Compile a probe that includes `nhglue.h` (and `glitnir.h`, whose rectangle `NhgRect` matches) and prints each
+    /// of `exprs` as a signed integer; return the values.  `decls` go before `main` (they must compile against the
+    /// header, with every warning an error).
     fn probe(decls: &str, exprs: &[&str]) -> Vec<i64> {
         // one directory per probe: the tests run in parallel
         static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -38,7 +40,7 @@ mod abi {
         let dir = std::env::temp_dir().join(format!("nhglue-layout-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut c = format!(
-            "#include <stdio.h>\n#include <stddef.h>\n#include \"nhglue.h\"\n{decls}\nint main(void) {{\n"
+            "#include <stdio.h>\n#include <stddef.h>\n#include \"nhglue.h\"\n#include \"glitnir.h\"\n{decls}\nint main(void) {{\n"
         );
         for e in exprs {
             c += &format!("  printf(\"%lld\\n\", (long long) ({e}));\n");
@@ -51,7 +53,6 @@ mod abi {
         let cc = Command::new("cc")
             .args(["-std=gnu11", "-Wall", "-Werror"])
             .args(["-I", &format!("{root}/include")])
-            .args(["-I", &format!("{root}/../shell/include")])
             .args(["-I", &format!("{root}/../glitnir/include")])
             .arg("-o")
             .arg(&exe)
@@ -90,14 +91,21 @@ mod abi {
             ("NHG_E_TOO_SMALL", NHG_E_TOO_SMALL.into()),
             ("NHG_E_THREAD", NHG_E_THREAD.into()),
             ("NHG_E_RECONNECTING", NHG_E_RECONNECTING.into()),
-            ("NHSHELL_E_PANIC", NHG_E_PANIC.into()),
-            ("NHSHELL_E_ARG", NHG_E_ARG.into()),
-            ("NHSHELL_E_STATE", NHG_E_STATE.into()),
-            ("NHSHELL_E_UNSUPPORTED", NHG_E_UNSUPPORTED.into()),
-            ("NHSHELL_E_DISCONNECTED", NHG_E_DISCONNECTED.into()),
-            ("NHSHELL_E_NOMEM", NHG_E_NOMEM.into()),
-            ("NHSHELL_E_TIMEOUT", NHG_E_TIMEOUT.into()),
-            ("NHSHELL_E_TOO_SMALL", NHG_E_TOO_SMALL.into()),
+            // the codes equal the shell's where they mean the same
+            ("NHG_E_PANIC", nhshell::api::NHSHELL_E_PANIC.into()),
+            ("NHG_E_ARG", nhshell::api::NHSHELL_E_ARG.into()),
+            ("NHG_E_STATE", nhshell::api::NHSHELL_E_STATE.into()),
+            (
+                "NHG_E_UNSUPPORTED",
+                nhshell::api::NHSHELL_E_UNSUPPORTED.into(),
+            ),
+            (
+                "NHG_E_DISCONNECTED",
+                nhshell::api::NHSHELL_E_DISCONNECTED.into(),
+            ),
+            ("NHG_E_NOMEM", nhshell::api::NHSHELL_E_NOMEM.into()),
+            ("NHG_E_TIMEOUT", nhshell::api::NHSHELL_E_TIMEOUT.into()),
+            ("NHG_E_TOO_SMALL", nhshell::api::NHSHELL_E_TOO_SMALL.into()),
             // backings, damage and scroll
             ("NHG_GEOM_LAYER_CHANGED", NHG_GEOM_LAYER_CHANGED.into()),
             ("NHG_GEOM_FRESH", NHG_GEOM_FRESH.into()),
@@ -292,7 +300,6 @@ PROTO (nhg_abi_version, int32_t (uint32_t *));
 PROTO (nhg_open, NhgDisplay *(const char *, char *, size_t));
 PROTO (nhg_close, int32_t (NhgDisplay *));
 PROTO (nhg_fd, int32_t (NhgDisplay *));
-PROTO (nhg_shell, NhShell *(NhgDisplay *));
 PROTO (nhg_layer_ensure, int32_t (NhgDisplay *, uint64_t *, const NhgFrameGeom *));
 PROTO (nhg_backing, int32_t (NhgDisplay *, uint64_t, const NhgFrameGeom *, NhgBacking *));
 PROTO (nhg_damage, int32_t (NhgDisplay *, uint64_t, const NhgRect *, size_t));
@@ -329,7 +336,6 @@ PROTO (nhg_frame_outputs, int32_t (NhgDisplay *, uint64_t, uint64_t *, size_t, s
             nhg_open;
         let _: unsafe extern "C" fn(*mut NhgDisplay) -> i32 = nhg_close;
         let _: unsafe extern "C" fn(*mut NhgDisplay) -> i32 = nhg_fd;
-        let _: unsafe extern "C" fn(*mut NhgDisplay) -> *mut NhShell = nhg_shell;
         // backings, damage and scroll
         let _: unsafe extern "C" fn(*mut NhgDisplay, *mut u64, *const NhgFrameGeom) -> i32 =
             nhg_layer_ensure;
@@ -530,7 +536,6 @@ PROTO (nhg_csd_title_bar, int32_t (NhgDisplay *, uint64_t, int32_t, int32_t, Nhg
             ("NHG_FULLSCREEN_MAXIMIZED", NHG_FULLSCREEN_MAXIMIZED.into()),
             ("NHG_DEL_TIP", NHG_DEL_TIP.into()),
             ("sizeof (NhgAnchor)", size_of::<NhgAnchor>() as i64),
-            ("sizeof (NhShellAnchor)", size_of::<NhgAnchor>() as i64),
             (
                 "offsetof (NhgAnchor, adjust)",
                 offset_of!(NhgAnchor, adjust) as i64,
@@ -600,6 +605,122 @@ PROTO (nhg_tip_hide, int32_t (NhgDisplay *, uint64_t));";
                 i32,
             ) -> i32 = nhg_tip_show;
             let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_tip_hide;
+        }
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe(decls, &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+    }
+
+    /// The shell's part of the header: its values, its capabilities and counters as C reads them, and the calls
+    /// that reach it, against the shell's Rust side.
+    #[test]
+    fn shell_header_matches() {
+        use nhshell::api::*;
+        use nhshell::caps::NhShellCaps;
+        use nhshell::event::*;
+        type C = NhShellCaps;
+        type P = NhShellPresenterStats;
+        let rows: &[(&str, i64)] = &[
+            ("NHG_MOD_SHIFT", NHSHELL_MOD_SHIFT.into()),
+            ("NHG_MOD_CTRL", NHSHELL_MOD_CTRL.into()),
+            ("NHG_MOD_ALT", NHSHELL_MOD_ALT.into()),
+            ("NHG_MOD_SUPER", NHSHELL_MOD_SUPER.into()),
+            ("NHG_MOD_HYPER", NHSHELL_MOD_HYPER.into()),
+            ("NHG_MOD_META", NHSHELL_MOD_META.into()),
+            ("NHG_MOD_CAPS", NHSHELL_MOD_CAPS.into()),
+            ("NHG_STATE_MAXIMIZED", NHSHELL_STATE_MAXIMIZED.into()),
+            ("NHG_STATE_FULLSCREEN", NHSHELL_STATE_FULLSCREEN.into()),
+            ("NHG_STATE_ACTIVATED", NHSHELL_STATE_ACTIVATED.into()),
+            ("NHG_STATE_RESIZING", NHSHELL_STATE_RESIZING.into()),
+            ("NHG_STATE_TILED_L", NHSHELL_STATE_TILED_L.into()),
+            ("NHG_STATE_TILED_R", NHSHELL_STATE_TILED_R.into()),
+            ("NHG_STATE_TILED_T", NHSHELL_STATE_TILED_T.into()),
+            ("NHG_STATE_TILED_B", NHSHELL_STATE_TILED_B.into()),
+            ("NHG_STATE_SUSPENDED", NHSHELL_STATE_SUSPENDED.into()),
+            ("NHG_BUTTON_RELEASED", NHSHELL_BUTTON_RELEASED.into()),
+            ("NHG_BUTTON_PRESSED", NHSHELL_BUTTON_PRESSED.into()),
+            ("NHG_WIN_UNDECORATED", NHSHELL_WIN_UNDECORATED.into()),
+            ("NHG_WIN_FULLSCREEN", NHSHELL_WIN_FULLSCREEN.into()),
+            ("NHG_WIN_MAXIMIZED", NHSHELL_WIN_MAXIMIZED.into()),
+            ("NHG_WIN_GRAB", NHSHELL_WIN_GRAB.into()),
+            ("NHG_WIN_RESTORE", NHSHELL_WIN_RESTORE.into()),
+            ("NHG_EDGE_TOP", NHSHELL_EDGE_TOP.into()),
+            ("NHG_EDGE_BOTTOM", NHSHELL_EDGE_BOTTOM.into()),
+            ("NHG_EDGE_LEFT", NHSHELL_EDGE_LEFT.into()),
+            ("NHG_EDGE_RIGHT", NHSHELL_EDGE_RIGHT.into()),
+            ("NHG_CURSOR_DEFAULT", NHSHELL_CURSOR_DEFAULT.into()),
+            ("NHG_CURSOR_TEXT", NHSHELL_CURSOR_TEXT.into()),
+            ("NHG_CURSOR_POINTER", NHSHELL_CURSOR_POINTER.into()),
+            ("NHG_CURSOR_CROSSHAIR", NHSHELL_CURSOR_CROSSHAIR.into()),
+            ("NHG_CURSOR_WAIT", NHSHELL_CURSOR_WAIT.into()),
+            ("NHG_CURSOR_HELP", NHSHELL_CURSOR_HELP.into()),
+            ("NHG_CURSOR_MOVE", NHSHELL_CURSOR_MOVE.into()),
+            ("NHG_CURSOR_NOT_ALLOWED", NHSHELL_CURSOR_NOT_ALLOWED.into()),
+            ("NHG_CURSOR_RESIZE_NS", NHSHELL_CURSOR_RESIZE_NS.into()),
+            ("NHG_CURSOR_RESIZE_EW", NHSHELL_CURSOR_RESIZE_EW.into()),
+            ("NHG_CURSOR_RESIZE_NWSE", NHSHELL_CURSOR_RESIZE_NWSE.into()),
+            ("NHG_CURSOR_RESIZE_NESW", NHSHELL_CURSOR_RESIZE_NESW.into()),
+            ("NHG_CURSOR_HIDDEN", NHSHELL_CURSOR_HIDDEN.into()),
+            ("NHG_KIND_TOPLEVEL", NHSHELL_KIND_TOPLEVEL.into()),
+            ("NHG_KIND_CHILD", NHSHELL_KIND_CHILD.into()),
+            ("NHG_KIND_POPUP", NHSHELL_KIND_POPUP.into()),
+            ("NHG_ADJUST_SLIDE_X", NHSHELL_ADJUST_SLIDE_X.into()),
+            ("NHG_ADJUST_SLIDE_Y", NHSHELL_ADJUST_SLIDE_Y.into()),
+            ("NHG_ADJUST_FLIP_X", NHSHELL_ADJUST_FLIP_X.into()),
+            ("NHG_ADJUST_FLIP_Y", NHSHELL_ADJUST_FLIP_Y.into()),
+            ("NHG_SEL_CLIPBOARD", NHSHELL_SEL_CLIPBOARD.into()),
+            ("NHG_SEL_PRIMARY", NHSHELL_SEL_PRIMARY.into()),
+            // NhgCaps
+            ("sizeof (C)", size_of::<C>() as i64),
+            ("_Alignof (C)", align_of::<C>() as i64),
+            ("COFF (compositor)", offset_of!(C, compositor) as i64),
+            ("COFF (text_input_v3)", offset_of!(C, text_input_v3) as i64),
+            ("COFF (activation)", offset_of!(C, activation) as i64),
+            ("COFF (xdg_foreign)", offset_of!(C, xdg_foreign) as i64),
+            ("COFF (ssd)", offset_of!(C, ssd) as i64),
+            ("COFF (force_csd)", offset_of!(C, force_csd) as i64),
+            // NhgPresenterCounters
+            ("sizeof (P)", size_of::<P>() as i64),
+            ("_Alignof (P)", align_of::<P>() as i64),
+            ("POFF (packets)", offset_of!(P, packets) as i64),
+            ("POFF (bare_commits)", offset_of!(P, bare_commits) as i64),
+            ("POFF (front_trims)", offset_of!(P, front_trims) as i64),
+            ("POFF (thread_on)", offset_of!(P, thread_on) as i64),
+            (
+                "offsetof (NhgPresenterStats, frames)",
+                offset_of!(NhgPresenterStats, frames) as i64,
+            ),
+        ];
+        let decls = "\
+#define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
+typedef NhgCaps C;
+#define COFF(m) offsetof (C, m)
+typedef NhgPresenterCounters P;
+#define POFF(m) offsetof (P, m)
+PROTO (nhg_dispatch_main, int32_t (NhgDisplay *));
+PROTO (nhg_caps, int32_t (NhgDisplay *, NhgCaps *));
+PROTO (nhg_window_move, int32_t (NhgDisplay *, uint64_t));
+PROTO (nhg_window_resize, int32_t (NhgDisplay *, uint64_t, uint32_t));
+PROTO (nhg_window_show_menu, int32_t (NhgDisplay *, uint64_t, int32_t, int32_t));
+PROTO (nhg_window_set_cursor, int32_t (NhgDisplay *, uint64_t, uint32_t));
+PROTO (nhg_window_activate, int32_t (NhgDisplay *, uint64_t, const char *));
+PROTO (nhg_set_cursor_theme, int32_t (NhgDisplay *, const char *, uint32_t));";
+        {
+            use nhglue::ffi::*;
+            let _: unsafe extern "C" fn(*mut NhgDisplay) -> i32 = nhg_dispatch_main;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, *mut C) -> i32 = nhg_caps;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_window_move;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u32) -> i32 = nhg_window_resize;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32, i32) -> i32 =
+                nhg_window_show_menu;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u32) -> i32 = nhg_window_set_cursor;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *const c_char) -> i32 =
+                nhg_window_activate;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, *const c_char, u32) -> i32 =
+                nhg_set_cursor_theme;
         }
         let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
         let got = probe(decls, &exprs);
@@ -943,7 +1064,7 @@ PROTO (nhg_last_error, int32_t (NhgDisplay *, char *, size_t, size_t *));";
         unsafe {
             assert_eq!(nhg_close(null), NHG_OK);
             assert_eq!(nhg_fd(null), NHG_E_ARG);
-            assert!(nhg_shell(null).is_null());
+            assert_eq!(nhg_dispatch_main(null), NHG_E_ARG);
         }
     }
 

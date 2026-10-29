@@ -3997,7 +3997,7 @@ if test "${with_glitnir}" = yes; then
   glitnir_lib=libglitnir.a
   GLITNIR_CRATE_DEPS=
   GLITNIR_CRATE_INCLUDE=
-  dnl Nidhogg's own Wayland shell: the glue's libnhglue.a replaces libglitnir.a (it carries every nhshell_* and
+  dnl Nidhogg's own Wayland shell: the glue's libnhglue.a replaces libglitnir.a (it carries the shell and every
   dnl glitnir_* symbol; two Rust static libraries in one binary would collide on std's symbols).  GLITNIR_CRATE_DEPS
   dnl lists the crates whose sources rebuild it.
   if test "$HAVE_NHWL" = yes; then
@@ -4011,7 +4011,7 @@ if test "${with_glitnir}" = yes; then
     GLITNIR_SRCDIR=`cd "$srcdir/nidhogg/glue" && pwd` ||
       AC_MSG_ERROR([nidhogg/glue is missing])
     GLITNIR_CRATE_DEPS="$GLITNIR_SRCDIR $nhwl_shell_dir `cd "$srcdir/nidhogg/glitnir" && pwd`"
-    GLITNIR_CRATE_INCLUDE="-I$nhwl_shell_dir/include -I`cd "$srcdir/nidhogg/glitnir" && pwd`/include"
+    GLITNIR_CRATE_INCLUDE="-I`cd "$srcdir/nidhogg/glitnir" && pwd`/include"
     NHWL_OBJ="nhwlterm.o nhwlfns.o nhwldraw.o nhwlselect.o glitnir-decor.o"
   fi
   GLITNIR_LIBNAME=$glitnir_lib

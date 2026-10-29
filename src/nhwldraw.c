@@ -2581,8 +2581,8 @@ nhwl_snapshot (struct frame *f)
    kernel).  Device pixels; the corners' 12 is logical.  */
 
 #define NHWL_CSD_RADIUS 12
-#define NHWL_CSD_TILED (NHSHELL_STATE_TILED_L | NHSHELL_STATE_TILED_R \
-			| NHSHELL_STATE_TILED_T | NHSHELL_STATE_TILED_B)
+#define NHWL_CSD_TILED (NHG_STATE_TILED_L | NHG_STATE_TILED_R \
+			| NHG_STATE_TILED_T | NHG_STATE_TILED_B)
 
 static void
 nhwl_csd_source (cairo_t *cr, unsigned long fg, unsigned long bg, double mix)
@@ -2660,9 +2660,9 @@ nhwl_csd_draw (struct frame *f)
   int W = out->cr_width, H = out->cr_height;
   Lisp_Object title = !NILP (f->title) ? f->title : f->name;
   const char *name = STRINGP (title) ? SSDATA (ENCODE_UTF_8 (title)) : "";
-  bool active = (out->states & NHSHELL_STATE_ACTIVATED) != 0;
-  bool round = !(out->states & (NHSHELL_STATE_MAXIMIZED
-				| NHSHELL_STATE_FULLSCREEN | NHWL_CSD_TILED));
+  bool active = (out->states & NHG_STATE_ACTIVATED) != 0;
+  bool round = !(out->states & (NHG_STATE_MAXIMIZED
+				| NHG_STATE_FULLSCREEN | NHWL_CSD_TILED));
   double s = (out->scale120 ? out->scale120 : 120) / 120.0;
   unsigned long fg = 0, bg = 0;
   uint64_t look = 0;
