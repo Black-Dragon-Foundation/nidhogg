@@ -8,8 +8,8 @@
 //!   is 1 and the compositor applies it (no alpha the shell multiplies), its `alpha-background` is 1 (C says so in its
 //!   flags), the compositor has `wp_viewporter` and `wl_subcompositor`, and `nhwl-scroll-layers` allows the frame's
 //!   scale (C passes the variable as flags: off, on, or integer scales only).
-//! - **Promotion:** a window's first full-window scroll (its run moves every row of the window except the ones the
-//!   scroll exposes) makes it a WINDOW layer right under the frame's layer, with id `w->sequence_number | WINDOW_TAG`
+//! - **Promotion:** a window's first full-window scroll (its run starts at the window's first row and moves every row
+//!   that is not exposed or drawn again, [`full_window`]) makes it a WINDOW layer right under the frame's layer, with id `w->sequence_number | WINDOW_TAG`
 //!   (the scroll's id too) and the window's exact rectangle in the backing (Glitnir snaps it), then its own output.  At
 //!   most four per frame.
 //! - **Demotion:** two seconds after the window's last full-window scroll, when the window is resized, split or
@@ -110,8 +110,10 @@ pub fn opaque_root(r: &Root, flags: u32, s120: u32) -> bool {
         && r.viewporter
 }
 
-/// Whether the rows `run` moving to `to_y` move every row of the window at `rect` except the ones the move exposes:
-/// the window's columns, from its first row to its last.
+/// Whether the rows `run` moving to `to_y` scroll the whole window at `rect`: the window's columns, from its first
+/// row, with every other row the move exposes or Emacs draws again.  The run need not reach the window's last row: a
+/// row only partly visible there is drawn again, not moved, so a window whose height is no multiple of its line height
+/// scrolls with a run that stops above it.  A run that starts lower (an `open-line` in the middle) is no scroll.
 pub fn full_window(rect: NhgRect, run: NhgRect, to_y: i32) -> bool {
     let top = run.y.min(to_y);
     let bottom = run.y.max(to_y).saturating_add(run.h);
@@ -122,7 +124,7 @@ pub fn full_window(rect: NhgRect, run: NhgRect, to_y: i32) -> bool {
         && run.x == rect.x
         && run.w == rect.w
         && top == rect.y
-        && bottom == rect.y.saturating_add(rect.h)
+        && bottom <= rect.y.saturating_add(rect.h)
 }
 
 /// The frame's facts for `window` (its shell window), and the display's compositor.
