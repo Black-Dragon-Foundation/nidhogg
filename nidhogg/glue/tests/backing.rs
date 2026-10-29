@@ -104,6 +104,60 @@ mod backing {
         b.forget(key);
     }
 
+    /// Drawing that leaves the pixels as the last publish showed them is dropped before the next publish; a pixel that
+    /// differs keeps its rectangle, and damage other than the drawing's (the whole frame) is never dropped.
+    #[test]
+    fn unchanged_drawing_is_dropped() {
+        let mut b = Backings::default();
+        let mut key = 0;
+        let g = geom(8, 6, 0, 0, 0xff00_0000);
+        b.ensure(&mut key, &g);
+        let v = b.backing(key, &g).unwrap();
+        // the first publish: nothing is known of what was shown, so everything goes
+        b.drop_unchanged(key);
+        assert!(!committed(key).is_empty());
+        b.published(key);
+
+        let cursor = NhgRect {
+            x: 1,
+            y: 1,
+            w: 2,
+            h: 3,
+        };
+        // the cursor drawn again in its place
+        put(&v, 1, 1, 0xff00_0000);
+        b.damage(key, &[cursor]).unwrap();
+        b.drop_unchanged(key);
+        assert_eq!(committed(key), []);
+        b.published(key);
+
+        // a blink: one pixel differs
+        put(&v, 2, 3, 0xffff_ffff);
+        let other = NhgRect {
+            x: 5,
+            y: 0,
+            w: 2,
+            h: 2,
+        };
+        b.damage(key, &[cursor, other]).unwrap();
+        b.drop_unchanged(key);
+        assert_eq!(committed(key), [cursor]);
+        b.published(key);
+
+        // and back: that differs from what the blink showed
+        put(&v, 2, 3, 0xff00_0000);
+        b.damage(key, &[cursor]).unwrap();
+        b.drop_unchanged(key);
+        assert_eq!(committed(key), [cursor]);
+        b.published(key);
+
+        // the whole frame is published as it came
+        b.damage_all(key).unwrap();
+        b.drop_unchanged(key);
+        assert!(!committed(key).is_empty());
+        b.forget(key);
+    }
+
     /// Damage gets the border's offset; the whole frame is damaged on the layer's creation.
     #[test]
     fn damage_is_offset_by_the_border() {

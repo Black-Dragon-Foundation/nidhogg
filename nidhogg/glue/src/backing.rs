@@ -141,6 +141,48 @@ pub struct Frame {
     pub(crate) layers: crate::layers::Layers,
     /// The rows the visible bell inverted, until they are put back (`bell.rs`).
     flash: Vec<Saved>,
+    /// What changed since the frame's last publish (backing coordinates).
+    since: Since,
+    /// The backing as of the frame's last publish (empty: not known).
+    shown: Vec<u32>,
+}
+
+/// What a frame's damage has been since its last publish: the plain damage (drawing), and the rows any damage
+/// touched, for keeping the shown copy.
+#[derive(Debug, Default)]
+struct Since {
+    /// The drawing's rectangles ([`Backings::damage`]).
+    plain: Vec<Rect>,
+    /// Damage other than the drawing's came (the whole frame, a scroll, the bell): nothing is filtered.
+    other: bool,
+    /// The rectangles any damage touched, unless `all`.
+    touched: Vec<Rect>,
+    /// The whole backing may have changed.
+    all: bool,
+}
+
+/// Past this many rectangles the shown copy is taken whole.
+const TOUCHED_MAX: usize = 64;
+
+impl Since {
+    fn touch(&mut self, r: Rect) {
+        if self.touched.len() >= TOUCHED_MAX {
+            self.all = true;
+        }
+        if !self.all {
+            self.touched.push(r);
+        }
+    }
+
+    fn other(&mut self, rects: &[Rect]) {
+        self.other = true;
+        rects.iter().for_each(|r| self.touch(*r));
+    }
+
+    fn everything(&mut self) {
+        self.other = true;
+        self.all = true;
+    }
 }
 
 /// Copy `h` rows of `w` pixels from `src` (rows `w` apart) into `dst` (rows `stride` bytes apart), each pixel's bytes
@@ -282,6 +324,7 @@ impl Backings {
         // SAFETY: `d` is a readable LayerDesc for the call.
         unsafe { glitnir_layer_upsert(id, &d) };
         glitnir_damage_all(id);
+        f.since.everything();
         f.layer_w = w;
         f.layer_h = h;
         f.layer_s120 = s120;
@@ -315,6 +358,8 @@ impl Backings {
         }
         // the rows the bell inverted are not where they were
         f.flash.clear();
+        f.shown = Vec::new();
+        f.since.everything();
         f.pixels = px;
         f.w = w;
         f.h = h;
@@ -339,6 +384,8 @@ impl Backings {
             f.release(moved);
             // SAFETY: `moved` is one readable rectangle for the call.
             unsafe { glitnir_damage_add_n(key, &moved, 1) };
+            f.since.plain.push(moved);
+            f.since.touch(moved);
             added += 1;
         }
         Ok(added)
@@ -347,7 +394,9 @@ impl Backings {
     /// Damage the whole frame, its margins and title strip included.  From `nhwl_damage_all`.
     pub fn damage_all(&mut self, key: u64) -> Result<(), i32> {
         // all of it is drawn again: nothing of the bell's rows is left to put back
-        self.get(key)?.flash.clear();
+        let f = self.get(key)?;
+        f.flash.clear();
+        f.since.everything();
         glitnir_damage_all(key);
         Ok(())
     }
@@ -412,6 +461,7 @@ impl Backings {
             }
         };
         f.release(area);
+        f.since.other(&[area]);
         glitnir_scroll(key, w_seq | WINDOW_TAG, area, to_y - from_y, exposed);
         Ok(())
     }
@@ -596,6 +646,7 @@ impl Backings {
             changed.push(rect);
             n += 1;
         }
+        f.since.other(&changed);
         damage_backing(key, &changed);
         Ok(n)
     }
@@ -603,8 +654,86 @@ impl Backings {
     /// Put the rows the bell inverted back, except pixels a draw has replaced since, and damage them.  Returns how
     /// many rectangles were written (0: nothing to put back).  Writes pixels.
     pub fn unflash(&mut self, key: u64) -> Result<i32, i32> {
-        let rects = self.get(key)?.unflash();
+        let f = self.get(key)?;
+        let rects = f.unflash();
+        if !rects.is_empty() {
+            f.since.other(&rects);
+        }
         damage_backing(key, &rects);
         Ok(rects.len() as i32)
+    }
+}
+
+// ---- Damage that changed nothing -----------------------------------------------------------------------------------
+
+impl Frame {
+    /// The pixels of `r` (backing coordinates) are what the frame's last publish showed.  False without a shown copy.
+    fn unchanged(&self, r: &Rect) -> bool {
+        if self.shown.len() != self.pixels.len() {
+            return false;
+        }
+        let x0 = r.x.clamp(0, self.w) as usize;
+        let x1 = r.x.saturating_add(r.w).clamp(0, self.w) as usize;
+        let (y0, y1) = (
+            r.y.clamp(0, self.h),
+            r.y.saturating_add(r.h).clamp(0, self.h),
+        );
+        let w = self.w as usize;
+        (y0..y1).all(|y| {
+            let row = y as usize * w;
+            self.pixels[row + x0..row + x1] == self.shown[row + x0..row + x1]
+        })
+    }
+}
+
+impl Backings {
+    /// Before frame `key` is published: the drawing's damage whose pixels are what the last publish showed goes (a
+    /// redisplay that drew the same pixels again, such as the cursor in its place).  Only when the frame had no damage
+    /// but the drawing's since: anything else (a scroll, the whole frame, the bell) is published as it came.  Reads
+    /// pixels.
+    pub fn drop_unchanged(&mut self, key: u64) {
+        let Ok(f) = self.get(key) else { return };
+        if f.since.other || f.since.plain.is_empty() || f.shown.len() != f.pixels.len() {
+            return;
+        }
+        let changed: Vec<Rect> = f
+            .since
+            .plain
+            .iter()
+            .filter(|r| !f.unchanged(r))
+            .copied()
+            .collect();
+        if changed.len() == f.since.plain.len() {
+            return;
+        }
+        // the pending damage is the drawing's rectangles and nothing else: it is given again without the unchanged
+        glitnir::damage::with(key, |d| {
+            d.drain();
+        });
+        damage_backing(key, &changed);
+        f.since.plain = changed;
+    }
+
+    /// Frame `key` was published: what it showed is the backing now.  Reads pixels.
+    pub fn published(&mut self, key: u64) {
+        let Ok(f) = self.get(key) else { return };
+        let since = std::mem::take(&mut f.since);
+        if f.pixels.is_empty() {
+            f.shown = Vec::new();
+            return;
+        }
+        if since.all || f.shown.len() != f.pixels.len() {
+            f.shown.clone_from(&f.pixels);
+            return;
+        }
+        let w = f.w as usize;
+        for r in &since.touched {
+            let x0 = r.x.clamp(0, f.w) as usize;
+            let x1 = r.x.saturating_add(r.w).clamp(0, f.w) as usize;
+            for y in r.y.clamp(0, f.h)..r.y.saturating_add(r.h).clamp(0, f.h) {
+                let row = y as usize * w;
+                f.shown[row + x0..row + x1].copy_from_slice(&f.pixels[row + x0..row + x1]);
+            }
+        }
     }
 }
