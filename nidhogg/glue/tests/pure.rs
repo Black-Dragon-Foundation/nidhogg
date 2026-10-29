@@ -108,3 +108,113 @@ mod pointer {
         }
     }
 }
+
+mod select {
+    use nhglue::select::pick_at;
+
+    const TYPES: &[u8] = b"text/plain\0UTF8_STRING\0image/png\0";
+    const TEXT: [&[u8]; 5] = [
+        b"text/plain;charset=utf-8",
+        b"UTF8_STRING",
+        b"text/plain",
+        b"STRING",
+        b"TEXT",
+    ];
+
+    /// The target's own name first, wherever the offer has it; then the text types in their order of preference,
+    /// not the offer's; whole names only.
+    #[test]
+    fn mime_choice() {
+        assert_eq!(pick_at(TYPES, b"image/png", &TEXT), Some(23));
+        assert_eq!(pick_at(TYPES, b"text/plain", &[]), Some(0));
+        assert_eq!(pick_at(TYPES, b"STRING", &TEXT), Some(11));
+        assert_eq!(pick_at(b"TEXT\0text/plain\0", b"STRING", &TEXT), Some(5));
+        assert_eq!(pick_at(TYPES, b"STRING", &[]), None);
+        assert_eq!(pick_at(TYPES, b"text", &[]), None);
+        assert_eq!(pick_at(TYPES, b"", &[]), None);
+        assert_eq!(pick_at(b"", b"TEXT", &TEXT), None);
+        // an offered empty type is a type
+        assert_eq!(pick_at(b"a\0\0", b"", &[]), Some(2));
+    }
+}
+
+mod colours {
+    use nhglue::backing::premultiply;
+    use nhglue::csd::title_bar_mix;
+
+    /// W0's mix: each channel in double, truncated; (inactive foreground, background).
+    #[test]
+    fn title_bar_mix_truncates() {
+        assert_eq!(title_bar_mix(0xffffff, 0x000000), (0x999999, 0x1e1e1e));
+        assert_eq!(title_bar_mix(0x000000, 0xffffff), (0x646464, 0xe0e0e0));
+        // 255 * 0.88 + 255 * 0.12 is 255 in double, not 254
+        assert_eq!(title_bar_mix(0xffffff, 0xffffff), (0xffffff, 0xffffff));
+        assert_eq!(title_bar_mix(0x336699, 0xf0e0d0), (0x7d96ae, 0xd9d1c9));
+        assert_eq!(title_bar_mix(0xc8c8c8, 0x646464), (0xa0a0a0, 0x707070));
+        // only the low 24 bits are colour
+        assert_eq!(
+            title_bar_mix(0xff00_0000 | 0x336699, 0xff00_0000 | 0xf0e0d0),
+            (0x7d96ae, 0xd9d1c9)
+        );
+    }
+
+    /// Cairo 1.18's solid SOURCE paint on ARGB32: clamp, premultiply, `d * 65535 + 0.5` truncated to 16 bits, the high
+    /// byte kept.
+    #[test]
+    fn premultiply_rounds_as_cairo() {
+        assert_eq!(premultiply(0xffffff, 1.0), 0xffff_ffff);
+        assert_eq!(premultiply(0x000000, 1.0), 0xff00_0000);
+        assert_eq!(premultiply(0x336699, 1.0), 0xff33_6699);
+        assert_eq!(premultiply(0x808080, 0.5), 0x8040_4040);
+        assert_eq!(premultiply(0xff0000, 0.25), 0x4040_0000);
+        assert_eq!(premultiply(0x336699, 0.8), 0xcc28_517a);
+        assert_eq!(premultiply(0x7f7f7f, 1.0 / 3.0), 0x552a_2a2a);
+        // alpha 0.004 is 262 / 65535: a byte of 1; 0.003 is 197, which Cairo clears
+        assert_eq!(premultiply(0xffffff, 0.004), 0x0101_0101);
+        assert_eq!(premultiply(0xffffff, 0.003), 0);
+        assert_eq!(premultiply(0x123456, 0.0), 0);
+        // clamped to [0, 1]; NaN is none
+        assert_eq!(premultiply(0xffffff, 2.0), 0xffff_ffff);
+        assert_eq!(premultiply(0xffffff, -1.0), 0);
+        assert_eq!(premultiply(0xffffff, f64::NAN), 0);
+    }
+}
+
+mod monitors {
+    use nhglue::monitors::device_origin;
+
+    /// `roundf (x * scale120 / 120.0f)` with C's types: the int position times the unsigned scale is an unsigned
+    /// product, so a negative position wraps (kept as the C had it).
+    #[test]
+    fn device_origin_as_c() {
+        assert_eq!(device_origin(1920, 0, 180), (2880, 0));
+        assert_eq!(device_origin(1, 3, 180), (2, 5));
+        assert_eq!(device_origin(3, 1, 140), (4, 1));
+        assert_eq!(device_origin(100, 100, 0), (0, 0));
+        assert_eq!(device_origin(-1920, 0, 120), (35_789_476, 0));
+        assert_eq!(device_origin(0, -1, 120), (0, 35_791_396));
+    }
+}
+
+mod snapshot {
+    use nhglue::abi::NHG_E_ARG;
+    use nhglue::backing::copy_rows;
+
+    /// Rows of `w` pixels into a wider stride; the padding is left alone.
+    #[test]
+    fn copy_rows_keeps_padding() {
+        let src = [0x0102_0304u32, 5, 6, 7, 8, 9];
+        let mut dst = [0xaau8; 16 + 12];
+        assert_eq!(copy_rows(&src, 3, 2, &mut dst, 16), Ok(()));
+        assert_eq!(&dst[..4], &0x0102_0304u32.to_ne_bytes());
+        assert_eq!(&dst[8..12], &6u32.to_ne_bytes());
+        assert_eq!(&dst[12..16], &[0xaa; 4]);
+        assert_eq!(&dst[16..20], &7u32.to_ne_bytes());
+        assert_eq!(&dst[24..28], &9u32.to_ne_bytes());
+        // too short a destination, a stride below a row, or too few pixels
+        assert_eq!(copy_rows(&src, 3, 2, &mut dst[..27], 16), Err(NHG_E_ARG));
+        assert_eq!(copy_rows(&src, 3, 2, &mut dst, 8), Err(NHG_E_ARG));
+        assert_eq!(copy_rows(&src[..5], 3, 2, &mut dst, 16), Err(NHG_E_ARG));
+        assert_eq!(copy_rows(&[], 0, 0, &mut [], 0), Ok(()));
+    }
+}

@@ -2465,25 +2465,14 @@ nhwl_glitnir_forget (struct frame *f)
 
 /* The frame's background as the backing stores it: premultiplied ARGB,
    as Cairo paints it (nhwl_set_cr_source_with_color with the background
-   alpha).  */
+   alpha); the glue does Cairo's arithmetic.  */
 static uint32_t
 nhwl_background_argb (struct frame *f)
 {
-  cairo_surface_t *s = cairo_image_surface_create (CAIRO_FORMAT_ARGB32, 1, 1);
-  cairo_t *cr = cairo_create (s);
-  Emacs_Color col;
-  uint32_t argb;
+  uint32_t argb = 0;
 
-  col.pixel = FRAME_NHWL_OUTPUT (f)->background_color;
-  nhwl_query_color (f, &col);
-  cairo_set_source_rgba (cr, col.red / 65535.0, col.green / 65535.0,
-			 col.blue / 65535.0, f->alpha_background);
-  cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
-  cairo_paint (cr);
-  cairo_destroy (cr);
-  cairo_surface_flush (s);
-  argb = *(uint32_t *) cairo_image_surface_get_data (s);
-  cairo_surface_destroy (s);
+  NHG (nhg_premultiply (FRAME_NHWL_OUTPUT (f)->background_color & 0xffffff,
+			f->alpha_background, &argb));
   return argb;
 }
 
@@ -2548,7 +2537,6 @@ nhwl_snapshot (struct frame *f)
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
   cairo_surface_t *copy;
   NhgBacking b;
-  int i;
 
   if (!out->cr_surface)
     return NULL;
@@ -2557,10 +2545,9 @@ nhwl_snapshot (struct frame *f)
     return NULL;
   copy = cairo_image_surface_create (CAIRO_FORMAT_ARGB32, b.w, b.h);
   cairo_surface_flush (copy);
-  for (i = 0; i < b.h; i++)
-    memcpy (cairo_image_surface_get_data (copy)
-	    + (ptrdiff_t) i * cairo_image_surface_get_stride (copy),
-	    b.pixels + (ptrdiff_t) i * b.stride, (size_t) b.w * 4);
+  NHG (nhg_snapshot_copy (FRAME_NHG (f), out->glitnir_id,
+			  cairo_image_surface_get_data (copy),
+			  cairo_image_surface_get_stride (copy), b.w, b.h));
   cairo_surface_mark_dirty (copy);
   return copy;
 }
