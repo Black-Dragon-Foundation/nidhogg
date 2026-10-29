@@ -345,9 +345,11 @@ mod ime {
         };
         // SAFETY: a live display.
         unsafe {
-            assert_eq!(nhg_im_cursor(d, id, r), NHG_OK);
-            assert_eq!(nhg_im_cursor(d, id, r), NHG_OK);
-            assert_eq!(nhg_im_cursor(d, id, r2), NHG_OK);
+            assert_eq!(nhg_im_cursor(d, id, 120, r), NHG_OK);
+            assert_eq!(nhg_im_cursor(d, id, 120, r), NHG_OK);
+            assert_eq!(nhg_im_cursor(d, id, 120, r2), NHG_OK);
+            // a window the glue does not know
+            assert_eq!(nhg_im_cursor(d, id + 1000, 120, r), NHG_E_STATE);
         }
         backend(d).dispatch_main().unwrap();
         assert_eq!(

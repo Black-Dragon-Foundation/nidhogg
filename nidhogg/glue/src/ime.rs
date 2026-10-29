@@ -44,17 +44,28 @@ pub fn enable(state: &mut Display, window: u64, on: bool) -> Result<(), GlueErro
     Ok(())
 }
 
-/// The cursor rectangle in `window`, in logical pixels.
-pub fn cursor(
-    state: &mut Display,
-    window: u64,
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-) -> Result<(), GlueError> {
-    state.backend().text_input_cursor(window, x, y, w, h)?;
+/// The cursor rectangle `r` of `window`'s frame, device pixels in its native area: the input method of its tree's root
+/// gets it in logical pixels of the root's surface at `s120` (C's scale of the root; 0: 120), at least 1 x 1.  The
+/// origin and the rounding moved from `nhwl_im_update`.
+pub fn cursor(state: &mut Display, window: u64, s120: u32, r: [i32; 4]) -> Result<(), GlueError> {
+    let (root, ox, oy) = crate::child::native_origin(state, window)?;
+    let [x, y, w, h] = cursor_rect(r, ox, oy, s120);
+    state.backend().text_input_cursor(root, x, y, w, h)?;
     Ok(())
+}
+
+/// The rectangle `r` (device pixels, from the native area at (`ox`, `oy`) in the root's surface) in logical pixels of
+/// the root's surface at `s120` (0: 120), at least 1 x 1, rounded as `nhwl_to_logical` did.
+pub fn cursor_rect(r: [i32; 4], ox: i32, oy: i32, s120: u32) -> [i32; 4] {
+    let s = if s120 == 0 { 120 } else { s120 };
+    let log = |v: i32| crate::window::to_logical(v, s);
+    let [x, y, w, h] = r;
+    [
+        log(x.wrapping_add(ox)),
+        log(y.wrapping_add(oy)),
+        log(w).max(1),
+        log(h).max(1),
+    ]
 }
 
 /// The text around point in `window`, and where point and the mark are in it (byte offsets).
