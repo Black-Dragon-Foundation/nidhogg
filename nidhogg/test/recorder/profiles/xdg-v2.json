@@ -1,6 +1,7 @@
 {
   "name": "xdg-v2",
   "decoration": "server",
+  "touch": true,
   "globals": {
     "wl_compositor": 6,
     "xdg_system_bell_v1": 1,

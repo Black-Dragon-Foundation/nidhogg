@@ -193,6 +193,14 @@ impl XdgShellHandler for State {
             );
             return;
         }
+        // the grabbing popup takes the pointer, as compositors give it: a button still held from the press that
+        // opened it no longer keeps the pointer on the surface pressed, so the motion and the release reach the popup
+        if kind == "button" {
+            if let Some(ptr) = self.seat.get_pointer().filter(|p| p.is_grabbed()) {
+                let time = self.time_ms();
+                ptr.unset_grab(self, SERIAL_COUNTER.next_serial(), time);
+            }
+        }
         self.grabs.push((surface, kind));
     }
 
