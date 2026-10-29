@@ -306,10 +306,14 @@ Batches go to `workers-fr-tests--collect', raw output to the property
           (dotimes (i 4)
             (push (make-pipe-process :name (format "wfr-taker-%d" i) :noquery t)
                   taken))
-          ;; Past the grandchild's write (0.5 s after the start).
-          (let ((end (+ (float-time) 1.5)))
-            (while (< (float-time) end)
-              (accept-process-output nil 0.05)))
+          ;; Past the grandchild's write: it is gone once it has written.
+          (let ((gpid (with-temp-buffer
+                        (insert-file-contents pidfile)
+                        (string-to-number (buffer-string)))))
+            (should (> gpid 0))
+            (should (workers-fr-tests--until
+                     (lambda () (/= (signal-process gpid 0) 0))
+                     10)))
           (should-not (process-live-p proc))
           (should (equal (mapcar #'cadr (workers-fr-tests--got proc))
                          '("one"))))
