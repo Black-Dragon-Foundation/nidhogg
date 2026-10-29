@@ -2174,7 +2174,8 @@ while the top-level has the keyboard.  Delete the child and focus the parent aft
                   (dolist (ch '("a" "b" "c")) (gui-runner-recorder (list :cmd "key" :text ch)))
                   (gui-runner-recorder '(:cmd "key" :keycode 28 :state "press"))
                   (gui-runner-recorder '(:cmd "key" :keycode 28 :state "release"))))
-         (post (lambda () (push last-event-frame frames))))
+         ;; the recursive edit runs the hook once on entry, with no command (and the parent's last event)
+         (post (lambda () (when this-command (push last-event-frame frames)))))
     (unwind-protect
         (progn
           (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
