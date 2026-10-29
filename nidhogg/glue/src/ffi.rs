@@ -1554,6 +1554,27 @@ nhg_export! {
     }
 }
 
+nhg_export! {
+    /// Where our drag stands: the phase (`NHG_DRAG_PHASE_*`), and once done `*action` the action performed (0: none)
+    /// and `*frame` the window whose frame the call returns (0: none).  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `action` and `frame` are null or writable.
+    fn nhg_drag_state(d: *mut NhgDisplay, action: *mut u32, frame: *mut u64) -> i32 |state| {
+        let (phase, act, win) = crate::dnd::drag_state(state);
+        // SAFETY: each is null or writable (the caller's promise).
+        unsafe {
+            if !action.is_null() {
+                *action = act;
+            }
+            if !frame.is_null() {
+                *frame = win;
+            }
+        }
+        Ok(phase)
+    }
+}
+
 // ---- Giving the display up -----------------------------------------------------------------------------------------
 
 nhg_export! {

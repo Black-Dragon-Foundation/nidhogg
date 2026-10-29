@@ -894,6 +894,14 @@ int32_t nhg_drag_start (NhgDisplay *d, uint64_t window, const char *const *mimes
 /* Give our drag up: its source goes, and no NHG_ACT_DRAG_DONE follows.  1 when it ran, else 0.  */
 int32_t nhg_drag_cancel (NhgDisplay *d);
 
+/* Where our drag stands, for the wait loop: the phase, and once DONE *ACTION the action performed (0: none) and *FRAME
+   the window whose frame the call returns (0: none).  Both may be NULL.  The state stays past nhg_drag_cancel.  */
+#define NHG_DRAG_PHASE_WAITING   0   /* started, the compositor showed nothing yet */
+#define NHG_DRAG_PHASE_LIVE      1   /* the compositor took the drag */
+#define NHG_DRAG_PHASE_DROPPED   2   /* dropped on another client, which has to finish it */
+#define NHG_DRAG_PHASE_DONE      3   /* over */
+int32_t nhg_drag_state (NhgDisplay *d, uint32_t *action, uint64_t *frame);
+
 /* ---- Giving the display up ---------------------------------------------------------------------------------------
    When the compositor went and nothing waits for it (reconnecting is off, failed or timed out), C calls nhg_give_up
    before it deletes the display's frames: reconnecting stops, a drag over us ends unfinished, and the touch points and
