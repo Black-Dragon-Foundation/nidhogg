@@ -1915,8 +1915,13 @@ connection."
   "Without the file chooser interface `x-file-dialog' asks in the minibuffer."
   :tags '(gnome-smoke)
   (skip-unless (and (nhwl-gui--live-p) (not (getenv "NHWL_FAKE_PORTAL_SCRIPT"))))
-  (let ((unread-command-events (append "/tmp/nhwl-typed" '(return))))
-    (should (equal (x-file-dialog "Open: " "/tmp/" nil t) "/tmp/nhwl-typed"))))
+  ;; MUSTMATCH: the typed file exists (a missing one would leave the minibuffer waiting); the minibuffer starts
+  ;; with the folder, so its name alone is typed
+  (let ((file (make-temp-file "/tmp/nhwl-typed")))
+    (unwind-protect
+        (let ((unread-command-events (append (file-name-nondirectory file) '(return))))
+          (should (equal (x-file-dialog "Open: " "/tmp/" nil t) file)))
+      (delete-file file))))
 
 (ert-deftest nhwl-gui/browse-url-passes-an-activation-token ()
   "`browse-url-xdg-open' runs xdg-open with an XDG_ACTIVATION_TOKEN the compositor issued."
