@@ -350,6 +350,58 @@ mod window {
         close(d);
     }
 
+    /// The compositor's size, fitted while C applies its configure: a new size is given and recorded at once (a
+    /// content ack, as `nhg_frame_resized`); the size the frame already has once rounded gives nothing.  A clamp with
+    /// no border keeps 16384 a side; flags it does not know and an unknown window are refused.
+    #[test]
+    fn fit_gives_and_records_the_size() {
+        use nhglue::csd::{NHG_FIT_CONFIGURE, NHG_FIT_UNDECORATED};
+        let rec = Recorder::start("sway");
+        let d = open(&rec);
+        let id = toplevel(d);
+        let first = last_ack(d, id);
+        let fit = |lw: i32, lh: i32, native: (i32, i32), flags: u32| {
+            let (mut w, mut h) = (-1, -1);
+            // SAFETY: a live display; `w` and `h` are writable.
+            let rc = unsafe {
+                nhg_frame_fit(
+                    d, id, 120, lw, lh, 0, native.0, native.1, flags, &mut w, &mut h,
+                )
+            };
+            (rc, w, h)
+        };
+        configure(&rec, [320, 160], "");
+        until(d, |a| a.kind == NHG_ACT_RESIZE && a.window == id);
+        assert_eq!(fit(320, 160, (200, 100), NHG_FIT_CONFIGURE), (1, 320, 160));
+        frame(d, id, |f| {
+            assert_eq!((f.facts.native_w, f.facts.native_h), (320, 160))
+        });
+        let content = last_ack(d, id).expect("recorded as C applied the configure");
+        assert_ne!(Some(content), first);
+        assert_eq!(content.1, NHSHELL_ACK_CONTENT);
+
+        assert_eq!(fit(320, 160, (320, 160), NHG_FIT_CONFIGURE), (0, -1, -1));
+        assert_eq!(fit(0, 160, (320, 160), NHG_FIT_CONFIGURE), (0, -1, -1));
+        assert_eq!(fit(320, 160, (200, 100), 0), (0, -1, -1));
+        // not maximized, fullscreen or tiled: an undecorated change keeps the size
+        assert_eq!(fit(320, 160, (200, 100), NHG_FIT_UNDECORATED), (0, -1, -1));
+        assert_eq!(fit(320, 160, (200, 100), 4).0, NHG_E_ARG);
+        let (mut w, mut h) = (0, 0);
+        // SAFETY: a live display; `w` and `h` are writable.
+        let unknown = unsafe { nhg_frame_fit(d, id + 1000, 120, 1, 1, 0, 2, 2, 1, &mut w, &mut h) };
+        assert_eq!(unknown, NHG_E_STATE);
+
+        let (mut w, mut h) = (20_000, 300);
+        // SAFETY: a live display; `w` and `h` are readable and writable.
+        assert_eq!(unsafe { nhg_frame_clamp(d, id, &mut w, &mut h) }, NHG_OK);
+        assert_eq!((w, h), (16384, 300));
+        let (mut w, mut h) = (300, 40_000);
+        // SAFETY: as above; window 0 has no border.
+        assert_eq!(unsafe { nhg_frame_clamp(d, 0, &mut w, &mut h) }, NHG_OK);
+        assert_eq!((w, h), (300, 16384));
+        close(d);
+    }
+
     /// Fullscreen asks to leave maximized, then for fullscreen; back to none leaves fullscreen, then maximized;
     /// maximized, `fullwidth` and `fullheight` ask for maximized.  An unknown mode is refused.
     #[test]

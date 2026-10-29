@@ -162,7 +162,7 @@ enum Region {
 
 /// Device size of `logical` pixels at `s120`/120, as `nhwl_to_device` rounds (half away from zero, in f32 like the
 /// presenter's mutter-compatible rounding).
-fn to_device(logical: i32, s120: u32) -> i32 {
+pub fn to_device(logical: i32, s120: u32) -> i32 {
     (logical as f32 * s120 as f32 / 120.0f32).round() as i32
 }
 
@@ -446,6 +446,112 @@ pub fn layout(
 /// `window`'s offsets around the native area: L, T, R, B.
 pub fn offsets(state: &Display, window: u64) -> Result<[i32; 4], GlueError> {
     Ok(state.frame(window)?.csd.offsets())
+}
+
+/// `nhg_frame_fit`'s flags: a configure's suggestion is applied (the size is fitted when the window geometry differs
+/// from it), or `undecorated` changed (a maximized, fullscreen or tiled window's native area is fitted to the
+/// compositor's size again).
+pub const NHG_FIT_CONFIGURE: u32 = 1;
+pub const NHG_FIT_UNDECORATED: u32 = 2;
+
+/// The largest side of a frame's surface, in device pixels.  Cairo's image surfaces stop at 32767 a side, and the
+/// shell's buffer is one shared-memory pool whose size the protocol carries as an int32, so 4 x width x height must
+/// stay under 2 GiB: 16384 x 16384 x 4 is 1 GiB.  Moved from C's `NHWL_MAX_SIDE`.
+pub const SURFACE_MAX_SIDE: i32 = 16384;
+
+/// The native size `w` x `h` clamped so that the surface (the native area and the border `[l, t, r, b]`) stays within
+/// `SURFACE_MAX_SIDE` (moved from `nhwl_clamp_native_size`).
+pub fn clamp(w: i32, h: i32, [l, t, r, b]: [i32; 4]) -> (i32, i32) {
+    (
+        w.min(SURFACE_MAX_SIDE - l - r),
+        h.min(SURFACE_MAX_SIDE - t - b),
+    )
+}
+
+/// The native size the compositor's size `lw` x `lh` (logical, for the window geometry: the native area and the
+/// strip) gives at `s120` (0: 120) with the border `border` and the title strip `strip`, clamped, when the frame must
+/// take it: with `NHG_FIT_CONFIGURE`, when its native size `native` rounds to another window geometry; with
+/// `NHG_FIT_UNDECORATED`, when the window (not a `child`) is maximized, fullscreen or tiled (`states`) and the size
+/// differs from `native`.  None when it keeps its size, or without a size.  Moved from `nhwl_configure`'s and
+/// `nhwl_set_undecorated_hint`'s size branches with `nhwl_csd_geometry_size` and `nhwl_csd_native_size`.
+#[allow(clippy::too_many_arguments)]
+pub fn fit_size(
+    s120: u32,
+    (lw, lh): (i32, i32),
+    states: u32,
+    native: (i32, i32),
+    border: [i32; 4],
+    strip: i32,
+    child: bool,
+    flags: u32,
+) -> Option<(i32, i32)> {
+    let s = if s120 == 0 { 120 } else { s120 };
+    if lw <= 0 || lh <= 0 {
+        return None;
+    }
+    let fitted = || {
+        let dw = to_device(lw, s).max(1);
+        let dh = (to_device(lh, s) - strip).max(1);
+        clamp(dw, dh, border)
+    };
+    if flags & NHG_FIT_CONFIGURE != 0 {
+        let gw = crate::window::to_logical(native.0, s);
+        let gh = crate::window::to_logical(native.1 + strip, s);
+        return (lw != gw || lh != gh).then(fitted);
+    }
+    const KEEP: u32 = NHSHELL_STATE_MAXIMIZED
+        | NHSHELL_STATE_FULLSCREEN
+        | NHSHELL_STATE_TILED_L
+        | NHSHELL_STATE_TILED_R
+        | NHSHELL_STATE_TILED_T
+        | NHSHELL_STATE_TILED_B;
+    if flags & NHG_FIT_UNDECORATED != 0 && !child && states & KEEP != 0 {
+        let d = fitted();
+        return (d != native).then_some(d);
+    }
+    None
+}
+
+/// `nhg_frame_fit`: `window`'s native size for the compositor's size `lw` x `lh` at C's scale `s120`, with the border
+/// and strip of its last layout (`fit_size`).  When the frame takes it, the glue records it at once (as
+/// `nhg_frame_resized`: a configure being applied gets a content ack) and C changes the frame's size.
+#[allow(clippy::too_many_arguments)]
+pub fn fit(
+    state: &mut Display,
+    window: u64,
+    s120: u32,
+    lw: i32,
+    lh: i32,
+    states: u32,
+    native: (i32, i32),
+    flags: u32,
+) -> Result<Option<(i32, i32)>, GlueError> {
+    if flags & !(NHG_FIT_CONFIGURE | NHG_FIT_UNDECORATED) != 0 {
+        return Err(GlueError::Arg);
+    }
+    let f = state.frame(window)?;
+    let child = f.flags & NHG_FRAME_CHILD != 0;
+    let size = fit_size(
+        s120,
+        (lw, lh),
+        states,
+        native,
+        f.csd.offsets(),
+        f.csd.strip,
+        child,
+        flags,
+    );
+    if let Some((w, h)) = size {
+        crate::configure::resized(state, window, w.max(1), h.max(1))?;
+    }
+    Ok(size)
+}
+
+/// `window`'s native size `w` x `h` as the frame may take it (`clamp`, with the border of its last layout; an unknown
+/// window has none).  Moved from `nhwl_clamp_native_size`.
+pub fn clamp_native(state: &Display, window: u64, w: i32, h: i32) -> (i32, i32) {
+    let border = state.frame(window).map_or([0; 4], |f| f.csd.offsets());
+    clamp(w, h, border)
 }
 
 /// The publish step of `window`, whose native size is `native_w` x `native_h`: send the window geometry if it
