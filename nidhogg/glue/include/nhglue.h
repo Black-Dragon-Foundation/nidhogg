@@ -608,6 +608,21 @@ int32_t nhg_window_alpha (NhgDisplay *d, uint64_t window, double alpha, double a
 /* Push: C resized the frame itself to W x H device pixels (as nhg_frame_resized: a configure being applied gets a
    content ack).  */
 int32_t nhg_window_size (NhgDisplay *d, uint64_t window, int32_t w, int32_t h);
+/* The native size *W x *H the frame of WINDOW asks for, clamped in place so that its surface (the native area and the
+   border of its last layout) stays within 16384 device pixels a side: Cairo's image surfaces stop at 32767, and the
+   shell's one shared-memory pool must stay under 2 GiB.  An unknown WINDOW, or 0, has no border.  */
+int32_t nhg_frame_clamp (NhgDisplay *d, uint64_t window, int32_t *w, int32_t *h);
+/* The compositor's size LW x LH (logical pixels, for the window geometry: the native area and the title strip) for
+   WINDOW, whose frame has the native size NATIVE_W x NATIVE_H (device pixels), C's scale SCALE120 and the toplevel's
+   STATES (NHG_STATE_*), at the border and strip of its last layout (nhg_csd_layout first).  1 when the frame takes
+   another size, in *W x *H (device pixels, clamped as nhg_frame_clamp; the glue records it as nhg_frame_resized does,
+   and C changes the frame's size), 0 when it keeps its size or LW or LH is 0.  FLAGS: CONFIGURE, a configure is
+   applied (the frame keeps its size when it already is LW x LH once rounded); UNDECORATED, `undecorated' changed
+   (a maximized, fullscreen or tiled top-level fits its native area to LW x LH again).  */
+#define NHG_FIT_CONFIGURE   1
+#define NHG_FIT_UNDECORATED 2
+int32_t nhg_frame_fit (NhgDisplay *d, uint64_t window, uint32_t scale120, int32_t lw, int32_t lh, uint32_t states,
+                       int32_t native_w, int32_t native_h, uint32_t flags, int32_t *w, int32_t *h);
 /* The frame's smallest size, W x H device pixels (a child's window has none).  */
 int32_t nhg_window_min_size (NhgDisplay *d, uint64_t window, int32_t w, int32_t h);
 /* Push: Emacs made the frame visible (ON non-zero) or invisible, not iconified.  Checked (nhg_debug_check_frame).  */

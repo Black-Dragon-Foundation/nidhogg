@@ -1147,9 +1147,10 @@ PROTO (nhg_layers_count, int32_t (NhgDisplay *, uint64_t));";
     /// table.
     #[test]
     fn moved_header_matches() {
+        use nhglue::csd::{NHG_FIT_CONFIGURE, NHG_FIT_UNDECORATED};
         use nhglue::ffi::{
-            nhg_csd_mix, nhg_frame_monitors, nhg_monitor_origin, nhg_premultiply,
-            nhg_selection_pick, nhg_snapshot_copy,
+            nhg_csd_mix, nhg_frame_clamp, nhg_frame_fit, nhg_frame_monitors, nhg_monitor_origin,
+            nhg_premultiply, nhg_selection_pick, nhg_snapshot_copy,
         };
         let decls = "\
 #define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
@@ -1158,7 +1159,10 @@ PROTO (nhg_csd_mix, int32_t (uint32_t, uint32_t, uint32_t *, uint32_t *));
 PROTO (nhg_premultiply, int32_t (uint32_t, double, uint32_t *));
 PROTO (nhg_snapshot_copy, int32_t (NhgDisplay *, uint64_t, uint8_t *, int32_t, int32_t, int32_t));
 PROTO (nhg_frame_monitors, int32_t (NhgDisplay *, uint64_t, uint32_t *));
-PROTO (nhg_monitor_origin, int32_t (int32_t, int32_t, uint32_t, int32_t *, int32_t *));";
+PROTO (nhg_monitor_origin, int32_t (int32_t, int32_t, uint32_t, int32_t *, int32_t *));
+PROTO (nhg_frame_clamp, int32_t (NhgDisplay *, uint64_t, int32_t *, int32_t *));
+PROTO (nhg_frame_fit, int32_t (NhgDisplay *, uint64_t, uint32_t, int32_t, int32_t, uint32_t, int32_t, int32_t,
+                               uint32_t, int32_t *, int32_t *));";
         let _: unsafe extern "C" fn(
             *mut NhgDisplay,
             *const c_char,
@@ -1173,7 +1177,31 @@ PROTO (nhg_monitor_origin, int32_t (int32_t, int32_t, uint32_t, int32_t *, int32
             nhg_snapshot_copy;
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *mut u32) -> i32 = nhg_frame_monitors;
         let _: unsafe extern "C" fn(i32, i32, u32, *mut i32, *mut i32) -> i32 = nhg_monitor_origin;
-        let got = probe(decls, &["NHG_OK"]);
-        assert_eq!(got, [i64::from(NHG_OK)]);
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *mut i32, *mut i32) -> i32 =
+            nhg_frame_clamp;
+        let _: unsafe extern "C" fn(
+            *mut NhgDisplay,
+            u64,
+            u32,
+            i32,
+            i32,
+            u32,
+            i32,
+            i32,
+            u32,
+            *mut i32,
+            *mut i32,
+        ) -> i32 = nhg_frame_fit;
+        let rows: &[(&str, i64)] = &[
+            ("NHG_OK", NHG_OK.into()),
+            ("NHG_FIT_CONFIGURE", NHG_FIT_CONFIGURE.into()),
+            ("NHG_FIT_UNDECORATED", NHG_FIT_UNDECORATED.into()),
+        ];
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe(decls, &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
     }
 }
