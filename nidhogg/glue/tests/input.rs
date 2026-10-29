@@ -126,7 +126,8 @@ mod pointer {
             .expect("a CLICK action");
         assert_eq!(
             (c.window, c.code, c.flags, c.mods),
-            (id, 272, NHSHELL_BUTTON_PRESSED, 0)
+            // evdev's BTN_LEFT (272) is Emacs's button 0
+            (id, 0, NHSHELL_BUTTON_PRESSED, 0)
         );
         // SAFETY: a live display.
         assert_eq!(unsafe { nhg_frame_forget(d, id) }, NHG_OK);
