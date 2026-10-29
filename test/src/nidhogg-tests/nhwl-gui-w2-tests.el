@@ -70,7 +70,8 @@ shell sends no `grab' (a stale serial would be a dismissal), and the popup is sh
         (progn
           (setq f (make-frame-on-display "nhwl-second"))
           (should (nhwl-gui--wait (lambda () (with-selected-frame f (redisplay t)) (nhwl-gui--toplevel-commits)) 5))
-          (setq p (nhwl-gui--popup-frame f '(40 30 1 1 :grab t)))
+          ;; a frame is made on the selected frame's display, which must be its parent's
+          (setq p (with-selected-frame f (nhwl-gui--popup-frame f '(40 30 1 1 :grab t))))
           (let ((n (nhwl-gui--wait (lambda () (redisplay t) (nhwl-gui--new-popup nil)) 5)))
             (should n)
             (should-not (nhwl-gui--get n :grab))
@@ -466,6 +467,13 @@ rule `errors' judges what was sent."
     (gui-runner-recorder req)
     (nhwl-gui--pump 0.3)))
 
+(defun nhwl-gui--dnd-end ()
+  "End a foreign drag that was not dropped: it leaves the surface and the button comes up over nothing.  A drag left
+going holds the recorder's pointer for the next rows."
+  (gui-runner-recorder '(:cmd "dnd_leave"))
+  (gui-runner-recorder '(:cmd "dnd_drop"))
+  (nhwl-gui--pump 0.3))
+
 (defun nhwl-gui--dnd-log ()
   "The newest offer the recorder has logged."
   (car (last (plist-get (gui-runner-recorder '(:cmd "dnd_log")) :offers))))
@@ -521,9 +529,10 @@ rule `errors' judges what was sent."
           (switch-to-buffer b)
           (insert "abc")
           (goto-char 2)
-          (let ((y (+ (nth 3 (window-inside-pixel-edges)) 3)))
-            (nhwl-gui--dnd-offer '(:text/plain "X") :at (vector 60 y))
-            (gui-runner-recorder `(:cmd "dnd_motion" :at [60 ,y]))
+          ;; the surface position: past the client-side title bar and margins where there are some
+          (let ((at (apply #'vector (nhwl-gui--native-to-logical 60 (+ (nth 3 (window-inside-pixel-edges)) 3)))))
+            (nhwl-gui--dnd-offer '(:text/plain "X") :at at)
+            (gui-runner-recorder `(:cmd "dnd_motion" :at ,at))
             (nhwl-gui--pump 0.3)
             (gui-runner-recorder '(:cmd "dnd_drop")))
           (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (> (buffer-size) 3)) 3))
@@ -534,16 +543,21 @@ rule `errors' judges what was sent."
   "A drop over a child frame is the child's: its window gets the text and the toplevel's does not."
   (skip-unless (nhwl-gui--recorder-p))
   (let* ((parent (selected-frame)) (b (generate-new-buffer " *dnd-child*")) (child nil)
-         (host (get-buffer-create " *dnd-host*")))
+         (host (get-buffer-create " *dnd-host*")) (before (nhwl-gui--sub-ids)) (id nil))
     (unwind-protect
         (progn
           (switch-to-buffer host)
+          ;; no menu or tool bar (a child frame has them by default): the drop is on the window
           (setq child (make-frame `((parent-frame . ,parent) (left . 20) (top . 20) (width . 30) (height . 8)
-                                    (minibuffer . nil) (no-other-frame . t))))
+                                    (minibuffer . nil) (no-other-frame . t) (menu-bar-lines . 0)
+                                    (tool-bar-lines . 0))))
           (with-selected-frame child (switch-to-buffer b))
           (nhwl-gui--pump 0.5)
-          (nhwl-gui--dnd-offer '(:text/plain "to the child") :surface "newest" :at [40 40])
-          (gui-runner-recorder '(:cmd "dnd_motion" :at [40 40] :surface "newest"))
+          ;; the child's own surface (the newest surface can be another one, such as the pointer's)
+          (setq id (plist-get (nhwl-gui--child-node before) :id))
+          (should id)
+          (nhwl-gui--dnd-offer '(:text/plain "to the child") :surface id :at [40 40])
+          (gui-runner-recorder `(:cmd "dnd_motion" :at [40 40] :surface ,id))
           (nhwl-gui--pump 0.3)
           (gui-runner-recorder '(:cmd "dnd_drop"))
           (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (> (buffer-size b) 0)) 3))
@@ -557,13 +571,14 @@ rule `errors' judges what was sent."
   "A drag that offers only `image/png' is not accepted and is never finished."
   (skip-unless (nhwl-gui--recorder-p))
   (nhwl-gui--dnd-offer '(:image/png "PNGDATA"))
-  (gui-runner-recorder '(:cmd "dnd_motion" :at [101 101]))
-  (nhwl-gui--pump 0.5)
-  (let ((log (nhwl-gui--dnd-log)))
-    (should-not (stringp (nhwl-gui--get log :accepted)))
-    (should-not (nhwl-gui--get log :finished)))
-  (gui-runner-recorder '(:cmd "dnd_leave"))
-  (nhwl-gui--pump 0.3))
+  (unwind-protect
+      (progn
+        (gui-runner-recorder '(:cmd "dnd_motion" :at [101 101]))
+        (nhwl-gui--pump 0.5)
+        (let ((log (nhwl-gui--dnd-log)))
+          (should-not (stringp (nhwl-gui--get log :accepted)))
+          (should-not (nhwl-gui--get log :finished))))
+    (nhwl-gui--dnd-end)))
 
 (ert-deftest nhwl-gui/drop-from-a-silent-source-times-out ()
   "A source that never sends its data: Emacs gives up at `nhwl-selection-timeout', destroys the offer within 1.5 s
@@ -597,36 +612,43 @@ of the drop, answers at once after it, and the next, normal drop inserts."
           (switch-to-buffer b)
           (insert (mapconcat #'identity (make-list 10 "0123456789") "\n"))
           (goto-char (point-min))
-          (let ((y (+ (nth 1 (window-inside-pixel-edges)) (* 4 (default-line-pixel-height)) 2)))
-            (nhwl-gui--dnd-offer '(:text/plain "x") :at (vector 30 y))
-            (gui-runner-recorder `(:cmd "dnd_motion" :at [32 ,y])))
-          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (= (line-number-at-pos) 5)) 3))
-          (gui-runner-recorder '(:cmd "dnd_leave"))
-          (nhwl-gui--pump 0.3))
+          ;; the surface position: past the client-side title bar and margins where there are some
+          (let ((y (+ (nth 1 (window-inside-pixel-edges)) (* 4 (default-line-height)) 2)))
+            (nhwl-gui--dnd-offer '(:text/plain "x") :at (apply #'vector (nhwl-gui--native-to-logical 30 y)))
+            (gui-runner-recorder `(:cmd "dnd_motion" :at ,(apply #'vector (nhwl-gui--native-to-logical 32 y)))))
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (= (line-number-at-pos) 5)) 3)))
+      (nhwl-gui--dnd-end)
       (kill-buffer b))))
 
 ;; Touch screens and touchpad pinch.  The recorder's `touch' and `pinch' commands stand in for the
 ;; compositor; the events Lisp sees are pgtk's: `touchscreen-begin', `touchscreen-update', `touchscreen-end', `pinch'.
+;; The rows read them here (`nhwl-gui--pump' would read and drop them): touch events are logged, a `pinch' runs its
+;; binding as the command loop would.
 
-(defvar nhwl-gui--touch-log nil "The events `touch-screen-handle-touch' saw, newest first.")
-
-(defun nhwl-gui--touch-note (event &rest _)
-  (push event nhwl-gui--touch-log))
+(defvar nhwl-gui--touch-log nil "The touch events Lisp read, newest first.")
 
 (defmacro nhwl-gui--with-touch-log (&rest body)
-  "Run BODY with the touch events Lisp sees collected in `nhwl-gui--touch-log'."
+  "Run BODY with the touch events Lisp reads collected in `nhwl-gui--touch-log'."
   (declare (indent 0))
   `(progn
      (setq nhwl-gui--touch-log nil)
-     (advice-add 'touch-screen-handle-touch :before #'nhwl-gui--touch-note)
-     (unwind-protect (progn ,@body)
-       (advice-remove 'touch-screen-handle-touch #'nhwl-gui--touch-note))))
+     ,@body))
+
+(defun nhwl-gui--pump-input (seconds)
+  "Read events for SECONDS: log the touch events, run each `pinch' event's binding, drop the rest."
+  (let ((deadline (+ (float-time) seconds)))
+    (while (< (float-time) deadline)
+      (let ((e (read-event nil nil 0.05)))
+        (pcase (car-safe e)
+          ((or 'touchscreen-begin 'touchscreen-update 'touchscreen-end) (push e nhwl-gui--touch-log))
+          ('pinch (let ((last-input-event e))
+                    (call-interactively (key-binding (vector e)) nil (vector e)))))))))
 
 (defun nhwl-gui--touch (op id at &optional surface)
   "Send a touch OP for point ID at logical AT (X Y), ending its frame; SURFACE names the target of a down."
   (gui-runner-recorder `(:cmd "touch" :op ,op :id ,id :at ,(vector (car at) (cadr at))
                               ,@(and surface (list :surface surface))))
-  (nhwl-gui--pump 0.2))
+  (nhwl-gui--pump-input 0.2))
 
 (defun nhwl-gui--touch-kinds ()
   "The kinds of the logged events, oldest first."
@@ -657,7 +679,7 @@ nothing."
     ;; the recorder sends a cancel only while a point has an event its frame has not closed yet
     (gui-runner-recorder '(:cmd "touch" :op "motion" :id 0 :at [30 40] :frame :false))
     (gui-runner-recorder '(:cmd "touch" :op "cancel"))
-    (nhwl-gui--pump 0.3)
+    (nhwl-gui--pump-input 0.3)
     (should (= (seq-count (lambda (e) (eq (car e) 'touchscreen-end)) nhwl-gui--touch-log) 2))
     (setq nhwl-gui--touch-log nil)
     (nhwl-gui--touch "motion" 0 '(31 41))
@@ -669,7 +691,8 @@ nothing."
   (let ((before (nhwl-gui--sub-ids)) (c nil))
     (unwind-protect
         (progn
-          (setq c (nhwl-gui--child))
+          ;; no menu or tool bar (a child frame has them by default): the touch is on the window
+          (setq c (nhwl-gui--child '(menu-bar-lines . 0) '(tool-bar-lines . 0)))
           (let ((n (nhwl-gui--child-node before)))
             (should n)
             (nhwl-gui--with-touch-log
@@ -685,7 +708,7 @@ nothing."
 (defun nhwl-gui--pinch (&rest args)
   "Send a pinch command with ARGS (a plist) and let Lisp read its event."
   (gui-runner-recorder (cons :cmd (cons "pinch" args)))
-  (nhwl-gui--pump 0.2))
+  (nhwl-gui--pump-input 0.2))
 
 (ert-deftest nhwl-gui/pinch-scales-text ()
   "A pinch begin and an update to scale 1.5 make `text-scale-pinch' scale the text up."
@@ -1496,16 +1519,16 @@ and the parent's (from a timer).  With no submenu popup the menu is dismissed.  
                  '(gamma))))
 
 (ert-deftest nhwl-gui/context-menu-click-keeps-it-open ()
-  "The first click on an item of a menu opened with the button held, without a drag, only keeps the menu open;
-the second chooses."
+  "The press that opened the menu coming up where it went down (a click, not a drag) only keeps the menu open; a
+click on an item then chooses."
   (skip-unless (nhwl-gui--recorder-p))
   (let ((before (nhwl-gui--popup-ids)) (open-after-first :unset) (timers nil))
     (unwind-protect
         (should (equal (nhwl-gui--menu-run
                         (nhwl-gui--menu-keymap)
                         (lambda (id)
+                          (nhwl-gui--menu-button 273 t)
                           (nhwl-gui--menu-over id 0 4)
-                          (nhwl-gui--menu-button 272)
                           (push (run-at-time 0.4 nil
                                              (lambda ()
                                                (setq open-after-first
@@ -1557,15 +1580,16 @@ the second chooses."
         (nhwl-gui--menu-run
          map
          (lambda (id)
-           (let* ((frame (cdr (assq 0 nhwl-menu--frames))) (window (frame-root-window frame)))
-             (setq seen (list (<= (frame-pixel-height frame) (display-pixel-height frame))
-                              (count-lines 1 (window-start window))))
+           (let* ((frame (cdr (assq 0 nhwl-menu--frames))) (window (frame-root-window frame))
+                  ;; the first row shown: a line count in the menu's buffer, not the timer's
+                  (top (lambda () (with-current-buffer (window-buffer window) (count-lines 1 (window-start window))))))
+             (setq seen (list (<= (frame-pixel-height frame) (display-pixel-height frame)) (funcall top)))
              (gui-runner-recorder (list :cmd "focus" :surface id))
              (gui-runner-recorder (list :cmd "pointer" :pos (vector 10 20)))
              (gui-runner-recorder '(:cmd "axis" :source "wheel" :v120 120))
              (push (run-at-time 0.4 nil
                                 (lambda ()
-                                  (setq seen (append seen (list (count-lines 1 (window-start window)))))
+                                  (setq seen (append seen (list (funcall top))))
                                   (gui-runner-recorder '(:cmd "click_outside"))))
                    timers))))
       (mapc #'cancel-timer timers))
@@ -1637,10 +1661,13 @@ toplevel remains in the tree, and the connection has no protocol error."
              (push (run-at-time 0.2 nil
                                 (lambda ()
                                   (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
-                                  (gui-runner-recorder (list :cmd "pointer" :pos (vector 5 5)))
+                                  ;; past the client-side title bar and margins where there are some
+                                  (gui-runner-recorder (list :cmd "pointer"
+                                                             :pos (apply #'vector (nhwl-gui--native-to-logical 5 5))))
                                   (nhwl-gui--menu-button 272)))
                    timers)
-             (read-key-sequence nil))
+             ;; the menu is dismissed: a menu-bar menu cancelled by a click quits, as on every Emacs
+             (condition-case nil (read-key-sequence nil) (quit nil)))
            (lambda (_id)
              (let ((frame (cdr (assq 0 nhwl-menu--frames))))
                (setq seen (list (nth 1 (frame-parameter frame 'nhwl-popup))
