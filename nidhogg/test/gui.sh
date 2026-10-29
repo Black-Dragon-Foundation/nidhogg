@@ -136,6 +136,9 @@ if [ -n "$container" ]; then
     fedora-45) image=$IMAGE_fedora_45 ;;
     *) echo "gui.sh: --container supports fedora-45" >&2; exit 2 ;;
   esac
+  # a local image with the packages below already installed (built once from the same base) saves every run the
+  # download; without it each run installs them into a fresh container
+  podman image exists "localhost/glitnir-gui-deps:$container" 2>/dev/null && image=localhost/glitnir-gui-deps:$container
   name=${GLITNIR_GUI_NAME:-glitnir-gui-$$}
   trap 'podman rm -f "$name" > /dev/null 2>&1' EXIT
   trap 'exit 1' INT TERM
@@ -162,9 +165,11 @@ if [ -n "$container" ]; then
       rt='"$inprefix"'/share/nidhogg/deps.runtime
       [ -f "$rt" ] || rt=/src/nidhogg/deps/'"$container"'.runtime
       pkgs=$(sed "s/#.*//" "$rt" 2>/dev/null || true)
-      dnf -y -q --setopt=install_weak_deps=False install mutter dbus-daemon mesa-dri-drivers mesa-libEGL \
-        mesa-libgbm python3-gobject-base dejavu-sans-mono-fonts procps-ng util-linux $pkgs > /tmp/dnf.log 2>&1 \
-        || { cat /tmp/dnf.log; exit 1; }
+      want="mutter dbus-daemon mesa-dri-drivers mesa-libEGL \
+        mesa-libgbm python3-gobject-base dejavu-sans-mono-fonts procps-ng util-linux $pkgs"
+      # already installed (the prebuilt image): nothing to download
+      rpm -q --quiet --whatprovides $want 2>/dev/null || dnf -y -q --setopt=install_weak_deps=False install $want \
+        > /tmp/dnf.log 2>&1 || { cat /tmp/dnf.log; exit 1; }
       # glycin (GTK 3 loads its icons through it) sandboxes its image loaders with bwrap --dev /dev, which a podman
       # container refuses (it cannot mount a devpts); the loaders get the container'"'"'s own /dev instead
       printf "%s\n" "#!/bin/bash" "a=(); while [ \$# -gt 0 ]; do if [ \"\$1\" = --dev ]; then a+=(--dev-bind \"\$2\" \"\$2\"); shift 2; else a+=(\"\$1\"); shift; fi; done" \
