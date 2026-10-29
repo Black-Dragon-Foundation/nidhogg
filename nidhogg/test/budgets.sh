@@ -4,6 +4,7 @@
 #
 #   nidhogg/test/budgets.sh --prefix-a SHELL [--compositor sway] [--scale S] [--size WxH] [--runs N] [--refresh 120]
 #                           [--out FILE.eld] [--window SEC] [--resize-steps N] [--motion-frames N] [--motion-size WxH]
+#                           [--config q|drgnx --drgnx DIR]
 #   nidhogg/test/budgets.sh --self-test --prefix-a SHELL [--out FILE.eld]
 #   nidhogg/test/budgets.sh --reference --prefix-a PGTK [--runs N] [--out FILE.eld]
 #
@@ -17,6 +18,11 @@
 #   --resize-steps N  `swaymsg resize' steps (default 200)
 #   --motion-frames N frames of the motion bench (default 600), on --motion-size (default 3840x2160) at scale 1.5 and
 #                     120 Hz
+#   --config C        q (default): both sides start with -Q.  drgnx: both sides start with drgnx's own configuration, the way
+#                     bin/drgnx starts its Emacs (--init-directory DIR/init); --drgnx names the checkout.  It is mounted
+#                     read-only at its own path, and the run's HOME is private, so drgnx's state lands in the run.  The
+#                     targets that name a 1920x1080 x 1 cell (pss-idle, cpu-typing, cpu-scroll, pss-scroll) were set on -Q
+#                     and are judged on --config q only; on drgnx they are report
 #   --refresh N       the speed sessions' sway output runs at N Hz (default 120; the scroll bar is a 120 Hz bar)
 #   --container fedora-45  accepted and ignored: the script always runs in its own container, and the slot wrappers
 #                     (drgnx-heavy-slot.sh) only start the command on the host, not inside a dev container, when they see this
@@ -33,7 +39,7 @@
 # scroll-120-dropped, scroll-120-dropped-inline, scroll-120-presenter-late, main-wait-max, freeze-watchdog,
 # cpu-typing-inline; cpu-scroll is fixed work (CPU seconds).  The -inline rows compare A with C (:c), the rest are judged
 # on the targets below.
-# The workload runs in the shell's own configuration (-Q); a config cell is the caller's to add.
+# The workload runs in the shell's own configuration (-Q) unless --config drgnx says otherwise.
 #
 # idle-wakeups-blink repeats the idle window with the cursor blinking, so redisplays run.
 # A row is (:row NAME :unit U :a (MEDIAN SD) [:c (MEDIAN SD)] :target T :kind gate|budget|report :source S
@@ -74,11 +80,13 @@ cpu-typing|8.59|budget|W0 gate 2026-10-27 (pgtk)|1920x1080@1
 cpu-scroll|$REF_CPU_SCROLL|budget|pgtk reference run|1920x1080@1
 pss-scroll|$REF_PSS_SCROLL|budget|pgtk reference run|1920x1080@1"
 
-pa= scale=1 size=1920x1080 runs=5 out=budgets.eld window=60 steps=200 mframes=600 msize=3840x2160 selftest=0 mode=host refresh=120 sscroll=10 fixed=2000 nh_env=() HAS_W3=0 reference=0
+pa= scale=1 size=1920x1080 runs=5 out=budgets.eld window=60 steps=200 mframes=600 msize=3840x2160 selftest=0 mode=host refresh=120 sscroll=10 fixed=2000 nh_env=() HAS_W3=0 reference=0 config=q drgnx=
 while [ $# -gt 0 ]; do
   case $1 in
     --prefix-a) pa=${2:-}; shift 2 ;;
     --reference) reference=1; shift ;;
+    --config) config=${2:-}; shift 2 ;;
+    --drgnx) drgnx=${2:-}; shift 2 ;;
     --compositor) [ "${2:-}" = sway ] || { echo "budgets.sh: only --compositor sway" >&2; exit 2; }; shift 2 ;;
     --scale) scale=${2:-}; shift 2 ;;
     --size) size=${2:-}; shift 2 ;;
@@ -102,8 +110,17 @@ case $refresh in ''|*[!0-9]*) echo "budgets.sh: --refresh is a whole number of H
 [ -x "$pa/bin/nidhogg" ] || { echo "budgets.sh: --prefix-a must be an unpacked Nidhogg" >&2; exit 2; }
 [ "$reference$selftest" != 11 ] || { echo "budgets.sh: --reference and --self-test do not combine" >&2; exit 2; }
 case $size$msize in *x*x*) ;; *) echo "budgets.sh: sizes are WxH" >&2; exit 2 ;; esac
+case $config in
+  q) nh_init=(-Q) ;;
+  drgnx)
+    [ -f "$drgnx/init/init.el" ] || { echo "budgets.sh: --config drgnx needs --drgnx DIR, a drgnx checkout" >&2; exit 2; }
+    [ "$mode" != host ] || drgnx=$(cd "$drgnx" && pwd)
+    nh_init=(--init-directory "$drgnx/init") ;;
+  *) echo "budgets.sh: --config is q or drgnx" >&2; exit 2 ;;
+esac
+cfgargs=(--config "$config"); [ -z "$drgnx" ] || cfgargs+=(--drgnx "$drgnx")
 sargs=(--prefix-a "$pa" --scale "$scale" --size "$size" --runs "$runs" --window "$window"
-       --resize-steps "$steps" --motion-frames "$mframes" --motion-size "$msize" --refresh "$refresh")
+       --resize-steps "$steps" --motion-frames "$mframes" --motion-size "$msize" --refresh "$refresh" "${cfgargs[@]}")
 [ "$reference" = 0 ] || sargs+=(--reference)
 
 # ---------------------------------------------------------------- on the host: the container
@@ -114,7 +131,7 @@ if [ "$mode" = host ]; then
   inpa=$(sed -n 's/^prefix=//p' "$pa/share/nidhogg/BUILDINFO" 2>/dev/null); [ -n "$inpa" ] || inpa=$(cd "$pa" && pwd)
   pa=$(cd "$pa" && pwd)
   sargs=(--prefix-a "$inpa" --scale "$scale" --size "$size" --runs "$runs" --window "$window"
-         --resize-steps "$steps" --motion-frames "$mframes" --motion-size "$msize" --refresh "$refresh" --out "/out/$outfile")
+         --resize-steps "$steps" --motion-frames "$mframes" --motion-size "$msize" --refresh "$refresh" "${cfgargs[@]}" --out "/out/$outfile")
   [ "$selftest" = 0 ] || sargs+=(--self-test)
   [ "$reference" = 0 ] || sargs+=(--reference)
   name=budgets-$$
@@ -123,6 +140,7 @@ if [ "$mode" = host ]; then
   # the same container recipe as gui.sh, plus wtype (the typing) and procps
   podman run --rm --name "$name" --memory "${BUDGETS_MEMORY:-6g}" --memory-swap "${BUDGETS_MEMORY:-6g}" \
     ${BUDGETS_CPUSET:+--cpuset-cpus "$BUDGETS_CPUSET"} \
+    ${drgnx:+-v "$drgnx:$drgnx:ro,z"} \
     -v "$checkout:/src:ro,z" -v "$pa:$inpa:ro,z" -v "$outdir:/out:Z" "$IMAGE_fedora_45" bash -c '
       set -eu
       pkgs=$(cat "'"$inpa"'/share/nidhogg/deps.runtime" 2>/dev/null | sed "s/#.*//" || true)
@@ -228,7 +246,7 @@ cl() { timeout 600 "$prefix/bin/nidhoggclient" -s "$xdg/srv" -e "$1" 2> /dev/nul
 start_nidhogg() {
   prefix=$1
   env ${nh_env[@]+"${nh_env[@]}"} BUDGETS_SRV=$xdg/srv BUDGETS_FILE=$run/big.txt \
-    timeout --kill-after=10 3000 "$prefix/bin/nidhogg" -Q --fullscreen \
+    timeout --kill-after=10 3000 "$prefix/bin/nidhogg" "${nh_init[@]}" --fullscreen \
     -l "$run/driver.el" 2> "$run/nh.err" &
   epid=$!
   for _ in $(seq 300); do
@@ -543,7 +561,8 @@ for ((ri = 1; ri <= runs; ri++)); do
 done
 
 # ---- aggregate: median and SD per row and side, then the verdict against the row's target
-TBL=$TARGETS awk -F'|' -v cell="${size}@${scale}" -v ref="$reference" '
+cellid=${size}@${scale}; [ "$config" = q ] || cellid=$config:$cellid   # the cell a target names is a -Q cell
+TBL=$TARGETS awk -F'|' -v cell="$cellid" -v ref="$reference" '
   function med(row, side,   n, i, j, t, v) {
     n = cnt[row, side]
     for (i = 1; i <= n; i++) v[i] = val[row, side, i]
