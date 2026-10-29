@@ -61,6 +61,20 @@
   (should (equal (should-error (nhwl-dnd--actions '((XdndActionCopy . 2))))
                  '(wrong-type-argument stringp 2))))
 
+(ert-deftest nhwl-dnd-targets-signal-like-c ()
+  "TARGETS that are not a list of strings signal before the drag starts.
+A circular list signals `circular-list', as C's FOR_EACH_TAIL did,
+instead of looping."
+  (should (equal (should-error (x-begin-drag "STRING"))
+                 '(wrong-type-argument listp "STRING")))
+  (should (equal (should-error (x-begin-drag '("STRING" 1)))
+                 '(wrong-type-argument stringp 1)))
+  (should (equal (should-error (x-begin-drag '("STRING" . "TEXT")))
+                 '(wrong-type-argument listp ("STRING" . "TEXT"))))
+  (let ((circular (list "STRING" "TEXT")))
+    (setcdr (cdr circular) circular)
+    (should (eq (car (should-error (x-begin-drag circular))) 'circular-list))))
+
 (ert-deftest nhwl-dnd-result-maps-like-c ()
   "The action bit the target performed as x-begin-drag's value."
   (should (eq (nhwl-dnd--result 1) 'XdndActionCopy))
@@ -161,6 +175,57 @@
   (should (equal (nhwl-settings--button-kinds '(close icon nil "close" menu))
                  '(1)))
   (should (null (nhwl-settings--button-kinds nil))))
+
+;;; The numbers, against the glue's header
+
+(defun nhwl-dnd-tests--header ()
+  "The text of nidhogg/glue/include/nhglue.h, or nil without the sources."
+  (let ((f (expand-file-name "nidhogg/glue/include/nhglue.h" source-directory)))
+    (and (file-readable-p f)
+         (with-temp-buffer (insert-file-contents f) (buffer-string)))))
+
+(defun nhwl-dnd-tests--define (header name)
+  "The value of NAME's `#define' in HEADER: N, Nu or (1u << N)."
+  (and (string-match (concat "^#define " (regexp-quote name)
+                             " +\\(?:(1u << \\([0-9]+\\))\\|\\([0-9]+\\)u?\\b\\)")
+                     header)
+       (if (match-string 1 header)
+           (ash 1 (string-to-number (match-string 1 header)))
+         (string-to-number (match-string 2 header)))))
+
+(ert-deftest nhwl-lisp-numbers-match-nhglue-h ()
+  "The Lisp copies of the glue's numbers equal nhglue.h's."
+  (let ((h (nhwl-dnd-tests--header)))
+    (skip-unless h)
+    (dolist (c '(("NHG_DND_COPY" . nhwl-dnd--copy) ("NHG_DND_MOVE" . nhwl-dnd--move)
+                 ("NHG_DND_ASK" . nhwl-dnd--ask)))
+      (should (equal (cons (car c) (nhwl-dnd-tests--define h (car c)))
+                     (cons (car c) (symbol-value (cdr c))))))
+    (dolist (a nhwl-win--popup-adjusts)
+      (let ((name (concat "NHG_ADJUST_" (upcase (string-replace "-" "_" (car a))))))
+        (should (equal (cons name (nhwl-dnd-tests--define h name))
+                       (cons name (cdr a))))))
+    (dolist (b '(("close" . "NHG_CSD_CLOSE") ("maximize" . "NHG_CSD_MAX")
+                 ("minimize" . "NHG_CSD_MIN") ("appmenu" . "NHG_CSD_MENU")))
+      (should (equal (cons (cdr b) (nhwl-dnd-tests--define h (cdr b)))
+                     (cons (cdr b) (cdr (assoc (car b) nhwl-settings--button-kinds))))))
+    (should (equal (nhwl-dnd-tests--define h "NHG_POPUP_GRAB")
+                   (nth 6 (nhwl-popup-decode '(0 0 1 1 :grab t)))))
+    ;; The gravities are numbered in NhgAnchor's comment: "1 top, 2 bottom, ...".
+    (should (string-match "grows toward: 0 none,\\([^;]*\\);" h))
+    (let ((listed (match-string 1 h))
+          (start 0)
+          (found nil))
+      (while (string-match "\\([1-8]\\) \\([a-z]+\\(?:-[a-z]+\\)?\\)" listed start)
+        (push (cons (match-string 2 listed) (string-to-number (match-string 1 listed)))
+              found)
+        (setq start (match-end 0)))
+      (should (equal (length found) 8))
+      (dolist (g found)
+        (should (equal (cons (car g)
+                             (- (1+ (length nhwl-win--popup-gravities))
+                                (length (member (car g) nhwl-win--popup-gravities))))
+                       g))))))
 
 (provide 'nhwl-dnd-tests)
 

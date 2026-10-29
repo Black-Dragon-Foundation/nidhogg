@@ -1167,13 +1167,13 @@ nhwl_csd_layout (struct frame *f)
 					  &lay)));
   if (rc < 0)
     return;
+  /* Copied even when unchanged: the glue lays a window made anew out
+     from nothing, so its "unchanged" may differ from this copy.  */
   c->on = lay.on != 0;
+  c->strip = lay.strip;
+  c->l = lay.l, c->t = lay.t, c->r = lay.r, c->b = lay.b;
   if (rc == 1)
-    {
-      c->strip = lay.strip;
-      c->l = lay.l, c->t = lay.t, c->r = lay.r, c->b = lay.b;
-      SET_FRAME_GARBAGED (f);
-    }
+    SET_FRAME_GARBAGED (f);
 }
 
 /* The title or the title bars' style changed: F is redisplayed, and the
