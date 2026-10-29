@@ -265,7 +265,8 @@
 ;; The daemon rows run under gui.sh `--daemon' (the runner is in the daemon).
 
 (defun nhwl-gui--nhwl-frames ()
-  (seq-filter (lambda (f) (and (frame-live-p f) (eq (framep f) 'pgtk))) (frame-list)))
+  "The live toplevel frames on Wayland, newest first: not the child frames, such as a menu's, kept between menus."
+  (seq-filter (lambda (f) (and (frame-live-p f) (eq (framep f) 'pgtk) (not (frame-parent f)))) (frame-list)))
 
 (ert-deftest nhwl-gui/daemon-frame-from-client ()
   (skip-unless (and (nhwl-gui--recorder-p) (daemonp)))
