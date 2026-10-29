@@ -67,7 +67,7 @@ mod ffi {
             // every later call answers NHG_E_PANIC without touching the state
             assert_eq!(nhg_frame_forget(d, 7), NHG_E_PANIC);
             assert_eq!(nhg_fd(d), NHG_E_PANIC);
-            assert!(nhg_shell(d).is_null());
+            assert_eq!(nhg_dispatch_main(d), NHG_E_PANIC);
         }
         let msg = panic_message(d);
         assert!(msg.contains("nhg_test_panic: a test panic"), "{msg}");
