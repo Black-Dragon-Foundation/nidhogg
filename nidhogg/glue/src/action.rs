@@ -1,5 +1,5 @@
-//! The actions `nhg_next` answers with: one shell event's, which C applies before it asks for the next event (design
-//! §4, review B1).  The actions and their texts stay valid until the next `nhg_next` on the display: only that call
+//! The actions `nhg_next` answers with: one shell event's, which C applies before it asks for the next event.
+//! The actions and their texts stay valid until the next `nhg_next` on the display: only that call
 //! frees them, so no other call C makes while it applies them can.
 
 use std::ffi::c_char;
@@ -9,7 +9,7 @@ use std::ffi::c_char;
 pub const NHG_IN_INPUT_WAITING: u32 = 1;
 pub const NHG_IN_COALESCE_WHEEL: u32 = 2;
 
-/// Action kinds 1–31 are the port's; 32–63 belong to W2's and W3's glue.
+/// Action kinds 1–31 are the original set; 32–63 are the later ones.
 pub const NHG_ACT_KEY: u32 = 1;
 pub const NHG_ACT_CLICK: u32 = 2;
 pub const NHG_ACT_WHEEL: u32 = 3;

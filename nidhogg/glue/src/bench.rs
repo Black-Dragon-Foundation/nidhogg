@@ -1,4 +1,4 @@
-//! The full-redraw bench of the W0 budgets: present N frames of a tree, each damaged whole, and time them.
+//! The full-redraw bench of the budgets table: present N frames of a tree, each damaged whole, and time them.
 //!
 //! Moved from `src/nhwlterm.c` (`nhwl--bench-full-redraw`).  Each frame is damaged, published at a consistency point
 //! and presented through the presenter (`present.rs`): on its thread (its count of buffer commits rises), or inline,

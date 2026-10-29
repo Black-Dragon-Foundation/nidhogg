@@ -229,7 +229,7 @@ mod toplevel {
         assert_eq!(ev.window, id);
     }
 
-    /// W1 Task 18: `alpha` is surface state; the window owes a commit, and a bare one carries the multiplier.
+    /// `alpha` is surface state; the window owes a commit, and a bare one carries the multiplier.
     #[test]
     fn alpha_rides_a_bare_commit() {
         let rec = Recorder::start("sway");

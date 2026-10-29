@@ -81,7 +81,7 @@ fn still_up(shell: &mut WaylandShell, ms: i64) {
 mod popup {
     use super::*;
 
-    /// W2-5: the newest of button press, key press and touch down; here a key press after a button press.
+    /// The grab takes the newest of button press, key press and touch down; here a key press after a button press.
     #[test]
     fn grab_uses_the_newest_press_serial() {
         let rec = Recorder::start("sway");
@@ -143,7 +143,7 @@ mod popup {
         }
     }
 
-    /// W2-5: a grabbing popup's parent popup must hold the topmost grab; a plain parent means no grab (the recorder
+    /// A grabbing popup's parent popup must hold the topmost grab; a plain parent means no grab (the recorder
     /// would answer a grab with `invalid_grab`).
     #[test]
     fn no_grab_under_a_non_grabbing_parent() {

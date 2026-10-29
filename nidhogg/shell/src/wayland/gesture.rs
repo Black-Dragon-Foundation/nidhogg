@@ -1,4 +1,4 @@
-//! Touchpad pinch (reader queue): `zwp_pointer_gesture_pinch_v1`, one per pointer, posted as `PINCH` records (W2-9).
+//! Touchpad pinch (reader queue): `zwp_pointer_gesture_pinch_v1`, one per pointer, posted as `PINCH` records.
 //!
 //! Only pinch is bound: Emacs has an event for it (`pinch`), and none for swipe or hold.  The protocol's scale is
 //! already cumulative since `begin`, as GDK's is, and is passed on as it comes; the deltas and the position become

@@ -1,4 +1,4 @@
-//! T0 tests of the W3 recorder additions: held-buffer writes, commit times, regions, the 120 Hz clock.
+//! T0 tests of the recorder's timing additions: held-buffer writes, commit times, regions, the 120 Hz clock.
 mod common;
 use common::Env;
 use serde_json::{json, Value};

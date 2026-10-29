@@ -1,5 +1,5 @@
-//! Child frames.  Moved from `src/nhwlchild.c` (W1's child frames, written fresh; the chrome's hand-over to the layer
-//! adapted from Nidhogg's own `glitnir_pgtk_params_changed`).
+//! Child frames.  Moved from `src/nhwlchild.c` (child frames written fresh; the chrome's hand-over to the layer
+//! follows Nidhogg's own `glitnir_pgtk_params_changed`).
 //!
 //! A child frame's window is a sync subsurface of its parent frame's (shell kind `NHSHELL_KIND_CHILD`), published and
 //! presented with its tree: its position, stacking, input region and mapping are its parent's state, recorded by the
@@ -8,7 +8,7 @@
 //! border (`csd.rs` holds it, as it holds a top-level's title bar), so the backing, the damage and the pointer use the
 //! offsets they already have.  The surface is the native area plus the margin; its input region is the native area.
 //!
-//! The facts it reads (design §3.3): the parent, the position (the frame's left and top), visibility and
+//! The facts it reads: the parent, the position (the frame's left and top), visibility and
 //! `no-accept-focus` are pushed (`nhg_child_set`, when the window is made, moved, shown or hidden); the chrome is
 //! pulled from C's `glitnir--resolve` call (`nhg_child_chrome`); the native size at each publish (`nhg_csd_paint`);
 //! a raise or lower (`nhg_child_raise`).  The stacking order among siblings is the glue's (`Stacking`, moved from C's

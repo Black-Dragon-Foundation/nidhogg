@@ -67,16 +67,16 @@ TARGETS="typing-stall-max|16|gate|V2 section 1 line 26: typing never stalls long
 latency-typing|16|gate|V2 section 1 line 26 (key to commit p95)
 scroll-120-presenter-late|0|gate|V2 section 1 line 25: no dropped frame at 120 Hz, presenter misses only
 freeze-watchdog|0|gate|V2 section 1 lines 27 and 61: no freeze over 100 ms (stalls the watchdog counted)
-typing-stall-p99|8.33|report|W3 budgets table; not a V2 bar
-main-wait-max|1|budget|W3
+typing-stall-p99|8.33|report|the budgets table; not a V2 bar
+main-wait-max|1|budget|the budgets table
 idle-wakeups-threads|0|budget|shells section 3: no wake-ups from the shell's threads
-motion-compose-p95|8.33|budget|shells section 3, W3
-motion-interval-p95|9.2|budget|shells section 3, W3
-motion-cores|1|budget|W3: under one core
+motion-compose-p95|8.33|budget|shells section 3, the budgets table
+motion-interval-p95|9.2|budget|shells section 3, the budgets table
+motion-cores|1|budget|the budgets table: under one core
 resize-stuck|0|budget|shells section 3: no stuck resize
 pss-compositor|51200|budget|shells section 3: the test compositor at 50 MB
-pss-idle|122880|budget|W0 gate 2026-10-27 (pgtk), 120 MB|1920x1080@1
-cpu-typing|8.59|budget|W0 gate 2026-10-27 (pgtk)|1920x1080@1
+pss-idle|122880|budget|pgtk gate run 2026-10-27, 120 MB|1920x1080@1
+cpu-typing|8.59|budget|pgtk gate run 2026-10-27|1920x1080@1
 cpu-scroll|$REF_CPU_SCROLL|budget|pgtk reference run|1920x1080@1
 pss-scroll|$REF_PSS_SCROLL|budget|pgtk reference run|1920x1080@1"
 
@@ -541,7 +541,7 @@ awk 'BEGIN { for (i = 1; i <= 10000; i++) printf "line %05d the quick brown fox 
 [ "$("$pa/bin/nidhogg" -Q --batch --eval '(princ (if (fboundp (quote nhwl-presenter-stats)) 1 0))' 2> /dev/null)" != 1 ] || HAS_W3=1
 if [ "$HAS_W3" = 0 ] && [ "$reference" = 0 ]; then
   for rr in latency-typing-inline scroll-120-dropped-inline cpu-typing-inline scroll-120-presenter-late main-wait-max; do
-    rec "$rr" A "SKIP needs the presenter thread (W3 Task 8): this build has no nhwl-presenter-stats"
+    rec "$rr" A "SKIP needs the presenter thread : this build has no nhwl-presenter-stats"
   done
 fi
 

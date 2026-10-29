@@ -1,13 +1,13 @@
-;;; nhwl-gui-w2-tests.el --- GUI rows for the native shell's W2 (parity)  -*- lexical-binding: t -*-
+;;; nhwl-gui-w2-tests.el --- GUI rows for the native shell's parity features  -*- lexical-binding: t -*-
 
-;; Run by nidhogg/test/gui.sh with the W1 rows (nhwl-gui-tests.el, loaded first: its helpers are used here).  Rows
+;; Run by nidhogg/test/gui.sh with the base rows (nhwl-gui-tests.el, loaded first: its helpers are used here).  Rows
 ;; that drive the compositor need `--compositor recorder'; rows named `nhwl-gui/live-*' run on real compositors and
 ;; are judged by the trace checker.
 
 (require 'ert)
 (require 'nhwl-gui-tests)
 
-;; W2 Task 12: popup frames.  A frame made with `nhwl-popup' (and `parent-frame') is an xdg popup of its parent's
+;; Popup frames.  A frame made with `nhwl-popup' (and `parent-frame') is an xdg popup of its parent's
 ;; window, shown and hidden with the frame; with `:grab' it grabs the keyboard and pointer when the shell has an input
 ;; serial.  The menus (nhwl-menu.el) are made of them.
 
@@ -450,7 +450,7 @@ rule `errors' judges what was sent."
           (should (frame-live-p (selected-frame))))
       (dolist (f frames) (when (frame-live-p f) (delete-frame f))))))
 
-;; W2 Task 10: the drop target.  The recorder is a foreign source (`dnd_offer', `dnd_motion', `dnd_drop', read back
+;; The drop target.  The recorder is a foreign source (`dnd_offer', `dnd_motion', `dnd_drop', read back
 ;; with `dnd_log'); `pgtk-dnd.el' decides what a drop does.  Positions are logical surface pixels of the toplevel.
 
 (defun nhwl-gui--dnd-offer (types &rest args)
@@ -600,7 +600,7 @@ of the drop, answers at once after it, and the next, normal drop inserts."
           (nhwl-gui--pump 0.3))
       (kill-buffer b))))
 
-;; W2 Task 15: touch screens and touchpad pinch.  The recorder's `touch' and `pinch' commands stand in for the
+;; Touch screens and touchpad pinch.  The recorder's `touch' and `pinch' commands stand in for the
 ;; compositor; the events Lisp sees are pgtk's: `touchscreen-begin', `touchscreen-update', `touchscreen-end', `pinch'.
 
 (defvar nhwl-gui--touch-log nil "The events `touch-screen-handle-touch' saw, newest first.")
@@ -713,7 +713,7 @@ nothing."
       (advice-remove 'text-scale-pinch count)
       (with-current-buffer (window-buffer (selected-window)) (text-scale-set 0)))))
 
-;; W2 Task 24: frames survive a compositor restart.  The recorder's `restart' drops every client and serves again on
+;; Frames survive a compositor restart.  The recorder's `restart' drops every client and serves again on
 ;; the same socket (`keep-socket': the connection waits in the backlog for `down_ms'; `rebind': the name is bound
 ;; again after `down_ms'; `gone': until `restart_up'), and the shell connects again on its backoff timer.  Lisp hears
 ;; of it through `nhwl-display-connection-functions'.  The rows end the first connection, so they run last; the gate
@@ -1009,7 +1009,7 @@ judge the second connection."
      (nhwl-gui--live-settle 0.5)
      (should (seq-every-p #'frame-live-p frames)))))
 
-;; W2 Task 13: the Lisp menu (lisp/term/nhwl-menu.el).  `x-popup-menu' runs its own loop, so the keys are typed by
+;; The Lisp menu (lisp/term/nhwl-menu.el).  `x-popup-menu' runs its own loop, so the keys are typed by
 ;; a timer once the menu's popup shows.  The recorder gives a grabbing popup the keyboard when told (`focus'), as a
 ;; compositor does; special keys go by evdev code (Down 108, Up 103, Enter 28, Esc 1, Space 57), characters by text.
 

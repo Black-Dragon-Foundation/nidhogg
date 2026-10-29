@@ -1,4 +1,4 @@
-//! Selections (W1 Task 6): the clipboard and the primary selection against nh-recorder (`NH_RECORDER`).  Each test
+//! Selections: the clipboard and the primary selection against nh-recorder (`NH_RECORDER`).  Each test
 //! starts its own recorder with a temporary `XDG_RUNTIME_DIR` and connects by absolute socket path.  The recorder's
 //! `offer` stands in for another client that owns a selection, its `read` for another client that pastes.
 

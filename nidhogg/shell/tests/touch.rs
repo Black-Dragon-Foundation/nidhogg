@@ -96,7 +96,7 @@ mod touch {
         assert!(late.is_empty(), "{late:?}");
     }
 
-    /// W2-5: a touch down is a press a popup grab may name.
+    /// A touch down is a press a popup grab may name.
     #[test]
     fn touch_serial_allows_a_grab() {
         let rec = Recorder::start("sway");
@@ -127,7 +127,7 @@ mod touch {
         assert!(shell.window_grabbed(p).unwrap());
     }
 
-    /// W2-9: the scale is cumulative since begin, as the protocol's is; END repeats the last one.  Positions and
+    /// The pinch scale is cumulative since begin, as the protocol's is; END repeats the last one.  Positions and
     /// deltas are device pixels.
     #[test]
     fn pinch_scale_is_cumulative() {

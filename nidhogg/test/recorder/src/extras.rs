@@ -1,4 +1,4 @@
-//! W2's smaller protocols: the system bell, idle inhibit, xdg-foreign export and xdg session management, each with
+//! The smaller protocols: the system bell, idle inhibit, xdg-foreign export and xdg session management, each with
 //! the log a test reads back (`bell_log`, `idle_inhibitors`, `exports`, `session_log`).
 //!
 //! Sessions persist in a JSON file (`--session-store`), so a second recorder instance restores what the first stored.

@@ -42,7 +42,7 @@
     (should-not (string-suffix-p ".el" file))))
 
 
-;; The resolver (Task 33).  The batch frame is a root tty frame; a child frame is stood in for by
+;; The resolver.  The batch frame is a root tty frame; a child frame is stood in for by
 ;; mocking the two things the resolver asks of it.
 
 (require 'cl-lib)
@@ -105,7 +105,7 @@
     (should-not (glitnir--resolve (selected-frame)))))
 
 (ert-deftest glitnir/decorated-children-get-none ()
-  ;; Design §3.4: a decorated child frame is a plain one, its own chrome parameters included.
+  ;; A decorated child frame is a plain one, its own chrome parameters included.
   (let ((child-frame-chrome '((corner-radius . 8) (shadow . (:blur 16)))))
     (glitnir-test--as-child '((undecorated . nil) (corner-radius . 4))
       (should-not (glitnir--resolve (selected-frame))))))
@@ -133,7 +133,7 @@
                 :type 'args-out-of-range)
   (should-error (glitnir--probe 'blur (list 4 4 (make-string 64 0)) '(0 0 4 4))))
 
-;; PD's box keys (:corner-radius, :open, :label), taken over for the shell (W1 Task 16).
+;; PD's box keys (:corner-radius, :open, :label), taken over for the shell.
 (ert-deftest glitnir/box-keys-accepted ()
   (skip-unless (featurep 'glitnir))
   (let ((face (make-symbol "glitnir-box-keys-face")))

@@ -5,7 +5,7 @@
 //! actions the event step gives.
 //!
 //! At scale 1, a 200 x 100 native area gets margins of 8 and a strip of 32: the backing is 216 x 148, the strip runs
-//! from (8, 8) to (208, 40), and W0's buttons (minimize, maximize, close) sit at x 112, 144 and 176.
+//! from (8, 8) to (208, 40), and the default buttons (minimize, maximize, close) sit at x 112, 144 and 176.
 
 #[path = "../../shell/tests/common/mod.rs"]
 mod common;
@@ -262,7 +262,7 @@ fn logged(rec: &Recorder, req: &str) -> bool {
 mod csd {
     use super::*;
 
-    /// The border follows the compositor's answer and the scale; the buttons follow the style (W0's before Lisp
+    /// The border follows the compositor's answer and the scale; the buttons follow the style (the default set before Lisp
     /// says), with the title box between them; an undecorated frame has none.
     #[test]
     fn layout_follows_the_style() {
@@ -287,7 +287,7 @@ mod csd {
             NHG_OK
         );
         assert_eq!(off, [8, 40, 8, 8]);
-        // W0's buttons
+        // the default buttons
         let (rc, p) = title_bar(d, id, 200, 100);
         assert_eq!(rc, 1);
         let strip = NhgRect {
