@@ -2656,6 +2656,25 @@ FRAME defaults to the selected frame.  */)
   return rc >= 0 ? make_string (buf, len) : Qnil;
 }
 
+DEFUN ("nhwl-system-bell-p", Fnhwl_system_bell_p, Snhwl_system_bell_p, 0, 1, 0,
+       doc: /* Return non-nil if the compositor offers a system bell.
+That is the xdg_system_bell_v1 protocol on DISPLAY (a display name or a
+frame; the selected frame's by default).  Without it `ding' does not sound
+on a shell frame, whatever `visible-bell' says.  */)
+  (Lisp_Object display)
+{
+  struct nhwl_display_info *dpyinfo = check_nhwl_display_info (display);
+  NhgCaps caps;
+  int32_t rc;
+
+  if (!dpyinfo->glue)
+    return Qnil;
+  block_input ();
+  rc = nhwl_glue_rc (dpyinfo, NHG (nhg_caps (dpyinfo->glue, &caps)));
+  unblock_input ();
+  return rc >= 0 && caps.system_bell ? Qt : Qnil;
+}
+
 /***********************************************************************
 			   Session restore
  ***********************************************************************/
@@ -3437,6 +3456,7 @@ syms_of_nhwlfns (void)
   DEFSYM (Qinhibit_idle, "inhibit-idle");
   defsubr (&Snhwl_frame_export_handle);
   defsubr (&Snhwl_activation_token);
+  defsubr (&Snhwl_system_bell_p);
   DEFSYM (Qsession_name, "session-name");
   DEFSYM (Qnhwl_session_start, "nhwl-session-start");
   DEFSYM (Qnhwl_session_name, "nhwl-session-name");
