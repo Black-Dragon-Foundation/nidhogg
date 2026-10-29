@@ -41,14 +41,14 @@ mod reconnect {
     }
 
     /// Every record up to and including `RECONNECTING`, within 3 s; no `DISCONNECTED` on the way.
-    fn until_reconnecting(shell: &mut WaylandShell) -> Vec<NhShellEvent> {
+    fn until_reconnecting(shell: &mut WaylandShell) -> Vec<Record> {
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut out = Vec::new();
         loop {
             while let Some(ev) = shell.next_event().unwrap() {
-                assert_ne!(ev.kind, NHSHELL_EV_DISCONNECTED, "a hangup is not a loss");
+                assert_ne!(ev.kind(), Kind::Disconnected, "a hangup is not a loss");
                 out.push(ev);
-                if ev.kind == NHSHELL_EV_RECONNECTING {
+                if ev.kind() == Kind::Reconnecting {
                     return out;
                 }
             }
@@ -64,7 +64,7 @@ mod reconnect {
     }
 
     /// `reconnect_within`, returning every record up to and including `RECONNECTED`.
-    fn reconnect_records(shell: &mut WaylandShell, secs: u64) -> Vec<NhShellEvent> {
+    fn reconnect_records(shell: &mut WaylandShell, secs: u64) -> Vec<Record> {
         let deadline = Instant::now() + Duration::from_secs(secs);
         loop {
             match shell.reconnect(50) {
@@ -82,7 +82,7 @@ mod reconnect {
         loop {
             while let Some(ev) = shell.next_event().unwrap() {
                 out.push(ev);
-                if ev.kind == NHSHELL_EV_RECONNECTED {
+                if ev.kind() == Kind::Reconnected {
                     return out;
                 }
             }
@@ -92,7 +92,7 @@ mod reconnect {
     }
 
     /// A keep-socket restart, and the reconnect after it: the records up to `RECONNECTED`.
-    fn restart_and_reconnect(rec: &Recorder, shell: &mut WaylandShell) -> Vec<NhShellEvent> {
+    fn restart_and_reconnect(rec: &Recorder, shell: &mut WaylandShell) -> Vec<Record> {
         restart(rec, r#"{"cmd":"restart","mode":"keep-socket"}"#);
         until_reconnecting(shell);
         reconnect_records(shell, 3)
@@ -116,9 +116,8 @@ mod reconnect {
 
     /// The next `CONFIGURE` of window `w`.
     fn configure_of(shell: &mut WaylandShell, w: u64) -> ConfigureEv {
-        let ev = wait_for(shell, |e| e.kind == NHSHELL_EV_CONFIGURE && e.window == w);
-        // SAFETY: a CONFIGURE record carries `configure`.
-        unsafe { ev.u.configure }
+        let ev = wait_for(shell, |e| e.kind() == Kind::Configure && e.window == w);
+        common::configure_of(&ev)
     }
 
     /// The string after `"data":` in a recorder reply (plain text without escapes).
@@ -132,10 +131,10 @@ mod reconnect {
     fn focus(rec: &Recorder, shell: &mut WaylandShell, w: u64) {
         let pid = shell.surface_protocol_id(w).unwrap();
         rec.control_ok(&format!(r#"{{"cmd":"focus","surface":{pid}}}"#));
-        wait_for(shell, |e| {
-            // SAFETY: a FOCUS record carries `focus`.
-            e.kind == NHSHELL_EV_FOCUS && e.window == w && unsafe { e.u.focus.r#in } == 1
-        });
+        wait_for(
+            shell,
+            |e| matches!(e.event, ShellEvent::Focus(f) if e.window == w && f.r#in == 1),
+        );
     }
 
     #[test]
@@ -147,7 +146,7 @@ mod reconnect {
         assert_eq!(shell.connection_state(), ConnectionState::Up);
         restart(&rec, r#"{"cmd":"restart","mode":"gone"}"#);
         let evs = until_reconnecting(&mut shell);
-        assert_eq!(evs.last().unwrap().kind, NHSHELL_EV_RECONNECTING);
+        assert_eq!(evs.last().unwrap().kind(), Kind::Reconnecting);
         assert_eq!(shell.connection_state(), ConnectionState::Reconnecting);
         assert_eq!(shell.last_error(), "", "a hangup is not a protocol error");
         // nothing of the old connection comes after it
@@ -173,7 +172,7 @@ mod reconnect {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             match shell.next_event() {
-                Ok(Some(ev)) => assert_ne!(ev.kind, NHSHELL_EV_RECONNECTING),
+                Ok(Some(ev)) => assert_ne!(ev.kind(), Kind::Reconnecting),
                 Ok(None) => {
                     assert!(Instant::now() < deadline, "no DISCONNECTED");
                     readable_within(shell.wake_fd(), 50);
@@ -276,7 +275,7 @@ mod reconnect {
             "{:?}",
             lost_at.elapsed()
         );
-        wait_event(&mut shell, NHSHELL_EV_RECONNECTED);
+        wait_event(&mut shell, Kind::Reconnected);
         // one connection for the shell, one for its reconnect
         let c = rec.control(r#"{"cmd":"connections"}"#);
         assert_eq!(number(&c, "accepted"), Some(2), "{c}");
@@ -331,7 +330,7 @@ mod reconnect {
             assert!(steps < 200, "never reconnected");
         }
         assert!(steps >= 10, "only {steps} steps across 1.5 s down");
-        wait_event(&mut shell, NHSHELL_EV_RECONNECTED);
+        wait_event(&mut shell, Kind::Reconnected);
     }
 
     #[test]
@@ -350,28 +349,24 @@ mod reconnect {
             r#"{{"cmd":"key","keycode":{KEY_A},"state":"press"}}"#
         ));
         // the key repeats while held
-        wait_for(&mut shell, |e| {
-            // SAFETY: a KEY record's valid member is `key`.
-            e.kind == NHSHELL_EV_KEY && unsafe { e.u.key.repeat == 1 }
-        });
+        wait_for(
+            &mut shell,
+            |e| matches!(e.event, ShellEvent::Key(k) if k.repeat == 1),
+        );
         restart(&rec, r#"{"cmd":"restart","mode":"gone"}"#);
         let evs = until_reconnecting(&mut shell);
         let release = evs
             .iter()
             .position(|e| {
-                // SAFETY: a BUTTON record's valid member is `pointer`.
-                e.kind == NHSHELL_EV_BUTTON
-                    && unsafe {
-                        e.u.pointer.button == BTN_LEFT
-                            && e.u.pointer.state == NHSHELL_BUTTON_RELEASED
-                    }
+                matches!(e.event, ShellEvent::Button(p)
+                    if p.button == BTN_LEFT && p.state == NHSHELL_BUTTON_RELEASED)
             })
             .expect("the held button is released at the loss");
         assert_eq!(evs[release].window, w);
         // no repeat after the loss
         let after = collect(&mut shell, 1000);
         assert!(
-            after.iter().all(|e| e.kind != NHSHELL_EV_KEY),
+            after.iter().all(|e| e.kind() != Kind::Key),
             "a key record after RECONNECTING"
         );
     }
@@ -386,9 +381,8 @@ mod reconnect {
         restart(&rec, r#"{"cmd":"restart","mode":"keep-socket"}"#);
         until_reconnecting(&mut shell);
         reconnect_within(&mut shell, 3);
-        let ev = wait_event(&mut shell, NHSHELL_EV_CONFIGURE);
-        // SAFETY: a CONFIGURE record carries `configure`.
-        let serial = unsafe { ev.u.configure }.serial;
+        let ev = wait_event(&mut shell, Kind::Configure);
+        let serial = common::configure_of(&ev).serial;
         shell.ack_configure(w, serial, NHSHELL_ACK_CONTENT).unwrap();
         // every slot counts as released: the buffer drawn before the loss comes back with its pixels, nothing drawn
         let b = shell.present_begin(w, 64, 48).unwrap();
@@ -583,11 +577,11 @@ mod reconnect {
         let evs = restart_and_reconnect(&rec, &mut shell);
         let done: Vec<u64> = evs
             .iter()
-            .filter(|e| e.kind == NHSHELL_EV_POPUP_DONE)
+            .filter(|e| e.kind() == Kind::PopupDone)
             .map(|e| e.window)
             .collect();
         assert_eq!(done, [c, b, a], "topmost first");
-        assert_eq!(evs.last().unwrap().kind, NHSHELL_EV_RECONNECTED);
+        assert_eq!(evs.last().unwrap().kind(), Kind::Reconnected);
         // the records are gone: destroying one has nothing to do
         assert_eq!(shell.window_destroy(a), Err(ShellError::State));
         let cfg = configure_of(&mut shell, top);
@@ -603,7 +597,7 @@ mod reconnect {
             std::thread::sleep(Duration::from_millis(10));
         }
         for ev in collect(&mut shell, 200) {
-            assert_ne!(ev.kind, NHSHELL_EV_DISCONNECTED, "a protocol error");
+            assert_ne!(ev.kind(), Kind::Disconnected, "a protocol error");
         }
         assert_eq!(shell.last_error(), "");
         assert_eq!(
@@ -805,9 +799,8 @@ mod reconnect {
         let rec = Recorder::start("mutter");
         let mut shell = open(&rec);
         shell.session_open(None, NHSHELL_SESSION_LAUNCH).unwrap();
-        let ev = wait_event(&mut shell, NHSHELL_EV_SESSION);
-        // SAFETY: a SESSION record carries `session`.
-        assert_eq!(unsafe { ev.u.session }.state, NHSHELL_SESSION_CREATED);
+        let ev = wait_event(&mut shell, Kind::Session);
+        assert!(matches!(ev.event, ShellEvent::Session(s) if s.state == NHSHELL_SESSION_CREATED));
         let id = shell.session_id().unwrap();
         let w = shell
             .window_new_named(
@@ -827,9 +820,8 @@ mod reconnect {
             .unwrap();
         draw(&mut shell, w, 300, 200);
         restart_and_reconnect(&rec, &mut shell);
-        let ev = wait_event(&mut shell, NHSHELL_EV_SESSION);
-        // SAFETY: as above.
-        assert_eq!(unsafe { ev.u.session }.state, NHSHELL_SESSION_RESTORED);
+        let ev = wait_event(&mut shell, Kind::Session);
+        assert!(matches!(ev.event, ShellEvent::Session(s) if s.state == NHSHELL_SESSION_RESTORED));
         assert_eq!(shell.session_id().unwrap(), id);
         let log = rec.control(r#"{"cmd":"session_log"}"#);
         // the reply's keys are sorted: an entry's fields before its "op" and its "reason" after it
@@ -860,12 +852,12 @@ mod reconnect {
         let w = mapped_window(&mut shell, 200, 150);
         focus(&rec, &mut shell, w);
         rec.control_ok(r#"{"cmd":"pointer","pos":[5,5]}"#);
-        wait_event(&mut shell, NHSHELL_EV_POINTER_ENTER);
+        wait_event(&mut shell, Kind::PointerEnter);
         rec.control_ok(r#"{"cmd":"button","button":272,"state":"press"}"#);
-        wait_for(&mut shell, |e| {
-            // SAFETY: a BUTTON record carries `pointer`.
-            e.kind == NHSHELL_EV_BUTTON && unsafe { e.u.pointer }.state == NHSHELL_BUTTON_PRESSED
-        });
+        wait_for(
+            &mut shell,
+            |e| matches!(e.event, ShellEvent::Button(p) if p.state == NHSHELL_BUTTON_PRESSED),
+        );
         shell
             .drag_start(
                 w,
@@ -874,16 +866,15 @@ mod reconnect {
             )
             .unwrap();
         rec.control_ok(r#"{"cmd":"pointer","pos":[30,30]}"#);
-        let enter = wait_event(&mut shell, NHSHELL_EV_DND_ENTER);
+        let enter = wait_event(&mut shell, Kind::DndEnter);
         assert_eq!(enter.window, w);
         restart(&rec, r#"{"cmd":"restart","mode":"keep-socket"}"#);
         let evs = until_reconnecting(&mut shell);
-        let at = |kind: u32| evs.iter().position(|e| e.kind == kind);
-        let leave = at(NHSHELL_EV_DND_LEAVE).expect("the drop leaves");
-        let done = at(NHSHELL_EV_DRAG_DONE).expect("the drag ends");
+        let at = |kind: Kind| evs.iter().position(|e| e.kind() == kind);
+        let leave = at(Kind::DndLeave).expect("the drop leaves");
+        let done = at(Kind::DragDone).expect("the drag ends");
         assert_eq!(evs[leave].window, w);
-        // SAFETY: drag-and-drop records carry `dnd`.
-        assert_eq!(unsafe { evs[done].u.dnd }.ok, 0);
+        assert!(matches!(evs[done].event, ShellEvent::DragDone(d) if d.ok == 0));
         assert!(leave < done && done < evs.len() - 1);
         reconnect_within(&mut shell, 3);
         assert!(!shell.selection_owned(NHSHELL_SEL_DND).unwrap());

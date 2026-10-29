@@ -54,10 +54,9 @@ fn window(shell: &mut WaylandShell, b: &mut Backing) -> u64 {
             flags: 0,
         })
         .unwrap();
-    let ev = wait_for(shell, |e| e.kind == NHSHELL_EV_CONFIGURE);
-    // SAFETY: a CONFIGURE record carries `configure`.
+    let ev = wait_for(shell, |e| e.kind() == Kind::Configure);
     shell
-        .ack_configure(id, unsafe { ev.u.configure }.serial, NHSHELL_ACK_CONTENT)
+        .ack_configure(id, configure_of(&ev).serial, NHSHELL_ACK_CONTENT)
         .unwrap();
     b.fill_all(BG);
     assert!(publish(shell, id, &[(&*b, id)], 0));
@@ -172,7 +171,7 @@ mod publish {
         assert_eq!(shell.presenter_stats().unwrap().superseded, 2);
         present(&rec);
         wait_for(&mut shell, |e| {
-            e.kind == NHSHELL_EV_FRAME_READY && e.window == id
+            e.kind() == Kind::FrameReady && e.window == id
         });
         std::thread::sleep(Duration::from_millis(100));
         while shell.next_event().unwrap().is_some() {}
@@ -233,7 +232,7 @@ mod publish {
         let r =
             rec.control(r#"{"cmd":"configure","surface":"focused","size":[300,150],"states":[]}"#);
         let serial = number(&r, "serial").expect("a serial") as u32;
-        wait_for(&mut shell, |e| e.kind == NHSHELL_EV_CONFIGURE);
+        wait_for(&mut shell, |e| e.kind() == Kind::Configure);
         shell
             .ack_configure(id, serial, NHSHELL_ACK_CONTENT)
             .unwrap();

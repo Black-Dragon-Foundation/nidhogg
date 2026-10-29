@@ -62,10 +62,9 @@ fn window(shell: &mut WaylandShell) -> u64 {
             flags: 0,
         })
         .unwrap();
-    let ev = wait_for(shell, |e| e.kind == NHSHELL_EV_CONFIGURE);
-    // SAFETY: a CONFIGURE record carries `configure`.
+    let ev = wait_for(shell, |e| e.kind() == Kind::Configure);
     shell
-        .ack_configure(id, unsafe { ev.u.configure }.serial, NHSHELL_ACK_CONTENT)
+        .ack_configure(id, configure_of(&ev).serial, NHSHELL_ACK_CONTENT)
         .unwrap();
     id
 }
@@ -113,7 +112,7 @@ fn configure_acked(
         size.0, size.1
     ));
     let serial = number(&r, "serial").expect("a serial") as u32;
-    wait_for(shell, |e| e.kind == NHSHELL_EV_CONFIGURE);
+    wait_for(shell, |e| e.kind() == Kind::Configure);
     shell.ack_configure(id, serial, flags).unwrap();
     serial
 }
@@ -180,7 +179,7 @@ mod pacer {
         assert!(waiting(&shell, id));
         assert_eq!(outstanding(&rec).0, 1);
         reconfigure(&mut shell, &rec, id, "");
-        wait_for(&mut shell, |e| e.kind == NHSHELL_EV_FRAME_READY);
+        wait_for(&mut shell, |e| e.kind() == Kind::FrameReady);
         assert!(!shell.present_tree(id).unwrap());
         shell.flush().unwrap();
         until(&mut shell, "the re-armed callback", |_| {
@@ -210,7 +209,7 @@ mod pacer {
         assert!(!ready(&mut shell, id), "suspended: content waits");
         while shell.next_event().unwrap().is_some() {}
         reconfigure(&mut shell, &rec, id, "");
-        wait_for(&mut shell, |e| e.kind == NHSHELL_EV_FRAME_READY);
+        wait_for(&mut shell, |e| e.kind() == Kind::FrameReady);
         draw(&mut shell, id, &[]);
         shell.window_dirty(id).unwrap();
         assert!(ready(&mut shell, id), "suspension ended");
@@ -239,7 +238,7 @@ mod pacer {
         shell.window_dirty(id).unwrap();
         assert!(!ready(&mut shell, id), "starved");
         rec.control(r#"{"cmd":"release"}"#);
-        wait_for(&mut shell, |e| e.kind == NHSHELL_EV_FRAME_READY);
+        wait_for(&mut shell, |e| e.kind() == Kind::FrameReady);
         assert!(!starved(&shell, id));
         assert!(ready(&mut shell, id));
     }
@@ -312,7 +311,7 @@ mod pacer {
         let deadline = Instant::now() + Duration::from_millis(300);
         while Instant::now() < deadline {
             while let Some(e) = shell.next_event().unwrap() {
-                posted += usize::from(e.kind == NHSHELL_EV_FRAME_READY && e.window == id);
+                posted += usize::from(e.kind() == Kind::FrameReady && e.window == id);
             }
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -408,7 +407,7 @@ mod pacer {
         });
         assert!(!acked(&log_since(&rec, seq), serial), "no bare ack");
         rec.control(r#"{"cmd":"release"}"#);
-        wait_for(&mut shell, |e| e.kind == NHSHELL_EV_FRAME_READY);
+        wait_for(&mut shell, |e| e.kind() == Kind::FrameReady);
         let b = bits(&mut shell, id);
         assert_ne!(b & NHSHELL_READY_CONTENT, 0);
         assert_ne!(
@@ -442,7 +441,7 @@ mod pacer {
         assert!(shell.present_begin(id, 200, 100).is_err(), "all three busy");
         while shell.next_event().unwrap().is_some() {}
         rec.control(r#"{"cmd":"release"}"#);
-        wait_for(&mut shell, |e| e.kind == NHSHELL_EV_FRAME_READY);
+        wait_for(&mut shell, |e| e.kind() == Kind::FrameReady);
         assert_eq!(bits(&mut shell, id), NHSHELL_READY_CONTENT);
     }
 
@@ -495,14 +494,14 @@ mod pacer {
         while shell.next_event().unwrap().is_some() {}
         shell.window_dirty(id).unwrap();
         present(&rec);
-        wait_for(&mut shell, |e| e.kind == NHSHELL_EV_FRAME_READY);
+        wait_for(&mut shell, |e| e.kind() == Kind::FrameReady);
         assert_ne!(bits(&mut shell, id) & NHSHELL_READY_CONTENT, 0);
         // the host decided on "nothing": a second ask finds nothing, and no record follows
         assert_eq!(bits(&mut shell, id), 0);
         assert!(
             collect(&mut shell, 300)
                 .iter()
-                .all(|e| e.kind != NHSHELL_EV_FRAME_READY)
+                .all(|e| e.kind() != Kind::FrameReady)
         );
     }
 }

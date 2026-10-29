@@ -28,7 +28,7 @@ pub struct TouchState {
     /// The live points, in the order they went down.
     points: Vec<Point>,
     /// The records of the frame in progress.
-    queued: Vec<NhShellEvent>,
+    queued: Vec<Record>,
 }
 
 /// Follow the seat's touch capability (called from the seat's handler).  A touch device that goes away cancels its
@@ -52,10 +52,9 @@ pub fn seat_capabilities(
     }
 }
 
-fn record(window: u64, time: u32, id: i32, op: u32, x: f64, y: f64) -> NhShellEvent {
-    let mut ev = NhShellEvent::new(NHSHELL_EV_TOUCH, window, u64::from(time) * 1_000_000);
-    ev.u.touch = TouchEv { id, op, x, y };
-    ev
+fn record(window: u64, time: u32, id: i32, op: u32, x: f64, y: f64) -> Record {
+    let t = TouchEv { id, op, x, y };
+    Record::new(ShellEvent::Touch(t), window, u64::from(time) * 1_000_000)
 }
 
 /// Drop the frame in progress and end every live point the host has heard of as cancelled.

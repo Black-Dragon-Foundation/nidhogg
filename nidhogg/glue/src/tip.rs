@@ -17,7 +17,7 @@ use nhshell::api::{
     ChildDesc, NHSHELL_ADJUST_FLIP_X, NHSHELL_ADJUST_FLIP_Y, NHSHELL_ADJUST_SLIDE_X,
     NHSHELL_ADJUST_SLIDE_Y, NHSHELL_KIND_POPUP, NHSHELL_WIN_UNDECORATED,
 };
-use nhshell::event::NhShellEvent;
+use nhshell::event::Record;
 
 /// `DELETE` flags: the compositor dismissed a tip's popup (its window is to go at once, the frame stays to Lisp).
 pub const NHG_DEL_TIP: u32 = 1;
@@ -103,7 +103,7 @@ pub fn hide(state: &mut Display, window: u64) -> Result<(), GlueError> {
 
 /// A `POPUP_DONE` of a tip's window: a `DELETE` action flagged `NHG_DEL_TIP`.  `false` for another window's (a popup
 /// frame's, still C's).
-pub fn popup_done(state: &mut Display, ev: &NhShellEvent) -> bool {
+pub fn popup_done(state: &mut Display, ev: &Record) -> bool {
     match state.frame(ev.window) {
         Ok(f) if f.flags & NHG_FRAME_TIP != 0 => {
             let mut a = NhgAction::new(NHG_ACT_DELETE, ev.window, ev.time_ns);

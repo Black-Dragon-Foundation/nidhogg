@@ -347,28 +347,19 @@ impl KeyboardState {
         }
     }
 
-    pub fn modifiers(&mut self, d: u32, l: u32, k: u32, group: u32, out: &mut Vec<NhShellEvent>) {
+    pub fn modifiers(&mut self, d: u32, l: u32, k: u32, group: u32, out: &mut Vec<Record>) {
         let Some(x) = self.xkb.as_mut() else { return };
         x.update_mask(d, l, k, group);
         let mods = x.mods();
         if mods != self.last_mods {
             self.last_mods = mods;
-            let mut ev = NhShellEvent::new(NHSHELL_EV_MODIFIERS, self.focus, 0);
-            ev.u.key = KeyEv {
-                keycode: 0,
-                keysym: 0,
-                mods,
-                pressed: 0,
-                repeat: 0,
-                utf8: [0; 16],
-            };
-            out.push(ev);
+            out.push(Record::new(ShellEvent::Modifiers { mods }, self.focus, 0));
         }
     }
 
     /// `wl_keyboard.key`, pressed or released (the seat is bound at version 9: no `repeated` state, the repeat is
     /// ours).
-    pub fn key(&mut self, time_ms: u32, evdev: u32, pressed: bool, out: &mut Vec<NhShellEvent>) {
+    pub fn key(&mut self, time_ms: u32, evdev: u32, pressed: bool, out: &mut Vec<Record>) {
         let Some(x) = self.xkb.as_mut() else { return };
         let Some(k) = x.key(evdev, pressed) else {
             return;
@@ -381,9 +372,11 @@ impl KeyboardState {
             repeat: 0,
             utf8: k.utf8,
         };
-        let mut ev = NhShellEvent::new(NHSHELL_EV_KEY, self.focus, u64::from(time_ms) * 1_000_000);
-        ev.u.key = key;
-        out.push(ev);
+        out.push(Record::new(
+            ShellEvent::Key(key),
+            self.focus,
+            u64::from(time_ms) * 1_000_000,
+        ));
         if pressed && x.repeats(evdev) {
             self.repeat.press(evdev, now_ms());
             self.held = Some(key);
@@ -397,7 +390,7 @@ impl KeyboardState {
     }
 
     /// The timerfd fired: post the repeat that is due, unless the previous one is still unread.
-    pub fn on_timer(&mut self, shared: &Shared, out: &mut Vec<NhShellEvent>) {
+    pub fn on_timer(&mut self, shared: &Shared, out: &mut Vec<Record>) {
         if let Some(fd) = &self.timer {
             let mut buf = [0u8; 8];
             // SAFETY: reads at most 8 bytes into `buf`; a nonblocking timerfd.
@@ -411,9 +404,12 @@ impl KeyboardState {
         if let (Some(key), Some(held)) = (self.repeat.tick(now, unread), self.held)
             && held.keycode == key
         {
-            let mut ev = NhShellEvent::new(NHSHELL_EV_KEY, self.focus, now * 1_000_000);
-            ev.u.key = KeyEv { repeat: 1, ..held };
-            out.push(ev);
+            let key = KeyEv { repeat: 1, ..held };
+            out.push(Record::new(
+                ShellEvent::Key(key),
+                self.focus,
+                now * 1_000_000,
+            ));
         }
         self.rearm();
     }

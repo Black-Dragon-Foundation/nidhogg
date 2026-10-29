@@ -122,11 +122,10 @@ fn window(shell: &mut WaylandShell, rec: &Recorder, b: &mut Backing) -> u64 {
             flags: 0,
         })
         .unwrap();
-    let ev = wait_for(shell, |e| e.kind == NHSHELL_EV_CONFIGURE && e.window == id);
+    let ev = wait_for(shell, |e| e.kind() == Kind::Configure && e.window == id);
     let seq = next_seq(rec);
-    // SAFETY: a CONFIGURE record carries `configure`.
     shell
-        .ack_configure(id, unsafe { ev.u.configure }.serial, NHSHELL_ACK_CONTENT)
+        .ack_configure(id, configure_of(&ev).serial, NHSHELL_ACK_CONTENT)
         .unwrap();
     b.fill_all(BG);
     assert!(publish(shell, id, &[(&*b, id)], 0));

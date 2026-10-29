@@ -5,7 +5,6 @@
 
 use crate::api::*;
 use crate::caps::NhShellCaps;
-use crate::event::NhShellEvent;
 use glitnir::geom::Rect;
 use std::ffi::{CStr, c_char};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -177,23 +176,6 @@ pub unsafe extern "C" fn nhshell_caps(sh: *mut NhShell, out: *mut NhShellCaps) -
         // SAFETY: `out` is null or writable.
         |b| unsafe { put(out, b.caps()) },
         |()| NHSHELL_OK,
-    )
-}
-
-/// Take the next event into `*out`: 1 got one, 0 the queue is empty, negative on error.
-///
-/// # Safety
-/// `sh` is a live handle; `out` is null or writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn nhshell_next_event(sh: *mut NhShell, out: *mut NhShellEvent) -> i32 {
-    guard(
-        sh,
-        |b| match b.next_event()? {
-            // SAFETY: `out` is null or writable.
-            Some(ev) => unsafe { put(out, ev) }.map(|()| 1),
-            None => Ok(0),
-        },
-        |n| n,
     )
 }
 

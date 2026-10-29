@@ -13,10 +13,9 @@ use nhglue::ffi::*;
 use nhglue::guard::GlueError;
 use nhglue::present::{NHG_SURF_DRAWABLE, NhgSurface};
 use nhglue::query::{Monitors, NhgMonitor};
-use nhshell::api::{NHSHELL_ACK_CONTENT, NHSHELL_SEL_CLIPBOARD};
+use nhshell::api::{NHSHELL_ACK_CONTENT, NHSHELL_SEL_CLIPBOARD, ShellBackend, WindowDesc};
 use nhshell::caps::NhShellCaps;
-use nhshell::event::{NHSHELL_EV_CONFIGURE, NHSHELL_EV_FOCUS, NhShellEvent};
-use nhshell::ffi::{NhShellWindowDesc, nhshell_next_event, nhshell_wake_fd, nhshell_window_new};
+use nhshell::event::{Record, ShellEvent};
 use rustix::process::Signal;
 use std::ptr;
 use std::sync::Mutex;
@@ -37,17 +36,18 @@ fn d_ref<'a>(d: *mut NhgDisplay) -> &'a NhgDisplay {
     unsafe { &*d }
 }
 
+/// The shell inside `d`, for what the glue does not wrap (windows, records).
+fn shell<'a>(d: *mut NhgDisplay) -> &'a mut dyn ShellBackend {
+    // SAFETY: a live display's shell handle, used only between glue calls.
+    unsafe { (*nhg_shell(d)).backend_mut() }
+}
+
 /// Take the shell's records until one satisfies `want` (3 s at most); false when none did.
-fn wait_record(d: *mut NhgDisplay, mut want: impl FnMut(&NhShellEvent) -> bool) -> bool {
-    // SAFETY: a live display and its handle.
-    let sh = unsafe { nhg_shell(d) };
+fn wait_record(d: *mut NhgDisplay, mut want: impl FnMut(&Record) -> bool) -> bool {
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
-        // SAFETY: the handle is live.
-        readable_within(unsafe { nhshell_wake_fd(sh) }, 20);
-        let mut ev = NhShellEvent::new(0, 0, 0);
-        // SAFETY: the handle is live; `ev` is writable.
-        while unsafe { nhshell_next_event(sh, &mut ev) } == 1 {
+        readable_within(shell(d).wake_fd(), 20);
+        while let Ok(Some(ev)) = shell(d).next_event() {
             if want(&ev) {
                 return true;
             }
@@ -89,32 +89,25 @@ fn clears(d: *mut NhgDisplay, ms: u64) -> Vec<i32> {
 
 /// A window of the display, registered, and (when `focus`) holding the keyboard focus.
 fn window(rec: &Recorder, d: *mut NhgDisplay, focus: bool) -> u64 {
-    let desc = NhShellWindowDesc {
-        w: 200,
-        h: 100,
-        title: c"select".as_ptr(),
-        app_id: c"select".as_ptr(),
-        flags: 0,
-        kind: 0,
-        parent: 0,
-        x: 0,
-        y: 0,
-        anchor: Default::default(),
-        session_name: ptr::null(),
-    };
-    let mut id = 0u64;
-    // SAFETY: a live display and its handle; the strings are NUL-terminated.
-    unsafe {
-        assert_eq!(nhshell_window_new(nhg_shell(d), &desc, &mut id), 0);
-        assert_eq!(nhg_frame_register(d, id, 0), NHG_OK);
-    }
+    let id = shell(d)
+        .window_new(&WindowDesc {
+            w: 200,
+            h: 100,
+            title: "select".into(),
+            app_id: "select".into(),
+            flags: 0,
+        })
+        .unwrap();
+    // SAFETY: a live display.
+    assert_eq!(unsafe { nhg_frame_register(d, id, 0) }, NHG_OK);
     if focus {
         let reply = rec.control_ok(&format!(r#"{{"cmd":"focus","surface":{id}}}"#));
         assert!(reply.contains("\"ok\":true"), "{reply}");
-        // SAFETY: a FOCUS record's valid member is `focus`.
         assert!(
-            wait_record(d, |e| e.kind == NHSHELL_EV_FOCUS
-                && unsafe { e.u.focus.r#in } == 1),
+            wait_record(
+                d,
+                |e| matches!(e.event, ShellEvent::Focus(f) if f.r#in == 1)
+            ),
             "keyboard focus"
         );
     }
@@ -372,9 +365,8 @@ mod bench {
         // map the window: its first configure acked with the buffer that carries it
         let mut serial = None;
         assert!(wait_record(d, |e| {
-            if e.kind == NHSHELL_EV_CONFIGURE {
-                // SAFETY: a CONFIGURE record carries `configure`.
-                serial = Some(unsafe { e.u.configure }.serial);
+            if let ShellEvent::Configure(c) = e.event {
+                serial = Some(c.serial);
             }
             serial.is_some()
         }));

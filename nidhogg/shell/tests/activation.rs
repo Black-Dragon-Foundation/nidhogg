@@ -97,7 +97,7 @@ fn readable_within(fd: i32, ms: i64) -> bool {
 }
 
 /// The next record satisfying `want` within 3 s; other records are dropped.
-fn wait_for(shell: &mut WaylandShell, want: impl Fn(&NhShellEvent) -> bool) -> NhShellEvent {
+fn wait_for(shell: &mut WaylandShell, want: impl Fn(&Record) -> bool) -> Record {
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         while let Some(ev) = shell.next_event().unwrap() {
@@ -123,7 +123,7 @@ fn setup() -> (Recorder, WaylandShell, u64) {
             flags: 0,
         })
         .unwrap();
-    wait_for(&mut shell, |e| e.kind == NHSHELL_EV_CONFIGURE);
+    wait_for(&mut shell, |e| e.kind() == Kind::Configure);
     assert!(
         rec.control(r#"{"cmd":"focus","surface":"toplevel"}"#)
             .contains("\"ok\":true")
@@ -136,7 +136,7 @@ fn setup() -> (Recorder, WaylandShell, u64) {
 fn issued_token(rec: &Recorder, shell: &mut WaylandShell, id: u64) -> String {
     rec.control(r#"{"cmd":"pointer","pos":[10,10]}"#);
     rec.control(r#"{"cmd":"button","button":272,"state":"press"}"#);
-    wait_for(shell, |e| e.kind == NHSHELL_EV_BUTTON);
+    wait_for(shell, |e| e.kind() == Kind::Button);
     shell.window_activate(id, None).unwrap();
     let log = rec.activations_with(shell, &format!(r#"{{"surface":{id},"token":""#));
     let at = log.find(r#""token":""#).unwrap() + r#""token":""#.len();

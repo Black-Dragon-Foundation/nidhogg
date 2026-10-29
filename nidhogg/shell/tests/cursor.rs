@@ -91,11 +91,11 @@ fn readable_within(fd: i32, ms: i64) -> bool {
 }
 
 /// The next record of `kind` within 3 s; other records are dropped.
-fn wait_event(shell: &mut WaylandShell, kind: u32) -> NhShellEvent {
+fn wait_event(shell: &mut WaylandShell, kind: Kind) -> Record {
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         while let Some(ev) = shell.next_event().unwrap() {
-            if ev.kind == kind {
+            if ev.kind() == kind {
                 return ev;
             }
         }
@@ -118,13 +118,13 @@ fn setup(profile: &str) -> (Recorder, WaylandShell, u64) {
             flags: 0,
         })
         .unwrap();
-    wait_event(&mut shell, NHSHELL_EV_CONFIGURE);
+    wait_event(&mut shell, Kind::Configure);
     assert!(
         rec.control(r#"{"cmd":"focus","surface":"toplevel"}"#)
             .contains("\"ok\":true")
     );
     rec.control(r#"{"cmd":"pointer","pos":[10,10]}"#);
-    wait_event(&mut shell, NHSHELL_EV_POINTER_ENTER);
+    wait_event(&mut shell, Kind::PointerEnter);
     (rec, shell, id)
 }
 
@@ -230,7 +230,7 @@ mod cursor {
 
         // a scale change loads the theme again at the new size
         rec.control(r#"{"cmd":"scale","value120":240}"#);
-        wait_event(&mut shell, NHSHELL_EV_SCALE);
+        wait_event(&mut shell, Kind::Scale);
         shell.set_cursor(id, NHSHELL_CURSOR_TEXT).unwrap();
         wait_reply(&rec, r#"{"cmd":"log","since":1}"#, |_| {
             cursor_commits(&rec).len() > 1

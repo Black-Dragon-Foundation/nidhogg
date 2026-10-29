@@ -85,13 +85,12 @@ impl DropOffer {
         self.data().map_or(0, |d| d.action.load(Ordering::Acquire))
     }
 
-    fn record(&self, kind: u32) -> NhShellEvent {
+    fn record(&self, kind: fn(DndEv) -> ShellEvent) -> Record {
         let source_actions = self
             .data()
             .map_or(0, |d| d.source_actions.load(Ordering::Acquire));
         let action = self.action();
-        let mut ev = NhShellEvent::new(kind, self.window, u64::from(self.time_ms) * 1_000_000);
-        ev.u.dnd = DndEv {
+        let d = DndEv {
             x: self.x,
             y: self.y,
             source_actions,
@@ -101,7 +100,7 @@ impl DropOffer {
             own: u8::from(self.own),
             ok: 0,
         };
-        ev
+        Record::new(kind(d), self.window, u64::from(self.time_ms) * 1_000_000)
     }
 }
 
@@ -123,14 +122,13 @@ struct Drag {
     action: u32,
 }
 
-fn drag_record(kind: u32, window: u64, action: u32, ok: bool) -> NhShellEvent {
-    let mut ev = NhShellEvent::new(kind, window, 0);
-    ev.u.dnd = DndEv {
+fn drag_record(kind: fn(DndEv) -> ShellEvent, window: u64, action: u32, ok: bool) -> Record {
+    let d = DndEv {
         action,
         ok: u8::from(ok),
         ..DndEv::default()
     };
-    ev
+    Record::new(kind(d), window, 0)
 }
 
 /// Both sides of drag and drop (`Selections::dnd`).
@@ -201,21 +199,21 @@ impl Dnd {
 /// The connection hung up and the shell reconnects: a drag over one of our surfaces leaves, as the compositor would
 /// have said, unless it already dropped (the host finishes that one, and its finish fails).  `Shared::reconnecting`
 /// posts the record before `RECONNECTING`.
-pub fn drop_lost(shared: &Shared) -> Option<NhShellEvent> {
+pub fn drop_lost(shared: &Shared) -> Option<Record> {
     let mut sel = selection::lock(shared);
     let dnd = &mut sel.dnd;
     dnd.over = false;
     dnd.sync_dragging(shared);
     let o = dnd.offer.take_if(|o| !o.dropped)?;
-    Some(o.record(NHSHELL_EV_DND_LEAVE))
+    Some(o.record(ShellEvent::DndLeave))
 }
 
 /// The display is lost: our drag ends as cancelled.  `Shared::close` posts the record before `DISCONNECTED`.
-pub fn drag_lost(shared: &Shared) -> Option<NhShellEvent> {
+pub fn drag_lost(shared: &Shared) -> Option<Record> {
     let mut sel = selection::lock(shared);
     let drag = sel.dnd.drag.take()?;
     sel.dnd.sync_dragging(shared);
-    Some(drag_record(NHSHELL_EV_DRAG_DONE, drag.window, 0, false))
+    Some(drag_record(ShellEvent::DragDone, drag.window, 0, false))
 }
 
 /// The reader's side: the data device's drag events and our source's.
@@ -255,7 +253,7 @@ impl ReaderState {
             actions_set: false,
             dropped: false,
         };
-        let ev = o.record(NHSHELL_EV_DND_ENTER);
+        let ev = o.record(ShellEvent::DndEnter);
         dnd.offer = Some(o);
         drop(sel);
         self.post(ev);
@@ -278,7 +276,7 @@ impl ReaderState {
             return;
         };
         (o.x, o.y, o.time_ms) = (x, y, time);
-        let ev = o.record(NHSHELL_EV_DND_MOTION);
+        let ev = o.record(ShellEvent::DndMotion);
         drop(sel);
         self.post(ev);
     }
@@ -293,7 +291,7 @@ impl ReaderState {
         let Some(o) = dnd.offer.take_if(|o| !o.dropped) else {
             return;
         };
-        let ev = o.record(NHSHELL_EV_DND_LEAVE);
+        let ev = o.record(ShellEvent::DndLeave);
         o.offer.destroy();
         drop(sel);
         self.post(ev);
@@ -307,7 +305,7 @@ impl ReaderState {
         dnd.sync_dragging(&shared);
         let Some(o) = dnd.offer.as_mut() else { return };
         o.dropped = true;
-        let ev = o.record(NHSHELL_EV_DND_DROP);
+        let ev = o.record(ShellEvent::DndDrop);
         drop(sel);
         self.post(ev);
     }
@@ -332,10 +330,10 @@ impl ReaderState {
             }
             wl_data_source::Event::Action { dnd_action } => {
                 drag.action = bits(dnd_action);
-                drag_record(NHSHELL_EV_DRAG_ACTION, drag.window, drag.action, false)
+                drag_record(ShellEvent::DragAction, drag.window, drag.action, false)
             }
             wl_data_source::Event::DndDropPerformed => {
-                drag_record(NHSHELL_EV_DRAG_DROPPED, drag.window, drag.action, false)
+                drag_record(ShellEvent::DragDropped, drag.window, drag.action, false)
             }
             wl_data_source::Event::DndFinished => dnd.drag_end(&shared, true),
             wl_data_source::Event::Cancelled => dnd.drag_end(&shared, false),
@@ -348,14 +346,14 @@ impl ReaderState {
 
 impl Dnd {
     /// Our drag ended (finished or cancelled): its source goes, and the one `DRAG_DONE`.
-    fn drag_end(&mut self, shared: &Shared, ok: bool) -> NhShellEvent {
+    fn drag_end(&mut self, shared: &Shared, ok: bool) -> Record {
         let drag = self.drag.take();
         self.sync_dragging(shared);
         let (window, action) = drag.map_or((0, 0), |d| {
             d.source.destroy();
             (d.window, if ok { d.action } else { 0 })
         });
-        drag_record(NHSHELL_EV_DRAG_DONE, window, action, ok)
+        drag_record(ShellEvent::DragDone, window, action, ok)
     }
 }
 

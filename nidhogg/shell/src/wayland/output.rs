@@ -1,9 +1,7 @@
 //! Outputs: `wl_output` (v4, with names) on the main queue; `OUTPUT_ADD` when an output is complete (each `done`) and
 //! `OUTPUT_REMOVE` when its global goes away.  An output's id is its registry name.
 
-use crate::event::{
-    NHSHELL_EV_OUTPUT_ADD, NHSHELL_EV_OUTPUT_CHANGE, NHSHELL_EV_OUTPUT_REMOVE, NhShellEvent,
-};
+use crate::event::{OutputEv, Record, ShellEvent};
 use crate::wayland::MainState;
 use wayland_client::protocol::wl_output::{self, Mode, WlOutput};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum};
@@ -49,7 +47,7 @@ impl Output {
 
 impl MainState {
     /// Post a record and wake the host (this runs on the host's thread, inside a dispatch).
-    pub(crate) fn post(&self, ev: NhShellEvent) {
+    pub(crate) fn post(&self, ev: Record) {
         if let Some(shared) = &self.shared {
             shared.post(ev);
             shared.wake.signal();
@@ -64,9 +62,11 @@ impl MainState {
         if out.proxy.version() >= 3 {
             out.proxy.release();
         }
-        let mut ev = NhShellEvent::new(NHSHELL_EV_OUTPUT_REMOVE, 0, 0);
-        ev.u.output.id = u64::from(name);
-        self.post(ev);
+        let o = OutputEv {
+            id: u64::from(name),
+            ..OutputEv::default()
+        };
+        self.post(Record::new(ShellEvent::OutputRemove(o), 0, 0));
         let ids: Vec<u64> = self.scales.keys().copied().collect();
         for id in ids {
             if let Some(s) = self.scales.get_mut(&id) {
@@ -130,27 +130,28 @@ impl Dispatch<WlOutput, u32> for MainState {
                 if out.announced.as_ref() == Some(&key) {
                     return;
                 }
-                let kind = if out.announced.is_some() {
-                    NHSHELL_EV_OUTPUT_CHANGE
+                let kind: fn(OutputEv) -> ShellEvent = if out.announced.is_some() {
+                    ShellEvent::OutputChange
                 } else {
-                    NHSHELL_EV_OUTPUT_ADD
+                    ShellEvent::OutputAdd
                 };
                 out.announced = Some(key);
-                let mut ev = NhShellEvent::new(kind, 0, 0);
-                ev.u.output.id = u64::from(*name);
-                ev.u.output.x = out.x;
-                ev.u.output.y = out.y;
-                ev.u.output.w = out.w;
-                ev.u.output.h = out.h;
-                ev.u.output.mm_w = out.mm_w;
-                ev.u.output.mm_h = out.mm_h;
-                ev.u.output.scale120 = out.scale120();
                 let bytes = out.name.as_bytes();
                 let n = bytes.len().min(31);
                 let mut buf = [0u8; 32];
                 buf[..n].copy_from_slice(&bytes[..n]);
-                ev.u.output.name = buf;
-                state.post(ev);
+                let o = OutputEv {
+                    id: u64::from(*name),
+                    x: out.x,
+                    y: out.y,
+                    w: out.w,
+                    h: out.h,
+                    mm_w: out.mm_w,
+                    mm_h: out.mm_h,
+                    scale120: out.scale120(),
+                    name: buf,
+                };
+                state.post(Record::new(kind(o), 0, 0));
                 state.recompute_scales_on(*name);
             }
             _ => {}

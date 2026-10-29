@@ -494,20 +494,20 @@ pub fn title_bar(
 /// A pointer event routed through its window's title bar: `true` when the title bar consumed it (its actions are
 /// pushed), `false` when it goes on to C as a raw event, after the actions pushed here.  `false` for a window the glue
 /// does not know.
-pub fn pointer(state: &mut Display, ev: &NhShellEvent) -> bool {
-    match ev.kind {
-        NHSHELL_EV_POINTER_ENTER | NHSHELL_EV_POINTER_MOTION => motion(state, ev),
-        NHSHELL_EV_POINTER_LEAVE => {
+pub fn pointer(state: &mut Display, ev: &Record) -> bool {
+    match ev.event {
+        ShellEvent::PointerEnter(p) | ShellEvent::PointerMotion(p) => motion(state, ev, &p),
+        ShellEvent::PointerLeave(_) => {
             leave(state, ev);
             false
         }
-        NHSHELL_EV_BUTTON => button(state, ev),
+        ShellEvent::Button(p) => button(state, ev, &p),
         _ => false,
     }
 }
 
 /// A `TITLE_BAR` action of `flags` for `ev`'s window.
-fn title_bar_action(ev: &NhShellEvent, flags: u32) -> NhgAction {
+fn title_bar_action(ev: &Record, flags: u32) -> NhgAction {
     let mut a = NhgAction::new(NHG_ACT_TITLE_BAR, ev.window, ev.time_ns);
     a.flags = flags;
     a
@@ -515,12 +515,10 @@ fn title_bar_action(ev: &NhShellEvent, flags: u32) -> NhgAction {
 
 /// The pointer is at a surface point: a button under it is drawn hovered, and over the border it takes the border's
 /// shape there.
-fn motion(state: &mut Display, ev: &NhShellEvent) -> bool {
+fn motion(state: &mut Display, ev: &Record, p: &PointerEv) -> bool {
     let Ok((_, style, f)) = state.csd_parts(ev.window) else {
         return false;
     };
-    // SAFETY: a POINTER_ENTER or POINTER_MOTION record carries `pointer`.
-    let p = unsafe { ev.u.pointer };
     let c = &mut f.csd;
     c.px = p.x;
     c.py = p.y;
@@ -564,7 +562,7 @@ fn motion(state: &mut Display, ev: &NhShellEvent) -> bool {
 }
 
 /// The pointer left the surface: no button is hovered any more.
-fn leave(state: &mut Display, ev: &NhShellEvent) {
+fn leave(state: &mut Display, ev: &Record) {
     let Ok(f) = state.frame_mut(ev.window) else {
         return;
     };
@@ -580,13 +578,11 @@ fn leave(state: &mut Display, ev: &NhShellEvent) {
 /// A pointer button.  A press in the border starts a move or resize (left), the window menu (right), or arms a button
 /// that the release over it fires; the release of a consumed press is consumed too.  A fired close becomes a
 /// `DELETE` action.
-fn button(state: &mut Display, ev: &NhShellEvent) -> bool {
+fn button(state: &mut Display, ev: &Record, p: &PointerEv) -> bool {
     let window = ev.window;
     let Ok((backend, style, f)) = state.csd_parts(window) else {
         return false;
     };
-    // SAFETY: a BUTTON record carries `pointer`.
-    let p = unsafe { ev.u.pointer };
     let states = f.cfg.states;
     let maximized = states & NHSHELL_STATE_MAXIMIZED != 0;
     let c = &mut f.csd;

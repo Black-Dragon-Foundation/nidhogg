@@ -11,7 +11,7 @@
 use crate::api::{
     NHSHELL_SEL_CLIPBOARD, NHSHELL_SEL_DND, NHSHELL_SEL_PRIMARY, ShellError, ShellResult,
 };
-use crate::event::{NHSHELL_EV_SELECTION, NhShellEvent, SelectionEv};
+use crate::event::{Record, SelectionEv, ShellEvent};
 use crate::wayland::WaylandShell;
 use crate::wayland::clipboard::{OfferTypes, SendBytes, read_with_timeout, receive_pipe, timespec};
 use crate::wayland::conn::Shared;
@@ -228,10 +228,8 @@ fn slot(kind: u32) -> ShellResult<usize> {
     }
 }
 
-fn selection_event(kind: u32) -> NhShellEvent {
-    let mut ev = NhShellEvent::new(NHSHELL_EV_SELECTION, 0, 0);
-    ev.u.selection = SelectionEv { kind };
-    ev
+fn selection_event(kind: u32) -> Record {
+    Record::new(ShellEvent::Selection(SelectionEv { kind }), 0, 0)
 }
 
 /// Bind the two managers and make the seat's devices, all on the reader's queue (`open` calls this).

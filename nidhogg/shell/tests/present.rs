@@ -15,11 +15,11 @@ use nhshell::wayland::WaylandShell;
 use std::time::{Duration, Instant};
 
 /// Whether a matching record arrives within `ms`.
-fn arrives(shell: &mut WaylandShell, ms: u64, kind: u32) -> bool {
+fn arrives(shell: &mut WaylandShell, ms: u64, kind: Kind) -> bool {
     let deadline = Instant::now() + Duration::from_millis(ms);
     loop {
         while let Some(ev) = shell.next_event().unwrap() {
-            if ev.kind == kind {
+            if ev.kind() == kind {
                 return true;
             }
         }
@@ -68,10 +68,9 @@ fn window(shell: &mut WaylandShell) -> u64 {
             flags: 0,
         })
         .unwrap();
-    let ev = wait_for(shell, |e| e.kind == NHSHELL_EV_CONFIGURE);
-    // SAFETY: a CONFIGURE record carries `configure`.
+    let ev = wait_for(shell, |e| e.kind() == Kind::Configure);
     shell
-        .ack_configure(id, unsafe { ev.u.configure }.serial, NHSHELL_ACK_CONTENT)
+        .ack_configure(id, configure_of(&ev).serial, NHSHELL_ACK_CONTENT)
         .unwrap();
     id
 }
@@ -100,10 +99,10 @@ mod present {
             rec.control(r#"{"cmd":"scale","value120":180}"#)
                 .contains("\"ok\":true")
         );
-        wait_for(&mut shell, |e| {
-            // SAFETY: SCALE records carry `scale`.
-            e.kind == NHSHELL_EV_SCALE && unsafe { e.u.scale.scale120 } == 180
-        });
+        wait_for(
+            &mut shell,
+            |e| matches!(e.event, ShellEvent::Scale(s) if s.scale120 == 180),
+        );
         let (w, h) = shell.present_buffer_size(id, 200, 100);
         assert_eq!((w, h), (300, 150));
         // a buffer that was never written is committed whole; the first reuse carries the host's own damage
@@ -161,7 +160,7 @@ mod present {
         );
         present(&rec);
         wait_for(&mut shell, |e| {
-            e.kind == NHSHELL_EV_FRAME_READY && e.window == id
+            e.kind() == Kind::FrameReady && e.window == id
         });
         assert_ne!(
             shell.window_ready(id).unwrap(),
@@ -180,14 +179,15 @@ mod present {
         draw(&mut shell, id, 200, 100, &[Rect::new(0, 0, 10, 10)]);
         wait_buffer_commits(&rec, 1);
         assert!(
-            !arrives(&mut shell, 200, NHSHELL_EV_FRAME_DONE),
+            !arrives(&mut shell, 200, Kind::FrameDone),
             "manual clock: no frame yet"
         );
         present(&rec);
-        let ev = wait_for(&mut shell, |e| e.kind == NHSHELL_EV_FRAME_DONE);
+        let ev = wait_for(&mut shell, |e| e.kind() == Kind::FrameDone);
         assert_eq!(ev.window, id);
-        // SAFETY: FRAME_DONE records carry `frame_done`.
-        let fd = unsafe { ev.u.frame_done };
+        let ShellEvent::FrameDone(fd) = ev.event else {
+            unreachable!()
+        };
         assert_ne!(fd.presented_ns, 0, "the profile has wp_presentation");
         assert!(fd.refresh_ns > 0);
     }
@@ -201,7 +201,7 @@ mod present {
         for _ in 0..2 {
             draw(&mut shell, id, 200, 100, &[Rect::new(0, 0, 10, 10)]);
             present(&rec);
-            wait_for(&mut shell, |e| e.kind == NHSHELL_EV_FRAME_DONE);
+            wait_for(&mut shell, |e| e.kind() == Kind::FrameDone);
         }
         // let the first buffer's release arrive
         std::thread::sleep(Duration::from_millis(200));
@@ -325,7 +325,7 @@ mod present {
                 .rec
                 .control(r#"{"cmd":"configure","surface":"focused","size":[200,100],"states":[]}"#);
             let serial = number(&r, "serial").expect("a serial") as u32;
-            wait_for(&mut self.shell, |e| e.kind == NHSHELL_EV_CONFIGURE);
+            wait_for(&mut self.shell, |e| e.kind() == Kind::Configure);
             self.shell
                 .ack_configure(self.ids[0], serial, flags)
                 .unwrap();
@@ -397,7 +397,7 @@ mod present {
         shell.set_mapped(id, true).unwrap();
         shell.flush().unwrap();
         wait_for(&mut shell, |e| {
-            e.kind == NHSHELL_EV_FRAME_READY && e.window == id
+            e.kind() == Kind::FrameReady && e.window == id
         });
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(callbacks(), 1, "recorded, not sent");

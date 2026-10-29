@@ -13,7 +13,7 @@
 use crate::action::{NHG_ACT_WHEEL, NHG_IN_COALESCE_WHEEL, NhgAction, NhgNextIn};
 use crate::display::Display;
 use crate::guard::GlueError;
-use nhshell::event::NhShellEvent;
+use nhshell::event::{Record, ScrollEv};
 
 /// `WHEEL` flags.  None of them: `w` whole steps, one event each.
 /// A finger or continuous record's own pixel delta (`dx`, `dy`): one event, no steps.
@@ -42,7 +42,7 @@ pub struct Scroll {
 /// A `SCROLL` record: nothing for a window the glue does not know, else a `WHEEL` action when it makes an event.  The
 /// action's `code` is the direction, `w` the number of steps, `dx` and `dy` the pixel delta in device pixels, `mods`
 /// the keyboard's.
-pub fn scroll(state: &mut Display, ev: &NhShellEvent, input: NhgNextIn) {
+pub fn scroll(state: &mut Display, ev: &Record, s: &ScrollEv, input: NhgNextIn) {
     let Ok(f) = state.frame(ev.window) else {
         return;
     };
@@ -52,8 +52,6 @@ pub fn scroll(state: &mut Display, ev: &NhShellEvent, input: NhgNextIn) {
         f64::from(f.scale120) / 120.0
     };
     let (col_w, line_h) = (f.facts.col_w, f.facts.line_h);
-    // SAFETY: a SCROLL record's valid member is `scroll`.
-    let s = unsafe { ev.u.scroll };
     let (px, py) = (s.dx * scale, s.dy * scale);
     let wheel = s.v120x != 0 || s.v120y != 0;
     let horizontal = if wheel {

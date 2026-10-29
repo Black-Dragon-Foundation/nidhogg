@@ -144,16 +144,14 @@ mod keyboard {
         while keys.len() < 2 && Instant::now() < deadline {
             readable_within(shell.wake_fd(), 100);
             while let Some(ev) = shell.next_event().unwrap() {
-                if ev.kind == NHSHELL_EV_KEY {
-                    keys.push(ev);
+                if let ShellEvent::Key(k) = ev.event {
+                    keys.push((ev, k));
                 }
             }
         }
         assert_eq!(keys.len(), 2, "a press and a release");
-        for (ev, pressed) in keys.iter().zip([1u8, 0]) {
+        for ((ev, k), pressed) in keys.iter().zip([1u8, 0]) {
             assert_eq!(ev.window, surface);
-            // SAFETY: a KEY record's valid member is `key`.
-            let k = unsafe { ev.u.key };
             assert_eq!((k.keycode, k.pressed, k.repeat), (KEY_A, pressed, 0));
             assert_eq!(k.keysym, u32::from(b'a'));
             assert_eq!(&k.utf8[..2], b"a\0");

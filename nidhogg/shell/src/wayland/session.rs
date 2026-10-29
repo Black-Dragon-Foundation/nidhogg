@@ -115,7 +115,7 @@ impl Session {
 
 impl WaylandShell {
     /// Open the session: `id` None for a new one, with `reason` `NHSHELL_SESSION_*`.  The answer comes as a
-    /// `NHSHELL_EV_SESSION` record; an open session is dropped first (its saved windows stay with the compositor).
+    /// `Session` record; an open session is dropped first (its saved windows stay with the compositor).
     pub(super) fn session_open_impl(&mut self, id: Option<&str>, reason: u32) -> ShellResult {
         let reason = match reason {
             NHSHELL_SESSION_LAUNCH => Reason::Launch,
@@ -179,9 +179,8 @@ impl Dispatch<XdgSessionV1, ()> for MainState {
             }
         };
         if let Some(shared) = &state.shared {
-            let mut ev = NhShellEvent::new(NHSHELL_EV_SESSION, 0, 0);
-            ev.u.session = SessionEv { state: which };
-            shared.post(ev);
+            let s = SessionEv { state: which };
+            shared.post(Record::new(ShellEvent::Session(s), 0, 0));
         }
     }
 }
