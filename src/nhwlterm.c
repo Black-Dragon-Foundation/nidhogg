@@ -3365,38 +3365,6 @@ nhwl_reconnect_settle (struct nhwl_display_info *dpyinfo,
   return n;
 }
 
-/* The drag out of a frame that nhwl_drag_run waits for: what the glue's
-   NHG_ACT_DRAG_* actions said so far.  One drag runs at a time.  */
-static struct
-{
-  bool live, dropped, done;
-  int action;
-  struct frame *frame;
-} nhwl_drag;
-
-/* Apply the glue's drag-source action A (NHG_ACT_DRAG_*).  */
-static void
-nhwl_drag_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a)
-{
-  switch (a->kind)
-    {
-    case NHG_ACT_DRAG_ACTION:
-      nhwl_drag.live = true;
-      break;
-
-    case NHG_ACT_DRAG_DROPPED:
-      nhwl_drag.live = nhwl_drag.dropped = true;
-      break;
-
-    default:
-      nhwl_drag.done = true;
-      nhwl_drag.action = a->code;
-      nhwl_drag.frame = ((a->flags & NHG_DRAG_FRAME)
-			 ? nhwl_window_to_frame (dpyinfo, a->window) : NULL);
-      break;
-    }
-}
-
 /* Apply action A of the glue's event step, one whose kind is ported: the
    Emacs calls the glue's decision needs.  An action whose window maps to
    no frame is skipped.  Return the number of events stored (through
@@ -3473,7 +3441,7 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
     case NHG_ACT_DRAG_ACTION:
     case NHG_ACT_DRAG_DROPPED:
     case NHG_ACT_DRAG_DONE:
-      nhwl_drag_apply (dpyinfo, a);
+      /* The glue keeps the drag's state; nhwl_drag_run polls it.  */
       return 0;
     }
 
@@ -3646,8 +3614,10 @@ nhwl_drag_run (struct nhwl_display_info *dpyinfo, double timeout,
   struct timespec limit = dtotimespec (timeout);
   struct timespec since = current_timespec ();
   bool dropped = false;
+  int32_t phase = NHG_DRAG_PHASE_WAITING;
+  uint32_t performed = 0;
+  uint64_t win = 0;
 
-  memset (&nhwl_drag, 0, sizeof nhwl_drag);
   *frame = NULL;
   record_unwind_protect_ptr (nhwl_drag_unwind, dpyinfo);
   for (;;)
@@ -3659,16 +3629,25 @@ nhwl_drag_run (struct nhwl_display_info *dpyinfo, double timeout,
       nhwl_drain_events (dpyinfo, &hold);
       if (hold.kind != NO_EVENT)
 	Vquit_flag = Qt;
-      if (nhwl_drag.done || !NILP (Vquit_flag) || dpyinfo->connection_lost
-	  || dpyinfo->glue_broken || !dpyinfo->glue)
+      if (dpyinfo->glue && !dpyinfo->glue_broken)
+	{
+	  block_input ();
+	  phase = nhwl_glue_rc (dpyinfo, NHG (nhg_drag_state (dpyinfo->glue,
+							       &performed,
+							       &win)));
+	  unblock_input ();
+	}
+      if (phase < 0 || phase == NHG_DRAG_PHASE_DONE || !NILP (Vquit_flag)
+	  || dpyinfo->connection_lost || dpyinfo->glue_broken
+	  || !dpyinfo->glue)
 	break;
       /* The finish timeout counts from the drop.  */
-      if (nhwl_drag.dropped && !dropped)
+      if (phase == NHG_DRAG_PHASE_DROPPED && !dropped)
 	{
 	  dropped = true;
 	  since = current_timespec ();
 	}
-      if ((dropped || !nhwl_drag.live)
+      if ((dropped || phase == NHG_DRAG_PHASE_WAITING)
 	  && timespec_cmp (timespec_sub (current_timespec (), since),
 			   limit) >= 0)
 	break;
@@ -3680,10 +3659,10 @@ nhwl_drag_run (struct nhwl_display_info *dpyinfo, double timeout,
   /* Gives a drag the glue still runs up: no DONE follows.  */
   unbind_to (count, Qnil);
   maybe_quit ();
-  if (!nhwl_drag.done)
+  if (phase != NHG_DRAG_PHASE_DONE)
     return 0;
-  *frame = nhwl_drag.frame;
-  return nhwl_drag.action;
+  *frame = win ? nhwl_window_to_frame (dpyinfo, win) : NULL;
+  return performed;
 }
 
 /* The reports of the glue's panics, newest first, for

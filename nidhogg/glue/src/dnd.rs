@@ -271,9 +271,35 @@ pub struct DragOut {
     over: u64,
     /// The action the compositor chose with the target (0: none).
     action: u32,
+    /// Dropped on another client's window, which has not finished it.
+    dropped: bool,
+    /// The end was reported: `result` is the action performed (0: none), `frame` the window whose frame the call
+    /// returns (0: none).  They stay until the next drag starts, past `drag_cancel`.
+    done: bool,
+    result: u32,
+    frame: u64,
 }
 
+/// `nhg_drag_state`'s phases: what C's wait loop polls.
+pub const NHG_DRAG_PHASE_WAITING: i32 = 0;
+pub const NHG_DRAG_PHASE_LIVE: i32 = 1;
+pub const NHG_DRAG_PHASE_DROPPED: i32 = 2;
+pub const NHG_DRAG_PHASE_DONE: i32 = 3;
+
 impl DragOut {
+    /// The phase, the action performed and the frame window (both 0 unless done).
+    fn phase(&self) -> (i32, u32, u64) {
+        if self.done {
+            (NHG_DRAG_PHASE_DONE, self.result, self.frame)
+        } else if self.dropped {
+            (NHG_DRAG_PHASE_DROPPED, 0, 0)
+        } else if self.live {
+            (NHG_DRAG_PHASE_LIVE, 0, 0)
+        } else {
+            (NHG_DRAG_PHASE_WAITING, 0, 0)
+        }
+    }
+
     /// The compositor took the drag: say so once.
     fn live(&mut self, actions: &mut Actions) {
         if !self.live {
@@ -290,6 +316,9 @@ impl DragOut {
     /// The drag is over with `action` (0: none); `frame` the window whose frame the call returns.
     fn end(&mut self, actions: &mut Actions, action: u32, frame: Option<u64>) {
         self.running = false;
+        self.done = true;
+        self.result = action;
+        self.frame = frame.unwrap_or(0);
         let (window, flags) = match frame {
             Some(w) => (w, NHG_DRAG_FRAME),
             None => (self.window, 0),
@@ -348,6 +377,12 @@ pub fn drag_cancel(state: &mut Display) -> bool {
     ran
 }
 
+/// Where our drag stands, for C's wait loop: the phase (`NHG_DRAG_PHASE_*`), and once done the action performed (0:
+/// none) and the window whose frame the call returns (0: none).
+pub fn drag_state(state: &Display) -> (i32, u32, u64) {
+    state.dnd.out.phase()
+}
+
 /// The records our drag reads while it runs: the source's (`DRAG_*`), and the input that shows whether the compositor
 /// took the drag.  A pointer leave says it did (the drag's grab took the pointer).  A button release or a touch up that
 /// still reaches us says it did not: the compositor ignores a drag with a stale serial and sends nothing about it, so
@@ -373,6 +408,7 @@ pub fn drag_input(state: &mut Display, ev: &Record) {
                 let a = out.action;
                 out.end(actions, a, None);
             } else {
+                out.dropped = true;
                 actions.push(drag_action(NHG_ACT_DRAG_DROPPED, out.window, out.action, 0));
             }
             false
@@ -455,4 +491,35 @@ fn own_drag(state: &mut Display, ev: &Record, d: &DndEv) {
 /// Whether our drag out runs (for the tests).
 pub fn dragging(state: &Display) -> bool {
     state.dnd.out.running
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The phases C polls, in the order a drag passes them; the result stays once done.
+    #[test]
+    fn drag_state_phases() {
+        let mut out = DragOut {
+            running: true,
+            window: 7,
+            ..DragOut::default()
+        };
+        let mut actions = Actions::default();
+        assert_eq!(out.phase(), (NHG_DRAG_PHASE_WAITING, 0, 0));
+        out.live(&mut actions);
+        assert_eq!(out.phase(), (NHG_DRAG_PHASE_LIVE, 0, 0));
+        out.dropped = true;
+        assert_eq!(out.phase(), (NHG_DRAG_PHASE_DROPPED, 0, 0));
+        out.end(&mut actions, 2, Some(9));
+        assert!(!out.running);
+        assert_eq!(out.phase(), (NHG_DRAG_PHASE_DONE, 2, 9));
+        let mut plain = DragOut {
+            running: true,
+            window: 7,
+            ..DragOut::default()
+        };
+        plain.end(&mut actions, 0, None);
+        assert_eq!(plain.phase(), (NHG_DRAG_PHASE_DONE, 0, 0));
+    }
 }
