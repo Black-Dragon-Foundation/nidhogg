@@ -415,6 +415,9 @@ if [ -n "$container" ]; then
     fedora-45) image=$IMAGE_fedora_45 ;;
     *) echo "gui.sh: --container supports fedora-45" >&2; exit 2 ;;
   esac
+  # a local image with the packages below already installed (built once from the same base) saves every run the
+  # download; without it each run installs them into a fresh container
+  podman image exists "localhost/glitnir-gui-deps:$container" 2>/dev/null && image=localhost/glitnir-gui-deps:$container
   name=${GLITNIR_GUI_NAME:-glitnir-gui-$$}
   trap 'podman rm -f "$name" > /dev/null 2>&1' EXIT
   trap 'exit 1' INT TERM
@@ -454,12 +457,15 @@ if [ -n "$container" ]; then
     ${sockenv[@]+"${sockenv[@]}"} "${mounts[@]}" "$image" bash -c '
       set -eu
       pkgs=$(sed "s/#.*//" "'"$inprefix"'/share/nidhogg/deps.runtime" 2>/dev/null || true)
-      dnf -y -q --setopt=install_weak_deps=False install mutter sway grim pixman libxkbcommon libcap dbus-daemon \
+      want="mutter sway grim pixman libxkbcommon libcap dbus-daemon \
         mesa-dri-drivers mesa-libEGL mesa-libgbm python3-gobject-base dejavu-sans-mono-fonts procps-ng util-linux \
         $(case " $* " in *" mutter "*) echo pipewire wireplumber gstreamer1-plugins-base pipewire-gstreamer pipewire-utils ;; esac) \
         $(case " $* " in *" kwin "*) echo kwin kscreen ;; *" labwc "*) echo labwc wlr-randr ;; esac) \
         $(case " $* " in *" fcitx5 "*) echo fcitx5 fcitx5-chinese-addons wtype ;; *" ibus "*) echo ibus ibus-libpinyin ;; esac) \
-        $pkgs > /tmp/dnf.log 2>&1 || { cat /tmp/dnf.log; exit 1; }
+        $pkgs"
+      # already installed (the prebuilt image): nothing to download
+      rpm -q --quiet --whatprovides $want 2>/dev/null || dnf -y -q --setopt=install_weak_deps=False install $want \
+        > /tmp/dnf.log 2>&1 || { cat /tmp/dnf.log; exit 1; }
       # sway ships with file capabilities a container refuses to exec: a copy without them
       for c in sway kwin_wayland kwin_wayland_wrapper labwc; do
         [ ! -x /usr/bin/$c ] || { cp /usr/bin/$c /usr/local/bin/$c; setcap -r /usr/local/bin/$c 2>/dev/null || true; }
