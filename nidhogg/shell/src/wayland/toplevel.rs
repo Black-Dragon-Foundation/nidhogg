@@ -290,9 +290,11 @@ impl ShellBackend for WaylandShell {
     fn window_destroy(&mut self, id: WindowId) -> ShellResult {
         let live = self.live();
         let done = self.window_destroy_local(id);
-        match live {
-            Err(ShellError::Reconnecting) => done,
-            live => live.and(done),
+        match (live, done) {
+            // in the gap the window goes locally; the dead connection's flush is not the call's failure
+            (Err(ShellError::Reconnecting), Err(ShellError::Disconnected)) => Ok(()),
+            (Err(ShellError::Reconnecting), done) => done,
+            (live, done) => live.and(done),
         }
     }
 

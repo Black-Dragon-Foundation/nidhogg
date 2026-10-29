@@ -135,14 +135,14 @@ until Lisp deletes or hides it."
 deletes them; either way the popups go topmost first, so the compositor never sees `not_the_topmost_popup' (the
 recorder ends a client for it), and only the toplevel is left."
   (skip-unless (nhwl-gui--recorder-p))
-  (let ((parent (selected-frame)) (before (nhwl-gui--popup-ids)) (frames nil)
-        (all-shown (lambda ()
-                     (nhwl-gui--wait (lambda ()
-                                       (nhwl-gui--pump 0.1)
-                                       (= (length (seq-difference (nhwl-gui--grabbed-ids) before)) 3))
-                                     5)))
-        (none-left (lambda ()
-                     (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (equal (nhwl-gui--popup-ids) before)) 5))))
+  (let* ((parent (selected-frame)) (before (nhwl-gui--popup-ids)) (frames nil)
+         (all-shown (lambda ()
+                      (nhwl-gui--wait (lambda ()
+                                        (nhwl-gui--pump 0.1)
+                                        (= (length (seq-difference (nhwl-gui--grabbed-ids) before)) 3))
+                                      5)))
+         (none-left (lambda ()
+                      (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (equal (nhwl-gui--popup-ids) before)) 5))))
     (unwind-protect
         (progn
           (nhwl-gui--press-serial)

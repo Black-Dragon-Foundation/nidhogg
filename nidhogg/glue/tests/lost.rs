@@ -87,7 +87,10 @@ mod lost {
         configured(d, w);
         // a configure serial the compositor never sent ends the connection with a protocol error
         let _ = backend(d).ack_configure(w, 999_999, 0);
-        let _ = backend(d).dispatch_main();
+        // an ack rides the commit that carries it: the window's next present sends it
+        until(d, |a| a.kind == NHG_ACT_READY && a.window == w);
+        // SAFETY: a live display; no surfaces.
+        unsafe { nhg_present(d, w, ptr::null(), 0, nhglue::present::NHG_PRESENT_READY, 0) };
         until(d, |a| a.kind == NHG_ACT_LOST);
         let text = last_error(d);
         assert!(text.contains(": error "), "{text:?}");

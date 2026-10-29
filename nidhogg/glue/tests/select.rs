@@ -173,7 +173,8 @@ mod select {
             assert_eq!(nhg_selection_disown(d, 0), 1);
             assert_eq!(nhg_selection_disown(d, 0), 0);
             assert_eq!(nhg_selection_owned(d, 0), 0);
-            assert_eq!(nhg_selection_owned(d, 2), NHG_E_ARG);
+            // 2 is the drag's offer (readable), 3 no selection
+            assert_eq!(nhg_selection_owned(d, 3), NHG_E_ARG);
             assert_eq!(nhg_close(d), NHG_OK);
         }
     }

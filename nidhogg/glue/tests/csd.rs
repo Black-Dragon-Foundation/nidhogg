@@ -474,7 +474,8 @@ mod csd {
             configured(d, id);
             let csd = facts_flags(d, id) & NHG_FACT_CSD != 0;
             assert_eq!(csd, profile == "mutter", "{profile}");
-            for states in [r#""activated""#, ""] {
+            // the recorder's first configure activates: inactive, then active again
+            for states in ["", r#""activated""#] {
                 configure(&rec, [200, 100], states);
                 apply_configure(d, id);
                 assert_eq!(
@@ -500,8 +501,8 @@ mod csd {
         let (rc, p) = paint(d, id, 210, 100, 2);
         assert_eq!((rc, p.strip.w), (1, 210), "a new size");
         assert_eq!(paint(d, id, 210, 100, 2).0, 0);
-        // the states (none since the first configure): active, then inactive
-        for (states, active) in [(r#""activated""#, 1), ("", 0)] {
+        // the states (activated since the recorder's first configure): inactive, then active again
+        for (states, active) in [("", 0), (r#""activated""#, 1)] {
             configure(&rec, [210, 132], states);
             apply_configure(d, id);
             settle(d);

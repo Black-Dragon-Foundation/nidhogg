@@ -240,7 +240,8 @@ mod dnd {
         offer(&rec, &[(TEXT, "x")]);
         let time = actions(d, 1, 3000)[0].time_ms as u32;
         assert_eq!(status(d, 0, time), 1);
-        let log = wait_log(&rec, &["\"accepted\":null"]);
+        // the recorder lists every accept the offer saw
+        let log = wait_log(&rec, &["\"accepted\":[null]"]);
         assert!(!log.contains("\"finished\":true"), "{log}");
         // SAFETY: a live display.
         unsafe { nhg_close(d) };
@@ -256,7 +257,7 @@ mod dnd {
         let time = actions(d, 1, 3000)[0].time_ms as u32;
         assert_eq!(read(d, c"text/uri-list"), b"file:///tmp/a");
         assert_eq!(status(d, NHSHELL_DND_COPY, time), 1);
-        wait_log(&rec, &["\"accepted\":\"text/uri-list\""]);
+        wait_log(&rec, &["\"accepted\":[\"text/uri-list\"]"]);
         // SAFETY: a live display.
         unsafe { nhg_close(d) };
     }
@@ -273,7 +274,7 @@ mod dnd {
             actions(d, 1, 500).is_empty(),
             "no action for a refused drag"
         );
-        let log = wait_log(&rec, &["\"accepted\":null"]);
+        let log = wait_log(&rec, &["\"accepted\":[null]"]);
         assert!(!log.contains("\"finished\":true"), "{log}");
         rec.control_ok(r#"{"cmd":"dnd_leave"}"#);
         // a type in the list (compared without case) goes through
