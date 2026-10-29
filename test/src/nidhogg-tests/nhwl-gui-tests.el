@@ -505,6 +505,9 @@ Return the two replies."
                                               (mapcan #'nhwl-gui--damage commits)))
                        (list rows)))))))
 
+(defvar nhwl-scroll-layers)
+
+;; The frame's own scroll path: window layers off (with them, the window's scroll moves its layer's view instead).
 (ert-deftest nhwl-gui/scroll-run-damages-exposed-rows ()
   (skip-unless (nhwl-gui--recorder-p))
   (switch-to-buffer "*scratch*")
@@ -513,7 +516,8 @@ Return the two replies."
   (goto-char (point-min))
   (redisplay t)
   (gui-runner-wait-settled)
-  (let* ((lh (frame-char-height))
+  (let* ((nhwl-scroll-layers nil)
+         (lh (frame-char-height))
          (edges (window-inside-pixel-edges))
          (mode0 (nth 3 edges))
          (mark (nhwl-gui--mark)))
