@@ -8,7 +8,7 @@ mod step;
 use common::{Recorder, readable_within};
 use nhglue::action::*;
 use nhglue::ffi::*;
-use nhglue::keys::NHG_KEY_REPEAT;
+use nhglue::keys::{NHG_KEY_CHAR, NHG_KEY_REPEAT, NHG_KEY_TEXT};
 use std::ptr;
 use std::time::{Duration, Instant};
 use step::*;
@@ -100,8 +100,8 @@ mod keys {
         }
         assert_eq!(keys.len(), 1, "only the press: {keys:?}");
         assert_eq!(
-            (keys[0].window, keys[0].code, keys[0].flags),
-            (id, i32::from(b'a'), 0)
+            (keys[0].window, keys[0].code, keys[0].flags, keys[0].x),
+            (id, i32::from(b'a'), NHG_KEY_CHAR, i32::from(b'a'))
         );
         assert!(silent >= 1, "no repeat was taken after the press");
         // nothing waiting: the next repeat gives an action
@@ -117,7 +117,7 @@ mod keys {
                 readable_within(unsafe { nhg_fd(d) }, 50);
             }
         };
-        assert_eq!(repeat.0.flags, NHG_KEY_REPEAT);
+        assert_eq!(repeat.0.flags, NHG_KEY_REPEAT | NHG_KEY_CHAR);
         assert_eq!(
             (repeat.0.code, repeat.1.as_slice()),
             (i32::from(b'a'), &b"a"[..])
@@ -156,8 +156,11 @@ mod keys {
         }
         assert_eq!(keys.len(), 1, "{keys:?}");
         let (a, text) = &keys[0];
-        // XK_eacute
-        assert_eq!((a.window, a.code, a.flags), (id, 0xe9, 0));
+        // XK_eacute: not a character keysym nor a function key, so (failing the keysym table) the text's é
+        assert_eq!(
+            (a.window, a.code, a.flags, a.x),
+            (id, 0xe9, NHG_KEY_TEXT, 0xe9)
+        );
         assert_eq!(text.as_slice(), "é".as_bytes());
         close(d);
     }
