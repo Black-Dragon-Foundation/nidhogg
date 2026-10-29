@@ -1102,6 +1102,51 @@ nhg_export! {
 }
 
 nhg_export! {
+    /// The native size `*w` x `*h` the frame of `window` asks for, clamped in place so that its surface stays within
+    /// 16384 device pixels a side (`csd::clamp_native`; an unknown window, or 0, has no border).  Neither reads nor
+    /// writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `w` and `h` are null or readable and writable.
+    fn nhg_frame_clamp(d: *mut NhgDisplay, window: u64, w: *mut i32, h: *mut i32) -> i32 |state| {
+        if w.is_null() || h.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: non-null, readable and writable (the caller's promise).
+        unsafe {
+            let (cw, ch) = crate::csd::clamp_native(state, window, w.read(), h.read());
+            w.write(cw);
+            h.write(ch);
+        }
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// The compositor's size `lw` x `lh` (logical) for `window`, whose frame has the native size `native_w` x
+    /// `native_h` and C's scale `scale120` and `states`, with `flags` (`NHG_FIT_*`, `csd::fit`): 1 with the native
+    /// size the frame takes in `*w`, `*h` (recorded as `nhg_frame_resized` records it; C changes the frame's size), 0
+    /// when it keeps its size.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `w` and `h` are null or writable.
+    fn nhg_frame_fit(d: *mut NhgDisplay, window: u64, scale120: u32, lw: i32, lh: i32, states: u32, native_w: i32, native_h: i32, flags: u32, w: *mut i32, h: *mut i32) -> i32 |state| {
+        if w.is_null() || h.is_null() {
+            return Err(GlueError::Arg);
+        }
+        let Some((fw, fh)) = crate::csd::fit(state, window, scale120, lw, lh, states, (native_w, native_h), flags)? else {
+            return Ok(0);
+        };
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe {
+            w.write(fw);
+            h.write(fh);
+        }
+        Ok(1)
+    }
+}
+
+nhg_export! {
     /// The frame's smallest size, `w` x `h` device pixels, for the compositor (a child frame's window has none).
     ///
     /// # Safety
