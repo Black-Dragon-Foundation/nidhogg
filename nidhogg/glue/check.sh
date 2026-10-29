@@ -2,6 +2,7 @@
 # nhglue's checks: the lock against the shell's, fmt, clippy, tests, licence policy; --full adds the release archive and
 # its exports; --android only checks that the crate builds for Android without the Wayland backend.
 # Usage: check.sh [--container DISTRO] [--test NAME] [--full] [--android] [--no-run]
+#        check.sh --c-fields BUILD_DIR | --provenance      (text checks of the C side; no cargo, no container)
 # --no-run compiles the tests without running them (the compile-only author check).
 # Exit 0 ok, 1 "check.sh: FAIL <check>", 2 usage, 3 --android skipped (the target's std is not installed; says why).
 # Without --container the host's cargo runs (CI, macOS).  With it, podman runs a memory-capped container (2 GiB) that
@@ -12,7 +13,7 @@
 # The link check against a built Emacs is nm-check.sh (it needs the build tree).
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-DISTRO="" TEST="" INNER=0 FULL=0 ANDROID=0 NORUN=0
+DISTRO="" TEST="" INNER=0 FULL=0 ANDROID=0 NORUN=0 CFIELDS="" PROVENANCE=0
 ANDROID_TARGET=aarch64-linux-android
 usage() { echo "usage: check.sh [--container DISTRO] [--test NAME] [--full] [--android] [--no-run]" >&2; exit 2; }
 while [ $# -gt 0 ]; do
@@ -23,9 +24,58 @@ while [ $# -gt 0 ]; do
     --no-run) NORUN=1; shift ;;
     --android) ANDROID=1; shift ;;
     --inner) INNER=1; shift ;;
+    --c-fields) [ $# -ge 2 ] || usage; CFIELDS=$2; shift 2 ;;
+    --provenance) PROVENANCE=1; shift ;;
     *) usage ;;
   esac
 done
+
+# --- the text checks of the C side (host or container; no cargo) ------------------------------------------------
+SRC=$(cd "$HERE/../.." && pwd)
+
+# --c-fields BUILD_DIR: the members of `struct nhwl_output' (src/nhwlterm.h) are exactly the ones its comment lists
+# (`@fields' and `@extra' tags; an `@extra' line may name several members).  BUILD_DIR must be a configured Nidhogg Wayland build (its src/nhwlterm.o exists).
+if [ -n "$CFIELDS" ]; then
+  [ -f "$CFIELDS/src/nhwlterm.o" ] || { echo "check.sh: FAIL c-fields: $CFIELDS has no src/nhwlterm.o (build first)" >&2; exit 1; }
+  hdr=$SRC/src/nhwlterm.h
+  listed=$(perl -0777 -ne 'while (/\@fields ([^\n]+)/g) { print "$1\n" } while (/\@extra ([\w ]+):/g) { print "$1\n" }' "$hdr" |
+    tr ' ' '\n' | grep . | sort)
+  actual=$(perl -0777 -ne '
+    /\nstruct nhwl_output\n\{(.*?)\n\};/s or exit 1;
+    $b = $1;
+    $b =~ s{/\*.*?\*/}{}gs;
+    $b =~ s/struct relief\s*\{[^}]*\}//s;
+    for $d (split /;/, $b) {
+      $d =~ s/:\s*\d+\s*$//;
+      for $p (split /,/, $d) { print "$1\n" if $p =~ /(\w+)\s*$/ }
+    }' "$hdr" | sort)
+  [ -n "$actual" ] || { echo "check.sh: FAIL c-fields: struct nhwl_output not found in $hdr" >&2; exit 1; }
+  if [ "$listed" != "$actual" ]; then
+    echo "check.sh: FAIL c-fields: the comment above struct nhwl_output and its members differ:" >&2
+    diff <(printf '%s\n' "$listed") <(printf '%s\n' "$actual") >&2
+    exit 1
+  fi
+  echo "check.sh: c-fields ok ($(printf '%s\n' "$actual" | wc -l) members)"
+  exit 0
+fi
+
+# --provenance: a file whose notes say "adapted from" (upstream code) names the upstream commit: a 40-digit hash on
+# the note's line, or an `Upstream commit:' note in the file.  Covers src/nhwl*.[ch], src/glitnir-decor.c and the glue.
+if [ "$PROVENANCE" = 1 ]; then
+  bad=0
+  while IFS= read -r f; do
+    grep -qiE 'adapted( in role)? from' "$f" || continue
+    grep -qiE 'upstream commit[: ]' "$f" && continue
+    # no file-level note: every note's line must carry a commit
+    if grep -iE 'adapted( in role)? from' "$f" | grep -vqE '[0-9a-f]{40}'; then
+      echo "check.sh: FAIL provenance: $f has an \"adapted from\" note without an upstream commit" >&2
+      bad=1
+    fi
+  done < <(ls "$SRC"/src/nhwl*.c "$SRC"/src/nhwl*.h "$SRC"/src/glitnir-decor.c "$HERE"/src/*.rs "$HERE"/src/*/*.rs 2>/dev/null)
+  [ "$bad" = 0 ] || exit 1
+  echo "check.sh: provenance ok"
+  exit 0
+fi
 
 if [ -n "$DISTRO" ] && [ "$INNER" = 0 ]; then
   command -v podman >/dev/null 2>&1 || { echo "check.sh: podman not found (podman only; no docker)" >&2; exit 1; }
