@@ -468,6 +468,11 @@ int32_t nhg_selection_owned (NhgDisplay *d, uint32_t kind);
    and their byte count; either may be NULL.  */
 int32_t nhg_selection_types (NhgDisplay *d, uint32_t kind, const char **out, size_t *len);
 
+/* The type to read the last nhg_selection_types call's selection as: NAME (LEN bytes) when offered, else the first
+   of the NPREFS PREFS offered.  1 with the type in *OUT (valid until the next nhg_selection_types), 0 for none.  */
+int32_t nhg_selection_pick (NhgDisplay *d, const char *name, size_t len, const char *const *prefs, size_t nprefs,
+                            const char **out);
+
 /* Selection KIND as MIME into *OUT, *LEN: our own bytes at once, another client's within TIMEOUT_MS
    (NHG_E_TIMEOUT).  NHG_E_DISCONNECTED within 100 ms of the connection's loss.  NHG_E_STATE without a selection or
    without that type.  */
@@ -916,6 +921,29 @@ int32_t nhg_give_up (NhgDisplay *d);
 /* Why the connection ended: a protocol error's text (INTERFACE@ID: error CODE: MESSAGE), up to CAP - 1 bytes and a
    NUL into BUF, its full length into *LEN (0: the connection lives, or ended with a plain hangup).  */
 int32_t nhg_last_error (NhgDisplay *d, char *buf, size_t cap, size_t *len);
+
+/* ---- Small pure functions: colours, a monitor's place, the snapshot's copy ---------------------------------------
+   Only nhg_snapshot_copy reads pixels.  */
+
+/* The title bar's colours when the style names no background, from the frame's FG and BG (0xRRGGBB): the background
+   12% toward the foreground into *OUT_BG, and an inactive window's own foreground, that 55% toward FG, into
+   *OUT_FG.  */
+int32_t nhg_csd_mix (uint32_t fg, uint32_t bg, uint32_t *out_fg, uint32_t *out_bg);
+
+/* RGB (0xRRGGBB) at ALPHA as a backing stores it: premultiplied ARGB, exactly as Cairo paints a solid source.  */
+int32_t nhg_premultiply (uint32_t rgb, double alpha, uint32_t *out);
+
+/* Copy FRAME's W x H backing (the size nhg_snapshot gave) into DST, rows STRIDE bytes apart.  NHG_E_STATE without a
+   backing of that size.  Reads pixels.  */
+int32_t nhg_snapshot_copy (NhgDisplay *d, uint64_t frame, uint8_t *dst, int32_t stride, int32_t w, int32_t h);
+
+/* The monitors WINDOW is on, as a mask of their places in nhg_monitors' list (bit J for the Jth; the first when the
+   compositor named none).  NHG_E_STATE for an unknown window, and *OUT is left.  */
+int32_t nhg_frame_monitors (NhgDisplay *d, uint64_t window, uint32_t *out);
+
+/* A monitor's position in device pixels from its logical X, Y and SCALE120, as display-monitor-attributes-list gives
+   it.  */
+int32_t nhg_monitor_origin (int32_t x, int32_t y, uint32_t scale120, int32_t *dx, int32_t *dy);
 
 #ifdef __cplusplus
 }

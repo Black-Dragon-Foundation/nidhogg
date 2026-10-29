@@ -191,19 +191,17 @@ the text, any other the bytes of the type of that name.  Waits at most
       return vec;
     }
 
+  /* The type: the target's name when offered, else for a text target the
+     first text type offered (the glue picks from the types just read).  */
   bool text = nhwl_text_target_p (target_type);
-  Lisp_Object mime = Qnil;
   Lisp_Object name = SYMBOL_NAME (target_type);
-  if (!NILP (Fmember (name, types)))
-    mime = name;
-  else if (text)
-    for (int i = 0; i < N_TEXT_MIMES && NILP (mime); i++)
-      {
-	Lisp_Object m = build_string (nhwl_text_mimes[i]);
-	if (!NILP (Fmember (m, types)))
-	  mime = m;
-      }
-  if (NILP (mime))
+  const char *mime = NULL;
+  if (nhwl_glue_rc (x_display_list,
+		    NHG (nhg_selection_pick (x_display_list->glue, SSDATA (name),
+					     SBYTES (name),
+					     text ? nhwl_text_mimes : NULL,
+					     text ? N_TEXT_MIMES : 0, &mime)))
+      <= 0)
     return Qnil;
 
   double secs = 1.0;
@@ -216,7 +214,7 @@ the text, any other the bytes of the type of that name.  Waits at most
   size_t len = 0;
   int rc = nhwl_glue_rc (x_display_list,
 			 NHG (nhg_selection_read (x_display_list->glue, kind,
-						  SSDATA (mime), ms, &out,
+						  mime, ms, &out,
 						  &len)));
   if (rc < 0)
     return Qnil;
