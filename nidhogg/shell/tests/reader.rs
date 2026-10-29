@@ -6,18 +6,14 @@ mod common;
 use common::*;
 use glitnir::geom::Rect;
 use nhshell::api::*;
-use nhshell::event::{NHSHELL_EV_DISCONNECTED, NHSHELL_EV_FOCUS, NhShellEvent};
-use nhshell::ffi::{
-    NhShell, nhshell_close, nhshell_dispatch_main, nhshell_next_event, nhshell_open,
-    nhshell_wake_fd,
-};
+use nhshell::event::{Kind, Record, ShellEvent};
 use nhshell::wayland::WaylandShell;
 use nhshell::wayland::registry::supported;
 use rustix::process::Signal;
 use std::time::{Duration, Instant};
 
 /// Take every queued record.
-fn drain(shell: &mut WaylandShell) -> Vec<NhShellEvent> {
+fn drain(shell: &mut WaylandShell) -> Vec<Record> {
     let mut out = Vec::new();
     while let Some(ev) = shell.next_event().unwrap() {
         out.push(ev);
@@ -88,14 +84,13 @@ mod reader {
             readable_within(shell.wake_fd(), 100),
             "no wake within 100 ms"
         );
-        let focus: Vec<NhShellEvent> = drain(&mut shell)
+        let focus: Vec<Record> = drain(&mut shell)
             .into_iter()
-            .filter(|e| e.kind == NHSHELL_EV_FOCUS)
+            .filter(|e| e.kind() == Kind::Focus)
             .collect();
         assert_eq!(focus.len(), 1);
         assert_eq!(focus[0].window, surface);
-        // SAFETY: a FOCUS record's valid member is `focus`.
-        assert_eq!(unsafe { focus[0].u.focus.r#in }, 1);
+        assert!(matches!(focus[0].event, ShellEvent::Focus(f) if f.r#in == 1));
         // drained to zero: not readable until the next record
         assert!(!readable_within(shell.wake_fd(), 0));
     }
@@ -144,13 +139,8 @@ mod reader {
     #[test]
     fn disconnect_is_an_event() {
         let rec = Recorder::start("sway");
-        let display = rec.display();
-        // through the C ABI, as the host sees it
-        let mut sh: *mut NhShell = std::ptr::null_mut();
-        // SAFETY: `display` is NUL-terminated; `sh` is writable.
-        assert_eq!(unsafe { nhshell_open(display.as_ptr(), &mut sh) }, 0);
-        // SAFETY: a live handle.
-        let wake = unsafe { nhshell_wake_fd(sh) };
+        let mut shell = rec.open();
+        let wake = shell.wake_fd();
         assert!(wake >= 0);
         assert!(rec.control(r#"{"cmd":"quit"}"#).contains("\"ok\":true"));
         assert!(
@@ -158,35 +148,27 @@ mod reader {
             "no wake after the compositor quit"
         );
         let mut kinds = Vec::new();
-        let mut ev = NhShellEvent::new(0, 0, 0);
         let deadline = Instant::now() + Duration::from_secs(2);
         let last = loop {
-            // SAFETY: a live handle; `ev` is writable.
-            match unsafe { nhshell_next_event(sh, &mut ev) } {
-                1 => kinds.push(ev.kind),
-                0 => {
+            match shell.next_event() {
+                Ok(Some(ev)) => kinds.push(ev.kind()),
+                Ok(None) => {
                     assert!(Instant::now() < deadline, "no DISCONNECTED: {kinds:?}");
                     readable_within(wake, 100);
                 }
-                r => break r,
+                Err(e) => break e,
             }
         };
-        assert_eq!(last, NHSHELL_E_DISCONNECTED);
-        assert_eq!(kinds.last(), Some(&NHSHELL_EV_DISCONNECTED), "{kinds:?}");
+        assert_eq!(last, ShellError::Disconnected);
+        assert_eq!(kinds.last(), Some(&Kind::Disconnected), "{kinds:?}");
         assert_eq!(
-            kinds
-                .iter()
-                .filter(|&&k| k == NHSHELL_EV_DISCONNECTED)
-                .count(),
+            kinds.iter().filter(|&&k| k == Kind::Disconnected).count(),
             1
         );
         // later calls keep reporting the loss, without a panic or a hang
-        // SAFETY: a live handle, closed last.
-        unsafe {
-            assert_eq!(nhshell_next_event(sh, &mut ev), NHSHELL_E_DISCONNECTED);
-            assert_eq!(nhshell_dispatch_main(sh), NHSHELL_E_DISCONNECTED);
-            assert_eq!(nhshell_close(sh), 0);
-        }
+        assert_eq!(shell.next_event().err(), Some(ShellError::Disconnected));
+        assert_eq!(shell.dispatch_main(), Err(ShellError::Disconnected));
+        drop(shell);
     }
 
     /// Take records until `DISCONNECTED` has been taken (the next call reports the loss), within 3 s.
@@ -416,7 +398,7 @@ mod reader {
         shell.flush().unwrap();
         let reply = rec.control_ok(&format!(r#"{{"cmd":"focus","surface":{surface}}}"#));
         assert!(reply.contains("\"ok\":true"), "{reply}");
-        wait_event(&mut shell, NHSHELL_EV_FOCUS);
+        wait_event(&mut shell, Kind::Focus);
         let reply = rec.control(
             r#"{"cmd":"offer","kind":"clipboard","types":{"text/plain":"never sent"},"silent":true}"#,
         );

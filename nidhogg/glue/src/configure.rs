@@ -30,9 +30,7 @@ const FULLSCREEN_STATES: u32 = NHSHELL_STATE_FULLSCREEN | NHSHELL_STATE_MAXIMIZE
 
 /// A `CONFIGURE` of a registered window: its state, its ack (due), and a `RESIZE` action.  Nothing for a window the
 /// glue does not know.
-pub fn configure(state: &mut Display, ev: &NhShellEvent) {
-    // SAFETY: a CONFIGURE event carries `configure`.
-    let c = unsafe { ev.u.configure };
+pub fn configure(state: &mut Display, ev: &Record, c: &ConfigureEv) {
     let Ok(f) = state.frame_mut(ev.window) else {
         return;
     };
@@ -62,9 +60,8 @@ pub fn configure(state: &mut Display, ev: &NhShellEvent) {
 }
 
 /// A `SCALE` of a registered window: a `SCALE` action when the scale is new (0, or the one C applied last, is none).
-pub fn scale(state: &mut Display, ev: &NhShellEvent) {
-    // SAFETY: a SCALE event carries `scale`.
-    let s = unsafe { ev.u.scale }.scale120;
+pub fn scale(state: &mut Display, ev: &Record, s: &ScaleEv) {
+    let s = s.scale120;
     let Ok(f) = state.frame_mut(ev.window) else {
         return;
     };

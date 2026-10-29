@@ -36,9 +36,8 @@ fn until(rec: &Recorder, cmd: &str, pred: impl Fn(&str) -> bool) -> String {
 /// A window made with `name` in its session, its first configure acked with a buffer.
 fn named_window(shell: &mut WaylandShell, flags: u32, name: &str) -> (u64, ConfigureEv) {
     let id = shell.window_new_named(&desc(flags), Some(name)).unwrap();
-    let ev = wait_event(shell, NHSHELL_EV_CONFIGURE);
-    // SAFETY: a CONFIGURE record carries `configure`.
-    let c = unsafe { ev.u.configure };
+    let ev = wait_event(shell, Kind::Configure);
+    let c = configure_of(&ev);
     shell
         .ack_configure(id, c.serial, NHSHELL_ACK_CONTENT)
         .unwrap();
@@ -48,9 +47,10 @@ fn named_window(shell: &mut WaylandShell, flags: u32, name: &str) -> (u64, Confi
 }
 
 fn session_state(shell: &mut WaylandShell) -> u32 {
-    let ev = wait_event(shell, NHSHELL_EV_SESSION);
-    // SAFETY: a SESSION record carries `session`.
-    unsafe { ev.u.session }.state
+    match wait_event(shell, Kind::Session).event {
+        ShellEvent::Session(s) => s.state,
+        e => panic!("not a session record: {e:?}"),
+    }
 }
 
 mod extras {
@@ -183,7 +183,7 @@ mod extras {
         assert!(!token.is_empty());
         let again = shell.activation_token(id, 1000).unwrap();
         assert_ne!(again, token, "every call asks for a fresh token");
-        wait_event(&mut shell, NHSHELL_EV_BUTTON);
+        wait_event(&mut shell, Kind::Button);
         // nothing answers: bounded
         rec.signal(Signal::STOP);
         let t = Instant::now();

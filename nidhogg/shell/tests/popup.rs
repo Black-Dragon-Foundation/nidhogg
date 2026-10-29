@@ -40,16 +40,16 @@ fn click(rec: &Recorder, shell: &mut WaylandShell, surface: u64, release: bool) 
     rec.control_ok(&format!(r#"{{"cmd":"focus","surface":{surface}}}"#));
     rec.control_ok(r#"{"cmd":"pointer","pos":[5,5]}"#);
     rec.control_ok(r#"{"cmd":"button","button":272,"state":"press"}"#);
-    wait_for(shell, |e| {
-        // SAFETY: a BUTTON record carries `pointer`.
-        e.kind == NHSHELL_EV_BUTTON && unsafe { e.u.pointer }.state == NHSHELL_BUTTON_PRESSED
-    });
+    wait_for(
+        shell,
+        |e| matches!(e.event, ShellEvent::Button(p) if p.state == NHSHELL_BUTTON_PRESSED),
+    );
     if release {
         rec.control_ok(r#"{"cmd":"button","button":272,"state":"release"}"#);
-        wait_for(shell, |e| {
-            // SAFETY: as above.
-            e.kind == NHSHELL_EV_BUTTON && unsafe { e.u.pointer }.button == BTN_LEFT
-        });
+        wait_for(
+            shell,
+            |e| matches!(e.event, ShellEvent::Button(p) if p.button == BTN_LEFT),
+        );
     }
 }
 
@@ -68,14 +68,11 @@ fn no_grab(rec: &Recorder, id: u64) {
 fn still_up(shell: &mut WaylandShell, ms: i64) {
     for ev in collect(shell, ms) {
         assert_ne!(
-            ev.kind, NHSHELL_EV_DISCONNECTED,
+            ev.kind(),
+            Kind::Disconnected,
             "a protocol error ended the connection"
         );
-        assert_ne!(
-            ev.kind, NHSHELL_EV_POPUP_DONE,
-            "popup {} dismissed",
-            ev.window
-        );
+        assert_ne!(ev.kind(), Kind::PopupDone, "popup {} dismissed", ev.window);
     }
     shell.dispatch_main().expect("the connection is up");
 }
@@ -92,7 +89,7 @@ mod popup {
         let top = mapped_window(&mut shell, 200, 100);
         click(&rec, &mut shell, top, true);
         rec.control_ok(r#"{"cmd":"key","text":"a"}"#);
-        wait_event(&mut shell, NHSHELL_EV_KEY);
+        wait_event(&mut shell, Kind::Key);
         let p = popup(&mut shell, top, NHSHELL_WIN_GRAB);
         rec.wait_node(p, |n| n.contains(&grab_of("key")));
         assert!(shell.window_grabbed(p).unwrap());
@@ -212,13 +209,13 @@ mod popup {
         let b = popup(&mut shell, a, NHSHELL_WIN_GRAB);
         rec.wait_node(b, |n| n.contains(&grab_of("button")));
         rec.control_ok(r#"{"cmd":"click_outside"}"#);
-        let first = wait_event(&mut shell, NHSHELL_EV_POPUP_DONE);
-        let second = wait_event(&mut shell, NHSHELL_EV_POPUP_DONE);
+        let first = wait_event(&mut shell, Kind::PopupDone);
+        let second = wait_event(&mut shell, Kind::PopupDone);
         assert_eq!((first.window, second.window), (b, a), "topmost first");
         assert!(!shell.window_grabbed(a).unwrap() && !shell.window_grabbed(b).unwrap());
         shell.window_destroy(a).unwrap();
         for ev in collect(&mut shell, 200) {
-            assert_ne!(ev.kind, NHSHELL_EV_DISCONNECTED);
+            assert_ne!(ev.kind(), Kind::Disconnected);
         }
         shell.dispatch_main().expect("the connection is up");
         assert_eq!(rec.surfaces("popup"), 0);
@@ -234,7 +231,7 @@ mod popup {
             let top = mapped_window(&mut shell, 200, 100);
             let p = popup(&mut shell, top, 0);
             wait_for(&mut shell, |e| {
-                e.kind == NHSHELL_EV_FRAME_READY && e.window == p
+                e.kind() == Kind::FrameReady && e.window == p
             });
             draw(&mut shell, p, 60, 30);
             rec.wait_node(p, |n| n.contains("\"buffer\":{\"h\":30,\"w\":60}"));
@@ -244,7 +241,7 @@ mod popup {
             );
             assert_eq!(shell.set_size(p, 80, 40).unwrap(), recreated, "{profile}");
             wait_for(&mut shell, |e| {
-                e.kind == NHSHELL_EV_FRAME_READY && e.window == p
+                e.kind() == Kind::FrameReady && e.window == p
             });
             let ready = shell.window_ready(p).unwrap();
             assert_ne!(ready & NHSHELL_READY_CONTENT, 0, "{profile}: {ready}");
@@ -270,20 +267,24 @@ mod popup {
         click(&rec, &mut shell, top, false);
         let p = popup(&mut shell, top, NHSHELL_WIN_GRAB);
         wait_for(&mut shell, |e| {
-            e.kind == NHSHELL_EV_FRAME_READY && e.window == p
+            e.kind() == Kind::FrameReady && e.window == p
         });
         draw(&mut shell, p, 60, 30);
         rec.wait_node(p, |n| {
             n.contains(&grab_of("button")) && n.contains("\"mapped\":true")
         });
         rec.control_ok(&format!(r#"{{"cmd":"focus","surface":{p}}}"#));
-        let focus = wait_for(&mut shell, |e| e.kind == NHSHELL_EV_FOCUS && e.window == p);
-        // SAFETY: a FOCUS record carries `focus`.
-        assert_eq!(unsafe { focus.u.focus }.r#in, 1);
+        let focus = wait_for(&mut shell, |e| e.kind() == Kind::Focus && e.window == p);
+        let ShellEvent::Focus(f) = focus.event else {
+            unreachable!()
+        };
+        assert_eq!(f.r#in, 1);
         rec.control_ok(r#"{"cmd":"key","text":"x"}"#);
-        let key = wait_event(&mut shell, NHSHELL_EV_KEY);
+        let key = wait_event(&mut shell, Kind::Key);
         assert_eq!(key.window, p);
-        // SAFETY: a KEY record carries `key`.
-        assert_eq!(unsafe { key.u.key }.utf8[0], b'x');
+        let ShellEvent::Key(k) = key.event else {
+            unreachable!()
+        };
+        assert_eq!(k.utf8[0], b'x');
     }
 }

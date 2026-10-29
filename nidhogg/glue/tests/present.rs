@@ -39,7 +39,7 @@ fn shell<'a>(d: *mut NhgDisplay) -> &'a mut dyn ShellBackend {
 }
 
 /// The next record satisfying `want` within 5 s; other records are dropped.
-fn wait_for(d: *mut NhgDisplay, want: impl Fn(&NhShellEvent) -> bool) -> NhShellEvent {
+fn wait_for(d: *mut NhgDisplay, want: impl Fn(&Record) -> bool) -> Record {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         while let Some(ev) = shell(d).next_event().unwrap() {
@@ -53,7 +53,7 @@ fn wait_for(d: *mut NhgDisplay, want: impl Fn(&NhShellEvent) -> bool) -> NhShell
 }
 
 /// The records that arrive within `ms` of quiet.
-fn collect(d: *mut NhgDisplay, ms: i64) -> Vec<NhShellEvent> {
+fn collect(d: *mut NhgDisplay, ms: i64) -> Vec<Record> {
     let mut out = Vec::new();
     loop {
         while let Some(ev) = shell(d).next_event().unwrap() {
@@ -78,9 +78,11 @@ fn toplevel(d: *mut NhgDisplay, w: i32, h: i32) -> u64 {
         .unwrap();
     // SAFETY: a live display.
     assert_eq!(unsafe { nhg_frame_register(d, id, 0) }, NHG_OK);
-    let ev = wait_for(d, |e| e.kind == NHSHELL_EV_CONFIGURE && e.window == id);
-    // SAFETY: a CONFIGURE record carries `configure`.
-    let serial = unsafe { ev.u.configure }.serial;
+    let ev = wait_for(d, |e| e.kind() == Kind::Configure && e.window == id);
+    let ShellEvent::Configure(c) = ev.event else {
+        unreachable!()
+    };
+    let serial = c.serial;
     shell(d)
         .ack_configure(id, serial, NHSHELL_ACK_CONTENT)
         .unwrap();
@@ -191,7 +193,7 @@ fn present(d: *mut NhgDisplay, root: u64, list: &[NhgSurface], flags: u32, key: 
 
 /// The root's `FRAME_READY`, then the inline present it asks for.
 fn ready(d: *mut NhgDisplay, root: u64) -> i32 {
-    wait_for(d, |e| e.kind == NHSHELL_EV_FRAME_READY && e.window == root);
+    wait_for(d, |e| e.kind() == Kind::FrameReady && e.window == root);
     present(d, root, &[], NHG_PRESENT_READY, 0)
 }
 
@@ -313,7 +315,7 @@ mod present {
         }
         let evs = collect(d, 200);
         assert!(
-            !evs.iter().any(|e| e.kind == NHSHELL_EV_FRAME_READY),
+            !evs.iter().any(|e| e.kind() == Kind::FrameReady),
             "a FRAME_READY with nothing drawn"
         );
         let after = stats(d).counters;

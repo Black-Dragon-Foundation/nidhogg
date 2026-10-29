@@ -298,7 +298,7 @@ impl Present {
         }
         if let (false, Some(shared)) = (self.notified, &self.shared) {
             self.notified = true;
-            shared.post(NhShellEvent::new(NHSHELL_EV_FRAME_READY, self.window, 0));
+            shared.post(Record::new(ShellEvent::FrameReady, self.window, 0));
             shared.wake.signal();
         }
     }
@@ -1339,8 +1339,8 @@ impl WaylandShell {
     }
 
     /// The host took a `FRAME_READY` record: the pacer may post the next one.
-    pub(super) fn frame_ready_taken(&mut self, ev: &NhShellEvent) {
-        if ev.kind == NHSHELL_EV_FRAME_READY
+    pub(super) fn frame_ready_taken(&mut self, ev: &Record) {
+        if matches!(ev.event, ShellEvent::FrameReady)
             && let Some(p) = self.main.presents.get(&ev.window)
         {
             lock(p).notified = false;
@@ -1490,12 +1490,11 @@ impl WaylandShell {
 }
 
 fn frame_done(state: &mut ReaderState, window: u64, time_ns: u64, presented_ns: u64, refresh: u32) {
-    let mut ev = NhShellEvent::new(NHSHELL_EV_FRAME_DONE, window, time_ns);
-    ev.u.frame_done = FrameDoneEv {
+    let f = FrameDoneEv {
         presented_ns,
         refresh_ns: refresh,
     };
-    state.post(ev);
+    state.post(Record::new(ShellEvent::FrameDone(f), window, time_ns));
 }
 
 /// A frame callback: the commit it was requested with has been shown (or is the compositor's to hold no longer).

@@ -6,13 +6,12 @@
 
 use crate::action::{NHG_ACT_FOCUS_IN, NHG_ACT_FOCUS_OUT, NhgAction};
 use crate::display::Display;
-use nhshell::event::NhShellEvent;
+use nhshell::event::{FocusEv, Record};
 
 /// A `FOCUS` event: the window with the keyboard follows it, and a registered window gets one `FOCUS_IN` or
 /// `FOCUS_OUT` action naming it; a window the glue does not know gets none (C found no frame for it).
-pub fn focus(state: &mut Display, ev: &NhShellEvent) {
-    // SAFETY: a FOCUS record's valid member is `focus`.
-    let on = unsafe { ev.u.focus }.r#in != 0;
+pub fn focus(state: &mut Display, ev: &Record, f: &FocusEv) {
+    let on = f.r#in != 0;
     if on {
         state.keyboard.window = ev.window;
     } else if state.keyboard.window == ev.window {
