@@ -1,8 +1,8 @@
 //! T1 tests of reconnecting in place: the recorder restarts (`restart`: the socket kept, bound again, or gone until
 //! `restart_up`) and the shell connects again with its windows, pools and input.  The harness is `common/mod.rs`.
 //!
-//! The descriptor and thread counts of `twenty_reconnects_free_everything` are the process's, so every test here holds
-//! `SERIAL`: that one exclusively, the others shared.
+//! The descriptor and thread counts of the twenty-cycle tests are the process's, so every test here holds `SERIAL`:
+//! those two exclusively, the others shared.
 
 mod common;
 
@@ -938,5 +938,299 @@ mod reconnect {
         let c = rec.control(r#"{"cmd":"connections"}"#);
         assert_eq!(number(&c, "accepted"), Some(21), "{c}");
         assert_eq!(number(&c, "live"), Some(1), "{c}");
+    }
+
+    // The presenter thread across a reconnect: it sends nothing from the loss until the new configure, keeps the
+    // fronts and their damage, drops the content layers, and frees what the old connection had.
+
+    use glitnir::geom::Rect;
+
+    const BG: u32 = 0xff20_4060;
+    /// A window layer's Glitnir id (a window id carries the top bit, as the glue's do).
+    const WIN: u64 = (1 << 63) | 7;
+    /// The window's rectangle on a 400 x 300 frame, with 60 rows of frame below it.
+    const VIEW: Rect = Rect::new(0, 0, 400, 240);
+
+    /// Dispatch the records until `f` holds (10 s at most).
+    fn until(shell: &mut WaylandShell, what: &str, f: impl Fn(&mut WaylandShell) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            while shell.next_event().unwrap().is_some() {}
+            if f(shell) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "never: {what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// The output shows `b` at the top-left.
+    fn shows(rec: &Recorder, b: &backing::Backing) -> bool {
+        let snap = rec.snapshot();
+        (0..b.h).all(|y| {
+            (0..b.w)
+                .all(|x| Recorder::snapshot_pixel(&snap, x as usize, y as usize) == b.pixel(x, y))
+        })
+    }
+
+    /// Window `w`'s buffer commits on its surface now, from recorder commit `seq` on.
+    fn buffer_commits(rec: &Recorder, shell: &WaylandShell, seq: u64, w: u64) -> Vec<String> {
+        let pid = shell.surface_protocol_id(w).unwrap();
+        commits(rec, seq, pid)
+            .into_iter()
+            .filter(|c| c.contains("\"buffer\":{"))
+            .collect()
+    }
+
+    /// A shell with reconnecting on, presenting on its own thread, with a top-level of `b`'s size that shows `b` filled
+    /// with `BG` and whose pacer is idle again (the next packet composes at once).
+    fn presenting(rec: &Recorder, b: &mut backing::Backing) -> (WaylandShell, u64) {
+        let mut shell = open(rec);
+        shell.set_presenter_thread(true).unwrap();
+        let w = shell
+            .window_new(&WindowDesc {
+                w: b.w,
+                h: b.h,
+                title: "t".into(),
+                app_id: "nidhogg.test".into(),
+                flags: 0,
+            })
+            .unwrap();
+        let c = configure_of(&mut shell, w);
+        shell
+            .ack_configure(w, c.serial, NHSHELL_ACK_CONTENT)
+            .unwrap();
+        b.fill_all(BG);
+        let b: &backing::Backing = b;
+        assert!(backing::publish(&mut shell, w, &[(b, w)], 0));
+        until(&mut shell, "the first picture", |_| shows(rec, b));
+        until(&mut shell, "an idle pacer", |s| {
+            !s.present_pacer(w).unwrap().0
+        });
+        (shell, w)
+    }
+
+    /// The commits presenting made so far, with a buffer or bare.
+    fn commits_made(shell: &WaylandShell) -> u64 {
+        let s = shell.presenter_stats().unwrap();
+        s.commits + s.bare_commits
+    }
+
+    /// After a reconnect: window `w`'s first configure, acked as the glue acks it (a content ack), and the host's
+    /// publish after it (nothing new drawn: the waiting ack asks for a packet).
+    fn configure_and_publish(
+        shell: &mut WaylandShell,
+        w: u64,
+        b: &backing::Backing,
+    ) -> ConfigureEv {
+        let c = configure_of(shell, w);
+        shell
+            .ack_configure(w, c.serial, NHSHELL_ACK_CONTENT)
+            .unwrap();
+        assert!(
+            backing::publish(shell, w, &[(b, w)], 0),
+            "the ack asks for a packet"
+        );
+        c
+    }
+
+    /// The host makes window layer `WIN` of `b`'s frame its own output and draws it in `argb` (the glue does it at a
+    /// full-window scroll).
+    fn promote(b: &mut backing::Backing, argb: u32) {
+        glitnir::scene::with(b.g, |s| {
+            s.upsert(&glitnir::scene::LayerDesc {
+                id: WIN,
+                parent: b.g,
+                kind: 2,
+                rect: VIEW,
+                scale: 1.0,
+                visible: 1,
+            })?;
+            s.set_output(WIN, true)
+        })
+        .unwrap();
+        b.fill(VIEW, argb);
+    }
+
+    /// The window goes back into its frame (the glue does it at the loss).
+    fn demote(b: &backing::Backing) {
+        glitnir::scene::with(b.g, |s| s.set_output(WIN, false)).unwrap();
+    }
+
+    /// Root `w` has one content layer, and the layer committed a buffer from recorder commit `seq` on.
+    fn layer_shown(rec: &Recorder, shell: &WaylandShell, w: u64, seq: u64) -> bool {
+        shell.content_layers(w).first().is_some_and(|l| {
+            commits(rec, seq, l.0 as u32)
+                .iter()
+                .any(|c| c.contains("\"buffer\":{"))
+        })
+    }
+
+    /// The memfds among the descriptors.
+    fn memfds() -> usize {
+        std::fs::read_dir("/proc/self/fd")
+            .unwrap()
+            .filter_map(|e| std::fs::read_link(e.ok()?.path()).ok())
+            .filter(|p| p.to_string_lossy().starts_with("/memfd:"))
+            .count()
+    }
+
+    /// Review Focus 5: a restart with 20 packets queued and a compose delayed (100 ms).  Nothing commits from the loss
+    /// until the new configure, a new presenter thread runs after the reconnect, and the first buffer on the new
+    /// surface carries the configure's ack and the newest packet's picture.
+    #[test]
+    fn presenter_pauses_and_resumes() {
+        let _g = shared();
+        let rec = Recorder::start("sway");
+        let mut b = backing::Backing::new(200, 100);
+        let (mut shell, w) = presenting(&rec, &mut b);
+        let tid = shell.presenter_tid().expect("the presenter runs");
+        let made = commits_made(&shell);
+        shell.set_compose_delay(100);
+        for i in 0..20u32 {
+            b.fill(
+                Rect::new(i as i32 * 10, 0, 10, 100),
+                0xff00_0000 | i.wrapping_mul(0x000a_0b0c),
+            );
+            assert!(backing::publish(&mut shell, w, &[(&b, w)], 0));
+        }
+        restart(&rec, r#"{"cmd":"restart","mode":"keep-socket"}"#);
+        until_reconnecting(&mut shell);
+        let seq = next_seq(&rec);
+        reconnect_within(&mut shell, 3);
+        shell.set_compose_delay(0);
+        let again = shell.presenter_tid().expect("the presenter runs again");
+        assert_ne!(again, tid, "the presenter thread was not started again");
+        // the new presenter has had its turns: the tree waits for its configure
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            commits_made(&shell),
+            made,
+            "a commit between the loss and the new configure"
+        );
+        assert!(
+            buffer_commits(&rec, &shell, seq, w).is_empty(),
+            "a buffer before the new configure"
+        );
+        let c = configure_and_publish(&mut shell, w, &b);
+        until(&mut shell, "the newest packet's picture", |_| {
+            shows(&rec, &b)
+        });
+        let first = buffer_commits(&rec, &shell, seq, w).remove(0);
+        assert!(
+            first.starts_with(&format!("{{\"ack_serial\":{},", c.serial)),
+            "the first buffer without the configure's ack: {first}"
+        );
+    }
+
+    /// Review Focus 5: the compositor goes while the presenter composes (300 ms) and stays away past the compose.  The
+    /// compose ends on a dead connection: nothing is sent, its buffer goes back, and the picture it held comes back
+    /// whole on the new connection.
+    #[test]
+    fn no_commit_on_the_dead_connection() {
+        let _g = shared();
+        let rec = Recorder::start("sway");
+        let mut b = backing::Backing::new(200, 100);
+        let (mut shell, w) = presenting(&rec, &mut b);
+        let made = commits_made(&shell);
+        shell.set_compose_delay(300);
+        b.fill(Rect::new(20, 20, 60, 40), 0xff11_2233);
+        assert!(backing::publish(&mut shell, w, &[(&b, w)], 0));
+        // the presenter is composing
+        std::thread::sleep(Duration::from_millis(30));
+        restart(&rec, r#"{"cmd":"restart","mode":"gone"}"#);
+        // taking RECONNECTING joins the presenter: its compose has ended
+        until_reconnecting(&mut shell);
+        assert_eq!(shell.reconnect(50), Err(ShellError::Timeout));
+        restart(&rec, r#"{"cmd":"restart_up"}"#);
+        reconnect_within(&mut shell, 3);
+        shell.set_compose_delay(0);
+        assert_eq!(
+            commits_made(&shell),
+            made,
+            "a commit on the dead connection"
+        );
+        configure_and_publish(&mut shell, w, &b);
+        until(&mut shell, "the picture composed at the loss", |_| {
+            shows(&rec, &b)
+        });
+    }
+
+    /// Content layers belong to the connection: they go at the loss; once the host demotes the window (the glue does
+    /// at the loss) the frame shows it again; the next promotion makes a new layer on the new connection.
+    #[test]
+    fn content_layers_dropped_and_repromoted() {
+        let _g = shared();
+        let rec = Recorder::start("sway");
+        let mut b = backing::Backing::new(400, 300);
+        let (mut shell, w) = presenting(&rec, &mut b);
+        let seq = next_seq(&rec);
+        promote(&mut b, 0xff33_6699);
+        assert!(backing::publish(&mut shell, w, &[(&b, w)], 0));
+        until(&mut shell, "the layer's first buffer", |s| {
+            layer_shown(&rec, s, w, seq)
+        });
+        restart(&rec, r#"{"cmd":"restart","mode":"keep-socket"}"#);
+        until_reconnecting(&mut shell);
+        demote(&b);
+        reconnect_within(&mut shell, 3);
+        assert!(
+            shell.content_layers(w).is_empty(),
+            "a content layer kept across the reconnect"
+        );
+        configure_and_publish(&mut shell, w, &b);
+        until(&mut shell, "the window in its frame", |_| shows(&rec, &b));
+        assert!(
+            shell.content_layers(w).is_empty(),
+            "a content layer without a promotion"
+        );
+        let seq = next_seq(&rec);
+        promote(&mut b, 0xff99_6633);
+        assert!(backing::publish(&mut shell, w, &[(&b, w)], 0));
+        until(&mut shell, "a new layer's first buffer", |s| {
+            layer_shown(&rec, s, w, seq)
+        });
+        until(&mut shell, "the promoted window's picture", |_| {
+            shows(&rec, &b)
+        });
+    }
+
+    /// Review Focus 5: twenty restarts while presenting on the thread, a window its own output, and a packet queued at
+    /// each loss: the picture comes back each time, and descriptors, memfds and threads equal cycle 5's.
+    #[test]
+    fn twenty_cycles_with_the_presenter_free_everything() {
+        let _g = SERIAL.write().unwrap_or_else(|e| e.into_inner());
+        let rec = Recorder::start("sway");
+        let mut b = backing::Backing::new(400, 300);
+        let (mut shell, w) = presenting(&rec, &mut b);
+        let seq = next_seq(&rec);
+        promote(&mut b, 0xff33_6699);
+        assert!(backing::publish(&mut shell, w, &[(&b, w)], 0));
+        until(&mut shell, "the layer's first buffer", |s| {
+            layer_shown(&rec, s, w, seq)
+        });
+        let mut at5 = None;
+        for cycle in 1..=20u32 {
+            // rows in the window (its layer's ring buffers) and in the frame below it, queued at the loss
+            let argb = 0xff00_0000 | cycle.wrapping_mul(0x0001_0203);
+            b.fill(Rect::new(0, 100, 400, 10), argb);
+            b.fill(Rect::new(0, 250, 400, 20), argb);
+            assert!(backing::publish(&mut shell, w, &[(&b, w)], 0));
+            restart(&rec, r#"{"cmd":"restart","mode":"keep-socket"}"#);
+            until_reconnecting(&mut shell);
+            reconnect_within(&mut shell, 3);
+            configure_and_publish(&mut shell, w, &b);
+            until(&mut shell, "the picture after the reconnect", |_| {
+                shows(&rec, &b)
+            });
+            assert!(shell.presenter_tid().is_some(), "the presenter runs");
+            if cycle == 5 {
+                at5 = Some((fds(), memfds(), tasks()));
+            }
+        }
+        let (fd5, mem5, task5) = at5.unwrap();
+        assert_eq!(fds(), fd5, "descriptors");
+        assert_eq!(memfds(), mem5, "memfds");
+        assert_eq!(tasks(), task5, "threads");
     }
 }
