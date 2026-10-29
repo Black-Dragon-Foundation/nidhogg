@@ -348,7 +348,8 @@ mod child {
 
         assert_eq!(set(d, c, root, 50, 25, NHG_CHILD_VISIBLE), 0);
         still(&rec, c, |n| n.contains("\"position\":[30,20]"));
-        assert_ne!(ready(d, root) & NHG_PRESENTED_COMMITTED, 0);
+        // a bare commit: COMMITTED reports a root buffer only
+        assert_eq!(ready(d, root) & NHG_PRESENTED_COMMITTED, 0);
         rec.wait_node(c, |n| n.contains("\"position\":[50,25]"));
         assert_eq!(
             frames_of(&rec, c),
@@ -505,7 +506,8 @@ mod child {
         assert_eq!(set(d, c, root, 30, 20, 0), 0);
         assert_eq!(set(d, c, root, 30, 20, 0), 0, "hidden already");
         still(&rec, c, |n| n.contains("\"mapped\":true"));
-        assert_ne!(ready(d, root) & NHG_PRESENTED_COMMITTED, 0);
+        // a bare commit: COMMITTED reports a root buffer only
+        assert_eq!(ready(d, root) & NHG_PRESENTED_COMMITTED, 0);
         let n = rec.wait_node(c, |n| n.contains("\"mapped\":false"));
         assert!(n.contains("\"buffer\":null"), "{n}");
         tick(&rec, d);
@@ -550,7 +552,8 @@ mod child {
         let seq = next_seq(&rec);
         assert_eq!(set(d, g, c, 25, 15, NHG_CHILD_VISIBLE), 0);
         still(&rec, g, |n| n.contains("\"position\":[10,10]"));
-        assert_ne!(ready(d, root) & NHG_PRESENTED_COMMITTED, 0);
+        // a bare commit: COMMITTED reports a root buffer only
+        assert_eq!(ready(d, root) & NHG_PRESENTED_COMMITTED, 0);
         rec.wait_node(g, |n| n.contains("\"position\":[25,15]"));
         let commits = log(&rec, seq);
         let first = |id: u64| {
