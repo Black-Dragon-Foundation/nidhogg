@@ -195,6 +195,9 @@ similar) event."
   (ignore follow-tooltip)
   (unless (listp targets)
     (signal 'wrong-type-argument (list 'listp targets)))
+  ;; A circular list ends in a cons after its distinct conses.
+  (when (consp (nthcdr (safe-length targets) targets))
+    (signal 'circular-list (list targets)))
   (let ((tail targets))
     (while (consp tail)
       (unless (stringp (car tail))

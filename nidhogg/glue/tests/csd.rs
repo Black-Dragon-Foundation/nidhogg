@@ -353,6 +353,27 @@ mod csd {
         close(d);
     }
 
+    /// A window made anew is laid out from nothing: an undecorated layout is "unchanged" (0), yet the whole layout is
+    /// written, which C copies over what it kept for the frame's previous window.
+    #[test]
+    fn unchanged_layout_is_still_written() {
+        let rec = Recorder::start("mutter");
+        let d = open(&rec);
+        let id = window(d);
+        let mut l = NhgCsdLayout {
+            l: 99,
+            t: 99,
+            r: 99,
+            b: 99,
+            strip: 99,
+            on: 1,
+        };
+        // SAFETY: a live display; `l` is writable.
+        let rc = unsafe { nhg_csd_layout(d, id, 120, NHG_CSD_UNDECORATED, &mut l) };
+        assert_eq!((rc, l), (0, NhgCsdLayout::default()));
+        close(d);
+    }
+
     /// Margins, strip and buttons each hit as `nhwl_csd_hit` did: the border consumes the motion and gives its pointer
     /// shape; a button under the pointer is hovered; back in the native area, the border is left and the motion goes
     /// on as the pointer's own action, after the title bar's.
