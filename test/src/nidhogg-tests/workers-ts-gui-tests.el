@@ -159,6 +159,9 @@ mode.  Afterwards every parse lands and the file and its buffer go."
             ;; The create start's job, parked.
             (should (nidhogg-workers--test-await-paused 'before-done 30000))
             (delete-other-windows)
+            ;; All 20 pictures must be on screen: the page's rows are
+            ;; font-high, so how many fit depends on the scale.
+            (set-frame-height nil 40)
             (switch-to-buffer buf)
             (goto-char (point-min))
             (set-window-buffer (split-window-right) page)
