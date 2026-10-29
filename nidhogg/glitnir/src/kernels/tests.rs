@@ -291,7 +291,7 @@ fn corner_coverage_within_1_of_255() {
     );
 }
 
-/// PD's corners (Task 14) against a Cairo-free reference: each pixel of a corner square takes 16×16 point samples,
+/// PD's corners against a Cairo-free reference: each pixel of a corner square takes 16×16 point samples,
 /// each sample `beneath` beyond the outer arc, `ring` between the arcs, else the inside (`fill`, or the pixel as drawn
 /// when `fill` is 0); every channel within 1/255. Outside the squares of the mask nothing changes.
 #[test]

@@ -1,4 +1,4 @@
-//! Touch (reader queue): `wl_touch` points posted as `TOUCH` records at the end of each touch frame (W2-10).
+//! Touch (reader queue): `wl_touch` points posted as `TOUCH` records at the end of each touch frame.
 //!
 //! A point belongs to the surface it went down on; its motion and lift carry that window and device pixels at its
 //! scale.  The records of a frame wait for `frame`, so a host sees the points of one frame together.  A `cancel`

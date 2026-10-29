@@ -12,7 +12,7 @@
     (should (eq (framep (selected-frame)) 'pgtk))
     (should (= (frame-scale-factor) (ceiling s)))))
 
-;; Stats and snapshot of the stock present path (Task 5).
+;; Stats and snapshot of the stock present path.
 
 (ert-deftest glitnir-gui/stats-record-the-stock-paint ()
   (let ((glitnir-enable nil))                   ; the stock path (Glitnir paints only the damage)
@@ -53,7 +53,7 @@
   (skip-unless (daemonp))
   (should (>= (plist-get (glitnir-stats) :count) 1)))
 
-;; Damage recorded in pgtk's drawing primitives (Task 20).  Each test first takes what is pending, so it sees only
+;; Damage recorded in pgtk's drawing primitives.  Each test first takes what is pending, so it sees only
 ;; what its own steps drew.
 
 (defun glitnir-gui--frame-rect ()
@@ -128,7 +128,7 @@
         (dotimes (_ 20) (insert "z") (redisplay t))
         (should (= calls (glitnir--calls)))))))
 
-;; Consistency points, the root freeze and damage-only present (Task 21).
+;; Consistency points, the root freeze and damage-only present.
 
 (defconst glitnir-gui--magenta '(:background "#ff00ff" :foreground "#ff00ff"))
 
@@ -273,7 +273,7 @@ dispatch (GDK commits that paint), then types and redraws again, as a command an
   ;; posframe's cycle (popup-churn): show a child, move it, hide it; the paints should cover the child's rectangles,
   ;; not the root.  Known failure GL-POPUP-CHURN-FULL-1: a child frame is a GtkWidget in its parent's EmacsFixed, so
   ;; its show/hide restyles the parent's CSS node and GTK's style-updated handlers (gtk_widget_real_style_updated,
-  ;; gtk_fixed_style_updated) invalidate the whole root in the next layout phase.  MP-3's widget-less child frames
+  ;; gtk_fixed_style_updated) invalidate the whole root in the next layout phase.  the widget-less child frames
   ;; remove it.
   :expected-result :failed
   (let* ((cb (glitnir-gui--text-buffer "*glitnir-churn*" 5))
@@ -418,7 +418,7 @@ dispatch (GDK commits that paint), then types and redraws again, as a command an
       (kill-buffer buf))))
 
 (ert-deftest glitnir-gui/no-starvation-while-redisplaying ()
-  ;; R7's scenario S3-1: GLib dispatch happens inside redisplay (jit-lock's `input-pending-p') and finds the root
+  ;; GLib dispatch happens inside redisplay (jit-lock's `input-pending-p') and finds the root
   ;; frozen; each consistency point paints, so the display keeps up.
   (let* ((a (glitnir-gui--jit-buffer "*glitnir-a*"))
          (b (glitnir-gui--jit-buffer "*glitnir-b*"))
@@ -450,7 +450,7 @@ dispatch (GDK commits that paint), then types and redraws again, as a command an
           (should (<= (plist-get last :commit-ns) (plist-get last :paint-ns) (plist-get last :present-ns)
                       (glitnir--now-ns))))))))
 
-;; Debug modes (Task 22).
+;; Debug modes.
 
 (defun glitnir-gui--violations ()
   (plist-get (glitnir-stats) :violations))
@@ -517,7 +517,7 @@ dispatch (GDK commits that paint), then types and redraws again, as a command an
         (should (>= (plist-get s :count) 5))
         (should (= (plist-get s :painted-px) (glitnir-gui--frame-px)))))))
 
-;; The panic fallback (Task 23).
+;; The panic fallback.
 
 (defun glitnir-gui--panics (where)
   "Make the next call at WHERE panic, and check what the fallback leaves.
@@ -564,7 +564,7 @@ Glitnir is turned back on after (`revive'), for the tests that follow."
 (ert-deftest glitnir-gui/panic-in-draw-paints-stock ()
   (glitnir-gui--panics 'draw))
 
-;; Layers, the stacking list and scene commits from pgtk's hooks (Task 32).  Each test runs under `verify', which
+;; Layers, the stacking list and scene commits from pgtk's hooks.  Each test runs under `verify', which
 ;; also checks at every commit that Glitnir stacks the child frames as GDK stacks their windows.
 
 (defmacro glitnir-gui--verified (&rest body)
@@ -761,7 +761,7 @@ Glitnir is turned back on after (`revive'), for the tests that follow."
               (should (equal (take 2 (glitnir--layer-rect c)) (list (round (* 260 s)) (round (* 230 s))))))))
       (glitnir-gui--delete fs))))
 
-;; The Lisp surface (Task 33): chrome resolved from parameters and faces reaches the layer.
+;; The Lisp surface: chrome resolved from parameters and faces reaches the layer.
 
 (defun glitnir-gui--chromed (&rest params)
   "A shown child frame with PARAMS (corner-radius, shadow ...) as frame parameters."
@@ -835,7 +835,7 @@ Glitnir is turned back on after (`revive'), for the tests that follow."
           (redraw-frame c))
       (when (frame-live-p c) (delete-frame c t)))))
 
-;; Child frames as layers, paint-through (Task 34): each frame's draw handler composes the committed scene into GDK's
+;; Child frames as layers, paint-through: each frame's draw handler composes the committed scene into GDK's
 ;; buffer.  The root shows magenta under the popups (cyan, empty), so a rounded corner, a shadow and the stock
 ;; picture are told apart by their pixels.  Every test runs under `verify'.
 
@@ -1024,7 +1024,7 @@ Glitnir is on again after, and they are redrawn whole once more (so `verify' com
       (when (frame-live-p c) (delete-frame c t)))))
 
 (ert-deftest glitnir-gui/decorated-child-identical ()
-  ;; Design §3.4: a decorated (not `undecorated') child frame gets no chrome, from the option or its own
+  ;; A decorated (not `undecorated') child frame gets no chrome, from the option or its own
   ;; parameters: its pixels are Glitnir off's.
   (glitnir-gui--under)
   (let ((c nil) (old child-frame-chrome))

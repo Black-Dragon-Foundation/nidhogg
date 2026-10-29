@@ -717,7 +717,7 @@ Return the two replies."
           (should (<= 1 n 2)))
       (kill-buffer buf))))
 
-;; Task 10: child frames (nhwlchild.c).  A child frame is a subsurface of its parent's window; the recorder's `tree'
+;; Child frames (nhwlchild.c).  A child frame is a subsurface of its parent's window; the recorder's `tree'
 ;; shows each surface's role, parent, position (logical), input region and buffer.
 
 (defun nhwl-gui--tree ()
@@ -786,7 +786,7 @@ Return the two replies."
                      5))
             (should-not (seq-filter (lambda (cm) (and (eql (plist-get cm :surface) id) (nhwl-gui--get cm :buffer)))
                                     (plist-get (gui-runner-recorder (list :cmd "log" :since mark)) :commits)))
-            ;; S5: the sync child's move is applied by a bare commit of the parent
+            ;; the sync child's move is applied by a bare commit of the parent
             (should (equal (car (nhwl-gui--commit-summary (nhwl-gui--toplevel-all-commits mark))) '(nil nil 0)))))
       (when (frame-live-p c) (delete-frame c t)))))
 
@@ -1235,7 +1235,7 @@ The shell's records reach Lisp (the monitors-changed hook) only through the inpu
                    5)))
       (when (frame-live-p new) (delete-frame new t)))))
 
-;; Task 11: tip frames.  A tooltip is an xdg popup of the frame under the pointer; the recorder's `tree' shows it with
+;; Tip frames.  A tooltip is an xdg popup of the frame under the pointer; the recorder's `tree' shows it with
 ;; role "popup".
 
 (defun nhwl-gui--popup-ids ()
@@ -1285,7 +1285,7 @@ The shell's records reach Lisp (the monitors-changed hook) only through the inpu
           (should-not (x-hide-tip)))
       (x-hide-tip))))
 
-;; Present path S2: acks are recorded and go out with the commit that carries them.
+;; Present path, acks: acks are recorded and go out with the commit that carries them.
 
 (defun nhwl-gui--popup-commits (mark)
   "The popups' commits since MARK."
@@ -1350,7 +1350,7 @@ serial is never acked early, with the old buffer)."
                              (if (eql (nhwl-gui--get c :ack_serial) a) '(700 500) '(760 540))))))))
     (gui-runner-recorder '(:cmd "unocclude"))))
 
-;;; Monitors (native shells W1 Task 14)
+;;; Monitors
 
 (defun nhwl-gui--wait-ev (pred)
   "Like `nhwl-gui--wait' with PRED, reading events between the tries."
@@ -1661,7 +1661,7 @@ characters go, the mark stays."
             (should (equal (plist-get e :location) (list (round (/ 40 s)) (round (/ 24 s)))))))
       (delete-frame f))))
 
-;;; A real press on a header line or mode line arrives with that posn area (native shells W1, after Task 20)
+;;; A real press on a header line or mode line arrives with that posn area
 
 (defun nhwl-gui--line-frame ()
   "A new ordinary frame whose only window has a header line and a mode line, drawn."
@@ -1727,7 +1727,7 @@ characters go, the mark stays."
   (skip-unless (nhwl-gui--recorder-p))
   (nhwl-gui--click-line 'mode 'mode-line))
 
-;; Present path S3: the rule at FRAME_READY.  A buffer needs damage or a content ack, a bare commit needs something
+;; Present path, the rule at FRAME_READY.  A buffer needs damage or a content ack, a bare commit needs something
 ;; owed, and a redisplay that draws nothing commits nothing.
 
 (defun nhwl-gui--toplevel-all-commits (mark)
@@ -1887,7 +1887,7 @@ echo area empty."
        (should (> (plist-get s :count) 0))
        (should (< (plist-get (plist-get s :key-to-commit-ms) :max) 100))))))
 
-;; Present path S4: only damage wakes the pacer.  A draw outside redisplay (the drain's mouse highlight) still shows.
+;; Present path, wake-ups: only damage wakes the pacer.  A draw outside redisplay (the drain's mouse highlight) still shows.
 
 (defun nhwl-gui--native-to-logical (x y)
   "The surface position, in logical pixels, of the selected frame's native pixel X, Y (past the margins and strip)."
@@ -1933,7 +1933,7 @@ alone wakes the pacer, and a commit with damage follows within 200 ms."
                    (should (< (- (float-time) t0) 0.2))))))
          (kill-buffer buf))))))
 
-;; Present path S5: child frames are sync subsurfaces, presented with their tree (children deepest first, the root
+;; Present path, children: child frames are sync subsurfaces, presented with their tree (children deepest first, the root
 ;; last).  The recorder logs a sync child's commit when its root's commit applies it, with that commit's seq in
 ;; `applied_by'.
 
@@ -2060,7 +2060,7 @@ commit applies the move."
                  (should (eql (nhwl-gui--get (car cs) :applied_by) (plist-get (car roots) :seq))))))
          (when (frame-live-p g) (delete-frame g t)))))))
 
-;; Task 17: keyboard focus in child frames (W1-7).  Wayland gives the keyboard to the top-level only; the glue routes
+;; Keyboard focus in child frames.  Wayland gives the keyboard to the top-level only; the glue routes
 ;; its keys to the frame of its tree that Emacs focused.  `last-event-frame' names the frame a key was read in, the
 ;; frame whose selected window the command loop inserts into.
 
@@ -2092,7 +2092,7 @@ while the top-level has the keyboard.  Delete the child and focus the parent aft
       (kill-buffer buf))))
 
 (ert-deftest nhwl-gui/keys-go-to-the-focused-child ()
-  "W1-7: the top-level's keys go to the child frame Emacs focused."
+  "The top-level's keys go to the child frame Emacs focused."
   (skip-unless (nhwl-gui--recorder-p))
   (nhwl-gui--with-focused-child
    (lambda (c _parent)
@@ -2187,7 +2187,7 @@ while the top-level has the keyboard.  Delete the child and focus the parent aft
       (when (frame-live-p mf) (delete-frame mf t))
       (when (frame-live-p parent) (select-frame-set-input-focus parent)))))
 
-;; Task 18: every frame parameter has its effect or a listed no-op (nidhogg/shell/README.md, "Frame parameters").
+;; Every frame parameter has its effect or a listed no-op (nidhogg/shell/README.md, "Frame parameters").
 
 (defconst nhwl-gui--handled-parameters
   '(auto-raise auto-lower background-color border-color border-width cursor-color cursor-type font
@@ -2272,7 +2272,7 @@ while the top-level has the keyboard.  Delete the child and focus the parent aft
     (redisplay t)))
 
 (ert-deftest nhwl-gui/200-resizes-no-flash ()
-  ;; W1-2, from P1.5 Task 15: 200 configures of alternating sizes; every commit with a buffer shows the size of
+  ;; 200 configures of alternating sizes; every commit with a buffer shows the size of
   ;; the newest configure it acked (no old-size buffer), and no commit attaches a buffer that damages nothing.
   (skip-unless (nhwl-gui--recorder-p))
   (nhwl-gui--windowed)
@@ -2299,7 +2299,7 @@ while the top-level has the keyboard.  Delete the child and focus the parent aft
       (should-not (plist-get (gui-runner-recorder (list :cmd "empty_buffer_commits" :since mark)) :commits)))
     (nhwl-gui--windowed)))
 
-;; Task 19: the full title bar (nhwlcsd.c): GNOME's button layout, the title-bar faces' colours for an active and an
+;; The full title bar (nhwlcsd.c): GNOME's button layout, the title-bar faces' colours for an active and an
 ;; inactive window, no margin on a tiled side, rounded top corners, the scale.  `nhwl--title-bar' gives the layout in
 ;; device pixels of the surface.
 

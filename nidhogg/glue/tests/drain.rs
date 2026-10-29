@@ -140,7 +140,7 @@ mod drain {
 
     /// A press on a child and a key, queued in one burst, taken in one drain: the key's action names the window with
     /// the keyboard (the root), and the test's apply loop, standing in for C, applied the press's focus before the
-    /// next `nhg_next`, so its resolution sends the key to the child (review B1).  The recorder moves the pointer over
+    /// next `nhg_next`, so its resolution sends the key to the child.  The recorder moves the pointer over
     /// the surface with the keyboard, so the burst focuses the child for the press and the root again for the key.
     #[test]
     fn click_on_child_then_key_routes_to_child() {
