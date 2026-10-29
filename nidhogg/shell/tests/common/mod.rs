@@ -5,7 +5,7 @@
 pub mod backing;
 
 use nhshell::api::ShellBackend;
-use nhshell::event::NhShellEvent;
+use nhshell::event::{ConfigureEv, Kind, OutputEv, PointerEv, Record, ShellEvent};
 use nhshell::wayland::WaylandShell;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fd::BorrowedFd;
@@ -181,7 +181,7 @@ pub fn readable_within(fd: i32, ms: i64) -> bool {
 }
 
 /// The next record satisfying `want` within 5 s; other records are dropped.
-pub fn wait_for(shell: &mut WaylandShell, want: impl Fn(&NhShellEvent) -> bool) -> NhShellEvent {
+pub fn wait_for(shell: &mut WaylandShell, want: impl Fn(&Record) -> bool) -> Record {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         while let Some(ev) = shell.next_event().unwrap() {
@@ -194,8 +194,39 @@ pub fn wait_for(shell: &mut WaylandShell, want: impl Fn(&NhShellEvent) -> bool) 
     }
 }
 
-pub fn wait_event(shell: &mut WaylandShell, kind: u32) -> NhShellEvent {
-    wait_for(shell, |e| e.kind == kind)
+pub fn wait_event(shell: &mut WaylandShell, kind: Kind) -> Record {
+    wait_for(shell, |e| e.kind() == kind)
+}
+
+/// A `CONFIGURE` record's payload.
+pub fn configure_of(ev: &Record) -> ConfigureEv {
+    match ev.event {
+        ShellEvent::Configure(c) => c,
+        e => panic!("not a configure: {e:?}"),
+    }
+}
+
+/// An output record's payload (add, change, remove, enter, leave).
+pub fn output_of(ev: &Record) -> OutputEv {
+    match ev.event {
+        ShellEvent::OutputAdd(o)
+        | ShellEvent::OutputChange(o)
+        | ShellEvent::OutputRemove(o)
+        | ShellEvent::EnterOutput(o)
+        | ShellEvent::LeaveOutput(o) => o,
+        e => panic!("not an output record: {e:?}"),
+    }
+}
+
+/// A pointer record's payload (enter, leave, motion, button).
+pub fn pointer_of(ev: &Record) -> PointerEv {
+    match ev.event {
+        ShellEvent::PointerEnter(p)
+        | ShellEvent::PointerLeave(p)
+        | ShellEvent::PointerMotion(p)
+        | ShellEvent::Button(p) => p,
+        e => panic!("not a pointer record: {e:?}"),
+    }
 }
 
 /// A top-level window of `w` x `h` logical pixels, mapped: its first configure acked with the buffer that carries it.
@@ -210,9 +241,8 @@ pub fn mapped_window(shell: &mut WaylandShell, w: i32, h: i32) -> u64 {
             flags: 0,
         })
         .unwrap();
-    let ev = wait_event(shell, nhshell::event::NHSHELL_EV_CONFIGURE);
-    // SAFETY: a CONFIGURE record carries `configure`.
-    let serial = unsafe { ev.u.configure }.serial;
+    let ev = wait_event(shell, Kind::Configure);
+    let serial = configure_of(&ev).serial;
     shell
         .ack_configure(id, serial, NHSHELL_ACK_CONTENT)
         .unwrap();
@@ -232,7 +262,7 @@ pub fn draw(shell: &mut WaylandShell, id: u64, w: i32, h: i32) {
 }
 
 /// Every record that arrives within `ms` of quiet.
-pub fn collect(shell: &mut WaylandShell, ms: i64) -> Vec<NhShellEvent> {
+pub fn collect(shell: &mut WaylandShell, ms: i64) -> Vec<Record> {
     let mut out = Vec::new();
     loop {
         while let Some(ev) = shell.next_event().unwrap() {

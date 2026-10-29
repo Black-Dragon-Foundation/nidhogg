@@ -26,10 +26,7 @@
 //!   left at the loss (`DND_LEAVE`, before `RECONNECTING`).
 
 use crate::api::*;
-use crate::event::{
-    NHSHELL_EV_RECONNECTED, NHSHELL_EV_RECONNECTING, NHSHELL_EV_SELECTION, NhShellEvent,
-    SelectionEv,
-};
+use crate::event::{OutputEv, Record, SelectionEv, ShellEvent};
 use crate::wayland::conn::{self, Refused};
 use crate::wayland::reader::{self, ReaderState};
 use crate::wayland::{MainState, WaylandShell, present, selection};
@@ -86,13 +83,15 @@ enum Step {
 
 impl MainState {
     /// Each window's outputs, left: the records, and no window is on any output any more.
-    fn leave_all_outputs(&mut self) -> Vec<NhShellEvent> {
+    fn leave_all_outputs(&mut self) -> Vec<Record> {
         let mut out = Vec::new();
         for (&id, s) in &mut self.scales {
             for name in s.entered.drain(..) {
-                let mut ev = NhShellEvent::new(crate::event::NHSHELL_EV_LEAVE_OUTPUT, id, 0);
-                ev.u.output.id = u64::from(name);
-                out.push(ev);
+                let o = OutputEv {
+                    id: u64::from(name),
+                    ..OutputEv::default()
+                };
+                out.push(Record::new(ShellEvent::LeaveOutput(o), id, 0));
             }
         }
         out
@@ -105,9 +104,11 @@ impl MainState {
         let names: Vec<u32> = self.outputs.keys().copied().collect();
         self.outputs.clear();
         for name in names {
-            let mut ev = NhShellEvent::new(crate::event::NHSHELL_EV_OUTPUT_REMOVE, 0, 0);
-            ev.u.output.id = u64::from(name);
-            self.post(ev);
+            let o = OutputEv {
+                id: u64::from(name),
+                ..OutputEv::default()
+            };
+            self.post(Record::new(ShellEvent::OutputRemove(o), 0, 0));
         }
         self.cursor.forget_connection();
     }
@@ -116,10 +117,10 @@ impl MainState {
 impl WaylandShell {
     /// The next record.  When it is `RECONNECTING`, the windows' `LEAVE_OUTPUT` records go before it, and taking it
     /// starts reconnecting.
-    pub(super) fn take_record(&mut self) -> ShellResult<Option<NhShellEvent>> {
+    pub(super) fn take_record(&mut self) -> ShellResult<Option<Record>> {
         let ev = self.shared.take()?;
         if let Some(e) = ev
-            && e.kind == NHSHELL_EV_RECONNECTING
+            && matches!(e.event, ShellEvent::Reconnecting)
             && self.reconnect.is_none()
         {
             let mut leaves = self.main.leave_all_outputs();
@@ -360,8 +361,7 @@ impl WaylandShell {
         if presenter_was_on {
             let _ = self.set_presenter_thread_impl(true);
         }
-        self.shared
-            .post(NhShellEvent::new(NHSHELL_EV_RECONNECTED, 0, 0));
+        self.shared.post(Record::new(ShellEvent::Reconnected, 0, 0));
         self.shared.wake.signal();
         self.flush()
     }
@@ -388,9 +388,9 @@ impl WaylandShell {
     /// - Idle inhibitors are held again; export handles and activation tokens are forgotten.
     pub(super) fn remake_windows(&mut self) -> ShellResult {
         for kind in selection::lock(&self.shared).take_lost() {
-            let mut ev = NhShellEvent::new(NHSHELL_EV_SELECTION, 0, 0);
-            ev.u.selection = SelectionEv { kind };
-            self.shared.post(ev);
+            let s = SelectionEv { kind };
+            self.shared
+                .post(Record::new(ShellEvent::Selection(s), 0, 0));
         }
         self.popups_closed();
         let qh = self.main_queue.handle();

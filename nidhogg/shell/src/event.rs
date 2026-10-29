@@ -1,77 +1,172 @@
-//! Event records: what the shell hands the host, `#[repr(C)]` twins of `NhShellEvent` in `include/nhshell.h`.
+//! Event records: what the shell hands the host.
 //!
-//! One record type for every backend.  `kind` says which member of the union `u` is valid; kinds without a member
-//! (`CLOSE`, `DISCONNECTED`, `POINTER_LEAVE`, `FRAME_READY`) leave it zeroed.  `MODIFIERS` uses `key.mods`; `POINTER_ENTER`,
-//! `POINTER_MOTION` and `POINTER_LEAVE` use `pointer.x`/`y`; `BUTTON` uses `pointer.button`/`state`; `OUTPUT_REMOVE`
-//! uses `output.id`.  Window sizes are logical pixels; pointer positions are device pixels (logical x scale);
-//! `time_ns` is the compositor's clock in nanoseconds.
+//! One record type for every backend: the window it names, the compositor's time and the event with its payload.
+//! Window sizes are logical pixels; pointer positions are device pixels (logical x scale); `time_ns` is the
+//! compositor's clock in nanoseconds.
 
-pub const NHSHELL_EV_KEY: u32 = 1;
-pub const NHSHELL_EV_MODIFIERS: u32 = 2;
-pub const NHSHELL_EV_POINTER_ENTER: u32 = 3;
-pub const NHSHELL_EV_POINTER_LEAVE: u32 = 4;
-pub const NHSHELL_EV_POINTER_MOTION: u32 = 5;
-pub const NHSHELL_EV_BUTTON: u32 = 6;
-pub const NHSHELL_EV_SCROLL: u32 = 7;
-pub const NHSHELL_EV_CONFIGURE: u32 = 8;
-pub const NHSHELL_EV_CLOSE: u32 = 9;
-pub const NHSHELL_EV_SCALE: u32 = 10;
-pub const NHSHELL_EV_FOCUS: u32 = 11;
-pub const NHSHELL_EV_FRAME_DONE: u32 = 12;
-pub const NHSHELL_EV_OUTPUT_ADD: u32 = 13;
-pub const NHSHELL_EV_OUTPUT_REMOVE: u32 = 14;
-pub const NHSHELL_EV_DISCONNECTED: u32 = 15;
-/// The window's pacer lets the host present what it drew (after `window_dirty`, an ack, a frame callback or a release).
-/// It may come twice for one frame: `window_ready` says whether to present.  16–20 belong to popups and children.
-pub const NHSHELL_EV_FRAME_READY: u32 = 21;
-/// The compositor dismissed a popup (no payload); the window is still there until the host destroys it.
-pub const NHSHELL_EV_POPUP_DONE: u32 = 16;
-/// The clipboard or the primary selection changed (ours or another client's); `u.selection.kind` says which.
-pub const NHSHELL_EV_SELECTION: u32 = 17;
-// text-input-v3 (`u.text`); the text is fetched with `nhshell_take_text`
-/// The preedit changed: `u.text.id`/`len` its text (len 0: cleared), `cursor_begin`/`cursor_end` bytes (-1: hidden).
-pub const NHSHELL_EV_PREEDIT: u32 = 18;
-/// Text to insert: `u.text.id`, `u.text.len`.
-pub const NHSHELL_EV_COMMIT_TEXT: u32 = 19;
-/// Delete `u.text.before` bytes before and `u.text.after` bytes after the cursor.
-pub const NHSHELL_EV_DELETE_SURROUNDING: u32 = 20;
-/// An output announced by `OUTPUT_ADD` changed (same payload; sent only when a field differs).
-pub const NHSHELL_EV_OUTPUT_CHANGE: u32 = 22;
-/// The window is now on output `u.output.id` (other members zero).
-pub const NHSHELL_EV_ENTER_OUTPUT: u32 = 23;
-/// The window left output `u.output.id`.
-pub const NHSHELL_EV_LEAVE_OUTPUT: u32 = 24;
-// Drag and drop (`u.dnd`; Rust only, no C twin in `nhshell.h`).  The drop target's records name the window under the
-// pointer (a child or popup too); the drag source's name the window the drag started from.
-/// A drag entered one of our windows; its offer is `NHSHELL_SEL_DND` from now on.
-pub const NHSHELL_EV_DND_ENTER: u32 = 32;
-/// The drag moved over the window.
-pub const NHSHELL_EV_DND_MOTION: u32 = 33;
-/// The drag left the window (no drop): the offer is gone.
-pub const NHSHELL_EV_DND_LEAVE: u32 = 34;
-/// The drag was dropped on the window with `u.dnd.action`: read the offer, then `dnd_finish`.
-pub const NHSHELL_EV_DND_DROP: u32 = 35;
-/// Our drag: the action the compositor chose with the target changed (`u.dnd.action`, 0: none).
-pub const NHSHELL_EV_DRAG_ACTION: u32 = 36;
-/// Our drag: the user dropped it on a target that accepted it; `DRAG_DONE` comes when the target is finished.
-pub const NHSHELL_EV_DRAG_DROPPED: u32 = 37;
-/// Our drag ended: `u.dnd.ok` 1 when the target finished with `u.dnd.action`, 0 when it was cancelled (dropped on
-/// nothing, refused, or the display was lost: then before `DISCONNECTED`).  Comes once per drag.
-pub const NHSHELL_EV_DRAG_DONE: u32 = 38;
-/// A touch point went down, moved, lifted or was cancelled (`u.touch`), on the window it went down on.  The records
-/// of one touch frame are posted together when the frame ends; a cancel posts `NHSHELL_TOUCH_CANCEL` for every live
-/// point at once.
-pub const NHSHELL_EV_TOUCH: u32 = 39;
-/// A touchpad pinch began, changed or ended (`u.pinch`), on the window under the pointer.
-pub const NHSHELL_EV_PINCH: u32 = 40;
-/// The compositor answered `nhshell_session_open` (or took the session over): `u.session.state`.
-pub const NHSHELL_EV_SESSION: u32 = 41;
-/// The display went with reconnecting on (`ShellBackend::set_reconnect`): from the moment it is taken the shell is
-/// reconnecting, and the host drives `reconnect`.  The releases of held buttons, an empty `PREEDIT` and each
-/// window's `LEAVE_OUTPUT` come before it.  No payload.
-pub const NHSHELL_EV_RECONNECTING: u32 = 42;
-/// `reconnect` succeeded: the shell is connected again.  No payload.
-pub const NHSHELL_EV_RECONNECTED: u32 = 43;
+/// One event and its payload.
+#[derive(Clone, Copy, Debug)]
+pub enum ShellEvent {
+    Key(KeyEv),
+    /// The modifier mask changed: `NHSHELL_MOD_*` bits.
+    Modifiers {
+        mods: u32,
+    },
+    /// The pointer entered the window at `x`, `y`.
+    PointerEnter(PointerEv),
+    /// The pointer left the window (`x`, `y` 0).
+    PointerLeave(PointerEv),
+    /// The pointer moved to `x`, `y`.
+    PointerMotion(PointerEv),
+    /// A button was pressed or released: `button`, `state`.
+    Button(PointerEv),
+    Scroll(ScrollEv),
+    Configure(ConfigureEv),
+    Close,
+    Scale(ScaleEv),
+    Focus(FocusEv),
+    FrameDone(FrameDoneEv),
+    OutputAdd(OutputEv),
+    /// Output `id` went (other fields zero).
+    OutputRemove(OutputEv),
+    /// After the connection was lost: the last record.
+    Disconnected,
+    /// The compositor dismissed a popup; the window is still there until the host destroys it.
+    PopupDone,
+    /// The clipboard or the primary selection changed (ours or another client's).
+    Selection(SelectionEv),
+    // text-input-v3; the text is fetched with `ShellBackend::take_text`
+    /// The preedit changed: `id`/`len` its text (len 0: cleared), `cursor_begin`/`cursor_end` bytes (-1: hidden).
+    Preedit(TextEv),
+    /// Text to insert: `id`, `len`.
+    CommitText(TextEv),
+    /// Delete `before` bytes before and `after` bytes after the cursor.
+    DeleteSurrounding(TextEv),
+    /// The window's pacer lets the host present what it drew (after `window_dirty`, an ack, a frame callback or a
+    /// release).  It may come twice for one frame: `window_ready` says whether to present.
+    FrameReady,
+    /// An output announced by `OutputAdd` changed (same payload; sent only when a field differs).
+    OutputChange(OutputEv),
+    /// The window is now on output `id` (other fields zero).
+    EnterOutput(OutputEv),
+    /// The window left output `id`.
+    LeaveOutput(OutputEv),
+    // Drag and drop.  The drop target's records name the window under the pointer (a child or popup too); the drag
+    // source's name the window the drag started from.
+    /// A drag entered one of our windows; its offer is `NHSHELL_SEL_DND` from now on.
+    DndEnter(DndEv),
+    /// The drag moved over the window.
+    DndMotion(DndEv),
+    /// The drag left the window (no drop): the offer is gone.
+    DndLeave(DndEv),
+    /// The drag was dropped on the window with `action`: read the offer, then `dnd_finish`.
+    DndDrop(DndEv),
+    /// Our drag: the action the compositor chose with the target changed (`action`, 0: none).
+    DragAction(DndEv),
+    /// Our drag: the user dropped it on a target that accepted it; `DragDone` comes when the target is finished.
+    DragDropped(DndEv),
+    /// Our drag ended: `ok` 1 when the target finished with `action`, 0 when it was cancelled (dropped on nothing,
+    /// refused, or the display was lost: then before `Disconnected`).  Comes once per drag.
+    DragDone(DndEv),
+    /// A touch point went down, moved, lifted or was cancelled, on the window it went down on.  The records of one
+    /// touch frame are posted together when the frame ends; a cancel posts `NHSHELL_TOUCH_CANCEL` for every live point
+    /// at once.
+    Touch(TouchEv),
+    /// A touchpad pinch began, changed or ended, on the window under the pointer.
+    Pinch(PinchEv),
+    /// The compositor answered `session_open` (or took the session over).
+    Session(SessionEv),
+    /// The display went with reconnecting on (`ShellBackend::set_reconnect`): from the moment it is taken the shell is
+    /// reconnecting, and the host drives `reconnect`.  The releases of held buttons, an empty `Preedit` and each
+    /// window's `LeaveOutput` come before it.
+    Reconnecting,
+    /// `reconnect` succeeded: the shell is connected again.
+    Reconnected,
+}
+
+/// A record's kind without its payload, for filters (`ShellEvent::kind`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Key,
+    Modifiers,
+    PointerEnter,
+    PointerLeave,
+    PointerMotion,
+    Button,
+    Scroll,
+    Configure,
+    Close,
+    Scale,
+    Focus,
+    FrameDone,
+    OutputAdd,
+    OutputRemove,
+    Disconnected,
+    PopupDone,
+    Selection,
+    Preedit,
+    CommitText,
+    DeleteSurrounding,
+    FrameReady,
+    OutputChange,
+    EnterOutput,
+    LeaveOutput,
+    DndEnter,
+    DndMotion,
+    DndLeave,
+    DndDrop,
+    DragAction,
+    DragDropped,
+    DragDone,
+    Touch,
+    Pinch,
+    Session,
+    Reconnecting,
+    Reconnected,
+}
+
+impl ShellEvent {
+    pub fn kind(&self) -> Kind {
+        match self {
+            ShellEvent::Key(_) => Kind::Key,
+            ShellEvent::Modifiers { .. } => Kind::Modifiers,
+            ShellEvent::PointerEnter(_) => Kind::PointerEnter,
+            ShellEvent::PointerLeave(_) => Kind::PointerLeave,
+            ShellEvent::PointerMotion(_) => Kind::PointerMotion,
+            ShellEvent::Button(_) => Kind::Button,
+            ShellEvent::Scroll(_) => Kind::Scroll,
+            ShellEvent::Configure(_) => Kind::Configure,
+            ShellEvent::Close => Kind::Close,
+            ShellEvent::Scale(_) => Kind::Scale,
+            ShellEvent::Focus(_) => Kind::Focus,
+            ShellEvent::FrameDone(_) => Kind::FrameDone,
+            ShellEvent::OutputAdd(_) => Kind::OutputAdd,
+            ShellEvent::OutputRemove(_) => Kind::OutputRemove,
+            ShellEvent::Disconnected => Kind::Disconnected,
+            ShellEvent::PopupDone => Kind::PopupDone,
+            ShellEvent::Selection(_) => Kind::Selection,
+            ShellEvent::Preedit(_) => Kind::Preedit,
+            ShellEvent::CommitText(_) => Kind::CommitText,
+            ShellEvent::DeleteSurrounding(_) => Kind::DeleteSurrounding,
+            ShellEvent::FrameReady => Kind::FrameReady,
+            ShellEvent::OutputChange(_) => Kind::OutputChange,
+            ShellEvent::EnterOutput(_) => Kind::EnterOutput,
+            ShellEvent::LeaveOutput(_) => Kind::LeaveOutput,
+            ShellEvent::DndEnter(_) => Kind::DndEnter,
+            ShellEvent::DndMotion(_) => Kind::DndMotion,
+            ShellEvent::DndLeave(_) => Kind::DndLeave,
+            ShellEvent::DndDrop(_) => Kind::DndDrop,
+            ShellEvent::DragAction(_) => Kind::DragAction,
+            ShellEvent::DragDropped(_) => Kind::DragDropped,
+            ShellEvent::DragDone(_) => Kind::DragDone,
+            ShellEvent::Touch(_) => Kind::Touch,
+            ShellEvent::Pinch(_) => Kind::Pinch,
+            ShellEvent::Session(_) => Kind::Session,
+            ShellEvent::Reconnecting => Kind::Reconnecting,
+            ShellEvent::Reconnected => Kind::Reconnected,
+        }
+    }
+}
 
 /// `session.state`.
 pub const NHSHELL_SESSION_CREATED: u32 = 0;
@@ -116,8 +211,7 @@ pub const NHSHELL_PINCH_BEGIN: u32 = 0;
 pub const NHSHELL_PINCH_UPDATE: u32 = 1;
 pub const NHSHELL_PINCH_END: u32 = 2;
 
-#[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct KeyEv {
     /// The evdev scancode.
     pub keycode: u32,
@@ -130,8 +224,7 @@ pub struct KeyEv {
     pub utf8: [u8; 16],
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct PointerEv {
     pub x: f64,
     pub y: f64,
@@ -140,8 +233,7 @@ pub struct PointerEv {
     pub state: u32,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct ScrollEv {
     pub dx: f64,
     pub dy: f64,
@@ -152,40 +244,35 @@ pub struct ScrollEv {
     pub stop: u8,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct ConfigureEv {
     /// The size the compositor asks for, in logical pixels; 0 means "your choice".
     pub w: i32,
     pub h: i32,
     pub states: u32,
-    /// Hand it to `nhshell_window_ack_configure` once a buffer of that size is committed.
+    /// Hand it to `ShellBackend::ack_configure` once a buffer of that size is committed.
     pub serial: u32,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct ScaleEv {
     /// The preferred scale times 120.
     pub scale120: u32,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct FocusEv {
     pub r#in: u8,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct FrameDoneEv {
     /// 0 when the compositor sent no presentation feedback.
     pub presented_ns: u64,
     pub refresh_ns: u32,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct OutputEv {
     pub id: u64,
     pub x: i32,
@@ -200,10 +287,9 @@ pub struct OutputEv {
 }
 
 /// text-input-v3 records; lengths and offsets are bytes of UTF-8.
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct TextEv {
-    /// The text for `nhshell_take_text`; 0 for none.
+    /// The text for `ShellBackend::take_text`; 0 for none.
     pub id: u32,
     pub len: u32,
     pub cursor_begin: i32,
@@ -212,8 +298,7 @@ pub struct TextEv {
     pub after: u32,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct SelectionEv {
     /// `NHSHELL_SEL_CLIPBOARD` or `NHSHELL_SEL_PRIMARY`.
     pub kind: u32,
@@ -221,8 +306,7 @@ pub struct SelectionEv {
 
 /// One touch point.  Positions are device pixels in the window the point went down on; UP and CANCEL carry the
 /// point's last position.
-#[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct TouchEv {
     /// The point's id, unique while it is down.
     pub id: i32,
@@ -235,8 +319,7 @@ pub struct TouchEv {
 /// A touchpad pinch.  `dx`, `dy` are this update's motion of the fingers' centre (device pixels); `scale` is
 /// cumulative since BEGIN (1.0 at BEGIN; END repeats the last); `rotation` is this update's angle in degrees,
 /// clockwise; `x`, `y` are the pointer's position (device pixels).
-#[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct PinchEv {
     /// `NHSHELL_PINCH_*`.
     pub phase: u32,
@@ -251,16 +334,13 @@ pub struct PinchEv {
     pub cancelled: u8,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct SessionEv {
     /// `NHSHELL_SESSION_*`.
     pub state: u32,
 }
 
-/// A drag-and-drop record (`NHSHELL_EV_DND_*`, `NHSHELL_EV_DRAG_*`).  Rust only: it fits inside the union's C size, and
-/// `nhshell.h` has no member for it.
-#[repr(C)]
+/// A drag-and-drop record (`ShellEvent::Dnd*`, `ShellEvent::Drag*`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct DndEv {
     /// The pointer's position in the window, device pixels (target records).
@@ -281,43 +361,24 @@ pub struct DndEv {
     pub ok: u8,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub union NhShellEventData {
-    pub key: KeyEv,
-    pub pointer: PointerEv,
-    pub scroll: ScrollEv,
-    pub configure: ConfigureEv,
-    pub scale: ScaleEv,
-    pub focus: FocusEv,
-    pub frame_done: FrameDoneEv,
-    pub output: OutputEv,
-    pub selection: SelectionEv,
-    pub text: TextEv,
-    pub touch: TouchEv,
-    pub pinch: PinchEv,
-    pub session: SessionEv,
-    pub dnd: DndEv,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct NhShellEvent {
-    pub kind: u32,
+/// One record: `event` for `window` (0: none) at `time_ns` (0: unknown).
+#[derive(Clone, Copy, Debug)]
+pub struct Record {
     pub window: u64,
     pub time_ns: u64,
-    pub u: NhShellEventData,
+    pub event: ShellEvent,
 }
 
-impl NhShellEvent {
-    /// An event of `kind` for `window` with a zeroed payload.
-    pub fn new(kind: u32, window: u64, time_ns: u64) -> Self {
-        NhShellEvent {
-            kind,
+impl Record {
+    pub fn new(event: ShellEvent, window: u64, time_ns: u64) -> Self {
+        Record {
             window,
             time_ns,
-            // SAFETY: every member is plain integers and floats, for which all-zero is valid.
-            u: unsafe { std::mem::zeroed() },
+            event,
         }
+    }
+
+    pub fn kind(&self) -> Kind {
+        self.event.kind()
     }
 }

@@ -4,7 +4,7 @@
 //! from the host's main thread.  Sizes are logical pixels unless a name says `dev` (device pixels).
 
 use crate::caps::NhShellCaps;
-use crate::event::NhShellEvent;
+use crate::event::Record;
 use glitnir::geom::Rect;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -128,7 +128,7 @@ pub const NHSHELL_CURSOR_RESIZE_NWSE: u32 = 10;
 pub const NHSHELL_CURSOR_RESIZE_NESW: u32 = 11;
 pub const NHSHELL_CURSOR_HIDDEN: u32 = 12;
 
-/// The selections, for the `selection_*` calls and `NHSHELL_EV_SELECTION`.
+/// The selections, for the `selection_*` calls and `ShellEvent::Selection`.
 pub const NHSHELL_SEL_CLIPBOARD: u32 = 0;
 pub const NHSHELL_SEL_PRIMARY: u32 = 1;
 /// The offer of the drag over one of our windows, for `selection_types` and `selection_read` only: valid from
@@ -220,7 +220,7 @@ pub trait ShellBackend {
     /// event comes out, then `ShellError::Disconnected`.  Once `DISCONNECTED` has been taken, every call but
     /// `wake_fd`, `caps` and `last_error` returns `Disconnected`, at once; `window_destroy` still frees the window's
     /// local state.  A bounded wait in progress (a selection read) gives up with `Disconnected` when the loss comes.
-    fn next_event(&mut self) -> ShellResult<Option<NhShellEvent>>;
+    fn next_event(&mut self) -> ShellResult<Option<Record>>;
     /// Run the work that must happen on the host's thread (configure and surface events).
     fn dispatch_main(&mut self) -> ShellResult;
     /// Why the connection ended: a protocol error's text, `INTERFACE@ID: error CODE: MESSAGE`; empty while it lives
@@ -298,7 +298,7 @@ pub trait ShellBackend {
     /// The window's xdg-foreign handle (no scheme prefix), exported at the first call and cached until the window
     /// goes; waits at most `timeout_ms` for it (`Timeout`).  `Unsupported` without the exporter.
     fn window_export(&mut self, window: WindowId, timeout_ms: u32) -> ShellResult<String>;
-    /// Open the session (`id` None: a new one) for `reason` (`NHSHELL_SESSION_*`); `NHSHELL_EV_SESSION` answers.
+    /// Open the session (`id` None: a new one) for `reason` (`NHSHELL_SESSION_*`); `ShellEvent::Session` answers.
     /// `Unsupported` without session management.
     fn session_open(&mut self, id: Option<&str>, reason: u32) -> ShellResult;
     /// The open session's id (`State` before the compositor has said).

@@ -8,9 +8,8 @@ use common::{Recorder, readable_within};
 use nhglue::abi::*;
 use nhglue::action::*;
 use nhglue::ffi::*;
-use nhshell::api::{NHSHELL_DND_COPY, NHSHELL_SEL_DND};
-use nhshell::event::{NHSHELL_EV_FOCUS, NhShellEvent};
-use nhshell::ffi::{NhShellWindowDesc, nhshell_next_event, nhshell_wake_fd, nhshell_window_new};
+use nhshell::api::{NHSHELL_DND_COPY, NHSHELL_SEL_DND, ShellBackend, WindowDesc};
+use nhshell::event::{Record, ShellEvent};
 use std::ffi::c_char;
 use std::ptr;
 use std::sync::Mutex;
@@ -39,17 +38,18 @@ fn open(rec: &Recorder) -> *mut NhgDisplay {
     d
 }
 
+/// The shell inside `d`, for what the glue does not wrap (windows, records).
+fn shell<'a>(d: *mut NhgDisplay) -> &'a mut dyn ShellBackend {
+    // SAFETY: a live display's shell handle, used only between glue calls.
+    unsafe { (*nhg_shell(d)).backend_mut() }
+}
+
 /// Take the shell's records until one satisfies `want` (3 s at most).
-fn wait_record(d: *mut NhgDisplay, mut want: impl FnMut(&NhShellEvent) -> bool) -> bool {
-    // SAFETY: a live display and its handle.
-    let sh = unsafe { nhg_shell(d) };
+fn wait_record(d: *mut NhgDisplay, mut want: impl FnMut(&Record) -> bool) -> bool {
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
-        // SAFETY: the handle is live.
-        readable_within(unsafe { nhshell_wake_fd(sh) }, 20);
-        let mut ev = NhShellEvent::new(0, 0, 0);
-        // SAFETY: the handle is live; `ev` is writable.
-        while unsafe { nhshell_next_event(sh, &mut ev) } == 1 {
+        readable_within(shell(d).wake_fd(), 20);
+        while let Ok(Some(ev)) = shell(d).next_event() {
             if want(&ev) {
                 return true;
             }
@@ -60,31 +60,24 @@ fn wait_record(d: *mut NhgDisplay, mut want: impl FnMut(&NhShellEvent) -> bool) 
 
 /// A registered window with the keyboard focus.
 fn window(rec: &Recorder, d: *mut NhgDisplay) -> u64 {
-    let desc = NhShellWindowDesc {
-        w: 200,
-        h: 150,
-        title: c"dnd".as_ptr(),
-        app_id: c"dnd".as_ptr(),
-        flags: 0,
-        kind: 0,
-        parent: 0,
-        x: 0,
-        y: 0,
-        anchor: Default::default(),
-        session_name: ptr::null(),
-    };
-    let mut id = 0u64;
-    // SAFETY: a live display and its handle; the strings are NUL-terminated.
-    unsafe {
-        assert_eq!(nhshell_window_new(nhg_shell(d), &desc, &mut id), 0);
-        assert_eq!(nhg_frame_register(d, id, 0), NHG_OK);
-    }
+    let id = shell(d)
+        .window_new(&WindowDesc {
+            w: 200,
+            h: 150,
+            title: "dnd".into(),
+            app_id: "dnd".into(),
+            flags: 0,
+        })
+        .unwrap();
+    // SAFETY: a live display.
+    assert_eq!(unsafe { nhg_frame_register(d, id, 0) }, NHG_OK);
     let reply = rec.control_ok(&format!(r#"{{"cmd":"focus","surface":{id}}}"#));
     assert!(reply.contains("\"ok\":true"), "{reply}");
-    // SAFETY: a FOCUS record's valid member is `focus`.
     assert!(
-        wait_record(d, |e| e.kind == NHSHELL_EV_FOCUS
-            && unsafe { e.u.focus.r#in } == 1),
+        wait_record(
+            d,
+            |e| matches!(e.event, ShellEvent::Focus(f) if f.r#in == 1)
+        ),
         "keyboard focus"
     );
     id

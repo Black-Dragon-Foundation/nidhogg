@@ -25,10 +25,7 @@ use crate::frame::{NHG_FACT_VISIBLE, NHG_FRAME_KINDS};
 use crate::present::{NHG_PRESENTED_COMMITTED, NHG_PRESENTED_PUBLISHED};
 use crate::query::NhgMonitor;
 use nhshell::api::ShellError;
-use nhshell::event::{
-    NHSHELL_EV_FOCUS, NHSHELL_EV_OUTPUT_ADD, NHSHELL_EV_OUTPUT_CHANGE, NHSHELL_EV_OUTPUT_REMOVE,
-    NhShellEvent,
-};
+use nhshell::event::{Record, ShellEvent};
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
@@ -109,7 +106,7 @@ fn backoff(ticks: u32) -> u32 {
 
 /// `RECONNECTING`: forget what the old connection had, note what `reconnected` compares, and ask C for the timer.  A
 /// loss before an earlier reconnect settled keeps the earlier notes.
-pub fn lost(state: &mut Display, ev: &NhShellEvent) {
+pub fn lost(state: &mut Display, ev: &Record) {
     let r = &mut state.reconnect;
     if matches!(r.phase, Phase::Up) {
         r.before = outputs(state.monitors.all());
@@ -134,7 +131,7 @@ pub fn lost(state: &mut Display, ev: &NhShellEvent) {
 }
 
 /// `RECONNECTED`: the shown top-levels owe a presentation, and C damages every frame.
-pub fn reconnected(state: &mut Display, ev: &NhShellEvent) {
+pub fn reconnected(state: &mut Display, ev: &Record) {
     let owed = state
         .frames()
         .filter(|(_, f)| f.flags & NHG_FRAME_KINDS == 0 && f.facts.flags & NHG_FACT_VISIBLE != 0)
@@ -151,21 +148,18 @@ pub fn reconnected(state: &mut Display, ev: &NhShellEvent) {
 
 /// After each event's actions: a keyboard enter is noted, and the monitor actions wait until `reconnected` (the
 /// outputs of the old connection go and the new ones come; `settle` compares the lists once).
-pub fn after(state: &mut Display, ev: &NhShellEvent) {
+pub fn after(state: &mut Display, ev: &Record) {
     let r = &mut state.reconnect;
     if matches!(r.phase, Phase::Up) {
         return;
     }
-    let focus_in = ev.kind == NHSHELL_EV_FOCUS && {
-        // SAFETY: a FOCUS record's valid member is `focus`.
-        unsafe { ev.u.focus }.r#in != 0
-    };
+    let focus_in = matches!(ev.event, ShellEvent::Focus(f) if f.r#in != 0);
     if focus_in {
         r.entered = true;
     }
     let output = matches!(
-        ev.kind,
-        NHSHELL_EV_OUTPUT_ADD | NHSHELL_EV_OUTPUT_CHANGE | NHSHELL_EV_OUTPUT_REMOVE
+        ev.event,
+        ShellEvent::OutputAdd(_) | ShellEvent::OutputChange(_) | ShellEvent::OutputRemove(_)
     );
     let quiet = matches!(r.phase, Phase::Reconnecting { .. } | Phase::Settling { .. });
     if output

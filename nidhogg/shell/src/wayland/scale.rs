@@ -6,9 +6,7 @@
 //! `wl_surface.preferred_buffer_scale`, else from the largest scale of the outputs the surface entered.  All of it
 //! runs on the main queue.
 
-use crate::event::{
-    NHSHELL_EV_ENTER_OUTPUT, NHSHELL_EV_LEAVE_OUTPUT, NHSHELL_EV_SCALE, NhShellEvent,
-};
+use crate::event::{OutputEv, Record, ScaleEv, ShellEvent};
 use crate::wayland::MainState;
 use wayland_client::protocol::wl_surface;
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
@@ -166,9 +164,8 @@ impl MainState {
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(id, new);
         }
-        let mut ev = NhShellEvent::new(NHSHELL_EV_SCALE, id, 0);
-        ev.u.scale.scale120 = new;
-        self.post(ev);
+        let s = ScaleEv { scale120: new };
+        self.post(Record::new(ShellEvent::Scale(s), id, 0));
     }
 
     /// Recompute every surface that is on output `name`.
@@ -198,17 +195,21 @@ pub fn surface_event(
                 && !s.entered.contains(&name)
             {
                 s.entered.push(name);
-                let mut ev = NhShellEvent::new(NHSHELL_EV_ENTER_OUTPUT, id, 0);
-                ev.u.output.id = u64::from(name);
-                state.post(ev);
+                let o = OutputEv {
+                    id: u64::from(name),
+                    ..OutputEv::default()
+                };
+                state.post(Record::new(ShellEvent::EnterOutput(o), id, 0));
             }
         }
         wl_surface::Event::Leave { output } => {
             if let (Some(&name), Some(s)) = (output.data::<u32>(), state.scales.get_mut(&id)) {
                 s.entered.retain(|&o| o != name);
-                let mut ev = NhShellEvent::new(NHSHELL_EV_LEAVE_OUTPUT, id, 0);
-                ev.u.output.id = u64::from(name);
-                state.post(ev);
+                let o = OutputEv {
+                    id: u64::from(name),
+                    ..OutputEv::default()
+                };
+                state.post(Record::new(ShellEvent::LeaveOutput(o), id, 0));
             }
         }
         wl_surface::Event::PreferredBufferScale { factor } => {

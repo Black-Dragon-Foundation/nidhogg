@@ -13,9 +13,7 @@
 //! applies it in the protocol's order and posts the records.  Texts travel as ids (`take_text`), single-use.
 
 use crate::api::{ShellError, ShellResult};
-use crate::event::{
-    NHSHELL_EV_COMMIT_TEXT, NHSHELL_EV_DELETE_SURROUNDING, NHSHELL_EV_PREEDIT, NhShellEvent, TextEv,
-};
+use crate::event::{Record, ShellEvent, TextEv};
 use crate::wayland::reader::ReaderState;
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
@@ -138,16 +136,20 @@ impl Inner {
         self.commit();
     }
 
-    fn event(&mut self, kind: u32, window: u64, text: Option<String>, tev: TextEv) -> NhShellEvent {
-        let mut ev = NhShellEvent::new(kind, window, 0);
+    fn event(
+        &mut self,
+        kind: fn(TextEv) -> ShellEvent,
+        window: u64,
+        text: Option<String>,
+        tev: TextEv,
+    ) -> Record {
         let id = text.map_or(0, |t| self.store(t));
-        ev.u.text = TextEv { id, ..tev };
-        ev
+        Record::new(kind(TextEv { id, ..tev }), window, 0)
     }
 
-    fn clear_preedit(&mut self, window: u64, out: &mut Vec<NhShellEvent>) {
+    fn clear_preedit(&mut self, window: u64, out: &mut Vec<Record>) {
         self.preedit_active = false;
-        out.push(self.event(NHSHELL_EV_PREEDIT, window, None, TextEv::default()));
+        out.push(self.event(ShellEvent::Preedit, window, None, TextEv::default()));
     }
 }
 
@@ -261,7 +263,7 @@ impl TextInput {
 
     /// The connection is gone: focus goes (a shown preedit is cleared into `out`) and so does the object; what the
     /// host asked for each window stays, so a window is enabled again at its next keyboard enter.
-    pub fn lost(&self, out: &mut Vec<NhShellEvent>) {
+    pub fn lost(&self, out: &mut Vec<Record>) {
         self.leave(out);
         let mut i = lock(&self.inner);
         i.obj = None;
@@ -293,7 +295,7 @@ impl TextInput {
         }
     }
 
-    fn leave(&self, out: &mut Vec<NhShellEvent>) {
+    fn leave(&self, out: &mut Vec<Record>) {
         let mut i = lock(&self.inner);
         let Some(window) = i.entered.take() else {
             return;
@@ -309,7 +311,7 @@ impl TextInput {
 
     /// `done`: apply the pending state in the protocol's order: replace the preedit, delete surrounding text, insert
     /// the commit string, insert the new preedit.
-    fn done(&self, serial: u32, out: &mut Vec<NhShellEvent>) {
+    fn done(&self, serial: u32, out: &mut Vec<Record>) {
         let mut i = lock(&self.inner);
         // foot: a `done` for an older state is ignored
         if serial != i.commits {
@@ -328,7 +330,7 @@ impl TextInput {
                 after,
                 ..TextEv::default()
             };
-            out.push(i.event(NHSHELL_EV_DELETE_SURROUNDING, window, None, tev));
+            out.push(i.event(ShellEvent::DeleteSurrounding, window, None, tev));
         }
         if let Some(text) = commit {
             let len = text.len() as u32;
@@ -336,7 +338,7 @@ impl TextInput {
                 len,
                 ..TextEv::default()
             };
-            out.push(i.event(NHSHELL_EV_COMMIT_TEXT, window, Some(text), tev));
+            out.push(i.event(ShellEvent::CommitText, window, Some(text), tev));
         }
         if let Some((text, begin, end)) = new_preedit {
             let tev = TextEv {
@@ -345,7 +347,7 @@ impl TextInput {
                 cursor_end: end,
                 ..TextEv::default()
             };
-            out.push(i.event(NHSHELL_EV_PREEDIT, window, Some(text), tev));
+            out.push(i.event(ShellEvent::Preedit, window, Some(text), tev));
             i.preedit_active = true;
         }
     }

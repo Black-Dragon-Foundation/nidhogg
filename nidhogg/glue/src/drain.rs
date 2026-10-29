@@ -27,7 +27,7 @@ use crate::tip;
 use crate::touch;
 
 use crate::reconnect;
-use nhshell::event::*;
+use nhshell::event::{Record, SelectionEv, ShellEvent};
 
 /// Take one event: `Ok(1)` with its actions in `state.actions` (none, possibly), `Ok(0)` when none is queued.  The
 /// last call's actions are dropped first, and the acks of the configures C applied since are recorded.
@@ -40,52 +40,52 @@ pub fn next(state: &mut Display, input: NhgNextIn) -> Result<i32, GlueError> {
     // our drag out (`x-begin-drag`) reads the source's records and the input that shows whether it began; the input
     // goes on as usual below
     dnd::drag_input(state, &ev);
-    match ev.kind {
-        NHSHELL_EV_KEY => keys::key(state, &ev, input),
-        NHSHELL_EV_MODIFIERS => keys::modifiers(state, &ev),
-        NHSHELL_EV_FOCUS => focus::focus(state, &ev),
-        NHSHELL_EV_CONFIGURE => configure::configure(state, &ev),
-        NHSHELL_EV_SCALE => configure::scale(state, &ev),
-        NHSHELL_EV_CLOSE => window_action(state, &ev, NHG_ACT_DELETE),
+    match ev.event {
+        ShellEvent::Key(k) => keys::key(state, &ev, &k, input),
+        ShellEvent::Modifiers { mods } => keys::modifiers(state, mods),
+        ShellEvent::Focus(f) => focus::focus(state, &ev, &f),
+        ShellEvent::Configure(c) => configure::configure(state, &ev, &c),
+        ShellEvent::Scale(s) => configure::scale(state, &ev, &s),
+        ShellEvent::Close => window_action(state, &ev, NHG_ACT_DELETE),
         // the present step runs on every FRAME_READY, drawn or not (the shell owes the commit)
-        NHSHELL_EV_FRAME_READY => window_action(state, &ev, NHG_ACT_READY),
-        NHSHELL_EV_FRAME_DONE => {}
-        NHSHELL_EV_SELECTION => selection(state, &ev),
-        NHSHELL_EV_SCROLL => scroll::scroll(state, &ev, input),
-        NHSHELL_EV_PREEDIT | NHSHELL_EV_COMMIT_TEXT | NHSHELL_EV_DELETE_SURROUNDING => {
+        ShellEvent::FrameReady => window_action(state, &ev, NHG_ACT_READY),
+        ShellEvent::FrameDone(_) => {}
+        ShellEvent::Selection(s) => selection(state, &ev, &s),
+        ShellEvent::Scroll(s) => scroll::scroll(state, &ev, &s, input),
+        ShellEvent::Preedit(_) | ShellEvent::CommitText(_) | ShellEvent::DeleteSurrounding(_) => {
             ime::event(state, &ev)
         }
-        NHSHELL_EV_OUTPUT_ADD | NHSHELL_EV_OUTPUT_CHANGE => monitors::output(state, &ev),
-        NHSHELL_EV_OUTPUT_REMOVE => monitors::removed(state, &ev),
-        NHSHELL_EV_ENTER_OUTPUT => monitors::entered(state, &ev),
-        NHSHELL_EV_LEAVE_OUTPUT => monitors::left(state, &ev),
-        NHSHELL_EV_DISCONNECTED => state
+        ShellEvent::OutputAdd(o) | ShellEvent::OutputChange(o) => monitors::output(state, &ev, &o),
+        ShellEvent::OutputRemove(o) => monitors::removed(state, &ev, &o),
+        ShellEvent::EnterOutput(o) => monitors::entered(state, &ev, &o),
+        ShellEvent::LeaveOutput(o) => monitors::left(state, &ev, &o),
+        ShellEvent::Disconnected => state
             .actions
             .push(NhgAction::new(NHG_ACT_LOST, 0, ev.time_ns)),
         // through the title bar first: what it does not consume goes on as the pointer's own action, after the title
         // bar's (the event's own action is its last)
-        NHSHELL_EV_POINTER_ENTER
-        | NHSHELL_EV_POINTER_MOTION
-        | NHSHELL_EV_POINTER_LEAVE
-        | NHSHELL_EV_BUTTON => {
+        ShellEvent::PointerEnter(_)
+        | ShellEvent::PointerMotion(_)
+        | ShellEvent::PointerLeave(_)
+        | ShellEvent::Button(_) => {
             if !csd::pointer(state, &ev) {
                 pointer::event(state, &ev)
             }
         }
-        NHSHELL_EV_DND_ENTER
-        | NHSHELL_EV_DND_MOTION
-        | NHSHELL_EV_DND_LEAVE
-        | NHSHELL_EV_DND_DROP => dnd::event(state, &ev),
+        ShellEvent::DndEnter(_)
+        | ShellEvent::DndMotion(_)
+        | ShellEvent::DndLeave(_)
+        | ShellEvent::DndDrop(_) => dnd::event(state, &ev),
         // a popup frame's dismissal (a tip's is taken in the guard)
-        NHSHELL_EV_POPUP_DONE if !tip::popup_done(state, &ev) => {
+        ShellEvent::PopupDone if !tip::popup_done(state, &ev) => {
             popup::popup_done(state, &ev);
         }
-        NHSHELL_EV_SESSION => session::event(state, &ev),
-        NHSHELL_EV_TOUCH => touch::touch(state, &ev),
-        NHSHELL_EV_PINCH => touch::pinch(state, &ev),
+        ShellEvent::Session(s) => session::event(state, &ev, &s),
+        ShellEvent::Touch(t) => touch::touch(state, &ev, &t),
+        ShellEvent::Pinch(p) => touch::pinch(state, &ev, &p),
         // a popup closed by the reconnect came as an ordinary dismissal above
-        NHSHELL_EV_RECONNECTING => reconnect::lost(state, &ev),
-        NHSHELL_EV_RECONNECTED => reconnect::reconnected(state, &ev),
+        ShellEvent::Reconnecting => reconnect::lost(state, &ev),
+        ShellEvent::Reconnected => reconnect::reconnected(state, &ev),
         // kinds C did nothing with
         _ => {}
     }
@@ -95,9 +95,8 @@ pub fn next(state: &mut Display, input: NhgNextIn) -> Result<i32, GlueError> {
 
 /// A selection changed: a `SELECTION_CLEAR` (the kind in `code`) when it was ours and another client has it now.
 /// From `nhwl_selection_changed`.
-fn selection(state: &mut Display, ev: &NhShellEvent) {
-    // SAFETY: a SELECTION record's valid member is `selection`.
-    let kind = unsafe { ev.u.selection }.kind;
+fn selection(state: &mut Display, ev: &Record, s: &SelectionEv) {
+    let kind = s.kind;
     if select::changed(state, kind) {
         let mut a = NhgAction::new(NHG_ACT_SELECTION_CLEAR, 0, ev.time_ns);
         a.code = kind as i32;
@@ -106,7 +105,7 @@ fn selection(state: &mut Display, ev: &NhShellEvent) {
 }
 
 /// An action of `kind` for a registered window; nothing for another.
-fn window_action(state: &mut Display, ev: &NhShellEvent, kind: u32) {
+fn window_action(state: &mut Display, ev: &Record, kind: u32) {
     if state.frame(ev.window).is_ok() {
         state
             .actions

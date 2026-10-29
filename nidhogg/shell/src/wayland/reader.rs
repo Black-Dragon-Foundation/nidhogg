@@ -11,7 +11,7 @@
 //! dispatch or a panic posts `DISCONNECTED` and ends the thread; a hangup (EPIPE, ECONNRESET) with reconnecting on
 //! posts what the loss ends and `RECONNECTING` instead.
 
-use crate::event::{FocusEv, NHSHELL_EV_FOCUS, NhShellEvent};
+use crate::event::{FocusEv, Record, ShellEvent};
 use crate::wayland::clipboard::SendBytes;
 use crate::wayland::conn::Shared;
 use crate::wayland::gesture::PinchState;
@@ -77,13 +77,13 @@ impl ReaderState {
         }
     }
 
-    fn post_all(&mut self, evs: Vec<NhShellEvent>) {
+    fn post_all(&mut self, evs: Vec<Record>) {
         for ev in evs {
             self.post(ev);
         }
     }
 
-    pub(super) fn post(&mut self, ev: NhShellEvent) {
+    pub(super) fn post(&mut self, ev: Record) {
         self.shared.post(ev);
         self.posted = true;
     }
@@ -388,9 +388,8 @@ impl Dispatch<WlKeyboard, ()> for ReaderState {
     ) {
         // The window id is the surface's protocol id, unless a reconnect made the surface again (`window_of`).
         let focus = |surface: &wayland_client::protocol::wl_surface::WlSurface, on: u8| {
-            let mut ev = NhShellEvent::new(NHSHELL_EV_FOCUS, crate::wayland::window_of(surface), 0);
-            ev.u.focus = FocusEv { r#in: on };
-            ev
+            let f = FocusEv { r#in: on };
+            Record::new(ShellEvent::Focus(f), crate::wayland::window_of(surface), 0)
         };
         match event {
             wl_keyboard::Event::Enter {

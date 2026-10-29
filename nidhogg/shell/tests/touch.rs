@@ -10,16 +10,17 @@ use nhshell::event::*;
 use nhshell::wayland::WaylandShell;
 
 /// (window, id, op, x, y) of a TOUCH record.
-fn touch_of(e: &NhShellEvent) -> (u64, i32, u32, f64, f64) {
-    // SAFETY: a TOUCH record carries `touch`.
-    let t = unsafe { e.u.touch };
+fn touch_of(e: &Record) -> (u64, i32, u32, f64, f64) {
+    let ShellEvent::Touch(t) = e.event else {
+        panic!("not a touch record: {e:?}");
+    };
     (e.window, t.id, t.op, t.x, t.y)
 }
 
 fn touches(shell: &mut WaylandShell, ms: i64) -> Vec<(u64, i32, u32, f64, f64)> {
     collect(shell, ms)
         .iter()
-        .filter(|e| e.kind == NHSHELL_EV_TOUCH)
+        .filter(|e| e.kind() == Kind::Touch)
         .map(touch_of)
         .collect()
 }
@@ -58,7 +59,7 @@ mod touch {
             ]
         );
         touch(&rec, "up", 0, (0, 0), true);
-        let ev = wait_event(&mut shell, NHSHELL_EV_TOUCH);
+        let ev = wait_event(&mut shell, Kind::Touch);
         assert_eq!(
             touch_of(&ev),
             (top, 0, NHSHELL_TOUCH_UP, 9.0, 10.0),
@@ -74,7 +75,7 @@ mod touch {
         touch(&rec, "down", 0, (5, 6), true);
         touch(&rec, "down", 1, (7, 8), true);
         wait_for(&mut shell, |e| {
-            e.kind == NHSHELL_EV_TOUCH && touch_of(e).1 == 1
+            e.kind() == Kind::Touch && touch_of(e).1 == 1
         });
         // Smithay sends `cancel` only while a point has an event its frame has not closed yet: an unframed motion
         touch(&rec, "motion", 0, (5, 6), false);
@@ -102,7 +103,7 @@ mod touch {
         let mut shell = rec.open();
         let top = mapped_window(&mut shell, 200, 100);
         touch(&rec, "down", 0, (5, 6), true);
-        wait_event(&mut shell, NHSHELL_EV_TOUCH);
+        wait_event(&mut shell, Kind::Touch);
         let p = shell
             .child_new(&ChildDesc {
                 kind: NHSHELL_KIND_POPUP,
@@ -136,7 +137,7 @@ mod touch {
         rec.control_ok(&format!(r#"{{"cmd":"focus","surface":{top}}}"#));
         rec.control_ok(r#"{"cmd":"pointer","pos":[4,4]}"#);
         wait_for(&mut shell, |e| {
-            e.kind == NHSHELL_EV_POINTER_ENTER || e.kind == NHSHELL_EV_POINTER_MOTION
+            e.kind() == Kind::PointerEnter || e.kind() == Kind::PointerMotion
         });
         for req in [
             r#"{"cmd":"pinch","op":"begin","fingers":2}"#,
@@ -149,10 +150,11 @@ mod touch {
         }
         let mut got = Vec::new();
         while got.len() < 4 {
-            let ev = wait_event(&mut shell, NHSHELL_EV_PINCH);
+            let ev = wait_event(&mut shell, Kind::Pinch);
             assert_eq!(ev.window, top);
-            // SAFETY: a PINCH record carries `pinch`.
-            let p = unsafe { ev.u.pinch };
+            let ShellEvent::Pinch(p) = ev.event else {
+                unreachable!()
+            };
             assert_eq!((p.fingers, p.x, p.y), (2, 4.0, 4.0));
             got.push((p.phase, p.scale, p.dx, p.dy, p.rotation, p.cancelled));
         }

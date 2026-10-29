@@ -44,55 +44,8 @@ typedef struct
   bool force_csd;  /* client-side decorations are forced (a test switch) */
 } NhShellCaps;
 
-/* Event kinds.  KIND says which member of NhShellEvent.u is valid; CLOSE, POINTER_LEAVE, DISCONNECTED and FRAME_READY
-   have none.  MODIFIERS uses u.key.mods; POINTER_ENTER, POINTER_MOTION and POINTER_LEAVE use u.pointer.x and y;
-   BUTTON uses u.pointer.button and state; OUTPUT_REMOVE uses u.output.id.  Pointer positions are device pixels
-   (surface-local logical times the window's scale); TIME_NS is the compositor's clock.  */
-enum
-{
-  NHSHELL_EV_KEY = 1, NHSHELL_EV_MODIFIERS, NHSHELL_EV_POINTER_ENTER, NHSHELL_EV_POINTER_LEAVE,
-  NHSHELL_EV_POINTER_MOTION, NHSHELL_EV_BUTTON, NHSHELL_EV_SCROLL, NHSHELL_EV_CONFIGURE, NHSHELL_EV_CLOSE,
-  NHSHELL_EV_SCALE, NHSHELL_EV_FOCUS, NHSHELL_EV_FRAME_DONE, NHSHELL_EV_OUTPUT_ADD, NHSHELL_EV_OUTPUT_REMOVE,
-  NHSHELL_EV_DISCONNECTED,
-  NHSHELL_EV_POPUP_DONE = 16,      /* the compositor dismissed a popup; no payload */
-  /* the tree's pacer lets the host present it (see nhshell_present_tree); 16-20 belong to popups and children */
-  NHSHELL_EV_FRAME_READY = 21
-};
-
-/* text-input-v3 events (u.text; lengths and offsets are UTF-8 bytes).  PREEDIT: the preedit changed; u.text.id and len
-   say its text (len 0: cleared), cursor_begin and cursor_end the cursor in it (-1: hidden).  COMMIT_TEXT: insert the
-   text (id, len).  DELETE_SURROUNDING: delete u.text.before bytes before and u.text.after bytes after the cursor.
-   Within one `done` the records come in the protocol's order: clear the old preedit, delete, commit, new preedit.  */
-enum
-{
-  NHSHELL_EV_PREEDIT = 18, NHSHELL_EV_COMMIT_TEXT = 19, NHSHELL_EV_DELETE_SURROUNDING = 20
-};
-
-/* Monitors.  OUTPUT_CHANGE: an output already announced by OUTPUT_ADD changed (same payload as ADD; sent only when a
-   field differs).  ENTER_OUTPUT and LEAVE_OUTPUT: the window (NhShellEvent.window) is now on / no longer on the
-   output u.output.id (the other u.output members are zero).  A removed output leaves every window without a LEAVE.  */
-enum
-{
-  NHSHELL_EV_OUTPUT_CHANGE = 22, NHSHELL_EV_ENTER_OUTPUT = 23, NHSHELL_EV_LEAVE_OUTPUT = 24
-};
-
-/* Touch and pinch.  TOUCH (u.touch): a point went down, moved, lifted or was cancelled, on the window it went down on;
-   the records of one touch frame are posted together when the frame ends, and a cancel posts NHSHELL_TOUCH_CANCEL for
-   every live point at once.  Positions are device pixels; UP and CANCEL carry the point's last position.  PINCH
-   (u.pinch): a touchpad pinch on the window under the pointer; dx and dy are this update's motion (device pixels),
-   scale is cumulative since BEGIN (1.0 at BEGIN; END repeats the last), rotation this update's angle in degrees
-   (clockwise), x and y the pointer's position (device pixels), cancelled is set on a cancelled END.  */
-enum
-{
-  NHSHELL_EV_TOUCH = 39, NHSHELL_EV_PINCH = 40
-};
-/* Session.  SESSION (u.session): the compositor answered nhshell_session_open (CREATED: a new id, see
-   nhshell_session_id; RESTORED: the saved session) or another client took the session over (REPLACED: window names are
-   ignored from then on).  */
-enum
-{
-  NHSHELL_EV_SESSION = 41
-};
+/* The shell's events are Rust records (crate nhshell, event.rs), which the glue reads; the values below are the ones
+   C still uses.  */
 #define NHSHELL_SESSION_CREATED  0u
 #define NHSHELL_SESSION_RESTORED 1u
 #define NHSHELL_SESSION_REPLACED 2u
@@ -104,7 +57,7 @@ enum
 #define NHSHELL_PINCH_UPDATE 1u
 #define NHSHELL_PINCH_END    2u
 
-/* u.key.mods */
+/* key modifiers */
 #define NHSHELL_MOD_SHIFT (1u << 0)
 #define NHSHELL_MOD_CTRL  (1u << 1)
 #define NHSHELL_MOD_ALT   (1u << 2)
@@ -113,7 +66,7 @@ enum
 #define NHSHELL_MOD_META  (1u << 5)
 #define NHSHELL_MOD_CAPS  (1u << 6)
 
-/* u.configure.states */
+/* a configure's states */
 #define NHSHELL_STATE_MAXIMIZED  (1u << 0)
 #define NHSHELL_STATE_FULLSCREEN (1u << 1)
 #define NHSHELL_STATE_ACTIVATED  (1u << 2)
@@ -124,86 +77,14 @@ enum
 #define NHSHELL_STATE_TILED_B    (1u << 7)
 #define NHSHELL_STATE_SUSPENDED  (1u << 8)
 
-/* u.pointer.state */
+/* a button's state */
 #define NHSHELL_BUTTON_RELEASED 0
 #define NHSHELL_BUTTON_PRESSED  1
 
-/* u.scroll.source */
+/* a scroll's source */
 #define NHSHELL_SCROLL_WHEEL      0
 #define NHSHELL_SCROLL_FINGER     1
 #define NHSHELL_SCROLL_CONTINUOUS 2
-
-typedef struct
-{
-  uint32_t kind;
-  uint64_t window;
-  uint64_t time_ns;
-  union
-  {
-    struct
-    {
-      uint32_t keycode;     /* evdev scancode */
-      uint32_t keysym;
-      uint32_t mods;        /* NHSHELL_MOD_* after this event */
-      uint8_t pressed, repeat;
-      char utf8[16];        /* the text the key produced, NUL-terminated; "" for none */
-    } key;
-    struct
-    {
-      double x, y;
-      uint32_t button;      /* evdev button code (BTN_LEFT = 0x110) */
-      uint32_t state;
-    } pointer;
-    struct
-    {
-      double dx, dy;
-      int32_t v120x, v120y; /* wheel steps, 120 per notch; 0 when the source reports none */
-      uint32_t source;
-      uint8_t stop;
-    } scroll;
-    struct
-    {
-      int32_t w, h;         /* the size asked for; 0: your choice */
-      uint32_t states;
-      uint32_t serial;      /* pass to nhshell_window_ack_configure after committing a buffer of that size */
-    } configure;
-    struct { uint32_t scale120; } scale;  /* the preferred scale times 120 */
-    struct { uint8_t in; } focus;
-    struct
-    {
-      uint64_t presented_ns;  /* 0: no presentation feedback */
-      uint32_t refresh_ns;
-    } frame_done;
-    struct
-    {
-      uint64_t id;
-      int32_t x, y, w, h, mm_w, mm_h;
-      uint32_t scale120;
-      char name[32];
-    } output;
-    struct { uint32_t kind; } selection;  /* NHSHELL_SEL_* */
-    struct
-    {
-      uint32_t id, len;           /* the text for nhshell_take_text; 0 for none */
-      int32_t cursor_begin, cursor_end;
-      uint32_t before, after;
-    } text;
-    struct
-    {
-      int32_t id;           /* unique while the point is down */
-      uint32_t op;          /* NHSHELL_TOUCH_* */
-      double x, y;
-    } touch;
-    struct
-    {
-      uint32_t phase;       /* NHSHELL_PINCH_* */
-      uint32_t fingers;
-      double dx, dy, scale, rotation, x, y;
-      uint8_t cancelled;
-    } pinch;
-    struct { uint32_t state; } session;  /* NHSHELL_SESSION_CREATED, _RESTORED or _REPLACED */
-  } u;
-} NhShellEvent;
 
 /* Window flags and interactive-resize edges (OR the edges for a corner).  */
 #define NHSHELL_WIN_UNDECORATED (1u << 0)
@@ -281,11 +162,8 @@ int32_t nhshell_close (NhShell *sh);
 int32_t nhshell_wake_fd (NhShell *sh);
 int32_t nhshell_caps (NhShell *sh, NhShellCaps *out);
 
-/* Events.  next_event returns 1 with an event in *OUT, 0 when the queue is empty; when the wake descriptor is readable
-   the host calls it until it returns 0 (which also runs pending main-thread work and clears the descriptor).  After
-   the connection is lost it yields one DISCONNECTED event, then returns NHSHELL_E_DISCONNECTED.  dispatch_main runs
-   the work that must happen on the host's thread (configure and surface events) and flushes.  */
-int32_t nhshell_next_event (NhShell *sh, NhShellEvent *out);
+/* dispatch_main runs the work that must happen on the host's thread (configure and surface events) and flushes.  The
+   events themselves are read through the glue.  */
 int32_t nhshell_dispatch_main (NhShell *sh);
 
 /* Windows.  A window is a 64-bit id.  move, resize and show_menu use the latest input serial.  */
@@ -342,7 +220,7 @@ int32_t nhshell_window_inhibit_idle (NhShell *sh, uint64_t window, int32_t on);
 int32_t nhshell_window_export (NhShell *sh, uint64_t window, uint32_t timeout_ms, char *buf, size_t cap, size_t *len);
 
 /* Sessions (xdg_session_manager_v1; NHSHELL_E_UNSUPPORTED without it).  open: ID NULL for a new session, REASON
-   NHSHELL_SESSION_LAUNCH, _RECOVER or _RESTORE (0, 1, 2); an open session is dropped first.  NHSHELL_EV_SESSION
+   NHSHELL_SESSION_LAUNCH, _RECOVER or _RESTORE (0, 1, 2); an open session is dropped first.  A session record
    answers, and session_id then gives the id (NHSHELL_E_STATE before).  A window with a session_name in its descriptor
    joins the session before its first commit, as a restore with NHSHELL_WIN_RESTORE; a name already held by a live
    window is NHSHELL_E_STATE.  With no session, or a REPLACED one, names are ignored.  session_remove takes WINDOW out of
@@ -382,7 +260,7 @@ int32_t nhshell_window_set_size (NhShell *sh, uint64_t window, int32_t w, int32_
 int32_t nhshell_window_scale (NhShell *sh, uint64_t window, uint32_t *scale120);
 int32_t nhshell_window_ssd (NhShell *sh, uint64_t window, int32_t *ssd);
 
-/* Publishing: the shell presents.  One pacer per tree (a root and its child windows): NHSHELL_EV_FRAME_READY comes for
+/* Publishing: the shell presents.  One pacer per tree (a root and its child windows): a frame-ready record comes for
    roots only, when the pacer lets the tree present (frame callbacks pace, a content ack never waits, a starved tree
    waits for a buffer release, and a commit owed for surface state or a re-arm wakes it too).
    At a consistency point the host publishes a tree (a root and its child windows): one NhShellSurfaceFrame per
@@ -424,12 +302,10 @@ int32_t nhshell_presenter_stats (NhShell *sh, NhShellPresenterStats *out);
    the current MIME types, each followed by a NUL, to BUF when CAP holds them all, sets *LEN to the bytes needed and
    returns the count.  read returns our own bytes at once, or reads another client's until it finishes or TIMEOUT_MS
    passes (NHSHELL_E_TIMEOUT); NHSHELL_E_STATE when there is no selection or no such type.  Free *OUT with
-   nhshell_free_bytes.  NHSHELL_EV_SELECTION (u.selection.kind) says a selection changed, ours or another
-   client's.  */
+   nhshell_free_bytes.  */
 #define NHSHELL_E_TIMEOUT         -7
 #define NHSHELL_SEL_CLIPBOARD 0u
 #define NHSHELL_SEL_PRIMARY   1u
-enum { NHSHELL_EV_SELECTION = 17 };
 int32_t nhshell_selection_own (NhShell *sh, uint32_t kind, const char *const *mimes, const uint8_t *const *data,
                                const size_t *lens, size_t n);
 int32_t nhshell_selection_disown (NhShell *sh, uint32_t kind);

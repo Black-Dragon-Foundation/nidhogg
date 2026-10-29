@@ -128,8 +128,6 @@ fn records(shell: &mut WaylandShell, n: usize) -> Vec<Rec> {
     while out.len() < n && Instant::now() < deadline {
         readable_within(shell.wake_fd(), 100);
         while let Some(ev) = shell.next_event().unwrap() {
-            // SAFETY: only read for the three text kinds below, whose valid member is `text`; the union is zeroed.
-            let t = unsafe { ev.u.text };
             let mut text = |id: u32, len: u32| {
                 if id == 0 {
                     assert_eq!(len, 0, "a record without text id has len 0");
@@ -138,13 +136,13 @@ fn records(shell: &mut WaylandShell, n: usize) -> Vec<Rec> {
                 assert_eq!(shell.text_len(id).unwrap(), len as usize);
                 String::from_utf8(shell.take_text(id).unwrap()).unwrap()
             };
-            match ev.kind {
-                NHSHELL_EV_PREEDIT => {
+            match ev.event {
+                ShellEvent::Preedit(t) => {
                     let s = text(t.id, t.len);
                     out.push(Rec::Preedit(s, t.cursor_begin, t.cursor_end));
                 }
-                NHSHELL_EV_COMMIT_TEXT => out.push(Rec::Commit(text(t.id, t.len))),
-                NHSHELL_EV_DELETE_SURROUNDING => out.push(Rec::Delete(t.before, t.after)),
+                ShellEvent::CommitText(t) => out.push(Rec::Commit(text(t.id, t.len))),
+                ShellEvent::DeleteSurrounding(t) => out.push(Rec::Delete(t.before, t.after)),
                 _ => {}
             }
         }
@@ -283,9 +281,8 @@ mod text_input {
         while id == 0 && Instant::now() < deadline {
             readable_within(shell.wake_fd(), 100);
             while let Some(ev) = shell.next_event().unwrap() {
-                if ev.kind == NHSHELL_EV_COMMIT_TEXT {
-                    // SAFETY: a COMMIT_TEXT record's valid member is `text`.
-                    id = unsafe { ev.u.text.id };
+                if let ShellEvent::CommitText(t) = ev.event {
+                    id = t.id;
                 }
             }
         }

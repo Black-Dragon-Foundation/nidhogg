@@ -18,11 +18,11 @@ static library in the binary (two would collide on std's symbols), carrying this
 
 ## The shell API
 
-`src/api.rs` (the `ShellBackend` trait), `src/caps.rs` (`NhShellCaps`), `src/event.rs` (`NhShellEvent`) and `src/ffi.rs`
+`src/api.rs` (the `ShellBackend` trait), `src/caps.rs` (`NhShellCaps`), `src/event.rs` (`ShellEvent`, the records) and `src/ffi.rs`
 (the C ABI, `include/nhshell.h`) name no windowing backend: `ffi.rs` holds a `Box<dyn ShellBackend>`. The tree check
 (`nidhogg/test/tree-test.sh`) and the test `api::no_wayland_names_in_ffi` keep `wayland_` out of everything but
-`src/wayland/`. `abi::event_layout` compiles `nhshell.h` with `cc` and compares every size, alignment and offset with
-the Rust records. `caps::profile_names_map` checks that each global of the recorder's `mutter` profile has a field in
+`src/wayland/`. `abi::record_layout` compiles `nhshell.h` with `cc` and compares every size, alignment and offset with
+the Rust structs it declares. `caps::profile_names_map` checks that each global of the recorder's `mutter` profile has a field in
 `NhShellCaps` (`caps::GLOBAL_FIELDS` is the name table; `wl_shm` and `wl_output` have no field).
 
 A request that has no counterpart on a backend (`move`, `resize`, `show_menu`, `set_app_id`, `ack_configure`) is
