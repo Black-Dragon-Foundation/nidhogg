@@ -352,6 +352,21 @@ fn check_size(w: i32, h: i32) -> Result<(), GlueError> {
     }
 }
 
+/// The title bar's colours when the style names no background (W0's mix, moved from `nhwl_csd_colours`): the frame's
+/// background `bg` 12% toward its foreground `fg`, and the foreground of an inactive window whose style names none,
+/// the mixed background 55% toward the frame's foreground.  0xRRGGBB each; every channel is mixed in `double` and
+/// truncated, as C did.  `(fg, bg)`.
+pub fn title_bar_mix(fg: u32, bg: u32) -> (u32, u32) {
+    let mix = |a: u32, ka: f64, b: u32, kb: f64| {
+        [16, 8, 0].into_iter().fold(0, |acc, s| {
+            let c = |p: u32| f64::from((p >> s) & 0xff);
+            acc | (((c(a) * ka + c(b) * kb) as u32) << s)
+        })
+    };
+    let mbg = mix(bg, 0.88, fg, 0.12);
+    (mix(mbg, 0.45, fg, 0.55), mbg)
+}
+
 /// Lisp gave the title bars their style: the buttons of each side (`NHG_CSD_*`; other codes are ignored).  Every
 /// title bar is painted again.
 pub fn style(state: &mut Display, left: &[u32], right: &[u32]) {
