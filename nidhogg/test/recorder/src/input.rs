@@ -5,6 +5,7 @@ use crate::control::err;
 use crate::state::State;
 use serde_json::{json, Value};
 use smithay::backend::input::{Axis, AxisSource, ButtonState, KeyState};
+use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::input::keyboard::{xkb, FilterResult, Keycode, XkbConfig};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, CursorImageAttributes, CursorImageStatus, MotionEvent};
 use smithay::input::{Seat, SeatHandler, SeatState};
@@ -486,7 +487,9 @@ fn focus(state: &mut State, req: &Value) -> Value {
     json!({"ok": true})
 }
 
-/// `{"cmd":"pointer","pos":[X,Y]}`: moves the pointer over the focused surface (surface-local logical).
+/// `{"cmd":"pointer","pos":[X,Y]}`: moves the pointer over the focused surface (surface-local logical).  A position
+/// outside the surface is over nothing: the surface gets a leave (a drag over it, a data device leave), and the next
+/// position inside it an enter.
 fn pointer(state: &mut State, req: &Value) -> Value {
     let Some(ptr) = state.seat.get_pointer() else {
         return err("this profile's seat has no pointer");
@@ -504,10 +507,13 @@ fn pointer(state: &mut State, req: &Value) -> Value {
     let Some(surface) = state.focus.clone() else {
         return err("no focused surface (send focus first)");
     };
+    let inside = with_renderer_surface_state(&surface, |s| s.surface_size())
+        .flatten()
+        .is_none_or(|sz| x >= 0.0 && y >= 0.0 && x < f64::from(sz.w) && y < f64::from(sz.h));
     let time = state.time_ms();
     ptr.motion(
         state,
-        Some((surface, (0.0, 0.0).into())),
+        inside.then(|| (surface, (0.0, 0.0).into())),
         &MotionEvent {
             location: (x, y).into(),
             serial: SERIAL_COUNTER.next_serial(),
