@@ -483,15 +483,19 @@ With CENTER the frame is centred on the point of ANCHOR."
       (set-window-fringes window 0 0)
       (set-window-margins window 0 0))
     (fit-frame-to-buffer frame)
-    (let ((limit (- (display-pixel-height frame) 20)))
-      (when (> (frame-pixel-height frame) limit)
-        (set-frame-size frame (frame-pixel-width frame) limit t)))
-    (when center
-      (setq anchor (append (list (max 0 (- (nth 0 anchor)
-                                           (/ (frame-pixel-width frame) 2)))
-                                 (max 0 (- (nth 1 anchor)
-                                           (/ (frame-pixel-height frame) 2))))
-                           (nthcdr 2 anchor))))
+    ;; a new size is the frame's at the next redisplay: take it now, for
+    ;; the limit and the centre
+    (redisplay t)
+    (let ((limit (- (display-pixel-height frame) 20))
+          (height (frame-pixel-height frame)))
+      (when (> height limit)
+        (set-frame-size frame (frame-pixel-width frame) limit t)
+        (setq height limit))
+      (when center
+        (setq anchor (append (list (max 0 (- (nth 0 anchor)
+                                             (/ (frame-pixel-width frame) 2)))
+                                   (max 0 (- (nth 1 anchor) (/ height 2))))
+                             (nthcdr 2 anchor)))))
     (set-frame-parameter frame 'nhwl-popup anchor)
     (make-frame-visible frame)
     frame))
@@ -660,8 +664,9 @@ One of `down', `drag', `click', `move', `wheel', `touch-begin' and
 
 (defun nhwl-menu--locate (event)
   "Where the pointer or touch EVENT happened over a menu, or nil.
-The result is (DEPTH ROW WINDOW); ROW is nil past the last row."
-  (let* ((posn (ignore-errors (event-start event)))
+The result is (DEPTH ROW WINDOW); ROW is nil past the last row.  For a
+drag, that is where the button was released."
+  (let* ((posn (ignore-errors (event-end event)))
          (window (and (posnp posn) (posn-window posn)))
          (entry (and (window-live-p window)
                      (rassq (window-frame window) nhwl-menu--frames)))
@@ -731,6 +736,16 @@ Return nil to go on, `cancel' (everything), `close' (this level),
 `(retry . EVENT)' (EVENT is for a level above)."
   (cond
    ((eq (car-safe event) 'delete-frame) (nhwl-menu--dismissed event))
+   ;; the pointer's first motion into a frame that is not selected, such
+   ;; as a menu's, reads as a `switch-frame': it moves over the menu all
+   ;; the same
+   ((eq (car-safe event) 'switch-frame)
+    (let ((mouse (mouse-pixel-position)))
+      (when (and (frame-live-p (car mouse)) (numberp (cadr mouse)))
+        (nhwl-menu--mouse (list 'mouse-movement
+                                (posn-at-x-y (cadr mouse) (cddr mouse)
+                                             (car mouse)))
+                          'move depth parent-row))))
    ((nhwl-menu--mouse-kind event)
     (nhwl-menu--mouse event (nhwl-menu--mouse-kind event) depth parent-row))
    ((memq event '(down ?\C-n))
