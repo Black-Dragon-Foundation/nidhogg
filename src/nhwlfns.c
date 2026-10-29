@@ -2704,6 +2704,7 @@ out, nil without session management.  The answer arrives as an
     signal_error ("Unknown session reason", reason);
   if (!NILP (id))
     CHECK_STRING (id);
+  FRAME_DISPLAY_INFO (f)->session_saved = STRINGP (id);
   if (STRINGP (id))
     id = ENCODE_UTF_8 (id);
   block_input ();
