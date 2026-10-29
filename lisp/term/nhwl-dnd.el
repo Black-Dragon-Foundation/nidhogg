@@ -34,7 +34,11 @@
 (defconst nhwl-dnd--move 2 "The move action's bit (NHG_DND_MOVE).")
 (defconst nhwl-dnd--ask 4 "The ask action's bit (NHG_DND_ASK).")
 
-(defvar selection-converter-alist)
+;; X and pgtk define it in C; here it is Lisp's (select.el, loaded first, gave
+;; it its value), and special, so a `let' of it reaches the converters.
+(defvar selection-converter-alist nil
+  "An alist associating X Windows selection-types with functions.
+See the variable of the same name in X builds; `select.el' sets it.")
 (defvar nhwl--xdnd-value)
 (declare-function nhwl--drag-start "nhwlfns.c"
                   (frame items-fn offered preferred allow-current return-frame))

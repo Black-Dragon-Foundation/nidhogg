@@ -269,6 +269,11 @@ pub fn offer(state: &mut State, req: &Value) -> Value {
     let Some(ptr) = state.seat.get_pointer() else {
         return err("this profile's seat has no pointer");
     };
+    if state.dnd.active {
+        // the foreign drag before this one left the window (`dnd_leave`) but still holds the button: it ends over
+        // nothing first, as a new drag cannot start while the old one is held
+        dropped(state);
+    }
     if ptr.is_grabbed() {
         return err("a pointer grab is active");
     }
