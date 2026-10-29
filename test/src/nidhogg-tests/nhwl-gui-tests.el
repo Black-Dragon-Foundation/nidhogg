@@ -434,6 +434,28 @@ Return the two replies."
           (setq i (+ i 4)))
         (should found)))))
 
+(ert-deftest nhwl-gui/typed-text-reaches-the-screen ()
+  ;; the typed text's cells change in the compositor's picture, the client-side title bar's margins too (a glyph
+  ;; string's fills and font drawing nest the backing's clip, which once moved them by the margins twice, out of the
+  ;; string's clip: nothing reached the screen on the mutter profile)
+  (skip-unless (nhwl-gui--recorder-p))
+  (switch-to-buffer "*scratch*")
+  (erase-buffer)
+  (message nil)
+  (redisplay t)
+  (gui-runner-wait-settled)
+  (let* ((edges (window-inside-pixel-edges))
+         (left (/ (- (plist-get (plist-get (nhwl-gui--last-commit) :buffer) :w) (frame-pixel-width)) 2))
+         (cells (list (+ left (nth 0 edges)) (+ (nhwl-gui--native-top) (nth 1 edges))
+                      (* 4 (frame-char-width)) (frame-char-height)))
+         (before (gui-runner-screen-grab))
+         (mark (nhwl-gui--mark)))
+    (insert "MMMM")
+    (redisplay t)
+    (let ((after (nhwl-gui--shown mark)))
+      (should (> (cdr (gui-runner-pixel-diff before after cells)) (frame-char-width)))
+      (should (= (car (gui-runner-pixel-diff (glitnir-snapshot nil 'raw) after)) 0)))))
+
 (ert-deftest nhwl-gui/scale-150-buffer-exact ()
   (skip-unless (nhwl-gui--recorder-p))
   (skip-unless (= (frame-scale-factor) 1.5))
