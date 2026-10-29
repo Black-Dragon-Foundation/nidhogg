@@ -19,10 +19,10 @@ pub fn open(rec: &Recorder) -> *mut NhgDisplay {
     d
 }
 
-/// The shell's backend inside `d`, as C reaches the calls not yet ported.
+/// The shell's backend inside `d`, for what the glue does not wrap (windows, records).
 pub fn backend<'a>(d: *mut NhgDisplay) -> &'a mut dyn ShellBackend {
-    // SAFETY: a live display; its shell handle lives as long as it does, and no glue call runs meanwhile.
-    unsafe { &mut *nhg_shell(d) }.backend_mut()
+    // SAFETY: a live display; its backend lives as long as it does, and no glue call runs meanwhile.
+    unsafe { &mut *(*d).backend_ptr() }
 }
 
 /// One step: its return and a copy of its actions.

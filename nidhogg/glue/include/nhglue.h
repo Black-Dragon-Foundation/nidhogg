@@ -5,7 +5,8 @@
    never calls back into Emacs (nidhogg/glue/nm-check.sh checks the archive for it).  Call everything on the Lisp
    thread that holds Emacs's global lock.  Every call returns NHG_OK (or a count, where said) or a negative NHG_E_*
    code; a panic inside the glue is caught at the boundary and reported as NHG_E_PANIC.  libnhglue.a also carries every
-   nhshell_* and glitnir_* symbol: it is the one Rust library Emacs links.
+   glitnir_* symbol: it is the one Rust library Emacs links.  The shell (crate nhshell) has no C ABI: C reaches it
+   only through these calls.
 
    The guard.  Every call runs in one: with less than 256 KiB of stack left it returns NHG_E_NOMEM; a display whose
    state is locked on entry (a call that re-entered, or one a longjmp abandoned) is poisoned; a panic poisons it too.
@@ -20,10 +21,9 @@
 #ifndef NHGLUE_H
 #define NHGLUE_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-
-#include "nhshell.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -31,7 +31,7 @@ extern "C" {
 
 #define NHG_ABI_VERSION      1
 
-/* The codes equal NHSHELL_E_* where they mean the same.  */
+/* The codes equal the shell's where they mean the same.  */
 #define NHG_OK               0
 #define NHG_E_PANIC         -1   /* a panic inside the glue */
 #define NHG_E_ARG           -2
@@ -50,8 +50,8 @@ typedef struct NhgDisplay NhgDisplay;
 /* Write the ABI version (NHG_ABI_VERSION) to *OUT.  NHG_E_ARG if OUT is NULL.  */
 int32_t nhg_abi_version (uint32_t *out);
 
-/* Connect to DISPLAY (NULL: the environment's) as nhshell_open does.  NULL on failure, with a NUL-terminated reason
-   in ERR (CAP bytes; ERR may be NULL when CAP is 0).  */
+/* Connect to DISPLAY (NULL: the environment's) through the shell.  NULL on failure, with a NUL-terminated reason in
+   ERR (CAP bytes; ERR may be NULL when CAP is 0).  */
 NhgDisplay *nhg_open (const char *display, char *err, size_t cap);
 
 /* Close the connection and free D.  NULL is accepted.  D is not used again.  On a poisoned display it touches nothing
@@ -62,8 +62,88 @@ int32_t nhg_close (NhgDisplay *d);
 /* The descriptor that is readable when events are queued (>= 0), or a negative code.  */
 int32_t nhg_fd (NhgDisplay *d);
 
-/* The shell handle inside D, for the nhshell_* calls not yet ported; valid until nhg_close.  NULL if D is NULL.  */
-NhShell *nhg_shell (NhgDisplay *d);
+/* Run the shell's work that must happen on the host's thread (configure and surface events) and flush.  */
+int32_t nhg_dispatch_main (NhgDisplay *d);
+
+/* The shell's capabilities: one protocol version per optional feature, 0 when absent.  A missing protocol makes its
+   feature do nothing.  */
+typedef struct
+{
+  uint32_t compositor, subcompositor, seat, xdg_wm_base, xdg_decoration, fractional_scale, viewporter, cursor_shape,
+    text_input_v3, primary_selection, data_device, presentation, fifo, commit_timing, alpha_modifier, activation,
+    pointer_warp, system_bell, session_management, background_effect, pointer_gestures, idle_inhibit,
+    single_pixel_buffer, dmabuf, xdg_foreign;
+  bool ssd;        /* server-side decorations were granted, after negotiation */
+  bool force_csd;  /* client-side decorations are forced (a test switch) */
+} NhgCaps;
+
+/* Copy the capabilities to *OUT.  NHG_E_ARG if OUT is NULL.  */
+int32_t nhg_caps (NhgDisplay *d, NhgCaps *out);
+
+/* ---- The shell's values --------------------------------------------------------------------------------------------
+
+   The values of the shell's records and requests that C uses: the keyboard's modifiers, a configure's states, a
+   button's state, window flags, interactive-resize edges (OR them for a corner), pointer shapes, window kinds, a
+   popup's adjustments and the selections.  */
+
+#define NHG_MOD_SHIFT (1u << 0)
+#define NHG_MOD_CTRL  (1u << 1)
+#define NHG_MOD_ALT   (1u << 2)
+#define NHG_MOD_SUPER (1u << 3)
+#define NHG_MOD_HYPER (1u << 4)
+#define NHG_MOD_META  (1u << 5)
+#define NHG_MOD_CAPS  (1u << 6)
+
+#define NHG_STATE_MAXIMIZED  (1u << 0)
+#define NHG_STATE_FULLSCREEN (1u << 1)
+#define NHG_STATE_ACTIVATED  (1u << 2)
+#define NHG_STATE_RESIZING   (1u << 3)
+#define NHG_STATE_TILED_L    (1u << 4)
+#define NHG_STATE_TILED_R    (1u << 5)
+#define NHG_STATE_TILED_T    (1u << 6)
+#define NHG_STATE_TILED_B    (1u << 7)
+#define NHG_STATE_SUSPENDED  (1u << 8)
+
+#define NHG_BUTTON_RELEASED 0
+#define NHG_BUTTON_PRESSED  1
+
+#define NHG_WIN_UNDECORATED (1u << 0)
+#define NHG_WIN_FULLSCREEN  (1u << 1)
+#define NHG_WIN_MAXIMIZED   (1u << 2)
+/* A popup that takes the keyboard and pointer (a menu): it grabs with the newest button press, key press or touch
+   down serial, unless a drag is in progress, there is no serial, or it would not become the topmost grab (its parent
+   must be a top-level window while no popup holds a grab, or the popup holding the topmost grab).  Without the grab
+   it still works by keys through its parent's focus, but an outside click does not dismiss it.  */
+#define NHG_WIN_GRAB        (1u << 3)
+/* With a session name: ask the session to restore the window (before its first commit) instead of just adding it.  */
+#define NHG_WIN_RESTORE     (1u << 4)
+
+#define NHG_EDGE_TOP    1u
+#define NHG_EDGE_BOTTOM 2u
+#define NHG_EDGE_LEFT   4u
+#define NHG_EDGE_RIGHT  8u
+
+enum
+{
+  NHG_CURSOR_DEFAULT, NHG_CURSOR_TEXT, NHG_CURSOR_POINTER, NHG_CURSOR_CROSSHAIR, NHG_CURSOR_WAIT, NHG_CURSOR_HELP,
+  NHG_CURSOR_MOVE, NHG_CURSOR_NOT_ALLOWED, NHG_CURSOR_RESIZE_NS, NHG_CURSOR_RESIZE_EW, NHG_CURSOR_RESIZE_NWSE,
+  NHG_CURSOR_RESIZE_NESW, NHG_CURSOR_HIDDEN
+};
+
+/* A child is a sync subsurface of its parent, presented with its tree (what it shows, and its position, stacking,
+   input region and unmap, take effect once every ancestor has committed after it, the root last); a popup is placed
+   by the compositor beside an anchor rectangle, and is a tree of its own.  */
+#define NHG_KIND_TOPLEVEL 0u
+#define NHG_KIND_CHILD    1u
+#define NHG_KIND_POPUP    2u
+
+#define NHG_ADJUST_SLIDE_X (1u << 0)
+#define NHG_ADJUST_SLIDE_Y (1u << 1)
+#define NHG_ADJUST_FLIP_X  (1u << 2)
+#define NHG_ADJUST_FLIP_Y  (1u << 3)
+
+#define NHG_SEL_CLIPBOARD 0u
+#define NHG_SEL_PRIMARY   1u
 
 /* ---- Backings, damage and scroll ----------------------------------------------------------------------------------
 
@@ -162,10 +242,18 @@ int32_t nhg_present (NhgDisplay *d, uint64_t root, const NhgSurface *s, size_t n
 int32_t nhg_presenter_thread (NhgDisplay *d, int32_t on);
 
 /* The presenter's counters since open, and its timing: FRAMES root buffers that showed published drawing, LATE of
-   them committed more than a refresh after they were ready, and the longest wait from ready to commit.  Neither.  */
+   them committed more than a refresh after they were ready, and the longest wait from ready to commit.  Neither.
+   The shell's counters: packets published and merged into one still waiting (SUPERSEDED), buffer and bare commits,
+   the longest wait of the host's thread and the longest publish copy, fronts dropped idle, and whether the presenter
+   runs on its own thread.  */
 typedef struct
 {
-  NhShellPresenterStats counters;
+  uint64_t packets, superseded, commits, bare_commits, main_wait_max_ns, publish_copy_max_ns, front_trims;
+  uint32_t thread_on;
+} NhgPresenterCounters;
+typedef struct
+{
+  NhgPresenterCounters counters;
   uint64_t frames, late, ready_to_commit_max_ns;
 } NhgPresenterStats;
 int32_t nhg_presenter_stats (NhgDisplay *d, NhgPresenterStats *out);
@@ -225,7 +313,7 @@ typedef struct { uint32_t flags; } NhgNextIn;
 #define NHG_ACT_WHEEL            3
 #define NHG_ACT_MOTION           4
 #define NHG_ACT_LEAVE            5
-#define NHG_ACT_RESIZE           6   /* W, H the suggestion (logical; 0: the frame's own), CODE the NHSHELL_STATE_*,
+#define NHG_ACT_RESIZE           6   /* W, H the suggestion (logical; 0: the frame's own), CODE the NHG_STATE_*,
 				        FLAGS NHG_RESIZE_*; C pushes the frame's new size if it changes it */
 #define NHG_ACT_SCALE            7   /* CODE the scale times 120, SCALE the factor */
 #define NHG_ACT_GARBAGE          8
@@ -244,13 +332,13 @@ typedef struct { uint32_t flags; } NhgNextIn;
 #define NHG_ACT_IM_SURROUNDING  20
 #define NHG_ACT_SELECTION_CLEAR 21
 #define NHG_ACT_TITLE_BAR       22   /* a pointer event went through the title bar: FLAGS NHG_TB_*, CODE the pointer
-					shape (NHSHELL_CURSOR_*) with NHG_TB_POINTER; the event's own action (MOTION,
+					shape (NHG_CURSOR_*) with NHG_TB_POINTER; the event's own action (MOTION,
 					LEAVE, CLICK), if any, comes after it */
 
 #define NHG_RESIZE_FULLSCREEN    1   /* fullscreen or maximized changed: C stores the fullscreen parameter */
 
 /* MOTION (an enter is one): DX, DY the pointer's position in device pixels in the window's surface.  LEAVE: the
-   window.  CLICK: CODE the evdev button, FLAGS the NHSHELL_BUTTON_* state, DX, DY the position, MODS the keyboard's.
+   window.  CLICK: CODE the evdev button, FLAGS the NHG_BUTTON_* state, DX, DY the position, MODS the keyboard's.
    WHEEL: CODE NHG_WHEEL_UP, _DOWN, _LEFT or _RIGHT (as pgtk's buttons 4 to 7), W the whole steps, DX, DY the
    record's pixel delta in device pixels, MODS the keyboard's, FLAGS NHG_WHEEL_*: none (W events, one step each),
    HIRES (one event with the pixel delta, no steps), STOP (a gesture ended; momentum begins) or COALESCED (W steps in
@@ -349,7 +437,7 @@ int32_t nhg_test_panic (NhgDisplay *d);
 
    A KEY action is a press or a repeat: WINDOW the window with the keyboard (C sends the key to the frame of its tree
    that Emacs focused, or to the focus frame when no frame has that window), CODE the keysym, TEXT its UTF-8 (possibly
-   empty), MODS the NHSHELL_MOD_* mask, FLAGS NHG_KEY_*.  A repeat taken by a call with NHG_IN_INPUT_WAITING set gives
+   empty), MODS the NHG_MOD_* mask, FLAGS NHG_KEY_*.  A repeat taken by a call with NHG_IN_INPUT_WAITING set gives
    no action.  FOCUS_IN and FOCUS_OUT name the window whose keyboard focus changed; C resolves Emacs's focus frame
    and its highlighting.  A popup frame's focus, and the focus a top-level lends a grabbing popup frame of its own,
    give none (nhg_popup_hide says when a lent focus is lost).  */
@@ -357,8 +445,8 @@ int32_t nhg_test_panic (NhgDisplay *d);
 #define NHG_KEY_REPEAT           1   /* the key is a repeat */
 
 /* ---- Selections, display queries, the bench, the bell and the pointer -------------------------------------------
-   None of these reads or writes pixels except nhg_bench_full_redraw, which reads them.  KIND is NHSHELL_SEL_CLIPBOARD
-   or NHSHELL_SEL_PRIMARY.  A buffer a call lends stays valid until the next call of the same entry point.  */
+   None of these reads or writes pixels except nhg_bench_full_redraw, which reads them.  KIND is NHG_SEL_CLIPBOARD or
+   NHG_SEL_PRIMARY.  A buffer a call lends stays valid until the next call of the same entry point.  */
 
 /* Offer N types as selection KIND: MIMES[i] with the LENS[i] bytes at DATA[i], copied.  NHG_E_STATE without keyboard
    focus; the glue then owns nothing.  */
@@ -401,7 +489,7 @@ typedef struct
 {
   int32_t w, h, mm_w, mm_h;
   uint32_t scale120;
-  NhShellCaps caps;
+  NhgCaps caps;
 } NhgDisplayInfo;
 int32_t nhg_display_info (NhgDisplay *d, NhgDisplayInfo *out);
 
@@ -417,7 +505,7 @@ int32_t nhg_bench_full_redraw (NhgDisplay *d, const NhgSurface *s, size_t n, uin
    protocol.  */
 int32_t nhg_bell (NhgDisplay *d, uint64_t window);
 
-/* Show (ON) the pointer over WINDOW as SHAPE (NHSHELL_CURSOR_*), or hide it.  */
+/* Show (ON) the pointer over WINDOW as SHAPE (NHG_CURSOR_*), or hide it.  */
 int32_t nhg_pointer_visible (NhgDisplay *d, uint64_t window, int32_t on, uint32_t shape);
 
 /* ---- Wheel units, the input method and outputs ---------------------------------------------------------------------
@@ -450,7 +538,9 @@ int32_t nhg_frame_outputs (NhgDisplay *d, uint64_t window, uint64_t *out, size_t
    popup or child frame's new window (each show makes one) starts from Emacs's values, and its alpha starts over.
    Texts are UTF-8 with their lengths, valid for the call.  Neither reads nor writes pixels, nor do the calls below.  */
 
-/* Layout equals NhShellAnchor: a rectangle in the parent's surface (logical pixels), the gravity, NHSHELL_ADJUST_*.  */
+/* A popup's anchor: the rectangle in the parent's surface (logical pixels) it sits beside, the gravity (the side or
+   corner it grows toward: 0 none, 1 top, 2 bottom, 3 left, 4 right, 5 top-left, 6 bottom-left, 7 top-right,
+   8 bottom-right; the popup's matching corner touches the same corner of the rectangle) and NHG_ADJUST_*.  */
 typedef struct { int32_t x, y, w, h; uint32_t gravity, adjust; } NhgAnchor;
 
 typedef struct
@@ -459,8 +549,8 @@ typedef struct
   const char *title; size_t title_len;
   const char *app_id; size_t app_id_len;
   const char *session_name; size_t session_name_len;   /* top-levels; empty: none */
-  uint32_t flags;               /* NHSHELL_WIN_* */
-  uint32_t kind;                /* NHSHELL_KIND_* */
+  uint32_t flags;               /* NHG_WIN_* */
+  uint32_t kind;                /* NHG_KIND_* */
   uint64_t parent;              /* children and popups */
   int32_t x, y;                 /* children: the offset in the parent (logical) */
   NhgAnchor anchor;             /* popups */
@@ -477,6 +567,21 @@ int32_t nhg_window_new (NhgDisplay *d, const NhgWindowDesc *w, uint64_t *out);
 int32_t nhg_window_title (NhgDisplay *d, uint64_t window, const char *title, size_t len);
 /* `undecorated' changed at run time (ON non-zero): a top-level asks the compositor again; a child has nothing to ask.  */
 int32_t nhg_window_undecorated (NhgDisplay *d, uint64_t window, int32_t on);
+/* An interactive move, an interactive resize from EDGES (NHG_EDGE_*), the window menu at X, Y (logical pixels in the
+   surface); each uses the latest input serial.  A request a backend has no counterpart for is accepted and does
+   nothing.  */
+int32_t nhg_window_move (NhgDisplay *d, uint64_t window);
+int32_t nhg_window_resize (NhgDisplay *d, uint64_t window, uint32_t edges);
+int32_t nhg_window_show_menu (NhgDisplay *d, uint64_t window, int32_t x, int32_t y);
+/* The pointer shape over WINDOW (NHG_CURSOR_*; NHG_CURSOR_HIDDEN shows none).  */
+int32_t nhg_window_set_cursor (NhgDisplay *d, uint64_t window, uint32_t shape);
+/* Ask the compositor to activate WINDOW (xdg-activation).  TOKEN is the activation token to use (emacsclient's
+   XDG_ACTIVATION_TOKEN, NUL-terminated); NULL requests one with the latest input serial and the window's surface, and
+   activates when it arrives (NHG_E_STATE before any input; NHG_E_UNSUPPORTED without xdg_activation_v1).  */
+int32_t nhg_window_activate (NhgDisplay *d, uint64_t window, const char *token);
+/* The Xcursor theme (NAME, NUL-terminated, and logical SIZE) shown where the compositor lacks wp_cursor_shape_v1; a
+   cursor already shown from the theme is redrawn.  */
+int32_t nhg_set_cursor_theme (NhgDisplay *d, const char *name, uint32_t size);
 
 /* nhg_window_alpha's result bits.  DAMAGE: C damages the whole frame.  HOST: the compositor cannot apply the alpha,
    so the shell multiplies the pixels (NHG_SURF_ALPHA_HOST, with *CUT as the surface's ALPHA_CUT).  */
@@ -568,7 +673,7 @@ int32_t nhg_child_stack (NhgDisplay *d, uint64_t window, const uint64_t *sibling
    A popup frame's window (registered with NHG_FRAME_POPUP) is an xdg popup of its parent frame's window, made when
    the frame is shown and destroyed when it is hidden; the frame is the root of its own tree.  C decodes the frame's
    `nhwl-popup' parameter (X Y W H . PLIST): ANCHOR_DEV is the rectangle in device pixels of the parent's native area,
-   GRAVITY NhgAnchor's (1 to 8), ADJUST NHSHELL_ADJUST_*, FLAGS NHG_POPUP_*.  The glue places it in the parent's
+   GRAVITY NhgAnchor's (1 to 8), ADJUST NHG_ADJUST_*, FLAGS NHG_POPUP_*.  The glue places it in the parent's
    surface (after its border) at the parent's scale.  Size, gravity, adjust and grab apply at the next show; a new
    parameter moves the shown popup.  A grab needs a recent press's serial: without one the popup grabs nothing.  The
    compositor dismissing it is a DELETE action with NHG_DEL_POPUP: C stores a delete-frame event, and the frame stays
@@ -695,8 +800,8 @@ int32_t nhg_session_remove (NhgDisplay *d, uint64_t window);
 /* ---- The drop target -------------------------------------------------------------------------------------------
    A drag from another client comes out of nhg_next as NHG_ACT_DND_* actions for the window under the pointer: DX, DY
    the position in device pixels, TIME_MS the compositor's drag time (hand it back to nhg_dnd_status and
-   nhg_dnd_finish), CODE the action (NHSHELL_DND_*; 0: none), the source's preferred one for ENTER and MOTION, the
-   chosen one for DROP.  LEAVE has the window only.  The offer is read as selection NHSHELL_SEL_DND (2) with
+   nhg_dnd_finish), CODE the action (NHG_DND_*; 0: none), the source's preferred one for ENTER and MOTION, the
+   chosen one for DROP.  LEAVE has the window only.  The offer is read as selection NHG_SEL_DND (2) with
    nhg_selection_types and nhg_selection_read, from the enter until the leave or the finish.  The shell sends no LEAVE
    after a DROP.  */
 #define NHG_ACT_DND_ENTER       32
@@ -704,8 +809,8 @@ int32_t nhg_session_remove (NhgDisplay *d, uint64_t window);
 #define NHG_ACT_DND_LEAVE       34
 #define NHG_ACT_DND_DROP        35
 
-#define NHG_SEL_DND              2   /* the offer's KIND for nhg_selection_types, _owned and _read (NHSHELL_SEL_DND) */
-#define NHG_DND_COPY             1   /* the actions (NHSHELL_DND_*) */
+#define NHG_SEL_DND              2   /* the offer's KIND for nhg_selection_types, _owned and _read */
+#define NHG_DND_COPY             1   /* the actions */
 #define NHG_DND_MOVE             2
 #define NHG_DND_ASK              4
 
@@ -713,7 +818,7 @@ int32_t nhg_session_remove (NhgDisplay *d, uint64_t window);
    frame.  */
 int32_t nhg_dnd_register (NhgDisplay *d, uint64_t window, const char *const *mimes, size_t n);
 
-/* Accept the current drag for ACTION (NHSHELL_DND_*, one bit; 0 accepts nothing) with the type last read from the offer
+/* Accept the current drag for ACTION (NHG_DND_*, one bit; 0 accepts nothing) with the type last read from the offer
    (else its first).  1 when the shell was told, 0 for a call older than the drag's enter or without a drag.  */
 int32_t nhg_dnd_status (NhgDisplay *d, uint32_t action, uint32_t time_ms);
 

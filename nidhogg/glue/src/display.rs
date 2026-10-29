@@ -8,9 +8,9 @@ use crate::guard::{GlueError, PanicReport};
 use crate::keys::Keyboard;
 use crate::present::Presenting;
 use nhshell::api::{BackendThread, ShellBackend};
-use nhshell::ffi::{NhShell, nhshell_close};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -33,8 +33,9 @@ pub struct NhgDisplay {
 
 /// The state behind the display's lock.
 pub struct Display {
-    /// The shell handle (`nhshell_open`), owned here; C reaches it through `nhg_shell` for the calls not yet ported.
-    shell: NonNull<NhShell>,
+    /// The shell's backend (`nhshell::open`), owned here (a `Box` taken apart, released in `Drop`, leaked by
+    /// `NhgDisplay::abandon`).
+    shell: NonNull<dyn ShellBackend>,
     frames: BTreeMap<u64, Frame>,
     /// Windows forgotten since they were last registered: calls naming them are refused.
     forgotten: BTreeSet<u64>,
@@ -67,8 +68,10 @@ pub struct Display {
 
 impl Drop for Display {
     fn drop(&mut self) {
-        // SAFETY: the handle came from `nhshell_open` and is released only here.
-        unsafe { nhshell_close(self.shell.as_ptr()) };
+        let shell = self.shell.as_ptr();
+        // SAFETY: the backend came from `Box::into_raw` in `new` and is released only here.  A panic in its drop is
+        // caught, as the close always was.
+        let _ = catch_unwind(AssertUnwindSafe(|| drop(unsafe { Box::from_raw(shell) })));
         // A backing C never forgot leaves no Glitnir root behind.  After the close, which stops the shell's threads,
         // so that no presenter composes a root while it goes.
         let keys: Vec<u64> = self.backings.frames_mut().map(|(k, _)| k).collect();
@@ -80,12 +83,9 @@ impl Drop for Display {
 
 impl NhgDisplay {
     /// A display over `shell`, which it takes over.
-    ///
-    /// # Safety
-    /// `shell` is a live handle from `nhshell_open`, owned by nothing else.
-    pub unsafe fn new(mut shell: NonNull<NhShell>) -> NhgDisplay {
-        // SAFETY: a live handle, not used anywhere else yet (the caller's promise).
-        let abandon = unsafe { shell.as_mut() }.backend_mut().abandon();
+    pub fn new(shell: Box<dyn ShellBackend>) -> NhgDisplay {
+        let abandon = shell.abandon();
+        let shell = NonNull::from(Box::leak(shell));
         NhgDisplay {
             poisoned: AtomicBool::new(false),
             panic: OnceLock::new(),
@@ -153,6 +153,13 @@ impl NhgDisplay {
         std::mem::forget(self);
     }
 
+    /// The shell's backend, for the Rust tests, which stand in for the shell's other users (C has no way to it).
+    /// Valid until the display is closed; use it only between glue calls.
+    #[doc(hidden)]
+    pub fn backend_ptr(&self) -> *mut dyn ShellBackend {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).shell()
+    }
+
     /// Test hook: hold the state's lock, as an abandoned call would.
     #[cfg(feature = "test-hooks")]
     #[doc(hidden)]
@@ -162,16 +169,15 @@ impl NhgDisplay {
 }
 
 impl Display {
-    /// The shell handle (valid until the display is dropped).
-    pub fn shell(&mut self) -> *mut NhShell {
+    /// The shell's backend (valid until the display is dropped).
+    pub fn shell(&mut self) -> *mut dyn ShellBackend {
         self.shell.as_ptr()
     }
 
     /// The shell's backend, the backings and the presenting mode, borrowed at once.
     pub(crate) fn presenting(&mut self) -> (&mut dyn ShellBackend, &Backings, &mut Presenting) {
-        // SAFETY: the handle came from `nhshell_open` and lives as long as the display; C reaches it through
-        // `nhg_shell` only between glue calls, so this is its one borrow while `self` is borrowed.
-        let backend = unsafe { self.shell.as_mut() }.backend_mut();
+        // SAFETY: the backend lives as long as the display, and this is its one borrow while `self` is borrowed.
+        let backend = unsafe { self.shell.as_mut() };
         (backend, &self.backings, &mut self.presenting)
     }
 
@@ -210,8 +216,8 @@ impl Display {
 
     /// The shell's backend.
     pub fn backend(&mut self) -> &mut dyn ShellBackend {
-        // SAFETY: the handle is live until the display is dropped, and the display's lock is held.
-        unsafe { self.shell.as_mut() }.backend_mut()
+        // SAFETY: the backend is live until the display is dropped, and the display's lock is held.
+        unsafe { self.shell.as_mut() }
     }
 
     /// The last `nhg_next`'s actions.
@@ -253,9 +259,9 @@ impl Display {
         window: u64,
     ) -> Result<(&mut dyn ShellBackend, &crate::csd::Style, &mut Frame), GlueError> {
         let f = self.frames.get_mut(&window).ok_or(GlueError::State)?;
-        // SAFETY: the handle is live until the display is dropped, and the display's lock is held; the frame and
+        // SAFETY: the backend is live until the display is dropped, and the display's lock is held; the frame and
         // the style are other fields.
-        let backend = unsafe { self.shell.as_mut() }.backend_mut();
+        let backend = unsafe { self.shell.as_mut() };
         Ok((backend, &self.csd_style, f))
     }
 }

@@ -110,14 +110,14 @@ else
   echo "check.sh: cargo-deny not on PATH, skipping the licence check"
 fi
 [ "$FULL" = 1 ] || { echo "check.sh: ok (without --full: no release archive)"; exit 0; }
-# the archive Emacs links: every nhg_*, nhshell_* and glitnir_* function of the three headers is exported (built with
+# the archive Emacs links: every nhg_* and glitnir_* function of the two headers is exported (built with
 # the test hooks, as an --enable-checking Emacs links it, so that the hooks' exports are checked too)
 cargo build --release --offline --locked --features test-hooks      || fail build
 lib=$CARGO_TARGET_DIR/release/libnhglue.a
 [ -f "$lib" ] || fail "build (no libnhglue.a)"
 exports=$(nm -g --defined-only "$lib" 2>/dev/null | awk '$2 ~ /^[TDBR]$/ {print $3}')
-for sym in $(grep -ho '\(nhg\|nhshell\|glitnir\)_[a-z0-9_]* (\?(' include/nhglue.h ../shell/include/nhshell.h \
-               ../glitnir/include/glitnir.h | tr -d '( ' | sort -u); do
+for sym in $(grep -ho '\(nhg\|glitnir\)_[a-z0-9_]* (\?(' include/nhglue.h ../glitnir/include/glitnir.h |
+               tr -d '( ' | sort -u); do
   printf '%s\n' "$exports" | grep -qx "$sym" || fail "exports $sym"
 done
 echo "check.sh: ok"

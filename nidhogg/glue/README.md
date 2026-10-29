@@ -6,7 +6,8 @@ the hook tables, `DEFUN`s) and all Cairo drawing, and calls in here through `inc
 
 - **One library.** Under `--with-nidhogg-wayland` configure links `libnhglue.a` instead of `libglitnir.a`. It is the
   one Rust static library in the binary (two would collide on std's symbols), so `src/lib.rs` re-exports Glitnir's
-  and the shell's C ABIs: `nidhogg-glitnir.c` and the C calls not yet ported keep linking. `nhshell` is an rlib.
+  C ABI: `nidhogg-glitnir.c` keeps linking. `nhshell` is an rlib with no C ABI; C reaches the shell only through
+  `nhg_*`.
 - **Calls go one way.** C calls `nhg_*`; the glue answers with plain records (ids, rectangles, ARGB colours, UTF-8
   text, pixel pointers into Rust-owned backings) and never calls Emacs. It never sees a `Lisp_Object` or an Emacs
   struct, and C passes it no function pointers.
@@ -23,7 +24,7 @@ the hook tables, `DEFUN`s) and all Cairo drawing, and calls in here through `inc
 
 - `check.sh [--container DISTRO] [--test NAME]`: the lock against the shell's, fmt, clippy `-D warnings` (also with
   `test-hooks`), tests and cargo-deny. `--no-run` builds the tests without running them. `--full` adds the release archive and checks that it exports every function of
-  `nhglue.h`, `nhshell.h` and `glitnir.h`. `--android` runs `cargo check --no-default-features --target
+  `nhglue.h` and `glitnir.h`. `--android` runs `cargo check --no-default-features --target
   aarch64-linux-android` (no NDK, no link) and exits 3 when the toolchain has no std for that target.
 - `tests/abi.rs` (`abi::header_matches_records`) compiles `nhglue.h` with `cc` and compares its constants and
   prototypes with the Rust side.

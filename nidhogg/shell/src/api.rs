@@ -1,7 +1,7 @@
 //! The shell API: `ShellBackend`, the trait every windowing backend implements, and the plain types around it.
 //!
-//! The C ABI (`ffi.rs`) holds a `Box<dyn ShellBackend>` and knows nothing of the backend behind it.  All calls come
-//! from the host's main thread.  Sizes are logical pixels unless a name says `dev` (device pixels).
+//! The glue holds a `Box<dyn ShellBackend>` (`crate::open`) and knows nothing of the backend behind it.  All calls
+//! come from the host's main thread.  Sizes are logical pixels unless a name says `dev` (device pixels).
 
 use crate::caps::NhShellCaps;
 use crate::event::Record;
@@ -39,7 +39,7 @@ pub const NHSHELL_E_TOO_SMALL: i32 = -8;
 /// The display is reconnecting (`ShellBackend::reconnect`): the call sent nothing.
 pub const NHSHELL_E_RECONNECTING: i32 = -9;
 
-/// Why a call failed; `code` is the C ABI's value.
+/// Why a call failed; `code` is the glue's `NHG_E_*` value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShellError {
     Arg,
@@ -508,6 +508,7 @@ pub struct SurfaceFrame<'a> {
 
 /// The presenter's counters since open: packets published and merged into one still waiting (`superseded`), buffer
 /// and bare commits, the longest wait of the host's thread and the longest publish copy, and fronts dropped idle.
+/// C reads it as `NhgPresenterCounters` (`nhglue.h`), inside the glue's `NhgPresenterStats`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct NhShellPresenterStats {
@@ -523,8 +524,8 @@ pub struct NhShellPresenterStats {
 
 #[cfg(test)]
 mod tests {
-    /// The shell API names no backend: the files behind the C ABI name no Wayland backend identifier, and, apart
-    /// from `caps.rs` (whose table names protocol interfaces), no Wayland object type.  (The patterns are built from halves so this
+    /// The shell API names no backend: the files of the API name no Wayland backend identifier, and, apart from
+    /// `caps.rs` (whose table names protocol interfaces), no Wayland object type.  (The patterns are built from halves so this
     /// file does not match itself.)
     #[test]
     fn no_wayland_names_in_ffi() {
@@ -534,7 +535,7 @@ mod tests {
             ("api.rs", include_str!("api.rs"), true),
             ("caps.rs", include_str!("caps.rs"), false),
             ("event.rs", include_str!("event.rs"), true),
-            ("ffi.rs", include_str!("ffi.rs"), true),
+            ("lib.rs", include_str!("lib.rs"), true),
         ];
         for (name, text, check_wl) in files {
             // this test's own name is the one line allowed to say it

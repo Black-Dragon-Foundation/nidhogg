@@ -1,11 +1,10 @@
 # nhshell
 
-Nidhogg's native shell layer: a Rust crate with a C ABI (`include/nhshell.h`), built as an rlib. Under
-`--with-nidhogg-wayland` the Makefile links `nidhogg/glue`'s `libnhglue.a` instead of `libglitnir.a`: the one Rust
-static library in the binary (two would collide on std's symbols), carrying this crate's `nhshell_*` and every
+Nidhogg's native shell layer: a Rust library, built as an rlib, whose one user is the glue (`nidhogg/glue`); it has
+no C ABI of its own. Under `--with-nidhogg-wayland` the Makefile links the glue's `libnhglue.a` instead of
+`libglitnir.a`: the one Rust static library in the binary (two would collide on std's symbols), carrying every
 `glitnir_*` symbol too. The Wayland backend (`src/wayland/` and its dependencies) sits behind the default feature
-`wayland`. New shell calls go into `trait ShellBackend` and this README only: no new entries in `nhshell.h` or
-`src/ffi.rs`, which retire once the glue makes every call in Rust.
+`wayland`. New shell calls go into `trait ShellBackend`; C reaches them through the glue's `nhg_*` entry points.
 
 - Dependencies are vendored in `vendor/` (`cargo vendor-filterer`, Linux and macOS, x86_64 and aarch64) and the build
   runs offline and locked (`.cargo/config.toml`). Third-party crates are limited to wayland-client, wayland-backend,
@@ -18,12 +17,13 @@ static library in the binary (two would collide on std's symbols), carrying this
 
 ## The shell API
 
-`src/api.rs` (the `ShellBackend` trait), `src/caps.rs` (`NhShellCaps`), `src/event.rs` (`ShellEvent`, the records) and `src/ffi.rs`
-(the C ABI, `include/nhshell.h`) name no windowing backend: `ffi.rs` holds a `Box<dyn ShellBackend>`. The tree check
+`src/api.rs` (the `ShellBackend` trait), `src/caps.rs` (`NhShellCaps`), `src/event.rs` (`ShellEvent`, the records) and
+`src/lib.rs` (`open`, which gives the glue a `Box<dyn ShellBackend>`) name no windowing backend. The tree check
 (`nidhogg/test/tree-test.sh`) and the test `api::no_wayland_names_in_ffi` keep `wayland_` out of everything but
-`src/wayland/`. `abi::record_layout` compiles `nhshell.h` with `cc` and compares every size, alignment and offset with
-the Rust structs it declares. `caps::profile_names_map` checks that each global of the recorder's `mutter` profile has a field in
-`NhShellCaps` (`caps::GLOBAL_FIELDS` is the name table; `wl_shm` and `wl_output` have no field).
+`src/wayland/`. `NhShellCaps` and `NhShellPresenterStats` stay `#[repr(C)]`: the glue hands them to C inside its own
+records (`NhgCaps`, `NhgPresenterCounters`), and its `tests/abi.rs` pins their layout. `caps::profile_names_map`
+checks that each global of the recorder's `mutter` profile has a field in `NhShellCaps` (`caps::GLOBAL_FIELDS` is the
+name table; `wl_shm` and `wl_output` have no field).
 
 A request that has no counterpart on a backend (`move`, `resize`, `show_menu`, `set_app_id`, `ack_configure`) is
 accepted and does nothing; so is a capability the backend does not have (its field is 0). That is the same rule as for

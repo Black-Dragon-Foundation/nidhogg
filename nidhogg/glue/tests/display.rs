@@ -119,27 +119,19 @@ mod display {
         let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let rec = Recorder::start("mutter");
         let d = open(&rec);
-        let title = c"poisoned";
-        let desc = nhshell::ffi::NhShellWindowDesc {
+        let desc = nhshell::api::WindowDesc {
             w: 200,
             h: 100,
-            title: title.as_ptr(),
-            app_id: title.as_ptr(),
+            title: "poisoned".into(),
+            app_id: "poisoned".into(),
             flags: 0,
-            kind: 0,
-            parent: 0,
-            x: 0,
-            y: 0,
-            anchor: Default::default(),
-            session_name: ptr::null(),
         };
-        let mut id = 0u64;
-        // SAFETY: a live display and its shell handle; the descriptor's strings are NUL-terminated.
-        unsafe {
-            let sh = nhg_shell(d);
-            assert_eq!(nhshell::ffi::nhshell_window_new(sh, &desc, &mut id), 0);
-            assert_eq!(nhg_frame_register(d, id, 0), NHG_OK);
-        }
+        // SAFETY: a live display's backend, used only between glue calls.
+        let id = unsafe { &mut *d_ref(d).backend_ptr() }
+            .window_new(&desc)
+            .unwrap();
+        // SAFETY: a live display.
+        assert_eq!(unsafe { nhg_frame_register(d, id, 0) }, NHG_OK);
         let deadline = Instant::now() + Duration::from_secs(3);
         while rec.surfaces("toplevel") == 0 {
             assert!(

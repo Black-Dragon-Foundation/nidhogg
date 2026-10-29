@@ -17,8 +17,8 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 
-/* This file implements Emacs's terminal hooks against the shell API
-   (nhshell.h) once; it never calls Wayland.  Functions adapted from
+/* This file implements Emacs's terminal hooks against the shell glue
+   (nhglue.h) once; it never calls Wayland.  Functions adapted from
    pgtkterm.c name their origin in their comment.  The frame's pixel unit
    is the device pixel, so a scale change re-fonts the frame as a move
    between monitors does, and no drawing happens at a fractional scale.
@@ -911,8 +911,8 @@ nhwl_define_frame_cursor (struct frame *f, Emacs_Cursor cursor)
       && cursor)
     {
       block_input ();
-      nhshell_window_set_cursor (FRAME_NHWL_SHELL (f), out->window,
-				 (uint32_t) ((intptr_t) cursor - 1));
+      NHG (nhg_window_set_cursor (FRAME_NHG (f), out->window,
+				  (uint32_t) ((intptr_t) cursor - 1)));
       unblock_input ();
     }
   out->current_cursor = cursor;
@@ -1033,37 +1033,31 @@ nhwl_window_facts (struct frame *f)
 	  | (FRAME_NHWL_OUTPUT (f)->csd.on ? NHG_FACT_CSD : 0));
 }
 
-/* Make frame F's shell window from DESC through the glue, which registers
-   it as a frame of kind FLAGS (NHG_FRAME_*) with the facts it starts from
-   (the scale F's window starts at, F's native size, its visibility and
-   title bar); its id goes to *ID.  The glue's code, or 0.  */
+/* Make frame F's shell window from DESC (its NUL-terminated strings, the
+   rest up to ANCHOR) through the glue, which registers it as a frame of
+   kind FLAGS (NHG_FRAME_*) with the facts it starts from (the scale F's
+   window starts at, F's native size, its visibility and title bar),
+   filled in here; its id goes to *ID.  The glue's code, or 0.  */
 int
-nhwl_window_new (struct frame *f, NhShellWindowDesc *desc, uint32_t flags,
+nhwl_window_new (struct frame *f, NhgWindowDesc *desc, uint32_t flags,
 		 uint64_t *id)
 {
   struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
   int w = f->new_size_p ? f->new_width : FRAME_PIXEL_WIDTH (f);
   int h = f->new_size_p ? f->new_height : FRAME_PIXEL_HEIGHT (f);
-  NhgWindowDesc d = {
-    .w = desc->w, .h = desc->h,
-    .title = desc->title,
-    .title_len = desc->title ? strlen (desc->title) : 0,
-    .app_id = desc->app_id,
-    .app_id_len = desc->app_id ? strlen (desc->app_id) : 0,
-    .session_name = desc->session_name,
-    .session_name_len = desc->session_name ? strlen (desc->session_name) : 0,
-    .flags = desc->flags, .kind = desc->kind, .parent = desc->parent,
-    .x = desc->x, .y = desc->y,
-    .anchor = { desc->anchor.x, desc->anchor.y, desc->anchor.w,
-		desc->anchor.h, desc->anchor.gravity, desc->anchor.adjust },
-    .role = flags,
-    .facts = nhwl_window_facts (f),
-    .native_w = max (1, w), .native_h = max (1, h),
-    .scale120 = out->scale120,
-  };
 
-  int rc = nhwl_glue_rc (dpyinfo, NHG (nhg_window_new (dpyinfo->glue, &d,
+  desc->title_len = desc->title ? strlen (desc->title) : 0;
+  desc->app_id_len = desc->app_id ? strlen (desc->app_id) : 0;
+  desc->session_name_len
+    = desc->session_name ? strlen (desc->session_name) : 0;
+  desc->role = flags;
+  desc->facts = nhwl_window_facts (f);
+  desc->native_w = max (1, w);
+  desc->native_h = max (1, h);
+  desc->scale120 = out->scale120;
+
+  int rc = nhwl_glue_rc (dpyinfo, NHG (nhg_window_new (dpyinfo->glue, desc,
 							   id)));
   if (rc >= 0 && FRAME_COLUMN_WIDTH (f) > 0 && FRAME_LINE_HEIGHT (f) > 0)
     nhwl_glue_rc (dpyinfo, NHG (nhg_frame_units (dpyinfo->glue, *id,
@@ -1133,7 +1127,7 @@ nhwl_create_frame_window (struct frame *f)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
   struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
-  NhShellWindowDesc desc;
+  NhgWindowDesc desc;
   Lisp_Object title;
   Lisp_Object encoded = Qnil;
   Lisp_Object encoded_name = Qnil;
@@ -1150,7 +1144,7 @@ nhwl_create_frame_window (struct frame *f)
   desc.h = max (1, nhwl_to_logical (FRAME_PIXEL_HEIGHT (f), out->scale120));
   desc.title = STRINGP (encoded) ? SSDATA (encoded) : "";
   desc.app_id = "nidhogg";
-  desc.flags = FRAME_UNDECORATED (f) ? NHSHELL_WIN_UNDECORATED : 0;
+  desc.flags = FRAME_UNDECORATED (f) ? NHG_WIN_UNDECORATED : 0;
   if (nhwl_child_p (f))
     {
       /* A child frame starts at its parent's scale.  */
@@ -1300,8 +1294,7 @@ nhwl_title_bar_action (struct frame *f, const NhgAction *a)
       /* The border's shape there; the event goes no further.  */
       if (out->current_cursor != nhwl_cursor_for_shape (a->code))
 	{
-	  nhshell_window_set_cursor (FRAME_NHWL_SHELL (f), out->window,
-				     a->code);
+	  NHG (nhg_window_set_cursor (FRAME_NHG (f), out->window, a->code));
 	  out->current_cursor = nhwl_cursor_for_shape (a->code);
 	}
       clear_mouse_face (MOUSE_HL_INFO (f));
@@ -1364,9 +1357,9 @@ nhwl_set_undecorated_hint (struct frame *f, bool undecorated)
   unblock_input ();
   nhwl_csd_layout (f);
   if (!nhwl_child_p (f) && out->logical_w > 0 && out->logical_h > 0
-      && (out->states & (NHSHELL_STATE_MAXIMIZED | NHSHELL_STATE_FULLSCREEN
-			 | NHSHELL_STATE_TILED_L | NHSHELL_STATE_TILED_R
-			 | NHSHELL_STATE_TILED_T | NHSHELL_STATE_TILED_B)))
+      && (out->states & (NHG_STATE_MAXIMIZED | NHG_STATE_FULLSCREEN
+			 | NHG_STATE_TILED_L | NHG_STATE_TILED_R
+			 | NHG_STATE_TILED_T | NHG_STATE_TILED_B)))
     {
       nhwl_csd_native_size (f, out->logical_w, out->logical_h, &dw, &dh);
       nhwl_clamp_native_size (f, &dw, &dh);
@@ -1582,7 +1575,7 @@ nhwl_wait_for_configure (struct frame *f)
 
   int rounds = 0;
 
-  while (!out->configured && dpyinfo->shell && waited_ms < limit * 1000
+  while (!out->configured && dpyinfo->glue && waited_ms < limit * 1000
 	 && rounds++ < 4000)
     {
       int rc;
@@ -1795,7 +1788,7 @@ nhwl_free_frame_resources (struct frame *f)
 	}
   }
 
-  if (out->window && dpyinfo->shell)
+  if (out->window && dpyinfo->glue)
     {
       nhwl_glue_rc (dpyinfo, NHG (nhg_im_enable (dpyinfo->glue, out->window,
 						 0)));
@@ -1822,7 +1815,7 @@ nhwl_destroy_window (struct frame *f)
   struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
 
   check_window_system (f);
-  if (dpyinfo->shell != NULL)
+  if (dpyinfo->glue != NULL)
     nhwl_free_frame_resources (f);
 
   dpyinfo->reference_count--;
@@ -1867,7 +1860,7 @@ nhwl_activate_frame (struct frame *f)
   if (!out->window)
     return;
   block_input ();
-  nhshell_window_activate (FRAME_NHWL_SHELL (f), out->window, NULL);
+  NHG (nhg_window_activate (FRAME_NHG (f), out->window, NULL));
   unblock_input ();
 }
 
@@ -2017,7 +2010,7 @@ nhwl_focus_route (struct frame *r, struct frame *to, bool gone)
  ***********************************************************************/
 
 /* A child frame is a sync subsurface of its parent frame's window (shell
-   kind NHSHELL_KIND_CHILD), published and presented with its tree: the
+   kind NHG_KIND_CHILD), published and presented with its tree: the
    shell commits the child frames deepest first, then the root
    (nhwl_publish).  It has its own backing and its own Glitnir root, like
    any frame; the root's one layer carries the frame's chrome (rounded
@@ -2086,7 +2079,7 @@ nhwl_dev_to_log (int dev, uint32_t s120)
    shadow margin before the child's native area).  The glue keeps it from
    then on.  */
 void
-nhwl_child_describe (struct frame *f, NhShellWindowDesc *desc)
+nhwl_child_describe (struct frame *f, NhgWindowDesc *desc)
 {
   struct nhwl_output *out, *po;
 
@@ -2094,7 +2087,7 @@ nhwl_child_describe (struct frame *f, NhShellWindowDesc *desc)
     return;
   out = FRAME_NHWL_OUTPUT (f);
   po = FRAME_NHWL_OUTPUT (FRAME_PARENT_FRAME (f));
-  desc->kind = NHSHELL_KIND_CHILD;
+  desc->kind = NHG_KIND_CHILD;
   desc->parent = po->window;
   desc->x = nhwl_dev_to_log (po->csd.l + f->left_pos - out->csd.l,
 			     po->scale120);
@@ -2320,17 +2313,17 @@ nhwl_emacs_modifiers (uint32_t mods)
   if (FIXNUMP (tem))
     mod_hyper = XFIXNUM (tem) & INT_MAX;
 
-  if (mods & NHSHELL_MOD_SHIFT)
+  if (mods & NHG_MOD_SHIFT)
     mod |= shift_modifier;
-  if (mods & NHSHELL_MOD_CTRL)
+  if (mods & NHG_MOD_CTRL)
     mod |= ctrl_modifier;
-  if (mods & NHSHELL_MOD_ALT)
+  if (mods & NHG_MOD_ALT)
     mod |= mod_alt;
-  if (mods & NHSHELL_MOD_META)
+  if (mods & NHG_MOD_META)
     mod |= mod_meta;
-  if (mods & NHSHELL_MOD_SUPER)
+  if (mods & NHG_MOD_SUPER)
     mod |= mod_super;
-  if (mods & NHSHELL_MOD_HYPER)
+  if (mods & NHG_MOD_HYPER)
     mod |= mod_hyper;
   return mod;
 }
@@ -2577,9 +2570,9 @@ nhwl_configure (struct frame *f, const NhgAction *a)
   out->logical_h = a->h;
   out->configured = true;
 
-  if (states & NHSHELL_STATE_FULLSCREEN)
+  if (states & NHG_STATE_FULLSCREEN)
     fs = Qfullboth;
-  else if (states & NHSHELL_STATE_MAXIMIZED)
+  else if (states & NHG_STATE_MAXIMIZED)
     fs = Qmaximized;
   if (a->flags & NHG_RESIZE_FULLSCREEN)
     store_frame_param (f, Qfullscreen, fs);
@@ -3000,7 +2993,7 @@ nhwl_click_apply (struct nhwl_display_info *dpyinfo, struct frame *f,
 {
   union buffered_input_event inev;
   int code = nhwl_button_code (a->code);
-  bool down = a->flags == NHSHELL_BUTTON_PRESSED;
+  bool down = a->flags == NHG_BUTTON_PRESSED;
 
   EVENT_INIT (inev.ie);
   inev.ie.kind = NO_EVENT;
@@ -3583,7 +3576,7 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
   int n = 0;
   int rc = 0;
 
-  if (!dpyinfo->shell || dpyinfo->glue_broken)
+  if (!dpyinfo->glue || dpyinfo->glue_broken)
     return 0;
 
   block_input ();
@@ -3613,7 +3606,7 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
   /* Flush what we sent while handling the events.  A broken glue is
      handled by the caller.  */
   if (rc != NHG_E_DISCONNECTED && !dpyinfo->glue_broken)
-    nhshell_dispatch_main (dpyinfo->shell);
+    NHG (nhg_dispatch_main (dpyinfo->glue));
   unblock_input ();
   return count;
 }
@@ -3667,7 +3660,7 @@ nhwl_drag_run (struct nhwl_display_info *dpyinfo, double timeout,
       if (hold.kind != NO_EVENT)
 	Vquit_flag = Qt;
       if (nhwl_drag.done || !NILP (Vquit_flag) || dpyinfo->connection_lost
-	  || dpyinfo->glue_broken || !dpyinfo->shell)
+	  || dpyinfo->glue_broken || !dpyinfo->glue)
 	break;
       /* The finish timeout counts from the drop.  */
       if (nhwl_drag.dropped && !dropped)
@@ -3732,7 +3725,7 @@ nhwl_read_socket (struct terminal *terminal, struct input_event *hold_quit)
   struct nhwl_display_info *dpyinfo = terminal->display_info.nhwl;
   int n;
 
-  if (!dpyinfo || !dpyinfo->shell)
+  if (!dpyinfo || !dpyinfo->glue)
     return 0;
   /* A call whose code went unchecked (the drawing calls) may have poisoned
      the glue: any call answers NHG_E_PANIC then, and nhg_fd is a cheap
@@ -3945,7 +3938,7 @@ nhwl_toggle_invisible_pointer (struct frame *f, bool invisible)
 					      ? (uint32_t) ((intptr_t)
 							    out->current_cursor
 							    - 1)
-					      : NHSHELL_CURSOR_DEFAULT)));
+					      : NHG_CURSOR_DEFAULT)));
       unblock_input ();
     }
   f->pointer_invisible = invisible;
@@ -4176,7 +4169,6 @@ nhwl_term_init (Lisp_Object display_name)
   Lisp_Object lisp_dpy_name;
   Lisp_Object color_file, system_name;
   NhgDisplay *glue;
-  NhShell *shell;
   ptrdiff_t nbytes;
 
   block_input ();
@@ -4200,7 +4192,6 @@ nhwl_term_init (Lisp_Object display_name)
       unblock_input ();
       return 0;
     }
-  shell = NHG (nhg_shell (glue));
 
   if (strlen (dpy_name) == 0)
     {
@@ -4212,7 +4203,6 @@ nhwl_term_init (Lisp_Object display_name)
 
   dpyinfo = xzalloc (sizeof *dpyinfo);
   dpyinfo->glue = glue;
-  dpyinfo->shell = shell;
   dpyinfo->connection = nhwl_glue_rc (dpyinfo, NHG (nhg_fd (glue)));
   {
     const char *env = getenv ("NHWL_PRESENTER");
@@ -4228,7 +4218,7 @@ nhwl_term_init (Lisp_Object display_name)
     NHG (nhg_set_reconnect (glue, 1));
   /* The title bars' style Lisp gave so far.  */
   nhwl_csd_push_style (dpyinfo);
-  nhshell_caps (shell, &dpyinfo->caps);
+  NHG (nhg_caps (glue, &dpyinfo->caps));
   terminal = nhwl_create_terminal (dpyinfo);
 
   {
@@ -4279,11 +4269,11 @@ nhwl_term_init (Lisp_Object display_name)
   dpyinfo->icon_bitmap_id = -1;
   dpyinfo->n_planes = 24;
   dpyinfo->color_p = 1;
-  dpyinfo->invisible_cursor = nhwl_cursor_for_shape (NHSHELL_CURSOR_HIDDEN);
+  dpyinfo->invisible_cursor = nhwl_cursor_for_shape (NHG_CURSOR_HIDDEN);
   dpyinfo->vertical_scroll_bar_cursor
-    = nhwl_cursor_for_shape (NHSHELL_CURSOR_RESIZE_EW);
+    = nhwl_cursor_for_shape (NHG_CURSOR_RESIZE_EW);
   dpyinfo->horizontal_scroll_bar_cursor
-    = nhwl_cursor_for_shape (NHSHELL_CURSOR_RESIZE_NS);
+    = nhwl_cursor_for_shape (NHG_CURSOR_RESIZE_NS);
 
   reset_mouse_highlight (&dpyinfo->mouse_highlight);
 
@@ -4295,7 +4285,7 @@ nhwl_term_init (Lisp_Object display_name)
     fatal ("Could not read %s.\n", SDATA (color_file));
 
   /* The outputs the shell announced while connecting give the scale.  */
-  nhshell_dispatch_main (shell);
+  NHG (nhg_dispatch_main (glue));
   dpyinfo->scale120 = 0;
   dpyinfo->resx = dpyinfo->resy = 96.0;
   nhwl_drain_events (dpyinfo, NULL);
@@ -4358,7 +4348,7 @@ nhwl_delete_terminal (struct terminal *terminal)
   /* Its client data is DPYINFO, freed below.  */
   nhwl_reconnect_disarm (dpyinfo);
 
-  if (dpyinfo->shell)
+  if (dpyinfo->glue)
     {
       image_destroy_all_bitmaps (dpyinfo);
 
@@ -4370,7 +4360,6 @@ nhwl_delete_terminal (struct terminal *terminal)
 	 the rest.  */
       NHG (nhg_close (dpyinfo->glue));
       dpyinfo->glue = NULL;
-      dpyinfo->shell = NULL;
     }
 
   nhwl_delete_display (dpyinfo);
