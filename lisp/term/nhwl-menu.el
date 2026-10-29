@@ -605,18 +605,42 @@ The compositor dismisses every popup of a stack, and each one reports."
                     (memq (car-safe (nth 1 event)) (nhwl-menu--live-frames)))
                (setq count (1- count))))))))
 
+(defun nhwl-menu--dead-frame-event-p (event)
+  "Non-nil when EVENT is a `delete-frame' event for a frame already dead."
+  (and (eq (car-safe event) 'delete-frame)
+       (framep (car-safe (nth 1 event)))
+       (not (frame-live-p (car (nth 1 event))))))
+
+(defun nhwl-menu--drain-dead ()
+  "Read the `delete-frame' events of dead frames that are already queued.
+When a display goes, its menu frames are deleted with it, and each one
+reports; nothing is left for `handle-delete-frame'."
+  (let ((map (nhwl-menu--event-map)) (more t))
+    (while more
+      (let ((event (let ((special-event-map map))
+                     (read-event nil nil 0))))
+        (cond ((null event) (setq more nil))
+              ((nhwl-menu--dead-frame-event-p event))
+              (t (setq unread-command-events
+                       (cons event unread-command-events))
+                 (setq more nil)))))))
+
 (defun nhwl-menu--dismissed (event)
   "Cancel the menu for the `delete-frame' EVENT; the symbol `cancel'.
-For a menu frame, the other levels' events are read here.  For any other
-frame the event is left for the command loop."
+For a menu frame, the other levels' events are read here.  For a frame
+already dead (its display went), the events of the other dead frames
+are read here too.  For any other frame the event is left for the
+command loop."
   (let ((frame (car-safe (nth 1 event))))
-    (if (memq frame (nhwl-menu--live-frames))
-        (let ((others 0))
-          (dolist (f (nhwl-menu--live-frames))
-            (when (and (not (eq f frame)) (frame-visible-p f))
-              (setq others (1+ others))))
-          (nhwl-menu--drain others))
-      (setq unread-command-events (cons event unread-command-events))))
+    (cond
+     ((memq frame (nhwl-menu--live-frames))
+      (let ((others 0))
+        (dolist (f (nhwl-menu--live-frames))
+          (when (and (not (eq f frame)) (frame-visible-p f))
+            (setq others (1+ others))))
+        (nhwl-menu--drain others)))
+     ((nhwl-menu--dead-frame-event-p event) (nhwl-menu--drain-dead))
+     (t (setq unread-command-events (cons event unread-command-events)))))
   'cancel)
 
 (defun nhwl-menu--mouse-kind (event)
@@ -762,8 +786,10 @@ level down), or `(retry . EVENT)'."
                                0.25))))
              (outcome
               (cond
-               ;; the menu's frame is gone (its parent was deleted)
+               ;; the menu's frame is gone (its parent was deleted); when its
+               ;; display went, the dead frames' events are read here
                ((not (frame-live-p (cdr (assq depth nhwl-menu--frames))))
+                (nhwl-menu--drain-dead)
                 'cancel)
                (event (with-current-buffer buffer
                         (nhwl-menu--handle event depth parent-row)))

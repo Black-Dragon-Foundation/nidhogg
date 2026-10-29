@@ -93,6 +93,13 @@ fn outputs(all: &[NhgMonitor]) -> Vec<Monitor> {
     v
 }
 
+impl Reconnect {
+    /// The display is given up (`Display::give_up`): every later step says so, and nothing is left to settle.
+    pub(crate) fn give_up(&mut self) {
+        self.phase = Phase::Gone;
+    }
+}
+
 /// The next tick's delay after `ticks` steps that found no display.
 fn backoff(ticks: u32) -> u32 {
     FIRST_MS
