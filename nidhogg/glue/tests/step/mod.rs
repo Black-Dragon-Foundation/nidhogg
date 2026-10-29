@@ -113,6 +113,7 @@ pub fn window(d: *mut NhgDisplay) -> u64 {
 }
 
 /// The window's first configure taken and applied (no resize), its ack recorded.
+#[track_caller]
 pub fn configured(d: *mut NhgDisplay, id: u64) {
     until(d, |a| a.kind == NHG_ACT_RESIZE && a.window == id);
     step(d, 0);
