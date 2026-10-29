@@ -8,15 +8,13 @@ use crate::action::{NHG_ACT_MONITORS, NhgAction};
 use crate::display::Display;
 use crate::guard::GlueError;
 use crate::query::{MAX_OUTPUTS, NhgMonitor};
-use nhshell::event::NhShellEvent;
+use nhshell::event::{OutputEv, Record};
 use std::ffi::c_char;
 
 /// An `OUTPUT_ADD` or `OUTPUT_CHANGE`: the output joins the list or replaces the one with its id, and a `MONITORS`
 /// action says so, with the output's scale times 120 in `code` (C takes the display's scale from the first nonzero
 /// one).  A new output past the sixteenth gives nothing.
-pub fn output(state: &mut Display, ev: &NhShellEvent) {
-    // SAFETY: an OUTPUT record's valid member is `output`.
-    let o = unsafe { ev.u.output };
+pub fn output(state: &mut Display, ev: &Record, o: &OutputEv) {
     let mut m = NhgMonitor {
         id: o.id,
         x: o.x,
@@ -41,9 +39,8 @@ pub fn output(state: &mut Display, ev: &NhShellEvent) {
 
 /// An `OUTPUT_REMOVE`: the output leaves the list and every window's outputs, and a `MONITORS` action says so.  An
 /// output the glue did not know gives nothing.
-pub fn removed(state: &mut Display, ev: &NhShellEvent) {
-    // SAFETY: an OUTPUT record's valid member is `output`.
-    let id = unsafe { ev.u.output }.id;
+pub fn removed(state: &mut Display, ev: &Record, o: &OutputEv) {
+    let id = o.id;
     if !state.monitors.remove(id) {
         return;
     }
@@ -56,9 +53,8 @@ pub fn removed(state: &mut Display, ev: &NhShellEvent) {
 }
 
 /// An `ENTER_OUTPUT`: the window is on the output now (at most `MAX_OUTPUTS` are kept per window).
-pub fn entered(state: &mut Display, ev: &NhShellEvent) {
-    // SAFETY: an OUTPUT record's valid member is `output`.
-    let id = unsafe { ev.u.output }.id;
+pub fn entered(state: &mut Display, ev: &Record, o: &OutputEv) {
+    let id = o.id;
     if let Ok(f) = state.frame_mut(ev.window)
         && f.outputs.len() < MAX_OUTPUTS
         && !f.outputs.contains(&id)
@@ -68,9 +64,8 @@ pub fn entered(state: &mut Display, ev: &NhShellEvent) {
 }
 
 /// A `LEAVE_OUTPUT`: the window is off the output.
-pub fn left(state: &mut Display, ev: &NhShellEvent) {
-    // SAFETY: an OUTPUT record's valid member is `output`.
-    let id = unsafe { ev.u.output }.id;
+pub fn left(state: &mut Display, ev: &Record, o: &OutputEv) {
+    let id = o.id;
     if let Ok(f) = state.frame_mut(ev.window) {
         f.outputs.retain(|&o| o != id);
     }

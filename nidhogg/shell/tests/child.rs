@@ -132,7 +132,7 @@ fn readable_within(fd: i32, ms: i64) -> bool {
 }
 
 /// The next record satisfying `pred` within 3 s; other records are dropped.
-fn wait_for(shell: &mut WaylandShell, pred: impl Fn(&NhShellEvent) -> bool) -> NhShellEvent {
+fn wait_for(shell: &mut WaylandShell, pred: impl Fn(&Record) -> bool) -> Record {
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         while let Some(ev) = shell.next_event().unwrap() {
@@ -156,10 +156,12 @@ fn window(shell: &mut WaylandShell) -> u64 {
             flags: 0,
         })
         .unwrap();
-    let ev = wait_for(shell, |e| e.kind == NHSHELL_EV_CONFIGURE);
-    // SAFETY: a CONFIGURE record carries `configure`.
+    let ev = wait_for(shell, |e| e.kind() == Kind::Configure);
+    let ShellEvent::Configure(c) = ev.event else {
+        unreachable!()
+    };
     shell
-        .ack_configure(id, unsafe { ev.u.configure }.serial, NHSHELL_ACK_CONTENT)
+        .ack_configure(id, c.serial, NHSHELL_ACK_CONTENT)
         .unwrap();
     draw(shell, id, 200, 100);
     id
@@ -347,7 +349,7 @@ mod child {
         let p = popup(&mut shell, parent, anchor);
         // the first configure is acked with the popup's first buffer
         wait_for(&mut shell, |e| {
-            e.kind == NHSHELL_EV_FRAME_READY && e.window == p
+            e.kind() == Kind::FrameReady && e.window == p
         });
         draw(&mut shell, p, 60, 30);
         // below and right of the rectangle: its bottom-right corner is the popup's top-left
@@ -355,7 +357,7 @@ mod child {
         assert!(n.contains("\"role\":\"popup\""), "{n}");
         shell.set_position(p, 20, 25).unwrap();
         wait_for(&mut shell, |e| {
-            e.kind == NHSHELL_EV_FRAME_READY && e.window == p
+            e.kind() == Kind::FrameReady && e.window == p
         });
         shell.present_bare(p).unwrap();
         rec.wait_node(p, |n| n.contains("\"position\":[30,35]"));
@@ -378,13 +380,13 @@ mod child {
         };
         let p = popup(&mut shell, parent, anchor);
         wait_for(&mut shell, |e| {
-            e.kind == NHSHELL_EV_FRAME_READY && e.window == p
+            e.kind() == Kind::FrameReady && e.window == p
         });
         draw(&mut shell, p, 60, 30);
         rec.wait_node(p, |n| n.contains("\"position\":[110,60]"));
         shell.set_position(p, 20, 25).unwrap();
         wait_for(&mut shell, |e| {
-            e.kind == NHSHELL_EV_FRAME_READY && e.window == p
+            e.kind() == Kind::FrameReady && e.window == p
         });
         assert_eq!(shell.window_ready(p).unwrap(), NHSHELL_READY_OWED);
         // acked, not committed: the position stays
@@ -407,7 +409,7 @@ mod child {
         assert_eq!(shell.window_ready(parent).unwrap(), 0);
         shell.set_position(c, 70, 10).unwrap();
         wait_for(&mut shell, |e| {
-            e.kind == NHSHELL_EV_FRAME_READY && e.window == parent
+            e.kind() == Kind::FrameReady && e.window == parent
         });
         assert_ne!(shell.window_ready(parent).unwrap() & NHSHELL_READY_OWED, 0);
         // bare commits of the child (it owes one too), then the parent, clear it and apply the move
@@ -433,7 +435,7 @@ mod child {
         assert!(shell.present_begin(p, 60, 30).is_err());
         // the configure is dispatched: its content ack makes the popup ready
         wait_for(&mut shell, |e| {
-            e.kind == NHSHELL_EV_FRAME_READY && e.window == p
+            e.kind() == Kind::FrameReady && e.window == p
         });
         assert_ne!(shell.window_ready(p).unwrap() & NHSHELL_READY_CONTENT, 0);
         assert!(shell.present_begin(p, 60, 30).is_ok());
@@ -456,14 +458,14 @@ mod child {
         };
         let p = popup(&mut shell, parent, anchor);
         wait_for(&mut shell, |e| {
-            e.kind == NHSHELL_EV_FRAME_READY && e.window == p
+            e.kind() == Kind::FrameReady && e.window == p
         });
         draw(&mut shell, p, 60, 30);
         rec.wait_node(p, |n| n.contains("\"position\":[110,60]"));
         assert!(shell.set_position(p, 20, 25).unwrap(), "redraw all");
         // the new popup is configured again, and that first configure wants a buffer
         wait_for(&mut shell, |e| {
-            e.kind == NHSHELL_EV_FRAME_READY && e.window == p
+            e.kind() == Kind::FrameReady && e.window == p
         });
         assert_ne!(shell.window_ready(p).unwrap() & NHSHELL_READY_CONTENT, 0);
         draw(&mut shell, p, 60, 30);
@@ -482,7 +484,7 @@ mod child {
         rec.wait_node(p, |_| true);
         let r = rec.control(&format!(r#"{{"cmd":"popup_done","surface":{p}}}"#));
         assert!(r.contains("\"ok\":true"), "{r}");
-        let ev = wait_for(&mut shell, |e| e.kind == NHSHELL_EV_POPUP_DONE);
+        let ev = wait_for(&mut shell, |e| e.kind() == Kind::PopupDone);
         assert_eq!(ev.window, p);
     }
 
@@ -498,7 +500,7 @@ mod child {
     }
 
     /// Records until the queue is empty, after the recorder had time to answer.
-    fn drain(shell: &mut WaylandShell) -> Vec<NhShellEvent> {
+    fn drain(shell: &mut WaylandShell) -> Vec<Record> {
         let mut seen = Vec::new();
         for _ in 0..2 {
             while let Some(ev) = shell.next_event().unwrap() {
@@ -603,7 +605,7 @@ mod child {
         drain(&mut shell);
         shell.set_position(g, 30, 25).unwrap();
         wait_for(&mut shell, |e| {
-            e.kind == NHSHELL_EV_FRAME_READY && e.window == root
+            e.kind() == Kind::FrameReady && e.window == root
         });
         assert_eq!(shell.window_ready(g).unwrap(), NHSHELL_READY_OWED);
         assert_eq!(shell.window_ready(c).unwrap(), NHSHELL_READY_OWED);
@@ -633,7 +635,7 @@ mod child {
         let seen = drain(&mut shell);
         let ready: Vec<u64> = seen
             .iter()
-            .filter(|e| e.kind == NHSHELL_EV_FRAME_READY)
+            .filter(|e| e.kind() == Kind::FrameReady)
             .map(|e| e.window)
             .collect();
         assert_eq!(ready, vec![root]);

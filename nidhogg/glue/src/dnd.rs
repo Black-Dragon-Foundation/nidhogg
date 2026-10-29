@@ -29,11 +29,7 @@ use crate::action::{
 use crate::display::Display;
 use crate::guard::GlueError;
 use nhshell::api::{NHSHELL_SEL_DND, ShellBackend, ShellError};
-use nhshell::event::{DndEv, NHSHELL_EV_DND_ENTER, NHSHELL_EV_DND_LEAVE, NHSHELL_EV_DND_MOTION};
-use nhshell::event::{NHSHELL_BUTTON_RELEASED, NHSHELL_EV_BUTTON, NHSHELL_EV_POINTER_LEAVE};
-use nhshell::event::{NHSHELL_EV_DND_DROP, NhShellEvent};
-use nhshell::event::{NHSHELL_EV_DRAG_ACTION, NHSHELL_EV_DRAG_DONE, NHSHELL_EV_DRAG_DROPPED};
-use nhshell::event::{NHSHELL_EV_TOUCH, NHSHELL_TOUCH_UP};
+use nhshell::event::{DndEv, Kind, NHSHELL_BUTTON_RELEASED, NHSHELL_TOUCH_UP, Record, ShellEvent};
 use std::collections::BTreeMap;
 
 /// What the glue holds for the drop target of one display.
@@ -121,9 +117,14 @@ fn action(kind: u32, window: u64, d: &DndEv, code: u32) -> NhgAction {
 }
 
 /// The shell reported a drag-and-drop event of the target side.
-pub fn event(state: &mut Display, ev: &NhShellEvent) {
-    // SAFETY: a DND record's valid member is `dnd`.
-    let d = unsafe { ev.u.dnd };
+pub fn event(state: &mut Display, ev: &Record) {
+    let (ShellEvent::DndEnter(d)
+    | ShellEvent::DndMotion(d)
+    | ShellEvent::DndLeave(d)
+    | ShellEvent::DndDrop(d)) = ev.event
+    else {
+        return;
+    };
     if d.own != 0 {
         return own_drag(state, ev, &d);
     }
@@ -132,8 +133,8 @@ pub fn event(state: &mut Display, ev: &NhShellEvent) {
     // SAFETY: the handle lives as long as the display, and `dnd` and `actions` are fields it does not touch.
     let backend = unsafe { &mut *sh }.backend_mut();
     let (dnd, actions) = (&mut state.dnd, &mut state.actions);
-    match ev.kind {
-        NHSHELL_EV_DND_ENTER => {
+    match ev.kind() {
+        Kind::DndEnter => {
             dnd.finish_stale(backend);
             dnd.over = true;
             dnd.enter_ms = d.time_ms;
@@ -145,11 +146,11 @@ pub fn event(state: &mut Display, ev: &NhShellEvent) {
                 let _ = backend.dnd_status(None, 0, 0);
             }
         }
-        NHSHELL_EV_DND_MOTION if dnd.over && !dnd.refused && !dnd.dropped => {
+        Kind::DndMotion if dnd.over && !dnd.refused && !dnd.dropped => {
             actions.push(action(NHG_ACT_DND_MOTION, ev.window, &d, d.preferred));
         }
         // the shell sends none after a drop; a leave that comes anyway must not end the offer Lisp will read
-        NHSHELL_EV_DND_LEAVE if !dnd.dropped => {
+        Kind::DndLeave if !dnd.dropped => {
             if dnd.over && !dnd.refused {
                 actions.push(action(NHG_ACT_DND_LEAVE, ev.window, &d, 0));
             }
@@ -157,7 +158,7 @@ pub fn event(state: &mut Display, ev: &NhShellEvent) {
             dnd.refused = false;
             dnd.mime = None;
         }
-        NHSHELL_EV_DND_DROP => {
+        Kind::DndDrop => {
             if dnd.over && !dnd.refused && !dnd.dropped && known {
                 dnd.dropped = true;
                 actions.push(action(NHG_ACT_DND_DROP, ev.window, &d, d.action));
@@ -352,22 +353,20 @@ pub fn drag_cancel(state: &mut Display) -> bool {
 /// still reaches us says it did not: the compositor ignores a drag with a stale serial and sends nothing about it, so
 /// the drag ends there with no action.  `DRAG_DONE` ends it with the target's action, or none when it was cancelled
 /// (dropped on nothing, refused, or the display lost).
-pub fn drag_input(state: &mut Display, ev: &NhShellEvent) {
+pub fn drag_input(state: &mut Display, ev: &Record) {
     if !state.dnd.out.running {
         return;
     }
     let (out, actions) = (&mut state.dnd.out, &mut state.actions);
-    let refused = match ev.kind {
-        NHSHELL_EV_DRAG_ACTION => {
-            // SAFETY: a DRAG record's valid member is `dnd`.
-            out.action = unsafe { ev.u.dnd }.action;
+    let refused = match ev.event {
+        ShellEvent::DragAction(d) => {
+            out.action = d.action;
             out.live = true;
             actions.push(drag_action(NHG_ACT_DRAG_ACTION, out.window, out.action, 0));
             false
         }
-        NHSHELL_EV_DRAG_DROPPED => {
-            // SAFETY: as above.
-            out.action = unsafe { ev.u.dnd }.action;
+        ShellEvent::DragDropped(d) => {
+            out.action = d.action;
             out.live = true;
             if out.over != 0 {
                 // on our own window: its DND_DROP gives Lisp the drop, and the call returns now
@@ -378,20 +377,16 @@ pub fn drag_input(state: &mut Display, ev: &NhShellEvent) {
             }
             false
         }
-        NHSHELL_EV_DRAG_DONE => {
-            // SAFETY: as above.
-            let d = unsafe { ev.u.dnd };
+        ShellEvent::DragDone(d) => {
             out.end(actions, if d.ok != 0 { d.action } else { 0 }, None);
             false
         }
-        NHSHELL_EV_POINTER_LEAVE => {
+        ShellEvent::PointerLeave(_) => {
             out.live(actions);
             false
         }
-        // SAFETY: a BUTTON record's valid member is `pointer`.
-        NHSHELL_EV_BUTTON => unsafe { ev.u.pointer }.state == NHSHELL_BUTTON_RELEASED,
-        // SAFETY: a TOUCH record's valid member is `touch`.
-        NHSHELL_EV_TOUCH => unsafe { ev.u.touch }.op == NHSHELL_TOUCH_UP,
+        ShellEvent::Button(p) => p.state == NHSHELL_BUTTON_RELEASED,
+        ShellEvent::Touch(t) => t.op == NHSHELL_TOUCH_UP,
         _ => false,
     };
     if refused {
@@ -405,14 +400,14 @@ pub fn drag_input(state: &mut Display, ev: &NhShellEvent) {
 /// `NHG_DRAG_ALLOW_CURRENT`, on a window that is not a frame, or once the call has returned).  A drop becomes the
 /// `DND_ENTER` and `DND_DROP` actions `pgtk-dnd.el` reads the drag's kept bytes from (`NHSHELL_SEL_DND`), and the glue
 /// finishes the offer at once, so our source ends; the call returns at the drop.
-fn own_drag(state: &mut Display, ev: &NhShellEvent, d: &DndEv) {
+fn own_drag(state: &mut Display, ev: &Record, d: &DndEv) {
     let known = state.frame(ev.window).is_ok();
     let sh = state.shell();
     // SAFETY: the handle lives as long as the display, and `dnd` and `actions` are fields it does not touch.
     let backend = unsafe { &mut *sh }.backend_mut();
     let (out, actions) = (&mut state.dnd.out, &mut state.actions);
-    match ev.kind {
-        NHSHELL_EV_DND_ENTER => {
+    match ev.kind() {
+        Kind::DndEnter => {
             if ev.window != out.window {
                 out.left = true;
             }
@@ -436,13 +431,13 @@ fn own_drag(state: &mut Display, ev: &NhShellEvent, d: &DndEv) {
                 backend.dnd_status(None, 0, 0)
             };
         }
-        NHSHELL_EV_DND_LEAVE => {
+        Kind::DndLeave => {
             if out.over == out.window {
                 out.left = true;
             }
             out.over = 0;
         }
-        NHSHELL_EV_DND_DROP => {
+        Kind::DndDrop => {
             out.over = 0;
             if known && d.action != 0 {
                 actions.push(action(NHG_ACT_DND_ENTER, ev.window, d, d.action));

@@ -23,7 +23,7 @@ use nhshell::api::{
     ChildDesc, NHSHELL_ADJUST_FLIP_X, NHSHELL_ADJUST_FLIP_Y, NHSHELL_ADJUST_SLIDE_X,
     NHSHELL_ADJUST_SLIDE_Y, NHSHELL_KIND_POPUP, NHSHELL_WIN_GRAB,
 };
-use nhshell::event::NhShellEvent;
+use nhshell::event::Record;
 
 /// `nhg_popup_show` and `nhg_popup_place` flags: the popup takes the keyboard and pointer, and a click elsewhere
 /// dismisses it.
@@ -232,7 +232,7 @@ pub fn focus_kept(state: &mut Display, window: u64, on: bool) -> bool {
 }
 
 /// A `POPUP_DONE` of a popup frame's window: a `DELETE` action flagged `NHG_DEL_POPUP`.  `false` for another window's.
-pub fn popup_done(state: &mut Display, ev: &NhShellEvent) -> bool {
+pub fn popup_done(state: &mut Display, ev: &Record) -> bool {
     match state.frame(ev.window) {
         Ok(f) if f.flags & NHG_FRAME_POPUP != 0 => {
             let mut a = NhgAction::new(NHG_ACT_DELETE, ev.window, ev.time_ns);

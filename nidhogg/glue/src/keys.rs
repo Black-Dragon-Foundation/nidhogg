@@ -6,7 +6,7 @@
 
 use crate::action::{NHG_ACT_KEY, NHG_IN_INPUT_WAITING, NhgAction, NhgNextIn};
 use crate::display::Display;
-use nhshell::event::NhShellEvent;
+use nhshell::event::{KeyEv, Record};
 
 /// `KEY` flags: the event is a key repeat.
 pub const NHG_KEY_REPEAT: u32 = 1;
@@ -28,9 +28,7 @@ pub struct Keyboard {
 ///
 /// The action names the window the event came for, even one the glue forgot: C sends its keys to the frame of that
 /// window's tree that Emacs focused, or to the focus frame when it has none.
-pub fn key(state: &mut Display, ev: &NhShellEvent, input: NhgNextIn) {
-    // SAFETY: a KEY record's valid member is `key`.
-    let k = unsafe { ev.u.key };
+pub fn key(state: &mut Display, ev: &Record, k: &KeyEv, input: NhgNextIn) {
     if k.pressed == 0 {
         return;
     }
@@ -49,7 +47,6 @@ pub fn key(state: &mut Display, ev: &NhShellEvent, input: NhgNextIn) {
 }
 
 /// A `MODIFIERS` event: the mask changes, and no action.
-pub fn modifiers(state: &mut Display, ev: &NhShellEvent) {
-    // SAFETY: a MODIFIERS record carries `key` (its `mods`).
-    state.keyboard.mods = unsafe { ev.u.key }.mods;
+pub fn modifiers(state: &mut Display, mods: u32) {
+    state.keyboard.mods = mods;
 }

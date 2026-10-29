@@ -189,7 +189,7 @@ impl ShellBackend for WaylandShell {
 
     /// The next record.  When the records are empty: drain the wake descriptor, dispatch the main queue if it is
     /// pending, and look again, so nothing posted in between is lost.
-    fn next_event(&mut self) -> ShellResult<Option<NhShellEvent>> {
+    fn next_event(&mut self) -> ShellResult<Option<Record>> {
         loop {
             if let Some(ev) = self.take_record()? {
                 self.frame_ready_taken(&ev);
@@ -779,14 +779,13 @@ impl Dispatch<XdgSurface, u64> for MainState {
             // what the compositor granted is what a reconnect asks for again
             w.asked.states = states & ASKED_STATES;
             let suspended = states & NHSHELL_STATE_SUSPENDED != 0;
-            let mut ev = NhShellEvent::new(NHSHELL_EV_CONFIGURE, *id, 0);
-            ev.u.configure = ConfigureEv {
+            let c = ConfigureEv {
                 w: cw,
                 h: ch,
                 states,
                 serial,
             };
-            shared.post(ev);
+            shared.post(Record::new(ShellEvent::Configure(c), *id, 0));
             state.present_configured(*id, suspended);
         }
     }
@@ -816,7 +815,7 @@ impl Dispatch<XdgToplevel, u64> for MainState {
             }
             xdg_toplevel::Event::Close => {
                 if let Some(shared) = state.shared.as_ref() {
-                    shared.post(NhShellEvent::new(NHSHELL_EV_CLOSE, *id, 0));
+                    shared.post(Record::new(ShellEvent::Close, *id, 0));
                 }
             }
             xdg_toplevel::Event::WmCapabilities { capabilities } => {

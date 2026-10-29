@@ -164,18 +164,17 @@ impl ReaderState {
         (x * k, y * k)
     }
 
-    fn post_pointer(&mut self, kind: u32, time: u32, x: f64, y: f64) {
+    fn post_pointer(&mut self, kind: fn(PointerEv) -> ShellEvent, time: u32, x: f64, y: f64) {
         let id = self.pointer.surface;
         (self.pointer.x, self.pointer.y) = (x, y);
         let (x, y) = self.to_device(id, x, y);
-        let mut ev = NhShellEvent::new(kind, id, time_ns(time));
-        ev.u.pointer = PointerEv {
+        let p = PointerEv {
             x,
             y,
             button: 0,
             state: 0,
         };
-        self.post(ev);
+        self.post(Record::new(kind(p), id, time_ns(time)));
     }
 
     /// The connection is gone and no release will come: a release for every button still held, on the window the
@@ -190,14 +189,13 @@ impl ReaderState {
         let id = self.pointer.surface;
         let (x, y) = self.to_device(id, self.pointer.x, self.pointer.y);
         for button in held {
-            let mut ev = NhShellEvent::new(NHSHELL_EV_BUTTON, id, 0);
-            ev.u.pointer = PointerEv {
+            let p = PointerEv {
                 x,
                 y,
                 button,
                 state: NHSHELL_BUTTON_RELEASED,
             };
-            self.post(ev);
+            self.post(Record::new(ShellEvent::Button(p), id, 0));
         }
     }
 }
@@ -236,7 +234,7 @@ impl Dispatch<WlPointer, ()> for ReaderState {
                     serials.release_all(false);
                 }
                 state.pointer.surface = crate::wayland::window_of(&surface);
-                state.post_pointer(NHSHELL_EV_POINTER_ENTER, 0, surface_x, surface_y);
+                state.post_pointer(ShellEvent::PointerEnter, 0, surface_x, surface_y);
             }
             wl_pointer::Event::Leave { .. } => {
                 // the implicit grab ended (or a drag took the pointer): no release will come for a held button
@@ -246,14 +244,14 @@ impl Dispatch<WlPointer, ()> for ReaderState {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .release_all(false);
-                state.post_pointer(NHSHELL_EV_POINTER_LEAVE, 0, 0.0, 0.0);
+                state.post_pointer(ShellEvent::PointerLeave, 0, 0.0, 0.0);
                 state.pointer.surface = 0;
             }
             wl_pointer::Event::Motion {
                 time,
                 surface_x,
                 surface_y,
-            } => state.post_pointer(NHSHELL_EV_POINTER_MOTION, time, surface_x, surface_y),
+            } => state.post_pointer(ShellEvent::PointerMotion, time, surface_x, surface_y),
             wl_pointer::Event::Button {
                 serial,
                 time,
@@ -277,9 +275,7 @@ impl Dispatch<WlPointer, ()> for ReaderState {
                 if pressed {
                     selection::lock(&state.shared).input(serial);
                 }
-                let mut ev =
-                    NhShellEvent::new(NHSHELL_EV_BUTTON, state.pointer.surface, time_ns(time));
-                ev.u.pointer = PointerEv {
+                let p = PointerEv {
                     x: 0.0,
                     y: 0.0,
                     button,
@@ -289,6 +285,7 @@ impl Dispatch<WlPointer, ()> for ReaderState {
                         NHSHELL_BUTTON_RELEASED
                     },
                 };
+                let ev = Record::new(ShellEvent::Button(p), state.pointer.surface, time_ns(time));
                 state.post(ev);
             }
             wl_pointer::Event::AxisSource {
@@ -314,8 +311,7 @@ impl Dispatch<WlPointer, ()> for ReaderState {
             wl_pointer::Event::Frame => {
                 let seat_v = state.seat.as_ref().map_or(0, |s| s.version());
                 if let Some(s) = state.pointer.frame.take(seat_v >= 8) {
-                    let mut ev = NhShellEvent::new(NHSHELL_EV_SCROLL, state.pointer.surface, 0);
-                    ev.u.scroll = s;
+                    let ev = Record::new(ShellEvent::Scroll(s), state.pointer.surface, 0);
                     state.post(ev);
                 }
             }

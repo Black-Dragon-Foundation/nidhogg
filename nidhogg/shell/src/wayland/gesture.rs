@@ -46,8 +46,7 @@ impl ReaderState {
         let (_, px, py) = self.pointer.position();
         let (x, y) = self.to_device(window, px, py);
         let (dx, dy) = self.to_device(window, dx, dy);
-        let mut ev = NhShellEvent::new(NHSHELL_EV_PINCH, window, u64::from(time) * 1_000_000);
-        ev.u.pinch = PinchEv {
+        let p = PinchEv {
             phase,
             fingers: self.pinch.fingers,
             dx,
@@ -58,6 +57,7 @@ impl ReaderState {
             y,
             cancelled: cancelled as u8,
         };
+        let ev = Record::new(ShellEvent::Pinch(p), window, u64::from(time) * 1_000_000);
         self.post(ev);
     }
 }

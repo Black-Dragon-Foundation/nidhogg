@@ -20,13 +20,21 @@ fn setup() -> (Recorder, WaylandShell, u64) {
     let r = rec.control_ok(&format!(r#"{{"cmd":"focus","surface":{id}}}"#));
     assert!(r.contains("\"ok\":true"), "{r}");
     rec.control_ok(r#"{"cmd":"pointer","pos":[5,5]}"#);
-    wait_event(&mut shell, NHSHELL_EV_POINTER_ENTER);
+    wait_event(&mut shell, Kind::PointerEnter);
     (rec, shell, id)
 }
 
-fn dnd(ev: &NhShellEvent) -> DndEv {
-    // SAFETY: drag-and-drop records carry `dnd`.
-    unsafe { ev.u.dnd }
+fn dnd(ev: &Record) -> DndEv {
+    match ev.event {
+        ShellEvent::DndEnter(d)
+        | ShellEvent::DndMotion(d)
+        | ShellEvent::DndLeave(d)
+        | ShellEvent::DndDrop(d)
+        | ShellEvent::DragAction(d)
+        | ShellEvent::DragDropped(d)
+        | ShellEvent::DragDone(d) => d,
+        e => panic!("not a drag-and-drop record: {e:?}"),
+    }
 }
 
 /// A foreign source enters the window at (10, 12) with copy and move, offering `types` (MIME, text).
@@ -40,7 +48,7 @@ fn offer(rec: &Recorder, shell: &mut WaylandShell, types: &[(&str, &str)], silen
         types.join(",")
     ));
     assert!(r.contains("\"ok\":true"), "{r}");
-    dnd(&wait_event(shell, NHSHELL_EV_DND_ENTER))
+    dnd(&wait_event(shell, Kind::DndEnter))
 }
 
 fn plain_offer(rec: &Recorder, shell: &mut WaylandShell) -> DndEv {
@@ -66,28 +74,28 @@ fn wait_log(rec: &Recorder, want: &[&str]) -> String {
 }
 
 /// No record of `kind` within `ms`; the connection is still up.
-fn none_of(shell: &mut WaylandShell, kind: u32, ms: i64) {
+fn none_of(shell: &mut WaylandShell, kind: Kind, ms: i64) {
     for ev in collect(shell, ms) {
-        assert_ne!(ev.kind, kind, "an unexpected record {kind}");
-        assert_ne!(ev.kind, NHSHELL_EV_DISCONNECTED, "the connection ended");
+        assert_ne!(ev.kind(), kind, "an unexpected record {kind:?}");
+        assert_ne!(ev.kind(), Kind::Disconnected, "the connection ended");
     }
 }
 
 /// The recorder presses the left button over the window; the shell has read the press.
 fn press(rec: &Recorder, shell: &mut WaylandShell) {
     rec.control_ok(r#"{"cmd":"button","button":272,"state":"press"}"#);
-    wait_for(shell, |e| {
-        // SAFETY: a BUTTON record carries `pointer`.
-        e.kind == NHSHELL_EV_BUTTON && unsafe { e.u.pointer }.state == NHSHELL_BUTTON_PRESSED
-    });
+    wait_for(
+        shell,
+        |e| matches!(e.event, ShellEvent::Button(p) if p.state == NHSHELL_BUTTON_PRESSED),
+    );
 }
 
 fn release(rec: &Recorder, shell: &mut WaylandShell) {
     rec.control_ok(r#"{"cmd":"button","button":272,"state":"release"}"#);
-    wait_for(shell, |e| {
-        // SAFETY: as above.
-        e.kind == NHSHELL_EV_BUTTON && unsafe { e.u.pointer }.state == NHSHELL_BUTTON_RELEASED
-    });
+    wait_for(
+        shell,
+        |e| matches!(e.event, ShellEvent::Button(p) if p.state == NHSHELL_BUTTON_RELEASED),
+    );
 }
 
 /// Press the button and drag `items` out of window `id`; the recorder has seen the drag start.
@@ -100,13 +108,13 @@ fn start_drag(rec: &Recorder, shell: &mut WaylandShell, id: u64, items: &[(&str,
 }
 
 /// The records up to and including the first `DRAG_DONE`, within 5 s.
-fn until_done(shell: &mut WaylandShell) -> Vec<NhShellEvent> {
+fn until_done(shell: &mut WaylandShell) -> Vec<Record> {
     let mut out = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         while let Some(ev) = shell.next_event().unwrap() {
             out.push(ev);
-            if ev.kind == NHSHELL_EV_DRAG_DONE {
+            if ev.kind() == Kind::DragDone {
                 return out;
             }
         }
@@ -125,10 +133,10 @@ mod dnd {
     fn enter_motion_drop_reported_in_device_pixels() {
         let (rec, mut shell, id) = setup();
         rec.control(r#"{"cmd":"scale","value120":240}"#);
-        wait_for(&mut shell, |e| {
-            // SAFETY: SCALE records carry `scale`.
-            e.kind == NHSHELL_EV_SCALE && unsafe { e.u.scale.scale120 } == 240
-        });
+        wait_for(
+            &mut shell,
+            |e| matches!(e.event, ShellEvent::Scale(s) if s.scale120 == 240),
+        );
         let enter = plain_offer(&rec, &mut shell);
         assert_eq!((enter.x, enter.y), (20.0, 24.0));
         assert_eq!(enter.source_actions, NHSHELL_DND_COPY | NHSHELL_DND_MOVE);
@@ -137,7 +145,7 @@ mod dnd {
         assert!(shell.dragging(), "a drag over us: popups take no grab");
 
         rec.control_ok(r#"{"cmd":"dnd_motion","at":[20,21]}"#);
-        let ev = wait_event(&mut shell, NHSHELL_EV_DND_MOTION);
+        let ev = wait_event(&mut shell, Kind::DndMotion);
         assert_eq!(ev.window, id);
         let m = dnd(&ev);
         assert_eq!((m.x, m.y), (40.0, 42.0));
@@ -152,14 +160,14 @@ mod dnd {
             .unwrap();
         wait_log(&rec, &["\"chosen\":\"copy\""]);
         rec.control_ok(r#"{"cmd":"dnd_drop"}"#);
-        let ev = wait_event(&mut shell, NHSHELL_EV_DND_DROP);
+        let ev = wait_event(&mut shell, Kind::DndDrop);
         assert_eq!(ev.window, id);
         let d = dnd(&ev);
         assert_eq!((d.x, d.y), (40.0, 42.0));
         assert_eq!(d.action, NHSHELL_DND_COPY);
         assert!(!shell.dragging());
         // the leave that follows a drop keeps the offer for the host's finish
-        none_of(&mut shell, NHSHELL_EV_DND_LEAVE, 200);
+        none_of(&mut shell, Kind::DndLeave, 200);
         let data = shell.selection_read(NHSHELL_SEL_DND, "text/plain", 1000);
         assert_eq!(data.as_deref(), Ok(&b"dropped text"[..]));
         shell.dnd_finish(true).unwrap();
@@ -193,7 +201,7 @@ mod dnd {
         );
         assert!(!shell.selection_owned(NHSHELL_SEL_DND).unwrap());
         rec.control_ok(r#"{"cmd":"dnd_leave"}"#);
-        wait_event(&mut shell, NHSHELL_EV_DND_LEAVE);
+        wait_event(&mut shell, Kind::DndLeave);
         assert!(shell.selection_types(NHSHELL_SEL_DND).unwrap().is_empty());
         assert_eq!(
             shell.selection_read(NHSHELL_SEL_DND, "text/plain", 1000),
@@ -219,9 +227,9 @@ mod dnd {
         wait_log(&rec, &["\"received\":[\"text/plain\"]"]);
         // the shell goes on: the drag still moves, leaves, and the offer is gone
         rec.control_ok(r#"{"cmd":"dnd_motion","at":[30,30]}"#);
-        wait_event(&mut shell, NHSHELL_EV_DND_MOTION);
+        wait_event(&mut shell, Kind::DndMotion);
         rec.control_ok(r#"{"cmd":"dnd_leave"}"#);
-        wait_event(&mut shell, NHSHELL_EV_DND_LEAVE);
+        wait_event(&mut shell, Kind::DndLeave);
         wait_log(&rec, &["\"destroyed\":true"]);
         // and the next drop works
         offer(&rec, &mut shell, &[("text/plain", "second")], false);
@@ -260,7 +268,7 @@ mod dnd {
         );
         // the compositor's choice comes with the next record
         rec.control_ok(r#"{"cmd":"dnd_motion","at":[11,12]}"#);
-        let m = dnd(&wait_event(&mut shell, NHSHELL_EV_DND_MOTION));
+        let m = dnd(&wait_event(&mut shell, Kind::DndMotion));
         assert_eq!(
             (m.action, m.preferred),
             (NHSHELL_DND_MOVE, NHSHELL_DND_MOVE)
@@ -276,7 +284,7 @@ mod dnd {
         // `finish` here would be a protocol error: refused, and the offer still goes
         assert_eq!(shell.dnd_finish(true), Err(ShellError::State));
         wait_log(&rec, &["\"finished\":false", "\"destroyed\":true"]);
-        none_of(&mut shell, NHSHELL_EV_DISCONNECTED, 200);
+        none_of(&mut shell, Kind::Disconnected, 200);
         shell.dispatch_main().expect("the connection is up");
         assert_eq!(shell.last_error(), "");
         assert_eq!(shell.dnd_finish(false), Err(ShellError::State));
@@ -291,9 +299,9 @@ mod dnd {
         // a refused drop is no drop: the drag only leaves
         rec.control_ok(r#"{"cmd":"dnd_drop"}"#);
         let ev = wait_for(&mut shell, |e| {
-            e.kind == NHSHELL_EV_DND_DROP || e.kind == NHSHELL_EV_DND_LEAVE
+            e.kind() == Kind::DndDrop || e.kind() == Kind::DndLeave
         });
-        assert_eq!(ev.kind, NHSHELL_EV_DND_LEAVE);
+        assert_eq!(ev.kind(), Kind::DndLeave);
         wait_log(&rec, &["\"finished\":false", "\"destroyed\":true"]);
         assert!(!shell.dragging());
     }
@@ -365,24 +373,21 @@ mod dnd {
         let r = rec.control(r#"{"cmd":"drag_drop","finish":true}"#);
         assert!(r.contains("\"result\":\"finished\""), "{r}");
         let evs = until_done(&mut shell);
-        let at = |kind: u32| {
+        let at = |kind: Kind| {
             evs.iter()
-                .position(|e| e.kind == kind)
-                .unwrap_or_else(|| panic!("no record {kind}"))
+                .position(|e| e.kind() == kind)
+                .unwrap_or_else(|| panic!("no record {kind:?}"))
         };
-        assert!(at(NHSHELL_EV_DRAG_ACTION) < at(NHSHELL_EV_DRAG_DROPPED));
-        assert!(at(NHSHELL_EV_DRAG_DROPPED) < at(NHSHELL_EV_DRAG_DONE));
-        assert_eq!(
-            dnd(&evs[at(NHSHELL_EV_DRAG_ACTION)]).action,
-            NHSHELL_DND_COPY
-        );
+        assert!(at(Kind::DragAction) < at(Kind::DragDropped));
+        assert!(at(Kind::DragDropped) < at(Kind::DragDone));
+        assert_eq!(dnd(&evs[at(Kind::DragAction)]).action, NHSHELL_DND_COPY);
         let done = evs.last().unwrap();
         assert_eq!(done.window, id);
         assert_eq!((dnd(done).ok, dnd(done).action), (1, NHSHELL_DND_COPY));
         assert!(!shell.dragging());
         assert!(!shell.selection_owned(NHSHELL_SEL_DND).unwrap());
         // the recorder ends its grab 150 ms later, when a source still alive would hear `cancelled`
-        none_of(&mut shell, NHSHELL_EV_DRAG_DONE, 400);
+        none_of(&mut shell, Kind::DragDone, 400);
     }
 
     #[test]
@@ -393,7 +398,7 @@ mod dnd {
         let done = *until_done(&mut shell).last().unwrap();
         assert_eq!((dnd(&done).ok, dnd(&done).action), (0, 0));
         assert!(!shell.dragging());
-        none_of(&mut shell, NHSHELL_EV_DRAG_DONE, 300);
+        none_of(&mut shell, Kind::DragDone, 300);
         // our own cancel: the source goes and nothing follows (the pointer comes back over the window first: the
         // drag's grab had taken it)
         rec.control_ok(r#"{"cmd":"pointer","pos":[6,6]}"#);
@@ -403,7 +408,7 @@ mod dnd {
             .unwrap();
         shell.drag_cancel().unwrap();
         assert!(!shell.dragging());
-        none_of(&mut shell, NHSHELL_EV_DRAG_DONE, 300);
+        none_of(&mut shell, Kind::DragDone, 300);
         shell.drag_cancel().unwrap();
     }
 
@@ -414,7 +419,7 @@ mod dnd {
         start_drag(&rec, &mut shell, id, items);
         // the drag moves over our own window
         rec.control_ok(r#"{"cmd":"pointer","pos":[30,30]}"#);
-        let ev = wait_event(&mut shell, NHSHELL_EV_DND_ENTER);
+        let ev = wait_event(&mut shell, Kind::DndEnter);
         assert_eq!(ev.window, id);
         assert_eq!(dnd(&ev).own, 1);
         let mut types = shell.selection_types(NHSHELL_SEL_DND).unwrap();
@@ -428,9 +433,9 @@ mod dnd {
             .dnd_status(Some(TEXT), NHSHELL_DND_COPY, NHSHELL_DND_COPY)
             .unwrap();
         // the compositor's answer to the status reaches our source
-        wait_for(&mut shell, |e| e.kind == NHSHELL_EV_DRAG_ACTION);
+        wait_for(&mut shell, |e| e.kind() == Kind::DragAction);
         rec.control_ok(r#"{"cmd":"button","button":272,"state":"release"}"#);
-        let drop = wait_event(&mut shell, NHSHELL_EV_DND_DROP);
+        let drop = wait_event(&mut shell, Kind::DndDrop);
         assert_eq!((dnd(&drop).own, dnd(&drop).action), (1, NHSHELL_DND_COPY));
         shell.dnd_finish(true).unwrap();
         let done = *until_done(&mut shell).last().unwrap();
@@ -451,10 +456,10 @@ mod dnd {
         loop {
             match shell.next_event() {
                 Ok(Some(ev)) => {
-                    if ev.kind == NHSHELL_EV_DRAG_DONE {
+                    if ev.kind() == Kind::DragDone {
                         done = Some(dnd(&ev));
                     }
-                    kinds.push(ev.kind);
+                    kinds.push(ev.kind());
                 }
                 Ok(None) => {
                     assert!(Instant::now() < deadline, "no DISCONNECTED: {kinds:?}");
@@ -470,13 +475,10 @@ mod dnd {
         assert!(n >= 2, "{kinds:?}");
         assert_eq!(
             &kinds[n - 2..],
-            [NHSHELL_EV_DRAG_DONE, NHSHELL_EV_DISCONNECTED],
+            [Kind::DragDone, Kind::Disconnected],
             "{kinds:?}"
         );
-        assert_eq!(
-            kinds.iter().filter(|&&k| k == NHSHELL_EV_DRAG_DONE).count(),
-            1
-        );
+        assert_eq!(kinds.iter().filter(|&&k| k == Kind::DragDone).count(), 1);
         assert_eq!(done.map(|d| d.ok), Some(0));
         assert!(!shell.dragging());
         assert_eq!(shell.drag_cancel(), Err(ShellError::Disconnected));
