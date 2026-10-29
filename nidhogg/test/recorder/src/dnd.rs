@@ -76,6 +76,9 @@ pub struct Dnd {
     surface: Option<WlSurface>,
     /// A foreign drag has begun and not yet been dropped.
     active: bool,
+    /// The client's pointer drag has just started: its origin surface gets the drag's enter, as a desktop
+    /// compositor's does (Smithay's grab enters only at the next motion).
+    enter_origin: bool,
 }
 
 fn action_names(a: DndAction) -> Vec<&'static str> {
@@ -182,6 +185,7 @@ impl ClientDndGrabHandler for State {
             .as_ref()
             .and_then(|s| with_source_metadata(s, |m| (m.mime_types.clone(), m.dnd_action)).ok());
         let (mimes, actions) = meta.unwrap_or_else(|| (Vec::new(), DndAction::empty()));
+        self.dnd.enter_origin = pointer.is_some();
         self.dnd.drags.push(DragRec {
             source,
             kind: if pointer.is_some() { "button" } else { "touch" },
@@ -201,6 +205,31 @@ impl ClientDndGrabHandler for State {
             d.result = if validated { "dropped" } else { "cancelled" };
         }
     }
+}
+
+/// After a dispatch: the client's new pointer drag enters its origin surface where the pointer is (the grab is set
+/// once `started` returns, so this cannot run there).
+pub fn enter_origin(state: &mut State) {
+    if !std::mem::take(&mut state.dnd.enter_origin) {
+        return;
+    }
+    let Some(ptr) = state.seat.get_pointer() else {
+        return;
+    };
+    let Some((surface, origin)) = ptr.grab_start_data().and_then(|d| d.focus) else {
+        return;
+    };
+    let time = state.time_ms();
+    ptr.motion(
+        state,
+        Some((surface, origin)),
+        &MotionEvent {
+            location: ptr.current_location(),
+            serial: SERIAL_COUNTER.next_serial(),
+            time,
+        },
+    );
+    ptr.frame(state);
 }
 
 /// The surface a command names: an id, `"toplevel"` or `"newest"`; without a name, the one the drag is over.
