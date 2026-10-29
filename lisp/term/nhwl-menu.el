@@ -33,6 +33,14 @@
 ;; with a `delete-frame' event for its frame, which `special-event-map'
 ;; would hand to `handle-delete-frame', so the loop reads with a map
 ;; that lacks it.
+;;
+;; A submenu is a nested level: the loop of its parent calls
+;; `nhwl-menu--run' for it, and that returns what happened (a choice,
+;; `close' for one level, `cancel' for all, or an event that belongs to
+;; a shallower level).  The pointer selects the row under it, a button
+;; release or a touch tap chooses it, the wheel scrolls a menu taller
+;; than the output, and a dialog (`x-popup-dialog' on this shell is a
+;; menu) is centred on its frame.
 
 ;;; Code:
 
@@ -40,6 +48,11 @@
   "Popup menus drawn by Emacs on Nidhogg's Wayland shell."
   :group 'menu
   :prefix "nhwl-menu-")
+
+(defcustom nhwl-menu-submenu-delay 0.2
+  "Seconds the pointer rests on a submenu row before its menu opens."
+  :type 'number
+  :group 'nhwl-menu)
 
 (defface nhwl-menu
   '((t :inherit menu))
@@ -251,6 +264,18 @@ item, and a cancelled menu (PATH nil) nil."
 (defvar-local nhwl-menu--overlay nil
   "The overlay that highlights the selected row.")
 
+(defvar-local nhwl-menu--due nil
+  "When the selected submenu row opens its menu (`float-time'), or nil.")
+
+(defvar-local nhwl-menu--touch nil
+  "The touch point that began on this menu, (ID . ROW), or nil.")
+
+(defvar nhwl-menu--pressed nil
+  "Non-nil while the menu waits for the release of the press that opened it.")
+
+(defvar nhwl-menu--help-shown nil
+  "Non-nil while the echo area shows an item's help.")
+
 (defun nhwl-menu--make-rows (title items)
   "The rows for TITLE (a string or nil) and the visible ITEMS."
   (let ((rows nil))
@@ -341,8 +366,15 @@ item, and a cancelled menu (PATH nil) nil."
        (not (eq (nhwl-menu--kind row) 'separator))))
 
 (defun nhwl-menu--select-row (index)
-  "Select row INDEX (nil for none) of the current menu buffer."
-  (setq nhwl-menu--index index)
+  "Select row INDEX (nil for none) of the current menu buffer.
+The row's help, if it has any, goes to the echo area."
+  (setq nhwl-menu--index index
+        nhwl-menu--due nil)
+  (let ((help (and index (aref (aref nhwl-menu--rows index) 6))))
+    (cond (help (setq nhwl-menu--help-shown t)
+                (let ((message-log-max nil)) (message "%s" help)))
+          (nhwl-menu--help-shown (setq nhwl-menu--help-shown nil)
+                                 (message nil))))
   (if index
       (save-excursion
         (goto-char (point-min))
@@ -381,12 +413,35 @@ nil to start before the first row (STEP 1) or after the last (-1)."
     (when i (nhwl-menu--select-row i))))
 
 (defun nhwl-menu--activate ()
-  "The choice `(choose . ROW)' for the selected row, or nil.
-A submenu row chooses nothing."
+  "The outcome for the selected row, or nil.
+`(choose . ROW)' for an item, `(open . ROW)' for a submenu."
   (let ((row (and nhwl-menu--index (aref nhwl-menu--rows nhwl-menu--index))))
-    (when (and row (nhwl-menu--selectable-p row)
-               (eq (nhwl-menu--kind row) 'item))
-      (cons 'choose row))))
+    (when (and row (nhwl-menu--selectable-p row))
+      (cons (if (eq (nhwl-menu--kind row) 'submenu) 'open 'choose) row))))
+
+(defun nhwl-menu--hover (row)
+  "Select ROW (nil for none) under the pointer.
+A submenu row opens its menu after `nhwl-menu-submenu-delay'."
+  (let ((row (and row (nhwl-menu--selectable-p (aref nhwl-menu--rows row))
+                  row)))
+    (unless (eql row nhwl-menu--index)
+      (nhwl-menu--select-row row)
+      (when (and row (eq (nhwl-menu--kind (aref nhwl-menu--rows row))
+                         'submenu))
+        (setq nhwl-menu--due (+ (float-time) nhwl-menu-submenu-delay))))))
+
+(defun nhwl-menu--scroll (window delta)
+  "Scroll the menu in WINDOW by DELTA rows, within its rows."
+  (with-current-buffer (window-buffer window)
+    (let* ((visible (max 1 (window-body-height window)))
+           (last (max 0 (- (length nhwl-menu--rows) visible)))
+           (start (max 0 (min last (+ (count-lines 1 (window-start window))
+                                      delta)))))
+      (save-excursion
+        (goto-char (point-min))
+        (forward-line start)
+        (set-window-start window (point) t)
+        (set-window-point window (point))))))
 
 ;;;; Frames
 
@@ -397,10 +452,11 @@ A submenu row chooses nothing."
       (when (frame-live-p (cdr entry)) (push (cdr entry) frames)))
     frames))
 
-(defun nhwl-menu--frame (depth parent anchor buffer)
+(defun nhwl-menu--frame (depth parent anchor buffer &optional center)
   "The frame of DEPTH showing BUFFER as a popup of PARENT at ANCHOR.
-Made once per depth and parent, then reused.  It is sized to the buffer
-and shown, which makes the popup."
+Made once per depth and parent, then reused.  It is sized to the buffer,
+at most the height of the display, and shown, which makes the popup.
+With CENTER the frame is centred on the point of ANCHOR."
   (let ((frame (cdr (assq depth nhwl-menu--frames))))
     (unless (and (frame-live-p frame) (eq (frame-parent frame) parent))
       (when (frame-live-p frame) (delete-frame frame t))
@@ -426,16 +482,26 @@ and shown, which makes the popup."
       (set-window-start window 1)
       (set-window-fringes window 0 0)
       (set-window-margins window 0 0))
-    (set-frame-parameter frame 'nhwl-popup anchor)
     (fit-frame-to-buffer frame)
+    (let ((limit (- (display-pixel-height frame) 20)))
+      (when (> (frame-pixel-height frame) limit)
+        (set-frame-size frame (frame-pixel-width frame) limit t)))
+    (when center
+      (setq anchor (append (list (max 0 (- (nth 0 anchor)
+                                           (/ (frame-pixel-width frame) 2)))
+                                 (max 0 (- (nth 1 anchor)
+                                           (/ (frame-pixel-height frame) 2))))
+                           (nthcdr 2 anchor))))
+    (set-frame-parameter frame 'nhwl-popup anchor)
     (make-frame-visible frame)
     frame))
 
-(defun nhwl-menu--hide ()
-  "Hide the visible menu frames, the deepest first."
+(defun nhwl-menu--hide (&optional depth)
+  "Hide the visible menu frames from DEPTH (default 0) down, deepest first."
   (dolist (entry (sort (copy-sequence nhwl-menu--frames)
                        (lambda (a b) (> (car a) (car b)))))
-    (when (and (frame-live-p (cdr entry)) (frame-visible-p (cdr entry)))
+    (when (and (>= (car entry) (or depth 0))
+               (frame-live-p (cdr entry)) (frame-visible-p (cdr entry)))
       (make-frame-invisible (cdr entry) t))))
 
 ;;;; Position
@@ -474,16 +540,42 @@ and shown, which makes the popup."
                             (cadr (car position))))
    ((and (consp position) (symbolp (car position)))
     (let* ((posn (event-start position))
-           (xy (posn-x-y posn)))
-      (nhwl-menu--window-spot (posn-window posn) (car xy) (cdr xy))))
+           (xy (posn-x-y posn))
+           (spot (nhwl-menu--window-spot (posn-window posn) (car xy) (cdr xy))))
+      ;; a click on the menu bar opens the menu below the bar
+      (if (eq (posn-area posn) 'menu-bar)
+          (list (nth 0 spot) (nth 1 spot)
+                (* (or (frame-parameter (nth 0 spot) 'menu-bar-lines) 0)
+                   (frame-char-height (nth 0 spot)))
+                0)
+        spot)))
    (t (nhwl-menu--point-spot))))
 
+(defun nhwl-menu--dialog-p (position)
+  "Non-nil if POSITION is the middle of a frame, where a dialog is put.
+`x-popup-dialog' falls back to `x-popup-menu' at ((X Y) FRAME), the
+middle of FRAME."
+  (and (consp position) (consp (car position)) (framep (cadr position))
+       (numberp (car (car position))) (numberp (cadr (car position)))
+       (= (car (car position)) (/ (frame-pixel-width (cadr position)) 2))
+       (= (cadr (car position)) (/ (frame-pixel-height (cadr position)) 2))))
+
 (defun nhwl-menu--anchor (position)
-  "The parent frame and anchor (FRAME . ANCHOR) for POSITION.
-ANCHOR is the value of `nhwl-popup' for a grabbing popup."
-  (let ((spot (nhwl-menu--spot position)))
-    (cons (nth 0 spot)
-          (list (nth 1 spot) (nth 2 spot) 0 (nth 3 spot) :grab t))))
+  "The parent frame, the anchor and whether to centre, for POSITION.
+The result is (FRAME ANCHOR CENTER).  ANCHOR is the value of `nhwl-popup'
+for a grabbing popup; a popup hangs from a top-level frame, so the spot
+in a child frame is taken up to the top-level frame."
+  (let* ((spot (nhwl-menu--spot position))
+         (frame (nth 0 spot))
+         (x (nth 1 spot))
+         (y (nth 2 spot)))
+    (while (frame-parent frame)
+      (let ((at (frame-position frame)))
+        (setq x (+ x (car at))
+              y (+ y (cdr at))
+              frame (frame-parent frame))))
+    (list frame (list x y 0 (nth 3 spot) :grab t)
+          (nhwl-menu--dialog-p position))))
 
 ;;;; The loop
 
@@ -493,11 +585,12 @@ ANCHOR is the value of `nhwl-popup' for a grabbing popup."
     (define-key map [delete-frame] nil)
     map))
 
-(defun nhwl-menu--read (map)
-  "Read an event with `special-event-map' bound to MAP; C-g reads as C-g."
+(defun nhwl-menu--read (map timeout)
+  "Read an event with `special-event-map' bound to MAP, waiting TIMEOUT seconds.
+Nil if none came; C-g reads as C-g."
   (let ((special-event-map map))
     (condition-case nil
-        (read-event)
+        (read-event nil nil timeout)
       (quit ?\C-g))))
 
 (defun nhwl-menu--drain (count)
@@ -526,11 +619,96 @@ frame the event is left for the command loop."
       (setq unread-command-events (cons event unread-command-events))))
   'cancel)
 
-(defun nhwl-menu--handle (event)
-  "Act on EVENT in the current menu buffer.
-Return nil to go on, `cancel', or `(choose . ROW)'."
+(defun nhwl-menu--mouse-kind (event)
+  "What kind of pointer or touch EVENT is, or nil.
+One of `down', `drag', `click', `move', `wheel', `touch-begin' and
+`touch-end'."
+  (let ((head (car-safe event)))
+    (when (and head (symbolp head))
+      (let ((name (symbol-name head)))
+        (cond ((string-match-p "down-mouse-[0-9]+\\'" name) 'down)
+              ((string-match-p "drag-mouse-[0-9]+\\'" name) 'drag)
+              ((string-match-p "wheel-\\(?:up\\|down\\)\\'" name) 'wheel)
+              ((string-match-p "\\(?:\\`\\|-\\)mouse-[0-9]+\\'" name) 'click)
+              ((eq head 'mouse-movement) 'move)
+              ((eq head 'touchscreen-begin) 'touch-begin)
+              ((eq head 'touchscreen-end) 'touch-end))))))
+
+(defun nhwl-menu--locate (event)
+  "Where the pointer or touch EVENT happened over a menu, or nil.
+The result is (DEPTH ROW WINDOW); ROW is nil past the last row."
+  (let* ((posn (ignore-errors (event-start event)))
+         (window (and (posnp posn) (posn-window posn)))
+         (entry (and (window-live-p window)
+                     (rassq (window-frame window) nhwl-menu--frames)))
+         (y (and entry (cdr-safe (posn-x-y posn)))))
+    (when (numberp y)
+      (with-current-buffer (window-buffer window)
+        (let ((row (+ (count-lines 1 (window-start window))
+                      (floor y (frame-char-height (window-frame window))))))
+          (list (car entry)
+                (and (>= y 0) (< row (length nhwl-menu--rows)) row)
+                window))))))
+
+(defun nhwl-menu--mouse (event kind depth parent-row)
+  "Act on the pointer or touch EVENT of KIND in the menu level DEPTH.
+PARENT-ROW is the row of the level above that opened this one, or nil.
+Return what `nhwl-menu--handle' does."
+  (let* ((at (nhwl-menu--locate event))
+         (row (nth 1 at))
+         (window (nth 2 at))
+         ;; the release of the press that opened the menu, if it did not
+         ;; move, only keeps the menu open; any release ends the wait
+         (held (and (eq kind 'click) nhwl-menu--pressed)))
+    (when (memq kind '(click drag))
+      (setq nhwl-menu--pressed nil))
+    (cond
+     ((null at) nil)
+     ;; an event for a shallower level is that level's to handle, except
+     ;; over the row this level opened from
+     ((< (car at) depth)
+      (unless (and (= (car at) (1- depth)) (eql row parent-row))
+        (cons 'retry event)))
+     ((> (car at) depth) nil)
+     ((eq kind 'wheel)
+      (nhwl-menu--scroll window (if (string-match-p "up\\'"
+                                                    (symbol-name (car event)))
+                                    -3 3))
+      nil)
+     ((eq kind 'move) (nhwl-menu--hover row) nil)
+     ((memq kind '(down touch-begin))
+      (nhwl-menu--hover row)
+      (when (eq kind 'touch-begin)
+        (setq nhwl-menu--touch (and row (cons (car (cadr event)) row))))
+      ;; pressing a submenu row opens it at once
+      (and (eq kind 'down)
+           (let ((outcome (nhwl-menu--activate)))
+             (and (eq (car-safe outcome) 'open) outcome))))
+     ((eq kind 'touch-end)
+      ;; a tap: the end of the touch that began on this row (nth 2 of the
+      ;; event is non-nil when the touch was cancelled)
+      (let ((tap (and row (equal nhwl-menu--touch
+                                 (cons (car (cadr event)) row))
+                      (not (nth 2 event)))))
+        (setq nhwl-menu--touch nil)
+        (when tap
+          (nhwl-menu--hover row)
+          (nhwl-menu--activate))))
+     ;; a release (click or drag) chooses the row
+     (held nil)
+     (t (nhwl-menu--hover row)
+        (nhwl-menu--activate)))))
+
+(defun nhwl-menu--handle (event depth parent-row)
+  "Act on EVENT in the current menu buffer, level DEPTH.
+PARENT-ROW is the row of the level above that opened this one, or nil.
+Return nil to go on, `cancel' (everything), `close' (this level),
+`(choose . ROW)', `(open . ROW)' (the submenu of a row), or
+`(retry . EVENT)' (EVENT is for a level above)."
   (cond
    ((eq (car-safe event) 'delete-frame) (nhwl-menu--dismissed event))
+   ((nhwl-menu--mouse-kind event)
+    (nhwl-menu--mouse event (nhwl-menu--mouse-kind event) depth parent-row))
    ((memq event '(down ?\C-n))
     (nhwl-menu--move nhwl-menu--index 1) nil)
    ((memq event '(up ?\C-p))
@@ -538,21 +716,83 @@ Return nil to go on, `cancel', or `(choose . ROW)'."
    ((eq event 'home) (nhwl-menu--move nil 1) nil)
    ((eq event 'end) (nhwl-menu--move nil -1) nil)
    ((memq event '(return kp-enter ?\r ?\s)) (nhwl-menu--activate))
-   ((memq event '(escape ?\e ?\C-g)) 'cancel)
+   ((eq event 'right)
+    (let ((outcome (nhwl-menu--activate)))
+      (and (eq (car-safe outcome) 'open) outcome)))
+   ((eq event 'left) (and (> depth 0) 'close))
+   ((memq event '(escape ?\e)) (if (> depth 0) 'close 'cancel))
+   ((eq event ?\C-g) 'cancel)
    ((and (characterp event) (> event 32)) (nhwl-menu--jump event) nil)))
 
-(defun nhwl-menu--run (depth parent anchor rows)
+(defun nhwl-menu--open (depth row)
+  "Run the submenu of ROW, selected in menu level DEPTH.
+Return what `nhwl-menu--run' returns, or nil if the submenu is empty."
+  (let* ((frame (cdr (assq depth nhwl-menu--frames)))
+         (window (frame-root-window frame))
+         (index (buffer-local-value 'nhwl-menu--index (window-buffer window)))
+         (rows (nhwl-menu--make-rows
+                nil (nhwl-menu--keymap-items (cdr (nhwl-menu--value row)))))
+         ;; the popup sits at the right of the row, its top at the row's
+         (anchor (list (frame-pixel-width frame)
+                       (* (- index (count-lines 1 (window-start window)))
+                          (frame-char-height frame))
+                       0 0 :grab t :gravity 'bottom-right
+                       :adjust (list 'flip-x 'slide-y))))
+    (when (> (length rows) 0)
+      (unwind-protect
+          (nhwl-menu--run (1+ depth) frame anchor rows index)
+        (nhwl-menu--hide (1+ depth))))))
+
+(defun nhwl-menu--run (depth parent anchor rows parent-row &optional center)
   "Show ROWS as menu level DEPTH, a popup of PARENT at ANCHOR.
-Return the list of the items chosen, or nil if the menu was cancelled."
+PARENT-ROW is the row of the level above that opened this one, or nil.
+Return `cancel', `close', `(choose ROW...)' (the rows chosen from this
+level down), or `(retry . EVENT)'."
   (let ((buffer (nhwl-menu--buffer depth rows))
         (map (nhwl-menu--event-map))
-        (outcome nil))
-    (nhwl-menu--frame depth parent anchor buffer)
-    (while (not outcome)
-      (let ((event (nhwl-menu--read map)))
-        (setq outcome (with-current-buffer buffer
-                        (nhwl-menu--handle event)))))
-    (and (consp outcome) (list (cdr outcome)))))
+        (pending nil)
+        (result nil))
+    (nhwl-menu--frame depth parent anchor buffer center)
+    (while (not result)
+      (let* ((due (buffer-local-value 'nhwl-menu--due buffer))
+             (event (or (pop pending)
+                        (nhwl-menu--read
+                         map (if due
+                                 (max 0.01 (min 0.25 (- due (float-time))))
+                               0.25))))
+             (outcome
+              (cond
+               ;; the menu's frame is gone (its parent was deleted)
+               ((not (frame-live-p (cdr (assq depth nhwl-menu--frames))))
+                'cancel)
+               (event (with-current-buffer buffer
+                        (nhwl-menu--handle event depth parent-row)))
+               ((and due (>= (float-time) due))
+                (with-current-buffer buffer
+                  (setq nhwl-menu--due nil)
+                  (nhwl-menu--activate))))))
+        (cond
+         ((eq (car-safe outcome) 'open)
+          (let ((sub (nhwl-menu--open depth (cdr outcome))))
+            (cond ((eq (car-safe sub) 'choose)
+                   (setq result (cons 'choose (cons (cdr outcome) (cdr sub)))))
+                  ((eq sub 'cancel) (setq result 'cancel))
+                  ((eq (car-safe sub) 'retry) (push (cdr sub) pending)))))
+         ((eq (car-safe outcome) 'choose)
+          (setq result (list 'choose (cdr outcome))))
+         (outcome (setq result outcome)))))
+    result))
+
+(defun nhwl-menu--down-p (position)
+  "Non-nil if the menu for POSITION is opened by a mouse button held down.
+POSITION is the event when it is one; otherwise the event that ran the
+command (`popup-menu' turns the event into coordinates)."
+  (let ((event (if (and (consp position) (symbolp (car position)))
+                   position
+                 last-nonmenu-event)))
+    (and (consp event) (symbolp (car event))
+         (string-match-p "down-mouse-[0-9]+\\'" (symbol-name (car event)))
+         t)))
 
 ;;;###autoload
 (defun nhwl-menu-popup (position menu)
@@ -565,15 +805,22 @@ and a cancelled menu nil."
   (let ((rows (nhwl-menu--make-rows (nhwl-menu--title menu)
                                     (nhwl-menu--items menu)))
         (frame (selected-frame))
-        (path nil))
+        (nhwl-menu--pressed (nhwl-menu--down-p position))
+        (result nil))
     (when (> (length rows) 0)
       (let ((anchor (nhwl-menu--anchor position)))
         (unwind-protect
-            (setq path (nhwl-menu--run 0 (car anchor) (cdr anchor) rows))
+            (setq result (track-mouse
+                           (nhwl-menu--run 0 (nth 0 anchor) (nth 1 anchor)
+                                           rows nil (nth 2 anchor))))
           (nhwl-menu--hide)
+          (when nhwl-menu--help-shown
+            (setq nhwl-menu--help-shown nil)
+            (message nil))
           (when (and (frame-live-p frame) (not (eq frame (selected-frame))))
             (select-frame frame 'norecord)))))
-    (nhwl-menu--return menu path)))
+    (nhwl-menu--return menu (and (eq (car-safe result) 'choose)
+                                 (cdr result)))))
 
 (provide 'nhwl-menu)
 
