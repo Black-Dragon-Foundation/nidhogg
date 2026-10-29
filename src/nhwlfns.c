@@ -2956,7 +2956,7 @@ nhwl_selection_kind (Lisp_Object sel)
   if (EQ (sel, QCLIPBOARD))
     return NHG_SEL_CLIPBOARD;
   /* The offer of the drag over our windows (nhwl_dnd_event_arg).  */
-  if (EQ (sel, Qnhwl_dnd_selection))
+  if (EQ (sel, QXdndSelection))
     return NHG_SEL_DND;
   return -1;
 }
@@ -2995,7 +2995,7 @@ compositor refuses (no keyboard focus).  The value of `XdndSelection'
 is kept for `x-begin-drag', which converts it.  */)
   (Lisp_Object selection, Lisp_Object value, Lisp_Object frame)
 {
-  if (EQ (selection, Qnhwl_dnd_selection))
+  if (EQ (selection, QXdndSelection))
     return Vnhwl_xdnd_value = value;
   int kind = nhwl_selection_kind (selection);
   if (kind < 0 || !x_display_list || !STRINGP (value))
@@ -3025,7 +3025,7 @@ DEFUN ("pgtk-disown-selection-internal", Fpgtk_disown_selection_internal,
        doc: /* If we own the selection SELECTION, disown it.  */)
   (Lisp_Object selection, Lisp_Object terminal)
 {
-  if (EQ (selection, Qnhwl_dnd_selection))
+  if (EQ (selection, QXdndSelection))
     {
       Lisp_Object owned = NILP (Vnhwl_xdnd_value) ? Qnil : Qt;
       Vnhwl_xdnd_value = Qnil;
@@ -3047,7 +3047,7 @@ DEFUN ("pgtk-selection-owner-p", Fpgtk_selection_owner_p,
        doc: /* Whether the current Emacs process owns the selection SELECTION.  */)
   (Lisp_Object selection, Lisp_Object terminal)
 {
-  if (EQ (selection, Qnhwl_dnd_selection))
+  if (EQ (selection, QXdndSelection))
     return NILP (Vnhwl_xdnd_value) ? Qnil : Qt;
   int kind = nhwl_selection_kind (selection);
   if (kind < 0 || !x_display_list)
@@ -3165,9 +3165,9 @@ nhwl_dnd_action_symbol (int code)
   switch (code)
     {
     case NHG_DND_COPY:
-      return Qnhwl_dnd_copy;
+      return Qcopy;
     case NHG_DND_MOVE:
-      return Qnhwl_dnd_move;
+      return Qmove;
     case NHG_DND_ASK:
       return Qnhwl_dnd_ask;
     default:
@@ -3182,10 +3182,10 @@ nhwl_dnd_action_code (Lisp_Object act)
 {
   if (NILP (act))
     return 0;
-  if (EQ (act, Qnhwl_dnd_copy) || EQ (act, Qnhwl_dnd_link)
-      || EQ (act, Qnhwl_dnd_private))
+  if (EQ (act, Qcopy) || EQ (act, Qlink)
+      || EQ (act, Qprivate))
     return NHG_DND_COPY;
-  if (EQ (act, Qnhwl_dnd_move))
+  if (EQ (act, Qmove))
     return NHG_DND_MOVE;
   if (EQ (act, Qnhwl_dnd_ask))
     return NHG_DND_ASK;
@@ -3204,10 +3204,10 @@ nhwl_dnd_event_arg (const NhgAction *a)
     {
     case NHG_ACT_DND_ENTER:
     case NHG_ACT_DND_MOTION:
-      return list4 (Qlambda, Qnhwl_dnd_selection, time,
+      return list4 (Qlambda, QXdndSelection, time,
 		    nhwl_dnd_action_symbol (a->code));
     case NHG_ACT_DND_DROP:
-      return list3 (Qquote, Qnhwl_dnd_selection, time);
+      return list3 (Qquote, QXdndSelection, time);
     default:
       return Qnil;
     }
@@ -3330,7 +3330,7 @@ bit, 0: none).  */)
   preferred = XFIXNAT (preferred_arg);
   if (!NILP (allow_current_frame))
     flags |= NHG_DRAG_ALLOW_CURRENT;
-  if (EQ (return_frame, Qnhwl_now))
+  if (EQ (return_frame, Qnow))
     flags |= NHG_DRAG_RETURN_NOW;
   else if (!NILP (return_frame))
     flags |= NHG_DRAG_RETURN_FRAME;
@@ -3463,19 +3463,19 @@ syms_of_nhwlfns (void)
   DEFSYM (Qnhwl_session_launch, "launch");
   DEFSYM (Qnhwl_session_recover, "recover");
   DEFSYM (Qnhwl_session_restore, "restore");
-  DEFSYM (Qnhwl_session_created, "created");
+  DEFSYM (Qcreated, "created");
   DEFSYM (Qnhwl_session_restored, "restored");
   DEFSYM (Qnhwl_session_replaced, "replaced");
   defsubr (&Snhwl__session_open);
   defsubr (&Snhwl__session_remove);
 
   /* The selection primitives.  */
-  DEFSYM (Qnhwl_dnd_selection, "XdndSelection");
-  DEFSYM (Qnhwl_dnd_copy, "copy");
-  DEFSYM (Qnhwl_dnd_move, "move");
+  DEFSYM (QXdndSelection, "XdndSelection");
+  DEFSYM (Qcopy, "copy");
+  DEFSYM (Qmove, "move");
   DEFSYM (Qnhwl_dnd_ask, "ask");
-  DEFSYM (Qnhwl_dnd_link, "link");
-  DEFSYM (Qnhwl_dnd_private, "private");
+  DEFSYM (Qlink, "link");
+  DEFSYM (Qprivate, "private");
   DEFSYM (QCLIPBOARD, "CLIPBOARD");
   DEFSYM (Qnhwl_selection_timeout, "nhwl-selection-timeout");
   DEFSYM (Qpgtk_lost_selection_functions, "pgtk-lost-selection-functions");
@@ -3492,7 +3492,7 @@ syms_of_nhwlfns (void)
 Each is called with the selection (a symbol) as its argument.  */);
   Vpgtk_lost_selection_functions = Qnil;
 
-  DEFSYM (Qnhwl_now, "now");
+  DEFSYM (Qnow, "now");
   DEFVAR_LISP ("nhwl--xdnd-value", Vnhwl_xdnd_value,
     doc: /* The XdndSelection value Lisp set (`gui-set-selection'), or nil.
 `x-begin-drag' converts it when a drag starts; no other client sees it
