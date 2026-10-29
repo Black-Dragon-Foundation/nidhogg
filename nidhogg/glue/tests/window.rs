@@ -154,6 +154,11 @@ fn draw(d: *mut NhgDisplay, window: u64, key: &mut u64, w: i32, h: i32) {
 /// `window`'s `READY` action, then the inline present it asks for.
 fn ready(d: *mut NhgDisplay, window: u64) -> i32 {
     until(d, |a| a.kind == NHG_ACT_READY && a.window == window);
+    present_ready(d, window)
+}
+
+/// The inline present a `READY` action of `window` asks for.
+fn present_ready(d: *mut NhgDisplay, window: u64) -> i32 {
     // SAFETY: a live display; no surfaces.
     unsafe { nhg_present(d, window, ptr::null(), 0, NHG_PRESENT_READY, 0) }
 }
@@ -215,11 +220,12 @@ fn shown_tip(profile: &str) -> (Recorder, *mut NhgDisplay, u64, u64, u64) {
             (60, 30, 120)
         );
     });
-    // its first configure, then its picture: below and right of (25, 10) logical
-    until(d, |a| a.kind == NHG_ACT_RESIZE && a.window == tip);
+    // its first configure (the shell's: it acks a popup's, no RESIZE), then its picture: below and right of (25, 10)
+    // logical
+    until(d, |a| a.kind == NHG_ACT_READY && a.window == tip);
     let mut tkey = 0;
     draw(d, tip, &mut tkey, 60, 30);
-    ready(d, tip);
+    present_ready(d, tip);
     let n = rec.wait_node(tip, |n| n.contains("\"buffer\":{\"h\":30,\"w\":60}"));
     assert!(n.contains("\"position\":[26,11]"), "{n}");
     (rec, d, top, tip, tkey)
@@ -553,9 +559,10 @@ mod tip {
         let mut w = tip;
         assert_eq!(tip_show(d, &mut w, top, at(40, 40), (0, 0)), 0, "no redraw");
         assert_eq!(w, tip, "the same popup");
-        // the reposition's configure is acked with a bare commit
-        until(d, |a| a.kind == NHG_ACT_RESIZE && a.window == tip);
-        ready(d, tip);
+        // the reposition's configure is acked with a bare commit, once it is in (no action marks it; the shown tip's
+        // frame callbacks are READYs too)
+        settle(d);
+        present_ready(d, tip);
         rec.wait_node(tip, |n| n.contains("\"position\":[46,31]"));
         let commits: Vec<String> = log(&rec, seq).into_iter().filter(|c| of(c, tip)).collect();
         assert!(!commits.is_empty(), "the move committed");
@@ -579,9 +586,10 @@ mod tip {
         );
         assert_eq!(w, tip, "the same id");
         frame(d, tip, |f| assert_eq!(f.flags, NHG_FRAME_TIP));
-        until(d, |a| a.kind == NHG_ACT_RESIZE && a.window == tip);
+        // the new popup's configure in (no action marks it; the old one's frame callbacks are READYs too)
+        settle(d);
         draw(d, tip, &mut key, 60, 30);
-        ready(d, tip);
+        present_ready(d, tip);
         let n = rec.wait_node(tip, |n| n.contains("\"position\":[46,31]"));
         assert!(n.contains("\"buffer\":{\"h\":30,\"w\":60}"), "{n}");
         close(d);

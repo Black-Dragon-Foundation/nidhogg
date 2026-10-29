@@ -113,7 +113,9 @@ tsan_lane() {
     IFS='|' read -ra parts <<< "${TEST//\\/}"
     for p in "${parts[@]}"; do [ -n "$p" ] && filters+=("$p"); done
   fi
-  export RUSTFLAGS=-Zsanitizer=thread
+  # rustix goes through libc here: its raw syscalls map and unmap the shm buffers behind TSan's back, so a buffer
+  # at an address another library's mapping (libxkbcommon's Compose file) had used reads as racing with that mmap
+  export RUSTFLAGS="-Zsanitizer=thread --cfg rustix_use_libc"
   cargo test --offline -Zbuild-std --target "$host" "${cfg[@]}" --no-run >"$CARGO_TARGET_DIR.build.log" 2>&1 \
     || unavailable "the sanitized build failed: $(grep -m1 -E '^error' "$CARGO_TARGET_DIR.build.log")"
   # --tests: rustdoc does not get RUSTFLAGS, so a doc test would mix sanitizer settings

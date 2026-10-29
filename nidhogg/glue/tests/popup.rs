@@ -80,6 +80,11 @@ fn draw(d: *mut NhgDisplay, window: u64, w: i32, h: i32) {
 /// `window`'s `READY` action, then the inline present it asks for.
 fn ready(d: *mut NhgDisplay, window: u64) -> i32 {
     until(d, |a| a.kind == NHG_ACT_READY && a.window == window);
+    present_ready(d, window)
+}
+
+/// The inline present a `READY` action of `window` asks for.
+fn present_ready(d: *mut NhgDisplay, window: u64) -> i32 {
     // SAFETY: a live display; no surfaces.
     unsafe { nhg_present(d, window, ptr::null(), 0, NHG_PRESENT_READY, 0) }
 }
@@ -151,9 +156,11 @@ fn shown_popup(rec: &Recorder, d: *mut NhgDisplay, top: u64, flags: u32) -> u64 
     );
     assert_eq!(rc, NHG_OK);
     assert_ne!(p, 0);
-    until(d, |a| a.kind == NHG_ACT_RESIZE && a.window == p);
+    // a popup's configures are the shell's (it acks them; no RESIZE): its first one makes it ready, and it is drawn
+    // then
+    until(d, |a| a.kind == NHG_ACT_READY && a.window == p);
     draw(d, p, 60, 30);
-    ready(d, p);
+    present_ready(d, p);
     let n = rec.wait_node(p, |n| n.contains("\"buffer\":{\"h\":30,\"w\":60}"));
     assert!(n.contains("\"position\":[104,54]"), "{n}");
     p
@@ -299,9 +306,10 @@ mod popup {
             assert_eq!(pp.sent, (80, 40));
         });
         // still at the old anchor's corner, as shown: the reposition keeps the gravity and the anchor's size
-        until(d, |a| a.kind == NHG_ACT_RESIZE && a.window == p);
+        // the reposition's configure in (no action marks it; the shown popup's frame callbacks are READYs too)
+        settle(d);
         draw(d, p, 80, 40);
-        ready(d, p);
+        present_ready(d, p);
         let n = rec.wait_node(p, |n| n.contains("\"buffer\":{\"h\":40,\"w\":80}"));
         assert!(n.contains("\"position\":[104,54]"), "{n}");
         // SAFETY: a live display.
@@ -309,9 +317,9 @@ mod popup {
         // shown again: below and left of the new anchor
         let (rc, q) = show(d, (top, top), next, BOTTOM_LEFT, 0, (60, 30));
         assert_eq!(rc, NHG_OK);
-        until(d, |a| a.kind == NHG_ACT_RESIZE && a.window == q);
+        until(d, |a| a.kind == NHG_ACT_READY && a.window == q);
         draw(d, q, 60, 30);
-        ready(d, q);
+        present_ready(d, q);
         let n = rec.wait_node(q, |n| n.contains("\"buffer\":{\"h\":30,\"w\":60}"));
         assert!(n.contains("\"position\":[40,70]"), "{n}");
         close(d);

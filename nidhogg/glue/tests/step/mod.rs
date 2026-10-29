@@ -43,7 +43,9 @@ pub fn step(d: *mut NhgDisplay, flags: u32) -> (i32, Vec<NhgAction>) {
     (rc, v)
 }
 
-/// Step until an action satisfies `want` (within 5 s); every action seen, the awaited one last.
+/// Step until an action satisfies `want` (within 5 s); every action seen, the awaited one last.  A failure names the
+/// caller's line and the (kind, window) of every action that came instead.
+#[track_caller]
 pub fn until(d: *mut NhgDisplay, want: impl Fn(&NhgAction) -> bool) -> Vec<NhgAction> {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut seen = Vec::new();
@@ -58,7 +60,11 @@ pub fn until(d: *mut NhgDisplay, want: impl Fn(&NhgAction) -> bool) -> Vec<NhgAc
             }
         }
         if rc == 0 {
-            assert!(Instant::now() < deadline, "the awaited action never came");
+            assert!(
+                Instant::now() < deadline,
+                "the awaited action never came; came instead: {:?}",
+                seen.iter().map(|a| (a.kind, a.window)).collect::<Vec<_>>()
+            );
             // SAFETY: a live display.
             readable_within(unsafe { nhg_fd(d) }, 50);
         }
@@ -107,6 +113,7 @@ pub fn window(d: *mut NhgDisplay) -> u64 {
 }
 
 /// The window's first configure taken and applied (no resize), its ack recorded.
+#[track_caller]
 pub fn configured(d: *mut NhgDisplay, id: u64) {
     until(d, |a| a.kind == NHG_ACT_RESIZE && a.window == id);
     step(d, 0);

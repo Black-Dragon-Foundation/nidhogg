@@ -298,6 +298,11 @@ pub fn offer(state: &mut State, req: &Value) -> Value {
     let Some(ptr) = state.seat.get_pointer() else {
         return err("this profile's seat has no pointer");
     };
+    if state.dnd.active {
+        // the foreign drag before this one left the window (`dnd_leave`) but still holds the button: it ends over
+        // nothing first, as a new drag cannot start while the old one is held
+        dropped(state);
+    }
     if ptr.is_grabbed() {
         return err("a pointer grab is active");
     }
@@ -452,6 +457,13 @@ pub fn drag_log(state: &State) -> Value {
         .drags
         .iter()
         .map(|d| {
+            // a drag whose client destroyed its source (it gave the drag up) is cancelled: Smithay reports no drop
+            let gone = d.source.as_ref().is_some_and(|s| !s.is_alive());
+            let result = if d.result == "started" && gone {
+                "cancelled"
+            } else {
+                d.result
+            };
             json!({
                 "serial_kind": d.kind,
                 "origin": d.origin,
@@ -459,7 +471,7 @@ pub fn drag_log(state: &State) -> Value {
                 "actions": d.actions,
                 "icon": d.icon,
                 "sends": d.sends,
-                "result": d.result,
+                "result": result,
             })
         })
         .collect();
