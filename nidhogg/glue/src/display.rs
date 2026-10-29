@@ -178,10 +178,10 @@ impl Display {
     }
 
     /// The shell's backend, the backings and the presenting mode, borrowed at once.
-    pub(crate) fn presenting(&mut self) -> (&mut dyn ShellBackend, &Backings, &mut Presenting) {
+    pub(crate) fn presenting(&mut self) -> (&mut dyn ShellBackend, &mut Backings, &mut Presenting) {
         // SAFETY: the backend lives as long as the display, and this is its one borrow while `self` is borrowed.
         let backend = unsafe { self.shell.as_mut() };
-        (backend, &self.backings, &mut self.presenting)
+        (backend, &mut self.backings, &mut self.presenting)
     }
 
     /// Register `window` (a shell window id) as a frame of kind `flags`.  A window forgotten earlier may be
