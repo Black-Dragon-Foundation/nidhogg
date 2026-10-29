@@ -11,8 +11,7 @@ mod abi {
         NhgDisplay, nhg_abi_version, nhg_close, nhg_dispatch_main, nhg_fd, nhg_open,
     };
     use nhglue::ffi::{
-        nhg_backing, nhg_backing_forget, nhg_damage, nhg_damage_all, nhg_layer_ensure, nhg_scroll,
-        nhg_snapshot,
+        nhg_backing, nhg_backing_forget, nhg_damage, nhg_damage_all, nhg_layer_ensure, nhg_snapshot,
     };
     use nhglue::ffi::{
         nhg_bell, nhg_bench_full_redraw, nhg_display_info, nhg_pointer_visible,
@@ -307,7 +306,6 @@ PROTO (nhg_layer_ensure, int32_t (NhgDisplay *, uint64_t *, const NhgFrameGeom *
 PROTO (nhg_backing, int32_t (NhgDisplay *, uint64_t, const NhgFrameGeom *, NhgBacking *));
 PROTO (nhg_damage, int32_t (NhgDisplay *, uint64_t, const NhgRect *, size_t));
 PROTO (nhg_damage_all, int32_t (NhgDisplay *, uint64_t));
-PROTO (nhg_scroll, int32_t (NhgDisplay *, uint64_t, uint64_t, NhgRect, int32_t));
 PROTO (nhg_snapshot, int32_t (NhgDisplay *, uint64_t, NhgBacking *));
 PROTO (nhg_backing_forget, int32_t (NhgDisplay *, uint64_t));
 PROTO (nhg_present, int32_t (NhgDisplay *, uint64_t, const NhgSurface *, size_t, uint32_t, uint64_t));
@@ -351,7 +349,6 @@ PROTO (nhg_frame_outputs, int32_t (NhgDisplay *, uint64_t, uint64_t *, size_t, s
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *const NhgRect, usize) -> i32 =
             nhg_damage;
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_damage_all;
-        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u64, NhgRect, i32) -> i32 = nhg_scroll;
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *mut NhgBacking) -> i32 = nhg_snapshot;
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_backing_forget;
         // presenting
