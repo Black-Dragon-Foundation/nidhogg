@@ -23,7 +23,7 @@
 ;; value (`nhwl--xdnd-value', set by `gui-set-selection') is converted
 ;; for every target when the drag starts, through
 ;; `selection-converter-alist', as X converts a selection it owns.  The
-;; drag itself is `nhwl--drag-start' (nhwlselect.c): the glue runs it and
+;; drag itself is `nhwl--drag-start' (nhwlfns.c): the glue runs it and
 ;; C waits for its end.
 ;;
 ;; This file is loaded at dump time and uses no `cl-lib' or `pcase'.
@@ -36,7 +36,7 @@
 
 (defvar selection-converter-alist)
 (defvar nhwl--xdnd-value)
-(declare-function nhwl--drag-start "nhwlselect.c"
+(declare-function nhwl--drag-start "nhwlfns.c"
                   (frame items-fn offered preferred allow-current return-frame))
 
 (defun nhwl-dnd--actions (action)

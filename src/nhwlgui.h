@@ -16,7 +16,9 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 
-/* Adapted from pgtkgui.h: the X-isms the shared code expects, without GDK.  */
+/* Adapted from pgtkgui.h: the X-isms the shared code expects, without GDK.
+   Upstream commit: a360712c9d272d950d8d8255ef74570f7e90b7d9 (GNU Emacs
+   emacs-31.1).  */
 
 #ifndef __NHWLGUI_H__
 #define __NHWLGUI_H__

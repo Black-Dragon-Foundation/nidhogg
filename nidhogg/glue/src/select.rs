@@ -1,7 +1,7 @@
 //! The clipboard and the primary selection: which of them this process owns, and the reads that wait for another
 //! client's.
 //!
-//! Moved from `src/nhwlselect.c` (`nhwl_sel_ours`, `nhwl_selection_changed`, the shell calls under the `pgtk-*-selection`
+//! Moved from the selection primitives of `src/nhwlfns.c` (`nhwl_sel_ours`, `nhwl_selection_changed`, the shell calls under the `pgtk-*-selection`
 //! DEFUNs), without a change in behaviour.  C still converts Lisp to bytes and back: it passes the MIME types and bytes
 //! it offers, and takes a read's bytes as plain data.
 //!
@@ -136,7 +136,7 @@ impl Select {
 }
 
 /// Where in `types` (MIME types, each followed by a NUL) the type to read starts: `name` when it is one of them, else
-/// the first of `prefs` that is.  Moved from `Fpgtk_get_selection_internal` (`src/nhwlselect.c`), whose `member`
+/// the first of `prefs` that is.  Moved from `Fpgtk_get_selection_internal` (`src/nhwlfns.c`), whose `member`
 /// compared the strings' bytes.
 pub fn pick_at(types: &[u8], name: &[u8], prefs: &[&[u8]]) -> Option<usize> {
     let find = |want: &[u8]| {
