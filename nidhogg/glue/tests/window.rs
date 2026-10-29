@@ -215,8 +215,8 @@ fn shown_tip(profile: &str) -> (Recorder, *mut NhgDisplay, u64, u64, u64) {
             (60, 30, 120)
         );
     });
-    // its first configure, then its picture: below and right of (25, 10) logical
-    until(d, |a| a.kind == NHG_ACT_RESIZE && a.window == tip);
+    // its first configure (the shell's: it acks a popup's, no RESIZE), then its picture: below and right of (25, 10)
+    // logical
     let mut tkey = 0;
     draw(d, tip, &mut tkey, 60, 30);
     ready(d, tip);
@@ -554,7 +554,6 @@ mod tip {
         assert_eq!(tip_show(d, &mut w, top, at(40, 40), (0, 0)), 0, "no redraw");
         assert_eq!(w, tip, "the same popup");
         // the reposition's configure is acked with a bare commit
-        until(d, |a| a.kind == NHG_ACT_RESIZE && a.window == tip);
         ready(d, tip);
         rec.wait_node(tip, |n| n.contains("\"position\":[46,31]"));
         let commits: Vec<String> = log(&rec, seq).into_iter().filter(|c| of(c, tip)).collect();
@@ -579,7 +578,6 @@ mod tip {
         );
         assert_eq!(w, tip, "the same id");
         frame(d, tip, |f| assert_eq!(f.flags, NHG_FRAME_TIP));
-        until(d, |a| a.kind == NHG_ACT_RESIZE && a.window == tip);
         draw(d, tip, &mut key, 60, 30);
         ready(d, tip);
         let n = rec.wait_node(tip, |n| n.contains("\"position\":[46,31]"));

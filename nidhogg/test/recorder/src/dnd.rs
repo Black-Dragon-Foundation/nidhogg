@@ -428,6 +428,13 @@ pub fn drag_log(state: &State) -> Value {
         .drags
         .iter()
         .map(|d| {
+            // a drag whose client destroyed its source (it gave the drag up) is cancelled: Smithay reports no drop
+            let gone = d.source.as_ref().is_some_and(|s| !s.is_alive());
+            let result = if d.result == "started" && gone {
+                "cancelled"
+            } else {
+                d.result
+            };
             json!({
                 "serial_kind": d.kind,
                 "origin": d.origin,
@@ -435,7 +442,7 @@ pub fn drag_log(state: &State) -> Value {
                 "actions": d.actions,
                 "icon": d.icon,
                 "sends": d.sends,
-                "result": d.result,
+                "result": result,
             })
         })
         .collect();
