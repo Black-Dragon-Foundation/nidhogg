@@ -361,5 +361,84 @@ quiet period and scrolling again.  The trace rules (errors, acks, sync, viewport
       (kill-buffer buf)
       (delete-other-windows))))
 
+;; Reconnect while presenting.  The compositor restarts while a window scrolls on a layer of its own and the user
+;; types: the presenter sends nothing from the loss until each frame's new configure, the layer goes at the loss, and
+;; once `reconnected' has run the frame shows its backing again; the next full-window scroll makes a layer on the new
+;; connection.  The restart helpers are the frames-survive rows' (nhwl-gui-w2-tests.el, loaded with `--files'
+;; 'nhwl-gui*-tests.el').  These rows end the first connection, so they run last; the gate runs them with `--daemon'
+;; and the trace rules `errors,unconfigured,sync,held-reuse' on the second connection.
+
+(declare-function nhwl-gui--restart "nhwl-gui-w2-tests")
+(declare-function nhwl-gui--reconnected "nhwl-gui-w2-tests")
+(declare-function nhwl-gui--connection-note "nhwl-gui-w2-tests")
+(defvar nhwl-gui--connection-log)
+
+(defun nhwl-gui--scroll-and-type (n)
+  "Scroll the selected window N times (twelve up, eight down, over), typing a character every fifth time, reading
+events between steps."
+  (dotimes (i n)
+    (if (< (% i 20) 12) (scroll-up 1) (scroll-down 1))
+    (when (zerop (% i 5)) (insert "k"))
+    (redisplay t)
+    (nhwl-gui--pump 0.02)))
+
+(ert-deftest nhwl-gui/compositor-restart-while-scrolling ()
+  "The recorder restarts (keep-socket, down 300 ms) while a window with a layer of its own scrolls and the user types:
+the frame stays, the hook runs `reconnecting' then `reconnected', the composite equals the backing after it, and a
+full-window scroll makes a layer again, with the composite still equal to the backing."
+  :tags '(runs-last)
+  (skip-unless (and (nhwl-gui--layers-p) (fboundp 'nhwl-gui--restart) (fboundp 'nhwl-gui--reconnected)))
+  (nhwl-gui--with-layer-buffer
+   (lambda ()
+     (let ((f (selected-frame)) (timer nil))
+       (should (= (nhwl-gui--scroll-promote) 1))
+       (setq nhwl-gui--connection-log nil)
+       (add-hook 'nhwl-display-connection-functions #'nhwl-gui--connection-note)
+       (unwind-protect
+           (progn
+             (setq timer (run-at-time 0.2 nil (lambda () (nhwl-gui--restart "keep-socket" :down_ms 300))))
+             (nhwl-gui--scroll-and-type 60)
+             (should (nhwl-gui--reconnected))
+             (should (equal nhwl-gui--connection-log '(reconnecting reconnected))))
+         (when timer (cancel-timer timer))
+         (remove-hook 'nhwl-display-connection-functions #'nhwl-gui--connection-note))
+       (should (frame-live-p f))
+       (redisplay t)
+       (gui-runner-wait-settled)
+       (should (equal (nhwl-gui--grab-matches-snapshot) '(0 . 0)))
+       (should (= (nhwl-gui--scroll-promote) 1))
+       (gui-runner-wait-settled)
+       (should (equal (nhwl-gui--grab-matches-snapshot) '(0 . 0)))))))
+
+(ert-deftest nhwl-gui/live-kwin-restart-while-scrolling ()
+  "KWin restarts (its wrapper keeps the socket) while a window scrolls on a layer and the user types: Nidhogg
+reconnects and goes on scrolling.  The trace rules errors, unconfigured, sync and held-reuse judge the second
+connection."
+  :tags '(runs-last)
+  (skip-unless (and (nhwl-gui--live-p) (not (getenv "GLITNIR_GUI_RECORDER")) (nhwl-gui--nhwl-frames)
+                    (equal (getenv "GLITNIR_GUI_COMPOSITOR") "kwin") (gui-runner-restart-available-p)
+                    (fboundp 'nhwl-gui--reconnected)))
+  (let ((buf (generate-new-buffer " *nhwl-live-restart*")) (f (selected-frame)))
+    (setq nhwl-gui--connection-log nil)
+    (add-hook 'nhwl-display-connection-functions #'nhwl-gui--connection-note)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buf)
+          (dotimes (i 400) (insert (format "line %03d of the live restart row\n" i)))
+          (goto-char (point-min))
+          (nhwl-gui--live-settle 0.5)
+          (nhwl-gui--scroll-and-type 20)
+          ;; the script stops KWin and starts it again while the window scrolls
+          (start-process "nhwl-kwin-restart" nil (getenv "NHWL_GUI_RESTART"))
+          (nhwl-gui--scroll-and-type 100)
+          (should (nhwl-gui--reconnected 20))
+          (nhwl-gui--scroll-and-type 60)
+          (nhwl-gui--live-settle 0.5)
+          (should (frame-live-p f)))
+      (remove-hook 'nhwl-display-connection-functions #'nhwl-gui--connection-note)
+      (kill-buffer buf)
+      (delete-other-windows))))
+
 (provide 'nhwl-gui-w3-tests)
 ;;; nhwl-gui-w3-tests.el ends here

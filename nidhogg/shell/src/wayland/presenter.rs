@@ -58,6 +58,14 @@ pub(crate) struct Wire {
     pub(crate) rqh: QueueHandle<ReaderState>,
 }
 
+impl Wire {
+    /// The connection went (a hangup the shell reconnects from, or the loss): nothing is sent on it any more.  The
+    /// reader marks it before it signals `Shared::gone`, so a tree checked after that commits nothing on it.
+    pub(crate) fn gone(&self) -> bool {
+        self.shared.reconnect_pending() || self.shared.is_closed()
+    }
+}
+
 /// The presenter's counters since open; any thread adds to them.
 #[derive(Default)]
 pub struct Counters {
