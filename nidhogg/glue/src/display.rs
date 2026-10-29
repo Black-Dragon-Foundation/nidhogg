@@ -55,6 +55,8 @@ pub struct Display {
     pub(crate) monitors: crate::query::Monitors,
     /// The title bars' style (`csd.rs`).
     pub(crate) csd_style: crate::csd::Style,
+    /// The child frames' stacking counters (`child.rs`).
+    pub(crate) stacking: crate::child::Stacking,
     /// The wheel's accumulator (`scroll.rs`).
     pub(crate) scroll: crate::scroll::Scroll,
     /// The drop target (`dnd.rs`).
@@ -103,6 +105,7 @@ impl NhgDisplay {
                 select: Default::default(),
                 monitors: Default::default(),
                 csd_style: Default::default(),
+                stacking: Default::default(),
                 scroll: Default::default(),
                 dnd: Default::default(),
                 touch: Default::default(),

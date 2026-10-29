@@ -426,8 +426,15 @@ nhg_export! {
             // SAFETY: non-null, with `n` readable surfaces (the caller's promise).
             _ => unsafe { std::slice::from_raw_parts(s, n) },
         };
+        // C lists child frames unsorted: a list to publish is checked as given, then put in stacking order
+        let list = if flags & present::NHG_PRESENT_BACKSTOP != 0 {
+            present::drawable(root, list)?;
+            crate::child::stack_order(state, list)
+        } else {
+            list.to_vec()
+        };
         let (backend, backings, presenting) = state.presenting();
-        let out = present::present(backend, backings, presenting, root, list, flags, t_key_ns)?;
+        let out = present::present(backend, backings, presenting, root, &list, flags, t_key_ns)?;
         crate::reconnect::presented(state, root, out);
         Ok(out)
     }
@@ -841,13 +848,13 @@ nhg_export! {
 }
 
 nhg_export! {
-    /// The cursor rectangle `r` in `window`, in logical pixels of its surface.  The compositor is told only when it
-    /// changed.
+    /// The cursor rectangle `r` of `window`'s frame, device pixels in its native area, for its tree's root at
+    /// `scale120` (`ime::cursor`).  The compositor is told only when it changed.
     ///
     /// # Safety
     /// `d` is null or a live display.
-    fn nhg_im_cursor(d: *mut NhgDisplay, window: u64, r: NhgRect) -> i32 |state| {
-        crate::ime::cursor(state, window, r.x, r.y, r.w, r.h)?;
+    fn nhg_im_cursor(d: *mut NhgDisplay, window: u64, scale120: u32, r: NhgRect) -> i32 |state| {
+        crate::ime::cursor(state, window, scale120, [r.x, r.y, r.w, r.h])?;
         Ok(NHG_OK)
     }
 }
@@ -1221,18 +1228,13 @@ nhg_export! {
 }
 
 nhg_export! {
-    /// `window` was raised or lowered: `siblings` holds its parent's `n` child windows bottom to top as C now stacks
-    /// them, `window` among them; `z_group` is the frame's z-group.  Neither reads nor writes pixels.
+    /// `window` was raised (`raise` nonzero) or lowered among its siblings, with `z_group`, the frame's z-group
+    /// (`child::raise`).  Neither reads nor writes pixels.
     ///
     /// # Safety
-    /// `d` is null or a live display; `siblings` holds `n` readable window ids.
-    fn nhg_child_stack(d: *mut NhgDisplay, window: u64, siblings: *const u64, n: usize, z_group: i32) -> i32 |state| {
-        if siblings.is_null() || n == 0 {
-            return Err(GlueError::Arg);
-        }
-        // SAFETY: non-null, with `n` readable ids (the caller's promise).
-        let s = unsafe { std::slice::from_raw_parts(siblings, n) };
-        crate::child::stack(state, window, s, z_group)?;
+    /// `d` is null or a live display.
+    fn nhg_child_raise(d: *mut NhgDisplay, window: u64, raise: i32, z_group: i32) -> i32 |state| {
+        crate::child::raise(state, window, raise != 0, z_group)?;
         Ok(NHG_OK)
     }
 }

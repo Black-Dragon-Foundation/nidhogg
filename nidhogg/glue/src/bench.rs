@@ -152,10 +152,15 @@ pub fn full_redraw(
 ) -> Result<NhgBenchOut, GlueError> {
     let root = s.first().ok_or(GlueError::Arg)?;
     state.frame(root.window)?;
+    // C lists child frames unsorted: a list `present` takes goes in stacking order (one it refuses stays as given)
+    let s = match crate::present::drawable(root.window, s) {
+        Ok(_) => crate::child::stack_order(state, s),
+        Err(_) => s.to_vec(),
+    };
     run(
         &mut Tree {
             state,
-            s,
+            s: &s,
             commits: 0,
             publish: Duration::ZERO,
         },

@@ -242,10 +242,8 @@ struct nhwl_output
   int cr_width, cr_height;
   uint64_t cr_gen;		/* counts the backing's creations */
   struct nhwl_csd csd;
-  /* On a child frame: its stacking among its siblings (larger is higher; the tree walk lists children by it), and
-     the chrome `glitnir--resolve' last gave it (logical pixels), pushed again when its window is made anew.  Its
-     layout, margin, position and mapping are the glue's (child.rs).  */
-  int child_z;
+  /* On a child frame: the chrome `glitnir--resolve' last gave it (logical pixels), pushed again when its window is
+     made anew.  Its layout, margin, position, mapping and stacking are the glue's (child.rs).  */
   NhgChrome chrome;
   /* The frame is a popup frame (its `nhwl-popup' parameter, given at creation): its window is a popup of its
      parent's, made while it is shown; the popup's state is the glue's (popup.rs).  */
@@ -524,7 +522,6 @@ extern struct frame *nhwl_window_frame (uint64_t);
 extern bool nhwl_child_p (struct frame *);
 extern struct frame *nhwl_tree_root (struct frame *);
 extern void nhwl_tip_dismissed (struct frame *);
-extern void nhwl_child_describe (struct frame *, NhgWindowDesc *);
 extern void nhwl_child_created (struct frame *);
 extern void nhwl_child_set_visible (struct frame *, bool);
 extern void nhwl_child_reposition (struct frame *);
@@ -537,7 +534,6 @@ extern void nhwl_set_no_accept_focus (struct frame *, Lisp_Object,
 extern struct frame *nhwl_focus_target (struct frame *);
 extern void nhwl_child_focus (struct frame *);
 extern void nhwl_child_focus_gone (struct frame *, bool);
-extern void nhwl_native_origin (struct frame *, int *, int *);
 
 /* nhwlfns.c: popup frames for menus (their windows are the glue's, popup.rs).  */
 extern bool nhwl_popup_frame_p (struct frame *);
