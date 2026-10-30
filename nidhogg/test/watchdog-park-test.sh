@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # The stall watchdog's park protocol on real threads (src/nidhogg-watchdog-park.h).
 #
-#   bash nidhogg/test/watchdog-park-test.sh [--cycles N] [--tsan-cycles N]
+#   bash nidhogg/test/watchdog-park-test.sh [--container fedora-45] [--cycles N] [--tsan-cycles N]
 #
-# Needs gcc with ThreadSanitizer (libtsan), nothing from an Emacs build; any container with gcc and
-# libtsan runs it.
+# Needs gcc with ThreadSanitizer (libtsan), nothing from an Emacs build; --container installs both in a
+# throwaway Fedora container, so the host needs neither.
 # It compiles the header's steps with a two-thread driver: a main thread that flips busy/waiting
 # (default 10^7 cycles) against a monitor that parks with the same steps the watchdog's monitor uses.
 # After each busy edge the main thread waits until the monitor has seen the span. Every park is a
@@ -20,14 +20,24 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 H=$root/src/nidhogg-watchdog-park.h
-cycles=10000000 tsan_cycles=100000
+cycles=10000000 tsan_cycles=100000 distro=
 while [ $# -gt 0 ]; do
   case "$1" in
     --cycles) cycles=$2; shift 2 ;;
     --tsan-cycles) tsan_cycles=$2; shift 2 ;;
-    *) echo "usage: watchdog-park-test.sh [--cycles N] [--tsan-cycles N]" >&2; exit 2 ;;
+    --container) distro=$2; shift 2 ;;
+    *) echo "usage: watchdog-park-test.sh [--container fedora-45] [--cycles N] [--tsan-cycles N]" >&2; exit 2 ;;
   esac
 done
+# --container: the same script inside a memory-capped Fedora container that installs gcc and libtsan itself
+# (the host needs neither); the checkout is mounted read-only.
+if [ -n "$distro" ]; then
+  command -v podman >/dev/null 2>&1 || { echo "park test: podman not found" >&2; exit 1; }
+  exec podman run --rm --name "nhpark-$$" --memory 2g --memory-swap 2g -v "$root:/src:ro,z" \
+    "registry.fedoraproject.org/fedora:${distro#fedora-}" bash -euo pipefail -c \
+    'dnf -y -q --setopt=install_weak_deps=False install gcc libtsan glibc-devel >/dev/null && exec bash /src/nidhogg/test/watchdog-park-test.sh "$@"' \
+    _ --cycles "$cycles" --tsan-cycles "$tsan_cycles"
+fi
 for f in nh_wd_park_busy nh_wd_park_must_wait nh_wd_park_leave nh_wd_park_model_run; do
   grep -q "^$f " "$H" 2>/dev/null || { echo "missing nidhogg-watchdog-park.h steps ($f)"; exit 1; }
 done

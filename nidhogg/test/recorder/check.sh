@@ -7,13 +7,15 @@
 # container may use the network to fetch crates.  --build leaves the release binary at <target>/release/nh-recorder.
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-DISTRO="" TEST="" BUILD=0 INNER=0
-usage() { echo "usage: check.sh [--container DISTRO] [--test NAME[\|NAME...]] [--build]" >&2; exit 2; }
+DISTRO="" TEST="" BUILD=0 INNER=0 REPEAT=1 FILTER=""
+usage() { echo "usage: check.sh [--container DISTRO] [--test NAME[\|NAME...]] [--build] [--repeat N] [--filter NAME]" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case $1 in
     --container) [ $# -ge 2 ] || usage; DISTRO=$2; shift 2 ;;
     --test) [ $# -ge 2 ] || usage; TEST=$2; shift 2 ;;
     --build) BUILD=1; shift ;;
+    --repeat) [ $# -ge 2 ] || usage; REPEAT=$2; shift 2 ;;
+    --filter) [ $# -ge 2 ] || usage; FILTER=$2; shift 2 ;;
     --inner) INNER=1; shift ;;
     *) usage ;;
   esac
@@ -35,7 +37,7 @@ if [ -n "$DISTRO" ] && [ "$INNER" = 0 ]; then
   trap cleanup EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  inner="dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install cargo rust clippy rustfmt gcc pixman-devel libxkbcommon-devel wayland-devel diffutils >/dev/null && bash /crate/check.sh --inner${TEST:+ --test $(printf '%q' "$TEST")}"
+  inner="dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install cargo rust clippy rustfmt gcc pixman-devel libxkbcommon-devel wayland-devel diffutils >/dev/null && bash /crate/check.sh --inner${TEST:+ --test $(printf '%q' "$TEST")} --repeat $REPEAT${FILTER:+ --filter $(printf '%q' "$FILTER")}"
   [ "$BUILD" = 1 ] && inner="$inner --build"
   podman run --rm --name "$NAME" --memory 3g --memory-swap 3g \
     -v "$HERE:/crate:ro,z" -v "$HOME_DIR:/cargo-home:Z" -v "$TARGET_DIR:/cargo-target:Z" "${EXTRA[@]}" \
@@ -61,7 +63,10 @@ if [ -n "$TEST" ]; then
   IFS='|' read -ra names <<< "${TEST//\\|/|}"
   for n in "${names[@]}"; do TESTARGS+=(--test "$n"); done
 fi
-cargo test --locked "${TESTARGS[@]}"                           || fail test
+# --repeat N: the same run N times (a flake hunt), --filter NAME: only the tests whose name has it
+for ((i = 1; i <= REPEAT; i++)); do
+  cargo test --locked "${TESTARGS[@]}" ${FILTER:+-- "$FILTER"}   || fail "test (run $i of $REPEAT)"
+done
 if command -v cargo-deny >/dev/null 2>&1; then
   cargo deny check licenses bans sources                       || fail deny
 else
