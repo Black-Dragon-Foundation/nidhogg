@@ -215,7 +215,7 @@ static void
 nhwl_connection_lost (struct nhwl_display_info *dpyinfo, const char *why)
 {
   struct terminal *t = dpyinfo->terminal, *p;
-  Lisp_Object tail, frame;
+  Lisp_Object tail, frame, buf = Fcurrent_buffer ();
   bool other = false;
 
   FOR_EACH_FRAME (tail, frame)
@@ -254,12 +254,12 @@ nhwl_connection_lost (struct nhwl_display_info *dpyinfo, const char *why)
   nhwl_lost_popups (dpyinfo);
   nhwl_connection_hook (dpyinfo, Qnhwl_lost);
 
-  FOR_EACH_FRAME (tail, frame)
-    if (FRAME_NHWL_P (XFRAME (frame))
-	&& FRAME_DISPLAY_INFO (XFRAME (frame)) == dpyinfo
-	&& FRAME_LIVE_P (XFRAME (frame)))
+  t->read_socket_hook = NULL;	/* delete_frame reads input: no re-entry */
+  FOR_EACH_FRAME (tail, frame)	/* a parent's deletion kills its children */
+    if (FRAME_LIVE_P (XFRAME (frame)) && FRAME_NHWL_P (XFRAME (frame))
+	&& FRAME_DISPLAY_INFO (XFRAME (frame)) == dpyinfo)
       delete_frame (frame, Qnoelisp);
-
+  Fset_buffer (buf);		/* the caller (call-process) may be inserting */
   /* Deleting the last frame deletes the terminal as well.  */
   for (p = terminal_list; p; p = p->next_terminal)
     if (p == t)
