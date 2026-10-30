@@ -167,22 +167,20 @@ arrival_from_timestamp (uint64_t ts_ms, uint64_t now)
   return a < now ? now - a : now;
 }
 
-/* Whether EV's timestamp is CLOCK_MONOTONIC milliseconds: an event on a
-   pgtk frame (GDK's time) or on a native shell frame (the compositor's
-   time, or the shell's own CLOCK_MONOTONIC for a key repeat).  */
 static bool
-event_time_monotonic_p (const struct input_event *ev)
+event_on_pgtk_p (const struct input_event *ev)
 {
   Lisp_Object fw = ev->frame_or_window;
   if (WINDOWP (fw))
     fw = WINDOW_FRAME (XWINDOW (fw));
-  if (!FRAMEP (fw))
-    return false;
 #ifdef HAVE_NHWL
-  if (FRAME_NHWL_P (XFRAME (fw)))
+  /* A native shell frame's timestamp is CLOCK_MONOTONIC milliseconds
+     too (the compositor's time, or the shell's own for a key repeat),
+     as GDK's is on a pgtk frame.  */
+  if (FRAMEP (fw) && FRAME_NHWL_P (XFRAME (fw)))
     return true;
 #endif
-  return FRAME_PGTK_P (XFRAME (fw));
+  return FRAMEP (fw) && FRAME_PGTK_P (XFRAME (fw));
 }
 
 /* Input arrived at ARRIVAL: the first in the span marks it felt.  */
@@ -201,7 +199,7 @@ nh_wd_input_stored (const struct input_event *ev)
   if (!nh_wd_on || !input_kind_p (ev->kind))
     return;
   uint64_t now = nh_wd_now_ns ();
-  stored_arrival = (ev->timestamp != 0 && event_time_monotonic_p (ev)
+  stored_arrival = (ev->timestamp != 0 && event_on_pgtk_p (ev)
 		    ? arrival_from_timestamp (ev->timestamp, now) : now);
   input_note (stored_arrival);
 }
