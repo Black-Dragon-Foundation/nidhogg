@@ -234,6 +234,8 @@ script() {
   [ -z "$SANITIZE" ] || echo 'export ASAN_OPTIONS=detect_leaks=0:abort_on_error=0:detect_stack_use_after_return=0 UBSAN_OPTIONS=print_stacktrace=1'
   # the 100 MB-class workers rows read this to size themselves down under the sanitizers (nidhogg-workers--test-size-scale)
   [ -z "${NIDHOGG_WORKERS_TEST_SIZE_SCALE:-}" ] || printf 'export NIDHOGG_WORKERS_TEST_SIZE_SCALE=%q\n' "$NIDHOGG_WORKERS_TEST_SIZE_SCALE"
+  # where the test grammars are, inside the container (the pre-flight mounts them): the treesit rows skip without them
+  [ -z "${NIDHOGG_TEST_GRAMMARS:-}" ] || printf 'export NIDHOGG_TEST_GRAMMARS=%q\n' "$NIDHOGG_TEST_GRAMMARS"
   if [ "$MODE" = container ]; then
     case $DISTRO in
       ubuntu-*|debian-*)
@@ -246,8 +248,9 @@ script() {
     esac
     # Fedora ships the sanitizer runtimes apart from gcc
     if [ -n "$SANITIZE" ]; then case $DISTRO in ubuntu-*|debian-*|arch) ;; *) echo "dnf -y --setopt=install_weak_deps=False install libasan libubsan libtsan" ;; esac; fi
-    # the pre-flight's P5, Fedora only: NIDHOGG_CHECK_RR is the recorder's command, the prefix of each test run
-    [ -z "${NIDHOGG_CHECK_RR:-}" ] || echo "dnf -y --setopt=install_weak_deps=False install rr"
+    # the pre-flight, Fedora only: packages only its tests need (gnutls-serv), and rr for P5; NIDHOGG_CHECK_RR is the
+    # recorder's command, the prefix of each test run.  Not in deps/: the builds' caches are keyed on that file
+    [ -z "${NIDHOGG_CHECK_PACKAGES:-}${NIDHOGG_CHECK_RR:-}" ] || echo "dnf -y --setopt=install_weak_deps=False install ${NIDHOGG_CHECK_PACKAGES:-} ${NIDHOGG_CHECK_RR:+rr}"
     [ -z "${NIDHOGG_BUILD_CCACHE:-}" ] || echo 'export CCACHE_DIR=/ccache CCACHE_COMPILERCHECK=content CCACHE_MAXSIZE=500M CC="ccache gcc"; ccache -z >/dev/null'
   fi
   cat <<'BODY'
