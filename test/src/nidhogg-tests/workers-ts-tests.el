@@ -456,6 +456,9 @@ memory.  Of a `let' form ERT keeps the form as written and its value."
       (let ((p (treesit-parser-create 'c nil t)))
         (should (nidhogg-workers--test-ts-start p))
         (workers-ts-tests--done p)
+        ;; Publish the first tree: a done job over older text gives way to
+        ;; the next snapshot, so the next job would be a first parse too.
+        (treesit-parser-root-node p)
         (goto-char (point-max))
         (insert "int w;\n")
         (should (nidhogg-workers--test-ts-start p))
