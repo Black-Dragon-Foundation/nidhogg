@@ -29,6 +29,14 @@ compare() {
     found=1
     g=$(basename "$on" -on.outcomes); g=${g#pkg-}; off="$dir/pkg-$g-off.outcomes"
     if [ ! -f "$off" ]; then echo "COMPARE FAIL $g: no off-mode outcomes"; rc=1; continue; fi
+    # a test with an outcome in one mode and none in the other (a run killed by its timeout loses whole tests) fails the compare
+    cut -f1 "$on" | sort -u > "$t/on-all"; cut -f1 "$off" | sort -u > "$t/off-all"
+    if [ "$(comm -3 "$t/on-all" "$t/off-all" | wc -l)" != 0 ]; then
+      echo "COMPARE FAIL $g: tests with an outcome in one mode only (a killed or cut-short run?):"
+      comm -23 "$t/on-all" "$t/off-all" | sed 's/^/  no off-mode outcome: /'
+      comm -13 "$t/on-all" "$t/off-all" | sed 's/^/  no on-mode outcome: /'
+      rc=1; continue
+    fi
     awk -F'\t' '$2=="failed"{print $1}' "$on" | sort -u > "$t/on"
     awk -F'\t' '$2=="failed"{print $1}' "$off" | sort -u > "$t/off"
     sort -u "$t/off" "$t/exp" > "$t/ok"

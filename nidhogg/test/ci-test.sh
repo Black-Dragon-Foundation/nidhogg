@@ -72,7 +72,12 @@ printf 'a\tpassed\nb\tpassed\nc\tfailed\nd\tpassed\n' > "$d/pkg-x-off.outcomes"
 printf '# c\nb\treason\towner\n' > "$d/exp"
 : > "$d/none"
 ! bash nidhogg/test/pkg-test.sh --compare "$d" --expected "$d/none" >/dev/null || fail "compare passed an on-only failure"
-printf 'a\tpassed\nb\tfailed\nc\tfailed\n' > "$d/pkg-x-on.outcomes"
+printf 'a\tpassed\nb\tfailed\nc\tfailed\nd\tpassed\n' > "$d/pkg-x-on.outcomes"
 bash nidhogg/test/pkg-test.sh --compare "$d" --expected "$d/exp" >/dev/null    || fail "compare failed a failure in both modes or an expected failure"
+# a test with an outcome in one mode only (a killed run) fails, whichever mode lost it
+printf 'a\tpassed\nb\tfailed\n' > "$d/pkg-x-on.outcomes"
+! bash nidhogg/test/pkg-test.sh --compare "$d" --expected "$d/exp" >/dev/null  || fail "compare passed a test missing from the on run"
+printf 'a\tpassed\nb\tfailed\nc\tfailed\n' > "$d/pkg-x-on.outcomes"; printf 'a\tpassed\n' > "$d/pkg-x-off.outcomes"
+! bash nidhogg/test/pkg-test.sh --compare "$d" --expected "$d/exp" >/dev/null  || fail "compare passed tests missing from the off run"
 rm -r "$d"
 exit $rc
