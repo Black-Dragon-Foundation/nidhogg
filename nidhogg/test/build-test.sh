@@ -57,6 +57,8 @@ run NIDHOGG_BUILD_PKG_CACHE=/var/tmp/pc -- --dry-run --container arch
 rcis 0; has "/var/tmp/pc/pacman:/var/cache/pacman/pkg"
 run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n
 rcis 0; has "--with-ns"; has "/Nidhogg.app"; has "P=/tmp/n"; hasnt "podman"
+run -- --dry-run --container fedora-44
+rcis 0; has "cmp -s"
 run -- --dry-run --container fedora-44 --check nidhogg/check-subset.txt
 rcis 0; has "make -C test src/nidhogg-tests"
 run -- --dry-run --container fedora-44 --out dist/x.tar.xz
