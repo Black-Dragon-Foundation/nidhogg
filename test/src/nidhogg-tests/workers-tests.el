@@ -174,14 +174,19 @@ ARGS go before the --eval."
 
 (ert-deftest workers/image-switches-on-by-default ()
   ;; A child Nidhogg with NIDHOGG_WORKERS unset: the image switches are
-  ;; on, in the build's defaults too, and tree-sitter's stay off.
+  ;; on, in the build's defaults too, and tree-sitter's stay off.  The
+  ;; parent may itself run with NIDHOGG_WORKERS=on or off (the suite runs
+  ;; both ways): the child must not inherit it.
   (skip-unless (workers-tests--proc-p))
-  (should (equal (workers-tests--child
-                  '(list nidhogg-workers-images nidhogg-image-defer
-                         (cdr (assq 'nidhogg-workers-images nidhogg-workers--defaults))
-                         (cdr (assq 'nidhogg-image-defer nidhogg-workers--defaults))
-                         nidhogg-workers-treesit nidhogg-treesit-defer))
-                 '(t t t t nil nil))))
+  (let ((process-environment
+         (seq-remove (lambda (e) (string-match-p "\\`NIDHOGG_WORKERS\\(=\\|\\'\\)" e))
+                     process-environment)))
+    (should (equal (workers-tests--child
+                    '(list nidhogg-workers-images nidhogg-image-defer
+                           (cdr (assq 'nidhogg-workers-images nidhogg-workers--defaults))
+                           (cdr (assq 'nidhogg-image-defer nidhogg-workers--defaults))
+                           nidhogg-workers-treesit nidhogg-treesit-defer))
+                   '(t t t t nil nil)))))
 
 (ert-deftest workers/area-files-load ()
   (require 'jsonrpc)
