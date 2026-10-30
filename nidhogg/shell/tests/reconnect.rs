@@ -1090,7 +1090,18 @@ mod reconnect {
         let seq = next_seq(&rec);
         reconnect_within(&mut shell, 3);
         shell.set_compose_delay(0);
-        let again = shell.presenter_tid().expect("the presenter runs again");
+        // the new thread reports its id once it runs
+        let started = Instant::now();
+        let again = loop {
+            if let Some(t) = shell.presenter_tid() {
+                break t;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "the presenter does not run again"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        };
         assert_ne!(again, tid, "the presenter thread was not started again");
         // the new presenter has had its turns: the tree waits for its configure
         std::thread::sleep(Duration::from_millis(50));
