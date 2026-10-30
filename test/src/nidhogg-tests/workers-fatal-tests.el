@@ -98,6 +98,23 @@ seconds.  The plist: `:status' and `:code' (`process-status' and
           (insert ,text)
           (auto-save-mode 1)))
 
+(defun workers-fatal-tests--exit-3 (why worker point &rest forms)
+  "A form that exits the child with code 3, saying WHY on stderr.
+For a row whose job never got where it waits for it: with WHY go the
+values of FORMS, WORKER's counters from `nidhogg-workers-stats' (its
+fallbacks among them) and how many workers are parked at POINT."
+  `(progn
+     (princ (format "nh-wk: exit 3: %s: %S\n" ,why
+                    (list ,@(mapcar (lambda (f) `(cons ',f ,f)) forms)
+                          (cons ',worker
+                                (plist-get (nidhogg-workers-stats)
+                                           ,(intern (format ":%s" worker))))
+                          (cons 'parked
+                                (nidhogg-workers--test-await-paused
+                                 ',point 0 0))))
+            #'external-debugging-output)
+     (kill-emacs 3)))
+
 (defun workers-fatal-tests--auto-saved (dir name)
   "The text of the auto-save file of DIR/NAME, or nil."
   (let ((f (expand-file-name (concat "#" name "#") dir)))
@@ -170,9 +187,11 @@ would for a user at the terminal."
                `(progn
                   ,(workers-fatal-tests--edit file "fatal under lock")
                   (nidhogg-workers--pause-at 'before-done)
-                  (nidhogg-workers--test-job 'nh-blk 0 :pause 'before-done)
-                  (unless (nidhogg-workers--test-await-paused 'before-done 5000)
-                    (kill-emacs 3))
+                  (let ((h (nidhogg-workers--test-job 'nh-blk 0 :pause 'before-done)))
+                    (unless (nidhogg-workers--test-await-paused 'before-done 5000)
+                      ,(workers-fatal-tests--exit-3
+                        "not parked" 'nh-blk 'before-done
+                        'h '(and h (nidhogg-workers--test-job-info h)))))
                   (princ "nh-wk: ready\n")
                   (nidhogg-workers--test-fatal-under-lock 'nh-blk))
                :pty t :mark "nh-wk: ready")))
@@ -193,13 +212,15 @@ would for a user at the terminal."
                          (setq nidhogg-workers--mode 'threads)
                          ,(workers-fatal-tests--edit file "emergency escape")
                          (nidhogg-workers--pause-at 'before-done)
-                         (nidhogg-workers--test-job 'nh-blk 0 :pause 'before-done)
-                         (run-at-time
-                          0 nil
-                          (lambda ()
-                            (if (nidhogg-workers--test-await-paused 'before-done 5000)
-                                (nidhogg-workers--test-fatal-under-lock 'nh-blk 'sigint)
-                              (kill-emacs 3)))))))
+                         (let ((h (nidhogg-workers--test-job 'nh-blk 0 :pause 'before-done)))
+                           (run-at-time
+                            0 nil
+                            (lambda ()
+                              (if (nidhogg-workers--test-await-paused 'before-done 5000)
+                                  (nidhogg-workers--test-fatal-under-lock 'nh-blk 'sigint)
+                                ,(workers-fatal-tests--exit-3
+                                  "not parked" 'nh-blk 'before-done
+                                  'h '(and h (nidhogg-workers--test-job-info h))))))))))
                :pty t :env '("TERM=xterm")
                :mark "nh-wk: holding"
                :answers (workers-fatal-tests--escape-answers))))
@@ -222,7 +243,9 @@ would for a user at the terminal."
                   (nidhogg-workers--pause-at 'before-write)
                   (nidhogg-workers--test-keyboard-auto-save t)
                   (unless (nidhogg-workers--test-await-paused 'before-write 5000)
-                    (kill-emacs 3))
+                    ,(workers-fatal-tests--exit-3
+                      "not parked" 'nh-save 'before-write
+                      '(nidhogg-workers--test-save-jobs)))
                   (princ "nh-wk: ready\n")
                   (nidhogg-workers--test-fatal-under-lock 'nh-save))
                :pty t :mark "nh-wk: ready")))
@@ -243,12 +266,16 @@ would for a user at the terminal."
                   ;; A first save leaves the buffer an arena.
                   (nidhogg-workers--test-keyboard-auto-save t)
                   (unless (nidhogg-workers--test-save-await 5000)
-                    (kill-emacs 3))
+                    ,(workers-fatal-tests--exit-3
+                      "first save not landed" 'nh-save 'before-write
+                      '(nidhogg-workers--test-save-jobs)))
                   (insert " more")
                   (nidhogg-workers--pause-at 'before-write)
                   (nidhogg-workers--test-keyboard-auto-save t)
                   (unless (nidhogg-workers--test-await-paused 'before-write 5000)
-                    (kill-emacs 3))
+                    ,(workers-fatal-tests--exit-3
+                      "not parked" 'nh-save 'before-write
+                      '(nidhogg-workers--test-save-jobs)))
                   (princ "nh-wk: ready\n")
                   (nidhogg-workers--test-fatal-under-lock 'nh-save 'arena))
                :pty t :mark "nh-wk: ready")))
@@ -278,7 +305,9 @@ would for a user at the terminal."
                           (lambda ()
                             (if (not (nidhogg-workers--test-await-paused
                                       'before-write 5000))
-                                (kill-emacs 3)
+                                ,(workers-fatal-tests--exit-3
+                                  "not parked" 'nh-save 'before-write
+                                  '(nidhogg-workers--test-save-jobs))
                               (setq auto-save-hook
                                     (list
                                      (lambda ()
