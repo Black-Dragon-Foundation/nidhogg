@@ -416,23 +416,27 @@ Return the two replies."
 (ert-deftest nhwl-gui/text-renders ()
   ;; recorder only: on headless sway grim's grab and the frame's snapshot differ (channel 255, not yet looked into)
   (skip-unless (nhwl-gui--recorder-p))
-  (switch-to-buffer "*scratch*")
-  (erase-buffer)
-  (insert "The quick brown fox jumps over the lazy dog 0123456789\n")
-  (insert "Nidhogg draws this with pgtk's Cairo code on its own backing.\n")
-  (let ((mark (nhwl-gui--mark)))
-    (redisplay t)
-    ;; the frame's own picture first, then the compositor's
-    (let* ((mine (glitnir-snapshot nil 'raw))
-           (theirs (nhwl-gui--shown mark))
-           (diff (gui-runner-pixel-diff mine theirs)))
-      (should (= (car diff) 0))
-      ;; something is drawn: the text area is not one flat colour
-      (let ((bytes (nth 2 mine)) (first (substring (nth 2 mine) 0 4)) (found nil) (i 0))
-        (while (and (not found) (< i (min (length bytes) 400000)))
-          (unless (equal (substring bytes i (+ i 4)) first) (setq found t))
-          (setq i (+ i 4)))
-        (should found)))))
+  ;; the cursor stays on: a blink between the snapshot and the grab is a real difference of one cell
+  (nhwl-gui--with-blink
+   nil
+   (lambda ()
+     (switch-to-buffer "*scratch*")
+     (erase-buffer)
+     (insert "The quick brown fox jumps over the lazy dog 0123456789\n")
+     (insert "Nidhogg draws this with pgtk's Cairo code on its own backing.\n")
+     (let ((mark (nhwl-gui--mark)))
+       (redisplay t)
+       ;; the frame's own picture first, then the compositor's
+       (let* ((mine (glitnir-snapshot nil 'raw))
+              (theirs (nhwl-gui--shown mark))
+              (diff (gui-runner-pixel-diff mine theirs)))
+         (should (= (car diff) 0))
+         ;; something is drawn: the text area is not one flat colour
+         (let ((bytes (nth 2 mine)) (first (substring (nth 2 mine) 0 4)) (found nil) (i 0))
+           (while (and (not found) (< i (min (length bytes) 400000)))
+             (unless (equal (substring bytes i (+ i 4)) first) (setq found t))
+             (setq i (+ i 4)))
+           (should found)))))))
 
 (ert-deftest nhwl-gui/typed-text-reaches-the-screen ()
   ;; the typed text's cells change in the compositor's picture, the client-side title bar's margins too (a glyph

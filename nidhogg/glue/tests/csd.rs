@@ -510,6 +510,13 @@ mod csd {
             assert_eq!((rc, p.active), (1, active), "{states}");
             assert_eq!(paint(d, id, 210, 100, 2).0, 0);
         }
+        // suspended and back: nothing the strip shows changed
+        for states in [r#""suspended","activated""#, r#""activated""#] {
+            configure(&rec, [210, 132], states);
+            apply_configure(d, id);
+            settle(d);
+            assert_eq!(paint(d, id, 210, 100, 2).0, 0, "{states}");
+        }
         // hovering the close button (226 wide: at 186)
         rec.control_ok(r#"{"cmd":"focus","surface":"toplevel"}"#);
         point(&rec, d, 190, 20);
