@@ -452,9 +452,9 @@ struct Tally {
 pub struct Composer {
     shadows: Option<ShadowCache>,
     tallies: BTreeMap<u64, Tally>,
-    /// A pause at the start of each compose, so tests can catch a compose in progress.
+    /// A gate at the start of each compose, so tests can hold a compose in progress until they release it (at most 5 s).
     #[cfg(test)]
-    delay: std::time::Duration,
+    gate: Option<std::sync::mpsc::Receiver<()>>,
 }
 
 impl Composer {
@@ -463,7 +463,7 @@ impl Composer {
             shadows: None,
             tallies: BTreeMap::new(),
             #[cfg(test)]
-            delay: std::time::Duration::ZERO,
+            gate: None,
         }
     }
 
@@ -521,7 +521,9 @@ pub fn compose_committed(
 ) -> Result<u32, i32> {
     let start = Instant::now();
     #[cfg(test)]
-    std::thread::sleep(k.delay);
+    if let Some(g) = &k.gate {
+        let _ = g.recv_timeout(std::time::Duration::from_secs(5));
+    }
     let shadows = k.shadows.get_or_insert_with(ShadowCache::new);
     let layers = compose_with(
         crate::kernels::kernels(),
@@ -1260,7 +1262,8 @@ mod tests {
 
     #[test]
     fn no_global_lock_during_compose() {
-        // a 4K root with a chromed popup, committed; thread A composes it with a 50 ms pause inside the compose
+        // a 4K root with a chromed popup, committed; thread A composes it and is held inside the compose until the
+        // host has drawn: a lock held across the compose would block the host until the gate's 5 s timeout
         let (w, h) = (3840, 2160);
         let root = 8801;
         let pop = Rect::new(800, 500, 1280, 800);
@@ -1277,6 +1280,7 @@ mod tests {
         );
         let (_, snap) = crate::damage::commit_snapshot(root).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
+        let (release, gate) = std::sync::mpsc::channel();
         let a = std::thread::spawn(move || {
             crate::mark_compose_thread();
             let root_px = Buf::new(w, h, 0xfff0_f0f0);
@@ -1284,7 +1288,7 @@ mod tests {
             let sources = [root_px.source(root, 1.0), popup.source(root + 1, 1.0)];
             let mut out = Buf::new(w, h, 0);
             let mut k = Composer::new();
-            k.delay = Duration::from_millis(50);
+            k.gate = Some(gate);
             tx.send(()).unwrap();
             compose_committed(
                 &snap,
@@ -1302,13 +1306,14 @@ mod tests {
             crate::damage::with(root, |d| d.add(Rect::new(i % 640, i / 640, 1, 1)));
         }
         let took = t0.elapsed();
+        release.send(()).unwrap();
         assert_eq!(a.join().unwrap(), Ok(2));
         assert_eq!(glitnir_root_drop(root), GLITNIR_OK);
         for id in [root, root + 1] {
             assert_eq!(glitnir_damage_forget(id), GLITNIR_OK);
         }
         assert!(
-            took < Duration::from_millis(5),
+            took < Duration::from_secs(1),
             "1000 damage calls took {took:?}"
         );
     }
