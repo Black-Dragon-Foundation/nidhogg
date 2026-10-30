@@ -12,6 +12,7 @@ mod selection;
 mod shell;
 mod state;
 mod touch;
+mod vpointer;
 
 use calloop::generic::Generic;
 use calloop::signals::{Signal, Signals};
@@ -35,7 +36,7 @@ struct Args {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: nh-recorder --socket NAME --control PATH --profile FILE [--clock auto|manual] [--output WxH@SCALE120] [--refresh-mhz N] [--session-store FILE]"
+        "usage: nh-recorder --socket NAME --control PATH --profile FILE [--clock auto|manual] [--output WxH@SCALE120] [--refresh-mhz N] [--session-store FILE]\n       nh-recorder --virtual-pointer   (a client: a pointer on $WAYLAND_DISPLAY driven from stdin)"
     );
     std::process::exit(2)
 }
@@ -98,6 +99,9 @@ fn die(msg: String) -> ! {
 }
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--virtual-pointer") {
+        vpointer::run();
+    }
     let args = parse_args();
     let profile = Profile::load(&args.profile).unwrap_or_else(|e| die(e));
     let mut event_loop: EventLoop<State> =
