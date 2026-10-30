@@ -87,7 +87,7 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
 - Targets today: Linux (pgtk) in a container or on the host. macOS (NS app, `Nidhogg.app`) is planned: `--host` has the
   code path, but it has not been built or tested yet.
 - Requirements: podman for `--container` (never docker) and enough free memory (below).
-- `--container DISTRO` (`fedora-44`, `fedora-45`, `ubuntu-26.04`) builds in a memory-capped podman container (podman only,
+- `--container DISTRO` (`fedora-44`, `fedora-45`, `ubuntu-26.04`, `debian-13`, `arch`) builds in a memory-capped podman container (podman only,
   never docker). `--host` builds on this machine (on Linux the packages in `nidhogg/deps/<distro>.build`
   must be installed).
 - Configure flags: `--with-native-compilation=aot --with-tree-sitter --with-pgtk` (Linux), `--with-ns ...` (macOS), each followed by `--with-glitnir` unless `--without-glitnir` is given.
@@ -169,7 +169,7 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
 ## Release tarballs
 
 `nidhogg/build.sh ... --out FILE` installs into a staging tree and writes `nidhogg-<version>-<distro>-<arch>.tar.xz`
-(distro `fedora-44`, `fedora-45`, `ubuntu-26.04` or `macos`; arch is `uname -m`) and `FILE.sha256`.
+(distro `fedora-44`, `fedora-45`, `ubuntu-26.04`, `debian-13`, `arch` or `macos`; arch is `uname -m`) and `FILE.sha256`.
 
 - One top directory `nidhogg-<version>/` holding the prefix's contents (macOS: `Nidhogg.app`).
 - `share/nidhogg/BUILDINFO` (`key=value`: `version commit distro arch prefix configure date`),
