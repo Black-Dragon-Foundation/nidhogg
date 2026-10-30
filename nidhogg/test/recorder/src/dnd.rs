@@ -13,6 +13,7 @@ use calloop::timer::{TimeoutAction, Timer};
 use calloop::{Interest, Mode, PostAction, RegistrationToken};
 use serde_json::{json, Value};
 use smithay::backend::input::ButtonState;
+use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::input::pointer::{ButtonEvent, GrabStartData, MotionEvent};
 use smithay::input::Seat;
 use smithay::reexports::wayland_server::backend::ObjectId;
@@ -219,6 +220,16 @@ pub fn enter_origin(state: &mut State) {
     let Some((surface, origin)) = ptr.grab_start_data().and_then(|d| d.focus) else {
         return;
     };
+    // a drag that starts with the pointer off the surface (held there by the button's grab) is over nothing
+    let at = ptr.current_location() - origin;
+    if !with_renderer_surface_state(&surface, |s| s.surface_size())
+        .flatten()
+        .is_none_or(|sz| {
+            at.x >= 0.0 && at.y >= 0.0 && at.x < f64::from(sz.w) && at.y < f64::from(sz.h)
+        })
+    {
+        return;
+    }
     let time = state.time_ms();
     ptr.motion(
         state,
