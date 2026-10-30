@@ -284,6 +284,8 @@ moves to the round's green drgnx commit.
   and the reds again under `rr record --chaos -n`, packed so that the trace replays in a later container (`build.sh`'s
   `NIDHOGG_CHECK_RR`; SELinux denies a labelled container `perf_event_open`, so that one container runs with labels off).
   On Zen a trace replays reliably only with SpecLockMap off (rr's wiki; root), and rr 5.9.0 aborts on a test that opens a pty.
+  The check containers get the test grammars (the builder's `.claude/tmp/grammars-cache`, from `fixtures/grammars.sh`) and
+  `gnutls-serv`, or the treesit and TLS files would skip whole; a file that still does is shown as `ALL SKIPPED`, never green.
   The report shows every group's results, one line per file per run; a file with no
   results from this run counts as red. A stamp (`REPORT.stamp`: commit, passes, date) is written only when every pass was
   green on a clean tree; `preflight-test.sh` checks that no interrupted, red or dirty run leaves one.
