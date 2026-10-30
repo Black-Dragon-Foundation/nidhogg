@@ -126,6 +126,11 @@ The Response goes out from a timer, after the method reply."
   (dolist (m '("OpenFile" "SaveFile"))
     (dbus-register-method :session fake-portal-service fake-portal-object fake-portal-chooser m
                           (fake-portal--dbus-method m)))
+  ;; The session's Nidhogg reads its desktop settings from the portal when its frame opens.  A call no handler serves
+  ;; gets no reply, so each read would wait out D-Bus's 25 s: answer as a portal that has none of them.
+  (dolist (m '("Read" "ReadOne" "ReadAll"))
+    (dbus-register-method :session fake-portal-service fake-portal-object "org.freedesktop.portal.Settings" m
+                          (lambda (&rest _) '(:error "org.freedesktop.portal.Error.NotFound" "no such setting"))))
   (let ((ready (getenv "NHWL_FAKE_PORTAL_READY")))
     (when ready (write-region "ready\n" nil ready nil 'silent))))
 
