@@ -570,6 +570,27 @@ meanwhile, while a SIGCHLD still reaches its handler and
       (should (< deepest 64))
       (delete-process p))))
 
+(ert-deftest workers/filter-costly-per-call-is-not-cut ()
+  ;; A filter whose calls cost more than the 4 ms budget whatever they
+  ;; get (as one that rescans all it gathered: drgnx's mock LLM server
+  ;; took a 12 MB body so) gets the natural reads, as today.  Per byte
+  ;; its estimate cut each delivery smaller, to 512 bytes: hundreds of
+  ;; calls for 256 KB, each as costly.
+  (workers-io-tests--modes
+    (let* ((calls 0) (got 0) (size (* 256 1024))
+           (p (make-process
+               :name "wio-per-call" :noquery t :connection-type 'pipe
+               :command (list "head" "-c" (number-to-string size) "/dev/zero")
+               :filter (lambda (_p s)
+                         (setq calls (1+ calls) got (+ got (length s)))
+                         (let ((end (+ (float-time) 0.005)))
+                           (while (< (float-time) end))))
+               :sentinel #'ignore)))
+      (should (workers-io-tests--info p :owned))
+      (should (workers-io-tests--until (lambda () (= got size)) 1500))
+      (should (< calls 64))
+      (delete-process p))))
+
 (ert-deftest workers/sigchld-vs-lisp-thread-handback ()
   ;; A Lisp thread hands reader-owned processes back and frees their
   ;; handles while SIGCHLDs arrive on the main thread, whose handler
