@@ -112,6 +112,11 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #endif
 
 #include "commands.h"
+#ifdef HAVE_NIDHOGG_WORKERS
+
+#include "nidhogg-workers.h"
+
+#endif
 
 #if !defined HAVE_ANDROID || defined ANDROID_STUBIFY
 
@@ -2610,6 +2615,12 @@ If file has multiple names, it continues to exist with the other names. */)
   CHECK_STRING (filename);
   filename = Fexpand_file_name (filename, Qnil);
   encoded_file = ENCODE_FILE (filename);
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  /* An auto-save job that would put this name back is dropped.  */
+  nh_save_file_deleted (filename);
+
+#endif
 
   if (emacs_unlink (SSDATA (encoded_file)) != 0
       && errno != ENOENT)
@@ -2765,6 +2776,13 @@ This is what happens in interactive use with M-x.  */)
   if (!NILP (handler))
     return calln (handler, Qrename_file,
 		  file, newname, ok_if_already_exists);
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  /* An auto-save job for FILE is dropped unless NEWNAME is its
+     buffer's auto-save name now (rename-auto-save-file).  */
+  nh_save_file_renamed (file, newname);
+
+#endif
 
   encoded_file = ENCODE_FILE (file);
   encoded_newname = ENCODE_FILE (newname);
@@ -6266,12 +6284,40 @@ auto_save_1 (void)
 	/* Remote files don't cooperate with fstatat.  */
 	auto_save_mode_bits = (XFIXNUM (modes) | 0600) & 0777;
     }
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  /* Keyboard-triggered, on the plain path: the write goes to nh-save.  */
+  if (nh_save_auto_save_1 (current_buffer, auto_save_mode_bits))
+    return Qnil;
+
+#endif
 
   return
     Fwrite_region (Qnil, Qnil, BVAR (current_buffer, auto_save_file_name), Qnil,
 		   NILP (Vauto_save_visited_file_name) ? Qlambda : Qt,
 		   Qnil, Qnil);
 }
+#ifdef HAVE_NIDHOGG_WORKERS
+
+/* nidhogg-blk.c: write the current buffer's auto-save now, as
+   do-auto-save writes each buffer (kill-buffer settling a job).  */
+static void
+nh_save_write_sync_unwind (int saving)
+{
+  auto_saving = saving;
+}
+
+void
+nh_save_write_sync (void)
+{
+  specpdl_ref count = SPECPDL_INDEX ();
+  record_unwind_protect_int (nh_save_write_sync_unwind, auto_saving);
+  auto_saving = 1;
+  internal_condition_case (auto_save_1, Qt, auto_save_error);
+  unbind_to (count, Qnil);
+}
+
+#endif
 
 struct auto_save_unwind
 {
@@ -6431,7 +6477,15 @@ A non-nil CURRENT-ONLY argument means save only current buffer.  */)
 	   and file changed since last real save.  */
 	if (STRINGP (BVAR (b, auto_save_file_name))
 	    && BUF_SAVE_MODIFF (b) < BUF_MODIFF (b)
+#ifdef HAVE_NIDHOGG_WORKERS
+
+	    /* A synchronous auto-save also writes a buffer whose
+	       auto-save job has not landed.  */
+	    && (BUF_AUTOSAVE_MODIFF (b) < BUF_MODIFF (b) || nh_save_due (b))
+
+#else
 	    && BUF_AUTOSAVE_MODIFF (b) < BUF_MODIFF (b)
+#endif
 	    /* -1 means we've turned off autosaving for a while--see below.  */
 	    && FIXNUMP (BVAR (b, save_length))
 	    && XFIXNUM (BVAR (b, save_length)) >= 0

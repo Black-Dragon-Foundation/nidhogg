@@ -12,6 +12,11 @@ on:
       drgnx_ref:
         description: "drgnx branch, tag or commit whose unit suite runs against the build (empty: the pinned commit)"
         default: ""
+      scope:
+        description: "full: every job; macos: the series rules and the macOS jobs only (between gates, Linux is tested locally)"
+        type: choice
+        options: [full, macos]
+        default: full
 
 permissions:
   contents: read
@@ -54,6 +59,7 @@ jobs:
 
   linux:
     name: Linux (${{ matrix.distro }})
+    if: ${{ inputs.scope != 'macos' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     strategy:
@@ -288,6 +294,12 @@ jobs:
           key: tarball-macos-${{ runner.arch }}-${{ steps.tree.outputs.tree }}-${{ hashFiles('nidhogg/build.sh') }}
       - name: The tarball runs unpacked
         run: bash nidhogg/test/tarball-test.sh dist/*.tar.xz macos
+      # the workers batch files of nidhogg/check-subset.txt (Task 37); a cached tarball has no build tree to check
+      - name: Workers checks (nidhogg/check-subset.txt, workers-* files)
+        if: ${{ steps.build.outcome == 'success' }}
+        run: |
+          grep 'nidhogg-tests/workers-' nidhogg/check-subset.txt > "$RUNNER_TEMP/macos-subset.txt"
+          /bin/bash nidhogg/build.sh --host --stage check --jobs 3 --build-dir "$RUNNER_TEMP/build" --check "$RUNNER_TEMP/macos-subset.txt"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tarball-macos
@@ -306,7 +318,7 @@ jobs:
     # runs once the Linux builds are done, whatever the other distros did: it needs only the fedora-45 tarball (the
     # download fails by itself when that build failed)
     needs: linux
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && inputs.scope != 'macos' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     outputs:
@@ -462,6 +474,120 @@ jobs:
           exit 1
       - name: drgnx's unit suite on the built Nidhogg
         run: bash nidhogg/ci/drgnx-suite.sh dist/*.tar.xz macos drgnx
+
+  # The off-main-thread work's CI (engine C, PD-4).  Like drgnx-linux they run once the Linux builds are done, whatever the other
+  # distros did, and they are not in release's needs: the default-on rule requires them green on the gate commit, a release
+  # does not wait for them.  None of them has fail-fast.
+  workers-harness:
+    name: Workers C harness (TSan, fuzz)
+    needs: linux
+    if: ${{ !cancelled() && inputs.scope != 'macos' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: ThreadSanitizer drivers and fuzz targets, in a fedora-45 container
+        run: |
+          podman run --rm --memory 8g --memory-swap 8g -v "$PWD:/src:ro,Z" registry.fedoraproject.org/fedora:45 bash -euo pipefail -c '
+            dnf -y -q --setopt=install_weak_deps=False install gcc libtsan libasan libubsan \
+              libpng-devel libjpeg-turbo-devel giflib-devel libwebp-devel >/dev/null
+            cd /src
+            bash nidhogg/test/workers-harness.sh
+            bash nidhogg/test/workers-harness.sh --tsan $(cd test/src/nidhogg-tests/fuzz && ls tsan-*.c | sed "s/^tsan-//; s/[.]c$//")
+            bash nidhogg/test/workers-harness.sh --fuzz 60'
+
+  workers-asan:
+    name: Workers batch files (ASan + UBSan dev build)
+    needs: linux
+    if: ${{ !cancelled() && inputs.scope != 'macos' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Every workers-*-tests batch file but the timing and GUI groups
+        run: |
+          ls test/src/nidhogg-tests/workers-*-tests.el | sed 's|^test/||; s|[.]el$||' | grep -v -e -timing- -e -gui- > "$RUNNER_TEMP/asan-subset.txt"
+          cat "$RUNNER_TEMP/asan-subset.txt"
+      - name: "Build and run (the 100 MB-class rows are sized down: nidhogg-workers--test-size-scale)"
+        env:
+          NIDHOGG_BUILD_SANITIZE: address,undefined
+          NIDHOGG_WORKERS_TEST_SIZE_SCALE: "0.1"
+        run: |
+          bash nidhogg/build.sh --container fedora-45 --dev --memory 12g --jobs 4 --build-dir "$RUNNER_TEMP/build-asan" \
+            --check "$RUNNER_TEMP/asan-subset.txt"
+      - name: Build logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-logs-workers-asan
+          path: ${{ runner.temp }}/build-asan/*.log
+          if-no-files-found: ignore
+
+  workers-pkg:
+    name: Package suites (${{ matrix.group }}, workers ${{ matrix.mode }})
+    needs: linux
+    if: ${{ !cancelled() && inputs.scope != 'macos' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [jsonrpc, treesit, process, files]
+        mode: ["on", "off"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        id: dl
+        continue-on-error: true
+        with:
+          name: tarball-fedora-45
+          path: dist
+      - name: The fedora-45 build made a tarball
+        if: ${{ steps.dl.outcome == 'failure' }}
+        run: |
+          echo "::error::no tarball: the fedora-45 build job failed (see the Linux fedora-45 job), so there is nothing to test"
+          exit 1
+      - name: Unpack the tarball at its prefix
+        id: unpack
+        run: |
+          top=$(tar -tJf dist/*.tar.xz | head -n 1 | cut -d/ -f1)
+          prefix=$(tar -xJOf dist/*.tar.xz "$top/share/nidhogg/BUILDINFO" | sed -n 's/^prefix=//p')
+          sudo mkdir -p "$prefix" && sudo tar -C "$prefix" --strip-components=1 -xJf dist/*.tar.xz
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+      - name: ${{ matrix.group }} with the workers ${{ matrix.mode }}
+        env:
+          NIDHOGG_PKG_CACHE: ${{ runner.temp }}/pkg-cache
+        run: bash nidhogg/test/pkg-test.sh --container fedora-45 --prefix "${{ steps.unpack.outputs.prefix }}" --mode "${{ matrix.mode }}" --select "${{ matrix.group }}" --out "$RUNNER_TEMP/out"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: pkg-outcomes-${{ matrix.group }}-${{ matrix.mode }}
+          path: ${{ runner.temp }}/out/
+          if-no-files-found: error
+
+  workers-pkg-compare:
+    name: Package suites, on against off
+    needs: workers-pkg
+    if: ${{ !cancelled() && inputs.scope != 'macos' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: pkg-outcomes-*
+          merge-multiple: true
+          path: outcomes
+      - name: A failure only with the workers on fails the gate
+        run: bash nidhogg/test/pkg-test.sh --compare outcomes
 
   release:
     name: Release

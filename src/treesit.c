@@ -25,6 +25,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "coding.h"
 
 #include "treesit.h"
+#ifdef HAVE_NIDHOGG_WORKERS
+#include "nidhogg-workers.h"
+#endif
 
 #if HAVE_TREE_SITTER
 
@@ -559,11 +562,13 @@ load_tree_sitter_if_necessary (bool required)
 #endif
 }
 
+#ifndef HAVE_NIDHOGG_WORKERS
 static void *
 treesit_calloc_wrapper (size_t n, size_t size)
 {
   return xzalloc (n * size);
 }
+#endif
 
 static void
 treesit_initialize (void)
@@ -571,7 +576,11 @@ treesit_initialize (void)
   if (!treesit_initialized)
     {
       load_tree_sitter_if_necessary (true);
+#ifdef HAVE_NIDHOGG_WORKERS
+      nh_ts_alloc_install ();
+#else
       ts_set_allocator (xmalloc, treesit_calloc_wrapper, xrealloc, xfree);
+#endif
       treesit_initialized = true;
     }
 }
@@ -1259,6 +1268,31 @@ treesit_tree_edit_1 (TSTree *tree, ptrdiff_t start_byte,
 		      start_point, old_end_point, new_end_point};
   ts_tree_edit (tree, &edit);
 }
+#ifdef HAVE_NIDHOGG_WORKERS
+
+/* Log the edit treesit_tree_edit_1 just applied to PARSER's tree, for
+   its parse job (nidhogg-treesit-bg.c replays it at the publish).  */
+static void
+nh_ts_log_tree_edit (Lisp_Object parser, ptrdiff_t start_byte,
+		     ptrdiff_t old_end_byte, ptrdiff_t new_end_byte,
+		     TSPoint start_point, TSPoint old_end_point,
+		     TSPoint new_end_point)
+{
+  TSInputEdit edit = {(uint32_t) start_byte,
+		      (uint32_t) old_end_byte,
+		      (uint32_t) new_end_byte,
+		      start_point, old_end_point, new_end_point};
+  nh_ts_record_edit (XTS_PARSER (parser), &edit, start_byte, old_end_byte,
+		     new_end_byte);
+}
+
+/* Set by treesit-parser-changed-regions for the treesit_ensure_parsed
+   it calls next, which clears it at once: the one demand that may
+   answer "not ready" while redisplay fontifies (nidhogg-treesit-bg.c,
+   nh_ts_demand).  Every other demand ends with a tree.  */
+static bool nh_ts_demand_may_defer;
+
+#endif
 
 /* Given a position at POS_LINECOL, and the linecol of a buffer change
    (START_LINECOL, OLD_END_LINECOL, and NEW_END_LINECOL), compute the new
@@ -1397,6 +1431,16 @@ treesit_record_change_1 (ptrdiff_t start_byte, ptrdiff_t old_end_byte,
 
       bool parser_tracks_linecol
 	= XTS_PARSER (lisp_parser)->visi_beg_linecol.bytepos != 0;
+#ifdef HAVE_NIDHOGG_WORKERS
+
+      /* A snapshot taken before this edit is stale (with or without a
+	 tree).  */
+      XTS_PARSER (lisp_parser)->nh_gen++;
+      XTS_PARSER (lisp_parser)->nh_edited_bytes
+	+= max (new_end_byte, old_end_byte) - start_byte;
+      XTS_PARSER (lisp_parser)->nh_edit_count++;
+
+#endif
 
       if (tree != NULL)
 	{
@@ -1504,8 +1548,23 @@ treesit_record_change_1 (ptrdiff_t start_byte, ptrdiff_t old_end_byte,
 	  treesit_tree_edit_1 (tree, start_offset, old_end_offset,
 			       new_end_offset, start_point, old_end_point,
 			       new_end_point);
+#ifdef HAVE_NIDHOGG_WORKERS
+
+	  nh_ts_log_tree_edit (lisp_parser, start_offset, old_end_offset,
+			       new_end_offset, start_point, old_end_point,
+			       new_end_point);
+
+#endif
 	  XTS_PARSER (lisp_parser)->need_reparse = true;
 	}
+#ifdef HAVE_NIDHOGG_WORKERS
+
+      else
+	/* No tree: a job parsing the text logs the change itself (B3).  */
+	nh_ts_record_edit (XTS_PARSER (lisp_parser), NULL, start_byte,
+			   old_end_byte, new_end_byte);
+
+#endif
     }
 }
 
@@ -1654,6 +1713,14 @@ treesit_sync_visible_region (Lisp_Object parser)
   if (visible_beg != BUF_BEGV_BYTE (buffer)
       || visible_end != BUF_ZV_BYTE (buffer))
     XTS_PARSER (parser)->need_reparse = true;
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  /* The edits below move the tree's view: a snapshot is stale.  */
+  if (visible_beg != BUF_BEGV_BYTE (buffer)
+      || visible_end != BUF_ZV_BYTE (buffer))
+    XTS_PARSER (parser)->nh_gen++;
+
+#endif
 
   /* Before we parse or set ranges, catch up with the narrowing
      situation.  We change visible_beg and visible_end to match
@@ -1687,6 +1754,13 @@ treesit_sync_visible_region (Lisp_Object parser)
       treesit_tree_edit_1 (tree, 0, 0, visible_beg - BUF_BEGV_BYTE (buffer),
 			   TREESIT_TS_POINT_1_0, TREESIT_TS_POINT_1_0,
 			   point_new_end);
+#ifdef HAVE_NIDHOGG_WORKERS
+
+      nh_ts_log_tree_edit (parser, 0, 0, visible_beg - BUF_BEGV_BYTE (buffer),
+			   TREESIT_TS_POINT_1_0, TREESIT_TS_POINT_1_0,
+			   point_new_end);
+
+#endif
       visible_beg = BUF_BEGV_BYTE (buffer);
       visi_beg_linecol = buffer_begv_linecol;
       eassert (visible_beg <= visible_end);
@@ -1705,6 +1779,14 @@ treesit_sync_visible_region (Lisp_Object parser)
 			   visible_end - visible_beg,
 			   BUF_ZV_BYTE (buffer) - visible_beg,
 			   point_start, point_start, point_new_end);
+#ifdef HAVE_NIDHOGG_WORKERS
+
+      nh_ts_log_tree_edit (parser, visible_end - visible_beg,
+			   visible_end - visible_beg,
+			   BUF_ZV_BYTE (buffer) - visible_beg,
+			   point_start, point_start, point_new_end);
+
+#endif
       visible_end = BUF_ZV_BYTE (buffer);
       visi_end_linecol = buffer_zv_linecol;
       eassert (visible_beg <= visible_end);
@@ -1722,6 +1804,14 @@ treesit_sync_visible_region (Lisp_Object parser)
 			   visible_end - visible_beg,
 			   BUF_ZV_BYTE (buffer) - visible_beg,
 			   point_start, point_old_end, point_start);
+#ifdef HAVE_NIDHOGG_WORKERS
+
+      nh_ts_log_tree_edit (parser, BUF_ZV_BYTE (buffer) - visible_beg,
+			   visible_end - visible_beg,
+			   BUF_ZV_BYTE (buffer) - visible_beg,
+			   point_start, point_old_end, point_start);
+
+#endif
       visible_end = BUF_ZV_BYTE (buffer);
       visi_end_linecol = buffer_zv_linecol;
       eassert (visible_beg <= visible_end);
@@ -1736,6 +1826,13 @@ treesit_sync_visible_region (Lisp_Object parser)
       treesit_tree_edit_1 (tree, 0, BUF_BEGV_BYTE (buffer) - visible_beg, 0,
 			   TREESIT_TS_POINT_1_0, point_old_end,
 			   TREESIT_TS_POINT_1_0);
+#ifdef HAVE_NIDHOGG_WORKERS
+
+      nh_ts_log_tree_edit (parser, 0, BUF_BEGV_BYTE (buffer) - visible_beg, 0,
+			   TREESIT_TS_POINT_1_0, point_old_end,
+			   TREESIT_TS_POINT_1_0);
+
+#endif
       visible_beg = BUF_BEGV_BYTE (buffer);
       visi_beg_linecol = buffer_begv_linecol;
       eassert (visible_beg <= visible_end);
@@ -1900,6 +1997,12 @@ treesit_call_after_change_functions (Lisp_Object parser, Lisp_Object ranges)
 static Lisp_Object
 treesit_ensure_parsed (Lisp_Object parser)
 {
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  bool nh_may_defer = nh_ts_demand_may_defer;
+  nh_ts_demand_may_defer = false;
+
+#endif
   if (XTS_PARSER (parser)->within_reparse) return Qnil;
   XTS_PARSER (parser)->within_reparse = true;
 
@@ -1921,7 +2024,42 @@ treesit_ensure_parsed (Lisp_Object parser)
   TSTree *tree = XTS_PARSER (parser)->tree;
   TSInput input = XTS_PARSER (parser)->input;
 
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  /* A worker's parse of the current text, a 1 ms attempt or a wait for
+     a nearly done job replaces the synchronous parse; everything after
+     it is today's tail.  While redisplay fontifies, a job may take the
+     parse instead: nothing changes now.  */
+  void *published;
+  int nh_demand = nh_ts_demand (parser, nh_may_defer, &published);
+  if (nh_demand == NH_TS_NOT_READY)
+    {
+      XTS_PARSER (parser)->within_reparse = false;
+      return Qnil;
+    }
+  TSTree *new_tree = published;
+  if (nh_demand != NH_TS_TREE)
+    {
+      /* The synchronous parse is timed: it feeds the estimates.  */
+      struct timespec t0, t1;
+      clock_gettime (CLOCK_MONOTONIC, &t0);
+      new_tree = ts_parser_parse (treesit_parser, tree, input);
+      clock_gettime (CLOCK_MONOTONIC, &t1);
+      if (new_tree)
+	nh_ts_note_parse (XTS_PARSER (parser), tree != NULL,
+			  (int64_t) (t1.tv_sec - t0.tv_sec) * 1000000000
+			  + (t1.tv_nsec - t0.tv_nsec),
+			  BUF_ZV_BYTE (buffer) - BUF_BEGV_BYTE (buffer));
+    }
+  else
+    {
+      XTS_PARSER (parser)->nh_edited_bytes = 0;
+      XTS_PARSER (parser)->nh_edit_count = 0;
+    }
+
+#else
   TSTree *new_tree = ts_parser_parse (treesit_parser, tree, input);
+#endif
   /* This should be very rare (impossible, really): it only happens
      when 1) language is not set (impossible in Emacs because the user
      has to supply a language to create a parser), 2) parse canceled
@@ -2036,6 +2174,17 @@ make_treesit_parser (Lisp_Object buffer, TSParser *parser,
   lisp_parser->deleted = false;
   lisp_parser->need_to_gc_buffer = false;
   lisp_parser->within_reparse = false;
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  lisp_parser->nh_job = NULL;
+  lisp_parser->nh_gen = 0;
+  lisp_parser->nh_stat_timestamp = -1;
+  lisp_parser->nh_incr = (struct nh_wk_cost) { 0 };
+  lisp_parser->nh_full = (struct nh_wk_cost) { 0 };
+  lisp_parser->nh_edited_bytes = 0;
+  lisp_parser->nh_edit_count = 0;
+
+#endif
   eassert (lisp_parser->visible_beg <= lisp_parser->visible_end);
 
   if (tracks_linecol)
@@ -2096,6 +2245,13 @@ make_treesit_query (Lisp_Object query, Lisp_Object language)
 void
 treesit_delete_parser (struct Lisp_TS_Parser *lisp_parser)
 {
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  /* Cancel the parse job and drop the parser's reference; the worker's
+     own keeps the job alive until it is done.  */
+  nh_ts_parser_freed (lisp_parser);
+
+#endif
   if (lisp_parser->need_to_gc_buffer)
     Fkill_buffer (lisp_parser->buffer);
   ts_tree_delete (lisp_parser->tree);
@@ -2459,6 +2615,11 @@ See `treesit-parser-list' for the buffer's parser list.  */)
     = Fdelete (parser, BVAR (buf, ts_parser_list));
 
   XTS_PARSER (parser)->deleted = true;
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  nh_ts_parser_freed (XTS_PARSER (parser));
+
+#endif
   return Qnil;
 }
 
@@ -2901,6 +3062,11 @@ or no affected ranges, return nil.  */)
 {
   treesit_check_parser (parser);
   treesit_initialize ();
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  nh_ts_demand_may_defer = true;
+
+#endif
   return treesit_ensure_parsed (parser);
 }
 
@@ -3017,7 +3183,15 @@ If NODE is nil, return nil.  */)
 
   TSNode treesit_node = XTS_NODE (node)->node;
   char *string = ts_node_string (treesit_node);
+#ifdef HAVE_NIDHOGG_WORKERS
+  /* Tree-sitter allocated STRING with the allocator set in
+     treesit_initialize; the caller frees it.  */
+  Lisp_Object result = build_string (string);
+  xfree (string);
+  return result;
+#else
   return build_string (string);
+#endif
 }
 
 static bool treesit_cursor_helper (TSTreeCursor *, TSNode, Lisp_Object);
@@ -5138,6 +5312,14 @@ nodes in the subtree, including NODE.  */)
   CHECK_TS_NODE (node);
 
   treesit_initialize ();
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  /* A published tree's root: the worker computed it.  */
+  Lisp_Object cached = nh_ts_subtree_stat_cached (node);
+  if (!NILP (cached))
+    return cached;
+
+#endif
 
   TSTreeCursor cursor = ts_tree_cursor_new (XTS_NODE (node)->node);
   ptrdiff_t max_depth = 1;

@@ -51,6 +51,11 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "coding.h"
 #include "termhooks.h"
 #include "font.h"
+#ifdef HAVE_NIDHOGG_WORKERS
+
+# include "nidhogg-workers.h"
+# include "nidhogg-image-bg.h"
+#endif
 
 #ifdef HAVE_SYS_STAT_H
 #include <sys/stat.h>
@@ -1674,6 +1679,13 @@ calling this function.  */)
 {
   Lisp_Object size;
 
+#ifdef HAVE_NIDHOGG_WORKERS
+  bool answered;
+  size = nh_img_size (spec, frame, !NILP (pixels), &answered);
+  if (answered)
+    return size;
+
+#endif
   size = Qnil;
   if (valid_image_p (spec))
     {
@@ -1727,6 +1739,13 @@ or omitted means use the selected frame.  */)
 {
   Lisp_Object ext;
 
+#ifdef HAVE_NIDHOGG_WORKERS
+  bool answered;
+  ext = nh_img_metadata (spec, frame, &answered);
+  if (answered)
+    return ext;
+
+#endif
   ext = Qnil;
   if (valid_image_p (spec))
     {
@@ -1775,6 +1794,10 @@ free_image (struct frame *f, struct image *img)
   if (img)
     {
       struct image_cache *c = FRAME_IMAGE_CACHE (f);
+#ifdef HAVE_NIDHOGG_WORKERS
+      nh_img_freed (f, img);
+
+#endif
 
       /* Remove IMG from the hash table of its cache.  */
       if (img->prev)
@@ -1850,6 +1873,11 @@ prepare_image_for_display (struct frame *f, struct image *img)
 {
   /* We're about to display IMG, so set its timestamp to `now'.  */
   img->timestamp = current_timespec ();
+#ifdef HAVE_NIDHOGG_WORKERS
+  if (nh_img_prepare (f, img))
+    return;
+
+#endif
 
   /* If IMG doesn't have a pixmap yet, load it now, using the image
      type dependent loader function.  */
@@ -3520,6 +3548,141 @@ image_set_transform (struct frame *f, struct image *img)
 }
 
 #endif /* HAVE_IMAGEMAGICK || HAVE_NATIVE_TRANSFORMS */
+#ifdef HAVE_NIDHOGG_WORKERS
+
+/* What nidhogg-image-bg.c needs of this file to answer `image-size' and
+   `image-metadata' from an image's header, without loading it.  */
+
+/* The format of the image SPEC asks for, if the header parsers know
+   it and this build's loader is the C one.  */
+
+int
+nh_img_spec_format (Lisp_Object spec)
+{
+#ifndef HAVE_NATIVE_IMAGE_API
+  Lisp_Object type = image_spec_value (spec, QCtype, NULL);
+# ifdef HAVE_PNG
+  if (EQ (type, Qpng))
+    return NH_IMG_F_PNG;
+# endif
+# ifdef HAVE_JPEG
+  if (EQ (type, Qjpeg))
+    return NH_IMG_F_JPEG;
+# endif
+# ifdef HAVE_GIF
+  if (EQ (type, Qgif))
+    return NH_IMG_F_GIF;
+# endif
+# ifdef HAVE_WEBP
+  if (EQ (type, Qwebp))
+    return NH_IMG_F_WEBP;
+# endif
+#endif
+  return NH_IMG_F_NONE;
+}
+
+/* The loaders' size limit (`max-image-size') on a native size.  */
+
+bool
+nh_img_size_ok (struct frame *f, int width, int height)
+{
+  return check_image_size (f, width, height);
+}
+
+/* The size lookup_image would give an image of native size NATIVE_W x
+   NATIVE_H that loads, with its margins: the transform
+   `image_set_transform' computes (:width, :height, :max-width,
+   :max-height, :scale, :rotation) and `lookup_image's :margin and
+   :relief.  F is NULL only in tests, where the face's sizes are 0.
+   False when a spec value would make the loader report an error.  */
+
+bool
+nh_img_displayed_size (struct frame *f, Lisp_Object spec, int native_w,
+		       int native_h, int *width, int *height)
+{
+  int w = native_w, h = native_h;
+#ifdef HAVE_NATIVE_TRANSFORMS
+  struct image tmp;
+  memset (&tmp, 0, sizeof tmp);
+  tmp.spec = spec;
+  tmp.dependencies = tmp.lisp_data = Qnil;
+  if (f)
+    {
+      if (FRAME_FACE_CACHE (f) == NULL)
+	init_frame_faces (f);
+      if (FRAME_FACE_CACHE (f)->used == 0)
+	recompute_basic_faces (f);
+      struct face *face = FACE_FROM_ID (f, DEFAULT_FACE_ID);
+      tmp.face_font_size = face->font->pixel_size;
+      tmp.face_font_height = face->font->height;
+      tmp.face_font_width = face->font->average_width;
+    }
+  /* `:scale default' reads the frame and `image-scaling-factor'.  */
+  if (EQ (image_spec_value (spec, QCscale, NULL), Qdefault)
+      && (!f
+	  || !(EQ (Vimage_scaling_factor, Qauto)
+	       || NUMBERP (Vimage_scaling_factor))))
+    return false;
+  bool rot_found;
+  Lisp_Object rot = image_spec_value (spec, QCrotation, &rot_found);
+  double rotation = 0.0;
+  if (rot_found)
+    {
+      if (!NUMBERP (rot))
+	return false;
+      compute_image_rotation (&tmp, &rotation);
+      if (rotation != 0 && rotation != 90 && rotation != 180
+	  && rotation != 270)
+	return false;
+    }
+  compute_image_size (f, native_w, native_h, &tmp, &w, &h);
+  if (rotation == 90 || rotation == 270)
+    {
+      int t = w;
+      w = h;
+      h = t;
+    }
+#endif
+  int hmargin = 0, vmargin = 0;
+  Lisp_Object margin = image_spec_value (spec, QCmargin, NULL);
+  if (FIXNUMP (margin))
+    vmargin = hmargin = XFIXNUM (margin);
+  else if (CONSP (margin))
+    {
+      hmargin = XFIXNUM (XCAR (margin));
+      vmargin = XFIXNUM (XCDR (margin));
+    }
+  Lisp_Object relief = image_spec_value (spec, QCrelief, NULL);
+  int relief_bound = INT_MAX - max (hmargin, vmargin);
+  if (RANGED_FIXNUMP (- relief_bound, relief, relief_bound))
+    {
+      hmargin += eabs (XFIXNUM (relief));
+      vmargin += eabs (XFIXNUM (relief));
+    }
+  *width = w + 2 * hmargin;
+  *height = h + 2 * vmargin;
+  return true;
+}
+
+/* The entry lookup_image (F, SPEC, -1) would find in F's cache, or NULL:
+   the same search, without loading.  */
+struct image *
+nh_img_cache_find (struct frame *f, Lisp_Object spec)
+{
+  if (!FRAME_IMAGE_CACHE (f) || !FRAME_FACE_CACHE (f)
+      || FRAME_FACE_CACHE (f)->used == 0)
+    return NULL;
+  struct face *face = FACE_FROM_ID (f, DEFAULT_FACE_ID);
+  if (!face->font)
+    return NULL;
+  return search_image_cache (f, spec, sxhash (filter_image_spec (spec)),
+			     face->foreground, face->background,
+			     face->font->pixel_size,
+			     SSDATA (face->lface[LFACE_FAMILY_INDEX]), false);
+}
+
+
+#endif /* HAVE_NIDHOGG_WORKERS */
 
 /* Return the id of image with Lisp specification SPEC on frame F.
    SPEC must be a valid Lisp image specification (see valid_image_p).  */
@@ -3557,6 +3720,11 @@ lookup_image (struct frame *f, Lisp_Object spec, int face_id)
       free_image (f, img);
       img = NULL;
     }
+#ifdef HAVE_NIDHOGG_WORKERS
+  if (img)
+    nh_img_hit (f, img);
+
+#endif
 
   /* If not found, create a new image and cache it.  */
   if (img == NULL)
@@ -3572,7 +3740,14 @@ lookup_image (struct frame *f, Lisp_Object spec, int face_id)
       size_t len = strlen (font_family) + 1;
       img->face_font_family = xmalloc (len);
       memcpy (img->face_font_family, font_family, len);
+#ifdef HAVE_NIDHOGG_WORKERS
+      if (!nh_img_lookup (f, img))
+
+#endif
       img->load_failed_p = ! img->type->load_img (f, img);
+#ifdef HAVE_NIDHOGG_WORKERS
+      nh_img_cost_add (img);
+#endif
 
       /* If we can't load the image, and we don't have a width and
 	 height, use some arbitrary width and height so that we can
@@ -7962,6 +8137,677 @@ native_image_load (struct frame *f, struct image *img)
 
 #endif	/* HAVE_NATIVE_IMAGE_API */
 
+#ifdef HAVE_NIDHOGG_WORKERS
+
+/***********************************************************************
+	     Nidhogg: the decoder cores in the synchronous loaders
+ ***********************************************************************/
+
+/* Under the flag the PNG, JPEG, GIF and WebP loaders below first try
+   nh_img_sync_load, which decodes with the Lisp-free cores of
+   nidhogg-image-bg.c (the code the worker runs) and installs the result
+   as the loaders do.  It handles a load only on Cairo frames and when the
+   spec's data or file is usable; anything else runs the loader as before.
+   `nidhogg-workers--test-image-legacy' non-nil turns it off (the oracle
+   compares the two).  The code between the markers is the only part of
+   image.c that knows the cores.  */
+
+# ifdef USE_CAIRO
+
+/* Log the error OUT describes, with the text the loader logs.  */
+static void
+nh_img_report (int fmt, struct nh_img_out *out, struct image *img,
+	       Lisp_Object spec_file, Lisp_Object file, bool is_data)
+{
+  Lisp_Object msg = build_string (out->errmsg);
+  bool have_msg = out->errmsg[0] != 0;
+
+  for (int i = 0; i < out->nwarn; i++)
+    image_error ("PNG warning: %s", build_string (out->warn[i]));
+  switch (out->err)
+    {
+    case NH_IMG_E_OPEN:
+      image_not_found_error (spec_file);
+      break;
+    case NH_IMG_E_NOT_IMAGE:
+      if (is_data)
+	image_error ("Not a PNG image: `%s'", img->spec);
+      else
+	image_error ("Not a PNG file: `%s'", file);
+      break;
+    case NH_IMG_E_LIB:
+      if (fmt == NH_IMG_PNG)
+	image_error ("PNG error: %s", msg);
+      else
+	image_error ("Error reading JPEG image `%s': %s", img->spec, msg);
+      break;
+    case NH_IMG_E_SIZE:
+      image_size_error ();
+      break;
+    case NH_IMG_E_NOMEM:
+      memory_full (SIZE_MAX);
+    case NH_IMG_E_GIF_OPEN:
+      if (is_data)
+	{
+	  if (have_msg)
+	    image_error ("Cannot open memory source `%s': %s", img->spec, msg);
+	  else
+	    image_error ("Cannot open memory source `%s'", img->spec);
+	}
+      else if (have_msg)
+	image_error ("Cannot open `%s': %s", file, msg);
+      else
+	image_error ("Cannot open `%s'", file);
+      break;
+    case NH_IMG_E_GIF_READ:
+      if (!is_data)
+	{
+	  if (have_msg)
+	    image_error ("Error reading `%s' (%s)", img->spec, msg);
+	  else
+	    image_error ("Error reading `%s'", img->spec);
+	}
+      else if (have_msg)
+	image_error ("Error reading GIF data: %s", msg);
+      else
+	image_error ("Error reading GIF data");
+      break;
+    case NH_IMG_E_GIF_SUBIMAGE:
+      image_error ("Subimage does not fit in image");
+      break;
+    case NH_IMG_E_GIF_INDEX:
+      image_error ("Invalid image number `%s' in image `%s'",
+		   make_fixnum (out->err_arg), img->spec);
+      break;
+    case NH_IMG_E_WEBP_HEADERS:
+      if (is_data)
+	image_error ("Error parsing WebP headers from image data");
+      else
+	image_error ("Error parsing WebP headers from file: `%s'", spec_file);
+      break;
+    case NH_IMG_E_WEBP_PARSE:
+      if (is_data)
+	image_error ("Error parsing WebP image data");
+      else
+	image_error ("Error parsing WebP file: `%s'", spec_file);
+      break;
+    case NH_IMG_E_WEBP_INFO:
+      if (is_data)
+	image_error ("Error getting global animation info from WebP image data");
+      else
+	image_error ("Error getting global animation info from WebP file: `%s'",
+		     spec_file);
+      break;
+    case NH_IMG_E_WEBP_FRAME:
+      if (is_data)
+	image_error ("Error decoding frame #%d from WebP image data",
+		     make_int (out->err_arg));
+      else
+	image_error ("Error decoding frame #%d from WebP file: `%s'",
+		     make_int (out->err_arg), spec_file);
+      break;
+    case NH_IMG_E_WEBP_DECODE:
+      if (is_data)
+	image_error ("Error decoding WebP image data");
+      else
+	image_error ("Error decoding WebP file: `%s'", spec_file);
+      break;
+    default:		/* NH_IMG_E_SILENT */
+      break;
+    }
+}
+
+/* Put the decoded OUT into IMG as the loader of FMT does.  */
+static bool
+nh_img_install (struct frame *f, struct image *img, int fmt,
+		struct nh_img_out *out)
+{
+  Emacs_Pix_Container ximg, mask_img = NULL;
+  int w = out->width, h = out->height;
+  Lisp_Object specified_bg = image_spec_value (img->spec, QCbackground, NULL);
+
+  if (!image_create_x_image_and_pixmap (f, img, w, h, 0, &ximg, 0))
+    return false;
+  for (int y = 0; y < h; y++)
+    memcpy ((char *) ximg->data + (ptrdiff_t) y * ximg->bytes_per_line,
+	    out->pixels + (ptrdiff_t) y * w, (size_t) w * 4);
+  if (out->mask
+      && !image_create_x_image_and_pixmap (f, img, w, h, 1, &mask_img, 1))
+    {
+      image_destroy_x_image (ximg);
+      image_clear_image_1 (f, img, CLEAR_IMAGE_PIXMAP);
+      return false;
+    }
+  if (mask_img)
+    for (int y = 0; y < h; y++)
+      memcpy ((char *) mask_img->data + (ptrdiff_t) y * mask_img->bytes_per_line,
+	      out->mask + (ptrdiff_t) y * w, w);
+
+  if (out->has_corners)
+    for (int i = 0; i < 4; i++)
+      img->corners[i] = out->corners[i];
+  img->width = w;
+  img->height = h;
+
+  if (fmt == NH_IMG_PNG && NILP (specified_bg) && out->bkgd_valid)
+    {
+      Lisp_Object color_name = make_color_name (out->bkgd[0], out->bkgd[1],
+						out->bkgd[2]);
+      img->background = image_alloc_image_color (f, img, color_name, 0);
+      img->background_valid = 1;
+    }
+  if (fmt == NH_IMG_GIF)
+    {
+      img->lisp_data = Qnil;
+      if (out->ext)
+	{
+	  for (struct nh_img_ext *e = out->ext; e; e = e->next)
+	    img->lisp_data
+	      = Fcons (make_fixnum (e->function),
+		       Fcons (make_unibyte_string ((char *) e->bytes, e->len),
+			      img->lisp_data));
+	  img->lisp_data = list2 (Qextension_data, img->lisp_data);
+	  img->lisp_data
+	    = Fcons (Qdelay,
+		     Fcons (out->delay ? make_float (out->delay / 100.0) : Qt,
+			    img->lisp_data));
+	}
+      if (out->frame_count > 1)
+	img->lisp_data = Fcons (Qcount,
+				Fcons (make_fixnum (out->frame_count),
+				       img->lisp_data));
+    }
+  if (fmt == NH_IMG_WEBP && out->animated)
+    {
+      img->lisp_data = Fcons (Qcount,
+			      Fcons (make_fixnum (out->frame_count),
+				     img->lisp_data));
+      img->lisp_data
+	= Fcons (Qdelay,
+		 Fcons (out->delay ? make_float (out->delay / 1000.0) : Qt,
+			img->lisp_data));
+    }
+
+  if (fmt == NH_IMG_PNG || NILP (specified_bg))
+    /* Casting avoids a GCC warning.  */
+    IMAGE_BACKGROUND (img, f, (Emacs_Pix_Context) ximg);
+  image_put_x_image (f, img, ximg, 0);
+  if (mask_img)
+    {
+      image_background_transparent (img, f, (Emacs_Pix_Context) mask_img);
+      image_put_x_image (f, img, mask_img, 1);
+    }
+  return true;
+}
+
+static void
+nh_img_params_resolve (struct frame *f, struct image *img, int fmt,
+		       struct nh_img_params *p)
+{
+  Lisp_Object specified_bg = image_spec_value (img->spec, QCbackground, NULL);
+  Lisp_Object index = image_spec_value (img->spec, QCindex, NULL);
+  Emacs_Color color;
+
+  p->frame_index = (fmt == NH_IMG_GIF || fmt == NH_IMG_WEBP) && !NILP (index)
+    ? (FIXNUMP (index) ? XFIXNAT (index) : 0) : -1;
+  p->limit_w = p->limit_h = -1;
+  if (FIXNUMP (Vmax_image_size))
+    p->limit_w = p->limit_h = XFIXNUM (Vmax_image_size);
+  else if (FLOATP (Vmax_image_size))
+    {
+      double w = f ? FRAME_PIXEL_WIDTH (f) : 1024;
+      double h = f ? FRAME_PIXEL_HEIGHT (f) : 1024;
+      double lw = floor (XFLOAT_DATA (Vmax_image_size) * w);
+      double lh = floor (XFLOAT_DATA (Vmax_image_size) * h);
+      p->limit_w = lw > 1e15 ? INT64_C (1000000000000000) : (int64_t) lw;
+      p->limit_h = lh > 1e15 ? INT64_C (1000000000000000) : (int64_t) lh;
+    }
+  if (fmt == NH_IMG_PNG || fmt == NH_IMG_WEBP)
+    {
+      if (STRINGP (specified_bg))
+	p->bg_set = FRAME_TERMINAL (f)->defined_color_hook
+	  (f, SSDATA (specified_bg), &color, false, false);
+      else
+	{
+	  FRAME_TERMINAL (f)->query_frame_background_color (f, &color);
+	  p->bg_set = true;
+	}
+      if (p->bg_set)
+	{
+	  p->bg_r = color.red;
+	  p->bg_g = color.green;
+	  p->bg_b = color.blue;
+	}
+    }
+  if (fmt == NH_IMG_GIF)
+    {
+      FRAME_TERMINAL (f)->query_frame_background_color (f, &color);
+      p->frame_bg_pixel = RGB_TO_ULONG (color.red >> 8, color.green >> 8,
+					color.blue >> 8);
+      if (STRINGP (specified_bg))
+	{
+	  unsigned long bg
+	    = image_alloc_image_color (f, img, specified_bg,
+				       FRAME_BACKGROUND_PIXEL (f));
+	  Emacs_Color c = { .pixel = bg };
+	  FRAME_TERMINAL (f)->query_colors (f, &c, 1);
+	  p->gif_bg_set = true;
+	  p->gif_bg_pixel = RGB_TO_ULONG (c.red >> 8, c.green >> 8, c.blue >> 8);
+	}
+    }
+}
+
+bool
+nh_img_sync_load (struct frame *f, struct image *img, int fmt, bool *ok)
+{
+  if (nh_img_legacy || fmt < 0 || fmt >= NH_IMG_FMT_N || !nh_img_decoders[fmt])
+    return false;
+  Lisp_Object spec_file = image_spec_value (img->spec, QCfile, NULL);
+  Lisp_Object spec_data = image_spec_value (img->spec, QCdata, NULL);
+  Lisp_Object file = Qnil, encoded = Qnil;
+  const uint8_t *data = NULL;
+  uint8_t *decoded = NULL;
+  size_t len = 0;
+  struct nh_img_params p;
+  memset (&p, 0, sizeof p);
+
+  if (NILP (spec_data))
+    {
+      file = image_find_image_file (spec_file);
+      if (!STRINGP (file))
+	return false;
+      encoded = ENCODE_FILE (file);
+      p.file = SSDATA (encoded);
+      /* The cores read whole regular files only: anything else (a
+	 device, a FIFO) keeps upstream's loader and its errors.  */
+      struct stat st;
+      if (stat (p.file, &st) != 0 || !S_ISREG (st.st_mode))
+	return false;
+    }
+  else if (STRINGP (spec_data))
+    {
+      data = SDATA (spec_data);
+      len = SBYTES (spec_data);
+      if (nh_img_b64_spec (img->spec))
+	{
+	  /* :nidhogg-data-encoding base64 (Task 30).  */
+	  size_t cap = len / 4 * 3 + 3, got;
+	  bool complete;
+	  decoded = malloc (cap);
+	  if (!decoded
+	      || !nh_img_b64_decode (data, len, decoded, cap, &got, &complete))
+	    {
+	      free (decoded);
+	      return false;
+	    }
+	  data = decoded;
+	  len = got;
+	}
+    }
+  else
+    return false;
+
+  nh_img_params_resolve (f, img, fmt, &p);
+  if (p.frame_index >= 0)
+    p.key = data ? nh_img_hash (data, len) : nh_img_file_key (p.file);
+
+  struct nh_img_out out;
+  memset (&out, 0, sizeof out);
+  int64_t t0;
+  int depth = nh_img_phase_begin (&t0);
+  int rc = nh_img_decode (fmt, data, len, &p, &out);
+  nh_img_phase_end (depth, t0);
+  if (rc == 0)
+    *ok = nh_img_install (f, img, fmt, &out);
+  else
+    {
+      nh_img_report (fmt, &out, img, spec_file, file, data != NULL);
+      *ok = false;
+    }
+  nh_img_out_free (&out);
+  free (decoded);
+  return true;
+}
+
+/* Task 29: what the pending entries of nidhogg-image-bg.c need of this
+   file.  A pending entry is an image whose decode runs on nh-img: lookup_image
+   gave it the header's native size and then did everything it does after
+   a load, so it has its final size and no pixels.  It lands at the next
+   redisplay (nh_img_land).  */
+
+/* The job's inputs for IMG of FMT: a malloc'd copy of :data in *DATA
+   (*LEN bytes) or the encoded file name in *FILE (malloc'd), and every
+   frame and face input the loaders read, in *P.  False (nothing to free)
+   when the core cannot take it: then lookup_image loads as before.  */
+bool
+nh_img_job_inputs (struct frame *f, struct image *img, int fmt,
+		   struct nh_img_params *p, uint8_t **data, size_t *len,
+		   char **file)
+{
+  *data = NULL;
+  *len = 0;
+  *file = NULL;
+  if (nh_img_legacy || fmt < 0 || fmt >= NH_IMG_FMT_N || !nh_img_decoders[fmt])
+    return false;
+  Lisp_Object spec_data = image_spec_value (img->spec, QCdata, NULL);
+  if (NILP (spec_data))
+    {
+      Lisp_Object name
+	= image_find_image_file (image_spec_value (img->spec, QCfile, NULL));
+      if (!STRINGP (name))
+	return false;
+      *file = strdup (SSDATA (ENCODE_FILE (name)));
+      if (!*file)
+	return false;
+    }
+  else if (STRINGP (spec_data))
+    {
+      *len = SBYTES (spec_data);
+      *data = malloc (*len ? *len : 1);
+      if (!*data)
+	return false;
+      memcpy (*data, SDATA (spec_data), *len);
+    }
+  else
+    return false;
+  memset (p, 0, sizeof *p);
+  nh_img_params_resolve (f, img, fmt, p);
+  p->file = *file;
+  return true;
+}
+
+/* Put a job's result (OUT, RC its code) into IMG as the loader of FMT
+   does, errors logged with the loader's text; value: the loader's.  */
+bool
+nh_img_load_result (struct frame *f, struct image *img, int fmt,
+		    struct nh_img_out *out, int rc)
+{
+  if (rc == 0)
+    return nh_img_install (f, img, fmt, out);
+  Lisp_Object spec_file = image_spec_value (img->spec, QCfile, NULL);
+  Lisp_Object spec_data = image_spec_value (img->spec, QCdata, NULL);
+  Lisp_Object file = NILP (spec_data) ? image_find_image_file (spec_file) : Qnil;
+  nh_img_report (fmt, out, img, spec_file, file, !NILP (spec_data));
+  return false;
+}
+
+/* What lookup_image does after the load of a new entry; a copy of its
+   code, for the entries that land later.  */
+static void
+nh_img_after_load (struct frame *f, struct image *img)
+{
+  Lisp_Object spec = img->spec;
+
+  if (img->load_failed_p)
+    {
+      Lisp_Object value = image_spec_value (spec, QCwidth, NULL);
+      img->width = FIXNUMP (value) ? XFIXNAT (value) : DEFAULT_IMAGE_WIDTH;
+      value = image_spec_value (spec, QCheight, NULL);
+      img->height = FIXNUMP (value) ? XFIXNAT (value) : DEFAULT_IMAGE_HEIGHT;
+      return;
+    }
+
+  Lisp_Object ascent = image_spec_value (spec, QCascent, NULL);
+  if (FIXNUMP (ascent))
+    img->ascent = XFIXNUM (ascent);
+  else if (EQ (ascent, Qcenter))
+    img->ascent = CENTERED_IMAGE_ASCENT;
+
+  Lisp_Object margin = image_spec_value (spec, QCmargin, NULL);
+  if (FIXNUMP (margin))
+    img->vmargin = img->hmargin = XFIXNUM (margin);
+  else if (CONSP (margin))
+    {
+      img->hmargin = XFIXNUM (XCAR (margin));
+      img->vmargin = XFIXNUM (XCDR (margin));
+    }
+
+  Lisp_Object relief = image_spec_value (spec, QCrelief, NULL);
+  int relief_bound = INT_MAX - max (img->hmargin, img->vmargin);
+  if (RANGED_FIXNUMP (- relief_bound, relief, relief_bound))
+    {
+      img->relief = XFIXNUM (relief);
+      img->hmargin += eabs (img->relief);
+      img->vmargin += eabs (img->relief);
+    }
+
+  if (! img->background_valid)
+    {
+      Lisp_Object bg = image_spec_value (img->spec, QCbackground, NULL);
+      if (!NILP (bg))
+	{
+	  img->background
+	    = image_alloc_image_color (f, img, bg, img->face_background);
+	  img->background_valid = 1;
+	}
+    }
+
+  postprocess_image (f, img);
+#  ifdef HAVE_NATIVE_TRANSFORMS
+  image_set_transform (f, img);
+#  endif
+}
+
+/* Land the pending entry IMG: back to the state make_image left it in,
+   loaded from OUT (RC its code) or, with OUT null (its job could not
+   finish), by its loader, then what lookup_image does after a load.
+   The pixels, mask, metadata, errors and size are what a synchronous
+   lookup_image would have made.  */
+void
+nh_img_land (struct frame *f, struct image *img, int fmt,
+	     struct nh_img_out *out, int rc)
+{
+  block_input ();
+  if (img->cr_data)
+    {
+      cairo_pattern_destroy (img->cr_data);
+      img->cr_data = NULL;
+    }
+  img->width = img->height = 0;
+  img->hmargin = img->vmargin = 0;
+  img->relief = 0;
+  img->ascent = DEFAULT_IMAGE_ASCENT;
+  img->background_valid = 0;
+  img->background_transparent_valid = 0;
+  img->lisp_data = Qnil;
+  img->load_failed_p = ! (out ? nh_img_load_result (f, img, fmt, out, rc)
+			  : img->type->load_img (f, img));
+  nh_img_after_load (f, img);
+  unblock_input ();
+}
+
+/* prepare_image_for_display on a pending entry: no load (it lands from
+   nh-img) and no pattern (image_set_transform's dummy pattern, which
+   records the transform, would draw as a black box), so the glyph draws
+   as the face's background.  */
+bool
+nh_img_prepare (struct frame *f, struct image *img)
+{
+  if (img->pixmap != NO_PIXMAP || img->load_failed_p
+      || !nh_img_pending_p (f, img))
+    return false;
+  if (img->cr_data)
+    {
+      block_input ();
+      cairo_pattern_destroy (img->cr_data);
+      img->cr_data = NULL;
+      unblock_input ();
+    }
+  nh_img_stand_in_for (f, img);
+  return true;
+}
+
+/* Task 30: give pending IMG the picture of READY, scaled into IMG's box
+   (its final displayed size).  READY's pattern keeps its own transform
+   (rotation, flip, scale); the new pattern shares its surface and maps
+   IMG's box onto READY's box first.  False: READY has no picture.  */
+bool
+nh_img_stand_in (struct frame *f, struct image *img, struct image *ready)
+{
+  cairo_surface_t *surface;
+  if (!ready->cr_data || ready->width <= 0 || ready->height <= 0
+      || img->width <= 0 || img->height <= 0
+      || cairo_pattern_get_type (ready->cr_data) != CAIRO_PATTERN_TYPE_SURFACE
+      || cairo_pattern_get_surface (ready->cr_data, &surface)
+	 != CAIRO_STATUS_SUCCESS)
+    return false;
+  block_input ();
+  cairo_pattern_t *pat = cairo_pattern_create_for_surface (surface);
+  if (cairo_pattern_status (pat) != CAIRO_STATUS_SUCCESS)
+    {
+      cairo_pattern_destroy (pat);
+      unblock_input ();
+      return false;
+    }
+  cairo_matrix_t mr, scale, m;
+  cairo_pattern_get_matrix (ready->cr_data, &mr);
+  cairo_matrix_init_scale (&scale, (double) ready->width / img->width,
+			   (double) ready->height / img->height);
+  cairo_matrix_multiply (&m, &scale, &mr);
+  cairo_pattern_set_matrix (pat, &m);
+  cairo_pattern_set_filter (pat, cairo_pattern_get_filter (ready->cr_data));
+  if (img->cr_data)
+    cairo_pattern_destroy (img->cr_data);
+  img->cr_data = pat;
+  unblock_input ();
+  return true;
+}
+
+DEFUN ("nidhogg-workers--test-image-pixels", Fnidhogg_workers__test_image_pixels,
+       Snidhogg_workers__test_image_pixels, 1, 3, 0,
+       doc: /* Load image SPEC on FRAME and return its pixels (test primitive).
+The image cache is emptied first, unless CACHED is non-nil: then SPEC's
+entry in the cache is read as it is (a pending one waits).  Value: a plist
+with :width, :height, :pixels (32-bit words, little endian), :mask,
+:lisp-data, :corners and :failed.  A cached entry that has been displayed
+with a mask reads :pixels and :mask nil (Cairo holds them premultiplied).  */)
+  (Lisp_Object spec, Lisp_Object frame, Lisp_Object cached)
+{
+  if (!valid_image_p (spec))
+    error ("Invalid image specification");
+  struct frame *f = decode_window_system_frame (frame);
+  if (NILP (cached))
+    clear_image_cache (f, Qt);
+  ptrdiff_t id = lookup_image (f, spec, -1);
+  struct image *img = IMAGE_FROM_ID (f, id);
+  Lisp_Object pixels = Qnil, mask = Qnil;
+  int w = img->width, h = img->height;
+  /* A displayed entry has handed its pixel buffer to its Cairo pattern
+     (cr_put_image_to_cr_data): read it there.  Without a mask that
+     surface wraps the loader's buffer untouched; with one it holds
+     premultiplied pixels and the mask is gone, so those read as nil.  */
+  unsigned char *data = NULL;
+  ptrdiff_t stride = 0;
+  if (img->pixmap && img->pixmap->data)
+    {
+      data = (unsigned char *) img->pixmap->data;
+      stride = img->pixmap->bytes_per_line;
+    }
+  else if (img->pixmap && !img->mask && img->cr_data
+	   && cairo_pattern_get_type (img->cr_data) == CAIRO_PATTERN_TYPE_SURFACE)
+    {
+      cairo_surface_t *s;
+      if (cairo_pattern_get_surface (img->cr_data, &s) == CAIRO_STATUS_SUCCESS
+	  && cairo_surface_get_type (s) == CAIRO_SURFACE_TYPE_IMAGE
+	  && cairo_image_surface_get_width (s) == w
+	  && cairo_image_surface_get_height (s) == h)
+	{
+	  cairo_surface_flush (s);
+	  data = cairo_image_surface_get_data (s);
+	  stride = cairo_image_surface_get_stride (s);
+	}
+    }
+  if (data && w > 0 && h > 0)
+    {
+      pixels = make_uninit_string ((ptrdiff_t) w * h * 4);
+      STRING_SET_UNIBYTE (pixels);
+      for (int y = 0; y < h; y++)
+	memcpy (SDATA (pixels) + (ptrdiff_t) y * w * 4,
+		data + (ptrdiff_t) y * stride, (size_t) w * 4);
+    }
+  if (img->mask && img->mask->data && w > 0 && h > 0)
+    {
+      mask = make_uninit_string ((ptrdiff_t) w * h);
+      STRING_SET_UNIBYTE (mask);
+      for (int y = 0; y < h; y++)
+	memcpy (SDATA (mask) + (ptrdiff_t) y * w,
+		(char *) img->mask->data + (ptrdiff_t) y * img->mask->bytes_per_line,
+		w);
+    }
+  return list (intern_c_string (":width"), make_fixnum (w),
+	       intern_c_string (":height"), make_fixnum (h),
+	       intern_c_string (":pixels"), pixels,
+	       intern_c_string (":mask"), mask,
+	       intern_c_string (":lisp-data"), img->lisp_data,
+	       intern_c_string (":corners"),
+	       list4 (make_fixnum (img->corners[0]), make_fixnum (img->corners[1]),
+		      make_fixnum (img->corners[2]), make_fixnum (img->corners[3])),
+	       intern_c_string (":failed"), img->load_failed_p ? Qt : Qnil);
+}
+
+/* Called from nh_img_syms (nidhogg-image-bg.c).  */
+void
+nh_img_image_syms (void)
+{
+  DEFVAR_BOOL ("nidhogg-workers--test-image-legacy", nh_img_legacy,
+    doc: /* Non-nil means the image loaders skip the decoder cores (tests).  */);
+  nh_img_legacy = false;
+  defsubr (&Snidhogg_workers__test_image_pixels);
+}
+
+# else /* not USE_CAIRO */
+
+bool
+nh_img_sync_load (struct frame *f, struct image *img, int fmt, bool *ok)
+{
+  return false;
+}
+
+/* No pending entries without Cairo: nh_img_job_inputs refuses.  */
+bool
+nh_img_job_inputs (struct frame *f, struct image *img, int fmt,
+		   struct nh_img_params *p, uint8_t **data, size_t *len,
+		   char **file)
+{
+  *data = NULL;
+  *len = 0;
+  *file = NULL;
+  return false;
+}
+
+bool
+nh_img_load_result (struct frame *f, struct image *img, int fmt,
+		    struct nh_img_out *out, int rc)
+{
+  return false;
+}
+
+void
+nh_img_land (struct frame *f, struct image *img, int fmt,
+	     struct nh_img_out *out, int rc)
+{
+}
+
+bool
+nh_img_prepare (struct frame *f, struct image *img)
+{
+  return false;
+}
+
+bool
+nh_img_stand_in (struct frame *f, struct image *img, struct image *ready)
+{
+  return false;
+}
+
+void
+nh_img_image_syms (void)
+{
+}
+
+# endif /* not USE_CAIRO */
+
+#endif /* HAVE_NIDHOGG_WORKERS */
 
 /***********************************************************************
 				 PNG
@@ -8258,6 +9104,9 @@ struct png_load_context
 static bool
 png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
 {
+#ifdef HAVE_NIDHOGG_WORKERS
+  NH_IMG_SYNC_LOAD (f, img, NH_IMG_PNG);
+#endif
   Lisp_Object specified_file, specified_data;
   FILE *fp = NULL;
   int x, y;
@@ -8468,7 +9317,12 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
              true))
 	/* The user specified `:background', use that.  */
 	{
+#ifdef HAVE_NIDHOGG_WORKERS
+	  /* The screen format is 8-bit even after strip_16.  */
+	  int shift = 8;
+#else
 	  int shift = bit_depth == 16 ? 0 : 8;
+#endif
 	  png_color_16 bg = { 0 };
 	  bg.red = color.red >> shift;
 	  bg.green = color.green >> shift;
@@ -9007,6 +9861,9 @@ static bool
 jpeg_load_body (struct frame *f, struct image *img,
 		struct my_jpeg_error_mgr *mgr)
 {
+#ifdef HAVE_NIDHOGG_WORKERS
+  NH_IMG_SYNC_LOAD (f, img, NH_IMG_JPEG);
+#endif
   Lisp_Object specified_file, specified_data;
   FILE *fp = NULL;
   JSAMPARRAY buffer;
@@ -9869,6 +10726,9 @@ gif_destroy (union anim_handle *handle)
 static bool
 gif_load (struct frame *f, struct image *img)
 {
+#ifdef HAVE_NIDHOGG_WORKERS
+  NH_IMG_SYNC_LOAD (f, img, NH_IMG_GIF);
+#endif
   int rc, width, height, x, y, i, j;
   ColorMapObject *gif_color_map;
   GifFileType *gif = NULL;
@@ -10520,6 +11380,9 @@ webp_destroy (union anim_handle *handle)
 static bool
 webp_load (struct frame *f, struct image *img)
 {
+#ifdef HAVE_NIDHOGG_WORKERS
+  NH_IMG_SYNC_LOAD (f, img, NH_IMG_WEBP);
+#endif
   /* Return value.  */
   bool success = false;
   /* Owned copies and borrowed views of input WebP bitstream data and

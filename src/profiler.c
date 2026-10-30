@@ -22,6 +22,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "syssignal.h"
 #include "systime.h"
 #include "pdumper.h"
+#ifdef HAVE_NIDHOGG_WORKERS
+#include "nidhogg-workers.h"
+#endif
 
 /* Return A + B, but return the maximum fixnum if the result would overflow.
    Assume A and B are nonnegative and in fixnum range.  */
@@ -672,6 +675,13 @@ before returning.  */)
 void
 malloc_probe (size_t size)
 {
+#ifdef HAVE_NIDHOGG_WORKERS
+  if (nh_wk_on_worker ())
+    {
+      nh_wk_worker_probes++;
+      return;
+    }
+#endif
   add_sample (&memory, min (size, MOST_POSITIVE_FIXNUM));
 }
 

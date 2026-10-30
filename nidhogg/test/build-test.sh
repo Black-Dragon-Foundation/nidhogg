@@ -65,6 +65,13 @@ run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n
 rcis 0; has "--with-nidhogg-watchdog"
 run -- --dry-run --container fedora-45 --without-nidhogg-watchdog
 rcis 0; hasnt "--with-nidhogg-watchdog"
+# the worker threads likewise, unless --without-nidhogg-workers
+run -- --dry-run --container fedora-45
+rcis 0; has "--with-nidhogg-workers"
+run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n
+rcis 0; has "--with-nidhogg-workers"
+run -- --dry-run --container fedora-45 --without-nidhogg-workers
+rcis 0; hasnt "--with-nidhogg-workers"; has "--with-nidhogg-watchdog"
 # --dev: native-compilation=yes, no JIT in the image, never packed, cache stamp carries the mode
 run -- --dry-run --container fedora-44 --dev
 rcis 0; has "--with-native-compilation=yes"; hasnt "--with-native-compilation=aot"; has "site-init.el"; has "MODE_ID=yes"; has "--with-tree-sitter"
@@ -75,7 +82,12 @@ rcis 1; has "never packed"
 run -- --dry-run --container fedora-44 --dev --stage pack
 rcis 1; has "never packed"
 run -- --dry-run --container fedora-44
-rcis 0; hasnt "site-init.el"; has "MODE_ID=aot"
+rcis 0; hasnt "site-init.el"; has "MODE_ID=aot"; hasnt "fsanitize"
+# NIDHOGG_BUILD_SANITIZE reaches CFLAGS and LDFLAGS; dev builds only
+run NIDHOGG_BUILD_SANITIZE=address,undefined -- --dry-run --container fedora-45 --dev
+rcis 0; has "CFLAGS='-g -O1 -fno-omit-frame-pointer -fsanitize=address,undefined'"; has "LDFLAGS='-fsanitize=address,undefined'"; has "libasan"
+run NIDHOGG_BUILD_SANITIZE=address,undefined -- --dry-run --container fedora-45
+rcis 1; has "dev builds only"
 # macOS counts free + inactive + speculative + purgeable pages (a fake vm_stat: 16 KiB pages, 262144 each = 4 GiB each)
 T=$(mktemp -d "${TMPDIR:-/tmp}/nidhogg-build-test.XXXXXX")
 trap 'rm -rf "$T"' EXIT

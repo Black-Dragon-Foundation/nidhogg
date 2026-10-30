@@ -57,6 +57,11 @@ glitnir_box_key_ok (Lisp_Object key, Lisp_Object value)
   return false;
 }
 
+#ifdef HAVE_NIDHOGG_WORKERS
+/* glitnir-images.c: the image decoders on the image worker.  */
+extern void syms_of_glitnir_images (void);
+#endif
+
 DEFUN ("glitnir-active-p", Fglitnir_active_p, Sglitnir_active_p, 0, 1, 0,
        doc: /* Return non-nil if Glitnir (the compositor) draws FRAME.
 FRAME defaults to the selected frame.  Only graphical frames of the pgtk
@@ -841,6 +846,9 @@ whole frame.  `damage-hold' (for tests) keeps each frame's damage until
 point; the points then present whole frames.  */);
   Vglitnir_debug = Qnil;
 
+#ifdef HAVE_NIDHOGG_WORKERS
+  syms_of_glitnir_images ();
+#endif
   Fprovide (intern_c_string ("glitnir"), Qnil);
 }
 

@@ -11,8 +11,15 @@ publish = false
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
+# The image decoders (feature `images`, README "Image decoders"): exact pins, no default features (gif: only
+# `std`, without which the crate is empty).
+png = { version = "=0.18.1", default-features = false, optional = true }
+gif = { version = "=0.14.2", default-features = false, features = ["std"], optional = true }
+image-webp = { version = "=0.2.4", default-features = false, optional = true }
 
 [features]
+default = ["images"]
+images = ["dep:png", "dep:gif", "dep:image-webp"]
 pixman-oracle = []
 
 # The shadow tests convolve their reference images with an exact Gaussian (~10⁹ multiply-adds): optimised, they

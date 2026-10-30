@@ -27,6 +27,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <tree_sitter/api.h>
 #include "lisp.h"
 #include "buffer.h"
+#ifdef HAVE_NIDHOGG_WORKERS
+#include "nidhogg-workers.h"
+#endif
 
 INLINE_HEADER_BEGIN
 
@@ -122,6 +125,27 @@ struct Lisp_TS_Parser
      prevent infinite recursion due to calling after change
      functions.  */
   bool within_reparse;
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  /* Nidhogg's worker threads (nidhogg-treesit-bg.c).  The parser's
+     reference to its parse job (a struct nh_ts_job), or NULL; the edit
+     generation, which every recorded change and every narrowing sync
+     that moves the tree's view increments; the subtree statistics of
+     the published tree, valid while NH_STAT_TIMESTAMP equals
+     TIMESTAMP.  */
+  void *nh_job;
+  ptrdiff_t nh_gen;
+  ptrdiff_t nh_stat[3];
+  ptrdiff_t nh_stat_timestamp;
+  /* What a reparse costs (§7.5): a synchronous parse over an old tree
+     (ns per parse), one without (ns per byte), and the bytes edited
+     since the last parse.  */
+  struct nh_wk_cost nh_incr, nh_full;
+  ptrdiff_t nh_edited_bytes;
+  /* ... and the edits made since then.  */
+  ptrdiff_t nh_edit_count;
+
+#endif
 };
 
 /* A wrapper around a tree-sitter node.  */
