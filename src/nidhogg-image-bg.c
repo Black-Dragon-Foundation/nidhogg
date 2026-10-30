@@ -556,11 +556,11 @@ nh_png_decode (const uint8_t *data, size_t len,
 
   if (!transparent_p && p->bg_set)
     {
-      int shift = bit_depth == 16 ? 0 : 8;
+      /* The screen format is 8-bit even after strip_16.  */
       png_color_16 bg = { 0 };
-      bg.red = p->bg_r >> shift;
-      bg.green = p->bg_g >> shift;
-      bg.blue = p->bg_b >> shift;
+      bg.red = p->bg_r >> 8;
+      bg.green = p->bg_g >> 8;
+      bg.blue = p->bg_b >> 8;
       png_set_background (ctx.png, &bg, PNG_BACKGROUND_GAMMA_SCREEN, 0, 1.0);
     }
 

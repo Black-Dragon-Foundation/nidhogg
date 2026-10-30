@@ -307,6 +307,23 @@ unibyte strings; CHUNKS, each (TYPE . BODY), go before the image data."
                                    (if (and bg (memq name '(gamma-alpha srgb-alpha)))
                                        1 0)))))))))))
 
+(ert-deftest workers/image-16-bit-background ()
+  ;; A 16-bit RGBA pixel 0x5555 at alpha 0xaaaa (2/3) over #333333 is
+  ;; 0x49 per channel, by the C core and by Rust alike (not over 0x66).
+  (skip-unless (and (memq 'png (workers-image-tests--rust-types))
+                    (workers-image-tests--core-p 'png)))
+  (let* ((v (unibyte-string #x55 #x55 #x55 #x55 #x55 #x55 #xaa #xaa))
+         (spec `(image :type png
+                       :data ,(workers-image-tests--png 1 1 6 16 (list v))))
+         (params '(:limit 10000 :bg (13107 13107 13107))))
+    (dolist (rust '(nil (png)))
+      (let* ((nidhogg-workers-image-rust rust)
+             (r (nidhogg-workers--test-image-decode spec params)))
+        (should-not (plist-get r :error))
+        ;; one 32-bit word, 0x00494949 in either byte order
+        (should (equal (sort (append (plist-get r :pixels) nil) #'<)
+                       '(0 #x49 #x49 #x49)))))))
+
 (ert-deftest workers/image-rust-errors ()
   ;; Truncated, corrupt and oversized PNGs fail in Rust as they fail in
   ;; the C core, with the same kind of error (the text is the crate's).
