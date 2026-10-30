@@ -362,8 +362,11 @@ struct nh_io_h
   int64_t ndecoded, nredecoded;
 
   /* Delivery (Task 19), the main thread's: the filter's estimated ns per
-     byte, once COST_KNOWN; COST_FIXED when a test fixed it.  */
-  double cost;
+     byte and per call, once COST_KNOWN, fitted over the moving averages
+     of its calls' bytes, ns, bytes² and bytes × ns (M_N, M_T, M_NN,
+     M_NT); COST_FIXED when a test fixed it (per byte only).  */
+  double cost, call;
+  double m_n, m_t, m_nn, m_nt;
   bool cost_known, cost_fixed;
   /* Filter calls with its output in progress (one waits: nested).  */
   int filtering;
@@ -1948,8 +1951,12 @@ nh_io_now (void)
    (read-process-output-max).  The default filter is C: SIZE.  Any other
    filter: the natural read (a pty's, else SIZE), and with a known cost
    also what its estimated work fits in the inline budget, at least
-   NH_IO_DELIVER_MIN bytes.  A delivery never grows past the natural
-   read, and one nested in P's own filter (it waits: `sleep-for',
+   NH_IO_DELIVER_MIN bytes.  Each piece of a cut costs the filter's
+   work per call again: a filter whose calls cost half the budget
+   whatever they get (it waits, or rescans all it gathered) is not cut,
+   as today (cut, its total work grew with the number of calls, by up
+   to the natural read over NH_IO_DELIVER_MIN).  A delivery never grows
+   past the natural read, and one nested in P's own filter (it waits: `sleep-for',
    `accept-process-output') is that read: a smaller one would only
    nest the filter deeper, a level per delivery, up to
    `max-lisp-eval-depth'.  */
@@ -1965,11 +1972,13 @@ nh_io_limit (struct Lisp_Process *p, struct nh_io_h *h, ptrdiff_t size)
   nh_wk_pressure_sample ();
   if (h->cost_known && h->cost > 0)
     {
-      double fit = (double) nh_wk_inline_ns () / h->cost;
+      double budget = nh_wk_inline_ns ();
+      double fit = (h->call <= budget / 2 ? (budget - h->call) / h->cost
+		    : size);
       if (fit < NH_IO_DELIVER_MIN)
 	fit = NH_IO_DELIVER_MIN;
       bool shrunk = fit < size;
-      double base = (double) NH_WK_INLINE_NS / h->cost;
+      double base = (NH_WK_INLINE_NS - h->call) / h->cost;
       if (fit < lim)
 	lim = fit;
       nh_wk_count_decision (NH_WK_A_IO, !shrunk,
@@ -2671,9 +2680,11 @@ nh_io_filter_begin (struct Lisp_Process *p, struct nh_io_filter *f)
 
 /* The filter call F got NBYTES bytes (0: it was not called).  Count its
    ns without the filter calls nested in it (a filter that waits gets
-   output meanwhile), and fold its ns per byte into its process's
-   estimate (a moving average, a quarter for the newest call) unless a
-   test fixed it.  */
+   output meanwhile), and fold the call into its process's estimate
+   unless a test fixed it: NS = CALL + COST × NBYTES, a least-squares
+   fit over moving averages (a quarter for the newest call).  While the
+   calls are about one size the two cannot be told apart, and the cost
+   is per byte (a cut then gives the next calls other sizes).  */
 void
 nh_io_filter_end (struct nh_io_filter *f, ptrdiff_t nbytes)
 {
@@ -2689,9 +2700,27 @@ nh_io_filter_end (struct nh_io_filter *f, ptrdiff_t nbytes)
   nh_wk_phase_ns_add (NH_WK_PH_FILTER, 0, ns);
   if (!h || h->cost_fixed)
     return;
-  double per = (double) ns / nbytes;
-  h->cost = h->cost_known ? h->cost + (per - h->cost) / 4 : per;
+  double n = nbytes, t = ns, w = h->cost_known ? 0.25 : 1;
+  h->m_n += w * (n - h->m_n);
+  h->m_t += w * (t - h->m_t);
+  h->m_nn += w * (n * n - h->m_nn);
+  h->m_nt += w * (n * t - h->m_nt);
   h->cost_known = true;
+  double var = h->m_nn - h->m_n * h->m_n;
+  /* Sizes that spread less than 1/16 of their mean tell nothing.  */
+  double k = (var > h->m_n * h->m_n / 256
+	      ? (h->m_nt - h->m_n * h->m_t) / var : -1);
+  double c = h->m_t - (k < 0 ? 0 : k) * h->m_n;
+  if (k < 0 && var > h->m_n * h->m_n / 256)
+    /* More bytes took less time: the work is per call.  */
+    k = 0;
+  else if (k < 0 || c < 0)
+    {
+      k = h->m_t / h->m_n;
+      c = 0;
+    }
+  h->cost = k;
+  h->call = c;
 }
 
 /* Task 24: P's framed delivery left a batch.  Hand it to C (FN nil:
@@ -2924,6 +2953,7 @@ it.  Return non-nil if the reader owns PROCESS (else nothing changes).  */)
     return Qnil;
   h->cost_fixed = h->cost_known = !NILP (ns);
   h->cost = NILP (ns) ? 0 : XFLOATINT (ns);
+  h->call = 0;
   return Qt;
 }
 
