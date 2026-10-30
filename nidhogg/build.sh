@@ -246,6 +246,8 @@ script() {
     esac
     # Fedora ships the sanitizer runtimes apart from gcc
     if [ -n "$SANITIZE" ]; then case $DISTRO in ubuntu-*|debian-*|arch) ;; *) echo "dnf -y --setopt=install_weak_deps=False install libasan libubsan libtsan" ;; esac; fi
+    # the pre-flight's P5, Fedora only: NIDHOGG_CHECK_RR is the recorder's command, the prefix of each test run
+    [ -z "${NIDHOGG_CHECK_RR:-}" ] || echo "dnf -y --setopt=install_weak_deps=False install rr"
     [ -z "${NIDHOGG_BUILD_CCACHE:-}" ] || echo 'export CCACHE_DIR=/ccache CCACHE_COMPILERCHECK=content CCACHE_MAXSIZE=500M CC="ccache gcc"; ccache -z >/dev/null'
   fi
   cat <<'BODY'
@@ -361,10 +363,19 @@ BODY
   fi
   if [ "$MODE" = container ] && [ -n "${NIDHOGG_BUILD_CCACHE:-}" ] && [ "$STAGE" != pack ]; then echo 'ccache -s || true'; fi
   if [ -n "$CHECK" ] && { [ "$STAGE" = all ] || [ "$STAGE" = check ]; }; then
+    # test/Makefile runs each test as $(GDB) ... emacs: the recorder goes there, its traces under the build dir
+    rr_arg=""
+    if [ -n "${NIDHOGG_CHECK_RR:-}" ]; then
+      echo 'export _RR_TRACE_DIR="$B/rr-traces"; mkdir -p "$_RR_TRACE_DIR"'
+      rr_arg="$(printf '%q' "GDB=$NIDHOGG_CHECK_RR") "
+    fi
     for t in $(sed "s/#.*//" "$CHECK" 2>/dev/null || echo "<targets of $CHECK>"); do
       echo "phase check $t"
-      echo "checked \"\$B/check.log\" make -C test $t"
+      echo "checked \"\$B/check.log\" make -C test $rr_arg$t"
     done
+    # each container installs its packages afresh: a trace replays in a later one only with its files packed in
+    # and the trace's name, in a log so that it comes back from the desktop
+    [ -z "$rr_arg" ] || echo 'rr pack "$_RR_TRACE_DIR/latest-trace" || echo "build.sh: rr pack failed"; readlink -f "$_RR_TRACE_DIR/latest-trace" > "$B/check-logs/rr-trace.log"'
     echo "check_rerun"
   fi
   if [ "$STAGE" = build ] || [ "$STAGE" = check ]; then :
