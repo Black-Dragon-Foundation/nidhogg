@@ -10,14 +10,63 @@ mod step;
 use common::Recorder;
 use nhglue::abi::*;
 use nhglue::action::*;
+use nhglue::backing::{NhgBacking, NhgFrameGeom, NhgRect};
 use nhglue::dnd::*;
 use nhglue::ffi::*;
+use nhglue::present::*;
 use nhshell::api::{NHSHELL_DND_COPY, NHSHELL_DND_MOVE, NHSHELL_SEL_DND};
 use std::ffi::c_char;
+use std::ptr;
 use std::time::{Duration, Instant};
 use step::*;
 
 const TEXT: &std::ffi::CStr = c"text/plain;charset=utf-8";
+
+/// Draw `window`'s frame whole (200 x 100) and publish it, so the compositor has a surface with a buffer to put the
+/// pointer over (a surface without one has no size and is hit by nothing).
+fn draw(d: *mut NhgDisplay, window: u64) {
+    let g = NhgFrameGeom {
+        native_w: 200,
+        native_h: 100,
+        bg_argb: 0xff20_4060,
+        scale120: 120,
+        layer: NhgRect {
+            x: 0,
+            y: 0,
+            w: 200,
+            h: 100,
+        },
+        ..Default::default()
+    };
+    let mut key = 0;
+    let mut b = NhgBacking {
+        pixels: ptr::null_mut(),
+        stride: 0,
+        w: 0,
+        h: 0,
+        generation: 0,
+    };
+    // SAFETY: a live display; `g`, the key and the backing are valid for the calls.
+    unsafe {
+        assert!(nhg_layer_ensure(d, &mut key, &g) >= 0);
+        assert_eq!(nhg_backing(d, key, &g, &mut b), 0);
+        assert_eq!(nhg_damage_all(d, key), 0);
+    }
+    let s = [NhgSurface {
+        window,
+        parent: 0,
+        frame: key,
+        flags: NHG_SURF_DRAWABLE,
+        alpha_cut: 0,
+    }];
+    // SAFETY: a live display; one readable surface.
+    let rc = unsafe { nhg_present(d, window, s.as_ptr(), 1, NHG_PRESENT_BACKSTOP, 0) };
+    assert!(rc >= 0, "present: {rc}");
+    // the picture goes out at the window's READY, inline
+    until(d, |a| a.kind == NHG_ACT_READY && a.window == window);
+    // SAFETY: a live display; no surfaces.
+    unsafe { nhg_present(d, window, ptr::null(), 0, NHG_PRESENT_READY, 0) };
+}
 
 /// A window with the keyboard and the pointer over it, its first configure applied.
 fn ready(rec: &Recorder, d: *mut NhgDisplay) -> u64 {
@@ -25,6 +74,8 @@ fn ready(rec: &Recorder, d: *mut NhgDisplay) -> u64 {
     // SAFETY: a live display.
     assert_eq!(unsafe { nhg_frame_units(d, id, 10, 10) }, NHG_OK);
     configured(d, id);
+    draw(d, id);
+    rec.wait_node(id, |n| n.contains("\"buffer\":{"));
     rec.control_ok(r#"{"cmd":"focus","surface":"toplevel"}"#);
     rec.control_ok(r#"{"cmd":"pointer","pos":[10,10]}"#);
     settle(d);
