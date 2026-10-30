@@ -279,8 +279,10 @@ impl Present {
         let open = self.configured && !self.starved;
         let content_ack = open && content_ack;
         let content = content_ack || (open && self.dirty && !self.waiting && !self.suspended);
-        let owed = self.configured
-            && (self.owed || self.rec.rearm || (self.ack.is_some() && !self.ack_content));
+        // a re-arm waits for a content ack's commit, which asks for a callback itself (when a buffer is free)
+        let rearm = self.rec.rearm && !(open && self.ack.is_some() && self.ack_content);
+        let owed =
+            self.configured && (self.owed || rearm || (self.ack.is_some() && !self.ack_content));
         u32::from(content) * NHSHELL_READY_CONTENT
             + u32::from(content_ack) * NHSHELL_READY_ACK
             + u32::from(owed) * NHSHELL_READY_OWED
