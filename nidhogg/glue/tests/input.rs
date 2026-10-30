@@ -421,6 +421,36 @@ fn name_of(m: &NhgMonitor) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+/// Like `until`, for what the main queue carries (outputs): the reader thread wakes the descriptor when it has
+/// queued something, and the host then dispatches the main queue; a dispatch before the compositor's event reached
+/// the reader finds nothing and nothing calls it again, so each pass dispatches first.
+#[track_caller]
+fn pump_until(d: *mut NhgDisplay, want: impl Fn(&NhgAction) -> bool) -> Vec<NhgAction> {
+    let end = Instant::now() + Duration::from_secs(5);
+    let mut seen = Vec::new();
+    loop {
+        backend(d).dispatch_main().unwrap();
+        let (rc, v) = step(d, 0);
+        assert!(rc >= 0, "nhg_next failed: {rc}");
+        for a in v {
+            let done = want(&a);
+            seen.push(a);
+            if done {
+                return seen;
+            }
+        }
+        if rc == 0 {
+            assert!(
+                Instant::now() < end,
+                "the awaited action never came; came instead: {:?}",
+                seen.iter().map(|a| (a.kind, a.window)).collect::<Vec<_>>()
+            );
+            // SAFETY: a live display.
+            readable_within(unsafe { nhg_fd(d) }, 50);
+        }
+    }
+}
+
 mod monitors {
     use super::*;
 
@@ -440,9 +470,7 @@ mod monitors {
         rec.control_ok(
             r#"{"cmd":"output","op":"add","name":"nh-extra","size":[800,600],"scale120":240}"#,
         );
-        backend(d).dispatch_main().unwrap();
-        // wait for the record itself: the shell queues it when the compositor's events arrive, not on a schedule
-        let mut seen = until(d, |a| a.kind == NHG_ACT_MONITORS && a.code == 240);
+        let mut seen = pump_until(d, |a| a.kind == NHG_ACT_MONITORS && a.code == 240);
         seen.extend(settle(d));
         let changed: Vec<_> = seen.iter().filter(|a| a.kind == NHG_ACT_MONITORS).collect();
         assert!(!changed.is_empty());
@@ -459,7 +487,6 @@ mod monitors {
         rec.control_ok(&format!(
             r#"{{"cmd":"output","op":"enter","name":"{first_name}","surface":{id}}}"#
         ));
-        backend(d).dispatch_main().unwrap();
         let outputs = |d| {
             let mut ids = [0u64; 16];
             let mut n = 0usize;
@@ -469,8 +496,9 @@ mod monitors {
             ids[..n].to_vec()
         };
         // the enter record carries no action: step until the window's outputs show it
-        let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while outputs(d) != [first[0].id] && std::time::Instant::now() < end {
+        let end = Instant::now() + Duration::from_secs(5);
+        while outputs(d) != [first[0].id] && Instant::now() < end {
+            backend(d).dispatch_main().unwrap();
             step(d, 0);
             // SAFETY: a live display.
             readable_within(unsafe { nhg_fd(d) }, 50);
@@ -479,8 +507,7 @@ mod monitors {
         rec.control_ok(&format!(
             r#"{{"cmd":"output","op":"remove","name":"{first_name}"}}"#
         ));
-        backend(d).dispatch_main().unwrap();
-        until(d, |a| a.kind == NHG_ACT_MONITORS && a.code == 0);
+        pump_until(d, |a| a.kind == NHG_ACT_MONITORS && a.code == 0);
         settle(d);
         assert_eq!(list_monitors(d).len(), first.len(), "one left, one added");
         assert!(outputs(d).is_empty(), "the output the window was on went");
