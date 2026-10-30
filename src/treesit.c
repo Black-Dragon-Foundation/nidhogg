@@ -3017,7 +3017,11 @@ If NODE is nil, return nil.  */)
 
   TSNode treesit_node = XTS_NODE (node)->node;
   char *string = ts_node_string (treesit_node);
-  return build_string (string);
+  /* Tree-sitter allocated STRING with the allocator set in
+     treesit_initialize; the caller frees it.  */
+  Lisp_Object result = build_string (string);
+  xfree (string);
+  return result;
 }
 
 static bool treesit_cursor_helper (TSTreeCursor *, TSNode, Lisp_Object);
