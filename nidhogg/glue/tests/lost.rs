@@ -85,6 +85,57 @@ mod lost {
         let d = open(&rec);
         let w = window(d);
         configured(d, w);
+        // the first configure's ack is a content ack and waits for a picture: draw one so it goes out, or the bad ack
+        // below would join it as a content ack and no commit would carry it
+        let g = NhgFrameGeom {
+            native_w: 200,
+            native_h: 100,
+            scale120: 120,
+            layer: NhgRect {
+                x: 0,
+                y: 0,
+                w: 200,
+                h: 100,
+            },
+            ..Default::default()
+        };
+        let mut key = 0;
+        let mut b = nhglue::backing::NhgBacking {
+            pixels: ptr::null_mut(),
+            stride: 0,
+            w: 0,
+            h: 0,
+            generation: 0,
+        };
+        // SAFETY: a live display; `g`, the key and the backing are valid for the calls.
+        unsafe {
+            assert!(nhg_layer_ensure(d, &mut key, &g) >= 0);
+            assert_eq!(nhg_backing(d, key, &g, &mut b), 0);
+            assert_eq!(nhg_damage_all(d, key), 0);
+        }
+        let s = [nhglue::present::NhgSurface {
+            window: w,
+            parent: 0,
+            frame: key,
+            flags: nhglue::present::NHG_SURF_DRAWABLE,
+            alpha_cut: 0,
+        }];
+        // SAFETY: a live display; one readable surface.
+        let rc = unsafe {
+            nhg_present(
+                d,
+                w,
+                s.as_ptr(),
+                1,
+                nhglue::present::NHG_PRESENT_BACKSTOP,
+                0,
+            )
+        };
+        assert!(rc >= 0, "present: {rc}");
+        until(d, |a| a.kind == NHG_ACT_READY && a.window == w);
+        // SAFETY: a live display; no surfaces.
+        unsafe { nhg_present(d, w, ptr::null(), 0, nhglue::present::NHG_PRESENT_READY, 0) };
+        settle(d);
         // a configure serial the compositor never sent ends the connection with a protocol error
         let _ = backend(d).ack_configure(w, 999_999, 0);
         // an ack rides the commit that carries it: the window's next present sends it
