@@ -1445,10 +1445,12 @@ returns `copy'."
 
 (ert-deftest nhwl-gui/live-drag-between-two-nidhoggs ()
   "On sway, text dragged out of this Nidhogg onto a second `nidhogg -Q' is inserted there, and the call returns
-`copy'.  The pointer is driven by `swaymsg seat - cursor'; the trace rules (errors, dnd) judge what was sent."
+`copy'.  The pointer is driven by `swaymsg seat - cursor'; the trace rules (errors, dnd) judge what was sent.  The
+session's frame is fullscreen and gui.sh's sway floats the second one over it, so the row puts them side by side."
   :tags '(runs-last)
   (skip-unless (and (nhwl-gui--live-p) (equal (glitnir-gui--compositor) "sway") (executable-find "swaymsg")))
-  (let* ((file (make-temp-file "nhwl-drag-target-"))
+  (let* ((fullscreen (frame-parameter nil 'fullscreen))
+         (file (make-temp-file "nhwl-drag-target-"))
          (second (make-process
                   :name "nhwl-drag-target" :noquery t :buffer nil
                   :command (list (expand-file-name invocation-name invocation-directory) "-Q"
@@ -1462,9 +1464,18 @@ returns `copy'."
         (let ((from nil) (to nil))
           (should (nhwl-gui--wait (lambda ()
                                     (nhwl-gui--live-settle 0.2)
+                                    (nhwl-gui--sway-centre (process-id second)))
+                                  8))
+          ;; gui.sh's sway floats every window at the output's centre: put the two side by side
+          (dolist (w (list (cons (emacs-pid) 0) (cons (process-id second) 50)))
+            (call-process "swaymsg" nil nil nil
+                          (format "[pid=%d] fullscreen disable, resize set width 45 ppt height 80 ppt, \
+move position %d ppt 10 ppt" (car w) (cdr w))))
+          (should (nhwl-gui--wait (lambda ()
+                                    (nhwl-gui--live-settle 0.2)
                                     (setq from (nhwl-gui--sway-centre (emacs-pid))
                                           to (nhwl-gui--sway-centre (process-id second)))
-                                    (and from to))
+                                    (and from to (> (abs (- (car from) (car to))) 100)))
                                   8))
           (call-process "swaymsg" nil nil nil "seat" "-" "cursor" "set"
                         (number-to-string (car from)) (number-to-string (cdr from)))
@@ -1482,6 +1493,7 @@ swaymsg seat - cursor set %d %d; sleep 0.5; swaymsg seat - cursor release button
                                  (with-temp-buffer (insert-file-contents file) (buffer-string)))))
       (when (and driver (process-live-p driver)) (delete-process driver))
       (when (process-live-p second) (delete-process second))
+      (set-frame-parameter nil 'fullscreen fullscreen)
       (call-process "swaymsg" nil nil nil "seat" "-" "cursor" "release" "button1")
       (delete-file file))))
 
