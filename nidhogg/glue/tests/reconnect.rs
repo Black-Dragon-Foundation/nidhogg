@@ -248,8 +248,9 @@ mod reconnect {
         let key = backing(d);
         restart_and_reconnect(&rec, d);
         assert_eq!(settle_now(d).0 & NHG_SETTLE_REPORT, 0, "not presented yet");
-        // published before the new configure: still owed
-        publish_whole(d, w, key);
+        // published before the new configure: still owed.  Nothing is read here: the configure that follows must
+        // reach `configured`, not a settle that drops it.
+        publish(d, w, key);
         assert_eq!(settle_now(d).0 & NHG_SETTLE_REPORT, 0, "not configured yet");
         configured(d, w);
         publish_whole(d, w, key);
@@ -324,8 +325,8 @@ mod reconnect {
         key
     }
 
-    /// Damage frame `key` whole and publish window `w` at a consistency point, as C does after a redraw.
-    fn publish_whole(d: *mut NhgDisplay, w: u64, key: u64) {
+    /// Damage frame `key` whole and publish window `w` at a consistency point; no action is read.
+    fn publish(d: *mut NhgDisplay, w: u64, key: u64) {
         let s = NhgSurface {
             window: w,
             parent: 0,
@@ -339,6 +340,11 @@ mod reconnect {
             let rc = nhg_present(d, w, &s, 1, NHG_PRESENT_BACKSTOP, 0);
             assert!(rc >= 0, "{rc}");
         }
+    }
+
+    /// `publish`, as C does after a redraw, then the actions until 200 ms of quiet, the root's `FRAME_READY` answered.
+    fn publish_whole(d: *mut NhgDisplay, w: u64, key: u64) {
+        publish(d, w, key);
         // the inline present at the root's FRAME_READY
         // SAFETY: a live display.
         if readable_within(unsafe { nhg_fd(d) }, 500) {
