@@ -9,6 +9,11 @@ test -f "$wf"                                                     || { fail "no 
 for j in tree linux macos drgnx release; do grep -qE "^  $j:" "$wf" || fail "no job $j"; done
 # drgnx's tests gate a release
 awk '/^  release:/,0' "$wf" | grep -qE 'needs: \[tree, linux, macos, drgnx\]' || fail "release not gated"
+# the timing lane is report-only: its own job that never fails the run, and no release needs it
+grep -qE "^  timing:" "$wf"                                       || fail "no job timing"
+awk '/^  timing:/,/^  release:/' "$wf" | grep -qE '^    continue-on-error: true$' || fail "the timing job is not continue-on-error: true"
+awk '/^  release:/,0' "$wf" | grep -E '^    needs:' | grep -qw timing && fail "release needs the timing job"
+grep -qE '^    needs: .*timing' "$wf"                            && fail "a job needs the timing job"
 # drgnx's tiers: drgnx's own workflow, at one pinned commit that is also the default drgnx_ref, on this run's tarballs
 pin=$(grep -oE 'uses: Black-Dragon-Foundation/drgnx/\.github/workflows/drgnx-tiers\.yml@[0-9a-f]{40}' "$wf" | sed 's/.*@//')
 [ -n "$pin" ]                                                     || fail "drgnx's tiers are not called at a pinned commit"
