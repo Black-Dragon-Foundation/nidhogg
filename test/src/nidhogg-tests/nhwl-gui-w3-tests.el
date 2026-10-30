@@ -94,12 +94,14 @@ and the main thread never waited 1 ms for the presenter.  Under gui.sh `--daemon
       (kill-buffer buf))))
 
 (ert-deftest nhwl-gui/presenter-idle-has-no-wakeups ()
-  "An idle frame's presenter sleeps: once the quiet period dropped the fronts, its thread is not woken for 3 s."
+  "An idle frame's presenter sleeps: once the quiet period dropped the fronts, its thread is not woken for 3 s.
+Idle means no tooltip either: a tip an earlier row left shown hides at its own timer, which is a real wake."
   (skip-unless (and (nhwl-gui--recorder-p) (nhwl-gui--presenter-on-p)))
   (nhwl-gui--with-blink
    nil
    (lambda ()
      (let ((trims (plist-get (nhwl-presenter-stats) :front-trims)))
+       (x-hide-tip)
        (redisplay t)
        ;; the quiet period (2 s) and the trim's own wake
        (should (nhwl-gui--wait (lambda ()
