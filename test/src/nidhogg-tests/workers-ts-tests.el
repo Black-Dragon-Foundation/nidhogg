@@ -122,6 +122,23 @@ BODY sees `mode' and `dir' (the grammar directory)."
   "Wait until PARSER's job is done (inline jobs already are)."
   (should (eql (nidhogg-workers--test-ts-wait parser 120000) 1)))
 
+(defun workers-ts-tests--parting (a b)
+  "Nil if strings A and B are equal, else their lengths and where they part."
+  (unless (equal a b)
+    (let ((i (1- (abs (compare-strings a nil nil b nil nil)))))
+      (list :lengths (list (length a) (length b)) :at i
+            :a (substring a i (min (length a) (+ i 160)))
+            :b (substring b i (min (length b) (+ i 160)))))))
+
+(defmacro workers-ts-tests--differ (a b)
+  "Nil if tree strings A and B are equal, else where they part; for `should-not'.
+ERT keeps the arguments of every `should' form's call in the test's
+result until the run ends, and these strings reach megabytes: compared
+in `(should (equal ...))' they ran a whole suite in one process out of
+memory.  Of a `let' form ERT keeps the form as written and its value."
+  `(let ((a ,a) (b ,b))
+     (workers-ts-tests--parting a b)))
+
 (defun workers-ts-tests--sync-sexp (text &optional lang ranges)
   "The S-expression of a synchronous LANG (default C) parse of TEXT with RANGES."
   (with-temp-buffer
@@ -237,8 +254,9 @@ BODY sees `mode' and `dir' (the grammar directory)."
               (sexp (treesit-node-string (treesit-parser-root-node p))))
           (should (= (workers-ts-tests--stat :published) pub))
           (should (= (workers-ts-tests--stat :discarded) (1+ dis)))
-          (should (equal sexp (workers-ts-tests--sync-sexp
-                               (buffer-string) 'c (list (cons 1 5000))))))))))
+          (should-not (workers-ts-tests--differ
+                       sexp (workers-ts-tests--sync-sexp
+                             (buffer-string) 'c (list (cons 1 5000))))))))))
 
 (ert-deftest workers/ts-delete-and-gc ()
   ;; The parser deleted, its buffer killed and a forced GC while a job is
@@ -290,9 +308,10 @@ BODY sees `mode' and `dir' (the grammar directory)."
                 (insert "int q;\n")
                 (should (nidhogg-workers--test-ts-start p))
                 (workers-ts-tests--done p)
-                (should (equal (treesit-node-string (treesit-parser-root-node p))
-                               (workers-ts-tests--sync-sexp
-                                (buffer-substring (point-min) (point-max)))))
+                (should-not (workers-ts-tests--differ
+                             (treesit-node-string (treesit-parser-root-node p))
+                             (workers-ts-tests--sync-sexp
+                              (buffer-substring (point-min) (point-max)))))
                 (goto-char 2500)
                 (insert "int r;\n")
                 (workers-ts-tests--pause mode 'after-snapshot)
@@ -346,11 +365,13 @@ BODY sees `mode' and `dir' (the grammar directory)."
           (workers-ts-tests--done p)
           (workers-ts-tests--done e)
           (let ((pub (workers-ts-tests--stat :published)))
-            (should (equal (treesit-node-string (treesit-parser-root-node e))
-                           (workers-ts-tests--sync-sexp
-                            (buffer-string) 'c (list (cons 100 3000)))))
-            (should (equal (treesit-node-string (treesit-parser-root-node p))
-                           (workers-ts-tests--sync-sexp (buffer-string))))
+            (should-not (workers-ts-tests--differ
+                         (treesit-node-string (treesit-parser-root-node e))
+                         (workers-ts-tests--sync-sexp
+                          (buffer-string) 'c (list (cons 100 3000)))))
+            (should-not (workers-ts-tests--differ
+                         (treesit-node-string (treesit-parser-root-node p))
+                         (workers-ts-tests--sync-sexp (buffer-string))))
             (should (= (workers-ts-tests--stat :published) (+ pub 2)))))))))
 
 (defconst workers-ts-tests--samples
@@ -376,15 +397,17 @@ BODY sees `mode' and `dir' (the grammar directory)."
                   (pub (workers-ts-tests--stat :published)))
               (should (nidhogg-workers--test-ts-start p))
               (workers-ts-tests--done p)
-              (should (equal (treesit-node-string (treesit-parser-root-node p))
-                             (workers-ts-tests--sync-sexp (buffer-string) (car s))))
+              (should-not (workers-ts-tests--differ
+                           (treesit-node-string (treesit-parser-root-node p))
+                           (workers-ts-tests--sync-sexp (buffer-string) (car s))))
               (goto-char (/ (point-max) 3))
               (forward-line 0)
               (insert (cdr s) (cdr s))
               (should (nidhogg-workers--test-ts-start p))
               (workers-ts-tests--done p)
-              (should (equal (treesit-node-string (treesit-parser-root-node p))
-                             (workers-ts-tests--sync-sexp (buffer-string) (car s))))
+              (should-not (workers-ts-tests--differ
+                           (treesit-node-string (treesit-parser-root-node p))
+                           (workers-ts-tests--sync-sexp (buffer-string) (car s))))
               (should (= (workers-ts-tests--stat :published) (+ pub 2))))))))))
 
 (ert-deftest workers/ts-subtree-stat-cached ()
@@ -513,7 +536,8 @@ B's tree."
             (should (= (workers-ts-tests--stat :published) (1+ pub)))
             (should (= (workers-ts-tests--stat :replayed) (1+ rep)))
             (should (= (workers-ts-tests--stat :replayed-edits) (+ edits 30)))
-            (should (equal sa (workers-ts-tests--sexp pb)))))
+            (should-not (workers-ts-tests--differ
+                         sa (workers-ts-tests--sexp pb)))))
       (kill-buffer a)
       (kill-buffer b))))
 
@@ -555,8 +579,9 @@ B's tree."
             (should (= (workers-ts-tests--stat :discarded) (1+ dis)))
             (nidhogg-workers--release 'after-snapshot)
             (let ((pub (workers-ts-tests--stat :published)))
-              (should (equal (workers-ts-tests--sexp p)
-                             (workers-ts-tests--sync-sexp (buffer-string))))
+              (should-not (workers-ts-tests--differ
+                           (workers-ts-tests--sexp p)
+                           (workers-ts-tests--sync-sexp (buffer-string))))
               (should (= (workers-ts-tests--stat :published) pub)))
             (should (nidhogg-workers--test-ts-await-idle 60000))))))))
 
@@ -597,8 +622,9 @@ B's tree."
                                        1 2))))
               (let ((pub (workers-ts-tests--stat :published))
                     (rep (workers-ts-tests--stat :replayed)))
-                (should (equal (workers-ts-tests--sexp p)
-                               (workers-ts-tests--sync-sexp (buffer-string))))
+                (should-not (workers-ts-tests--differ
+                             (workers-ts-tests--sexp p)
+                             (workers-ts-tests--sync-sexp (buffer-string))))
                 (should (= (workers-ts-tests--stat :published) (1+ pub)))
                 (should (= (workers-ts-tests--stat :replayed) rep)))
               (should (nidhogg-workers--test-ts-await-idle 60000)))))))))
@@ -732,8 +758,9 @@ language.  A buffer under 8000 characters gets a yank."
                       (buffer-enable-undo)))
                   (setq pa (treesit-parser-create (car s) a t)
                         pb (treesit-parser-create (car s) b t))
-                  (should (equal (workers-ts-tests--sexp pa)
-                                 (workers-ts-tests--sexp pb)))
+                  (should-not (workers-ts-tests--differ
+                               (workers-ts-tests--sexp pa)
+                               (workers-ts-tests--sexp pb)))
                   (while (< steps workers-ts-tests--oracle-steps)
                     ;; Edits before the snapshot.
                     (dotimes (_ (1+ (random 4)))
@@ -756,7 +783,8 @@ language.  A buffer under 8000 characters gets a yank."
                         (workers-ts-tests--done pa))
                       ;; The demand.
                       (let ((sa (workers-ts-tests--sexp pa)))
-                        (should (equal sa (workers-ts-tests--sexp pb)))
+                        (should-not (workers-ts-tests--differ
+                                     sa (workers-ts-tests--sexp pb)))
                         (setq demands (1+ demands))
                         (when started
                           (should (= (workers-ts-tests--stat :published)
@@ -821,8 +849,9 @@ group's `workers/ts-attempt-clock')."
         (should (= (workers-ts-tests--stat :started) (1+ started)))
         (nidhogg-workers--release 'after-snapshot)
         (workers-ts-tests--done p)))
-    (should (equal (workers-ts-tests--sexp p)
-                   (workers-ts-tests--sync-sexp (buffer-string))))))
+    (should-not (workers-ts-tests--differ
+                 (workers-ts-tests--sexp p)
+                 (workers-ts-tests--sync-sexp (buffer-string))))))
 
 (ert-deftest workers/ts-start-points ()
   ;; §17.3 S1: in a 2 MB buffer that redisplay fontifies, a one-character
@@ -907,9 +936,10 @@ group's `workers/ts-attempt-clock')."
                   (nidhogg-workers--test-ts-select-entry)
                   (should (= (workers-ts-tests--stat :started-select) (1+ sel)))
                   (workers-ts-tests--done p)
-                  (should (equal (workers-ts-tests--sexp p)
-                                 (workers-ts-tests--sync-sexp
-                                  (buffer-string))))))))
+                  (should-not (workers-ts-tests--differ
+                               (workers-ts-tests--sexp p)
+                               (workers-ts-tests--sync-sexp
+                                (buffer-string))))))))
         (with-current-buffer buf
           (set-buffer-modified-p nil))
         (kill-buffer buf)
@@ -935,8 +965,9 @@ group's `workers/ts-attempt-clock')."
               (should (= (workers-ts-tests--stat :started-create) (1+ created)))
               (should (workers-ts-tests--info p :job))
               (workers-ts-tests--done p)
-              (should (equal (workers-ts-tests--sexp p)
-                             (workers-ts-tests--sync-sexp (buffer-string))))
+              (should-not (workers-ts-tests--differ
+                           (workers-ts-tests--sexp p)
+                           (workers-ts-tests--sync-sexp (buffer-string))))
               (should (= (workers-ts-tests--stat :published) (1+ pub)))))
         (kill-buffer buf)
         (delete-file file)))))
@@ -976,8 +1007,9 @@ started in FN stays queued until something waits for it."
                (let ((ab (workers-ts-tests--stat :abandoned))
                      (waited (workers-ts-tests--stat :waited))
                      (pub (workers-ts-tests--stat :published)))
-                 (should (equal (workers-ts-tests--sexp p)
-                                (workers-ts-tests--sync-sexp (buffer-string))))
+                 (should-not (workers-ts-tests--differ
+                              (workers-ts-tests--sexp p)
+                              (workers-ts-tests--sync-sexp (buffer-string))))
                  (should (= (workers-ts-tests--stat :abandoned) (1+ ab)))
                  (should (= (workers-ts-tests--stat :waited) waited))
                  (should (= (workers-ts-tests--stat :published) pub))
@@ -992,8 +1024,9 @@ started in FN stays queued until something waits for it."
             (insert "int x;\n")
             (let ((ab (workers-ts-tests--stat :abandoned))
                   (waited (workers-ts-tests--stat :waited)))
-              (should (equal (workers-ts-tests--sexp p)
-                             (workers-ts-tests--sync-sexp (buffer-string))))
+              (should-not (workers-ts-tests--differ
+                           (workers-ts-tests--sexp p)
+                           (workers-ts-tests--sync-sexp (buffer-string))))
               (should (= (workers-ts-tests--stat :abandoned) (1+ ab)))
               (should (= (workers-ts-tests--stat :waited) waited)))
             (nidhogg-workers--release 'after-snapshot)
@@ -1022,8 +1055,9 @@ started in FN stays queued until something waits for it."
                 (pub (workers-ts-tests--stat :published))
                 (ab (workers-ts-tests--stat :abandoned)))
             (unwind-protect
-                (should (equal (workers-ts-tests--sexp p)
-                               (workers-ts-tests--sync-sexp (buffer-string))))
+                (should-not (workers-ts-tests--differ
+                             (workers-ts-tests--sexp p)
+                             (workers-ts-tests--sync-sexp (buffer-string))))
               (nidhogg-workers--test-release-on-wait nil))
             (should (= (workers-ts-tests--stat :published) (1+ pub)))
             (should (= (workers-ts-tests--stat :abandoned) ab))
@@ -1231,9 +1265,10 @@ unbound), then jit-lock with `nidhogg--redisplay-fontifying' bound to BUF."
                                  (buffer-chars-modified-tick)))
                     (should (= (workers-ts-tests--stat :published)
                                (+ pub (if (eq mode 'threads) 1 0))))
-                    (should (equal (workers-ts-tests--sexp p)
-                                   (workers-ts-tests--sync-sexp
-                                    (buffer-string))))))
+                    (should-not (workers-ts-tests--differ
+                                 (workers-ts-tests--sexp p)
+                                 (workers-ts-tests--sync-sexp
+                                  (buffer-string))))))
                 (dolist (call (list (cons "syntax-ppss"
                                           (lambda ()
                                             (treesit--pre-syntax-ppss
@@ -1264,9 +1299,10 @@ unbound), then jit-lock with `nidhogg--redisplay-fontifying' bound to BUF."
                       (should (= (workers-ts-tests--deferrals) defs))
                       (should (eql treesit--pre-redisplay-tick
                                    (buffer-chars-modified-tick)))
-                      (should (equal (workers-ts-tests--sexp p)
-                                     (workers-ts-tests--sync-sexp
-                                      (buffer-string))))))))))
+                      (should-not (workers-ts-tests--differ
+                                   (workers-ts-tests--sexp p)
+                                   (workers-ts-tests--sync-sexp
+                                    (buffer-string))))))))))
         (kill-buffer buf)))))
 
 (ert-deftest workers/ts-defer-off ()
@@ -1317,8 +1353,9 @@ unbound), then jit-lock with `nidhogg--redisplay-fontifying' bound to BUF."
               (should (= (workers-ts-tests--deferrals) defs))
               (should (eql treesit--pre-redisplay-tick
                            (buffer-chars-modified-tick)))
-              (should (equal (workers-ts-tests--sexp p)
-                             (workers-ts-tests--sync-sexp (buffer-string))))))
+              (should-not (workers-ts-tests--differ
+                           (workers-ts-tests--sexp p)
+                           (workers-ts-tests--sync-sexp (buffer-string))))))
         (kill-buffer buf)
         (should (nidhogg-workers--test-ts-await-idle 60000))))))
 
@@ -1411,9 +1448,10 @@ unbound), then jit-lock with `nidhogg--redisplay-fontifying' bound to BUF."
                 (should-not nidhogg-workers-treesit--pending)
                 (should (= (workers-ts-tests--stat :attempts) att))
                 (should (= (workers-ts-tests--deferrals) defs))
-                (should (equal (workers-ts-tests--sexp p)
-                               (workers-ts-tests--sync-sexp
-                                (buffer-string)))))))
+                (should-not (workers-ts-tests--differ
+                             (workers-ts-tests--sexp p)
+                             (workers-ts-tests--sync-sexp
+                              (buffer-string)))))))
         (kill-buffer buf)))))
 
 (ert-deftest workers/ts-pre-redisplay-starts-job ()
@@ -1514,8 +1552,9 @@ SEED is (INCR-NS FULL-NS-PER-BYTE) for `nidhogg-workers--test-ts-cost'."
       (should (workers-ts-tests--fontifying-demand p))
       (should (= (workers-ts-tests--stat :attempts) att))
       (should (= (workers-ts-tests--stat :started) started))
-      (should (equal (workers-ts-tests--sexp p)
-                     (workers-ts-tests--sync-sexp (buffer-string)))))))
+      (should-not (workers-ts-tests--differ
+                   (workers-ts-tests--sexp p)
+                   (workers-ts-tests--sync-sexp (buffer-string)))))))
 
 ;; A slow incremental average never sends a typing edit to a job (§7.6).
 (ert-deftest workers/ts-typing-ignores-slow-incremental-average ()
@@ -1535,8 +1574,9 @@ SEED is (INCR-NS FULL-NS-PER-BYTE) for `nidhogg-workers--test-ts-cost'."
       (workers-ts-tests--type-char)
       (nidhogg-workers--test-ts-select-entry)
       (should-not (workers-ts-tests--info p :job))
-      (should (equal (workers-ts-tests--sexp p)
-                     (workers-ts-tests--sync-sexp (buffer-string))))
+      (should-not (workers-ts-tests--differ
+                   (workers-ts-tests--sexp p)
+                   (workers-ts-tests--sync-sexp (buffer-string))))
       (should (= (workers-ts-tests--stat :waited) waited)))))
 
 (ert-deftest workers/ts-paste-offloads ()
@@ -1555,8 +1595,9 @@ SEED is (INCR-NS FULL-NS-PER-BYTE) for `nidhogg-workers--test-ts-cost'."
       (should (eq (workers-ts-tests--info p :job) 'running))
       (nidhogg-workers--release 'after-snapshot)
       (workers-ts-tests--done p)
-      (should (equal (workers-ts-tests--sexp p)
-                     (workers-ts-tests--sync-sexp (buffer-string)))))))
+      (should-not (workers-ts-tests--differ
+                   (workers-ts-tests--sexp p)
+                   (workers-ts-tests--sync-sexp (buffer-string)))))))
 
 (ert-deftest workers/ts-attempt-no-estimate-only ()
   ;; The 16 ms attempt runs only while there is no estimate, and its
@@ -1597,8 +1638,9 @@ SEED is (INCR-NS FULL-NS-PER-BYTE) for `nidhogg-workers--test-ts-cost'."
     (let ((ab (workers-ts-tests--stat :abandoned))
           (waited (workers-ts-tests--stat :waited)))
       (nidhogg-workers--test-release-on-wait 'after-snapshot)
-      (should (equal (workers-ts-tests--sexp p)
-                     (workers-ts-tests--sync-sexp (buffer-string))))
+      (should-not (workers-ts-tests--differ
+                   (workers-ts-tests--sexp p)
+                   (workers-ts-tests--sync-sexp (buffer-string))))
       (should (= (workers-ts-tests--stat :waited) waited))
       (should (= (workers-ts-tests--stat :abandoned) (1+ ab))))))
 
@@ -1682,8 +1724,9 @@ SEED is (INCR-NS FULL-NS-PER-BYTE) for `nidhogg-workers--test-ts-cost'."
             (let ((ab (workers-ts-tests--stat :abandoned))
                   (waited (workers-ts-tests--stat :waited)))
               (nidhogg-workers--test-release-on-wait 'after-snapshot)
-              (should (equal (workers-ts-tests--sexp p)
-                             (workers-ts-tests--sync-sexp (buffer-string))))
+              (should-not (workers-ts-tests--differ
+                           (workers-ts-tests--sexp p)
+                           (workers-ts-tests--sync-sexp (buffer-string))))
               (if (eq (cadr case) 'cancelled)
                   (progn (should (= (workers-ts-tests--stat :abandoned) (1+ ab)))
                          (should (= (workers-ts-tests--stat :waited) waited)))
