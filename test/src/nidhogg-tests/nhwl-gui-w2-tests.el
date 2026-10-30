@@ -1837,27 +1837,26 @@ signals nothing, no frame and no terminal of the display is left, the daemon sta
 
 (ert-deftest nhwl-gui/display-lost-during-drag-out ()
   "A drag out of Emacs is in flight when the compositor goes for good: `x-begin-drag' returns nil and signals nothing,
-no frame of the display is left, and the daemon stays."
+no frame of the display is left, and the daemon stays.  The drag's loop runs no Lisp, so the loss comes from another
+process (`nhwl-gui--recorder-later')."
   :tags '(runs-last)
   (skip-unless (and (nhwl-gui--recorder-p) (daemonp) (fboundp 'x-begin-drag)))
-  (let ((nhwl-reconnect nil) (timer nil) (result 'unset) (err nil))
+  (let ((nhwl-reconnect nil) (later nil) (result 'unset) (err nil))
     (unwind-protect
         (nhwl-gui--with-connection-log
-         (ignore-errors (gui-set-selection 'XdndSelection "dragged text"))
-         (nhwl-gui--point 100 100)
-         (gui-runner-recorder '(:cmd "button" :button 272 :state "press"))
-         (nhwl-gui--pump 0.2)
-         (setq timer (nhwl-gui--lose-display 0.3))
+         (gui-set-selection 'XdndSelection "dragged text")
+         (nhwl-gui--drag-press)
+         (setq later (nhwl-gui--recorder-later '((0.3 :cmd "restart" :mode "gone"))))
          (setq result (condition-case e
-                          (with-timeout (10 'timeout)
-                            (x-begin-drag '("text/plain;charset=utf-8") 'XdndActionCopy nil nil t))
+                          (x-begin-drag '("text/plain;charset=utf-8") 'XdndActionCopy nil nil t)
                         (error (setq err e) 'error)))
          (should-not err)
          (should-not result)
+         (should (string-search "\"restart\"" (nhwl-gui--later-output later)))
          (should (nhwl-gui--display-gone-p))
          (should (daemonp))
          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (memq 'lost nhwl-gui--connection-log)) 2)))
-      (when timer (cancel-timer timer))
+      (nhwl-gui--drag-cleanup later)
       (nhwl-gui--reopen-display))))
 
 (ert-deftest nhwl-gui/display-restart-twenty-cycles ()
