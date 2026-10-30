@@ -9,7 +9,8 @@
 #       skips with a note (P1:skipped in the stamp).
 #   P2  the files of preflight-files.txt (workers, process, I/O, watchdog) pinned to 1 CPU, to 2 CPUs and under a
 #       podman --cpus=0.5 (cgroup cpu.max 50000 100000), --runs (3) each, through NIDHOGG_BUILD_PODMAN_ARGS.  A run whose test file only passed on
-#       check-rerun.sh's second run counts as a red: the pre-flight is where a flake is found.
+#       check-rerun.sh's second run counts as a red: the pre-flight is where a flake is found.  The report has a GROUP line
+#       per file per run (green, RED or NOT RUN, with its ERT summary) and a `P2 GROUP: N green, M red of K` line per group.
 #   P3  the same files on the chaos build (D-chaos, built with `build.sh --chaos` when missing), --seeds (200) seeds
 #       each, NIDHOGG_TEST_SEED=1..N.  A red prints its seed and the replay line.
 #   P4  nidhogg/test/workers-harness.sh --tsan and --sched.
@@ -54,7 +55,21 @@ say() { echo "$*" | tee -a "$out"; }
 reds=0
 declare -a done_passes=()       # P2, P3:skipped, ...
 redlist=()                      # "PASS|TARGET|WRAP|SEED" for P5
-trap 'rm -f "$out.stamp" "$out.stamp.tmp"; say "preflight: interrupted: no stamp"; exit 130' INT TERM HUP
+runlst="" runlog="" runmark=""   # the current group's temporary files; a kill must not leave the list in the tree
+trap 'rm -f "$out.stamp" "$out.stamp.tmp" "$runlst" "$runlog" "$runmark"; say "preflight: interrupted: no stamp"; exit 130' INT TERM HUP
+declare -A group_green=() group_red=()   # "PASS WRAP" -> files; the summary line of each group
+run_no=0                                 # which of the group's --runs this is
+group_add() { # PASS WRAP green|red
+  local k="$1 $2"
+  [ "$3" = green ] && group_green[$k]=$((${group_green[$k]:-0} + 1)) || group_red[$k]=$((${group_red[$k]:-0} + 1))
+}
+group_summary() { # PASS WRAP...: one line per group, what it ran, not only what failed
+  local p=$1 w g r; shift
+  for w in "$@"; do
+    g=${group_green["$p $w"]:-0} r=${group_red["$p $w"]:-0}
+    say "$p $w: $g green, $r red of $((g + r))"
+  done
+}
 
 targets() { sed 's/#.*//' "$1" 2>/dev/null | awk 'NF'; }
 
@@ -78,37 +93,49 @@ run_one() { # PASS TARGET WRAP SEED -> 0 green  (the stub runner of the test hoo
   local log rc
   log=$(mktemp "${out}.run.XXXXXX")
   "$PREFLIGHT_RUNNER" "$1" "$2" "$3" "$4" > "$log" 2>&1; rc=$?
-  [ "$rc" = 0 ] || note_red "$1" "$2" "$3" "$4" "$log"
+  if [ "$rc" = 0 ]; then say "GROUP $1 $3 run=$run_no seed=$4 $2 green"; group_add "$1" "$3" green
+  else say "GROUP $1 $3 run=$run_no seed=$4 $2 RED"; group_add "$1" "$3" red; note_red "$1" "$2" "$3" "$4" "$log"; fi
   rm -f "$log"
   return "$rc"
 }
 # All the files of the list in one container run (the container's package install costs more than a short test file):
 # a file is red when its target is named in the run's FAILED lines or in check-rerun.sh's lines (a failure, or a pass only
-# on the second run: that is a find here), and the whole run is red when it failed without naming one.
+# on the second run: that is a find here), and the whole run is red when it failed without naming one.  Every file gets a
+# GROUP line with its ERT summary.  A file with no check log newer than this run's start was not tested (check-logs/ keeps
+# older runs' logs, and a run that dies early names nothing): it is red, or its last result would pass for this run's.
 run_group() { # PASS WRAP SEED [LIST]
-  local pass=$1 wrap=$2 seed=$3 list=${4:-$files} t log rc dir=$build lst named=0 pargs=""
+  local pass=$1 wrap=$2 seed=$3 list=${4:-$files} t log rc dir=$build lst named=0 pargs="" tlog sum red
   if [ -n "${PREFLIGHT_RUNNER:-}" ]; then
     while IFS= read -r t; do run_one "$pass" "$t" "$wrap" "$seed"; done < <(targets "$list")
     return 0
   fi
   [ "$seed" = - ] || dir=$build-chaos
-  log=$(mktemp "${out}.run.XXXXXX")
-  lst=$(mktemp "$root/preflight-chk.XXXXXX.txt"); targets "$list" > "$lst"      # untracked, so the desktop sync carries it
+  log=$(mktemp "${out}.run.XXXXXX"); runlog=$log
+  runmark=$(mktemp "${out}.mark.XXXXXX")
+  lst=$(mktemp "$root/preflight-chk.XXXXXX.txt"); runlst=$lst; targets "$list" > "$lst"      # untracked, so the desktop sync carries it
   # the pin is a podman option of the check container (taskset on the podman client does not reach the container)
   case $wrap in cpu1) pargs="--cpuset-cpus=0" ;; cpu2) pargs="--cpuset-cpus=0,1" ;; quota) pargs="--cpus=0.5" ;; esac
   local cmd=("$slot" "$T/nidhogg-build-local.sh" ${prefix:+--prefix "$prefix"} --build-dir "$dir" --stage check --check "${lst#"$root"/}")
   if [ "$seed" = - ]; then NIDHOGG_BUILD_PODMAN_ARGS=$pargs "${cmd[@]}" > "$log" 2>&1; rc=$?
   else NIDHOGG_BUILD_PODMAN_ARGS=$pargs NIDHOGG_TEST_SEED=$seed "${cmd[@]}" > "$log" 2>&1; rc=$?; fi
-  rm -f "$lst"
+  rm -f "$lst"; runlst=""
   while IFS= read -r t; do
+    tlog=$dir/check-logs/$t.log red=0 sum=""
+    if [ -f "$tlog" ] && [ "$tlog" -nt "$runmark" ]; then sum=$(sed -nE 's/^(Ran [0-9]+ tests.*) \(.*, ([0-9.]+) sec\).*/\1, \2 s/p' "$tlog" | tail -n 1); fi
     if grep -qF -e "make -C test $t " -e "check-rerun: $t " -e "check-rerun: RED: $t" "$log"; then
-      note_red "$pass" "$t" "$wrap" "$seed" "$log"; named=1
+      red=1; say "GROUP $pass $wrap run=$run_no seed=$seed $t RED: ${sum:-no ERT summary}"
+    elif [ -z "$sum" ]; then
+      red=1; say "GROUP $pass $wrap run=$run_no seed=$seed $t NOT RUN: no ERT summary from this run"
+    else
+      say "GROUP $pass $wrap run=$run_no seed=$seed $t green: $sum"
     fi
+    if [ "$red" = 1 ]; then group_add "$pass" "$wrap" red; note_red "$pass" "$t" "$wrap" "$seed" "$log"; named=1
+    else group_add "$pass" "$wrap" green; fi
   done < <(targets "$list")
   if [ "$named" = 0 ] && { [ "$rc" != 0 ] || grep -qE '^flaky \(listed' "$log"; }; then
     note_red "$pass" "(whole run)" "$wrap" "$seed" "$log"
   fi
-  rm -f "$log"
+  rm -f "$log" "$runmark"; runlog="" runmark=""
 }
 want_pass() { case ",$want," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 finish_pass() { # PASS NOTE  (a pass counts when it ran with no red; skipped is recorded as such)
@@ -128,7 +155,8 @@ if want_pass P1; then
 fi
 if want_pass P2; then
   say "P2: pinned runs ($runs each)"; before=$reds
-  for w in cpu1 cpu2 quota; do for ((i = 0; i < runs; i++)); do run_group P2 "$w" -; done; done
+  for w in cpu1 cpu2 quota; do for ((run_no = 1; run_no <= runs; run_no++)); do run_group P2 "$w" -; done; done
+  group_summary P2 cpu1 cpu2 quota
   [ "$reds" = "$before" ] && done_passes+=(P2) || say "P2: reds"
 fi
 if want_pass P3; then
