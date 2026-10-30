@@ -429,7 +429,14 @@ unibyte strings; CHUNKS, each (TYPE . BODY), go before the image data."
             (let ((status
                    (call-process
                     "/bin/sh" nil t nil "-c"
-                    "ulimit -v 2000000; exec \"$@\"" "sh"
+                    ;; ASan maps terabytes of shadow memory at start, which
+                    ;; `ulimit -v' refuses (the child exits 1 before any Lisp):
+                    ;; there ASan's own RSS limit bounds it instead.
+                    (if (string-search "sanitize=address"
+                                       system-configuration-options)
+                        "ASAN_OPTIONS=\"${ASAN_OPTIONS:+$ASAN_OPTIONS:}hard_rss_limit_mb=2000\" exec \"$@\""
+                      "ulimit -v 2000000; exec \"$@\"")
+                    "sh"
                     (expand-file-name invocation-name invocation-directory)
                     "-Q" "--batch" "--eval"
                     (prin1-to-string
