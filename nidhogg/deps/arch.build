@@ -1,0 +1,37 @@
+# Packages the Arch Linux build needs (one per line).  Arch packages carry their headers; the rolling release has
+# no version number, so this list tracks the current repositories.
+gcc
+make
+tar
+xz
+git
+autoconf
+automake
+texinfo
+pkgconf
+libgccjit
+gnutls
+tree-sitter
+gtk3
+harfbuzz
+cairo
+libxml2
+ncurses
+sqlite
+giflib
+libtiff
+libwebp
+lcms2
+gmp
+librsvg
+libjpeg-turbo
+libpng
+dbus
+systemd-libs
+fontconfig
+freetype2
+acl
+zlib
+rust
+wayland
+libxkbcommon
