@@ -263,16 +263,9 @@ pub fn decode(data: &[u8], p: &Params) -> Result<Image, Error> {
     if compose && chunks.gamma {
         return Err(Error::Host);
     }
-    // The C loader passes the 16-bit colour unshifted for a 16-bit file; libpng, which strips after composing,
-    // then widens the background itself (`png_init_read_transformations`: `background.red * 257`, kept in 16 bits,
-    // so it wraps) before composing at 16 bits.
-    let bg = |v: u16| {
-        if depth == 16 {
-            v.wrapping_mul(257)
-        } else {
-            v >> 8
-        }
-    };
+    // The C loader passes the 8-bit colour; for a 16-bit file libpng, which strips after composing, widens it
+    // (`png_init_read_transformations`: `background.red * 257`) and composes at 16 bits.
+    let bg = |v: u16| if depth == 16 { (v >> 8) * 257 } else { v >> 8 };
     let conv = Convert {
         color,
         depth,
@@ -422,20 +415,20 @@ mod tests {
         let f = encode(1, 1, ColorType::Rgba, BitDepth::Sixteen, &data, |_| {});
         let bg = 0xff01u16;
         let img = decode(&f, &params(Some([bg; 3]))).unwrap();
-        let c = u32::from(over16(r, a, bg.wrapping_mul(257)) >> 8);
+        let c = u32::from(over16(r, a, (bg >> 8) * 257) >> 8);
         assert_eq!(pixels(&img), vec![(c << 16) | (c << 8) | c]);
     }
 
     #[test]
     fn sixteen_bit_background_is_widened_like_libpng() {
-        // the C core gives 0x5a for this pixel: its 0x3333 background acts as 0x6633
+        // the 0x3333 background acts as 0x3333 (8-bit 0x33 times 257): 0x5555 at 2/3 alpha over it is 0x49
         let mut data = Vec::new();
         for v in [0x5555u16, 0x5555, 0x5555, 0xaaaa] {
             data.extend_from_slice(&v.to_be_bytes());
         }
         let f = encode(1, 1, ColorType::Rgba, BitDepth::Sixteen, &data, |_| {});
         let img = decode(&f, &params(Some([0x3333; 3]))).unwrap();
-        assert_eq!(pixels(&img), vec![0x005a_5a5a]);
+        assert_eq!(pixels(&img), vec![0x0049_4949]);
     }
 
     #[test]
