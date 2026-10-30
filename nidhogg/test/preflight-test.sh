@@ -103,6 +103,41 @@ pkill -TERM -f "$d/r8/report"; kill "$(cat "$d/hang.pid")" 2>/dev/null; wait "$p
 ls "$d/repo"/preflight-chk.* > /dev/null 2>&1 && fail "a killed run left its list file"
 ls "$d/r8"/report.* > /dev/null 2>&1 && fail "a killed run left its temporary files"
 
+# P5: a red of P2 goes through the recorder once, however many runs were red, in its own pin, with the options rr needs
+cat > "$d/fakeslot-rr" <<'EOF'
+#!/usr/bin/env bash
+b="" l=""
+while [ $# -gt 0 ]; do case $1 in --build-dir) b=$2; shift 2 ;; --check) l=$2; shift 2 ;; *) shift ;; esac; done
+if [ -n "${NIDHOGG_CHECK_RR:-}" ]; then
+  echo "$NIDHOGG_CHECK_RR|$NIDHOGG_BUILD_PODMAN_ARGS|$(cat "$FAKE_ROOT/$l")" >> "$FAKE_RR"
+  t=$(cat "$FAKE_ROOT/$l"); mkdir -p "$b/check-logs/$(dirname "$t")"
+  echo "Ran 7 tests, 7 results as expected, 0 unexpected (2026-10-30 11:49:44+0000, 1.5 sec)" > "$b/check-logs/$t.log"
+  [ -z "${FAKE_NO_TRACE:-}" ] || exit 0
+  [ -z "${FAKE_RR_ABORT:-}" ] || echo "[FATAL src/record_syscall.cc:6758:rec_process_syscall_arch()]" >> "$b/check-logs/$t.log"
+  echo /build/rr-traces/emacs-0 > "$b/check-logs/rr-trace.log"     # what build.sh writes
+  exit 0
+fi
+while IFS= read -r t; do
+  mkdir -p "$b/check-logs/$(dirname "$t")"
+  echo "Ran 7 tests, 7 results as expected, 0 unexpected (2026-10-30 11:49:44+0000, 1.5 sec)" > "$b/check-logs/$t.log"
+done < "$FAKE_ROOT/$l"
+[ "${NIDHOGG_BUILD_PODMAN_ARGS:-}" != --cpuset-cpus=0 ] || echo "check-rerun: RED: src/b-tests"
+exit 0
+EOF
+chmod +x "$d/fakeslot-rr"
+PREFLIGHT_SLOT="$d/fakeslot-rr" FAKE_ROOT="$d/repo" FAKE_RR="$d/rr.calls" pre "" --passes P2,P5 --runs 2 --out "$d/r9/report" > /dev/null; r=$?
+[ "$r" = 1 ] && [ ! -e "$d/r9/report.stamp" ] || fail "a red with P5 run exited $r, or got a stamp"
+[ "$(wc -l < "$d/rr.calls" 2>/dev/null)" = 1 ] || fail "not one recording of the red: $(cat "$d/rr.calls" 2>/dev/null)"
+[ "$(cat "$d/rr.calls" 2>/dev/null)" = "rr record --chaos -n|--cpuset-cpus=0 --cap-add=SYS_PTRACE --security-opt seccomp=unconfined --security-opt label=disable|src/b-tests" ] \
+  || fail "the recording's command or options: $(cat "$d/rr.calls" 2>/dev/null)"
+grep -q "^P5 src/b-tests wrap=cpu1 seed=-: trace $d/b/rr-traces/emacs-0$" "$d/r9/report" || fail "no trace line in the report"
+# an older run's trace name never stands for this one; a recorder that aborted is said so
+rm -f "$d/rr.calls"
+PREFLIGHT_SLOT="$d/fakeslot-rr" FAKE_ROOT="$d/repo" FAKE_RR="$d/rr.calls" FAKE_NO_TRACE=1 pre "" --passes P2,P5 --runs 1 --out "$d/r10/report" > /dev/null
+grep -q "^P5 src/b-tests wrap=cpu1 seed=-: no trace" "$d/r10/report" || fail "an old trace name passed for this run's"
+PREFLIGHT_SLOT="$d/fakeslot-rr" FAKE_ROOT="$d/repo" FAKE_RR="$d/rr.calls" FAKE_RR_ABORT=1 pre "" --passes P2,P5 --runs 1 --out "$d/r11/report" > /dev/null
+grep -q "^P5 src/b-tests wrap=cpu1 seed=-: trace .*rr aborted" "$d/r11/report" || fail "an aborted recording not said"
+
 # a dirty tree gets none
 echo x > "$d/repo/f"; git -C "$d/repo" add f
 pre "$d/ok" --out "$d/r4/report" > /dev/null; r=$?
