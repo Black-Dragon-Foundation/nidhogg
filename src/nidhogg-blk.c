@@ -2406,7 +2406,14 @@ parked at a pause point).  Bounded condition waits, not sleeps.  */)
       nh_wk_wait (&h.v[i]->job, left > 0 ? left : 0, NH_WK_PH_WORKER_WAIT, 0);
     }
   unbind_to (count, Qnil);
-  Fnidhogg_workers__drain ();
+  /* A job's waiters wake when it is done, before its worker queues its
+     finish (nh_wk_complete): a drain now may find nothing to land.
+     Wait out the rest of MS for that too; await-landed then drains.  */
+  struct timespec now;
+  clock_gettime (CLOCK_MONOTONIC, &now);
+  int64_t left = deadline - ((int64_t) now.tv_sec * 1000000000 + now.tv_nsec);
+  Fnidhogg_workers__test_await_landed (intern_c_string ("nh-save"),
+				       make_fixnum (left > 0 ? left / 1000000 : 0));
   for (struct nh_save_job *j = nh_save_jobs; j; j = j->next)
     if (!j->landed)
       return Qnil;
