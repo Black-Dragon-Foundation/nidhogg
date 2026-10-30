@@ -319,7 +319,9 @@ struct nh_io_h
   /* Paused by delete_read_fd (any thread, signal context included).  */
   _Atomic bool paused;
   /* nh-io's: set before it reads the copy, cleared once what it read is
-     queued and the wake fd written (nh_io_settle).  */
+     queued and the wake fd written, under nh_io_m with those: a delivery
+     of that read then finds it cleared, and nh_io_settle never waits for
+     a read whose output is already gone.  */
   _Atomic bool reading;
   /* The FIFO is at its cap: set and cleared under nh_io_m, read by nh-io
      without it.  */
@@ -396,6 +398,9 @@ struct nh_io_h
 static pthread_mutex_t nh_io_m = PTHREAD_MUTEX_INITIALIZER;
 static struct nh_io_cmd *nh_io_cmd_head, *nh_io_cmd_tail;
 static struct nh_wk_wake nh_io_cmdw = { -1, -1 };
+/* Written when what nh_io_settle's wait is for goes away with no wake fd
+   written: a handle paused, a read that landed nothing.  */
+static struct nh_wk_wake nh_io_settlew = { -1, -1 };
 static _Atomic bool nh_io_cmd_pending;
 static _Atomic bool nh_io_crash;
 
@@ -498,6 +503,14 @@ nh_io_poke (void)
 {
   atomic_store (&nh_io_cmd_pending, true);
   nh_wk_wake_signal (&nh_io_cmdw);
+}
+
+/* H's read is over and its wake fd was not written: nothing landed.  */
+static void
+nh_io_read_ended (struct nh_io_h *h)
+{
+  atomic_store (&h->reading, false);
+  nh_wk_wake_signal (&nh_io_settlew);
 }
 
 /* nh-io.  */
@@ -998,7 +1011,11 @@ nh_io_fr_run (struct nh_io_h *h, const unsigned char *s, ptrdiff_t n,
     atomic_store (&h->capped, true);
   if (was_quiet && (add > 0 || rc < 0 || ev <= 0) && !h->inl)
     nh_wk_wake_signal (&h->wake);
+  atomic_store (&h->reading, false);
   pthread_mutex_unlock (&nh_io_m);
+  /* A partial message: nothing landed.  */
+  if (add == 0 && rc >= 0 && ev > 0)
+    nh_wk_wake_signal (&nh_io_settlew);
 
   if (add > 0)
     nh_wk_stat_add (NH_WK_IO, NH_WK_ST_QUEUED_BYTES, add);
@@ -1123,7 +1140,7 @@ nh_io_read_one (struct nh_io_h *h, unsigned char **buf, ptrdiff_t *size)
   while (r < 0 && errno == EINTR);
   if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
     {
-      atomic_store (&h->reading, false);
+      nh_io_read_ended (h);
       return;
     }
   int err = errno;
@@ -1134,7 +1151,6 @@ nh_io_read_one (struct nh_io_h *h, unsigned char **buf, ptrdiff_t *size)
 		  : NH_IO_EV_ERROR, h->id, h->copy, r);
       nh_io_fr_run (h, *buf, r > 0 ? r : 0, r > 0 ? 1 : r == 0 ? 0 : -1, err,
 		    &h->stop);
-      atomic_store (&h->reading, false);
       return;
     }
   struct nh_io_chunk *c = NULL;
@@ -1174,8 +1190,8 @@ nh_io_read_one (struct nh_io_h *h, unsigned char **buf, ptrdiff_t *size)
     h->err = err;
   if (was_quiet)
     nh_wk_wake_signal (&h->wake);
-  pthread_mutex_unlock (&nh_io_m);
   atomic_store (&h->reading, false);
+  pthread_mutex_unlock (&nh_io_m);
 
   if (c)
     nh_wk_stat_add (NH_WK_IO, NH_WK_ST_QUEUED_BYTES, r);
@@ -1260,6 +1276,8 @@ nh_io_start (void)
   if (nh_io_running)
     return true;
   if (nh_io_cmdw.rfd < 0 && nh_wk_wake_open (&nh_io_cmdw) < 0)
+    return false;
+  if (nh_io_settlew.rfd < 0 && nh_wk_wake_open (&nh_io_settlew) < 0)
     return false;
   memset (&nh_io_loop, 0, sizeof nh_io_loop);
   atomic_store (&nh_io_loop.refs, 1);
@@ -2308,7 +2326,10 @@ nh_io_pause (int infd)
   if (h)
     {
       if (!atomic_exchange (&h->paused, true) && !h->inl)
-	nh_io_poke ();
+	{
+	  nh_io_poke ();
+	  nh_wk_wake_signal (&nh_io_settlew);
+	}
       sel = h->sel;
     }
   atomic_fetch_sub (&nh_io_pausing, 1);
@@ -2336,6 +2357,28 @@ nh_io_poll_any (struct pollfd *pfd, int n, int ms)
   return r > 0;
 }
 
+/* The times nh_io_settle gave up at its deadline.  */
+static EMACS_INT nh_io_settle_bound_hits;
+/* Tests: runs once, between nh_io_settle's checks and its wait.  */
+static void (*nh_io_settle_gap) (void);
+static int nh_io_settle_gap_fd;
+
+static void
+nh_io_gap_pause (void)
+{
+  nh_io_settle_gap = NULL;
+  nh_io_pause (nh_io_settle_gap_fd);
+}
+
+static void
+nh_io_gap_read_ends (void)
+{
+  nh_io_settle_gap = NULL;
+  struct nh_io_h *h = nh_io_tab[nh_io_settle_gap_fd];
+  if (h)
+    nh_io_read_ended (h);
+}
+
 /* Before a select over MASK with TIMEOUT in wait_reading_process_output.
    A zero timeout asks what output is there now, which today is what
    the kernel holds: `accept-process-output' with a zero timeout gets it,
@@ -2354,7 +2397,7 @@ nh_io_settle (fd_set *mask, struct timespec timeout)
   if (timeout.tv_sec != 0 || timeout.tv_nsec != 0
       || atomic_load (&nh_wk_dead))
     return;
-  struct pollfd real[FD_SETSIZE], wake[FD_SETSIZE];
+  struct pollfd real[FD_SETSIZE], wake[FD_SETSIZE + 1];
   struct nh_io_h *hs[FD_SETSIZE];
   int n = 0;
   for (int fd = 0; fd < FD_SETSIZE; fd++)
@@ -2383,8 +2426,12 @@ nh_io_settle (fd_set *mask, struct timespec timeout)
      Else nothing in the kernel and no read in progress (checked in that
      order: a read that ended in between wrote its wake fd): nothing is
      on its way.  The kernel's bytes count only while the handle is not
-     paused: the SIGCHLD handler may pause one during the wait (its
-     signal cuts the poll short), and nh-io never reads those.  */
+     paused: the SIGCHLD handler may pause one during the wait, and nh-io
+     never reads those.  What ends the wait without a wake fd (that
+     pause, a read that lands nothing) writes nh_io_settlew: it is read
+     empty before the checks a wait rests on, and an event after them is
+     then still there for the poll, wherever the signal lands.  */
+  wake[n] = (struct pollfd) { .fd = nh_io_settlew.rfd, .events = POLLIN };
   while (!nh_io_poll_any (wake, n, 0))
     {
       bool pending = false;
@@ -2403,11 +2450,23 @@ nh_io_settle (fd_set *mask, struct timespec timeout)
 	  waiting = true;
 	  depth = NH_WK_PHASE_PUSH (NH_IO_PH, NH_IO_RS_DRAIN);
 	  nh_wk_wait_begins ();
+	  nh_wk_wake_clear (&nh_io_settlew);
+	  continue;
 	}
-      nh_io_poll_any (wake, n, (int) (left / 1000000) + 1);
+      if (nh_io_settle_gap)
+	nh_io_settle_gap ();
+      nh_io_poll_any (wake, n + 1, (int) (left / 1000000) + 1);
+      nh_wk_wake_clear (&nh_io_settlew);
     }
   if (waiting)
-    NH_WK_PHASE_POP (depth);
+    {
+      NH_WK_PHASE_POP (depth);
+      /* Output that came at the last moment counts as a hit too: the wait
+	 took the whole bound.  */
+      clock_gettime (CLOCK_MONOTONIC, &t);
+      if (t.tv_sec * INT64_C (1000000000) + t.tv_nsec >= deadline)
+	nh_io_settle_bound_hits++;
+    }
 }
 
 /* Whether P is going down: its status says so, or (a subprocess) the
@@ -3227,6 +3286,44 @@ hand-over makes a new one.  */)
   return events;
 }
 
+DEFUN ("nidhogg-workers--test-settle-bound-hits",
+       Fnidhogg_workers__test_settle_bound_hits,
+       Snidhogg_workers__test_settle_bound_hits, 0, 0, 0,
+       doc: /* Return how many zero-timeout waits since start took their whole bound.
+For tests: a wait for output on its way ends long before the bound
+unless a test holds nh-io at a pause point.  */)
+  (void)
+{
+  return make_fixnum (nh_io_settle_bound_hits);
+}
+
+DEFUN ("nidhogg-workers--test-settle-gap", Fnidhogg_workers__test_settle_gap,
+       Snidhogg_workers__test_settle_gap, 0, 2, 0,
+       doc: /* Run one event in the next zero-timeout wait's gap; for tests.
+The gap lies after the wait's checks and before it sleeps.  KIND is
+`pause': pause PROCESS's reader there, as the SIGCHLD handler does; or
+`read-end': PROCESS's reader counts as reading from now on, and its read
+ends there with nothing landed.  With no arguments, return non-nil while
+the event has yet to run.  */)
+  (Lisp_Object process, Lisp_Object kind)
+{
+  if (NILP (process))
+    return nh_io_settle_gap ? Qt : Qnil;
+  CHECK_PROCESS (process);
+  struct nh_io_h *h = nh_io_get (XPROCESS (process));
+  if (!h)
+    error ("Not reader-owned");
+  nh_io_settle_gap_fd = XPROCESS (process)->infd;
+  if (EQ (kind, intern_c_string ("pause")))
+    nh_io_settle_gap = nh_io_gap_pause;
+  else
+    {
+      atomic_store (&h->reading, true);
+      nh_io_settle_gap = nh_io_gap_read_ends;
+    }
+  return Qnil;
+}
+
 DEFUN ("nidhogg-workers--test-io-crash", Fnidhogg_workers__test_io_crash,
        Snidhogg_workers__test_io_crash, 0, 0, 0,
        doc: /* Make nh-io dereference NULL; for the fatal-path tests.
@@ -3289,6 +3386,8 @@ delivery per value).  */);
   defsubr (&Snidhogg_set_process_reader);
   defsubr (&Snidhogg_workers__test_io_info);
   defsubr (&Snidhogg_workers__test_io_log);
+  defsubr (&Snidhogg_workers__test_settle_bound_hits);
+  defsubr (&Snidhogg_workers__test_settle_gap);
   defsubr (&Snidhogg_workers__test_io_crash);
   defsubr (&Snidhogg_workers__test_io_hold_lock);
   defsubr (&Snidhogg_workers__test_filter_cost);
