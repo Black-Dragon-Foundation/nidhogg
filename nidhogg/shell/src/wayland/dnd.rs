@@ -208,12 +208,14 @@ pub fn drop_lost(shared: &Shared) -> Option<Record> {
     Some(o.record(ShellEvent::DndLeave))
 }
 
-/// The display is lost: our drag ends as cancelled.  `Shared::close` posts the record before `DISCONNECTED`.
+/// The display is lost: our drag ends as cancelled, and no drag is over us any more (our own drag is over our surface
+/// when it went).  `Shared::close` posts the record before `DISCONNECTED`.
 pub fn drag_lost(shared: &Shared) -> Option<Record> {
     let mut sel = selection::lock(shared);
-    let drag = sel.dnd.drag.take()?;
+    sel.dnd.over = false;
+    let drag = sel.dnd.drag.take();
     sel.dnd.sync_dragging(shared);
-    Some(drag_record(ShellEvent::DragDone, drag.window, 0, false))
+    drag.map(|d| drag_record(ShellEvent::DragDone, d.window, 0, false))
 }
 
 /// The reader's side: the data device's drag events and our source's.
