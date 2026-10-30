@@ -593,7 +593,9 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   `read-process-output-max` bytes and inserts the reader's decodes directly, with today's process mark, marker and
   after-change bookkeeping (a raw-text system's bytes from 0x80 become raw-byte characters in a multibyte buffer, as
   today). Any other filter gets one string of at most `read-process-output-max` bytes and at most its estimated 4 ms of
-  work (a moving average of its nanoseconds per byte; at least 512 bytes), and never more than a pty read (4 KB) on a
+  work (its nanoseconds per call and per byte, fitted over moving averages of its calls; at least 512 bytes; a filter
+  whose calls cost half of that whatever they get, one that waits or rescans all it gathered, is not cut, and neither
+  is a delivery nested in its own filter), and never more than a pty read (4 KB) on a
   pty: a delivery never grows past the natural read, so a cheap filter on a stream of small reads gets fewer, larger
   calls only by the queue joining chunks, and a costly one no longer call than today's. The reader stays at most 16 KB
   ahead of a pty's filter (`--test-io-info`'s `:ahead`), so the child's writes block in the kernel. `nbytes_read` grows by the raw bytes, so `accept-process-output` keeps its meaning;
