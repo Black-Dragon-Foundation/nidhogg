@@ -618,9 +618,12 @@ Return the two replies."
 (ert-deftest nhwl-gui/scroll-stop-sends-touch-end ()
   (skip-unless (nhwl-gui--recorder-p))
   (switch-to-buffer "*scratch*")
-  (let ((events (nhwl-gui--scroll-events '(:cmd "axis" :source "finger" :stop t) "touch-end")))
-    (should (= (length events) 1))
-    (should (eq (car (car events)) 'touch-end))))
+  (unwind-protect
+      (let ((events (nhwl-gui--scroll-events '(:cmd "axis" :source "finger" :stop t) "touch-end")))
+        (should (= (length events) 1))
+        (should (eq (car (car events)) 'touch-end)))
+    ;; the scroll left the pointer on the menu bar (100, 50): back into the text for the rows after
+    (nhwl-gui--point 100 100)))
 
 (ert-deftest nhwl-gui/resize-during-redisplay-acks-newest ()
   (skip-unless (nhwl-gui--recorder-p))
