@@ -63,6 +63,46 @@ for sig in TERM KILL; do
   [ ! -e "$d/stamps3/$sha.stamp" ] || fail "a stamp copy after $sig mid-run"
 done
 
+# the real group path, through a fake slot: every group's results are in the report, not only the reds
+cat > "$d/fakeslot" <<'EOF'
+#!/usr/bin/env bash
+# stands for the heavy slot and the build: a check log per listed target, except $FAKE_SKIP; $FAKE_HANG: never returns
+b="" l=""
+while [ $# -gt 0 ]; do case $1 in --build-dir) b=$2; shift 2 ;; --check) l=$2; shift 2 ;; *) shift ;; esac; done
+if [ -n "${FAKE_HANG:-}" ]; then echo $$ > "$FAKE_HANG"; exec sleep 30; fi
+while IFS= read -r t; do
+  [ "$t" != "${FAKE_SKIP:-}" ] || continue
+  mkdir -p "$b/check-logs/$(dirname "$t")"
+  echo "Ran 7 tests, 7 results as expected, 0 unexpected (2026-10-30 11:49:44+0000, 1.5 sec)" > "$b/check-logs/$t.log"
+done < "$FAKE_ROOT/$l"
+EOF
+chmod +x "$d/fakeslot"
+grp() { PREFLIGHT_SLOT="$d/fakeslot" FAKE_ROOT="$d/repo" pre "" --passes P2 "$@"; }
+grp --out "$d/r5/report" > /dev/null; r=$?
+[ "$r" = 0 ] && [ -e "$d/r5/report.stamp" ] || fail "a green group run exited $r"
+for w in cpu1 cpu2 quota; do
+  for t in src/a-tests src/b-tests; do
+    grep -q "^GROUP P2 $w run=1 seed=- $t green: Ran 7 tests, 7 results as expected, 0 unexpected" "$d/r5/report" \
+      || fail "no green result of $t in group $w"
+  done
+  grep -q "^P2 $w: 2 green, 0 red of 2$" "$d/r5/report" || fail "no summary of group $w"
+done
+# a file with no log from this run was not tested: its older log (r5's) must not pass for it
+FAKE_SKIP=src/b-tests grp --out "$d/r7/report" > /dev/null; r=$?
+[ "$r" = 1 ] && [ ! -e "$d/r7/report.stamp" ] || fail "a file that did not run still got a stamp ($r)"
+grep -q "^GROUP P2 cpu1 run=1 seed=- src/b-tests NOT RUN" "$d/r7/report" || fail "no NOT RUN line"
+grep -q "^P2 cpu1: 1 green, 1 red of 2$" "$d/r7/report" || fail "a file not run counted as green"
+# a killed group leaves no list file in the tree (the list is untracked, for the desktop sync)
+mkdir -p "$d/r8"
+FAKE_HANG=$d/hang.pid grp --out "$d/r8/report" > /dev/null 2>&1 &
+pid=$!
+for _ in $(seq 1 50); do [ -s "$d/hang.pid" ] && break; sleep 0.1; done
+ls "$d/repo"/preflight-chk.* > /dev/null 2>&1 || fail "the hanging group has no list file to clean up"
+# bash runs the trap when its foreground child returns: signal preflight.sh itself, then end the fake slot
+pkill -TERM -f "$d/r8/report"; kill "$(cat "$d/hang.pid")" 2>/dev/null; wait "$pid" 2>/dev/null
+ls "$d/repo"/preflight-chk.* > /dev/null 2>&1 && fail "a killed run left its list file"
+ls "$d/r8"/report.* > /dev/null 2>&1 && fail "a killed run left its temporary files"
+
 # a dirty tree gets none
 echo x > "$d/repo/f"; git -C "$d/repo" add f
 pre "$d/ok" --out "$d/r4/report" > /dev/null; r=$?
