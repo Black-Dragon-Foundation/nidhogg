@@ -62,17 +62,19 @@ declare -a done_passes=()       # P2, P3:skipped, ...
 redlist=()                      # "PASS|TARGET|WRAP|SEED" for P5
 runlst="" runlog="" runmark=""   # the current group's temporary files; a kill must not leave the list in the tree
 trap 'rm -f "$out.stamp" "$out.stamp.tmp" "$runlst" "$runlog" "$runmark"; say "preflight: interrupted: no stamp"; exit 130' INT TERM HUP
-declare -A group_green=() group_red=()   # "PASS WRAP" -> files; the summary line of each group
+export NIDHOGG_TEST_GRAMMARS=/grammars NIDHOGG_CHECK_PACKAGES=gnutls-utils    # or the treesit and TLS files skip whole
+declare -A group_green=() group_red=() group_skip=()   # "PASS WRAP" -> files; the summary line of each group
 run_no=0                                 # which of the group's --runs this is
-group_add() { # PASS WRAP green|red
+group_add() { # PASS WRAP green|red|skip
   local k="$1 $2"
-  [ "$3" = green ] && group_green[$k]=$((${group_green[$k]:-0} + 1)) || group_red[$k]=$((${group_red[$k]:-0} + 1))
+  case $3 in green) group_green[$k]=$((${group_green[$k]:-0} + 1)) ;; red) group_red[$k]=$((${group_red[$k]:-0} + 1)) ;;
+    skip) group_skip[$k]=$((${group_skip[$k]:-0} + 1)) ;; esac
 }
 group_summary() { # PASS WRAP...: one line per group, what it ran, not only what failed
-  local p=$1 w g r; shift
+  local p=$1 w g r s; shift
   for w in "$@"; do
-    g=${group_green["$p $w"]:-0} r=${group_red["$p $w"]:-0}
-    say "$p $w: $g green, $r red of $((g + r))"
+    g=${group_green["$p $w"]:-0} r=${group_red["$p $w"]:-0} s=${group_skip["$p $w"]:-0}
+    say "$p $w: $g green, $r red of $((g + r + s))${group_skip["$p $w"]:+, $s all skipped}"
   done
 }
 
@@ -80,12 +82,15 @@ targets() { sed 's/#.*//' "$1" 2>/dev/null | awk 'NF'; }
 
 # --- one run of one test file -----------------------------------------------------------------------------------------
 # the pin is a podman option of the check container (taskset on the podman client does not reach the container)
-wrap_args() { case $1 in cpu1) echo "--cpuset-cpus=0" ;; cpu2) echo "--cpuset-cpus=0,1" ;; quota) echo "--cpus=0.5" ;; esac; }
+# The grammars are mounted from the builder's $T/grammars-cache (fixtures/grammars.sh builds it): a missing one fails the run.
+wrap_args() {
+  local pin=""
+  case $1 in cpu1) pin="--cpuset-cpus=0 " ;; cpu2) pin="--cpuset-cpus=0,1 " ;; quota) pin="--cpus=0.5 " ;; esac
+  echo "$pin-v $T/grammars-cache:/grammars:ro,z"
+}
 replay_line() { # TARGET WRAP SEED
-  local pre=""
-  [ "$3" = - ] || pre="NIDHOGG_TEST_SEED=$3 "
-  case $2 in cpu1) pre="${pre}NIDHOGG_BUILD_PODMAN_ARGS=--cpuset-cpus=0 " ;; cpu2) pre="${pre}NIDHOGG_BUILD_PODMAN_ARGS=--cpuset-cpus=0,1 " ;;
-    quota) pre="${pre}NIDHOGG_BUILD_PODMAN_ARGS=--cpus=0.5 " ;; esac
+  local pre="NIDHOGG_TEST_GRAMMARS=/grammars NIDHOGG_CHECK_PACKAGES=gnutls-utils NIDHOGG_BUILD_PODMAN_ARGS='$(wrap_args "$2")' "
+  [ "$3" = - ] || pre="NIDHOGG_TEST_SEED=$3 $pre"
   local dir=$build; [ "$3" = - ] || dir=$build-chaos
   echo "${pre}$T/nidhogg-build-local.sh ${prefix:+--prefix $prefix }--build-dir $dir --stage check --check <a file listing $1>"
 }
@@ -132,13 +137,17 @@ run_group() { # PASS WRAP SEED [LIST]
       red=1; say "GROUP $pass $wrap run=$run_no seed=$seed $t RED: ${sum:-no ERT summary}"
     elif [ -z "$sum" ]; then
       red=1; say "GROUP $pass $wrap run=$run_no seed=$seed $t NOT RUN: no ERT summary from this run"
+    elif [[ $sum == *" 0 results as expected"* ]]; then     # it ran and tested nothing: not a red, and not a green either
+      red=2; say "GROUP $pass $wrap run=$run_no seed=$seed $t ALL SKIPPED: $sum"
     else
       say "GROUP $pass $wrap run=$run_no seed=$seed $t green: $sum"
     fi
     if [ "$red" = 1 ]; then group_add "$pass" "$wrap" red; note_red "$pass" "$t" "$wrap" "$seed" "$log"; named=1
+    elif [ "$red" = 2 ]; then group_add "$pass" "$wrap" skip
     else group_add "$pass" "$wrap" green; fi
   done < <(targets "$list")
   if [ "$named" = 0 ] && { [ "$rc" != 0 ] || grep -qE '^flaky \(listed' "$log"; }; then
+    say "RED $pass (whole run) wrap=$wrap seed=$seed: exit $rc"   # 255 from ssh: the link dropped, not a test
     note_red "$pass" "(whole run)" "$wrap" "$seed" "$log"
   fi
   rm -f "$log" "$runmark"; runlog="" runmark=""
