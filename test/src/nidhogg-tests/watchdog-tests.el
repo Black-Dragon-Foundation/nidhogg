@@ -21,6 +21,7 @@
 
 (require 'ert)
 (require 'loadhist)
+(require 'nidhogg-test-peer)
 
 (ert-deftest watchdog/feature () (should (featurep 'nidhogg-watchdog)))
 
@@ -71,8 +72,13 @@
   (nidhogg-watchdog--test-clock watchdog-test--now))
 
 (defun watchdog-test--idle ()
-  "One short responsive wait: it ends the current span and starts the next."
-  (nidhogg-watchdog--test-idle-wait 0.001))
+  "Wait responsively until the current span ended; the next has started.
+One 1 ms wait may end none: a child's status change makes its first pass
+a zero-timeout poll, and a clock tick during that pass runs out the
+deadline on the coarse clock, so it returns without a responsive select."
+  (let ((spans (watchdog-test--stat :spans)))
+    (while (= spans (watchdog-test--stat :spans))
+      (nidhogg-watchdog--test-idle-wait 0.001))))
 
 (defun watchdog-test--span (ms)
   "Advance the virtual clock by MS milliseconds, then wait: a span of MS."
@@ -172,9 +178,8 @@
   (watchdog-test--running '(100 2000 nil :no-monitor)
     (watchdog-test--align)
     (let* ((state 'start)
-           (proc (make-process
-                  :name "watchdog-test" :connection-type 'pipe :noquery t
-                  :command '("sh" "-c" "echo a; sleep 0.3; echo b")
+           (peer (nidhogg-test-peer-make
+                  :name "watchdog-test"
                   :filter
                   (lambda (_proc out)
                     (when (and (eq state 'start) (string-search "a" out))
@@ -187,13 +192,18 @@
                       (watchdog-test--clock-at 200))
                     (when (string-search "b" out)
                       (setq state 'done))))))
-      (while (and (not (eq state 'done)) (accept-process-output proc 2)))
-      (should (eq state 'done))
-      (watchdog-test--clock-at 250)
-      (watchdog-test--idle)
-      (let ((stalls (car (nidhogg-watchdog--take))))
-        (should (= (length stalls) 1))
-        (should (= (plist-get (car stalls) :wall-ms) 250.0))))))
+      (unwind-protect
+          (progn
+            (nidhogg-test-peer-write peer "a")
+            (should (eq state 'thrown))
+            (nidhogg-test-peer-write peer "b")
+            (should (eq state 'done))
+            (watchdog-test--clock-at 250)
+            (watchdog-test--idle)
+            (let ((stalls (car (nidhogg-watchdog--take))))
+              (should (= (length stalls) 1))
+              (should (= (plist-get (car stalls) :wall-ms) 250.0))))
+        (nidhogg-test-peer-close peer)))))
 
 (ert-deftest watchdog/inhibit-redisplay-wait-is-busy ()
   ;; In a timer, a 300 ms wait under `inhibit-redisplay' does not end the
