@@ -796,7 +796,9 @@ meanwhile, while a SIGCHLD still reaches its handler and
                    "re-stop" (lambda (p s)
                                (when (and sent (not stopped))
                                  (setq stopped t)
-                                 (stop-process p))
+                                 ;; SIGSTOP, not `stop-process': SIGTSTP is discarded for
+                                 ;; the orphaned process group of a session leader
+                                 (signal-process p 'STOP))
                                (push s got)))))
           (process-send-string p data)
           (setq sent t)
