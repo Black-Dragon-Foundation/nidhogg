@@ -1445,46 +1445,70 @@ returns `copy'."
           (cons (+ (alist-get 'x r) (/ (alist-get 'width r) 2))
                 (+ (alist-get 'y r) (/ (alist-get 'height r) 2))))))))
 
+(defun nhwl-gui--sway-layout-size ()
+  "The (W . H) of sway's first output, in layout pixels."
+  (with-temp-buffer
+    (call-process "swaymsg" nil t nil "-r" "-t" "get_outputs")
+    (let ((r (alist-get 'rect (car (json-parse-string (buffer-string) :object-type 'alist :array-type 'list
+                                                      :false-object nil :null-object nil)))))
+      (cons (alist-get 'width r) (alist-get 'height r)))))
+
 (ert-deftest nhwl-gui/live-drag-between-two-nidhoggs ()
   "On sway, text dragged out of this Nidhogg onto a second `nidhogg -Q' is inserted there, and the call returns
-`copy'.  The pointer is driven by `swaymsg seat - cursor'; the trace rules (errors, dnd) judge what was sent."
+`copy'; the trace rules (errors, dnd) judge what was sent.  The session's frame is fullscreen and gui.sh's sway floats
+the second one over it, so the row puts them side by side.  Headless sway has no input devices: the pointer is a
+virtual one (`NHWL_GUI_VPOINTER', gui.sh --recorder), driven from another process, since the drag's loop runs no Lisp."
   :tags '(runs-last)
-  (skip-unless (and (nhwl-gui--live-p) (equal (glitnir-gui--compositor) "sway") (executable-find "swaymsg")))
-  (let* ((file (make-temp-file "nhwl-drag-target-"))
+  (skip-unless (and (nhwl-gui--live-p) (equal (glitnir-gui--compositor) "sway") (executable-find "swaymsg")
+                    (getenv "NHWL_GUI_VPOINTER")))
+  (let* ((fullscreen (frame-parameter nil 'fullscreen))
+         (file (make-temp-file "nhwl-drag-target-"))
          (second (make-process
                   :name "nhwl-drag-target" :noquery t :buffer nil
                   :command (list (expand-file-name invocation-name invocation-directory) "-Q"
                                  "--eval" (prin1-to-string
-                                           `(run-at-time 10 nil
+                                           `(run-at-time 15 nil
                                                          (lambda ()
                                                            (write-region (point-min) (point-max) ,file)
                                                            (kill-emacs)))))))
          (driver nil))
     (unwind-protect
-        (let ((from nil) (to nil))
+        (let ((from nil) (to nil) (size nil))
+          (should (nhwl-gui--wait (lambda ()
+                                    (nhwl-gui--live-settle 0.2)
+                                    (nhwl-gui--sway-centre (process-id second)))
+                                  8))
+          ;; gui.sh's sway floats every window at the output's centre: put the two side by side
+          (dolist (w (list (cons (emacs-pid) 0) (cons (process-id second) 50)))
+            (call-process "swaymsg" nil nil nil
+                          (format "[pid=%d] fullscreen disable, resize set width 45 ppt height 80 ppt, \
+move position %d ppt 10 ppt" (car w) (cdr w))))
           (should (nhwl-gui--wait (lambda ()
                                     (nhwl-gui--live-settle 0.2)
                                     (setq from (nhwl-gui--sway-centre (emacs-pid))
                                           to (nhwl-gui--sway-centre (process-id second)))
-                                    (and from to))
+                                    (and from to (> (abs (- (car from) (car to))) 100)))
                                   8))
-          (call-process "swaymsg" nil nil nil "seat" "-" "cursor" "set"
-                        (number-to-string (car from)) (number-to-string (cdr from)))
-          (call-process "swaymsg" nil nil nil "seat" "-" "cursor" "press" "button1")
-          (nhwl-gui--pump 0.3)
-          (setq driver (make-process
-                        :name "nhwl-drag-driver" :noquery t :buffer nil
-                        :command (list "sh" "-c"
-                                       (format "sleep 1; swaymsg seat - cursor set %d %d; sleep 0.5; \
-swaymsg seat - cursor set %d %d; sleep 0.5; swaymsg seat - cursor release button1"
-                                               (car to) (cdr to) (+ 5 (car to)) (cdr to)))))
+          (setq size (nhwl-gui--sway-layout-size))
+          (let ((move (lambda (p) (format "echo move %d %d %d %d; " (car p) (cdr p) (car size) (cdr size)))))
+            (setq driver
+                  (make-process
+                   :name "nhwl-drag-driver" :noquery t :connection-type 'pipe :buffer nil
+                   :command (list "sh" "-c"
+                                  ;; the pause before the press lets Nidhogg bind the new pointer first
+                                  (concat "{ " (funcall move from) "sleep 1; echo press; sleep 3; " (funcall move to)
+                                          "sleep 0.5; " (funcall move (cons (+ 5 (car to)) (cdr to)))
+                                          "sleep 0.5; echo release; sleep 1; } | \"$0\" --virtual-pointer")
+                                  (getenv "NHWL_GUI_VPOINTER")))))
+          ;; the drag starts from the press, so its button event must have arrived
+          (should (nhwl-gui--wait (lambda () (eq (car-safe (read-event nil nil 0.1)) 'down-mouse-1)) 6))
           (should (eq (dnd-begin-text-drag "from the first Nidhogg") 'copy))
           (should (nhwl-gui--wait (lambda () (not (process-live-p second))) 15))
           (should (string-search "from the first Nidhogg"
                                  (with-temp-buffer (insert-file-contents file) (buffer-string)))))
       (when (and driver (process-live-p driver)) (delete-process driver))
       (when (process-live-p second) (delete-process second))
-      (call-process "swaymsg" nil nil nil "seat" "-" "cursor" "release" "button1")
+      (set-frame-parameter nil 'fullscreen fullscreen)
       (delete-file file))))
 
 ;; Menus by pointer and touch, submenus, dialogs and the menu bar.  The pointer goes to the surface that has the
@@ -1839,27 +1863,26 @@ signals nothing, no frame and no terminal of the display is left, the daemon sta
 
 (ert-deftest nhwl-gui/display-lost-during-drag-out ()
   "A drag out of Emacs is in flight when the compositor goes for good: `x-begin-drag' returns nil and signals nothing,
-no frame of the display is left, and the daemon stays."
+no frame of the display is left, and the daemon stays.  The drag's loop runs no Lisp, so the loss comes from another
+process (`nhwl-gui--recorder-later')."
   :tags '(runs-last)
   (skip-unless (and (nhwl-gui--recorder-p) (daemonp) (fboundp 'x-begin-drag)))
-  (let ((nhwl-reconnect nil) (timer nil) (result 'unset) (err nil))
+  (let ((nhwl-reconnect nil) (later nil) (result 'unset) (err nil))
     (unwind-protect
         (nhwl-gui--with-connection-log
-         (ignore-errors (gui-set-selection 'XdndSelection "dragged text"))
-         (nhwl-gui--point 100 100)
-         (gui-runner-recorder '(:cmd "button" :button 272 :state "press"))
-         (nhwl-gui--pump 0.2)
-         (setq timer (nhwl-gui--lose-display 0.3))
+         (gui-set-selection 'XdndSelection "dragged text")
+         (nhwl-gui--drag-press)
+         (setq later (nhwl-gui--recorder-later '((0.3 :cmd "restart" :mode "gone"))))
          (setq result (condition-case e
-                          (with-timeout (10 'timeout)
-                            (x-begin-drag '("text/plain;charset=utf-8") 'XdndActionCopy nil nil t))
+                          (x-begin-drag '("text/plain;charset=utf-8") 'XdndActionCopy nil nil t)
                         (error (setq err e) 'error)))
          (should-not err)
          (should-not result)
+         (should (string-search "\"restart\"" (nhwl-gui--later-output later)))
          (should (nhwl-gui--display-gone-p))
          (should (daemonp))
          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (memq 'lost nhwl-gui--connection-log)) 2)))
-      (when timer (cancel-timer timer))
+      (nhwl-gui--drag-cleanup later)
       (nhwl-gui--reopen-display))))
 
 (ert-deftest nhwl-gui/display-restart-twenty-cycles ()
@@ -1956,8 +1979,10 @@ connection."
                   (0 :cmd "key" :keycode 29 :state "release")))))
     (unwind-protect
         (progn
-          (should (eq (condition-case nil (progn (x-file-dialog "Open" "/tmp/" nil t) 'returned)
-                        (quit 'quit))
+          ;; the harness runs rows with `inhibit-quit' t, which keeps the quit pending; a user's C-g arrives with it nil
+          (should (eq (let ((inhibit-quit nil))
+                        (condition-case nil (progn (x-file-dialog "Open" "/tmp/" nil t) 'returned)
+                          (quit 'quit)))
                       'quit))
           (should (nhwl-gui--wait (lambda () (seq-find (lambda (e) (plist-get e :close)) (gui-runner-portal-log)))
                                   3))

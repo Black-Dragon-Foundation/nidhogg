@@ -317,6 +317,8 @@ pub(crate) fn spawn(
     stage: Stage,
 ) -> std::io::Result<JoinHandle<Option<Stage>>> {
     link.stop.store(false, Ordering::Release);
+    // the thread before this one (a reconnect starts a new one) is no id of this one's
+    link.tid.store(0, Ordering::Release);
     let done = Arc::new(ThreadDone::default());
     *locked(&link.done) = Some(done.clone());
     let finished = done.clone();
