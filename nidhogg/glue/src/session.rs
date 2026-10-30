@@ -33,7 +33,10 @@ pub fn open(state: &mut Display, id: &str, reason: u32) -> Result<(), GlueError>
         return Err(GlueError::Arg);
     }
     let id = (!id.is_empty()).then_some(id);
-    Ok(state.backend().session_open(id, reason)?)
+    state.backend().session_open(id, reason)?;
+    // a session opened with a saved id restores its windows (`window::new`)
+    state.session_saved = id.is_some();
+    Ok(())
 }
 
 /// The open session's id.  `NHG_E_STATE` before the compositor has answered.

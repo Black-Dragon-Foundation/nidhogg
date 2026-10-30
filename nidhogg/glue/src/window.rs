@@ -18,7 +18,8 @@ use crate::display::Display;
 use crate::frame::{Frame, NHG_FACT_CSD, NHG_FACT_ICONIFIED, NHG_FACT_VISIBLE, NHG_FRAME_CHILD};
 use crate::guard::GlueError;
 use nhshell::api::{
-    Anchor, ChildDesc, NHSHELL_KIND_CHILD, NHSHELL_KIND_TOPLEVEL, ShellError, WindowDesc,
+    Anchor, ChildDesc, NHSHELL_KIND_CHILD, NHSHELL_KIND_TOPLEVEL, NHSHELL_WIN_RESTORE, ShellError,
+    WindowDesc,
 };
 use std::ffi::c_char;
 
@@ -131,6 +132,15 @@ pub fn seed(
     Ok(())
 }
 
+/// A named top-level of a session opened with a saved id is restored: `NHSHELL_WIN_RESTORE` is added to `flags`.
+fn restore_flag(flags: u32, session_saved: bool, session_name: &str) -> u32 {
+    if session_saved && !session_name.is_empty() {
+        flags | NHSHELL_WIN_RESTORE
+    } else {
+        flags
+    }
+}
+
 /// Make the window `d` describes and register it, seeded.  A window the glue cannot register is destroyed again.
 pub fn new(
     state: &mut Display,
@@ -148,7 +158,7 @@ pub fn new(
             h: d.h,
             title: title.into(),
             app_id: app_id.into(),
-            flags: d.flags,
+            flags: restore_flag(d.flags, state.session_saved, session_name),
         };
         // an empty name is none
         state
@@ -334,5 +344,22 @@ pub fn wait_configured(
         0 => Err(GlueError::Code(NHG_E_TIMEOUT)),
         // something queued, or an interrupted wait: C drains and asks again
         _ => Ok(0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_named_window_of_a_saved_session_is_restored() {
+        assert_eq!(restore_flag(0, true, "w"), NHSHELL_WIN_RESTORE);
+        assert_eq!(restore_flag(0, true, ""), 0, "unnamed");
+        assert_eq!(restore_flag(0, false, "w"), 0, "new session");
+        assert_eq!(
+            restore_flag(2, true, "w"),
+            2 | NHSHELL_WIN_RESTORE,
+            "other flags kept"
+        );
     }
 }
