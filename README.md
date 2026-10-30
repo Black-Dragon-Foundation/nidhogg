@@ -281,8 +281,9 @@ moves to the round's green drgnx commit.
 - Before a round, `nidhogg/test/preflight.sh` (the desktop, in the heavy slots) runs the passes that find ordering bugs:
   the check files of `preflight-files.txt` pinned to 1 and 2 CPUs and under half a core (3 runs each; podman options
   through `NIDHOGG_BUILD_PODMAN_ARGS`), on the chaos build with many seeds, the workers harness (`--tsan`, `--sched`),
-  and the reds again under `rr`. A stamp (`REPORT.stamp`: commit, passes, date) is written only when every pass was green
-  on a clean tree; `preflight-test.sh` checks that no interrupted, red or dirty run leaves one.
+  and the reds again under `rr`. The report shows every group's results, one line per file per run; a file with no
+  results from this run counts as red. A stamp (`REPORT.stamp`: commit, passes, date) is written only when every pass was
+  green on a clean tree; `preflight-test.sh` checks that no interrupted, red or dirty run leaves one.
 - Actions are pinned to commit SHAs. `bash nidhogg/test/ci-test.sh` checks these rules.
 
 ## Stall watchdog
