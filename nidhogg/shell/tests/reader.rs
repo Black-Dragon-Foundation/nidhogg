@@ -324,6 +324,15 @@ mod reader {
         ("present_tree", |s, w| s.present_tree(w).map(drop)),
         ("set_presenter_thread", |s, _| s.set_presenter_thread(false)),
         ("presenter_stats", |s, _| s.presenter_stats().map(drop)),
+        ("presenter_timing", |s, _| s.presenter_timing().map(drop)),
+        ("dnd_status", |s, _| {
+            s.dnd_status(Some("text/plain"), NHSHELL_DND_COPY, NHSHELL_DND_COPY)
+        }),
+        ("dnd_finish", |s, _| s.dnd_finish(true)),
+        ("drag_start", |s, w| {
+            s.drag_start(w, &[("text/plain", b"x")], NHSHELL_DND_COPY)
+        }),
+        ("drag_cancel", |s, _| s.drag_cancel()),
         ("set_reconnect", |s, _| s.set_reconnect(true)),
         ("reconnect", |s, _| s.reconnect(50)),
         ("window_destroy", |s, w| s.window_destroy(w)),
