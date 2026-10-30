@@ -1,0 +1,4 @@
+# TEST-FILE BUDGET-RATIO: a timing file is red when the median of its samples exceeds ratio x the runner calibration.
+# Set from one desktop perf-island run (timing-lane.sh --build-dir); report-only for now.
+watchdog-timing-tests 100
+workers-timing-tests 100
