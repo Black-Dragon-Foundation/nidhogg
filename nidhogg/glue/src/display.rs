@@ -66,6 +66,8 @@ pub struct Display {
 
     /// Reconnecting in place (`reconnect.rs`).
     pub(crate) reconnect: crate::reconnect::Reconnect,
+    /// The session was opened with a saved id: its named top-level windows are restored, not added (`session.rs`).
+    pub(crate) session_saved: bool,
 }
 
 impl Drop for Display {
@@ -111,6 +113,7 @@ impl NhgDisplay {
                 touch: Default::default(),
 
                 reconnect: Default::default(),
+                session_saved: false,
             }),
         }
     }
