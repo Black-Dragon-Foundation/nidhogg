@@ -6,13 +6,19 @@ rc=0
 fail() { echo "CI FAIL: $*"; rc=1; }
 wf=.github/workflows/build.yml
 test -f "$wf"                                                     || { fail "no $wf"; exit 1; }
-for j in tree linux macos drgnx-linux drgnx-macos release; do grep -qE "^  $j:" "$wf" || fail "no job $j"; done
+for j in tree linux macos drgnx release; do grep -qE "^  $j:" "$wf" || fail "no job $j"; done
 # drgnx's tests gate a release
-awk '/^  release:/,0' "$wf" | grep -qE 'needs: \[tree, linux, macos, drgnx-linux, drgnx-macos\]' || fail "release not gated"
+awk '/^  release:/,0' "$wf" | grep -qE 'needs: \[tree, linux, macos, drgnx\]' || fail "release not gated"
+# drgnx's tiers: drgnx's own workflow, at one pinned commit that is also the default drgnx_ref, on this run's tarballs
+pin=$(grep -oE 'uses: Black-Dragon-Foundation/drgnx/\.github/workflows/drgnx-tiers\.yml@[0-9a-f]{40}' "$wf" | sed 's/.*@//')
+[ -n "$pin" ]                                                     || fail "drgnx's tiers are not called at a pinned commit"
+grep -qF "drgnx_ref: \${{ inputs.drgnx_ref || '$pin' }}" "$wf"    || fail "the default drgnx_ref is not the pinned commit $pin"
+grep -qF 'nidhogg: artifact' "$wf"                                || fail "drgnx's tiers do not run on this run's tarballs"
+grep -qF "'unit no-lisp-writes ui macos'" "$wf"                   || fail "drgnx's tiers are not unit, gate mode, GUI and macOS"
 # a release only from a pushed v* tag, never from workflow_dispatch or a pull request
 awk '/^  release:/,0' "$wf" | grep -qF "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" || fail "release not restricted to a pushed v* tag"
 # pinned actions, podman only, builds only through build.sh
-! grep -E 'uses: [^ ]+@' "$wf" | grep -vqE '@[0-9a-f]{40} # v'   || fail "unpinned action"
+! grep -E 'uses: [^ ]+@' "$wf" | grep -v 'drgnx-tiers\.yml@' | grep -vqE '@[0-9a-f]{40} # v' || fail "unpinned action"
 ! grep -qw docker "$wf"                                           || fail "docker in $wf"
 ! grep -qE '\./configure|make -j' "$wf"                           || fail "a build outside build.sh"
 grep -qE '^permissions:' "$wf"                                    || fail "no top-level permissions"
@@ -43,11 +49,11 @@ grep -qF -- '--without-glitnir' <<<"$nj"                          || fail "compi
 grep -qF -- '--stage build' <<<"$nj"                              || fail "compile-noglitnir does not stop after the build stage"
 grep -qF 'fedora-44' <<<"$nj"                                     || fail "compile-noglitnir is not on fedora-44"
 # macOS runs the crate's tests with the host's cargo (Homebrew rust), before the build: the aarch64 NEON baseline
-mj=$(awk '/^  macos:/,/^  drgnx-linux:/' "$wf")
+mj=$(awk '/^  macos:/,/^  drgnx:/' "$wf")
 grep -qF 'bash nidhogg/glitnir/check.sh' <<<"$mj"                 || fail "macos runs the glitnir checks"
 [ "$(grep -n 'glitnir/check.sh' <<<"$mj" | head -1 | cut -d: -f1)" -lt "$(grep -n 'id: build' <<<"$mj" | head -1 | cut -d: -f1)" ] 2>/dev/null || fail "macos runs the glitnir checks after the build"
 # the GUI job: needs the Linux builds, runs the fedora-45 tarball in a container at scales 1 and 2, with a time limit
-gj=$(awk '/^  gui:/,/^  drgnx-macos:/' "$wf")
+gj=$(awk '/^  gui:/,/^  workers-harness:/' "$wf")
 [ -n "$gj" ]                                                      || fail "no job gui"
 grep -qE 'needs: linux' <<<"$gj"                                  || fail "gui does not need linux"
 grep -qE 'timeout-minutes: 60' <<<"$gj"                           || fail "gui has no 60-minute limit"
@@ -65,6 +71,13 @@ done
 job workers-pkg | grep -q 'fail-fast: false'                       || fail "workers-pkg has no fail-fast: false"
 { job workers-pkg | grep -qE 'mode: \["on", "off"\]' && grep -q 'pkg-test.sh --compare' "$wf"; } || fail "workers-pkg does not run on and off and compare"
 job workers-asan | grep -q 'NIDHOGG_BUILD_SANITIZE'                || fail "workers-asan does not build sanitized"
+# a release tag runs only what release needs: the tagged commit passed the rest in its round
+for j in compile-noglitnir gui workers-harness workers-asan workers-pkg workers-pkg-compare; do
+  job "$j" | grep -qF "github.ref_type != 'tag'"                    || fail "$j runs for a release tag"
+done
+for j in tree linux macos drgnx; do
+  ! job "$j" | grep -qF "github.ref_type != 'tag'"                  || fail "$j, which release needs, is skipped for a tag"
+done
 # pkg-test.sh --compare: an on-only failure fails, a failure in both passes, an expected failure passes
 d=$(mktemp -d)
 printf 'a\tpassed\nb\tfailed\nc\tfailed\nd\tfailed\n' > "$d/pkg-x-on.outcomes"
