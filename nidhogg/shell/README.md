@@ -8,7 +8,8 @@ no C ABI of its own. Under `--with-nidhogg-wayland` the Makefile links the glue'
 
 - Dependencies are vendored in `vendor/` (`cargo vendor-filterer`, Linux and macOS, x86_64 and aarch64) and the build
   runs offline and locked (`.cargo/config.toml`). Third-party crates are limited to wayland-client, wayland-backend,
-  wayland-protocols, xkbcommon, rustix and their dependencies.
+  wayland-protocols, xkbcommon, rustix and their dependencies, plus the image decoders Glitnir depends on (png, gif,
+  image-webp and theirs, the same versions as `../glitnir/vendor/`).
 - `check.sh [--container DISTRO] [--test NAME]` runs fmt, clippy `-D warnings`, tests and cargo-deny; `--full` adds
   the vendor-drift check and the release build. The archive's exports are checked by `nidhogg/glue/check.sh --full`.
   The glue builds from this `vendor/`; after a revendor, its `Cargo.lock` takes this one's packages (its check says
