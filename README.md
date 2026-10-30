@@ -281,7 +281,10 @@ moves to the round's green drgnx commit.
 - Before a round, `nidhogg/test/preflight.sh` (the desktop, in the heavy slots) runs the passes that find ordering bugs:
   the check files of `preflight-files.txt` pinned to 1 and 2 CPUs and under half a core (3 runs each; podman options
   through `NIDHOGG_BUILD_PODMAN_ARGS`), on the chaos build with many seeds, the workers harness (`--tsan`, `--sched`),
-  and the reds again under `rr`. The report shows every group's results, one line per file per run; a file with no
+  and the reds again under `rr record --chaos -n`, packed so that the trace replays in a later container (`build.sh`'s
+  `NIDHOGG_CHECK_RR`; SELinux denies a labelled container `perf_event_open`, so that one container runs with labels off).
+  On Zen a trace replays reliably only with SpecLockMap off (rr's wiki; root), and rr 5.9.0 aborts on a test that opens a pty.
+  The report shows every group's results, one line per file per run; a file with no
   results from this run counts as red. A stamp (`REPORT.stamp`: commit, passes, date) is written only when every pass was
   green on a clean tree; `preflight-test.sh` checks that no interrupted, red or dirty run leaves one.
 - Actions are pinned to commit SHAs. `bash nidhogg/test/ci-test.sh` checks these rules.
