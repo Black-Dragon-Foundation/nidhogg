@@ -586,15 +586,6 @@ unibyte strings; CHUNKS, each (TYPE . BODY), go before the image data."
   (let ((nidhogg-workers-images t))
     (nidhogg-workers--test-image-answer kind spec)))
 
-(defun workers-image-tests--crc32 (string)
-  (let ((c #xffffffff))
-    (dolist (b (append string nil))
-      (setq c (logxor c b))
-      (dotimes (_ 8)
-        (setq c (if (zerop (logand c 1)) (ash c -1)
-                  (logxor (ash c -1) #xedb88320)))))
-    (logxor c #xffffffff)))
-
 (defun workers-image-tests--png-header (w h)
   "The first 33 bytes of a PNG of W x H pixels, with a valid IHDR."
   (let* ((be32 (lambda (n) (unibyte-string (logand (ash n -24) 255)
