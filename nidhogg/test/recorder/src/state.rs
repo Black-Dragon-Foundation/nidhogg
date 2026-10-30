@@ -146,6 +146,8 @@ pub struct State {
     pub serials: [Option<u32>; 3],
     /// The `xdg_activation_v1.activate` calls seen: `{token, surface}`.
     pub activations: Vec<serde_json::Value>,
+    /// The tokens clients created (`xdg_activation_token_v1.commit`): `{token}`; an external program is handed one.
+    pub issued_tokens: Vec<serde_json::Value>,
     /// Every wl_output global served (the first is `output`), for the `output` command.
     pub outputs: Vec<(Output, GlobalId)>,
     pub rmlvo: crate::input::Rmlvo,
@@ -481,6 +483,7 @@ impl State {
             grabs: Vec::new(),
             serials: [None; 3],
             activations: Vec::new(),
+            issued_tokens: Vec::new(),
             outputs,
             rmlvo,
             focus: None,
