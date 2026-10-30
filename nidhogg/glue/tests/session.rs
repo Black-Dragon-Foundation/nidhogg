@@ -149,9 +149,10 @@ fn removing_a_window_takes_its_name_out_once() {
     let d = open(&rec);
     assert_eq!(open_session(d, "", NHG_SESSION_LAUNCH), NHG_OK);
     answer(d);
+    // each window configured before the next is made: `configured` ends in a settle that drops what comes then
     let (_, w) = named(d, "second");
-    let (_, plain) = named(d, "");
     configured(d, w);
+    let (_, plain) = named(d, "");
     configured(d, plain);
     // SAFETY: a live display.
     unsafe {
