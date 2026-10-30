@@ -527,12 +527,14 @@ meanwhile, while a SIGCHLD still reaches its handler and
   ;; handler pauses an exiting process's reader after the wait copied
   ;; its select mask, and nh-io reads no paused handle, so waiting for
   ;; its output only reached the 1 s bound.  Many short processes that
-  ;; write as they exit, polled with a zero timeout: no poll takes near
-  ;; the bound.  (A stress row: the window is the SIGCHLD between the
-  ;; mask copy and the select.)
+  ;; write as they exit, polled with a zero timeout: no poll reaches the
+  ;; bound.  (A stress row: the windows are the SIGCHLD between the mask
+  ;; copy and the select, and a delivery that outruns nh-io clearing its
+  ;; reading flag, so a poll waits for a read whose output is gone.)
   (workers-io-tests--modes
     (when (eq mode 'threads)
-      (let ((worst 0.0))
+      (let ((worst 0.0)
+            (hits-before (nidhogg-workers--test-settle-bound-hits)))
         (dotimes (i 200)
           (let ((p (make-process
                     :name (format "wio-zp-%d" i) :noquery t
@@ -544,7 +546,46 @@ meanwhile, while a SIGCHLD still reaches its handler and
                 (accept-process-output nil 0)
                 (setq worst (max worst (- (float-time) t0)))))
             (delete-process p)))
-        (should (< worst 0.5))))))
+        (ert-info ((format "worst poll %.3f s" worst))
+          (should (= 0 (- (nidhogg-workers--test-settle-bound-hits)
+                          hits-before))))))))
+
+(defun workers-io-tests--poll-through-gap (proc)
+  "Poll PROC with a zero timeout until the settle gap's event has run.
+Return the times the waits meanwhile reached their bound."
+  (let ((hits (nidhogg-workers--test-settle-bound-hits))
+        (deadline (+ (float-time) 5)))
+    (while (and (nidhogg-workers--test-settle-gap)
+                (< (float-time) deadline))
+      (accept-process-output proc 0 nil t))
+    (should-not (nidhogg-workers--test-settle-gap))
+    (- (nidhogg-workers--test-settle-bound-hits) hits)))
+
+(ert-deftest workers/zero-timeout-pause-in-the-gap ()
+  ;; The SIGCHLD handler pauses a reader after the wait's checks found
+  ;; its output pending and before the wait sleeps.  nh-io reads no
+  ;; paused handle and no signal cuts the sleep short: the wait is told.
+  (workers-io-tests--modes
+    (when (eq mode 'threads)
+      (let ((cat (workers-io-tests--cat "gap-pause")))
+        (should (workers-io-tests--info cat :owned))
+        ;; nh-io held before its read: the output stays in the kernel.
+        (nidhogg-workers--pause-at 'in-poll)
+        (process-send-string cat "held\n")
+        (should (nidhogg-workers--test-await-paused 'in-poll 5000))
+        (nidhogg-workers--test-settle-gap cat 'pause)
+        (should (= 0 (workers-io-tests--poll-through-gap cat)))))))
+
+(ert-deftest workers/zero-timeout-read-ends-in-the-gap ()
+  ;; A read that lands nothing (a partial frame, EAGAIN) writes no wake
+  ;; fd.  It ends after the wait's checks saw it in progress and before
+  ;; the wait sleeps: the wait is told.
+  (workers-io-tests--modes
+    (when (eq mode 'threads)
+      (let ((cat (workers-io-tests--cat "gap-read")))
+        (should (workers-io-tests--info cat :owned))
+        (nidhogg-workers--test-settle-gap cat 'read-end)
+        (should (= 0 (workers-io-tests--poll-through-gap cat)))))))
 
 (ert-deftest workers/filter-that-waits-nests-as-today ()
   ;; A filter that waits (`sleep-for', as drgnx's hub test readers do)
