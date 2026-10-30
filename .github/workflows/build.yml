@@ -1,5 +1,6 @@
-# Nidhogg CI.  Every build goes through nidhogg/build.sh (podman containers on Linux, the host on macOS).  drgnx's unit
-# suite runs against the built tarballs and gates the release job.  README.md, "CI and releases".
+# Nidhogg CI.  Every build goes through nidhogg/build.sh (podman containers on Linux, the host on macOS).  drgnx's tiers
+# (its own drgnx-tiers.yml, called here) run against the built tarballs and gate the release job.  README.md, "CI and
+# releases".
 name: Nidhogg
 
 on:
@@ -20,11 +21,6 @@ on:
 
 permissions:
   contents: read
-
-# The drgnx commit under test is pinned, so a drgnx push never turns Nidhogg red: bump it by hand to a drgnx main
-# commit whose own CI is green (README.md, "CI and releases").
-env:
-  DRGNX_REF: ${{ inputs.drgnx_ref || '459ef4c56598b8eb90f3f25962f3f8690491f267' }}
 
 concurrency:
   group: nidhogg-${{ github.ref }}
@@ -191,6 +187,7 @@ jobs:
   # Rust installed (build.sh leaves cargo and rust out of the package list under --without-glitnir).
   compile-noglitnir:
     name: Compile without Glitnir (fedora-44)
+    if: ${{ github.ref_type != 'tag' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     steps:
@@ -313,81 +310,32 @@ jobs:
           path: ${{ runner.temp }}/build/*.log
           if-no-files-found: ignore
 
-  drgnx-linux:
-    name: drgnx suite (Linux, fedora-45 build)
-    # runs once the Linux builds are done, whatever the other distros did: it needs only the fedora-45 tarball (the
-    # download fails by itself when that build failed)
-    needs: linux
-    if: ${{ !cancelled() && inputs.scope != 'macos' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    outputs:
-      drgnx_commit: ${{ steps.drgnx.outputs.commit }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: Black-Dragon-Foundation/drgnx
-          ref: ${{ env.DRGNX_REF }}
-          path: drgnx
-          persist-credentials: false
-      # what drgnx's ci.yml (emacs-31) builds for its suite, from the drgnx checkout and cached as there: Ratatoskr with
-      # the test hooks and ratatoskr-mock beside it (DRGNX_RATATOSKR_BIN), huginn's dump example (DRGNX_HUGINN_DUMP).
-      # Built on the runner (glibc older than Fedora 45's); drgnx-suite.sh mounts them into the test container.  The
-      # tests that need them are on drgnx's test/no-skip.eld: without them they skip and the suite fails.  The cargo cache
-      # is restored before the builds and saved right after them, as the build job's caches are.
-      - name: Cargo cache (drgnx's runtime)
-        id: cg
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            drgnx/runtime/target
-          key: cargo-${{ runner.os }}-drgnx-suite-${{ hashFiles('drgnx/runtime/Cargo.lock') }}
-      - name: Ratatoskr (cargo build, for drgnx's client tests)
-        id: rt
-        run: |
-          cargo build --locked --manifest-path drgnx/runtime/Cargo.toml -p drgnx-ratatoskr -p domr \
-            --features drgnx-ratatoskr/test-hooks --bin ratatoskr --bin ratatoskr-mock
-          echo "DRGNX_RATATOSKR_BIN=$GITHUB_WORKSPACE/drgnx/runtime/target/debug/ratatoskr" >> "$GITHUB_ENV"
-      - name: huginn's dump example (DRGNX_HUGINN_DUMP)
-        id: hd
-        run: |
-          cargo build --locked --manifest-path drgnx/runtime/Cargo.toml -p huginn --example dump
-          echo "DRGNX_HUGINN_DUMP=$GITHUB_WORKSPACE/drgnx/runtime/target/debug/examples/dump" >> "$GITHUB_ENV"
-      - name: Save the cargo cache
-        if: ${{ always() && steps.rt.outcome == 'success' && steps.hd.outcome == 'success' && steps.cg.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            drgnx/runtime/target
-          key: cargo-${{ runner.os }}-drgnx-suite-${{ hashFiles('drgnx/runtime/Cargo.lock') }}
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        id: dl
-        continue-on-error: true
-        with:
-          name: tarball-fedora-45
-          path: dist
-      - name: The fedora-45 build made a tarball
-        if: ${{ steps.dl.outcome == 'failure' }}
-        run: |
-          echo "::error::no tarball: the fedora-45 build job failed (see the Linux fedora-45 job), so there is nothing to test"
-          exit 1
-      - name: Record the drgnx commit
-        id: drgnx
-        run: echo "commit=$(git -C drgnx rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - name: drgnx's unit suite on the built Nidhogg
-        run: bash nidhogg/ci/drgnx-suite.sh dist/*.tar.xz fedora-45 drgnx
+  # drgnx's Emacs-side tiers on the tarballs this run built, through drgnx's own definition of them
+  # (.github/workflows/drgnx-tiers.yml in drgnx), called at a pinned drgnx commit, so a drgnx push never turns Nidhogg
+  # red.  The default drgnx_ref is the same commit (nidhogg/test/ci-test.sh checks the two agree); bump both by hand to a
+  # drgnx commit whose CI is green, and pass drgnx_ref by hand for a joint round (README.md, "CI and releases").  The
+  # unit suite and gate mode on the fedora-45 tarball, the GUI tier on it under headless mutter, the unit suite on the
+  # macOS tarball (only that one in scope=macos).  It runs once the builds are done, whatever they did: a job whose
+  # tarball is missing fails by itself.
+  drgnx:
+    name: drgnx tiers
+    needs: [linux, macos]
+    if: ${{ !cancelled() }}
+    permissions:
+      contents: read
+      packages: read
+    uses: Black-Dragon-Foundation/drgnx/.github/workflows/drgnx-tiers.yml@7f7e90edb71b52081f093d9c8c7bb7069caffabd # drgnx pin
+    with:
+      drgnx_ref: ${{ inputs.drgnx_ref || '7f7e90edb71b52081f093d9c8c7bb7069caffabd' }}
+      nidhogg: artifact
+      tiers: ${{ inputs.scope == 'macos' && 'macos' || 'unit no-lisp-writes ui macos' }}
 
   # GUI tests (test/src/nidhogg-tests/*-gui-tests.el): the fedora-45 tarball in a fedora-45 container on a headless mutter
   # with its own session bus, at monitor scale 1 and 2 (nidhogg/test/gui.sh).  Not part of the release gate.
   gui:
     name: GUI tests (headless mutter, scale ${{ matrix.scale }})
     needs: linux
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.ref_type != 'tag' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
@@ -416,72 +364,14 @@ jobs:
       - name: GUI tests at scale ${{ matrix.scale }}
         run: bash nidhogg/test/gui.sh --prefix "$RUNNER_TEMP/nidhogg" --scale "${{ matrix.scale }}" --container fedora-45 --timeout 1800
 
-  drgnx-macos:
-    name: drgnx suite (macOS)
-    needs: macos
-    runs-on: xcode-27
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: Black-Dragon-Foundation/drgnx
-          ref: ${{ env.DRGNX_REF }}
-          path: drgnx
-          persist-credentials: false
-      # as drgnx-linux (Homebrew's rust, as drgnx's macos.yml)
-      - name: Rust (Homebrew)
-        run: brew install rust
-      - name: Cargo cache (drgnx's runtime)
-        id: cg
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            drgnx/runtime/target
-          key: cargo-${{ runner.os }}-drgnx-suite-${{ hashFiles('drgnx/runtime/Cargo.lock') }}
-      - name: Ratatoskr (cargo build, for drgnx's client tests)
-        id: rt
-        run: |
-          cargo build --locked --manifest-path drgnx/runtime/Cargo.toml -p drgnx-ratatoskr -p domr \
-            --features drgnx-ratatoskr/test-hooks --bin ratatoskr --bin ratatoskr-mock
-          echo "DRGNX_RATATOSKR_BIN=$GITHUB_WORKSPACE/drgnx/runtime/target/debug/ratatoskr" >> "$GITHUB_ENV"
-      - name: huginn's dump example (DRGNX_HUGINN_DUMP)
-        id: hd
-        run: |
-          cargo build --locked --manifest-path drgnx/runtime/Cargo.toml -p huginn --example dump
-          echo "DRGNX_HUGINN_DUMP=$GITHUB_WORKSPACE/drgnx/runtime/target/debug/examples/dump" >> "$GITHUB_ENV"
-      - name: Save the cargo cache
-        if: ${{ always() && steps.rt.outcome == 'success' && steps.hd.outcome == 'success' && steps.cg.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            drgnx/runtime/target
-          key: cargo-${{ runner.os }}-drgnx-suite-${{ hashFiles('drgnx/runtime/Cargo.lock') }}
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        id: dl
-        continue-on-error: true
-        with:
-          name: tarball-macos
-          path: dist
-      - name: The macOS build made a tarball
-        if: ${{ steps.dl.outcome == 'failure' }}
-        run: |
-          echo "::error::no tarball: the macOS build job failed (see the macOS job), so there is nothing to test"
-          exit 1
-      - name: drgnx's unit suite on the built Nidhogg
-        run: bash nidhogg/ci/drgnx-suite.sh dist/*.tar.xz macos drgnx
-
-  # The off-main-thread work's CI (engine C, PD-4).  Like drgnx-linux they run once the Linux builds are done, whatever the other
-  # distros did, and they are not in release's needs: the default-on rule requires them green on the gate commit, a release
-  # does not wait for them.  None of them has fail-fast.
+  # The off-main-thread work's CI (engine C, PD-4).  They run once the Linux builds are done, whatever the other distros
+  # did, and they are not in release's needs: the default-on rule requires them green on the gate commit, a release
+  # does not wait for them.  None of them has fail-fast.  Like gui and compile-noglitnir, none runs for a release tag:
+  # the tagged commit passed them in its round (README.md, "CI and releases").
   workers-harness:
     name: Workers C harness (TSan, fuzz)
     needs: linux
-    if: ${{ !cancelled() && inputs.scope != 'macos' }}
+    if: ${{ !cancelled() && inputs.scope != 'macos' && github.ref_type != 'tag' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -501,7 +391,7 @@ jobs:
   workers-asan:
     name: Workers batch files (ASan + UBSan dev build)
     needs: linux
-    if: ${{ !cancelled() && inputs.scope != 'macos' }}
+    if: ${{ !cancelled() && inputs.scope != 'macos' && github.ref_type != 'tag' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -530,7 +420,7 @@ jobs:
   workers-pkg:
     name: Package suites (${{ matrix.group }}, workers ${{ matrix.mode }})
     needs: linux
-    if: ${{ !cancelled() && inputs.scope != 'macos' }}
+    if: ${{ !cancelled() && inputs.scope != 'macos' && github.ref_type != 'tag' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
@@ -574,7 +464,7 @@ jobs:
   workers-pkg-compare:
     name: Package suites, on against off
     needs: workers-pkg
-    if: ${{ !cancelled() && inputs.scope != 'macos' }}
+    if: ${{ !cancelled() && inputs.scope != 'macos' && github.ref_type != 'tag' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -592,7 +482,7 @@ jobs:
   release:
     name: Release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [tree, linux, macos, drgnx-linux, drgnx-macos]
+    needs: [tree, linux, macos, drgnx]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -611,13 +501,13 @@ jobs:
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
-          DRGNX_COMMIT: ${{ needs.drgnx-linux.outputs.drgnx_commit }}
+          DRGNX_COMMIT: ${{ needs.drgnx.outputs.drgnx_commit }}
         run: |
           V=$(head -n 1 nidhogg/version)
           cd dist
           sha256sum -- *.tar.xz > SHA256SUMS
           commit=$(tar -xJOf "$(ls -- *fedora-45*.tar.xz)" "nidhogg-$V/share/nidhogg/BUILDINFO" | sed -n 's/^commit=//p')
-          printf 'Nidhogg %s, built from commit %s.\n\ndrgnx unit suite passed on Linux and macOS against drgnx commit %s.\n' \
+          printf 'Nidhogg %s, built from commit %s.\n\ndrgnx tiers passed on this build against drgnx commit %s: the unit suite and gate mode, the GUI tier (Linux), the unit suite (macOS).\n' \
             "$V" "$commit" "$DRGNX_COMMIT" > ../notes.md
           cd ..
           gh release create "$GITHUB_REF_NAME" dist/* --title "Nidhogg $V" --notes-file notes.md

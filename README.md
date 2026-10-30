@@ -210,8 +210,14 @@ mutter. `DIR` is a Nidhogg prefix (an unpacked tarball or an install).
 
 `.github/workflows/build.yml` runs on pushes to `nidhogg-31`, `v*-nidhogg.*` tags, pull requests and by hand
 (`drgnx_ref` input: the drgnx branch, tag or commit under test). Without the input the drgnx commit is the one pinned
-in `DRGNX_REF`, never drgnx's moving `main`: a drgnx push cannot turn Nidhogg red. Bump the pin by hand to a drgnx
-`main` commit whose own CI is green.
+in the `drgnx` job, never drgnx's moving `main`: a drgnx push cannot turn Nidhogg red. The pin is written twice, as
+the commit of drgnx's tiers workflow (`uses: …/drgnx-tiers.yml@COMMIT`, which takes no expression) and as the default
+`drgnx_ref`; `ci-test.sh` checks they agree. Bump both by hand to a drgnx commit whose own CI is green.
+
+A joint round (drgnx and Nidhogg change together, drgnx's `docs/develop/ci.md`, "Joint rounds"): drgnx goes to
+`ci/joint/<name>`, where its own CI runs only what needs no Emacs, and this workflow runs by hand with
+`drgnx_ref=ci/joint/<name>`, so drgnx's Emacs-side tiers run once, on this run's build. Before the release tag, the pin
+moves to the round's green drgnx commit.
 
 - `tree`: `tree-test.sh` and `ci-test.sh` (full history and tags).
 - `linux` (fedora-44, fedora-45, ubuntu-26.04): `build.sh --container D --stage build`, the cache saves, then `--stage check
@@ -220,14 +226,19 @@ in `DRGNX_REF`, never drgnx's moving `main`: a drgnx push cannot turn Nidhogg re
   `tarball-test.sh macos`. Each uploads its tarball and `.sha256`.
 - `compile-noglitnir` (fedora-44): `build.sh --without-glitnir --stage build`, with no Rust installed (the tree still
   compiles without Glitnir). It is not part of the release gate.
-- `drgnx-linux` (fedora-45 tarball) and `drgnx-macos`: first what drgnx's `ci.yml` builds for its suite, from the drgnx
-  checkout and cached as there (Ratatoskr with the test hooks and `ratatoskr-mock`: `DRGNX_RATATOSKR_BIN`; huginn's
-  `dump` example: `DRGNX_HUGINN_DUMP`), then `nidhogg/ci/drgnx-suite.sh TARBALL DISTRO DRGNX_DIR` runs drgnx's
-  unit suite with `DRGNX_EMACS` set to the built Nidhogg (the `:timing` tests in a second run). Locally, a narrowed run:
-  `DRGNX_TEST_SELECTOR='drgnx-doctor/' bash nidhogg/ci/drgnx-suite.sh TARBALL fedora-44 ../drgnx`.
+- `drgnx` (after `linux` and `macos`, whatever they did): calls drgnx's own `.github/workflows/drgnx-tiers.yml` at the
+  pinned commit with `nidhogg: artifact`, so drgnx's tiers run on this run's tarballs exactly as drgnx's CI runs them on
+  the release: the unit suite and gate mode on the fedora-45 tarball (installed into drgnx's test image on top of the
+  release), drgnx's GUI tier on it under headless mutter, and the unit suite on the macOS tarball (only that one with
+  `scope=macos`). The test binaries (Ratatoskr with the test hooks, `ratatoskr-mock`, huginn's `dump`) are built once
+  for the Linux jobs; the cargo cache is this repository's (a called workflow uses the caller's). Locally, a narrowed
+  run of the unit suite on a tarball: `DRGNX_TEST_SELECTOR='drgnx-doctor/' bash nidhogg/ci/drgnx-suite.sh TARBALL
+  fedora-44 ../drgnx`.
 - `gui` (fedora-45 tarball, after `linux`; scales 1 and 2; 60 minutes): `nidhogg/test/gui.sh --container fedora-45`
   (see GUI tests). It is not part of the release gate.
-- `release` (a pushed `v*` tag only, never a manual run or a pull request) needs all five jobs, fails unless the tag is `v$(cat nidhogg/version)`, and publishes the
+- A release tag runs only what `release` needs (`tree`, `linux`, `macos`, `drgnx`): `compile-noglitnir`, `gui` and the
+  workers jobs skip it, since the tagged commit passed them in its round.
+- `release` (a pushed `v*` tag only, never a manual run or a pull request) needs `tree`, `linux`, `macos` and `drgnx`, fails unless the tag is `v$(cat nidhogg/version)`, and publishes the
   tarballs, their `.sha256` files and `SHA256SUMS`; the notes name the built commit and the drgnx commit tested.
 - Caches (`actions/cache/restore` before the build, `actions/cache/save` right after the step that produced them, so a
   later failing step, e.g. the tarball test, loses nothing; a save is skipped when its key was already found, and a build
