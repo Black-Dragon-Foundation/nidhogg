@@ -397,7 +397,9 @@ first commit.  The name is one an earlier frame left in the session."
       (when (frame-live-p f) (delete-frame f)))))
 
 (ert-deftest nhwl-gui/frame-of-a-saved-session-is-restored ()
-  "With the session opened by a saved id, a new frame's window goes in as a restore, not an add."
+  "With the session opened by a saved id, a new frame's window goes in as a restore, not an add.  It opens a second
+session on the display, so it runs after the rows that count the first."
+  :tags '(runs-last)
   (skip-unless (nhwl-gui--session-p))
   (require 'nhwl-session)
   (let ((id (nhwl-session--read-id)) (f nil))
@@ -1327,9 +1329,12 @@ arrives."
                          (0 :cmd "key" :text "g")
                          (0 :cmd "key" :keycode 29 :state "release"))))
           (setq t0 (float-time))
-          (should (eq (condition-case nil
-                          (progn (dnd-begin-text-drag "x") 'returned)
-                        (quit 'quit))
+          ;; the harness runs rows with `inhibit-quit' t, which keeps the quit pending (as in any Lisp that binds it);
+          ;; a user's C-g arrives with it nil
+          (should (eq (let ((inhibit-quit nil))
+                        (condition-case nil
+                            (progn (dnd-begin-text-drag "x") 'returned)
+                          (quit 'quit)))
                       'quit))
           (should (< (- (float-time) t0) 3.0))
           (should (nhwl-gui--connected-p))
