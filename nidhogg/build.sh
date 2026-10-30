@@ -277,22 +277,22 @@ logged() {
     exit 1
   fi
 }
-# a check target: a failure is kept for check_rerun (its last argument is the target), not the end of the run
-CHECK_RED=""
+# a check target (its last argument): a failure is not the end of the run, check_rerun judges every target's log
+CHECK_ALL=""
 checked() {
   all=$1; shift
   tlog="$B/check-logs/${!#}.log"
   mkdir -p "$(dirname "$tlog")"; : > "$tlog"
-  crc=0; ( logged "$tlog" "$@" ) || crc=1
+  ( logged "$tlog" "$@" ) || true
   cat "$tlog" >> "$all"
-  [ "$crc" = 0 ] || CHECK_RED="$CHECK_RED ${!#}"
+  CHECK_ALL="$CHECK_ALL ${!#}"
 }
 # one more run of each failed test file; a test that then passes must be listed in nidhogg/test/flaky.txt with its cause
 # (also checks that the list names no test that is gone); the first runs' logs are $B/check-logs/TARGET.log
 check_rerun() {
   # shellcheck disable=SC2086
   bash "$S/nidhogg/test/check-rerun.sh" --flaky "$S/nidhogg/test/flaky.txt" --src "$B/src/test" \
-    --make "make -C $B/obj/test" "$B/check-logs" $CHECK_RED || { echo "FAILED: check (see above)" >&2; exit 1; }
+    --make "make -C $B/obj/test" "$B/check-logs" $CHECK_ALL || { echo "FAILED: check (see above)" >&2; exit 1; }
 }
 mkdir -p "$B/src" "$B/obj"
 BODY
