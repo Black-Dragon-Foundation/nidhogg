@@ -20,9 +20,11 @@ png = "0.17"
 # the xdg session-management protocol, which Smithay 0.7 lacks, is generated from protocols/ (src/extras.rs)
 wayland-backend = "0.3"
 wayland-scanner = "0.31"
+# --virtual-pointer: a client that gives a compositor without input devices (headless sway) a pointer (src/vpointer.rs)
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 
 [dev-dependencies]
-wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
 
 [profile.release]
