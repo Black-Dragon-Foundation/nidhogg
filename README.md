@@ -270,6 +270,11 @@ moves to the round's green drgnx commit.
     base; never those of sibling branches or other tags. Keys are identical on every branch, so a run on `macos-ci` or a
     pull request reuses what `nidhogg-31` saved. Unused caches are evicted after 7 days and the oldest go first above 10 GB
     ([GitHub: dependency caching](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)).
+- Before a round, `nidhogg/test/preflight.sh` (the desktop, in the heavy slots) runs the passes that find ordering bugs:
+  the check files of `preflight-files.txt` pinned to 1 and 2 CPUs and under half a core (3 runs each; podman options
+  through `NIDHOGG_BUILD_PODMAN_ARGS`), on the chaos build with many seeds, the workers harness (`--tsan`, `--sched`),
+  and the reds again under `rr`. A stamp (`REPORT.stamp`: commit, passes, date) is written only when every pass was green
+  on a clean tree; `preflight-test.sh` checks that no interrupted, red or dirty run leaves one.
 - Actions are pinned to commit SHAs. `bash nidhogg/test/ci-test.sh` checks these rules.
 
 ## Stall watchdog

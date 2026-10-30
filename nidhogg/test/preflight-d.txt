@@ -1,0 +1,2 @@
+# The deterministic (class D) test files P1 of preflight.sh runs twice and pinned. Empty until files migrate to scripted
+# peers and the virtual clock; an empty list skips P1 with a note.
