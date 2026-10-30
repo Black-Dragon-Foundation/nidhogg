@@ -1,0 +1,27 @@
+# Packages a Nidhogg tarball needs at run time on Arch Linux.  gcc and libgccjit: native compilation runs them.
+gcc
+libgccjit
+gtk3
+harfbuzz
+cairo
+gnutls
+tree-sitter
+libxml2
+sqlite
+giflib
+libtiff
+libwebp
+lcms2
+gmp
+librsvg
+libjpeg-turbo
+libpng
+dbus
+systemd-libs
+fontconfig
+freetype2
+acl
+zlib
+ncurses
+wayland
+libxkbcommon

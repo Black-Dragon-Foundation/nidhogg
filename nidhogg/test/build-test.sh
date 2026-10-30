@@ -47,8 +47,14 @@ run NIDHOGG_BUILD_UNAME=Darwin NIDHOGG_BUILD_NPROC=16 NIDHOGG_BUILD_MEMORY_KB=$(
 rcis 0; has "warning:"
 run -- --dry-run --container ubuntu-26.04 --memory 12g --jobs 4
 rcis 0; has "docker.io/library/ubuntu:26.04"; has "--memory 12g"; has "make -j4"
-run -- --dry-run --container arch
-rcis 2; has "fedora-44 fedora-45 ubuntu-26.04"
+run -- --dry-run --container nosuch
+rcis 2; has "fedora-44 fedora-45 ubuntu-26.04 debian-13 arch"
+run -- --dry-run --container debian-13 --jobs 4
+rcis 0; has "docker.io/library/debian:13"; has "apt-get install"
+run -- --dry-run --container arch --jobs 4
+rcis 0; has "docker.io/library/archlinux:latest"; has "pacman -Syu --noconfirm --needed"; hasnt "apt-get"
+run NIDHOGG_BUILD_PKG_CACHE=/var/tmp/pc -- --dry-run --container arch
+rcis 0; has "/var/tmp/pc/pacman:/var/cache/pacman/pkg"
 run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n
 rcis 0; has "--with-ns"; has "/Nidhogg.app"; has "P=/tmp/n"; hasnt "podman"
 run -- --dry-run --container fedora-44 --check nidhogg/check-subset.txt
@@ -195,12 +201,14 @@ chmod +x "$dl/bin/emacs-31.1"
 [ "$(readlink "$dl/bin/nidhogg.pdmp")" = ../libexec/emacs/31.1/x86_64/emacs-bbb.pdmp ] ||
   fail "dumplinks: nidhogg.pdmp -> $(readlink "$dl/bin/nidhogg.pdmp"), wanted the binary's emacs-bbb.pdmp"
 # every distro has both lists; build.sh has no bash-4 constructs
-for d in fedora-44 fedora-45 ubuntu-26.04 macos; do
+for d in fedora-44 fedora-45 ubuntu-26.04 debian-13 arch macos; do
   { test -s nidhogg/deps/$d.build && test -s nidhogg/deps/$d.runtime; } || fail "deps lists missing for $d"
 done
 # the Rust toolchain for Glitnir is in every build list (Homebrew: rust)
 for d in fedora-44 fedora-45; do grep -qx cargo nidhogg/deps/$d.build && grep -qx rust nidhogg/deps/$d.build || fail "$d.build lacks cargo/rust"; done
 grep -qx cargo nidhogg/deps/ubuntu-26.04.build && grep -qx rustc nidhogg/deps/ubuntu-26.04.build || fail "ubuntu-26.04.build lacks cargo/rustc"
+grep -qx cargo nidhogg/deps/debian-13.build && grep -qx rustc nidhogg/deps/debian-13.build || fail "debian-13.build lacks cargo/rustc"
+grep -qx rust nidhogg/deps/arch.build || fail "arch.build lacks rust"
 grep -qx rust nidhogg/deps/macos.build || fail "macos.build lacks rust"
 if grep -nE 'declare -A|mapfile|readarray|\$\{[a-zA-Z_]+(,,|\^\^)\}|;&|\|&' nidhogg/build.sh; then fail "bash 4 construct in build.sh"; fi
 if command -v shellcheck >/dev/null; then shellcheck --severity=warning nidhogg/build.sh nidhogg/test/*.sh || fail shellcheck; fi
