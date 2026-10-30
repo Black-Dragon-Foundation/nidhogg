@@ -95,6 +95,10 @@ extern void nhwl_handle_selection_clear (struct input_event *);
 #include "nidhogg-watchdog-phase.h"
 
 #endif
+#ifdef HAVE_NIDHOGG_WORKERS
+#include "nidhogg-workers.h"
+
+#endif
 #ifdef WINDOWSNT
 char const DEV_TTY[] = "CONOUT$";
 #else
@@ -2909,7 +2913,14 @@ read_char (int commandflag, Lisp_Object map,
       && num_nonmacro_input_events - last_auto_save > max (auto_save_interval, 20)
       && !detect_input_pending_run_timers (0))
     {
+#ifdef HAVE_NIDHOGG_WORKERS
+
+      /* Keyboard-triggered: plain-path writes may go to nh-save.  */
+      nh_save_keyboard_auto_save (auto_save_no_message ? Qt : Qnil);
+
+#else
       Fdo_auto_save (auto_save_no_message ? Qt : Qnil, Qnil);
+#endif
       /* Hooks can actually change some buffers in auto save.  */
       redisplay ();
     }
@@ -2977,7 +2988,14 @@ read_char (int commandflag, Lisp_Object map,
 	  if (EQ (tem0, Qt)
 	      && ! CONSP (Vunread_command_events))
 	    {
+#ifdef HAVE_NIDHOGG_WORKERS
+
+	      /* Keyboard-triggered: plain-path writes may go to nh-save.  */
+	      nh_save_keyboard_auto_save (auto_save_no_message ? Qt : Qnil);
+
+#else
 	      Fdo_auto_save (auto_save_no_message ? Qt : Qnil, Qnil);
+#endif
 	      redisplay ();
 	    }
 	}
@@ -12728,7 +12746,19 @@ handle_interrupt (bool in_signal_handler)
 	  c = read_stdin ();
 	  if (c == 'y' || c == 'Y')
 	    {
+#ifdef HAVE_NIDHOGG_WORKERS
+
+	      /* Signal context (§4 item 11): no worker lock, no job; the
+		 auto-save writes every due buffer synchronously.  */
+	      nh_wk_signal_enter ();
+
+#endif
 	      Fdo_auto_save (Qt, Qnil);
+#ifdef HAVE_NIDHOGG_WORKERS
+
+	      nh_wk_signal_leave ();
+
+#endif
 #ifdef MSDOS
 	      write_stdout ("\r\nAuto-save done");
 #else

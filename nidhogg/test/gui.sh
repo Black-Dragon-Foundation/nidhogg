@@ -467,7 +467,10 @@ if [ -n "$container" ]; then
   podman run --rm --name "$name" --memory "${GLITNIR_GUI_MEMORY:-6g}" --memory-swap "${GLITNIR_GUI_MEMORY:-6g}" \
     ${sockenv[@]+"${sockenv[@]}"} "${mounts[@]}" "$image" bash -c '
       set -eu
-      pkgs=$(sed "s/#.*//" "'"$inprefix"'/share/nidhogg/deps.runtime" 2>/dev/null || true)
+      # a plain install (not a packaged tarball) has no deps.runtime: the checkout'"'"'s list for this distro stands in
+      rt='"$inprefix"'/share/nidhogg/deps.runtime
+      [ -f "$rt" ] || rt=/src/nidhogg/deps/'"$container"'.runtime
+      pkgs=$(sed "s/#.*//" "$rt" 2>/dev/null || true)
       want="mutter sway grim pixman libxkbcommon libcap dbus-daemon \
         mesa-dri-drivers mesa-libEGL mesa-libgbm python3-gobject-base dejavu-sans-mono-fonts procps-ng util-linux \
         $(case " $* " in *" mutter "*) echo pipewire wireplumber gstreamer1-plugins-base pipewire-gstreamer pipewire-utils ;; esac) \
