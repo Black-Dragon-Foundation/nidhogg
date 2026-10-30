@@ -324,9 +324,9 @@ jobs:
     permissions:
       contents: read
       packages: read
-    uses: Black-Dragon-Foundation/drgnx/.github/workflows/drgnx-tiers.yml@7f7e90edb71b52081f093d9c8c7bb7069caffabd # drgnx pin
+    uses: Black-Dragon-Foundation/drgnx/.github/workflows/drgnx-tiers.yml@4353f1fa51e054c3078474e686d981aeb2348aec # drgnx pin
     with:
-      drgnx_ref: ${{ inputs.drgnx_ref || '7f7e90edb71b52081f093d9c8c7bb7069caffabd' }}
+      drgnx_ref: ${{ inputs.drgnx_ref || '4353f1fa51e054c3078474e686d981aeb2348aec' }}
       nidhogg: artifact
       tiers: ${{ inputs.scope == 'macos' && 'macos' || 'unit no-lisp-writes ui macos' }}
 
