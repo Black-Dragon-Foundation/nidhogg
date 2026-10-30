@@ -6950,7 +6950,9 @@ read_and_dispose_of_process_output (struct Lisp_Process *p, char *chars,
 #endif
 #ifdef HAVE_NIDHOGG_WORKERS
       /* The filter's cost, which caps its deliveries (Task 19).  */
-      int64_t nh_f0 = nh_io_filter_begin (p);
+      struct nh_io_filter nh_f;
+      specpdl_ref nh_fc = SPECPDL_INDEX ();
+      nh_io_filter_begin (p, &nh_f);
 
 #endif
       if (SBYTES (text) > 0)
@@ -6965,7 +6967,8 @@ read_and_dispose_of_process_output (struct Lisp_Process *p, char *chars,
       nh_wd_phase_pop_to (nh_wd_d);
 #endif
 #ifdef HAVE_NIDHOGG_WORKERS
-      nh_io_filter_end (p, nh_f0, SBYTES (text));
+      nh_io_filter_end (&nh_f, SBYTES (text));
+      unbind_to (nh_fc, Qnil);
 
 #endif
 

@@ -365,6 +365,8 @@ struct nh_io_h
      byte, once COST_KNOWN; COST_FIXED when a test fixed it.  */
   double cost;
   bool cost_known, cost_fixed;
+  /* Filter calls with its output in progress (one waits: nested).  */
+  int filtering;
 
   /* Framing (Task 24).  The reader's framer; the raw cap to go back to.  */
   struct nh_io_framer fr;
@@ -1947,15 +1949,20 @@ nh_io_now (void)
    filter: the natural read (a pty's, else SIZE), and with a known cost
    also what its estimated work fits in the inline budget, at least
    NH_IO_DELIVER_MIN bytes.  A delivery never grows past the natural
-   read.  */
+   read, and one nested in P's own filter (it waits: `sleep-for',
+   `accept-process-output') is that read: a smaller one would only
+   nest the filter deeper, a level per delivery, up to
+   `max-lisp-eval-depth'.  */
 static ptrdiff_t
 nh_io_limit (struct Lisp_Process *p, struct nh_io_h *h, ptrdiff_t size)
 {
   if (fast_read_process_output
       && EQ (p->filter, Qinternal_default_process_filter))
     return size;
-  nh_wk_pressure_sample ();
   double lim = p->pty_out && NH_IO_PTY_READ < size ? NH_IO_PTY_READ : size;
+  if (h->filtering > 0)
+    return (ptrdiff_t) lim;
+  nh_wk_pressure_sample ();
   if (h->cost_known && h->cost > 0)
     {
       double fit = (double) nh_wk_inline_ns () / h->cost;
@@ -2622,27 +2629,64 @@ nh_io_deliver_end (struct nh_io_deliver *d)
     nh_wk_phase_ns_add (NH_WK_PH_DELIVER, 0, ns);
 }
 
-/* Around a filter call with P's output: the filter's cost.  The start
-   for nh_io_filter_end, 0 when the reader does not own P.  */
-int64_t
-nh_io_filter_begin (struct Lisp_Process *p)
+/* The filter call F is over: its handle, if F's process still has it
+   (its filter may have deleted it or handed it back), no longer counts
+   it.  */
+static struct nh_io_h *
+nh_io_filter_leave (struct nh_io_filter *f)
 {
-  return nh_io_get (p) ? nh_io_now () : 0;
+  struct nh_io_h *h = nh_io_get (f->p);
+  if (h && h->id != f->id)
+    h = NULL;
+  if (h)
+    h->filtering--;
+  f->t0 = 0;
+  return h;
 }
 
-/* The filter called at T0 got NBYTES bytes (0: it was not called).
-   Count its ns, and fold its ns per byte into P's estimate (a moving
-   average, a quarter for the newest call) unless a test fixed it.  P's
-   filter may have deleted P or handed it back meanwhile.  */
-void
-nh_io_filter_end (struct Lisp_Process *p, int64_t t0, ptrdiff_t nbytes)
+/* A filter that exits non-locally (a `throw' past it) leaves too.  */
+static void
+nh_io_filter_unwind (void *f)
 {
-  if (!t0 || nbytes <= 0)
+  if (((struct nh_io_filter *) f)->t0)
+    nh_io_filter_leave (f);
+}
+
+/* Around a filter call with P's output: the filter's cost.  F->t0 stays
+   0 when the reader does not own P; else an unwind record leaves the
+   call (the caller unbinds it after nh_io_filter_end).  */
+void
+nh_io_filter_begin (struct Lisp_Process *p, struct nh_io_filter *f)
+{
+  struct nh_io_h *h = nh_io_get (p);
+  *f = (struct nh_io_filter) { .p = p };
+  if (!h)
     return;
-  int64_t ns = nh_io_now () - t0;
+  f->t0 = nh_io_now ();
+  f->filter_ns = nh_io_filter_ns;
+  f->id = h->id;
+  h->filtering++;
+  record_unwind_protect_ptr (nh_io_filter_unwind, f);
+}
+
+/* The filter call F got NBYTES bytes (0: it was not called).  Count its
+   ns without the filter calls nested in it (a filter that waits gets
+   output meanwhile), and fold its ns per byte into its process's
+   estimate (a moving average, a quarter for the newest call) unless a
+   test fixed it.  */
+void
+nh_io_filter_end (struct nh_io_filter *f, ptrdiff_t nbytes)
+{
+  if (!f->t0)
+    return;
+  int64_t ns = (nh_io_now () - f->t0) - (nh_io_filter_ns - f->filter_ns);
+  struct nh_io_h *h = nh_io_filter_leave (f);
+  if (nbytes <= 0)
+    return;
+  if (ns < 0)
+    ns = 0;
   nh_io_filter_ns += ns;
   nh_wk_phase_ns_add (NH_WK_PH_FILTER, 0, ns);
-  struct nh_io_h *h = nh_io_get (p);
   if (!h || h->cost_fixed)
     return;
   double per = (double) ns / nbytes;

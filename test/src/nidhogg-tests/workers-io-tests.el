@@ -546,6 +546,30 @@ meanwhile, while a SIGCHLD still reaches its handler and
             (delete-process p)))
         (should (< worst 0.5))))))
 
+(ert-deftest workers/filter-that-waits-nests-as-today ()
+  ;; A filter that waits (`sleep-for', as drgnx's hub test readers do)
+  ;; gets its process's next output nested inside it.  A costly filter's
+  ;; deliveries are capped (to 512 bytes at least), but a nested one is
+  ;; the natural read, as today: capped, each nested delivery found more
+  ;; output and the filter nested a level per 512 bytes, past
+  ;; `max-lisp-eval-depth'.
+  (workers-io-tests--modes
+    (let* ((depth 0) (deepest 0) (got 0) (size (* 1024 1024))
+           (p (make-process
+               :name "wio-nest" :noquery t :connection-type 'pipe
+               :command (list "head" "-c" (number-to-string size) "/dev/zero")
+               :filter (lambda (_p s)
+                         (setq depth (1+ depth) deepest (max deepest depth)
+                               got (+ got (length s)))
+                         (unwind-protect (sleep-for 0.001)
+                           (setq depth (1- depth))))
+               :sentinel #'ignore)))
+      (should (workers-io-tests--info p :owned))
+      (nidhogg-workers--test-filter-cost p 1e6)
+      (should (workers-io-tests--until (lambda () (= got size)) 1500))
+      (should (< deepest 64))
+      (delete-process p))))
+
 (ert-deftest workers/sigchld-vs-lisp-thread-handback ()
   ;; A Lisp thread hands reader-owned processes back and frees their
   ;; handles while SIGCHLDs arrive on the main thread, whose handler
