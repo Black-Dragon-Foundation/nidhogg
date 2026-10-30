@@ -2,7 +2,9 @@
 # The pre-flight: the passes that find ordering bugs on the desktop, before a CI round.
 #   preflight.sh --build-dir D --out REPORT [--prefix P] [--seeds N] [--runs N] [--files FILE] [--passes P2,P3,..]
 #                [--stamp-dir DIR] [--sched-modules "M..."] [--tsan-modules "M..."]
-# Passes (run from the nidhogg worktree root, through the heavy slot):
+# Run it from the nidhogg worktree root on the laptop, not itself in a slot: every build run takes a heavy slot of its own
+# (drgnx-heavy-slot.sh nidhogg-build-local.sh, the way nh-verify.sh does; git does not work inside a slot's jail on the
+# desktop, so a script run there cannot call the build wrapper).  Passes:
 #   P1  the D files (nidhogg/test/preflight-d.txt) twice, unpinned and pinned to 1 CPU: the same results.  An empty list
 #       skips with a note (P1:skipped in the stamp).
 #   P2  the files of preflight-files.txt (workers, process, I/O, watchdog) pinned to 1 CPU, to 2 CPUs and under a
@@ -25,6 +27,7 @@ root=${PREFLIGHT_ROOT:-$(cd "$here/../.." && pwd)}   # PREFLIGHT_ROOT: the tree 
 T=${PREFLIGHT_TMP:-/home/upmanyu/workspace/black-dragon-foundation/.claude/tmp}
 build="" out="" prefix="" seeds=200 runs=3 files="$here/preflight-files.txt" stampdir="" want="P1,P2,P3,P4,P5"
 sched="" tsan="queue wake io"
+slot=${PREFLIGHT_SLOT:-$T/drgnx-heavy-slot.sh}
 usage() { sed -n '2,5p' "$0" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case $1 in
@@ -93,7 +96,7 @@ run_group() { # PASS WRAP SEED [LIST]
   lst=$(mktemp "$root/preflight-chk.XXXXXX.txt"); targets "$list" > "$lst"      # untracked, so the desktop sync carries it
   # the pin is a podman option of the check container (taskset on the podman client does not reach the container)
   case $wrap in cpu1) pargs="--cpuset-cpus=0" ;; cpu2) pargs="--cpuset-cpus=0,1" ;; quota) pargs="--cpus=0.5" ;; esac
-  local cmd=("$T/nidhogg-build-local.sh" ${prefix:+--prefix "$prefix"} --build-dir "$dir" --stage check --check "${lst#"$root"/}")
+  local cmd=("$slot" "$T/nidhogg-build-local.sh" ${prefix:+--prefix "$prefix"} --build-dir "$dir" --stage check --check "${lst#"$root"/}")
   if [ "$seed" = - ]; then NIDHOGG_BUILD_PODMAN_ARGS=$pargs "${cmd[@]}" > "$log" 2>&1; rc=$?
   else NIDHOGG_BUILD_PODMAN_ARGS=$pargs NIDHOGG_TEST_SEED=$seed "${cmd[@]}" > "$log" 2>&1; rc=$?; fi
   rm -f "$lst"
@@ -132,7 +135,7 @@ if want_pass P3; then
   before=$reds
   if [ -z "${PREFLIGHT_RUNNER:-}" ] && [ ! -d "$build-chaos" ]; then
     say "P3: building the chaos build in $build-chaos"
-    "$T/nidhogg-build-local.sh" ${prefix:+--prefix "$prefix"} --chaos --build-dir "$build-chaos" --stage build >> "$out" 2>&1 \
+    "$slot" "$T/nidhogg-build-local.sh" ${prefix:+--prefix "$prefix"} --chaos --build-dir "$build-chaos" --stage build >> "$out" 2>&1 \
       || { say "P3: the chaos build failed"; reds=$((reds + 1)); }
   fi
   say "P3: $seeds seeds per file on the chaos build"
