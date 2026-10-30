@@ -441,8 +441,9 @@ mod monitors {
             r#"{"cmd":"output","op":"add","name":"nh-extra","size":[800,600],"scale120":240}"#,
         );
         backend(d).dispatch_main().unwrap();
-        queued(d);
-        let seen = settle(d);
+        // wait for the record itself: the shell queues it when the compositor's events arrive, not on a schedule
+        let mut seen = until(d, |a| a.kind == NHG_ACT_MONITORS && a.code == 240);
+        seen.extend(settle(d));
         let changed: Vec<_> = seen.iter().filter(|a| a.kind == NHG_ACT_MONITORS).collect();
         assert!(!changed.is_empty());
         assert!(changed.iter().any(|a| a.code == 240), "{changed:?}");
@@ -459,8 +460,6 @@ mod monitors {
             r#"{{"cmd":"output","op":"enter","name":"{first_name}","surface":{id}}}"#
         ));
         backend(d).dispatch_main().unwrap();
-        queued(d);
-        settle(d);
         let outputs = |d| {
             let mut ids = [0u64; 16];
             let mut n = 0usize;
@@ -469,17 +468,20 @@ mod monitors {
             assert_eq!(rc as usize, n);
             ids[..n].to_vec()
         };
+        // the enter record carries no action: step until the window's outputs show it
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while outputs(d) != [first[0].id] && std::time::Instant::now() < end {
+            step(d, 0);
+            // SAFETY: a live display.
+            readable_within(unsafe { nhg_fd(d) }, 50);
+        }
         assert_eq!(outputs(d), [first[0].id]);
         rec.control_ok(&format!(
             r#"{{"cmd":"output","op":"remove","name":"{first_name}"}}"#
         ));
         backend(d).dispatch_main().unwrap();
-        queued(d);
-        let seen = settle(d);
-        assert!(
-            seen.iter()
-                .any(|a| a.kind == NHG_ACT_MONITORS && a.code == 0)
-        );
+        until(d, |a| a.kind == NHG_ACT_MONITORS && a.code == 0);
+        settle(d);
         assert_eq!(list_monitors(d).len(), first.len(), "one left, one added");
         assert!(outputs(d).is_empty(), "the output the window was on went");
         // SAFETY: a live display.

@@ -6,6 +6,7 @@ use std::os::unix::fs::FileExt;
 use std::time::{Duration, Instant};
 use wayland_client::protocol::{wl_compositor::WlCompositor, wl_surface::WlSurface};
 use wayland_client::Proxy;
+use wayland_protocols::wp::presentation_time::client::wp_presentation::WpPresentation;
 
 /// Show a fresh 16 x 16 buffer on `s`; returns the file behind it.
 fn show(env: &mut Env, s: &WlSurface) -> std::path::PathBuf {
@@ -105,22 +106,25 @@ fn opaque_and_input_regions_logged() {
 #[test]
 fn refresh_120_paces_callbacks() {
     let mut env = Env::new("sway", &["--refresh-mhz", "120000"]);
+    let presentation: WpPresentation = env.bind("wp_presentation", 2);
     let s = env.surface();
     let b = env.buffer(16, 16);
     s.attach(Some(&b), 0, 0);
-    let mut stamps = Vec::new();
     for n in 1..=10 {
         s.frame(&env.qh, ());
+        presentation.feedback(&s, &env.qh, ());
         s.damage_buffer(0, 0, 16, 16);
         s.commit();
         let end = Instant::now() + Duration::from_secs(2);
-        while env.client.frames < n {
+        while env.client.frames < n || env.client.presented.len() < n as usize {
             env.roundtrip();
             assert!(Instant::now() < end, "callback {n} never came");
             std::thread::sleep(Duration::from_micros(300));
         }
-        stamps.push(Instant::now());
     }
+    // the compositor's own presentation times (ns): the client's wake-ups are late by a scheduling jitter that
+    // moves the first stamp as much as the last
+    let stamps = &env.client.presented;
     let span = stamps[9] - stamps[0];
     assert!(
         span >= Duration::from_millis(75) && span <= Duration::from_millis(85),
