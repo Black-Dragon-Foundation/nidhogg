@@ -13,15 +13,16 @@
 # The link check against a built Emacs is nm-check.sh (it needs the build tree).
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-DISTRO="" TEST="" INNER=0 FULL=0 ANDROID=0 NORUN=0 CFIELDS="" PROVENANCE=0
+DISTRO="" TEST="" INNER=0 FULL=0 ANDROID=0 NORUN=0 CFIELDS="" PROVENANCE=0 REPEAT=1
 ANDROID_TARGET=aarch64-linux-android
-usage() { echo "usage: check.sh [--container DISTRO] [--test NAME] [--full] [--android] [--no-run]" >&2; exit 2; }
+usage() { echo "usage: check.sh [--container DISTRO] [--test NAME] [--full] [--android] [--no-run] [--repeat N]" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case $1 in
     --container) [ $# -ge 2 ] || usage; DISTRO=$2; shift 2 ;;
     --test) [ $# -ge 2 ] || usage; TEST=$2; shift 2 ;;
     --full) FULL=1; shift ;;
     --no-run) NORUN=1; shift ;;
+    --repeat) [ $# -ge 2 ] || usage; REPEAT=$2; shift 2 ;;
     --android) ANDROID=1; shift ;;
     --inner) INNER=1; shift ;;
     --c-fields) [ $# -ge 2 ] || usage; CFIELDS=$2; shift 2 ;;
@@ -104,6 +105,7 @@ if [ -n "$DISTRO" ] && [ "$INNER" = 0 ]; then
   [ -n "$TEST" ] && args="$args --test $(printf %q "$TEST")"
   [ "$FULL" = 1 ] && args="$args --full"
   [ "$NORUN" = 1 ] && args="$args --no-run"
+  [ "$REPEAT" = 1 ] || args="$args --repeat $REPEAT"
   [ "$ANDROID" = 1 ] && args="$args --android"
   # the Android target's std, where the distro packages it (Fedora does not: --android then exits 3)
   android_std=""
@@ -155,7 +157,10 @@ fi
 if [ "$NORUN" = 1 ]; then
   cargo test --offline --locked --features test-hooks --no-run       || fail test-build
 else
-  cargo test --offline --locked --no-fail-fast --features test-hooks -- ${filters[@]+"${filters[@]}"} || fail test
+  # --repeat N: the same run N times (a flake hunt), the first red one fails the check
+  for ((i = 1; i <= REPEAT; i++)); do
+    cargo test --offline --locked --no-fail-fast --features test-hooks -- ${filters[@]+"${filters[@]}"} || fail "test (run $i of $REPEAT)"
+  done
 fi
 if command -v cargo-deny >/dev/null 2>&1; then
   cargo deny check licenses bans sources                            || fail deny
