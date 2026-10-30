@@ -584,7 +584,8 @@ pub fn paint(
         native: c.native,
         offsets: c.offsets(),
         look,
-        states,
+        // a suspended window shows nothing, so leaving or entering it changes nothing drawn
+        states: states & !NHSHELL_STATE_SUSPENDED,
         hover: c.hover,
         down: c.down,
         style: style.generation,
