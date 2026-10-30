@@ -954,24 +954,26 @@ while the compositor is down, it runs once."
 
 (ert-deftest nhwl-gui/compositor-restart-during-drag-and-preedit ()
   "A preedit shown and a drag out in flight when the compositor restarts: `x-begin-drag' returns nil and the preedit
-overlay is gone."
+overlay is gone.  The drag's loop runs no Lisp, so the restart comes from another process (`nhwl-gui--recorder-later'),
+and the row sets the XdndSelection it drags itself."
   :tags '(runs-last)
   (skip-unless (and (nhwl-gui--recorder-p) (fboundp 'x-begin-drag)))
-  (let ((buf (generate-new-buffer " *nhwl-reconnect-ime*")) (timer nil) (result 'unset))
+  (let ((buf (generate-new-buffer " *nhwl-reconnect-ime*")) (later nil) (result 'unset))
     (unwind-protect
         (progn
           (nhwl-gui--ime-ready buf)
           (gui-runner-recorder '(:cmd "text_input" :preedit "ni" :cursor [2 2]))
           (should (nhwl-gui--wait (lambda () (nhwl-gui--ime-pump) (equal (nhwl-gui--preedit-string) "ni"))))
-          (nhwl-gui--point 100 100)
-          (gui-runner-recorder '(:cmd "button" :button 272 :state "press"))
+          (gui-set-selection 'XdndSelection "dragged text")
+          (nhwl-gui--drag-press)
           (nhwl-gui--with-connection-log
-           (setq timer (run-at-time 0.3 nil (lambda () (nhwl-gui--restart "keep-socket" :down_ms 300))))
+           (setq later (nhwl-gui--recorder-later '((0.3 :cmd "restart" :mode "keep-socket" :down_ms 300))))
            (setq result (x-begin-drag '("text/plain;charset=utf-8") 'XdndActionCopy nil nil t))
            (should-not result)
+           (should (string-search "\"restart\"" (nhwl-gui--later-output later)))
            (should (nhwl-gui--reconnected)))
           (should (equal (nhwl-gui--preedit-string) "")))
-      (when timer (cancel-timer timer))
+      (nhwl-gui--drag-cleanup later)
       (kill-buffer buf))))
 
 (ert-deftest nhwl-gui/make-frame-while-reconnecting-signals ()
