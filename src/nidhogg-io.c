@@ -2366,12 +2366,16 @@ nh_io_settle (fd_set *mask, struct timespec timeout)
   /* A wake fd readable: the select finds output, as today's would.
      Else nothing in the kernel and no read in progress (checked in that
      order: a read that ended in between wrote its wake fd): nothing is
-     on its way.  */
+     on its way.  The kernel's bytes count only while the handle is not
+     paused: the SIGCHLD handler may pause one during the wait (its
+     signal cuts the poll short), and nh-io never reads those.  */
   while (!nh_io_poll_any (wake, n, 0))
     {
-      bool pending = nh_io_poll_any (real, n, 0);
+      bool pending = false;
       for (int i = 0; !pending && i < n; i++)
-	pending = atomic_load (&hs[i]->reading);
+	pending = ((!atomic_load (&hs[i]->paused)
+		    && nh_io_poll_any (&real[i], 1, 0))
+		   || atomic_load (&hs[i]->reading));
       if (!pending)
 	break;
       clock_gettime (CLOCK_MONOTONIC, &t);
