@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# drgnx's unit suite against a built Nidhogg tarball.
+# drgnx's unit suite against a built Nidhogg tarball, for a local run (CI runs drgnx's own tiers workflow instead:
+# README.md, "CI and releases").
 #   nidhogg/ci/drgnx-suite.sh TARBALL DISTRO DRGNX_DIR     (DISTRO: fedora-44 | fedora-45 | ubuntu-26.04 | macos)
 # Linux: a fresh --memory ${NIDHOGG_SUITE_MEMORY:-4g} podman container of DISTRO; the tarball is unpacked at its BUILDINFO
 # prefix and DRGNX_DIR is mounted read-only.  macOS: on the host (brew install of deps.runtime + ripgrep + rust).
 # DRGNX_RATATOSKR_BIN (Ratatoskr with the test hooks, ratatoskr-mock beside it) and DRGNX_HUGINN_DUMP (huginn's dump
-# example) are passed through when set (Linux: their directories mounted read-only): the workflow builds them from DRGNX_DIR
-# as drgnx's ci.yml does.  Unset, the tests that need them skip, and a full run fails on drgnx's test/no-skip.eld.
+# example) are passed through when set (Linux: their directories mounted read-only): build them from DRGNX_DIR
+# as drgnx's CI does.  Unset, the tests that need them skip, and a full run fails on drgnx's test/no-skip.eld.
 # Run as drgnx's own unit tier does: DRGNX_TEST_NO_TIMING=1, DRGNX_TEST_RERUN=1, one run (no timing pass).  DRGNX_TEST_SELECTOR narrows it.
 # Exit 0 when the suite passes, else non-zero.  bash 3.2-safe.
 set -eu
