@@ -8461,11 +8461,11 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
              true))
 	/* The user specified `:background', use that.  */
 	{
-	  int shift = bit_depth == 16 ? 0 : 8;
+	  /* The screen format is 8-bit even after strip_16.  */
 	  png_color_16 bg = { 0 };
-	  bg.red = color.red >> shift;
-	  bg.green = color.green >> shift;
-	  bg.blue = color.blue >> shift;
+	  bg.red = color.red >> 8;
+	  bg.green = color.green >> 8;
+	  bg.blue = color.blue >> 8;
 
 	  png_set_background (png_ptr, &bg,
 			      PNG_BACKGROUND_GAMMA_SCREEN, 0, 1.0);
