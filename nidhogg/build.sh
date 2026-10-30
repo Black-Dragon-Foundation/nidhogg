@@ -397,6 +397,8 @@ if [ "$MODE" = container ]; then
   fi
   [ -z "${NIDHOGG_BUILD_CCACHE:-}" ] || CACHE_ARGS="$CACHE_ARGS -v $NIDHOGG_BUILD_CCACHE:/ccache:z"
   [ -z "$LISP_CACHE" ] || CACHE_ARGS="$CACHE_ARGS -v $LISP_CACHE:/lispcache:z"
+  # extra podman options (words, no quoting): nidhogg/test/preflight.sh pins a check run with --cpuset-cpus=0 or --cpus=0.5
+  [ -z "${NIDHOGG_BUILD_PODMAN_ARGS:-}" ] || CACHE_ARGS="$CACHE_ARGS $NIDHOGG_BUILD_PODMAN_ARGS"
   CMD_HEAD="$PODMAN run --rm --name $NAME --memory $MEMORY --memory-swap $MEMORY -v $ROOT:/src:ro,z -v $BUILD_DIR:/build:Z ${MOUNT:+-v $MOUNT} $CACHE_ARGS $IMAGE"
   if [ "$DRY" = 1 ]; then
     echo "$CMD_HEAD bash -euo pipefail -c '"
