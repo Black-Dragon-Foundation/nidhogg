@@ -1099,7 +1099,9 @@ while the menu opens, as for a menu opened by a `down-mouse-3' event."
         (setq result (with-timeout (10 'timeout)
                        (if (functionp menu) (funcall menu) (x-popup-menu (or position t) menu))))
       (cancel-timer timer))
-    (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (equal (nhwl-gui--popup-ids) before)) 5))
+    ;; none of the menu's popups is left; one that was there before may have gone meanwhile (a tooltip an earlier
+    ;; hover showed hides on its own timer)
+    (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (null (seq-difference (nhwl-gui--popup-ids) before))) 5))
     result))
 
 (defun nhwl-gui--menu-typing (menu keys)
