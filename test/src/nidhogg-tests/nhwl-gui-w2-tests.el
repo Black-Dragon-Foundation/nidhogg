@@ -396,6 +396,24 @@ first commit.  The name is one an earlier frame left in the session."
           (should (nhwl-gui--connected-p)))
       (when (frame-live-p f) (delete-frame f)))))
 
+(ert-deftest nhwl-gui/frame-of-a-saved-session-is-restored ()
+  "With the session opened by a saved id, a new frame's window goes in as a restore, not an add.  It opens a second
+session on the display, so it runs after the rows that count the first."
+  :tags '(runs-last)
+  (skip-unless (nhwl-gui--session-p))
+  (require 'nhwl-session)
+  (let ((id (nhwl-session--read-id)) (f nil))
+    (skip-unless id)
+    (unwind-protect
+        (progn
+          (should (nhwl--session-open (selected-frame) id 'restore))
+          (nhwl-gui--pump 0.3)
+          (setq f (make-frame '((session-name . "row-saved") (minibuffer . nil))))
+          (nhwl-gui--pump 0.3)
+          (should (seq-find (lambda (e) (equal (plist-get e :name) "row-saved"))
+                            (nhwl-gui--session-log "restore"))))
+      (when (frame-live-p f) (delete-frame f)))))
+
 (ert-deftest nhwl-gui/user-deleted-frame-leaves-the-session ()
   "A frame deleted before Emacs exits is removed from the session (a `remove' with its name)."
   (skip-unless (nhwl-gui--session-p))
@@ -1311,9 +1329,12 @@ arrives."
                          (0 :cmd "key" :text "g")
                          (0 :cmd "key" :keycode 29 :state "release"))))
           (setq t0 (float-time))
-          (should (eq (condition-case nil
-                          (progn (dnd-begin-text-drag "x") 'returned)
-                        (quit 'quit))
+          ;; the harness runs rows with `inhibit-quit' t, which keeps the quit pending (as in any Lisp that binds it);
+          ;; a user's C-g arrives with it nil
+          (should (eq (let ((inhibit-quit nil))
+                        (condition-case nil
+                            (progn (dnd-begin-text-drag "x") 'returned)
+                          (quit 'quit)))
                       'quit))
           (should (< (- (float-time) t0) 3.0))
           (should (nhwl-gui--connected-p))
@@ -1971,8 +1992,10 @@ connection."
                          (insert-file-contents out)
                          (and (re-search-forward "^XDG_ACTIVATION_TOKEN=\\(.+\\)$" nil t) (match-string 1)))))
             (should (stringp token))
+            ;; the stub xdg-open never calls activate, so the recorder's activations stay empty: the proof is the
+            ;; token the compositor issued (xdg_activation_token_v1.commit), which `:issued' lists
             (should (seq-find (lambda (a) (equal (plist-get a :token) token))
-                              (plist-get (gui-runner-recorder '(:cmd "activation_log")) :activations)))))
+                              (plist-get (gui-runner-recorder '(:cmd "activation_log")) :issued)))))
       (delete-directory dir t))))
 
 (provide 'nhwl-gui-w2-tests)

@@ -49,6 +49,11 @@ impl XdgActivationHandler for State {
         &mut self.activation_state
     }
 
+    fn token_created(&mut self, token: XdgActivationToken, _: XdgActivationTokenData) -> bool {
+        self.issued_tokens.push(json!({"token": token.as_str()}));
+        true
+    }
+
     fn request_activation(
         &mut self,
         token: XdgActivationToken,
@@ -226,7 +231,7 @@ pub fn read(state: &mut State, req: &Value, reply_to: &UnixStream) -> Option<Val
     None
 }
 
-/// `activation_log`: the `xdg_activation_v1.activate` calls seen so far.
+/// `activation_log`: the `xdg_activation_v1.activate` calls seen so far, and the tokens issued.
 pub fn activation_log(state: &State) -> Value {
-    json!({"ok": true, "activations": state.activations})
+    json!({"ok": true, "activations": state.activations, "issued": state.issued_tokens})
 }
