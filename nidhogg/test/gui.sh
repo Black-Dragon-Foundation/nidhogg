@@ -188,7 +188,9 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
     kwin)
       # through the wrapper: it holds the socket, so a KWin that dies and comes back keeps the name (and the clients
       # that connect meanwhile wait)
-      kwin_wayland_wrapper --virtual --width "$W" --height "$H" --scale 1 --socket "$display" --no-lockscreen --no-global-shortcuts \
+      # (the wrapper makes the socket itself, wayland-N, and passes that name to KWin ahead of any --socket of ours,
+      # which KWin then ignores: the name is found below, as for sway)
+      kwin_wayland_wrapper --virtual --width "$W" --height "$H" --scale 1 --no-lockscreen --no-global-shortcuts \
         --no-kactivities > "$clog" 2>&1 &
       mpid=$!
       ;;
@@ -205,7 +207,7 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
       ;;
   esac
   for _ in $(seq 150); do
-    if [ "$compositor" = sway ] || [ "$compositor" = labwc ]; then
+    if [ "$compositor" = sway ] || [ "$compositor" = labwc ] || [ "$compositor" = kwin ]; then
       sock=$(compgen -G "$XDG_RUNTIME_DIR/wayland-*" | grep -v '\.lock$' | head -n 1)
       [ -n "$sock" ] && [ -S "$sock" ] && { display=${sock##*/}; break; }
     elif [ "$compositor" = recorder ]; then
@@ -396,7 +398,7 @@ if [ "${GLITNIR_GUI_DRY:-}" = 1 ]; then
   case $compositor in
     sway) echo "sway -c RUN/sway.conf   (output HEADLESS-1 mode $size scale $scale; $monitors output(s))" ;;
     mutter) echo "mutter --headless --wayland --no-x11 --wayland-display NAME ($monitors x --virtual-monitor $size; scale $scale)" ;;
-    kwin) echo "kwin_wayland_wrapper --virtual --width $W --height $H --socket NAME   (scale $scale by kscreen-doctor; NHWL_GUI_RESTART kills the kwin_wayland child)" ;;
+    kwin) echo "kwin_wayland_wrapper --virtual --width $W --height $H   (the socket wayland-N is found; scale $scale by kscreen-doctor; NHWL_GUI_RESTART kills the kwin_wayland child)" ;;
     labwc) echo "labwc   (WLR_BACKENDS=headless; $monitors output(s) of $size, scale $scale by wlr-randr)" ;;
     recorder) echo "$recorder --output ${size}@${s120} --profile $(dirname "$self")/recorder/profiles/$rprofile.json --socket NAME --control CTL --session-store RUN/session-store.json${rargs[*]:+ ${rargs[*]}}" ;;
   esac
