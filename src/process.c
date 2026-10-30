@@ -127,6 +127,10 @@ static struct rlimit nofile_limit;
 #include "nidhogg-watchdog.h"
 #include "nidhogg-watchdog-phase.h"
 #endif
+#ifdef HAVE_NIDHOGG_WORKERS
+
+#include "nidhogg-workers.h"
+#endif
 
 #ifdef HAVE_WINDOW_SYSTEM
 #include TERM_HEADER
@@ -480,6 +484,56 @@ clear_fd_callback_data (struct fd_callback_data* elem)
   elem->waiting_thread = NULL;
 }
 
+#ifdef HAVE_NIDHOGG_WORKERS
+
+/* The process reader (nidhogg-io.c).  A reader-owned process keeps its
+   real fd in p->infd and p->open_fd[]; the select set holds its wake fd
+   instead, which chan_process names too.  This is FD as the select set
+   knows it: the wake fd for a reader-owned process's real fd.  With
+   HAND_OVER (add_process_read_fd) an eligible process is handed over
+   first, keeping the real fd's thread lock, and a paused reader
+   resumes.  */
+static int
+nh_io_channel (int fd, bool hand_over)
+{
+  Lisp_Object proc = chan_process[fd];
+  if (!PROCESSP (proc) || XPROCESS (proc)->infd != fd)
+    return fd;
+  int sel = nh_io_select_fd (XPROCESS (proc));
+  if (sel >= 0 && hand_over)
+    nh_io_resume (fd);
+  else if (sel < 0 && hand_over && nh_io_handover (XPROCESS (proc)))
+    {
+      sel = nh_io_select_fd (XPROCESS (proc));
+      chan_process[sel] = proc;
+      fd_callback_info[sel].thread = fd_callback_info[fd].thread;
+    }
+  return sel < 0 ? fd : sel;
+}
+
+/* delete_read_fd's FD as the select set knows it, the reader paused
+   first.  FD is a real fd, or a wake fd (the round-robin's EOF and EIO
+   paths pass their channel).  The SIGCHLD handler gets here: in signal
+   context only the lock-free nh_io_pause runs.  */
+static int
+nh_io_unread (int fd)
+{
+  int sel = nh_io_pause (fd);
+  return (sel != fd || nh_wk_signal_context ()
+	  ? sel : nh_io_channel (fd, false));
+}
+
+/* Lock P's select fd, if a reader owns P, to THRD too (set_proc_thread
+   and a dying thread's processes lock only infd and outfd).  */
+static void
+nh_io_set_thread (struct Lisp_Process *p, struct thread_state *thrd)
+{
+  int sel = p->infd < 0 ? -1 : nh_io_select_fd (p);
+  if (sel >= 0)
+    fd_callback_info[sel].thread = thrd;
+}
+
+#endif
 
 /* Add a file descriptor FD to be monitored for when read is possible.
    When read is possible, call FUNC with argument DATA.  */
@@ -504,6 +558,10 @@ add_non_keyboard_read_fd (int fd, fd_callback func, void *data)
 static void
 add_process_read_fd (int fd)
 {
+#ifdef HAVE_NIDHOGG_WORKERS
+  fd = nh_io_channel (fd, true);
+
+#endif
   eassert (fd >= 0 && fd < FD_SETSIZE);
   eassert (fd_callback_info[fd].func == NULL);
 
@@ -520,9 +578,103 @@ add_process_read_fd (int fd)
 void
 delete_read_fd (int fd)
 {
+#ifdef HAVE_NIDHOGG_WORKERS
+  fd = nh_io_unread (fd);
+
+#endif
   delete_keyboard_wait_descriptor (fd);
 }
 
+#ifdef HAVE_NIDHOGG_WORKERS
+
+/* Hand PROC back to the main thread (REASON, an enum nh_io_reason).
+   The wake fd leaves the select set first, since after a detach that
+   timed out nh-io closes it (and a closed fd in the set aborts the next
+   select).  Unless the process is going down, the bytes the reader had
+   read keep the wake fd selected until nh_io_read has delivered them;
+   then reading goes back to the real fd, if it was on.  */
+static void
+nh_io_back (Lisp_Object proc, int reason)
+{
+  struct Lisp_Process *p = XPROCESS (proc);
+  int sel = p->infd < 0 ? -1 : nh_io_select_fd (p);
+  struct fd_callback_data d = { 0 };
+  if (sel >= 0)
+    {
+      d = fd_callback_info[sel];
+      chan_process[sel] = Qnil;
+      delete_keyboard_wait_descriptor (sel);
+    }
+  nh_io_handback (p, reason);
+  if (sel < 0 || reason == NH_IO_CLOSE)
+    return;
+  int fd = sel;
+  if (nh_io_done (p))
+    {
+      nh_io_release (p);
+      fd = p->infd;
+    }
+  else
+    {
+      /* An inline handle's copy is closed now: it selects on the real
+	 fd.  */
+      fd = nh_io_select_fd (p);
+      chan_process[fd] = proc;
+    }
+  if (d.flags & FOR_READ)
+    {
+      add_process_read_fd (fd);
+      fd_callback_info[fd].thread = d.thread;
+    }
+}
+
+/* read_process_output's read for a reader-owned process: true if
+   *NBYTES holds what the reader delivered.  A handed-back process
+   whose last bytes are out goes back to its real fd.  */
+static bool
+nh_io_read_chunk (Lisp_Object proc, int channel, char *buf, ptrdiff_t size,
+		  ssize_t *nbytes)
+{
+  bool handled;
+  *nbytes = nh_io_read (XPROCESS (proc), channel, buf, size, &handled);
+  if (nh_io_select_fd (XPROCESS (proc)) >= 0 && nh_io_done (XPROCESS (proc)))
+    nh_io_back (proc, NH_IO_READER_OFF);
+  return handled;
+}
+
+void
+nh_io_proc_reader (Lisp_Object proc, bool on)
+{
+  struct Lisp_Process *p = XPROCESS (proc);
+  int fd = p->infd;
+  if (!on)
+    {
+      /* Framing goes off first (Task 24): its bytes go to the filter.  */
+      nh_io_unframe (proc);
+      nh_io_back (proc, NH_IO_READER_OFF);
+    }
+  else if (fd >= 0 && nh_io_select_fd (p) < 0
+	   && (fd_callback_info[fd].flags & (FOR_READ | FOR_WRITE)) == FOR_READ)
+    {
+      struct thread_state *thread = fd_callback_info[fd].thread;
+      delete_keyboard_wait_descriptor (fd);
+      add_process_read_fd (fd);
+      fd_callback_info[nh_io_channel (fd, false)].thread = thread;
+    }
+}
+
+/* Before a drain (status_notify's, a non-running wait_proc's): an
+   ending reader-owned process is handed back, so the drain delivers the
+   reader's bytes and then reads the real fd to EAGAIN or EOF on this
+   thread, all before the sentinel (Task 17).  */
+static void
+nh_io_drain_back (Lisp_Object proc)
+{
+  if (XPROCESS (proc)->infd >= 0 && nh_io_drain (XPROCESS (proc)))
+    nh_io_back (proc, NH_IO_STATUS);
+}
+
+#endif
 /* Add a file descriptor FD to be monitored for when write is possible.
    When write is possible, call FUNC with argument DATA.  */
 
@@ -983,6 +1135,10 @@ update_processes_for_thread_death (Lisp_Object dying_thread)
 
 	  pset_thread (proc, Qnil);
 	  eassert (proc->infd < FD_SETSIZE);
+#ifdef HAVE_NIDHOGG_WORKERS
+	  nh_io_set_thread (proc, NULL);
+
+#endif
 	  if (proc->infd >= 0)
 	    fd_callback_info[proc->infd].thread = NULL;
 	  eassert (proc->outfd < FD_SETSIZE);
@@ -1106,6 +1262,16 @@ Interactively, it will kill the current buffer's process.  */)
   process = get_process (process);
   p = XPROCESS (process);
 
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  /* A lookup on nh-blk is dropped, never waited for (Task 35).  */
+  if (p->nh_dns_job)
+    {
+      nh_dns_drop (p->nh_dns_job);
+      p->nh_dns_job = NULL;
+    }
+
+#endif
 #ifdef HAVE_GETADDRINFO_A
   if (p->dns_request)
     {
@@ -1402,6 +1568,14 @@ The string argument is normally a multibyte string, except:
     }
 
   pset_filter (p, filter);
+#ifdef HAVE_NIDHOGG_WORKERS
+  /* Any filter turns framing off: the bytes not yet delivered go to it
+     (Task 24).  */
+  nh_io_unframe (process);
+  /* The hand-over at the add above saw the old filter, t.  */
+  if (p->infd >= 0 && !EQ (filter, Qt))
+    nh_io_proc_reader (process, true);
+#endif
 
   if (NETCONN1_P (p) || SERIALCONN1_P (p) || PIPECONN1_P (p))
     pset_childp (p, plist_put (p->childp, QCfilter, filter));
@@ -1456,6 +1630,10 @@ set_proc_thread (struct Lisp_Process *proc, struct thread_state *thrd)
   eassert ((NILP (proc->thread) && !thrd)
 	   || (THREADP (proc->thread) && XTHREAD (proc->thread) == thrd));
   eassert (proc->infd < FD_SETSIZE);
+#ifdef HAVE_NIDHOGG_WORKERS
+  nh_io_set_thread (proc, thrd);
+
+#endif
   if (proc->infd >= 0)
     fd_callback_info[proc->infd].thread = thrd;
   eassert (proc->outfd < FD_SETSIZE);
@@ -3988,6 +4166,9 @@ usage: (make-network-process &rest ARGS)  */)
 #ifdef HAVE_GETADDRINFO_A
   struct gaicb *dns_request = NULL;
 #endif
+#ifdef HAVE_NIDHOGG_WORKERS
+  struct nh_dns_job *nh_dns = NULL;
+#endif
   specpdl_ref count = SPECPDL_INDEX ();
 
   if (nargs == 0)
@@ -4157,6 +4338,20 @@ usage: (make-network-process &rest ARGS)  */)
 	  portstringlen = SBYTES (service);
 	}
 
+#ifdef HAVE_NIDHOGG_WORKERS
+
+      /* The lookup on nh-blk (Task 35), on every platform; the test
+	 variable takes the path of a platform without getaddrinfo_a.  */
+      if (nowait)
+	{
+	  nh_dns = nh_dns_start (SSDATA (host), portstring, family, socktype);
+	  if (nh_dns)
+	    goto open_socket;
+	  if (nh_dns_glibc_off)
+	    goto nh_dns_sync;
+	}
+
+#endif
 #ifdef HAVE_GETADDRINFO_A
       if (nowait)
 	{
@@ -4192,6 +4387,9 @@ usage: (make-network-process &rest ARGS)  */)
   /* If we have a host, use getaddrinfo to resolve both host and service.
      Otherwise, use getservbyname to lookup the service.  */
 
+#ifdef HAVE_NIDHOGG_WORKERS
+ nh_dns_sync:
+#endif
   if (!NILP (host))
     {
       struct addrinfo *res, *lres;
@@ -4313,6 +4511,17 @@ usage: (make-network-process &rest ARGS)  */)
       p->status = list1 (Qconnect);
       postpone_connection = true;
     }
+#endif
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  /* The same for a lookup on nh-blk (Task 35).  */
+  if (nh_dns && !p->is_server && NILP (addrinfos))
+    {
+      p->nh_dns_job = nh_dns;
+      p->status = list1 (Qconnect);
+      postpone_connection = true;
+    }
+
 #endif
   if (! postpone_connection)
     connect_network_socket (proc, addrinfos, use_external_socket_p);
@@ -4834,6 +5043,11 @@ deactivate_process (Lisp_Object proc)
 
   /* Beware SIGCHLD hereabouts.  */
 
+#ifdef HAVE_NIDHOGG_WORKERS
+  /* The reader lets go of the process before any of its fds closes.  */
+  nh_io_back (proc, NH_IO_CLOSE);
+
+#endif
   for (i = 0; i < PROCESS_OPEN_FDS; i++)
     {
       if (p->open_fd[i] >= 0)
@@ -5230,6 +5444,63 @@ check_for_dns (Lisp_Object proc)
 }
 
 #endif /* HAVE_GETADDRINFO_A */
+#ifdef HAVE_NIDHOGG_WORKERS
+
+/* While a lookup on nh-blk runs, the select comes back this often, as
+   ASYNC_RETRY_NSEC makes it for getaddrinfo_a (0.1 s).  */
+# define NH_DNS_RETRY_NSEC 100000000
+
+/* check_for_dns and its caller in the wait loop, for the lookups on
+   nh-blk (Task 35): each process WAIT_PROC covers (all with NULL) whose
+   lookup is over connects to the addresses found, or gets the status
+   glibc's path sets.  True when the select must come back to poll, as
+   retry_for_async.  */
+static bool
+nh_dns_check (struct Lisp_Process *wait_proc)
+{
+  Lisp_Object tail, proc;
+  bool retry = false;
+
+  FOR_EACH_PROCESS (tail, proc)
+    {
+      struct Lisp_Process *p = XPROCESS (proc);
+      struct addrinfo *res;
+
+      if (!p->nh_dns_job || (wait_proc && p != wait_proc))
+	continue;
+      if (nh_dns_poll (p->nh_dns_job, &res))
+	{
+	  retry = true;
+	  continue;
+	}
+      Lisp_Object addrinfos = Qnil;
+      if (res)
+	{
+	  for (struct addrinfo *r = res; r; r = r->ai_next)
+	    addrinfos = Fcons (conv_addrinfo_to_lisp (r), addrinfos);
+	  addrinfos = Fnreverse (addrinfos);
+	  freeaddrinfo (res);
+	}
+      else if (connecting_status (p->status))
+	{
+	  deactivate_process (proc);
+	  pset_status (p, (list2
+			   (Qfailed,
+			    concat3 (build_string ("Name lookup of "),
+				     build_string (nh_dns_host (p->nh_dns_job)),
+				     build_string (" failed")))));
+	}
+      nh_dns_drop (p->nh_dns_job);
+      p->nh_dns_job = NULL;
+      if (!NILP (addrinfos) && connecting_status (p->status))
+	connect_network_socket (proc, addrinfos, Qnil);
+      else
+	retry = true;
+    }
+  return retry;
+}
+
+#endif
 
 static void
 wait_for_socket_fds (Lisp_Object process, char const *name)
@@ -5359,6 +5630,9 @@ wait_reading_process_output (intmax_t time_limit, int nsecs, int read_kbd,
 #if defined HAVE_GETADDRINFO_A || defined HAVE_GNUTLS
   bool retry_for_async;
 #endif
+#ifdef HAVE_NIDHOGG_WORKERS
+  bool nh_dns_retry;
+#endif
   specpdl_ref count = SPECPDL_INDEX ();
 
   eassert (wait_proc == NULL
@@ -5376,6 +5650,13 @@ wait_reading_process_output (intmax_t time_limit, int nsecs, int read_kbd,
   record_unwind_protect_int (wait_reading_process_output_unwind,
 			     waiting_for_user_input_p);
   waiting_for_user_input_p = read_kbd;
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  /* Tree-sitter's start point for edits no redisplay demanded.  */
+  if (read_kbd != 0)
+    nh_ts_select_entry ();
+
+#endif
 
   if (TYPE_MAXIMUM (time_t) < time_limit)
     time_limit = TYPE_MAXIMUM (time_t);
@@ -5467,6 +5748,12 @@ wait_reading_process_output (intmax_t time_limit, int nsecs, int read_kbd,
 	  }
       }
 #endif /* GETADDRINFO_A or GNUTLS */
+#ifdef HAVE_NIDHOGG_WORKERS
+
+      /* The lookups on nh-blk (Task 35), on every platform.  */
+      nh_dns_retry = nh_dns_check (wait_proc);
+
+#endif
 
       /* Compute time from now till when time limit is up.  */
       /* Exit if already run out.  */
@@ -5546,6 +5833,9 @@ wait_reading_process_output (intmax_t time_limit, int nsecs, int read_kbd,
 	    FD_CLR (fd, &Atemp);
 
 	  timeout = make_timespec (0, 0);
+#ifdef HAVE_NIDHOGG_WORKERS
+	  nh_io_settle (&Atemp, timeout);
+#endif
 	  if ((thread_select (pselect, max_desc + 1,
 			      &Atemp,
 			      (num_pending_connects > 0 ? &Ctemp : NULL),
@@ -5577,6 +5867,10 @@ wait_reading_process_output (intmax_t time_limit, int nsecs, int read_kbd,
 	    {
 	      unsigned int count = 0;
 	      XSETPROCESS (proc, wait_proc);
+#ifdef HAVE_NIDHOGG_WORKERS
+	      nh_io_drain_back (proc);
+
+#endif
 
 	      while (true)
 		{
@@ -5610,7 +5904,13 @@ wait_reading_process_output (intmax_t time_limit, int nsecs, int read_kbd,
 	{
 	  if (wait_proc->infd < 0)  /* Terminated.  */
 	    break;
+#ifdef HAVE_NIDHOGG_WORKERS
+	  /* Its wake fd, if a reader owns it.  */
+	  FD_SET (nh_io_channel (wait_proc->infd, false), &Available);
+
+#else
 	  FD_SET (wait_proc->infd, &Available);
+#endif
 	  check_delay = 0;
           check_write = 0;
 	}
@@ -5743,6 +6043,13 @@ wait_reading_process_output (intmax_t time_limit, int nsecs, int read_kbd,
 	      timeout.tv_nsec = ASYNC_RETRY_NSEC;
 	    }
 #endif
+#ifdef HAVE_NIDHOGG_WORKERS
+
+	  if (nh_dns_retry
+	      && (timeout.tv_sec > 0 || timeout.tv_nsec > NH_DNS_RETRY_NSEC))
+	    timeout = make_timespec (0, NH_DNS_RETRY_NSEC);
+
+#endif
 
 #ifdef HAVE_GNUTLS
           /* GnuTLS buffers data internally. We need to check if some
@@ -5780,6 +6087,9 @@ wait_reading_process_output (intmax_t time_limit, int nsecs, int read_kbd,
 	  if ((read_kbd || !NILP (wait_for_cell))
 	      && timespec_cmp (short_timeout, timeout) < 0)
 	    timeout = short_timeout;
+#endif
+#ifdef HAVE_NIDHOGG_WORKERS
+	  nh_io_settle (&Available, timeout);
 #endif
 
 	  /* Android requires using a replacement for pselect in
@@ -6249,7 +6559,16 @@ read_process_output (Lisp_Object proc, int channel)
   ssize_t nbytes;
   struct Lisp_Process *p = XPROCESS (proc);
   eassert (0 <= channel && channel < FD_SETSIZE);
+#ifdef HAVE_NIDHOGG_WORKERS
+  /* The real fd's struct: CHANNEL may be a reader's wake fd.  */
+  struct coding_system *coding = proc_decode_coding_system[p->infd];
+  /* The reader delivered (Task 19).  */
+  bool nh_reader = false;
+  struct nh_io_deliver nh_deliver;
+
+#else
   struct coding_system *coding = proc_decode_coding_system[channel];
+#endif
   int carryover = p->decoding_carryover;
   ptrdiff_t readmax = p->readmax;
   specpdl_ref count = SPECPDL_INDEX ();
@@ -6288,6 +6607,15 @@ read_process_output (Lisp_Object proc, int channel)
 				    readmax - buffered);
       else
 #endif
+#ifdef HAVE_NIDHOGG_WORKERS
+      if ((nh_reader = nh_io_read_chunk (proc, channel,
+					 chars + carryover + buffered,
+					 readmax - buffered, &nbytes)))
+	/* Adaptive read buffering does not apply (Task 19).  */
+	goto nh_io_delivered;
+      else
+
+#endif
 	nbytes = emacs_read (channel, chars + carryover + buffered,
 			     readmax - buffered);
       if (nbytes > 0 && p->adaptive_read_buffering)
@@ -6315,6 +6643,10 @@ read_process_output (Lisp_Object proc, int channel)
 	      process_output_skip = 1;
 	    }
 	}
+#ifdef HAVE_NIDHOGG_WORKERS
+    nh_io_delivered:
+
+#endif
       nbytes += buffered;
       nbytes += buffered && nbytes <= 0;
     }
@@ -6346,7 +6678,15 @@ read_process_output (Lisp_Object proc, int channel)
      friends don't expect current-buffer to be changed from under them.  */
   record_unwind_current_buffer ();
 
+#ifdef HAVE_NIDHOGG_WORKERS
+  nh_io_deliver_begin (nh_reader, &nh_deliver);
+
+#endif
   read_and_dispose_of_process_output (p, chars, nbytes, coding);
+#ifdef HAVE_NIDHOGG_WORKERS
+  nh_io_deliver_end (&nh_deliver);
+
+#endif
 
   /* Handling the process output should not deactivate the mark.  */
   Vdeactivate_mark = odeactivate;
@@ -6429,6 +6769,10 @@ read_process_output_set_last_coding_system (struct Lisp_Process *p,
 					    struct coding_system *coding)
 {
   Vlast_coding_system_used = CODING_ID_NAME (coding->id);
+#ifdef HAVE_NIDHOGG_WORKERS
+  nh_io_coding_settled (p, coding);
+
+#endif
   /* A new coding system might be found.  */
   if (!EQ (p->decode_coding_system, Vlast_coding_system_used))
     {
@@ -6509,6 +6853,11 @@ read_and_insert_process_output (struct Lisp_Process *p, char *buf,
 	 faithfully reflect inserted text until we
 	 TEMP_SET_PT_BOTH below.  */
       specbind (Qinhibit_modification_hooks, Qt);
+#ifdef HAVE_NIDHOGG_WORKERS
+      /* nh-io's decode of these bytes, if it is still current (Task 19).  */
+      if (!nh_io_insert (p, process_coding, buf, nread))
+
+#endif
       decode_coding_c_string (process_coding,
 			      (unsigned char *) buf, nread, curbuf);
       unbind_to (count1, Qnil);
@@ -6564,11 +6913,33 @@ read_and_dispose_of_process_output (struct Lisp_Process *p, char *chars,
      save the match data in a special nonrecursive fashion.  */
   running_asynch_code = 1;
 
+#ifdef HAVE_NIDHOGG_WORKERS
+  struct nh_io_call nh_call;
+  /* A framed delivery: the batch function gets its batch, as a filter
+     gets its string (Task 24).  */
+  if (nh_io_batch_begin (p, &nh_call))
+    {
+      if (!NILP (nh_call.fn))
+	internal_condition_case_1 (read_process_output_call,
+				   list3 (nh_call.fn, make_lisp_proc (p),
+					  nh_call.batch),
+				   !NILP (Vdebug_on_error) ? Qnil : Qerror,
+				   read_process_output_error_handler);
+      nh_io_batch_end (&nh_call);
+    }
+  else
+
+#endif
   if (fast_read_process_output
       && EQ (p->filter, Qinternal_default_process_filter))
     read_and_insert_process_output (p, chars, nbytes, coding);
   else
     {
+#ifdef HAVE_NIDHOGG_WORKERS
+      /* nh-io's decode of these bytes, if it is still current.  */
+      if (!nh_io_decoded (p, coding, chars, nbytes))
+
+#endif
       decode_coding_c_string (coding, (unsigned char *) chars, nbytes, Qt);
       text = coding->dst_object;
 
@@ -6576,6 +6947,11 @@ read_and_dispose_of_process_output (struct Lisp_Process *p, char *chars,
 
 #ifdef HAVE_NIDHOGG_WATCHDOG
       int nh_wd_d = nh_wd_phase_push (NH_WD_PH_FILTER);
+#endif
+#ifdef HAVE_NIDHOGG_WORKERS
+      /* The filter's cost, which caps its deliveries (Task 19).  */
+      int64_t nh_f0 = nh_io_filter_begin (p);
+
 #endif
       if (SBYTES (text) > 0)
 	/* FIXME: It's wrong to wrap or not based on debug-on-error, and
@@ -6587,6 +6963,10 @@ read_and_dispose_of_process_output (struct Lisp_Process *p, char *chars,
 				   read_process_output_error_handler);
 #ifdef HAVE_NIDHOGG_WATCHDOG
       nh_wd_phase_pop_to (nh_wd_d);
+#endif
+#ifdef HAVE_NIDHOGG_WORKERS
+      nh_io_filter_end (p, nh_f0, SBYTES (text));
+
 #endif
 
     }
@@ -7793,7 +8173,15 @@ handle_child_signal (int sig)
 static void
 deliver_child_signal (int sig)
 {
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  nh_wk_signal_enter ();
+#endif
   deliver_process_signal (sig, handle_child_signal);
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  nh_wk_signal_leave ();
+#endif
 }
 
 
@@ -7915,6 +8303,11 @@ status_notify (struct Lisp_Process *deleting_process,
 	{
 	  p->update_tick = p->tick;
 
+#ifdef HAVE_NIDHOGG_WORKERS
+	  if (p != deleting_process)
+	    nh_io_drain_back (proc);
+
+#endif
 	  /* If process is still active, read any output that remains.  */
 	  while (! EQ (p->filter, Qt)
 		 && ! connecting_status (p->status)
@@ -8049,6 +8442,11 @@ encode subprocess input. */)
   encoding = coding_inherit_eol_type (encoding, Qnil);
   pset_decode_coding_system (p, decoding);
   pset_encode_coding_system (p, encoding);
+#ifdef HAVE_NIDHOGG_WORKERS
+  /* A coding system turns framing off (Task 24).  */
+  nh_io_unframe (process);
+
+#endif
 
   /* If the sockets haven't been set up yet, the final setup part of
      this will be called asynchronously. */
@@ -8421,6 +8819,18 @@ setup_process_coding_systems (Lisp_Object process)
 	coding_system = raw_text_coding_system (coding_system);
     }
   setup_coding_system (coding_system, proc_decode_coding_system[inch]);
+#ifdef HAVE_NIDHOGG_WORKERS
+  /* setup_coding_system leaves dst_multibyte alone, and the struct is
+     reused for whatever process gets this fd next: the default filter's
+     fast path into a unibyte buffer (read_and_insert_process_output)
+     would then depend on what the last decode into it was, and the
+     reader on or off would record different systems (Task 19).  The
+     first delivery decodes, as it always did, and records the system
+     it used.  */
+  proc_decode_coding_system[inch]->dst_multibyte = true;
+  nh_io_coding_changed (p, proc_decode_coding_system[inch]);
+
+#endif
 
   eassert (0 <= outch && outch < FD_SETSIZE);
   if (!proc_encode_coding_system[outch])
@@ -8482,10 +8892,20 @@ kill_buffer_processes (Lisp_Object buffer)
   FOR_EACH_PROCESS (tail, proc)
     if (NILP (buffer) || EQ (XPROCESS (proc)->buffer, buffer))
       {
+#ifdef HAVE_NIDHOGG_WORKERS
+
+	/* A connection's fds close before its deletion; a subprocess's
+	   after its SIGHUP below, which needs its infd.  */
+	if (NETCONN_P (proc) || SERIALCONN_P (proc) || PIPECONN_P (proc))
+	  nh_io_dead_close (XPROCESS (proc));
+#endif
 	if (NETCONN_P (proc) || SERIALCONN_P (proc) || PIPECONN_P (proc))
 	  Fdelete_process (proc);
 	else if (XPROCESS (proc)->infd >= 0)
 	  process_send_signal (proc, SIGHUP, Qnil, 1);
+#ifdef HAVE_NIDHOGG_WORKERS
+	nh_io_dead_close (XPROCESS (proc));
+#endif
       }
 #else  /* subprocesses */
   /* Since we have no subprocesses, this does nothing.  */

@@ -401,6 +401,371 @@ write, using `nidhogg-watchdog--test-hang-now`, `--test-names` and `--test-hold-
 `watchdog/hang-file-survives-kill`, `-sigterm` and `-sighup` in the timing group (a child killed by that signal during
 a 5 s hang; a fresh child records it).
 
+## Work off the main thread
+
+Nidhogg can move work that blocks the main thread onto worker threads: reading process output, parsing with
+tree-sitter, decoding images, directory reads, file blocks, auto-save and host-name lookups. The main thread keeps
+every Lisp object; a worker only reads bytes and files and hands a result back for the main thread to land.
+
+- Build flag: `--with-nidhogg-workers` (defines `HAVE_NIDHOGG_WORKERS`; `build.sh` passes it on every target unless given
+  `--without-nidhogg-workers`). Without it the build equals upstream's for every file the workers touch.
+- Switches (customization group `nidhogg-workers`): `nidhogg-workers-process-reader` (on) with
+  `nidhogg-workers-reader-pipes`, `-reader-sockets` and `-reader-ptys`; `nidhogg-workers-framing`,
+  `nidhogg-workers-treesit`, `nidhogg-treesit-defer`, `nidhogg-workers-images`, `nidhogg-image-defer`,
+  `nidhogg-workers-autosave`, `nidhogg-workers-dns`. Each is off until the default-on commit of its step; on so far:
+  `nidhogg-workers-reader-pipes`, `nidhogg-workers-reader-sockets`, `nidhogg-workers-images`, `nidhogg-image-defer`.
+  `nidhogg-redisplay-wait-budget` (1) is how many milliseconds a redisplay may wait for a nearly finished worker job.
+- The environment variable `NIDHOGG_WORKERS`, read at startup: `default` (or unset), `on`, `off`, `inline`, or a list
+  such as `+nidhogg-workers-treesit-nidhogg-workers-dns`. `nidhogg-workers-set-all` and `nidhogg-workers-apply` do the
+  same at run time.
+- No worker thread exists until the first job is submitted.
+- Files: `src/nidhogg-workers.h` (the shared layout and every cross-file prototype), `src/nidhogg-workers-phase.h`,
+  `src/nidhogg-{workers,treesit-bg,io,decode,json-tape,image-bg,blk}.c`; Lisp in `lisp/nidhogg-workers*.el`
+  (preloaded; the feature is `nidhogg-workers`, the Lisp part `nidhogg-workers-lisp`; the tree-sitter and jsonrpc
+  files load with their packages).
+- Tests: `workers/…` in `test/src/nidhogg-tests/workers-*-tests.el`, GUI rows `workers-gui/…` in `*-gui-tests.el`;
+  `nidhogg/test/workers-harness.sh` compiles the C files without Lisp (`--tsan MODULE…` runs the ThreadSanitizer
+  drivers, `--fuzz SECONDS` the parser fuzz targets); `nidhogg/test/pkg-test.sh` runs the package suites (jsonrpc,
+  treesit, process, files) with the workers on, off or `inline` and `--compare`s on against off (the treesit group
+  loads the test grammars when `grammars.sh` has built them); `NIDHOGG_BUILD_SANITIZE=address,undefined
+  nidhogg/build.sh --dev …` is the ASan build. CI jobs `workers-harness`, `workers-asan`, `workers-pkg` run them.
+- The runtime (`src/nidhogg-workers.c`): five workers, `nh-io`, `nh-parse`, `nh-img` (one thread per two cores, at
+  most two), `nh-blk` (one to four threads, grown when every thread has been busy 50 ms; directory reads, file reads
+  and lookups take at most two each and always leave one for a class with nothing running) and `nh-save`. Threads
+  start at their first job, never while dumping, with every asynchronous signal blocked (the fatal ones stay with
+  Emacs's crash forwarding). Speculative jobs run at `SCHED_IDLE`; a wait on one that has not started moves it to the
+  worker's normal-priority thread, and a wait on one already running tries to raise its thread (unprivileged this is
+  refused once and counted as `boost-denied`). Finished jobs land in completion order at the next timer check, never
+  inside a filter, through one completion fd (an eventfd; a pipe elsewhere) that is cleared before its queue is
+  re-checked. Waits are bounded, survive signals and never go through `select`. `(nidhogg-workers-stats &optional
+  RESET)` returns the counters. Test primitives: `nidhogg-workers--mode` (`threads` or `inline`), the pause points
+  (`nidhogg-workers--pause-at`, `--release`, `--test-await-paused`), `--test-job`, `--test-wait`, `--test-job-info`,
+  `--test-signal-storm`, `--test-wake-race`, `--test-fd-reserve`; `nidhogg/test/workers-harness.sh --tsan queue wake`
+  runs the queues and the wake protocol under ThreadSanitizer.
+- The fatal path: `shut_down_emacs` marks the workers dead first when Emacs dies of a signal or a fatal error. From
+  then on no job is submitted, no wait waits, completions are dropped and the queues are abandoned (not freed), so a
+  crash under a worker's mutex, or on a worker thread (forwarded to the main thread as usual), still prints its
+  backtrace and writes the emergency auto-save. No signal handler takes a worker mutex: the SIGCHLD handler runs in
+  signal context, where submit, wait and cancel refuse at once and a worker mutex taken anyway aborts the process
+  rather than deadlock. `kill-emacs` with jobs in flight exits without waiting for them. Test primitives:
+  `nidhogg-workers--test-crash`, `--test-fatal-under-lock`, `--test-signal-under-locks`.
+- Waits and the redisplay budget: a main-thread wait on a worker pushes the watchdog's `worker-wait` (or `treesit-wait`)
+  phase and counts its time in `:phase-ms`; it never enters `select`, so the watchdog's span runs through it. Every
+  `redisplay_internal` call starts a wait budget of `nidhogg-redisplay-wait-budget` milliseconds (default 1), spent
+  only on a tree-sitter job at least 90 % done (one wait of at most 1 ms); redisplay never waits for an image.
+- Inline or offload (one rule): work whose estimate (a moving average of measured cost: decode ns per pixel per format,
+  a filter's ns per byte) is at most 4 ms runs inline, exactly as without workers; above it the work goes to a worker
+  and the caller does not wait. The threshold drops to 1 ms under pressure (input pending, or the last busy span over
+  16 ms; it ends after 3 quiet redisplays) and is never raised above 4 ms; an image with no stand-in keeps the 4 ms.
+  `nidhogg-workers-stats` reports `:decisions`, `:costs` and `:pressure`; `nidhogg-workers--policy` the constants.
+<!-- wk: Task 6 -->
+<!-- wk: Task 7 -->
+<!-- wk: Task 8 -->
+- Tree-sitter's allocator: on a worker thread tree-sitter allocates with libc (a worker never reaches `xmalloc`, so the
+  memory profiler is never entered from one); on the main thread it still goes through `xmalloc`. Test grammars (C,
+  TypeScript, Python, Rust, HTML at pinned commits) are built by `test/src/nidhogg-tests/fixtures/grammars.sh` into
+  `NIDHOGG_TEST_GRAMMARS` (default `fixtures/grammars-cache/`); the tree-sitter rows skip without them. It also builds
+  `crash`, Python whose external scanner writes through a null pointer at a backquote (`fixtures/crash-scanner.c`):
+  `workers/worker-crash-forwarded-grammar` parses it on `nh-parse` and expects the fatal path.
+- Tree-sitter on the main thread: every synchronous parse a demand makes (`treesit_ensure_parsed`) is in the watchdog's
+  `treesit` phase and its `:phase-ms`, with the workers' switches on or off, so an A/B compares the main thread's
+  whole tree-sitter time (parses plus `treesit-wait`).
+- Tree-sitter parse jobs (`src/nidhogg-treesit-bg.c`; tree-sitter 0.25 or later): with `nidhogg-workers-treesit` on, a
+  job for a parser copies the buffer's visible text (two copies around the gap, the watchdog's `treesit` phase with
+  reason `snapshot`), a copy of the parser's tree, the ranges a demand would parse with and the parser's edit
+  generation; `nh-parse` parses that with a parser of its own (cancellable at any point; a cancelled parse is reset,
+  never resumed) and, for a first parse, computes the tree's subtree statistics (treesit.el asks for them once per
+  buffer, and on a large tree the walk costs more than an incremental reparse). Nothing is published early: the next
+  demand (`treesit_ensure_parsed`) takes the tree when the job is done and its language, visible range, ranges and
+  generation are still the parser's, then runs today's tail (timestamp, changed ranges, notifiers), so notifiers run
+  only at demands and nodes go out of date only there; any other job is dropped and today's synchronous parse runs.
+  No job starts under a temporary narrowing, and a start never changes the parser's visible range or ranges. One job
+  per parser, the latest snapshot wins; deleting the parser, killing its buffer or GC cancels it, and whichever of
+  the parser and the worker lets go last frees it. `(nidhogg-treesit-parser-ready-p PARSER)` says whether a demand
+  would not parse on the main thread; `treesit-subtree-stat` on a first parse's published root answers from the worker's count. Test
+  primitives: `nidhogg-workers--test-ts-start`, `--test-ts-wait`, `--test-ts-info`, `--test-ts-stats` (with the
+  jobs' time queued, parsing and walking), `--test-ts-await-idle`, and
+  `nidhogg-workers--test-ts-trace` (non-nil: each step of a main-thread demand, its microseconds and its Lisp callers,
+  is pushed onto it).
+- Edits during a parse job: every edit made to a parser's tree while it has a job (the changes Lisp makes, and the
+  narrowing sync a demand does) is logged exactly as applied; a parser that has no tree yet logs the change in buffer
+  bytes, which become tree edits at the publish. The publish replays the log onto the job's tree and, if there was any
+  edit, reparses once on the main thread (the watchdog's `treesit` phase) with the parser's current ranges: the same
+  incremental grouping as a synchronous parse at the snapshot, so typing during a long parse loses nothing the worker
+  did. A parser that tracks line and column (`treesit-languages-require-line-column-tracking`) drops a job that started
+  without a tree at its first edit. A start (unlike a demand) drops a job over older text for a new snapshot, and a
+  cancelled parse is never resumed. The worker's `treesit-subtree-stat` answer is dropped when a replay reparsed.
+  `--test-ts-stats` adds `:replayed`, `:replayed-edits`, `:superseded` and `:parses`; `--test-ts-info` adds `:log`.
+- Where tree-sitter jobs start, and when the main thread waits: a job starts (1) when a major mode has finished, for
+  each parser that never parsed (`nidhogg-workers-treesit--start-created` on `after-change-major-mode-hook`), so the
+  first parse of a large file overlaps the rest of `find-file`; (2) at redisplay's demand: while redisplay fontifies a
+  buffer (`nidhogg--redisplay-fontifying` names it), `treesit-parser-changed-regions` (the demand of
+  `treesit--pre-redisplay`) estimates the reparse (the parser's average incremental parse plus the bytes edited since
+  at the full-parse rate, per parser, the language's until the parser has its own): at most the inline base (4 ms,
+  pressure ignored over a tree) it parses on the main thread as upstream does and takes no snapshot, so typing gains
+  nothing from the workers; over it (a paste, a revert, `indent-region`) a job takes it and the demand answers "not
+  ready" (it returns nil and the parser still needs a reparse). A parser with no tree goes to a job; one with no
+  incremental sample yet makes one 16 ms attempt (cancelled and reset, never resumed, then a job) that seeds the
+  estimate;
+  every other demand (`treesit-parser-root-node`, so every node and query function) still ends with a tree; (3) when
+  Emacs waits for keyboard input (`wait_reading_process_output` with `READ_KBD` ≠ 0), for parsers edited since by
+  timers, filters or idle timers that no demand parsed. A demand that needs a tree while a job runs cancels the job
+  and parses on the main thread when the job has not started, or when its snapshot is older than the newest edit and
+  it has parsed less than half its input; otherwise it waits for the job (the watchdog's `treesit-wait` phase, the job
+  moved to the normal-priority thread or raised, as for every wait) for at most what parsing it here would cost (a reparse estimate over a tree, a full-parse estimate without; between
+  16 ms and 2 s), and only when what is left of the job's estimate is no more than that; then it publishes it, or
+  cancels it and parses. The select entry starts a job only for a parser with no tree or an estimate over the base. Test primitives: `nidhogg-workers--test-fontifying` (a macro binding the variable),
+  `--test-ts-select-entry` (batch Emacs never waits for keyboard input), `--test-ts-attempt-bound` (the attempt's
+  bound in nanoseconds, `t` for none: the semantic rows assert the ledger, the timing group the 16 ms), `--test-ts-cost`
+  (seed or add a parser's reparse estimates);
+  `--test-ts-stats` adds `:attempts`, `:cancels`, `:started-demand`, `:started-create`, `:started-select`, `:waited`
+  and `:abandoned`; `--test-ts-info` adds `:policy`.
+- Deferral at redisplay (`nidhogg-treesit-defer`, `lisp/nidhogg-workers-treesit.el`): with it and
+  `nidhogg-workers-treesit` on, redisplay (and only redisplay, not `vertical-motion`, `pos-visible-in-window-p` or other
+  display code called from Lisp) binds `nidhogg--redisplay-fontifying` to the buffer it fontifies. A tree-sitter major
+  mode's buffer gets two wrappers: one in place of `treesit--pre-redisplay` in `pre-redisplay-functions` (its demand of
+  the primary parser starts the job (or parses, by the estimate), then waits for the job within the redisplay's budget;
+  a parser still not ready leaves `treesit--pre-redisplay-tick` unrecorded), and one around
+  `font-lock-fontify-region-function`: when the primary parser, a local parser of the region or any other parser of the
+  buffer has a job that does not finish within what is left of the budget, it returns without calling font-lock, so
+  the region keeps the faces it had (nothing is unfontified), records the region and counts a `treesit` deferral in
+  `nidhogg-workers-stats`; jit-lock marks it fontified. A job started with deferral on lands through the drainer: once
+  no job runs for the buffer, its recorded regions are marked unfontified and its windows redisplayed, and that
+  redisplay's demand publishes the tree, runs the notifiers and colours them. Nothing else defers: `font-lock-ensure`
+  and `font-lock-fontify-buffer` (the variable is nil or names another buffer, as when Org fontifies a source block in
+  a temporary buffer), `syntax-ppss` and outline search (they call `treesit--pre-redisplay` itself, not the hook
+  entry), indentation, navigation, `treesit-node-at`, eglot and every package wait or parse as before. With
+  `nidhogg-treesit-defer` off, redisplay binds nothing and parses as before. `nidhogg-workers--test-ts-await-idle`
+  lands nh-parse's finished jobs first (a job started with deferral on is freed when it lands).
+<!-- wk: Task 14 -->
+<!-- wk: Task 15 -->
+- The process reader's fd ownership (`src/nidhogg-io.c`): an eligible process (a subprocess with pipes or a pty, a
+  `make-pipe-process` pipe, a plain network stream once connected, a connection a server accepted) is handed to `nh-io`
+  when its fd would enter the select set, if `nidhogg-workers-process-reader` and its fd kind's sub-switch are on and two
+  more fds stay 64 below `FD_SETSIZE` (else it keeps today's path). `nh-io` reads its own `F_DUPFD_CLOEXEC` copy of the
+  fd; the select set holds a wake fd instead (so `process-prioritize-lower-fds` orders by wake fd); `p->infd` stays the
+  real fd for writes, ioctls and `process-send-eof`. Never handed over: TLS, datagrams, servers, serial, a `:nowait`
+  stream before it connects, filter `t` (until the filter changes), and a process after `(nidhogg-set-process-reader
+  PROCESS nil)`. Hand-back is synchronous: before any of a process's fds closes, `nh-io` drops it and closes its copy,
+  then acknowledges; the bytes it had read are delivered first. Delivery goes through the usual filter path, one
+  delivery per channel per select (below). Test primitives: `nidhogg-workers--test-io-info`, `--test-io-log`,
+  `--test-io-crash`, `--test-io-hold-lock`; `workers-harness.sh --tsan io`.
+- The reader's flow control and drains: where Emacs stops reading a process (`set-process-filter` `t`, `stop-process` on
+  a connection, the `SIGCHLD` handler when a child exits) `nh-io` pauses after the read in progress (an atomic flag and
+  one byte to its command fd: no lock, so the signal handler may do it), and resumes where reading resumes. Each process
+  queues at most max (4 × `read-process-output-max`, 256 KB) of unread output; at that cap `nh-io` stops reading it until
+  delivery catches up, so the kernel's back-pressure applies as today (`stop-process` on a subprocess only stops the
+  child; the cap bounds what is read meanwhile). When a process ends, its last output is delivered before its sentinel
+  runs: the reader hands it back and Emacs reads the rest of the fd itself until it would block, so a grandchild that
+  holds the pipe open does not delay the sentinel. Sentinels run, as today, only when no process has output waiting:
+  Emacs first waits (at most a second) for output `nh-io` is reading or has yet to read, so a `:stderr` pipe's last
+  output and EOF still come before the child's sentinel. A zero-timeout wait (`accept-process-output` with a timeout of
+  0, how TRAMP polls) waits the same way, so it gets what the kernel holds, as today. `accept-process-output` with
+  JUST-THIS-ONE waits on that process's wake fd only, and a process locked to a Lisp thread (`set-process-thread`) is
+  delivered only on that thread.
+  Test primitives: `nidhogg-workers--test-io-info`'s `:queued`, `:cap` and `:paused`; the `after-read` pause point
+  (`nh-io` parks there when a queue reaches its cap).
+- Decoding on the reader (`src/nidhogg-decode.c`): when a reader-owned process decodes with a stateless system
+  (`utf-8`, `raw-text`, `no-conversion` or `binary` with a settled end of line: `-unix`, `-dos`, `-mac`; not
+  `utf-8-emacs`, BOM variants or systems with a translation table or post-read conversion), `nh-io` decodes each chunk as
+  it reads it, with copies of Emacs's own decoder and end-of-line rules (quirks included), and a filter gets that string:
+  multibyte for UTF-8 (invalid bytes as raw-byte characters), unibyte for the raw-text systems, as today. Every other
+  system, `undecided` and end-of-line detection stay on the main thread; once the main thread's detection settles a
+  process on a stateless system, `nh-io` decodes from the next chunk. Each chunk keeps its raw bytes and the process's
+  coding generation, which every `set-process-coding-system`, `set-process-buffer` and `set-process-filter` moves on: a
+  chunk decoded under an older generation, any chunk while `standard-translation-table-for-decode` or
+  `inhibit-eol-conversion` is in force, and any chunk whose carried-over bytes differ from the main thread's are decoded
+  again on the main thread from the raw bytes, so filters see what they see without the reader. An incomplete sequence
+  at the end of the stream is flushed as today. The default filter inserts those decodes too (below). Test primitives:
+  `nidhogg-workers--test-decode` (the decoder, or with ORACLE the main thread's, over a list of chunks),
+  `--test-io-info`'s `:coding-generation`, `:decoder`, `:decoded` and `:redecoded`; `workers-harness.sh --fuzz SECONDS
+  decode`.
+- Delivery from the reader: one delivery per channel per select, as today's one read, but it joins the chunks already
+  queued (it never waits for more). The default filter (with `fast-read-process-output`) gets up to
+  `read-process-output-max` bytes and inserts the reader's decodes directly, with today's process mark, marker and
+  after-change bookkeeping (a raw-text system's bytes from 0x80 become raw-byte characters in a multibyte buffer, as
+  today). Any other filter gets one string of at most `read-process-output-max` bytes and at most its estimated 4 ms of
+  work (a moving average of its nanoseconds per byte; at least 512 bytes), and never more than a pty read (4 KB) on a
+  pty: a delivery never grows past the natural read, so a cheap filter on a stream of small reads gets fewer, larger
+  calls only by the queue joining chunks, and a costly one no longer call than today's. The reader stays at most 16 KB
+  ahead of a pty's filter (`--test-io-info`'s `:ahead`), so the child's writes block in the kernel. `nbytes_read` grows by the raw bytes, so `accept-process-output` keeps its meaning;
+  the redisplay after each delivery stays. The C delivery runs in the watchdog's `deliver` phase and the filter in
+  `filter`; `nidhogg-workers-stats`'s `:phase-ms` counts both for reader-owned processes. Adaptive read buffering
+  (`process-adaptive-read-buffering`) does not apply to a reader-owned process. Test primitives:
+  `nidhogg-workers--test-filter-cost` (fix a filter's estimated cost), `--test-io-info`'s `:filter-cost`.
+- STARTTLS, ptys, comint and TRAMP under the reader: `gnutls-boot` (every STARTTLS upgrade: smtpmail, Gnus, ERC,
+  `open-network-stream` with `:type` `starttls`, and a blocking `open-gnutls-stream`, which connects as a plain stream
+  first) takes the socket back from `nh-io` before any GnuTLS call, and that process is never handed over again (also
+  after `gnutls-deinit`). Bytes `nh-io` had read but not delivered go to GnuTLS, never to the filter (delivering them
+  would be STARTTLS response injection): the session gets a pull function that returns them before it reads the socket,
+  and TLS's pending check counts them. A pty's writes, `process-send-eof`, `set-process-window-size`,
+  `interrupt-process` and `process-tty-name` use the real fd or the tty name as before; comint and TRAMP see the same
+  results. Test primitives: `nidhogg-workers--test-io-info`'s `:tls-reclaimed`, `:tls-pulled`, `:tls-left` and
+  `:tls-pull`.
+- The reader's sub-switches go on by default one fd kind at a time, in the order pipes, sockets, ptys (the OT3 gate).
+  Any kind can be turned off alone: with its sub-switch nil, that kind takes today's path and the other kinds stay
+  reader-owned (`workers/reader-sub-switches`). On by default so far: pipes (subprocesses with pipes and
+  `make-pipe-process`) and sockets (plain network streams once connected, connections a server accepted). `workers/terminal-emulators`
+  (`workers-terminal-tests.el`, run by `pkg-test.sh`'s `process` group, which has eat and vterm) draws a recorded `htop`
+  and `ls --color` stream in eat and vterm with the reader off and on and compares the screens (text and faces).
+- JSON tape (`src/nidhogg-json-tape.c`): a tokenizer that copies json.c's rules byte for byte (strict UTF-8, surrogates,
+  depth 10,000, integer overflow, floats parsed in the C locale, the same error symbol at the same position) and
+  writes one malloc block (a tape of 16-byte entries, a string arena and a table with each distinct object key once),
+  with no Lisp, so a worker can run it; the main thread materializes the tape into the objects `json-parse-string`
+  and `json-parse-buffer` build. Test primitive: `(nidhogg-workers--test-tokenize STRING MODE &rest OPTIONS)`.
+- JSON materializer slices: the main thread builds a message in slices (it looks at the clock every 4,096 entries and
+  yields once the slice's budget is spent), in the watchdog phase `json`. Between slices the partial result, every open
+  container's collected elements and the key cache live in a Lisp vector on a `staticpro`'d list, so GC may run;
+  nothing is visible to Lisp until the message is complete. A slice left by a signal (`memory-full`) drops its state
+  and the message becomes an error (`json-out-of-memory`). Each distinct key is interned once per message. Test
+  primitives: `nidhogg-workers--test-json-start`, `-test-json-step`, `-test-json-in-flight`, and the variables
+  `nidhogg-workers--test-slice-entries`, `-test-intern-count`, `-test-json-fail-at`.
+- Framed processes: `(nidhogg-set-process-framing PROCESS FRAMING &rest ARGS)` and `(nidhogg-process-framing
+  PROCESS)`. FRAMING is `content-length` (LSP and DAP: header names in any case and order, at most 8 KB of header),
+  `lines` (newline-delimited JSON: a trailing `\r` dropped, empty lines skipped) or `records` (`:separator` 0, the
+  default, or `?\n`; an optional stateless `:coding` decodes each record). `nh-io` frames what it reads, tokenizes each
+  complete JSON message into a tape (or decodes each record) and queues the messages, at most 64 MB of complete ones
+  (the message in progress may grow to `:max-message`, 256 MB by default; past it, a framing error). The main thread
+  materializes queued messages for up to 4 ms per delivery (a large message may take several) and calls
+  `:batch-function` FN with the process and a batch, `((MESSAGE RAW ERROR) …)` in arrival order: MESSAGE what
+  `json-parse-string` (`:parse 'buffer`: `json-parse-buffer`) returns for RAW, the message's bytes, or ERROR the error
+  it signals; `:object-type` and the other json options apply. FN runs under a filter's protections and in the watchdog
+  phase `filter`; a batch for a process whose buffer is dead is dropped, and FN may call `accept-process-output` on its
+  own process. `nbytes_read` grows by the delivered messages' bytes, so `accept-process-output` returns non-nil only
+  once a message was delivered. A process can be framed only while `nh-io` reads it and it decodes with `binary` or
+  `no-conversion` (`records`: any stateless system); else `nidhogg-framing-unsupported` (with the process and a reason:
+  the hand-over refusal, `coding`, `not-read`). Framing goes off with FRAMING nil, any `set-process-filter` (also
+  through `add-function`), `set-process-coding-system`, `nidhogg-set-process-reader` nil or a framing error: every byte
+  not yet delivered (queued messages, the one in progress) goes to the filter as raw output, in order. Turning it on or
+  off is a command `nh-io` carries out between reads (the main thread waits, `worker-wait` reason `detach`); a
+  hand-back or a switch-off stops a tokenize in progress within 64 KB, and the main thread frames those bytes itself.
+  The status drains and inline mode deliver every complete message at once. The configuration lives on the process's
+  plist under an uninterned key. Test primitives: `(nidhogg-workers--test-frame CHUNKS EOF FRAMING &rest ARGS)`,
+  `nidhogg-workers--test-deliver-budget`, `--test-io-info`'s `:messages`, the io log's `stopped`;
+  `workers-harness.sh --fuzz SECONDS framers`.
+- jsonrpc (`lisp/nidhogg-workers-jsonrpc.el`; `lisp/jsonrpc.el` is unchanged): with `nidhogg-workers-framing` on,
+  every `jsonrpc-process-connection` (eglot, dape, …) is framed `content-length` (`:parse 'buffer`, plists) when its
+  process starts. The batch function runs jsonrpc's filter tail unchanged: each message onto `jsonrpc-mqueue` with
+  `:jsonrpc-json` from RAW (or the same "Invalid JSON" warning), then one timer per message with one shared
+  `(current-time)` in reverse push order, so dispatch is in arrival order and `jsonrpc-event-hook` sees the same
+  `:json`. It stays on `jsonrpc--process-filter` when the process cannot be framed or `jsonrpc--json-read` or
+  `jsonrpc--process-filter` has advice; advice added later (eglot-booster) turns framing off at the next batch, and
+  that batch and every byte after it go to the filter. A framing error (a banner before the first header) hands the
+  bytes to the filter, which skips the junk as before. The process buffer stays empty while framed. The test
+  `workers/jsonrpc-tail-unchanged` holds the SHA-256 of `jsonrpc--process-filter`'s source: an upstream change fails it
+  until the copied tail is checked against it.
+<!-- wk: Task 26 -->
+<!-- wk: Task 27 -->
+**Image decoder cores.** PNG, JPEG, GIF and WebP decode through Lisp-free cores in `src/nidhogg-image-bg.c`, copies
+of the loaders' decode paths behind the table `nh_img_decoders` of `src/nidhogg-image-bg.h`. With the flag the
+synchronous loaders in `image.c` (Cairo frames) use the same cores, so a picture never depends on who asked first;
+`nidhogg-workers--test-image-legacy` set to non-nil turns that off for a comparison. The cores keep their own animation
+cache (by file name and modification time, or a hash of the data), so frame N of a GIF or WebP decodes from frame N-1.
+Test primitives: `nidhogg-workers--test-image-decode`, `--test-image-decode-finish`, `--test-decode-count`,
+`--test-image-cache-clear`, `--test-image-pixels`.
+**Rust decoders (Glitnir).** With Glitnir built in, `src/glitnir-images.c` puts an entry in front of the PNG core at
+load time, and in front of the GIF and WebP cores; the formats in `nidhogg-workers-image-rust` (default nil; `png`,
+`gif`, `webp`) decode through Glitnir's stateless `glitnir_img_decode` (the `png` crate, libpng's transformations
+redone sample by sample, `png_composite`'s rounding; the `gif` crate under a port of giflib's reader and the GIF
+loader's disposal; `image-webp` under a port of libwebp's animation decoder and blend), the others through the C
+core, on whichever thread decodes, from the next decode on. The pixels are the core's; a PNG whose alpha libpng would
+composite through gamma tables (a `gAMA`, `sRGB`, `iCCP` or `cICP` chunk) goes back to the C core with the bytes
+already read; PNG error texts are the crate's, GIF's are giflib's. An animation's state comes back from each decode
+and is kept by `src/glitnir-images.c` as the cores keep theirs (8 entries, 256 MB), so frame N continues from N-1.
+Test primitive: `nidhogg-workers--test-image-rust` (the Rust formats, decodes, hand-backs and continued decodes;
+RESET also empties the kept states).
+**Images decode on `nh-img` during redisplay.** With `nidhogg-workers-images` and `nidhogg-image-defer` on (both are by default), a PNG,
+JPEG, GIF or WebP that redisplay meets for the first time (on a Cairo frame) is decoded on `nh-img` (up to two
+threads, one per two cores) from a copy of its `:data` or its file name, with the frame's and face's colours resolved
+first, when its estimated decode is over the inline threshold (above); redisplay never waits for it: the image keeps
+its final size from the header and shows the face's background (an empty rectangle) until it lands. The landing
+finishes it at the start of the next redisplay, exactly as a synchronous load would, and redraws only the windows that
+show it. Clearing the image cache, `image-flush`, eviction and deleting the frame drop a decode still running. A Lisp
+call that needs the pixels of an image still decoding (`image-mask-p`) waits for it, or loads it itself after a
+second; inside redisplay (a mode line's `:eval`, the tool bar) it loads it at once without waiting.
+`image-size` and `image-metadata` answer from the header without waiting for a spec not in the cache or still
+decoding, and from the cache entry otherwise; display outside redisplay (`window-text-pixel-size`) and the tool bar
+load synchronously, as today, and so does everything with either switch off. Watchdog phases: `image` (header, synchronous decodes, landing),
+`worker-wait` with `image-pixels`; `:deferrals` counts the images that landed late. Test primitives:
+`nidhogg-workers--test-await-landed`, `--test-marked-windows`, `--deferrable-p`, `--test-image-info`,
+`--test-image-job`, `--test-image-forget`, `--test-image-land`, and `--test-image-pixels`' CACHED argument.
+**A replaced image keeps its picture until the new one lands.** A pending entry whose spec equals a ready entry's
+except `:index`, `:scale`, `:max-width`, `:max-height`, `:rotation`, `:width`, `:height` or `:data`, met at the same
+buffer position (or display property) where a window last drew that ready image, draws the ready pixels scaled into its
+own box instead of the empty rectangle (a GIF stepping `:index`, `image-mode` zoom and rotate, `doc-view` pages);
+`--test-image-info` counts them as `:standing`. `(nidhogg-image-prefetch SPEC CALLBACK &optional FRAME)` decodes SPEC
+into the frame's cache on the default face without showing it and calls `(CALLBACK SPEC ready|failed)` from the timer
+check; a prefetched spec that is displayed afterwards draws without a pending frame. `:nidhogg-data-encoding base64` in
+a spec makes the decoder read `:data` as base64 text (on `nh-img` and in the synchronous loaders).
+<!-- wk: Task 31 -->
+- Directory reads (`src/nidhogg-blk.c`, class `dir` of `nh-blk`): `(nidhogg-directory-files-async DIR CALLBACK &key
+  match nosort id-format recursive max-depth max-entries skip)` reads a local directory on a worker (`lstat`,
+  `readlink`, cached `getpwuid_r`/`getgrgid_r`) and calls `(CALLBACK BATCH DONE ERROR)` from the main loop with
+  `(NAME . ATTRIBUTES)` lists exactly as `directory-files-and-attributes` returns them. Sorted results arrive in one
+  batch, `:nosort` ones in batches of 1000. A name with a file name handler signals `nidhogg-not-local`.
+- File blocks (`src/nidhogg-blk.c`, `src/nidhogg-decode.c`): `(nidhogg-read-file-async FILE CALLBACK &key beg end)`
+  reads a byte range of a regular file on `nh-blk` and scans it (ASCII only; strictly valid UTF-8 with its character
+  count; line-ending kind; null byte, ESC, BOM); `CALLBACK` gets `(BLOCK ERROR)`, BLOCK a `user-ptr` that owns the
+  bytes. `(nidhogg-insert-file-block BLOCK)` chooses the coding on the main thread as `insert-file-contents` does and
+  inserts with the worker's counts only for `undecided` with UTF-8 first and valid UTF-8 (no null, ESC, CR, BOM), or
+  ASCII-only text under an ASCII-compatible coding; everything else goes through `decode_coding_gap`.
+  `nidhogg-blk--insert-path` (`fast` or `decode`) is the test hook.
+- Auto-save writes (`src/nidhogg-blk.c`, `nh-save`, one thread of its own): with `nidhogg-workers-autosave` on, an
+  auto-save the keyboard loop triggers (after `auto-save-interval` events or `auto-save-timeout` idle seconds) copies
+  each due buffer on the plain path (its auto-save file is not the visited file; no `write-region-annotate-functions`,
+  formats, selective display or file name handler) and writes the copy on `nh-save`, encoded as `utf-8-emacs-unix`,
+  into a new file in the same directory (an unnamed `O_TMPFILE` on Linux, else `.#NAME#.nh-PID-N`, NAME cut to 200
+  bytes). The copy of a
+  buffer of 4 MB or more stays allocated when its job lands and the next save copies into it: page faults dominate a
+  fresh 50 MB copy (20.9 ms, 12,800 faults, against 3.0 ms and none into the same memory), so the main thread's copy
+  takes a seventh of the time; the memory goes when the buffer is killed, its auto-saving is off or the switch is off
+  (it is RSS the size of
+  the buffer, kept per big buffer; `--test-save-snapshot` reports `:snapshot-ns`, `:snapshot-faults`, `:arena-bytes`). At the next timer
+  check the file is renamed onto the buffer's current `buffer-auto-save-file-name`, unless the job was superseded: a
+  save of the buffer, `delete-file` of the name, `rename-file` of it to another name, a newer auto-save, or a
+  synchronous one; or unless that name is now off the plain path (the visited file, `auto-save-visited-file-name`, a
+  file name handler), which leaves the text to the next auto-save. `do-auto-save` from Lisp, `kill-emacs`, the fatal path and the tty emergency escape stay
+  synchronous and also write any buffer whose job has not landed; `kill-buffer` lands a finished job, or writes a
+  running one's auto-save (drops it, if the buffer was saved since or its auto-saving is off), before it asks about
+  the auto-save file. Hooks, counters, messages and `recent-auto-save-p`
+  are as before. Within the contract: the file reaches the disk a few ms after "Auto-saving...done" and replaces the
+  old one by a rename; a write error shows the usual warning at that point; while a buffer's previous job still runs
+  its next auto-save is written synchronously with a warning, and a job running over 60 s turns auto-saving off for
+  that buffer for 20 minutes, as a 60 s write does (but the skipped text counts as unsaved once the job lands, so the
+  first auto-save after the 20 minutes writes it). Test primitives: `nidhogg-workers--test-keyboard-auto-save`,
+  `--test-save-await`, `--test-save-jobs`, `--test-save-age`, `--test-save-encode`, `nidhogg-workers--save-unnamed`
+  and the `before-write` pause point.
+- Host-name lookups (`src/nidhogg-blk.c`, `nh-blk` class `dns`): with `nidhogg-workers-dns` on,
+  `make-network-process` with `:nowait` runs `getaddrinfo` with the same hints on a worker on every platform, in place
+  of glibc's `getaddrinfo_a` (and of the synchronous lookup where that is missing: macOS, Android, musl). The wait loop
+  hands the addresses to the same postponed connect; a failed lookup sets `(failed "Name lookup of HOST failed")`
+  everywhere. `delete-process` during a lookup drops the job and returns at once (glibc's path waits for a running
+  lookup). Lookups without `:nowait` are unchanged. Within the contract: off glibc, a bad host name with `:nowait`
+  becomes a `failed` status instead of an error from `make-network-process`. Test primitives:
+  `nidhogg-workers--test-dns-info`, `nidhogg-workers--test-glibc-dns-off` (the path of a platform without
+  `getaddrinfo_a`, on Linux) and the `in-lookup` pause point.
+<!-- wk: Task 36 -->
+- Platforms: Linux first; macOS (NS) builds the same sources. There the wake channels are pipes made with `emacs_pipe`
+  (a reader-owned process holds three fds, which the budget check counts), timed waits use
+  `pthread_cond_timedwait_relative_np`, speculative threads set `QOS_CLASS_UTILITY` on themselves and a wait raises the
+  running one with `pthread_override_qos_class_start_np` / `_end_np`, host names resolve through `nh-blk` (no
+  `getaddrinfo_a`), auto-save uses named temporary files (no `O_TMPFILE`), and images stay on NSImage, synchronously,
+  for every type (`nidhogg-workers--deferrable-p` is nil). The `macos` CI job runs the `workers-*` batch files of
+  `nidhogg/check-subset.txt`; there are no macOS GUI rows (no macOS GUI runner).
+<!-- wk: Task 37 -->
+- Android: no Android build exists; `nidhogg/test/android-check.sh` compiles each worker file (`-fsyntax-only`, harness
+  mode, `aarch64-linux-android26`, the NDK pinned by version and sha256) against bionic's headers, and a fixture that
+  calls `getaddrinfo_a` must fail. `__linux__` is also defined on Android, so the Linux paths apply: `eventfd` wake fds,
+  `syscall (SYS_gettid)`, `pthread_setname_np (thread, name)` and `pthread_getname_np` (API 26), `SCHED_IDLE` through
+  `pthread_setschedparam` (a denial is the `boost-denied` fallback), `O_TMPFILE` for auto-save, and `nh-blk` for
+  `:nowait` lookups (bionic has no `getaddrinfo_a`). Review of `android_select` (`android.c`), by reading: it runs
+  `pselect` for the caller's fd sets on its poll thread, so a wake fd is an ordinary fd in `readfds` and ends the wait
+  like any process fd, in the non-threaded path (called from `wait_reading_process_output`) and in the threaded one
+  (`thread_select` through `android_select_wrapper`, which accepts no signal mask: the workers pass none). A completion
+  that arrives with the UI event queue empty is seen by the poll thread's `pselect`, which posts the select semaphore.
+  Not checked: the watchdog's files (they need Emacs's headers) and any run on a device.
+<!-- wk: Task 38 -->
+
 ## Reporting issues
 
 - Problems specific to Nidhogg (its patches, build, or `nidhogg-version`) go to this repository's issue tracker.

@@ -113,6 +113,11 @@ AC_ARG_WITH([nidhogg-watchdog-signal],
   [AS_HELP_STRING([--with-nidhogg-watchdog-signal=NAME],
     [the signal the watchdog's monitor sends the main thread (default SIGURG)])],
   [], [with_nidhogg_watchdog_signal=SIGURG])
+dnl Nidhogg: worker threads (see README.md, "Work off the main thread").
+AC_ARG_WITH([nidhogg-workers],
+  [AS_HELP_STRING([--with-nidhogg-workers],
+    [build the worker threads (process reader, tree-sitter, images, file blocks)])],
+  [], [with_nidhogg_workers=no])
 
 AC_CONFIG_HEADERS([src/config.h:src/config.in])
 AC_CONFIG_SRCDIR([src/lisp.h])
@@ -4033,7 +4038,7 @@ if test "${with_glitnir}" = yes; then
   fi
   AC_MSG_RESULT([$glitnir_native])
   HAVE_GLITNIR=yes
-  GLITNIR_OBJ="nidhogg-glitnir.o"
+  GLITNIR_OBJ="nidhogg-glitnir.o glitnir-images.o"
   test "$HAVE_PGTK" = yes && GLITNIR_OBJ="$GLITNIR_OBJ glitnir-pgtk.o"
   GLITNIR_LIBS="glitnir-target/release/$glitnir_lib $glitnir_native"
   AC_DEFINE([HAVE_GLITNIR], [1], [Define to 1 to build Glitnir (the compositor, Rust).])
@@ -7833,6 +7838,18 @@ case $with_nidhogg_watchdog in
   *) AC_MSG_ERROR([--with-nidhogg-watchdog takes yes or no]) ;;
 esac
 AC_SUBST([NIDHOGG_WATCHDOG_OBJ])
+
+dnl Nidhogg: the worker threads.  Every .c file is compiled with the flag; each body is under HAVE_NIDHOGG_WORKERS.
+NIDHOGG_WORKERS_OBJ=
+case $with_nidhogg_workers in
+  yes)
+    NIDHOGG_WORKERS_OBJ="nidhogg-workers.o nidhogg-treesit-bg.o nidhogg-io.o nidhogg-decode.o nidhogg-json-tape.o nidhogg-image-bg.o nidhogg-blk.o"
+    AC_DEFINE([HAVE_NIDHOGG_WORKERS], [1], [Define to 1 to build the worker threads.])
+    ;;
+  no) ;;
+  *) AC_MSG_ERROR([--with-nidhogg-workers takes yes or no]) ;;
+esac
+AC_SUBST([NIDHOGG_WORKERS_OBJ])
 
 # This is just a printable representation of the shared user ID.
 android_shared_user=
