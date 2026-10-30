@@ -333,31 +333,39 @@
     (nhwl-gui--wait (lambda () (string-match-p "^READY" out)) 5)
     (cons proc ctl)))
 
-;; The row ends the session's recorder, so it runs last (tag `runs-last').
+;; The row drops the session's display, so it runs last (tag `runs-last').  The display goes for good with
+;; reconnecting off (with it on, the frames wait `nhwl-reconnect-timeout' for the compositor); the recorder stays up, so
+;; the other display-lost rows can serve the display again.
 (ert-deftest nhwl-gui/display-lost-daemon-survives ()
   :tags '(runs-last)
   (skip-unless (and (nhwl-gui--recorder-p) (daemonp)))
   (should (nhwl-gui--nhwl-frames))
-  (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
-  (nhwl-gui--pump)
-  ;; a key and the loss in one read: the drain that stores the key also finds the display gone
-  (nhwl-gui--recorder-twice '(:cmd "key" :keycode 30 :state "press") '(:cmd "quit"))
-  (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (null (nhwl-gui--nhwl-frames))) 3))
-  (should (daemonp))
-  ;; the daemon still opens frames, on another display
-  (when (getenv "GLITNIR_GUI_RECORDER_BIN")
-    (let* ((second (nhwl-gui--second-recorder)) (f nil))
-      (unwind-protect
-          (progn
-            (should (process-live-p (car second)))
-            (setq f (make-frame-on-display "nhwl-second"))
-            (should (frame-live-p f))
-            (should (equal (terminal-name (frame-terminal f)) "nhwl-second"))
-            (let ((process-environment (cons (concat "GLITNIR_GUI_RECORDER=" (cdr second)) process-environment)))
-              (should (nhwl-gui--wait (lambda () (with-selected-frame f (redisplay t)) (nhwl-gui--toplevel-commits))
-                                      5))))
-        (when (frame-live-p f) (delete-frame f t))
-        (delete-process (car second))))))
+  (let ((nhwl-reconnect nil))
+    (unwind-protect
+        (progn
+          (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
+          (nhwl-gui--pump)
+          ;; a key and the loss in one read: the drain that stores the key also finds the display gone
+          (nhwl-gui--recorder-twice '(:cmd "key" :keycode 30 :state "press") '(:cmd "restart" :mode "gone"))
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (null (nhwl-gui--nhwl-frames))) 3))
+          (should (daemonp))
+          ;; the daemon still opens frames, on another display
+          (when (getenv "GLITNIR_GUI_RECORDER_BIN")
+            (let* ((second (nhwl-gui--second-recorder)) (f nil))
+              (unwind-protect
+                  (progn
+                    (should (process-live-p (car second)))
+                    (setq f (make-frame-on-display "nhwl-second"))
+                    (should (frame-live-p f))
+                    (should (equal (terminal-name (frame-terminal f)) "nhwl-second"))
+                    (let ((process-environment (cons (concat "GLITNIR_GUI_RECORDER=" (cdr second))
+                                                     process-environment)))
+                      (should (nhwl-gui--wait (lambda () (with-selected-frame f (redisplay t))
+                                                (nhwl-gui--toplevel-commits))
+                                              5))))
+                (when (frame-live-p f) (delete-frame f t))
+                (delete-process (car second))))))
+      (nhwl-gui--reopen-display))))
 
 ;; Drawing
 
