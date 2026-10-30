@@ -8461,7 +8461,12 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
              true))
 	/* The user specified `:background', use that.  */
 	{
+#ifdef HAVE_NIDHOGG_WORKERS
+	  /* The screen format is 8-bit even after strip_16.  */
+	  int shift = 8;
+#else
 	  int shift = bit_depth == 16 ? 0 : 8;
+#endif
 	  png_color_16 bg = { 0 };
 	  bg.red = color.red >> shift;
 	  bg.green = color.green >> shift;
