@@ -285,6 +285,12 @@ rm -f "$B"/*.log
 # GNU cp's -u (copy only newer) keeps an incremental build dir's mtimes; BSD cp (macOS) has no -u: copy everything
 if cp -u /dev/null "$B/.cp-u-probe" 2>/dev/null; then CP_UPDATE="cp -a -u"; else CP_UPDATE="cp -pR"; fi; rm -f "$B/.cp-u-probe"
 for e in "$S"/* "$S"/.[!.]*; do [ -e "$e" ] || continue; [ "${e##*/}" = .git ] || $CP_UPDATE "$e" "$B/src/"; done
+# a source whose content differs from the build dir's copy is copied with a fresh mtime: cp -u skips a file that is not newer
+# (an edit that kept an older mtime, e.g. after a checkout of another commit), and make then keeps the stale .elc/.o
+for d in lisp leim src lib lib-src lwlib; do
+  [ -d "$S/$d" ] || continue
+  (cd "$S" && find "$d" -type f) | while IFS= read -r f; do [ -e "$B/src/$f" ] && ! cmp -s "$S/$f" "$B/src/$f" && cp "$S/$f" "$B/src/$f"; done || true
+done
 cd "$B/src"
 BODY
   if [ -n "$LISP_CACHE" ]; then cat <<'BODY'
