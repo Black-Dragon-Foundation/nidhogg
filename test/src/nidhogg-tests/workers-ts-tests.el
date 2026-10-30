@@ -275,6 +275,9 @@ memory.  Of a `let' form ERT keeps the form as written and its value."
             (treesit-parser-delete p)))
         (kill-buffer buf)
         (garbage-collect)
+        ;; With deferral on, the drainer holds a landed (inline) job until
+        ;; the next timer check: run it.  A parked job has not landed.
+        (nidhogg-workers--drain)
         (should (= (workers-ts-tests--stat :live)
                    (if (eq mode 'threads) 1 0)))
         (nidhogg-workers--release)
