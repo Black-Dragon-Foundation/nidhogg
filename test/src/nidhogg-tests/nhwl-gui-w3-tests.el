@@ -308,6 +308,10 @@ and the root's damage stays in the mode line (and the one-row overlap a fraction
      ;; an echo-area message (the startup one) has its last cell drawn again by each scroll's redisplay, outside the
      ;; mode line
      (message nil)
+     ;; an earlier row's pointer may rest on the menu bar (it is at (100, 50)): the redisplay that handles that
+     ;; pointer draws the menu bar's item again, outside the mode line, so the pointer goes into the text first
+     (nhwl-gui--point 300 400)
+     (redisplay t)
      (should (= (nhwl-gui--scroll-promote) 1))
      (gui-runner-wait-settled)
      ;; frame pixels are device pixels here; the layer is the window's box snapped outward (one row or column more)
@@ -316,16 +320,20 @@ and the root's damage stays in the mode line (and the one-row overlap a fraction
             (width (window-pixel-width))
             (mode-y0 (+ top (nth 3 (window-inside-pixel-edges)) -1))
             (mode-y1 (+ top (nth 3 (window-pixel-edges)) 1))
-            (rebases 0) (last-y nil))
+            (rebases 0) (last-y nil) (ring nil))
        (dotimes (_ 20)
          (let ((mark (nhwl-gui--mark)) (cs nil))
            (scroll-up 1)
            (redisplay t)
            (gui-runner-wait-settled)
            ;; the ring's view going back to the middle of its buffers (it would have left them) draws the whole view
-           ;; there, by design: once in (ring rows - view rows) / 2 rows of scrolling, at most once here
+           ;; there, by design, and so does a ring that was just made (some runs make the layer's ring at the first
+           ;; scroll, with its view in the middle); the bound is computed from the ring's geometry below
            (dolist (c (nhwl-gui--layer-commits mark))
              (let ((y (nhwl-gui--ring-middle-y c)))
+               (when y
+                 (setq ring (cons (plist-get (plist-get c :buffer) :h)
+                                  (round (nth 3 (nhwl-gui--get (plist-get c :viewport) :src))))))
                (if (and y (car y) (not (equal last-y y)))
                    (setq rebases (1+ rebases))
                  (push c cs))
@@ -334,7 +342,13 @@ and the root's damage stays in the mode line (and the one-row overlap a fraction
                  (root (apply #'append (mapcar #'nhwl-gui--damage (nhwl-gui--new mark)))))
              (should (<= (nhwl-gui--area layer) (* 3 (1+ line) (1+ width))))
              (should (seq-every-p (lambda (r) (nhwl-gui--rect-in-p r mode-y0 mode-y1)) root)))))
-       (should (<= rebases 1))))))
+       ;; The view starts in the middle of a ring of twice its rows and moves one line a scroll, so it can make
+       ;; (ring - view) / 2 rows of moves, one scroll more rebases: a period of P scrolls, P = moves + 1.  A ring that
+       ;; was there rebases at scrolls P, 2P, ... (floor (20 / P) times); one made by the first scroll draws the
+       ;; middle then and rebases at 1 + P, 1 + 2P, ... (1 + floor (19 / P)), which is the larger.
+       (let* ((slack (- (car ring) (cdr ring)))
+              (period (1+ (/ (- slack (/ slack 2)) line))))
+         (should (<= rebases (1+ (/ 19 period)))))))))
 
 (defun nhwl-gui--ring-middle-y (c)
   "Layer commit C's view: (MIDDLE-P . Y), Y its row in the buffer, MIDDLE-P when that is the middle (where a new or
