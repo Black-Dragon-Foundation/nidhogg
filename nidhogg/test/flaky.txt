@@ -1,0 +1,4 @@
+# Tests that may fail once and pass on the rerun that `build.sh --stage check` gives a failing test file
+# (nidhogg/test/check-rerun.sh).  One row per test: NAME # cause; stress run
+# A flake without a cause is fixed, not listed.  A row naming a test that no longer exists, or one defined in two files,
+# fails the check.

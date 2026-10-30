@@ -164,6 +164,13 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   build. It can't pass for a release: `--dev` refuses `--out` and `--stage pack`, and its compiled-Lisp cache stamp
   carries the mode, so dev and AOT entries never mix. Use a fresh `--build-dir` when switching modes.
 - `--check FILE` runs the `make -C test` targets listed in FILE (`nidhogg/check-subset.txt` is what CI runs).
+- A test that needs a process to say something at a given moment uses a scripted peer
+  (`lisp/emacs-lisp/nidhogg-test-peer.el`, installed with Nidhogg): `nidhogg-test-peer-write` delivers a string to the
+  peer's filter as exactly one call and returns after it ran, with no child process and no sleep.
+- A test file that fails in `--check` runs once more (`nidhogg/test/check-rerun.sh`). A test that failed and then passed
+  fails the check unless `nidhogg/test/flaky.txt` lists it as `NAME # cause; stress run`; the run then prints
+  `flaky (listed: CAUSE)`. A listed name that no test defines, or that two files define, fails the check too. A flake
+  without a cause is fixed, not listed. `bash nidhogg/test/check-rerun-test.sh` tests the step with a fake runner.
 - `bash nidhogg/test/build-test.sh` checks the dry-run output.
 
 ## Release tarballs
@@ -219,7 +226,7 @@ A joint round (drgnx and Nidhogg change together, drgnx's `docs/develop/ci.md`, 
 `drgnx_ref=ci/joint/<name>`, so drgnx's Emacs-side tiers run once, on this run's build. Before the release tag, the pin
 moves to the round's green drgnx commit.
 
-- `tree`: `tree-test.sh` and `ci-test.sh` (full history and tags).
+- `tree`: `tree-test.sh`, `ci-test.sh` and `check-rerun-test.sh` (full history and tags).
 - `linux` (fedora-44, fedora-45, ubuntu-26.04): `build.sh --container D --stage build`, the cache saves, then `--stage check
   --check nidhogg/check-subset.txt`, then `--stage pack --out ...` (so a failing check keeps the build's caches), then
   `tarball-test.sh`. `macos`: Homebrew `deps/macos.build`, `build.sh --host` (`--stage build`, then `--stage pack`),
