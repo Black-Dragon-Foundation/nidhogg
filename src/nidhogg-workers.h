@@ -310,11 +310,16 @@ struct nh_io_deliver
 };
 extern void nh_io_deliver_begin (bool reader, struct nh_io_deliver *);
 extern void nh_io_deliver_end (struct nh_io_deliver *);
-/* Around a filter call: its ns, and the estimate of its cost per byte
-   that caps the deliveries to it (NBYTES 0: it was not called).  */
-extern int64_t nh_io_filter_begin (struct Lisp_Process *);
-extern void nh_io_filter_end (struct Lisp_Process *, int64_t t0,
-			      ptrdiff_t nbytes);
+/* Around a filter call: its ns without the filter calls nested in it,
+   and the estimate of its cost per byte that caps the deliveries to it
+   (NBYTES 0: it was not called).  */
+struct nh_io_filter
+{
+  struct Lisp_Process *p;
+  int64_t t0, filter_ns, id;
+};
+extern void nh_io_filter_begin (struct Lisp_Process *, struct nh_io_filter *);
+extern void nh_io_filter_end (struct nh_io_filter *, ptrdiff_t nbytes);
 /* Task 20, Fgnutls_boot's hooks: with GNUTLS_STATE NULL (before any
    GnuTLS call) the reader hands the process back for good and keeps
    the bytes it had not delivered for GnuTLS; with the new session, the
