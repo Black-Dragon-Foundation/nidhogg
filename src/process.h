@@ -196,6 +196,12 @@ struct Lisp_Process
        DNS call. */
     struct gaicb *dns_request;
 #endif
+#ifdef HAVE_NIDHOGG_WORKERS
+
+    /* The `:nowait' lookup on nh-blk the socket waits for (Task 35).  */
+    struct nh_dns_job *nh_dns_job;
+
+#endif
 
 #ifdef HAVE_GNUTLS
     gnutls_initstage_t gnutls_initstage;

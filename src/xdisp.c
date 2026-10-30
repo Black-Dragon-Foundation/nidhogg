@@ -503,6 +503,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #ifdef HAVE_NIDHOGG_WATCHDOG
 #include "nidhogg-watchdog-phase.h"
 #endif
+#ifdef HAVE_NIDHOGG_WORKERS
+#include "nidhogg-workers.h"
+#endif
 
 #ifndef FRAME_OUTPUT_DATA
 #define FRAME_OUTPUT_DATA(f) (NULL)
@@ -4699,6 +4702,11 @@ handle_fontified_prop (struct it *it)
 
       val = Vfontification_functions;
       specbind (Qfontification_functions, Qnil);
+#ifdef HAVE_NIDHOGG_WORKERS
+
+      nh_ts_redisplay_fontifying (redisplaying_p);
+
+#endif
 
       eassert (it->end_charpos == ZV);
 
@@ -6630,7 +6638,11 @@ handle_single_display_spec (struct it *it, Lisp_Object spec, Lisp_Object object,
 	     displaying a non-selected window, and the buffer's point
 	     was temporarily moved to the window-point.  */
 	  specbind (Qinhibit_quit, Qt);
+#ifdef HAVE_NIDHOGG_WORKERS
+	  it->image_id = nh_img_redisplay_lookup (it->f, value, it->face_id, it);
+#else
 	  it->image_id = lookup_image (it->f, value, it->face_id);
+#endif
 	  unbind_to (count, Qnil);
 	  it->position = start_pos;
 	  it->object = NILP (object) ? it->w->contents : object;
@@ -17427,6 +17439,10 @@ redisplay_internal (void)
 #ifdef HAVE_NIDHOGG_WATCHDOG
   nh_wd_redisplay_depth = nh_wd_phase_push (NH_WD_PH_REDISPLAY);
 #endif
+#ifdef HAVE_NIDHOGG_WORKERS
+  nh_wk_budget_reset ();
+  nh_img_redisplay_begin ();
+#endif
   block_buffer_flips ();
   specbind (Qinhibit_free_realized_faces, Qnil);
 
@@ -25149,7 +25165,11 @@ push_prefix_prop (struct it *it, Lisp_Object prop, int from_buffer)
   else if (IMAGEP (prop))
     {
       it->what = IT_IMAGE;
+#ifdef HAVE_NIDHOGG_WORKERS
+      it->image_id = nh_img_redisplay_lookup (it->f, prop, it->face_id, it);
+#else
       it->image_id = lookup_image (it->f, prop, it->face_id);
+#endif
       it->method = GET_FROM_IMAGE;
       it->string_from_prefix_prop_p = true;
     }
@@ -30577,7 +30597,12 @@ calc_pixel_width_or_height (double *res, struct it *it, Lisp_Object prop,
 	  if (FRAME_WINDOW_P (it->f)
 	      && valid_image_p (prop))
 	    {
+#ifdef HAVE_NIDHOGG_WORKERS
+	      ptrdiff_t id = nh_img_redisplay_lookup (it->f, prop, it->face_id,
+						      NULL);
+#else
 	      ptrdiff_t id = lookup_image (it->f, prop, it->face_id);
+#endif
 	      struct image *img = IMAGE_FROM_ID (it->f, id);
 
 	      return OK_PIXELS (width_p ? img->width : img->height);
@@ -32143,7 +32168,12 @@ draw_glyphs (struct window *w, int x, struct glyph_row *row,
 	      && (EQ (image_spec_value (s->img->spec, QCtype, NULL), Qsvg)))
 	    {
 	      ptrdiff_t id;
+#ifdef HAVE_NIDHOGG_WORKERS
+	      id = nh_img_redisplay_lookup (f, s->img->spec,
+					    hlinfo->mouse_face_face_id, NULL);
+#else
 	      id = lookup_image (f, s->img->spec, hlinfo->mouse_face_face_id);
+#endif
 	      s->img = IMAGE_FROM_ID (f, id);
 	      prepare_image_for_display (f, s->img);
 	    }
