@@ -29,7 +29,7 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 VERSION=$(head -n 1 "$ROOT/nidhogg/version")
-DISTROS="fedora-44 fedora-45 ubuntu-26.04"
+DISTROS="fedora-44 fedora-45 ubuntu-26.04 debian-13 arch"
 
 usage() {
   cat >&2 <<USAGE
@@ -89,6 +89,8 @@ if [ "$MODE" = container ]; then
     fedora-44) IMAGE=registry.fedoraproject.org/fedora:44 ;;
     fedora-45) IMAGE=registry.fedoraproject.org/fedora:45 ;;
     ubuntu-26.04) IMAGE=docker.io/library/ubuntu:26.04 ;;
+    debian-13) IMAGE=docker.io/library/debian:13 ;;
+    arch) IMAGE=docker.io/library/archlinux:latest ;;
   esac
   [ "$UNAME" = Linux ] || [ "$DRY" = 1 ] || die "--container needs Linux (use --host on macOS)"
 else
@@ -185,7 +187,7 @@ COMMIT=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)
 ARCH=$(uname -m)
 DISTRO_TAG=$DISTRO
 if [ "$MODE" = host ] && [ "$UNAME" = Linux ] && [ -r /etc/os-release ]; then
-  DISTRO_TAG=$(. /etc/os-release; echo "${ID}-${VERSION_ID}")
+  DISTRO_TAG=$(. /etc/os-release; if [ "$ID" = arch ]; then echo arch; else echo "${ID}-${VERSION_ID}"; fi)
 fi
 if [ -n "$OUT" ]; then
   OUT_DIR=$(dirname "$OUT")
@@ -234,14 +236,16 @@ script() {
   [ -z "${NIDHOGG_WORKERS_TEST_SIZE_SCALE:-}" ] || printf 'export NIDHOGG_WORKERS_TEST_SIZE_SCALE=%q\n' "$NIDHOGG_WORKERS_TEST_SIZE_SCALE"
   if [ "$MODE" = container ]; then
     case $DISTRO in
-      ubuntu-*)
+      ubuntu-*|debian-*)
         [ -z "${NIDHOGG_BUILD_PKG_CACHE:-}" ] || echo 'rm -f /etc/apt/apt.conf.d/docker-clean; echo "Binary::apt::APT::Keep-Downloaded-Packages \"true\";" > /etc/apt/apt.conf.d/keep'
         echo "apt-get update"
         echo "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $PKGS${NIDHOGG_BUILD_CCACHE:+ ccache}" ;;
+      arch)
+        echo "pacman -Syu --noconfirm --needed $PKGS${NIDHOGG_BUILD_CCACHE:+ ccache}" ;;
       *) echo "dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install $PKGS${NIDHOGG_BUILD_CCACHE:+ ccache}" ;;
     esac
     # Fedora ships the sanitizer runtimes apart from gcc
-    if [ -n "$SANITIZE" ]; then case $DISTRO in ubuntu-*) ;; *) echo "dnf -y --setopt=install_weak_deps=False install libasan libubsan libtsan" ;; esac; fi
+    if [ -n "$SANITIZE" ]; then case $DISTRO in ubuntu-*|debian-*|arch) ;; *) echo "dnf -y --setopt=install_weak_deps=False install libasan libubsan libtsan" ;; esac; fi
     [ -z "${NIDHOGG_BUILD_CCACHE:-}" ] || echo 'export CCACHE_DIR=/ccache CCACHE_COMPILERCHECK=content CCACHE_MAXSIZE=500M CC="ccache gcc"; ccache -z >/dev/null'
   fi
   cat <<'BODY'
@@ -363,7 +367,8 @@ if [ "$MODE" = container ]; then
   # and a second build's :Z locks the first one out of it mid-build; the read-only source mount is :z for the same reason
   # (builds, GUI runs and crate checks of one checkout run at once)
   if [ -n "${NIDHOGG_BUILD_PKG_CACHE:-}" ]; then
-    case $DISTRO in ubuntu-*) CACHE_ARGS="-v $NIDHOGG_BUILD_PKG_CACHE/apt:/var/cache/apt/archives:z" ;;
+    case $DISTRO in ubuntu-*|debian-*) CACHE_ARGS="-v $NIDHOGG_BUILD_PKG_CACHE/apt:/var/cache/apt/archives:z" ;;
+      arch) CACHE_ARGS="-v $NIDHOGG_BUILD_PKG_CACHE/pacman:/var/cache/pacman/pkg:z" ;;
       *) CACHE_ARGS="-v $NIDHOGG_BUILD_PKG_CACHE/dnf:/var/cache/libdnf5:z" ;; esac
   fi
   [ -z "${NIDHOGG_BUILD_CCACHE:-}" ] || CACHE_ARGS="$CACHE_ARGS -v $NIDHOGG_BUILD_CCACHE:/ccache:z"
@@ -379,7 +384,7 @@ if [ "$MODE" = container ]; then
   echo "+ $CMD_HEAD bash -euo pipefail -c <script>"
   [ -z "${NIDHOGG_BUILD_CCACHE:-}" ] || mkdir -p "$NIDHOGG_BUILD_CCACHE"
   [ -z "$LISP_CACHE" ] || mkdir -p "$LISP_CACHE"
-  [ -z "${NIDHOGG_BUILD_PKG_CACHE:-}" ] || mkdir -p "$NIDHOGG_BUILD_PKG_CACHE/apt" "$NIDHOGG_BUILD_PKG_CACHE/dnf"
+  [ -z "${NIDHOGG_BUILD_PKG_CACHE:-}" ] || mkdir -p "$NIDHOGG_BUILD_PKG_CACHE/apt" "$NIDHOGG_BUILD_PKG_CACHE/dnf" "$NIDHOGG_BUILD_PKG_CACHE/pacman"
   # stop and remove our own container (and only it) however we end
   cleanup() {
     [ -z "${RUN_PID:-}" ] || kill "$RUN_PID" 2>/dev/null || true
