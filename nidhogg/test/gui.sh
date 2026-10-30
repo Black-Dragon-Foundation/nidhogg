@@ -24,7 +24,9 @@
 #                       (nh-recorder, our own recording compositor, one output).  The T3 compositors: kwin (KWin's
 #                       --virtual backend, one output, scale by kscreen-doctor) and labwc (wlroots headless, pixman,
 #                       scale by wlr-randr).  Every compositor binary runs as a copy without file capabilities.
-#   --recorder BIN      the nh-recorder binary (default $REC); mounted at /opt/nh-recorder in a container
+#   --recorder BIN      the nh-recorder binary (default $REC); mounted at /opt/nh-recorder in a container.  On sway it
+#                       serves the rows a virtual pointer instead (NHWL_GUI_VPOINTER: BIN --virtual-pointer), which
+#                       headless sway, having no input devices, needs for `swaymsg seat - cursor' to reach a client
 #   --recorder-profile  what the recorder imitates: sway (default), kwin, mutter or xdg-v2 (xdg_wm_base at version 2)
 #   NHWL_GUI_RESTART    (set for the rows; recorder, sway and kwin) a script that stops the compositor and starts it again
 #                       on the same socket (the recorder with the same --session-store; for kwin it kills the
@@ -121,6 +123,12 @@ if [ "$compositor" = recorder ]; then
   [ -n "$recorder" ] && [ -x "$recorder" ] || { echo "gui.sh: nh-recorder not built (--recorder BIN or \$REC: '$recorder')" >&2; exit 2; }
   recorder=$(cd "$(dirname "$recorder")" && pwd)/$(basename "$recorder")
   [ "$monitors" = 1 ] || { echo "gui.sh: the recorder has one output (--monitors 1)" >&2; exit 2; }
+fi
+# headless sway has no input devices: a given recorder binary serves the rows a virtual pointer (NHWL_GUI_VPOINTER)
+userec=0
+if [ "$compositor" = recorder ]; then userec=1
+elif [ "$compositor" = sway ] && [ -n "$recorder" ] && [ -x "$recorder" ]; then
+  userec=1; recorder=$(cd "$(dirname "$recorder")" && pwd)/$(basename "$recorder")
 fi
 known=$tests/gui-known-differences.eld
 # the recorder's scale is a 120th: round(S * 120)
@@ -321,6 +329,7 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
   export GLITNIR_GUI_COMPOSITOR=$compositor GLITNIR_GUI_KNOWN=$known GLITNIR_GUI_FILES=$files GLITNIR_GUI_TAG=$tag
   [ -z "$ctl" ] || export GLITNIR_GUI_RECORDER=$ctl GLITNIR_GUI_RECORDER_BIN=$recorder \
     GLITNIR_GUI_RECORDER_PROFILE="$(dirname "$self")/recorder/profiles/$rprofile.json"
+  [ "$compositor" != sway ] || [ "$userec" = 0 ] || export NHWL_GUI_VPOINTER=$recorder
   export GDK_BACKEND=wayland NO_AT_BRIDGE=1
   unset DISPLAY EMACS_SOCKET_NAME
   for kv in ${envs[@]+"${envs[@]}"}; do export "$kv"; done
@@ -426,7 +435,7 @@ if [ -n "$container" ]; then
   [ -n "$inprefix" ] || inprefix=$prefix
   args=(--prefix "$inprefix" --compositor "$compositor" --recorder-profile "$rprofile" --scale "$scale" --size "$size"
         --monitors "$monitors" --tests /src/test/src/nidhogg-tests --timeout "$timeout")
-  [ "$compositor" != recorder ] || args+=(--recorder /opt/nh-recorder)
+  [ "$userec" = 0 ] || args+=(--recorder /opt/nh-recorder)
   [ -z "$select" ] || args+=(--select "$select")
   [ "$daemon" = 0 ] || args+=(--daemon)
   [ "$csd" = 0 ] || args+=(--force-csd)
@@ -440,7 +449,7 @@ if [ -n "$container" ]; then
   for ra in ${rargs[@]+"${rargs[@]}"}; do args+=(--recorder-arg "$ra"); done
   out=
   mounts=(-v "$checkout:/src:ro,z" -v "$prefix:$inprefix:ro,z")
-  [ "$compositor" != recorder ] || mounts+=(-v "$recorder:/opt/nh-recorder:ro,z")
+  [ "$userec" = 0 ] || mounts+=(-v "$recorder:/opt/nh-recorder:ro,z")
   # a caller's GLITNIR_GUI_SOCKDIR (a host directory) is where the run's XDG_RUNTIME_DIR is made, so the caller can see it
   sockenv=()
   if [ -n "${GLITNIR_GUI_SOCKDIR:-}" ]; then
