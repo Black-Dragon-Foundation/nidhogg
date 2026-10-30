@@ -17272,8 +17272,26 @@ reconsider_clip_changes (struct window *w)
   if (b->clip_changed
       && w->window_end_valid
       && w->current_matrix->buffer == b
-      && w->current_matrix->zv == BUF_ZV (b)
-      && w->current_matrix->begv == BUF_BEGV (b))
+      && w->current_matrix->begv == BUF_BEGV (b)
+      && (w->current_matrix->zv == BUF_ZV (b)
+	  /* Text inserted or deleted inside the restriction moves ZV
+	     but not the restriction, which still ends as far from Z
+	     as it did.  That holds only if every change since W was
+	     last displayed lies between BEGV and ZV; the unchanged
+	     counts and the gap bound the changes as in try_window_id,
+	     and they cover W only if W was the last window of B
+	     marked accurate.  So a command that narrows and widens
+	     around its own insertion, like blink-matching-open after
+	     `)', does not redisplay the whole window.  */
+	  || (w->last_modified == BUF_UNCHANGED_MODIFIED (b)
+	      && (BUF_Z (b) - BUF_ZV (b)
+		  == w->current_matrix->z - w->current_matrix->zv)
+	      && (BUF_BEG (b) + min (BUF_BEG_UNCHANGED (b),
+				     BUF_GPT (b) - BUF_BEG (b))
+		  >= BUF_BEGV (b))
+	      && (BUF_Z (b) - min (BUF_END_UNCHANGED (b),
+				   BUF_Z (b) - BUF_GPT (b))
+		  <= BUF_ZV (b)))))
     b->clip_changed = false;
 
   /* If display wasn't paused, and W is not a tool bar window, see if
@@ -18308,6 +18326,7 @@ mark_window_display_accurate_1 (struct window *w, bool accurate_p)
       w->current_matrix->buffer = b;
       w->current_matrix->begv = BUF_BEGV (b);
       w->current_matrix->zv = BUF_ZV (b);
+      w->current_matrix->z = BUF_Z (b);
       w->current_matrix->header_line_p = window_wants_header_line (w);
       w->current_matrix->tab_line_p = window_wants_tab_line (w);
 

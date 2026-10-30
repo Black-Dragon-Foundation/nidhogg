@@ -841,9 +841,9 @@ struct glyph_matrix
      mark_window_display_accurate_1.  */
   struct buffer *buffer;
 
-  /* Values of BEGV and ZV as of last redisplay.  Set in
+  /* Values of BEGV, ZV and Z as of last redisplay.  Set in
      mark_window_display_accurate_1.  */
-  ptrdiff_t begv, zv;
+  ptrdiff_t begv, zv, z;
 };
 
 

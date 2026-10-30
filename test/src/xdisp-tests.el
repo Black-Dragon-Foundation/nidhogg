@@ -20,6 +20,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'ert-x)
 
 (defmacro xdisp-tests--in-minibuffer (&rest body)
   (declare (debug t) (indent 0))
@@ -212,5 +213,90 @@ int main () {
       (setq s2 (buffer-text-pixel-size))
       (should (equal m1 m2))
       (should (equal s1 s2)))))
+
+(defun xdisp-tests--clip-child (out)
+  "The form the child Emacs of `xdisp-tests--clip-restored-after-insert' runs.
+It writes to OUT how many lines three redisplays laid out: after
+`force-window-update', after an insertion, and after an insertion
+followed by a narrowing undone."
+  `(progn
+     (defvar xdisp-tests--n 0)
+     (defun xdisp-tests--count () (setq xdisp-tests--n (1+ xdisp-tests--n)) nil)
+     (defun xdisp-tests--laid-out (f)
+       ;; Each line's display property counts when the display
+       ;; engine reaches it.
+       (redisplay t)
+       (setq xdisp-tests--n 0)
+       (funcall f)
+       (redisplay t)
+       xdisp-tests--n)
+     (run-at-time
+      0 nil
+      (lambda ()
+        (switch-to-buffer "t")
+        ;; Reordering looks ahead for display strings and would
+        ;; count lines that are not laid out.
+        (setq bidi-display-reordering nil)
+        (dotimes (i 40)
+          (insert (propertize "l" 'display '(when (xdisp-tests--count) . "L"))
+                  (format "ine %d\n" i)))
+        (goto-char (point-min))
+        (forward-line 10)
+        (end-of-line)
+        (let ((counts
+               (list
+                (xdisp-tests--laid-out #'force-window-update)
+                (xdisp-tests--laid-out (lambda () (insert "x")))
+                ;; What `blink-matching-open' does after `)'.
+                (xdisp-tests--laid-out
+                 (lambda ()
+                   (insert ")")
+                   (save-restriction
+                     (narrow-to-region (line-beginning-position) (point))))))))
+          (with-temp-file ,out (prin1 counts (current-buffer))))
+        (kill-emacs 0)))))
+
+(ert-deftest xdisp-tests--clip-restored-after-insert ()
+  "A narrowing undone in the command that inserted text redisplays one line.
+The clip-changed mark it leaves is dropped when the restriction still
+ends as far from Z as at the last redisplay; it used to be dropped only
+for an unchanged ZV, which the insertion moved, so the whole window was
+redisplayed."
+  ;; The window-based optimizations need a terminal that can insert
+  ;; and delete lines: a child Emacs on a pty.
+  (ert-with-temp-directory dir
+    (let* ((out (expand-file-name "out" dir))
+           (process-environment
+            (append (list "TERM=screen" (concat "HOME=" dir))
+                    process-environment))
+           (buf (generate-new-buffer " *xdisp-child*"))
+           (proc (make-process
+                  :name "xdisp-child" :buffer buf :connection-type 'pty
+                  :command (list (expand-file-name invocation-name
+                                                   invocation-directory)
+                                 "-nw" "-Q" "--eval"
+                                 (prin1-to-string
+                                  (xdisp-tests--clip-child out)))))
+           (deadline (+ (float-time) 60)))
+      (unwind-protect
+          (progn
+            (while (and (process-live-p proc) (< (float-time) deadline))
+              (accept-process-output proc 0.1))
+            (unless (file-exists-p out)
+              (ert-fail (list "no counts from the child"
+                              (with-current-buffer buf (buffer-string)))))
+            (pcase-let ((`(,whole ,insert ,narrowed)
+                         (with-temp-buffer
+                           (insert-file-contents out)
+                           (read (current-buffer)))))
+              (message "lines laid out: whole %d, insert %d, narrowed %d"
+                       whole insert narrowed)
+              (ert-info ((format "lines laid out: whole %d, insert %d, narrowed %d"
+                                 whole insert narrowed))
+                (should (>= whole 20))
+                (should (< (* 2 insert) whole))
+                (should (< (* 2 narrowed) whole)))))
+        (delete-process proc)
+        (kill-buffer buf)))))
 
 ;;; xdisp-tests.el ends here
