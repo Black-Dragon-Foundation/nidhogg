@@ -73,8 +73,11 @@ if [ -n "${FAKE_HANG:-}" ]; then echo $$ > "$FAKE_HANG"; exec sleep 30; fi
 while IFS= read -r t; do
   [ "$t" != "${FAKE_SKIP:-}" ] || continue
   mkdir -p "$b/check-logs/$(dirname "$t")"
-  echo "Ran 7 tests, 7 results as expected, 0 unexpected (2026-10-30 11:49:44+0000, 1.5 sec)" > "$b/check-logs/$t.log"
+  if [ "$t" = "${FAKE_ALLSKIP:-}" ]; then echo "Ran 7 tests, 0 results as expected, 0 unexpected, 7 skipped (2026-10-30 11:49:44+0000, 0.1 sec)" > "$b/check-logs/$t.log"
+  else echo "Ran 7 tests, 7 results as expected, 0 unexpected (2026-10-30 11:49:44+0000, 1.5 sec)" > "$b/check-logs/$t.log"; fi
 done < "$FAKE_ROOT/$l"
+echo "$NIDHOGG_TEST_GRAMMARS|$NIDHOGG_CHECK_PACKAGES|$NIDHOGG_BUILD_PODMAN_ARGS" > "$FAKE_ROOT/../slot.env"
+exit "${FAKE_EXIT:-0}"
 EOF
 chmod +x "$d/fakeslot"
 grp() { PREFLIGHT_SLOT="$d/fakeslot" FAKE_ROOT="$d/repo" pre "" --passes P2 "$@"; }
@@ -92,6 +95,16 @@ FAKE_SKIP=src/b-tests grp --out "$d/r7/report" > /dev/null; r=$?
 [ "$r" = 1 ] && [ ! -e "$d/r7/report.stamp" ] || fail "a file that did not run still got a stamp ($r)"
 grep -q "^GROUP P2 cpu1 run=1 seed=- src/b-tests NOT RUN" "$d/r7/report" || fail "no NOT RUN line"
 grep -q "^P2 cpu1: 1 green, 1 red of 2$" "$d/r7/report" || fail "a file not run counted as green"
+# the treesit and TLS files get what they need; a file that skips whole is said so, and never counts as green
+[ "$(cat "$d/slot.env" 2>/dev/null)" = "/grammars|gnutls-utils|--cpus=0.5 -v $d/grammars-cache:/grammars:ro,z" ] \
+  || fail "the check container's settings: $(cat "$d/slot.env" 2>/dev/null)"
+FAKE_ALLSKIP=src/b-tests grp --out "$d/r13/report" > /dev/null
+grep -q "^GROUP P2 cpu1 run=1 seed=- src/b-tests ALL SKIPPED: Ran 7 tests, 0 results as expected" "$d/r13/report" || fail "no ALL SKIPPED line"
+grep -q "^P2 cpu1: 1 green, 0 red of 2, 1 all skipped$" "$d/r13/report" || fail "an all-skipped file counted as green"
+# a run that failed with every file green (the link to the desktop dropped: ssh's 255) is red, and says how it ended
+FAKE_EXIT=255 grp --out "$d/r12/report" > /dev/null; r=$?
+[ "$r" = 1 ] && [ ! -e "$d/r12/report.stamp" ] || fail "a failed run with green files exited $r, or got a stamp"
+grep -q "^RED P2 (whole run) wrap=cpu1 seed=-: exit 255$" "$d/r12/report" || fail "a whole-run red without its exit status"
 # a killed group leaves no list file in the tree (the list is untracked, for the desktop sync)
 mkdir -p "$d/r8"
 FAKE_HANG=$d/hang.pid grp --out "$d/r8/report" > /dev/null 2>&1 &
@@ -121,14 +134,14 @@ while IFS= read -r t; do
   mkdir -p "$b/check-logs/$(dirname "$t")"
   echo "Ran 7 tests, 7 results as expected, 0 unexpected (2026-10-30 11:49:44+0000, 1.5 sec)" > "$b/check-logs/$t.log"
 done < "$FAKE_ROOT/$l"
-[ "${NIDHOGG_BUILD_PODMAN_ARGS:-}" != --cpuset-cpus=0 ] || echo "check-rerun: RED: src/b-tests"
+case ${NIDHOGG_BUILD_PODMAN_ARGS:-} in --cpuset-cpus=0\ *) echo "check-rerun: RED: src/b-tests" ;; esac
 exit 0
 EOF
 chmod +x "$d/fakeslot-rr"
 PREFLIGHT_SLOT="$d/fakeslot-rr" FAKE_ROOT="$d/repo" FAKE_RR="$d/rr.calls" pre "" --passes P2,P5 --runs 2 --out "$d/r9/report" > /dev/null; r=$?
 [ "$r" = 1 ] && [ ! -e "$d/r9/report.stamp" ] || fail "a red with P5 run exited $r, or got a stamp"
 [ "$(wc -l < "$d/rr.calls" 2>/dev/null)" = 1 ] || fail "not one recording of the red: $(cat "$d/rr.calls" 2>/dev/null)"
-[ "$(cat "$d/rr.calls" 2>/dev/null)" = "rr record --chaos -n|--cpuset-cpus=0 --cap-add=SYS_PTRACE --security-opt seccomp=unconfined --security-opt label=disable|src/b-tests" ] \
+[ "$(cat "$d/rr.calls" 2>/dev/null)" = "rr record --chaos -n|--cpuset-cpus=0 -v $d/grammars-cache:/grammars:ro,z --cap-add=SYS_PTRACE --security-opt seccomp=unconfined --security-opt label=disable|src/b-tests" ] \
   || fail "the recording's command or options: $(cat "$d/rr.calls" 2>/dev/null)"
 grep -q "^P5 src/b-tests wrap=cpu1 seed=-: trace $d/b/rr-traces/emacs-0$" "$d/r9/report" || fail "no trace line in the report"
 # an older run's trace name never stands for this one; a recorder that aborted is said so
