@@ -382,6 +382,33 @@ mod pacer {
         assert!(commits[1].contains("\"frame_cb\":true"), "{log}");
     }
 
+    /// A configure of a new size reaches a waiting pacer: the content ack's buffer commit asks for a new callback
+    /// itself, so the re-arm owes no commit before it, and the ack is the one commit.
+    #[test]
+    fn content_ack_takes_the_rearm() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let mut shell = rec.open();
+        let id = window(&mut shell);
+        draw(&mut shell, id, &[full()]);
+        assert!(waiting(&shell, id));
+        let seq = next_seq(&rec);
+        let serial = configure_acked(&mut shell, &rec, id, (240, 120), "", NHSHELL_ACK_CONTENT);
+        assert_eq!(
+            bits(&mut shell, id) & NHSHELL_READY_OWED,
+            0,
+            "nothing owed bare"
+        );
+        draw(&mut shell, id, &[full()]);
+        until(&mut shell, "the ack's callback", |_| {
+            outstanding(&rec).0 == 2
+        });
+        let log = log_since(&rec, seq);
+        let commits: Vec<&str> = log.split("{\"ack_serial\":").skip(1).collect();
+        assert_eq!(commits.len(), 1, "{log}");
+        assert!(commits[0].starts_with(&serial.to_string()), "{log}");
+        assert!(commits[0].contains("\"frame_cb\":true"), "{log}");
+    }
+
     /// Three buffers busy and a new size acked: nothing is owed that could go bare, a bare commit carries no ack, and
     /// the buffer commit after a release carries it.
     #[test]
