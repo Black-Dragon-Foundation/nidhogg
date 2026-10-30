@@ -1965,8 +1965,10 @@ connection."
                   (0 :cmd "key" :keycode 29 :state "release")))))
     (unwind-protect
         (progn
-          (should (eq (condition-case nil (progn (x-file-dialog "Open" "/tmp/" nil t) 'returned)
-                        (quit 'quit))
+          ;; the harness runs rows with `inhibit-quit' t, which keeps the quit pending; a user's C-g arrives with it nil
+          (should (eq (let ((inhibit-quit nil))
+                        (condition-case nil (progn (x-file-dialog "Open" "/tmp/" nil t) 'returned)
+                          (quit 'quit)))
                       'quit))
           (should (nhwl-gui--wait (lambda () (seq-find (lambda (e) (plist-get e :close)) (gui-runner-portal-log)))
                                   3))
