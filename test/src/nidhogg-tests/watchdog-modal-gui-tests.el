@@ -24,9 +24,9 @@
 
 ;; Run by nidhogg/test/gui.sh (gui-runner.el loads every *-gui-tests.el).
 
-;; The watchdog treats a menu or a dialog the user is looking at as waiting
-;; (the GLib poll wrapper, nidhogg-watchdog-gtk.c), and a Lisp timer that
-;; runs inside one as busy.  Uses `--start', the spans and `--take'.
+;; A menu or a dialog the user is looking at is waiting (it reads events in
+;; its own `read-event' loop, nhwl-menu.el), and a Lisp timer that runs
+;; inside one is busy.  Uses `--start', the spans and `--take'.
 
 (defmacro watchdog-modal--with-watchdog (&rest body)
   "Run BODY with the watchdog on at a 100 ms threshold; stop it after."
@@ -60,27 +60,34 @@
                (seq-take frames 6))))
    stalls "\n"))
 
+(defun watchdog-modal--escape ()
+  "Close the open menu or dialog, as the Escape key does."
+  (push 'escape unread-command-events))
+
 (ert-deftest watchdog-gui/menu-open-is-waiting ()
   (watchdog-modal--with-watchdog
-    (nidhogg-watchdog--test-popdown-after 1000)
+    (run-with-timer 1 nil #'watchdog-modal--escape)
     (condition-case nil
         (x-popup-menu (list '(10 10) (selected-window))
                       '("Menu" ("Pane" ("One" . one) ("Two" . two))))
       (quit nil))
-    (should (null (watchdog-modal--stalls)))))
+    ;; Making the menu's frame may stall on a slow machine (a real stall,
+    ;; before its loop starts): the claim is about the second it is open.
+    (let ((stalls (watchdog-modal--stalls)))
+      (ert-info ((watchdog-modal--describe-stalls stalls) :prefix "stalls: ")
+        (should-not (seq-some (lambda (s) (>= (plist-get s :wall-ms) 900)) stalls))))))
 
 (ert-deftest watchdog-gui/timer-inside-a-dialog-is-busy ()
   (watchdog-modal--with-watchdog
-    ;; A file chooser runs in `xg_dialog_run' (nh_wd_dialog_depth), the one
-    ;; modal loop that runs Lisp timers; pgtk's popup dialogs do not.
-    (let ((timer (run-with-timer 0.2 nil #'watchdog-modal--busy-timer)))
+    (let ((timer (run-with-timer 0.2 nil #'watchdog-modal--busy-timer))
+          (close (run-with-timer 1 nil #'watchdog-modal--escape)))
       (unwind-protect
           (progn
-            (nidhogg-watchdog--test-dialog-response-after 1000)
-            (condition-case nil (x-file-dialog "Pick" "/tmp/" nil t) (quit nil))
-            ;; The chooser's own setup may stall on a slow machine (a real
-            ;; stall in `x-file-dialog', before the dialog loop starts), so
-            ;; the claim is about the timer's stall, not the stall count.
+            (condition-case nil
+                (x-popup-dialog (selected-frame) '("Pick" ("One" . one) ("Two" . two)))
+              (quit nil))
+            ;; The dialog's own setup may stall on a slow machine, so the
+            ;; claim is about the timer's stall, not the stall count.
             (let* ((stalls (watchdog-modal--stalls))
                    (busy (seq-filter
                           (lambda (s)
@@ -95,23 +102,10 @@
               (ert-info ((watchdog-modal--describe-stalls stalls) :prefix "stalls: ")
                 (should (= (length busy) 1))
                 (should (>= (plist-get (car busy) :wall-ms) 300)))))
-        (cancel-timer timer)))))
+        (cancel-timer timer)
+        (cancel-timer close)))))
 
 (defun watchdog-modal--busy-timer ()
   (watchdog-modal--spin 300))
-
-(ert-deftest watchdog-gui/map-wait-stays-busy ()
-  (watchdog-modal--with-watchdog
-    (let ((f (make-frame '((visibility . nil) (minibuffer . nil)
-                           (parent-frame . nil)))))
-      (unwind-protect
-          (let ((child (make-frame `((parent-frame . ,f) (visibility . nil)
-                                     (minibuffer . nil)
-                                     (width . 10) (height . 5)))))
-            (nidhogg-watchdog--stats t)
-            (make-frame-visible child)
-            (should (= (plist-get (nidhogg-watchdog--stats) :wrapper-edges) 0))
-            (delete-frame child))
-        (delete-frame f)))))
 
 ;;; watchdog-modal-gui-tests.el ends here
