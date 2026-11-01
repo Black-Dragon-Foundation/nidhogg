@@ -62,6 +62,8 @@ declare -a done_passes=()       # P2, P3:skipped, ...
 redlist=()                      # "PASS|TARGET|WRAP|SEED" for P5
 runlst="" runlog="" runmark=""   # the current group's temporary files; a kill must not leave the list in the tree
 trap 'rm -f "$out.stamp" "$out.stamp.tmp" "$runlst" "$runlog" "$runmark"; say "preflight: interrupted: no stamp"; exit 130' INT TERM HUP
+# a run that was killed with KILL (or whose machine died) cannot run the trap: its list files are swept at the next start
+rm -f "$root"/preflight-chk.*.txt
 export NIDHOGG_TEST_GRAMMARS=/grammars NIDHOGG_CHECK_PACKAGES=gnutls-utils    # or the treesit and TLS files skip whole
 declare -A group_green=() group_red=() group_skip=()   # "PASS WRAP" -> files; the summary line of each group
 run_no=0                                 # which of the group's --runs this is
@@ -127,9 +129,28 @@ run_group() { # PASS WRAP SEED [LIST]
   lst=$(mktemp "$root/preflight-chk.XXXXXX.txt"); runlst=$lst; targets "$list" > "$lst"      # untracked, so the desktop sync carries it
   pargs=$(wrap_args "$wrap")
   local cmd=("$slot" "$T/nidhogg-build-local.sh" ${prefix:+--prefix "$prefix"} --build-dir "$dir" --stage check --check "${lst#"$root"/}")
-  if [ "$seed" = - ]; then NIDHOGG_BUILD_PODMAN_ARGS=$pargs "${cmd[@]}" > "$log" 2>&1; rc=$?
-  else NIDHOGG_BUILD_PODMAN_ARGS=$pargs NIDHOGG_TEST_SEED=$seed "${cmd[@]}" > "$log" 2>&1; rc=$?; fi
+  local try fetch=0
+  for try in 1 2; do
+    : > "$log"; touch "$runmark"
+    if [ "$seed" = - ]; then NIDHOGG_BUILD_PODMAN_ARGS=$pargs "${cmd[@]}" > "$log" 2>&1; rc=$?
+    else NIDHOGG_BUILD_PODMAN_ARGS=$pargs NIDHOGG_TEST_SEED=$seed "${cmd[@]}" > "$log" 2>&1; rc=$?; fi
+    # the container could not fetch its packages: infrastructure, not a test.  Once more; then it is said so.
+    fetch=0
+    if [ "$rc" != 0 ] && grep -qE 'Failed to download|Cannot download|Errors during downloading|Failed to synchronize cache|Curl error|Failed to resolve|Could not resolve host' "$log"; then
+      fetch=1; [ "$try" = 2 ] || say "preflight: the check container could not fetch packages (infrastructure); running the group again"
+    fi
+    [ "$fetch" = 1 ] || break
+  done
   rm -f "$lst"; runlst=""
+  if [ "$fetch" = 1 ] || { [ "$rc" != 0 ] && grep -q '^build.sh: the build failed' "$log" && ! grep -qE '^(Ran [0-9]+ tests|make -C test |check-rerun: )' "$log"; }; then
+    # no test ran: one red for the run, not a NOT RUN per file
+    if [ "$fetch" = 1 ]; then why="the check container could not fetch packages twice (infrastructure, not a test)"
+    else why="the build failed before any test ran"; fi
+    say "RED $pass (whole run) wrap=$wrap seed=$seed: exit $rc, $why"
+    note_red "$pass" "(whole run)" "$wrap" "$seed" "$log"
+    rm -f "$log" "$runmark"; runlog="" runmark=""
+    return 0
+  fi
   while IFS= read -r t; do
     tlog=$dir/check-logs/$t.log red=0 sum=""
     if [ -f "$tlog" ] && [ "$tlog" -nt "$runmark" ]; then sum=$(sed -nE 's/^(Ran [0-9]+ tests.*) \(.*, ([0-9.]+) sec\).*/\1, \2 s/p' "$tlog" | tail -n 1); fi
@@ -142,7 +163,13 @@ run_group() { # PASS WRAP SEED [LIST]
     else
       say "GROUP $pass $wrap run=$run_no seed=$seed $t green: $sum"
     fi
-    if [ "$red" = 1 ]; then group_add "$pass" "$wrap" red; note_red "$pass" "$t" "$wrap" "$seed" "$log"; named=1
+    if [ "$red" = 1 ]; then
+      # the run's log holds every file of the group: the detail is this file's own lines, not the log's tail
+      det=$(mktemp "${out}.run.XXXXXX")
+      { grep -F -e "$t" -e "$(basename "$t")." "$log"
+        [ -z "$sum" ] || tail -n 30 "$tlog"; } > "$det" 2>/dev/null
+      [ -s "$det" ] || cp "$log" "$det"
+      group_add "$pass" "$wrap" red; note_red "$pass" "$t" "$wrap" "$seed" "$det"; named=1; rm -f "$det"
     elif [ "$red" = 2 ]; then group_add "$pass" "$wrap" skip
     else group_add "$pass" "$wrap" green; fi
   done < <(targets "$list")
