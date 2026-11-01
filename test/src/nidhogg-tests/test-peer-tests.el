@@ -1,4 +1,5 @@
 ;;; test-peer-tests.el --- tests for the scripted peers  -*- lexical-binding: t -*-
+;; test-class: det
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 

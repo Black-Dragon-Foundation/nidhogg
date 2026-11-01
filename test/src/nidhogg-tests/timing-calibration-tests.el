@@ -1,4 +1,5 @@
 ;;; timing-calibration-tests.el --- the timing lane's reference workload  -*- lexical-binding: t -*-
+;; test-class: timing
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
