@@ -679,6 +679,7 @@ nh_wk_inflight_end (int w)
   atomic_fetch_sub (&nh_wk_w[w].inflight, 1);
   pthread_cond_broadcast (&nh_wk_done_cv);
   pthread_mutex_unlock (&nh_wk_done_m);
+  nh_tc_kick ();
 }
 
 /* A thread that is not a pool worker but must act as one (tests, Task 9's
@@ -1313,6 +1314,7 @@ nh_wk_pause_point (enum nh_wk_pause p)
   nh_wk_lock (&nh_wk_pause_m);
   nh_wk_parked[p]++;
   pthread_cond_broadcast (&nh_wk_pause_cv);
+  nh_tc_kick ();
   while ((atomic_load (&nh_wk_armed) & bit) && !atomic_load (&nh_wk_dead))
     pthread_cond_wait (&nh_wk_pause_cv, &nh_wk_pause_m);
   nh_wk_parked[p]--;
@@ -1865,6 +1867,8 @@ struct nh_wk_test_job
 {
   struct nh_wk_job job;
   int pause, ms;
+  int timed_ms;			/* a timed wait this long, then 0 */
+  int64_t waited_ms;		/* what nh_wk_now said it took */
   EMACS_INT id, user_id;
   int policy;			/* sched_getscheduler, or -1 */
   long tid;
@@ -1874,6 +1878,28 @@ struct nh_wk_test_job
 enum { NH_WK_TEST_JOBS = 256 };
 static struct nh_wk_test_job *nh_wk_test_jobs[NH_WK_TEST_JOBS];
 static EMACS_INT nh_wk_test_next_id;
+static pthread_mutex_t nh_wk_test_m = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t nh_wk_test_cv;
+
+static void
+nh_wk_test_cv_init (void)
+{
+  nh_wk_cond_init (&nh_wk_test_cv);
+}
+
+/* The test job's timed wait: nothing but its deadline ends it.  */
+static void
+nh_wk_test_timed (struct nh_wk_test_job *t)
+{
+  static pthread_once_t once = PTHREAD_ONCE_INIT;
+  pthread_once (&once, nh_wk_test_cv_init);
+  uint64_t t0 = nh_wk_now (), deadline = t0 + t->timed_ms * NH_WK_MS;
+  nh_wk_lock (&nh_wk_test_m);
+  while (nh_wk_now () < deadline && !atomic_load (&t->job.cancel))
+    nh_wk_cond_wait_until (&nh_wk_test_cv, &nh_wk_test_m, deadline);
+  pthread_mutex_unlock (&nh_wk_test_m);
+  t->waited_ms = (nh_wk_now () - t0) / NH_WK_MS;
+}
 
 static void
 nh_wk_test_run (struct nh_wk_job *job)
@@ -1894,6 +1920,8 @@ nh_wk_test_run (struct nh_wk_job *job)
 #endif
   if (t->pause != NH_WK_P_NONE)
     nh_wk_pause_point (t->pause);
+  if (t->timed_ms > 0)
+    nh_wk_test_timed (t);
   for (int i = 0; i < t->ms && !atomic_load (&job->cancel); i++)
     {
       struct timespec ms = { 0, NH_WK_MS };
@@ -1932,8 +1960,10 @@ WORKER is `nh-io', `nh-parse', `nh-img', `nh-blk' or `nh-save'.  PROPS:
 `:class' (`dir', `file' or `dns'; nh-blk's class, default `file'),
 `:pause' (a pause point the job passes first), `:speculative' (non-nil:
 an idle-priority job), `:id' (the integer the landing pushes onto
-`nidhogg-workers--test-finished'; default the job's handle).  Return
-the job's handle, an integer, or nil if the submit was refused.
+`nidhogg-workers--test-finished'; default the job's handle), `:no-finish'
+(non-nil: a job with no finish function), `:timed-wait' (first a timed
+wait of that many ms).  Return the job's handle, an integer, or nil if
+the submit was refused.
 usage: (nidhogg-workers--test-job WORKER MS &rest PROPS)  */)
   (ptrdiff_t nargs, Lisp_Object *args)
 {
@@ -1965,6 +1995,13 @@ usage: (nidhogg-workers--test-job WORKER MS &rest PROPS)  */)
 	{
 	  CHECK_FIXNUM (args[i + 1]);
 	  t->user_id = XFIXNUM (args[i + 1]);
+	}
+      else if (strcmp (k, ":no-finish") == 0)
+	t->job.finish = NILP (args[i + 1]) ? t->job.finish : NULL;
+      else if (strcmp (k, ":timed-wait") == 0)
+	{
+	  CHECK_FIXNAT (args[i + 1]);
+	  t->timed_ms = XFIXNAT (args[i + 1]);
 	}
       else
 	{
@@ -2016,7 +2053,7 @@ DEFUN ("nidhogg-workers--test-job-info", Fnidhogg_workers__test_job_info,
        doc: /* Return what the test job ID recorded; for tests.
 A plist: `:state' (`queued', `running', `done' or `cancelled'), and,
 once it ran, `:comm' (its thread's name), `:policy' (`other', `idle',
-`batch' or nil) and `:tid'.  */)
+`batch' or nil), `:tid' and `:waited-ms' (what its timed wait took).  */)
   (Lisp_Object id)
 {
   static const char *const states[] = {
@@ -2039,10 +2076,11 @@ once it ran, `:comm' (its thread's name), `:policy' (`other', `idle',
     policy = intern_c_string ("other");
 #endif
   bool ran = st != NH_WK_J_QUEUED && t->comm[0];
-  return listn (8, nh_wk_kw (":state"), intern_c_string (states[st]),
+  return listn (10, nh_wk_kw (":state"), intern_c_string (states[st]),
 		nh_wk_kw (":comm"), ran ? build_string (t->comm) : Qnil,
 		nh_wk_kw (":policy"), policy,
-		nh_wk_kw (":tid"), ran ? make_int (t->tid) : Qnil);
+		nh_wk_kw (":tid"), ran ? make_int (t->tid) : Qnil,
+		nh_wk_kw (":waited-ms"), make_int (t->waited_ms));
 }
 
 DEFUN ("nidhogg-workers--test-cancel", Fnidhogg_workers__test_cancel,
