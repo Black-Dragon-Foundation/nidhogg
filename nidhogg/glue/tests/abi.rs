@@ -1159,7 +1159,7 @@ PROTO (nhg_layers_count, int32_t (NhgDisplay *, uint64_t));";
 PROTO (nhg_selection_pick, int32_t (NhgDisplay *, const char *, size_t, const char *const *, size_t, const char **));
 PROTO (nhg_csd_mix, int32_t (uint32_t, uint32_t, uint32_t *, uint32_t *));
 PROTO (nhg_premultiply, int32_t (uint32_t, double, uint32_t *));
-PROTO (nhg_tree_snapshot, int32_t (NhgDisplay *, const NhgSurface *, size_t, uint8_t *, int32_t, int32_t, int32_t));
+PROTO (nhg_tree_snapshot, int32_t (NhgDisplay *, const NhgSurface *, size_t, bool, uint8_t *, int32_t, int32_t, int32_t));
 PROTO (nhg_frame_monitors, int32_t (NhgDisplay *, uint64_t, uint32_t *));
 PROTO (nhg_monitor_origin, int32_t (int32_t, int32_t, uint32_t, int32_t *, int32_t *));
 PROTO (nhg_frame_clamp, int32_t (NhgDisplay *, uint64_t, int32_t *, int32_t *));
@@ -1179,6 +1179,7 @@ PROTO (nhg_frame_fit, int32_t (NhgDisplay *, uint64_t, uint32_t, int32_t, int32_
             *mut NhgDisplay,
             *const nhglue::present::NhgSurface,
             usize,
+            bool,
             *mut u8,
             i32,
             i32,

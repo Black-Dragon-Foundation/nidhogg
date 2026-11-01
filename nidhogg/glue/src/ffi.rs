@@ -1763,14 +1763,15 @@ nhg_export! {
 
 nhg_export! {
     /// The tree of `s`'s first surface as the compositor was given it, its popups on top, into `dst`, rows `stride`
-    /// bytes apart: `s` holds trees as `nhg_present` takes them, one after another, and `w` x `h` is the size
-    /// `nhg_snapshot` gave for the root.  `NHG_E_STATE` without a root of that size that may show a buffer.  Reads
+    /// bytes apart: `s` holds trees as `nhg_present` takes them, one after another, `composed` false leaves Glitnir's
+    /// chrome and scenes out, and `w` x `h` is the size `nhg_snapshot` gave for the root.  `NHG_E_STATE` without a root
+    /// of that size that may show a buffer.  Reads
     /// pixels.
     ///
     /// # Safety
     /// `d` is null or a live display; `s` holds `n` readable surfaces; `dst` is null or holds `stride` x (`h` - 1) +
     /// 4 x `w` writable bytes.
-    fn nhg_tree_snapshot(d: *mut NhgDisplay, s: *const NhgSurface, n: usize, dst: *mut u8, stride: i32, w: i32, h: i32) -> i32 |state| {
+    fn nhg_tree_snapshot(d: *mut NhgDisplay, s: *const NhgSurface, n: usize, composed: bool, dst: *mut u8, stride: i32, w: i32, h: i32) -> i32 |state| {
         let (Ok(su), Ok(wu), Ok(hu)) = (usize::try_from(stride), usize::try_from(w), usize::try_from(h)) else {
             return Err(GlueError::Arg);
         };
@@ -1787,7 +1788,7 @@ nhg_export! {
         // SAFETY: non-null, with `n` readable surfaces (the caller's promise).
         let list = unsafe { std::slice::from_raw_parts(s, n) };
         let (backend, backings, _) = state.presenting();
-        let picture = present::tree_snapshot(backend, backings, list, w, h)?;
+        let picture = present::tree_snapshot(backend, backings, list, composed, w, h)?;
         // SAFETY: `dst` holds `bytes` writable bytes (the caller's promise), not the backing's.
         let out = unsafe { std::slice::from_raw_parts_mut(dst, bytes) };
         crate::backing::copy_rows(&picture, wu, hu, out, su)?;
