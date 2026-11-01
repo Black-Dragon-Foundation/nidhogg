@@ -105,6 +105,22 @@ ANSWERS maps (NAMESPACE . KEY) to a value; others signal `dbus-error'.
       (should (equal (face-attribute 'nidhogg-title-bar :background nil t)
                      "#ebebeb")))))
 
+(ert-deftest nhwl-settings/reduced-motion-from-portal ()
+  (dolist (case '((0 . 0) (1 . 1) (7 . 0)))
+    (nhwl-settings-test--with-portal
+        `((("org.freedesktop.appearance" . "reduced-motion") . ,(car case)))
+      (nhwl-settings-init)
+      (should (eq (nhwl-settings-get 'reduced-motion) (cdr case)))))
+  (nhwl-settings-test--with-portal nil
+    (let (calls)
+      (add-hook 'nhwl-settings-changed-functions
+                (lambda (key value) (push (cons key value) calls)))
+      (nhwl-settings-init)
+      (should (eq (nhwl-settings-get 'reduced-motion) 0))
+      (funcall handler "org.freedesktop.appearance" "reduced-motion" 1)
+      (should (eq (nhwl-settings-get 'reduced-motion) 1))
+      (should (equal calls '((reduced-motion . 1)))))))
+
 (provide 'nhwl-settings-tests)
 
 ;;; nhwl-settings-tests.el ends here

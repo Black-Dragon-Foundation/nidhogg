@@ -38,7 +38,7 @@ Used when `glitnir-debug' is `damage'."
   :version "31.1")
 
 (defcustom child-frame-chrome nil
-  "Chrome (rounded corners and a shadow) for child frames.
+  "Chrome (rounded corners, a shadow, motion) for child frames.
 Nil, an alist, or a function of the frame returning an alist.  The
 alist may hold `corner-radius' (a number of pixels) and `shadow' (a
 plist of :blur, :offset (X . Y), :spread and :opacity, or nil for no
@@ -46,9 +46,22 @@ shadow).  A frame's own `corner-radius' and `shadow' parameters win
 over it; `(corner-radius . 0)' and `(shadow . nil)' opt a frame out.
 Root frames and decorated (not `undecorated') child frames get no
 chrome.  The shadow colour is the foreground of the
-`child-frame-shadow' face."
+`child-frame-shadow' face.
+
+It may also hold `transition', how the frame appears and disappears,
+and `backdrop-blur', a blur radius in pixels for what lies behind the
+frame (it shows only with a translucent `alpha-background').  Both are
+frame parameters too, and the parameter wins.  `transition' is nil,
+`fade', `pop' (a pop in, a fade out), or a plist (:show KIND :hide KIND
+:duration S :curve C :hide-duration S :hide-curve C).  KIND is nil,
+`fade' or `pop'; C is `linear', `ease', `ease-in', `ease-out',
+`ease-in-out' or (cubic-bezier X1 Y1 X2 Y2).  The shorthands and the
+plist's defaults show over 0.12 s with `ease-out' and hide over 0.08 s
+with `ease-in'.  When the desktop asks for reduced motion there is no
+transition."
   :type '(choice (const :tag "None" nil)
-                 (alist :key-type (choice (const corner-radius) (const shadow))
+                 (alist :key-type (choice (const corner-radius) (const shadow)
+                                          (const transition) (const backdrop-blur))
                         :value-type sexp)
                  function)
   :group 'glitnir
@@ -124,17 +137,92 @@ and `child-frame-chrome'.  Root frames and decorated (not
   "Slot names of `glitnir--chrome-vector' and their indices.
 The same numbers are `NHG_CHROME_*' in nhglue.h and `SLOT_*' in the glue's chrome.rs.")
 
+(defconst glitnir--curves
+  '((linear 0 0 1 1) (ease 0.25 0.1 0.25 1) (ease-in 0.42 0 1 1)
+    (ease-out 0 0 0.58 1) (ease-in-out 0.42 0 0.58 1))
+  "The CSS easing names and their control points X1 Y1 X2 Y2.")
+
+(defun glitnir--curve (spec)
+  "Return the control points (X1 Y1 X2 Y2) of curve SPEC.
+SPEC is a name in `glitnir--curves' or (cubic-bezier X1 Y1 X2 Y2) with X1
+and X2 in 0..1.  Signal `wrong-type-argument' otherwise."
+  (cond
+   ((and (symbolp spec) (cdr (assq spec glitnir--curves))))
+   ((and (proper-list-p spec) (eq (car spec) 'cubic-bezier) (= (length spec) 5)
+         (not (memq nil (mapcar #'numberp (cdr spec))))
+         (<= 0 (nth 1 spec) 1) (<= 0 (nth 3 spec) 1))
+    (cdr spec))
+   (t (signal 'wrong-type-argument (list 'glitnir-curve spec)))))
+
+(defun glitnir--leg (kind secs curve)
+  "Return one transition leg as a list (KIND MS X1 Y1 X2 Y2).
+KIND is nil or `none', `fade' or `pop'; SECS a non-negative number of seconds;
+CURVE as for `glitnir--curve'.  Both are checked even when KIND is none; a leg
+with no motion is all zeros."
+  (let ((k (cdr (assq kind '((nil . 0) (none . 0) (fade . 1) (pop . 2))))))
+    (unless k (signal 'wrong-type-argument (list 'glitnir-transition-kind kind)))
+    (unless (and (numberp secs) (>= secs 0))
+      (signal 'wrong-type-argument (list 'glitnir-transition-duration secs)))
+    (let ((points (glitnir--curve curve)))
+      (if (zerop k)
+          (make-list 6 0)
+        (append (list k (round (* 1000 secs))) points)))))
+
+(defun glitnir--transition (spec)
+  "Return transition SPEC as the slots 8-19: show leg, then hide leg.
+SPEC is nil, `fade' (fade in, fade out), `pop' (pop in, fade out) or a
+plist (:show KIND :hide KIND :duration S :curve C :hide-duration S
+:hide-curve C).  The shorthands show over 0.12 s, `ease-out', and hide
+over 0.08 s, `ease-in'; so do the plist's defaults, and a missing :show
+or :hide is no motion for that leg."
+  (let (show hide dur curve hdur hcurve)
+    (cond
+     ((null spec) (setq show nil hide nil))
+     ((memq spec '(fade pop)) (setq show spec hide 'fade))
+     ((and (proper-list-p spec) (zerop (% (length spec) 2)))
+      (let ((p spec))
+        (while p
+          (unless (memq (car p) '(:show :hide :duration :curve :hide-duration :hide-curve))
+            (signal 'wrong-type-argument (list 'glitnir-transition-key (car p))))
+          (setq p (cddr p))))
+      (setq show (plist-get spec :show) hide (plist-get spec :hide)
+            dur (plist-get spec :duration) curve (plist-get spec :curve)
+            hdur (plist-get spec :hide-duration) hcurve (plist-get spec :hide-curve)))
+     (t (signal 'wrong-type-argument (list 'glitnir-transition spec))))
+    (append (glitnir--leg show (or dur 0.12) (or curve 'ease-out))
+            (glitnir--leg hide (or hdur 0.08) (or hcurve 'ease-in)))))
+
+(defun glitnir--option (frame key)
+  "Return child frame FRAME's option KEY: its parameter, else `child-frame-chrome''s.
+Only undecorated child frames have one."
+  (let ((params (frame-parameters frame)))
+    (when (cdr (assq 'undecorated params))
+      (let ((opt (if (functionp child-frame-chrome)
+                     (funcall child-frame-chrome frame)
+                   child-frame-chrome)))
+        (cdr (or (assq key params) (assq key opt)))))))
+
 (defun glitnir--chrome-vector (frame)
   "Return FRAME's chrome as a vector of numbers, or nil for a root frame.
 The slots are `glitnir--chrome-slots'.  Slots 0-7 come from `glitnir--resolve',
-clamped; the rest are 0 (`beneath-rgb' is -1).  A child frame with no chrome
-has a vector whose first slot is 0."
+clamped; 8-19 from the `transition' option, which the desktop's reduced-motion
+setting turns off; 20 from `backdrop-blur'; `beneath-rgb' is -1.  A child frame
+with no chrome has a vector whose first slot is 0."
   (when (frame-parent frame)
     (let* ((res (glitnir--resolve frame))
            (sh (plist-get res :shadow))
            (off (plist-get sh :offset))
            (col (plist-get sh :color))
+           (tr (glitnir--transition (glitnir--option frame 'transition)))
+           (blur (glitnir--option frame 'backdrop-blur))
            (v (make-vector (length glitnir--chrome-slots) 0)))
+      (unless (or (null blur) (and (numberp blur) (>= blur 0)))
+        (signal 'wrong-type-argument (list 'glitnir-backdrop-blur blur)))
+      (when (and (fboundp 'nhwl-settings-get) (eql (nhwl-settings-get 'reduced-motion) 1))
+        (setcar tr 0)
+        (setcar (nthcdr 6 tr) 0))
+      (dotimes (i 12) (aset v (+ 8 i) (nth i tr)))
+      (aset v (alist-get 'backdrop glitnir--chrome-slots) (or blur 0))
       (aset v (alist-get 'beneath-rgb glitnir--chrome-slots) -1)
       (when res
         (aset v 0 1)
@@ -171,6 +259,11 @@ its first window)."
           (glitnir-refresh f))))))
 
 (add-hook 'pre-redisplay-functions #'glitnir--recheck-shadow)
+(defun glitnir--settings-changed (key _value)
+  "Resolve every child frame again when the desktop's reduced-motion KEY changed."
+  (when (eq key 'reduced-motion) (glitnir-refresh)))
+;; nhwl-settings.el loads after this file; `add-hook' makes the hook variable here.
+(add-hook 'nhwl-settings-changed-functions #'glitnir--settings-changed)
 (defun glitnir--theme-refresh (&rest _) (glitnir-refresh))
 (add-hook 'enable-theme-functions #'glitnir--theme-refresh)
 (add-hook 'disable-theme-functions #'glitnir--theme-refresh)
