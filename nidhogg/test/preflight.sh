@@ -9,7 +9,7 @@
 #       CPU: a file whose results differ between the runs is red (`RED P1 DIFFERENT`).  No such file skips with a note
 #       (P1:skipped in the stamp).
 #   P2  the files of preflight-files.txt (workers, process, I/O, watchdog) and every `;; test-class: cond` file outside the
-#       GUI set (*-gui-tests.el) and the Wayland shell's nhwl-* files (they need a --nidhogg-wayland build, not this one), pinned to 1 CPU, to 2 CPUs and under a
+#       GUI set (*-gui-tests.el) and the Wayland shell's nhwl-* files (check-subset.txt and the GUI lanes run those), pinned to 1 CPU, to 2 CPUs and under a
 #       podman --cpus=0.5 (cgroup cpu.max 50000 100000), --runs (3) each, through NIDHOGG_BUILD_PODMAN_ARGS.  A run whose test file only passed on
 #       check-rerun.sh's second run counts as a red: the pre-flight is where a flake is found.  The report has a GROUP line
 #       per file per run (green, RED or NOT RUN, with its ERT summary) and a `P2 GROUP: N green, M red of K` line per group.
