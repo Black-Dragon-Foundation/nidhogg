@@ -5,9 +5,11 @@
 # Run it from the nidhogg worktree root on the laptop, not itself in a slot: every build run takes a heavy slot of its own
 # (drgnx-heavy-slot.sh nidhogg-build-local.sh, the way nh-verify.sh does; git does not work inside a slot's jail on the
 # desktop, so a script run there cannot call the build wrapper).  Passes:
-#   P1  the D files (nidhogg/test/preflight-d.txt) twice, unpinned and pinned to 1 CPU: the same results.  An empty list
-#       skips with a note (P1:skipped in the stamp).
-#   P2  the files of preflight-files.txt (workers, process, I/O, watchdog) pinned to 1 CPU, to 2 CPUs and under a
+#   P1  every file with the header line `;; test-class: det` (test/src/nidhogg-tests) twice unpinned and once pinned to 1
+#       CPU: a file whose results differ between the runs is red (`RED P1 DIFFERENT`).  No such file skips with a note
+#       (P1:skipped in the stamp).
+#   P2  the files of preflight-files.txt (workers, process, I/O, watchdog) and every `;; test-class: cond` file outside the
+#       GUI set (*-gui-tests.el), pinned to 1 CPU, to 2 CPUs and under a
 #       podman --cpus=0.5 (cgroup cpu.max 50000 100000), --runs (3) each, through NIDHOGG_BUILD_PODMAN_ARGS.  A run whose test file only passed on
 #       check-rerun.sh's second run counts as a red: the pre-flight is where a flake is found.  The report has a GROUP line
 #       per file per run (green, RED or NOT RUN, with its ERT summary) and a `P2 GROUP: N green, M red of K` line per group.
@@ -64,7 +66,8 @@ reds=0
 declare -a done_passes=()       # P2, P3:skipped, ...
 redlist=()                      # "PASS|TARGET|WRAP|SEED" for P5
 runlst="" runlog="" runmark=""   # the current group's temporary files; a kill must not leave the list in the tree
-trap 'rm -f "$out.stamp" "$out.stamp.tmp" "$runlst" "$runlog" "$runmark"; say "preflight: interrupted: no stamp"; exit 130' INT TERM HUP
+dlist="" plist=""                # P1's and P2/P3's file lists, built from the classes
+trap 'rm -f "$out.stamp" "$out.stamp.tmp" "$runlst" "$runlog" "$runmark" "$dlist" "$plist"; say "preflight: interrupted: no stamp"; exit 130' INT TERM HUP
 # a run that was killed with KILL (or whose machine died) cannot run the trap: its list files are swept at the next start
 rm -f "$root"/preflight-chk.*.txt
 export NIDHOGG_TEST_GRAMMARS=/grammars NIDHOGG_CHECK_PACKAGES=gnutls-utils    # or the treesit and TLS files skip whole
@@ -84,6 +87,15 @@ group_summary() { # PASS WRAP...: one line per group, what it ran, not only what
 }
 
 targets() { sed 's/#.*//' "$1" 2>/dev/null | awk 'NF'; }
+# The test files of a class, as `make -C test` names them, read from their `;; test-class: CLASS` line (first 15 lines).
+tests=${PREFLIGHT_TESTS:-$root/test}
+class_files() { # CLASS
+  local f
+  for f in "$tests"/src/nidhogg-tests/*-tests.el; do
+    [ -f "$f" ] || continue
+    head -n 15 "$f" | grep -qxF ";; test-class: $1" && echo "src/nidhogg-tests/$(basename "$f" .el)"
+  done
+}
 
 # --- one run of one test file -----------------------------------------------------------------------------------------
 # the pin is a podman option of the check container (taskset on the podman client does not reach the container)
@@ -208,15 +220,25 @@ finish_pass() { # PASS NOTE  (a pass counts when it ran with no red; skipped is 
 
 # --- the passes ------------------------------------------------------------------------------------------------------
 if want_pass P1; then
-  d="$here/preflight-d.txt"
-  if [ -z "$(targets "$d")" ]; then
-    say "P1 skipped: no D files yet (nidhogg/test/preflight-d.txt is empty)"; done_passes+=("P1:skipped")
+  dlist=$(mktemp "${out}.d.XXXXXX"); class_files det > "$dlist"
+  if [ -z "$(targets "$dlist")" ]; then
+    say "P1 skipped: no test file has the class line ';; test-class: det' yet"; done_passes+=("P1:skipped")
   else
     before=$reds
-    run_group P1 none - "$d"; run_group P1 none - "$d"; run_group P1 cpu1 - "$d"
+    run_no=1; run_group P1 none - "$dlist"; run_no=2; run_group P1 none - "$dlist"; run_no=3; run_group P1 cpu1 - "$dlist"
+    # the same results in every run: a file green in one and red in another is a find of its own
+    while IFS= read -r t; do
+      say "RED P1 DIFFERENT $t: its results differ between the runs (unpinned twice, pinned to 1 CPU)"; reds=$((reds + 1))
+    done < <(awk '$1 == "GROUP" && $2 == "P1" { s = $7; sub(/:.*/, "", s); if (!(($6, s) in seen)) { seen[$6, s] = 1; n[$6]++ } }
+                  END { for (t in n) if (n[t] > 1) print t }' "$out" | sort)
     [ "$reds" = "$before" ] && done_passes+=(P1) || say "P1: reds"
   fi
+  rm -f "$dlist"; dlist=""
 fi
+# P2 and P3 run the listed files and every C file outside the GUI set
+plist=$(mktemp "${out}.files.XXXXXX")
+{ targets "$files"; class_files cond | grep -v -e '-gui-tests$'; } | awk '!s[$0]++' > "$plist"
+files=$plist
 if want_pass P2; then
   say "P2: pinned runs ($runs each)"; before=$reds
   for w in cpu1 cpu2 quota; do for ((run_no = 1; run_no <= runs; run_no++)); do run_group P2 "$w" -; done; done
@@ -262,6 +284,7 @@ if want_pass P5; then
 fi
 
 # --- the verdict -----------------------------------------------------------------------------------------------------
+rm -f "$plist"; plist=""
 if [ "$reds" != 0 ]; then say "preflight: $reds red; no stamp"; exit 1; fi
 if [ -n "$dirty" ]; then say "preflight: green, but the tree has uncommitted changes; no stamp"; exit 1; fi
 [ "$commit" != unknown ] || { say "preflight: no commit; no stamp"; exit 1; }
