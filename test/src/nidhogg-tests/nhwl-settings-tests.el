@@ -1,4 +1,5 @@
 ;;; nhwl-settings-tests.el --- tests for the Wayland shell's desktop settings  -*- lexical-binding: t -*-
+;; test-class: cond
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
