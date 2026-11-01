@@ -284,7 +284,7 @@ machine whose timing never shows it, not certain.
   tarballs, their `.sha256` files and `SHA256SUMS`; the notes name the built commit and the drgnx commit tested.
 - Caches (`actions/cache/restore` before the build, `actions/cache/save` right after the step that produced them, so a
   later failing step, e.g. the tarball test, loses nothing; a save is skipped when its key was already found, and a build
-  that failed saves nothing). A key is immutable: change its inputs and the key changes; to force a rebuild, edit
+  that failed saves nothing but ccache). A key is immutable: change its inputs and the key changes; to force a rebuild, edit
   `build.sh` or delete the entry in the repository's Actions caches. Linux (`D` = distro, `G` = hash of `deps/D.build`):
   - built tarball: `tarball-D-<git tree hash of HEAD>-<hash of build.sh>`, exact. A hit skips the build and Emacs's
     checks; the tarball test, the upload and drgnx's suite still run. Never used or saved for a release tag: a release is
@@ -297,15 +297,47 @@ machine whose timing never shows it, not certain.
     saves the generated files of `lisp/` and `leim/` plus `native-lisp/` after `make`, and restores them with one
     timestamp newer than every source (CI first sets every tracked file's mtime to the commit time,
     `nidhogg/ci/set-mtimes.sh`), so `make` sees them up to date; an entry made by another gcc is ignored.
-  - ccache for the C objects: `ccache-D-gcc-G-<commit>`, restored from the same without the commit (ccache hashes the
-    preprocessed source and checks gcc by content). Downloaded packages (dnf, apt): `pkgs-D-G`.
+  - ccache for the C objects: `ccache-D-gcc-G-<run id>-<attempt>`, restored from the newest entry with the same prefix
+    (ccache hashes the preprocessed source and checks gcc by content, so any older entry is safe; a new key per run lets
+    every run save its additions). It is saved after a failed build too, never after a cancelled one. One generated
+    header (`globals.h`) changes with any new primitive or variable and every file including `lisp.h` misses then.
+    `compile-noglitnir` (`ccache-fedora-44-noglitnir-...`) and `workers-asan` (`ccache-fedora-45-asan-...`) have their
+    own. Downloaded packages (dnf, apt): `pkgs-D-G`, restored by prefix (the package managers verify what they reuse),
+    also in `compile-noglitnir`, `native-crates`, `workers-harness` and `workers-asan`.
   - macOS: the tarball (`tarball-macos-<arch>-...`), Homebrew's downloads (`brew-macos-<arch>-<hash of deps/macos.build>`,
-    Homebrew verifies checksums) and compiled Lisp (`lisp-macos-<arch>-<gcc and libgccjit versions>-<runner temp>-...`).
+    Homebrew verifies checksums), compiled Lisp (`lisp-macos-<arch>-<gcc and libgccjit versions>-<runner temp>-...`) and
+    ccache (`ccache-macos-<arch>-<runner image and version>-<hash of deps/macos.build>-...`, the compiler checked by
+    `cc -v`, since `/usr/bin/cc` is a shim; `build.sh --host` uses ccache when `NIDHOGG_BUILD_CCACHE` is set).
+  - `native-crates`: the recorder's, the shell's and the glue's cargo registry and target directories
+    (`crates-fedora-45-<hash of the four Cargo.lock files>-<run>`, restored by prefix: cargo rebuilds whatever is stale;
+    incremental data is dropped before the save). `workers-pkg`: the pinned packages
+    (`pkg-pins-<hash of pkg-pins.txt and pkg-test.sh>`, exact, without build output or compiled files).
+  - Compiled Lisp and tarballs are never restored for a release tag; a release is built fresh, with only self-checking
+    caches (ccache, packages).
+  - Who saves: `nidhogg-31` and `ci/*` branches save every cache except the package downloads and Homebrew, which only
+    `nidhogg-31` saves (they hit by prefix anyway); pull requests and tags save nothing, so an untrusted pull request
+    never writes a cache a trusted run reads. A narrowed run (below) saves no tarball, since its checks were cut.
   - Scoping: a run restores caches of its own branch or the default branch (`nidhogg-31`), and a pull request those of its
     base; never those of sibling branches or other tags. Keys are identical on every branch, so a run on a `ci/*` branch
-    or a pull request reuses what `nidhogg-31` saved. Only `nidhogg-31` saves (every save step is limited to it): the same
-    key saved again per ref counts once per ref against the limit. Unused caches are evicted after 7 days and the oldest go first above 10 GB
-    ([GitHub: dependency caching](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)).
+    or a pull request reuses what `nidhogg-31` saved, and a second run on the same `ci/*` branch what the first saved.
+    Unused caches are evicted after 7 days and the least recently used go first above 10 GB per repository
+    ([GitHub: dependency caching](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching));
+    the per-ref package and test-binary copies are the largest entries and go first.
+- Path filter: the `changes` job runs `nidhogg/ci/changes.sh nidhogg/ci/paths.txt`, which decides the jobs a change can
+  affect from the table in `paths.txt` (glob rows, first match wins, a job's dependencies are added). It filters only a
+  pull request, and only against the tip of `nidhogg-31` when that tip is an ancestor whose `Nidhogg gate` check passed;
+  a push to `nidhogg-31`, a tag, a manual run without `jobs` or `checks` (a `ci/*` round included), any error working
+  out the diff, more than 300 changed files and any path no row names run every job.
+  Workflows, `nidhogg/ci/`, `build.sh`, `deps/`, the version, the check subset, licenses and the test scripts run every
+  job; docs that no job reads run none. The `gate` job (`Nidhogg gate`) always runs, needs every job but `timing` and
+  `release`, and passes when each ran green or was skipped by the filter (or, on a tag, is a workers or `noglitnir`
+  job). `bash nidhogg/ci/changes.sh nidhogg/ci/paths.txt --self-test` checks the rules and every `test` row of the
+  table; `ci-test.sh` runs it.
+- Narrowed runs: `gh workflow run build.yml --ref BRANCH -f jobs='linux' -f checks='src/emacs-tests'` runs only the
+  named jobs (plus what they need) and, in `linux` and the workers jobs, only the named check targets (space-separated,
+  as in `check-subset.txt`) instead of
+  `check-subset.txt`; `-f lanes='gui-1 gui-2'` picks `native-gui` lanes (`scope=macos` is narrowed the same way). Such
+  a run's gate is named `Nidhogg gate (partial)`, so it never reads as the full gate.
 - `timing` (fedora-45 and macOS, after `linux` and `macos`; `continue-on-error: true`; not in `release`'s needs, so it can
   never fail a run or a release): the timing test files in a lane of their own, report-only
   (`nidhogg/test/timing-lane.sh`, rows and budget ratios in `nidhogg/test/timing-rows.txt`). It runs nothing else. A fixed
