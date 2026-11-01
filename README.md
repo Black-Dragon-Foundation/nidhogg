@@ -249,8 +249,8 @@ machine whose timing never shows it, not certain.
   pause) or `;; test-class: timing` (may assert the clock). A test's own tag (`:det`, `:cond`, `:timing`) overrides the
   file's. `test-class-lint-tests.el` reads the files as data and fails a classified file that breaks its class (a
   same-file helper counts as part of the test). Files that are not tests are listed in `nidhogg/test/class-exempt.txt`
-  (`FILE # reason`); a row whose file is gone fails the check. Until every file is classified the check reports the
-  count of unclassified files and passes.
+  (`FILE # reason`); a row whose file is gone fails the check. Every test file has a class, so a file with neither a
+  class line nor an exempt row fails it.
 - `tree`: `tree-test.sh`, `ci-test.sh` and `check-rerun-test.sh` (full history and tags).
 - `linux` (fedora-44, fedora-45, ubuntu-26.04): `build.sh --container D --stage build`, the cache saves, then `--stage check
   --check nidhogg/check-subset.txt`, then `--stage pack --out ...` (so a failing check keeps the build's caches), then
