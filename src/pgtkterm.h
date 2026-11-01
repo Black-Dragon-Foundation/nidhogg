@@ -450,14 +450,6 @@ struct pgtk_output
      I watch it periodically with atimer. */
   double watched_scale_factor;
   struct atimer *scale_factor_atimer;
-#ifdef HAVE_GLITNIR
-  /* Glitnir's per-root state (glitnir-pgtk.c), allocated at the first use.  */
-  void *glitnir;
-
-  /* The frame's surface was made anew inside redisplay, which may clear
-     the garbaged flag that would redraw it whole (GL-U1-BLANK-CORFU-1).  */
-  bool cr_reset_in_redisplay;
-#endif
 };
 
 /* Satisfy term.c.  */
