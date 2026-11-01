@@ -58,8 +58,8 @@ rules=errors,acks,unconfigured,popup,grab,popup-order
 trace=()
 sliced=0 only="" limit=1200
 case $lane in
-  gui-1)           min=8;   limit=1800; args=("${sway[@]}" --scale 1) ;;
-  gui-2)           min=8;   limit=1800; args=("${sway[@]}" --scale 2) ;;
+  gui-1)           min=100; limit=1800; args=("${sway[@]}" --scale 1) ;;
+  gui-2)           min=100; limit=1800; args=("${sway[@]}" --scale 2) ;;
   recorder)        min=150; sliced=1; args=("${rec[@]}" "${nhwl[@]}") ;;
   recorder-mutter) min=150; sliced=1; args=("${rec[@]}" "${nhwl[@]}" --recorder-profile mutter) ;;
   recorder-kwin)   min=150; sliced=1; args=("${rec[@]}" "${nhwl[@]}" --recorder-profile kwin) ;;
@@ -70,18 +70,18 @@ case $lane in
   recorder-csd)    min=150; sliced=1; args=("${rec[@]}" "${nhwl[@]}" --force-csd) ;;
   recorder-daemon) min=150; sliced=1; args=("${rec[@]}" "${nhwl[@]}" --daemon) ;;
   portal-fake)     min=3;   only='^nhwl-gui/file-dialog'; args=("${rec[@]}" "${nhwl[@]}" --portal fake) ;;
-  mutter)          min=8;   args=(--compositor mutter "${nhwl[@]}")
+  mutter)          min=12;  args=(--compositor mutter "${nhwl[@]}")
                    trace=(--wayland-debug "$work/trace" --trace-check "$rules") ;;
-  mutter-125)      min=8;   args=(--compositor mutter "${nhwl[@]}" --scale 1.25)
+  mutter-125)      min=12;  args=(--compositor mutter "${nhwl[@]}" --scale 1.25)
                    trace=(--wayland-debug "$work/trace" --trace-check "$rules") ;;
-  kwin)            min=8;   args=(--compositor kwin "${nhwl[@]}")
+  kwin)            min=12;  args=(--compositor kwin "${nhwl[@]}")
                    trace=(--wayland-debug "$work/trace" --trace-check "$rules") ;;
-  sway)            min=8;   args=("${sway[@]}" "${nhwl[@]}") ;;
-  sway-csd)        min=8;   args=("${sway[@]}" "${nhwl[@]}" --force-csd) ;;
-  sway-daemon)     min=8;   args=("${sway[@]}" "${nhwl[@]}" --daemon) ;;
-  decor-recorder)  min=15;  args=("${rec[@]}" "${decor[@]}") ;;
-  decor-1)         min=15;  args=("${sway[@]}" "${decor[@]}" --scale 1) ;;
-  decor-2)         min=15;  args=("${sway[@]}" "${decor[@]}" --scale 2) ;;
+  sway)            min=12;  args=("${sway[@]}" "${nhwl[@]}") ;;
+  sway-csd)        min=12;  args=("${sway[@]}" "${nhwl[@]}" --force-csd) ;;
+  sway-daemon)     min=12;  args=("${sway[@]}" "${nhwl[@]}" --daemon) ;;
+  decor-recorder)  min=18;  args=("${rec[@]}" "${decor[@]}") ;;
+  decor-1)         min=18;  args=("${sway[@]}" "${decor[@]}" --scale 1) ;;
+  decor-2)         min=18;  args=("${sway[@]}" "${decor[@]}" --scale 2) ;;
   *) usage ;;
 esac
 
