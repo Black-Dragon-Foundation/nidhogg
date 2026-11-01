@@ -170,6 +170,16 @@ fn popup(shell: &mut WaylandShell, parent: u64, b: &Backing) -> u64 {
         .unwrap()
 }
 
+/// The recorder's next commit `seq` at each `xdg_popup.reposition` of popup `id`.
+fn repositions(rec: &Recorder, id: u64) -> Vec<u64> {
+    rec.control(r#"{"cmd":"input_log","since":1}"#)
+        .split("{\"commit_seq\":")
+        .skip(1)
+        .filter(|e| e.contains(&format!("\"surface\":{id},")))
+        .map(|e| e.split(',').next().unwrap().parse().unwrap())
+        .collect()
+}
+
 /// `ms` of the shell's records: the connection stays up, so no protocol error ended it.
 fn stays_up(shell: &mut WaylandShell, ms: i64) {
     for ev in collect(shell, ms) {
@@ -236,6 +246,19 @@ fn popups_map_parent_first(thread: bool) {
     });
     stays_up(&mut shell, 50);
     assert_eq!(buffer_commits(&rec, 1, p), 1);
+
+    // the child's place was worked out against an unmapped parent: it is worked out again, and that is what it acks
+    let first_seq = |id| {
+        let c = commits(&rec, 1, id);
+        let first = c.iter().find(|c| c.contains("\"buffer\":{")).unwrap();
+        assert!(!first.contains("\"ack_stale\":true"), "{first}");
+        number(first, "seq").unwrap()
+    };
+    let (parent, child) = (first_seq(p), first_seq(c));
+    let placed = repositions(&rec, c);
+    assert_eq!(placed.len(), 1, "{placed:?}");
+    assert!(parent < placed[0] && placed[0] <= child, "{placed:?}");
+    assert!(repositions(&rec, p).is_empty(), "its parent did not change");
 }
 
 mod presenter {
@@ -249,6 +272,46 @@ mod presenter {
     #[test]
     fn popups_map_parent_first_inline() {
         popups_map_parent_first(false);
+    }
+
+    /// A popup's parent shows a new size: the place worked out against the old one goes out again after that commit,
+    /// and the popup acks it, so that the compositor never judges the popup by a stale place.
+    #[test]
+    fn a_parents_new_size_places_its_popups_again() {
+        let rec = Recorder::start("sway");
+        let mut shell = threaded(&rec);
+        let mut tb = Backing::new(200, 100);
+        let top = window(&mut shell, &rec, &mut tb);
+        let (mut pb, mut cb) = (Backing::new(60, 30), Backing::new(60, 30));
+        let p = popup(&mut shell, top, &pb);
+        let c = popup(&mut shell, p, &cb);
+        stays_up(&mut shell, 100);
+        pb.fill_all(BG);
+        publish(&mut shell, p, &[(&pb, p)], 0);
+        cb.fill_all(BG);
+        publish(&mut shell, c, &[(&cb, c)], 0);
+        until(&mut shell, "the child's buffer", |_| {
+            buffer_commits(&rec, 1, c) >= 1
+        });
+
+        assert!(!shell.set_size(p, 80, 40).unwrap());
+        stays_up(&mut shell, 50);
+        pb.resize(80, 40);
+        pb.fill_all(BG);
+        publish(&mut shell, p, &[(&pb, p)], 0);
+        until(&mut shell, "a second place", |_| {
+            repositions(&rec, c).len() == 2
+        });
+        let log = commits(&rec, 1, p);
+        let resized = log.iter().find(|c| c.contains("\"h\":40")).unwrap();
+        assert!(repositions(&rec, c)[1] > number(resized, "seq").unwrap());
+        let acked = move |rec: &Recorder| {
+            let log = commits(rec, 1, c);
+            log.iter().rev().any(|c| !c.contains("\"ack_serial\":null"))
+                && !log.last().unwrap().contains("\"ack_stale\":true")
+        };
+        until(&mut shell, "the new place acked", |_| acked(&rec));
+        stays_up(&mut shell, 50);
     }
 
     /// A popup's new size reaches the compositor while its first picture composes: the configure read meanwhile holds
@@ -284,6 +347,66 @@ mod presenter {
             .unwrap();
         assert!(!first.contains("\"ack_serial\":null"), "{first}");
         assert!(first.contains("\"h\":40"), "{first}");
+    }
+
+    /// A popup's picture is published before its first configure is read: a popup is made at its size, so that picture
+    /// is the configure's, and it shows with no redisplay after it.
+    #[test]
+    fn a_popups_picture_may_come_before_its_first_configure() {
+        let rec = Recorder::start("sway");
+        let mut shell = threaded(&rec);
+        let mut tb = Backing::new(200, 100);
+        let top = window(&mut shell, &rec, &mut tb);
+        let mut b = Backing::new(60, 30);
+        let p = popup(&mut shell, top, &b);
+        b.fill_all(BG);
+        publish(&mut shell, p, &[(&b, p)], 0);
+        until(&mut shell, "the picture", |_| {
+            buffer_commits(&rec, 1, p) >= 1
+        });
+    }
+
+    /// A second size reaches a window with the first size's picture in the compose: its ack replaces the first's and
+    /// waits for its own picture.  The first's picture has no ack left, and may not show that size.
+    #[test]
+    fn a_picture_whose_ack_was_replaced_does_not_show() {
+        let rec = Recorder::start("sway");
+        let mut shell = threaded(&rec);
+        let mut b = Backing::new(200, 100);
+        let id = window(&mut shell, &rec, &mut b);
+        let resize = |shell: &mut WaylandShell, w: i32, h: i32| {
+            rec.control_ok(&format!(
+                r#"{{"cmd":"configure","surface":"focused","size":[{w},{h}],"states":[]}}"#
+            ));
+            let ev = wait_for(shell, |e| e.kind() == Kind::Configure && e.window == id);
+            shell
+                .ack_configure(id, configure_of(&ev).serial, NHSHELL_ACK_CONTENT)
+                .unwrap();
+        };
+        let seq = next_seq(&rec);
+        shell.set_compose_delay(300);
+        resize(&mut shell, 300, 150);
+        b.resize(300, 150);
+        b.fill_all(BG);
+        publish(&mut shell, id, &[(&b, id)], 0);
+        // in the compose: the delay outlasts these
+        std::thread::sleep(Duration::from_millis(50));
+        resize(&mut shell, 200, 100);
+        stays_up(&mut shell, 400);
+        assert_eq!(buffer_commits(&rec, seq, id), 0, "a size no ack stands for");
+        shell.set_compose_delay(0);
+        b.resize(200, 100);
+        b.fill_all(BG);
+        publish(&mut shell, id, &[(&b, id)], 0);
+        until(&mut shell, "the second size's picture", |_| {
+            buffer_commits(&rec, seq, id) >= 1
+        });
+        let shown = commits(&rec, seq, id)
+            .into_iter()
+            .find(|c| c.contains("\"buffer\":{"))
+            .unwrap();
+        assert!(!shown.contains("\"ack_serial\":null"), "{shown}");
+        assert!(shown.contains("\"h\":100"), "{shown}");
     }
 
     /// Review Focus 3: the host publishes while the pacer waits, then stays away for 200 ms.  The frame callback
