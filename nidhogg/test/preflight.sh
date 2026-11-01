@@ -70,7 +70,7 @@ dlist="" plist=""                # P1's and P2/P3's file lists, built from the c
 trap 'rm -f "$out.stamp" "$out.stamp.tmp" "$runlst" "$runlog" "$runmark" "$dlist" "$plist"; say "preflight: interrupted: no stamp"; exit 130' INT TERM HUP
 # a run that was killed with KILL (or whose machine died) cannot run the trap: its list files are swept at the next start
 rm -f "$root"/preflight-chk.*.txt
-export NIDHOGG_TEST_GRAMMARS=/grammars NIDHOGG_CHECK_PACKAGES=gnutls-utils    # or the treesit and TLS files skip whole
+export NIDHOGG_BUILD_IMAGE_CACHE=1 NIDHOGG_TEST_GRAMMARS=/grammars NIDHOGG_CHECK_PACKAGES=gnutls-utils    # or the treesit and TLS files skip whole
 declare -A group_green=() group_red=() group_skip=()   # "PASS WRAP" -> files; the summary line of each group
 run_no=0                                 # which of the group's --runs this is
 group_add() { # PASS WRAP green|red|skip
