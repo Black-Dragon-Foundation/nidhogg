@@ -188,7 +188,7 @@ tree_picture (struct frame *r)
     {
       s = cairo_image_surface_create (CAIRO_FORMAT_ARGB32, b.w, b.h);
       cairo_surface_flush (s);
-      if (NHG (nhg_tree_snapshot (FRAME_NHG (r), list, n,
+      if (NHG (nhg_tree_snapshot (FRAME_NHG (r), list, n, glitnir_enable,
 				  cairo_image_surface_get_data (s),
 				  cairo_image_surface_get_stride (s), b.w,
 				  b.h)) >= 0)
@@ -208,7 +208,8 @@ DEFUN ("glitnir-snapshot", Fglitnir_snapshot, Sglitnir_snapshot, 1, 2, 0,
        doc: /* Return the picture of FRAME's root frame.
 The whole tree as the compositor was given it: the root, its visible child
 frames and popups at their places and in their stacking, with their chrome,
-shadows and alpha, inside the root's surface.
+shadows and alpha, inside the root's surface.  With `glitnir-enable' nil,
+the frames' own pixels: no chrome, no shadows, no scene.
 FORMAT is `png' (the default; the value is a unibyte string holding a PNG)
 or `raw' (the value is (WIDTH HEIGHT BYTES), BYTES a unibyte string of
 ARGB32 pixels in the machine's byte order, device pixels, rows tightly
