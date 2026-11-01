@@ -89,6 +89,15 @@ ci_lanes=$(job native-gui | sed -nE 's/^          - ([a-z0-9-]+)$/\1/p' | sort)
 sh_lanes=$(sed -nE 's/^  ([a-z0-9-]+)\) +min=[1-9][0-9]*;.*/\1/p' nidhogg/test/native-gui.sh | sort)
 [ -n "$ci_lanes" ] && [ "$ci_lanes" = "$sh_lanes" ]                || fail "native-gui's matrix and native-gui.sh's lanes (with a floor) differ"
 grep -qF 'expected at least $min' nidhogg/test/native-gui.sh       || fail "native-gui.sh does not fail below a lane's floor"
+# the pre-flight leaves the shell's files to the check subset and these lanes: each is in one of them
+for f in test/src/nidhogg-tests/nhwl-*-tests.el; do
+  n=$(basename "$f" .el)
+  case $n in
+    nhwl-gui-*|nhwl-gui) grep -qF "'nhwl-gui*-tests.el'" nidhogg/test/native-gui.sh || fail "$n is in no GUI lane" ;;
+    nhwl-ime-tests) grep -qF 'ime-matrix.sh' nidhogg/test/native-gui.sh || fail "$n is in no GUI lane" ;;
+    *) grep -qx "src/nidhogg-tests/$n" nidhogg/check-subset.txt || fail "$n is in no check and no lane" ;;
+  esac
+done
 # a release tag runs what release needs: the tagged commit passed the rest in its round
 for j in compile-noglitnir workers-harness workers-asan workers-pkg workers-pkg-compare; do
   job "$j" | grep -qF "github.ref_type != 'tag'"                    || fail "$j runs for a release tag"
