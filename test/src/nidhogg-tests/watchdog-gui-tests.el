@@ -79,8 +79,10 @@ a sample lands there, not in `float-time', all but every time."
             (setq watchdog-gui--evals 0)
             (redisplay t)
             (should (> watchdog-gui--evals 0))
-            (nidhogg-watchdog--test-idle-wait 0.001)
-            (let* ((stalls (car (nidhogg-watchdog--take)))
+            ;; the idle wait ends the span; the monitor hands the stall over on its own tick
+            (let* ((stalls (gui-runner-wait (lambda ()
+                                              (nidhogg-watchdog--test-idle-wait 0.01)
+                                              (car (nidhogg-watchdog--take)))))
                    (s (car stalls)))
               (should (= (length stalls) 1))
               (should (>= (plist-get s :wall-ms) 250))
