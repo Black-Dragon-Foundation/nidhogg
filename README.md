@@ -215,6 +215,41 @@ mutter. `DIR` is a Nidhogg prefix (an unpacked tarball or an install).
   passed, 1 on a failure or a timeout (default 300 s).
 - CI job `gui` (below) runs the fedora-45 tarball at scales 1 and 2.
 
+## The test clock
+
+A test that waits for time spends real time and races the machine it runs on. The test clock replaces both: a
+batch Emacs with `NIDHOGG_TEST_CLOCK=1` in its environment may call `(nidhogg-test-clock-start &optional AUTO)`, and
+from then on `current-time`, Lisp timers and the workers' clocks read virtual time. The variable alone changes
+nothing, and an interactive Emacs refuses to start the clock. File times stay real, and so do the watchdog's own
+thread and the Rust shell's waits. The clock and the watchdog are never on together: `nidhogg-test-clock-start`
+refuses a running watchdog. A build without Glitnir has no clock, and `(featurep 'nidhogg-test-clock)` is nil.
+
+- **Manual (AUTO nil).** Only `(nidhogg-test-clock-advance SECS)` moves it. Due timers run in order, each at its own
+  time, and workers' timed waits come due. A wait's own timeout stays real, because nothing inside the wait could
+  move the clock.
+- **Auto (AUTO non-nil).** A wait moves the clock once nothing can run, straight to the earliest deadline: a Lisp
+  timer, a thread's timeout or a worker's timed wait. `(sit-for 3600)` returns at once, with the hour gone by.
+
+Nothing can run when all of these hold: no other Lisp thread is runnable, no process output is in the kernel or
+between a read and its FIFO, every job is blocked (parked at a pause point, in a timed wait, or queued with no thread
+for it) and nh-io sits in its poll, no completion or signal is pending, and no real child is alive. A
+`nidhogg-test-peer` is not a child, so it never holds the clock. A real child does, so time stands still while it
+lives. `(nidhogg-test-clock-state)` shows what the clock sees: `:timers`, `:deadlines`, `:jobs`, `:fds`, `:children`
+and `:blocks`, the selects that really blocked.
+
+If nothing can run and nothing is left to wait for, the wait can never end. It signals
+`nidhogg-test-clock-deadlock`, with that same plist as the error's data, instead of hanging until the runner's timeout.
+
+Waits on the thread that holds the global lock (`nh_wk_wait`, the output settle) keep real bounds, since that thread
+is what would have to move the clock. A Lisp thread that `condition-notify` just woke counts as blocked until it
+runs, so time can move a little before it does; no wake-up is lost.
+
+    (nidhogg-test-clock-start t)
+    (run-at-time 60 nil #'my-tick)
+    (sit-for 120)                ; returns at once; my-tick ran at 60.0
+    (nidhogg-test-clock-now)     ; => 120.0
+    (nidhogg-test-clock-stop)
+
 ## CI and releases
 
 `.github/workflows/build.yml` runs on pushes to `nidhogg-31`, `v*-nidhogg.*` tags, pull requests and by hand

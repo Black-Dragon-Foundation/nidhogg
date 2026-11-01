@@ -38,3 +38,4 @@ src/timefns-tests
 lisp/subr-tests
 lisp/files-tests
 lisp/emacs-lisp/bytecomp-tests
+src/nidhogg-tests/test-clock-tests
