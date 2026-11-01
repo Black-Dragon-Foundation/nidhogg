@@ -407,6 +407,8 @@ static _Atomic bool nh_io_crash;
 /* nh-io's loop: one job that never ends.  */
 static struct nh_wk_job nh_io_loop;
 static bool nh_io_running;
+/* The test clock: nh-io sits in its poll, so its job holds nothing.  */
+static _Atomic bool nh_io_polling;
 
 /* The test log (--test-io-log): a ring of the latest events.  */
 enum nh_io_ev
@@ -1242,7 +1244,10 @@ nh_io_main (struct nh_wk_job *job)
 	    polled[np++] = set[i];
 	  }
 
+      atomic_store (&nh_io_polling, true);
+      nh_tc_kick ();
       int r = poll (pfd, np, -1);
+      atomic_store (&nh_io_polling, false);
       if (atomic_load (&nh_wk_dead))
 	nh_io_park ();
       if (r < 0)
@@ -1966,9 +1971,7 @@ enum { NH_IO_DELIVER_MIN = 512 };
 static int64_t
 nh_io_now (void)
 {
-  struct timespec ts;
-  clock_gettime (CLOCK_MONOTONIC, &ts);
-  return (int64_t) ts.tv_sec * 1000000000 + ts.tv_nsec;
+  return nh_wk_now ();
 }
 
 /* The most one delivery to P takes, SIZE being the read it replaces
@@ -2424,10 +2427,9 @@ nh_io_settle (fd_set *mask, struct timespec timeout)
     return;
   int depth = -1;
   bool waiting = false;
-  struct timespec t;
-  clock_gettime (CLOCK_MONOTONIC, &t);
-  int64_t deadline = (t.tv_sec * INT64_C (1000000000) + t.tv_nsec
-		      + NH_IO_DETACH_NS);
+  /* The bound stays real under a test clock: this thread holds the
+     global lock, and nothing moves that clock meanwhile.  */
+  int64_t deadline = nh_wk_real_ns () + NH_IO_DETACH_NS;
   /* A wake fd readable: the select finds output, as today's would.
      Else nothing in the kernel and no read in progress (checked in that
      order: a read that ended in between wrote its wake fd): nothing is
@@ -2447,8 +2449,7 @@ nh_io_settle (fd_set *mask, struct timespec timeout)
 		   || atomic_load (&hs[i]->reading));
       if (!pending)
 	break;
-      clock_gettime (CLOCK_MONOTONIC, &t);
-      int64_t left = deadline - (t.tv_sec * INT64_C (1000000000) + t.tv_nsec);
+      int64_t left = deadline - nh_wk_real_ns ();
       if (left <= 0)
 	break;
       if (!waiting)
@@ -2469,11 +2470,60 @@ nh_io_settle (fd_set *mask, struct timespec timeout)
       NH_WK_PHASE_POP (depth);
       /* Output that came at the last moment counts as a hit too: the wait
 	 took the whole bound.  */
-      clock_gettime (CLOCK_MONOTONIC, &t);
-      if (t.tv_sec * INT64_C (1000000000) + t.tv_nsec >= deadline)
+      if (nh_wk_real_ns () >= deadline)
 	nh_io_settle_bound_hits++;
     }
 }
+
+#ifdef HAVE_NH_TEST_CLOCK
+
+/* Is output of H on its way to its FIFO?  nh_io_settle's checks, in its
+   order: the kernel's bytes, then a read in progress.  */
+static bool
+nh_io_tc_held (struct nh_io_h *h, int fd)
+{
+  struct pollfd real = { .fd = fd, .events = POLLIN };
+  return ((!atomic_load (&h->paused) && !atomic_load (&h->capped) && !h->io_end
+	   && nh_io_poll_any (&real, 1, 0))
+	  || atomic_load (&h->reading));
+}
+
+bool
+nh_io_tc_quiet (void)
+{
+  if (!nh_io_running)
+    return true;
+  if (atomic_load (&nh_io_cmd_pending))
+    return false;
+  for (int fd = 0; fd < FD_SETSIZE; fd++)
+    {
+      struct nh_io_h *h = nh_io_tab[fd];
+      if (h && !h->inl && !h->detached && nh_io_tc_held (h, fd))
+	return false;
+    }
+  return true;
+}
+
+Lisp_Object
+nh_io_tc_fds (void)
+{
+  Lisp_Object fds = Qnil;
+  for (int fd = FD_SETSIZE - 1; fd >= 0; fd--)
+    {
+      struct nh_io_h *h = nh_io_tab[fd];
+      if (h && !h->inl && !h->detached && nh_io_tc_held (h, fd))
+	fds = Fcons (make_fixnum (fd), fds);
+    }
+  return fds;
+}
+
+bool
+nh_io_tc_polling (void)
+{
+  return atomic_load (&nh_io_polling);
+}
+
+#endif /* HAVE_NH_TEST_CLOCK */
 
 /* Whether P is going down: its status says so, or (a subprocess) the
    SIGCHLD handler saw it exit.  */

@@ -7848,7 +7848,7 @@ dnl Nidhogg: the worker threads.  Every .c file is compiled with the flag; each 
 NIDHOGG_WORKERS_OBJ=
 case $with_nidhogg_workers in
   yes)
-    NIDHOGG_WORKERS_OBJ="nidhogg-workers.o nidhogg-treesit-bg.o nidhogg-io.o nidhogg-decode.o nidhogg-json-tape.o nidhogg-image-bg.o nidhogg-blk.o"
+    NIDHOGG_WORKERS_OBJ="nidhogg-workers.o nidhogg-treesit-bg.o nidhogg-io.o nidhogg-decode.o nidhogg-json-tape.o nidhogg-image-bg.o nidhogg-blk.o nidhogg-testclock.o"
     AC_DEFINE([HAVE_NIDHOGG_WORKERS], [1], [Define to 1 to build the worker threads.])
     ;;
   no) ;;
