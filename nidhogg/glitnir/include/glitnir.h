@@ -388,6 +388,34 @@ void glitnir_img_free (GlitnirImgOut *out);
 /* Free an animation state from OUT's anim.  ANIM may be NULL.  */
 void glitnir_img_anim_free (void *anim);
 
+/* Virtual time for test runs.  Any thread may call these.  One elapsed time drives a wall and a monotonic reading (ns).
+   glitnir_tc_start starts from real readings, glitnir_tc_stop ends it; a queued wait then comes back from the next
+   glitnir_tc_take_due.  */
+void glitnir_tc_start (int64_t wall_ns, uint64_t mono_ns);
+void glitnir_tc_stop (void);
+int64_t glitnir_tc_wall_ns (void);
+uint64_t glitnir_tc_mono_ns (void);
+
+/* Move the monotonic reading to MONO_NS and the wall reading with it; never back.  */
+void glitnir_tc_advance_to (uint64_t mono_ns);
+
+/* The earliest deadline queued, 0 if none.  */
+uint64_t glitnir_tc_next_deadline (void);
+
+/* How many waits are queued.  */
+uint64_t glitnir_tc_waiting (void);
+
+/* Queue a wait on CV and M, opaque here, until the monotonic reading DEADLINE.  Returns its id, or 0 if the clock is
+   off, or 1 if DEADLINE has passed (neither queues anything).  CV and M must outlive the wait.  */
+uint64_t glitnir_tc_register (uint64_t deadline, void *cv, void *m);
+
+/* Take the wait ID off the queue.  Returns 1 if it was there, 0 if glitnir_tc_take_due took it first.  */
+int32_t glitnir_tc_unregister (uint64_t id);
+
+/* Take the earliest wait whose deadline has passed (with the clock off, the earliest of all), its condition variable
+   in *CV and its mutex in *M.  Returns 1, or 0 if there is none.  */
+int32_t glitnir_tc_take_due (void **cv, void **m);
+
 #ifdef __cplusplus
 }
 #endif

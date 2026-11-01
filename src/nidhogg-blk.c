@@ -1588,7 +1588,7 @@ struct nh_save_job
   Lisp_Object holder;		/* (BUFFER . NAME), in nh_save_roots */
   modiff_count modiff;		/* BUF_MODIFF at the snapshot */
   struct timespec modtime;	/* the buffer's modtime at the snapshot */
-  struct timespec started;	/* CLOCK_MONOTONIC, at the snapshot */
+  struct timespec started;	/* nh_wk_now, at the snapshot */
   bool landed;
   /* A later auto-save skipped the buffer for this hung job, and
      do-auto-save then counted the buffer's whole text as saved.  */
@@ -1640,11 +1640,18 @@ nh_save_arena_adopt (struct nh_save_job *j)
 static bool nh_save_keyboard_triggered;
 static intmax_t nh_save_kbd_depth;
 
+static struct timespec
+nh_save_clock (void)
+{
+  uint64_t ns = nh_wk_now ();
+  return (struct timespec) { .tv_sec = ns / 1000000000,
+			     .tv_nsec = ns % 1000000000 };
+}
+
 static int64_t
 nh_save_age_ns (struct nh_save_job *j)
 {
-  struct timespec now;
-  clock_gettime (CLOCK_MONOTONIC, &now);
+  struct timespec now = nh_save_clock ();
   return ((int64_t) (now.tv_sec - j->started.tv_sec) * 1000000000
 	  + (now.tv_nsec - j->started.tv_nsec));
 }
@@ -2169,13 +2176,12 @@ nh_save_queue (struct buffer *b, int mode)
     }
   j->arena = arena;
   j->cap = cap;
-  struct timespec c0, c1;
   int64_t f0 = nh_save_thread_faults ();
   int depth = NH_WK_PHASE_PUSH (NH_WK_PH_WORKER_WAIT, NH_WK_RS_SNAPSHOT);
-  clock_gettime (CLOCK_MONOTONIC, &c0);
+  struct timespec c0 = nh_save_clock ();
   memcpy (text, BUF_BEG_ADDR (b), n1);
   memcpy (text + n1, BUF_GAP_END_ADDR (b), n2);
-  clock_gettime (CLOCK_MONOTONIC, &c1);
+  struct timespec c1 = nh_save_clock ();
   NH_WK_PHASE_POP (depth);
   atomic_store (&nh_save_snap_ns, (int64_t) (c1.tv_sec - c0.tv_sec)
 		* 1000000000 + (c1.tv_nsec - c0.tv_nsec));
@@ -2191,7 +2197,7 @@ nh_save_queue (struct buffer *b, int mode)
   j->buf = b;
   j->modiff = BUF_MODIFF (b);
   j->modtime = b->modtime;
-  clock_gettime (CLOCK_MONOTONIC, &j->started);
+  j->started = nh_save_clock ();
   j->job.w = NH_WK_SAVE;
   j->job.run = nh_save_run;
   j->job.finish = nh_save_finish;

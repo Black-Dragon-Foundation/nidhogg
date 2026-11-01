@@ -1930,6 +1930,38 @@ DEFUN ("process-list", Fprocess_list, Sprocess_list, 0, 0, 0,
 {
   return Fmapcar (Qcdr, Vprocess_alist);
 }
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+
+/* Whether PROC is a real child of this Emacs that has not been waited
+   for.  A peer is not.  */
+static bool
+nh_tc_live_child (Lisp_Object proc)
+{
+  struct Lisp_Process *p = XPROCESS (proc);
+  return EQ (p->type, Qreal) && p->pid > 0 && p->alive;
+}
+
+bool
+nh_tc_child_alive (void)
+{
+  Lisp_Object tail, proc;
+  FOR_EACH_PROCESS (tail, proc)
+    if (nh_tc_live_child (proc))
+      return true;
+  return false;
+}
+
+Lisp_Object
+nh_tc_children (void)
+{
+  Lisp_Object tail, proc, names = Qnil;
+  FOR_EACH_PROCESS (tail, proc)
+    if (nh_tc_live_child (proc))
+      names = Fcons (XPROCESS (proc)->name, names);
+  return names;
+}
+
+#endif
 
 
 static Lisp_Object
@@ -6132,6 +6164,10 @@ wait_reading_process_output (intmax_t time_limit, int nsecs, int read_kbd,
 #endif	/* !HAVE_GLIB */
 #endif /* HAVE_ANDROID && !ANDROID_STUBIFY */
 
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+	  if (nh_tc_on)
+	    nh_tc_raise ();
+#endif
 #ifdef HAVE_GNUTLS
 	  /* Merge tls_available into Available. */
 	  if (tls_nfds > 0)

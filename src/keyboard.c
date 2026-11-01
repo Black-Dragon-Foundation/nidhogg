@@ -91,6 +91,11 @@ extern void nhwl_handle_selection_clear (struct input_event *);
 #include TERM_HEADER
 #endif /* HAVE_WINDOW_SYSTEM */
 
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+#include "nidhogg-testclock.h"
+/* The waits; the timers read the clock itself.  */
+#define current_timespec nh_tc_wait_now
+#endif
 #ifdef HAVE_NIDHOGG_WATCHDOG
 #include "nidhogg-watchdog-phase.h"
 
@@ -4767,7 +4772,11 @@ timer_start_idle (void)
   if (timespec_valid_p (timer_idleness_start_time))
     return;
 
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+  timer_idleness_start_time = nh_tc_now ();
+#else
   timer_idleness_start_time = current_timespec ();
+#endif
   timer_last_idleness_start_time = timer_idleness_start_time;
 
   /* Mark all idle-time timers as once again candidates for running.  */
@@ -4843,7 +4852,11 @@ timer_check_2 (Lisp_Object timers, Lisp_Object idle_timers)
     return invalid_timespec ();
 
   struct timespec
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+    now = nh_tc_now (),
+#else
     now = current_timespec (),
+#endif
     idleness_now = (timespec_valid_p (timer_idleness_start_time)
 		    ? timespec_sub (now, timer_idleness_start_time)
 		    : make_timespec (0, 0));
@@ -5027,8 +5040,13 @@ is a multiple of the system clock resolution.  */)
   (void)
 {
   if (timespec_valid_p (timer_idleness_start_time))
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+    return make_lisp_time (timespec_sub (nh_tc_now (),
+					 timer_idleness_start_time));
+#else
     return make_lisp_time (timespec_sub (current_timespec (),
 					 timer_idleness_start_time));
+#endif
 
   return Qnil;
 }
