@@ -593,9 +593,14 @@ Return the times the waits meanwhile reached their bound."
   ;; deliveries are capped (to 512 bytes at least), but a nested one is
   ;; the natural read, as today: capped, each nested delivery found more
   ;; output and the filter nested a level per 512 bytes, past
-  ;; `max-lisp-eval-depth'.
+  ;; `max-lisp-eval-depth'.  A natural read is at least a pipe page of
+  ;; `head''s output, however the threads are scheduled (on one CPU each
+  ;; read can be just that, with or without workers), so the levels are
+  ;; at most SIZE's pages, plus the capped first delivery and the rest
+  ;; of its read; capped, they would be eight times as many.
   (workers-io-tests--modes
     (let* ((depth 0) (deepest 0) (got 0) (size (* 1024 1024))
+           (levels (+ (/ size 4096) 2))
            (p (make-process
                :name "wio-nest" :noquery t :connection-type 'pipe
                :command (list "head" "-c" (number-to-string size) "/dev/zero")
@@ -608,7 +613,7 @@ Return the times the waits meanwhile reached their bound."
       (should (workers-io-tests--info p :owned))
       (nidhogg-workers--test-filter-cost p 1e6)
       (should (workers-io-tests--until (lambda () (= got size)) 1500))
-      (should (< deepest 64))
+      (should (<= deepest levels))
       (delete-process p))))
 
 (ert-deftest workers/filter-costly-per-call-is-not-cut ()
