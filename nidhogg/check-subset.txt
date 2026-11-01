@@ -2,6 +2,7 @@
 # input, native compilation) plus core Lisp.
 src/nidhogg-tests/identity-tests
 src/nidhogg-tests/test-peer-tests
+src/nidhogg-tests/test-class-lint-tests
 src/nidhogg-tests/glitnir-tests
 src/nidhogg-tests/watchdog-tests
 src/nidhogg-tests/watchdog-monitor-tests
