@@ -607,6 +607,79 @@ mod reconnect {
         );
     }
 
+    /// A popup closed at the reconnect is the host's until it destroys the popup in turn: no new window takes its id,
+    /// though the new connection hands out the low ids again.  Windows made before the popups and gone before the
+    /// restart put the popups' ids above what the new connection starts with; the two kinds of window take different
+    /// numbers of ids, so their mix comes to them.
+    #[test]
+    fn popups_closed_keep_their_ids_from_new_windows() {
+        let _g = shared();
+        let rec = Recorder::start("sway");
+        let mut shell = open(&rec);
+        let top = mapped_window(&mut shell, 200, 100);
+        let new = |shell: &mut WaylandShell, kind: u32, parent: u64| {
+            shell
+                .child_new(&ChildDesc {
+                    kind,
+                    parent,
+                    x: 0,
+                    y: 0,
+                    w: 60,
+                    h: 30,
+                    anchor: Anchor {
+                        x: 10,
+                        y: 10,
+                        w: 4,
+                        h: 4,
+                        gravity: 8,
+                        adjust: 0,
+                    },
+                    flags: 0,
+                })
+                .unwrap()
+        };
+        let fillers: Vec<u64> = (0..8)
+            .map(|_| new(&mut shell, NHSHELL_KIND_CHILD, top))
+            .collect();
+        let a = new(&mut shell, NHSHELL_KIND_POPUP, top);
+        let b = new(&mut shell, NHSHELL_KIND_POPUP, a);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while rec.surfaces("popup") < 2 {
+            assert!(Instant::now() < deadline, "the popups never arrived");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        for f in fillers {
+            shell.window_destroy(f).unwrap();
+        }
+        let evs = restart_and_reconnect(&rec, &mut shell);
+        let done: Vec<u64> = evs
+            .iter()
+            .filter(|e| e.kind() == Kind::PopupDone)
+            .map(|e| e.window)
+            .collect();
+        assert_eq!(done, [b, a]);
+        let cfg = configure_of(&mut shell, top);
+        shell
+            .ack_configure(top, cfg.serial, NHSHELL_ACK_CONTENT)
+            .unwrap();
+        draw(&mut shell, top, 200, 100);
+        let mut made = Vec::new();
+        for i in 0..36 {
+            let kind = if i % 3 == 2 {
+                NHSHELL_KIND_POPUP
+            } else {
+                NHSHELL_KIND_CHILD
+            };
+            made.push(new(&mut shell, kind, top));
+        }
+        assert!(
+            !made.contains(&a) && !made.contains(&b),
+            "{a} or {b} in {made:?}"
+        );
+        assert_eq!(shell.window_destroy(a), Err(ShellError::State));
+        assert_eq!(shell.last_error(), "");
+    }
+
     /// A top-level published before the loss, with its tree presented; made again and reconnected.  The records up
     /// to `RECONNECTED`, the recorder's first commit of the new connection, and the backing.
     fn published_then_reconnected(
