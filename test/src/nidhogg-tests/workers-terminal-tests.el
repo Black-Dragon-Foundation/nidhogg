@@ -1,4 +1,5 @@
 ;;; workers-terminal-tests.el --- tests for workers: terminal emulators  -*- lexical-binding: t -*-
+;; test-class: det
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
@@ -189,6 +190,7 @@ WANT is a string the screen shows."
           (should (equal (car on) (car off))))))))
 
 (ert-deftest workers/terminal-emulators ()
+  :tags '(:cond)
   ;; eat and vterm (when built) draw a recorded `htop' and `ls --color'
   ;; stream to the same screen with the reader on and off (§17.2a).
   (skip-unless (featurep 'nidhogg-workers))

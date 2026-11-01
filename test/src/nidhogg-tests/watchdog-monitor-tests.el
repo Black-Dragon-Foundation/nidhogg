@@ -1,4 +1,5 @@
 ;;; watchdog-monitor-tests.el --- tests for the stall watchdog (monitor)  -*- lexical-binding: t -*-
+;; test-class: det
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
@@ -90,6 +91,12 @@ its two internal signals (32 and 33) out of any mask."
           (dotimes (i 64)
             (unless (memq (1+ i) '(9 19 32 33))
               (setq want (logior want (ash 1 i)))))
+          ;; A new thread shows the mask pthread_create gave it (glibc's 32 and 33 blocked too)
+          ;; until it has run its first instruction and restored the creator's mask: on one CPU
+          ;; that can come after `--start' returns.  Read again until it has run (a condition,
+          ;; not a time; a thread that never runs fails the final comparison).
+          (let ((n 0))
+            (while (and (/= (watchdog-monitor-tests--sigblk id) want) (< (setq n (1+ n)) 100000))))
           (should (= (watchdog-monitor-tests--sigblk id) want))))
     (nidhogg-watchdog--stop)))
 
@@ -98,6 +105,7 @@ its two internal signals (32 and 33) out of any mask."
 A wake-up is a return from the monitor's condition-variable wait
 that finds no busy span: at most the end of the span before the
 wait (its T/2 deadline) and none while the wait lasts."
+  :tags '(:cond)
   (unwind-protect
       (progn
         (nidhogg-watchdog--start 100 2000 nil)
@@ -110,6 +118,7 @@ wait (its T/2 deadline) and none while the wait lasts."
 
 (ert-deftest watchdog/monitor-never-arms-on-the-test-clock ()
   "While the virtual clock is set, a real 300 ms spin raises no request."
+  :tags '(:cond)
   (unwind-protect
       (progn
         (nidhogg-watchdog--start 100 2000 nil)

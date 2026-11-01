@@ -1,4 +1,5 @@
 ;;; glitnir-tests.el --- tests for Glitnir (the compositor)  -*- lexical-binding: t -*-
+;; test-class: cond
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 

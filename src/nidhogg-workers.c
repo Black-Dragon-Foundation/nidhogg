@@ -144,6 +144,8 @@ static NH_WK_TEST_ONLY const char *const nh_wk_class_names[NH_WK_CL_N] = {
 
 /* 1 + the worker this thread belongs to; 0 off the workers.  */
 static _Thread_local int nh_wk_self;
+/* This worker waits with no job, which the test clock must know.  */
+static _Thread_local bool nh_wk_in_standby;
 
 struct nh_wk_pool
 {
@@ -197,12 +199,18 @@ static _Atomic int nh_wk_boost_state;
 
 static pthread_once_t nh_wk_once = PTHREAD_ONCE_INIT;
 
-static uint64_t
-nh_wk_now (void)
+uint64_t
+nh_wk_real_ns (void)
 {
   struct timespec ts;
   clock_gettime (CLOCK_MONOTONIC, &ts);
   return (uint64_t) ts.tv_sec * 1000000000 + ts.tv_nsec;
+}
+
+uint64_t
+nh_wk_now (void)
+{
+  return nh_tc_on ? nh_tc_mono_ns () : nh_wk_real_ns ();
 }
 
 static struct timespec
@@ -234,9 +242,15 @@ int
 nh_wk_cond_wait_until (pthread_cond_t *cv, pthread_mutex_t *m,
 		       uint64_t deadline)
 {
+#ifdef HAVE_NH_TEST_CLOCK
+  int r;
+  if (nh_tc_on && nh_wk_self
+      && nh_tc_cond_wait (cv, m, deadline, !nh_wk_in_standby, &r))
+    return r;
+#endif
 #ifdef __APPLE__
 
-  uint64_t now = nh_wk_now ();
+  uint64_t now = nh_wk_real_ns ();
   struct timespec rel = nh_wk_abs (deadline > now ? deadline - now : 0);
   return pthread_cond_timedwait_relative_np (cv, m, &rel);
 
@@ -431,12 +445,61 @@ nh_wk_wake_open (struct nh_wk_wake *w)
   return 0;
 }
 
+#ifdef NH_CHAOS
+/* nidhogg-chaos.h.  */
+static uint64_t nh_chaos_seed;
+static pthread_once_t nh_chaos_once = PTHREAD_ONCE_INIT;
+static _Atomic uint64_t nh_chaos_threads;
+static _Thread_local uint64_t nh_chaos_state;
+
+static void
+nh_chaos_start (void)
+{
+  const char *s = getenv ("NIDHOGG_TEST_SEED");
+  nh_chaos_seed = s ? strtoull (s, NULL, 10) : 0;
+  fprintf (stderr, "chaos seed %llu\n", (unsigned long long) nh_chaos_seed);
+}
+
+void
+nh_chaos_point (const char *site)
+{
+  (void) site;
+  if (nh_wk_signal_context ())
+    return;
+  uint64_t x = nh_chaos_state;
+  if (!x)
+    {
+      pthread_once (&nh_chaos_once, nh_chaos_start);
+      uint64_t z = ((nh_chaos_seed + atomic_fetch_add (&nh_chaos_threads, 1) + 1)
+		    * UINT64_C (0x9E3779B97F4A7C15));
+      x = (z ^ z >> 30) | 1;
+    }
+  x ^= x << 13;
+  x ^= x >> 7;
+  x ^= x << 17;
+  nh_chaos_state = x;
+  unsigned int r = x >> 60;
+  if (r < 12)
+    return;
+  int err = errno;
+  if (r < 14)
+    sched_yield ();
+  else
+    {
+      struct timespec t = { 0, 1000 * (long) (1 + (x >> 8) % 200) };
+      nanosleep (&t, NULL);
+    }
+  errno = err;
+}
+#endif /* NH_CHAOS */
+
 /* Async-signal-safe: one write, errno kept.  A full eventfd or pipe is
    already readable, so EAGAIN is fine.  */
 void
 nh_wk_wake_signal (struct nh_wk_wake *w)
 {
   int err = errno;
+  NH_CHAOS_POINT ("wake-signal");
   if (w->wfd >= 0)
     {
 #ifdef __linux__
@@ -507,6 +570,8 @@ static void
 nh_wk_cq_push (struct nh_wk_cq *q, struct nh_wk_job *j)
 {
   j->next = NULL;
+  /* A job's waiters woke before this (nh_wk_complete): let them run.  */
+  NH_CHAOS_POINT ("cq-push");
   nh_wk_lock (&q->m);
   bool was_empty = !q->head;
   if (q->tail)
@@ -549,11 +614,21 @@ nh_wk_cq_nonempty (struct nh_wk_cq *q)
 static void
 nh_wk_cq_ready (struct nh_wk_cq *q)
 {
+#ifdef NH_SCHED_BUG
+  /* The harness's proof that its orders find a bug: re-checked first, a
+     push between the check and the clear loses its wake-up.  */
+  bool nonempty = nh_wk_cq_nonempty (q);
+  NH_CHAOS_POINT ("cq-ready");
+  nh_wk_wake_clear (&q->wake);
+  if (nonempty)
+    q->arm (q);
+#else
   nh_wk_wake_clear (&q->wake);
   if (q->gap)
     q->gap ();
   if (nh_wk_cq_nonempty (q))
     q->arm (q);
+#endif
 }
 
 static void nh_wk_arm_drainer (struct nh_wk_cq *);
@@ -585,6 +660,7 @@ nh_wk_set_state (struct nh_wk_job *job, int state)
   atomic_store (&job->state, state);
   pthread_cond_broadcast (&nh_wk_done_cv);
   pthread_mutex_unlock (&nh_wk_done_m);
+  NH_CHAOS_POINT ("set-state");
 }
 
 /* The job's run is over (or, for a worker with its own loop, its result
@@ -611,6 +687,7 @@ nh_wk_inflight_end (int w)
   atomic_fetch_sub (&nh_wk_w[w].inflight, 1);
   pthread_cond_broadcast (&nh_wk_done_cv);
   pthread_mutex_unlock (&nh_wk_done_m);
+  nh_tc_kick ();
 }
 
 /* A thread that is not a pool worker but must act as one (tests, Task 9's
@@ -680,6 +757,7 @@ nh_wk_lock (pthread_mutex_t *m)
       atomic_fetch_add (&nh_wk_signal_locks, 1);
       abort ();
     }
+  NH_CHAOS_POINT ("lock");
   pthread_mutex_lock (m);
 }
 
@@ -778,6 +856,7 @@ nh_wk_has_startable (struct nh_wk_wst *ws, int pool)
 static struct nh_wk_job *
 nh_wk_pick (struct nh_wk_wst *ws, int pool)
 {
+  NH_CHAOS_POINT ("pick");
   for (struct nh_wk_job *j = ws->pool[pool].head; j; j = j->next)
     if (nh_wk_class_ok (ws, pool, j))
       {
@@ -868,8 +947,10 @@ nh_wk_standby (struct nh_wk_wst *ws, int pool)
 	  p->standby = false;
 	  return true;
 	}
+      nh_wk_in_standby = true;
       nh_wk_cond_wait_until (&p->cv, &ws->m, (at > nh_wk_now () ? at
 					      : nh_wk_now () + NH_WK_MS));
+      nh_wk_in_standby = false;
     }
 }
 
@@ -1171,7 +1252,9 @@ nh_wk_wait (struct nh_wk_job *job, int64_t timeout_ns, int phase, int reason)
     return -1;
   NH_WK_ASSERT (!nh_wk_on_worker ());
 
-  uint64_t t0 = nh_wk_now ();
+  /* The waits of a thread that holds the global lock stay real: what
+     could move a test clock is that very thread.  */
+  uint64_t t0 = nh_wk_real_ns ();
   uint64_t deadline = t0 + (timeout_ns > 0 ? timeout_ns : 0);
   int depth = NH_WK_PHASE_PUSH (phase, reason);
   pthread_t runner = pthread_self ();
@@ -1185,7 +1268,7 @@ nh_wk_wait (struct nh_wk_job *job, int64_t timeout_ns, int phase, int reason)
       if (st == NH_WK_J_DONE || st == NH_WK_J_CANCELLED
 	  || atomic_load (&nh_wk_dead))
 	break;
-      uint64_t now = nh_wk_now ();
+      uint64_t now = nh_wk_real_ns ();
       if (now >= deadline)
 	break;
       /* Returns on a broadcast, the deadline, or for no reason at all
@@ -1197,7 +1280,7 @@ nh_wk_wait (struct nh_wk_job *job, int64_t timeout_ns, int phase, int reason)
   if (boosted)
     nh_wk_unboost (runner);
   NH_WK_PHASE_POP (depth);
-  nh_wk_wait_counted (job->w, phase, reason, nh_wk_now () - t0);
+  nh_wk_wait_counted (job->w, phase, reason, nh_wk_real_ns () - t0);
   return (st == NH_WK_J_DONE ? 1
 	  : st == NH_WK_J_CANCELLED || atomic_load (&nh_wk_dead) ? -1 : 0);
 }
@@ -1243,6 +1326,7 @@ nh_wk_pause_point (enum nh_wk_pause p)
   nh_wk_lock (&nh_wk_pause_m);
   nh_wk_parked[p]++;
   pthread_cond_broadcast (&nh_wk_pause_cv);
+  nh_tc_kick ();
   while ((atomic_load (&nh_wk_armed) & bit) && !atomic_load (&nh_wk_dead))
     pthread_cond_wait (&nh_wk_pause_cv, &nh_wk_pause_m);
   nh_wk_parked[p]--;
@@ -1268,15 +1352,52 @@ nh_wk_release (int p)
   pthread_mutex_unlock (&nh_wk_pause_m);
 }
 
+#ifdef HAVE_NH_TEST_CLOCK
+int64_t
+nh_wk_tc_busy (void)
+{
+  nh_wk_init ();
+  if (atomic_load (&nh_tc_woken) > 0)
+    return 1;
+  int64_t busy = 0;
+  for (int w = 0; w < NH_WK_N; w++)
+    {
+      struct nh_wk_wst *ws = &nh_wk_w[w];
+      nh_wk_lock (&ws->m);
+      busy += atomic_load (&ws->inflight);
+      /* A queued job with no thread to run it waits for something else
+	 to end, or for the growth delay.  */
+      for (int pool = 0; pool < NH_WK_POOLS; pool++)
+	{
+	  struct nh_wk_pool *p = &ws->pool[pool];
+	  bool thread = (p->idle > 0
+			 || p->threads - p->running - p->idle - p->standby > 0);
+	  for (struct nh_wk_job *j = p->head; j; j = j->next)
+	    if (!thread || !nh_wk_class_ok (ws, pool, j))
+	      busy--;
+	}
+      pthread_mutex_unlock (&ws->m);
+    }
+  /* A released point's workers are still parked: they can run.  */
+  nh_wk_lock (&nh_wk_pause_m);
+  unsigned armed = atomic_load (&nh_wk_armed);
+  for (int p = 0; p < NH_WK_P_N; p++)
+    if (armed & 1u << p)
+      busy -= nh_wk_parked[p];
+  pthread_mutex_unlock (&nh_wk_pause_m);
+  return busy - atomic_load (&nh_tc_idle_jobs) - nh_io_tc_polling ();
+}
+#endif
+
 /* Wait at most MS until N workers are parked at P; return how many
    are, or -1 if fewer.  */
 static NH_WK_TEST_ONLY int
 nh_wk_await_paused (int p, int64_t ms, int n)
 {
   nh_wk_init ();
-  uint64_t deadline = nh_wk_now () + ms * NH_WK_MS;
+  uint64_t deadline = nh_wk_real_ns () + ms * NH_WK_MS;
   nh_wk_lock (&nh_wk_pause_m);
-  while (nh_wk_parked[p] < n && nh_wk_now () < deadline)
+  while (nh_wk_parked[p] < n && nh_wk_real_ns () < deadline)
     {
       nh_wk_cond_wait_until (&nh_wk_pause_cv, &nh_wk_pause_m, deadline);
     }
@@ -1758,6 +1879,8 @@ struct nh_wk_test_job
 {
   struct nh_wk_job job;
   int pause, ms;
+  int timed_ms;			/* a timed wait this long, then 0 */
+  int64_t waited_ms;		/* what nh_wk_now said it took */
   EMACS_INT id, user_id;
   int policy;			/* sched_getscheduler, or -1 */
   long tid;
@@ -1767,6 +1890,28 @@ struct nh_wk_test_job
 enum { NH_WK_TEST_JOBS = 256 };
 static struct nh_wk_test_job *nh_wk_test_jobs[NH_WK_TEST_JOBS];
 static EMACS_INT nh_wk_test_next_id;
+static pthread_mutex_t nh_wk_test_m = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t nh_wk_test_cv;
+
+static void
+nh_wk_test_cv_init (void)
+{
+  nh_wk_cond_init (&nh_wk_test_cv);
+}
+
+/* The test job's timed wait: nothing but its deadline ends it.  */
+static void
+nh_wk_test_timed (struct nh_wk_test_job *t)
+{
+  static pthread_once_t once = PTHREAD_ONCE_INIT;
+  pthread_once (&once, nh_wk_test_cv_init);
+  uint64_t t0 = nh_wk_now (), deadline = t0 + t->timed_ms * NH_WK_MS;
+  nh_wk_lock (&nh_wk_test_m);
+  while (nh_wk_now () < deadline && !atomic_load (&t->job.cancel))
+    nh_wk_cond_wait_until (&nh_wk_test_cv, &nh_wk_test_m, deadline);
+  pthread_mutex_unlock (&nh_wk_test_m);
+  t->waited_ms = (nh_wk_now () - t0) / NH_WK_MS;
+}
 
 static void
 nh_wk_test_run (struct nh_wk_job *job)
@@ -1787,6 +1932,8 @@ nh_wk_test_run (struct nh_wk_job *job)
 #endif
   if (t->pause != NH_WK_P_NONE)
     nh_wk_pause_point (t->pause);
+  if (t->timed_ms > 0)
+    nh_wk_test_timed (t);
   for (int i = 0; i < t->ms && !atomic_load (&job->cancel); i++)
     {
       struct timespec ms = { 0, NH_WK_MS };
@@ -1825,8 +1972,10 @@ WORKER is `nh-io', `nh-parse', `nh-img', `nh-blk' or `nh-save'.  PROPS:
 `:class' (`dir', `file' or `dns'; nh-blk's class, default `file'),
 `:pause' (a pause point the job passes first), `:speculative' (non-nil:
 an idle-priority job), `:id' (the integer the landing pushes onto
-`nidhogg-workers--test-finished'; default the job's handle).  Return
-the job's handle, an integer, or nil if the submit was refused.
+`nidhogg-workers--test-finished'; default the job's handle), `:no-finish'
+(non-nil: a job with no finish function), `:timed-wait' (first a timed
+wait of that many ms).  Return the job's handle, an integer, or nil if
+the submit was refused.
 usage: (nidhogg-workers--test-job WORKER MS &rest PROPS)  */)
   (ptrdiff_t nargs, Lisp_Object *args)
 {
@@ -1858,6 +2007,13 @@ usage: (nidhogg-workers--test-job WORKER MS &rest PROPS)  */)
 	{
 	  CHECK_FIXNUM (args[i + 1]);
 	  t->user_id = XFIXNUM (args[i + 1]);
+	}
+      else if (strcmp (k, ":no-finish") == 0)
+	t->job.finish = NILP (args[i + 1]) ? t->job.finish : NULL;
+      else if (strcmp (k, ":timed-wait") == 0)
+	{
+	  CHECK_FIXNAT (args[i + 1]);
+	  t->timed_ms = XFIXNAT (args[i + 1]);
 	}
       else
 	{
@@ -1909,7 +2065,7 @@ DEFUN ("nidhogg-workers--test-job-info", Fnidhogg_workers__test_job_info,
        doc: /* Return what the test job ID recorded; for tests.
 A plist: `:state' (`queued', `running', `done' or `cancelled'), and,
 once it ran, `:comm' (its thread's name), `:policy' (`other', `idle',
-`batch' or nil) and `:tid'.  */)
+`batch' or nil), `:tid' and `:waited-ms' (what its timed wait took).  */)
   (Lisp_Object id)
 {
   static const char *const states[] = {
@@ -1932,10 +2088,11 @@ once it ran, `:comm' (its thread's name), `:policy' (`other', `idle',
     policy = intern_c_string ("other");
 #endif
   bool ran = st != NH_WK_J_QUEUED && t->comm[0];
-  return listn (8, nh_wk_kw (":state"), intern_c_string (states[st]),
+  return listn (10, nh_wk_kw (":state"), intern_c_string (states[st]),
 		nh_wk_kw (":comm"), ran ? build_string (t->comm) : Qnil,
 		nh_wk_kw (":policy"), policy,
-		nh_wk_kw (":tid"), ran ? make_int (t->tid) : Qnil);
+		nh_wk_kw (":tid"), ran ? make_int (t->tid) : Qnil,
+		nh_wk_kw (":waited-ms"), make_int (t->waited_ms));
 }
 
 DEFUN ("nidhogg-workers--test-cancel", Fnidhogg_workers__test_cancel,
@@ -2001,14 +2158,37 @@ bounded condition wait, not a sleep.  */)
       lim = XFIXNAT (ms);
     }
   nh_wk_init ();
-  uint64_t deadline = nh_wk_now () + lim * NH_WK_MS;
+  uint64_t deadline = nh_wk_real_ns () + lim * NH_WK_MS;
   nh_wk_lock (&nh_wk_done_m);
-  while (atomic_load (&nh_wk_w[w].inflight) > 0 && nh_wk_now () < deadline)
+  while (atomic_load (&nh_wk_w[w].inflight) > 0 && nh_wk_real_ns () < deadline)
     nh_wk_cond_wait_until (&nh_wk_done_cv, &nh_wk_done_m, deadline);
   bool idle = atomic_load (&nh_wk_w[w].inflight) <= 0;
   pthread_mutex_unlock (&nh_wk_done_m);
   Fnidhogg_workers__drain ();
   return idle ? Qt : Qnil;
+}
+
+DEFUN ("nidhogg-workers--test-await-inflight",
+       Fnidhogg_workers__test_await_inflight,
+       Snidhogg_workers__test_await_inflight, 3, 3, 0,
+       doc: /* Wait at most MS milliseconds until WORKER has at most N jobs left; for tests.
+A job's waiters wake before its finish is queued; a job left the count
+once it is.  Return t if the count got there.  A bounded condition wait,
+not a sleep.  */)
+  (Lisp_Object worker, Lisp_Object n, Lisp_Object ms)
+{
+  int w = nh_wk_name_index (worker, nh_wk_names, NH_WK_N, "worker");
+  CHECK_FIXNAT (n);
+  CHECK_FIXNAT (ms);
+  nh_wk_init ();
+  uint64_t deadline = nh_wk_real_ns () + XFIXNAT (ms) * NH_WK_MS;
+  nh_wk_lock (&nh_wk_done_m);
+  while (atomic_load (&nh_wk_w[w].inflight) > XFIXNAT (n)
+	 && nh_wk_real_ns () < deadline)
+    nh_wk_cond_wait_until (&nh_wk_done_cv, &nh_wk_done_m, deadline);
+  bool ok = atomic_load (&nh_wk_w[w].inflight) <= XFIXNAT (n);
+  pthread_mutex_unlock (&nh_wk_done_m);
+  return ok ? Qt : Qnil;
 }
 
 DEFUN ("nidhogg-workers--test-release-on-wait",
@@ -2323,13 +2503,13 @@ worker mutexes were taken in signal context (0: a lock there aborts).  */)
       error ("Cannot start the SIGCHLD storm");
     }
   EMACS_INT total = XFIXNAT (n);
-  uint64_t deadline = nh_wk_now () + 20000 * NH_WK_MS;
+  uint64_t deadline = nh_wk_real_ns () + 20000 * NH_WK_MS;
   for (int i = 0; i < NLOCKS; i++)
     {
       EMACS_INT share_end = total * (i + 1) / NLOCKS;
       nh_wk_lock (locks[i]);
       while (atomic_load (&nh_wk_probes) < share_end
-	     && nh_wk_now () < deadline)
+	     && nh_wk_real_ns () < deadline)
 	{
 	  struct timespec ts = { 0, 50000 };
 	  nanosleep (&ts, NULL);
@@ -2692,6 +2872,7 @@ One budget per redisplay, shared by every tree-sitter and image wait in it.  */)
   defsubr (&Snidhogg_workers__release);
   defsubr (&Snidhogg_workers__test_await_paused);
   defsubr (&Snidhogg_workers__test_await_landed);
+  defsubr (&Snidhogg_workers__test_await_inflight);
   defsubr (&Snidhogg_workers__test_release_on_wait);
   defsubr (&Snidhogg_workers__test_signal_storm);
   defsubr (&Snidhogg_workers__test_storm_sent);
@@ -2737,6 +2918,9 @@ syms_of_nidhogg_workers (void)
   nh_img_syms ();
   nh_blk_syms ();
   nh_blk_file_syms ();
+#ifdef HAVE_NH_TEST_CLOCK
+  nh_tc_syms ();
+#endif
 
   Fprovide (intern_c_string ("nidhogg-workers"), Qnil);
 }
