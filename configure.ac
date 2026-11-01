@@ -4013,10 +4013,11 @@ if test "${with_glitnir}" = yes; then
   dnl glitnir_* symbol; two Rust static libraries in one binary would collide on std's symbols).  GLITNIR_CRATE_DEPS
   dnl lists the crates whose sources rebuild it.
   if test "$HAVE_NHWL" = yes; then
-    EMACS_CHECK_MODULES([NHWL_WAYLAND], [wayland-client >= 1.26])
+    dnl 1.24 is Ubuntu 26.04's, the oldest libwayland a release is built on.
+    EMACS_CHECK_MODULES([NHWL_WAYLAND], [wayland-client >= 1.24])
     EMACS_CHECK_MODULES([NHWL_XKBCOMMON], [xkbcommon >= 1.13])
     test "$HAVE_NHWL_WAYLAND" = yes && test "$HAVE_NHWL_XKBCOMMON" = yes ||
-      AC_MSG_ERROR([--with-nidhogg-wayland needs wayland-client >= 1.26 and xkbcommon >= 1.13 (packages: nidhogg/deps/*.build)])
+      AC_MSG_ERROR([--with-nidhogg-wayland needs wayland-client >= 1.24 and xkbcommon >= 1.13 (packages: nidhogg/deps/*.build)])
     glitnir_lib=libnhglue.a
     nhwl_shell_dir=`cd "$srcdir/nidhogg/shell" && pwd` ||
       AC_MSG_ERROR([nidhogg/shell is missing])
