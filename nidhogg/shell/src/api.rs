@@ -331,7 +331,8 @@ pub trait ShellBackend {
     fn set_input_region(&mut self, window: WindowId, rects: &[Rect]) -> ShellResult;
     /// Off: show nothing (a null buffer); on: the next present shows the window again.  A child with a motion spec
     /// (`set_motion`) stays mapped, showing its last picture, while its hide leg runs, and unmaps in the tree commit
-    /// after the leg's end; on, its show leg starts at the first tree commit that carries its new picture.
+    /// after the leg's end; on, its show leg starts at the first tree commit that carries its new picture.  A hide and
+    /// a show in one command run no leg: on the presenter thread a hide waits a few milliseconds for the show.
     fn set_mapped(&mut self, window: WindowId, on: bool) -> ShellResult;
     /// Child `window`'s show and hide transitions, run by whoever presents its tree (`None`: none, and a leg that
     /// runs ends at once: a show jumps to its end, a hide unmaps in the next tree commit).  `State` for any other
