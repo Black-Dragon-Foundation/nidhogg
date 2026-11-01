@@ -633,6 +633,13 @@ impl Stage {
                     if let Some(m) = self.moves.get_mut(&id) {
                         m.wanted = on;
                         m.hold = if on || hold == 0 { 0 } else { now_ns() + hold };
+                        // no leg ran, so none will hide it: the packet that listed it drawable is out of date
+                        if !on
+                            && m.bare
+                            && let Some(s) = self.surfaces.get_mut(&id)
+                        {
+                            s.drawable = false;
+                        }
                     }
                 }
                 Mail::Ghost(id, key) => self.ghost(id, key),

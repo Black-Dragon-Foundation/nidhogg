@@ -619,6 +619,37 @@ mod motion {
         assert!(!t.mapped_now(t.kid));
     }
 
+    /// The child drawn and hidden again while the tree waits for its frame callback, so no frame has seen the child.
+    fn hidden_before_its_first_frame(t: &mut Tree) {
+        t.rb.fill(Rect::new(0, 0, 10, 10), 0xff00_ff00);
+        assert!(publish(&mut t.shell, t.root, &[(&t.rb, t.root)], 0));
+        t.committed();
+        t.kid_with(pop());
+        t.draw_kid();
+        t.shell.set_mapped(t.kid, false).unwrap();
+    }
+
+    /// A hide that came before the first frame leaves nothing to show, and a later show starts as a first one does.
+    #[test]
+    fn hide_before_the_first_frame_shows_nothing() {
+        let mut t = Tree::open("kwin", false);
+        let seq = t.next_seq();
+        hidden_before_its_first_frame(&mut t);
+        t.rec.present(STEP);
+        t.idle();
+        std::thread::sleep(Duration::from_millis(50));
+        t.sync();
+        assert_eq!(t.buffers(seq, t.kid), 0, "a hidden child's picture");
+        assert!(!t.ticking());
+        t.shell.set_mapped(t.kid, true).unwrap();
+        t.draw_kid();
+        t.committed();
+        assert_eq!(t.buffers(seq, t.kid), 1, "the show's first frame");
+        t.finish();
+        assert!(t.mapped_now(t.kid));
+        t.no_protocol_error();
+    }
+
     /// A frame that sat quiet past the pool's idle time still has its picture to fade.
     #[test]
     fn hide_after_a_quiet_period_fades() {
