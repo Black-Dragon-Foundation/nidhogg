@@ -501,12 +501,6 @@ pub fn fit_size(
         let gh = crate::window::to_logical(native.1 + strip, s);
         return (lw != gw || lh != gh).then(fitted);
     }
-    const KEEP: u32 = NHSHELL_STATE_MAXIMIZED
-        | NHSHELL_STATE_FULLSCREEN
-        | NHSHELL_STATE_TILED_L
-        | NHSHELL_STATE_TILED_R
-        | NHSHELL_STATE_TILED_T
-        | NHSHELL_STATE_TILED_B;
     if flags & NHG_FIT_UNDECORATED != 0 && !child && states & KEEP != 0 {
         let d = fitted();
         return (d != native).then_some(d);
@@ -514,9 +508,19 @@ pub fn fit_size(
     None
 }
 
+/// The states in which the compositor sets the window's size.
+const KEEP: u32 = NHSHELL_STATE_MAXIMIZED
+    | NHSHELL_STATE_FULLSCREEN
+    | NHSHELL_STATE_TILED_L
+    | NHSHELL_STATE_TILED_R
+    | NHSHELL_STATE_TILED_T
+    | NHSHELL_STATE_TILED_B;
+
 /// `nhg_frame_fit`: `window`'s native size for the compositor's size `lw` x `lh` at C's scale `s120`, with the border
 /// and strip of its last layout (`fit_size`).  When the frame takes it, the glue records it at once (as
-/// `nhg_frame_resized`: a configure being applied gets a content ack) and C changes the frame's size.
+/// `nhg_frame_resized`: a configure being applied gets a content ack) and C changes the frame's size.  A configure
+/// that enters a state of `KEEP` remembers the size, and one that leaves them with no size of its own (0 x 0: ours to
+/// pick) goes back to it.
 #[allow(clippy::too_many_arguments)]
 pub fn fit(
     state: &mut Display,
@@ -531,8 +535,16 @@ pub fn fit(
     if flags & !(NHG_FIT_CONFIGURE | NHG_FIT_UNDECORATED) != 0 {
         return Err(GlueError::Arg);
     }
-    let f = state.frame(window)?;
+    let f = state.frame_mut(window)?;
     let child = f.flags & NHG_FRAME_CHILD != 0;
+    let mut back = None;
+    if flags & NHG_FIT_CONFIGURE != 0 {
+        if states & KEEP != 0 {
+            f.floating.get_or_insert(native);
+        } else {
+            back = f.floating.take();
+        }
+    }
     let size = fit_size(
         s120,
         (lw, lh),
@@ -542,7 +554,8 @@ pub fn fit(
         f.csd.strip,
         child,
         flags,
-    );
+    )
+    .or(back.filter(|&b| (lw <= 0 || lh <= 0) && b != native));
     if let Some((w, h)) = size {
         crate::configure::resized(state, window, w.max(1), h.max(1))?;
     }

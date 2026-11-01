@@ -408,6 +408,46 @@ mod window {
         close(d);
     }
 
+    /// Entering fullscreen remembers the size; leaving it with 0 x 0 (the size is ours to pick) goes back to it, and
+    /// leaving it with a size of the compositor's takes that one.
+    #[test]
+    fn leaving_fullscreen_with_no_size_goes_back() {
+        use nhglue::csd::NHG_FIT_CONFIGURE;
+        use nhshell::api::NHSHELL_STATE_FULLSCREEN as FULL;
+        let rec = Recorder::start("sway");
+        let d = open(&rec);
+        let id = toplevel(d);
+        let fit = |lw: i32, lh: i32, states: u32, native: (i32, i32)| {
+            let (mut w, mut h) = (-1, -1);
+            // SAFETY: a live display; `w` and `h` are writable.
+            let rc = unsafe {
+                nhg_frame_fit(
+                    d,
+                    id,
+                    120,
+                    lw,
+                    lh,
+                    states,
+                    native.0,
+                    native.1,
+                    NHG_FIT_CONFIGURE,
+                    &mut w,
+                    &mut h,
+                )
+            };
+            (rc, w, h)
+        };
+        assert_eq!(fit(800, 600, FULL, (320, 160)), (1, 800, 600));
+        assert_eq!(fit(800, 600, FULL, (800, 600)), (0, -1, -1));
+        assert_eq!(fit(0, 0, 0, (800, 600)), (1, 320, 160));
+        assert_eq!(fit(0, 0, 0, (320, 160)), (0, -1, -1), "once");
+
+        assert_eq!(fit(800, 600, FULL, (320, 160)), (1, 800, 600));
+        assert_eq!(fit(400, 300, 0, (800, 600)), (1, 400, 300));
+        assert_eq!(fit(0, 0, 0, (400, 300)), (0, -1, -1), "already gone");
+        close(d);
+    }
+
     /// Fullscreen asks to leave maximized, then for fullscreen; back to none leaves fullscreen, then maximized;
     /// maximized, `fullwidth` and `fullheight` ask for maximized.  An unknown mode is refused.
     #[test]

@@ -46,11 +46,13 @@ pub struct Popup {
     /// The window the host named, and the window whose `xdg_surface` the popup hangs on (the nearest ancestor that
     /// has one) with that `xdg_surface` and the offset from it to the window the host named.
     pub parent: WindowId,
-    base_window: WindowId,
+    pub(super) base_window: WindowId,
     base: XdgSurface,
     offset: (i32, i32),
     anchor: Anchor,
     size: (i32, i32),
+    /// Where the compositor put it in `base_window`'s window geometry, logical pixels (the newest configure).
+    pub(super) placed: (i32, i32),
     token: u32,
     /// `place_gen` when the newest reposition went out.
     place_gen: u64,
@@ -194,6 +196,7 @@ impl WaylandShell {
                 offset,
                 anchor: d.anchor,
                 size: (d.w, d.h),
+                placed: (0, 0),
                 token: 0,
                 place_gen: 0,
                 repositioned: None,
@@ -416,6 +419,11 @@ impl Dispatch<XdgPopup, u64> for MainState {
         _: &QueueHandle<Self>,
     ) {
         match event {
+            xdg_popup::Event::Configure { x, y, .. } => {
+                if let Some(p) = state.popups.get_mut(id) {
+                    p.placed = (x, y);
+                }
+            }
             xdg_popup::Event::PopupDone => {
                 // dismissed: the grab is gone, but the popup stays until the host destroys it (still topmost first)
                 if let Some(p) = state.popups.get_mut(id) {

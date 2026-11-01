@@ -493,7 +493,7 @@ nhwl_child_of (struct frame *c, struct frame *f)
 /* Whether F may show a buffer by itself: shown, and at the size its next
    redisplay draws (a size change_frame_size queued is drawn by that
    redisplay, which publishes again).  A child frame's surface is unmapped
-   only while it is hidden (nhwl_child_set_visible), so a shown one is
+   only while it is hidden (nhwl_child_push), so a shown one is
    mapped.  The glue asks the same of every ancestor.  */
 static bool
 nhwl_frame_drawable (struct frame *f)
@@ -668,6 +668,24 @@ nhwl_publish (struct frame *f)
   if (rc > 0 && (rc & NHG_PRESENTED_KEY_DONE))
     out->t_key_ns = 0;
   unblock_input ();
+}
+
+/* Root R's tree and every popup (the shell keeps those hanging from it),
+   brought up to date for glitnir-snapshot, into *S; how many there are.  */
+ptrdiff_t
+nhwl_snapshot_list (struct frame *r, const NhgSurface **s)
+{
+  Lisp_Object tail, frame;
+
+  nhwl_publish (r);
+  nhwl_nsurfaces = 0;
+  nhwl_surface_add (r, 0, true);
+  FOR_EACH_FRAME (tail, frame)
+    if (nhwl_popup_frame_p (XFRAME (frame))
+	&& FRAME_NHWL_OUTPUT (XFRAME (frame))->window)
+      nhwl_surface_add (XFRAME (frame), 0, true);
+  *s = nhwl_surfaces;
+  return nhwl_nsurfaces;
 }
 
 /* The pacer of root window ROOT's tree lets it present (inline mode): the
@@ -1130,7 +1148,9 @@ nhwl_create_frame_window (struct frame *f)
   if (rc < 0)
     error ("nidhogg-wayland: cannot create a window (%d)", rc);
   out->window = id;
-  /* `alpha' was set before the window existed.  */
+  /* `alpha' was set before the window existed, or for an older window.  */
+  out->alpha_cut = 0;
+  out->alpha_host = false;
   nhwl_set_frame_alpha (f);
   nhwl_set_min_size (f);
 }
@@ -1502,9 +1522,10 @@ nhwl_make_frame_visible (struct frame *f)
       nhwl_popup_show (f);
       return;
     }
-  if (!FRAME_VISIBLE_P (f))
+  /* A shown frame made a top-level again waits for its first configure.  */
+  if (!FRAME_VISIBLE_P (f) || !out->configured)
     {
-      nhwl_child_set_visible (f, true);
+      nhwl_child_push (f, true);
       if (!out->configured)
 	nhwl_wait_for_configure (f);
       if (out->configured)
@@ -1531,7 +1552,7 @@ nhwl_make_frame_invisible (struct frame *f)
       return;
     }
   nhwl_child_focus_gone (f, false);
-  nhwl_child_set_visible (f, false);
+  nhwl_child_push (f, false);
   SET_FRAME_VISIBLE (f, 0);
   SET_FRAME_ICONIFIED (f, false);
   nhwl_window_visible (f, false);
@@ -1770,13 +1791,6 @@ frame_highlight (struct frame *f)
   nhwl_set_frame_alpha (f);
 }
 
-static void
-frame_unhighlight (struct frame *f)
-{
-  gui_update_cursor (f, true);
-  nhwl_set_frame_alpha (f);
-}
-
 /* Adapted from pgtk_frame_rehighlight.  */
 void
 nhwl_frame_rehighlight (struct nhwl_display_info *dpyinfo)
@@ -1799,7 +1813,7 @@ nhwl_frame_rehighlight (struct nhwl_display_info *dpyinfo)
     dpyinfo->highlight_frame = 0;
 
   if (old_highlight)
-    frame_unhighlight (old_highlight);
+    frame_highlight (old_highlight);
   if (dpyinfo->highlight_frame)
     frame_highlight (dpyinfo->highlight_frame);
 }
@@ -1966,7 +1980,7 @@ nhwl_child_shown (struct frame *f)
    area sits in the parent's, whether it is SHOWN (its surface mapped) and
    whether it is no-accept-focus.  A surface mapped again is drawn again
    whole.  */
-static void
+void
 nhwl_child_push (struct frame *f, bool shown)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
@@ -2002,14 +2016,6 @@ nhwl_child_created (struct frame *f)
 				       &out->chrome)));
   nhwl_csd_layout (f);
   nhwl_child_push (f, nhwl_child_shown (f));
-}
-
-/* Show or hide child frame F's surface (the visibility hooks); showing
-   repaints all of it.  */
-void
-nhwl_child_set_visible (struct frame *f, bool on)
-{
-  nhwl_child_push (f, on);
 }
 
 /* Child frame F moved (its left or top changed), or its
