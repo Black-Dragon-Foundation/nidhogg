@@ -1,5 +1,7 @@
 ;;; nhwl-gui-tests.el --- GUI rows for Nidhogg's own Wayland shell  -*- lexical-binding: t -*-
 
+;; test-class: cond
+
 ;; Run by nidhogg/test/gui.sh in a build made with --with-nidhogg-wayland.  The rows that drive or read the compositor
 ;; need `--compositor recorder' ($GLITNIR_GUI_RECORDER, the recorder's control socket); the others run on any
 ;; compositor.  `gui-runner-recorder' lives in gui-runner.el.  The rows run from a timer, so input sits unread until a
@@ -30,10 +32,7 @@
 
 (defun nhwl-gui--wait (pred &optional seconds)
   "Wait up to SECONDS (default 3) for PRED to return non-nil; return its value."
-  (let ((deadline (+ (float-time) (or seconds 3))) (v nil))
-    (while (and (not (setq v (funcall pred))) (< (float-time) deadline))
-      (accept-process-output nil 0.05))
-    v))
+  (gui-runner-wait pred (or seconds 3)))
 
 (defun nhwl-gui--toplevel-commits ()
   (seq-filter (lambda (c)
@@ -73,7 +72,6 @@
         (progn
           (switch-to-buffer buf)
           (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
-          (sit-for 0.2)
           (dolist (ch '("a" "b" "c"))
             (gui-runner-recorder (list :cmd "key" :text ch)))
           ;; the keys wait in the input queue: read them and run their bindings
@@ -96,10 +94,14 @@
                     (error nil)))))
     data))
 
+(defun nhwl-gui--target-p (type)
+  "Non-nil when the clipboard's offer lists TYPE, a symbol, among its targets."
+  (memq type (append (gui-get-selection 'CLIPBOARD 'TARGETS) nil)))
+
 (defun nhwl-gui--focus-toplevel ()
-  "Give the toplevel keyboard focus (a selection needs it to be owned)."
+  "Give the toplevel keyboard focus (a selection needs it to be owned), and wait for Emacs to have read it."
   (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
-  (sit-for 0.3))
+  (nhwl-gui--wait-ev #'frame-focus-state))
 
 (ert-deftest nhwl-gui/kill-reaches-another-client ()
   :tags '(selection)
@@ -117,7 +119,7 @@
   (skip-unless (executable-find "wl-paste"))
   (let ((select-enable-clipboard t) (kill-ring nil) (kill-ring-yank-pointer nil) (got nil))
     (select-frame-set-input-focus (selected-frame))
-    (sit-for 0.5)
+    (nhwl-gui--wait-ev #'frame-focus-state)
     (kill-new "from emacs")
     (should (nhwl-gui--wait
              (lambda ()
@@ -142,7 +144,7 @@
                            :types (:text/plain\;charset=utf-8 "theirs")))
     ;; the clear event sits in the input queue until Emacs reads input
     (should (nhwl-gui--wait (lambda () (read-event nil nil 0.05) lost)))
-    (sit-for 0.3)
+    (gui-runner-observe 0.3)            ; no second loss
     (should (equal lost '(CLIPBOARD)))
     (should-not (pgtk-selection-owner-p 'CLIPBOARD))
     (redisplay t)
@@ -177,12 +179,14 @@
       (should (equal (nhwl-gui--recorder-read "primary" "text/plain;charset=utf-8") "region text")))))
 
 (ert-deftest nhwl-gui/selection-read-from-a-silent-source-times-out ()
-  :tags '(selection)
+  :tags '(selection :timing)
   (skip-unless (nhwl-gui--recorder-p))
   (nhwl-gui--focus-toplevel)
   (gui-runner-recorder '(:cmd "offer" :kind "clipboard" :silent t
-                         :types (:text/plain\;charset=utf-8 "never sent")))
-  (sit-for 0.3)
+                         :types (:text/plain\;charset=utf-8 "never sent"
+                                 :text/x-nhwl-silent "never sent")))
+  ;; the offer has reached Emacs when its own type is among the targets (no source is asked for those)
+  (should (nhwl-gui--wait (lambda () (nhwl-gui--target-p 'text/x-nhwl-silent))))
   (let ((t0 (float-time)))
     (should-not (gui-get-selection 'CLIPBOARD 'UTF8_STRING))
     (should (< (- (float-time) t0) 1.5)))
@@ -218,7 +222,6 @@
           (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
           (gui-runner-recorder '(:cmd "keymap" :rmlvo (:rules "evdev" :model "pc105" :layout "us" :variant ""
                                                        :options "ctrl:swap_lalt_lctl_lwin")))
-          (sit-for 0.3)
           ;; KEY_LEFTALT (56) is Control_L under the option; "a" then arrives as C-a
           (gui-runner-recorder '(:cmd "key" :keycode 56 :state "press"))
           (gui-runner-recorder '(:cmd "key" :text "a"))
@@ -288,20 +291,20 @@
     (should (nhwl-gui--wait (lambda () (> (length (nhwl-gui--toplevel-commits)) before))))))
 
 (ert-deftest nhwl-gui/ping-answered-while-a-lisp-thread-sleeps ()
+  :tags '(:timing)
   (skip-unless (and (nhwl-gui--recorder-p) (daemonp)))
   (let ((buf (generate-new-buffer " *nhwl-ping*")))
     (unwind-protect
         (progn
           (switch-to-buffer buf)
           (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
-          (make-thread (lambda () (sleep-for 5)))
+          (gui-runner-sleeping-thread 5)
           (let ((r nil))
             (run-at-time 0.5 nil
                          (lambda ()
                            (setq r (gui-runner-recorder '(:cmd "ping")))
                            (gui-runner-recorder '(:cmd "key" :text "x"))))
-            (sit-for 3)
-            (should r)
+            (should (nhwl-gui--wait (lambda () r) 5))
             (should (< (plist-get r :pong_ms) 100))
             (should (nhwl-gui--wait
                      (lambda ()
@@ -414,9 +417,7 @@ Return the two replies."
     (unwind-protect
         (progn
           (process-send-string proc (concat (json-serialize a) "\n" (json-serialize b) "\n"))
-          (let ((deadline (+ (float-time) 10)))
-            (while (and (< (length (split-string reply "\n" t)) 2) (< (float-time) deadline))
-              (accept-process-output proc 0.1)))
+          (gui-runner-wait (lambda () (>= (length (split-string reply "\n" t)) 2)))
           (mapcar (lambda (l) (json-parse-string l :object-type 'plist :array-type 'list))
                   (split-string reply "\n" t)))
       (delete-process proc))))
@@ -520,9 +521,7 @@ Return the two replies."
     (setq mark (nhwl-gui--mark))
     (dotimes (i 10)
       (insert (string (+ ?a i)))
-      (redisplay t)
-      (sit-for 0.03))
-    (gui-runner-wait-settled)
+      (gui-runner-wait-settled))
     (let* ((all (nhwl-gui--new mark))
            ;; a buffer never written (age 0) goes out whole: at most one such commit per pool buffer (3)
            (fresh (seq-filter (lambda (c)
@@ -574,11 +573,12 @@ Return the two replies."
   (nhwl-gui--point 100 50)
   (dolist (r (if (keywordp (car record)) (list record) record))
     (gui-runner-recorder r))
-  (let ((deadline (+ (float-time) 0.6)) (events nil))
-    (while (< (float-time) deadline)
-      (let ((e (read-event nil nil 0.05)))
-        (when (and (consp e) (string-match-p (or regexp "wheel-\\|touch-end") (symbol-name (car e))))
-          (push e events))))
+  (let ((events nil))
+    (gui-runner-for 0.6 (lambda ()
+                          (let ((e (read-event nil nil 0.05)))
+                            (when (and (consp e)
+                                       (string-match-p (or regexp "wheel-\\|touch-end") (symbol-name (car e))))
+                              (push e events)))))
     (nreverse events)))
 
 (ert-deftest nhwl-gui/wheel-v120-halves-accumulate ()
@@ -670,12 +670,12 @@ Return the two replies."
     (dotimes (i 20)
       (insert (format "change %d\n" i))
       (redisplay t)
-      (sit-for 0.02))
-    (sit-for 0.3)
+      (gui-runner-observe 0.02))
+    (gui-runner-observe 0.3)            ; nothing is committed meanwhile
     (should-not (nhwl-gui--new mark))
     (gui-runner-recorder '(:cmd "configure" :surface "focused" :states ["activated"]))
     (should (nhwl-gui--wait (lambda () (redisplay t) (nhwl-gui--new mark)) 5))
-    (sit-for 0.3)
+    (gui-runner-wait-settled)
     ;; one commit carries everything that accumulated (the 20 new lines' rows; past 32 rectangles the damage
     ;; collapses to their bounding box); cursor redraws may follow it, nothing else
     (let* ((cs (nhwl-gui--new mark))
@@ -701,7 +701,7 @@ Return the two replies."
                              '(:cmd "configure" :surface "focused" :size [700 500] :states ["activated"]))
                             :serial))
     ;; one read takes the configure and the FRAME_DONE, with no redisplay before it
-    (sleep-for 0.1)
+    (gui-runner-wait-callbacks-answered)
     (input-pending-p)
     (should (nhwl-gui--wait
              (lambda ()
@@ -722,8 +722,7 @@ Return the two replies."
   (unwind-protect
       (progn
         (set-frame-size nil 40000 600 t)
-        (redisplay t)
-        (sit-for 0.3)
+        (gui-runner-wait-settled)
         (insert "after the huge size\n")
         (redisplay t)
         (should (frame-live-p (selected-frame)))
@@ -750,7 +749,7 @@ Return the two replies."
           (nhwl-gui--pump)
           ;; KEY_A held for 5 s (repeat after 600 ms at 25 Hz) while this row sleeps: the input poll runs meanwhile
           (gui-runner-recorder '(:cmd "key" :keycode 30 :state "press"))
-          (sleep-for 5)
+          (gui-runner-stimulus 5)
           (gui-runner-recorder '(:cmd "key" :keycode 30 :state "release"))
           (let ((deadline (+ (float-time) 1)))
             (while (< (float-time) deadline)
@@ -936,10 +935,9 @@ Return the two replies."
 
 (defun nhwl-gui--live-settle (&optional seconds)
   "Redisplay and run process output for SECONDS (default 0.3), so the shell's commits and the compositor's answers happen."
-  (let ((end (+ (float-time) (or seconds 0.3))))
-    (while (< (float-time) end)
-      (redisplay t)
-      (accept-process-output nil 0.05))))
+  (gui-runner-for (or seconds 0.3) (lambda ()
+                                     (redisplay t)
+                                     (accept-process-output nil 0.05))))
 
 ;; They leave frames, a tip and the window size behind, so they run after the other rows (`runs-last'); a row that ended
 ;; the session's display (the display-lost row) leaves no native frame, and they skip.
@@ -1053,8 +1051,6 @@ Return the two replies."
   (when (getenv "GLITNIR_GUI_RECORDER")
     (gui-runner-recorder '(:cmd "configure" :surface "focused" :size [800 600] :states ["activated"]))
     (nhwl-gui--wait (lambda () (redisplay t) (= (frame-pixel-width) (round (* 800 (frame-scale-factor))))) 5))
-  (sit-for 0.3)
-  (redisplay t)
   (gui-runner-wait-settled))
 
 (defun nhwl-gui--last-commit ()
@@ -1063,8 +1059,7 @@ Return the two replies."
 (defun nhwl-gui--pump (&optional seconds)
   "Let the shell's input events be read and the keyboard queue drained, for SECONDS (default 0.3).
 The shell's records reach Lisp (the monitors-changed hook) only through the input loop."
-  (let ((deadline (+ (float-time) (or seconds 0.3))))
-    (while (< (float-time) deadline) (read-event nil nil 0.05))))
+  (gui-runner-for (or seconds 0.3) (lambda () (read-event nil nil 0.05))))
 
 (defun nhwl-gui--point (x y)
   (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
@@ -1186,7 +1181,7 @@ The shell's records reach Lisp (the monitors-changed hook) only through the inpu
 
 (ert-deftest nhwl-gui/stats-key-series-only-keys ()
   "S6: `:key-to-commit-ms' counts the paints that show a key only: the cursor's blinks stay out of it."
-  :tags '(both-modes)
+  :tags '(both-modes :timing)
   (skip-unless (nhwl-gui--recorder-p))
   (nhwl-gui--with-blink
    0.1
@@ -1368,24 +1363,24 @@ serial is never acked early, with the old buffer)."
   (unwind-protect
       (progn
         (gui-runner-recorder '(:cmd "occlude"))
-        (insert "x")
-        (redisplay t)
-        (sleep-for 0.1)
+        (let ((before (nhwl-gui--mark)))
+          (insert "x")
+          (redisplay t)
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--new before)))))
         ;; the commit above waits for its callback, which is held
         (let* ((mark (nhwl-gui--mark))
                (a (let ((inhibit-redisplay t))
                     (prog1 (plist-get (gui-runner-recorder
                                        '(:cmd "configure" :surface "focused" :size [700 500] :states ["activated"]))
                                       :serial)
-                      (sleep-for 0.2)
+                      (gui-runner-stimulus 0.2) ; the first configure is read alone
                       (input-pending-p))))
                (b (plist-get (gui-runner-recorder
                               '(:cmd "configure" :surface "focused" :size [760 540] :states ["activated"]))
                              :serial)))
-          (sleep-for 0.2)
-          (input-pending-p)
           (should (nhwl-gui--wait
                    (lambda ()
+                     (input-pending-p)
                      (redisplay t)
                      (seq-find (lambda (c) (eql (nhwl-gui--get c :ack_serial) b)) (nhwl-gui--new mark)))
                    5))
@@ -1481,12 +1476,11 @@ serial is never acked early, with the old buffer)."
 
 (defun nhwl-gui--ime-pump ()
   "Read pending events and run the characters an input method commits (special events run as they are read)."
-  (let ((deadline (+ (float-time) 0.2)) ev)
-    (while (< (float-time) deadline)
-      (setq ev (read-event nil nil 0.05))
-      (when (characterp ev)
-        (setq last-command-event ev)
-        (command-execute (key-binding (vector ev)) nil (vector ev))))))
+  (gui-runner-for 0.2 (lambda ()
+                        (let ((ev (read-event nil nil 0.05)))
+                          (when (characterp ev)
+                            (setq last-command-event ev)
+                            (command-execute (key-binding (vector ev)) nil (vector ev)))))))
 
 (defun nhwl-gui--preedit-string ()
   "The text of the preedit overlay `pgtk-preedit-text' keeps, \"\" for none."
@@ -1632,12 +1626,10 @@ characters go, the mark stays."
 
 (defun nhwl-gui--press-event (area)
   "Read events until a `down-mouse-1' on AREA arrives; return it."
-  (let ((deadline (+ (float-time) 2)) ev)
-    (while (and (not ev) (< (float-time) deadline))
-      (let ((e (read-event nil nil 0.05)))
-        (when (and (consp e) (eq (car e) 'down-mouse-1) (eq (posn-area (event-start e)) area))
-          (setq ev e))))
-    ev))
+  (gui-runner-wait (lambda ()
+                     (let ((e (read-event nil nil 0.05)))
+                       (and (consp e) (eq (car e) 'down-mouse-1) (eq (posn-area (event-start e)) area) e)))
+                   2))
 
 (defun nhwl-gui--point-at (x y)
   "Put the pointer at logical X, Y of the newest toplevel."
@@ -1833,20 +1825,20 @@ without the blink nothing at all."
                      (delete-frame old t)
                      (car (nhwl-gui--nhwl-frames)))))
     (select-frame new)
-    (make-thread (lambda () (sleep-for 10)))
+    (gui-runner-sleeping-thread 10)
     (gui-runner-wait-settled)
     (nhwl-gui--with-blink
      0.1
      (lambda ()
        (let ((mark (nhwl-gui--mark)))
-         (sit-for 1.5)
+         (gui-runner-observe 1.5)
          (should-not (plist-get (gui-runner-recorder (list :cmd "empty_buffer_commits" :since mark)) :commits)))))
     (nhwl-gui--with-blink
      nil
      (lambda ()
        (gui-runner-wait-settled)
        (let ((mark (nhwl-gui--mark)))
-         (sit-for 1.5)
+         (gui-runner-observe 1.5)
          (should-not (nhwl-gui--toplevel-all-commits mark)))))))
 
 (ert-deftest nhwl-gui/focus-change-commits-bare ()
@@ -1866,7 +1858,7 @@ without the blink nothing at all."
                 (lambda () (seq-find (lambda (c) (eql (nhwl-gui--get c :ack_serial) serial))
                                      (nhwl-gui--toplevel-all-commits mark)))
                 3))
-       (sit-for 0.5)
+       (gui-runner-observe 0.5)         ; no other ack follows
        (let ((cs (nhwl-gui--commit-summary (nhwl-gui--toplevel-all-commits mark))))
          (should (equal (seq-filter (lambda (c) (car c)) cs) (list (list serial nil 0)))))))))
 
@@ -1904,7 +1896,7 @@ Redisplay is held until the move is out: the redisplay after a move redraws the 
   "A key that draws nothing leaves no stale key time: the next key's paint is measured from its own key.
 The key is read and dropped (no command, which would update the window and redraw the cursor), with blink off and the
 echo area empty."
-  :tags '(both-modes)
+  :tags '(both-modes :timing)
   (skip-unless (nhwl-gui--live-p))
   (skip-unless (nhwl-gui--recorder-p))
   (nhwl-gui--with-blink
@@ -1944,6 +1936,7 @@ echo area empty."
 (ert-deftest nhwl-gui/mouse-face-from-the-drain-shows ()
   "Moving the pointer onto a button draws its mouse face from the event drain, outside redisplay: that draw's damage
 alone wakes the pacer, and a commit with damage follows within 200 ms."
+  :tags '(:timing)
   (skip-unless (nhwl-gui--recorder-p))
   (nhwl-gui--with-blink
    nil
@@ -2037,6 +2030,7 @@ delete the frame after.  Blink is off and the parent's echo area is empty, so on
 
 (ert-deftest nhwl-gui/child-hide-commits-root ()
   "B3: hiding a child frame is its own commit (a null buffer), applied by a root commit within 200 ms."
+  :tags '(:timing)
   (skip-unless (nhwl-gui--recorder-p))
   (nhwl-gui--with-child
    (lambda (c id)
@@ -2113,11 +2107,7 @@ commit applies the move."
 (defun nhwl-gui--key-frame (char)
   "Type CHAR on the recorder's keyboard; the frame Emacs read it in, or nil when it never came."
   (gui-runner-recorder (list :cmd "key" :text (string char)))
-  (let ((deadline (+ (float-time) 2)) (got nil))
-    (while (and (not got) (< (float-time) deadline))
-      (when (eql (read-event nil nil 0.05) char)
-        (setq got last-event-frame)))
-    got))
+  (gui-runner-wait (lambda () (and (eql (read-event nil nil 0.05) char) last-event-frame)) 2))
 
 (defun nhwl-gui--with-focused-child (fn &rest params)
   "Call FN with a shown child frame (PARAMS first) and its parent, after `select-frame-set-input-focus' on the child
@@ -2335,8 +2325,8 @@ while the top-level has the keyboard.  Delete the child and focus the parent aft
                                 :serial)))
         (puthash serial (append size nil) sizes)
         (redisplay t)
-        (sit-for 0.01)))
-    (nhwl-gui--wait (lambda () (redisplay t) nil) 1)
+        (gui-runner-observe 0.01)))
+    (gui-runner-wait-settled)
     (setq commits (nhwl-gui--toplevel-all-commits mark))
     (let (size bad)
       (dolist (c commits)

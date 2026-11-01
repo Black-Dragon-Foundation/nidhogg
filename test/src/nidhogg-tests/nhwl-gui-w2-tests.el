@@ -1,5 +1,7 @@
 ;;; nhwl-gui-w2-tests.el --- GUI rows for the native shell's parity features  -*- lexical-binding: t -*-
 
+;; test-class: cond
+
 ;; Run by nidhogg/test/gui.sh with the base rows (nhwl-gui-tests.el, loaded first: its helpers are used here).  Rows
 ;; that drive the compositor need `--compositor recorder'; rows named `nhwl-gui/live-*' run on real compositors and
 ;; are judged by the trace checker.
@@ -601,6 +603,7 @@ going holds the recorder's pointer for the next rows."
 (ert-deftest nhwl-gui/drop-from-a-silent-source-times-out ()
   "A source that never sends its data: Emacs gives up at `nhwl-selection-timeout', destroys the offer within 1.5 s
 of the drop, answers at once after it, and the next, normal drop inserts."
+  :tags '(:timing)
   (skip-unless (nhwl-gui--recorder-p))
   (let ((b (generate-new-buffer " *dnd*")))
     (unwind-protect
@@ -851,7 +854,7 @@ the hook runs `reconnecting', then `reconnected'."
 (ert-deftest nhwl-gui/compositor-restart-falls-back-after-timeout ()
   "The compositor stays gone and `nhwl-reconnect-timeout' is 1.0: the display's frames are deleted within 2 s, the
 daemon stays, and the hook runs `reconnecting', then `lost'."
-  :tags '(runs-last)
+  :tags '(runs-last :timing)
   (skip-unless (and (nhwl-gui--recorder-p) (daemonp)))
   (let ((nhwl-reconnect-timeout 1.0) (frames (nhwl-gui--nhwl-frames)) (t0 nil))
     (unwind-protect
@@ -954,7 +957,7 @@ while the compositor is down, it runs once."
 
 (ert-deftest nhwl-gui/compositor-restart-during-drag-and-preedit ()
   "A preedit shown and a drag out in flight when the compositor restarts: `x-begin-drag' returns nil and the preedit
-overlay is gone.  The drag's loop runs no Lisp, so the restart comes from another process (`nhwl-gui--recorder-later'),
+overlay is gone.  The drag's loop runs no Lisp, so the restart comes from another process (`gui-runner-recorder-later'),
 and the row sets the XdndSelection it drags itself."
   :tags '(runs-last)
   (skip-unless (and (nhwl-gui--recorder-p) (fboundp 'x-begin-drag)))
@@ -967,7 +970,7 @@ and the row sets the XdndSelection it drags itself."
           (gui-set-selection 'XdndSelection "dragged text")
           (nhwl-gui--drag-press)
           (nhwl-gui--with-connection-log
-           (setq later (nhwl-gui--recorder-later '((0.3 :cmd "restart" :mode "keep-socket" :down_ms 300))))
+           (setq later (gui-runner-recorder-later '((drag :cmd "restart" :mode "keep-socket" :down_ms 300))))
            (setq result (x-begin-drag '("text/plain;charset=utf-8") 'XdndActionCopy nil nil t))
            (should-not result)
            (should (string-search "\"restart\"" (nhwl-gui--later-output later)))
@@ -1170,33 +1173,11 @@ the menu has closed, a key arrives in the frame again."
 
 ;; Dragging out of Emacs (`x-begin-drag').  The recorder is the foreign target (`drag_target', `drag_drop',
 ;; `drag_cancel', read back with `drag_log').  `x-begin-drag' blocks until the drag ends, so the target's part is sent
-;; by a batch Nidhogg started just before the call (`nhwl-gui--recorder-later'), whose output holds the replies.
+;; by a batch Nidhogg started just before the call (`gui-runner-recorder-later'), whose output holds the replies.
 ;; Positions are logical surface pixels of the toplevel.
 
-(defun nhwl-gui--recorder-later (steps)
-  "Send STEPS to the recorder from a batch Nidhogg, one after another; return its process.
-Each step is (SECONDS . PLIST): wait SECONDS, send PLIST and wait for the reply, which goes to the process's buffer
-as one line."
-  (let ((form `(let ((path ,(getenv "GLITNIR_GUI_RECORDER")))
-                 (dolist (step ',steps)
-                   (sleep-for (car step))
-                   (let* ((reply "")
-                          (p (make-network-process
-                              :name "later" :family 'local :service path :coding 'utf-8
-                              :filter (lambda (_p out) (setq reply (concat reply out))))))
-                     (process-send-string p (concat (json-serialize (cdr step)) "\n"))
-                     (let ((deadline (+ (float-time) 10)))
-                       (while (and (not (string-suffix-p "\n" reply)) (< (float-time) deadline))
-                         (accept-process-output p 0.1)))
-                     (delete-process p)
-                     (princ reply))))))
-    (make-process :name "nhwl-gui-later" :noquery t :connection-type 'pipe
-                  :buffer (generate-new-buffer " *nhwl-gui-later*")
-                  :command (list (expand-file-name invocation-name invocation-directory)
-                                 "-Q" "--batch" "--eval" (prin1-to-string form)))))
-
 (defun nhwl-gui--later-output (later)
-  "The replies LATER (from `nhwl-gui--recorder-later') printed, once it has exited (10 s at most)."
+  "The replies LATER (from `gui-runner-recorder-later') printed, once it has exited (10 s at most)."
   (nhwl-gui--wait (lambda () (not (process-live-p later))) 10)
   (with-current-buffer (process-buffer later) (buffer-string)))
 
@@ -1234,8 +1215,8 @@ as one line."
     (unwind-protect
         (progn
           (nhwl-gui--drag-press)
-          (setq later (nhwl-gui--recorder-later
-                       '((0.8 :cmd "drag_target" :accept "text/plain;charset=utf-8" :action "copy")
+          (setq later (gui-runner-recorder-later
+                       '((drag :cmd "drag_target" :accept "text/plain;charset=utf-8" :action "copy")
                          (0.2 :cmd "drag_drop" :finish t))))
           (should (eq (dnd-begin-text-drag "hello") 'copy))
           (should (string-search "\"data\":\"hello\"" (nhwl-gui--later-output later)))
@@ -1253,8 +1234,8 @@ file:// URI."
     (unwind-protect
         (progn
           (nhwl-gui--drag-press)
-          (setq later (nhwl-gui--recorder-later
-                       '((0.8 :cmd "drag_target" :accept "text/uri-list" :action "move")
+          (setq later (gui-runner-recorder-later
+                       '((drag :cmd "drag_target" :accept "text/uri-list" :action "move")
                          (0.2 :cmd "drag_drop" :finish t))))
           (should (eq (dnd-begin-file-drag file nil 'move) 'move))
           (let ((out (nhwl-gui--later-output later)))
@@ -1267,6 +1248,7 @@ file:// URI."
 (ert-deftest nhwl-gui/drag-out-cancelled-returns-nil ()
   "A drag cancelled over nothing returns nil within 1 s of the cancel, the buffer is unchanged, and the next click
 arrives."
+  :tags '(:timing)
   (skip-unless (nhwl-gui--recorder-p))
   (let ((b (generate-new-buffer " *drag*")) (later nil) (r 'unset) (t0 nil))
     (unwind-protect
@@ -1274,11 +1256,11 @@ arrives."
           (switch-to-buffer b)
           (insert "keep this text")
           (nhwl-gui--drag-press)
-          (setq later (nhwl-gui--recorder-later '((0.8 :cmd "drag_cancel"))))
+          (setq later (gui-runner-recorder-later '((drag :cmd "drag_cancel"))))
           (setq t0 (float-time))
           (setq r (dnd-begin-text-drag "keep this text" nil 'move))
           (should-not r)
-          ;; the batch Nidhogg's start and its 0.8 s wait, then at most 1 s
+          ;; the batch Nidhogg's start, then at most 1 s
           (should (< (- (float-time) t0) 2.5))
           (should (equal (buffer-string) "keep this text"))
           (nhwl-gui--point 120 100)
@@ -1291,6 +1273,7 @@ arrives."
 (ert-deftest nhwl-gui/drag-out-target-never-finishes ()
   "A target that takes the drop as a move but never finishes: the call returns nil within
 `nhwl-dnd-finish-timeout' + 1 s of the drop, and the region a move would delete stays."
+  :tags '(:timing)
   (skip-unless (nhwl-gui--recorder-p))
   (let ((b (generate-new-buffer " *drag*")) (later nil) (t0 nil) (nhwl-dnd-finish-timeout 1.0))
     (unwind-protect
@@ -1298,13 +1281,13 @@ arrives."
           (switch-to-buffer b)
           (insert "moved text")
           (nhwl-gui--drag-press)
-          (setq later (nhwl-gui--recorder-later
-                       '((0.8 :cmd "drag_target" :accept "text/plain;charset=utf-8" :action "move")
+          (setq later (gui-runner-recorder-later
+                       '((drag :cmd "drag_target" :accept "text/plain;charset=utf-8" :action "move")
                          (0.2 :cmd "drag_drop" :finish :false))))
           (setq t0 (float-time))
           (let ((r (dnd-begin-text-drag "moved text" nil 'move)))
             (should-not r)
-            ;; the batch Nidhogg's start, its 1 s of waits, the timeout and 1 s
+            ;; the batch Nidhogg's start, its 0.2 s wait, the timeout and 1 s
             (should (< (- (float-time) t0) 4.0))
             ;; what `mouse-drag-and-drop-region' does with the result
             (when (eq r 'move) (delete-region (point-min) (point-max))))
@@ -1314,6 +1297,7 @@ arrives."
 
 (ert-deftest nhwl-gui/drag-out-without-a-button-returns-nil ()
   "Without a held button the call returns nil at once, and no drag starts."
+  :tags '(:timing)
   (skip-unless (nhwl-gui--recorder-p))
   (nhwl-gui--click 100 100)
   (let ((before (length (nhwl-gui--drags))) (t0 (float-time)))
@@ -1323,13 +1307,14 @@ arrives."
 
 (ert-deftest nhwl-gui/quit-during-drag-cancels ()
   "C-g during a drag gives it up and quits, at once; the display stays, and the next click arrives."
+  :tags '(:timing)
   (skip-unless (nhwl-gui--recorder-p))
   (let ((later nil) (t0 nil))
     (unwind-protect
         (progn
           (nhwl-gui--drag-press)
-          (setq later (nhwl-gui--recorder-later
-                       '((0.8 :cmd "key" :keycode 29 :state "press")
+          (setq later (gui-runner-recorder-later
+                       '((drag :cmd "key" :keycode 29 :state "press")
                          (0 :cmd "key" :text "g")
                          (0 :cmd "key" :keycode 29 :state "release"))))
           (setq t0 (float-time))
@@ -1370,10 +1355,10 @@ arrives."
                  (out (+ (frame-pixel-width) 40)))
             (nhwl-gui--point x y)
             (gui-runner-recorder '(:cmd "button" :button 272 :state "press"))
-            (setq later (nhwl-gui--recorder-later
+            (setq later (gui-runner-recorder-later
                          `((0.6 :cmd "pointer" :pos [,(+ x 20) ,y])
                            (0.3 :cmd "pointer" :pos [,out ,y])
-                           (1.0 :cmd "drag_target" :accept "text/plain;charset=utf-8" :action "copy")
+                           (drag :cmd "drag_target" :accept "text/plain;charset=utf-8" :action "copy")
                            (0.2 :cmd "drag_drop" :finish t))))
             (let ((ev (nhwl-gui--press-event nil)))
               (should ev)
@@ -1392,8 +1377,8 @@ frame."
         (progn
           (gui-set-selection 'XdndSelection "x")
           (nhwl-gui--drag-press)
-          (setq later (nhwl-gui--recorder-later
-                       `((0.8 :cmd "pointer" :pos [,out 100])
+          (setq later (gui-runner-recorder-later
+                       `((drag :cmd "pointer" :pos [,out 100])
                          (0.3 :cmd "pointer" :pos [120 100]))))
           (should (eq (x-begin-drag '("text/plain;charset=utf-8") 'XdndActionCopy nil t) (selected-frame)))
           (should (nhwl-gui--connected-p)))
@@ -1415,8 +1400,8 @@ returns `copy'."
             (let* ((se (window-inside-pixel-edges))
                    (de (window-inside-pixel-edges w)))
               (nhwl-gui--drag-press (+ (nth 0 se) 10) (+ (nth 1 se) 3))
-              (setq later (nhwl-gui--recorder-later
-                           `((0.8 :cmd "pointer" :pos [,(+ (nth 0 de) 10) ,(+ (nth 1 de) 3)])
+              (setq later (gui-runner-recorder-later
+                           `((drag :cmd "pointer" :pos [,(+ (nth 0 de) 10) ,(+ (nth 1 de) 3)])
                              (0.4 :cmd "button" :button 272 :state "release"))))))
           (should (eq (dnd-begin-text-drag "dragged in" nil 'copy t) 'copy))
           (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (> (buffer-size dst) 0)) 3))
@@ -1864,7 +1849,7 @@ signals nothing, no frame and no terminal of the display is left, the daemon sta
 (ert-deftest nhwl-gui/display-lost-during-drag-out ()
   "A drag out of Emacs is in flight when the compositor goes for good: `x-begin-drag' returns nil and signals nothing,
 no frame of the display is left, and the daemon stays.  The drag's loop runs no Lisp, so the loss comes from another
-process (`nhwl-gui--recorder-later')."
+process (`gui-runner-recorder-later')."
   :tags '(runs-last)
   (skip-unless (and (nhwl-gui--recorder-p) (daemonp) (fboundp 'x-begin-drag)))
   (let ((nhwl-reconnect nil) (later nil) (result 'unset) (err nil))
@@ -1872,7 +1857,7 @@ process (`nhwl-gui--recorder-later')."
         (nhwl-gui--with-connection-log
          (gui-set-selection 'XdndSelection "dragged text")
          (nhwl-gui--drag-press)
-         (setq later (nhwl-gui--recorder-later '((0.3 :cmd "restart" :mode "gone"))))
+         (setq later (gui-runner-recorder-later '((drag :cmd "restart" :mode "gone"))))
          (setq result (condition-case e
                           (x-begin-drag '("text/plain;charset=utf-8") 'XdndActionCopy nil nil t)
                         (error (setq err e) 'error)))
@@ -1973,7 +1958,7 @@ connection."
   (skip-unless (nhwl-gui--fake-portal-p))
   (gui-runner-portal-script '((:never t)))
   (nhwl-gui--point 100 100)
-  (let ((later (nhwl-gui--recorder-later
+  (let ((later (gui-runner-recorder-later
                 '((0.8 :cmd "key" :keycode 29 :state "press")
                   (0 :cmd "key" :text "g")
                   (0 :cmd "key" :keycode 29 :state "release")))))
