@@ -74,6 +74,37 @@
         (redisplay t)
         (sit-for 0.1)))))
 
+;;; Waiting.  A row waits on what the frame, the presenter or the compositor reports: a deadline bounds a failure and
+;;; never decides a pass.
+
+(defun gui-runner-wait (pred &optional seconds)
+  "Run the event loop until PRED returns non-nil, and return its value; nil after SECONDS (default 10).
+Input stays in the queue for the row to read; timers and process output run."
+  (let ((deadline (+ (float-time) (or seconds 10))) (v nil))
+    (while (and (not (setq v (funcall pred))) (< (float-time) deadline))
+      (accept-process-output nil 0.01)
+      (input-pending-p))
+    v))
+
+(defun gui-runner-observe (seconds &optional tick)
+  "Watch the session for SECONDS, with redisplay, timers and events running, calling TICK (when given) on each turn.
+This is the span a row asserts something does not happen in, not a wait for something to happen: a span too short
+can miss a bug, it cannot fail a good run.  Input stays in the queue."
+  (let ((end (+ (float-time) seconds)))
+    (while (< (float-time) end)
+      (when tick (funcall tick))
+      (sit-for (min 0.05 (max 0 (- end (float-time)))))
+      (accept-process-output nil 0.01))))
+
+(defun gui-runner-stimulus (seconds)
+  "SECONDS of real time, with Lisp not reading input, as a row's stimulus: a key held while Lisp is busy, random gaps
+between a row's steps, the quiet the code under test measures.  Never a wait for something to happen."
+  (sleep-for seconds))
+
+(defun gui-runner-sleeping-thread (seconds)
+  "Start a Lisp thread that sleeps SECONDS, a row's stimulus: Lisp with a thread alive and waiting."
+  (make-thread (lambda () (sleep-for seconds))))
+
 ;;; Grabs from the compositor: (gui-runner-screen-grab) is (W H BYTES), BYTES W*H BGRA pixels, on every compositor
 
 (require 'cl-lib)
@@ -124,6 +155,40 @@ Signals `error' when the reply's :ok is false."
               (error "recorder: %s" (plist-get parsed :error)))
             parsed))
       (delete-process proc))))
+
+(defun gui-runner-recorder-later (steps)
+  "Send STEPS to the recorder from a batch Nidhogg, one after another; return its process.
+For a row whose next call blocks with no Lisp running (a drag's loop, a dialog).  Each step is (WAIT . PLIST): WAIT is
+seconds of stimulus, or `drag', which waits (10 s at most) until the recorder has logged a drag that was not there at
+this call.  PLIST is then sent, and its reply goes to the process's buffer as one line."
+  (let ((form `(progn
+                 (defun later-ask (plist)
+                   (let* ((reply "")
+                          (p (make-network-process
+                              :name "later" :family 'local :service ,(getenv "GLITNIR_GUI_RECORDER") :coding 'utf-8
+                              :filter (lambda (_p out) (setq reply (concat reply out))))))
+                     (process-send-string p (concat (json-serialize plist) "\n"))
+                     (let ((deadline (+ (float-time) 10)))
+                       (while (and (not (string-suffix-p "\n" reply)) (< (float-time) deadline))
+                         (accept-process-output p 0.1)))
+                     (delete-process p)
+                     reply))
+                 (defun later-drags ()
+                   (length (plist-get (json-parse-string (later-ask '(:cmd "drag_log"))
+                                                         :object-type 'plist :array-type 'list)
+                                      :drags)))
+                 (dolist (step ',steps)
+                   (if (numberp (car step))
+                       (sleep-for (car step))
+                     (let ((deadline (+ (float-time) 10)))
+                       (while (and (<= (later-drags) ,(length (plist-get (gui-runner-recorder '(:cmd "drag_log")) :drags)))
+                                   (< (float-time) deadline))
+                         (accept-process-output nil 0.02))))
+                   (princ (later-ask (cdr step)))))))
+    (make-process :name "nhwl-gui-later" :noquery t :connection-type 'pipe
+                  :buffer (generate-new-buffer " *nhwl-gui-later*")
+                  :command (list (expand-file-name invocation-name invocation-directory)
+                                 "-Q" "--batch" "--eval" (prin1-to-string form)))))
 
 ;; The empty-commit invariant: a row of a recorder run fails when the recorder logged a commit that attached a new buffer
 ;; with no damage while the row ran.  On unless NHWL_GUI_STRICT_COMMITS is 0 (gui.sh --env).  A row that stops the
@@ -185,13 +250,19 @@ Signals `error' when the reply's :ok is false."
 (defvar gui-runner--pw-procs nil "The pipewire and wireplumber processes this session started.")
 (defvar gui-runner--cast-session nil "The ScreenCast session's D-Bus path, held by Emacs's own connection.")
 
+(defun gui-runner--pw-client-p (name)
+  "Non-nil when pipewire lists a client whose description holds NAME."
+  (eq 0 (call-process "sh" nil nil nil "-c" (format "timeout 5 pw-cli ls Client | grep -q %s" name))))
+
 (defun gui-runner--cast-start ()
   "Start pipewire, wireplumber and a ScreenCast session on the headless monitor (once per run)."
   (unless gui-runner--cast-session
-    (setq gui-runner--pw-procs
-          (list (start-process "pipewire" " *pipewire*" "pipewire")
-                (progn (sleep-for 1) (start-process "wireplumber" " *wireplumber*" "wireplumber"))))
-    (sleep-for 1)
+    (setq gui-runner--pw-procs (list (start-process "pipewire" " *pipewire*" "pipewire")))
+    (unless (gui-runner-wait (lambda () (file-exists-p (expand-file-name "pipewire-0" (getenv "XDG_RUNTIME_DIR")))))
+      (error "gui-runner: pipewire has no socket"))
+    (push (start-process "wireplumber" " *wireplumber*" "wireplumber") gui-runner--pw-procs)
+    (unless (gui-runner-wait (lambda () (gui-runner--pw-client-p "wireplumber")))
+      (error "gui-runner: wireplumber did not connect"))
     (let* ((svc "org.gnome.Mutter.ScreenCast")
            (sess (dbus-call-method :session svc "/org/gnome/Mutter/ScreenCast" svc
                                    "CreateSession" :timeout 10000 '(:array :signature "{sv}"))))
@@ -201,7 +272,8 @@ Signals `error' when the reply's :ok is false."
       (dbus-call-method :session svc sess "org.gnome.Mutter.ScreenCast.Session" "Start" :timeout 10000)
       (glitnir-gui--say "gui-runner: cast started")
       (setq gui-runner--cast-session sess)
-      (sleep-for 1.5))))
+      (unless (gui-runner-wait (lambda () (not (string-empty-p (gui-runner--cast-node)))))
+        (error "gui-runner: mutter's stream has no pipewire node")))))
 
 (defun gui-runner--cast-node ()
   "The pipewire node id of mutter's stream, as a string."
@@ -213,7 +285,6 @@ Signals `error' when the reply's :ok is false."
 (defun gui-runner--mutter-grab ()
   "Grab the screen through the ScreenCast session of `gui-runner--cast-start' and one `gst-launch-1.0' run."
   (gui-runner--cast-start)
-  (sit-for 0.3)
   (let ((file (make-temp-file "gui-runner-grab-")) w h)
     (unwind-protect
         (progn
@@ -283,14 +354,23 @@ Signals `error' when the reply's :ok is false."
           (list w h bytes))
       (delete-file file))))
 
+(defun gui-runner--stable-grab (grab)
+  "Call GRAB until two grabs in a row show the same picture (five at most), and return the last.
+A commit and a grab reach the compositor on different connections, and it reports no frame number to the grabber: the
+first grab can be the frame before the one just committed."
+  (let ((pic (funcall grab)) (n 0) next)
+    (while (and (< n 4) (not (equal pic (setq next (funcall grab)))))
+      (setq pic next n (1+ n)))
+    pic))
+
 (defun gui-runner-screen-grab ()
   "Grab the compositor's output: a list (W H BYTES), BYTES a unibyte string of W*H BGRA pixels (Cairo ARGB32,
 little-endian), the shape of `glitnir-snapshot's `raw'.  Sway and labwc: grim; KWin: none (the row skips); recorder: its `snapshot'; mutter: ScreenCast."
   (pcase (glitnir-gui--compositor)
-    ((or "sway" "labwc") (gui-runner--sway-grab))
+    ((or "sway" "labwc") (gui-runner--stable-grab #'gui-runner--sway-grab))
     ("kwin" (ert-skip "no headless grab on KWin"))
     ("recorder" (gui-runner--recorder-grab))
-    ("mutter" (gui-runner--mutter-grab))
+    ("mutter" (gui-runner--stable-grab #'gui-runner--mutter-grab))
     (c (error "gui-runner-screen-grab: unknown compositor %S" c))))
 
 (defun gui-runner--sway-node-shown-p (node)
@@ -309,30 +389,67 @@ the workspaces and the output are \"visible\" before any window maps)."
                  (json-parse-string (buffer-string) :object-type 'alist :array-type 'list
                                     :false-object nil :null-object nil))))))
 
-(defun gui-runner--recorder-commit-after-p (since)
-  "Non-nil when the recorder logged a toplevel commit with a seq of at least SINCE."
-  (seq-some (lambda (c) (equal (plist-get c :role) "toplevel"))
-            (plist-get (gui-runner-recorder (list :cmd "log" :since since)) :commits)))
+(defvar gui-runner--settled-counts nil
+  "`gui-runner--presenter-counts' at the end of the last `gui-runner-wait-settled'.")
+
+(defun gui-runner--presenter-counts ()
+  "(OWED . SENT) of the selected frame's display: the packets that need a commit of their own (published, less those
+merged into one still waiting), and the commits sent.  Nil on a frame with no presenter, or when the display is gone."
+  (when-let* (((fboundp 'nhwl-presenter-stats))
+              (s (ignore-errors (nhwl-presenter-stats))))
+    (cons (- (plist-get s :packets) (plist-get s :superseded))
+          (+ (plist-get s :commits) (plist-get s :bare-commits)))))
+
+(defun gui-runner--presented-p ()
+  "Non-nil when every packet published since the last settle has gone out as a commit.
+A packet makes at least one commit, and a tree with child frames makes more, so this holds only once none waits for
+the presenter or the pacer."
+  (let ((now (gui-runner--presenter-counts)) (then gui-runner--settled-counts))
+    (or (null now) (null then)
+        (>= (- (cdr now) (cdr then)) (- (car now) (car then))))))
+
+(defun gui-runner--recorder-next ()
+  "The recorder's next commit sequence number (a :since past the end, so no commit is copied)."
+  (plist-get (gui-runner-recorder '(:cmd "log" :since 1000000000)) :next))
+
+(defun gui-runner--recorder-quiet (seen)
+  "A predicate: every frame callback is answered and the recorder's commit log stands still between two calls.
+SEEN is a cons whose car keeps the last sequence number.  A commit sent before the first of the two replies has been
+read by the second, and an answered callback leaves the pacer open, so a commit still owed shows in
+`gui-runner--presented-p'.  While the output is occluded the callbacks wait: only the log counts."
+  (lambda ()
+    (let* ((o (gui-runner-recorder '(:cmd "outstanding")))
+           (occluded (eq (plist-get o :occluded) t))
+           (next (gui-runner--recorder-next))
+           (still (eql next (car seen))))
+      (setcar seen next)
+      (and still
+           (or occluded (and (eql 0 (plist-get o :callbacks)) (gui-runner--presented-p)))))))
 
 (defun gui-runner-wait-settled ()
-  "Wait until the compositor shows what the frame last drew.
-Sway: two frame periods (60 Hz) after `swaymsg -t get_tree' shows a window of Nidhogg.  Recorder: a toplevel commit
-newer than this call (0.5 s at most: a redisplay that changes nothing commits nothing); a dead control socket is an
-error.  Mutter: redisplay and 0.5 s."
-  (let ((since (and (equal (glitnir-gui--compositor) "recorder")
-                    (plist-get (gui-runner-recorder '(:cmd "log" :since 0)) :next))))
-    (redisplay t)
-    (pcase (glitnir-gui--compositor)
-      ("sway"
-       (let ((deadline (+ (float-time) 10)))
-         (while (and (not (gui-runner--sway-window-shown-p)) (< (float-time) deadline))
-           (sit-for 0.1)))
-       (sit-for (/ 2.0 60)))
-      ("recorder"
-       (let ((deadline (+ (float-time) 0.5)))
-         (while (and (not (gui-runner--recorder-commit-after-p since)) (< (float-time) deadline))
-           (sit-for 0.02))))
-      (_ (sit-for 0.5)))))
+  "Wait until what the frame last drew has reached the compositor, and print a line if that took over 3 s.
+The frame's side, on the native shell: the presenter owes no commit (`gui-runner--presented-p'); on pgtk: a paint after
+it (`glitnir-snapshot' asks for one and returns after GDK's after-paint, which commits).  The compositor's side,
+recorder: the frame callbacks are answered and the commit log stands still (a dead control socket is an error); sway:
+`swaymsg -t get_tree' shows a window of Nidhogg.  A later grab is a later request on the compositor's event loop."
+  (redisplay t)
+  (let* ((compositor (glitnir-gui--compositor)) (native (featurep 'nidhogg-wayland))
+         (graphic (display-graphic-p)) (ok t)
+         (settle (lambda (pred)
+                   (let ((deadline (+ (float-time) 3)) (v nil))
+                     (while (and (not (setq v (funcall pred))) (< (float-time) deadline))
+                       (sit-for 0.01))
+                     (unless v (setq ok nil))))))
+    (when (and graphic (not native) (fboundp 'glitnir-snapshot))
+      (ignore-errors (glitnir-snapshot nil 'raw)))
+    (pcase compositor
+      ("sway" (funcall settle (lambda () (and (gui-runner--sway-window-shown-p) (gui-runner--presented-p)))))
+      ("recorder" (funcall settle (gui-runner--recorder-quiet (list nil))))
+      (_ (funcall settle #'gui-runner--presented-p)))
+    (setq gui-runner--settled-counts (gui-runner--presenter-counts))
+    (unless ok
+      (let ((test (ert-running-test)))
+        (glitnir-gui--say "gui-runner: not settled in 3 s (%S)" (and test (ert-test-name test)))))))
 
 (defun gui-runner-pixel-diff (a b &optional rect)
   "Compare two grabs A and B (each (W H BYTES)) over RECT, a list (X Y W H) in both (default: the common top-left
@@ -476,7 +593,7 @@ The recorder keeps its session store.  Signals an error when the script fails or
   (run-at-time 0 nil
                (lambda ()
                  (condition-case err
-                     (progn (redisplay t) (sit-for 0.2) (glitnir-gui--run))
+                     (progn (redisplay t) (glitnir-gui--run))
                    (error (glitnir-gui--say "gui-runner: %S" err) (kill-emacs 1))))))
 
 ;; `window-setup-hook' runs at the end of `command-line'; the timer fires in the command loop after it.
