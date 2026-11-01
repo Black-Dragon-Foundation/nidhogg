@@ -210,9 +210,9 @@ mutter. `DIR` is a Nidhogg prefix (an unpacked tarball or an install).
 
 `.github/workflows/build.yml` runs on pushes to `nidhogg-31`, `v*-nidhogg.*` tags, pull requests and by hand
 (`drgnx_ref` input: the drgnx branch, tag or commit under test). Without the input the drgnx commit is the one pinned
-in the `drgnx` job, never drgnx's moving `main`: a drgnx push cannot turn Nidhogg red. The pin is written twice, as
-the commit of drgnx's tiers workflow (`uses: …/drgnx-tiers.yml@COMMIT`, which takes no expression) and as the default
-`drgnx_ref`; `ci-test.sh` checks they agree. Bump both by hand to a drgnx commit whose own CI is green.
+in the `drgnx` job, never drgnx's moving `main`: a drgnx push cannot turn Nidhogg red. The pin is written once, as
+the commit of drgnx's tiers workflow (`uses: …/drgnx-tiers.yml@COMMIT`, which takes no expression); a `pin` job reads
+it from that line and it becomes the default `drgnx_ref`. Bump that line by hand to a drgnx commit whose own CI is green.
 
 A joint round (drgnx and Nidhogg change together, drgnx's `docs/develop/ci.md`, "Joint rounds"): drgnx goes to
 `ci/joint/<name>`, where its own CI runs only what needs no Emacs, and this workflow runs by hand with
@@ -260,8 +260,9 @@ moves to the round's green drgnx commit.
   - macOS: the tarball (`tarball-macos-<arch>-...`), Homebrew's downloads (`brew-macos-<arch>-<hash of deps/macos.build>`,
     Homebrew verifies checksums) and compiled Lisp (`lisp-macos-<arch>-<gcc and libgccjit versions>-<runner temp>-...`).
   - Scoping: a run restores caches of its own branch or the default branch (`nidhogg-31`), and a pull request those of its
-    base; never those of sibling branches or other tags. Keys are identical on every branch, so a run on `macos-ci` or a
-    pull request reuses what `nidhogg-31` saved. Unused caches are evicted after 7 days and the oldest go first above 10 GB
+    base; never those of sibling branches or other tags. Keys are identical on every branch, so a run on a `ci/*` branch
+    or a pull request reuses what `nidhogg-31` saved. Only `nidhogg-31` saves (every save step is limited to it): the same
+    key saved again per ref counts once per ref against the limit. Unused caches are evicted after 7 days and the oldest go first above 10 GB
     ([GitHub: dependency caching](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)).
 - Actions are pinned to commit SHAs. `bash nidhogg/test/ci-test.sh` checks these rules.
 
