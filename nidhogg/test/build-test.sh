@@ -144,6 +144,11 @@ run NIDHOGG_BUILD_CCACHE=/var/tmp/cc -- --dry-run --container ubuntu-26.04
 rcis 0; has "--no-install-recommends \$(sed"; has "ccache -s"
 run -- --dry-run --container fedora-45
 rcis 0; hasnt "ccache"
+# on the host (macOS CI): the cache directory as given, the compiler checked by its -v output (not the cc shim's content)
+run NIDHOGG_BUILD_CCACHE=/var/tmp/cc NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n
+rcis 0; has "CCACHE_DIR=/var/tmp/cc"; has "CCACHE_COMPILERCHECK=%compiler%\\ -v"; has "CC=ccache\\ gcc"; has "ccache -s"; hasnt "CCACHE_COMPILERCHECK=content"
+run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n
+rcis 0; hasnt "ccache"
 # compiled-Lisp cache: opt-in, mounted with a shared label, restored before autogen under a shared lock, saved after make
 # under an exclusive one, only for the same compiler
 run NIDHOGG_BUILD_LISP_CACHE=/var/tmp/lc -- --dry-run --container fedora-45

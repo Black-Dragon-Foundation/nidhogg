@@ -6,6 +6,7 @@ rc=0
 fail() { echo "CI FAIL: $*"; rc=1; }
 wf=.github/workflows/build.yml
 test -f "$wf"                                                     || { fail "no $wf"; exit 1; }
+job() { awk -v j="  $1:" '$0==j{p=1;print;next} p&&/^  [a-z]/{exit} p' "$wf"; }   # the text of job $1
 for j in tree linux macos drgnx release; do grep -qE "^  $j:" "$wf" || fail "no job $j"; done
 # drgnx's tests gate a release
 awk '/^  release:/,0' "$wf" | grep -qE 'needs: \[tree, linux, macos, drgnx, native-crates, native-gui\]' || fail "release not gated"
@@ -20,8 +21,32 @@ pin=$(grep -oE 'uses: Black-Dragon-Foundation/drgnx/\.github/workflows/drgnx-tie
 ! grep -qF "inputs.drgnx_ref || '" "$wf"                          || fail "a literal default drgnx_ref (the uses line is the one pin)"
 grep -qE '^  pin:' "$wf"                                          || fail "no pin job"
 grep -qF 'inputs.drgnx_ref || needs.pin.outputs.ref' "$wf"        || fail "the default drgnx_ref is not the pin job's output"
-# cache budget: only the default branch saves, so ci/* branches and tags restore only
-[ "$(grep -c 'uses: actions/cache/save@' "$wf")" -eq "$(grep -c "github.ref == 'refs/heads/nidhogg-31'" "$wf")" ] || fail "a cache save step not limited to nidhogg-31"
+# cache writes: every save step is CACHE_SAVE's (nidhogg-31 and ci/*) or CACHE_SAVE_ALL's (nidhogg-31), and neither is
+# ever true for a pull request or a tag (a pull request's or tag's entry is never one a trusted run reads)
+for l in $(grep -n 'uses: actions/cache/save@' "$wf" | cut -d: -f1); do
+  sed -n "$((l - 2)),$((l - 1))p" "$wf" | grep -qE "if: .*env\.CACHE_SAVE(_ALL)? == 'true'" || fail "the cache save at line $l is not under CACHE_SAVE or CACHE_SAVE_ALL"
+done
+grep -qxF "  CACHE_SAVE: \${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/nidhogg-31' || startsWith(github.ref, 'refs/heads/ci/')) }}" "$wf" || fail "CACHE_SAVE is not nidhogg-31 and ci/* pushes"
+grep -qxF "  CACHE_SAVE_ALL: \${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/nidhogg-31' }}" "$wf" || fail "CACHE_SAVE_ALL is not nidhogg-31's"
+# a release tag's tarball has no restored compiled Lisp: the jobs that make tarballs skip the restore for a tag
+for j in linux macos; do
+  job "$j" | grep -A1 'id: lc$' | grep -qF "!startsWith(github.ref, 'refs/tags/')" || fail "$j restores compiled Lisp for a tag"
+done
+# the path filter: its self-test and the table's bite cases, a changes job every other job waits on, and a gate that
+# always runs, needs every job but the report-only timing lane, and is named partial for a narrowed run
+bash nidhogg/ci/changes.sh nidhogg/ci/paths.txt --self-test >/dev/null || fail "nidhogg/ci/changes.sh --self-test"
+tbl_jobs=$(sed -n 's/^jobs: //p' nidhogg/ci/paths.txt)
+for j in $tbl_jobs; do
+  awk -v j="  $j:" '$0==j{p=1;next} p&&/^  [a-z]/{exit} p' "$wf" | grep -qF "needs.changes.outputs.$j != 'false'" || fail "job $j does not follow the changes job"
+  grep -qF "      $j: \${{ steps.c.outputs.run_$(echo "$j" | tr - _) }}" "$wf" || fail "the changes job has no output $j"
+done
+gate=$(awk '/^  gate:/{p=1;print;next} p&&/^  [a-z]/{exit} p' "$wf")
+grep -qF "name: \${{ needs.changes.outputs.partial == 'true' && 'Nidhogg gate (partial)' || 'Nidhogg gate' }}" <<<"$gate" || fail "the gate is not named partial for a narrowed run"
+grep -qE '^    if: always\(\)$' <<<"$gate"                       || fail "the gate does not always run"
+gneeds=$(sed -nE 's/^    needs: \[(.*)\]$/\1/p' <<<"$gate" | tr -d ' ' | tr , '\n' | sort)
+jobs_all=$(awk '/^jobs:/{p=1;next} p' "$wf" | sed -nE 's/^  ([a-z0-9-]+):$/\1/p' | grep -vxE 'gate|release|timing' | sort)
+[ "$gneeds" = "$jobs_all" ]                                       || fail "the gate does not need every job but release and timing"
+grep -qF 'GATE: Nidhogg gate' "$wf"                               || fail "the changes job does not check the base's Nidhogg gate"
 grep -qF 'nidhogg: artifact' "$wf"                                || fail "drgnx's tiers do not run on this run's tarballs"
 grep -qF "'unit no-lisp-writes ui macos'" "$wf"                   || fail "drgnx's tiers are not unit, gate mode, GUI and macOS"
 # a release only from a pushed v* tag, never from workflow_dispatch or a pull request
@@ -40,11 +65,14 @@ n=$(grep -c 'uses: actions/cache/restore@' "$wf")
 bad=$(grep -A6 'uses: actions/cache/' "$wf" | grep -E '^[ -]*key: ' | grep -vE 'hashFiles|tree\.outputs|lisp\.outputs' || true)
 [ -z "$bad" ]                                                     || fail "a cache key without a hash of its inputs: $bad"
 grep -A8 'id: tb' "$wf" | grep -q "startsWith(github.ref, 'refs/tags/')" || fail "the tarball cache is used for a release tag"
-! grep -A12 'id: tb' "$wf" | grep -q restore-keys                 || fail "the tarball cache has restore-keys"
-# the compiled-Lisp cache is exact-key (no restore-keys: a partly stale set is not rebuilt correctly)
-! grep -A12 'id: lc' "$wf" | grep -q restore-keys                 || fail "the compiled-Lisp cache has restore-keys"
-# every cache save comes after its build and only when the build succeeded
-[ "$(grep -c "steps.build.outcome == 'success'" "$wf")" -ge 6 ]  || fail "a cache save not gated on the build step"
+step() { awk -v l="$1" 'NR>l && /^      - /{exit} NR>=l' "$wf"; }   # the step from line $1 to the next one
+for l in $(grep -nE 'id: (tb|lc)$' "$wf" | cut -d: -f1); do
+  # the tarball and compiled-Lisp caches are exact-key (no restore-keys: a partly stale set is not rebuilt correctly)
+  ! step "$l" | grep -q 'restore-keys'                            || fail "the exact cache at line $l has restore-keys"
+done
+# a compiled-Lisp or tarball save comes after a build (or pack) that passed; a tarball from narrowed checks is never saved
+[ "$(grep -A1 -E 'name: Save (compiled Lisp|built tarball)$' "$wf" | grep -cE "steps\.(build|pack)\.outcome == 'success'|steps\.lcok\.outputs\.ok == 'true'")" -eq "$(grep -cE 'name: Save (compiled Lisp|built tarball)$' "$wf")" ] || fail "a compiled-Lisp or tarball save not gated on its build"
+[ "$(grep -A1 'name: Save built tarball$' "$wf" | grep -cF "inputs.checks == ''")" -eq "$(grep -c 'name: Save built tarball$' "$wf")" ] || fail "a narrowed run saves its tarball"
 # the tree job runs Glitnir's checks and cargo-deny's advisories, with pixman's headers installed
 tj=$(awk '/^  tree:/,/^  linux:/' "$wf")
 grep -qF 'bash nidhogg/glitnir/check.sh' <<<"$tj"                 || fail "the tree job does not run glitnir/check.sh"
@@ -65,9 +93,8 @@ grep -qF 'bash nidhogg/glitnir/check.sh' <<<"$mj"                 || fail "macos
 ! grep -qiE 'pgtk|--nidhogg-wayland' "$wf"                        || fail "a job names pgtk or a window system of its own"
 [ "$(grep -cE '^ +name: tarball-\$\{\{ matrix\.distro \}\}$|^ +name: tarball-macos$' "$wf")" -eq 2 ] || fail "a tarball artifact release would publish by mistake"
 # the workers' jobs (engine C, PD-4): present, after linux, outside release's needs, never fail-fast, pkg suites on and off
-job() { awk -v j="  $1:" '$0==j{p=1;print;next} p&&/^  [a-z]/{exit} p' "$wf"; }
 for j in workers-harness workers-asan workers-pkg; do
-  job "$j" | grep -qE '^    needs: linux'                          || fail "no job $j (or it does not need linux)"
+  job "$j" | grep -qE '^    needs: \[changes, linux\]'             || fail "no job $j (or it does not need linux)"
   ! job "$j" | grep -q 'fail-fast: true'                            || fail "a workers job has fail-fast: $j"
   ! awk '/^  release:/,0' "$wf" | grep -qE "needs:.*$j"             || fail "release needs $j"
 done
@@ -78,16 +105,17 @@ job workers-asan | grep -q 'NIDHOGG_BUILD_SANITIZE'                || fail "work
 for s in 'recorder/check.sh --container fedora-45 --build' 'shell/check.sh --container fedora-45' 'glue/check.sh --container fedora-45'; do
   job native-crates | grep -qF "$s"                                || fail "native-crates does not run $s"
 done
-job native-gui | grep -qE '^    needs: \[linux, native-crates\]'   || fail "native-gui does not need linux and native-crates"
+job native-gui | grep -qE '^    needs: \[changes, linux, native-crates\]' || fail "native-gui does not need linux and native-crates"
 job native-gui | grep -q 'fail-fast: false'                        || fail "native-gui has no fail-fast: false"
 job native-gui | grep -qE 'timeout-minutes: 60'                    || fail "native-gui has no 60-minute limit"
 job native-gui | grep -qF 'tarball-fedora-45'                      || fail "native-gui does not use the fedora-45 tarball"
 job native-gui | grep -qF -- '--container fedora-45'               || fail "native-gui does not run in a container"
 job native-gui | grep -qF 'nidhogg/test/native-gui.sh'             || fail "native-gui does not run native-gui.sh"
-# every lane in the matrix is a lane of the script and the other way round, and a lane has a floor: none is green on 0 rows
-ci_lanes=$(job native-gui | sed -nE 's/^          - ([a-z0-9-]+)$/\1/p' | sort)
+# the matrix is the script's lanes, each with a floor (none is green on 0 rows): the changes job reads them from it
+job native-gui | grep -qF 'lane: ${{ fromJSON(needs.changes.outputs.lanes) }}' || fail "native-gui's matrix is not the changes job's lanes"
+grep -qF "sed -nE 's/^  ([a-z0-9-]+)\\) +min=[1-9][0-9]*;.*/\\1/p' nidhogg/test/native-gui.sh" "$wf" || fail "the changes job does not read the lanes (with a floor) from native-gui.sh"
 sh_lanes=$(sed -nE 's/^  ([a-z0-9-]+)\) +min=[1-9][0-9]*;.*/\1/p' nidhogg/test/native-gui.sh | sort)
-[ -n "$ci_lanes" ] && [ "$ci_lanes" = "$sh_lanes" ]                || fail "native-gui's matrix and native-gui.sh's lanes (with a floor) differ"
+[ "$(echo "$sh_lanes" | wc -l)" -ge 10 ]                           || fail "native-gui.sh has fewer than 10 lanes with a floor"
 grep -qF 'expected at least $min' nidhogg/test/native-gui.sh       || fail "native-gui.sh does not fail below a lane's floor"
 # the pre-flight leaves the shell's files to the check subset and these lanes: each is in one of them
 for f in test/src/nidhogg-tests/nhwl-*-tests.el; do
