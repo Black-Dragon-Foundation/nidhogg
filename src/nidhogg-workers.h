@@ -45,6 +45,14 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #ifndef NH_WK_HARNESS
 # include "lisp.h"
 #endif
+#include "nidhogg-chaos.h"
+#ifdef NH_WK_HARNESS
+# define nh_tc_on false
+# define nh_tc_mono_ns() UINT64_C (0)
+# define nh_tc_kick() ((void) 0)
+#else
+# include "nidhogg-testclock.h"
+#endif
 
 /* The worker threads (the thread names are nh-io, nh-parse, nh-img,
    nh-blk and nh-save).  */
@@ -155,6 +163,11 @@ extern void nh_wk_wake_close (struct nh_wk_wake *);
 extern bool nh_wk_fd_budget_ok (int extra);
 extern bool nh_wk_on_worker (void);
 extern void nh_wk_set_on_worker (bool);
+/* CLOCK_MONOTONIC in ns, following the test clock.  What a worker reads
+   and what a time spent is measured with.  */
+extern uint64_t nh_wk_now (void);
+/* CLOCK_MONOTONIC in ns, always real.  */
+extern uint64_t nh_wk_real_ns (void);
 
 /* Condition variables whose timed waits use CLOCK_MONOTONIC deadlines
    (ns).  macOS has no pthread_condattr_setclock: there the wait is

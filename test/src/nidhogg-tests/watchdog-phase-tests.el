@@ -1,4 +1,5 @@
 ;;; watchdog-phase-tests.el --- tests for the stall watchdog (phase)  -*- lexical-binding: t -*-
+;; test-class: det
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
@@ -112,6 +113,7 @@ the primitive itself, when it has one, comes first)."
     done))
 
 (ert-deftest watchdog/phases ()
+  :tags '(:cond)
   (wdph-running
     (with-temp-buffer
       (insert "abc")
@@ -152,6 +154,7 @@ the primitive itself, when it has one, comes first)."
     (should (eq (nidhogg-watchdog--test-phase) 'lisp))))
 
 (ert-deftest watchdog/phase-restored-after-error ()
+  :tags '(:cond)
   ;; A non-local exit pops the phases pushed inside its catch target
   ;; (`unwind_to_catch'): an error out of `json-parse-string', a `throw' out of a
   ;; filter.
@@ -167,6 +170,7 @@ the primitive itself, when it has one, comes first)."
     (should (eq (nidhogg-watchdog--test-phase) 'lisp))))
 
 (ert-deftest watchdog/phase-kept-across-an-inner-catch ()
+  :tags '(:cond)
   ;; A catch established inside the phase and thrown to inside it, and
   ;; an error caught inside it, leave the phase alone.
   (wdph-running

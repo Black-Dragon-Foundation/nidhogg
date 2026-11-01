@@ -102,6 +102,13 @@ process to complete."
 			     :buffer stdout-buffer
 			     :stderr stderr-buffer)))
     (process-test-wait-for-sentinel proc 20)
+    ;; The sentinel can run before the stderr pipe has been read: the
+    ;; pipe's own end of file is the event to wait for (bug#80166).
+    (let ((errp (get-buffer-process stderr-buffer))
+          (start (float-time)))
+      (while (and errp (process-live-p errp)
+                  (< (- (float-time) start) process-test-sentinel-wait-timeout))
+        (accept-process-output errp 0.1)))
     (should (with-current-buffer stdout-buffer
 	      (goto-char (point-min))
 	      (looking-at "hello stdout!")))
@@ -136,6 +143,12 @@ process to complete."
     (set-process-sentinel stderr-proc (lambda (_proc _input)
 					(setq stderr-sentinel-called t)))
     (process-test-wait-for-sentinel proc 20)
+    ;; The stderr pipe's end of file, not the main sentinel, says its
+    ;; output has been read (bug#80166).
+    (let ((start (float-time)))
+      (while (and (not stderr-sentinel-called)
+                  (< (- (float-time) start) process-test-sentinel-wait-timeout))
+        (accept-process-output stderr-proc 0.1)))
     (should (equal 1 (with-current-buffer stdout-buffer
 		       (point-max))))
     (should (equal "hello stdout!\n"
