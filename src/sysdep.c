@@ -38,6 +38,10 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "sysselect.h"
 #include "blockinput.h"
 
+#ifdef HAVE_NIDHOGG_WORKERS
+# include <stdatomic.h>
+#endif
+
 #ifdef HAVE_LINUX_FS_H
 # include <linux/fs.h>
 # include <sys/syscall.h>
@@ -1767,6 +1771,33 @@ enum { BACKTRACE_LIMIT_MAX = 500 };
 static void *thread_backtrace_buffer[BACKTRACE_LIMIT_MAX + 1];
 static int thread_backtrace_npointers;
 
+#ifdef HAVE_NIDHOGG_WORKERS
+/* A worker's fatal signal, until the main thread takes it.  The signal
+   can land anywhere on the main thread, inside malloc among others, and
+   the fatal path allocates: run in the handler, it would block for good
+   on a lock its own thread holds, with the auto-save unwritten.  So the
+   handler only asks for the next safe point, and returns.  */
+static _Atomic int forwarded_fatal;
+
+/* How often, 10 ms apart, a worker repeats the signal: it may land just
+   before a select, which then sleeps on.  After that the signal runs the
+   fatal path in the handler, as a main thread in a long C loop needs.  */
+enum { FORWARD_STEPS = 100 };
+
+/* The main thread, at a safe point: take a forwarded signal.  */
+void
+take_forwarded_fatal (void)
+{
+  int sig = atomic_exchange (&forwarded_fatal, 0);
+  if (sig)
+    {
+      /* As in the handler; a repeat on its way waits for the end.  */
+      pthread_sigmask (SIG_BLOCK, &process_fatal_action.sa_mask, 0);
+      terminate_due_to_signal (sig, 40);
+    }
+}
+#endif /* HAVE_NIDHOGG_WORKERS */
+
 /* SIG has arrived at the current thread.
    If we are on the main thread, handle the signal SIG with HANDLER.
    Otherwise, this is a fatal error in the handling thread.  */
@@ -1781,6 +1812,16 @@ deliver_thread_signal (int sig, signal_handler_t handler)
       thread_backtrace_npointers
 	= backtrace (thread_backtrace_buffer, BACKTRACE_LIMIT_MAX);
       sigaction (sig, &process_fatal_action, 0);
+#ifdef HAVE_NIDHOGG_WORKERS
+      atomic_store (&forwarded_fatal, sig);
+      for (int i = 0; i < FORWARD_STEPS && atomic_load (&forwarded_fatal); i++)
+	{
+	  pthread_kill (main_thread_id, sig);
+	  nanosleep (&(struct timespec) { .tv_nsec = 10000000 }, NULL);
+	}
+      /* Not taken: whoever clears it goes on, the other stops.  */
+      if (atomic_exchange (&forwarded_fatal, 0))
+#endif
       pthread_kill (main_thread_id, sig);
 
       /* Avoid further damage while the main thread is exiting.  */
@@ -1803,6 +1844,14 @@ handle_fatal_signal (int sig)
 static void
 deliver_fatal_signal (int sig)
 {
+#ifdef HAVE_NIDHOGG_WORKERS
+  if (atomic_load (&forwarded_fatal) == sig
+      && pthread_equal (pthread_self (), main_thread_id))
+    {
+      pending_signals = true;
+      return;
+    }
+#endif
   deliver_process_signal (sig, handle_fatal_signal);
 }
 
