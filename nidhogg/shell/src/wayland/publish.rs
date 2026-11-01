@@ -303,6 +303,13 @@ struct Surface {
     outs: BTreeMap<u64, Pending>,
 }
 
+impl Surface {
+    /// A packet's picture waits for a commit of this surface or of its layers.
+    fn waits(&self) -> bool {
+        !self.damage.is_empty() || !self.outs.is_empty()
+    }
+}
+
 /// The presenter's side: fronts, merged packets, the display's composer and the counters.
 #[derive(Default)]
 pub struct Stage {
@@ -363,7 +370,7 @@ impl Stage {
             .fold(false, |w, s| {
                 // the newest packet says which surfaces may show a buffer
                 s.drawable = false;
-                w || !s.damage.is_empty()
+                w || s.waits()
             });
         if waiting {
             Counters::add(&self.stats.superseded, 1);
@@ -660,6 +667,10 @@ impl Stage {
     pub fn forget(&mut self, id: u64) {
         if let Some(s) = self.surfaces.remove(&id) {
             self.composer.forget(s.glitnir_root);
+            // the packet this surface's damage waited for commits nothing now, unless the rest of its tree still shows it
+            if s.waits() && !self.surfaces.values().any(|o| o.root == s.root && o.waits()) {
+                Counters::add(&self.stats.superseded, 1);
+            }
         }
         self.keys.remove(&id);
         self.applied.remove(&id);
