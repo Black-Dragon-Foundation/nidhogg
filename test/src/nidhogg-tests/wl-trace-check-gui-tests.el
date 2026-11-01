@@ -1,4 +1,5 @@
 ;;; wl-trace-check-gui-tests.el --- the protocol-trace checker, on traces written by hand  -*- lexical-binding: t -*-
+;; test-class: cond
 
 ;; Each rule of nidhogg/test/wl-trace-check.el is run on a trace that breaks it (it must report it) and on one that
 ;; does not (it must stay silent).  The rows need no frame and no compositor; they run with `--select wl-trace-check/'.

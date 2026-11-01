@@ -1,4 +1,5 @@
 ;;; workers-tests.el --- tests for the worker threads (flag, feature, switches)  -*- lexical-binding: t -*-
+;; test-class: cond
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
@@ -329,10 +330,14 @@ ARGS go before the --eval."
               (should (nidhogg-workers--test-await-paused 'after-read 5000))
               (should (nidhogg-workers--test-await-paused 'before-decode 5000))
               (should (nidhogg-workers--test-await-paused 'in-lookup 5000))
+              ;; A job's waiters wake before its finish is queued: wait
+              ;; until each is queued, or the next overtakes it.
               (nidhogg-workers--release 'in-lookup)
               (should (eql (nidhogg-workers--test-wait j3 5000) 1))
+              (should (nidhogg-workers--test-await-inflight 'nh-blk 2 5000))
               (nidhogg-workers--release 'after-read)
-              (should (eql (nidhogg-workers--test-wait j1 5000) 1)))
+              (should (eql (nidhogg-workers--test-wait j1 5000) 1))
+              (should (nidhogg-workers--test-await-inflight 'nh-blk 1 5000)))
             (should (and j1 j3))
             (should-not (funcall ours))
             (set-process-filter

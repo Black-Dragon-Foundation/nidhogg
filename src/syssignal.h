@@ -31,6 +31,9 @@ extern void block_interrupt_signal (sigset_t *);
 extern void restore_signal_mask (sigset_t const *);
 extern void block_tty_out_signal (sigset_t *);
 extern void unblock_tty_out_signal (sigset_t const *);
+#ifdef HAVE_NIDHOGG_WORKERS
+extern void take_forwarded_fatal (void);
+#endif
 
 #ifdef HAVE_PTHREAD
 #include <pthread.h>

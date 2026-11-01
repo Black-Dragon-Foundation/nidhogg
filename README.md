@@ -20,7 +20,8 @@ for upstreaming.
   `"31.1-nidhogg.4"`. Nidhogg's version lives in `nidhogg-version` and is appended to `M-x emacs-version` output.
 - Icon: the Black Dragon Foundation logo, in place of GNU Emacs's under the same file names, so the install rules,
   `Icon=emacs` in the `.desktop` files and the app bundle's `Info.plist` stay as they are. In-tree: the hicolor PNGs
-  (`etc/images/icons/hicolor/<N>x<N>/apps/emacs.png`, 16 to 512 px; 48 px and below are a head-and-chest crop),
+  (`etc/images/icons/hicolor/<N>x<N>/apps/emacs.png`, 16 to 512 px; the dragon's head, chest and inner wings on a
+  rounded tile, the head alone at 32 px and below),
   `scalable/apps/emacs.svg` (the 512 px PNG embedded; it is also the X/GTK frame icon), the macOS
   `nextstep/Cocoa/Emacs.base/Contents/Resources/Emacs.icns` and the Android launcher icon under `java/res/`. GNU's
   document icons and Windows icons (`nt/icons/`) are unchanged. If a rebase conflicts on one of these files, keep
@@ -170,7 +171,8 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
 - A test file that fails in `--check` runs once more (`nidhogg/test/check-rerun.sh`). A test that failed and then passed
   fails the check unless `nidhogg/test/flaky.txt` lists it as `NAME # cause; stress run`; the run then prints
   `flaky (listed: CAUSE)`. A listed name that no test defines, or that two files define, fails the check too. A flake
-  without a cause is fixed, not listed. `bash nidhogg/test/check-rerun-test.sh` tests the step with a fake runner.
+  without a cause is fixed, not listed. A deterministic (class D) test is never rerun and stays red, and a D test on
+  `flaky.txt` fails the check; a C test in the same file still reruns. `bash nidhogg/test/check-rerun-test.sh` tests the step with a fake runner.
 - `bash nidhogg/test/build-test.sh` checks the dry-run output.
 
 ## Release tarballs
@@ -214,19 +216,66 @@ on a Nidhogg frame, pgtk or the native shell's as the prefix was built, under a 
   passed, 1 on a failure or a timeout (default 300 s).
 - CI job `gui` (below) runs the fedora-45 tarball at scales 1 and 2, and `native-gui` the native shell's rows.
 
+## The test clock
+
+A test that waits for time spends real time and races the machine it runs on. The test clock replaces both: a
+batch Emacs with `NIDHOGG_TEST_CLOCK=1` in its environment may call `(nidhogg-test-clock-start &optional AUTO)`, and
+from then on `current-time`, Lisp timers and the workers' clocks read virtual time. The variable alone changes
+nothing, and an interactive Emacs refuses to start the clock. File times stay real, and so do the watchdog's own
+thread and the Rust shell's waits. The clock and the watchdog are never on together: `nidhogg-test-clock-start`
+refuses a running watchdog. A build without Glitnir has no clock, and `(featurep 'nidhogg-test-clock)` is nil.
+
+- **Manual (AUTO nil).** Only `(nidhogg-test-clock-advance SECS)` moves it. Due timers run in order, each at its own
+  time, and workers' timed waits come due. A wait's own timeout stays real, because nothing inside the wait could
+  move the clock.
+- **Auto (AUTO non-nil).** A wait moves the clock once nothing can run, straight to the earliest deadline: a Lisp
+  timer, a thread's timeout or a worker's timed wait. `(sit-for 3600)` returns at once, with the hour gone by.
+
+Nothing can run when all of these hold: no other Lisp thread is runnable, no process output is in the kernel or
+between a read and its FIFO, every job is blocked (parked at a pause point, in a timed wait, or queued with no thread
+for it) and nh-io sits in its poll, no completion or signal is pending, and no real child is alive. A
+`nidhogg-test-peer` is not a child, so it never holds the clock. A real child does, so time stands still while it
+lives. `(nidhogg-test-clock-state)` shows what the clock sees: `:timers`, `:deadlines`, `:jobs`, `:fds`, `:children`
+and `:blocks`, the selects that really blocked.
+
+If nothing can run and nothing is left to wait for, the wait can never end. It signals
+`nidhogg-test-clock-deadlock`, with that same plist as the error's data, instead of hanging until the runner's timeout.
+
+Waits on the thread that holds the global lock (`nh_wk_wait`, the output settle) keep real bounds, since that thread
+is what would have to move the clock. A Lisp thread that `condition-notify` just woke counts as blocked until it
+runs, so time can move a little before it does; no wake-up is lost.
+
+    (nidhogg-test-clock-start t)
+    (run-at-time 60 nil #'my-tick)
+    (sit-for 120)                ; returns at once; my-tick ran at 60.0
+    (nidhogg-test-clock-now)     ; => 120.0
+    (nidhogg-test-clock-stop)
+
 ## CI and releases
 
 `.github/workflows/build.yml` runs on pushes to `nidhogg-31`, `v*-nidhogg.*` tags, pull requests and by hand
 (`drgnx_ref` input: the drgnx branch, tag or commit under test). Without the input the drgnx commit is the one pinned
-in the `drgnx` job, never drgnx's moving `main`: a drgnx push cannot turn Nidhogg red. The pin is written twice, as
-the commit of drgnx's tiers workflow (`uses: …/drgnx-tiers.yml@COMMIT`, which takes no expression) and as the default
-`drgnx_ref`; `ci-test.sh` checks they agree. Bump both by hand to a drgnx commit whose own CI is green.
+in the `drgnx` job, never drgnx's moving `main`: a drgnx push cannot turn Nidhogg red. The pin is written once, as
+the commit of drgnx's tiers workflow (`uses: …/drgnx-tiers.yml@COMMIT`, which takes no expression); a `pin` job reads
+it from that line and it becomes the default `drgnx_ref`. Bump that line by hand to a drgnx commit whose own CI is green.
 
 A joint round (drgnx and Nidhogg change together, drgnx's `docs/develop/ci.md`, "Joint rounds"): drgnx goes to
 `ci/joint/<name>`, where its own CI runs only what needs no Emacs, and this workflow runs by hand with
 `drgnx_ref=ci/joint/<name>`, so drgnx's Emacs-side tiers run once, on this run's build. Before the release tag, the pin
 moves to the round's green drgnx commit.
 
+A chaos build (`build.sh --dev --chaos`; `--chaos` refuses without `--dev`, so it never reaches a release) adds seeded
+delays at the workers' sync points (`src/nidhogg-chaos.h`). The seed is `NIDHOGG_TEST_SEED` (decimal, default 0), child
+Emacs processes inherit it, and the first point prints `chaos seed N` to stderr. It makes an ordering bug likely on a
+machine whose timing never shows it, not certain.
+
+- Test classes: a test file in `test/src/nidhogg-tests/` states its class in one header line within its first 15 lines,
+  exactly `;; test-class: det` (deterministic: no real time), `;; test-class: cond` (waits on conditions, no fixed
+  pause) or `;; test-class: timing` (may assert the clock). A test's own tag (`:det`, `:cond`, `:timing`) overrides the
+  file's. `test-class-lint-tests.el` reads the files as data and fails a classified file that breaks its class (a
+  same-file helper counts as part of the test). Files that are not tests are listed in `nidhogg/test/class-exempt.txt`
+  (`FILE # reason`); a row whose file is gone fails the check. Until every file is classified the check reports the
+  count of unclassified files and passes.
 - `tree`: `tree-test.sh`, `ci-test.sh` and `check-rerun-test.sh` (full history and tags).
 - `linux` (fedora-44, fedora-45, ubuntu-26.04): `build.sh --container D --stage build`, the cache saves, then `--stage check
   --check nidhogg/check-subset.txt`, then `--stage pack --out ...` (so a failing check keeps the build's caches), then
@@ -276,8 +325,9 @@ moves to the round's green drgnx commit.
   - macOS: the tarball (`tarball-macos-<arch>-...`), Homebrew's downloads (`brew-macos-<arch>-<hash of deps/macos.build>`,
     Homebrew verifies checksums) and compiled Lisp (`lisp-macos-<arch>-<gcc and libgccjit versions>-<runner temp>-...`).
   - Scoping: a run restores caches of its own branch or the default branch (`nidhogg-31`), and a pull request those of its
-    base; never those of sibling branches or other tags. Keys are identical on every branch, so a run on `macos-ci` or a
-    pull request reuses what `nidhogg-31` saved. Unused caches are evicted after 7 days and the oldest go first above 10 GB
+    base; never those of sibling branches or other tags. Keys are identical on every branch, so a run on a `ci/*` branch
+    or a pull request reuses what `nidhogg-31` saved. Only `nidhogg-31` saves (every save step is limited to it): the same
+    key saved again per ref counts once per ref against the limit. Unused caches are evicted after 7 days and the oldest go first above 10 GB
     ([GitHub: dependency caching](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)).
 - `timing` (fedora-45 and macOS, after `linux` and `macos`; `continue-on-error: true`; not in `release`'s needs, so it can
   never fail a run or a release): the timing test files in a lane of their own, report-only
@@ -288,7 +338,8 @@ moves to the round's green drgnx commit.
   verdicts are in the job log and the `timing-*` artifact. Absolute budgets stay on the desktop's perf island.
   `timing-lane.sh --self-test` checks the verdict rules.
 - Before a round, `nidhogg/test/preflight.sh` (the desktop, in the heavy slots) runs the passes that find ordering bugs:
-  the check files of `preflight-files.txt` pinned to 1 and 2 CPUs and under half a core (3 runs each; podman options
+  every `;; test-class: det` file twice unpinned and once on 1 CPU (a difference between the runs is red), then
+  the check files of `preflight-files.txt` plus every `cond` file outside the GUI set pinned to 1 and 2 CPUs and under half a core (3 runs each; podman options
   through `NIDHOGG_BUILD_PODMAN_ARGS`), on the chaos build with many seeds, the workers harness (`--tsan`, `--sched`),
   and the reds again under `rr record --chaos -n`, packed so that the trace replays in a later container (`build.sh`'s
   `NIDHOGG_CHECK_RR`; SELinux denies a labelled container `perf_event_open`, so that one container runs with labels off).
@@ -479,8 +530,10 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   files load with their packages).
 - Tests: `workers/…` in `test/src/nidhogg-tests/workers-*-tests.el`, GUI rows `workers-gui/…` in `*-gui-tests.el`;
   `nidhogg/test/workers-harness.sh` compiles the C files without Lisp (`--tsan MODULE…` runs the ThreadSanitizer
-  drivers, `--fuzz SECONDS` the parser fuzz targets); `nidhogg/test/pkg-test.sh` runs the package suites (jsonrpc,
-  treesit, process, files) with the workers on, off or `inline` and `--compare`s on against off (the treesit group
+  drivers, `--fuzz SECONDS` the parser fuzz targets, `--sched MODULE… [--seeds N]` the drivers in `fuzz/sched-*.c`
+  under exact thread orders, PCT at depth 2, where `--seeds S:S` replays a failed seed; `NH_SCHED_CFLAGS=-DNH_SCHED_BUG`
+  breaks the completion channel's clear-then-re-check, and `wake` must go red); `nidhogg/test/pkg-test.sh` runs the
+  package suites (jsonrpc, treesit, process, files) with the workers on, off or `inline` and `--compare`s on against off (the treesit group
   loads the test grammars when `grammars.sh` has built them); `NIDHOGG_BUILD_SANITIZE=address,undefined
   nidhogg/build.sh --dev …` is the ASan build. CI jobs `workers-harness`, `workers-asan`, `workers-pkg` run them.
 - The runtime (`src/nidhogg-workers.c`): five workers, `nh-io`, `nh-parse`, `nh-img` (one thread per two cores, at
@@ -499,7 +552,9 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
 - The fatal path: `shut_down_emacs` marks the workers dead first when Emacs dies of a signal or a fatal error. From
   then on no job is submitted, no wait waits, completions are dropped and the queues are abandoned (not freed), so a
   crash under a worker's mutex, or on a worker thread (forwarded to the main thread as usual), still prints its
-  backtrace and writes the emergency auto-save. No signal handler takes a worker mutex: the SIGCHLD handler runs in
+  backtrace and writes the emergency auto-save. A crash on a worker reaches the main thread at its next safe point
+  (`process_pending_signals`), since the auto-save allocates and the signal may land inside malloc; a main thread that
+  gets to none in 1 s takes it in the handler. No signal handler takes a worker mutex: the SIGCHLD handler runs in
   signal context, where submit, wait and cancel refuse at once and a worker mutex taken anyway aborts the process
   rather than deadlock. `kill-emacs` with jobs in flight exits without waiting for them. Test primitives:
   `nidhogg-workers--test-crash`, `--test-fatal-under-lock`, `--test-signal-under-locks`.

@@ -118,6 +118,11 @@ AC_ARG_WITH([nidhogg-workers],
   [AS_HELP_STRING([--with-nidhogg-workers],
     [build the worker threads (process reader, tree-sitter, images, file blocks)])],
   [], [with_nidhogg_workers=no])
+dnl Nidhogg: seeded delays at the workers' sync points; test runs only, never a release.
+AC_ARG_WITH([nidhogg-chaos],
+  [AS_HELP_STRING([--with-nidhogg-chaos],
+    [seed delays at the worker threads' sync points, for test runs])],
+  [], [with_nidhogg_chaos=no])
 
 AC_CONFIG_HEADERS([src/config.h:src/config.in])
 AC_CONFIG_SRCDIR([src/lisp.h])
@@ -7843,13 +7848,18 @@ dnl Nidhogg: the worker threads.  Every .c file is compiled with the flag; each 
 NIDHOGG_WORKERS_OBJ=
 case $with_nidhogg_workers in
   yes)
-    NIDHOGG_WORKERS_OBJ="nidhogg-workers.o nidhogg-treesit-bg.o nidhogg-io.o nidhogg-decode.o nidhogg-json-tape.o nidhogg-image-bg.o nidhogg-blk.o"
+    NIDHOGG_WORKERS_OBJ="nidhogg-workers.o nidhogg-treesit-bg.o nidhogg-io.o nidhogg-decode.o nidhogg-json-tape.o nidhogg-image-bg.o nidhogg-blk.o nidhogg-testclock.o"
     AC_DEFINE([HAVE_NIDHOGG_WORKERS], [1], [Define to 1 to build the worker threads.])
     ;;
   no) ;;
   *) AC_MSG_ERROR([--with-nidhogg-workers takes yes or no]) ;;
 esac
 AC_SUBST([NIDHOGG_WORKERS_OBJ])
+case $with_nidhogg_chaos in
+  yes) AC_DEFINE([NH_CHAOS], [1], [Define to 1 for seeded delays at the workers' sync points.]) ;;
+  no) ;;
+  *) AC_MSG_ERROR([--with-nidhogg-chaos takes yes or no]) ;;
+esac
 
 # This is just a printable representation of the shared user ID.
 android_shared_user=

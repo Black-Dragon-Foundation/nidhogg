@@ -2446,9 +2446,7 @@ DEFUN ("nidhogg-workers--test-image-cache-clear",
 static int64_t
 nh_img_now (void)
 {
-  struct timespec ts;
-  clock_gettime (CLOCK_MONOTONIC, &ts);
-  return (int64_t) ts.tv_sec * 1000000000 + ts.tv_nsec;
+  return nh_wk_now ();
 }
 
 int
