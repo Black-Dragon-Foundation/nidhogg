@@ -310,6 +310,35 @@ check_rerun() {
 }
 mkdir -p "$B/src" "$B/obj"
 BODY
+  # Glitnir's floor is configure's; a distro that carries an older Rust (Debian 13) builds with a pinned private toolchain
+  # in the build directory: network once, never root.  rustup-init comes from the versioned archive (the unversioned file
+  # changes under a pinned hash), one sha256 per target, the same pins as drgnx's install.sh
+  if [ -n "$GLITNIR" ] && [ "$UNAME" = Linux ]; then cat <<'BODY'
+R="$B/rust" RUST_PIN=1.93.1 RUSTUP_VERSION=1.28.2
+rust_recent() {
+  v=$(rustc --version 2>/dev/null | sed -n 's/^rustc \([0-9]*\)\.\([0-9]*\).*/\1 \2/p')
+  [ -n "$v" ] && { [ "${v% *}" -gt 1 ] || [ "${v#* }" -ge 93 ]; }
+}
+if [ -x "$R/cargo/bin/rustc" ]; then export RUSTUP_HOME="$R/home" CARGO_HOME="$R/cargo" PATH="$R/cargo/bin:$PATH"; fi
+if ! rust_recent; then
+  phase "Rust $RUST_PIN (private, in the build directory)"
+  case $(uname -m) in
+    x86_64) sha=20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c ;;
+    aarch64) sha=e3853c5a252fca15252d07cb23a1bdd9377a8c6f3efa01531109281ae47f841c ;;
+    *) echo "build.sh: no pinned Rust for $(uname -m): install Rust 1.93 or newer" >&2; exit 1 ;;
+  esac
+  mkdir -p "$R"
+  curl -fsSL -o "$R/rustup-init" "https://static.rust-lang.org/rustup/archive/$RUSTUP_VERSION/$(uname -m)-unknown-linux-gnu/rustup-init" ||
+    { echo "build.sh: could not download rustup-init" >&2; exit 1; }
+  echo "$sha  $R/rustup-init" | sha256sum -c --quiet ||
+    { echo "build.sh: rustup-init is not the pinned file: nothing was run" >&2; rm -f "$R/rustup-init"; exit 1; }
+  chmod +x "$R/rustup-init"
+  export RUSTUP_HOME="$R/home" CARGO_HOME="$R/cargo" PATH="$R/cargo/bin:$PATH"
+  logged "$B/rust.log" "$R/rustup-init" -y --no-modify-path --profile minimal --default-toolchain "$RUST_PIN"
+  rm -f "$R/rustup-init"
+fi
+BODY
+  fi
   case $STAGE in all|build) ;; *) echo 'cd "$B/obj"' ;; esac
   if [ "$STAGE" = all ] || [ "$STAGE" = build ]; then cat <<'BODY'
 rm -f "$B"/*.log
