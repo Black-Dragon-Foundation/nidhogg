@@ -1521,6 +1521,7 @@ nh_save_test_arena_hold (void)
 static void
 nh_save_arena_free (struct buffer *b)
 {
+  NH_CHAOS_POINT ("arena-free");
   pthread_mutex_lock (&nh_save_arena_m);
   struct nh_save_arena *a = nh_save_arena_find (b);
   if (a)
@@ -1544,6 +1545,7 @@ nh_save_arena_take (struct buffer *b, size_t n, struct nh_save_arena **arena,
   unsigned char *text = NULL;
   *arena = NULL;
   *cap = n;
+  NH_CHAOS_POINT ("arena-take");
   pthread_mutex_lock (&nh_save_arena_m);
   struct nh_save_arena *a = nh_save_arena_find (b);
   if (a && !a->busy && !a->dead && a->cap >= n)
@@ -1586,7 +1588,7 @@ struct nh_save_job
   Lisp_Object holder;		/* (BUFFER . NAME), in nh_save_roots */
   modiff_count modiff;		/* BUF_MODIFF at the snapshot */
   struct timespec modtime;	/* the buffer's modtime at the snapshot */
-  struct timespec started;	/* CLOCK_MONOTONIC, at the snapshot */
+  struct timespec started;	/* nh_wk_now, at the snapshot */
   bool landed;
   /* A later auto-save skipped the buffer for this hung job, and
      do-auto-save then counted the buffer's whole text as saved.  */
@@ -1609,6 +1611,7 @@ nh_save_arena_adopt (struct nh_save_job *j)
 {
   if (!j->text || j->arena || j->nbytes < NH_SAVE_ARENA_MIN)
     return;
+  NH_CHAOS_POINT ("arena-adopt");
   pthread_mutex_lock (&nh_save_arena_m);
   struct nh_save_arena *a = nh_save_arena_find (j->buf);
   if (a && (a->busy || a->dead || a->cap >= j->cap))
@@ -1637,11 +1640,18 @@ nh_save_arena_adopt (struct nh_save_job *j)
 static bool nh_save_keyboard_triggered;
 static intmax_t nh_save_kbd_depth;
 
+static struct timespec
+nh_save_clock (void)
+{
+  uint64_t ns = nh_wk_now ();
+  return (struct timespec) { .tv_sec = ns / 1000000000,
+			     .tv_nsec = ns % 1000000000 };
+}
+
 static int64_t
 nh_save_age_ns (struct nh_save_job *j)
 {
-  struct timespec now;
-  clock_gettime (CLOCK_MONOTONIC, &now);
+  struct timespec now = nh_save_clock ();
   return ((int64_t) (now.tv_sec - j->started.tv_sec) * 1000000000
 	  + (now.tv_nsec - j->started.tv_nsec));
 }
@@ -1824,6 +1834,7 @@ nh_save_free_text (struct nh_save_job *j)
 	{
 	  /* The memory stays the buffer's, unless it was freed
 	     meanwhile.  */
+	  NH_CHAOS_POINT ("arena-back");
 	  pthread_mutex_lock (&nh_save_arena_m);
 	  j->arena->busy = false;
 	  if (j->arena->dead)
@@ -2153,6 +2164,7 @@ nh_save_queue (struct buffer *b, int mode)
       free (j);
       if (arena)
 	{
+	  NH_CHAOS_POINT ("arena-back");
 	  pthread_mutex_lock (&nh_save_arena_m);
 	  arena->busy = false;
 	  pthread_mutex_unlock (&nh_save_arena_m);
@@ -2164,13 +2176,12 @@ nh_save_queue (struct buffer *b, int mode)
     }
   j->arena = arena;
   j->cap = cap;
-  struct timespec c0, c1;
   int64_t f0 = nh_save_thread_faults ();
   int depth = NH_WK_PHASE_PUSH (NH_WK_PH_WORKER_WAIT, NH_WK_RS_SNAPSHOT);
-  clock_gettime (CLOCK_MONOTONIC, &c0);
+  struct timespec c0 = nh_save_clock ();
   memcpy (text, BUF_BEG_ADDR (b), n1);
   memcpy (text + n1, BUF_GAP_END_ADDR (b), n2);
-  clock_gettime (CLOCK_MONOTONIC, &c1);
+  struct timespec c1 = nh_save_clock ();
   NH_WK_PHASE_POP (depth);
   atomic_store (&nh_save_snap_ns, (int64_t) (c1.tv_sec - c0.tv_sec)
 		* 1000000000 + (c1.tv_nsec - c0.tv_nsec));
@@ -2186,7 +2197,7 @@ nh_save_queue (struct buffer *b, int mode)
   j->buf = b;
   j->modiff = BUF_MODIFF (b);
   j->modtime = b->modtime;
-  clock_gettime (CLOCK_MONOTONIC, &j->started);
+  j->started = nh_save_clock ();
   j->job.w = NH_WK_SAVE;
   j->job.run = nh_save_run;
   j->job.finish = nh_save_finish;

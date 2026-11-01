@@ -34,7 +34,7 @@ DISTROS="fedora-44 fedora-45 ubuntu-26.04 debian-13 arch"
 usage() {
   cat >&2 <<USAGE
 usage: nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memory SIZE]
-                        [--build-dir DIR] [--check FILE] [--out FILE] [--stage build|check|pack] [--without-glitnir] [--nidhogg-wayland] [--dev] [--without-nidhogg-watchdog] [--without-nidhogg-workers] [--dry-run]
+                        [--build-dir DIR] [--check FILE] [--out FILE] [--stage build|check|pack] [--without-glitnir] [--nidhogg-wayland] [--dev] [--chaos] [--without-nidhogg-watchdog] [--without-nidhogg-workers] [--dry-run]
   DISTRO: $DISTROS
 USAGE
   exit 2
@@ -46,6 +46,7 @@ DEV=0; [ "${NIDHOGG_BUILD_DEV:-}" != 1 ] || DEV=1
 NHWL=0   # --nidhogg-wayland: Nidhogg's own Wayland shell (no GTK) instead of pgtk
 WATCHDOG=1   # the stall watchdog is built in unless --without-nidhogg-watchdog
 WORKERS=1    # the worker threads are built in unless --without-nidhogg-workers
+CHAOS=0      # --chaos: seeded delays at the workers' sync points (src/nidhogg-chaos.h); dev builds only, so never in a release
 while [ $# -gt 0 ]; do
   case $1 in
     --container) [ $# -ge 2 ] || usage; MODE=container; DISTRO=$2; shift 2 ;;
@@ -60,6 +61,7 @@ while [ $# -gt 0 ]; do
     --without-glitnir) GLITNIR=""; shift ;;
     --nidhogg-wayland) NHWL=1; shift ;;
     --dev) DEV=1; shift ;;
+    --chaos) CHAOS=1; shift ;;
     --without-nidhogg-watchdog) WATCHDOG=0; shift ;;
     --without-nidhogg-workers) WORKERS=0; shift ;;
     --dry-run) DRY=1; shift ;;
@@ -70,6 +72,7 @@ done
 if [ "$DEV" = 1 ] && { [ -n "$OUT" ] || [ "$STAGE" = pack ]; }; then
   die "--dev builds are never packed (no --out, no --stage pack): a dev build is not a release; build without --dev"
 fi
+[ "$CHAOS" = 0 ] || [ "$DEV" = 1 ] || die "--chaos is for dev builds only: add --dev"
 NATIVE=aot; [ "$DEV" = 0 ] || NATIVE=yes
 # NIDHOGG_BUILD_SANITIZE=address,undefined adds -fsanitize=... to CFLAGS and LDFLAGS: dev builds only (the workers-asan CI job)
 SANITIZE=${NIDHOGG_BUILD_SANITIZE:-}
@@ -161,6 +164,7 @@ PKGS="\$(sed \"s/#.*//\" \$S/nidhogg/deps/$DISTRO.build"
 if [ -n "$GLITNIR" ]; then PKGS="$PKGS)"; else PKGS="$PKGS | grep -vxE 'cargo|rust|rustc')"; fi
 [ "$WATCHDOG" = 0 ] || CONF="$CONF --with-nidhogg-watchdog"
 [ "$WORKERS" = 0 ] || CONF="$CONF --with-nidhogg-workers"
+[ "$CHAOS" = 0 ] || CONF="$CONF --with-nidhogg-chaos"
 # the quotes are parsed by the build script, not here
 [ -z "$SANITIZE" ] || CONF="$CONF CFLAGS='-g -O1 -fno-omit-frame-pointer -fsanitize=$SANITIZE' LDFLAGS='-fsanitize=$SANITIZE'"
 
@@ -234,6 +238,8 @@ script() {
   [ -z "$SANITIZE" ] || echo 'export ASAN_OPTIONS=detect_leaks=0:abort_on_error=0:detect_stack_use_after_return=0 UBSAN_OPTIONS=print_stacktrace=1'
   # the 100 MB-class workers rows read this to size themselves down under the sanitizers (nidhogg-workers--test-size-scale)
   [ -z "${NIDHOGG_WORKERS_TEST_SIZE_SCALE:-}" ] || printf 'export NIDHOGG_WORKERS_TEST_SIZE_SCALE=%q\n' "$NIDHOGG_WORKERS_TEST_SIZE_SCALE"
+  # where the test grammars are, inside the container (the pre-flight mounts them): the treesit rows skip without them
+  [ -z "${NIDHOGG_TEST_GRAMMARS:-}" ] || printf 'export NIDHOGG_TEST_GRAMMARS=%q\n' "$NIDHOGG_TEST_GRAMMARS"
   if [ "$MODE" = container ]; then
     case $DISTRO in
       ubuntu-*|debian-*)
@@ -246,6 +252,9 @@ script() {
     esac
     # Fedora ships the sanitizer runtimes apart from gcc
     if [ -n "$SANITIZE" ]; then case $DISTRO in ubuntu-*|debian-*|arch) ;; *) echo "dnf -y --setopt=install_weak_deps=False install libasan libubsan libtsan" ;; esac; fi
+    # the pre-flight, Fedora only: packages only its tests need (gnutls-serv), and rr for P5; NIDHOGG_CHECK_RR is the
+    # recorder's command, the prefix of each test run.  Not in deps/: the builds' caches are keyed on that file
+    [ -z "${NIDHOGG_CHECK_PACKAGES:-}${NIDHOGG_CHECK_RR:-}" ] || echo "dnf -y --setopt=install_weak_deps=False install ${NIDHOGG_CHECK_PACKAGES:-} ${NIDHOGG_CHECK_RR:+rr}"
     [ -z "${NIDHOGG_BUILD_CCACHE:-}" ] || echo 'export CCACHE_DIR=/ccache CCACHE_COMPILERCHECK=content CCACHE_MAXSIZE=500M CC="ccache gcc"; ccache -z >/dev/null'
   fi
   cat <<'BODY'
@@ -276,6 +285,23 @@ logged() {
     tail -n 100 "$log" >&2
     exit 1
   fi
+}
+# a check target (its last argument): a failure is not the end of the run, check_rerun judges every target's log
+CHECK_ALL=""
+checked() {
+  all=$1; shift
+  tlog="$B/check-logs/${!#}.log"
+  mkdir -p "$(dirname "$tlog")"; : > "$tlog"
+  ( logged "$tlog" "$@" ) || true
+  cat "$tlog" >> "$all"
+  CHECK_ALL="$CHECK_ALL ${!#}"
+}
+# one more run of each failed test file; a test that then passes must be listed in nidhogg/test/flaky.txt with its cause
+# (also checks that the list names no test that is gone); the first runs' logs are $B/check-logs/TARGET.log
+check_rerun() {
+  # shellcheck disable=SC2086
+  bash "$S/nidhogg/test/check-rerun.sh" --flaky "$S/nidhogg/test/flaky.txt" --src "$B/src/test" \
+    --make "make -C $B/obj/test" "$B/check-logs" $CHECK_ALL || { echo "FAILED: check (see above)" >&2; exit 1; }
 }
 mkdir -p "$B/src" "$B/obj"
 BODY
@@ -344,10 +370,20 @@ BODY
   fi
   if [ "$MODE" = container ] && [ -n "${NIDHOGG_BUILD_CCACHE:-}" ] && [ "$STAGE" != pack ]; then echo 'ccache -s || true'; fi
   if [ -n "$CHECK" ] && { [ "$STAGE" = all ] || [ "$STAGE" = check ]; }; then
+    # test/Makefile runs each test as $(GDB) ... emacs: the recorder goes there, its traces under the build dir
+    rr_arg=""
+    if [ -n "${NIDHOGG_CHECK_RR:-}" ]; then
+      echo 'export _RR_TRACE_DIR="$B/rr-traces"; mkdir -p "$_RR_TRACE_DIR"'
+      rr_arg="$(printf '%q' "GDB=$NIDHOGG_CHECK_RR") "
+    fi
     for t in $(sed "s/#.*//" "$CHECK" 2>/dev/null || echo "<targets of $CHECK>"); do
       echo "phase check $t"
-      echo "logged \"\$B/check.log\" make -C test $t"
+      echo "checked \"\$B/check.log\" make -C test $rr_arg$t"
     done
+    # each container installs its packages afresh: a trace replays in a later one only with its files packed in
+    # and the trace's name, in a log so that it comes back from the desktop
+    [ -z "$rr_arg" ] || echo 'rr pack "$_RR_TRACE_DIR/latest-trace" || echo "build.sh: rr pack failed"; readlink -f "$_RR_TRACE_DIR/latest-trace" > "$B/check-logs/rr-trace.log"'
+    echo "check_rerun"
   fi
   if [ "$STAGE" = build ] || [ "$STAGE" = check ]; then :
   elif [ -n "$OUT" ]; then
@@ -379,6 +415,8 @@ if [ "$MODE" = container ]; then
   fi
   [ -z "${NIDHOGG_BUILD_CCACHE:-}" ] || CACHE_ARGS="$CACHE_ARGS -v $NIDHOGG_BUILD_CCACHE:/ccache:z"
   [ -z "$LISP_CACHE" ] || CACHE_ARGS="$CACHE_ARGS -v $LISP_CACHE:/lispcache:z"
+  # extra podman options (words, no quoting): nidhogg/test/preflight.sh pins a check run with --cpuset-cpus=0 or --cpus=0.5
+  [ -z "${NIDHOGG_BUILD_PODMAN_ARGS:-}" ] || CACHE_ARGS="$CACHE_ARGS $NIDHOGG_BUILD_PODMAN_ARGS"
   CMD_HEAD="$PODMAN run --rm --name $NAME --memory $MEMORY --memory-swap $MEMORY -v $ROOT:/src:ro,z -v $BUILD_DIR:/build:Z ${MOUNT:+-v $MOUNT} $CACHE_ARGS $IMAGE"
   if [ "$DRY" = 1 ]; then
     echo "$CMD_HEAD bash -euo pipefail -c '"

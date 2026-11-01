@@ -1,4 +1,5 @@
 ;;; workers-image-gui-tests.el --- GUI tests for workers: image  -*- lexical-binding: t -*-
+;; test-class: cond
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 

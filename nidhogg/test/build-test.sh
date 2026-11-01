@@ -60,7 +60,7 @@ rcis 0; has "--with-ns"; has "/Nidhogg.app"; has "P=/tmp/n"; hasnt "podman"
 run -- --dry-run --container fedora-44
 rcis 0; has "cmp -s"
 run -- --dry-run --container fedora-44 --check nidhogg/check-subset.txt
-rcis 0; has "make -C test src/nidhogg-tests"
+rcis 0; has "make -C test src/nidhogg-tests"; has "nidhogg/test/check-rerun.sh"; has "check_rerun"
 run -- --dry-run --container fedora-44 --out dist/x.tar.xz
 rcis 0; has "DESTDIR=/build/stage"; has "BUILDINFO"; has "/out:Z"; has "/src:ro,z"
 has 'lic=$pk/share/nidhogg/licenses'; has 'cp -a "$S/nidhogg/licenses/." "$lic/"'; has 'cp "$S/nidhogg/THIRD_PARTY.md" "$lic/"'
@@ -80,6 +80,13 @@ run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n
 rcis 0; has "--with-nidhogg-workers"
 run -- --dry-run --container fedora-45 --without-nidhogg-workers
 rcis 0; hasnt "--with-nidhogg-workers"; has "--with-nidhogg-watchdog"
+# --chaos: seeded delays in a dev build, never a release
+run -- --dry-run --container fedora-45
+rcis 0; hasnt "--with-nidhogg-chaos"
+run -- --dry-run --container fedora-45 --dev --chaos
+rcis 0; has "--with-nidhogg-chaos"
+run -- --dry-run --container fedora-45 --chaos
+rcis 1; has "dev builds only"
 # --dev: native-compilation=yes, no JIT in the image, never packed, cache stamp carries the mode
 run -- --dry-run --container fedora-44 --dev
 rcis 0; has "--with-native-compilation=yes"; hasnt "--with-native-compilation=aot"; has "site-init.el"; has "MODE_ID=yes"; has "--with-tree-sitter"

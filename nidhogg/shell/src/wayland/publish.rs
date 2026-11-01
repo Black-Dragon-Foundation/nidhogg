@@ -758,6 +758,12 @@ impl Stage {
                 }
             }
             let outs_changed = Pending::merge_all(&mut s.outs, outputs);
+            // a window on its own layer: its pixels are in the output's damage, not the frame's
+            s.damage_px += outputs
+                .iter()
+                .flat_map(|o| &o.damage)
+                .map(Rect::area)
+                .sum::<u64>();
             if part.window != p.root {
                 // only a root's windows get layers: a child's own outputs are its damage
                 for o in std::mem::take(&mut s.outs).into_values() {
@@ -1028,9 +1034,10 @@ impl Stage {
         let Stage {
             surfaces, composer, ..
         } = self;
-        let Some(s) = surfaces.get(&root) else {
+        let Some(s) = surfaces.get_mut(&root) else {
             return;
         };
+        s.painted_px += clips.iter().map(Rect::area).sum::<u64>();
         let Some(front) = &s.front else {
             return;
         };

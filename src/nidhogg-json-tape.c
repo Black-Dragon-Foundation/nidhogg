@@ -1000,9 +1000,7 @@ static Lisp_Object nh_json_in_flight;
 static uint64_t
 nh_json_now (void)
 {
-  struct timespec ts;
-  clock_gettime (CLOCK_MONOTONIC, &ts);
-  return (uint64_t) ts.tv_sec * 1000000000 + ts.tv_nsec;
+  return nh_wk_now ();
 }
 
 /* Start materializing TAPE with CONF into M; the options' objects are

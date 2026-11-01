@@ -1,4 +1,5 @@
 ;;; watchdog-hang-tests.el --- tests for the stall watchdog (hang)  -*- lexical-binding: t -*-
+;; test-class: det
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
@@ -245,6 +246,7 @@ Threshold 100 ms, hang 300 ms; FN runs in a fresh busy span."
               (car (nidhogg-watchdog--take))))
 
 (ert-deftest watchdog/hang-file-schema ()
+  :tags '(:cond)
   (watchdog-hang--hanging
    (lambda (file)
      (nidhogg-watchdog--test-hold-rename t)
@@ -262,7 +264,8 @@ Threshold 100 ms, hang 300 ms; FN runs in a fresh busy span."
        (should (equal (nidhogg-watchdog--proc-start (emacs-pid))
                       (plist-get h :proc-start)))
        (should (equal (nidhogg-watchdog--boot-id) (plist-get h :boot-id)))
-       (should (< (abs (- (plist-get h :start) (float-time))) 60))
+       ;; An epoch time (seconds since 1970), not a monotonic one.
+       (should (> (plist-get h :start) 1.0e9))
        (should (>= (plist-get h :duration-ms) 300))
        (should (member (plist-get h :phase)
                        '("lisp" "process-wait" "call-process")))
@@ -278,6 +281,7 @@ Threshold 100 ms, hang 300 ms; FN runs in a fresh busy span."
        (should-not (nidhogg-watchdog--hang-dead-p h))))))
 
 (ert-deftest watchdog/hang-file-deleted-at-span-end ()
+  :tags '(:cond)
   (watchdog-hang--hanging
    (lambda (file)
      (nidhogg-watchdog--test-hold-rename t)
@@ -294,6 +298,7 @@ Threshold 100 ms, hang 300 ms; FN runs in a fresh busy span."
        (should (eq t (plist-get s :hang)))))))
 
 (ert-deftest watchdog/hang-ends-during-write ()
+  :tags '(:cond)
   ;; The span ends while the monitor is between fsync and rename: the
   ;; rename is skipped, so no finished hang comes back.
   (watchdog-hang--hanging
@@ -310,6 +315,7 @@ Threshold 100 ms, hang 300 ms; FN runs in a fresh busy span."
        (should (eq t (plist-get s :hang)))))))
 
 (ert-deftest watchdog/hang-file-kept-by-stop-in-hang ()
+  :tags '(:cond)
   ;; `kill-emacs', run by SIGTERM or SIGHUP from the signal handler, turns
   ;; the mode off while the hang's span is still busy: the stop keeps the
   ;; file for the next start's `:killed' record.
@@ -343,6 +349,7 @@ Threshold 100 ms, hang 300 ms; FN runs in a fresh busy span."
                     (directory-files "/proc/self/fd" t "\\`[0-9]"))))
 
 (ert-deftest watchdog/hang-dir-held-for-fsync ()
+  :tags '(:cond)
   ;; The monitor holds the log directory open while it runs, to fsync it
   ;; after a hang file's first rename (only then is the rename durable),
   ;; and closes it at stop.

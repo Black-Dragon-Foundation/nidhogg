@@ -1,6 +1,6 @@
 //! Decorations: label anchors, label placement and the sprite cache.
 //!
-//! An anchor states something about a window layer's retained pixels: where the first glyph of a `:label` run sits
+//! An anchor states something about a layer's retained pixels: where the first glyph of a `:label` run sits
 //! (layer-local device px), the clip the label is limited to, and the key of the sprite (a name tag, rendered once
 //! by the host) to put over it.  The host keeps anchors exactly as true as the pixels: every glyph draw drops the
 //! anchors of the glyphs it overdraws and records the ones it contains, clears drop what they cover, and a scroll
@@ -10,7 +10,8 @@
 //! At commit the scene places the labels ([`place`]): above the anchor glyph, below it on the window's first text
 //! row, shifted right past an earlier label on the same row, and one row further from the text (up for a label above,
 //! down for one below) when the shift would take it out of the layer.  A label that appears, moves or goes damages
-//! its old and new bounds, and compose draws the sprites over the window layer's pixels ([`crate::compose`]).
+//! its old and new bounds, and compose draws the sprites over the layer's pixels ([`crate::compose`]).  The native
+//! shell's frames have one frame layer, which holds their windows' anchors.
 //!
 //! Sprites are premultiplied ARGB at the layer's device scale, so compose never resamples them.  The cache keeps
 //! the [`SPRITE_CAP`] most recently used.

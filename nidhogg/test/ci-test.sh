@@ -9,10 +9,19 @@ test -f "$wf"                                                     || { fail "no 
 for j in tree linux macos drgnx release; do grep -qE "^  $j:" "$wf" || fail "no job $j"; done
 # drgnx's tests gate a release
 awk '/^  release:/,0' "$wf" | grep -qE 'needs: \[tree, linux, macos, drgnx\]' || fail "release not gated"
+# the timing lane is report-only: its own job that never fails the run, and no release needs it
+grep -qE "^  timing:" "$wf"                                       || fail "no job timing"
+awk '/^  timing:/,/^  release:/' "$wf" | grep -qE '^    continue-on-error: true$' || fail "the timing job is not continue-on-error: true"
+awk '/^  release:/,0' "$wf" | grep -E '^    needs:' | grep -qw timing && fail "release needs the timing job"
+grep -qE '^    needs: .*timing' "$wf"                            && fail "a job needs the timing job"
 # drgnx's tiers: drgnx's own workflow, at one pinned commit that is also the default drgnx_ref, on this run's tarballs
 pin=$(grep -oE 'uses: Black-Dragon-Foundation/drgnx/\.github/workflows/drgnx-tiers\.yml@[0-9a-f]{40}' "$wf" | sed 's/.*@//')
 [ -n "$pin" ]                                                     || fail "drgnx's tiers are not called at a pinned commit"
-grep -qF "drgnx_ref: \${{ inputs.drgnx_ref || '$pin' }}" "$wf"    || fail "the default drgnx_ref is not the pinned commit $pin"
+! grep -qF "inputs.drgnx_ref || '" "$wf"                          || fail "a literal default drgnx_ref (the uses line is the one pin)"
+grep -qE '^  pin:' "$wf"                                          || fail "no pin job"
+grep -qF 'inputs.drgnx_ref || needs.pin.outputs.ref' "$wf"        || fail "the default drgnx_ref is not the pin job's output"
+# cache budget: only the default branch saves, so ci/* branches and tags restore only
+[ "$(grep -c 'uses: actions/cache/save@' "$wf")" -eq "$(grep -c "github.ref == 'refs/heads/nidhogg-31'" "$wf")" ] || fail "a cache save step not limited to nidhogg-31"
 grep -qF 'nidhogg: artifact' "$wf"                                || fail "drgnx's tiers do not run on this run's tarballs"
 grep -qF "'unit no-lisp-writes ui macos'" "$wf"                   || fail "drgnx's tiers are not unit, gate mode, GUI and macOS"
 # a release only from a pushed v* tag, never from workflow_dispatch or a pull request
@@ -53,7 +62,7 @@ mj=$(awk '/^  macos:/,/^  drgnx:/' "$wf")
 grep -qF 'bash nidhogg/glitnir/check.sh' <<<"$mj"                 || fail "macos runs the glitnir checks"
 [ "$(grep -n 'glitnir/check.sh' <<<"$mj" | head -1 | cut -d: -f1)" -lt "$(grep -n 'id: build' <<<"$mj" | head -1 | cut -d: -f1)" ] 2>/dev/null || fail "macos runs the glitnir checks after the build"
 # the GUI job: needs the Linux builds, runs the fedora-45 tarball in a container at scales 1 and 2, with a time limit
-gj=$(awk '/^  gui:/,/^  workers-harness:/' "$wf")
+gj=$(awk '/^  gui:/,/^  native:/' "$wf")
 [ -n "$gj" ]                                                      || fail "no job gui"
 grep -qE 'needs: linux' <<<"$gj"                                  || fail "gui does not need linux"
 grep -qE 'timeout-minutes: 60' <<<"$gj"                           || fail "gui has no 60-minute limit"
@@ -71,8 +80,23 @@ done
 job workers-pkg | grep -q 'fail-fast: false'                       || fail "workers-pkg has no fail-fast: false"
 { job workers-pkg | grep -qE 'mode: \["on", "off"\]' && grep -q 'pkg-test.sh --compare' "$wf"; } || fail "workers-pkg does not run on and off and compare"
 job workers-asan | grep -q 'NIDHOGG_BUILD_SANITIZE'                || fail "workers-asan does not build sanitized"
+# the native shell: its own build (every other tarball is pgtk), the crates' checks on the recorder, every GUI lane
+job native | grep -qF -- '--nidhogg-wayland'                       || fail "the native job does not build the native shell"
+for s in 'recorder/check.sh --container fedora-45 --build' 'shell/check.sh --container fedora-45' 'glue/check.sh --container fedora-45'; do
+  job native-crates | grep -qF "$s"                                || fail "native-crates does not run $s"
+done
+job native-gui | grep -qE '^    needs: \[native, native-crates\]'  || fail "native-gui does not need native and native-crates"
+job native-gui | grep -q 'fail-fast: false'                        || fail "native-gui has no fail-fast: false"
+job native-gui | grep -qF 'nidhogg/test/native-gui.sh'             || fail "native-gui does not run native-gui.sh"
+for l in recorder recorder-mutter recorder-inline mutter sway decor-recorder decor-1 decor-2; do
+  job native-gui | grep -E '^        lane:' | grep -qE "[[, ]${l}[],]" || fail "native-gui has no lane $l"
+  grep -qE "^  $l\)" nidhogg/test/native-gui.sh                    || fail "native-gui.sh has no lane $l"
+done
+for j in native native-crates native-gui; do
+  ! awk '/^  release:/,0' "$wf" | grep -qE "needs:.*$j"            || fail "release needs $j"
+done
 # a release tag runs only what release needs: the tagged commit passed the rest in its round
-for j in compile-noglitnir gui workers-harness workers-asan workers-pkg workers-pkg-compare; do
+for j in compile-noglitnir gui native native-crates native-gui workers-harness workers-asan workers-pkg workers-pkg-compare; do
   job "$j" | grep -qF "github.ref_type != 'tag'"                    || fail "$j runs for a release tag"
 done
 for j in tree linux macos drgnx; do

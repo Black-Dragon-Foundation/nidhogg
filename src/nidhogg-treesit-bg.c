@@ -371,9 +371,7 @@ nh_ts_init_once (void)
 static int64_t
 nh_ts_now (void)
 {
-  struct timespec ts;
-  clock_gettime (CLOCK_MONOTONIC, &ts);
-  return (int64_t) ts.tv_sec * 1000000000 + ts.tv_nsec;
+  return nh_wk_now ();
 }
 
 static void
@@ -1716,10 +1714,10 @@ this first lands nh-parse's finished jobs, as
 {
   CHECK_FIXNAT (ms);
   pthread_once (&nh_ts_once, nh_ts_init_once);
-  int64_t deadline = nh_ts_now () + XFIXNAT (ms) * INT64_C (1000000);
+  int64_t deadline = nh_wk_real_ns () + XFIXNAT (ms) * INT64_C (1000000);
   Fnidhogg_workers__test_await_landed (intern_c_string ("nh-parse"), ms);
   nh_wk_lock (&nh_ts_live_m);
-  while (nh_ts_live > 0 && nh_ts_now () < deadline)
+  while (nh_ts_live > 0 && nh_wk_real_ns () < deadline)
     {
       nh_wk_cond_wait_until (&nh_ts_live_cv, &nh_ts_live_m, deadline);
     }

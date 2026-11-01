@@ -1,5 +1,7 @@
 ;;; recorder-gui-tests.el --- GUI tests against nh-recorder  -*- lexical-binding: t -*-
 
+;; test-class: cond
+
 ;; Run by nidhogg/test/gui.sh `--compositor recorder', where $GLITNIR_GUI_RECORDER is the
 ;; recorder's control socket.  `gui-runner-recorder' lives in gui-runner.el.  The rows skip without it.
 
@@ -82,10 +84,7 @@ acks it and return that commit (nil when none came)."
 
 (defun recorder-gui--wait (pred &optional seconds)
   "Wait up to SECONDS (default 3) for PRED to return non-nil; return its value."
-  (let ((deadline (+ (float-time) (or seconds 3))) (v nil))
-    (while (and (not (setq v (funcall pred))) (< (float-time) deadline))
-      (accept-process-output nil 0.05))
-    v))
+  (gui-runner-wait pred (or seconds 3)))
 
 (ert-deftest recorder-gui/keymap-options-reach-the-client ()
   (skip-unless (getenv "GLITNIR_GUI_RECORDER"))
@@ -94,7 +93,6 @@ acks it and return that commit (nil when none came)."
       (progn
         (gui-runner-recorder '(:cmd "keymap" :rmlvo (:rules "evdev" :model "pc105" :layout "us" :variant ""
                                                      :options "ctrl:swap_lalt_lctl_lwin")))
-        (sit-for 0.3)
         (setq last-input-event nil)
         ;; KEY_LEFTALT (56) is Control_L under the option; "a" then arrives as C-a
         (gui-runner-recorder '(:cmd "key" :keycode 56 :state "press"))

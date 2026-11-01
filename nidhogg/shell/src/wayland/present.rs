@@ -155,6 +155,12 @@ pub struct Present {
     tree_content: bool,
     /// The root's first configure came (children are configured at creation).
     configured: bool,
+    /// A root committed a buffer since its role was made: the compositor has it mapped.
+    mapped: bool,
+    /// A popup whose parent window is not mapped yet shows nothing: the parent comes first (see `popup.rs`).
+    awaits_parent: bool,
+    /// The popups waiting for this root's first buffer.
+    awaiting: Vec<Arc<Mutex<Present>>>,
     /// `FRAME_READY` was posted and the host has not asked `window_ready` since.
     notified: bool,
     /// The compositor says the window is not shown (xdg_toplevel `suspended`).
@@ -251,6 +257,9 @@ impl Present {
             owed: false,
             // a child needs no configure
             configured: root.is_some(),
+            mapped: false,
+            awaits_parent: false,
+            awaiting: Vec::new(),
             root,
             tree_content: false,
             suspended: false,
@@ -305,7 +314,7 @@ impl Present {
 
     /// The ready bits, with `content_ack` saying whether a recorded content ack may go now.
     fn ready_with(&self, content_ack: bool) -> u32 {
-        let open = self.configured && !self.starved;
+        let open = self.configured && !self.starved && !self.awaits_parent;
         let content_ack = open && content_ack;
         let content = content_ack || (open && self.dirty && !self.waiting && !self.suspended);
         // a re-arm waits for a content ack's commit, which asks for a callback itself (when a buffer is free)
@@ -416,6 +425,22 @@ impl Present {
         self.bufs.clear();
         self.begun = None;
         self.layers.clear();
+        self.awaiting.clear();
+    }
+
+    /// A root's first buffer went: the popups that waited for it may show theirs.  The tree's mutex is held; a
+    /// popup's follows it, as a child's does.
+    fn now_mapped(&mut self) {
+        if self.root.is_none() {
+            self.mapped = true;
+        }
+        for popup in std::mem::take(&mut self.awaiting) {
+            let mut p = lock(&popup);
+            p.awaits_parent = false;
+            if !p.retired {
+                p.notify();
+            }
+        }
     }
 
     /// The connection was made again (`me` is this state's own handle): each buffer gets a new `wl_buffer` from its
@@ -631,6 +656,7 @@ impl Present {
         self.commit.surface.commit();
         let rearm = self.send_rearm(me, &wire.rqh);
         self.pool.submitted(slot);
+        self.now_mapped();
         1 + u64::from(rearm)
     }
 
@@ -679,6 +705,7 @@ impl Present {
         self.ack = None;
         self.ack_content = false;
         self.configured = false;
+        self.mapped = false;
         self.epoch += 1;
     }
 
@@ -697,6 +724,7 @@ impl Present {
         r.geometry = r.geometry.or(sent.geometry);
         let child = self.root.is_some();
         self.configured = child;
+        self.mapped = false;
         self.owed = child;
         self.ack = None;
         self.ack_content = false;
@@ -1100,8 +1128,11 @@ fn send(
     let layered = send_layers(stage, wire, root, r, layer_jobs, root_shows);
     let mut shown = false;
     if let Some(j) = take_job(&mut jobs, tree) {
-        if j.epoch == r.epoch && r.configured {
-            let held = r.ack_held_at(applied);
+        let held = r.ack_held_at(applied);
+        // a window's first buffer carries an ack: a configure read during the compose held the only one there is, and
+        // a buffer without it is what xdg-shell calls unconfigured
+        let acked = r.mapped || (r.ack.is_some() && !held);
+        if j.epoch == r.epoch && r.configured && acked {
             r.commit_buffer(tree, wire, j.slot, &j.buf, &j.damage, held);
             r.bufs.insert(j.slot.id, j.buf);
             count_frame(stage, root, r);
@@ -1249,6 +1280,18 @@ impl MainState {
 
     fn present_of(&self, id: u64) -> Option<Arc<Mutex<Present>>> {
         self.presents.get(&id).cloned()
+    }
+
+    /// Popup `id` hangs on window `parent`: while that has shown no buffer, the popup shows none.
+    pub(crate) fn present_after(&mut self, id: u64, parent: u64) {
+        let (Some(popup), Some(parent)) = (self.present_of(id), self.present_of(parent)) else {
+            return;
+        };
+        let mut parent = lock(&parent);
+        if !parent.mapped {
+            lock(&popup).awaits_parent = true;
+            parent.awaiting.push(popup);
+        }
     }
 
     /// Record `f` on window `id`'s presenter state (nothing when `id` has none).

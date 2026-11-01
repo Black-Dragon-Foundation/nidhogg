@@ -810,6 +810,7 @@ impl CompositorHandler for State {
             self.log.mark_applied(seq);
         }
         self.session_commit(surface, session_size);
+        self.popup_buffer_rules(surface);
         self.initial_configure(surface);
     }
 

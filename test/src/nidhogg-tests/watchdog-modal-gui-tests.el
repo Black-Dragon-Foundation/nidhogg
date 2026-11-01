@@ -1,4 +1,5 @@
 ;;; watchdog-modal-gui-tests.el --- GUI tests for the stall watchdog (menus and dialogs)  -*- lexical-binding: t -*-
+;; test-class: cond
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 

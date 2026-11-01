@@ -318,6 +318,57 @@ impl XdgDecorationHandler for State {
 delegate_xdg_shell!(State);
 delegate_xdg_decoration!(State);
 
+/// Whether a surface shows a buffer.
+fn shows_a_buffer(surface: &WlSurface) -> bool {
+    compositor::with_states(surface, |states| {
+        states
+            .data_map
+            .get::<RendererSurfaceStateUserData>()
+            .is_some_and(|r| r.lock().unwrap().buffer().is_some())
+    })
+}
+
+impl State {
+    /// A popup showing a buffer has acked a configure, and its parent shows one: xdg-shell wants both.  mutter copes
+    /// with the first and dismisses a popup for the second; a popup above the dismissed one then ends the client.
+    /// Here either ends the client at once, so that a row sees it whatever hangs on the popup.
+    pub fn popup_buffer_rules(&self, surface: &WlSurface) {
+        let Some(popup) = self.popups.iter().find(|p| p.wl_surface() == surface) else {
+            return;
+        };
+        if !shows_a_buffer(surface) {
+            return;
+        }
+        let configured = compositor::with_states(surface, |states| {
+            states
+                .data_map
+                .get::<XdgPopupSurfaceData>()
+                .is_some_and(|d| d.lock().unwrap().configured)
+        });
+        let parent_shown = popup
+            .get_parent_surface()
+            .is_none_or(|p| shows_a_buffer(&p));
+        let (error, text) = if !configured {
+            (
+                xdg_wm_base::Error::InvalidSurfaceState,
+                "a popup's first buffer came before any ack_configure",
+            )
+        } else if !parent_shown {
+            (
+                xdg_wm_base::Error::InvalidPopupParent,
+                "a popup was mapped before its parent",
+            )
+        } else {
+            return;
+        };
+        for id in crate::state::objects_of(&self.display, surface, "xdg_wm_base") {
+            if let Ok(base) = XdgWmBase::from_id(&self.display, id) {
+                base.post_error(error, text);
+            }
+        }
+    }
+}
+
 /// `TopLeft` to `top_left`.
 fn snake(s: &str) -> String {
     let mut out = String::new();

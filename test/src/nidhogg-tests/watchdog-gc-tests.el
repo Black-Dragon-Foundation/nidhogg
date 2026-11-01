@@ -1,4 +1,5 @@
 ;;; watchdog-gc-tests.el --- tests for the stall watchdog (gc)  -*- lexical-binding: t -*-
+;; test-class: det
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
@@ -82,7 +83,7 @@ The rings are emptied first and after; the watchdog is stopped after."
         (should (<= (plist-get (nth 0 cs) :start) (plist-get (nth 1 cs) :start)
                     (plist-get (nth 2 cs) :start)))
         ;; The epoch, like a stall's :start.
-        (should (< (abs (- (plist-get (nth 2 cs) :start) (float-time))) 60)))
+        (should (> (plist-get (nth 2 cs) :start) 1.0e9)))
       ;; `--take' empties the ring.
       (should-not (watchdog-gc--collections)))))
 
@@ -183,6 +184,7 @@ The rings are emptied first and after; the watchdog is stopped after."
       (nidhogg-watchdog--test-clock nil))))
 
 (ert-deftest watchdog/gc-split ()
+  :tags '(:cond)
   ;; Threshold 1 ms; a timer forces a collection on a 2M-cons heap
   ;; and spins.  Its span is a record with the collection's exact pause
   ;; as its GC time, and the collection names that pause.

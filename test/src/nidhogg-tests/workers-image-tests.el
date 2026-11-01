@@ -1,4 +1,5 @@
 ;;; workers-image-tests.el --- tests for workers: image decoding  -*- lexical-binding: t -*-
+;; test-class: det
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
@@ -414,6 +415,7 @@ unibyte strings; CHUNKS, each (TYPE . BODY), go before the image data."
                                           (cdr (assoc (list file bg index) texts))))))))))))))
 
 (ert-deftest workers/image-core-refuses-nonregular-file ()
+  :tags '(:cond)
   ;; A spec whose file leads to /dev/zero: the cores refuse it at once
   ;; (before the fix they grew a buffer until memory ran out).  Run in a
   ;; child under a memory limit, so a regression fails instead of taking
@@ -535,6 +537,7 @@ unibyte strings; CHUNKS, each (TYPE . BODY), go before the image data."
                          want)))))))
 
 (ert-deftest workers/image-data-copy ()
+  :tags '(:cond)
   ;; The job decodes a copy: the Lisp string is cleared and the heap
   ;; collected while the job is held, and the copy still decodes.
   (let* ((golden (workers-image-tests--golden))
@@ -710,6 +713,7 @@ unibyte strings; CHUNKS, each (TYPE . BODY), go before the image data."
   (plist-get (nidhogg-workers--test-image-info) key))
 
 (ert-deftest workers/image-evicted ()
+  :tags '(:cond)
   ;; §17.2b S5, frame-less: display jobs for three test entries; two of
   ;; the entries go (what free_image does for every eviction,
   ;; `clear-image-cache', `image-flush' and frame deletion) while their

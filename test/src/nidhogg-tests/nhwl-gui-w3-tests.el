@@ -1,5 +1,7 @@
 ;;; nhwl-gui-w3-tests.el --- GUI rows for the native shell's presenter  -*- lexical-binding: t -*-
 
+;; test-class: cond
+
 ;; Run by nidhogg/test/gui.sh with the base rows (nhwl-gui-tests.el, loaded first: its helpers are used here).  Rows
 ;; that drive the compositor need `--compositor recorder'; rows named `nhwl-gui/live-*' run on real compositors and
 ;; are judged by the trace checker.  Each feature appends its rows under its own heading.
@@ -52,9 +54,9 @@ before the Lisp ends: the commit does not wait for the main loop."
        (unwind-protect
            (progn
              (switch-to-buffer buf)
-             (nhwl-gui--pump)
+             (gui-runner-wait-settled)
              (let ((mark (nhwl-gui--mark)))
-               ;; the first picture commits at once and leaves the pacer waiting; the second waits for the callback
+               ;; the first picture commits at once and leaves the pacer waiting; the secondwaits for the callback
                (insert "a")
                (redisplay t)
                (insert "b")
@@ -69,6 +71,7 @@ before the Lisp ends: the commit does not wait for the main loop."
   "Review Focus 4: 200 cycles of making and deleting a frame with a child frame and a tooltip while typing, with the
 presenter composing and committing all along.  No hang (the row's own deadline is 120 s), the shell stays connected,
 and the main thread never waited 1 ms for the presenter.  Under gui.sh `--daemon' too."
+  :tags '(:timing)
   (skip-unless (and (nhwl-gui--recorder-p) (nhwl-gui--presenter-on-p)))
   (let ((t0 (float-time)) (buf (generate-new-buffer " *nhwl-storm*")))
     (unwind-protect
@@ -86,7 +89,7 @@ and the main thread never waited 1 ms for the presenter.  Under gui.sh `--daemon
               (x-hide-tip)
               (when (frame-live-p c) (delete-frame c))
               (delete-frame f))
-            (when (zerop (% i 20)) (nhwl-gui--pump 0.05))
+            (when (zerop (% i 20)) (nhwl-gui--pump))
             (should (< (- (float-time) t0) 120)))
           (nhwl-gui--pump)
           (should (nhwl-gui--connected-p))
@@ -109,7 +112,7 @@ Idle means no tooltip either: a tip an earlier row left shown hides at its own t
                                5))
        (let ((before (nhwl-gui--presenter-switches)))
          (should before)
-         (sleep-for 3)
+         (gui-runner-stimulus 3)        ; the quiet the row asserts: Lisp asks the presenter for nothing
          (should (equal (nhwl-gui--presenter-switches) before)))))))
 
 ;; Window layers.  On an opaque top-level frame, a window's full-window scroll gives it a layer of its own (a
@@ -139,6 +142,9 @@ Idle means no tooltip either: a tip an earlier row left shown hides at its own t
              (gui-runner-wait-settled)
              (funcall fn))
          (kill-buffer buf)
+         ;; a split resizes the window, which takes its layer away: the next row starts without one
+         (split-window)
+         (redisplay t)
          (delete-other-windows)
          (redisplay t))))))
 
@@ -201,7 +207,7 @@ seconds later the next publish takes it away, and its unmap is applied by a root
        (gui-runner-wait-settled)
        (let ((ids (nhwl-gui--layer-ids mark)))
          (should (= (length ids) 1))
-         (sleep-for 2.2)
+         (gui-runner-stimulus 2.2)      ; the two quiet seconds the shell counts
          (let ((quiet (nhwl-gui--mark)))
            (insert "q")
            (redisplay t)
@@ -212,6 +218,23 @@ seconds later the next publish takes it away, and its unmap is applied by a root
              (should unmap)
              (should (nhwl-gui--get unmap :applied_by)))
            (should (equal (nhwl-gui--grab-matches-snapshot) '(0 . 0)))))))))
+
+(ert-deftest nhwl-gui/scroll-layer-paints-count-in-the-stats ()
+  "A paint a window layer shows alone, with a bare root commit, has its pixels in `glitnir-stats'."
+  (skip-unless (nhwl-gui--layers-p))
+  (nhwl-gui--with-layer-buffer
+   (lambda ()
+     (should (= (nhwl-gui--scroll-promote) 1))
+     (gui-runner-wait-settled)
+     (glitnir-stats nil t)
+     (insert "x")
+     (redisplay t)
+     (gui-runner-wait-settled)
+     (should (= (nhwl--scroll-layers) 1))
+     (let ((s (glitnir-stats)))
+       (should (> (plist-get s :count) 0))
+       (should (> (plist-get s :damage-px) 0))
+       (should (> (plist-get s :painted-px) 0))))))
 
 (ert-deftest nhwl-gui/scroll-layer-not-for-translucent-frames ()
   "A frame with `alpha' 0.9, or `alpha-background' 0.8, gets no layer; a layered window loses its layer at the next
@@ -387,17 +410,19 @@ quiet period and scrolling again.  The trace rules (errors, acks, sync, viewport
           (switch-to-buffer buf)
           (dotimes (i 400) (insert (format "line %03d of the live window-layer row\n" i)))
           (goto-char (point-min))
-          (nhwl-gui--live-settle 0.5)
+          (nhwl-gui--live-settle)
           (dotimes (i 60)
             (if (< (% i 20) 12) (scroll-up 1) (scroll-down 1))
-            (nhwl-gui--live-settle 0.02))
+            (nhwl-gui--live-settle))
           (split-window-below)
-          (nhwl-gui--live-settle 0.3)
-          (dotimes (_ 20) (scroll-up 1) (nhwl-gui--live-settle 0.02))
+          (nhwl-gui--live-settle)
+          (dotimes (_ 20) (scroll-up 1) (nhwl-gui--live-settle))
           (delete-other-windows)
-          (nhwl-gui--live-settle 2.5)
-          (dotimes (_ 20) (scroll-down 1) (nhwl-gui--live-settle 0.02))
-          (nhwl-gui--live-settle 0.5))
+          (nhwl-gui--live-settle)
+          ;; the row's quiet period: the span with no scrolling is the point
+          (nhwl-gui--observe 2.5)
+          (dotimes (_ 20) (scroll-down 1) (nhwl-gui--live-settle))
+          (nhwl-gui--live-settle))
       (kill-buffer buf)
       (delete-other-windows))))
 
@@ -420,7 +445,10 @@ events between steps."
     (if (< (% i 20) 12) (scroll-up 1) (scroll-down 1))
     (when (zerop (% i 5)) (insert "k"))
     (redisplay t)
-    (nhwl-gui--pump 0.02)))
+    ;; no fence: a row restarts the compositor under this loop
+    (gui-runner-read-all)
+    ;; stimulus: the user's pace, so that scrolls and keys are not one burst
+    (gui-runner-stimulus 0.02)))
 
 (ert-deftest nhwl-gui/compositor-restart-while-scrolling ()
   "The recorder restarts (keep-socket, down 300 ms) while a window with a layer of its own scrolls and the user types:
@@ -467,14 +495,14 @@ connection."
           (switch-to-buffer buf)
           (dotimes (i 400) (insert (format "line %03d of the live restart row\n" i)))
           (goto-char (point-min))
-          (nhwl-gui--live-settle 0.5)
+          (nhwl-gui--live-settle)
           (nhwl-gui--scroll-and-type 20)
           ;; the script stops KWin and starts it again while the window scrolls
           (start-process "nhwl-kwin-restart" nil (getenv "NHWL_GUI_RESTART"))
           (nhwl-gui--scroll-and-type 100)
           (should (nhwl-gui--reconnected 20))
           (nhwl-gui--scroll-and-type 60)
-          (nhwl-gui--live-settle 0.5)
+          (nhwl-gui--live-settle)
           (should (frame-live-p f)))
       (remove-hook 'nhwl-display-connection-functions #'nhwl-gui--connection-note)
       (kill-buffer buf)
