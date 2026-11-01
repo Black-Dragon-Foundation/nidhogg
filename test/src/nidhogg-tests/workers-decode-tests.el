@@ -1,4 +1,5 @@
 ;;; workers-decode-tests.el --- tests for workers: process decoding  -*- lexical-binding: t -*-
+;; test-class: cond
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
@@ -107,6 +108,7 @@ found invalid, so where a stream is cut changes its result."
         (list system s mine)))))
 
 (ert-deftest workers/decode-differential ()
+  :tags '(:det)
   ;; §17.2a: 100,000 seeded byte strings (valid and invalid UTF-8, raw
   ;; bytes, CR/LF mixes, a lone CR at chunk ends), each cut at every
   ;; boundary or at random, under each stateless system in turn: nh-io's
