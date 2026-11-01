@@ -54,9 +54,9 @@ before the Lisp ends: the commit does not wait for the main loop."
        (unwind-protect
            (progn
              (switch-to-buffer buf)
-             (nhwl-gui--pump)
+             (gui-runner-wait-settled)
              (let ((mark (nhwl-gui--mark)))
-               ;; the first picture commits at once and leaves the pacer waiting; the second waits for the callback
+               ;; the first picture commits at once and leaves the pacer waiting; the secondwaits for the callback
                (insert "a")
                (redisplay t)
                (insert "b")
@@ -142,6 +142,9 @@ Idle means no tooltip either: a tip an earlier row left shown hides at its own t
              (gui-runner-wait-settled)
              (funcall fn))
          (kill-buffer buf)
+         ;; a split resizes the window, which takes its layer away: the next row starts without one
+         (split-window)
+         (redisplay t)
          (delete-other-windows)
          (redisplay t))))))
 
@@ -215,6 +218,23 @@ seconds later the next publish takes it away, and its unmap is applied by a root
              (should unmap)
              (should (nhwl-gui--get unmap :applied_by)))
            (should (equal (nhwl-gui--grab-matches-snapshot) '(0 . 0)))))))))
+
+(ert-deftest nhwl-gui/scroll-layer-paints-count-in-the-stats ()
+  "A paint a window layer shows alone, with a bare root commit, has its pixels in `glitnir-stats'."
+  (skip-unless (nhwl-gui--layers-p))
+  (nhwl-gui--with-layer-buffer
+   (lambda ()
+     (should (= (nhwl-gui--scroll-promote) 1))
+     (gui-runner-wait-settled)
+     (glitnir-stats nil t)
+     (insert "x")
+     (redisplay t)
+     (gui-runner-wait-settled)
+     (should (= (nhwl--scroll-layers) 1))
+     (let ((s (glitnir-stats)))
+       (should (> (plist-get s :count) 0))
+       (should (> (plist-get s :damage-px) 0))
+       (should (> (plist-get s :painted-px) 0))))))
 
 (ert-deftest nhwl-gui/scroll-layer-not-for-translucent-frames ()
   "A frame with `alpha' 0.9, or `alpha-background' 0.8, gets no layer; a layered window loses its layer at the next
