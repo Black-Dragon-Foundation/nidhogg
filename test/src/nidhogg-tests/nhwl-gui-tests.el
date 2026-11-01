@@ -623,7 +623,8 @@ Return the two replies."
             (should (= (cdr (nth 4 ev)) (- want)))
             (pixel-scroll-precision ev)
             (should (< want (frame-char-height)))
-            (should (= (window-vscroll nil t) want))))
+            ;; `pixel-scroll-precision' rounds its delta to whole pixels (12.5 at scale 1.25)
+            (should (= (window-vscroll nil t) (round want)))))
       (pixel-scroll-precision-mode -1)
       (set-window-vscroll nil 0 t))))
 
