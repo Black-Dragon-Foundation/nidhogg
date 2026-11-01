@@ -419,14 +419,14 @@ turns the finished spans into JSON Lines records, names function, file and packa
   (`unwind_to_catch`) pops every phase pushed inside its catch target, so a `condition-case` around a failing
   `json-parse-string` does not label the rest of the span `json`. Nothing goes on the specpdl. A stall is `:felt`
   when a keyboard, button or wheel event was stored during it (a key pressed while Emacs was busy) or when it ran a
-  command; `:input-wait-ms` runs from that input's arrival (a pgtk event's own timestamp when it reads as
+  command; `:input-wait-ms` runs from that input's arrival (a shell event's own timestamp when it reads as
   `CLOCK_MONOTONIC` within the last 2 s, else the time it was stored) to the stall's end. `:commands` counts the
   commands in the span, and `:input-queued` says a second one ran in it (keys queued behind each other). The
   commands named by `nidhogg-watchdog--set-typing-commands` (16 at most) are timed one by one, from their key's
   arrival to the next key taken or the next wait, into the `:typing` histogram of `nidhogg-watchdog--stats`.
-An open popup menu or dialog counts as the user waiting, not as a stall: on pgtk a wrapper around GLib's poll
-function (`src/nidhogg-watchdog-gtk.c`) marks the wait. A Lisp timer that runs inside a menu or dialog is still
-busy time and is reported.
+An open popup menu or dialog counts as the user waiting, not as a stall: on the shell both read events in Lisp's own
+`read-event` loop (`nhwl-menu.el`), which is an ordinary wait. A Lisp timer that runs inside a menu or dialog is
+still busy time and is reported.
 The timing group (`watchdog-timing-tests.el`) runs on the real clock with wide margins (spins of 0.5 to 10 s
 against a 100 ms threshold) and asserts counts, never sample numbers ("at least one sample, or `:missed` counted"): a
 1 s spin from a timer (state CPU, the timer function on the stack), a blocked `call-process` (phase `call-process`),
