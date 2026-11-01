@@ -325,6 +325,11 @@ mod reader {
         ("set_presenter_thread", |s, _| s.set_presenter_thread(false)),
         ("presenter_stats", |s, _| s.presenter_stats().map(drop)),
         ("presenter_timing", |s, _| s.presenter_timing().map(drop)),
+        ("window_stacking", |s, w| s.window_stacking(w).map(drop)),
+        ("draw_count", |s, w| s.draw_count(w).map(drop)),
+        ("tree_snapshot", |s, w| {
+            s.tree_snapshot(w, &[], true).map(drop)
+        }),
         ("dnd_status", |s, _| {
             s.dnd_status(Some("text/plain"), NHSHELL_DND_COPY, NHSHELL_DND_COPY)
         }),
