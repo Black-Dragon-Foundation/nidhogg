@@ -1,4 +1,5 @@
 ;;; watchdog-tests.el --- tests for the stall watchdog (flag, edges, spans)  -*- lexical-binding: t -*-
+;; test-class: det
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
@@ -170,6 +171,7 @@ deadline on the coarse clock, so it returns without a responsive select."
       (should (eql (watchdog-test--stat :stalls) 33)))))
 
 (ert-deftest watchdog/responsive-flag-unwinds ()
+  :tags '(:cond)
   ;; A `throw' out of a nested responsive wait inside a filter
   ;; run by `accept-process-output'.  process.c restores
   ;; `waiting_for_user_input_p' on the way out, so the outer
@@ -206,6 +208,7 @@ deadline on the coarse clock, so it returns without a responsive select."
         (nidhogg-test-peer-close peer)))))
 
 (ert-deftest watchdog/inhibit-redisplay-wait-is-busy ()
+  :tags '(:cond)
   ;; In a timer, a 300 ms wait under `inhibit-redisplay' does not end the
   ;; span (`dbus-call-method', jsonrpc's cancel-on-input wait): one 300 ms
   ;; stall, not two of 150.  Its phase (`process-wait') has its own row
@@ -224,6 +227,7 @@ deadline on the coarse clock, so it returns without a responsive select."
       (should (eql (watchdog-test--stat :requests) 0)))))
 
 (ert-deftest watchdog/null-timeout-is-idle ()
+  :tags '(:cond)
   ;; A wait with no timeout of its own (left by a timer's `throw') is
   ;; idle: the span before it ends there (60 ms), and the one after it
   ;; (60 ms) starts when it returns.  Counted as busy it would be 120 ms.
@@ -238,6 +242,7 @@ deadline on the coarse clock, so it returns without a responsive select."
     (should-not (car (nidhogg-watchdog--take)))))
 
 (ert-deftest watchdog/lisp-thread-select-never-counts ()
+  :tags '(:cond)
   ;; A Lisp thread's selects never touch the state, even its responsive
   ;; waits; the main thread waits in `thread-join' (busy, no select).
   (skip-unless (featurep 'threads))
@@ -246,7 +251,7 @@ deadline on the coarse clock, so it returns without a responsive select."
     (let ((spans (watchdog-test--stat :spans)))
       (thread-join
        (make-thread (lambda ()
-                      (dotimes (_ 5) (sleep-for 0.01))
+                      (dotimes (_ 5) (accept-process-output nil 0.01))
                       (dotimes (_ 5) (nidhogg-watchdog--test-idle-wait 0.01)))
                     "watchdog-test"))
       (should (= spans (watchdog-test--stat :spans))))))
