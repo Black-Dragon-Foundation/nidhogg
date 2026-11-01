@@ -136,6 +136,29 @@ mod publish {
         assert_eq!(shell.presenter_stats().unwrap().packets, 2);
     }
 
+    /// A window goes with a packet waiting for the pacer: that packet never commits, and the counters say so.
+    #[test]
+    fn a_packet_gone_with_its_window_is_superseded() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let mut shell = rec.open();
+        let mut b = Backing::new(200, 100);
+        let id = window(&mut shell, &mut b);
+        shown(&mut shell, &rec, id);
+        b.fill(Rect::new(0, 0, 20, 10), 0xff11_2233);
+        assert!(publish(&mut shell, id, &[(&b, id)], 0));
+        assert!(shell.present_tree(id).unwrap());
+        shell.flush().unwrap();
+        b.fill(Rect::new(40, 0, 20, 10), 0xff33_2211);
+        assert!(publish(&mut shell, id, &[(&b, id)], 0));
+        assert!(!shell.present_tree(id).unwrap(), "the pacer waits");
+        let before = shell.presenter_stats().unwrap();
+        assert_eq!(before.superseded, 0);
+        shell.window_destroy(id).unwrap();
+        let after = shell.presenter_stats().unwrap();
+        assert_eq!(after.superseded, 1);
+        assert_eq!(after.commits, before.commits);
+    }
+
     /// Review Focus 2: three packets while the pacer waits merge; the one commit at the callback damages their union
     /// and shows the last backing.
     #[test]

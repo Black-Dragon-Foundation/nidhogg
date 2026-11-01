@@ -324,7 +324,8 @@ top, the layer comes before the child, and stays there while the window scrolls 
 
 (ert-deftest nhwl-gui/scroll-upload-is-exposed-rows-only ()
   "Per one-line scroll of a layered window: the layer's damage is at most the exposed line and the cursor's two lines,
-and the root's damage stays in the mode line (and the one-row overlap a fractional scale snaps in)."
+and the root's damage stays in the mode line and the one-row overlaps a fractional scale snaps in, at the window's top
+and bottom."
   (skip-unless (nhwl-gui--layers-p))
   (nhwl-gui--with-layer-buffer
    (lambda ()
@@ -343,6 +344,7 @@ and the root's damage stays in the mode line (and the one-row overlap a fraction
             (width (window-pixel-width))
             (mode-y0 (+ top (nth 3 (window-inside-pixel-edges)) -1))
             (mode-y1 (+ top (nth 3 (window-pixel-edges)) 1))
+            (window-y (+ top (nth 1 (window-pixel-edges))))
             (rebases 0) (last-y nil) (ring nil))
        (dotimes (_ 20)
          (let ((mark (nhwl-gui--mark)) (cs nil))
@@ -364,7 +366,9 @@ and the root's damage stays in the mode line (and the one-row overlap a fraction
            (let ((layer (apply #'append (mapcar #'nhwl-gui--damage cs)))
                  (root (apply #'append (mapcar #'nhwl-gui--damage (nhwl-gui--new mark)))))
              (should (<= (nhwl-gui--area layer) (* 3 (1+ line) (1+ width))))
-             (should (seq-every-p (lambda (r) (nhwl-gui--rect-in-p r mode-y0 mode-y1)) root)))))
+             (should (seq-every-p (lambda (r) (or (nhwl-gui--rect-in-p r mode-y0 mode-y1)
+                                                  (nhwl-gui--rect-in-p r (1- window-y) window-y)))
+                                  root)))))
        ;; The view starts in the middle of a ring of twice its rows and moves one line a scroll, so it can make
        ;; (ring - view) / 2 rows of moves, one scroll more rebases: a period of P scrolls, P = moves + 1.  A ring that
        ;; was there rebases at scrolls P, 2P, ... (floor (20 / P) times); one made by the first scroll draws the
@@ -498,6 +502,7 @@ connection."
           (nhwl-gui--live-settle)
           (nhwl-gui--scroll-and-type 20)
           ;; the script stops KWin and starts it again while the window scrolls
+          (gui-runner-restart-note)
           (start-process "nhwl-kwin-restart" nil (getenv "NHWL_GUI_RESTART"))
           (nhwl-gui--scroll-and-type 100)
           (should (nhwl-gui--reconnected 20))
