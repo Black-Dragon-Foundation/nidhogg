@@ -1,4 +1,5 @@
 ;;; workers-ts-gui-tests.el --- GUI tests for workers: ts  -*- lexical-binding: t -*-
+;; test-class: cond
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
