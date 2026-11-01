@@ -85,13 +85,17 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
                  [--build-dir DIR] [--check FILE] [--dev] [--dry-run]
 ```
 
-- Targets today: Linux (pgtk) in a container or on the host. macOS (NS app, `Nidhogg.app`) is planned: `--host` has the
-  code path, but it has not been built or tested yet.
+- Targets today: Linux (Nidhogg's own Wayland shell, no GTK) in a container or on the host. pgtk is not built:
+  `configure` refuses `--with-pgtk`, and upstream's pgtk files stay in the tree only for clean merges. macOS (NS app,
+  `Nidhogg.app`) is planned: `--host` has the code path, but it has not been built or tested yet.
 - Requirements: podman for `--container` (never docker) and enough free memory (below).
 - `--container DISTRO` (`fedora-44`, `fedora-45`, `ubuntu-26.04`, `debian-13`, `arch`) builds in a memory-capped podman container (podman only,
   never docker). `--host` builds on this machine (on Linux the packages in `nidhogg/deps/<distro>.build`
   must be installed).
-- Configure flags: `--with-native-compilation=aot --with-tree-sitter --with-pgtk` (Linux), `--with-ns ...` (macOS), each followed by `--with-glitnir` unless `--without-glitnir` is given.
+- Configure flags: `--with-native-compilation=aot --with-tree-sitter --with-nidhogg-wayland` (Linux), `--with-ns ...` (macOS), each followed by `--with-glitnir` unless `--without-glitnir` is given.
+  The shell carries Glitnir, so on Linux `--without-glitnir` is a terminal-only build (`--without-x`, no Rust installed);
+  it exists to show the tree compiles without Rust. `--nidhogg-wayland` is the default, still accepted, and refused
+  together with `--without-glitnir`.
 - Memory rule: the build is refused below 3 GiB (3072 MiB) of available memory; the container cap is max(2, min(6, free - 1)) GiB.
   `make -j` is min(CPUs, cap / 1.5 GiB). `--memory` and `--jobs` override; on a host build either one turns the refusal
   into a warning (the caller takes responsibility).
@@ -106,7 +110,7 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   by content) with its cache in DIR; the `.eln` files from native compilation do not go through ccache.
 - **Glitnir (the compositor)** is Nidhogg's Rust library (`nidhogg/glitnir/`). Source builds therefore need **Rust**:
   `cargo` and `rustc` 1.93 or newer (the build lists name the packages: `cargo` + `rust` on Fedora, `cargo` + `rustc` on
-  Ubuntu, `rust` from Homebrew on macOS). `build.sh` passes `--with-glitnir` on pgtk and NS; `--without-glitnir` builds
+  Ubuntu, `rust` from Homebrew on macOS). `build.sh` passes `--with-glitnir` on Linux and NS; `--without-glitnir` builds
   without it and without installing Rust. The configure flag is `--with-glitnir` (default no; `HAVE_GLITNIR`): configure
   checks `cargo` and `rustc` only under the flag and otherwise stops with `--with-glitnir needs cargo and rustc 1.93 or
   newer`. `make` builds the crate offline and locked, with its cargo home and target directory under `src/` of the build
@@ -198,7 +202,7 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
 `bash nidhogg/test/gui.sh --prefix DIR [--scale S] [--size WxH] [--monitors N] [--select REGEXP] [--tests DIR]
 [--daemon] [--container DISTRO] [--wayland-debug FILE] [--env K=V]... [--timeout SEC]` runs the `*-gui-tests.el` and
 `*-gui-NAME-tests.el` files of `test/src/nidhogg-tests/` (ERT tests named `glitnir-gui/…`, `nidhogg-gui/…`, `nhwl-gui/…`)
-on a Nidhogg frame, pgtk or the native shell's as the prefix was built, under a headless sway, or the compositor
+on a Nidhogg frame of the native shell, under a headless sway, or the compositor
 `--compositor` names (mutter, for one). `DIR` is a Nidhogg prefix (an unpacked tarball or an install).
 
 - Everything is private to the run: `dbus-run-session` gives mutter its own session bus, mutter its own Wayland display
