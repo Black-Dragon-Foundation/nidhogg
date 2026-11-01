@@ -1,0 +1,4 @@
+# Seeds per file for P3 (preflight.sh): "TARGET N # why".  A file listed here gets at most N seeds; the rest get --seeds.
+# workers-ts-tests: workers/ts-oracle replays 5000 seeded edits per grammar and mode, 260-350 s on every build, and its edits are
+# seeded by name, not by NIDHOGG_TEST_SEED; the seed only changes the thread order, so a few seeds judge it.
+src/nidhogg-tests/workers-ts-tests 10 # ts-oracle: about 5 min a run
