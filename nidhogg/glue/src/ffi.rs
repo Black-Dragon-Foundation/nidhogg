@@ -1254,7 +1254,7 @@ nhg_export! {
 nhg_export! {
     /// `window`'s chrome slot vector as `glitnir--chrome-vector` gave it now: `NHG_E_ARG` for a wrong length or a slot
     /// out of range; 1 when the corners or shadow changed (C lays the frame out again and garbages it), 0 when not.
-    /// Neither reads nor writes pixels.
+    /// New transitions go to the shell at once.  Neither reads nor writes pixels.
     ///
     /// # Safety
     /// `d` is null or a live display; `v` is null or points to `n` readable floats.

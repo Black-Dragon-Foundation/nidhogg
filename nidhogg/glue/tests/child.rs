@@ -109,6 +109,12 @@ fn toplevel(d: *mut NhgDisplay, w: i32, h: i32) -> u64 {
 /// A child frame of `parent`'s window with its native area at (`x`, `y`), `w` x `h` (scale 1, no margin yet), made
 /// and pushed as `nhwl_create_frame_window` and `nhwl_child_created` do.
 fn child(d: *mut NhgDisplay, parent: u64, x: i32, y: i32, w: i32, h: i32) -> u64 {
+    let none = chrome::encode(&NhgChrome::default());
+    child_with(d, parent, x, y, w, h, &none)
+}
+
+/// `child` with the chrome vector C kept for the frame.
+fn child_with(d: *mut NhgDisplay, parent: u64, x: i32, y: i32, w: i32, h: i32, v: &[f32]) -> u64 {
     let id = shell(d)
         .child_new(&ChildDesc {
             kind: NHSHELL_KIND_CHILD,
@@ -125,8 +131,8 @@ fn child(d: *mut NhgDisplay, parent: u64, x: i32, y: i32, w: i32, h: i32) -> u64
     unsafe {
         assert_eq!(nhg_frame_register(d, id, NHG_FRAME_CHILD), NHG_OK);
         assert_eq!(nhg_frame_scale(d, id, 120), NHG_OK);
-        assert_eq!(chrome(d, id, &NhgChrome::default()), 0);
     }
+    assert_eq!(vector(d, id, v), 0);
     assert_eq!(lay(d, id).0, 0, "no chrome, no margin");
     assert_eq!(set(d, id, parent, x, y, NHG_CHILD_VISIBLE), 0);
     id
@@ -315,6 +321,48 @@ fn still(rec: &Recorder, id: u64, pred: impl Fn(&str) -> bool) {
 /// A shown tree: `frames` (the root first, each parent before its children, as `(surface, parent)`), each drawn whole,
 /// prepared and published, the first picture committed and its callbacks answered.
 fn show(rec: &Recorder, d: *mut NhgDisplay, frames: &mut [(&mut Surf, u64)]) {
+    draw(d, frames);
+    tick(rec, d);
+}
+
+/// One frame of a running leg: the clock moves on, and the root's `FRAME_READY` gets the inline present it asks for.
+/// `false` when none came: the leg is over.
+fn leg_frame(rec: &Recorder, d: *mut NhgDisplay, root: u64) -> bool {
+    // the recorder serves its sockets in turns: this reads what the last present sent
+    rec.control(r#"{"cmd":"outstanding"}"#);
+    rec.control(r#"{"cmd":"outstanding"}"#);
+    let r = rec.control(r#"{"cmd":"present","advance_ns":16000000}"#);
+    assert!(r.contains("\"ok\":true"), "{r}");
+    let more = collect(d, 100)
+        .iter()
+        .any(|e| e.kind() == Kind::FrameReady && e.window == root);
+    if more {
+        present(d, root, &[], NHG_PRESENT_READY);
+    }
+    more
+}
+
+/// The frames a leg has left.
+fn run_leg(rec: &Recorder, d: *mut NhgDisplay, root: u64) -> usize {
+    let mut n = 0;
+    while leg_frame(rec, d, root) {
+        n += 1;
+        assert!(n < 40, "a leg that does not end");
+    }
+    n
+}
+
+/// The vector of a frame with no chrome that fades in over 120 ms and out over 80 ms.
+fn fades() -> [f32; chrome::SLOTS] {
+    let mut v = chrome::encode(&NhgChrome::default());
+    v[chrome::SLOT_SHOW_KIND..=chrome::SLOT_HIDE_Y2].copy_from_slice(&[
+        1.0, 120.0, 0.0, 0.0, 0.58, 1.0, 1.0, 80.0, 0.42, 0.0, 1.0, 1.0,
+    ]);
+    v
+}
+
+/// `show` up to the first picture's commit: its callbacks are still to come.
+fn draw(d: *mut NhgDisplay, frames: &mut [(&mut Surf, u64)]) {
     for (s, _) in frames.iter_mut() {
         prepare(d, s);
         fill(d, s, BG);
@@ -329,7 +377,6 @@ fn show(rec: &Recorder, d: *mut NhgDisplay, frames: &mut [(&mut Surf, u64)]) {
         0
     );
     assert_ne!(ready(d, root) & NHG_PRESENTED_COMMITTED, 0);
-    tick(rec, d);
 }
 
 /// The tests are named `child::…`, like the other crates' T1 tests.
@@ -391,6 +438,76 @@ mod child {
         v[chrome::SLOT_SHOW_MS] = 120.0;
         v[chrome::SLOT_BACKDROP] = 10.0;
         assert_eq!(vector(d, c, &v), 0, "motion and backdrop alone");
+        close(d);
+    }
+
+    /// The slots reach the shell before the first picture: the first show runs its leg, and a hide keeps the surface
+    /// through its own, for about the slots' durations.
+    #[test]
+    fn vector_motion_reaches_shell() {
+        let rec = Recorder::start_clock("kwin", "manual");
+        let d = open(&rec);
+        let root = toplevel(d, 200, 100);
+        let mut r = surface(d, root, 200, 100);
+        let c = child(d, root, 30, 20, 60, 40);
+        assert_eq!(vector(d, c, &fades()), 0, "nothing to lay out");
+        let mut k = surface(d, c, 60, 40);
+        draw(d, &mut [(&mut r, 0), (&mut k, root)]);
+        assert_eq!(frames_of(&rec, c), 1);
+        let n = run_leg(&rec, d, root);
+        assert!((3..=12).contains(&n), "{n} frames of a 120 ms show");
+        assert_eq!(frames_of(&rec, c), n + 1, "each frame a buffer");
+
+        assert_eq!(set(d, c, root, 30, 20, 0), 0);
+        ready(d, root);
+        assert_eq!(frames_of(&rec, c), n + 2, "the hide's first frame");
+        rec.wait_node(c, |n| n.contains("\"mapped\":true"));
+        let m = run_leg(&rec, d, root);
+        assert!((2..=8).contains(&m), "{m} frames of an 80 ms hide");
+        rec.wait_node(c, |n| n.contains("\"mapped\":false"));
+        close(d);
+    }
+
+    /// A vector with no kinds takes the transitions back: a hide unmaps at once, with no frame.
+    #[test]
+    fn chrome_without_motion_clears_spec() {
+        let rec = Recorder::start_clock("kwin", "manual");
+        let d = open(&rec);
+        let root = toplevel(d, 200, 100);
+        let mut r = surface(d, root, 200, 100);
+        let c = child(d, root, 30, 20, 60, 40);
+        assert_eq!(vector(d, c, &fades()), 0);
+        let mut k = surface(d, c, 60, 40);
+        draw(d, &mut [(&mut r, 0), (&mut k, root)]);
+        run_leg(&rec, d, root);
+        let frames = frames_of(&rec, c);
+
+        let none = chrome::encode(&NhgChrome::default());
+        assert_eq!(vector(d, c, &none), 0, "nothing to lay out");
+        assert_eq!(set(d, c, root, 30, 20, 0), 0);
+        assert_eq!(ready(d, root) & NHG_PRESENTED_COMMITTED, 0);
+        let n = rec.wait_node(c, |n| n.contains("\"mapped\":false"));
+        assert!(n.contains("\"buffer\":null"), "{n}");
+        assert_eq!(frames_of(&rec, c), frames, "no leg");
+        close(d);
+    }
+
+    /// A window made anew (a reparent) has no transitions in the shell, and takes them from the vector C kept.
+    #[test]
+    fn remade_window_gets_motion_again() {
+        let rec = Recorder::start_clock("kwin", "manual");
+        let d = open(&rec);
+        let root = toplevel(d, 200, 100);
+        let mut r = surface(d, root, 200, 100);
+        let v = fades();
+        let old = child_with(d, root, 30, 20, 60, 40, &v);
+        // SAFETY: a live display.
+        assert_eq!(unsafe { nhg_window_destroy(d, old) }, NHG_OK);
+        let c = child_with(d, root, 30, 20, 60, 40, &v);
+        let mut k = surface(d, c, 60, 40);
+        draw(d, &mut [(&mut r, 0), (&mut k, root)]);
+        let n = run_leg(&rec, d, root);
+        assert!((3..=12).contains(&n), "{n} frames of a 120 ms show");
         close(d);
     }
 
