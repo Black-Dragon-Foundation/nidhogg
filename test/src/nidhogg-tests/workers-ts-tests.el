@@ -1,4 +1,5 @@
 ;;; workers-ts-tests.el --- tests for workers: tree-sitter off the main thread  -*- lexical-binding: t -*-
+;; test-class: cond
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
