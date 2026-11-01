@@ -61,6 +61,16 @@ pub const EXPORTS: &[&str] = &[
     "glitnir_stats_forget",
     "glitnir_stats_record",
     "glitnir_stats_summary",
+    "glitnir_tc_advance_to",
+    "glitnir_tc_mono_ns",
+    "glitnir_tc_next_deadline",
+    "glitnir_tc_register",
+    "glitnir_tc_start",
+    "glitnir_tc_stop",
+    "glitnir_tc_take_due",
+    "glitnir_tc_unregister",
+    "glitnir_tc_waiting",
+    "glitnir_tc_wall_ns",
 ];
 
 fn code(r: Result<(), i32>) -> i32 {
