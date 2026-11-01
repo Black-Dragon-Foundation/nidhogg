@@ -18,9 +18,10 @@
 # Which runs are filtered: a pull request, a push to ci/** other than ci/joint/**, and a narrowed dispatch.  Every
 # other run (the default branch, tags, schedules, a dispatch that names nothing, joint rounds) runs everything.  A
 # filtered run diffs against a base whose own gate passed: the pull request's base, or the default branch's tip, which
-# must be an ancestor of SHA.  The default branch only ever moves to a commit whose gate passed, so the jobs a change
-# cannot affect have their result on the base.  Anything uncertain runs everything: no base, a base that is not an
-# ancestor, a base without a passed GATE, an API error, 300 or more changed files, a path no row matches.
+# must be an ancestor of SHA.  The base's GATE passed (every finished run of it), so the jobs a change cannot affect
+# have their result on the base (a filtered gate there stands, by the same rule, on its own base).  Anything uncertain
+# runs everything: no base, a base that is not an ancestor, a base without a passed GATE or with a red one, an API
+# error, 300 or more changed files, a path no row matches.
 #
 # Output: run_ID=true|false (ID with - as _) for PUSH and CAN, skip= (the PUSH jobs not run: the gate's allowed
 # skips), partial=true|false (a narrowed run left out a job the change needs, or narrowed the tests: its gate is named
@@ -119,8 +120,11 @@ base_of() {
     base=$("$GH" api "repos/$REPO/branches/$DEFAULT_BRANCH" --jq .commit.sha 2>/dev/null) || { echo "!no default branch tip"; return; }
   fi
   case $base in *[!0-9a-f]*|'') echo "!no base commit"; return ;; esac
+  # every finished GATE run on the base passed (one red, say the default branch's own run after a green ci/* run,
+  # means its results cannot stand in), and at least one did
   ok=$("$GH" api --method GET "repos/$REPO/commits/$base/check-runs" -f check_name="$GATE" -f filter=all \
-         --jq '[.check_runs[] | select(.conclusion == "success")] | length' 2>/dev/null) || { echo "!the checks API failed"; return; }
+         --jq '[.check_runs[] | select(.conclusion != null) | .conclusion] | if length > 0 and all(. == "success") then 1 else 0 end' \
+         2>/dev/null) || { echo "!the checks API failed"; return; }
   [ "${ok:-0}" -gt 0 ] 2>/dev/null || { echo "!the base ${base:0:12} has no passed $GATE"; return; }
   echo "$base"
 }
