@@ -1738,8 +1738,10 @@ toplevel remains in the tree, and the connection has no protocol error."
                                                              :pos (apply #'vector (nhwl-gui--native-to-logical 5 5))))
                                   (nhwl-gui--menu-button 272)))
                    timers)
-             ;; the menu is dismissed: a menu-bar menu cancelled by a click quits, as on every Emacs
-             (condition-case nil (read-key-sequence nil) (quit nil)))
+             ;; the menu is dismissed: a menu-bar menu cancelled by a click quits, as on every Emacs.  The harness runs
+             ;; rows with `inhibit-quit' t: that quit stays pending and `read-key-sequence' goes on with a length of -1
+             (let ((inhibit-quit nil))
+               (condition-case nil (read-key-sequence nil) (quit nil))))
            (lambda (_id)
              (let ((frame (cdr (assq 0 nhwl-menu--frames))))
                (setq seen (list (nth 1 (frame-parameter frame 'nhwl-popup))
