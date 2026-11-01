@@ -86,6 +86,8 @@ pub struct MainState {
     windows: HashMap<u64, toplevel::Window>,
     children: HashMap<u64, child::Child>,
     popups: HashMap<u64, popup::Popup>,
+    /// The popups made so far (and made again), for the order the compositor stacks them in (`child::painted`).
+    popups_made: u64,
     /// The popups that sent a grab, bottom to top, dismissed or not, until they are destroyed (`popup.rs`).
     grabs: Vec<u64>,
     activation: Option<wayland_protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1>,
