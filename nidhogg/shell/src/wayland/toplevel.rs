@@ -199,6 +199,7 @@ impl ShellBackend for WaylandShell {
             if self.shared.main_pending.swap(false, Ordering::AcqRel) {
                 // an error here reaches the host as the reader's DISCONNECTED record
                 let _ = self.dispatch_main_queue();
+                self.popups_place_again();
                 continue;
             }
             let ev = self.take_record()?;
@@ -218,6 +219,7 @@ impl ShellBackend for WaylandShell {
             return Ok(());
         }
         self.dispatch_main_queue()?;
+        self.popups_place_again();
         self.present_housekeeping();
         self.flush()
     }
