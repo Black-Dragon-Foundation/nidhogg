@@ -71,7 +71,9 @@ jobs:
           persist-credentials: false
       # Caches are restored before the build and saved right after it (actions/cache/save), not at the end of the job: a
       # later failing step (the tarball test) keeps what the build produced.  Every key is identical on every branch, so a
-      # run on macos-ci or a pull request restores what nidhogg-31 (the default branch) saved.  README.md, "CI and releases".
+      # run on a ci/* branch or a pull request restores what nidhogg-31 (the default branch) saved.  Only nidhogg-31 saves:
+      # an identical key saved again per ref would count against the repository's cache limit once per ref.  README.md,
+      # "CI and releases".
       - name: Source tree hash, compiled-Lisp inputs, file times
         id: tree
         run: |
@@ -133,19 +135,19 @@ jobs:
           bash nidhogg/build.sh --container "${{ matrix.distro }}" --stage build --memory 12g --jobs 4 --build-dir "$RUNNER_TEMP/build"
       # saved right after the build, before Emacs's checks and the tarball (a build that failed saves nothing); an entry whose key was found is not saved again
       - name: Save ccache
-        if: ${{ always() && steps.build.outcome == 'success' }}
+        if: ${{ always() && github.ref == 'refs/heads/nidhogg-31' && steps.build.outcome == 'success' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ccache
           key: ccache-${{ matrix.distro }}-gcc-${{ hashFiles(format('nidhogg/deps/{0}.build', matrix.distro)) }}-${{ github.sha }}
       - name: Save package downloads
-        if: ${{ always() && steps.build.outcome == 'success' && steps.pk.outputs.cache-hit != 'true' }}
+        if: ${{ always() && github.ref == 'refs/heads/nidhogg-31' && steps.build.outcome == 'success' && steps.pk.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/pkg-cache
           key: pkgs-${{ matrix.distro }}-${{ hashFiles(format('nidhogg/deps/{0}.build', matrix.distro)) }}
       - name: Save compiled Lisp
-        if: ${{ always() && steps.build.outcome == 'success' && steps.lc.outputs.cache-hit != 'true' }}
+        if: ${{ always() && github.ref == 'refs/heads/nidhogg-31' && steps.build.outcome == 'success' && steps.lc.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/lisp-cache
@@ -166,7 +168,7 @@ jobs:
           bash nidhogg/build.sh --container "${{ matrix.distro }}" --stage pack --memory 12g --jobs 4 --build-dir "$RUNNER_TEMP/build" \
             --out "dist/nidhogg-$V-${{ matrix.distro }}-$(uname -m).tar.xz"
       - name: Save built tarball
-        if: ${{ always() && steps.pack.outcome == 'success' && !startsWith(github.ref, 'refs/tags/') }}
+        if: ${{ always() && github.ref == 'refs/heads/nidhogg-31' && steps.pack.outcome == 'success' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: dist
@@ -243,7 +245,7 @@ jobs:
         if: ${{ steps.tb.outputs.cache-hit != 'true' }}
         run: sed 's/#.*//' nidhogg/deps/macos.build | xargs brew install
       - name: Save Homebrew downloads
-        if: ${{ always() && steps.brew.outcome == 'success' && steps.bd.outputs.cache-hit != 'true' }}
+        if: ${{ always() && github.ref == 'refs/heads/nidhogg-31' && steps.brew.outcome == 'success' && steps.bd.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.brewdir.outputs.dir }}
@@ -275,7 +277,7 @@ jobs:
           NIDHOGG_BUILD_LISP_CACHE: ${{ runner.temp }}/lisp-cache
         run: /bin/bash nidhogg/build.sh --host --stage build --jobs 3 --build-dir "$RUNNER_TEMP/build"
       - name: Save compiled Lisp
-        if: ${{ always() && steps.build.outcome == 'success' && steps.lc.outputs.cache-hit != 'true' }}
+        if: ${{ always() && github.ref == 'refs/heads/nidhogg-31' && steps.build.outcome == 'success' && steps.lc.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/lisp-cache
@@ -287,7 +289,7 @@ jobs:
           V=$(head -n 1 nidhogg/version)
           /bin/bash nidhogg/build.sh --host --stage pack --jobs 3 --build-dir "$RUNNER_TEMP/build" --out "dist/nidhogg-$V-macos-$(uname -m).tar.xz"
       - name: Save built tarball
-        if: ${{ always() && steps.pack.outcome == 'success' && !startsWith(github.ref, 'refs/tags/') }}
+        if: ${{ always() && github.ref == 'refs/heads/nidhogg-31' && steps.pack.outcome == 'success' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: dist
@@ -315,21 +317,40 @@ jobs:
 
   # drgnx's Emacs-side tiers on the tarballs this run built, through drgnx's own definition of them
   # (.github/workflows/drgnx-tiers.yml in drgnx), called at a pinned drgnx commit, so a drgnx push never turns Nidhogg
-  # red.  The default drgnx_ref is the same commit (nidhogg/test/ci-test.sh checks the two agree); bump both by hand to a
-  # drgnx commit whose CI is green, and pass drgnx_ref by hand for a joint round (README.md, "CI and releases").  The
+  # red.  The uses line below is the one place the pin lives: GitHub allows no expression there, so the pin job reads
+  # the SHA from it and the default drgnx_ref is that output.  Bump the uses line by hand to a drgnx commit whose CI is
+  # green, and pass drgnx_ref by hand for a joint round (README.md, "CI and releases").  The
   # unit suite and gate mode on the fedora-45 tarball, the GUI tier on it under headless mutter, the unit suite on the
   # macOS tarball (only that one in scope=macos).  It runs once the builds are done, whatever they did: a job whose
   # tarball is missing fails by itself.
+  pin:
+    name: drgnx pin
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      ref: ${{ steps.pin.outputs.ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/workflows
+      - name: The drgnx commit the uses line pins
+        id: pin
+        run: |
+          ref=$(grep -oE '^ {4}uses:[ ]Black-Dragon-Foundation/drgnx/\.github/workflows/drgnx-tiers\.yml@[0-9a-f]{40}' .github/workflows/build.yml | sed 's/.*@//')
+          [ -n "$ref" ] || { echo "no pinned drgnx-tiers.yml in build.yml" >&2; exit 1; }
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
   drgnx:
     name: drgnx tiers
-    needs: [linux, macos]
+    needs: [pin, linux, macos]
     if: ${{ !cancelled() }}
     permissions:
       contents: read
       packages: read
     uses: Black-Dragon-Foundation/drgnx/.github/workflows/drgnx-tiers.yml@4353f1fa51e054c3078474e686d981aeb2348aec # drgnx pin
     with:
-      drgnx_ref: ${{ inputs.drgnx_ref || '4353f1fa51e054c3078474e686d981aeb2348aec' }}
+      drgnx_ref: ${{ inputs.drgnx_ref || needs.pin.outputs.ref }}
       nidhogg: artifact
       tiers: ${{ inputs.scope == 'macos' && 'macos' || 'unit no-lisp-writes ui macos' }}
 
