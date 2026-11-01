@@ -420,8 +420,14 @@ pub trait ShellBackend {
     /// Root `root`'s tree as the compositor was given it: `frames` (the root's first; a surface not listed is hidden,
     /// and any that is not in the tree is ignored) composed whole, their chrome and shadows included, at their places,
     /// in their stacking, with their alpha, popups on top.  The root's size, row by row, premultiplied.  For tests and
-    /// captures: it costs presenting nothing, and `frames` must be what was published.
-    fn tree_snapshot(&self, root: WindowId, frames: &[SurfaceFrame]) -> ShellResult<Vec<u32>>;
+    /// captures: it costs presenting nothing, and `frames` must be what was published.  `composed` false: the same
+    /// without Glitnir, the frames' own pixels, square and with no shadows.
+    fn tree_snapshot(
+        &self,
+        root: WindowId,
+        frames: &[SurfaceFrame],
+        composed: bool,
+    ) -> ShellResult<Vec<u32>>;
 
     /// What a host needs to abandon this backend without touching its state again: the glue calls it once at open and
     /// uses it only after a panic left the backend's state in doubt.  Every thread the backend runs is in the list.
