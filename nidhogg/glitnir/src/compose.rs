@@ -418,23 +418,20 @@ pub fn compose_with(
     let pieces = disjoint(clips, t.rect);
     let mut drawn = 0u32;
     for p in scene {
-        if p.kind == Kind::Window {
-            for l in labels.iter().filter(|l| l.layer == p.id) {
-                draw_label(k, t, &pieces, l, sprites);
+        let source = sources.iter().find(|s| s.layer == p.id);
+        if let Some(src) = source.filter(|_| {
+            p.kind != Kind::Window && pieces.iter().any(|c| !c.intersect(&p.bounds).is_empty())
+        }) {
+            let plan = Plan::new(p, src, t.scale, shadows);
+            for c in &pieces {
+                plan.draw(k, t, src, *c);
             }
-            continue;
+            drawn = drawn.saturating_add(1);
         }
-        if !pieces.iter().any(|c| !c.intersect(&p.bounds).is_empty()) {
-            continue;
+        // a layer's labels go over its pixels (a window layer's pixels are its frame's, drawn before it)
+        for l in labels.iter().filter(|l| l.layer == p.id) {
+            draw_label(k, t, &pieces, l, sprites);
         }
-        let Some(src) = sources.iter().find(|s| s.layer == p.id) else {
-            continue;
-        };
-        let plan = Plan::new(p, src, t.scale, shadows);
-        for c in &pieces {
-            plan.draw(k, t, src, *c);
-        }
-        drawn = drawn.saturating_add(1);
     }
     Ok(drawn)
 }
@@ -1147,6 +1144,47 @@ mod tests {
                 scale: 1.0,
             })
             .collect()
+    }
+
+    /// The native shell keeps its windows' anchors on the frame's one layer: the label is placed there, damages its
+    /// bounds and goes over the frame's pixels.
+    #[test]
+    fn a_label_on_the_frame_layer_goes_over_its_pixels() {
+        const W: i32 = 64;
+        const H: i32 = 48;
+        let mut s = Scene::default();
+        let mut frames = crate::damage::Frames::new();
+        let up = desc(1, 0, 1, Rect::new(0, 0, W, H), 1.0, true);
+        s.upsert(&up).unwrap();
+        let mut sprites = Sprites::new();
+        sprites.put(7, vec![0xffff_8000; 12 * 6], 12, 6);
+        let sprites = std::sync::Arc::new(sprites);
+        s.commit_with(1, &mut frames, &sprites);
+        let a = Anchor {
+            glyph: Rect::new(16, 24, 8, 12),
+            clip: Rect::new(0, 0, W, H),
+            sprite: 7,
+            row_top: 0,
+        };
+        s.decor_put(1, &a).unwrap();
+        let damage = s.commit_with(1, &mut frames, &sprites).to_vec();
+        let pill = Rect::new(16, 18, 12, 6);
+        assert!(
+            damage.iter().any(|r| !r.intersect(&pill).is_empty()),
+            "{damage:?}"
+        );
+        let src = Buf::new(W, H, 0xff20_2020);
+        let mut out = Buf::new(W, H, 0);
+        let drawn = compose_committed(
+            &s.snapshot(),
+            &mut Composer::new(),
+            &mut out.target(1.0),
+            &[Rect::new(0, 0, W, H)],
+            &[src.source(1, 1.0)],
+        );
+        assert_eq!(drawn, Ok(1));
+        assert_eq!(out.at(16, 18), 0xffff_8000, "the pill");
+        assert_eq!(out.at(16, 24), 0xff20_2020, "the glyph below it");
     }
 
     #[test]
