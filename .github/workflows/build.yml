@@ -433,6 +433,13 @@ jobs:
           mkdir -p "$RUNNER_TEMP/nidhogg"
           tar -xJf dist/*.tar.xz -C "$RUNNER_TEMP/nidhogg" --strip-components=1
           chmod +x recorder/nh-recorder
+      - name: A render node for KWin, which composites on nothing else (vgem; Mesa draws in software)
+        if: ${{ matrix.lane == 'kwin' }}
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q "linux-modules-extra-$(uname -r)"
+          sudo modprobe vgem
+          sudo chmod 666 /dev/dri/renderD*
       - run: bash nidhogg/test/native-gui.sh "${{ matrix.lane }}" --prefix "$RUNNER_TEMP/nidhogg" --recorder "$PWD/recorder/nh-recorder" --container fedora-45
 
   # The off-main-thread work's CI (engine C, PD-4).  They run once the Linux builds are done, whatever the other distros
