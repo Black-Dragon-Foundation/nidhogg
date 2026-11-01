@@ -9,10 +9,11 @@
 #                                                 prints the installed size and the cgroup's peak memory (no Nidhogg, no rows)
 #   GLITNIR_GUI_DRY=1 nidhogg/test/ime-matrix.sh --prefix DIR   print the gui.sh command of each combination and exit
 #
-# Combinations (compositor + input method, pinyin profile, keys typed by wtype; mutter: RemoteDesktop over D-Bus):
-#   sway-fcitx5   headless sway, fcitx5 as a client (input-method-v2)
-#   kwin-fcitx5   KWin --virtual, fcitx5 launched by KWin (kwinrc)
-#   gnome-ibus    headless mutter (GNOME's text-input and IBus path) with ibus-daemon; gnome-shell itself is not started
+# Combinations (compositor + input method, pinyin profile, keys typed by wtype):
+#   sway-fcitx5   headless sway, fcitx5 as a client (input-method-v2): every row runs
+#   kwin-fcitx5   KWin --virtual, fcitx5 launched by KWin (kwinrc): KWin refuses wtype's virtual keyboard, every row skips
+#   gnome-ibus    headless mutter with ibus-daemon: the cursor rectangle only, the typing rows skip.  GNOME's bridge to IBus
+#                 is gnome-shell's, which does not start here (no logind on a system bus), so IBus stays a manual check
 # --out FILE.eld gets one plist per row: (:combo C :row R :result pass|fail|skipped :reason S).  A combination that
 # cannot be driven is `skipped' with the reason, never a failure.  Exit 0 when no row failed, 1 otherwise, 2 usage.
 set -u
@@ -112,7 +113,7 @@ for combo in "${combos[@]}"; do
     verdict=$(grep -E "^(passed|skipped|FAILED) $name\$" "$log" 2>/dev/null | head -n 1 | cut -d' ' -f1)
     case $verdict in
       passed) record "$combo" "$row" pass "" ;;
-      skipped) record "$combo" "$row" skipped "$(sed -n "s/^nhwl-ime-skip $name: //p" "$log" | head -n 1)" ;;
+      skipped) record "$combo" "$row" skipped "$(sed -n "s#^nhwl-ime-skip $name: ##p" "$log" | head -n 1)" ;;
       FAILED) record "$combo" "$row" fail "$(grep -A1 "^FAILED $name\$" "$log" | sed -n 2p | cut -c1-200)"; failed=1 ;;
       *)
         # no verdict: the container, the compositor or Nidhogg did not come up.  Whole-combination reason from the log.

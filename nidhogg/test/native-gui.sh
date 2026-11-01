@@ -25,6 +25,9 @@
 #   sway-daemon       headless sway, rows in a daemon
 #   decor-recorder    the decoration rows on nh-recorder
 #   decor-1, decor-2  the decoration rows on headless sway at scale 1 and 2
+#   ime-sway          nhwl-ime-tests.el on headless sway with fcitx5 (ime-matrix.sh, its own container; a skipped row is
+#                     not a passed one)
+#   ime-mutter        the same on headless mutter: the cursor rectangle (no input method there)
 #
 # The recorder lanes run their rows SLICE at a time, each slice in a new Emacs and compositor: rows leave windows' layers,
 # frames and focus behind them, and these lanes test the shell, not one row after another's leftovers.
@@ -56,7 +59,7 @@ nhwl=(--files 'nhwl-gui*-tests.el')
 decor=(--files 'glitnir-decor-gui-tests.el')
 rules=errors,acks,unconfigured,popup,grab,popup-order
 trace=()
-sliced=0 only="" limit=1200
+sliced=0 only="" limit=1200 ime=""
 case $lane in
   gui-1)           min=100; limit=1800; args=("${sway[@]}" --scale 1) ;;
   gui-2)           min=100; limit=1800; args=("${sway[@]}" --scale 2) ;;
@@ -82,6 +85,8 @@ case $lane in
   decor-recorder)  min=18;  args=("${rec[@]}" "${decor[@]}") ;;
   decor-1)         min=18;  args=("${sway[@]}" "${decor[@]}" --scale 1) ;;
   decor-2)         min=18;  args=("${sway[@]}" "${decor[@]}" --scale 2) ;;
+  ime-sway)        min=3;   ime="sway-fcitx5" ;;
+  ime-mutter)      min=1;   ime="gnome-ibus" ;;
   *) usage ;;
 esac
 
@@ -98,7 +103,11 @@ run() {
   [ -z "$line" ] || ran=$(( ran + ${line% *} - ${line#* } ))
 }
 
-if [ "$sliced" = 1 ]; then
+if [ -n "$ime" ]; then
+  # exits 0 when every row skipped, so the rows that passed are what counts
+  bash "$here/ime-matrix.sh" --prefix "$prefix" --only "$ime" --out "$work/ime.eld" --container || fail=1
+  ran=$(grep -c ':result pass' "$work/ime.eld")
+elif [ "$sliced" = 1 ]; then
   mapfile -t rows < <(sed -nE 's/^\(ert-deftest (nhwl-gui\/[^ ]+).*/\1/p' "$here"/../../test/src/nidhogg-tests/nhwl-gui*-tests.el | sort)
   for ((i = 0; i < ${#rows[@]}; i += SLICE)); do
     sel=$(printf '%s\\|' "${rows[@]:i:SLICE}")

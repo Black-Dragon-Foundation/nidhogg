@@ -41,7 +41,8 @@
 #   --select REGEXP     ERT selector, an Emacs regexp (alternation is \|); default every test
 #   --tests DIR         where the *-gui-tests.el files are (default: test/src/nidhogg-tests of this checkout)
 #   --daemon            run in `nidhogg --fg-daemon' and open the frame with emacsclient -c
-#   --container DISTRO  the same, inside a memory-capped podman container (fedora-45), image pinned by digest
+#   --container DISTRO  the same, inside a memory-capped podman container: fedora-45, image pinned by digest, or
+#                       ubuntu-26.04 or debian-13 with --compositor recorder only
 #   --wayland-debug F   Emacs's stderr (WAYLAND_DEBUG=client protocol trace and the test output) goes to F
 #   --env K=V           an extra environment variable for Nidhogg (repeatable)
 #   --force-csd         client-side decorations: GTK_CSD=1 for pgtk, NIDHOGG_SHELL_FORCE_CSD=1 for the shell, and
@@ -424,8 +425,13 @@ fi
 if [ -n "$container" ]; then
   case $container in
     fedora-45) image=$IMAGE_fedora_45 ;;
-    *) echo "gui.sh: --container supports fedora-45" >&2; exit 2 ;;
+    # the other libraries a tarball is built on, with the recorder only: no compositor packages to keep working there
+    ubuntu-26.04) image=docker.io/library/ubuntu:26.04 ;;
+    debian-13) image=docker.io/library/debian:13 ;;
+    *) echo "gui.sh: --container supports fedora-45, ubuntu-26.04 and debian-13" >&2; exit 2 ;;
   esac
+  [ "$container" = fedora-45 ] || [ "$compositor" = recorder ] ||
+    { echo "gui.sh: --container $container runs --compositor recorder only" >&2; exit 2; }
   # a local image with the packages below already installed (built once from the same base) saves every run the
   # download; without it each run installs them into a fresh container
   podman image exists "localhost/glitnir-gui-deps:$container" 2>/dev/null && image=localhost/glitnir-gui-deps:$container
@@ -471,6 +477,12 @@ if [ -n "$container" ]; then
       rt='"$inprefix"'/share/nidhogg/deps.runtime
       [ -f "$rt" ] || rt=/src/nidhogg/deps/'"$container"'.runtime
       pkgs=$(sed "s/#.*//" "$rt" 2>/dev/null || true)
+      if command -v apt-get > /dev/null; then
+        { apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
+            dbus fonts-dejavu-core procps util-linux xkb-data $pkgs; } > /tmp/apt.log 2>&1 || { tail -n 30 /tmp/apt.log; exit 1; }
+        export XDG_RUNTIME_DIR=/tmp/xdg-container
+        exec bash /src/nidhogg/test/gui.sh "$@"
+      fi
       want="mutter sway grim pixman libxkbcommon libcap dbus-daemon \
         mesa-dri-drivers mesa-libEGL mesa-libgbm python3-gobject-base dejavu-sans-mono-fonts procps-ng util-linux \
         $(case " $* " in *" mutter "*) echo pipewire wireplumber gstreamer1-plugins-base pipewire-gstreamer pipewire-utils ;; esac) \

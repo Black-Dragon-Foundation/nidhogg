@@ -2,8 +2,9 @@
 ;; test-class: cond
 
 ;; Run by nidhogg/test/ime-matrix.sh (through gui.sh --ime IM --files nhwl-ime-tests.el), one container per
-;; combination.  The rows type real keys at the compositor (wtype on sway and KWin, mutter's RemoteDesktop D-Bus
-;; interface on mutter) and the input method (fcitx5 or ibus, pinyin) answers with preedit and commit_string.
+;; combination.  The rows type real keys at the compositor with wtype and the input method (fcitx5, pinyin) answers
+;; with preedit and commit_string; on mutter only the cursor rectangle runs (mutter's RemoteDesktop D-Bus interface
+;; attaches the keyboard).
 ;; Without NHWL_IME_COMBO (any other run) every row skips.  A combination that cannot be driven skips with a reason,
 ;; printed as "nhwl-ime-skip ROW: REASON" for the rig; it is never a failure.
 ;;
@@ -47,34 +48,61 @@ Committed characters arrive as keystrokes; insert them."
         (dbus-call-method :session svc s (concat svc ".Session") "Start")
         (setq nhwl-ime--rd s))))
 
+(defun nhwl-ime--mutter-key (keysym)
+  "Press and release KEYSYM through mutter's RemoteDesktop session."
+  (let ((svc "org.gnome.Mutter.RemoteDesktop"))
+    (dolist (down '(t nil))
+      (dbus-call-method :session svc (nhwl-ime--rd-session) (concat svc ".Session")
+                        "NotifyKeyboardKeysym" :uint32 keysym :boolean down))))
+
+(defun nhwl-ime--wtype (&rest args)
+  "Run wtype with ARGS, its own protocol trace off; skip the row if it fails."
+  (with-temp-buffer
+    (let* ((process-environment (cons "WAYLAND_DEBUG" process-environment))
+           (rc (apply #'call-process "wtype" nil t nil args)))
+      (unless (eq rc 0)
+        (nhwl-ime--skip "%s cannot type through wtype: %s" (getenv "GLITNIR_GUI_COMPOSITOR")
+                        (string-trim (buffer-string)))))))
+
 (defun nhwl-ime--type (letters &optional space)
   "Type the lower-case LETTERS, then a space when SPACE, at the compositor.
 Skip the row if it cannot be driven."
+  (when (equal (getenv "GLITNIR_GUI_COMPOSITOR") "mutter")
+    (nhwl-ime--skip "bare mutter has no input method: GNOME's bridge to IBus is gnome-shell's, which needs logind"))
+  (apply #'nhwl-ime--wtype "-d" "60" letters (and space '("-k" "space")))
+  (nhwl-ime--pump 0.3))
+
+(defvar nhwl-ime--keyboard nil
+  "The wtype process that keeps a keyboard on the seat.")
+
+(defun nhwl-ime--attach-keyboard ()
+  "Give the seat a keyboard, as a real session has.
+A headless compositor has none, so Emacs gets no keyboard focus and never turns text input on.  Mutter's session keeps
+one after a first key; on the others wtype's virtual keyboard lasts as long as wtype, which sleeps for the whole run."
   (if (equal (getenv "GLITNIR_GUI_COMPOSITOR") "mutter")
       (condition-case err
-          (let ((svc "org.gnome.Mutter.RemoteDesktop"))
-            (dolist (c (append letters (and space " ") nil))
-              (dolist (down '(t nil))
-                (dbus-call-method :session svc (nhwl-ime--rd-session) (concat svc ".Session")
-                                  "NotifyKeyboardKeysym" :uint32 c :boolean down))
-              (nhwl-ime--pump 0.05)))
+          (nhwl-ime--mutter-key #xffe1)   ; Shift_L, which types nothing
         (error (nhwl-ime--skip "mutter's RemoteDesktop refused the keys: %S" err)))
     (unless (executable-find "wtype") (nhwl-ime--skip "no wtype"))
-    (with-temp-buffer
-      (let ((rc (apply #'call-process "wtype" nil t nil "-d" "60" letters (and space '("-k" "space")))))
-        (unless (eq rc 0)
-          (nhwl-ime--skip "%s cannot type through wtype: %s" (getenv "GLITNIR_GUI_COMPOSITOR")
-                          (string-trim (buffer-string))))))
-    (nhwl-ime--pump 0.3)))
+    (unless (process-live-p nhwl-ime--keyboard)
+      (let ((process-environment (cons "WAYLAND_DEBUG" process-environment)))
+        (setq nhwl-ime--keyboard
+              (start-process "nhwl-ime-keyboard" " *nhwl-ime-keyboard*" "wtype" "-s" "600000"))
+        (set-process-query-on-exit-flag nhwl-ime--keyboard nil)))))
 
 (defun nhwl-ime--ready ()
-  "Skip unless this run is an IME combination; show a fresh buffer."
+  "Skip unless this run is an IME combination; show a fresh buffer with the keyboard focus."
   (unless (getenv "NHWL_IME_COMBO") (nhwl-ime--skip "not an IME-matrix run"))
   (unless (featurep 'nidhogg-wayland) (nhwl-ime--skip "not the native shell"))
-  (unless (nhwl-ime--wait (lambda () (frame-focus-state)) 5) (nhwl-ime--skip "the frame never got the keyboard"))
   (switch-to-buffer (get-buffer-create "*ime*"))
   (erase-buffer)
   (when (overlayp (bound-and-true-p pgtk-preedit-overlay)) (delete-overlay pgtk-preedit-overlay))
+  (nhwl-ime--attach-keyboard)
+  (unless (nhwl-ime--wait (lambda () (eq (frame-focus-state) t)) 5)
+    (nhwl-ime--skip "%s gave no keyboard focus: %s" (getenv "GLITNIR_GUI_COMPOSITOR")
+                    (if (process-live-p nhwl-ime--keyboard)
+                        "the keyboard is attached"
+                      (with-current-buffer " *nhwl-ime-keyboard*" (string-trim (buffer-string))))))
   (nhwl-ime--pump 0.5))
 
 (ert-deftest nhwl-ime/pinyin-commits-cjk ()
@@ -98,7 +126,7 @@ Skip the row if it cannot be driven."
       (with-temp-buffer
         (insert-file-contents f nil (max 0 (- (file-attribute-size (file-attributes f)) 2000000)))
         (goto-char (point-max))
-        (when (re-search-backward (concat "zwp_text_input_v3@[0-9]+\\.set_cursor_rectangle("
+        (when (re-search-backward (concat "zwp_text_input_v3[#@][0-9]+\\.set_cursor_rectangle("
                                           "\\(-?[0-9]+\\), \\(-?[0-9]+\\), \\(-?[0-9]+\\), \\(-?[0-9]+\\))")
                                   nil t)
           (mapcar (lambda (i) (string-to-number (match-string i))) '(1 2 3 4)))))))
