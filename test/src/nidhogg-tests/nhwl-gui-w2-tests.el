@@ -888,7 +888,8 @@ daemon stays, and the hook runs `reconnecting', then `lost'."
          (should (< (- (float-time) t0) 2.5))
          (should (daemonp))
          (should (equal nhwl-gui--connection-log '(reconnecting lost))))
-      (ignore-errors (gui-runner-recorder '(:cmd "restart_up"))))))
+      ;; the display's frames are gone: the rows after this one need one
+      (nhwl-gui--reopen-display))))
 
 (ert-deftest nhwl-gui/compositor-restart-socket-reappears ()
   "The socket name is bound again after 1.5 s: the shell finds it on its backoff and the frame stays."
@@ -1371,8 +1372,6 @@ arrives."
 (ert-deftest nhwl-gui/drag-region-cross-program ()
   "With `mouse-drag-and-drop-region-cross-program', the region dragged out of the frame reaches the other client."
   (skip-unless (nhwl-gui--recorder-p))
-  ;; under a client-side title bar this drag never starts and the row hangs in the drag loop: not understood yet
-  (skip-when (> (nhwl-gui--native-top) 0))
   (let ((b (generate-new-buffer " *drag-region*")) (later nil)
         (mouse-drag-and-drop-region t) (mouse-drag-and-drop-region-cross-program t))
     (unwind-protect
@@ -1385,8 +1384,9 @@ arrives."
           (activate-mark)
           (redisplay t)
           (let* ((e (window-inside-pixel-edges))
-                 (x (+ (nth 0 e) 10))
-                 (y (+ (nth 1 e) 3))
+                 (at (nhwl-gui--native-to-logical (+ (nth 0 e) 10) (+ (nth 1 e) 3)))
+                 (x (car at))
+                 (y (cadr at))
                  (out (+ (frame-pixel-width) 40)))
             (nhwl-gui--point x y)
             (gui-runner-recorder '(:cmd "button" :button 272 :state "press"))
@@ -1394,7 +1394,10 @@ arrives."
                          `((0.6 :cmd "pointer" :pos [,(+ x 20) ,y])
                            (0.3 :cmd "pointer" :pos [,out ,y])
                            (drag :cmd "drag_target" :accept "text/plain;charset=utf-8" :action "copy")
-                           (0.2 :cmd "drag_drop" :finish t))))
+                           (0.2 :cmd "drag_drop" :finish t)
+                           ;; a drag that never began waits for this release in Lisp's mouse loop, with nothing else
+                           ;; to end it
+                           (0 :cmd "button" :button 272 :state "release"))))
             (let ((ev (nhwl-gui--press-event nil)))
               (should ev)
               (funcall (key-binding (vector 'down-mouse-1)) ev)))
@@ -1484,45 +1487,63 @@ virtual one (`NHWL_GUI_VPOINTER', gui.sh --recorder), driven from another proces
                     (getenv "NHWL_GUI_VPOINTER")))
   (let* ((fullscreen (frame-parameter nil 'fullscreen))
          (file (make-temp-file "nhwl-drag-target-"))
+         (ready (concat file ".ready"))
          (second (make-process
                   :name "nhwl-drag-target" :noquery t :buffer nil
                   :command (list (expand-file-name invocation-name invocation-directory) "-Q"
                                  "--eval" (prin1-to-string
-                                           `(run-at-time 15 nil
-                                                         (lambda ()
-                                                           (write-region (point-min) (point-max) ,file)
-                                                           (kill-emacs)))))))
+                                           `(progn
+                                              (run-with-idle-timer 0.3 nil (lambda () (write-region "" nil ,ready)))
+                                              (run-at-time 15 nil
+                                                           (lambda ()
+                                                             (write-region (point-min) (point-max) ,file)
+                                                             (kill-emacs))))))))
          (driver nil))
     (unwind-protect
-        (let ((from nil) (to nil) (size nil))
+        (let ((from nil) (to nil) (size (nhwl-gui--sway-layout-size)))
+          ;; sway sizes a floating window by what it commits, so a picture of the old size on its way undoes a resize:
+          ;; both windows finish drawing first
           (should (nhwl-gui--wait (lambda ()
                                     (redisplay t)
                                     (nhwl-gui--pump)
-                                    (nhwl-gui--sway-centre (process-id second)))
+                                    (file-exists-p ready))
                                   8))
+          (nhwl-gui--live-settle)
           ;; gui.sh's sway floats every window at the output's centre: put the two side by side
           (dolist (w (list (cons (emacs-pid) 0) (cons (process-id second) 50)))
             (call-process "swaymsg" nil nil nil
                           (format "[pid=%d] fullscreen disable, resize set width 45 ppt height 80 ppt, \
 move position %d ppt 10 ppt" (car w) (cdr w))))
           (should (nhwl-gui--wait (lambda ()
-                                    (redisplay t)
-                                    (nhwl-gui--pump)
+                                    (nhwl-gui--live-settle)
                                     (setq from (nhwl-gui--sway-centre (emacs-pid))
                                           to (nhwl-gui--sway-centre (process-id second)))
-                                    (and from to (> (abs (- (car from) (car to))) 100)))
+                                    (and from to (> (car to) (/ (car size) 2)) (< (car from) (/ (car size) 2))))
                                   8))
-          (setq size (nhwl-gui--sway-layout-size))
           (let ((move (lambda (p) (format "echo move %d %d %d %d; " (car p) (cdr p) (car size) (cdr size)))))
             (setq driver
                   (make-process
                    :name "nhwl-drag-driver" :noquery t :connection-type 'pipe :buffer nil
                    :command (list "sh" "-c"
-                                  ;; the pause before the press lets Nidhogg bind the new pointer first
-                                  (concat "{ " (funcall move from) "sleep 1; echo press; sleep 3; " (funcall move to)
+                                  ;; the row says `move' until Nidhogg has the pointer, then `press'; what follows runs
+                                  ;; while the drag's loop does, so it is scripted
+                                  (concat "{ x=0; while read -r line && [ \"$line\" = move ]; do x=$((1 - x)); "
+                                          "echo move $((" (number-to-string (car from)) " + x)) "
+                                          (format "%d %d %d; " (cdr from) (car size) (cdr size))
+                                          "done; echo press; sleep 3; " (funcall move to)
                                           "sleep 0.5; " (funcall move (cons (+ 5 (car to)) (cdr to)))
                                           "sleep 0.5; echo release; sleep 1; } | \"$0\" --virtual-pointer")
                                   (getenv "NHWL_GUI_VPOINTER")))))
+          ;; A press reaches a client only with the pointer on its surface, and neither a pointer Nidhogg has not bound
+          ;; yet nor one sway took away is: while a resize is being applied sway shows a saved picture, which has no
+          ;; surface, and it sends no enter until the next motion.  So: move until the pointer is in the frame's middle.
+          (should (nhwl-gui--wait (lambda ()
+                                    (process-send-string driver "move\n")
+                                    (read-event nil nil 0.1)
+                                    (let ((x (cadr (mouse-pixel-position))))
+                                      (and x (< (abs (- x (/ (frame-pixel-width) 2))) 50))))
+                                  6))
+          (process-send-string driver "press\n")
           ;; the drag starts from the press, so its button event must have arrived
           (should (nhwl-gui--wait (lambda () (eq (car-safe (read-event nil nil 0.1)) 'down-mouse-1)) 6))
           (should (eq (dnd-begin-text-drag "from the first Nidhogg") 'copy))
@@ -1532,17 +1553,23 @@ move position %d ppt 10 ppt" (car w) (cdr w))))
       (when (and driver (process-live-p driver)) (delete-process driver))
       (when (process-live-p second) (delete-process second))
       (set-frame-parameter nil 'fullscreen fullscreen)
-      (delete-file file))))
+      (delete-file file)
+      (when (file-exists-p ready) (delete-file ready)))))
 
 ;; Menus by pointer and touch, submenus, dialogs and the menu bar.  The pointer goes to the surface that has the
-;; keyboard (`focus'), in its own logical pixels, so a row is at x 10 and y (row + 1/2) times the character height.
+;; keyboard (`focus'), in its own logical pixels, so a row is at x 10 and y (row + 1/2) character heights, which are
+;; device pixels: `nhwl-gui--menu-row-y' divides by the scale.
 ;; The steps after a menu opened run from timers (the menu's loop is reading): they send recorder commands only.
+
+(defun nhwl-gui--menu-row-y (depth row)
+  "The middle of row ROW of the menu level DEPTH, in that popup's logical pixels."
+  (let ((frame (cdr (assq depth nhwl-menu--frames))))
+    (floor (* (+ row 0.5) (frame-char-height frame)) (frame-scale-factor frame))))
 
 (defun nhwl-gui--menu-over (id depth row)
   "Move the pointer over row ROW of the menu level DEPTH, whose popup is ID, giving that popup the keyboard."
-  (let ((height (frame-char-height (cdr (assq depth nhwl-menu--frames)))))
-    (gui-runner-recorder (list :cmd "focus" :surface id))
-    (gui-runner-recorder (list :cmd "pointer" :pos (vector 10 (floor (* (+ row 0.5) height)))))))
+  (gui-runner-recorder (list :cmd "focus" :surface id))
+  (gui-runner-recorder (list :cmd "pointer" :pos (vector 10 (nhwl-gui--menu-row-y depth row)))))
 
 (defun nhwl-gui--menu-button (button &optional release-only)
   "Press and release BUTTON (an evdev code) on the pointer's surface; only release it with RELEASE-ONLY."
@@ -1738,8 +1765,10 @@ toplevel remains in the tree, and the connection has no protocol error."
                                                              :pos (apply #'vector (nhwl-gui--native-to-logical 5 5))))
                                   (nhwl-gui--menu-button 272)))
                    timers)
-             ;; the menu is dismissed: a menu-bar menu cancelled by a click quits, as on every Emacs
-             (condition-case nil (read-key-sequence nil) (quit nil)))
+             ;; the menu is dismissed: a menu-bar menu cancelled by a click quits, as on every Emacs.  The harness runs
+             ;; rows with `inhibit-quit' t: that quit stays pending and `read-key-sequence' goes on with a length of -1
+             (let ((inhibit-quit nil))
+               (condition-case nil (read-key-sequence nil) (quit nil))))
            (lambda (_id)
              (let ((frame (cdr (assq 0 nhwl-menu--frames))))
                (setq seen (list (nth 1 (frame-parameter frame 'nhwl-popup))
@@ -1796,8 +1825,7 @@ its title); choosing Yes returns t."
   (should (equal (nhwl-gui--menu-run
                   (nhwl-gui--menu-keymap)
                   (lambda (id)
-                    (let* ((height (frame-char-height (cdr (assq 0 nhwl-menu--frames))))
-                           (at (vector 10 (floor (* 4.5 height)))))
+                    (let ((at (vector 10 (nhwl-gui--menu-row-y 0 4))))
                       (gui-runner-recorder (list :cmd "touch" :op "down" :id 0 :at at :surface id))
                       (gui-runner-recorder (list :cmd "touch" :op "up" :id 0 :at [0 0])))))
                  '(gamma))))
@@ -1844,7 +1872,8 @@ submenu open, all driven by queued events.  The trace rules (errors, popup, grab
 (defun nhwl-gui--reopen-display ()
   "Serve the session's display again and select a new frame on it, once it has drawn; the frame."
   (ignore-errors (gui-runner-recorder '(:cmd "restart_up")))
-  (let ((f (make-frame-on-display (getenv "WAYLAND_DISPLAY"))))
+  ;; `nhwl-reconnect' counts when a display opens too, and these rows have it nil: the rows after them reconnect
+  (let ((f (let ((nhwl-reconnect t)) (make-frame-on-display (getenv "WAYLAND_DISPLAY")))))
     (select-frame f)
     (nhwl-gui--wait (lambda () (with-selected-frame f (redisplay t)) (nhwl-gui--toplevel-commits)) 5)
     f))
@@ -1950,7 +1979,9 @@ connection."
     (gui-runner-restart-compositor)
     (should (nhwl-gui--display-gone-p))
     (should (daemonp))
-    (setq f (make-frame-on-display (getenv "WAYLAND_DISPLAY")))
+    ;; `nhwl-reconnect' counts when a display opens too: the display the next rows restart reconnects
+    (let ((nhwl-reconnect t))
+      (setq f (make-frame-on-display (getenv "WAYLAND_DISPLAY"))))
     (select-frame f)
     (nhwl-gui--live-settle)
     (should (frame-live-p f))))

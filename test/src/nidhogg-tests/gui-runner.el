@@ -434,15 +434,9 @@ recorder: the frame callbacks are answered and the commit log stands still (a de
   (let* ((compositor (glitnir-gui--compositor)) (native (featurep 'nidhogg-wayland))
          (graphic (display-graphic-p)) (ok t)
          (settle (lambda (pred)
-                   (let ((deadline (+ (float-time) 3)) (v nil) (last nil) (still 0))
+                   (let ((deadline (+ (float-time) 3)) (v nil))
                      (while (and (not (setq v (funcall pred))) (< (float-time) deadline))
-                       (if read (gui-runner-read-all) (sit-for 0.01))
-                       (let ((counts (gui-runner--presenter-counts)))
-                         (setq still (if (equal counts last) (1+ still) 0)
-                               last counts))
-                       ;; a packet of a frame hidden or deleted before the presenter reached it never commits, and the
-                       ;; presenter does not say so: counters that stand still mean what is owed is lost
-                       (when (= still 20) (setq gui-runner--settled-counts last)))
+                       (if read (gui-runner-read-all) (sit-for 0.01)))
                      (unless v (setq ok nil))))))
     (when (and graphic (not native) (fboundp 'glitnir-snapshot))
       (ignore-errors (glitnir-snapshot nil 'raw)))
@@ -511,11 +505,17 @@ Each is (:response N [:uris (URI...)]) or (:never t)."
   (let ((script (getenv "NHWL_GUI_RESTART")))
     (and script (not (string-empty-p script)) (file-executable-p script))))
 
+(defun gui-runner-restart-note ()
+  "Tell the trace that the compositor is about to stop on purpose, so the lost connection is no `errors' violation.
+The text is `wl-trace-check-restart-line'."
+  (glitnir-gui--say "gui-runner: restarting the compositor"))
+
 (defun gui-runner-restart-compositor ()
   "Stop the compositor and start it again on the same socket; returns when it serves (the script printed READY).
 The recorder keeps its session store.  Signals an error when the script fails or the run has none."
   (unless (gui-runner-restart-available-p)
     (error "gui-runner: this compositor has no restart script (NHWL_GUI_RESTART)"))
+  (gui-runner-restart-note)
   (with-temp-buffer
     (let ((rc (call-process (getenv "NHWL_GUI_RESTART") nil t nil)))
       (unless (and (eq rc 0) (string-match-p "^READY$" (buffer-string)))
