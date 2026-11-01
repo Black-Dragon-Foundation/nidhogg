@@ -1371,8 +1371,6 @@ arrives."
 (ert-deftest nhwl-gui/drag-region-cross-program ()
   "With `mouse-drag-and-drop-region-cross-program', the region dragged out of the frame reaches the other client."
   (skip-unless (nhwl-gui--recorder-p))
-  ;; under a client-side title bar this drag never starts and the row hangs in the drag loop: not understood yet
-  (skip-when (> (nhwl-gui--native-top) 0))
   (let ((b (generate-new-buffer " *drag-region*")) (later nil)
         (mouse-drag-and-drop-region t) (mouse-drag-and-drop-region-cross-program t))
     (unwind-protect
@@ -1385,8 +1383,9 @@ arrives."
           (activate-mark)
           (redisplay t)
           (let* ((e (window-inside-pixel-edges))
-                 (x (+ (nth 0 e) 10))
-                 (y (+ (nth 1 e) 3))
+                 (at (nhwl-gui--native-to-logical (+ (nth 0 e) 10) (+ (nth 1 e) 3)))
+                 (x (car at))
+                 (y (cadr at))
                  (out (+ (frame-pixel-width) 40)))
             (nhwl-gui--point x y)
             (gui-runner-recorder '(:cmd "button" :button 272 :state "press"))
@@ -1394,7 +1393,10 @@ arrives."
                          `((0.6 :cmd "pointer" :pos [,(+ x 20) ,y])
                            (0.3 :cmd "pointer" :pos [,out ,y])
                            (drag :cmd "drag_target" :accept "text/plain;charset=utf-8" :action "copy")
-                           (0.2 :cmd "drag_drop" :finish t))))
+                           (0.2 :cmd "drag_drop" :finish t)
+                           ;; a drag that never began waits for this release in Lisp's mouse loop, with nothing else
+                           ;; to end it
+                           (0 :cmd "button" :button 272 :state "release"))))
             (let ((ev (nhwl-gui--press-event nil)))
               (should ev)
               (funcall (key-binding (vector 'down-mouse-1)) ev)))
