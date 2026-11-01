@@ -679,6 +679,7 @@ nhwl_set_parent_frame (struct frame *f, Lisp_Object new_value,
       nhwl_popup_hide (o->frame);
   nhwl_child_focus_gone (f, false);
   block_input ();
+  NHG (nhg_session_remove (FRAME_NHG (f), out->window));
   if (out->window)
     nhwl_window_destroy (dpyinfo, out->window);
   out->window = out->focus_window = 0;
