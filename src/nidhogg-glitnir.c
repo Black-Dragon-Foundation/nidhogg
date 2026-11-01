@@ -124,7 +124,8 @@ DEFUN ("glitnir-stats", Fglitnir_stats, Sglitnir_stats, 0, 2, 0,
 The record covers the last 1024 paints (counts are since the last reset).
 It is a plist (:count N :compose-ms (:p50 :p95 :max) :draw-ms (...)
 :latency-ms (...) :freeze-ms (...) :damage-px N :painted-px N
-:backfill-rate F :ticks N :late-ticks N :violations N :scale-mismatch N);
+:backfill-rate F :ticks N :late-ticks N :violations N :scale-mismatch N
+:backdrop-px N);
 :damage-px and :painted-px are medians in device pixels.  Times are in
 milliseconds; :latency-ms is the time from the commit of a redisplay to the
 end of the paint that shows it, :freeze-ms the time the root was frozen
@@ -173,7 +174,7 @@ empties the record after reading it.  */)
     plist = nconc2 (plist, pctl (":latency-ms", &s.latency_ms));
   plist = nconc2 (plist, pctl (":freeze-ms", &s.freeze_ms));
   return nconc2 (plist,
-		 listn (14, intern_c_string (":damage-px"),
+		 listn (16, intern_c_string (":damage-px"),
 			make_uint (s.damage_px_p50),
 			intern_c_string (":painted-px"),
 			make_uint (s.painted_px_p50),
@@ -186,7 +187,9 @@ empties the record after reading it.  */)
 			intern_c_string (":violations"),
 			make_uint (s.violations),
 			intern_c_string (":scale-mismatch"),
-			make_uint (s.scale_mismatch)));
+			make_uint (s.scale_mismatch),
+			intern_c_string (":backdrop-px"),
+			make_uint (s.backdrop_px)));
 #else
   (void) f;
   (void) reset;
