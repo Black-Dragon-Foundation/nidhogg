@@ -9,6 +9,8 @@
 # --flaky FILE   rows `NAME # cause; stress run` (default: flaky.txt beside this script).
 # --src DIR      the tree of the .el test files, to check that every listed name exists once (default: LOGDIR).
 # --make CMD     how a target is run again: CMD TARGET (default: make -C LOGDIR).
+# A test of class D (its :tags, else its file's `;; test-class: det' line) is never rerun and stays red; a D test on
+# flaky.txt fails the check.
 # Prints `flaky (listed: CAUSE)` for a listed flake.  Exit 0: no unlisted flake, no red, no stale or ambiguous row.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
@@ -43,11 +45,27 @@ if [ -f "$flaky" ]; then
   done < "$flaky"
 fi
 
-# every listed name must be defined in exactly one test file
+# a test's class, read from the source: its own :tags (:det, :cond, :timing) over its file's `;; test-class:' line
+# (first 15 lines); empty when it has neither
+class_of() {
+  local name=$1 file tags cls
+  file=$(grep -rlF --include='*.el' -e "(ert-deftest $name " -e "(ert-deftest $name)" "$src" 2>/dev/null | sort -u | head -n 1)
+  [ -n "$file" ] || return 0
+  tags=$(awk -v n="(ert-deftest $name" '
+    !f && index($0, n) == 1 { c = substr($0, length(n) + 1, 1); if (c == " " || c == ")" || c == "") f = 1 }
+    f { k++; if (k > 1 && substr($0, 1, 1) == "(") exit; if ($0 ~ /:tags/) print; if (k >= 8) exit }' "$file")
+  for cls in det cond timing; do
+    case $tags in *":$cls"*) echo "$cls"; return 0 ;; esac
+  done
+  head -n 15 "$file" | sed -n 's/^;; test-class: \(det\|cond\|timing\)$/\1/p' | head -n 1
+}
+
+# every listed name must be defined in exactly one test file, and none may be a D test (a D test has no flake)
 for name in "${!cause[@]}"; do
   n=$(grep -rlF --include='*.el' -e "(ert-deftest $name " -e "(ert-deftest $name)" "$src" 2>/dev/null | sort -u | wc -l)
   [ "$n" -ge 1 ] || red "flaky row $name names no test (stale row)"
   [ "$n" -le 1 ] || red "flaky row $name names a test defined in $n files"
+  [ "$n" -ne 1 ] || [ "$(class_of "$name")" != det ] || red "flaky row $name names a deterministic test (a D test has no flake: fix it)"
 done
 
 # the targets with unexpected results
@@ -72,6 +90,18 @@ for t in "${targets[@]}"; do
   fi
   [ -f "$log" ] || { red "$t: no log"; continue; }
   failed=$(grep -E '^ +FAILED +' "$log" | sed -E 's/^ +FAILED +//; s/ +$//' | sort -u)
+  # a failing D test is never rerun: it stays red; the rest of the file reruns as before
+  rest=""
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    if [ "$(class_of "$name")" = det ]; then
+      red "$name is a deterministic test and failed (no rerun)"
+    else
+      rest+="$name"$'\n'
+    fi
+  done <<< "$failed"
+  if [ -n "$failed" ] && [ -z "$rest" ]; then continue; fi
+  failed=${rest%$'\n'}
   echo "check-rerun: $t had unexpected results; running it once more"
   if $mk "$t" > "$logdir/.rerun.out" 2>&1; then
     if [ -z "$failed" ]; then red "$t: failed, then passed, and the log names no test to list"; continue; fi
