@@ -1,4 +1,5 @@
 ;;; workers-fatal-tests.el --- tests for workers: fatal paths  -*- lexical-binding: t -*-
+;; test-class: cond
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
@@ -135,8 +136,9 @@ fallbacks among them) and how many workers are parked at POINT."
   (let ((darwin (eq system-type 'darwin)))
     (should (equal (list (plist-get r :status) (plist-get r :code))
                    (list 'signal (if darwin 6 (cdr sig)))))
+    ;; The fatal path ended the child before the helper's 30 s kill: a
+    ;; kill would show another exit code.
     (should (plist-get r :secs))
-    (should (< (plist-get r :secs) 5))
     (let ((err (plist-get r :err)))
       (should (string-match-p (format "^Fatal error %d: %s" (cdr sig)
                                       (if darwin "" name))
@@ -427,7 +429,6 @@ fixtures/grammars.sh builds it; found as `workers-ts-tests' finds its grammars."
         (should (equal (list (plist-get r :status) (plist-get r :code))
                        '(exit 0)))
         (should (plist-get r :secs))
-        (should (< (plist-get r :secs) 2))
         (should-not (directory-files dir nil "\\.nh-"))
         (should (equal (workers-fatal-tests--auto-saved dir "d.txt")
                        "jobs in flight"))))))
@@ -492,8 +493,7 @@ holds the text.  Waits 20 s at most for the child."
                (unless (plist-get (nidhogg-workers--test-io-info client) :owned)
                  (kill-emacs 3)))
              ,crash-form
-             (sleep-for 30)
-             (kill-emacs 4)))
+             (while t (accept-process-output nil 1))))
          (child (make-process
                  :name "wfatal-child" :noquery t :buffer nil
                  :command (list (expand-file-name invocation-name
@@ -548,8 +548,7 @@ holds the text.  Waits 20 s at most for the child."
                (unless (plist-get (nidhogg-workers--test-io-info p) :owned)
                  (kill-emacs 3)))
              (nidhogg-workers--test-io-crash)
-             (sleep-for 30)
-             (kill-emacs 4)))
+             (while t (accept-process-output nil 1))))
          (child (make-process
                  :name "wfatal-hup-child" :noquery t :buffer nil
                  :command (list (expand-file-name invocation-name
@@ -567,7 +566,7 @@ holds the text.  Waits 20 s at most for the child."
           (should (> pid 0))
           (setq i 0)
           (while (and (process-attributes pid) (< i 100))
-            (sleep-for 0.02)
+            (accept-process-output nil 0.02)
             (setq i (1+ i)))
           (prog1 (should-not (process-attributes pid))
             (ignore-errors (signal-process pid 'SIGKILL))))

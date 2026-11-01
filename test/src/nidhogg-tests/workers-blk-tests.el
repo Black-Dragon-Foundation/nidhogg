@@ -1,4 +1,5 @@
 ;;; workers-blk-tests.el --- tests for workers: directory reads and file blocks  -*- lexical-binding: t -*-
+;; test-class: cond
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
@@ -218,6 +219,7 @@ Like a remote one, it answers `expand-file-name', which
       (delete-directory root t))))
 
 (ert-deftest workers/dir-remote ()
+  :tags '(:det)
   (let ((file-name-handler-alist
          ;; Not Tramp's syntax: a "/method:" name would reach Tramp's
          ;; autoload handler, which unhooks itself from the shared list.
