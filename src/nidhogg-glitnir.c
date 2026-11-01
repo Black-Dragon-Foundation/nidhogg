@@ -27,6 +27,8 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "lisp.h"
 #include "frame.h"
 #ifdef HAVE_NHWL
+#include "blockinput.h"
+#include "dispextern.h"
 #include "keyboard.h"
 #include "nhwlterm.h"
 #endif
@@ -168,10 +170,45 @@ png_write (void *closure, const unsigned char *data, unsigned int length)
   return CAIRO_STATUS_SUCCESS;
 }
 
-#endif /* HAVE_NHWL */
+/* Root R's tree as the compositor was given it, or NULL: the glue composes
+   what the tree published, so this costs presenting nothing.  */
+static cairo_surface_t *
+tree_picture (struct frame *r)
+{
+  const NhgSurface *list;
+  NhgBacking b;
+  cairo_surface_t *s = NULL;
+
+  if (redisplaying_p || !FRAME_NHWL_OUTPUT (r)->cr_surface)
+    return NULL;
+  block_input ();
+  ptrdiff_t n = nhwl_snapshot_list (r, &list);
+  if (NHG (nhg_snapshot (FRAME_NHG (r), FRAME_NHWL_OUTPUT (r)->glitnir_id,
+			 &b)) >= 0)
+    {
+      s = cairo_image_surface_create (CAIRO_FORMAT_ARGB32, b.w, b.h);
+      cairo_surface_flush (s);
+      if (NHG (nhg_tree_snapshot (FRAME_NHG (r), list, n,
+				  cairo_image_surface_get_data (s),
+				  cairo_image_surface_get_stride (s), b.w,
+				  b.h)) >= 0)
+	cairo_surface_mark_dirty (s);
+      else
+	{
+	  cairo_surface_destroy (s);
+	  s = NULL;
+	}
+    }
+  unblock_input ();
+  return s;
+}
+#endif
 
 DEFUN ("glitnir-snapshot", Fglitnir_snapshot, Sglitnir_snapshot, 1, 2, 0,
-       doc: /* Return FRAME's picture.
+       doc: /* Return the picture of FRAME's root frame.
+The whole tree as the compositor was given it: the root, its visible child
+frames and popups at their places and in their stacking, with their chrome,
+shadows and alpha, inside the root's surface.
 FORMAT is `png' (the default; the value is a unibyte string holding a PNG)
 or `raw' (the value is (WIDTH HEIGHT BYTES), BYTES a unibyte string of
 ARGB32 pixels in the machine's byte order, device pixels, rows tightly
@@ -186,7 +223,7 @@ packed).  */)
   cairo_surface_t *s;
   if (!FRAME_NHWL_P (f))
     error ("glitnir-snapshot: no image surface");
-  s = nhwl_snapshot (f);
+  s = tree_picture (nhwl_tree_root (f));
   if (s == NULL)
     error ("glitnir-snapshot: the frame has no picture yet");
   int w = cairo_image_surface_get_width (s);
@@ -317,23 +354,6 @@ Return nil.  */)
 #else
   (void) f;
 #endif
-  return Qnil;
-}
-
-/* Two names drgnx's parity rows still call; they go with those rows.  */
-
-DEFUN ("glitnir--calls", Fglitnir__calls, Sglitnir__calls, 0, 0, 0,
-       doc: /* Return 0: nothing counts the calls into Glitnir.  */)
-  (void)
-{
-  return make_fixnum (0);
-}
-
-DEFUN ("glitnir--debug-panic", Fglitnir__debug_panic, Sglitnir__debug_panic,
-       0, 1, 0,
-       doc: /* Return nil: a panic in the shell's library loses the display.  */)
-  (Lisp_Object where)
-{
   return Qnil;
 }
 
@@ -479,8 +499,6 @@ syms_of_nidhogg_glitnir (void)
 
   defsubr (&Sglitnir__probe);
   defsubr (&Sglitnir__decor_bench);
-  defsubr (&Sglitnir__calls);
-  defsubr (&Sglitnir__debug_panic);
   defsubr (&Sglitnir_active_p);
   defsubr (&Sglitnir_stats);
   defsubr (&Sglitnir_snapshot);

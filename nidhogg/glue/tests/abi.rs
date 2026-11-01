@@ -1152,14 +1152,14 @@ PROTO (nhg_layers_count, int32_t (NhgDisplay *, uint64_t));";
         use nhglue::csd::{NHG_FIT_CONFIGURE, NHG_FIT_UNDECORATED};
         use nhglue::ffi::{
             nhg_csd_mix, nhg_frame_clamp, nhg_frame_fit, nhg_frame_monitors, nhg_monitor_origin,
-            nhg_premultiply, nhg_selection_pick, nhg_snapshot_copy,
+            nhg_premultiply, nhg_selection_pick, nhg_tree_snapshot,
         };
         let decls = "\
 #define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
 PROTO (nhg_selection_pick, int32_t (NhgDisplay *, const char *, size_t, const char *const *, size_t, const char **));
 PROTO (nhg_csd_mix, int32_t (uint32_t, uint32_t, uint32_t *, uint32_t *));
 PROTO (nhg_premultiply, int32_t (uint32_t, double, uint32_t *));
-PROTO (nhg_snapshot_copy, int32_t (NhgDisplay *, uint64_t, uint8_t *, int32_t, int32_t, int32_t));
+PROTO (nhg_tree_snapshot, int32_t (NhgDisplay *, const NhgSurface *, size_t, uint8_t *, int32_t, int32_t, int32_t));
 PROTO (nhg_frame_monitors, int32_t (NhgDisplay *, uint64_t, uint32_t *));
 PROTO (nhg_monitor_origin, int32_t (int32_t, int32_t, uint32_t, int32_t *, int32_t *));
 PROTO (nhg_frame_clamp, int32_t (NhgDisplay *, uint64_t, int32_t *, int32_t *));
@@ -1175,8 +1175,15 @@ PROTO (nhg_frame_fit, int32_t (NhgDisplay *, uint64_t, uint32_t, int32_t, int32_
         ) -> i32 = nhg_selection_pick;
         let _: unsafe extern "C" fn(u32, u32, *mut u32, *mut u32) -> i32 = nhg_csd_mix;
         let _: unsafe extern "C" fn(u32, f64, *mut u32) -> i32 = nhg_premultiply;
-        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *mut u8, i32, i32, i32) -> i32 =
-            nhg_snapshot_copy;
+        let _: unsafe extern "C" fn(
+            *mut NhgDisplay,
+            *const nhglue::present::NhgSurface,
+            usize,
+            *mut u8,
+            i32,
+            i32,
+            i32,
+        ) -> i32 = nhg_tree_snapshot;
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *mut u32) -> i32 = nhg_frame_monitors;
         let _: unsafe extern "C" fn(i32, i32, u32, *mut i32, *mut i32) -> i32 = nhg_monitor_origin;
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *mut i32, *mut i32) -> i32 =

@@ -317,3 +317,132 @@ mod publish {
         shows(&rec, &b);
     }
 }
+
+mod tree_snapshot {
+    use super::*;
+
+    const GREEN: u32 = 0xff00_ff00;
+    /// Half-covering blue, premultiplied.
+    const VEIL: u32 = 0x8000_0080;
+
+    fn child(shell: &mut WaylandShell, parent: u64, x: i32, y: i32) -> u64 {
+        shell
+            .child_new(&ChildDesc {
+                kind: NHSHELL_KIND_CHILD,
+                parent,
+                x,
+                y,
+                w: 40,
+                h: 20,
+                anchor: Anchor::default(),
+                flags: 0,
+            })
+            .unwrap()
+    }
+
+    fn backing(argb: u32) -> Backing {
+        let mut b = Backing::new(40, 20);
+        b.fill_all(argb);
+        b
+    }
+
+    fn at(picture: &[u32], x: usize, y: usize) -> u32 {
+        picture[y * 200 + x]
+    }
+
+    #[test]
+    fn places_stacks_and_blends_a_tree() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let mut shell = rec.open();
+        let mut root = Backing::new(200, 100);
+        let id = window(&mut shell, &mut root);
+        let (solid, veil) = (backing(GREEN), backing(VEIL));
+        let a = child(&mut shell, id, 10, 10);
+        let b = child(&mut shell, id, 30, 20);
+        let g = child(&mut shell, a, 100, 60);
+        let off = child(&mut shell, id, -30, -10);
+        let tree = [
+            (&root, id),
+            (&solid, a),
+            (&veil, b),
+            (&solid, g),
+            (&solid, off),
+        ];
+        assert!(publish(&mut shell, id, &tree, 0));
+        let frames = tree.map(|(b, w)| b.frame(w));
+        let shot = |shell: &WaylandShell, f: &[SurfaceFrame]| shell.tree_snapshot(id, f).unwrap();
+
+        let p = shot(&shell, &frames);
+        assert_eq!(p.len(), 200 * 100, "the root's size");
+        assert_eq!(at(&p, 199, 99), BG, "only the root");
+        assert_eq!(at(&p, 15, 15), GREEN, "a child at its offset");
+        assert_eq!(
+            at(&p, 35, 25),
+            0xff00_7f80,
+            "the later child over the earlier"
+        );
+        assert_eq!(at(&p, 60, 35), 0xff10_20b0, "the veil over the root");
+        assert_eq!(at(&p, 115, 75), GREEN, "a grandchild at both offsets");
+        assert_eq!(at(&p, 9, 9), GREEN, "what hangs out of the root is cut");
+
+        shell.stack(a, b, true).unwrap();
+        assert_eq!(at(&shot(&shell, &frames), 35, 25), GREEN, "raised");
+
+        let no_a = [frames[0], frames[2], frames[4]];
+        let p = shot(&shell, &no_a);
+        assert_eq!(at(&p, 15, 15), BG, "a surface not listed is hidden");
+        assert_eq!(at(&p, 115, 75), BG, "and so is what hangs from it");
+
+        shell.set_alpha(a, u32::MAX / 2).unwrap();
+        let p = shot(&shell, &frames);
+        assert_eq!(at(&p, 15, 15), 0xff10_9f30, "the compositor's alpha");
+        assert_eq!(at(&p, 115, 75), GREEN, "on the window that has it");
+
+        let empty: [SurfaceFrame; 0] = [];
+        assert!(shell.tree_snapshot(id, &empty).is_err());
+        assert!(shell.tree_snapshot(a, &frames[1..]).is_err(), "not a root");
+    }
+
+    /// A popup goes where the compositor put it, over the tree it hangs from; another tree's is left out.
+    #[test]
+    fn popups_show_over_their_tree() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let mut shell = rec.open();
+        let mut root = Backing::new(200, 100);
+        let id = window(&mut shell, &mut root);
+        let mut other_root = Backing::new(200, 100);
+        let other = window(&mut shell, &mut other_root);
+        let (red, veil) = (backing(0xffff_0000), backing(VEIL));
+        let anchor = Anchor {
+            x: 10,
+            y: 10,
+            w: 4,
+            h: 4,
+            gravity: 8,
+            adjust: 0,
+        };
+        let popup = |shell: &mut WaylandShell, parent| {
+            shell
+                .child_new(&ChildDesc {
+                    kind: NHSHELL_KIND_POPUP,
+                    parent,
+                    x: 0,
+                    y: 0,
+                    w: 40,
+                    h: 20,
+                    anchor,
+                    flags: 0,
+                })
+                .unwrap()
+        };
+        let p = popup(&mut shell, id);
+        let q = popup(&mut shell, other);
+        wait_for(&mut shell, |e| e.kind() == Kind::Configure && e.window == p);
+        let frames = [root.frame(id), red.frame(p), veil.frame(q)];
+        let got = shell.tree_snapshot(id, &frames).unwrap();
+        assert_eq!(at(&got, 13, 13), BG);
+        assert_eq!(at(&got, 14, 14), 0xffff_0000);
+        assert_eq!(at(&got, 53, 33), 0xffff_0000);
+        assert_eq!(at(&got, 54, 34), BG);
+    }
+}

@@ -26,7 +26,7 @@ use crate::wayland::layers::Pending;
 use crate::wayland::presenter::Counters;
 use crate::wayland::scale::SCALE_ONE;
 use glitnir::committed::Committed;
-use glitnir::compose::{Composer, SourceView, TargetView, compose_committed};
+use glitnir::compose::{Composer, SourceView, TargetView, compose_committed, compose_root};
 use glitnir::geom::Rect;
 use glitnir::pool::IDLE_NS;
 use glitnir::stats::StatsEntry;
@@ -273,6 +273,32 @@ fn alpha_multiply(t: &mut TargetView, cut: u32) {
                 | ((((v >> 16) & 0xff) * a / 255) << 16)
                 | ((((v >> 8) & 0xff) * a / 255) << 8)
                 | ((v & 0xff) * a / 255);
+        }
+    }
+}
+
+/// Each of `p`'s four channels times `a` / 255.
+fn scaled(p: u32, a: u32) -> u32 {
+    [24, 16, 8, 0]
+        .iter()
+        .fold(0, |v, sh| v | ((((p >> sh) & 0xff) * a + 127) / 255) << sh)
+}
+
+/// Premultiplied `src`, `w` pixels a row, over `dst` (`size`) at `(x, y)` with the compositor's `alpha`: the part
+/// inside `dst`.
+fn blend(dst: &mut [u32], size: (i32, i32), src: &[u32], w: i32, (x, y): (i32, i32), alpha: u32) {
+    let a = (u64::from(alpha) * 255 / u64::from(u32::MAX)) as u32;
+    let (x0, x1) = (x.max(0), (x + w).min(size.0));
+    for (row, line) in src.chunks_exact(w as usize).enumerate() {
+        let to = y + row as i32;
+        if !(0..size.1).contains(&to) || x0 >= x1 {
+            continue;
+        }
+        let at = to as usize * size.0 as usize;
+        let d = &mut dst[at + x0 as usize..at + x1 as usize];
+        for (d, p) in d.iter_mut().zip(&line[(x0 - x) as usize..]) {
+            let s = scaled(*p, a);
+            *d = s.wrapping_add(scaled(*d, 255 - (s >> 24)));
         }
     }
 }
@@ -860,6 +886,55 @@ impl WaylandShell {
         }
         self.main.present_published(root, seq, damaged);
         Ok(true)
+    }
+
+    /// `ShellBackend::tree_snapshot`: each surface composed whole on this thread, as its next buffer would be, from the
+    /// host's pixels and the scene committed with them (`Composer`s take no lock), then the surfaces over each other.
+    /// Nothing of the presenter's is touched.
+    pub(super) fn tree_snapshot_impl(
+        &self,
+        root: WindowId,
+        frames: &[SurfaceFrame],
+    ) -> ShellResult<Vec<u32>> {
+        let m = &self.main;
+        let first = frames.first().filter(|f| f.window == root);
+        let Some(first) = first.filter(|_| m.is_window(root) && !m.children.contains_key(&root))
+        else {
+            return Err(ShellError::State);
+        };
+        let size = (first.w, first.h);
+        let scale120 = |id| m.scales.get(&id).map_or(SCALE_ONE, |s| s.scale120()).max(1);
+        let root_scale = f64::from(scale120(root)) / 120.0;
+        let mut out = vec![0; size.0 as usize * size.1 as usize];
+        for id in m.painted(root) {
+            let Some(f) = frames.iter().find(|f| f.window == id) else {
+                continue;
+            };
+            let all = Rect::new(0, 0, f.w, f.h);
+            let mut front = Front::new(f.w, f.h);
+            let mut px = Vec::with_capacity(front.data.len());
+            copy_rect(f, &all, &mut px);
+            front.write(&all, &px);
+            let scale = f64::from(scale120(id)) / 120.0;
+            let mut t = TargetView {
+                data: &mut px,
+                stride: f.w as usize,
+                rect: all,
+                scale,
+            };
+            let src = front.view(f.glitnir_root, (f.src_x, f.src_y), scale);
+            if compose_root(f.glitnir_root, &mut t, &[all], &[src]).is_err() {
+                front.copy_to(&mut t, &[all]);
+            }
+            if f.flags & NHSHELL_SF_ALPHA_HOST != 0 {
+                alpha_multiply(&mut t, f.alpha_cut);
+            }
+            let (x, y) = m.origin(id);
+            let at = |v: i32| (f64::from(v) * root_scale).round() as i32;
+            let alpha = m.present_alpha(id).unwrap_or(u32::MAX);
+            blend(&mut out, size, &px, f.w, (at(x), at(y)), alpha);
+        }
+        Ok(out)
     }
 
     /// Test hook: the bytes the latest publish copied.
