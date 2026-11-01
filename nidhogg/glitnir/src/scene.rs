@@ -180,7 +180,7 @@ pub struct Scene {
     /// The committed scene, with its labels.
     snapshot: Arc<Committed>,
     listed: Vec<u64>,
-    /// Each window layer's label anchors, layer-local.
+    /// Each layer's label anchors, layer-local.
     anchors: BTreeMap<u64, Anchors>,
 }
 
@@ -336,7 +336,7 @@ impl Scene {
         Ok(())
     }
 
-    /// The labels of the committed scene, in paint order within each window layer.
+    /// The labels of the committed scene, in paint order within each layer.
     pub fn labels(&self) -> &[Label] {
         &self.snapshot.labels
     }
@@ -346,10 +346,11 @@ impl Scene {
         Arc::clone(&self.snapshot)
     }
 
-    /// The labels the visible window layers of PLACED have now.
+    /// The labels the visible layers of PLACED have now: a window layer's, or a frame layer's where the frame's windows
+    /// have no layers of their own (the native shell's).
     fn placed_labels(&self, placed: &[Placed], sprites: &Sprites) -> Vec<Label> {
         let mut out = Vec::new();
-        for p in placed.iter().filter(|p| p.kind == Kind::Window) {
+        for p in placed {
             if let Some(a) = self.anchors.get(&p.id) {
                 crate::decor::place(p.id, p.rect, a.as_slice(), sprites, &mut out);
             }
