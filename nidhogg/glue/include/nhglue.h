@@ -958,10 +958,11 @@ int32_t nhg_csd_mix (uint32_t fg, uint32_t bg, uint32_t *out_fg, uint32_t *out_b
 int32_t nhg_premultiply (uint32_t rgb, double alpha, uint32_t *out);
 
 /* The tree of S's first surface as the compositor was given it, its popups on top, into DST, rows STRIDE bytes apart:
-   S holds N surfaces, trees as nhg_present takes them one after another, and W x H is the size nhg_snapshot gave for
-   the root.  NHG_E_STATE without a root of that size that may show a buffer.  Reads pixels.  */
-int32_t nhg_tree_snapshot (NhgDisplay *d, const NhgSurface *s, size_t n, uint8_t *dst, int32_t stride, int32_t w,
-                           int32_t h);
+   S holds N surfaces, trees as nhg_present takes them one after another, COMPOSED false leaves Glitnir's chrome and
+   scenes out, and W x H is the size nhg_snapshot gave for the root.  NHG_E_STATE without a root of that size that may
+   show a buffer.  Reads pixels.  */
+int32_t nhg_tree_snapshot (NhgDisplay *d, const NhgSurface *s, size_t n, bool composed, uint8_t *dst, int32_t stride,
+                           int32_t w, int32_t h);
 
 /* The monitors WINDOW is on, as a mask of their places in nhg_monitors' list (bit J for the Jth; the first when the
    compositor named none).  NHG_E_STATE for an unknown window, and *OUT is left.  */
