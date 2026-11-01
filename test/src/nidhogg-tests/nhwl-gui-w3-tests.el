@@ -55,10 +55,14 @@ before the Lisp ends: the commit does not wait for the main loop."
            (progn
              (switch-to-buffer buf)
              (gui-runner-wait-settled)
-             (let ((mark (nhwl-gui--mark)))
-               ;; the first picture commits at once and leaves the pacer waiting; the secondwaits for the callback
+             (let ((mark (nhwl-gui--mark))
+                   (commits (plist-get (nhwl-presenter-stats) :commits))
+                   (end (+ (float-time) 5)))
+               ;; the first picture commits at once and leaves the pacer waiting; the second waits for the callback.
+               ;; A second picture published before the presenter took the first merges with it: one commit.
                (insert "a")
                (redisplay t)
+               (while (and (= (plist-get (nhwl-presenter-stats) :commits) commits) (< (float-time) end)))
                (insert "b")
                (redisplay t)
                (let ((end (+ (float-time) 0.2)))

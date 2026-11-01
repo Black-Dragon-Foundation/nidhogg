@@ -668,7 +668,12 @@ impl Stage {
         if let Some(s) = self.surfaces.remove(&id) {
             self.composer.forget(s.glitnir_root);
             // the packet this surface's damage waited for commits nothing now, unless the rest of its tree still shows it
-            if s.waits() && !self.surfaces.values().any(|o| o.root == s.root && o.waits()) {
+            if s.waits()
+                && !self
+                    .surfaces
+                    .values()
+                    .any(|o| o.root == s.root && o.waits())
+            {
                 Counters::add(&self.stats.superseded, 1);
             }
         }
