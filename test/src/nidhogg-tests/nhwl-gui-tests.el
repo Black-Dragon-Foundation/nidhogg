@@ -1209,21 +1209,43 @@ top-level with its child again, mapped each way, with the buffer, the size and t
       (nhwl-gui--live-settle))))
 
 (ert-deftest nhwl-gui/live-fullscreen-gives-the-size-back ()
-  "A size set by hand comes back after fullscreen, on every compositor: some answer leaving it with 0 x 0, ours to pick."
+  "A size set by hand comes back after fullscreen, on every compositor: some answer leaving it with 0 x 0, ours to pick.
+The recorder keeps no state of its own: it answers here as a compositor does, the output's size, then 0 x 0."
   :tags '(runs-last)
   (skip-unless (and (nhwl-gui--live-p) (nhwl-gui--nhwl-frames)))
-  (let ((old (frame-parameter nil 'fullscreen)) (size nil)
-        (now (lambda () (list (frame-pixel-width) (frame-pixel-height)))))
+  (let* ((old (frame-parameter nil 'fullscreen)) (size nil)
+         (now (lambda () (list (frame-pixel-width) (frame-pixel-height))))
+         (rec (nhwl-gui--recorder-p))
+         (mark (lambda () (and rec (plist-get (gui-runner-recorder '(:cmd "input_log" :since 0)) :next))))
+         (answer (lambda (since req &rest configure)
+                   (when rec
+                     (should (nhwl-gui--wait
+                              (lambda ()
+                                (seq-find (lambda (e) (equal (plist-get e :req) req))
+                                          (plist-get (gui-runner-recorder (list :cmd "input_log" :since since))
+                                                     :entries)))))
+                     (gui-runner-recorder (append '(:cmd "configure" :surface "focused") configure))))))
     (unwind-protect
         (progn
           (set-frame-parameter nil 'fullscreen nil)
+          ;; the recorder sends its pending state again on `set_fullscreen': an earlier row's size there would be
+          ;; the compositor's floating size, not the one set by hand.  0 x 0: the size is ours
+          (when rec (gui-runner-recorder '(:cmd "configure" :surface "focused" :states ["activated"])))
           (nhwl-gui--live-settle)
           (set-frame-size nil 62 21)
           (nhwl-gui--live-settle)
           (setq size (funcall now))
-          (set-frame-parameter nil 'fullscreen 'fullboth)
+          (let ((since (funcall mark))
+                (s (frame-scale-factor))
+                (out (and rec (mapcar #'string-to-number (split-string (getenv "GLITNIR_GUI_SIZE") "x")))))
+            (set-frame-parameter nil 'fullscreen 'fullboth)
+            (funcall answer since "xdg_toplevel.set_fullscreen"
+                     :size (and rec (vector (round (/ (car out) s)) (round (/ (cadr out) s))))
+                     :states ["fullscreen" "activated"]))
           (should (nhwl-gui--wait (lambda () (redisplay t) (not (equal (funcall now) size))) 8))
-          (set-frame-parameter nil 'fullscreen nil)
+          (let ((since (funcall mark)))
+            (set-frame-parameter nil 'fullscreen nil)
+            (funcall answer since "xdg_toplevel.unset_fullscreen" :states ["activated"]))
           (should (nhwl-gui--wait (lambda () (redisplay t) (equal (funcall now) size)) 8)))
       (set-frame-parameter nil 'fullscreen old)
       (nhwl-gui--live-settle))))
