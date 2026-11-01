@@ -803,11 +803,11 @@ impl Stage {
         })
     }
 
-    /// When the next hide stops waiting after `now`: the presenter wakes for it.
-    pub(crate) fn next_hold(&self, now: u64) -> Option<u64> {
+    /// When the next hide stops waiting: the presenter wakes for it, at once for a wait that ended after the tick looked.
+    pub(crate) fn next_hold(&self) -> Option<u64> {
         self.moves
             .values()
-            .filter(|m| m.wanted != m.settled && m.hold > now)
+            .filter(|m| m.wanted != m.settled && m.hold != 0)
             .map(|m| m.hold)
             .min()
     }
@@ -1570,5 +1570,40 @@ impl WaylandShell {
     pub(super) fn publish_ghost(&mut self, root: u64, id: u64, key: u64) {
         self.presenting.fronts.remove(&id);
         self.motion_post(root, Mail::Ghost(id, key));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glitnir::ease::Curve;
+    use glitnir::motion::Leg;
+
+    /// A hide whose wait ran out between the tick that saw it and the presenter's next sleep still needs its wake.
+    #[test]
+    fn next_hold_keeps_a_wait_that_just_ended() {
+        let leg = Leg {
+            kind: Kind::Fade,
+            duration_ns: 80_000_000,
+            curve: Curve::EASE_IN,
+        };
+        let spec = MotionSpec {
+            show: leg,
+            hide: leg,
+        };
+        let mut stage = Stage::new(Arc::default());
+        assert_eq!(stage.next_hold(), None);
+        let mut hiding = Moving::new(spec, true, true);
+        hiding.wanted = false;
+        hiding.hold = 5;
+        stage.moves.insert(1, hiding);
+        assert_eq!(stage.next_hold(), Some(5));
+        // a hide with no wait is due now, and a show has nothing to wait for
+        stage.moves.get_mut(&1).unwrap().hold = 0;
+        assert_eq!(stage.next_hold(), None);
+        let shown = stage.moves.get_mut(&1).unwrap();
+        shown.wanted = true;
+        shown.hold = 5;
+        assert_eq!(stage.next_hold(), None);
     }
 }
