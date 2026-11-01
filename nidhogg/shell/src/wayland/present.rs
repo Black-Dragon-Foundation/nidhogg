@@ -289,6 +289,12 @@ impl Present {
         self.notify();
     }
 
+    /// The recorded content ack takes a packet published after `seq`, also one published before the ack.
+    pub(crate) fn packet_after(&mut self, seq: u64) {
+        self.ack_seq = self.ack_seq.min(seq);
+        self.notify();
+    }
+
     /// `ready` for a published tree whose newest packet in the fronts is `applied`: a content ack counts once a packet
     /// came after it, and while it waits no content goes (the configure's picture is not there yet); owed state may
     /// still go bare.
