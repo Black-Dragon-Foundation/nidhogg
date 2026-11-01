@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Nidhogg's GUI test runner: a headless compositor (headless sway by default; its own session bus, its own Wayland
-# display), a Nidhogg pgtk frame on it, and the *-gui-tests.el files run by test/src/nidhogg-tests/gui-runner.el.
+# display), a Nidhogg frame on it, and the *-gui-tests.el files run by test/src/nidhogg-tests/gui-runner.el.
 # Never touches the caller's display, session bus or Emacs server: everything it starts is private and stopped on exit.
 #
 #   nidhogg/test/gui.sh --prefix DIR [--compositor sway|mutter|kwin|labwc|recorder] [--recorder BIN]

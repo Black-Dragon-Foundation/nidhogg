@@ -285,8 +285,8 @@ machine whose timing never shows it, not certain.
   --check nidhogg/check-subset.txt`, then `--stage pack --out ...` (so a failing check keeps the build's caches), then
   `tarball-test.sh`. `macos`: Homebrew `deps/macos.build`, `build.sh --host` (`--stage build`, then `--stage pack`),
   `tarball-test.sh macos`. Each uploads its tarball and `.sha256`.
-- `compile-noglitnir` (fedora-44): `build.sh --without-glitnir --stage build`, with no Rust installed (the tree still
-  compiles without Glitnir). It is not part of the release gate.
+- `compile-noglitnir` (fedora-44): `build.sh --without-glitnir --stage build`, a terminal-only build with no Rust
+  installed (the tree still compiles without Glitnir). It is not part of the release gate.
 - `drgnx` (after `linux` and `macos`, whatever they did): calls drgnx's own `.github/workflows/drgnx-tiers.yml` at the
   pinned commit with `nidhogg: artifact`, so drgnx's tiers run on this run's tarballs exactly as drgnx's CI runs them on
   the release: the unit suite and gate mode on the fedora-45 tarball (installed into drgnx's test image on top of the
@@ -295,19 +295,19 @@ machine whose timing never shows it, not certain.
   for the Linux jobs; the cargo cache is this repository's (a called workflow uses the caller's). Locally, a narrowed
   run of the unit suite on a tarball: `DRGNX_TEST_SELECTOR='drgnx-doctor/' bash nidhogg/ci/drgnx-suite.sh TARBALL
   fedora-44 ../drgnx`.
-- `gui` (fedora-45 tarball, after `linux`; scales 1 and 2; 60 minutes): `nidhogg/test/gui.sh --container fedora-45` on
-  headless sway, gui.sh's default (see GUI tests). The tarball is pgtk, so the `nhwl-gui/` rows skip. It is not part of
+- Every Linux tarball is the native shell, so the shell has no build job of its own. `native-crates` builds `nh-recorder`
+  and runs the recorder's, the shell's and the glue's `check.sh`, whose T1 tests run against it (they fail, not skip,
+  without the recorder). `native-gui` (fedora-45 tarball, after `linux` and `native-crates`; 60 minutes per lane) runs
+  `nidhogg/test/native-gui.sh LANE --container fedora-45`, one job per lane, listed at the top of that script:
+  every `*-gui-tests.el` file on headless sway at scales 1 and 2 (`gui-1`, `gui-2`); the `nhwl-gui/` rows on the recorder
+  (sway's, mutter's, KWin's and xdg-v2 globals; no presenter thread; 120 Hz; scale 1.25; client-side decorations; in a
+  daemon; the scripted portal), on headless mutter at scales 1 and 1.25 and on KWin with the protocol trace checked,
+  and on headless sway (plain, client-side decorations, in a daemon); and the decoration rows on the recorder and on sway
+  at scales 1 and 2. A lane fails when too few rows ran, so none is green on rows that all skipped. Both jobs are part of
   the release gate.
-- The native shell has jobs of its own, since every tarball above is pgtk and `build.sh` builds it only under
-  `--nidhogg-wayland`: `native` builds and packs it on fedora-45; `native-crates` builds `nh-recorder` and runs the
-  recorder's, the shell's and the glue's `check.sh`, whose T1 tests run against it; `native-gui` runs
-  `nidhogg/test/native-gui.sh LANE` on both, one job per lane (the recorder with sway's and with mutter's globals, the
-  recorder with no presenter thread, headless mutter with its protocol trace checked, headless sway, and the decoration
-  rows on the recorder and on sway at scales 1 and 2). A lane fails when too few rows ran: on a pgtk build every row
-  would skip and the lane would still be green. None of them is part of the release gate.
-- A release tag runs only what `release` needs (`tree`, `linux`, `macos`, `drgnx`): `compile-noglitnir`, `gui`, the native
-  and the workers jobs skip it, since the tagged commit passed them in its round.
-- `release` (a pushed `v*` tag only, never a manual run or a pull request) needs `tree`, `linux`, `macos` and `drgnx`, fails unless the tag is `v$(cat nidhogg/version)`, and publishes the
+- A release tag runs what `release` needs (`tree`, `linux`, `macos`, `drgnx`, `native-crates`, `native-gui`):
+  `compile-noglitnir` and the workers jobs skip it, since the tagged commit passed them in its round.
+- `release` (a pushed `v*` tag only, never a manual run or a pull request) needs `tree`, `linux`, `macos`, `drgnx`, `native-crates` and `native-gui`, fails unless the tag is `v$(cat nidhogg/version)`, and publishes the
   tarballs, their `.sha256` files and `SHA256SUMS`; the notes name the built commit and the drgnx commit tested.
 - Caches (`actions/cache/restore` before the build, `actions/cache/save` right after the step that produced them, so a
   later failing step, e.g. the tarball test, loses nothing; a save is skipped when its key was already found, and a build

@@ -8,7 +8,7 @@ wf=.github/workflows/build.yml
 test -f "$wf"                                                     || { fail "no $wf"; exit 1; }
 for j in tree linux macos drgnx release; do grep -qE "^  $j:" "$wf" || fail "no job $j"; done
 # drgnx's tests gate a release
-awk '/^  release:/,0' "$wf" | grep -qE 'needs: \[tree, linux, macos, drgnx\]' || fail "release not gated"
+awk '/^  release:/,0' "$wf" | grep -qE 'needs: \[tree, linux, macos, drgnx, native-crates, native-gui\]' || fail "release not gated"
 # the timing lane is report-only: its own job that never fails the run, and no release needs it
 grep -qE "^  timing:" "$wf"                                       || fail "no job timing"
 awk '/^  timing:/,/^  release:/' "$wf" | grep -qE '^    continue-on-error: true$' || fail "the timing job is not continue-on-error: true"
@@ -61,15 +61,9 @@ grep -qF 'fedora-44' <<<"$nj"                                     || fail "compi
 mj=$(awk '/^  macos:/,/^  drgnx:/' "$wf")
 grep -qF 'bash nidhogg/glitnir/check.sh' <<<"$mj"                 || fail "macos runs the glitnir checks"
 [ "$(grep -n 'glitnir/check.sh' <<<"$mj" | head -1 | cut -d: -f1)" -lt "$(grep -n 'id: build' <<<"$mj" | head -1 | cut -d: -f1)" ] 2>/dev/null || fail "macos runs the glitnir checks after the build"
-# the GUI job: needs the Linux builds, runs the fedora-45 tarball in a container at scales 1 and 2, with a time limit
-gj=$(awk '/^  gui:/,/^  native:/' "$wf")
-[ -n "$gj" ]                                                      || fail "no job gui"
-grep -qE 'needs: linux' <<<"$gj"                                  || fail "gui does not need linux"
-grep -qE 'timeout-minutes: 60' <<<"$gj"                           || fail "gui has no 60-minute limit"
-grep -qE 'scale: \[1, 2\]' <<<"$gj"                               || fail "gui does not run scales 1 and 2"
-grep -qF 'tarball-fedora-45' <<<"$gj"                             || fail "gui does not use the fedora-45 tarball"
-grep -qF -- '--container fedora-45' <<<"$gj"                      || fail "gui does not run in a container"
-grep -qF 'bash nidhogg/test/gui.sh' <<<"$gj"                      || fail "gui does not run gui.sh"
+# one Linux path: the shell is build.sh's default, so no job names a toolkit, and nothing else is packed as a tarball
+! grep -qiE 'pgtk|--nidhogg-wayland' "$wf"                        || fail "a job names pgtk or a window system of its own"
+[ "$(grep -cE '^ +name: tarball-\$\{\{ matrix\.distro \}\}$|^ +name: tarball-macos$' "$wf")" -eq 2 ] || fail "a tarball artifact release would publish by mistake"
 # the workers' jobs (engine C, PD-4): present, after linux, outside release's needs, never fail-fast, pkg suites on and off
 job() { awk -v j="  $1:" '$0==j{p=1;print;next} p&&/^  [a-z]/{exit} p' "$wf"; }
 for j in workers-harness workers-asan workers-pkg; do
@@ -80,26 +74,26 @@ done
 job workers-pkg | grep -q 'fail-fast: false'                       || fail "workers-pkg has no fail-fast: false"
 { job workers-pkg | grep -qE 'mode: \["on", "off"\]' && grep -q 'pkg-test.sh --compare' "$wf"; } || fail "workers-pkg does not run on and off and compare"
 job workers-asan | grep -q 'NIDHOGG_BUILD_SANITIZE'                || fail "workers-asan does not build sanitized"
-# the native shell: its own build (every other tarball is pgtk), the crates' checks on the recorder, every GUI lane
-job native | grep -qF -- '--nidhogg-wayland'                       || fail "the native job does not build the native shell"
+# the native shell: the crates' checks on the recorder, every GUI lane on the fedora-45 tarball
 for s in 'recorder/check.sh --container fedora-45 --build' 'shell/check.sh --container fedora-45' 'glue/check.sh --container fedora-45'; do
   job native-crates | grep -qF "$s"                                || fail "native-crates does not run $s"
 done
-job native-gui | grep -qE '^    needs: \[native, native-crates\]'  || fail "native-gui does not need native and native-crates"
+job native-gui | grep -qE '^    needs: \[linux, native-crates\]'   || fail "native-gui does not need linux and native-crates"
 job native-gui | grep -q 'fail-fast: false'                        || fail "native-gui has no fail-fast: false"
+job native-gui | grep -qE 'timeout-minutes: 60'                    || fail "native-gui has no 60-minute limit"
+job native-gui | grep -qF 'tarball-fedora-45'                      || fail "native-gui does not use the fedora-45 tarball"
+job native-gui | grep -qF -- '--container fedora-45'               || fail "native-gui does not run in a container"
 job native-gui | grep -qF 'nidhogg/test/native-gui.sh'             || fail "native-gui does not run native-gui.sh"
-for l in recorder recorder-mutter recorder-inline mutter sway decor-recorder decor-1 decor-2; do
-  job native-gui | grep -E '^        lane:' | grep -qE "[[, ]${l}[],]" || fail "native-gui has no lane $l"
-  grep -qE "^  $l\)" nidhogg/test/native-gui.sh                    || fail "native-gui.sh has no lane $l"
-done
-for j in native native-crates native-gui; do
-  ! awk '/^  release:/,0' "$wf" | grep -qE "needs:.*$j"            || fail "release needs $j"
-done
-# a release tag runs only what release needs: the tagged commit passed the rest in its round
-for j in compile-noglitnir gui native native-crates native-gui workers-harness workers-asan workers-pkg workers-pkg-compare; do
+# every lane in the matrix is a lane of the script and the other way round, and a lane has a floor: none is green on 0 rows
+ci_lanes=$(job native-gui | sed -nE 's/^          - ([a-z0-9-]+)$/\1/p' | sort)
+sh_lanes=$(sed -nE 's/^  ([a-z0-9-]+)\) +min=[1-9][0-9]*;.*/\1/p' nidhogg/test/native-gui.sh | sort)
+[ -n "$ci_lanes" ] && [ "$ci_lanes" = "$sh_lanes" ]                || fail "native-gui's matrix and native-gui.sh's lanes (with a floor) differ"
+grep -qF 'expected at least $min' nidhogg/test/native-gui.sh       || fail "native-gui.sh does not fail below a lane's floor"
+# a release tag runs what release needs: the tagged commit passed the rest in its round
+for j in compile-noglitnir workers-harness workers-asan workers-pkg workers-pkg-compare; do
   job "$j" | grep -qF "github.ref_type != 'tag'"                    || fail "$j runs for a release tag"
 done
-for j in tree linux macos drgnx; do
+for j in tree linux macos drgnx native-crates native-gui; do
   ! job "$j" | grep -qF "github.ref_type != 'tag'"                  || fail "$j, which release needs, is skipped for a tag"
 done
 # pkg-test.sh --compare: an on-only failure fails, a failure in both passes, an expected failure passes
