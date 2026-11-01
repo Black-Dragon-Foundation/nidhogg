@@ -226,6 +226,13 @@ A joint round (drgnx and Nidhogg change together, drgnx's `docs/develop/ci.md`, 
 `drgnx_ref=ci/joint/<name>`, so drgnx's Emacs-side tiers run once, on this run's build. Before the release tag, the pin
 moves to the round's green drgnx commit.
 
+- Test classes: a test file in `test/src/nidhogg-tests/` states its class in one header line within its first 15 lines,
+  exactly `;; test-class: det` (deterministic: no real time), `;; test-class: cond` (waits on conditions, no fixed
+  pause) or `;; test-class: timing` (may assert the clock). A test's own tag (`:det`, `:cond`, `:timing`) overrides the
+  file's. `test-class-lint-tests.el` reads the files as data and fails a classified file that breaks its class (a
+  same-file helper counts as part of the test). Files that are not tests are listed in `nidhogg/test/class-exempt.txt`
+  (`FILE # reason`); a row whose file is gone fails the check. Until every file is classified the check reports the
+  count of unclassified files and passes.
 - `tree`: `tree-test.sh`, `ci-test.sh` and `check-rerun-test.sh` (full history and tags).
 - `linux` (fedora-44, fedora-45, ubuntu-26.04): `build.sh --container D --stage build`, the cache saves, then `--stage check
   --check nidhogg/check-subset.txt`, then `--stage pack --out ...` (so a failing check keeps the build's caches), then
