@@ -542,6 +542,29 @@ holds the text.  Waits 20 s at most for the child."
                   '(nidhogg-workers--test-io-crash))
                  '(signal t))))
 
+(ert-deftest workers/worker-crash-while-main-allocates ()
+  ;; A worker's crash lands on a main thread inside malloc: the fatal
+  ;; path allocates for the emergency auto-save, so running it there
+  ;; blocks on a lock its own thread holds, for good.  Here the main
+  ;; thread allocates as hard as it can (large strings go to malloc).
+  (skip-unless (fboundp 'nidhogg-workers--test-fatal-under-lock))
+  (dotimes (_ 5)
+    (should (equal (workers-fatal-tests--reader-child
+                    '(progn (nidhogg-workers--test-io-crash)
+                            (while t (make-string 5000 ?x))))
+                   '(signal t)))))
+
+(ert-deftest workers/worker-crash-main-in-a-c-wait ()
+  ;; A main thread that reaches no safe point still goes down, within
+  ;; the worker's 1 s: here it sits in a bounded condition wait, which
+  ;; runs no pending signals.
+  (skip-unless (fboundp 'nidhogg-workers--test-fatal-under-lock))
+  (should (equal (workers-fatal-tests--reader-child
+                  '(progn (nidhogg-workers--test-io-crash)
+                          (nidhogg-workers--test-await-paused 'after-read 15000)
+                          (kill-emacs 5)))
+                 '(signal t))))
+
 (ert-deftest workers/fatal-hups-reader-owned-children ()
   ;; A reader-owned subprocess (pipes) gets its SIGHUP on the fatal path,
   ;; as upstream's kill_buffer_processes sends it: the reader's fds close
