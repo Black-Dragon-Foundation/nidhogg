@@ -8445,6 +8445,9 @@ void
 process_pending_signals (void)
 {
   pending_signals = false;
+#ifdef HAVE_NIDHOGG_WORKERS
+  take_forwarded_fatal ();
+#endif
   handle_async_input ();
   do_pending_atimers ();
 }
