@@ -1,4 +1,5 @@
 ;;; workers-timing-tests.el --- tests for workers: the timing group (wide margins)  -*- lexical-binding: t -*-
+;; test-class: timing
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
