@@ -27,7 +27,7 @@
 
 (defun nhwl-gui--popup-node (before)
   "The newest popup node not in the id list BEFORE once it shows a buffer, waiting up to 5 s."
-  (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (nhwl-gui--new-popup before)) 5))
+  (nhwl-gui--wait (lambda () (nhwl-gui--pump) (nhwl-gui--new-popup before)) 5))
 
 (defun nhwl-gui--grabbed-ids ()
   "The ids of the popups that hold a grab."
@@ -55,7 +55,7 @@ its buffer is the frame's size."
             (should n)
             (should (equal (plist-get (plist-get n :grab) :serial_kind) "button"))
             (should (nhwl-gui--wait (lambda ()
-                                      (nhwl-gui--pump 0.1)
+                                      (nhwl-gui--pump)
                                       (let ((b (plist-get (nhwl-gui--node (plist-get n :id)) :buffer)))
                                         (and (eql (plist-get b :w) (frame-pixel-width p))
                                              (eql (plist-get b :h) (frame-pixel-height p)))))
@@ -101,7 +101,8 @@ focus-out, `frame-focus-state' stays t, and a key typed on the popup arrives in 
             (should (nhwl-gui--get n :grab))
             ;; the compositor gives the grabbing popup the keyboard (the recorder does it when told)
             (gui-runner-recorder (list :cmd "focus" :surface (plist-get n :id)))
-            (nhwl-gui--pump)
+            ;; absence: a focus-out for the parent would run the hook in this span
+            (nhwl-gui--observe 0.3)
             (should (= outs 0))
             (should (eq (frame-focus-state parent) t))
             (should (eq (nhwl-gui--key-frame ?x) p))
@@ -130,7 +131,7 @@ until Lisp deletes or hides it."
             (should (equal ev (list 'delete-frame (list p)))))
           (should (frame-live-p p))
           (delete-frame p)
-          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (equal (nhwl-gui--popup-ids) before)) 5)))
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (equal (nhwl-gui--popup-ids) before)) 5)))
       (when (frame-live-p p) (delete-frame p)))))
 
 (ert-deftest nhwl-gui/nested-popup-frames-destroyed-topmost-first ()
@@ -141,14 +142,14 @@ recorder ends a client for it), and only the toplevel is left."
   (let* ((parent (selected-frame)) (before (nhwl-gui--popup-ids)) (frames nil) (mine nil)
          (all-shown (lambda ()
                       (nhwl-gui--wait (lambda ()
-                                        (nhwl-gui--pump 0.1)
+                                        (nhwl-gui--pump)
                                         (setq mine (seq-difference (nhwl-gui--grabbed-ids) before))
                                         (= (length mine) 3))
                                       5)))
          ;; these three: a tooltip the pointer's hover shows or hides meanwhile is no part of the row
          (none-left (lambda ()
                       (nhwl-gui--wait (lambda ()
-                                        (nhwl-gui--pump 0.1)
+                                        (nhwl-gui--pump)
                                         (not (seq-intersection (nhwl-gui--popup-ids) mine)))
                                       5))))
     (unwind-protect
@@ -186,7 +187,7 @@ is made again and drawn whole): the popup's buffer follows the frame, and it sta
             (set-frame-size p (car size) (cdr size))
             (should (nhwl-gui--wait
                      (lambda ()
-                       (nhwl-gui--pump 0.1)
+                       (nhwl-gui--pump)
                        (redisplay t)
                        (let* ((n (seq-find (lambda (n) (and (equal (plist-get n :role) "popup")
                                                             (not (memq (plist-get n :id) before))))
@@ -210,17 +211,17 @@ rules (errors, acks, unconfigured, popup, grab, popup-order) judge what was sent
             (setq p (nhwl-gui--popup-frame p '(20 10 1 1 :grab t :gravity right)))
             (push p frames))
           (setq frames (nreverse frames))
-          (nhwl-gui--live-settle 0.5)
+          (nhwl-gui--live-settle)
           (make-frame-invisible (car frames))
-          (nhwl-gui--live-settle 0.3)
+          (nhwl-gui--live-settle)
           (dolist (f frames) (make-frame-visible f))
-          (nhwl-gui--live-settle 0.5)
+          (nhwl-gui--live-settle)
           (set-frame-size (nth 2 frames) 30 8)
-          (nhwl-gui--live-settle 0.3)
+          (nhwl-gui--live-settle)
           (set-frame-parameter (car frames) 'nhwl-popup '(60 40 1 1 :grab t :gravity right))
-          (nhwl-gui--live-settle 0.3)
+          (nhwl-gui--live-settle)
           (delete-frame (car frames))
-          (nhwl-gui--live-settle 0.3)
+          (nhwl-gui--live-settle)
           (should-not (seq-some #'frame-live-p frames))
           (should (frame-live-p (selected-frame))))
       (dolist (f (reverse frames)) (when (frame-live-p f) (delete-frame f))))))
@@ -267,14 +268,14 @@ restores them; the recorder's composite equals the pre-bell composite."
            (bottom (lambda (c) (seq-some (lambda (r) (> (+ (nth 1 r) (nth 3 r)) (- h (* 4 line))))
                                          (nhwl-gui--damage c)))))
       (setq flash (nhwl-gui--wait (lambda ()
-                                    (nhwl-gui--pump 0.05)
+                                    (nhwl-gui--pump)
                                     (seq-find (lambda (c) (and (funcall top c) (funcall bottom c)))
                                               (nhwl-gui--toplevel-all-commits mark)))
                                   3))
       (should flash)
       ;; the restore follows the flash by about 50 ms, in a commit of its own
       (setq restore (nhwl-gui--wait (lambda ()
-                                      (nhwl-gui--pump 0.05)
+                                      (nhwl-gui--pump)
                                       (seq-find (lambda (c) (and (> (plist-get c :seq) (plist-get flash :seq))
                                                                  (funcall top c)))
                                                 (nhwl-gui--toplevel-all-commits mark)))
@@ -289,14 +290,15 @@ restores them; the recorder's composite equals the pre-bell composite."
   (let ((visible-bell nil) (ring-bell-function nil) (id (nhwl-gui--toplevel-id)))
     (should id)
     (ding)
-    (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.05) (member id (nhwl-gui--bells))) 3))))
+    (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (member id (nhwl-gui--bells))) 3))))
 
 (ert-deftest nhwl-gui/bell-without-protocol-does-nothing ()
   "Sway profile (no xdg_system_bell_v1): `ding' logs no ring, and the connection stays up."
   (skip-unless (and (nhwl-gui--recorder-p) (not (nhwl-gui--has-global-p :xdg_system_bell_v1))))
   (let ((visible-bell nil) (ring-bell-function nil))
     (ding)
-    (nhwl-gui--pump 0.3)
+    ;; absence: a ring Emacs sent would reach the recorder's log in this span
+    (nhwl-gui--observe 0.3)
     (should-not (nhwl-gui--bells))
     (should (nhwl-gui--connected-p))))
 
@@ -307,15 +309,16 @@ restores them; the recorder's composite equals the pre-bell composite."
       (progn
         (should (zerop (nhwl-gui--live-inhibitors)))
         (set-frame-parameter nil 'inhibit-idle t)
-        (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.05) (= (nhwl-gui--live-inhibitors) 1)) 3))
+        (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (= (nhwl-gui--live-inhibitors) 1)) 3))
         ;; set again: still one
         (set-frame-parameter nil 'inhibit-idle t)
-        (nhwl-gui--pump 0.2)
+        ;; absence: a second inhibitor would reach the recorder in this span
+        (nhwl-gui--observe 0.2)
         (should (= (nhwl-gui--live-inhibitors) 1))
         (set-frame-parameter nil 'inhibit-idle nil)
-        (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.05) (zerop (nhwl-gui--live-inhibitors))) 3))
+        (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (zerop (nhwl-gui--live-inhibitors))) 3))
         (set-frame-parameter nil 'inhibit-idle t)
-        (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.05) (= (nhwl-gui--live-inhibitors) 1)) 3)))
+        (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (= (nhwl-gui--live-inhibitors) 1)) 3)))
     (set-frame-parameter nil 'inhibit-idle nil)))
 
 (ert-deftest nhwl-gui/export-handle-matches-the-compositor ()
@@ -371,7 +374,9 @@ frame joined it as \"initial\"."
   (let ((f (make-frame '(( minibuffer . nil)))))
     (unwind-protect
         (progn
-          (nhwl-gui--pump 0.3)
+          (nhwl-gui--wait (lambda () (nhwl-gui--pump) (frame-parameter f 'session-name)))
+          ;; absence: a second get_session for this frame would reach the recorder in this span
+          (nhwl-gui--observe 0.3)
           (should (= (length (nhwl-gui--session-log "get_session")) 1))
           (should (stringp (frame-parameter f 'session-name)))
           (should-not (equal (frame-parameter f 'session-name) "initial"))
@@ -385,9 +390,9 @@ first commit.  The name is one an earlier frame left in the session."
   (let ((f (make-frame '((session-name . "row-restore") (minibuffer . nil)))))
     (unwind-protect
         (progn
-          (nhwl-gui--pump 0.3)
+          (nhwl-gui--pump)
           (should (nhwl-gui--wait (lambda ()
-                                    (nhwl-gui--pump 0.05)
+                                    (nhwl-gui--pump)
                                     (seq-find (lambda (e) (equal (plist-get e :name) "row-restore"))
                                               (nhwl-gui--session-log "add")))
                                   3))
@@ -399,7 +404,9 @@ first commit.  The name is one an earlier frame left in the session."
           ;; and the compositor raises no protocol error
           (delete-frame f)
           (setq f (make-frame '((session-name . "row-restore") (minibuffer . nil))))
-          (nhwl-gui--pump 0.3)
+          ;; a protocol error for the restore comes before the frame's picture is answered
+          (gui-runner-wait-settled)
+          (nhwl-gui--pump)
           (should (nhwl-gui--connected-p)))
       (when (frame-live-p f) (delete-frame f)))))
 
@@ -414,21 +421,22 @@ session on the display, so it runs after the rows that count the first."
     (unwind-protect
         (progn
           (should (nhwl--session-open (selected-frame) id 'restore))
-          (nhwl-gui--pump 0.3)
+          (nhwl-gui--pump)
           (setq f (make-frame '((session-name . "row-saved") (minibuffer . nil))))
-          (nhwl-gui--pump 0.3)
-          (should (seq-find (lambda (e) (equal (plist-get e :name) "row-saved"))
-                            (nhwl-gui--session-log "restore"))))
+          (should (nhwl-gui--wait (lambda ()
+                                    (nhwl-gui--pump)
+                                    (seq-find (lambda (e) (equal (plist-get e :name) "row-saved"))
+                                              (nhwl-gui--session-log "restore"))))))
       (when (frame-live-p f) (delete-frame f)))))
 
 (ert-deftest nhwl-gui/user-deleted-frame-leaves-the-session ()
   "A frame deleted before Emacs exits is removed from the session (a `remove' with its name)."
   (skip-unless (nhwl-gui--session-p))
   (let ((f (make-frame '((session-name . "row-deleted") (minibuffer . nil)))))
-    (nhwl-gui--pump 0.3)
+    (nhwl-gui--pump)
     (delete-frame f)
     (should (nhwl-gui--wait (lambda ()
-                              (nhwl-gui--pump 0.05)
+                              (nhwl-gui--pump)
                               (seq-find (lambda (e) (equal (plist-get e :name) "row-deleted"))
                                         (nhwl-gui--session-log "remove")))
                             3))))
@@ -443,7 +451,8 @@ is delivered here as the special event C makes of it."
         (progn
           (nhwl-session '(nhwl-session (replaced)))
           (setq f (make-frame '((minibuffer . nil))))
-          (nhwl-gui--pump 0.3)
+          ;; absence: an `add' Emacs sent would reach the recorder's log in this span
+          (nhwl-gui--observe 0.3)
           (should-not (frame-parameter f 'session-name))
           (should (= (length (nhwl-gui--session-log "add")) adds))
           (should (nhwl-gui--connected-p)))
@@ -457,7 +466,8 @@ is delivered here as the special event C makes of it."
   (let ((f (make-frame '((minibuffer . nil)))))
     (unwind-protect
         (progn
-          (nhwl-gui--pump 0.3)
+          ;; absence: a protocol error or a session name would come in this span
+          (nhwl-gui--observe 0.3)
           (should-not (frame-parameter f 'session-name))
           (should (nhwl-gui--connected-p)))
       (when (frame-live-p f) (delete-frame f)))))
@@ -471,13 +481,13 @@ rule `errors' judges what was sent."
     (unwind-protect
         (progn
           (dotimes (_ 2) (push (make-frame '((minibuffer . nil))) frames))
-          (nhwl-gui--live-settle 0.5)
+          (nhwl-gui--live-settle)
           (let ((name (frame-parameter (car frames) 'session-name)))
             (delete-frame (car frames))
             (setq frames (cdr frames))
-            (nhwl-gui--live-settle 0.3)
+            (nhwl-gui--live-settle)
             (push (make-frame `((session-name . ,name) (minibuffer . nil))) frames)
-            (nhwl-gui--live-settle 0.5))
+            (nhwl-gui--live-settle))
           (should (frame-live-p (selected-frame))))
       (dolist (f frames) (when (frame-live-p f) (delete-frame f))))))
 
@@ -490,18 +500,26 @@ rule `errors' judges what was sent."
                    :surface "toplevel" :at [100 100])))
     (while args (setq req (plist-put req (pop args) (pop args))))
     (gui-runner-recorder req)
-    (nhwl-gui--pump 0.3)))
+    (nhwl-gui--pump)))
 
 (defun nhwl-gui--dnd-end ()
   "End a foreign drag that was not dropped: it leaves the surface and the button comes up over nothing.  A drag left
 going holds the recorder's pointer for the next rows."
   (gui-runner-recorder '(:cmd "dnd_leave"))
   (gui-runner-recorder '(:cmd "dnd_drop"))
-  (nhwl-gui--pump 0.3))
+  (nhwl-gui--pump))
 
 (defun nhwl-gui--dnd-log ()
   "The newest offer the recorder has logged."
   (car (last (plist-get (gui-runner-recorder '(:cmd "dnd_log")) :offers))))
+
+(defun nhwl-gui--dnd-accepted-p ()
+  "Non-nil when the newest offer's log of accepts (a type, or null for a refusal, each) holds a type."
+  (seq-some #'stringp (plist-get (nhwl-gui--dnd-log) :accepted)))
+
+(defun nhwl-gui--dnd-accepted ()
+  "Wait for Emacs to accept the drag's type: a drop before that would find the offer not accepted."
+  (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (nhwl-gui--dnd-accepted-p)))))
 
 (defun nhwl-gui--dnd-drop-on (buffer &optional at)
   "Show BUFFER (emptied) in the selected window, drag text onto it (at AT, a vector, else (100, 100)) and drop."
@@ -509,9 +527,9 @@ going holds the recorder's pointer for the next rows."
   (let ((inhibit-read-only t)) (erase-buffer))
   (nhwl-gui--dnd-offer '(:text/plain "dropped text") :at (or at [100 100]))
   (gui-runner-recorder `(:cmd "dnd_motion" :at ,(or at [100 100])))
-  (nhwl-gui--pump 0.3)
+  (nhwl-gui--dnd-accepted)
   (gui-runner-recorder '(:cmd "dnd_drop"))
-  (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1)
+  (nhwl-gui--wait (lambda () (nhwl-gui--pump)
                     (with-current-buffer buffer (> (buffer-size) 0)))
                   3))
 
@@ -524,7 +542,7 @@ going holds the recorder's pointer for the next rows."
         (progn
           (should (nhwl-gui--dnd-drop-on b))
           (should (equal (with-current-buffer b (buffer-string)) "dropped text"))
-          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1)
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump)
                                     (nhwl-gui--get (nhwl-gui--dnd-log) :finished))
                                   3)))
       (kill-buffer b))))
@@ -538,9 +556,9 @@ going holds the recorder's pointer for the next rows."
           (switch-to-buffer (get-buffer-create " *dnd-host*"))
           (nhwl-gui--dnd-offer (list :text/uri-list (concat "file://" file "\r\n")))
           (gui-runner-recorder '(:cmd "dnd_motion" :at [100 100]))
-          (nhwl-gui--pump 0.3)
+          (nhwl-gui--dnd-accepted)
           (gui-runner-recorder '(:cmd "dnd_drop"))
-          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (setq b (find-buffer-visiting file))) 3)))
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (setq b (find-buffer-visiting file))) 3)))
       (when b (kill-buffer b))
       (kill-buffer " *dnd-host*")
       (delete-file file))))
@@ -558,9 +576,9 @@ going holds the recorder's pointer for the next rows."
           (let ((at (apply #'vector (nhwl-gui--native-to-logical 60 (+ (nth 3 (window-inside-pixel-edges)) 3)))))
             (nhwl-gui--dnd-offer '(:text/plain "X") :at at)
             (gui-runner-recorder `(:cmd "dnd_motion" :at ,at))
-            (nhwl-gui--pump 0.3)
+            (nhwl-gui--dnd-accepted)
             (gui-runner-recorder '(:cmd "dnd_drop")))
-          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (> (buffer-size) 3)) 3))
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (> (buffer-size) 3)) 3))
           (should (equal (buffer-string) "aXbc")))
       (kill-buffer b))))
 
@@ -577,15 +595,15 @@ going holds the recorder's pointer for the next rows."
                                     (minibuffer . nil) (no-other-frame . t) (menu-bar-lines . 0)
                                     (tool-bar-lines . 0))))
           (with-selected-frame child (switch-to-buffer b))
-          (nhwl-gui--pump 0.5)
+          (nhwl-gui--pump)
           ;; the child's own surface (the newest surface can be another one, such as the pointer's)
           (setq id (plist-get (nhwl-gui--child-node before) :id))
           (should id)
           (nhwl-gui--dnd-offer '(:text/plain "to the child") :surface id :at [40 40])
           (gui-runner-recorder `(:cmd "dnd_motion" :at [40 40] :surface ,id))
-          (nhwl-gui--pump 0.3)
+          (nhwl-gui--dnd-accepted)
           (gui-runner-recorder '(:cmd "dnd_drop"))
-          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (> (buffer-size b) 0)) 3))
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (> (buffer-size b) 0)) 3))
           (should (equal (with-current-buffer b (buffer-string)) "to the child"))
           (should (zerop (buffer-size host))))
       (when (frame-live-p child) (delete-frame child))
@@ -599,10 +617,10 @@ going holds the recorder's pointer for the next rows."
   (unwind-protect
       (progn
         (gui-runner-recorder '(:cmd "dnd_motion" :at [101 101]))
-        (nhwl-gui--pump 0.5)
-        (let ((log (nhwl-gui--dnd-log)))
-          (should-not (stringp (nhwl-gui--get log :accepted)))
-          (should-not (nhwl-gui--get log :finished))))
+        ;; absence: an accept for the refused type would reach the recorder in this span
+        (nhwl-gui--observe 0.5)
+        (should-not (nhwl-gui--dnd-accepted-p))
+        (should-not (nhwl-gui--get (nhwl-gui--dnd-log) :finished)))
     (nhwl-gui--dnd-end)))
 
 (ert-deftest nhwl-gui/drop-from-a-silent-source-times-out ()
@@ -616,10 +634,10 @@ of the drop, answers at once after it, and the next, normal drop inserts."
           (switch-to-buffer b)
           (nhwl-gui--dnd-offer '(:text/plain "never read") :silent t)
           (gui-runner-recorder '(:cmd "dnd_motion" :at [101 101]))
-          (nhwl-gui--pump 0.3)
+          (nhwl-gui--dnd-accepted)
           (gui-runner-recorder '(:cmd "dnd_drop"))
           (let ((t0 (float-time)))
-            (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.05)
+            (should (nhwl-gui--wait (lambda () (nhwl-gui--pump)
                                       (nhwl-gui--get (nhwl-gui--dnd-log) :destroyed))
                                     1.5))
             (should (= (+ 1 1) 2))
@@ -642,7 +660,7 @@ of the drop, answers at once after it, and the next, normal drop inserts."
           (let ((y (+ (nth 1 (window-inside-pixel-edges)) (* 4 (default-line-height)) 2)))
             (nhwl-gui--dnd-offer '(:text/plain "x") :at (apply #'vector (nhwl-gui--native-to-logical 30 y)))
             (gui-runner-recorder `(:cmd "dnd_motion" :at ,(apply #'vector (nhwl-gui--native-to-logical 32 y)))))
-          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (= (line-number-at-pos) 5)) 3)))
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (= (line-number-at-pos) 5)) 3)))
       (nhwl-gui--dnd-end)
       (kill-buffer b))))
 
@@ -660,21 +678,19 @@ of the drop, answers at once after it, and the next, normal drop inserts."
      (setq nhwl-gui--touch-log nil)
      ,@body))
 
-(defun nhwl-gui--pump-input (seconds)
-  "Read events for SECONDS: log the touch events, run each `pinch' event's binding, drop the rest."
-  (let ((deadline (+ (float-time) seconds)))
-    (while (< (float-time) deadline)
-      (let ((e (read-event nil nil 0.05)))
-        (pcase (car-safe e)
-          ((or 'touchscreen-begin 'touchscreen-update 'touchscreen-end) (push e nhwl-gui--touch-log))
-          ('pinch (let ((last-input-event e))
-                    (call-interactively (key-binding (vector e)) nil (vector e)))))))))
+(defun nhwl-gui--pump-input ()
+  "Read what the compositor has sent: log the touch events, run each `pinch' event's binding, drop the rest."
+  (nhwl-gui--pump (lambda (e)
+                    (pcase (car-safe e)
+                      ((or 'touchscreen-begin 'touchscreen-update 'touchscreen-end) (push e nhwl-gui--touch-log))
+                      ('pinch (let ((last-input-event e))
+                                (call-interactively (key-binding (vector e)) nil (vector e))))))))
 
 (defun nhwl-gui--touch (op id at &optional surface)
   "Send a touch OP for point ID at logical AT (X Y), ending its frame; SURFACE names the target of a down."
   (gui-runner-recorder `(:cmd "touch" :op ,op :id ,id :at ,(vector (car at) (cadr at))
                               ,@(and surface (list :surface surface))))
-  (nhwl-gui--pump-input 0.2))
+  (nhwl-gui--pump-input))
 
 (defun nhwl-gui--touch-kinds ()
   "The kinds of the logged events, oldest first."
@@ -705,7 +721,7 @@ nothing."
     ;; the recorder sends a cancel only while a point has an event its frame has not closed yet
     (gui-runner-recorder '(:cmd "touch" :op "motion" :id 0 :at [30 40] :frame :false))
     (gui-runner-recorder '(:cmd "touch" :op "cancel"))
-    (nhwl-gui--pump-input 0.3)
+    (nhwl-gui--pump-input)
     (should (= (seq-count (lambda (e) (eq (car e) 'touchscreen-end)) nhwl-gui--touch-log) 2))
     (setq nhwl-gui--touch-log nil)
     (nhwl-gui--touch "motion" 0 '(31 41))
@@ -734,7 +750,7 @@ nothing."
 (defun nhwl-gui--pinch (&rest args)
   "Send a pinch command with ARGS (a plist) and let Lisp read its event."
   (gui-runner-recorder (cons :cmd (cons "pinch" args)))
-  (nhwl-gui--pump-input 0.2))
+  (nhwl-gui--pump-input))
 
 (ert-deftest nhwl-gui/pinch-scales-text ()
   "A pinch begin and an update to scale 1.5 make `text-scale-pinch' scale the text up."
@@ -793,7 +809,7 @@ nothing."
 
 (defun nhwl-gui--reconnected (&optional seconds)
   "Read events for up to SECONDS (default 10) until the connection hook has run with `reconnected'."
-  (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (memq 'reconnected nhwl-gui--connection-log)) (or seconds 10)))
+  (nhwl-gui--wait (lambda () (nhwl-gui--pump) (memq 'reconnected nhwl-gui--connection-log)) (or seconds 10)))
 
 (defun nhwl-gui--restart-and-reconnect (&rest args)
   "A keep-socket restart with ARGS, then the wait for `reconnected'; non-nil when it came."
@@ -866,7 +882,7 @@ daemon stays, and the hook runs `reconnecting', then `lost'."
         (nhwl-gui--with-connection-log
          (setq t0 (float-time))
          (nhwl-gui--restart "gone")
-         (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (not (seq-some #'frame-live-p frames))) 4))
+         (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (not (seq-some #'frame-live-p frames))) 4))
          (should (< (- (float-time) t0) 2.5))
          (should (daemonp))
          (should (equal nhwl-gui--connection-log '(reconnecting lost))))
@@ -904,7 +920,7 @@ hidden, and a child frame stays, a subsurface of the new connection's tree."
          (should-not (seq-some (lambda (f) (and (frame-live-p f) (frame-visible-p f) (frame-parameter f 'tooltip)))
                                (frame-list)))
          (should (frame-live-p c))
-         (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (nhwl-gui--subs)) 5)))
+         (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (nhwl-gui--subs)) 5)))
       (when timer (cancel-timer timer))
       (x-hide-tip)
       (when (and c (frame-live-p c)) (delete-frame c t)))))
@@ -949,13 +965,16 @@ while the compositor is down, it runs once."
         (progn
           (nhwl-gui--with-connection-log
            (should (nhwl-gui--restart-and-reconnect)))
-          (nhwl-gui--pump 0.5)
+          ;; absence: the hook would run for the second connection's outputs in this span
+          (nhwl-gui--observe 0.5)
           (should (= runs 0))
           (nhwl-gui--with-connection-log
            (nhwl-gui--restart "keep-socket" :down_ms 800)
            (gui-runner-recorder '(:cmd "output" :op "add" :name "nh-rc24" :size [800 600]))
            (should (nhwl-gui--reconnected)))
-          (nhwl-gui--pump 0.5)
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (> runs 0))))
+          ;; absence: a second run for the one new output would come in this span
+          (nhwl-gui--observe 0.5)
           (should (= runs 1)))
       (remove-hook 'display-monitors-changed-functions count)
       (ignore-errors (gui-runner-recorder '(:cmd "output" :op "remove" :name "nh-rc24"))))))
@@ -992,7 +1011,7 @@ and the row sets the XdndSelection it drags itself."
     (unwind-protect
         (nhwl-gui--with-connection-log
          (nhwl-gui--restart "gone")
-         (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (memq 'reconnecting nhwl-gui--connection-log)) 5))
+         (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (memq 'reconnecting nhwl-gui--connection-log)) 5))
          (setq err (condition-case e (progn (setq f (make-frame)) nil) (error (cadr e))))
          (should (equal err "Display is reconnecting"))
          (gui-runner-recorder '(:cmd "restart_up"))
@@ -1016,7 +1035,7 @@ connection per cycle."
           (setq accepted (nhwl-gui--accepted))
           (dotimes (i 20)
             (x-show-tip (format "cycle %d" i) nil nil 60)
-            (nhwl-gui--pump 0.2)
+            (gui-runner-wait-settled)
             (nhwl-gui--with-connection-log
              (should (nhwl-gui--restart-and-reconnect)))
             (should (= (nhwl-gui--accepted) (+ accepted i 1)))
@@ -1043,10 +1062,10 @@ trace rules `errors,acks,unconfigured,subsurface' judge the second connection."
     (unwind-protect
         (nhwl-gui--with-connection-log
          (setq c (nhwl-gui--child))
-         (nhwl-gui--live-settle 0.5)
+         (nhwl-gui--live-settle)
          (gui-runner-restart-compositor)
          (should (nhwl-gui--reconnected))
-         (nhwl-gui--live-settle 0.5)
+         (nhwl-gui--live-settle)
          (should (seq-every-p #'frame-live-p frames))
          (should (frame-live-p c)))
       (when (and c (frame-live-p c)) (delete-frame c t)))))
@@ -1059,10 +1078,10 @@ judge the second connection."
                     (equal (getenv "GLITNIR_GUI_COMPOSITOR") "sway")))
   (let ((frames (nhwl-gui--nhwl-frames)))
     (nhwl-gui--with-connection-log
-     (nhwl-gui--live-settle 0.5)
+     (nhwl-gui--live-settle)
      (gui-runner-restart-compositor)
      (should (nhwl-gui--reconnected))
-     (nhwl-gui--live-settle 0.5)
+     (nhwl-gui--live-settle)
      (should (seq-every-p #'frame-live-p frames)))))
 
 ;; The Lisp menu (lisp/term/nhwl-menu.el).  `x-popup-menu' runs its own loop, so the keys are typed by
@@ -1095,7 +1114,7 @@ while the menu opens, as for a menu opened by a `down-mouse-3' event."
     (when hold
       (nhwl-gui--point 100 100)
       (gui-runner-recorder '(:cmd "button" :button 273 :state "press"))
-      (nhwl-gui--pump 0.1))
+      (nhwl-gui--pump))
     (setq timer (run-at-time 0.1 0.1
                              (lambda ()
                                (let ((new (seq-difference (nhwl-gui--popup-ids) before)))
@@ -1109,7 +1128,7 @@ while the menu opens, as for a menu opened by a `down-mouse-3' event."
       (cancel-timer timer))
     ;; none of the menu's popups is left; one that was there before may have gone meanwhile (a tooltip an earlier
     ;; hover showed hides on its own timer)
-    (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (null (seq-difference (nhwl-gui--popup-ids) before))) 5))
+    (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (null (seq-difference (nhwl-gui--popup-ids) before))) 5))
     result))
 
 (defun nhwl-gui--menu-typing (menu keys)
@@ -1145,8 +1164,8 @@ while the menu opens, as for a menu opened by a `down-mouse-3' event."
   "Keys typed while the menu is open leave the buffer unchanged and cause no focus-out of the frame under it; once
 the menu has closed, a key arrives in the frame again."
   (skip-unless (nhwl-gui--recorder-p))
-  (let ((buf (generate-new-buffer " *nhwl-menu-keys*")) (outs 0) (parent (selected-frame))
-        (count (lambda () (setq outs (1+ outs)))))
+  (let* ((buf (generate-new-buffer " *nhwl-menu-keys*")) (outs 0) (parent (selected-frame))
+         (count (lambda () (setq outs (1+ outs)))))
     (unwind-protect
         (progn
           (set-window-buffer (selected-window) buf)
@@ -1191,8 +1210,12 @@ the menu has closed, a key arrives in the frame again."
   (when later
     (when (process-live-p later) (delete-process later))
     (kill-buffer (process-buffer later)))
-  (ignore-errors (gui-runner-recorder '(:cmd "button" :button 272 :state "release")))
-  (nhwl-gui--pump))
+  ;; the row may have lost the connection
+  (ignore-errors (gui-runner-recorder '(:cmd "button" :button 272 :state "release"))
+                 (gui-runner-recorder '(:cmd "ping")))
+  ;; a span, not a condition: a drag begun at once after this one is cancelled in 0.1 s, and neither the drag log nor
+  ;; the fence shows what ends; no report of the recorder or the shell found yet
+  (nhwl-gui--observe 0.3))
 
 (defun nhwl-gui--drag-press (&optional x y)
   "Press the left button over the toplevel at X, Y (default 100, 100) and keep it held; the press is read and dropped."
@@ -1409,7 +1432,7 @@ returns `copy'."
                            `((drag :cmd "pointer" :pos [,(+ (nth 0 de) 10) ,(+ (nth 1 de) 3)])
                              (0.4 :cmd "button" :button 272 :state "release"))))))
           (should (eq (dnd-begin-text-drag "dragged in" nil 'copy t) 'copy))
-          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (> (buffer-size dst) 0)) 3))
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (> (buffer-size dst) 0)) 3))
           (should (equal (with-current-buffer dst (buffer-string)) "dragged in"))
           (should (equal (with-current-buffer src (buffer-string)) "source")))
       (nhwl-gui--drag-cleanup later)
@@ -1465,7 +1488,8 @@ virtual one (`NHWL_GUI_VPOINTER', gui.sh --recorder), driven from another proces
     (unwind-protect
         (let ((from nil) (to nil) (size nil))
           (should (nhwl-gui--wait (lambda ()
-                                    (nhwl-gui--live-settle 0.2)
+                                    (redisplay t)
+                                    (nhwl-gui--pump)
                                     (nhwl-gui--sway-centre (process-id second)))
                                   8))
           ;; gui.sh's sway floats every window at the output's centre: put the two side by side
@@ -1474,7 +1498,8 @@ virtual one (`NHWL_GUI_VPOINTER', gui.sh --recorder), driven from another proces
                           (format "[pid=%d] fullscreen disable, resize set width 45 ppt height 80 ppt, \
 move position %d ppt 10 ppt" (car w) (cdr w))))
           (should (nhwl-gui--wait (lambda ()
-                                    (nhwl-gui--live-settle 0.2)
+                                    (redisplay t)
+                                    (nhwl-gui--pump)
                                     (setq from (nhwl-gui--sway-centre (emacs-pid))
                                           to (nhwl-gui--sway-centre (process-id second)))
                                     (and from to (> (abs (- (car from) (car to))) 100)))
@@ -1775,16 +1800,16 @@ submenu open, all driven by queued events.  The trace rules (errors, popup, grab
   :tags '(runs-last)
   (skip-unless (and (nhwl-gui--live-p) (nhwl-gui--nhwl-frames)))
   (let ((map (nhwl-gui--submenu-keymap)))
-    (nhwl-gui--live-settle 0.3)
+    (nhwl-gui--live-settle)
     ;; Down Down Right Down Return: Top, More, the submenu, Inner1
     (let ((unread-command-events (list 'down 'down 'right 'down 'return)))
       (should (equal (x-popup-menu t map) '(more inner1))))
-    (nhwl-gui--live-settle 0.3)
+    (nhwl-gui--live-settle)
     ;; the same menus again: the frames are shown again; the compositor dismisses the stack with a submenu open
     (let ((unread-command-events (list 'down 'down 'right
                                        (list 'delete-frame (list (cdr (assq 0 nhwl-menu--frames)))))))
       (should-not (x-popup-menu t map)))
-    (nhwl-gui--live-settle 0.3)
+    (nhwl-gui--live-settle)
     (should (frame-live-p (selected-frame)))))
 
 ;; Losing the display.  When the compositor goes and nothing waits for it (here `nhwl-reconnect' is nil), the
@@ -1802,7 +1827,7 @@ submenu open, all driven by queued events.  The trace rules (errors, popup, grab
 
 (defun nhwl-gui--display-gone-p ()
   "Read events for up to 3 s until no frame of the session's display is left; non-nil then."
-  (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (null (nhwl-gui--nhwl-frames))) 3))
+  (nhwl-gui--wait (lambda () (nhwl-gui--pump) (null (nhwl-gui--nhwl-frames))) 3))
 
 (defun nhwl-gui--display-terminal-p (display)
   "Non-nil when a live terminal is named DISPLAY."
@@ -1843,8 +1868,9 @@ signals nothing, no frame and no terminal of the display is left, the daemon sta
                  (should (nhwl-gui--display-gone-p))
                  (should-not (nhwl-gui--display-terminal-p display))
                  (should (daemonp))
-                 (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) nhwl-gui--connection-log) 2))
-                 (nhwl-gui--pump 0.3)
+                 (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) nhwl-gui--connection-log) 2))
+                 ;; absence: a second connection event would come in this span
+                 (nhwl-gui--observe 0.3)
                  (should (equal nhwl-gui--connection-log '(lost)))
                  (should (equal names (list display))))
              (remove-hook 'nhwl-display-connection-functions note))))
@@ -1871,7 +1897,7 @@ process (`gui-runner-recorder-later')."
          (should (string-search "\"restart\"" (nhwl-gui--later-output later)))
          (should (nhwl-gui--display-gone-p))
          (should (daemonp))
-         (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (memq 'lost nhwl-gui--connection-log)) 2)))
+         (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (memq 'lost nhwl-gui--connection-log)) 2)))
       (nhwl-gui--drag-cleanup later)
       (nhwl-gui--reopen-display))))
 
@@ -1889,7 +1915,7 @@ thread counts equal cycle 5's, VmRSS grew less than 8 MiB since cycle 5, and `ma
             (select-frame f)
             (nhwl-gui--child)
             (x-show-tip (format "cycle %d" i) nil nil 60)
-            (nhwl-gui--pump 0.2)
+            (gui-runner-wait-settled)
             (gui-runner-restart-compositor)
             (should (nhwl-gui--display-gone-p))
             (should (daemonp))
@@ -1912,13 +1938,13 @@ connection."
   (skip-unless (and (nhwl-gui--live-p) (daemonp) (gui-runner-restart-available-p)
                     (equal (getenv "GLITNIR_GUI_COMPOSITOR") "sway")))
   (let ((nhwl-reconnect nil) (f nil))
-    (nhwl-gui--live-settle 0.5)
+    (nhwl-gui--live-settle)
     (gui-runner-restart-compositor)
     (should (nhwl-gui--display-gone-p))
     (should (daemonp))
     (setq f (make-frame-on-display (getenv "WAYLAND_DISPLAY")))
     (select-frame f)
-    (nhwl-gui--live-settle 0.5)
+    (nhwl-gui--live-settle)
     (should (frame-live-p f))))
 
 ;; The file chooser portal and activation tokens for xdg-open (lisp/term/nhwl-portal.el).  Rows that need the
