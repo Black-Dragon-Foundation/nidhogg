@@ -4,3 +4,4 @@ pgtk-gui-tests.el # pgtk leaves the Linux build; its tests are not migrated
 gui-runner.el # helper: loads the *-gui-tests.el files, defines no tests
 fake-portal.el # helper: the fake desktop portal the GUI tests start
 fixtures # helper files the tests read
+test-clock-tests.el # tests the clock itself: its sit-for, run-at-time and clock reads are virtual, which the class lints cannot tell

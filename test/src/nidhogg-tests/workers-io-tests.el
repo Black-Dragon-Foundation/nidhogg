@@ -1,4 +1,5 @@
 ;;; workers-io-tests.el --- tests for workers: the process reader  -*- lexical-binding: t -*-
+;; test-class: cond
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
@@ -607,7 +608,7 @@ Return the times the waits meanwhile reached their bound."
                :filter (lambda (_p s)
                          (setq depth (1+ depth) deepest (max deepest depth)
                                got (+ got (length s)))
-                         (unwind-protect (sleep-for 0.001)
+                         (unwind-protect (accept-process-output nil 0.001)
                            (setq depth (1- depth))))
                :sentinel #'ignore)))
       (should (workers-io-tests--info p :owned))
