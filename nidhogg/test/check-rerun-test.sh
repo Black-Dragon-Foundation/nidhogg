@@ -72,5 +72,55 @@ printf 'Running 1 tests\n' > "$d/t/src/a-tests.log"
 out=$(run src/a-tests); r=$?
 [ "$r" = 1 ] && grep -q 'no ERT summary' <<<"$out" || fail "a log without a summary was not red: $r $out"
 
+# class D: a failing D test is not rerun and stays red (the runner would pass, and must not be called)
+cat > "$d/s/src/d-tests.el" <<'EOF'
+;; test-class: det
+(ert-deftest d/plain ()
+  (should t))
+(ert-deftest d/loose ()
+  :tags '(:cond)
+  (should t))
+EOF
+cat > "$d/s/src/m-tests.el" <<'EOF'
+;; test-class: cond
+(ert-deftest m/waits ()
+  (should t))
+(ert-deftest m/exact ()
+  :tags '(:det)
+  (should t))
+EOF
+: > "$d/flaky.txt"
+red_d_log() {
+  printf 'Ran 2 tests, 0 results as expected, 2 unexpected\n\n2 unexpected results:\n' > "$d/t/src/$1.log"
+  shift; for n in "$@"; do printf '   FAILED  %s\n' "$n" >> "$d/t/src/$LOGFILE.log"; done
+}
+LOGFILE=d-tests; red_d_log d-tests d/plain
+rm -f "$d/ran"; printf '#!/usr/bin/env bash\n: > "%s/ran"; exit 0\n' "$d" > "$d/runner2"; chmod +x "$d/runner2"
+out=$(bash "$rr" --flaky "$d/flaky.txt" --src "$d/s" --make "$d/runner2" "$d/t" src/d-tests); r=$?
+[ "$r" = 1 ] && grep -q 'd/plain is a deterministic test' <<<"$out" && [ ! -e "$d/ran" ] || fail "a failing D test was rerun or not red: $r $out"
+
+# a test's own tag beats its file's class: :cond in a D file still reruns, :det in a C file does not
+LOGFILE=d-tests; red_d_log d-tests d/loose
+out=$(run src/d-tests); r=$?
+[ "$r" = 1 ] && grep -q 'not in flaky.txt' <<<"$out" || fail "a :cond test in a D file was not rerun: $r $out"
+LOGFILE=m-tests; red_d_log m-tests m/exact
+rm -f "$d/ran"
+out=$(bash "$rr" --flaky "$d/flaky.txt" --src "$d/s" --make "$d/runner2" "$d/t" src/m-tests); r=$?
+[ "$r" = 1 ] && grep -q 'm/exact is a deterministic test' <<<"$out" && [ ! -e "$d/ran" ] || fail "a :det test in a C file was rerun: $r $out"
+
+# a C test in a mixed file still reruns; the D one in it stays red
+LOGFILE=m-tests; red_d_log m-tests m/exact m/waits
+rm -f "$d/ran"
+out=$(bash "$rr" --flaky "$d/flaky.txt" --src "$d/s" --make "$d/runner2" "$d/t" src/m-tests); r=$?
+[ "$r" = 1 ] && grep -q 'm/exact is a deterministic test' <<<"$out" && grep -q 'm/waits failed, then passed' <<<"$out" && [ -e "$d/ran" ] \
+  || fail "a C test in a mixed file was not rerun: $r $out"
+rm -f "$d/t/src/m-tests.log"
+
+# a D test on flaky.txt fails the check, even with nothing to rerun
+printf 'd/plain # c; s\n' > "$d/flaky.txt"
+printf 'Ran 1 tests, 1 results as expected, 0 unexpected\n' > "$d/t/src/d-tests.log"
+out=$(run src/d-tests); r=$?
+[ "$r" = 1 ] && grep -q 'd/plain names a deterministic test' <<<"$out" || fail "a D test on flaky.txt was not red: $r $out"
+
 [ "$rc" = 0 ] && echo "check-rerun-test: ok"
 exit $rc
