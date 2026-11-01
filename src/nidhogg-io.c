@@ -1251,6 +1251,12 @@ nh_io_main (struct nh_wk_job *job)
       if (atomic_load (&nh_wk_dead))
 	nh_io_park ();
 
+      /* A poke writes the fd after setting the flag, so the write can
+	 come after the commands that flag asked for were carried out.
+	 Clear what this poll saw, before reading the flag: left readable,
+	 the next poll would return at once, and again, until a command.  */
+      if (pfd[0].revents & POLLIN)
+	nh_wk_wake_clear (&nh_io_cmdw);
       /* Commands first, then between reads: a detach waits for at most
 	 one read.  */
       nh_io_commands (&set, &n, &cap, polled, np);
@@ -3324,6 +3330,25 @@ the event has yet to run.  */)
   return Qnil;
 }
 
+DEFUN ("nidhogg-workers--test-io-late-wake", Fnidhogg_workers__test_io_late_wake,
+       Snidhogg_workers__test_io_late_wake, 1, 1, 0,
+       doc: /* Write nh-io's command fd with no command pending; for tests.
+A poke whose write came after nh-io took its flag.  Return t once nh-io
+has cleared the fd, nil if it has not after MS milliseconds.  */)
+  (Lisp_Object ms)
+{
+  CHECK_FIXNAT (ms);
+  nh_wk_wake_signal (&nh_io_cmdw);
+  struct pollfd p = { .fd = nh_io_cmdw.rfd, .events = POLLIN };
+  for (EMACS_INT i = 0; i < XFIXNAT (ms); i++)
+    {
+      if (poll (&p, 1, 0) <= 0)
+	return Qt;
+      nanosleep (&(struct timespec) { .tv_nsec = 1000000 }, NULL);
+    }
+  return Qnil;
+}
+
 DEFUN ("nidhogg-workers--test-io-crash", Fnidhogg_workers__test_io_crash,
        Snidhogg_workers__test_io_crash, 0, 0, 0,
        doc: /* Make nh-io dereference NULL; for the fatal-path tests.
@@ -3388,6 +3413,7 @@ delivery per value).  */);
   defsubr (&Snidhogg_workers__test_io_log);
   defsubr (&Snidhogg_workers__test_settle_bound_hits);
   defsubr (&Snidhogg_workers__test_settle_gap);
+  defsubr (&Snidhogg_workers__test_io_late_wake);
   defsubr (&Snidhogg_workers__test_io_crash);
   defsubr (&Snidhogg_workers__test_io_hold_lock);
   defsubr (&Snidhogg_workers__test_filter_cost);

@@ -2065,6 +2065,29 @@ bounded condition wait, not a sleep.  */)
   return idle ? Qt : Qnil;
 }
 
+DEFUN ("nidhogg-workers--test-await-inflight",
+       Fnidhogg_workers__test_await_inflight,
+       Snidhogg_workers__test_await_inflight, 3, 3, 0,
+       doc: /* Wait at most MS milliseconds until WORKER has at most N jobs left; for tests.
+A job's waiters wake before its finish is queued; a job left the count
+once it is.  Return t if the count got there.  A bounded condition wait,
+not a sleep.  */)
+  (Lisp_Object worker, Lisp_Object n, Lisp_Object ms)
+{
+  int w = nh_wk_name_index (worker, nh_wk_names, NH_WK_N, "worker");
+  CHECK_FIXNAT (n);
+  CHECK_FIXNAT (ms);
+  nh_wk_init ();
+  uint64_t deadline = nh_wk_now () + XFIXNAT (ms) * NH_WK_MS;
+  nh_wk_lock (&nh_wk_done_m);
+  while (atomic_load (&nh_wk_w[w].inflight) > XFIXNAT (n)
+	 && nh_wk_now () < deadline)
+    nh_wk_cond_wait_until (&nh_wk_done_cv, &nh_wk_done_m, deadline);
+  bool ok = atomic_load (&nh_wk_w[w].inflight) <= XFIXNAT (n);
+  pthread_mutex_unlock (&nh_wk_done_m);
+  return ok ? Qt : Qnil;
+}
+
 DEFUN ("nidhogg-workers--test-release-on-wait",
        Fnidhogg_workers__test_release_on_wait,
        Snidhogg_workers__test_release_on_wait, 1, 1, 0,
@@ -2746,6 +2769,7 @@ One budget per redisplay, shared by every tree-sitter and image wait in it.  */)
   defsubr (&Snidhogg_workers__release);
   defsubr (&Snidhogg_workers__test_await_paused);
   defsubr (&Snidhogg_workers__test_await_landed);
+  defsubr (&Snidhogg_workers__test_await_inflight);
   defsubr (&Snidhogg_workers__test_release_on_wait);
   defsubr (&Snidhogg_workers__test_signal_storm);
   defsubr (&Snidhogg_workers__test_storm_sent);
