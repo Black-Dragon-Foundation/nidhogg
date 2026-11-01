@@ -8613,6 +8613,11 @@ nh_img_land (struct frame *f, struct image *img, int fmt,
   img->load_failed_p = ! (out ? nh_img_load_result (f, img, fmt, out, rc)
 			  : img->type->load_img (f, img));
   nh_img_after_load (f, img);
+  /* A landing inside redisplay (a mode line's :eval): rows laid out while
+     IMG was pending draw it after this with nothing preparing it again,
+     and they must not find image_set_transform's dummy pattern.  */
+  if (redisplaying_p)
+    prepare_image_for_display (f, img);
   unblock_input ();
 }
 
