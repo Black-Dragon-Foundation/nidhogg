@@ -1999,7 +1999,7 @@ nhwl_child_created (struct frame *f)
     return;
   nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
 		NHG (nhg_child_chrome (FRAME_NHG (f), out->window,
-				       &out->chrome)));
+				       out->chrome, NHG_CHROME_SLOTS)));
   nhwl_csd_layout (f);
   nhwl_child_push (f, nhwl_child_shown (f));
 }
