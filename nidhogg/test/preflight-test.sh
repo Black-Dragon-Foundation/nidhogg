@@ -211,7 +211,7 @@ PREFLIGHT_SLOT="$d/fakeslot" FAKE_ROOT="$d/repo" pre "" --passes P2 --out "$d/r1
 
 # the classes: P1 takes every `;; test-class: det` file, P2 adds every cond file outside the GUI set to its list
 mkdir -p "$d/tests/src/nidhogg-tests"
-for spec in d-tests:det c-tests:cond c-gui-tests:cond n-tests:; do
+for spec in d-tests:det c-tests:cond c-gui-tests:cond nhwl-c-tests:cond n-tests:; do
   f=$d/tests/src/nidhogg-tests/${spec%%:*}.el
   printf ';;; x  -*- lexical-binding: t -*-\n' > "$f"
   [ -z "${spec#*:}" ] || printf ';; test-class: %s\n' "${spec#*:}" >> "$f"
