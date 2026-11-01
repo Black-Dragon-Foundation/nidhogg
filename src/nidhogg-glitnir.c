@@ -605,6 +605,24 @@ to the selected frame.  */)
 		    c.border_argb & 0xff, c.border_argb >> 24));
   return list (kw_radius, make_float (c.radius_px), kw_shadow, shadow,
 	       kw_border, border);
+#elif defined HAVE_NHWL
+  /* The border is Emacs's own drawing here, not chrome.  */
+  if (!FRAME_NHWL_P (f) || !FRAME_NHWL_OUTPUT (f)->chrome.on)
+    return Qnil;
+  const NhgChrome *c = &FRAME_NHWL_OUTPUT (f)->chrome;
+  double s = XFLOATINT (Fframe_scale_factor (frame));
+  Lisp_Object shadow
+    = (c->opacity <= 0 ? Qnil
+       : list (intern_c_string (":blur"), make_float (s * c->blur),
+	       intern_c_string (":offset"),
+	       Fcons (make_float (s * c->ox), make_float (s * c->oy)),
+	       intern_c_string (":spread"), make_float (s * c->spread),
+	       intern_c_string (":opacity"), make_float (c->opacity),
+	       intern_c_string (":color"),
+	       list3i ((c->rgb >> 16) & 0xff, (c->rgb >> 8) & 0xff,
+		       c->rgb & 0xff)));
+  return list4 (intern_c_string (":radius"), make_float (s * c->radius),
+		intern_c_string (":shadow"), shadow);
 #else
   (void) f;
   return Qnil;
