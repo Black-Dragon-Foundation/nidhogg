@@ -33,9 +33,8 @@
 #                     With no --prefix-a, --self-test only checks the motion and palette rows (all budget, at 2880x1800@2)
 #                     and their workloads
 #   fade-*, palette-* the motion and blurred-palette rows, from the child frame's glitnir-stats; judged at 2880x1800@2
-#                     only.  fade-interval-p95, fade-overrun-max and palette-beneath-blur-p95 have no key in the record
-#                     yet and are skipped
-#   BUDGETS_MEMORY    the container's memory cap (default 6g); BUDGETS_CPUSET pins it (podman --cpuset-cpus)
+#                     only.  A row whose workload left its key empty (no tick, no recompute) is skipped, never a pass
+#   BUDGETS_MEMORY   the container's memory cap (default 6g); BUDGETS_CPUSET pins it (podman --cpuset-cpus)
 #
 # The speed sessions (V2's three bars, C1, C4) run each side with WAYLAND_DEBUG=client and read the traces with
 # wl-latency.el: key-to-commit and frame intervals.  They also run the stall watchdog (threshold 100 ms) and count its
@@ -136,6 +135,10 @@ if [ "$selftest" = 1 ] && [ -z "$pa" ]; then
   done
   for w in fade_bench palette_bench; do
     grep -q "^$w()" "$self" || { echo "budgets self-test: no $w workload" >&2; bad=1; }
+  done
+  for k in tick-interval-ms leg-overrun-ms blur-ms; do
+    grep -q "\":$k\"" "$checkout/src/nidhogg-glitnir.c" || { echo "budgets self-test: glitnir-stats has no :$k" >&2; bad=1; }
+    grep -q "(budgets--stat :$k" "$self" || { echo "budgets self-test: no row reads :$k" >&2; bad=1; }
   done
   [ "$bad" = 0 ] || exit 1
   echo "budgets self-test: the effect rows and workloads are known"
@@ -535,9 +538,10 @@ speed() {
 }
 
 # fade_bench: a 640x400 logical child with (transition . pop), shown and hidden 50 times with Lisp idle.  Every number
-# comes from the child's glitnir-stats record: :compose-ms p95, and the :ticks that still arrive after the last hide has
-# ended (fade-idle-commits).  The stats have no tick-interval or leg-length key, so fade-interval-p95 and
-# fade-overrun-max are SKIP rows until the record gains one: no value is made up.
+# comes from the child's glitnir-stats record: :compose-ms p95, the :ticks that still arrive after the last hide has
+# ended (fade-idle-commits), :tick-interval-ms p95 (the time between two commits, as motion-interval-p95 reads it, over
+# the record's last 1024 paints) and :leg-overrun-ms (the worst leg of the run, by the frame time its end shows at, from
+# the leg's start: a hide's up to 8 ms wait before its leg is not in it).
 fade_bench() {
   local r
   start_sway "$size" "$scale" "$refresh" && start_nidhogg "$pa" || return 1
@@ -546,18 +550,21 @@ fade_bench() {
     "ok "*)
       set -- $r
       rec fade-compose-p95 A "$2"
-      rec fade-idle-commits A "$3" ;;
-    *) for x in fade-compose-p95 fade-idle-commits; do rec "$x" A "SKIP the fade workload did not run: $(echo "$r" | head -c 100 | tr '"\n' "' ")"; done ;;
+      rec fade-idle-commits A "$3"
+      if [ "$6" = 0 ]; then
+        for x in fade-interval-p95 fade-overrun-max; do rec "$x" A "SKIP the workload ran no tick"; done
+      else
+        rec fade-interval-p95 A "$4"
+        rec fade-overrun-max A "$5"
+      fi ;;
+    *) for x in fade-compose-p95 fade-idle-commits fade-interval-p95 fade-overrun-max; do rec "$x" A "SKIP the fade workload did not run: $(echo "$r" | head -c 100 | tr '"\n' "' ")"; done ;;
   esac
-  for x in fade-interval-p95 fade-overrun-max; do
-    rec "$x" A "SKIP glitnir-stats has no tick-interval or leg-length key to read"
-  done
   stop_all
 }
 
 # palette_bench: a child with alpha-background 0.82 and backdrop-blur 10 over the full buffer; 200 keys typed into it, then
-# 50 changes beneath.  compose p95, key-to-commit p95 and :backdrop-px come from the child's glitnir-stats record.  The
-# record has no time for recomputing the blur, so palette-beneath-blur-p95 is a SKIP row.
+# 50 changes beneath.  compose p95, key-to-commit p95, :backdrop-px and :blur-ms p95 (only the paints that recomputed
+# the blur) come from the child's glitnir-stats record.
 palette_bench() {
   local r
   start_sway "$size" "$scale" "$refresh" && start_nidhogg "$pa" || return 1
@@ -578,8 +585,11 @@ palette_bench() {
     *) for x in palette-filter-compose-p95 palette-filter-input-p95 palette-typing-backdrop-px; do
          rec "$x" A "SKIP the palette workload did not run: $(echo "$r" | head -c 100 | tr '"\n' "' ")"; done ;;
   esac
-  cl '(budgets--beneath 50)' > /dev/null
-  rec palette-beneath-blur-p95 A "SKIP glitnir-stats has no time for the blur's recompute, only :backdrop-px"
+  r=$(cl '(budgets--beneath 50)' | tr -d '"')
+  case $r in
+    "ok "*) rec palette-beneath-blur-p95 A "${r#ok }" ;;
+    *) rec palette-beneath-blur-p95 A "SKIP no change beneath recomputed the blur: $(echo "$r" | head -c 100 | tr '"\n' "' ")" ;;
+  esac
   stop_all
 }
 
@@ -635,7 +645,7 @@ cat > "$run/driver.el" <<'EOF'
     (dolist (k path) (setq v (plist-get v k)))
     (or v 0)))
 (defun budgets--fade (n)
-  "Show and hide a pop child N times; \"ok COMPOSE-P95 TICKS-AFTER-THE-END\"."
+  "Show and hide a pop child N times; \"ok COMPOSE-P95 TICKS-AFTER-THE-END INTERVAL-P95 OVERRUN TICKS\"."
   (budgets--child '((transition . pop) (background-color . "#336699")))
   (redisplay t) (sit-for 0.8)
   (glitnir-stats budgets--c t)
@@ -644,7 +654,8 @@ cat > "$run/driver.el" <<'EOF'
     (make-frame-visible budgets--c) (sit-for 0.5))
   (let ((p95 (budgets--stat :compose-ms :p95)) (t0 (budgets--stat :ticks)))
     (sit-for 1.0)
-    (prog1 (format "ok %s %s" p95 (- (budgets--stat :ticks) t0))
+    (prog1 (format "ok %s %s %s %s %s" p95 (- (budgets--stat :ticks) t0)
+                   (budgets--stat :tick-interval-ms :p95) (budgets--stat :leg-overrun-ms) t0)
       (delete-frame budgets--c t))))
 (defun budgets--palette-open ()
   "A translucent child with a backdrop blur over the buffer, selected so the keys go to it."
@@ -658,12 +669,15 @@ cat > "$run/driver.el" <<'EOF'
   "\"ok COMPOSE-P95 KEY-TO-COMMIT-P95 BACKDROP-PX\" over the typing since the open."
   (format "ok %s %s %s" (budgets--stat :compose-ms :p95) (budgets--stat :key-to-commit-ms :p95) (budgets--stat :backdrop-px)))
 (defun budgets--beneath (n)
-  "N changes to the parent's buffer, each shown, under the child; then the child goes."
+  "N changes to the parent's buffer, each shown, under the child; then the child goes.
+\"ok BLUR-P95\", or \"none\" when no change recomputed the blur."
   (with-selected-window (frame-root-window (frame-parent budgets--c))
     (goto-char (point-min))
     (dotimes (_ n) (insert "x") (redisplay t) (sit-for 0.05)))
-  (delete-frame budgets--c t)
-  t)
+  (prog1 (if (> (budgets--stat :blur-ms :max) 0)
+             (format "ok %s" (budgets--stat :blur-ms :p95))
+           "none")
+    (delete-frame budgets--c t)))
 EOF
 awk 'BEGIN { for (i = 1; i <= 10000; i++) printf "line %05d the quick brown fox jumps over the lazy dog, again and again\n", i }' > "$run/big.txt"
 
