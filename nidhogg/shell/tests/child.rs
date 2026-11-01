@@ -288,7 +288,10 @@ mod child {
         commit(&mut shell, parent);
         let order = |first: u64, second: u64| format!("\"children\":[{first},{second}]");
         rec.wait_node(parent, |n| n.contains(&order(a, b)));
+        assert_eq!(shell.window_stacking(parent).unwrap(), [a, b]);
         shell.stack(a, b, true).unwrap();
+        // the record is what the compositor was told, whenever the commit goes
+        assert_eq!(shell.window_stacking(parent).unwrap(), [b, a]);
         present(&mut shell, parent);
         rec.wait_node(parent, |n| n.contains(&order(b, a)));
         shell.stack(a, b, false).unwrap();
@@ -298,6 +301,28 @@ mod child {
         shell.stack(b, 0, false).unwrap();
         present(&mut shell, parent);
         rec.wait_node(parent, |n| n.contains(&order(b, a)));
+        // a grandchild comes right after its parent
+        let g = child(&mut shell, a, 0, 0);
+        assert_eq!(shell.window_stacking(parent).unwrap(), [b, a, g]);
+    }
+
+    #[test]
+    fn draw_count_counts_what_showed() {
+        let rec = Recorder::start();
+        let mut shell = rec.open();
+        let parent = window(&mut shell);
+        let c = child(&mut shell, parent, 0, 0);
+        commit(&mut shell, parent);
+        let drawn = shell.draw_count(parent).unwrap();
+        assert!(drawn >= 1, "the first buffer counts");
+        shell.set_position(c, 5, 6).unwrap();
+        present(&mut shell, parent);
+        assert_eq!(
+            shell.draw_count(parent).unwrap(),
+            drawn + 1,
+            "a bare commit that moves a child"
+        );
+        assert_eq!(shell.draw_count(c).unwrap(), 0, "a child paces nothing");
     }
 
     #[test]
