@@ -3,6 +3,7 @@
 #![allow(clippy::needless_range_loop)]
 
 use super::*;
+use crate::geom::Rect;
 use crate::shadow::{ShadowCache, ShadowSpec, ShadowTiles, step_for};
 use std::sync::{Arc, OnceLock};
 
@@ -712,4 +713,103 @@ fn shadow_cache_is_bounded() {
         cache.get(40, 30, &spec(4.0, blur(ShadowCache::CAPACITY + i), 1.0));
     }
     assert_eq!(cache.len(), ShadowCache::CAPACITY);
+}
+
+// ---- scale ------------------------------------------------------------------------------------------------------
+
+fn random_image(r: &mut Rng, h: usize, stride: usize) -> Vec<u32> {
+    (0..stride * h).map(|_| r.premul()).collect()
+}
+
+fn full(w: usize, h: usize) -> Rect {
+    Rect::new(0, 0, w as i32, h as i32)
+}
+
+#[test]
+fn scale_identity_is_copy() {
+    let mut r = Rng(seed("scale-identity"));
+    for k in std::iter::once(baseline()).chain(avx2()) {
+        let (w, h, stride) = (37, 23, 40);
+        let src = random_image(&mut r, h, stride);
+        let mut dst = vec![0xdead_beef; stride * h];
+        k.scale(&mut dst, stride, &src, stride, w, h, 1.0, full(w, h));
+        for y in 0..h {
+            assert_eq!(
+                dst[y * stride..][..w],
+                src[y * stride..][..w],
+                "{} row {y}",
+                k.name
+            );
+            // outside the width the stride's padding is untouched
+            assert!(
+                dst[y * stride + w..(y + 1) * stride]
+                    .iter()
+                    .all(|&p| p == 0xdead_beef)
+            );
+        }
+    }
+}
+
+#[test]
+fn scale_half_matches_reference() {
+    let mut r = Rng(seed("scale-half"));
+    let (w, h) = (16usize, 16usize);
+    let src = random_image(&mut r, h, w);
+    for k in std::iter::once(baseline()).chain(avx2()) {
+        let mut dst = vec![0x1234_5678; w * h];
+        k.scale(&mut dst, w, &src, w, w, h, 0.5, full(w, h));
+        for y in 0..h {
+            for x in 0..w {
+                let got = dst[y * w + x];
+                // the scaled source covers [4, 12) on both axes; each pixel is the average of an aligned 2x2 block
+                if !(4..12).contains(&x) || !(4..12).contains(&y) {
+                    assert_eq!(got, 0, "{} ({x},{y}) is outside the source", k.name);
+                    continue;
+                }
+                let (sx, sy) = (2 * x - 8, 2 * y - 8);
+                for c in 0..4 {
+                    let sum: u32 = [(0, 0), (1, 0), (0, 1), (1, 1)]
+                        .iter()
+                        .map(|(dx, dy)| chan(src[(sy + dy) * w + sx + dx], c))
+                        .sum();
+                    let want = sum as f32 / 4.0;
+                    let g = chan(got, c) as f32;
+                    assert!(
+                        (g - want).abs() <= 1.0,
+                        "{} ({x},{y}) channel {c}: {g} vs {want}",
+                        k.name
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn scale_avx2_equals_baseline() {
+    let Some(avx) = avx2() else {
+        eprintln!("no AVX2 build on this machine");
+        return;
+    };
+    let mut r = Rng(seed("scale-avx2"));
+    for _ in 0..200 {
+        let (w, h) = (1 + r.below(70), 1 + r.below(40));
+        let (ss, ds) = (w + r.below(5), w + r.below(7));
+        let src = random_image(&mut r, h, ss);
+        let s = [0.5, 0.96, 1.0, 1.04, 1.7, 0.03][r.below(6)] + r.below(100) as f32 / 1000.0;
+        let clip = Rect::new(
+            r.below(5) as i32 - 2,
+            r.below(5) as i32 - 2,
+            1 + r.below(w + 3) as i32,
+            1 + r.below(h + 3) as i32,
+        );
+        let mut a = vec![0x5555_5555; ds * h];
+        let mut b = a.clone();
+        baseline().scale(&mut a, ds, &src, ss, w, h, s, clip);
+        avx.scale(&mut b, ds, &src, ss, w, h, s, clip);
+        assert!(
+            a == b,
+            "AVX2 differs from the baseline ({w}x{h}, scale {s}, clip {clip:?})"
+        );
+    }
 }

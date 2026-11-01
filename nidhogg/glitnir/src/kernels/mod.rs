@@ -10,6 +10,7 @@ mod copy;
 mod corner;
 mod over;
 mod ring;
+mod scale;
 #[cfg(test)]
 mod tests;
 
@@ -45,6 +46,7 @@ pub struct Kernels {
     over_row: fn(&mut [u32], &[u32]),
     mask_over_row: fn(&mut [u32], &[u32], &[u8], u8),
     solid_over_row: fn(&mut [u32], u32, &[u8]),
+    scale_row: scale::ScaleRow,
 }
 
 static BASELINE: Kernels = Kernels {
@@ -54,6 +56,7 @@ static BASELINE: Kernels = Kernels {
     over_row: over::over_base,
     mask_over_row: over::mask_over_base,
     solid_over_row: over::solid_over_base,
+    scale_row: scale::scale_base,
 };
 
 #[cfg(target_arch = "x86_64")]
@@ -64,6 +67,7 @@ static AVX2: Kernels = Kernels {
     over_row: over::over_avx2,
     mask_over_row: over::mask_over_avx2,
     solid_over_row: over::solid_over_avx2,
+    scale_row: scale::scale_avx2,
 };
 
 /// The kernels for this machine, chosen once: AVX2 where the CPU has it, else the baseline.
