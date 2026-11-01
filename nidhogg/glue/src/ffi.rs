@@ -462,6 +462,42 @@ nhg_export! {
     }
 }
 
+nhg_export! {
+    /// Up to `cap` of root `root`'s child windows in `out`, bottom to top as the compositor was told to stack them; the
+    /// number copied.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `out` holds `cap` writable windows.
+    fn nhg_stacking(d: *mut NhgDisplay, root: u64, out: *mut u64, cap: usize) -> i32 |state| {
+        if out.is_null() {
+            return Err(GlueError::Arg);
+        }
+        let (backend, _, _) = state.presenting();
+        let list = backend.window_stacking(root)?;
+        let n = list.len().min(cap);
+        // SAFETY: `out` holds `cap` writable windows, and `n <= cap` (the caller's promise).
+        unsafe { ptr::copy_nonoverlapping(list.as_ptr(), out, n) };
+        Ok(n as i32)
+    }
+}
+
+nhg_export! {
+    /// Root `root`'s commits that showed something, in `out`.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `out` is null or writable.
+    fn nhg_draw_count(d: *mut NhgDisplay, root: u64, out: *mut u64) -> i32 |state| {
+        if out.is_null() {
+            return Err(GlueError::Arg);
+        }
+        let (backend, _, _) = state.presenting();
+        let n = backend.draw_count(root)?;
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe { out.write(n) };
+        Ok(NHG_OK)
+    }
+}
+
 // ---- Selections, display queries, the bench, the bell and the pointer (`select.rs`, `query.rs`, `bench.rs`) --------
 //
 // KIND is `NHSHELL_SEL_CLIPBOARD` 0 or `NHSHELL_SEL_PRIMARY` 1.  A buffer a call lends (`nhg_selection_types`, `_read`)
