@@ -6472,7 +6472,15 @@ wait_reading_process_output (intmax_t time_limit, int nsecs, int read_kbd,
 		     then defer the sentinel signaling until
 		     later. */
 		  if (NILP (p->gnutls_boot_parameters)
+#ifdef HAVE_NIDHOGG_WORKERS
+		      /* A handshake that finished in
+			 connect_network_socket, ahead of this wake,
+			 left saying "open" to it.  */
+		      && (!p->gnutls_p
+			  || p->gnutls_initstage == GNUTLS_STAGE_READY))
+#else
 		      && !p->gnutls_p)
+#endif
 #endif
 		    {
 		      pset_status (p, Qrun);
