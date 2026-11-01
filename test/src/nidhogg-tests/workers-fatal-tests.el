@@ -33,6 +33,22 @@
 (require 'ert)
 (require 'seq)
 
+;; These children crash on purpose.  A core_pattern that pipes to a
+;; handler ignores a limit of 0: the process stays alive while the kernel
+;; writes it all out, seconds under load, which reads as a hung fatal
+;; path.  One byte is the limit the kernel takes as no core for a pipe,
+;; and `ulimit' cannot say it: it counts blocks.
+(defconst workers-fatal-tests--no-core
+  "if command -v prlimit >/dev/null; then p='prlimit --core=1'; else p=; ulimit -c 0; fi; "
+  "Shell code that keeps a child's crash from dumping core: `exec $p'.")
+
+(defun workers-fatal-tests--child (&rest args)
+  "A command that runs this Nidhogg with ARGS, and no core dump."
+  (append (list "/bin/sh" "-c"
+                (concat workers-fatal-tests--no-core "exec $p \"$@\"")
+                "sh" (expand-file-name invocation-name invocation-directory))
+          args))
+
 (defun workers-fatal-tests--run (args &rest props)
   "Run a child Nidhogg with ARGS; return a plist of what happened.
 PROPS: `:pty' (non-nil: its terminal is a pty, so a fatal error prints
@@ -56,7 +72,8 @@ seconds.  The plist: `:status' and `:code' (`process-status' and
                 :connection-type (if (plist-get props :pty) 'pty 'pipe)
                 :command (append
                           (list "/bin/sh" "-c"
-                                "ulimit -c 0; err=$1; shift; exec \"$@\" 2>\"$err\""
+                                (concat workers-fatal-tests--no-core
+                                        "err=$1; shift; exec $p \"$@\" 2>\"$err\"")
                                 "sh" err
                                 (expand-file-name invocation-name
                                                   invocation-directory))
@@ -496,9 +513,8 @@ holds the text.  Waits 20 s at most for the child."
              (kill-emacs 4)))
          (child (make-process
                  :name "wfatal-child" :noquery t :buffer nil
-                 :command (list (expand-file-name invocation-name
-                                                  invocation-directory)
-                                "-Q" "--batch" "--eval" (prin1-to-string form)))))
+                 :command (workers-fatal-tests--child
+                           "-Q" "--batch" "--eval" (prin1-to-string form)))))
     (unwind-protect
         (let ((i 0))
           (while (and (process-live-p child) (< i 1000))
@@ -552,9 +568,8 @@ holds the text.  Waits 20 s at most for the child."
              (kill-emacs 4)))
          (child (make-process
                  :name "wfatal-hup-child" :noquery t :buffer nil
-                 :command (list (expand-file-name invocation-name
-                                                  invocation-directory)
-                                "-Q" "--batch" "--eval" (prin1-to-string form)))))
+                 :command (workers-fatal-tests--child
+                           "-Q" "--batch" "--eval" (prin1-to-string form)))))
     (unwind-protect
         (let ((i 0) pid)
           (while (and (process-live-p child) (< i 1000))
