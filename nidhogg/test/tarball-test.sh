@@ -29,7 +29,10 @@ WANT=$want ROOT=$root "$bin" --batch -Q --eval '(progn
   (unless (featurep (quote nidhogg)) (error "no nidhogg feature"))
   (unless (and (native-comp-available-p) (native-compile (quote (lambda () 1)))) (error "native compilation"))
   (unless (treesit-available-p) (error "tree-sitter"))
-  (unless (featurep (if (eq system-type (quote darwin)) (quote ns) (quote pgtk))) (error "not the graphical build"))
+  (unless (featurep (if (eq system-type (quote darwin)) (quote ns) (quote nidhogg-wayland))) (error "not the graphical build"))
+  (unless (eq system-type (quote darwin))
+    (dolist (type (quote (png jpeg gif tiff svg webp)))
+      (unless (image-type-available-p type) (error "no image type %s" type))))
   (require (quote org))
   (unless (file-in-directory-p data-directory (getenv "ROOT")) (error "data-directory %s" data-directory))
   (princ "TARBALL OK\n"))' || { echo "TARBALL FAIL: checks failed for $root"; exit 1; }

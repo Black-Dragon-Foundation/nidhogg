@@ -11,7 +11,6 @@ pkgconf-pkg-config
 libgccjit-devel
 gnutls-devel
 libtree-sitter-devel
-gtk3-devel
 harfbuzz-devel
 cairo-devel
 libxml2-devel

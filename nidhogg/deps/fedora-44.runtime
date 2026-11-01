@@ -1,7 +1,6 @@
 # Packages a Nidhogg tarball needs at run time on Fedora 44.  gcc and libgccjit: native compilation runs them.
 gcc
 libgccjit
-gtk3
 harfbuzz
 cairo
 gnutls
