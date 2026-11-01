@@ -49,6 +49,12 @@ message, arguments.  The time is `HH:MM:SS.microseconds' (libwayland 1.24 and la
   "Lost connection\\|connection broke\\|Protocol error\\|Broken pipe\\|wl_display\\.error"
   "Non-trace lines that mean the connection died.")
 
+(defconst wl-trace-check-restart-line "gui-runner: restarting the compositor"
+  "The line a test writes before it stops the compositor on purpose.")
+
+(defconst wl-trace-check--lost-re "Lost connection\\|connection broke\\|Broken pipe"
+  "The `wl-trace-check--error-re' lines a stopped compositor causes.")
+
 (defun wl-trace-check--ms (time)
   "TIME, a trace timestamp (\"HH:MM:SS.uuuuuu\" or \"SECONDS.MS\" in ms), as milliseconds."
   (let ((parts (save-match-data (split-string time ":"))))
@@ -95,7 +101,9 @@ Returns a list of strings \"RULE line N: what\", empty when the trace is clean."
         (serial-size (make-hash-table))   ; serial -> size
         (acked-size (make-hash-table))    ; xdg_surface id -> the previous acked non-zero size
         (acked-once (make-hash-table))    ; xdg_surface id -> t
+        (vp-dest (make-hash-table))       ; wl_surface id -> its newest wp_viewport destination, the size it shows
         (need-buffer (make-hash-table))   ; wl_surface id -> line of the ack that wants a buffer
+        (restarting nil)                  ; a test stopped the compositor and this client has not connected again
         (attached (make-hash-table))      ; wl_surface id -> :buffer, :null or nil since its last commit
         ;; popups and drags
         (popup-parent (make-hash-table))  ; xdg_popup id -> the xdg_surface id it was made on, or nil
@@ -128,7 +136,10 @@ Returns a list of strings \"RULE line N: what\", empty when the trace is clean."
             (if (not (string-match wl-trace-check--line-re text))
                 (progn
                   (when (< (length sample) 6) (push (truncate-string-to-width text 160) sample))
-                  (when (string-match wl-trace-check--error-re text)
+                  (when (string-search wl-trace-check-restart-line text)
+                    (setq restarting t))
+                  (when (and (string-match wl-trace-check--error-re text)
+                             (not (and restarting (string-match wl-trace-check--lost-re text))))
                     (bad "errors" n "%s" (string-trim text))))
               (let* ((time (wl-trace-check--ms (match-string 1 text)))
                      (request (match-string 2 text))
@@ -155,6 +166,8 @@ Returns a list of strings \"RULE line N: what\", empty when the trace is clean."
                 (setq sync-pending (cl-remove-if (lambda (p) (< (car p) time)) sync-pending))
                 (cond
                  ;; ---- errors and object lifetime
+                 ((and request (equal iface "wl_display") (equal msg "get_registry"))
+                  (setq restarting nil))
                  ((and (equal iface "wl_display") (equal msg "error"))
                   (bad "errors" n "wl_display.error(%s)" args))
                  ((and (equal iface "wl_display") (equal msg "delete_id"))
@@ -210,7 +223,8 @@ Returns a list of strings \"RULE line N: what\", empty when the trace is clean."
                          (w (gethash id xdg-wl)))
                     (puthash id t acked-once)
                     (when (and size (> (car size) 0) (> (cdr size) 0))
-                      (when (and w (not (equal size (gethash id acked-size))))
+                      ;; new: not what the surface shows (a client told 0 x 0 chose its size before this configure)
+                      (when (and w (not (equal size (or (gethash w vp-dest) (gethash id acked-size)))))
                         (puthash w n need-buffer))
                       (puthash id size acked-size))
                     (dolist (p popup-pending)
@@ -281,9 +295,14 @@ Returns a list of strings \"RULE line N: what\", empty when the trace is clean."
                         (v (mapcar #'string-to-number (split-string args ", " t))))
                     (when (and s (= (length v) 4))
                       (if (< (nth 2 v) 0) (remhash s vp-src) (puthash s v vp-src)))))
+                 ((and request (equal iface "wp_viewport") (equal msg "set_destination"))
+                  (let ((s (gethash id vp-surface))
+                        (v (mapcar #'string-to-number (split-string args ", " t))))
+                    (when (and s (= (length v) 2))
+                      (if (< (car v) 0) (remhash s vp-dest) (puthash s (cons (car v) (cadr v)) vp-dest)))))
                  ((and request (equal iface "wp_viewport") (equal msg "destroy"))
                   (let ((s (gethash id vp-surface)))
-                    (when s (remhash s vp-src))
+                    (when s (remhash s vp-src) (remhash s vp-dest))
                     (remhash id vp-surface)))
                  ;; ---- subsurface state
                  ((and request (equal iface "wl_subsurface") (equal msg "set_desync"))
