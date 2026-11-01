@@ -227,7 +227,18 @@ done
 # the Rust toolchain for Glitnir is in every build list (Homebrew: rust)
 for d in fedora-44 fedora-45; do grep -qx cargo nidhogg/deps/$d.build && grep -qx rust nidhogg/deps/$d.build || fail "$d.build lacks cargo/rust"; done
 grep -qx cargo nidhogg/deps/ubuntu-26.04.build && grep -qx rustc nidhogg/deps/ubuntu-26.04.build || fail "ubuntu-26.04.build lacks cargo/rustc"
-grep -qx cargo nidhogg/deps/debian-13.build && grep -qx rustc nidhogg/deps/debian-13.build || fail "debian-13.build lacks cargo/rustc"
+# Debian's Rust is below the floor: the build fetches the pinned one, for which it needs curl and nothing of Debian's
+grep -qx curl nidhogg/deps/debian-13.build && ! grep -qxE 'cargo|rustc' nidhogg/deps/debian-13.build || fail "debian-13.build: curl, and no distro Rust"
+run -- --dry-run --container debian-13 --jobs 4
+rcis 0; has "RUST_PIN=1.93.1"; has "sha256sum -c"
+run -- --dry-run --container debian-13 --jobs 4 --without-glitnir
+rcis 0; hasnt "RUST_PIN"
+run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n
+rcis 0; hasnt "RUST_PIN"
+pin=$(sed -n 's/.*RUST_PIN=1\.\([0-9]*\)\..*/\1/p' nidhogg/build.sh | head -1)
+floor=$(sed -n 's/.*whether rustc is 1\.\([0-9]*\) or newer.*/\1/p' configure.ac | head -1)
+recent=$(sed -n 's/.*"${v#\* }" -ge \([0-9]*\).*/\1/p' nidhogg/build.sh | head -1)
+[ -n "$pin" ] && [ "$pin" -ge "$floor" ] && [ "$recent" = "$floor" ] || fail "build.sh's Rust (pin 1.$pin, check 1.$recent) and configure's floor 1.$floor disagree"
 grep -qx rust nidhogg/deps/arch.build || fail "arch.build lacks rust"
 grep -qx rust nidhogg/deps/macos.build || fail "macos.build lacks rust"
 if grep -nE 'declare -A|mapfile|readarray|\$\{[a-zA-Z_]+(,,|\^\^)\}|;&|\|&' nidhogg/build.sh; then fail "bash 4 construct in build.sh"; fi

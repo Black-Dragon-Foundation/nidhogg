@@ -31,7 +31,8 @@ libfontconfig-dev
 libfreetype-dev
 libacl1-dev
 zlib1g-dev
-cargo
-rustc
+# Debian's Rust is below Glitnir's floor: build.sh fetches a pinned toolchain into the build directory
+curl
+ca-certificates
 libwayland-dev
 libxkbcommon-dev
