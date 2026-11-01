@@ -231,6 +231,8 @@ pub struct Shared {
     pub want_flush: AtomicBool,
     /// The main queue has events for the host's thread to dispatch.
     pub main_pending: AtomicBool,
+    /// The popups the host's thread sends a positioner for again, with `main_pending` (`popup.rs`).
+    place: Mutex<Vec<u64>>,
     /// The shell is closing; the reader leaves its loop without posting `DISCONNECTED`.
     pub stop: AtomicBool,
     /// Readable from the moment the connection is lost, until a reconnect drains it: the host's bounded waits (a
@@ -268,6 +270,7 @@ impl Shared {
             reader_wake: Wake::new()?,
             want_flush: AtomicBool::new(false),
             main_pending: AtomicBool::new(false),
+            place: Mutex::default(),
             stop: AtomicBool::new(false),
             gone: Wake::new()?,
             reconnect: AtomicBool::new(false),
@@ -279,6 +282,20 @@ impl Shared {
             dragging: AtomicBool::new(false),
             reader_done: ThreadDone::default(),
         })
+    }
+
+    /// The host's thread sends these popups' positioners again.
+    pub fn place_popups(&self, ids: Vec<u64>) {
+        if ids.is_empty() {
+            return;
+        }
+        relock(&self.place).extend(ids);
+        self.main_pending.store(true, Ordering::Release);
+        self.wake.signal();
+    }
+
+    pub fn take_place(&self) -> Vec<u64> {
+        std::mem::take(&mut relock(&self.place))
     }
 
     /// Queue a record; the poster signals `wake` once per batch.
