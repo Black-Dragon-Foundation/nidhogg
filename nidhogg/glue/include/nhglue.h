@@ -946,8 +946,8 @@ int32_t nhg_give_up (NhgDisplay *d);
    NUL into BUF, its full length into *LEN (0: the connection lives, or ended with a plain hangup).  */
 int32_t nhg_last_error (NhgDisplay *d, char *buf, size_t cap, size_t *len);
 
-/* ---- Small pure functions: colours, a monitor's place, the snapshot's copy ---------------------------------------
-   Only nhg_snapshot_copy reads pixels.  */
+/* ---- Small pure functions: colours, a monitor's place, the tree's picture -----------------------------------------
+   Only nhg_tree_snapshot reads pixels.  */
 
 /* The title bar's colours when the style names no background, from the frame's FG and BG (0xRRGGBB): the background
    12% toward the foreground into *OUT_BG, and an inactive window's own foreground, that 55% toward FG, into
@@ -957,9 +957,11 @@ int32_t nhg_csd_mix (uint32_t fg, uint32_t bg, uint32_t *out_fg, uint32_t *out_b
 /* RGB (0xRRGGBB) at ALPHA as a backing stores it: premultiplied ARGB, exactly as Cairo paints a solid source.  */
 int32_t nhg_premultiply (uint32_t rgb, double alpha, uint32_t *out);
 
-/* Copy FRAME's W x H backing (the size nhg_snapshot gave) into DST, rows STRIDE bytes apart.  NHG_E_STATE without a
-   backing of that size.  Reads pixels.  */
-int32_t nhg_snapshot_copy (NhgDisplay *d, uint64_t frame, uint8_t *dst, int32_t stride, int32_t w, int32_t h);
+/* The tree of S's first surface as the compositor was given it, its popups on top, into DST, rows STRIDE bytes apart:
+   S holds N surfaces, trees as nhg_present takes them one after another, and W x H is the size nhg_snapshot gave for
+   the root.  NHG_E_STATE without a root of that size that may show a buffer.  Reads pixels.  */
+int32_t nhg_tree_snapshot (NhgDisplay *d, const NhgSurface *s, size_t n, uint8_t *dst, int32_t stride, int32_t w,
+                           int32_t h);
 
 /* The monitors WINDOW is on, as a mask of their places in nhg_monitors' list (bit J for the Jth; the first when the
    compositor named none).  NHG_E_STATE for an unknown window, and *OUT is left.  */

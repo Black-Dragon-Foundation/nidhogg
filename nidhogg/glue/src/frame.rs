@@ -86,6 +86,8 @@ pub struct Frame {
     pub focus_lent: bool,
     /// The window holds an idle inhibitor (`bell.rs`).
     pub idle_inhibited: bool,
+    /// The native size when a state that sets the size came (`csd::fit`), to go back to.
+    pub floating: Option<(i32, i32)>,
 }
 
 impl Frame {
