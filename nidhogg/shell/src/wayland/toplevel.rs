@@ -696,12 +696,20 @@ impl WaylandShell {
 }
 
 impl WaylandShell {
-    /// `window_destroy` without the connection's check: the window and its dependents go, popups topmost first.
+    /// `window_destroy` without the connection's check: the window and its dependents go, popups topmost first.  A
+    /// popup that goes with its parent is the host's still (a tip hangs on the frame under the pointer, and no frame
+    /// knows that): it hears `POPUP_DONE`, as from the compositor, and the id stays out of use until it lets go.
     pub(super) fn window_destroy_local(&mut self, id: WindowId) -> ShellResult {
+        self.main.orphans.remove(&id);
         self.text_input.forget(id);
         self.extras_forget(id);
         for dep in self.dependents_of(id) {
+            let popup = self.main.popups.contains_key(&dep);
             let _ = self.window_destroy_local(dep);
+            if popup {
+                self.main.orphans.insert(dep);
+                self.shared.post(Record::new(ShellEvent::PopupDone, dep, 0));
+            }
         }
         if self.main.children.contains_key(&id) {
             return self.child_destroy(id);
