@@ -488,6 +488,33 @@ mod child {
         assert_eq!(ev.window, p);
     }
 
+    /// The host names a popup that went with its parent until it destroys the popup in turn: it is told, and no new
+    /// window takes the id.  The client library hands out the lowest free ids, and the two kinds of window take
+    /// different numbers of them, so their mix comes to it.
+    #[test]
+    fn a_popup_gone_with_its_parent_keeps_its_id_from_new_windows() {
+        let rec = Recorder::start();
+        let mut shell = rec.open();
+        let parent = window(&mut shell);
+        let c = child(&mut shell, parent, 0, 0);
+        let p = popup(&mut shell, c, Anchor::default());
+        rec.wait_node(p, |_| true);
+        shell.window_destroy(c).unwrap();
+        let ev = wait_for(&mut shell, |e| e.kind() == Kind::PopupDone);
+        assert_eq!(ev.window, p);
+        rec.wait_surfaces(1);
+        std::thread::sleep(Duration::from_millis(100));
+        let mut made = Vec::new();
+        for i in 0..24 {
+            made.push(match i % 3 {
+                2 => popup(&mut shell, parent, Anchor::default()),
+                _ => child(&mut shell, parent, 0, 0),
+            });
+        }
+        assert!(!made.contains(&p), "{p} in {made:?}");
+        assert!(shell.window_destroy(p).is_err());
+    }
+
     #[test]
     fn destroy_child_leaves_one_surface() {
         let rec = Recorder::start();
