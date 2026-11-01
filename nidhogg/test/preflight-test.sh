@@ -151,6 +151,50 @@ grep -q "^P5 src/b-tests wrap=cpu1 seed=-: no trace" "$d/r10/report" || fail "an
 PREFLIGHT_SLOT="$d/fakeslot-rr" FAKE_ROOT="$d/repo" FAKE_RR="$d/rr.calls" FAKE_RR_ABORT=1 pre "" --passes P2,P5 --runs 1 --out "$d/r11/report" > /dev/null
 grep -q "^P5 src/b-tests wrap=cpu1 seed=-: trace .*rr aborted" "$d/r11/report" || fail "an aborted recording not said"
 
+# a failed build is one red for the run, and a package fetch that failed is retried once and called infrastructure
+cat > "$d/fakeslot-infra" <<'EOF'
+#!/usr/bin/env bash
+b="" l=""
+while [ $# -gt 0 ]; do case $1 in --build-dir) b=$2; shift 2 ;; --check) l=$2; shift 2 ;; *) shift ;; esac; done
+n=$(( $(cat "$FAKE_ROOT/../slot.count" 2>/dev/null || echo 0) + 1 )); echo $n > "$FAKE_ROOT/../slot.count"
+case $FAKE_MODE in
+  fetch-always|fetch-once)
+    if [ "$FAKE_MODE" = fetch-always ] || [ "$n" = 1 ]; then
+      echo "Error: Failed to download metadata for repo 'fedora'"; echo "build.sh: the build failed; logs are in $b" >&2; exit 1
+    fi ;;
+  nobuild) echo "make: *** no rule"; echo "build.sh: the build failed; logs are in $b" >&2; exit 1 ;;
+  detail)
+    echo "NOISE-OF-ANOTHER-FILE backtrace"; echo "check-rerun: src/b-tests had unexpected results; running it once more"
+    echo "check-rerun: RED: 3/7  b-test-one (0.1 sec) at ../../src/test/src/b-tests.el:9 failed, then passed on rerun"
+    echo "build.sh: the build failed; logs are in $b" >&2 ;;
+esac
+while IFS= read -r t; do
+  mkdir -p "$b/check-logs/$(dirname "$t")"
+  echo "Ran 7 tests, 7 results as expected, 0 unexpected (2026-10-30 11:49:44+0000, 1.5 sec)" > "$b/check-logs/$t.log"
+done < "$FAKE_ROOT/$l"
+exit 0
+EOF
+chmod +x "$d/fakeslot-infra"
+infra() { rm -f "$d/slot.count"; PREFLIGHT_SLOT="$d/fakeslot-infra" FAKE_ROOT="$d/repo" FAKE_MODE=$1 pre "" --passes P2 --out "$d/$2/report" > /dev/null; }
+infra fetch-always r14; r=$?
+[ "$r" = 1 ] && [ ! -e "$d/r14/report.stamp" ] || fail "a fetch failure got a stamp or exit $r"
+grep -q "^RED P2 (whole run) wrap=cpu1 seed=-: exit 1, the check container could not fetch packages twice (infrastructure" "$d/r14/report" || fail "no infrastructure red"
+grep -q "NOT RUN" "$d/r14/report" && fail "a fetch failure was reported as files not run"
+infra fetch-once r15
+grep -q "running the group again" "$d/r15/report" && grep -q "^GROUP P2 cpu1 run=1 seed=- src/a-tests green" "$d/r15/report" || fail "a fetch failure was not retried"
+grep -q "^RED" "$d/r15/report" && fail "a retried fetch failure left a red"
+infra nobuild r16
+grep -q "^RED P2 (whole run) wrap=cpu1 seed=-: exit 1, the build failed before any test ran" "$d/r16/report" || fail "no build-failed red"
+grep -q "NOT RUN" "$d/r16/report" && fail "a failed build was reported as files not run"
+# a named red carries its own file's lines, not the group log's tail
+infra detail r17
+grep -q "^RED P2 src/b-tests wrap=cpu1 seed=-" "$d/r17/report" && grep -q "b-test-one" "$d/r17/report" || fail "a named red without its own lines"
+awk '/^--- P2 src\/b-tests/{f=1} f' "$d/r17/report" | grep -q NOISE && fail "a named red carries another file's lines"
+# a list file a killed run left behind is swept at the next start
+touch "$d/repo/preflight-chk.stale.txt"
+PREFLIGHT_SLOT="$d/fakeslot" FAKE_ROOT="$d/repo" pre "" --passes P2 --out "$d/r18/report" > /dev/null
+[ ! -e "$d/repo/preflight-chk.stale.txt" ] || fail "a stale list file was left"
+
 # a dirty tree gets none
 echo x > "$d/repo/f"; git -C "$d/repo" add f
 pre "$d/ok" --out "$d/r4/report" > /dev/null; r=$?
