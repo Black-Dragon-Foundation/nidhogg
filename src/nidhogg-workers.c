@@ -144,6 +144,8 @@ static NH_WK_TEST_ONLY const char *const nh_wk_class_names[NH_WK_CL_N] = {
 
 /* 1 + the worker this thread belongs to; 0 off the workers.  */
 static _Thread_local int nh_wk_self;
+/* This worker waits with no job, which the test clock must know.  */
+static _Thread_local bool nh_wk_in_standby;
 
 struct nh_wk_pool
 {
@@ -240,9 +242,15 @@ int
 nh_wk_cond_wait_until (pthread_cond_t *cv, pthread_mutex_t *m,
 		       uint64_t deadline)
 {
+#ifdef HAVE_NH_TEST_CLOCK
+  int r;
+  if (nh_tc_on && nh_wk_self
+      && nh_tc_cond_wait (cv, m, deadline, !nh_wk_in_standby, &r))
+    return r;
+#endif
 #ifdef __APPLE__
 
-  uint64_t now = nh_wk_now ();
+  uint64_t now = nh_wk_real_ns ();
   struct timespec rel = nh_wk_abs (deadline > now ? deadline - now : 0);
   return pthread_cond_timedwait_relative_np (cv, m, &rel);
 
@@ -939,8 +947,10 @@ nh_wk_standby (struct nh_wk_wst *ws, int pool)
 	  p->standby = false;
 	  return true;
 	}
+      nh_wk_in_standby = true;
       nh_wk_cond_wait_until (&p->cv, &ws->m, (at > nh_wk_now () ? at
 					      : nh_wk_now () + NH_WK_MS));
+      nh_wk_in_standby = false;
     }
 }
 
@@ -1242,7 +1252,9 @@ nh_wk_wait (struct nh_wk_job *job, int64_t timeout_ns, int phase, int reason)
     return -1;
   NH_WK_ASSERT (!nh_wk_on_worker ());
 
-  uint64_t t0 = nh_wk_now ();
+  /* The waits of a thread that holds the global lock stay real: what
+     could move a test clock is that very thread.  */
+  uint64_t t0 = nh_wk_real_ns ();
   uint64_t deadline = t0 + (timeout_ns > 0 ? timeout_ns : 0);
   int depth = NH_WK_PHASE_PUSH (phase, reason);
   pthread_t runner = pthread_self ();
@@ -1256,7 +1268,7 @@ nh_wk_wait (struct nh_wk_job *job, int64_t timeout_ns, int phase, int reason)
       if (st == NH_WK_J_DONE || st == NH_WK_J_CANCELLED
 	  || atomic_load (&nh_wk_dead))
 	break;
-      uint64_t now = nh_wk_now ();
+      uint64_t now = nh_wk_real_ns ();
       if (now >= deadline)
 	break;
       /* Returns on a broadcast, the deadline, or for no reason at all
@@ -1268,7 +1280,7 @@ nh_wk_wait (struct nh_wk_job *job, int64_t timeout_ns, int phase, int reason)
   if (boosted)
     nh_wk_unboost (runner);
   NH_WK_PHASE_POP (depth);
-  nh_wk_wait_counted (job->w, phase, reason, nh_wk_now () - t0);
+  nh_wk_wait_counted (job->w, phase, reason, nh_wk_real_ns () - t0);
   return (st == NH_WK_J_DONE ? 1
 	  : st == NH_WK_J_CANCELLED || atomic_load (&nh_wk_dead) ? -1 : 0);
 }
@@ -1383,9 +1395,9 @@ static NH_WK_TEST_ONLY int
 nh_wk_await_paused (int p, int64_t ms, int n)
 {
   nh_wk_init ();
-  uint64_t deadline = nh_wk_now () + ms * NH_WK_MS;
+  uint64_t deadline = nh_wk_real_ns () + ms * NH_WK_MS;
   nh_wk_lock (&nh_wk_pause_m);
-  while (nh_wk_parked[p] < n && nh_wk_now () < deadline)
+  while (nh_wk_parked[p] < n && nh_wk_real_ns () < deadline)
     {
       nh_wk_cond_wait_until (&nh_wk_pause_cv, &nh_wk_pause_m, deadline);
     }
@@ -2146,9 +2158,9 @@ bounded condition wait, not a sleep.  */)
       lim = XFIXNAT (ms);
     }
   nh_wk_init ();
-  uint64_t deadline = nh_wk_now () + lim * NH_WK_MS;
+  uint64_t deadline = nh_wk_real_ns () + lim * NH_WK_MS;
   nh_wk_lock (&nh_wk_done_m);
-  while (atomic_load (&nh_wk_w[w].inflight) > 0 && nh_wk_now () < deadline)
+  while (atomic_load (&nh_wk_w[w].inflight) > 0 && nh_wk_real_ns () < deadline)
     nh_wk_cond_wait_until (&nh_wk_done_cv, &nh_wk_done_m, deadline);
   bool idle = atomic_load (&nh_wk_w[w].inflight) <= 0;
   pthread_mutex_unlock (&nh_wk_done_m);
@@ -2169,10 +2181,10 @@ not a sleep.  */)
   CHECK_FIXNAT (n);
   CHECK_FIXNAT (ms);
   nh_wk_init ();
-  uint64_t deadline = nh_wk_now () + XFIXNAT (ms) * NH_WK_MS;
+  uint64_t deadline = nh_wk_real_ns () + XFIXNAT (ms) * NH_WK_MS;
   nh_wk_lock (&nh_wk_done_m);
   while (atomic_load (&nh_wk_w[w].inflight) > XFIXNAT (n)
-	 && nh_wk_now () < deadline)
+	 && nh_wk_real_ns () < deadline)
     nh_wk_cond_wait_until (&nh_wk_done_cv, &nh_wk_done_m, deadline);
   bool ok = atomic_load (&nh_wk_w[w].inflight) <= XFIXNAT (n);
   pthread_mutex_unlock (&nh_wk_done_m);
@@ -2491,13 +2503,13 @@ worker mutexes were taken in signal context (0: a lock there aborts).  */)
       error ("Cannot start the SIGCHLD storm");
     }
   EMACS_INT total = XFIXNAT (n);
-  uint64_t deadline = nh_wk_now () + 20000 * NH_WK_MS;
+  uint64_t deadline = nh_wk_real_ns () + 20000 * NH_WK_MS;
   for (int i = 0; i < NLOCKS; i++)
     {
       EMACS_INT share_end = total * (i + 1) / NLOCKS;
       nh_wk_lock (locks[i]);
       while (atomic_load (&nh_wk_probes) < share_end
-	     && nh_wk_now () < deadline)
+	     && nh_wk_real_ns () < deadline)
 	{
 	  struct timespec ts = { 0, 50000 };
 	  nanosleep (&ts, NULL);
