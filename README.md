@@ -170,7 +170,8 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
 - A test file that fails in `--check` runs once more (`nidhogg/test/check-rerun.sh`). A test that failed and then passed
   fails the check unless `nidhogg/test/flaky.txt` lists it as `NAME # cause; stress run`; the run then prints
   `flaky (listed: CAUSE)`. A listed name that no test defines, or that two files define, fails the check too. A flake
-  without a cause is fixed, not listed. `bash nidhogg/test/check-rerun-test.sh` tests the step with a fake runner.
+  without a cause is fixed, not listed. A deterministic (class D) test is never rerun and stays red, and a D test on
+  `flaky.txt` fails the check; a C test in the same file still reruns. `bash nidhogg/test/check-rerun-test.sh` tests the step with a fake runner.
 - `bash nidhogg/test/build-test.sh` checks the dry-run output.
 
 ## Release tarballs
@@ -286,7 +287,8 @@ moves to the round's green drgnx commit.
   verdicts are in the job log and the `timing-*` artifact. Absolute budgets stay on the desktop's perf island.
   `timing-lane.sh --self-test` checks the verdict rules.
 - Before a round, `nidhogg/test/preflight.sh` (the desktop, in the heavy slots) runs the passes that find ordering bugs:
-  the check files of `preflight-files.txt` pinned to 1 and 2 CPUs and under half a core (3 runs each; podman options
+  every `;; test-class: det` file twice unpinned and once on 1 CPU (a difference between the runs is red), then
+  the check files of `preflight-files.txt` plus every `cond` file outside the GUI set pinned to 1 and 2 CPUs and under half a core (3 runs each; podman options
   through `NIDHOGG_BUILD_PODMAN_ARGS`), on the chaos build with many seeds, the workers harness (`--tsan`, `--sched`),
   and the reds again under `rr record --chaos -n`, packed so that the trace replays in a later container (`build.sh`'s
   `NIDHOGG_CHECK_RR`; SELinux denies a labelled container `perf_event_open`, so that one container runs with labels off).
