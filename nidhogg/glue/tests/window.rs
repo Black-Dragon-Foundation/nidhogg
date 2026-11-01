@@ -413,7 +413,7 @@ mod window {
     #[test]
     fn leaving_fullscreen_with_no_size_goes_back() {
         use nhglue::csd::NHG_FIT_CONFIGURE;
-        use nhshell::api::NHSHELL_STATE_FULLSCREEN as FULL;
+        use nhshell::event::NHSHELL_STATE_FULLSCREEN as FULL;
         let rec = Recorder::start("sway");
         let d = open(&rec);
         let id = toplevel(d);

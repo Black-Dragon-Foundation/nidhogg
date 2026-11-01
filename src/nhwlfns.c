@@ -679,6 +679,7 @@ nhwl_set_parent_frame (struct frame *f, Lisp_Object new_value,
       nhwl_popup_hide (o->frame);
   nhwl_child_focus_gone (f, false);
   block_input ();
+  NHG (nhg_session_remove (FRAME_NHG (f), out->window));
   if (out->window)
     nhwl_window_destroy (dpyinfo, out->window);
   out->window = out->focus_window = 0;
@@ -1609,16 +1610,18 @@ Internal use only, use `display-monitor-attributes-list' instead.  */)
 }
 
 /* Return geometric attributes of FRAME.  Adapted from frame_geometry
-   (pgtkfns.c): a Wayland client has no position, the decorations are
-   drawn inside the frame, and the origin is (0, 0).  */
+   (pgtkfns.c): a top-level has no position on Wayland, the decorations
+   are drawn inside it, and a child frame's origin is in its parent.  */
 static Lisp_Object
 frame_geometry (Lisp_Object frame, Lisp_Object attribute)
 {
   struct frame *f = decode_live_frame (frame);
   int native_width = FRAME_PIXEL_WIDTH (f);
   int native_height = FRAME_PIXEL_HEIGHT (f);
-  int left_pos = 0, top_pos = 0;
-  int native_right = native_width, native_bottom = native_height;
+  int left_pos = FRAME_PARENT_FRAME (f) ? f->left_pos : 0;
+  int top_pos = FRAME_PARENT_FRAME (f) ? f->top_pos : 0;
+  int native_right = left_pos + native_width;
+  int native_bottom = top_pos + native_height;
   int internal_border_width = FRAME_INTERNAL_BORDER_WIDTH (f);
   int tab_bar_height = FRAME_TAB_BAR_HEIGHT (f);
   int tab_bar_width = (tab_bar_height
@@ -1631,10 +1634,7 @@ frame_geometry (Lisp_Object frame, Lisp_Object attribute)
     return Qnil;	/* This can occur while creating a frame.  */
 
   /* Construct list.  */
-  if (EQ (attribute, Qouter_edges))
-    return list4 (make_fixnum (left_pos), make_fixnum (top_pos),
-		  make_fixnum (native_right), make_fixnum (native_bottom));
-  else if (EQ (attribute, Qnative_edges))
+  if (EQ (attribute, Qouter_edges) || EQ (attribute, Qnative_edges))
     return list4 (make_fixnum (left_pos), make_fixnum (top_pos),
 		  make_fixnum (native_right), make_fixnum (native_bottom));
   else if (EQ (attribute, Qinner_edges))
