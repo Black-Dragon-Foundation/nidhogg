@@ -22,7 +22,8 @@
 #   --prefix DIR        an unpacked Nidhogg (DIR/bin/nidhogg)
 #   --compositor C      sway (default: headless sway, wlroots pixman renderer), mutter (headless mutter) or recorder
 #                       (nh-recorder, our own recording compositor, one output).  The T3 compositors: kwin (KWin's
-#                       --virtual backend, one output, scale by kscreen-doctor) and labwc (wlroots headless, pixman,
+#                       --virtual backend, one output, scale by kscreen-doctor; it needs a render node, handed to the
+#                       container) and labwc (wlroots headless, pixman,
 #                       scale by wlr-randr).  Every compositor binary runs as a copy without file capabilities.
 #   --recorder BIN      the nh-recorder binary (default $REC); mounted at /opt/nh-recorder in a container.  On sway it
 #                       serves the rows a virtual pointer instead (NHWL_GUI_VPOINTER: BIN --virtual-pointer), which
@@ -452,6 +453,8 @@ if [ -n "$container" ]; then
   out=
   mounts=(-v "$checkout:/src:ro,z" -v "$prefix:$inprefix:ro,z")
   [ "$userec" = 0 ] || mounts+=(-v "$recorder:/opt/nh-recorder:ro,z")
+  # KWin composites only on a render node (6.8 has no QPainter scene): without one it manages windows and shows none
+  if [ "$compositor" = kwin ] && [ -d /dev/dri ]; then mounts+=(--device /dev/dri); fi
   # a caller's GLITNIR_GUI_SOCKDIR (a host directory) is where the run's XDG_RUNTIME_DIR is made, so the caller can see it
   sockenv=()
   if [ -n "${GLITNIR_GUI_SOCKDIR:-}" ]; then
@@ -507,6 +510,10 @@ esac
 for t in $need; do
   command -v "$t" > /dev/null || { echo "gui.sh: $t not found (the host needs $need; or use --container)" >&2; exit 1; }
 done
+# a KWin that composites nothing answers no frame callback, and a lane on it proves little
+if [ "$compositor" = kwin ] && ! compgen -G '/dev/dri/renderD*' > /dev/null; then
+  echo "gui.sh: KWin needs a render node (/dev/dri/renderD*); CI gets one from vgem" >&2; exit 1
+fi
 run=$(mktemp -d "${TMPDIR:-/tmp}/glitnir-gui.XXXXXX")
 # XDG_RUNTIME_DIR holds only sockets, and a Unix socket path is limited to 107 bytes: it sits in a short directory.
 xdg=$(mktemp -d "${GLITNIR_GUI_SOCKDIR:-/tmp}/glg.XXXXXX")
