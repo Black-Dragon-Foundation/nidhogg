@@ -39,3 +39,8 @@ lisp/subr-tests
 lisp/files-tests
 lisp/emacs-lisp/bytecomp-tests
 src/nidhogg-tests/test-clock-tests
+src/nidhogg-tests/nhwl-dnd-tests
+src/nidhogg-tests/nhwl-menu-tests
+src/nidhogg-tests/nhwl-portal-tests
+src/nidhogg-tests/nhwl-session-tests
+src/nidhogg-tests/nhwl-settings-tests
