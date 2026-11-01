@@ -24,8 +24,8 @@
 #                     targets that name a 1920x1080 x 1 cell (pss-idle, cpu-typing, cpu-scroll, pss-scroll) were set on -Q
 #                     and are judged on --config q only; on drgnx they are report
 #   --refresh N       the speed sessions' sway output runs at N Hz (default 120; the scroll bar is a 120 Hz bar)
-#   --container fedora-45  accepted and ignored: the script always runs in its own container, and the slot wrappers
-#                     (drgnx-heavy-slot.sh) only start the command on the host, not inside a dev container, when they see this
+#   --container fedora-45  accepted and ignored: the script always runs in its own container, and the caller's
+#                     container wrapper only starts the command on the host, not inside a dev container, when it sees this
 #   --out FILE        the plists, one per line (default budgets.eld in the current directory)
 #   --self-test       --runs 1, 1280x720, 3 s windows, 10 resize steps, 30 motion frames; then every line must read
 #                     back as a plist with :target, :kind and :verdict, none may be nil, and freeze-watchdog may not be
