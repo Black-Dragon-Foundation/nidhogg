@@ -1,0 +1,16 @@
+# The test files P2 (pinned) and P3 (chaos build, seeds) of preflight.sh run: the workers, process and I/O files, and the
+# watchdog's (as `make -C test` names them).
+src/nidhogg-tests/watchdog-tests
+src/nidhogg-tests/watchdog-hang-tests
+src/nidhogg-tests/workers-tests
+src/nidhogg-tests/workers-fatal-tests
+src/nidhogg-tests/workers-io-tests
+src/nidhogg-tests/workers-decode-tests
+src/nidhogg-tests/workers-framing-tests
+src/nidhogg-tests/workers-json-tests
+src/nidhogg-tests/workers-autosave-tests
+src/nidhogg-tests/workers-blk-tests
+src/nidhogg-tests/workers-ts-tests
+src/nidhogg-tests/workers-tls-tests
+src/process-tests
+src/thread-tests

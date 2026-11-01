@@ -244,9 +244,21 @@ PROTO is `smtp', `imap' or `alert' (see `workers-tls-tests--mock-program')."
                                "-Q" "--batch" "-l" file)
                 :filter (lambda (_p s) (setq out (concat out s)))))
     (process-put proc 'file file)
-    (unless (workers-tls-tests--until
-             (lambda () (string-match-p "^port [0-9]+$" out)) 1500)
-      (error "The mock server did not start: %S" out))
+    ;; The events are the port line and the child's exit: a child that
+    ;; died (no gnutls-serv, say) ends the wait at once, with what it
+    ;; said and how it ended, instead of the wait running out its clock.
+    (workers-tls-tests--until
+     (lambda ()
+       (or (string-match-p "^port [0-9]+$" out)
+           (not (process-live-p proc))))
+     1500)
+    (unless (string-match-p "^port [0-9]+$" out)
+      (let ((status (process-status proc))
+            (code (process-exit-status proc)))
+        (delete-process proc)
+        (delete-file file)
+        (error "The mock server did not start (%s, %s): %S"
+               status code out)))
     (string-match "^port \\([0-9]+\\)$" out)
     (cons proc (string-to-number (match-string 1 out)))))
 
