@@ -289,6 +289,8 @@ mod reader {
             s.set_input_region(w, &[Rect::new(0, 0, 1, 1)])
         }),
         ("set_mapped", |s, w| s.set_mapped(w, false)),
+        ("set_motion", |s, w| s.set_motion(w, None)),
+        ("set_backdrop", |s, w| s.set_backdrop(w, 0.0)),
         ("window_grabbed", |s, w| s.window_grabbed(w).map(drop)),
         ("set_size", |s, w| s.set_size(w, 10, 10).map(drop)),
         ("present_begin", |s, w| s.present_begin(w, 64, 48).map(drop)),

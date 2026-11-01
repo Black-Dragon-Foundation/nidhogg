@@ -333,6 +333,11 @@ impl ShellBackend for WaylandShell {
         self.window_set_motion(id, spec)
     }
 
+    fn set_backdrop(&mut self, id: WindowId, blur_px: f32) -> ShellResult {
+        self.live()?;
+        self.window_set_backdrop(id, blur_px)
+    }
+
     fn window_grabbed(&self, id: WindowId) -> ShellResult<bool> {
         self.live()?;
         self.popup_grabbed(id)
