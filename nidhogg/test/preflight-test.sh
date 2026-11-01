@@ -30,6 +30,7 @@ exit 0
 EOF
 cat > "$d/harness" <<'EOF'
 #!/usr/bin/env bash
+echo "$*" >> "${HARNESS_LOG:-/dev/null}"
 exit 0
 EOF
 chmod +x "$d/ok" "$d/failp3" "$d/slow" "$d/harness"
@@ -43,6 +44,11 @@ pre "$d/ok" --out "$d/r1/report" --stamp-dir "$d/stamps" > /dev/null; r=$?
   || fail "stamp form: $(cat "$d/r1/report.stamp" 2>/dev/null)"
 [ "$(awk '{print NF}' "$d/r1/report.stamp")" = 3 ] || fail "stamp is not <commit> <passes> <date>"
 cmp -s "$d/r1/report.stamp" "$d/stamps/$sha.stamp" || fail "no copy in --stamp-dir"
+
+# P4: the schedule pass names modules and its own 2000 seeds (not P3's 3), both calls with their modules
+HARNESS_LOG="$d/harness.calls" pre "$d/ok" --passes P4 --out "$d/r19/report" > /dev/null
+[ "$(cat "$d/harness.calls" 2>/dev/null)" = "$(printf -- '--tsan queue wake io\n--sched queue wake --seeds 2000')" ] \
+  || fail "P4's harness calls: $(cat "$d/harness.calls" 2>/dev/null)"
 
 # no-stamp-on-failure: P3 red on one seed; the report names the seed and the replay line
 mkdir -p "$d/r2"; echo "old" > "$d/r2/report.stamp"
