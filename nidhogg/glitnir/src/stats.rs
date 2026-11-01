@@ -27,6 +27,10 @@ pub struct StatsEntry {
     pub painted_px: u64,
     /// Device pixels of backdrop blur recomputed for this paint.
     pub backdrop_px: u64,
+    /// This commit is a transition's tick: the nanoseconds since the leg's tick before it (0: none).
+    pub tick_interval_ns: u64,
+    /// Nanoseconds spent on `backdrop_px` (0: nothing recomputed).
+    pub blur_ns: u64,
     pub layers: u32,
     pub ticks: u32,
     pub late_ticks: u32,
@@ -63,6 +67,12 @@ pub struct Summary {
     pub backdrop_px: u64,
     /// From the update to the end of the paint, over the entries with an update time only.
     pub update_ms: Percentiles,
+    /// Between a transition's ticks, over the entries with an interval only.
+    pub tick_interval_ms: Percentiles,
+    /// Recomputing a backdrop blur, over the entries that did only.
+    pub blur_ms: Percentiles,
+    /// How far the worst transition since the last reset ran past its length.
+    pub leg_overrun_ms: f64,
 }
 
 /// The last `RING` entries of one root, and the totals since the last reset.
@@ -76,6 +86,7 @@ pub struct Ring {
     violations: u64,
     scale_mismatch: u64,
     backdrop_px: u64,
+    overrun_ns: u64,
 }
 
 impl Ring {
@@ -89,6 +100,7 @@ impl Ring {
             violations: 0,
             scale_mismatch: 0,
             backdrop_px: 0,
+            overrun_ns: 0,
         }
     }
 
@@ -116,6 +128,7 @@ impl Ring {
         self.violations = 0;
         self.scale_mismatch = 0;
         self.backdrop_px = 0;
+        self.overrun_ns = 0;
     }
 }
 
@@ -147,6 +160,15 @@ fn ms(from: u64, to: u64) -> f64 {
 fn summarise(r: &Ring) -> Summary {
     let b = &r.buf;
     let series = |f: &dyn Fn(&StatsEntry) -> f64| percentiles(b.iter().map(f).collect());
+    let some = |f: fn(&StatsEntry) -> u64| {
+        percentiles(
+            b.iter()
+                .map(f)
+                .filter(|ns| *ns != 0)
+                .map(|ns| ns as f64 / 1e6)
+                .collect(),
+        )
+    };
     let mut damage: Vec<u64> = b.iter().map(|e| e.damage_px).collect();
     let mut painted: Vec<u64> = b.iter().map(|e| e.painted_px).collect();
     damage.sort_unstable();
@@ -177,6 +199,9 @@ fn summarise(r: &Ring) -> Summary {
                 .map(|e| ms(e.t_update_ns, e.t_draw_end_ns))
                 .collect(),
         ),
+        tick_interval_ms: some(|e| e.tick_interval_ns),
+        blur_ms: some(|e| e.blur_ns),
+        leg_overrun_ms: r.overrun_ns as f64 / 1e6,
     }
 }
 
@@ -193,6 +218,14 @@ fn rings() -> MutexGuard<'static, Rings> {
 /// Append one entry to ROOT's ring (allocated on the first record).  Any thread may record.
 pub fn record(root: u64, e: StatsEntry) {
     rings().entry(root).or_insert_with(Ring::new).push(e);
+}
+
+/// A transition of ROOT ended `overrun_ns` past its length.  A hide ends in a commit with no picture, so this is not an
+/// entry.  A root with no ring yet has nothing to add it to: this never allocates.
+pub fn leg_ended(root: u64, overrun_ns: u64) {
+    if let Some(r) = rings().get_mut(&root) {
+        r.overrun_ns = r.overrun_ns.max(overrun_ns);
+    }
 }
 
 /// ROOT's summary, then empty its ring when `reset`.  A root with no record yet summarises as an empty ring (zeros,
@@ -355,6 +388,51 @@ mod tests {
         // ten keyed entries, each 2 ms; the other thirty would pull the median to 0
         assert_eq!(s.update_ms.p50, 2.0);
         assert_eq!(s.update_ms.max, 2.0);
+        forget(root);
+    }
+
+    #[test]
+    fn tick_and_blur_series_skip_entries_without_one() {
+        let root = 9007;
+        let mut rng = Rng(seed());
+        for i in 0..40u64 {
+            let (tick_interval_ns, blur_ns) = match i % 4 {
+                0 => (8_000_000, 0),
+                1 => (0, 1_000_000),
+                _ => (0, 0),
+            };
+            record(
+                root,
+                StatsEntry {
+                    tick_interval_ns,
+                    blur_ns,
+                    ..random_entry(&mut rng)
+                },
+            );
+        }
+        let s = summary(root, false);
+        assert_eq!(s.tick_interval_ms.p50, 8.0);
+        assert_eq!(s.tick_interval_ms.max, 8.0);
+        assert_eq!(s.blur_ms.p50, 1.0);
+        assert_eq!(s.blur_ms.max, 1.0);
+        forget(root);
+    }
+
+    #[test]
+    fn leg_overrun_is_the_largest_since_the_reset() {
+        let root = 9008;
+        leg_ended(root, 1_000_000);
+        assert!(!rings().contains_key(&root), "no ring is made for it");
+        let mut rng = Rng(seed());
+        record(root, random_entry(&mut rng));
+        leg_ended(root, 3_000_000);
+        leg_ended(root, 2_000_000);
+        // it outlives the ring's entries
+        for _ in 0..RING + 1 {
+            record(root, random_entry(&mut rng));
+        }
+        assert_eq!(summary(root, true).leg_overrun_ms, 3.0);
+        assert_eq!(summary(root, false).leg_overrun_ms, 0.0);
         forget(root);
     }
 

@@ -124,8 +124,9 @@ DEFUN ("glitnir-stats", Fglitnir_stats, Sglitnir_stats, 0, 2, 0,
 The record covers the last 1024 paints (counts are since the last reset).
 It is a plist (:count N :compose-ms (:p50 :p95 :max) :draw-ms (...)
 :latency-ms (...) :freeze-ms (...) :damage-px N :painted-px N
-:backfill-rate F :ticks N :late-ticks N :violations N :scale-mismatch N
-:backdrop-px N);
+:tick-interval-ms (...) :blur-ms (...) :backfill-rate F :ticks N
+:late-ticks N :violations N :scale-mismatch N :backdrop-px N
+:leg-overrun-ms F);
 :damage-px and :painted-px are medians in device pixels.  Times are in
 milliseconds; :latency-ms is the time from the commit of a redisplay to the
 end of the paint that shows it, :freeze-ms the time the root was frozen
@@ -135,7 +136,11 @@ returns nil for a frame that is not a graphical pgtk or nhwl frame.  On a
 nhwl frame :key-to-commit-ms replaces :latency-ms: the time from a key
 event to the commit of the buffer that shows it, over the paints that
 show a key only; :draw-ms runs from the start of the draw to the
-buffer's commit, and :painted-px is the area composed.
+buffer's commit, and :painted-px is the area composed.  There
+:tick-interval-ms is the time between two commits of a transition,
+:blur-ms the time a recompute of the backdrop blur took, each over the
+paints that had one, and :leg-overrun-ms how far the worst transition
+since the last reset ran past its length.
 Non-nil RESET
 empties the record after reading it.  */)
   (Lisp_Object frame, Lisp_Object reset)
@@ -173,8 +178,10 @@ empties the record after reading it.  */)
 # endif
     plist = nconc2 (plist, pctl (":latency-ms", &s.latency_ms));
   plist = nconc2 (plist, pctl (":freeze-ms", &s.freeze_ms));
+  plist = nconc2 (plist, pctl (":tick-interval-ms", &s.tick_interval_ms));
+  plist = nconc2 (plist, pctl (":blur-ms", &s.blur_ms));
   return nconc2 (plist,
-		 listn (16, intern_c_string (":damage-px"),
+		 listn (18, intern_c_string (":damage-px"),
 			make_uint (s.damage_px_p50),
 			intern_c_string (":painted-px"),
 			make_uint (s.painted_px_p50),
@@ -189,7 +196,9 @@ empties the record after reading it.  */)
 			intern_c_string (":scale-mismatch"),
 			make_uint (s.scale_mismatch),
 			intern_c_string (":backdrop-px"),
-			make_uint (s.backdrop_px)));
+			make_uint (s.backdrop_px),
+			intern_c_string (":leg-overrun-ms"),
+			make_float (s.leg_overrun_ms)));
 #else
   (void) f;
   (void) reset;
