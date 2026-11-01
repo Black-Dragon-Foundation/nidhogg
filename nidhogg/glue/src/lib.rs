@@ -36,6 +36,9 @@ pub mod csd;
 
 pub mod child;
 
+// a child frame's chrome vector
+pub mod chrome;
+
 // window layers
 pub mod layers;
 

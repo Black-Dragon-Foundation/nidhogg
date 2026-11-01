@@ -116,6 +116,42 @@ and `child-frame-chrome'.  Root frames and decorated (not
       (when (or shadow (and radius (> radius 0)))
         (list :radius (or radius 0) :shadow shadow)))))
 
+(defconst glitnir--chrome-slots
+  '((on . 0) (radius . 1) (blur . 2) (ox . 3) (oy . 4) (spread . 5) (opacity . 6) (rgb . 7)
+    (show-kind . 8) (show-ms . 9) (show-x1 . 10) (show-y1 . 11) (show-x2 . 12) (show-y2 . 13)
+    (hide-kind . 14) (hide-ms . 15) (hide-x1 . 16) (hide-y1 . 17) (hide-x2 . 18) (hide-y2 . 19)
+    (backdrop . 20) (beneath-rgb . 21))
+  "Slot names of `glitnir--chrome-vector' and their indices.
+The same numbers are `NHG_CHROME_*' in nhglue.h and `SLOT_*' in the glue's chrome.rs.")
+
+(defun glitnir--chrome-vector (frame)
+  "Return FRAME's chrome as a vector of numbers, or nil for a root frame.
+The slots are `glitnir--chrome-slots'.  Slots 0-7 come from `glitnir--resolve',
+clamped; the rest are 0 (`beneath-rgb' is -1).  A child frame with no chrome
+has a vector whose first slot is 0."
+  (when (frame-parent frame)
+    (let* ((res (glitnir--resolve frame))
+           (sh (plist-get res :shadow))
+           (off (plist-get sh :offset))
+           (col (plist-get sh :color))
+           (v (make-vector (length glitnir--chrome-slots) 0)))
+      (aset v (alist-get 'beneath-rgb glitnir--chrome-slots) -1)
+      (when res
+        (aset v 0 1)
+        (aset v 1 (max 0 (plist-get res :radius)))
+        (when sh
+          (aset v 2 (max 0 (plist-get sh :blur)))
+          (aset v 3 (car off))
+          (aset v 4 (cdr off))
+          (aset v 5 (plist-get sh :spread))
+          (aset v 6 (min 1 (max 0 (plist-get sh :opacity))))
+          (aset v 7 (let ((rgb 0))
+                      (dotimes (i 3)
+                        (let ((c (nth i col)))
+                          (setq rgb (logior (ash rgb 8) (if (natnump c) (min c 255) 0)))))
+                      rgb))))
+      v)))
+
 (defun glitnir-refresh (&optional frame)
   "Resolve the chrome of FRAME (default: every child frame) again."
   (dolist (f (if frame (list frame) (frame-list)))
