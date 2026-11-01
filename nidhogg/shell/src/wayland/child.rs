@@ -34,6 +34,18 @@ impl MainState {
         }
         self.stacking.remove(&id);
     }
+
+    /// The child windows under `id` as stacked, bottom to top, each child's own right after it.
+    pub(crate) fn stacked_under(&self, id: WindowId) -> Vec<WindowId> {
+        let mut out = Vec::new();
+        for &k in self.stacking.get(&id).into_iter().flatten() {
+            if k != id {
+                out.push(k);
+                out.extend(self.stacked_under(k));
+            }
+        }
+        out
+    }
 }
 
 impl WaylandShell {

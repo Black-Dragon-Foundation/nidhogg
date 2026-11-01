@@ -551,6 +551,16 @@ impl ShellBackend for WaylandShell {
         Ok(self.presenter_stats_impl())
     }
 
+    fn window_stacking(&self, root: WindowId) -> ShellResult<Vec<WindowId>> {
+        self.live()?;
+        Ok(self.main.stacked_under(root))
+    }
+
+    fn draw_count(&self, root: WindowId) -> ShellResult<u64> {
+        self.live()?;
+        self.main.present_draws(root).ok_or(ShellError::State)
+    }
+
     /// Works on a lost connection too: it touches nothing.
     fn abandon(&self) -> Abandon {
         self.abandon_impl()
