@@ -274,9 +274,9 @@ struct nhwl_output
   int cr_width, cr_height;
   uint64_t cr_gen;		/* counts the backing's creations */
   struct nhwl_csd csd;
-  /* On a child frame: the chrome `glitnir--resolve' last gave it (logical pixels), pushed again when its window is
-     made anew.  Its layout, margin, position, mapping and stacking are the glue's (child.rs).  */
-  NhgChrome chrome;
+  /* On a child frame: the chrome vector `glitnir--chrome-vector' last gave it (logical pixels), pushed again when its
+     window is made anew.  Its layout, margin, position, mapping and stacking are the glue's (child.rs).  */
+  float chrome[NHG_CHROME_SLOTS];
   /* The frame is a popup frame (its `nhwl-popup' parameter, given at creation): its window is a popup of its
      parent's, made while it is shown; the popup's state is the glue's (popup.rs).  */
   bool popup_frame;

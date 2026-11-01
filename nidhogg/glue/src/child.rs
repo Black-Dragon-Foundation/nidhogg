@@ -31,10 +31,9 @@ pub const NHG_CHILD_VISIBLE: u32 = 1;
 pub const NHG_CHILD_NO_FOCUS: u32 = 2;
 const FLAGS: u32 = NHG_CHILD_VISIBLE | NHG_CHILD_NO_FOCUS;
 
-/// The chrome `glitnir--resolve` gives a child frame, in logical pixels (C decodes the Lisp plist): `on` 0 for none,
-/// the corner radius, the shadow's blur, offset, spread, opacity (0 to 1) and colour (`0xRRGGBB`).  Layout equals
-/// `NhgChrome`.
-#[repr(C)]
+/// The corners and shadow of a child frame's chrome, in logical pixels, as `chrome::decode` takes them from the slot
+/// vector: `on` 0 for none, the corner radius, the shadow's blur, offset, spread, opacity (0 to 1) and colour
+/// (`0xRRGGBB`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct NhgChrome {
     pub on: u32,
@@ -330,11 +329,13 @@ pub fn set(
     Ok(false)
 }
 
-/// Child `window`'s chrome as `glitnir--resolve` gave it now: whether it changed (C then lays the frame out again,
-/// which gives the margin, and draws it again).  The layer takes it at the next `nhg_layer_ensure`.
-pub fn chrome(state: &mut Display, window: u64, c: &NhgChrome) -> Result<bool, GlueError> {
+/// Child `window`'s chrome slot vector as `glitnir--chrome-vector` gave it now (`chrome::decode` checks it): whether
+/// the corners or the shadow changed (C then lays the frame out again, which gives the margin, and draws it again).
+/// A change of the other slots alone is `false`.  The layer takes it at the next `nhg_layer_ensure`.
+pub fn chrome(state: &mut Display, window: u64, v: &[f32]) -> Result<bool, GlueError> {
+    let d = crate::chrome::decode(v)?;
     let f = child_mut(state, window)?;
-    let n = if c.on == 0 { NhgChrome::default() } else { *c };
+    let n = d.chrome.unwrap_or_default();
     if f.child.chrome == n {
         return Ok(false);
     }
