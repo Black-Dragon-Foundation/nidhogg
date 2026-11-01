@@ -19,6 +19,13 @@
 //! A window that is its own output (a content layer, `layers.rs`) is left out of its frame's damage.  The patch
 //! carries its damage too, and a full-window scroll moves the front's rows as it moved the backing's, so the front
 //! stays the whole picture; the output's changes wait, merged, for its layer's next commit.
+//!
+//! **A child's transitions** (`set_motion`) live on the stage too.  What the host asks reaches it as mail, in order with
+//! the packets; the frames are `present_tree`'s (`tick`): a leg starts at a tree commit, and while it runs every frame of
+//! the tree composes the child whole, scales it and multiplies it by the sample of the time the frame will show.  A leg
+//! is sampled on the tree's clock (`Clock`), so a state is a function of the presented times and never of how many
+//! frames were drawn.  A child that goes while it hides stays here as a *ghost*, under a key no window holds, until its
+//! leg ends.
 
 use crate::api::*;
 use crate::wayland::WaylandShell;
@@ -28,6 +35,8 @@ use crate::wayland::scale::SCALE_ONE;
 use glitnir::committed::Committed;
 use glitnir::compose::{Composer, SourceView, TargetView, compose_committed};
 use glitnir::geom::Rect;
+use glitnir::kernels::kernels;
+use glitnir::motion::{Kind, Motion, MotionSpec, Sample};
 use glitnir::pool::IDLE_NS;
 use glitnir::stats::StatsEntry;
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -103,11 +112,17 @@ pub struct Packet {
     pub parts: Vec<Part>,
 }
 
-/// What the host's thread hands the presenter, in order: a packet, or a window that is gone (a surface id may be
-/// reused for a new window after it).
+/// What the host's thread hands the presenter, in order: a packet, a window that is gone (a surface id may be reused
+/// for a new window after it), or what it asked of a child's transitions.
 pub enum Mail {
     Packet(Packet),
     Forget(u64),
+    /// Child `.0` has the transitions `.1`; `.2`: the host has it shown.
+    Motion(u64, Option<MotionSpec>, bool),
+    /// The host showed (`.1`) or hid child `.0`.
+    Mapped(u64, bool),
+    /// Child `.0` went during its hide leg: it fades on under key `.1`.
+    Ghost(u64, u64),
 }
 
 #[derive(Default)]
@@ -277,6 +292,22 @@ fn alpha_multiply(t: &mut TargetView, cut: u32) {
     }
 }
 
+/// Compose a surface's picture into `t` within `clips`: its scene over `src`, or its front alone.
+fn draw(
+    scene: Option<&Committed>,
+    composer: &mut Composer,
+    front: &Front,
+    src: &SourceView,
+    t: &mut TargetView,
+    clips: &[Rect],
+) {
+    let sources = std::slice::from_ref(src);
+    let composed = scene.is_some_and(|c| compose_committed(c, composer, t, clips, sources).is_ok());
+    if !composed {
+        front.copy_to(t, clips);
+    }
+}
+
 /// What the presenter keeps of a surface: its front, and what waits for its next commit.
 #[derive(Default)]
 struct Surface {
@@ -303,10 +334,161 @@ struct Surface {
     outs: BTreeMap<u64, Pending>,
 }
 
+/// What a tree's presentation feedback said so far, read under its mutex.
+#[derive(Clone, Copy)]
+pub(crate) struct Fed {
+    /// The refresh period.
+    pub(crate) period: u64,
+    /// Feedback asked for so far; answers come in that order.
+    pub(crate) asked: u64,
+    /// The number of the newest answer that reported a frame (0: none), and that frame's time.
+    pub(crate) shown: u64,
+    pub(crate) shown_ns: u64,
+    /// The newest answer said no frame was shown: the compositor is not showing the tree.
+    pub(crate) discarded: bool,
+}
+
+/// A tree's clock for its transitions, from the first frame of a leg until no leg is left.
+///
+/// A frame's time is when it will show.  Before anything was reported that is a period from now.  The first frame this
+/// clock reported is then tied to the time it was drawn for, and from there on the frame after a reported one shows a
+/// period after it: the presented times drive the clock, whichever clock the compositor reports them on, and only
+/// where they do not come (no `wp_presentation`, a discarded frame: sway discards the feedback of a root commit that
+/// only carried a child) does the real clock take over.
+struct Clock {
+    /// The feedback asked for before this clock's first frame.
+    base: u64,
+    /// The time the clock's first frame was drawn for.
+    first: u64,
+    /// The newest frame's time.
+    last: u64,
+    /// Reported times plus this are the clock's (0 for a first frame that showed long after it was drawn: the tree
+    /// was hidden, and the leg's time passed meanwhile).
+    offset: Option<i64>,
+}
+
+impl Clock {
+    fn new(f: &Fed) -> Clock {
+        Clock {
+            base: f.asked,
+            first: 0,
+            last: 0,
+            offset: None,
+        }
+    }
+
+    /// The time the next frame will show, never before the one drawn last.
+    fn frame(&mut self, f: &Fed, now: u64) -> u64 {
+        let real = now + f.period;
+        let t = if f.asked == self.base {
+            // none of this clock's frames asked yet: the coming one is its first
+            self.first = real;
+            real
+        } else if f.discarded {
+            real
+        } else if f.shown > self.base {
+            let (ns, first) = (f.shown_ns, self.first);
+            let offset = *self.offset.get_or_insert_with(|| {
+                if ns.saturating_sub(first) > 2 * f.period {
+                    0
+                } else {
+                    first as i64 - ns as i64
+                }
+            });
+            (ns as i64 + offset) as u64 + f.period
+        } else {
+            // the answer is on its way
+            self.last + f.period
+        };
+        self.last = self.last.max(t);
+        self.last
+    }
+}
+
+/// `spec`'s motion at rest: shown at identity, or hidden.
+fn at_rest(spec: MotionSpec, shown: bool) -> Motion {
+    let mut at_once = spec;
+    at_once.hide.kind = Kind::None;
+    let mut m = Motion::new(at_once);
+    if !shown {
+        m.request(false);
+        m.commit(0);
+    }
+    m.set_spec(spec);
+    m
+}
+
+/// A child's transitions.
+struct Moving {
+    spec: MotionSpec,
+    motion: Motion,
+    /// What the host asked for last (shown: `true`), and what the tree's commits have settled.
+    wanted: bool,
+    settled: bool,
+    /// The surface has no buffer (never shown, or unmapped): a show waits for a new picture.
+    bare: bool,
+    /// A leg has frames to go: for a show its last one at identity, for a hide the unmap.
+    last: bool,
+    /// The surface's window is gone; it lives until its hide ends.
+    ghost: bool,
+    /// The newest frame's time.
+    t: u64,
+    /// The next commit is a tick; when the one before it went, by the real clock (0: none); the period then.
+    ticked: bool,
+    tick_ns: u64,
+    period: u64,
+}
+
+impl Moving {
+    /// A child that gets `spec` now: `mapped` by the host, and `drawn` when a buffer of it has shown.  One that never
+    /// showed is yet to show: its first picture starts the show leg.
+    fn new(spec: MotionSpec, mapped: bool, drawn: bool) -> Moving {
+        let shown = mapped && drawn;
+        Moving {
+            spec,
+            motion: at_rest(spec, shown),
+            wanted: mapped,
+            settled: shown,
+            bare: !shown,
+            last: false,
+            ghost: false,
+            t: 0,
+            ticked: false,
+            tick_ns: 0,
+            period: 0,
+        }
+    }
+
+    /// The tree's next frame has something to do for this surface.
+    fn due(&self, s: &Surface) -> bool {
+        self.last
+            || (self.wanted != self.settled
+                && (!self.bare || (s.drawable && s.front.is_some() && !s.damage.is_empty())))
+    }
+
+    /// The surface shows a buffer whatever the host's packets say: a hide runs or waits for its first frame.
+    fn keeps_drawable(&self) -> bool {
+        self.last || (self.settled && !self.wanted)
+    }
+
+    /// The surface may be asked to fade at any time, or does: its front stays through the quiet period.
+    fn keeps_front(&self) -> bool {
+        !self.bare
+    }
+}
+
 /// The presenter's side: fronts, merged packets, the display's composer and the counters.
 #[derive(Default)]
 pub struct Stage {
     surfaces: HashMap<u64, Surface>,
+    /// The transitions of the children that have them; empty, none of this costs anything.
+    moves: HashMap<u64, Moving>,
+    /// Each moving tree's clock, by root.
+    clocks: HashMap<u64, Clock>,
+    /// Children whose hide is over: each unmaps in its tree's next commit.
+    unmaps: Vec<u64>,
+    /// A leg's picture before its scale.
+    scratch: Vec<u32>,
     /// Each root's earliest key time that no commit has shown yet.
     keys: HashMap<u64, u64>,
     /// Each root's newest packet applied to the fronts (its sequence number): a content ack recorded before it may
@@ -330,8 +512,143 @@ impl Stage {
             match m {
                 Mail::Packet(p) => self.apply(p, &mail.patches),
                 Mail::Forget(id) => self.forget(id),
+                Mail::Motion(id, spec, mapped) => self.set_motion(id, spec, mapped),
+                Mail::Mapped(id, on) => {
+                    if let Some(m) = self.moves.get_mut(&id) {
+                        m.wanted = on;
+                    }
+                }
+                Mail::Ghost(id, key) => self.ghost(id, key),
             }
         }
+    }
+
+    /// Child `id` has the transitions `spec`, and the host has it shown or not (`mapped`).  With none, a leg that runs
+    /// ends: a show's picture is composed once more as it is, a hide (or one that waits) unmaps.
+    fn set_motion(&mut self, id: u64, spec: Option<MotionSpec>, mapped: bool) {
+        let s = self.surfaces.get_mut(&id);
+        match spec {
+            Some(spec) => {
+                if let Some(m) = self.moves.get_mut(&id) {
+                    m.spec = spec;
+                    m.motion.set_spec(spec);
+                } else {
+                    let drawn = s.is_some_and(|s| !s.hist.is_empty());
+                    self.moves.insert(id, Moving::new(spec, mapped, drawn));
+                }
+            }
+            None => {
+                let (Some(m), Some(s)) = (self.moves.remove(&id), s) else {
+                    return;
+                };
+                if !m.wanted && !m.bare {
+                    self.unmaps.push(id);
+                } else if let (true, Some(f)) = (m.last, &s.front) {
+                    s.damage = vec![Rect::new(0, 0, f.w, f.h)];
+                }
+            }
+        }
+    }
+
+    /// Child `id` went during its hide leg: what the stage has of it moves to `key` (the host may give `id` out again).
+    fn ghost(&mut self, id: u64, key: u64) {
+        if let Some(s) = self.surfaces.remove(&id) {
+            self.surfaces.insert(key, s);
+        }
+        if let Some(mut m) = self.moves.remove(&id) {
+            m.ghost = true;
+            self.moves.insert(key, m);
+        }
+    }
+
+    /// Some child has transitions, or an unmap to go: `present_tree` looks at its tree's.
+    pub(crate) fn moving(&self) -> bool {
+        !self.moves.is_empty() || !self.unmaps.is_empty()
+    }
+
+    /// The next frame of root `root`'s tree has a transition to serve.
+    pub(crate) fn work(&self, root: u64) -> bool {
+        self.moves.iter().any(|(id, m)| {
+            self.surfaces
+                .get(id)
+                .is_some_and(|s| s.root == root && m.due(s))
+        })
+    }
+
+    /// The children of root `root` to unmap now, gone from the list.
+    pub(crate) fn take_unmaps(&mut self, root: u64) -> Vec<u64> {
+        let Stage {
+            surfaces, unmaps, ..
+        } = self;
+        let mut out = Vec::new();
+        unmaps.retain(|id| {
+            let Some(s) = surfaces.get_mut(id).filter(|s| s.root == root) else {
+                return surfaces.contains_key(id);
+            };
+            s.drawable = false;
+            out.push(*id);
+            false
+        });
+        out
+    }
+
+    /// A frame of root `root`'s tree is about to go (`fed`: its feedback): each child's leg starts or goes on.  A leg
+    /// that runs damages all of its surface, so the frame composes it whole with the sample of the frame's time; the
+    /// leg's end gives one last frame at rest, or for a hide the unmap (`take_unmaps`).  Returns the ghosts whose hide
+    /// ended.
+    pub(crate) fn tick(&mut self, root: u64, fed: &Fed) -> Vec<u64> {
+        let t = self
+            .clocks
+            .entry(root)
+            .or_insert_with(|| Clock::new(fed))
+            .frame(fed, now_ns());
+        let start = t.saturating_sub(fed.period);
+        let Stage {
+            surfaces,
+            moves,
+            unmaps,
+            ..
+        } = self;
+        let mut ended = Vec::new();
+        for (&id, m) in moves.iter_mut() {
+            let Some(s) = surfaces.get_mut(&id).filter(|s| s.root == root) else {
+                continue;
+            };
+            if !m.due(s) {
+                continue;
+            }
+            if m.wanted != m.settled {
+                m.motion.request(m.wanted);
+                m.motion.commit(start);
+                m.settled = m.wanted;
+                m.bare = false;
+                m.last = true;
+                m.tick_ns = 0;
+            }
+            m.t = t;
+            m.period = fed.period;
+            if !m.settled && (s.front.is_none() || m.motion.unmap_due(t)) {
+                m.last = false;
+                m.bare = true;
+                s.drawable = false;
+                if m.ghost {
+                    ended.push(id);
+                } else {
+                    unmaps.push(id);
+                }
+                continue;
+            }
+            if let Some(f) = &s.front {
+                s.damage = vec![Rect::new(0, 0, f.w, f.h)];
+            }
+            m.ticked = true;
+            m.last = m.motion.running(t);
+        }
+        if !self.work(root) {
+            self.clocks.remove(&root);
+            self.scratch = Vec::new();
+        }
+        ended
     }
 
     /// Root `root`'s newest packet in the fronts (0: none).
@@ -347,22 +664,29 @@ impl Stage {
     /// When the next front may be dropped idle: the earliest quiet period's end among fronts with nothing waiting.
     pub fn next_trim(&self) -> Option<u64> {
         self.surfaces
-            .values()
-            .filter(|s| s.front.is_some() && s.damage.is_empty() && s.outs.is_empty())
-            .map(|s| s.last_ns + IDLE_NS)
+            .iter()
+            .filter(|(id, s)| {
+                s.front.is_some()
+                    && s.damage.is_empty()
+                    && s.outs.is_empty()
+                    && !self.moves.get(id).is_some_and(Moving::keeps_front)
+            })
+            .map(|(_, s)| s.last_ns + IDLE_NS)
             .min()
     }
 
     /// Write `p`'s patches into the fronts and merge it into what waits for its tree's commit.
     fn apply(&mut self, p: Packet, patches: &PatchPool) {
         self.applied.insert(p.root, p.seq);
+        let moves = &self.moves;
         let waiting = self
             .surfaces
-            .values_mut()
-            .filter(|s| s.root == p.root)
-            .fold(false, |w, s| {
-                // the newest packet says which surfaces may show a buffer
-                s.drawable = false;
+            .iter_mut()
+            .filter(|(_, s)| s.root == p.root)
+            .fold(false, |w, (id, s)| {
+                // the newest packet says which surfaces may show a buffer, but for a hide that runs (C lists a hidden
+                // frame as not drawable at once)
+                s.drawable = moves.get(id).is_some_and(Moving::keeps_drawable);
                 w || !s.damage.is_empty()
             });
         if waiting {
@@ -445,8 +769,30 @@ impl Stage {
     }
 
     /// The connection went: the next compositor has none of the pictures, so the whole of every front waits for its
-    /// surface's first commit there (composed whole, and damaged whole on the new surface).
+    /// surface's first commit there (composed whole, and damaged whole on the new surface).  Ghosts go, and every leg
+    /// ends where it was heading: the new surfaces have no picture to move from.
     pub fn connection_lost(&mut self) {
+        let ghosts: Vec<u64> = self
+            .moves
+            .iter()
+            .filter(|(_, m)| m.ghost)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ghosts {
+            self.forget(id);
+        }
+        self.clocks.clear();
+        self.unmaps.clear();
+        for (id, m) in &mut self.moves {
+            let shown = m.wanted && m.settled;
+            m.motion = at_rest(m.spec, shown);
+            m.settled = shown;
+            m.bare = !shown;
+            m.last = false;
+            if let (false, Some(s)) = (m.wanted, self.surfaces.get_mut(id)) {
+                s.drawable = false;
+            }
+        }
         for s in self.surfaces.values_mut() {
             if let Some(f) = &s.front {
                 s.damage = vec![Rect::new(0, 0, f.w, f.h)];
@@ -464,8 +810,15 @@ impl Stage {
     /// Compose surface `id`'s buffer `buf` from its front: the waiting damage and what the buffer's age misses.
     pub fn compose(&mut self, id: u64, buf: &NhShellBuffer) {
         let Stage {
-            surfaces, composer, ..
+            surfaces,
+            composer,
+            moves,
+            scratch,
+            ..
         } = self;
+        let sample = moves
+            .get(&id)
+            .map_or(Sample::IDENTITY, |m| m.motion.sample(m.t));
         let Some(s) = surfaces.get_mut(&id) else {
             return;
         };
@@ -500,15 +853,29 @@ impl Stage {
             scale: s.scale,
         };
         let src = front.view(s.glitnir_root, s.src, s.scale);
-        let composed = s
-            .scene
-            .as_ref()
-            .is_some_and(|c| compose_committed(c, composer, &mut t, &clips, &[src]).is_ok());
-        if !composed {
-            front.copy_to(&mut t, &clips);
+        let scene = s.scene.as_deref();
+        if sample.scale == 1.0 {
+            draw(scene, composer, front, &src, &mut t, &clips);
+        } else {
+            // a pop: the picture as it will rest, then scaled about its centre, so the shadow's tiles stretch with it
+            let (w, h) = (buf.w as usize, buf.h as usize);
+            scratch.resize(w * h, 0);
+            let mut whole = TargetView {
+                data: scratch,
+                stride: w,
+                rect: all,
+                scale: s.scale,
+            };
+            draw(scene, composer, front, &src, &mut whole, &[all]);
+            kernels().scale(t.data, stride, scratch, w, w, h, sample.scale, all);
         }
-        if s.alpha_host {
-            alpha_multiply(&mut t, s.alpha_cut);
+        let cut = if s.alpha_host { s.alpha_cut } else { 0 };
+        if sample.opacity < 1.0 {
+            // the leg's opacity is always our multiply (a static alpha stays with the compositor when it can)
+            let keep = (1.0 - f64::from(cut) / f64::from(u32::MAX)) * f64::from(sample.opacity);
+            alpha_multiply(&mut t, ((1.0 - keep) * f64::from(u32::MAX)) as u32);
+        } else if s.alpha_host {
+            alpha_multiply(&mut t, cut);
         }
     }
 
@@ -531,8 +898,20 @@ impl Stage {
         }
     }
 
-    /// Surface `id`'s stats entry for a commit that showed what waited (with the tree's key time when it is the root).
+    /// Surface `id`'s stats entry for a commit that showed what waited (with the tree's key time when it is the root),
+    /// with the tick it was, if any: late when it came over 1.25 periods after the one before.  A ghost's root is gone,
+    /// so its frames go unrecorded.
     fn record(&mut self, id: u64) {
+        let now = now_ns();
+        let (mut ticks, mut late_ticks, mut ghost) = (0, 0, false);
+        if let Some(m) = self.moves.get_mut(&id) {
+            ghost = m.ghost;
+            if std::mem::take(&mut m.ticked) {
+                ticks = 1;
+                late_ticks = u32::from(m.tick_ns != 0 && now - m.tick_ns > m.period * 5 / 4);
+                m.tick_ns = now;
+            }
+        }
         let Some(s) = self.surfaces.get_mut(&id) else {
             return;
         };
@@ -545,15 +924,19 @@ impl Stage {
             t_update_ns: key,
             t_commit_ns: s.draw_start_ns,
             t_draw_start_ns: s.draw_start_ns,
-            t_draw_end_ns: now_ns(),
+            t_draw_end_ns: now,
             presented_us: -1,
             damage_px: s.damage_px,
             painted_px: s.painted_px,
             backfill: 2,
+            ticks,
+            late_ticks,
             ..StatsEntry::default()
         };
         self.composer.fill_stats(s.glitnir_root, &mut e);
-        glitnir::stats::record(s.glitnir_root, e);
+        if !ghost {
+            glitnir::stats::record(s.glitnir_root, e);
+        }
         s.draw_start_ns = 0;
         s.damage_px = 0;
         s.painted_px = 0;
@@ -640,6 +1023,7 @@ impl Stage {
                 && s.damage.is_empty()
                 && s.outs.is_empty()
                 && now.saturating_sub(s.last_ns) > IDLE_NS
+                && !self.moves.get(id).is_some_and(Moving::keeps_front)
             {
                 s.front = None;
                 out.push(*id);
@@ -654,6 +1038,9 @@ impl Stage {
         if let Some(s) = self.surfaces.remove(&id) {
             self.composer.forget(s.glitnir_root);
         }
+        self.moves.remove(&id);
+        self.clocks.remove(&id);
+        self.unmaps.retain(|u| *u != id);
         self.keys.remove(&id);
         self.applied.remove(&id);
     }
@@ -860,12 +1247,35 @@ impl WaylandShell {
     /// Window `id` is gone: its front and what waited for it go too, after the packets published before.
     pub(super) fn publish_forget(&mut self, id: u64) {
         self.presenting.fronts.remove(&id);
+        self.post(Mail::Forget(id));
+    }
+
+    /// Hand `m` to the presenter, after the packets published before.
+    fn post(&mut self, m: Mail) {
         let mail = &self.main.mailbox;
-        let waited = mail.post(Mail::Forget(id));
+        let waited = mail.post(m);
         Counters::max(&self.presenting.stats.main_wait_max_ns, waited);
         match self.presenting.stage.as_mut() {
             Some(stage) => stage.drain(mail),
             None => self.link.wake(),
         }
+    }
+
+    /// Hand `m` about a child of root `root`'s tree to the presenter, and let the tree's next frame see it: a hide on
+    /// an idle tree has no other wake.
+    pub(super) fn motion_post(&mut self, root: u64, m: Mail) {
+        self.post(m);
+        self.main.present_tick(root);
+    }
+
+    /// The presenter has a picture of window `id`, or will have with the packets on their way.
+    pub(super) fn published_front(&self, id: u64) -> bool {
+        self.presenting.fronts.contains_key(&id)
+    }
+
+    /// Window `id` went as a ghost under `key` in root `root`'s tree.
+    pub(super) fn publish_ghost(&mut self, root: u64, id: u64, key: u64) {
+        self.presenting.fronts.remove(&id);
+        self.motion_post(root, Mail::Ghost(id, key));
     }
 }
