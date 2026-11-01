@@ -122,6 +122,21 @@ impl MainState {
     }
 
     pub(crate) fn detach_scale(&mut self, id: u64) {
+        if let Some(s) = self.take_scale(id) {
+            s.destroy();
+        }
+    }
+
+    /// `detach_scale`, but the viewport lives on with whoever commits the surface (a ghost's fade): without it the
+    /// surface would change size.
+    pub(crate) fn detach_scale_keeping_viewport(&mut self, id: u64) {
+        if let Some(mut s) = self.take_scale(id) {
+            s.viewport = None;
+            s.destroy();
+        }
+    }
+
+    fn take_scale(&mut self, id: u64) -> Option<SurfaceScale> {
         if let Some(shared) = &self.shared {
             shared
                 .scale120
@@ -129,9 +144,7 @@ impl MainState {
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&id);
         }
-        if let Some(s) = self.scales.remove(&id) {
-            s.destroy();
-        }
+        self.scales.remove(&id)
     }
 
     /// Recompute surface `id`'s scale and post `SCALE` when it changed.

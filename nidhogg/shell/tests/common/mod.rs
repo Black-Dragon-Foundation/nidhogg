@@ -35,6 +35,11 @@ impl Recorder {
 
     /// The same on `clock`: `auto`, or `manual` (frames only on the `present` command).
     pub fn start_clock(profile: &str, clock: &str) -> Recorder {
+        Recorder::start_refresh(profile, clock, 60_000)
+    }
+
+    /// The same with an output that refreshes at `refresh_mhz` (what presentation feedback reports).
+    pub fn start_refresh(profile: &str, clock: &str, refresh_mhz: u32) -> Recorder {
         let bin = std::env::var_os("NH_RECORDER")
             .expect("NH_RECORDER is not set (the path of a built nh-recorder)");
         static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -49,6 +54,7 @@ impl Recorder {
             .arg(dir.join("control"))
             .arg("--profile")
             .arg(&profile)
+            .args(["--refresh-mhz", &refresh_mhz.to_string()])
             .env("XDG_RUNTIME_DIR", &dir)
             .stdout(Stdio::piped())
             .spawn()
@@ -94,6 +100,12 @@ impl Recorder {
             }
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    /// One frame of a manual clock: it moves on by `advance_ns`, and what waits for a frame is answered.
+    pub fn present(&self, advance_ns: u64) {
+        let r = self.control(&format!(r#"{{"cmd":"present","advance_ns":{advance_ns}}}"#));
+        assert!(r.contains("\"ok\":true"), "{r}");
     }
 
     /// The output as the compositor shows it now: (width, its BGRA pixels, 4 bytes each, rows packed).

@@ -142,6 +142,9 @@ impl WaylandShell {
         if let Some(stage) = self.presenting.stage.as_mut() {
             stage.connection_lost();
         }
+        for p in self.main.presents.values() {
+            present::lock(p).drop_ghosts();
+        }
         self.reconnect = Some(Reconnecting {
             attempt: None,
             presenter_was_on,
