@@ -110,57 +110,27 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   by content) with its cache in DIR; the `.eln` files from native compilation do not go through ccache.
 - **Glitnir (the compositor)** is Nidhogg's Rust library (`nidhogg/glitnir/`). Source builds therefore need **Rust**:
   `cargo` and `rustc` 1.93 or newer (the build lists name the packages: `cargo` + `rust` on Fedora, `cargo` + `rustc` on
-  Ubuntu, `rust` from Homebrew on macOS). `build.sh` passes `--with-glitnir` on Linux and NS; `--without-glitnir` builds
+  Ubuntu, `rust` from Homebrew on macOS). Debian 13 carries 1.85, so on any Linux whose `rustc` is older `build.sh` fetches
+  a pinned toolchain into `BUILD-DIR/rust` (`rustup-init` from the versioned archive, its sha256 checked; network once,
+  no root). `build.sh` passes `--with-glitnir` on Linux and NS; `--without-glitnir` builds
   without it and without installing Rust. The configure flag is `--with-glitnir` (default no; `HAVE_GLITNIR`): configure
   checks `cargo` and `rustc` only under the flag and otherwise stops with `--with-glitnir needs cargo and rustc 1.93 or
   newer`. `make` builds the crate offline and locked, with its cargo home and target directory under `src/` of the build
   tree (never `~/.cargo`), and links it into `temacs`. With the flag the feature `glitnir` is provided, `glitnir-enable`
   (default `t`) and `glitnir-active-p` exist; without it none of them do. Release tarballs need no Rust.
-  `glitnir-active-p` is non-nil for a pgtk frame (not a tooltip) that draws on an ARGB32 image surface (GDK's Wayland
-  surfaces) while `glitnir-enable` is non-nil. For such a frame pgtk's drawing primitives record **damage** (device
-  pixels, rounded outward; a scroll as one operation; the visible bell, resizes and scale changes as the whole frame;
-  nothing while `x-export-frames` draws); an inactive frame makes no call into Glitnir. `(glitnir--damage &optional
-  FRAME)` takes a frame's pending damage as `((X Y W H) …)`; the next consistency point takes it otherwise, unless
-  `glitnir-debug` is `damage-hold` (the damage then stays until read and the points present whole frames).
-  **Damage-only present.** The first damage on a root frame or its child frames freezes the root's GDK window
-  (`gdk_window_freeze_updates`), so GTK never paints a half-drawn picture; so does a scene change made inside
-  redisplay, and a child frame's new border ring (its first one is drawn before it has a surface, so no damage of its
-  own would freeze the root). At a **consistency point** (redisplay's buffer
-  flips unblocked, also after an error or a throw out of redisplay; a frame up to date outside a flip block;
-  `flush_display` and the end of the pgtk handlers that draw — mouse highlight, focus, the visible bell — and of
-  `pgtk_read_socket`, these only outside redisplay; an idle callback for any other drawing outside redisplay) the root's
-  damage, its children's included, is committed and invalidated rectangle by rectangle on the root widget, in place of
-  pgtk's whole-widget invalidation, and the root thaws and paints at once (`gdk_window_process_updates`; without it,
-  GLib dispatch inside redisplay would find the root frozen and starve the display). With `glitnir-enable` nil the
-  stock path runs: whole-widget paints, no call into Glitnir but the frame-time record, and a frozen root thaws at its
-  next point. `glitnir-stats` records the commit time on both paths (`:latency-ms`), the freeze (`:freeze-ms`), the
-  committed and the painted pixels; `:backfill-rate` is nil (GDK's staging surface hides back-fills). Test primitives:
-  `glitnir--draw-count`, `glitnir--frozen-p`, `glitnir--last-paint`, `glitnir--now-ns`, `glitnir--max-paint-gap-ms`,
-  `glitnir--motion` (a synthetic pointer motion, handled by GTK at once), `glitnir--draw-undamaged` and
-  `glitnir--compose-with-pending` (see *Debug modes*).
-  **Debug modes** (`glitnir-debug`; nil in normal use):
-  - `damage`: every committed rectangle is painted over the frame for 100 ms in the background of the
-    `glitnir-debug-damage` face (half transparent; the frame's surface never holds it).
-  - `verify`: a copy of each frame's surface (a child frame's too) is kept as of the previous commit. At each commit,
-    pixels that changed outside the committed damage are logged once to stderr, `glitnir verify: FRAME X Y W H after
-    PRIMITIVE` (the bounding box in device pixels, the drawing primitive that recorded damage last), then in braces
-    the count of such pixels, the first one's old and new value and the committed rectangles, and counted in
-    `:violations` of `glitnir-stats`. A GTK paint of a root that still has uncommitted damage or an uncommitted scene
-    change logs `glitnir verify: compose with pending damage` and a backtrace (who dispatched GLib), and counts; a
-    freeze that lasts over a second logs when it ends. Each counted line ends with the frame's state in brackets (root
-    or child, its name, size and place, its surface, visibility, whether redisplay runs, the root's dirty, pending and
-    frozen state, a monotonic time in ms). It costs a full
-    surface compare per commit: for tests and hunting, not daily use. `(glitnir--draw-undamaged)` paints a rectangle
-    without recording it (the next commit reports it); `(glitnir--compose-with-pending)` forces one paint of the root
-    while damage is pending; `(glitnir--debug-freeze)` (any non-nil `glitnir-debug`) freezes the root as the first
-    damage after a point does, so that a test can act between the freeze and the point that thaws it. Verify also
-    counts a commit whose stacking of child frames differs from GDK's (`(glitnir--stacking)`: Glitnir's, bottom to top),
-    and logs uncounted `glitnir verify: FRAME composed without content` for a child frame's surface composed with a
-    transparent middle pixel on an opaque frame. A frame's surface made anew inside redisplay (a size or scale change
-    at an `unblock_input`) is never shown before the frame has been redrawn whole: redisplay may clear the garbaged
-    flag that would redraw it, so the last complete surface stays and the frame is garbaged again;
-    `(glitnir--debug-reset-surface FRAME)` makes it anew for tests.
-  - `full`: every commit damages the whole frame (the paint that Glitnir would otherwise have saved).
+  On Linux the library is linked through the native shell's glue (`nidhogg/glue`, `libnhglue.a`; `nidhogg/shell/README.md`).
+  `glitnir-active-p` is non-nil for a frame of the shell that has a scene (not a tooltip) while `glitnir-enable` is
+  non-nil. Emacs draws each frame into its own backing and publishes the damage, the copied pixels and the scene per
+  tree (a root and its child frames); the presenter, one thread per display (`NHWL_PRESENTER=0` runs it inline), composes
+  and commits. Child frames are subsurfaces of their parent, so the Wayland compositor puts the tree together.
+  There is no stock path: with `glitnir-enable` nil the decorations are off and the presenter still composes.
+  `glitnir-stats` gives `:key-to-commit-ms` in place of `:latency-ms`, `:draw-ms` runs to the buffer's commit and
+  `:painted-px` is the area composed; `nhwl-presenter-stats` has the presenter's own counters. `glitnir-snapshot` is one
+  frame's backing, without its child frames.
+  The other test primitives (`glitnir--draw-count`, `--frozen-p`, `--last-paint`, `--stacking`, `--layer-rect`,
+  `--chrome` and the like) and the `damage`, `verify` and `full` modes of `glitnir-debug` belonged to `src/glitnir-pgtk.c`,
+  which is not built: on the shell the primitives answer 0 or nil, and those modes do nothing. A panic in the glue drops the
+  display it happened on and Emacs keeps running (`nhwl-glue-panics`).
 - **Dev build** (`--dev` or `NIDHOGG_BUILD_DEV=1`, for agents' task builds): configures `--with-native-compilation=yes`
   instead of `aot`, so only the preloaded Lisp is native-compiled and the other ~1,400 files stay bytecode (minutes instead
   of the better part of an hour). A `lisp/site-init.el` written into the build copy sets `native-comp-jit-compilation` to
@@ -210,15 +180,17 @@ on a Nidhogg frame of the native shell, under a headless sway, or the compositor
   directories are temporary. `WAYLAND_DISPLAY`, `DISPLAY`, the session bus and `EMACS_SOCKET_NAME` of the caller are
   unset, so a run never reaches the caller's compositor, session or Emacs server. Everything started is stopped on exit.
 - The scale: `gdctl set --logical-monitor --scale S` inside the session (mutter 50 accepts a fractional scale on a headless
-  virtual monitor). GTK 3 knows only integer scales, so `(frame-scale-factor)` is `ceil(S)` and the monitor's GDK geometry
-  `(WxH / S) * ceil(S)` (S = 1.25 on 2880x1800: 4608x2880). The runner waits up to 10 s for both before the tests start.
+  virtual monitor). The shell has the exact scale, so `(frame-scale-factor)` is S and the monitor's geometry its device
+  size. The runner waits up to 10 s for both before the tests start.
 - `--daemon` starts `nidhogg --fg-daemon` (socket in the run's private runtime directory) and opens the frame with
   `nidhoggclient -c`; the runner starts the tests from `server-after-make-frame-hook`.
 - `--container fedora-45` does the same in a `--memory 6g` podman container (image pinned by digest; `mutter`,
   `dbus-daemon` and the tarball's `deps.runtime` are installed there). A tarball is mounted at the prefix its `BUILDINFO` names.
+  `--container ubuntu-26.04` and `debian-13` run a tarball built there, on the recorder only, to try those distros' libraries.
 - The tests start after the first frame is visible and redisplayed, never inside `command-line`. Exit 0 when all tests
   passed, 1 on a failure or a timeout (default 300 s).
-- CI job `gui` (below) runs the fedora-45 tarball at scales 1 and 2, and `native-gui` the native shell's rows.
+- CI job `native-gui` (below) runs the fedora-45 tarball, every file at scales 1 and 2 and the native shell's rows on each
+  compositor.
 
 ## The test clock
 
@@ -302,8 +274,10 @@ machine whose timing never shows it, not certain.
   every `*-gui-tests.el` file on headless sway at scales 1 and 2 (`gui-1`, `gui-2`); the `nhwl-gui/` rows on the recorder
   (sway's, mutter's, KWin's and xdg-v2 globals; no presenter thread; 120 Hz; scale 1.25; client-side decorations; in a
   daemon; the scripted portal), on headless mutter at scales 1 and 1.25 and on KWin with the protocol trace checked,
-  and on headless sway (plain, client-side decorations, in a daemon); and the decoration rows on the recorder and on sway
-  at scales 1 and 2. A lane fails when too few rows ran, so none is green on rows that all skipped. Both jobs are part of
+  and on headless sway (plain, client-side decorations, in a daemon); the decoration rows on the recorder and on sway
+  at scales 1 and 2; and the input-method rows (`nidhogg/test/ime-matrix.sh`) on sway with fcitx5 and, the cursor
+  rectangle only, on mutter. GNOME's IBus path needs gnome-shell, which does not run in the container, and KWin refuses
+  the keys, so both stay manual checks. A lane fails when too few rows ran, so none is green on rows that all skipped. Both jobs are part of
   the release gate.
 - A release tag runs what `release` needs (`tree`, `linux`, `macos`, `drgnx`, `native-crates`, `native-gui`):
   `compile-noglitnir` and the workers jobs skip it, since the tagged commit passed them in its round.
@@ -363,14 +337,14 @@ turns the finished spans into JSON Lines records, names function, file and packa
 
 - Build flag: `--with-nidhogg-watchdog` (defines `HAVE_NIDHOGG_WATCHDOG`; `build.sh` passes it on every target unless
   given `--without-nidhogg-watchdog`). `--with-nidhogg-watchdog-signal=NAME` picks the signal (default `SIGURG`).
-  Linux (pgtk and terminal) first; elsewhere the flag builds and starting the watchdog signals an error.
+  Linux (the native shell and terminal) first; elsewhere the flag builds and starting the watchdog signals an error.
 - Off unless something turns it on (drgnx does). With the flag built in and nothing started there is no thread and no
   signal handler.
 - With the flag off the build equals upstream's for every file the watchdog touches (checked by
   `nidhogg/test/tree-test.sh`).
 - Files: `src/nidhogg-watchdog.h` (the shared layout and every cross-file prototype), `src/nidhogg-watchdog.c` (edges,
   spans, records), `-monitor.c` (monitor thread, park protocol), `-sample.c` (signal handler, raw ring), `-gc.c` (GC end
-  hook), `-input.c` and `-phase.h` (phases, felt input), `-gtk.c` (GLib poll wrapper, pgtk only), `-park.h` (the park
+  hook), `-input.c` and `-phase.h` (phases, felt input), `-gtk.c` (GLib poll wrapper, empty without pgtk), `-park.h` (the park
   protocol's steps); Lisp in `lisp/nidhogg-watchdog*.el` (preloaded; the feature is `nidhogg-watchdog`).
 - Tests: `watchdog/…` in `test/src/nidhogg-tests/watchdog-*-tests.el`, GUI rows `watchdog-gui/…` in `*-gui-tests.el`.
 
@@ -419,14 +393,14 @@ turns the finished spans into JSON Lines records, names function, file and packa
   (`unwind_to_catch`) pops every phase pushed inside its catch target, so a `condition-case` around a failing
   `json-parse-string` does not label the rest of the span `json`. Nothing goes on the specpdl. A stall is `:felt`
   when a keyboard, button or wheel event was stored during it (a key pressed while Emacs was busy) or when it ran a
-  command; `:input-wait-ms` runs from that input's arrival (a pgtk event's own timestamp when it reads as
+  command; `:input-wait-ms` runs from that input's arrival (a native shell event's own timestamp when it reads as
   `CLOCK_MONOTONIC` within the last 2 s, else the time it was stored) to the stall's end. `:commands` counts the
   commands in the span, and `:input-queued` says a second one ran in it (keys queued behind each other). The
   commands named by `nidhogg-watchdog--set-typing-commands` (16 at most) are timed one by one, from their key's
   arrival to the next key taken or the next wait, into the `:typing` histogram of `nidhogg-watchdog--stats`.
-An open popup menu or dialog counts as the user waiting, not as a stall: on pgtk a wrapper around GLib's poll
-function (`src/nidhogg-watchdog-gtk.c`) marks the wait. A Lisp timer that runs inside a menu or dialog is still
-busy time and is reported.
+An open popup menu or dialog counts as the user waiting, not as a stall: on the native shell it runs its own loop on
+`read-event` (`lisp/term/nhwl-menu.el`), which is an ordinary responsive wait. A Lisp timer that runs inside a menu or
+dialog is still busy time and is reported.
 The timing group (`watchdog-timing-tests.el`) runs on the real clock with wide margins (spins of 0.5 to 10 s
 against a 100 ms threshold) and asserts counts, never sample numbers ("at least one sample, or `:missed` counted"): a
 1 s spin from a timer (state CPU, the timer function on the stack), a blocked `call-process` (phase `call-process`),
@@ -434,7 +408,7 @@ no sample requests before half the threshold, child Nidhoggs on a pty for the re
 spin makes the stall `:felt`), a Lisp thread that holds the global lock while the main thread idles (`:lisp-thread`),
 `suspend-emacs` and `sit-for` (waiting, no stall), and a 10 s deep-sampling stress run (allocation, byte code, native
 code, forced collections, a specpdl past 10⁵ entries) in which every sampled word is a live object or
-`nidhogg-watchdog--gone`. GUI rows (`watchdog-gui-tests.el`, `nidhogg/test/gui.sh`): `sit-for` on a pgtk frame is
+`nidhogg-watchdog--gone`. GUI rows (`watchdog-gui-tests.el`, `nidhogg/test/gui.sh`): `sit-for` on a frame of the shell is
 waiting, and a mode-line `:eval` that spins is a stall in the `redisplay` phase with the `:eval` function innermost.
 `M-x nidhogg-watchdog-mode` (global, off by default) starts the monitor with `nidhogg-watchdog-threshold` (100 ms)
 and `nidhogg-watchdog-hang-ms` (2000) and one repeating 1 s idle timer; a start that fails after the C side started
