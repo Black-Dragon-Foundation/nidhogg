@@ -670,6 +670,24 @@ nhwl_publish (struct frame *f)
   unblock_input ();
 }
 
+/* Root R's tree and every popup (the shell keeps those hanging from it),
+   brought up to date for glitnir-snapshot, into *S; how many there are.  */
+ptrdiff_t
+nhwl_snapshot_list (struct frame *r, const NhgSurface **s)
+{
+  Lisp_Object tail, frame;
+
+  nhwl_publish (r);
+  nhwl_nsurfaces = 0;
+  nhwl_surface_add (r, 0, true);
+  FOR_EACH_FRAME (tail, frame)
+    if (nhwl_popup_frame_p (XFRAME (frame))
+	&& FRAME_NHWL_OUTPUT (XFRAME (frame))->window)
+      nhwl_surface_add (XFRAME (frame), 0, true);
+  *s = nhwl_surfaces;
+  return nhwl_nsurfaces;
+}
+
 /* The pacer of root window ROOT's tree lets it present (inline mode): the
    shell presents what was published.  It needs nothing of Emacs, so it runs
    whatever Emacs is doing, drawn or not: a tree that owes a commit (a bare

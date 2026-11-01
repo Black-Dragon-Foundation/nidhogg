@@ -35,16 +35,56 @@ impl MainState {
         self.stacking.remove(&id);
     }
 
-    /// The child windows under `id` as stacked, bottom to top, each child's own right after it.
+    /// Append `id` and the child windows under it to `out` bottom to top, a parent's place among its children kept.
+    fn paint_order(&self, id: WindowId, out: &mut Vec<WindowId>) {
+        match self.stacking.get(&id) {
+            Some(order) => order.iter().for_each(|&k| {
+                if k == id {
+                    out.push(id);
+                } else {
+                    self.paint_order(k, out);
+                }
+            }),
+            None => out.push(id),
+        }
+    }
+
+    /// The child windows under `id` as stacked, bottom to top.
     pub(crate) fn stacked_under(&self, id: WindowId) -> Vec<WindowId> {
         let mut out = Vec::new();
-        for &k in self.stacking.get(&id).into_iter().flatten() {
-            if k != id {
-                out.push(k);
-                out.extend(self.stacked_under(k));
+        self.paint_order(id, &mut out);
+        out.retain(|&k| k != id);
+        out
+    }
+
+    /// Root `root`, its child windows and the popups hanging from them, each with its own: what shows, bottom to top.
+    /// A popup is above every window of the tree it hangs from, and above the popups older than it.
+    pub(crate) fn painted(&self, root: WindowId) -> Vec<WindowId> {
+        let mut out = Vec::new();
+        self.paint_order(root, &mut out);
+        let mut popups: Vec<_> = self.popups.iter().map(|(&id, p)| (id, p.parent)).collect();
+        popups.sort_unstable();
+        for (id, parent) in popups {
+            if out.contains(&parent) {
+                self.paint_order(id, &mut out);
             }
         }
         out
+    }
+
+    /// Where window `id`'s surface starts in its tree's root, logical pixels: a child at its offsets, a popup where the
+    /// compositor placed it in the window geometry of the window it hangs on.
+    pub(crate) fn origin(&self, id: WindowId) -> (i32, i32) {
+        if let Some(c) = self.children.get(&id) {
+            let (x, y) = self.origin(c.parent);
+            return (x + c.x, y + c.y);
+        }
+        let Some(p) = self.popups.get(&id) else {
+            return (0, 0);
+        };
+        let (x, y) = self.origin(p.base_window);
+        let (gx, gy) = self.present_geometry_origin(p.base_window);
+        (x + gx + p.placed.0, y + gy + p.placed.1)
     }
 }
 

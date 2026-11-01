@@ -952,6 +952,30 @@ own count is its root's."
        (should (nhwl-gui--wait (lambda () (> (glitnir--draw-count) before)) 5))
        (should (= (glitnir--draw-count c) (glitnir--draw-count)))))))
 
+(ert-deftest nhwl-gui/snapshot-holds-the-tree ()
+  "`glitnir-snapshot' of a root shows its child frames where they sit, and only while they are shown."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let* ((root (selected-frame)) (c nil) (none nil) (changed nil))
+    (unwind-protect
+        (progn
+          (gui-runner-wait-settled)
+          (setq none (glitnir-snapshot root 'raw)
+                c (nhwl-gui--child '(background-color . "#ff00ff")))
+          (should (nhwl-gui--wait (lambda () (frame-visible-p c)) 5))
+          (gui-runner-wait-settled)
+          (setq changed (glitnir-snapshot root 'raw))
+          (should (equal (seq-take changed 2) (seq-take none 2)))
+          (should-not (equal (nth 2 changed) (nth 2 none)))
+          ;; magenta in the child's middle, wherever the native area starts in the surface
+          (let* ((w (car changed)) (bytes (nth 2 changed))
+                 (px (lambda (x y) (aref bytes (+ (* y w 4) (* x 4) 2)))))
+            (should (seq-some (lambda (y) (= (funcall px (+ 40 (/ (frame-pixel-width c) 2)) y) 255))
+                              (number-sequence 30 (+ 30 (frame-pixel-height c) 80)))))
+          (make-frame-invisible c)
+          (gui-runner-wait-settled)
+          (should (equal (glitnir-snapshot root 'raw) none)))
+      (when (frame-live-p c) (delete-frame c t)))))
+
 ;; Live rows: they run on any compositor, the real sway and mutter included, and assert only that the frame is live and
 ;; nothing signalled.  What the shell said to the compositor is judged afterwards by the trace checker
 ;; (`gui.sh --wayland-debug F --trace-check RULES', nidhogg/test/wl-trace-check.el).
