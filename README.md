@@ -164,6 +164,13 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   build. It can't pass for a release: `--dev` refuses `--out` and `--stage pack`, and its compiled-Lisp cache stamp
   carries the mode, so dev and AOT entries never mix. Use a fresh `--build-dir` when switching modes.
 - `--check FILE` runs the `make -C test` targets listed in FILE (`nidhogg/check-subset.txt` is what CI runs).
+- A test that needs a process to say something at a given moment uses a scripted peer
+  (`lisp/emacs-lisp/nidhogg-test-peer.el`, installed with Nidhogg): `nidhogg-test-peer-write` delivers a string to the
+  peer's filter as exactly one call and returns after it ran, with no child process and no sleep.
+- A test file that fails in `--check` runs once more (`nidhogg/test/check-rerun.sh`). A test that failed and then passed
+  fails the check unless `nidhogg/test/flaky.txt` lists it as `NAME # cause; stress run`; the run then prints
+  `flaky (listed: CAUSE)`. A listed name that no test defines, or that two files define, fails the check too. A flake
+  without a cause is fixed, not listed. `bash nidhogg/test/check-rerun-test.sh` tests the step with a fake runner.
 - `bash nidhogg/test/build-test.sh` checks the dry-run output.
 
 ## Release tarballs
@@ -224,7 +231,7 @@ delays at the workers' sync points (`src/nidhogg-chaos.h`). The seed is `NIDHOGG
 Emacs processes inherit it, and the first point prints `chaos seed N` to stderr. It makes an ordering bug likely on a
 machine whose timing never shows it, not certain.
 
-- `tree`: `tree-test.sh` and `ci-test.sh` (full history and tags).
+- `tree`: `tree-test.sh`, `ci-test.sh` and `check-rerun-test.sh` (full history and tags).
 - `linux` (fedora-44, fedora-45, ubuntu-26.04): `build.sh --container D --stage build`, the cache saves, then `--stage check
   --check nidhogg/check-subset.txt`, then `--stage pack --out ...` (so a failing check keeps the build's caches), then
   `tarball-test.sh`. `macos`: Homebrew `deps/macos.build`, `build.sh --host` (`--stage build`, then `--stage pack`),
@@ -268,6 +275,25 @@ machine whose timing never shows it, not certain.
     base; never those of sibling branches or other tags. Keys are identical on every branch, so a run on `macos-ci` or a
     pull request reuses what `nidhogg-31` saved. Unused caches are evicted after 7 days and the oldest go first above 10 GB
     ([GitHub: dependency caching](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)).
+- `timing` (fedora-45 and macOS, after `linux` and `macos`; `continue-on-error: true`; not in `release`'s needs, so it can
+  never fail a run or a release): the timing test files in a lane of their own, report-only
+  (`nidhogg/test/timing-lane.sh`, rows and budget ratios in `nidhogg/test/timing-rows.txt`). It runs nothing else. A fixed
+  workload (`timing-calibration-tests.el`, about a second) runs before and after each row on the same runner; a row takes
+  20 samples and is judged on the median against `ratio x calibration`. Calibrations over 25 % apart void the attempt
+  (retried once, then `void`, never red); a red reruns once with fresh calibrations (pass on the rerun: `flaky`). The
+  verdicts are in the job log and the `timing-*` artifact. Absolute budgets stay on the desktop's perf island.
+  `timing-lane.sh --self-test` checks the verdict rules.
+- Before a round, `nidhogg/test/preflight.sh` (the desktop, in the heavy slots) runs the passes that find ordering bugs:
+  the check files of `preflight-files.txt` pinned to 1 and 2 CPUs and under half a core (3 runs each; podman options
+  through `NIDHOGG_BUILD_PODMAN_ARGS`), on the chaos build with many seeds, the workers harness (`--tsan`, `--sched`),
+  and the reds again under `rr record --chaos -n`, packed so that the trace replays in a later container (`build.sh`'s
+  `NIDHOGG_CHECK_RR`; SELinux denies a labelled container `perf_event_open`, so that one container runs with labels off).
+  On Zen a trace replays reliably only with SpecLockMap off (rr's wiki; root), and rr 5.9.0 aborts on a test that opens a pty.
+  The check containers get the test grammars (the builder's `.claude/tmp/grammars-cache`, from `fixtures/grammars.sh`) and
+  `gnutls-serv`, or the treesit and TLS files would skip whole; a file that still does is shown as `ALL SKIPPED`, never green.
+  The report shows every group's results, one line per file per run; a file with no
+  results from this run counts as red. A stamp (`REPORT.stamp`: commit, passes, date) is written only when every pass was
+  green on a clean tree; `preflight-test.sh` checks that no interrupted, red or dirty run leaves one.
 - Actions are pinned to commit SHAs. `bash nidhogg/test/ci-test.sh` checks these rules.
 
 ## Stall watchdog

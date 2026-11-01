@@ -1,0 +1,7 @@
+# TEST-FILE BUDGET-RATIO: a timing file is red when the median of its samples exceeds ratio x the runner calibration.
+# Each ratio is the median over the calibration in one desktop perf-island run (20 samples, 0 failures; 123.933 and 0.227),
+# times 1.25: what two calibrations of one run may differ before it is void.  Report-only for now.
+# The watchdog file's median (84 s) is mostly real waits, which do not scale with the runner's speed: a runner much faster
+# than the desktop reads as over budget there.
+watchdog-timing-tests 154.9
+workers-timing-tests 0.284
