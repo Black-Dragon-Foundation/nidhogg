@@ -1,4 +1,5 @@
 ;;; watchdog-gcrow-tests.el --- tests for the stall watchdog (gcrow)  -*- lexical-binding: t -*-
+;; test-class: det
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 

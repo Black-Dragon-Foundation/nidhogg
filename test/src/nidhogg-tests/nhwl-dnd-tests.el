@@ -1,4 +1,5 @@
 ;;; nhwl-dnd-tests.el --- tests for the shell's names and conversions in Lisp  -*- lexical-binding: t -*-
+;; test-class: cond
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 

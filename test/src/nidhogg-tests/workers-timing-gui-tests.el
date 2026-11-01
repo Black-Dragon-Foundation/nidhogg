@@ -1,4 +1,5 @@
 ;;; workers-timing-gui-tests.el --- GUI tests for workers: timing  -*- lexical-binding: t -*-
+;; test-class: timing
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
