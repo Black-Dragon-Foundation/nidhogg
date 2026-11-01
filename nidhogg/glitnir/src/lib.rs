@@ -29,6 +29,7 @@ pub mod shadow;
 pub mod snap;
 pub mod stack;
 pub mod stats;
+pub mod testclock;
 
 /// The library's global state, behind one lock, used from the host's main thread only.
 #[derive(Debug, Default)]
