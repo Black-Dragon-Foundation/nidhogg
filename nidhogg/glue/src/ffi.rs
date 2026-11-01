@@ -1252,15 +1252,19 @@ nhg_export! {
 }
 
 nhg_export! {
-    /// `window`'s chrome as `glitnir--resolve` gave it now: 1 when it changed (C lays the frame out again and
-    /// garbages it), 0 when not.  Neither reads nor writes pixels.
+    /// `window`'s chrome slot vector as `glitnir--chrome-vector` gave it now: `NHG_E_ARG` for a wrong length or a slot
+    /// out of range; 1 when the corners or shadow changed (C lays the frame out again and garbages it), 0 when not.
+    /// Neither reads nor writes pixels.
     ///
     /// # Safety
-    /// `d` is null or a live display; `c` is null or points to a readable `NhgChrome`.
-    fn nhg_child_chrome(d: *mut NhgDisplay, window: u64, c: *const crate::child::NhgChrome) -> i32 |state| {
-        // SAFETY: null or readable (the caller's promise).
-        let c = unsafe { c.as_ref() }.ok_or(GlueError::Arg)?;
-        Ok(i32::from(crate::child::chrome(state, window, c)?))
+    /// `d` is null or a live display; `v` is null or points to `n` readable floats.
+    fn nhg_child_chrome(d: *mut NhgDisplay, window: u64, v: *const f32, n: usize) -> i32 |state| {
+        if v.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: `n` readable floats (the caller's promise).
+        let v = unsafe { std::slice::from_raw_parts(v, n) };
+        Ok(i32::from(crate::child::chrome(state, window, v)?))
     }
 }
 

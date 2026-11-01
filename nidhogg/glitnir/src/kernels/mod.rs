@@ -11,6 +11,7 @@ mod copy;
 mod corner;
 mod over;
 mod ring;
+mod scale;
 #[cfg(test)]
 mod tests;
 
@@ -54,6 +55,7 @@ pub struct Kernels {
     box_h_row: fn(&mut [Px], &[Px], usize),
     box_v_row: BoxVRow,
     bilerp_row: fn(&mut [u32], &[Px], &[Px], u16),
+    scale_row: scale::ScaleRow,
 }
 
 static BASELINE: Kernels = Kernels {
@@ -67,6 +69,7 @@ static BASELINE: Kernels = Kernels {
     box_h_row: blur::box_h_base,
     box_v_row: blur::box_v_base,
     bilerp_row: blur::bilerp_base,
+    scale_row: scale::scale_base,
 };
 
 #[cfg(target_arch = "x86_64")]
@@ -81,6 +84,7 @@ static AVX2: Kernels = Kernels {
     box_h_row: blur::box_h_avx2,
     box_v_row: blur::box_v_avx2,
     bilerp_row: blur::bilerp_avx2,
+    scale_row: scale::scale_avx2,
 };
 
 /// The kernels for this machine, chosen once: AVX2 where the CPU has it, else the baseline.

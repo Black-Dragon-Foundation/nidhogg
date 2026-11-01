@@ -50,3 +50,11 @@ Entries:
   one cursor image on a pointer surface; sizes, names and the reload rules are Nidhogg's, noted in its header)
 
 Crates vendored for the cursor theme (in `nidhogg/shell/vendor/`, unmodified, MIT, accepted by `deny.toml`): `wayland-cursor` 0.31.14 and `xcursor` 0.3.11, from crates.io.
+
+## https://github.com/WebKit/WebKit@029da7d3d074a75a24c2413e98b183a8bbfcfb62 Source/WebCore/platform/graphics/UnitBezier.h
+
+- URL: https://github.com/WebKit/WebKit
+- Commit: 029da7d3d074a75a24c2413e98b183a8bbfcfb62 (2026-08-28, the last commit that touched the file)
+- Licence: BSD-2-Clause (`nidhogg/licenses/LICENSE-BSD2-webkit`); the adapted file is `GPL-3.0-or-later AND BSD-2-Clause`
+- Files: `nidhogg/glitnir/src/ease.rs` (the cubic-Bézier solver for CSS easing curves: sample table, Newton steps,
+  bisection; rewritten in Rust)

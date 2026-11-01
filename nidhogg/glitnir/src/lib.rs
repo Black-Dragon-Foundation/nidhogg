@@ -14,11 +14,13 @@ pub mod committed;
 pub mod compose;
 pub mod damage;
 pub mod decor;
+pub mod ease;
 pub mod ffi;
 pub mod geom;
 #[cfg(feature = "images")]
 pub mod images;
 pub mod kernels;
+pub mod motion;
 #[cfg(all(test, feature = "pixman-oracle"))]
 mod oracle;
 pub mod pool;
