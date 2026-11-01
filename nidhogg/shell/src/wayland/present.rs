@@ -145,10 +145,15 @@ pub struct Present {
     configured: bool,
     /// A root committed a buffer since its role was made: the compositor has it mapped.
     mapped: bool,
-    /// A popup whose parent window is not mapped yet shows nothing: the parent comes first (see `popup.rs`).
+    /// The size of a root's newest committed buffer.
+    shown: (i32, i32),
+    /// A popup shows nothing while its place was worked out against a parent that is not the one the compositor will
+    /// judge it against: unmapped, or of another size (see `popup.rs`).
     awaits_parent: bool,
-    /// The popups waiting for this root's first buffer.
-    awaiting: Vec<Arc<Mutex<Present>>>,
+    /// Bumped by each parent's commit that makes the place stale: only a reposition sent after it ends the wait.
+    place_gen: u64,
+    /// The popups that hang on this root.
+    popups: Vec<Arc<Mutex<Present>>>,
     /// `FRAME_READY` was posted and the host has not asked `window_ready` since.
     notified: bool,
     /// The compositor says the window is not shown (xdg_toplevel `suspended`).
@@ -237,8 +242,10 @@ impl Present {
             // a child needs no configure
             configured: root.is_some(),
             mapped: false,
+            shown: (0, 0),
             awaits_parent: false,
-            awaiting: Vec::new(),
+            place_gen: 0,
+            popups: Vec::new(),
             root,
             tree_content: false,
             suspended: false,
@@ -271,6 +278,12 @@ impl Present {
     /// for the host, the newest published; for presenting, the newest in the fronts.
     fn ack_held_at(&self, seq: u64) -> bool {
         self.ack_content && seq <= self.ack_seq
+    }
+
+    /// The recorded content ack takes any packet, also one published before it.
+    pub(crate) fn any_packet(&mut self) {
+        self.ack_seq = 0;
+        self.notify();
     }
 
     /// `ready` for a published tree whose newest packet in the fronts is `applied`: a content ack counts once a packet
@@ -337,22 +350,31 @@ impl Present {
         self.bufs.clear();
         self.begun = None;
         self.layers.clear();
-        self.awaiting.clear();
+        self.popups.clear();
     }
 
-    /// A root's first buffer went: the popups that waited for it may show theirs.  The tree's mutex is held; a
-    /// popup's follows it, as a child's does.
-    fn now_mapped(&mut self) {
-        if self.root.is_none() {
-            self.mapped = true;
+    /// A root's buffer of `size` went.  The compositor placed the popups on it against the root as it was before this
+    /// commit: on the first buffer or a new size they wait, and the host's thread places them again.  The tree's mutex
+    /// is held; a popup's follows it, as a child's does.
+    fn parent_shown(&mut self, size: (i32, i32)) {
+        if self.root.is_some() || (self.mapped && self.shown == size) {
+            return;
         }
-        for popup in std::mem::take(&mut self.awaiting) {
-            let mut p = lock(&popup);
-            p.awaits_parent = false;
+        self.mapped = true;
+        self.shown = size;
+        let Some(shared) = &self.shared else {
+            return;
+        };
+        let mut again = Vec::new();
+        for popup in &self.popups {
+            let mut p = lock(popup);
             if !p.retired {
-                p.notify();
+                p.awaits_parent = true;
+                p.place_gen += 1;
+                again.push(p.window);
             }
         }
+        shared.place_popups(again);
     }
 
     /// The connection was made again (`me` is this state's own handle): each buffer gets a new `wl_buffer` from its
@@ -570,7 +592,7 @@ impl Present {
         self.commit.surface.commit();
         let rearm = self.send_rearm(me, &wire.rqh);
         self.pool.submitted(slot);
-        self.now_mapped();
+        self.parent_shown((buf.w, buf.h));
         1 + u64::from(rearm)
     }
 
@@ -1002,8 +1024,9 @@ fn send(
     let mut shown = false;
     if let Some(j) = take_job(&mut jobs, tree) {
         let held = r.ack_held_at(applied);
-        // a window's first buffer carries an ack: a configure read during the compose held the only one there is, and
-        // a buffer without it is what xdg-shell calls unconfigured
+        // a configure read during the compose holds the ack the commit would carry.  A window's first buffer goes with
+        // one (without, it is what xdg-shell calls unconfigured).  So does a new size: the ack the picture was drawn for
+        // was replaced, and with no ack the size shows no configure's
         let acked = r.mapped || (r.ack.is_some() && !held);
         if j.epoch == r.epoch && r.configured && acked {
             r.commit_buffer(tree, wire, j.slot, &j.buf, &j.damage, held);
@@ -1165,8 +1188,25 @@ impl MainState {
         let mut parent = lock(&parent);
         if !parent.mapped {
             lock(&popup).awaits_parent = true;
-            parent.awaiting.push(popup);
         }
+        parent.popups.retain(|p| !lock(p).retired);
+        parent.popups.push(popup);
+    }
+
+    /// Popup `id`'s `place_gen`, read before a reposition goes out.
+    pub(crate) fn present_place_gen(&self, id: u64) -> u64 {
+        self.presents.get(&id).map_or(0, |p| lock(p).place_gen)
+    }
+
+    /// The configure of a reposition sent at `generation` is recorded: unless the parent changed since, or has never
+    /// shown (generation 0), popup `id` may show.
+    pub(crate) fn present_placed(&self, id: u64, generation: u64) {
+        self.present_record(id, |p| {
+            if p.awaits_parent && generation != 0 && p.place_gen == generation {
+                p.awaits_parent = false;
+                p.notify();
+            }
+        });
     }
 
     /// Record `f` on window `id`'s presenter state (nothing when `id` has none).
@@ -1225,7 +1265,10 @@ impl MainState {
             // the tree could not commit before this configure: its frames are timed from here, not from their publish
             p.t_open_ns = crate::wayland::publish::now_ns();
         }
-        p.ack_seq = self.mailbox.seq();
+        // a bare ack asks for no picture: a content ack under it still takes the packet that came after that one
+        if content || remade {
+            p.ack_seq = self.mailbox.seq();
+        }
         p.notify();
     }
 
