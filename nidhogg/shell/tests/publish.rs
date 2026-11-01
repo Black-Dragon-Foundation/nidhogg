@@ -347,7 +347,8 @@ mod tree_snapshot {
         ];
         assert!(publish(&mut shell, id, &tree, 0));
         let frames = tree.map(|(b, w)| b.frame(w));
-        let shot = |shell: &WaylandShell, f: &[SurfaceFrame]| shell.tree_snapshot(id, f).unwrap();
+        let shot =
+            |shell: &WaylandShell, f: &[SurfaceFrame]| shell.tree_snapshot(id, f, true).unwrap();
 
         let p = shot(&shell, &frames);
         assert_eq!(p.len(), 200 * 100, "the root's size");
@@ -376,14 +377,17 @@ mod tree_snapshot {
         assert_eq!(at(&p, 115, 75), GREEN, "on the window that has it");
 
         let empty: [SurfaceFrame; 0] = [];
-        assert!(shell.tree_snapshot(id, &empty).is_err());
-        assert!(shell.tree_snapshot(a, &frames[1..]).is_err(), "not a root");
+        assert!(shell.tree_snapshot(id, &empty, true).is_err());
+        assert!(
+            shell.tree_snapshot(a, &frames[1..], true).is_err(),
+            "not a root"
+        );
     }
 
     /// A popup goes where the compositor put it, over the tree it hangs from; another tree's is left out.
     #[test]
     fn popups_show_over_their_tree() {
-        let rec = Recorder::start_clock("sway", "manual");
+        let rec = Recorder::start("sway");
         let mut shell = rec.open();
         let mut root = Backing::new(200, 100);
         let id = window(&mut shell, &mut root);
@@ -414,9 +418,12 @@ mod tree_snapshot {
         };
         let p = popup(&mut shell, id);
         let q = popup(&mut shell, other);
-        wait_for(&mut shell, |e| e.kind() == Kind::Configure && e.window == p);
+        wait_for(&mut shell, |e| {
+            e.kind() == Kind::FrameReady && e.window == p
+        });
         let frames = [root.frame(id), red.frame(p), veil.frame(q)];
-        let got = shell.tree_snapshot(id, &frames).unwrap();
+        let got = shell.tree_snapshot(id, &frames, true).unwrap();
+        assert_eq!(got, shell.tree_snapshot(id, &frames, false).unwrap());
         assert_eq!(at(&got, 13, 13), BG);
         assert_eq!(at(&got, 14, 14), 0xffff_0000);
         assert_eq!(at(&got, 53, 33), 0xffff_0000);
