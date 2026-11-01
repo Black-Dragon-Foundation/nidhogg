@@ -613,7 +613,8 @@ nhwl_create_tree (struct frame *f)
       SET_FRAME_GARBAGED (f);
     }
   FOR_EACH_FRAME (tail, frame)
-    if (FRAME_NHWL_P (XFRAME (frame)) && FRAME_PARENT_FRAME (XFRAME (frame)) == f)
+    if (FRAME_NHWL_P (XFRAME (frame)) && FRAME_PARENT_FRAME (XFRAME (frame)) == f
+	&& !nhwl_popup_frame_p (XFRAME (frame)))
       nhwl_create_tree (XFRAME (frame));
 }
 
@@ -635,55 +636,69 @@ nhwl_forget_windows_under (struct frame *f)
       }
 }
 
-/* The `parent-frame' parameter changed at run time.  A top-level cannot
-   become a child frame or back; a child changes parent by getting a
-   new window under the new one.  */
+/* Put F's `parent-frame' back to OLD_VALUE and signal WHY.  */
+static AVOID
+nhwl_parent_refused (struct frame *f, Lisp_Object old_value, const char *why)
+{
+  store_frame_param (f, Qparent_frame, old_value);
+  error ("%s", why);
+}
+
+/* The `parent-frame' parameter changed at run time.  A surface keeps its
+   role, so F and the child frames under it get new windows, its popups
+   hide, and the backing keeps the picture.  The keys stay with F: routed
+   in its new tree, or asked for as a top-level.  */
 void
 nhwl_set_parent_frame (struct frame *f, Lisp_Object new_value,
 		       Lisp_Object old_value)
 {
   struct frame *p = NULL, *a;
-  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f), *o;
+  struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
+  bool focused = dpyinfo->x_focus_event_frame == f;
 
   if (!NILP (new_value)
       && (!FRAMEP (new_value) || !FRAME_LIVE_P (p = XFRAME (new_value))
 	  || !FRAME_NHWL_P (p)))
-    {
-      store_frame_param (f, Qparent_frame, old_value);
-      error ("Invalid specification of `parent-frame'");
-    }
+    nhwl_parent_refused (f, old_value,
+			 "Invalid specification of `parent-frame'");
   if (p == FRAME_PARENT_FRAME (f))
     return;
   if (nhwl_popup_frame_p (f))
-    {
-      store_frame_param (f, Qparent_frame, old_value);
-      error ("nidhogg-wayland: a popup frame keeps its parent");
-    }
-  if (!p || !FRAME_PARENT_FRAME (f))
-    {
-      store_frame_param (f, Qparent_frame, old_value);
-      error ("nidhogg-wayland: a top-level frame cannot become a child frame, or back");
-    }
-  if (FRAME_DISPLAY_INFO (f) != FRAME_DISPLAY_INFO (p))
-    {
-      store_frame_param (f, Qparent_frame, old_value);
-      error ("Cross display reparent");
-    }
+    nhwl_parent_refused (f, old_value,
+			 "nidhogg-wayland: a popup frame keeps its parent");
+  if (p && dpyinfo != FRAME_DISPLAY_INFO (p))
+    nhwl_parent_refused (f, old_value, "Cross display reparent");
   for (a = p; a; a = FRAME_PARENT_FRAME (a))
     if (a == f)
-      {
-	store_frame_param (f, Qparent_frame, old_value);
-	error ("Cannot make a frame its own ancestor");
-      }
+      nhwl_parent_refused (f, old_value,
+			   "Cannot make a frame its own ancestor");
 
+  for (o = dpyinfo->outputs; o; o = o->next_output)
+    if (o->popup_frame && o->window && frame_ancestor_p (f, o->frame))
+      nhwl_popup_hide (o->frame);
+  nhwl_child_focus_gone (f, false);
   block_input ();
   if (out->window)
-    nhwl_window_destroy (FRAME_DISPLAY_INFO (f), out->window);
-  out->window = 0;
+    nhwl_window_destroy (dpyinfo, out->window);
+  out->window = out->focus_window = 0;
   nhwl_forget_windows_under (f);
   fset_parent_frame (f, new_value);
-  nhwl_create_tree (f);
+  out->configured = false;
+  out->states = 0;
   unblock_input ();
+  nhwl_create_tree (f);
+  if (!p)
+    {
+      nhwl_csd_layout (f);
+      if (FRAME_VISIBLE_P (f))
+	nhwl_make_frame_visible (f);
+    }
+  nhwl_child_params_changed (f);
+  if (focused && p)
+    nhwl_focus_route (nhwl_tree_root (f), f, false);
+  else if (focused)
+    nhwl_activate_frame (f);
 }
 
 /* Adapted from pgtk_default_font_parameter: the font is opened at the
