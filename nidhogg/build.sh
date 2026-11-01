@@ -238,6 +238,8 @@ script() {
   [ -z "$SANITIZE" ] || echo 'export ASAN_OPTIONS=detect_leaks=0:abort_on_error=0:detect_stack_use_after_return=0 UBSAN_OPTIONS=print_stacktrace=1'
   # the 100 MB-class workers rows read this to size themselves down under the sanitizers (nidhogg-workers--test-size-scale)
   [ -z "${NIDHOGG_WORKERS_TEST_SIZE_SCALE:-}" ] || printf 'export NIDHOGG_WORKERS_TEST_SIZE_SCALE=%q\n' "$NIDHOGG_WORKERS_TEST_SIZE_SCALE"
+  # where the test grammars are, inside the container (the pre-flight mounts them): the treesit rows skip without them
+  [ -z "${NIDHOGG_TEST_GRAMMARS:-}" ] || printf 'export NIDHOGG_TEST_GRAMMARS=%q\n' "$NIDHOGG_TEST_GRAMMARS"
   if [ "$MODE" = container ]; then
     case $DISTRO in
       ubuntu-*|debian-*)
@@ -250,6 +252,9 @@ script() {
     esac
     # Fedora ships the sanitizer runtimes apart from gcc
     if [ -n "$SANITIZE" ]; then case $DISTRO in ubuntu-*|debian-*|arch) ;; *) echo "dnf -y --setopt=install_weak_deps=False install libasan libubsan libtsan" ;; esac; fi
+    # the pre-flight, Fedora only: packages only its tests need (gnutls-serv), and rr for P5; NIDHOGG_CHECK_RR is the
+    # recorder's command, the prefix of each test run.  Not in deps/: the builds' caches are keyed on that file
+    [ -z "${NIDHOGG_CHECK_PACKAGES:-}${NIDHOGG_CHECK_RR:-}" ] || echo "dnf -y --setopt=install_weak_deps=False install ${NIDHOGG_CHECK_PACKAGES:-} ${NIDHOGG_CHECK_RR:+rr}"
     [ -z "${NIDHOGG_BUILD_CCACHE:-}" ] || echo 'export CCACHE_DIR=/ccache CCACHE_COMPILERCHECK=content CCACHE_MAXSIZE=500M CC="ccache gcc"; ccache -z >/dev/null'
   fi
   cat <<'BODY'
@@ -280,6 +285,23 @@ logged() {
     tail -n 100 "$log" >&2
     exit 1
   fi
+}
+# a check target (its last argument): a failure is not the end of the run, check_rerun judges every target's log
+CHECK_ALL=""
+checked() {
+  all=$1; shift
+  tlog="$B/check-logs/${!#}.log"
+  mkdir -p "$(dirname "$tlog")"; : > "$tlog"
+  ( logged "$tlog" "$@" ) || true
+  cat "$tlog" >> "$all"
+  CHECK_ALL="$CHECK_ALL ${!#}"
+}
+# one more run of each failed test file; a test that then passes must be listed in nidhogg/test/flaky.txt with its cause
+# (also checks that the list names no test that is gone); the first runs' logs are $B/check-logs/TARGET.log
+check_rerun() {
+  # shellcheck disable=SC2086
+  bash "$S/nidhogg/test/check-rerun.sh" --flaky "$S/nidhogg/test/flaky.txt" --src "$B/src/test" \
+    --make "make -C $B/obj/test" "$B/check-logs" $CHECK_ALL || { echo "FAILED: check (see above)" >&2; exit 1; }
 }
 mkdir -p "$B/src" "$B/obj"
 BODY
@@ -348,10 +370,20 @@ BODY
   fi
   if [ "$MODE" = container ] && [ -n "${NIDHOGG_BUILD_CCACHE:-}" ] && [ "$STAGE" != pack ]; then echo 'ccache -s || true'; fi
   if [ -n "$CHECK" ] && { [ "$STAGE" = all ] || [ "$STAGE" = check ]; }; then
+    # test/Makefile runs each test as $(GDB) ... emacs: the recorder goes there, its traces under the build dir
+    rr_arg=""
+    if [ -n "${NIDHOGG_CHECK_RR:-}" ]; then
+      echo 'export _RR_TRACE_DIR="$B/rr-traces"; mkdir -p "$_RR_TRACE_DIR"'
+      rr_arg="$(printf '%q' "GDB=$NIDHOGG_CHECK_RR") "
+    fi
     for t in $(sed "s/#.*//" "$CHECK" 2>/dev/null || echo "<targets of $CHECK>"); do
       echo "phase check $t"
-      echo "logged \"\$B/check.log\" make -C test $t"
+      echo "checked \"\$B/check.log\" make -C test $rr_arg$t"
     done
+    # each container installs its packages afresh: a trace replays in a later one only with its files packed in
+    # and the trace's name, in a log so that it comes back from the desktop
+    [ -z "$rr_arg" ] || echo 'rr pack "$_RR_TRACE_DIR/latest-trace" || echo "build.sh: rr pack failed"; readlink -f "$_RR_TRACE_DIR/latest-trace" > "$B/check-logs/rr-trace.log"'
+    echo "check_rerun"
   fi
   if [ "$STAGE" = build ] || [ "$STAGE" = check ]; then :
   elif [ -n "$OUT" ]; then
@@ -383,6 +415,8 @@ if [ "$MODE" = container ]; then
   fi
   [ -z "${NIDHOGG_BUILD_CCACHE:-}" ] || CACHE_ARGS="$CACHE_ARGS -v $NIDHOGG_BUILD_CCACHE:/ccache:z"
   [ -z "$LISP_CACHE" ] || CACHE_ARGS="$CACHE_ARGS -v $LISP_CACHE:/lispcache:z"
+  # extra podman options (words, no quoting): nidhogg/test/preflight.sh pins a check run with --cpuset-cpus=0 or --cpus=0.5
+  [ -z "${NIDHOGG_BUILD_PODMAN_ARGS:-}" ] || CACHE_ARGS="$CACHE_ARGS $NIDHOGG_BUILD_PODMAN_ARGS"
   CMD_HEAD="$PODMAN run --rm --name $NAME --memory $MEMORY --memory-swap $MEMORY -v $ROOT:/src:ro,z -v $BUILD_DIR:/build:Z ${MOUNT:+-v $MOUNT} $CACHE_ARGS $IMAGE"
   if [ "$DRY" = 1 ]; then
     echo "$CMD_HEAD bash -euo pipefail -c '"
