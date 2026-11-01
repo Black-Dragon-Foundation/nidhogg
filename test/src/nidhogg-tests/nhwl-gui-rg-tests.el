@@ -31,7 +31,7 @@
     (should (= (length (nhwl-gui--clients)) 1))
     (should (= (nhwl--test-glue-panic f) -1))
     ;; within 1 s the frame is gone and the daemon is not
-    (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.05) (not (frame-live-p f))) 1))
+    (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (not (frame-live-p f))) 1))
     (should (daemonp))
     (should (string-match-p "nhg_test_panic" (or (car (nhwl-glue-panics)) "")))
     ;; the connection was shut down: the recorder saw the client go, and its windows with it
@@ -145,7 +145,7 @@
     (should f)
     (with-selected-frame f
       (nhwl-gui--focus-toplevel)
-      (nhwl-gui--pump 0.2)
+      (nhwl-gui--pump)
       (condition-case nil
           (progn
             (let ((inhibit-quit t))
@@ -183,7 +183,7 @@
       (gui-runner-recorder '(:cmd "pointer" :pos [10 10]))
       (gui-runner-recorder '(:cmd "configure" :surface "focused" :size [300 200]))
       (delete-frame g)
-      (nhwl-gui--pump 0.5)
+      (nhwl-gui--pump)
       (should-not (frame-live-p g)))
     (should (frame-live-p f))
     (should (null (nhwl-glue-panics)))
@@ -193,7 +193,7 @@
       (gui-runner-recorder '(:cmd "configure" :surface "focused" :size [320 220]))
       (run-at-time 0 nil (lambda () (delete-frame h)))
       (redisplay t)
-      (nhwl-gui--pump 0.5)
+      (nhwl-gui--wait (lambda () (nhwl-gui--pump) (not (frame-live-p h))) 5)
       (should-not (frame-live-p h)))
     (should (frame-live-p f))
     (should (null (nhwl-glue-panics)))
@@ -354,16 +354,16 @@ real compositor; the trace checker's rule `acks' judges that every ack rides a b
     (unwind-protect
         (progn
           (set-frame-parameter nil 'fullscreen nil)
-          (nhwl-gui--live-settle 0.5)
+          (nhwl-gui--live-settle)
           (dotimes (_ 30)
             (set-frame-size nil (+ 50 (random 30)) (+ 15 (random 15)))
             (insert "x")
             (redisplay t)
             (gui-runner-stimulus (/ (random 31) 1000.0)))
-          (nhwl-gui--live-settle 0.5)
+          (nhwl-gui--live-settle)
           (should (frame-live-p (selected-frame))))
       (set-frame-parameter nil 'fullscreen old)
-      (nhwl-gui--live-settle 0.5))))
+      (nhwl-gui--live-settle))))
 
 (ert-deftest nhwl-gui/idle-publishes-nothing ()
   "With the cursor's blink off, 2 s of idle redisplays publish no packet."
@@ -478,7 +478,7 @@ its old size after the resize: it keeps its last buffer until its own redisplay,
     (should f)
     (with-selected-frame f
       (nhwl-gui--focus-toplevel)
-      (nhwl-gui--pump 0.2)
+      (nhwl-gui--pump)
       (setq th (make-thread
                 (lambda ()
                   (dotimes (_ 100)
@@ -579,7 +579,7 @@ strip again), and goes again when the pointer leaves the button."
     (with-selected-frame f
       (nhwl-gui--focus-toplevel)
       (gui-runner-recorder '(:cmd "pointer" :pos [40 40]))
-      (nhwl-gui--pump 0.3)
+      (nhwl-gui--pump)
       (let ((wheel (lambda (v120)
                      (gui-runner-recorder (list :cmd "axis" :source "wheel" :v120 v120))
                      (let ((got nil) (deadline (+ (float-time) 1.5)))
@@ -604,12 +604,12 @@ strip again), and goes again when the pointer leaves the button."
       (unwind-protect
           (progn
             (gui-runner-recorder '(:cmd "output" :op "add" :name "nh-rg5" :size [800 600]))
-            (nhwl-gui--pump 0.5)
+            (nhwl-gui--wait (lambda () (nhwl-gui--pump) (> runs 0)) 5)
             (should (> runs 0))
             (should (= (length (display-monitor-attributes-list)) (1+ before)))
             (setq runs 0)
             (gui-runner-recorder '(:cmd "output" :op "remove" :name "nh-rg5"))
-            (nhwl-gui--pump 0.5)
+            (nhwl-gui--wait (lambda () (nhwl-gui--pump) (> runs 0)) 5)
             (should (> runs 0))
             (should (= (length (display-monitor-attributes-list)) before)))
         (ignore-errors (gui-runner-recorder '(:cmd "output" :op "remove" :name "nh-rg5")))

@@ -85,10 +85,14 @@ Timers, process output and GTK run; a native frame's input stays unread until PR
       (accept-process-output nil 0.01))
     v))
 
-(defun gui-runner-for (seconds fn)
-  "Call FN again and again for SECONDS: a fixed span of reading what comes, not a wait for one thing to happen."
-  (let ((end (+ (float-time) seconds)))
-    (while (< (float-time) end) (funcall fn))))
+(defun gui-runner-read-all (&optional fn)
+  "Read the events that have arrived, until none is left, and call FN (when given) on each one.  What has not arrived
+yet is for a condition, or the recorder's `ping' before this call.  The read's timeout only ends an empty read: a
+timeout of 0 reads nothing, and one that passes during the read's redisplay returns nil with input pending, which is
+why `input-pending-p' decides."
+  (let ((e nil))
+    (while (or (setq e (read-event nil nil 0.01)) (input-pending-p))
+      (when (and e fn) (funcall fn e)))))
 
 (defun gui-runner-observe (seconds &optional tick)
   "Watch the session for SECONDS, with redisplay, timers and events running, calling TICK (when given) on each turn.
@@ -407,8 +411,9 @@ merged into one still waiting), and the commits sent.  Nil on a frame with no pr
 (defun gui-runner--presented-p ()
   "Non-nil when every packet published since the last settle has gone out as a commit.
 A packet makes at least one commit, and a tree with child frames makes more, so this holds only once none waits for
-the presenter or the pacer."
-  (let ((now (gui-runner--presenter-counts)) (then gui-runner--settled-counts))
+the presenter or the pacer.  A new connection's presenter counts from zero."
+  (let* ((now (gui-runner--presenter-counts)) (then gui-runner--settled-counts)
+         (then (if (and now then (< (cdr now) (cdr then))) '(0 . 0) then)))
     (or (null now) (null then)
         (>= (- (cdr now) (cdr then)) (- (car now) (car then))))))
 
@@ -438,8 +443,9 @@ the answers and whatever the recorder sent before them are in the socket for one
                 (< (float-time) deadline))
       (accept-process-output nil 0.01))))
 
-(defun gui-runner-wait-settled ()
-  "Wait until what the frame last drew has reached the compositor, and print a line if that took over 3 s.
+(defun gui-runner-wait-settled (&optional read)
+  "Wait until what the frame last drew has reached the compositor, and fail the running row if that takes over 3 s.
+With READ, read and drop the events meanwhile: a commit can wait for a configure Emacs has not read yet.
 The frame's side, on the native shell: the presenter owes no commit (`gui-runner--presented-p'); on pgtk: a paint after
 it (`glitnir-snapshot' asks for one and returns after GDK's after-paint, which commits).  The compositor's side,
 recorder: the frame callbacks are answered and the commit log stands still (a dead control socket is an error); sway:
@@ -448,9 +454,15 @@ recorder: the frame callbacks are answered and the commit log stands still (a de
   (let* ((compositor (glitnir-gui--compositor)) (native (featurep 'nidhogg-wayland))
          (graphic (display-graphic-p)) (ok t)
          (settle (lambda (pred)
-                   (let ((deadline (+ (float-time) 3)) (v nil))
+                   (let ((deadline (+ (float-time) 3)) (v nil) (last nil) (still 0))
                      (while (and (not (setq v (funcall pred))) (< (float-time) deadline))
-                       (sit-for 0.01))
+                       (if read (gui-runner-read-all) (sit-for 0.01))
+                       (let ((counts (gui-runner--presenter-counts)))
+                         (setq still (if (equal counts last) (1+ still) 0)
+                               last counts))
+                       ;; a packet of a frame hidden or deleted before the presenter reached it never commits, and the
+                       ;; presenter does not say so: counters that stand still mean what is owed is lost
+                       (when (= still 20) (setq gui-runner--settled-counts last)))
                      (unless v (setq ok nil))))))
     (when (and graphic (not native) (fboundp 'glitnir-snapshot))
       (ignore-errors (glitnir-snapshot nil 'raw)))
@@ -458,10 +470,16 @@ recorder: the frame callbacks are answered and the commit log stands still (a de
       ("sway" (funcall settle (lambda () (and (gui-runner--sway-window-shown-p) (gui-runner--presented-p)))))
       ("recorder" (funcall settle (gui-runner--recorder-quiet (list nil))))
       (_ (funcall settle #'gui-runner--presented-p)))
-    (setq gui-runner--settled-counts (gui-runner--presenter-counts))
-    (unless ok
-      (let ((test (ert-running-test)))
-        (glitnir-gui--say "gui-runner: not settled in 3 s (%S)" (and test (ert-test-name test)))))))
+    (let ((then gui-runner--settled-counts) (now (gui-runner--presenter-counts)))
+      (setq gui-runner--settled-counts now)
+      (unless ok
+        (let ((why (format "gui-runner: not settled in 3 s: presenter %S since %S, selected %S, frames %S%s" now then
+                           (selected-frame) (mapcar (lambda (f) (cons f (frame-visible-p f))) (frame-list))
+                           (if (equal compositor "recorder")
+                               (format ", outstanding %S" (gui-runner-recorder '(:cmd "outstanding")))
+                             ""))))
+          (glitnir-gui--say "%s" why)
+          (when (ert-running-test) (ert-fail why)))))))
 
 (defun gui-runner-pixel-diff (a b &optional rect)
   "Compare two grabs A and B (each (W H BYTES)) over RECT, a list (X Y W H) in both (default: the common top-left
