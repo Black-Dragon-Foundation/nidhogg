@@ -66,8 +66,8 @@ reds=0
 declare -a done_passes=()       # P2, P3:skipped, ...
 redlist=()                      # "PASS|TARGET|WRAP|SEED" for P5
 runlst="" runlog="" runmark=""   # the current group's temporary files; a kill must not leave the list in the tree
-dlist="" plist=""                # P1's and P2/P3's file lists, built from the classes
-trap 'rm -f "$out.stamp" "$out.stamp.tmp" "$runlst" "$runlog" "$runmark" "$dlist" "$plist"; say "preflight: interrupted: no stamp"; exit 130' INT TERM HUP
+dlist="" plist="" slist=""                # P1's and P2/P3's file lists, built from the classes
+trap 'rm -f "$out.stamp" "$out.stamp.tmp" "$runlst" "$runlog" "$runmark" "$dlist" "$plist" "$slist"; say "preflight: interrupted: no stamp"; exit 130' INT TERM HUP
 # a run that was killed with KILL (or whose machine died) cannot run the trap: its list files are swept at the next start
 rm -f "$root"/preflight-chk.*.txt
 export NIDHOGG_BUILD_IMAGE_CACHE=1 NIDHOGG_TEST_GRAMMARS=/grammars NIDHOGG_CHECK_PACKAGES=gnutls-utils    # or the treesit and TLS files skip whole
@@ -255,8 +255,16 @@ if want_pass P3; then
     "$slot" "$T/nidhogg-build-local.sh" ${prefix:+--prefix "$prefix"} --chaos --build-dir "$build-chaos" --stage build >> "$out" 2>&1 \
       || { say "P3: the chaos build failed"; reds=$((reds + 1)); }
   fi
-  say "P3: $seeds seeds per file on the chaos build"
-  for ((s = 1; s <= seeds; s++)); do run_group P3 none "$s"; done
+  say "P3: $seeds seeds per file on the chaos build (fewer for the files of preflight-seeds.txt)"
+  declare -A seed_cap=()
+  while read -r t n _; do [ -n "$t" ] && seed_cap[$t]=$n; done < <(targets "${PREFLIGHT_SEEDS:-$here/preflight-seeds.txt}")
+  for ((s = 1; s <= seeds; s++)); do
+    slist=$(mktemp "${out}.seeds.XXXXXX")
+    while IFS= read -r t; do [ "$s" -le "${seed_cap[$t]:-$seeds}" ] && echo "$t"; done < <(targets "$files") > "$slist"
+    [ ! -s "$slist" ] || run_group P3 none "$s" "$slist"
+    rm -f "$slist"
+  done
+  slist=""
   [ "$reds" = "$before" ] && done_passes+=(P3) || say "P3: reds"
 fi
 if want_pass P4; then
