@@ -4,6 +4,8 @@
 
 use crate::child::NhgChrome;
 use crate::guard::GlueError;
+use glitnir::ease::Curve;
+use glitnir::motion::{Kind, Leg, MotionSpec};
 
 pub const SLOT_ON: usize = 0;
 pub const SLOT_RADIUS: usize = 1;
@@ -95,6 +97,28 @@ pub fn decode(v: &[f32]) -> Result<Decoded, GlueError> {
     })
 }
 
+/// One leg's slots (kind, ms, x1, y1, x2, y2), as `decode` checked them.
+fn leg(s: &[f32]) -> Leg {
+    Leg {
+        kind: match s[0] as u32 {
+            1 => Kind::Fade,
+            2 => Kind::Pop,
+            _ => Kind::None,
+        },
+        duration_ns: (f64::from(s[1]) * 1e6).round() as u64,
+        curve: Curve::new(s[2], s[3], s[4], s[5]).unwrap_or(Curve::LINEAR),
+    }
+}
+
+/// The transitions `d` asks for: `None` when both kinds are 0.
+pub fn motion(d: &Decoded) -> Option<MotionSpec> {
+    let (show, hide) = d.motion_slots.split_at(6);
+    (show[0] != 0.0 || hide[0] != 0.0).then(|| MotionSpec {
+        show: leg(show),
+        hide: leg(hide),
+    })
+}
+
 /// The vector of a struct chrome with no motion, backdrop or beneath colour: what Lisp gives today's chrome.
 pub fn encode(c: &NhgChrome) -> [f32; SLOTS] {
     let mut v = [0.0; SLOTS];
@@ -173,6 +197,47 @@ mod tests {
         v[SLOT_SHOW_Y1] = 1.5;
         v[SLOT_HIDE_Y2] = -0.5;
         assert!(decode(&v).is_ok());
+    }
+
+    #[test]
+    fn no_kind_is_no_motion() {
+        let d = decode(&encode(&TODAY)).unwrap();
+        assert_eq!(motion(&d), None);
+        // reduced motion zeroes the kinds and leaves the rest
+        let mut v = encode(&TODAY);
+        v[SLOT_SHOW_MS] = 120.0;
+        v[SLOT_HIDE_MS] = 80.0;
+        assert_eq!(motion(&decode(&v).unwrap()), None);
+    }
+
+    #[test]
+    fn slots_become_the_legs() {
+        let mut v = encode(&TODAY);
+        v[SLOT_SHOW_KIND..=SLOT_HIDE_Y2].copy_from_slice(&[
+            2.0, 120.0, 0.0, 0.0, 0.58, 1.0, 1.0, 80.0, 0.42, 0.0, 1.0, 1.0,
+        ]);
+        let m = motion(&decode(&v).unwrap()).unwrap();
+        assert_eq!(
+            m.show,
+            Leg {
+                kind: Kind::Pop,
+                duration_ns: 120_000_000,
+                curve: Curve::EASE_OUT,
+            }
+        );
+        assert_eq!(
+            m.hide,
+            Leg {
+                kind: Kind::Fade,
+                duration_ns: 80_000_000,
+                curve: Curve::EASE_IN,
+            }
+        );
+        // one leg alone: the other, all zeros, moves nothing
+        v[SLOT_HIDE_KIND..=SLOT_HIDE_Y2].copy_from_slice(&[0.0; 6]);
+        let m = motion(&decode(&v).unwrap()).unwrap();
+        assert_eq!(m.show.kind, Kind::Pop);
+        assert_eq!((m.hide.kind, m.hide.duration_ns), (Kind::None, 0));
     }
 
     #[test]
