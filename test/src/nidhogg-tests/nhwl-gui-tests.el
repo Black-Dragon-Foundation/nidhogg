@@ -30,9 +30,18 @@
 (defun nhwl-gui--commits ()
   (plist-get (gui-runner-recorder '(:cmd "log" :since 0)) :commits))
 
+(defvar nhwl-gui--waiting nil
+  "Non-nil inside `nhwl-gui--wait': the wait's condition ends it, so `nhwl-gui--pump' reads without a fence.")
+
 (defun nhwl-gui--wait (pred &optional seconds)
   "Wait up to SECONDS (default 3) for PRED to return non-nil; return its value."
-  (gui-runner-wait pred (or seconds 3)))
+  (let ((nhwl-gui--waiting t))
+    (gui-runner-wait pred (or seconds 3))))
+
+(defun nhwl-gui--observe (seconds)
+  "Read and drop events for SECONDS, the span a row asserts something does not happen in (`gui-runner-observe').
+The call says why the span is the point."
+  (gui-runner-observe seconds #'gui-runner-read-all))
 
 (defun nhwl-gui--toplevel-commits ()
   (seq-filter (lambda (c)
@@ -574,11 +583,10 @@ Return the two replies."
   (dolist (r (if (keywordp (car record)) (list record) record))
     (gui-runner-recorder r))
   (let ((events nil))
-    (gui-runner-for 0.6 (lambda ()
-                          (let ((e (read-event nil nil 0.05)))
-                            (when (and (consp e)
-                                       (string-match-p (or regexp "wheel-\\|touch-end") (symbol-name (car e))))
-                              (push e events)))))
+    (nhwl-gui--pump (lambda (e)
+                      (when (and (consp e)
+                                 (string-match-p (or regexp "wheel-\\|touch-end") (symbol-name (car e))))
+                        (push e events))))
     (nreverse events)))
 
 (ert-deftest nhwl-gui/wheel-v120-halves-accumulate ()
@@ -933,11 +941,10 @@ Return the two replies."
 ;; nothing signalled.  What the shell said to the compositor is judged afterwards by the trace checker
 ;; (`gui.sh --wayland-debug F --trace-check RULES', nidhogg/test/wl-trace-check.el).
 
-(defun nhwl-gui--live-settle (&optional seconds)
-  "Redisplay and run process output for SECONDS (default 0.3), so the shell's commits and the compositor's answers happen."
-  (gui-runner-for (or seconds 0.3) (lambda ()
-                                     (redisplay t)
-                                     (accept-process-output nil 0.05))))
+(defun nhwl-gui--live-settle ()
+  "Wait until the shell's pictures have reached the compositor, reading what it answers."
+  (gui-runner-wait-settled t)
+  (gui-runner-read-all))
 
 ;; They leave frames, a tip and the window size behind, so they run after the other rows (`runs-last'); a row that ended
 ;; the session's display (the display-lost row) leaves no native frame, and they skip.
@@ -982,7 +989,7 @@ Return the two replies."
   (unwind-protect
       (progn
         (x-show-tip "hello" nil nil 10)
-        (nhwl-gui--live-settle 0.5)
+        (nhwl-gui--live-settle)
         ;; only the offset changes: the tip moves with DX and DY and nothing else
         (dotimes (i 5)
           (x-show-tip "hello" nil nil 10 (* (1+ i) 7) (* (1+ i) 3))
@@ -998,18 +1005,18 @@ Return the two replies."
     (unwind-protect
         (progn
           (set-frame-parameter nil 'fullscreen nil)
-          (nhwl-gui--live-settle 0.5)
+          (nhwl-gui--live-settle)
           (set-frame-parameter nil 'fullscreen 'fullboth)
-          (nhwl-gui--live-settle 0.5)
+          (nhwl-gui--live-settle)
           (set-frame-parameter nil 'fullscreen nil)
-          (nhwl-gui--live-settle 0.5)
+          (nhwl-gui--live-settle)
           (set-frame-size nil 60 20)
-          (nhwl-gui--live-settle 0.5)
+          (nhwl-gui--live-settle)
           (set-frame-size nil 70 24)
-          (nhwl-gui--live-settle 0.5)
+          (nhwl-gui--live-settle)
           (should (frame-live-p (selected-frame))))
       (set-frame-parameter nil 'fullscreen old)
-      (nhwl-gui--live-settle 0.5))))
+      (nhwl-gui--live-settle))))
 
 ;; `skip-unless' is `(unless (ignore-errors FORM) (ert-skip ...))': a void function in its form skips the row silently.
 ;; This row fails when a file's `skip-unless' forms call a function that is not defined.
@@ -1056,10 +1063,15 @@ Return the two replies."
 (defun nhwl-gui--last-commit ()
   (car (last (nhwl-gui--toplevel-commits))))
 
-(defun nhwl-gui--pump (&optional seconds)
-  "Let the shell's input events be read and the keyboard queue drained, for SECONDS (default 0.3).
-The shell's records reach Lisp (the monitors-changed hook) only through the input loop."
-  (gui-runner-for (or seconds 0.3) (lambda () (read-event nil nil 0.05))))
+(defun nhwl-gui--pump (&optional fn)
+  "Read everything the compositor has sent so far, calling FN (when given) on each event; else drop it.
+The shell's records reach Lisp (the monitors-changed hook) only through the input loop.  On the recorder a ping is the
+fence: events keep their order on the wire and the shell's reader answers a ping, so with the reply in hand what came
+before it is in Emacs's queue.  Inside `nhwl-gui--wait' there is no fence: the condition is, and a connection may be
+down then.  This covers what the compositor sent; an answer to something Emacs just asked needs a condition."
+  (when (and (nhwl-gui--recorder-p) (not nhwl-gui--waiting))
+    (gui-runner-recorder '(:cmd "ping")))
+  (gui-runner-read-all fn))
 
 (defun nhwl-gui--point (x y)
   (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
@@ -1195,7 +1207,7 @@ The shell's records reach Lisp (the monitors-changed hook) only through the inpu
      (blink-cursor-start)
      (glitnir-stats nil t)
      ;; the blink paints, no key
-     (nhwl-gui--pump 0.6)
+     (nhwl-gui--wait (lambda () (nhwl-gui--pump) (> (or (plist-get (glitnir-stats) :count) 0) 0)) 5)
      (let ((s (glitnir-stats)))
        (should (> (plist-get s :count) 0))
        (should (= (plist-get (plist-get s :key-to-commit-ms) :max) 0)))
@@ -1412,12 +1424,12 @@ serial is never acked early, with the old buffer)."
          (progn
            (gui-runner-recorder '(:cmd "output" :op "add" :name "nh-1" :size [800 600] :scale120 240))
            (should (nhwl-gui--wait-ev (lambda () (nhwl-gui--monitor "nh-1"))))
-           (nhwl-gui--pump 0.3)
+           (nhwl-gui--pump)
            ,@body)
        ;; the removal's own record must be read before the next row counts the hook
        (ignore-errors (gui-runner-recorder '(:cmd "output" :op "remove" :name "nh-1")))
        (nhwl-gui--wait-ev (lambda () (null (nhwl-gui--monitor "nh-1"))))
-       (nhwl-gui--pump 0.3)
+       (nhwl-gui--pump)
        (remove-hook 'display-monitors-changed-functions fn))))
 
 (ert-deftest nhwl-gui/monitor-list-has-the-output ()
@@ -1449,7 +1461,8 @@ serial is never acked early, with the old buffer)."
          (f (selected-frame)))
      (gui-runner-recorder '(:cmd "output" :op "remove" :name "nh-1"))
      (should (nhwl-gui--wait-ev (lambda () (null (nhwl-gui--monitor "nh-1")))))
-     (nhwl-gui--pump 0.3)
+     ;; absence: a second run of the hook for the one removal would come now
+     (nhwl-gui--observe 0.3)
      (should (= (length (display-monitor-attributes-list)) 1))
      (should (= nhwl-gui--hook-runs 1))
      (should (frame-live-p f))
@@ -1476,11 +1489,10 @@ serial is never acked early, with the old buffer)."
 
 (defun nhwl-gui--ime-pump ()
   "Read pending events and run the characters an input method commits (special events run as they are read)."
-  (gui-runner-for 0.2 (lambda ()
-                        (let ((ev (read-event nil nil 0.05)))
-                          (when (characterp ev)
-                            (setq last-command-event ev)
-                            (command-execute (key-binding (vector ev)) nil (vector ev)))))))
+  (nhwl-gui--pump (lambda (ev)
+                    (when (characterp ev)
+                      (setq last-command-event ev)
+                      (command-execute (key-binding (vector ev)) nil (vector ev))))))
 
 (defun nhwl-gui--preedit-string ()
   "The text of the preedit overlay `pgtk-preedit-text' keeps, \"\" for none."
@@ -1620,8 +1632,9 @@ characters go, the mark stays."
     (with-current-buffer (window-buffer (frame-selected-window f))
       (setq-local header-line-format " drag me"))
     (redisplay t)
-    (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (frame-visible-p f)) 5)
-    (nhwl-gui--pump 0.3)
+    (nhwl-gui--wait (lambda () (nhwl-gui--pump) (frame-visible-p f)) 5)
+    (gui-runner-wait-settled)
+    (nhwl-gui--pump)
     f))
 
 (defun nhwl-gui--press-event (area)
@@ -1635,7 +1648,7 @@ characters go, the mark stays."
   "Put the pointer at logical X, Y of the newest toplevel."
   (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
   (gui-runner-recorder (list :cmd "pointer" :pos (vector x y)))
-  (nhwl-gui--pump 0.3))
+  (nhwl-gui--pump))
 
 (defun nhwl-gui--press-at (area x y)
   "Press the left button at logical X, Y of the newest toplevel and run AREA's `down-mouse-1' binding on it."
@@ -1644,10 +1657,10 @@ characters go, the mark stays."
   (let ((ev (nhwl-gui--press-event area)))
     (should ev)
     (funcall (key-binding (vector area 'down-mouse-1)) ev)
-    (nhwl-gui--pump 0.3)))
+    (nhwl-gui--pump)))
 
 (defun nhwl-gui--input-wait (mark req)
-  (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (nhwl-gui--input-since mark req))))
+  (nhwl-gui--wait (lambda () (nhwl-gui--pump) (nhwl-gui--input-since mark req))))
 
 (ert-deftest nhwl-gui/undecorated-drag-moves ()
   (skip-unless (nhwl-gui--recorder-p))
@@ -1659,9 +1672,9 @@ characters go, the mark stays."
           ;; tab-line drag runs
           (nhwl-gui--point-at 100 100)
           (gui-runner-recorder '(:cmd "button" :button 272 :state "press"))
-          (nhwl-gui--pump 0.3)
+          (nhwl-gui--pump)
           (mouse-drag-frame-move (list 'down-mouse-1 (posn-at-x-y 10 10 f)))
-          (nhwl-gui--pump 0.3)
+          (nhwl-gui--pump)
           (let ((e (nhwl-gui--input-wait mark "xdg_toplevel.move")))
             (should e)
             (should (integerp (plist-get e :serial)))))
@@ -1692,7 +1705,7 @@ characters go, the mark stays."
           (nhwl-gui--point-at 100 100)
           (gui-runner-recorder '(:cmd "button" :button 272 :state "press"))
           (gui-runner-recorder '(:cmd "button" :button 272 :state "release"))
-          (nhwl-gui--pump 0.3)
+          (nhwl-gui--pump)
           (should (nhwl-frame-show-window-menu f 40 24))
           (let ((e (nhwl-gui--input-wait mark "xdg_toplevel.show_window_menu")))
             (should e)
@@ -1710,8 +1723,9 @@ characters go, the mark stays."
       (setq-local header-line-format " header")
       (setq-local mode-line-format " mode"))
     (redisplay t)
-    (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (frame-visible-p f)) 5)
-    (nhwl-gui--pump 0.3)
+    (nhwl-gui--wait (lambda () (nhwl-gui--pump) (frame-visible-p f)) 5)
+    (gui-runner-wait-settled)
+    (nhwl-gui--pump)
     (redisplay t)
     f))
 
@@ -1751,7 +1765,7 @@ characters go, the mark stays."
                 (when (and (consp x) (eq (car x) 'down-mouse-1) (eq (posn-area (event-start x)) area))
                   (setq ev x))))
             (gui-runner-recorder '(:cmd "button" :button 272 :state "release"))
-            (nhwl-gui--pump 0.3)
+            (nhwl-gui--pump)
             (unless ev (ert-fail (format "no down-mouse-1 on %S at %S,%S (native %S,%S, offsets %S,%S, scale %S), saw %S"
                                          area lx ly nx ny offx offy s seen)))
             (should ev)))
@@ -1913,8 +1927,9 @@ echo area empty."
      (gui-runner-recorder '(:cmd "key" :text "q"))
      (should (nhwl-gui--wait (lambda () (eq (read-event nil nil 0.1) ?q))))
      (redisplay t)
-     ;; read input meanwhile (`sleep-for' does not): a paint owed for the key would go out now, not with the next key
-     (nhwl-gui--pump 0.3)
+     ;; absence, reading input meanwhile (`sleep-for' does not): a paint owed for the key would go out now, not with
+     ;; the next key
+     (nhwl-gui--observe 0.3)
      ;; the key drew nothing
      (should (memq (plist-get (glitnir-stats) :count) '(nil 0)))
      (nhwl-gui--run-key "a")
@@ -2363,7 +2378,7 @@ while the top-level has the keyboard.  Delete the child and focus the parent aft
 
 (defun nhwl-gui--strip-becomes (rgb)
   "Wait until the strip shows RGB; return non-nil if it did."
-  (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (redisplay t) (nhwl-gui--rgb-near (nhwl-gui--strip-rgb) rgb)) 5))
+  (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (nhwl-gui--rgb-near (nhwl-gui--strip-rgb) rgb)) 5))
 
 (ert-deftest nhwl-gui/csd-layout-follows-gnome ()
   ;; GNOME's "close:minimize": close at the left edge, minimize at the right, no maximize; a click on minimize
@@ -2410,13 +2425,14 @@ while the top-level has the keyboard.  Delete the child and focus the parent aft
   (unwind-protect
       (progn
         (gui-runner-recorder '(:cmd "configure" :surface "focused" :size [800 600] :states ["activated" "tiled_left"]))
-        (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (redisplay t)
+        (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t)
                                   (eql (nth 0 (plist-get (nhwl--title-bar) :margins)) 0))
                                 5))
         (should (nhwl-gui--wait (lambda () (redisplay t) (eql (car (nhwl-gui--get (nhwl-gui--last-commit) :geometry)) 0))))
         (let ((mark (plist-get (gui-runner-recorder '(:cmd "input_log" :since 0)) :next)))
           (nhwl-gui--click 2 300)
-          (nhwl-gui--pump 0.5)
+          ;; absence: a resize Emacs asked for would reach the recorder in this span
+          (nhwl-gui--observe 0.5)
           (should-not (nhwl-gui--input-since mark "xdg_toplevel.resize"))))
     (nhwl-gui--windowed)))
 
@@ -2440,7 +2456,7 @@ while the top-level has the keyboard.  Delete the child and focus the parent aft
   (unwind-protect
       (progn
         (gui-runner-recorder '(:cmd "scale" :value120 180))
-        (should (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (redisplay t) (= (frame-scale-factor) 1.5)) 5))
+        (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-scale-factor) 1.5)) 5))
         (nhwl-gui--windowed)
         (should (nhwl-gui--wait (lambda () (redisplay t) (eql (nth 3 (plist-get (nhwl--title-bar) :strip)) 48))))
         (let* ((tb (nhwl--title-bar)) (strip (plist-get tb :strip))
@@ -2451,7 +2467,7 @@ while the top-level has the keyboard.  Delete the child and focus the parent aft
           (should (= (funcall alpha (+ (nth 1 strip) 47)) 255))
           (should (= (funcall alpha (1- (nth 1 strip))) 0))))
     (gui-runner-recorder '(:cmd "scale" :value120 120))
-    (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (redisplay t) (= (frame-scale-factor) 1.0)) 5)
+    (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-scale-factor) 1.0)) 5)
     (nhwl-gui--windowed)))
 
 (provide 'nhwl-gui-tests)
