@@ -14,6 +14,7 @@ use common::{Recorder, number, readable_within};
 use nhglue::abi::*;
 use nhglue::backing::{NhgBacking, NhgFrameGeom, NhgRect};
 use nhglue::child::{NHG_CHILD_VISIBLE, NhgChrome};
+use nhglue::chrome;
 use nhglue::csd::{NhgCsdLayout, NhgCsdPaint};
 use nhglue::ffi::*;
 use nhglue::frame::NHG_FRAME_CHILD;
@@ -124,7 +125,7 @@ fn child(d: *mut NhgDisplay, parent: u64, x: i32, y: i32, w: i32, h: i32) -> u64
     unsafe {
         assert_eq!(nhg_frame_register(d, id, NHG_FRAME_CHILD), NHG_OK);
         assert_eq!(nhg_frame_scale(d, id, 120), NHG_OK);
-        assert_eq!(nhg_child_chrome(d, id, &NhgChrome::default()), 0);
+        assert_eq!(chrome(d, id, &NhgChrome::default()), 0);
     }
     assert_eq!(lay(d, id).0, 0, "no chrome, no margin");
     assert_eq!(set(d, id, parent, x, y, NHG_CHILD_VISIBLE), 0);
@@ -137,8 +138,12 @@ fn set(d: *mut NhgDisplay, id: u64, parent: u64, x: i32, y: i32, flags: u32) -> 
 }
 
 fn chrome(d: *mut NhgDisplay, id: u64, c: &NhgChrome) -> i32 {
-    // SAFETY: a live display; `c` is readable.
-    unsafe { nhg_child_chrome(d, id, c) }
+    vector(d, id, &chrome::encode(c))
+}
+
+fn vector(d: *mut NhgDisplay, id: u64, v: &[f32]) -> i32 {
+    // SAFETY: a live display; `v` is readable.
+    unsafe { nhg_child_chrome(d, id, v.as_ptr(), v.len()) }
 }
 
 /// `nhg_csd_layout` at scale 1, as C calls it: its return and the layout.
@@ -365,6 +370,27 @@ mod child {
                 .all(|e| !(e.kind() == Kind::FrameReady && e.window == root))
         );
         assert!(log(&rec, seq).is_empty());
+        close(d);
+    }
+
+    /// A wrong length or a slot out of range is `NHG_E_ARG` and changes nothing; motion and backdrop slots alone
+    /// are no change for the layout (0), however often they change.
+    #[test]
+    fn chrome_vector_checks_and_motion_slots_alone_return_0() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let d = open(&rec);
+        let root = toplevel(d, 200, 100);
+        let c = child(d, root, 30, 20, 60, 40);
+        let mut v = chrome::encode(&SHADOW);
+        assert_eq!(vector(d, c, &v[..chrome::SLOTS - 1]), NHG_E_ARG);
+        v[chrome::SLOT_OPACITY] = 1.5;
+        assert_eq!(vector(d, c, &v), NHG_E_ARG);
+        v[chrome::SLOT_OPACITY] = 0.5;
+        assert_eq!(vector(d, c, &v), 1);
+        v[chrome::SLOT_SHOW_KIND] = 2.0;
+        v[chrome::SLOT_SHOW_MS] = 120.0;
+        v[chrome::SLOT_BACKDROP] = 10.0;
+        assert_eq!(vector(d, c, &v), 0, "motion and backdrop alone");
         close(d);
     }
 
