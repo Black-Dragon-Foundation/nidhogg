@@ -23,8 +23,10 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
    it.  At each point a thread does nothing (about 3 in 4), yields, or
    sleeps 1-200 us, by a per-thread xorshift seeded from
    NIDHOGG_TEST_SEED (decimal, default 0; child Emacs processes inherit
-   it) and the order threads first reach a point.  The first point prints
-   `chaos seed N' to stderr.  A seed makes a bug likely, not certain:
+   it) and the order threads first reach a point.  With
+   NIDHOGG_TEST_CHAOS_BANNER set the first point prints `chaos seed N'
+   to stderr (off by default: a test that reads a child's stderr would
+   see it).  A seed makes a bug likely, not certain:
    the kernel still schedules.
 
    Off in signal context and on the fatal path, where nothing may wait.
