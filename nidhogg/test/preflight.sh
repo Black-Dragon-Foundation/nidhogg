@@ -175,6 +175,9 @@ run_group() { # PASS WRAP SEED [LIST]
       red=1; say "GROUP $pass $wrap run=$run_no seed=$seed $t NOT RUN: no ERT summary from this run"
     elif [[ $sum == *" 0 results as expected"* ]]; then     # it ran and tested nothing: not a red, and not a green either
       red=2; say "GROUP $pass $wrap run=$run_no seed=$seed $t ALL SKIPPED: $sum"
+    elif [[ $sum =~ ,\ ([1-9][0-9]*)\ skipped ]] && targets "${PREFLIGHT_NO_SKIP:-$here/preflight-no-skip.txt}" | grep -qxF "$t"; then
+      # a row the pre-flight relies on skipped (a missing tool, say): that is not a green
+      red=1; say "GROUP $pass $wrap run=$run_no seed=$seed $t RED: ${BASH_REMATCH[1]} test(s) skipped in a file that must not skip: $sum"
     else
       say "GROUP $pass $wrap run=$run_no seed=$seed $t green: $sum"
     fi

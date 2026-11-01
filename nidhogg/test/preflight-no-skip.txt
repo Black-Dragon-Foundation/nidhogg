@@ -1,0 +1,3 @@
+# Test files the pre-flight relies on: a skipped test in one is a red, not a green (preflight.sh).
+# workers-tls-tests skips without gnutls-serv, the row that was P2's blocker.
+src/nidhogg-tests/workers-tls-tests
