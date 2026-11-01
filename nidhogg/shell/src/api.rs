@@ -340,6 +340,12 @@ pub trait ShellBackend {
     fn set_motion(&mut self, _window: WindowId, _spec: Option<MotionSpec>) -> ShellResult {
         Err(ShellError::Unsupported)
     }
+    /// Child `window` has what lies beneath it in its parent blurred under its pixels, with σ `blur_px` logical pixels
+    /// (0: none).  Whoever presents its tree recomputes it from the parent's damage alone, and shows it in the tree
+    /// commit that shows the change.  `State` for any other window, `Arg` for a negative or non-finite σ.
+    fn set_backdrop(&mut self, _window: WindowId, _blur_px: f32) -> ShellResult {
+        Err(ShellError::Unsupported)
+    }
     /// Whether popup `window` holds a grab (asked with `NHSHELL_WIN_GRAB`, granted, not dismissed); false for other
     /// windows.
     fn window_grabbed(&self, window: WindowId) -> ShellResult<bool>;

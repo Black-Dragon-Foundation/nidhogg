@@ -27,14 +27,23 @@
 //! frames were drawn.  A child that goes while it hides stays here as a *ghost*, under a key no window holds, until its
 //! leg ends.  On the presenter thread a hide waits `HIDE_HOLD_NS` first: inline, the host's thread is the one that
 //! presents, so a hide and a show in one command meet no frame; the thread must not wake between them either.
+//!
+//! **A child's backdrop** (`set_backdrop`) lives here too.  Its source is the parent's front at the child's native area
+//! (`Stage::beneath`): the parent's patches and scrolled rows are what it recomputes from, the child's own drawing never
+//! touches it, and what the recompute changed is the child's damage, so it shows in the tree commit that shows the
+//! change beneath.  A move, a resize or a new scale recomputes it all.  While a shown child has one the parent keeps its
+//! front through the quiet period.  The recompute runs on the presenter's side of the tree's mutex, like a compose.
 
 use crate::api::*;
 use crate::wayland::WaylandShell;
 use crate::wayland::layers::Pending;
 use crate::wayland::presenter::Counters;
 use crate::wayland::scale::SCALE_ONE;
+use glitnir::blur::Backdrop;
 use glitnir::committed::Committed;
-use glitnir::compose::{Composer, SourceView, TargetView, compose_committed};
+use glitnir::compose::{
+    Composer, Extras, SourceView, TargetView, compose_committed, compose_committed_with,
+};
 use glitnir::geom::Rect;
 use glitnir::kernels::kernels;
 use glitnir::motion::{Kind, Motion, MotionSpec, Sample};
@@ -52,6 +61,8 @@ const SPARE_PATCHES: usize = 4;
 /// in the same command, and the presenter would otherwise wake between the two calls.  Long enough for the host to
 /// be scheduled, short enough to fit the budget's one period past a leg's duration.
 pub const HIDE_HOLD_NS: u64 = 8_000_000;
+/// The rectangles of change a backdrop keeps for its next recompute, before they become one.
+const MAX_DIRTY: usize = 16;
 
 /// `CLOCK_MONOTONIC` nanoseconds, the host's clock for key times.
 pub fn now_ns() -> u64 {
@@ -128,6 +139,10 @@ pub enum Mail {
     Mapped(u64, bool),
     /// Child `.0` went during its hide leg: it fades on under key `.1`.
     Ghost(u64, u64),
+    /// Child `.0` of window `.1` has a backdrop of σ `.2` logical px (0: none); `.3`: its offset in the parent.
+    Backdrop(u64, u64, f32, (i32, i32)),
+    /// Child `.0`, which has a backdrop, moved to the offset `.1` in its parent.
+    Placed(u64, (i32, i32)),
 }
 
 #[derive(Default)]
@@ -297,7 +312,21 @@ fn alpha_multiply(t: &mut TargetView, cut: u32) {
     }
 }
 
-/// Compose a surface's picture into `t` within `clips`: its scene over `src`, or its front alone.
+/// Clear `t` within `clips`.
+fn clear(t: &mut TargetView, clips: &[Rect]) {
+    let bounds = t.rect;
+    for r in clips.iter().map(|r| r.intersect(&bounds)) {
+        if r.is_empty() {
+            continue;
+        }
+        for y in r.y..r.y + r.h {
+            let at = (y - bounds.y) as usize * t.stride + (r.x - bounds.x) as usize;
+            t.data[at..at + r.w as usize].fill(0);
+        }
+    }
+}
+
+/// Compose a surface's picture into `t` within `clips`: its scene over `src` with `x`, or its front alone.
 fn draw(
     scene: Option<&Committed>,
     composer: &mut Composer,
@@ -305,9 +334,15 @@ fn draw(
     src: &SourceView,
     t: &mut TargetView,
     clips: &[Rect],
+    x: &Extras,
 ) {
+    // a shadow and rounded corners go OVER what the buffer holds, its older picture: nothing lies under a child's layer
+    if scene.is_some_and(|c| c.layers.iter().any(|p| p.chrome.is_some())) {
+        clear(t, clips);
+    }
     let sources = std::slice::from_ref(src);
-    let composed = scene.is_some_and(|c| compose_committed(c, composer, t, clips, sources).is_ok());
+    let composed =
+        scene.is_some_and(|c| compose_committed_with(c, composer, t, clips, sources, x).is_ok());
     if !composed {
         front.copy_to(t, clips);
     }
@@ -485,12 +520,82 @@ impl Moving {
     }
 }
 
+/// What a backdrop's image should be made from, in the parent's device pixels.
+#[derive(Clone, Copy, PartialEq)]
+struct Aim {
+    region: Rect,
+    sigma_px: f32,
+    scale: f64,
+    /// The size of what it is read from.
+    size: (i32, i32),
+    /// The child's layer in its own surface: what takes the region's pixels there.
+    layer_at: (i32, i32),
+}
+
+/// A child's backdrop blur.
+struct Blur {
+    parent: u64,
+    /// σ in logical pixels, and the surface's offset in its parent's.
+    blur_px: f32,
+    at: (i32, i32),
+    image: Backdrop,
+    /// What the image was last brought up to, and how the parent changed since.
+    aim: Option<Aim>,
+    dirty: Vec<Rect>,
+    /// Pixels recomputed that no stats entry has yet.
+    recomputed: u64,
+}
+
+impl Blur {
+    /// What the image should be now, with what lies beneath it; `None` while either picture is missing, or the two
+    /// are at different scales.
+    fn aim(&self, child: &Surface, surfaces: &HashMap<u64, Surface>) -> Option<Aim> {
+        let layer = child
+            .scene
+            .as_ref()?
+            .layers
+            .iter()
+            .find(|p| p.id == child.glitnir_root)?
+            .rect;
+        let (front, scale) = Stage::beneath(surfaces, self.parent)?;
+        child.front.as_ref()?;
+        let device = |logical: i32| (f64::from(logical) * scale).round() as i32;
+        (scale == child.scale).then(|| Aim {
+            region: Rect::new(
+                device(self.at.0) + layer.x,
+                device(self.at.1) + layer.y,
+                layer.w,
+                layer.h,
+            ),
+            sigma_px: self.blur_px * scale as f32,
+            scale,
+            size: (front.w, front.h),
+            layer_at: (layer.x, layer.y),
+        })
+    }
+
+    fn due(&self, aim: &Aim) -> bool {
+        self.aim.as_ref() != Some(aim) || !self.dirty.is_empty()
+    }
+
+    /// The parent changed at `rects`.
+    fn soil(&mut self, rects: &[Rect]) {
+        self.dirty.extend_from_slice(rects);
+        if self.dirty.len() > MAX_DIRTY {
+            let all = self.dirty.iter().fold(Rect::default(), |a, r| a.bounds(r));
+            self.dirty = vec![all];
+        }
+    }
+}
+
 /// The presenter's side: fronts, merged packets, the display's composer and the counters.
 #[derive(Default)]
 pub struct Stage {
     surfaces: HashMap<u64, Surface>,
     /// The transitions of the children that have them; empty, none of this costs anything.
     moves: HashMap<u64, Moving>,
+    /// The backdrops of the children that have one; empty, none of this costs anything.
+    blurs: HashMap<u64, Blur>,
     /// Each moving tree's clock, by root.
     clocks: HashMap<u64, Clock>,
     /// Children whose hide is over: each unmaps in its tree's next commit.
@@ -531,8 +636,108 @@ impl Stage {
                     }
                 }
                 Mail::Ghost(id, key) => self.ghost(id, key),
+                Mail::Backdrop(id, parent, blur_px, at) => {
+                    self.set_backdrop(id, parent, blur_px, at);
+                }
+                Mail::Placed(id, at) => {
+                    if let Some(b) = self.blurs.get_mut(&id) {
+                        b.at = at;
+                    }
+                }
             }
         }
+    }
+
+    /// Child `id` of window `parent` has a backdrop of σ `blur_px` logical px; 0 takes it away, and its picture is
+    /// composed whole without it.
+    fn set_backdrop(&mut self, id: u64, parent: u64, blur_px: f32, at: (i32, i32)) {
+        if blur_px > 0.0 {
+            let b = self.blurs.entry(id).or_insert_with(|| Blur {
+                parent,
+                blur_px,
+                at,
+                image: Backdrop::new(),
+                aim: None,
+                dirty: Vec::new(),
+                recomputed: 0,
+            });
+            (b.blur_px, b.at) = (blur_px, at);
+        } else if self.blurs.remove(&id).is_some()
+            && let Some(s) = self.surfaces.get_mut(&id)
+            && let Some(f) = &s.front
+        {
+            s.damage = vec![Rect::new(0, 0, f.w, f.h)];
+        }
+    }
+
+    /// What a backdrop is read from: the front of window `parent`, and its scale.  (A front holds the backing's pixels:
+    /// what Glitnir draws from the scene, a label, is not in it.)
+    fn beneath(surfaces: &HashMap<u64, Surface>, parent: u64) -> Option<(&Front, f64)> {
+        let s = surfaces.get(&parent)?;
+        Some((s.front.as_ref()?, s.scale))
+    }
+
+    /// A shown child of root `root`'s tree has a backdrop that is not up to date.
+    pub(crate) fn blur_due(&self, root: u64) -> bool {
+        self.blurs.iter().any(|(id, b)| {
+            self.surfaces
+                .get(id)
+                .filter(|s| s.root == root && s.drawable)
+                .and_then(|s| b.aim(s, &self.surfaces))
+                .is_some_and(|aim| b.due(&aim))
+        })
+    }
+
+    /// Bring root `root`'s backdrops up to date: what a recompute changed waits as the child's damage for the tree's
+    /// commit, which shows the change beneath.
+    pub(crate) fn blur(&mut self, root: u64) {
+        let Stage {
+            surfaces, blurs, ..
+        } = self;
+        for (id, b) in blurs.iter_mut() {
+            let Some(aim) = surfaces
+                .get(id)
+                .filter(|s| s.root == root && s.drawable)
+                .and_then(|s| b.aim(s, surfaces))
+                .filter(|aim| b.due(aim))
+            else {
+                continue;
+            };
+            let Some((front, _)) = Stage::beneath(surfaces, b.parent) else {
+                continue;
+            };
+            let changed = b.image.update(
+                &front.data,
+                front.w as usize,
+                aim.size,
+                aim.region,
+                aim.sigma_px,
+                aim.scale,
+                &b.dirty,
+            );
+            b.dirty.clear();
+            b.aim = Some(aim);
+            b.recomputed += b.image.recomputed_px();
+            if let (Some(r), Some(s)) = (changed, surfaces.get_mut(id)) {
+                let (x, y) = aim.layer_at;
+                let r = r.translate(x - aim.region.x, y - aim.region.y);
+                s.damage_px += r.area();
+                s.damage.push(r);
+                if s.draw_start_ns == 0 {
+                    s.draw_start_ns = now_ns();
+                }
+            }
+        }
+    }
+
+    /// The windows with a shown child that has a backdrop: their fronts stay through the quiet period.
+    fn blur_parents(&self) -> Vec<u64> {
+        let shown = |id: &u64| self.surfaces.get(id).is_some_and(|s| s.drawable);
+        self.blurs
+            .iter()
+            .filter(|(id, _)| shown(id))
+            .map(|(_, b)| b.parent)
+            .collect()
     }
 
     /// Child `id` has the transitions `spec`, and the host has it shown or not (`mapped`).  With none, a leg that runs
@@ -570,6 +775,9 @@ impl Stage {
         if let Some(mut m) = self.moves.remove(&id) {
             m.ghost = true;
             self.moves.insert(key, m);
+        }
+        if let Some(b) = self.blurs.remove(&id) {
+            self.blurs.insert(key, b);
         }
     }
 
@@ -698,6 +906,7 @@ impl Stage {
 
     /// When the next front may be dropped idle: the earliest quiet period's end among fronts with nothing waiting.
     pub fn next_trim(&self) -> Option<u64> {
+        let kept = self.blur_parents();
         self.surfaces
             .iter()
             .filter(|(id, s)| {
@@ -705,6 +914,7 @@ impl Stage {
                     && s.damage.is_empty()
                     && s.outs.is_empty()
                     && !self.moves.get(id).is_some_and(Moving::keeps_front)
+                    && !kept.contains(id)
             })
             .map(|(_, s)| s.last_ns + IDLE_NS)
             .min()
@@ -755,6 +965,20 @@ impl Stage {
                     let n = r.w as usize * r.h as usize;
                     front.write(r, &part.patch[at..at + n]);
                     at += n;
+                }
+            }
+            if !self.blurs.is_empty() {
+                let dirt: Vec<Rect> = if part.full || !size_ok {
+                    vec![Rect::new(0, 0, part.w, part.h)]
+                } else {
+                    let scrolled = outputs.iter().filter(|o| !o.full && o.scroll != 0);
+                    (part.rects.iter().copied())
+                        .chain(scrolled.map(|o| o.rect))
+                        .collect()
+                };
+                let under = self.blurs.values_mut();
+                for b in under.filter(|b| b.parent == part.window) {
+                    b.soil(&dirt);
                 }
             }
             let outs_changed = Pending::merge_all(&mut s.outs, outputs);
@@ -854,6 +1078,7 @@ impl Stage {
             surfaces,
             composer,
             moves,
+            blurs,
             scratch,
             ..
         } = self;
@@ -862,6 +1087,9 @@ impl Stage {
             .map_or(Sample::IDENTITY, |m| m.motion.sample(m.t));
         let Some(s) = surfaces.get_mut(&id) else {
             return;
+        };
+        let extras = Extras {
+            backdrop: blurs.get(&id).map(|b| (&b.image, s.glitnir_root)),
         };
         let Some(front) = &s.front else {
             return;
@@ -896,7 +1124,7 @@ impl Stage {
         let src = front.view(s.glitnir_root, s.src, s.scale);
         let scene = s.scene.as_deref();
         if sample.scale == 1.0 {
-            draw(scene, composer, front, &src, &mut t, &clips);
+            draw(scene, composer, front, &src, &mut t, &clips, &extras);
         } else {
             // a pop: the picture as it will rest, then scaled about its centre, so the shadow's tiles stretch with it
             let (w, h) = (buf.w as usize, buf.h as usize);
@@ -907,7 +1135,7 @@ impl Stage {
                 rect: all,
                 scale: s.scale,
             };
-            draw(scene, composer, front, &src, &mut whole, &[all]);
+            draw(scene, composer, front, &src, &mut whole, &[all], &extras);
             kernels().scale(t.data, stride, scratch, w, w, h, sample.scale, all);
         }
         let cut = if s.alpha_host { s.alpha_cut } else { 0 };
@@ -953,6 +1181,10 @@ impl Stage {
                 m.tick_ns = now;
             }
         }
+        let backdrop_px = self
+            .blurs
+            .get_mut(&id)
+            .map_or(0, |b| std::mem::take(&mut b.recomputed));
         let Some(s) = self.surfaces.get_mut(&id) else {
             return;
         };
@@ -969,6 +1201,7 @@ impl Stage {
             presented_us: -1,
             damage_px: s.damage_px,
             painted_px: s.painted_px,
+            backdrop_px,
             backfill: 2,
             ticks,
             late_ticks,
@@ -1059,6 +1292,7 @@ impl Stage {
 
     /// Drop the fronts of surfaces with no publish for the pool's quiet period and nothing waiting; their windows.
     pub fn trim(&mut self, now: u64) -> Vec<u64> {
+        let kept = self.blur_parents();
         let mut out = Vec::new();
         for (id, s) in &mut self.surfaces {
             if s.front.is_some()
@@ -1066,6 +1300,7 @@ impl Stage {
                 && s.outs.is_empty()
                 && now.saturating_sub(s.last_ns) > IDLE_NS
                 && !self.moves.get(id).is_some_and(Moving::keeps_front)
+                && !kept.contains(id)
             {
                 s.front = None;
                 out.push(*id);
@@ -1081,6 +1316,7 @@ impl Stage {
             self.composer.forget(s.glitnir_root);
         }
         self.moves.remove(&id);
+        self.blurs.remove(&id);
         self.clocks.remove(&id);
         self.unmaps.retain(|u| *u != id);
         self.keys.remove(&id);
@@ -1310,6 +1546,11 @@ impl WaylandShell {
     pub(super) fn motion_post(&mut self, root: u64, m: Mail) {
         self.post(m);
         self.main.present_tick(root);
+    }
+
+    /// Child `id`, which has a backdrop, moved: what the move owes wakes the presenter, which reads this first.
+    pub(super) fn backdrop_placed(&mut self, id: u64, at: (i32, i32)) {
+        self.post(Mail::Placed(id, at));
     }
 
     /// The presenter has a picture of window `id`, or will have with the packets on their way.
