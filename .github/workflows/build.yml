@@ -333,10 +333,11 @@ jobs:
       nidhogg: artifact
       tiers: ${{ inputs.scope == 'macos' && 'macos' || 'unit no-lisp-writes ui macos' }}
 
-  # GUI tests (test/src/nidhogg-tests/*-gui-tests.el): the fedora-45 tarball in a fedora-45 container on a headless mutter
-  # with its own session bus, at monitor scale 1 and 2 (nidhogg/test/gui.sh).  Not part of the release gate.
+  # GUI tests (test/src/nidhogg-tests/*-gui-tests.el): the fedora-45 tarball, a pgtk build, in a fedora-45 container on a
+  # headless sway (gui.sh's default) with its own session bus, at monitor scale 1 and 2 (nidhogg/test/gui.sh).  The
+  # native shell's rows skip here: native-gui runs them.  Not part of the release gate.
   gui:
-    name: GUI tests (headless mutter, scale ${{ matrix.scale }})
+    name: GUI tests (pgtk, headless sway, scale ${{ matrix.scale }})
     needs: linux
     if: ${{ !cancelled() && github.ref_type != 'tag' }}
     runs-on: ubuntu-24.04
@@ -366,6 +367,93 @@ jobs:
           tar -xJf dist/*.tar.xz -C "$RUNNER_TEMP/nidhogg" --strip-components=1
       - name: GUI tests at scale ${{ matrix.scale }}
         run: bash nidhogg/test/gui.sh --prefix "$RUNNER_TEMP/nidhogg" --scale "${{ matrix.scale }}" --container fedora-45 --timeout 1800
+
+  # The native Wayland shell.  Every tarball above is pgtk (build.sh's default), so it gets a build of its own, the
+  # recorder its rows need, its crates' checks, and its GUI rows on the recorder and on real compositors
+  # (nidhogg/test/native-gui.sh).  None is in release's needs and none runs for a release tag, like gui.
+  native:
+    name: Native shell build (fedora-45)
+    if: ${{ inputs.scope != 'macos' && github.ref_type != 'tag' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: bash nidhogg/ci/set-mtimes.sh
+      - name: ccache (C objects)
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-native-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ github.sha }}
+          restore-keys: ccache-native-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-
+      - name: Build and pack
+        id: build
+        env:
+          NIDHOGG_BUILD_CCACHE: ${{ runner.temp }}/ccache
+        run: |
+          bash nidhogg/build.sh --container fedora-45 --nidhogg-wayland --memory 12g --jobs 4 --build-dir "$RUNNER_TEMP/build" \
+            --out "dist/nidhogg-native-fedora-45-$(uname -m).tar.xz"
+      - name: Save ccache
+        if: ${{ always() && steps.build.outcome == 'success' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-native-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ github.sha }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tarball-native
+          path: dist/
+          if-no-files-found: error
+
+  # The recorder, then the crates' checks, which need it: their T1 tests run against it, and nothing else in this
+  # workflow runs them (the build compiles the crates, and only Glitnir's checks run in tree).
+  native-crates:
+    name: Native shell crates (recorder, shell, glue)
+    if: ${{ inputs.scope != 'macos' && github.ref_type != 'tag' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: T="$RUNNER_TEMP" bash nidhogg/test/recorder/check.sh --container fedora-45 --build
+      - run: T="$RUNNER_TEMP" NH_RECORDER="$RUNNER_TEMP/nh-recorder-target/release/nh-recorder" bash nidhogg/shell/check.sh --container fedora-45
+      - run: T="$RUNNER_TEMP" NH_RECORDER="$RUNNER_TEMP/nh-recorder-target/release/nh-recorder" bash nidhogg/glue/check.sh --container fedora-45
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nh-recorder
+          path: ${{ runner.temp }}/nh-recorder-target/release/nh-recorder
+          if-no-files-found: error
+
+  native-gui:
+    name: Native GUI rows (${{ matrix.lane }})
+    needs: [native, native-crates]
+    if: ${{ !cancelled() && inputs.scope != 'macos' && github.ref_type != 'tag' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [recorder, recorder-mutter, recorder-inline, mutter, sway, decor-recorder, decor-1, decor-2]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: tarball-native
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nh-recorder
+          path: recorder
+      - name: Unpack
+        run: |
+          mkdir -p "$RUNNER_TEMP/nidhogg"
+          tar -xJf dist/*.tar.xz -C "$RUNNER_TEMP/nidhogg" --strip-components=1
+          chmod +x recorder/nh-recorder
+      - run: bash nidhogg/test/native-gui.sh "${{ matrix.lane }}" --prefix "$RUNNER_TEMP/nidhogg" --recorder "$PWD/recorder/nh-recorder" --container fedora-45
 
   # The off-main-thread work's CI (engine C, PD-4).  They run once the Linux builds are done, whatever the other distros
   # did, and they are not in release's needs: the default-on rule requires them green on the gate commit, a release
