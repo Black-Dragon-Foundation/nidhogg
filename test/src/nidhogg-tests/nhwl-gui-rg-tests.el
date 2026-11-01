@@ -1,5 +1,7 @@
 ;;; nhwl-gui-rg-tests.el --- GUI rows for the native shell's glue in Rust  -*- lexical-binding: t -*-
 
+;; test-class: cond
+
 ;; Run by nidhogg/test/gui.sh with the base rows (nhwl-gui-tests.el, whose helpers are used here).  The runner's default
 ;; file pattern (`-gui-tests.el') does not match this file's name: load it with `--files 'nhwl-gui*-tests.el''.  Each
 ;; part of the glue has its rows under its own heading.
@@ -106,18 +108,18 @@
           (setq pid (plist-get st :pid))
           ;; the child's window is the newest toplevel
           (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
-          (sleep-for 0.3)
           ;; a 200-key burst, with a SIGINT every 10 keys, 5 ms apart from the keys around it
           (dotimes (i 200)
             (gui-runner-recorder '(:cmd "key" :text "a"))
             (when (= (% i 10) 5)
-              (sleep-for 0.005)
+              (gui-runner-stimulus 0.005)
               (signal-process pid 'SIGINT)
-              (sleep-for 0.005)))
-          (sleep-for 1)
-          (setq st (nhwl-gui--read-status status))
+              (gui-runner-stimulus 0.005)))
+          (should (nhwl-gui--wait (lambda ()
+                                    (setq st (nhwl-gui--read-status status))
+                                    (> (plist-get st :quits) 0))
+                                  10))
           (should (process-live-p proc))
-          (should (> (plist-get st :quits) 0))
           (should (= (plist-get st :panics) 0))
           ;; the frame still takes input: 10 keys typed afterwards arrive
           (dolist (k (split-string "0123456789" "" t))
@@ -263,11 +265,11 @@ published picture is the one shown, whichever packets were superseded."
                (insert (char-to-string (+ ?a (% i 26))))
                (when (zerop (% i 60)) (insert "\n"))
                (redisplay t)
-               (sleep-for (/ (random 21) 1000.0)))
+               (gui-runner-stimulus (/ (random 21) 1000.0)))
              (dotimes (i 40)
                (if (< (% i 10) 5) (scroll-up 3) (scroll-down 2))
                (redisplay t)
-               (sleep-for (/ (random 21) 1000.0)))
+               (gui-runner-stimulus (/ (random 21) 1000.0)))
              (redisplay t)
              (gui-runner-wait-settled)
              (should (equal (nhwl-gui--grab-matches-snapshot) '(0 . 0))))
@@ -306,7 +308,7 @@ configure of the same size and states, one bare ack; with nothing drawn, nothing
                (should (equal (nhwl-gui--toplevel-kinds mark) '(bare-ack))))
              (let ((mark (nhwl-gui--mark)))
                (redisplay t)
-               (sit-for 0.5)
+               (gui-runner-observe 0.5)
                (should (equal (nhwl-gui--toplevel-kinds mark) nil))))
          (kill-buffer buf)
          (nhwl-gui--windowed))))))
@@ -329,7 +331,7 @@ ack attaches a buffer of that configure's size (logical pixels), and the newest 
               (setq last serial)
               (insert "x")
               (redisplay t)
-              (sleep-for (/ (random 31) 1000.0))))
+              (gui-runner-stimulus (/ (random 31) 1000.0))))
           (should (nhwl-gui--wait
                    (lambda ()
                      (redisplay t)
@@ -357,7 +359,7 @@ real compositor; the trace checker's rule `acks' judges that every ack rides a b
             (set-frame-size nil (+ 50 (random 30)) (+ 15 (random 15)))
             (insert "x")
             (redisplay t)
-            (sleep-for (/ (random 31) 1000.0)))
+            (gui-runner-stimulus (/ (random 31) 1000.0)))
           (nhwl-gui--live-settle 0.5)
           (should (frame-live-p (selected-frame))))
       (set-frame-parameter nil 'fullscreen old)
@@ -373,7 +375,7 @@ real compositor; the trace checker's rule `acks' judges that every ack rides a b
      (redisplay t)
      (gui-runner-wait-settled)
      (let ((packets (plist-get (nhwl-presenter-stats) :packets)))
-       (sit-for 2)
+       (gui-runner-observe 2)
        (redisplay t)
        (should (= (plist-get (nhwl-presenter-stats) :packets) packets))))))
 
@@ -487,7 +489,7 @@ its old size after the resize: it keeps its last buffer until its own redisplay,
                 "nhwl-rg-thread"))
       (dotimes (i 20)
         (gui-runner-recorder (list :cmd "key" :text (string (+ ?a i))))
-        (sleep-for 0.01))
+        (gui-runner-stimulus 0.01))
       (let ((deadline (+ (float-time) 20)))
         (while (and (not done) (< (float-time) deadline))
           (let ((e (read-event nil nil 0.05)))

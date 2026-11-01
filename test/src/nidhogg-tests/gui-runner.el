@@ -79,12 +79,16 @@
 
 (defun gui-runner-wait (pred &optional seconds)
   "Run the event loop until PRED returns non-nil, and return its value; nil after SECONDS (default 10).
-Input stays in the queue for the row to read; timers and process output run."
+Timers, process output and GTK run; a native frame's input stays unread until PRED reads it."
   (let ((deadline (+ (float-time) (or seconds 10))) (v nil))
     (while (and (not (setq v (funcall pred))) (< (float-time) deadline))
-      (accept-process-output nil 0.01)
-      (input-pending-p))
+      (accept-process-output nil 0.01))
     v))
+
+(defun gui-runner-for (seconds fn)
+  "Call FN again and again for SECONDS: a fixed span of reading what comes, not a wait for one thing to happen."
+  (let ((end (+ (float-time) seconds)))
+    (while (< (float-time) end) (funcall fn))))
 
 (defun gui-runner-observe (seconds &optional tick)
   "Watch the session for SECONDS, with redisplay, timers and events running, calling TICK (when given) on each turn.
@@ -425,6 +429,14 @@ read by the second, and an answered callback leaves the pacer open, so a commit 
       (setcar seen next)
       (and still
            (or occluded (and (eql 0 (plist-get o :callbacks)) (gui-runner--presented-p)))))))
+
+(defun gui-runner-wait-callbacks-answered ()
+  "Wait (5 s at most) for the recorder to have answered every frame callback, with Emacs reading no input meanwhile:
+the answers and whatever the recorder sent before them are in the socket for one read."
+  (let ((deadline (+ (float-time) 5)))
+    (while (and (not (eql 0 (plist-get (gui-runner-recorder '(:cmd "outstanding")) :callbacks)))
+                (< (float-time) deadline))
+      (accept-process-output nil 0.01))))
 
 (defun gui-runner-wait-settled ()
   "Wait until what the frame last drew has reached the compositor, and print a line if that took over 3 s.
