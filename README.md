@@ -497,7 +497,9 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
 - The fatal path: `shut_down_emacs` marks the workers dead first when Emacs dies of a signal or a fatal error. From
   then on no job is submitted, no wait waits, completions are dropped and the queues are abandoned (not freed), so a
   crash under a worker's mutex, or on a worker thread (forwarded to the main thread as usual), still prints its
-  backtrace and writes the emergency auto-save. No signal handler takes a worker mutex: the SIGCHLD handler runs in
+  backtrace and writes the emergency auto-save. A crash on a worker reaches the main thread at its next safe point
+  (`process_pending_signals`), since the auto-save allocates and the signal may land inside malloc; a main thread that
+  gets to none in 1 s takes it in the handler. No signal handler takes a worker mutex: the SIGCHLD handler runs in
   signal context, where submit, wait and cancel refuse at once and a worker mutex taken anyway aborts the process
   rather than deadlock. `kill-emacs` with jobs in flight exits without waiting for them. Test primitives:
   `nidhogg-workers--test-crash`, `--test-fatal-under-lock`, `--test-signal-under-locks`.
