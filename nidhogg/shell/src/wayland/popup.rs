@@ -14,6 +14,11 @@
 //! **Destroy order.**  A popup is destroyed only when nothing is above it: `window_destroy` takes its dependents
 //! first (deepest first), and `popup_destroy` takes every grabbing popup above it first, topmost first, so the
 //! compositor never sees `not_the_topmost_popup`.
+//!
+//! **Map order.**  Each popup is a tree of its own, but xdg-shell wants a popup's parent mapped first, and mutter
+//! dismisses a popup whose parent it finds unmapped; one with a popup of its own then goes under that popup, which
+//! mutter answers with `not_the_topmost_popup`, ending the client.  So a popup shows no buffer until the window it hangs
+//! on has shown one (`Present::awaits_parent`).
 
 use crate::api::*;
 use crate::event::*;
@@ -185,6 +190,7 @@ impl WaylandShell {
         // the compositor sends the first configure only after this bare commit
         surface.commit();
         self.main.present_register(id, Some(xdg_surface), None);
+        self.main.present_after(id, base_window);
         self.flush()?;
         Ok(id)
     }
