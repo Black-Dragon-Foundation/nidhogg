@@ -502,9 +502,10 @@ impl Moving {
         }
     }
 
-    /// The tree's next frame has something to do for this surface.
+    /// The tree's next frame has something to do for this surface: a ghost with no picture has only to go.
     fn due(&self, s: &Surface) -> bool {
         self.last
+            || (self.ghost && self.bare)
             || (self.wanted != self.settled
                 && (!self.bare || (s.drawable && s.front.is_some() && !s.damage.is_empty())))
     }
