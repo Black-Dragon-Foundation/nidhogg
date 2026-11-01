@@ -1,5 +1,4 @@
 ;;; test-clock-tests.el --- tests for the test clock  -*- lexical-binding: t -*-
-;; test-class: det
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
@@ -140,7 +139,6 @@
     (should (= 0 (test-clock-tests--blocks)))))
 
 (ert-deftest test-clock/a-real-child-holds-the-clock-and-is-named ()
-  :tags '(:cond)
   (test-clock-tests--with t
     (let ((proc (make-process :name "test-clock-child" :noquery t
                               :connection-type 'pipe
