@@ -40,7 +40,8 @@
 ;;   D and C    no `should' over a comparison of a clock read.  Only T
 ;;              (timing) tests assert the clock.
 ;; A test that calls a same-file function or macro is judged by what that
-;; function does too.
+;; function does too, except for the clock-assertion rule, which reads
+;; only the test's own text (a wait helper reads the clock by design).
 
 ;;; Code:
 
@@ -259,7 +260,9 @@ class line has none."
             (dolist (d (test-class-lint--fixed-pause nodes))
               (push (list 'cond-pause name d) out)))
           (when (memq class '(det cond))
-            (dolist (d (test-class-lint--asserts-clock body helpers))
+            ;; No helpers followed: a `should' over a wait helper (whose own loop reads the
+            ;; clock) compared with something else is not an assertion on the clock.
+            (dolist (d (test-class-lint--asserts-clock body (make-hash-table :test 'eq)))
               (push (list 'clock-assert name d) out))))))
     (nreverse out)))
 
@@ -407,6 +410,10 @@ class line has none."
                             " (should (< dt 2))))\n"))))
     (should-not (test-class-lint--violations
                  (concat cnd "(ert-deftest my/a () (let ((n 3)) (should (< n 5))))\n")))
+    ;; A wait helper that reads the clock is not an assertion on it.
+    (should-not (test-class-lint--violations
+                 (concat cnd "(defun my--until (f) (let ((e (+ (float-time) 5))) (while (and (not (funcall f)) (< (float-time) e)))))\n"
+                         "(ert-deftest my/a () (let ((ok (my--until (lambda () t)))) (should ok) (should (my--until (lambda () (= 1 1))))))\n")))
     ;; T asserts the clock; a tag moves one test; no class line means no lint.
     (should-not (test-class-lint--violations
                  (concat ";; test-class: timing\n"
