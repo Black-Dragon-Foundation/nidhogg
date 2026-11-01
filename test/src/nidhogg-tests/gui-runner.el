@@ -31,31 +31,11 @@
   (or (getenv "GLITNIR_GUI_COMPOSITOR") "mutter"))
 
 (defun glitnir-gui--scale-ready-p ()
-  "Non-nil once the selected frame sits at the asked scale (the monitor's scale applied), by the rule of the compositor."
-  (pcase (glitnir-gui--compositor)
-    ;; Probed 2026-10-26 on the .2 prefix, sway, 2880x1800: scale 1 gives (frame-scale-factor) 1.0 and geometry
-    ;; 2880x1800; 1.25 gives 2.0 and 4608x2880; 1.5 gives 2.0 and 3840x2400; 2 gives 2.0 and 2880x1800.  That is
-    ;; mutter's rule too.  The recorder (profile sway) sends the same wl_output scale and xdg-output size.
-    ((or "sway" "mutter" "recorder" "kwin" "labwc") (glitnir-gui--gtk3-scale-ready-p))
-    (c (error "gui-runner: unknown compositor %S" c))))
-
-(defun glitnir-gui--gtk3-scale-ready-p ()
-  (let ((s (glitnir-gui--scale)))
-    (if (featurep 'nidhogg-wayland)
-        ;; Nidhogg's own Wayland shell has the exact scale and the monitor's device size
-        (and (< (abs (- (frame-scale-factor) s)) 0.001)
-             (let ((size (getenv "GLITNIR_GUI_SIZE"))
-                   (geo (alist-get 'geometry (car (display-monitor-attributes-list)))))
-               (or (not size) (equal (format "%dx%d" (nth 2 geo) (nth 3 geo)) size))))
-      ;; GTK 3 knows only integer scales: it reports ceil(S) and a monitor geometry of the logical size (WxH / S)
-      ;; times ceil(S) (S = 1.25 on 2880x1800: 4608x2880), which tells S = 1.25 from S = 2.
-      (and (= (frame-scale-factor) (ceiling s))
-           (let* ((size (getenv "GLITNIR_GUI_SIZE"))
-                  (geo (alist-get 'geometry (car (display-monitor-attributes-list))))
-                  (m (and size (string-match "\\`\\([0-9]+\\)x\\([0-9]+\\)\\'" size))))
-             (or (not m)
-                 (and (= (nth 2 geo) (* (ceiling s) (round (/ (string-to-number (match-string 1 size)) s))))
-                      (= (nth 3 geo) (* (ceiling s) (round (/ (string-to-number (match-string 2 size)) s)))))))))))
+  "Non-nil once the selected frame sits at the asked scale and the monitor's device size, which the native shell reports."
+  (and (< (abs (- (frame-scale-factor) (glitnir-gui--scale))) 0.001)
+       (let ((size (getenv "GLITNIR_GUI_SIZE"))
+             (geo (alist-get 'geometry (car (display-monitor-attributes-list)))))
+         (or (not size) (equal (format "%dx%d" (nth 2 geo) (nth 3 geo)) size)))))
 
 (defun glitnir-gui--wait-for-scale ()
   (let ((deadline (+ (float-time) 10)))

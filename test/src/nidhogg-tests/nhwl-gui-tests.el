@@ -456,6 +456,70 @@ Return the two replies."
              (setq i (+ i 4)))
            (should found)))))))
 
+(defconst nhwl-gui--image-dir
+  (expand-file-name "fixtures/images/" (file-name-directory (or load-file-name buffer-file-name)))
+  "The image corpus.")
+
+(defun nhwl-gui--image-row (pixels w y)
+  "Row Y of PIXELS (words of width W, `nidhogg-workers--test-image-pixels') as an opaque frame's backing stores it."
+  (let ((row (substring pixels (* 4 y w) (* 4 (1+ y) w))) (i 3))
+    (while (< i (* 4 w))
+      (aset row i 255)
+      (setq i (+ i 4)))
+    row))
+
+(defun nhwl-gui--image-shown-p (spec)
+  "Non-nil when the decoded picture of SPEC lies in the selected frame's backing, pixel for pixel."
+  (pcase-let* ((r (nidhogg-workers--test-image-pixels spec nil t))
+               (w (plist-get r :width)) (h (plist-get r :height)) (pixels (plist-get r :pixels))
+               (`(,sw ,_ ,bytes) (glitnir-snapshot nil 'raw)))
+    (when pixels
+      (let ((first (nhwl-gui--image-row pixels w 0)) (start 0) (found nil))
+        (while (and (not found) (setq start (string-search first bytes start)))
+          (if (and (zerop (% start 4))
+                   (cl-loop for y from 1 below h
+                            for o = (+ start (* y 4 sw))
+                            always (string= (nhwl-gui--image-row pixels w y)
+                                            (substring bytes o (min (+ o (* 4 w)) (length bytes))))))
+              (setq found t)
+            (setq start (1+ start))))
+        found))))
+
+(ert-deftest nhwl-gui/real-images-show ()
+  "A real PNG, JPEG, GIF, WebP and SVG reach the frame's pixels, decoded at once and decoded on the worker: every image a
+user displays takes this path, and a build without the image libraries would not run it at all."
+  (skip-unless (nhwl-gui--live-p))
+  (dolist (type '(png jpeg gif webp svg))
+    (should (image-type-available-p type)))
+  (let* ((file (lambda (type name)
+                 `(image :type ,type :scale 1 :file ,(expand-file-name name nhwl-gui--image-dir))))
+         (specs (list (funcall file 'png "oracle-rgb8.png") (funcall file 'jpeg "base444.jpg")
+                      (funcall file 'gif "one.gif") (funcall file 'webp "lossy.webp")
+                      `(image :type svg :scale 1
+                              :data ,(concat "<svg xmlns='http://www.w3.org/2000/svg' width='32' height='24'>"
+                                             "<rect width='32' height='24' fill='#ff0080'/>"
+                                             "<rect x='8' y='6' width='16' height='12' fill='#00ff80'/></svg>"))))
+         (buf (generate-new-buffer "*nhwl-images*")))
+    (unwind-protect
+        (nhwl-gui--with-blink
+         nil
+         (lambda ()
+           (switch-to-buffer buf)
+           (setq-local cursor-type nil)
+           (dolist (spec specs) (insert (propertize " " 'display spec) "\n"))
+           (goto-char (point-min))
+           (dolist (decision '(nil offload))
+             (let ((nidhogg-workers-images t) (nidhogg-image-defer t) (nidhogg-workers--mode 'threads))
+               (nidhogg-workers--test-decide decision)
+               (clear-image-cache t)
+               (force-window-update)
+               (dolist (spec specs)
+                 (ert-info ((format "%S, decision %S" (plist-get (cdr spec) :type) decision))
+                   (should (nhwl-gui--wait (lambda () (redisplay t) (nhwl-gui--image-shown-p spec)) 5))))))))
+      (nidhogg-workers--test-decide nil)
+      (clear-image-cache t)
+      (kill-buffer buf))))
+
 (ert-deftest nhwl-gui/typed-text-reaches-the-screen ()
   ;; the typed text's cells change in the compositor's picture, the client-side title bar's margins too (a glyph
   ;; string's fills and font drawing nest the backing's clip, which once moved them by the margins twice, out of the
@@ -931,11 +995,26 @@ Return the two replies."
                         (seq-filter (lambda (i) (memq i (list ia ib)))
                                     (plist-get (nhwl-gui--node parent) :children)))))
           (should (equal (funcall order) (list ia ib)))
+          (should (equal (glitnir--stacking) (list a b)))
           (raise-frame a)
           (should (nhwl-gui--wait (lambda () (equal (funcall order) (list ib ia))) 5))
+          (should (equal (glitnir--stacking) (list b a)))
           (lower-frame a)
-          (should (nhwl-gui--wait (lambda () (equal (funcall order) (list ia ib))) 5)))
+          (should (nhwl-gui--wait (lambda () (equal (funcall order) (list ia ib))) 5))
+          (should (equal (glitnir--stacking a) (list a b))))
       (dolist (f (list a b)) (when (and f (frame-live-p f)) (delete-frame f t))))))
+
+(ert-deftest nhwl-gui/draw-count-counts-a-child-move ()
+  "`glitnir--draw-count' reads the root's commits that showed something: a child frame's move is one, a child frame's
+own count is its root's."
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--with-child
+   (lambda (c _id)
+     (let ((before (glitnir--draw-count)))
+       (should (> before 0))
+       (set-frame-position c 90 70)
+       (should (nhwl-gui--wait (lambda () (> (glitnir--draw-count) before)) 5))
+       (should (= (glitnir--draw-count c) (glitnir--draw-count)))))))
 
 ;; Live rows: they run on any compositor, the real sway and mutter included, and assert only that the frame is live and
 ;; nothing signalled.  What the shell said to the compositor is judged afterwards by the trace checker
