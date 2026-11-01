@@ -30,6 +30,11 @@
 #   --self-test       --runs 1, 1280x720, 3 s windows, 10 resize steps, 30 motion frames; then every line must read
 #                     back as a plist with :target, :kind and :verdict, none may be nil, and freeze-watchdog may not be
 #                     skipped
+#                     With no --prefix-a, --self-test only checks the motion and palette rows (all budget, at 2880x1800@2)
+#                     and their workloads
+#   fade-*, palette-* the motion and blurred-palette rows, from the child frame's glitnir-stats; judged at 2880x1800@2
+#                     only.  fade-interval-p95, fade-overrun-max and palette-beneath-blur-p95 have no key in the record
+#                     yet and are skipped
 #   BUDGETS_MEMORY    the container's memory cap (default 6g); BUDGETS_CPUSET pins it (podman --cpuset-cpus)
 #
 # The speed sessions (V2's three bars, C1, C4) run each side with WAYLAND_DEBUG=client and read the traces with
@@ -78,7 +83,18 @@ pss-compositor|51200|budget|shells section 3: the test compositor at 50 MB
 pss-idle|122880|budget|pgtk gate run 2026-10-27, 120 MB|1920x1080@1
 cpu-typing|8.59|budget|pgtk gate run 2026-10-27|1920x1080@1
 cpu-scroll|$REF_CPU_SCROLL|budget|pgtk reference run|1920x1080@1
-pss-scroll|$REF_PSS_SCROLL|budget|pgtk reference run|1920x1080@1"
+pss-scroll|$REF_PSS_SCROLL|budget|pgtk reference run|1920x1080@1
+fade-interval-p95|10.42|budget|the budgets table: 1.25 periods at 120 Hz|2880x1800@2
+fade-overrun-max|8.33|budget|the budgets table: a transition ends within its duration + 1 period at 120 Hz|2880x1800@2
+fade-compose-p95|2.5|budget|the budgets table: a 640x400 logical popup at scale 2|2880x1800@2
+fade-idle-commits|0|budget|the budgets table: no commit from 1 period after the end|2880x1800@2
+palette-filter-compose-p95|3|budget|the budgets table: compose with the blur|2880x1800@2
+palette-filter-input-p95|16|budget|the budgets table: key to commit in the blurred palette|2880x1800@2
+palette-typing-backdrop-px|0|budget|the budgets table: typing recomputes no blur|2880x1800@2
+palette-beneath-blur-p95|1.5|budget|the budgets table: recomputing the blur after a change beneath|2880x1800@2"
+# the motion and palette rows, for the static self-test
+EFFECT_ROWS="fade-interval-p95 fade-overrun-max fade-compose-p95 fade-idle-commits palette-filter-compose-p95 palette-filter-input-p95 palette-typing-backdrop-px palette-beneath-blur-p95"
+EFFECT_CELL=2880x1800@2
 
 pa= scale=1 size=1920x1080 runs=5 out=budgets.eld window=60 steps=200 mframes=600 msize=3840x2160 selftest=0 mode=host refresh=120 sscroll=10 fixed=2000 nh_env=() HAS_W3=0 reference=0 config=q drgnx=
 while [ $# -gt 0 ]; do
@@ -107,6 +123,24 @@ while [ $# -gt 0 ]; do
 done
 if [ "$selftest" = 1 ]; then runs=1 size=1280x720 window=3 steps=10 mframes=30 msize=1280x720 sscroll=2 fixed=100; fi
 case $refresh in ''|*[!0-9]*) echo "budgets.sh: --refresh is a whole number of Hz" >&2; exit 2 ;; esac
+# --self-test with no build: the targets table alone (the effect rows, all budget, all at the effects' cell, the
+# workloads present); the timing runs are the gate's
+if [ "$selftest" = 1 ] && [ -z "$pa" ]; then
+  bad=0
+  for rr in $EFFECT_ROWS; do
+    line=$(printf '%s\n' "$TARGETS" | grep "^$rr|") || { echo "budgets self-test: no $rr row" >&2; bad=1; continue; }
+    IFS='|' read -r _ tg kd _ tc <<< "$line"
+    case $tg in ''|*[!0-9.]*) echo "budgets self-test: $rr has no numeric target" >&2; bad=1 ;; esac
+    [ "$kd" = budget ] || { echo "budgets self-test: $rr is $kd, not budget" >&2; bad=1; }
+    [ "$tc" = "$EFFECT_CELL" ] || { echo "budgets self-test: $rr is judged at '$tc', not $EFFECT_CELL" >&2; bad=1; }
+  done
+  for w in fade_bench palette_bench; do
+    grep -q "^$w()" "$self" || { echo "budgets self-test: no $w workload" >&2; bad=1; }
+  done
+  [ "$bad" = 0 ] || exit 1
+  echo "budgets self-test: the effect rows and workloads are known"
+  exit 0
+fi
 [ -x "$pa/bin/nidhogg" ] || { echo "budgets.sh: --prefix-a must be an unpacked Nidhogg" >&2; exit 2; }
 [ "$reference$selftest" != 11 ] || { echo "budgets.sh: --reference and --self-test do not combine" >&2; exit 2; }
 case $size$msize in *x*x*) ;; *) echo "budgets.sh: sizes are WxH" >&2; exit 2 ;; esac
@@ -184,7 +218,10 @@ if [ "$mode" = container ]; then
         (unless blink (error "no idle-wakeups-blink row"))
         (dolist (want (quote (typing-stall-max typing-stall-p99 latency-typing scroll-120-dropped
                               scroll-120-presenter-late main-wait-max cpu-scroll latency-typing-inline
-                              freeze-watchdog pss-compositor)))
+                              freeze-watchdog pss-compositor
+                              fade-interval-p95 fade-overrun-max fade-compose-p95 fade-idle-commits
+                              palette-filter-compose-p95 palette-filter-input-p95 palette-typing-backdrop-px
+                              palette-beneath-blur-p95)))
           (unless (memq want seen) (error "no %s row" want)))
         (when (< n 10) (error "only %d rows" n))
         (princ (format "budgets self-test: %d rows read back\n" n))))' "$out" || rc=1
@@ -497,6 +534,55 @@ speed() {
   stop_all
 }
 
+# fade_bench: a 640x400 logical child with (transition . pop), shown and hidden 50 times with Lisp idle.  Every number
+# comes from the child's glitnir-stats record: :compose-ms p95, and the :ticks that still arrive after the last hide has
+# ended (fade-idle-commits).  The stats have no tick-interval or leg-length key, so fade-interval-p95 and
+# fade-overrun-max are SKIP rows until the record gains one: no value is made up.
+fade_bench() {
+  local r
+  start_sway "$size" "$scale" "$refresh" && start_nidhogg "$pa" || return 1
+  r=$(cl '(budgets--fade 50)' | tr -d '"')
+  case $r in
+    "ok "*)
+      set -- $r
+      rec fade-compose-p95 A "$2"
+      rec fade-idle-commits A "$3" ;;
+    *) for x in fade-compose-p95 fade-idle-commits; do rec "$x" A "SKIP the fade workload did not run: $(echo "$r" | head -c 100 | tr '"\n' "' ")"; done ;;
+  esac
+  for x in fade-interval-p95 fade-overrun-max; do
+    rec "$x" A "SKIP glitnir-stats has no tick-interval or leg-length key to read"
+  done
+  stop_all
+}
+
+# palette_bench: a child with alpha-background 0.82 and backdrop-blur 10 over the full buffer; 200 keys typed into it, then
+# 50 changes beneath.  compose p95, key-to-commit p95 and :backdrop-px come from the child's glitnir-stats record.  The
+# record has no time for recomputing the blur, so palette-beneath-blur-p95 is a SKIP row.
+palette_bench() {
+  local r
+  start_sway "$size" "$scale" "$refresh" && start_nidhogg "$pa" || return 1
+  cl '(budgets--palette-open)' > /dev/null
+  wtype -d 20 -- "$(awk 'BEGIN { for (i = 0; i < 200; i++) printf "%c", 97 + i % 26 }')" 2> "$run/wtype.err"; local wrc=$?
+  r=$(cl '(budgets--palette-read)' | tr -d '"')
+  case $r in
+    "ok "*)
+      set -- $r
+      if [ "$wrc" != 0 ]; then
+        for x in palette-filter-compose-p95 palette-filter-input-p95 palette-typing-backdrop-px; do
+          rec "$x" A "SKIP wtype did not reach the frame (exit $wrc)"; done
+      else
+        rec palette-filter-compose-p95 A "$2"
+        rec palette-filter-input-p95 A "$3"
+        rec palette-typing-backdrop-px A "$4"
+      fi ;;
+    *) for x in palette-filter-compose-p95 palette-filter-input-p95 palette-typing-backdrop-px; do
+         rec "$x" A "SKIP the palette workload did not run: $(echo "$r" | head -c 100 | tr '"\n' "' ")"; done ;;
+  esac
+  cl '(budgets--beneath 50)' > /dev/null
+  rec palette-beneath-blur-p95 A "SKIP glitnir-stats has no time for the blur's recompute, only :backdrop-px"
+  stop_all
+}
+
 # ---- inputs: the driver, the 10k-line file
 cat > "$run/driver.el" <<'EOF'
 ;;; budgets driver: no timers, so idle really is idle.
@@ -534,6 +620,50 @@ cat > "$run/driver.el" <<'EOF'
         (setq next (+ next per) d (- next (float-time)))
         (if (> d 0) (sleep-for d) (setq next (float-time))))))
   t)
+
+;; the effects' workloads (glitnir-stats of the child frame is the only source; the native shell's, not the pgtk-only keys)
+(defvar budgets--c nil "The child frame of the effects' workloads.")
+(defun budgets--child (params)
+  "A 640x400 logical child frame of the selected frame with PARAMS, kept in `budgets--c'."
+  (let ((s (frame-scale-factor)))
+    (setq budgets--c (make-frame `(,@params (parent-frame . ,(selected-frame)) (left . 40) (top . 30)
+                                   (width . (text-pixels . ,(* 640 s))) (height . (text-pixels . ,(* 400 s)))
+                                   (undecorated . t) (minibuffer . nil))))))
+(defun budgets--stat (&rest path)
+  "The value at PATH in the child's glitnir-stats record, 0 when there is none."
+  (let ((v (glitnir-stats budgets--c)))
+    (dolist (k path) (setq v (plist-get v k)))
+    (or v 0)))
+(defun budgets--fade (n)
+  "Show and hide a pop child N times; \"ok COMPOSE-P95 TICKS-AFTER-THE-END\"."
+  (budgets--child '((transition . pop) (background-color . "#336699")))
+  (redisplay t) (sit-for 0.8)
+  (glitnir-stats budgets--c t)
+  (dotimes (_ n)
+    (make-frame-invisible budgets--c) (sit-for 0.5)
+    (make-frame-visible budgets--c) (sit-for 0.5))
+  (let ((p95 (budgets--stat :compose-ms :p95)) (t0 (budgets--stat :ticks)))
+    (sit-for 1.0)
+    (prog1 (format "ok %s %s" p95 (- (budgets--stat :ticks) t0))
+      (delete-frame budgets--c t))))
+(defun budgets--palette-open ()
+  "A translucent child with a backdrop blur over the buffer, selected so the keys go to it."
+  (budgets--child '((alpha-background . 0.82) (backdrop-blur . 10) (background-color . "#202830")))
+  (set-window-buffer (frame-root-window budgets--c) (get-buffer-create " *budgets-palette*"))
+  (select-frame-set-input-focus budgets--c)
+  (redisplay t) (sit-for 0.5)
+  (glitnir-stats budgets--c t)
+  t)
+(defun budgets--palette-read ()
+  "\"ok COMPOSE-P95 KEY-TO-COMMIT-P95 BACKDROP-PX\" over the typing since the open."
+  (format "ok %s %s %s" (budgets--stat :compose-ms :p95) (budgets--stat :key-to-commit-ms :p95) (budgets--stat :backdrop-px)))
+(defun budgets--beneath (n)
+  "N changes to the parent's buffer, each shown, under the child; then the child goes."
+  (with-selected-window (frame-root-window (frame-parent budgets--c))
+    (goto-char (point-min))
+    (dotimes (_ n) (insert "x") (redisplay t) (sit-for 0.05)))
+  (delete-frame budgets--c t)
+  t)
 EOF
 awk 'BEGIN { for (i = 1; i <= 10000; i++) printf "line %05d the quick brown fox jumps over the lazy dog, again and again\n", i }' > "$run/big.txt"
 
@@ -558,6 +688,8 @@ for ((ri = 1; ri <= runs; ri++)); do
     speed C "$pa" || { echo "budgets.sh: the C speed session failed"; exit 1; }
   fi
   motion || { echo "budgets.sh: the motion session failed"; exit 1; }
+  fade_bench || { echo "budgets.sh: the fade session failed"; exit 1; }
+  palette_bench || { echo "budgets.sh: the palette session failed"; exit 1; }
 done
 
 # ---- aggregate: median and SD per row and side, then the verdict against the row's target
@@ -605,6 +737,9 @@ TBL=$TARGETS awk -F'|' -v cell="$cellid" -v ref="$reference" '
     unit["cpu-scroll"] = "CPU s, fixed work"; unit["power-scroll"] = "J, fixed work"; unit["freeze-watchdog"] = "stalls over 100 ms"
     unit["cpu-typing-inline"] = "% of one core (A thread, C inline)"
     unit["motion-compose-p95"] = "ms"; unit["motion-interval-p95"] = "ms"; unit["motion-cores"] = "cores"
+    unit["fade-interval-p95"] = "ms"; unit["fade-overrun-max"] = "ms"; unit["fade-compose-p95"] = "ms"; unit["fade-idle-commits"] = "commits"
+    unit["palette-filter-compose-p95"] = "ms"; unit["palette-filter-input-p95"] = "ms"; unit["palette-typing-backdrop-px"] = "device px"
+    unit["palette-beneath-blur-p95"] = "ms"
     for (k = 1; k <= nrows; k++) {
       row = order[k]; u = unit[row]
       if (u == "") u = (row ~ /^cpu-/) ? "% of one core" : (row ~ /^power-/) ? "W" : (row ~ /^pss-/) ? "kB" : "-"
@@ -626,7 +761,7 @@ TBL=$TARGETS awk -F'|' -v cell="$cellid" -v ref="$reference" '
         if (cnt[row, "C"]) line = line " :c " pair(row, "C")
         print line " :target " (target == "" ? "nil" : target) " :kind " kind " :source " quote(source) " :verdict skip)"; continue
       }
-      if (row ~ /^(typing-stall|latency-typing|scroll-120|main-wait|cpu-typing-inline)/) line = line " :cell " quote(cell)
+      if (row ~ /^(typing-stall|latency-typing|scroll-120|main-wait|cpu-typing-inline|fade-|palette-)/) line = line " :cell " quote(cell)
       a = med(row, "A")
       line = line " :a " pair(row, "A")
       if (cnt[row, "C"]) line = line " :c " pair(row, "C")
