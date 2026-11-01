@@ -321,6 +321,9 @@ pub fn set(
     if on && !c.mapped {
         let _ = backend.set_mapped(window, true);
         c.mapped = true;
+        // a frame shown again goes above its siblings, as XMapRaised does
+        let z_group = c.z_group;
+        raise(state, window, true, z_group)?;
         return Ok(true);
     }
     if !on && c.mapped {
