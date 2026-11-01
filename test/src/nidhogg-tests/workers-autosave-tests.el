@@ -1,4 +1,5 @@
 ;;; workers-autosave-tests.el --- tests for workers: auto-save  -*- lexical-binding: t -*-
+;; test-class: det
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
@@ -349,6 +350,7 @@ Return (STATUS CODE AUTO-SAVED-BYTES)."
                              (file-name-directory file))))))
 
 (ert-deftest workers/autosave-save-race ()
+  :tags '(:cond)
   ;; §17.2b B3.  Each race with a job in flight (parked at before-write
   ;; in `threads' mode; run but not landed in `inline' mode), then
   ;; released: the files left, the "has auto save data" test and what

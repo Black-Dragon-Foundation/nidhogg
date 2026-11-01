@@ -41,6 +41,9 @@ jobs:
       - run: TREE_TEST_SELF=1 bash nidhogg/test/tree-test.sh
       - run: bash nidhogg/test/tree-test.sh
       - run: bash nidhogg/test/ci-test.sh
+      - run: bash nidhogg/test/check-rerun-test.sh
+      - run: bash nidhogg/test/preflight-test.sh
+      - run: bash nidhogg/test/timing-lane.sh --self-test
       # Glitnir (the compositor): the crate's checks (fmt, clippy, tests, licences, vendor drift) and the advisories.
       - name: Glitnir's checks
         run: |
@@ -68,7 +71,9 @@ jobs:
           persist-credentials: false
       # Caches are restored before the build and saved right after it (actions/cache/save), not at the end of the job: a
       # later failing step (the tarball test) keeps what the build produced.  Every key is identical on every branch, so a
-      # run on macos-ci or a pull request restores what nidhogg-31 (the default branch) saved.  README.md, "CI and releases".
+      # run on a ci/* branch or a pull request restores what nidhogg-31 (the default branch) saved.  Only nidhogg-31 saves:
+      # an identical key saved again per ref would count against the repository's cache limit once per ref.  README.md,
+      # "CI and releases".
       - name: Source tree hash, compiled-Lisp inputs, file times
         id: tree
         run: |
@@ -130,19 +135,19 @@ jobs:
           bash nidhogg/build.sh --container "${{ matrix.distro }}" --stage build --memory 12g --jobs 4 --build-dir "$RUNNER_TEMP/build"
       # saved right after the build, before Emacs's checks and the tarball (a build that failed saves nothing); an entry whose key was found is not saved again
       - name: Save ccache
-        if: ${{ always() && steps.build.outcome == 'success' }}
+        if: ${{ always() && github.ref == 'refs/heads/nidhogg-31' && steps.build.outcome == 'success' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ccache
           key: ccache-${{ matrix.distro }}-gcc-${{ hashFiles(format('nidhogg/deps/{0}.build', matrix.distro)) }}-${{ github.sha }}
       - name: Save package downloads
-        if: ${{ always() && steps.build.outcome == 'success' && steps.pk.outputs.cache-hit != 'true' }}
+        if: ${{ always() && github.ref == 'refs/heads/nidhogg-31' && steps.build.outcome == 'success' && steps.pk.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/pkg-cache
           key: pkgs-${{ matrix.distro }}-${{ hashFiles(format('nidhogg/deps/{0}.build', matrix.distro)) }}
       - name: Save compiled Lisp
-        if: ${{ always() && steps.build.outcome == 'success' && steps.lc.outputs.cache-hit != 'true' }}
+        if: ${{ always() && github.ref == 'refs/heads/nidhogg-31' && steps.build.outcome == 'success' && steps.lc.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/lisp-cache
@@ -163,7 +168,7 @@ jobs:
           bash nidhogg/build.sh --container "${{ matrix.distro }}" --stage pack --memory 12g --jobs 4 --build-dir "$RUNNER_TEMP/build" \
             --out "dist/nidhogg-$V-${{ matrix.distro }}-$(uname -m).tar.xz"
       - name: Save built tarball
-        if: ${{ always() && steps.pack.outcome == 'success' && !startsWith(github.ref, 'refs/tags/') }}
+        if: ${{ always() && github.ref == 'refs/heads/nidhogg-31' && steps.pack.outcome == 'success' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: dist
@@ -240,7 +245,7 @@ jobs:
         if: ${{ steps.tb.outputs.cache-hit != 'true' }}
         run: sed 's/#.*//' nidhogg/deps/macos.build | xargs brew install
       - name: Save Homebrew downloads
-        if: ${{ always() && steps.brew.outcome == 'success' && steps.bd.outputs.cache-hit != 'true' }}
+        if: ${{ always() && github.ref == 'refs/heads/nidhogg-31' && steps.brew.outcome == 'success' && steps.bd.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.brewdir.outputs.dir }}
@@ -272,7 +277,7 @@ jobs:
           NIDHOGG_BUILD_LISP_CACHE: ${{ runner.temp }}/lisp-cache
         run: /bin/bash nidhogg/build.sh --host --stage build --jobs 3 --build-dir "$RUNNER_TEMP/build"
       - name: Save compiled Lisp
-        if: ${{ always() && steps.build.outcome == 'success' && steps.lc.outputs.cache-hit != 'true' }}
+        if: ${{ always() && github.ref == 'refs/heads/nidhogg-31' && steps.build.outcome == 'success' && steps.lc.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/lisp-cache
@@ -284,7 +289,7 @@ jobs:
           V=$(head -n 1 nidhogg/version)
           /bin/bash nidhogg/build.sh --host --stage pack --jobs 3 --build-dir "$RUNNER_TEMP/build" --out "dist/nidhogg-$V-macos-$(uname -m).tar.xz"
       - name: Save built tarball
-        if: ${{ always() && steps.pack.outcome == 'success' && !startsWith(github.ref, 'refs/tags/') }}
+        if: ${{ always() && github.ref == 'refs/heads/nidhogg-31' && steps.pack.outcome == 'success' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: dist
@@ -312,28 +317,48 @@ jobs:
 
   # drgnx's Emacs-side tiers on the tarballs this run built, through drgnx's own definition of them
   # (.github/workflows/drgnx-tiers.yml in drgnx), called at a pinned drgnx commit, so a drgnx push never turns Nidhogg
-  # red.  The default drgnx_ref is the same commit (nidhogg/test/ci-test.sh checks the two agree); bump both by hand to a
-  # drgnx commit whose CI is green, and pass drgnx_ref by hand for a joint round (README.md, "CI and releases").  The
+  # red.  The uses line below is the one place the pin lives: GitHub allows no expression there, so the pin job reads
+  # the SHA from it and the default drgnx_ref is that output.  Bump the uses line by hand to a drgnx commit whose CI is
+  # green, and pass drgnx_ref by hand for a joint round (README.md, "CI and releases").  The
   # unit suite and gate mode on the fedora-45 tarball, the GUI tier on it under headless mutter, the unit suite on the
   # macOS tarball (only that one in scope=macos).  It runs once the builds are done, whatever they did: a job whose
   # tarball is missing fails by itself.
+  pin:
+    name: drgnx pin
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      ref: ${{ steps.pin.outputs.ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/workflows
+      - name: The drgnx commit the uses line pins
+        id: pin
+        run: |
+          ref=$(grep -oE '^ {4}uses:[ ]Black-Dragon-Foundation/drgnx/\.github/workflows/drgnx-tiers\.yml@[0-9a-f]{40}' .github/workflows/build.yml | sed 's/.*@//')
+          [ -n "$ref" ] || { echo "no pinned drgnx-tiers.yml in build.yml" >&2; exit 1; }
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
   drgnx:
     name: drgnx tiers
-    needs: [linux, macos]
+    needs: [pin, linux, macos]
     if: ${{ !cancelled() }}
     permissions:
       contents: read
       packages: read
     uses: Black-Dragon-Foundation/drgnx/.github/workflows/drgnx-tiers.yml@4353f1fa51e054c3078474e686d981aeb2348aec # drgnx pin
     with:
-      drgnx_ref: ${{ inputs.drgnx_ref || '4353f1fa51e054c3078474e686d981aeb2348aec' }}
+      drgnx_ref: ${{ inputs.drgnx_ref || needs.pin.outputs.ref }}
       nidhogg: artifact
       tiers: ${{ inputs.scope == 'macos' && 'macos' || 'unit no-lisp-writes ui macos' }}
 
-  # GUI tests (test/src/nidhogg-tests/*-gui-tests.el): the fedora-45 tarball in a fedora-45 container on a headless mutter
-  # with its own session bus, at monitor scale 1 and 2 (nidhogg/test/gui.sh).  Not part of the release gate.
+  # GUI tests (test/src/nidhogg-tests/*-gui-tests.el): the fedora-45 tarball, a pgtk build, in a fedora-45 container on a
+  # headless sway (gui.sh's default) with its own session bus, at monitor scale 1 and 2 (nidhogg/test/gui.sh).  The
+  # native shell's rows skip here: native-gui runs them.  Not part of the release gate.
   gui:
-    name: GUI tests (headless mutter, scale ${{ matrix.scale }})
+    name: GUI tests (pgtk, headless sway, scale ${{ matrix.scale }})
     needs: linux
     if: ${{ !cancelled() && github.ref_type != 'tag' }}
     runs-on: ubuntu-24.04
@@ -363,6 +388,93 @@ jobs:
           tar -xJf dist/*.tar.xz -C "$RUNNER_TEMP/nidhogg" --strip-components=1
       - name: GUI tests at scale ${{ matrix.scale }}
         run: bash nidhogg/test/gui.sh --prefix "$RUNNER_TEMP/nidhogg" --scale "${{ matrix.scale }}" --container fedora-45 --timeout 1800
+
+  # The native Wayland shell.  Every tarball above is pgtk (build.sh's default), so it gets a build of its own, the
+  # recorder its rows need, its crates' checks, and its GUI rows on the recorder and on real compositors
+  # (nidhogg/test/native-gui.sh).  None is in release's needs and none runs for a release tag, like gui.
+  native:
+    name: Native shell build (fedora-45)
+    if: ${{ inputs.scope != 'macos' && github.ref_type != 'tag' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: bash nidhogg/ci/set-mtimes.sh
+      - name: ccache (C objects)
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-native-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ github.sha }}
+          restore-keys: ccache-native-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-
+      - name: Build and pack
+        id: build
+        env:
+          NIDHOGG_BUILD_CCACHE: ${{ runner.temp }}/ccache
+        run: |
+          bash nidhogg/build.sh --container fedora-45 --nidhogg-wayland --memory 12g --jobs 4 --build-dir "$RUNNER_TEMP/build" \
+            --out "dist/nidhogg-native-fedora-45-$(uname -m).tar.xz"
+      - name: Save ccache
+        if: ${{ always() && steps.build.outcome == 'success' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-native-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ github.sha }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tarball-native
+          path: dist/
+          if-no-files-found: error
+
+  # The recorder, then the crates' checks, which need it: their T1 tests run against it, and nothing else in this
+  # workflow runs them (the build compiles the crates, and only Glitnir's checks run in tree).
+  native-crates:
+    name: Native shell crates (recorder, shell, glue)
+    if: ${{ inputs.scope != 'macos' && github.ref_type != 'tag' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: T="$RUNNER_TEMP" bash nidhogg/test/recorder/check.sh --container fedora-45 --build
+      - run: T="$RUNNER_TEMP" NH_RECORDER="$RUNNER_TEMP/nh-recorder-target/release/nh-recorder" bash nidhogg/shell/check.sh --container fedora-45
+      - run: T="$RUNNER_TEMP" NH_RECORDER="$RUNNER_TEMP/nh-recorder-target/release/nh-recorder" bash nidhogg/glue/check.sh --container fedora-45
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nh-recorder
+          path: ${{ runner.temp }}/nh-recorder-target/release/nh-recorder
+          if-no-files-found: error
+
+  native-gui:
+    name: Native GUI rows (${{ matrix.lane }})
+    needs: [native, native-crates]
+    if: ${{ !cancelled() && inputs.scope != 'macos' && github.ref_type != 'tag' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [recorder, recorder-mutter, recorder-inline, mutter, sway, decor-recorder, decor-1, decor-2]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: tarball-native
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nh-recorder
+          path: recorder
+      - name: Unpack
+        run: |
+          mkdir -p "$RUNNER_TEMP/nidhogg"
+          tar -xJf dist/*.tar.xz -C "$RUNNER_TEMP/nidhogg" --strip-components=1
+          chmod +x recorder/nh-recorder
+      - run: bash nidhogg/test/native-gui.sh "${{ matrix.lane }}" --prefix "$RUNNER_TEMP/nidhogg" --recorder "$PWD/recorder/nh-recorder" --container fedora-45
 
   # The off-main-thread work's CI (engine C, PD-4).  They run once the Linux builds are done, whatever the other distros
   # did, and they are not in release's needs: the default-on rule requires them green on the gate commit, a release
@@ -478,6 +590,60 @@ jobs:
           path: outcomes
       - name: A failure only with the workers on fails the gate
         run: bash nidhogg/test/pkg-test.sh --compare outcomes
+
+  # The timing tests in a lane of their own, report-only: it runs nothing else, judges each timing file on the median of 20
+  # samples against the runner's own speed (a fixed workload before and after), and never fails the run or the release
+  # (continue-on-error, not in release's needs). README.md, "CI and releases".
+  timing:
+    name: Timing lane, report-only (${{ matrix.name }})
+    needs: [linux, macos]
+    if: ${{ !cancelled() && github.ref_type != 'tag' }}
+    continue-on-error: true
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: fedora-45, runner: ubuntu-24.04, artifact: tarball-fedora-45 }
+          - { name: macos, runner: xcode-27, artifact: tarball-macos }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist
+      - name: Unpack the tarball
+        run: |
+          mkdir -p "$RUNNER_TEMP/nidhogg"
+          tar -xJf dist/*.tar.xz -C "$RUNNER_TEMP/nidhogg" --strip-components=1
+      - name: Timing lane (Linux, in the pinned fedora-45 image)
+        if: ${{ matrix.name == 'fedora-45' }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          podman run --rm --memory 4g --memory-swap 4g \
+            -v "$PWD:/src:ro,z" -v "$RUNNER_TEMP/nidhogg:/nh:ro,z" -v "$RUNNER_TEMP/out:/out:z" \
+            registry.fedoraproject.org/fedora@sha256:6430abb162172c052b6ac9c9d6a219b1b21352508c04b1b0ff2eb9292943d881 bash -c '
+              set -eu
+              rt=/nh/share/nidhogg/deps.runtime
+              dnf -y -q --setopt=install_weak_deps=False install $(sed "s/#.*//" "$rt") > /tmp/dnf.log 2>&1 || { cat /tmp/dnf.log; exit 1; }
+              cd /src && bash nidhogg/test/timing-lane.sh --prefix /nh --report /out/timing.txt'
+      - name: Timing lane (macOS)
+        if: ${{ matrix.name == 'macos' }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          /bin/bash nidhogg/test/timing-lane.sh --prefix "$RUNNER_TEMP/nidhogg" --report "$RUNNER_TEMP/out/timing.txt"
+      - name: The verdicts
+        if: always()
+        run: cat "$RUNNER_TEMP/out/timing.txt" || true
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: timing-${{ matrix.name }}
+          path: ${{ runner.temp }}/out/timing.txt
+          if-no-files-found: ignore
 
   release:
     name: Release

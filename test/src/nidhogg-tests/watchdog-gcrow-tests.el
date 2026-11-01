@@ -1,4 +1,5 @@
 ;;; watchdog-gcrow-tests.el --- tests for the stall watchdog (gcrow)  -*- lexical-binding: t -*-
+;; test-class: det
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
@@ -313,6 +314,7 @@ Each is MS or (MS LIVE-MB FELT).  A stall line goes in too (skipped)."
       (should-not (directory-files nidhogg-watchdog-log-directory nil "\\.jsonl\\'")))))
 
 (ert-deftest watchdog/gcrow-join-after-drop ()
+  :tags '(:cond)
   ;; Notes for 1, 2, 4, 5 (the hook's ring dropped 3); collections 1, 3, 4
   ;; (the C ring dropped 2; 5 is not taken yet).  Every heap lands on the
   ;; pause with its `gcs-done', never on its neighbour's.
