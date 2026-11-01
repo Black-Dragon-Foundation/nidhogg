@@ -607,10 +607,11 @@ mod reconnect {
         );
     }
 
-    /// A popup closed at the reconnect is the host's until it destroys the popup in turn: no new window takes its id,
-    /// though the new connection hands out the low ids again.  Windows made before the popups and gone before the
-    /// restart put the popups' ids above what the new connection starts with; the two kinds of window take different
-    /// numbers of ids, so their mix comes to them.
+    /// A popup closed at the reconnect is the host's until it destroys the popup in turn (the glue's `DELETE` of a
+    /// tip waits for Emacs to read it): no new window takes its id, though the new connection hands out the low ids
+    /// again.  Windows made before the popups and gone before the restart put the popups' ids above what the new
+    /// connection starts with.  Bare surfaces then take the new connection's ids one at a time up to just below a
+    /// closed popup's, so the next window's surface is the one with that protocol id; the test sees that it is.
     #[test]
     fn popups_closed_keep_their_ids_from_new_windows() {
         let _g = shared();
@@ -663,20 +664,41 @@ mod reconnect {
             .ack_configure(top, cfg.serial, NHSHELL_ACK_CONTENT)
             .unwrap();
         draw(&mut shell, top, 200, 100);
-        let mut made = Vec::new();
-        for i in 0..36 {
-            let kind = if i % 3 == 2 {
-                NHSHELL_KIND_POPUP
-            } else {
-                NHSHELL_KIND_CHILD
-            };
-            made.push(new(&mut shell, kind, top));
+        // the ids the new connection's objects gave back are free again before the bare surfaces count up
+        std::thread::sleep(Duration::from_millis(100));
+        let mut closed = [a, b];
+        closed.sort_unstable();
+        let mut hit = None;
+        for t in closed {
+            let mut s = shell.surface_new().unwrap();
+            while s + 1 < t {
+                s = shell.surface_new().unwrap();
+            }
+            if s + 1 != t {
+                // a live object of the new connection holds `t`
+                continue;
+            }
+            let w = new(&mut shell, NHSHELL_KIND_CHILD, top);
+            let pid = shell
+                .surface_protocol_id(w)
+                .expect("the new window is kept");
+            if u64::from(pid) == t {
+                hit = Some((t, w));
+                break;
+            }
+        }
+        let (t, w) = hit.expect("no new window's surface got a closed popup's protocol id");
+        assert_ne!(
+            w, t,
+            "a new window took the id of popup {t}, closed at the reconnect"
+        );
+        for p in [a, b] {
+            assert_eq!(shell.window_destroy(p), Err(ShellError::State));
         }
         assert!(
-            !made.contains(&a) && !made.contains(&b),
-            "{a} or {b} in {made:?}"
+            shell.surface_protocol_id(w).is_some(),
+            "letting go of the closed popups took the new window"
         );
-        assert_eq!(shell.window_destroy(a), Err(ShellError::State));
         assert_eq!(shell.last_error(), "");
     }
 
