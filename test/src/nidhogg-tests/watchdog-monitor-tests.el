@@ -91,6 +91,12 @@ its two internal signals (32 and 33) out of any mask."
           (dotimes (i 64)
             (unless (memq (1+ i) '(9 19 32 33))
               (setq want (logior want (ash 1 i)))))
+          ;; A new thread shows the mask pthread_create gave it (glibc's 32 and 33 blocked too)
+          ;; until it has run its first instruction and restored the creator's mask: on one CPU
+          ;; that can come after `--start' returns.  Read again until it has run (a condition,
+          ;; not a time; a thread that never runs fails the final comparison).
+          (let ((n 0))
+            (while (and (/= (watchdog-monitor-tests--sigblk id) want) (< (setq n (1+ n)) 100000))))
           (should (= (watchdog-monitor-tests--sigblk id) want))))
     (nidhogg-watchdog--stop)))
 
