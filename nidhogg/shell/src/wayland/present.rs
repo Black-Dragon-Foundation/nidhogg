@@ -168,6 +168,8 @@ pub struct Present {
     freed: usize,
     /// The mailbox's sequence number when the ack was recorded: a content ack goes with a packet published after it.
     ack_seq: u64,
+    /// A top-level's configure came and the host has not answered it yet.
+    unanswered: bool,
     /// A root: the newest packet published for its tree.
     published: u64,
     pub(crate) commit: Commit,
@@ -256,6 +258,7 @@ impl Present {
             discarded: 0,
             freed: 0,
             ack_seq: 0,
+            unanswered: false,
             published: 0,
             kids: Vec::new(),
             epoch: 0,
@@ -1026,9 +1029,10 @@ fn send(
         let held = r.ack_held_at(applied);
         // a configure read during the compose holds the ack the commit would carry.  A window's first buffer goes with
         // one (without, it is what xdg-shell calls unconfigured).  So does a new size: the ack the picture was drawn for
-        // was replaced, and with no ack the size shows no configure's
+        // was replaced, and with no ack the size shows no configure's.  Over a configure the host has not answered,
+        // a new size waits too: a compositor reads it as the client's own resize (sway then drops the one it asked for)
         let acked = if r.mapped {
-            !held || (j.buf.w, j.buf.h) == r.shown
+            (j.buf.w, j.buf.h) == r.shown || (!held && !r.unanswered)
         } else {
             r.ack.is_some() && !held
         };
@@ -1278,6 +1282,7 @@ impl MainState {
         };
         let mut p = lock(&present);
         p.configured = true;
+        p.unanswered = false;
         p.ack = Some(serial);
         // the first configure after a reconnect brings the picture back
         let remade = std::mem::take(&mut p.content_next);
@@ -1322,6 +1327,7 @@ impl MainState {
         };
         let mut p = lock(&present);
         p.configured = true;
+        p.unanswered = true;
         let was = std::mem::replace(&mut p.suspended, suspended);
         drop(p);
         self.present_rearm(id);
