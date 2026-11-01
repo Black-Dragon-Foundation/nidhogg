@@ -154,12 +154,8 @@ current one, as the C cores' caches do; `glitnir_img_anim_free` frees one the ca
 
 ## Limits
 
-A panic inside the library is caught at the boundary (`GLITNIR_E_PANIC`), and so is any other error a call returns:
-the glue then thaws every frozen root, finishes a running draw with the stock picture, restores pgtk's whole-widget
-invalidations, redraws every frame and switches Glitnir off for the session (no further `glitnir_*` call;
-`glitnir-active-p` and `glitnir-stats` are nil, `glitnir-snapshot` still works). It shows one message.
-`glitnir--debug-panic` (only with `glitnir-debug` set; WHERE `commit` or `draw`) makes the next such call panic, and
-`revive` turns Glitnir back on for the tests that follow.
+A panic inside the library is caught at the boundary (`GLITNIR_E_PANIC`). On the shell a panic in a glue call loses
+the display, not Emacs (`nhwl-gui/glue-panic-loses-the-display-not-emacs`).
 
 Three failures the fallback cannot catch still abort the process: an allocation failure, a second panic while one is
 being handled, and a stack overflow. To keep the first rare, the frame-time rings are preallocated and the caches

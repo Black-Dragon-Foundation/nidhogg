@@ -4047,7 +4047,6 @@ if test "${with_glitnir}" = yes; then
   AC_MSG_RESULT([$glitnir_native])
   HAVE_GLITNIR=yes
   GLITNIR_OBJ="nidhogg-glitnir.o glitnir-images.o"
-  test "$HAVE_PGTK" = yes && GLITNIR_OBJ="$GLITNIR_OBJ glitnir-pgtk.o"
   GLITNIR_LIBS="glitnir-target/release/$glitnir_lib $glitnir_native"
   AC_DEFINE([HAVE_GLITNIR], [1], [Define to 1 to build Glitnir (the compositor, Rust).])
 fi
