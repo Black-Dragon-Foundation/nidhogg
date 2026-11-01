@@ -19,6 +19,12 @@
 //! dismisses a popup whose parent it finds unmapped; one with a popup of its own then goes under that popup, which
 //! mutter answers with `not_the_topmost_popup`, ending the client.  So a popup shows no buffer until the window it hangs
 //! on has shown one (`Present::awaits_parent`).
+//!
+//! **Place.**  The compositor works a popup's place out when the positioner reaches it, against the parent as it is
+//! then, and judges the popup at each of its commits against the parent as it is by then: mutter dismisses one that
+//! neither overlaps nor touches its parent.  A place worked out against an unmapped parent, or a parent of another size,
+//! is stale.  So every commit that maps a window or changes its size holds the popups on it and sends their positioners
+//! again (`popups_place_again`); each shows again once the configure of a reposition sent after that commit is recorded.
 
 use crate::api::*;
 use crate::event::*;
@@ -46,6 +52,11 @@ pub struct Popup {
     anchor: Anchor,
     size: (i32, i32),
     token: u32,
+    /// `place_gen` when the newest reposition went out, and the next configure answers that reposition.
+    place_gen: u64,
+    repositioned: bool,
+    /// The next configure is the popup's first, and its size has not changed since it was made.
+    made: bool,
     /// The next configure is a content ack: the popup's first, the first after it was made again, or the first after
     /// a new size.
     first: bool,
@@ -181,6 +192,9 @@ impl WaylandShell {
                 anchor: d.anchor,
                 size: (d.w, d.h),
                 token: 0,
+                place_gen: 0,
+                repositioned: false,
+                made: false,
                 first: true,
                 wants_grab: d.flags & NHSHELL_WIN_GRAB != 0,
                 grabbed: false,
@@ -239,6 +253,7 @@ impl WaylandShell {
         }
         self.popup_place(id, |p| {
             p.size = (w, h);
+            p.made = false;
             p.first = true;
         })
     }
@@ -254,6 +269,7 @@ impl WaylandShell {
             return Err(ShellError::State);
         }
         let qh = self.main_queue.handle();
+        let place_gen = self.main.present_place_gen(id);
         // making it again is role setup, done under the tree's mutex like a destroy
         let tree = self.main.presents.get(&id).cloned().filter(|_| recreate);
         let mut tree = tree.as_ref().map(|t| present::lock(t));
@@ -264,6 +280,8 @@ impl WaylandShell {
         let pos = positioner(wm_base, &qh, p.size, &p.anchor, p.offset)?;
         if !recreate {
             p.token = p.token.wrapping_add(1);
+            p.place_gen = place_gen;
+            p.repositioned = false;
             p.popup.reposition(&pos, p.token);
             pos.destroy();
             self.flush()?;
@@ -290,6 +308,22 @@ impl WaylandShell {
         drop(tree);
         self.flush()?;
         Ok(true)
+    }
+
+    /// Send the positioners of the popups whose parent's commit made their place stale.  Below `xdg_popup` 3 there is
+    /// no reposition, and making a popup again is no answer to a parent's commit: the place stands.
+    pub(super) fn popups_place_again(&mut self) {
+        for id in self.shared.take_place() {
+            let Some(p) = self.main.popups.get(&id) else {
+                continue;
+            };
+            if p.popup.version() < 3 {
+                self.main
+                    .present_placed(id, self.main.present_place_gen(id));
+            } else {
+                let _ = self.popup_place(id, |_| {});
+            }
+        }
     }
 
     /// A reconnect closes every popup, topmost first (the deepest, then the newest grab): each posts `POPUP_DONE`, and
@@ -347,7 +381,16 @@ impl MainState {
             return false;
         };
         let content = std::mem::take(&mut p.first);
+        let made = std::mem::take(&mut p.made);
+        let placed = std::mem::take(&mut p.repositioned).then_some(p.place_gen);
         self.present_ack(id, serial, content);
+        if made {
+            // a popup is made at its size: a picture published before this configure is the configure's picture
+            self.present_record(id, present::Present::any_packet);
+        }
+        if let Some(place_gen) = placed {
+            self.present_placed(id, place_gen);
+        }
         true
     }
 }
@@ -361,14 +404,23 @@ impl Dispatch<XdgPopup, u64> for MainState {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let xdg_popup::Event::PopupDone = event {
-            // dismissed: the grab is gone, but the popup stays until the host destroys it (still topmost first)
-            if let Some(p) = state.popups.get_mut(id) {
-                p.grabbed = false;
+        match event {
+            xdg_popup::Event::PopupDone => {
+                // dismissed: the grab is gone, but the popup stays until the host destroys it (still topmost first)
+                if let Some(p) = state.popups.get_mut(id) {
+                    p.grabbed = false;
+                }
+                if let Some(shared) = state.shared.as_ref() {
+                    shared.post(Record::new(ShellEvent::PopupDone, *id, 0));
+                }
             }
-            if let Some(shared) = state.shared.as_ref() {
-                shared.post(Record::new(ShellEvent::PopupDone, *id, 0));
+            // the configure that follows carries the new place
+            xdg_popup::Event::Repositioned { token } => {
+                if let Some(p) = state.popups.get_mut(id) {
+                    p.repositioned = token == p.token;
+                }
             }
+            _ => {}
         }
     }
 }

@@ -124,7 +124,16 @@
             '(1020.0 "> xdg_surface@22.ack_configure(9)")
             '(1300.0 "> wl_surface@7.commit()"))))
     (should (= (length v) 1))
-    (should (string-match-p "no commit" (car v)))))
+    (should (string-match-p "no commit" (car v))))
+  ;; a popup that went owes neither
+  (should-not (wl-trace-check-test--run
+               '("popup")
+               wl-trace-check-test--popup
+               '(1010.0 "xdg_popup@23.repositioned(3)")
+               '(1010.1 "xdg_surface@22.configure(9)")
+               '(1050.0 "> xdg_popup@23.destroy()")
+               '(1050.1 "> xdg_surface@22.destroy()")
+               '(1300.0 "> wl_surface@7.commit()"))))
 
 (defconst wl-trace-check-test--nested
   '((1000.0 "> wl_subcompositor@11.get_subsurface(new id wl_subsurface@40, wl_surface@6, wl_surface@5)")
