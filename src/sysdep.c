@@ -40,8 +40,8 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #ifdef HAVE_NIDHOGG_WORKERS
 # include <stdatomic.h>
-#endif
 
+#endif
 #ifdef HAVE_LINUX_FS_H
 # include <linux/fs.h>
 # include <sys/syscall.h>
@@ -1796,8 +1796,8 @@ take_forwarded_fatal (void)
       terminate_due_to_signal (sig, 40);
     }
 }
-#endif /* HAVE_NIDHOGG_WORKERS */
 
+#endif /* HAVE_NIDHOGG_WORKERS */
 /* SIG has arrived at the current thread.
    If we are on the main thread, handle the signal SIG with HANDLER.
    Otherwise, this is a fatal error in the handling thread.  */
