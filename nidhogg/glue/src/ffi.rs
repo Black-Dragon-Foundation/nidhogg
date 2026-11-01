@@ -1762,28 +1762,35 @@ nhg_export! {
 }
 
 nhg_export! {
-    /// Copy the frame's `w` x `h` backing (the size `nhg_snapshot` gave) into `dst`, rows `stride` bytes apart.
-    /// `NHG_E_STATE` without a backing of that size.  Reads pixels.
+    /// The tree of `s`'s first surface as the compositor was given it, its popups on top, into `dst`, rows `stride`
+    /// bytes apart: `s` holds trees as `nhg_present` takes them, one after another, and `w` x `h` is the size
+    /// `nhg_snapshot` gave for the root.  `NHG_E_STATE` without a root of that size that may show a buffer.  Reads
+    /// pixels.
     ///
     /// # Safety
-    /// `d` is null or a live display; `dst` is null or holds `stride` x (`h` - 1) + 4 x `w` writable bytes.
-    fn nhg_snapshot_copy(d: *mut NhgDisplay, frame: u64, dst: *mut u8, stride: i32, w: i32, h: i32) -> i32 |state| {
+    /// `d` is null or a live display; `s` holds `n` readable surfaces; `dst` is null or holds `stride` x (`h` - 1) +
+    /// 4 x `w` writable bytes.
+    fn nhg_tree_snapshot(d: *mut NhgDisplay, s: *const NhgSurface, n: usize, dst: *mut u8, stride: i32, w: i32, h: i32) -> i32 |state| {
         let (Ok(su), Ok(wu), Ok(hu)) = (usize::try_from(stride), usize::try_from(w), usize::try_from(h)) else {
             return Err(GlueError::Arg);
         };
-        if dst.is_null() {
+        if dst.is_null() || s.is_null() || n == 0 {
             return Err(GlueError::Arg);
         }
-        let n = match hu {
+        let bytes = match hu {
             0 => 0,
             _ => (hu - 1)
                 .checked_mul(su)
                 .and_then(|n| n.checked_add(wu.checked_mul(4)?))
                 .ok_or(GlueError::Arg)?,
         };
-        // SAFETY: `dst` holds `n` writable bytes (the caller's promise), not the backing's.
-        let out = unsafe { std::slice::from_raw_parts_mut(dst, n) };
-        state.backings.snapshot_into(frame, out, su, w, h)?;
+        // SAFETY: non-null, with `n` readable surfaces (the caller's promise).
+        let list = unsafe { std::slice::from_raw_parts(s, n) };
+        let (backend, backings, _) = state.presenting();
+        let picture = present::tree_snapshot(backend, backings, list, w, h)?;
+        // SAFETY: `dst` holds `bytes` writable bytes (the caller's promise), not the backing's.
+        let out = unsafe { std::slice::from_raw_parts_mut(dst, bytes) };
+        crate::backing::copy_rows(&picture, wu, hu, out, su)?;
         Ok(NHG_OK)
     }
 }

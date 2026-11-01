@@ -40,11 +40,13 @@ pub struct Popup {
     /// The window the host named, and the window whose `xdg_surface` the popup hangs on (the nearest ancestor that
     /// has one) with that `xdg_surface` and the offset from it to the window the host named.
     pub parent: WindowId,
-    base_window: WindowId,
+    pub(super) base_window: WindowId,
     base: XdgSurface,
     offset: (i32, i32),
     anchor: Anchor,
     size: (i32, i32),
+    /// Where the compositor put it in `base_window`'s window geometry, logical pixels (the newest configure).
+    pub(super) placed: (i32, i32),
     token: u32,
     /// The next configure is a content ack: the popup's first, the first after it was made again, or the first after
     /// a new size.
@@ -180,6 +182,7 @@ impl WaylandShell {
                 offset,
                 anchor: d.anchor,
                 size: (d.w, d.h),
+                placed: (0, 0),
                 token: 0,
                 first: true,
                 wants_grab: d.flags & NHSHELL_WIN_GRAB != 0,
@@ -361,14 +364,22 @@ impl Dispatch<XdgPopup, u64> for MainState {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let xdg_popup::Event::PopupDone = event {
-            // dismissed: the grab is gone, but the popup stays until the host destroys it (still topmost first)
-            if let Some(p) = state.popups.get_mut(id) {
-                p.grabbed = false;
+        match event {
+            xdg_popup::Event::Configure { x, y, .. } => {
+                if let Some(p) = state.popups.get_mut(id) {
+                    p.placed = (x, y);
+                }
             }
-            if let Some(shared) = state.shared.as_ref() {
-                shared.post(Record::new(ShellEvent::PopupDone, *id, 0));
+            xdg_popup::Event::PopupDone => {
+                // dismissed: the grab is gone, but the popup stays until the host destroys it (still topmost first)
+                if let Some(p) = state.popups.get_mut(id) {
+                    p.grabbed = false;
+                }
+                if let Some(shared) = state.shared.as_ref() {
+                    shared.post(Record::new(ShellEvent::PopupDone, *id, 0));
+                }
             }
+            _ => {}
         }
     }
 }

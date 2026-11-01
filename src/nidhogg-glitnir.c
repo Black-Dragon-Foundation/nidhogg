@@ -30,6 +30,9 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "glitnir-pgtk.h"
 #endif
 #ifdef HAVE_NHWL
+#include "blockinput.h"
+#include "dispextern.h"
+#include "keyboard.h"
 #include "nhwlterm.h"
 #endif
 
@@ -221,8 +224,46 @@ png_write (void *closure, const unsigned char *data, unsigned int length)
 
 #endif /* HAVE_PGTK */
 
+#ifdef HAVE_NHWL
+/* Root R's tree as the compositor was given it, or NULL: the glue composes
+   what the tree published, so this costs presenting nothing.  */
+static cairo_surface_t *
+tree_picture (struct frame *r)
+{
+  const NhgSurface *list;
+  NhgBacking b;
+  cairo_surface_t *s = NULL;
+
+  if (redisplaying_p || !FRAME_NHWL_OUTPUT (r)->cr_surface)
+    return NULL;
+  block_input ();
+  ptrdiff_t n = nhwl_snapshot_list (r, &list);
+  if (NHG (nhg_snapshot (FRAME_NHG (r), FRAME_NHWL_OUTPUT (r)->glitnir_id,
+			 &b)) >= 0)
+    {
+      s = cairo_image_surface_create (CAIRO_FORMAT_ARGB32, b.w, b.h);
+      cairo_surface_flush (s);
+      if (NHG (nhg_tree_snapshot (FRAME_NHG (r), list, n,
+				  cairo_image_surface_get_data (s),
+				  cairo_image_surface_get_stride (s), b.w,
+				  b.h)) >= 0)
+	cairo_surface_mark_dirty (s);
+      else
+	{
+	  cairo_surface_destroy (s);
+	  s = NULL;
+	}
+    }
+  unblock_input ();
+  return s;
+}
+#endif
+
 DEFUN ("glitnir-snapshot", Fglitnir_snapshot, Sglitnir_snapshot, 1, 2, 0,
        doc: /* Return the picture GTK last committed for FRAME's root frame.
+On the native shell, the whole tree as the compositor was given it: the
+root, its visible child frames and popups at their places and in their
+stacking, with their chrome, shadows and alpha, inside the root's surface.
 FORMAT is `png' (the default; the value is a unibyte string holding a PNG)
 or `raw' (the value is (WIDTH HEIGHT BYTES), BYTES a unibyte string of
 ARGB32 pixels in the machine's byte order, device pixels, rows tightly
@@ -239,7 +280,7 @@ copy, requests a repaint, and waits up to one second for it.  */)
 # ifdef HAVE_NHWL
   if (!FRAME_NHWL_P (f))
     error ("glitnir-snapshot: no image surface");
-  s = nhwl_snapshot (f);
+  s = tree_picture (nhwl_tree_root (f));
   if (s == NULL)
     error ("glitnir-snapshot: the frame has no picture yet");
 # else
