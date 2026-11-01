@@ -201,6 +201,36 @@ touch "$d/repo/preflight-chk.stale.txt"
 PREFLIGHT_SLOT="$d/fakeslot" FAKE_ROOT="$d/repo" pre "" --passes P2 --out "$d/r18/report" > /dev/null
 [ ! -e "$d/repo/preflight-chk.stale.txt" ] || fail "a stale list file was left"
 
+# the classes: P1 takes every `;; test-class: det` file, P2 adds every cond file outside the GUI set to its list
+mkdir -p "$d/tests/src/nidhogg-tests"
+for spec in d-tests:det c-tests:cond c-gui-tests:cond n-tests:; do
+  f=$d/tests/src/nidhogg-tests/${spec%%:*}.el
+  printf ';;; x  -*- lexical-binding: t -*-\n' > "$f"
+  [ -z "${spec#*:}" ] || printf ';; test-class: %s\n' "${spec#*:}" >> "$f"
+done
+cat > "$d/rec" <<'EOF'
+#!/usr/bin/env bash
+# PASS TARGET WRAP SEED: logs the call; $REC_FLIP: that target fails in a pinned P1 run only
+echo "$1 $2 $3" >> "$REC_LOG"
+[ "$1" = P1 ] && [ "$2" = "${REC_FLIP:-}" ] && [ "$3" = cpu1 ] && exit 1
+exit 0
+EOF
+chmod +x "$d/rec"
+export REC_LOG="$d/rec.log"; rm -f "$REC_LOG"
+PREFLIGHT_TESTS="$d/tests" pre "$d/rec" --passes P1,P2 --out "$d/r20/report" > /dev/null; r=$?
+[ "$r" = 0 ] || fail "a green classified run exited $r"
+[ "$(grep '^P1 ' "$REC_LOG" | tr '\n' ';')" = "P1 src/nidhogg-tests/d-tests none;P1 src/nidhogg-tests/d-tests none;P1 src/nidhogg-tests/d-tests cpu1;" ] \
+  || fail "P1's files: $(grep '^P1 ' "$REC_LOG" | tr '\n' ';')"
+[ "$(grep '^P2 ' "$REC_LOG" | grep ' cpu1$' | cut -d' ' -f2 | tr '\n' ' ')" = "src/a-tests src/b-tests src/nidhogg-tests/c-tests " ] \
+  || fail "P2's files: $(grep '^P2 ' "$REC_LOG" | grep ' cpu1$' | cut -d' ' -f2 | tr '\n' ' ')"
+[ "$(cut -d' ' -f1,2 "$d/r20/report.stamp")" = "$sha P1,P2" ] || fail "a run of D files was stamped as skipped: $(cat "$d/r20/report.stamp")"
+# a D file whose results differ between its runs is red
+rm -f "$REC_LOG"
+REC_FLIP=src/nidhogg-tests/d-tests PREFLIGHT_TESTS="$d/tests" pre "$d/rec" --passes P1 --out "$d/r21/report" > /dev/null; r=$?
+[ "$r" = 1 ] && [ ! -e "$d/r21/report.stamp" ] || fail "differing runs of a D file exited $r or got a stamp"
+grep -q '^RED P1 DIFFERENT src/nidhogg-tests/d-tests' "$d/r21/report" || fail "no DIFFERENT line"
+[ -z "$(find "$d/r20" "$d/r21" -type f ! -name report ! -name report.stamp)" ] || fail "temporary list files left behind"
+
 # a dirty tree gets none
 echo x > "$d/repo/f"; git -C "$d/repo" add f
 pre "$d/ok" --out "$d/r4/report" > /dev/null; r=$?

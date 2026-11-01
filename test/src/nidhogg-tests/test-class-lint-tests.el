@@ -1,0 +1,409 @@
+;;; test-class-lint-tests.el --- every test file has a class, and a lint for each class  -*- lexical-binding: t -*-
+
+;; test-class: det
+
+;; Copyright (C) 2026 Black Dragon Foundation contributors
+
+;; This file is part of Nidhogg.
+
+;; Nidhogg is free software: you can redistribute it and/or modify
+;; it under the terms of the GNU General Public License as published by
+;; the Free Software Foundation, either version 3 of the License, or
+;; (at your option) any later version.
+
+;; Nidhogg is distributed in the hope that it will be useful,
+;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;; GNU General Public License for more details.
+
+;; You should have received a copy of the GNU General Public License
+;; along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.
+
+;;; Commentary:
+
+;; A test file's class is the header comment line `;; test-class: det'
+;; (or `cond', or `timing'), exact, within the first 15 lines.  A test's
+;; class is its own tag (:det, :cond, :timing) when it has one, else
+;; the file's.  The files are read as data with `read', never loaded, so
+;; this works on any Emacs and needs no `require' of what they require.
+;;
+;; A lint applies to a file as soon as it has a class line.  Files that
+;; are not tests are listed in nidhogg/test/class-exempt.txt
+;; (`FILE # reason', FILE relative to test/src/nidhogg-tests/).
+;;
+;; The rules:
+;;   D (det)    no real time: no sleep-for, sit-for, asynchronous process
+;;              or timer creation, no accept-process-output with a time, no
+;;              float-time deadline.  A synchronous `call-process' is
+;;              allowed.  Peer and clock helpers are allowed.
+;;   C (cond)   no fixed pause: no sleep-for, no sit-for above 0.
+;;   D and C    no `should' over a comparison of a clock read.  Only T
+;;              (timing) tests assert the clock.
+;; A test that calls a same-file function or macro is judged by what that
+;; function does too.
+
+;;; Code:
+
+(require 'ert)
+(require 'cl-lib)
+(require 'seq)
+(require 'subr-x)
+
+(defconst test-class-lint--dir
+  (expand-file-name "test/src/nidhogg-tests/" source-directory)
+  "The directory of Nidhogg's own test files.")
+
+(defconst test-class-lint--exempt-file
+  (expand-file-name "nidhogg/test/class-exempt.txt" source-directory)
+  "The list of files that are not tests and carry no class.")
+
+(defvar test-class-lint--all-classified nil
+  "When non-nil, a test file with neither a class nor an exempt row fails.
+Until then `test-class/every-test-has-a-class' only reports the count.")
+
+(defconst test-class-lint--classes '(det cond timing))
+
+(defconst test-class-lint--real-time
+  '(make-process start-process start-file-process
+    run-at-time run-with-timer
+    run-with-idle-timer float-time time-since)
+  "Symbols a D test must not use outside the clock helpers.
+The fixed pauses (`sleep-for', `sit-for' above 0) are barred too, see
+`test-class-lint--fixed-pause'.")
+
+(defconst test-class-lint--clock-reads '(float-time current-time time-since)
+  "Functions whose value is a clock read.")
+
+(defconst test-class-lint--comparisons
+  '(< > <= >= = /= time-less-p time-equal-p)
+  "Functions that compare.")
+
+(defconst test-class-lint--allowed-prefix
+  "\\`\\(?:nidhogg-test-peer-\\|nidhogg-test-clock-\\|nidhogg-watchdog--test-clock\\'\\)"
+  "Calls whose whole subtree the real-time rule ignores.")
+
+;;; Reading
+
+(defun test-class-lint--read-forms (string)
+  "All top-level forms of STRING, read as data."
+  (with-temp-buffer
+    (insert string)
+    (goto-char (point-min))
+    (let (forms)
+      (condition-case nil
+          (while t (push (read (current-buffer)) forms))
+        (end-of-file nil))
+      (nreverse forms))))
+
+(defun test-class-lint--file-class (string)
+  "The class symbol of the header line in STRING, `none', or `bad'."
+  (let ((lines (seq-take (split-string string "\n") 15))
+        (class 'none))
+    (while (and lines (eq class 'none))
+      (let ((line (pop lines)))
+        (when (string-prefix-p ";; test-class:" line)
+          (setq class
+                (if (string-match "\\`;; test-class: \\(det\\|cond\\|timing\\)\\'" line)
+                    (intern (match-string 1 line))
+                  'bad)))))
+    class))
+
+(defun test-class-lint--parse-test (form)
+  "Split an `ert-deftest' FORM into (NAME TAGS BODY)."
+  (let ((rest (nthcdr 3 form)) tags)
+    (when (stringp (car rest)) (pop rest))
+    (while (keywordp (car rest))
+      (when (eq (car rest) :tags)
+        (let ((v (cadr rest)))
+          (setq tags (if (eq (car-safe v) 'quote) (cadr v) v))))
+      (setq rest (cddr rest)))
+    (list (nth 1 form) tags rest)))
+
+(defun test-class-lint--test-class (file-class tags)
+  "The class of a test with TAGS in a file of FILE-CLASS."
+  (or (seq-find (lambda (c) (memq (intern (concat ":" (symbol-name c))) tags))
+                test-class-lint--classes)
+      (and (memq file-class test-class-lint--classes) file-class)))
+
+(defun test-class-lint--helpers (forms)
+  "A table of the same-file functions and macros in FORMS: name to body."
+  (let ((table (make-hash-table :test 'eq)))
+    (dolist (f forms)
+      (when (and (memq (car-safe f) '(defun defmacro defsubst cl-defun cl-defmacro))
+                 (symbolp (nth 1 f)))
+        (puthash (nth 1 f) (nthcdr 3 f) table)))
+    table))
+
+;;; Walking
+
+(defun test-class-lint--nodes (body helpers)
+  "Collect what BODY uses, following calls into HELPERS.
+Returns (CALLS . SYMS): every list whose head is a symbol, and every
+symbol that is not a head.  Quoted data and calls into the allowed
+helpers are skipped."
+  (let ((calls nil) (syms nil) (seen (make-hash-table :test 'eq)))
+    (cl-labels
+        ((visit (x)
+           (cond
+            ((symbolp x)
+             (when x (push x syms) (follow x)))
+            ((vectorp x) (mapc #'visit x))
+            ((consp x)
+             (let ((head (car x)))
+               (cond
+                ((eq head 'quote))
+                ((and (symbolp head)
+                      (string-match-p test-class-lint--allowed-prefix (symbol-name head))))
+                (t
+                 (when (symbolp head) (push x calls) (follow head))
+                 (let ((tail (if (symbolp head) (cdr x) x)))
+                   (while (consp tail) (visit (pop tail)))
+                   (when tail (visit tail)))))))))
+         (follow (name)
+           (let ((hb (gethash name helpers 'none)))
+             (unless (or (eq hb 'none) (gethash name seen))
+               (puthash name t seen)
+               (mapc #'visit hb)))))
+      (mapc #'visit body))
+    (cons calls syms)))
+
+(defun test-class-lint--uses-p (nodes names)
+  "Non-nil if NODES (from `test-class-lint--nodes') mention a symbol of NAMES."
+  (or (seq-some (lambda (c) (memq (car c) names)) (car nodes))
+      (seq-some (lambda (s) (memq s names)) (cdr nodes))))
+
+(defun test-class-lint--zero-p (x)
+  "Non-nil if X is a literal zero."
+  (and (numberp x) (zerop x)))
+
+;;; The rules
+
+(defun test-class-lint--real-time (nodes)
+  "The D rule: what in NODES uses real time."
+  (let ((found (reverse (test-class-lint--fixed-pause nodes))))
+    (dolist (s test-class-lint--real-time)
+      (when (test-class-lint--uses-p nodes (list s)) (push (symbol-name s) found)))
+    (dolist (c (car nodes))
+      (when (and (eq (car c) 'accept-process-output)
+                 (nth 2 c) (not (test-class-lint--zero-p (nth 2 c))))
+        (push "accept-process-output with a time" found)))
+    (nreverse found)))
+
+(defun test-class-lint--fixed-pause (nodes)
+  "The C rule: what in NODES is a fixed pause."
+  (let (found)
+    (when (test-class-lint--uses-p nodes '(sleep-for)) (push "sleep-for" found))
+    (dolist (c (car nodes))
+      (when (and (eq (car c) 'sit-for) (not (test-class-lint--zero-p (nth 1 c))))
+        (push "sit-for above 0" found)))
+    (when (seq-some (lambda (s) (eq s 'sit-for)) (cdr nodes))
+      (push "sit-for passed on" found))
+    (nreverse found)))
+
+(defun test-class-lint--tainted (body helpers)
+  "The variables bound in BODY, directly or not, from a clock read."
+  (let ((tainted nil) (changed t)
+        (all (car (test-class-lint--nodes body helpers))))
+    (while changed
+      (setq changed nil)
+      (let ((clocky (lambda (init)
+                      (let ((n (test-class-lint--nodes (list init) helpers)))
+                        (or (test-class-lint--uses-p n test-class-lint--clock-reads)
+                            (test-class-lint--uses-p n tainted))))))
+        (dolist (c all)
+          (cond
+           ((memq (car c) '(let let*))
+            (dolist (b (cadr c))
+              (when (and (consp b) (symbolp (car b)) (cdr b)
+                         (not (memq (car b) tainted))
+                         (funcall clocky (cadr b)))
+                (push (car b) tainted) (setq changed t))))
+           ((eq (car c) 'setq)
+            (let ((p (cdr c)))
+              (while (cdr p)
+                (when (and (symbolp (car p)) (not (memq (car p) tainted))
+                           (funcall clocky (cadr p)))
+                  (push (car p) tainted) (setq changed t))
+                (setq p (cddr p)))))))))
+    tainted))
+
+(defun test-class-lint--asserts-clock (body helpers)
+  "The D and C rule over BODY: `should' forms that compare a clock read."
+  (let ((tainted (test-class-lint--tainted body helpers)) found)
+    (dolist (c (car (test-class-lint--nodes body helpers)))
+      (when (memq (car c) '(should should-not))
+        (let ((n (test-class-lint--nodes (cdr c) helpers)))
+          (when (and (test-class-lint--uses-p n test-class-lint--comparisons)
+                     (or (test-class-lint--uses-p n test-class-lint--clock-reads)
+                         (test-class-lint--uses-p n tainted)))
+            (push "should compares a clock read" found)))))
+    (delete-dups found)))
+
+(defun test-class-lint--violations (string)
+  "Every lint violation in the test file text STRING, as (RULE TEST DETAIL).
+RULE is `det-real-time', `cond-pause' or `clock-assert'.  A file without a
+class line has none."
+  (let* ((file-class (test-class-lint--file-class string))
+         (forms (test-class-lint--read-forms string))
+         (helpers (test-class-lint--helpers forms))
+         out)
+    (dolist (f forms)
+      (when (eq (car-safe f) 'ert-deftest)
+        (pcase-let* ((`(,name ,tags ,body) (test-class-lint--parse-test f))
+                     (class (test-class-lint--test-class file-class tags))
+                     (nodes (test-class-lint--nodes body helpers)))
+          (when (eq class 'det)
+            (dolist (d (test-class-lint--real-time nodes))
+              (push (list 'det-real-time name d) out)))
+          (when (eq class 'cond)
+            (dolist (d (test-class-lint--fixed-pause nodes))
+              (push (list 'cond-pause name d) out)))
+          (when (memq class '(det cond))
+            (dolist (d (test-class-lint--asserts-clock body helpers))
+              (push (list 'clock-assert name d) out))))))
+    (nreverse out)))
+
+;;; The files
+
+(defun test-class-lint--test-files ()
+  "Nidhogg's own test files."
+  (directory-files test-class-lint--dir t "-tests\\.el\\'"))
+
+(defun test-class-lint--read-file (file)
+  "The text of FILE."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (buffer-string)))
+
+(defun test-class-lint--exempt ()
+  "The files in the exempt list, relative to the test directory."
+  (when (file-readable-p test-class-lint--exempt-file)
+    (let (rows)
+      (dolist (line (split-string (test-class-lint--read-file test-class-lint--exempt-file) "\n"))
+        (unless (or (string-empty-p (string-trim line)) (string-prefix-p "#" line))
+          (push (string-trim (car (split-string line " # "))) rows)))
+      (nreverse rows))))
+
+(defun test-class-lint--real-violations (rule)
+  "The violations of RULE over every classified test file, as strings."
+  (let (out)
+    (dolist (file (test-class-lint--test-files))
+      (dolist (v (test-class-lint--violations (test-class-lint--read-file file)))
+        (when (eq (car v) rule)
+          (push (format "%s: %s: %s" (file-name-nondirectory file) (nth 1 v) (nth 2 v)) out))))
+    (nreverse out)))
+
+;;; The tests
+
+(ert-deftest test-class/det-uses-no-real-time ()
+  (should-not (test-class-lint--real-violations 'det-real-time)))
+
+(ert-deftest test-class/cond-has-no-fixed-pause ()
+  (should-not (test-class-lint--real-violations 'cond-pause)))
+
+(ert-deftest test-class/only-timing-asserts-the-clock ()
+  (should-not (test-class-lint--real-violations 'clock-assert)))
+
+(defconst test-class-lint--header-det ";; test-class: det\n")
+(defconst test-class-lint--header-cond ";; test-class: cond\n")
+
+(ert-deftest test-class/sees-through-a-local-helper ()
+  (let ((v (test-class-lint--violations
+            (concat test-class-lint--header-det
+                    "(defun my--wait () (sleep-for 1))\n"
+                    "(defun my--outer () (my--wait))\n"
+                    "(ert-deftest my/a () (my--outer) (should t))\n"))))
+    (should (equal v '((det-real-time my/a "sleep-for")))))
+  ;; A macro body counts too.
+  (should (test-class-lint--violations
+           (concat test-class-lint--header-det
+                   "(defmacro my--m (&rest b) `(progn (run-at-time 1 nil #'ignore) ,@b))\n"
+                   "(ert-deftest my/a () (my--m (should t)))\n")))
+  ;; A helper nobody calls does not matter.
+  (should-not (test-class-lint--violations
+               (concat test-class-lint--header-det
+                       "(defun my--wait () (sleep-for 1))\n"
+                       "(ert-deftest my/a () (should t))\n"))))
+
+(ert-deftest test-class/the-lints-bite ()
+  (let ((det test-class-lint--header-det)
+        (cnd test-class-lint--header-cond))
+    (dolist (case '(("(sleep-for 0.1)" "sleep-for")
+                    ("(sit-for 0.1)" "sit-for above 0")
+                    ("(make-process :name \"x\" :command '(\"true\"))" "make-process")
+                    ("(start-process \"x\" nil \"true\")" "start-process")
+                    ("(run-at-time 1 nil #'ignore)" "run-at-time")
+                    ("(accept-process-output p 1)" "accept-process-output with a time")
+                    ("(while (< (float-time) 5) nil)" "float-time")))
+      (let ((v (test-class-lint--violations
+                (concat det "(ert-deftest my/a () " (car case) ")\n"))))
+        (should (member (list 'det-real-time 'my/a (cadr case)) v))))
+    ;; What a D test may do.
+    (should-not (test-class-lint--violations
+                 (concat det "(ert-deftest my/a () (sit-for 0) (call-process \"true\") (accept-process-output p)"
+                         " (accept-process-output p 0) (nidhogg-test-peer-make (sleep-for 1))"
+                         " (nidhogg-watchdog--test-clock 5) '(sleep-for 1))\n")))
+    ;; C: a fixed pause.
+    (should (equal '((cond-pause my/a "sleep-for"))
+                   (test-class-lint--violations
+                    (concat cnd "(ert-deftest my/a () (sleep-for 0.1))\n"))))
+    (should (equal '((cond-pause my/a "sit-for above 0"))
+                   (test-class-lint--violations
+                    (concat cnd "(ert-deftest my/a () (sit-for 1))\n"))))
+    (should-not (test-class-lint--violations
+                 (concat cnd "(ert-deftest my/a () (sit-for 0) (make-process :name \"x\"))\n")))
+    ;; Clock assertions, direct and through a variable.
+    (should (equal '((clock-assert my/a "should compares a clock read"))
+                   (test-class-lint--violations
+                    (concat cnd "(ert-deftest my/a () (should (< (- (float-time) 1) 5)))\n"))))
+    (should (equal '((clock-assert my/a "should compares a clock read"))
+                   (test-class-lint--violations
+                    (concat cnd "(ert-deftest my/a ()"
+                            " (let* ((t0 (float-time)) (dt (- (float-time) t0)))"
+                            " (should (< dt 2))))\n"))))
+    (should-not (test-class-lint--violations
+                 (concat cnd "(ert-deftest my/a () (let ((n 3)) (should (< n 5))))\n")))
+    ;; T asserts the clock; a tag moves one test; no class line means no lint.
+    (should-not (test-class-lint--violations
+                 (concat ";; test-class: timing\n"
+                         "(ert-deftest my/a () (sleep-for 1) (should (< (float-time) 5)))\n")))
+    (should-not (test-class-lint--violations
+                 (concat det "(ert-deftest my/a () :tags '(:timing) (sleep-for 1))\n")))
+    (should (test-class-lint--violations
+             (concat cnd "(ert-deftest my/a () :tags '(:det) (sleep-for 1))\n")))
+    (should-not (test-class-lint--violations "(ert-deftest my/a () (sleep-for 1))\n"))))
+
+(ert-deftest test-class/the-class-line-is-exact ()
+  (should (eq 'det (test-class-lint--file-class ";; test-class: det\n")))
+  (should (eq 'timing (test-class-lint--file-class "a\n;; test-class: timing\n")))
+  (should (eq 'none (test-class-lint--file-class "a\n")))
+  (should (eq 'bad (test-class-lint--file-class ";; test-class: fast\n")))
+  (should (eq 'bad (test-class-lint--file-class ";; test-class: det \n")))
+  (should (eq 'none (test-class-lint--file-class
+                     (concat (make-string 15 ?\n) ";; test-class: det\n")))))
+
+(ert-deftest test-class/every-test-has-a-class ()
+  (let* ((exempt (test-class-lint--exempt))
+         (stale (seq-remove (lambda (f)
+                              (file-exists-p (expand-file-name f test-class-lint--dir)))
+                            exempt))
+         bad unclassified (ntests 0))
+    (dolist (file (test-class-lint--test-files))
+      (let* ((name (file-name-nondirectory file))
+             (text (test-class-lint--read-file file))
+             (class (test-class-lint--file-class text)))
+        (cond ((eq class 'bad) (push name bad))
+              ((and (eq class 'none) (not (member name exempt)))
+               (push name unclassified)
+               (cl-incf ntests
+                        (seq-count (lambda (f) (eq (car-safe f) 'ert-deftest))
+                                   (test-class-lint--read-forms text)))))))
+    (message "test-class: %d test files without a class (%d tests): %s"
+             (length unclassified) ntests (string-join (reverse unclassified) " "))
+    (should-not stale)
+    (should-not bad)
+    (when test-class-lint--all-classified
+      (should-not unclassified))))
+
+(provide 'test-class-lint-tests)
+;;; test-class-lint-tests.el ends here
