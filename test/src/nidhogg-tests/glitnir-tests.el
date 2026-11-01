@@ -238,12 +238,15 @@
       (should-error (glitnir--chrome-vector (selected-frame)) :type 'wrong-type-argument))))
 
 (ert-deftest glitnir-backdrop-slot ()
-  (glitnir-test--as-child '((backdrop-blur . 10))
+  (glitnir-test--as-child '((backdrop-blur . 10) (alpha-background . 0.8))
     (should (= (aref (glitnir--chrome-vector (selected-frame)) 20) 10)))
-  (glitnir-test--as-child '((backdrop-blur . 2.5))
+  (glitnir-test--as-child '((backdrop-blur . 2.5) (alpha-background . 50))
     (should (= (aref (glitnir--chrome-vector (selected-frame)) 20) 2.5)))
-  (glitnir-test--as-child nil
+  (glitnir-test--as-child '((alpha-background . 0.8))
     (should (= (aref (glitnir--chrome-vector (selected-frame)) 20) 0)))
+  (dolist (opaque '(nil 1.0 100))
+    (glitnir-test--as-child `((backdrop-blur . 10) (alpha-background . ,opaque))
+      (should (= (aref (glitnir--chrome-vector (selected-frame)) 20) 0))))
   (dolist (bad '(-1 "10" t))
     (glitnir-test--as-child `((backdrop-blur . ,bad))
       (should-error (glitnir--chrome-vector (selected-frame)) :type 'wrong-type-argument))))

@@ -202,12 +202,18 @@ Only undecorated child frames have one."
                    child-frame-chrome)))
         (cdr (or (assq key params) (assq key opt)))))))
 
+(defun glitnir--translucent-p (frame)
+  "Non-nil when FRAME's `alpha-background' lets what lies behind it show."
+  (when-let* ((a (cdr (assq 'alpha-background (frame-parameters frame)))))
+    (< a (if (floatp a) 1.0 100))))
+
 (defun glitnir--chrome-vector (frame)
   "Return FRAME's chrome as a vector of numbers, or nil for a root frame.
 The slots are `glitnir--chrome-slots'.  Slots 0-7 come from `glitnir--resolve',
 clamped; 8-19 from the `transition' option, which the desktop's reduced-motion
-setting turns off; 20 from `backdrop-blur'; `beneath-rgb' is -1.  A child frame
-with no chrome has a vector whose first slot is 0."
+setting turns off; 20 from `backdrop-blur', 0 while the frame's
+`alpha-background' is opaque; `beneath-rgb' is -1.  A child frame with no chrome
+has a vector whose first slot is 0."
   (when (frame-parent frame)
     (let* ((res (glitnir--resolve frame))
            (sh (plist-get res :shadow))
@@ -222,7 +228,8 @@ with no chrome has a vector whose first slot is 0."
         (setcar tr 0)
         (setcar (nthcdr 6 tr) 0))
       (dotimes (i 12) (aset v (+ 8 i) (nth i tr)))
-      (aset v (alist-get 'backdrop glitnir--chrome-slots) (or blur 0))
+      (aset v (alist-get 'backdrop glitnir--chrome-slots)
+            (if (and blur (glitnir--translucent-p frame)) blur 0))
       (aset v (alist-get 'beneath-rgb glitnir--chrome-slots) -1)
       (when res
         (aset v 0 1)

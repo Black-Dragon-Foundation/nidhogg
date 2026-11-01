@@ -25,6 +25,8 @@ pub struct StatsEntry {
     pub damage_px: u64,
     pub scroll_px: u64,
     pub painted_px: u64,
+    /// Device pixels of backdrop blur recomputed for this paint.
+    pub backdrop_px: u64,
     pub layers: u32,
     pub ticks: u32,
     pub late_ticks: u32,
@@ -58,6 +60,7 @@ pub struct Summary {
     pub late_ticks: u64,
     pub violations: u64,
     pub scale_mismatch: u64,
+    pub backdrop_px: u64,
     /// From the update to the end of the paint, over the entries with an update time only.
     pub update_ms: Percentiles,
 }
@@ -72,6 +75,7 @@ pub struct Ring {
     late_ticks: u64,
     violations: u64,
     scale_mismatch: u64,
+    backdrop_px: u64,
 }
 
 impl Ring {
@@ -84,6 +88,7 @@ impl Ring {
             late_ticks: 0,
             violations: 0,
             scale_mismatch: 0,
+            backdrop_px: 0,
         }
     }
 
@@ -99,6 +104,7 @@ impl Ring {
         self.late_ticks += u64::from(e.late_ticks);
         self.violations += u64::from(e.violations);
         self.scale_mismatch += u64::from(e.scale_mismatch != 0);
+        self.backdrop_px += e.backdrop_px;
     }
 
     fn clear(&mut self) {
@@ -109,6 +115,7 @@ impl Ring {
         self.late_ticks = 0;
         self.violations = 0;
         self.scale_mismatch = 0;
+        self.backdrop_px = 0;
     }
 }
 
@@ -163,6 +170,7 @@ fn summarise(r: &Ring) -> Summary {
         late_ticks: r.late_ticks,
         violations: r.violations,
         scale_mismatch: r.scale_mismatch,
+        backdrop_px: r.backdrop_px,
         update_ms: percentiles(
             b.iter()
                 .filter(|e| e.t_update_ns != 0)
@@ -242,6 +250,7 @@ mod tests {
             painted_px: r.next() % 1000,
             backfill: (r.next() % 3) as u8,
             ticks: (r.next() % 3) as u32,
+            backdrop_px: r.next() % 1000,
             ..StatsEntry::default()
         }
     }
@@ -314,6 +323,10 @@ mod tests {
         let filled = all.iter().filter(|e| e.backfill == 1).count();
         assert_eq!(s.backfill_rate, filled as f64 / known as f64);
         assert_eq!(s.ticks, all.iter().map(|e| u64::from(e.ticks)).sum::<u64>());
+        assert_eq!(
+            s.backdrop_px,
+            all.iter().map(|e| e.backdrop_px).sum::<u64>()
+        );
         forget(root);
     }
 
