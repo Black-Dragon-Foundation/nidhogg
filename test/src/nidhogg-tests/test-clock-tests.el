@@ -288,4 +288,30 @@ filter call) and the bytes on their way."
                        (princ (nidhogg-test-clock-now))))))
     (should (= 0.0 (nidhogg-test-clock-now)))))
 
+(ert-deftest test-clock/worker-timed-wait-follows-virtual-time ()
+  (test-clock-tests--with nil
+    (let ((job (nidhogg-workers--test-job 'nh-parse 0 :timed-wait 5000)))
+      (should job)
+      ;; A manual clock's waits are real.
+      (cl-loop repeat 5000
+               until (= 1 (plist-get (nidhogg-test-clock-state) :deadlines))
+               do (sleep-for 0.001))
+      (should (= 1 (plist-get (nidhogg-test-clock-state) :deadlines)))
+      (nidhogg-test-clock-advance 2)
+      (should (= 0 (nidhogg-workers--test-wait job 50)))
+      (nidhogg-test-clock-advance 3)
+      (should (= 1 (nidhogg-workers--test-wait job 5000)))
+      (should (= 5000 (plist-get (nidhogg-workers--test-job-info job)
+                                 :waited-ms))))))
+
+(ert-deftest test-clock/a-registered-wait-counts-idle ()
+  (test-clock-tests--with t
+    (let ((job (nidhogg-workers--test-job 'nh-parse 0 :timed-wait 5000)))
+      (should job)
+      (sit-for 10)
+      (should (= 1 (nidhogg-workers--test-wait job 5000)))
+      (should (= 5000 (plist-get (nidhogg-workers--test-job-info job)
+                                 :waited-ms)))
+      (should (= 10.0 (nidhogg-test-clock-now))))))
+
 ;;; test-clock-tests.el ends here
