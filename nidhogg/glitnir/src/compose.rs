@@ -17,9 +17,13 @@
 //! on how the rectangles cut it, so composing the damage equals composing everything wherever the damage covers what
 //! changed.
 //!
+//! A layer with a backdrop ([`Extras`]) has the blurred picture of what lies beneath it under its pixels: the copy
+//! becomes the blur's row with the layer OVER it, in the same pass, and the corner squares take that through their mask.
+//!
 //! [`compose_committed`] composes a commit's snapshot with a caller-owned [`Composer`] and takes no lock, so the
 //! host's thread can go on drawing while another thread composes.
 
+use crate::blur::Backdrop;
 use crate::committed::Committed;
 use crate::decor::{Label, Sprites};
 use crate::ffi::{GLITNIR_E_ARG, GLITNIR_E_STATE};
@@ -79,6 +83,46 @@ pub struct TargetView<'a> {
     pub stride: usize,
     pub rect: Rect,
     pub scale: f64,
+}
+
+/// What a compose draws beyond the scene.
+#[derive(Clone, Copy, Default)]
+pub struct Extras<'a> {
+    /// A blurred backdrop and the layer it lies under. The image's region is the layer's rectangle in the image's source.
+    pub backdrop: Option<(&'a Backdrop, u64)>,
+}
+
+impl Extras<'_> {
+    /// Nothing beyond the scene.
+    pub const NONE: Extras<'static> = Extras { backdrop: None };
+
+    /// The backdrop of layer `p`, and what takes a root px to its source's coordinates.
+    fn beneath(&self, p: &Placed) -> Option<Beneath<'_>> {
+        let (image, _) = self.backdrop.filter(|(_, l)| *l == p.id)?;
+        let r = image.region()?;
+        Some(Beneath {
+            image,
+            shift: (r.x - p.rect.x, r.y - p.rect.y),
+        })
+    }
+}
+
+/// A layer's backdrop, for drawing it.
+#[derive(Clone, Copy)]
+struct Beneath<'a> {
+    image: &'a Backdrop,
+    shift: (i32, i32),
+}
+
+impl Beneath<'_> {
+    /// Root row `y` across `q`, from the image into `out`.
+    fn row(&self, y: i32, q: Rect, out: &mut [u32]) {
+        self.image.sample_row(
+            y + self.shift.1,
+            q.x + self.shift.0,
+            &mut out[..q.w as usize],
+        );
+    }
 }
 
 /// The stride in pixels and the slice length (up to the last row's last pixel) of a strided buffer.
@@ -312,8 +356,15 @@ impl Plan {
         }
     }
 
-    /// Draw the layer within CLIP (inside the target).
-    fn draw(&self, k: &Kernels, t: &mut TargetView, src: &SourceView, clip: Rect) {
+    /// Draw the layer within CLIP (inside the target), over BENEATH when it has a backdrop.
+    fn draw(
+        &self,
+        k: &Kernels,
+        t: &mut TargetView,
+        src: &SourceView,
+        clip: Rect,
+        beneath: Option<Beneath>,
+    ) {
         if let Some(s) = &self.shadow {
             let mut parts = vec![s.image.intersect(&clip)];
             for cut in &self.copied {
@@ -327,9 +378,19 @@ impl Plan {
         }
         for cut in &self.copied {
             let q = cut.intersect(&clip);
-            if !q.is_empty() {
-                let (w, h) = (q.w as usize, q.h as usize);
+            if q.is_empty() {
+                continue;
+            }
+            let (w, h) = (q.w as usize, q.h as usize);
+            let Some(b) = beneath else {
                 k.copy(&mut t.at(q), &src.at(q, self.origin), w, h);
+                continue;
+            };
+            // row by row, so that a row is in the cache when the layer goes over it
+            for y in q.y..q.y + q.h {
+                let row = Rect::new(q.x, y, q.w, 1);
+                b.row(y, q, t.at(row).data);
+                k.over(&mut t.at(row), &src.at(row, self.origin), w, 1);
             }
         }
         let (inside, ring, colour): (&[u8], Option<&[u8]>, u32) = match &self.corners {
@@ -350,7 +411,25 @@ impl Plan {
                 data: &inside[off..],
                 stride: n,
             };
-            k.mask_over(&mut dst, &src.at(q, self.origin), &mask, w, h, 255);
+            match beneath {
+                None => k.mask_over(&mut dst, &src.at(q, self.origin), &mask, w, h, 255),
+                Some(b) => {
+                    let mut px = vec![0u32; w * h];
+                    for (i, row) in px.chunks_exact_mut(w).enumerate() {
+                        b.row(q.y + i as i32, q, row);
+                    }
+                    let mut fused = PixelsMut {
+                        data: &mut px,
+                        stride: w,
+                    };
+                    k.over(&mut fused, &src.at(q, self.origin), w, h);
+                    let fused = Pixels {
+                        data: &px,
+                        stride: w,
+                    };
+                    k.mask_over(&mut dst, &fused, &mask, w, h, 255);
+                }
+            }
             if let Some(ring) = ring {
                 let mask = Mask {
                     data: &ring[off..],
@@ -412,6 +491,23 @@ pub fn compose_with(
     shadows: &mut ShadowCache,
     sprites: &Sprites,
 ) -> Result<u32, i32> {
+    let x = Extras::NONE;
+    compose_layers(k, scene, labels, t, clips, sources, shadows, sprites, &x)
+}
+
+/// [`compose_with`] with X drawn too.
+#[allow(clippy::too_many_arguments)]
+fn compose_layers(
+    k: &Kernels,
+    scene: &[Placed],
+    labels: &[Label],
+    t: &mut TargetView,
+    clips: &[Rect],
+    sources: &[SourceView],
+    shadows: &mut ShadowCache,
+    sprites: &Sprites,
+    x: &Extras,
+) -> Result<u32, i32> {
     if sources.iter().any(|s| s.scale != t.scale) {
         return Err(GLITNIR_E_STATE);
     }
@@ -423,8 +519,9 @@ pub fn compose_with(
             p.kind != Kind::Window && pieces.iter().any(|c| !c.intersect(&p.bounds).is_empty())
         }) {
             let plan = Plan::new(p, src, t.scale, shadows);
+            let beneath = x.beneath(p);
             for c in &pieces {
-                plan.draw(k, t, src, *c);
+                plan.draw(k, t, src, *c, beneath);
             }
             drawn = drawn.saturating_add(1);
         }
@@ -516,13 +613,25 @@ pub fn compose_committed(
     clips: &[Rect],
     sources: &[SourceView],
 ) -> Result<u32, i32> {
+    compose_committed_with(c, k, t, clips, sources, &Extras::NONE)
+}
+
+/// [`compose_committed`] with X drawn too.
+pub fn compose_committed_with(
+    c: &Committed,
+    k: &mut Composer,
+    t: &mut TargetView,
+    clips: &[Rect],
+    sources: &[SourceView],
+    x: &Extras,
+) -> Result<u32, i32> {
     let start = Instant::now();
     #[cfg(test)]
     if let Some(g) = &k.gate {
         let _ = g.recv_timeout(std::time::Duration::from_secs(5));
     }
     let shadows = k.shadows.get_or_insert_with(ShadowCache::new);
-    let layers = compose_with(
+    let layers = compose_layers(
         crate::kernels::kernels(),
         &c.layers,
         &c.labels,
@@ -531,6 +640,7 @@ pub fn compose_committed(
         sources,
         shadows,
         &c.sprites,
+        x,
     )?;
     let tally = k.tallies.entry(c.root).or_default();
     let ns = u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
@@ -1354,6 +1464,194 @@ mod tests {
             took < Duration::from_secs(1),
             "1000 damage calls took {took:?}"
         );
+    }
+
+    /// A child frame's scene: its one layer at `rect`, with `chrome`.
+    fn kid_scene(rect: Rect, chrome: Option<Chrome>) -> Scene {
+        let (mut s, mut f) = (Scene::default(), Frames::new());
+        s.upsert(&desc(ROOT, 0, 1, rect, 1.0, true)).unwrap();
+        s.set_chrome(ROOT, chrome).unwrap();
+        s.commit(ROOT, &mut f);
+        s
+    }
+
+    fn with_extras(s: &Scene, x: &Extras, content: &Buf, out: &mut Buf, clips: &[Rect]) {
+        compose_committed_with(
+            &s.snapshot(),
+            &mut Composer::new(),
+            &mut out.target(1.0),
+            clips,
+            &[content.source(ROOT, 1.0)],
+            x,
+        )
+        .unwrap();
+    }
+
+    /// The blurred `parent` for a layer lying at `region` in it.
+    fn blurred(parent: &Buf, region: Rect, sigma: f32) -> Backdrop {
+        let mut b = Backdrop::new();
+        let size = (parent.w, parent.h);
+        assert_eq!(
+            b.update(&parent.px, parent.w as usize, size, region, sigma, 1.0, &[]),
+            Some(region)
+        );
+        b
+    }
+
+    #[test]
+    fn backdrop_under_content_inside_corners() {
+        const BENEATH: u32 = 0xff40_80c0;
+        let (surface, rect) = (Rect::new(0, 0, 48, 48), Rect::new(8, 8, 32, 32));
+        let chrome = Chrome {
+            radius_px: 8.0,
+            blur_px: 6.0,
+            shadow_opacity: 0.5,
+            shadow_argb: 0xff00_0000,
+            ..Chrome::default()
+        };
+        let s = kid_scene(rect, Some(chrome));
+        let parent = Buf::new(96, 96, BENEATH);
+        let b = blurred(&parent, Rect::new(20, 30, 32, 32), 8.0);
+        let x = Extras {
+            backdrop: Some((&b, ROOT)),
+        };
+        let content = Buf::new(32, 32, 0x8080_8080);
+        let mut out = Buf::new(48, 48, 0);
+        with_extras(&s, &x, &content, &mut out, &[surface]);
+        // the middle: half white OVER the flat backdrop
+        let over = |c: u32| 0x80 + (c * 0x7f + 127) / 255;
+        let middle = out.at(24, 24);
+        for (i, c) in [0xc0, 0x80, 0x40].into_iter().enumerate() {
+            let got = (middle >> (8 * i)) & 0xff;
+            assert!(got.abs_diff(over(c)) <= 1, "channel {i}: {middle:08x}");
+        }
+        assert_eq!(middle >> 24, 0xff);
+        // past the rounded corner the backdrop is not drawn: a compose without one gives the same pixel
+        let mut plain = Buf::new(48, 48, 0);
+        with_extras(&s, &Extras::NONE, &content, &mut plain, &[surface]);
+        assert_eq!(out.at(8, 8), plain.at(8, 8));
+        assert_ne!(out.at(8, 8) >> 24, 0xff);
+        assert_eq!(out.at(2, 24), plain.at(2, 24), "the shadow is the same");
+        // the edge of the disc takes some of each
+        let edge = (out.at(10, 10) >> 24, plain.at(10, 10) >> 24);
+        assert!(edge.0 > edge.1, "{edge:?}");
+    }
+
+    #[test]
+    fn extras_none_equals_compose_committed() {
+        const W: i32 = 64;
+        const H: i32 = 48;
+        let all = Rect::new(0, 0, W, H);
+        for seed in 1..=100 {
+            let mut g = XorShift::new(seed);
+            let rect = Rect::new(6, 5, 40, 30);
+            let s = kid_scene(rect, Some(rand_chrome(&mut g)));
+            let content = Buf::random(&mut g, rect.w, rect.h);
+            let parent = Buf::random(&mut g, 96, 96);
+            let garbage = Buf::random(&mut g, W, H);
+            let (mut a, mut b, mut c) = (garbage.clone(), garbage.clone(), garbage);
+            let mut shadows = ShadowCache::new();
+            let views = [content.source(ROOT, 1.0)];
+            let scene = s.committed();
+            compose(
+                kernels(),
+                scene,
+                &mut a.target(1.0),
+                &[all],
+                &views,
+                &mut shadows,
+            )
+            .unwrap();
+            with_extras(&s, &Extras::NONE, &content, &mut b, &[all]);
+            assert_eq!(first_difference(&a, &b), None, "seed {seed}");
+            // a backdrop for a layer that is not here draws nothing
+            let beneath = blurred(&parent, rect, 8.0);
+            let x = Extras {
+                backdrop: Some((&beneath, ROOT + 1)),
+            };
+            with_extras(&s, &x, &content, &mut c, &[all]);
+            assert_eq!(first_difference(&a, &c), None, "seed {seed}");
+        }
+    }
+
+    /// The key property with a backdrop: a change beneath, or in the layer, composed within what it damaged, equals
+    /// composing everything.  (A surface is cleared where it is composed: nothing lies under a child frame's layer.)
+    #[test]
+    fn damage_only_equals_full_with_backdrop() {
+        const W: i32 = 64;
+        const H: i32 = 48;
+        let all = Rect::new(0, 0, W, H);
+        let clear = |b: &mut Buf, clips: &[Rect]| {
+            for c in clips {
+                let c = c.intersect(&all);
+                for y in c.y..c.y + c.h {
+                    b.px[(y * W + c.x) as usize..][..c.w as usize].fill(0);
+                }
+            }
+        };
+        for seed in 1..=200 {
+            let mut g = XorShift::new(seed);
+            let rect = Rect::new(4 + g.below(8) as i32, 3 + g.below(6) as i32, 40, 30);
+            let chrome = (g.below(4) != 0).then(|| rand_chrome(&mut g));
+            let s = kid_scene(rect, chrome);
+            let mut content = Buf::random(&mut g, rect.w, rect.h);
+            let mut parent = Buf::random(&mut g, 96, 80);
+            // the region may hang over the parent's edge
+            let region = Rect::new(
+                g.below(96) as i32 - 20,
+                g.below(80) as i32 - 16,
+                rect.w,
+                rect.h,
+            );
+            let sigma = [4.0, 8.0, 10.5][g.below(3) as usize];
+            let mut b = Backdrop::new();
+            let size = (parent.w, parent.h);
+            b.update(&parent.px, 96, size, region, sigma, 1.0, &[]);
+            let mut out = Buf::new(W, H, 0);
+            with_extras(
+                &s,
+                &Extras {
+                    backdrop: Some((&b, ROOT)),
+                },
+                &content,
+                &mut out,
+                &[all],
+            );
+            for round in 0..6 {
+                let mut clips = Vec::new();
+                if g.below(2) == 0 {
+                    let r = Rect::new(
+                        g.below(96) as i32,
+                        g.below(80) as i32,
+                        1 + g.below(30) as i32,
+                        1 + g.below(30) as i32,
+                    );
+                    parent.paint(&mut g, r);
+                    let changed = b.update(&parent.px, 96, size, region, sigma, 1.0, &[r]);
+                    let to_layer = (rect.x - region.x, rect.y - region.y);
+                    clips.extend(changed.map(|c| c.translate(to_layer.0, to_layer.1)));
+                } else {
+                    let r = Rect::new(
+                        g.below(40) as i32,
+                        g.below(30) as i32,
+                        1 + g.below(12) as i32,
+                        1 + g.below(12) as i32,
+                    );
+                    content.paint(&mut g, r);
+                    clips.push(r.translate(rect.x, rect.y));
+                }
+                let x = Extras {
+                    backdrop: Some((&b, ROOT)),
+                };
+                clear(&mut out, &clips);
+                with_extras(&s, &x, &content, &mut out, &clips);
+                let mut want = Buf::new(W, H, 0);
+                with_extras(&s, &x, &content, &mut want, &[all]);
+                if let Some(d) = first_difference(&out, &want) {
+                    panic!("seed {seed} round {round}: {d:?}; clips {clips:?}");
+                }
+            }
+        }
     }
 
     #[test]
