@@ -6,6 +6,7 @@
 use crate::caps::NhShellCaps;
 use crate::event::Record;
 use glitnir::geom::Rect;
+use glitnir::motion::MotionSpec;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::Thread;
@@ -260,6 +261,8 @@ pub trait ShellBackend {
         desc: &WindowDesc,
         session_name: Option<&str>,
     ) -> ShellResult<WindowId>;
+    /// The window and its dependents go, and the id with them.  A child whose hide leg runs (`set_motion`) finishes its
+    /// fade first as a surface the host no longer sees, unless its parent goes or the connection does.
     fn window_destroy(&mut self, window: WindowId) -> ShellResult;
     fn set_title(&mut self, window: WindowId, title: &str) -> ShellResult;
     fn set_app_id(&mut self, window: WindowId, app_id: &str) -> ShellResult;
@@ -326,8 +329,16 @@ pub trait ShellBackend {
     fn stack(&mut self, window: WindowId, sibling: WindowId, above: bool) -> ShellResult;
     /// The part of the window that takes input (logical pixels); none at all means the whole surface.
     fn set_input_region(&mut self, window: WindowId, rects: &[Rect]) -> ShellResult;
-    /// Off: show nothing (a null buffer); on: the next present shows the window again.
+    /// Off: show nothing (a null buffer); on: the next present shows the window again.  A child with a motion spec
+    /// (`set_motion`) stays mapped, showing its last picture, while its hide leg runs, and unmaps in the tree commit
+    /// after the leg's end; on, its show leg starts at the first tree commit that carries its new picture.
     fn set_mapped(&mut self, window: WindowId, on: bool) -> ShellResult;
+    /// Child `window`'s show and hide transitions, run by whoever presents its tree (`None`: none, and a leg that
+    /// runs ends at once: a show jumps to its end, a hide unmaps in the next tree commit).  `State` for any other
+    /// window.
+    fn set_motion(&mut self, _window: WindowId, _spec: Option<MotionSpec>) -> ShellResult {
+        Err(ShellError::Unsupported)
+    }
     /// Whether popup `window` holds a grab (asked with `NHSHELL_WIN_GRAB`, granted, not dismissed); false for other
     /// windows.
     fn window_grabbed(&self, window: WindowId) -> ShellResult<bool>;
