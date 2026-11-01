@@ -502,6 +502,7 @@ connection."
           (nhwl-gui--live-settle)
           (nhwl-gui--scroll-and-type 20)
           ;; the script stops KWin and starts it again while the window scrolls
+          (gui-runner-restart-note)
           (start-process "nhwl-kwin-restart" nil (getenv "NHWL_GUI_RESTART"))
           (nhwl-gui--scroll-and-type 100)
           (should (nhwl-gui--reconnected 20))
