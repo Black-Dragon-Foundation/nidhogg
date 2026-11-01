@@ -109,8 +109,8 @@ pub struct MainState {
     tokens: activation::Tokens,
     /// The newest window id given out above the protocol's range (`window_surface`).
     next_id: u64,
-    /// Popups that went with their parent while the host still names them: no new window takes such an id until the
-    /// host destroys the popup in turn (`window_destroy_local`).
+    /// Popups that went with their parent, or closed at a reconnect (`popups_closed`), while the host still names them:
+    /// no new window takes such an id until the host destroys the popup in turn (`window_destroy_local`).
     orphans: HashSet<u64>,
     /// Each parent's child windows bottom to top, the parent itself among them, for making the stacking again after
     /// a reconnect (`child.rs`).

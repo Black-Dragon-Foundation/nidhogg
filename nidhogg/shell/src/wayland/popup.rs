@@ -351,7 +351,8 @@ impl WaylandShell {
 
     /// A reconnect closes every popup, topmost first (the deepest, then the newest grab): each posts `POPUP_DONE`, and
     /// its record goes with what hangs on it.  Its objects went with the old connection; a popup shown again is a new
-    /// one.
+    /// one.  The host names it until it destroys it in turn, and the new connection hands out the low ids again, so
+    /// its id stays out of use till then (`orphans`).
     pub(super) fn popups_closed(&mut self) {
         let m = &self.main;
         let depth = |mut id: WindowId| {
@@ -379,6 +380,7 @@ impl WaylandShell {
         }
         for (_, _, id) in order {
             let _ = self.window_destroy_local(id);
+            self.main.orphans.insert(id);
         }
     }
 
