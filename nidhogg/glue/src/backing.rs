@@ -475,23 +475,6 @@ impl Backings {
         Ok(f.view())
     }
 
-    /// Copy the frame's `w` x `h` backing into `dst`, rows `stride` bytes apart (`glitnir-snapshot`'s copy, moved
-    /// from `nhwl_snapshot`).  `NHG_E_STATE` without a backing of that size.
-    pub fn snapshot_into(
-        &mut self,
-        key: u64,
-        dst: &mut [u8],
-        stride: usize,
-        w: i32,
-        h: i32,
-    ) -> Result<(), i32> {
-        let f = self.get(key)?;
-        if f.pixels.is_empty() || (f.w, f.h) != (w, h) {
-            return Err(NHG_E_STATE);
-        }
-        copy_rows(&f.pixels, w as usize, h as usize, dst, stride)
-    }
-
     /// The frame is gone: its scene, damage and statistics go, and its backing is freed.  From
     /// `nhwl_glitnir_forget`.
     pub fn forget(&mut self, key: u64) {

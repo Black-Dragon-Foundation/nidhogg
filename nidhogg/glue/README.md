@@ -231,7 +231,7 @@ accepted and does nothing, as for a missing Wayland protocol.
 | `nhg_layer_ensure` | - | make the frame's Glitnir layer match a geometry | same (Glitnir is the compositor-independent scene) |
 | `nhg_backing` | R W | size the frame's backing and describe it | same; CoreAnimation layers could use an IOSurface instead |
 | `nhg_damage` / `nhg_damage_all` | - | damage rectangles of the frame | same |
-| `nhg_snapshot` / `nhg_snapshot_copy` | R | borrow or copy the backing | same |
+| `nhg_snapshot` / `nhg_tree_snapshot` | R | borrow the backing; the tree's picture as the compositor was given it | same |
 | `nhg_backing_forget` | - | drop a frame's scene and backing | same |
 | `nhg_present` | R | publish and present a tree | hand the backing to a `CALayer`; no CPU compose |
 | `nhg_presenter_thread` / `nhg_presenter_stats` | - | presenter thread switch and counters | not used (CoreAnimation composites) |

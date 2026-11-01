@@ -561,6 +561,11 @@ impl ShellBackend for WaylandShell {
         self.main.present_draws(root).ok_or(ShellError::State)
     }
 
+    fn tree_snapshot(&self, root: WindowId, frames: &[SurfaceFrame]) -> ShellResult<Vec<u32>> {
+        self.live()?;
+        self.tree_snapshot_impl(root, frames)
+    }
+
     /// Works on a lost connection too: it touches nothing.
     fn abandon(&self) -> Abandon {
         self.abandon_impl()
