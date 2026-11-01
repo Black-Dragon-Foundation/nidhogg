@@ -31,6 +31,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "coding.h"
 #include "lisp.h"
 #include "pdumper.h"
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+#include "nidhogg-testclock.h"
+#endif
 
 #include <strftime.h>
 
@@ -147,6 +150,10 @@ struct timespec
 monotonic_coarse_timespec (void)
 {
   struct timespec ts;
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+  if (nh_tc_auto)
+    return nh_tc_mono ();
+#endif
 #ifdef CLOCK_MONOTONIC_COARSE
   if (clock_gettime (CLOCK_MONOTONIC_COARSE, &ts) == 0)
     return ts;
@@ -940,7 +947,11 @@ decode_time_components (Lisp_Object high, Lisp_Object low,
 static union c_time
 current_time_in_cform (enum cform cform)
 {
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+  struct timespec now = nh_tc_now ();
+#else
   struct timespec now = current_timespec ();
+#endif
   return ((FASTER_TIMEFNS
 	   && (cform == CFORM_TIMESPEC || cform == CFORM_SECS_ONLY))
 	  ? (union c_time) {.ts = now}
@@ -1828,7 +1839,11 @@ You can use `time-convert' to get a particular timestamp form
 regardless of the value of `current-time-list'.  */)
   (void)
 {
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+  return make_lisp_time (nh_tc_now ());
+#else
   return make_lisp_time (current_timespec ());
+#endif
 }
 
 #ifdef CLOCKS_PER_SEC
