@@ -162,4 +162,36 @@
       (insert (propertize "abc" 'face face))
       (should (equal (buffer-string) "abc")))))
 
+;; The chrome vector: Lisp resolves, C copies, the glue validates.
+
+(ert-deftest glitnir-chrome-vector-layout ()
+  (let ((child-frame-chrome '((corner-radius . 8) (shadow . (:blur 16 :offset (2 . 6) :spread -1 :opacity 0.5)))))
+    (should-not (glitnir--chrome-vector (selected-frame)))
+    (glitnir-test--as-child nil
+      (let* ((f (selected-frame))
+             (v (glitnir--chrome-vector f))
+             (r (glitnir--resolve f))
+             (s (plist-get r :shadow))
+             (c (plist-get s :color)))
+        (should (= (length v) 22))
+        (should (= (length v) (length glitnir--chrome-slots)))
+        (should (equal (list (aref v 0) (aref v 1) (aref v 2) (aref v 3) (aref v 4) (aref v 5) (aref v 6))
+                       (list 1 (plist-get r :radius) (plist-get s :blur) 2 6 -1 (plist-get s :opacity))))
+        (should (= (aref v 7) (+ (ash (nth 0 c) 16) (ash (nth 1 c) 8) (nth 2 c))))
+        (should (cl-every #'zerop (cl-subseq v 8 21)))
+        (should (= (aref v 21) -1))))
+    ;; a child frame without chrome still has a vector, off
+    (let ((child-frame-chrome nil))
+      (glitnir-test--as-child nil
+        (let ((v (glitnir--chrome-vector (selected-frame))))
+          (should (= (length v) 22))
+          (should (= (aref v 0) 0)))))))
+
+(ert-deftest glitnir-chrome-vector-clamps ()
+  (let ((child-frame-chrome '((corner-radius . 4) (shadow . (:opacity 1.5 :blur -3)))))
+    (glitnir-test--as-child nil
+      (let ((v (glitnir--chrome-vector (selected-frame))))
+        (should (= (aref v 6) 1))
+        (should (= (aref v 2) 0))))))
+
 ;;; glitnir-tests.el ends here
