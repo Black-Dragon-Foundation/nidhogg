@@ -78,7 +78,7 @@ done
 # the real group path, through a fake slot: every group's results are in the report, not only the reds
 cat > "$d/fakeslot" <<'EOF'
 #!/usr/bin/env bash
-# stands for the heavy slot and the build: a check log per listed target, except $FAKE_SKIP; $FAKE_HANG: never returns
+# stands for the slot wrapper and the build: a check log per listed target, except $FAKE_SKIP; $FAKE_HANG: never returns
 b="" l=""
 while [ $# -gt 0 ]; do case $1 in --build-dir) b=$2; shift 2 ;; --check) l=$2; shift 2 ;; *) shift ;; esac; done
 if [ -n "${FAKE_HANG:-}" ]; then echo $$ > "$FAKE_HANG"; exec sleep 30; fi
@@ -121,11 +121,11 @@ PREFLIGHT_NO_SKIP="$d/no-skip.txt" FAKE_PARTSKIP=src/a-tests grp --out "$d/r14/r
 grep -q "^GROUP P2 cpu1 run=1 seed=- src/a-tests RED: 1 test(s) skipped" "$d/r14/report" || fail "no RED line for a skip in a must-not-skip file"
 PREFLIGHT_NO_SKIP="$d/no-skip.txt" FAKE_PARTSKIP=src/b-tests grp --out "$d/r15/report" > /dev/null; r=$?
 [ "$r" = 0 ] || fail "a skip in an ordinary file was red ($r)"
-# a run that failed with every file green (the link to the desktop dropped: ssh's 255) is red, and says how it ended
+# a run that failed with every file green (the wrapper lost its runner: exit 255) is red, and says how it ended
 FAKE_EXIT=255 grp --out "$d/r12/report" > /dev/null; r=$?
 [ "$r" = 1 ] && [ ! -e "$d/r12/report.stamp" ] || fail "a failed run with green files exited $r, or got a stamp"
 grep -q "^RED P2 (whole run) wrap=cpu1 seed=-: exit 255$" "$d/r12/report" || fail "a whole-run red without its exit status"
-# a killed group leaves no list file in the tree (the list is untracked, for the desktop sync)
+# a killed group leaves no list file in the tree (the list is untracked, for a wrapper that copies the tree's changes)
 mkdir -p "$d/r8"
 FAKE_HANG=$d/hang.pid grp --out "$d/r8/report" > /dev/null 2>&1 &
 pid=$!
