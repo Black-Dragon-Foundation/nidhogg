@@ -1,0 +1,67 @@
+# The path filter of .github/workflows/build.yml (nidhogg/ci/changes.sh reads it; README.md, "CI and releases").
+# A row: a glob (`*` matches across `/`) and the jobs a change there can affect; the first row that matches wins, and a
+# path no row matches runs everything.  ALL: every job below.  -: no job (the tree, pin, changes and gate jobs always run).
+jobs: linux compile-noglitnir macos drgnx native-crates native-gui workers-harness workers-asan workers-pkg workers-pkg-compare timing
+
+# the jobs whose artifacts a job takes: they run whenever it does (the drgnx tiers take whichever tarballs there are;
+# the report-only timing lane's macOS half finds no tarball when only Linux built, which never fails the run)
+deps native-gui: linux native-crates
+deps workers-pkg: linux
+deps workers-pkg-compare: workers-pkg
+deps timing: linux
+
+# the workflow, CI's scripts, the build script, the package lists and the version, the test harnesses: everything
+.github/*                    ALL
+nidhogg/ci/*                 ALL
+nidhogg/build.sh             ALL
+nidhogg/deps/*               ALL
+nidhogg/env.sh               ALL
+nidhogg/version              ALL
+nidhogg/check-subset.txt     ALL
+nidhogg/licenses/*           ALL
+nidhogg/THIRD_PARTY.md       ALL
+# the recorder: its crate's checks build it, the GUI rows run on it
+nidhogg/test/recorder/*      native-crates native-gui
+nidhogg/test/*               ALL
+
+# notes nothing builds, installs or reads
+README.md                    -
+AGENTS.md                    -
+CLAUDE.md                    -
+ChangeLog.*                  -
+nidhogg/glitnir/README.md    -
+nidhogg/shell/README.md      -
+nidhogg/glue/README.md       -
+
+# the native shell's crates and its C side: Linux only (the NS build links Glitnir alone, the build without Glitnir none)
+nidhogg/shell/*              linux drgnx native-crates native-gui workers-harness workers-asan workers-pkg workers-pkg-compare timing
+nidhogg/glue/*               linux drgnx native-crates native-gui workers-harness workers-asan workers-pkg workers-pkg-compare timing
+src/nhwl*                    linux drgnx native-crates native-gui workers-harness workers-asan workers-pkg workers-pkg-compare timing
+src/glitnir-decor.c          linux drgnx native-crates native-gui workers-harness workers-asan workers-pkg workers-pkg-compare timing
+# Glitnir: every build that has it (not the one without), and the glue's checks, which link it
+nidhogg/glitnir/*            linux macos drgnx native-crates native-gui workers-harness workers-asan workers-pkg workers-pkg-compare timing
+# the NS port: macOS only
+src/ns*                      macos drgnx
+nextstep/*                   macos drgnx
+# Emacs's sources, tests and data (lisp/, src/, test/, etc/, doc/, ...) match no row: they run everything
+
+# bite cases (changes.sh --self-test): PATHS | REQUEST | SELECTOR | RUN | PARTIAL
+test README.md                         | -          | -                      | -     | false
+test README.md,nidhogg/glue/README.md  | -          | -                      | -     | false
+test lisp/subr.el                      | -          | -                      | ALL   | false
+test .github/workflows/build.yml       | -          | -                      | ALL   | false
+test nidhogg/build.sh                  | -          | -                      | ALL   | false
+test nidhogg/test/native-gui.sh        | -          | -                      | ALL   | false
+test some/new/place.txt                | -          | -                      | ALL   | false
+test nidhogg/shell/src/lib.rs          | -          | -                      | linux drgnx native-crates native-gui workers-harness workers-asan workers-pkg workers-pkg-compare timing | false
+test nidhogg/glitnir/src/lib.rs        | -          | -                      | linux macos drgnx native-crates native-gui workers-harness workers-asan workers-pkg workers-pkg-compare timing | false
+test nidhogg/test/recorder/src/main.rs | -          | -                      | linux native-crates native-gui | false
+test src/nsterm.m                      | -          | -                      | macos drgnx | false
+test src/nsterm.m,README.md            | -          | -                      | macos drgnx | false
+test src/nsterm.m,src/xdisp.c          | -          | -                      | ALL   | false
+# narrowed dispatches: what the change needs and the run leaves out, or a test selection, makes the run partial
+test lisp/subr.el                      | linux      | -                      | linux | true
+test lisp/subr.el                      | linux      | src/emacs-tests        | linux | true
+test lisp/subr.el                      | native-gui | -                      | linux native-crates native-gui | true
+test src/nsterm.m                      | macos drgnx | -                     | macos drgnx | false
+test README.md                         | linux      | -                      | linux | false
