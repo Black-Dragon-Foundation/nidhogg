@@ -119,18 +119,17 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   tree (never `~/.cargo`), and links it into `temacs`. With the flag the feature `glitnir` is provided, `glitnir-enable`
   (default `t`) and `glitnir-active-p` exist; without it none of them do. Release tarballs need no Rust.
   On Linux the library is linked through the native shell's glue (`nidhogg/glue`, `libnhglue.a`; `nidhogg/shell/README.md`).
-  `glitnir-active-p` is non-nil for a frame of the shell that has a scene (not a tooltip) while `glitnir-enable` is
-  non-nil. Emacs draws each frame into its own backing and publishes the damage, the copied pixels and the scene per
-  tree (a root and its child frames); the presenter, one thread per display (`NHWL_PRESENTER=0` runs it inline), composes
-  and commits. Child frames are subsurfaces of their parent, so the Wayland compositor puts the tree together.
-  There is no stock path: with `glitnir-enable` nil the decorations are off and the presenter still composes.
+  `glitnir-active-p` is non-nil for a frame of the shell (not a tooltip) while `glitnir-enable` is non-nil; nil turns
+  Glitnir's decorations off and nothing else. Emacs draws each frame into its own backing and publishes the damage, the
+  copied pixels and the scene per tree (a root and its child frames); the presenter, one thread per display
+  (`NHWL_PRESENTER=0` runs it inline), composes and commits. Child frames are subsurfaces of their parent, so the Wayland
+  compositor puts the tree together.
   `glitnir-stats` gives `:key-to-commit-ms` in place of `:latency-ms`, `:draw-ms` runs to the buffer's commit and
   `:painted-px` is the area composed; `nhwl-presenter-stats` has the presenter's own counters. `glitnir-snapshot` is one
-  frame's backing, without its child frames.
-  The other test primitives (`glitnir--draw-count`, `--frozen-p`, `--last-paint`, `--stacking`, `--layer-rect`,
-  `--chrome` and the like) and the `damage`, `verify` and `full` modes of `glitnir-debug` belonged to `src/glitnir-pgtk.c`,
-  which is not built: on the shell the primitives answer 0 or nil, and those modes do nothing. A panic in the glue drops the
-  display it happened on and Emacs keeps running (`nhwl-glue-panics`).
+  frame's backing, without its child frames. Test primitives: `glitnir--draw-count` (the commits of a tree that showed
+  something), `glitnir--stacking` (a root's child frames bottom to top), `glitnir--chrome` (the chrome the shell holds
+  for a frame, in device pixels). A panic in the glue drops the display it happened on and Emacs keeps running
+  (`nhwl-glue-panics`).
 - **Dev build** (`--dev` or `NIDHOGG_BUILD_DEV=1`, for agents' task builds): configures `--with-native-compilation=yes`
   instead of `aot`, so only the preloaded Lisp is native-compiled and the other ~1,400 files stay bytecode (minutes instead
   of the better part of an hour). A `lisp/site-init.el` written into the build copy sets `native-comp-jit-compilation` to
@@ -180,8 +179,8 @@ on a Nidhogg frame of the native shell, under a headless sway, or the compositor
   directories are temporary. `WAYLAND_DISPLAY`, `DISPLAY`, the session bus and `EMACS_SOCKET_NAME` of the caller are
   unset, so a run never reaches the caller's compositor, session or Emacs server. Everything started is stopped on exit.
 - The scale: `gdctl set --logical-monitor --scale S` inside the session (mutter 50 accepts a fractional scale on a headless
-  virtual monitor). The shell has the exact scale, so `(frame-scale-factor)` is S and the monitor's geometry its device
-  size. The runner waits up to 10 s for both before the tests start.
+  virtual monitor). The shell reports the exact scale as `(frame-scale-factor)` and the monitor's device size as its
+  geometry. The runner waits up to 10 s for both before the tests start.
 - `--daemon` starts `nidhogg --fg-daemon` (socket in the run's private runtime directory) and opens the frame with
   `nidhoggclient -c`; the runner starts the tests from `server-after-make-frame-hook`.
 - `--container fedora-45` does the same in a `--memory 6g` podman container (image pinned by digest; `mutter`,
@@ -337,14 +336,14 @@ turns the finished spans into JSON Lines records, names function, file and packa
 
 - Build flag: `--with-nidhogg-watchdog` (defines `HAVE_NIDHOGG_WATCHDOG`; `build.sh` passes it on every target unless
   given `--without-nidhogg-watchdog`). `--with-nidhogg-watchdog-signal=NAME` picks the signal (default `SIGURG`).
-  Linux (the native shell and terminal) first; elsewhere the flag builds and starting the watchdog signals an error.
+  Linux (the shell and terminal) first; elsewhere the flag builds and starting the watchdog signals an error.
 - Off unless something turns it on (drgnx does). With the flag built in and nothing started there is no thread and no
   signal handler.
 - With the flag off the build equals upstream's for every file the watchdog touches (checked by
   `nidhogg/test/tree-test.sh`).
 - Files: `src/nidhogg-watchdog.h` (the shared layout and every cross-file prototype), `src/nidhogg-watchdog.c` (edges,
   spans, records), `-monitor.c` (monitor thread, park protocol), `-sample.c` (signal handler, raw ring), `-gc.c` (GC end
-  hook), `-input.c` and `-phase.h` (phases, felt input), `-gtk.c` (GLib poll wrapper, empty without pgtk), `-park.h` (the park
+  hook), `-input.c` and `-phase.h` (phases, felt input), `-park.h` (the park
   protocol's steps); Lisp in `lisp/nidhogg-watchdog*.el` (preloaded; the feature is `nidhogg-watchdog`).
 - Tests: `watchdog/…` in `test/src/nidhogg-tests/watchdog-*-tests.el`, GUI rows `watchdog-gui/…` in `*-gui-tests.el`.
 
@@ -393,14 +392,14 @@ turns the finished spans into JSON Lines records, names function, file and packa
   (`unwind_to_catch`) pops every phase pushed inside its catch target, so a `condition-case` around a failing
   `json-parse-string` does not label the rest of the span `json`. Nothing goes on the specpdl. A stall is `:felt`
   when a keyboard, button or wheel event was stored during it (a key pressed while Emacs was busy) or when it ran a
-  command; `:input-wait-ms` runs from that input's arrival (a native shell event's own timestamp when it reads as
+  command; `:input-wait-ms` runs from that input's arrival (a shell event's own timestamp when it reads as
   `CLOCK_MONOTONIC` within the last 2 s, else the time it was stored) to the stall's end. `:commands` counts the
   commands in the span, and `:input-queued` says a second one ran in it (keys queued behind each other). The
   commands named by `nidhogg-watchdog--set-typing-commands` (16 at most) are timed one by one, from their key's
   arrival to the next key taken or the next wait, into the `:typing` histogram of `nidhogg-watchdog--stats`.
-An open popup menu or dialog counts as the user waiting, not as a stall: on the native shell it runs its own loop on
-`read-event` (`lisp/term/nhwl-menu.el`), which is an ordinary responsive wait. A Lisp timer that runs inside a menu or
-dialog is still busy time and is reported.
+An open popup menu or dialog counts as the user waiting, not as a stall: on the shell both read events in Lisp's own
+`read-event` loop (`lisp/term/nhwl-menu.el`), which is an ordinary wait. A Lisp timer that runs inside a menu or dialog
+is still busy time and is reported.
 The timing group (`watchdog-timing-tests.el`) runs on the real clock with wide margins (spins of 0.5 to 10 s
 against a 100 ms threshold) and asserts counts, never sample numbers ("at least one sample, or `:missed` counted"): a
 1 s spin from a timer (state CPU, the timer function on the stack), a blocked `call-process` (phase `call-process`),
@@ -408,7 +407,7 @@ no sample requests before half the threshold, child Nidhoggs on a pty for the re
 spin makes the stall `:felt`), a Lisp thread that holds the global lock while the main thread idles (`:lisp-thread`),
 `suspend-emacs` and `sit-for` (waiting, no stall), and a 10 s deep-sampling stress run (allocation, byte code, native
 code, forced collections, a specpdl past 10⁵ entries) in which every sampled word is a live object or
-`nidhogg-watchdog--gone`. GUI rows (`watchdog-gui-tests.el`, `nidhogg/test/gui.sh`): `sit-for` on a frame of the shell is
+`nidhogg-watchdog--gone`. GUI rows (`watchdog-gui-tests.el`, `nidhogg/test/gui.sh`): `sit-for` on a shell frame is
 waiting, and a mode-line `:eval` that spins is a stall in the `redisplay` phase with the `:eval` function innermost.
 `M-x nidhogg-watchdog-mode` (global, off by default) starts the monitor with `nidhogg-watchdog-threshold` (100 ms)
 and `nidhogg-watchdog-hang-ms` (2000) and one repeating 1 s idle timer; a start that fails after the C side started

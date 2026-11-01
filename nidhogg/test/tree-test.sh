@@ -37,6 +37,10 @@ flag_rule() {
     done
     while IFS= read -r f; do
       git cat-file -e "${gbase[i]}:$f" 2>/dev/null || continue   # new files are the group's own
+      if ! git cat-file -e "HEAD:$f" 2>/dev/null; then           # a group may remove its own file, not an upstream one
+        [ -n "$(git log -1 --format=%h --diff-filter=A --grep='^nidhogg: ' HEAD -- "$f")" ] || fail "$f was removed"
+        continue
+      fi
       case $f in
         # C sources only (src/Makefile.in is not preprocessed).  Both sides go through unifdef: it also folds unrelated
         # always-false conditions such as '#if defined X && 0', which would show as a diff against the raw base.
@@ -101,6 +105,12 @@ if [ "${TREE_TEST_SELF:-}" = 1 ]; then
     mkdir -p "$self/r/$(dirname "$2")" && printf '%b' "$3" > "$self/r/$2" && git -C "$self/r" add -A &&
       git -C "$self/r" commit -qm "$1"; }
   loadup() { fixture; putf "nidhogg: pgtk: l" lisp/loadup.el '(a)\n'; }
+  fixture; putf "nidhogg: glitnir: g" src/b.c '#ifdef HAVE_GLITNIR\nint g;\n#endif\n'; put "nidhogg: watchdog: w" "$wd"
+  git -C "$self/r" rm -q src/b.c; git -C "$self/r" commit -qm "nidhogg: glitnir: gone"
+  expect "a group removes its own file" ""
+  fixture; put "nidhogg: glitnir: g" "$in"
+  git -C "$self/r" rm -q src/a.c; git -C "$self/r" commit -qm "nidhogg: glitnir: gone"
+  expect "a group removes an upstream file" "src/a.c was removed"
   fixture; put "nidhogg: watchdog: w" "${wd}int out;\n"
   expect "a watchdog line outside the flag" "src/a.c changes code outside HAVE_NIDHOGG_WATCHDOG"
   fixture; put "nidhogg: watchdog: w" "$wd"

@@ -18,6 +18,7 @@ mod abi {
         nhg_selection_disown, nhg_selection_owned, nhg_selection_read, nhg_selection_set,
         nhg_selection_types,
     };
+    use nhglue::ffi::{nhg_draw_count, nhg_stacking};
     use nhglue::ffi::{nhg_frame_csd, nhg_frame_resized, nhg_frame_scale, nhg_next};
     use nhglue::ffi::{nhg_frame_forget, nhg_frame_register, nhg_panic_message};
     use nhglue::ffi::{nhg_present, nhg_presenter_stats, nhg_presenter_thread};
@@ -311,6 +312,8 @@ PROTO (nhg_backing_forget, int32_t (NhgDisplay *, uint64_t));
 PROTO (nhg_present, int32_t (NhgDisplay *, uint64_t, const NhgSurface *, size_t, uint32_t, uint64_t));
 PROTO (nhg_presenter_thread, int32_t (NhgDisplay *, int32_t));
 PROTO (nhg_presenter_stats, int32_t (NhgDisplay *, NhgPresenterStats *));
+PROTO (nhg_stacking, int32_t (NhgDisplay *, uint64_t, uint64_t *, size_t));
+PROTO (nhg_draw_count, int32_t (NhgDisplay *, uint64_t, uint64_t *));
 PROTO (nhg_frame_register, int32_t (NhgDisplay *, uint64_t, uint32_t));
 PROTO (nhg_frame_forget, int32_t (NhgDisplay *, uint64_t));
 PROTO (nhg_panic_message, int32_t (NhgDisplay *, char *, size_t, size_t *));
@@ -363,6 +366,8 @@ PROTO (nhg_frame_outputs, int32_t (NhgDisplay *, uint64_t, uint64_t *, size_t, s
         let _: unsafe extern "C" fn(*mut NhgDisplay, i32) -> i32 = nhg_presenter_thread;
         let _: unsafe extern "C" fn(*mut NhgDisplay, *mut NhgPresenterStats) -> i32 =
             nhg_presenter_stats;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *mut u64, usize) -> i32 = nhg_stacking;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *mut u64) -> i32 = nhg_draw_count;
         // the window registry and the guard
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u32) -> i32 = nhg_frame_register;
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_frame_forget;

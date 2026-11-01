@@ -180,6 +180,8 @@ pub struct Present {
     t_open_ns: u64,
     /// The refresh period presentation feedback reported (0: none yet).
     refresh_ns: u32,
+    /// A root: its commits that showed something (`ShellBackend::draw_count`).
+    draws: u64,
     /// A root: its windows that are their own outputs, each on a content layer (`layers.rs`).
     pub(crate) layers: Vec<ContentLayer>,
 }
@@ -252,6 +254,7 @@ impl Present {
             epoch: 0,
             t_open_ns: 0,
             refresh_ns: 0,
+            draws: 0,
             layers: Vec::new(),
         }
     }
@@ -557,6 +560,7 @@ impl Present {
             }
             self.waiting = true;
             self.rec.rearm = false;
+            self.draws += 1;
         }
         if !hold_ack {
             self.ack_content = false;
@@ -588,6 +592,10 @@ impl Present {
             xdg.ack_configure(serial);
         }
         self.send_recorded(false, wire.compositor.as_ref(), &wire.rqh);
+        // a child's new state applies with this commit; a bare ack shows nothing
+        if !child && (self.owed || self.tree_content) {
+            self.draws += 1;
+        }
         if std::mem::take(&mut self.tree_content) {
             let surface = &self.commit.surface;
             surface.frame(&wire.rqh, me.clone());
@@ -1142,6 +1150,11 @@ impl MainState {
 
     fn present_of(&self, id: u64) -> Option<Arc<Mutex<Present>>> {
         self.presents.get(&id).cloned()
+    }
+
+    /// Root `id`'s commits that showed something.
+    pub(crate) fn present_draws(&self, id: u64) -> Option<u64> {
+        self.presents.get(&id).map(|p| lock(p).draws)
     }
 
     /// Popup `id` hangs on window `parent`: while that has shown no buffer, the popup shows none.

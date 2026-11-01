@@ -410,6 +410,12 @@ pub trait ShellBackend {
     /// Present on the shell's own thread (`on`) or inline, when the host calls `present_tree` (off at open).
     fn set_presenter_thread(&mut self, on: bool) -> ShellResult;
     fn presenter_stats(&self) -> ShellResult<NhShellPresenterStats>;
+    /// The child windows of root `root` as the compositor was told to stack them, bottom to top, hidden ones too, each
+    /// child's own right after it.  A record for tests.
+    fn window_stacking(&self, root: WindowId) -> ShellResult<Vec<WindowId>>;
+    /// The commits of root `root` that showed something: a buffer, a child's buffer or a child's new state.  A record
+    /// for tests.
+    fn draw_count(&self, root: WindowId) -> ShellResult<u64>;
 
     /// What a host needs to abandon this backend without touching its state again: the glue calls it once at open and
     /// uses it only after a panic left the backend's state in doubt.  Every thread the backend runs is in the list.

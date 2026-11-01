@@ -134,10 +134,10 @@ window's body edges and POS's position are added to that."
 ;; The neighbour corner repaint: a chip's rounded ends stay right when the glyph string beside it is redrawn alone.
 
 (defun glitnir-decor-gui--chip (before edit &optional face-props after)
-  "Draw BEFORE then a rounded chip \" ab \" under `verify'; call EDIT with the start of BEFORE's end (a marker) to redraw
+  "Draw BEFORE then a rounded chip \" ab \"; call EDIT with the start of BEFORE's end (a marker) to redraw
 only the neighbour; return (VIOLATIONS TOP-LEFT-PX TOP-RIGHT-PX FULL-GRAB FRAME-ORIGIN AFTER-VALUE) with pixels of the
 chip's corners.  AFTER, called last with the chip's buffer still shown, makes AFTER-VALUE."
-  (let ((glitnir-enable t) (glitnir-debug 'verify)
+  (let ((glitnir-enable t)
         (face (make-symbol "glitnir-decor-gui-chip")))
     (custom-declare-face face nil "Test face.")
     (apply #'set-face-attribute face nil :background "#303060" :foreground "white"
@@ -418,26 +418,6 @@ Return the number of runs."
              (or (getenv "GLITNIR_GUI_SCALE") "1") r0 r6 delta)
     (when (> delta 2000)
       (ert-fail (format "corner cost over the limit: radius0 %S radius6 %S delta %.0f us (limit 2000)" r0 r6 delta)))))
-
-(ert-deftest glitnir-decor-gui/decor-verify-no-violations ()
-  "Violations: card rows and the corner repaint under `verify' leave 0 violations."
-  (skip-unless (featurep 'nidhogg-wayland))
-  (let ((glitnir-enable t) (glitnir-debug 'verify))
-    (with-temp-buffer
-      (switch-to-buffer (current-buffer))
-      (face-remap-add-relative 'default :background "#202020" :foreground "white")
-      (glitnir-decor-gui--board 6)
-      (redisplay t)
-      (let ((before (plist-get (glitnir-stats) :violations)))
-        (goto-char (point-min))
-        (dotimes (_ 5)                  ; scrolling and edits repaint the corners
-          (forward-line 7)
-          (insert "x") (redisplay t) (delete-char -1) (redisplay t)
-          (set-window-start nil (point-min)) (redisplay t))
-        (gui-runner-wait-settled)
-        (message "GLITNIR-PD violations scale=%s violations=%s" (or (getenv "GLITNIR_GUI_SCALE") "1")
-                 (- (plist-get (glitnir-stats) :violations) before))
-        (should (= 0 (- (plist-get (glitnir-stats) :violations) before)))))))
 
 (ert-deftest glitnir-decor-gui/decor-svg-tag-softness-record ()
   "Tag softness (record only): an svg-lib style tag image at the run's scale; write a crop to look at softness."
