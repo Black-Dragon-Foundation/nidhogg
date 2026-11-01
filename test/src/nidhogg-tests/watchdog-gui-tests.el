@@ -1,5 +1,7 @@
 ;;; watchdog-gui-tests.el --- GUI tests for the stall watchdog  -*- lexical-binding: t -*-
 
+;; test-class: cond
+
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
 ;; This file is part of Nidhogg.
@@ -30,19 +32,21 @@
 
 (defmacro watchdog-gui--running (&rest body)
   "Run BODY with the watchdog on at 100 ms; stop it after.
-The test's own span is ended (a short `sit-for') and dropped first."
+The test's own span is ended (a short idle wait) and dropped first."
   (declare (indent 0))
   `(progn
      (nidhogg-watchdog--start 100 600000 nil)
      (unwind-protect
          (progn
-           (sit-for 0.05)
+           (nidhogg-watchdog--test-idle-wait 0.001)
            (nidhogg-watchdog--take)
            (nidhogg-watchdog--stats t)
            ,@body)
        (ignore-errors (nidhogg-watchdog--stop)))))
 
 (ert-deftest watchdog-gui/sit-for-is-waiting ()
+  ;; `sit-for' itself is what this row is about
+  :tags '(:timing)
   (watchdog-gui--running
     (sit-for 1)
     (sit-for 0.05)
@@ -75,7 +79,7 @@ a sample lands there, not in `float-time', all but every time."
             (setq watchdog-gui--evals 0)
             (redisplay t)
             (should (> watchdog-gui--evals 0))
-            (sit-for 0.05)
+            (nidhogg-watchdog--test-idle-wait 0.001)
             (let* ((stalls (car (nidhogg-watchdog--take)))
                    (s (car stalls)))
               (should (= (length stalls) 1))
