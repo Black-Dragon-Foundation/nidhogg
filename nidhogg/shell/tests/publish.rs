@@ -452,4 +452,64 @@ mod tree_snapshot {
         assert_eq!(at(&got, 53, 33), 0xffff_0000);
         assert_eq!(at(&got, 54, 34), BG);
     }
+
+    /// Ids are used again, so a popup on a popup may have the lower id, and so may a later sibling: each still shows
+    /// over its parent, and siblings stack in the order they were made.
+    #[test]
+    fn popups_stack_in_the_order_they_were_made() {
+        const BLUE: u32 = 0xff00_00ff;
+        let rec = Recorder::start("sway");
+        let mut shell = rec.open();
+        let mut root = Backing::new(200, 100);
+        let id = window(&mut shell, &mut root);
+        let anchor = Anchor {
+            x: 10,
+            y: 10,
+            w: 4,
+            h: 4,
+            gravity: 8,
+            adjust: 0,
+        };
+        let popup = |shell: &mut WaylandShell, parent| {
+            shell
+                .child_new(&ChildDesc {
+                    kind: NHSHELL_KIND_POPUP,
+                    parent,
+                    x: 0,
+                    y: 0,
+                    w: 40,
+                    h: 20,
+                    anchor,
+                    flags: 0,
+                })
+                .unwrap()
+        };
+        let fillers = [popup(&mut shell, id), popup(&mut shell, id)];
+        let p = popup(&mut shell, id);
+        for f in fillers {
+            shell.window_destroy(f).unwrap();
+        }
+        // the client library frees an id once the compositor has let go of it
+        until(&mut shell, "the fillers gone", |_| {
+            rec.surfaces("popup") == 1
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        while shell.next_event().unwrap().is_some() {}
+        let n = popup(&mut shell, p);
+        let s = popup(&mut shell, id);
+        assert!(n < p && s < p, "no id used again: {n} and {s}, {p}");
+        let (red, green, blue) = (backing(0xffff_0000), backing(GREEN), backing(BLUE));
+        let frames = [root.frame(id), red.frame(p), green.frame(n), blue.frame(s)];
+        let shot = |shell: &WaylandShell| shell.tree_snapshot(id, &frames, false).unwrap();
+        // placed: nothing is left at the root's corner, where an unplaced popup shows
+        until(&mut shell, "the popups placed", |sh| {
+            let got = shot(sh);
+            at(&got, 5, 5) == BG && at(&got, 20, 20) != BG
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        while shell.next_event().unwrap().is_some() {}
+        let got = shot(&shell);
+        assert_eq!(at(&got, 60, 40), GREEN, "the popup on a popup");
+        assert_eq!(at(&got, 20, 20), BLUE, "the later sibling on top");
+    }
 }

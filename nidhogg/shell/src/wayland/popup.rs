@@ -69,6 +69,9 @@ pub struct Popup {
     wants_grab: bool,
     /// The popup holds a grab: one was sent, and the compositor has not dismissed the popup since.
     grabbed: bool,
+    /// Its place in `popups_made` when it was made (or made again): the compositor stacks a popup over those made
+    /// before it.  Ids are used again, so they say nothing of that.
+    pub(super) order: u64,
 }
 
 fn positioner(
@@ -184,6 +187,7 @@ impl WaylandShell {
         pos.destroy();
         m.attach_scale(&surface, &qh);
         m.surfaces.insert(id, surface.clone());
+        m.popups_made += 1;
         m.popups.insert(
             id,
             Popup {
@@ -205,6 +209,7 @@ impl WaylandShell {
                 first: true,
                 wants_grab: d.flags & NHSHELL_WIN_GRAB != 0,
                 grabbed: false,
+                order: m.popups_made,
             },
         );
         self.popup_grab(id);
@@ -298,6 +303,9 @@ impl WaylandShell {
             return Ok(false);
         }
         p.first = true;
+        // a new xdg_popup: the compositor stacks it over its siblings
+        m.popups_made += 1;
+        p.order = m.popups_made;
         let held = std::mem::take(&mut p.grabbed);
         p.popup.destroy();
         p.xdg_surface.destroy();
