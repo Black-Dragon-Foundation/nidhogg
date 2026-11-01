@@ -166,6 +166,12 @@ impl Motion {
             .is_some_and(|a| t_ns < a.start_ns.saturating_add(a.duration_ns))
     }
 
+    /// How far `t_ns` lies past the end of the newest leg; `None` when none ran.
+    pub fn overrun(&self, t_ns: u64) -> Option<u64> {
+        self.leg
+            .map(|a| t_ns.saturating_sub(a.start_ns.saturating_add(a.duration_ns)))
+    }
+
     /// A hide has ended (or was immediate): the surface can be unmapped.
     pub fn unmap_due(&self, t_ns: u64) -> bool {
         !self.shown && !self.running(t_ns)
@@ -310,6 +316,19 @@ mod tests {
         assert!(!m.running(9 * MS));
         assert!(!m.unmap_due(9 * MS));
         assert_eq!(m.sample(9 * MS), Sample::IDENTITY);
+    }
+
+    #[test]
+    fn overrun_is_the_time_past_the_newest_leg() {
+        let mut m = Motion::new(spec(Kind::Fade, Kind::None));
+        assert_eq!(m.overrun(5 * MS), None);
+        m.request(false);
+        m.commit(0);
+        assert_eq!(m.overrun(5 * MS), None, "an immediate hide runs no leg");
+        m.request(true);
+        m.commit(100 * MS);
+        assert_eq!(m.overrun(150 * MS), Some(0));
+        assert_eq!(m.overrun(223 * MS), Some(3 * MS));
     }
 
     #[test]
