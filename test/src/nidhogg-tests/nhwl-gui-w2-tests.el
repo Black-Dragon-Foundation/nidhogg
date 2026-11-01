@@ -888,7 +888,8 @@ daemon stays, and the hook runs `reconnecting', then `lost'."
          (should (< (- (float-time) t0) 2.5))
          (should (daemonp))
          (should (equal nhwl-gui--connection-log '(reconnecting lost))))
-      (ignore-errors (gui-runner-recorder '(:cmd "restart_up"))))))
+      ;; the display's frames are gone: the rows after this one need one
+      (nhwl-gui--reopen-display))))
 
 (ert-deftest nhwl-gui/compositor-restart-socket-reappears ()
   "The socket name is bound again after 1.5 s: the shell finds it on its backoff and the frame stays."
@@ -1535,14 +1536,19 @@ move position %d ppt 10 ppt" (car w) (cdr w))))
       (delete-file file))))
 
 ;; Menus by pointer and touch, submenus, dialogs and the menu bar.  The pointer goes to the surface that has the
-;; keyboard (`focus'), in its own logical pixels, so a row is at x 10 and y (row + 1/2) times the character height.
+;; keyboard (`focus'), in its own logical pixels, so a row is at x 10 and y (row + 1/2) character heights, which are
+;; device pixels: `nhwl-gui--menu-row-y' divides by the scale.
 ;; The steps after a menu opened run from timers (the menu's loop is reading): they send recorder commands only.
+
+(defun nhwl-gui--menu-row-y (depth row)
+  "The middle of row ROW of the menu level DEPTH, in that popup's logical pixels."
+  (let ((frame (cdr (assq depth nhwl-menu--frames))))
+    (floor (* (+ row 0.5) (frame-char-height frame)) (frame-scale-factor frame))))
 
 (defun nhwl-gui--menu-over (id depth row)
   "Move the pointer over row ROW of the menu level DEPTH, whose popup is ID, giving that popup the keyboard."
-  (let ((height (frame-char-height (cdr (assq depth nhwl-menu--frames)))))
-    (gui-runner-recorder (list :cmd "focus" :surface id))
-    (gui-runner-recorder (list :cmd "pointer" :pos (vector 10 (floor (* (+ row 0.5) height)))))))
+  (gui-runner-recorder (list :cmd "focus" :surface id))
+  (gui-runner-recorder (list :cmd "pointer" :pos (vector 10 (nhwl-gui--menu-row-y depth row)))))
 
 (defun nhwl-gui--menu-button (button &optional release-only)
   "Press and release BUTTON (an evdev code) on the pointer's surface; only release it with RELEASE-ONLY."
@@ -1796,8 +1802,7 @@ its title); choosing Yes returns t."
   (should (equal (nhwl-gui--menu-run
                   (nhwl-gui--menu-keymap)
                   (lambda (id)
-                    (let* ((height (frame-char-height (cdr (assq 0 nhwl-menu--frames))))
-                           (at (vector 10 (floor (* 4.5 height)))))
+                    (let ((at (vector 10 (nhwl-gui--menu-row-y 0 4))))
                       (gui-runner-recorder (list :cmd "touch" :op "down" :id 0 :at at :surface id))
                       (gui-runner-recorder (list :cmd "touch" :op "up" :id 0 :at [0 0])))))
                  '(gamma))))
