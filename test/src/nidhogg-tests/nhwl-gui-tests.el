@@ -1044,6 +1044,89 @@ own count is its root's."
        (should (nhwl-gui--wait (lambda () (> (glitnir--draw-count) before)) 5))
        (should (= (glitnir--draw-count c) (glitnir--draw-count)))))))
 
+(ert-deftest nhwl-gui/snapshot-holds-the-tree ()
+  "`glitnir-snapshot' of a root shows its child frames where they sit, and only while they are shown."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let* ((root (selected-frame)) (c nil) (none nil) (changed nil))
+    (unwind-protect
+        (progn
+          (gui-runner-wait-settled)
+          (setq none (glitnir-snapshot root 'raw)
+                c (nhwl-gui--child '(background-color . "#ff00ff")))
+          (should (nhwl-gui--wait (lambda () (frame-visible-p c)) 5))
+          (gui-runner-wait-settled)
+          (setq changed (glitnir-snapshot root 'raw))
+          (should (equal (seq-take changed 2) (seq-take none 2)))
+          (should-not (equal (nth 2 changed) (nth 2 none)))
+          ;; magenta in the child's middle, wherever the native area starts in the surface
+          (let* ((w (car changed)) (bytes (nth 2 changed))
+                 (px (lambda (x y) (aref bytes (+ (* y w 4) (* x 4) 2)))))
+            (should (seq-some (lambda (y) (= (funcall px (+ 40 (/ (frame-pixel-width c) 2)) y) 255))
+                              (number-sequence 30 (+ 30 (frame-pixel-height c) 80)))))
+          (make-frame-invisible c)
+          (gui-runner-wait-settled)
+          (should (equal (glitnir-snapshot root 'raw) none)))
+      (when (frame-live-p c) (delete-frame c t)))))
+
+(ert-deftest nhwl-gui/reparent-both-ways ()
+  "`parent-frame' set at run time: a top-level and the child under it become subsurfaces of the new parent, and a
+top-level with its child again, mapped each way, with the buffer, the size and the picture intact."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let* ((root (selected-frame)) (buf (generate-new-buffer " *reparent*")) (f nil) (g nil)
+         (tops (lambda () (seq-filter (lambda (n) (and (equal (plist-get n :role) "toplevel") (nhwl-gui--get n :buffer)))
+                                      (nhwl-gui--tree))))
+         (n (length (funcall tops))))
+    (unwind-protect
+        (progn
+          (with-current-buffer buf (insert "the buffer stays\n"))
+          (setq f (make-frame '((minibuffer . nil) (undecorated . t) (width . 30) (height . 8) (left . 40) (top . 30))))
+          (set-window-buffer (frame-root-window f) buf)
+          (should (nhwl-gui--wait (lambda () (= (length (funcall tops)) (1+ n))) 5))
+          (let* ((before (nhwl-gui--sub-ids))
+                 (size (list (frame-pixel-width f) (frame-pixel-height f))))
+            (setq g (make-frame `((parent-frame . ,f) (left . 5) (top . 5) (width . 8) (height . 2)
+                                  (undecorated . t) (minibuffer . nil))))
+            (should (nhwl-gui--wait (lambda () (nhwl-gui--new-sub before)) 5))
+            (select-frame root)
+            (gui-runner-wait-settled)
+            (let* ((pic (glitnir-snapshot f 'raw)) (subs (nhwl-gui--sub-ids)))
+              (set-frame-parameter f 'parent-frame root)
+              (should (eq (frame-parent f) root))
+              (should (nhwl-gui--wait (lambda () (= (length (funcall tops)) n)) 5))
+              (should (nhwl-gui--wait
+                       (lambda ()
+                         (let* ((new (seq-filter (lambda (s) (and (not (memq (plist-get s :id) subs))
+                                                                  (nhwl-gui--get s :buffer)))
+                                                 (nhwl-gui--subs)))
+                                (ids (mapcar (lambda (s) (plist-get s :id)) new)))
+                           (and (= (length new) 2)
+                                (seq-find (lambda (s) (memq (plist-get s :parent) ids)) new))))
+                       5))
+              (should (equal (list (frame-pixel-width f) (frame-pixel-height f)) size))
+              (set-frame-parameter f 'parent-frame nil)
+              (should-not (frame-parent f))
+              (should (eq (frame-parent g) f))
+              (should (nhwl-gui--wait (lambda () (= (length (funcall tops)) (1+ n))) 5))
+              (gui-runner-wait-settled)
+              (should (eq (window-buffer (frame-root-window f)) buf))
+              (should (equal (list (frame-pixel-width f) (frame-pixel-height f)) size))
+              (should (equal (glitnir-snapshot f 'raw) pic)))))
+      (dolist (x (list g f)) (when (and x (frame-live-p x)) (delete-frame x t)))
+      (kill-buffer buf)
+      (select-frame root))))
+
+(ert-deftest nhwl-gui/reparent-refuses-a-cycle ()
+  "A frame cannot go under its own child: the parameter stays as it was."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((c nil))
+    (unwind-protect
+        (progn
+          (setq c (nhwl-gui--child))
+          (should-error (set-frame-parameter (selected-frame) 'parent-frame c))
+          (should-not (frame-parent (selected-frame)))
+          (should-not (frame-parameter (selected-frame) 'parent-frame)))
+      (when (frame-live-p c) (delete-frame c t)))))
+
 ;; Live rows: they run on any compositor, the real sway and mutter included, and assert only that the frame is live and
 ;; nothing signalled.  What the shell said to the compositor is judged afterwards by the trace checker
 ;; (`gui.sh --wayland-debug F --trace-check RULES', nidhogg/test/wl-trace-check.el).
@@ -1124,6 +1207,53 @@ own count is its root's."
           (should (frame-live-p (selected-frame))))
       (set-frame-parameter nil 'fullscreen old)
       (nhwl-gui--live-settle))))
+
+(ert-deftest nhwl-gui/live-fullscreen-gives-the-size-back ()
+  "A size set by hand comes back after fullscreen, on every compositor: some answer leaving it with 0 x 0, ours to pick."
+  :tags '(runs-last)
+  (skip-unless (and (nhwl-gui--live-p) (nhwl-gui--nhwl-frames)))
+  (let ((old (frame-parameter nil 'fullscreen)) (size nil)
+        (now (lambda () (list (frame-pixel-width) (frame-pixel-height)))))
+    (unwind-protect
+        (progn
+          (set-frame-parameter nil 'fullscreen nil)
+          (nhwl-gui--live-settle)
+          (set-frame-size nil 62 21)
+          (nhwl-gui--live-settle)
+          (setq size (funcall now))
+          (set-frame-parameter nil 'fullscreen 'fullboth)
+          (should (nhwl-gui--wait (lambda () (redisplay t) (not (equal (funcall now) size))) 8))
+          (set-frame-parameter nil 'fullscreen nil)
+          (should (nhwl-gui--wait (lambda () (redisplay t) (equal (funcall now) size)) 8)))
+      (set-frame-parameter nil 'fullscreen old)
+      (nhwl-gui--live-settle))))
+
+(ert-deftest nhwl-gui/live-reparent ()
+  "`parent-frame' set both ways on a shown frame: the display lives, the frame shows, its buffer and size stay."
+  :tags '(runs-last)
+  (skip-unless (and (nhwl-gui--live-p) (nhwl-gui--nhwl-frames)))
+  (let* ((root (selected-frame)) (buf (generate-new-buffer " *reparent*")) (f nil))
+    (unwind-protect
+        (progn
+          (setq f (make-frame '((minibuffer . nil) (undecorated . t) (width . 20) (height . 5) (left . 40) (top . 30))))
+          (set-window-buffer (frame-root-window f) buf)
+          (nhwl-gui--live-settle)
+          (let ((size (list (frame-pixel-width f) (frame-pixel-height f))))
+            (dotimes (_ 2)
+              (set-frame-parameter f 'parent-frame root)
+              (nhwl-gui--live-settle)
+              (should (eq (frame-parent f) root))
+              (set-frame-parameter f 'parent-frame nil)
+              (nhwl-gui--live-settle)
+              (should-not (frame-parent f))
+              (should (frame-visible-p f))
+              (should (eq (window-buffer (frame-root-window f)) buf))
+              (should (equal (list (frame-pixel-width f) (frame-pixel-height f)) size)))))
+      (when (frame-live-p f) (delete-frame f t))
+      (kill-buffer buf)
+      (select-frame root)
+      (nhwl-gui--live-settle))
+    (should (frame-live-p root))))
 
 ;; `skip-unless' is `(unless (ignore-errors FORM) (ert-skip ...))': a void function in its form skips the row silently.
 ;; This row fails when a file's `skip-unless' forms call a function that is not defined.
