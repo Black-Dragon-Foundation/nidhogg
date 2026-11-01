@@ -713,3 +713,119 @@ fn shadow_cache_is_bounded() {
     }
     assert_eq!(cache.len(), ShadowCache::CAPACITY);
 }
+
+// ---- the backdrop blur's passes -----------------------------------------------------------------------------------
+
+fn blur_tables() -> Vec<&'static Kernels> {
+    let mut tables = vec![baseline()];
+    tables.extend(avx2());
+    tables
+}
+
+fn px_row(r: &mut Rng, n: usize) -> Vec<Px> {
+    (0..n).map(|_| r.premul().to_ne_bytes()).collect()
+}
+
+/// The mean of a window, as the running sums compute it.
+fn mean(window: &[Px]) -> Px {
+    let (span, inv) = (window.len() as u32, blur::inverse(window.len()) as u32);
+    std::array::from_fn(|c| {
+        let sum: u32 = window.iter().map(|p| p[c] as u32).sum();
+        (((sum + span / 2) * inv) >> 16) as u8
+    })
+}
+
+#[test]
+fn blur_down4_averages_each_block() {
+    let mut r = Rng(0xd04a);
+    for k in blur_tables() {
+        for w in [1, 2, 7, 33] {
+            let rows: Vec<Vec<u32>> = (0..4)
+                .map(|_| (0..4 * w).map(|_| r.premul()).collect())
+                .collect();
+            let mut d = vec![[0; 4]; w];
+            k.down4(&mut d, [&rows[0], &rows[1], &rows[2], &rows[3]]);
+            for (i, o) in d.iter().enumerate() {
+                let want: Px = std::array::from_fn(|c| {
+                    let sum: u32 = rows
+                        .iter()
+                        .flat_map(|row| &row[i * 4..i * 4 + 4])
+                        .map(|p| p.to_ne_bytes()[c] as u32)
+                        .sum();
+                    ((sum + 8) >> 4) as u8
+                });
+                assert_eq!(*o, want, "{} block {i} of {w}", k.name);
+            }
+        }
+    }
+}
+
+#[test]
+fn blur_box_passes_match_a_window_mean() {
+    let mut r = Rng(0xb0c5);
+    for k in blur_tables() {
+        for (w, radius) in [(1, 1), (5, 2), (40, 1), (40, 3), (17, 9), (3, MAX_RADIUS)] {
+            let span = 2 * radius + 1;
+            let across = px_row(&mut r, w + 2 * radius);
+            let mut d = vec![[0; 4]; w];
+            k.box_h(&mut d, &across, radius);
+            for (i, o) in d.iter().enumerate() {
+                assert_eq!(*o, mean(&across[i..i + span]), "{} across", k.name);
+            }
+
+            let rows = 6;
+            let down = px_row(&mut r, w * (rows + 2 * radius));
+            let mut d = vec![[0; 4]; w * rows];
+            k.box_v(&mut d, &down, w, radius, &mut Vec::new());
+            for (i, o) in d.iter().enumerate() {
+                let column: Vec<Px> = (0..span).map(|j| down[i + j * w]).collect();
+                assert_eq!(*o, mean(&column), "{} down", k.name);
+            }
+        }
+        // radius 0 is the identity
+        let s = px_row(&mut r, 12);
+        let mut d = vec![[0; 4]; 12];
+        k.box_h(&mut d, &s, 0);
+        assert_eq!(d, s);
+        d.fill([0; 4]);
+        k.box_v(&mut d, &s, 4, 0, &mut Vec::new());
+        assert_eq!(d, s);
+    }
+}
+
+#[test]
+fn blur_box_passes_keep_a_flat_colour() {
+    for k in blur_tables() {
+        for radius in 1..=MAX_RADIUS {
+            for v in 0..=255_u8 {
+                let s = vec![[v; 4]; 4 * radius + 2];
+                let mut d = vec![[0; 4]; 2];
+                k.box_h(&mut d, &s, radius);
+                assert_eq!(d, [[v; 4]; 2], "{} radius {radius}", k.name);
+                let mut d = vec![[0; 4]; 2];
+                k.box_v(&mut d, &s, 1, radius, &mut Vec::new());
+                assert_eq!(d, [[v; 4]; 2], "{} radius {radius}", k.name);
+            }
+        }
+    }
+}
+
+#[test]
+fn blur_bilerp_equals_the_lookup_one_pixel_at_a_time() {
+    let mut r = Rng(0xb11e);
+    for k in blur_tables() {
+        // past one stack block, and across its end
+        for spans in [1, 3, 63, 64, 65, 130] {
+            let (t, b) = (px_row(&mut r, spans + 1), px_row(&mut r, spans + 1));
+            for fy in [1, 3, 5, 7] {
+                let mut o = vec![0; 4 * spans];
+                k.bilerp(&mut o, &t, &b, fy);
+                for (i, p) in o.iter().enumerate() {
+                    let (s, f) = (i / 4, 2 * (i % 4) as u16 + 1);
+                    let want = bilerp_px(&t[s], &t[s + 1], &b[s], &b[s + 1], f, fy);
+                    assert_eq!(*p, want, "{} pixel {i} of {spans} spans", k.name);
+                }
+            }
+        }
+    }
+}
