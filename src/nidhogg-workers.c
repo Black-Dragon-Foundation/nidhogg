@@ -600,11 +600,21 @@ nh_wk_cq_nonempty (struct nh_wk_cq *q)
 static void
 nh_wk_cq_ready (struct nh_wk_cq *q)
 {
+#ifdef NH_SCHED_BUG
+  /* The harness's proof that its orders find a bug: re-checked first, a
+     push between the check and the clear loses its wake-up.  */
+  bool nonempty = nh_wk_cq_nonempty (q);
+  NH_CHAOS_POINT ("cq-ready");
+  nh_wk_wake_clear (&q->wake);
+  if (nonempty)
+    q->arm (q);
+#else
   nh_wk_wake_clear (&q->wake);
   if (q->gap)
     q->gap ();
   if (nh_wk_cq_nonempty (q))
     q->arm (q);
+#endif
 }
 
 static void nh_wk_arm_drainer (struct nh_wk_cq *);
