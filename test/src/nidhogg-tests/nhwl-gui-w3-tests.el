@@ -1,5 +1,7 @@
 ;;; nhwl-gui-w3-tests.el --- GUI rows for the native shell's presenter  -*- lexical-binding: t -*-
 
+;; test-class: cond
+
 ;; Run by nidhogg/test/gui.sh with the base rows (nhwl-gui-tests.el, loaded first: its helpers are used here).  Rows
 ;; that drive the compositor need `--compositor recorder'; rows named `nhwl-gui/live-*' run on real compositors and
 ;; are judged by the trace checker.  Each feature appends its rows under its own heading.
@@ -69,6 +71,7 @@ before the Lisp ends: the commit does not wait for the main loop."
   "Review Focus 4: 200 cycles of making and deleting a frame with a child frame and a tooltip while typing, with the
 presenter composing and committing all along.  No hang (the row's own deadline is 120 s), the shell stays connected,
 and the main thread never waited 1 ms for the presenter.  Under gui.sh `--daemon' too."
+  :tags '(:timing)
   (skip-unless (and (nhwl-gui--recorder-p) (nhwl-gui--presenter-on-p)))
   (let ((t0 (float-time)) (buf (generate-new-buffer " *nhwl-storm*")))
     (unwind-protect
@@ -109,7 +112,7 @@ Idle means no tooltip either: a tip an earlier row left shown hides at its own t
                                5))
        (let ((before (nhwl-gui--presenter-switches)))
          (should before)
-         (sleep-for 3)
+         (gui-runner-stimulus 3)        ; the quiet the row asserts: Lisp asks the presenter for nothing
          (should (equal (nhwl-gui--presenter-switches) before)))))))
 
 ;; Window layers.  On an opaque top-level frame, a window's full-window scroll gives it a layer of its own (a
@@ -201,7 +204,7 @@ seconds later the next publish takes it away, and its unmap is applied by a root
        (gui-runner-wait-settled)
        (let ((ids (nhwl-gui--layer-ids mark)))
          (should (= (length ids) 1))
-         (sleep-for 2.2)
+         (gui-runner-stimulus 2.2)      ; the two quiet seconds the shell counts
          (let ((quiet (nhwl-gui--mark)))
            (insert "q")
            (redisplay t)
