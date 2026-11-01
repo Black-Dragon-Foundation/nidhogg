@@ -454,15 +454,9 @@ recorder: the frame callbacks are answered and the commit log stands still (a de
   (let* ((compositor (glitnir-gui--compositor)) (native (featurep 'nidhogg-wayland))
          (graphic (display-graphic-p)) (ok t)
          (settle (lambda (pred)
-                   (let ((deadline (+ (float-time) 3)) (v nil) (last nil) (still 0))
+                   (let ((deadline (+ (float-time) 3)) (v nil))
                      (while (and (not (setq v (funcall pred))) (< (float-time) deadline))
-                       (if read (gui-runner-read-all) (sit-for 0.01))
-                       (let ((counts (gui-runner--presenter-counts)))
-                         (setq still (if (equal counts last) (1+ still) 0)
-                               last counts))
-                       ;; a packet of a frame hidden or deleted before the presenter reached it never commits, and the
-                       ;; presenter does not say so: counters that stand still mean what is owed is lost
-                       (when (= still 20) (setq gui-runner--settled-counts last)))
+                       (if read (gui-runner-read-all) (sit-for 0.01)))
                      (unless v (setq ok nil))))))
     (when (and graphic (not native) (fboundp 'glitnir-snapshot))
       (ignore-errors (glitnir-snapshot nil 'raw)))

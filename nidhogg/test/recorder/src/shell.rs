@@ -233,6 +233,12 @@ impl XdgShellHandler for State {
     ) {
         surface.with_pending_state(|s| s.geometry = positioner.get_geometry());
         surface.send_repositioned(token);
+        let entry = json!({
+            "req": "xdg_popup.reposition",
+            "surface": surface.wl_surface().id().protocol_id(),
+            "commit_seq": self.log.next_seq(),
+        });
+        self.log_input(entry);
     }
 
     fn move_request(&mut self, surface: ToplevelSurface, _: WlSeat, serial: Serial) {
