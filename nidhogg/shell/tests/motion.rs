@@ -650,6 +650,23 @@ mod motion {
         t.no_protocol_error();
     }
 
+    /// The same child gone as well: it had no leg to wait for, so its ghost goes with the next frame.
+    #[test]
+    fn ghost_of_a_child_that_never_showed_goes() {
+        let mut t = Tree::open("kwin", false);
+        hidden_before_its_first_frame(&mut t);
+        t.shell.window_destroy(t.kid).unwrap();
+        assert_eq!(t.rec.surfaces("subsurface"), 1, "the ghost");
+        t.rec.present(STEP);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while t.rec.surfaces("subsurface") != 0 {
+            assert!(Instant::now() < deadline, "a stuck ghost");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!t.ticking());
+        t.no_protocol_error();
+    }
+
     /// A frame that sat quiet past the pool's idle time still has its picture to fade.
     #[test]
     fn hide_after_a_quiet_period_fades() {
