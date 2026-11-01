@@ -81,6 +81,7 @@ scale: `scale120` = 120 x (Xft DPI / 96), and server-side decorations always (`s
 | `window_export` | none (sandbox handles do not exist) | the window's XID as text | fits |
 | `activation_token` | none: an empty token | a `_NET_STARTUP_ID` for the window | fits |
 | `session_open`, `window_session_remove` | state restoration (`NSWindowRestoration`) | `XSMP` session management | fits |
+| `window_stacking`, `draw_count` (records for tests: the stacking the compositor was told, a root's commits that showed something) | the child windows' order, and the tree's `CATransaction`s | the children's stacking order, and the tree's `PresentPixmap`s | fits |
 | `set_alpha` | `alphaValue` | `_NET_WM_WINDOW_OPACITY` | fits |
 | `selection_own`, `selection_disown`, `selection_owned` | `NSPasteboard` `declareTypes:owner:` with the copied bytes per type; no system primary selection, so `PRIMARY` stays inside the process | `SetSelectionOwner` on `CLIPBOARD` or `PRIMARY`, answering `SelectionRequest` from the copy (INCR for large data) | fits |
 | `selection_types`, `selection_read` | the pasteboard's `types` and `dataForType:` (synchronous, the timeout never runs out) | `ConvertSelection` to `TARGETS` or the type, waiting for `SelectionNotify` up to the timeout | fits |

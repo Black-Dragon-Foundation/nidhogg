@@ -64,16 +64,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "font.h"
 #include "xsettings.h"
 #include "emacsgtkfixed.h"
-#ifdef HAVE_GLITNIR
-#include "glitnir-pgtk.h"
-#endif
 
 #ifdef GDK_WINDOWING_WAYLAND
 #include <gdk/gdkwayland.h>
-#endif
-#ifdef HAVE_NIDHOGG_WATCHDOG
-
-#include "nidhogg-watchdog.h"
 #endif
 
 #define FRAME_CR_CONTEXT(f)		((f)->output_data.pgtk->cr_context)
@@ -280,30 +273,8 @@ flip_cr_context (struct frame *f)
   cairo_t *cr = FRAME_CR_ACTIVE_CONTEXT (f);
 
   block_input ();
-#ifdef HAVE_GLITNIR
-  /* A surface made anew inside redisplay may hold only what that
-     redisplay drew after (its border at least): redisplay clears the
-     garbaged flag of a frame it updated, so the frame's rows are never
-     redrawn into it.  It never becomes the shown one before the frame
-     has been redrawn whole: the last complete surface stays, and the
-     frame is garbaged again for the next redisplay
-     (GL-U1-BLANK-CORFU-1).  */
-  if (FRAME_X_OUTPUT (f)->cr_reset_in_redisplay)
-    {
-      if (!redisplaying_p)
-	{
-	  FRAME_X_OUTPUT (f)->cr_reset_in_redisplay = false;
-	  SET_FRAME_GARBAGED (f);
-	}
-      unblock_input ();
-      return;
-    }
-#endif
   if (cr != FRAME_CR_CONTEXT (f))
     {
-#ifdef HAVE_GLITNIR
-      glitnir_pgtk_damage_all (f);
-#endif
       cairo_destroy (cr);
 
       FRAME_CR_ACTIVE_CONTEXT (f)
@@ -442,9 +413,6 @@ pgtk_raise_frame (struct frame *f)
   if (FRAME_VISIBLE_P (f))
     gdk_window_raise (gtk_widget_get_window (FRAME_WIDGET (f)));
   unblock_input ();
-#ifdef HAVE_GLITNIR
-  glitnir_pgtk_raise_lower (f, true);
-#endif
 }
 
 /* Lower frame F.  */
@@ -457,9 +425,6 @@ pgtk_lower_frame (struct frame *f)
       block_input ();
       gdk_window_lower (gtk_widget_get_window (FRAME_WIDGET (f)));
       unblock_input ();
-#ifdef HAVE_GLITNIR
-      glitnir_pgtk_raise_lower (f, false);
-#endif
     }
 }
 
@@ -488,9 +453,6 @@ pgtk_free_frame_resources (struct frame *f)
 
   block_input ();
 
-#ifdef HAVE_GLITNIR
-  glitnir_pgtk_free_frame (f);
-#endif
   pgtk_unlink_touch_points (f);
 #ifdef HAVE_XWIDGETS
   kill_frame_xwidget_views (f);
@@ -760,9 +722,6 @@ pgtk_set_offset (struct frame *f, int xoff, int yoff, int change_gravity)
 	  GtkWidget *parent = gtk_widget_get_parent (fixed);
 	  gtk_fixed_move (GTK_FIXED (parent), fixed,
 			  f->left_pos, f->top_pos);
-#ifdef HAVE_GLITNIR
-	  glitnir_pgtk_scene_changed (f);
-#endif
 	}
     }
   unblock_input ();
@@ -785,9 +744,6 @@ pgtk_set_window_size (struct frame *f, bool change_gravity,
   gtk_widget_queue_resize (FRAME_WIDGET (f));
 
   unblock_input ();
-#ifdef HAVE_GLITNIR
-  glitnir_pgtk_scene_changed (f);
-#endif
 }
 
 void
@@ -904,9 +860,6 @@ pgtk_make_frame_visible (struct frame *f)
       if (win)
 	gtk_window_deiconify (GTK_WINDOW (win));
 
-#ifdef HAVE_GLITNIR
-      glitnir_pgtk_frame_mapped (f);
-#endif
       pgtk_wait_for_map_event (f, false);
     }
 }
@@ -916,9 +869,6 @@ void
 pgtk_make_frame_invisible (struct frame *f)
 {
   gtk_widget_hide (FRAME_WIDGET (f));
-#ifdef HAVE_GLITNIR
-  glitnir_pgtk_scene_changed (f);
-#endif
 
   /* Handle any pending map event(s), then make the frame visible
      manually, to avoid race conditions.  */
@@ -1119,9 +1069,6 @@ pgtk_set_parent_frame (struct frame *f, Lisp_Object new_value,
       unblock_input ();
 
       fset_parent_frame (f, new_value);
-#ifdef HAVE_GLITNIR
-      glitnir_pgtk_reparented (f);
-#endif
     }
 }
 
@@ -2594,9 +2541,6 @@ pgtk_draw_glyph_string (struct glyph_string *s)
 {
   bool relief_drawn_p = false;
 
-#ifdef HAVE_GLITNIR
-  glitnir_pgtk_damage_glyphs (s);
-#endif
   /* If S draws into the background of its successors, draw the
      background of the successors first so that S can draw into it.
      This makes S->next use XDrawString instead of XDrawImageString.  */
@@ -3145,9 +3089,6 @@ pgtk_draw_window_cursor (struct window *w, struct glyph_row *glyph_row, int x,
 	}
     }
 
-#ifdef HAVE_GLITNIR
-  glitnir_pgtk_damage_cursor (w, glyph_row, on_p);
-#endif
 }
 
 static void
@@ -3309,9 +3250,6 @@ pgtk_scroll_run (struct window *w, struct run *run)
   /* Cursor off.  Will be switched on again in x_update_window_end.  */
   gui_clear_cursor (w);
 
-#ifdef HAVE_GLITNIR
-  glitnir_pgtk_scroll (f, w, x, from_y, to_y, width, height);
-#endif
   {
     cairo_rectangle_t src_rect = { x, from_y, width, height };
     cairo_rectangle_t dst_rect = { x, to_y, width, height };
@@ -3421,9 +3359,6 @@ pgtk_text_icon (struct frame *f, const char *icon_name)
 static void
 pgtk_update_begin (struct frame *f)
 {
-#ifdef HAVE_GLITNIR
-  glitnir_pgtk_update_begin (f);
-#endif
   pgtk_clear_under_internal_border (f);
 }
 
@@ -3437,9 +3372,6 @@ pgtk_draw_vertical_window_border (struct window *w, int x, int y0, int y1)
   cairo_t *cr;
 
   cr = pgtk_begin_cr_clip (f);
-#ifdef HAVE_GLITNIR
-  glitnir_pgtk_damage (f, x, y0, 1, y1 - y0);
-#endif
 
   face = FACE_FROM_ID_OR_NULL (f, VERTICAL_BORDER_FACE_ID);
   if (face)
@@ -3470,9 +3402,6 @@ pgtk_draw_window_divider (struct window *w, int x0, int x1, int y0, int y1)
 			      ? face_last->foreground
 			      : FRAME_FOREGROUND_PIXEL (f));
   cairo_t *cr = pgtk_begin_cr_clip (f);
-#ifdef HAVE_GLITNIR
-  glitnir_pgtk_damage (f, x0, y0, x1 - x0, y1 - y0);
-#endif
 
   if (y1 - y0 > x1 - x0 && x1 - x0 > 2)
     /* Vertical.  */
@@ -3535,9 +3464,6 @@ pgtk_frame_up_to_date (struct frame *f)
   if (!buffer_flipping_blocked_p ())
     {
       flip_cr_context (f);
-#ifdef HAVE_GLITNIR
-      if (!glitnir_pgtk_consistency_point (f, 2))
-#endif
       gtk_widget_queue_draw (FRAME_GTK_WIDGET (f));
     }
   unblock_input ();
@@ -3731,9 +3657,6 @@ pgtk_draw_fringe_bitmap (struct window *w, struct glyph_row *row,
   struct face *face = p->face;
 
   cairo_t *cr = pgtk_begin_cr_clip (f);
-#ifdef HAVE_GLITNIR
-  glitnir_pgtk_damage_fringe (w, p);
-#endif
 
   /* Must clip because of partially visible lines.  */
   pgtk_clip_to_row (w, row, ANY_AREA, cr);
@@ -3831,9 +3754,6 @@ pgtk_hide_hourglass (struct frame *f)
 static void
 pgtk_flush_display (struct frame *f)
 {
-#ifdef HAVE_GLITNIR
-  glitnir_pgtk_consistency_point (f, 3);
-#endif
 }
 
 extern frame_parm_handler pgtk_frame_parm_handlers[];
@@ -3891,10 +3811,6 @@ recover_from_visible_bell (struct atimer *timer)
     {
       cairo_surface_destroy (FRAME_X_OUTPUT (f)->cr_surface_visible_bell);
       FRAME_X_OUTPUT (f)->cr_surface_visible_bell = NULL;
-#ifdef HAVE_GLITNIR
-      /* After the bell is gone: a paint the damage brings shows the frame.  */
-      glitnir_pgtk_damage_all (f);
-#endif
     }
 
   if (FRAME_X_OUTPUT (f)->atimer_visible_bell != NULL)
@@ -3976,9 +3892,6 @@ pgtk_flash (struct frame *f)
   if (FRAME_X_OUTPUT (f)->cr_surface_visible_bell)
     cairo_surface_destroy (FRAME_X_OUTPUT (f)->cr_surface_visible_bell);
   FRAME_X_OUTPUT (f)->cr_surface_visible_bell = surface;
-#ifdef HAVE_GLITNIR
-  glitnir_pgtk_damage_all (f);
-#endif
 
   delay = make_timespec (0, 50 * 1000 * 1000);
 
@@ -3994,9 +3907,6 @@ pgtk_flash (struct frame *f)
 
   cairo_destroy (cr);
   unblock_input ();
-#ifdef HAVE_GLITNIR
-  glitnir_pgtk_consistency_point (f, 4);
-#endif
 }
 
 /* Make audible bell.  */
@@ -4034,9 +3944,6 @@ pgtk_read_socket (struct terminal *terminal, struct input_event *hold_quit)
   count = evq_flush (hold_quit);
   if (count > 0)
     {
-#ifdef HAVE_GLITNIR
-      glitnir_pgtk_consistency_points (4);
-#endif
       return count;
     }
 
@@ -4057,9 +3964,6 @@ pgtk_read_socket (struct terminal *terminal, struct input_event *hold_quit)
 
   if (context_acquired)
     g_main_context_release (context);
-#ifdef HAVE_GLITNIR
-  glitnir_pgtk_consistency_points (4);
-#endif
 
   count = evq_flush (hold_quit);
   if (count > 0)
@@ -4963,9 +4867,6 @@ pgtk_buffer_flipping_unblocked_hook (struct frame *f)
 {
   block_input ();
   flip_cr_context (f);
-#ifdef HAVE_GLITNIR
-  if (!glitnir_pgtk_consistency_point (f, 1))
-#endif
   gtk_widget_queue_draw (FRAME_GTK_WIDGET (f));
   unblock_input ();
 }
@@ -5171,12 +5072,6 @@ pgtk_clear_under_internal_border (struct frame *f)
       struct face *face = FACE_FROM_ID_OR_NULL (f, face_id);
 
       block_input ();
-#ifdef HAVE_GLITNIR
-      glitnir_pgtk_damage_internal_border (f);
-      glitnir_pgtk_record_border (f, border,
-				  face ? face->background : 0,
-				  face ? f->alpha_background : 0);
-#endif
 
       if (face)
 	{
@@ -5200,19 +5095,12 @@ pgtk_clear_under_internal_border (struct frame *f)
 
       unblock_input ();
     }
-#ifdef HAVE_GLITNIR
-  else if (FRAME_INTERNAL_BORDER_WIDTH (f) <= 0)
-    glitnir_pgtk_record_border (f, 0, 0, 0);
-#endif
 }
 
 static gboolean
 pgtk_handle_draw (GtkWidget *widget, cairo_t *cr, gpointer *data)
 {
   struct frame *f;
-#ifdef HAVE_GLITNIR
-  bool glitnir_recorded = false;
-#endif
 
   GdkWindow *win = gtk_widget_get_window (widget);
 
@@ -5220,29 +5108,17 @@ pgtk_handle_draw (GtkWidget *widget, cairo_t *cr, gpointer *data)
     {
       cairo_surface_t *src = NULL;
       f = pgtk_any_window_to_frame (win);
-#ifdef HAVE_GLITNIR
-      if (f != NULL)
-	glitnir_recorded = glitnir_pgtk_draw_begin (f, widget, cr);
-#endif
       if (f != NULL)
 	{
 	  src = FRAME_X_OUTPUT (f)->cr_surface_visible_bell;
 	  if (src == NULL && FRAME_CR_ACTIVE_CONTEXT (f) != NULL)
 	    src = cairo_get_target (FRAME_CR_ACTIVE_CONTEXT (f));
 	}
-#ifdef HAVE_GLITNIR
-      if (glitnir_recorded && glitnir_pgtk_draw (f, cr))
-	src = NULL;
-#endif
       if (src != NULL)
 	{
 	  cairo_set_source_surface (cr, src, 0, 0);
 	  cairo_paint (cr);
 	}
-#ifdef HAVE_GLITNIR
-      if (glitnir_recorded)
-	glitnir_pgtk_draw_end (f);
-#endif
     }
   return FALSE;
 }
@@ -5969,9 +5845,6 @@ leave_notify_event (GtkWidget *widget, GdkEvent *event,
 
   if (inev.ie.kind != NO_EVENT)
     evq_enqueue (&inev);
-#ifdef HAVE_GLITNIR
-  glitnir_pgtk_consistency_point (frame, 4);
-#endif
   return TRUE;
 }
 
@@ -5995,9 +5868,6 @@ focus_in_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
     evq_enqueue (&inev);
 
   pgtk_im_focus_in (frame);
-#ifdef HAVE_GLITNIR
-  glitnir_pgtk_consistency_point (frame, 4);
-#endif
 
   return TRUE;
 }
@@ -6022,9 +5892,6 @@ focus_out_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
     evq_enqueue (&inev);
 
   pgtk_im_focus_out (frame);
-#ifdef HAVE_GLITNIR
-  glitnir_pgtk_consistency_point (frame, 4);
-#endif
 
   return TRUE;
 }
@@ -6199,9 +6066,6 @@ motion_notify_event (GtkWidget *widget, GdkEvent *event,
 		      help_echo_object, help_echo_pos);
     }
 
-#ifdef HAVE_GLITNIR
-  glitnir_pgtk_consistency_point (frame, 4);
-#endif
   return TRUE;
 }
 
@@ -7230,9 +7094,6 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
       any_help_event_p = false;
 
       Fset_input_interrupt_mode (Qt);
-#ifdef HAVE_NIDHOGG_WATCHDOG
-      nh_wd_gtk_install ();
-#endif
       baud_rate = 19200;
 
 #ifdef USE_CAIRO
@@ -7604,9 +7465,6 @@ pgtk_clear_area (struct frame *f, int x, int y, int width, int height)
   eassert (width > 0 && height > 0);
 
   cr = pgtk_begin_cr_clip (f);
-#ifdef HAVE_GLITNIR
-  glitnir_pgtk_damage (f, x, y, width, height);
-#endif
   pgtk_set_cr_source_with_color (f, FRAME_X_OUTPUT (f)->background_color,
 				 true);
   cairo_rectangle (cr, x, y, width, height);
@@ -7725,11 +7583,6 @@ pgtk_cr_update_surface_desired_size (struct frame *f, int width, int height, boo
       FRAME_CR_SURFACE_DESIRED_WIDTH (f) = width;
       FRAME_CR_SURFACE_DESIRED_HEIGHT (f) = height;
       SET_FRAME_GARBAGED (f);
-#ifdef HAVE_GLITNIR
-      if (redisplaying_p)
-	FRAME_X_OUTPUT (f)->cr_reset_in_redisplay = true;
-      glitnir_pgtk_damage_all (f);
-#endif
     }
 }
 

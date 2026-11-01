@@ -254,6 +254,13 @@ typedef struct
 } NhgPresenterStats;
 int32_t nhg_presenter_stats (NhgDisplay *d, NhgPresenterStats *out);
 
+/* Up to CAP of root ROOT's child windows in OUT, bottom to top as the compositor was told to stack them, hidden ones
+   too, each child's own right after it; the number copied.  Neither.  */
+int32_t nhg_stacking (NhgDisplay *d, uint64_t root, uint64_t *out, size_t cap);
+
+/* ROOT's commits that showed something (a buffer, a child's buffer or new state) in OUT.  Neither.  */
+int32_t nhg_draw_count (NhgDisplay *d, uint64_t root, uint64_t *out);
+
 /* ---- The window registry ------------------------------------------------------------------------------------------
 
    Each shell window C makes, with its kind, keyed by the window's id; a frame's pixel state above is keyed by its
