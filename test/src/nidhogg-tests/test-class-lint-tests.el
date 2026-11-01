@@ -58,9 +58,10 @@
   (expand-file-name "nidhogg/test/class-exempt.txt" source-directory)
   "The list of files that are not tests and carry no class.")
 
-(defvar test-class-lint--all-classified nil
+(defvar test-class-lint--all-classified t
   "When non-nil, a test file with neither a class nor an exempt row fails.
-Until then `test-class/every-test-has-a-class' only reports the count.")
+Every test file has a class, so it is set; nil would make
+`test-class/every-test-has-a-class' only report the count.")
 
 (defconst test-class-lint--classes '(det cond timing))
 
