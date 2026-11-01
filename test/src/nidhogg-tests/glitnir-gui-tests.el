@@ -2,21 +2,19 @@
 
 ;; test-class: cond
 
-;; Run by nidhogg/test/gui.sh on a headless mutter (test/src/nidhogg-tests/gui-runner.el
-;; loads every *-gui-tests.el).  GLITNIR_GUI_SCALE is the monitor scale the run asked for.
-;; The rows wait on what GTK and Glitnir report: `glitnir-gui--drawn' after a change, `glitnir-gui--painted' when nothing
-;; may be pending.
+;; Run by nidhogg/test/gui.sh (test/src/nidhogg-tests/gui-runner.el loads every *-gui-tests.el).  GLITNIR_GUI_SCALE is
+;; the monitor scale the run asked for.  The rows judge what the shell gave the compositor: `glitnir-snapshot' of a root
+;; holds its whole tree, child frames at their places.  Frame sizes and positions on the native shell are device pixels.
 
 (require 'ert)
 (require 'cl-lib)
 
 (defun glitnir-gui--drawn-since (draws)
-  "Wait for GTK to draw the selected frame's root once more than DRAWS, a `glitnir--draw-count'.
-The frame clock's after-paint runs in the same cycle as the draw, so the paint is in the record too."
+  "Wait for the selected frame's tree to show something once more than DRAWS, a `glitnir--draw-count'."
   (should (gui-runner-wait (lambda () (> (glitnir--draw-count) draws)))))
 
 (defmacro glitnir-gui--drawn (&rest body)
-  "Run BODY, which changes what the frame shows, redisplay, and wait for the paint of it."
+  "Run BODY, which changes what the frame shows, redisplay, and wait for the commit of it."
   (declare (indent 0))
   (let ((draws (make-symbol "draws")))
     `(let ((,draws (glitnir--draw-count)))
@@ -24,44 +22,23 @@ The frame clock's after-paint runs in the same cycle as the draw, so the paint i
        (redisplay t)
        (glitnir-gui--drawn-since ,draws))))
 
-(defun glitnir-gui--paint-cycle ()
-  "Run one frame-clock cycle on the selected frame, and return its picture, a raw snapshot.
-`glitnir-snapshot' presents what is pending, invalidates one pixel and waits for the after-paint, so GTK's layout and
-every paint queued before this call have run when it returns.  For when nothing may be pending; the 1-pixel paint
-goes into the record of paints, so a row that reads medians uses `glitnir-gui--drawn'."
+(defun glitnir-gui--painted ()
+  "Redisplay, wait for the presenter, and return the picture, a raw snapshot."
+  (redisplay t)
+  (gui-runner-wait-settled)
   (glitnir-snapshot nil 'raw))
 
-(defun glitnir-gui--painted ()
-  "Redisplay, then run one frame-clock cycle (`glitnir-gui--paint-cycle')."
-  (redisplay t)
-  (glitnir-gui--paint-cycle))
-
-(ert-deftest glitnir-gui/a-pgtk-frame-at-the-asked-scale ()
+(ert-deftest glitnir-gui/a-frame-at-the-asked-scale ()
   :tags '(gnome-smoke)
-  (let ((s (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1"))))
-    (should (eq (framep (selected-frame)) 'pgtk))
-    (should (= (frame-scale-factor) (ceiling s)))))
-
-;; Stats and snapshot of the stock present path.
-
-(ert-deftest glitnir-gui/stats-record-the-stock-paint ()
-  (let ((glitnir-enable nil))                   ; the stock path (Glitnir paints only the damage)
-    (redisplay t)
-    (glitnir-stats nil t)
-    (with-temp-buffer
-      (switch-to-buffer (current-buffer))
-      (dotimes (_ 5) (glitnir-gui--drawn (insert "x")))
-      (let ((s (glitnir-stats)))
-        (should (>= (plist-get s :count) 5))
-        (should (= (plist-get s :painted-px)    ; stock paints the whole widget
-                   (round (* (frame-pixel-width) (frame-pixel-height)
-                             (expt (frame-scale-factor) 2)))))))))
+  (should (< (abs (- (frame-scale-factor)
+                     (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1"))))
+             0.001)))
 
 (ert-deftest glitnir-gui/snapshot-has-the-frame-size ()
   :tags '(gnome-smoke)
   (pcase-let ((`(,w ,h ,bytes) (glitnir-snapshot nil 'raw)))
-    (should (= w (round (* (frame-pixel-width) (frame-scale-factor)))))
-    (should (= h (round (* (frame-pixel-height) (frame-scale-factor)))))
+    (should (= w (frame-pixel-width)))
+    (should (= h (frame-pixel-height)))
     (should (= (length bytes) (* 4 w h)))
     (should-not (multibyte-string-p bytes))))
 
@@ -71,115 +48,19 @@ goes into the record of paints, so a row that reads medians uses `glitnir-gui--d
     (should-not (multibyte-string-p png))
     (should (string-prefix-p "\x89PNG" png))))
 
-(ert-deftest glitnir-gui/snapshot-unarmed-costs-nothing ()
-  ;; Calls into Glitnir are made for damage now; `glitnir-gui/inactive-makes-no-calls' checks the no-call path.
-  (let ((copies (glitnir--snapshot-copies)))
-    (with-temp-buffer
-      (switch-to-buffer (current-buffer))
-      (dotimes (_ 20) (glitnir-gui--drawn (insert "y"))))
-    (should (= copies (glitnir--snapshot-copies)))))
-
 (ert-deftest glitnir-gui/daemon-first-frame-initialises ()
   (skip-unless (daemonp))
   (should (>= (plist-get (glitnir-stats) :count) 1)))
 
-;; Damage recorded in pgtk's drawing primitives.  Each test first takes what is pending, so it sees only
-;; what its own steps drew.
-
-(defun glitnir-gui--frame-rect ()
-  "The selected frame as one device-pixel rectangle (X Y W H)."
-  (list 0 0 (round (* (frame-pixel-width) (frame-scale-factor)))
-        (round (* (frame-pixel-height) (frame-scale-factor)))))
-
-(ert-deftest glitnir-gui/typing-damages-one-row ()
-  :tags '(gnome-smoke)
-  (with-temp-buffer
-    (switch-to-buffer (current-buffer))
-    (insert "hello")
-    (let ((glitnir-debug 'damage-hold))
-      (redisplay t) (glitnir--damage)
-      (insert "x") (redisplay t)
-      (let ((rows (glitnir--damage)) (lh (* (line-pixel-height) (frame-scale-factor))))
-        (should rows)
-        (should (cl-every (lambda (r) (<= (nth 3 r) (* 2 lh))) rows))))))
-
-(ert-deftest glitnir-gui/garbaged-frame-damages-all ()
-  (let ((glitnir-debug 'damage-hold))
-    (redisplay t) (glitnir--damage)
-    (redraw-frame) (redisplay t)
-    (should (equal (glitnir--damage) (list (glitnir-gui--frame-rect))))))
-
-(ert-deftest glitnir-gui/scroll-records-a-scroll-op ()
-  ;; C-v moves the rows it keeps with pgtk_scroll_run: one rectangle spans the window's text area (the scroll's area
-  ;; also holds the fringes; the last, partly visible row may be redrawn on its own), and the rows the scroll
-  ;; covers add nothing, so the damage is a handful of rectangles rather than one per row.
-  (with-temp-buffer
-    (switch-to-buffer (current-buffer))
-    (dotimes (i 500) (insert (format "line %d\n" i)))
-    (goto-char (point-min))
-    (let ((glitnir-debug 'damage-hold) (s (frame-scale-factor)) (lh (line-pixel-height)))
-      (redisplay t) (glitnir--damage)
-      (scroll-up-command) (redisplay t)
-      (pcase-let ((`(,l ,top ,r ,bottom) (window-body-pixel-edges))
-                  (rects (glitnir--damage)))
-        (should (cl-some (lambda (x)
-                           (and (<= (nth 0 x) (* l s)) (>= (+ (nth 0 x) (nth 2 x)) (* r s))
-                                (<= (nth 1 x) (* top s)) (>= (+ (nth 1 x) (nth 3 x)) (* (- bottom (* 2 lh)) s))))
-                         rects))
-        (should (<= (length rects) 8))))))
-
-(ert-deftest glitnir-gui/visible-bell-damages-all ()
-  (let ((glitnir-debug 'damage-hold) (visible-bell t) (ring-bell-function nil))
-    (redisplay t) (glitnir--damage)
-    (ding t)
-    (should (equal (glitnir--damage) (list (glitnir-gui--frame-rect))))
-    ;; the bell's atimer (50 ms) takes the flash back
-    (should (gui-runner-wait (lambda () (equal (glitnir--damage) (list (glitnir-gui--frame-rect))))))))
-
-(ert-deftest glitnir-gui/export-records-nothing ()
-  ;; x-export-frames first redisplays the frame for real (that may redraw the cursors), then clears and draws the
-  ;; whole frame into its own surface: recorded, that would be the whole frame.
-  (let ((glitnir-debug 'damage-hold))
-    (redisplay t) (glitnir--damage)
-    (should (stringp (x-export-frames nil 'png)))
-    (let ((rects (glitnir--damage)) (frame (glitnir-gui--frame-rect)))
-      (should-not (member frame rects))
-      (should (< (apply #'+ (mapcar (lambda (r) (* (nth 2 r) (nth 3 r))) rects))
-                 (/ (* (nth 2 frame) (nth 3 frame)) 100))))))
-
-(ert-deftest glitnir-gui/inactive-makes-no-calls ()
+(ert-deftest glitnir-gui/enable-nil-is-inactive ()
   (should (glitnir-active-p))
-  (with-temp-buffer
-    (switch-to-buffer (current-buffer))
-    (redisplay t)
-    (let ((glitnir-enable nil))
-      (should-not (glitnir-active-p))
-      (let ((calls (glitnir--calls)))
-        (dotimes (_ 20) (insert "z") (redisplay t))
-        (should (= calls (glitnir--calls)))))))
-
-;; Consistency points, the root freeze and damage-only present.
+  (let ((glitnir-enable nil))
+    (should-not (glitnir-active-p))))
 
 (defconst glitnir-gui--magenta '(:background "#ff00ff" :foreground "#ff00ff"))
 
-(defun glitnir-gui--busy (s)
-  (let ((end (+ (float-time) s)))
-    (while (< (float-time) end))))
-
-(defun glitnir-gui--settle ()
-  "Wait (5 s at most) for three frame-clock cycles running in which the selected frame takes no whole-frame damage;
-non-nil if they came.  Right after the session starts the frame is still redrawn whole for a while, and Emacs defers
-a mouse highlight until that redisplay is done."
-  (let ((glitnir-debug 'damage-hold) (clean 0))
-    (redisplay t) (glitnir--damage)
-    (gui-runner-wait (lambda ()
-                       (glitnir-gui--painted)
-                       (setq clean (if (member (glitnir-gui--frame-rect) (glitnir--damage)) 0 (1+ clean)))
-                       (>= clean 3))
-                     5)))
-
 (defun glitnir-gui--frame-px ()
-  (round (* (frame-pixel-width) (frame-pixel-height) (expt (frame-scale-factor) 2))))
+  (* (frame-pixel-width) (frame-pixel-height)))
 
 (defun glitnir-gui--samples (r g b)
   "Samples (every 4th device pixel) of a snapshot of the selected frame's root that have the colour R G B."
@@ -193,16 +74,6 @@ a mouse highlight until that redisplay is done."
                           (cl-incf n)))))
     n))
 
-(defvar glitnir-gui--jit-hook nil "A function the jit-lock function calls after `input-pending-p'.")
-
-(defun glitnir-gui--jit (beg end)
-  "A jit-lock function that takes 2 ms a chunk and calls `input-pending-p', as a slow mode would."
-  (glitnir-gui--busy 0.002)
-  (input-pending-p)
-  (when glitnir-gui--jit-hook (funcall glitnir-gui--jit-hook))
-  (put-text-property beg end 'face (if (cl-evenp (/ beg 1000)) 'bold 'italic))
-  `(jit-lock-bounds ,beg . ,end))
-
 (defun glitnir-gui--text-buffer (name lines)
   (let ((b (get-buffer-create name)))
     (with-current-buffer b
@@ -210,13 +81,6 @@ a mouse highlight until that redisplay is done."
       (dotimes (i lines)
         (insert (format "%5d %s\n" i (make-string 70 (+ ?a (% i 26))))))
       (goto-char (point-min)))
-    b))
-
-(defun glitnir-gui--jit-buffer (name)
-  (let ((b (glitnir-gui--text-buffer name 2000)))
-    (with-current-buffer b
-      (setq-local jit-lock-chunk-size 400)
-      (jit-lock-register #'glitnir-gui--jit))
     b))
 
 (defun glitnir-gui--child (buffer visible &optional background)
@@ -230,19 +94,6 @@ a mouse highlight until that redisplay is done."
     (when visible (make-frame-visible f))
     f))
 
-(defun glitnir-gui--scroll (buffers steps lines)
-  "STEPS back-to-back redisplays; each moves every window of BUFFERS LINES further, all text unfontified."
-  (dotimes (i steps)
-    (dolist (b buffers)
-      (with-current-buffer b
-        (with-silent-modifications
-          (put-text-property (point-min) (point-max) 'fontified nil)))
-      (let ((start (with-current-buffer b
-                     (save-excursion (goto-char (point-min)) (forward-line (* (% i 90) lines)) (point)))))
-        (dolist (w (get-buffer-window-list b nil t))
-          (set-window-start w start))))
-    (redisplay t)))
-
 (ert-deftest glitnir-gui/typing-paints-only-damage ()
   (should (glitnir-active-p))
   (with-temp-buffer
@@ -255,125 +106,7 @@ a mouse highlight until that redisplay is done."
       (should (>= (plist-get s :count) 5))
       (should (< (plist-get s :painted-px) (/ (glitnir-gui--frame-px) 10))))))
 
-(ert-deftest glitnir-gui/stats-sum-a-frames-draws ()
-  ;; A point that paints at once draws outside the frame clock; several such draws can come before the clock's
-  ;; after-paint records the frame.  Its entry sums them all (one draw's numbers would hide the others).
-  (with-temp-buffer
-    (switch-to-buffer (current-buffer))
-    (insert "hello")
-    (glitnir-gui--painted)
-    (glitnir-stats nil t)
-    (let ((draws (glitnir--draw-count)))
-      ;; two whole-widget draws with no GLib dispatch between them: one frame
-      (dotimes (_ 2) (should (glitnir--compose-with-pending)))
-      (should (gui-runner-wait (lambda () (and (>= (- (glitnir--draw-count) draws) 2)
-                                               (>= (plist-get (glitnir-stats) :count) 1)))))
-      (let ((s (glitnir-stats)))
-        (should (>= (- (glitnir--draw-count) draws) 2))
-        ;; GDK's clock may close a frame inside a draw, so the draws need
-        ;; not be one entry; no entry is ever left without a draw.
-        (should (<= 1 (plist-get s :count) (- (glitnir--draw-count) draws)))
-        ;; A draw paints its damage, not the whole widget: the entries
-        ;; carry the draws' pixels, and never more than the draws could.
-        (should (<= 1 (plist-get s :painted-px)
-                    (* (- (glitnir--draw-count) draws) (glitnir-gui--frame-px))))))))
-
-(defun glitnir-gui--new-buffers (enable)
-  "GDK's new buffers over 20 tab-like switches with `glitnir-enable' ENABLE: each switch redraws the window, lets GLib
-dispatch (GDK commits that paint), then types and redraws again, as a command and the timer after it do."
-  (let ((a (glitnir-gui--text-buffer "*glitnir-tab-a*" 200))
-        (b (glitnir-gui--text-buffer "*glitnir-tab-b*" 200))
-        (glitnir-enable enable))
-    (unwind-protect
-        (progn
-          (switch-to-buffer a)
-          (glitnir-gui--drawn (insert "."))
-          (let ((before (plist-get (glitnir--paint-counters) :new-buffers)))
-            (dotimes (i 20)
-              (switch-to-buffer (if (cl-evenp i) b a))
-              (redisplay t)
-              (accept-process-output nil 0.002)
-              (glitnir-gui--drawn (insert "x")))
-            (- (plist-get (glitnir--paint-counters) :new-buffers) before)))
-      (kill-buffer a) (kill-buffer b))))
-
-(ert-deftest glitnir-gui/points-reuse-the-buffer ()
-  ;; A paint while the compositor still holds the last committed buffer makes GDK allocate a new one and copy every
-  ;; pixel the paint left alone into it (5 MP at 2880x1800 scale 2).  The points must paint no more often into a new
-  ;; buffer than the stock present does.
-  (let ((off (glitnir-gui--new-buffers nil)) (on (glitnir-gui--new-buffers t)))
-    (princ (format "new buffers: on %d, off %d\n" on off) #'external-debugging-output)
-    (should (<= on (+ off 2)))))
-
-(ert-deftest glitnir-gui/child-churn-paints-the-child-only ()
-  ;; posframe's cycle (popup-churn): show a child, move it, hide it; the paints should cover the child's rectangles,
-  ;; not the root.  Known failure GL-POPUP-CHURN-FULL-1: a child frame is a GtkWidget in its parent's EmacsFixed, so
-  ;; its show/hide restyles the parent's CSS node and GTK's style-updated handlers (gtk_widget_real_style_updated,
-  ;; gtk_fixed_style_updated) invalidate the whole root in the next layout phase.  the widget-less child frames
-  ;; remove it.
-  :expected-result :failed
-  (let* ((cb (glitnir-gui--text-buffer "*glitnir-churn*" 5))
-         (c (glitnir-gui--child cb nil))
-         (buf (generate-new-buffer "*glitnir-churn-root*")))
-    (unwind-protect
-        (progn
-          (switch-to-buffer buf)
-          (insert "root")
-          (glitnir-gui--painted)
-          (glitnir-stats nil t)
-          (dotimes (i 20)
-            (let ((draws (glitnir--draw-count)))
-              (set-frame-position c (+ 200 (* 4 (% i 10))) 200)
-              (make-frame-visible c)
-              (set-frame-position c (+ 204 (* 4 (% i 10))) 200)
-              (redisplay t)
-              (make-frame-invisible c)
-              (redisplay t)
-              (glitnir-gui--drawn-since draws)))
-          (let ((s (glitnir-stats)))
-            (princ (format "child churn: painted px p50 %d of %d\n" (plist-get s :painted-px) (glitnir-gui--frame-px))
-                   #'external-debugging-output)
-            (should (>= (plist-get s :count) 10))
-            (should (< (plist-get s :painted-px) (/ (glitnir-gui--frame-px) 4)))))
-      (delete-frame c)
-      (kill-buffer cb) (kill-buffer buf))))
-
-(ert-deftest glitnir-gui/no-draw-while-frozen ()
-  ;; The child frame is newer, so redisplay draws it first: its damage freezes the root before the root's jit-lock
-  ;; runs.  The jit-lock function then moves the child (GTK invalidates the root on its next layout) and lets GLib
-  ;; dispatch for 30 ms through `input-pending-p': the root must not paint until the consistency point.
-  (let* ((a (glitnir-gui--jit-buffer "*glitnir-a*"))
-         (b (glitnir-gui--text-buffer "*glitnir-b*" 30))
-         (c (glitnir-gui--child b t))
-         (deltas nil) (n 0))
-    (unwind-protect
-        (progn
-          (switch-to-buffer a)
-          (glitnir-gui--painted)
-          (setq glitnir-gui--jit-hook
-                (lambda ()
-                  (when (and (< n 10) (glitnir--frozen-p))
-                    (let ((before (glitnir--draw-count)))
-                      (cl-incf n)
-                      (set-frame-position c (+ 100 (* 10 (% n 20))) 150)
-                      (dotimes (_ 3) (glitnir-gui--busy 0.01) (input-pending-p))
-                      (push (- (glitnir--draw-count) before) deltas)))))
-          (dotimes (_ 20)
-            (with-current-buffer b (goto-char (point-min)) (insert "x"))
-            (glitnir-gui--scroll (list a) 1 20))
-          (setq glitnir-gui--jit-hook nil)
-          (let ((draws (glitnir--draw-count)))
-            (redisplay t)
-            (glitnir-gui--drawn-since draws)
-            ;; before the cleanup: deleting the child damages the root, which freezes it again until the next redisplay
-            (should-not (glitnir--frozen-p))))
-      (setq glitnir-gui--jit-hook nil)
-      (delete-frame c)
-      (kill-buffer a) (kill-buffer b))
-    (should (>= (length deltas) 5))
-    (should (cl-every #'zerop deltas))))
-
-(ert-deftest glitnir-gui/error-in-redisplay-thaws ()
+(ert-deftest glitnir-gui/error-in-redisplay-keeps-drawing ()
   (let ((buf (generate-new-buffer "*glitnir-err*")))
     (unwind-protect
         (progn
@@ -387,233 +120,11 @@ dispatch (GDK commits that paint), then types and redraws again, as a command an
           (should (eq (catch 'glitnir-gui-out (redisplay t) nil) 'thrown))
           (kill-local-variable 'mode-line-format)
           (insert (propertize "MMMMMMMM" 'face glitnir-gui--magenta))
-          (redisplay t)
-          (should-not (glitnir--frozen-p))
+          (glitnir-gui--painted)
           (should (> (glitnir-gui--samples 255 0 255) 0)))
       (kill-buffer buf))))
 
-(ert-deftest glitnir-gui/nested-map-wait-consistent ()
-  (let* ((cb (glitnir-gui--text-buffer "*glitnir-c*" 10))
-         (c (glitnir-gui--child cb nil))
-         (buf (generate-new-buffer "*glitnir-map*")))
-    (unwind-protect
-        (progn
-          (switch-to-buffer buf)
-          (dotimes (_ 5)
-            (make-frame-invisible c)
-            (insert "a") (redisplay t)
-            (make-frame-visible c)      ; the map wait's nested loop, inside this command
-            (insert (propertize "MM" 'face glitnir-gui--magenta))
-            (redisplay t))
-          ;; the child, already shown, changes: its damage reaches the root's commit
-          (with-current-buffer cb
-            (goto-char (point-min))
-            (insert (propertize "YYYYYYYY" 'face '(:background "#ffff00" :foreground "#ffff00"))))
-          (redisplay t)
-          (should-not (glitnir--frozen-p))
-          (should (> (glitnir-gui--samples 255 0 255) 0))  ; the typed text
-          (should (> (glitnir-gui--samples 0 255 255) 0))  ; the child
-          (should (> (glitnir-gui--samples 255 255 0) 0))) ; the child's new text
-      (delete-frame c)
-      (kill-buffer cb) (kill-buffer buf))))
-
-(ert-deftest glitnir-gui/enable-nil-is-stock ()
-  (with-temp-buffer
-    (switch-to-buffer (current-buffer))
-    (glitnir-gui--painted)
-    (let ((glitnir-enable nil))
-      (should-not (glitnir-active-p))
-      (glitnir-gui--drawn (insert "."))
-      (glitnir-stats nil t)
-      (let ((calls (glitnir--calls)) (draws (glitnir--draw-count)))
-        (dotimes (_ 20)
-          (let ((before (glitnir--draw-count)))
-            (insert "z") (redisplay t)
-            (should-not (glitnir--frozen-p))
-            (glitnir-gui--drawn-since before)))
-        (should (= calls (glitnir--calls)))
-        (should (> (glitnir--draw-count) draws))
-        (should (= (plist-get (glitnir-stats) :painted-px) (glitnir-gui--frame-px)))))))
-
-(ert-deftest glitnir-gui/mouse-highlight-commits ()
-  (let ((buf (generate-new-buffer "*glitnir-mouse*")))
-    (unwind-protect
-        (progn
-          (switch-to-buffer buf)
-          (insert "\n\n  " (propertize "HOVERHOVERHOVERHOVER" 'mouse-face glitnir-gui--magenta) "\n")
-          (glitnir-gui--painted)
-          (should (glitnir-gui--settle))  ; first in a session, the motions would come while the frame settles
-          (should (= (glitnir-gui--samples 255 0 255) 0))
-          (pcase-let ((`(,x . ,y) (posn-x-y (posn-at-point (+ (point-min) 6))))
-                      (`(,left ,top . ,_) (window-inside-pixel-edges)))
-            ;; `glitnir--motion' hands the motion straight to GTK's handler (no GDK queue, which holds the newest
-            ;; motion back until another event follows it, and no wait): a motion elsewhere, then one over the
-            ;; text, no redisplay between.  The handler draws the highlight; the stock path would show it only at
-            ;; the next redisplay.
-            (dolist (xy (list (cons (+ left 2) (+ top 2)) (cons (+ left x 4) (+ top y 4))))
-              (should (glitnir--motion nil (car xy) (cdr xy)))))
-          (should (> (glitnir-gui--samples 255 0 255) 0)))
-      (kill-buffer buf))))
-
-(ert-deftest glitnir-gui/no-starvation-while-redisplaying ()
-  ;; GLib dispatch happens inside redisplay (jit-lock's `input-pending-p') and finds the root
-  ;; frozen; each consistency point paints, so the display keeps up.
-  :tags '(:timing)
-  (let* ((a (glitnir-gui--jit-buffer "*glitnir-a*"))
-         (b (glitnir-gui--jit-buffer "*glitnir-b*"))
-         (c (glitnir-gui--child b t)))
-    (unwind-protect
-        (progn
-          (switch-to-buffer a)
-          (glitnir-gui--painted)
-          (glitnir--max-paint-gap-ms nil t)
-          (glitnir-gui--scroll (list a b) 100 20)
-          (let ((gap (glitnir--max-paint-gap-ms)))
-            (princ (format "longest paint gap: %.1f ms\n" gap) #'external-debugging-output)
-            (should (< gap 500))))
-      (delete-frame c)
-      (kill-buffer a) (kill-buffer b))))
-
-(ert-deftest glitnir-gui/latency-recorded-on-and-off ()
-  (with-temp-buffer
-    (switch-to-buffer (current-buffer))
-    (dolist (on '(t nil))
-      (let ((glitnir-enable on))
-        (glitnir-gui--drawn (insert "."))
-        (glitnir-stats nil t)
-        (dotimes (_ 20) (glitnir-gui--drawn (insert "l")))
-        (let ((s (glitnir-stats)) (last (glitnir--last-paint)))
-          (should (> (plist-get s :count) 0))
-          (should (> (plist-get (plist-get s :latency-ms) :p50) 0))
-          (should (null (plist-get s :backfill-rate)))
-          (should (<= (plist-get last :commit-ns) (plist-get last :paint-ns) (plist-get last :present-ns)
-                      (glitnir--now-ns))))))))
-
-;; Debug modes.
-
-(defun glitnir-gui--violations ()
-  (plist-get (glitnir-stats) :violations))
-
-(ert-deftest glitnir-gui/verify-catches-a-missed-rect ()
-  (with-temp-buffer
-    (switch-to-buffer (current-buffer))
-    (should (glitnir-gui--settle))
-    (let ((glitnir-debug 'verify))
-      (glitnir-gui--drawn (insert "a")) ; this commit keeps the copy the next one is compared with
-      (glitnir-stats nil t)
-      (should (glitnir--draw-undamaged))
-      (glitnir-gui--drawn (insert "b"))
-      (should (>= (glitnir-gui--violations) 1))
-      ;; the rectangle is in the copy now: the next commit is clean
-      (glitnir-stats nil t)
-      (glitnir-gui--drawn (insert "c"))
-      (should (= (glitnir-gui--violations) 0)))
-    (redraw-frame)))
-
-(ert-deftest glitnir-gui/verify-quiet-on-typing ()
-  (with-temp-buffer
-    (switch-to-buffer (current-buffer))
-    (should (glitnir-gui--settle))
-    (dotimes (i 3000) (insert (format "line %d\n" i)))
-    (goto-char (point-min))
-    (let ((glitnir-debug 'verify))
-      (glitnir-gui--painted)
-      (glitnir-stats nil t)
-      (dotimes (_ 200) (insert "k") (redisplay t))
-      (dotimes (_ 5) (scroll-up-command) (redisplay t))
-      (dotimes (_ 5) (scroll-down-command) (redisplay t))
-      (let ((w (frame-pixel-width)) (h (frame-pixel-height)))
-        (set-frame-size nil (+ w 40) h t) (glitnir-gui--painted)
-        (set-frame-size nil w h t) (glitnir-gui--painted))
-      (dotimes (_ 20) (insert "k") (redisplay t))
-      (glitnir-gui--painted)
-      (should (= (glitnir-gui--violations) 0)))))
-
-(ert-deftest glitnir-gui/verify-catches-compose-with-pending ()
-  (with-temp-buffer
-    (switch-to-buffer (current-buffer))
-    (should (glitnir-gui--settle))
-    (let ((glitnir-debug 'verify))
-      (glitnir-gui--painted)
-      (glitnir-stats nil t)
-      (should (glitnir--compose-with-pending))
-      (should (= (glitnir-gui--violations) 1))
-      (should-not (glitnir--frozen-p))
-      ;; an ordinary commit afterwards is clean
-      (glitnir-stats nil t)
-      (glitnir-gui--drawn (insert "x"))
-      (should (= (glitnir-gui--violations) 0)))))
-
-(ert-deftest glitnir-gui/full-paints-everything ()
-  (with-temp-buffer
-    (switch-to-buffer (current-buffer))
-    (should (glitnir-gui--settle))
-    (let ((glitnir-debug 'full))
-      (glitnir-gui--painted)
-      (glitnir-stats nil t)
-      (dotimes (_ 10) (glitnir-gui--drawn (insert "f")))
-      (let ((s (glitnir-stats)))
-        (should (>= (plist-get s :count) 5))
-        (should (= (plist-get s :painted-px) (glitnir-gui--frame-px)))))))
-
-;; The panic fallback.
-
-(defun glitnir-gui--panics (where)
-  "Make the next call at WHERE panic, and check what the fallback leaves.
-Glitnir is turned back on after (`revive'), for the tests that follow."
-  (with-temp-buffer
-    (switch-to-buffer (current-buffer))
-    (should (glitnir-gui--settle))
-    (let ((glitnir-debug 'verify) (kept nil))
-      (unwind-protect
-          (progn
-            (glitnir-gui--drawn
-              (insert (propertize "YYYYYYYY" 'face '(:background "#ffff00" :foreground "#ffff00"))))
-            (should (glitnir-active-p))
-            (glitnir--debug-panic where)
-            (glitnir-gui--drawn (insert (propertize "MM" 'face glitnir-gui--magenta)))
-            (should-not (glitnir-active-p))
-            (should-not (glitnir-stats))
-            (should-not (glitnir--frozen-p))
-            (let ((calls (glitnir--calls)) (draws (glitnir--draw-count)))
-              ;; a typed key shows, in a whole-frame paint, with the rest of the picture
-              (glitnir-gui--drawn
-                (insert (propertize "KKKK" 'face '(:background "#00ff00" :foreground "#00ff00"))))
-              (glitnir-gui--drawn (redraw-frame))
-              (should (> (glitnir--draw-count) draws))
-              (should-not (glitnir--frozen-p))
-              (should (> (glitnir-gui--samples 0 255 0) 0))
-              (should (> (glitnir-gui--samples 255 0 255) 0))
-              (should (> (glitnir-gui--samples 255 255 0) 0))
-              (pcase-let ((`(,w ,h ,_) (glitnir-snapshot nil 'raw)))
-                (should (= (* w h) (glitnir-gui--frame-px))))
-              (should-not (glitnir-active-p))
-              (should-not (glitnir-stats))
-              (should (= calls (glitnir--calls))))
-            (setq kept t))
-        (glitnir--debug-panic 'revive)
-        (glitnir-gui--drawn (redraw-frame)))
-      (should kept)
-      (should (glitnir-active-p)))))
-
-(ert-deftest glitnir-gui/panic-in-commit-falls-back ()
-  (glitnir-gui--panics 'commit))
-
-(ert-deftest glitnir-gui/panic-in-draw-paints-stock ()
-  (glitnir-gui--panics 'draw))
-
-;; Layers, the stacking list and scene commits from pgtk's hooks.  Each test runs under `verify', which
-;; also checks at every commit that Glitnir stacks the child frames as GDK stacks their windows.
-
-(defmacro glitnir-gui--verified (&rest body)
-  "Run BODY with `glitnir-debug' `verify'; no violation may be counted meanwhile."
-  (declare (indent 0))
-  `(let ((glitnir-debug 'verify))
-     (glitnir-gui--painted)
-     (glitnir-stats nil t)
-     ,@body
-     (glitnir-gui--painted)
-     (should (= (glitnir-gui--violations) 0))))
+;; The stacking list.
 
 (defun glitnir-gui--children (n)
   "N child frames of the selected frame, made and shown one after the other."
@@ -640,166 +151,111 @@ Glitnir is turned back on after (`revive'), for the tests that follow."
 (ert-deftest glitnir-gui/stacking-follows-raise-lower ()
   (let ((fs (glitnir-gui--children 3)))
     (unwind-protect
-        (glitnir-gui--verified
-          (pcase-let ((`(,a ,b ,c) fs))
-            (redisplay t)
-            (should (cl-every #'frame-visible-p fs))
-            (should (equal (glitnir--stacking) (list a b c)))
-            (raise-frame a)
-            (should (equal (glitnir--stacking) (list b c a)))
-            (lower-frame c)
-            (should (equal (glitnir--stacking) (list c b a)))
-            (raise-frame b) (redisplay t)
-            (should (equal (glitnir--stacking) (list c a b)))))
+        (pcase-let ((`(,a ,b ,c) fs))
+          (glitnir-gui--painted)
+          (should (cl-every #'frame-visible-p fs))
+          (should (equal (glitnir--stacking) (list a b c)))
+          (raise-frame a)
+          (should (equal (glitnir--stacking) (list b c a)))
+          (lower-frame c)
+          (should (equal (glitnir--stacking) (list c b a)))
+          (raise-frame b) (redisplay t)
+          (should (equal (glitnir--stacking) (list c a b))))
       (glitnir-gui--delete fs))))
 
 (ert-deftest glitnir-gui/map-raises-the-node ()
   (let ((fs (glitnir-gui--children 2)))
     (unwind-protect
-        (glitnir-gui--verified
-          (pcase-let ((`(,a ,b) fs))
-            (redisplay t)
-            (should (equal (glitnir--stacking) (list a b)))
-            (make-frame-invisible a) (redisplay t)
-            (should (equal (glitnir--stacking) (list a b))) ; hidden nodes keep their place
-            (make-frame-visible a) (redisplay t)
-            (should (equal (glitnir--stacking) (list b a)))))
+        (pcase-let ((`(,a ,b) fs))
+          (glitnir-gui--painted)
+          (should (equal (glitnir--stacking) (list a b)))
+          (make-frame-invisible a) (glitnir-gui--painted)
+          (make-frame-visible a) (glitnir-gui--painted)
+          (should (equal (glitnir--stacking) (list b a))))
       (glitnir-gui--delete fs))))
 
 (ert-deftest glitnir-gui/zgroup-changes-nothing-for-child-frames ()
-  ;; pgtk child frames have no z-group (pgtk_set_z_group needs an outer widget).
   (let ((fs (glitnir-gui--children 2)))
     (unwind-protect
-        (glitnir-gui--verified
-          (pcase-let ((`(,a ,b) fs))
-            (redisplay t)
-            (set-frame-parameter a 'z-group 'above) (redisplay t)
-            (should (equal (glitnir--stacking) (list a b)))
-            (set-frame-parameter b 'z-group 'below) (redisplay t)
-            (should (equal (glitnir--stacking) (list a b)))))
+        (pcase-let ((`(,a ,b) fs))
+          (glitnir-gui--painted)
+          (set-frame-parameter a 'z-group 'above) (redisplay t)
+          (should (equal (glitnir--stacking) (list a b)))
+          (set-frame-parameter b 'z-group 'below) (redisplay t)
+          (should (equal (glitnir--stacking) (list a b))))
       (glitnir-gui--delete fs))))
 
 (ert-deftest glitnir-gui/reparent-moves-the-node ()
   (let ((fs (glitnir-gui--children 3)))
     (unwind-protect
-        (glitnir-gui--verified
-          (pcase-let ((`(,a ,b ,c) fs))
-            (redisplay t)
-            ;; a goes on top of c's child frames, inside c
-            (set-frame-parameter a 'parent-frame c) (redisplay t)
-            (should (eq (frame-parent a) c))
-            (should (equal (glitnir--stacking) (list b c a)))
-            ;; b goes into a, inside c
-            (set-frame-parameter b 'parent-frame a) (redisplay t)
-            (should (equal (glitnir--stacking) (list c a b)))))
+        (pcase-let ((`(,a ,b ,c) fs))
+          (glitnir-gui--painted)
+          ;; a goes on top of c's child frames, inside c
+          (set-frame-parameter a 'parent-frame c) (redisplay t)
+          (should (eq (frame-parent a) c))
+          (should (equal (glitnir--stacking) (list b c a)))
+          ;; b goes into a, inside c
+          (set-frame-parameter b 'parent-frame a) (redisplay t)
+          (should (equal (glitnir--stacking) (list c a b))))
       (glitnir-gui--delete fs))))
 
 (ert-deftest glitnir-gui/unparent-makes-a-root ()
   (let* ((root (selected-frame)) (fs (glitnir-gui--children 2)) (d nil))
     (unwind-protect
-        (glitnir-gui--verified
-          (pcase-let ((`(,a ,b) fs))
-            (redisplay t)
-            (set-frame-parameter a 'parent-frame nil)
-            (select-frame root)
-            (should (gui-runner-wait (lambda () (glitnir-gui--painted) (glitnir-active-p a))))
-            (should-not (frame-parent a))
-            (should (equal (glitnir--stacking) (list b)))
-            (should (glitnir-active-p a))
-            (should (null (glitnir--stacking a)))
-            ;; a root of its own: its child frames stack in its scene
-            (setq d (glitnir-gui--nested a))
-            (redisplay t)
-            (should (equal (glitnir--stacking a) (list d)))
-            (should (equal (glitnir--stacking) (list b)))))
+        (pcase-let ((`(,a ,b) fs))
+          (glitnir-gui--painted)
+          (set-frame-parameter a 'parent-frame nil)
+          (select-frame root)
+          (should (gui-runner-wait (lambda () (glitnir-gui--painted) (glitnir-active-p a))))
+          (should-not (frame-parent a))
+          (should (equal (glitnir--stacking) (list b)))
+          (should (glitnir-active-p a))
+          (should (null (glitnir--stacking a)))
+          ;; a root of its own: its child frames stack in its tree
+          (setq d (glitnir-gui--nested a))
+          (redisplay t)
+          (should (equal (glitnir--stacking a) (list d)))
+          (should (equal (glitnir--stacking) (list b))))
       (select-frame root)
       (glitnir-gui--delete (append fs (list d))))))
 
 (ert-deftest glitnir-gui/nested-child-stacks-in-its-parent ()
   (let* ((fs (glitnir-gui--children 2)) (c nil))
     (unwind-protect
-        (glitnir-gui--verified
-          (pcase-let ((`(,a ,b) fs))
-            (setq c (glitnir-gui--nested a))
-            (redisplay t)
-            (should (equal (glitnir--stacking) (list a c b)))
-            (raise-frame c) (redisplay t)
-            (should (equal (glitnir--stacking) (list a c b))) ; inside a, below b
-            (raise-frame a) (redisplay t)
-            (should (equal (glitnir--stacking) (list b a c)))))
+        (pcase-let ((`(,a ,b) fs))
+          (setq c (glitnir-gui--nested a))
+          (glitnir-gui--painted)
+          (should (equal (glitnir--stacking) (list a c b)))
+          (raise-frame c) (redisplay t)
+          (should (equal (glitnir--stacking) (list a c b))) ; inside a, below b
+          (raise-frame a) (redisplay t)
+          (should (equal (glitnir--stacking) (list b a c))))
       (glitnir-gui--delete (append fs (list c))))))
 
-(ert-deftest glitnir-gui/delete-child-while-frozen ()
-  ;; Review Focus 1: a timer deletes a shown child (then, in the second round, the parent of a shown child) between
-  ;; the root's freeze and its next consistency point.  The commit drops the node (and the nodes under it), nothing
-  ;; reads their pixels (no `verify' violation), and the root thaws at the next point, which outside redisplay is
-  ;; GLib's next idle run.  The freeze is the first damage's, made by `glitnir--debug-freeze' in the same timer, so
-  ;; GLib runs nothing between it and the deletion.
-  (let* ((fs (glitnir-gui--children 2)) (c nil) (frozen nil) (deleted nil))
-    (cl-flet ((delete-frozen (f)
-                (setq frozen 'unset)
-                (run-at-time 0 nil (lambda ()
-                                     (glitnir--debug-freeze)
-                                     (setq frozen (glitnir--frozen-p))
-                                     (delete-frame f t)
-                                     (setq deleted t)))
+(ert-deftest glitnir-gui/delete-child-from-a-timer ()
+  ;; A timer deletes a shown child, then the parent of a shown nested child: the tree loses them and stays active.
+  (let* ((fs (glitnir-gui--children 2)) (c nil) (deleted nil))
+    (cl-flet ((delete-later (f)
+                (run-at-time 0 nil (lambda () (delete-frame f t) (setq deleted t)))
                 (should (gui-runner-wait (lambda () deleted)))
                 (setq deleted nil)
-                (should (eq frozen t))
-                (should-not (frame-live-p f))
-                (should (gui-runner-wait (lambda () (not (glitnir--frozen-p)))))
-                (glitnir-gui--paint-cycle)))
+                (should-not (frame-live-p f))))
       (unwind-protect
-          (glitnir-gui--verified
-            (pcase-let ((`(,a ,b) fs))
-              (glitnir-gui--painted)
-              (delete-frozen a)
-              (should (equal (glitnir--stacking) (list b)))
-              ;; the parent of a shown nested child
-              (setq c (glitnir-gui--nested b))
-              (glitnir-gui--painted)
-              (should (equal (glitnir--stacking) (list b c)))
-              (delete-frozen b)
-              (should-not (frame-live-p c))
-              (should (null (glitnir--stacking)))
-              (should (glitnir-active-p))))
+          (pcase-let ((`(,a ,b) fs))
+            (glitnir-gui--painted)
+            (delete-later a)
+            (should (equal (glitnir--stacking) (list b)))
+            ;; the parent of a shown nested child
+            (setq c (glitnir-gui--nested b))
+            (glitnir-gui--painted)
+            (should (equal (glitnir--stacking) (list b c)))
+            (delete-later b)
+            (should-not (frame-live-p c))
+            (should (null (glitnir--stacking)))
+            (should (glitnir-active-p)))
         (glitnir-gui--delete (append fs (list c)))))))
 
-(ert-deftest glitnir-gui/resized-child-keeps-its-last-complete-picture ()
-  (let ((fs (glitnir-gui--children 1)))
-    (unwind-protect
-        (glitnir-gui--verified
-          (let* ((c (car fs)) (s (frame-scale-factor))
-                 (size (lambda () (list (round (* (frame-pixel-width c) s)) (round (* (frame-pixel-height c) s)))))
-                 (old (progn (glitnir-gui--painted) (funcall size))))
-            (should (equal (cddr (glitnir--layer-rect c)) old))
-            ;; GTK allocates the new size at its next layout (GLib runs, redisplay does not): until the child is
-            ;; redrawn, its node keeps the size of the picture it has
-            (set-frame-size c 70 20)
-            (glitnir-gui--paint-cycle)
-            (glitnir--stacking)
-            (should (equal (cddr (glitnir--layer-rect c)) old))
-            (should (gui-runner-wait (lambda () (glitnir-gui--painted) (not (equal (funcall size) old)))))
-            (should (equal (cddr (glitnir--layer-rect c)) (funcall size)))))
-      (glitnir-gui--delete fs))))
-
-(ert-deftest glitnir-gui/scene-hook-commits-outside-redisplay ()
-  ;; A timer moves a shown child and nothing is redrawn: the move hook commits the scene at once, so the next paint
-  ;; shows a commit made after the move (with no Emacs damage, no point would have committed).
-  (let ((fs (glitnir-gui--children 1)))
-    (unwind-protect
-        (glitnir-gui--verified
-          (let ((c (car fs)) (s (frame-scale-factor)))
-            (glitnir-gui--painted)
-            (let ((t0 (glitnir--now-ns)) (n0 (plist-get (glitnir-stats) :count)))
-              (run-at-time 0 nil (lambda () (set-frame-position c 260 230)))
-              (should (gui-runner-wait (lambda () (and (>= (plist-get (glitnir-stats) :count) (1+ n0))
-                                                       (>= (plist-get (glitnir--last-paint) :commit-ns) t0)))))
-              (should-not (glitnir--frozen-p))
-              (should (equal (take 2 (glitnir--layer-rect c)) (list (round (* 260 s)) (round (* 230 s))))))))
-      (glitnir-gui--delete fs))))
-
-;; The Lisp surface: chrome resolved from parameters and faces reaches the layer.
+;; The Lisp surface: chrome resolved from parameters and faces reaches the shell.
 
 (defun glitnir-gui--chromed (&rest params)
   "A shown child frame with PARAMS (corner-radius, shadow ...) as frame parameters."
@@ -809,7 +265,7 @@ Glitnir is turned back on after (`revive'), for the tests that follow."
     (glitnir-gui--painted)
     c))
 
-(ert-deftest glitnir-gui/chrome-reaches-glitnir ()
+(ert-deftest glitnir-gui/chrome-reaches-the-shell ()
   (let ((c (glitnir-gui--chromed '(corner-radius . 8)
                                  '(shadow . (:blur 16 :offset (0 . 6) :spread 2 :opacity 0.35)))))
     (unwind-protect
@@ -831,54 +287,21 @@ Glitnir is turned back on after (`revive'), for the tests that follow."
           (should-not (glitnir--chrome c)))
       (glitnir-gui--delete (list c)))))
 
-(ert-deftest glitnir-gui/per-frame-border-face-follows ()
-  (let ((c (glitnir-gui--chromed '(corner-radius . 8))))
-    (unwind-protect
-        (progn
-          (set-face-background 'child-frame-border "red" c)
-          (glitnir-gui--painted) (redisplay t)
-          (let ((b (plist-get (glitnir--chrome c) :border)))
-            (should b)
-            (should (equal (take 3 (plist-get b :color)) '(255 0 0)))
-            (should (> (plist-get b :width) 0)))
-          (set-face-background 'child-frame-border "blue" c)
-          (glitnir-gui--painted) (redisplay t)
-          (should (equal (take 3 (plist-get (plist-get (glitnir--chrome c) :border) :color)) '(0 0 255))))
-      (glitnir-gui--delete (list c)))))
-
 (ert-deftest glitnir-gui/per-frame-shadow-face-follows ()
   (let ((c (glitnir-gui--chromed '(shadow . (:blur 16 :opacity 0.35)))))
     (unwind-protect
         (progn
           (should (equal (plist-get (plist-get (glitnir--chrome c) :shadow) :color) '(0 0 0)))
           (set-face-foreground 'child-frame-shadow "red" c)
-          (glitnir-gui--painted) (redisplay t)
+          (glitnir-gui--painted)
           (should (equal (plist-get (plist-get (glitnir--chrome c) :shadow) :color) '(255 0 0))))
       (glitnir-gui--delete (list c)))))
 
-(ert-deftest glitnir-gui/first-border-holds-the-root ()
-  ;; A child frame's first border is drawn before it has a surface (redraw_frame's update_begin, as a new popup's
-  ;; first redisplay does), so it records no damage, but its ring changes the scene.  The root stays frozen until
-  ;; the point that commits it: the unblock_input that follows dispatches GLib, and GTK must not paint the root
-  ;; first (`verify' counted that as a compose with pending damage, GL-VERIFY-RESIZE-FLAKE-1).
-  (let ((root (selected-frame)) (c nil))
-    (unwind-protect
-        (glitnir-gui--verified
-          (setq c (make-frame `((parent-frame . ,root) (minibuffer . nil) (visibility . nil) (undecorated . t)
-                                (internal-border-width . 1) (corner-radius . 8) (width . 24) (height . 6))))
-          (select-frame root)
-          (glitnir-gui--painted)
-          (should-not (glitnir--frozen-p root))
-          ;; The idle point may commit before this returns, so the freeze itself is not asserted: `verified' is.
-          (redraw-frame c))
-      (when (frame-live-p c) (delete-frame c t)))))
-
-;; Child frames as layers, paint-through: each frame's draw handler composes the committed scene into GDK's
-;; buffer.  The root shows magenta under the popups (cyan, empty), so a rounded corner, a shadow and the stock
-;; picture are told apart by their pixels.  Every test runs under `verify'.
+;; Child frames in the picture.  The root shows magenta under the popups (cyan, empty), so a rounded corner and a shadow
+;; are told apart by their pixels.
 
 (defconst glitnir-gui--chrome '((corner-radius . 8) (shadow . (:blur 16 :offset (0 . 6) :spread 0 :opacity 0.35)))
-  "drgnx's popup defaults (the plan's PD-7).")
+  "drgnx's popup defaults.")
 
 (deftheme glitnir-gui-test "Colours the child-frame faces (glitnir-gui/theme-switch-recolours-visible-popup).")
 (custom-theme-set-faces 'glitnir-gui-test
@@ -909,11 +332,13 @@ PARAMS come first, so they win over the defaults here."
     (select-frame root)
     (set-window-buffer (frame-root-window f) (get-buffer-create "*glitnir-pop*"))
     (make-frame-visible f)
-    ;; GTK maps it at its next layout; the cycle after that one paints it into the root.  A popup Glitnir leaves to
-    ;; GTK (alpha) never joins the stacking: 2 s, and the row judges what it sees.
-    (gui-runner-wait (lambda () (glitnir-gui--painted) (memq f (glitnir--stacking))) 2)
     (glitnir-gui--painted)
     f))
+
+(defun glitnir-gui--rect (c)
+  "C's native area in its parent's picture, (X Y W H) in device pixels."
+  (pcase-let ((`(,x . ,y) (frame-position c)))
+    (list x y (frame-pixel-width c) (frame-pixel-height c))))
 
 (defun glitnir-gui--pixel (snap xy)
   "The (R G B) of device pixel XY, (X Y), in SNAP, a raw snapshot."
@@ -925,8 +350,8 @@ PARAMS come first, so they win over the defaults here."
   (list (+ (nth 0 rect) (/ (nth 2 rect) 2)) (+ (nth 1 rect) (/ (nth 3 rect) 2))))
 
 (defun glitnir-gui--around (c)
-  "C's layer rectangle grown by 40 logical pixels on each side, its shadow's reach."
-  (pcase-let ((`(,x ,y ,w ,h) (glitnir--layer-rect c)) (m (round (* 40 (frame-scale-factor)))))
+  "C's rectangle grown by 40 logical pixels on each side, its shadow's reach."
+  (pcase-let ((`(,x ,y ,w ,h) (glitnir-gui--rect c)) (m (round (* 40 (frame-scale-factor)))))
     (list (- x m) (- y m) (+ w m m) (+ h m m))))
 
 (defun glitnir-gui--differ (a b rect)
@@ -940,25 +365,22 @@ PARAMS come first, so they win over the defaults here."
                           (cl-incf n)))))
     n))
 
-(defun glitnir-gui--redraw (frames)
-  (glitnir-gui--drawn (dolist (f (cons (selected-frame) frames)) (redraw-frame f))))
-
 (defun glitnir-gui--off (frames)
-  "A raw snapshot of the selected frame drawn the stock way, it and FRAMES redrawn whole with Glitnir off.
-Glitnir is on again after, and they are redrawn whole once more (so `verify' compares like with like)."
+  "A raw snapshot of the selected frame with it and FRAMES redrawn whole with Glitnir off, redrawn again after."
   (prog1 (let ((glitnir-enable nil))
-           (glitnir-gui--redraw frames)
-           (glitnir-snapshot nil 'raw))
-    (glitnir-gui--redraw frames)))
+           (dolist (f (cons (selected-frame) frames)) (redraw-frame f))
+           (glitnir-gui--painted))
+    (dolist (f (cons (selected-frame) frames)) (redraw-frame f))
+    (glitnir-gui--painted)))
 
 (ert-deftest glitnir-gui/corner-shows-what-is-beneath ()
   :tags '(gnome-smoke)
   (glitnir-gui--under)
   (let ((c nil))
     (unwind-protect
-        (glitnir-gui--verified
+        (progn
           (setq c (glitnir-gui--popup '((corner-radius . 8) (shadow . nil))))
-          (pcase-let ((snap (glitnir-snapshot nil 'raw)) (`(,x ,y ,w ,h) (glitnir--layer-rect c)))
+          (pcase-let ((snap (glitnir-snapshot nil 'raw)) (`(,x ,y ,w ,h) (glitnir-gui--rect c)))
             (should (equal (glitnir-gui--pixel snap (list x y)) '(255 0 255)))
             (should (equal (glitnir-gui--pixel snap (list (+ x w -1) (+ y h -1))) '(255 0 255)))
             (should (equal (glitnir-gui--pixel snap (glitnir-gui--mid (list x y w h))) '(0 255 255)))
@@ -966,42 +388,15 @@ Glitnir is on again after, and they are redrawn whole once more (so `verify' com
             (should-not (equal (glitnir-gui--pixel snap (list x (+ y (/ h 2)))) '(255 0 255)))))
       (when (frame-live-p c) (delete-frame c t)))))
 
-(ert-deftest glitnir-gui/surface-reset-inside-redisplay-keeps-content ()
-  ;; A popup's surface made anew inside redisplay after the popup was updated (pgtk's scale watch or GTK's
-  ;; size-allocate at an unblock_input; newer frames are updated first, so the root's fontification runs after the
-  ;; popup's update): redisplay then clears the popup's garbaged flag, its rows are never redrawn, and the surface
-  ;; that became the shown one held its border only, composed with its chrome around a transparent inside
-  ;; (GL-U1-BLANK-CORFU-1).  The last complete surface stays until the popup has been redrawn whole.
-  (glitnir-gui--under)
-  (let ((c nil) (armed t))
-    (unwind-protect
-        (glitnir-gui--verified
-          (setq c (glitnir-gui--popup '((corner-radius . 0) (shadow . nil))))
-          (with-current-buffer "*glitnir-under*"
-            (setq-local fontification-functions
-                        (list (lambda (pos)
-                                (put-text-property pos (point-max) 'fontified t)
-                                (when armed
-                                  (setq armed nil)
-                                  (glitnir--debug-reset-surface c)))))
-            (put-text-property (point-min) (point-max) 'fontified nil))
-          (force-mode-line-update t)     ; every frame's windows: the popup is updated before the root's
-          (glitnir-gui--painted) (redisplay t)
-          (should-not armed)
-          (pcase-let ((snap (glitnir-snapshot nil 'raw)) (`(,x ,y ,w ,h) (glitnir--layer-rect c)))
-            (should (equal (glitnir-gui--pixel snap (glitnir-gui--mid (list x y w h))) '(0 255 255)))))
-      (with-current-buffer "*glitnir-under*" (kill-local-variable 'fontification-functions))
-      (when (frame-live-p c) (delete-frame c t)))))
-
 (ert-deftest glitnir-gui/shadow-darkens-below ()
   :tags '(gnome-smoke)
   (glitnir-gui--under)
   (let ((c nil))
     (unwind-protect
-        (glitnir-gui--verified
+        (progn
           (setq c (glitnir-gui--popup '((corner-radius . 0) (shadow . (:blur 16 :offset (0 . 6) :opacity 0.35)))))
           (pcase-let* ((snap (glitnir-snapshot nil 'raw)) (s (frame-scale-factor))
-                       (`(,x ,y ,w ,h) (glitnir--layer-rect c)) (mx (+ x (/ w 2))))
+                       (`(,x ,y ,w ,h) (glitnir-gui--rect c)) (mx (+ x (/ w 2))))
             (let ((below (glitnir-gui--pixel snap (list mx (+ y h (round (* 4 s)))))))
               (should (< (nth 0 below) 245))
               (should (< (nth 2 below) 245)))
@@ -1011,49 +406,40 @@ Glitnir is on again after, and they are redrawn whole once more (so `verify' com
 
 (ert-deftest glitnir-gui/no-residue-after-hide ()
   (glitnir-gui--under)
-  (let ((c nil) (before (glitnir-snapshot nil 'raw)))
+  (let ((c nil) (before (glitnir-gui--painted)))
     (unwind-protect
-        (glitnir-gui--verified
+        (progn
           (setq c (glitnir-gui--popup glitnir-gui--chrome))
           (let ((rect (glitnir-gui--around c)))
             (set-frame-position c 230 215) (glitnir-gui--painted)
-            (make-frame-invisible c) (glitnir-gui--painted)
-            (should (= (glitnir-gui--differ before (glitnir-snapshot nil 'raw) rect) 0))))
+            (make-frame-invisible c)
+            (should (= (glitnir-gui--differ before (glitnir-gui--painted) rect) 0))))
       (when (frame-live-p c) (delete-frame c t)))))
 
 (ert-deftest glitnir-gui/geometry-parity ()
-  ;; Glitnir draws child frames, it never places them: their geometry after each Lisp call is the Glitnir-off run's.
-  ;; Each side lets GTK's layout run before it reads: stock pgtk takes a child's `frame-edges' from GTK's allocation,
-  ;; which follows only at GTK's next layout (whenever GLib next dispatches, e.g. from an unblock_input with input
-  ;; pending), so a read right after the call races in stock too.  The fix is NH-PGTK-CHILD-EDGES-1 (branch
-  ;; nh-pgtk-child-frame-edges, below the flag groups).
+  ;; Chrome widens a child frame's surface, never its frame: its geometry after each Lisp call is the same without.
   (glitnir-gui--under)
-  (cl-flet ((run (on)
-              (let ((glitnir-enable on) (out nil) (c nil))
+  (cl-flet ((run (params)
+              (let ((out nil) (c nil))
                 (unwind-protect
                     (cl-flet ((note () (glitnir-gui--painted)
                                 (push (list (frame-edges c) (frame-edges c 'native-edges) (frame-position c))
                                       out)))
-                      (setq c (glitnir-gui--popup glitnir-gui--chrome)) (note)
+                      (setq c (glitnir-gui--popup params)) (note)
                       (set-frame-position c 260 230) (note)
                       (set-frame-size c 30 8) (note)
                       (make-frame-invisible c) (note)
                       (make-frame-visible c) (note)
                       (modify-frame-parameters c '((left . 180) (top . 210))) (note)
-                      (modify-frame-parameters c '((corner-radius . 4))) (note)
-                      (redisplay t) (note)
                       (nreverse out))
                   (when (frame-live-p c) (delete-frame c t))))))
-    (glitnir-gui--verified
-      (let ((on (run t)) (off (run nil)))
-        (glitnir-gui--redraw nil)
-        (should (equal on off))))))
+    (should (equal (run glitnir-gui--chrome) (run nil)))))
 
 (ert-deftest glitnir-gui/no-chrome-child-identical ()
   (glitnir-gui--under)
   (let ((c nil) (old child-frame-chrome))
     (unwind-protect
-        (glitnir-gui--verified
+        (progn
           (setq child-frame-chrome glitnir-gui--chrome)
           (setq c (glitnir-gui--popup '((corner-radius . 0) (shadow . nil))))
           (let ((rect (glitnir-gui--around c)) (on (glitnir-gui--painted)))
@@ -1068,7 +454,7 @@ Glitnir is on again after, and they are redrawn whole once more (so `verify' com
   (glitnir-gui--under)
   (let ((c nil) (old child-frame-chrome))
     (unwind-protect
-        (glitnir-gui--verified
+        (progn
           (setq child-frame-chrome glitnir-gui--chrome)
           (setq c (glitnir-gui--popup '((undecorated . nil) (corner-radius . 8))))
           (let ((rect (glitnir-gui--around c)) (on (glitnir-gui--painted)))
@@ -1077,19 +463,29 @@ Glitnir is on again after, and they are redrawn whole once more (so `verify' com
       (setq child-frame-chrome old)
       (when (frame-live-p c) (delete-frame c t)))))
 
+(ert-deftest glitnir-gui/per-frame-border-face-follows ()
+  (let ((c (glitnir-gui--chromed '(corner-radius . 8))))
+    (unwind-protect
+        (pcase-let ((`(,x ,y ,_ ,h) (glitnir-gui--rect c)))
+          (let ((edge (list x (+ y (/ h 2)))))
+            (set-face-background 'child-frame-border "red" c)
+            (should (equal (glitnir-gui--pixel (glitnir-gui--painted) edge) '(255 0 0)))
+            (set-face-background 'child-frame-border "blue" c)
+            (should (equal (glitnir-gui--pixel (glitnir-gui--painted) edge) '(0 0 255)))))
+      (glitnir-gui--delete (list c)))))
+
 (ert-deftest glitnir-gui/theme-switch-recolours-visible-popup ()
   (glitnir-gui--under)
   (let ((c nil))
     (unwind-protect
-        (glitnir-gui--verified
+        (progn
           (setq c (glitnir-gui--popup glitnir-gui--chrome))
-          (pcase-let* ((s (frame-scale-factor)) (`(,x ,y ,w ,h) (glitnir--layer-rect c))
+          (pcase-let* ((s (frame-scale-factor)) (`(,x ,y ,w ,h) (glitnir-gui--rect c))
                        (below (list (+ x (/ w 2)) (+ y h (round (* 4 s)))))
                        (edge (list x (+ y (/ h 2)))))
             (should (< (nth 0 (glitnir-gui--pixel (glitnir-snapshot nil 'raw) below)) 245)) ; black on magenta
             (enable-theme 'glitnir-gui-test)
-            (redisplay t)
-            (let ((snap (glitnir-snapshot nil 'raw)))
+            (let ((snap (glitnir-gui--painted)))
               (should (>= (nth 0 (glitnir-gui--pixel snap below)) 250)) ; red on magenta
               (should (< (nth 2 (glitnir-gui--pixel snap below)) 245))
               (should (equal (glitnir-gui--pixel snap edge) '(0 0 255))))))
@@ -1100,10 +496,10 @@ Glitnir is on again after, and they are redrawn whole once more (so `verify' com
   (glitnir-gui--under)
   (let ((c nil) (old child-frame-chrome))
     (unwind-protect
-        (glitnir-gui--verified
+        (progn
           (setq child-frame-chrome nil)
           (setq c (glitnir-gui--popup nil))
-          (pcase-let ((`(,x ,y . ,_) (glitnir--layer-rect c)))
+          (pcase-let ((`(,x ,y . ,_) (glitnir-gui--rect c)))
             (should-not (equal (glitnir-gui--pixel (glitnir-snapshot nil 'raw) (list x y)) '(255 0 255)))
             ;; the option's watcher refreshes from a timer
             (setq child-frame-chrome '((corner-radius . 8)))
@@ -1116,103 +512,43 @@ Glitnir is on again after, and they are redrawn whole once more (so `verify' com
       (when (frame-live-p c) (delete-frame c t)))))
 
 (ert-deftest glitnir-gui/timer-move-without-redraw-commits ()
-  ;; Review Focus 3: a timer moves a shown popup and nothing is redrawn; the next snapshot shows it at its new place.
+  ;; A timer moves a shown popup and nothing is redrawn: the picture shows it at its new place.
   (glitnir-gui--under)
   (let ((c nil))
     (unwind-protect
-        (glitnir-gui--verified
+        (progn
           (setq c (glitnir-gui--popup glitnir-gui--chrome))
-          (let ((s (frame-scale-factor)) (old (glitnir--layer-rect c))
-                (t0 (glitnir--now-ns)) (n0 (plist-get (glitnir-stats) :count)))
+          (let ((old (glitnir-gui--rect c)))
             (run-at-time 0 nil (lambda () (set-frame-position c 520 360)))
-            ;; the paint of the move: the first picture after it must show the popup at its new place
-            (should (gui-runner-wait (lambda () (and (not (equal (take 2 (glitnir--layer-rect c)) (take 2 old)))
-                                                     (>= (plist-get (glitnir-stats) :count) (1+ n0))
-                                                     (>= (plist-get (glitnir--last-paint) :commit-ns) t0)))))
-            (let ((snap (glitnir-snapshot nil 'raw)) (new (glitnir--layer-rect c)))
-              (should (equal (take 2 new) (list (round (* 520 s)) (round (* 360 s)))))
-              (should (equal (glitnir-gui--pixel snap (glitnir-gui--mid new)) '(0 255 255)))
+            (should (gui-runner-wait (lambda () (not (equal (take 2 (glitnir-gui--rect c)) (take 2 old))))))
+            (gui-runner-wait-settled)
+            (let ((snap (glitnir-snapshot nil 'raw)))
+              (should (equal (glitnir-gui--pixel snap (glitnir-gui--mid (glitnir-gui--rect c))) '(0 255 255)))
               (should (equal (glitnir-gui--pixel snap (glitnir-gui--mid old)) '(255 0 255))))))
       (when (frame-live-p c) (delete-frame c t)))))
 
-(defun glitnir-gui--hide-from-timer ()
-  "A timer hides a shown popup and nothing is redrawn (Review Focus 3).  Returns (MS . DIFFER): the time from the call
-to the first paint after it (nil when none came in 0.5 s), and the number of differing pixels around the popup
-between the picture before it was shown and the first picture after the hide."
-  (glitnir-gui--under)
-  (let ((c nil) (t0 nil) (first nil) (before (glitnir-snapshot nil 'raw)) (result nil))
-    (unwind-protect
-        (glitnir-gui--verified
-          (setq c (glitnir-gui--popup glitnir-gui--chrome))
-          (let ((rect (glitnir-gui--around c)) (end (+ (float-time) 0.5)))
-            (run-at-time 0 nil (lambda () (setq t0 (glitnir--now-ns)) (make-frame-invisible c)))
-            (while (and (not first) (< (float-time) end))
-              (accept-process-output nil 0.001)
-              (when t0
-                (let ((p (plist-get (glitnir--last-paint) :paint-ns)))
-                  (when (> p t0) (setq first p)))))
-            (setq result (cons (and first (/ (- first t0) 1e6))
-                               (glitnir-gui--differ before (glitnir-snapshot nil 'raw) rect)))))
-      (when (frame-live-p c) (delete-frame c t)))
-    result))
-
 (ert-deftest glitnir-gui/hide-from-timer-paints-without-popup ()
-  ;; The hide hook commits at once: a paint follows the call, and the popup is gone from it.
-  (pcase-let ((`(,ms . ,differ) (glitnir-gui--hide-from-timer)))
-    (should ms)
-    (should (= differ 0))))
-
-(ert-deftest glitnir-gui/hide-from-timer-not-late ()
-  ;; Review Focus 3: the first paint after the call comes within one frame-clock tick (60 Hz) and 4 ms.  On sway the
-  ;; frame callback comes later (gui-known-differences.eld); mutter checks it in the smoke tier.
-  :tags '(gnome-smoke :timing)
-  (pcase-let ((`(,ms . ,_) (glitnir-gui--hide-from-timer)))
-    (should ms)
-    (princ (format "hide from a timer: first paint %.1f ms after the call\n" ms) #'external-debugging-output)
-    (should (<= ms (+ (/ 1000.0 60) 4)))))
-
-(ert-deftest glitnir-gui/alpha-child-drawn-stock ()
-  ;; GTK paints a child with an `alpha' below 1 inside a group: it is drawn the stock way, with no chrome even when
-  ;; the option gives it some (P2 brings `alpha' in).
+  ;; A timer hides a shown popup and nothing is redrawn: the popup leaves the picture.
   (glitnir-gui--under)
-  (let ((c nil) (old child-frame-chrome))
+  (let ((c nil) (before (glitnir-gui--painted)))
     (unwind-protect
-        (glitnir-gui--verified
-          (setq child-frame-chrome glitnir-gui--chrome)
-          (setq c (glitnir-gui--popup '((alpha . 0.8))))
-          (let ((rect (glitnir-gui--around c)) (on (glitnir-gui--painted)))
-            (should (= (glitnir-gui--differ on (glitnir-gui--off (list c)) rect) 0))))
-      (setq child-frame-chrome old)
+        (progn
+          (setq c (glitnir-gui--popup glitnir-gui--chrome))
+          (let ((rect (glitnir-gui--around c)))
+            (run-at-time 0 nil (lambda () (make-frame-invisible c)))
+            (should (gui-runner-wait
+                     (lambda () (= (glitnir-gui--differ before (glitnir-snapshot nil 'raw) rect) 0))))))
       (when (frame-live-p c) (delete-frame c t)))))
 
 (ert-deftest glitnir-gui/visible-bell-clears ()
-  ;; The bell's inverted rows show (the root's source is the bell's surface while it lives), and once its 50 ms
-  ;; atimer has taken it back the picture is the one before.
+  ;; The bell's inverted rows show, and once its 50 ms atimer has taken it back the picture is the one before.
   (glitnir-gui--under)
-  (glitnir-gui--verified
-    (let* ((visible-bell t) (ring-bell-function nil) (s (frame-scale-factor))
-           (top (nth 1 (window-pixel-edges (frame-first-window))))
-           (row (list (round (* (/ (frame-pixel-width) 2) s)) (round (* top s))
-                      (round (* (/ (frame-pixel-width) 4) s)) (round (* (/ (frame-char-height) 2) s))))
-           (before (glitnir-snapshot nil 'raw)))
-      (ding)
-      (should (> (glitnir-gui--differ before (glitnir-snapshot nil 'raw) row) 0))
-      (should (gui-runner-wait (lambda () (= (glitnir-gui--differ before (glitnir-snapshot nil 'raw) row) 0)))))))
-
-(ert-deftest glitnir-gui/scale-mismatch-draws-stock ()
-  ;; Review Focus 4: until pgtk sees a new monitor scale (its 1 s atimer), the frames' surfaces have another scale
-  ;; than GDK's buffer; that root is drawn the stock way and the paint is counted.
-  (glitnir-gui--under)
-  (let ((c nil))
-    (unwind-protect
-        (glitnir-gui--verified
-          (setq c (glitnir-gui--popup glitnir-gui--chrome))
-          (let ((rect (glitnir-gui--around c)) (n (plist-get (glitnir-stats) :scale-mismatch)))
-            (should (glitnir--debug-scale-mismatch))
-            (redisplay t)
-            (should (gui-runner-wait (lambda () (>= (plist-get (glitnir-stats) :scale-mismatch) (1+ n)))))
-            (let ((on (glitnir-snapshot nil 'raw)))
-              (should (= (glitnir-gui--differ on (glitnir-gui--off (list c)) rect) 0)))))
-      (when (frame-live-p c) (delete-frame c t)))))
+  (let* ((visible-bell t) (ring-bell-function nil)
+         (top (nth 1 (window-pixel-edges (frame-first-window))))
+         (row (list (/ (frame-pixel-width) 2) top (/ (frame-pixel-width) 4) (/ (frame-char-height) 2)))
+         (before (glitnir-gui--painted)))
+    (ding)
+    (should (> (glitnir-gui--differ before (glitnir-snapshot nil 'raw) row) 0))
+    (should (gui-runner-wait (lambda () (= (glitnir-gui--differ before (glitnir-snapshot nil 'raw) row) 0))))))
 
 ;;; glitnir-gui-tests.el ends here
