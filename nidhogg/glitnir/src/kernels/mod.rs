@@ -6,6 +6,7 @@
 //! of the baseline, so the baseline build is the vector build there. OVER is pixman's exact `UN8x4_MUL_UN8`
 //! arithmetic (x·a/255 rounded), bit for bit equal to `pixman_image_composite32` for premultiplied input.
 
+mod blur;
 mod copy;
 mod corner;
 mod over;
@@ -13,6 +14,7 @@ mod ring;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use blur::{MAX_RADIUS, Px, bilerp_px};
 pub use corner::corner_coverage;
 pub use ring::{RingCoverage, clamp_radius, decor_tile, ring_coverage};
 
@@ -36,6 +38,9 @@ pub struct Mask<'a> {
     pub stride: usize,
 }
 
+type Down4Row = fn(&mut [Px], &[u32], &[u32], &[u32], &[u32]);
+type BoxVRow = fn(&mut [Px], &mut [[u16; 4]], &[Px], &[Px], u16);
+
 /// One build of the row kernels. Get the machine's with [`kernels`].
 pub struct Kernels {
     /// "baseline" or "avx2".
@@ -45,6 +50,10 @@ pub struct Kernels {
     over_row: fn(&mut [u32], &[u32]),
     mask_over_row: fn(&mut [u32], &[u32], &[u8], u8),
     solid_over_row: fn(&mut [u32], u32, &[u8]),
+    down4_row: Down4Row,
+    box_h_row: fn(&mut [Px], &[Px], usize),
+    box_v_row: BoxVRow,
+    bilerp_row: fn(&mut [u32], &[Px], &[Px], u16),
 }
 
 static BASELINE: Kernels = Kernels {
@@ -54,6 +63,10 @@ static BASELINE: Kernels = Kernels {
     over_row: over::over_base,
     mask_over_row: over::mask_over_base,
     solid_over_row: over::solid_over_base,
+    down4_row: blur::down4_base,
+    box_h_row: blur::box_h_base,
+    box_v_row: blur::box_v_base,
+    bilerp_row: blur::bilerp_base,
 };
 
 #[cfg(target_arch = "x86_64")]
@@ -64,6 +77,10 @@ static AVX2: Kernels = Kernels {
     over_row: over::over_avx2,
     mask_over_row: over::mask_over_avx2,
     solid_over_row: over::solid_over_avx2,
+    down4_row: blur::down4_avx2,
+    box_h_row: blur::box_h_avx2,
+    box_v_row: blur::box_v_avx2,
+    bilerp_row: blur::bilerp_avx2,
 };
 
 /// The kernels for this machine, chosen once: AVX2 where the CPU has it, else the baseline.
@@ -186,6 +203,54 @@ impl Kernels {
         for r in 0..h {
             (self.solid_over_row)(dst.row(r, w), colour, mask.row(r, w));
         }
+    }
+
+    /// `d` = the 4×4 box averages of four source rows, each 4 × `d.len()` wide.
+    pub(crate) fn down4(&self, d: &mut [Px], rows: [&[u32]; 4]) {
+        (self.down4_row)(d, rows[0], rows[1], rows[2], rows[3]);
+    }
+
+    /// `d[i]` = the mean of `s[i..=i + 2r]`; `s` is `2r` longer than `d`.
+    pub(crate) fn box_h(&self, d: &mut [Px], s: &[Px], r: usize) {
+        if r == 0 {
+            d.copy_from_slice(s);
+        } else {
+            (self.box_h_row)(d, s, r);
+        }
+    }
+
+    /// The same down the rows of width `w`: `s` has `2r` rows more than `d`. `sums` is scratch.
+    pub(crate) fn box_v(
+        &self,
+        d: &mut [Px],
+        s: &[Px],
+        w: usize,
+        r: usize,
+        sums: &mut Vec<[u16; 4]>,
+    ) {
+        if r == 0 {
+            d.copy_from_slice(s);
+            return;
+        }
+        let span = 2 * r + 1;
+        sums.clear();
+        sums.resize(w, [r as u16; 4]);
+        for row in s[..(span - 1) * w].chunks_exact(w) {
+            for (sum, p) in sums.iter_mut().zip(row) {
+                *sum = std::array::from_fn(|c| sum[c] + p[c] as u16);
+            }
+        }
+        let inv = blur::inverse(span);
+        for (i, d) in d.chunks_exact_mut(w).enumerate() {
+            let (add, sub) = (&s[(i + span - 1) * w..][..w], &s[i * w..][..w]);
+            (self.box_v_row)(d, sums, add, sub, inv);
+        }
+    }
+
+    /// Four pixels per pair of neighbouring cells of a ¼-resolution image, between the rows `t` and `b` at `fy`/8 of the
+    /// way down; `t` and `b` hold one cell more than `o` has quarters.
+    pub(crate) fn bilerp(&self, o: &mut [u32], t: &[Px], b: &[Px], fy: u16) {
+        (self.bilerp_row)(o, t, b, fy);
     }
 }
 

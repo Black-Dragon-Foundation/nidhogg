@@ -47,6 +47,13 @@ views (`kernels::{Pixels, PixelsMut, Mask}`).
   3σ past its box. Tiles hold one sample every 2 px from σ 8 and every 4 px from σ 16, sampled bilinearly: the
   coarsest that keeps the error within 2/255 of an 8×8-supersampled rounded rectangle convolved with an exact
   Gaussian.
+- `blur::Backdrop` keeps what lies beneath a translucent layer, blurred, at ¼ resolution, for the composite to sample
+  bilinearly: a 4×4 box average, then three running-sum box passes per axis (the kernels `down4`, `box_h`, `box_v`,
+  `bilerp`), at a cost that does not depend on σ. The image holds the layer's region plus `blur::margin(σ)` (3σ, a
+  multiple of 4). `update` recomputes only the rows the source's damage reaches, and a change of σ, scale, region or
+  source size recomputes it all; it returns the part of the region whose samples changed. Past the source, and past the
+  image, the edge repeats. Box radii are whole cells, so σ takes effect in steps, and below 2 device pixels it blurs only
+  as far as the averaging does.
 
 ## Compose
 
