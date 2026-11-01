@@ -1,7 +1,6 @@
 # Packages a Nidhogg tarball needs at run time on Ubuntu 26.04.  gcc and libgccjit: native compilation runs them.
 gcc
 libgccjit-15-dev
-libgtk-3-0t64
 libharfbuzz0b
 libcairo2
 libgnutls30t64

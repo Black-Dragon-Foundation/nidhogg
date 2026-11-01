@@ -2,6 +2,9 @@
 # Build Nidhogg in a capped podman container or on the host.  See README.md ("Building").
 #   nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memory SIZE]
 #                    [--build-dir DIR] [--check FILE] [--out FILE] [--stage STAGE] [--dry-run]
+# Linux builds Nidhogg's own Wayland shell (--with-nidhogg-wayland, which carries Glitnir), the one Linux path; macOS the NS app.
+# --without-glitnir on Linux is a terminal-only build with no Rust: the shell needs Glitnir, so there is no window system.
+# --nidhogg-wayland is the default and stays accepted; with --without-glitnir it is refused.
 # --stage build|check|pack runs one part on an existing --build-dir (default: all three in one run): build = configure and make
 # (and the compiled-Lisp cache), check = the --check targets in the built tree, pack = install and the tarball (--out).
 # --dev (or NIDHOGG_BUILD_DEV=1) is the DEV BUILD, for agents' task builds and functional/GUI tests: it configures
@@ -43,8 +46,8 @@ die() { echo "build.sh: $*" >&2; exit 1; }
 
 MODE="" DISTRO="" PREFIX="" JOBS="" MEMORY="" BUILD_DIR="" CHECK="" OUT="" DRY=0 STAGE=all GLITNIR=--with-glitnir
 DEV=0; [ "${NIDHOGG_BUILD_DEV:-}" != 1 ] || DEV=1
-NHWL=0   # --nidhogg-wayland: Nidhogg's own Wayland shell (no GTK) instead of pgtk
-WATCHDOG=1   # the stall watchdog is built in unless --without-nidhogg-watchdog
+NHWL=0       # --nidhogg-wayland was asked for by name
+WATCHDOG=1  # the stall watchdog is built in unless --without-nidhogg-watchdog
 WORKERS=1    # the worker threads are built in unless --without-nidhogg-workers
 CHAOS=0      # --chaos: seeded delays at the workers' sync points (src/nidhogg-chaos.h); dev builds only, so never in a release
 while [ $# -gt 0 ]; do
@@ -73,6 +76,7 @@ if [ "$DEV" = 1 ] && { [ -n "$OUT" ] || [ "$STAGE" = pack ]; }; then
   die "--dev builds are never packed (no --out, no --stage pack): a dev build is not a release; build without --dev"
 fi
 [ "$CHAOS" = 0 ] || [ "$DEV" = 1 ] || die "--chaos is for dev builds only: add --dev"
+[ "$NHWL" = 0 ] || [ -n "$GLITNIR" ] || die "--nidhogg-wayland needs Glitnir: leave out --without-glitnir"
 NATIVE=aot; [ "$DEV" = 0 ] || NATIVE=yes
 # NIDHOGG_BUILD_SANITIZE=address,undefined adds -fsanitize=... to CFLAGS and LDFLAGS: dev builds only (the workers-asan CI job)
 SANITIZE=${NIDHOGG_BUILD_SANITIZE:-}
@@ -154,11 +158,12 @@ fi
 
 if [ "$MODE" = host ] && [ "$UNAME" = Darwin ]; then
   CONF="--with-ns --with-native-compilation=$NATIVE --with-tree-sitter"
+elif [ -n "$GLITNIR" ]; then
+  CONF="--with-native-compilation=$NATIVE --with-tree-sitter --with-nidhogg-wayland"
 else
-  CONF="--with-native-compilation=$NATIVE --with-tree-sitter --with-pgtk"
-  if [ "$NHWL" = 1 ]; then CONF=${CONF/--with-pgtk/--with-nidhogg-wayland}; fi
+  CONF="--with-native-compilation=$NATIVE --with-tree-sitter --without-x"
 fi
-# Glitnir (the compositor, Rust) is on by default on pgtk and NS; --without-glitnir drops it and the Rust packages
+# Glitnir (the compositor, Rust) is on by default on Linux and NS; --without-glitnir drops it and the Rust packages
 CONF="$CONF${GLITNIR:+ $GLITNIR}"
 PKGS="\$(sed \"s/#.*//\" \$S/nidhogg/deps/$DISTRO.build"
 if [ -n "$GLITNIR" ]; then PKGS="$PKGS)"; else PKGS="$PKGS | grep -vxE 'cargo|rust|rustc')"; fi

@@ -12,7 +12,6 @@ pkgconf
 libgccjit
 gnutls
 tree-sitter
-gtk3
 harfbuzz
 cairo
 libxml2

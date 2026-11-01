@@ -18,14 +18,25 @@ rcis() { [ "$rc" = "$1" ] || fail "exit $rc, wanted $1: $out"; }
 
 run NIDHOGG_BUILD_NPROC=16 NIDHOGG_BUILD_MEMORY_KB=$((16*1024*1024)) -- --dry-run --container fedora-44 --prefix /opt/x
 rcis 0; has "--memory 6g --memory-swap 6g"; has "make -j4"; has "registry.fedoraproject.org/fedora:44"
-has "--prefix=\"\$P\""; has "P=/opt/x"; has "--with-pgtk"; has "--with-native-compilation=aot"; has "--with-tree-sitter"
+has "--prefix=\"\$P\""; has "P=/opt/x"; has "--with-nidhogg-wayland"; hasnt "pgtk"; has "--with-native-compilation=aot"; has "--with-tree-sitter"
 has "nidhogg/deps/fedora-44.build"; hasnt "docker"
-# Glitnir (the compositor): --with-glitnir by default on pgtk and NS, --without-glitnir turns it off (and installs no Rust)
+# Glitnir (the compositor): --with-glitnir by default on Linux and NS, --without-glitnir turns it off (and installs no Rust)
 has "--with-glitnir"; hasnt "grep -vxE"
 run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n
-rcis 0; has "--with-glitnir"; hasnt "grep -vxE"
+rcis 0; has "--with-glitnir"; has "--with-ns"; hasnt "grep -vxE"; hasnt "--with-nidhogg-wayland"
+# without Glitnir there is no shell, so Linux builds for the terminal
 run -- --dry-run --container fedora-44 --without-glitnir
-rcis 0; hasnt "--with-glitnir"; has "grep -vxE 'cargo|rust|rustc'"
+rcis 0; hasnt "--with-glitnir"; hasnt "--with-nidhogg-wayland"; has "--without-x"; has "grep -vxE 'cargo|rust|rustc'"
+run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n --without-glitnir
+rcis 0; hasnt "--with-glitnir"; has "--with-ns"; hasnt "--without-x"
+# the old switch still works, and it cannot be asked for without what it needs
+run -- --dry-run --container fedora-44 --nidhogg-wayland
+rcis 0; has "--with-nidhogg-wayland"
+run -- --dry-run --container fedora-44 --nidhogg-wayland --without-glitnir
+rcis 1; has "needs Glitnir"
+for d in fedora-44 fedora-45 ubuntu-26.04 debian-13 arch; do
+  ! grep -qi gtk nidhogg/deps/$d.build nidhogg/deps/$d.runtime || fail "$d's package lists still name GTK"
+done
 # low-memory-shrinks-or-refuses
 run NIDHOGG_BUILD_NPROC=16 NIDHOGG_BUILD_MEMORY_KB=$((5*1024*1024)) -- --dry-run --container fedora-45
 rcis 0; has "--memory 4g --memory-swap 4g"; has "make -j2"; has "/opt/nidhogg/31.1-nidhogg.4"
