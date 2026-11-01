@@ -1,5 +1,7 @@
 ;;; nhwl-menu-tests.el --- tests for the Wayland shell's popup menus  -*- lexical-binding: t -*-
 
+;; test-class: cond
+
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
 ;; This file is part of Nidhogg.
@@ -189,6 +191,7 @@
 (ert-deftest nhwl-menu/hover-on-a-submenu-row-arms-the-delay ()
   "Hovering a submenu row sets the time it opens; an item or a title does
 not, and selecting by key clears it."
+  :tags '(:timing)
   (let* ((map (nhwl-menu-test--two-levels))
          (rows (nhwl-menu--make-rows (nhwl-menu--title map)
                                      (nhwl-menu--items map)))
