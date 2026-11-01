@@ -508,7 +508,7 @@ extern void nhwl_damage_glyphs (struct glyph_string *);
 extern void nhwl_damage_cursor (struct window *, struct glyph_row *, bool);
 extern void nhwl_damage_fringe (struct window *,
 				struct draw_fringe_bitmap_params *);
-extern cairo_surface_t *nhwl_snapshot (struct frame *);
+extern ptrdiff_t nhwl_snapshot_list (struct frame *, const NhgSurface **);
 extern bool nhwl_glitnir_active_p (struct frame *);
 extern void nhwl_layer_origin (struct frame *, int *, int *);
 extern bool nhwl_decor_target (struct frame *, struct window *, uint64_t *,

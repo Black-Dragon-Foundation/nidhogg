@@ -210,6 +210,28 @@ pub struct NhgPresenterStats {
     pub ready_to_commit_max_ns: u64,
 }
 
+/// `nhg_tree_snapshot`: the first tree of `s` as the compositor was given it, with the popups that hang from it.  `s`
+/// holds trees as `nhg_present` takes them, one after another (a surface with no parent starts one).  `w` x `h` is the
+/// root's size.  Reads pixels.
+pub fn tree_snapshot(
+    backend: &dyn ShellBackend,
+    backings: &Backings,
+    s: &[NhgSurface],
+    w: i32,
+    h: i32,
+) -> Result<Vec<u32>, GlueError> {
+    let mut list = Vec::with_capacity(s.len());
+    for tree in s.chunk_by(|_, x| x.parent != 0) {
+        list.extend(frames(backings, tree, &drawable(tree[0].window, tree)?));
+    }
+    match list.first() {
+        Some(f) if f.window == s[0].window && (f.w, f.h) == (w, h) => {
+            Ok(backend.tree_snapshot(s[0].window, &list)?)
+        }
+        _ => Err(GlueError::State),
+    }
+}
+
 /// The shell presenter's counters and timing.
 pub fn stats(backend: &dyn ShellBackend) -> Result<NhgPresenterStats, GlueError> {
     let t = backend.presenter_timing()?;

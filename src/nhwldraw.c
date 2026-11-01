@@ -2535,28 +2535,6 @@ nhwl_now_ns (void)
   return (uint64_t) ts.tv_sec * 1000000000 + ts.tv_nsec;
 }
 
-/* A copy of F's backing, for glitnir-snapshot.  */
-cairo_surface_t *
-nhwl_snapshot (struct frame *f)
-{
-  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
-  cairo_surface_t *copy;
-  NhgBacking b;
-
-  if (!out->cr_surface)
-    return NULL;
-  cairo_surface_flush (out->cr_surface);
-  if (NHG (nhg_snapshot (FRAME_NHG (f), out->glitnir_id, &b)) < 0)
-    return NULL;
-  copy = cairo_image_surface_create (CAIRO_FORMAT_ARGB32, b.w, b.h);
-  cairo_surface_flush (copy);
-  NHG (nhg_snapshot_copy (FRAME_NHG (f), out->glitnir_id,
-			  cairo_image_surface_get_data (copy),
-			  cairo_image_surface_get_stride (copy), b.w, b.h));
-  cairo_surface_mark_dirty (copy);
-  return copy;
-}
-
 
 /***********************************************************************
 			   The title strip

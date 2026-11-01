@@ -1157,6 +1157,23 @@ impl MainState {
         self.presents.get(&id).map(|p| lock(p).draws)
     }
 
+    /// The alpha the compositor applies to window `id`'s surface, the newest the host asked for.
+    pub(crate) fn present_alpha(&self, id: u64) -> Option<u32> {
+        let p = lock(self.presents.get(&id)?);
+        p.rec.alpha.or(p.sent.alpha)
+    }
+
+    /// Where window `id`'s window geometry starts in its surface, logical pixels.
+    pub(crate) fn present_geometry_origin(&self, id: u64) -> (i32, i32) {
+        self.presents
+            .get(&id)
+            .and_then(|p| {
+                let p = lock(p);
+                p.rec.geometry.or(p.sent.geometry)
+            })
+            .map_or((0, 0), |g| (g.x, g.y))
+    }
+
     /// Popup `id` hangs on window `parent`: while that has shown no buffer, the popup shows none.
     pub(crate) fn present_after(&mut self, id: u64, parent: u64) {
         let (Some(popup), Some(parent)) = (self.present_of(id), self.present_of(parent)) else {
