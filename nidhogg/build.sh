@@ -19,8 +19,9 @@
 # Test overrides: NIDHOGG_BUILD_UNAME, NIDHOGG_BUILD_NPROC, NIDHOGG_BUILD_MEMORY_KB, NIDHOGG_BUILD_PODMAN,
 # NIDHOGG_BUILD_VMSTAT (a vm_stat stand-in), NIDHOGG_BUILD_HEARTBEAT (seconds between "still running" lines, default 300).
 # NIDHOGG_BUILD_PKG_CACHE=DIR keeps the container's downloaded packages (dnf, apt) in DIR between builds.
-# NIDHOGG_BUILD_CCACHE=DIR (container builds) compiles the C code through ccache with its cache in DIR (ccache is installed
-# in the container; the compiler is checked by content, so a changed gcc never hits).
+# NIDHOGG_BUILD_CCACHE=DIR compiles the C code through ccache with its cache in DIR.  In a container ccache is installed
+# there and the compiler is checked by content, so a changed gcc never hits; on the host (macOS CI) ccache must be on
+# PATH and the compiler is checked by its `-v` output (Xcode's cc is a shim whose content does not follow Xcode).
 # NIDHOGG_BUILD_LISP_CACHE=DIR keeps the build's compiled Lisp (the generated files under lisp/ and leim/: .elc, loaddefs, ...,
 # and obj/native-lisp: the .eln files) in DIR: written after `make`, restored (made newer than every source) before it.  The
 # caller keys DIR on everything that determines the output (the Lisp and C sources, build.sh, the distro, the compiler): an
@@ -261,6 +262,9 @@ script() {
     # recorder's command, the prefix of each test run.  Not in deps/: the builds' caches are keyed on that file
     [ -z "${NIDHOGG_CHECK_PACKAGES:-}${NIDHOGG_CHECK_RR:-}" ] || echo "dnf -y --setopt=install_weak_deps=False install ${NIDHOGG_CHECK_PACKAGES:-} ${NIDHOGG_CHECK_RR:+rr}"
     [ -z "${NIDHOGG_BUILD_CCACHE:-}" ] || echo 'export CCACHE_DIR=/ccache CCACHE_COMPILERCHECK=content CCACHE_MAXSIZE=500M CC="ccache gcc"; ccache -z >/dev/null'
+  elif [ -n "${NIDHOGG_BUILD_CCACHE:-}" ]; then
+    printf 'export CCACHE_DIR=%q CCACHE_COMPILERCHECK=%q CCACHE_MAXSIZE=500M CC=%q; ccache -z >/dev/null\n' \
+      "$NIDHOGG_BUILD_CCACHE" '%compiler% -v' "ccache ${CC:-gcc}"
   fi
   cat <<'BODY'
 # relative links so that a relocated binary finds its dump beside itself; the installed binary's own dump (a reused
@@ -402,7 +406,7 @@ lc_unlock
 BODY
   fi
   fi
-  if [ "$MODE" = container ] && [ -n "${NIDHOGG_BUILD_CCACHE:-}" ] && [ "$STAGE" != pack ]; then echo 'ccache -s || true'; fi
+  if [ -n "${NIDHOGG_BUILD_CCACHE:-}" ] && [ "$STAGE" != pack ]; then echo 'ccache -s || true'; fi
   if [ -n "$CHECK" ] && { [ "$STAGE" = all ] || [ "$STAGE" = check ]; }; then
     # test/Makefile runs each test as $(GDB) ... emacs: the recorder goes there, its traces under the build dir
     rr_arg=""
