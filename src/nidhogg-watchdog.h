@@ -166,7 +166,7 @@ struct nh_wd_cur
      (serialised by the lock): gc_ns_total, gc_count, gc_dropped;
    Lisp (`--deep') sets deep_left; the main thread's finalise of a deep
      stall decrements it; the monitor only reads it;
-   main thread: spans, stalls, dropped, wrapper_edges.
+   main thread: spans, stalls, dropped.
    The settings (threshold_ns, hang_ns, period_ns, no_monitor) are set
    by `--start'.  */
 struct nh_wd_shared
@@ -199,7 +199,6 @@ struct nh_wd_shared
   uint64_t spans;
   uint64_t stalls;
   uint64_t dropped;
-  uint64_t wrapper_edges;
 
   pthread_mutex_t m;
   pthread_cond_t cv;
@@ -258,7 +257,6 @@ extern void syms_of_nidhogg_watchdog (void);
 /* Edges and spans.  [nidhogg-watchdog.c]  */
 extern void nh_wd_wait_enter (struct thread_state *self,
 			      const struct timespec *timeout);
-extern void nh_wd_wait_enter_modal (const struct timespec *timeout);
 extern void nh_wd_wait_leave (struct thread_state *self);
 extern void nh_wd_suspend (bool);
 extern uint64_t nh_wd_now_ns (void);
@@ -334,12 +332,6 @@ extern void syms_of_nidhogg_watchdog_gc (void);
 extern void nh_wd_input_span_open (uint64_t now);
 extern void nh_wd_input_span_close (struct nh_wd_stall *, uint64_t now);
 extern void nh_wd_unwind_phases (struct handler *catch);
-
-/* The GLib poll wrapper and the dialog depth (pgtk only).
-   [nidhogg-watchdog-gtk.c]  */
-extern void nh_wd_gtk_install (void);
-extern void nh_wd_gtk_syms (void);
-extern int nh_wd_dialog_depth;
 
 #endif /* HAVE_NIDHOGG_WATCHDOG */
 

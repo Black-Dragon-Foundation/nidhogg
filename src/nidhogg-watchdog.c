@@ -47,9 +47,6 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "nidhogg-watchdog.h"
 #include "nidhogg-watchdog-phase.h"
 #include "coding.h"
-#ifdef HAVE_PGTK
-#include "dispextern.h"
-#endif
 
 /* The shared state (declared in nidhogg-watchdog.h).  All zero until
    `--start'; the lock and the condition variable are ready from the
@@ -250,26 +247,6 @@ nh_wd_wait_enter (struct thread_state *self, const struct timespec *timeout)
 }
 
 void
-nh_wd_wait_enter_modal (const struct timespec *timeout)
-{
-  if (!nh_wd_on || !pthread_equal (pthread_self (), nh_wd.main_id)
-      || !main_thread_p (current_thread))
-    return;
-  if (timeout && timeout->tv_sec == 0 && timeout->tv_nsec == 0)
-    return;
-#ifdef HAVE_PGTK
-  /* A person is using a menu or a dialog.  No waiting_for_user_input_p
-     test: the field is the command's outer 0 here.  */
-  if (!(popup_activated () || nh_wd_dialog_depth > 0))
-    return;
-  /* Only a wait that ends the span forgets a busy wait's phase depth.  */
-  wd_wait_depth = -1;
-  __atomic_fetch_add (&nh_wd.wrapper_edges, 1, __ATOMIC_RELAXED);
-  span_close (nh_wd_now_ns ());
-#endif
-}
-
-void
 nh_wd_wait_leave (struct thread_state *self)
 {
   if (!main_thread_p (self) || !nh_wd_on
@@ -365,7 +342,7 @@ usage: (nidhogg-watchdog--start THRESHOLD-MS HANG-MS HANG-FILE &rest FLAGS)  */)
 		    __ATOMIC_RELAXED);
   __atomic_store_n (&nh_wd.no_monitor, no_monitor, __ATOMIC_RELAXED);
   uint64_t *counters[] = {
-    &nh_wd.spans, &nh_wd.stalls, &nh_wd.dropped, &nh_wd.wrapper_edges,
+    &nh_wd.spans, &nh_wd.stalls, &nh_wd.dropped,
     &nh_wd.missed, &nh_wd.stale, &nh_wd.requests, &nh_wd.monitor_wakeups,
     &nh_wd.monitor_cpu_ns, &nh_wd.samples_taken, &nh_wd.gc_dropped,
   };
@@ -528,7 +505,7 @@ DEFUN ("nidhogg-watchdog--stats", Fnidhogg_watchdog__stats,
        Snidhogg_watchdog__stats, 0, 1, 0,
        doc: /* Return the stall watchdog's counters, or nil when it is off.
 \(:spans N :stalls N :dropped N :missed N :stale N :requests N :samples N
- :monitor-wakeups N :monitor-cpu-ms F :gc-dropped N :wrapper-edges N
+ :monitor-wakeups N :monitor-cpu-ms F :gc-dropped N
  :histograms (:command V :other V :typing V :collections V)), each V a
 vector of counts by bucket (ms): <4 <8 <16 <33 <50 <100 <250 <1000 >=1000.
 With RESET non-nil, also zero them.  */)
@@ -555,15 +532,14 @@ With RESET non-nil, also zero them.  */)
   Lisp_Object wakeups = make_uint (WD_TAKE (&nh_wd.monitor_wakeups));
   Lisp_Object cpu = wd_ms (WD_TAKE (&nh_wd.monitor_cpu_ns));
   Lisp_Object gc_dropped = make_uint (WD_TAKE (&nh_wd.gc_dropped));
-  Lisp_Object edges = make_uint (WD_TAKE (&nh_wd.wrapper_edges));
   Lisp_Object samples = make_uint (WD_TAKE (&nh_wd.samples_taken));
 #undef WD_TAKE
-  return listn (24,
+  return listn (22,
 		QCspans, spans, QCstalls, stalls, QCdropped, dropped,
 		QCmissed, missed, QCstale, stale, QCrequests, requests,
 		QCsamples, samples,
 		QCmonitor_wakeups, wakeups, QCmonitor_cpu_ms, cpu,
-		QCgc_dropped, gc_dropped, QCwrapper_edges, edges,
+		QCgc_dropped, gc_dropped,
 		QChistograms,
 		listn (8, QCcommand, h[NH_WD_H_COMMAND], QCother, h[NH_WD_H_OTHER],
 		       QCtyping, h[NH_WD_H_TYPING],
@@ -657,7 +633,6 @@ syms_of_nidhogg_watchdog (void)
   DEFSYM (QCmonitor_wakeups, ":monitor-wakeups");
   DEFSYM (QCmonitor_cpu_ms, ":monitor-cpu-ms");
   DEFSYM (QCgc_dropped, ":gc-dropped");
-  DEFSYM (QCwrapper_edges, ":wrapper-edges");
   DEFSYM (QChistograms, ":histograms");
   DEFSYM (QCcommand, ":command");
   DEFSYM (QCother, ":other");
@@ -675,9 +650,6 @@ syms_of_nidhogg_watchdog (void)
 
   nh_wd_syms_of_sample ();
   nh_wd_input_syms ();
-#ifdef HAVE_PGTK
-  nh_wd_gtk_syms ();
-#endif
 
   Fprovide (intern_c_string ("nidhogg-watchdog"), Qnil);
 }
