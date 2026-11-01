@@ -11,7 +11,7 @@ use std::array::from_fn;
 pub(crate) type Px = [u8; 4];
 
 /// The largest box radius. Up to this width the inverse, rounded up, adds less than the half that rounds, so a flat
-/// colour stays exactly itself; a box twice as wide turns 255 into 256.
+/// colour stays exactly itself; from radius 75 a flat colour drifts up by one.
 pub(crate) const MAX_RADIUS: usize = 63;
 
 /// 2¹⁶ / `span`, rounded up.
