@@ -427,7 +427,7 @@ fn run(link: &Link, mail: &Mailbox, mut stage: Stage) -> Stage {
                 Some(now + TRIM_RETRY_NS)
             };
         }
-        if let Some(hold) = stage.next_hold(now) {
+        if let Some(hold) = stage.next_hold() {
             next = Some(next.map_or(hold, |t| t.min(hold)));
         }
         if next != armed {
