@@ -133,9 +133,10 @@ window's body edges and POS's position are added to that."
 
 ;; The neighbour corner repaint: a chip's rounded ends stay right when the glyph string beside it is redrawn alone.
 
-(defun glitnir-decor-gui--chip (before edit &optional face-props)
+(defun glitnir-decor-gui--chip (before edit &optional face-props after)
   "Draw BEFORE then a rounded chip \" ab \" under `verify'; call EDIT with the start of BEFORE's end (a marker) to redraw
-only the neighbour; return (VIOLATIONS TOP-LEFT-PX TOP-RIGHT-PX FULL-GRAB) with pixels of the chip's corners."
+only the neighbour; return (VIOLATIONS TOP-LEFT-PX TOP-RIGHT-PX FULL-GRAB FRAME-ORIGIN AFTER-VALUE) with pixels of the
+chip's corners.  AFTER, called last with the chip's buffer still shown, makes AFTER-VALUE."
   (let ((glitnir-enable t) (glitnir-debug 'verify)
         (face (make-symbol "glitnir-decor-gui-chip")))
     (custom-declare-face face nil "Test face.")
@@ -159,7 +160,7 @@ only the neighbour; return (VIOLATIONS TOP-LEFT-PX TOP-RIGHT-PX FULL-GRAB) with 
           (list (plist-get (glitnir-stats) :violations)
                 (glitnir-decor-gui--px g (car at) (cdr at))
                 (glitnir-decor-gui--px g (1- (car right)) (cdr at))
-                g fo)))))))
+                g fo (and after (funcall after)))))))))
 
 (ert-deftest glitnir-decor-gui/decor-repaint-before-draw-survives-overhang ()
   (skip-unless (featurep 'nidhogg-wayland))
@@ -214,11 +215,13 @@ only the neighbour; return (VIOLATIONS TOP-LEFT-PX TOP-RIGHT-PX FULL-GRAB) with 
 (ert-deftest glitnir-decor-gui/decor-partial-equals-full ()
   (skip-unless (featurep 'nidhogg-wayland))
   ;; Redrawing only the neighbour gives the same pixels as a full redraw.
-  (let ((r (glitnir-decor-gui--chip "xy" (lambda (m) (save-excursion (goto-char m) (delete-char -1) (insert "y"))))))
+  (let ((r (glitnir-decor-gui--chip "xy" (lambda (m) (save-excursion (goto-char m) (delete-char -1) (insert "y")))
+                                    nil (lambda ()
+                                          (redraw-frame)
+                                          (gui-runner-wait-settled)
+                                          (gui-runner-screen-grab)))))
     (should (= (nth 0 r) 0))
-    (redraw-frame)
-    (gui-runner-wait-settled)
-    (let* ((full (gui-runner-screen-grab)) (part (nth 3 r)))
+    (let* ((full (nth 5 r)) (part (nth 3 r)))
       (should (equal (aref (nth 2 full) 0) (aref (nth 2 part) 0)))
       ;; the title bar around the text area changes between two grabs (focus, hover): compare the text area
       (let* ((s (glitnir-decor-gui--scale))
