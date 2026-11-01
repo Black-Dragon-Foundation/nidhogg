@@ -1,4 +1,5 @@
 ;;; watchdog-lisp-tests.el --- tests for the stall watchdog (lisp)  -*- lexical-binding: t -*-
+;; test-class: det
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
