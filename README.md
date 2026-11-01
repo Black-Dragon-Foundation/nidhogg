@@ -219,6 +219,11 @@ A joint round (drgnx and Nidhogg change together, drgnx's `docs/develop/ci.md`, 
 `drgnx_ref=ci/joint/<name>`, so drgnx's Emacs-side tiers run once, on this run's build. Before the release tag, the pin
 moves to the round's green drgnx commit.
 
+A chaos build (`build.sh --dev --chaos`; `--chaos` refuses without `--dev`, so it never reaches a release) adds seeded
+delays at the workers' sync points (`src/nidhogg-chaos.h`). The seed is `NIDHOGG_TEST_SEED` (decimal, default 0), child
+Emacs processes inherit it, and the first point prints `chaos seed N` to stderr. It makes an ordering bug likely on a
+machine whose timing never shows it, not certain.
+
 - `tree`: `tree-test.sh` and `ci-test.sh` (full history and tags).
 - `linux` (fedora-44, fedora-45, ubuntu-26.04): `build.sh --container D --stage build`, the cache saves, then `--stage check
   --check nidhogg/check-subset.txt`, then `--stage pack --out ...` (so a failing check keeps the build's caches), then
