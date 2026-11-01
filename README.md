@@ -270,7 +270,7 @@ moves to the round's green drgnx commit.
 
 A chaos build (`build.sh --dev --chaos`; `--chaos` refuses without `--dev`, so it never reaches a release) adds seeded
 delays at the workers' sync points (`src/nidhogg-chaos.h`). The seed is `NIDHOGG_TEST_SEED` (decimal, default 0), child
-Emacs processes inherit it, and the first point prints `chaos seed N` to stderr. It makes an ordering bug likely on a
+Emacs processes inherit it, and with `NIDHOGG_TEST_CHAOS_BANNER` set the first point prints `chaos seed N` to stderr. It makes an ordering bug likely on a
 machine whose timing never shows it, not certain.
 
 - Test classes: a test file in `test/src/nidhogg-tests/` states its class in one header line within its first 15 lines,
