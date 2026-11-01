@@ -2643,10 +2643,11 @@ AC_SUBST([AUTO_DEPEND])
 
 #### Choose a window system.
 
+dnl Nidhogg: the shell is the one Linux window system; pgtk's sources stay for clean merges and are never built.
+test "${with_pgtk}" != yes ||
+  AC_MSG_ERROR([--with-pgtk is not built by Nidhogg: Linux uses --with-nidhogg-wayland])
 dnl Nidhogg: --with-nidhogg-wayland is one window system of its own: it refuses the others, wants Linux, and builds Glitnir.
 if test "${with_nidhogg_wayland}" = yes; then
-  test "${with_pgtk}" != yes ||
-    AC_MSG_ERROR([--with-nidhogg-wayland cannot be combined with --with-pgtk])
   test "${with_x}" != yes ||
     AC_MSG_ERROR([--with-nidhogg-wayland cannot be combined with --with-x])
   test "${with_ns}" != yes ||
@@ -3634,7 +3635,7 @@ fi
 HAVE_RSVG=no
 if test "${HAVE_X11}" = "yes" || test "${HAVE_NS}" = "yes" \
    || test "${opsys}" = "mingw32" || test "${HAVE_BE_APP}" = "yes" \
-   || test "${window_system}" = "pgtk" \
+   || test "${window_system}" = "pgtk" || test "${window_system}" = "nhwl" \
    || test "${REALLY_ANDROID}" = "yes"; then
   if test "${with_rsvg}" != "no"; then
     RSVG_REQUIRED=2.14.0
@@ -3663,6 +3664,7 @@ if test "${with_webp}" != "no"; then
    if test "${HAVE_X11}" = "yes" || test "${opsys}" = "mingw32" \
    || test "${HAVE_W32}" = "yes" || test "${HAVE_NS}" = "yes" \
    || test "${HAVE_BE_APP}" = "yes" || test "${HAVE_PGTK}" = "yes" \
+   || test "${HAVE_NHWL}" = "yes" \
    || test "${REALLY_ANDROID}" = "yes"; then
       WEBP_REQUIRED=0.6.0
       # Definitions from webp/decode.h are in libwebp, and those from
@@ -5065,7 +5067,7 @@ LIBJPEG=
 JPEG_CFLAGS=
 if test "${HAVE_X11}" = "yes" || test "${HAVE_W32}" = "yes" \
    || test "${HAVE_NS}" = "yes" || test "${HAVE_BE_APP}" = "yes" \
-   || test "$window_system" = "pgtk" \
+   || test "$window_system" = "pgtk" || test "$window_system" = "nhwl" \
    || test "${REALLY_ANDROID}" = "yes"; then
   if test "${with_jpeg}" != "no"; then
     if test "${REALLY_ANDROID}" = "yes"; then
@@ -5484,7 +5486,7 @@ if test "${with_png}" != no; then
     AC_CHECK_HEADER([png.h], [HAVE_PNG=yes])
   elif test "${HAVE_X11}" = "yes" || test "${HAVE_W32}" = "yes" \
        || test "${HAVE_NS}" = "yes" || test "${HAVE_BE_APP}" = "yes" \
-       || test "$window_system" = "pgtk" \
+       || test "$window_system" = "pgtk" || test "$window_system" = "nhwl" \
        || test "${REALLY_ANDROID}" = "yes"; then
     EMACS_CHECK_MODULES([PNG], [libpng >= 1.0.0])
     if test $HAVE_PNG = yes; then
@@ -5563,7 +5565,7 @@ if test "${opsys}" = "mingw32"; then
   fi
 elif test "${HAVE_X11}" = "yes" || test "${HAVE_W32}" = "yes" \
      || test "${HAVE_NS}" = "yes" || test "${HAVE_BE_APP}" = "yes" \
-     || test "$window_system" = "pgtk" \
+     || test "$window_system" = "pgtk" || test "$window_system" = "nhwl" \
      || test "${REALLY_ANDROID}" = "yes"; then
   if test "${with_tiff}" != "no"; then
     if test "${REALLY_ANDROID}" != "yes"; then
@@ -5611,6 +5613,7 @@ if test "${opsys}" = "mingw32"; then
 elif test "${HAVE_X11}" = "yes" && test "${with_gif}" != "no" \
         || test "${HAVE_W32}" = "yes" || test "${HAVE_NS}" = "yes" \
 	|| test "${HAVE_BE_APP}" = "yes" || test "$window_system" = "pgtk" \
+	|| test "$window_system" = "nhwl" \
 	|| test "${REALLY_ANDROID}" = "yes" \
 	&& test "${with_gif}" != "no"; then
   AC_CHECK_HEADER([gif_lib.h],
