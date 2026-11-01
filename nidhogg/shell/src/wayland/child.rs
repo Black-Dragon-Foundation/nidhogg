@@ -27,6 +27,8 @@ pub struct Child {
     /// decides when it maps and unmaps.
     mapped: bool,
     motion: bool,
+    /// It has a backdrop (`set_backdrop`): presenting follows its position.
+    backdrop: bool,
 }
 
 impl MainState {
@@ -72,6 +74,7 @@ impl WaylandShell {
                 y: d.y,
                 mapped: true,
                 motion: false,
+                backdrop: false,
             },
         );
         m.present_register(id, None, Some(subsurface));
@@ -179,6 +182,9 @@ impl WaylandShell {
         if let Some(c) = self.main.children.get_mut(&id) {
             c.x = x;
             c.y = y;
+            if c.backdrop {
+                self.backdrop_placed(id, (x, y));
+            }
             self.main
                 .present_record(id, |p| p.rec.position = Some((x, y)));
             // The protocol applies the position with the parent's commit; Smithay with the child's own (cached until
@@ -278,6 +284,23 @@ impl WaylandShell {
         }
         let root = self.main.tree_root(id);
         self.motion_post(root, Mail::Motion(id, spec, mapped));
+        Ok(())
+    }
+
+    /// Child `id`'s backdrop: σ `blur_px` logical pixels, 0 for none.
+    pub(super) fn window_set_backdrop(&mut self, id: WindowId, blur_px: f32) -> ShellResult {
+        if !blur_px.is_finite() || blur_px < 0.0 {
+            return Err(ShellError::Arg);
+        }
+        let c = self.main.children.get_mut(&id).ok_or(ShellError::State)?;
+        let on = blur_px > 0.0;
+        if !c.backdrop && !on {
+            return Ok(());
+        }
+        c.backdrop = on;
+        let (parent, at) = (c.parent, (c.x, c.y));
+        let root = self.main.tree_root(id);
+        self.motion_post(root, Mail::Backdrop(id, parent, blur_px, at));
         Ok(())
     }
 }

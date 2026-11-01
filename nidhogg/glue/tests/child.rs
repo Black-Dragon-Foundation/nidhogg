@@ -441,6 +441,57 @@ mod child {
         close(d);
     }
 
+    /// The backdrop's slot reaches the shell, and 0 takes it away.  A clear child shows the blur of what lies beneath,
+    /// then the root's own pixels again.
+    #[test]
+    fn vector_backdrop_reaches_shell() {
+        let rec = Recorder::start_clock("kwin", "manual");
+        let d = open(&rec);
+        let root = toplevel(d, 200, 100);
+        let mut r = surface(d, root, 200, 100);
+        let c = child(d, root, 30, 20, 60, 40);
+        let mut v = chrome::encode(&NhgChrome::default());
+        v[chrome::SLOT_BACKDROP] = 4.0;
+        assert_eq!(vector(d, c, &v), 0, "nothing to lay out");
+        let mut k = surface(d, c, 60, 40);
+        prepare(d, &mut r);
+        prepare(d, &mut k);
+        fill(d, &r, 0xff00_0000);
+        fill(d, &k, 0);
+        // the root is white from x = 60 on: a sharp edge, under the child's middle
+        for y in 0..r.back.h as usize {
+            for x in 60..r.back.w as usize {
+                // SAFETY: (x, y) lies inside the borrowed backing.
+                let at = y * r.back.w as usize + x;
+                unsafe { *r.back.pixels.cast::<u32>().add(at) = 0xffff_ffff };
+            }
+        }
+        let list = [
+            entry(&r, 0, NHG_SURF_DRAWABLE),
+            entry(&k, root, NHG_SURF_DRAWABLE),
+        ];
+        assert_ne!(
+            present(d, root, &list, NHG_PRESENT_BACKSTOP) & NHG_PRESENTED_PUBLISHED,
+            0
+        );
+        assert_ne!(ready(d, root) & NHG_PRESENTED_COMMITTED, 0);
+        tick(&rec, d);
+        // the pixels neither black nor white: where the edge is blurred
+        let grey = |rec: &Recorder| {
+            let snap = rec.snapshot();
+            let (px, _) = snap.1.as_chunks::<4>();
+            px.iter().filter(|p| (1..255).contains(&p[0])).count()
+        };
+        let blurred = grey(&rec);
+
+        v[chrome::SLOT_BACKDROP] = 0.0;
+        assert_eq!(vector(d, c, &v), 0);
+        ready(d, root);
+        tick(&rec, d);
+        assert!(grey(&rec) < blurred, "{} of {blurred}", grey(&rec));
+        close(d);
+    }
+
     /// The slots reach the shell before the first picture: the first show runs its leg, and a hide keeps the surface
     /// through its own, for about the slots' durations.
     #[test]
