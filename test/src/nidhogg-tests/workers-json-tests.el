@@ -1,4 +1,5 @@
 ;;; workers-json-tests.el --- tests for workers: the JSON tape  -*- lexical-binding: t -*-
+;; test-class: det
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 

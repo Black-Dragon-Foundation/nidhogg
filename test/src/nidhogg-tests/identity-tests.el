@@ -1,4 +1,5 @@
 ;;; identity-tests.el --- tests for Nidhogg's identity  -*- lexical-binding: t -*-
+;; test-class: det
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 

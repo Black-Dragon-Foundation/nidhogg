@@ -1,4 +1,5 @@
 ;;; nhwl-ime-tests.el --- input-method rows for the native shell  -*- lexical-binding: t -*-
+;; test-class: cond
 
 ;; Run by nidhogg/test/ime-matrix.sh (through gui.sh --ime IM --files nhwl-ime-tests.el), one container per
 ;; combination.  The rows type real keys at the compositor (wtype on sway and KWin, mutter's RemoteDesktop D-Bus
