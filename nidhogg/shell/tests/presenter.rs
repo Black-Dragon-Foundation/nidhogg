@@ -409,6 +409,33 @@ mod presenter {
         assert!(shown.contains("\"h\":100"), "{shown}");
     }
 
+    /// A configure has come and the host, which drew a size of its own, has not answered it.  A compositor reads the
+    /// commit of a new size as the client's own resize (sway sizes a floating window by it and drops the one it asked
+    /// for), so the picture waits for the answer, which is all it needs.
+    #[test]
+    fn a_picture_waits_for_the_answer_to_a_configure() {
+        let rec = Recorder::start("sway");
+        let mut shell = threaded(&rec);
+        let mut b = Backing::new(200, 100);
+        let id = window(&mut shell, &rec, &mut b);
+        let seq = next_seq(&rec);
+        rec.control_ok(r#"{"cmd":"configure","surface":"focused","size":[300,150],"states":[]}"#);
+        let ev = wait_for(&mut shell, |e| {
+            e.kind() == Kind::Configure && e.window == id
+        });
+        b.resize(240, 100);
+        b.fill_all(BG);
+        publish(&mut shell, id, &[(&b, id)], 0);
+        stays_up(&mut shell, 200);
+        assert_eq!(buffer_commits(&rec, seq, id), 0, "over an open configure");
+        shell
+            .ack_configure(id, configure_of(&ev).serial, 0)
+            .unwrap();
+        until(&mut shell, "the picture after the answer", |_| {
+            buffer_commits(&rec, seq, id) >= 1
+        });
+    }
+
     /// Review Focus 3: the host publishes while the pacer waits, then stays away for 200 ms.  The frame callback
     /// comes 20 ms in; the presenter commits the packet before the host is back.
     #[test]

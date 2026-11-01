@@ -64,6 +64,23 @@ fn no_grab(rec: &Recorder, id: u64) {
     });
 }
 
+/// The connection is still up within `ms`, and of the popups only those of `gone` heard they went with their parent
+/// (a host still names them).
+fn gone_with_parent(shell: &mut WaylandShell, ms: i64, gone: &[u64]) {
+    let mut done = Vec::new();
+    for ev in collect(shell, ms) {
+        assert_ne!(ev.kind(), Kind::Disconnected, "a protocol error");
+        if ev.kind() == Kind::PopupDone {
+            done.push(ev.window);
+        }
+    }
+    done.sort_unstable();
+    let mut gone = gone.to_vec();
+    gone.sort_unstable();
+    assert_eq!(done, gone);
+    shell.dispatch_main().expect("the connection is up");
+}
+
 /// The connection is still up within `ms`: no protocol error ended it, and no `POPUP_DONE` came.
 fn still_up(shell: &mut WaylandShell, ms: i64) {
     for ev in collect(shell, ms) {
@@ -182,7 +199,7 @@ mod popup {
             rec.wait_node(id, |n| n.contains(&grab_of("button")));
         }
         shell.window_destroy(a).unwrap();
-        still_up(&mut shell, 200);
+        gone_with_parent(&mut shell, 200, &[b, c]);
         assert_eq!(rec.surfaces("popup"), 0);
         assert_eq!(rec.surfaces("toplevel"), 1, "only the top-level is left");
         assert!(rec.control(r#"{"cmd":"clients"}"#).contains("\"pid\""));
@@ -193,7 +210,7 @@ mod popup {
         let c = popup(&mut shell, b, NHSHELL_WIN_GRAB);
         rec.wait_node(c, |n| n.contains(&grab_of("button")));
         shell.window_destroy(top).unwrap();
-        still_up(&mut shell, 200);
+        gone_with_parent(&mut shell, 200, &[a, b, c]);
         assert_eq!(rec.surfaces("popup") + rec.surfaces("toplevel"), 0);
     }
 
