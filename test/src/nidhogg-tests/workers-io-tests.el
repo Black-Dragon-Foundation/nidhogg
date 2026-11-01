@@ -796,6 +796,17 @@ Return the times the waits meanwhile reached their bound."
         (should-not ret)
         (should (< cpu 0.05))))))
 
+(ert-deftest workers/reader-clears-a-late-command-wake ()
+  ;; A poke sets the command flag, then writes the fd; nh-io can take the
+  ;; flag between the two, so the write lands with nothing to do.  It
+  ;; must still clear the fd: left readable, its poll returns at once
+  ;; and it spins until the next command.
+  (workers-io-tests--modes
+    (when (eq mode 'threads)
+      (let ((cat (workers-io-tests--cat "late-wake")))
+        (should (workers-io-tests--info cat :owned))
+        (should (nidhogg-workers--test-io-late-wake 2000))))))
+
 (ert-deftest workers/lisp-thread-lock ()
   ;; A reader-owned process locked to a `make-thread' thread is delivered
   ;; only on that thread, though the main thread waits for output too:
