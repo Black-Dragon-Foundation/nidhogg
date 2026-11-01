@@ -170,7 +170,8 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
 - A test file that fails in `--check` runs once more (`nidhogg/test/check-rerun.sh`). A test that failed and then passed
   fails the check unless `nidhogg/test/flaky.txt` lists it as `NAME # cause; stress run`; the run then prints
   `flaky (listed: CAUSE)`. A listed name that no test defines, or that two files define, fails the check too. A flake
-  without a cause is fixed, not listed. `bash nidhogg/test/check-rerun-test.sh` tests the step with a fake runner.
+  without a cause is fixed, not listed. A deterministic (class D) test is never rerun and stays red, and a D test on
+  `flaky.txt` fails the check; a C test in the same file still reruns. `bash nidhogg/test/check-rerun-test.sh` tests the step with a fake runner.
 - `bash nidhogg/test/build-test.sh` checks the dry-run output.
 
 ## Release tarballs
@@ -231,6 +232,13 @@ delays at the workers' sync points (`src/nidhogg-chaos.h`). The seed is `NIDHOGG
 Emacs processes inherit it, and the first point prints `chaos seed N` to stderr. It makes an ordering bug likely on a
 machine whose timing never shows it, not certain.
 
+- Test classes: a test file in `test/src/nidhogg-tests/` states its class in one header line within its first 15 lines,
+  exactly `;; test-class: det` (deterministic: no real time), `;; test-class: cond` (waits on conditions, no fixed
+  pause) or `;; test-class: timing` (may assert the clock). A test's own tag (`:det`, `:cond`, `:timing`) overrides the
+  file's. `test-class-lint-tests.el` reads the files as data and fails a classified file that breaks its class (a
+  same-file helper counts as part of the test). Files that are not tests are listed in `nidhogg/test/class-exempt.txt`
+  (`FILE # reason`); a row whose file is gone fails the check. Until every file is classified the check reports the
+  count of unclassified files and passes.
 - `tree`: `tree-test.sh`, `ci-test.sh` and `check-rerun-test.sh` (full history and tags).
 - `linux` (fedora-44, fedora-45, ubuntu-26.04): `build.sh --container D --stage build`, the cache saves, then `--stage check
   --check nidhogg/check-subset.txt`, then `--stage pack --out ...` (so a failing check keeps the build's caches), then
@@ -284,7 +292,8 @@ machine whose timing never shows it, not certain.
   verdicts are in the job log and the `timing-*` artifact. Absolute budgets stay on the desktop's perf island.
   `timing-lane.sh --self-test` checks the verdict rules.
 - Before a round, `nidhogg/test/preflight.sh` (the desktop, in the heavy slots) runs the passes that find ordering bugs:
-  the check files of `preflight-files.txt` pinned to 1 and 2 CPUs and under half a core (3 runs each; podman options
+  every `;; test-class: det` file twice unpinned and once on 1 CPU (a difference between the runs is red), then
+  the check files of `preflight-files.txt` plus every `cond` file outside the GUI set pinned to 1 and 2 CPUs and under half a core (3 runs each; podman options
   through `NIDHOGG_BUILD_PODMAN_ARGS`), on the chaos build with many seeds, the workers harness (`--tsan`, `--sched`),
   and the reds again under `rr record --chaos -n`, packed so that the trace replays in a later container (`build.sh`'s
   `NIDHOGG_CHECK_RR`; SELinux denies a labelled container `perf_event_open`, so that one container runs with labels off).
