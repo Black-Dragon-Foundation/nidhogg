@@ -263,6 +263,34 @@ class line has none."
               (push (list 'clock-assert name d) out))))))
     (nreverse out)))
 
+;;; Where the tags sit
+
+(defconst test-class-lint--tag-lines 8
+  "How many lines of a test nidhogg/test/check-rerun.sh reads for its :tags.")
+
+(defun test-class-lint--late-tags (string)
+  "The names of tests in STRING whose :tags sit past the line check-rerun.sh reads."
+  (let (late)
+    (with-temp-buffer
+      (with-syntax-table emacs-lisp-mode-syntax-table
+        (insert string)
+        (goto-char (point-min))
+        (condition-case nil
+            (while t
+              (forward-comment (buffer-size))
+              (let* ((start (point))
+                     (form (read (current-buffer)))
+                     (end (point)))
+                (when (and (eq (car-safe form) 'ert-deftest)
+                           (nth 1 (test-class-lint--parse-test form)))
+                  (goto-char start)
+                  (search-forward ":tags" end t)
+                  (when (> (count-lines start (point)) test-class-lint--tag-lines)
+                    (push (nth 1 form) late))
+                  (goto-char end))))
+          (end-of-file nil))))
+    (nreverse late)))
+
 ;;; The files
 
 (defun test-class-lint--test-files ()
@@ -303,6 +331,22 @@ class line has none."
 
 (ert-deftest test-class/only-timing-asserts-the-clock ()
   (should-not (test-class-lint--real-violations 'clock-assert)))
+
+(ert-deftest test-class/tags-sit-where-check-rerun-reads ()
+  (should-not (let (out)
+                (dolist (file (test-class-lint--test-files))
+                  (dolist (n (test-class-lint--late-tags (test-class-lint--read-file file)))
+                    (push (format "%s: %s" (file-name-nondirectory file) n) out)))
+                out))
+  ;; The bite: tags on line 8 pass, on line 9 or later fail.
+  (let ((pad (lambda (n) (concat "(ert-deftest my/a ()\n" (make-string n ?\n)))))
+    (should-not (test-class-lint--late-tags
+                 (concat (funcall pad 6) "  :tags '(:det)\n  (should t))\n")))
+    (should (equal '(my/a)
+                   (test-class-lint--late-tags
+                    (concat (funcall pad 8) "  :tags '(:det)\n  (should t))\n"))))
+    (should-not (test-class-lint--late-tags
+                 (concat (funcall pad 9) "  (should t))\n")))))
 
 (defconst test-class-lint--header-det ";; test-class: det\n")
 (defconst test-class-lint--header-cond ";; test-class: cond\n")
