@@ -194,9 +194,10 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
 ## GUI tests
 
 `bash nidhogg/test/gui.sh --prefix DIR [--scale S] [--size WxH] [--monitors N] [--select REGEXP] [--tests DIR]
-[--daemon] [--container DISTRO] [--wayland-debug FILE] [--env K=V]... [--timeout SEC]` runs the `*-gui-tests.el` files of
-`test/src/nidhogg-tests/` (ERT tests named `glitnir-gui/…`, `nidhogg-gui/…`) on a Nidhogg pgtk frame under a headless
-mutter. `DIR` is a Nidhogg prefix (an unpacked tarball or an install).
+[--daemon] [--container DISTRO] [--wayland-debug FILE] [--env K=V]... [--timeout SEC]` runs the `*-gui-tests.el` and
+`*-gui-NAME-tests.el` files of `test/src/nidhogg-tests/` (ERT tests named `glitnir-gui/…`, `nidhogg-gui/…`, `nhwl-gui/…`)
+on a Nidhogg frame, pgtk or the native shell's as the prefix was built, under a headless sway, or the compositor
+`--compositor` names (mutter, for one). `DIR` is a Nidhogg prefix (an unpacked tarball or an install).
 
 - Everything is private to the run: `dbus-run-session` gives mutter its own session bus, mutter its own Wayland display
   (`glitnir-gui-<pid>`) and virtual monitors (`--size`, default 2880x1800, `--monitors`), and `HOME` and the XDG
@@ -211,7 +212,7 @@ mutter. `DIR` is a Nidhogg prefix (an unpacked tarball or an install).
   `dbus-daemon` and the tarball's `deps.runtime` are installed there). A tarball is mounted at the prefix its `BUILDINFO` names.
 - The tests start after the first frame is visible and redisplayed, never inside `command-line`. Exit 0 when all tests
   passed, 1 on a failure or a timeout (default 300 s).
-- CI job `gui` (below) runs the fedora-45 tarball at scales 1 and 2.
+- CI job `gui` (below) runs the fedora-45 tarball at scales 1 and 2, and `native-gui` the native shell's rows.
 
 ## CI and releases
 
@@ -241,10 +242,18 @@ moves to the round's green drgnx commit.
   for the Linux jobs; the cargo cache is this repository's (a called workflow uses the caller's). Locally, a narrowed
   run of the unit suite on a tarball: `DRGNX_TEST_SELECTOR='drgnx-doctor/' bash nidhogg/ci/drgnx-suite.sh TARBALL
   fedora-44 ../drgnx`.
-- `gui` (fedora-45 tarball, after `linux`; scales 1 and 2; 60 minutes): `nidhogg/test/gui.sh --container fedora-45`
-  (see GUI tests). It is not part of the release gate.
-- A release tag runs only what `release` needs (`tree`, `linux`, `macos`, `drgnx`): `compile-noglitnir`, `gui` and the
-  workers jobs skip it, since the tagged commit passed them in its round.
+- `gui` (fedora-45 tarball, after `linux`; scales 1 and 2; 60 minutes): `nidhogg/test/gui.sh --container fedora-45` on
+  headless sway, gui.sh's default (see GUI tests). The tarball is pgtk, so the `nhwl-gui/` rows skip. It is not part of
+  the release gate.
+- The native shell has jobs of its own, since every tarball above is pgtk and `build.sh` builds it only under
+  `--nidhogg-wayland`: `native` builds and packs it on fedora-45; `native-crates` builds `nh-recorder` and runs the
+  recorder's, the shell's and the glue's `check.sh`, whose T1 tests run against it; `native-gui` runs
+  `nidhogg/test/native-gui.sh LANE` on both, one job per lane (the recorder with sway's and with mutter's globals, the
+  recorder with no presenter thread, headless mutter with its protocol trace checked, headless sway, and the decoration
+  rows on the recorder and on sway at scales 1 and 2). A lane fails when too few rows ran: on a pgtk build every row
+  would skip and the lane would still be green. None of them is part of the release gate.
+- A release tag runs only what `release` needs (`tree`, `linux`, `macos`, `drgnx`): `compile-noglitnir`, `gui`, the native
+  and the workers jobs skip it, since the tagged commit passed them in its round.
 - `release` (a pushed `v*` tag only, never a manual run or a pull request) needs `tree`, `linux`, `macos` and `drgnx`, fails unless the tag is `v$(cat nidhogg/version)`, and publishes the
   tarballs, their `.sha256` files and `SHA256SUMS`; the notes name the built commit and the drgnx commit tested.
 - Caches (`actions/cache/restore` before the build, `actions/cache/save` right after the step that produced them, so a
