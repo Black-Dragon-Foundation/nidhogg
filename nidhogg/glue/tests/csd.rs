@@ -374,6 +374,25 @@ mod csd {
         close(d);
     }
 
+    /// A press in the native area keeps the pointer for the frame: over the border and past the surface the motion
+    /// goes on (a drag out of the frame starts from it), and the border is back after the release.
+    #[test]
+    fn a_held_press_keeps_the_motion() {
+        let rec = Recorder::start("mutter");
+        let (d, _) = csd_window(&rec);
+        point(&rec, d, 100, 80);
+        button(&rec, d, true);
+        for (x, y) in [(213, 80), (100, 20), (260, 80)] {
+            let ev = point(&rec, d, x, y);
+            assert!(any_pointer(&ev), "at {x}, {y}");
+            assert!(last_title_bar(&ev).is_none(), "{ev:?}");
+        }
+        button(&rec, d, false);
+        let ev = point(&rec, d, 100, 3);
+        assert!(!any_pointer(&ev), "{ev:?}");
+        close(d);
+    }
+
     /// Margins, strip and buttons each hit as `nhwl_csd_hit` did: the border consumes the motion and gives its pointer
     /// shape; a button under the pointer is hovered; back in the native area, the border is left and the motion goes
     /// on as the pointer's own action, after the title bar's.
