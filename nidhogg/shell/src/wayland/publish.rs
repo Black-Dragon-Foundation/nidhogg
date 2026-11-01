@@ -25,7 +25,8 @@
 //! the tree composes the child whole, scales it and multiplies it by the sample of the time the frame will show.  A leg
 //! is sampled on the tree's clock (`Clock`), so a state is a function of the presented times and never of how many
 //! frames were drawn.  A child that goes while it hides stays here as a *ghost*, under a key no window holds, until its
-//! leg ends.
+//! leg ends.  On the presenter thread a hide waits `HIDE_HOLD_NS` first: inline, the host's thread is the one that
+//! presents, so a hide and a show in one command meet no frame; the thread must not wake between them either.
 
 use crate::api::*;
 use crate::wayland::WaylandShell;
@@ -47,6 +48,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 const HIST: usize = 4;
 /// Patch buffers kept for the next publish.
 const SPARE_PATCHES: usize = 4;
+/// How long a hide waits on the presenter thread before its leg starts.  The host's thread may show the child again
+/// in the same command, and the presenter would otherwise wake between the two calls.  Long enough for the host to
+/// be scheduled, short enough to fit the budget's one period past a leg's duration.
+pub const HIDE_HOLD_NS: u64 = 8_000_000;
 
 /// `CLOCK_MONOTONIC` nanoseconds, the host's clock for key times.
 pub fn now_ns() -> u64 {
@@ -431,6 +436,8 @@ struct Moving {
     last: bool,
     /// The surface's window is gone; it lives until its hide ends.
     ghost: bool,
+    /// A hide starts no leg before this time (`HIDE_HOLD_NS`; 0: none).
+    hold: u64,
     /// The newest frame's time.
     t: u64,
     /// The next commit is a tick; when the one before it went, by the real clock (0: none); the period then.
@@ -452,6 +459,7 @@ impl Moving {
             bare: !shown,
             last: false,
             ghost: false,
+            hold: 0,
             t: 0,
             ticked: false,
             tick_ns: 0,
@@ -489,6 +497,8 @@ pub struct Stage {
     unmaps: Vec<u64>,
     /// A leg's picture before its scale.
     scratch: Vec<u32>,
+    /// How long a hide waits for the host's next call (0: inline, where the host's thread presents anyway).
+    pub hide_hold_ns: u64,
     /// Each root's earliest key time that no commit has shown yet.
     keys: HashMap<u64, u64>,
     /// Each root's newest packet applied to the fronts (its sequence number): a content ack recorded before it may
@@ -514,8 +524,10 @@ impl Stage {
                 Mail::Forget(id) => self.forget(id),
                 Mail::Motion(id, spec, mapped) => self.set_motion(id, spec, mapped),
                 Mail::Mapped(id, on) => {
+                    let hold = self.hide_hold_ns;
                     if let Some(m) = self.moves.get_mut(&id) {
                         m.wanted = on;
+                        m.hold = if on || hold == 0 { 0 } else { now_ns() + hold };
                     }
                 }
                 Mail::Ghost(id, key) => self.ghost(id, key),
@@ -575,6 +587,23 @@ impl Stage {
         })
     }
 
+    /// When the next hide stops waiting after `now`: the presenter wakes for it.
+    pub(crate) fn next_hold(&self, now: u64) -> Option<u64> {
+        self.moves
+            .values()
+            .filter(|m| m.wanted != m.settled && m.hold > now)
+            .map(|m| m.hold)
+            .min()
+    }
+
+    /// Presenting goes inline: nobody would wake for a hide that waits, so none does.
+    pub fn end_holds(&mut self) {
+        self.hide_hold_ns = 0;
+        for m in self.moves.values_mut() {
+            m.hold = 0;
+        }
+    }
+
     /// The children of root `root` to unmap now, gone from the list.
     pub(crate) fn take_unmaps(&mut self, root: u64) -> Vec<u64> {
         let Stage {
@@ -597,11 +626,12 @@ impl Stage {
     /// leg's end gives one last frame at rest, or for a hide the unmap (`take_unmaps`).  Returns the ghosts whose hide
     /// ended.
     pub(crate) fn tick(&mut self, root: u64, fed: &Fed) -> Vec<u64> {
+        let now = now_ns();
         let t = self
             .clocks
             .entry(root)
             .or_insert_with(|| Clock::new(fed))
-            .frame(fed, now_ns());
+            .frame(fed, now);
         let start = t.saturating_sub(fed.period);
         let Stage {
             surfaces,
@@ -617,7 +647,12 @@ impl Stage {
             if !m.due(s) {
                 continue;
             }
-            if m.wanted != m.settled {
+            // a hide that waits: a leg that runs goes on meanwhile
+            let held = now < m.hold;
+            if held && !m.last {
+                continue;
+            }
+            if m.wanted != m.settled && !held {
                 m.motion.request(m.wanted);
                 m.motion.commit(start);
                 m.settled = m.wanted;
@@ -1076,7 +1111,9 @@ impl Presenting {
         if stage.is_none() {
             self.fronts.clear();
         }
-        self.stage = Some(stage.unwrap_or_else(|| Stage::new(self.stats.clone())));
+        let mut stage = stage.unwrap_or_else(|| Stage::new(self.stats.clone()));
+        stage.end_holds();
+        self.stage = Some(stage);
     }
 }
 

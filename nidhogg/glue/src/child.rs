@@ -9,8 +9,9 @@
 //! offsets they already have.  The surface is the native area plus the margin; its input region is the native area.
 //!
 //! The facts it reads: the parent, the position (the frame's left and top), visibility and
-//! `no-accept-focus` are pushed (`nhg_child_set`, when the window is made, moved, shown or hidden); the chrome is
-//! pulled from C's `glitnir--resolve` call (`nhg_child_chrome`); the native size at each publish (`nhg_csd_paint`);
+//! `no-accept-focus` are pushed (`nhg_child_set`, when the window is made, moved, shown or hidden); the chrome and
+//! the transitions are pulled from C's `glitnir--resolve` call (`nhg_child_chrome`), and the shell runs the transitions
+//! (a hide's and a show's calls are `nhg_child_set`'s); the native size at each publish (`nhg_csd_paint`);
 //! a raise or lower (`nhg_child_raise`).  The stacking order among siblings is the glue's (`Stacking`, moved from C's
 //! `child_z`): the surface list C passes to `nhg_present` is put in it.  The scale is the one of the frame's last
 //! layout.  The keyboard focus redirect stays C.
@@ -23,6 +24,7 @@ use crate::guard::GlueError;
 use crate::present::NhgSurface;
 use glitnir::ffi::glitnir_layer_set_chrome;
 use glitnir::geom::Rect;
+use glitnir::motion::MotionSpec;
 use glitnir::scene::Chrome;
 use std::ptr;
 
@@ -69,6 +71,8 @@ pub struct Child {
     /// The chrome changed since the layer last took it, and the scale it took it at.
     chrome_dirty: bool,
     chrome_s120: u32,
+    /// The transitions the shell has for the window.
+    motion: Option<MotionSpec>,
     /// The Glitnir layer's rectangle as last handed over (None: not yet).
     layer: Option<NhgRect>,
     /// The surface's offset in the parent's surface (logical) and its input region (logical; all 0 for none), as
@@ -331,10 +335,17 @@ pub fn set(
 
 /// Child `window`'s chrome slot vector as `glitnir--chrome-vector` gave it now (`chrome::decode` checks it): whether
 /// the corners or the shadow changed (C then lays the frame out again, which gives the margin, and draws it again).
-/// A change of the other slots alone is `false`.  The layer takes it at the next `nhg_layer_ensure`.
+/// A change of the other slots alone is `false`.  The layer takes it at the next `nhg_layer_ensure`.  A change of the
+/// transitions goes to the shell now: C calls this before the window's first picture, so its first show has its leg.  A
+/// window made anew starts with none, so it gets them again.  A failed request is tried again at the next call.
 pub fn chrome(state: &mut Display, window: u64, v: &[f32]) -> Result<bool, GlueError> {
     let d = crate::chrome::decode(v)?;
-    let f = child_mut(state, window)?;
+    let motion = crate::chrome::motion(&d);
+    child_mut(state, window)?;
+    let (backend, _, f) = state.csd_parts(window)?;
+    if f.child.motion != motion && backend.set_motion(window, motion).is_ok() {
+        f.child.motion = motion;
+    }
     let n = d.chrome.unwrap_or_default();
     if f.child.chrome == n {
         return Ok(false);
