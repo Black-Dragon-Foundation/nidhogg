@@ -1116,6 +1116,26 @@ top-level with its child again, mapped each way, with the buffer, the size and t
       (set-frame-parameter nil 'fullscreen old)
       (nhwl-gui--live-settle))))
 
+(ert-deftest nhwl-gui/live-fullscreen-gives-the-size-back ()
+  "A size set by hand comes back after fullscreen, on every compositor: some answer leaving it with 0 x 0, ours to pick."
+  :tags '(runs-last)
+  (skip-unless (and (nhwl-gui--live-p) (nhwl-gui--nhwl-frames)))
+  (let ((old (frame-parameter nil 'fullscreen)) (size nil)
+        (now (lambda () (list (frame-pixel-width) (frame-pixel-height)))))
+    (unwind-protect
+        (progn
+          (set-frame-parameter nil 'fullscreen nil)
+          (nhwl-gui--live-settle)
+          (set-frame-size nil 62 21)
+          (nhwl-gui--live-settle)
+          (setq size (funcall now))
+          (set-frame-parameter nil 'fullscreen 'fullboth)
+          (should (nhwl-gui--wait (lambda () (redisplay t) (not (equal (funcall now) size))) 8))
+          (set-frame-parameter nil 'fullscreen nil)
+          (should (nhwl-gui--wait (lambda () (redisplay t) (equal (funcall now) size)) 8)))
+      (set-frame-parameter nil 'fullscreen old)
+      (nhwl-gui--live-settle))))
+
 (ert-deftest nhwl-gui/live-reparent ()
   "`parent-frame' set both ways on a shown frame: the display lives, the frame shows, its buffer and size stay."
   :tags '(runs-last)
