@@ -6164,6 +6164,10 @@ wait_reading_process_output (intmax_t time_limit, int nsecs, int read_kbd,
 #endif	/* !HAVE_GLIB */
 #endif /* HAVE_ANDROID && !ANDROID_STUBIFY */
 
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+	  if (nh_tc_on)
+	    nh_tc_raise ();
+#endif
 #ifdef HAVE_GNUTLS
 	  /* Merge tls_available into Available. */
 	  if (tls_nfds > 0)

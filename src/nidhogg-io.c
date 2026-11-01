@@ -1244,7 +1244,10 @@ nh_io_main (struct nh_wk_job *job)
 	    polled[np++] = set[i];
 	  }
 
+      atomic_store (&nh_io_polling, true);
+      nh_tc_kick ();
       int r = poll (pfd, np, -1);
+      atomic_store (&nh_io_polling, false);
       if (atomic_load (&nh_wk_dead))
 	nh_io_park ();
       if (r < 0)
