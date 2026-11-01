@@ -174,15 +174,16 @@
           (should (equal (glitnir--stacking) (list b a))))
       (glitnir-gui--delete fs))))
 
-(ert-deftest glitnir-gui/zgroup-changes-nothing-for-child-frames ()
+(ert-deftest glitnir-gui/zgroup-raises-and-lowers-child-frames ()
   (let ((fs (glitnir-gui--children 2)))
     (unwind-protect
         (pcase-let ((`(,a ,b) fs))
           (glitnir-gui--painted)
           (set-frame-parameter a 'z-group 'above) (redisplay t)
-          (should (equal (glitnir--stacking) (list a b)))
+          (should (equal (glitnir--stacking) (list b a)))
+          (set-frame-parameter a 'z-group nil)
           (set-frame-parameter b 'z-group 'below) (redisplay t)
-          (should (equal (glitnir--stacking) (list a b))))
+          (should (equal (glitnir--stacking) (list b a))))
       (glitnir-gui--delete fs))))
 
 (ert-deftest glitnir-gui/reparent-moves-the-node ()
