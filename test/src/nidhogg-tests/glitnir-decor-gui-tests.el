@@ -1,5 +1,7 @@
 ;;; glitnir-decor-gui-tests.el --- GUI tests for Glitnir decorations (PD)  -*- lexical-binding: t -*-
 
+;; test-class: cond
+
 ;; Run by nidhogg/test/gui.sh (gui-runner.el loads every *-gui-tests.el).  From the pgtk rows of the same
 ;; decorations, taken over for the native Wayland shell: the rows run only there.  The shell's frame pixels are device
 ;; pixels, so a frame pixel is one pixel of the grab whatever the monitor scale (`glitnir-decor-gui--scale').
@@ -25,8 +27,7 @@ X and Y are device pixels of GRAB (see `glitnir-decor-gui--at')."
       (face-remap-add-relative 'default :background "#202020" :foreground "white")
       (insert "\n\n  " (propertize " ab " 'face face) "  \n\n")
       (goto-char 4)
-      (redisplay t)
-      (sit-for 0.3)
+      (gui-runner-wait-settled)
       (glitnir-decor-gui--at (gui-runner-screen-grab) 5))))
 
 (defun glitnir-decor-gui--dev (s v)
@@ -36,7 +37,7 @@ X and Y are device pixels of GRAB (see `glitnir-decor-gui--at')."
 (defun glitnir-decor-gui--calibrate ()
   "The device pixel of a grab at the frame's top-left, found with the selected window's text area empty and the
 cursor off (so the first block of the buffer's background #202020 is the text area's corner)."
-  (redisplay t) (sit-for 0.3)
+  (gui-runner-wait-settled)
   (let* ((s (glitnir-decor-gui--scale))
          (o (gui-runner-grab-find-block (gui-runner-screen-grab) '(32 32 32) 4 4))
          (e (window-body-pixel-edges)))
@@ -148,10 +149,10 @@ only the neighbour; return (VIOLATIONS TOP-LEFT-PX TOP-RIGHT-PX FULL-GRAB) with 
         (insert "\n\n  " before (propertize " ab " 'face face) "  \n\n")
         (let* ((chip (+ 5 (length before))) (m (copy-marker chip)))
         (goto-char 1)
-        (redisplay t) (sit-for 0.3)
+        (gui-runner-wait-settled)
         (glitnir-stats nil t)
         (funcall edit m)
-        (redisplay t) (sit-for 0.3)
+        (gui-runner-wait-settled)
         (let* ((g (gui-runner-screen-grab))
                (at (cdr (glitnir-decor-gui--at g chip fo)))
                (right (cdr (glitnir-decor-gui--at g (+ chip 4) fo))))
@@ -216,7 +217,7 @@ only the neighbour; return (VIOLATIONS TOP-LEFT-PX TOP-RIGHT-PX FULL-GRAB) with 
   (let ((r (glitnir-decor-gui--chip "xy" (lambda (m) (save-excursion (goto-char m) (delete-char -1) (insert "y"))))))
     (should (= (nth 0 r) 0))
     (redraw-frame)
-    (sit-for 0.3)
+    (gui-runner-wait-settled)
     (let* ((full (gui-runner-screen-grab)) (part (nth 3 r)))
       (should (equal (aref (nth 2 full) 0) (aref (nth 2 part) 0)))
       ;; the title bar around the text area changes between two grabs (focus, hover): compare the text area
@@ -259,7 +260,7 @@ buffer empty (a label test's first line is not empty, so the text area's corner 
 
 (defun glitnir-decor-gui--above-p (pos &optional below)
   "True if the pixel one glyph-height above (BELOW: below) POS, half a glyph in, is the label's pill colour."
-  (redisplay t) (sit-for 0.3)
+  (gui-runner-wait-settled)
   (let* ((s (glitnir-decor-gui--scale))
          (g (gui-runner-screen-grab))
          (at (cdr (glitnir-decor-gui--at g pos glitnir-decor-gui--origin)))
@@ -397,8 +398,7 @@ Return the number of runs."
       (switch-to-buffer (current-buffer))
       (face-remap-add-relative 'default :background "#202020" :foreground "white")
       (let ((n (glitnir-decor-gui--board radius)))
-        (redisplay t)
-        (sit-for 0.3)
+        (gui-runner-wait-settled)
         (glitnir--decor-bench 20 n)     ; warm the sprite and glyph caches
         (glitnir--decor-bench runs n)))))
 
@@ -431,7 +431,7 @@ Return the number of runs."
           (forward-line 7)
           (insert "x") (redisplay t) (delete-char -1) (redisplay t)
           (set-window-start nil (point-min)) (redisplay t))
-        (sit-for 0.3)
+        (gui-runner-wait-settled)
         (message "GLITNIR-PD violations scale=%s violations=%s" (or (getenv "GLITNIR_GUI_SCALE") "1")
                  (- (plist-get (glitnir-stats) :violations) before))
         (should (= 0 (- (plist-get (glitnir-stats) :violations) before)))))))
@@ -446,7 +446,7 @@ Return the number of runs."
       (switch-to-buffer (current-buffer))
       (face-remap-add-relative 'default :background "#202020" :foreground "white")
       (insert "\n\n  " (propertize "T" 'display (create-image svg 'svg t)) "\n\n")
-      (redisplay t) (sit-for 0.3)
+      (gui-runner-wait-settled)
       (let* ((grab (gui-runner-screen-grab))
              (o (gui-runner-grab-find-block grab '(96 48 48) 8 8)) ; #303060 as B G R
              (soft 0))
