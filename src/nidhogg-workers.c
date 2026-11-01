@@ -431,12 +431,61 @@ nh_wk_wake_open (struct nh_wk_wake *w)
   return 0;
 }
 
+#ifdef NH_CHAOS
+/* nidhogg-chaos.h.  */
+static uint64_t nh_chaos_seed;
+static pthread_once_t nh_chaos_once = PTHREAD_ONCE_INIT;
+static _Atomic uint64_t nh_chaos_threads;
+static _Thread_local uint64_t nh_chaos_state;
+
+static void
+nh_chaos_start (void)
+{
+  const char *s = getenv ("NIDHOGG_TEST_SEED");
+  nh_chaos_seed = s ? strtoull (s, NULL, 10) : 0;
+  fprintf (stderr, "chaos seed %llu\n", (unsigned long long) nh_chaos_seed);
+}
+
+void
+nh_chaos_point (const char *site)
+{
+  (void) site;
+  if (nh_wk_signal_context ())
+    return;
+  uint64_t x = nh_chaos_state;
+  if (!x)
+    {
+      pthread_once (&nh_chaos_once, nh_chaos_start);
+      uint64_t z = ((nh_chaos_seed + atomic_fetch_add (&nh_chaos_threads, 1) + 1)
+		    * UINT64_C (0x9E3779B97F4A7C15));
+      x = (z ^ z >> 30) | 1;
+    }
+  x ^= x << 13;
+  x ^= x >> 7;
+  x ^= x << 17;
+  nh_chaos_state = x;
+  unsigned int r = x >> 60;
+  if (r < 12)
+    return;
+  int err = errno;
+  if (r < 14)
+    sched_yield ();
+  else
+    {
+      struct timespec t = { 0, 1000 * (long) (1 + (x >> 8) % 200) };
+      nanosleep (&t, NULL);
+    }
+  errno = err;
+}
+#endif /* NH_CHAOS */
+
 /* Async-signal-safe: one write, errno kept.  A full eventfd or pipe is
    already readable, so EAGAIN is fine.  */
 void
 nh_wk_wake_signal (struct nh_wk_wake *w)
 {
   int err = errno;
+  NH_CHAOS_POINT ("wake-signal");
   if (w->wfd >= 0)
     {
 #ifdef __linux__
@@ -507,6 +556,8 @@ static void
 nh_wk_cq_push (struct nh_wk_cq *q, struct nh_wk_job *j)
 {
   j->next = NULL;
+  /* A job's waiters woke before this (nh_wk_complete): let them run.  */
+  NH_CHAOS_POINT ("cq-push");
   nh_wk_lock (&q->m);
   bool was_empty = !q->head;
   if (q->tail)
@@ -585,6 +636,7 @@ nh_wk_set_state (struct nh_wk_job *job, int state)
   atomic_store (&job->state, state);
   pthread_cond_broadcast (&nh_wk_done_cv);
   pthread_mutex_unlock (&nh_wk_done_m);
+  NH_CHAOS_POINT ("set-state");
 }
 
 /* The job's run is over (or, for a worker with its own loop, its result
@@ -680,6 +732,7 @@ nh_wk_lock (pthread_mutex_t *m)
       atomic_fetch_add (&nh_wk_signal_locks, 1);
       abort ();
     }
+  NH_CHAOS_POINT ("lock");
   pthread_mutex_lock (m);
 }
 
@@ -778,6 +831,7 @@ nh_wk_has_startable (struct nh_wk_wst *ws, int pool)
 static struct nh_wk_job *
 nh_wk_pick (struct nh_wk_wst *ws, int pool)
 {
+  NH_CHAOS_POINT ("pick");
   for (struct nh_wk_job *j = ws->pool[pool].head; j; j = j->next)
     if (nh_wk_class_ok (ws, pool, j))
       {

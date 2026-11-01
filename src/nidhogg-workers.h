@@ -45,6 +45,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #ifndef NH_WK_HARNESS
 # include "lisp.h"
 #endif
+#include "nidhogg-chaos.h"
 
 /* The worker threads (the thread names are nh-io, nh-parse, nh-img,
    nh-blk and nh-save).  */

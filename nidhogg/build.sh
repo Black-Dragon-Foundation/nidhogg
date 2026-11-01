@@ -34,7 +34,7 @@ DISTROS="fedora-44 fedora-45 ubuntu-26.04 debian-13 arch"
 usage() {
   cat >&2 <<USAGE
 usage: nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memory SIZE]
-                        [--build-dir DIR] [--check FILE] [--out FILE] [--stage build|check|pack] [--without-glitnir] [--nidhogg-wayland] [--dev] [--without-nidhogg-watchdog] [--without-nidhogg-workers] [--dry-run]
+                        [--build-dir DIR] [--check FILE] [--out FILE] [--stage build|check|pack] [--without-glitnir] [--nidhogg-wayland] [--dev] [--chaos] [--without-nidhogg-watchdog] [--without-nidhogg-workers] [--dry-run]
   DISTRO: $DISTROS
 USAGE
   exit 2
@@ -46,6 +46,7 @@ DEV=0; [ "${NIDHOGG_BUILD_DEV:-}" != 1 ] || DEV=1
 NHWL=0   # --nidhogg-wayland: Nidhogg's own Wayland shell (no GTK) instead of pgtk
 WATCHDOG=1   # the stall watchdog is built in unless --without-nidhogg-watchdog
 WORKERS=1    # the worker threads are built in unless --without-nidhogg-workers
+CHAOS=0      # --chaos: seeded delays at the workers' sync points (src/nidhogg-chaos.h); dev builds only, so never in a release
 while [ $# -gt 0 ]; do
   case $1 in
     --container) [ $# -ge 2 ] || usage; MODE=container; DISTRO=$2; shift 2 ;;
@@ -60,6 +61,7 @@ while [ $# -gt 0 ]; do
     --without-glitnir) GLITNIR=""; shift ;;
     --nidhogg-wayland) NHWL=1; shift ;;
     --dev) DEV=1; shift ;;
+    --chaos) CHAOS=1; shift ;;
     --without-nidhogg-watchdog) WATCHDOG=0; shift ;;
     --without-nidhogg-workers) WORKERS=0; shift ;;
     --dry-run) DRY=1; shift ;;
@@ -70,6 +72,7 @@ done
 if [ "$DEV" = 1 ] && { [ -n "$OUT" ] || [ "$STAGE" = pack ]; }; then
   die "--dev builds are never packed (no --out, no --stage pack): a dev build is not a release; build without --dev"
 fi
+[ "$CHAOS" = 0 ] || [ "$DEV" = 1 ] || die "--chaos is for dev builds only: add --dev"
 NATIVE=aot; [ "$DEV" = 0 ] || NATIVE=yes
 # NIDHOGG_BUILD_SANITIZE=address,undefined adds -fsanitize=... to CFLAGS and LDFLAGS: dev builds only (the workers-asan CI job)
 SANITIZE=${NIDHOGG_BUILD_SANITIZE:-}
@@ -161,6 +164,7 @@ PKGS="\$(sed \"s/#.*//\" \$S/nidhogg/deps/$DISTRO.build"
 if [ -n "$GLITNIR" ]; then PKGS="$PKGS)"; else PKGS="$PKGS | grep -vxE 'cargo|rust|rustc')"; fi
 [ "$WATCHDOG" = 0 ] || CONF="$CONF --with-nidhogg-watchdog"
 [ "$WORKERS" = 0 ] || CONF="$CONF --with-nidhogg-workers"
+[ "$CHAOS" = 0 ] || CONF="$CONF --with-nidhogg-chaos"
 # the quotes are parsed by the build script, not here
 [ -z "$SANITIZE" ] || CONF="$CONF CFLAGS='-g -O1 -fno-omit-frame-pointer -fsanitize=$SANITIZE' LDFLAGS='-fsanitize=$SANITIZE'"
 
