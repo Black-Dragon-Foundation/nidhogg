@@ -52,9 +52,12 @@ pub struct Popup {
     anchor: Anchor,
     size: (i32, i32),
     token: u32,
-    /// `place_gen` when the newest reposition went out, and the next configure answers that reposition.
+    /// `place_gen` when the newest reposition went out.
     place_gen: u64,
-    repositioned: bool,
+    /// The token of the reposition the next configure answers.
+    repositioned: Option<u32>,
+    /// The new size's reposition: only its configure is the content ack of `first`.
+    sized: Option<u32>,
     /// The next configure is the popup's first, and its size has not changed since it was made.
     made: bool,
     /// The next configure is a content ack: the popup's first, the first after it was made again, or the first after
@@ -193,8 +196,9 @@ impl WaylandShell {
                 size: (d.w, d.h),
                 token: 0,
                 place_gen: 0,
-                repositioned: false,
-                made: false,
+                repositioned: None,
+                sized: None,
+                made: true,
                 first: true,
                 wants_grab: d.flags & NHSHELL_WIN_GRAB != 0,
                 grabbed: false,
@@ -251,11 +255,15 @@ impl WaylandShell {
         if p.size == (w, h) {
             return Ok(false);
         }
-        self.popup_place(id, |p| {
+        let again = self.popup_place(id, |p| {
             p.size = (w, h);
             p.made = false;
             p.first = true;
-        })
+        })?;
+        if let Some(p) = self.main.popups.get_mut(&id) {
+            p.sized = (!again).then_some(p.token);
+        }
+        Ok(again)
     }
 
     /// Change popup `id`'s placement with `change`, then send it: `xdg_popup.reposition` (v3+), else the popup is
@@ -281,7 +289,6 @@ impl WaylandShell {
         if !recreate {
             p.token = p.token.wrapping_add(1);
             p.place_gen = place_gen;
-            p.repositioned = false;
             p.popup.reposition(&pos, p.token);
             pos.destroy();
             self.flush()?;
@@ -374,15 +381,19 @@ impl WaylandShell {
 
 impl MainState {
     /// Record a popup's configure ack (sent with the next commit); false when `id` is not a popup.  The first
-    /// configure (or the first after a new size) changes what the popup shows; a configure after `repositioned` is a
-    /// bare ack.
+    /// configure, or that of a new size's reposition, changes what the popup shows; any other is a bare ack.
     pub(super) fn popup_ack(&mut self, id: u64, serial: u32) -> bool {
         let Some(p) = self.popups.get_mut(&id) else {
             return false;
         };
-        let content = std::mem::take(&mut p.first);
+        let answers = p.repositioned.take();
+        let content = p.first && (p.sized.is_none() || answers == p.sized);
+        if content {
+            p.first = false;
+            p.sized = None;
+        }
         let made = std::mem::take(&mut p.made);
-        let placed = std::mem::take(&mut p.repositioned).then_some(p.place_gen);
+        let placed = (answers == Some(p.token)).then_some(p.place_gen);
         self.present_ack(id, serial, content);
         if made {
             // a popup is made at its size: a picture published before this configure is the configure's picture
@@ -417,7 +428,7 @@ impl Dispatch<XdgPopup, u64> for MainState {
             // the configure that follows carries the new place
             xdg_popup::Event::Repositioned { token } => {
                 if let Some(p) = state.popups.get_mut(id) {
-                    p.repositioned = token == p.token;
+                    p.repositioned = Some(token);
                 }
             }
             _ => {}
