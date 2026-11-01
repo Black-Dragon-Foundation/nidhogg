@@ -138,14 +138,19 @@ until Lisp deletes or hides it."
 deletes them; either way the popups go topmost first, so the compositor never sees `not_the_topmost_popup' (the
 recorder ends a client for it), and only the toplevel is left."
   (skip-unless (nhwl-gui--recorder-p))
-  (let* ((parent (selected-frame)) (before (nhwl-gui--popup-ids)) (frames nil)
+  (let* ((parent (selected-frame)) (before (nhwl-gui--popup-ids)) (frames nil) (mine nil)
          (all-shown (lambda ()
                       (nhwl-gui--wait (lambda ()
                                         (nhwl-gui--pump 0.1)
-                                        (= (length (seq-difference (nhwl-gui--grabbed-ids) before)) 3))
+                                        (setq mine (seq-difference (nhwl-gui--grabbed-ids) before))
+                                        (= (length mine) 3))
                                       5)))
+         ;; these three: a tooltip the pointer's hover shows or hides meanwhile is no part of the row
          (none-left (lambda ()
-                      (nhwl-gui--wait (lambda () (nhwl-gui--pump 0.1) (equal (nhwl-gui--popup-ids) before)) 5))))
+                      (nhwl-gui--wait (lambda ()
+                                        (nhwl-gui--pump 0.1)
+                                        (not (seq-intersection (nhwl-gui--popup-ids) mine)))
+                                      5))))
     (unwind-protect
         (progn
           (nhwl-gui--press-serial)
