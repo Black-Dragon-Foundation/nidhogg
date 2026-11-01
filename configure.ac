@@ -7838,7 +7838,7 @@ case $with_nidhogg_watchdog in
       SIG[[A-Z0-9]]*) ;;
       *) AC_MSG_ERROR([--with-nidhogg-watchdog-signal takes a signal name such as SIGURG, not '$with_nidhogg_watchdog_signal']) ;;
     esac
-    NIDHOGG_WATCHDOG_OBJ="nidhogg-watchdog.o nidhogg-watchdog-monitor.o nidhogg-watchdog-sample.o nidhogg-watchdog-gc.o nidhogg-watchdog-input.o nidhogg-watchdog-gtk.o"
+    NIDHOGG_WATCHDOG_OBJ="nidhogg-watchdog.o nidhogg-watchdog-monitor.o nidhogg-watchdog-sample.o nidhogg-watchdog-gc.o nidhogg-watchdog-input.o"
     AC_DEFINE([HAVE_NIDHOGG_WATCHDOG], [1], [Define to 1 to build the stall watchdog.])
     AC_DEFINE_UNQUOTED([NIDHOGG_WATCHDOG_SIGNAL], [$with_nidhogg_watchdog_signal],
       [The signal the stall watchdog's monitor sends the main thread.])
