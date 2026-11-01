@@ -357,23 +357,6 @@ Return nil.  */)
   return Qnil;
 }
 
-/* Two names drgnx's parity rows still call; they go with those rows.  */
-
-DEFUN ("glitnir--calls", Fglitnir__calls, Sglitnir__calls, 0, 0, 0,
-       doc: /* Return 0: nothing counts the calls into Glitnir.  */)
-  (void)
-{
-  return make_fixnum (0);
-}
-
-DEFUN ("glitnir--debug-panic", Fglitnir__debug_panic, Sglitnir__debug_panic,
-       0, 1, 0,
-       doc: /* Return nil: a panic in the shell's library loses the display.  */)
-  (Lisp_Object where)
-{
-  return Qnil;
-}
-
 DEFUN ("glitnir--probe", Fglitnir__probe, Sglitnir__probe, 3, 4, 0,
        doc: /* Measure a picture; KIND is `edges', `rule' or `seams'.
 RAW is (WIDTH HEIGHT BYTES) as (glitnir-snapshot FRAME 'raw) returns it;
@@ -516,8 +499,6 @@ syms_of_nidhogg_glitnir (void)
 
   defsubr (&Sglitnir__probe);
   defsubr (&Sglitnir__decor_bench);
-  defsubr (&Sglitnir__calls);
-  defsubr (&Sglitnir__debug_panic);
   defsubr (&Sglitnir_active_p);
   defsubr (&Sglitnir_stats);
   defsubr (&Sglitnir_snapshot);
