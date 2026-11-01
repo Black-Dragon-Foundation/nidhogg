@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The pre-flight: the passes that find ordering bugs on the desktop, before a CI round.
 #   preflight.sh --build-dir D --out REPORT [--prefix P] [--seeds N] [--runs N] [--files FILE] [--passes P2,P3,..]
-#                [--stamp-dir DIR] [--sched-modules "M..."] [--tsan-modules "M..."]
+#                [--stamp-dir DIR] [--sched-modules "M..."] [--sched-seeds N] [--tsan-modules "M..."]
 # Run it from the nidhogg worktree root on the laptop, not itself in a slot: every build run takes a heavy slot of its own
 # (drgnx-heavy-slot.sh nidhogg-build-local.sh, the way nh-verify.sh does; git does not work inside a slot's jail on the
 # desktop, so a script run there cannot call the build wrapper).  Passes:
@@ -13,7 +13,8 @@
 #       per file per run (green, RED or NOT RUN, with its ERT summary) and a `P2 GROUP: N green, M red of K` line per group.
 #   P3  the same files on the chaos build (D-chaos, built with `build.sh --chaos` when missing), --seeds (200) seeds
 #       each, NIDHOGG_TEST_SEED=1..N.  A red prints its seed and the replay line.
-#   P4  nidhogg/test/workers-harness.sh --tsan and --sched.
+#   P4  nidhogg/test/workers-harness.sh --tsan (queue wake io) and --sched (queue wake, --sched-seeds, default 2000, not
+#       P3's --seeds), in the dev image through a heavy slot (.claude/tmp/harness-ctr.sh).
 #   P5  each red of P2 and P3 once more under `rr record --chaos -n`, in its own pin (build.sh's NIDHOGG_CHECK_RR).  The
 #       trace is packed, so that it replays in a later container, and stays in the build dir's rr-traces/ (on the desktop);
 #       the report names it.  No reds: P5:skipped.  SELinux denies container_t perf_event_open (EACCES, with
@@ -30,9 +31,10 @@
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 root=${PREFLIGHT_ROOT:-$(cd "$here/../.." && pwd)}   # PREFLIGHT_ROOT: the tree whose commit is stamped (the test hook)
-T=${PREFLIGHT_TMP:-/home/upmanyu/workspace/black-dragon-foundation/.claude/tmp}
+T=${PREFLIGHT_TMP:-}     # the directory of the slot and build wrappers: the caller (the org-side round script) sets it
+[ -n "$T" ] || { echo "preflight: PREFLIGHT_TMP is not set (the directory with drgnx-heavy-slot.sh, nidhogg-build-local.sh and harness-ctr.sh)" >&2; exit 2; }
 build="" out="" prefix="" seeds=200 runs=3 files="$here/preflight-files.txt" stampdir="" want="P1,P2,P3,P4,P5"
-sched="" tsan="queue wake io"
+sched="queue wake" sched_seeds=2000 tsan="queue wake io"
 slot=${PREFLIGHT_SLOT:-$T/drgnx-heavy-slot.sh}
 usage() { sed -n '2,5p' "$0" >&2; exit 2; }
 while [ $# -gt 0 ]; do
@@ -46,6 +48,7 @@ while [ $# -gt 0 ]; do
     --passes) want=${2:?}; shift 2 ;;
     --stamp-dir) stampdir=${2:?}; shift 2 ;;
     --sched-modules) sched=${2:?}; shift 2 ;;
+    --sched-seeds) sched_seeds=${2:?}; shift 2 ;;
     --tsan-modules) tsan=${2:?}; shift 2 ;;
     *) usage ;;
   esac
@@ -233,11 +236,13 @@ if want_pass P3; then
 fi
 if want_pass P4; then
   say "P4: workers-harness --tsan and --sched"; before=$reds
-  h=${PREFLIGHT_HARNESS:-$here/workers-harness.sh}
+  # in the dev image, through a heavy slot like every build run (harness-ctr.sh builds the image for its Containerfile
+  # when the machine lacks it); the stub of the test hook runs as it is
+  if [ -n "${PREFLIGHT_HARNESS:-}" ]; then h=("$PREFLIGHT_HARNESS"); else h=("$slot" "$T/harness-ctr.sh"); fi
   # shellcheck disable=SC2086
-  "$h" --tsan $tsan >> "$out" 2>&1 || { say "RED P4 --tsan $tsan"; reds=$((reds + 1)); }
+  "${h[@]}" --tsan $tsan >> "$out" 2>&1 || { say "RED P4 --tsan $tsan"; reds=$((reds + 1)); }
   # shellcheck disable=SC2086
-  "$h" --sched $sched --seeds "$seeds" >> "$out" 2>&1 || { say "RED P4 --sched $sched --seeds $seeds"; reds=$((reds + 1)); }
+  "${h[@]}" --sched $sched --seeds "$sched_seeds" >> "$out" 2>&1 || { say "RED P4 --sched $sched --seeds $sched_seeds"; reds=$((reds + 1)); }
   [ "$reds" = "$before" ] && done_passes+=(P4) || say "P4: reds"
 fi
 if want_pass P5; then
