@@ -38,6 +38,10 @@
 //! goes during its hide stays in its root's list as a *ghost*, under a key no window holds, without any of the host's
 //! records; presenting destroys it, under the tree's mutex, at the end of the leg, and the host's thread when its parent
 //! goes.
+//!
+//! **A child's backdrop** adds no way to commit either.  One that is not up to date makes the tree dirty, and is
+//! recomputed when the gate is open for content, without the mutex: what changed is the child's damage, in the same tree
+//! commit as the change beneath, so a pacer that waits holds the recompute back too.
 
 use crate::api::*;
 use crate::event::*;
@@ -1029,6 +1033,16 @@ pub(crate) fn present_tree(
     delay: Duration,
 ) -> bool {
     let applied = stage.applied(root);
+    if stage.blur_due(root) {
+        let open = {
+            let mut r = lock(tree);
+            r.dirty = true;
+            !r.retired && r.ready_published(applied) & NHSHELL_READY_CONTENT != 0
+        };
+        if open {
+            stage.blur(root);
+        }
+    }
     let mut jobs = Vec::new();
     let mut layer_jobs = Vec::new();
     {

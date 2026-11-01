@@ -10,8 +10,8 @@
 //!
 //! The facts it reads: the parent, the position (the frame's left and top), visibility and
 //! `no-accept-focus` are pushed (`nhg_child_set`, when the window is made, moved, shown or hidden); the chrome and
-//! the transitions are pulled from C's `glitnir--resolve` call (`nhg_child_chrome`), and the shell runs the transitions
-//! (a hide's and a show's calls are `nhg_child_set`'s); the native size at each publish (`nhg_csd_paint`);
+//! the transitions and the backdrop are pulled from C's `glitnir--resolve` call (`nhg_child_chrome`), and the shell runs
+//! them (a hide's and a show's calls are `nhg_child_set`'s); the native size at each publish (`nhg_csd_paint`);
 //! a raise or lower (`nhg_child_raise`).  The stacking order among siblings is the glue's (`Stacking`, moved from C's
 //! `child_z`): the surface list C passes to `nhg_present` is put in it.  The scale is the one of the frame's last
 //! layout.  The keyboard focus redirect stays C.
@@ -71,8 +71,9 @@ pub struct Child {
     /// The chrome changed since the layer last took it, and the scale it took it at.
     chrome_dirty: bool,
     chrome_s120: u32,
-    /// The transitions the shell has for the window.
+    /// The transitions the shell has for the window, and its backdrop's σ in logical pixels (0: none).
     motion: Option<MotionSpec>,
+    backdrop: f32,
     /// The Glitnir layer's rectangle as last handed over (None: not yet).
     layer: Option<NhgRect>,
     /// The surface's offset in the parent's surface (logical) and its input region (logical; all 0 for none), as
@@ -336,8 +337,9 @@ pub fn set(
 /// Child `window`'s chrome slot vector as `glitnir--chrome-vector` gave it now (`chrome::decode` checks it): whether
 /// the corners or the shadow changed (C then lays the frame out again, which gives the margin, and draws it again).
 /// A change of the other slots alone is `false`.  The layer takes it at the next `nhg_layer_ensure`.  A change of the
-/// transitions goes to the shell now: C calls this before the window's first picture, so its first show has its leg.  A
-/// window made anew starts with none, so it gets them again.  A failed request is tried again at the next call.
+/// transitions or the backdrop (Lisp's slot is 0 for an opaque `alpha-background`) goes to the shell now: C calls this
+/// before the window's first picture, so its first show has its leg.  A window made anew starts with none, so it gets
+/// them again.  A failed request is tried again at the next call.
 pub fn chrome(state: &mut Display, window: u64, v: &[f32]) -> Result<bool, GlueError> {
     let d = crate::chrome::decode(v)?;
     let motion = crate::chrome::motion(&d);
@@ -345,6 +347,9 @@ pub fn chrome(state: &mut Display, window: u64, v: &[f32]) -> Result<bool, GlueE
     let (backend, _, f) = state.csd_parts(window)?;
     if f.child.motion != motion && backend.set_motion(window, motion).is_ok() {
         f.child.motion = motion;
+    }
+    if f.child.backdrop != d.backdrop_px && backend.set_backdrop(window, d.backdrop_px).is_ok() {
+        f.child.backdrop = d.backdrop_px;
     }
     let n = d.chrome.unwrap_or_default();
     if f.child.chrome == n {
