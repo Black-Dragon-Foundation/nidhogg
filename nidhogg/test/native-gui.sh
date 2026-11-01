@@ -58,8 +58,8 @@ rules=errors,acks,unconfigured,popup,grab,popup-order
 trace=()
 sliced=0 only="" limit=1200
 case $lane in
-  gui-1)           min=100; limit=1800; args=("${sway[@]}" --scale 1) ;;
-  gui-2)           min=100; limit=1800; args=("${sway[@]}" --scale 2) ;;
+  gui-1)           min=103; limit=1800; args=("${sway[@]}" --scale 1) ;;
+  gui-2)           min=102; limit=1800; args=("${sway[@]}" --scale 2) ;;
   recorder)        min=150; sliced=1; args=("${rec[@]}" "${nhwl[@]}") ;;
   recorder-mutter) min=150; sliced=1; args=("${rec[@]}" "${nhwl[@]}" --recorder-profile mutter) ;;
   recorder-kwin)   min=150; sliced=1; args=("${rec[@]}" "${nhwl[@]}" --recorder-profile kwin) ;;
