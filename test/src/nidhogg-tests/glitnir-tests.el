@@ -194,4 +194,79 @@
         (should (= (aref v 6) 1))
         (should (= (aref v 2) 0))))))
 
+;; Task 3: transition, backdrop-blur and reduced motion fill slots 8-20.
+
+(defconst glitnir-test--ease-out '(0 0 0.58 1))
+(defconst glitnir-test--ease-in '(0.42 0 1 1))
+
+(defun glitnir-test--motion (v)
+  "Slots 8-19 of vector V as a list."
+  (cl-loop for i from 8 below 20 collect (aref v i)))
+
+(defmacro glitnir-test--with-reduced-motion (value &rest body)
+  "Run BODY with the desktop's reduced-motion setting VALUE."
+  (declare (indent 1))
+  `(cl-letf (((symbol-function 'nhwl-settings-get)
+              (lambda (key) (and (eq key 'reduced-motion) ,value))))
+     ,@body))
+
+(ert-deftest glitnir-transition-pop-default ()
+  (glitnir-test--as-child '((transition . pop))
+    (let ((v (glitnir--chrome-vector (selected-frame))))
+      (should (equal (glitnir-test--motion v)
+                     (append '(2 120) glitnir-test--ease-out '(1 80) glitnir-test--ease-in)))
+      (should (= (length v) 22)))))
+
+(ert-deftest glitnir-transition-plist-and-curves ()
+  (glitnir-test--as-child '((transition . (:show fade :duration 0.2 :curve ease-in-out
+                                           :hide pop :hide-duration 0.05
+                                           :hide-curve (cubic-bezier 0.1 2 0.9 -1))))
+    (should (equal (glitnir-test--motion (glitnir--chrome-vector (selected-frame)))
+                   '(1 200 0.42 0 0.58 1 2 50 0.1 2 0.9 -1))))
+  ;; the option may come from child-frame-chrome; the frame's parameter wins
+  (let ((child-frame-chrome '((transition . fade))))
+    (glitnir-test--as-child nil
+      (should (= (aref (glitnir--chrome-vector (selected-frame)) 8) 1)))
+    (glitnir-test--as-child '((transition . nil))
+      (should (= (aref (glitnir--chrome-vector (selected-frame)) 8) 0)))))
+
+(ert-deftest glitnir-transition-invalid-signals ()
+  (dolist (bad '(slide (:show spin) (:duration -1) (:curve bounce)
+                       (:show fade :curve (cubic-bezier 2 0 1 1)) (:show) 3))
+    (glitnir-test--as-child `((transition . ,bad))
+      (should-error (glitnir--chrome-vector (selected-frame)) :type 'wrong-type-argument))))
+
+(ert-deftest glitnir-backdrop-slot ()
+  (glitnir-test--as-child '((backdrop-blur . 10))
+    (should (= (aref (glitnir--chrome-vector (selected-frame)) 20) 10)))
+  (glitnir-test--as-child '((backdrop-blur . 2.5))
+    (should (= (aref (glitnir--chrome-vector (selected-frame)) 20) 2.5)))
+  (glitnir-test--as-child nil
+    (should (= (aref (glitnir--chrome-vector (selected-frame)) 20) 0)))
+  (dolist (bad '(-1 "10" t))
+    (glitnir-test--as-child `((backdrop-blur . ,bad))
+      (should-error (glitnir--chrome-vector (selected-frame)) :type 'wrong-type-argument))))
+
+(ert-deftest glitnir-transition-off-without-param ()
+  (glitnir-test--as-child nil
+    (let ((v (glitnir--chrome-vector (selected-frame))))
+      (should (cl-every #'zerop (glitnir-test--motion v)))
+      (should (zerop (aref v 20))))))
+
+(ert-deftest glitnir-reduced-motion-mid-transition ()
+  (let (refreshed)
+    (glitnir-test--as-child '((transition . pop))
+      (glitnir-test--with-reduced-motion 0
+        (should (= (aref (glitnir--chrome-vector (selected-frame)) 8) 2)))
+      (glitnir-test--with-reduced-motion 1
+        (let ((v (glitnir--chrome-vector (selected-frame))))
+          (should (= (aref v 8) 0))
+          (should (= (aref v 14) 0))))
+      ;; the setting changing runs a refresh
+      (cl-letf (((symbol-function 'glitnir-refresh) (lambda (&rest _) (setq refreshed t))))
+        (glitnir--settings-changed 'color-scheme 1)
+        (should-not refreshed)
+        (run-hook-with-args 'nhwl-settings-changed-functions 'reduced-motion 1)
+        (should refreshed)))))
+
 ;;; glitnir-tests.el ends here
