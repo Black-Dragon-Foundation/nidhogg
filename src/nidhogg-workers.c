@@ -457,7 +457,11 @@ nh_chaos_start (void)
 {
   const char *s = getenv ("NIDHOGG_TEST_SEED");
   nh_chaos_seed = s ? strtoull (s, NULL, 10) : 0;
-  fprintf (stderr, "chaos seed %llu\n", (unsigned long long) nh_chaos_seed);
+  /* Only on request: every child Emacs inherits the environment, and a
+     test that reads its child's stderr (set-process-filter-t) sees the
+     banner as output.  The pre-flight's report names the seed.  */
+  if (getenv ("NIDHOGG_TEST_CHAOS_BANNER"))
+    fprintf (stderr, "chaos seed %llu\n", (unsigned long long) nh_chaos_seed);
 }
 
 void
