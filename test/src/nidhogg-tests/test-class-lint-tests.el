@@ -45,6 +45,8 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
+(require 'seq)
 (require 'subr-x)
 
 (defconst test-class-lint--dir
@@ -62,10 +64,12 @@ Until then `test-class/every-test-has-a-class' only reports the count.")
 (defconst test-class-lint--classes '(det cond timing))
 
 (defconst test-class-lint--real-time
-  '(sleep-for sit-for make-process start-process start-file-process
+  '(make-process start-process start-file-process
     run-at-time run-with-timer
     run-with-idle-timer float-time time-since)
-  "Symbols a D test must not use outside the clock helpers.")
+  "Symbols a D test must not use outside the clock helpers.
+The fixed pauses (`sleep-for', `sit-for' above 0) are barred too, see
+`test-class-lint--fixed-pause'.")
 
 (defconst test-class-lint--clock-reads '(float-time current-time time-since)
   "Functions whose value is a clock read.")
@@ -154,7 +158,7 @@ helpers are skipped."
                  (when (symbolp head) (push x calls) (follow head))
                  (let ((tail (if (symbolp head) (cdr x) x)))
                    (while (consp tail) (visit (pop tail)))
-                   (when tail (visit tail))))))))))
+                   (when tail (visit tail)))))))))
          (follow (name)
            (let ((hb (gethash name helpers 'none)))
              (unless (or (eq hb 'none) (gethash name seen))
@@ -176,7 +180,7 @@ helpers are skipped."
 
 (defun test-class-lint--real-time (nodes)
   "The D rule: what in NODES uses real time."
-  (let (found)
+  (let ((found (reverse (test-class-lint--fixed-pause nodes))))
     (dolist (s test-class-lint--real-time)
       (when (test-class-lint--uses-p nodes (list s)) (push (symbol-name s) found)))
     (dolist (c (car nodes))
