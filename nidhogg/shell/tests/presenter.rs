@@ -147,8 +147,144 @@ fn starve(rec: &Recorder) -> (WaylandShell, Backing, u64) {
     (shell, b, id)
 }
 
+/// A popup of `parent`, `b`'s size, beside (10, 10).
+fn popup(shell: &mut WaylandShell, parent: u64, b: &Backing) -> u64 {
+    shell
+        .child_new(&ChildDesc {
+            kind: NHSHELL_KIND_POPUP,
+            parent,
+            x: 0,
+            y: 0,
+            w: b.w,
+            h: b.h,
+            anchor: Anchor {
+                x: 10,
+                y: 10,
+                w: 1,
+                h: 1,
+                gravity: 8,
+                adjust: 0,
+            },
+            flags: 0,
+        })
+        .unwrap()
+}
+
+/// `ms` of the shell's records: the connection stays up, so no protocol error ended it.
+fn stays_up(shell: &mut WaylandShell, ms: i64) {
+    for ev in collect(shell, ms) {
+        assert_ne!(ev.kind(), Kind::Disconnected, "a protocol error");
+    }
+    shell.dispatch_main().expect("the connection is up");
+}
+
+/// A popup chain whose child has its picture first: the child's buffer waits for its parent's, as xdg-shell wants
+/// (mutter dismisses a popup mapped under an unmapped parent, and the recorder ends the client for it).
+fn popups_map_parent_first(thread: bool) {
+    let rec = Recorder::start("sway");
+    let mut shell = rec.open();
+    if thread {
+        shell.set_presenter_thread(true).unwrap();
+    }
+    let mut tb = Backing::new(200, 100);
+    let top = shell
+        .window_new(&WindowDesc {
+            w: tb.w,
+            h: tb.h,
+            title: "t".into(),
+            app_id: "nidhogg.test".into(),
+            flags: 0,
+        })
+        .unwrap();
+    let ev = wait_for(&mut shell, |e| {
+        e.kind() == Kind::Configure && e.window == top
+    });
+    shell
+        .ack_configure(top, configure_of(&ev).serial, NHSHELL_ACK_CONTENT)
+        .unwrap();
+    tb.fill_all(BG);
+    publish(&mut shell, top, &[(&tb, top)], 0);
+    if !thread {
+        shell.present_tree(top).unwrap();
+    }
+    rec.wait_node(top, |n| n.contains("\"buffer\":{"));
+
+    let (mut pb, mut cb) = (Backing::new(60, 30), Backing::new(60, 30));
+    let p = popup(&mut shell, top, &pb);
+    let c = popup(&mut shell, p, &cb);
+    // both configures are read in this span
+    stays_up(&mut shell, 100);
+    cb.fill_all(BG);
+    publish(&mut shell, c, &[(&cb, c)], 0);
+    if !thread {
+        assert!(!shell.present_tree(c).unwrap(), "nothing under its parent");
+    }
+    stays_up(&mut shell, 100);
+    assert_eq!(buffer_commits(&rec, 1, c), 0, "the parent comes first");
+
+    pb.fill_all(BG);
+    publish(&mut shell, p, &[(&pb, p)], 0);
+    if !thread {
+        assert!(shell.present_tree(p).unwrap());
+        wait_for(&mut shell, |e| {
+            e.kind() == Kind::FrameReady && e.window == c
+        });
+        assert!(shell.present_tree(c).unwrap());
+    }
+    until(&mut shell, "the child's buffer", |_| {
+        buffer_commits(&rec, 1, c) >= 1
+    });
+    stays_up(&mut shell, 50);
+    assert_eq!(buffer_commits(&rec, 1, p), 1);
+}
+
 mod presenter {
     use super::*;
+
+    #[test]
+    fn popups_map_parent_first_on_the_thread() {
+        popups_map_parent_first(true);
+    }
+
+    #[test]
+    fn popups_map_parent_first_inline() {
+        popups_map_parent_first(false);
+    }
+
+    /// A popup's new size reaches the compositor while its first picture composes: the configure read meanwhile holds
+    /// the only ack there is (it waits for a picture of the new size), and that first buffer may not go without one.
+    #[test]
+    fn a_first_buffer_never_goes_without_an_ack() {
+        let rec = Recorder::start("sway");
+        let mut shell = threaded(&rec);
+        let mut tb = Backing::new(200, 100);
+        let top = window(&mut shell, &rec, &mut tb);
+        let mut b = Backing::new(60, 30);
+        let p = popup(&mut shell, top, &b);
+        stays_up(&mut shell, 100);
+        shell.set_compose_delay(300);
+        b.fill_all(BG);
+        publish(&mut shell, p, &[(&b, p)], 0);
+        // in the compose: the delay outlasts these
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(!shell.set_size(p, 80, 40).unwrap());
+        stays_up(&mut shell, 400);
+        assert_eq!(buffer_commits(&rec, 1, p), 0, "no buffer without an ack");
+        shell.set_compose_delay(0);
+        b.resize(80, 40);
+        b.fill_all(BG);
+        publish(&mut shell, p, &[(&b, p)], 0);
+        until(&mut shell, "the picture of the new size", |_| {
+            buffer_commits(&rec, 1, p) >= 1
+        });
+        stays_up(&mut shell, 50);
+        let first = commits(&rec, 1, p)
+            .into_iter()
+            .find(|c| c.contains("\"buffer\":{"))
+            .unwrap();
+        assert!(!first.contains("\"ack_serial\":null"), "{first}");
+        assert!(first.contains("\"h\":40"), "{first}");
+    }
 
     /// Review Focus 3: the host publishes while the pacer waits, then stays away for 200 ms.  The frame callback
     /// comes 20 ms in; the presenter commits the packet before the host is back.
