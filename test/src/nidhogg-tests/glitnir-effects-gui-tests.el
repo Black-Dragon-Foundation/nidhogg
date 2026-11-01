@@ -36,8 +36,8 @@
   "Non-nil when the row can read the recorder too."
   (and (glitnir-fx--live-p) (nhwl-gui--recorder-p)))
 
-(defun glitnir-fx--with-child (transition fn)
-  "Call FN with a child frame of `glitnir-fx--colour' and nothing else, with TRANSITION, just shown.
+(defun glitnir-fx--with-child (transition fn &rest params)
+  "Call FN with a child frame of `glitnir-fx--colour' and nothing else, with TRANSITION and PARAMS, just shown.
 FN gets the frame, its surface's id on the recorder (else nil) and a grab from before the frame was made.  On the
 recorder the leg's first buffer is in the log by then.  The frame goes after, and the parent's cursor does not blink."
   (nhwl-gui--with-blink
@@ -54,10 +54,11 @@ recorder the leg's first buffer is in the log by then.  The frame goes after, an
        (unwind-protect
            (progn
              (with-current-buffer buf (setq mode-line-format nil))
-             (setq c (nhwl-gui--child (cons 'transition transition)
-                                      (cons 'background-color glitnir-fx--colour)
-                                      '(left-fringe . 0) '(right-fringe . 0) '(internal-border-width . 0)
-                                      '(vertical-scroll-bars . nil) '(cursor-type . nil)))
+             (setq c (apply #'nhwl-gui--child (cons 'transition transition)
+                            (cons 'background-color glitnir-fx--colour)
+                            '(left-fringe . 0) '(right-fringe . 0) '(internal-border-width . 0)
+                            '(vertical-scroll-bars . nil) '(cursor-type . nil)
+                            params))
              (set-window-buffer (frame-root-window c) buf)
              (redisplay t)
              (funcall fn c (and (nhwl-gui--recorder-p) (plist-get (nhwl-gui--child-node before) :id)) base))
@@ -349,5 +350,208 @@ Inline: the leg's time passes unseen, and at most two commits jump to the end."
        (should (= (glitnir-fx--ticks c) 0))
        (should (<= (length (glitnir-fx--buffers id mark))
                    (- (glitnir-fx--presenter :packets) packets)))))))
+
+;; Task 7: the backdrop.  A child with one shows the parent's pixels, blurred, through half its background; a row keeps
+;; the parent still (its cursor does not blink) but for the change it makes.
+
+(defconst glitnir-fx--blur '((alpha-background . 0.5) (backdrop-blur . 10))
+  "The parameters of a child with a backdrop.")
+
+(defun glitnir-fx--backdrop-px (c)
+  "Backdrop pixels recomputed for child frame C since its record's last reset."
+  (or (plist-get (glitnir-stats c) :backdrop-px) 0))
+
+(defun glitnir-fx--rest (c)
+  "Empty child frame C's record once what it last drew has reached the compositor."
+  (gui-runner-wait-settled)
+  (glitnir-stats c t))
+
+(defun glitnir-fx--spot ()
+  "(X . Y) in a grab of the corner of a child frame made as the rows make theirs, with square corners and opaque."
+  (let (at)
+    (glitnir-fx--with-child
+     nil
+     (lambda (_c _id _base)
+       (setq at (glitnir-fx--wait #'glitnir-fx--found))
+       (should at)))
+    (gui-runner-wait-settled)
+    at))
+
+(defun glitnir-fx--with-text (fn)
+  "Call FN with `*scratch*' full of numbered lines in one window, its top line first; it is emptied after."
+  (let ((text (with-current-buffer (get-buffer-create "*scratch*") (buffer-string))))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer "*scratch*")
+          (erase-buffer)
+          (dotimes (i 400)
+            (insert (format "line %03d of the blur rows, with a mark %s at a place of its own\n"
+                            i (make-string (% (* i 7) 23) ?#))))
+          (goto-char (point-min))
+          (redisplay t)
+          (funcall fn))
+      (with-current-buffer "*scratch*"
+        (erase-buffer)
+        (insert text)))))
+
+(ert-deftest glitnir-blur-follows-change-beneath ()
+  "A change in the parent under the child shows in the child; on the recorder, in the one commit of the tree."
+  :tags '(gnome-smoke)
+  (skip-unless (glitnir-fx--live-p))
+  (let ((at (glitnir-fx--spot)))
+    (apply
+     #'glitnir-fx--with-child
+     nil
+     (lambda (c id _base)
+       (glitnir-fx--rest c)
+       (let ((before (gui-runner-screen-grab))
+             (mark (and id (nhwl-gui--mark))))
+         (with-current-buffer "*scratch*"
+           (goto-char (point-min))
+           (dotimes (_ 12) (insert (make-string 60 ?#) "\n")))
+         (redisplay t)
+         (unwind-protect
+             (progn
+               (should (glitnir-fx--wait (lambda () (> (glitnir-fx--backdrop-px c) 0))))
+               (gui-runner-wait-settled)
+               (should (> (cdr (gui-runner-pixel-diff before (gui-runner-screen-grab)
+                                                      (glitnir-fx--rect c at)))
+                          0))
+               (when id
+                 (let* ((kid (car (glitnir-fx--buffers id mark)))
+                        (by (or (nhwl-gui--get kid :applied_by) (plist-get kid :seq))))
+                   (should kid)
+                   (should (seq-find (lambda (r) (eql (plist-get r :seq) by)) (nhwl-gui--new mark))))))
+           (with-current-buffer "*scratch*" (erase-buffer)))))
+     glitnir-fx--blur)))
+
+(ert-deftest glitnir-typing-in-blurred-child-no-reblur ()
+  "50 keys typed into a child with a backdrop recompute none of it."
+  (skip-unless (glitnir-fx--recorder-p))
+  (apply
+   #'glitnir-fx--with-child
+   nil
+   (lambda (c id _base)
+     (glitnir-fx--rest c)
+     (let ((mark (nhwl-gui--mark))
+           (buf (window-buffer (frame-root-window c))))
+       (dotimes (_ 50)
+         (should (glitnir-fx--next-key))
+         (with-current-buffer buf (insert "x"))
+         (redisplay t)
+         (gui-runner-wait-settled))
+       (should (> (length (glitnir-fx--buffers id mark)) 0))
+       (should (= (glitnir-fx--backdrop-px c) 0))))
+   glitnir-fx--blur))
+
+(ert-deftest glitnir-blur-off-identical ()
+  "A child with an opaque background grabs the same with `backdrop-blur' as without, and recomputes nothing."
+  (skip-unless (glitnir-fx--live-p))
+  (let (with without)
+    (glitnir-fx--with-child
+     nil
+     (lambda (c _id _base)
+       (gui-runner-wait-settled)
+       (setq with (gui-runner-screen-grab))
+       (should (= (glitnir-fx--backdrop-px c) 0)))
+     '(alpha-background . 1.0) '(backdrop-blur . 10))
+    (gui-runner-wait-settled)
+    (glitnir-fx--with-child
+     nil
+     (lambda (_c _id _base)
+       (gui-runner-wait-settled)
+       (setq without (gui-runner-screen-grab)))
+     '(alpha-background . 1.0))
+    (should (eql 0 (cdr (gui-runner-pixel-diff with without))))))
+
+(ert-deftest glitnir-blur-corners ()
+  "Rounded corners: the pixel at a corner is what lies beneath, the blur stops there."
+  (skip-unless (glitnir-fx--live-p))
+  (let ((at (glitnir-fx--spot)))
+    (apply
+     #'glitnir-fx--with-child
+     nil
+     (lambda (c _id base)
+       (gui-runner-wait-settled)
+       (let* ((grab (gui-runner-screen-grab))
+              (right (+ (car at) (frame-pixel-width c) -1))
+              (bottom (+ (cdr at) (frame-pixel-height c) -1)))
+         (dolist (p (list (cons (car at) (cdr at)) (cons right (cdr at))
+                          (cons (car at) bottom) (cons right bottom)))
+           (should (eql 0 (cdr (gui-runner-pixel-diff base grab (list (car p) (cdr p) 1 1))))))))
+     '(corner-radius . 8) glitnir-fx--blur)))
+
+(ert-deftest glitnir-blur-over-scrolling-window ()
+  "20 line scrolls of a promoted window beneath: the child follows each, and ends as a blur made afresh."
+  (skip-unless (and (glitnir-fx--recorder-p) (fboundp 'nhwl--scroll-layers)
+                    (boundp 'nhwl-scroll-layers) nhwl-scroll-layers))
+  (let ((at (glitnir-fx--spot)) grab rect)
+    (glitnir-fx--with-text
+     (lambda ()
+       (apply
+        #'glitnir-fx--with-child
+        nil
+        (lambda (c id _base)
+          (glitnir-fx--rest c)
+          (let ((mark (nhwl-gui--mark)) (layers 0))
+            (dotimes (_ 20)
+              (scroll-up 1)
+              (redisplay t)
+              (setq layers (max layers (nhwl--scroll-layers)))
+              (gui-runner-wait-settled))
+            (should (= layers 1))
+            (should (>= (length (glitnir-fx--buffers id mark)) 20))
+            (should (> (glitnir-fx--backdrop-px c) 0))
+            (setq grab (gui-runner-screen-grab)
+                  rect (glitnir-fx--rect c at))))
+        glitnir-fx--blur)
+       (gui-runner-wait-settled)
+       (apply
+        #'glitnir-fx--with-child
+        nil
+        (lambda (_c _id _base)
+          (gui-runner-wait-settled)
+          (should (eql 0 (cdr (gui-runner-pixel-diff grab (gui-runner-screen-grab) rect)))))
+        glitnir-fx--blur)))))
+
+(ert-deftest glitnir-blur-scale-change ()
+  "From scale 1 to 1.25 with the child open: it recomputes, at the new scale, and nothing breaks on the way."
+  (skip-unless (glitnir-fx--recorder-p))
+  (apply
+   #'glitnir-fx--with-child
+   nil
+   (lambda (c _id _base)
+     (glitnir-fx--rest c)
+     (unwind-protect
+         (progn
+           (gui-runner-recorder '(:cmd "scale" :value120 150))
+           (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-scale-factor) 1.25)) 5))
+           (should (glitnir-fx--wait (lambda () (redisplay t) (> (glitnir-fx--backdrop-px c) 0))))
+           (gui-runner-wait-settled t)
+           (should (glitnir-fx--connected-p)))
+       (gui-runner-recorder '(:cmd "scale" :value120 120))
+       (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-scale-factor) 1.0)) 5)
+       (gui-runner-wait-settled t)))
+   glitnir-fx--blur))
+
+(ert-deftest glitnir-fade-with-blur ()
+  "A child with a backdrop fades out and leaves nothing; the blur fades with it and is not recomputed."
+  (skip-unless (glitnir-fx--recorder-p))
+  (let ((at (glitnir-fx--spot)))
+    (apply
+     #'glitnir-fx--with-child
+     'pop
+     (lambda (c id base)
+       (should (glitnir-fx--wait (lambda () (> (glitnir-fx--backdrop-px c) 0))))
+       (should (glitnir-fx--wait (lambda () (> (length (glitnir-fx--buffers id 0)) 1))))
+       (glitnir-fx--rest c)
+       (make-frame-invisible c t)
+       (should (nhwl-gui--wait (lambda () (glitnir-fx--unmapped-p id)) 3))
+       (gui-runner-wait-settled)
+       (should (= (glitnir-fx--backdrop-px c) 0))
+       (should (glitnir-fx--clean base (glitnir-fx--rect c at)))
+       (should (glitnir-fx--connected-p)))
+     glitnir-fx--blur)))
 
 ;;; glitnir-effects-gui-tests.el ends here
