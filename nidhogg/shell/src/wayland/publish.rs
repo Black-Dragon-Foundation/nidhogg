@@ -890,11 +890,12 @@ impl WaylandShell {
 
     /// `ShellBackend::tree_snapshot`: each surface composed whole on this thread, as its next buffer would be, from the
     /// host's pixels and the scene committed with them (`Composer`s take no lock), then the surfaces over each other.
-    /// Nothing of the presenter's is touched.
+    /// Nothing of the presenter's is touched.  `composed` false leaves the scenes out: the host's pixels alone, square.
     pub(super) fn tree_snapshot_impl(
         &self,
         root: WindowId,
         frames: &[SurfaceFrame],
+        composed: bool,
     ) -> ShellResult<Vec<u32>> {
         let m = &self.main;
         let first = frames.first().filter(|f| f.window == root);
@@ -923,7 +924,7 @@ impl WaylandShell {
                 scale,
             };
             let src = front.view(f.glitnir_root, (f.src_x, f.src_y), scale);
-            if compose_root(f.glitnir_root, &mut t, &[all], &[src]).is_err() {
+            if !composed || compose_root(f.glitnir_root, &mut t, &[all], &[src]).is_err() {
                 front.copy_to(&mut t, &[all]);
             }
             if f.flags & NHSHELL_SF_ALPHA_HOST != 0 {
