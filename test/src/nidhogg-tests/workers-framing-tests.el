@@ -1,4 +1,5 @@
 ;;; workers-framing-tests.el --- tests for workers: process framing  -*- lexical-binding: t -*-
+;; test-class: cond
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
@@ -89,6 +90,16 @@ its handler."
       (call-process "true")
       (setq i (1+ i)))
     (funcall pred)))
+
+(defun workers-fr-tests--witness ()
+  "Serve the event loop once more, on a condition.
+A fresh framed `cat' echoes one line back; when that batch has come, every
+event that was ready before it has had its turn.  Use it before asserting
+that something did not happen."
+  (let ((w (workers-fr-tests--cat "witness" 'lines)))
+    (process-send-string w "{\"w\":1}\n")
+    (should (workers-fr-tests--until (lambda () (workers-fr-tests--got w))))
+    (delete-process w)))
 
 (defun workers-fr-tests--info (proc key)
   (plist-get (nidhogg-workers--test-io-info proc) key))
@@ -748,7 +759,7 @@ tree), and there is no untracked one."
             (process-send-string p data)
             (setq sent t)
             (should (workers-fr-tests--until (lambda () deleted)))
-            (workers-fr-tests--until #'ignore 0.1)
+            (workers-fr-tests--witness)
             (should (= after 0))))
         (ert-info ("set-process-filter" :prefix "")
           (let ((p (framed "re-filter"
@@ -809,7 +820,7 @@ tree), and there is no untracked one."
             (process-send-string b data)
             (process-send-string a data)
             (should (workers-fr-tests--until (lambda () b-deleted)))
-            (workers-fr-tests--until #'ignore 0.1)
+            (workers-fr-tests--witness)
             (should (= b-after 0))
             (should-not (process-live-p b))
             (should (process-live-p a))))))))
@@ -842,7 +853,7 @@ tree), and there is no untracked one."
         (stop-process client)
         (should (workers-fr-tests--info client :paused))
         (process-send-string conn (workers-fr-tests--lines 11 10))
-        (workers-fr-tests--until #'ignore 0.3)
+        (workers-fr-tests--witness)
         (should (= (length (workers-fr-tests--got client)) 10))
         (should (<= (workers-fr-tests--info client :queued) (* 64 1024)))
         (continue-process client)
@@ -857,7 +868,7 @@ tree), and there is no untracked one."
         (should (workers-fr-tests--info client :paused))
         (should-not (nidhogg-process-framing client))
         (process-send-string conn (workers-fr-tests--lines 21 5))
-        (workers-fr-tests--until #'ignore 0.3)
+        (workers-fr-tests--witness)
         (should (equal (workers-fr-tests--raw client) ""))
         (set-process-filter client #'workers-fr-tests--raw-filter)
         (should (workers-fr-tests--until
@@ -1081,6 +1092,7 @@ each notification dispatched goes to the process property `dispatched'
           (should (equal (run t) want)))))))
 
 (ert-deftest workers/jsonrpc-tail-unchanged ()
+  :tags '(:det)
   ;; Review M15: lisp/nidhogg-workers-jsonrpc.el copies the tail of
   ;; `jsonrpc--process-filter'.  The SHA-256 recorded with the copy is
   ;; the filter's source in lisp/jsonrpc.el, so an upstream change to

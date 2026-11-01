@@ -30,6 +30,7 @@ exit 0
 EOF
 cat > "$d/harness" <<'EOF'
 #!/usr/bin/env bash
+echo "$*" >> "${HARNESS_LOG:-/dev/null}"
 exit 0
 EOF
 chmod +x "$d/ok" "$d/failp3" "$d/slow" "$d/harness"
@@ -43,6 +44,11 @@ pre "$d/ok" --out "$d/r1/report" --stamp-dir "$d/stamps" > /dev/null; r=$?
   || fail "stamp form: $(cat "$d/r1/report.stamp" 2>/dev/null)"
 [ "$(awk '{print NF}' "$d/r1/report.stamp")" = 3 ] || fail "stamp is not <commit> <passes> <date>"
 cmp -s "$d/r1/report.stamp" "$d/stamps/$sha.stamp" || fail "no copy in --stamp-dir"
+
+# P4: the schedule pass names modules and its own 2000 seeds (not P3's 3), both calls with their modules
+HARNESS_LOG="$d/harness.calls" pre "$d/ok" --passes P4 --out "$d/r19/report" > /dev/null
+[ "$(cat "$d/harness.calls" 2>/dev/null)" = "$(printf -- '--tsan queue wake io\n--sched queue wake --seeds 2000')" ] \
+  || fail "P4's harness calls: $(cat "$d/harness.calls" 2>/dev/null)"
 
 # no-stamp-on-failure: P3 red on one seed; the report names the seed and the replay line
 mkdir -p "$d/r2"; echo "old" > "$d/r2/report.stamp"
@@ -73,7 +79,8 @@ if [ -n "${FAKE_HANG:-}" ]; then echo $$ > "$FAKE_HANG"; exec sleep 30; fi
 while IFS= read -r t; do
   [ "$t" != "${FAKE_SKIP:-}" ] || continue
   mkdir -p "$b/check-logs/$(dirname "$t")"
-  if [ "$t" = "${FAKE_ALLSKIP:-}" ]; then echo "Ran 7 tests, 0 results as expected, 0 unexpected, 7 skipped (2026-10-30 11:49:44+0000, 0.1 sec)" > "$b/check-logs/$t.log"
+  if [ "$t" = "${FAKE_PARTSKIP:-}" ]; then echo "Ran 7 tests, 6 results as expected, 0 unexpected, 1 skipped (2026-10-30 11:49:44+0000, 0.1 sec)" > "$b/check-logs/$t.log"
+  elif [ "$t" = "${FAKE_ALLSKIP:-}" ]; then echo "Ran 7 tests, 0 results as expected, 0 unexpected, 7 skipped (2026-10-30 11:49:44+0000, 0.1 sec)" > "$b/check-logs/$t.log"
   else echo "Ran 7 tests, 7 results as expected, 0 unexpected (2026-10-30 11:49:44+0000, 1.5 sec)" > "$b/check-logs/$t.log"; fi
 done < "$FAKE_ROOT/$l"
 echo "$NIDHOGG_TEST_GRAMMARS|$NIDHOGG_CHECK_PACKAGES|$NIDHOGG_BUILD_PODMAN_ARGS" > "$FAKE_ROOT/../slot.env"
@@ -101,6 +108,13 @@ grep -q "^P2 cpu1: 1 green, 1 red of 2$" "$d/r7/report" || fail "a file not run 
 FAKE_ALLSKIP=src/b-tests grp --out "$d/r13/report" > /dev/null
 grep -q "^GROUP P2 cpu1 run=1 seed=- src/b-tests ALL SKIPPED: Ran 7 tests, 0 results as expected" "$d/r13/report" || fail "no ALL SKIPPED line"
 grep -q "^P2 cpu1: 1 green, 0 red of 2, 1 all skipped$" "$d/r13/report" || fail "an all-skipped file counted as green"
+# a skip in a file the pre-flight relies on is a red; the same skip elsewhere is not
+printf 'src/a-tests\n' > "$d/no-skip.txt"
+PREFLIGHT_NO_SKIP="$d/no-skip.txt" FAKE_PARTSKIP=src/a-tests grp --out "$d/r14/report" > /dev/null; r=$?
+[ "$r" = 1 ] && [ ! -e "$d/r14/report.stamp" ] || fail "a skip in a must-not-skip file passed ($r)"
+grep -q "^GROUP P2 cpu1 run=1 seed=- src/a-tests RED: 1 test(s) skipped" "$d/r14/report" || fail "no RED line for a skip in a must-not-skip file"
+PREFLIGHT_NO_SKIP="$d/no-skip.txt" FAKE_PARTSKIP=src/b-tests grp --out "$d/r15/report" > /dev/null; r=$?
+[ "$r" = 0 ] || fail "a skip in an ordinary file was red ($r)"
 # a run that failed with every file green (the link to the desktop dropped: ssh's 255) is red, and says how it ended
 FAKE_EXIT=255 grp --out "$d/r12/report" > /dev/null; r=$?
 [ "$r" = 1 ] && [ ! -e "$d/r12/report.stamp" ] || fail "a failed run with green files exited $r, or got a stamp"
@@ -194,6 +208,36 @@ awk '/^--- P2 src\/b-tests/{f=1} f' "$d/r17/report" | grep -q NOISE && fail "a n
 touch "$d/repo/preflight-chk.stale.txt"
 PREFLIGHT_SLOT="$d/fakeslot" FAKE_ROOT="$d/repo" pre "" --passes P2 --out "$d/r18/report" > /dev/null
 [ ! -e "$d/repo/preflight-chk.stale.txt" ] || fail "a stale list file was left"
+
+# the classes: P1 takes every `;; test-class: det` file, P2 adds every cond file outside the GUI set to its list
+mkdir -p "$d/tests/src/nidhogg-tests"
+for spec in d-tests:det c-tests:cond c-gui-tests:cond n-tests:; do
+  f=$d/tests/src/nidhogg-tests/${spec%%:*}.el
+  printf ';;; x  -*- lexical-binding: t -*-\n' > "$f"
+  [ -z "${spec#*:}" ] || printf ';; test-class: %s\n' "${spec#*:}" >> "$f"
+done
+cat > "$d/rec" <<'EOF'
+#!/usr/bin/env bash
+# PASS TARGET WRAP SEED: logs the call; $REC_FLIP: that target fails in a pinned P1 run only
+echo "$1 $2 $3" >> "$REC_LOG"
+[ "$1" = P1 ] && [ "$2" = "${REC_FLIP:-}" ] && [ "$3" = cpu1 ] && exit 1
+exit 0
+EOF
+chmod +x "$d/rec"
+export REC_LOG="$d/rec.log"; rm -f "$REC_LOG"
+PREFLIGHT_TESTS="$d/tests" pre "$d/rec" --passes P1,P2 --out "$d/r20/report" > /dev/null; r=$?
+[ "$r" = 0 ] || fail "a green classified run exited $r"
+[ "$(grep '^P1 ' "$REC_LOG" | tr '\n' ';')" = "P1 src/nidhogg-tests/d-tests none;P1 src/nidhogg-tests/d-tests none;P1 src/nidhogg-tests/d-tests cpu1;" ] \
+  || fail "P1's files: $(grep '^P1 ' "$REC_LOG" | tr '\n' ';')"
+[ "$(grep '^P2 ' "$REC_LOG" | grep ' cpu1$' | cut -d' ' -f2 | tr '\n' ' ')" = "src/a-tests src/b-tests src/nidhogg-tests/c-tests " ] \
+  || fail "P2's files: $(grep '^P2 ' "$REC_LOG" | grep ' cpu1$' | cut -d' ' -f2 | tr '\n' ' ')"
+[ "$(cut -d' ' -f1,2 "$d/r20/report.stamp")" = "$sha P1,P2" ] || fail "a run of D files was stamped as skipped: $(cat "$d/r20/report.stamp")"
+# a D file whose results differ between its runs is red
+rm -f "$REC_LOG"
+REC_FLIP=src/nidhogg-tests/d-tests PREFLIGHT_TESTS="$d/tests" pre "$d/rec" --passes P1 --out "$d/r21/report" > /dev/null; r=$?
+[ "$r" = 1 ] && [ ! -e "$d/r21/report.stamp" ] || fail "differing runs of a D file exited $r or got a stamp"
+grep -q '^RED P1 DIFFERENT src/nidhogg-tests/d-tests' "$d/r21/report" || fail "no DIFFERENT line"
+[ -z "$(find "$d/r20" "$d/r21" -type f ! -name report ! -name report.stamp)" ] || fail "temporary list files left behind"
 
 # a dirty tree gets none
 echo x > "$d/repo/f"; git -C "$d/repo" add f

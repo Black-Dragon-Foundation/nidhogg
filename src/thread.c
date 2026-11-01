@@ -26,6 +26,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "coding.h"
 #include "syssignal.h"
 #include "pdumper.h"
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+#include "nidhogg-testclock.h"
+#endif
 #include "keyboard.h"
 #ifdef HAVE_NIDHOGG_WATCHDOG
 #include "nidhogg-watchdog.h"
@@ -232,6 +235,9 @@ lisp_mutex_lock_for_thread (lisp_mutex_t *mutex, struct thread_state *locker,
 
   self = locker;
   self->wait_condvar = &mutex->condition;
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+  nh_tc_kick ();
+#endif
   while (mutex->owner != NULL && (new_count != 0
 				  || NILP (self->error_symbol)))
     sys_cond_wait (&mutex->condition, &global_lock);
@@ -461,6 +467,9 @@ condition_wait_callback (void *arg)
   if (NILP (self->error_symbol))
     {
       self->wait_condvar = &cvar->cond;
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+      nh_tc_kick ();
+#endif
       /* This call could switch to another thread.  */
       sys_cond_wait (&cvar->cond, &global_lock);
       self->wait_condvar = NULL;
@@ -618,6 +627,16 @@ really_call_select (void *arg)
   struct select_args *sa = arg;
   struct thread_state *self = current_thread;
   sigset_t oldset;
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+  /* On an auto-advancing test clock one select may take several rounds,
+     each with the global lock released only around the real select.  */
+  struct nh_tc_wait tw;
+  bool tc = nh_tc_auto && nh_tc_wait_begin (&tw, self, sa->max_fds, sa->rfds,
+					    sa->wfds, sa->efds, sa->timeout);
+ again:
+  if (tc)
+    nh_tc_before (&tw, &sa->max_fds, &sa->timeout);
+#endif
 #ifdef HAVE_NIDHOGG_WATCHDOG
   nh_wd_wait_enter (self, sa->timeout);
 #endif
@@ -629,6 +648,10 @@ really_call_select (void *arg)
 
   sa->result = (sa->func) (sa->max_fds, sa->rfds, sa->wfds, sa->efds,
 			   sa->timeout, sa->sigmask);
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+  if (tc)
+    nh_tc_returned (&tw);
+#endif
 #ifdef HAVE_NIDHOGG_WATCHDOG
   nh_wd_wait_leave (self);
 #endif
@@ -646,6 +669,10 @@ really_call_select (void *arg)
       self->not_holding_lock = 0;
     }
   restore_signal_mask (&oldset);
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+  if (tc && nh_tc_after (&tw, &sa->result))
+    goto again;
+#endif
 }
 
 int
@@ -867,6 +894,9 @@ run_thread (void *state)
     ;
   *iter = (*iter)->next_thread;
 
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+  nh_tc_kick ();
+#endif
   release_global_lock ();
 
   return NULL;
@@ -1116,6 +1146,9 @@ thread_join_callback (void *arg)
   XSETTHREAD (thread, tstate);
   self->event_object = thread;
   self->wait_condvar = &tstate->thread_condvar;
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+  nh_tc_kick ();
+#endif
   while (thread_live_p (tstate) && NILP (self->error_symbol))
     sys_cond_wait (self->wait_condvar, &global_lock);
 

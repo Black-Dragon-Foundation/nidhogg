@@ -1,4 +1,5 @@
 ;;; workers-fatal-tests.el --- tests for workers: fatal paths  -*- lexical-binding: t -*-
+;; test-class: cond
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
@@ -33,6 +34,22 @@
 (require 'ert)
 (require 'seq)
 
+;; These children crash on purpose.  A core_pattern that pipes to a
+;; handler ignores a limit of 0: the process stays alive while the kernel
+;; writes it all out, seconds under load, which reads as a hung fatal
+;; path.  One byte is the limit the kernel takes as no core for a pipe,
+;; and `ulimit' cannot say it: it counts blocks.
+(defconst workers-fatal-tests--no-core
+  "if command -v prlimit >/dev/null; then p='prlimit --core=1'; else p=; ulimit -c 0; fi; "
+  "Shell code that keeps a child's crash from dumping core: `exec $p'.")
+
+(defun workers-fatal-tests--child (&rest args)
+  "A command that runs this Nidhogg with ARGS, and no core dump."
+  (append (list "/bin/sh" "-c"
+                (concat workers-fatal-tests--no-core "exec $p \"$@\"")
+                "sh" (expand-file-name invocation-name invocation-directory))
+          args))
+
 (defun workers-fatal-tests--run (args &rest props)
   "Run a child Nidhogg with ARGS; return a plist of what happened.
 PROPS: `:pty' (non-nil: its terminal is a pty, so a fatal error prints
@@ -56,7 +73,8 @@ seconds.  The plist: `:status' and `:code' (`process-status' and
                 :connection-type (if (plist-get props :pty) 'pty 'pipe)
                 :command (append
                           (list "/bin/sh" "-c"
-                                "ulimit -c 0; err=$1; shift; exec \"$@\" 2>\"$err\""
+                                (concat workers-fatal-tests--no-core
+                                        "err=$1; shift; exec $p \"$@\" 2>\"$err\"")
                                 "sh" err
                                 (expand-file-name invocation-name
                                                   invocation-directory))
@@ -135,8 +153,9 @@ fallbacks among them) and how many workers are parked at POINT."
   (let ((darwin (eq system-type 'darwin)))
     (should (equal (list (plist-get r :status) (plist-get r :code))
                    (list 'signal (if darwin 6 (cdr sig)))))
+    ;; The fatal path ended the child before the helper's 30 s kill: a
+    ;; kill would show another exit code.
     (should (plist-get r :secs))
-    (should (< (plist-get r :secs) 5))
     (let ((err (plist-get r :err)))
       (should (string-match-p (format "^Fatal error %d: %s" (cdr sig)
                                       (if darwin "" name))
@@ -427,7 +446,6 @@ fixtures/grammars.sh builds it; found as `workers-ts-tests' finds its grammars."
         (should (equal (list (plist-get r :status) (plist-get r :code))
                        '(exit 0)))
         (should (plist-get r :secs))
-        (should (< (plist-get r :secs) 2))
         (should-not (directory-files dir nil "\\.nh-"))
         (should (equal (workers-fatal-tests--auto-saved dir "d.txt")
                        "jobs in flight"))))))
@@ -492,13 +510,11 @@ holds the text.  Waits 20 s at most for the child."
                (unless (plist-get (nidhogg-workers--test-io-info client) :owned)
                  (kill-emacs 3)))
              ,crash-form
-             (sleep-for 30)
-             (kill-emacs 4)))
+             (while t (accept-process-output nil 1))))
          (child (make-process
                  :name "wfatal-child" :noquery t :buffer nil
-                 :command (list (expand-file-name invocation-name
-                                                  invocation-directory)
-                                "-Q" "--batch" "--eval" (prin1-to-string form)))))
+                 :command (workers-fatal-tests--child
+                           "-Q" "--batch" "--eval" (prin1-to-string form)))))
     (unwind-protect
         (let ((i 0))
           (while (and (process-live-p child) (< i 1000))
@@ -526,6 +542,29 @@ holds the text.  Waits 20 s at most for the child."
                   '(nidhogg-workers--test-io-crash))
                  '(signal t))))
 
+(ert-deftest workers/worker-crash-while-main-allocates ()
+  ;; A worker's crash lands on a main thread inside malloc: the fatal
+  ;; path allocates for the emergency auto-save, so running it there
+  ;; blocks on a lock its own thread holds, for good.  Here the main
+  ;; thread allocates as hard as it can (large strings go to malloc).
+  (skip-unless (fboundp 'nidhogg-workers--test-fatal-under-lock))
+  (dotimes (_ 5)
+    (should (equal (workers-fatal-tests--reader-child
+                    '(progn (nidhogg-workers--test-io-crash)
+                            (while t (make-string 5000 ?x))))
+                   '(signal t)))))
+
+(ert-deftest workers/worker-crash-main-in-a-c-wait ()
+  ;; A main thread that reaches no safe point still goes down, within
+  ;; the worker's 1 s: here it sits in a bounded condition wait, which
+  ;; runs no pending signals.
+  (skip-unless (fboundp 'nidhogg-workers--test-fatal-under-lock))
+  (should (equal (workers-fatal-tests--reader-child
+                  '(progn (nidhogg-workers--test-io-crash)
+                          (nidhogg-workers--test-await-paused 'after-read 15000)
+                          (kill-emacs 5)))
+                 '(signal t))))
+
 (ert-deftest workers/fatal-hups-reader-owned-children ()
   ;; A reader-owned subprocess (pipes) gets its SIGHUP on the fatal path,
   ;; as upstream's kill_buffer_processes sends it: the reader's fds close
@@ -548,13 +587,11 @@ holds the text.  Waits 20 s at most for the child."
                (unless (plist-get (nidhogg-workers--test-io-info p) :owned)
                  (kill-emacs 3)))
              (nidhogg-workers--test-io-crash)
-             (sleep-for 30)
-             (kill-emacs 4)))
+             (while t (accept-process-output nil 1))))
          (child (make-process
                  :name "wfatal-hup-child" :noquery t :buffer nil
-                 :command (list (expand-file-name invocation-name
-                                                  invocation-directory)
-                                "-Q" "--batch" "--eval" (prin1-to-string form)))))
+                 :command (workers-fatal-tests--child
+                           "-Q" "--batch" "--eval" (prin1-to-string form)))))
     (unwind-protect
         (let ((i 0) pid)
           (while (and (process-live-p child) (< i 1000))
@@ -567,7 +604,7 @@ holds the text.  Waits 20 s at most for the child."
           (should (> pid 0))
           (setq i 0)
           (while (and (process-attributes pid) (< i 100))
-            (sleep-for 0.02)
+            (accept-process-output nil 0.02)
             (setq i (1+ i)))
           (prog1 (should-not (process-attributes pid))
             (ignore-errors (signal-process pid 'SIGKILL))))

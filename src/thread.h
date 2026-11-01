@@ -216,6 +216,10 @@ struct thread_state
   /* Threads are kept on a linked list.  */
   struct thread_state *next_thread;
 
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+  /* The select of this thread the test clock knows about, or NULL.  */
+  struct nh_tc_wait *nh_tc;
+#endif
   struct bc_thread_state bc;
 } GCALIGNED_STRUCT;
 

@@ -17,7 +17,11 @@ grep -qE '^    needs: .*timing' "$wf"                            && fail "a job 
 # drgnx's tiers: drgnx's own workflow, at one pinned commit that is also the default drgnx_ref, on this run's tarballs
 pin=$(grep -oE 'uses: Black-Dragon-Foundation/drgnx/\.github/workflows/drgnx-tiers\.yml@[0-9a-f]{40}' "$wf" | sed 's/.*@//')
 [ -n "$pin" ]                                                     || fail "drgnx's tiers are not called at a pinned commit"
-grep -qF "drgnx_ref: \${{ inputs.drgnx_ref || '$pin' }}" "$wf"    || fail "the default drgnx_ref is not the pinned commit $pin"
+! grep -qF "inputs.drgnx_ref || '" "$wf"                          || fail "a literal default drgnx_ref (the uses line is the one pin)"
+grep -qE '^  pin:' "$wf"                                          || fail "no pin job"
+grep -qF 'inputs.drgnx_ref || needs.pin.outputs.ref' "$wf"        || fail "the default drgnx_ref is not the pin job's output"
+# cache budget: only the default branch saves, so ci/* branches and tags restore only
+[ "$(grep -c 'uses: actions/cache/save@' "$wf")" -eq "$(grep -c "github.ref == 'refs/heads/nidhogg-31'" "$wf")" ] || fail "a cache save step not limited to nidhogg-31"
 grep -qF 'nidhogg: artifact' "$wf"                                || fail "drgnx's tiers do not run on this run's tarballs"
 grep -qF "'unit no-lisp-writes ui macos'" "$wf"                   || fail "drgnx's tiers are not unit, gate mode, GUI and macOS"
 # a release only from a pushed v* tag, never from workflow_dispatch or a pull request

@@ -1,4 +1,5 @@
 ;;; workers-tls-tests.el --- tests for workers: STARTTLS and the reader  -*- lexical-binding: t -*-
+;; test-class: cond
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
@@ -105,9 +106,12 @@
                                    "--port" (number-to-string port))
                     :filter (lambda (_p s) (setq out (concat out s))))))
         (workers-tls-tests--until
+         ;; The whole status line is the event: "port N..." alone is only
+         ;; its start, and "done" can arrive in a later read.
          (lambda ()
            (or (not (process-live-p proc))
-               (string-match-p (format "port %d\\.\\.\\." port) out)))
+               (string-match-p (format "port %d\\.\\.\\.[^\r\n]*[\r\n]" port)
+                               out)))
          1500)
         (if (string-match-p (format "port %d\\.\\.\\.done" port) out)
             (throw 'server (cons proc port))
@@ -136,9 +140,11 @@
                                        "--x509certfile" (getenv "WTLS_CERT")
                                        "--port" (number-to-string port))))
              (set-process-filter proc (lambda (_p s) (setq out (concat out s))))
+             ;; The whole status line, as in the parent's server helper.
              (while (and (process-live-p proc)
-                         (not (string-match-p (format "port %d\\.\\.\\." port)
-                                              out)))
+                         (not (string-match-p
+                               (format "port %d\\.\\.\\.[^\r\n]*[\r\n]" port)
+                               out)))
                (accept-process-output proc 0.1))
              (if (string-match-p (format "port %d\\.\\.\\.done" port) out)
                  (progn (setq wtls-serv proc) (throw 'up port))
@@ -441,17 +447,21 @@ PULLED PULL)."
                           :tls-parameters
                           (cons 'gnutls-x509pki
                                 (gnutls-boot-parameters :hostname "localhost")))))
-              (should (workers-tls-tests--until
-                       (lambda () (not (eq (process-status proc) 'connect)))))
+              (unless (workers-tls-tests--until
+                       (lambda () (not (eq (process-status proc) 'connect))))
+                (ert-fail (format "still connecting, server %S"
+                                  (process-status (car s)))))
               (should (eq (process-status proc) 'open))
               (should (consp (gnutls-peer-status proc)))
               (should-not (workers-tls-tests--info proc :owned))
               (should (eq (workers-tls-tests--info proc :refused) 'tls))
               (process-send-string proc "ping\n")
-              (should (workers-tls-tests--until
-                       (lambda ()
-                         (equal (with-current-buffer buf (buffer-string))
-                                "ping\n"))))
+              (ert-info ((lambda () (format "echo %S" (with-current-buffer buf
+                                                        (buffer-string)))))
+                (should (workers-tls-tests--until
+                         (lambda ()
+                           (equal (with-current-buffer buf (buffer-string))
+                                  "ping\n")))))
               (delete-process proc)
               (kill-buffer buf)))
         (delete-process (car s))))))

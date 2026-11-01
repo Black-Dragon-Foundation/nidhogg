@@ -1,4 +1,5 @@
 ;;; nhwl-portal-tests.el --- tests for the Wayland shell's file dialog portal  -*- lexical-binding: t -*-
+;; test-class: cond
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
