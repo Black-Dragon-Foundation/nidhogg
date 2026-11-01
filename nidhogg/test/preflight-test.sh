@@ -79,7 +79,8 @@ if [ -n "${FAKE_HANG:-}" ]; then echo $$ > "$FAKE_HANG"; exec sleep 30; fi
 while IFS= read -r t; do
   [ "$t" != "${FAKE_SKIP:-}" ] || continue
   mkdir -p "$b/check-logs/$(dirname "$t")"
-  if [ "$t" = "${FAKE_ALLSKIP:-}" ]; then echo "Ran 7 tests, 0 results as expected, 0 unexpected, 7 skipped (2026-10-30 11:49:44+0000, 0.1 sec)" > "$b/check-logs/$t.log"
+  if [ "$t" = "${FAKE_PARTSKIP:-}" ]; then echo "Ran 7 tests, 6 results as expected, 0 unexpected, 1 skipped (2026-10-30 11:49:44+0000, 0.1 sec)" > "$b/check-logs/$t.log"
+  elif [ "$t" = "${FAKE_ALLSKIP:-}" ]; then echo "Ran 7 tests, 0 results as expected, 0 unexpected, 7 skipped (2026-10-30 11:49:44+0000, 0.1 sec)" > "$b/check-logs/$t.log"
   else echo "Ran 7 tests, 7 results as expected, 0 unexpected (2026-10-30 11:49:44+0000, 1.5 sec)" > "$b/check-logs/$t.log"; fi
 done < "$FAKE_ROOT/$l"
 echo "$NIDHOGG_TEST_GRAMMARS|$NIDHOGG_CHECK_PACKAGES|$NIDHOGG_BUILD_PODMAN_ARGS" > "$FAKE_ROOT/../slot.env"
@@ -107,6 +108,13 @@ grep -q "^P2 cpu1: 1 green, 1 red of 2$" "$d/r7/report" || fail "a file not run 
 FAKE_ALLSKIP=src/b-tests grp --out "$d/r13/report" > /dev/null
 grep -q "^GROUP P2 cpu1 run=1 seed=- src/b-tests ALL SKIPPED: Ran 7 tests, 0 results as expected" "$d/r13/report" || fail "no ALL SKIPPED line"
 grep -q "^P2 cpu1: 1 green, 0 red of 2, 1 all skipped$" "$d/r13/report" || fail "an all-skipped file counted as green"
+# a skip in a file the pre-flight relies on is a red; the same skip elsewhere is not
+printf 'src/a-tests\n' > "$d/no-skip.txt"
+PREFLIGHT_NO_SKIP="$d/no-skip.txt" FAKE_PARTSKIP=src/a-tests grp --out "$d/r14/report" > /dev/null; r=$?
+[ "$r" = 1 ] && [ ! -e "$d/r14/report.stamp" ] || fail "a skip in a must-not-skip file passed ($r)"
+grep -q "^GROUP P2 cpu1 run=1 seed=- src/a-tests RED: 1 test(s) skipped" "$d/r14/report" || fail "no RED line for a skip in a must-not-skip file"
+PREFLIGHT_NO_SKIP="$d/no-skip.txt" FAKE_PARTSKIP=src/b-tests grp --out "$d/r15/report" > /dev/null; r=$?
+[ "$r" = 0 ] || fail "a skip in an ordinary file was red ($r)"
 # a run that failed with every file green (the link to the desktop dropped: ssh's 255) is red, and says how it ended
 FAKE_EXIT=255 grp --out "$d/r12/report" > /dev/null; r=$?
 [ "$r" = 1 ] && [ ! -e "$d/r12/report.stamp" ] || fail "a failed run with green files exited $r, or got a stamp"
