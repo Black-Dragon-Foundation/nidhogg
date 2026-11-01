@@ -919,6 +919,33 @@ Return the two replies."
       (ignore-errors (gui-runner-recorder '(:cmd "focus" :surface "toplevel")))
       (when (frame-live-p c) (delete-frame c t)))))
 
+(ert-deftest nhwl-gui/tip-goes-with-the-frame-under-it ()
+  "A tip hangs on the frame under the pointer, which does not know it.  That frame goes: the tip's popup goes too.
+The tip frame outlives it and hears so: the same tip shown again makes a new popup, not a move of the old one."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((before (nhwl-gui--sub-ids)) (c nil))
+    (unwind-protect
+        (progn
+          (setq c (nhwl-gui--child))
+          (let ((id (plist-get (nhwl-gui--child-node before) :id))
+                (pops (nhwl-gui--popup-ids)))
+            (gui-runner-recorder (list :cmd "focus" :surface id))
+            (gui-runner-recorder '(:cmd "pointer" :pos [10 10]))
+            (nhwl-gui--pump)
+            (x-show-tip "hello" nil nil 30)
+            (let ((tip (nhwl-gui--wait (lambda () (nhwl-gui--pump) (nhwl-gui--new-popup pops)) 5)))
+              (should tip)
+              (delete-frame c t)
+              (should (nhwl-gui--wait
+                       (lambda () (nhwl-gui--pump) (not (memq (plist-get tip :id) (nhwl-gui--popup-ids))))
+                       5)))
+            (nhwl-gui--pump)
+            (x-show-tip "hello" nil nil 30)
+            (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (nhwl-gui--new-popup pops)) 5))))
+      (x-hide-tip)
+      (ignore-errors (gui-runner-recorder '(:cmd "focus" :surface "toplevel")))
+      (when (frame-live-p c) (delete-frame c t)))))
+
 (ert-deftest nhwl-gui/child-frames-stack ()
   (skip-unless (nhwl-gui--recorder-p))
   (let ((a nil) (b nil))
