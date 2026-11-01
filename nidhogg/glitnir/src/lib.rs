@@ -9,6 +9,7 @@
 use std::cell::Cell;
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
+pub mod blur;
 pub mod committed;
 pub mod compose;
 pub mod damage;
