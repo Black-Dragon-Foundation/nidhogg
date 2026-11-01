@@ -28,13 +28,23 @@
 //! retires the window.  The root's `Present` also lists the tree's child windows, so that presenting needs nothing of
 //! the host's state; the lock order is the root's mutex, then a child's.  It holds the root's content layers too
 //! (`layers.rs`), committed with the descendants, before the root.
+//!
+//! **A child's transition** adds no way to commit.  While one runs the root's `ticking` turns each frame callback into
+//! `dirty`, so the pacer wakes once per period: the presenter in thread mode, `FRAME_READY` inline.  The rest is the one
+//! rule above: `present_tree` asks for the frame only once `ready_published` gives the tree `CONTENT`, so a tick waits
+//! for the callback of the frame before it, and for a content ack's packet, and goes in the tree's commit that carries
+//! the ack.  It damages the child's whole surface and is a buffer, a frame callback and feedback like any other drawing;
+//! an occluded or suspended tree gets no ticks.  A hide unmaps as owed state in the commit after its end.  A child that
+//! goes during its hide stays in its root's list as a *ghost*, under a key no window holds, without any of the host's
+//! records; presenting destroys it, under the tree's mutex, at the end of the leg, and the host's thread when its parent
+//! goes.
 
 use crate::api::*;
 use crate::event::*;
 use crate::wayland::conn::Shared;
 use crate::wayland::layers::{ContentLayer, LayerJob};
 use crate::wayland::presenter::{Counters, DEFAULT_REFRESH_NS, Link, Wire};
-use crate::wayland::publish::Stage;
+use crate::wayland::publish::{Fed, Stage};
 use crate::wayland::reader::ReaderState;
 use crate::wayland::scale::{SCALE_ONE, buffer_size};
 use crate::wayland::shm::ShmBuf;
@@ -114,6 +124,8 @@ pub(crate) struct Kid {
     pub(crate) id: u64,
     pub(crate) parent: u64,
     pub(crate) present: Arc<Mutex<Present>>,
+    /// The window is gone and its surface fades on: `id` is a key of the stage's, no window's.
+    pub(crate) ghost: bool,
 }
 
 /// A window's presenter state, shared with the reader thread's handlers.
@@ -176,6 +188,17 @@ pub struct Present {
     refresh_ns: u32,
     /// A root: its windows that are their own outputs, each on a content layer (`layers.rs`).
     pub(crate) layers: Vec<ContentLayer>,
+    /// A root: a child's transition runs or waits for a frame, so a frame callback is drawn content.
+    ticking: bool,
+    /// A child: the host hid it and its hide has not unmapped yet.
+    pub(crate) hiding: bool,
+    /// A root: the presentation feedback asked for so far.
+    asked: u64,
+    /// A root: the number of the newest answer that reported a frame, and that frame's time.
+    shown: u64,
+    shown_ns: u64,
+    /// A root: the newest answer said the frame was not shown.
+    fed_discarded: bool,
 }
 
 /// The user data of a `wl_buffer`: its window's presenter and its slot.
@@ -244,6 +267,12 @@ impl Present {
             t_open_ns: 0,
             refresh_ns: 0,
             layers: Vec::new(),
+            ticking: false,
+            hiding: false,
+            asked: 0,
+            shown: 0,
+            shown_ns: 0,
+            fed_discarded: false,
         }
     }
 
@@ -311,6 +340,68 @@ impl Present {
         self.notify();
     }
 
+    /// What presentation feedback said so far.
+    fn fed(&self) -> Fed {
+        Fed {
+            period: match self.refresh_ns {
+                0 => DEFAULT_REFRESH_NS,
+                n => u64::from(n),
+            },
+            asked: self.asked,
+            shown: self.shown,
+            shown_ns: self.shown_ns,
+            discarded: self.fed_discarded,
+        }
+    }
+
+    /// Feedback for the coming commit (`Fed`).
+    fn ask_feedback(&mut self, wire: &Wire, me: &Arc<Mutex<Present>>) {
+        if let Some(pres) = &wire.presentation {
+            pres.feedback(&self.commit.surface, &wire.rqh, me.clone());
+            self.asked += 1;
+        }
+    }
+
+    /// Destroy a ghost: what it kept for its fade, and its surface.
+    fn bury(&mut self) {
+        self.retired = true;
+        self.clear();
+        if let Some(a) = self.commit.alpha.take() {
+            a.destroy();
+        }
+        if let Some(v) = self.commit.viewport.take() {
+            v.destroy();
+        }
+        if let Some(s) = self.commit.subsurface.take() {
+            s.destroy();
+        }
+        self.commit.surface.destroy();
+    }
+
+    /// The ghosts under window `id` go with it; their keys.
+    fn bury_under(&mut self, id: u64) -> Vec<u64> {
+        let mut keys = Vec::new();
+        self.kids.retain(|k| {
+            let under = k.ghost && k.parent == id;
+            if under {
+                lock(&k.present).bury();
+                keys.push(k.id);
+            }
+            !under
+        });
+        keys
+    }
+
+    /// The connection is gone, and with it every ghost's objects.
+    pub(crate) fn drop_ghosts(&mut self) {
+        self.kids.retain(|k| {
+            if k.ghost {
+                lock(&k.present).release();
+            }
+            !k.ghost
+        });
+    }
+
     /// Drop the buffers the pool let go of.
     fn reap(&mut self, now: u64) {
         for s in self.pool.trim(now) {
@@ -368,6 +459,7 @@ impl Present {
     /// callback's user data would keep alive (the shared state's descriptors, the root presenter, the tree's
     /// children, the presenter link).
     pub(crate) fn release(&mut self) {
+        self.drop_ghosts();
         self.clear();
         self.shared = None;
         self.root = None;
@@ -527,9 +619,7 @@ impl Present {
         let paced = self.root.is_none() && (!all.is_empty() || self.tree_content);
         if paced {
             surface.frame(&wire.rqh, me.clone());
-            if let Some(pres) = &wire.presentation {
-                pres.feedback(surface, &wire.rqh, me.clone());
-            }
+            self.ask_feedback(wire, me);
             self.waiting = true;
             self.rec.rearm = false;
         }
@@ -563,11 +653,8 @@ impl Present {
         }
         self.send_recorded(false, wire.compositor.as_ref(), &wire.rqh);
         if std::mem::take(&mut self.tree_content) {
-            let surface = &self.commit.surface;
-            surface.frame(&wire.rqh, me.clone());
-            if let Some(pres) = &wire.presentation {
-                pres.feedback(surface, &wire.rqh, me.clone());
-            }
+            self.commit.surface.frame(&wire.rqh, me.clone());
+            self.ask_feedback(wire, me);
             self.waiting = true;
             self.rec.rearm = false;
         }
@@ -619,8 +706,12 @@ impl Present {
         self.notified = false;
         self.suspended = false;
         self.tree_content = false;
-        // the new compositor reports its own refresh
+        // the new compositor reports its own refresh, and answers nothing the old one was asked
         self.refresh_ns = 0;
+        self.asked = u64::from(self.presented) + u64::from(self.discarded);
+        self.fed_discarded = false;
+        self.ticking = false;
+        self.hiding = false;
         self.epoch += 1;
     }
 }
@@ -738,6 +829,40 @@ fn begin_layers(
         }
     }
     jobs
+}
+
+/// The children of root `root` (`r`, locked) whose hide is over unmap: a null buffer with their next commit, which they
+/// and their ancestors now owe.
+fn owe_unmaps(stage: &mut Stage, root: u64, r: &mut Present, kids: &[Kid]) {
+    for id in stage.take_unmaps(root) {
+        let Some(k) = kids.iter().find(|k| k.id == id) else {
+            continue;
+        };
+        let mut p = lock(&k.present);
+        p.rec.unmap = true;
+        p.hiding = false;
+        p.owed = true;
+        drop(p);
+        let mut cur = k.parent;
+        while let Some(a) = kids.iter().find(|a| a.id == cur) {
+            lock(&a.present).owed = true;
+            cur = a.parent;
+        }
+        r.owed = true;
+    }
+}
+
+/// The tree's next frame goes (`r`, the root's state, locked): its transitions start, go on or end.  A ghost whose hide
+/// ended is destroyed.
+fn tick(stage: &mut Stage, root: u64, r: &mut Present) {
+    for key in stage.tick(root, &r.fed()) {
+        if let Some(at) = r.kids.iter().position(|k| k.id == key) {
+            lock(&r.kids.remove(at).present).bury();
+        }
+        stage.forget(key);
+    }
+    let kids = r.kids.clone();
+    owe_unmaps(stage, root, r, &kids);
 }
 
 /// Commit root `root`'s layer jobs before the root's commit (sync children apply with it), unmap the leaving layers
@@ -884,10 +1009,15 @@ pub(crate) fn present_tree(
             return false;
         }
         r.notified = false;
-        let kids = r.kids.clone();
+        let mut kids = r.kids.clone();
         if !ContentLayer::can(wire) {
             // no layer can show a window apart: the frame shows it
             stage.fold_outputs(root);
+        }
+        if r.ticking || stage.moving() {
+            owe_unmaps(stage, root, &mut r, &kids);
+            r.ticking = stage.work(root);
+            r.dirty |= r.ticking;
         }
         // damage in the fronts, or a content layer's change, is drawn content, whenever its packet arrived
         if tree_damaged(stage, &kids, root) || stage.outputs_pending(root) {
@@ -903,6 +1033,11 @@ pub(crate) fn present_tree(
         }
         if bits & NHSHELL_READY_ACK != 0 {
             stage.damage_all_if_clean(root);
+        }
+        // the one place a transition gets a frame: the gate above is open for content
+        if bits & NHSHELL_READY_CONTENT != 0 && r.ticking {
+            tick(stage, root, &mut r);
+            kids = r.kids.clone();
         }
         if bits & NHSHELL_READY_CONTENT != 0
             && (tree_damaged(stage, &kids, root) || stage.outputs_pending(root))
@@ -988,6 +1123,8 @@ fn send(
     }
     // a child's job left over (the child went meanwhile, or its buffer could not be committed) goes back or drops
     put_back_all(tree, r, jobs, Vec::new());
+    // after the commits: the callback of a transition's last frame wakes nobody
+    r.ticking = r.ticking && stage.work(root);
     shown
 }
 
@@ -1060,6 +1197,7 @@ impl MainState {
                 id,
                 parent,
                 present: p.clone(),
+                ghost: false,
             });
             self.presents.insert(id, p);
         } else {
@@ -1225,6 +1363,20 @@ impl MainState {
     /// Window `id`'s scale changed: its next buffer's viewport and buffer scale follow.
     pub(crate) fn present_scale(&self, id: u64, scale120: u32) {
         self.present_record(id, |p| p.commit.scale120 = scale120);
+    }
+
+    /// Root `root`'s tree has something new for a transition: its pacer wakes now if it can, or at its frame callback.
+    pub(crate) fn present_tick(&mut self, root: u64) {
+        self.present_record(root, |p| {
+            p.ticking = true;
+            p.dirty = true;
+            p.notify();
+        });
+    }
+
+    /// Child `id`'s hide has not unmapped yet.
+    pub(crate) fn present_hiding(&self, id: u64) -> bool {
+        self.presents.get(&id).is_some_and(|p| lock(p).hiding)
     }
 }
 
@@ -1396,6 +1548,13 @@ impl WaylandShell {
         Some((p.waiting, p.starved, p.presented, p.discarded))
     }
 
+    /// Test hook: root `id`'s tree has a transition to run on (its frame callbacks turn into frames).  False only once
+    /// the frame that ended the last one is committed.
+    #[doc(hidden)]
+    pub fn motion_ticking(&self, id: WindowId) -> bool {
+        self.main.presents.get(&id).is_some_and(|p| lock(p).ticking)
+    }
+
     /// Housekeeping on the host's thread: free the buffers that sat idle past the pool's quiet period.
     pub(super) fn present_housekeeping(&mut self) {
         let now = now_ns();
@@ -1412,6 +1571,7 @@ impl WaylandShell {
         let root = self.main.tree_root(id);
         let tree = self.main.present_of(root);
         let own = self.main.presents.remove(&id);
+        let ghosts;
         {
             let mut tree = tree.as_ref().map(|t| lock(t));
             let mut own = own.as_ref().filter(|_| root != id).map(|p| lock(p));
@@ -1432,6 +1592,10 @@ impl WaylandShell {
                 }
                 p.clear();
             }
+            // a ghost dies with its parent, before the parent's surface goes
+            ghosts = tree
+                .as_deref_mut()
+                .map_or_else(Vec::new, |t| t.bury_under(id));
             destroy(&mut self.main);
         }
         if root == id
@@ -1439,7 +1603,42 @@ impl WaylandShell {
         {
             self.link.remove_root(t);
         }
+        for key in ghosts {
+            self.publish_forget(key);
+        }
         self.publish_forget(id);
+    }
+
+    /// Child `id` goes during its hide leg: its id and the host's records of it go now (`destroy`, under the tree's
+    /// mutex), and its surface stays in the tree under a new key, taking no input, until the leg ends.  Ghosts under it
+    /// die.
+    pub(super) fn present_ghost(&mut self, id: WindowId, destroy: impl FnOnce(&mut MainState)) {
+        let root = self.main.tree_root(id);
+        let tree = self.main.present_of(root);
+        let own = self.main.presents.remove(&id);
+        self.main.next_id = self.main.next_id.max(1 << 32) + 1;
+        let key = self.main.next_id;
+        let mut ghosts = Vec::new();
+        {
+            let mut tree = tree.as_ref().map(|t| lock(t));
+            if let Some(t) = tree.as_deref_mut() {
+                ghosts = t.bury_under(id);
+                if let Some(k) = t.kids.iter_mut().find(|k| k.id == id) {
+                    k.id = key;
+                    k.ghost = true;
+                }
+            }
+            if let Some(p) = &own {
+                let mut p = lock(p);
+                p.rec.input = Some(vec![Rect::new(0, 0, 0, 0)]);
+                p.owed = true;
+            }
+            destroy(&mut self.main);
+        }
+        for g in ghosts {
+            self.publish_forget(g);
+        }
+        self.publish_ghost(root, id, key);
     }
 
     /// Test hook: commits of registered trees made outside `present_tree` (by `present_commit`, `present_bare`, or
@@ -1517,6 +1716,8 @@ impl Dispatch<WlCallback, Arc<Mutex<Present>>> for ReaderState {
             // starved while waiting: the pacer is idle now, and an idle pacer grows the pool
             p.starved = false;
             p.t_open_ns = crate::wayland::publish::now_ns();
+            // a running transition's next frame is drawn content, with nothing else to wake it
+            p.dirty |= p.ticking;
             p.notify();
         }
     }
@@ -1547,11 +1748,17 @@ impl Dispatch<WpPresentationFeedback, Arc<Mutex<Present>>> for ReaderState {
                 }
                 let secs = (u64::from(tv_sec_hi) << 32) | u64::from(tv_sec_lo);
                 let t = secs * 1_000_000_000 + u64::from(tv_nsec);
+                p.shown = u64::from(p.presented) + u64::from(p.discarded);
+                p.shown_ns = t;
+                p.fed_discarded = false;
                 let window = p.window;
                 drop(p);
                 frame_done(state, window, t, t, refresh);
             }
-            wp_presentation_feedback::Event::Discarded => p.discarded += 1,
+            wp_presentation_feedback::Event::Discarded => {
+                p.discarded += 1;
+                p.fed_discarded = true;
+            }
             _ => {}
         }
     }
