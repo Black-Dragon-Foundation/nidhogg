@@ -80,6 +80,9 @@ pub struct Dnd {
     /// The client's pointer drag has just started: its origin surface gets the drag's enter, as a desktop
     /// compositor's does (Smithay's grab enters only at the next motion).
     enter_origin: bool,
+    /// Finished drops whose `RELEASE_DELAY` is still running.  The release ends whatever drag holds the grab by then,
+    /// so a next drag waits for this (`drag_log`'s `release_pending`).
+    releases: u32,
 }
 
 fn action_names(a: DndAction) -> Vec<&'static str> {
@@ -486,7 +489,7 @@ pub fn drag_log(state: &State) -> Value {
             })
         })
         .collect();
-    json!({"ok": true, "drags": drags})
+    json!({"ok": true, "drags": drags, "release_pending": state.dnd.releases > 0})
 }
 
 /// The newest client drag that is still going, with its source.
@@ -679,9 +682,11 @@ pub fn drag_drop(state: &mut State, req: &Value, reply_to: &UnixStream) -> Optio
         if let Some(d) = state.dnd.drags.last_mut() {
             d.result = result;
         }
+        state.dnd.releases += 1;
         let _ = state
             .handle
             .insert_source(Timer::from_duration(RELEASE_DELAY), |_, _, state| {
+                state.dnd.releases -= 1;
                 release(state);
                 TimeoutAction::Drop
             });
