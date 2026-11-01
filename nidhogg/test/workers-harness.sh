@@ -4,6 +4,11 @@
 #                                         leaves out everything that needs Lisp
 #   workers-harness.sh --tsan MODULE...   build and run test/src/nidhogg-tests/fuzz/tsan-MODULE.c under
 #                                         ThreadSanitizer; exit 0 = every driver passed with no race report
+#   workers-harness.sh --sched MODULE... [--seeds N]
+#                                         build fuzz/sched-MODULE.c and run it under exact thread orders (PCT,
+#                                         fuzz/sched-pct.h), seeds 1 to N (default 2000); exit 0 = every seed passed and
+#                                         seed 1 gave one trace twice.  A failure prints `seed S'; --seeds S:S replays it
+#                                         and prints its trace.  NH_SCHED_CFLAGS adds compiler flags.
 # Modules: queue (two producers, one consumer, 10^6 jobs through the runtime), wake (the completion channel's
 # clear/re-check protocol, 10^6 races), io (the reader's hand-over, wake fds and synchronous hand-back over pipes
 # filled by writer threads: every byte once and in order).  Tasks 6, 10, 16, 18, 22, 24, 27-29 and 32 add drivers and fuzz targets.
@@ -35,6 +40,41 @@ if [ "${1:-}" = --tsan ]; then
   exit $fail
 fi
 
+if [ "${1:-}" = --sched ]; then
+  shift
+  mods=() seeds=2000
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --seeds) seeds=${2:?--seeds N or S:S}; shift 2 ;;
+      *) mods+=("$1"); shift ;;
+    esac
+  done
+  [ ${#mods[@]} -gt 0 ] || { echo "workers-harness: --sched needs a module" >&2; exit 2; }
+  out=$(mktemp -d)
+  trap 'rm -r "$out"' EXIT
+  fail=0
+  for m in "${mods[@]}"; do
+    src="$ROOT/test/src/nidhogg-tests/fuzz/sched-$m.c"
+    if [ ! -f "$src" ]; then
+      echo "FAIL no $m module"; fail=1; continue
+    fi
+    # shellcheck disable=SC2086
+    if ! "$CC" "${FLAGS[@]}" -DNH_SCHED ${NH_SCHED_CFLAGS:-} -g -O1 -pthread "$src" -o "$out/$m"; then
+      echo "FAIL $m (build)"; fail=1; continue
+    fi
+    if ! "$out/$m" "$seeds"; then
+      echo "FAIL $m"; fail=1; continue
+    fi
+    a=$("$out/$m" 1:1 | grep '^trace' || true) b=$("$out/$m" 1:1 | grep '^trace' || true)
+    if [ -n "$a" ] && [ "$a" = "$b" ]; then
+      echo "ok   $m ($a)"
+    else
+      echo "FAIL $m (seed 1 gave '$a', then '$b')"; fail=1
+    fi
+  done
+  exit $fail
+fi
+
 FILES="nidhogg-workers nidhogg-treesit-bg nidhogg-io nidhogg-decode nidhogg-json-tape nidhogg-image-bg nidhogg-blk"
 
 fail=0
@@ -50,7 +90,7 @@ if [ "${1:-}" = --fuzz ]; then
     [ "$(id -u)" = 0 ] && dnf install -y -q libasan libubsan >/dev/null 2>&1 || true
     echo 'int main(void){return 0;}' | "$CC" $SAN -x c - -o "$OUT/probe" 2>/dev/null || { SAN=; echo "fuzz: no sanitizers"; }
   fi
-  TARGETS=${*:-$(cd "$FZ" && ls *.c | grep -v '^driver\.c$' | grep -v '^tsan-' | sed 's/\.c$//')}
+  TARGETS=${*:-$(cd "$FZ" && ls *.c | grep -v '^driver\.c$' | grep -v -E '^(tsan|sched)-' | sed 's/\.c$//')}
   for t in $TARGETS; do
     # this target's result (fail is the whole run's: an earlier target's failure must not mark this one)
     DEFS=; LIBS=; bad=0; SEEDS=images

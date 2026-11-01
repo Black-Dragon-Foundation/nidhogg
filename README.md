@@ -449,8 +449,10 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   files load with their packages).
 - Tests: `workers/…` in `test/src/nidhogg-tests/workers-*-tests.el`, GUI rows `workers-gui/…` in `*-gui-tests.el`;
   `nidhogg/test/workers-harness.sh` compiles the C files without Lisp (`--tsan MODULE…` runs the ThreadSanitizer
-  drivers, `--fuzz SECONDS` the parser fuzz targets); `nidhogg/test/pkg-test.sh` runs the package suites (jsonrpc,
-  treesit, process, files) with the workers on, off or `inline` and `--compare`s on against off (the treesit group
+  drivers, `--fuzz SECONDS` the parser fuzz targets, `--sched MODULE… [--seeds N]` the drivers in `fuzz/sched-*.c`
+  under exact thread orders, PCT at depth 2, where `--seeds S:S` replays a failed seed; `NH_SCHED_CFLAGS=-DNH_SCHED_BUG`
+  breaks the completion channel's clear-then-re-check, and `wake` must go red); `nidhogg/test/pkg-test.sh` runs the
+  package suites (jsonrpc, treesit, process, files) with the workers on, off or `inline` and `--compare`s on against off (the treesit group
   loads the test grammars when `grammars.sh` has built them); `NIDHOGG_BUILD_SANITIZE=address,undefined
   nidhogg/build.sh --dev …` is the ASan build. CI jobs `workers-harness`, `workers-asan`, `workers-pkg` run them.
 - The runtime (`src/nidhogg-workers.c`): five workers, `nh-io`, `nh-parse`, `nh-img` (one thread per two cores, at

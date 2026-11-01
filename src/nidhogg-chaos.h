@@ -36,7 +36,10 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #ifdef HAVE_NIDHOGG_WORKERS
 
-#ifdef NH_CHAOS
+#if defined NH_WK_HARNESS && defined NH_SCHED
+/* The harness's exact thread orders: fuzz/sched-pct.h, included first.  */
+# define NH_CHAOS_POINT(site) NH_SCHED_POINT ()
+#elif defined NH_CHAOS
 extern void nh_chaos_point (const char *site);
 # define NH_CHAOS_POINT(site) nh_chaos_point (site)
 #else
