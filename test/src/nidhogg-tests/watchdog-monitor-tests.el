@@ -1,4 +1,5 @@
 ;;; watchdog-monitor-tests.el --- tests for the stall watchdog (monitor)  -*- lexical-binding: t -*-
+;; test-class: det
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
@@ -98,6 +99,7 @@ its two internal signals (32 and 33) out of any mask."
 A wake-up is a return from the monitor's condition-variable wait
 that finds no busy span: at most the end of the span before the
 wait (its T/2 deadline) and none while the wait lasts."
+  :tags '(:cond)
   (unwind-protect
       (progn
         (nidhogg-watchdog--start 100 2000 nil)
@@ -110,6 +112,7 @@ wait (its T/2 deadline) and none while the wait lasts."
 
 (ert-deftest watchdog/monitor-never-arms-on-the-test-clock ()
   "While the virtual clock is set, a real 300 ms spin raises no request."
+  :tags '(:cond)
   (unwind-protect
       (progn
         (nidhogg-watchdog--start 100 2000 nil)
