@@ -205,6 +205,9 @@ Returns a list of strings \"RULE line N: what\", empty when the trace is clean."
                     (when child
                       (remhash child parent-of)
                       (remhash child sub-of))))
+                 ;; a popup that went owes no ack
+                 ((and request (equal iface "xdg_surface") (equal msg "destroy"))
+                  (setq popup-pending (cl-remove-if (lambda (p) (eq (nth 1 p) id)) popup-pending)))
                  ;; ---- xdg configure and ack
                  ((and (not request) (equal iface "xdg_toplevel") (equal msg "configure"))
                   (let ((x (gethash id top-xdg)))

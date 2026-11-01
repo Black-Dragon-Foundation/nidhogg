@@ -145,6 +145,8 @@ pub struct Csd {
     /// A press in the border was consumed, so its release is too; the pointer is over the border.
     grab: bool,
     in_border: bool,
+    /// Buttons pressed in the native area and not released: the frame has the pointer until then, wherever it goes.
+    held: u32,
     /// The time of the last press on the strip (0: none), for the double click.
     click_ns: u64,
 }
@@ -644,6 +646,9 @@ fn motion(state: &mut Display, ev: &Record, p: &PointerEv) -> bool {
     let c = &mut f.csd;
     c.px = p.x;
     c.py = p.y;
+    if c.held != 0 {
+        return false;
+    }
     let region = hit(style, c, c.px, c.py);
     let mut a = title_bar_action(ev, 0);
     let hover = match region {
@@ -683,12 +688,14 @@ fn motion(state: &mut Display, ev: &Record, p: &PointerEv) -> bool {
     consumed
 }
 
-/// The pointer left the surface: no button is hovered any more.
+/// The pointer left the surface: no button is hovered any more, and a held one's release comes here no more (a drag
+/// took the pointer).
 fn leave(state: &mut Display, ev: &Record) {
     let Ok(f) = state.frame_mut(ev.window) else {
         return;
     };
     let c = &mut f.csd;
+    c.held = 0;
     if c.hover != 0 {
         c.hover = 0;
         if c.on {
@@ -715,6 +722,7 @@ fn button(state: &mut Display, ev: &Record, p: &PointerEv) -> bool {
     if p.state != NHSHELL_BUTTON_PRESSED {
         let armed = c.down;
         if !c.grab {
+            c.held = c.held.saturating_sub(1);
             return false;
         }
         c.grab = false;
@@ -750,7 +758,9 @@ fn button(state: &mut Display, ev: &Record, p: &PointerEv) -> bool {
             }
         }
     } else {
-        if region == Region::None {
+        // a second button held over the border is the frame's too
+        if region == Region::None || c.held != 0 {
+            c.held += 1;
             return false;
         }
         c.grab = true;
