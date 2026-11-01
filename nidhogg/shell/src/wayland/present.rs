@@ -1027,7 +1027,11 @@ fn send(
         // a configure read during the compose holds the ack the commit would carry.  A window's first buffer goes with
         // one (without, it is what xdg-shell calls unconfigured).  So does a new size: the ack the picture was drawn for
         // was replaced, and with no ack the size shows no configure's
-        let acked = r.mapped || (r.ack.is_some() && !held);
+        let acked = if r.mapped {
+            !held || (j.buf.w, j.buf.h) == r.shown
+        } else {
+            r.ack.is_some() && !held
+        };
         if j.epoch == r.epoch && r.configured && acked {
             r.commit_buffer(tree, wire, j.slot, &j.buf, &j.damage, held);
             r.bufs.insert(j.slot.id, j.buf);

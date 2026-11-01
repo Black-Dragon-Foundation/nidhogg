@@ -46,7 +46,7 @@ use crate::api::*;
 use conn::Shared;
 use reader::ReaderState;
 use registry::Globals;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::CStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
@@ -107,6 +107,9 @@ pub struct MainState {
     tokens: activation::Tokens,
     /// The newest window id given out above the protocol's range (`window_surface`).
     next_id: u64,
+    /// Popups that went with their parent while the host still names them: no new window takes such an id until the
+    /// host destroys the popup in turn (`window_destroy_local`).
+    orphans: HashSet<u64>,
     /// Each parent's child windows bottom to top, the parent itself among them, for making the stacking again after
     /// a reconnect (`child.rs`).
     stacking: HashMap<u64, Vec<u64>>,
@@ -521,7 +524,7 @@ impl MainState {
         let compositor = self.compositor.as_ref().ok_or(ShellError::State)?;
         let surface = compositor.create_surface(qh, SurfaceTag::default());
         let mut id = u64::from(surface.id().protocol_id());
-        if self.is_window(id) || self.surfaces.contains_key(&id) {
+        if self.is_window(id) || self.surfaces.contains_key(&id) || self.orphans.contains(&id) {
             self.next_id = self.next_id.max(1 << 32) + 1;
             id = self.next_id;
             if let Some(t) = surface.data::<SurfaceTag>() {
