@@ -546,7 +546,7 @@ The recorder keeps its session store.  Signals an error when the script fails or
     (dolist (f (let ((glob (getenv "GLITNIR_GUI_FILES")))
                  (if (and glob (not (string-empty-p glob)))
                      (file-expand-wildcards (expand-file-name glob dir) t)
-                   (directory-files dir t "-gui-tests\\.el\\'"))))
+                   (directory-files dir t "-gui\\(-[a-z0-9]+\\)?-tests\\.el\\'"))))
       (load f nil t))))
 
 ;; The known-differences file holds entries (TEST-NAME COMPOSITOR REASON . OPTIONS): the test is expected to fail on that
