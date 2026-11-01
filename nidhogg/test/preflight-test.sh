@@ -58,6 +58,12 @@ pre "$d/failp3" --out "$d/r2/report" --stamp-dir "$d/stamps2" > /dev/null; r=$?
 [ ! -e "$d/stamps2/$sha.stamp" ] || fail "a stamp copy after a red"
 grep -q 'RED P3 src/b-tests wrap=none seed=2' "$d/r2/report" || fail "no red line with its seed"
 grep -q 'NIDHOGG_TEST_SEED=2 ' "$d/r2/report" || fail "no replay line with the seed"
+# a seed budget: src/b-tests gets 1 of the 3 seeds, so its red on seed 2 never runs
+mkdir -p "$d/r2b"; printf 'src/b-tests 1 # slow\n' > "$d/seeds.txt"
+PREFLIGHT_SEEDS="$d/seeds.txt" pre "$d/failp3" --passes P3 --out "$d/r2b/report" > /dev/null 2>&1; r=$?
+[ "$r" = 0 ] || fail "a capped file was run past its budget ($r)"
+[ "$(grep -c '^GROUP P3 .* src/b-tests ' "$d/r2b/report")" = 1 ] || fail "b-tests did not get exactly its 1 seed"
+[ "$(grep -c '^GROUP P3 .* src/a-tests ' "$d/r2b/report")" = 3 ] || fail "a-tests lost seeds"
 
 # no-stamp-on-failure: killed mid-run (TERM, then KILL)
 for sig in TERM KILL; do
