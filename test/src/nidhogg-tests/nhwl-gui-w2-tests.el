@@ -1211,15 +1211,16 @@ the menu has closed, a key arrives in the frame again."
     (when (process-live-p later) (delete-process later))
     (kill-buffer (process-buffer later)))
   ;; the row may have lost the connection
-  (ignore-errors (gui-runner-recorder '(:cmd "button" :button 272 :state "release"))
-                 (gui-runner-recorder '(:cmd "ping")))
-  ;; a span, not a condition: a drag begun at once after this one is cancelled in 0.1 s, and neither the drag log nor
-  ;; the fence shows what ends; no report of the recorder or the shell found yet
-  (nhwl-gui--observe 0.3))
+  (ignore-errors
+    (gui-runner-recorder '(:cmd "button" :button 272 :state "release"))
+    ;; the recorder keeps a finished drop's grab a moment, and its release ends a drag begun meanwhile
+    (nhwl-gui--wait (lambda () (not (eq (plist-get (gui-runner-recorder '(:cmd "drag_log")) :release_pending) t))))
+    (nhwl-gui--pump)))
 
 (defun nhwl-gui--drag-press (&optional x y)
-  "Press the left button over the toplevel at X, Y (default 100, 100) and keep it held; the press is read and dropped."
-  (nhwl-gui--point (or x 100) (or y 100))
+  "Press the left button over the toplevel at native pixel X, Y (default 100, 100) and keep it held; the press is read
+and dropped."
+  (apply #'nhwl-gui--point (nhwl-gui--native-to-logical (or x 100) (or y 100)))
   (gui-runner-recorder '(:cmd "button" :button 272 :state "press"))
   (nhwl-gui--pump))
 
