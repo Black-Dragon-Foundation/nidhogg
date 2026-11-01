@@ -909,6 +909,9 @@ PARAMS come first, so they win over the defaults here."
     (select-frame root)
     (set-window-buffer (frame-root-window f) (get-buffer-create "*glitnir-pop*"))
     (make-frame-visible f)
+    ;; GTK maps it at its next layout; the cycle after that one paints it into the root.  A popup Glitnir leaves to
+    ;; GTK (alpha) never joins the stacking: 2 s, and the row judges what it sees.
+    (gui-runner-wait (lambda () (glitnir-gui--painted) (memq f (glitnir--stacking))) 2)
     (glitnir-gui--painted)
     f))
 
@@ -1119,9 +1122,13 @@ Glitnir is on again after, and they are redrawn whole once more (so `verify' com
     (unwind-protect
         (glitnir-gui--verified
           (setq c (glitnir-gui--popup glitnir-gui--chrome))
-          (let ((s (frame-scale-factor)) (old (glitnir--layer-rect c)))
+          (let ((s (frame-scale-factor)) (old (glitnir--layer-rect c))
+                (t0 (glitnir--now-ns)) (n0 (plist-get (glitnir-stats) :count)))
             (run-at-time 0 nil (lambda () (set-frame-position c 520 360)))
-            (gui-runner-wait (lambda () (not (equal (take 2 (glitnir--layer-rect c)) (take 2 old)))))
+            ;; the paint of the move: the first picture after it must show the popup at its new place
+            (should (gui-runner-wait (lambda () (and (not (equal (take 2 (glitnir--layer-rect c)) (take 2 old)))
+                                                     (>= (plist-get (glitnir-stats) :count) (1+ n0))
+                                                     (>= (plist-get (glitnir--last-paint) :commit-ns) t0)))))
             (let ((snap (glitnir-snapshot nil 'raw)) (new (glitnir--layer-rect c)))
               (should (equal (take 2 new) (list (round (* 520 s)) (round (* 360 s)))))
               (should (equal (glitnir-gui--pixel snap (glitnir-gui--mid new)) '(0 255 255)))
