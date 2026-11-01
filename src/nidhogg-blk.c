@@ -1521,6 +1521,7 @@ nh_save_test_arena_hold (void)
 static void
 nh_save_arena_free (struct buffer *b)
 {
+  NH_CHAOS_POINT ("arena-free");
   pthread_mutex_lock (&nh_save_arena_m);
   struct nh_save_arena *a = nh_save_arena_find (b);
   if (a)
@@ -1544,6 +1545,7 @@ nh_save_arena_take (struct buffer *b, size_t n, struct nh_save_arena **arena,
   unsigned char *text = NULL;
   *arena = NULL;
   *cap = n;
+  NH_CHAOS_POINT ("arena-take");
   pthread_mutex_lock (&nh_save_arena_m);
   struct nh_save_arena *a = nh_save_arena_find (b);
   if (a && !a->busy && !a->dead && a->cap >= n)
@@ -1609,6 +1611,7 @@ nh_save_arena_adopt (struct nh_save_job *j)
 {
   if (!j->text || j->arena || j->nbytes < NH_SAVE_ARENA_MIN)
     return;
+  NH_CHAOS_POINT ("arena-adopt");
   pthread_mutex_lock (&nh_save_arena_m);
   struct nh_save_arena *a = nh_save_arena_find (j->buf);
   if (a && (a->busy || a->dead || a->cap >= j->cap))
@@ -1824,6 +1827,7 @@ nh_save_free_text (struct nh_save_job *j)
 	{
 	  /* The memory stays the buffer's, unless it was freed
 	     meanwhile.  */
+	  NH_CHAOS_POINT ("arena-back");
 	  pthread_mutex_lock (&nh_save_arena_m);
 	  j->arena->busy = false;
 	  if (j->arena->dead)
@@ -2153,6 +2157,7 @@ nh_save_queue (struct buffer *b, int mode)
       free (j);
       if (arena)
 	{
+	  NH_CHAOS_POINT ("arena-back");
 	  pthread_mutex_lock (&nh_save_arena_m);
 	  arena->busy = false;
 	  pthread_mutex_unlock (&nh_save_arena_m);
