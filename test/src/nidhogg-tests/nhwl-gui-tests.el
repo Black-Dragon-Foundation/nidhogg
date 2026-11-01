@@ -931,11 +931,26 @@ Return the two replies."
                         (seq-filter (lambda (i) (memq i (list ia ib)))
                                     (plist-get (nhwl-gui--node parent) :children)))))
           (should (equal (funcall order) (list ia ib)))
+          (should (equal (glitnir--stacking) (list a b)))
           (raise-frame a)
           (should (nhwl-gui--wait (lambda () (equal (funcall order) (list ib ia))) 5))
+          (should (equal (glitnir--stacking) (list b a)))
           (lower-frame a)
-          (should (nhwl-gui--wait (lambda () (equal (funcall order) (list ia ib))) 5)))
+          (should (nhwl-gui--wait (lambda () (equal (funcall order) (list ia ib))) 5))
+          (should (equal (glitnir--stacking a) (list a b))))
       (dolist (f (list a b)) (when (and f (frame-live-p f)) (delete-frame f t))))))
+
+(ert-deftest nhwl-gui/draw-count-counts-a-child-move ()
+  "`glitnir--draw-count' reads the root's commits that showed something: a child frame's move is one, a child frame's
+own count is its root's."
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--with-child
+   (lambda (c _id)
+     (let ((before (glitnir--draw-count)))
+       (should (> before 0))
+       (set-frame-position c 90 70)
+       (should (nhwl-gui--wait (lambda () (> (glitnir--draw-count) before)) 5))
+       (should (= (glitnir--draw-count c) (glitnir--draw-count)))))))
 
 ;; Live rows: they run on any compositor, the real sway and mutter included, and assert only that the frame is live and
 ;; nothing signalled.  What the shell said to the compositor is judged afterwards by the trace checker

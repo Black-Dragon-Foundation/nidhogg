@@ -322,12 +322,21 @@ DEFUN ("glitnir--now-ns", Fglitnir__now_ns, Sglitnir__now_ns, 0, 0, 0,
 DEFUN ("glitnir--draw-count", Fglitnir__draw_count, Sglitnir__draw_count,
        0, 1, 0,
        doc: /* Return the number of times GTK drew FRAME's root frame since start.
-FRAME defaults to the selected frame.  */)
+On a nhwl frame, its commits that showed something: a buffer, a child
+frame's buffer or a child frame's new place.  FRAME defaults to the
+selected frame.  */)
   (Lisp_Object frame)
 {
   struct frame *f = decode_live_frame (frame);
 #ifdef HAVE_PGTK
   return make_uint (glitnir_pgtk_draw_count (f));
+#elif defined HAVE_NHWL
+  uint64_t n = 0;
+  if (FRAME_NHWL_P (f)
+      && NHG (nhg_draw_count (FRAME_NHG (f),
+			      nhwl_frame_window (nhwl_tree_root (f)), &n)) < 0)
+    n = 0;
+  return make_uint (n);
 #else
   (void) f;
   return make_fixnum (0);
@@ -545,6 +554,25 @@ the value is nil when Glitnir does not draw its root.  */)
       Lisp_Object c;
       XSETFRAME (c, fs[n]);
       list = Fcons (c, list);
+    }
+  return list;
+#elif defined HAVE_NHWL
+  uint64_t w[256];
+  int n = (FRAME_NHWL_P (f)
+	   ? NHG (nhg_stacking (FRAME_NHG (f),
+				nhwl_frame_window (nhwl_tree_root (f)),
+				w, ARRAYELTS (w)))
+	   : 0);
+  Lisp_Object list = Qnil;
+  while (n-- > 0)
+    {
+      struct frame *k = nhwl_window_frame (w[n]);
+      if (k)
+	{
+	  Lisp_Object c;
+	  XSETFRAME (c, k);
+	  list = Fcons (c, list);
+	}
     }
   return list;
 #else
