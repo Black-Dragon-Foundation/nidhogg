@@ -506,8 +506,9 @@ pub struct SurfaceFrame<'a> {
     pub alpha_cut: u32,
 }
 
-/// The presenter's counters since open: packets published and merged into one still waiting (`superseded`), buffer
-/// and bare commits, the longest wait of the host's thread and the longest publish copy, and fronts dropped idle.
+/// The presenter's counters since open: packets published, those merged into one still waiting or gone with their
+/// window (`superseded`: `packets - superseded` packets commit), buffer and bare commits, the longest wait of the host's
+/// thread and the longest publish copy, and fronts dropped idle.
 /// C reads it as `NhgPresenterCounters` (`nhglue.h`), inside the glue's `NhgPresenterStats`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
