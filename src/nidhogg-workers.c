@@ -197,12 +197,18 @@ static _Atomic int nh_wk_boost_state;
 
 static pthread_once_t nh_wk_once = PTHREAD_ONCE_INIT;
 
-static uint64_t
-nh_wk_now (void)
+uint64_t
+nh_wk_real_ns (void)
 {
   struct timespec ts;
   clock_gettime (CLOCK_MONOTONIC, &ts);
   return (uint64_t) ts.tv_sec * 1000000000 + ts.tv_nsec;
+}
+
+uint64_t
+nh_wk_now (void)
+{
+  return nh_tc_on ? nh_tc_mono_ns () : nh_wk_real_ns ();
 }
 
 static struct timespec
@@ -1331,6 +1337,43 @@ nh_wk_release (int p)
   pthread_cond_broadcast (&nh_wk_pause_cv);
   pthread_mutex_unlock (&nh_wk_pause_m);
 }
+
+#ifdef HAVE_NH_TEST_CLOCK
+int64_t
+nh_wk_tc_busy (void)
+{
+  nh_wk_init ();
+  if (atomic_load (&nh_tc_woken) > 0)
+    return 1;
+  int64_t busy = 0;
+  for (int w = 0; w < NH_WK_N; w++)
+    {
+      struct nh_wk_wst *ws = &nh_wk_w[w];
+      nh_wk_lock (&ws->m);
+      busy += atomic_load (&ws->inflight);
+      /* A queued job with no thread to run it waits for something else
+	 to end, or for the growth delay.  */
+      for (int pool = 0; pool < NH_WK_POOLS; pool++)
+	{
+	  struct nh_wk_pool *p = &ws->pool[pool];
+	  bool thread = (p->idle > 0
+			 || p->threads - p->running - p->idle - p->standby > 0);
+	  for (struct nh_wk_job *j = p->head; j; j = j->next)
+	    if (!thread || !nh_wk_class_ok (ws, pool, j))
+	      busy--;
+	}
+      pthread_mutex_unlock (&ws->m);
+    }
+  /* A released point's workers are still parked: they can run.  */
+  nh_wk_lock (&nh_wk_pause_m);
+  unsigned armed = atomic_load (&nh_wk_armed);
+  for (int p = 0; p < NH_WK_P_N; p++)
+    if (armed & 1u << p)
+      busy -= nh_wk_parked[p];
+  pthread_mutex_unlock (&nh_wk_pause_m);
+  return busy - atomic_load (&nh_tc_idle_jobs) - nh_io_tc_polling ();
+}
+#endif
 
 /* Wait at most MS until N workers are parked at P; return how many
    are, or -1 if fewer.  */
@@ -2825,6 +2868,9 @@ syms_of_nidhogg_workers (void)
   nh_img_syms ();
   nh_blk_syms ();
   nh_blk_file_syms ();
+#ifdef HAVE_NH_TEST_CLOCK
+  nh_tc_syms ();
+#endif
 
   Fprovide (intern_c_string ("nidhogg-workers"), Qnil);
 }

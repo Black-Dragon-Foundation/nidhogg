@@ -44,6 +44,10 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "pdumper.h"
 #include "disptab.h"
 #include "cm.h"
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+#include "nidhogg-testclock.h"
+#define current_timespec nh_tc_wait_now
+#endif
 
 #ifdef HAVE_ANDROID
 #include "android.h"
