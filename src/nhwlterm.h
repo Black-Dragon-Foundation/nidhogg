@@ -546,7 +546,7 @@ extern bool nhwl_child_p (struct frame *);
 extern struct frame *nhwl_tree_root (struct frame *);
 extern void nhwl_tip_dismissed (struct frame *);
 extern void nhwl_child_created (struct frame *);
-extern void nhwl_child_set_visible (struct frame *, bool);
+extern void nhwl_child_push (struct frame *, bool);
 extern void nhwl_child_reposition (struct frame *);
 extern void nhwl_child_params_changed (struct frame *);
 extern void nhwl_frame_raise_lower (struct frame *, bool);
