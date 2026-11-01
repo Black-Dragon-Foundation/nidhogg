@@ -403,6 +403,24 @@ BODY
 if [ "$MODE" = container ]; then
   if [ "$STAGE" = build ] || [ "$STAGE" = check ]; then MOUNT=""
   elif [ -n "$OUT" ]; then MOUNT="$OUT_DIR:/out:Z"; else MOUNT="$PREFIX:$PREFIX:Z"; [ "$DRY" = 1 ] || mkdir -p "$PREFIX"; fi
+  # NIDHOGG_BUILD_IMAGE_CACHE=1 (Fedora): the packages go into a local image once, keyed on the base image and the package
+  # list, and every run starts from it: the script's own install then finds everything there.  A pre-flight seed (one
+  # container, tests only) otherwise reinstalls some 350 packages and spends minutes on it.
+  if [ -n "${NIDHOGG_BUILD_IMAGE_CACHE:-}" ] && [ "$DRY" = 0 ] && [ "${DISTRO#fedora-}" != "$DISTRO" ]; then
+    pk=$(sed 's/#.*//' "$ROOT/nidhogg/deps/$DISTRO.build")
+    [ -n "$GLITNIR" ] || pk=$(printf '%s\n' "$pk" | grep -vxE 'cargo|rust|rustc')
+    pk="$(echo $pk) ${NIDHOGG_BUILD_CCACHE:+ccache} ${NIDHOGG_CHECK_PACKAGES:-} ${NIDHOGG_CHECK_RR:+rr}"
+    ihash=$(printf '%s\n%s\n' "$IMAGE" "$pk" | sha256sum | cut -c1-12)
+    CIMAGE=localhost/nidhogg-build:$DISTRO-$ihash
+    if ! "$PODMAN" image exists "$CIMAGE"; then
+      echo "build.sh: making the package image $CIMAGE (once)"
+      ctx=$(mktemp -d)
+      printf 'FROM %s\nRUN dnf -y --setopt=install_weak_deps=False install %s && dnf clean all\n' "$IMAGE" "$pk" > "$ctx/Containerfile"
+      "$PODMAN" build --memory 4g -t "$CIMAGE" -f "$ctx/Containerfile" "$ctx" >&2 || { rm -rf "$ctx"; die "the package image failed"; }
+      rm -rf "$ctx"
+    fi
+    IMAGE=$CIMAGE
+  fi
   NAME=nidhogg-build-$$
   CACHE_ARGS=""
   # the caches are shared by builds running at once: :z (a shared label), since :Z relabels a directory for one container
