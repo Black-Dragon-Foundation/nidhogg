@@ -457,6 +457,65 @@ mod motion {
         assert!(t.mapped_now(t.kid));
     }
 
+    /// A hide, then a commit: the presenter has had a turn since the hide.
+    fn hide_then_a_turn(t: &mut Tree) -> u64 {
+        t.shown_with(pop());
+        let seq = t.next_seq();
+        t.shell.set_mapped(t.kid, false).unwrap();
+        t.rb.fill(Rect::new(0, 0, 10, 10), 0xff00_ff00);
+        assert!(publish(&mut t.shell, t.root, &[(&t.rb, t.root)], 0));
+        t.committed();
+        seq
+    }
+
+    /// The presenter thread may wake between a hide and a show of one command: the hide waits, and costs no frame.
+    #[test]
+    fn hide_show_across_a_presenter_wake_no_frames() {
+        // a hold far longer than the test's steps take on a starved machine
+        let mut t = Tree::open("kwin", false);
+        t.shell.set_hide_hold(5000);
+        let seq = hide_then_a_turn(&mut t);
+        assert_eq!(t.buffers(seq, t.root), 1, "the turn");
+        assert_eq!(t.buffers(seq, t.kid), 0, "the hide waits");
+        t.shell.set_mapped(t.kid, true).unwrap();
+        t.step();
+        t.until("no leg to tick", |t| !t.ticking());
+        assert_eq!(t.buffers(seq, t.kid), 0, "no frame");
+        assert_eq!(glitnir::stats::summary(t.kb.g, false).ticks, 0);
+        assert!(t.mapped_now(t.kid));
+        t.no_protocol_error();
+        // without the hold the same calls run a leg
+        let mut t = Tree::open("kwin", false);
+        t.shell.set_hide_hold(0);
+        let seq = hide_then_a_turn(&mut t);
+        assert_eq!(t.buffers(seq, t.kid), 1, "the leg's first frame");
+        t.shell.set_mapped(t.kid, true).unwrap();
+        t.finish();
+        assert!(glitnir::stats::summary(t.kb.g, false).ticks >= 1);
+    }
+
+    /// A hide that waits starts by itself, and a running show's frames do not wait for it.
+    #[test]
+    fn held_hide_lets_a_running_show_go_on() {
+        let mut t = Tree::open("kwin", false);
+        t.shell.set_hide_hold(100);
+        t.kid_with(pop());
+        t.draw_kid();
+        t.committed();
+        t.step();
+        let seq = t.next_seq();
+        t.shell.set_mapped(t.kid, false).unwrap();
+        t.sync();
+        t.rec.present(STEP);
+        t.until("the show's next frame", |t| t.buffers(seq, t.kid) > 0);
+        t.until("the unmap", |t| {
+            t.rec.present(STEP);
+            !t.mapped_now(t.kid)
+        });
+        assert!(!t.ticking());
+        t.no_protocol_error();
+    }
+
     #[test]
     fn no_spec_maps_and_unmaps_at_once() {
         let mut t = Tree::open("kwin", false);
