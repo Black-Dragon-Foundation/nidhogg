@@ -115,6 +115,7 @@ Each function is called with the key (a symbol) and the new value.")
 (defconst nhwl-settings--keys
   '((color-scheme "org.freedesktop.appearance" "color-scheme" 0)
     (accent-color "org.freedesktop.appearance" "accent-color" nil)
+    (reduced-motion "org.freedesktop.appearance" "reduced-motion" 0)
     (button-layout "org.gnome.desktop.wm.preferences" "button-layout"
                    "appmenu:close")
     (cursor-theme "org.gnome.desktop.interface" "cursor-theme" "default")
@@ -130,7 +131,8 @@ Each function is called with the key (a symbol) and the new value.")
 (defun nhwl-settings-get (key)
   "Return the desktop setting KEY, or its default.
 KEY is `color-scheme' (0 none, 1 dark, 2 light), `accent-color' (a
-list (R G B) of floats, or nil), `button-layout' (a string),
+list (R G B) of floats, or nil), `reduced-motion' (1 when the desktop
+asks for less motion, else 0), `button-layout' (a string),
 `cursor-theme' or `cursor-size'."
   (let ((entry (assq key nhwl-settings--keys)))
     (unless entry (error "Unknown desktop setting: %S" key))
@@ -154,6 +156,9 @@ list (R G B) of floats, or nil), `button-layout' (a string),
    ((eq key 'color-scheme)
     (when (and (consp value) (null (cdr value))) (setq value (car value)))
     (and (memq value '(0 1 2)) value))
+   ((eq key 'reduced-motion)
+    (when (and (consp value) (null (cdr value))) (setq value (car value)))
+    (and (memq value '(0 1)) value))
    (t
     (when (and (consp value) (null (cdr value))) (setq value (car value)))
     (and (stringp value) value))))
