@@ -357,6 +357,11 @@ impl Backdrop {
     pub fn recomputed_px(&self) -> u64 {
         self.recomputed
     }
+
+    /// The region the image was made for, in source coordinates; `None` while nothing is cached.
+    pub fn region(&self) -> Option<Rect> {
+        self.key.map(|k| k.region)
+    }
 }
 
 /// One row of cells across `area`, from the source. The last cell of a row may hang over the source's right edge, whose

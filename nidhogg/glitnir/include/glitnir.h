@@ -32,7 +32,7 @@ typedef struct
   uint64_t t_compose_start_ns, t_compose_end_ns;
   int64_t clock_frame_us;
   int64_t presented_us;		/* -1: not known (GTK3 binds no wp_presentation) */
-  uint64_t damage_px, scroll_px, painted_px;
+  uint64_t damage_px, scroll_px, painted_px, backdrop_px;
   uint32_t layers, ticks, late_ticks, violations;
   uint8_t backfill;		/* 0, 1, or 2 unknown */
   uint8_t scale_mismatch;
@@ -47,7 +47,7 @@ typedef struct
   GlitnirPercentiles compose_ms, draw_ms, latency_ms, freeze_ms;
   uint64_t damage_px_p50, painted_px_p50;
   double backfill_rate;		/* -1: no entry knows (backfill 2 everywhere) */
-  uint64_t ticks, late_ticks, violations, scale_mismatch;
+  uint64_t ticks, late_ticks, violations, scale_mismatch, backdrop_px;
   /* From t_update_ns to the end of the paint, over the entries with an update time only.  */
   GlitnirPercentiles update_ms;
 } GlitnirStatsSummary;
