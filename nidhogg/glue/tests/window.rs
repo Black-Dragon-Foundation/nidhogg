@@ -448,6 +448,46 @@ mod window {
         close(d);
     }
 
+    /// At scale 2 an odd native size has no logical size of its own: when the compositor gives the floating size back
+    /// itself, its geometry (rounded), the frame goes back to its own size, not to the rounded one.
+    #[test]
+    fn leaving_fullscreen_at_scale_2_gives_an_odd_size_back() {
+        use nhglue::csd::NHG_FIT_CONFIGURE;
+        use nhshell::event::NHSHELL_STATE_FULLSCREEN as FULL;
+        let rec = Recorder::start("sway");
+        let d = open(&rec);
+        let id = toplevel(d);
+        let fit = |lw: i32, lh: i32, states: u32, native: (i32, i32)| {
+            let (mut w, mut h) = (-1, -1);
+            // SAFETY: a live display; `w` and `h` are writable.
+            let rc = unsafe {
+                nhg_frame_fit(
+                    d,
+                    id,
+                    240,
+                    lw,
+                    lh,
+                    states,
+                    native.0,
+                    native.1,
+                    NHG_FIT_CONFIGURE,
+                    &mut w,
+                    &mut h,
+                )
+            };
+            (rc, w, h)
+        };
+        assert_eq!(fit(1440, 900, FULL, (1008, 777)), (1, 2880, 1800));
+        assert_eq!(fit(504, 389, 0, (2880, 1800)), (1, 1008, 777));
+        assert_eq!(fit(1440, 900, FULL, (1008, 777)), (1, 2880, 1800));
+        assert_eq!(
+            fit(600, 400, 0, (2880, 1800)),
+            (1, 1200, 800),
+            "another size is the compositor's"
+        );
+        close(d);
+    }
+
     /// Fullscreen asks to leave maximized, then for fullscreen; back to none leaves fullscreen, then maximized;
     /// maximized, `fullwidth` and `fullheight` ask for maximized.  An unknown mode is refused.
     #[test]
