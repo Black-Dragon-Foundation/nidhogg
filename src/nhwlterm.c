@@ -1380,7 +1380,20 @@ nhwl_set_offset (struct frame *f, int xoff, int yoff, int change_gravity)
 	f->size_hint_flags |= YNegative;
       f->win_gravity = NorthWestGravity;
     }
-  /* A child frame has a position: in its parent.  */
+  /* A child frame has a position: in its parent.  A negative one counts
+     from the parent's right or bottom edge (as pgtk_calc_absolute_position
+     makes it, without the outer border a Wayland frame lacks).  */
+  if (nhwl_child_p (f)
+      && (f->size_hint_flags & (XNegative | YNegative)))
+    {
+      struct frame *p = FRAME_PARENT_FRAME (f);
+
+      if (f->size_hint_flags & XNegative)
+	f->left_pos += FRAME_PIXEL_WIDTH (p) - FRAME_PIXEL_WIDTH (f);
+      if (f->size_hint_flags & YNegative)
+	f->top_pos += FRAME_PIXEL_HEIGHT (p) - FRAME_PIXEL_HEIGHT (f);
+      f->size_hint_flags &= ~ (XNegative | YNegative);
+    }
   nhwl_child_reposition (f);
 }
 
