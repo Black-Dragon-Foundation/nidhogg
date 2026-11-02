@@ -762,13 +762,17 @@ impl CompositorHandler for State {
                 }
                 .to_string()
             });
-        // a toplevel's logical size, for the session store
+        // a toplevel's logical size, for the session store: its window geometry, else the viewport's destination (a
+        // fractional scale's buffer is device pixels at buffer scale 1), else the buffer over its scale
         let session_size = (role == "toplevel")
             .then(|| {
-                geometry.map(|g| [g[2], g[3]]).or_else(|| {
-                    let scale = buffer_scale.max(1);
-                    buffer.as_ref().map(|b| [b.w / scale, b.h / scale])
-                })
+                geometry
+                    .map(|g| [g[2], g[3]])
+                    .or(viewport.dst.filter(|d| d[0] > 0 && d[1] > 0))
+                    .or_else(|| {
+                        let scale = buffer_scale.max(1);
+                        buffer.as_ref().map(|b| [b.w / scale, b.h / scale])
+                    })
             })
             .flatten();
         let commit = Commit {
