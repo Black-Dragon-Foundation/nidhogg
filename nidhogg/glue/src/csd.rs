@@ -520,7 +520,7 @@ const KEEP: u32 = NHSHELL_STATE_MAXIMIZED
 /// and strip of its last layout (`fit_size`).  When the frame takes it, the glue records it at once (as
 /// `nhg_frame_resized`: a configure being applied gets a content ack) and C changes the frame's size.  A configure
 /// that enters a state of `KEEP` remembers the size, and one that leaves them with no size of its own (0 x 0: ours to
-/// pick) goes back to it.
+/// pick), or with the remembered size's window geometry, goes back to it.
 #[allow(clippy::too_many_arguments)]
 pub fn fit(
     state: &mut Display,
@@ -545,17 +545,28 @@ pub fn fit(
             back = f.floating.take();
         }
     }
-    let size = fit_size(
-        s120,
-        (lw, lh),
-        states,
-        native,
-        f.csd.offsets(),
-        f.csd.strip,
-        child,
-        flags,
-    )
-    .or(back.filter(|&b| (lw <= 0 || lh <= 0) && b != native));
+    // the size is the remembered one's window geometry too when the compositor gives the floating size back itself: a
+    // native size that rounds to it (an odd one at scale 2) is the frame's own, not the rounded one
+    let (s, strip) = (if s120 == 0 { 120 } else { s120 }, f.csd.strip);
+    let geometry = |(w, h): (i32, i32)| {
+        (
+            crate::window::to_logical(w, s),
+            crate::window::to_logical(h + strip, s),
+        )
+    };
+    let size = match back {
+        Some(b) if b != native && (lw <= 0 || lh <= 0 || geometry(b) == (lw, lh)) => Some(b),
+        _ => fit_size(
+            s120,
+            (lw, lh),
+            states,
+            native,
+            f.csd.offsets(),
+            f.csd.strip,
+            child,
+            flags,
+        ),
+    };
     if let Some((w, h)) = size {
         crate::configure::resized(state, window, w.max(1), h.max(1))?;
     }
