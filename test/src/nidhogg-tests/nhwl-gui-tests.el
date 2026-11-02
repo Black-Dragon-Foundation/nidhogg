@@ -1150,10 +1150,11 @@ top-level with its child again, mapped each way, with the buffer, the size and t
 back (a commit after the request) and the answer has reached sway.  Sway's transactions wait for the answer to each
 configure by its serial: a request sent before the frame answered the last one lets the two configures coalesce, the
 transaction waits out its timeout, and sway loses the floating size (it then sends a fullscreen state with the
-floating size, or takes the late fullscreen picture for the floating size).  A person cannot toggle that fast."
-  (let ((before (nhwl-gui--commits)))
+floating size, or takes the late fullscreen picture for the floating size).  A person cannot toggle that fast.
+A VALUE the frame already has asks nothing, and nothing is waited for."
+  (let ((before (nhwl-gui--commits)) (asks (not (eq value (frame-parameter nil 'fullscreen)))))
     (set-frame-parameter nil 'fullscreen value)
-    (when (equal (glitnir-gui--compositor) "sway")
+    (when (and asks (equal (glitnir-gui--compositor) "sway"))
       (should (nhwl-gui--wait (lambda () (redisplay t) (> (nhwl-gui--commits) before)) 8))
       (nhwl-gui--live-settle))))
 
