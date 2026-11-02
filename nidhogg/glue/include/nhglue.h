@@ -692,6 +692,10 @@ int32_t nhg_child_set (NhgDisplay *d, uint64_t window, uint64_t parent, int32_t 
    and garbages it), 0 when not.  The layer takes it at the next nhg_layer_ensure.  */
 int32_t nhg_child_chrome (NhgDisplay *d, uint64_t window, const NhgChrome *c);
 
+/* WINDOW's border as C painted it now: WIDTH device pixels (0: none) in premultiplied ARGB.  1 when it changed (the
+   chrome's rounded corners keep it as a ring from the next nhg_layer_ensure), 0 when not.  */
+int32_t nhg_child_border (NhgDisplay *d, uint64_t window, int32_t width, uint32_t argb);
+
 /* WINDOW was raised (RAISE nonzero) or lowered among its siblings, the other child windows of its parent; Z_GROUP is
    the frame's z-group (Emacs's enum z_group: 0 none, 1 above, 2 below, 3 above-suspended; the glue keeps the value).
    The glue keeps the stacking order: a child goes above its siblings when its window is first pushed

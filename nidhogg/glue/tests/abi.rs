@@ -739,7 +739,7 @@ PROTO (nhg_set_cursor_theme, int32_t (NhgDisplay *, const char *, uint32_t));";
     #[test]
     fn child_header_matches() {
         use nhglue::child::*;
-        use nhglue::ffi::{nhg_child_chrome, nhg_child_raise, nhg_child_set};
+        use nhglue::ffi::{nhg_child_border, nhg_child_chrome, nhg_child_raise, nhg_child_set};
         type C = NhgChrome;
         let rows: &[(&str, i64)] = &[
             ("NHG_CHILD_VISIBLE", NHG_CHILD_VISIBLE.into()),
@@ -760,10 +760,12 @@ PROTO (nhg_set_cursor_theme, int32_t (NhgDisplay *, const char *, uint32_t));";
 typedef NhgChrome C;
 PROTO (nhg_child_set, int32_t (NhgDisplay *, uint64_t, uint64_t, int32_t, int32_t, uint32_t));
 PROTO (nhg_child_chrome, int32_t (NhgDisplay *, uint64_t, const NhgChrome *));
+PROTO (nhg_child_border, int32_t (NhgDisplay *, uint64_t, int32_t, uint32_t));
 PROTO (nhg_child_raise, int32_t (NhgDisplay *, uint64_t, int32_t, int32_t));";
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u64, i32, i32, u32) -> i32 =
             nhg_child_set;
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *const C) -> i32 = nhg_child_chrome;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32, u32) -> i32 = nhg_child_border;
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32, i32) -> i32 = nhg_child_raise;
         let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
         let got = probe(decls, &exprs);

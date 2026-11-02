@@ -67,6 +67,9 @@ pub struct Child {
     /// The surface is shown (not unmapped).
     mapped: bool,
     chrome: NhgChrome,
+    /// The frame's border (its child-frame border, the internal border C paints), device pixels, and its colour,
+    /// premultiplied ARGB: the chrome's rounded corners keep it as a ring.  0 wide: none.
+    border: (i32, u32),
     /// The chrome changed since the layer last took it, and the scale it took it at.
     chrome_dirty: bool,
     chrome_s120: u32,
@@ -352,6 +355,20 @@ pub fn chrome(state: &mut Display, window: u64, c: &NhgChrome) -> Result<bool, G
     Ok(true)
 }
 
+/// Child `window`'s border as C painted it now: `width` device pixels (0: none) in premultiplied `argb`.  Whether it
+/// changed; the layer takes it with the chrome at the next `nhg_layer_ensure`, so a rounded corner keeps the border
+/// as a ring instead of cutting it off.
+pub fn border(state: &mut Display, window: u64, width: i32, argb: u32) -> Result<bool, GlueError> {
+    let f = child_mut(state, window)?;
+    let b = if width > 0 { (width, argb) } else { (0, 0) };
+    if f.child.border == b {
+        return Ok(false);
+    }
+    f.child.border = b;
+    f.child.chrome_dirty = true;
+    Ok(true)
+}
+
 /// The sibling a raised (`raise`) or lowered child is stacked against, and whether it goes above it: the highest of
 /// its `siblings` (window, place) for a raise, the lowest for a lower (None: alone).  Moved from
 /// `nhwl_frame_raise_lower`, whose sorted list put the child at its top or bottom and stacked it against its
@@ -473,7 +490,7 @@ pub fn apply_chrome(state: &mut Display, window: u64, key: u64, s120: u32) {
     let s = f64::from(s120) / 120.0;
     c.chrome_dirty = false;
     c.chrome_s120 = s120;
-    let ch = c.chrome;
+    let (ch, (border, border_argb)) = (c.chrome, c.border);
     let px = |v: f32| (f64::from(v) * s) as f32;
     let g = (ch.on != 0).then(|| Chrome {
         radius_px: px(ch.radius),
@@ -483,7 +500,9 @@ pub fn apply_chrome(state: &mut Display, window: u64, key: u64, s120: u32) {
         spread_px: px(ch.spread),
         shadow_opacity: ch.opacity,
         shadow_argb: 0xff00_0000 | ch.rgb,
-        ..Chrome::default()
+        // already device pixels: C paints the border in the frame's own pixels
+        border_px: border as f32,
+        border_argb,
     });
     let p = g.as_ref().map_or(ptr::null(), |g| g as *const Chrome);
     // SAFETY: `p` is null or points to `g`, a readable Chrome for the call.  Glitnir's answer is ignored, as C did (a
