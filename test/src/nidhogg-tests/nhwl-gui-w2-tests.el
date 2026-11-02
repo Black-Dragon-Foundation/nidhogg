@@ -822,9 +822,23 @@ nothing."
   "How many connections the recorder has accepted since it started."
   (plist-get (gui-runner-recorder '(:cmd "connections")) :accepted))
 
+(defun nhwl-gui--fd-kinds ()
+  "This process's descriptors as a sorted list of what each is (a socket, a pipe, an eventfd, a file's name), without
+the shell's buffer memfds.  A window's buffer pool holds one memfd a buffer and grows and trims by time (a pool idle for
+2 s keeps one buffer), so their number at a given moment says nothing of a leak: VmRSS judges the buffers.  An
+inode number changes with each connection, so a kind leaves it out."
+  (sort (delq nil (mapcar (lambda (fd)
+                            (let ((l (ignore-errors (file-symlink-p (concat "/proc/self/fd/" fd)))))
+                              (cond ((null l) nil)
+                                    ((string-prefix-p "/memfd:nhshell-buffer" l) nil)
+                                    ((string-match "\\`\\([a-z_]+\\):\\[[0-9]+\\]\\'" l) (match-string 1 l))
+                                    (t l))))
+                          (directory-files "/proc/self/fd" nil "\\`[0-9]")))
+        #'string<))
+
 (defun nhwl-gui--proc-counts ()
-  "This process's (FDS TASKS RSS-KB)."
-  (list (length (directory-files "/proc/self/fd" nil "\\`[0-9]"))
+  "This process's (FDS TASKS RSS-KB), FDS as `nhwl-gui--fd-kinds' lists them."
+  (list (nhwl-gui--fd-kinds)
         (length (directory-files "/proc/self/task" nil "\\`[0-9]"))
         (with-temp-buffer
           (insert-file-contents "/proc/self/status")
@@ -1026,7 +1040,7 @@ and the row sets the XdndSelection it drags itself."
 
 (ert-deftest nhwl-gui/compositor-restart-twenty-cycles-keeps-frames ()
   "Twenty keep-socket restarts with a frame, a child frame and a tooltip: after the last the same frames live, the
-descriptor and thread counts equal cycle 5's, VmRSS grew less than 8 MiB since cycle 5, and the recorder accepted one
+descriptors (`nhwl-gui--fd-kinds') and thread count equal cycle 5's, VmRSS grew less than 8 MiB since cycle 5, and the recorder accepted one
 connection per cycle."
   :tags '(runs-last)
   (skip-unless (nhwl-gui--recorder-p))
@@ -1049,7 +1063,7 @@ connection per cycle."
           (let ((at20 (nhwl-gui--proc-counts)))
             (should (frame-live-p f))
             (should (frame-live-p c))
-            (should (= (nth 0 at20) (nth 0 at5)))
+            (should (equal (nth 0 at20) (nth 0 at5)))
             (should (= (nth 1 at20) (nth 1 at5)))
             (should (< (- (nth 2 at20) (nth 2 at5)) (* 8 1024)))))
       (x-hide-tip)
@@ -1940,8 +1954,8 @@ process (`gui-runner-recorder-later')."
 
 (ert-deftest nhwl-gui/display-restart-twenty-cycles ()
   "Twenty cycles of a frame, a child frame and a tooltip, then a compositor restart (`NHWL_GUI_RESTART') with
-reconnecting off: each time the display's frames are deleted and the daemon stays.  After cycle 20 the descriptor and
-thread counts equal cycle 5's, VmRSS grew less than 8 MiB since cycle 5, and `make-frame-on-display' works."
+reconnecting off: each time the display's frames are deleted and the daemon stays.  After cycle 20 the descriptors
+\(`nhwl-gui--fd-kinds') and thread count equal cycle 5's, VmRSS grew less than 8 MiB since cycle 5, and `make-frame-on-display' works."
   :tags '(runs-last)
   (skip-unless (and (nhwl-gui--recorder-p) (daemonp) (gui-runner-restart-available-p)))
   (let ((nhwl-reconnect nil) (display (getenv "WAYLAND_DISPLAY")) (at5 nil) (f nil))
@@ -1962,7 +1976,7 @@ thread counts equal cycle 5's, VmRSS grew less than 8 MiB since cycle 5, and `ma
               (setq at5 (nhwl-gui--proc-counts))))
           (garbage-collect)
           (let ((at20 (nhwl-gui--proc-counts)))
-            (should (= (nth 0 at20) (nth 0 at5)))
+            (should (equal (nth 0 at20) (nth 0 at5)))
             (should (= (nth 1 at20) (nth 1 at5)))
             (should (< (- (nth 2 at20) (nth 2 at5)) (* 8 1024)))))
       (should (frame-live-p (nhwl-gui--reopen-display))))))
