@@ -201,9 +201,9 @@ fn scale120(f: &Frame) -> u32 {
 }
 
 /// The room the shadow needs on each side (L, T, R, B), device pixels at `s120`: the layer grown by the spread and
-/// the blur's reach (3 sigma, sigma = blur / 2; one pixel more for rounding), moved by the offset.  At a whole scale
-/// each is grown to a whole number of logical pixels: the surface's place in its parent is logical, so at scale 2 an
-/// odd margin would put the native area a device pixel off where the frame is.
+/// the blur's reach (3 sigma, sigma = blur / 2; one pixel more for rounding), moved by the offset.  Each is grown to
+/// a whole number of logical pixels: the surface's place in its parent is logical, so at scale 2 an odd margin would
+/// put the native area a device pixel off where the frame is.
 fn margins(c: &NhgChrome, s120: u32) -> [i32; 4] {
     // as C's `opacity > 0`: none at 0 or below, or NaN
     if c.on == 0 || c.opacity.is_nan() || c.opacity <= 0.0 {
@@ -215,10 +215,7 @@ fn margins(c: &NhgChrome, s120: u32) -> [i32; 4] {
         .saturating_add((f64::from(c.spread) * s).round() as i32);
     let ox = (f64::from(c.ox) * s).round() as i32;
     let oy = (f64::from(c.oy) * s).round() as i32;
-    // a fractional scale has no whole count to grow to: its places round wherever the margin ends
-    let n = if s120 == 0 { 120 } else { s120 };
-    let k = if n % 120 == 0 { (n / 120) as i32 } else { 1 };
-    let whole = |m: i32| m.saturating_add(k - 1) / k * k;
+    let whole = |m: i32| ((f64::from(m) / s).ceil() * s).round() as i32;
     [
         whole(pad.saturating_sub(ox).max(0)),
         whole(pad.saturating_sub(oy).max(0)),
