@@ -474,6 +474,9 @@ mod tree_snapshot {
         wait_for(&mut shell, |e| {
             e.kind() == Kind::FrameReady && e.window == p
         });
+        // a popup is the root of its own tree, published by itself: the snapshot composes it from its committed scene
+        assert!(publish(&mut shell, p, &[(&red, p)], 0));
+        assert!(publish(&mut shell, q, &[(&veil, q)], 0));
         let frames = [root.frame(id), red.frame(p), veil.frame(q)];
         let got = shell.tree_snapshot(id, &frames, true).unwrap();
         assert_eq!(got, shell.tree_snapshot(id, &frames, false).unwrap());
