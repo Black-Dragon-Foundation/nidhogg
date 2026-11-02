@@ -166,7 +166,8 @@ stacking, input region and mapping go out with its tree's commit.
   pointer use it. `nhg_layer_ensure` puts a child's Glitnir layer inside it and hands the layer the chrome.
 - **Size:** a child frame's size is its own (`nhwl_set_window_size`): Lisp reads the new size as soon as
   `set-frame-size` returns, shown or hidden, as under GTK, so a popup sized and then placed by its size (posframe) is
-  placed by the new one. A visible top-level's new size waits for the next redisplay.
+  placed by the new one. A visible top-level's new size waits for the next redisplay; maximized or fullscreen, it
+  keeps the compositor's size (xdg-shell binds the client to it), as a GTK window does.
 - **Publish:** `nhg_csd_paint` sends the child's position and its input region (the native area) when they changed;
   a top-level whose border changed places its children again at once.
 - **Stacking:** C keeps the siblings' order (its tree walk lists children by it) and hands it to `nhg_child_stack` on
