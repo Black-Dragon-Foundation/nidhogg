@@ -779,10 +779,33 @@ nhwl_fill_background_by_face (struct frame *f, struct face *face, int x,
   nhwl_end_cr_clip (f);
 }
 
+/* Child frame F's border, WIDTH device pixels (0: none) in face
+   colour RGB at alpha ALPHA, for its chrome: the rounded corners keep it
+   as a ring, as Glitnir's pgtk path recorded it.  */
+static void
+nhwl_child_border (struct frame *f, int width, unsigned long rgb,
+		   double alpha)
+{
+  uint32_t a, argb;
+
+  if (!nhwl_child_p (f) || !FRAME_NHWL_OUTPUT (f)->window)
+    return;
+  alpha = min (max (alpha, 0.0), 1.0);
+  a = lround (alpha * 255);
+  argb = (a << 24 | ((rgb >> 16 & 0xff) * a / 255) << 16
+	  | ((rgb >> 8 & 0xff) * a / 255) << 8 | (rgb & 0xff) * a / 255);
+  nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		NHG (nhg_child_border (FRAME_NHG (f),
+				       FRAME_NHWL_OUTPUT (f)->window, width,
+				       width > 0 ? argb : 0)));
+}
+
 /* Adapted from pgtk_clear_under_internal_border.  */
 void
 nhwl_clear_under_internal_border (struct frame *f)
 {
+  if (FRAME_INTERNAL_BORDER_WIDTH (f) <= 0)
+    nhwl_child_border (f, 0, 0, 0);
   if (FRAME_INTERNAL_BORDER_WIDTH (f) > 0 && FRAME_NHWL_OUTPUT (f)->window)
     {
       int border = FRAME_INTERNAL_BORDER_WIDTH (f);
@@ -803,6 +826,8 @@ nhwl_clear_under_internal_border (struct frame *f)
 
       block_input ();
       nhwl_damage_internal_border (f);
+      nhwl_child_border (f, border, face ? face->background : 0,
+			 face ? f->alpha_background : 0);
 
       if (face)
 	{
@@ -1347,7 +1372,12 @@ nhwl_set_frame_alpha (struct frame *f)
 /* Adapted from pgtk_set_window_size.  The window's size is the size of
    the buffer we present, so the frame takes the size it asks for at
    once (the compositor only suggests), within what a surface may be
-   (the glue clamps it).  */
+   (the glue clamps it).  A child frame or an invisible frame has its new
+   size before this returns, as xg_frame_set_char_size gives it them: a
+   caller that sizes a child and then places it by its size (posframe,
+   any popup fitted to its buffer) reads the new size, not the old one.
+   A visible top-level's size waits for the next redisplay, as a
+   configure's does.  */
 void
 nhwl_set_window_size (struct frame *f, bool change_gravity, int pixelwidth,
 		      int pixelheight)
@@ -1356,7 +1386,8 @@ nhwl_set_window_size (struct frame *f, bool change_gravity, int pixelwidth,
 
   NHG (nhg_frame_clamp (FRAME_NHG (f), window, &pixelwidth, &pixelheight));
   nhwl_popup_set_size (f, pixelwidth, pixelheight);
-  change_frame_size (f, pixelwidth, pixelheight, false, true, false);
+  change_frame_size (f, pixelwidth, pixelheight, false,
+		     FRAME_VISIBLE_P (f) && !FRAME_PARENT_FRAME (f), false);
   SET_FRAME_GARBAGED (f);
   if (window)
     nhwl_glue_rc (FRAME_DISPLAY_INFO (f),

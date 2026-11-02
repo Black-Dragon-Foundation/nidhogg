@@ -1301,6 +1301,18 @@ nhg_export! {
 }
 
 nhg_export! {
+    /// `window`'s border as C painted it now, `width` device pixels (0: none) in premultiplied `argb`: 1 when it
+    /// changed (the chrome's corners keep it as a ring from the next `nhg_layer_ensure`), 0 when not.  Neither reads
+    /// nor writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_child_border(d: *mut NhgDisplay, window: u64, width: i32, argb: u32) -> i32 |state| {
+        Ok(i32::from(crate::child::border(state, window, width, argb)?))
+    }
+}
+
+nhg_export! {
     /// `window` was raised (`raise` nonzero) or lowered among its siblings, with `z_group`, the frame's z-group
     /// (`child::raise`).  Neither reads nor writes pixels.
     ///
