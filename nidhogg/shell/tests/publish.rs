@@ -474,6 +474,14 @@ mod tree_snapshot {
         wait_for(&mut shell, |e| {
             e.kind() == Kind::FrameReady && e.window == p
         });
+        // published, so each surface's scene is committed: the snapshot composes from it as the presenter does
+        assert!(publish(&mut shell, id, &[(&root, id), (&red, p)], 0));
+        assert!(publish(
+            &mut shell,
+            other,
+            &[(&other_root, other), (&veil, q)],
+            0
+        ));
         let frames = [root.frame(id), red.frame(p), veil.frame(q)];
         let got = shell.tree_snapshot(id, &frames, true).unwrap();
         assert_eq!(got, shell.tree_snapshot(id, &frames, false).unwrap());
