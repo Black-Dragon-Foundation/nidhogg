@@ -300,6 +300,18 @@ impl ShellBackend for WaylandShell {
         }
     }
 
+    fn scale_start(&mut self, id: WindowId, scale120: u32) -> ShellResult {
+        self.live()?;
+        if scale120 == 0 {
+            return Err(ShellError::Arg);
+        }
+        if !self.main.scales.contains_key(&id) {
+            return Err(ShellError::State);
+        }
+        self.main.scale_start(id, scale120);
+        Ok(())
+    }
+
     fn child_new(&mut self, desc: &ChildDesc) -> ShellResult<WindowId> {
         self.live()?;
         match desc.kind {
