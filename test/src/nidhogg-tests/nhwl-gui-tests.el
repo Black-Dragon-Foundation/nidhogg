@@ -1152,7 +1152,7 @@ top-level with its child again, mapped each way, with the buffer, the size and t
   (gui-runner-wait-settled t)
   (gui-runner-read-all))
 
-(defun nhwl-gui--commits ()
+(defun nhwl-gui--sent-commits ()
   "The commits the selected frame's display has sent, with a buffer or without."
   (let ((s (nhwl-presenter-stats)))
     (+ (plist-get s :commits) (plist-get s :bare-commits))))
@@ -1164,10 +1164,10 @@ configure by its serial: a request sent before the frame answered the last one l
 transaction waits out its timeout, and sway loses the floating size (it then sends a fullscreen state with the
 floating size, or takes the late fullscreen picture for the floating size).  A person cannot toggle that fast.
 A VALUE the frame already has asks nothing, and nothing is waited for."
-  (let ((before (nhwl-gui--commits)) (asks (not (eq value (frame-parameter nil 'fullscreen)))))
+  (let ((before (nhwl-gui--sent-commits)) (asks (not (eq value (frame-parameter nil 'fullscreen)))))
     (set-frame-parameter nil 'fullscreen value)
     (when (and asks (equal (glitnir-gui--compositor) "sway"))
-      (should (nhwl-gui--wait (lambda () (redisplay t) (> (nhwl-gui--commits) before)) 8))
+      (should (nhwl-gui--wait (lambda () (redisplay t) (> (nhwl-gui--sent-commits) before)) 8))
       (nhwl-gui--live-settle))))
 
 ;; They leave frames, a tip and the window size behind, so they run after the other rows (`runs-last'); a row that ended
