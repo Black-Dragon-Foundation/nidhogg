@@ -1268,6 +1268,7 @@ A VALUE the frame already has asks nothing, and nothing is waited for."
 
 (ert-deftest nhwl-gui/live-fullscreen-gives-the-size-back ()
   "A size set by hand comes back after fullscreen, on every compositor: some answer leaving it with 0 x 0, ours to pick.
+A size asked for while fullscreen changes nothing: the compositor's size binds, as a GTK window's does.
 The recorder keeps no state of its own: it answers here as a compositor does, the output's size, then 0 x 0."
   :tags '(runs-last)
   (skip-unless (and (nhwl-gui--live-p) (nhwl-gui--nhwl-frames)))
@@ -1301,6 +1302,11 @@ The recorder keeps no state of its own: it answers here as a compositor does, th
                      :size (and rec (vector (round (/ (car out) s)) (round (/ (cadr out) s))))
                      :states ["fullscreen" "activated"]))
           (should (nhwl-gui--wait (lambda () (redisplay t) (not (equal (funcall now) size))) 8))
+          ;; fullscreen, the compositor's size binds: a size asked for meanwhile leaves the frame as it is
+          (let ((full (funcall now)))
+            (set-frame-size nil 80 30)
+            (redisplay t)
+            (should (equal (funcall now) full)))
           (let ((since (funcall mark)))
             (nhwl-gui--set-fullscreen nil)
             (funcall answer since "xdg_toplevel.unset_fullscreen" :states ["activated"]))

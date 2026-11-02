@@ -1377,12 +1377,20 @@ nhwl_set_frame_alpha (struct frame *f)
    caller that sizes a child and then places it by its size (posframe,
    any popup fitted to its buffer) reads the new size, not the old one.
    A visible top-level's size waits for the next redisplay, as a
-   configure's does.  */
+   configure's does.  A visible top-level that is maximized or
+   fullscreen keeps the compositor's size, as a GTK window does:
+   xdg-shell binds the client to that size (fullscreen: at most it), and
+   leaving the state gives the floating size back.  */
 void
 nhwl_set_window_size (struct frame *f, bool change_gravity, int pixelwidth,
 		      int pixelheight)
 {
   uint64_t window = FRAME_NHWL_OUTPUT (f)->window;
+
+  if (FRAME_VISIBLE_P (f) && !FRAME_PARENT_FRAME (f)
+      && (FRAME_NHWL_OUTPUT (f)->states
+	  & (NHG_STATE_MAXIMIZED | NHG_STATE_FULLSCREEN)))
+    return;
 
   NHG (nhg_frame_clamp (FRAME_NHG (f), window, &pixelwidth, &pixelheight));
   nhwl_popup_set_size (f, pixelwidth, pixelheight);
