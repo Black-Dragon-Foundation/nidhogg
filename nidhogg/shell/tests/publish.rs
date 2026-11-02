@@ -407,6 +407,36 @@ mod tree_snapshot {
         );
     }
 
+    /// A child's rounded corner shows what lies beneath it: the child is composed into a clear surface, as the
+    /// presenter's new buffer is, not over its own square pixels.
+    #[test]
+    fn a_rounded_corner_shows_what_is_beneath() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let mut shell = rec.open();
+        let mut root = Backing::new(200, 100);
+        let id = window(&mut shell, &mut root);
+        let solid = backing(GREEN);
+        let a = child(&mut shell, id, 10, 10);
+        let chrome = glitnir::scene::Chrome {
+            radius_px: 8.0,
+            ..Default::default()
+        };
+        glitnir::scene::with(solid.g, |s| s.set_chrome(solid.g, Some(chrome))).expect("the chrome");
+        let tree = [(&root, id), (&solid, a)];
+        assert!(publish(&mut shell, id, &tree, 0));
+        let frames = tree.map(|(b, w)| b.frame(w));
+        let p = shell.tree_snapshot(id, &frames, true).unwrap();
+        assert_eq!(at(&p, 10, 10), BG, "the corner is cut");
+        assert_eq!(at(&p, 49, 29), BG, "and the one across");
+        assert_eq!(at(&p, 30, 20), GREEN, "the middle is the child's");
+        let square = shell.tree_snapshot(id, &frames, false).unwrap();
+        assert_eq!(
+            at(&square, 10, 10),
+            GREEN,
+            "without the chrome the corner is square"
+        );
+    }
+
     /// A popup goes where the compositor put it, over the tree it hangs from; another tree's is left out.
     #[test]
     fn popups_show_over_their_tree() {
