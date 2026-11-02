@@ -884,6 +884,22 @@ user displays takes this path, and a build without the image libraries would not
                            (list (round (/ (+ (car off) 40) s)) (round (/ (+ (cadr off) 30) s)))))))
       (when (frame-live-p c) (delete-frame c t)))))
 
+(ert-deftest nhwl-gui/child-frame-size-is-read-back-at-once ()
+  "A child frame's new size is its size when `set-frame-size' returns, shown or hidden, as under GTK: a popup sized
+and then placed by its size (posframe) is placed by the new one."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((c nil) (frame-resize-pixelwise t))
+    (unwind-protect
+        (progn
+          (setq c (nhwl-gui--child))
+          (dolist (size '((300 120) (180 100) (420 2000) (220 140)))
+            (set-frame-size c (car size) (cadr size) t)
+            (should (equal (list (frame-native-width c) (frame-native-height c)) size)))
+          (make-frame-invisible c)
+          (set-frame-size c 260 110 t)
+          (should (equal (list (frame-native-width c) (frame-native-height c)) '(260 110))))
+      (when (frame-live-p c) (delete-frame c t)))))
+
 (ert-deftest nhwl-gui/child-frame-move-is-a-position-change ()
   (skip-unless (nhwl-gui--recorder-p))
   (let* ((s (frame-scale-factor)) (before (nhwl-gui--sub-ids)) (c nil))
