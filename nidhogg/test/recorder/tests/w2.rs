@@ -626,6 +626,40 @@ fn session_restore_before_first_commit() {
 }
 
 #[test]
+fn session_restore_gives_back_a_viewport_size() {
+    // a fractional scale's toplevel: a device-pixel buffer at buffer scale 1, its logical size the viewport's
+    let dir = std::env::temp_dir().join(format!("nh-session-{}-v", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = dir.join("store.json");
+    let mut first = Env::new("mutter", &["--session-store", store.to_str().unwrap()]);
+    let (old, old_heard) = get_session(&mut first, Reason::Launch, None);
+    let id = created_id(&old_heard);
+    let viewporter: wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter =
+        first.bind("wp_viewporter", 1);
+    let wm: XdgWmBase = first.bind("xdg_wm_base", 6);
+    let surface = first.surface();
+    let xs = wm.get_xdg_surface(&surface, &first.qh, ());
+    let top = xs.get_toplevel(&first.qh, ());
+    old.add_toplevel(&top, "main".into(), &first.qh, Heard::default());
+    surface.commit();
+    first.roundtrip();
+    xs.ack_configure(first.client.xdg_serial);
+    let viewport = viewporter.get_viewport(&surface, &first.qh, ());
+    viewport.set_destination(300, 200);
+    let buffer = first.buffer(375, 250);
+    surface.attach(Some(&buffer), 0, 0);
+    surface.commit();
+    first.roundtrip();
+    let mut second = first.join();
+    let (taken, _) = get_session(&mut second, Reason::Recover, Some(&id));
+    second.client.configures.clear();
+    session_toplevel(&mut second, &taken, "main", true, 300, 200);
+    let (w, h, _) = second.client.configures.first().cloned().unwrap();
+    assert_eq!((w, h), (300, 200));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn session_restore_after_commit_is_already_mapped() {
     let mut env = Env::new("mutter", &[]);
     let (session, _heard) = get_session(&mut env, Reason::Launch, None);
