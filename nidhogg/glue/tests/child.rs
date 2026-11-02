@@ -368,6 +368,23 @@ mod child {
         close(d);
     }
 
+    /// At scale 2 the margin is whole logical pixels (even device pixels): the surface's place in its parent is
+    /// logical, and an odd margin would put the native area a device pixel off the frame's position.
+    #[test]
+    fn chrome_margin_is_whole_logical_pixels() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let d = open(&rec);
+        let root = toplevel(d, 200, 100);
+        let c = child(d, root, 30, 20, 60, 40);
+        assert_eq!(chrome(d, c, &SHADOW), 1);
+        let mut l = NhgCsdLayout::default();
+        // SAFETY: a live display; `l` is writable.
+        assert_eq!(unsafe { nhg_csd_layout(d, c, 240, 0, &mut l) }, 1);
+        // 15, 11, 15, 19 device pixels of reach, each grown to an even count
+        assert_eq!((l.l, l.t, l.r, l.b), (16, 12, 16, 20));
+        close(d);
+    }
+
     /// The chrome gives the child its shadow margin: the frame's offsets grow by it, the surface moves up and left by
     /// it so that the native area stays where the frame is, and the layer takes the chrome at the next layer step.
     /// The same chrome again changes nothing.
