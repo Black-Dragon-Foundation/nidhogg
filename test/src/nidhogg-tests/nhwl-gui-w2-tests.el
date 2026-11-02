@@ -1552,7 +1552,7 @@ move position %d ppt 10 ppt" (car w) (cdr w))))
                                  (with-temp-buffer (insert-file-contents file) (buffer-string)))))
       (when (and driver (process-live-p driver)) (delete-process driver))
       (when (process-live-p second) (delete-process second))
-      (set-frame-parameter nil 'fullscreen fullscreen)
+      (nhwl-gui--set-fullscreen fullscreen)
       (delete-file file)
       (when (file-exists-p ready) (delete-file ready)))))
 
