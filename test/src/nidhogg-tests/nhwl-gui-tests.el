@@ -1048,6 +1048,18 @@ own count is its root's."
        (should (nhwl-gui--wait (lambda () (> (glitnir--draw-count) before)) 5))
        (should (= (glitnir--draw-count c) (glitnir--draw-count)))))))
 
+(ert-deftest nhwl-gui/child-negative-position-counts-from-the-far-edges ()
+  "A child frame at a negative position counts from its parent's right and bottom edges: -1 sits one pixel inside."
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--with-child
+   (lambda (c _id)
+     (let ((p (frame-parent c)))
+       (set-frame-position c -1 -1)
+       (should (equal (frame-edges c 'outer-edges)
+                      (list (- (frame-pixel-width p) (frame-pixel-width c) 1)
+                            (- (frame-pixel-height p) (frame-pixel-height c) 1)
+                            (1- (frame-pixel-width p)) (1- (frame-pixel-height p)))))))))
+
 (ert-deftest nhwl-gui/snapshot-holds-the-tree ()
   "`glitnir-snapshot' of a root shows its child frames where they sit, and only while they are shown."
   (skip-unless (nhwl-gui--recorder-p))
