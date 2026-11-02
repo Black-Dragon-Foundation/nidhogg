@@ -454,7 +454,11 @@ mod child {
         assert_eq!(ensure(d, &mut k), 0);
         assert_eq!(border(d, c, 1, 0xff6b_6b6b), 1);
         assert_eq!(ensure(d, &mut k), 1, "the layer takes the border");
-        assert_eq!(border(d, c, 1, 0xff6b_6b6b), 0, "the same border is no change");
+        assert_eq!(
+            border(d, c, 1, 0xff6b_6b6b),
+            0,
+            "the same border is no change"
+        );
         assert_eq!(ensure(d, &mut k), 0);
         assert_eq!(border(d, c, 0, 0xff6b_6b6b), 1);
         assert_eq!(border(d, c, 0, 0), 0, "no border has no colour");
