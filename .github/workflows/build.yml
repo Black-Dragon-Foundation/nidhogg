@@ -613,10 +613,23 @@ jobs:
           chmod +x recorder/nh-recorder
       - name: A render node for KWin, which composites on nothing else (vgem; Mesa draws in software)
         if: ${{ matrix.lane == 'kwin' }}
+        # vgem ships in linux-modules-extra-<kernel>; a runner image can boot a kernel whose package is not in the
+        # archive yet, so the flavour's metapackage is the fallback, and a kernel with no vgem fails here by name
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q "linux-modules-extra-$(uname -r)"
-          sudo modprobe vgem
+          k=$(uname -r)
+          if ! sudo modprobe vgem 2>/dev/null; then
+            sudo apt-get update -q
+            if apt-cache show "linux-modules-extra-$k" >/dev/null 2>&1; then
+              sudo apt-get install -y -q "linux-modules-extra-$k"
+            elif apt-cache show "linux-modules-extra-${k##*-}" >/dev/null 2>&1; then
+              echo "no linux-modules-extra-$k in the archive; installing linux-modules-extra-${k##*-}"
+              sudo apt-get install -y -q "linux-modules-extra-${k##*-}"
+            fi
+            if ! sudo modprobe vgem; then
+              echo "::error::no vgem module for the runner's kernel $k (linux-modules-extra-$k is not in the archive, and the extra modules installed are for: $(ls /lib/modules | tr '\n' ' ')); KWin needs a render node, so the kwin lane cannot run on this runner image"
+              exit 1
+            fi
+          fi
           sudo chmod 666 /dev/dri/renderD*
       - run: bash nidhogg/test/native-gui.sh "${{ matrix.lane }}" --prefix "$RUNNER_TEMP/nidhogg" --recorder "$PWD/recorder/nh-recorder" --container fedora-45
 
