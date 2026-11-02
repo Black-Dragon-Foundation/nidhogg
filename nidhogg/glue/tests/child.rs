@@ -141,6 +141,11 @@ fn chrome(d: *mut NhgDisplay, id: u64, c: &NhgChrome) -> i32 {
     unsafe { nhg_child_chrome(d, id, c) }
 }
 
+fn border(d: *mut NhgDisplay, id: u64, width: i32, argb: u32) -> i32 {
+    // SAFETY: a live display.
+    unsafe { nhg_child_border(d, id, width, argb) }
+}
+
 /// `nhg_csd_layout` at scale 1, as C calls it: its return and the layout.
 fn lay(d: *mut NhgDisplay, id: u64) -> (i32, NhgCsdLayout) {
     let mut l = NhgCsdLayout::default();
@@ -430,6 +435,30 @@ mod child {
         assert_eq!(chrome(d, c, &NhgChrome::default()), 1);
         assert_eq!(lay(d, c).0, 1);
         assert_eq!(offsets(d, c), [0; 4]);
+        close(d);
+    }
+
+    /// The frame's border goes to the layer with the chrome, so the rounded corners keep it as a ring: a new border is
+    /// a change the next layer step hands over, the same border again is none, and no border clears it.
+    #[test]
+    fn border_goes_with_the_chrome() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let d = open(&rec);
+        let root = toplevel(d, 200, 100);
+        let c = child(d, root, 30, 20, 60, 40);
+        let mut k = surface(d, c, 60, 40);
+        assert_eq!(chrome(d, c, &SHADOW), 1);
+        lay(d, c);
+        k.border = offsets(d, c);
+        assert_eq!(ensure(d, &mut k), 1);
+        assert_eq!(ensure(d, &mut k), 0);
+        assert_eq!(border(d, c, 1, 0xff6b_6b6b), 1);
+        assert_eq!(ensure(d, &mut k), 1, "the layer takes the border");
+        assert_eq!(border(d, c, 1, 0xff6b_6b6b), 0, "the same border is no change");
+        assert_eq!(ensure(d, &mut k), 0);
+        assert_eq!(border(d, c, 0, 0xff6b_6b6b), 1);
+        assert_eq!(border(d, c, 0, 0), 0, "no border has no colour");
+        assert_eq!(ensure(d, &mut k), 1);
         close(d);
     }
 

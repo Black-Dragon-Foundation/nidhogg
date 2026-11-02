@@ -158,10 +158,15 @@ stacking, input region and mapping go out with its tree's commit.
 - **Facts:** C pushes the child's parent, its position (the frame's left and top, device pixels of the parent's native
   area), whether it is shown and whether it is no-accept-focus (`nhg_child_set`) when its window is made, moved, shown
   or hidden, and the chrome `glitnir--resolve` gives it (`nhg_child_chrome`, a pull of the Lisp call's result) when its
-  parameters change. A window made again (a reparent) gets both again; the debug check compares the parent.
+  parameters change. A window made again (a reparent) gets both again; the debug check compares the parent. When C
+  paints the frame's border (its child-frame border) it pushes its width and colour too (`nhg_child_border`): the
+  layer takes them with the chrome, so the rounded corners keep the border as a ring, as Glitnir's pgtk path did.
 - **Margin:** the shadow needs room around the native area (spread, three sigma of blur, the offset). It is the frame's
   border, laid out by `nhg_csd_layout` like a title bar, so `nhg_frame_offsets`, the backing, the damage and the
   pointer use it. `nhg_layer_ensure` puts a child's Glitnir layer inside it and hands the layer the chrome.
+- **Size:** a child frame's size is its own (`nhwl_set_window_size`): Lisp reads the new size as soon as
+  `set-frame-size` returns, shown or hidden, as under GTK, so a popup sized and then placed by its size (posframe) is
+  placed by the new one. A visible top-level's new size waits for the next redisplay.
 - **Publish:** `nhg_csd_paint` sends the child's position and its input region (the native area) when they changed;
   a top-level whose border changed places its children again at once.
 - **Stacking:** C keeps the siblings' order (its tree walk lists children by it) and hands it to `nhg_child_stack` on
@@ -251,7 +256,7 @@ accepted and does nothing, as for a missing Wayland protocol.
 | `nhg_window_wait_configured` | - | one round of the wait for the first configure | returns configured at once |
 | `nhg_frame_clamp` / `nhg_frame_fit` | - | size fitting and the surface clamp | same |
 | `nhg_tip_show` / `nhg_tip_hide` | - | tooltip popups | a borderless `NSPanel` |
-| `nhg_child_set` / `nhg_child_chrome` / `nhg_child_raise` | - | child frames: place, chrome, stacking | a child `NSWindow`, via `addChildWindow` |
+| `nhg_child_set` / `nhg_child_chrome` / `nhg_child_border` / `nhg_child_raise` | - | child frames: place, chrome, stacking | a child `NSWindow`, via `addChildWindow` |
 | `nhg_popup_show` / `nhg_popup_place` / `nhg_popup_size` / `nhg_popup_hide` | - | popup frames for menus | a borderless `NSPanel` with a grab |
 | `nhg_scroll_window` | W | scroll a window's rows; promote or demote its layer | same; a layer is a `CALayer` |
 | `nhg_layers_sync` / `nhg_layers_count` | - | demote layers that are gone, resized or idle; count them | same |
