@@ -916,6 +916,9 @@ impl WaylandShell {
             let mut px = Vec::with_capacity(front.data.len());
             copy_rect(f, &all, &mut px);
             front.write(&all, &px);
+            // composed into a clear surface, as the presenter's new buffer is: a rounded corner and a shadow go over
+            // what lies beneath the surface, not over the host's square pixels
+            px.fill(0);
             let scale = f64::from(scale120(id)) / 120.0;
             let mut t = TargetView {
                 data: &mut px,
