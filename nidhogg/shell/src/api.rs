@@ -261,6 +261,10 @@ pub trait ShellBackend {
         session_name: Option<&str>,
     ) -> ShellResult<WindowId>;
     fn window_destroy(&mut self, window: WindowId) -> ShellResult;
+    /// The scale (times 120) the host made a new window's frame for: its buffers' viewport starts there, not at 1, until
+    /// the compositor says what the scale is (a `SCALE` comes only when it says another).  A frame made a top-level
+    /// again from a child already shows at its output's scale.  Nothing when the compositor has spoken already.
+    fn scale_start(&mut self, window: WindowId, scale120: u32) -> ShellResult;
     fn set_title(&mut self, window: WindowId, title: &str) -> ShellResult;
     fn set_app_id(&mut self, window: WindowId, app_id: &str) -> ShellResult;
     fn set_min_size(&mut self, window: WindowId, w: i32, h: i32) -> ShellResult;

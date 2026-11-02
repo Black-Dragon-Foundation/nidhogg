@@ -193,6 +193,11 @@ pub fn new(
         let _ = state.backend().window_destroy(id);
         return Err(e);
     }
+    // the frame was made for this scale (a reparented one shows at it already): its buffers start there, not at 1;
+    // a refusal leaves them at 1 until the compositor says, as before
+    if d.scale120 > 0 {
+        let _ = state.backend().scale_start(id, d.scale120);
+    }
     Ok(id)
 }
 
