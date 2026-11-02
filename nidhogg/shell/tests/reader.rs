@@ -243,6 +243,7 @@ mod reader {
         ("window_new_named", |s, _| {
             s.window_new_named(&desc(), Some("n")).map(drop)
         }),
+        ("scale_start", |s, w| s.scale_start(w, 240)),
         ("set_title", |s, w| s.set_title(w, "x")),
         ("set_app_id", |s, w| s.set_app_id(w, "x")),
         ("set_min_size", |s, w| s.set_min_size(w, 10, 10)),

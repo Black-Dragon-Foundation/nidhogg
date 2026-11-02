@@ -121,6 +121,30 @@ impl MainState {
         }
     }
 
+    /// `ShellBackend::scale_start`: surface `id` starts at `scale120` while the compositor has said nothing of its
+    /// scale.  No `SCALE` is posted: the host made the frame for it.
+    pub(crate) fn scale_start(&mut self, id: u64, scale120: u32) {
+        let Some(s) = self.scales.get_mut(&id) else {
+            return;
+        };
+        if s.frac120.is_some()
+            || s.buffer_scale.is_some()
+            || !s.entered.is_empty()
+            || s.current == scale120
+        {
+            return;
+        }
+        s.current = scale120;
+        self.present_scale(id, scale120);
+        if let Some(shared) = &self.shared {
+            shared
+                .scale120
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(id, scale120);
+        }
+    }
+
     pub(crate) fn detach_scale(&mut self, id: u64) {
         if let Some(shared) = &self.shared {
             shared
