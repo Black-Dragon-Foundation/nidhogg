@@ -525,22 +525,26 @@ user displays takes this path, and a build without the image libraries would not
   ;; string's fills and font drawing nest the backing's clip, which once moved them by the margins twice, out of the
   ;; string's clip: nothing reached the screen on the mutter profile)
   (skip-unless (nhwl-gui--recorder-p))
-  (switch-to-buffer "*scratch*")
-  (erase-buffer)
-  (message nil)
-  (redisplay t)
-  (gui-runner-wait-settled)
-  (let* ((edges (window-inside-pixel-edges))
-         (left (/ (- (plist-get (plist-get (nhwl-gui--last-commit) :buffer) :w) (frame-pixel-width)) 2))
-         (cells (list (+ left (nth 0 edges)) (+ (nhwl-gui--native-top) (nth 1 edges))
-                      (* 4 (frame-char-width)) (frame-char-height)))
-         (before (gui-runner-screen-grab))
-         (mark (nhwl-gui--mark)))
-    (insert "MMMM")
-    (redisplay t)
-    (let ((after (nhwl-gui--shown mark)))
-      (should (> (cdr (gui-runner-pixel-diff before after cells)) (frame-char-width)))
-      (should (= (car (gui-runner-pixel-diff (glitnir-snapshot nil 'raw) after)) 0)))))
+  ;; the cursor stays on: a blink between the grab and the snapshot is a real difference of one cell
+  (nhwl-gui--with-blink
+   nil
+   (lambda ()
+     (switch-to-buffer "*scratch*")
+     (erase-buffer)
+     (message nil)
+     (redisplay t)
+     (gui-runner-wait-settled)
+     (let* ((edges (window-inside-pixel-edges))
+            (left (/ (- (plist-get (plist-get (nhwl-gui--last-commit) :buffer) :w) (frame-pixel-width)) 2))
+            (cells (list (+ left (nth 0 edges)) (+ (nhwl-gui--native-top) (nth 1 edges))
+                         (* 4 (frame-char-width)) (frame-char-height)))
+            (before (gui-runner-screen-grab))
+            (mark (nhwl-gui--mark)))
+       (insert "MMMM")
+       (redisplay t)
+       (let ((after (nhwl-gui--shown mark)))
+         (should (> (cdr (gui-runner-pixel-diff before after cells)) (frame-char-width)))
+         (should (= (car (gui-runner-pixel-diff (glitnir-snapshot nil 'raw) after)) 0)))))))
 
 (ert-deftest nhwl-gui/scale-150-buffer-exact ()
   (skip-unless (nhwl-gui--recorder-p))
@@ -1136,6 +1140,23 @@ top-level with its child again, mapped each way, with the buffer, the size and t
   (gui-runner-wait-settled t)
   (gui-runner-read-all))
 
+(defun nhwl-gui--commits ()
+  "The commits the selected frame's display has sent, with a buffer or without."
+  (let ((s (nhwl-presenter-stats)))
+    (+ (plist-get s :commits) (plist-get s :bare-commits))))
+
+(defun nhwl-gui--set-fullscreen (value)
+  "Set the selected frame's `fullscreen' to VALUE; on sway, wait until the frame has answered the configure that comes
+back (a commit after the request) and the answer has reached sway.  Sway's transactions wait for the answer to each
+configure by its serial: a request sent before the frame answered the last one lets the two configures coalesce, the
+transaction waits out its timeout, and sway loses the floating size (it then sends a fullscreen state with the
+floating size, or takes the late fullscreen picture for the floating size).  A person cannot toggle that fast."
+  (let ((before (nhwl-gui--commits)))
+    (set-frame-parameter nil 'fullscreen value)
+    (when (equal (glitnir-gui--compositor) "sway")
+      (should (nhwl-gui--wait (lambda () (redisplay t) (> (nhwl-gui--commits) before)) 8))
+      (nhwl-gui--live-settle))))
+
 ;; They leave frames, a tip and the window size behind, so they run after the other rows (`runs-last'); a row that ended
 ;; the session's display (the display-lost row) leaves no native frame, and they skip.
 (ert-deftest nhwl-gui/live-child-frames ()
@@ -1194,18 +1215,18 @@ top-level with its child again, mapped each way, with the buffer, the size and t
   (let ((old (frame-parameter nil 'fullscreen)))
     (unwind-protect
         (progn
-          (set-frame-parameter nil 'fullscreen nil)
+          (nhwl-gui--set-fullscreen nil)
           (nhwl-gui--live-settle)
-          (set-frame-parameter nil 'fullscreen 'fullboth)
+          (nhwl-gui--set-fullscreen 'fullboth)
           (nhwl-gui--live-settle)
-          (set-frame-parameter nil 'fullscreen nil)
+          (nhwl-gui--set-fullscreen nil)
           (nhwl-gui--live-settle)
           (set-frame-size nil 60 20)
           (nhwl-gui--live-settle)
           (set-frame-size nil 70 24)
           (nhwl-gui--live-settle)
           (should (frame-live-p (selected-frame))))
-      (set-frame-parameter nil 'fullscreen old)
+      (nhwl-gui--set-fullscreen old)
       (nhwl-gui--live-settle))))
 
 (ert-deftest nhwl-gui/live-fullscreen-gives-the-size-back ()
@@ -1227,7 +1248,7 @@ The recorder keeps no state of its own: it answers here as a compositor does, th
                      (gui-runner-recorder (append '(:cmd "configure" :surface "focused") configure))))))
     (unwind-protect
         (progn
-          (set-frame-parameter nil 'fullscreen nil)
+          (nhwl-gui--set-fullscreen nil)
           ;; the recorder sends its pending state again on `set_fullscreen': an earlier row's size there would be
           ;; the compositor's floating size, not the one set by hand.  0 x 0: the size is ours
           (when rec (gui-runner-recorder '(:cmd "configure" :surface "focused" :states ["activated"])))
@@ -1238,16 +1259,16 @@ The recorder keeps no state of its own: it answers here as a compositor does, th
           (let ((since (funcall mark))
                 (s (frame-scale-factor))
                 (out (and rec (mapcar #'string-to-number (split-string (getenv "GLITNIR_GUI_SIZE") "x")))))
-            (set-frame-parameter nil 'fullscreen 'fullboth)
+            (nhwl-gui--set-fullscreen 'fullboth)
             (funcall answer since "xdg_toplevel.set_fullscreen"
                      :size (and rec (vector (round (/ (car out) s)) (round (/ (cadr out) s))))
                      :states ["fullscreen" "activated"]))
           (should (nhwl-gui--wait (lambda () (redisplay t) (not (equal (funcall now) size))) 8))
           (let ((since (funcall mark)))
-            (set-frame-parameter nil 'fullscreen nil)
+            (nhwl-gui--set-fullscreen nil)
             (funcall answer since "xdg_toplevel.unset_fullscreen" :states ["activated"]))
           (should (nhwl-gui--wait (lambda () (redisplay t) (equal (funcall now) size)) 8)))
-      (set-frame-parameter nil 'fullscreen old)
+      (nhwl-gui--set-fullscreen old)
       (nhwl-gui--live-settle))))
 
 (ert-deftest nhwl-gui/live-reparent ()
