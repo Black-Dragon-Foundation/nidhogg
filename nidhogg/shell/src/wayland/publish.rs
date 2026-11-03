@@ -817,6 +817,7 @@ impl WaylandShell {
                     .is_some_and(|c| c.outputs.iter().any(Pending::changes))
         });
         if !damaged && !self.main.present_wants_packet(root) {
+            self.main.present_nothing_new(root);
             return Ok(false);
         }
         let mail = self.main.mailbox.clone();

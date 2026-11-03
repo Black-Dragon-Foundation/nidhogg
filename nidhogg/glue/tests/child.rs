@@ -498,6 +498,93 @@ mod child {
         close(d);
     }
 
+    /// No root `FRAME_READY` among `records`: nothing woke the tree's pacer.
+    fn quiet(records: &[Record], root: u64) -> bool {
+        records
+            .iter()
+            .all(|e| !(e.kind() == Kind::FrameReady && e.window == root))
+    }
+
+    /// A resized child's input region, sent at the publish step, goes with the picture that publish shows: it wakes
+    /// nothing by itself (the root's `FRAME_READY` comes for the publish), and one root commit applies it with the
+    /// child's new frame.
+    #[test]
+    fn a_new_region_goes_with_the_picture() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let d = open(&rec);
+        let root = toplevel(d, 200, 100);
+        let mut r = surface(d, root, 200, 100);
+        let c = child(d, root, 30, 20, 60, 40);
+        assert_eq!(chrome(d, c, &SHADOW), 1);
+        assert_eq!(lay(d, c).0, 1);
+        let mut k = surface(d, c, 60, 40);
+        show(&rec, d, &mut [(&mut r, 0), (&mut k, root)]);
+        rec.wait_node(c, |n| n.contains("\"input_region\":[[8,6,60,40]]"));
+
+        let seq = next_seq(&rec);
+        (k.w, k.h) = (80, 50);
+        prepare(d, &mut k);
+        fill(d, &k, BG);
+        assert!(
+            quiet(&collect(d, 200), root),
+            "the region alone woke the pacer"
+        );
+        let list = [
+            entry(&r, 0, NHG_SURF_DRAWABLE),
+            entry(&k, root, NHG_SURF_DRAWABLE),
+        ];
+        assert_ne!(
+            present(d, root, &list, NHG_PRESENT_BACKSTOP) & NHG_PRESENTED_PUBLISHED,
+            0
+        );
+        ready(d, root);
+        rec.wait_node(c, |n| n.contains("\"input_region\":[[8,6,80,50]]"));
+        let commits = log(&rec, seq);
+        let roots = commits.iter().filter(|x| of(x, root)).count();
+        assert_eq!(roots, 1, "{commits:?}");
+        close(d);
+    }
+
+    /// A new margin moves the child's surface and its input region at the publish step: neither wakes anything by
+    /// itself, and the one root commit that shows the picture applies both.
+    #[test]
+    fn a_new_margin_goes_with_the_picture() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let d = open(&rec);
+        let root = toplevel(d, 200, 100);
+        let mut r = surface(d, root, 200, 100);
+        let c = child(d, root, 30, 20, 60, 40);
+        let mut k = surface(d, c, 60, 40);
+        show(&rec, d, &mut [(&mut r, 0), (&mut k, root)]);
+        rec.wait_node(c, |n| n.contains("\"position\":[30,20]"));
+
+        let seq = next_seq(&rec);
+        assert_eq!(chrome(d, c, &SHADOW), 1);
+        assert_eq!(lay(d, c).0, 1);
+        prepare(d, &mut k);
+        fill(d, &k, BG);
+        assert!(
+            quiet(&collect(d, 200), root),
+            "the place alone woke the pacer"
+        );
+        let list = [
+            entry(&r, 0, NHG_SURF_DRAWABLE),
+            entry(&k, root, NHG_SURF_DRAWABLE),
+        ];
+        assert_ne!(
+            present(d, root, &list, NHG_PRESENT_BACKSTOP) & NHG_PRESENTED_PUBLISHED,
+            0
+        );
+        ready(d, root);
+        rec.wait_node(c, |n| {
+            n.contains("\"position\":[22,14]") && n.contains("\"input_region\":[[8,6,60,40]]")
+        });
+        let commits = log(&rec, seq);
+        let roots = commits.iter().filter(|x| of(x, root)).count();
+        assert_eq!(roots, 1, "{commits:?}");
+        close(d);
+    }
+
     /// A child made goes above its siblings; a raise puts it above the highest, a lower below the lowest, whatever its
     /// z-group (the glue keeps the order); it applies with the root's commit.  A window that is not a child is
     /// refused; a child alone changes nothing.

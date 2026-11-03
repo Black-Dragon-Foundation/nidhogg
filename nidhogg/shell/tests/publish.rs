@@ -473,6 +473,47 @@ mod tree_snapshot {
         );
     }
 
+    /// A child's place from the host's publish step waits for that publish: nothing wakes for it, and a publish with
+    /// nothing new to show still wakes the tree, whose bare commits apply it.
+    #[test]
+    fn a_childs_place_waits_for_its_publish() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let mut shell = rec.open();
+        let mut root = Backing::new(200, 100);
+        let id = window(&mut shell, &mut root);
+        shown(&mut shell, &rec, id);
+        let solid = backing(GREEN);
+        let a = child(&mut shell, id, 10, 10);
+        let tree = [(&root, id), (&solid, a)];
+        assert!(publish(&mut shell, id, &tree, 0));
+        shell.present_tree(id).unwrap();
+        shown(&mut shell, &rec, id);
+        rec.wait_node(a, |n| n.contains("\"position\":[10,10]"));
+
+        let input = [Rect::new(2, 2, 20, 10)];
+        shell
+            .set_child_place(a, Some((30, 20)), Some(&input))
+            .unwrap();
+        let woke = collect(&mut shell, 200);
+        assert!(
+            woke.iter().all(|e| e.kind() != Kind::FrameReady),
+            "the place alone woke the pacer"
+        );
+        assert!(!publish(&mut shell, id, &tree, 0), "nothing new to show");
+        wait_for(&mut shell, |e| {
+            e.kind() == Kind::FrameReady && e.window == id
+        });
+        assert!(!shell.present_tree(id).unwrap(), "bare commits");
+        rec.wait_node(a, |n| {
+            n.contains("\"position\":[30,20]") && n.contains("\"input_region\":[[2,2,20,10]]")
+        });
+        assert_eq!(
+            shell.set_child_place(id, Some((1, 1)), None),
+            Err(ShellError::State),
+            "not a child"
+        );
+    }
+
     /// A child's rounded corner shows what lies beneath it: the child is composed into a clear surface, as the
     /// presenter's new buffer is, not over its own square pixels.
     #[test]
