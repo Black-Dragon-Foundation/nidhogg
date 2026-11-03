@@ -45,6 +45,10 @@ pub struct Window {
     pending: (i32, i32, u32),
     /// What the window asked of its `xdg_toplevel`, which a reconnect asks again.
     asked: Asked,
+    /// Of `ASKED_STATES`, those whose newest request asked them on (requests alone change it), and those the newest
+    /// configure granted (`ask_state`).
+    requested: u32,
+    granted: u32,
 }
 
 /// What a top-level asked for that its role objects carry.
@@ -148,15 +152,22 @@ impl WaylandShell {
         self.main.windows.get_mut(&id).ok_or(ShellError::State)
     }
 
-    /// Ask for state `bit` (`ASKED_STATES`) on or off.
-    fn ask_state(&mut self, id: WindowId, bit: u32, on: bool) -> ShellResult<&XdgToplevel> {
+    /// Ask for state `bit` (`ASKED_STATES`) on or off: the top-level to send the request on, or `None` when both the
+    /// newest request for the state and the newest configure already have it that way.  Such a request changes
+    /// nothing, and a compositor may act on it all the same: mutter, asked to leave a maximized state the window is not
+    /// in just after leaving fullscreen, sizes the window from its fullscreen rectangle.  Either one alone is not
+    /// enough: a configure sent before the compositor read the newest request does not answer it, and a compositor may
+    /// change the state itself.
+    fn ask_state(&mut self, id: WindowId, bit: u32, on: bool) -> ShellResult<Option<&XdgToplevel>> {
         let w = self.window_mut(id)?;
-        w.asked.states = if on {
-            w.asked.states | bit
-        } else {
-            w.asked.states & !bit
-        };
-        Ok(&w.toplevel)
+        let has = |states: u32| (states & bit != 0) == on;
+        if has(w.requested) && has(w.granted) {
+            return Ok(None);
+        }
+        let set = |states: u32| if on { states | bit } else { states & !bit };
+        w.requested = set(w.requested);
+        w.asked.states = set(w.asked.states);
+        Ok(Some(&w.toplevel))
     }
 
     /// The latest input serial the move, resize and menu requests are sent with (0 before any input).
@@ -279,6 +290,8 @@ impl ShellBackend for WaylandShell {
                 ssd: false,
                 wm_capabilities: WM_CAP_ALL,
                 pending: (0, 0, 0),
+                requested: asked.states,
+                granted: 0,
                 asked,
             },
         );
@@ -388,22 +401,20 @@ impl ShellBackend for WaylandShell {
 
     fn set_fullscreen(&mut self, id: WindowId, on: bool) -> ShellResult {
         self.live()?;
-        let t = self.ask_state(id, NHSHELL_STATE_FULLSCREEN, on)?;
-        if on {
-            t.set_fullscreen(None);
-        } else {
-            t.unset_fullscreen();
+        match self.ask_state(id, NHSHELL_STATE_FULLSCREEN, on)? {
+            Some(t) if on => t.set_fullscreen(None),
+            Some(t) => t.unset_fullscreen(),
+            None => {}
         }
         self.flush()
     }
 
     fn set_maximized(&mut self, id: WindowId, on: bool) -> ShellResult {
         self.live()?;
-        let t = self.ask_state(id, NHSHELL_STATE_MAXIMIZED, on)?;
-        if on {
-            t.set_maximized();
-        } else {
-            t.unset_maximized();
+        match self.ask_state(id, NHSHELL_STATE_MAXIMIZED, on)? {
+            Some(t) if on => t.set_maximized(),
+            Some(t) => t.unset_maximized(),
+            None => {}
         }
         self.flush()
     }
@@ -789,6 +800,8 @@ impl WaylandShell {
                 ssd: false,
                 wm_capabilities: WM_CAP_ALL,
                 pending: (0, 0, 0),
+                requested: asked.states,
+                granted: 0,
                 asked,
             },
         );
@@ -832,6 +845,7 @@ impl Dispatch<XdgSurface, u64> for MainState {
             let (cw, ch, states) = w.pending;
             // what the compositor granted is what a reconnect asks for again
             w.asked.states = states & ASKED_STATES;
+            w.granted = states & ASKED_STATES;
             let suspended = states & NHSHELL_STATE_SUSPENDED != 0;
             let c = ConfigureEv {
                 w: cw,
