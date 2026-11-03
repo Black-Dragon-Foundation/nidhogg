@@ -5,9 +5,11 @@
 use std::ffi::c_char;
 
 /// `NhgNextIn` flags, sampled by C before each `nhg_next`: `kbd_buffer_events_waiting ()` and
-/// `mwheel-coalesce-scroll-events`.
+/// `mwheel-coalesce-scroll-events`; and the step that takes no event, only records the acks due (a drain cut at its
+/// cap ends with it).
 pub const NHG_IN_INPUT_WAITING: u32 = 1;
 pub const NHG_IN_COALESCE_WHEEL: u32 = 2;
+pub const NHG_IN_ACKS_ONLY: u32 = 4;
 
 /// Action kinds 1–31 are the original set; 32–63 are the later ones.
 pub const NHG_ACT_KEY: u32 = 1;

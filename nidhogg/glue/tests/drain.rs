@@ -261,6 +261,37 @@ mod configure {
         close(d);
     }
 
+    /// A drain cut at its cap ends with a step that takes no event (`NHG_IN_ACKS_ONLY`): the configure C applied last
+    /// is answered (its bare ack recorded), and the configure queued behind it stays for the next drain.  Without it the
+    /// ack waited for the next drain, while the frame already showed the configure's state.
+    #[test]
+    fn acks_only_records_the_due_ack_and_takes_no_event() {
+        let rec = Recorder::start("mutter");
+        let d = open(&rec);
+        let id = window(d);
+        configured(d, id);
+        // SAFETY: a live display.
+        assert_eq!(unsafe { nhg_frame_csd(d, id, 0) }, NHG_OK);
+        settle(d);
+        configure(&rec, [200, 100], r#""activated""#);
+        until(d, |a| a.kind == NHG_ACT_RESIZE && a.window == id);
+        let before = last_ack(d, id);
+        configure(&rec, [200, 100], r#""activated","maximized""#);
+        queued(d);
+        let (rc, v) = step(d, NHG_IN_ACKS_ONLY);
+        assert_eq!((rc, v.len()), (0, 0), "no event taken");
+        let after = last_ack(d, id);
+        assert_ne!(after, before, "the applied configure is answered");
+        assert_eq!(after.map(|(_, f)| f), Some(0));
+        let seen = until(d, |a| a.kind == NHG_ACT_RESIZE && a.window == id);
+        assert_eq!(
+            seen.last().unwrap().flags & NHG_RESIZE_FULLSCREEN,
+            NHG_RESIZE_FULLSCREEN,
+            "the queued configure is still there"
+        );
+        close(d);
+    }
+
     /// Under server-side decorations a change of activation is no content change: a bare ack.  Maximizing asks C to
     /// store the fullscreen parameter.
     #[test]

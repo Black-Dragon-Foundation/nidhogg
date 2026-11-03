@@ -125,11 +125,18 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   (`NHWL_PRESENTER=0` runs it inline), composes and commits. Child frames are subsurfaces of their parent, so the Wayland
   compositor puts the tree together.
   `glitnir-stats` gives `:key-to-commit-ms` in place of `:latency-ms`, `:draw-ms` runs to the buffer's commit and
-  `:painted-px` is the area composed; `nhwl-presenter-stats` has the presenter's own counters. `glitnir-snapshot` is one
+  `:painted-px` is the area composed; `nhwl-presenter-stats` has the presenter's own counters. Among them is a fence:
+  each request Emacs gives the presenter (a picture, a configure's ack, surface state for a commit) takes the next
+  number, `:published` the newest; `:presented` reaches a number once that request and every older one has gone out in
+  a flushed commit (or no longer needs one), so `:presented` equal to `:published` means the compositor has
+  everything asked so far, whatever else was committed. The GUI runner's settle waits on it. `:shown` follows once the
+  compositor has also used each shown window's newest commit (its frame callback is done): a request sent before then
+  may meet the compositor's old state. `glitnir-snapshot` is one
   frame's backing, without its child frames. Test primitives: `glitnir--draw-count` (the commits of a tree that showed
   something), `glitnir--stacking` (a root's child frames bottom to top), `glitnir--chrome` (the chrome the shell holds
-  for a frame, in device pixels). A panic in the glue drops the display it happened on and Emacs keeps running
-  (`nhwl-glue-panics`).
+  for a frame, in device pixels), `nhwl--frame-states` (the fullscreen and maximized states of the compositor's last
+  configure, its answer to the frame's `fullscreen` parameter). A panic in the glue drops the display it happened on and
+  Emacs keeps running (`nhwl-glue-panics`).
 - **Dev build** (`--dev` or `NIDHOGG_BUILD_DEV=1`, for agents' task builds): configures `--with-native-compilation=yes`
   instead of `aot`, so only the preloaded Lisp is native-compiled and the other ~1,400 files stay bytecode (minutes instead
   of the better part of an hour). A `lisp/site-init.el` written into the build copy sets `native-comp-jit-compilation` to

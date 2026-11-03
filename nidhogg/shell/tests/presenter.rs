@@ -516,6 +516,60 @@ mod presenter {
         assert!(shell.next_event().is_ok(), "no protocol error");
     }
 
+    /// The presenter's own commits move `presented`: behind `published` while the pacer holds a picture, at it once
+    /// that picture's commit is flushed.
+    #[test]
+    fn presented_follows_the_presenters_commits() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let mut shell = threaded(&rec);
+        let mut b = Backing::new(200, 100);
+        let id = window(&mut shell, &rec, &mut b);
+        let presented = |s: &mut WaylandShell| {
+            let st = s.presenter_stats().unwrap();
+            st.presented == st.published
+        };
+        until(&mut shell, "the first picture presented", presented);
+        b.fill(Rect::new(10, 10, 20, 20), 0xff12_3456);
+        let seq = next_seq(&rec);
+        assert!(publish(&mut shell, id, &[(&b, id)], 0));
+        stays_up(&mut shell, 50);
+        assert_eq!(buffer_commits(&rec, seq, id), 0, "the pacer holds it");
+        let st = shell.presenter_stats().unwrap();
+        assert_eq!(st.presented + 1, st.published, "{st:?}");
+        present(&rec);
+        until(&mut shell, "the picture presented", presented);
+        until(&mut shell, "its commit in the log", |_| {
+            buffer_commits(&rec, seq, id) == 1
+        });
+    }
+
+    /// A configure's bare ack is a request: the presenter moves `presented` past it only once the commit that carries
+    /// it is flushed, so a settle that sees `presented` reach `published` has the answer on the wire before its next
+    /// request.
+    #[test]
+    fn presented_passes_a_bare_ack_after_its_commit() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let mut shell = threaded(&rec);
+        let mut b = Backing::new(200, 100);
+        let id = window(&mut shell, &rec, &mut b);
+        let presented = |s: &mut WaylandShell| {
+            let st = s.presenter_stats().unwrap();
+            st.presented == st.published
+        };
+        until(&mut shell, "the first picture presented", presented);
+        let r =
+            rec.control(r#"{"cmd":"configure","surface":"focused","size":[200,100],"states":[]}"#);
+        let serial = number(&r, "serial").expect("a serial") as u32;
+        wait_for(&mut shell, |e| {
+            e.kind() == Kind::Configure && e.window == id
+        });
+        let before = shell.presenter_stats().unwrap();
+        shell.ack_configure(id, serial, 0).unwrap();
+        until(&mut shell, "the ack presented", presented);
+        let st = shell.presenter_stats().unwrap();
+        assert_eq!(st.bare_commits - before.bare_commits, 1, "{st:?}");
+    }
+
     /// Review Focus 1: the compositor holds every buffer it replaced; 200 packets.  No buffer is written while
     /// held: the tree starves instead.
     #[test]

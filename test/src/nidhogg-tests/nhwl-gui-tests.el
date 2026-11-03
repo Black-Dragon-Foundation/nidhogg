@@ -1176,23 +1176,36 @@ top-level with its child again, mapped each way, with the buffer, the size and t
   (gui-runner-wait-settled t)
   (gui-runner-read-all))
 
-(defun nhwl-gui--sent-commits ()
-  "The commits the selected frame's display has sent, with a buffer or without."
+(defun nhwl-gui--answered-p (value)
+  "Non-nil when the compositor's last configure has the state the `fullscreen' VALUE asks for (`nhwl--frame-states')."
+  (let ((s (nhwl--frame-states)))
+    (pcase value
+      ('fullboth (memq 'fullscreen s))
+      ((or 'maximized 'fullwidth 'fullheight) (and (memq 'maximized s) (not (memq 'fullscreen s))))
+      (_ (not (or (memq 'fullscreen s) (memq 'maximized s)))))))
+
+(defun nhwl-gui--shown-p ()
+  "Non-nil when the compositor has used every request of the display so far: `:shown' has reached `:published'
+\(`nhwl-presenter-stats'), each shown window's newest commit has its frame callback back."
   (let ((s (nhwl-presenter-stats)))
-    (+ (plist-get s :commits) (plist-get s :bare-commits))))
+    (>= (plist-get s :shown) (plist-get s :published))))
 
 (defun nhwl-gui--set-fullscreen (value)
-  "Set the selected frame's `fullscreen' to VALUE; on sway, wait until the frame has answered the configure that comes
-back (a commit after the request) and the answer has reached sway.  Sway's transactions wait for the answer to each
-configure by its serial: a request sent before the frame answered the last one lets the two configures coalesce, the
-transaction waits out its timeout, and sway loses the floating size (it then sends a fullscreen state with the
-floating size, or takes the late fullscreen picture for the floating size).  A person cannot toggle that fast.
-A VALUE the frame already has asks nothing, and nothing is waited for."
-  (let ((before (nhwl-gui--sent-commits)) (asks (not (eq value (frame-parameter nil 'fullscreen)))))
+  "Set the selected frame's `fullscreen' to VALUE and wait until the compositor has answered and has the frame's answer
+to that: the compositor's last configure has VALUE's state (`nhwl-gui--answered-p'), the frame's ack of it and its
+picture at the new size have gone out (`nhwl-gui--live-settle'), and the compositor has used them (`nhwl-gui--shown-p').
+The row's next step then meets the frame as the compositor left it, however late the answer comes: mutter at scale
+1.25 answers after a settle, and a size set by hand before its answer met the fullscreen state, whose size binds.  And
+the compositor has acted on the frame's answer before the next request, which otherwise meets the old state: sway's
+two configures coalesce (its transaction waits for the answer to each configure by its serial, waits out its
+timeout, and loses the floating size).  A person cannot toggle that fast.  The recorder answers when the row tells
+it to: there nothing is waited for.  A VALUE the frame already has asks nothing, and nothing is waited for."
+  (let ((asks (not (eq value (frame-parameter nil 'fullscreen)))))
     (set-frame-parameter nil 'fullscreen value)
-    (when (and asks (equal (glitnir-gui--compositor) "sway"))
-      (should (nhwl-gui--wait (lambda () (redisplay t) (> (nhwl-gui--sent-commits) before)) 8))
-      (nhwl-gui--live-settle))))
+    (when (and asks (not (equal (glitnir-gui--compositor) "recorder")))
+      (should (nhwl-gui--wait (lambda () (redisplay t) (nhwl-gui--answered-p value)) 8))
+      (nhwl-gui--live-settle)
+      (should (nhwl-gui--wait (lambda () (gui-runner-read-all) (nhwl-gui--shown-p)) 8)))))
 
 ;; They leave frames, a tip and the window size behind, so they run after the other rows (`runs-last'); a row that ended
 ;; the session's display (the display-lost row) leaves no native frame, and they skip.
@@ -1376,11 +1389,14 @@ The recorder keeps no state of its own: it answers here as a compositor does, th
          (getenv "GLITNIR_GUI_CSD"))))
 
 (defun nhwl-gui--windowed ()
-  "Leave fullscreen; on the recorder to an 800 x 600 geometry."
+  "Leave fullscreen; on the recorder to an 800 x 600 geometry.  Elsewhere wait for the compositor's answer
+(`nhwl-gui--answered-p'): the row's next step meets a windowed frame, however late the answer comes."
   (set-frame-parameter nil 'fullscreen nil)
-  (when (getenv "GLITNIR_GUI_RECORDER")
-    (gui-runner-recorder '(:cmd "configure" :surface "focused" :size [800 600] :states ["activated"]))
-    (nhwl-gui--wait (lambda () (redisplay t) (= (frame-pixel-width) (round (* 800 (frame-scale-factor))))) 5))
+  (if (getenv "GLITNIR_GUI_RECORDER")
+      (progn
+        (gui-runner-recorder '(:cmd "configure" :surface "focused" :size [800 600] :states ["activated"]))
+        (nhwl-gui--wait (lambda () (redisplay t) (= (frame-pixel-width) (round (* 800 (frame-scale-factor))))) 5))
+    (should (nhwl-gui--wait (lambda () (redisplay t) (nhwl-gui--answered-p nil)) 8)))
   (gui-runner-wait-settled))
 
 (defun nhwl-gui--last-commit ()

@@ -7,7 +7,8 @@
 //! which C sends to the focus frame as before; every other kind did nothing in C without a frame.
 
 use crate::action::{
-    NHG_ACT_DELETE, NHG_ACT_LOST, NHG_ACT_READY, NHG_ACT_SELECTION_CLEAR, NhgAction, NhgNextIn,
+    NHG_ACT_DELETE, NHG_ACT_LOST, NHG_ACT_READY, NHG_ACT_SELECTION_CLEAR, NHG_IN_ACKS_ONLY,
+    NhgAction, NhgNextIn,
 };
 use crate::configure;
 use crate::csd;
@@ -30,10 +31,14 @@ use crate::reconnect;
 use nhshell::event::{Record, SelectionEv, ShellEvent};
 
 /// Take one event: `Ok(1)` with its actions in `state.actions` (none, possibly), `Ok(0)` when none is queued.  The
-/// last call's actions are dropped first, and the acks of the configures C applied since are recorded.
+/// last call's actions are dropped first, and the acks of the configures C applied since are recorded; with
+/// `NHG_IN_ACKS_ONLY` that is all (`Ok(0)`), so that a drain cut at its cap leaves no configure it applied unanswered.
 pub fn next(state: &mut Display, input: NhgNextIn) -> Result<i32, GlueError> {
     state.actions.clear();
     configure::record_due(state);
+    if input.flags & NHG_IN_ACKS_ONLY != 0 {
+        return Ok(0);
+    }
     let Some(ev) = state.backend().next_event()? else {
         return Ok(0);
     };
