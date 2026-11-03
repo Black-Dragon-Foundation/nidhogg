@@ -4205,7 +4205,8 @@ DEFUN ("nhwl-presenter-stats", Fnhwl_presenter_stats, Snhwl_presenter_stats,
 DISPLAY is a display name, a frame or a terminal; nil means the selected
 frame's.  A plist: `:packets' published, `:superseded' by a newer one
 before they were presented, `:commits' with a buffer and `:bare-commits'
-without, `:main-wait-max-ns' (the longest Emacs's thread waited for the
+without (each counted once flushed to the compositor),
+`:main-wait-max-ns' (the longest Emacs's thread waited for the
 presenter), `:publish-copy-max-ns' (the longest copy into the front
 buffers), `:front-trims' (front buffers dropped after the quiet period),
 `:thread-on' (1 when it presents on its own thread, 0 inline), and its

@@ -33,7 +33,7 @@ use crate::api::*;
 use crate::event::*;
 use crate::wayland::conn::Shared;
 use crate::wayland::layers::{ContentLayer, LayerJob};
-use crate::wayland::presenter::{Counters, DEFAULT_REFRESH_NS, Link, Wire};
+use crate::wayland::presenter::{DEFAULT_REFRESH_NS, Link, Wire};
 use crate::wayland::publish::Stage;
 use crate::wayland::reader::ReaderState;
 use crate::wayland::scale::{SCALE_ONE, buffer_size};
@@ -908,7 +908,7 @@ fn send_kids(
         let bare = !buffer && p.owed;
         if bare {
             p.commit_bare(&k.present, wire);
-            Counters::add(&stage.stats.bare_commits, 1);
+            stage.presented_bare();
         }
         drop(p);
         if !(buffer || bare) {
@@ -1060,7 +1060,7 @@ fn send(
     }
     if !shown && r.owes() {
         r.commit_bare(tree, wire);
-        Counters::add(&stage.stats.bare_commits, 1);
+        stage.presented_bare();
     }
     // a child's job left over (the child went meanwhile, or its buffer could not be committed) goes back or drops
     put_back_all(tree, r, jobs, Vec::new());
@@ -1529,7 +1529,9 @@ impl WaylandShell {
             return Ok(false);
         };
         let shown = present_tree(stage, &wire, root, &tree, Duration::ZERO);
-        self.flush()?;
+        let flushed = wire.shared.host_flush(&wire.conn);
+        stage.flushed();
+        flushed?;
         Ok(shown)
     }
 
