@@ -170,7 +170,7 @@ impl Mailbox {
 
     /// Nothing is on its way to the stage: no mail, no publish in progress.  No lock: a publish stores its start
     /// before it takes its number (`next_seq`), so a reader that saw the number sees the publish or its mail.
-    fn quiet(&self) -> bool {
+    pub(crate) fn quiet(&self) -> bool {
         self.inflight.load(Ordering::Acquire) == 0
     }
 

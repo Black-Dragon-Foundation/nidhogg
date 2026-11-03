@@ -596,6 +596,19 @@ impl ShellBackend for WaylandShell {
         self.main.present_draws(root).ok_or(ShellError::State)
     }
 
+    /// A `wl_display.sync` on the reader's queue: the reader handles its answer after every event before it, so
+    /// their records are posted and the main queue's events wait for `next_event`.
+    fn reader_roundtrip(&self, timeout: std::time::Duration) -> ShellResult {
+        self.live()?;
+        let qh = self.main.reader_qh.as_ref().ok_or(ShellError::State)?;
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        self.conn
+            .display()
+            .sync(qh, crate::wayland::reader::Synced(tx));
+        self.flush()?;
+        rx.recv_timeout(timeout).map_err(|_| ShellError::Timeout)
+    }
+
     fn tree_snapshot(
         &self,
         root: WindowId,
