@@ -534,14 +534,18 @@ nh_sel_out (struct thread_state *self)
 }
 
 /* FD is about to close or leave the select set; the caller holds the
-   global lock.  Wait until no other thread's select holds FD, and take
-   FD out of the sets of those that are out, which the thread reads once
-   it has the lock (and the test clock selects on again).  A thread in
-   its select needs no lock to get out of it: the child signal pipe,
-   which every select that can block has in its set, wakes it, and a
-   test's pause point lets it go on.  In signal context (the SIGCHLD
-   handler deregisters an fd) and on the fatal path nothing waits; the
-   close that follows does.  */
+   global lock, or runs in a signal handler on top of its own thread's
+   select (kill-emacs from SIGTERM).  Wait until no other thread's
+   select holds FD, and take FD out of the sets of those that are out,
+   which the thread reads once it has the lock (and the test clock
+   selects on again).  A thread in its select needs no lock to get out
+   of it: the child signal pipe, which every select that can block has
+   in its set, wakes it, and a test's pause point lets it go on.  The
+   calling thread's own select is never waited for: running here, it is
+   not in the select (a signal interrupted it), and it could never get
+   out under its own handler.  In signal context (the SIGCHLD handler
+   deregisters an fd) and on the fatal path nothing waits; the close
+   that follows does.  */
 static void
 nh_sel_quiesce (int fd)
 {
@@ -554,7 +558,7 @@ nh_sel_quiesce (int fd)
       if (!sel || sel->nfds <= fd || !FD_ISSET (fd, &sel->held))
 	continue;
       pthread_mutex_lock (&nh_sel_m);
-      if (sel->in)
+      if (sel->in && !sys_thread_equal (t->thread_id, sys_thread_self ()))
 	{
 	  child_signal_notify ();
 	  nh_wk_pause_kick (&sel->wanted);
