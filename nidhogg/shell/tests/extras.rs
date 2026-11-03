@@ -73,6 +73,7 @@ mod extras {
         until(&rec, "bell_log", |r| {
             r.contains(&format!("\"surface\":{id}"))
         });
+        // past the rings' spacing (20 ms), which is time itself: a sleep never ends before it has passed
         std::thread::sleep(Duration::from_millis(30));
         shell.bell(0).unwrap();
         until(&rec, "bell_log", |r| r.contains("\"surface\":null"));
@@ -84,14 +85,25 @@ mod extras {
         let rec = Recorder::start("mutter");
         let mut shell = rec.open();
         let id = mapped_window(&mut shell, 200, 100);
+        let t = Instant::now();
         shell.bell(id).unwrap();
         shell.bell(id).unwrap();
+        // the two rings were closer than the spacing unless this thread was held up between them (the rule itself is
+        // the unit test's, on its own clock)
+        let close = t.elapsed() < Duration::from_millis(20);
+        // past the rings' spacing (20 ms), which is time itself: a sleep never ends before it has passed
         std::thread::sleep(Duration::from_millis(30));
         shell.bell(id).unwrap();
         let log = until(&rec, "bell_log", |r| r.matches("\"surface\"").count() >= 2);
-        std::thread::sleep(Duration::from_millis(50));
+        // the recorder has every ring the shell sent
+        sync(&shell);
         let log2 = rec.control(r#"{"cmd":"bell_log"}"#);
-        assert_eq!(log2.matches("\"surface\"").count(), 2, "{log} then {log2}");
+        let rings = log2.matches("\"surface\"").count();
+        if close {
+            assert_eq!(rings, 2, "{log} then {log2}");
+        } else {
+            assert!((2..=3).contains(&rings), "{log} then {log2}");
+        }
     }
 
     #[test]
@@ -178,7 +190,8 @@ mod extras {
         while !readable_within(shell.wake_fd(), 20) {
             assert!(Instant::now() < deadline, "no input arrived");
         }
-        std::thread::sleep(Duration::from_millis(50));
+        // the press and the pointer's events before it are records
+        sync(&shell);
         let token = shell.activation_token(id, 1000).unwrap();
         assert!(!token.is_empty());
         let again = shell.activation_token(id, 1000).unwrap();

@@ -456,6 +456,7 @@ mod layers {
             scroll(&mut b, if i % 3 == 2 { 16 } else { -16 }, &mut n);
             publish(&mut shell, id, &[(&b, id)], 0);
             while shell.next_event().unwrap().is_some() {}
+            // pacing only, so that frames commit while every buffer is held; no interleaving may write a held one
             std::thread::sleep(Duration::from_millis(2));
         }
         let w = rec.control(r#"{"cmd":"held_buffer_writes","since":0}"#);

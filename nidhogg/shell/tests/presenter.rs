@@ -138,8 +138,15 @@ fn starve(rec: &Recorder) -> (WaylandShell, Backing, u64) {
             0xff00_0000 | (i * 997),
         );
         publish(&mut shell, id, &[(&b, id)], 0);
-        while shell.next_event().unwrap().is_some() {}
-        std::thread::sleep(Duration::from_millis(2));
+        // each packet is committed before the next, in a buffer of its own, until none is left
+        until(
+            &mut shell,
+            "the packet committed, or the tree starved",
+            |s| {
+                let st = s.presenter_stats().unwrap();
+                st.presented == st.published || s.present_pacer(id).unwrap().1
+            },
+        );
     }
     until(&mut shell, "the tree starves", |s| {
         s.present_pacer(id).unwrap().1
@@ -180,12 +187,44 @@ fn repositions(rec: &Recorder, id: u64) -> Vec<u64> {
         .collect()
 }
 
-/// `ms` of the shell's records: the connection stays up, so no protocol error ended it.
-fn stays_up(shell: &mut WaylandShell, ms: i64) {
-    for ev in collect(shell, ms) {
+/// The shell and the recorder are level: a presenter turn (thread mode) covered every request so far, the recorder
+/// handled them, the shell took every record of what the recorder sent before, and those records raised no request.
+/// The connection stays up: no record is a protocol error's.
+fn stays_up(shell: &mut WaylandShell) {
+    for _ in 0..100 {
+        let st = shell.presenter_stats().unwrap();
+        if st.thread_on == 1 {
+            turn(shell);
+        } else {
+            sync(shell);
+        }
+        let mut taken = 0;
+        while let Some(ev) = shell.next_event().unwrap() {
+            assert_ne!(ev.kind(), Kind::Disconnected, "a protocol error");
+            taken += 1;
+        }
+        shell.dispatch_main().expect("the connection is up");
+        if taken == 0 && shell.presenter_stats().unwrap().published == st.published {
+            return;
+        }
+    }
+    panic!("the shell and the recorder never came level");
+}
+
+/// The configures and other records the recorder sent so far are taken, with the presenter left alone (its compose
+/// may be held at the gate).
+fn read_records(shell: &mut WaylandShell) {
+    sync(shell);
+    while let Some(ev) = shell.next_event().unwrap() {
         assert_ne!(ev.kind(), Kind::Disconnected, "a protocol error");
     }
-    shell.dispatch_main().expect("the connection is up");
+}
+
+/// Thread `tid` is asleep (blocked in a wait), not running or ready to run.
+fn asleep(tid: i32) -> bool {
+    let s = std::fs::read_to_string(format!("/proc/self/task/{tid}/stat")).unwrap();
+    // "TID (COMM) STATE ...": the name may hold spaces, so the state is what follows the last parenthesis
+    s[s.rfind(')').unwrap() + 1..].trim_start().starts_with('S')
 }
 
 /// A popup chain whose child has its picture first: the child's buffer waits for its parent's, as xdg-shell wants
@@ -222,14 +261,14 @@ fn popups_map_parent_first(thread: bool) {
     let (mut pb, mut cb) = (Backing::new(60, 30), Backing::new(60, 30));
     let p = popup(&mut shell, top, &pb);
     let c = popup(&mut shell, p, &cb);
-    // both configures are read in this span
-    stays_up(&mut shell, 100);
+    // both configures are read
+    stays_up(&mut shell);
     cb.fill_all(BG);
     publish(&mut shell, c, &[(&cb, c)], 0);
     if !thread {
         assert!(!shell.present_tree(c).unwrap(), "nothing under its parent");
     }
-    stays_up(&mut shell, 100);
+    stays_up(&mut shell);
     assert_eq!(buffer_commits(&rec, 1, c), 0, "the parent comes first");
 
     pb.fill_all(BG);
@@ -244,7 +283,7 @@ fn popups_map_parent_first(thread: bool) {
     until(&mut shell, "the child's buffer", |_| {
         buffer_commits(&rec, 1, c) >= 1
     });
-    stays_up(&mut shell, 50);
+    stays_up(&mut shell);
     assert_eq!(buffer_commits(&rec, 1, p), 1);
 
     // the child's place was worked out against an unmapped parent: it is worked out again, and that is what it acks
@@ -285,7 +324,7 @@ mod presenter {
         let (mut pb, mut cb) = (Backing::new(60, 30), Backing::new(60, 30));
         let p = popup(&mut shell, top, &pb);
         let c = popup(&mut shell, p, &cb);
-        stays_up(&mut shell, 100);
+        stays_up(&mut shell);
         pb.fill_all(BG);
         publish(&mut shell, p, &[(&pb, p)], 0);
         cb.fill_all(BG);
@@ -295,7 +334,7 @@ mod presenter {
         });
 
         assert!(!shell.set_size(p, 80, 40).unwrap());
-        stays_up(&mut shell, 50);
+        stays_up(&mut shell);
         pb.resize(80, 40);
         pb.fill_all(BG);
         publish(&mut shell, p, &[(&pb, p)], 0);
@@ -311,7 +350,7 @@ mod presenter {
                 && !log.last().unwrap().contains("\"ack_stale\":true")
         };
         until(&mut shell, "the new place acked", |_| acked(&rec));
-        stays_up(&mut shell, 50);
+        stays_up(&mut shell);
     }
 
     /// A popup's new size reaches the compositor while its first picture composes: the configure read meanwhile holds
@@ -324,23 +363,27 @@ mod presenter {
         let top = window(&mut shell, &rec, &mut tb);
         let mut b = Backing::new(60, 30);
         let p = popup(&mut shell, top, &b);
-        stays_up(&mut shell, 100);
-        shell.set_compose_delay(300);
+        stays_up(&mut shell);
+        shell.set_compose_gate(true);
         b.fill_all(BG);
         publish(&mut shell, p, &[(&b, p)], 0);
-        // in the compose: the delay outlasts these
-        std::thread::sleep(Duration::from_millis(50));
+        assert!(
+            shell.composes_held(1, Duration::from_secs(10)),
+            "the first picture composed"
+        );
+        // its send waits at the gate while the new size's configure is read
         assert!(!shell.set_size(p, 80, 40).unwrap());
-        stays_up(&mut shell, 400);
+        read_records(&mut shell);
+        shell.set_compose_gate(false);
+        stays_up(&mut shell);
         assert_eq!(buffer_commits(&rec, 1, p), 0, "no buffer without an ack");
-        shell.set_compose_delay(0);
         b.resize(80, 40);
         b.fill_all(BG);
         publish(&mut shell, p, &[(&b, p)], 0);
         until(&mut shell, "the picture of the new size", |_| {
             buffer_commits(&rec, 1, p) >= 1
         });
-        stays_up(&mut shell, 50);
+        stays_up(&mut shell);
         let first = commits(&rec, 1, p)
             .into_iter()
             .find(|c| c.contains("\"buffer\":{"))
@@ -376,13 +419,13 @@ mod presenter {
         let top = window(&mut shell, &rec, &mut tb);
         let mut b = Backing::new(60, 30);
         let p = popup(&mut shell, top, &b);
-        stays_up(&mut shell, 100);
+        stays_up(&mut shell);
         b.fill_all(BG);
         publish(&mut shell, p, &[(&b, p)], 0);
         until(&mut shell, "the first picture", |_| {
             buffer_commits(&rec, 1, p) >= 1
         });
-        stays_up(&mut shell, 50);
+        stays_up(&mut shell);
         let seq = next_seq(&rec);
         assert!(!shell.set_size(p, 80, 40).unwrap());
         b.resize(80, 40);
@@ -418,17 +461,20 @@ mod presenter {
                 .unwrap();
         };
         let seq = next_seq(&rec);
-        shell.set_compose_delay(300);
+        shell.set_compose_gate(true);
         resize(&mut shell, 300, 150);
         b.resize(300, 150);
         b.fill_all(BG);
         publish(&mut shell, id, &[(&b, id)], 0);
-        // in the compose: the delay outlasts these
-        std::thread::sleep(Duration::from_millis(50));
+        assert!(
+            shell.composes_held(1, Duration::from_secs(10)),
+            "the first size's picture composed"
+        );
+        // its send waits at the gate while the second size comes and is acked
         resize(&mut shell, 200, 100);
-        stays_up(&mut shell, 400);
+        shell.set_compose_gate(false);
+        stays_up(&mut shell);
         assert_eq!(buffer_commits(&rec, seq, id), 0, "a size no ack stands for");
-        shell.set_compose_delay(0);
         b.resize(200, 100);
         b.fill_all(BG);
         publish(&mut shell, id, &[(&b, id)], 0);
@@ -460,7 +506,7 @@ mod presenter {
         b.resize(240, 100);
         b.fill_all(BG);
         publish(&mut shell, id, &[(&b, id)], 0);
-        stays_up(&mut shell, 200);
+        stays_up(&mut shell);
         assert_eq!(buffer_commits(&rec, seq, id), 0, "over an open configure");
         shell
             .ack_configure(id, configure_of(&ev).serial, 0)
@@ -470,8 +516,8 @@ mod presenter {
         });
     }
 
-    /// Review Focus 3: the host publishes while the pacer waits, then stays away for 200 ms.  The frame callback
-    /// comes 20 ms in; the presenter commits the packet before the host is back.
+    /// Review Focus 3: the host publishes while the pacer waits, then stays away.  The frame callback comes; the
+    /// presenter commits the packet before the host is back.
     #[test]
     fn wakes_on_frame_callback_without_the_host() {
         let rec = Recorder::start_clock("sway", "manual");
@@ -485,34 +531,24 @@ mod presenter {
         b.fill(Rect::new(10, 10, 20, 20), 0xff12_3456);
         let seq = next_seq(&rec);
         assert!(publish(&mut shell, id, &[(&b, id)], 0));
-        std::thread::sleep(Duration::from_millis(5));
+        // the presenter has had its turn for the packet: the pacer holds it
+        turn(&shell);
         assert_eq!(
             buffer_commits(&rec, seq, id),
             0,
             "nothing before the callback"
         );
-        let committed = std::thread::scope(|s| {
-            let rec = &rec;
-            let seen = s.spawn(move || {
-                std::thread::sleep(Duration::from_millis(20));
-                present(rec);
-                let deadline = Instant::now() + Duration::from_secs(1);
-                while Instant::now() < deadline {
-                    if buffer_commits(rec, seq, id) >= 1 {
-                        return Some(Instant::now());
-                    }
-                    std::thread::sleep(Duration::from_millis(2));
-                }
-                None
-            });
-            // the host is busy: no shell call at all
-            std::thread::sleep(Duration::from_millis(200));
-            let back = Instant::now();
-            (seen.join().unwrap(), back)
-        });
-        let (seen, back) = committed;
-        let seen = seen.expect("the presenter committed on its own");
-        assert!(seen < back, "committed before the host came back");
+        // the host is away from here on: no shell call until the commit is in the recorder's log
+        present(&rec);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while buffer_commits(&rec, seq, id) == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "the presenter never committed on its own"
+            );
+            // the recorder's log has no wake-up to wait on: ask again shortly
+            std::thread::sleep(Duration::from_millis(2));
+        }
         assert!(shell.next_event().is_ok(), "no protocol error");
     }
 
@@ -532,7 +568,7 @@ mod presenter {
         b.fill(Rect::new(10, 10, 20, 20), 0xff12_3456);
         let seq = next_seq(&rec);
         assert!(publish(&mut shell, id, &[(&b, id)], 0));
-        stays_up(&mut shell, 50);
+        stays_up(&mut shell);
         assert_eq!(buffer_commits(&rec, seq, id), 0, "the pacer holds it");
         let st = shell.presenter_stats().unwrap();
         assert_eq!(st.presented + 1, st.published, "{st:?}");
@@ -612,11 +648,14 @@ mod presenter {
         let id = window(&mut shell, &rec, &mut b);
         present(&rec);
         until(&mut shell, "the callback", |s| !waiting(s, id));
-        shell.set_compose_delay(100);
+        shell.set_compose_gate(true);
         b.fill(Rect::new(0, 0, 50, 50), 0xff00_ff00);
         let seq = next_seq(&rec);
         assert!(publish(&mut shell, id, &[(&b, id)], 0));
-        std::thread::sleep(Duration::from_millis(30));
+        assert!(
+            shell.composes_held(1, Duration::from_secs(10)),
+            "the picture composed"
+        );
         assert_eq!(buffer_commits(&rec, seq, id), 0, "still composing");
         let t = Instant::now();
         shell.window_destroy(id).unwrap();
@@ -624,7 +663,9 @@ mod presenter {
         if !sanitized() {
             assert!(took < Duration::from_millis(2), "destroy waited {took:?}");
         }
-        std::thread::sleep(Duration::from_millis(200));
+        // the compose goes on to its send, which finds the window retired
+        shell.set_compose_gate(false);
+        stays_up(&mut shell);
         assert!(
             commits(&rec, seq, id).is_empty(),
             "a commit on the destroyed surface"
@@ -772,8 +813,10 @@ mod presenter {
             s.presenter_stats().unwrap().front_trims >= 1
         });
         let tid = shell.presenter_tid().expect("the presenter runs");
-        std::thread::sleep(Duration::from_millis(50));
+        // the turn that trimmed has ended in the presenter's wait
+        until(&mut shell, "the presenter asleep", |_| asleep(tid));
         let before = switches(tid);
+        // an idle span: nothing may wake the thread in it (no event marks the absence of wake-ups)
         std::thread::sleep(Duration::from_secs(3));
         assert_eq!(switches(tid), before, "nh-present woke while idle");
     }

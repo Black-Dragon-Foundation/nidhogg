@@ -180,6 +180,25 @@ pub fn readable_within(fd: i32, ms: i64) -> bool {
     matches!(poll(&mut fds, Some(&t)), Ok(n) if n > 0)
 }
 
+/// The recorder has handled every request the shell sent so far, and the shell every event the recorder sent before
+/// answering: their records are queued, and a state the recorder reports now is the one those requests left.
+pub fn sync(shell: &dyn ShellBackend) {
+    shell
+        .reader_roundtrip(Duration::from_secs(10))
+        .expect("the reader's roundtrip");
+}
+
+/// Thread mode: a presenter turn has covered every request so far, and the recorder has what it sent (`sync`).  A
+/// commit those requests imply is in the recorder's log now; one that is not waits for something else.
+pub fn turn(shell: &WaylandShell) {
+    let seq = shell.presenter_stats().unwrap().published;
+    assert!(
+        shell.presenter_turned(seq, Duration::from_secs(10)),
+        "no presenter turn covered request {seq}"
+    );
+    sync(shell);
+}
+
 /// The next record satisfying `want` within 5 s; other records are dropped.
 pub fn wait_for(shell: &mut WaylandShell, want: impl Fn(&Record) -> bool) -> Record {
     let deadline = Instant::now() + Duration::from_secs(5);

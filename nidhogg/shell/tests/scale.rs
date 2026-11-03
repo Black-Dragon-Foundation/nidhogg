@@ -143,14 +143,15 @@ mod monitors_added {
         rec.control_ok(
             r#"{"cmd":"output","op":"add","name":"nh-1","size":[800,600],"scale120":240}"#,
         );
-        // outputs that come and go are the host's to dispatch (the main queue)
+        // outputs that come and go are the host's to dispatch (the main queue).  Each round answers the requests of
+        // the one before: the global, the bind, the output's own events and what they ask for are all in by the last.
         let mut evs = Vec::new();
-        for _ in 0..10 {
+        for _ in 0..4 {
+            sync(&shell);
             shell.dispatch_main().unwrap();
             while let Some(ev) = shell.next_event().unwrap() {
                 evs.push(ev);
             }
-            std::thread::sleep(std::time::Duration::from_millis(50));
         }
         let mut kinds = Vec::new();
         kinds.extend(
