@@ -419,7 +419,7 @@ BODY
       echo "checked \"\$B/check.log\" make -C test $rr_arg$t"
     done
     # each container installs its packages afresh: a trace replays in a later one only with its files packed in
-    # and the trace's name, in a log so that it comes back from the desktop
+    # and the trace's name, in a log so that it comes back from a remote runner
     [ -z "$rr_arg" ] || echo 'rr pack "$_RR_TRACE_DIR/latest-trace" || echo "build.sh: rr pack failed"; readlink -f "$_RR_TRACE_DIR/latest-trace" > "$B/check-logs/rr-trace.log"'
     echo "check_rerun"
   fi
