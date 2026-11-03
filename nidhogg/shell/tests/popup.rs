@@ -195,8 +195,9 @@ mod popup {
         let a = popup(&mut shell, top, NHSHELL_WIN_GRAB);
         let b = popup(&mut shell, a, NHSHELL_WIN_GRAB);
         let c = popup(&mut shell, b, NHSHELL_WIN_GRAB);
+        shell.flush().unwrap();
         for id in [a, b, c] {
-            rec.wait_node(id, |n| n.contains(&grab_of("button")));
+            rec.wait_window(&shell, id, |n| n.contains(&grab_of("button")));
         }
         shell.window_destroy(a).unwrap();
         gone_with_parent(&mut shell, 200, &[b, c]);
@@ -204,14 +205,45 @@ mod popup {
         assert_eq!(rec.surfaces("toplevel"), 1, "only the top-level is left");
         assert!(rec.control(r#"{"cmd":"clients"}"#).contains("\"pid\""));
 
-        // a new chain grabs again (no popup holds a grab), then its top-level goes
+        // a new chain grabs again (no popup holds a grab), then its top-level goes.  Its surfaces may take the
+        // protocol ids the first chain's let go of: the recorder names those apart (`wait_window`).
         let a = popup(&mut shell, top, NHSHELL_WIN_GRAB);
         let b = popup(&mut shell, a, NHSHELL_WIN_GRAB);
         let c = popup(&mut shell, b, NHSHELL_WIN_GRAB);
-        rec.wait_node(c, |n| n.contains(&grab_of("button")));
+        shell.flush().unwrap();
+        rec.wait_window(&shell, c, |n| n.contains(&grab_of("button")));
         shell.window_destroy(top).unwrap();
         gone_with_parent(&mut shell, 200, &[a, b, c]);
         assert_eq!(rec.surfaces("popup") + rec.surfaces("toplevel"), 0);
+    }
+
+    /// A popup whose surface takes the protocol id an earlier popup's surface had: the recorder names it apart (a
+    /// generation above bit 32), the shell by the protocol id, and `wait_window` finds it.  The order is forced: with
+    /// every id the first popup let go of handled, a frame callback made before it goes last, so the next positioner
+    /// takes the callback's id and the next surface the first popup's.
+    #[test]
+    fn a_popup_on_a_used_protocol_id_is_found() {
+        let rec = Recorder::start_clock("no-presentation", "manual");
+        let mut shell = rec.open();
+        // its frame callback waits for the manual clock
+        let top = mapped_window(&mut shell, 200, 100);
+        let x = popup(&mut shell, top, 0);
+        shell.flush().unwrap();
+        rec.wait_window(&shell, x, |_| true);
+        shell.window_destroy(x).unwrap();
+        rec.ping(&shell);
+        let r = rec.control(r#"{"cmd":"present","advance_ns":16000000}"#);
+        assert!(r.contains("\"ok\":true"), "{r}");
+        rec.ping(&shell);
+        let y = popup(&mut shell, top, 0);
+        assert_eq!(y, x, "the new surface has the first popup's protocol id");
+        shell.flush().unwrap();
+        rec.wait_window(&shell, y, |n| n.contains("\"role\":\"popup\""));
+        let tree = rec.control(r#"{"cmd":"tree"}"#);
+        assert!(
+            !tree.contains(&format!("\"id\":{y},")),
+            "the recorder names it apart: {tree}"
+        );
     }
 
     /// After the compositor dismisses a chain (an outside click), the popups stay until the host destroys them, and
