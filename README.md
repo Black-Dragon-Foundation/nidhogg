@@ -344,16 +344,16 @@ machine whose timing never shows it, not certain.
   workload (`timing-calibration-tests.el`, about a second) runs before and after each row on the same runner; a row takes
   20 samples and is judged on the median against `ratio x calibration`. Calibrations over 25 % apart void the attempt
   (retried once, then `void`, never red); a red reruns once with fresh calibrations (pass on the rerun: `flaky`). The
-  verdicts are in the job log and the `timing-*` artifact. Absolute budgets stay on the desktop's perf island.
+  verdicts are in the job log and the `timing-*` artifact. Absolute budgets are judged on a pinned host.
   `timing-lane.sh --self-test` checks the verdict rules.
-- Before a round, `nidhogg/test/preflight.sh` (the desktop, in the heavy slots) runs the passes that find ordering bugs:
+- Before a round, `nidhogg/test/preflight.sh` (on an isolated runner, each build through the caller's wrappers) runs the passes that find ordering bugs:
   every `;; test-class: det` file twice unpinned and once on 1 CPU (a difference between the runs is red), then
   the check files of `preflight-files.txt` plus every `cond` file outside the GUI set pinned to 1 and 2 CPUs and under half a core (3 runs each; podman options
   through `NIDHOGG_BUILD_PODMAN_ARGS`), on the chaos build with many seeds, the workers harness (`--tsan`, `--sched`),
   and the reds again under `rr record --chaos -n`, packed so that the trace replays in a later container (`build.sh`'s
   `NIDHOGG_CHECK_RR`; SELinux denies a labelled container `perf_event_open`, so that one container runs with labels off).
   On Zen a trace replays reliably only with SpecLockMap off (rr's wiki; root), and rr 5.9.0 aborts on a test that opens a pty.
-  The check containers get the test grammars (the builder's `.claude/tmp/grammars-cache`, from `fixtures/grammars.sh`) and
+  The check containers get the test grammars (`grammars-cache` in the caller's `PREFLIGHT_TMP`, from `fixtures/grammars.sh`) and
   `gnutls-serv`, or the treesit and TLS files would skip whole; a file that still does is shown as `ALL SKIPPED`, never green.
   The report shows every group's results, one line per file per run; a file with no
   results from this run counts as red. A stamp (`REPORT.stamp`: commit, passes, date) is written only when every pass was

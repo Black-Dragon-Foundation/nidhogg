@@ -69,6 +69,11 @@ pub struct Popup {
     wants_grab: bool,
     /// The popup holds a grab: one was sent, and the compositor has not dismissed the popup since.
     grabbed: bool,
+    /// Its place in `popups_made` when it was made (or made again): the compositor stacks a popup over those made
+    /// before it.  Ids are used again, so they say nothing of that.
+    pub(super) order: u64,
+    /// The newest packet when the new size went out: a packet after it is that size's picture.
+    sized_after: u64,
 }
 
 fn positioner(
@@ -184,6 +189,7 @@ impl WaylandShell {
         pos.destroy();
         m.attach_scale(&surface, &qh);
         m.surfaces.insert(id, surface.clone());
+        m.popups_made += 1;
         m.popups.insert(
             id,
             Popup {
@@ -205,6 +211,8 @@ impl WaylandShell {
                 first: true,
                 wants_grab: d.flags & NHSHELL_WIN_GRAB != 0,
                 grabbed: false,
+                order: m.popups_made,
+                sized_after: 0,
             },
         );
         self.popup_grab(id);
@@ -263,8 +271,10 @@ impl WaylandShell {
             p.made = false;
             p.first = true;
         })?;
+        let after = self.main.mailbox.seq();
         if let Some(p) = self.main.popups.get_mut(&id) {
             p.sized = (!again).then_some(p.token);
+            p.sized_after = after;
         }
         Ok(again)
     }
@@ -298,6 +308,9 @@ impl WaylandShell {
             return Ok(false);
         }
         p.first = true;
+        // a new xdg_popup: the compositor stacks it over its siblings
+        m.popups_made += 1;
+        p.order = m.popups_made;
         let held = std::mem::take(&mut p.grabbed);
         p.popup.destroy();
         p.xdg_surface.destroy();
@@ -338,7 +351,8 @@ impl WaylandShell {
 
     /// A reconnect closes every popup, topmost first (the deepest, then the newest grab): each posts `POPUP_DONE`, and
     /// its record goes with what hangs on it.  Its objects went with the old connection; a popup shown again is a new
-    /// one.
+    /// one.  The host names it until it destroys it in turn, and the new connection hands out the low ids again, so
+    /// its id stays out of use till then (`orphans`).
     pub(super) fn popups_closed(&mut self) {
         let m = &self.main;
         let depth = |mut id: WindowId| {
@@ -366,6 +380,7 @@ impl WaylandShell {
         }
         for (_, _, id) in order {
             let _ = self.window_destroy_local(id);
+            self.main.orphans.insert(id);
         }
     }
 
@@ -384,23 +399,30 @@ impl WaylandShell {
 
 impl MainState {
     /// Record a popup's configure ack (sent with the next commit); false when `id` is not a popup.  The first
-    /// configure, or that of a new size's reposition, changes what the popup shows; any other is a bare ack.
+    /// configure, or that of a new size's reposition, changes what the popup shows; any other is a bare ack.  Either
+    /// takes a picture published before it: the first any (a popup is made at its size), the new size's one published
+    /// after the size went out (the host draws it before it reads the configure).
     pub(super) fn popup_ack(&mut self, id: u64, serial: u32) -> bool {
         let Some(p) = self.popups.get_mut(&id) else {
             return false;
         };
         let answers = p.repositioned.take();
+        let resized = p.first && p.sized.is_some() && answers == p.sized;
         let content = p.first && (p.sized.is_none() || answers == p.sized);
         if content {
             p.first = false;
             p.sized = None;
         }
         let made = std::mem::take(&mut p.made);
+        let after = p.sized_after;
         let placed = (answers == Some(p.token)).then_some(p.place_gen);
         self.present_ack(id, serial, content);
         if made {
             // a popup is made at its size: a picture published before this configure is the configure's picture
             self.present_record(id, present::Present::any_packet);
+        } else if resized {
+            // the new size is the host's own: a picture published after it asked for it is this configure's picture
+            self.present_record(id, |r| r.packet_after(after));
         }
         if let Some(place_gen) = placed {
             self.present_placed(id, place_gen);

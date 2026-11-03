@@ -366,6 +366,40 @@ mod presenter {
         });
     }
 
+    /// A popup's new size is drawn before the configure of its reposition is read: that picture is the configure's,
+    /// and the ack (the new place) goes with no redisplay after it.
+    #[test]
+    fn a_resized_popups_picture_may_come_before_its_configure() {
+        let rec = Recorder::start("sway");
+        let mut shell = threaded(&rec);
+        let mut tb = Backing::new(200, 100);
+        let top = window(&mut shell, &rec, &mut tb);
+        let mut b = Backing::new(60, 30);
+        let p = popup(&mut shell, top, &b);
+        stays_up(&mut shell, 100);
+        b.fill_all(BG);
+        publish(&mut shell, p, &[(&b, p)], 0);
+        until(&mut shell, "the first picture", |_| {
+            buffer_commits(&rec, 1, p) >= 1
+        });
+        stays_up(&mut shell, 50);
+        let seq = next_seq(&rec);
+        assert!(!shell.set_size(p, 80, 40).unwrap());
+        b.resize(80, 40);
+        b.fill_all(BG);
+        publish(&mut shell, p, &[(&b, p)], 0);
+        until(&mut shell, "the new place acked", |_| {
+            commits(&rec, seq, p)
+                .iter()
+                .any(|c| !c.contains("\"ack_serial\":null"))
+        });
+        let acked = commits(&rec, seq, p)
+            .into_iter()
+            .find(|c| !c.contains("\"ack_serial\":null"))
+            .unwrap();
+        assert!(acked.contains("\"h\":40"), "{acked}");
+    }
+
     /// A second size reaches a window with the first size's picture in the compose: its ack replaces the first's and
     /// waits for its own picture.  The first's picture has no ack left, and may not show that size.
     #[test]
