@@ -488,8 +488,12 @@ mod window {
         close(d);
     }
 
-    /// Fullscreen asks to leave maximized, then for fullscreen; back to none leaves fullscreen, then maximized;
-    /// maximized, `fullwidth` and `fullheight` ask for maximized.  An unknown mode is refused.
+    /// Fullscreen asks for fullscreen, and to leave maximized only when the window is or was asked to be; back to
+    /// none leaves fullscreen (asked for, though the configure did not grant it yet) and leaves maximized only when
+    /// it is; maximized, `fullwidth` and `fullheight` ask for maximized.  A request that changes nothing is not sent:
+    /// mutter, asked to leave a maximized state the window is not in just after leaving fullscreen, sized the window
+    /// from its fullscreen rectangle.  An unknown mode is refused.  Requests reach the log in order, so a later one
+    /// seen there shows what was not sent before it.
     #[test]
     fn fullscreen_and_back() {
         let rec = Recorder::start("sway");
@@ -504,23 +508,16 @@ mod window {
 
         assert_eq!(fs(NHG_FULLSCREEN_BOTH), NHG_OK);
         let log = wait_requests(&rec, "set_fullscreen", n(&log0, "set_fullscreen") + 1);
-        let (unmax, full) = (
-            request(&log, "unset_maximized"),
-            request(&log, "set_fullscreen"),
+        assert_eq!(
+            n(&log, "unset_maximized"),
+            n(&log0, "unset_maximized"),
+            "never maximized: {log}"
         );
-        assert_eq!(unmax.0, n(&log0, "unset_maximized") + 1);
-        assert!(unmax.1 < full.1, "unset_maximized first: {log}");
-        // the recorder answers with a configure
+        // the recorder answers with a configure (granting nothing)
         until(d, |a| a.kind == NHG_ACT_RESIZE && a.window == id);
 
         assert_eq!(fs(NHG_FULLSCREEN_NONE), NHG_OK);
-        let log = wait_requests(&rec, "unset_maximized", unmax.0 + 1);
-        let unfull = request(&log, "unset_fullscreen");
-        assert_eq!(unfull.0, n(&log0, "unset_fullscreen") + 1);
-        assert!(
-            unfull.1 < request(&log, "unset_maximized").1,
-            "unset_fullscreen first: {log}"
-        );
+        let log = wait_requests(&rec, "unset_fullscreen", n(&log0, "unset_fullscreen") + 1);
 
         let max0 = n(&log, "set_maximized");
         for mode in [
@@ -530,7 +527,23 @@ mod window {
         ] {
             assert_eq!(fs(mode), NHG_OK);
         }
-        wait_requests(&rec, "set_maximized", max0 + 3);
+        let log = wait_requests(&rec, "set_maximized", max0 + 3);
+        assert_eq!(
+            (n(&log, "unset_maximized"), n(&log, "unset_fullscreen")),
+            (
+                n(&log0, "unset_maximized"),
+                n(&log0, "unset_fullscreen") + 1
+            ),
+            "neither maximized nor fullscreen any more: {log}"
+        );
+
+        assert_eq!(fs(NHG_FULLSCREEN_NONE), NHG_OK);
+        let log = wait_requests(&rec, "unset_maximized", n(&log0, "unset_maximized") + 1);
+        assert_eq!(
+            n(&log, "unset_fullscreen"),
+            n(&log0, "unset_fullscreen") + 1,
+            "{log}"
+        );
         assert_eq!(fs(9), NHG_E_ARG);
         close(d);
     }
