@@ -101,6 +101,9 @@ pub struct Packet {
     pub t_key_ns: u64,
     pub t_publish_ns: u64,
     pub parts: Vec<Part>,
+    /// Published for a content ack with nothing drawn: the root's whole picture waits for the commit that carries
+    /// the ack.
+    pub whole: bool,
 }
 
 /// What the host's thread hands the presenter, in order: a packet, or a window that is gone (a surface id may be
@@ -459,6 +462,10 @@ impl Stage {
             }
             s.damage_px += part.damage.iter().map(Rect::area).sum::<u64>();
             s.damage.extend(part.damage);
+        }
+        // its picture waits like a drawn one: a newer packet merges into it, the window's end supersedes it
+        if p.whole {
+            self.damage_all_if_clean(p.root);
         }
     }
 
@@ -874,6 +881,7 @@ impl WaylandShell {
             t_key_ns,
             t_publish_ns,
             parts,
+            whole: !damaged,
         });
         Counters::max(&st.main_wait_max_ns, waited.max(pushed));
         Counters::add(&st.packets, 1);
