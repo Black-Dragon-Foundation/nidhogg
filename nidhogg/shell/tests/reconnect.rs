@@ -664,8 +664,9 @@ mod reconnect {
             .ack_configure(top, cfg.serial, NHSHELL_ACK_CONTENT)
             .unwrap();
         draw(&mut shell, top, 200, 100);
-        // the ids the new connection's objects gave back are free again before the bare surfaces count up
-        std::thread::sleep(Duration::from_millis(100));
+        // the ids the new connection's objects gave back are free again before the bare surfaces count up: the
+        // recorder's `delete_id`s are read
+        shell.roundtrip().unwrap();
         let mut closed = [a, b];
         closed.sort_unstable();
         let mut hit = None;
@@ -875,7 +876,8 @@ mod reconnect {
         ));
         assert_eq!(data_of(&reply), Some("new"), "{reply}");
         assert!(!shell.selection_owned(NHSHELL_SEL_PRIMARY).unwrap());
-        std::thread::sleep(Duration::from_millis(100));
+        // the recorder has handled the disown
+        sync(&shell);
         let reply = rec.control(&format!(
             r#"{{"cmd":"read","kind":"primary","type":"{plain}"}}"#
         ));
@@ -1198,8 +1200,8 @@ mod reconnect {
             std::thread::sleep(Duration::from_millis(1));
         };
         assert_ne!(again, tid, "the presenter thread was not started again");
-        // the new presenter has had its turns: the tree waits for its configure
-        std::thread::sleep(Duration::from_millis(50));
+        // the new presenter has had its turn for every request: the tree waits for its configure
+        turn(&shell);
         assert_eq!(
             commits_made(&shell),
             made,
@@ -1246,9 +1248,9 @@ mod reconnect {
         until(&mut shell, "the picture shown", |_| shows(&rec, &b));
     }
 
-    /// Review Focus 5: the compositor goes while the presenter composes (300 ms) and stays away past the compose.  The
-    /// compose ends on a dead connection: nothing is sent, its buffer goes back, and the picture it held comes back
-    /// whole on the new connection.
+    /// Review Focus 5: the compositor goes while the presenter composes and stays away past the compose.  The compose
+    /// ends on a dead connection: nothing is sent, its buffer goes back, and the picture it held comes back whole on the
+    /// new connection.
     #[test]
     fn no_commit_on_the_dead_connection() {
         let _g = shared();
@@ -1256,18 +1258,19 @@ mod reconnect {
         let mut b = backing::Backing::new(200, 100);
         let (mut shell, w) = presenting(&rec, &mut b);
         let made = commits_made(&shell);
-        shell.set_compose_delay(300);
+        shell.set_compose_gate(true);
         b.fill(Rect::new(20, 20, 60, 40), 0xff11_2233);
         assert!(backing::publish(&mut shell, w, &[(&b, w)], 0));
-        // the presenter is composing
-        std::thread::sleep(Duration::from_millis(30));
+        assert!(
+            shell.composes_held(1, Duration::from_secs(10)),
+            "the presenter composed"
+        );
         restart(&rec, r#"{"cmd":"restart","mode":"gone"}"#);
-        // taking RECONNECTING joins the presenter: its compose has ended
+        // taking RECONNECTING joins the presenter, which opens the gate: its compose ends on the dead connection
         until_reconnecting(&mut shell);
         assert_eq!(shell.reconnect(50), Err(ShellError::Timeout));
         restart(&rec, r#"{"cmd":"restart_up"}"#);
         reconnect_within(&mut shell, 3);
-        shell.set_compose_delay(0);
         assert_eq!(
             commits_made(&shell),
             made,

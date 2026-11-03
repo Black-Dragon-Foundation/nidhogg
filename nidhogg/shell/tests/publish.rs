@@ -39,7 +39,8 @@ fn waiting(shell: &WaylandShell, id: u64) -> bool {
 fn shown(shell: &mut WaylandShell, rec: &Recorder, id: u64) {
     present(rec);
     until(shell, "the frame callback", |s| !waiting(s, id));
-    std::thread::sleep(Duration::from_millis(100));
+    // the release sent with the callback is handled
+    sync(shell);
     while shell.next_event().unwrap().is_some() {}
 }
 
@@ -378,7 +379,7 @@ mod publish {
         wait_for(&mut shell, |e| {
             e.kind() == Kind::FrameReady && e.window == id
         });
-        std::thread::sleep(Duration::from_millis(100));
+        sync(&shell);
         while shell.next_event().unwrap().is_some() {}
         assert!(shell.present_tree(id).unwrap());
         shell.flush().unwrap();
@@ -447,8 +448,7 @@ mod publish {
             !shell.present_tree(id).unwrap(),
             "packet 5 does not carry the ack"
         );
-        shell.flush().unwrap();
-        std::thread::sleep(Duration::from_millis(100));
+        sync(&shell);
         assert!(
             commits(&rec, seq, id).iter().all(|c| !c.contains(&ack)),
             "{:?}",
@@ -486,6 +486,7 @@ mod publish {
         assert!(shell.present_tree(id).unwrap());
         shell.flush().unwrap();
         shown(&mut shell, &rec, id);
+        // the front's quiet period (2 s) is time itself: a sleep never ends before it has passed
         std::thread::sleep(Duration::from_millis(2100));
         shell.dispatch_main().unwrap();
         assert_eq!(shell.presenter_stats().unwrap().front_trims, 1);
@@ -763,7 +764,7 @@ mod tree_snapshot {
             let got = shot(sh);
             at(&got, 5, 5) == BG && at(&got, 20, 20) != BG
         });
-        std::thread::sleep(Duration::from_millis(100));
+        sync(&shell);
         while shell.next_event().unwrap().is_some() {}
         let got = shot(&shell);
         assert_eq!(at(&got, 60, 40), GREEN, "the popup on a popup");
