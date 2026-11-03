@@ -336,6 +336,16 @@ impl ShellBackend for WaylandShell {
         self.window_set_input_region(id, rects)
     }
 
+    fn set_child_place(
+        &mut self,
+        id: WindowId,
+        pos: Option<(i32, i32)>,
+        input: Option<&[Rect]>,
+    ) -> ShellResult {
+        self.live()?;
+        self.window_set_child_place(id, pos, input)
+    }
+
     fn set_mapped(&mut self, id: WindowId, on: bool) -> ShellResult {
         self.live()?;
         self.window_set_mapped(id, on)

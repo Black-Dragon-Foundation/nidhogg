@@ -1317,6 +1317,18 @@ impl MainState {
         p.notify();
     }
 
+    /// A publish of root `root`'s tree had nothing new to show: the pacer wakes if the tree owes a commit (what the
+    /// host's publish step recorded waits for its publish, `ShellBackend::set_child_place`), which goes bare.
+    pub(crate) fn present_nothing_new(&mut self, root: u64) {
+        let Some(present) = self.present_of(root) else {
+            return;
+        };
+        let mut p = lock(&present);
+        if p.owes() {
+            p.notify();
+        }
+    }
+
     /// The compositor configured window `id`: note whether it is suspended, and re-arm a waiting pacer.
     pub(crate) fn present_configured(&mut self, id: u64, suspended: bool) {
         if !self.windows.contains_key(&id) {
