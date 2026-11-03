@@ -113,17 +113,44 @@ impl Recorder {
         u32::from_le_bytes(snap.1[at..at + 4].try_into().unwrap())
     }
 
-    /// Surface `id`'s entry in the `tree` reply once `pred` holds for it, within 3 s.  The reply's keys are sorted, so
-    /// each surface's object opens with `{"above":`.
+    /// The recorder's surface `id`'s entry in the `tree` reply once `pred` holds for it, within 3 s.
     pub fn wait_node(&self, id: u64, pred: impl Fn(&str) -> bool) -> String {
-        let key = format!("\"id\":{id},");
+        self.wait_entry(&format!("surface {id}"), |n| n == id, pred)
+    }
+
+    /// Window `id`'s entry in the `tree` reply once `pred` holds for it, within 3 s.  The recorder names a surface by
+    /// its protocol id, with a generation above bit 32 when the client used that protocol id for a surface before;
+    /// the shell's window ids keep their own rule.  So the entry is the one of the window's protocol id now, which no
+    /// other live surface has.
+    pub fn wait_window(
+        &self,
+        shell: &WaylandShell,
+        id: u64,
+        pred: impl Fn(&str) -> bool,
+    ) -> String {
+        let pid = u64::from(shell.surface_protocol_id(id).expect("a window"));
+        self.wait_entry(
+            &format!("window {id} (protocol id {pid})"),
+            |n| n & 0xffff_ffff == pid,
+            pred,
+        )
+    }
+
+    /// The `tree` entry whose id satisfies `which` once `pred` holds for it, within 3 s.  The reply's keys are sorted,
+    /// so each surface's object opens with `{"above":`, and its first `"id":` is the surface's.
+    fn wait_entry(
+        &self,
+        what: &str,
+        which: impl Fn(u64) -> bool,
+        pred: impl Fn(&str) -> bool,
+    ) -> String {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             let r = self.control(r#"{"cmd":"tree"}"#);
             let node = r
                 .split("{\"above\":")
                 .skip(1)
-                .find(|n| n.contains(&key))
+                .find(|n| number(n, "id").is_some_and(&which))
                 .map(|n| format!("{{\"above\":{n}"));
             if let Some(n) = &node
                 && pred(n)
@@ -132,10 +159,20 @@ impl Recorder {
             }
             assert!(
                 Instant::now() < deadline,
-                "surface {id} never matched; last: {node:?}"
+                "{what} never matched; last: {node:?}"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    /// The shell's reader has handled every event the recorder sent so far, the protocol ids it let go of
+    /// (`wl_display.delete_id`) included, and nothing was made for it: the recorder's `xdg_wm_base.ping`, which the
+    /// reader answers.  What the shell queued is flushed first, so the recorder handles it before it pings.  A
+    /// roundtrip would make a callback, which takes an id and lets it go again.
+    pub fn ping(&self, shell: &WaylandShell) {
+        shell.flush().unwrap();
+        let r = self.control(r#"{"cmd":"ping"}"#);
+        assert!(r.contains("\"pong_ms\""), "no pong: {r}");
     }
 
     /// The number of surfaces of `role` (`toplevel`, `popup`, `subsurface`) in the `tree` reply.
