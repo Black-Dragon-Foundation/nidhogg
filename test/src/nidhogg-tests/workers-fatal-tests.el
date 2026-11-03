@@ -661,4 +661,32 @@ holds the text.  Waits 20 s at most for the child."
                      '(exit 0)))
       (should (string-match-p "nh-wk: done" (plist-get r :out))))))
 
+(ert-deftest workers/kill-emacs-in-a-select-closes-its-fds ()
+  ;; A SIGTERM that comes while the main thread selects runs `kill-emacs'
+  ;; in the handler, on the thread whose select holds the fds.  A close
+  ;; from `kill-emacs-hook' waited for that select to end, which it never
+  ;; does under its own handler: the child hung until it was killed (the
+  ;; fake portal's daemon at the end of a GUI lane).  A close never waits
+  ;; for its own thread's select.  The reader is off, so P's real fd is
+  ;; the one selected on and closed.
+  (let ((r (workers-fatal-tests--batch
+            '(progn
+               (setq nidhogg-workers-process-reader nil)
+               (let ((p (make-process :name "p" :command '("cat")
+                                      :connection-type 'pipe :noquery t)))
+                 (add-hook 'kill-emacs-hook
+                           (lambda ()
+                             (delete-process p)
+                             (princ "nh-wk: hook done\n")))
+                 (make-process :name "k" :noquery t :connection-type 'pipe
+                               :command (list "sh" "-c"
+                                              (format "sleep 0.5; kill -TERM %d"
+                                                      (emacs-pid))))
+                 (accept-process-output p 20)
+                 (princ "nh-wk: not killed\n"))))))
+    (ert-info ((format "%S" r) :prefix "child: ")
+      (should (equal (list (plist-get r :status) (plist-get r :code))
+                     '(exit 15)))
+      (should (string-match-p "nh-wk: hook done" (plist-get r :out))))))
+
 ;;; workers-fatal-tests.el ends here
