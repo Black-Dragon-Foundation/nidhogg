@@ -33,6 +33,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #ifdef HAVE_NIDHOGG_WATCHDOG
 #include "nidhogg-watchdog.h"
 #endif
+#ifdef HAVE_NIDHOGG_WORKERS
+#include "nidhogg-workers.h"
+#endif
 
 #ifdef HAVE_NS
 #include "nsterm.h"
@@ -164,6 +167,11 @@ static void
 acquire_global_lock (struct thread_state *self)
 {
   sys_mutex_lock (&global_lock);
+#ifdef HAVE_NIDHOGG_WORKERS
+  /* Its select, if it was in one, is over (process.c): before
+     post_acquire_global_lock, which may signal.  */
+  self->nh_sel = NULL;
+#endif
   post_acquire_global_lock (self);
 }
 
@@ -185,6 +193,15 @@ maybe_reacquire_global_lock (void)
     {
       struct thread_state *self = current_thread;
 
+#ifdef HAVE_NIDHOGG_WORKERS
+      /* Out of its select before it waits for the lock, which a close
+	 waiting for that select holds.  A nested C-g would come here
+	 again: it waits.  */
+      sigset_t oldset;
+      block_interrupt_signal (&oldset);
+      nh_sel_out (self);
+      restore_signal_mask (&oldset);
+#endif
       acquire_global_lock (self);
       current_thread->not_holding_lock = 0;
     }
@@ -627,12 +644,22 @@ really_call_select (void *arg)
   struct select_args *sa = arg;
   struct thread_state *self = current_thread;
   sigset_t oldset;
+#ifdef HAVE_NIDHOGG_WORKERS
+  /* What other threads see of this select (process.h).  */
+  struct nh_sel sel = { .sets = { sa->rfds, sa->wfds, sa->efds } };
+#endif
 #if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
   /* On an auto-advancing test clock one select may take several rounds,
      each with the global lock released only around the real select.  */
   struct nh_tc_wait tw;
   bool tc = nh_tc_auto && nh_tc_wait_begin (&tw, self, sa->max_fds, sa->rfds,
 					    sa->wfds, sa->efds, sa->timeout);
+  if (tc)
+    {
+      sel.sets[3] = &tw.r;
+      sel.sets[4] = tw.wp ? &tw.w : NULL;
+      sel.sets[5] = tw.ep ? &tw.e : NULL;
+    }
  again:
   if (tc)
     nh_tc_before (&tw, &sa->max_fds, &sa->timeout);
@@ -642,9 +669,18 @@ really_call_select (void *arg)
 #endif
 
   block_interrupt_signal (&oldset);
+#ifdef HAVE_NIDHOGG_WORKERS
+  nh_sel_hold (self, &sel, sa->max_fds);
+#endif
   self->not_holding_lock = 1;
   release_global_lock ();
   restore_signal_mask (&oldset);
+#ifdef HAVE_NIDHOGG_WORKERS
+  if (self != &main_thread.s
+      && !(sa->timeout && sa->timeout->tv_sec == 0
+	   && sa->timeout->tv_nsec == 0))
+    nh_wk_thread_pause_point (NH_WK_P_BEFORE_SELECT, &sel.wanted);
+#endif
 
   sa->result = (sa->func) (sa->max_fds, sa->rfds, sa->wfds, sa->efds,
 			   sa->timeout, sa->sigmask);
@@ -659,6 +695,9 @@ really_call_select (void *arg)
   release_select_lock ();
 
   block_interrupt_signal (&oldset);
+#ifdef HAVE_NIDHOGG_WORKERS
+  nh_sel_out (self);
+#endif
   /* If we were interrupted by C-g while inside sa->func above, the
      signal handler could have called maybe_reacquire_global_lock, in
      which case we are already holding the lock and shouldn't try

@@ -558,6 +558,14 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   (`nidhogg-workers--pause-at`, `--release`, `--test-await-paused`), `--test-job`, `--test-wait`, `--test-job-info`,
   `--test-signal-storm`, `--test-wake-race`, `--test-fd-reserve`; `nidhogg/test/workers-harness.sh --tsan queue wake`
   runs the queues and the wake protocol under ThreadSanitizer.
+- Lisp threads' selects (`src/thread.c`, `src/process.c`): a Lisp thread selects without the global lock, on fds it
+  chose while it held the lock. No other thread closes one of them, or takes it out of the select set, while that
+  select holds it: the close waits until the select is out (the child signal pipe, in every select that can block,
+  wakes it), and takes the fd out of the sets of a select that is back but has not got the lock yet. So a select never
+  meets a closed fd (`EBADF` aborts Emacs) or reports on the next fd to get its number, the test clock's later rounds
+  included. The pipe opens at startup; signal context (the SIGCHLD handler) and the fatal path never wait. Test
+  primitive: the pause point `before-select`, where a Lisp thread other than the main one parks before a select that
+  can block, its fds held; a close that waits for it sends it on.
 - The fatal path: `shut_down_emacs` marks the workers dead first when Emacs dies of a signal or a fatal error. From
   then on no job is submitted, no wait waits, completions are dropped and the queues are abandoned (not freed), so a
   crash under a worker's mutex, or on a worker thread (forwarded to the main thread as usual), still prints its

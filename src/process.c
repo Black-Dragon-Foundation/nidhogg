@@ -486,6 +486,89 @@ clear_fd_callback_data (struct fd_callback_data* elem)
 
 #ifdef HAVE_NIDHOGG_WORKERS
 
+/* The selects that run without the global lock (struct nh_sel,
+   process.h).  A thread sets its own (thread_state's nh_sel) before it
+   lets go of the lock and clears it as it takes the lock back
+   (thread.c), so a thread that holds the lock sees every other thread's
+   select, each either in the select or out of it and waiting for the
+   lock.  An fd that closes, or leaves the select set, while a select
+   holds it would make that select fail with EBADF (which aborts) or
+   select on the next fd to get its number; nh_sel_quiesce makes both
+   impossible.  nh_sel_m and nh_sel_cv cover the selects' IN.  */
+static pthread_mutex_t nh_sel_m = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t nh_sel_cv = PTHREAD_COND_INITIALIZER;
+
+/* SELF, with the global lock, is about to select on SEL's sets below
+   NFDS without it.  */
+void
+nh_sel_hold (struct thread_state *self, struct nh_sel *sel, int nfds)
+{
+  sel->nfds = min (nfds, FD_SETSIZE);
+  FD_ZERO (&sel->held);
+  for (int fd = 0; fd < sel->nfds; fd++)
+    for (int i = 0; i < 3; i++)
+      if (sel->sets[i] && FD_ISSET (fd, sel->sets[i]))
+	{
+	  FD_SET (fd, &sel->held);
+	  break;
+	}
+  sel->in = true;
+  sel->wanted = false;
+  self->nh_sel = sel;
+}
+
+/* SELF's select is back, or a C-g took SELF out of it: SELF waits for
+   the lock now, and touches the sets only once it has it.  With SIGINT
+   blocked on the main thread (maybe_reacquire_global_lock comes here in
+   the handler).  */
+void
+nh_sel_out (struct thread_state *self)
+{
+  struct nh_sel *sel = self->nh_sel;
+  if (!sel || !sel->in)
+    return;
+  pthread_mutex_lock (&nh_sel_m);
+  sel->in = false;
+  pthread_cond_broadcast (&nh_sel_cv);
+  pthread_mutex_unlock (&nh_sel_m);
+}
+
+/* FD is about to close or leave the select set; the caller holds the
+   global lock.  Wait until no other thread's select holds FD, and take
+   FD out of the sets of those that are out, which the thread reads once
+   it has the lock (and the test clock selects on again).  A thread in
+   its select needs no lock to get out of it: the child signal pipe,
+   which every select that can block has in its set, wakes it, and a
+   test's pause point lets it go on.  In signal context (the SIGCHLD
+   handler deregisters an fd) and on the fatal path nothing waits; the
+   close that follows does.  */
+static void
+nh_sel_quiesce (int fd)
+{
+  if (fd < 0 || FD_SETSIZE <= fd || nh_wk_signal_context ()
+      || nh_wk_on_worker ())
+    return;
+  for (struct thread_state *t = all_threads; t; t = t->next_thread)
+    {
+      struct nh_sel *sel = t->nh_sel;
+      if (!sel || sel->nfds <= fd || !FD_ISSET (fd, &sel->held))
+	continue;
+      pthread_mutex_lock (&nh_sel_m);
+      if (sel->in)
+	{
+	  child_signal_notify ();
+	  nh_wk_pause_kick (&sel->wanted);
+	  while (sel->in)
+	    pthread_cond_wait (&nh_sel_cv, &nh_sel_m);
+	}
+      pthread_mutex_unlock (&nh_sel_m);
+      FD_CLR (fd, &sel->held);
+      for (int i = 0; i < ARRAYELTS (sel->sets); i++)
+	if (sel->sets[i])
+	  FD_CLR (fd, sel->sets[i]);
+    }
+}
+
 /* The process reader (nidhogg-io.c).  A reader-owned process keeps its
    real fd in p->infd and p->open_fd[]; the select set holds its wake fd
    instead, which chan_process names too.  This is FD as the select set
@@ -733,6 +816,9 @@ delete_write_fd (int fd)
   fd_callback_info[fd].flags &= ~(FOR_WRITE | NON_BLOCKING_CONNECT_FD);
   if (fd_callback_info[fd].flags == 0)
     {
+#ifdef HAVE_NIDHOGG_WORKERS
+      nh_sel_quiesce (fd);
+#endif
       clear_fd_callback_data (&fd_callback_info[fd]);
 
       if (fd == max_desc)
@@ -2327,6 +2413,10 @@ close_process_fd (int *fd_addr)
   if (0 <= fd)
     {
       *fd_addr = -1;
+#ifdef HAVE_NIDHOGG_WORKERS
+      /* deactivate_process closes before it deregisters.  */
+      nh_sel_quiesce (fd);
+#endif
       emacs_close (fd);
     }
 }
@@ -8834,6 +8924,9 @@ delete_keyboard_wait_descriptor (int desc)
 #ifdef subprocesses
   eassert (desc >= 0 && desc < FD_SETSIZE);
 
+#ifdef HAVE_NIDHOGG_WORKERS
+  nh_sel_quiesce (desc);
+#endif
   clear_fd_callback_data (&fd_callback_info[desc]);
 
   if (desc == max_desc)
@@ -9275,6 +9368,13 @@ init_process_emacs (int sockfd)
   memset (proc_encode_coding_system, 0, sizeof proc_encode_coding_system);
 #ifdef DATAGRAM_SOCKETS
   memset (datagram_address, 0, sizeof datagram_address);
+#endif
+#ifdef HAVE_NIDHOGG_WORKERS
+
+  /* Now, not at the first subprocess: a close that waits for a select
+     wakes it with this pipe (nh_sel_quiesce), connections and other fds
+     too.  */
+  child_signal_init ();
 #endif
 
 #endif	/* subprocesses */

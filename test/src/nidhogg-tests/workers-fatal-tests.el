@@ -27,7 +27,8 @@
 ;; the backtrace on stderr, the emergency auto-save) and exit within
 ;; the bound; a signal handler never takes a worker mutex.  The crash
 ;; rows run in `threads' mode only: in `inline' mode there is no worker
-;; thread to crash or to hold a job in flight.
+;; thread to crash or to hold a job in flight.  One row is about a Lisp
+;; thread's select, which a close under it made abort the child.
 
 ;;; Code:
 
@@ -622,5 +623,42 @@ holds the text.  Waits 20 s at most for the child."
                   '(progn (nidhogg-workers--test-io-hold-lock t)
                           (signal-process (emacs-pid) 'SIGSEGV)))
                  '(signal t))))
+
+(ert-deftest workers/close-waits-for-the-select ()
+  ;; A Lisp thread lets go of the global lock before it selects on the
+  ;; fds it computed: a process deleted meanwhile on another thread closed
+  ;; its fd under the select, which failed with EBADF and aborted the
+  ;; child (process-tests/multiple-threads-waiting, about one run in 240).
+  ;; Now a close waits until no select holds the fd.  The thread parks at
+  ;; before-select with Q's fd in its set while the main thread deletes Q;
+  ;; the reader is off, so Q's real fd is the one selected on and closed.
+  (let ((r (workers-fatal-tests--batch
+            '(progn
+               (setq nidhogg-workers-process-reader nil)
+               (let* ((p (make-process :name "p" :command '("cat")
+                                       :connection-type 'pipe :noquery t))
+                      (q (make-process :name "q" :command '("cat")
+                                       :connection-type 'pipe :noquery t))
+                      (n 0))
+                 (set-process-thread p nil)
+                 (set-process-thread q nil)
+                 (nidhogg-workers--pause-at 'before-select)
+                 (let ((th (make-thread
+                            (apply-partially #'accept-process-output p 5))))
+                   (while (and (not (nidhogg-workers--test-await-paused
+                                     'before-select 0))
+                               (< (setq n (1+ n)) 100000))
+                     (thread-yield))
+                   (unless (nidhogg-workers--test-await-paused 'before-select 0)
+                     (kill-emacs 3))
+                   (delete-process q)
+                   (process-send-string p "x\n")
+                   (nidhogg-workers--release 'before-select)
+                   (thread-join th))
+                 (princ "nh-wk: done\n"))))))
+    (ert-info ((format "%S" r) :prefix "child: ")
+      (should (equal (list (plist-get r :status) (plist-get r :code))
+                     '(exit 0)))
+      (should (string-match-p "nh-wk: done" (plist-get r :out))))))
 
 ;;; workers-fatal-tests.el ends here
