@@ -53,7 +53,7 @@ pub struct Pacing {
 
 /// One attach of a buffer: where, when, and the checksum of its bytes inside the viewport source.
 struct Attach {
-    surface: u32,
+    surface: u64,
     buffer: ObjectId,
     seq: u64,
     src: Option<[f64; 4]>,
@@ -198,7 +198,7 @@ impl State {
             self.pacing.live.insert(
                 id,
                 Attach {
-                    surface: surface.id().protocol_id(),
+                    surface: crate::state::uid(surface),
                     buffer: buf.id(),
                     seq,
                     src,

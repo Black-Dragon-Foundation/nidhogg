@@ -7,7 +7,7 @@
 //! surface.  A foreign target never has a surface, so after `drag_drop`'s `dnd_finished` the grab is released a moment
 //! later: a client that destroys its source on `dnd_finished` never hears that `cancelled`.
 use crate::control::{err, write_reply};
-use crate::state::{objects_of, State};
+use crate::state::{objects_of, uid, State};
 use calloop::generic::Generic;
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{Interest, Mode, PostAction, RegistrationToken};
@@ -59,10 +59,10 @@ struct OfferRec {
 struct DragRec {
     source: Option<WlDataSource>,
     kind: &'static str,
-    origin: Option<u32>,
+    origin: Option<u64>,
     mimes: Vec<String>,
     actions: Vec<&'static str>,
-    icon: Option<u32>,
+    icon: Option<u64>,
     sends: Vec<String>,
     accept: Option<String>,
     action: DndAction,
@@ -179,10 +179,10 @@ impl ClientDndGrabHandler for State {
         let origin = match (&pointer, seat.get_touch()) {
             (Some(p), _) => p
                 .grab_start_data()
-                .and_then(|d| d.focus.map(|(s, _)| s.id().protocol_id())),
+                .and_then(|d| d.focus.map(|(s, _)| uid(&s))),
             (None, Some(t)) => t
                 .grab_start_data()
-                .and_then(|d| d.focus.map(|(s, _)| s.id().protocol_id())),
+                .and_then(|d| d.focus.map(|(s, _)| uid(&s))),
             _ => None,
         };
         let meta = source
@@ -196,7 +196,7 @@ impl ClientDndGrabHandler for State {
             origin,
             mimes,
             actions: action_names(actions),
-            icon: icon.map(|i| i.id().protocol_id()),
+            icon: icon.as_ref().map(uid),
             sends: Vec::new(),
             accept: None,
             action: DndAction::None,

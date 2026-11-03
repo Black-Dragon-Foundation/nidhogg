@@ -2,13 +2,12 @@
 //! owns a selection; `read` reads what a real client offers.  Neither ever blocks the event loop: reads wait on a
 //! non-blocking socket with a 1 s deadline timer, writes happen on a short-lived thread.
 use crate::control::{err, write_reply};
-use crate::state::State;
+use crate::state::{uid, State};
 use calloop::generic::Generic;
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{Interest, Mode, PostAction, RegistrationToken};
 use serde_json::{json, Value};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::reexports::wayland_server::Resource;
 use smithay::wayland::selection::data_device::{
     request_data_device_client_selection, set_data_device_selection,
 };
@@ -62,7 +61,7 @@ impl XdgActivationHandler for State {
     ) {
         self.activations.push(json!({
             "token": token.as_str(),
-            "surface": surface.id().protocol_id(),
+            "surface": uid(&surface),
         }));
     }
 }

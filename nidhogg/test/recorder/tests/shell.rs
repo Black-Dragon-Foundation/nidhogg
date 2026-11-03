@@ -2,6 +2,8 @@
 mod common;
 use common::{send, Env};
 use serde_json::json;
+use wayland_client::protocol::wl_compositor::WlCompositor;
+use wayland_client::Proxy;
 use wayland_protocols::xdg::decoration::zv1::client::zxdg_decoration_manager_v1::ZxdgDecorationManagerV1;
 use wayland_protocols::xdg::decoration::zv1::client::zxdg_toplevel_decoration_v1::Mode;
 use wayland_protocols::xdg::shell::client::xdg_toplevel::State;
@@ -191,6 +193,69 @@ fn shell_acks_are_stale_per_surface_not_per_protocol_id() {
     assert_eq!(last["client"], 2, "{last}");
     assert_eq!(last["ack_serial"], b_serial, "{last}");
     assert_eq!(last["ack_stale"], false, "{last}");
+}
+
+#[test]
+fn shell_a_surface_made_after_another_went_has_a_new_id() {
+    // a client reuses a protocol id once the compositor deleted it: the new surface must not be reported (tree, log)
+    // or found (commands) under the id of the one that went, or a row that compares two trees takes it for the old one
+    let mut env = Env::new("sway", &[]);
+    let (s1, xs1, top1) = env.toplevel(200, 100);
+    let pid = s1.id().protocol_id();
+    let old = env.rec.commits().last().unwrap()["surface"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(
+        old,
+        u64::from(pid),
+        "the first surface of a protocol id keeps it"
+    );
+    // bound before the toplevel goes, so no bind takes its id
+    let compositor: WlCompositor = env.bind("wl_compositor", 6);
+    let wm: XdgWmBase = env.bind("xdg_wm_base", 6);
+    top1.destroy();
+    xs1.destroy();
+    s1.destroy();
+    env.roundtrip();
+    // the client takes the lowest free id: surfaces made one after another reach the one that went
+    let mut spare = Vec::new();
+    let s2 = loop {
+        let s = compositor.create_surface(&env.qh, ());
+        if s.id().protocol_id() == pid {
+            break s;
+        }
+        assert!(spare.len() < 64, "the client never reused id {pid}");
+        spare.push(s);
+    };
+    let xs2 = wm.get_xdg_surface(&s2, &env.qh, ());
+    let _top2 = xs2.get_toplevel(&env.qh, ());
+    s2.commit();
+    env.roundtrip();
+    xs2.ack_configure(env.client.xdg_serial);
+    let buffer = env.buffer(200, 100);
+    s2.attach(Some(&buffer), 0, 0);
+    s2.commit();
+    env.roundtrip();
+    let new = env.rec.commits().last().unwrap()["surface"]
+        .as_u64()
+        .unwrap();
+    assert_ne!(new, old, "the log names the new surface as the old one");
+    let tree = env.rec.control(json!({"cmd": "tree"}));
+    let ids: Vec<u64> = tree["surfaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["id"].as_u64().unwrap())
+        .collect();
+    assert!(ids.contains(&new) && !ids.contains(&old), "{tree}");
+    let found = env
+        .rec
+        .control(json!({"cmd": "configure", "surface": new, "size": [300, 200]}));
+    assert_eq!(found["ok"], true, "{found}");
+    let gone = env
+        .rec
+        .control(json!({"cmd": "configure", "surface": old, "size": [300, 200]}));
+    assert_eq!(gone["ok"], false, "{gone}");
 }
 
 #[test]
