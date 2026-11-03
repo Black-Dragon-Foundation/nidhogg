@@ -257,13 +257,12 @@ fn logged(rec: &Recorder, req: &str) -> usize {
         .count()
 }
 
-/// Wait (3 s at most) until the log holds `n` of `req`, then a little more; the count.
-fn logged_after(rec: &Recorder, req: &str, n: usize) -> usize {
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while logged(rec, req) < n && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    std::thread::sleep(Duration::from_millis(200));
+/// The count of `req` in the log once the recorder has handled every request the shell sent so far, the shell's
+/// answers to the events before included: the first roundtrip has the reader handle those events, the second has
+/// the recorder handle what the reader sent for them.
+fn logged_after(d: *mut NhgDisplay, rec: &Recorder, req: &str) -> usize {
+    common::sync(backend(d));
+    common::sync(backend(d));
     logged(rec, req)
 }
 
@@ -276,7 +275,7 @@ fn typing(rec: &Recorder, d: *mut NhgDisplay) -> u64 {
     rec.control_ok(r#"{"cmd":"focus","surface":"toplevel"}"#);
     settle(d);
     assert!(
-        logged_after(rec, "text_input.commit", 1) >= 1,
+        logged_after(d, rec, "text_input.commit") >= 1,
         "text input never entered"
     );
     id
@@ -353,7 +352,7 @@ mod ime {
         }
         backend(d).dispatch_main().unwrap();
         assert_eq!(
-            logged_after(&rec, "text_input.set_cursor_rectangle", before + 2),
+            logged_after(d, &rec, "text_input.set_cursor_rectangle"),
             before + 2
         );
         close(d);
@@ -385,7 +384,7 @@ mod ime {
         }
         backend(d).dispatch_main().unwrap();
         assert_eq!(
-            logged_after(&rec, "text_input.set_surrounding_text", before + 1),
+            logged_after(d, &rec, "text_input.set_surrounding_text"),
             before + 1
         );
         // SAFETY: a live display; the text holds 3 readable bytes.
@@ -394,7 +393,7 @@ mod ime {
         }
         backend(d).dispatch_main().unwrap();
         assert_eq!(
-            logged_after(&rec, "text_input.set_surrounding_text", before + 2),
+            logged_after(d, &rec, "text_input.set_surrounding_text"),
             before + 2
         );
         close(d);

@@ -305,9 +305,10 @@ fn frames_of(rec: &Recorder, id: u64) -> usize {
         .count()
 }
 
-/// Surface `id`'s tree entry 100 ms on, which must still satisfy `pred`: nothing applied a change meanwhile.
-fn still(rec: &Recorder, id: u64, pred: impl Fn(&str) -> bool) {
-    std::thread::sleep(Duration::from_millis(100));
+/// Surface `id`'s tree entry once the recorder has handled every request so far, which must still satisfy `pred`:
+/// nothing applied a change.
+fn still(d: *mut NhgDisplay, rec: &Recorder, id: u64, pred: impl Fn(&str) -> bool) {
+    common::sync(shell(d));
     let n = rec.wait_node(id, |_| true);
     assert!(pred(&n), "applied before its root's commit: {n}");
 }
@@ -352,7 +353,7 @@ mod child {
         let frames = frames_of(&rec, c);
 
         assert_eq!(set(d, c, root, 50, 25, NHG_CHILD_VISIBLE), 0);
-        still(&rec, c, |n| n.contains("\"position\":[30,20]"));
+        still(d, &rec, c, |n| n.contains("\"position\":[30,20]"));
         // a bare commit: COMMITTED reports a root buffer only
         assert_eq!(ready(d, root) & NHG_PRESENTED_COMMITTED, 0);
         rec.wait_node(c, |n| n.contains("\"position\":[50,25]"));
@@ -602,7 +603,7 @@ mod child {
 
         // a raised (z-group above)
         assert_eq!(raise(d, a, 1, 1), NHG_OK);
-        still(&rec, root, |n| n.contains(&order(a, b)));
+        still(d, &rec, root, |n| n.contains(&order(a, b)));
         ready(d, root);
         rec.wait_node(root, |n| n.contains(&order(b, a)));
         tick(&rec, d);
@@ -642,7 +643,7 @@ mod child {
 
         assert_eq!(set(d, c, root, 30, 20, 0), 0);
         assert_eq!(set(d, c, root, 30, 20, 0), 0, "hidden already");
-        still(&rec, c, |n| n.contains("\"mapped\":true"));
+        still(d, &rec, c, |n| n.contains("\"mapped\":true"));
         // a bare commit: COMMITTED reports a root buffer only
         assert_eq!(ready(d, root) & NHG_PRESENTED_COMMITTED, 0);
         let n = rec.wait_node(c, |n| n.contains("\"mapped\":false"));
@@ -688,7 +689,7 @@ mod child {
 
         let seq = next_seq(&rec);
         assert_eq!(set(d, g, c, 25, 15, NHG_CHILD_VISIBLE), 0);
-        still(&rec, g, |n| n.contains("\"position\":[10,10]"));
+        still(d, &rec, g, |n| n.contains("\"position\":[10,10]"));
         // a bare commit: COMMITTED reports a root buffer only
         assert_eq!(ready(d, root) & NHG_PRESENTED_COMMITTED, 0);
         rec.wait_node(g, |n| n.contains("\"position\":[25,15]"));
