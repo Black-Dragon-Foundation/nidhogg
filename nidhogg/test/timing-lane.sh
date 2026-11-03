@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The timing lane (report-only): the timing test files, judged against the runner's own speed.
 #   timing-lane.sh (--build-dir D | --prefix P) --report F [--rows FILE] [--samples N] [--container DISTRO] [--runner EXE]
-# --build-dir D: a sample is `build.sh --stage check` on that build dir (the desktop); --prefix P: an installed Nidhogg
+# --build-dir D: a sample is `build.sh --stage check` on that build dir (a pinned host); --prefix P: an installed Nidhogg
 # (P/bin/nidhogg) runs the test file in a batch Emacs of its own (the CI job, in a container on Linux, natively on macOS).
 #   timing-lane.sh --self-test
 # Each row of timing-rows.txt (`TEST-FILE BUDGET-RATIO`, a file under test/src/nidhogg-tests/) takes N (20) samples,
@@ -45,7 +45,7 @@ default_sample() {
     secs=$(sed -nE 's/^Ran [0-9]+ tests.*, ([0-9.]+) sec\).*/\1/p' "$log" | tail -n 1)
     rm -f "$log"; echo "${secs:-0}"; return "$rc"
   fi
-  lst=$(mktemp "$root/timing-chk.XXXXXX.txt"); echo "src/nidhogg-tests/$t" > "$lst"    # untracked: the desktop sync carries it
+  lst=$(mktemp "$root/timing-chk.XXXXXX.txt"); echo "src/nidhogg-tests/$t" > "$lst"    # untracked: a wrapper that copies the tree's changes carries it
   "$root/nidhogg/build.sh" --container "$distro" --stage check --build-dir "$build" --check "${lst#"$root"/}" > /dev/null 2>&1; rc=$?
   rm -f "$lst"
   log=$build/check-logs/src/nidhogg-tests/$t.log

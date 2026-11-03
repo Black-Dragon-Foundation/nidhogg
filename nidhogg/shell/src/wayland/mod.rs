@@ -86,6 +86,8 @@ pub struct MainState {
     windows: HashMap<u64, toplevel::Window>,
     children: HashMap<u64, child::Child>,
     popups: HashMap<u64, popup::Popup>,
+    /// The popups made so far (and made again), for the order the compositor stacks them in (`child::painted`).
+    popups_made: u64,
     /// The popups that sent a grab, bottom to top, dismissed or not, until they are destroyed (`popup.rs`).
     grabs: Vec<u64>,
     activation: Option<wayland_protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1>,
@@ -107,8 +109,8 @@ pub struct MainState {
     tokens: activation::Tokens,
     /// The newest window id given out above the protocol's range (`window_surface`).
     next_id: u64,
-    /// Popups that went with their parent while the host still names them: no new window takes such an id until the
-    /// host destroys the popup in turn (`window_destroy_local`).
+    /// Popups that went with their parent, or closed at a reconnect (`popups_closed`), while the host still names them:
+    /// no new window takes such an id until the host destroys the popup in turn (`window_destroy_local`).
     orphans: HashSet<u64>,
     /// Each parent's child windows bottom to top, the parent itself among them, for making the stacking again after
     /// a reconnect (`child.rs`).

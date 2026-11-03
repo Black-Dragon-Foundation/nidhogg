@@ -378,7 +378,8 @@ impl WaylandShell {
     /// fronts are kept; their protocol objects belonged to the old connection.
     /// - Another client's selection that went posts an empty `SELECTION`; what we own is offered again at the first
     ///   serial (`Selections::reconnected`).
-    /// - Popups close, topmost first: `POPUP_DONE` each, and their records go.
+    /// - Popups close, topmost first: `POPUP_DONE` each, and their records go; their ids stay out of use until the
+    ///   host destroys them.
     /// - An open session is opened again with reason `recover` and its id.
     /// - Top-levels are made again with what they asked for (title, app id, min size, maximized or fullscreen, the
     ///   decoration mode), each restored under its session name before its role-setup commit; then the children,

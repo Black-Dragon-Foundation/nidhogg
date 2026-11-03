@@ -58,13 +58,19 @@ impl MainState {
     }
 
     /// Root `root`, its child windows and the popups hanging from them, each with its own: what shows, bottom to top.
-    /// A popup is above every window of the tree it hangs from, and above the popups older than it.
+    /// A popup is above every window of the tree it hangs from, and above the popups made before it, in the order the
+    /// shell gave the compositor (ids are used again: a popup's id may be lower than its parent's).  A popup's parent
+    /// was made before it, so it is listed by the time the popup comes.
     pub(crate) fn painted(&self, root: WindowId) -> Vec<WindowId> {
         let mut out = Vec::new();
         self.paint_order(root, &mut out);
-        let mut popups: Vec<_> = self.popups.iter().map(|(&id, p)| (id, p.parent)).collect();
+        let mut popups: Vec<_> = self
+            .popups
+            .iter()
+            .map(|(&id, p)| (p.order, id, p.parent))
+            .collect();
         popups.sort_unstable();
-        for (id, parent) in popups {
+        for (_, id, parent) in popups {
             if out.contains(&parent) {
                 self.paint_order(id, &mut out);
             }

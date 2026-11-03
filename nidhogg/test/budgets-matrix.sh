@@ -21,7 +21,7 @@
 # 1920x1080 x 1, 1920x1080 x 1.25, 3840x2160 x 1.5 and 3840x2160 x 2 (4).  There is no pgtk side and no ratio against
 # one: the verdicts are budgets.sh's, on absolute targets.  The one pgtk reference run belongs to the gate.
 # BUDGETS_CPUSET pins the containers.  When it is unset and DRGNX_PERF_CPUS=N is, the first N physical cores' first
-# threads are used (the island's pinning, lscpu CPU,CORE).  Timing runs go through perf-exclusive.sh.
+# threads are used (a pinned host's pinning, lscpu CPU,CORE).  Timing runs go through the caller's exclusive-host wrapper.
 # Exit 0 when every cell ran, 1 when a cell failed (the others still run; --resume picks up the rest), 2 usage.
 set -u
 
@@ -52,7 +52,7 @@ case ,$cells, in *xdrgnx,*) [ -f "$drgnx/init/init.el" ] || { echo "budgets-matr
 mkdir -p "$outdir" || exit 2
 outdir=$(cd "$outdir" && pwd)
 
-# the island's pinning, as the harness does it: one thread per physical core
+# a pinned host's pinning, as the harness does it: one thread per physical core
 if [ -z "${BUDGETS_CPUSET:-}" ] && [ -n "${DRGNX_PERF_CPUS:-}" ]; then
   BUDGETS_CPUSET=$(lscpu -p=CPU,CORE | awk -F, -v n="$DRGNX_PERF_CPUS" '/^#/ {next} !($2 in s) && k < n {s[$2] = 1; printf "%s%s", (k++ ? "," : ""), $1}')
   export BUDGETS_CPUSET
