@@ -1220,6 +1220,32 @@ mod reconnect {
         );
     }
 
+    /// `presented` counts what this connection's compositor has: none of the pictures from the loss on, until the new
+    /// compositor has every one.
+    #[test]
+    fn presented_starts_again_on_the_new_connection() {
+        let _g = shared();
+        let rec = Recorder::start("sway");
+        let mut b = backing::Backing::new(200, 100);
+        let (mut shell, w) = presenting(&rec, &mut b);
+        let presented = |s: &mut WaylandShell| {
+            let st = s.presenter_stats().unwrap();
+            st.presented == st.published
+        };
+        until(&mut shell, "the first picture presented", presented);
+        restart(&rec, r#"{"cmd":"restart","mode":"keep-socket"}"#);
+        until_reconnecting(&mut shell);
+        reconnect_within(&mut shell, 3);
+        let st = shell.presenter_stats().unwrap();
+        assert!(
+            st.presented < st.published,
+            "presented on the new connection before its configure: {st:?}"
+        );
+        configure_and_publish(&mut shell, w, &b);
+        until(&mut shell, "the picture on the new connection", presented);
+        until(&mut shell, "the picture shown", |_| shows(&rec, &b));
+    }
+
     /// Review Focus 5: the compositor goes while the presenter composes (300 ms) and stays away past the compose.  The
     /// compose ends on a dead connection: nothing is sent, its buffer goes back, and the picture it held comes back
     /// whole on the new connection.

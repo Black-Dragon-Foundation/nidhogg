@@ -377,39 +377,34 @@ the workspaces and the output are \"visible\" before any window maps)."
                  (json-parse-string (buffer-string) :object-type 'alist :array-type 'list
                                     :false-object nil :null-object nil))))))
 
-(defvar gui-runner--settled-counts nil
-  "`gui-runner--presenter-counts' at the end of the last `gui-runner-wait-settled'.")
-
 (defun gui-runner--presenter-counts ()
-  "(OWED . SENT) of the selected frame's display: the packets that need a commit of their own (published, less those
-merged into one still waiting), and the commits sent.  Nil on a frame with no presenter, or when the display is gone."
+  "(PUBLISHED PRESENTED SENT) of the selected frame's display: the newest request's number, the newest that has gone
+out with every older one, and the commits sent (`nhwl-presenter-stats').  Nil on a frame with no presenter, or when
+the display is gone."
   (when-let* (((fboundp 'nhwl-presenter-stats))
               (s (ignore-errors (nhwl-presenter-stats))))
-    (cons (- (plist-get s :packets) (plist-get s :superseded))
+    (list (plist-get s :published) (plist-get s :presented)
           (+ (plist-get s :commits) (plist-get s :bare-commits)))))
 
 (defun gui-runner--presented-p (&optional now)
-  "Non-nil when every packet published since the last settle has gone out as a commit.
-NOW is the `gui-runner--presenter-counts' to judge (nil: read them now).  A packet makes at least one commit, and a
-tree with child frames makes more, so this holds only once none waits for the presenter or the pacer.  A new
-connection's presenter counts from zero."
-  (let* ((now (or now (gui-runner--presenter-counts))) (then gui-runner--settled-counts)
-         (then (if (and now then (< (cdr now) (cdr then))) '(0 . 0) then)))
-    (or (null now) (null then)
-        (>= (- (cdr now) (cdr then)) (- (car now) (car then))))))
+  "Non-nil when every request of the frame's display has gone out to the compositor in a flushed commit.
+NOW is the `gui-runner--presenter-counts' to judge (nil: read them now).  Each picture published, configure ack and
+piece of surface state takes a number, and the presenter's `:presented' passes one only once its commit, and every
+older one's, is flushed: no other commit (a bare ack, a child frame's, the one before) stands for it."
+  (let ((now (or now (gui-runner--presenter-counts))))
+    (or (null now) (>= (nth 1 now) (nth 0 now)))))
 
 (defun gui-runner--recorder-next ()
   "The recorder's next commit sequence number (a :since past the end, so no commit is copied)."
   (plist-get (gui-runner-recorder '(:cmd "log" :since 1000000000)) :next))
 
 (defun gui-runner--recorder-quiet (seen)
-  "A predicate: every packet has gone out as a commit, every frame callback is answered, and the recorder's commit log
-stands still between two calls.  SEEN is a cons whose car keeps the last sequence number.  An answered callback leaves
-the pacer open, so a commit still owed shows in `gui-runner--presented-p'.  The presenter's counters are read before
-the recorder is asked: a commit counts once flushed, and one flushed before the first of the two replies has been read
-by the second, so the log read here holds every commit counted before.  They are read again after: a packet published
-or a commit sent meanwhile (a query's redisplay can publish) is for the next call.  While the output is occluded the
-callbacks wait: only the log counts."
+  "A predicate: every request has gone out (`gui-runner--presented-p'), every frame callback is answered, and the
+recorder's commit log stands still between two calls.  SEEN is a cons whose car keeps the last sequence number.  The
+presenter's counters are read before the recorder is asked: a commit counts once flushed, and one flushed before the
+first of the two replies has been read by the second, so the log read here holds every commit counted before.  They
+are read again after: a request numbered or a commit sent meanwhile (a query's redisplay can publish) is for the next
+call.  While the output is occluded the callbacks wait: only the log counts."
   (lambda ()
     (let* ((counts (gui-runner--presenter-counts))
            (o (gui-runner-recorder '(:cmd "outstanding")))
@@ -433,7 +428,7 @@ the answers and whatever the recorder sent before them are in the socket for one
 (defun gui-runner-wait-settled (&optional read)
   "Wait until what the frame last drew has reached the compositor, and fail the running row if that takes over 3 s.
 With READ, read and drop the events meanwhile: a commit can wait for a configure Emacs has not read yet.
-The frame's side, on the native shell: the presenter owes no commit (`gui-runner--presented-p'); on pgtk: a paint after
+The frame's side, on the native shell: every request has gone out (`gui-runner--presented-p'); on pgtk: a paint after
 it (`glitnir-snapshot' asks for one and returns after GDK's after-paint, which commits).  The compositor's side,
 recorder: the frame callbacks are answered and the commit log stands still (a dead control socket is an error); sway:
 `swaymsg -t get_tree' shows a window of Nidhogg.  A later grab is a later request on the compositor's event loop."
@@ -451,16 +446,15 @@ recorder: the frame callbacks are answered and the commit log stands still (a de
       ("sway" (funcall settle (lambda () (and (gui-runner--sway-window-shown-p) (gui-runner--presented-p)))))
       ("recorder" (funcall settle (gui-runner--recorder-quiet (list nil))))
       (_ (funcall settle #'gui-runner--presented-p)))
-    (let ((then gui-runner--settled-counts) (now (gui-runner--presenter-counts)))
-      (setq gui-runner--settled-counts now)
-      (unless ok
-        (let ((why (format "gui-runner: not settled in 3 s: presenter %S since %S, selected %S, frames %S%s" now then
-                           (selected-frame) (mapcar (lambda (f) (cons f (frame-visible-p f))) (frame-list))
-                           (if (equal compositor "recorder")
-                               (format ", outstanding %S" (gui-runner-recorder '(:cmd "outstanding")))
-                             ""))))
-          (glitnir-gui--say "%s" why)
-          (when (ert-running-test) (ert-fail why)))))))
+    (unless ok
+      (let ((why (format "gui-runner: not settled in 3 s: presenter %S, selected %S, frames %S%s"
+                         (gui-runner--presenter-counts)
+                         (selected-frame) (mapcar (lambda (f) (cons f (frame-visible-p f))) (frame-list))
+                         (if (equal compositor "recorder")
+                             (format ", outstanding %S" (gui-runner-recorder '(:cmd "outstanding")))
+                           ""))))
+        (glitnir-gui--say "%s" why)
+        (when (ert-running-test) (ert-fail why))))))
 
 (defun gui-runner-pixel-diff (a b &optional rect)
   "Compare two grabs A and B (each (W H BYTES)) over RECT, a list (X Y W H) in both (default: the common top-left

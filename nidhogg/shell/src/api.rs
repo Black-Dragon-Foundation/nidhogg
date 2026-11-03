@@ -540,8 +540,9 @@ pub struct SurfaceFrame<'a> {
 
 /// The presenter's counters since open: packets published, those merged into one still waiting or gone with their
 /// window (`superseded`: `packets - superseded` packets commit), buffer and bare commits (counted once flushed to the
-/// compositor), the longest wait of the host's thread and the longest publish copy, and fronts dropped idle.
-/// C reads it as `NhgPresenterCounters` (`nhglue.h`), inside the glue's `NhgPresenterStats`.
+/// compositor), the longest wait of the host's thread and the longest publish copy, fronts dropped idle, and how far
+/// the pictures have gone out.  C reads it as `NhgPresenterCounters` (`nhglue.h`), inside the glue's
+/// `NhgPresenterStats`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct NhShellPresenterStats {
@@ -552,6 +553,19 @@ pub struct NhShellPresenterStats {
     pub main_wait_max_ns: u64,
     pub publish_copy_max_ns: u64,
     pub front_trims: u64,
+    /// The newest request's number (0: none yet): each packet published takes the next one, and so does each
+    /// configure ack and piece of surface state recorded for a commit.
+    pub published: u64,
+    /// The newest request that, with every older one, has gone out to this connection's compositor in a flushed
+    /// commit, or needs none any more (its window is gone or hidden; a content ack whose picture is not published
+    /// yet waits for that packet's number).  `presented < published` while a picture, an ack or recorded state waits
+    /// for its commit, whatever else was committed meanwhile; 0 after a connection loss until the new compositor has
+    /// every picture.
+    pub presented: u64,
+    /// The same, once moreover the compositor has used each shown window's newest commit (its frame callback is
+    /// done): `presented` says the requests are on their way, `shown` that the compositor acted on them.  It stays
+    /// behind while a window the compositor shows holds back its callback.
+    pub shown: u64,
     pub thread_on: u32,
 }
 
