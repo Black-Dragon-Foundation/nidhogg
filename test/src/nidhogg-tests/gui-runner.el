@@ -388,11 +388,12 @@ merged into one still waiting), and the commits sent.  Nil on a frame with no pr
     (cons (- (plist-get s :packets) (plist-get s :superseded))
           (+ (plist-get s :commits) (plist-get s :bare-commits)))))
 
-(defun gui-runner--presented-p ()
+(defun gui-runner--presented-p (&optional now)
   "Non-nil when every packet published since the last settle has gone out as a commit.
-A packet makes at least one commit, and a tree with child frames makes more, so this holds only once none waits for
-the presenter or the pacer.  A new connection's presenter counts from zero."
-  (let* ((now (gui-runner--presenter-counts)) (then gui-runner--settled-counts)
+NOW is the `gui-runner--presenter-counts' to judge (nil: read them now).  A packet makes at least one commit, and a
+tree with child frames makes more, so this holds only once none waits for the presenter or the pacer.  A new
+connection's presenter counts from zero."
+  (let* ((now (or now (gui-runner--presenter-counts))) (then gui-runner--settled-counts)
          (then (if (and now then (< (cdr now) (cdr then))) '(0 . 0) then)))
     (or (null now) (null then)
         (>= (- (cdr now) (cdr then)) (- (car now) (car then))))))
@@ -402,18 +403,24 @@ the presenter or the pacer.  A new connection's presenter counts from zero."
   (plist-get (gui-runner-recorder '(:cmd "log" :since 1000000000)) :next))
 
 (defun gui-runner--recorder-quiet (seen)
-  "A predicate: every frame callback is answered and the recorder's commit log stands still between two calls.
-SEEN is a cons whose car keeps the last sequence number.  A commit sent before the first of the two replies has been
-read by the second, and an answered callback leaves the pacer open, so a commit still owed shows in
-`gui-runner--presented-p'.  While the output is occluded the callbacks wait: only the log counts."
+  "A predicate: every packet has gone out as a commit, every frame callback is answered, and the recorder's commit log
+stands still between two calls.  SEEN is a cons whose car keeps the last sequence number.  An answered callback leaves
+the pacer open, so a commit still owed shows in `gui-runner--presented-p'.  The presenter's counters are read before
+the recorder is asked: a commit counts once flushed, and one flushed before the first of the two replies has been read
+by the second, so the log read here holds every commit counted before.  They are read again after: a packet published
+or a commit sent meanwhile (a query's redisplay can publish) is for the next call.  While the output is occluded the
+callbacks wait: only the log counts."
   (lambda ()
-    (let* ((o (gui-runner-recorder '(:cmd "outstanding")))
+    (let* ((counts (gui-runner--presenter-counts))
+           (o (gui-runner-recorder '(:cmd "outstanding")))
            (occluded (eq (plist-get o :occluded) t))
            (next (gui-runner--recorder-next))
            (still (eql next (car seen))))
       (setcar seen next)
       (and still
-           (or occluded (and (eql 0 (plist-get o :callbacks)) (gui-runner--presented-p)))))))
+           (or occluded
+               (and (eql 0 (plist-get o :callbacks)) (gui-runner--presented-p counts)
+                    (equal counts (gui-runner--presenter-counts))))))))
 
 (defun gui-runner-wait-callbacks-answered ()
   "Wait (5 s at most) for the recorder to have answered every frame callback, with Emacs reading no input meanwhile:
