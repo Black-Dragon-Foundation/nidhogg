@@ -727,8 +727,13 @@ mod tree_snapshot {
             gravity: 8,
             adjust: 0,
         };
+        // The client library hands an id out again once it has handled the compositor's `delete_id`, the one it let
+        // go of last first.  So that `p` takes new ids and `n` and `s` the fillers', nothing may be let go of at a time
+        // of its own: the root's frame callback is done and handled first, and each popup's positioner (let go of
+        // once the popup is made) before the next popup.  A ping waits for that and takes no id; a roundtrip's
+        // callback would take one and let it go.
         let popup = |shell: &mut WaylandShell, parent| {
-            shell
+            let w = shell
                 .child_new(&ChildDesc {
                     kind: NHSHELL_KIND_POPUP,
                     parent,
@@ -739,19 +744,21 @@ mod tree_snapshot {
                     anchor,
                     flags: 0,
                 })
-                .unwrap()
+                .unwrap();
+            rec.ping(shell);
+            w
         };
+        until(&mut shell, "the root's frame callback", |s| !waiting(s, id));
+        rec.ping(&shell);
         let fillers = [popup(&mut shell, id), popup(&mut shell, id)];
         let p = popup(&mut shell, id);
         for f in fillers {
             shell.window_destroy(f).unwrap();
         }
-        // the client library frees an id once the compositor has let go of it (`delete_id`), which a roundtrip after
-        // the destroys has read
         until(&mut shell, "the fillers gone", |_| {
             rec.surfaces("popup") == 1
         });
-        shell.roundtrip().unwrap();
+        rec.ping(&shell);
         while shell.next_event().unwrap().is_some() {}
         let n = popup(&mut shell, p);
         let s = popup(&mut shell, id);
