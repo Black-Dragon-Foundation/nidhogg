@@ -134,9 +134,9 @@ impl Extras {
     }
 }
 
-/// The ids the logs use: protocol ids, per client, as in the other logs.
-fn sid(surface: &WlSurface) -> u32 {
-    surface.id().protocol_id()
+/// The ids the logs use: the surface's id (`state::uid`), per client, as in the other logs.
+fn sid(surface: &WlSurface) -> u64 {
+    crate::state::uid(surface)
 }
 
 /// The replies of the four query commands.

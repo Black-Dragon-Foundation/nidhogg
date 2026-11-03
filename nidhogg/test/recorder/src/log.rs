@@ -35,9 +35,10 @@ impl DamageRect {
 pub struct Commit {
     pub seq: u64,
     pub client: u32,
-    pub surface: u32,
+    /// The surface's id (`state::uid`), as the tree and the commands name it.
+    pub surface: u64,
     pub role: String,
-    pub parent: Option<u32>,
+    pub parent: Option<u64>,
     pub buffer: Option<BufferInfo>,
     pub buffer_scale: i32,
     pub viewport: Viewport,
@@ -79,7 +80,7 @@ pub struct Commit {
 /// A buffer whose bytes inside the viewport source differed at its release from what they were at its attach.
 #[derive(Serialize, Clone, Debug)]
 pub struct HeldWrite {
-    pub surface: u32,
+    pub surface: u64,
     pub buffer: u32,
     pub attached_seq: u64,
     pub released_seq: u64,

@@ -1,6 +1,6 @@
 //! xdg-shell scripting: initial and scripted configures with states, the decoration mode, ping/pong.
 use crate::control::{err, write_reply};
-use crate::state::{role_name, PendingPing, State};
+use crate::state::{role_name, uid, PendingPing, State};
 use serde_json::{json, Value};
 use smithay::delegate_xdg_decoration;
 use smithay::delegate_xdg_shell;
@@ -87,7 +87,7 @@ impl State {
     ) {
         let mut entry = json!({
             "req": format!("xdg_toplevel.{req}"),
-            "surface": t.wl_surface().id().protocol_id(),
+            "surface": uid(t.wl_surface()),
             "serial": serial.map(u32::from),
         });
         if let (Some(e), Some(x)) = (entry.as_object_mut(), extra.as_object()) {
@@ -235,7 +235,7 @@ impl XdgShellHandler for State {
         surface.send_repositioned(token);
         let entry = json!({
             "req": "xdg_popup.reposition",
-            "surface": surface.wl_surface().id().protocol_id(),
+            "surface": uid(surface.wl_surface()),
             "commit_seq": self.log.next_seq(),
         });
         self.log_input(entry);
@@ -393,11 +393,8 @@ fn find_toplevel(state: &mut State, req: &Value) -> Result<ToplevelSurface, Valu
     state.toplevels.retain(|t| t.alive());
     let toplevel = match req.get("surface") {
         Some(Value::Number(n)) => {
-            let id = n.as_u64().unwrap_or(0) as u32;
-            state
-                .toplevels
-                .iter()
-                .find(|t| t.wl_surface().id().protocol_id() == id)
+            let id = n.as_u64().unwrap_or(0);
+            state.toplevels.iter().find(|t| uid(t.wl_surface()) == id)
         }
         Some(Value::String(s)) if s == "focused" => state.toplevels.last(),
         _ => return Err(err("\"surface\" must be an id or \"focused\"")),
@@ -503,11 +500,8 @@ pub fn popup_done(state: &mut State, req: &Value) -> Value {
     let popup = match req.get("surface") {
         Some(Value::String(s)) if s == "newest" => state.popups.last(),
         Some(Value::Number(n)) => {
-            let id = n.as_u64().unwrap_or(0) as u32;
-            state
-                .popups
-                .iter()
-                .find(|p| p.wl_surface().id().protocol_id() == id)
+            let id = n.as_u64().unwrap_or(0);
+            state.popups.iter().find(|p| uid(p.wl_surface()) == id)
         }
         _ => return err("\"surface\" must be an id or \"newest\""),
     };
@@ -543,19 +537,13 @@ pub fn tree(state: &mut State) -> Value {
         .surfaces
         .iter()
         .map(|surface| {
-            let id = surface.id().protocol_id();
+            let id = uid(surface);
             let role = role_name(surface);
             let parent = compositor::get_parent(surface);
-            let children: Vec<u32> = compositor::get_children(surface)
-                .iter()
-                .map(|c| c.id().protocol_id())
-                .collect();
-            let above: Vec<u32> = match &parent {
+            let children: Vec<u64> = compositor::get_children(surface).iter().map(uid).collect();
+            let above: Vec<u64> = match &parent {
                 Some(p) => {
-                    let siblings: Vec<u32> = compositor::get_children(p)
-                        .iter()
-                        .map(|c| c.id().protocol_id())
-                        .collect();
+                    let siblings: Vec<u64> = compositor::get_children(p).iter().map(uid).collect();
                     siblings
                         .iter()
                         .position(|&s| s == id)
@@ -629,7 +617,7 @@ pub fn tree(state: &mut State) -> Value {
                 "id": id,
                 "role": role,
                 "grab": grab,
-                "parent": parent.map(|p| p.id().protocol_id()),
+                "parent": parent.as_ref().map(uid),
                 "position": position,
                 "sync": role == "subsurface" && compositor::is_sync_subsurface(surface),
                 "above": above,
