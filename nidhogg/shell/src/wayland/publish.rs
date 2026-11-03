@@ -349,6 +349,8 @@ pub struct Stage {
     /// ride a buffer composed now.
     applied: HashMap<u64, u64>,
     composer: Composer,
+    /// Commits sent since the last flush, with a buffer (a window's or a layer's) and bare; they count when flushed.
+    unflushed: (u64, u64),
     pub stats: Arc<Counters>,
 }
 
@@ -559,14 +561,14 @@ impl Stage {
     }
 
     /// Surface `id`'s buffer was committed: its stats entry (with the tree's key time when it is the root), and its
-    /// damage joins the history.
+    /// damage joins the history.  The commit counts at the next `flushed`.
     pub fn presented(&mut self, id: u64) {
         self.record(id);
         if let Some(s) = self.surfaces.get_mut(&id) {
             s.hist.push_front(std::mem::take(&mut s.damage));
             s.hist.truncate(HIST);
         }
-        Counters::add(&self.stats.commits, 1);
+        self.unflushed.0 += 1;
     }
 
     /// Root `root`'s tree showed new pixels on its content layers alone: its stats entry and key time, unless the
@@ -575,6 +577,20 @@ impl Stage {
         if !self.damaged(root) {
             self.record(root);
         }
+    }
+
+    /// A bare commit was sent; it counts at the next `flushed`.
+    pub fn presented_bare(&mut self) {
+        self.unflushed.1 += 1;
+    }
+
+    /// The connection was flushed: the commits sent before count.  A commit in the counters has left for the
+    /// compositor (or, with the socket full, waits for the reader's flush), so a settle that reads them and then asks
+    /// the compositor finds each one there (`gui-runner--recorder-quiet`).
+    pub fn flushed(&mut self) {
+        let (commits, bare) = std::mem::take(&mut self.unflushed);
+        Counters::add(&self.stats.commits, commits);
+        Counters::add(&self.stats.bare_commits, bare);
     }
 
     /// Surface `id`'s stats entry for a commit that showed what waited (with the tree's key time when it is the root).
@@ -625,12 +641,12 @@ impl Stage {
         self.surfaces.get(&root)?.outs.get(&layer)
     }
 
-    /// Layer `layer` of root `root` committed what waited for it.
+    /// Layer `layer` of root `root` committed what waited for it; the commit counts at the next `flushed`.
     pub fn take_pending(&mut self, root: u64, layer: u64) {
         if let Some(s) = self.surfaces.get_mut(&root) {
             s.outs.remove(&layer);
         }
-        Counters::add(&self.stats.commits, 1);
+        self.unflushed.0 += 1;
     }
 
     /// No layer can show root `root`'s own outputs (no subcompositor or viewporter): what waits for them becomes the
