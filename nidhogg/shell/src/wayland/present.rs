@@ -1014,8 +1014,12 @@ pub(crate) fn present_tree(
 /// until its commit.  A retired tree holds nothing, and neither does one before its first configure (nothing of it can
 /// go until then).  Second: the compositor has not used the root's newest commit yet (its frame callback is not done),
 /// unless the window is not shown (suspended), where no callback comes.
+/// A lock that is busy counts as waiting: the fence never waits for one (the host may hold it), and whoever holds it
+/// wakes presenting again when it is done.
 fn tree_waits(stage: &Stage, root: u64, tree: &Arc<Mutex<Present>>) -> (bool, bool) {
-    let r = lock(tree);
+    let Some(r) = peek(tree) else {
+        return (true, true);
+    };
     if r.retired {
         return (false, false);
     }
@@ -1023,11 +1027,19 @@ fn tree_waits(stage: &Stage, root: u64, tree: &Arc<Mutex<Present>>) -> (bool, bo
     let waits = r.owes()
         || ack
         || (r.configured && r.tree_content)
-        || r.kids.iter().any(|k| {
-            let p = lock(&k.present);
-            !p.retired && p.owes()
-        });
+        || r.kids
+            .iter()
+            .any(|k| peek(&k.present).is_none_or(|p| !p.retired && p.owes()));
     (waits, r.newest_frame.is_some() && !r.suspended)
+}
+
+/// `p` locked if no one holds it, else `None`.
+fn peek(p: &Mutex<Present>) -> Option<MutexGuard<'_, Present>> {
+    match p.try_lock() {
+        Ok(g) => Some(g),
+        Err(TryLockError::Poisoned(e)) => Some(e.into_inner()),
+        Err(TryLockError::WouldBlock) => None,
+    }
 }
 
 /// `Stage::note_presented` for the trees in `roots` (the presenter's list): whether one holds anything to send, and
