@@ -419,13 +419,14 @@ pub fn follow_parent(state: &mut Display, parent: u64) {
 
 /// The publish step of a drawable child `window` whose native size is `native_w` x `native_h` (from
 /// `nhg_csd_paint`): its position and input region (the native area, without the shadow margin) go to the shell if
-/// they changed, with the tree's next commit.  Nothing for any other window.
+/// they changed, for the commit that shows this publish's picture (the publish wakes the tree for them).  A failed
+/// request is tried again at the next publish.  Nothing for any other window.
 pub fn sync(state: &mut Display, window: u64, native_w: i32, native_h: i32) {
     match state.frame(window) {
         Ok(f) if f.flags & NHG_FRAME_CHILD != 0 && f.child.parent != 0 => {}
         _ => return,
     }
-    send_position(state, window);
+    let pos = position(state, window).ok();
     let Ok((backend, _, f)) = state.csd_parts(window) else {
         return;
     };
@@ -438,18 +439,24 @@ pub fn sync(state: &mut Display, window: u64, native_w: i32, native_h: i32) {
         [0; 4]
     };
     let c = &mut f.child;
-    if c.region == Some(reg) {
-        return;
-    }
+    let pos = pos.filter(|&p| c.pos != Some(p));
     if c.region.is_none() && reg[2] == 0 {
         // the whole surface is the default
         c.region = Some(reg);
+    }
+    let region = (c.region != Some(reg)).then_some(reg);
+    if pos.is_none() && region.is_none() {
         return;
     }
     let rect = [Rect::new(reg[0], reg[1], reg[2], reg[3])];
-    let rects: &[Rect] = if reg[2] != 0 { &rect } else { &[] };
-    if backend.set_input_region(window, rects).is_ok() {
-        c.region = Some(reg);
+    let input = region.map(|r| if r[2] != 0 { &rect[..] } else { &[][..] });
+    if backend.set_child_place(window, pos, input).is_ok() {
+        if pos.is_some() {
+            c.pos = pos;
+        }
+        if region.is_some() {
+            c.region = region;
+        }
     }
 }
 

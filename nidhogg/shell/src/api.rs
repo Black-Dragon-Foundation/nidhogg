@@ -330,6 +330,16 @@ pub trait ShellBackend {
     fn stack(&mut self, window: WindowId, sibling: WindowId, above: bool) -> ShellResult;
     /// The part of the window that takes input (logical pixels); none at all means the whole surface.
     fn set_input_region(&mut self, window: WindowId, rects: &[Rect]) -> ShellResult;
+    /// Child `window`'s position and input region as the host's publish step has them for its next picture (`None`:
+    /// unchanged), recorded as `set_position` and `set_input_region` record them.  Nothing wakes for them: the publish
+    /// that follows does, so the commit that shows the picture carries them (a publish with nothing new to show still
+    /// wakes a tree that owes a commit).  `State` for a window that is not a child.
+    fn set_child_place(
+        &mut self,
+        window: WindowId,
+        pos: Option<(i32, i32)>,
+        input: Option<&[Rect]>,
+    ) -> ShellResult;
     /// Off: show nothing (a null buffer); on: the next present shows the window again.
     fn set_mapped(&mut self, window: WindowId, on: bool) -> ShellResult;
     /// Whether popup `window` holds a grab (asked with `NHSHELL_WIN_GRAB`, granted, not dismissed); false for other
