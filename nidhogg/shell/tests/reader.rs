@@ -51,15 +51,8 @@ mod reader {
     fn ping_answered_while_main_blocks() {
         let rec = Recorder::start("sway");
         let shell = rec.open();
-        // the recorder pings from another thread while this one sleeps 3 s without calling the shell
-        let reply = std::thread::scope(|s| {
-            let pinger = s.spawn(|| {
-                std::thread::sleep(Duration::from_millis(500));
-                rec.control(r#"{"cmd":"ping"}"#)
-            });
-            std::thread::sleep(Duration::from_secs(3));
-            pinger.join().unwrap()
-        });
+        // the host's thread makes no shell call from the ping to its answer: only the reader can give the pong
+        let reply = rec.control(r#"{"cmd":"ping"}"#);
         let ms = number(&reply, "pong_ms").unwrap_or_else(|| panic!("no pong: {reply}"));
         assert!(ms < 100, "pong after {ms} ms");
         drop(shell);
@@ -115,6 +108,7 @@ mod reader {
             sent += BATCH;
             shell.flush().unwrap();
         }
+        // a span for the reader's retries: none can succeed while the recorder is stopped, so no event marks it
         std::thread::sleep(Duration::from_millis(100));
         assert!(
             shell.flush_pending(),
@@ -344,6 +338,9 @@ mod reader {
         ("drag_cancel", |s, _| s.drag_cancel()),
         ("set_reconnect", |s, _| s.set_reconnect(true)),
         ("reconnect", |s, _| s.reconnect(50)),
+        ("reader_roundtrip", |s, _| {
+            s.reader_roundtrip(Duration::from_secs(1))
+        }),
         ("window_destroy", |s, w| s.window_destroy(w)),
     ];
 

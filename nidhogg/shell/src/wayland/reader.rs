@@ -28,6 +28,7 @@ use std::sync::{Arc, Weak};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::{JoinHandle, ThreadId};
 use wayland_client::backend::WaylandError;
+use wayland_client::protocol::wl_callback::{self, WlCallback};
 use wayland_client::protocol::wl_keyboard::{self, KeyState, WlKeyboard};
 use wayland_client::protocol::wl_seat::{self, Capability, WlSeat};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
@@ -480,6 +481,22 @@ impl Dispatch<XdgWmBase, ()> for ReaderState {
         if let xdg_wm_base::Event::Ping { serial } = event {
             wm_base.pong(serial);
         }
+    }
+}
+
+/// `WaylandShell::reader_roundtrip`'s callback: its answer is handled after every event the compositor sent before.
+pub struct Synced(pub std::sync::mpsc::SyncSender<()>);
+
+impl Dispatch<WlCallback, Synced> for ReaderState {
+    fn event(
+        _: &mut Self,
+        _: &WlCallback,
+        _: wl_callback::Event,
+        synced: &Synced,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let _ = synced.0.try_send(());
     }
 }
 
