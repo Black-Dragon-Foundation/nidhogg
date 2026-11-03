@@ -939,14 +939,14 @@ fn send_kids(
 /// content ack never rides a bare commit.
 ///
 /// The decision and the sends run under the tree's mutex; composing runs between them without it, so the host's
-/// thread never waits for a compose.  A tree retired meanwhile commits nothing; its buffers go.  `delay`: a test hook
-/// that makes composing take that long.
+/// thread never waits for a compose.  A tree retired meanwhile commits nothing; its buffers go.  `hold`: the test
+/// hooks' wait between a compose and its send (the presenter's compose delay and gate).
 pub(crate) fn present_tree(
     stage: &mut Stage,
     wire: &Wire,
     root: u64,
     tree: &Arc<Mutex<Present>>,
-    delay: Duration,
+    hold: &dyn Fn(),
 ) -> bool {
     let applied = stage.applied(root);
     let mut jobs = Vec::new();
@@ -1001,9 +1001,7 @@ pub(crate) fn present_tree(
     for j in &layer_jobs {
         j.draw(stage, root);
     }
-    if !delay.is_zero() {
-        std::thread::sleep(delay);
-    }
+    hold();
     let mut r = lock(tree);
     send(stage, wire, root, tree, &mut r, applied, jobs, layer_jobs)
 }
@@ -1584,7 +1582,7 @@ impl WaylandShell {
         let Some(tree) = self.main.presents.get(&root).cloned() else {
             return Ok(false);
         };
-        let shown = present_tree(stage, &wire, root, &tree, Duration::ZERO);
+        let shown = present_tree(stage, &wire, root, &tree, &|| {});
         let flushed = wire.shared.host_flush(&wire.conn);
         stage.flushed();
         flushed?;

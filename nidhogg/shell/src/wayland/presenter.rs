@@ -30,7 +30,7 @@ use rustix::event::{PollFd, PollFlags, poll};
 use rustix::fd::{FromRawFd, OwnedFd};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use wayland_client::protocol::wl_compositor::WlCompositor;
@@ -157,6 +157,20 @@ pub struct Link {
     delay_ms: AtomicU64,
     /// The running thread's kernel id (0: none), for the tests that watch its wake-ups.
     tid: AtomicI32,
+    /// Test hooks' state (`presenter_turned`, `set_compose_gate`); `hooks_cv` is signalled at each change.
+    hooks: Mutex<Hooks>,
+    hooks_cv: Condvar,
+}
+
+/// What the tests wait for on the presenter thread.
+#[derive(Default)]
+struct Hooks {
+    /// The newest request number that a finished turn of the running thread covered (0: none yet).
+    turned: u64,
+    /// Composes wait before their send until the gate opens.
+    gate_closed: bool,
+    /// Composes that have reached the closed gate since open.
+    held: u64,
 }
 
 impl Link {
@@ -175,6 +189,8 @@ impl Link {
             counters: Arc::default(),
             delay_ms: AtomicU64::new(delay),
             tid: AtomicI32::new(0),
+            hooks: Mutex::default(),
+            hooks_cv: Condvar::new(),
         })
     }
 
@@ -237,6 +253,45 @@ impl Link {
 
     fn delay(&self) -> Duration {
         Duration::from_millis(self.delay_ms.load(Ordering::Relaxed))
+    }
+
+    /// Between a compose and its send, on the presenter thread: the compose delay, then the closed gate.
+    fn compose_hold(&self) {
+        let delay = self.delay();
+        if !delay.is_zero() {
+            std::thread::sleep(delay);
+        }
+        let mut h = locked(&self.hooks);
+        if !h.gate_closed {
+            return;
+        }
+        h.held += 1;
+        self.hooks_cv.notify_all();
+        while h.gate_closed {
+            h = self.hooks_cv.wait(h).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    fn set_gate(&self, closed: bool) {
+        locked(&self.hooks).gate_closed = closed;
+        self.hooks_cv.notify_all();
+    }
+
+    /// A turn of the running thread covered every request up to `seq`.
+    fn turned(&self, seq: u64) {
+        let mut h = locked(&self.hooks);
+        h.turned = h.turned.max(seq);
+        self.hooks_cv.notify_all();
+    }
+
+    /// Wait until `done` holds for the hooks' state, `timeout` at most.
+    fn wait_hooks(&self, timeout: Duration, done: impl Fn(&Hooks) -> bool) -> bool {
+        let h = locked(&self.hooks);
+        let (h, _) = self
+            .hooks_cv
+            .wait_timeout_while(h, timeout, |h| !done(h))
+            .unwrap_or_else(|e| e.into_inner());
+        done(&h)
     }
 
     /// A host thread's wait for a lock the presenter may hold.
@@ -327,8 +382,9 @@ pub(crate) fn spawn(
     stage: Stage,
 ) -> std::io::Result<JoinHandle<Option<Stage>>> {
     link.stop.store(false, Ordering::Release);
-    // the thread before this one (a reconnect starts a new one) is no id of this one's
+    // the thread before this one (a reconnect starts a new one): neither its id nor its turns are this one's
     link.tid.store(0, Ordering::Release);
+    locked(&link.hooks).turned = 0;
     let done = Arc::new(ThreadDone::default());
     *locked(&link.done) = Some(done.clone());
     let finished = done.clone();
@@ -411,17 +467,21 @@ fn run(link: &Link, mail: &Mailbox, mut stage: Stage) -> Stage {
         if link.stop.load(Ordering::Acquire) {
             return stage;
         }
+        // read before the drain: with nothing on its way after the turn, this turn covered every request up to it
+        let seen = mail.seq();
         stage.drain(mail);
         if let Some(wire) = wire {
-            let delay = link.delay();
             let roots = link.roots();
             for (id, tree) in &roots {
-                present_tree(&mut stage, &wire, *id, tree, delay);
+                present_tree(&mut stage, &wire, *id, tree, &|| link.compose_hold());
             }
             // EAGAIN is the reader's to retry; any other failure reaches the host through the reader's DISCONNECTED
             let _ = wire.shared.host_flush(&wire.conn);
             stage.flushed();
             note_presented(&stage, mail, &roots);
+        }
+        if mail.quiet() {
+            link.turned(seen);
         }
         if timer_fired {
             timer.drain();
@@ -478,6 +538,8 @@ impl crate::wayland::WaylandShell {
     pub(super) fn presenter_stop(&mut self) {
         self.link.on.store(false, Ordering::Release);
         if let Some(t) = self.presenting.thread.take() {
+            // a compose held at the test hook's gate would never end
+            self.link.set_gate(false);
             BackendThread::stop(&*self.link);
             let stage = t.join().ok().flatten();
             self.presenting.restage(stage);
@@ -488,6 +550,29 @@ impl crate::wayland::WaylandShell {
     #[doc(hidden)]
     pub fn set_compose_delay(&self, ms: u64) {
         self.link.set_delay_ms(ms);
+    }
+
+    /// Test hook: composes on the presenter thread wait before their send (the tree's mutex not held) while the gate
+    /// is closed.  Stopping the thread opens it.
+    #[doc(hidden)]
+    pub fn set_compose_gate(&self, closed: bool) {
+        self.link.set_gate(closed);
+    }
+
+    /// Test hook: wait until `n` composes have reached the closed gate since open (`timeout` at most); whether they
+    /// have.
+    #[doc(hidden)]
+    pub fn composes_held(&self, n: u64, timeout: Duration) -> bool {
+        self.link.wait_hooks(timeout, |h| h.held >= n)
+    }
+
+    /// Test hook: wait until a finished turn of the running presenter thread covered request `seq` (a `published` the
+    /// host read), `timeout` at most; whether one did.  That turn drained the request, presented every tree and
+    /// flushed what it sent (a full socket is the reader's to retry): a commit it implies is on the wire, and one it
+    /// did not make waits for something else (a frame callback, a release, an ack).
+    #[doc(hidden)]
+    pub fn presenter_turned(&self, seq: u64, timeout: Duration) -> bool {
+        self.link.wait_hooks(timeout, |h| h.turned >= seq)
     }
 
     /// Test hook: the presenter thread's kernel id, once it runs.

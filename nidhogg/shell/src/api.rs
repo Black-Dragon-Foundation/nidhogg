@@ -430,6 +430,14 @@ pub trait ShellBackend {
     /// The commits of root `root` that showed something: a buffer, a child's buffer or a child's new state.  A record
     /// for tests.
     fn draw_count(&self, root: WindowId) -> ShellResult<u64>;
+    /// Test hook: a roundtrip through the thread that handles the compositor's input.  Every request sent so far has
+    /// reached the compositor, and every event it sent before its answer has been handled (its records are queued).
+    /// `Timeout` when no answer comes within `timeout`; `Unsupported` for a backend without one.
+    #[doc(hidden)]
+    fn reader_roundtrip(&self, timeout: std::time::Duration) -> ShellResult {
+        let _ = timeout;
+        Err(ShellError::Unsupported)
+    }
 
     /// Root `root`'s tree as the compositor was given it: `frames` (the root's first; a surface not listed is hidden,
     /// and any that is not in the tree is ignored) composed whole, their chrome and shadows included, at their places,
