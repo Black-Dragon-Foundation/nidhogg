@@ -335,7 +335,8 @@ mod configure {
         assert_eq!((scales[0].window, scales[0].code), (id, 180));
         assert!((scales[0].scale - 1.5).abs() < 1e-9);
         rec.control_ok(r#"{"cmd":"scale","value120":180}"#);
-        std::thread::sleep(Duration::from_millis(200));
+        // whatever the recorder sent for it is queued
+        common::sync(backend(d));
         assert!(settle(d).iter().all(|a| a.kind != NHG_ACT_SCALE));
         close(d);
     }
