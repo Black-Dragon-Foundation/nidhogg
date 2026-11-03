@@ -122,16 +122,18 @@ impl MainState {
     }
 
     /// `ShellBackend::scale_start`: surface `id` starts at `scale120` while the compositor has said nothing of its
-    /// scale.  No `SCALE` is posted: the host made the frame for it.
+    /// scale (with a fractional-scale object: no `preferred_scale` yet, see `recompute_scale`).  No `SCALE` is posted:
+    /// the host made the frame for it.
     pub(crate) fn scale_start(&mut self, id: u64, scale120: u32) {
         let Some(s) = self.scales.get_mut(&id) else {
             return;
         };
-        if s.frac120.is_some()
-            || s.buffer_scale.is_some()
-            || !s.entered.is_empty()
-            || s.current == scale120
-        {
+        let heard = if s.fractional.is_some() {
+            s.frac120.is_some()
+        } else {
+            s.buffer_scale.is_some() || !s.entered.is_empty()
+        };
+        if heard || s.current == scale120 {
             return;
         }
         s.current = scale120;
@@ -158,22 +160,27 @@ impl MainState {
         }
     }
 
-    /// Recompute surface `id`'s scale and post `SCALE` when it changed.
+    /// Recompute surface `id`'s scale and post `SCALE` when it changed.  A surface with a fractional-scale object takes
+    /// `preferred_scale` alone: the integer scales round it up, and a new surface hears its buffer scale first, so
+    /// taking that meanwhile would post a scale the surface never has (a frame made at 1.25 heard 2 and grew).
     pub(crate) fn recompute_scale(&mut self, id: u64) {
         let Some(s) = self.scales.get(&id) else {
             return;
         };
-        let new = s
-            .frac120
-            .or(s.buffer_scale.map(|b| b * 120))
-            .or_else(|| {
-                s.entered
-                    .iter()
-                    .filter_map(|o| self.outputs.get(o))
-                    .map(|o| o.scale120())
-                    .max()
-            })
-            .unwrap_or(SCALE_ONE);
+        let new = if s.fractional.is_some() {
+            s.frac120.unwrap_or(s.current)
+        } else {
+            s.buffer_scale
+                .map(|b| b * 120)
+                .or_else(|| {
+                    s.entered
+                        .iter()
+                        .filter_map(|o| self.outputs.get(o))
+                        .map(|o| o.scale120())
+                        .max()
+                })
+                .unwrap_or(SCALE_ONE)
+        };
         if new == s.current {
             return;
         }

@@ -30,6 +30,40 @@ mod scale {
         assert_eq!(shell.window_scale(id).unwrap(), 150);
     }
 
+    /// The fractional scale is the surface's scale where the compositor has it: the integer buffer scale that comes
+    /// with it (rounded up, and to a new surface first) posts no scale of its own (a child frame made at 1.25 heard 2
+    /// for a moment, re-opened its fonts and grew).
+    #[test]
+    fn a_new_surface_hears_only_its_fractional_scale() {
+        let rec = Recorder::start("sway");
+        let mut shell = rec.open();
+        assert!(
+            rec.control(r#"{"cmd":"scale","value120":150}"#)
+                .contains("\"ok\":true")
+        );
+        let id = shell.surface_new().unwrap();
+        shell.scale_attach(id).unwrap();
+        shell.flush().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut seen = Vec::new();
+        while !seen.contains(&150) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no scale 150: {seen:?}"
+            );
+            while let Some(e) = shell.next_event().unwrap() {
+                if let ShellEvent::Scale(s) = e.event
+                    && e.window == id
+                {
+                    seen.push(s.scale120);
+                }
+            }
+            readable_within(shell.wake_fd(), 50);
+        }
+        assert_eq!(seen, vec![150]);
+        assert_eq!(shell.window_scale(id).unwrap(), 150);
+    }
+
     #[test]
     fn fallback_to_buffer_scale_without_fractional() {
         let rec = Recorder::start("no-fractional");
