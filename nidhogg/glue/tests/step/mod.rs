@@ -85,11 +85,12 @@ pub fn settle(d: *mut NhgDisplay) -> Vec<NhgAction> {
     }
 }
 
-/// Wait until the shell has queued what the recorder sent (its descriptor is readable), and a little more.
+/// Wait until the shell has queued what the recorder sent (its descriptor is readable), all of it: the recorder has
+/// handled every request so far, and the shell every event it sent before answering (`common::sync`).
 pub fn queued(d: *mut NhgDisplay) {
     // SAFETY: a live display.
     assert!(readable_within(unsafe { nhg_fd(d) }, 3000), "nothing came");
-    std::thread::sleep(Duration::from_millis(200));
+    crate::common::sync(backend(d));
 }
 
 /// A top-level window of 200 x 100, made and registered as `nhwl_window_new` makes it, at scale 1.
