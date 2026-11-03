@@ -474,12 +474,15 @@ is delivered here as the special event C makes of it."
 
 (ert-deftest nhwl-gui/live-session ()
   "Session restore on a real compositor (mutter): frames made, deleted and made again under their names.  The trace
-rule `errors' judges what was sent."
+rule `errors' judges what was sent.  The selected frame leaves fullscreen first (an earlier row may have left it
+there): sway shows no window behind a fullscreen one and answers none of its frame callbacks, so a new frame's
+pictures would wait for good and no settle could end."
   :tags '(runs-last)
   (skip-unless (and (nhwl-gui--live-p) (nhwl-gui--nhwl-frames)))
-  (let ((frames nil))
+  (let ((frames nil) (old (frame-parameter nil 'fullscreen)))
     (unwind-protect
         (progn
+          (nhwl-gui--set-fullscreen nil)
           (dotimes (_ 2) (push (make-frame '((minibuffer . nil))) frames))
           (nhwl-gui--live-settle)
           (let ((name (frame-parameter (car frames) 'session-name)))
@@ -489,7 +492,8 @@ rule `errors' judges what was sent."
             (push (make-frame `((session-name . ,name) (minibuffer . nil))) frames)
             (nhwl-gui--live-settle))
           (should (frame-live-p (selected-frame))))
-      (dolist (f frames) (when (frame-live-p f) (delete-frame f))))))
+      (dolist (f frames) (when (frame-live-p f) (delete-frame f)))
+      (nhwl-gui--set-fullscreen old))))
 
 ;; The drop target.  The recorder is a foreign source (`dnd_offer', `dnd_motion', `dnd_drop', read back
 ;; with `dnd_log'); `pgtk-dnd.el' decides what a drop does.  Positions are logical surface pixels of the toplevel.
