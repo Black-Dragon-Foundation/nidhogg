@@ -571,7 +571,8 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   select holds it: the close waits until the select is out (the child signal pipe, in every select that can block,
   wakes it), and takes the fd out of the sets of a select that is back but has not got the lock yet. So a select never
   meets a closed fd (`EBADF` aborts Emacs) or reports on the next fd to get its number, the test clock's later rounds
-  included. The pipe opens at startup; signal context (the SIGCHLD handler) and the fatal path never wait. Test
+  included. The pipe opens at startup; signal context (the SIGCHLD handler) and the fatal path never wait, and no
+  close waits for its own thread's select (`kill-emacs` from a SIGTERM handler runs on top of it). Test
   primitive: the pause point `before-select`, where a Lisp thread other than the main one parks before a select that
   can block, its fds held; a close that waits for it sends it on.
 - The fatal path: `shut_down_emacs` marks the workers dead first when Emacs dies of a signal or a fatal error. From
