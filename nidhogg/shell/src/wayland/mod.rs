@@ -397,6 +397,18 @@ impl WaylandShell {
         self.shared.want_flush.load(Ordering::Acquire)
     }
 
+    /// Test hook: a roundtrip on a queue of its own.  Whatever the compositor sent before its answer has been read,
+    /// so the protocol ids it let go of (`wl_display.delete_id`) are free again.
+    #[doc(hidden)]
+    pub fn roundtrip(&self) -> ShellResult {
+        struct Nothing;
+        let mut queue = self.conn.new_event_queue::<Nothing>();
+        queue
+            .roundtrip(&mut Nothing)
+            .map(|_| ())
+            .map_err(|_| ShellError::Disconnected)
+    }
+
     /// Test hook: a drag is in progress on the seat (popups take no grab).
     #[doc(hidden)]
     pub fn dragging(&self) -> bool {

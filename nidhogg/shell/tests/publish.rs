@@ -169,22 +169,109 @@ mod publish {
         stage.presented(1);
         stage.take_pending(1, 2);
         stage.presented_bare();
-        let s = stats.stats(false);
+        let s = stats.stats(false, 0);
         assert_eq!(
             (s.commits, s.bare_commits),
             (0, 0),
             "counted before the flush"
         );
         stage.flushed();
-        let s = stats.stats(false);
+        let s = stats.stats(false, 0);
         assert_eq!((s.commits, s.bare_commits), (2, 1));
         stage.flushed();
-        let s = stats.stats(false);
+        let s = stats.stats(false, 0);
         assert_eq!((s.commits, s.bare_commits), (2, 1), "counted twice");
     }
 
-    /// The packets that need a commit of their own less the commits sent: a settled display has it where it was
-    /// (`gui-runner--presented-p`).
+    /// `presented` is the newest request that, with every older one, has gone out: while the pacer holds a picture
+    /// it stays behind `published`, whatever went out meanwhile (here a bare ack), and it reaches it with that
+    /// picture's flushed commit.  A settle that counted commits against packets took the bare ack for the picture.
+    #[test]
+    fn presented_waits_for_the_picture_the_pacer_holds() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let mut shell = rec.open();
+        let mut b = Backing::new(200, 100);
+        let id = window(&mut shell, &mut b);
+        let before = shell.presenter_stats().unwrap();
+        assert_eq!(
+            before.presented, before.published,
+            "the first picture: {before:?}"
+        );
+        b.fill(Rect::new(0, 0, 20, 10), 0xff11_2233);
+        assert!(publish(&mut shell, id, &[(&b, id)], 0));
+        assert!(
+            !shell.present_tree(id).unwrap(),
+            "the pacer waits for the first picture's callback"
+        );
+        let r =
+            rec.control(r#"{"cmd":"configure","surface":"focused","size":[200,100],"states":[]}"#);
+        let serial = number(&r, "serial").expect("a serial") as u32;
+        wait_for(&mut shell, |e| e.kind() == Kind::Configure);
+        shell.ack_configure(id, serial, 0).unwrap();
+        assert!(!shell.present_tree(id).unwrap(), "the bare ack goes alone");
+        shell.flush().unwrap();
+        let s = shell.presenter_stats().unwrap();
+        assert_eq!(s.bare_commits - before.bare_commits, 1, "{s:?}");
+        assert!(s.presented < s.published, "the picture waits: {s:?}");
+        // (the first configure's content ack posted a FRAME_READY still queued: wait for the callback itself)
+        present(&rec);
+        until(&mut shell, "the frame callback", |s| !waiting(s, id));
+        assert!(shell.present_tree(id).unwrap(), "the held picture");
+        shell.flush().unwrap();
+        let s = shell.presenter_stats().unwrap();
+        assert_eq!(s.presented, s.published, "{s:?}");
+        assert!(s.shown < s.published, "its callback is held: {s:?}");
+        present(&rec);
+        until(&mut shell, "the held picture's callback", |s| {
+            !waiting(s, id)
+        });
+        let s = shell.presenter_stats().unwrap();
+        assert_eq!(s.shown, s.published, "used: {s:?}");
+    }
+
+    /// A configure's ack is a request too: with no picture waiting, `presented` stays behind `published` until the
+    /// commit that carries the ack is flushed.  A settle that waited for pictures alone let the next request (a
+    /// fullscreen state) overtake the answer to the configure before it.
+    #[test]
+    fn presented_waits_for_a_bare_ack() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let mut shell = rec.open();
+        let mut b = Backing::new(200, 100);
+        let id = window(&mut shell, &mut b);
+        let r =
+            rec.control(r#"{"cmd":"configure","surface":"focused","size":[200,100],"states":[]}"#);
+        let serial = number(&r, "serial").expect("a serial") as u32;
+        wait_for(&mut shell, |e| e.kind() == Kind::Configure);
+        let before = shell.presenter_stats().unwrap();
+        shell.ack_configure(id, serial, 0).unwrap();
+        let s = shell.presenter_stats().unwrap();
+        assert!(s.presented < s.published, "recorded, not sent: {s:?}");
+        assert!(!shell.present_tree(id).unwrap(), "the bare ack goes alone");
+        let s = shell.presenter_stats().unwrap();
+        assert_eq!(s.bare_commits - before.bare_commits, 1, "{s:?}");
+        assert_eq!(s.presented, s.published, "{s:?}");
+    }
+
+    /// A window goes while the pacer holds its picture: nothing waits any more, and `presented` reaches the newest
+    /// packet with no commit.
+    #[test]
+    fn presented_reaches_the_newest_when_the_waiting_window_goes() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let mut shell = rec.open();
+        let mut b = Backing::new(200, 100);
+        let id = window(&mut shell, &mut b);
+        b.fill(Rect::new(0, 0, 20, 10), 0xff11_2233);
+        assert!(publish(&mut shell, id, &[(&b, id)], 0));
+        assert!(!shell.present_tree(id).unwrap(), "the pacer waits");
+        let s = shell.presenter_stats().unwrap();
+        assert!(s.presented < s.published, "{s:?}");
+        shell.window_destroy(id).unwrap();
+        let s = shell.presenter_stats().unwrap();
+        assert_eq!(s.presented, s.published, "{s:?}");
+    }
+
+    /// The packets that need a commit of their own less the commits sent: a display with nothing waiting has it where
+    /// it was.
     fn unpaid(s: &NhShellPresenterStats) -> i64 {
         (s.packets - s.superseded) as i64 - (s.commits + s.bare_commits) as i64
     }
@@ -230,6 +317,10 @@ mod publish {
         assert_eq!(after.packets - before.packets, 2);
         assert_eq!(after.superseded - before.superseded, 1, "{after:?}");
         assert_eq!(unpaid(&after), unpaid(&before), "{before:?} {after:?}");
+        assert_eq!(
+            after.presented, after.published,
+            "both acks went: {after:?}"
+        );
     }
 
     /// A window goes with the packet of a content ack still waiting: it never commits, and the counters say so.
@@ -247,6 +338,7 @@ mod publish {
         let after = shell.presenter_stats().unwrap();
         assert_eq!(after.superseded - before.superseded, 1, "{after:?}");
         assert_eq!(unpaid(&after), unpaid(&before), "{before:?} {after:?}");
+        assert_eq!(after.presented, after.published, "nothing waits: {after:?}");
     }
 
     /// Review Focus 2: three packets while the pacer waits merge; the one commit at the callback damages their union
@@ -653,11 +745,12 @@ mod tree_snapshot {
         for f in fillers {
             shell.window_destroy(f).unwrap();
         }
-        // the client library frees an id once the compositor has let go of it
+        // the client library frees an id once the compositor has let go of it (`delete_id`), which a roundtrip after
+        // the destroys has read
         until(&mut shell, "the fillers gone", |_| {
             rec.surfaces("popup") == 1
         });
-        std::thread::sleep(Duration::from_millis(100));
+        shell.roundtrip().unwrap();
         while shell.next_event().unwrap().is_some() {}
         let n = popup(&mut shell, p);
         let s = popup(&mut shell, id);

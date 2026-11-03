@@ -240,11 +240,16 @@ int32_t nhg_presenter_thread (NhgDisplay *d, int32_t on);
 /* The presenter's counters since open, and its timing: FRAMES root buffers that showed published drawing, LATE of
    them committed more than a refresh after they were ready, and the longest wait from ready to commit.  Neither.
    The shell's counters: packets published and merged into one still waiting (SUPERSEDED), buffer and bare commits,
-   the longest wait of the host's thread and the longest publish copy, fronts dropped idle, and whether the presenter
-   runs on its own thread.  */
+   the longest wait of the host's thread and the longest publish copy, fronts dropped idle, the newest request's
+   number (PUBLISHED: packets, configure acks and surface state recorded for a commit each take the next one) and the
+   newest request that, with every older one, has gone out to this connection's compositor in a flushed commit or
+   needs none any more (PRESENTED: behind PUBLISHED while a picture, an ack or recorded state waits, whatever else
+   was committed), the same once the compositor has used each shown window's newest commit too (SHOWN: its frame
+   callback is done), and whether the presenter runs on its own thread.  */
 typedef struct
 {
   uint64_t packets, superseded, commits, bare_commits, main_wait_max_ns, publish_copy_max_ns, front_trims;
+  uint64_t published, presented, shown;
   uint32_t thread_on;
 } NhgPresenterCounters;
 typedef struct
@@ -304,10 +309,12 @@ int32_t nhg_frame_csd (NhgDisplay *d, uint64_t window, int32_t on);
    read_socket_hook loops on nhg_next, which takes exactly one shell event and answers with its actions; C applies
    them (the Emacs calls) before it asks again, so each decision sees what the earlier events changed.  Before each
    call C samples NHG_IN_* again.  An action whose window maps to no frame is skipped.  Neither reads nor writes
-   pixels.  */
+   pixels.  Each call first records the acks of the configures C applied since the last; with NHG_IN_ACKS_ONLY that
+   is all it does (it takes no event and returns 0), which a drain cut at its cap ends with.  */
 
 #define NHG_IN_INPUT_WAITING   1   /* kbd_buffer_events_waiting () */
 #define NHG_IN_COALESCE_WHEEL  2   /* mwheel-coalesce-scroll-events */
+#define NHG_IN_ACKS_ONLY       4   /* record the acks due, take no event */
 typedef struct { uint32_t flags; } NhgNextIn;
 
 /* Kinds 1-31 are the original set, 32-63 the later ones.  */

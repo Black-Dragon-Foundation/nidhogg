@@ -3363,6 +3363,18 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 	count += nhwl_apply (dpyinfo, &list.v[i], hold_quit);
     }
 
+  /* Cut at the cap, the drain may end right after a configure it
+     applied: record that ack now, taking no event, so that every
+     configure applied is answered when the drain returns.  */
+  if (rc > 0)
+    {
+      in.flags = NHG_IN_ACKS_ONLY;
+      list.v = NULL;
+      list.n = 0;
+      rc = nhwl_glue_rc (dpyinfo,
+			 NHG (nhg_next (dpyinfo->glue, &in, &list)));
+    }
+
   if (rc == NHG_E_DISCONNECTED)
     dpyinfo->connection_lost = true;
 
@@ -4209,7 +4221,16 @@ without (each counted once flushed to the compositor),
 `:main-wait-max-ns' (the longest Emacs's thread waited for the
 presenter), `:publish-copy-max-ns' (the longest copy into the front
 buffers), `:front-trims' (front buffers dropped after the quiet period),
-`:thread-on' (1 when it presents on its own thread, 0 inline), and its
+`:published' (the newest request's number, 0 before the first: each
+packet, configure ack and piece of surface state recorded for a commit
+takes the next one), `:presented' (the newest request that, with every
+older one, has gone out to the compositor in a flushed commit or needs
+none any more: below `:published' while a picture, an ack or recorded
+state waits, whatever else was committed meanwhile; 0 after a
+reconnection until the new compositor has every picture), `:shown'
+(the same, once the compositor has also used each shown window's
+newest commit: its frame callback is done; behind while a window the
+compositor shows holds its callback back), `:thread-on' (1 when it presents on its own thread, 0 inline), and its
 timing: `:presenter-frames' root buffers that showed published drawing,
 `:presenter-late' of them committed more than a refresh after they were
 ready, and `:ready-to-commit-max-ns'.  */)
@@ -4229,6 +4250,9 @@ ready, and `:ready-to-commit-max-ns'.  */)
 	       QCpublish_copy_max_ns,
 	       make_uint (s.counters.publish_copy_max_ns),
 	       QCfront_trims, make_uint (s.counters.front_trims),
+	       QCpublished, make_uint (s.counters.published),
+	       QCpresented, make_uint (s.counters.presented),
+	       QCshown, make_uint (s.counters.shown),
 	       QCthread_on, make_fixnum (s.counters.thread_on),
 	       QCpresenter_frames, make_uint (s.frames),
 	       QCpresenter_late, make_uint (s.late),
@@ -4266,6 +4290,27 @@ its layer's view (`nhwl-scroll-layers').  For tests.  */)
   return make_fixnum (max (rc, 0));
 }
 
+DEFUN ("nhwl--frame-states", Fnhwl__frame_states, Snhwl__frame_states,
+       0, 1, 0,
+       doc: /* Return the states of FRAME's last configure, a list.
+FRAME defaults to the selected frame.  The list holds `fullscreen' and
+`maximized' as the compositor last configured them: its answer, while
+the `fullscreen' parameter says at once what the frame asked for.  For
+tests.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+  Lisp_Object states = Qnil;
+
+  if (!FRAME_NHWL_P (f))
+    error ("Not a Nidhogg shell frame");
+  if (FRAME_NHWL_OUTPUT (f)->states & NHG_STATE_MAXIMIZED)
+    states = Fcons (Qmaximized, states);
+  if (FRAME_NHWL_OUTPUT (f)->states & NHG_STATE_FULLSCREEN)
+    states = Fcons (Qfullscreen, states);
+  return states;
+}
+
 #ifdef ENABLE_CHECKING
 DEFUN ("nhwl--test-glue-panic", Fnhwl__test_glue_panic,
        Snhwl__test_glue_panic, 0, 1, 0,
@@ -4294,6 +4339,7 @@ syms_of_nhwlterm (void)
   defsubr (&Snhwl_presenter_stats);
   defsubr (&Snhwl_glue_panics);
   defsubr (&Snhwl__scroll_layers);
+  defsubr (&Snhwl__frame_states);
 #ifdef ENABLE_CHECKING
   defsubr (&Snhwl__test_glue_panic);
 #endif
@@ -4319,6 +4365,9 @@ syms_of_nhwlterm (void)
   DEFSYM (QCmain_wait_max_ns, ":main-wait-max-ns");
   DEFSYM (QCpublish_copy_max_ns, ":publish-copy-max-ns");
   DEFSYM (QCfront_trims, ":front-trims");
+  DEFSYM (QCpublished, ":published");
+  DEFSYM (QCpresented, ":presented");
+  DEFSYM (QCshown, ":shown");
   DEFSYM (QCthread_on, ":thread-on");
   DEFSYM (QCpresenter_frames, ":presenter-frames");
   DEFSYM (QCpresenter_late, ":presenter-late");
