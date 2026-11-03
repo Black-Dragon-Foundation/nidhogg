@@ -255,6 +255,33 @@ impl WaylandShell {
         Ok(())
     }
 
+    /// `ShellBackend::set_child_place`: recorded and owed as `window_set_position` and `window_set_input_region` do,
+    /// with no wake.
+    pub(super) fn window_set_child_place(
+        &mut self,
+        id: WindowId,
+        pos: Option<(i32, i32)>,
+        input: Option<&[Rect]>,
+    ) -> ShellResult {
+        let c = self.main.children.get_mut(&id).ok_or(ShellError::State)?;
+        if let Some((x, y)) = pos {
+            (c.x, c.y) = (x, y);
+        }
+        if pos.is_none() && input.is_none() {
+            return Ok(());
+        }
+        self.main.present_record(id, |p| {
+            if pos.is_some() {
+                p.rec.position = pos;
+            }
+            if let Some(rects) = input {
+                p.rec.input = Some(rects.to_vec());
+            }
+        });
+        self.main.present_owe(id, true, false);
+        Ok(())
+    }
+
     pub(super) fn window_set_mapped(&mut self, id: WindowId, on: bool) -> ShellResult {
         if !self.main.surfaces.contains_key(&id) {
             return Err(ShellError::State);
