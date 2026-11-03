@@ -122,6 +122,18 @@ impl ClientData for ClientState {
     }
 }
 
+/// A surface's id in the logs, the tree and the commands: its protocol id, with the number of the client's earlier
+/// surfaces of that protocol id above bit 32.  A client reuses a protocol id once the compositor deleted it, and the
+/// protocol id alone would name the new surface as the one that went (a row comparing two trees takes it for the old
+/// one).  The first surface of a protocol id keeps it; ids stay per client, as protocol ids are.
+struct SurfaceUid(u64);
+
+/// `surface`'s id (`SurfaceUid`).  Not inside `compositor::with_states` of the same surface: it takes that lock.
+pub fn uid(surface: &WlSurface) -> u64 {
+    compositor::with_states(surface, |s| s.data_map.get::<SurfaceUid>().map(|u| u.0))
+        .unwrap_or_else(|| u64::from(surface.id().protocol_id()))
+}
+
 pub struct State {
     pub display: DisplayHandle,
     pub compositor_state: CompositorState,
@@ -170,6 +182,8 @@ pub struct State {
     pub decoration_mode: DecoMode,
     /// Every surface created, for scale events and frame callbacks.
     pub surfaces: Vec<WlSurface>,
+    /// How many surfaces each client made under each protocol id: the next one's number (`SurfaceUid`).
+    uid_gens: HashMap<(u32, u32), u32>,
     pub toplevels: Vec<ToplevelSurface>,
     pub popups: Vec<PopupSurface>,
     /// Newest configure serial sent, and newest acked since the last commit, by surface object (protocol ids are
@@ -504,6 +518,7 @@ impl State {
             popups: Vec::new(),
             sent_serial: HashMap::new(),
             acked: HashMap::new(),
+            uid_gens: HashMap::new(),
             shell_clients: Vec::new(),
             pings: Vec::new(),
             mono_base,
@@ -599,6 +614,19 @@ impl CompositorHandler for State {
     fn new_surface(&mut self, surface: &WlSurface) {
         self.surfaces.retain(|s| s.is_alive());
         self.surfaces.push(surface.clone());
+        let client = surface
+            .client()
+            .and_then(|c| c.get_data::<ClientState>().map(|d| d.id))
+            .unwrap_or(0);
+        let pid = surface.id().protocol_id();
+        let n = self.uid_gens.entry((client, pid)).or_insert(0);
+        let uid = u64::from(pid) | (u64::from(*n) << 32);
+        *n += 1;
+        compositor::with_states(surface, |states| {
+            states
+                .data_map
+                .insert_if_missing_threadsafe(|| SurfaceUid(uid));
+        });
         // a surface born at a scale above 1 hears it at once
         compositor::add_pre_commit_hook::<State, _>(surface, |_, _, surface| {
             // outside `with_states`: it takes the surface's lock, which `with_states` holds
@@ -643,13 +671,13 @@ impl CompositorHandler for State {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
-        let sid = surface.id().protocol_id();
+        let sid = uid(surface);
         let client = surface
             .client()
             .and_then(|c| c.get_data::<ClientState>().map(|d| d.id))
             .unwrap_or(0);
         let role = role_name(surface);
-        let parent = compositor::get_parent(surface).map(|p| p.id().protocol_id());
+        let parent = compositor::get_parent(surface).map(|p| uid(&p));
         let (buffer, buffer_scale, request, viewport, presentation, pos, title, app_id, alpha) =
             compositor::with_states(surface, |states| {
                 let viewport = {

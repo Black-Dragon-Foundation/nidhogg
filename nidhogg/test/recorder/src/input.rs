@@ -174,7 +174,7 @@ impl SeatHandler for State {
                 });
                 json!({
                     "req": "set_cursor",
-                    "surface": s.id().protocol_id(),
+                    "surface": crate::state::uid(&s),
                     "hotspot": hotspot.map(|h| [h.x, h.y]),
                     "serial": null,
                 })
@@ -320,11 +320,11 @@ pub(crate) fn find_surface(state: &mut State, v: &Value) -> Result<WlSurface, St
     state.toplevels.retain(|t| t.alive());
     match v {
         Value::Number(n) => {
-            let id = n.as_u64().unwrap_or(0) as u32;
+            let id = n.as_u64().unwrap_or(0);
             state
                 .surfaces
                 .iter()
-                .find(|s| s.id().protocol_id() == id)
+                .find(|s| crate::state::uid(s) == id)
                 .cloned()
                 .ok_or_else(|| "no such surface".to_string())
         }
