@@ -409,6 +409,7 @@ fn run(link: &Link, mail: &Mailbox, mut stage: Stage) -> Stage {
             }
             // EAGAIN is the reader's to retry; any other failure reaches the host through the reader's DISCONNECTED
             let _ = wire.shared.host_flush(&wire.conn);
+            stage.flushed();
         }
         if timer_fired {
             timer.drain();

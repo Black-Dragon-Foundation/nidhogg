@@ -159,6 +159,30 @@ mod publish {
         assert_eq!(after.commits, before.commits);
     }
 
+    /// A commit counts once its connection is flushed, not when it is sent: a settle reads the counters and then asks
+    /// the compositor, which must have every commit they count (`gui-runner--recorder-quiet`).
+    #[test]
+    fn commits_count_once_flushed() {
+        use nhshell::wayland::{presenter::Counters, publish::Stage};
+        let stats = std::sync::Arc::new(Counters::default());
+        let mut stage = Stage::new(stats.clone());
+        stage.presented(1);
+        stage.take_pending(1, 2);
+        stage.presented_bare();
+        let s = stats.stats(false);
+        assert_eq!(
+            (s.commits, s.bare_commits),
+            (0, 0),
+            "counted before the flush"
+        );
+        stage.flushed();
+        let s = stats.stats(false);
+        assert_eq!((s.commits, s.bare_commits), (2, 1));
+        stage.flushed();
+        let s = stats.stats(false);
+        assert_eq!((s.commits, s.bare_commits), (2, 1), "counted twice");
+    }
+
     /// The packets that need a commit of their own less the commits sent: a settled display has it where it was
     /// (`gui-runner--presented-p`).
     fn unpaid(s: &NhShellPresenterStats) -> i64 {
