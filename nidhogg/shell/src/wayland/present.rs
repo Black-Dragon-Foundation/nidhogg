@@ -34,7 +34,7 @@ use crate::event::*;
 use crate::wayland::conn::Shared;
 use crate::wayland::layers::{ContentLayer, LayerJob};
 use crate::wayland::presenter::{DEFAULT_REFRESH_NS, Link, Wire};
-use crate::wayland::publish::Stage;
+use crate::wayland::publish::{Mailbox, Stage};
 use crate::wayland::reader::ReaderState;
 use crate::wayland::scale::{SCALE_ONE, buffer_size};
 use crate::wayland::shm::ShmBuf;
@@ -125,6 +125,10 @@ pub struct Present {
     begun: Option<BufferSlot>,
     /// The pacer waits for the frame callback of its last commit with content.
     waiting: bool,
+    /// The frame callback of a root's newest commit that asked for one, until it is done: the compositor has used
+    /// that commit, and with it every older one (`NhShellPresenterStats::shown`).  An older callback's done says
+    /// nothing of the newer commits.
+    newest_frame: Option<WlCallback>,
     /// A `present_begin` found every buffer busy: the next release makes the pacer ready again.
     starved: bool,
     /// The host drew something since its last frame.
@@ -236,6 +240,7 @@ impl Present {
             bufs: HashMap::new(),
             begun: None,
             waiting: false,
+            newest_frame: None,
             starved: false,
             dirty: false,
             ack: None,
@@ -537,7 +542,7 @@ impl Present {
         if !std::mem::take(&mut self.rec.rearm) || !self.waiting || self.root.is_some() {
             return false;
         }
-        self.commit.surface.frame(rqh, me.clone());
+        self.newest_frame = Some(self.commit.surface.frame(rqh, me.clone()));
         self.commit.surface.commit();
         true
     }
@@ -585,7 +590,7 @@ impl Present {
         // the pacer, feedback is statistics
         let paced = self.root.is_none() && (!all.is_empty() || self.tree_content);
         if paced {
-            surface.frame(&wire.rqh, me.clone());
+            self.newest_frame = Some(surface.frame(&wire.rqh, me.clone()));
             if let Some(pres) = &wire.presentation {
                 pres.feedback(surface, &wire.rqh, me.clone());
             }
@@ -629,7 +634,7 @@ impl Present {
         }
         if std::mem::take(&mut self.tree_content) {
             let surface = &self.commit.surface;
-            surface.frame(&wire.rqh, me.clone());
+            self.newest_frame = Some(surface.frame(&wire.rqh, me.clone()));
             if let Some(pres) = &wire.presentation {
                 pres.feedback(surface, &wire.rqh, me.clone());
             }
@@ -682,6 +687,7 @@ impl Present {
         self.ack_content = false;
         self.content_next = !child;
         self.waiting = false;
+        self.newest_frame = None;
         self.starved = false;
         self.notified = false;
         self.suspended = false;
@@ -1002,6 +1008,39 @@ pub(crate) fn present_tree(
     send(stage, wire, root, tree, &mut r, applied, jobs, layer_jobs)
 }
 
+/// Root `root`'s tree (`tree`) holds something presenting would send: recorded surface state or a bare ack (`owes`),
+/// a content ack whose picture is in the fronts, or a child's buffer the root has not applied yet.  A content ack held
+/// for a packet not published yet waits for the host, not for presenting: that packet's number is behind `presented`
+/// until its commit.  A retired tree holds nothing, and neither does one before its first configure (nothing of it can
+/// go until then).  Second: the compositor has not used the root's newest commit yet (its frame callback is not done),
+/// unless the window is not shown (suspended), where no callback comes.
+fn tree_waits(stage: &Stage, root: u64, tree: &Arc<Mutex<Present>>) -> (bool, bool) {
+    let r = lock(tree);
+    if r.retired {
+        return (false, false);
+    }
+    let ack = r.ack.is_some() && !r.ack_held_at(stage.applied(root));
+    let waits = r.owes()
+        || ack
+        || (r.configured && r.tree_content)
+        || r.kids.iter().any(|k| {
+            let p = lock(&k.present);
+            !p.retired && p.owes()
+        });
+    (waits, r.newest_frame.is_some() && !r.suspended)
+}
+
+/// `Stage::note_presented` for the trees in `roots` (the presenter's list): whether one holds anything to send, and
+/// whether one's newest commit is not used yet.
+pub(crate) fn note_presented(stage: &Stage, mail: &Mailbox, roots: &[(u64, Arc<Mutex<Present>>)]) {
+    stage.note_presented(mail, |s| {
+        roots.iter().fold((false, false), |(w, u), (id, tree)| {
+            let (tw, tu) = tree_waits(s, *id, tree);
+            (w || tw, u || tu)
+        })
+    });
+}
+
 /// `present_tree`'s send phase, under the tree's mutex: the child windows and the content layers, then the root.  A
 /// tree retired meanwhile commits nothing; its layers' buffers went with it.
 #[allow(clippy::too_many_arguments)]
@@ -1257,14 +1296,14 @@ impl MainState {
 
     /// Child `id`'s state waits for commits (B3: sync subsurfaces): `id`'s own when `own`, and every ancestor's up to
     /// the root, since a sync child's commit applies only with its parent's.  With `wake`, the root's pacer wakes
-    /// (a root's own state too: its alpha).
+    /// (a root's own state too: its alpha).  The state is a request (`Mailbox::bump`), numbered once every window
+    /// owes its commit and before the wake, so that the turn the wake runs reads a number that counts it.
     pub(crate) fn present_owe(&mut self, id: u64, own: bool, wake: bool) {
-        let present = if own { self.present_of(id) } else { None };
-        if let Some(present) = present {
-            let mut p = lock(&present);
-            p.owed = true;
-            if wake && !self.children.contains_key(&id) {
-                p.notify();
+        let mut root = None;
+        if own && let Some(present) = self.present_of(id) {
+            lock(&present).owed = true;
+            if !self.children.contains_key(&id) {
+                root = Some(present);
             }
         }
         let mut cur = id;
@@ -1273,11 +1312,14 @@ impl MainState {
             let Some(present) = self.present_of(cur) else {
                 continue;
             };
-            let mut p = lock(&present);
-            p.owed = true;
-            if wake && !self.children.contains_key(&cur) {
-                p.notify();
+            lock(&present).owed = true;
+            if !self.children.contains_key(&cur) {
+                root = Some(present);
             }
+        }
+        self.mailbox.bump();
+        if wake && let Some(root) = root {
+            lock(&root).notify();
         }
     }
 
@@ -1301,6 +1343,8 @@ impl MainState {
         if content || remade {
             p.ack_seq = self.mailbox.seq();
         }
+        // the ack is a request: numbered once recorded and before the wake (`present_owe`)
+        self.mailbox.bump();
         p.notify();
     }
 
@@ -1649,7 +1693,7 @@ fn frame_done(state: &mut ReaderState, window: u64, time_ns: u64, presented_ns: 
 impl Dispatch<WlCallback, Arc<Mutex<Present>>> for ReaderState {
     fn event(
         _: &mut Self,
-        _: &WlCallback,
+        cb: &WlCallback,
         event: wl_callback::Event,
         present: &Arc<Mutex<Present>>,
         _: &Connection,
@@ -1658,6 +1702,9 @@ impl Dispatch<WlCallback, Arc<Mutex<Present>>> for ReaderState {
         if let wl_callback::Event::Done { .. } = event {
             let mut p = lock(present);
             p.waiting = false;
+            if p.newest_frame.as_ref() == Some(cb) {
+                p.newest_frame = None;
+            }
             // nothing waits any more: a re-arm not sent yet has no callback to replace
             p.rec.rearm = false;
             // starved while waiting: the pacer is idle now, and an idle pacer grows the pool

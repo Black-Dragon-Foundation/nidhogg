@@ -23,6 +23,7 @@
 use crate::api::*;
 use crate::wayland::WaylandShell;
 use crate::wayland::layers::Pending;
+use crate::wayland::present::note_presented;
 use crate::wayland::presenter::Counters;
 use crate::wayland::scale::SCALE_ONE;
 use glitnir::committed::Committed;
@@ -141,13 +142,26 @@ fn timed<T>(m: &Mutex<T>) -> (MutexGuard<'_, T>, u64) {
 }
 
 impl Mailbox {
-    /// The newest packet's sequence number (0: none yet).
+    /// The newest request's number (0: none yet): each packet takes the next one, and so does each ack or piece of
+    /// surface state the host records for a commit (`bump`).
     pub fn seq(&self) -> u64 {
         self.seq.load(Ordering::Acquire)
     }
 
     fn next_seq(&self) -> u64 {
         self.seq.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    /// A request that is no packet (an ack, or surface state recorded for a commit) takes the next number, once it is
+    /// recorded and before presenting is woken for it: `presented` passes it only after it has gone out.
+    pub(crate) fn bump(&self) {
+        self.next_seq();
+    }
+
+    /// Nothing is on its way to the stage: no mail, no publish in progress.
+    fn quiet(&self) -> bool {
+        let b = locked(&self.inbox);
+        !b.busy && b.mail.is_empty()
     }
 
     /// A publish starts deciding what it copies: the fronts the presenter dropped since the last one, and the
@@ -372,6 +386,33 @@ impl Stage {
         }
     }
 
+    /// A surface that may show a buffer has a picture waiting for a commit.
+    fn picture_waits(&self) -> bool {
+        self.surfaces.values().any(|s| s.drawable && s.waits())
+    }
+
+    /// `presented` reaches the newest request when every one has gone out in a flushed commit or needs none any more:
+    /// nothing is on its way (`mail`), every commit sent is flushed, no picture waits in the fronts and no tree waits
+    /// for a commit (`trees_wait`: their recorded acks and state).  The number is read first, so each request it
+    /// counts was queued or recorded before any of that is looked at; one recorded later is behind it.  The stage's
+    /// owner calls it: the presenter thread at the end of each turn, the host's thread (inline) when it reads the
+    /// counters.  A picture leaves the fronts' waiting damage only with its commit (`presented`, `take_pending`), its
+    /// window (`forget`) or a newer packet that no longer lists its surface.  `shown` reaches it too when moreover the
+    /// compositor has used every tree's newest commit (`trees_wait`'s second half: a frame callback not done yet).
+    pub fn note_presented(&self, mail: &Mailbox, trees_wait: impl FnOnce(&Stage) -> (bool, bool)) {
+        let seen = mail.seq();
+        if !(mail.quiet() && self.unflushed == (0, 0) && !self.picture_waits()) {
+            return;
+        }
+        let (waits, unused) = trees_wait(self);
+        if !waits {
+            self.stats.presented.store(seen, Ordering::Release);
+            if !unused {
+                self.stats.shown.store(seen, Ordering::Release);
+            }
+        }
+    }
+
     /// Root `root`'s newest packet in the fronts (0: none).
     pub fn applied(&self, root: u64) -> u64 {
         self.applied.get(&root).copied().unwrap_or(0)
@@ -500,6 +541,11 @@ impl Stage {
                 s.damage = vec![Rect::new(0, 0, f.w, f.h)];
             }
         }
+        if self.picture_waits() {
+            // none of them has gone out to the next compositor
+            self.stats.presented.store(0, Ordering::Release);
+            self.stats.shown.store(0, Ordering::Release);
+        }
     }
 
     /// What surface `id`'s next buffer is: its front's size and the damage that waits.
@@ -584,9 +630,10 @@ impl Stage {
         self.unflushed.1 += 1;
     }
 
-    /// The connection was flushed: the commits sent before count.  A commit in the counters has left for the
-    /// compositor (or, with the socket full, waits for the reader's flush), so a settle that reads them and then asks
-    /// the compositor finds each one there (`gui-runner--recorder-quiet`).
+    /// The connection was flushed: the commits sent before count, and `presented` may follow them
+    /// (`note_presented`).  A commit in the counters has left for the compositor (or, with the socket full, waits for
+    /// the reader's flush, ahead of any later request), so a settle that reads them and then asks the compositor finds
+    /// each one there (`gui-runner--recorder-quiet`).
     pub fn flushed(&mut self) {
         let (commits, bare) = std::mem::take(&mut self.unflushed);
         Counters::add(&self.stats.commits, commits);
@@ -972,8 +1019,16 @@ impl WaylandShell {
         self.presenting.copied
     }
 
+    /// The counters.  `presented` is current as read: inline this thread owns the stage and looks now; a presenter
+    /// thread behind the newest request (one recorded with no wake) gets a turn, which looks at its end.
     pub(super) fn presenter_stats_impl(&self) -> NhShellPresenterStats {
-        self.presenting.stats.stats(self.link.on())
+        let (mail, st) = (&self.main.mailbox, &self.presenting.stats);
+        match self.presenting.stage.as_ref() {
+            Some(stage) => note_presented(stage, mail, &self.link.roots()),
+            None if st.shown.load(Ordering::Acquire) < mail.seq() => self.link.wake(),
+            None => {}
+        }
+        st.stats(self.link.on(), mail.seq())
     }
 
     /// Drop idle fronts (inline; the presenter thread trims its own); the next publish of those surfaces copies them

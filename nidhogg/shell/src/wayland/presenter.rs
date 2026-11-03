@@ -6,7 +6,8 @@
 //! 1. drain the mailbox, writing patches into the fronts;
 //! 2. for each registered root, `present_tree`: decide under the tree's mutex and take the buffers out, compose
 //!    without it, then take it again and, unless the tree was retired meanwhile, send and commit;
-//! 3. flush (a full socket is the reader's to retry);
+//! 3. flush (a full socket is the reader's to retry), and with nothing waiting anywhere move `presented` to the
+//!    newest request (`note_presented`);
 //! 4. drop fronts idle for the pool's quiet period, at a timerfd armed for exactly that, then disarmed.
 //!
 //! The thread blocks every asynchronous signal, runs its loop in `catch_unwind` (a panic stops presenting and posts
@@ -22,7 +23,7 @@
 use crate::api::*;
 use crate::wayland::MainState;
 use crate::wayland::conn::{Shared, Wake};
-use crate::wayland::present::{Present, present_tree};
+use crate::wayland::present::{Present, note_presented, present_tree};
 use crate::wayland::publish::{Mailbox, Stage, now_ns};
 use crate::wayland::reader::ReaderState;
 use rustix::event::{PollFd, PollFlags, poll};
@@ -81,6 +82,11 @@ pub struct Counters {
     pub frames: AtomicU64,
     pub late: AtomicU64,
     pub ready_max_ns: AtomicU64,
+    /// `NhShellPresenterStats::presented`.  Only the stage's owner stores it (`Stage::note_presented`), after the
+    /// flush of the commits it counts, and at a connection's loss.
+    pub presented: AtomicU64,
+    /// `NhShellPresenterStats::shown`, stored with `presented`.
+    pub shown: AtomicU64,
 }
 
 impl Counters {
@@ -92,7 +98,8 @@ impl Counters {
         c.fetch_max(v, Ordering::Relaxed);
     }
 
-    pub fn stats(&self, thread_on: bool) -> NhShellPresenterStats {
+    /// The counters, with `published` the newest request's number (`Mailbox::seq`).
+    pub fn stats(&self, thread_on: bool, published: u64) -> NhShellPresenterStats {
         let g = |c: &AtomicU64| c.load(Ordering::Relaxed);
         NhShellPresenterStats {
             packets: g(&self.packets),
@@ -102,6 +109,9 @@ impl Counters {
             main_wait_max_ns: g(&self.main_wait_max_ns),
             publish_copy_max_ns: g(&self.publish_copy_max_ns),
             front_trims: g(&self.front_trims),
+            published,
+            presented: self.presented.load(Ordering::Acquire),
+            shown: self.shown.load(Ordering::Acquire),
             thread_on: u32::from(thread_on),
         }
     }
@@ -404,12 +414,14 @@ fn run(link: &Link, mail: &Mailbox, mut stage: Stage) -> Stage {
         stage.drain(mail);
         if let Some(wire) = wire {
             let delay = link.delay();
-            for (id, tree) in link.roots() {
-                present_tree(&mut stage, &wire, id, &tree, delay);
+            let roots = link.roots();
+            for (id, tree) in &roots {
+                present_tree(&mut stage, &wire, *id, tree, delay);
             }
             // EAGAIN is the reader's to retry; any other failure reaches the host through the reader's DISCONNECTED
             let _ = wire.shared.host_flush(&wire.conn);
             stage.flushed();
+            note_presented(&stage, mail, &roots);
         }
         if timer_fired {
             timer.drain();

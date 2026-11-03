@@ -173,6 +173,14 @@ mod abi {
                 "offsetof (NhgPresenterStats, ready_to_commit_max_ns)",
                 offset_of!(NhgPresenterStats, ready_to_commit_max_ns) as i64,
             ),
+            (
+                "offsetof (NhgPresenterStats, counters.presented)",
+                offset_of!(NhgPresenterStats, counters.presented) as i64,
+            ),
+            (
+                "offsetof (NhgPresenterStats, counters.thread_on)",
+                offset_of!(NhgPresenterStats, counters.thread_on) as i64,
+            ),
             // the window registry
             ("NHG_FRAME_CHILD", NHG_FRAME_CHILD.into()),
             ("NHG_FRAME_TIP", NHG_FRAME_TIP.into()),
@@ -192,6 +200,7 @@ mod abi {
             // the event step
             ("NHG_IN_INPUT_WAITING", NHG_IN_INPUT_WAITING.into()),
             ("NHG_IN_COALESCE_WHEEL", NHG_IN_COALESCE_WHEEL.into()),
+            ("NHG_IN_ACKS_ONLY", NHG_IN_ACKS_ONLY.into()),
             ("NHG_ACT_KEY", NHG_ACT_KEY.into()),
             ("NHG_ACT_CLICK", NHG_ACT_CLICK.into()),
             ("NHG_ACT_WHEEL", NHG_ACT_WHEEL.into()),
@@ -693,6 +702,9 @@ PROTO (nhg_tip_hide, int32_t (NhgDisplay *, uint64_t));";
             ("POFF (packets)", offset_of!(P, packets) as i64),
             ("POFF (bare_commits)", offset_of!(P, bare_commits) as i64),
             ("POFF (front_trims)", offset_of!(P, front_trims) as i64),
+            ("POFF (published)", offset_of!(P, published) as i64),
+            ("POFF (presented)", offset_of!(P, presented) as i64),
+            ("POFF (shown)", offset_of!(P, shown) as i64),
             ("POFF (thread_on)", offset_of!(P, thread_on) as i64),
             (
                 "offsetof (NhgPresenterStats, frames)",
