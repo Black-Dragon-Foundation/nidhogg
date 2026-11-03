@@ -90,6 +90,33 @@ A string among them is a line of test output, written as it is."
                             (1003.2 "> xdg_surface@20.ack_configure(8)")
                             (1003.3 "> wl_surface@5.commit()"))))))))
 
+(ert-deftest wl-trace-check/acks-the-window-geometry-already-shown-needs-none ()
+  "A client that draws its own shadow shows its window geometry inside a larger surface: a configure of the geometry's
+size is no new size, though the viewport's destination is larger (mutter, at the end of a resize row)."
+  (let ((chose (list '(1000.0 "> wp_viewporter@8.get_viewport(new id wp_viewport@9, wl_surface@5)")
+                     '(1000.1 "> xdg_wm_base@10.get_xdg_surface(new id xdg_surface@20, wl_surface@5)")
+                     '(1000.2 "> xdg_surface@20.get_toplevel(new id xdg_toplevel@21)")
+                     '(1001.0 "xdg_toplevel@21.configure(0, 0, array[0])")
+                     '(1001.1 "xdg_surface@20.configure(7)")
+                     '(1002.0 "> xdg_surface@20.ack_configure(7)")
+                     '(1002.1 "> xdg_surface@20.set_window_geometry(8, 8, 300, 200)")
+                     '(1002.2 "> wp_viewport@9.set_destination(316, 216)")
+                     '(1002.3 "> wl_surface@5.attach(wl_buffer@30, 0, 0)")
+                     '(1002.4 "> wl_surface@5.commit()"))))
+    (should-not (wl-trace-check-test--run
+                 '("acks") chose
+                 '((1003.0 "xdg_toplevel@21.configure(300, 200, array[4])")
+                   (1003.1 "xdg_surface@20.configure(8)")
+                   (1003.2 "> xdg_surface@20.ack_configure(8)")
+                   (1003.3 "> wl_surface@5.commit()"))))
+    ;; the surface's size, shadow and all, is not the window's
+    (should (= 1 (length (wl-trace-check-test--run
+                          '("acks") chose
+                          '((1003.0 "xdg_toplevel@21.configure(316, 216, array[4])")
+                            (1003.1 "xdg_surface@20.configure(8)")
+                            (1003.2 "> xdg_surface@20.ack_configure(8)")
+                            (1003.3 "> wl_surface@5.commit()"))))))))
+
 (ert-deftest wl-trace-check/unconfigured-attach-before-the-first-ack ()
   (let ((v (wl-trace-check-test--run
             '("unconfigured")
