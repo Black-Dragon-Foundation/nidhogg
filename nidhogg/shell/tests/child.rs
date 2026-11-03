@@ -213,6 +213,14 @@ fn present(shell: &mut WaylandShell, id: u64) {
 }
 
 /// The recorder's next commit number.
+/// The recorder has handled every request the shell sent so far, and the shell every event the recorder sent before
+/// answering: their records are queued, and a state the recorder reports now is the one those requests left.
+fn sync(shell: &WaylandShell) {
+    shell
+        .reader_roundtrip(Duration::from_secs(10))
+        .expect("the reader's roundtrip");
+}
+
 fn next_seq(rec: &Recorder) -> u64 {
     let log = rec.control(r#"{"cmd":"log","since":1}"#);
     let at = log.find("\"next\":").expect("next") + "\"next\":".len();
@@ -415,7 +423,7 @@ mod child {
         });
         assert_eq!(shell.window_ready(p).unwrap(), NHSHELL_READY_OWED);
         // acked, not committed: the position stays
-        std::thread::sleep(Duration::from_millis(100));
+        sync(&shell);
         rec.wait_node(p, |n| n.contains("\"position\":[110,60]"));
         shell.present_bare(p).unwrap();
         rec.wait_node(p, |n| n.contains("\"position\":[30,35]"));
@@ -428,8 +436,7 @@ mod child {
         let mut shell = rec.open();
         let parent = window(&mut shell);
         let c = child(&mut shell, parent, 40, 30);
-        while shell.next_event().unwrap().is_some() {}
-        std::thread::sleep(Duration::from_millis(100));
+        sync(&shell);
         while shell.next_event().unwrap().is_some() {}
         assert_eq!(shell.window_ready(parent).unwrap(), 0);
         shell.set_position(c, 70, 10).unwrap();
@@ -528,7 +535,8 @@ mod child {
         let ev = wait_for(&mut shell, |e| e.kind() == Kind::PopupDone);
         assert_eq!(ev.window, p);
         rec.wait_surfaces(1);
-        std::thread::sleep(Duration::from_millis(100));
+        // the ids the recorder let go of (`delete_id`) are read, so the client library hands them out again
+        shell.roundtrip().unwrap();
         let mut made = Vec::new();
         for i in 0..24 {
             made.push(match i % 3 {
@@ -551,21 +559,20 @@ mod child {
         rec.wait_surfaces(1);
     }
 
-    /// Records until the queue is empty, after the recorder had time to answer.
+    /// Records until the queue is empty, once the recorder has answered everything sent so far.
     fn drain(shell: &mut WaylandShell) -> Vec<Record> {
+        sync(shell);
         let mut seen = Vec::new();
-        for _ in 0..2 {
-            while let Some(ev) = shell.next_event().unwrap() {
-                seen.push(ev);
-            }
-            std::thread::sleep(Duration::from_millis(100));
+        while let Some(ev) = shell.next_event().unwrap() {
+            seen.push(ev);
         }
         seen
     }
 
-    /// Surface `id`'s tree entry still matches `pred` 100 ms on: nothing applied it meanwhile.
-    fn still(rec: &Recorder, id: u64, pred: impl Fn(&str) -> bool) {
-        std::thread::sleep(Duration::from_millis(100));
+    /// Surface `id`'s tree entry still matches `pred` once the recorder has handled every request so far: nothing
+    /// applied it.
+    fn still(shell: &WaylandShell, rec: &Recorder, id: u64, pred: impl Fn(&str) -> bool) {
+        sync(shell);
         let key = format!("\"id\":{id},");
         let node = rec.tree().into_iter().find(|n| n.contains(&key));
         assert!(
@@ -603,9 +610,9 @@ mod child {
         // position: the child and the root owe a commit
         shell.set_position(a, 70, 10).unwrap();
         assert!(owed(&mut shell));
-        still(&rec, a, |n| n.contains("\"position\":[0,0]"));
+        still(&shell, &rec, a, |n| n.contains("\"position\":[0,0]"));
         shell.present_bare(a).unwrap();
-        still(&rec, a, |n| n.contains("\"position\":[0,0]"));
+        still(&shell, &rec, a, |n| n.contains("\"position\":[0,0]"));
         shell.present_bare(root).unwrap();
         rec.wait_node(a, |n| n.contains("\"position\":[70,10]"));
         assert!(!owed(&mut shell));
@@ -615,7 +622,7 @@ mod child {
         rec.wait_node(root, |n| n.contains(&order(a, b)));
         shell.stack(a, b, true).unwrap();
         assert!(owed(&mut shell));
-        still(&rec, root, |n| n.contains(&order(a, b)));
+        still(&shell, &rec, root, |n| n.contains(&order(a, b)));
         shell.present_bare(root).unwrap();
         rec.wait_node(root, |n| n.contains(&order(b, a)));
 
@@ -624,16 +631,16 @@ mod child {
             .set_input_region(a, &[Rect::new(10, 10, 80, 40)])
             .unwrap();
         assert!(owed(&mut shell));
-        still(&rec, a, |n| n.contains("\"input_region\":null"));
+        still(&shell, &rec, a, |n| n.contains("\"input_region\":null"));
         shell.present_bare(a).unwrap();
-        still(&rec, a, |n| n.contains("\"input_region\":null"));
+        still(&shell, &rec, a, |n| n.contains("\"input_region\":null"));
         shell.present_bare(root).unwrap();
         rec.wait_node(a, |n| n.contains("\"input_region\":[[10,10,80,40]]"));
 
         // unmap
         shell.set_mapped(a, false).unwrap();
         assert!(owed(&mut shell));
-        still(&rec, a, |n| n.contains("\"mapped\":true"));
+        still(&shell, &rec, a, |n| n.contains("\"mapped\":true"));
         shell.present_bare(a).unwrap();
         shell.present_bare(root).unwrap();
         rec.wait_node(a, |n| n.contains("\"mapped\":false"));
@@ -665,7 +672,7 @@ mod child {
         // deepest first: the grandchild, its parent, then the root
         shell.present_bare(g).unwrap();
         shell.present_bare(c).unwrap();
-        still(&rec, g, |n| n.contains("\"position\":[5,5]"));
+        still(&shell, &rec, g, |n| n.contains("\"position\":[5,5]"));
         shell.present_bare(root).unwrap();
         rec.wait_node(g, |n| n.contains("\"position\":[30,25]"));
         for id in [g, c, root] {
@@ -680,8 +687,14 @@ mod child {
         let mut shell = rec.open();
         let root = window(&mut shell);
         let c = child(&mut shell, root, 0, 0);
-        // the root's first frame is shown: its pacer is idle
+        // the root's first frame is shown: its callback came, so its pacer is idle
         rec.wait_node(root, |n| n.contains("\"mapped\":true"));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while shell.present_pacer(root).unwrap().0 {
+            assert!(Instant::now() < deadline, "the root's callback never came");
+            readable_within(shell.wake_fd(), 50);
+            while shell.next_event().unwrap().is_some() {}
+        }
         drain(&mut shell);
         shell.window_dirty(c).unwrap();
         let seen = drain(&mut shell);
@@ -724,7 +737,7 @@ mod child {
         let seq = next_seq(&rec);
         shell.set_position(c, 70, 10).unwrap();
         shell.flush().unwrap();
-        still(&rec, c, |n| n.contains("\"position\":[40,30]"));
+        still(&shell, &rec, c, |n| n.contains("\"position\":[40,30]"));
         assert!(commits_since(&rec, seq).is_empty(), "recorded, not sent");
         assert!(!shell.present_tree(root).unwrap(), "bare commits only");
         shell.flush().unwrap();
@@ -841,19 +854,14 @@ mod alpha {
         rec.wait_node(root, |n| n.contains("\"mapped\":true"));
         let seq = next_seq(&rec);
         shell.set_alpha(root, u32::MAX / 2).unwrap();
-        shell.flush().unwrap();
-        std::thread::sleep(Duration::from_millis(150));
+        sync(&shell);
         assert!(commits_since(&rec, seq).is_empty(), "recorded, not sent");
         assert!(!shell.present_tree(root).unwrap(), "a bare commit");
-        shell.flush().unwrap();
-        let deadline = Instant::now() + Duration::from_secs(3);
-        let first = loop {
-            if let Some(c) = commits_of(&rec, seq, root).into_iter().next() {
-                break c;
-            }
-            assert!(Instant::now() < deadline, "no commit");
-            std::thread::sleep(Duration::from_millis(10));
-        };
+        sync(&shell);
+        let first = commits_of(&rec, seq, root)
+            .into_iter()
+            .next()
+            .expect("a commit");
         assert!(first.contains("\"buffer\":null"), "{first}");
         assert!(first.contains("\"frame_cb\":false"), "{first}");
         let at = first.find("\"alpha\":").expect("an alpha") + "\"alpha\":".len();

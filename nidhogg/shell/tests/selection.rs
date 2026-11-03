@@ -483,8 +483,14 @@ mod selection {
         offer.receive("text/plain".into(), rustix::fd::AsFd::as_fd(&write_end));
         conn.flush().unwrap();
         drop(write_end);
-        // the pipe fills (64 KiB) and the shell's reader waits for it to drain; meanwhile it answers pings
-        std::thread::sleep(Duration::from_millis(300));
+        // the pipe fills and the shell's reader waits for it to drain; meanwhile it answers pings
+        let capacity = rustix::pipe::fcntl_getpipe_size(&read_end).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while rustix::io::ioctl_fionread(&read_end).unwrap() < capacity as u64 {
+            assert!(Instant::now() < deadline, "the pipe never filled");
+            // a pipe has no wake-up for "full": look again shortly
+            std::thread::sleep(Duration::from_millis(1));
+        }
         let pong = rec.control(r#"{"cmd":"ping"}"#);
         let ms: u64 = pong
             .split("\"pong_ms\":")

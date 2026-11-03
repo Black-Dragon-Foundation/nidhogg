@@ -86,7 +86,8 @@ fn warm(shell: &mut WaylandShell, rec: &Recorder, id: u64) {
         present(rec);
         until(shell, "the frame callback", |s| !waiting(s, id));
     }
-    std::thread::sleep(Duration::from_millis(100));
+    // the releases the recorder sent with the callbacks are handled
+    sync(shell);
 }
 
 /// The pacer's ready bits (`NHSHELL_READY_*`) of window `id`.
@@ -153,7 +154,7 @@ mod pacer {
         warm(&mut shell, &rec, id);
         reconfigure(&mut shell, &rec, id, "");
         assert!(draw(&mut shell, id, &[]) > 0, "a reused buffer");
-        std::thread::sleep(Duration::from_millis(200));
+        sync(&shell);
         let o = outstanding(&rec);
         assert_eq!(
             (o.0, o.1),
@@ -307,13 +308,11 @@ mod pacer {
         while shell.next_event().unwrap().is_some() {}
         shell.window_dirty(id).unwrap();
         shell.window_dirty(id).unwrap();
+        // the marks post at once, and the manual clock sends nothing that could post another
+        sync(&shell);
         let mut posted = 0;
-        let deadline = Instant::now() + Duration::from_millis(300);
-        while Instant::now() < deadline {
-            while let Some(e) = shell.next_event().unwrap() {
-                posted += usize::from(e.kind() == Kind::FrameReady && e.window == id);
-            }
-            std::thread::sleep(Duration::from_millis(10));
+        while let Some(e) = shell.next_event().unwrap() {
+            posted += usize::from(e.kind() == Kind::FrameReady && e.window == id);
         }
         assert_eq!(posted, 1);
         assert!(ready(&mut shell, id));
@@ -348,11 +347,10 @@ mod pacer {
         let id = window(&mut shell);
         warm(&mut shell, &rec, id);
         let serial = reconfigure(&mut shell, &rec, id, "");
-        shell.flush().unwrap();
-        std::thread::sleep(Duration::from_millis(150));
+        sync(&shell);
         assert!(!acked(&commit_log(&rec), serial), "no commit, no ack");
         draw(&mut shell, id, &[full()]);
-        std::thread::sleep(Duration::from_millis(100));
+        sync(&shell);
         assert!(acked(&commit_log(&rec), serial), "{}", commit_log(&rec));
     }
 
@@ -366,7 +364,7 @@ mod pacer {
         draw(&mut shell, id, &[full()]);
         assert!(waiting(&shell, id));
         let serial = reconfigure(&mut shell, &rec, id, "");
-        std::thread::sleep(Duration::from_millis(100));
+        sync(&shell);
         assert_eq!(outstanding(&rec).0, 1, "recorded, not sent");
         let seq = next_seq(&rec);
         shell.present_bare(id).unwrap();
@@ -443,7 +441,7 @@ mod pacer {
             "a content ack waits"
         );
         draw(&mut shell, id, &[full()]);
-        std::thread::sleep(Duration::from_millis(100));
+        sync(&shell);
         assert!(
             acked(&log_since(&rec, seq), serial),
             "the buffer carries it"
@@ -485,8 +483,7 @@ mod pacer {
         let serial = configure_acked(&mut shell, &rec, id, (300, 150), "", NHSHELL_ACK_CONTENT);
         assert!(shell.present_begin(id, 300, 150).is_ok(), "a third buffer");
         shell.present_commit(id, &[full()]).unwrap();
-        shell.flush().unwrap();
-        std::thread::sleep(Duration::from_millis(100));
+        sync(&shell);
         assert!(acked(&commit_log(&rec), serial));
     }
 
@@ -507,7 +504,7 @@ mod pacer {
         let serial = reconfigure(&mut shell, &rec, id, "");
         assert_eq!(bits(&mut shell, id), NHSHELL_READY_OWED);
         shell.present_bare(id).unwrap();
-        std::thread::sleep(Duration::from_millis(100));
+        sync(&shell);
         assert!(acked(&commit_log(&rec), serial), "{}", commit_log(&rec));
     }
 
@@ -525,8 +522,10 @@ mod pacer {
         assert_ne!(bits(&mut shell, id) & NHSHELL_READY_CONTENT, 0);
         // the host decided on "nothing": a second ask finds nothing, and no record follows
         assert_eq!(bits(&mut shell, id), 0);
+        // every callback the recorder sent is handled
+        sync(&shell);
         assert!(
-            collect(&mut shell, 300)
+            collect(&mut shell, 0)
                 .iter()
                 .all(|e| e.kind() != Kind::FrameReady)
         );

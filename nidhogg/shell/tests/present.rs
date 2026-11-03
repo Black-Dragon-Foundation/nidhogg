@@ -118,7 +118,8 @@ mod present {
         let mut n = 1;
         loop {
             present(&rec);
-            std::thread::sleep(Duration::from_millis(100));
+            // the callback and the releases sent with it are handled
+            sync(&shell);
             n += 1;
             if draw(&mut shell, id, w, h, &[Rect::new(5, 6, 100, 20)]) > 0 {
                 break;
@@ -203,9 +204,10 @@ mod present {
             present(&rec);
             wait_for(&mut shell, |e| e.kind() == Kind::FrameDone);
         }
-        // let the first buffer's release arrive
-        std::thread::sleep(Duration::from_millis(200));
+        // the first buffer's release is handled
+        sync(&shell);
         assert_eq!(shell.present_stats(id).map(|s| (s.0, s.1)), Some((2, 0)));
+        // the pool's quiet period (2 s) is time itself: a sleep never ends before it has passed
         std::thread::sleep(Duration::from_millis(2100));
         shell.dispatch_main().unwrap();
         assert_eq!(shell.present_stats(id).map(|s| (s.0, s.1)), Some((1, 1)));
@@ -340,7 +342,8 @@ mod present {
                 assert!(Instant::now() < deadline, "the root never stopped waiting");
                 std::thread::sleep(Duration::from_millis(10));
             }
-            std::thread::sleep(Duration::from_millis(100));
+            // the releases sent with the callback are handled
+            sync(&self.shell);
             while self.shell.next_event().unwrap().is_some() {}
         }
 
@@ -399,16 +402,12 @@ mod present {
         wait_for(&mut shell, |e| {
             e.kind() == Kind::FrameReady && e.window == id
         });
-        std::thread::sleep(Duration::from_millis(100));
+        sync(&shell);
         assert_eq!(callbacks(), 1, "recorded, not sent");
         assert_eq!(next_seq(&rec), seq, "no commit yet");
         assert!(!shell.present_tree(id).unwrap());
-        shell.flush().unwrap();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while callbacks() < 2 {
-            assert!(Instant::now() < deadline, "no re-armed callback");
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        sync(&shell);
+        assert_eq!(callbacks(), 2, "the re-armed callback");
         let log = rec.control(&format!(r#"{{"cmd":"log","since":{seq}}}"#));
         let commits: Vec<&str> = log.split("{\"ack_serial\":").skip(1).collect();
         assert_eq!(commits.len(), 1, "{log}");
@@ -517,8 +516,7 @@ mod present {
             t.settle();
             setup(&mut t);
             // the setup's own commits (a gate case's first picture, a re-arm) are not the case's
-            t.shell.flush().unwrap();
-            std::thread::sleep(Duration::from_millis(100));
+            sync(&t.shell);
             let seq = next_seq(&t.rec);
             let root_buffer = want.iter().any(|w| matches!(w, (Root, Buffer | BufferAck)));
             assert_eq!(
@@ -526,12 +524,8 @@ mod present {
                 root_buffer,
                 "{name}"
             );
-            t.shell.flush().unwrap();
-            let deadline = Instant::now() + Duration::from_secs(2);
-            while t.got(seq).len() < want.len() && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            std::thread::sleep(Duration::from_millis(100));
+            // inline: present_tree sent every commit of the case
+            sync(&t.shell);
             assert_eq!(t.got(seq), want, "{name}");
         }
         assert!(t.shell.next_event().is_ok(), "no protocol error");
