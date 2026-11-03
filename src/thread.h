@@ -220,6 +220,12 @@ struct thread_state
   /* The select of this thread the test clock knows about, or NULL.  */
   struct nh_tc_wait *nh_tc;
 #endif
+#ifdef HAVE_NIDHOGG_WORKERS
+  /* This thread's select while it runs without the global lock, else
+     NULL (struct nh_sel, process.h).  It is set and cleared only with
+     the lock held.  */
+  struct nh_sel *nh_sel;
+#endif
   struct bc_thread_state bc;
 } GCALIGNED_STRUCT;
 

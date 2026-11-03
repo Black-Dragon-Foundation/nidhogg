@@ -75,7 +75,8 @@ enum nh_wk_class
   NH_WK_CL_N
 };
 
-/* The points where a worker parks while a test arms them.  */
+/* The points where a worker parks while a test arms them; at
+   NH_WK_P_BEFORE_SELECT a Lisp thread other than the main one does.  */
 enum nh_wk_pause
 {
   NH_WK_P_NONE,
@@ -88,6 +89,7 @@ enum nh_wk_pause
   NH_WK_P_AFTER_HEADER,
   NH_WK_P_BEFORE_WRITE,
   NH_WK_P_IN_LOOKUP,
+  NH_WK_P_BEFORE_SELECT,
   NH_WK_P_N
 };
 
@@ -156,6 +158,8 @@ extern void nh_wk_job_ref (struct nh_wk_job *);
 extern void nh_wk_job_unref (struct nh_wk_job *);
 extern void nh_wk_complete (struct nh_wk_job *);
 extern void nh_wk_pause_point (enum nh_wk_pause);
+extern void nh_wk_thread_pause_point (enum nh_wk_pause, bool const *);
+extern void nh_wk_pause_kick (bool *);
 extern int nh_wk_wake_open (struct nh_wk_wake *);
 extern void nh_wk_wake_signal (struct nh_wk_wake *);
 extern void nh_wk_wake_clear (struct nh_wk_wake *);

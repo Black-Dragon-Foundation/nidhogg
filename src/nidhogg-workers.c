@@ -135,7 +135,8 @@ static NH_WK_TEST_ONLY const char *const nh_wk_fallback_names[NH_WK_FB_N] = {
 
 static NH_WK_TEST_ONLY const char *const nh_wk_pause_names[NH_WK_P_N] = {
   "none", "after-snapshot", "before-done", "after-read", "before-tokenize",
-  "before-decode", "in-poll", "after-header", "before-write", "in-lookup"
+  "before-decode", "in-poll", "after-header", "before-write", "in-lookup",
+  "before-select"
 };
 
 static NH_WK_TEST_ONLY const char *const nh_wk_class_names[NH_WK_CL_N] = {
@@ -1320,20 +1321,56 @@ nh_wk_cancel (struct nh_wk_job *job)
 
 /* Pause points.  */
 
-void
-nh_wk_pause_point (enum nh_wk_pause p)
+/* Park at P until it is released, or until KICK, if non-NULL, is set
+   (nh_wk_pause_kick).  */
+static void
+nh_wk_park (enum nh_wk_pause p, bool const *kick)
 {
   unsigned bit = 1u << p;
-  if (!(atomic_load (&nh_wk_armed) & bit) || !nh_wk_on_worker ())
-    return;
-  nh_wk_count (&nh_wk_w[nh_wk_self - 1].pauses, 1);
   nh_wk_lock (&nh_wk_pause_m);
   nh_wk_parked[p]++;
   pthread_cond_broadcast (&nh_wk_pause_cv);
   nh_tc_kick ();
-  while ((atomic_load (&nh_wk_armed) & bit) && !atomic_load (&nh_wk_dead))
+  while ((atomic_load (&nh_wk_armed) & bit) && !atomic_load (&nh_wk_dead)
+	 && !(kick && *kick))
     pthread_cond_wait (&nh_wk_pause_cv, &nh_wk_pause_m);
   nh_wk_parked[p]--;
+  pthread_cond_broadcast (&nh_wk_pause_cv);
+  pthread_mutex_unlock (&nh_wk_pause_m);
+}
+
+void
+nh_wk_pause_point (enum nh_wk_pause p)
+{
+  if (!(atomic_load (&nh_wk_armed) & 1u << p) || !nh_wk_on_worker ())
+    return;
+  nh_wk_count (&nh_wk_w[nh_wk_self - 1].pauses, 1);
+  nh_wk_park (p, NULL);
+}
+
+/* A Lisp thread's pause point (before-select, really_call_select): the
+   thread parks with the global lock let go, as a worker does.  KICK, if
+   non-NULL, is its select's: a close that waits for that select
+   (process.c) sets it with nh_wk_pause_kick, before the thread parks or
+   after, and the thread goes on into its select, where a thread no test
+   stopped would be.  */
+void
+nh_wk_thread_pause_point (enum nh_wk_pause p, bool const *kick)
+{
+  if (atomic_load (&nh_wk_armed) & 1u << p)
+    nh_wk_park (p, kick);
+}
+
+/* Set *KICK and send on the Lisp thread parked with it, if any.  The
+   caller holds the global lock, which arming and releasing take: with
+   nothing armed, no thread parks before the caller is done.  */
+void
+nh_wk_pause_kick (bool *kick)
+{
+  if (!atomic_load (&nh_wk_armed))
+    return;
+  nh_wk_lock (&nh_wk_pause_m);
+  *kick = true;
   pthread_cond_broadcast (&nh_wk_pause_cv);
   pthread_mutex_unlock (&nh_wk_pause_m);
 }
@@ -1382,11 +1419,12 @@ nh_wk_tc_busy (void)
 	}
       pthread_mutex_unlock (&ws->m);
     }
-  /* A released point's workers are still parked: they can run.  */
+  /* A released point's workers are still parked: they can run.  Lisp
+     threads park at before-select: not workers.  */
   nh_wk_lock (&nh_wk_pause_m);
   unsigned armed = atomic_load (&nh_wk_armed);
   for (int p = 0; p < NH_WK_P_N; p++)
-    if (armed & 1u << p)
+    if (p != NH_WK_P_BEFORE_SELECT && armed & 1u << p)
       busy -= nh_wk_parked[p];
   pthread_mutex_unlock (&nh_wk_pause_m);
   return busy - atomic_load (&nh_tc_idle_jobs) - nh_io_tc_polling ();
@@ -2113,7 +2151,10 @@ DEFUN ("nidhogg-workers--pause-at", Fnidhogg_workers__pause_at,
        doc: /* Arm the pause point POINT: a worker that reaches it parks; for tests.
 POINT is one of `after-snapshot', `before-done', `after-read',
 `before-tokenize', `before-decode', `in-poll', `after-header',
-`before-write', `in-lookup'.  `nidhogg-workers--release' un-parks.  */)
+`before-write', `in-lookup', or `before-select', where a Lisp thread
+other than the main one parks just before a select that can block, the
+global lock let go; a close that waits for that select sends it on.
+`nidhogg-workers--release' un-parks.  */)
   (Lisp_Object point)
 {
   nh_wk_arm_pause (nh_wk_point_arg (point));
