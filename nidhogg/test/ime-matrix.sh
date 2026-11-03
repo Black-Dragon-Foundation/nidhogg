@@ -35,7 +35,7 @@ while [ $# -gt 0 ]; do
     --timeout) timeout=${2:-}; shift 2 ;;
     --smoke) smoke=${2:-}; shift 2 ;;
     --mem) mem=${2:-}; shift 2 ;;
-    --container) shift ;;   # always on; the word tells the slot wrappers this command starts its own containers
+    --container) shift ;;   # always on; the word tells the caller's container wrapper this command starts its own containers
     -h|--help) usage ;;
     *) echo "ime-matrix.sh: unknown argument $1" >&2; usage ;;
   esac

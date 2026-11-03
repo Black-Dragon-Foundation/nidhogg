@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# The pre-flight: the passes that find ordering bugs on the desktop, before a CI round.
+# The pre-flight: the passes that find ordering bugs on an isolated runner, before a CI round.
 #   preflight.sh --build-dir D --out REPORT [--prefix P] [--seeds N] [--runs N] [--files FILE] [--passes P2,P3,..]
 #                [--stamp-dir DIR] [--sched-modules "M..."] [--sched-seeds N] [--tsan-modules "M..."]
-# Run it from the nidhogg worktree root on the laptop, not itself in a slot: every build run takes a heavy slot of its own
-# (drgnx-heavy-slot.sh nidhogg-build-local.sh, the way nh-verify.sh does; git does not work inside a slot's jail on the
-# desktop, so a script run there cannot call the build wrapper).  Passes:
+# Run it from the nidhogg worktree root, not itself through the caller's slot wrapper: every build run goes through that
+# wrapper on its own ($PREFLIGHT_TMP's drgnx-heavy-slot.sh nidhogg-build-local.sh; git does not work inside the wrapper's
+# jail, so a script run there cannot call the build wrapper).  Passes:
 #   P1  every file with the header line `;; test-class: det` (test/src/nidhogg-tests) twice unpinned and once pinned to 1
 #       CPU: a file whose results differ between the runs is red (`RED P1 DIFFERENT`).  No such file skips with a note
 #       (P1:skipped in the stamp).
@@ -16,12 +16,12 @@
 #   P3  the same files on the chaos build (D-chaos, built with `build.sh --chaos` when missing), --seeds (200) seeds
 #       each, NIDHOGG_TEST_SEED=1..N.  A red prints its seed and the replay line.
 #   P4  nidhogg/test/workers-harness.sh --tsan (queue wake io) and --sched (queue wake, --sched-seeds, default 2000, not
-#       P3's --seeds), in the dev image through a heavy slot (.claude/tmp/harness-ctr.sh).
+#       P3's --seeds), in the dev image through the caller's container wrapper ($PREFLIGHT_TMP's harness-ctr.sh).
 #   P5  each red of P2 and P3 once more under `rr record --chaos -n`, in its own pin (build.sh's NIDHOGG_CHECK_RR).  The
-#       trace is packed, so that it replays in a later container, and stays in the build dir's rr-traces/ (on the desktop);
+#       trace is packed, so that it replays in a later container, and stays in the build dir's rr-traces/ (on the runner);
 #       the report names it.  No reds: P5:skipped.  SELinux denies container_t perf_event_open (EACCES, with
 #       kernel.perf_event_paranoid=2 allowing it), so this container alone runs with labels off, seccomp open and ptrace.
-#       Limits on the desktop: a trace replays only some of the time (2 of 6, ticks off by 1 or 2 at random syscalls; rr
+#       Limits on a Zen runner: a trace replays only some of the time (2 of 6, ticks off by 1 or 2 at random syscalls; rr
 #       says Zen needs SpecLockMap off, an MSR write as root), and rr 5.9.0 aborts on a pty's ioctl 0x402c542c, so a test
 #       file that opens a pty leaves an incomplete trace (the report says rr aborted).
 # REPORT gets the log.  Only when every run passed, REPORT.stamp holds one line `<commit> <passes> <date>` (a skipped pass
@@ -33,7 +33,7 @@
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 root=${PREFLIGHT_ROOT:-$(cd "$here/../.." && pwd)}   # PREFLIGHT_ROOT: the tree whose commit is stamped (the test hook)
-T=${PREFLIGHT_TMP:-}     # the directory of the slot and build wrappers: the caller (the org-side round script) sets it
+T=${PREFLIGHT_TMP:-}     # the directory of the caller's slot, build and container wrappers: the caller sets it
 [ -n "$T" ] || { echo "preflight: PREFLIGHT_TMP is not set (the directory with drgnx-heavy-slot.sh, nidhogg-build-local.sh and harness-ctr.sh)" >&2; exit 2; }
 build="" out="" prefix="" seeds=200 runs=3 files="$here/preflight-files.txt" stampdir="" want="P1,P2,P3,P4,P5"
 sched="queue wake" sched_seeds=2000 tsan="queue wake io"
@@ -99,7 +99,7 @@ class_files() { # CLASS
 
 # --- one run of one test file -----------------------------------------------------------------------------------------
 # the pin is a podman option of the check container (taskset on the podman client does not reach the container)
-# The grammars are mounted from the builder's $T/grammars-cache (fixtures/grammars.sh builds it): a missing one fails the run.
+# The grammars are mounted from $T/grammars-cache (fixtures/grammars.sh builds it): a missing one fails the run.
 wrap_args() {
   local pin=""
   case $1 in cpu1) pin="--cpuset-cpus=0 " ;; cpu2) pin="--cpuset-cpus=0,1 " ;; quota) pin="--cpus=0.5 " ;; esac
@@ -141,7 +141,7 @@ run_group() { # PASS WRAP SEED [LIST]
   [ "$seed" = - ] || dir=$build-chaos
   log=$(mktemp "${out}.run.XXXXXX"); runlog=$log
   runmark=$(mktemp "${out}.mark.XXXXXX")
-  lst=$(mktemp "$root/preflight-chk.XXXXXX.txt"); runlst=$lst; targets "$list" > "$lst"      # untracked, so the desktop sync carries it
+  lst=$(mktemp "$root/preflight-chk.XXXXXX.txt"); runlst=$lst; targets "$list" > "$lst"      # untracked, so a wrapper that copies the tree's changes carries it
   pargs=$(wrap_args "$wrap")
   local cmd=("$slot" "$T/nidhogg-build-local.sh" ${prefix:+--prefix "$prefix"} --build-dir "$dir" --stage check --check "${lst#"$root"/}")
   local try fetch=0
@@ -192,7 +192,7 @@ run_group() { # PASS WRAP SEED [LIST]
     else group_add "$pass" "$wrap" green; fi
   done < <(targets "$list")
   if [ "$named" = 0 ] && { [ "$rc" != 0 ] || grep -qE '^flaky \(listed' "$log"; }; then
-    say "RED $pass (whole run) wrap=$wrap seed=$seed: exit $rc"   # 255 from ssh: the link dropped, not a test
+    say "RED $pass (whole run) wrap=$wrap seed=$seed: exit $rc"   # 255: the wrapper lost its runner, not a test
     note_red "$pass" "(whole run)" "$wrap" "$seed" "$log"
   fi
   rm -f "$log" "$runmark"; runlog="" runmark=""
@@ -269,7 +269,7 @@ if want_pass P3; then
 fi
 if want_pass P4; then
   say "P4: workers-harness --tsan and --sched"; before=$reds
-  # in the dev image, through a heavy slot like every build run (harness-ctr.sh builds the image for its Containerfile
+  # in the dev image, through the slot wrapper like every build run (the container wrapper builds the image for its Containerfile
   # when the machine lacks it); the stub of the test hook runs as it is
   if [ -n "${PREFLIGHT_HARNESS:-}" ]; then h=("$PREFLIGHT_HARNESS"); else h=("$slot" "$T/harness-ctr.sh"); fi
   # shellcheck disable=SC2086

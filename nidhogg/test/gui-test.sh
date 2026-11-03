@@ -3,7 +3,7 @@
 # the others are real runs in a container.  Needs GUI_TEST_PREFIX, an unpacked Nidhogg (the third also needs podman).
 #   GUI_TEST_PREFIX=DIR [GUI_TEST_RECORDER=nh-recorder] bash nidhogg/test/gui-test.sh [--container]
 # GUI_TEST_RECORDER (a built nh-recorder) adds the recorder's cases (its kill case, and the lost display's exit 70).
-# (--container is ignored: it tells the slot scripts that this script starts its own container.)
+# (--container is ignored: it tells the caller's container wrapper that this script starts its own container.)
 set -u
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 gui=$here/gui.sh
