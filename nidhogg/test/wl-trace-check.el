@@ -102,6 +102,8 @@ Returns a list of strings \"RULE line N: what\", empty when the trace is clean."
         (acked-size (make-hash-table))    ; xdg_surface id -> the previous acked non-zero size
         (acked-once (make-hash-table))    ; xdg_surface id -> t
         (vp-dest (make-hash-table))       ; wl_surface id -> its newest wp_viewport destination, the size it shows
+        (geometry (make-hash-table))      ; xdg_surface id -> (W . H) of its newest window geometry, the window's size
+                                          ; within a surface that also holds the client's shadow
         (need-buffer (make-hash-table))   ; wl_surface id -> line of the ack that wants a buffer
         (restarting nil)                  ; a test stopped the compositor and this client has not connected again
         (attached (make-hash-table))      ; wl_surface id -> :buffer, :null or nil since its last commit
@@ -177,7 +179,7 @@ Returns a list of strings \"RULE line N: what\", empty when the trace is clean."
                       (when w (remhash w wl-xdg)))
                     (setq grabbing (delq gone grabbing))
                     (dolist (tab (list xdg-wl wl-xdg top-xdg popup-xdg sub-child sub-parent parent-of sub-of
-                                       cfg-size acked-size acked-once need-buffer attached
+                                       cfg-size acked-size acked-once need-buffer attached geometry
                                        popup-parent popup-live offer-state offer-dead
                                        buf-held buf-size vp-surface vp-src surf-pending surf-buf))
                       (remhash gone tab))))
@@ -205,6 +207,10 @@ Returns a list of strings \"RULE line N: what\", empty when the trace is clean."
                     (when child
                       (remhash child parent-of)
                       (remhash child sub-of))))
+                 ((and request (equal iface "xdg_surface") (equal msg "set_window_geometry")
+                       (string-match "\\`-?[0-9]+, -?[0-9]+, \\([0-9]+\\), \\([0-9]+\\)" args))
+                  (puthash id (cons (string-to-number (match-string 1 args)) (string-to-number (match-string 2 args)))
+                           geometry))
                  ;; a popup that went owes no ack
                  ((and request (equal iface "xdg_surface") (equal msg "destroy"))
                   (setq popup-pending (cl-remove-if (lambda (p) (eq (nth 1 p) id)) popup-pending)))
@@ -226,8 +232,10 @@ Returns a list of strings \"RULE line N: what\", empty when the trace is clean."
                          (w (gethash id xdg-wl)))
                     (puthash id t acked-once)
                     (when (and size (> (car size) 0) (> (cdr size) 0))
-                      ;; new: not what the surface shows (a client told 0 x 0 chose its size before this configure)
-                      (when (and w (not (equal size (or (gethash w vp-dest) (gethash id acked-size)))))
+                      ;; new: not what the window shows (a client told 0 x 0 chose its size before this configure).  A
+                      ;; configure's size is the window geometry's: the surface may be larger by the client's shadow
+                      (when (and w (not (equal size (or (gethash id geometry) (gethash w vp-dest)
+                                                        (gethash id acked-size)))))
                         (puthash w n need-buffer))
                       (puthash id size acked-size))
                     (dolist (p popup-pending)
