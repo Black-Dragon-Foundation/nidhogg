@@ -317,6 +317,28 @@ extern Lisp_Object network_interface_info (Lisp_Object);
 extern Lisp_Object remove_slash_colon (Lisp_Object);
 
 extern void update_processes_for_thread_death (Lisp_Object);
+#ifdef HAVE_NIDHOGG_WORKERS
+
+/* A select that runs without the global lock, on really_call_select's
+   stack (thread.c), from just before its thread lets go of the lock
+   until the thread holds it again.  Meanwhile no other thread closes or
+   deregisters one of its fds before the select is out (process.c's
+   nh_sel_quiesce), and then the fd leaves SETS, whose stale readiness
+   could name the next fd to get its number.  */
+struct nh_sel
+{
+  fd_set held;			/* the fds of SETS[0..2] below NFDS */
+  int nfds;
+  /* The select's sets, then the copies the test clock puts back for its
+     next round; NULL where there is none.  */
+  fd_set *sets[6];
+  bool in;			/* not out of the select yet (nh_sel_m) */
+  bool wanted;			/* a close waits for it (nh_wk_pause_kick) */
+};
+
+extern void nh_sel_hold (struct thread_state *, struct nh_sel *, int);
+extern void nh_sel_out (struct thread_state *);
+#endif
 extern void dissociate_controlling_tty (void);
 
 extern int open_channel_for_module (Lisp_Object);
