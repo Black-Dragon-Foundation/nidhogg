@@ -220,6 +220,7 @@ mod shell {
         until_log(&rec, "bell_log", |r| {
             r.contains(&format!("\"surface\":{top}"))
         });
+        // past the rings' spacing (20 ms), which is time itself: a sleep never ends before it has passed
         std::thread::sleep(Duration::from_millis(30));
         // SAFETY: a live display.
         unsafe {
