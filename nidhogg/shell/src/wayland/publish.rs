@@ -123,10 +123,20 @@ struct Inbox {
     trimmed: Vec<u64>,
 }
 
+impl Inbox {
+    /// What is on its way: the mail, and a publish in progress.
+    fn inflight(&self) -> u64 {
+        self.mail.len() as u64 + u64::from(self.busy)
+    }
+}
+
 /// Packets on their way to the presenter.  The lock is held for a push, a take or a trim only.
 #[derive(Default)]
 pub struct Mailbox {
     inbox: Mutex<Inbox>,
+    /// `Inbox::inflight`, stored under the lock at each change, so that `quiet` takes no lock: the presenter's look
+    /// at it never makes the host wait.
+    inflight: AtomicU64,
     seq: AtomicU64,
     pub patches: PatchPool,
 }
@@ -158,10 +168,15 @@ impl Mailbox {
         self.next_seq();
     }
 
-    /// Nothing is on its way to the stage: no mail, no publish in progress.
+    /// Nothing is on its way to the stage: no mail, no publish in progress.  No lock: a publish stores its start
+    /// before it takes its number (`next_seq`), so a reader that saw the number sees the publish or its mail.
     fn quiet(&self) -> bool {
-        let b = locked(&self.inbox);
-        !b.busy && b.mail.is_empty()
+        self.inflight.load(Ordering::Acquire) == 0
+    }
+
+    /// `b` changed: store what is on its way (`inflight`), still under the lock.
+    fn note(&self, b: &Inbox) {
+        self.inflight.store(b.inflight(), Ordering::Release);
     }
 
     /// A publish starts deciding what it copies: the fronts the presenter dropped since the last one, and the
@@ -169,6 +184,7 @@ impl Mailbox {
     fn begin_publish(&self) -> (Vec<u64>, u64) {
         let (mut b, waited) = timed(&self.inbox);
         b.busy = true;
+        self.note(&b);
         (std::mem::take(&mut b.trimmed), waited)
     }
 
@@ -177,6 +193,7 @@ impl Mailbox {
         let (mut b, waited) = timed(&self.inbox);
         b.mail.push_back(Mail::Packet(p));
         b.busy = false;
+        self.note(&b);
         waited
     }
 
@@ -184,11 +201,15 @@ impl Mailbox {
     pub fn post(&self, m: Mail) -> u64 {
         let (mut b, waited) = timed(&self.inbox);
         b.mail.push_back(m);
+        self.note(&b);
         waited
     }
 
     pub fn take(&self) -> VecDeque<Mail> {
-        std::mem::take(&mut locked(&self.inbox).mail)
+        let mut b = locked(&self.inbox);
+        let mail = std::mem::take(&mut b.mail);
+        self.note(&b);
+        mail
     }
 
     /// Run the presenter's front trim `f` when nothing is on its way (no mail, no publish in progress), and tell the
