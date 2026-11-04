@@ -574,15 +574,24 @@ class line has none."
   (expand-file-name "nidhogg/test/flaky.txt" source-directory)
   "The list of tests that may fail once and pass on the rerun.")
 
+(defun test-class-lint--flaky-names (text)
+  "The test names the rows of flaky list TEXT carry.
+A row is NAME # cause: the name ends at the first `#', as in check-rerun.sh."
+  (let (rows)
+    (dolist (line (split-string text "\n"))
+      (unless (or (string-empty-p (string-trim line)) (string-prefix-p "#" line))
+        (push (string-trim (car (split-string line "#"))) rows)))
+    (nreverse rows)))
+
 (defun test-class-lint--flaky-rows ()
   "The test names that rows of the flaky list carry."
   (when (file-readable-p test-class-lint--flaky-file)
-    (let (rows)
-      (dolist (line (split-string (test-class-lint--read-file test-class-lint--flaky-file)
-                                  "\n"))
-        (unless (or (string-empty-p (string-trim line)) (string-prefix-p "#" line))
-          (push (string-trim (car (split-string line " # "))) rows)))
-      (nreverse rows))))
+    (test-class-lint--flaky-names (test-class-lint--read-file test-class-lint--flaky-file))))
+
+(ert-deftest test-class/flaky-rows-split-where-check-rerun-does ()
+  (should (equal '("a" "b" "c" "d")
+                 (test-class-lint--flaky-names
+                  "# comment\na # why\nb #why\nc# why\n  d  #why # more\n\n"))))
 
 (defun test-class-lint--own-test-names ()
   "The names of the tests Nidhogg's own test files define."
@@ -604,7 +613,8 @@ class line has none."
 (defun test-class-lint--thread-violations (text)
   "Line numbers in C source TEXT where a thread starts with signals unblocked.
 Each `pthread_create' must sit in a function that, before it, blocks or
-sets a mask built by `sigfillset' (or `nh_wk_worker_sigmask'), and
+sets a mask built by `sigfillset' (or `nh_wk_worker_sigmask') -- the fill
+before the mask is set, and no other signal-mask call in between -- and
 that, after it, sets the old mask back with `pthread_sigmask'."
   (let* ((lines (vconcat (split-string text "\n")))
          (n (length lines))
@@ -613,26 +623,30 @@ that, after it, sets the old mask back with `pthread_sigmask'."
       (let ((line (aref lines i)))
         (cond
          ((string-prefix-p "}" line) (setq start (1+ i)))
-         ((string-match-p "\\bpthread_create (" line)
-          (let ((var nil) (filled nil) (restored nil) (end i))
+         ((string-match-p "\\bpthread_create *(" line)
+          (let ((var nil) (mask-line nil) (filled nil) (restored nil) (end i))
             (while (and (< end n) (not (string-prefix-p "}" (aref lines end))))
               (setq end (1+ end)))
+            ;; The nearest signal-mask call before the create must set the
+            ;; whole mask: an unblock (or any other call) after it undoes it.
             (cl-loop for j from (1- i) downto start
                      for l = (aref lines j)
-                     when (string-match
-                           "pthread_sigmask (SIG_\\(?:BLOCK\\|SETMASK\\), &\\([a-z_]+\\)" l)
-                     do (setq var (match-string 1 l)) and return nil)
+                     when (string-match-p "\\b\\(?:pthread_sigmask\\|sigprocmask\\) *(" l)
+                     do (when (string-match
+                               "pthread_sigmask *(SIG_\\(?:BLOCK\\|SETMASK\\), *&\\([a-z_]+\\)" l)
+                          (setq var (match-string 1 l) mask-line j))
+                     and return nil)
             (when var
               (setq filled
-                    (cl-loop for j from start below i
+                    (cl-loop for j from start below mask-line
                              thereis (string-match-p
-                                      (concat "\\(?:sigfillset\\|nh_wk_worker_sigmask\\) (&"
+                                      (concat "\\(?:sigfillset\\|nh_wk_worker_sigmask\\) *(&"
                                               (regexp-quote var) ")")
                                       (aref lines j)))))
             (setq restored
                   (cl-loop for j from (1+ i) below end
                            thereis (string-match-p
-                                    "pthread_sigmask (SIG_SETMASK, &[a-z_]+, \\(?:NULL\\|0\\))"
+                                    "pthread_sigmask *(SIG_SETMASK, *&[a-z_]+, *\\(?:NULL\\|0\\))"
                                     (aref lines j))))
             (unless (and var filled restored)
               (push (1+ i) bad)))))))
@@ -653,6 +667,15 @@ that, after it, sets the old mask back with `pthread_sigmask'."
     ;; Never restored.
     (should (test-class-lint--thread-violations
              "void\nf (void)\n{\n  sigfillset (&all);\n  pthread_sigmask (SIG_SETMASK, &all, &old);\n  pthread_create (&t, NULL, g, NULL);\n}\n"))
+    ;; A create with no space before its parenthesis is still a create.
+    (should (test-class-lint--thread-violations
+             "void\nf (void)\n{\n  pthread_create(&t, NULL, g, NULL);\n}\n"))
+    ;; An unblock between the mask and the create undoes the mask.
+    (should (test-class-lint--thread-violations
+             "void\nf (void)\n{\n  sigfillset (&all);\n  pthread_sigmask (SIG_SETMASK, &all, &old);\n  pthread_sigmask (SIG_UNBLOCK, &all, NULL);\n  pthread_create (&t, NULL, g, NULL);\n  pthread_sigmask (SIG_SETMASK, &old, NULL);\n}\n"))
+    ;; The set is filled only after the mask was taken from it.
+    (should (test-class-lint--thread-violations
+             "void\nf (void)\n{\n  pthread_sigmask (SIG_SETMASK, &all, &old);\n  sigfillset (&all);\n  pthread_create (&t, NULL, g, NULL);\n  pthread_sigmask (SIG_SETMASK, &old, NULL);\n}\n"))
     ;; The mask of an earlier function does not count.
     (should (test-class-lint--thread-violations
              (concat good "void\nh (void)\n{\n  pthread_create (&t, NULL, g, NULL);\n  pthread_sigmask (SIG_SETMASK, &old, NULL);\n}\n")))))
@@ -666,7 +689,7 @@ that, after it, sets the old mask back with `pthread_sigmask'."
         (creates 0) bad)
     (dolist (file files)
       (let ((text (test-class-lint--read-file file)))
-        (cl-incf creates (cl-count-if (lambda (l) (string-match-p "\\bpthread_create (" l))
+        (cl-incf creates (cl-count-if (lambda (l) (string-match-p "\\bpthread_create *(" l))
                                       (split-string text "\n")))
         (dolist (line (test-class-lint--thread-violations text))
           (push (format "%s:%d" (file-name-nondirectory file) line) bad))))
