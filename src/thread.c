@@ -257,7 +257,14 @@ lisp_mutex_lock_for_thread (lisp_mutex_t *mutex, struct thread_state *locker,
 #endif
   while (mutex->owner != NULL && (new_count != 0
 				  || NILP (self->error_symbol)))
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+    {
+      sys_cond_wait (&mutex->condition, &global_lock);
+      nh_tc_cond_back (self);
+    }
+#else
     sys_cond_wait (&mutex->condition, &global_lock);
+#endif
   self->wait_condvar = NULL;
 
   if (new_count == 0 && !NILP (self->error_symbol))
@@ -291,6 +298,9 @@ lisp_mutex_unlock (lisp_mutex_t *mutex)
     return 0;
 
   mutex->owner = NULL;
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+  nh_tc_cond_woke (&mutex->condition, true);
+#endif
   sys_cond_broadcast (&mutex->condition);
 
   return 1;
@@ -308,6 +318,9 @@ lisp_mutex_unlock_for_wait (lisp_mutex_t *mutex)
 
   mutex->count = 0;
   mutex->owner = NULL;
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+  nh_tc_cond_woke (&mutex->condition, true);
+#endif
   sys_cond_broadcast (&mutex->condition);
 
   return result;
@@ -489,6 +502,9 @@ condition_wait_callback (void *arg)
 #endif
       /* This call could switch to another thread.  */
       sys_cond_wait (&cvar->cond, &global_lock);
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+      nh_tc_cond_back (self);
+#endif
       self->wait_condvar = NULL;
     }
   self->event_object = Qnil;
@@ -550,6 +566,9 @@ condition_notify_callback (void *arg)
 
   XSETCONDVAR (cond, na->cvar);
   saved_count = lisp_mutex_unlock_for_wait (&mutex->mutex);
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+  nh_tc_cond_woke (&na->cvar->cond, na->all);
+#endif
   if (na->all)
     sys_cond_broadcast (&na->cvar->cond);
   else
@@ -911,6 +930,9 @@ run_thread (void *state)
   xfree (self->thread_name);
 
   current_thread = NULL;
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+  nh_tc_cond_woke (&self->thread_condvar, true);
+#endif
   sys_cond_broadcast (&self->thread_condvar);
 
 #ifdef HAVE_NS
@@ -1055,6 +1077,9 @@ thread_signal_callback (void *arg)
   struct thread_state *tstate = arg;
   struct thread_state *self = current_thread;
 
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+  nh_tc_cond_woke (tstate->wait_condvar, true);
+#endif
   sys_cond_broadcast (tstate->wait_condvar);
   post_acquire_global_lock (self);
 }
@@ -1189,7 +1214,14 @@ thread_join_callback (void *arg)
   nh_tc_kick ();
 #endif
   while (thread_live_p (tstate) && NILP (self->error_symbol))
+#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
+    {
+      sys_cond_wait (self->wait_condvar, &global_lock);
+      nh_tc_cond_back (self);
+    }
+#else
     sys_cond_wait (self->wait_condvar, &global_lock);
+#endif
 
   self->wait_condvar = NULL;
   self->event_object = Qnil;

@@ -275,6 +275,59 @@ filter call) and the bytes on their way."
       (thread-join runner)
       (thread-join sleeper))))
 
+(defmacro test-clock-tests--with-waiter (work &rest body)
+  "Run BODY with `waiter', a thread that waits on `cv' and then does WORK.
+BODY starts once the waiter waits; `notify' wakes it."
+  (declare (indent 1) (debug t))
+  `(let* ((m (make-mutex "test-clock-m"))
+          (cv (make-condition-variable m "test-clock-cv"))
+          (ready nil)
+          (waiter (make-thread
+                   (lambda ()
+                     (with-mutex m
+                       (while (not ready) (condition-wait cv)))
+                     ,work)
+                   "test-clock-waiter"))
+          (notify (lambda ()
+                    (with-mutex m
+                      (setq ready t)
+                      (condition-notify cv)))))
+     (while (not (eq cv (thread--blocker waiter)))
+       (thread-yield))
+     (unwind-protect (progn ,@body)
+       (thread-join waiter))))
+
+(ert-deftest test-clock/a-notified-thread-runs-before-time-moves ()
+  (test-clock-tests--with t
+    (let ((at nil))
+      (test-clock-tests--with-waiter (setq at (nidhogg-test-clock-now))
+        (should (nidhogg-test-clock--quiet-p))
+        (funcall notify)
+        ;; Woken, the waiter has yet to run.
+        (should-not (nidhogg-test-clock--quiet-p))
+        (sit-for 10)
+        (should (= 0.0 at))
+        (should (= 10.0 (nidhogg-test-clock-now)))))))
+
+(ert-deftest test-clock/a-notified-thread-is-no-deadlock ()
+  (test-clock-tests--with t
+    (let* ((got nil)
+           (peer (nidhogg-test-peer-make :name "test-clock-notified"))
+           (client (nidhogg-test-peer--state-client
+                    (process-get peer 'nidhogg-test-peer))))
+      (unwind-protect
+          (progn
+            (set-process-filter peer (lambda (_p s) (setq got s)))
+            (test-clock-tests--with-waiter (process-send-string client "x")
+              ;; Not 0: making the peer may wait for its connection.
+              (let ((start (nidhogg-test-clock-now)))
+                (funcall notify)
+                ;; Only the woken waiter's write can end this wait.
+                (while (not got) (accept-process-output peer))
+                (should (equal "x" got))
+                (should (= start (nidhogg-test-clock-now))))))
+        (nidhogg-test-peer-close peer)))))
+
 (ert-deftest test-clock/child-emacs-on-its-own-clock ()
   :tags '(:cond)
   (test-clock-tests--with nil
