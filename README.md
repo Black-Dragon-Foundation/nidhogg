@@ -565,11 +565,19 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   `nidhogg/test/workers-harness.sh` compiles the C files without Lisp (`--tsan MODULE…` runs the ThreadSanitizer
   drivers, `--fuzz SECONDS` the parser fuzz targets, `--sched MODULE… [--seeds N]` the drivers in `fuzz/sched-*.c`
   under exact thread orders, PCT at depth 2, where `--seeds S:S` replays a failed seed; `NH_SCHED_CFLAGS=-DNH_SCHED_BUG`
-  breaks the completion channel's clear-then-re-check, and `wake` must go red); `nidhogg/test/pkg-test.sh` runs the
+  breaks the completion channel's clear-then-re-check, and `wake` must go red; `--sched --exhaustive [--preemptions K]
+  [--max-runs N] MODULE…` runs every schedule with at most K preemptions (default 2) instead, by depth-first search
+  with iterative context bounding: a switch at a block or a thread's end is free and every choice there is tried, a
+  switch away from a thread that could go on (or from a yielding one to any but the next thread) costs one; a failure
+  prints `schedule [C1,…]`, which the driver's argument `x:K:C1,…` replays with its trace; over N schedules (default
+  200,000) the module fails with its count, and the driver is narrowed, never the bound; module `selftest` is the
+  mode's own test, a lost update that needs one preemption: clean at K=0, red at K≥1 with the same failures on two
+  runs, and the schedule count equal to its closed form; `queue` also lands an nh-save job through
+  `nh_wk_await_jobs`, the wait `nidhogg-workers--test-save-await` uses); `nidhogg/test/pkg-test.sh` runs the
   package suites (jsonrpc, treesit, process, files) with the workers on, off or `inline` and `--compare`s on against off (the treesit group
   loads the test grammars when `grammars.sh` has built them); `NIDHOGG_BUILD_SANITIZE=address,undefined
-  nidhogg/build.sh --dev …` is the ASan build. CI jobs `workers-harness`, `workers-asan`, `workers-chaos` (the chaos
-  build, seeds 1 to 5) and `workers-pkg` run them.
+  nidhogg/build.sh --dev …` is the ASan build. CI jobs `workers-harness` (TSan, `--sched --exhaustive selftest queue
+  wake`, fuzz), `workers-asan`, `workers-chaos` (the chaos build, seeds 1 to 5) and `workers-pkg` run them.
 - The runtime (`src/nidhogg-workers.c`): five workers, `nh-io`, `nh-parse`, `nh-img` (one thread per two cores, at
   most two), `nh-blk` (one to four threads, grown when every thread has been busy 50 ms; directory reads, file reads
   and lookups take at most two each and always leave one for a class with nothing running) and `nh-save`. Threads
