@@ -33,7 +33,7 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 VERSION=$(head -n 1 "$ROOT/nidhogg/version")
-DISTROS="fedora-45ubuntu-26.04 debian-13 arch"
+DISTROS="fedora-45 ubuntu-26.04 debian-13 arch"
 
 usage() {
   cat >&2 <<USAGE
