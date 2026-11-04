@@ -5,7 +5,8 @@ mod common;
 
 use common::*;
 use nhshell::api::{
-    NHSHELL_READY_OWED, NHSHELL_WIN_UNDECORATED, ShellBackend, ShellError, WindowDesc,
+    NHSHELL_ACK_CONTENT, NHSHELL_READY_OWED, NHSHELL_WIN_UNDECORATED, ShellBackend, ShellError,
+    WindowDesc,
 };
 use nhshell::event::*;
 use nhshell::wayland::WaylandShell;
@@ -293,5 +294,81 @@ mod toplevel {
         shell.flush().unwrap();
         shell.dispatch_main().unwrap();
         assert!(shell.window_ssd(id).is_ok());
+    }
+
+    /// Set window `id`'s window geometry to `w` x `h` and commit a buffer of that size.
+    fn show_at(shell: &mut WaylandShell, id: u64, w: i32, h: i32) {
+        shell.set_geometry(id, 0, 0, w, h).unwrap();
+        draw(shell, id, w, h);
+    }
+
+    /// A window shown at 200 x 100, its first configure acked, every record read and the commit at the recorder.
+    fn shown_window(shell: &mut WaylandShell) -> u64 {
+        let id = new_window(shell);
+        let first = configure_of(&wait_event(shell, Kind::Configure));
+        shell
+            .ack_configure(id, first.serial, NHSHELL_ACK_CONTENT)
+            .unwrap();
+        show_at(shell, id, 200, 100);
+        sync(shell);
+        collect(shell, 50);
+        id
+    }
+
+    /// The compositor's configure of a size `size` and `states`, sent now; the shell reads it at its next record.
+    fn configure_now(rec: &Recorder, size: (i32, i32), states: &str) {
+        rec.control_ok(&format!(
+            r#"{{"cmd":"configure","surface":"focused","size":[{},{}],"states":[{states}]}}"#,
+            size.0, size.1
+        ));
+    }
+
+    /// Mutter answers a window's first buffer with a configure of its size.  A window that chose a new size of its
+    /// own before reading it keeps that size: the configure was sent before the compositor read the commit, so its
+    /// size is the window's choice (0 x 0).  Once the compositor has read it, the same size is its own request again.
+    #[test]
+    fn configure_sent_before_an_own_size_leaves_it() {
+        let rec = Recorder::start("mutter");
+        let mut shell = rec.open();
+        let id = shown_window(&mut shell);
+        configure_now(&rec, (200, 100), r#""activated""#);
+        show_at(&mut shell, id, 300, 150);
+        let c = configure_of(&wait_event(&mut shell, Kind::Configure));
+        assert_eq!(
+            (c.w, c.h),
+            (0, 0),
+            "sent before the recorder read 300 x 150"
+        );
+        // the recorder has read the commit and answered the sync after it
+        sync(&shell);
+        collect(&mut shell, 50);
+        configure_now(&rec, (200, 100), r#""activated""#);
+        let c = configure_of(&wait_event(&mut shell, Kind::Configure));
+        assert_eq!((c.w, c.h), (200, 100), "sent after the recorder read it");
+    }
+
+    /// A size of the window's own recorded, not committed yet: a configure of the size the compositor has is the
+    /// window's choice too.
+    #[test]
+    fn configure_while_an_own_size_waits_leaves_it() {
+        let rec = Recorder::start("mutter");
+        let mut shell = rec.open();
+        let id = shown_window(&mut shell);
+        configure_now(&rec, (200, 100), r#""activated""#);
+        shell.set_geometry(id, 0, 0, 300, 150).unwrap();
+        let c = configure_of(&wait_event(&mut shell, Kind::Configure));
+        assert_eq!((c.w, c.h), (0, 0));
+    }
+
+    /// A size the compositor sets (maximized here) binds, sent before the commit or not.
+    #[test]
+    fn compositor_sized_configure_before_an_own_size_binds() {
+        let rec = Recorder::start("mutter");
+        let mut shell = rec.open();
+        let id = shown_window(&mut shell);
+        configure_now(&rec, (200, 100), r#""maximized","activated""#);
+        show_at(&mut shell, id, 300, 150);
+        let c = configure_of(&wait_event(&mut shell, Kind::Configure));
+        assert_eq!((c.w, c.h), (200, 100));
     }
 }
