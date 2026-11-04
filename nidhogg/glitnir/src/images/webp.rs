@@ -1,7 +1,8 @@
 //! WebP as a host built on libwebp decodes it.
 //!
 //! A still image is decoded by `image-webp` (RGBA when it has alpha, else RGB; lossy images with its "fancy"
-//! upsampling, libwebp's default) and its alpha composited over the background with the host's float formula.
+//! upsampling, libwebp's default) and its alpha composited over the background with the host's float formula. One
+//! in the extended format (VP8X) has alpha as libwebp decides it, from its image rather than the VP8X flag.
 //!
 //! An animation is read as libwebp's demuxer reads it (ANIM before the frames; each ANMF an optional ALPH and a VP8
 //! or VP8L image whose own header gives the frame's size, inside the canvas) and composed as `WebPAnimDecoder`
@@ -248,6 +249,53 @@ fn image_features(fourcc: &[u8], p: &[u8]) -> Option<(u32, u32, bool)> {
     }
 }
 
+/// `WebPGetFeatures` of a still image in the extended format (VP8X): its ALPH (the last before the image, only for
+/// VP8) and image chunks, the image's size, which must be the canvas', and whether libwebp decodes it with alpha:
+/// for VP8 when the VP8X flag says so or there is an ALPH chunk, for VP8L when its own header says so (or an ALPH
+/// chunk is there). None where libwebp's headers do not parse; an image chunk cut short parses (its decode fails).
+fn still_extended(data: &[u8]) -> Option<(WebpFrame, bool)> {
+    if le32(&data[16..]) != 10 {
+        return None;
+    }
+    let riff_end = (le32(&data[4..]) as usize)
+        .saturating_add(8)
+        .min(data.len());
+    let flag = data[20] & 0x10 != 0;
+    let (cw, ch) = (le24(&data[24..]) + 1, le24(&data[27..]) + 1);
+    let mut at = 30;
+    let mut alph = None;
+    while at + 8 <= riff_end {
+        let (fourcc, size) = (&data[at..at + 4], le32(&data[at + 4..]) as usize);
+        let (start, end) = (at + 8, (at + 8).saturating_add(size));
+        match fourcc {
+            b"VP8 " | b"VP8L" => {
+                let end = end.min(riff_end);
+                let (width, height, header_alpha) = image_features(fourcc, &data[start..end])?;
+                if (width, height) != (cw, ch) {
+                    return None;
+                }
+                let lossless = fourcc == b"VP8L";
+                let has_alpha = alph.is_some() || if lossless { header_alpha } else { flag };
+                let frame = WebpFrame {
+                    width,
+                    height,
+                    lossless,
+                    alph: alph.filter(|_| !lossless),
+                    image: start..end,
+                    ..WebpFrame::default()
+                };
+                return Some((frame, has_alpha));
+            }
+            // the other chunks must be whole
+            _ if end > riff_end => return None,
+            b"ALPH" => alph = Some(start..end),
+            _ => {}
+        }
+        at = end + (size & 1);
+    }
+    None
+}
+
 /// The animation's frames, as `WebPDemux` reads them for `WebPAnimDecoderNew`; its texts are ours.
 fn demux(data: &[u8], cw: u32, ch: u32) -> Result<Vec<WebpFrame>, Error> {
     let bad = |m: &str| Error::Parse(m.to_string());
@@ -363,7 +411,8 @@ pub fn decode(data: &[u8], p: &Params, state: Option<Box<Anim>>) -> Result<Image
         Some(Anim::Webp(w)) => Some(w),
         _ => None,
     };
-    let mut still: Option<(Vec<u8>, bool, u32, u32)> = None;
+    // the still's samples, bytes per pixel, whether its alpha composites, its size
+    let mut still: Option<(Vec<u8>, usize, bool, u32, u32)> = None;
     if anim.is_none() {
         // WebPGetFeatures: the RIFF header and the first chunk
         let vp8x = data.len() >= 30
@@ -394,6 +443,17 @@ pub fn decode(data: &[u8], p: &Params, state: Option<Box<Anim>>) -> Result<Image
                 has_last: false,
                 duration: 0,
             });
+        } else if vp8x {
+            // image-webp takes the alpha from the VP8X flag; libwebp from the image (`still_extended`), so the image
+            // is decoded from its own chunks under the alpha libwebp gives it
+            let (f, has_alpha) = still_extended(data).ok_or(Error::NotImage)?;
+            size_ok(p, i64::from(f.width), i64::from(f.height))?;
+            // libwebp's decode wants the whole RIFF
+            if (le32(&data[4..]) as usize).saturating_add(8) > data.len() {
+                return Err(Error::Decode("truncated RIFF".into()));
+            }
+            let rgba = frame_rgba(data, &f).map_err(Error::Decode)?;
+            still = Some((rgba.into_flattened(), 4, has_alpha, f.width, f.height));
         } else {
             let mut dec = WebPDecoder::new(Cursor::new(data)).map_err(|_| Error::NotImage)?;
             let (w, h) = dec.dimensions();
@@ -402,13 +462,14 @@ pub fn decode(data: &[u8], p: &Params, state: Option<Box<Anim>>) -> Result<Image
             let mut buf = try_vec(size, 0u8)?;
             dec.read_image(&mut buf)
                 .map_err(|e| Error::Decode(e.to_string()))?;
-            still = Some((buf, dec.has_alpha(), w, h));
+            let step = if dec.has_alpha() { 4 } else { 3 };
+            still = Some((buf, step, dec.has_alpha(), w, h));
         }
     }
 
     let (width, height, frame_count, duration);
     let decoded: &[u8];
-    let alpha_blend;
+    let (alpha_blend, step);
     if let Some(e) = anim.as_mut() {
         let frames = e.frames.len() as i32;
         let idx = if p.frame_index >= 0 {
@@ -448,14 +509,16 @@ pub fn decode(data: &[u8], p: &Params, state: Option<Box<Anim>>) -> Result<Image
         duration = dur;
         decoded = e.curr.as_flattened();
         alpha_blend = true;
+        step = 4;
     } else {
-        let (buf, has_alpha, w, h) = still.as_ref().expect("a still image");
+        let (buf, bytes, has_alpha, w, h) = still.as_ref().expect("a still image");
         width = *w;
         height = *h;
         frame_count = 0;
         duration = 0;
         decoded = buf;
         alpha_blend = *has_alpha;
+        step = *bytes;
     }
     size_ok(p, i64::from(width), i64::from(height))?;
     let n = width as usize * height as usize;
@@ -469,7 +532,6 @@ pub fn decode(data: &[u8], p: &Params, state: Option<Box<Anim>>) -> Result<Image
     } else {
         (0, 0, 0)
     };
-    let step = if alpha_blend { 4 } else { 3 };
     for (px, q) in pixels
         .as_mut_slice()
         .iter_mut()
@@ -682,6 +744,62 @@ mod tests {
             ),
         ];
         super::super::fuzz_abi(super::super::GLITNIR_IMG_WEBP, &seeds, 10_000);
+    }
+
+    /// A still in the extended format: a VP8X chunk with FLAGS over a CW×CH canvas, then CHUNKS.
+    fn extended(flags: u8, cw: u32, ch: u32, chunks: &[(&[u8; 4], &[u8])]) -> Vec<u8> {
+        let mut body = b"WEBP".to_vec();
+        let mut vp8x = vec![flags, 0, 0, 0];
+        vp8x.extend_from_slice(&(cw - 1).to_le_bytes()[..3]);
+        vp8x.extend_from_slice(&(ch - 1).to_le_bytes()[..3]);
+        for (fourcc, p) in [(b"VP8X", &vp8x[..])]
+            .into_iter()
+            .chain(chunks.iter().copied())
+        {
+            body.extend_from_slice(fourcc);
+            body.extend_from_slice(&(p.len() as u32).to_le_bytes());
+            body.extend_from_slice(p);
+            if p.len() % 2 == 1 {
+                body.push(0);
+            }
+        }
+        let mut f = b"RIFF".to_vec();
+        f.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        f.extend_from_slice(&body);
+        f
+    }
+
+    #[test]
+    fn an_extended_still_takes_its_alpha_from_the_image() {
+        let px = [[200, 100, 50, 128], [1, 2, 3, 255]];
+        let bg = Some([0xffff, 0x8000, 0]);
+        let want: Vec<u32> = px.iter().map(|&c| host(c, [255, 128, 0])).collect();
+        let opaque: Vec<u32> = px
+            .iter()
+            .map(|&c| host([c[0], c[1], c[2], 255], [0; 3]))
+            .collect();
+        let l = vp8l(2, 1, &px);
+        assert_eq!((l[4] >> 4) & 1, 1);
+        // no VP8X alpha flag: a VP8L whose header has alpha is composited
+        let f = extended(0, 2, 1, &[(b"VP8L", &l)]);
+        assert_eq!(
+            decode(&f, &params(-1, bg), None).unwrap().pixels.as_slice(),
+            &want[..]
+        );
+        // the flag over a VP8L whose header has none: the alpha is dropped
+        let mut off = l.clone();
+        off[4] &= !0x10;
+        let f = extended(0x10, 2, 1, &[(b"VP8L", &off)]);
+        assert_eq!(
+            decode(&f, &params(-1, bg), None).unwrap().pixels.as_slice(),
+            &opaque[..]
+        );
+        // a canvas that is not the image's size does not parse
+        let f = extended(0x10, 3, 1, &[(b"VP8L", &l)]);
+        assert!(matches!(
+            decode(&f, &params(-1, bg), None),
+            Err(Error::NotImage)
+        ));
     }
 
     #[test]
