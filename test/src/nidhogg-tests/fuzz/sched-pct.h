@@ -39,7 +39,24 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
    and its STEPS is about its longest run: the change point is drawn
    from there, so a seed past the run's end changes nothing.  A failed
    seed prints `seed S'; the argument S:S replays it and prints its
-   trace.  */
+   trace.
+
+   The argument x:K runs the bounded exhaustive mode instead
+   (sched_explore): every schedule with at most K preemptions, by
+   depth-first search (Musuvathi and Qadeer's iterative context
+   bounding, PLDI 2007).  A preemption is a switch away from a thread
+   that could go on; a switch at a block or a thread's end is free, and
+   every thread that can run then is tried.  A thread that yields could
+   go on (it spins): there the next thread by number is the free
+   choice.  Each schedule runs in a child that follows a forced prefix
+   of choices, then the natural ones (the running thread goes on, after
+   a yield the next one, else the lowest-numbered), and leaves its
+   choices in
+   memory shared with the parent, which backtracks.  A failed schedule
+   prints `schedule [C1,C2,...]', the threads chosen at its first
+   decisions; the argument x:K:C1,C2,... replays it and prints its
+   trace.  A second argument caps the number of schedules (default
+   200000): over it, the run exits 3.  */
 
 #ifndef SCHED_PCT_H
 #define SCHED_PCT_H
@@ -49,6 +66,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #endif
 
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <sched.h>
 #include <stdbool.h>
@@ -58,11 +76,14 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/mman.h>
 #include <sys/wait.h>
 
 #define SCHED_THREADS 32
 /* Steps of one seed before it counts as a livelock.  */
 #define SCHED_LIMIT 2000000
+/* Decisions of one schedule the exhaustive mode can record.  */
+#define SCHED_DECISIONS (1L << 20)
 
 struct sched_thread
 {
@@ -90,6 +111,29 @@ static struct
 
 static _Thread_local int sched_self;
 
+/* One decision of the exhaustive mode: a step at which more than one
+   thread could run.  */
+struct sched_choice
+{
+  uint8_t pick;			/* the thread that ran */
+  uint8_t cur;			/* the thread that stepped */
+  uint8_t natural;		/* the free choice; SCHED_FREE: any is */
+  uint32_t enabled;		/* the threads that could run */
+};
+#define SCHED_FREE 0xff
+
+static struct
+{
+  bool on;			/* in a child of sched_explore */
+  bool trace;			/* print each decision (a replay) */
+  int k;			/* the bound; -1: not the exhaustive mode */
+  long runs;			/* schedules run */
+  const uint8_t *forced;	/* the first choices */
+  long nforced;
+  struct sched_choice *d;	/* shared with the parent */
+  long *nd;
+} sched_x = { .k = -1 };
+
 static uint64_t
 sched_random (void)
 {
@@ -109,16 +153,84 @@ sched_fail (const char *why)
   _exit (1);
 }
 
+/* The threads that can run: those that have not yielded, else any.  */
+static uint32_t
+sched_enabled (void)
+{
+  uint32_t en = 0;
+  for (int pass = 0; pass < 2 && !en; pass++)
+    for (int i = 0; i < sched.n; i++)
+      if (sched.t[i].ready && !sched.t[i].done
+	  && (pass == 1 || !sched.t[i].yielded))
+	en |= UINT32_C (1) << i;
+  return en;
+}
+
+/* The natural choice among EN, the threads that can run, when the
+   running thread CUR steps: CUR if it can go on; after a yield the next
+   thread by number (a thread that yields could go on: it spins); after
+   a block or a thread's end, none (SCHED_FREE).  Another choice than
+   the natural one is a preemption.  */
+static int
+sched_x_natural (uint32_t en, int cur)
+{
+  if (en >> cur & 1)
+    return cur;
+  if (!sched.t[cur].yielded || !sched.t[cur].ready || sched.t[cur].done)
+    return SCHED_FREE;
+  uint32_t above = en & ~((UINT32_C (2) << cur) - 1);
+  return __builtin_ctz (above ? above : en);
+}
+
+/* The exhaustive mode's choice among EN: the forced one, else the
+   natural one, else the lowest-numbered.  A step with one thread to run
+   is no decision.  */
+static int
+sched_x_choose (uint32_t en)
+{
+  if (!(en & (en - 1)))
+    return __builtin_ctz (en);
+  int cur = sched.cur;
+  int natural = sched_x_natural (en, cur);
+  long d = *sched_x.nd;
+  int pick = d < sched_x.nforced ? sched_x.forced[d]
+    : natural != SCHED_FREE ? natural : __builtin_ctz (en);
+  if (pick >= SCHED_THREADS || !(en >> pick & 1))
+    {
+      fprintf (stderr, "sched: decision %ld forces thread %d, which cannot"
+	       " run: the driver is not deterministic\n", d, pick);
+      fflush (NULL);
+      _exit (5);
+    }
+  if (d == SCHED_DECISIONS)
+    sched_fail ("too many decisions");
+  sched_x.d[d] = (struct sched_choice) { pick, cur, natural, en };
+  *sched_x.nd = d + 1;
+  if (sched_x.trace)
+    {
+      printf ("decision %ld at step %ld: %d of {", d, sched.step, pick);
+      for (int i = 0, sep = 0; i < sched.n; i++)
+	if (en >> i & 1)
+	  printf (sep++ ? ",%d" : "%d", i);
+      printf ("}, %d %s%s\n", cur,
+	      natural == SCHED_FREE ? "could not go on"
+	      : natural == cur ? "could go on" : "yielded",
+	      natural == SCHED_FREE || pick == natural ? "" : ": a preemption");
+    }
+  return pick;
+}
+
 /* The thread to run next.  */
 static int
 sched_pick (void)
 {
   int best = -1;
-  for (int pass = 0; pass < 2 && best < 0; pass++)
+  uint32_t en = sched_enabled ();
+  if (en && sched_x.on)
+    best = sched_x_choose (en);
+  else
     for (int i = 0; i < sched.n; i++)
-      if (sched.t[i].ready && !sched.t[i].done
-	  && (pass == 1 || !sched.t[i].yielded)
-	  && (best < 0 || sched.t[i].prio > sched.t[best].prio))
+      if (en >> i & 1 && (best < 0 || sched.t[i].prio > sched.t[best].prio))
 	best = i;
   if (best < 0)
     {
@@ -320,11 +432,189 @@ sched_sleep (const struct timespec *req, struct timespec *rem)
   return 0;
 }
 
+/* Run one schedule in a child: the choices FORCED[0..N), then the
+   natural ones.  QUIET sends the child's stderr to /dev/null; TRACE
+   prints its decisions.  Return the child's exit status, or 128 plus
+   the signal that ended it; its decisions are in sched_x.d.  */
+static int
+sched_x_run (const uint8_t *forced, long n, int (*body) (void),
+	     bool quiet, bool trace)
+{
+  *sched_x.nd = 0;
+  fflush (NULL);
+  pid_t pid = fork ();
+  if (pid < 0)
+    return -1;
+  if (pid == 0)
+    {
+      alarm (60);
+      if (quiet)
+	{
+	  int fd = open ("/dev/null", O_WRONLY);
+	  if (fd >= 0)
+	    dup2 (fd, 2);
+	}
+      sched.rng = UINT64_C (0x9E3779B97F4A7C15);
+      sched.hash = UINT64_C (14695981039346656037);
+      sched.change_at = 0;
+      sched_x.on = true;
+      sched_x.trace = trace;
+      sched_x.forced = forced;
+      sched_x.nforced = n;
+      sched.n = 1;
+      sched_add (0, NULL, NULL);
+      int rc = body ();
+      if (trace)
+	printf ("trace %016llx in %ld steps, %ld decisions\n",
+		(unsigned long long) sched.hash, sched.step, *sched_x.nd);
+      fflush (NULL);
+      _exit (rc);
+    }
+  int st;
+  if (waitpid (pid, &st, 0) != pid)
+    return -1;
+  return WIFEXITED (st) ? WEXITSTATUS (st) : 128 + WTERMSIG (st);
+}
+
+/* The alternative to C's choice that comes after it, within BUDGET
+   preemptions, or -1.  The order: the natural choice, then the others
+   by number.  */
+static int
+sched_x_next (const struct sched_choice *c, int budget)
+{
+  if (c->natural != SCHED_FREE && budget < 1)
+    return -1;			/* every other choice preempts */
+  int natural = c->natural != SCHED_FREE ? c->natural
+    : __builtin_ctz (c->enabled);
+  for (int i = c->pick == natural ? 0 : c->pick + 1; i < SCHED_THREADS; i++)
+    if (c->enabled >> i & 1 && i != natural)
+      return i;
+  return -1;
+}
+
+static void
+sched_x_print (const char *what, const uint8_t *v, long n)
+{
+  printf ("%s [", what);
+  for (long i = 0; i < n; i++)
+    printf (i ? ",%d" : "%d", v[i]);
+  printf ("]\n");
+}
+
+/* Every schedule of BODY with at most K preemptions, at most MAX of
+   them.  Return 0 if each held, 1 if one failed, 3 over MAX, 2 on a
+   harness error.  */
+static int
+sched_explore (int k, long max, int (*body) (void))
+{
+  uint8_t *prefix = malloc (SCHED_DECISIONS);
+  uint8_t *bad = malloc (SCHED_DECISIONS);
+  int *pre = malloc ((SCHED_DECISIONS + 1) * sizeof *pre);
+  if (!prefix || !bad || !pre)
+    return 2;
+  long np = 0, nbad = -1, failed = 0;
+  sched_x.k = k;
+  sched_x.runs = 0;
+  for (;;)
+    {
+      if (sched_x.runs == max)
+	{
+	  printf ("over the bound: %ld schedules\n", sched_x.runs);
+	  return 3;
+	}
+      int rc = sched_x_run (prefix, np, body, true, false);
+      sched_x.runs++;
+      if (rc < 0 || rc == 5)
+	{
+	  sched_x_print ("harness error in schedule", prefix, np);
+	  return 2;
+	}
+      if (rc != 0)
+	{
+	  if (++failed <= 5)
+	    sched_x_print ("schedule", prefix, np);
+	  if (nbad < 0)
+	    {
+	      memcpy (bad, prefix, np);
+	      nbad = np;
+	    }
+	}
+      /* Back up to the last decision with a choice left.  */
+      long n = *sched_x.nd;
+      pre[0] = 0;
+      for (long i = 0; i < n; i++)
+	pre[i + 1] = pre[i] + (sched_x.d[i].natural != SCHED_FREE
+			       && sched_x.d[i].pick != sched_x.d[i].natural);
+      long i = n - 1;
+      int alt = -1;
+      for (; i >= 0 && alt < 0; i--)
+	alt = sched_x_next (&sched_x.d[i], k - pre[i]);
+      if (alt < 0)
+	break;
+      i++;
+      for (long j = 0; j < i; j++)
+	prefix[j] = sched_x.d[j].pick;
+      prefix[i] = (uint8_t) alt;
+      np = i + 1;
+    }
+  if (failed > 5)
+    printf ("... and %ld more\n", failed - 5);
+  printf ("exhaustive K=%d: %ld schedules, %ld failed\n", k, sched_x.runs,
+	  failed);
+  /* The first failure's own message.  */
+  if (nbad >= 0)
+    sched_x_run (bad, nbad, body, false, false);
+  return failed ? 1 : 0;
+}
+
+/* The argument x:K[:C1,C2,...] and the cap MAX: explore, or replay one
+   schedule with its trace.  */
+static int
+sched_x_main (const char *arg, long max, int (*body) (void))
+{
+  char *end;
+  int k = (int) strtol (arg + 2, &end, 10);
+  if (end == arg + 2 || k < 0 || (*end && *end != ':'))
+    {
+      fprintf (stderr, "sched: x:K or x:K:C1,C2,... (got %s)\n", arg);
+      return 2;
+    }
+  size_t size = SCHED_DECISIONS * sizeof *sched_x.d + sizeof (long);
+  void *shared = mmap (NULL, size, PROT_READ | PROT_WRITE,
+		       MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+  if (shared == MAP_FAILED)
+    return 2;
+  sched_x.d = shared;
+  sched_x.nd = (long *) (sched_x.d + SCHED_DECISIONS);
+  if (!*end)
+    return sched_explore (k, max, body);
+  static uint8_t choices[SCHED_DECISIONS];
+  long n = 0;
+  for (const char *p = end + 1; *p; n++)
+    {
+      long c = strtol (p, &end, 10);
+      if (end == p || c < 0 || c >= SCHED_THREADS || n == SCHED_DECISIONS
+	  || (*end && *end != ','))
+	{
+	  fprintf (stderr, "sched: bad schedule at %s\n", p);
+	  return 2;
+	}
+      choices[n] = (uint8_t) c;
+      p = *end ? end + 1 : end;
+    }
+  int rc = sched_x_run (choices, n, body, false, true);
+  sched_x_print (rc ? "failed: schedule" : "held: schedule", choices, n);
+  return rc != 0;
+}
+
 static __attribute__ ((unused)) int
 sched_main (int argc, char **argv, long steps, int (*body) (void))
 {
   long from = 1, to = 2000;
   bool one = false;
+  if (argc > 1 && argv[1][0] == 'x' && argv[1][1] == ':')
+    return sched_x_main (argv[1], argc > 2 ? strtol (argv[2], NULL, 10)
+			 : 200000, body);
   if (argc > 1)
     {
       char *end;

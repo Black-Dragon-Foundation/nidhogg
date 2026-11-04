@@ -153,6 +153,9 @@ extern bool nh_wk_submit (struct nh_wk_job *);
 extern int nh_wk_wait (struct nh_wk_job *, int64_t timeout_ns, int phase,
 		       int reason);
 extern void nh_wk_wait_begins (void);
+extern bool nh_wk_await_idle (int, uint64_t deadline);
+extern void nh_wk_await_jobs (int, struct nh_wk_job *const *, ptrdiff_t,
+			      uint64_t deadline, int phase);
 extern void nh_wk_cancel (struct nh_wk_job *);
 extern void nh_wk_job_ref (struct nh_wk_job *);
 extern void nh_wk_job_unref (struct nh_wk_job *);
