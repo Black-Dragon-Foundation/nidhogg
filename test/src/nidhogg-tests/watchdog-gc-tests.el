@@ -210,4 +210,12 @@ The rings are emptied first and after; the watchdog is stopped after."
           (should (eq (plist-get c :explicit) t)))))
     (should (= (length heap) 2000000))))
 
+;; The stall watchdog runs on Linux only so far (`nidhogg-watchdog--start' signals elsewhere), so on another
+;; platform this file's tests skip instead of failing.
+(unless (eq system-type 'gnu/linux)
+  (dolist (test (ert-select-tests t t))
+    (when (equal (ert-test-file-name test) load-file-name)
+      (setf (ert-test-body test)
+            (lambda () (ert-skip "the stall watchdog runs on Linux only"))))))
+
 ;;; watchdog-gc-tests.el ends here
