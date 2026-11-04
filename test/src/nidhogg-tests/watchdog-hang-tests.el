@@ -362,4 +362,12 @@ Threshold 100 ms, hang 300 ms; FN runs in a fresh busy span."
        (nidhogg-watchdog--stop)
        (should-not (member dir (watchdog-hang--open-files)))))))
 
+;; The stall watchdog runs on Linux only so far (`nidhogg-watchdog--start' signals elsewhere), so on another
+;; platform this file's tests skip instead of failing.
+(unless (eq system-type 'gnu/linux)
+  (dolist (test (ert-select-tests t t))
+    (when (equal (ert-test-file-name test) load-file-name)
+      (setf (ert-test-body test)
+            (lambda () (ert-skip "the stall watchdog runs on Linux only"))))))
+
 ;;; watchdog-hang-tests.el ends here
