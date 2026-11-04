@@ -256,7 +256,9 @@ machine whose timing never shows it, not certain.
   exactly `;; test-class: det` (deterministic: no real time), `;; test-class: cond` (waits on conditions, no fixed
   pause) or `;; test-class: timing` (may assert the clock). A test's own tag (`:det`, `:cond`, `:timing`) overrides the
   file's. `test-class-lint-tests.el` reads the files as data and fails a classified file that breaks its class (a
-  same-file helper counts as part of the test). Files that are not tests are listed in `nidhogg/test/class-exempt.txt`
+  same-file helper counts as part of the test). In both D and C, a child started with a script that writes, sleeps and
+  writes again (`echo a; sleep 0.3; echo b`) fails it: the test would rely on the OS handing it two reads at the child's
+  pace (a scripted peer, `nidhogg-test-peer`, gives one read per write). Files that are not tests are listed in `nidhogg/test/class-exempt.txt`
   (`FILE # reason`); a row whose file is gone fails the check. Every test file has a class, so a file with neither a
   class line nor an exempt row fails it.
 - `tree`: `tree-test.sh`, `ci-test.sh` and `check-rerun-test.sh` (full history and tags).
