@@ -21,12 +21,27 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 
 ;; Fixture day files: JSON Lines as `nidhogg-watchdog--log-write' makes them.
+;; Every line is on one fixed day, and the report's "today" is that day: a
+;; run across midnight reads the same file it wrote.
+
+(defconst watchdog-report--day-file "2026-03-01.jsonl"
+  "The fixture's day file.")
+
+(defconst watchdog-report--at "2026-03-01T12:00:00.000+00:00"
+  "The time of every fixture line, noon UTC of that day.")
+
+(defun watchdog-report--midnight ()
+  "Midnight UTC of the fixture's day, the report's start of today.
+In any time zone that is on the day before or the day itself, so the
+day file is read, and noon UTC is after it."
+  (encode-time '(0 0 0 1 3 2026 nil nil t)))
 
 (defun watchdog-report--stall (pkg sig nongc felt &optional stacks)
   "A stall line of PKG and SIG with NONGC ms, FELT, and STACKS (frames, n)."
-  (list :type "stall" :at (format-time-string "%FT%T.000%:z")
+  (list :type "stall" :at watchdog-report--at
         :wall_ms nongc :nongc_ms nongc :gc_ms 0
         :felt (if felt t :false) :state "running"
         :culprit (list :pkg pkg) :signature sig
@@ -37,7 +52,7 @@
 
 (defun watchdog-report--gc (pause felt)
   "A GC line of PAUSE ms."
-  (list :type "gc" :at (format-time-string "%FT%T.000%:z")
+  (list :type "gc" :at watchdog-report--at
         :pause_ms pause :felt (if felt t :false) :origin "auto"))
 
 (defmacro watchdog-report--with-day (lines &rest body)
@@ -48,8 +63,7 @@
           (nidhogg-watchdog-threshold 100))
      (unwind-protect
          (progn
-           (with-temp-file (expand-file-name
-                            (format-time-string "%F.jsonl") dir)
+           (with-temp-file (expand-file-name watchdog-report--day-file dir)
              (dolist (l ,lines)
                (insert (json-serialize l :false-object :false) "\n")))
            ,@body)
@@ -114,17 +128,19 @@
 (ert-deftest watchdog/report-rows ()
   (watchdog-report--with-day (watchdog-report--day)
     (unwind-protect
-        (save-window-excursion
-          (nidhogg-watchdog-report)
-          (with-current-buffer "*Nidhogg Watchdog*"
-            (should (derived-mode-p 'nidhogg-watchdog-report-mode))
-            ;; GC row, pkg-b, its signature, pkg-a, its signature.
-            (should (= (length tabulated-list-entries) 5))
-            (should (plist-get (car (car tabulated-list-entries)) :gc))
-            (should (string-prefix-p
-                     "pkg-b" (aref (cadr (nth 1 tabulated-list-entries)) 0)))
-            (should (string-prefix-p
-                     "  sig-b" (aref (cadr (nth 2 tabulated-list-entries)) 0)))))
+        (cl-letf (((symbol-function 'nidhogg-watchdog--rep-midnight)
+                   #'watchdog-report--midnight))
+          (save-window-excursion
+            (nidhogg-watchdog-report)
+            (with-current-buffer "*Nidhogg Watchdog*"
+              (should (derived-mode-p 'nidhogg-watchdog-report-mode))
+              ;; GC row, pkg-b, its signature, pkg-a, its signature.
+              (should (= (length tabulated-list-entries) 5))
+              (should (plist-get (car (car tabulated-list-entries)) :gc))
+              (should (string-prefix-p
+                       "pkg-b" (aref (cadr (nth 1 tabulated-list-entries)) 0)))
+              (should (string-prefix-p
+                       "  sig-b" (aref (cadr (nth 2 tabulated-list-entries)) 0))))))
       (when (get-buffer "*Nidhogg Watchdog*")
         (kill-buffer "*Nidhogg Watchdog*")))))
 
