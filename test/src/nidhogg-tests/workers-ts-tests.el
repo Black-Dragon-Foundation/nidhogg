@@ -149,6 +149,14 @@ memory.  Of a `let' form ERT keeps the form as written and its value."
         (treesit-parser-set-included-ranges p ranges))
       (treesit-node-string (treesit-parser-root-node p)))))
 
+;; Emacs's GC counts Lisp allocation only: the tree-sitter trees and parser
+;; state that a dead parser holds are C memory, so a loop that makes parsers
+;; (the oracle's fresh parse per demand) can pile up gigabytes before a
+;; collection runs.  Collect where such a loop has dropped its parsers.
+(defun workers-ts-tests--collect ()
+  "Run a garbage collection so dead parsers free their trees."
+  (garbage-collect))
+
 (defvar workers-ts-tests--calls nil
   "The notifier calls: (TAG . RANGES), the latest first.")
 
@@ -801,7 +809,9 @@ language.  A buffer under 8000 characters gets a yank."
                         (unless (equal sa (with-current-buffer a
                                             (workers-ts-tests--sync-sexp
                                              (buffer-string) (car s))))
-                          (setq divergent (1+ divergent))))))
+                          (setq divergent (1+ divergent)))
+                        (when (zerop (% demands 25))
+                          (workers-ts-tests--collect)))))
                   (should (> replays 0))
                   (message "workers/ts-oracle: %s %s: %d demands, %d replays, %d diverge from a fresh parse"
                            mode (car s) demands replays divergent))
