@@ -219,6 +219,9 @@ struct thread_state
 #if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
   /* The select of this thread the test clock knows about, or NULL.  */
   struct nh_tc_wait *nh_tc;
+  /* A wake of WAIT_CONDVAR is on its way to this thread, which has yet
+     to take the global lock back: it can run.  With the lock held.  */
+  bool nh_tc_woken;
 #endif
 #ifdef HAVE_NIDHOGG_WORKERS
   /* This thread's select while it runs without the global lock, else

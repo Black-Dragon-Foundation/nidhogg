@@ -56,9 +56,14 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
    must itself run: it is `due' until it does, and nobody reads the fd
    meanwhile.
 
-   Limit: a Lisp thread a condition-notify just woke still counts as
-   blocked until it runs, so time can move a little before it does; no
-   wake-up is lost.  Glib's own timeouts in xg_select stay real (a GUI
+   A Lisp thread in a wait on its wait_condvar is blocked, unless a wake
+   is on its way to it: whoever broadcasts or signals that condition
+   variable, with the global lock, marks the waiters it woke
+   (nh_tc_woken; a signal marks one).  A waiter back from the wait
+   clears its mark, or, if a signal meant for another came to it, that
+   one's, and kicks: it may wait again.  A spurious wake-up can clear a
+   mark early, so time can still move a little early then, but never
+   hang on a mark.  Glib's own timeouts in xg_select stay real (a GUI
    concern; tests on this clock are batch).  */
 
 #include <config.h>
@@ -184,18 +189,61 @@ nh_tc_fds_ready (struct nh_tc_wait *w)
 		  &zero, NULL) > 0;
 }
 
+/* Threads marked nh_tc_woken; with the global lock.  */
+static int nh_tc_cond_woken;
+
+void
+nh_tc_cond_woke (const void *cv, bool all)
+{
+  if (!nh_tc_auto)
+    return;
+  /* A marked waiter has a wake on its way already, so a signal's goes
+     to an unmarked one, if any is left.  */
+  for (struct thread_state *t = all_threads; t; t = t->next_thread)
+    if (t->wait_condvar == cv && !t->nh_tc_woken)
+      {
+	t->nh_tc_woken = true;
+	nh_tc_cond_woken++;
+	if (!all)
+	  return;
+      }
+}
+
+void
+nh_tc_cond_back (struct thread_state *self)
+{
+  struct thread_state *t = self;
+  if (!t->nh_tc_woken)
+    {
+      if (nh_tc_cond_woken == 0)
+	return;
+      /* A signal's wake came to SELF, not to the waiter marked for it,
+	 which still waits.  */
+      for (t = all_threads; t; t = t->next_thread)
+	if (t->nh_tc_woken && t->wait_condvar == self->wait_condvar)
+	  break;
+      if (!t)
+	return;
+    }
+  t->nh_tc_woken = false;
+  nh_tc_cond_woken--;
+  /* SELF may wait again, or that waiter waits on: neither can run.  */
+  nh_tc_kick ();
+}
+
 /* Can nothing run but what SELF, which holds the lock, will do?  */
 static bool
 nh_tc_quiet (struct thread_state *self)
 {
-  /* A thread out of its select waits for the lock, so it can run.  */
+  /* A thread out of its select waits for the lock, so it can run, and
+     so can one a wake is on its way to.  */
   for (struct thread_state *t = all_threads; t; t = t->next_thread)
     {
       struct nh_tc_wait *o = t->nh_tc;
       if (t == self)
 	continue;
       if (o ? !atomic_load (&o->in_select) || o->due || nh_tc_fds_ready (o)
-	  : !t->wait_condvar)
+	  : !t->wait_condvar || t->nh_tc_woken)
 	return false;
     }
   return (nh_io_tc_quiet () && nh_wk_tc_busy () <= 0
