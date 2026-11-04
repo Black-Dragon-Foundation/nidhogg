@@ -1015,6 +1015,8 @@ nh_io_fr_run (struct nh_io_h *h, const unsigned char *s, ptrdiff_t n,
     nh_wk_wake_signal (&h->wake);
   atomic_store (&h->reading, false);
   pthread_mutex_unlock (&nh_io_m);
+  /* The read is handed to main: a chaos build lets main run first.  */
+  NH_CHAOS_POINT ("io-fr-handoff");
   /* A partial message: nothing landed.  */
   if (add == 0 && rc >= 0 && ev > 0)
     nh_wk_wake_signal (&nh_io_settlew);
@@ -1194,6 +1196,8 @@ nh_io_read_one (struct nh_io_h *h, unsigned char **buf, ptrdiff_t *size)
     nh_wk_wake_signal (&h->wake);
   atomic_store (&h->reading, false);
   pthread_mutex_unlock (&nh_io_m);
+  /* The read is handed to main: a chaos build lets main run first.  */
+  NH_CHAOS_POINT ("io-read-handoff");
 
   if (c)
     nh_wk_stat_add (NH_WK_IO, NH_WK_ST_QUEUED_BYTES, r);
