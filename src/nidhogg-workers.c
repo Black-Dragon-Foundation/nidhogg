@@ -1290,6 +1290,38 @@ nh_wk_wait (struct nh_wk_job *job, int64_t timeout_ns, int phase, int reason)
 	  : st == NH_WK_J_CANCELLED || atomic_load (&nh_wk_dead) ? -1 : 0);
 }
 
+/* Wait until worker W has no job queued or running, or until the real
+   time DEADLINE.  Return whether it has none.  For tests.  */
+bool
+nh_wk_await_idle (int w, uint64_t deadline)
+{
+  nh_wk_init ();
+  nh_wk_lock (&nh_wk_done_m);
+  while (atomic_load (&nh_wk_w[w].inflight) > 0 && nh_wk_real_ns () < deadline)
+    nh_wk_cond_wait_until (&nh_wk_done_cv, &nh_wk_done_m, deadline);
+  bool idle = atomic_load (&nh_wk_w[w].inflight) <= 0;
+  pthread_mutex_unlock (&nh_wk_done_m);
+  return idle;
+}
+
+/* Wait until the real time DEADLINE for the N jobs JOBS of worker W
+   (PHASE as for nh_wk_wait), then for their finishes to be queued: a
+   drain after this lands every one that is done.  For tests.  */
+void
+nh_wk_await_jobs (int w, struct nh_wk_job *const *jobs, ptrdiff_t n,
+		  uint64_t deadline, int phase)
+{
+  for (ptrdiff_t i = 0; i < n; i++)
+    {
+      int64_t left = deadline - nh_wk_real_ns ();
+      nh_wk_wait (jobs[i], left > 0 ? left : 0, phase, 0);
+    }
+  /* A job's waiters wake when it is done, before its worker queues its
+     finish (nh_wk_complete): a drain now may find nothing to land.
+     Wait out the rest of the time for that too.  */
+  nh_wk_await_idle (w, deadline);
+}
+
 void
 nh_wk_cancel (struct nh_wk_job *job)
 {
@@ -2202,13 +2234,7 @@ bounded condition wait, not a sleep.  */)
       CHECK_FIXNAT (ms);
       lim = XFIXNAT (ms);
     }
-  nh_wk_init ();
-  uint64_t deadline = nh_wk_real_ns () + lim * NH_WK_MS;
-  nh_wk_lock (&nh_wk_done_m);
-  while (atomic_load (&nh_wk_w[w].inflight) > 0 && nh_wk_real_ns () < deadline)
-    nh_wk_cond_wait_until (&nh_wk_done_cv, &nh_wk_done_m, deadline);
-  bool idle = atomic_load (&nh_wk_w[w].inflight) <= 0;
-  pthread_mutex_unlock (&nh_wk_done_m);
+  bool idle = nh_wk_await_idle (w, nh_wk_real_ns () + lim * NH_WK_MS);
   Fnidhogg_workers__drain ();
   return idle ? Qt : Qnil;
 }
