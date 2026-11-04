@@ -81,7 +81,7 @@ fn scan(data: &[u8], color: ColorType, depth: u8, palette_len: usize) -> Chunks 
                     ColorType::Rgb if len == 6 => {
                         Some(vec![be16(body), be16(&body[2..]), be16(&body[4..])])
                     }
-                    ColorType::Indexed if have_plte && len > 0 && len <= palette_len.min(256) => {
+                    ColorType::Indexed if have_plte && len > 0 && len <= palette_len => {
                         Some(body.iter().map(|&a| u16::from(a)).collect())
                     }
                     _ => None,
@@ -249,7 +249,16 @@ pub fn decode(data: &[u8], p: &Params) -> Result<Image, Error> {
     super::size_ok(p, i64::from(w), i64::from(h))?;
     let (color, depth, interlaced) = (info.color_type, info.bit_depth as u8, info.interlaced);
     let palette: Vec<u8> = info.palette.as_deref().unwrap_or(&[]).to_vec();
-    let chunks = scan(data, color, depth, palette.len() / 3);
+    // png_handle_PLTE: a palette image's PLTE is whole entries, at most 256, and libpng keeps only the entries the
+    // bit depth can index (which bounds the tRNS and bKGD that are valid)
+    let mut entries = palette.len() / 3;
+    if color == ColorType::Indexed {
+        if !palette.len().is_multiple_of(3) || entries > 256 {
+            return Err(Error::Decode("PLTE: invalid".into()));
+        }
+        entries = entries.min(1 << depth);
+    }
+    let chunks = scan(data, color, depth, entries);
 
     let trns = chunks.trns.as_deref();
     let has_alpha = matches!(color, ColorType::GrayscaleAlpha | ColorType::Rgba) || trns.is_some();
@@ -490,6 +499,34 @@ mod tests {
         let img = decode(&f, &params(Some([0; 3]))).unwrap();
         assert_eq!(pixels(&img), vec![0xff0000, 0x00ff00, 0x0000ff]);
         assert_eq!(img.mask.as_ref().unwrap().as_slice(), &[0, 255, 255]);
+    }
+
+    #[test]
+    fn a_palette_counts_only_the_entries_its_depth_indexes() {
+        // six entries at 2 bits: libpng keeps four, so a 5-entry tRNS and a bKGD of entry 5 are invalid (ignored)
+        let pal: Vec<u8> = (1..=18).collect();
+        let f = encode_with(
+            4,
+            1,
+            ColorType::Indexed,
+            BitDepth::Two,
+            &[0b0001_1011],
+            |e| e.set_palette(pal.clone()),
+            &[
+                (png::chunk::tRNS, &[0, 100, 255, 255, 50][..]),
+                (png::chunk::bKGD, &[5][..]),
+            ],
+        );
+        let img = decode(&f, &params(Some([0xffff; 3]))).unwrap();
+        assert_eq!(img.pixels.as_slice()[0], 0x010203);
+        assert!(img.mask.is_none() && img.bkgd.is_none());
+        // a PLTE that is not whole entries fails, as libpng's
+        let mut bad = f.clone();
+        let at = bad.windows(4).position(|w| w == b"PLTE").unwrap() - 4;
+        bad[at + 3] = 17;
+        let crc = crc32(&bad[at + 4..at + 8 + 17]);
+        bad.splice(at + 8 + 17..at + 8 + 18 + 4, crc.to_be_bytes());
+        assert!(matches!(decode(&bad, &params(None)), Err(Error::Decode(_))));
     }
 
     #[test]
