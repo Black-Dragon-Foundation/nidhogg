@@ -255,6 +255,18 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
     gdctl set "${args[@]}" || { echo "gui.sh: gdctl could not set scale $scale"; exit 1; }
   elif [ "$compositor" = kwin ]; then
     kscreen-doctor "output.Virtual-0.scale.$scale" > /dev/null || { echo "gui.sh: kscreen-doctor could not set scale $scale"; exit 1; }
+    # KWin manages windows on any render node, but composites, and so answers frame callbacks, only where its OpenGL
+    # scene came up (6.8 has no QPainter one).  Without it every row that waits for a frame fails on the 3 s settle,
+    # which reads as thirteen shell bugs: the lane stops here instead, with what KWin says about itself.
+    info=$(dbus-send --session --print-reply=literal --dest=org.kde.KWin /KWin org.kde.KWin.supportInformation 2>&1)
+    gl=$(printf '%s\n' "$info" | grep -E '^(Compositing is|Compositing Type|OpenGL (renderer|version) string)')
+    printf '%s\n' "$gl" | sed 's/^/gui.sh: kwin: /'
+    if ! printf '%s\n' "$gl" | grep -q '^Compositing is active'; then
+      echo "gui.sh: KWin composites nothing on this machine (no OpenGL scene on its render node), so it sends no frame"
+      echo "gui.sh: callbacks and the rows cannot run; render nodes: $(cd /sys/class/drm 2>/dev/null && for n in renderD*; do printf '%s=%s ' "$n" "$(basename "$(readlink -f "$n/device/driver")")"; done)"
+      cat "$clog"
+      exit 1
+    fi
   elif [ "$compositor" = labwc ]; then
     args=()
     for ((i = 1; i <= monitors; i++)); do
@@ -489,7 +501,7 @@ if [ -n "$container" ]; then
       want="mutter sway grim pixman libxkbcommon libcap dbus-daemon \
         mesa-dri-drivers mesa-libEGL mesa-libgbm python3-gobject-base dejavu-sans-mono-fonts procps-ng util-linux \
         $(case " $* " in *" mutter "*) echo pipewire wireplumber gstreamer1-plugins-base pipewire-gstreamer pipewire-utils ;; esac) \
-        $(case " $* " in *" kwin "*) echo kwin kscreen ;; *" labwc "*) echo labwc wlr-randr ;; esac) \
+        $(case " $* " in *" kwin "*) echo kwin kscreen dbus-tools ;; *" labwc "*) echo labwc wlr-randr ;; esac) \
         $(case " $* " in *" fcitx5 "*) echo fcitx5 fcitx5-chinese-addons wtype ;; *" ibus "*) echo ibus ibus-libpinyin ;; esac) \
         $pkgs"
       # already installed (the prebuilt image): nothing to download
