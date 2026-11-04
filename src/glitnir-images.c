@@ -511,7 +511,7 @@ messages are the Rust decoders' own.  Takes effect at the next decode;
 only the global value counts.  */);
   Lisp_Object dflt = Qnil;
   for (int fmt = NH_IMG_FMT_N - 1; fmt >= 0; fmt--)
-    if (GLITNIR_IMG_RUST_DEFAULT & (1u << fmt))
+    if ((GLITNIR_IMG_RUST_DEFAULT & (1u << fmt)) && glitnir_img_core[fmt])
       dflt = Fcons (intern_c_string (glitnir_img_names[fmt]), dflt);
   Vnidhogg_workers_image_rust = dflt;
 

@@ -264,6 +264,16 @@ unibyte strings; CHUNKS, each (TYPE . BODY), go before the image data."
       (palette-trns-too-long 3 8 2 1 (,(funcall b 0 1))
                              ("PLTE" . ,(funcall b 1 2 3 4 5 6))
                              ("tRNS" . ,(funcall b 0 0 0)))
+      ;; six entries at 2 bits: libpng keeps the four the depth indexes,
+      ;; so a 5-entry tRNS and a bKGD of entry 5 are past the palette
+      (palette-trns-past-depth 3 2 4 1 (,(funcall b #b00011011))
+                               ("PLTE" . ,(funcall b 255 0 0 0 255 0 0 0 255
+                                                   9 9 9 8 8 8 7 7 7))
+                               ("tRNS" . ,(funcall b 0 100 255 255 50)))
+      (palette-bkgd-past-depth 3 2 1 1 (,(funcall b 0))
+                               ("PLTE" . ,(funcall b 1 2 3 4 5 6 7 8 9
+                                                   10 11 12 13 14 15 16 17 18))
+                               ("bKGD" . ,(funcall b 5)))
       (rgba-trns-ignored 6 8 1 1 (,(funcall b 9 9 9 77)) ("tRNS" . ,(funcall b 0 9 0 9 0 9)))
       (bkgd-rgb 2 8 1 1 (,(funcall b 1 2 3)) ("bKGD" . ,(funcall b 0 7 0 8 0 9)))
       (bkgd-gray-invalid 0 4 2 1 (,(funcall b #x12)) ("bKGD" . ,(funcall b 0 16)))
@@ -336,7 +346,13 @@ unibyte strings; CHUNKS, each (TYPE . BODY), go before the image data."
          (cases `((truncated ,(substring good 0 (- (length good) 20)) nil)
                   (no-iend ,(substring good 0 (- (length good) 12)) nil)
                   (not-png ,(concat "GIF89a" (substring good 6)) nil)
-                  (too-big ,good (:limit 1)))))
+                  (too-big ,good (:limit 1))
+                  ;; a palette image's PLTE of whole entries only
+                  (plte-not-triples
+                   ,(workers-image-tests--png
+                     2 1 3 8 (list (workers-image-tests--bytes 0 1))
+                     (cons "PLTE" (workers-image-tests--bytes 1 2 3 4 5 6 7)))
+                   nil))))
     (pcase-dolist (`(,name ,data ,extra) cases)
       (let* ((spec `(image :type png :data ,data))
              (params (append extra '(:limit 10000)))
@@ -348,6 +364,92 @@ unibyte strings; CHUNKS, each (TYPE . BODY), go before the image data."
                        (list name (plist-get c :error))))
         (should (plist-get r :error))
         (should-not (plist-get r :pixels))))))
+
+;; WebP stills in the extended format (VP8X), rebuilt from the corpus'
+;; chunks, where the VP8X flag and the image disagree about alpha.
+
+(defun workers-image-tests--le (n bytes)
+  "N as BYTES little-endian bytes."
+  (apply #'unibyte-string
+         (mapcar (lambda (i) (logand (ash n (* -8 i)) 255)) (number-sequence 0 (1- bytes)))))
+
+(defun workers-image-tests--webp-chunks (file)
+  "The chunks of corpus FILE, a WebP: ((FOURCC . PAYLOAD) ...)."
+  (let ((d (with-temp-buffer
+             (set-buffer-multibyte nil)
+             (insert-file-contents-literally
+              (expand-file-name file workers-image-tests--dir))
+             (buffer-string)))
+        (at 12) (chunks nil))
+    (while (<= (+ at 8) (length d))
+      (let ((n (logior (aref d (+ at 4)) (ash (aref d (+ at 5)) 8)
+                       (ash (aref d (+ at 6)) 16) (ash (aref d (+ at 7)) 24))))
+        (push (cons (substring d at (+ at 4)) (substring d (+ at 8) (+ at 8 n)))
+              chunks)
+        (setq at (+ at 8 n (logand n 1)))))
+    (nreverse chunks)))
+
+(defun workers-image-tests--webp-vp8x (flags w h chunks)
+  "A WebP of a W×H canvas: a VP8X chunk with FLAGS, then CHUNKS."
+  (let ((body (mapconcat
+               (lambda (c)
+                 (concat (car c) (workers-image-tests--le (length (cdr c)) 4) (cdr c)
+                         (if (= (logand (length (cdr c)) 1) 1) (unibyte-string 0) "")))
+               (cons (cons "VP8X" (concat (unibyte-string flags 0 0 0)
+                                          (workers-image-tests--le (1- w) 3)
+                                          (workers-image-tests--le (1- h) 3)))
+                     chunks)
+               "")))
+    (concat "RIFF" (workers-image-tests--le (+ 4 (length body)) 4) "WEBP" body)))
+
+(ert-deftest workers/image-rust-webp-extended-alpha ()
+  ;; libwebp decides a VP8X still's alpha by its image: a lossy one has
+  ;; alpha when the flag says so or an ALPH chunk is there, a lossless one
+  ;; when its own header says so.  Rust gives the C core's pixels for
+  ;; each disagreement, and the C core's error for a canvas that is not
+  ;; the image's size.
+  (skip-unless (and (memq 'webp (workers-image-tests--rust-types))
+                    (workers-image-tests--core-p 'webp)))
+  (let* ((chunk (lambda (file fourcc)
+                  (assoc fourcc (workers-image-tests--webp-chunks file))))
+         (size (lambda (file)
+                 (let ((r (let ((nidhogg-workers-image-rust nil))
+                            (nidhogg-workers--test-image-decode
+                             (workers-image-tests--core-spec file nil)
+                             '(:limit 10000)))))
+                   (list (plist-get r :width) (plist-get r :height)))))
+         (vp8 (funcall chunk "oracle-lossy-alpha.webp" "VP8 "))
+         (alph (funcall chunk "oracle-lossy-alpha.webp" "ALPH"))
+         (vp8l (funcall chunk "oracle-lossless-alpha.webp" "VP8L"))
+         ;; the same bitstream with its header's alpha bit (bit 28) clear
+         (vp8l-hint-off (let ((p (copy-sequence (cdr vp8l))))
+                          (aset p 4 (logand (aref p 4) (lognot #x10)))
+                          (cons "VP8L" p)))
+         (lossy (funcall size "oracle-lossy-alpha.webp"))
+         (lossless (funcall size "oracle-lossless-alpha.webp"))
+         (file (lambda (flags wh chunks)
+                 (workers-image-tests--webp-vp8x flags (car wh) (cadr wh) chunks)))
+         (cases `((lossy-flag-without-alph ,(funcall file #x10 lossy (list vp8)))
+                  (lossy-alph-without-flag ,(funcall file 0 lossy (list alph vp8)))
+                  (lossless-alpha-without-flag ,(funcall file 0 lossless (list vp8l)))
+                  (lossless-flag-header-opaque
+                   ,(funcall file #x10 lossless (list vp8l-hint-off)))
+                  (canvas-not-the-image
+                   ,(funcall file #x10 (list (1+ (car lossy)) (cadr lossy))
+                             (list alph vp8)))))
+         (keys '(:error :width :height :pixels :mask)))
+    (pcase-dolist (`(,name ,data) cases)
+      (dolist (bg '(nil (65535 32768 0)))
+        (let* ((spec `(image :type webp :data ,data))
+               (params (append '(:limit 10000) (and bg (list :bg bg))))
+               (c (let ((nidhogg-workers-image-rust nil))
+                    (nidhogg-workers--test-image-decode spec params)))
+               (r (let ((nidhogg-workers-image-rust '(webp)))
+                    (nidhogg-workers--test-image-decode spec params))))
+          (should (equal (list name bg (and (plist-get c :error) t))
+                         (list name bg (eq name 'canvas-not-the-image))))
+          (should (equal (cons name (mapcar (lambda (k) (plist-get r k)) keys))
+                         (cons name (mapcar (lambda (k) (plist-get c k)) keys)))))))))
 
 (ert-deftest workers/image-rust-animation-cache ()
   ;; In Rust too, frame N continues from the state kept at N-1 (the C
