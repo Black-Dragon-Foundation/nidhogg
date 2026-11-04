@@ -246,6 +246,8 @@ script() {
   [ -z "${NIDHOGG_WORKERS_TEST_SIZE_SCALE:-}" ] || printf 'export NIDHOGG_WORKERS_TEST_SIZE_SCALE=%q\n' "$NIDHOGG_WORKERS_TEST_SIZE_SCALE"
   # where the test grammars are, inside the container (the pre-flight mounts them): the treesit rows skip without them
   [ -z "${NIDHOGG_TEST_GRAMMARS:-}" ] || printf 'export NIDHOGG_TEST_GRAMMARS=%q\n' "$NIDHOGG_TEST_GRAMMARS"
+  # a chaos build's seed (the pre-flight's P3 runs seeds 1..N): without it in the container every seed ran as seed 0
+  [ -z "${NIDHOGG_TEST_SEED:-}" ] || printf 'export NIDHOGG_TEST_SEED=%q\n' "$NIDHOGG_TEST_SEED"
   if [ "$MODE" = container ]; then
     case $DISTRO in
       ubuntu-*|debian-*)
