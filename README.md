@@ -225,8 +225,9 @@ If nothing can run and nothing is left to wait for, the wait can never end. It s
 `nidhogg-test-clock-deadlock`, with that same plist as the error's data, instead of hanging until the runner's timeout.
 
 Waits on the thread that holds the global lock (`nh_wk_wait`, the output settle) keep real bounds, since that thread
-is what would have to move the clock. A Lisp thread that `condition-notify` just woke counts as blocked until it
-runs, so time can move a little before it does; no wake-up is lost.
+is what would have to move the clock. A Lisp thread that `condition-notify`, `mutex-unlock`, a thread's exit or
+`thread-signal` just woke counts as runnable until it runs, so its work happens before time moves and is never taken
+for a deadlock.
 
     (nidhogg-test-clock-start t)
     (run-at-time 60 nil #'my-tick)
