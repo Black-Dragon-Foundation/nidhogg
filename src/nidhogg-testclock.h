@@ -98,6 +98,13 @@ extern bool nh_tc_after (struct nh_tc_wait *, int *result);
    found, if any.  */
 extern void nh_tc_raise (void);
 
+/* thread.c, with the global lock held.  CV, a condition variable Lisp
+   threads wait on as their wait_condvar, is broadcast (ALL) or
+   signalled: its waiters, or one, can run.  */
+extern void nh_tc_cond_woke (const void *cv, bool all);
+/* SELF is back from a wait on its wait_condvar, which is still set.  */
+extern void nh_tc_cond_back (struct thread_state *self);
+
 /* A timed wait on a worker thread, with CV's mutex M held: wait on the
    clock.  JOB says a job waits, which stops holding the clock.  False
    if the clock is off.  Else *RESULT is what pthread_cond_timedwait
