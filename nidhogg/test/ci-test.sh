@@ -148,4 +148,9 @@ printf 'a\tpassed\nb\tfailed\n' > "$d/pkg-x-on.outcomes"
 printf 'a\tpassed\nb\tfailed\nc\tfailed\n' > "$d/pkg-x-on.outcomes"; printf 'a\tpassed\n' > "$d/pkg-x-off.outcomes"
 ! bash nidhogg/test/pkg-test.sh --compare "$d" --expected "$d/exp" >/dev/null  || fail "compare passed tests missing from the off run"
 rm -r "$d"
+# a chaos build's seed reaches the check container (the pre-flight's P3 runs seeds 1..N); none set, none exported
+NIDHOGG_TEST_SEED=7 bash nidhogg/build.sh --container fedora-45 --dev --chaos --prefix /tmp/p --dry-run 2>/dev/null \
+  | grep -qxF 'export NIDHOGG_TEST_SEED=7'                         || fail "build.sh does not pass NIDHOGG_TEST_SEED into its container"
+env -u NIDHOGG_TEST_SEED bash nidhogg/build.sh --container fedora-45 --dev --chaos --prefix /tmp/p --dry-run 2>/dev/null \
+  | grep -qF 'NIDHOGG_TEST_SEED'                                   && fail "build.sh exports NIDHOGG_TEST_SEED that was not set"
 exit $rc
