@@ -61,7 +61,8 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 /* The formats decoded in Rust when nothing says otherwise: a bit per
    `enum nh_img_fmt'.  The variable's default is built from it, so the
    dumped value and the mask agree.  */
-#define GLITNIR_IMG_RUST_DEFAULT 0u
+#define GLITNIR_IMG_RUST_DEFAULT \
+  ((1u << NH_IMG_PNG) | (1u << NH_IMG_GIF) | (1u << NH_IMG_WEBP))
 
 /* The largest image file read (encoded bytes), as the cores' limit.  */
 #define GLITNIR_IMG_FILE_MAX ((off_t) 1 << 30)
@@ -504,7 +505,8 @@ syms_of_glitnir_images (void)
 A list of image types: each one in it that Glitnir has a decoder for
 \(`png', `gif' and `webp', with the `png', `gif' and `image-webp'
 crates) is decoded in Rust, the others by the C libraries, as before.  Both give the same pixels; the Rust decoders keep
-the C libraries out of the path of untrusted image data.  A PNG whose
+the C libraries out of the path of untrusted image data.  By default every
+type Glitnir has a decoder for; nil decodes them all with the C libraries.  A PNG whose
 transparency libpng would composite through gamma tables (one with a
 gAMA, sRGB, iCCP or cICP chunk) is decoded by libpng either way.  Error
 messages are the Rust decoders' own.  Takes effect at the next decode;

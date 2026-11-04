@@ -801,8 +801,8 @@ cache (by file name and modification time, or a hash of the data), so frame N of
 Test primitives: `nidhogg-workers--test-image-decode`, `--test-image-decode-finish`, `--test-decode-count`,
 `--test-image-cache-clear`, `--test-image-pixels`.
 **Rust decoders (Glitnir).** With Glitnir built in, `src/glitnir-images.c` puts an entry in front of the PNG core at
-load time, and in front of the GIF and WebP cores; the formats in `nidhogg-workers-image-rust` (default nil; `png`,
-`gif`, `webp`) decode through Glitnir's stateless `glitnir_img_decode` (the `png` crate, libpng's transformations
+load time, and in front of the GIF and WebP cores; the formats in `nidhogg-workers-image-rust` (by default `png`,
+`gif` and `webp`, each that the build has a C core for; nil turns them off) decode through Glitnir's stateless `glitnir_img_decode` (the `png` crate, libpng's transformations
 redone sample by sample, `png_composite`'s rounding; the `gif` crate under a port of giflib's reader and the GIF
 loader's disposal; `image-webp` under a port of libwebp's animation decoder and blend), the others through the C
 core, on whichever thread decodes, from the next decode on. The pixels are the core's; a PNG whose alpha libpng would
