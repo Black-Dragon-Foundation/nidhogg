@@ -1216,37 +1216,51 @@ tramp-tests.el: a local `sh -i' over a pty, the same tramp-sh code)."
         (should (accept-process-output cat 5 nil t))
         (should (equal (workers-io-tests--out cat) "z"))))
     (ert-info ("a pty before its filter's cost is known" :prefix "")
+      ;; The writer sends 1,000 bytes at a time and announces each chunk
+      ;; (a line in PROG) once its write returned.  Inline, the kernel is
+      ;; the only queue and its size varies, so the row waits for what
+      ;; the writer announced, never for the whole 8,000.
       (let* ((done (workers-io-tests--done-file))
+             (prog-file (workers-io-tests--done-file))
+             (announced (lambda ()
+                          (if (file-exists-p prog-file)
+                              (with-temp-buffer
+                                (insert-file-contents prog-file)
+                                (count-lines (point-min) (point-max)))
+                            0)))
              (proc (workers-io-tests--writer
                     "pty"
-                    (format "head -c 8000 /dev/zero | tr '\\0' a; : > %s; read x"
+                    (format "i=0; while [ $i -lt 8 ]; do head -c 1000 /dev/zero | tr '\\0' a; echo $i >> %s; i=$((i+1)); done; : > %s; read x"
+                            (shell-quote-argument prog-file)
                             (shell-quote-argument done))
                     :connection-type 'pty)))
         (unwind-protect
             (progn
               (should (workers-io-tests--info proc :owned))
               (should-not (workers-io-tests--info proc :filter-cost))
-              ;; Inline, the kernel is the only queue.  An XNU pty holds
-              ;; at most t_hiwat bytes, roundup (2048, CBSIZE) at most
-              ;; (bsd/kern/tty.c ttsetwater, bsd/sys/tty.h TTMAXHIWAT),
-              ;; less than one read, and its writer sleeps until they
-              ;; are read: there the output is served while the writer
-              ;; runs, and the first delivery is still one read.
-              (should (if (and (eq mode 'inline) (eq system-type 'darwin))
-                          (workers-io-tests--until (lambda () (file-exists-p done)))
-                        (workers-io-tests--busy-until
-                         (lambda () (file-exists-p done)))))
-              (when (eq mode 'threads)
-                (should (workers-io-tests--busy-until
-                         (lambda () (= (workers-io-tests--info proc :queued) 8000)))))
+              (if (eq mode 'threads)
+                  ;; nh-io drains the pty, so the writer finishes.
+                  (progn
+                    (should (workers-io-tests--busy-until
+                             (lambda () (file-exists-p done))))
+                    (should (workers-io-tests--busy-until
+                             (lambda () (= (workers-io-tests--info proc :queued) 8000)))))
+                ;; An XNU pty holds less than one read and its writer
+                ;; sleeps until they are read: there the output is served
+                ;; while the writer runs.  Elsewhere two chunks fit any
+                ;; pty's queue.
+                (should (if (eq system-type 'darwin)
+                            (workers-io-tests--until (lambda () (>= (funcall announced) 1)))
+                          (workers-io-tests--busy-until
+                           (lambda () (>= (funcall announced) 2))))))
               (should (workers-io-tests--until
                        (lambda () (= (workers-io-tests--got proc) 8000))))
-              ;; 8,000 bytes queued, more than one read; the first
-              ;; delivery takes a pty's read.
+              ;; The first delivery takes at most a pty's read.
               (should (<= (car (workers-io-tests--sizes proc)) 4096))
               ;; Its call measured the filter's cost.
               (should (workers-io-tests--info proc :filter-cost)))
-          (ignore-errors (delete-file done)))))
+          (ignore-errors (delete-file done))
+          (ignore-errors (delete-file prog-file)))))
     (ert-info ("a filter at 1 µs per byte" :prefix "")
       (let ((proc (let ((read-process-output-max 65536))
                     (make-process :name "wio-cost" :command '("cat")
