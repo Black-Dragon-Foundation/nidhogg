@@ -58,8 +58,8 @@ fn grab_of(kind: &str) -> String {
 }
 
 /// Popup `id` reached the recorder without a grab.
-fn no_grab(rec: &Recorder, id: u64) {
-    rec.wait_node(id, |n| {
+fn no_grab(rec: &Recorder, shell: &WaylandShell, id: u64) {
+    rec.wait_window(shell, id, |n| {
         n.contains("\"role\":\"popup\"") && n.contains("\"grab\":null")
     });
 }
@@ -108,7 +108,7 @@ mod popup {
         rec.control_ok(r#"{"cmd":"key","text":"a"}"#);
         wait_event(&mut shell, Kind::Key);
         let p = popup(&mut shell, top, NHSHELL_WIN_GRAB);
-        rec.wait_node(p, |n| n.contains(&grab_of("key")));
+        rec.wait_window(&shell, p, |n| n.contains(&grab_of("key")));
         assert!(shell.window_grabbed(p).unwrap());
         assert!(!shell.window_grabbed(top).unwrap());
         still_up(&mut shell, 100);
@@ -116,7 +116,7 @@ mod popup {
         shell.window_destroy(p).unwrap();
         click(&rec, &mut shell, top, false);
         let q = popup(&mut shell, top, NHSHELL_WIN_GRAB);
-        rec.wait_node(q, |n| n.contains(&grab_of("button")));
+        rec.wait_window(&shell, q, |n| n.contains(&grab_of("button")));
     }
 
     #[test]
@@ -125,7 +125,7 @@ mod popup {
         let mut shell = rec.open();
         let top = mapped_window(&mut shell, 200, 100);
         let p = popup(&mut shell, top, NHSHELL_WIN_GRAB);
-        no_grab(&rec, p);
+        no_grab(&rec, &shell, p);
         assert!(!shell.window_grabbed(p).unwrap());
         still_up(&mut shell, 150);
     }
@@ -150,7 +150,7 @@ mod popup {
             collect(&mut shell, 20);
         }
         let p = popup(&mut shell, top, NHSHELL_WIN_GRAB);
-        no_grab(&rec, p);
+        no_grab(&rec, &shell, p);
         assert!(!shell.window_grabbed(p).unwrap());
         // the drag leaves: grabs are allowed again
         rec.control_ok(r#"{"cmd":"dnd_leave"}"#);
@@ -170,16 +170,16 @@ mod popup {
         click(&rec, &mut shell, top, false);
         let tip = popup(&mut shell, top, 0);
         let p = popup(&mut shell, tip, NHSHELL_WIN_GRAB);
-        no_grab(&rec, p);
+        no_grab(&rec, &shell, p);
         assert!(!shell.window_grabbed(p).unwrap());
         // and while a grab chain is open, a second grab beside it (on the top-level) is withheld too
         let a = popup(&mut shell, top, NHSHELL_WIN_GRAB);
         let b = popup(&mut shell, a, NHSHELL_WIN_GRAB);
         let c = popup(&mut shell, a, NHSHELL_WIN_GRAB);
         let d = popup(&mut shell, top, NHSHELL_WIN_GRAB);
-        rec.wait_node(b, |n| n.contains(&grab_of("button")));
-        no_grab(&rec, c);
-        no_grab(&rec, d);
+        rec.wait_window(&shell, b, |n| n.contains(&grab_of("button")));
+        no_grab(&rec, &shell, c);
+        no_grab(&rec, &shell, d);
         still_up(&mut shell, 150);
     }
 
@@ -256,7 +256,7 @@ mod popup {
         click(&rec, &mut shell, top, false);
         let a = popup(&mut shell, top, NHSHELL_WIN_GRAB);
         let b = popup(&mut shell, a, NHSHELL_WIN_GRAB);
-        rec.wait_node(b, |n| n.contains(&grab_of("button")));
+        rec.wait_window(&shell, b, |n| n.contains(&grab_of("button")));
         rec.control_ok(r#"{"cmd":"click_outside"}"#);
         let first = wait_event(&mut shell, Kind::PopupDone);
         let second = wait_event(&mut shell, Kind::PopupDone);
@@ -283,7 +283,7 @@ mod popup {
                 e.kind() == Kind::FrameReady && e.window == p
             });
             draw(&mut shell, p, 60, 30);
-            rec.wait_node(p, |n| n.contains("\"buffer\":{\"h\":30,\"w\":60}"));
+            rec.wait_window(&shell, p, |n| n.contains("\"buffer\":{\"h\":30,\"w\":60}"));
             assert!(
                 !shell.set_size(p, 60, 30).unwrap(),
                 "same size: nothing to do"
@@ -300,7 +300,7 @@ mod popup {
                 "{profile}: a content ack waits"
             );
             draw(&mut shell, p, 80, 40);
-            let n = rec.wait_node(p, |n| n.contains("\"buffer\":{\"h\":40,\"w\":80}"));
+            let n = rec.wait_window(&shell, p, |n| n.contains("\"buffer\":{\"h\":40,\"w\":80}"));
             assert!(n.contains("\"position\":[14,14]"), "{profile}: {n}");
             assert!(shell.set_size(top, 10, 10).is_err(), "not a popup");
             still_up(&mut shell, 100);
@@ -319,7 +319,7 @@ mod popup {
             e.kind() == Kind::FrameReady && e.window == p
         });
         draw(&mut shell, p, 60, 30);
-        rec.wait_node(p, |n| {
+        rec.wait_window(&shell, p, |n| {
             n.contains(&grab_of("button")) && n.contains("\"mapped\":true")
         });
         rec.control_ok(&format!(r#"{{"cmd":"focus","surface":{p}}}"#));
