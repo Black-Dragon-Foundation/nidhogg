@@ -626,7 +626,9 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   TypeScript, Python, Rust, HTML at pinned commits) are built by `test/src/nidhogg-tests/fixtures/grammars.sh` into
   `NIDHOGG_TEST_GRAMMARS` (default `fixtures/grammars-cache/`); the tree-sitter rows skip without them. It also builds
   `crash`, Python whose external scanner writes through a null pointer at a backquote (`fixtures/crash-scanner.c`):
-  `workers/worker-crash-forwarded-grammar` parses it on `nh-parse` and expects the fatal path.
+  `workers/worker-crash-forwarded-grammar` parses it on `nh-parse` and expects the fatal path. CI's fedora-45 Linux leg
+  runs `grammars.sh` on the runner and mounts the result into its check container (`NIDHOGG_TEST_GRAMMARS=/grammars`), so
+  the grammar rows of the check subset run there instead of skipping.
 - Tree-sitter on the main thread: every synchronous parse a demand makes (`treesit_ensure_parsed`) is in the watchdog's
   `treesit` phase and its `:phase-ms`, with the workers' switches on or off, so an A/B compares the main thread's
   whole tree-sitter time (parses plus `treesit-wait`).

@@ -179,4 +179,11 @@ NIDHOGG_TEST_SEED=7 bash nidhogg/build.sh --container fedora-45 --dev --chaos --
   | grep -qxF 'export NIDHOGG_TEST_SEED=7'                         || fail "build.sh does not pass NIDHOGG_TEST_SEED into its container"
 env -u NIDHOGG_TEST_SEED bash nidhogg/build.sh --container fedora-45 --dev --chaos --prefix /tmp/p --dry-run 2>/dev/null \
   | grep -qF 'NIDHOGG_TEST_SEED'                                   && fail "build.sh exports NIDHOGG_TEST_SEED that was not set"
+# the fedora-45 Linux leg builds the test grammars (grammars.sh) and mounts them into its check container, so the
+# grammar rows run instead of skipping; no other leg builds them
+lj=$(job linux)
+grep -qF 'bash test/src/nidhogg-tests/fixtures/grammars.sh "$RUNNER_TEMP/grammars"' <<<"$lj" || fail "the linux job does not run grammars.sh"
+grep -qF "matrix.distro == 'fedora-45' && steps.build.outcome == 'success'" <<<"$lj"       || fail "grammars.sh runs on more than the fedora-45 leg"
+grep -qF "NIDHOGG_TEST_GRAMMARS: \${{ steps.grammars.outcome == 'success' && '/grammars' || '' }}" <<<"$lj" || fail "the check does not see the grammars"
+grep -qF -- "-v {0}/grammars:/grammars:ro,z" <<<"$lj"                 || fail "the check container does not mount the grammars"
 exit $rc
