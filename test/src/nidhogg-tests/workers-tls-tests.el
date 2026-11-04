@@ -466,6 +466,49 @@ PULLED PULL)."
               (kill-buffer buf)))
         (delete-process (car s))))))
 
+(ert-deftest workers/tls-nowait-handshake-before-the-connect-wake ()
+  ;; A `:nowait' stream whose handshake finishes inside its first
+  ;; `gnutls-boot', in `connect_network_socket', before the wake that
+  ;; reports the connect: that wake says "open", once.  Without it the
+  ;; status stays `connect' on a working session, since the wake leaves
+  ;; TLS streams to the handshake retries, and those find nothing left
+  ;; to do.  `:complete-negotiation' makes the first boot finish the
+  ;; handshake every time; without it a loopback server's answer can
+  ;; still beat the first read under load, as it did in
+  ;; `workers/starttls''s `:nowait' row.
+  (workers-tls-tests--skip)
+  (let ((s (workers-tls-tests--server)))
+    (unwind-protect
+        (workers-tls-tests--modes
+          (let* ((events nil)
+                 (buf (generate-new-buffer " *wtls*"))
+                 (proc (make-network-process
+                        :name "wtls-c-in-boot" :buffer buf :host "localhost"
+                        :service (cdr s) :family 'ipv4 :nowait t :noquery t
+                        :sentinel (lambda (_p e) (push e events))
+                        :tls-parameters
+                        (cons 'gnutls-x509pki
+                              (append '(:complete-negotiation t)
+                                      (gnutls-boot-parameters
+                                       :hostname "localhost"))))))
+            (unless (workers-tls-tests--until
+                     (lambda () (not (eq (process-status proc) 'connect))))
+              (ert-fail (format "still connecting, handshake %S, server %S"
+                                (and (ignore-errors (gnutls-peer-status proc))
+                                     'done)
+                                (process-status (car s)))))
+            (should (eq (process-status proc) 'open))
+            (should (equal events '("open\n")))
+            (should (consp (gnutls-peer-status proc)))
+            (process-send-string proc "ping\n")
+            (should (workers-tls-tests--until
+                     (lambda ()
+                       (equal (with-current-buffer buf (buffer-string))
+                              "ping\n"))))
+            (delete-process proc)
+            (kill-buffer buf)))
+      (delete-process (car s)))))
+
 (ert-deftest workers/starttls-no-leftover ()
   ;; A STARTTLS upgrade with nothing queued (a real exchange: the
   ;; server waits for the ClientHello): the session gets no pull
