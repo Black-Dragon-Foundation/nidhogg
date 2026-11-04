@@ -101,6 +101,32 @@ done
 job workers-pkg | grep -q 'fail-fast: false'                       || fail "workers-pkg has no fail-fast: false"
 { job workers-pkg | grep -qE 'mode: \["on", "off"\]' && grep -q 'pkg-test.sh --compare' "$wf"; } || fail "workers-pkg does not run on and off and compare"
 job workers-asan | grep -q 'NIDHOGG_BUILD_SANITIZE'                || fail "workers-asan does not build sanitized"
+# the workers files under chaos: a chaos build of its own beside the Linux builds, seeds 1 to 5, outside release's needs
+job workers-chaos | grep -qE '^    needs: changes$'                  || fail "no job workers-chaos (or it waits on more than the changes job)"
+job workers-chaos | grep -qF 'build.sh --container fedora-45 --dev --chaos --stage build' || fail "workers-chaos does not make a chaos build"
+job workers-chaos | grep -qF 'nidhogg/test/chaos-lane.sh --build-dir "$RUNNER_TEMP/build-chaos" --seeds "1 2 3 4 5" --' || fail "workers-chaos does not run chaos-lane.sh with seeds 1 to 5"
+! awk '/^  release:/,0' "$wf" | grep -qE 'needs:.*workers-chaos'   || fail "release needs workers-chaos"
+# chaos-lane.sh lets no rerun off (a first-run failure is red though the rerun passed and flaky.txt lists it), a file
+# that ran no test is red, and a red names its seed (a stand-in for build.sh's check stage)
+d=$(mktemp -d)
+cat > "$d/build" <<'STUB'
+while [ $# -gt 0 ]; do case $1 in --build-dir) b=$2; shift 2 ;; --check) l=$2; shift 2 ;; *) shift ;; esac; done
+for t in $(sed 's/#.*//' "$l"); do
+  mkdir -p "$b/check-logs/$(dirname "$t")"
+  case $NIDHOGG_TEST_SEED in
+    2) echo 'Ran 3 tests, 2 results as expected, 1 unexpected' ;;
+    3) echo 'Ran 0 tests, 0 results as expected, 0 unexpected' ;;
+    *) echo 'Ran 3 tests, 3 results as expected, 0 unexpected' ;;
+  esac > "$b/check-logs/$t.log"
+done
+[ "$NIDHOGG_TEST_SEED" != 2 ] || printf 'check-rerun: t had unexpected results; running it once more\nflaky (listed: a cause): t\n'
+STUB
+lane() { env -u GITHUB_ACTIONS bash nidhogg/test/chaos-lane.sh --build-dir "$d/b" --seeds "$1" -- bash "$d/build"; }
+lane 1 >/dev/null                                                   || fail "chaos-lane.sh: a green seed is red"
+o=$(lane "1 2")                                                     && fail "chaos-lane.sh passed a failure that the rerun let off"
+{ grep -q 'RED seed 2' <<<"$o" && ! grep -q 'RED seed 1' <<<"$o"; } || fail "chaos-lane.sh does not name the red seed"
+lane 3 >/dev/null                                                   && fail "chaos-lane.sh passed a seed that ran no test"
+rm -r "$d"
 # the native shell: the crates' checks on the recorder, every GUI lane on the fedora-45 tarball
 for s in 'recorder/check.sh --container fedora-45 --build' 'shell/check.sh --container fedora-45' 'glue/check.sh --container fedora-45'; do
   job native-crates | grep -qF "$s"                                || fail "native-crates does not run $s"
@@ -127,7 +153,7 @@ for f in test/src/nidhogg-tests/nhwl-*-tests.el; do
   esac
 done
 # a release tag runs what release needs: the tagged commit passed the rest in its round
-for j in compile-noglitnir workers-harness workers-asan workers-pkg workers-pkg-compare; do
+for j in compile-noglitnir workers-harness workers-asan workers-chaos workers-pkg workers-pkg-compare; do
   job "$j" | grep -qF "github.ref_type != 'tag'"                    || fail "$j runs for a release tag"
 done
 for j in tree linux macos drgnx native-crates native-gui; do
