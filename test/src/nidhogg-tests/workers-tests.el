@@ -1,5 +1,6 @@
 ;;; workers-tests.el --- tests for the worker threads (flag, feature, switches)  -*- lexical-binding: t -*-
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 

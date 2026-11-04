@@ -1,5 +1,6 @@
 ;;; workers-blk-tests.el --- tests for workers: directory reads and file blocks  -*- lexical-binding: t -*-
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
