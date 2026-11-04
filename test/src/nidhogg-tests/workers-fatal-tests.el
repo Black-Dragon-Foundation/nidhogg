@@ -365,6 +365,33 @@ would for a user at the terminal."
         (should (equal (workers-fatal-tests--auto-saved dir "c.txt")
                        "worker crash"))))))
 
+(ert-deftest workers/worker-crash-waits-for-a-safe-point ()
+  ;; The forwarded crash lands on a main thread far from a safe point,
+  ;; as inside malloc, where the fatal path, which allocates, would block
+  ;; for good on a lock its own thread holds.  So the handler only asks
+  ;; for the next safe point and returns, every time: the primitive's
+  ;; "deferred" comes before the fatal path's line, which then names the
+  ;; worker's signal, and the emergency auto-save exists.  A handler that
+  ;; runs the fatal path itself ends the child before "deferred".
+  (workers-fatal-tests--in-dir dir
+    (let* ((file (expand-file-name "s.txt" dir))
+           (r (workers-fatal-tests--batch
+               `(progn
+                  ,(workers-fatal-tests--edit file "safe point")
+                  (princ "nh-wk: ready\n")
+                  (unless (nidhogg-workers--test-crash-away-from-safe-points
+                           'nh-blk 10000)
+                    (kill-emacs 3))
+                  (while t
+                    (accept-process-output nil 0.05)))
+               :pty t :mark "nh-wk: ready")))
+      (ert-info ((format "%S" r) :prefix "child: ")
+        (workers-fatal-tests--should-die r '(SIGSEGV . 11) "Segmentation fault")
+        (should (string-match-p "^nh-wk: deferred\n\\(?:.\\|\n\\)*^Fatal error 11"
+                                (plist-get r :err)))
+        (should (equal (workers-fatal-tests--auto-saved dir "s.txt")
+                       "safe point"))))))
+
 (defconst workers-fatal-tests--crash-grammar-dir
   (let ((dir (or (getenv "NIDHOGG_TEST_GRAMMARS")
                  (expand-file-name
