@@ -1336,9 +1336,9 @@ nh_webp_decode (const uint8_t *data, size_t len,
 	if (alpha_blend)
 	  {
 	    float a = (float) q[3] / UINT8_MAX;
-	    r = (int) (a * q[0] + (1 - a) * bgr);
-	    g = (int) (a * q[1] + (1 - a) * bgg);
-	    b = (int) (a * q[2] + (1 - a) * bgb);
+	    r = nh_img_over_bg (a, q[0], bgr);
+	    g = nh_img_over_bg (a, q[1], bgg);
+	    b = nh_img_over_bg (a, q[2], bgb);
 	    q += 4;
 	  }
 	else

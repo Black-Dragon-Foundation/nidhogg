@@ -149,6 +149,20 @@ extern int64_t nh_img_decode_count (bool reset);
 extern void nh_img_cache_clear (void);
 extern int nh_img_cache_entries (void);
 
+/* The WebP composite of sample C with alpha A (0..1) over background
+   BG: A * C + (1 - A) * BG in single floats, truncated.  Each product
+   is rounded on its own, on every platform: a compiler that fuses the
+   multiply and the add (clang on arm64 does by default) rounds once
+   instead, and a sum that is an exact integer can then come out one
+   lower.  The volatile stores keep the products apart under any
+   contraction setting.  Glitnir's Rust decoder rounds the same way.  */
+static inline int
+nh_img_over_bg (float a, int c, int bg)
+{
+  volatile float fg = a * c, back = (1 - a) * bg;
+  return fg + back;
+}
+
 /* The entry of a synchronous loader in image.c (nidhogg-workers.h declares
    nh_img_sync_load): decode through the core and return its result.  */
 #define NH_IMG_SYNC_LOAD(f, img, fmt)				\

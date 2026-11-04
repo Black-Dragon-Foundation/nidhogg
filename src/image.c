@@ -11652,9 +11652,17 @@ webp_load (struct frame *f, struct image *img)
 	  if (features.has_alpha || features.has_animation)
 	    {
 	      float a = (float) p[3] / UINT8_MAX;
+#ifdef HAVE_NIDHOGG_WORKERS
+	      /* As the decoder core composites, each product rounded on
+		 its own on every platform.  */
+	      r = nh_img_over_bg (a, p[0], bg_color.red)   << 8;
+	      g = nh_img_over_bg (a, p[1], bg_color.green) << 8;
+	      b = nh_img_over_bg (a, p[2], bg_color.blue)  << 8;
+#else
 	      r = (int)(a * p[0] + (1 - a) * bg_color.red)   << 8;
 	      g = (int)(a * p[1] + (1 - a) * bg_color.green) << 8;
 	      b = (int)(a * p[2] + (1 - a) * bg_color.blue)  << 8;
+#endif
 	      p += 4;
 	    }
 	  else
