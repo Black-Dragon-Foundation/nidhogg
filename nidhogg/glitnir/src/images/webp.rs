@@ -400,7 +400,9 @@ fn demux(data: &[u8], cw: u32, ch: u32) -> Result<Vec<WebpFrame>, Error> {
     Ok(frames)
 }
 
-/// The host's composition over the background: `a * c + (1 - a) * bg` in single-precision floats, truncated.
+/// The host's composition over the background: `a * c + (1 - a) * bg` in single-precision floats, truncated, each
+/// product rounded on its own (Rust never fuses a multiply and an add; the host's `nh_img_over_bg` keeps them apart
+/// too, where a C compiler would fuse them on arm64 and round a sum that is an exact integer one lower).
 fn over_bg(c: u8, a: f32, bg: i32) -> u32 {
     (a * f32::from(c) + (1.0 - a) * bg as f32) as i32 as u32
 }
@@ -630,6 +632,14 @@ mod tests {
         let a = c[3] as f32 / 255.0;
         let ch = |k: usize| (a * c[k] as f32 + (1.0 - a) * bg[k] as f32) as i32 as u32;
         (ch(0) << 16) | (ch(1) << 8) | ch(2)
+    }
+
+    #[test]
+    fn the_composite_rounds_each_product() {
+        // 105/255 * 111 + 150/255 * 128 is exactly 121: rounded apart the products sum to 121, fused to 120.99…
+        let a = 105.0f32 / 255.0;
+        assert_eq!(over_bg(111, a, 128), 121);
+        assert_eq!(a.mul_add(111.0, (1.0 - a) * 128.0) as i32, 120);
     }
 
     #[test]
