@@ -16,25 +16,25 @@ has() { case $out in *"$1"*) ;; *) fail "output lacks '$1' (args: $*)";; esac; }
 hasnt() { case $out in *"$1"*) fail "output has '$1'";; esac; }
 rcis() { [ "$rc" = "$1" ] || fail "exit $rc, wanted $1: $out"; }
 
-run NIDHOGG_BUILD_NPROC=16 NIDHOGG_BUILD_MEMORY_KB=$((16*1024*1024)) -- --dry-run --container fedora-44 --prefix /opt/x
-rcis 0; has "--memory 6g --memory-swap 6g"; has "make -j4"; has "registry.fedoraproject.org/fedora:44"
+run NIDHOGG_BUILD_NPROC=16 NIDHOGG_BUILD_MEMORY_KB=$((16*1024*1024)) -- --dry-run --container fedora-45 --prefix /opt/x
+rcis 0; has "--memory 6g --memory-swap 6g"; has "make -j4"; has "registry.fedoraproject.org/fedora:45"
 has "--prefix=\"\$P\""; has "P=/opt/x"; has "--with-nidhogg-wayland"; hasnt "pgtk"; has "--with-native-compilation=aot"; has "--with-tree-sitter"
-has "nidhogg/deps/fedora-44.build"; hasnt "docker"
+has "nidhogg/deps/fedora-45.build"; hasnt "docker"
 # Glitnir (the compositor): --with-glitnir by default on Linux and NS, --without-glitnir turns it off (and installs no Rust)
 has "--with-glitnir"; hasnt "grep -vxE"
 run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n
 rcis 0; has "--with-glitnir"; has "--with-ns"; hasnt "grep -vxE"; hasnt "--with-nidhogg-wayland"
 # without Glitnir there is no shell, so Linux builds for the terminal
-run -- --dry-run --container fedora-44 --without-glitnir
+run -- --dry-run --container fedora-45 --without-glitnir
 rcis 0; hasnt "--with-glitnir"; hasnt "--with-nidhogg-wayland"; has "--without-x"; has "grep -vxE 'cargo|rust|rustc'"
 run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n --without-glitnir
 rcis 0; hasnt "--with-glitnir"; has "--with-ns"; hasnt "--without-x"
 # the old switch still works, and it cannot be asked for without what it needs
-run -- --dry-run --container fedora-44 --nidhogg-wayland
+run -- --dry-run --container fedora-45 --nidhogg-wayland
 rcis 0; has "--with-nidhogg-wayland"
-run -- --dry-run --container fedora-44 --nidhogg-wayland --without-glitnir
+run -- --dry-run --container fedora-45 --nidhogg-wayland --without-glitnir
 rcis 1; has "needs Glitnir"
-for d in fedora-44 fedora-45 ubuntu-26.04 debian-13 arch; do
+for d in fedora-45 ubuntu-26.04 debian-13 arch; do
   ! grep -qi gtk nidhogg/deps/$d.build nidhogg/deps/$d.runtime || fail "$d's package lists still name GTK"
 done
 # low-memory-shrinks-or-refuses
@@ -59,7 +59,7 @@ rcis 0; has "warning:"
 run -- --dry-run --container ubuntu-26.04 --memory 12g --jobs 4
 rcis 0; has "docker.io/library/ubuntu:26.04"; has "--memory 12g"; has "make -j4"
 run -- --dry-run --container nosuch
-rcis 2; has "fedora-44 fedora-45 ubuntu-26.04 debian-13 arch"
+rcis 2; has "fedora-45 ubuntu-26.04 debian-13 arch"
 run -- --dry-run --container debian-13 --jobs 4
 rcis 0; has "docker.io/library/debian:13"; has "apt-get install"
 run -- --dry-run --container arch --jobs 4
@@ -68,11 +68,11 @@ run NIDHOGG_BUILD_PKG_CACHE=/var/tmp/pc -- --dry-run --container arch
 rcis 0; has "/var/tmp/pc/pacman:/var/cache/pacman/pkg"
 run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n
 rcis 0; has "--with-ns"; has "/Nidhogg.app"; has "P=/tmp/n"; hasnt "podman"
-run -- --dry-run --container fedora-44
+run -- --dry-run --container fedora-45
 rcis 0; has "cmp -s"
-run -- --dry-run --container fedora-44 --check nidhogg/check-subset.txt
+run -- --dry-run --container fedora-45 --check nidhogg/check-subset.txt
 rcis 0; has "make -C test src/nidhogg-tests"; has "nidhogg/test/check-rerun.sh"; has "check_rerun"
-run -- --dry-run --container fedora-44 --out dist/x.tar.xz
+run -- --dry-run --container fedora-45 --out dist/x.tar.xz
 rcis 0; has "DESTDIR=/build/stage"; has "BUILDINFO"; has "/out:Z"; has "/src:ro,z"
 has 'lic=$pk/share/nidhogg/licenses'; has 'cp -a "$S/nidhogg/licenses/." "$lic/"'; has 'cp "$S/nidhogg/THIRD_PARTY.md" "$lic/"'
 run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --out dist/x.tar.xz
@@ -99,15 +99,15 @@ rcis 0; has "--with-nidhogg-chaos"
 run -- --dry-run --container fedora-45 --chaos
 rcis 1; has "dev builds only"
 # --dev: native-compilation=yes, no JIT in the image, never packed, cache stamp carries the mode
-run -- --dry-run --container fedora-44 --dev
+run -- --dry-run --container fedora-45 --dev
 rcis 0; has "--with-native-compilation=yes"; hasnt "--with-native-compilation=aot"; has "site-init.el"; has "MODE_ID=yes"; has "--with-tree-sitter"
-run NIDHOGG_BUILD_DEV=1 -- --dry-run --container fedora-44
+run NIDHOGG_BUILD_DEV=1 -- --dry-run --container fedora-45
 rcis 0; has "--with-native-compilation=yes"
-run -- --dry-run --container fedora-44 --dev --out dist/x.tar.xz
+run -- --dry-run --container fedora-45 --dev --out dist/x.tar.xz
 rcis 1; has "never packed"
-run -- --dry-run --container fedora-44 --dev --stage pack
+run -- --dry-run --container fedora-45 --dev --stage pack
 rcis 1; has "never packed"
-run -- --dry-run --container fedora-44
+run -- --dry-run --container fedora-45
 rcis 0; hasnt "site-init.el"; has "MODE_ID=aot"; hasnt "fsanitize"
 # NIDHOGG_BUILD_SANITIZE reaches CFLAGS and LDFLAGS; dev builds only
 run NIDHOGG_BUILD_SANITIZE=address,undefined -- --dry-run --container fedora-45 --dev
@@ -160,16 +160,16 @@ rcis 0; has "CONF_ID=--prefix=/tmp/p1\\ --with-native-compilation=aot"; has '"$M
 run -- --dry-run --container fedora-45
 rcis 0; hasnt "lispcache"; hasnt "compiled Lisp"
 # stages: build = make only, check = the check targets in the built tree, pack = install and tarball; no prefix mount unless packing
-run -- --dry-run --container fedora-44 --stage build --check nidhogg/check-subset.txt --out dist/x.tar.xz
+run -- --dry-run --container fedora-45 --stage build --check nidhogg/check-subset.txt --out dist/x.tar.xz
 rcis 0; has "phase make -j"; hasnt "phase check"; hasnt "phase tarball"; hasnt ":/out:Z"
-run -- --dry-run --container fedora-44 --stage check --check nidhogg/check-subset.txt --out dist/x.tar.xz
+run -- --dry-run --container fedora-45 --stage check --check nidhogg/check-subset.txt --out dist/x.tar.xz
 rcis 0; has "phase check src/emacs-tests"; hasnt "phase make -j"; hasnt "phase autogen"; hasnt "phase tarball"; has 'cd "$B/obj"'
-run -- --dry-run --container fedora-44 --stage pack --check nidhogg/check-subset.txt --out dist/x.tar.xz
+run -- --dry-run --container fedora-45 --stage pack --check nidhogg/check-subset.txt --out dist/x.tar.xz
 rcis 0; has "phase tarball"; hasnt "phase make -j"; hasnt "phase check"; has ":/out:Z"
-run -- --dry-run --container fedora-44 --stage bogus
+run -- --dry-run --container fedora-45 --stage bogus
 rcis 2
 # one progress line per phase
-run -- --dry-run --container fedora-44 --check nidhogg/check-subset.txt --out dist/x.tar.xz
+run -- --dry-run --container fedora-45 --check nidhogg/check-subset.txt --out dist/x.tar.xz
 for ph in "phase autogen" "phase configure" "phase make -j" "phase check src/nidhogg-tests" "phase install" "phase tarball"; do has "$ph"; done
 has "install_weak_deps=False"
 run -- --dry-run --container ubuntu-26.04
@@ -192,7 +192,7 @@ exit 0
 PM
 chmod +x "$T/podman"
 : > "$T/pm.log"
-run NIDHOGG_BUILD_PODMAN="$T/podman" FAKE_LOG="$T/pm.log" NIDHOGG_BUILD_MEMORY_KB=$((16*1024*1024)) -- --container fedora-44 --prefix "$T/prefix"
+run NIDHOGG_BUILD_PODMAN="$T/podman" FAKE_LOG="$T/pm.log" NIDHOGG_BUILD_MEMORY_KB=$((16*1024*1024)) -- --container fedora-45 --prefix "$T/prefix"
 rcis 0
 name=$(sed -n 's/^run .*--name \(nidhogg-build-[0-9]*\) .*/\1/p' "$T/pm.log")
 [ -n "$name" ] || fail "container not named: $(cat "$T/pm.log")"
@@ -209,7 +209,7 @@ for st in build check pack; do
 done
 : > "$T/pm.log"
 NIDHOGG_BUILD_UNAME=Linux NIDHOGG_BUILD_PODMAN="$T/podman" FAKE_LOG="$T/pm.log" FAKE_HANG=1 NIDHOGG_BUILD_MEMORY_KB=$((16*1024*1024)) \
-  bash nidhogg/build.sh --container fedora-44 --prefix "$T/prefix" >/dev/null 2>&1 &
+  bash nidhogg/build.sh --container fedora-45 --prefix "$T/prefix" >/dev/null 2>&1 &
 bpid=$!
 for _ in 1 2 3 4 5 6 7 8 9 10; do grep -q '^run ' "$T/pm.log" && break; sleep 0.5; done
 kill -TERM "$bpid"; wait "$bpid"; trc=$?
@@ -226,11 +226,11 @@ chmod +x "$dl/bin/emacs-31.1"
 [ "$(readlink "$dl/bin/nidhogg.pdmp")" = ../libexec/emacs/31.1/x86_64/emacs-bbb.pdmp ] ||
   fail "dumplinks: nidhogg.pdmp -> $(readlink "$dl/bin/nidhogg.pdmp"), wanted the binary's emacs-bbb.pdmp"
 # every distro has both lists; build.sh has no bash-4 constructs
-for d in fedora-44 fedora-45 ubuntu-26.04 debian-13 arch macos; do
+for d in fedora-45 ubuntu-26.04 debian-13 arch macos; do
   { test -s nidhogg/deps/$d.build && test -s nidhogg/deps/$d.runtime; } || fail "deps lists missing for $d"
 done
 # the Rust toolchain for Glitnir is in every build list (Homebrew: rust)
-for d in fedora-44 fedora-45; do grep -qx cargo nidhogg/deps/$d.build && grep -qx rust nidhogg/deps/$d.build || fail "$d.build lacks cargo/rust"; done
+for d in fedora-45; do grep -qx cargo nidhogg/deps/$d.build && grep -qx rust nidhogg/deps/$d.build || fail "$d.build lacks cargo/rust"; done
 grep -qx cargo nidhogg/deps/ubuntu-26.04.build && grep -qx rustc nidhogg/deps/ubuntu-26.04.build || fail "ubuntu-26.04.build lacks cargo/rustc"
 # Debian's Rust is below the floor: the build fetches the pinned one, for which it needs curl and nothing of Debian's
 grep -qx curl nidhogg/deps/debian-13.build && ! grep -qxE 'cargo|rustc' nidhogg/deps/debian-13.build || fail "debian-13.build: curl, and no distro Rust"
