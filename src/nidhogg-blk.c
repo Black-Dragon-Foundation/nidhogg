@@ -2400,31 +2400,19 @@ parked at a pause point).  Bounded condition waits, not sleeps.  */)
   (Lisp_Object ms)
 {
   CHECK_FIXNAT (ms);
-  struct timespec t0;
-  clock_gettime (CLOCK_MONOTONIC, &t0);
-  int64_t deadline = ((int64_t) t0.tv_sec * 1000000000 + t0.tv_nsec
-		      + (int64_t) XFIXNAT (ms) * 1000000);
+  uint64_t deadline = nh_wk_real_ns () + (uint64_t) XFIXNAT (ms) * 1000000;
   struct nh_save_held h;
   specpdl_ref count = SPECPDL_INDEX ();
   nh_save_hold (&h);
   record_unwind_protect_ptr (nh_save_release, &h);
+  /* The wait the workers harness drives too (its queue driver).  */
+  struct nh_wk_job **jobs = xnmalloc (h.n ? h.n : 1, sizeof *jobs);
   for (ptrdiff_t i = 0; i < h.n; i++)
-    {
-      struct timespec now;
-      clock_gettime (CLOCK_MONOTONIC, &now);
-      int64_t left = deadline - ((int64_t) now.tv_sec * 1000000000
-				 + now.tv_nsec);
-      nh_wk_wait (&h.v[i]->job, left > 0 ? left : 0, NH_WK_PH_WORKER_WAIT, 0);
-    }
+    jobs[i] = &h.v[i]->job;
+  nh_wk_await_jobs (NH_WK_SAVE, jobs, h.n, deadline, NH_WK_PH_WORKER_WAIT);
+  xfree (jobs);
   unbind_to (count, Qnil);
-  /* A job's waiters wake when it is done, before its worker queues its
-     finish (nh_wk_complete): a drain now may find nothing to land.
-     Wait out the rest of MS for that too; await-landed then drains.  */
-  struct timespec now;
-  clock_gettime (CLOCK_MONOTONIC, &now);
-  int64_t left = deadline - ((int64_t) now.tv_sec * 1000000000 + now.tv_nsec);
-  Fnidhogg_workers__test_await_landed (intern_c_string ("nh-save"),
-				       make_fixnum (left > 0 ? left / 1000000 : 0));
+  Fnidhogg_workers__drain ();
   for (struct nh_save_job *j = nh_save_jobs; j; j = j->next)
     if (!j->landed)
       return Qnil;

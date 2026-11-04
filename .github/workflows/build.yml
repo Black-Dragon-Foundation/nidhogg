@@ -666,6 +666,7 @@ jobs:
             cd /src
             bash nidhogg/test/workers-harness.sh
             bash nidhogg/test/workers-harness.sh --tsan $(cd test/src/nidhogg-tests/fuzz && ls tsan-*.c | sed "s/^tsan-//; s/[.]c$//")
+            bash nidhogg/test/workers-harness.sh --sched --exhaustive selftest queue wake
             bash nidhogg/test/workers-harness.sh --fuzz 60'
 
   workers-asan:

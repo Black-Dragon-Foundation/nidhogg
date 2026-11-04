@@ -9,6 +9,13 @@
 #                                         fuzz/sched-pct.h), seeds 1 to N (default 2000); exit 0 = every seed passed and
 #                                         seed 1 gave one trace twice.  A failure prints `seed S'; --seeds S:S replays it
 #                                         and prints its trace.  NH_SCHED_CFLAGS adds compiler flags.
+#   workers-harness.sh --sched --exhaustive [--preemptions K] [--max-runs N] MODULE...
+#                                         the same drivers, every schedule with at most K preemptions (default 2,
+#                                         fuzz/sched-pct.h's sched_explore); exit 0 = every schedule passed.  A failure
+#                                         prints `schedule [C1,...]'; running the driver with x:K:C1,... replays it and
+#                                         prints its trace.  Over N schedules (default 200000) a module fails with its
+#                                         count: narrow the driver, never the bound.  Module selftest is the mode's own
+#                                         test: clean at K=0, red at each K from 1 on, the same failures on two runs.
 # Modules: queue (two producers, one consumer, 10^6 jobs through the runtime), wake (the completion channel's
 # clear/re-check protocol, 10^6 races), io (the reader's hand-over, wake fds and synchronous hand-back over pipes
 # filled by writer threads: every byte once and in order).  Tasks 6, 10, 16, 18, 22, 24, 27-29 and 32 add drivers and fuzz targets.
@@ -42,10 +49,13 @@ fi
 
 if [ "${1:-}" = --sched ]; then
   shift
-  mods=() seeds=2000
+  mods=() seeds=2000 exhaustive=0 k=2 max=200000
   while [ $# -gt 0 ]; do
     case $1 in
       --seeds) seeds=${2:?--seeds N or S:S}; shift 2 ;;
+      --exhaustive) exhaustive=1; shift ;;
+      --preemptions) k=${2:?--preemptions K}; shift 2 ;;
+      --max-runs) max=${2:?--max-runs N}; shift 2 ;;
       *) mods+=("$1"); shift ;;
     esac
   done
@@ -58,9 +68,44 @@ if [ "${1:-}" = --sched ]; then
     if [ ! -f "$src" ]; then
       echo "FAIL no $m module"; fail=1; continue
     fi
+    # The exhaustive mode builds the drivers at their small sizes (NH_SCHED_SMALL), under the schedule cap.
+    small=; [ $exhaustive = 0 ] || small=-DNH_SCHED_SMALL
     # shellcheck disable=SC2086
-    if ! "$CC" "${FLAGS[@]}" -DNH_SCHED ${NH_SCHED_CFLAGS:-} -g -O1 -pthread "$src" -o "$out/$m"; then
+    if ! "$CC" "${FLAGS[@]}" -DNH_SCHED $small ${NH_SCHED_CFLAGS:-} -g -O1 -pthread "$src" -o "$out/$m"; then
       echo "FAIL $m (build)"; fail=1; continue
+    fi
+    if [ $exhaustive = 1 ] && [ "$m" = selftest ]; then
+      # The mode's own test: no failure at K=0; at each K from 1 to the bound the lost update found (exit 1, the
+      # closed-form count holds: exit 4 if not), twice, with the same output.
+      bad= rc=0
+      "$out/$m" x:0 "$max" > "$out/s0" 2>&1 || rc=$?
+      [ $rc = 0 ] || bad="K=0: exit $rc: $(tail -1 "$out/s0")"
+      summary="K=0 $(grep -o '[0-9]* schedules, [0-9]* failed' "$out/s0" || true)"
+      for ((j = 1; j <= k; j++)); do
+        [ -z "$bad" ] || break
+        ra=0 rb=0
+        "$out/$m" "x:$j" "$max" > "$out/sa" 2>&1 || ra=$?
+        "$out/$m" "x:$j" "$max" > "$out/sb" 2>&1 || rb=$?
+        if [ $ra != 1 ] || [ $rb != 1 ]; then
+          bad="K=$j: exit $ra, then $rb (want 1, the lost update found): $(tail -1 "$out/sa")"
+        elif ! cmp -s "$out/sa" "$out/sb"; then
+          bad="K=$j: two runs gave different failures"
+        else
+          summary+="; K=$j $(grep -o '[0-9]* schedules, [0-9]* failed' "$out/sa"), $(grep -m1 '^schedule' "$out/sa") twice"
+        fi
+      done
+      if [ -z "$bad" ]; then echo "ok   $m ($summary)"; else echo "FAIL $m ($bad)"; fail=1; fi
+      continue
+    fi
+    if [ $exhaustive = 1 ]; then
+      rc=0
+      "$out/$m" "x:$k" "$max" || rc=$?
+      case $rc in
+        0) echo "ok   $m" ;;
+        3) echo "FAIL $m (over $max schedules: narrow the driver)"; fail=1 ;;
+        *) echo "FAIL $m"; fail=1 ;;
+      esac
+      continue
     fi
     if ! "$out/$m" "$seeds"; then
       echo "FAIL $m"; fail=1; continue
