@@ -1,5 +1,6 @@
 ;;; workers-decode-tests.el --- tests for workers: process decoding  -*- lexical-binding: t -*-
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
