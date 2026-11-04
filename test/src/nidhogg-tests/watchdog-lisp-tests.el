@@ -239,6 +239,13 @@ starts are in 1970."
       (nidhogg-watchdog--log-write 'stall '(:wall-ms 100.0))
       (should (= (length (watchdog-lisp--lines "stall")) 5000)))))
 
+(defun watchdog-lisp--backdate (file secs)
+  "Move FILE's modification time SECS seconds back from its own.
+File times are real: a test backdates from the file, not the clock."
+  (set-file-times file (time-subtract (file-attribute-modification-time
+                                       (file-attributes file))
+                                      secs)))
+
 (ert-deftest watchdog/log-write-never-asks ()
   ;; Someone reads today's day file in a buffer, and the file changes on
   ;; disk behind it.  The next append must not ask about that: the drain
@@ -251,7 +258,7 @@ starts are in 1970."
       (unwind-protect
           (progn
             (nidhogg-watchdog--log-write 'gc '(:pause-ms 2.0))
-            (set-file-times file (time-subtract nil 60))
+            (watchdog-lisp--backdate file 60)
             (should-not (verify-visited-file-modtime buf))
             (cl-letf (((symbol-function 'ask-user-about-supersession-threat)
                        (lambda (&rest _) (error "Asked about supersession")))
@@ -270,9 +277,9 @@ starts are in 1970."
           (new (expand-file-name "2026-10-20.jsonl" nidhogg-watchdog-log-directory))
           (other (expand-file-name "notes.txt" nidhogg-watchdog-log-directory)))
       (dolist (f (list old new other)) (write-region "{}\n" nil f))
-      (set-file-times old (time-subtract nil (* 15 86400)))
-      (set-file-times other (time-subtract nil (* 30 86400)))
-      (set-file-times new (time-subtract nil (* 13 86400)))
+      (watchdog-lisp--backdate old (* 15 86400))
+      (watchdog-lisp--backdate other (* 30 86400))
+      (watchdog-lisp--backdate new (* 13 86400))
       (nidhogg-watchdog--prune)
       (should-not (file-exists-p old))
       (should (file-exists-p new))
