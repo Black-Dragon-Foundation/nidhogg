@@ -17,7 +17,7 @@ for upstreaming.
 
 - Command: `nidhogg` (and `nidhoggclient`). Feature: `nidhogg` (`(require 'nidhogg)`). Variable: `nidhogg-version`.
 - `emacs-version` stays GNU Emacs's own (`"31.1"`): packages call `version<` on it, and `version-to-list` rejects
-  `"31.1-nidhogg.4"`. Nidhogg's version lives in `nidhogg-version` and is appended to `M-x emacs-version` output.
+  `"31.1-nidhogg.5"`. Nidhogg's version lives in `nidhogg-version` and is appended to `M-x emacs-version` output.
 - Icon: the Black Dragon Foundation logo, in place of GNU Emacs's under the same file names, so the install rules,
   `Icon=emacs` in the `.desktop` files and the app bundle's `Info.plist` stay as they are. In-tree: the hicolor PNGs
   (`etc/images/icons/hicolor/<N>x<N>/apps/emacs.png`, 16 to 512 px; the dragon's head, chest and inner wings on a
@@ -31,7 +31,7 @@ for upstreaming.
 ## Version scheme
 
 `<GNU Emacs version>-nidhogg.<N>`. N counts Nidhogg releases on one upstream release and restarts at 1 on the next
-(31.2 gives `31.2-nidhogg.1`). The git tag is `v31.1-nidhogg.4`. The single source is the file `nidhogg/version`.
+(31.2 gives `31.2-nidhogg.1`). The git tag is `v31.1-nidhogg.5`. The single source is the file `nidhogg/version`.
 
 ## Branches and the patch series
 
