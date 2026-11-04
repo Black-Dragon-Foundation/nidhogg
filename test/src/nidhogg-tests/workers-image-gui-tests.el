@@ -25,17 +25,18 @@
 
 ;; Run by nidhogg/test/gui.sh (gui-runner.el loads every *-gui-tests.el).
 
-;; Gate 53 (OT7) runs the image suites twice: as they are, and with
-;; NH_IMAGE_RUST=1 (gui.sh --env), which turns Glitnir's Rust decoders on
-;; for the whole session: `nidhogg-workers-image-rust' becomes every type
-;; the build has one for.  The flagged loaders then decode in Rust, and
-;; the rows that compare them with today's loaders compare the Rust
+;; The image suites run twice: as they are, with Glitnir's Rust decoders
+;; on (the default), and with NH_IMAGE_RUST=0 (gui.sh --env), which turns
+;; them off for the whole session (NH_IMAGE_RUST=1 turns on every type the
+;; build has one for).  With them on the flagged loaders decode in Rust,
+;; and the rows that compare them with today's loaders compare the Rust
 ;; decoders with libpng, giflib and libwebp.
 (defvar nidhogg-workers-image-rust)
 (when (and (getenv "NH_IMAGE_RUST")
            (fboundp 'nidhogg-workers--test-image-rust))
   (setq nidhogg-workers-image-rust
-        (plist-get (nidhogg-workers--test-image-rust) :formats)))
+        (and (not (equal (getenv "NH_IMAGE_RUST") "0"))
+             (plist-get (nidhogg-workers--test-image-rust) :formats))))
 
 (defun workers-image-gui--error-key (file log)
   "What of the loader's LOG for FILE must match between the decoders.
@@ -179,10 +180,11 @@ Value: (DIGEST LISP-DATA CORNERS FAILED LOG)."
             (insert errors-golden)))))))
 
 (ert-deftest workers-gui/image-rust-in-use ()
-  ;; Gate 53's second run: the loaders really decode in Rust (PNG, GIF
-  ;; and WebP from the corpus), and nothing goes back to the C cores.
-  (skip-unless (and (display-graphic-p) (getenv "NH_IMAGE_RUST")
-                    (fboundp 'nidhogg-workers--test-image-rust)))
+  ;; With the Rust decoders on: the loaders really decode in Rust (PNG,
+  ;; GIF and WebP from the corpus), and nothing goes back to the C cores.
+  (skip-unless (and (display-graphic-p)
+                    (fboundp 'nidhogg-workers--test-image-rust)
+                    nidhogg-workers-image-rust))
   (let ((types (plist-get (nidhogg-workers--test-image-rust) :formats)))
     (should (equal types nidhogg-workers-image-rust))
     (nidhogg-workers--test-image-rust t)
