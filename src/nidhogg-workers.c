@@ -2447,6 +2447,43 @@ Return t if the job was submitted.  */)
   return submitted ? Qt : Qnil;
 }
 
+DEFUN ("nidhogg-workers--test-crash-away-from-safe-points",
+       Fnidhogg_workers__test_crash_away_from_safe_points,
+       Snidhogg_workers__test_crash_away_from_safe_points, 2, 2, 0,
+       doc: /* Crash WORKER while the main thread is far from a safe point; for tests.
+Run the pending signals, block every signal but SIGSEGV, submit
+WORKER's crash job (as `nidhogg-workers--test-crash' does) and wait in
+C, as code inside malloc would, up to MS milliseconds for a signal
+handler to ask for a safe point.  A forwarded crash whose handler runs
+the fatal path itself ends the process here.  One whose handler leaves
+it to the next safe point returns: then write "nh-wk: deferred" on
+standard error, restore the signal mask and return t.  Return nil if the
+job was not submitted or no handler asked in time.  */)
+  (Lisp_Object worker, Lisp_Object ms)
+{
+  CHECK_FIXNAT (ms);
+  /* Only the forwarded SIGSEGV may ask from here on.  */
+  while (pending_signals)
+    process_pending_signals ();
+  sigset_t others, old;
+  sigfillset (&others);
+  sigdelset (&others, SIGSEGV);
+  pthread_sigmask (SIG_BLOCK, &others, &old);
+  bool asked = false;
+  if (!NILP (Fnidhogg_workers__test_crash (worker)))
+    for (EMACS_INT i = 0; i < XFIXNAT (ms) && !(asked = pending_signals); i++)
+      nanosleep (&(struct timespec) { .tv_nsec = 1000000 }, NULL);
+  if (asked)
+    {
+      static char const msg[] = "nh-wk: deferred\n";
+      if (write (STDERR_FILENO, msg, sizeof msg - 1) < 0)
+	{
+	}
+    }
+  pthread_sigmask (SIG_SETMASK, &old, NULL);
+  return asked ? Qt : Qnil;
+}
+
 /* Write MSG to standard output, signal-safely (the tests' markers).  */
 static void
 nh_wk_say (const char *msg)
@@ -2951,6 +2988,7 @@ One budget per redisplay, shared by every tree-sitter and image wait in it.  */)
   defsubr (&Snidhogg_workers__test_fd_reserve);
   defsubr (&Snidhogg_workers__test_wake_open);
   defsubr (&Snidhogg_workers__test_crash);
+  defsubr (&Snidhogg_workers__test_crash_away_from_safe_points);
   defsubr (&Snidhogg_workers__test_fatal_under_lock);
   defsubr (&Snidhogg_workers__test_signal_under_locks);
   defsubr (&Snidhogg_workers__test_redisplay_begin);
