@@ -4,6 +4,12 @@
    thread drains the completion FIFO.  Every job runs, lands and is freed
    once, no wake-up is lost and nothing deadlocks.
 
+   With NH_SCHED_SMALL (the exhaustive mode: workers-harness.sh --sched
+   --exhaustive) one producer submits three jobs, to nh-blk, nh-img
+   (speculative) and nh-blk again: every choice at a block is tried
+   there, and two producers of one job each already give over 200,000
+   schedules within two preemptions.  PCT runs the full size.
+
 Copyright (C) 2026 Black Dragon Foundation contributors.
 
 This file is part of Nidhogg.
@@ -24,7 +30,11 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "sched-pct.h"
 #include "nidhogg-workers.c"
 
+#ifdef NH_SCHED_SMALL
+enum { PRODUCERS = 1, JOBS = 3 };
+#else
 enum { PRODUCERS = 2, JOBS = 6 };
+#endif
 
 static _Atomic long ran, finished, freed, refused;
 
@@ -58,9 +68,15 @@ producer (void *arg)
       struct nh_wk_job *j = calloc (1, sizeof *j);
       if (!j)
 	abort ();
+#ifdef NH_SCHED_SMALL
+      (void) p;
+      j->w = i & 1 ? NH_WK_IMG : NH_WK_BLK;
+      j->speculative = i & 1;
+#else
       j->w = p == 0 ? NH_WK_BLK : NH_WK_IMG;
-      j->cls = i % NH_WK_CL_N;
       j->speculative = p == 1 && (i & 1);
+#endif
+      j->cls = i % NH_WK_CL_N;
       j->run = q_run;
       j->finish = q_finish;
       j->free = q_free;
@@ -81,12 +97,56 @@ producer (void *arg)
   return NULL;
 }
 
+/* The landing the test primitives do (nidhogg-workers--test-save-await):
+   wait for a job with nh_wk_await_jobs, then drain once, as the main
+   thread does.  Its finish must have run by then.  */
+
+static bool landed;
+
+static void
+l_run (struct nh_wk_job *j)
+{
+  (void) j;
+}
+
+static void
+l_finish (struct nh_wk_job *j)
+{
+  (void) j;
+  landed = true;
+}
+
+static bool
+land (void)
+{
+  static struct nh_wk_job j = { .w = NH_WK_SAVE, .run = l_run,
+				.finish = l_finish };
+  struct nh_wk_job *v[] = { &j };
+  atomic_store (&j.refs, 1);
+  if (!nh_wk_submit (&j))
+    return false;
+  nh_wk_await_jobs (NH_WK_SAVE, v, 1, nh_wk_real_ns () + 10 * NH_WK_MS * 1000,
+		    0);
+  struct nh_wk_job *d;
+  while ((d = nh_wk_cq_pop (&nh_wk_done_q)))
+    {
+      d->finish (d);
+      nh_wk_job_unref (d);
+    }
+  return landed;
+}
+
 static int
 body (void)
 {
   nh_wk_init ();
   if (!nh_wk_done_open ())
     return 2;
+  if (!land ())
+    {
+      fprintf (stderr, "queue: a waited job had not landed after the drain\n");
+      return 1;
+    }
   pthread_t t[PRODUCERS];
   for (intptr_t p = 0; p < PRODUCERS; p++)
     if (pthread_create (&t[p], NULL, producer, (void *) p) != 0)
