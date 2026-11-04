@@ -568,5 +568,110 @@ class line has none."
     (when test-class-lint--all-classified
       (should-not unclassified))))
 
+;;; Flaky list and thread masks
+
+(defconst test-class-lint--flaky-file
+  (expand-file-name "nidhogg/test/flaky.txt" source-directory)
+  "The list of tests that may fail once and pass on the rerun.")
+
+(defun test-class-lint--flaky-rows ()
+  "The test names that rows of the flaky list carry."
+  (when (file-readable-p test-class-lint--flaky-file)
+    (let (rows)
+      (dolist (line (split-string (test-class-lint--read-file test-class-lint--flaky-file)
+                                  "\n"))
+        (unless (or (string-empty-p (string-trim line)) (string-prefix-p "#" line))
+          (push (string-trim (car (split-string line " # "))) rows)))
+      (nreverse rows))))
+
+(defun test-class-lint--own-test-names ()
+  "The names of the tests Nidhogg's own test files define."
+  (let (names)
+    (dolist (file (test-class-lint--test-files))
+      (dolist (form (test-class-lint--read-forms (test-class-lint--read-file file)))
+        (when (eq (car-safe form) 'ert-deftest)
+          (push (symbol-name (cadr form)) names))))
+    names))
+
+(ert-deftest test-class/flaky-txt-takes-no-rows ()
+  ;; A test of ours that fails once is a bug in the test or the code,
+  ;; found and fixed.  The list stays for GNU's own test files, whose
+  ;; tests we do not own; a row naming one of ours fails.
+  (let ((own (test-class-lint--own-test-names)))
+    (should-not (seq-filter (lambda (name) (member name own))
+                            (test-class-lint--flaky-rows)))))
+
+(defun test-class-lint--thread-violations (text)
+  "Line numbers in C source TEXT where a thread starts with signals unblocked.
+Each `pthread_create' must sit in a function that, before it, blocks or
+sets a mask built by `sigfillset' (or `nh_wk_worker_sigmask'), and
+that, after it, sets the old mask back with `pthread_sigmask'."
+  (let* ((lines (vconcat (split-string text "\n")))
+         (n (length lines))
+         (start 0) bad)
+    (dotimes (i n)
+      (let ((line (aref lines i)))
+        (cond
+         ((string-prefix-p "}" line) (setq start (1+ i)))
+         ((string-match-p "\\bpthread_create (" line)
+          (let ((var nil) (filled nil) (restored nil) (end i))
+            (while (and (< end n) (not (string-prefix-p "}" (aref lines end))))
+              (setq end (1+ end)))
+            (cl-loop for j from (1- i) downto start
+                     for l = (aref lines j)
+                     when (string-match
+                           "pthread_sigmask (SIG_\\(?:BLOCK\\|SETMASK\\), &\\([a-z_]+\\)" l)
+                     do (setq var (match-string 1 l)) and return nil)
+            (when var
+              (setq filled
+                    (cl-loop for j from start below i
+                             thereis (string-match-p
+                                      (concat "\\(?:sigfillset\\|nh_wk_worker_sigmask\\) (&"
+                                              (regexp-quote var) ")")
+                                      (aref lines j)))))
+            (setq restored
+                  (cl-loop for j from (1+ i) below end
+                           thereis (string-match-p
+                                    "pthread_sigmask (SIG_SETMASK, &[a-z_]+, \\(?:NULL\\|0\\))"
+                                    (aref lines j))))
+            (unless (and var filled restored)
+              (push (1+ i) bad)))))))
+    (nreverse bad)))
+
+(ert-deftest test-class/the-thread-lint-bites ()
+  (let ((good "static void\nf (void)\n{\n  sigset_t all, old;\n  sigfillset (&all);\n  pthread_sigmask (SIG_SETMASK, &all, &old);\n  pthread_create (&t, NULL, g, NULL);\n  pthread_sigmask (SIG_SETMASK, &old, NULL);\n}\n"))
+    (should-not (test-class-lint--thread-violations good))
+    ;; No mask at all.
+    (should (test-class-lint--thread-violations
+             "void\nf (void)\n{\n  pthread_create (&t, NULL, g, NULL);\n}\n"))
+    ;; The mask is set after the thread starts.
+    (should (test-class-lint--thread-violations
+             "void\nf (void)\n{\n  sigfillset (&all);\n  pthread_create (&t, NULL, g, NULL);\n  pthread_sigmask (SIG_SETMASK, &all, &old);\n  pthread_sigmask (SIG_SETMASK, &old, NULL);\n}\n"))
+    ;; A mask that is not the full set.
+    (should (test-class-lint--thread-violations
+             "void\nf (void)\n{\n  sigemptyset (&all);\n  pthread_sigmask (SIG_SETMASK, &all, &old);\n  pthread_create (&t, NULL, g, NULL);\n  pthread_sigmask (SIG_SETMASK, &old, NULL);\n}\n"))
+    ;; Never restored.
+    (should (test-class-lint--thread-violations
+             "void\nf (void)\n{\n  sigfillset (&all);\n  pthread_sigmask (SIG_SETMASK, &all, &old);\n  pthread_create (&t, NULL, g, NULL);\n}\n"))
+    ;; The mask of an earlier function does not count.
+    (should (test-class-lint--thread-violations
+             (concat good "void\nh (void)\n{\n  pthread_create (&t, NULL, g, NULL);\n  pthread_sigmask (SIG_SETMASK, &old, NULL);\n}\n")))))
+
+(ert-deftest test-class/every-thread-starts-with-signals-blocked ()
+  ;; A thread inherits its creator's signal mask: a thread started with
+  ;; signals open takes SIGCHLD, SIGALRM and the rest, and the handler
+  ;; runs where Emacs does not expect it.  android.c is GNU's and exempt.
+  (let ((files (directory-files (expand-file-name "src/" source-directory) t
+                                "\\`nidhogg-.*\\.c\\'"))
+        (creates 0) bad)
+    (dolist (file files)
+      (let ((text (test-class-lint--read-file file)))
+        (cl-incf creates (cl-count-if (lambda (l) (string-match-p "\\bpthread_create (" l))
+                                      (split-string text "\n")))
+        (dolist (line (test-class-lint--thread-violations text))
+          (push (format "%s:%d" (file-name-nondirectory file) line) bad))))
+    (should (> creates 0))
+    (should-not bad)))
+
 (provide 'test-class-lint-tests)
 ;;; test-class-lint-tests.el ends here
