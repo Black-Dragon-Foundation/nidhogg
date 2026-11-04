@@ -504,7 +504,7 @@ jobs:
     permissions:
       contents: read
       packages: read
-    uses: Black-Dragon-Foundation/drgnx/.github/workflows/drgnx-tiers.yml@28253ef8301105cb99e6ee6315178bc9de59bfc6 # drgnx pin
+    uses: Black-Dragon-Foundation/drgnx/.github/workflows/drgnx-tiers.yml@9a9f60153a7977067a191acda3621c5bb1332a44 # drgnx pin
     with:
       drgnx_ref: ${{ inputs.drgnx_ref || needs.pin.outputs.ref }}
       nidhogg: artifact
