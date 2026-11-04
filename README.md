@@ -608,7 +608,9 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   gets to none in 1 s takes it in the handler. No signal handler takes a worker mutex: the SIGCHLD handler runs in
   signal context, where submit, wait and cancel refuse at once and a worker mutex taken anyway aborts the process
   rather than deadlock. `kill-emacs` with jobs in flight exits without waiting for them. Test primitives:
-  `nidhogg-workers--test-crash`, `--test-fatal-under-lock`, `--test-signal-under-locks`.
+  `nidhogg-workers--test-crash`, `--test-crash-away-from-safe-points` (the crash while the main thread waits in C with
+  every other signal blocked: it says whether the handler left the fatal path to a safe point),
+  `--test-fatal-under-lock`, `--test-signal-under-locks`.
 - Waits and the redisplay budget: a main-thread wait on a worker pushes the watchdog's `worker-wait` (or `treesit-wait`)
   phase and counts its time in `:phase-ms`; it never enters `select`, so the watchdog's span runs through it. Every
   `redisplay_internal` call starts a wait budget of `nidhogg-redisplay-wait-budget` milliseconds (default 1), spent
