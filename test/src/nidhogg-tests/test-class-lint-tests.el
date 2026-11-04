@@ -39,6 +39,11 @@
 ;;              given nil for now).  A synchronous `call-process' is
 ;;              allowed.  Peer and clock helpers are allowed.
 ;;   C (cond)   no fixed pause: no sleep-for, no sit-for above 0.
+;;   D and C    no child script that writes, sleeps and writes again
+;;              (`echo a; sleep 0.3; echo b'): such a test relies on the
+;;              OS handing it the two writes as two reads, at the child's
+;;              pace.  Every string inside the call that starts the
+;;              child counts, quoted or not, and a helper's it calls.
 ;;   D and C    no `should' over a comparison of a clock read.  Only T
 ;;              (timing) tests assert the clock.
 ;; A test that calls a same-file function or macro is judged by what that
@@ -91,6 +96,10 @@ call (1 is the first argument).")
 (defconst test-class-lint--comparisons
   '(< > <= >= = /= time-less-p time-equal-p)
   "Functions that compare.")
+
+(defconst test-class-lint--paced-writes
+  "\\b\\(?:echo\\|printf\\)\\b\\(?:.\\|\n\\)*\\bsleep[ \t]+[0-9.]+\\(?:.\\|\n\\)*\\b\\(?:echo\\|printf\\)\\b"
+  "A shell script that writes, sleeps, then writes again.")
 
 (defconst test-class-lint--allowed-prefix
   "\\`\\(?:nidhogg-test-peer-\\|nidhogg-test-clock-\\|nidhogg-watchdog--test-clock\\'\\)"
@@ -231,6 +240,39 @@ helpers are skipped."
       (push "sit-for passed on" found))
     (nreverse found)))
 
+(defconst test-class-lint--child-starts
+  '(make-process start-process start-file-process
+    start-process-shell-command start-file-process-shell-command)
+  "Functions that start an asynchronous child, whose output arrives in reads.")
+
+(defun test-class-lint--child-strings (body helpers)
+  "The strings of the children BODY starts: every string, quoted data
+included, inside a call of `test-class-lint--child-starts', following calls
+into HELPERS (from the body, and from inside such a call)."
+  (let (out (seen (make-hash-table :test 'equal)))
+    (cl-labels
+        ((visit (x in)
+           (cond
+            ((stringp x) (when in (push x out)))
+            ((symbolp x)
+             (let ((hb (gethash x helpers 'none)))
+               (unless (or (eq hb 'none) (gethash (cons x in) seen))
+                 (puthash (cons x in) t seen)
+                 (dolist (f hb) (visit f in)))))
+            ((vectorp x) (mapc (lambda (y) (visit y in)) x))
+            ((consp x)
+             (let ((in (or in (and (memq (car x) test-class-lint--child-starts) t))))
+               (while (consp x) (visit (pop x) in))
+               (when x (visit x in)))))))
+      (dolist (f body) (visit f nil)))
+    out))
+
+(defun test-class-lint--paced-child (body helpers)
+  "The D and C rule over BODY: a child script that writes, sleeps and writes."
+  (when (seq-some (lambda (s) (string-match-p test-class-lint--paced-writes s))
+                  (test-class-lint--child-strings body helpers))
+    (list "a child that writes, sleeps and writes again")))
+
 (defun test-class-lint--tainted (body helpers)
   "The variables bound in BODY, directly or not, from a clock read."
   (let ((tainted nil) (changed t)
@@ -284,10 +326,12 @@ class line has none."
                      (class (test-class-lint--test-class file-class tags))
                      (nodes (test-class-lint--nodes body helpers)))
           (when (eq class 'det)
-            (dolist (d (test-class-lint--real-time nodes))
+            (dolist (d (append (test-class-lint--real-time nodes)
+                               (test-class-lint--paced-child body helpers)))
               (push (list 'det-real-time name d) out)))
           (when (eq class 'cond)
-            (dolist (d (test-class-lint--fixed-pause nodes))
+            (dolist (d (append (test-class-lint--fixed-pause nodes)
+                               (test-class-lint--paced-child body helpers)))
               (push (list 'cond-pause name d) out)))
           (when (memq class '(det cond))
             ;; No helpers followed: a `should' over a wait helper (whose own loop reads the
@@ -442,6 +486,24 @@ class line has none."
                     (concat cnd "(ert-deftest my/a () (sit-for 1))\n"))))
     (should-not (test-class-lint--violations
                  (concat cnd "(ert-deftest my/a () (sit-for 0) (make-process :name \"x\"))\n")))
+    ;; D and C: a child paced by a sleep between two writes, quoted or not, or
+    ;; in a same-file helper.  A child kept alive by a sleep is fine.
+    (should (equal '((cond-pause my/a "a child that writes, sleeps and writes again"))
+                   (test-class-lint--violations
+                    (concat cnd "(ert-deftest my/a () (make-process :name \"x\""
+                            " :command '(\"sh\" \"-c\" \"echo a; sleep 0.3; echo b\")))\n"))))
+    (should (equal '((cond-pause my/a "a child that writes, sleeps and writes again"))
+                   (test-class-lint--violations
+                    (concat cnd "(defun my--cmd () (list \"sh\" \"-c\" \"printf a\nsleep 1\nprintf b\"))\n"
+                            "(ert-deftest my/a () (make-process :name \"x\" :command (my--cmd)))\n"))))
+    (should (member '(det-real-time my/a "a child that writes, sleeps and writes again")
+                    (test-class-lint--violations
+                     (concat det "(ert-deftest my/a () (make-process :name \"x\""
+                             " :command '(\"sh\" \"-c\" \"echo a; sleep 0.3; echo b\")))\n"))))
+    (should-not (test-class-lint--violations
+                 (concat cnd "(ert-deftest my/a () (make-process :name \"x\""
+                         " :command '(\"sh\" \"-c\" \"echo $$; exec sleep 60\"))"
+                         " (make-process :name \"y\" :command '(\"sh\" \"-c\" \"sleep 60 & echo $!\")))\n")))
     ;; Clock assertions, direct and through a variable.
     (should (equal '((clock-assert my/a "should compares a clock read"))
                    (test-class-lint--violations

@@ -250,15 +250,18 @@ A joint round (drgnx and Nidhogg change together, drgnx's `docs/develop/ci.md`, 
 moves to the round's green drgnx commit.
 
 A chaos build (`build.sh --dev --chaos`; `--chaos` refuses without `--dev`, so it never reaches a release) adds seeded
-delays at the workers' sync points (`src/nidhogg-chaos.h`). The seed is `NIDHOGG_TEST_SEED` (decimal, default 0), child
-Emacs processes inherit it, and with `NIDHOGG_TEST_CHAOS_BANNER` set the first point prints `chaos seed N` to stderr. It makes an ordering bug likely on a
+delays at the workers' sync points (`src/nidhogg-chaos.h`), nh-io's hand-off of a read to the main thread among them. The
+seed is `NIDHOGG_TEST_SEED` (decimal, default 0); `build.sh` passes it into its check container, child Emacs processes
+inherit it, and with `NIDHOGG_TEST_CHAOS_BANNER` set the first point prints `chaos seed N` to stderr. It makes an ordering bug likely on a
 machine whose timing never shows it, not certain.
 
 - Test classes: a test file in `test/src/nidhogg-tests/` states its class in one header line within its first 15 lines,
   exactly `;; test-class: det` (deterministic: no real time), `;; test-class: cond` (waits on conditions, no fixed
   pause) or `;; test-class: timing` (may assert the clock). A test's own tag (`:det`, `:cond`, `:timing`) overrides the
   file's. `test-class-lint-tests.el` reads the files as data and fails a classified file that breaks its class (a
-  same-file helper counts as part of the test). Files that are not tests are listed in `nidhogg/test/class-exempt.txt`
+  same-file helper counts as part of the test). In both D and C, a child started with a script that writes, sleeps and
+  writes again (`echo a; sleep 0.3; echo b`) fails it: the test would rely on the OS handing it two reads at the child's
+  pace (a scripted peer, `nidhogg-test-peer`, gives one read per write). Files that are not tests are listed in `nidhogg/test/class-exempt.txt`
   (`FILE # reason`); a row whose file is gone fails the check. Every test file has a class, so a file with neither a
   class line nor an exempt row fails it.
 - `tree`: `tree-test.sh`, `ci-test.sh` and `check-rerun-test.sh` (full history and tags).
@@ -268,6 +271,15 @@ machine whose timing never shows it, not certain.
   `tarball-test.sh macos`. Each uploads its tarball and `.sha256`.
 - `compile-noglitnir` (fedora-44): `build.sh --without-glitnir --stage build`, a terminal-only build with no Rust
   installed (the tree still compiles without Glitnir). It is not part of the release gate.
+- `workers-chaos` (fedora-45, beside the Linux builds: it needs no tarball): `build.sh --dev --chaos --stage build`,
+  then `nidhogg/test/chaos-lane.sh`, which runs the files of `nidhogg/test/chaos-files.txt` (`workers-tests`,
+  `workers-io-tests`, `workers-fatal-tests`) in one check container per seed, `NIDHOGG_TEST_SEED` 1 to 5. No rerun lets
+  anything off: a file with an unexpected result in its first run is red even when `check-rerun.sh`'s second run
+  passes and `flaky.txt` lists the test, since a red under chaos is a race; a file that ran no test, or left no log from
+  this run, is red too. Each red is an error annotation naming the seed and the line that replays it, e.g.
+  `NIDHOGG_TEST_SEED=3 bash nidhogg/build.sh --container fedora-45 --dev --chaos … --build-dir DIR --stage check --check
+  nidhogg/test/chaos-files.txt`. It is in the `Nidhogg gate`, not in `release`'s needs (a tag skips it, as the other
+  workers jobs).
 - `drgnx` (after `linux` and `macos`, whatever they did): calls drgnx's own `.github/workflows/drgnx-tiers.yml` at the
   pinned commit with `nidhogg: artifact`, so drgnx's tiers run on this run's tarballs exactly as drgnx's CI runs them on
   the release: the unit suite and gate mode on the fedora-45 tarball (installed into drgnx's test image on top of the
@@ -312,9 +324,10 @@ machine whose timing never shows it, not certain.
     (ccache hashes the preprocessed source and checks gcc by content, so any older entry is safe; a new key per run lets
     every run save its additions). It is saved after a failed build too, never after a cancelled one. One generated
     header (`globals.h`) changes with any new primitive or variable and every file including `lisp.h` misses then.
-    `compile-noglitnir` (`ccache-fedora-44-noglitnir-...`) and `workers-asan` (`ccache-fedora-45-asan-...`) have their
+    `compile-noglitnir` (`ccache-fedora-44-noglitnir-...`), `workers-asan` (`ccache-fedora-45-asan-...`) and
+    `workers-chaos` (`ccache-fedora-45-chaos-...`, and its compiled Lisp `lisp-fedora-45-chaos-...`) have their
     own. Downloaded packages (dnf, apt): `pkgs-D-G`, restored by prefix (the package managers verify what they reuse),
-    also in `compile-noglitnir`, `native-crates`, `workers-harness` and `workers-asan`.
+    also in `compile-noglitnir`, `native-crates`, `workers-harness`, `workers-asan` and `workers-chaos`.
   - macOS: the tarball (`tarball-macos-<arch>-...`), Homebrew's downloads (`brew-macos-<arch>-<hash of deps/macos.build>`,
     Homebrew verifies checksums), compiled Lisp (`lisp-macos-<arch>-<gcc and libgccjit versions>-<runner temp>-...`) and
     ccache (`ccache-macos-<arch>-<runner image and version>-<hash of deps/macos.build>-...`, the compiler checked by
@@ -555,7 +568,8 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   breaks the completion channel's clear-then-re-check, and `wake` must go red); `nidhogg/test/pkg-test.sh` runs the
   package suites (jsonrpc, treesit, process, files) with the workers on, off or `inline` and `--compare`s on against off (the treesit group
   loads the test grammars when `grammars.sh` has built them); `NIDHOGG_BUILD_SANITIZE=address,undefined
-  nidhogg/build.sh --dev …` is the ASan build. CI jobs `workers-harness`, `workers-asan`, `workers-pkg` run them.
+  nidhogg/build.sh --dev …` is the ASan build. CI jobs `workers-harness`, `workers-asan`, `workers-chaos` (the chaos
+  build, seeds 1 to 5) and `workers-pkg` run them.
 - The runtime (`src/nidhogg-workers.c`): five workers, `nh-io`, `nh-parse`, `nh-img` (one thread per two cores, at
   most two), `nh-blk` (one to four threads, grown when every thread has been busy 50 ms; directory reads, file reads
   and lookups take at most two each and always leave one for a class with nothing running) and `nh-save`. Threads
