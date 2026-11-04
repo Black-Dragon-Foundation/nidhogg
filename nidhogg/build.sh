@@ -33,7 +33,7 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 VERSION=$(head -n 1 "$ROOT/nidhogg/version")
-DISTROS="fedora-44 fedora-45 ubuntu-26.04 debian-13 arch"
+DISTROS="fedora-45ubuntu-26.04 debian-13 arch"
 
 usage() {
   cat >&2 <<USAGE
@@ -94,7 +94,6 @@ NPROC=${NIDHOGG_BUILD_NPROC:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}
 if [ "$MODE" = container ]; then
   case " $DISTROS " in *" $DISTRO "*) ;; *) echo "unknown distro '$DISTRO'; one of: $DISTROS" >&2; exit 2 ;; esac
   case $DISTRO in
-    fedora-44) IMAGE=registry.fedoraproject.org/fedora:44 ;;
     fedora-45) IMAGE=registry.fedoraproject.org/fedora:45 ;;
     ubuntu-26.04) IMAGE=docker.io/library/ubuntu:26.04 ;;
     debian-13) IMAGE=docker.io/library/debian:13 ;;
