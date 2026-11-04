@@ -2,3 +2,5 @@
 # (nidhogg/test/check-rerun.sh).  One row per test: NAME # cause; stress run
 # A flake without a cause is fixed, not listed.  A row naming a test that no longer exists, or one defined in two files,
 # fails the check.
+# Read-only for Nidhogg's own tests (test/src/nidhogg-tests/): a row naming one fails test-class-lint-tests.el.  A row
+# is for a test in a GNU file, when the fault is in that test and Nidhogg's own code has been ruled out.
