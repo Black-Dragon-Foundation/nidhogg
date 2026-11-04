@@ -152,6 +152,17 @@ GOLDEN-HEADER is the corpus' recorded frame background colour."
         (should (= (plist-get stats :decoded) (length cases)))
         (should (= (plist-get stats :handed-back) 0))))))
 
+(ert-deftest workers/image-rust-on-by-default ()
+  ;; Every type the build has a Rust decoder for decodes in Rust unless
+  ;; the user says otherwise.
+  (let ((types (workers-image-tests--rust-types)))
+    (skip-unless types)
+    (should (equal (default-toplevel-value 'nidhogg-workers-image-rust) types))
+    (let ((spec (workers-image-tests--core-spec "oracle-rgb8.png" nil)))
+      (nidhogg-workers--test-image-rust t)
+      (nidhogg-workers--test-image-decode spec '(:limit 10000))
+      (should (= (plist-get (nidhogg-workers--test-image-rust) :decoded) 1)))))
+
 (ert-deftest workers/image-rust-switch ()
   ;; The switch takes effect at the next decode, and a let-binding ends.
   (skip-unless (memq 'png (workers-image-tests--rust-types)))
