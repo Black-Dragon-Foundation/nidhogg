@@ -387,7 +387,7 @@ would for a user at the terminal."
                :pty t :mark "nh-wk: ready")))
       (ert-info ((format "%S" r) :prefix "child: ")
         (workers-fatal-tests--should-die r '(SIGSEGV . 11) "Segmentation fault")
-        (should (string-match-p "^nh-wk: deferred\n\\(?:.\\|\n\\)*^Fatal error 11"
+        (should (string-match-p "^nh-wk: deferred\n\\(?:.*\n\\)*Fatal error 11"
                                 (plist-get r :err)))
         (should (equal (workers-fatal-tests--auto-saved dir "s.txt")
                        "safe point"))))))
@@ -605,10 +605,15 @@ holds the text.  Waits 20 s at most for the child."
              (setq nidhogg-workers--mode 'threads
                    nidhogg-workers-process-reader t
                    nidhogg-workers-reader-pipes t)
+             ;; The pid file appears whole, by a rename: a redirection
+             ;; creates it empty before `echo' writes, and a crash in
+             ;; between hangs up the shell with the file still empty.
              (let ((p (make-process
                        :name "sleeper" :connection-type 'pipe :noquery t
                        :command (list "sh" "-c"
-                                      ,(format "echo $$ > %s; exec sleep 300"
+                                      ,(format "echo $$ > %s.new && mv %s.new %s; exec sleep 300"
+                                               (shell-quote-argument pidfile)
+                                               (shell-quote-argument pidfile)
                                                (shell-quote-argument pidfile))))))
                (while (not (file-exists-p ,pidfile))
                  (accept-process-output nil 0.02))
