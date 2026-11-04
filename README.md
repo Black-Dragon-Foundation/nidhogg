@@ -269,6 +269,15 @@ machine whose timing never shows it, not certain.
   `tarball-test.sh macos`. Each uploads its tarball and `.sha256`.
 - `compile-noglitnir` (fedora-44): `build.sh --without-glitnir --stage build`, a terminal-only build with no Rust
   installed (the tree still compiles without Glitnir). It is not part of the release gate.
+- `workers-chaos` (fedora-45, beside the Linux builds: it needs no tarball): `build.sh --dev --chaos --stage build`,
+  then `nidhogg/test/chaos-lane.sh`, which runs the files of `nidhogg/test/chaos-files.txt` (`workers-tests`,
+  `workers-io-tests`, `workers-fatal-tests`) in one check container per seed, `NIDHOGG_TEST_SEED` 1 to 5. No rerun lets
+  anything off: a file with an unexpected result in its first run is red even when `check-rerun.sh`'s second run
+  passes and `flaky.txt` lists the test, since a red under chaos is a race; a file that ran no test, or left no log from
+  this run, is red too. Each red is an error annotation naming the seed and the line that replays it, e.g.
+  `NIDHOGG_TEST_SEED=3 bash nidhogg/build.sh --container fedora-45 --dev --chaos … --build-dir DIR --stage check --check
+  nidhogg/test/chaos-files.txt`. It is in the `Nidhogg gate`, not in `release`'s needs (a tag skips it, as the other
+  workers jobs).
 - `drgnx` (after `linux` and `macos`, whatever they did): calls drgnx's own `.github/workflows/drgnx-tiers.yml` at the
   pinned commit with `nidhogg: artifact`, so drgnx's tiers run on this run's tarballs exactly as drgnx's CI runs them on
   the release: the unit suite and gate mode on the fedora-45 tarball (installed into drgnx's test image on top of the
@@ -313,9 +322,10 @@ machine whose timing never shows it, not certain.
     (ccache hashes the preprocessed source and checks gcc by content, so any older entry is safe; a new key per run lets
     every run save its additions). It is saved after a failed build too, never after a cancelled one. One generated
     header (`globals.h`) changes with any new primitive or variable and every file including `lisp.h` misses then.
-    `compile-noglitnir` (`ccache-fedora-44-noglitnir-...`) and `workers-asan` (`ccache-fedora-45-asan-...`) have their
+    `compile-noglitnir` (`ccache-fedora-44-noglitnir-...`), `workers-asan` (`ccache-fedora-45-asan-...`) and
+    `workers-chaos` (`ccache-fedora-45-chaos-...`, and its compiled Lisp `lisp-fedora-45-chaos-...`) have their
     own. Downloaded packages (dnf, apt): `pkgs-D-G`, restored by prefix (the package managers verify what they reuse),
-    also in `compile-noglitnir`, `native-crates`, `workers-harness` and `workers-asan`.
+    also in `compile-noglitnir`, `native-crates`, `workers-harness`, `workers-asan` and `workers-chaos`.
   - macOS: the tarball (`tarball-macos-<arch>-...`), Homebrew's downloads (`brew-macos-<arch>-<hash of deps/macos.build>`,
     Homebrew verifies checksums), compiled Lisp (`lisp-macos-<arch>-<gcc and libgccjit versions>-<runner temp>-...`) and
     ccache (`ccache-macos-<arch>-<runner image and version>-<hash of deps/macos.build>-...`, the compiler checked by
@@ -556,7 +566,8 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   breaks the completion channel's clear-then-re-check, and `wake` must go red); `nidhogg/test/pkg-test.sh` runs the
   package suites (jsonrpc, treesit, process, files) with the workers on, off or `inline` and `--compare`s on against off (the treesit group
   loads the test grammars when `grammars.sh` has built them); `NIDHOGG_BUILD_SANITIZE=address,undefined
-  nidhogg/build.sh --dev …` is the ASan build. CI jobs `workers-harness`, `workers-asan`, `workers-pkg` run them.
+  nidhogg/build.sh --dev …` is the ASan build. CI jobs `workers-harness`, `workers-asan`, `workers-chaos` (the chaos
+  build, seeds 1 to 5) and `workers-pkg` run them.
 - The runtime (`src/nidhogg-workers.c`): five workers, `nh-io`, `nh-parse`, `nh-img` (one thread per two cores, at
   most two), `nh-blk` (one to four threads, grown when every thread has been busy 50 ms; directory reads, file reads
   and lookups take at most two each and always leave one for a class with nothing running) and `nh-save`. Threads

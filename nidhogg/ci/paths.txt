@@ -1,7 +1,7 @@
 # The path filter of .github/workflows/build.yml (nidhogg/ci/changes.sh reads it; README.md, "CI and releases").
 # A row: a glob (`*` matches across `/`) and the jobs a change there can affect; the first row that matches wins, and a
 # path no row matches runs everything.  ALL: every job below.  -: no job (the tree, pin, changes and gate jobs always run).
-jobs: linux compile-noglitnir macos drgnx native-crates native-gui workers-harness workers-asan workers-pkg workers-pkg-compare timing
+jobs: linux compile-noglitnir macos drgnx native-crates native-gui workers-harness workers-asan workers-chaos workers-pkg workers-pkg-compare timing
 
 # the jobs whose artifacts a job takes: they run whenever it does (the drgnx tiers take whichever tarballs there are;
 # the report-only timing lane's macOS half finds no tarball when only Linux built, which never fails the run)
@@ -34,12 +34,12 @@ nidhogg/shell/README.md      -
 nidhogg/glue/README.md       -
 
 # the native shell's crates and its C side: Linux only (the NS build links Glitnir alone, the build without Glitnir none)
-nidhogg/shell/*              linux drgnx native-crates native-gui workers-harness workers-asan workers-pkg workers-pkg-compare timing
-nidhogg/glue/*               linux drgnx native-crates native-gui workers-harness workers-asan workers-pkg workers-pkg-compare timing
-src/nhwl*                    linux drgnx native-crates native-gui workers-harness workers-asan workers-pkg workers-pkg-compare timing
-src/glitnir-decor.c          linux drgnx native-crates native-gui workers-harness workers-asan workers-pkg workers-pkg-compare timing
+nidhogg/shell/*              linux drgnx native-crates native-gui workers-harness workers-asan workers-chaos workers-pkg workers-pkg-compare timing
+nidhogg/glue/*               linux drgnx native-crates native-gui workers-harness workers-asan workers-chaos workers-pkg workers-pkg-compare timing
+src/nhwl*                    linux drgnx native-crates native-gui workers-harness workers-asan workers-chaos workers-pkg workers-pkg-compare timing
+src/glitnir-decor.c          linux drgnx native-crates native-gui workers-harness workers-asan workers-chaos workers-pkg workers-pkg-compare timing
 # Glitnir: every build that has it (not the one without), and the glue's checks, which link it
-nidhogg/glitnir/*            linux macos drgnx native-crates native-gui workers-harness workers-asan workers-pkg workers-pkg-compare timing
+nidhogg/glitnir/*            linux macos drgnx native-crates native-gui workers-harness workers-asan workers-chaos workers-pkg workers-pkg-compare timing
 # the NS port: macOS only
 src/ns*                      macos drgnx
 nextstep/*                   macos drgnx
@@ -53,8 +53,8 @@ test .github/workflows/build.yml       | -          | -                      | A
 test nidhogg/build.sh                  | -          | -                      | ALL   | false
 test nidhogg/test/native-gui.sh        | -          | -                      | ALL   | false
 test some/new/place.txt                | -          | -                      | ALL   | false
-test nidhogg/shell/src/lib.rs          | -          | -                      | linux drgnx native-crates native-gui workers-harness workers-asan workers-pkg workers-pkg-compare timing | false
-test nidhogg/glitnir/src/lib.rs        | -          | -                      | linux macos drgnx native-crates native-gui workers-harness workers-asan workers-pkg workers-pkg-compare timing | false
+test nidhogg/shell/src/lib.rs          | -          | -                      | linux drgnx native-crates native-gui workers-harness workers-asan workers-chaos workers-pkg workers-pkg-compare timing | false
+test nidhogg/glitnir/src/lib.rs        | -          | -                      | linux macos drgnx native-crates native-gui workers-harness workers-asan workers-chaos workers-pkg workers-pkg-compare timing | false
 test nidhogg/test/recorder/src/main.rs | -          | -                      | linux native-crates native-gui | false
 test src/nsterm.m                      | -          | -                      | macos drgnx | false
 test src/nsterm.m,README.md            | -          | -                      | macos drgnx | false
