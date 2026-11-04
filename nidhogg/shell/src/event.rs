@@ -246,7 +246,8 @@ pub struct ScrollEv {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ConfigureEv {
-    /// The size the compositor asks for, in logical pixels; 0 means "your choice".
+    /// The size the compositor asks for, in logical pixels; 0 means "your choice", as it does for a floating size the
+    /// compositor sent before it read a size of the window's own (`MainState::present_stale`).
     pub w: i32,
     pub h: i32,
     pub states: u32,

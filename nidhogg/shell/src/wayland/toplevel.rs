@@ -860,6 +860,12 @@ impl Dispatch<XdgSurface, u64> for MainState {
             w.asked.states = states & ASKED_STATES;
             w.granted = states & ASKED_STATES;
             let suspended = states & NHSHELL_STATE_SUSPENDED != 0;
+            // a size sent before the compositor read the window's own newer one is the window's to choose
+            let (cw, ch) = if state.present_stale(*id, (cw, ch), states) {
+                (0, 0)
+            } else {
+                (cw, ch)
+            };
             let c = ConfigureEv {
                 w: cw,
                 h: ch,
@@ -867,7 +873,7 @@ impl Dispatch<XdgSurface, u64> for MainState {
                 serial,
             };
             shared.post(Record::new(ShellEvent::Configure(c), *id, 0));
-            state.present_configured(*id, suspended);
+            state.present_configured(*id, (cw, ch), suspended);
         }
     }
 }
