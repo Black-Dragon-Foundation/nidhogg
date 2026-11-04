@@ -328,6 +328,20 @@ BODY starts once the waiter waits; `notify' wakes it."
                 (should (= start (nidhogg-test-clock-now))))))
         (nidhogg-test-peer-close peer)))))
 
+(ert-deftest test-clock/a-hung-child-ends-at-the-waits-own-deadline ()
+  (test-clock-tests--with t
+    (let ((proc (make-process :name "test-clock-hung" :noquery t
+                              :connection-type 'pipe
+                              :command '("sleep" "30"))))
+      (unwind-protect
+          (progn
+            ;; The wait's own 2 s, as real time, end it while the child
+            ;; lives; without that bound only the child's exit would.
+            (should-not (accept-process-output proc 2))
+            (should (process-live-p proc))
+            (should (= 2.0 (nidhogg-test-clock-now))))
+        (delete-process proc)))))
+
 (ert-deftest test-clock/child-emacs-on-its-own-clock ()
   :tags '(:cond)
   (test-clock-tests--with nil
