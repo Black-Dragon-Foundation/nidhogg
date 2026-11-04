@@ -76,12 +76,21 @@ impl Recorder {
             .collect()
     }
 
-    /// Surface `id`'s tree entry once `pred` holds for it, within 3 s.
-    fn wait_node(&self, id: u64, pred: impl Fn(&str) -> bool) -> String {
-        let key = format!("\"id\":{id},");
+    /// Window `id`'s tree entry once `pred` holds for it, within 3 s.  The recorder names a surface by its protocol id,
+    /// with a generation above bit 32 once the client used that protocol id before, while the shell's window ids keep
+    /// their own rule; so the entry is the one of the window's protocol id now, which no other live surface has.
+    fn wait_window(&self, shell: &WaylandShell, id: u64, pred: impl Fn(&str) -> bool) -> String {
+        let pid = u64::from(shell.surface_protocol_id(id).expect("a window"));
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
-            let node = self.tree().into_iter().find(|n| n.contains(&key));
+            let node = self.tree().into_iter().find(|n| {
+                n.split_once("\"id\":")
+                    .and_then(|(_, r)| {
+                        let end = r.find(|c: char| !c.is_ascii_digit()).unwrap_or(r.len());
+                        r[..end].parse::<u64>().ok()
+                    })
+                    .is_some_and(|n| n & 0xffff_ffff == pid)
+            });
             if let Some(n) = &node
                 && pred(n)
             {
@@ -89,7 +98,7 @@ impl Recorder {
             }
             assert!(
                 Instant::now() < deadline,
-                "surface {id} never matched; last: {node:?}"
+                "window {id} (protocol id {pid}) never matched; last: {node:?}"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -262,7 +271,7 @@ mod child {
         let c = child(&mut shell, parent, 40, 30);
         draw(&mut shell, c, 100, 60);
         commit(&mut shell, parent);
-        let n = rec.wait_node(c, |n| n.contains("\"position\":[40,30]"));
+        let n = rec.wait_window(&shell, c, |n| n.contains("\"position\":[40,30]"));
         assert!(n.contains("\"role\":\"subsurface\""), "{n}");
         assert!(n.contains(&format!("\"parent\":{parent},")), "{n}");
     }
@@ -275,14 +284,14 @@ mod child {
         let c = child(&mut shell, parent, 40, 30);
         draw(&mut shell, c, 100, 60);
         commit(&mut shell, parent);
-        rec.wait_node(c, |n| n.contains("\"position\":[40,30]"));
+        rec.wait_window(&shell, c, |n| n.contains("\"position\":[40,30]"));
         let before = rec.frames_of(c);
         assert_eq!(before, 1);
         shell.set_position(c, 70, 10).unwrap();
         // the tree's commits: the child (it owes one), then the parent
         shell.present_bare(c).unwrap();
         commit(&mut shell, parent);
-        rec.wait_node(c, |n| n.contains("\"position\":[70,10]"));
+        rec.wait_window(&shell, c, |n| n.contains("\"position\":[70,10]"));
         assert_eq!(rec.frames_of(c), before, "a move is not a new frame");
     }
 
@@ -295,20 +304,20 @@ mod child {
         let b = child(&mut shell, parent, 10, 10);
         commit(&mut shell, parent);
         let order = |first: u64, second: u64| format!("\"children\":[{first},{second}]");
-        rec.wait_node(parent, |n| n.contains(&order(a, b)));
+        rec.wait_window(&shell, parent, |n| n.contains(&order(a, b)));
         assert_eq!(shell.window_stacking(parent).unwrap(), [a, b]);
         shell.stack(a, b, true).unwrap();
         // the record is what the compositor was told, whenever the commit goes
         assert_eq!(shell.window_stacking(parent).unwrap(), [b, a]);
         present(&mut shell, parent);
-        rec.wait_node(parent, |n| n.contains(&order(b, a)));
+        rec.wait_window(&shell, parent, |n| n.contains(&order(b, a)));
         shell.stack(a, b, false).unwrap();
         present(&mut shell, parent);
-        rec.wait_node(parent, |n| n.contains(&order(a, b)));
+        rec.wait_window(&shell, parent, |n| n.contains(&order(a, b)));
         // sibling 0 is the parent: below it is the bottom
         shell.stack(b, 0, false).unwrap();
         present(&mut shell, parent);
-        rec.wait_node(parent, |n| n.contains(&order(b, a)));
+        rec.wait_window(&shell, parent, |n| n.contains(&order(b, a)));
         // a grandchild comes right after its parent
         let g = child(&mut shell, a, 0, 0);
         assert_eq!(shell.window_stacking(parent).unwrap(), [b, a, g]);
@@ -344,11 +353,13 @@ mod child {
             .unwrap();
         // a sync child's commit applies with its parent's
         present(&mut shell, parent);
-        rec.wait_node(c, |n| n.contains("\"input_region\":[[10,10,80,40]]"));
+        rec.wait_window(&shell, c, |n| {
+            n.contains("\"input_region\":[[10,10,80,40]]")
+        });
         // none at all: the whole surface again
         shell.set_input_region(c, &[]).unwrap();
         present(&mut shell, parent);
-        rec.wait_node(c, |n| n.contains("\"input_region\":null"));
+        rec.wait_window(&shell, c, |n| n.contains("\"input_region\":null"));
     }
 
     #[test]
@@ -359,10 +370,10 @@ mod child {
         let c = child(&mut shell, parent, 0, 0);
         draw(&mut shell, c, 100, 60);
         commit(&mut shell, parent);
-        rec.wait_node(c, |n| n.contains("\"mapped\":true"));
+        rec.wait_window(&shell, c, |n| n.contains("\"mapped\":true"));
         shell.set_mapped(c, false).unwrap();
         present(&mut shell, parent);
-        let n = rec.wait_node(c, |n| n.contains("\"mapped\":false"));
+        let n = rec.wait_window(&shell, c, |n| n.contains("\"mapped\":false"));
         assert!(n.contains("\"buffer\":null"), "{n}");
     }
 
@@ -386,14 +397,14 @@ mod child {
         });
         draw(&mut shell, p, 60, 30);
         // below and right of the rectangle: its bottom-right corner is the popup's top-left
-        let n = rec.wait_node(p, |n| n.contains("\"position\":[110,60]"));
+        let n = rec.wait_window(&shell, p, |n| n.contains("\"position\":[110,60]"));
         assert!(n.contains("\"role\":\"popup\""), "{n}");
         shell.set_position(p, 20, 25).unwrap();
         wait_for(&mut shell, |e| {
             e.kind() == Kind::FrameReady && e.window == p
         });
         shell.present_bare(p).unwrap();
-        rec.wait_node(p, |n| n.contains("\"position\":[30,35]"));
+        rec.wait_window(&shell, p, |n| n.contains("\"position\":[30,35]"));
     }
 
     /// The tip bug: a reposition takes effect when the client acks and commits.  The ack makes the popup ready
@@ -416,7 +427,7 @@ mod child {
             e.kind() == Kind::FrameReady && e.window == p
         });
         draw(&mut shell, p, 60, 30);
-        rec.wait_node(p, |n| n.contains("\"position\":[110,60]"));
+        rec.wait_window(&shell, p, |n| n.contains("\"position\":[110,60]"));
         shell.set_position(p, 20, 25).unwrap();
         wait_for(&mut shell, |e| {
             e.kind() == Kind::FrameReady && e.window == p
@@ -424,9 +435,9 @@ mod child {
         assert_eq!(shell.window_ready(p).unwrap(), NHSHELL_READY_OWED);
         // acked, not committed: the position stays
         sync(&shell);
-        rec.wait_node(p, |n| n.contains("\"position\":[110,60]"));
+        rec.wait_window(&shell, p, |n| n.contains("\"position\":[110,60]"));
         shell.present_bare(p).unwrap();
-        rec.wait_node(p, |n| n.contains("\"position\":[30,35]"));
+        rec.wait_window(&shell, p, |n| n.contains("\"position\":[30,35]"));
     }
 
     /// B2: a child's move or stacking is its parent's state, so the parent owes a commit.
@@ -449,7 +460,7 @@ mod child {
         shell.present_bare(c).unwrap();
         assert_eq!(shell.window_ready(c).unwrap(), 0);
         shell.present_bare(parent).unwrap();
-        rec.wait_node(c, |n| n.contains("\"position\":[70,10]"));
+        rec.wait_window(&shell, c, |n| n.contains("\"position\":[70,10]"));
         assert_eq!(shell.window_ready(parent).unwrap(), 0);
         shell.stack(c, 0, false).unwrap();
         assert_ne!(shell.window_ready(parent).unwrap() & NHSHELL_READY_OWED, 0);
@@ -493,7 +504,7 @@ mod child {
             e.kind() == Kind::FrameReady && e.window == p
         });
         draw(&mut shell, p, 60, 30);
-        rec.wait_node(p, |n| n.contains("\"position\":[110,60]"));
+        rec.wait_window(&shell, p, |n| n.contains("\"position\":[110,60]"));
         assert!(shell.set_position(p, 20, 25).unwrap(), "redraw all");
         // the new popup is configured again, and that first configure wants a buffer
         wait_for(&mut shell, |e| {
@@ -501,7 +512,7 @@ mod child {
         });
         assert_ne!(shell.window_ready(p).unwrap() & NHSHELL_READY_CONTENT, 0);
         draw(&mut shell, p, 60, 30);
-        let n = rec.wait_node(p, |n| n.contains("\"position\":[30,35]"));
+        let n = rec.wait_window(&shell, p, |n| n.contains("\"position\":[30,35]"));
         assert!(!n.contains("\"buffer\":null"), "{n}");
         // the connection is still up: the recorder raised no protocol error
         assert!(shell.next_event().is_ok());
@@ -513,7 +524,7 @@ mod child {
         let mut shell = rec.open();
         let parent = window(&mut shell);
         let p = popup(&mut shell, parent, Anchor::default());
-        rec.wait_node(p, |_| true);
+        rec.wait_window(&shell, p, |_| true);
         let r = rec.control(&format!(r#"{{"cmd":"popup_done","surface":{p}}}"#));
         assert!(r.contains("\"ok\":true"), "{r}");
         let ev = wait_for(&mut shell, |e| e.kind() == Kind::PopupDone);
@@ -530,7 +541,7 @@ mod child {
         let parent = window(&mut shell);
         let c = child(&mut shell, parent, 0, 0);
         let p = popup(&mut shell, c, Anchor::default());
-        rec.wait_node(p, |_| true);
+        rec.wait_window(&shell, p, |_| true);
         shell.window_destroy(c).unwrap();
         let ev = wait_for(&mut shell, |e| e.kind() == Kind::PopupDone);
         assert_eq!(ev.window, p);
@@ -588,7 +599,7 @@ mod child {
         let mut shell = rec.open();
         let parent = window(&mut shell);
         let c = child(&mut shell, parent, 0, 0);
-        rec.wait_node(c, |n| n.contains("\"sync\":true"));
+        rec.wait_window(&shell, c, |n| n.contains("\"sync\":true"));
     }
 
     /// B3: each change of a child is cached until the root commits, and makes the root owe that commit.
@@ -601,7 +612,7 @@ mod child {
         let b = child(&mut shell, root, 10, 10);
         draw(&mut shell, a, 100, 60);
         shell.present_bare(root).unwrap();
-        rec.wait_node(a, |n| n.contains("\"mapped\":true"));
+        rec.wait_window(&shell, a, |n| n.contains("\"mapped\":true"));
         drain(&mut shell);
         let owed =
             |shell: &mut WaylandShell| shell.window_ready(root).unwrap() & NHSHELL_READY_OWED != 0;
@@ -614,17 +625,17 @@ mod child {
         shell.present_bare(a).unwrap();
         still(&shell, &rec, a, |n| n.contains("\"position\":[0,0]"));
         shell.present_bare(root).unwrap();
-        rec.wait_node(a, |n| n.contains("\"position\":[70,10]"));
+        rec.wait_window(&shell, a, |n| n.contains("\"position\":[70,10]"));
         assert!(!owed(&mut shell));
 
         // stacking
         let order = |first: u64, second: u64| format!("\"children\":[{first},{second}]");
-        rec.wait_node(root, |n| n.contains(&order(a, b)));
+        rec.wait_window(&shell, root, |n| n.contains(&order(a, b)));
         shell.stack(a, b, true).unwrap();
         assert!(owed(&mut shell));
         still(&shell, &rec, root, |n| n.contains(&order(a, b)));
         shell.present_bare(root).unwrap();
-        rec.wait_node(root, |n| n.contains(&order(b, a)));
+        rec.wait_window(&shell, root, |n| n.contains(&order(b, a)));
 
         // input region (recorded: the child's commit carries it, the root's applies it)
         shell
@@ -635,7 +646,9 @@ mod child {
         shell.present_bare(a).unwrap();
         still(&shell, &rec, a, |n| n.contains("\"input_region\":null"));
         shell.present_bare(root).unwrap();
-        rec.wait_node(a, |n| n.contains("\"input_region\":[[10,10,80,40]]"));
+        rec.wait_window(&shell, a, |n| {
+            n.contains("\"input_region\":[[10,10,80,40]]")
+        });
 
         // unmap
         shell.set_mapped(a, false).unwrap();
@@ -643,7 +656,7 @@ mod child {
         still(&shell, &rec, a, |n| n.contains("\"mapped\":true"));
         shell.present_bare(a).unwrap();
         shell.present_bare(root).unwrap();
-        rec.wait_node(a, |n| n.contains("\"mapped\":false"));
+        rec.wait_window(&shell, a, |n| n.contains("\"mapped\":false"));
         assert!(!owed(&mut shell));
     }
 
@@ -658,7 +671,7 @@ mod child {
         draw(&mut shell, g, 100, 60);
         draw(&mut shell, c, 100, 60);
         shell.present_bare(root).unwrap();
-        rec.wait_node(g, |n| {
+        rec.wait_window(&shell, g, |n| {
             n.contains("\"mapped\":true") && n.contains("\"position\":[5,5]")
         });
         drain(&mut shell);
@@ -674,7 +687,7 @@ mod child {
         shell.present_bare(c).unwrap();
         still(&shell, &rec, g, |n| n.contains("\"position\":[5,5]"));
         shell.present_bare(root).unwrap();
-        rec.wait_node(g, |n| n.contains("\"position\":[30,25]"));
+        rec.wait_window(&shell, g, |n| n.contains("\"position\":[30,25]"));
         for id in [g, c, root] {
             assert_eq!(shell.window_ready(id).unwrap() & NHSHELL_READY_OWED, 0);
         }
@@ -688,7 +701,7 @@ mod child {
         let root = window(&mut shell);
         let c = child(&mut shell, root, 0, 0);
         // the root's first frame is shown: its callback came, so its pacer is idle
-        rec.wait_node(root, |n| n.contains("\"mapped\":true"));
+        rec.wait_window(&shell, root, |n| n.contains("\"mapped\":true"));
         let deadline = Instant::now() + Duration::from_secs(3);
         while shell.present_pacer(root).unwrap().0 {
             assert!(Instant::now() < deadline, "the root's callback never came");
@@ -709,7 +722,7 @@ mod child {
         // the tree presents: the child's buffer, then the root's paced commit, which applies it
         draw(&mut shell, c, 100, 60);
         shell.present_bare(root).unwrap();
-        rec.wait_node(c, |n| n.contains("\"mapped\":true"));
+        rec.wait_window(&shell, c, |n| n.contains("\"mapped\":true"));
         let log = rec.control(r#"{"cmd":"log","since":1}"#);
         let last = log
             .split("{\"ack_serial\":")
@@ -731,7 +744,7 @@ mod child {
         let c = child(&mut shell, root, 40, 30);
         draw(&mut shell, c, 100, 60);
         shell.present_bare(root).unwrap();
-        rec.wait_node(c, |n| {
+        rec.wait_window(&shell, c, |n| {
             n.contains("\"mapped\":true") && n.contains("\"position\":[40,30]")
         });
         let seq = next_seq(&rec);
@@ -741,7 +754,7 @@ mod child {
         assert!(commits_since(&rec, seq).is_empty(), "recorded, not sent");
         assert!(!shell.present_tree(root).unwrap(), "bare commits only");
         shell.flush().unwrap();
-        rec.wait_node(c, |n| n.contains("\"position\":[70,10]"));
+        rec.wait_window(&shell, c, |n| n.contains("\"position\":[70,10]"));
         assert_eq!(commits_of(&rec, seq, c).len(), 1, "the child's commit");
         assert!(!commits_of(&rec, seq, root).is_empty(), "the root's");
     }
@@ -758,8 +771,10 @@ mod child {
         draw(&mut shell, a, 100, 60);
         draw(&mut shell, b, 100, 60);
         shell.present_bare(root).unwrap();
-        rec.wait_node(b, |n| n.contains("\"mapped\":true"));
-        rec.wait_node(root, |n| n.contains(&format!("\"children\":[{a},{b}]")));
+        rec.wait_window(&shell, b, |n| n.contains("\"mapped\":true"));
+        rec.wait_window(&shell, root, |n| {
+            n.contains(&format!("\"children\":[{a},{b}]"))
+        });
         // the setup's own commits went through the host-driven calls
         let off = shell.commits_off_presenter();
         let seq = next_seq(&rec);
@@ -780,12 +795,12 @@ mod child {
         assert_eq!(shell.commits_off_presenter(), off);
         assert!(!shell.present_tree(root).unwrap());
         shell.flush().unwrap();
-        rec.wait_node(a, |n| n.contains("\"position\":[30,20]"));
-        rec.wait_node(root, |n| {
+        rec.wait_window(&shell, a, |n| n.contains("\"position\":[30,20]"));
+        rec.wait_window(&shell, root, |n| {
             n.contains(&format!("\"children\":[{b},{a}]"))
                 && n.contains("\"input_region\":[[0,0,150,80]]")
         });
-        rec.wait_node(b, |n| {
+        rec.wait_window(&shell, b, |n| {
             n.contains("\"mapped\":false") && n.contains("\"input_region\":[[5,5,9,9]]")
         });
         assert_eq!(shell.commits_off_presenter(), off, "all present_tree's");
@@ -805,7 +820,7 @@ mod child {
         draw(&mut shell, g, 40, 30);
         draw(&mut shell, c, 100, 60);
         shell.present_bare(root).unwrap();
-        rec.wait_node(g, |n| n.contains("\"mapped\":true"));
+        rec.wait_window(&shell, g, |n| n.contains("\"mapped\":true"));
         shell.set_position(g, 9, 9).unwrap();
         shell
             .set_input_region(c, &[Rect::new(1, 1, 10, 10)])
@@ -851,7 +866,7 @@ mod alpha {
         let rec = Recorder::start();
         let mut shell = rec.open();
         let root = window(&mut shell);
-        rec.wait_node(root, |n| n.contains("\"mapped\":true"));
+        rec.wait_window(&shell, root, |n| n.contains("\"mapped\":true"));
         let seq = next_seq(&rec);
         shell.set_alpha(root, u32::MAX / 2).unwrap();
         sync(&shell);
