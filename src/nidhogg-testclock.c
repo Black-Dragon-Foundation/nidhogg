@@ -40,7 +40,9 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
        the deadline has passed: the same; the caller goes on
        nothing left to wait for: a deadlock
        else: advance to the earliest deadline, and look again
-     else: a select with no timeout, the wake fd among its fds
+     else: a select with no timeout, the wake fd among its fds; while a
+       real child lives, the wait's own timeout as real time instead,
+       and once that is over the clock moves to the wait's deadline
 
    The fds are looked at after the check, because what the check clears
    (a read that landed) is then there for the look.  Each thing that
@@ -317,9 +319,18 @@ nh_tc_wait_begin (struct nh_tc_wait *w, struct thread_state *self,
   if (w->has_deadline)
     w->deadline = glitnir_tc_mono_ns () + nh_tc_ns (*timeout);
   atomic_store (&w->in_select, false);
-  w->due = w->done = w->sig = false;
+  w->due = w->done = w->sig = w->real_bound = false;
   self->nh_tc = w;
   return true;
+}
+
+/* The real CLOCK_MONOTONIC reading in ns.  */
+static int64_t
+nh_tc_real_ns (void)
+{
+  struct timespec t;
+  clock_gettime (CLOCK_MONOTONIC, &t);
+  return nh_tc_ns (t);
 }
 
 void
@@ -357,7 +368,21 @@ nh_tc_before (struct nh_tc_wait *w, int *max_fds, struct timespec **timeout)
 	  return;
 	}
       if (!nh_tc_quiet (w->self))
-	break;
+	{
+	  if (w->real_bound && nh_tc_real_ns () >= w->real_deadline)
+	    {
+	      /* Its real bound is over: the wait ends at its deadline.  */
+	      if (glitnir_tc_mono_ns () < w->deadline)
+		{
+		  glitnir_tc_advance_to (w->deadline);
+		  nh_tc_wake_waits ();
+		  nh_tc_wake_threads (w, w->deadline);
+		}
+	      w->done = true;
+	      return;
+	    }
+	  break;
+	}
       if (nh_tc_fds_ready (w))
 	return;
       uint64_t now = glitnir_tc_mono_ns ();
@@ -384,6 +409,22 @@ nh_tc_before (struct nh_tc_wait *w, int *max_fds, struct timespec **timeout)
   atomic_store (&w->in_select, true);
   atomic_fetch_add (&nh_tc_blocks, 1);
   *timeout = NULL;
+  if (w->has_deadline && nh_tc_child_alive ())
+    {
+      /* A hung child would hold the clock forever: the wait's own
+	 timeout bounds it, as real time.  */
+      int64_t real = nh_tc_real_ns ();
+      if (!w->real_bound)
+	{
+	  uint64_t now = glitnir_tc_mono_ns ();
+	  w->real_bound = true;
+	  w->real_deadline = real + (int64_t) (w->deadline > now
+					       ? w->deadline - now : 0);
+	}
+      w->real_left = nh_tc_timespec (w->real_deadline > real
+				     ? w->real_deadline - real : 0);
+      *timeout = &w->real_left;
+    }
 }
 
 void

@@ -84,6 +84,12 @@ struct nh_tc_wait
   bool due;			/* another thread reached its deadline */
   bool done;			/* its deadline passed, or a deadlock */
   bool sig;			/* a signal is pending */
+  /* While a real child holds the clock, the wait's own timeout still
+     bounds it, as real time: it ends at REAL_DEADLINE (CLOCK_MONOTONIC
+     ns), set when the first such round blocks.  */
+  bool real_bound;
+  int64_t real_deadline;
+  struct timespec real_left;	/* the round's timeout */
 };
 
 extern bool nh_tc_wait_begin (struct nh_tc_wait *, struct thread_state *,
