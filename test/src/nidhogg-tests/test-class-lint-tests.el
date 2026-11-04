@@ -32,9 +32,11 @@
 ;; (`FILE # reason', FILE relative to test/src/nidhogg-tests/).
 ;;
 ;; The rules:
-;;   D (det)    no real time: no sleep-for, sit-for, asynchronous process
-;;              or timer creation, no accept-process-output with a time, no
-;;              float-time deadline.  A synchronous `call-process' is
+;;   D (det)    no real time: no sleep-for, sit-for, asynchronous process,
+;;              connection or timer creation, no with-timeout, no
+;;              accept-process-output with a time (seconds or milliseconds),
+;;              no clock read (float-time, current-time, or a time function
+;;              given nil for now).  A synchronous `call-process' is
 ;;              allowed.  Peer and clock helpers are allowed.
 ;;   C (cond)   no fixed pause: no sleep-for, no sit-for above 0.
 ;;   D and C    no `should' over a comparison of a clock read.  Only T
@@ -67,14 +69,24 @@ Every test file has a class, so it is set; nil would make
 
 (defconst test-class-lint--real-time
   '(make-process start-process start-file-process
-    run-at-time run-with-timer
-    run-with-idle-timer float-time time-since)
+    make-network-process open-network-stream
+    run-at-time run-with-timer run-with-idle-timer timer-activate with-timeout
+    float-time current-time time-since)
   "Symbols a D test must not use outside the clock helpers.
 The fixed pauses (`sleep-for', `sit-for' above 0) are barred too, see
-`test-class-lint--fixed-pause'.")
+`test-class-lint--fixed-pause', and so are the reads of
+`test-class-lint--now-args'.")
 
 (defconst test-class-lint--clock-reads '(float-time current-time time-since)
   "Functions whose value is a clock read.")
+
+(defconst test-class-lint--now-args
+  '((time-add 1 2) (time-subtract 1 2) (time-less-p 1 2) (time-equal-p 1 2)
+    (time-convert 1) (time-to-seconds 1) (decode-time 1)
+    (current-time-string 1) (format-time-string 2))
+  "Functions that read the clock when a time argument is nil or left out.
+Each row is the function and the positions of its time arguments in a
+call (1 is the first argument).")
 
 (defconst test-class-lint--comparisons
   '(< > <= >= = /= time-less-p time-equal-p)
@@ -178,6 +190,21 @@ helpers are skipped."
   "Non-nil if X is a literal zero."
   (and (numberp x) (zerop x)))
 
+(defun test-class-lint--now-reads (nodes)
+  "The calls in NODES that read the clock through a nil time, as strings."
+  (let (found)
+    (dolist (c (car nodes))
+      (let ((pos (cdr (assq (car c) test-class-lint--now-args))))
+        (when (and pos (proper-list-p c)
+                   (seq-some (lambda (p) (null (nth p c))) pos))
+          (push (format "%s of now" (car c)) found))))
+    (delete-dups (nreverse found))))
+
+(defun test-class-lint--reads-clock-p (nodes)
+  "Non-nil if NODES read the clock."
+  (or (test-class-lint--uses-p nodes test-class-lint--clock-reads)
+      (test-class-lint--now-reads nodes)))
+
 ;;; The rules
 
 (defun test-class-lint--real-time (nodes)
@@ -185,9 +212,11 @@ helpers are skipped."
   (let ((found (reverse (test-class-lint--fixed-pause nodes))))
     (dolist (s test-class-lint--real-time)
       (when (test-class-lint--uses-p nodes (list s)) (push (symbol-name s) found)))
+    (dolist (r (test-class-lint--now-reads nodes)) (push r found))
     (dolist (c (car nodes))
       (when (and (eq (car c) 'accept-process-output)
-                 (nth 2 c) (not (test-class-lint--zero-p (nth 2 c))))
+                 (seq-some (lambda (a) (and a (not (test-class-lint--zero-p a))))
+                           (list (nth 2 c) (nth 3 c))))
         (push "accept-process-output with a time" found)))
     (nreverse found)))
 
@@ -210,7 +239,7 @@ helpers are skipped."
       (setq changed nil)
       (let ((clocky (lambda (init)
                       (let ((n (test-class-lint--nodes (list init) helpers)))
-                        (or (test-class-lint--uses-p n test-class-lint--clock-reads)
+                        (or (test-class-lint--reads-clock-p n)
                             (test-class-lint--uses-p n tainted))))))
         (dolist (c all)
           (cond
@@ -236,7 +265,7 @@ helpers are skipped."
       (when (memq (car c) '(should should-not))
         (let ((n (test-class-lint--nodes (cdr c) helpers)))
           (when (and (test-class-lint--uses-p n test-class-lint--comparisons)
-                     (or (test-class-lint--uses-p n test-class-lint--clock-reads)
+                     (or (test-class-lint--reads-clock-p n)
                          (test-class-lint--uses-p n tainted)))
             (push "should compares a clock read" found)))))
     (delete-dups found)))
@@ -382,14 +411,27 @@ class line has none."
                     ("(start-process \"x\" nil \"true\")" "start-process")
                     ("(run-at-time 1 nil #'ignore)" "run-at-time")
                     ("(accept-process-output p 1)" "accept-process-output with a time")
-                    ("(while (< (float-time) 5) nil)" "float-time")))
+                    ("(accept-process-output p nil 50)" "accept-process-output with a time")
+                    ("(accept-process-output p 0 50)" "accept-process-output with a time")
+                    ("(while (< (float-time) 5) nil)" "float-time")
+                    ("(let ((t0 (current-time))) t0)" "current-time")
+                    ("(with-timeout (1) (ignore))" "with-timeout")
+                    ("(make-network-process :name \"x\" :service 1)" "make-network-process")
+                    ("(open-network-stream \"x\" nil \"localhost\" 1)" "open-network-stream")
+                    ("(timer-activate tm)" "timer-activate")
+                    ("(while (time-less-p nil end) nil)" "time-less-p of now")
+                    ("(setq end (time-add nil 2))" "time-add of now")
+                    ("(format-time-string \"%F.jsonl\")" "format-time-string of now")))
       (let ((v (test-class-lint--violations
                 (concat det "(ert-deftest my/a () " (car case) ")\n"))))
         (should (member (list 'det-real-time 'my/a (cadr case)) v))))
     ;; What a D test may do.
     (should-not (test-class-lint--violations
                  (concat det "(ert-deftest my/a () (sit-for 0) (call-process \"true\") (accept-process-output p)"
-                         " (accept-process-output p 0) (nidhogg-test-peer-make (sleep-for 1))"
+                         " (accept-process-output p 0) (accept-process-output p 0 0)"
+                         " (accept-process-output p nil nil t) (format-time-string \"%F\" 0)"
+                         " (time-add t0 2) (time-less-p t0 t1)"
+                         " (nidhogg-test-peer-make (sleep-for 1))"
                          " (nidhogg-watchdog--test-clock 5) '(sleep-for 1))\n")))
     ;; C: a fixed pause.
     (should (equal '((cond-pause my/a "sleep-for"))
@@ -409,6 +451,13 @@ class line has none."
                     (concat cnd "(ert-deftest my/a ()"
                             " (let* ((t0 (float-time)) (dt (- (float-time) t0)))"
                             " (should (< dt 2))))\n"))))
+    (should (equal '((clock-assert my/a "should compares a clock read"))
+                   (test-class-lint--violations
+                    (concat cnd "(ert-deftest my/a () (should (time-less-p nil end)))\n"))))
+    (should (equal '((clock-assert my/a "should compares a clock read"))
+                   (test-class-lint--violations
+                    (concat cnd "(ert-deftest my/a () (let ((e (time-add nil 2)))"
+                            " (should (time-less-p x e))))\n"))))
     (should-not (test-class-lint--violations
                  (concat cnd "(ert-deftest my/a () (let ((n 3)) (should (< n 5))))\n")))
     ;; A wait helper that reads the clock is not an assertion on it.
