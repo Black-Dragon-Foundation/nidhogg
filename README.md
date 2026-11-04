@@ -218,7 +218,8 @@ Nothing can run when all of these hold: no other Lisp thread is runnable, no pro
 between a read and its FIFO, every job is blocked (parked at a pause point, in a timed wait, or queued with no thread
 for it) and nh-io sits in its poll, no completion or signal is pending, and no real child is alive. A
 `nidhogg-test-peer` is not a child, so it never holds the clock. A real child does, so time stands still while it
-lives. `(nidhogg-test-clock-state)` shows what the clock sees: `:timers`, `:deadlines`, `:jobs`, `:fds`, `:children`
+lives, and a wait with a timeout then lasts at most that timeout in real time: a hung child ends `(accept-process-output
+proc 2)` after 2 real seconds, with the clock moved to the wait's deadline. `(nidhogg-test-clock-state)` shows what the clock sees: `:timers`, `:deadlines`, `:jobs`, `:fds`, `:children`
 and `:blocks`, the selects that really blocked.
 
 If nothing can run and nothing is left to wait for, the wait can never end. It signals
