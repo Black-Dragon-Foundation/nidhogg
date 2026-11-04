@@ -65,6 +65,7 @@ jobs:
       native-gui: ${{ steps.c.outputs.run_native_gui }}
       workers-harness: ${{ steps.c.outputs.run_workers_harness }}
       workers-asan: ${{ steps.c.outputs.run_workers_asan }}
+      workers-chaos: ${{ steps.c.outputs.run_workers_chaos }}
       workers-pkg: ${{ steps.c.outputs.run_workers_pkg }}
       workers-pkg-compare: ${{ steps.c.outputs.run_workers_pkg_compare }}
       timing: ${{ steps.c.outputs.run_timing }}
@@ -743,6 +744,81 @@ jobs:
           path: ${{ runner.temp }}/build-asan/*.log
           if-no-files-found: ignore
 
+  # The workers files under chaos (README.md, "CI and releases"): a chaos build (build.sh --dev --chaos: seeded delays at
+  # the workers' sync points, src/nidhogg-chaos.h), then nidhogg/test/chaos-lane.sh runs the files of
+  # nidhogg/test/chaos-files.txt once per seed, 1 to 5, and lets no rerun off: a red under chaos is a race.  A red names
+  # its seed and the line that replays it.  Its own caches, keyed as workers-asan's (another configuration).  It needs
+  # no tarball, so it runs beside the Linux builds, not after them.
+  workers-chaos:
+    name: Workers files under chaos (seeds 1-5)
+    needs: changes
+    if: ${{ !cancelled() && inputs.scope != 'macos' && github.ref_type != 'tag' && needs.changes.outputs.workers-chaos != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Compiled-Lisp inputs, file times
+        id: tree
+        run: |
+          echo "lisp=$(bash nidhogg/ci/lisp-key.sh)" >> "$GITHUB_OUTPUT"
+          bash nidhogg/ci/set-mtimes.sh
+      - name: ccache (C objects)
+        id: cc
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-fedora-45-chaos-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-fedora-45-chaos-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-
+      - name: Package download cache (dnf)
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/pkg-cache
+          key: pkgs-fedora-45-${{ hashFiles('nidhogg/deps/fedora-45.build') }}
+          restore-keys: pkgs-fedora-45-
+      - name: Compiled Lisp (same Lisp and C sources)
+        id: lc
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/lisp-cache
+          key: lisp-fedora-45-chaos-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ steps.tree.outputs.lisp }}-${{ hashFiles('nidhogg/build.sh') }}
+      - name: The chaos build
+        id: build
+        env:
+          NIDHOGG_BUILD_PKG_CACHE: ${{ runner.temp }}/pkg-cache
+          NIDHOGG_BUILD_CCACHE: ${{ runner.temp }}/ccache
+          NIDHOGG_BUILD_LISP_CACHE: ${{ runner.temp }}/lisp-cache
+        run: bash nidhogg/build.sh --container fedora-45 --dev --chaos --stage build --memory 12g --jobs 4 --build-dir "$RUNNER_TEMP/build-chaos"
+      - name: Save ccache
+        if: ${{ !cancelled() && env.CACHE_SAVE == 'true' && steps.cc.outcome == 'success' && (steps.build.outcome == 'success' || steps.build.outcome == 'failure') }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-fedora-45-chaos-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Save compiled Lisp
+        if: ${{ always() && env.CACHE_SAVE == 'true' && steps.build.outcome == 'success' && steps.lc.outcome == 'success' && steps.lc.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/lisp-cache
+          key: lisp-fedora-45-chaos-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ steps.tree.outputs.lisp }}-${{ hashFiles('nidhogg/build.sh') }}
+      - name: The workers files, seeds 1 to 5, no rerun (nidhogg/test/chaos-files.txt)
+        if: ${{ steps.build.outcome == 'success' }}
+        env:
+          NIDHOGG_BUILD_PKG_CACHE: ${{ runner.temp }}/pkg-cache
+        run: |
+          bash nidhogg/test/chaos-lane.sh --build-dir "$RUNNER_TEMP/build-chaos" --seeds "1 2 3 4 5" -- \
+            bash nidhogg/build.sh --container fedora-45 --dev --chaos --memory 12g --jobs 4
+      - name: Build logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-logs-workers-chaos
+          path: |
+            ${{ runner.temp }}/build-chaos/*.log
+            ${{ runner.temp }}/build-chaos/check-logs/
+          if-no-files-found: ignore
+
   workers-pkg:
     name: Package suites (${{ matrix.group }}, workers ${{ matrix.mode }})
     needs: [changes, linux]
@@ -891,7 +967,7 @@ jobs:
   gate:
     name: ${{ needs.changes.outputs.partial == 'true' && 'Nidhogg gate (partial)' || 'Nidhogg gate' }}
     if: always()
-    needs: [changes, tree, linux, compile-noglitnir, macos, pin, drgnx, native-crates, native-gui, workers-harness, workers-asan, workers-pkg, workers-pkg-compare]
+    needs: [changes, tree, linux, compile-noglitnir, macos, pin, drgnx, native-crates, native-gui, workers-harness, workers-asan, workers-chaos, workers-pkg, workers-pkg-compare]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -903,7 +979,7 @@ jobs:
           PARTIAL: ${{ needs.changes.outputs.partial }}
         run: |
           allow=" $SKIP "
-          [ "$TAG" != true ] || allow="$allow compile-noglitnir workers-harness workers-asan workers-pkg workers-pkg-compare "
+          [ "$TAG" != true ] || allow="$allow compile-noglitnir workers-harness workers-asan workers-chaos workers-pkg workers-pkg-compare "
           jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
           [ "$PARTIAL" != true ] || echo "::notice::a narrowed run: its gate stands only for the jobs it ran"
           jq -e --arg allow "$allow" \
