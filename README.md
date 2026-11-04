@@ -89,7 +89,7 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   `configure` refuses `--with-pgtk`, and upstream's pgtk files stay in the tree only for clean merges. macOS (NS app,
   `Nidhogg.app`) is planned: `--host` has the code path, but it has not been built or tested yet.
 - Requirements: podman for `--container` (never docker) and enough free memory (below).
-- `--container DISTRO` (`fedora-44`, `fedora-45`, `ubuntu-26.04`, `debian-13`, `arch`) builds in a memory-capped podman container (podman only,
+- `--container DISTRO` (`fedora-45`, `ubuntu-26.04`, `debian-13`, `arch`) builds in a memory-capped podman container (podman only,
   never docker). `--host` builds on this machine (on Linux the packages in `nidhogg/deps/<distro>.build`
   must be installed).
 - Configure flags: `--with-native-compilation=aot --with-tree-sitter --with-nidhogg-wayland` (Linux), `--with-ns ...` (macOS), each followed by `--with-glitnir` unless `--without-glitnir` is given.
@@ -159,7 +159,7 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
 ## Release tarballs
 
 `nidhogg/build.sh ... --out FILE` installs into a staging tree and writes `nidhogg-<version>-<distro>-<arch>.tar.xz`
-(distro `fedora-44`, `fedora-45`, `ubuntu-26.04`, `debian-13`, `arch` or `macos`; arch is `uname -m`) and `FILE.sha256`.
+(distro `fedora-45`, `ubuntu-26.04`, `debian-13`, `arch` or `macos`; arch is `uname -m`) and `FILE.sha256`.
 
 - One top directory `nidhogg-<version>/` holding the prefix's contents (macOS: `Nidhogg.app`).
 - `share/nidhogg/BUILDINFO` (`key=value`: `version commit distro arch prefix configure date`),
@@ -265,11 +265,11 @@ machine whose timing never shows it, not certain.
   (`FILE # reason`); a row whose file is gone fails the check. Every test file has a class, so a file with neither a
   class line nor an exempt row fails it.
 - `tree`: `tree-test.sh`, `ci-test.sh` and `check-rerun-test.sh` (full history and tags).
-- `linux` (fedora-44, fedora-45, ubuntu-26.04): `build.sh --container D --stage build`, the cache saves, then `--stage check
+- `linux` (fedora-45, ubuntu-26.04): `build.sh --container D --stage build`, the cache saves, then `--stage check
   --check nidhogg/check-subset.txt`, then `--stage pack --out ...` (so a failing check keeps the build's caches), then
   `tarball-test.sh`. `macos`: Homebrew `deps/macos.build`, `build.sh --host` (`--stage build`, then `--stage pack`),
   `tarball-test.sh macos`. Each uploads its tarball and `.sha256`.
-- `compile-noglitnir` (fedora-44): `build.sh --without-glitnir --stage build`, a terminal-only build with no Rust
+- `compile-noglitnir` (fedora-45): `build.sh --without-glitnir --stage build`, a terminal-only build with no Rust
   installed (the tree still compiles without Glitnir). It is not part of the release gate.
 - `workers-chaos` (fedora-45, beside the Linux builds: it needs no tarball): `build.sh --dev --chaos --stage build`,
   then `nidhogg/test/chaos-lane.sh`, which runs the files of `nidhogg/test/chaos-files.txt` (`workers-tests`,
@@ -287,7 +287,7 @@ machine whose timing never shows it, not certain.
   `scope=macos`). The test binaries (Ratatoskr with the test hooks, `ratatoskr-mock`, huginn's `dump`) are built once
   for the Linux jobs; the cargo cache is this repository's (a called workflow uses the caller's). Locally, a narrowed
   run of the unit suite on a tarball: `DRGNX_TEST_SELECTOR='drgnx-doctor/' bash nidhogg/ci/drgnx-suite.sh TARBALL
-  fedora-44 ../drgnx`.
+  fedora-45 ../drgnx`.
 - Every Linux tarball is the native shell, so the shell has no build job of its own. `native-crates` builds `nh-recorder`
   and runs the recorder's, the shell's and the glue's `check.sh`, whose T1 tests run against it (they fail, not skip,
   without the recorder). `native-gui` (fedora-45 tarball, after `linux` and `native-crates`; 60 minutes per lane) runs
@@ -324,7 +324,7 @@ machine whose timing never shows it, not certain.
     (ccache hashes the preprocessed source and checks gcc by content, so any older entry is safe; a new key per run lets
     every run save its additions). It is saved after a failed build too, never after a cancelled one. One generated
     header (`globals.h`) changes with any new primitive or variable and every file including `lisp.h` misses then.
-    `compile-noglitnir` (`ccache-fedora-44-noglitnir-...`), `workers-asan` (`ccache-fedora-45-asan-...`) and
+    `compile-noglitnir` (`ccache-fedora-45-noglitnir-...`), `workers-asan` (`ccache-fedora-45-asan-...`) and
     `workers-chaos` (`ccache-fedora-45-chaos-...`, and its compiled Lisp `lisp-fedora-45-chaos-...`) have their
     own. Downloaded packages (dnf, apt): `pkgs-D-G`, restored by prefix (the package managers verify what they reuse),
     also in `compile-noglitnir`, `native-crates`, `workers-harness`, `workers-asan` and `workers-chaos`.
