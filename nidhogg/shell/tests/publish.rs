@@ -605,7 +605,7 @@ mod tree_snapshot {
         assert!(publish(&mut shell, id, &tree, 0));
         shell.present_tree(id).unwrap();
         shown(&mut shell, &rec, id);
-        rec.wait_node(a, |n| n.contains("\"position\":[10,10]"));
+        rec.wait_window(&shell, a, |n| n.contains("\"position\":[10,10]"));
 
         let input = [Rect::new(2, 2, 20, 10)];
         shell
@@ -621,7 +621,7 @@ mod tree_snapshot {
             e.kind() == Kind::FrameReady && e.window == id
         });
         assert!(!shell.present_tree(id).unwrap(), "bare commits");
-        rec.wait_node(a, |n| {
+        rec.wait_window(&shell, a, |n| {
             n.contains("\"position\":[30,20]") && n.contains("\"input_region\":[[2,2,20,10]]")
         });
         assert_eq!(
