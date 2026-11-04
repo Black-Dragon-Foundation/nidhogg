@@ -631,6 +631,9 @@ jobs:
             fi
           fi
           sudo chmod 666 /dev/dri/renderD*
+          # what the lane runs on: KWin has composited on Azure's runners and not on an AWS one (2026-11-04), whose
+          # differences are not known yet; gui.sh says whether KWin composites
+          echo "kernel $k; render nodes: $(cd /sys/class/drm && for n in renderD*; do printf '%s=%s ' "$n" "$(basename "$(readlink -f "$n/device/driver")")"; done); cards: $(cd /sys/class/drm && for n in card?; do printf '%s=%s ' "$n" "$(basename "$(readlink -f "$n/device/driver")")"; done)"
       - run: bash nidhogg/test/native-gui.sh "${{ matrix.lane }}" --prefix "$RUNNER_TEMP/nidhogg" --recorder "$PWD/recorder/nh-recorder" --container fedora-45
 
   # The off-main-thread work's CI (engine C, PD-4).  They run once the Linux builds are done, whatever the other distros

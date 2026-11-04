@@ -280,8 +280,9 @@ machine whose timing never shows it, not certain.
   `nidhogg/test/native-gui.sh LANE --container fedora-45`, one job per lane, listed at the top of that script:
   every `*-gui-tests.el` file on headless sway at scales 1 and 2 (`gui-1`, `gui-2`); the `nhwl-gui/` rows on the recorder
   (sway's, mutter's, KWin's and xdg-v2 globals; no presenter thread; 120 Hz; scale 1.25; client-side decorations; in a
-  daemon; the scripted portal), on headless mutter at scales 1 and 1.25 and on KWin with the protocol trace checked,
-  and on headless sway (plain, client-side decorations, in a daemon); the decoration rows on the recorder and on sway
+  daemon; the scripted portal), on headless mutter at scales 1 and 1.25 and on KWin with the protocol trace checked
+  (on vgem's render node; the lane stops, saying so, when KWin's OpenGL scene did not come up there, since KWin then
+  sends no frame callbacks), and on headless sway (plain, client-side decorations, in a daemon); the decoration rows on the recorder and on sway
   at scales 1 and 2; and the input-method rows (`nidhogg/test/ime-matrix.sh`) on sway with fcitx5 and, the cursor
   rectangle only, on mutter. GNOME's IBus path needs gnome-shell, which does not run in the container, and KWin refuses
   the keys, so both stay manual checks. A lane fails when too few rows ran, so none is green on rows that all skipped. Both jobs are part of
