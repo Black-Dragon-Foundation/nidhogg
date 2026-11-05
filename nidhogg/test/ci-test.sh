@@ -55,7 +55,14 @@ grep -qF 'SHA: ${{ github.event.pull_request.head.sha || github.sha }}' "$wf" ||
 job fast-forward | grep -qF "if: github.event_name == 'pull_request'" || fail "no fast-forward job for pull requests"
 job fast-forward | grep -qF 'git merge-base --is-ancestor "$tip" "$HEAD_SHA"' || fail "the fast-forward job does not check the base's tip"
 grep -qF '[ "$PR" = true ] || allow="$allow fast-forward "' <<<"$gate" || fail "the gate does not let fast-forward skip off pull requests"
-grep -qF 'nidhogg: artifact' "$wf"                               || fail "drgnx's tiers do not run on this run's tarballs"
+# every job that restores a build cache gives the files their last commit's time; the cargo targets' entry names the
+# commit it was built from, and what changed since then is stamped newer than it
+for j in linux compile-noglitnir macos native-crates workers-asan workers-chaos; do
+  job "$j" | grep -qF 'bash nidhogg/ci/set-mtimes.sh' || fail "job $j does not set the file times"
+done
+job native-crates | grep -qF 'set-mtimes.sh --since "$RUNNER_TEMP/nh-recorder-target/.nidhogg-source-commit"' || fail "native-crates does not stamp what changed since its cache"
+job native-crates | grep -qF 'git rev-parse HEAD > "$RUNNER_TEMP/nh-recorder-target/.nidhogg-source-commit"' || fail "native-crates' cache does not name its commit"
+grep -qF 'nidhogg: artifact' "$wf"                              || fail "drgnx's tiers do not run on this run's tarballs"
 grep -qF "'unit no-lisp-writes ui macos'" "$wf"                   || fail "drgnx's tiers are not unit, gate mode, GUI and macOS"
 # a release only from a pushed v* tag, never from workflow_dispatch or a pull request
 awk '/^  release:/,0' "$wf" | grep -qF "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" || fail "release not restricted to a pushed v* tag"

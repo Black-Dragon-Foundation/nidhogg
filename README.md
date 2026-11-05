@@ -324,8 +324,15 @@ machine whose timing never shows it, not certain.
     build's ABI hash, which the primitives determine), `lib`, `lib-src`, `etc`, the generators and configure inputs; docs,
     tests, `nidhogg/` and CI files are left out, so a change to those still hits. `build.sh` (`NIDHOGG_BUILD_LISP_CACHE`)
     saves the generated files of `lisp/` and `leim/` plus `native-lisp/` after `make`, and restores them with one
-    timestamp newer than every source (CI first sets every tracked file's mtime to the commit time,
-    `nidhogg/ci/set-mtimes.sh`), so `make` sees them up to date; an entry made by another gcc is ignored.
+    timestamp newer than every source, so `make` sees them up to date; an entry made by another gcc is ignored.
+  - File times: a checkout stamps every file with the current time, so every job that restores a build cache first runs
+    `nidhogg/ci/set-mtimes.sh`, which gives each tracked file the time of the last commit that changed it. The checkout
+    stays shallow (depth 1); the script deepens it to the upstream tag the series sits on (`git fetch
+    --shallow-exclude=emacs-31.1`, about as many commits as the series), and a file the series never changed gets the
+    time of the oldest fetched commit, the same in every run. Untracked and generated files keep their own, newer,
+    times. `native-crates`' entry names the commit it was built from, and `--since` stamps every file changed since
+    then with the current time: a commit's time can be older than a cache built from its parent, and cargo would take
+    the older file for unchanged.
   - ccache for the C objects: `ccache-D-gcc-G-<run id>-<attempt>`, restored from the newest entry with the same prefix
     (ccache hashes the preprocessed source and checks gcc by content, so any older entry is safe; a new key per run lets
     every run save its additions). It is saved after a failed build too, never after a cancelled one. One generated
@@ -339,7 +346,7 @@ machine whose timing never shows it, not certain.
     ccache (`ccache-macos-<arch>-<runner image and version>-<hash of deps/macos.build>-...`, the compiler checked by
     `cc -v`, since `/usr/bin/cc` is a shim; `build.sh --host` uses ccache when `NIDHOGG_BUILD_CCACHE` is set).
   - `native-crates`: the recorder's, the shell's and the glue's cargo registry and target directories
-    (`crates-fedora-45-<hash of the four Cargo.lock files>-<run>`, restored by prefix: cargo rebuilds whatever is stale;
+    (`crates-fedora-45-<hash of the four Cargo.lock files>-<run>`, restored by prefix: cargo rebuilds whatever is stale, by the file times above;
     incremental data is dropped before the save). `workers-pkg`: the pinned packages
     (`pkg-pins-<hash of pkg-pins.txt and pkg-test.sh>`, exact, without build output or compiled files).
   - Compiled Lisp and tarballs are never restored for a release tag; a release is built fresh, with only self-checking

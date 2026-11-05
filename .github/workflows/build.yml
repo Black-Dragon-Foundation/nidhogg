@@ -358,6 +358,8 @@ jobs:
           path: ${{ runner.temp }}/pkg-cache
           key: pkgs-fedora-45-${{ hashFiles('nidhogg/deps/fedora-45.build') }}
           restore-keys: pkgs-fedora-45-
+      - name: File times (each file's last commit)
+        run: bash nidhogg/ci/set-mtimes.sh
       - name: Build
         id: build
         env:
@@ -569,8 +571,9 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-      # the crates' cargo homes and target directories (cargo checks every restored artifact against its inputs, so an
-      # entry from any earlier run is safe: restore-keys), and the Linux jobs' package downloads for the containers
+      # the crates' cargo homes and target directories (cargo checks every restored artifact against its inputs' mtimes,
+      # which set-mtimes.sh below makes right, so an entry from any earlier run is safe: restore-keys), and the Linux
+      # jobs' package downloads for the containers
       - name: Cargo (recorder, shell, glue)
         id: cargo
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -588,6 +591,11 @@ jobs:
           path: ${{ runner.temp }}/pkg-cache
           key: pkgs-fedora-45-${{ hashFiles('nidhogg/deps/fedora-45.build') }}
           restore-keys: pkgs-fedora-45-
+      # each file's last commit time, so cargo finds the files this change did not touch older than the restored targets;
+      # the files changed since the commit the entry was built from (it names it) get the current time, since a commit's
+      # time can be older than a cache built from its parent
+      - name: File times (each file's last commit; what changed since the cache, now)
+        run: bash nidhogg/ci/set-mtimes.sh --since "$RUNNER_TEMP/nh-recorder-target/.nidhogg-source-commit"
       - id: recorder
         env:
           NIDHOGG_BUILD_PKG_CACHE: ${{ runner.temp }}/pkg-cache
@@ -601,10 +609,13 @@ jobs:
           NIDHOGG_BUILD_PKG_CACHE: ${{ runner.temp }}/pkg-cache
         run: T="$RUNNER_TEMP" NH_RECORDER="$RUNNER_TEMP/nh-recorder-target/release/nh-recorder" bash nidhogg/glue/check.sh --container fedora-45
       # saved after the checks whatever they said (a red run is the one that runs again); incremental data is left
-      # out: it only speeds up rebuilding the crates themselves, which a new commit does anyway
+      # out: it only speeds up rebuilding the crates themselves, which a change to them does anyway; the entry names
+      # the commit it was built from (set-mtimes.sh --since)
       - name: Leave cargo's incremental data out of the cache
         if: ${{ !cancelled() && env.CACHE_SAVE == 'true' && steps.recorder.outcome != 'skipped' }}
-        run: find "$RUNNER_TEMP"/nh-recorder-target "$RUNNER_TEMP"/nhshell-cargo "$RUNNER_TEMP"/nhglue-cargo -type d -name incremental -prune -exec rm -r {} + 2>/dev/null || true
+        run: |
+          find "$RUNNER_TEMP"/nh-recorder-target "$RUNNER_TEMP"/nhshell-cargo "$RUNNER_TEMP"/nhglue-cargo -type d -name incremental -prune -exec rm -r {} + 2>/dev/null || true
+          git rev-parse HEAD > "$RUNNER_TEMP/nh-recorder-target/.nidhogg-source-commit"
       - if: ${{ !cancelled() && env.CACHE_SAVE == 'true' && steps.recorder.outcome != 'skipped' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
