@@ -69,7 +69,7 @@ use wayland_client::protocol::wl_subsurface::WlSubsurface;
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
 use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_surface_v1::WpAlphaModifierSurfaceV1;
-use wayland_protocols::wp::presentation_time::client::wp_presentation::WpPresentation;
+use wayland_protocols::wp::presentation_time::client::wp_presentation::{self, WpPresentation};
 use wayland_protocols::wp::presentation_time::client::wp_presentation_feedback::{
     self, WpPresentationFeedback,
 };
@@ -230,10 +230,11 @@ pub struct Present {
     pub(crate) hiding: bool,
     /// A root: the presentation feedback asked for so far.
     asked: u64,
-    /// A root: the number of the newest answer that reported a frame, and that frame's time (`shown` is the size the
-    /// compositor showed).
+    /// A root: the number of the newest answer that reported a frame, that frame's time, and when the answer came
+    /// (`CLOCK_MONOTONIC`, ours; `shown` is the size the compositor showed).
     fed_shown: u64,
     shown_ns: u64,
+    shown_at: u64,
     /// A root: the newest answer said the frame was not shown.
     fed_discarded: bool,
 }
@@ -336,6 +337,7 @@ impl Present {
             asked: 0,
             fed_shown: 0,
             shown_ns: 0,
+            shown_at: 0,
             fed_discarded: false,
         }
     }
@@ -426,7 +428,11 @@ impl Present {
             asked: self.asked,
             shown: self.fed_shown,
             shown_ns: self.shown_ns,
+            shown_at: self.shown_at,
             discarded: self.fed_discarded,
+            monotonic: self.shared.as_ref().is_none_or(|s| {
+                s.presentation_clock.load(Ordering::Relaxed) == libc::CLOCK_MONOTONIC as u32
+            }),
         }
     }
 
@@ -2070,6 +2076,7 @@ impl Dispatch<WpPresentationFeedback, Arc<Mutex<Present>>> for ReaderState {
                 let t = secs * 1_000_000_000 + u64::from(tv_nsec);
                 p.fed_shown = u64::from(p.presented) + u64::from(p.discarded);
                 p.shown_ns = t;
+                p.shown_at = crate::wayland::publish::now_ns();
                 p.fed_discarded = false;
                 let window = p.window;
                 drop(p);
@@ -2146,6 +2153,21 @@ impl Dispatch<WlCallback, EchoFrame> for MainState {
 }
 
 delegate_noop!(MainState: WlShmPool);
-delegate_noop!(MainState: ignore WpPresentation);
+
+/// `wp_presentation`'s one event, sent at its bind: the clock its feedback reports on.
+impl Dispatch<WpPresentation, ()> for MainState {
+    fn event(
+        state: &mut Self,
+        _: &WpPresentation,
+        event: wp_presentation::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let (wp_presentation::Event::ClockId { clk_id }, Some(shared)) = (event, &state.shared) {
+            shared.presentation_clock.store(clk_id, Ordering::Relaxed);
+        }
+    }
+}
 // input regions made where the recorded state is sent
 delegate_noop!(ReaderState: WlRegion);

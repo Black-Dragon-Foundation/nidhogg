@@ -67,7 +67,12 @@ pub struct Summary {
     pub blur_ms: Percentiles,
     /// How far the worst transition since the last reset ran past its length.
     pub leg_overrun_ms: f64,
+    /// The 95th percentile of that over the last `LEGS` transitions: one late frame does not decide it.
+    pub leg_overrun_p95_ms: f64,
 }
+
+/// Transitions whose overruns are kept per root, for their percentile.
+pub const LEGS: usize = 128;
 
 /// The last `RING` entries of one root, and the totals since the last reset.
 #[derive(Debug)]
@@ -79,6 +84,9 @@ pub struct Ring {
     late_ticks: u64,
     backdrop_px: u64,
     overrun_ns: u64,
+    /// The last `LEGS` overruns, and how many ended since the reset.
+    legs: [u64; LEGS],
+    nlegs: usize,
     /// The newest entry; a reset keeps it (the paint still happened).
     newest: Option<StatsEntry>,
 }
@@ -93,6 +101,8 @@ impl Ring {
             late_ticks: 0,
             backdrop_px: 0,
             overrun_ns: 0,
+            legs: [0; LEGS],
+            nlegs: 0,
             newest: None,
         }
     }
@@ -119,6 +129,7 @@ impl Ring {
         self.late_ticks = 0;
         self.backdrop_px = 0;
         self.overrun_ns = 0;
+        self.nlegs = 0;
     }
 }
 
@@ -189,6 +200,11 @@ fn summarise(r: &Ring) -> Summary {
         tick_interval_ms: some(|e| e.tick_interval_ns),
         blur_ms: some(|e| e.blur_ns),
         leg_overrun_ms: r.overrun_ns as f64 / 1e6,
+        leg_overrun_p95_ms: {
+            let mut legs = r.legs[..r.nlegs.min(LEGS)].to_vec();
+            legs.sort_unstable();
+            rank(&legs, 95) as f64 / 1e6
+        },
     }
 }
 
@@ -212,6 +228,8 @@ pub fn record(root: u64, e: StatsEntry) {
 pub fn leg_ended(root: u64, overrun_ns: u64) {
     if let Some(r) = rings().get_mut(&root) {
         r.overrun_ns = r.overrun_ns.max(overrun_ns);
+        r.legs[r.nlegs % LEGS] = overrun_ns;
+        r.nlegs += 1;
     }
 }
 
@@ -425,6 +443,28 @@ mod tests {
         }
         assert_eq!(summary(root, true).leg_overrun_ms, 3.0);
         assert_eq!(summary(root, false).leg_overrun_ms, 0.0);
+        forget(root);
+    }
+
+    /// The overrun's 95th percentile is over the last `LEGS` legs: one late leg in a hundred moves the max, not it.
+    #[test]
+    fn leg_overrun_p95_is_over_the_last_legs() {
+        let root = 9009;
+        let mut rng = Rng(seed());
+        record(root, random_entry(&mut rng));
+        for i in 0..100u64 {
+            let ns = if i == 50 { 40_000_000 } else { 8_000_000 };
+            leg_ended(root, ns + i * 10_000);
+        }
+        let s = summary(root, false);
+        assert_eq!(s.leg_overrun_ms, 40.5);
+        assert!(s.leg_overrun_p95_ms < 9.0, "{}", s.leg_overrun_p95_ms);
+        // past `LEGS` legs the oldest go
+        for _ in 0..LEGS {
+            leg_ended(root, 1_000_000);
+        }
+        assert_eq!(summary(root, true).leg_overrun_p95_ms, 1.0);
+        assert_eq!(summary(root, false).leg_overrun_p95_ms, 0.0);
         forget(root);
     }
 

@@ -4,7 +4,8 @@
 //! - **The layer:** each card window gets a Glitnir WINDOW layer of its own, id `w->sequence_number | CARD_TAG`, at the
 //!   window's outer rectangle (its edges without the dividers, the mode line in) in the backing, with the chrome
 //!   converted to device px at the frame's scale and its [`Card`]: the colour beneath (what the corners show), the edge
-//!   ring, and the other windows' outer rectangles, which the shadow and the ring keep out of.
+//!   ring, and what the shadow and the ring keep out of: the other windows' outer rectangles, and everything outside
+//!   the window area (the bounding box of the listed windows' outer rectangles), where the tab, tool and menu bars are.
 //! - **Scroll layers:** a card window may be promoted (`layers.rs`). Its output stays `seq | WINDOW_TAG` at the window
 //!   box; the card is its own layer, so promotion and demotion never touch it, and a card's change never demotes.
 //!   Glitnir composes the card's corners into the output's buffer and damages them when the output scrolls. The card
@@ -87,6 +88,24 @@ fn card_of(w: &NhgLayerWindow, s: f64, keep_out: &[Rect]) -> Option<(Chrome, Car
     Some((chrome, card))
 }
 
+/// How far past the window area the bands around it reach: no chrome reaches further than a surface's side.
+const REACH: i32 = crate::csd::SURFACE_MAX_SIDE;
+
+/// The four bands around the window area, the bounding box of `outers` (none without a window): what lies there (the
+/// tab, tool and menu bars, the frame's edge) is no window, so only these keep a card's chrome off it.
+fn outside(outers: impl Iterator<Item = Rect>) -> Vec<Rect> {
+    let Some(a) = outers.reduce(|a, b| a.bounds(&b)) else {
+        return Vec::new();
+    };
+    let (x0, x1) = (a.x - REACH, a.x + a.w + REACH);
+    vec![
+        Rect::new(x0, a.y - REACH, x1 - x0, REACH),
+        Rect::new(x0, a.y + a.h, x1 - x0, REACH),
+        Rect::new(x0, a.y, REACH, a.h),
+        Rect::new(a.x + a.w, a.y, REACH, a.h),
+    ]
+}
+
 /// The layer id of window `seq`'s card.
 pub fn card_id(seq: u64) -> u64 {
     seq | CARD_TAG
@@ -115,6 +134,7 @@ pub fn sync_at(b: &mut Backings, key: u64, windows: &[NhgLayerWindow]) -> Result
         .map(|w| (w.seq, at(w.outer)))
         .filter(|(_, r)| !r.is_empty())
         .collect();
+    let around = outside(outers.iter().map(|(_, r)| *r));
     let cards = &mut f.cards;
     let mut seen: Vec<u64> = Vec::new();
     glitnir::scene::with(key, |sc| {
@@ -127,6 +147,7 @@ pub fn sync_at(b: &mut Backings, key: u64, windows: &[NhgLayerWindow]) -> Result
                 .iter()
                 .filter(|(q, _)| *q != w.seq)
                 .map(|(_, r)| *r)
+                .chain(around.iter().copied())
                 .collect();
             let Some((chrome, card)) = card_of(w, s, &keep_out) else {
                 continue;
