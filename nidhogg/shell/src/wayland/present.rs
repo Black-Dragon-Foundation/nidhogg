@@ -199,16 +199,19 @@ pub struct Present {
     /// its first configure on the connection.
     suggested: Option<(i32, i32)>,
     /// A top-level: the window-geometry sizes the compositor had of it before sizes it chose itself, kept until the
-    /// `wl_display.sync` sent after the newest such commit is answered (`echo_gen`).  A configure of one of them was
-    /// sent before the compositor read that commit (`MainState::present_stale`).
+    /// newest such commit has been shown (its frame callback on the main queue, `echo_gen`) or a configure asks for
+    /// that commit's size.  A configure of one of them was made before the compositor read that commit
+    /// (`MainState::present_stale`).
     echoes: Vec<(i32, i32)>,
     echo_gen: u64,
 }
 
-/// The user data of the `wl_display.sync` sent after a top-level's commit of a size of its own: its presenter state
-/// and the sync's number.  Its `done` is on the main queue, after every configure sent before the compositor read the
-/// commit.
-pub(crate) struct EchoSync(Arc<Mutex<Present>>, u64);
+/// The user data of the main-queue frame callback of a top-level's commit of a size of its own: its presenter state
+/// and the callback's number.  A sync would not do: mutter answers one as soon as it reads it, and sends a configure
+/// it made before it read the commit at its next repaint, after that answer.  A frame callback's `done` comes once
+/// the compositor has shown the commit, after the configures of that repaint (it sends them first), and on the main
+/// queue it is dispatched after them.
+pub(crate) struct EchoFrame(Arc<Mutex<Present>>, u64);
 
 /// The states in which the compositor, not the window, sets a top-level's size.
 const COMPOSITOR_SIZED: u32 = NHSHELL_STATE_MAXIMIZED
@@ -625,6 +628,11 @@ impl Present {
         for r in &all {
             surface.damage_buffer(r.x, r.y, r.w, r.h);
         }
+        // a size of the window's own: configures made before the compositor read it come before this commit is shown
+        if own {
+            self.echo_gen += 1;
+            surface.frame(&wire.mqh, EchoFrame(me.clone(), self.echo_gen));
+        }
         // only a root's commit with content (its own, or a child's it applies) is paced: the frame callback releases
         // the pacer, feedback is statistics
         let paced = self.root.is_none() && (!all.is_empty() || self.tree_content);
@@ -643,14 +651,6 @@ impl Present {
         self.owed = false;
         self.tree_content = false;
         self.commit.surface.commit();
-        // the compositor answers the sync after it has read the commit: configures before the answer were sent
-        // without the size
-        if own {
-            self.echo_gen += 1;
-            wire.conn
-                .display()
-                .sync(&wire.mqh, EchoSync(me.clone(), self.echo_gen));
-        }
         let rearm = self.send_rearm(me, &wire.rqh);
         self.pool.submitted(slot);
         self.parent_shown((buf.w, buf.h));
@@ -1442,8 +1442,9 @@ impl MainState {
     /// window chose itself since, and asks for a size the compositor had of it before: the window keeps its own, the
     /// last one asked for.  Mutter answers a window's first buffer with a configure of that buffer's size; a frame
     /// resized meanwhile (`set-frame-size` right after `make-frame`) read it after its new size and went back.  Such a
-    /// size is one the window's commits replaced while the sync after the newest is unanswered (`echoes`), or, while
-    /// a size of its own is recorded and not yet committed, the one the compositor has.  A size the compositor sets
+    /// size is one the window's commits replaced while the newest has not been shown (`echoes`), or, while a size of
+    /// its own is recorded and not yet committed, the one the compositor has.  A configure of the newest committed
+    /// size shows the compositor has read it: the replaced sizes are forgotten.  A size the compositor sets
     /// (`COMPOSITOR_SIZED`: maximized, fullscreen, tiled, an interactive resize) is never one of those.
     pub(crate) fn present_stale(&self, id: u64, (w, h): (i32, i32), states: u32) -> bool {
         if w <= 0 || h <= 0 || states & COMPOSITOR_SIZED != 0 {
@@ -1452,12 +1453,17 @@ impl MainState {
         let Some(present) = self.presents.get(&id) else {
             return false;
         };
-        let p = lock(present);
+        let mut p = lock(present);
         let size = |g: Option<Rect>| g.map(|g| (g.w, g.h));
         let (sent, recorded) = (size(p.sent.geometry), size(p.rec.geometry));
         let unsent = recorded.is_some() && recorded != sent && recorded != p.suggested;
-        recorded.or(sent) != Some((w, h))
-            && (p.echoes.contains(&(w, h)) || (unsent && sent == Some((w, h))))
+        if recorded.or(sent) == Some((w, h)) {
+            if !unsent {
+                p.echoes.clear();
+            }
+            return false;
+        }
+        p.echoes.contains(&(w, h)) || (unsent && sent == Some((w, h)))
     }
 
     /// The compositor configured window `id` with `size` (logical, as reported to the host): note it and whether the
@@ -1875,13 +1881,13 @@ impl Dispatch<WlBuffer, BufData> for ReaderState {
     }
 }
 
-// on the main queue: after every configure sent before the compositor read the commit the sync follows
-impl Dispatch<WlCallback, EchoSync> for MainState {
+// on the main queue: after every configure the compositor sent before it showed the commit
+impl Dispatch<WlCallback, EchoFrame> for MainState {
     fn event(
         _: &mut Self,
         _: &WlCallback,
         event: wl_callback::Event,
-        data: &EchoSync,
+        data: &EchoFrame,
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
