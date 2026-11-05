@@ -316,7 +316,9 @@ start_sway() {
   unset DISPLAY EMACS_SOCKET_NAME
 }
 
-cl() { timeout 600 "$prefix/bin/nidhoggclient" -s "$xdg/srv" -e "$1" 2> /dev/null | tr "\n" " "; }
+cl() { timeout 600 "$prefix/bin/nidhoggclient" -s "$xdg/srv" -e "$1" 2> "$run/cl.err" | tr "\n" " "; }
+# why R: a workload's reply R and the error the last cl call printed, for a SKIP reason
+why() { printf '%s %s' "$1" "$(cat "$run/cl.err" 2> /dev/null)" | head -c 160 | tr '"\n' "' "; }
 
 # start_nidhogg PREFIX: the frame, fullscreen, with the 10k-line buffer and a server (no timers: the idle rows count)
 start_nidhogg() {
@@ -452,7 +454,7 @@ motion() {
       rec motion-compose-p95 A "$(echo "$r" | awk '{for (i = 1; i <= NF; i++) if ($i == ":compose-p95") {gsub(/[()]/, "", $(i + 1)); print $(i + 1)}}')"
       rec motion-interval-p95 A "$(echo "$r" | awk '{for (i = 1; i <= NF; i++) if ($i == ":present-interval-p95") {gsub(/[()]/, "", $(i + 1)); print $(i + 1)}}')"
       rec motion-cores A "$(awk -v ck="$clk" -v s1="$s1" -v s2="$s2" 'BEGIN { split(s1, a, " "); split(s2, b, " "); printf "%.4f", ((b[1] + b[2]) - (a[1] + a[2])) / ck / (b[4] - a[4]) }')" ;;
-    *) for x in motion-compose-p95 motion-interval-p95 motion-cores; do rec "$x" A "SKIP the bench did not run: $(echo "$r" | head -c 100 | tr '"\n' "' ")"; done ;;
+    *) for x in motion-compose-p95 motion-interval-p95 motion-cores; do rec "$x" A "SKIP the bench did not run: $(why "$r")"; done ;;
   esac
   stop_all
 }
@@ -592,7 +594,7 @@ fade_bench() {
         rec fade-interval-p95 A "$4"
         rec fade-overrun-max A "$5"
       fi ;;
-    *) for x in fade-compose-p95 fade-idle-commits fade-interval-p95 fade-overrun-max; do rec "$x" A "SKIP the fade workload did not run: $(echo "$r" | head -c 100 | tr '"\n' "' ")"; done ;;
+    *) for x in fade-compose-p95 fade-idle-commits fade-interval-p95 fade-overrun-max; do rec "$x" A "SKIP the fade workload did not run: $(why "$r")"; done ;;
   esac
   stop_all
 }
@@ -618,12 +620,12 @@ palette_bench() {
         rec palette-typing-backdrop-px A "$4"
       fi ;;
     *) for x in palette-filter-compose-p95 palette-filter-input-p95 palette-typing-backdrop-px; do
-         rec "$x" A "SKIP the palette workload did not run: $(echo "$r" | head -c 100 | tr '"\n' "' ")"; done ;;
+         rec "$x" A "SKIP the palette workload did not run: $(why "$r")"; done ;;
   esac
   r=$(cl '(budgets--beneath 50)' | tr -d '"')
   case $r in
     "ok "*) rec palette-beneath-blur-p95 A "${r#ok }" ;;
-    *) rec palette-beneath-blur-p95 A "SKIP no change beneath recomputed the blur: $(echo "$r" | head -c 100 | tr '"\n' "' ")" ;;
+    *) rec palette-beneath-blur-p95 A "SKIP no change beneath recomputed the blur: $(why "$r")" ;;
   esac
   stop_all
 }
@@ -659,7 +661,7 @@ card_bench() {
   r=$(cl "(budgets--cards-open \"$run/xdisp.c\" \"$run/big.txt\")" | tr -d '"')
   case $r in
     "ok "*) ;;
-    *) for x in $CARD_ROWS; do rec "${x%:*}" A "SKIP the card workload did not run: $(echo "$r" | head -c 100 | tr '"\n' "' ")"; done
+    *) for x in $CARD_ROWS; do rec "${x%:*}" A "SKIP the card workload did not run: $(why "$r")"; done
        stop_all; return 0 ;;
   esac
   cl '(budgets--cards-set nil)' > /dev/null
@@ -696,7 +698,7 @@ card_bench() {
   pt2=$(cl "$pt" | tr -d '"')
   case $r in
     "ok "*) set -- $r; rec card-scroll-own-output A "$((1 + $2))" ;;
-    *) rec card-scroll-own-output A "SKIP the scroll did not run: $(echo "$r" | head -c 100 | tr '"\n' "' ")" ;;
+    *) rec card-scroll-own-output A "SKIP the scroll did not run: $(why "$r")" ;;
   esac
   r=$(rep scroll "$o1" "$o2" 0 "$(awk -v hz="$refresh" 'BEGIN { printf "%.4f", 1000 / hz }')")
   case $r in
