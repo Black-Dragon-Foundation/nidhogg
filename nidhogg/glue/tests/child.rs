@@ -13,7 +13,7 @@ mod common;
 use common::{Recorder, number, readable_within};
 use nhglue::abi::*;
 use nhglue::backing::{NhgBacking, NhgFrameGeom, NhgRect};
-use nhglue::child::{NHG_CHILD_VISIBLE, NhgChrome};
+use nhglue::child::{NHG_CHILD_REDRAW, NHG_CHILD_VISIBLE, NhgChrome};
 use nhglue::chrome;
 use nhglue::csd::{NhgCsdLayout, NhgCsdPaint};
 use nhglue::ffi::*;
@@ -829,6 +829,52 @@ mod child {
         ready(d, root);
         rec.wait_node(c, |n| {
             n.contains("\"position\":[22,14]") && n.contains("\"input_region\":[[8,6,60,40]]")
+        });
+        let commits = log(&rec, seq);
+        let roots = commits.iter().filter(|x| of(x, root)).count();
+        assert_eq!(roots, 1, "{commits:?}");
+        close(d);
+    }
+
+    /// A child moved while its frame waits to be drawn again (`NHG_CHILD_REDRAW`: a posframe resized and moved in one
+    /// call) keeps its place until the publish step, which sends it with the new picture: the move wakes nothing by
+    /// itself, and one root commit shows the child at its new place with its new size.  Without it the child showed
+    /// at the new place with its old picture first.  Pattern D: the recorder's manual clock.
+    #[test]
+    fn a_move_with_a_redraw_goes_with_the_picture() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let d = open(&rec);
+        let root = toplevel(d, 200, 100);
+        let mut r = surface(d, root, 200, 100);
+        let c = child(d, root, 30, 20, 60, 40);
+        let mut k = surface(d, c, 60, 40);
+        show(&rec, d, &mut [(&mut r, 0), (&mut k, root)]);
+        rec.wait_node(c, |n| n.contains("\"position\":[30,20]"));
+
+        let seq = next_seq(&rec);
+        assert_eq!(
+            set(d, c, root, 50, 25, NHG_CHILD_VISIBLE | NHG_CHILD_REDRAW),
+            0
+        );
+        assert!(
+            quiet(&collect(d, 200), root),
+            "the move woke the pacer before the picture"
+        );
+        still(d, &rec, c, |n| n.contains("\"position\":[30,20]"));
+        (k.w, k.h) = (80, 50);
+        prepare(d, &mut k);
+        fill(d, &k, BG);
+        let list = [
+            entry(&r, 0, NHG_SURF_DRAWABLE),
+            entry(&k, root, NHG_SURF_DRAWABLE),
+        ];
+        assert_ne!(
+            present(d, root, &list, NHG_PRESENT_BACKSTOP) & NHG_PRESENTED_PUBLISHED,
+            0
+        );
+        ready(d, root);
+        rec.wait_node(c, |n| {
+            n.contains("\"position\":[50,25]") && n.contains("\"w\":80")
         });
         let commits = log(&rec, seq);
         let roots = commits.iter().filter(|x| of(x, root)).count();
