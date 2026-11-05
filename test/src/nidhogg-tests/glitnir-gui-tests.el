@@ -106,6 +106,20 @@
       (should (>= (plist-get s :count) 5))
       (should (< (plist-get s :painted-px) (/ (glitnir-gui--frame-px) 10))))))
 
+(ert-deftest glitnir-gui/last-paint-times-the-change ()
+  ;; Pattern C (handshake): the change's commit is waited for through `glitnir--draw-count', after a settled start,
+  ;; so the newest paint is the one that shows it.  Its times are the perf lab's present source.
+  (with-temp-buffer
+    (switch-to-buffer (current-buffer))
+    (insert "hello")
+    (glitnir-gui--painted)
+    (let ((t0 (glitnir--now-ns)))
+      (glitnir-gui--drawn (insert "x"))
+      (let ((p (glitnir--last-paint)))
+        (should p)
+        (should (<= t0 (plist-get p :commit-ns) (plist-get p :paint-ns) (plist-get p :present-ns)
+                    (glitnir--now-ns)))))))
+
 (ert-deftest glitnir-gui/error-in-redisplay-keeps-drawing ()
   (let ((buf (generate-new-buffer "*glitnir-err*")))
     (unwind-protect
