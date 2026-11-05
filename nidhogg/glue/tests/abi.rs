@@ -758,6 +758,8 @@ PROTO (nhg_set_cursor_theme, int32_t (NhgDisplay *, const char *, uint32_t));";
             ("hide-y2", SLOT_HIDE_Y2),
             ("backdrop", SLOT_BACKDROP),
             ("beneath-rgb", SLOT_BENEATH_RGB),
+            ("ring-rgb", SLOT_RING_RGB),
+            ("ring-opacity", SLOT_RING_OPACITY),
         ];
         assert_eq!(rust.len(), SLOTS);
         // the container check mounts nidhogg/ alone, so the Lisp file is absent there; CI and the host have it
@@ -1194,6 +1196,32 @@ PROTO (nhg_layers_count, int32_t (NhgDisplay *, uint64_t));";
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_layers_count;
         let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
         let got = probe(decls, &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+    }
+
+    /// The window list's entry: the window box, the outer rectangle and the card's slots, laid out as C has them.
+    #[test]
+    fn layer_window_layout() {
+        use nhglue::chrome::SLOTS;
+        use nhglue::layers::NhgLayerWindow as L;
+        let rows: &[(&str, i64)] = &[
+            ("sizeof (L)", size_of::<L>() as i64),
+            ("_Alignof (L)", align_of::<L>() as i64),
+            ("offsetof (L, seq)", offset_of!(L, seq) as i64),
+            ("offsetof (L, rect)", offset_of!(L, rect) as i64),
+            ("offsetof (L, outer)", offset_of!(L, outer) as i64),
+            ("offsetof (L, card)", offset_of!(L, card) as i64),
+            (
+                "sizeof (((L *) 0)->card)",
+                (SLOTS * size_of::<f32>()) as i64,
+            ),
+            ("NHG_CHROME_SLOTS", SLOTS as i64),
+        ];
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe("typedef NhgLayerWindow L;", &exprs);
         assert_eq!(got.len(), rows.len());
         for ((expr, rust), c) in rows.iter().zip(got) {
             assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");

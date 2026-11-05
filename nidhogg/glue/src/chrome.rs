@@ -29,7 +29,9 @@ pub const SLOT_HIDE_X2: usize = 18;
 pub const SLOT_HIDE_Y2: usize = 19;
 pub const SLOT_BACKDROP: usize = 20;
 pub const SLOT_BENEATH_RGB: usize = 21;
-pub const SLOTS: usize = 22;
+pub const SLOT_RING_RGB: usize = 22;
+pub const SLOT_RING_OPACITY: usize = 23;
+pub const SLOTS: usize = 24;
 
 /// The vector, checked and split.  `chrome` is `None` when slot 0 is 0.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -39,6 +41,8 @@ pub struct Decoded {
     pub motion_slots: [f32; 12],
     pub backdrop_px: f32,
     pub beneath_rgb: Option<u32>,
+    /// A window card's edge ring: its colour (0xRRGGBB) and opacity; `None` for no ring or opacity 0.
+    pub ring: Option<(u32, f32)>,
 }
 
 fn rgb_of(v: f32, none_ok: bool) -> Result<Option<u32>, GlueError> {
@@ -71,12 +75,16 @@ pub fn decode(v: &[f32]) -> Result<Decoded, GlueError> {
         && [SLOT_SHOW_X1, SLOT_SHOW_X2, SLOT_HIDE_X1, SLOT_HIDE_X2]
             .into_iter()
             .all(unit)
-        && v[SLOT_BACKDROP] >= 0.0;
+        && v[SLOT_BACKDROP] >= 0.0
+        && unit(SLOT_RING_OPACITY);
     if !ok {
         return Err(GlueError::Arg);
     }
     let rgb = rgb_of(v[SLOT_RGB], false)?.unwrap_or(0);
     let beneath_rgb = rgb_of(v[SLOT_BENEATH_RGB], true)?;
+    let ring = rgb_of(v[SLOT_RING_RGB], true)?
+        .filter(|_| v[SLOT_RING_OPACITY] > 0.0)
+        .map(|c| (c, v[SLOT_RING_OPACITY]));
     let chrome = (v[SLOT_ON] != 0.0).then(|| NhgChrome {
         on: 1,
         radius: v[SLOT_RADIUS],
@@ -94,6 +102,7 @@ pub fn decode(v: &[f32]) -> Result<Decoded, GlueError> {
         motion_slots,
         backdrop_px: v[SLOT_BACKDROP],
         beneath_rgb,
+        ring,
     })
 }
 
@@ -131,6 +140,7 @@ pub fn encode(c: &NhgChrome) -> [f32; SLOTS] {
     v[SLOT_OPACITY] = c.opacity;
     v[SLOT_RGB] = c.rgb as f32;
     v[SLOT_BENEATH_RGB] = -1.0;
+    v[SLOT_RING_RGB] = -1.0;
     v
 }
 
@@ -249,6 +259,29 @@ mod tests {
             let mut v = encode(&TODAY);
             v[SLOT_BENEATH_RGB] = rgb as f32;
             assert_eq!(decode(&v).unwrap().beneath_rgb, Some(rgb));
+        }
+    }
+
+    #[test]
+    fn ring_slots_decode() {
+        let mut v = encode(&TODAY);
+        assert_eq!(decode(&v).unwrap().ring, None);
+        v[SLOT_RING_RGB] = 0x40_5060 as f32;
+        v[SLOT_RING_OPACITY] = 0.6;
+        assert_eq!(decode(&v).unwrap().ring, Some((0x40_5060, 0.6)));
+        // opacity 0 is no ring
+        v[SLOT_RING_OPACITY] = 0.0;
+        assert_eq!(decode(&v).unwrap().ring, None);
+        for (i, x) in [
+            (SLOT_RING_OPACITY, 1.5),
+            (SLOT_RING_OPACITY, -0.1),
+            (SLOT_RING_RGB, 16_777_216.0),
+            (SLOT_RING_RGB, 0.5),
+        ] {
+            let mut v = encode(&TODAY);
+            v[SLOT_RING_OPACITY] = 0.5;
+            v[i] = x;
+            assert_eq!(decode(&v), Err(GlueError::Arg), "slot {i} = {x}");
         }
     }
 }

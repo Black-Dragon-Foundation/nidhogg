@@ -252,6 +252,7 @@ mod layers {
         let ws = [NhgLayerWindow {
             seq: 30,
             rect: win(),
+            ..Default::default()
         }];
         scroll(&mut b, key, 30, win(), true, t0);
         commit(key);
@@ -290,6 +291,7 @@ mod layers {
         let ws = [NhgLayerWindow {
             seq: 40,
             rect: half,
+            ..Default::default()
         }];
         assert_eq!(sync_at(&mut b, key, &ws, true, t0).unwrap(), 0);
         assert!(commit(key).1.outputs.is_empty());
@@ -325,6 +327,7 @@ mod layers {
         let ws = [NhgLayerWindow {
             seq: 60,
             rect: win(),
+            ..Default::default()
         }];
         scroll(&mut b, key, 60, win(), true, t0);
         assert_eq!(sync_at(&mut b, key, &ws, true, t0).unwrap(), 1);
@@ -342,6 +345,7 @@ mod layers {
         let ws = [NhgLayerWindow {
             seq: 65,
             rect: win(),
+            ..Default::default()
         }];
         scroll(&mut b, key, 65, win(), true, t0);
         let mut g = geom(120);
@@ -367,10 +371,12 @@ mod layers {
             NhgLayerWindow {
                 seq: 70,
                 rect: left,
+                ..Default::default()
             },
             NhgLayerWindow {
                 seq: 71,
                 rect: right,
+                ..Default::default()
             },
         ];
         assert_eq!(sync_at(&mut b, key, &ws, true, t0).unwrap(), 2);
@@ -394,5 +400,55 @@ mod layers {
         b.forget(k1);
         assert_eq!(count(&mut b, k1), 0);
         b.forget(k2);
+    }
+
+    /// The window list carries each window's outer rectangle and card slots: a sync keeps a promoted window with a
+    /// card as one without, and the slots decode as Lisp wrote them (a window without a card has none).
+    #[test]
+    fn card_slots_pass_through_sync() {
+        use nhglue::chrome::*;
+        let mut b = Backings::default();
+        let (key, _) = frame(&mut b, 120);
+        let t0 = Instant::now();
+        let mut card = [0.0; SLOTS];
+        card[SLOT_ON] = 1.0;
+        card[SLOT_RADIUS] = 10.0;
+        card[SLOT_BLUR] = 3.0;
+        card[SLOT_OY] = 1.0;
+        card[SLOT_OPACITY] = 0.45;
+        card[SLOT_BENEATH_RGB] = 0x12_3456 as f32;
+        card[SLOT_RING_RGB] = 0x40_5060 as f32;
+        card[SLOT_RING_OPACITY] = 0.6;
+        let outer = NhgRect { h: 90, ..win() };
+        let ws = [
+            NhgLayerWindow {
+                seq: 90,
+                rect: win(),
+                outer,
+                card,
+            },
+            NhgLayerWindow {
+                seq: 91,
+                rect: NhgRect {
+                    y: 90,
+                    h: 10,
+                    ..win()
+                },
+                ..Default::default()
+            },
+        ];
+        scroll(&mut b, key, 90, win(), true, t0);
+        assert_eq!(sync_at(&mut b, key, &ws, true, t0).unwrap(), 1);
+        let d = ws[0].card().unwrap().expect("a card");
+        let c = d.chrome.unwrap();
+        assert_eq!((c.radius, c.blur, c.oy, c.opacity), (10.0, 3.0, 1.0, 0.45));
+        assert_eq!(d.beneath_rgb, Some(0x12_3456));
+        assert_eq!(d.ring, Some((0x40_5060, 0.6)));
+        assert_eq!(ws[0].outer, outer);
+        assert_eq!(ws[1].card(), Ok(None));
+        // a slot out of range is refused
+        let mut bad = ws[0];
+        bad.card[SLOT_RING_OPACITY] = 2.0;
+        assert!(bad.card().is_err());
     }
 }

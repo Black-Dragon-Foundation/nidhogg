@@ -585,7 +585,8 @@ static ptrdiff_t nhwl_nlayer_windows, nhwl_layer_windows_cap;
 
 /* List WINDOW's leaf windows and its next siblings' (the root window's
    next sibling is the minibuffer window), each with the box the scroll
-   passes (nhwl_scroll_run).  */
+   passes (nhwl_scroll_run), its edges without the dividers and its card
+   (the window parameter glitnir--card).  */
 static void
 nhwl_layer_windows_add (Lisp_Object window)
 {
@@ -604,15 +605,20 @@ nhwl_layer_windows_add (Lisp_Object window)
 	nhwl_layer_windows = xpalloc (nhwl_layer_windows,
 				      &nhwl_layer_windows_cap, 1, -1,
 				      sizeof *nhwl_layer_windows);
-      nhwl_layer_windows[nhwl_nlayer_windows++]
-	= (NhgLayerWindow) { w->sequence_number, { x, y, width, height } };
+      NhgLayerWindow *l = &nhwl_layer_windows[nhwl_nlayer_windows++];
+      *l = (NhgLayerWindow) { w->sequence_number, { x, y, width, height },
+	{ WINDOW_LEFT_EDGE_X (w), WINDOW_TOP_EDGE_Y (w),
+	  WINDOW_PIXEL_WIDTH (w) - WINDOW_RIGHT_DIVIDER_WIDTH (w),
+	  WINDOW_PIXEL_HEIGHT (w) - WINDOW_BOTTOM_DIVIDER_WIDTH (w) } };
+      nhwl_chrome_vector (Fwindow_parameter (window, Qglitnir__card), l->card);
     }
 }
 
 /* Before root R is published: the glue makes the windows of R with a
    layer of their own that are gone, resized or quiet part of the frame
    again, or all of them when R is no longer an opaque root, in this
-   publish.  Nothing to do while R has none.  */
+   publish, and gives the windows with a card theirs.  Nothing to do while
+   R has neither (its parameter glitnir--cards is nil).  */
 static void
 nhwl_layers_sync (struct frame *r)
 {
@@ -620,8 +626,9 @@ nhwl_layers_sync (struct frame *r)
   struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (r);
 
   if (!out->glitnir_id
-      || nhwl_glue_rc (dpyinfo, NHG (nhg_layers_count (dpyinfo->glue,
-							 out->glitnir_id))) <= 0)
+      || (NILP (get_frame_param (r, Qglitnir__cards))
+	  && nhwl_glue_rc (dpyinfo, NHG (nhg_layers_count (dpyinfo->glue,
+							   out->glitnir_id))) <= 0))
     return;
   nhwl_nlayer_windows = 0;
   nhwl_layer_windows_add (FRAME_ROOT_WINDOW (r));
