@@ -60,6 +60,10 @@ int32_t glitnir_stats_record (uint64_t root, const GlitnirStatsEntry *entry);
 /* Write ROOT's summary to OUT (zeros for an unknown root); empty the ring when RESET is non-zero.  */
 int32_t glitnir_stats_summary (uint64_t root, int32_t reset, GlitnirStatsSummary *out);
 
+/* Write ROOT's newest entry to OUT; a reset keeps it.  GLITNIR_E_STATE before ROOT's first record, GLITNIR_E_ARG if
+   OUT is NULL.  */
+int32_t glitnir_stats_last (uint64_t root, GlitnirStatsEntry *out);
+
 /* Drop ROOT's ring.  */
 int32_t glitnir_stats_forget (uint64_t root);
 
