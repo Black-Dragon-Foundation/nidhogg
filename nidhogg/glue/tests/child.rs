@@ -177,13 +177,14 @@ fn raise(d: *mut NhgDisplay, id: u64, raise: i32, z_group: i32) -> i32 {
     unsafe { nhg_child_raise(d, id, raise, z_group) }
 }
 
-/// A frame's backing in the glue, as C keeps it: its window, its key, its native size and its border.
+/// A frame's backing in the glue, as C keeps it: its window, its key, its native size, its border and its scale.
 struct Surf {
     window: u64,
     key: u64,
     w: i32,
     h: i32,
     border: [i32; 4],
+    s120: u32,
     back: NhgBacking,
 }
 
@@ -199,7 +200,7 @@ fn geom(s: &Surf) -> NhgFrameGeom {
         r,
         b,
         bg_argb: BG,
-        scale120: 120,
+        scale120: s.s120,
         layer: NhgRect {
             x: 0,
             y: 0,
@@ -230,6 +231,7 @@ fn surface(d: *mut NhgDisplay, window: u64, w: i32, h: i32) -> Surf {
         w,
         h,
         border: offsets(d, window),
+        s120: 120,
         back: NhgBacking {
             pixels: ptr::null_mut(),
             stride: 0,
@@ -679,6 +681,39 @@ mod child {
         show(&rec, d, &mut [(&mut r, 0), (&mut k, root)]);
         rec.wait_node(c, |n| n.contains("\"position\":[-4,-3]"));
         rec.wait_node(root, |n| n.contains("\"geometry\":[0,0,200,100]"));
+        close(d);
+    }
+
+    /// Without a border the window geometry is the surface's logical size as its viewport gives it.  A device size no
+    /// logical size maps onto (401 x 301 at scale 2) is cut to the largest that fits, 200 x 150; a geometry rounded
+    /// up to 201 x 151 would be a pixel past the surface, which xdg-shell clamps to the surface and its subsurfaces
+    /// (a child's shadow past the edge).  Pattern B: the manual clock gates the frames.
+    #[test]
+    fn toplevel_geometry_matches_the_viewport_on_odd_sizes() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let d = open(&rec);
+        let root = toplevel(d, 200, 150);
+        rec.control_ok(r#"{"cmd":"scale","value120":240}"#);
+        wait_for(d, |e| {
+            e.window == root && matches!(e.event, ShellEvent::Scale(s) if s.scale120 == 240)
+        });
+        let mut l = NhgCsdLayout::default();
+        // SAFETY: a live display; `l` is writable.
+        assert!(unsafe { nhg_csd_layout(d, root, 240, 0, &mut l) } >= 0);
+        let mut r = surface(d, root, 401, 301);
+        r.s120 = 240;
+        let seq = next_seq(&rec);
+        show(&rec, d, &mut [(&mut r, 0)]);
+        let c = log(&rec, seq)
+            .into_iter()
+            .rev()
+            .find(|c| of(c, root) && c.contains("\"buffer\":{"))
+            .expect("a buffer of the root");
+        assert!(c.contains("\"dst\":[200,150]"), "the viewport: {c}");
+        assert!(
+            c.contains("\"geometry\":[0,0,200,150]"),
+            "the geometry: {c}"
+        );
         close(d);
     }
 
