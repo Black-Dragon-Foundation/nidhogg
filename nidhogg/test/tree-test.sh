@@ -158,7 +158,7 @@ if [ "${TREE_TEST_SELF:-}" = 1 ]; then
   fixture; putf "nidhogg: glitnir: g" lisp/g.el '(a)\n'; putf "nidhogg: shell: s" src/s.c '#ifdef HAVE_NHWL\nint s;\n#endif\n'
   putf "nidhogg: pgtk: p" lisp/g.el '(a)\n(b)\n'
   expect "another commit editing a Lisp file a group created" "lisp/g.el changed outside the groups' own files"
-  echo "tree self-test: 21 cases ok"
+  echo "tree self-test: 23 cases ok"
   exit 0
 fi
 
