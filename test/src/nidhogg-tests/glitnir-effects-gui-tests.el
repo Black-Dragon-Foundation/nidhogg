@@ -897,6 +897,9 @@ the card as without."
                  (should (= (car (glitnir-fx--scroll-corners left box 3)) 1))
                  (disable-theme 'glitnir-fx-card)
                  (set-face-foreground 'window-divider glitnir-fx--gap (selected-frame))
+                 ;; a face set outside a theme reaches the cards through `glitnir-refresh' (a redisplay looks up
+                 ;; no face)
+                 (glitnir-refresh)
                  (glitnir-fx--redraw left)
                  (should (glitnir-fx--near (funcall corner) glitnir-fx--gap-bgr))
                  ;; enabling the theme sets the frame's face from it again
@@ -905,6 +908,7 @@ the card as without."
                  (should (glitnir-fx--near (funcall corner) '(96 32 160))))))
          (disable-theme 'glitnir-fx-card)
          (set-face-foreground 'window-divider glitnir-fx--gap (selected-frame))
+         (glitnir-refresh)
          (with-current-buffer (window-buffer left) (erase-buffer))
          (glitnir-fx--redraw left)
          (should (eql 0 (cdr (gui-runner-pixel-diff base (gui-runner-screen-grab) box)))))))))
