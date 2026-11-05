@@ -1853,8 +1853,8 @@ harmonize_variable_watchers (Lisp_Object alias, Lisp_Object base_variable)
     set_symbol_trapped_write
       (alias, XSYMBOL (base_variable)->u.s.trapped_write);
 }
-
 #ifdef HAVE_NIDHOGG_WORKERS
+
 /* The variables a `defvaralias' has pointed an alias at, as the keys
    of a weak table (nil until the first alias).  Every alias chain ends
    in such a link, so a variable that is not a key has no alias, and
