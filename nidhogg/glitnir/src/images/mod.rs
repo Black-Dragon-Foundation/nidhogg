@@ -294,6 +294,42 @@ impl Image {
     }
 }
 
+/// The most heap one decode may need at once (4 GiB): past it the decode fails as an allocation would.
+pub const MAX_DECODE_BYTES: u64 = 4 << 30;
+
+#[cfg(test)]
+thread_local! {
+    /// A smaller budget for this thread's decodes, to prove the failure path (test builds only).
+    static TEST_BUDGET: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_budget(bytes: Option<u64>) {
+    TEST_BUDGET.with(|b| b.set(bytes));
+}
+
+fn budget() -> u64 {
+    #[cfg(test)]
+    if let Some(b) = TEST_BUDGET.with(|b| b.get()) {
+        return b;
+    }
+    MAX_DECODE_BYTES
+}
+
+/// Whether BYTES of heap, the most a decode of this image needs at once (estimated from its header, before any
+/// decoder allocates), are within the budget and can be had.  The decoder crates allocate infallibly and Rust aborts
+/// the process when an allocation fails, which cannot be caught; so the decode asks first, and answers
+/// `Error::NoMem` as the C decoders did.  The probe reserves the bytes and gives them back at once.
+pub fn reserve(bytes: u64) -> Result<(), Error> {
+    if bytes > budget() {
+        return Err(Error::NoMem);
+    }
+    let mut probe: Vec<u8> = Vec::new();
+    probe
+        .try_reserve_exact(usize::try_from(bytes).map_err(|_| Error::NoMem)?)
+        .map_err(|_| Error::NoMem)
+}
+
 /// N copies of V in a vector whose allocation failure is an error, not an abort.
 pub fn try_vec<T: Clone>(n: usize, v: T) -> Result<Vec<T>, Error> {
     let mut out = Vec::new();
