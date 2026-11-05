@@ -90,22 +90,107 @@ mod scale {
             .unwrap();
         draw(&mut shell, kid, (125, 75));
         draw(&mut shell, id, (250, 125));
-        for w in [id, kid] {
-            pump(&mut shell, &mut seen, &|seen, _| {
-                seen.get(&w).is_some_and(|v| v.contains(&150))
-            });
+        pump(&mut shell, &mut seen, &|seen, _| {
+            seen.get(&id).is_some_and(|v| v.contains(&150))
+        });
+        // the child starts at its parent's scale: 150 already, with no record, when the window had it at the child's
+        // making, else 120 and then one record of 150
+        let drain = |shell: &mut nhshell::wayland::WaylandShell, seen: &mut Seen| {
+            while let Some(e) = shell.next_event().unwrap() {
+                if let ShellEvent::Scale(s) = e.event {
+                    seen.entry(e.window).or_default().push(s.scale120);
+                }
+            }
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while shell.window_scale(kid).unwrap() != 150 {
+            drain(&mut shell, &mut seen);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the child never took 150: {seen:?}"
+            );
+            readable_within(shell.wake_fd(), 50);
         }
+        drain(&mut shell, &mut seen);
         assert_eq!(
             seen.get(&id).map(Vec::as_slice),
             Some(&[150][..]),
             "the window's: {seen:?}"
         );
-        assert_eq!(
-            seen.get(&kid).map(Vec::as_slice),
-            Some(&[150][..]),
+        assert!(
+            matches!(seen.get(&kid).map(Vec::as_slice), None | Some([150])),
             "the child's: {seen:?}"
         );
-        assert_eq!(shell.window_scale(kid).unwrap(), 150);
+    }
+
+    /// A child frame starts at its parent's scale, as C makes it: the compositor tells a subsurface its scale only once
+    /// it shows, so its first buffer went out at scale 1 (twice its size at 2), and a blurred child had no backdrop until
+    /// its next picture (the two scales differed).  Pattern C: each step waits for the recorder's answer.
+    #[test]
+    fn child_starts_at_its_parents_scale() {
+        use nhshell::api::{NHSHELL_ACK_CONTENT, WindowDesc};
+        let rec = Recorder::start("sway");
+        let mut shell = rec.open();
+        assert!(
+            rec.control(r#"{"cmd":"scale","value120":240}"#)
+                .contains("\"ok\":true")
+        );
+        let id = shell
+            .window_new(&WindowDesc {
+                w: 200,
+                h: 100,
+                title: "t".into(),
+                app_id: "nidhogg.test".into(),
+                flags: 0,
+            })
+            .unwrap();
+        let ev = wait_for(&mut shell, |e| {
+            e.kind() == Kind::Configure && e.window == id
+        });
+        shell
+            .ack_configure(id, configure_of(&ev).serial, NHSHELL_ACK_CONTENT)
+            .unwrap();
+        let draw = |shell: &mut nhshell::wayland::WaylandShell, w: u64, (dw, dh): (i32, i32)| {
+            let b = shell.present_begin(w, dw, dh).unwrap();
+            unsafe { std::ptr::write_bytes(b.pixels, 0x80, (b.stride * b.h) as usize) };
+            shell
+                .present_commit(w, &[glitnir::geom::Rect::new(0, 0, dw, dh)])
+                .unwrap();
+            shell.flush().unwrap();
+        };
+        draw(&mut shell, id, (400, 200));
+        // its SCALE may have come with the configure: the scale itself is what counts
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while shell.window_scale(id).unwrap() != 240 {
+            while shell.next_event().unwrap().is_some() {}
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the window never took 240"
+            );
+            readable_within(shell.wake_fd(), 50);
+        }
+        let kid = shell
+            .child_new(&nhshell::api::ChildDesc {
+                kind: nhshell::api::NHSHELL_KIND_CHILD,
+                parent: id,
+                x: 20,
+                y: 20,
+                w: 100,
+                h: 60,
+                anchor: nhshell::api::Anchor::default(),
+                flags: 0,
+            })
+            .unwrap();
+        assert_eq!(shell.window_scale(kid).unwrap(), 240, "before any event");
+        draw(&mut shell, kid, (200, 120));
+        draw(&mut shell, id, (400, 200));
+        rec.wait_node(kid, |n| n.contains("\"buffer\":{\"h\":120,\"w\":200}"));
+        let log = rec.control(r#"{"cmd":"log","since":1}"#);
+        let first = log
+            .split("{\"ack_serial\":")
+            .find(|c| c.contains(&format!("\"surface\":{kid},")) && c.contains("\"buffer\":{"))
+            .expect("the child's first buffer");
+        assert!(first.contains("\"dst\":[100,60]"), "{first}");
     }
 
     #[test]
