@@ -14,6 +14,7 @@ use glitnir::scene::LayerDesc;
 use nhshell::api::*;
 use nhshell::event::*;
 use nhshell::wayland::WaylandShell;
+use nhshell::wayland::scale::viewport_size;
 use std::time::{Duration, Instant};
 
 const BG: u32 = 0xff20_4060;
@@ -631,5 +632,114 @@ mod layers {
             );
         }
         until(&mut shell, "the picture", |_| shows_composed(&rec, &b));
+    }
+
+    /// At scales 1, 1.25 and 2, on even and odd device sizes, a frame of single-pixel detail (any resampling shows)
+    /// is on the output exactly as its backing has it, and so is it with a window promoted to its own output: the
+    /// promoted picture equals the frame-composed one.
+    #[test]
+    fn promoted_window_matches_the_frame_at_1_1_25_and_2() {
+        for (s120, w, h) in [
+            (120, 400, 300),
+            (150, 400, 300),
+            (240, 400, 300),
+            (240, 401, 301),
+            (150, 401, 301),
+        ] {
+            let what = format!("scale {s120}, {w}x{h}");
+            let rec = Recorder::start("sway");
+            let mut shell = threaded(&rec);
+            let s = f64::from(s120) / 120.0;
+            let logical = |d: i32| (f64::from(d) / s).round() as i32;
+            let id = shell
+                .window_new(&WindowDesc {
+                    w: logical(w),
+                    h: logical(h),
+                    title: "t".into(),
+                    app_id: "nidhogg.test".into(),
+                    flags: 0,
+                })
+                .unwrap();
+            let ev = wait_for(&mut shell, |e| {
+                e.kind() == Kind::Configure && e.window == id
+            });
+            if s120 != 120 {
+                let cmd = format!(r#"{{"cmd":"scale","value120":{s120}}}"#);
+                assert!(rec.control(&cmd).contains("\"ok\":true"));
+                wait_for(
+                    &mut shell,
+                    |e| matches!(e.event, ShellEvent::Scale(x) if x.scale120 == s120),
+                );
+            }
+            shell
+                .ack_configure(id, configure_of(&ev).serial, NHSHELL_ACK_CONTENT)
+                .unwrap();
+            let mut b = Backing::new_scaled(w, h, s);
+            // a checker of two colours, one pixel a square
+            let checker = |b: &mut Backing, r: Rect, k: i32| {
+                for y in r.y..r.y + r.h {
+                    for x in r.x..r.x + r.w {
+                        let c: u32 = if (x + y + k) % 2 == 0 {
+                            0xff10_2030
+                        } else {
+                            0xffe0_d0c0
+                        };
+                        let at = ((y * b.w + x) * 4) as usize;
+                        b.px[at..at + 4].copy_from_slice(&c.to_ne_bytes());
+                    }
+                }
+                glitnir::damage::with(b.g, |d| d.add(r));
+            };
+            // what the output shows of the buffer: all of it, or (an odd size at scale 2) all but its last column and
+            // row, never a resampled picture
+            let (cw, ch) = (viewport_size(w, s120).1, viewport_size(h, s120).1);
+            assert!(w - cw <= 1 && h - ch <= 1, "{what}");
+            let shows = |rec: &Recorder, b: &Backing| {
+                let snap = rec.snapshot();
+                (0..ch).all(|y| {
+                    (0..cw).all(|x| {
+                        Recorder::snapshot_pixel(&snap, x as usize, y as usize) == b.pixel(x, y)
+                    })
+                })
+            };
+            checker(&mut b, Rect::new(0, 0, w, h), 0);
+            assert!(publish(&mut shell, id, &[(&b, id)], 0));
+            until(
+                &mut shell,
+                &format!("the frame as its backing, {what}"),
+                |_| shows(&rec, &b),
+            );
+            // a window on the device grid of every scale, promoted, its own pixels new
+            let view = Rect::new(0, 0, 200, 120);
+            glitnir::scene::with(b.g, |sc| {
+                sc.upsert(&LayerDesc {
+                    id: WIN,
+                    parent: b.g,
+                    kind: 2,
+                    rect: view,
+                    scale: s,
+                    visible: 1,
+                })?;
+                sc.set_output(WIN, true)
+            })
+            .unwrap();
+            checker(&mut b, view, 1);
+            let seq = next_seq(&rec);
+            assert!(publish(&mut shell, id, &[(&b, id)], 0));
+            until(
+                &mut shell,
+                &format!("the layer's first buffer, {what}"),
+                |s| {
+                    s.content_layers(id)
+                        .first()
+                        .is_some_and(|l| !buffer_commits(&rec, seq, l.0).is_empty())
+                },
+            );
+            until(
+                &mut shell,
+                &format!("the promoted window as its backing, {what}"),
+                |_| shows(&rec, &b),
+            );
+        }
     }
 }
