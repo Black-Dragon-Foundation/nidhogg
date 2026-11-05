@@ -62,9 +62,13 @@ in the root's device pixels), within the given rectangles (the damage, or a draw
 (sources, by layer id), bottom to top: layers without chrome are copied; a chromed layer's shadow tiles go over what
 lies below, then the layer is copied but for its four corner squares, which go through the corner mask, with the
 border ring when it has a border. Window layers are their frame's pixels (P1 composes a scroll as damage). A window
-layer with a card (`scene::set_card`, Rust only: a `Card`'s beneath colour, with the radius from the layer's chrome)
-then shows that colour in its four corner squares, outside the rounded rectangle, over the frame's pixels and labels;
-the rest of the window stays a plain copy. Pixels no
+layer with a card (`scene::set_card`, Rust only: a `Card`'s beneath colour, edge ring and the rectangles it keeps out,
+with the radius and shadow from the layer's chrome) then draws over the frame's pixels and labels: in the gap around the
+window (inside the frame, never inside a rectangle it keeps out, the other windows), the shadow and then the ring, a
+band just outside the rounded rectangle; in its four corner squares, outside the rounded rectangle, the beneath colour
+with the shadow and the ring over it. The rest of the window stays a plain copy, so typing inside it composes nothing
+of the card. A card's change damages where it draws (its corners and its bounds outside the window), and a change of
+the rectangles it keeps out only those that came or went. Pixels no
 layer covers are left alone. A pixel's value never depends on how the rectangles cut it, so composing the damage
 equals composing everything. A source whose device scale is not the target's is refused (`GLITNIR_E_STATE`) and the
 host draws that root the stock way. The time taken and the layers drawn fill the root's next frame-time entry.

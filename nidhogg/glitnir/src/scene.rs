@@ -132,17 +132,31 @@ impl Chrome {
 }
 
 /// A window layer's card: outside its rounded rectangle (the chrome's radius), its four corner squares show what lies
-/// beneath the window instead of the window, premultiplied ARGB in Cairo's order.  Rust only: the glue sets it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// beneath the window instead of the window; around it, in the gap, the chrome's shadow and an edge ring.  Colours
+/// are premultiplied ARGB in Cairo's order.  Rust only: the glue sets it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Card {
     pub beneath_argb: u32,
+    /// The edge ring just outside the rounded rectangle (0: none), `ring_px` device px wide.
+    pub ring_argb: u32,
+    pub ring_px: u32,
+    /// Where the shadow and the ring never draw: the other windows' rectangles (root device px), so the card's
+    /// chrome never takes pixels from their text.
+    pub keep_out: Arc<[Rect]>,
+}
+
+impl Card {
+    /// The ring's width, 0 without a ring.
+    pub fn ring(&self) -> u32 {
+        if self.ring_argb == 0 { 0 } else { self.ring_px }
+    }
 }
 
 /// The corner radius (whole device px, the chrome's, clamped to half the shorter side) and the four r×r corner squares
 /// (top-left, top-right, bottom-left, bottom-right; root device px) of a window layer with a card.  `None` for any
 /// other layer, or a radius of 0.
 pub fn card_corners(p: &Placed) -> Option<(u32, [Rect; 4])> {
-    p.card?;
+    p.card.as_ref()?;
     if p.kind != Kind::Window || p.rect.is_empty() {
         return None;
     }
@@ -164,30 +178,39 @@ pub fn card_corners(p: &Placed) -> Option<(u32, [Rect; 4])> {
     ))
 }
 
-/// The corner squares of ROOT's window cards in PLACED that meet the own output at RECT whose content moved by SCROLL,
-/// in the output's coordinates: where each is now, and where the scroll took the one composed before (the output's
-/// buffer keeps its rows, and with them the corners they were composed with).  Empty without a card.
-fn scrolled_corners(placed: &[Placed], root: u64, rect: Rect, scroll: i32) -> Vec<Rect> {
+/// The parts of ROOT's window cards (their corner squares, and their shadow and ring outside the window) that meet the
+/// own output at RECT whose content moved by SCROLL, in the output's coordinates: where each of NEW's is now, and where
+/// the scroll took each of OLD's, the last commit's (the output's buffer keeps its rows, and with them the card's
+/// pixels they were composed with, even when the card changed in this commit).  Empty without a card.
+fn scrolled_corners(
+    new: &[Placed],
+    old: &[Placed],
+    root: u64,
+    rect: Rect,
+    scroll: i32,
+) -> Vec<Rect> {
     let view = Rect::new(0, 0, rect.w, rect.h);
-    let mut out = Vec::new();
-    for (_, squares) in placed
+    let parts = |placed: &[Placed]| -> Vec<Rect> {
+        placed
+            .iter()
+            .filter(|p| p.parent == root)
+            .flat_map(card_patches)
+            .map(|sq| sq.intersect(&rect).translate(-rect.x, -rect.y))
+            .filter(|r| !r.is_empty())
+            .collect()
+    };
+    let here = parts(new);
+    let before: Vec<Rect> = parts(old)
+        .into_iter()
+        .filter(|r| !here.contains(r))
+        .collect();
+    let moved = here
         .iter()
-        .filter(|p| p.parent == root)
-        .filter_map(card_corners)
-    {
-        for sq in squares {
-            let here = sq.intersect(&rect).translate(-rect.x, -rect.y);
-            if here.is_empty() {
-                continue;
-            }
-            out.push(here);
-            let moved = here.translate(0, scroll).intersect(&view);
-            if !moved.is_empty() {
-                out.push(moved);
-            }
-        }
-    }
-    out
+        .chain(&before)
+        .map(|r| r.translate(0, scroll).intersect(&view))
+        .filter(|r| !r.is_empty())
+        .collect::<Vec<_>>();
+    here.into_iter().chain(moved).collect()
 }
 
 /// The pixels a layer at RECT with CHROME can touch: its rectangle and its shadow image.
@@ -198,7 +221,63 @@ pub fn bounds(rect: Rect, chrome: Option<&Chrome>) -> Rect {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// [`bounds`] of a layer that may have a card: its ring too.
+fn card_bounds(rect: Rect, chrome: Option<&Chrome>, card: Option<&Card>) -> Rect {
+    let b = bounds(rect, chrome);
+    match card.map(Card::ring) {
+        Some(w) if w > 0 && !rect.is_empty() => {
+            let w = w.min(i32::MAX as u32 / 4) as i32;
+            b.bounds(&Rect::new(
+                rect.x - w,
+                rect.y - w,
+                rect.w + 2 * w,
+                rect.h + 2 * w,
+            ))
+        }
+        _ => b,
+    }
+}
+
+/// The parts of the scene a window card at P draws: its corner squares, and its bounds outside its rectangle (the
+/// shadow and the ring).  Empty without a card.
+fn card_patches(p: &Placed) -> Vec<Rect> {
+    if p.card.is_none() || p.kind != Kind::Window {
+        return Vec::new();
+    }
+    let mut out: Vec<Rect> = crate::compose::subtract(p.bounds, p.rect).collect();
+    if let Some((_, squares)) = card_corners(p) {
+        out.extend(squares);
+    }
+    out
+}
+
+/// What a window card's change from O to N damages, both at one rectangle and scale: where either draws, or, when only
+/// the rectangles it keeps out changed, those that are in one list and not the other (where the shadow and the ring
+/// come or go).
+fn card_change(o: &Placed, n: &Placed) -> Vec<Rect> {
+    if let (Some(a), Some(b)) = (&o.card, &n.card)
+        && o.chrome == n.chrome
+        && (Card {
+            keep_out: Arc::clone(&b.keep_out),
+            ..a.clone()
+        }) == *b
+    {
+        let only = |x: &[Rect], y: &[Rect]| -> Vec<Rect> {
+            x.iter()
+                .filter(|r| !y.contains(r))
+                .map(|r| r.intersect(&n.bounds))
+                .collect()
+        };
+        let mut out = only(&a.keep_out, &b.keep_out);
+        out.extend(only(&b.keep_out, &a.keep_out));
+        return out;
+    }
+    let mut out = card_patches(o);
+    out.extend(card_patches(n));
+    out
+}
+
+#[derive(Debug, Clone, PartialEq)]
 struct Layer {
     kind: Kind,
     rect: Rect,
@@ -211,7 +290,7 @@ struct Layer {
 }
 
 /// A layer of a committed scene.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Placed {
     pub id: u64,
     pub parent: u64,
@@ -221,7 +300,7 @@ pub struct Placed {
     pub chrome: Option<Chrome>,
     /// A window layer's card ([`Scene::set_card`]).
     pub card: Option<Card>,
-    /// [`bounds`] of the rectangle and chrome.
+    /// [`bounds`] of the rectangle and chrome, with a card's ring.
     pub bounds: Rect,
 }
 
@@ -268,7 +347,7 @@ impl Scene {
         let (chrome, card, own) = self
             .layers
             .get(&d.id)
-            .map_or((None, None, false), |l| (l.chrome, l.card, l.own));
+            .map_or((None, None, false), |l| (l.chrome, l.card.clone(), l.own));
         let window = kind == Kind::Window;
         self.layers.insert(
             d.id,
@@ -516,8 +595,8 @@ impl Scene {
                     rect: l.rect,
                     scale: l.scale,
                     chrome: l.chrome,
-                    card: l.card,
-                    bounds: bounds(l.rect, l.chrome.as_ref()),
+                    card: l.card.clone(),
+                    bounds: card_bounds(l.rect, l.chrome.as_ref(), l.card.as_ref()),
                 });
                 self.walk(id, out);
             }
@@ -594,9 +673,26 @@ impl Scene {
                     }
                     _ => true,
                 };
-                if changed {
-                    out.extend(o.map(|p| p.bounds));
-                    out.extend(n.map(|p| p.bounds));
+                if !changed {
+                    continue;
+                }
+                match (o, n) {
+                    // a window card that only changed its card or chrome: where the card draws, not the window
+                    (Some(o), Some(n))
+                        if !rescaled
+                            && !self.restacked.contains(&id)
+                            && o.kind == Kind::Window
+                            && n.kind == Kind::Window
+                            && o.rect == n.rect
+                            && o.scale == n.scale
+                            && (o.card.is_some() || n.card.is_some()) =>
+                    {
+                        out.extend(card_change(o, n));
+                    }
+                    _ => {
+                        out.extend(o.map(|p| p.bounds));
+                        out.extend(n.map(|p| p.bounds));
+                    }
                 }
             }
             // Labels: the sprite bounds of every label that is not the same in both.
@@ -647,7 +743,7 @@ impl Scene {
                     offsets.get(&p.id).copied().unwrap_or(0)
                 };
                 if scroll != 0 {
-                    damage.extend(scrolled_corners(&new, root, rect, scroll));
+                    damage.extend(scrolled_corners(&new, old, root, rect, scroll));
                 }
                 windows.push(p.rect);
                 outputs.push(OutputFrame {
