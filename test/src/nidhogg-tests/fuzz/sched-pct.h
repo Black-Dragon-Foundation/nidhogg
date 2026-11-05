@@ -130,6 +130,8 @@ static struct
   long runs;			/* schedules run */
   const uint8_t *forced;	/* the first choices */
   long nforced;
+  long prev;			/* decisions of the run before, whose first
+				   NFORCED the forced run must repeat */
   struct sched_choice *d;	/* shared with the parent */
   long *nd;
 } sched_x = { .k = -1 };
@@ -195,6 +197,17 @@ sched_x_choose (uint32_t en)
   long d = *sched_x.nd;
   int pick = d < sched_x.nforced ? sched_x.forced[d]
     : natural != SCHED_FREE ? natural : __builtin_ctz (en);
+  /* A replay of the run before up to its changed choice meets the same
+     decisions: the same threads could run, the same one stepped.  The
+     parent's log still holds that run's, until this one overwrites it.  */
+  if (d < sched_x.prev && d < sched_x.nforced
+      && (sched_x.d[d].enabled != en || sched_x.d[d].cur != cur))
+    {
+      fprintf (stderr, "sched: decision %ld differs from the run before: the"
+	       " driver is not deterministic\n", d);
+      fflush (NULL);
+      _exit (6);
+    }
   if (pick >= SCHED_THREADS || !(en >> pick & 1))
     {
       fprintf (stderr, "sched: decision %ld forces thread %d, which cannot"
@@ -512,7 +525,7 @@ sched_explore (int k, long max, int (*body) (void))
   int *pre = malloc ((SCHED_DECISIONS + 1) * sizeof *pre);
   if (!prefix || !bad || !pre)
     return 2;
-  long np = 0, nbad = -1, failed = 0;
+  long np = 0, nbad = -1, failed = 0, runs_prev = 0;
   sched_x.k = k;
   sched_x.runs = 0;
   for (;;)
@@ -522,10 +535,17 @@ sched_explore (int k, long max, int (*body) (void))
 	  printf ("over the bound: %ld schedules\n", sched_x.runs);
 	  return 3;
 	}
+      sched_x.prev = runs_prev;
       int rc = sched_x_run (prefix, np, body, true, false);
       sched_x.runs++;
-      if (rc < 0 || rc == 5)
+      /* A replay that ends before its forced choices are used up took
+	 another path than the run it replays.  */
+      if (rc >= 0 && *sched_x.nd < np)
+	rc = 6;
+      if (rc < 0 || rc == 5 || rc == 6)
 	{
+	  if (rc == 6)
+	    printf ("the driver differs from the run before when replayed: ");
 	  sched_x_print ("harness error in schedule", prefix, np);
 	  return 2;
 	}
@@ -541,6 +561,7 @@ sched_explore (int k, long max, int (*body) (void))
 	}
       /* Back up to the last decision with a choice left.  */
       long n = *sched_x.nd;
+      runs_prev = n;
       pre[0] = 0;
       for (long i = 0; i < n; i++)
 	pre[i + 1] = pre[i] + (sched_x.d[i].natural != SCHED_FREE
@@ -563,7 +584,10 @@ sched_explore (int k, long max, int (*body) (void))
 	  failed);
   /* The first failure's own message.  */
   if (nbad >= 0)
-    sched_x_run (bad, nbad, body, false, false);
+    {
+      sched_x.prev = 0;
+      sched_x_run (bad, nbad, body, false, false);
+    }
   return failed ? 1 : 0;
 }
 

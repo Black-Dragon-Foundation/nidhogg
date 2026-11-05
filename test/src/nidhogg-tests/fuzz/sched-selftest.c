@@ -32,12 +32,19 @@ static int finished;
 static pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t c = PTHREAD_COND_INITIALIZER;
 
+/* NH_SCHED_SELFTEST_DIVERGE: a driver that is not deterministic, to test
+   that the explorer notices.  Every other schedule run, the second adder
+   skips its first points, so it ends earlier.  RUNS counts the runs, in memory shared with
+   the children.  */
+static long *runs;
+
 static void *
 adder (void *arg)
 {
-  (void) arg;
   for (int i = 0; i < M; i++)
-    if (i == M / 2)
+    if (i < M / 2 && arg && runs && (*runs & 1))
+      continue;
+    else if (i == M / 2)
       {
 	long v = counter;
 	NH_SCHED_POINT ();
@@ -58,8 +65,10 @@ static int
 body (void)
 {
   pthread_t t[2];
+  if (runs)
+    ++*runs;
   for (int i = 0; i < 2; i++)
-    if (pthread_create (&t[i], NULL, adder, NULL) != 0)
+    if (pthread_create (&t[i], NULL, adder, i ? (void *) 1 : NULL) != 0)
       return 2;
   pthread_mutex_lock (&m);
   while (finished < 2)
@@ -104,8 +113,15 @@ closed_form (int k)
 int
 main (int argc, char **argv)
 {
+  if (getenv ("NH_SCHED_SELFTEST_DIVERGE"))
+    {
+      runs = mmap (NULL, sizeof *runs, PROT_READ | PROT_WRITE,
+		   MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+      if (runs == MAP_FAILED)
+	return 2;
+    }
   int rc = sched_main (argc, argv, 40, body);
-  if (rc != 3 && sched_x.k >= 0 && sched_x.runs != closed_form (sched_x.k))
+  if ((rc == 0 || rc == 1) && sched_x.k >= 0 && sched_x.runs != closed_form (sched_x.k))
     {
       printf ("selftest: %ld schedules for K=%d, the closed form gives %ld\n",
 	      sched_x.runs, sched_x.k, closed_form (sched_x.k));
