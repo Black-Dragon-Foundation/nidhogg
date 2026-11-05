@@ -630,7 +630,8 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   `crash`, Python whose external scanner writes through a null pointer at a backquote (`fixtures/crash-scanner.c`):
   `workers/worker-crash-forwarded-grammar` parses it on `nh-parse` and expects the fatal path. CI's fedora-45 Linux leg
   runs `grammars.sh` on the runner and mounts the result into its check container (`NIDHOGG_TEST_GRAMMARS=/grammars`), so
-  the grammar rows of the check subset run there instead of skipping.
+  the grammar rows of the check subset run there instead of skipping. That leg's check also installs `gnutls-utils`
+  (`NIDHOGG_CHECK_PACKAGES`), so the TLS rows (`gnutls-serv`) run too.
 - Tree-sitter on the main thread: every synchronous parse a demand makes (`treesit_ensure_parsed`) is in the watchdog's
   `treesit` phase and its `:phase-ms`, with the workers' switches on or off, so an A/B compares the main thread's
   whole tree-sitter time (parses plus `treesit-wait`).
