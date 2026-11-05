@@ -1,0 +1,22 @@
+# Packages the crates' check.sh --container runs need on Fedora 45 (shell, glue, glitnir): the check image
+# (nidhogg/ci/image.sh local check-fedora-45) has them installed once, so a run installs nothing.  Its tag is a hash
+# of this file, so a change here makes the next run build a new image.
+cargo
+rust
+clippy
+rustfmt
+cargo-deny
+gcc
+binutils
+diffutils
+gawk
+pkgconf-pkg-config
+openssl-devel
+cmake
+wayland-devel
+libxkbcommon-devel
+xkeyboard-config
+libX11-common
+pixman-devel
+# shell/check.sh --tsan: rustup-init installs the nightly toolchain
+rustup

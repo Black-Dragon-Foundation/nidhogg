@@ -300,6 +300,11 @@ machine whose timing never shows it, not certain.
   `NIDHOGG_PKG_IMAGE` (pkg-test.sh), and each checks its packages (`rpm -q`) before it installs any, so a stale list
   costs time, never a result; `ci-test.sh` checks that the test images name every package gui.sh and pkg-test.sh ask
   for. `tarball-test.sh` keeps its fresh base image: it checks that `deps.runtime` is enough.
+  The shell's, glue's and Glitnir's `check.sh --container fedora-45` (a developer's run) use `nidhogg-check:fedora-45-HASH`
+  (`deps/fedora-45.check`, `ci/images/check-fedora-45.Containerfile`): `image.sh local check-fedora-45` builds it
+  once per tag on that machine (4 GiB cap) and prints `image: REF (local|built)`; the run installs no package. Only
+  `--android` still installs the Android std (Fedora has none, so it is skipped). It is not published to ghcr: CI's
+  jobs run in `nidhogg-build-fedora-45`.
 - `linux` (fedora-45, ubuntu-26.04): `build.sh --container D --stage build`, the cache saves, then `--stage check
   --check nidhogg/check-subset.txt`, then `--stage pack --out ...` (so a failing check keeps the build's caches), then
   `tarball-test.sh`. `macos`: Homebrew `deps/macos.build` (Rust from the runner image's rustup when it has one),

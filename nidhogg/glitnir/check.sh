@@ -3,9 +3,11 @@
 # Usage: check.sh [--container DISTRO] [--test NAME] [--android]   Exit 0 ok, 1 "check.sh: FAIL <check>", 2 usage.
 # --android checks only that the crate with its image decoders builds for aarch64-linux-android (the Android door,
 # gate 53): it needs that target's std (rustup target add aarch64-linux-android), which Fedora's packages lack.
-# Without --container the host's cargo runs (CI, macOS).  With it, podman runs a memory-capped container (2 GiB) that
-# installs cargo, clippy, rustfmt and pixman-devel; CARGO_HOME and CARGO_TARGET_DIR live under $GLITNIR_CARGO_DIR
-# (default $T/glitnir-cargo), the package cache under $NIDHOGG_BUILD_PKG_CACHE when set.
+# Without --container the host's cargo runs (CI, macOS).  With it, podman runs a memory-capped container (2 GiB) from the
+# check image (fedora-45: nidhogg-check:fedora-45-HASH, built once from deps/fedora-45.check by ci/image.sh local; the
+# run prints "image: REF (local|built)" and installs nothing).  Another distro installs cargo, clippy, rustfmt and
+# pixman-devel per run (the cache under $NIDHOGG_BUILD_PKG_CACHE when set).  CARGO_HOME and CARGO_TARGET_DIR live
+# under $GLITNIR_CARGO_DIR (default $T/glitnir-cargo).
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 DISTRO="" TEST="" INNER=0 ANDROID=0
@@ -35,11 +37,19 @@ if [ -n "$DISTRO" ] && [ "$INNER" = 0 ]; then
   trap cleanup EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  inner="dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install cargo rust clippy rustfmt pixman-devel diffutils >/dev/null && bash /crate/check.sh --inner${TEST:+ --test $TEST}$( [ "$ANDROID" = 0 ] || echo " --android")"
+  inner="bash /crate/check.sh --inner${TEST:+ --test $TEST}$( [ "$ANDROID" = 0 ] || echo " --android")"
+  IMAGE=""
+  if [ "$DISTRO" = fedora-45 ]; then
+    # the check image (deps/fedora-45.check), built here once: no package manager runs
+    IMAGE=$(bash "$HERE/../ci/image.sh" local check-fedora-45) || { echo "check.sh: the check image failed" >&2; exit 1; }
+  else
+    inner="dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install cargo rust clippy rustfmt pixman-devel diffutils >/dev/null && $inner"
+    IMAGE=registry.fedoraproject.org/fedora:${DISTRO#fedora-}
+  fi
   podman run --rm --name "$NAME" --memory 2g --memory-swap 2g \
     -v "$HERE:/crate:ro,z" -v "$CARGO_DIR:/cargo:Z" "${EXTRA[@]}" \
     -e CARGO_HOME=/cargo/home -e CARGO_TARGET_DIR=/cargo/target \
-    "registry.fedoraproject.org/fedora:${DISTRO#fedora-}" bash -euo pipefail -c "$inner" &
+    "$IMAGE" bash -euo pipefail -c "$inner" &
   pid=$!
   wait "$pid"
   exit $?
