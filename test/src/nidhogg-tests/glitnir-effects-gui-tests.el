@@ -38,6 +38,8 @@
 
 (defun glitnir-fx--with-child (transition fn &rest params)
   "Call FN with a child frame of `glitnir-fx--colour' and nothing else, with TRANSITION and PARAMS, just shown.
+No bars, as corfu and posframe make theirs: under -Q a child takes the tool bar, which a 20-column frame wraps into
+rows above its window, so the frame's top would not be its window's.
 FN gets the frame, its surface's id on the recorder (else nil) and a grab from before the frame was made.  On the
 recorder the leg's first buffer is in the log by then.  The frame goes after, and the parent's cursor does not blink."
   (nhwl-gui--with-blink
@@ -58,6 +60,7 @@ recorder the leg's first buffer is in the log by then.  The frame goes after, an
                             (cons 'background-color glitnir-fx--colour)
                             '(left-fringe . 0) '(right-fringe . 0) '(internal-border-width . 0)
                             '(vertical-scroll-bars . nil) '(cursor-type . nil)
+                            '(tool-bar-lines . 0) '(menu-bar-lines . 0) '(tab-bar-lines . 0)
                             params))
              (set-window-buffer (frame-root-window c) buf)
              (redisplay t)
@@ -169,7 +172,9 @@ A leg's frames multiply the colour, so a block of it holds at rest only."
 
 (ert-deftest glitnir-churn-no-pile ()
   "The corfu pattern fifty times: a hide from a timer, a show on the next key.  Half the shows come mid-leg.
-No leg piles up on another: the child's buffers stay within its content and one leg per churn, and nothing is left."
+No leg piles up on another: the child's buffers stay within its content and one leg per churn, and nothing is left.
+Each hide starts from a child at rest, its show's leg run: a hide that comes before the presenter has taken the show
+leaves the hide leg it would have reversed running, and one at that leg's end unmaps with no frame to tick."
   (skip-unless (glitnir-fx--recorder-p))
   (glitnir-fx--with-child
    'pop
@@ -183,6 +188,7 @@ No leg piles up on another: the child's buffers stay within its content and one 
        (gui-runner-wait-settled)
        (setq mark (nhwl-gui--mark) packets (glitnir-fx--presenter :packets))
        (dotimes (i 50)
+         (gui-runner-wait-settled)
          (let ((hidden nil) (ticks (glitnir-fx--ticks c)))
            (run-at-time 0 nil (lambda () (make-frame-invisible c t) (setq hidden t)))
            (should (gui-runner-wait (lambda () hidden)))
@@ -701,6 +707,31 @@ Everything goes back after: one window on `*scratch*', the frame's divider width
        (let ((without (gui-runner-screen-grab)))
          (should (eql 0 (cdr (gui-runner-pixel-diff with without other-rect))))
          (should (> (cdr (gui-runner-pixel-diff with without gap)) 0)))))))
+
+(ert-deftest glitnir-card-keeps-off-the-tab-bar ()
+  "With the tab bar on, the look's card in the top window draws nothing over the bars above the windows.
+The shadow and the ring stay inside the window area: the band from the frame's top to the window grabs the same with
+the card as without."
+  (skip-unless (glitnir-fx--live-p))
+  (let ((tabs (bound-and-true-p tab-bar-mode)))
+    (unwind-protect
+        (progn
+          (tab-bar-mode 1)
+          (glitnir-fx--with-cards
+           glitnir-fx--card-look
+           (lambda (left right)
+             (let* ((box (glitnir-fx--card-box left))
+                    (top (window-pixel-top left))
+                    (band (list (- (nth 0 box) (window-pixel-left left)) (- (nth 1 box) top)
+                                (frame-pixel-width) top))
+                    (with (gui-runner-screen-grab)))
+               (should (>= top (tab-bar-height nil t)))
+               (should (> (tab-bar-height nil t) 0))
+               (dolist (k '(corner-radius shadow ring)) (set-window-parameter left k nil))
+               (glitnir-fx--redraw left right)
+               (should (eql 0 (cdr (gui-runner-pixel-diff with (gui-runner-screen-grab) band))))))))
+      (tab-bar-mode (if tabs 1 -1))
+      (glitnir-fx--redraw (selected-window)))))
 
 (ert-deftest glitnir-card-typing-damage ()
   "50 characters typed in a card window: no commit's damage reaches a corner square, the cursor being in the middle."

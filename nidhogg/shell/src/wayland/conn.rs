@@ -23,7 +23,7 @@ use std::ffi::{CStr, OsStr, c_char, c_int, c_void};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use wayland_client::Connection;
 use wayland_client::backend::WaylandError;
@@ -255,6 +255,9 @@ pub struct Shared {
     pub dragging: AtomicBool,
     /// The reader thread has finished (its last act).
     pub reader_done: ThreadDone,
+    /// The clock `wp_presentation` reports on (`clock_id`, a `clockid_t`): until it says, `CLOCK_MONOTONIC`.  Only
+    /// then are reported times on the clock transitions are sampled on.
+    pub presentation_clock: AtomicU32,
 }
 
 fn relock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -281,6 +284,7 @@ impl Shared {
             selections: Mutex::default(),
             dragging: AtomicBool::new(false),
             reader_done: ThreadDone::default(),
+            presentation_clock: AtomicU32::new(libc::CLOCK_MONOTONIC as u32),
         })
     }
 
