@@ -25506,6 +25506,82 @@ display_count_lines_visually (struct it *it)
     }
 }
 
+#ifdef HAVE_NIDHOGG_WORKERS
+/* Line numbers counted from the buffer's start by
+   maybe_produce_line_number (its own and point's), for the redisplay
+   rows: `nidhogg-workers--test-line-number-counts'.  */
+static uintmax_t nh_lnum_counts_from_start;
+
+DEFUN ("nidhogg-workers--test-line-number-counts",
+       Fnidhogg_workers__test_line_number_counts,
+       Snidhogg_workers__test_line_number_counts, 0, 1, 0,
+       doc: /* Return the line numbers redisplay counted from the buffer's start.
+Each is a count of the lines from the beginning of the buffer (or of
+its accessible portion) to a line `display-line-numbers' shows, or to
+point.  Non-nil RESET sets the count back to 0 after reading it.
+For tests.  */)
+  (Lisp_Object reset)
+{
+  Lisp_Object n = make_uint (nh_lnum_counts_from_start);
+  if (!NILP (reset))
+    nh_lnum_counts_from_start = 0;
+  return n;
+}
+
+/* Whether window W's base line (the line number at a position that
+   line-number-mode's mode line keeps, and redisplay_window flushes once
+   an edit reaches it) may hold or give the line numbers
+   maybe_produce_line_number counts in the current buffer.  The base
+   holds the accessible portion's numbers, so it never takes or gives
+   WIDE numbers of a narrowed buffer.  Only inside redisplay, which
+   flushed a stale base before it drew the window.  */
+static bool
+nh_lnum_base_usable (struct window *w, bool wide)
+{
+  return (redisplaying_p
+	  && current_buffer == XBUFFER (w->contents)
+	  && !(wide && (BEG_BYTE != BEGV_BYTE || Z_BYTE != ZV_BYTE))
+	  && !current_buffer->clip_changed);
+}
+
+/* IT's line number was counted from the buffer's start: keep it as the
+   window's base line, so the next iterators count from there.  A window
+   that shows `%l' in no mode line (no mode line at all, or one without
+   it) has nobody else to keep it, and every iterator of every redisplay
+   counted the lines from the start, a few ms each deep into a large
+   buffer.  The mode line's decision that the lines are too long for
+   numbers (a base of -1) stays.  */
+static void
+nh_lnum_keep_base (struct it *it, ptrdiff_t this_line, bool wide)
+{
+  struct window *w = it->w;
+  nh_lnum_counts_from_start++;
+  if (w->base_line_pos != -1 && nh_lnum_base_usable (w, wide))
+    {
+      w->base_line_number = this_line + 1;
+      w->base_line_pos = IT_CHARPOS (*it);
+    }
+}
+
+/* Point's line number for maybe_produce_line_number (IT is before
+   point's line): from the window's base line when it is before point,
+   else from BEG_BYTE, the start of the counting.  */
+static ptrdiff_t
+nh_pt_lnum (struct it *it, ptrdiff_t beg_byte, bool wide)
+{
+  ptrdiff_t ignored;
+  struct window *w = it->w;
+  if (w->base_line_number > 0 && w->base_line_pos > 0
+      && w->base_line_pos <= PT && nh_lnum_base_usable (w, wide))
+    return (w->base_line_number - 1
+	    + display_count_lines_logically (CHAR_TO_BYTE (w->base_line_pos),
+					     PT_BYTE, PT, &ignored));
+  if (PT_BYTE > beg_byte)
+    nh_lnum_counts_from_start++;
+  return display_count_lines_logically (beg_byte, PT_BYTE, PT, &ignored);
+}
+
+#endif
 /* Produce the line-number glyphs for the current glyph_row.  If
    IT->glyph_row is non-NULL, populate the row with the produced
    glyphs.  */
@@ -25583,6 +25659,10 @@ maybe_produce_line_number (struct it *it)
 						   IT_CHARPOS (*it), &bytepos);
       eassert (this_line > 0 || (this_line == 0 && start_from == beg_byte));
       eassert (bytepos == IT_BYTEPOS (*it));
+#ifdef HAVE_NIDHOGG_WORKERS
+      if (start_from == beg_byte && IT_BYTEPOS (*it) > beg_byte)
+	nh_lnum_keep_base (it, this_line, line_numbers_wide);
+#endif
     }
 
   /* Record the line number information.  */
@@ -25615,8 +25695,12 @@ maybe_produce_line_number (struct it *it)
 	  this_line + display_count_lines_logically (it->lnum_bytepos, PT_BYTE,
 						     PT, &ignored);
       else
+#ifdef HAVE_NIDHOGG_WORKERS
+	it->pt_lnum = nh_pt_lnum (it, beg_byte, line_numbers_wide);
+#else
 	it->pt_lnum = display_count_lines_logically (beg_byte, PT_BYTE, PT,
 						     &ignored);
+#endif
     }
   /* Compute the required width if needed.  */
   if (!it->lnum_width)
@@ -38357,6 +38441,9 @@ be let-bound around code that needs to disable messages temporarily. */);
   defsubr (&Sdisplay__line_is_continued_p);
   defsubr (&Sget_display_property);
   defsubr (&Slong_line_optimizations_p);
+#ifdef HAVE_NIDHOGG_WORKERS
+  defsubr (&Snidhogg_workers__test_line_number_counts);
+#endif
 
   DEFSYM (Qmenu_bar_update_hook, "menu-bar-update-hook");
   DEFSYM (Qoverriding_terminal_local_map, "overriding-terminal-local-map");

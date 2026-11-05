@@ -59,6 +59,7 @@ pub const EXPORTS: &[&str] = &[
     "glitnir_stack_raise",
     "glitnir_stack_reparent",
     "glitnir_stats_forget",
+    "glitnir_stats_last",
     "glitnir_stats_record",
     "glitnir_stats_summary",
     "glitnir_tc_advance_to",
@@ -299,6 +300,25 @@ pub unsafe extern "C" fn glitnir_stats_summary(root: u64, reset: i32, out: *mut 
         }
         // SAFETY: non-null, and the caller promises it is writable.
         unsafe { out.write(crate::stats::summary(root, reset != 0)) };
+        GLITNIR_OK
+    })
+}
+
+/// Write ROOT's newest entry (kept across resets) to `out`; `GLITNIR_E_STATE` before ROOT's first record.
+///
+/// # Safety
+/// `out` must be null or point to a writable `StatsEntry`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn glitnir_stats_last(root: u64, out: *mut StatsEntry) -> i32 {
+    ffi_guard(|| {
+        if out.is_null() {
+            return GLITNIR_E_ARG;
+        }
+        let Some(e) = crate::stats::last(root) else {
+            return GLITNIR_E_STATE;
+        };
+        // SAFETY: non-null, and the caller promises it is writable.
+        unsafe { out.write(e) };
         GLITNIR_OK
     })
 }
