@@ -123,14 +123,13 @@ DEFUN ("glitnir-stats", Fglitnir_stats, Sglitnir_stats, 0, 2, 0,
        doc: /* Return the frame-time record of FRAME's root frame, or nil.
 The record covers the last 1024 paints (counts are since the last reset).
 It is a plist (:count N :compose-ms (:p50 :p95 :max) :draw-ms (...)
-:latency-ms (...) :freeze-ms (...) :damage-px N :painted-px N
+:latency-ms (...) :damage-px N :painted-px N
 :tick-interval-ms (...) :blur-ms (...) :backfill-rate F :ticks N
-:late-ticks N :violations N :scale-mismatch N :backdrop-px N
+:late-ticks N :backdrop-px N
 :leg-overrun-ms F);
 :damage-px and :painted-px are medians in device pixels.  Times are in
 milliseconds; :latency-ms is the time from the commit of a redisplay to the
-end of the paint that shows it, :freeze-ms the time the root was frozen
-before that commit.  :backfill-rate is nil: GDK's back-fills cannot be
+end of the paint that shows it.  :backfill-rate is nil: GDK's back-fills cannot be
 seen from the draw handler.  FRAME defaults to the selected frame; it
 returns nil for a frame that is not a graphical pgtk or nhwl frame.  On a
 nhwl frame :key-to-commit-ms replaces :latency-ms: the time from a key
@@ -162,11 +161,6 @@ empties the record after reading it.  */)
   int32_t rc = glitnir_stats_summary (id, !NILP (reset), &s);
   if (rc != GLITNIR_OK)
     return Qnil;
-# ifdef HAVE_PGTK
-  /* Violations not yet in an entry (the next paint records them).  */
-  if (FRAME_PGTK_P (f))
-    s.violations += glitnir_pgtk_violations (f, !NILP (reset));
-# endif
   Lisp_Object plist
     = list2 (intern_c_string (":count"), make_uint (s.count));
   plist = nconc2 (plist, pctl (":compose-ms", &s.compose_ms));
@@ -177,11 +171,10 @@ empties the record after reading it.  */)
   else
 # endif
     plist = nconc2 (plist, pctl (":latency-ms", &s.latency_ms));
-  plist = nconc2 (plist, pctl (":freeze-ms", &s.freeze_ms));
   plist = nconc2 (plist, pctl (":tick-interval-ms", &s.tick_interval_ms));
   plist = nconc2 (plist, pctl (":blur-ms", &s.blur_ms));
   return nconc2 (plist,
-		 listn (18, intern_c_string (":damage-px"),
+		 listn (14, intern_c_string (":damage-px"),
 			make_uint (s.damage_px_p50),
 			intern_c_string (":painted-px"),
 			make_uint (s.painted_px_p50),
@@ -191,10 +184,6 @@ empties the record after reading it.  */)
 			intern_c_string (":ticks"), make_uint (s.ticks),
 			intern_c_string (":late-ticks"),
 			make_uint (s.late_ticks),
-			intern_c_string (":violations"),
-			make_uint (s.violations),
-			intern_c_string (":scale-mismatch"),
-			make_uint (s.scale_mismatch),
 			intern_c_string (":backdrop-px"),
 			make_uint (s.backdrop_px),
 			intern_c_string (":leg-overrun-ms"),
@@ -490,29 +479,6 @@ selected frame.  Return non-nil if the root is frozen.  */)
     error ("glitnir--debug-freeze: `glitnir-debug' is nil");
 #ifdef HAVE_PGTK
   return glitnir_pgtk_debug_freeze (f) ? Qt : Qnil;
-#else
-  (void) f;
-  return Qnil;
-#endif
-}
-
-DEFUN ("glitnir--debug-scale-mismatch", Fglitnir__debug_scale_mismatch,
-       Sglitnir__debug_scale_mismatch, 0, 1, 0,
-       doc: /* Make the next paint of FRAME's root frame see a scale mismatch (for tests).
-Every draw of that paint finds the root's surface at another device scale
-than GDK's buffer, as between a monitor's scale change and pgtk's next
-look at it: the root and its child frames are drawn the stock way,
-without chrome, and the paint counts in the `:scale-mismatch' of
-`glitnir-stats'.  The whole root is queued for that paint.  Refused
-unless `glitnir-debug' is non-nil.  FRAME defaults to the selected frame.
-Return non-nil if the paint was armed.  */)
-  (Lisp_Object frame)
-{
-  struct frame *f = decode_live_frame (frame);
-  if (NILP (Vglitnir_debug))
-    error ("glitnir--debug-scale-mismatch: `glitnir-debug' is nil");
-#ifdef HAVE_PGTK
-  return glitnir_pgtk_debug_scale_mismatch (f) ? Qt : Qnil;
 #else
   (void) f;
   return Qnil;
@@ -829,7 +795,6 @@ syms_of_nidhogg_glitnir (void)
   defsubr (&Sglitnir__motion);
   defsubr (&Sglitnir__stacking);
   defsubr (&Sglitnir__debug_freeze);
-  defsubr (&Sglitnir__debug_scale_mismatch);
   defsubr (&Sglitnir__debug_reset_surface);
   defsubr (&Sglitnir__layer_rect);
   defsubr (&Sglitnir__chrome);
@@ -852,10 +817,9 @@ Setting it to nil makes Glitnir hand every frame back to the stock drawing.  */)
 the `glitnir-debug-damage' face.  `verify' keeps a copy of each frame's
 surface as of the previous commit; at each commit, pixels that changed
 outside the reported damage are logged once to stderr ("glitnir verify:
-FRAME X Y W H after PRIMITIVE") and counted in the `:violations' of
-`glitnir-stats', as are a paint while the root has uncommitted damage, a
-freeze that lasts over a second, and a commit whose stacking of child
-frames differs from GDK's.  `full' makes every commit damage the
+FRAME X Y W H after PRIMITIVE"), as are a paint while the root has
+uncommitted damage, a freeze that lasts over a second, and a commit whose
+stacking of child frames differs from GDK's.  `full' makes every commit damage the
 whole frame.  `damage-hold' (for tests) keeps each frame's damage until
 `glitnir--damage' takes it, instead of handing it to the next consistency
 point; the points then present whole frames.  */);
