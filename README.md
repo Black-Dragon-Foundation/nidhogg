@@ -709,6 +709,17 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   (`call-process`'s waitpid, a blocking read) slept on until another signal came, usually the busy cursor's SIGALRM
   `hourglass-delay` after the command started, so only a C-g within that second worked. Test:
   `test/src/nidhogg-tests/quit-tty-tests.el` (the controlling tty and another tty, C-g after the wait has started).
+- Line numbers deep in a large buffer (`src/xdisp.c`, `maybe_produce_line_number`; a stock cost, kept in this group
+  until the series is rewritten): `display-line-numbers` counts a line's number from the window's base line, a cache
+  that only `line-number-mode`'s `%l` in the window's mode line filled. A window that shows no `%l` (drgnx's windows
+  show no mode line) had none, so every display iterator of every redisplay counted the lines from the buffer's start,
+  and point's line again for the current-line face: a few ms each, 4.3 MB into drgnx's perf fixture, 4 per redisplay
+  when a window split and hundreds while compile-flood's log streamed. A count from the start now keeps its result as
+  that base, under the cache's own rules (inside redisplay, which flushes it once an edit reaches it; the accessible
+  portion's numbers only, so never `display-line-numbers-widen`'s numbers of a narrowed buffer; never over the mode
+  line's "lines too long" mark), and point's number counts from it too. Test:
+  `test/src/nidhogg-tests/workers-redisplay-gui-tests.el` (`nidhogg-workers--test-line-number-counts` counts the
+  counts from the start; `%l`, which reads the same base, checks the kept numbers, narrowed and widened too).
 - Waits and the redisplay budget: a main-thread wait on a worker pushes the watchdog's `worker-wait` (or `treesit-wait`)
   phase and counts its time in `:phase-ms`; it never enters `select`, so the watchdog's span runs through it. Every
   `redisplay_internal` call starts a wait budget of `nidhogg-redisplay-wait-budget` milliseconds (default 1), spent
