@@ -209,8 +209,9 @@ compositor uploads only the exposed rows. The glue decides; C passes facts.
   vector a child frame's chrome is (`NHG_CHROME_*`; C copies it, `chrome::decode` checks it).
 - **Cards** (`src/cards.rs`): the same sync gives each window with a card a WINDOW layer of its own, id
   `sequence_number | CARD_TAG`, at its outer rectangle, with the chrome in device px at the frame's scale and a Glitnir
-  `Card` (the beneath colour, the ring premultiplied and one logical px wide, the other windows' outer rectangles to
-  keep out of); it removes the layers of windows that lost their card or are gone, and keeps the cards above the
+  `Card` (the beneath colour, the ring premultiplied and one logical px wide, and what to keep out of: the other
+  windows' outer rectangles, and the bands around the window area, the bounding box of the listed windows' outer
+  rectangles, so the shadow and the ring never reach the tab, tool or menu bar); it removes the layers of windows that lost their card or are gone, and keeps the cards above the
   frame's outputs. A card window may be promoted: its output stays `seq | WINDOW_TAG` at the box, so promotion and
   demotion never touch the card. A scale change and the first sync after a reconnect give the cards again.
   `nhg_layers_count` counts outputs and cards, so the publish after the last card went still lists the windows.
