@@ -2,6 +2,7 @@
 ;; test-class: cond
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
+;; (CI cache diagnostic: a comment-only change in a Lisp test.)
 
 ;; This file is part of Nidhogg.
 
