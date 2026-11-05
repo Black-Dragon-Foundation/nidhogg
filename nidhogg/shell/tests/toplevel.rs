@@ -325,10 +325,11 @@ mod toplevel {
 
     /// Mutter answers a window's first buffer with a configure of its size.  A window that chose a new size of its
     /// own before reading it keeps that size: the configure was sent before the compositor read the commit, so its
-    /// size is the window's choice (0 x 0).  Once the compositor has read it, the same size is its own request again.
+    /// size is the window's choice (0 x 0).  Once the compositor has shown the commit, the same size is its own
+    /// request again.
     #[test]
     fn configure_sent_before_an_own_size_leaves_it() {
-        let rec = Recorder::start("mutter");
+        let rec = Recorder::start_clock("mutter", "manual");
         let mut shell = rec.open();
         let id = shown_window(&mut shell);
         configure_now(&rec, (200, 100), r#""activated""#);
@@ -339,12 +340,49 @@ mod toplevel {
             (0, 0),
             "sent before the recorder read 300 x 150"
         );
-        // the recorder has read the commit and answered the sync after it
+        // the recorder has read the commit and shown it
+        present(&rec);
         sync(&shell);
         collect(&mut shell, 50);
         configure_now(&rec, (200, 100), r#""activated""#);
         let c = configure_of(&wait_event(&mut shell, Kind::Configure));
-        assert_eq!((c.w, c.h), (200, 100), "sent after the recorder read it");
+        assert_eq!((c.w, c.h), (200, 100), "sent after the recorder showed it");
+    }
+
+    /// The manual clock's next frame: the frame callbacks of what the recorder has are answered.
+    fn present(rec: &Recorder) {
+        rec.control_ok(r#"{"cmd":"present","advance_ns":16000000}"#);
+    }
+
+    /// Mutter sends a configure at its repaint, while it answers a `wl_display.sync` as soon as it reads it: a
+    /// configure of the old size can come after the answer to a sync sent after the commit of the new size.  It is
+    /// the window's choice all the same until that commit has been shown (its frame callback), and the compositor's
+    /// after that.
+    #[test]
+    fn configure_after_the_sync_before_the_frame_leaves_it() {
+        let rec = Recorder::start_clock("mutter", "manual");
+        let mut shell = rec.open();
+        let id = shown_window(&mut shell);
+        present(&rec);
+        sync(&shell);
+        collect(&mut shell, 50);
+        show_at(&mut shell, id, 300, 150);
+        // the recorder has read the commit and answered every sync after it; it shows nothing until `present`
+        sync(&shell);
+        collect(&mut shell, 50);
+        configure_now(&rec, (200, 100), r#""activated""#);
+        let c = configure_of(&wait_event(&mut shell, Kind::Configure));
+        assert_eq!(
+            (c.w, c.h),
+            (0, 0),
+            "after the sync's answer, before the frame"
+        );
+        present(&rec);
+        sync(&shell);
+        collect(&mut shell, 50);
+        configure_now(&rec, (200, 100), r#""activated""#);
+        let c = configure_of(&wait_event(&mut shell, Kind::Configure));
+        assert_eq!((c.w, c.h), (200, 100), "after the frame");
     }
 
     /// A size of the window's own recorded, not committed yet: a configure of the size the compositor has is the
