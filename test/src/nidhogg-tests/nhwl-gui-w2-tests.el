@@ -1498,7 +1498,10 @@ returns `copy'."
 (ert-deftest nhwl-gui/live-sway-resize-reaches-the-frame ()
   "Every `swaymsg resize' of the floating frame gives it the size asked, at every scale: twenty steps between a narrow
 and a wide size, as budgets.sh's `resize-stuck' row takes them, each one asked once the one before has reached the
-frame (pattern C: the frame's size is the answer waited for)."
+frame and sway has used the frame's answer (pattern C: the frame's size and the presenter's counters are the answer
+waited for).  Sway sizes a floating window by its commits: one that comes after the next resize was asked overwrites
+that resize, which sway then never sends, so a step asked before the answer to the one before is lost on sway's side.
+A person cannot resize that fast."
   :tags '(runs-last)
   (skip-unless (and (nhwl-gui--live-p) (equal (glitnir-gui--compositor) "sway") (executable-find "swaymsg")))
   (let ((old (frame-parameter nil 'fullscreen)) (s (frame-scale-factor))
@@ -1511,7 +1514,7 @@ frame (pattern C: the frame's size is the answer waited for)."
                    (want (list (round (* w s)) (round (* h s)))))
               (call-process "swaymsg" nil nil nil
                             (format "[pid=%d] resize set width %d px height %d px" (emacs-pid) w h))
-              (nhwl-gui--wait (lambda () (gui-runner-read-all) (equal (funcall now) want)) 5)
+              (nhwl-gui--wait (lambda () (gui-runner-read-all) (and (equal (funcall now) want) (nhwl-gui--shown-p))) 5)
               ;; sway's own record of the window says which side lost the step: a rectangle of the asked size is a
               ;; configure the frame did not take, another one a resize sway dropped
               (ert-info ((format "step %d: %d x %d logical; sway's rectangle %S" i w h
