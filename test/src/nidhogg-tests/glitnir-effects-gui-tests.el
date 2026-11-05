@@ -38,6 +38,8 @@
 
 (defun glitnir-fx--with-child (transition fn &rest params)
   "Call FN with a child frame of `glitnir-fx--colour' and nothing else, with TRANSITION and PARAMS, just shown.
+No bars, as corfu and posframe make theirs: under -Q a child takes the tool bar, which a 20-column frame wraps into
+rows above its window, so the frame's top would not be its window's.
 FN gets the frame, its surface's id on the recorder (else nil) and a grab from before the frame was made.  On the
 recorder the leg's first buffer is in the log by then.  The frame goes after, and the parent's cursor does not blink."
   (nhwl-gui--with-blink
@@ -58,6 +60,7 @@ recorder the leg's first buffer is in the log by then.  The frame goes after, an
                             (cons 'background-color glitnir-fx--colour)
                             '(left-fringe . 0) '(right-fringe . 0) '(internal-border-width . 0)
                             '(vertical-scroll-bars . nil) '(cursor-type . nil)
+                            '(tool-bar-lines . 0) '(menu-bar-lines . 0) '(tab-bar-lines . 0)
                             params))
              (set-window-buffer (frame-root-window c) buf)
              (redisplay t)
@@ -169,7 +172,9 @@ A leg's frames multiply the colour, so a block of it holds at rest only."
 
 (ert-deftest glitnir-churn-no-pile ()
   "The corfu pattern fifty times: a hide from a timer, a show on the next key.  Half the shows come mid-leg.
-No leg piles up on another: the child's buffers stay within its content and one leg per churn, and nothing is left."
+No leg piles up on another: the child's buffers stay within its content and one leg per churn, and nothing is left.
+Each hide starts from a child at rest, its show's leg run: a hide that comes before the presenter has taken the show
+leaves the hide leg it would have reversed running, and one at that leg's end unmaps with no frame to tick."
   (skip-unless (glitnir-fx--recorder-p))
   (glitnir-fx--with-child
    'pop
@@ -183,6 +188,7 @@ No leg piles up on another: the child's buffers stay within its content and one 
        (gui-runner-wait-settled)
        (setq mark (nhwl-gui--mark) packets (glitnir-fx--presenter :packets))
        (dotimes (i 50)
+         (gui-runner-wait-settled)
          (let ((hidden nil) (ticks (glitnir-fx--ticks c)))
            (run-at-time 0 nil (lambda () (make-frame-invisible c t) (setq hidden t)))
            (should (gui-runner-wait (lambda () hidden)))
