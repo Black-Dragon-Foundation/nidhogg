@@ -247,6 +247,92 @@ fn node(rec: &Recorder, id: u64) -> String {
         .unwrap_or_default()
 }
 
+/// A card's layer id: a window's card is a window layer of its own (another tag than the window's).
+const CARD: u64 = (1 << 62) | 7;
+const BENEATH: u32 = 0xff11_2233;
+/// The card's corner radius, device px.
+const RADIUS: i32 = 10;
+
+/// The host gives the window a card at `rect` (as the glue does for a window with card parameters).
+fn card(b: &Backing, rect: Rect) {
+    glitnir::scene::with(b.g, |s| {
+        s.upsert(&LayerDesc {
+            id: CARD,
+            parent: b.g,
+            kind: 2,
+            rect,
+            scale: 1.0,
+            visible: 1,
+        })?;
+        s.set_chrome(
+            CARD,
+            Some(glitnir::scene::Chrome {
+                radius_px: RADIUS as f32,
+                ..Default::default()
+            }),
+        )?;
+        s.set_card(
+            CARD,
+            Some(glitnir::scene::Card {
+                beneath_argb: BENEATH,
+            }),
+        )
+    })
+    .unwrap();
+}
+
+/// The frame as the last scene commit composes it whole from the backing: what the output must show, wherever the
+/// window's pixels come from.
+fn composed(b: &Backing) -> Vec<u32> {
+    use glitnir::compose::{Composer, SourceView, TargetView, compose_committed};
+    let c = glitnir::scene::committed(b.g).expect("a committed scene");
+    let px: Vec<u32> =
+        b.px.as_chunks::<4>()
+            .0
+            .iter()
+            .map(|p| u32::from_ne_bytes(*p))
+            .collect();
+    let mut out = px.clone();
+    let all = Rect::new(0, 0, b.w, b.h);
+    let src = SourceView {
+        layer: b.g,
+        data: &px,
+        stride: b.w as usize,
+        width: b.w,
+        height: b.h,
+        scale: 1.0,
+    };
+    let mut t = TargetView {
+        data: &mut out,
+        stride: b.w as usize,
+        rect: all,
+        scale: 1.0,
+    };
+    compose_committed(&c, &mut Composer::new(), &mut t, &[all], &[src]).unwrap();
+    out
+}
+
+/// The output shows the frame composed whole.
+fn shows_composed(rec: &Recorder, b: &Backing) -> bool {
+    let want = composed(b);
+    let snap = rec.snapshot();
+    (0..b.h).all(|y| {
+        (0..b.w).all(|x| {
+            Recorder::snapshot_pixel(&snap, x as usize, y as usize) == want[(y * b.w + x) as usize]
+        })
+    })
+}
+
+/// A promoted window given a card at `rect`, its picture shown: as `promoted`.
+fn carded(rec: &Recorder, rect: Rect) -> (WaylandShell, Backing, u64, u64, u32) {
+    let (mut shell, b, id, surface, n) = promoted(rec);
+    card(&b, rect);
+    assert!(publish(&mut shell, id, &[(&b, id)], 0));
+    until(&mut shell, "the card", |_| shows_composed(rec, &b));
+    assert_eq!(composed(&b)[0], BENEATH, "the card's top-left corner pixel");
+    (shell, b, id, surface, n)
+}
+
 /// Surface `id`'s subsurfaces, bottom to top.
 fn children(rec: &Recorder, id: u64) -> Vec<u64> {
     let n = node(rec, id);
@@ -467,5 +553,82 @@ mod layers {
         assert!(w.contains("\"writes\":[]"), "held buffers written: {w}");
         assert!(!buffer_commits(&rec, 0, surface).is_empty());
         assert!(shell.next_event().is_ok(), "no protocol error");
+    }
+
+    /// A card over a promoted window: after every scroll, both ways and across the ring's rebase, the screen shows
+    /// the frame composed whole (the corners in place, nothing of them left in the rows that moved).
+    #[test]
+    fn card_corners_follow_the_scroll() {
+        let rec = Recorder::start("sway");
+        let (mut shell, mut b, id, surface, mut n) = carded(&rec, VIEW);
+        for dy in [-16, 16] {
+            for _ in 0..10 {
+                scroll_step(&mut shell, &rec, &mut b, id, surface, dy, &mut n);
+                until(&mut shell, "the corners after the scroll", |_| {
+                    shows_composed(&rec, &b)
+                });
+            }
+        }
+        assert_eq!(shell.content_layers(id).len(), 1, "still its own output");
+    }
+
+    /// The card is taller than the layer (a mode line below the window, in the frame): its bottom corners are the
+    /// frame's, its top ones the layer's.
+    #[test]
+    fn card_taller_than_the_layer() {
+        let rec = Recorder::start("sway");
+        let outer = Rect::new(VIEW.x, VIEW.y, VIEW.w, VIEW.h + 20);
+        let (mut shell, mut b, id, surface, mut n) = carded(&rec, outer);
+        assert_eq!(
+            composed(&b)[(259 * 400) as usize],
+            BENEATH,
+            "the bottom-left corner pixel"
+        );
+        for dy in [-24, 24, -8, 8] {
+            for _ in 0..3 {
+                scroll_step(&mut shell, &rec, &mut b, id, surface, dy, &mut n);
+                until(&mut shell, "the corners after the scroll", |_| {
+                    shows_composed(&rec, &b)
+                });
+            }
+        }
+    }
+
+    /// A scroll commit of a card's layer damages the exposed rows and the corner squares (where they are and where
+    /// the scroll moved them), nothing else; the layer stays opaque whole.
+    #[test]
+    fn card_scroll_damage_is_rows_and_corners() {
+        let rec = Recorder::start("sway");
+        let (mut shell, mut b, id, surface, mut n) = carded(&rec, VIEW);
+        let seq = next_seq(&rec);
+        for _ in 0..3 {
+            let c = scroll_step(&mut shell, &rec, &mut b, id, surface, -16, &mut n);
+            let off = source(&c)[1] as i32;
+            let d = damage(&c);
+            let exposed = Rect::new(0, off + VIEW.h - 16, 400, 16);
+            let r2 = (RADIUS * RADIUS) as u64;
+            assert!(
+                (0..exposed.h).all(|y| d.iter().any(|r| r.contains(0, exposed.y + y))),
+                "the exposed rows {exposed:?}: {d:?}"
+            );
+            let corner = Rect::new(0, off, RADIUS, RADIUS);
+            assert!(
+                d.iter().any(|r| !r.intersect(&corner).is_empty()),
+                "the top-left corner: {d:?}"
+            );
+            assert!(area(&d) <= exposed.area() + 8 * r2, "{d:?}");
+        }
+        let all = commits(&rec, 0, surface);
+        assert!(
+            all.iter().any(|c| c.contains("\"opaque\":[[0,0,400,240]]")),
+            "{all:?}"
+        );
+        for c in commits(&rec, seq, surface) {
+            assert!(
+                !c.contains("\"opaque\":[[") || c.contains("\"opaque\":[[0,0,400,240]]"),
+                "the opaque region changed: {c}"
+            );
+        }
+        until(&mut shell, "the picture", |_| shows_composed(&rec, &b));
     }
 }

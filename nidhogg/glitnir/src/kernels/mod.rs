@@ -16,7 +16,7 @@ mod scale;
 mod tests;
 
 pub(crate) use blur::{MAX_RADIUS, Px, bilerp_px};
-pub use corner::corner_coverage;
+pub use corner::{corner_coverage, outside_coverage};
 pub use ring::{RingCoverage, clamp_radius, decor_tile, ring_coverage};
 
 use std::sync::{Mutex, MutexGuard, OnceLock};
