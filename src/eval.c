@@ -1898,7 +1898,21 @@ probably_quit (void)
   if (!NILP (Vquit_flag) && NILP (Vinhibit_quit))
     process_quit_flag ();
   else if (pending_signals)
+#ifdef HAVE_NIDHOGG_WORKERS
+    {
+      process_pending_signals ();
+      /* The signals' input can set the flag: a C-g typed on a tty that
+	 is not the controlling one is a plain byte, read here by
+	 gobble_input after SIGIO, not a SIGINT.  Quit now: a caller
+	 looping on an interrupted system call (waitpid in
+	 get_child_status, a read in emacs_intr_read) goes back to sleep
+	 after this, until another signal or its child ends.  */
+      if (!NILP (Vquit_flag) && NILP (Vinhibit_quit))
+	process_quit_flag ();
+    }
+#else
     process_pending_signals ();
+#endif
   unbind_to (gc_count, Qnil);
 }
 
