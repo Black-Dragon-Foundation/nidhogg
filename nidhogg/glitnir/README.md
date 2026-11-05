@@ -61,7 +61,10 @@ views (`kernels::{Pixels, PixelsMut, Mask}`).
 in the root's device pixels), within the given rectangles (the damage, or a draw's clip), from the frames' surfaces
 (sources, by layer id), bottom to top: layers without chrome are copied; a chromed layer's shadow tiles go over what
 lies below, then the layer is copied but for its four corner squares, which go through the corner mask, with the
-border ring when it has a border. Window layers are their frame's pixels (P1 composes a scroll as damage). Pixels no
+border ring when it has a border. Window layers are their frame's pixels (P1 composes a scroll as damage). A window
+layer with a card (`scene::set_card`, Rust only: a `Card`'s beneath colour, with the radius from the layer's chrome)
+then shows that colour in its four corner squares, outside the rounded rectangle, over the frame's pixels and labels;
+the rest of the window stays a plain copy. Pixels no
 layer covers are left alone. A pixel's value never depends on how the rectangles cut it, so composing the damage
 equals composing everything. A source whose device scale is not the target's is refused (`GLITNIR_E_STATE`) and the
 host draws that root the stock way. The time taken and the layers drawn fill the root's next frame-time entry.
@@ -82,7 +85,9 @@ rounding) and lists the output in the snapshot (`Committed::outputs`: rectangle,
 coordinates, `full` when nothing of its last picture can be kept). Scene damage inside the window goes to the output
 only; the snapped rectangle's overlap with the neighbours goes to both. A `glitnir_scroll` whose area holds the whole
 window becomes the output's scroll distance plus its exposed rows, and damage drawn before it moves with the pixels;
-any other scroll stays damage. An output that goes (demoted, hidden, removed) or moves damages its old rectangle on
+any other scroll stays damage. A card's corners are composed into the output's buffer like any scene pixel, and they
+move with its rows, so an output's scroll also damages each card corner square in it, where it is and where the
+scroll took it (at most eight r×r squares): a card window keeps its own output, with no mask surface. An output that goes (demoted, hidden, removed) or moves damages its old rectangle on
 the frame. `pool::Ring` is the output buffers' row arithmetic: buffers `min(2·view, 8192)` rows tall, a scroll moves
 the view's offset and rebases to the middle at the buffer's end, and `punch_rows` names the rows more than half a
 view away, whose pages the shell may release.
