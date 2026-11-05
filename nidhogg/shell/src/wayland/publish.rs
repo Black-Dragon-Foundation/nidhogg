@@ -519,6 +519,13 @@ impl Moving {
     fn keeps_front(&self) -> bool {
         !self.bare
     }
+
+    /// The leg is over at the frame of time `t`: root `g`'s record learns how far past its length that is.
+    fn ended(&self, g: u64, t: u64) {
+        if let Some(ns) = self.motion.overrun(t) {
+            glitnir::stats::leg_ended(g, ns);
+        }
+    }
 }
 
 /// What a backdrop's image should be made from, in the parent's device pixels.
@@ -543,8 +550,9 @@ struct Blur {
     /// What the image was last brought up to, and how the parent changed since.
     aim: Option<Aim>,
     dirty: Vec<Rect>,
-    /// Pixels recomputed that no stats entry has yet.
+    /// Pixels recomputed that no stats entry has yet, and the nanoseconds that took.
     recomputed: u64,
+    took_ns: u64,
 }
 
 impl Blur {
@@ -668,6 +676,7 @@ impl Stage {
                 aim: None,
                 dirty: Vec::new(),
                 recomputed: 0,
+                took_ns: 0,
             });
             (b.blur_px, b.at) = (blur_px, at);
         } else if self.blurs.remove(&id).is_some()
@@ -714,6 +723,7 @@ impl Stage {
             let Some((front, _)) = Stage::beneath(surfaces, b.parent) else {
                 continue;
             };
+            let began = now_ns();
             let changed = b.image.update(
                 &front.data,
                 front.w as usize,
@@ -723,6 +733,10 @@ impl Stage {
                 aim.scale,
                 &b.dirty,
             );
+            // an update that kept the cache recomputed nothing: it has no time to report
+            if b.image.recomputed_px() != 0 {
+                b.took_ns += now_ns() - began;
+            }
             b.dirty.clear();
             b.aim = Some(aim);
             b.recomputed += b.image.recomputed_px();
@@ -879,6 +893,7 @@ impl Stage {
             m.t = t;
             m.period = fed.period;
             if !m.settled && (s.front.is_none() || m.motion.unmap_due(t)) {
+                m.ended(s.glitnir_root, t);
                 m.last = false;
                 m.bare = true;
                 s.drawable = false;
@@ -894,6 +909,9 @@ impl Stage {
             }
             m.ticked = true;
             m.last = m.motion.running(t);
+            if !m.last {
+                m.ended(s.glitnir_root, t);
+            }
         }
         if !self.work(root) {
             self.clocks.remove(&root);
@@ -1180,19 +1198,22 @@ impl Stage {
     /// so its frames go unrecorded.
     fn record(&mut self, id: u64) {
         let now = now_ns();
-        let (mut ticks, mut late_ticks, mut ghost) = (0, 0, false);
+        let (mut ticks, mut late_ticks, mut tick_interval_ns, mut ghost) = (0, 0, 0, false);
         if let Some(m) = self.moves.get_mut(&id) {
             ghost = m.ghost;
             if std::mem::take(&mut m.ticked) {
                 ticks = 1;
-                late_ticks = u32::from(m.tick_ns != 0 && now - m.tick_ns > m.period * 5 / 4);
+                if m.tick_ns != 0 {
+                    tick_interval_ns = now - m.tick_ns;
+                    late_ticks = u32::from(tick_interval_ns > m.period * 5 / 4);
+                }
                 m.tick_ns = now;
             }
         }
-        let backdrop_px = self
-            .blurs
-            .get_mut(&id)
-            .map_or(0, |b| std::mem::take(&mut b.recomputed));
+        let (backdrop_px, blur_ns) = self.blurs.get_mut(&id).map_or((0, 0), |b| {
+            let took = std::mem::take(&mut b.took_ns);
+            (std::mem::take(&mut b.recomputed), took)
+        });
         let Some(s) = self.surfaces.get_mut(&id) else {
             return;
         };
@@ -1210,6 +1231,8 @@ impl Stage {
             damage_px: s.damage_px,
             painted_px: s.painted_px,
             backdrop_px,
+            tick_interval_ns,
+            blur_ns,
             backfill: 2,
             ticks,
             late_ticks,
