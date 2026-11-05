@@ -29,14 +29,18 @@
 ;; waitpid, `maybe_quit' processes the pending signal, and
 ;; `gobble_input' reads the C-g and sets `quit-flag'.  `probably_quit'
 ;; (src/eval.c) used to check the flag only before it processed the
-;; signals, so the wait went on until another signal came (a child's
-;; SIGCHLD, more input) or the program ended.
+;; signals, so the wait went on until another signal came or the
+;; program ended.  The usual other signal is the busy cursor's: every
+;; command starts an atimer `hourglass-delay' (1 s) away, whose SIGALRM
+;; interrupts waitpid once.  A C-g within that second quit; a later one
+;; waited for the program.
 ;;
-;; The order is forced: the key goes in once the child's frame is up,
-;; C-g once the program has started and the child's main thread sleeps
-;; in the kernel's wait (/proc/PID/wchan), and nothing else signals
-;; the child, so without the fix the row is red every run.  The bound
-;; on the wait is 10 s for a program that sleeps 30 s.
+;; The order is forced: the child has no busy cursor, the key goes in
+;; once the child's frame is up, C-g once the program has started and
+;; the child's main thread sleeps in the kernel's wait
+;; (/proc/PID/wchan), and nothing else signals the child, so without
+;; the fix the row is red every run.  The bound on the wait is 10 s for
+;; a program that sleeps 30 s.
 
 ;;; Code:
 
@@ -91,6 +95,9 @@ opens with `make-frame-on-tty'; else to the child's controlling tty."
                        "-nw" "-Q" "--eval"
                        (prin1-to-string
                         `(progn
+                           ;; no busy-cursor timer: its SIGALRM, `hourglass-delay'
+                           ;; after the command starts, is the other signal
+                           (setq display-hourglass nil)
                            (defun nhq-run ()
                              (interactive)
                              (write-region
@@ -108,15 +115,23 @@ opens with `make-frame-on-tty'; else to the child's controlling tty."
                                                  (define-key m "x" #'nhq-run)
                                                  m)))
                                  emulation-mode-map-alists)
-                           ,@(and other-tty
-                                  `((select-frame-set-input-focus
-                                     (make-frame-on-tty ,(process-tty-name holder)
-                                                        "xterm"))))
-                           (write-region "" nil ,ready nil 'silent))))))
+                           (write-region
+                            (condition-case err
+                                (progn
+                                  ,@(and other-tty
+                                         ;; as server.el makes an emacsclient's frame
+                                         `((select-frame-set-input-focus
+                                            (make-frame '((window-system . nil)
+                                                          (tty . ,(process-tty-name holder))
+                                                          (tty-type . "xterm"))))))
+                                  "ok")
+                              (error (format "%S" err)))
+                            nil ,ready nil 'silent))))))
           (let ((tty (or holder child))
                 (pid (process-id child)))
-            (unless (quit-tty-tests--wait (lambda () (file-exists-p ready)) 30)
-              (error "The child's frame never came up"))
+            (let ((up (quit-tty-tests--wait (lambda () (quit-tty-tests--read ready)) 30)))
+              (unless (equal up "ok")
+                (error "The child's frame did not come up: %S" up)))
             (process-send-string tty "x")
             (unless (quit-tty-tests--wait (lambda () (file-exists-p started)) 30)
               (error "The program never started"))
