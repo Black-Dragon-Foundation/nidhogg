@@ -22,8 +22,9 @@
 #   --prefix DIR        an unpacked Nidhogg (DIR/bin/nidhogg)
 #   --compositor C      sway (default: headless sway, wlroots pixman renderer), mutter (headless mutter) or recorder
 #                       (nh-recorder, our own recording compositor, one output).  The T3 compositors: kwin (KWin's
-#                       --virtual backend, one output, scale by kscreen-doctor; it needs a render node, handed to the
-#                       container) and labwc (wlroots headless, pixman,
+#                       --virtual backend, one output, scale by kscreen-doctor; it composites on its software render
+#                       device, Mesa's llvmpipe over /dev/udmabuf, which is handed to the container, and on no GPU,
+#                       the same on every machine) and labwc (wlroots headless, pixman,
 #                       scale by wlr-randr).  Every compositor binary runs as a copy without file capabilities.
 #   --recorder BIN      the nh-recorder binary (default $REC); mounted at /opt/nh-recorder in a container.  On sway it
 #                       serves the rows a virtual pointer instead (NHWL_GUI_VPOINTER: BIN --virtual-pointer), which
@@ -262,8 +263,8 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
     gl=$(printf '%s\n' "$info" | grep -E '^(Compositing is|Compositing Type|OpenGL (renderer|version) string)')
     printf '%s\n' "$gl" | sed 's/^/gui.sh: kwin: /'
     if ! printf '%s\n' "$gl" | grep -q '^Compositing is active'; then
-      echo "gui.sh: KWin composites nothing on this machine (no OpenGL scene on its render node), so it sends no frame"
-      echo "gui.sh: callbacks and the rows cannot run; render nodes: $(cd /sys/class/drm 2>/dev/null && for n in renderD*; do printf '%s=%s ' "$n" "$(basename "$(readlink -f "$n/device/driver")")"; done)"
+      echo "gui.sh: KWin composites nothing on this machine (no OpenGL scene on its render device), so it sends no frame"
+      echo "gui.sh: callbacks and the rows cannot run; /dev/udmabuf: $(ls -l /dev/udmabuf 2>&1); /dev/dri: $(ls /dev/dri 2>&1 | tr '\n' ' ')"
       cat "$clog"
       exit 1
     fi
@@ -471,8 +472,12 @@ if [ -n "$container" ]; then
   out=
   mounts=(-v "$checkout:/src:ro,z" -v "$prefix:$inprefix:ro,z")
   [ "$userec" = 0 ] || mounts+=(-v "$recorder:/opt/nh-recorder:ro,z")
-  # KWin composites only on a render node (6.8 has no QPainter scene): without one it manages windows and shows none
-  if [ "$compositor" = kwin ] && [ -d /dev/dri ]; then mounts+=(--device /dev/dri); fi
+  # KWin composites only on a render device (6.8 has no QPainter scene): without one it manages windows and shows none.
+  # It gets /dev/udmabuf alone, never /dev/dri: with udmabuf and no DRM device KWin 6.8 renders on its software device
+  # (llvmpipe), the same on every machine.  A render node made it depend on the host: vgem composited on GitHub's Azure
+  # runners and not on an AWS one, whose first DRM device is a simpledrm framebuffer (2026-11-05).  SELinux labels off:
+  # udmabuf has no container label (a Fedora host denied it).
+  if [ "$compositor" = kwin ] && [ -c /dev/udmabuf ]; then mounts+=(--device /dev/udmabuf --security-opt label=disable); fi
   # a caller's GLITNIR_GUI_SOCKDIR (a host directory) is where the run's XDG_RUNTIME_DIR is made, so the caller can see it
   sockenv=()
   if [ -n "${GLITNIR_GUI_SOCKDIR:-}" ]; then
@@ -535,8 +540,8 @@ for t in $need; do
   command -v "$t" > /dev/null || { echo "gui.sh: $t not found (the host needs $need; or use --container)" >&2; exit 1; }
 done
 # a KWin that composites nothing answers no frame callback, and a lane on it proves little
-if [ "$compositor" = kwin ] && ! compgen -G '/dev/dri/renderD*' > /dev/null; then
-  echo "gui.sh: KWin needs a render node (/dev/dri/renderD*); CI gets one from vgem" >&2; exit 1
+if [ "$compositor" = kwin ] && ! { [ -r /dev/udmabuf ] && [ -w /dev/udmabuf ]; }; then
+  echo "gui.sh: KWin needs /dev/udmabuf, readable and writable, for its software render device (CI: chmod 666)" >&2; exit 1
 fi
 run=$(mktemp -d "${TMPDIR:-/tmp}/glitnir-gui.XXXXXX")
 # XDG_RUNTIME_DIR holds only sockets, and a Unix socket path is limited to 107 bytes: it sits in a short directory.
