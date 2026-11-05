@@ -1116,6 +1116,27 @@ own count is its root's."
                             (- (frame-pixel-height p) (frame-pixel-height c) 1)
                             (1- (frame-pixel-width p)) (1- (frame-pixel-height p)))))))))
 
+(ert-deftest nhwl-gui/child-frame-edges-start-at-its-position ()
+  "A child frame made hidden, then sized, placed and shown (drgnx's palette: posframe's order) has its outer, native
+and inner edges in its parent from its position, as `frame-position' says, not from (0, 0).  Pattern D: the frame's
+own records, read back with no wait."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((root (selected-frame)) (c nil))
+    (unwind-protect
+        (progn
+          (setq c (make-frame `((parent-frame . ,root) (minibuffer . nil) (undecorated . t) (visibility . nil)
+                                (internal-border-width . 8) (tool-bar-lines . 0) (menu-bar-lines . 0))))
+          (set-frame-size c 300 120 t)
+          (set-frame-position c 160 108)
+          (make-frame-visible c)
+          (let ((w (frame-pixel-width c)) (h (frame-pixel-height c)))
+            (ert-info ((format "position %S" (frame-position c)))
+              (should (equal (frame-position c) '(160 . 108)))
+              (should (equal (frame-edges c 'outer-edges) (list 160 108 (+ 160 w) (+ 108 h))))
+              (should (equal (frame-edges c 'native-edges) (list 160 108 (+ 160 w) (+ 108 h))))
+              (should (equal (frame-edges c 'inner-edges) (list 168 116 (+ 160 w -8) (+ 108 h -8)))))))
+      (when (frame-live-p c) (delete-frame c t)))))
+
 (ert-deftest nhwl-gui/snapshot-holds-the-tree ()
   "`glitnir-snapshot' of a root shows its child frames where they sit, and only while they are shown."
   (skip-unless (nhwl-gui--recorder-p))
