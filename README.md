@@ -704,6 +704,14 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   (`call-process`'s waitpid, a blocking read) slept on until another signal came, usually the busy cursor's SIGALRM
   `hourglass-delay` after the command started, so only a C-g within that second worked. Test:
   `test/src/nidhogg-tests/quit-tty-tests.el` (the controlling tty and another tty, C-g after the wait has started).
+- Variable watchers without the obarray walk (`src/data.c`, `src/eval.c`; a stock cost, kept in this group until the
+  series is rewritten): `add-variable-watcher` and `remove-variable-watcher` walk every interned symbol to give a
+  variable's aliases its write trap, which cost over 100 µs a call in a loaded session. `defvaralias` now records the
+  variable it points an alias at (a weak table; every alias chain ends in such a link), and the walk runs only for a
+  recorded variable, so a variable with no alias pays nothing and the aliases still share their base's watchers.
+  `(nidhogg--variable-watcher-walks)` counts the walks. Test: `test/src/nidhogg-tests/varwatch-tests.el` (no walk for
+  unaliased variables; a watcher added to or removed from a base or an alias, aliases made before and after, chains,
+  `defvaralias` of a watched variable).
 - Waits and the redisplay budget: a main-thread wait on a worker pushes the watchdog's `worker-wait` (or `treesit-wait`)
   phase and counts its time in `:phase-ms`; it never enters `select`, so the watchdog's span runs through it. Every
   `redisplay_internal` call starts a wait budget of `nidhogg-redisplay-wait-budget` milliseconds (default 1), spent
