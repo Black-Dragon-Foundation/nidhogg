@@ -702,6 +702,31 @@ Everything goes back after: one window on `*scratch*', the frame's divider width
          (should (eql 0 (cdr (gui-runner-pixel-diff with without other-rect))))
          (should (> (cdr (gui-runner-pixel-diff with without gap)) 0)))))))
 
+(ert-deftest glitnir-card-keeps-off-the-tab-bar ()
+  "With the tab bar on, the look's card in the top window draws nothing over the bars above the windows.
+The shadow and the ring stay inside the window area: the band from the frame's top to the window grabs the same with
+the card as without."
+  (skip-unless (glitnir-fx--live-p))
+  (let ((tabs (bound-and-true-p tab-bar-mode)))
+    (unwind-protect
+        (progn
+          (tab-bar-mode 1)
+          (glitnir-fx--with-cards
+           glitnir-fx--card-look
+           (lambda (left right)
+             (let* ((box (glitnir-fx--card-box left))
+                    (top (window-pixel-top left))
+                    (band (list (- (nth 0 box) (window-pixel-left left)) (- (nth 1 box) top)
+                                (frame-pixel-width) top))
+                    (with (gui-runner-screen-grab)))
+               (should (>= top (tab-bar-height nil t)))
+               (should (> (tab-bar-height nil t) 0))
+               (dolist (k '(corner-radius shadow ring)) (set-window-parameter left k nil))
+               (glitnir-fx--redraw left right)
+               (should (eql 0 (cdr (gui-runner-pixel-diff with (gui-runner-screen-grab) band))))))))
+      (tab-bar-mode (if tabs 1 -1))
+      (glitnir-fx--redraw (selected-window)))))
+
 (ert-deftest glitnir-card-typing-damage ()
   "50 characters typed in a card window: no commit's damage reaches a corner square, the cursor being in the middle."
   (skip-unless (glitnir-fx--recorder-p))
