@@ -32,6 +32,14 @@
   (should-not (glitnir-active-p))
   (should (memq glitnir-enable '(t nil))))
 
+(ert-deftest glitnir/no-paint-times-in-batch ()
+  ;; Pattern D (pure): the batch frame is never painted, so a perf probe that reads the present time sees none and
+  ;; waits for nothing; the clock is the monotonic one and runs.
+  (should-not (glitnir--last-paint))
+  (let ((a (glitnir--now-ns)) (b (glitnir--now-ns)))
+    (should (natnump a))
+    (should (<= a b))))
+
 (ert-deftest glitnir/in-the-configuration ()
   (should (string-search "--with-glitnir" system-configuration-options)))
 
