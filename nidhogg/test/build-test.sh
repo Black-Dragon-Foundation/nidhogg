@@ -274,6 +274,16 @@ recent=$(sed -n 's/.*"${v#\* }" -ge \([0-9]*\).*/\1/p' nidhogg/build.sh | head -
 [ -n "$pin" ] && [ "$pin" -ge "$floor" ] && [ "$recent" = "$floor" ] || fail "build.sh's Rust (pin 1.$pin, check 1.$recent) and configure's floor 1.$floor disagree"
 grep -qx rust nidhogg/deps/arch.build || fail "arch.build lacks rust"
 grep -qx rust nidhogg/deps/macos.build || fail "macos.build lacks rust"
+# a stage after the build mounts the cargo target the build linked src/glitnir-target to, without being given it again
+# (the pack stage's make install runs cargo through that link)
+ctb=$(mktemp -d); printf '%s\n' /tmp/ct-host > "$ctb/.nidhogg-cargo-target"
+run -- --dry-run --container ubuntu-26.04 --stage pack --build-dir "$ctb" --out "$ctb/n.tar.xz"
+rcis 0; has "-v /tmp/ct-host:/cargotarget:z"
+run -- --dry-run --container ubuntu-26.04 --stage check --build-dir "$ctb"
+rcis 0; has "-v /tmp/ct-host:/cargotarget:z"
+run NIDHOGG_BUILD_CARGO_TARGET=/tmp/ct-other -- --dry-run --container ubuntu-26.04 --stage pack --build-dir "$ctb" --out "$ctb/n.tar.xz"
+rcis 0; has "-v /tmp/ct-other:/cargotarget:z"
+rm -r "$ctb"
 if grep -nE 'declare -A|mapfile|readarray|\$\{[a-zA-Z_]+(,,|\^\^)\}|;&|\|&' nidhogg/build.sh; then fail "bash 4 construct in build.sh"; fi
 if command -v shellcheck >/dev/null; then shellcheck --severity=warning nidhogg/build.sh nidhogg/test/*.sh || fail shellcheck; fi
 exit "$fails"

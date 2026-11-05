@@ -190,6 +190,12 @@ elif [ "$DRY" = 0 ]; then
 fi
 
 if [ "$MODE" = container ]; then S=/src B=/build; else S=$ROOT B=$BUILD_DIR; fi
+# The build links src/glitnir-target to the cargo target, and every later stage runs make (the pack stage's install
+# runs cargo) through that link: a check or pack stage not given NIDHOGG_BUILD_CARGO_TARGET takes the one the build had.
+CT_NOTE=$BUILD_DIR/.nidhogg-cargo-target
+if [ -z "$CARGO_TARGET" ] && { [ "$STAGE" = check ] || [ "$STAGE" = pack ]; } && [ -f "$CT_NOTE" ]; then
+  CARGO_TARGET=$(cat "$CT_NOTE")
+fi
 # the configure cache and the Glitnir cargo target, mounted in a container, as given on the host
 for v in CONFIG_CACHE:CFC:/configcache CARGO_TARGET:CT:/cargotarget; do
   IFS=: read -r src dst mnt <<<"$v"
@@ -198,6 +204,9 @@ for v in CONFIG_CACHE:CFC:/configcache CARGO_TARGET:CT:/cargotarget; do
   if [ "$MODE" = container ]; then printf -v "$dst" '%s' "$mnt"; else printf -v "$dst" '%s' "${!src}"; fi
 done
 [ -z "$CARGO_TARGET" ] || [ -n "$GLITNIR" ] || CT=""
+if [ "$DRY" = 0 ] && { [ "$STAGE" = all ] || [ "$STAGE" = build ]; }; then
+  if [ -n "$CT" ]; then printf '%s\n' "$CARGO_TARGET" > "$CT_NOTE"; else rm -f "$CT_NOTE"; fi
+fi
 if [ -n "$LISP_CACHE" ]; then
   if [ "$MODE" = container ]; then LC=/lispcache
   elif [ "$DRY" = 1 ]; then LC=$LISP_CACHE
