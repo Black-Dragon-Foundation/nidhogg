@@ -278,4 +278,12 @@ Return the stalls taken after the span ended."
                      (memory-use-counts))))
       (should (equal (cl-mapcar #'- b a) (cl-mapcar #'- c b))))))
 
+;; The stall watchdog runs on Linux only so far (`nidhogg-watchdog--start' signals elsewhere), so on another
+;; platform this file's tests skip instead of failing.
+(unless (eq system-type 'gnu/linux)
+  (dolist (test (ert-select-tests t t))
+    (when (equal (ert-test-file-name test) load-file-name)
+      (setf (ert-test-body test)
+            (lambda () (ert-skip "the stall watchdog runs on Linux only"))))))
+
 ;;; watchdog-sample-tests.el ends here

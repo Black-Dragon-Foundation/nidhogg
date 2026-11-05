@@ -696,5 +696,107 @@ that, after it, sets the old mask back with `pthread_sigmask'."
     (should (> creates 0))
     (should-not bad)))
 
+;;; The test-pattern line
+;;
+;; A `cond' file names how its tests keep a race out on a `;; test-pattern: handshake' line, an exact line
+;; within its first 15 lines, beside the class line.  `handshake': the test parks the job or the child at a
+;; named point (`nidhogg-workers--pause', `--await', `--release') and goes on from what is announced, never from a
+;; sleep, a liveness poll or a timer used as a marker.  A wait that polls with a deadline for what the other side
+;; announces (`accept-process-output' with a time) is how the park is awaited, so it is allowed.  The `cond' files without the line are listed in
+;; nidhogg/test/pattern-pending.txt (`FILE # reason'); the list only shrinks, so every new `cond' file carries it.
+
+(defconst test-pattern-lint--pending-file
+  (expand-file-name "nidhogg/test/pattern-pending.txt" source-directory)
+  "The `cond' files that have no `;; test-pattern:' line yet.")
+
+(defconst test-pattern-lint--handshake-banned
+  '(process-live-p run-at-time run-with-timer run-with-idle-timer)
+  "What a handshake test never calls, besides a fixed pause.")
+
+(defun test-pattern-lint--file-patterns (string)
+  "The patterns of the `;; test-pattern: P…' line in STRING, as symbols; `bad' for a malformed line."
+  (let (patterns)
+    (dolist (line (seq-take (split-string string "\n") 15))
+      (when (string-prefix-p ";; test-pattern:" line)
+        (setq patterns
+              (if (string-match "\\`;; test-pattern: \\(handshake\\)\\'" line)
+                  (list (intern (match-string 1 line)))
+                'bad))))
+    patterns))
+
+(defun test-pattern-lint--handshake-violations (string)
+  "Every handshake-rule violation in the test file text STRING, as (TEST DETAIL)."
+  (let* ((forms (test-class-lint--read-forms string))
+         (helpers (test-class-lint--helpers forms))
+         out)
+    (dolist (f forms)
+      (when (eq (car-safe f) 'ert-deftest)
+        (pcase-let* ((`(,name ,_tags ,body) (test-class-lint--parse-test f))
+                     (nodes (test-class-lint--nodes body helpers)))
+          (dolist (d (append (test-class-lint--fixed-pause nodes)
+                             (seq-filter (lambda (s) (test-class-lint--uses-p nodes (list s)))
+                                         test-pattern-lint--handshake-banned)))
+            (push (list name (format "%s" d)) out)))))
+    (nreverse out)))
+
+(defun test-pattern-lint--pending ()
+  "The files of the pending list, relative to the test directory."
+  (let (rows)
+    (when (file-readable-p test-pattern-lint--pending-file)
+      (dolist (line (split-string (test-class-lint--read-file test-pattern-lint--pending-file) "\n"))
+        (unless (or (string-empty-p (string-trim line)) (string-prefix-p "#" line))
+          (push (string-trim (car (split-string line " # "))) rows))))
+    (nreverse rows)))
+
+(defun test-pattern-lint--cond-files ()
+  "The `cond' test files: (NAME . TEXT)."
+  (let (out)
+    (dolist (file (test-class-lint--test-files))
+      (let ((text (test-class-lint--read-file file)))
+        (when (eq (test-class-lint--file-class text) 'cond)
+          (push (cons (file-name-nondirectory file) text) out))))
+    (nreverse out)))
+
+(ert-deftest test-pattern/every-cond-file-has-a-pattern-or-is-pending ()
+  (let ((pending (test-pattern-lint--pending)) missing malformed)
+    (pcase-dolist (`(,name . ,text) (test-pattern-lint--cond-files))
+      (let ((p (test-pattern-lint--file-patterns text)))
+        (cond ((eq p 'bad) (push name malformed))
+              ((and (null p) (not (member name pending))) (push name missing)))))
+    (should-not malformed)
+    (should-not missing)))
+
+(ert-deftest test-pattern/pending-rows-only-shrink ()
+  (let ((files (test-pattern-lint--cond-files)) stale)
+    (dolist (row (test-pattern-lint--pending))
+      (let ((text (cdr (assoc row files))))
+        (when (or (null text) (test-pattern-lint--file-patterns text))
+          (push row stale))))
+    (should-not stale)))
+
+(ert-deftest test-pattern/handshake-files-park-and-announce ()
+  (let (bad)
+    (pcase-dolist (`(,name . ,text) (test-pattern-lint--cond-files))
+      (when (memq 'handshake (ensure-list (test-pattern-lint--file-patterns text)))
+        (dolist (v (test-pattern-lint--handshake-violations text))
+          (push (format "%s: %s: %s" name (car v) (cadr v)) bad))))
+    (should-not (nreverse bad))))
+
+(ert-deftest test-pattern/the-pattern-lints-bite ()
+  (should (equal '(handshake) (test-pattern-lint--file-patterns ";; test-pattern: handshake\n")))
+  (should-not (test-pattern-lint--file-patterns "a\n"))
+  (should (eq 'bad (test-pattern-lint--file-patterns ";; test-pattern: gated\n")))
+  (should (eq 'bad (test-pattern-lint--file-patterns ";; test-pattern: handshake \n")))
+  (should-not (test-pattern-lint--file-patterns (concat (make-string 15 ?\n) ";; test-pattern: handshake\n")))
+  (should-not (test-pattern-lint--handshake-violations
+               "(ert-deftest my/a () (nidhogg-workers--release 'x) (accept-process-output p 1) (sit-for 0))\n"))
+  (dolist (body '("(process-live-p p)" "(sleep-for 1)" "(sit-for 1)" "(run-at-time 1 nil #'ignore)"
+                  "(run-with-timer 1 nil #'ignore)"))
+    (should (test-pattern-lint--handshake-violations
+             (format "(ert-deftest my/a () %s)\n" body))))
+  ;; a helper's call counts
+  (should (test-pattern-lint--handshake-violations
+           "(defun my--wait (p) (process-live-p p))\n(ert-deftest my/a () (my--wait 1))\n")))
+
 (provide 'test-class-lint-tests)
 ;;; test-class-lint-tests.el ends here
