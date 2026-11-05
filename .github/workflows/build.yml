@@ -31,13 +31,15 @@ on:
         description: "Narrowed: the GUI lanes to run, space-separated (empty: every lane)"
         default: ""
 
+# packages: the prebuilt CI images (the images job)
 permissions:
   contents: read
+  packages: read
 
 # Which runs write caches (README.md, "Caches"), within the repository's 10 GB: nidhogg-31 every one; a pull request
-# from a branch of this repository the small ones, the exact-key families (compiled Lisp, tarballs, the pinned
-# packages) and ccache, not the large prefix-restored ones (the native crates' 1.2 GB, the package downloads,
-# Homebrew), which it reads from nidhogg-31 anyway, and the pr-caches job keeps only its newest run's set; ci/*
+# from a branch of this repository the small ones, the exact-key families (compiled Lisp, tarballs, configure's
+# checks, the pinned packages) and ccache, not the large prefix-restored ones (the native crates' 1.2 GB, Glitnir's
+# cargo targets), which it reads from nidhogg-31 anyway, and the pr-caches job keeps only its newest run's set; ci/*
 # branches, a fork's pull request and a tag none (they restore only).  GitHub scopes a pull request's entries to its
 # merge ref (refs/pull/N/merge): only that pull request's later runs read them, never nidhogg-31 or another branch.
 # Every run reads its own ref's and nidhogg-31's.
@@ -121,6 +123,17 @@ jobs:
           fi
           echo "lanes=$(echo "$want" | tr ' ' '\n' | jq -Rnc '[inputs | select(length > 0)]')" | tee -a "$GITHUB_OUTPUT"
 
+  # The prebuilt images the Linux jobs run in (images.yml, nidhogg/ci/image.sh): each one's digest, published here for
+  # a push to nidhogg-31 or a run by hand when its tag is missing; a pull request's run never publishes, and a job
+  # whose image this left empty builds it for itself.  Not in the gate: it makes a cache, not a verdict.
+  images:
+    name: Images
+    if: ${{ inputs.scope != 'macos' }}
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/images.yml
+
   tree:
     name: Patch series rules
     runs-on: ubuntu-24.04
@@ -178,7 +191,7 @@ jobs:
 
   linux:
     name: Linux (${{ matrix.distro }})
-    needs: changes
+    needs: [changes, images]
     if: ${{ !cancelled() && inputs.scope != 'macos' && needs.changes.outputs.linux != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 150
@@ -195,12 +208,11 @@ jobs:
       # later failing step (the tarball test) keeps what the build produced.  A run reads its own branch's entries and
       # nidhogg-31's (GitHub's scoping: never another branch's or a pull request's); which runs write which caches is
       # CACHE_SAVE and CACHE_SAVE_ALL above.  README.md, "Caches".
-      - name: Source tree hash, compiled-Lisp inputs, file times
+      - name: Source tree hash, compiled-Lisp inputs
         id: tree
         run: |
           echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
-          echo "lisp=$(bash nidhogg/ci/lisp-key.sh)" >> "$GITHUB_OUTPUT"
-          bash nidhogg/ci/set-mtimes.sh
+          echo "abi=$(bash nidhogg/ci/lisp-key.sh --abi)" >> "$GITHUB_OUTPUT"
       # The built tarball, keyed by the exact source tree (git's tree hash of HEAD), the distro and build.sh: an
       # unchanged tree reuses its tarball (saved only after the build and Emacs's checks passed) and the tarball test, the
       # artifact upload and drgnx's suite still run.  Never for a release tag: a release is built fresh, so its BUILDINFO
@@ -215,6 +227,15 @@ jobs:
       - name: The cached tarball is intact
         if: ${{ steps.tb.outputs.cache-hit == 'true' }}
         run: cd dist && sha256sum -c -- *.sha256
+      # every build.sh stage below runs in it and installs nothing (the build packages, ccache, gnutls-utils)
+      - name: The build image
+        id: img
+        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        uses: ./.github/actions/nh-image
+        with:
+          name: build-${{ matrix.distro }}
+          ref: ${{ matrix.distro == 'fedora-45' && needs.images.outputs.build_fedora_45 || needs.images.outputs.build_ubuntu_26_04 }}
+          variable: NIDHOGG_BUILD_IMAGE
       # ccache for the C compile.  ccache hashes the preprocessed source and checks the compiler by content (build.sh), so
       # a restored entry can only be a correct one: it may come from any earlier run (a prefix match).  The key carries the
       # distro and the compiler's package set (gcc, from the build dependency list), then the run, so a rerun saves anew.
@@ -226,33 +247,55 @@ jobs:
           path: ${{ runner.temp }}/ccache
           key: ccache-${{ matrix.distro }}-gcc-${{ hashFiles(format('nidhogg/deps/{0}.build', matrix.distro)) }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: ccache-${{ matrix.distro }}-gcc-${{ hashFiles(format('nidhogg/deps/{0}.build', matrix.distro)) }}-
-      - name: Package download cache (dnf, apt)
-        id: pk
-        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/pkg-cache
-          key: pkgs-${{ matrix.distro }}-${{ hashFiles(format('nidhogg/deps/{0}.build', matrix.distro)) }}
-          restore-keys: pkgs-${{ matrix.distro }}-
       # The build's compiled Lisp (generated files under lisp/, .elc, .eln): exact key only.  The Lisp compile is the
       # dominant cost, the ccache above does not touch it, and a partly stale set would not be rebuilt correctly.  Keyed
-      # by the Lisp and C-side inputs (nidhogg/ci/lisp-key.sh: .eln files embed the Emacs build's ABI hash, which the C
-      # side determines), build.sh (the configure flags) and the distro; build.sh also refuses an entry made by another gcc.
-      # Never for a release tag: a shipped tarball's compiled Lisp is compiled in its own run.
-      - name: Compiled Lisp (same Lisp and C sources)
+      # on what Emacs's own .eln check hashes, not the C bodies (nidhogg/ci/lisp-key.sh --abi: the Lisp side, the
+      # primitives' signatures, comp.c and the headers), the build image (gcc, libgccjit, the configuration), build.sh
+      # (the configure flags) and the distro, so a change to a C body reuses it.  After make, build.sh's guard
+      # (nidhogg/eln-guard.el) checks the restored .eln files against the new binary and builds the Lisp cold on a
+      # mismatch; build.sh also refuses an entry made by another gcc or configure line.  Never restored for nidhogg-31 or a
+      # release tag: their Lisp is compiled cold, so what ships and what the pull requests restore was never restored.
+      - name: Compiled Lisp (same Lisp side and ABI)
         id: lc
-        if: ${{ steps.tb.outputs.cache-hit != 'true' && !startsWith(github.ref, 'refs/tags/') }}
+        if: ${{ steps.tb.outputs.cache-hit != 'true' && !startsWith(github.ref, 'refs/tags/') && github.ref != 'refs/heads/nidhogg-31' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/lisp-cache
-          key: lisp-${{ matrix.distro }}-${{ hashFiles(format('nidhogg/deps/{0}.build', matrix.distro)) }}-${{ steps.tree.outputs.lisp }}-${{ hashFiles('nidhogg/build.sh') }}
+          key: lisp-${{ matrix.distro }}-${{ steps.img.outputs.id }}-${{ steps.tree.outputs.abi }}-${{ hashFiles('nidhogg/build.sh') }}
+      # autoconf's cache of configure's checks (build.sh, NIDHOGG_BUILD_CONFIG_CACHE): exact key only, on everything
+      # configure is made from and runs with (configure.ac, m4/, build-aux/, autogen.sh, the version, build.sh's
+      # flags, the build image's packages); a configure that fails with it runs again cold
+      - name: Configure's checks (same configure inputs, same image)
+        id: cf
+        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/config-cache
+          key: configure-${{ matrix.distro }}-${{ steps.img.outputs.id }}-${{ hashFiles('configure.ac', 'm4/**', 'build-aux/**', 'autogen.sh', 'nidhogg/version', 'nidhogg/build.sh') }}
+      # Glitnir's cargo target directory (the glue, the shell, Glitnir and their vendored crates; build.sh,
+      # NIDHOGG_BUILD_CARGO_TARGET): keyed on the Cargo.lock files and the image (rustc), restored from the newest entry
+      # of the same lock, as the native crates' are; cargo rebuilds what the file times below make stale
+      - name: Glitnir's cargo target (same Cargo.lock files, same image)
+        id: ct
+        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/glitnir-target
+          key: glitnir-target-${{ matrix.distro }}-${{ steps.img.outputs.id }}-${{ hashFiles('nidhogg/glue/Cargo.lock', 'nidhogg/shell/Cargo.lock', 'nidhogg/glitnir/Cargo.lock') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: glitnir-target-${{ matrix.distro }}-${{ steps.img.outputs.id }}-${{ hashFiles('nidhogg/glue/Cargo.lock', 'nidhogg/shell/Cargo.lock', 'nidhogg/glitnir/Cargo.lock') }}-
+      # each file's last commit time, and the files changed since the commit the cargo target was built from the
+      # current time (set-mtimes.sh --since: a commit's time can be older than a target built from its parent)
+      - name: File times (each file's last commit; what changed since the cargo target, now)
+        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        run: bash nidhogg/ci/set-mtimes.sh --since "$RUNNER_TEMP/glitnir-target/.nidhogg-source-commit"
       - name: Build
         id: build
         if: ${{ steps.tb.outputs.cache-hit != 'true' }}
         env:
-          NIDHOGG_BUILD_PKG_CACHE: ${{ runner.temp }}/pkg-cache
           NIDHOGG_BUILD_CCACHE: ${{ runner.temp }}/ccache
           NIDHOGG_BUILD_LISP_CACHE: ${{ runner.temp }}/lisp-cache
+          NIDHOGG_BUILD_CONFIG_CACHE: ${{ runner.temp }}/config-cache
+          NIDHOGG_BUILD_CARGO_TARGET: ${{ runner.temp }}/glitnir-target
         run: |
           bash nidhogg/build.sh --container "${{ matrix.distro }}" --stage build --memory 12g --jobs 4 --build-dir "$RUNNER_TEMP/build"
       # saved right after the build, before Emacs's checks and the tarball; ccache also after a failed build (its
@@ -264,18 +307,30 @@ jobs:
         with:
           path: ${{ runner.temp }}/ccache
           key: ccache-${{ matrix.distro }}-gcc-${{ hashFiles(format('nidhogg/deps/{0}.build', matrix.distro)) }}-${{ github.run_id }}-${{ github.run_attempt }}
-      - name: Save package downloads
-        if: ${{ always() && env.CACHE_SAVE_ALL == 'true' && steps.build.outcome == 'success' && steps.pk.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/pkg-cache
-          key: pkgs-${{ matrix.distro }}-${{ hashFiles(format('nidhogg/deps/{0}.build', matrix.distro)) }}
+      # nidhogg-31 saves its cold build's (it restores none); a run whose image was built here saves none (local-RUN)
       - name: Save compiled Lisp
-        if: ${{ always() && env.CACHE_SAVE == 'true' && steps.build.outcome == 'success' && steps.lc.outcome == 'success' && steps.lc.outputs.cache-hit != 'true' }}
+        if: ${{ always() && env.CACHE_SAVE == 'true' && steps.build.outcome == 'success' && !startsWith(steps.img.outputs.id, 'local-') && ((steps.lc.outcome == 'success' && steps.lc.outputs.cache-hit != 'true') || (steps.lc.outcome == 'skipped' && github.ref == 'refs/heads/nidhogg-31')) }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/lisp-cache
-          key: lisp-${{ matrix.distro }}-${{ hashFiles(format('nidhogg/deps/{0}.build', matrix.distro)) }}-${{ steps.tree.outputs.lisp }}-${{ hashFiles('nidhogg/build.sh') }}
+          key: lisp-${{ matrix.distro }}-${{ steps.img.outputs.id }}-${{ steps.tree.outputs.abi }}-${{ hashFiles('nidhogg/build.sh') }}
+      - name: Save configure's checks
+        if: ${{ always() && env.CACHE_SAVE == 'true' && steps.build.outcome == 'success' && steps.cf.outputs.cache-hit != 'true' && !startsWith(steps.img.outputs.id, 'local-') }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/config-cache
+          key: configure-${{ matrix.distro }}-${{ steps.img.outputs.id }}-${{ hashFiles('configure.ac', 'm4/**', 'build-aux/**', 'autogen.sh', 'nidhogg/version', 'nidhogg/build.sh') }}
+      # nidhogg-31 only (about 0.2 GB per distro; a pull request restores nidhogg-31's), pruned of cargo's incremental
+      # data; the entry names its commit only after a build that passed (build.sh)
+      - name: Leave cargo's incremental data out of the cargo target
+        if: ${{ always() && env.CACHE_SAVE_ALL == 'true' && steps.build.outcome == 'success' }}
+        run: find "$RUNNER_TEMP/glitnir-target" -type d -name incremental -prune -exec rm -r {} + 2>/dev/null || true
+      - name: Save Glitnir's cargo target
+        if: ${{ always() && env.CACHE_SAVE_ALL == 'true' && steps.build.outcome == 'success' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/glitnir-target
+          key: glitnir-target-${{ matrix.distro }}-${{ steps.img.outputs.id }}-${{ hashFiles('nidhogg/glue/Cargo.lock', 'nidhogg/shell/Cargo.lock', 'nidhogg/glitnir/Cargo.lock') }}-${{ github.run_id }}-${{ github.run_attempt }}
       # the checks: nidhogg/check-subset.txt, or a narrowed run's targets
       - name: The check subset
         id: subset
@@ -294,9 +349,8 @@ jobs:
         id: check
         if: ${{ steps.build.outcome == 'success' }}
         env:
-          NIDHOGG_BUILD_PKG_CACHE: ${{ runner.temp }}/pkg-cache
-          # gnutls-serv for the TLS rows (workers-tls-tests skip without it); build.sh installs it with dnf, so the
-          # fedora-45 leg only, as with the grammars
+          # gnutls-serv for the TLS rows (workers-tls-tests skip without it); in the build image (else build.sh
+          # installs it with dnf), so the fedora-45 leg only, as with the grammars
           NIDHOGG_CHECK_PACKAGES: ${{ matrix.distro == 'fedora-45' && 'gnutls-utils' || '' }}
           NIDHOGG_TEST_GRAMMARS: ${{ steps.grammars.outcome == 'success' && '/grammars' || '' }}
           NIDHOGG_BUILD_PODMAN_ARGS: ${{ steps.grammars.outcome == 'success' && format('-v {0}/grammars:/grammars:ro,z', runner.temp) || '' }}
@@ -304,8 +358,6 @@ jobs:
       - name: Write the tarball
         id: pack
         if: ${{ steps.check.outcome == 'success' }}
-        env:
-          NIDHOGG_BUILD_PKG_CACHE: ${{ runner.temp }}/pkg-cache
         run: |
           V=$(head -n 1 nidhogg/version)
           bash nidhogg/build.sh --container "${{ matrix.distro }}" --stage pack --memory 12g --jobs 4 --build-dir "$RUNNER_TEMP/build" \
@@ -338,7 +390,7 @@ jobs:
   # Glitnir, so this is a terminal-only build.
   compile-noglitnir:
     name: Compile without Glitnir (fedora-45)
-    needs: changes
+    needs: [changes, images]
     if: ${{ !cancelled() && github.ref_type != 'tag' && needs.changes.outputs.compile-noglitnir != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 150
@@ -347,7 +399,15 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-      # its own ccache (another configuration: no entry of the Linux jobs' would match), the Linux jobs' package downloads
+      # the build image without the Rust toolchain: the build has no Rust to find
+      - name: The build image (no Rust)
+        id: img
+        uses: ./.github/actions/nh-image
+        with:
+          name: build-fedora-45-norust
+          ref: ${{ needs.images.outputs.build_fedora_45_norust }}
+          variable: NIDHOGG_BUILD_IMAGE
+      # its own ccache (another configuration: no entry of the Linux jobs' would match)
       - name: ccache (C objects)
         id: cc
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -355,26 +415,40 @@ jobs:
           path: ${{ runner.temp }}/ccache
           key: ccache-fedora-45-noglitnir-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: ccache-fedora-45-noglitnir-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-
-      - name: Package download cache (dnf)
+      - name: Compiled-Lisp inputs, file times (each file's last commit)
+        id: tree
+        run: |
+          echo "abi=$(bash nidhogg/ci/lisp-key.sh --abi)" >> "$GITHUB_OUTPUT"
+          bash nidhogg/ci/set-mtimes.sh
+      # a dev build's compiled Lisp (its .elc and the preloaded files' .eln), keyed and guarded as the Linux jobs'
+      - name: Compiled Lisp (same Lisp side and ABI)
+        id: lc
+        if: ${{ github.ref != 'refs/heads/nidhogg-31' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/pkg-cache
-          key: pkgs-fedora-45-${{ hashFiles('nidhogg/deps/fedora-45.build') }}
-          restore-keys: pkgs-fedora-45-
-      - name: File times (each file's last commit)
-        run: bash nidhogg/ci/set-mtimes.sh
+          path: ${{ runner.temp }}/lisp-cache
+          key: lisp-fedora-45-noglitnir-${{ steps.img.outputs.id }}-${{ steps.tree.outputs.abi }}-${{ hashFiles('nidhogg/build.sh') }}
+      # a dev build (build.sh --dev: only the preloaded Lisp native-compiled, the rest byte-compiled): it shows what this
+      # job is for, that configure, the C side, the dump and the Lisp build without Glitnir and with no Rust installed,
+      # in minutes; the AOT compile of every file is the Linux jobs' (the same Lisp)
       - name: Build
         id: build
         env:
-          NIDHOGG_BUILD_PKG_CACHE: ${{ runner.temp }}/pkg-cache
           NIDHOGG_BUILD_CCACHE: ${{ runner.temp }}/ccache
-        run: bash nidhogg/build.sh --container fedora-45 --without-glitnir --stage build --memory 12g --jobs 4 --build-dir "$RUNNER_TEMP/build"
+          NIDHOGG_BUILD_LISP_CACHE: ${{ runner.temp }}/lisp-cache
+        run: bash nidhogg/build.sh --container fedora-45 --without-glitnir --dev --stage build --memory 12g --jobs 4 --build-dir "$RUNNER_TEMP/build"
       - name: Save ccache
         if: ${{ !cancelled() && env.CACHE_SAVE == 'true' && steps.cc.outcome == 'success' && (steps.build.outcome == 'success' || steps.build.outcome == 'failure') }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ccache
           key: ccache-fedora-45-noglitnir-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Save compiled Lisp
+        if: ${{ always() && env.CACHE_SAVE == 'true' && steps.build.outcome == 'success' && !startsWith(steps.img.outputs.id, 'local-') && ((steps.lc.outcome == 'success' && steps.lc.outputs.cache-hit != 'true') || (steps.lc.outcome == 'skipped' && github.ref == 'refs/heads/nidhogg-31')) }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/lisp-cache
+          key: lisp-fedora-45-noglitnir-${{ steps.img.outputs.id }}-${{ steps.tree.outputs.abi }}-${{ hashFiles('nidhogg/build.sh') }}
 
   macos:
     name: macOS (NS app)
@@ -388,12 +462,11 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
       # the same caches and keys as the Linux jobs (see there), saved right after the step that produced them
-      - name: Source tree hash, compiled-Lisp inputs, file times
+      - name: Source tree hash, compiled-Lisp inputs
         id: tree
         run: |
           echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
-          echo "lisp=$(bash nidhogg/ci/lisp-key.sh)" >> "$GITHUB_OUTPUT"
-          bash nidhogg/ci/set-mtimes.sh
+          echo "abi=$(bash nidhogg/ci/lisp-key.sh --abi)" >> "$GITHUB_OUTPUT"
       - name: Built tarball (same tree, same build.sh)
         id: tb
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
@@ -404,30 +477,21 @@ jobs:
       - name: The cached tarball is intact
         if: ${{ steps.tb.outputs.cache-hit == 'true' }}
         run: shasum -a 256 -c dist/*.sha256
-      # Homebrew's downloads (bottles), which brew checks against their checksums
-      - name: Homebrew cache path
-        id: brewdir
-        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
-        run: echo "dir=$(brew --cache)/downloads" >> "$GITHUB_OUTPUT"
-      - name: Homebrew downloads
-        id: bd
-        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ steps.brewdir.outputs.dir }}
-          key: brew-macos-${{ runner.arch }}-${{ hashFiles('nidhogg/deps/macos.build') }}
-          restore-keys: brew-macos-${{ runner.arch }}-
-      - name: Build dependencies (Homebrew)
+      # Homebrew's packages, downloaded each run (a 775 MB cache of the bottles saved under a minute); Rust from the
+      # image's rustup instead of Homebrew's when the image has it (Homebrew's otherwise)
+      - name: Build dependencies (Homebrew; Rust by rustup)
         id: brew
         if: ${{ steps.tb.outputs.cache-hit != 'true' }}
-        run: sed 's/#.*//' nidhogg/deps/macos.build | xargs brew install
-      - name: Save Homebrew downloads
-        if: ${{ always() && env.CACHE_SAVE_ALL == 'true' && steps.brew.outcome == 'success' && steps.bd.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ steps.brewdir.outputs.dir }}
-          key: brew-macos-${{ runner.arch }}-${{ hashFiles('nidhogg/deps/macos.build') }}
-      # Glitnir (the compositor): the crate's tests with Homebrew's rust (cargo, clippy, rustfmt; no pixman, the oracle is
+        run: |
+          if command -v rustup >/dev/null; then
+            sed 's/#.*//' nidhogg/deps/macos.build | grep -vx 'rust' | xargs brew install
+            rustup toolchain install stable --profile minimal --component clippy,rustfmt --no-self-update
+            rustup default stable
+          else
+            sed 's/#.*//' nidhogg/deps/macos.build | xargs brew install
+          fi
+          rustc -V
+      # Glitnir (the compositor): the crate's tests with the host's Rust (cargo, clippy, rustfmt; no pixman, the oracle is
       # Linux only; no cargo-deny, check.sh skips the licence check without it), so the aarch64 NEON baseline kernels are
       # tested somewhere.  Skipped with the build when the tarball for this tree is cached (it was built after these passed).
       - name: Glitnir's checks
@@ -443,13 +507,17 @@ jobs:
         run: |
           echo "v=$(brew list --versions gcc libgccjit | tr ' \n' '--')" >> "$GITHUB_OUTPUT"
           echo "image=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
-      - name: Compiled Lisp (same Lisp and C sources)
+          # what configure's checks find: every installed build package's version, and the image (Xcode)
+          echo "deps=$(sed 's/#.*//' nidhogg/deps/macos.build | { xargs brew list --versions 2>/dev/null || true; } | { cat; echo "$ImageOS-$ImageVersion"; } | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          echo "rust=$(rustc -V | tr ' ()' '-__')" >> "$GITHUB_OUTPUT"
+      # keyed as the Linux jobs' (--abi; the guard after make), never restored for nidhogg-31 or a tag
+      - name: Compiled Lisp (same Lisp side and ABI)
         id: lc
-        if: ${{ steps.tb.outputs.cache-hit != 'true' && !startsWith(github.ref, 'refs/tags/') }}
+        if: ${{ steps.tb.outputs.cache-hit != 'true' && !startsWith(github.ref, 'refs/tags/') && github.ref != 'refs/heads/nidhogg-31' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/lisp-cache
-          key: lisp-macos-${{ runner.arch }}-${{ steps.tc.outputs.v }}-${{ runner.temp }}-${{ steps.tree.outputs.lisp }}-${{ hashFiles('nidhogg/build.sh') }}
+          key: lisp-macos-${{ runner.arch }}-${{ steps.tc.outputs.v }}-${{ runner.temp }}-${{ steps.tree.outputs.abi }}-${{ hashFiles('nidhogg/build.sh') }}
       - name: ccache (Homebrew)
         id: ccb
         if: ${{ steps.tb.outputs.cache-hit != 'true' }}
@@ -461,11 +529,37 @@ jobs:
         with:
           path: ${{ runner.temp }}/ccache
           key: ccache-macos-${{ runner.arch }}-${{ steps.tc.outputs.image }}-${{ hashFiles('nidhogg/deps/macos.build') }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: ccache-macos-${{ runner.arch }}-${{ steps.tc.outputs.image }}-${{ hashFiles('nidhogg/deps/macos.build') }}-
+          # a new runner image falls back to the previous image's entry: ccache checks Xcode's clang by its -v output
+          # (CCACHE_COMPILERCHECK, build.sh), so a changed compiler misses and an unchanged one still hits
+          restore-keys: |
+            ccache-macos-${{ runner.arch }}-${{ steps.tc.outputs.image }}-${{ hashFiles('nidhogg/deps/macos.build') }}-
+            ccache-macos-${{ runner.arch }}-
+      # configure's checks and Glitnir's cargo target, as the Linux jobs' (keyed on the packages' versions and the image,
+      # and on the Cargo.lock files and rustc)
+      - name: Configure's checks (same configure inputs, same packages)
+        id: cf
+        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/config-cache
+          key: configure-macos-${{ runner.arch }}-${{ steps.tc.outputs.deps }}-${{ hashFiles('configure.ac', 'm4/**', 'build-aux/**', 'autogen.sh', 'nidhogg/version', 'nidhogg/build.sh') }}
+      - name: Glitnir's cargo target (same Cargo.lock, same rustc)
+        id: ct
+        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/glitnir-target
+          key: glitnir-target-macos-${{ runner.arch }}-${{ steps.tc.outputs.rust }}-${{ hashFiles('nidhogg/glitnir/Cargo.lock') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: glitnir-target-macos-${{ runner.arch }}-${{ steps.tc.outputs.rust }}-${{ hashFiles('nidhogg/glitnir/Cargo.lock') }}-
+      - name: File times (each file's last commit; what changed since the cargo target, now)
+        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        run: bash nidhogg/ci/set-mtimes.sh --since "$RUNNER_TEMP/glitnir-target/.nidhogg-source-commit"
       - name: Build
         id: build
         if: ${{ steps.tb.outputs.cache-hit != 'true' }}
         env:
+          NIDHOGG_BUILD_CONFIG_CACHE: ${{ runner.temp }}/config-cache
+          NIDHOGG_BUILD_CARGO_TARGET: ${{ runner.temp }}/glitnir-target
           NIDHOGG_BUILD_LISP_CACHE: ${{ runner.temp }}/lisp-cache
           NIDHOGG_BUILD_CCACHE: ${{ steps.ccb.outcome == 'success' && format('{0}/ccache', runner.temp) || '' }}
         run: /bin/bash nidhogg/build.sh --host --stage build --jobs 3 --build-dir "$RUNNER_TEMP/build"
@@ -476,11 +570,26 @@ jobs:
           path: ${{ runner.temp }}/ccache
           key: ccache-macos-${{ runner.arch }}-${{ steps.tc.outputs.image }}-${{ hashFiles('nidhogg/deps/macos.build') }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Save compiled Lisp
-        if: ${{ always() && env.CACHE_SAVE == 'true' && steps.build.outcome == 'success' && steps.lc.outcome == 'success' && steps.lc.outputs.cache-hit != 'true' }}
+        if: ${{ always() && env.CACHE_SAVE == 'true' && steps.build.outcome == 'success' && ((steps.lc.outcome == 'success' && steps.lc.outputs.cache-hit != 'true') || (steps.lc.outcome == 'skipped' && github.ref == 'refs/heads/nidhogg-31')) }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/lisp-cache
-          key: lisp-macos-${{ runner.arch }}-${{ steps.tc.outputs.v }}-${{ runner.temp }}-${{ steps.tree.outputs.lisp }}-${{ hashFiles('nidhogg/build.sh') }}
+          key: lisp-macos-${{ runner.arch }}-${{ steps.tc.outputs.v }}-${{ runner.temp }}-${{ steps.tree.outputs.abi }}-${{ hashFiles('nidhogg/build.sh') }}
+      - name: Save configure's checks
+        if: ${{ always() && env.CACHE_SAVE == 'true' && steps.build.outcome == 'success' && steps.cf.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/config-cache
+          key: configure-macos-${{ runner.arch }}-${{ steps.tc.outputs.deps }}-${{ hashFiles('configure.ac', 'm4/**', 'build-aux/**', 'autogen.sh', 'nidhogg/version', 'nidhogg/build.sh') }}
+      - name: Leave cargo's incremental data out of the cargo target
+        if: ${{ always() && env.CACHE_SAVE_ALL == 'true' && steps.build.outcome == 'success' }}
+        run: find "$RUNNER_TEMP/glitnir-target" -type d -name incremental -prune -exec rm -r {} + 2>/dev/null || true
+      - name: Save Glitnir's cargo target
+        if: ${{ always() && env.CACHE_SAVE_ALL == 'true' && steps.build.outcome == 'success' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/glitnir-target
+          key: glitnir-target-macos-${{ runner.arch }}-${{ steps.tc.outputs.rust }}-${{ hashFiles('nidhogg/glitnir/Cargo.lock') }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Write the tarball
         id: pack
         if: ${{ steps.build.outcome == 'success' }}
@@ -565,7 +674,7 @@ jobs:
   # (the build compiles the crates, and only Glitnir's checks run in tree).
   native-crates:
     name: Native shell crates (recorder, shell, glue)
-    needs: changes
+    needs: [changes, images]
     if: ${{ !cancelled() && inputs.scope != 'macos' && needs.changes.outputs.native-crates != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -574,42 +683,39 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-      # the crates' cargo homes and target directories (cargo checks every restored artifact against its inputs' mtimes,
-      # which set-mtimes.sh below makes right, so an entry from any earlier run is safe: restore-keys), and the Linux
-      # jobs' package downloads for the containers
+      # the three check.sh containers run in the build image, which has their packages
+      - name: The build image
+        uses: ./.github/actions/nh-image
+        with:
+          name: build-fedora-45
+          ref: ${{ needs.images.outputs.build_fedora_45 }}
+          variable: NIDHOGG_CRATES_IMAGE
+      # the crates' target directories and the recorder's downloaded crates (the registry's index and .crate files; the
+      # shell and the glue vendor theirs), never whole cargo homes: no unpacked sources, no tools, no credentials.  Cargo
+      # checks every restored artifact against its inputs' mtimes, which set-mtimes.sh below makes right, so an entry
+      # from any earlier run is safe: restore-keys
       - name: Cargo (recorder, shell, glue)
         id: cargo
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ${{ runner.temp }}/nh-recorder-cargo
+            ${{ runner.temp }}/nh-recorder-cargo/registry/index
+            ${{ runner.temp }}/nh-recorder-cargo/registry/cache
             ${{ runner.temp }}/nh-recorder-target
-            ${{ runner.temp }}/nhshell-cargo
-            ${{ runner.temp }}/nhglue-cargo
+            ${{ runner.temp }}/nhshell-cargo/target
+            ${{ runner.temp }}/nhglue-cargo/target
           key: crates-fedora-45-${{ hashFiles('nidhogg/test/recorder/Cargo.lock', 'nidhogg/shell/Cargo.lock', 'nidhogg/glue/Cargo.lock', 'nidhogg/glitnir/Cargo.lock') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: crates-fedora-45-${{ hashFiles('nidhogg/test/recorder/Cargo.lock', 'nidhogg/shell/Cargo.lock', 'nidhogg/glue/Cargo.lock', 'nidhogg/glitnir/Cargo.lock') }}-
-      - name: Package download cache (dnf)
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/pkg-cache
-          key: pkgs-fedora-45-${{ hashFiles('nidhogg/deps/fedora-45.build') }}
-          restore-keys: pkgs-fedora-45-
       # each file's last commit time, so cargo finds the files this change did not touch older than the restored targets;
       # the files changed since the commit the entry was built from (it names it) get the current time, since a commit's
       # time can be older than a cache built from its parent
       - name: File times (each file's last commit; what changed since the cache, now)
         run: bash nidhogg/ci/set-mtimes.sh --since "$RUNNER_TEMP/nh-recorder-target/.nidhogg-source-commit"
       - id: recorder
-        env:
-          NIDHOGG_BUILD_PKG_CACHE: ${{ runner.temp }}/pkg-cache
         run: T="$RUNNER_TEMP" bash nidhogg/test/recorder/check.sh --container fedora-45 --build
       - id: shell
-        env:
-          NIDHOGG_BUILD_PKG_CACHE: ${{ runner.temp }}/pkg-cache
         run: T="$RUNNER_TEMP" NH_RECORDER="$RUNNER_TEMP/nh-recorder-target/release/nh-recorder" bash nidhogg/shell/check.sh --container fedora-45
       - id: glue
-        env:
-          NIDHOGG_BUILD_PKG_CACHE: ${{ runner.temp }}/pkg-cache
         run: T="$RUNNER_TEMP" NH_RECORDER="$RUNNER_TEMP/nh-recorder-target/release/nh-recorder" bash nidhogg/glue/check.sh --container fedora-45
       # saved after the checks whatever they said (a red run is the one that runs again); incremental data is left
       # out: it only speeds up rebuilding the crates themselves, which a change to them does anyway.  The entry names
@@ -628,10 +734,11 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ${{ runner.temp }}/nh-recorder-cargo
+            ${{ runner.temp }}/nh-recorder-cargo/registry/index
+            ${{ runner.temp }}/nh-recorder-cargo/registry/cache
             ${{ runner.temp }}/nh-recorder-target
-            ${{ runner.temp }}/nhshell-cargo
-            ${{ runner.temp }}/nhglue-cargo
+            ${{ runner.temp }}/nhshell-cargo/target
+            ${{ runner.temp }}/nhglue-cargo/target
           key: crates-fedora-45-${{ hashFiles('nidhogg/test/recorder/Cargo.lock', 'nidhogg/shell/Cargo.lock', 'nidhogg/glue/Cargo.lock', 'nidhogg/glitnir/Cargo.lock') }}-${{ github.run_id }}-${{ github.run_attempt }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -644,7 +751,7 @@ jobs:
   # the script's own (every lane with a floor, read by the changes job), or a narrowed run's.
   native-gui:
     name: GUI rows (${{ matrix.lane }})
-    needs: [changes, linux, native-crates]
+    needs: [changes, images, linux, native-crates]
     if: ${{ !cancelled() && inputs.scope != 'macos' && needs.changes.outputs.native-gui != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -677,6 +784,13 @@ jobs:
           mkdir -p "$RUNNER_TEMP/nidhogg"
           tar -xJf dist/*.tar.xz -C "$RUNNER_TEMP/nidhogg" --strip-components=1
           chmod +x recorder/nh-recorder
+      # gui.sh's packages for every lane but KWin's and the input methods' extras, which gui.sh adds
+      - name: The GUI image
+        uses: ./.github/actions/nh-image
+        with:
+          name: gui-fedora-45
+          ref: ${{ needs.images.outputs.gui_fedora_45 }}
+          variable: GLITNIR_GUI_IMAGE
       # KWin 6.8 composites only on a render device.  It gets its software one, Mesa's llvmpipe over /dev/udmabuf, and no
       # DRM device (gui.sh): the same renderer on every runner.  vgem's render node composited on Azure's runners and not
       # on an AWS one (2026-11-05, kernel 7.0.0-1014-aws, whose first DRM device is a simpledrm framebuffer).  The
@@ -696,7 +810,7 @@ jobs:
   # the tagged commit passed them in its round (README.md, "CI and releases").
   workers-harness:
     name: Workers C harness (TSan, fuzz)
-    needs: [changes, linux]
+    needs: [changes, images, linux]
     if: ${{ !cancelled() && inputs.scope != 'macos' && github.ref_type != 'tag' && needs.changes.outputs.workers-harness != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -705,19 +819,19 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-      - name: Package download cache (dnf, the Linux jobs')
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: The build image
+        uses: ./.github/actions/nh-image
         with:
-          path: ${{ runner.temp }}/pkg-cache
-          key: pkgs-fedora-45-${{ hashFiles('nidhogg/deps/fedora-45.build') }}
-          restore-keys: pkgs-fedora-45-
-      # diffutils: the base image has no cmp, which the harness's selftest compares two runs with
+          name: build-fedora-45
+          ref: ${{ needs.images.outputs.build_fedora_45 }}
+          variable: HARNESS_IMAGE
+      # diffutils: the base image has no cmp, which the harness's selftest compares two runs with (the build image has
+      # every package here: nothing is installed)
       - name: ThreadSanitizer drivers and fuzz targets, in a fedora-45 container
         run: |
-          mkdir -p "$RUNNER_TEMP/pkg-cache/dnf"
-          podman run --rm --memory 8g --memory-swap 8g -v "$PWD:/src:ro,Z" -v "$RUNNER_TEMP/pkg-cache/dnf:/var/cache/libdnf5:Z" registry.fedoraproject.org/fedora:45 bash -euo pipefail -c '
-            dnf -y -q --setopt=install_weak_deps=False --setopt=keepcache=1 install gcc libtsan libasan libubsan \
-              libpng-devel libjpeg-turbo-devel giflib-devel libwebp-devel diffutils >/dev/null
+          podman run --rm --memory 8g --memory-swap 8g -v "$PWD:/src:ro,Z" "$HARNESS_IMAGE" bash -euo pipefail -c '
+            want="gcc libtsan libasan libubsan libpng-devel libjpeg-turbo-devel giflib-devel libwebp-devel diffutils"
+            rpm -q --quiet --whatprovides $want || dnf -y -q --setopt=install_weak_deps=False install $want >/dev/null
             cd /src
             bash nidhogg/test/workers-harness.sh
             bash nidhogg/test/workers-harness.sh --tsan $(cd test/src/nidhogg-tests/fuzz && ls tsan-*.c | sed "s/^tsan-//; s/[.]c$//")
@@ -726,7 +840,7 @@ jobs:
 
   workers-asan:
     name: Workers batch files (ASan + UBSan dev build)
-    needs: [changes, linux]
+    needs: [changes, images, linux]
     if: ${{ !cancelled() && inputs.scope != 'macos' && github.ref_type != 'tag' && needs.changes.outputs.workers-asan != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -739,6 +853,12 @@ jobs:
         run: |
           ls test/src/nidhogg-tests/workers-*-tests.el | sed 's|^test/||; s|[.]el$||' | grep -v -e -timing- -e -gui- > "$RUNNER_TEMP/asan-subset.txt"
           cat "$RUNNER_TEMP/asan-subset.txt"
+      - name: The build image
+        uses: ./.github/actions/nh-image
+        with:
+          name: build-fedora-45
+          ref: ${{ needs.images.outputs.build_fedora_45 }}
+          variable: NIDHOGG_BUILD_IMAGE
       # the Linux jobs' caches in this build's own entries (another configuration: --dev, the sanitizers), keyed as
       # there; build.sh stamps a compiled-Lisp entry with the mode, so a dev entry never meets a release build.  The
       # compiled Lisp is two entries: the byte-compiled part keyed on the Lisp side and the C side's names (lisp-key.sh
@@ -759,12 +879,6 @@ jobs:
           path: ${{ runner.temp }}/ccache
           key: ccache-fedora-45-asan-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: ccache-fedora-45-asan-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-
-      - name: Package download cache (dnf)
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/pkg-cache
-          key: pkgs-fedora-45-${{ hashFiles('nidhogg/deps/fedora-45.build') }}
-          restore-keys: pkgs-fedora-45-
       - name: Byte-compiled Lisp (same Lisp sources)
         id: lc
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -784,7 +898,6 @@ jobs:
         env:
           NIDHOGG_BUILD_SANITIZE: address,undefined
           NIDHOGG_WORKERS_TEST_SIZE_SCALE: "0.1"
-          NIDHOGG_BUILD_PKG_CACHE: ${{ runner.temp }}/pkg-cache
           NIDHOGG_BUILD_CCACHE: ${{ runner.temp }}/ccache
           NIDHOGG_BUILD_LISP_CACHE: ${{ runner.temp }}/lisp-cache
         run: |
@@ -830,7 +943,7 @@ jobs:
   # no tarball, so it runs beside the Linux builds, not after them.
   workers-chaos:
     name: Workers files under chaos (seeds 1-5)
-    needs: changes
+    needs: [changes, images]
     if: ${{ !cancelled() && inputs.scope != 'macos' && github.ref_type != 'tag' && needs.changes.outputs.workers-chaos != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -839,6 +952,12 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
+      - name: The build image
+        uses: ./.github/actions/nh-image
+        with:
+          name: build-fedora-45
+          ref: ${{ needs.images.outputs.build_fedora_45 }}
+          variable: NIDHOGG_BUILD_IMAGE
       - name: Compiled-Lisp inputs, file times
         id: tree
         run: |
@@ -852,12 +971,6 @@ jobs:
           path: ${{ runner.temp }}/ccache
           key: ccache-fedora-45-chaos-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: ccache-fedora-45-chaos-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-
-      - name: Package download cache (dnf)
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/pkg-cache
-          key: pkgs-fedora-45-${{ hashFiles('nidhogg/deps/fedora-45.build') }}
-          restore-keys: pkgs-fedora-45-
       # the compiled Lisp as two entries, as in workers-asan
       - name: Byte-compiled Lisp (same Lisp sources)
         id: lc
@@ -876,7 +989,6 @@ jobs:
       - name: The chaos build
         id: build
         env:
-          NIDHOGG_BUILD_PKG_CACHE: ${{ runner.temp }}/pkg-cache
           NIDHOGG_BUILD_CCACHE: ${{ runner.temp }}/ccache
           NIDHOGG_BUILD_LISP_CACHE: ${{ runner.temp }}/lisp-cache
         run: bash nidhogg/build.sh --container fedora-45 --dev --chaos --stage build --memory 12g --jobs 4 --build-dir "$RUNNER_TEMP/build-chaos"
@@ -902,8 +1014,6 @@ jobs:
           key: lisp-fedora-45-chaos-eln-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ steps.tree.outputs.lisp }}-${{ hashFiles('nidhogg/build.sh') }}
       - name: The workers files, seeds 1 to 5, no rerun (nidhogg/test/chaos-files.txt)
         if: ${{ steps.build.outcome == 'success' }}
-        env:
-          NIDHOGG_BUILD_PKG_CACHE: ${{ runner.temp }}/pkg-cache
         run: |
           bash nidhogg/test/chaos-lane.sh --build-dir "$RUNNER_TEMP/build-chaos" --seeds "1 2 3 4 5" -- \
             bash nidhogg/build.sh --container fedora-45 --dev --chaos --memory 12g --jobs 4
@@ -919,7 +1029,7 @@ jobs:
 
   workers-pkg:
     name: Package suites (${{ matrix.group }}, workers ${{ matrix.mode }})
-    needs: [changes, linux]
+    needs: [changes, images, linux]
     if: ${{ !cancelled() && inputs.scope != 'macos' && github.ref_type != 'tag' && needs.changes.outputs.workers-pkg != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -951,6 +1061,13 @@ jobs:
           prefix=$(tar -xJOf dist/*.tar.xz "$top/share/nidhogg/BUILDINFO" | sed -n 's/^prefix=//p')
           sudo mkdir -p "$prefix" && sudo tar -C "$prefix" --strip-components=1 -xJf dist/*.tar.xz
           echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+      # pkg-test.sh's servers and tools and the tarball's run-time packages
+      - name: The package suites' image
+        uses: ./.github/actions/nh-image
+        with:
+          name: pkg-fedora-45
+          ref: ${{ needs.images.outputs.pkg_fedora_45 }}
+          variable: NIDHOGG_PKG_IMAGE
       # the third-party packages' clones (pkg-test.sh checks out each pinned commit, fetching it when missing); what a
       # run makes inside them (vterm's module against this run's Emacs, compiled Lisp) is left out of the saved entry
       # (the paths are the save step's: they are part of the entry's version)
@@ -1012,7 +1129,7 @@ jobs:
   # (continue-on-error, not in release's needs). README.md, "CI and releases".
   timing:
     name: Timing lane, report-only (${{ matrix.name }})
-    needs: [changes, linux, macos]
+    needs: [changes, images, linux, macos]
     if: ${{ !cancelled() && github.ref_type != 'tag' && needs.changes.outputs.timing != 'false' }}
     continue-on-error: true
     runs-on: ${{ matrix.runner }}
@@ -1036,16 +1153,25 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/nidhogg"
           tar -xJf dist/*.tar.xz -C "$RUNNER_TEMP/nidhogg" --strip-components=1
+      # the GUI lanes' image: the tarball's run-time packages on the pinned base
+      - name: The test image
+        if: ${{ matrix.name == 'fedora-45' }}
+        uses: ./.github/actions/nh-image
+        with:
+          name: gui-fedora-45
+          ref: ${{ needs.images.outputs.gui_fedora_45 }}
+          variable: TIMING_IMAGE
       - name: Timing lane (Linux, in the pinned fedora-45 image)
         if: ${{ matrix.name == 'fedora-45' }}
         run: |
           mkdir -p "$RUNNER_TEMP/out"
           podman run --rm --memory 4g --memory-swap 4g \
             -v "$PWD:/src:ro,z" -v "$RUNNER_TEMP/nidhogg:/nh:ro,z" -v "$RUNNER_TEMP/out:/out:z" \
-            registry.fedoraproject.org/fedora@sha256:6430abb162172c052b6ac9c9d6a219b1b21352508c04b1b0ff2eb9292943d881 bash -c '
+            "$TIMING_IMAGE" bash -c '
               set -eu
               rt=/nh/share/nidhogg/deps.runtime
-              dnf -y -q --setopt=install_weak_deps=False install $(sed "s/#.*//" "$rt") > /tmp/dnf.log 2>&1 || { cat /tmp/dnf.log; exit 1; }
+              pk=$(sed "s/#.*//" "$rt")
+              rpm -q --quiet --whatprovides $pk || dnf -y -q --setopt=install_weak_deps=False install $pk > /tmp/dnf.log 2>&1 || { cat /tmp/dnf.log; exit 1; }
               cd /src && bash nidhogg/test/timing-lane.sh --prefix /nh --report /out/timing.txt'
       - name: Timing lane (macOS)
         if: ${{ matrix.name == 'macos' }}
