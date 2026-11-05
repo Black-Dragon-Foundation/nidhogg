@@ -126,6 +126,12 @@ Every allocation is bounded: the header's width and height are checked against t
 `MAX_PIXELS` (2^27) before the result is allocated, rows are decoded one at a time (no whole raw image), and the
 `png` crate's own limit (64 MiB for its buffers and chunks) stays at its default.
 
+The crates allocate infallibly and Rust aborts the process when an allocation fails (a hook cannot catch it), so a
+decode asks first: from the header's size it estimates the most heap it needs at once (`images::reserve`: bytes a
+pixel times the buffers the format holds together), refuses an estimate over `MAX_DECODE_BYTES` (4 GiB), and probes
+that the allocator can give it (`try_reserve_exact`, given back at once). A refusal is `GLITNIR_IMG_E_NOMEM`, as the C
+decoders answered an allocation failure. An animation asks again before each frame it composes.
+
 PNG (`images/png.rs`) gives libpng's pixels for the host's transformations: 16-bit samples keep their high byte,
 palettes and low-depth gray expand (gray scaled ×255, ×85, ×17), gray becomes RGB; a `tRNS` key or a palette whose
 alphas are all 0 or 255 makes a mask, any other alpha is composited over the caller's background with

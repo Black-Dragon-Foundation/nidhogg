@@ -16,7 +16,7 @@
 //! state's draws only that frame; any other starts from frame 0 on the kept canvas.
 
 use super::anim::Anim;
-use super::{CBuf, Error, Image, MAX_FRAMES, Params, size_ok, try_vec};
+use super::{CBuf, Error, Image, MAX_FRAMES, Params, reserve, size_ok, try_vec};
 use gif::{ColorOutput, DecodeOptions, MemoryLimit};
 use std::io::Cursor;
 use std::num::NonZeroU64;
@@ -195,6 +195,8 @@ fn read(data: &[u8], p: &Params) -> Result<GifAnim, Error> {
         .color_map(screen[4])
         .map_err(|_| Error::NotFormat(READ_FAILED))?;
     size_ok(p, i64::from(width), i64::from(height))?;
+    // a frame's raster is at most the screen: the crate's buffer and our copy of it
+    reserve(2 * width as u64 * height as u64)?;
 
     let mut frames: Vec<GifFrame> = Vec::new();
     let mut ext: Vec<u8> = Vec::new();
@@ -305,6 +307,8 @@ pub fn decode(data: &[u8], p: &Params, state: Option<Box<Anim>>) -> Result<Image
     }
     size_ok(p, i64::from(width), i64::from(height))?;
     let n = width as usize * height as usize;
+    // the canvas and the result (4 bytes a pixel each) and a frame's raster (two bytes a pixel)
+    reserve(10 * n as u64)?;
     if g.canvas.is_empty() {
         g.canvas = try_vec(n, 0u32)?;
     }
@@ -622,6 +626,18 @@ mod tests {
             build(1, 4, &[(0, 0, 1, 4, &[0, 1, 2, 3], None)]),
         ];
         super::super::fuzz_abi(super::super::GLITNIR_IMG_GIF, &seeds, 20_000);
+    }
+
+    /// Pattern D: a decode that does not fit the heap budget is an out-of-memory error before anything is
+    /// allocated, not an abort.
+    #[test]
+    fn a_decode_over_the_budget_is_out_of_memory() {
+        let f = build(4, 4, &[(0, 0, 4, 4, &[1; 16], None)]);
+        assert!(decode(&f, &params(0), None).is_ok());
+        super::super::set_test_budget(Some(16));
+        let r = decode(&f, &params(0), None);
+        super::super::set_test_budget(None);
+        assert!(matches!(r, Err(Error::NoMem)), "{:?}", r.err());
     }
 
     #[test]
