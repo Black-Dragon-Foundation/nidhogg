@@ -545,12 +545,59 @@ fn compose_layers(
             && let Some(frame) = scene.iter().find(|q| q.id == p.parent).map(|q| q.rect)
         {
             let plan = CardPlan::new(p, card, t.scale, shadows);
+            let (below, above) = neighbours(scene, p, &pieces, t.scale, shadows);
             for c in &pieces {
-                plan.draw(k, t, card, c.intersect(&frame));
+                plan.draw(k, t, card, c.intersect(&frame), (&below, &above));
             }
         }
     }
     Ok(drawn)
+}
+
+/// The other cards of card P's frame whose chrome reaches one of P's corner squares within PIECES, below P and above it
+/// in SCENE's paint order: what a corner shows of the gap has their shadows in it too.  None while no corner is drawn.
+fn neighbours(
+    scene: &[Placed],
+    p: &Placed,
+    pieces: &[Rect],
+    scale: f64,
+    shadows: &mut ShadowCache,
+) -> (Vec<CardPlan>, Vec<CardPlan>) {
+    let (mut below, mut above) = (Vec::new(), Vec::new());
+    let Some((_, squares)) = crate::scene::card_corners(p) else {
+        return (below, above);
+    };
+    let drawn: Vec<Rect> = squares
+        .iter()
+        .flat_map(|s| pieces.iter().map(|c| s.intersect(c)))
+        .filter(|r| !r.is_empty())
+        .collect();
+    if drawn.is_empty() {
+        return (below, above);
+    }
+    let mut past = false;
+    for q in scene {
+        if q.id == p.id {
+            past = true;
+            continue;
+        }
+        let Some(card) = &q.card else {
+            continue;
+        };
+        if q.kind != Kind::Window
+            || q.parent != p.parent
+            || !drawn.iter().any(|d| !d.intersect(&q.bounds).is_empty())
+        {
+            continue;
+        }
+        let plan = CardPlan::new(q, card, scale, shadows);
+        if past {
+            above.push(plan);
+        } else {
+            below.push(plan);
+        }
+    }
+    (below, above)
 }
 
 /// Whether any of PIECES meets what window card P draws: its bounds outside its rectangle, or a corner square.  Typing
@@ -660,13 +707,13 @@ impl CardPlan {
     ) -> CardPlan {
         let rect = p.rect;
         let c = p.chrome.unwrap_or_default();
-        let radius = whole(c.radius_px);
+        // the radius the corners have, clamped to half the shorter side: the shadow and the ring take it too
         let corners = crate::scene::card_corners(p);
         let r = corners.map_or(0, |(r, _)| r);
         let shadow = (c.has_shadow() && !rect.is_empty()).then(|| {
             let size = (rect.w as u32, rect.h as u32);
             let spec = ShadowSpec {
-                radius: radius as f32,
+                radius: r as f32,
                 blur: c.blur_px,
                 spread: c.spread_px,
                 colour: with_opacity(c.shadow_argb, c.shadow_opacity),
@@ -733,8 +780,33 @@ impl CardPlan {
             .composite(k, &mut d, s.size, from, (p.w as usize, p.h as usize));
     }
 
-    /// Draw the card within CLIP (inside the target and the frame).
-    fn draw(&self, k: &Kernels, t: &mut TargetView, card: &crate::scene::Card, clip: Rect) {
+    /// The shadow and the ring within Q into DST, Q's pixels row by row, but not inside the window: in the gap, where
+    /// they draw.
+    fn chrome_outside(&self, k: &Kernels, dst: &mut [u32], q: Rect) {
+        for part in subtract(q, self.rect) {
+            let at = (part.y - q.y) as usize * q.w as usize + (part.x - q.x) as usize;
+            let mut d = PixelsMut {
+                data: &mut dst[at..],
+                stride: q.w as usize,
+            };
+            self.shadow(k, &mut d, part);
+            if let Some(ring) = &self.ring {
+                ring.draw(k, &mut d, part);
+            }
+        }
+    }
+
+    /// Draw the card within CLIP (inside the target and the frame).  A corner shows the gap as it is beside it: the
+    /// colour beneath, then the chrome of the frame's other cards BELOW it in paint order, its own, and theirs ABOVE
+    /// it (each card keeps its chrome out of the others' windows, so none of it lies in the corner's square itself).
+    fn draw(
+        &self,
+        k: &Kernels,
+        t: &mut TargetView,
+        card: &crate::scene::Card,
+        clip: Rect,
+        (below, above): (&[CardPlan], &[CardPlan]),
+    ) {
         if clip.is_empty() {
             return;
         }
@@ -760,7 +832,8 @@ impl CardPlan {
         };
         let outside = outside_coverage(r);
         let (n, ru) = (2 * r as usize, r as usize);
-        let rich = self.shadow.is_some() || self.ring.is_some();
+        let rich =
+            self.shadow.is_some() || self.ring.is_some() || !below.is_empty() || !above.is_empty();
         for (i, sq) in squares.iter().enumerate() {
             let q = sq.intersect(&clip);
             if q.is_empty() {
@@ -770,6 +843,9 @@ impl CardPlan {
             let (w, h) = (q.w as usize, q.h as usize);
             if rich {
                 let mut px = vec![card.beneath_argb; w * h];
+                for o in below {
+                    o.chrome_outside(k, &mut px, q);
+                }
                 let mut gap = PixelsMut {
                     data: &mut px,
                     stride: w,
@@ -777,6 +853,9 @@ impl CardPlan {
                 self.shadow(k, &mut gap, q);
                 if let Some(ring) = &self.ring {
                     ring.draw(k, &mut gap, q);
+                }
+                for o in above {
+                    o.chrome_outside(k, &mut px, q);
                 }
                 let gap = Pixels {
                     data: &px,
@@ -1979,6 +2058,8 @@ mod tests {
 
         const WIN: u64 = (1 << 63) | 7;
         const CARD: u64 = (1 << 62) | 7;
+        /// A second window layer.
+        const NEXT: u64 = (1 << 63) | 8;
         const BENEATH: u32 = 0xff11_2233;
         /// A ring at 60 %, premultiplied.
         const RING: u32 = 0x9926_3039;
@@ -2387,6 +2468,84 @@ mod tests {
                     assert_eq!(out.at(x, y), 0xffaa_bbcc, "scale {scale}: interior {x},{y}");
                 }
             }
+        }
+
+        /// A card's corner shows the gap as it is there, a neighbour's shadow in it: the neighbour keeps its shadow out
+        /// of the card's window, but it lies under the corner's outside all the same.  Over a frame of the colour
+        /// beneath, the corner's outermost pixel equals that pixel with no corner and the shadow let in.
+        #[test]
+        fn corner_shows_a_neighbours_shadow() {
+            for scale in [1.0, 2.0, 1.25] {
+                let left = Rect::new(10, 10, 40, 40);
+                // 4 px of gap, well inside the neighbour's shadow
+                let right = Rect::new(54, 10, 40, 40);
+                let front = Buf::new(110, 64, BENEATH);
+                let soft = Chrome {
+                    blur_px: 12.0,
+                    shadow_opacity: 0.6,
+                    shadow_argb: 0xff00_0000,
+                    ..radius(8.0)
+                };
+                let build = |r: f32, keep: &[Rect]| {
+                    let (mut s, mut f) = carded(110, 64, scale, WIN, left, r);
+                    s.upsert(&desc(NEXT, ROOT, 2, right, scale, true)).unwrap();
+                    s.set_chrome(NEXT, Some(soft)).unwrap();
+                    s.set_card(NEXT, Some(rich(0, keep))).unwrap();
+                    s.commit(ROOT, &mut f);
+                    s
+                };
+                let with = compose_all(&build(8.0, &[left]), &front, scale);
+                let open = compose_all(&build(0.0, &[]), &front, scale);
+                assert_ne!(
+                    open.at(49, 30),
+                    BENEATH,
+                    "scale {scale}: the shadow reaches the window"
+                );
+                // the top-right and bottom-right corners' outermost pixels, beside the neighbour
+                for (x, y) in [(49, 10), (49, 49)] {
+                    assert_eq!(
+                        with.at(x, y),
+                        open.at(x, y),
+                        "scale {scale}: corner {x},{y}"
+                    );
+                }
+            }
+        }
+
+        /// A radius past half the window's shorter side draws as that half, the shadow too: a card 13 px high with a
+        /// spread of 1 is the same with radius 16 as with 6.
+        #[test]
+        fn shadow_radius_clamps_as_the_corners() {
+            let rect = Rect::new(20, 30, 60, 13);
+            let front = Buf::new(100, 72, 0xffaa_bbcc);
+            let look = |r: f32| Chrome {
+                spread_px: 1.0,
+                ..shadowed(r)
+            };
+            let (big, _) = with_card(100, 72, 1.0, rect, look(16.0), rich(1, &[]));
+            let (half, _) = with_card(100, 72, 1.0, rect, look(6.0), rich(1, &[]));
+            assert_eq!(
+                first_difference(
+                    &compose_all(&big, &front, 1.0),
+                    &compose_all(&half, &front, 1.0)
+                ),
+                None
+            );
+        }
+
+        /// Raising a card window damages where its card draws (the corners, the shadow and the ring), not its inside,
+        /// which shows the frame's pixels in any order.
+        #[test]
+        fn raise_damages_the_card_alone() {
+            let rect = Rect::new(10, 10, 60, 40);
+            let (mut s, mut f) = with_card(96, 72, 1.0, rect, shadowed(8.0), rich(1, &[]));
+            s.upsert(&desc(NEXT, ROOT, 2, Rect::new(0, 60, 96, 12), 1.0, true))
+                .unwrap();
+            s.commit(ROOT, &mut f);
+            s.raise(WIN).unwrap();
+            let damage = s.commit(ROOT, &mut f).to_vec();
+            assert!(covers(&damage, Rect::new(10, 10, 8, 8)), "{damage:?}");
+            assert!(!damage.iter().any(|d| d.contains(40, 30)), "{damage:?}");
         }
 
         /// The key property with cards: composing each commit's damage into a kept buffer equals composing the whole

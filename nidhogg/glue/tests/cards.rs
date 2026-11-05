@@ -256,8 +256,8 @@ mod cards {
         assert_eq!(placed(&commit(key).1, card_id(80)), Some(two));
     }
 
-    /// A card keeps its shadow and ring out of every other window's outer rectangle, its own excepted, and the ring
-    /// comes premultiplied.
+    /// A card keeps its shadow and ring out of every other window's outer rectangle, its own excepted (the bands
+    /// around the window area follow them), and the ring comes premultiplied.
     #[test]
     fn keep_out_is_other_windows_outer() {
         let mut b = Backings::default();
@@ -288,7 +288,8 @@ mod cards {
         ];
         sync(&mut b, key, &ws, t0);
         let k = placed(&commit(key).1, card_id(90)).unwrap().card.unwrap();
-        assert_eq!(&*k.keep_out, &[at(right().1), at(mini.outer)]);
+        assert_eq!(&k.keep_out[..2], &[at(right().1), at(mini.outer)]);
+        assert_eq!(k.keep_out.len(), 6, "and the bands around");
         assert_eq!(k.ring_argb, 0x9926_303a);
         // the right window moves: the card's list follows
         let moved = (
@@ -306,5 +307,30 @@ mod cards {
         sync(&mut b, key, &[ws[0], window(91, moved, None), mini], t0);
         let k = placed(&commit(key).1, card_id(90)).unwrap().card.unwrap();
         assert_eq!(k.keep_out[0], at(moved.1));
+    }
+
+    /// A card's shadow and ring stay inside the window area, the bounding box of the listed windows' outer
+    /// rectangles: what lies around it (the title strip here; a frame's tab, tool and menu bars) is kept out too.
+    #[test]
+    fn chrome_keeps_inside_the_window_area() {
+        let mut b = Backings::default();
+        let (key, _) = frame(&mut b, 120);
+        let t0 = Instant::now();
+        let ws = [window(92, left(), Some(card())), window(93, right(), None)];
+        sync(&mut b, key, &ws, t0);
+        let p = placed(&commit(key).1, card_id(92)).unwrap();
+        let k = p.card.expect("a card");
+        let area = at(left().1).bounds(&at(right().1));
+        // the shadow reaches above the window, into the strip, and past its left edge
+        assert!(p.bounds.y < area.y && p.bounds.x < area.x, "{:?}", p.bounds);
+        for y in p.bounds.y..p.bounds.y + p.bounds.h {
+            for x in p.bounds.x..p.bounds.x + p.bounds.w {
+                assert!(
+                    area.contains(x, y) || k.keep_out.iter().any(|r| r.contains(x, y)),
+                    "{x},{y} is outside the window area and not kept out: {:?}",
+                    k.keep_out
+                );
+            }
+        }
     }
 }

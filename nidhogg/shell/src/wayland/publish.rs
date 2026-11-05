@@ -51,7 +51,7 @@ use glitnir::kernels::kernels;
 use glitnir::motion::{Kind, Motion, MotionSpec, Sample};
 use glitnir::pool::IDLE_NS;
 use glitnir::stats::StatsEntry;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -453,29 +453,40 @@ pub(crate) struct Fed {
     pub(crate) period: u64,
     /// Feedback asked for so far; answers come in that order.
     pub(crate) asked: u64,
-    /// The number of the newest answer that reported a frame (0: none), and that frame's time.
+    /// The number of the newest answer that reported a frame (0: none), that frame's time (the compositor's clock),
+    /// and when the answer came (`now_ns`, ours).
     pub(crate) shown: u64,
     pub(crate) shown_ns: u64,
+    pub(crate) shown_at: u64,
     /// The newest answer said no frame was shown: the compositor is not showing the tree.
     pub(crate) discarded: bool,
+    /// The compositor reports on `CLOCK_MONOTONIC` (`wp_presentation.clock_id`).
+    pub(crate) monotonic: bool,
 }
 
-/// A tree's clock for its transitions, from the first frame of a leg until no leg is left.
+/// A tree's clock for its transitions, from the first frame of a leg until no leg is left.  Its times are ours
+/// (`now_ns`, `CLOCK_MONOTONIC`).
 ///
 /// A frame's time is when it will show.  Before anything was reported that is a period from now.  The first frame this
-/// clock reported is then tied to the time it was drawn for, and from there on the frame after a reported one shows a
-/// period after it: the presented times drive the clock, whichever clock the compositor reports them on, and only
-/// where they do not come (no `wp_presentation`, a discarded frame: sway discards the feedback of a root commit that
-/// only carried a child) does the real clock take over.
+/// clock reported is then tied to the time it was drawn for, or, when it showed over two periods after that time (the
+/// tree was hidden, and the leg's time passed meanwhile), to when it showed; from there on the frame after a reported
+/// one shows a period after it.  When it showed is told on our clock from the reported clock's intervals alone: the
+/// reported time's distance from the answer before this clock's first frame, added to when that answer came (else to
+/// when this one came).  So a compositor whose reported clock runs ahead of ours (the test recorder's manual clock)
+/// neither ends a leg early nor stretches it, and a slow machine whose answers come late, but report frames a period
+/// apart, runs every frame.  Where reported times do not come, or are on another clock (no `wp_presentation`, a
+/// discarded frame: sway discards the feedback of a root commit that only carried a child; a `clock_id` other than
+/// `CLOCK_MONOTONIC`), the real clock takes over.
 struct Clock {
     /// The feedback asked for before this clock's first frame.
     base: u64,
+    /// The newest answer before this clock's first frame: the frame's reported time, and when the answer came.
+    prev: Option<(u64, u64)>,
     /// The time the clock's first frame was drawn for.
     first: u64,
     /// The newest frame's time.
     last: u64,
-    /// Reported times plus this are the clock's (0 for a first frame that showed long after it was drawn: the tree
-    /// was hidden, and the leg's time passed meanwhile).
+    /// Reported times plus this are the clock's.
     offset: Option<i64>,
 }
 
@@ -483,6 +494,7 @@ impl Clock {
     fn new(f: &Fed) -> Clock {
         Clock {
             base: f.asked,
+            prev: (f.shown > 0).then_some((f.shown_ns, f.shown_at)),
             first: 0,
             last: 0,
             offset: None,
@@ -496,16 +508,21 @@ impl Clock {
             // none of this clock's frames asked yet: the coming one is its first
             self.first = real;
             real
-        } else if f.discarded {
+        } else if f.discarded || !f.monotonic {
             real
         } else if f.shown > self.base {
             let (ns, first) = (f.shown_ns, self.first);
+            let (pns, pat) = self.prev.unwrap_or((ns, f.shown_at));
             let offset = *self.offset.get_or_insert_with(|| {
-                if ns.saturating_sub(first) > 2 * f.period {
-                    0
+                // when it showed, on our clock: the reported interval since the anchor's frame, from the anchor's
+                // arrival
+                let showed = pat as i64 + (ns as i64 - pns as i64);
+                let at = if showed - first as i64 > 2 * f.period as i64 {
+                    showed
                 } else {
-                    first as i64 - ns as i64
-                }
+                    first as i64
+                };
+                at - ns as i64
             });
             (ns as i64 + offset) as u64 + f.period
         } else {
@@ -687,6 +704,8 @@ pub struct Stage {
     pub hide_hold_ns: u64,
     /// Each root's earliest key time that no commit has shown yet.
     keys: HashMap<u64, u64>,
+    /// The roots whose tree commit being sent shows a child's buffer with a packet's drawing in it: the key is spent.
+    answered: HashSet<u64>,
     /// Each root's newest packet applied to the fronts (its sequence number): a content ack recorded before it may
     /// ride a buffer composed now.
     applied: HashMap<u64, u64>,
@@ -995,6 +1014,8 @@ impl Stage {
             m.period = fed.period;
             if !m.settled && (s.front.is_none() || m.motion.unmap_due(t)) {
                 m.ended(s.glitnir_root, t);
+                // the record has its overrun: the leg is done with
+                m.motion.settle(t);
                 m.last = false;
                 m.bare = true;
                 s.drawable = false;
@@ -1012,6 +1033,8 @@ impl Stage {
             m.last = m.motion.running(t);
             if !m.last {
                 m.ended(s.glitnir_root, t);
+                // the record has its overrun: the leg is done with
+                m.motion.settle(t);
             }
         }
         if !self.work(root) {
@@ -1318,10 +1341,13 @@ impl Stage {
         Counters::add(&self.stats.bare_commits, bare);
     }
 
-    /// A tree commit of root `root` showed a child's buffer: the key it answered is spent, whether or not the root
-    /// had a buffer of its own in it (a child's entry only reads the key, the root's takes it).
+    /// A tree commit of root `root` showed a child's buffer: the key is spent when a child showed what a packet drew
+    /// (a fade tick alone answers no key), whether or not the root had a buffer of its own in it (a child's entry only
+    /// reads the key, the root's takes it).
     pub fn kids_shown(&mut self, root: u64) {
-        self.keys.remove(&root);
+        if self.answered.remove(&root) {
+            self.keys.remove(&root);
+        }
     }
 
     /// Surface `id`'s stats entry for a commit that showed what waited, with the tree's key time (a child's commit
@@ -1372,6 +1398,10 @@ impl Stage {
         self.composer.fill_stats(s.glitnir_root, &mut e);
         if !ghost {
             glitnir::stats::record(s.glitnir_root, e);
+        }
+        // a child's drawing from a packet answers its tree's key; its tree commit spends it (`kids_shown`)
+        if s.root != id && s.draw_start_ns != 0 {
+            self.answered.insert(s.root);
         }
         s.draw_start_ns = 0;
         s.damage_px = 0;
@@ -1491,6 +1521,7 @@ impl Stage {
         self.clocks.remove(&id);
         self.unmaps.retain(|u| *u != id);
         self.keys.remove(&id);
+        self.answered.remove(&id);
         self.applied.remove(&id);
     }
 }
@@ -1831,5 +1862,114 @@ mod tests {
         shown.wanted = true;
         shown.hold = 5;
         assert_eq!(stage.next_hold(), None);
+    }
+
+    /// A tree commit that showed a child's fade tick alone leaves the root's key for the commit that shows what the
+    /// key's packet drew; a child's buffer with a packet's drawing in it spends the key.  Pattern D: the stage alone.
+    #[test]
+    fn only_a_childs_drawing_spends_the_key() {
+        let mut stage = Stage::new(Arc::default());
+        let (root, kid) = (0x7e57_0001, 0x7e57_0002);
+        let part = |window: u64, damage: Vec<Rect>| Part {
+            window,
+            glitnir_root: window,
+            scene: None,
+            damage,
+            w: 4,
+            h: 4,
+            src: (0, 0),
+            flags: NHSHELL_SF_DRAWABLE,
+            alpha_cut: 0,
+            scale: 1.0,
+            rects: vec![Rect::new(0, 0, 4, 4)],
+            patch: vec![0; 16],
+            full: true,
+        };
+        let pool = PatchPool::default();
+        let all = Rect::new(0, 0, 4, 4);
+        // the key's packet: the root drew, the child did not
+        let p = Packet {
+            root,
+            seq: 1,
+            t_key_ns: 7,
+            t_publish_ns: 9,
+            parts: vec![part(root, vec![all]), part(kid, Vec::new())],
+            whole: false,
+        };
+        stage.apply(p, &pool);
+        // a fade tick: the child's whole front is its damage, and the root's buffer waits
+        stage.surfaces.get_mut(&kid).unwrap().damage = vec![all];
+        stage.presented(kid);
+        stage.kids_shown(root);
+        assert_eq!(stage.keys.get(&root), Some(&7), "a tick answers no key");
+        // the child draws: the tree commit that shows it answers the key
+        let p = Packet {
+            root,
+            seq: 2,
+            t_key_ns: 8,
+            t_publish_ns: 10,
+            parts: vec![part(kid, vec![Rect::new(0, 0, 1, 1)])],
+            whole: false,
+        };
+        stage.apply(p, &pool);
+        stage.presented(kid);
+        stage.kids_shown(root);
+        assert_eq!(stage.keys.get(&root), None);
+    }
+
+    /// What a tree's feedback said: `asked` answers asked, the newest reporting frame `shown` at `shown_ns` (the
+    /// compositor's clock), answered at `shown_at` (ours), on `CLOCK_MONOTONIC`, at a period of 8 ms.
+    fn fed(asked: u64, shown: u64, shown_ns: u64, shown_at: u64) -> Fed {
+        Fed {
+            period: 8_000_000,
+            asked,
+            shown,
+            shown_ns,
+            shown_at,
+            discarded: false,
+            monotonic: true,
+        }
+    }
+
+    /// The reported clock measures intervals only: one running 10 s ahead of ours ends no leg early; a first frame
+    /// that showed late ties the clock to when it showed, but an answer that only came late (a slow machine) does
+    /// not; a clock other than `CLOCK_MONOTONIC` is not read.  Pattern D: the clock alone.
+    #[test]
+    fn clock_decides_lateness_on_its_own_clock() {
+        const P: u64 = 8_000_000;
+        let ahead = 10_000_000_000;
+        let none = fed(0, 0, 0, 0);
+        // on time: the first frame is drawn for 1000 + P, and its answer comes then, reported 10 s ahead
+        let mut c = Clock::new(&none);
+        assert_eq!(c.frame(&none, 1_000), 1_000 + P);
+        assert_eq!(c.frame(&fed(1, 1, ahead, 1_000 + P), 2_000), 1_000 + 2 * P);
+        // the next answer reports its frame a period on
+        let next = fed(2, 2, ahead + P, 1_000 + 2 * P);
+        assert_eq!(c.frame(&next, 3_000), 1_000 + 3 * P);
+        // late, with no answer before: the answer came five periods after the frame's time
+        let mut c = Clock::new(&none);
+        c.frame(&none, 1_000);
+        let late = 1_000 + 6 * P;
+        assert_eq!(c.frame(&fed(1, 1, ahead, late), late), late + P);
+        // an answer before the leg (its frame reported at `ahead`, the answer at 500): the leg's first frame is
+        // reported a period after it, so it was on time, however late its answer came
+        let before = fed(3, 3, ahead, 500);
+        let mut c = Clock::new(&before);
+        assert_eq!(c.frame(&before, 1_000), 1_000 + P);
+        assert_eq!(c.frame(&fed(4, 4, ahead + P, late), late), 1_000 + 2 * P);
+        // reported a hundred periods after it: the tree was hidden, and the leg's time passed
+        let mut c = Clock::new(&before);
+        c.frame(&before, 1_000);
+        let showed = 500 + 100 * P;
+        let hidden = fed(4, 4, ahead + 100 * P, showed);
+        assert_eq!(c.frame(&hidden, showed), showed + P);
+        // another clock: the real one
+        let mut c = Clock::new(&none);
+        c.frame(&none, 1_000);
+        let other = Fed {
+            monotonic: false,
+            ..fed(1, 1, ahead, 1_000 + P)
+        };
+        assert_eq!(c.frame(&other, 5_000), 5_000 + P);
     }
 }
