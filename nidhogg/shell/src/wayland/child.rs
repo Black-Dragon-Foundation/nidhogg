@@ -58,6 +58,7 @@ impl WaylandShell {
         let subsurface = sub.get_subsurface(&surface, &parent, &qh, ());
         subsurface.set_position(d.x, d.y);
         m.attach_scale(&surface, &qh);
+        m.inherit_scale(id, d.parent);
         // a new subsurface goes on top of its parent's stack
         m.stacking
             .entry(d.parent)
