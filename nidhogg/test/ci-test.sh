@@ -21,13 +21,15 @@ pin=$(grep -oE 'uses: Black-Dragon-Foundation/drgnx/\.github/workflows/drgnx-tie
 ! grep -qF "inputs.drgnx_ref || '" "$wf"                          || fail "a literal default drgnx_ref (the uses line is the one pin)"
 grep -qE '^  pin:' "$wf"                                          || fail "no pin job"
 grep -qF 'inputs.drgnx_ref || needs.pin.outputs.ref' "$wf"        || fail "the default drgnx_ref is not the pin job's output"
-# cache writes: every save step is CACHE_SAVE's (nidhogg-31 and ci/*) or CACHE_SAVE_ALL's (nidhogg-31), and neither is
-# ever true for a pull request or a tag (a pull request's or tag's entry is never one a trusted run reads)
+# cache writes: every save step is CACHE_SAVE's (nidhogg-31, ci/* and this repository's pull requests) or
+# CACHE_SAVE_ALL's (nidhogg-31 and this repository's pull requests), and neither is ever true for a fork's pull request
+# or a tag; a pull request's entries are scoped to its merge ref, so no other ref's run reads them
 for l in $(grep -n 'uses: actions/cache/save@' "$wf" | cut -d: -f1); do
   sed -n "$((l - 2)),$((l - 1))p" "$wf" | grep -qE "if: .*env\.CACHE_SAVE(_ALL)? == 'true'" || fail "the cache save at line $l is not under CACHE_SAVE or CACHE_SAVE_ALL"
 done
-grep -qxF "  CACHE_SAVE: \${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/nidhogg-31' || startsWith(github.ref, 'refs/heads/ci/')) }}" "$wf" || fail "CACHE_SAVE is not nidhogg-31 and ci/* pushes"
-grep -qxF "  CACHE_SAVE_ALL: \${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/nidhogg-31' }}" "$wf" || fail "CACHE_SAVE_ALL is not nidhogg-31's"
+own_pr="(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)"
+grep -qxF "  CACHE_SAVE: \${{ $own_pr || (github.event_name != 'pull_request' && (github.ref == 'refs/heads/nidhogg-31' || startsWith(github.ref, 'refs/heads/ci/'))) }}" "$wf" || fail "CACHE_SAVE is not nidhogg-31, ci/* pushes and this repository's pull requests"
+grep -qxF "  CACHE_SAVE_ALL: \${{ $own_pr || (github.event_name != 'pull_request' && github.ref == 'refs/heads/nidhogg-31') }}" "$wf" || fail "CACHE_SAVE_ALL is not nidhogg-31's and this repository's pull requests'"
 # a release tag's tarball has no restored compiled Lisp: the jobs that make tarballs skip the restore for a tag
 for j in linux macos; do
   job "$j" | grep -A1 'id: lc$' | grep -qF "!startsWith(github.ref, 'refs/tags/')" || fail "$j restores compiled Lisp for a tag"
