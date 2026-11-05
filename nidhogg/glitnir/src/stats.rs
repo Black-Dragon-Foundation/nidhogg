@@ -449,7 +449,7 @@ mod tests {
     /// The overrun's 95th percentile is over the last `LEGS` legs: one late leg in a hundred moves the max, not it.
     #[test]
     fn leg_overrun_p95_is_over_the_last_legs() {
-        let root = 9009;
+        let root = 9010;
         let mut rng = Rng(seed());
         record(root, random_entry(&mut rng));
         for i in 0..100u64 {
