@@ -81,14 +81,15 @@ CACHE=${NIDHOGG_PKG_CACHE:-$HOME/.cache/nidhogg-pkg}; mkdir -p "$CACHE"
 PODMAN=${NIDHOGG_BUILD_PODMAN:-podman}
 
 # the in-container script is single-quoted on purpose: it expands there, not here
+# (procps: the base images have no ps, and TRAMP's list-system-processes and process-attributes rows skip without it)
 # shellcheck disable=SC2016
 INNER='set -u
 case $DISTRO in
   ubuntu-*) export DEBIAN_FRONTEND=noninteractive; apt-get update -qq
     apt-get install -y -qq --no-install-recommends $(sed "s/#.*//" /src/nidhogg/deps/$DISTRO.runtime) git make gcc cmake libtool-bin \
-      clangd python3-pylsp gnutls-bin openssh-server openssh-client >/dev/null ;;
+      clangd python3-pylsp gnutls-bin openssh-server openssh-client procps >/dev/null ;;
   *) dnf -y -q --setopt=install_weak_deps=False install $(sed "s/#.*//" /src/nidhogg/deps/$DISTRO.runtime) git make gcc cmake libtool \
-      clang-tools-extra python3-lsp-server gnutls-utils openssh-server openssh-clients findutils >/dev/null ;;
+      clang-tools-extra python3-lsp-server gnutls-utils openssh-server openssh-clients findutils procps-ng >/dev/null ;;
 esac
 EMACS=$PREFIX/bin/nidhogg; [ -x "$EMACS" ] || EMACS=$PREFIX/bin/emacs
 export HOME=$(mktemp -d) NIDHOGG_WORKERS=$MODE EMACS
