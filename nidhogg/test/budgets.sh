@@ -20,7 +20,11 @@
 #                     120 Hz
 #   --config C        q (default): both sides start with -Q.  drgnx: both sides start with drgnx's own configuration, the way
 #                     bin/drgnx starts its Emacs (--init-directory DIR/init); --drgnx names the checkout.  It is mounted
-#                     read-only at its own path, and the run's HOME is private, so drgnx's state lands in the run.  The
+#                     read-only at its own path, and the run's HOME is private, so drgnx's state lands in the run: a
+#                     warm-up start first (its Welcome, the native compilation of its Lisp), then every session starts
+#                     from a copy of what that left, so none restores the layout and buffers of the one before.  The
+#                     typing workloads put the 10k-line file in the frame's largest window first (drgnx's Welcome or
+#                     start page would take the letters as commands).  The
 #                     targets that name a 1920x1080 x 1 cell (pss-idle, cpu-typing, cpu-scroll, pss-scroll) were set on -Q
 #                     and are judged on --config q only; on drgnx they are report
 #   --refresh N       the speed sessions' sway output runs at N Hz (default 120; the scroll bar is a 120 Hz bar)
@@ -325,12 +329,29 @@ start_sway() {
 }
 
 cl() { timeout 600 "$prefix/bin/nidhoggclient" -s "$xdg/srv" -e "$1" 2> "$run/cl.err" | tr "\n" " "; }
-# why R: a workload's reply R and the error the last cl call printed, for a SKIP reason
-why() { printf '%s %s' "$1" "$(cat "$run/cl.err" 2> /dev/null)" | head -c 160 | tr '"\n' "' "; }
+# why R: a workload's reply R and the error the last cl call printed, for a SKIP reason; for no reply at all, whether
+# Nidhogg died or did not answer in time
+why() {
+  local w=$1
+  [ -n "${w// /}" ] || if kill -0 "$epid" 2> /dev/null; then w="no reply in time, nidhogg still running:"
+                       else w="nidhogg died: $(tail -n 3 "$run/nh.err" 2> /dev/null)"; fi
+  printf '%s %s' "$w" "$(cat "$run/cl.err" 2> /dev/null)" | head -c 160 | tr '"\n' "' "
+}
+
+# drgnx keeps its state in the run's HOME and XDG directories (the layout and buffers it restores, its first-start
+# marks): every session starts from the same copy of them, taken after a warm-up start (state0), so no session
+# restores what the one before it left
+STATE_DIRS="home cache data config"
+fresh_state() {
+  local d
+  [ -d "$run/state0" ] || return 0
+  for d in $STATE_DIRS; do rm -r "$run/$d"; cp -a "$run/state0/$d" "$run/$d"; done
+}
 
 # start_nidhogg PREFIX: the frame, fullscreen, with the 10k-line buffer and a server (no timers: the idle rows count)
 start_nidhogg() {
   prefix=$1
+  fresh_state
   env ${nh_env[@]+"${nh_env[@]}"} BUDGETS_SRV=$xdg/srv BUDGETS_FILE=$run/big.txt \
     timeout --kill-after=10 3000 "$prefix/bin/nidhogg" "${nh_init[@]}" --fullscreen \
     -l "$run/driver.el" 2> "$run/nh.err" &
@@ -399,7 +420,7 @@ measure() {
   n=$((window * 10))
   str=$(awk -v n="$n" 'BEGIN { for (i = 0; i < n; i++) printf "%c", 97 + i % 26 }')
   # emacsclient -e runs in the server buffer, not the one the keys go to: read the selected window's buffer
-  cl '(with-current-buffer (window-buffer (selected-window)) (goto-char (point-min)) (setq budgets--n (buffer-size)) (glitnir-stats nil t) t)' > /dev/null
+  cl '(progn (budgets--type-target) (glitnir-stats nil t) t)' > /dev/null
   s1=$(snap)
   wtype -d 100 -- "$str" 2> "$run/wtype.err"; local wrc=$?
   s2=$(snap)
@@ -471,7 +492,7 @@ motion() {
 do_typing() {
   local n=$((window * 10)) str
   str=$(awk -v n="$n" 'BEGIN { for (i = 0; i < n; i++) printf "%c", 97 + i % 26 }')
-  cl '(with-current-buffer (window-buffer (selected-window)) (goto-char (point-min)) (setq budgets--n (buffer-size)) t)' > /dev/null
+  cl '(budgets--type-target)' > /dev/null
   ts1=$(snap)
   wtype -d 100 -- "$str" 2> "$run/wtype.err"; twrc=$?
   ts2=$(snap)
@@ -731,6 +752,20 @@ cat > "$run/driver.el" <<'EOF'
 (require 'server)
 (server-start)
 
+(defun budgets--compiling ()
+  "Non-nil while native compilation has files queued or running."
+  (and (boundp 'comp-files-queue)
+       (or comp-files-queue (and (fboundp 'comp--async-runnings) (> (comp--async-runnings) 0)))
+       t))
+(defun budgets--type-target ()
+  "Show the 10k-line file at its start in the frame's largest window, selected, so typed keys go there.
+drgnx's start puts its Welcome or start page in that window, and they take letters as commands."
+  (let ((w (get-largest-window)))
+    (set-window-buffer w (find-file-noselect (getenv "BUDGETS_FILE")))
+    (select-window w)
+    (with-current-buffer (window-buffer w) (goto-char (point-min)) (setq budgets--n (buffer-size))))
+  t)
+
 ;; the workloads of the speed rows; emacsclient -e runs in the server buffer, so they act on the selected window's
 (defun budgets--scroll-fixed (n)
   "N scroll steps (5 lines each) with a redisplay after each, as fast as the build goes: the C4 fixed work."
@@ -874,6 +909,16 @@ if [ "$HAS_W3" = 0 ] && [ "$reference" = 0 ]; then
   for rr in latency-typing-inline scroll-120-dropped-inline cpu-typing-inline scroll-120-presenter-late main-wait-max; do
     rec "$rr" A "SKIP needs the presenter thread : this build has no nhwl-presenter-stats"
   done
+fi
+
+# drgnx's first start (its Welcome, the native compilation of its Lisp) in a warm-up session of its own, waited out
+# (10 minutes at most); what it left is the state every session starts from
+if [ "$config" = drgnx ]; then
+  start_sway "$size" "$scale" "" && start_nidhogg "$pa" || { echo "budgets.sh: the warm-up session failed"; exit 1; }
+  for _ in $(seq 600); do [ "$(cl '(budgets--compiling)' | tr -d ' ')" = nil ] && break; sleep 1; done
+  stop_all
+  mkdir "$run/state0"
+  for d in $STATE_DIRS; do cp -a "$run/$d" "$run/state0/$d"; done
 fi
 
 for ((ri = 1; ri <= runs; ri++)); do
