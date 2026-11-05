@@ -554,4 +554,316 @@ Inline: the leg's time passes unseen, and at most two commits jump to the end."
        (should (glitnir-fx--connected-p)))
      glitnir-fx--blur)))
 
+;; Task 11: window cards.  Two windows side by side, the left a card, a gap of 6 logical px between them in the
+;; divider colour.  Each buffer has a colour of its own, no mode line, no cursor and no fringes, so the left window's
+;; first block of its colour in a grab is its top row right of the top-left corner square: the card's corner is there
+;; minus the radius.  The rows run at the lane's scale (1, 2 and 1.25).
+
+(defconst glitnir-fx--card-bg "#3070c0" "The card window's background.")
+(defconst glitnir-fx--card-bgr '(192 112 48) "`glitnir-fx--card-bg' as a grab holds it.")
+(defconst glitnir-fx--other-bg "#c07030" "The other window's background.")
+(defconst glitnir-fx--other-bgr '(48 112 192) "`glitnir-fx--other-bg' as a grab holds it.")
+(defconst glitnir-fx--gap "#20a040" "The divider colour: the gap, and what the card's corners show.")
+(defconst glitnir-fx--gap-bgr '(64 160 32) "`glitnir-fx--gap' as a grab holds it.")
+(defconst glitnir-fx--radius 10 "The card's corner radius, logical px.")
+
+(defun glitnir-fx--card-r ()
+  "The card's corner radius in device px at the frame's scale, as the glue rounds it."
+  (floor (+ 0.5 (* glitnir-fx--radius (frame-scale-factor)))))
+
+(defun glitnir-fx--redraw (&rest windows)
+  "Draw WINDOWS again (a parameter change draws nothing by itself) and wait until it reached the compositor."
+  (dolist (w windows) (force-window-update w))
+  (redisplay t)
+  (gui-runner-wait-settled))
+
+(defun glitnir-fx--card-box (w)
+  "Card window W in a grab, (X Y WIDTH HEIGHT): found from its colour, sized from its edges without dividers."
+  (let ((at (gui-runner-grab-find-block (gui-runner-screen-grab) glitnir-fx--card-bgr 20 20))
+        (r (if (window-parameter w 'corner-radius) (glitnir-fx--card-r) 0)))
+    (should at)
+    (list (- (car at) r) (cdr at)
+          (- (window-pixel-width w) (window-right-divider-width w))
+          (- (window-pixel-height w) (window-bottom-divider-width w)))))
+
+(defun glitnir-fx--corners (box r)
+  "The four R x R corner squares of BOX, each (X Y R R)."
+  (pcase-let ((`(,x ,y ,w ,h) box))
+    (list (list x y r r) (list (+ x w (- r)) y r r)
+          (list x (+ y h (- r)) r r) (list (+ x w (- r)) (+ y h (- r)) r r))))
+
+(defun glitnir-fx--pixel (grab x y)
+  "Pixel (X . Y) of GRAB as (B G R)."
+  (let ((o (* 4 (+ x (* y (nth 0 grab))))) (b (nth 2 grab)))
+    (list (aref b o) (aref b (+ o 1)) (aref b (+ o 2)))))
+
+(defun glitnir-fx--near (px want)
+  "Non-nil when every channel of PX is within 2 of WANT's."
+  (cl-every (lambda (a b) (<= (abs (- a b)) 2)) px want))
+
+(defun glitnir-fx--with-cards (params fn)
+  "Call FN with the left and right windows of the rows' layout, the left with window PARAMS, drawn and settled.
+Everything goes back after: one window on `*scratch*', the frame's divider width and colour."
+  (nhwl-gui--with-blink
+   nil
+   (lambda ()
+     (let* ((f (selected-frame))
+            (gap (frame-parameter f 'right-divider-width))
+            (divider (face-attribute 'window-divider :foreground f))
+            (a (get-buffer-create " *glitnir-card-a*"))
+            (b (get-buffer-create " *glitnir-card-b*"))
+            left right)
+       (unwind-protect
+           (progn
+             (delete-other-windows)
+             (set-face-foreground 'window-divider glitnir-fx--gap f)
+             (set-frame-parameter f 'right-divider-width (round (* 6 (frame-scale-factor))))
+             (dolist (x (list (cons a glitnir-fx--card-bg) (cons b glitnir-fx--other-bg)))
+               (with-current-buffer (car x)
+                 (setq mode-line-format nil cursor-type nil)
+                 (face-remap-add-relative 'default :background (cdr x))))
+             (setq left (selected-window) right (split-window-right))
+             (set-window-buffer left a)
+             (set-window-buffer right b)
+             (dolist (w (list left right)) (set-window-fringes w 0 0))
+             (dolist (p params) (set-window-parameter left (car p) (cdr p)))
+             (message nil)
+             (glitnir-fx--redraw left right)
+             (funcall fn left right))
+         (when (window-live-p left)
+           (dolist (k '(corner-radius shadow ring)) (set-window-parameter left k nil)))
+         (delete-other-windows)
+         (switch-to-buffer "*scratch*")
+         (set-frame-parameter f 'right-divider-width gap)
+         (set-face-attribute 'window-divider f :foreground divider)
+         (kill-buffer a)
+         (kill-buffer b)
+         (glitnir-fx--redraw (selected-window)))))))
+
+(defconst glitnir-fx--card `((corner-radius . ,glitnir-fx--radius))
+  "A card with corners only.")
+
+(defconst glitnir-fx--card-look
+  `((corner-radius . ,glitnir-fx--radius) (shadow . (:blur 3 :offset (0 . 1) :opacity 0.45))
+    (ring . (,glitnir-fx--gap . 0.6)))
+  "The look's card: corners, a soft shadow one px down and the edge ring.")
+
+(ert-deftest glitnir-card-corner-shows-gap ()
+  "A card window's corner pixel is the gap's colour; the same window without a card shows its own there."
+  :tags '(gnome-smoke)
+  (skip-unless (glitnir-fx--live-p))
+  (glitnir-fx--with-cards
+   glitnir-fx--card
+   (lambda (left _right)
+     (should (window-parameter left 'glitnir--card))
+     (let* ((box (glitnir-fx--card-box left))
+            (grab (gui-runner-screen-grab)))
+       (dolist (sq (glitnir-fx--corners box (glitnir-fx--card-r)))
+         (should (glitnir-fx--near (glitnir-fx--pixel grab (nth 0 sq) (nth 1 sq)) glitnir-fx--gap-bgr)))
+       ;; a pixel on the top edge past the corner square is the window's
+       (should (glitnir-fx--near (glitnir-fx--pixel grab (+ (nth 0 box) (glitnir-fx--card-r)) (nth 1 box))
+                                 glitnir-fx--card-bgr))
+       (set-window-parameter left 'corner-radius nil)
+       (glitnir-fx--redraw left)
+       (should (glitnir-fx--near (glitnir-fx--pixel (gui-runner-screen-grab) (nth 0 box) (nth 1 box))
+                                 glitnir-fx--card-bgr))))))
+
+(ert-deftest glitnir-card-shadow-only-in-gap ()
+  "The look's card leaves the other window's pixels as they are without it; the gap beside the card is darker."
+  (skip-unless (glitnir-fx--live-p))
+  (glitnir-fx--with-cards
+   glitnir-fx--card-look
+   (lambda (left right)
+     (let* ((box (glitnir-fx--card-box left))
+            (with (gui-runner-screen-grab))
+            (other (gui-runner-grab-find-block with glitnir-fx--other-bgr 20 20))
+            (other-rect (list (car other) (cdr other)
+                              (- (window-pixel-width right) 2) (- (window-pixel-height right) 2)))
+            (gap (list (+ (nth 0 box) (nth 2 box)) (+ (nth 1 box) 20)
+                       (window-right-divider-width left) 20)))
+       (should other)
+       (dolist (k '(corner-radius shadow ring)) (set-window-parameter left k nil))
+       (glitnir-fx--redraw left right)
+       (let ((without (gui-runner-screen-grab)))
+         (should (eql 0 (cdr (gui-runner-pixel-diff with without other-rect))))
+         (should (> (cdr (gui-runner-pixel-diff with without gap)) 0)))))))
+
+(ert-deftest glitnir-card-typing-damage ()
+  "50 keys typed in a card window: no commit's damage reaches a corner square, the cursor being in the middle."
+  (skip-unless (glitnir-fx--recorder-p))
+  (glitnir-fx--with-cards
+   glitnir-fx--card
+   (lambda (left _right)
+     (let* ((box (glitnir-fx--card-box left))
+            (squares (glitnir-fx--corners box (glitnir-fx--card-r)))
+            (buf (window-buffer left))
+            (meets (lambda (a b)
+                     (pcase-let ((`(,ax ,ay ,aw ,ah) a) (`(,bx ,by ,bw ,bh) b))
+                       (and (< ax (+ bx bw)) (< bx (+ ax aw)) (< ay (+ by bh)) (< by (+ ay ah)))))))
+       (with-current-buffer buf
+         (dotimes (_ 12) (insert "\n"))
+         (forward-line -6)
+         (insert "  "))
+       (set-window-point left (with-current-buffer buf (point)))
+       (glitnir-fx--redraw left)
+       (let ((mark (nhwl-gui--mark)))
+         (dotimes (_ 50)
+           (should (glitnir-fx--next-key))
+           (with-current-buffer buf (insert "x"))
+           (redisplay t)
+           (gui-runner-wait-settled))
+         (let ((commits (seq-filter #'nhwl-gui--damage (nhwl-gui--toplevel-all-commits mark))))
+           (should commits)
+           (dolist (c commits)
+             (dolist (d (nhwl-gui--damage c))
+               (should-not (seq-find (lambda (sq) (funcall meets d sq)) squares))))))))))
+
+(ert-deftest glitnir-card-removed-no-residue ()
+  "A card that goes leaves the frame as it was before it came."
+  (skip-unless (glitnir-fx--live-p))
+  (glitnir-fx--with-cards
+   nil
+   (lambda (left _right)
+     (let ((base (gui-runner-screen-grab)))
+       (dolist (p glitnir-fx--card-look) (set-window-parameter left (car p) (cdr p)))
+       (glitnir-fx--redraw left)
+       (should (> (cdr (gui-runner-pixel-diff base (gui-runner-screen-grab))) 0))
+       (dolist (p glitnir-fx--card-look) (set-window-parameter left (car p) nil))
+       (glitnir-fx--redraw left)
+       (should (eql 0 (cdr (gui-runner-pixel-diff base (gui-runner-screen-grab)))))))))
+
+(defun glitnir-fx--outputs ()
+  "How many of the frame's windows are their own outputs: `nhwl--scroll-layers' counts each card too."
+  (- (nhwl--scroll-layers)
+     (seq-count (lambda (w) (window-parameter w 'glitnir--card)) (window-list nil t))))
+
+(defun glitnir-fx--fill (w)
+  "Fill window W's buffer with numbered lines, its top line first, after the box was found."
+  (with-current-buffer (window-buffer w)
+    (dotimes (i 300)
+      (insert (format "line %03d of the card rows %s\n" i (make-string (% (* i 7) 23) ?#))))
+    (goto-char (point-min)))
+  (set-window-start w 1)
+  (set-window-point w 1))
+
+(defun glitnir-fx--scroll-corners (w box steps)
+  "Scroll window W one line STEPS times from its top; after each, the grab of its four corner squares in BOX."
+  (set-window-start w 1)
+  (set-window-point w 1)
+  (glitnir-fx--redraw w)
+  (let (out (most 0))
+    (dotimes (_ steps)
+      (with-selected-window w (scroll-up 1))
+      (redisplay t)
+      (setq most (max most (glitnir-fx--outputs)))
+      (gui-runner-wait-settled)
+      (let ((grab (gui-runner-screen-grab)))
+        (push (cons grab (glitnir-fx--corners box (glitnir-fx--card-r))) out)))
+    (cons most (nreverse out))))
+
+(defun glitnir-fx--same-corners (a b)
+  "Non-nil when every corner square of steps A equals B's, step by step."
+  (cl-every (lambda (x y)
+              (cl-every (lambda (sq) (eql 0 (cdr (gui-runner-pixel-diff (car x) (car y) sq)))) (cdr x)))
+            a b))
+
+(defmacro glitnir-fx--with-scroll-layers (value &rest body)
+  "Run BODY with `nhwl-scroll-layers' VALUE, restored after."
+  (declare (indent 1))
+  `(let ((old nhwl-scroll-layers))
+     (unwind-protect (progn (setq nhwl-scroll-layers ,value) ,@body)
+       (setq nhwl-scroll-layers old))))
+
+(ert-deftest glitnir-card-promoted-scroll-corners ()
+  "A card window's full-window scrolls promote it; after each step its corners grab the same as without promotion."
+  :tags '(gnome-smoke)
+  (skip-unless (and (glitnir-fx--live-p) (fboundp 'nhwl--scroll-layers) (boundp 'nhwl-scroll-layers)))
+  (glitnir-fx--with-cards
+   glitnir-fx--card-look
+   (lambda (left _right)
+     (let ((box (glitnir-fx--card-box left)) promoted plain)
+       (glitnir-fx--fill left)
+       (glitnir-fx--with-scroll-layers t
+         (setq promoted (glitnir-fx--scroll-corners left box 10)))
+       (should (= (car promoted) 1))
+       (when (glitnir-fx--recorder-p)
+         (should (string-search "content" (format "%S" (gui-runner-recorder '(:cmd "tree"))))))
+       (glitnir-fx--with-scroll-layers nil
+         (glitnir-fx--redraw left)
+         (should (= (glitnir-fx--outputs) 0))
+         (setq plain (glitnir-fx--scroll-corners left box 10)))
+       (should (= (car plain) 0))
+       (should (glitnir-fx--same-corners (cdr promoted) (cdr plain)))))))
+
+(ert-deftest glitnir-card-promoted-demote-no-residue ()
+  "After the idle demotion of a promoted card window, the window grabs as it did while promoted."
+  (skip-unless (and (glitnir-fx--live-p) (fboundp 'nhwl--scroll-layers) (boundp 'nhwl-scroll-layers)))
+  (glitnir-fx--with-cards
+   glitnir-fx--card-look
+   (lambda (left _right)
+     (let ((box (glitnir-fx--card-box left)))
+       (glitnir-fx--fill left)
+       (glitnir-fx--with-scroll-layers t
+         (should (= (car (glitnir-fx--scroll-corners left box 3)) 1))
+         (let ((before (gui-runner-screen-grab)))
+           ;; demotion runs at a publish two seconds after the last scroll: the echo area draws, the window does not
+           (should (gui-runner-wait (lambda ()
+                                      (message "%s" (random 1000))
+                                      (redisplay t)
+                                      (= (glitnir-fx--outputs) 0))
+                                    6))
+           (message nil)
+           (redisplay t)
+           (gui-runner-wait-settled)
+           (should (eql 0 (cdr (gui-runner-pixel-diff before (gui-runner-screen-grab) box))))))))))
+
+(ert-deftest glitnir-card-theme-switch ()
+  "A theme that changes the divider colour changes what the corners show, promoted or not, and leaves nothing after."
+  (skip-unless (glitnir-fx--live-p))
+  (custom-declare-theme 'glitnir-fx-card nil)
+  (custom-theme-set-faces 'glitnir-fx-card '(window-divider ((t :foreground "#a02060"))))
+  (glitnir-fx--with-cards
+   glitnir-fx--card
+   (lambda (left _right)
+     (let* ((box (glitnir-fx--card-box left))
+            (corner (lambda () (glitnir-fx--pixel (gui-runner-screen-grab) (nth 0 box) (nth 1 box))))
+            (base (gui-runner-screen-grab)))
+       (unwind-protect
+           (progn
+             ;; the theme's colour wins over none set for the frame
+             (set-face-attribute 'window-divider (selected-frame) :foreground 'unspecified)
+             (enable-theme 'glitnir-fx-card)
+             (glitnir-fx--redraw left)
+             (should (glitnir-fx--near (funcall corner) '(96 32 160)))
+             (when (boundp 'nhwl-scroll-layers)
+               (glitnir-fx--fill left)
+               (glitnir-fx--with-scroll-layers t
+                 (should (= (car (glitnir-fx--scroll-corners left box 3)) 1))
+                 (disable-theme 'glitnir-fx-card)
+                 (set-face-foreground 'window-divider glitnir-fx--gap (selected-frame))
+                 (glitnir-fx--redraw left)
+                 (should (glitnir-fx--near (funcall corner) glitnir-fx--gap-bgr))
+                 (enable-theme 'glitnir-fx-card)
+                 (set-face-attribute 'window-divider (selected-frame) :foreground 'unspecified)
+                 (glitnir-fx--redraw left)
+                 (should (glitnir-fx--near (funcall corner) '(96 32 160))))))
+         (disable-theme 'glitnir-fx-card)
+         (set-face-foreground 'window-divider glitnir-fx--gap (selected-frame))
+         (with-current-buffer (window-buffer left) (erase-buffer))
+         (glitnir-fx--redraw left)
+         (should (eql 0 (cdr (gui-runner-pixel-diff base (gui-runner-screen-grab) box)))))))))
+
+(ert-deftest glitnir-cards-off-parity ()
+  "Card parameters that ask for no card (radius 0) change no pixel and give the frame no cards."
+  (skip-unless (glitnir-fx--live-p))
+  (glitnir-fx--with-cards
+   nil
+   (lambda (left _right)
+     (let ((base (gui-runner-screen-grab)))
+       (set-window-parameter left 'corner-radius 0)
+       (glitnir-fx--redraw left)
+       (should-not (window-parameter left 'glitnir--card))
+       (should-not (frame-parameter nil 'glitnir--cards))
+       (should (eql 0 (cdr (gui-runner-pixel-diff base (gui-runner-screen-grab)))))))))
+
 ;;; glitnir-effects-gui-tests.el ends here

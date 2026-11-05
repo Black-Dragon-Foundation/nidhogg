@@ -528,6 +528,11 @@ impl Scene {
         self.restacked.extend(self.stack.subtree(id));
     }
 
+    /// PARENT's children (0: the top level), bottom to top, whatever their kind.
+    pub fn children(&self, parent: u64) -> &[u64] {
+        self.stack.children(parent)
+    }
+
     /// Raise ID to the top of its siblings.
     pub fn raise(&mut self, id: u64) -> Result<(), i32> {
         self.known(id)?;
