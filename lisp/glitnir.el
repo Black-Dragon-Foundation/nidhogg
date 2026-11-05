@@ -311,18 +311,15 @@ in), else the frame's background.  The motion and backdrop slots are 0."
 (defvar glitnir--card-generation 0
   "Bumped when every window's card is resolved again (a theme changed).")
 
-(defun glitnir--card-key (window)
-  "What WINDOW's card is resolved from, or nil when it asks for none."
-  (let ((radius (window-parameter window 'corner-radius))
-        (shadow (window-parameter window 'shadow))
-        (ring (window-parameter window 'ring)))
-    (when (or radius shadow ring)
-      (let ((f (window-frame window)))
-        (list radius shadow ring glitnir--card-generation
-              (face-foreground 'window-divider f t)
-              (frame-parameter f 'background-color)
-              (and shadow (face-foreground 'child-frame-shadow f t))
-              (and (consp ring) (facep (car ring)) (face-foreground (car ring) f t)))))))
+(defun glitnir--card-key-same-p (old radius shadow ring)
+  "Non-nil when the key OLD still stands for the parameters RADIUS, SHADOW and RING.
+The key is (RADIUS SHADOW RING GENERATION) from the pass that resolved the card, or nil for a window that asked
+for none.  Nothing is allocated, and no face is looked up: colours are resolved with the card, and again when
+`glitnir--card-generation' changes."
+  (if old
+      (and (eq (nth 3 old) glitnir--card-generation)
+           (equal (nth 0 old) radius) (equal (nth 1 old) shadow) (equal (nth 2 old) ring))
+    (not (or radius shadow ring))))
 
 (defun glitnir--cards-flag (frame)
   "Set FRAME's parameter `glitnir--cards' to whether a window has a card.
@@ -337,11 +334,15 @@ Only when that changed."
   "Resolve WINDOW's card again when what it comes from changed.
 The vector goes into the window parameter `glitnir--card', which C lists
 with the window when the frame publishes."
-  (let ((key (glitnir--card-key window)))
-    (unless (equal key (window-parameter window 'glitnir--card-key))
+  (let ((radius (window-parameter window 'corner-radius))
+        (shadow (window-parameter window 'shadow))
+        (ring (window-parameter window 'ring)))
+    (unless (glitnir--card-key-same-p (window-parameter window 'glitnir--card-key) radius shadow ring)
       ;; the key first: a parameter that signals does so once
-      (set-window-parameter window 'glitnir--card-key key)
-      (let ((v (and key (glitnir--card-vector window))))
+      (set-window-parameter window 'glitnir--card-key
+                            (and (or radius shadow ring)
+                                 (list radius shadow ring glitnir--card-generation)))
+      (let ((v (and (or radius shadow ring) (glitnir--card-vector window))))
         (unless (equal v (window-parameter window 'glitnir--card))
           (set-window-parameter window 'glitnir--card v)
           ;; the window draws, so the frame publishes and C lists the new card
@@ -355,22 +356,48 @@ with the window when the frame publishes."
     (dolist (w (window-list f t))
       (glitnir--recheck-cards w))))
 
+(defvar glitnir--cards-seen (make-hash-table :test 'eq :weakness 'key)
+  "Per frame, the value `glitnir--recheck-frame-cards' last gave its `glitnir--cards' parameter.")
+
+(defun glitnir--recheck-tree (window)
+  "Recheck the card of every leaf window under WINDOW and its siblings; non-nil when one has a card.
+This runs on every redisplay, so it walks the tree rather than building a window list."
+  (let (any)
+    (while window
+      (if (window-child window)
+          (when (glitnir--recheck-tree (window-child window)) (setq any t))
+        (glitnir--recheck-cards window)
+        (when (window-parameter window 'glitnir--card) (setq any t)))
+      (setq window (window-next-sibling window)))
+    any))
+
 (defun glitnir--recheck-frame-cards (window)
   "Recheck the cards of every window on WINDOW's frame, before redisplay.
 Only for the frame's first window and the selected window, the windows
-redisplay passes, so a frame's windows are checked at most twice."
+redisplay passes, so a frame's windows are checked at most twice.  A pass
+that finds nothing changed allocates nothing and looks up no face; the frame's
+flag `glitnir--cards' follows the windows, also when the last card window was
+deleted."
   (let ((f (window-frame window)))
     (when (or (eq window (frame-first-window f)) (eq window (selected-window)))
-      (dolist (w (window-list f t))
-        (glitnir--recheck-cards w)))))
+      (let ((any (glitnir--recheck-tree (frame-root-window f))))
+        ;; `frame-parameter' conses the frame's whole parameter list, so the last value is kept beside it
+        (unless (eq any (gethash f glitnir--cards-seen))
+          (puthash f any glitnir--cards-seen)
+          (unless (eq any (frame-parameter f 'glitnir--cards))
+            (set-frame-parameter f 'glitnir--cards any)))))))
 
 (add-hook 'pre-redisplay-functions #'glitnir--recheck-frame-cards)
 
 (defun glitnir-refresh (&optional frame)
-  "Resolve the chrome of FRAME (default: every child frame) again."
+  "Resolve the chrome of FRAME (default: every child frame) again.
+Without FRAME the cards of every window are resolved again too: a card's
+colours are read when it is resolved, so a face changed outside a theme (a
+theme change does this itself) shows after this call."
   (dolist (f (if frame (list frame) (frame-list)))
     (when (and (frame-live-p f) (frame-parent f))
-      (glitnir--rechrome f))))
+      (glitnir--rechrome f)))
+  (unless frame (glitnir--recheck-all-cards)))
 
 (defun glitnir--recheck-shadow (window)
   "Refresh WINDOW's frame when its `child-frame-shadow' colour changed.
@@ -391,8 +418,7 @@ its first window)."
 ;; nhwl-settings.el loads after this file; `add-hook' makes the hook variable here.
 (add-hook 'nhwl-settings-changed-functions #'glitnir--settings-changed)
 (defun glitnir--theme-refresh (&rest _)
-  (glitnir-refresh)
-  (glitnir--recheck-all-cards))
+  (glitnir-refresh))
 (add-hook 'enable-theme-functions #'glitnir--theme-refresh)
 (add-hook 'disable-theme-functions #'glitnir--theme-refresh)
 (add-variable-watcher
