@@ -84,7 +84,9 @@ nj=$(awk '/^  compile-noglitnir:/,/^  macos:/' "$wf")
 [ -n "$nj" ]                                                      || fail "no job compile-noglitnir"
 grep -qF -- '--without-glitnir' <<<"$nj"                          || fail "compile-noglitnir does not pass --without-glitnir"
 grep -qF -- '--stage build' <<<"$nj"                              || fail "compile-noglitnir does not stop after the build stage"
-grep -qF 'fedora-44' <<<"$nj"                                     || fail "compile-noglitnir is not on fedora-44"
+grep -qF 'fedora-45' <<<"$nj"                                     || fail "compile-noglitnir is not on fedora-45"
+grep -qF 'distro: [fedora-45, ubuntu-26.04]' "$wf"                || fail "the Linux matrix is not fedora-45 and ubuntu-26.04"
+! grep -qF 'fedora-44' "$wf"                                      || fail "the workflow still names fedora-44"
 # macOS runs the crate's tests with the host's cargo (Homebrew rust), before the build: the aarch64 NEON baseline
 mj=$(awk '/^  macos:/,/^  drgnx:/' "$wf")
 grep -qF 'bash nidhogg/glitnir/check.sh' <<<"$mj"                 || fail "macos runs the glitnir checks"

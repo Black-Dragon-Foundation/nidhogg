@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # drgnx's unit suite against a built Nidhogg tarball, for a local run (CI runs drgnx's own tiers workflow instead:
 # README.md, "CI and releases").
-#   nidhogg/ci/drgnx-suite.sh TARBALL DISTRO DRGNX_DIR     (DISTRO: fedora-44 | fedora-45 | ubuntu-26.04 | macos)
+#   nidhogg/ci/drgnx-suite.sh TARBALL DISTRO DRGNX_DIR     (DISTRO: fedora-45 | ubuntu-26.04 | macos)
 # Linux: a fresh --memory ${NIDHOGG_SUITE_MEMORY:-4g} podman container of DISTRO; the tarball is unpacked at its BUILDINFO
 # prefix and DRGNX_DIR is mounted read-only.  macOS: on the host (brew install of deps.runtime + ripgrep + rust).
 # DRGNX_RATATOSKR_BIN (Ratatoskr with the test hooks, ratatoskr-mock beside it) and DRGNX_HUGINN_DUMP (huginn's dump
@@ -35,7 +35,6 @@ if [ "$DISTRO" = macos ]; then
 fi
 
 case $DISTRO in
-  fedora-44) IMAGE=registry.fedoraproject.org/fedora:44 ;;
   fedora-45) IMAGE=registry.fedoraproject.org/fedora:45 ;;
   ubuntu-26.04) IMAGE=docker.io/library/ubuntu:26.04 ;;
   *) echo "drgnx-suite: unknown distro $DISTRO" >&2; exit 2 ;;

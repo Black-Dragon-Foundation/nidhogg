@@ -98,7 +98,7 @@ as given, at the layer's device scale, never resampled.
 `check.sh [--container DISTRO] [--test NAME]` runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`,
 `cargo deny check licenses bans sources` (when `cargo-deny` is installed) and a vendor-drift check (it vendors a copy
 of the crate and compares; the source tree is never written). Without `--container` it uses the host's cargo; with
-`--container fedora-44` it runs in a podman container capped at 2 GiB.
+`--container fedora-45` it runs in a podman container capped at 2 GiB.
 
 ## Damage
 
