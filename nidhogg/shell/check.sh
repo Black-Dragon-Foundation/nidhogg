@@ -4,9 +4,11 @@
 # 2 usage, 3 the TSan lane is unavailable.
 # --full adds the slow checks (vendor drift, which needs the network, and the LTO release build with its exports); a
 # task's author check runs without it, integration builds and gates with it.
-# Without --container the host's cargo runs (CI, macOS).  With it, podman runs a memory-capped container (2 GiB) that
-# installs cargo, clippy, rustfmt and the -devel packages; CARGO_HOME and CARGO_TARGET_DIR live under
-# $NHSHELL_CARGO_DIR (default $T/nhshell-cargo), the package cache under $NIDHOGG_BUILD_PKG_CACHE when set.  The
+# Without --container the host's cargo runs (CI, macOS).  With it, podman runs a memory-capped container (2 GiB) from the
+# check image (fedora-45: nidhogg-check:fedora-45-HASH, built once from deps/fedora-45.check by ci/image.sh local; the
+# run prints "image: REF (local|built)" and installs nothing; NIDHOGG_CRATES_IMAGE names another).  Another distro
+# installs cargo, clippy, rustfmt and the -devel packages per run (the package cache under $NIDHOGG_BUILD_PKG_CACHE
+# when set).  CARGO_HOME and CARGO_TARGET_DIR live under $NHSHELL_CARGO_DIR (default $T/nhshell-cargo).  The
 # crate directory is only written by --revendor, which regenerates Cargo.lock and vendor/ (needs the network).
 # The vendor-drift check and --revendor use cargo-vendor-filterer, installed into $CARGO_HOME/bin on first use.
 # --tsan runs only the named tests (all without --test) under ThreadSanitizer: a nightly toolchain (rustup, installed
@@ -58,13 +60,21 @@ if [ -n "$DISTRO" ] && [ "$INNER" = 0 ]; then
   trap cleanup EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  # nothing to install in an image that has them (NIDHOGG_CRATES_IMAGE, CI's nidhogg-build-fedora-45)
-  pk="cargo rust clippy rustfmt gcc binutils diffutils pkgconf-pkg-config openssl-devel cmake wayland-devel libxkbcommon-devel xkeyboard-config libX11-common pixman-devel${TSAN_PKGS:-}"
-  inner="{ rpm -q --quiet --whatprovides $pk 2>/dev/null || dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install $pk >/dev/null; } && { command -v cargo-deny >/dev/null || dnf -y install cargo-deny >/dev/null 2>&1 || true; } && bash /nh/shell/check.sh --inner${TEST:+ --test $(printf %q "$TEST")}$([ "$REVENDOR" = 1 ] && echo ' --revendor')$([ "$FULL" = 1 ] && echo ' --full')$([ "$TSAN" = 1 ] && echo ' --tsan')"
+  inner="bash /nh/shell/check.sh --inner${TEST:+ --test $(printf %q "$TEST")}$([ "$REVENDOR" = 1 ] && echo ' --revendor')$([ "$FULL" = 1 ] && echo ' --full')$([ "$TSAN" = 1 ] && echo ' --tsan')"
+  IMAGE=${NIDHOGG_CRATES_IMAGE:-}
+  if [ -z "$IMAGE" ] && [ "$DISTRO" = fedora-45 ]; then
+    # the check image (deps/fedora-45.check), built here once: no package manager runs
+    IMAGE=$(bash "$HERE/../ci/image.sh" local check-fedora-45) || { echo "check.sh: the check image failed" >&2; exit 1; }
+  else
+    # nothing to install in an image that has them (NIDHOGG_CRATES_IMAGE, CI's nidhogg-build-fedora-45)
+    pk="cargo rust clippy rustfmt gcc binutils diffutils pkgconf-pkg-config openssl-devel cmake wayland-devel libxkbcommon-devel xkeyboard-config libX11-common pixman-devel${TSAN_PKGS:-}"
+    inner="{ rpm -q --quiet --whatprovides $pk 2>/dev/null || dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install $pk >/dev/null; } && { command -v cargo-deny >/dev/null || dnf -y install cargo-deny >/dev/null 2>&1 || true; } && $inner"
+    IMAGE=${IMAGE:-registry.fedoraproject.org/fedora:${DISTRO#fedora-}}
+  fi
   podman run --rm --name "$NAME" --memory "$MEM" --memory-swap "$MEM" \
     -v "$NH:/nh:$MODE,Z" -v "$CARGO_DIR:/cargo:Z" "${EXTRA[@]}" \
     -e CARGO_HOME=/cargo/home -e CARGO_TARGET_DIR=/cargo/target -e CARGO_BUILD_JOBS=2 \
-    "${NIDHOGG_CRATES_IMAGE:-registry.fedoraproject.org/fedora:${DISTRO#fedora-}}" bash -euo pipefail -c "$inner" &
+    "$IMAGE" bash -euo pipefail -c "$inner" &
   pid=$!
   wait "$pid"
   exit $?

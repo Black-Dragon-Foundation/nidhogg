@@ -5,9 +5,11 @@
 #        check.sh --c-fields BUILD_DIR | --provenance      (text checks of the C side; no cargo, no container)
 # --no-run compiles the tests without running them (the compile-only author check).
 # Exit 0 ok, 1 "check.sh: FAIL <check>", 2 usage, 3 --android skipped (the target's std is not installed; says why).
-# Without --container the host's cargo runs (CI, macOS).  With it, podman runs a memory-capped container (2 GiB) that
-# installs cargo, clippy, rustfmt and the -devel packages the shell needs; CARGO_HOME and CARGO_TARGET_DIR live under
-# $NHGLUE_CARGO_DIR (default $T/nhglue-cargo), the package cache under $NIDHOGG_BUILD_PKG_CACHE when set.  nidhogg/ is
+# Without --container the host's cargo runs (CI, macOS).  With it, podman runs a memory-capped container (2 GiB) from the
+# check image (fedora-45: nidhogg-check:fedora-45-HASH, built once from deps/fedora-45.check by ci/image.sh local; the
+# run prints "image: REF (local|built)" and installs nothing, except --android's std; NIDHOGG_CRATES_IMAGE names
+# another).  Another distro installs the packages per run (the cache under $NIDHOGG_BUILD_PKG_CACHE when set).
+# CARGO_HOME and CARGO_TARGET_DIR live under $NHGLUE_CARGO_DIR (default $T/nhglue-cargo).  nidhogg/ is
 # mounted read-only: the crate builds from the shell's vendor/ (.cargo/config.toml) and depends on ../shell and
 # ../glitnir.  NH_RECORDER (a built nidhogg/test/recorder) is passed to the T1 tests (tests/*.rs), mounted.
 # The link check against a built Emacs is nm-check.sh (it needs the build tree).
@@ -107,16 +109,25 @@ if [ -n "$DISTRO" ] && [ "$INNER" = 0 ]; then
   [ "$NORUN" = 1 ] && args="$args --no-run"
   [ "$REPEAT" = 1 ] || args="$args --repeat $REPEAT"
   [ "$ANDROID" = 1 ] && args="$args --android"
-  # the Android target's std, where the distro packages it (Fedora does not: --android then exits 3)
+  # the Android target's std, where the distro packages it (Fedora does not: --android then exits 3): the one install
+  # a run may still make, for --android only
   android_std=""
   [ "$ANDROID" = 1 ] && android_std="(dnf -y install rust-std-static-$ANDROID_TARGET >/dev/null 2>&1 || true) && "
-  # nothing to install in an image that has them (NIDHOGG_CRATES_IMAGE, CI's nidhogg-build-fedora-45)
-  pk="cargo rust clippy rustfmt gcc binutils diffutils gawk pkgconf-pkg-config wayland-devel libxkbcommon-devel xkeyboard-config libX11-common pixman-devel"
-  inner="{ rpm -q --quiet --whatprovides $pk 2>/dev/null || dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install $pk >/dev/null; } && { command -v cargo-deny >/dev/null || dnf -y install cargo-deny >/dev/null 2>&1 || true; } && ${android_std}bash /nh/glue/check.sh --inner$args"
+  inner="${android_std}bash /nh/glue/check.sh --inner$args"
+  IMAGE=${NIDHOGG_CRATES_IMAGE:-}
+  if [ -z "$IMAGE" ] && [ "$DISTRO" = fedora-45 ]; then
+    # the check image (deps/fedora-45.check), built here once: no package manager runs
+    IMAGE=$(bash "$HERE/../ci/image.sh" local check-fedora-45) || { echo "check.sh: the check image failed" >&2; exit 1; }
+  else
+    # nothing to install in an image that has them (NIDHOGG_CRATES_IMAGE, CI's nidhogg-build-fedora-45)
+    pk="cargo rust clippy rustfmt gcc binutils diffutils gawk pkgconf-pkg-config wayland-devel libxkbcommon-devel xkeyboard-config libX11-common pixman-devel"
+    inner="{ rpm -q --quiet --whatprovides $pk 2>/dev/null || dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install $pk >/dev/null; } && { command -v cargo-deny >/dev/null || dnf -y install cargo-deny >/dev/null 2>&1 || true; } && $inner"
+    IMAGE=${IMAGE:-registry.fedoraproject.org/fedora:${DISTRO#fedora-}}
+  fi
   podman run --rm --name "$NAME" --memory 2g --memory-swap 2g \
     -v "$NH:/nh:ro,z" -v "$CARGO_DIR:/cargo:z" "${EXTRA[@]}" \
     -e CARGO_HOME=/cargo/home -e CARGO_TARGET_DIR=/cargo/target -e CARGO_BUILD_JOBS=2 \
-    "${NIDHOGG_CRATES_IMAGE:-registry.fedoraproject.org/fedora:${DISTRO#fedora-}}" bash -euo pipefail -c "$inner" &
+    "$IMAGE" bash -euo pipefail -c "$inner" &
   pid=$!
   wait "$pid"
   exit $?

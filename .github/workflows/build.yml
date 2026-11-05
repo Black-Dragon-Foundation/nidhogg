@@ -150,6 +150,7 @@ jobs:
       - run: bash nidhogg/test/tree-test.sh
       - run: bash nidhogg/test/ci-test.sh
       - run: bash nidhogg/test/check-rerun-test.sh
+      - run: bash nidhogg/test/check-image-test.sh
       - run: bash nidhogg/test/preflight-test.sh
       - run: bash nidhogg/test/timing-lane.sh --self-test
       # Glitnir (the compositor): the crate's checks (fmt, clippy, tests, licences, vendor drift) and the advisories.
