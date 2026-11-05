@@ -6374,6 +6374,17 @@ to a pipe process only in chunks of 255 bytes, or after 0.5s."
       ;; Cleanup.
       (ignore-errors (delete-process proc)))))
 
+(defun tramp--test-signal-process-ready (proc)
+  "Wait until PROC's shell has said \"ready\": its trap is set.
+A signal sent earlier finds the shell before its trap (the shell dies of
+it, so the trap is never tested), or still the remote login shell
+before its exec, which does not die of it."
+  (with-timeout (10 (tramp--test-timeout-handler))
+    ;; A line of its own: an echo of the command line holds "ready" too.
+    (while (not (with-current-buffer (process-buffer proc)
+		  (string-match-p "^ready\r?$" (buffer-string))))
+      (accept-process-output proc 0.1 nil t))))
+
 (ert-deftest tramp-test31-signal-process ()
   "Check `signal-process'."
   :tags '(:expensive-test :tramp-asynchronous-processes)
@@ -6405,7 +6416,11 @@ to a pipe process only in chunks of 255 bytes, or after 0.5s."
       (dolist (sigcode '(2 INT))
 	(unwind-protect
 	    (with-temp-buffer
-	      (setq command "trap 'echo boom; exit 1' 2; sleep 100"
+	      ;; The shell says "ready" once its trap is set, and waits
+	      ;; with `wait', which a trapped signal ends at once (it
+	      ;; runs a trap only after a foreground command ends).
+	      (setq command
+		    "trap 'echo boom; kill $!; exit 1' 2; echo ready; sleep 100 & wait"
 		    proc (start-file-process-shell-command
 		          (format "test1-%s" sigcode) (current-buffer) command))
 	      (should (processp proc))
@@ -6416,6 +6431,7 @@ to a pipe process only in chunks of 255 bytes, or after 0.5s."
 	       (equal (process-get proc 'remote-command)
 		      (with-connection-local-variables
 		       `(,shell-file-name ,shell-command-switch ,command))))
+	      (tramp--test-signal-process-ready proc)
 	      (should (zerop (signal-process (funcall func proc) sigcode)))
 	      ;; Let the process accept the signal, and wait for its
 	      ;; exit: a poll that finds no output pending says
@@ -6431,7 +6447,11 @@ to a pipe process only in chunks of 255 bytes, or after 0.5s."
 
 	(unwind-protect
 	    (with-temp-buffer
-	      (setq command "trap 'echo boom; exit 1' 2; sleep 100"
+	      ;; The shell says "ready" once its trap is set, and waits
+	      ;; with `wait', which a trapped signal ends at once (it
+	      ;; runs a trap only after a foreground command ends).
+	      (setq command
+		    "trap 'echo boom; kill $!; exit 1' 2; echo ready; sleep 100 & wait"
 		    proc (start-file-process-shell-command
 		          (format "test2-%s" sigcode) (current-buffer) command))
 	      (should (processp proc))
@@ -6442,6 +6462,7 @@ to a pipe process only in chunks of 255 bytes, or after 0.5s."
 	       (equal (process-get proc 'remote-command)
 		      (with-connection-local-variables
 		       `(,shell-file-name ,shell-command-switch ,command))))
+	      (tramp--test-signal-process-ready proc)
 	      ;; `signal-process' has argument REMOTE since Emacs 29.
 	      (with-no-warnings
 		(should
