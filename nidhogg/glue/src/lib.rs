@@ -42,6 +42,9 @@ pub mod chrome;
 // window layers
 pub mod layers;
 
+// window cards
+pub mod cards;
+
 // the drop target
 pub mod dnd;
 
