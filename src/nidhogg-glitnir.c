@@ -95,9 +95,9 @@ DEFUN ("glitnir-stats", Fglitnir_stats, Sglitnir_stats, 0, 2, 0,
        doc: /* Return the frame-time record of FRAME's root frame, or nil.
 The record covers the last 1024 paints (counts are since the last reset).
 It is a plist (:count N :compose-ms (:p50 :p95 :max) :draw-ms (...)
-:key-to-commit-ms (...) :freeze-ms (...) :damage-px N :painted-px N
+:key-to-commit-ms (...) :damage-px N :painted-px N
 :tick-interval-ms (...) :blur-ms (...) :backfill-rate F :ticks N
-:late-ticks N :violations N :scale-mismatch N :backdrop-px N
+:late-ticks N :backdrop-px N
 :leg-overrun-ms F);
 :damage-px and :painted-px are medians in device pixels.  Times are in
 milliseconds; :key-to-commit-ms is the time from a key event to the commit
@@ -128,11 +128,10 @@ Non-nil RESET empties the record after reading it.  */)
   plist = nconc2 (plist, pctl (":compose-ms", &s.compose_ms));
   plist = nconc2 (plist, pctl (":draw-ms", &s.draw_ms));
   plist = nconc2 (plist, pctl (":key-to-commit-ms", &s.update_ms));
-  plist = nconc2 (plist, pctl (":freeze-ms", &s.freeze_ms));
   plist = nconc2 (plist, pctl (":tick-interval-ms", &s.tick_interval_ms));
   plist = nconc2 (plist, pctl (":blur-ms", &s.blur_ms));
   return nconc2 (plist,
-		 listn (18, intern_c_string (":damage-px"),
+		 listn (14, intern_c_string (":damage-px"),
 			make_uint (s.damage_px_p50),
 			intern_c_string (":painted-px"),
 			make_uint (s.painted_px_p50),
@@ -142,10 +141,6 @@ Non-nil RESET empties the record after reading it.  */)
 			intern_c_string (":ticks"), make_uint (s.ticks),
 			intern_c_string (":late-ticks"),
 			make_uint (s.late_ticks),
-			intern_c_string (":violations"),
-			make_uint (s.violations),
-			intern_c_string (":scale-mismatch"),
-			make_uint (s.scale_mismatch),
 			intern_c_string (":backdrop-px"),
 			make_uint (s.backdrop_px),
 			intern_c_string (":leg-overrun-ms"),

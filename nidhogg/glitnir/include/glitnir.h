@@ -28,15 +28,14 @@ int32_t glitnir_debug_panic (void);
 /* One paint, as the glue measures it (monotonic nanoseconds; 0 = not measured).  */
 typedef struct
 {
-  uint64_t t_update_ns, t_commit_ns, t_freeze_ns, t_draw_start_ns, t_draw_end_ns;
+  uint64_t t_update_ns, t_commit_ns, t_draw_start_ns, t_draw_end_ns;
   uint64_t t_compose_start_ns, t_compose_end_ns;
   int64_t clock_frame_us;
   int64_t presented_us;		/* -1: not known (GTK3 binds no wp_presentation) */
   uint64_t damage_px, scroll_px, painted_px, backdrop_px;
   uint64_t tick_interval_ns, blur_ns;	/* 0: not a tick after a leg's first; nothing recomputed */
-  uint32_t layers, ticks, late_ticks, violations;
+  uint32_t layers, ticks, late_ticks;
   uint8_t backfill;		/* 0, 1, or 2 unknown */
-  uint8_t scale_mismatch;
 } GlitnirStatsEntry;
 
 typedef struct { double p50, p95, max; } GlitnirPercentiles;
@@ -45,10 +44,10 @@ typedef struct { double p50, p95, max; } GlitnirPercentiles;
 typedef struct
 {
   uint64_t count;
-  GlitnirPercentiles compose_ms, draw_ms, latency_ms, freeze_ms;
+  GlitnirPercentiles compose_ms, draw_ms, latency_ms;
   uint64_t damage_px_p50, painted_px_p50;
   double backfill_rate;		/* -1: no entry knows (backfill 2 everywhere) */
-  uint64_t ticks, late_ticks, violations, scale_mismatch, backdrop_px;
+  uint64_t ticks, late_ticks, backdrop_px;
   /* From t_update_ns to the end of the paint, over the entries with an update time only.  */
   GlitnirPercentiles update_ms;
   /* The same over the entries with a tick interval, and with a blur time.  */

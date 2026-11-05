@@ -405,4 +405,64 @@ Colours are \"#RRGGBB\" specs: the batch terminal may define no colour names."
           (set-window-parameter w k nil))
         (funcall set-frame-parameter nil 'glitnir--cards nil)))))
 
+(defmacro glitnir-test--with-card-windows (n &rest body)
+  "Run BODY with N windows in the selected frame, every one a card whose vector is resolved.
+The windows are deleted and the card parameters and flag cleared after."
+  (declare (indent 1))
+  `(let ((ws (list (selected-window))) (window-min-height 1) (window-min-width 1))
+     (unwind-protect
+         (progn
+           (clrhash glitnir--cards-seen)
+           (while (< (length ws) ,n) (push (split-window (car ws) nil 'right) ws))
+           (dolist (w ws)
+             (set-window-parameter w 'corner-radius 8)
+             (set-window-parameter w 'shadow '(:blur 3 :offset (0 . 1) :opacity 0.45))
+             (set-window-parameter w 'ring '("#ff0000" . 0.6)))
+           (cl-letf (((symbol-function 'color-values)
+                      (lambda (c &optional _f) (and (stringp c) (color-values-from-color-spec c)))))
+             (glitnir--recheck-frame-cards (frame-first-window))
+             ,@body))
+       (dolist (w ws)
+         (when (window-live-p w)
+           (dolist (k '(corner-radius shadow ring glitnir--card glitnir--card-key))
+             (set-window-parameter w k nil))))
+       (delete-other-windows)
+       (clrhash glitnir--cards-seen)
+       (set-frame-parameter nil 'glitnir--cards nil))))
+
+(defun glitnir-test--recheck-n (n window)
+  "Run the card hook N times on WINDOW (compiled by the test: an interpreted loop conses by itself)."
+  (dotimes (_ n) (glitnir--recheck-frame-cards window)))
+
+(ert-deftest glitnir-card-recheck-unchanged-redisplay-allocates-nothing ()
+  "Pattern D (pure).  Over 100 passes of the redisplay hook with five card windows and nothing changed, no face
+is looked up and (within a stated bound) nothing is consed: the hook compares the window parameters with
+the generation it resolved them at."
+  (glitnir-test--with-card-windows 5
+    (should (= (length (window-list)) 5))
+    (let ((looked-up 0) (face-foreground (symbol-function 'face-foreground)) before conses)
+      (cl-letf (((symbol-function 'face-foreground)
+                 (lambda (&rest args) (setq looked-up (1+ looked-up)) (apply face-foreground args))))
+        (byte-compile 'glitnir-test--recheck-n)
+        (setq before (car (memory-use-counts)))
+        (glitnir-test--recheck-n 100 (frame-first-window))
+        (setq conses (- (car (memory-use-counts)) before)))
+      (should (= looked-up 0))
+      (should (<= conses 20)))))               ; the 100 passes cost no conses; slack for the counter's own list
+
+(ert-deftest glitnir-card-flag-clears-when-the-last-card-window-goes ()
+  "Pattern D (pure).  Deleting the only card window leaves no card, so the next pass of the redisplay hook clears
+the frame's `glitnir--cards' flag (C lists every window at every publish while it is set)."
+  (glitnir-test--with-card-windows 2
+    (should (eq (frame-parameter nil 'glitnir--cards) t))
+    (let ((card (frame-first-window)))
+      (set-window-parameter (next-window card nil nil) 'glitnir--card nil)
+      (dolist (k '(corner-radius shadow ring))
+        (set-window-parameter (next-window card nil nil) k nil))
+      (glitnir--recheck-frame-cards (frame-first-window))
+      (should (eq (frame-parameter nil 'glitnir--cards) t))
+      (delete-window card)
+      (glitnir--recheck-frame-cards (frame-first-window))
+      (should-not (frame-parameter nil 'glitnir--cards)))))
+
 ;;; glitnir-tests.el ends here
