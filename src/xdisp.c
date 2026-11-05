@@ -25584,8 +25584,8 @@ nh_pt_lnum (struct it *it, ptrdiff_t beg_byte, bool wide)
     nh_lnum_counts_from_start++;
   return display_count_lines_logically (beg_byte, PT_BYTE, PT, &ignored);
 }
-#endif
 
+#endif
 /* Produce the line-number glyphs for the current glyph_row.  If
    IT->glyph_row is non-NULL, populate the row with the produced
    glyphs.  */
