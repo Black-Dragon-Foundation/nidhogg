@@ -6376,8 +6376,7 @@ to a pipe process only in chunks of 255 bytes, or after 0.5s."
 
 (ert-deftest tramp-test31-signal-process ()
   "Check `signal-process'."
-  ;; The final `process-live-p' check does not run sufficiently.
-  :tags '(:expensive-test :tramp-asynchronous-processes :unstable)
+  :tags '(:expensive-test :tramp-asynchronous-processes)
   (skip-unless (tramp--test-enabled))
   (skip-unless (tramp--test-sh-p))
   (skip-unless (not (tramp--test-windows-nt-p)))
@@ -6418,9 +6417,12 @@ to a pipe process only in chunks of 255 bytes, or after 0.5s."
 		      (with-connection-local-variables
 		       `(,shell-file-name ,shell-command-switch ,command))))
 	      (should (zerop (signal-process (funcall func proc) sigcode)))
-	      ;; Let the process accept the signal.
+	      ;; Let the process accept the signal, and wait for its
+	      ;; exit: a poll that finds no output pending says
+	      ;; nothing about whether the shell has exited yet.
 	      (with-timeout (10 (tramp--test-timeout-handler))
-		(while (accept-process-output proc 0 nil t)))
+		(while (process-live-p proc)
+		  (accept-process-output proc 0.1 nil t)))
               (should-not (process-live-p proc)))
 
           ;; Cleanup.
@@ -6447,9 +6449,12 @@ to a pipe process only in chunks of 255 bytes, or after 0.5s."
 		  (signal-process
 		   (funcall func (process-get proc 'remote-pid))
 		   sigcode default-directory))))
-	      ;; Let the process accept the signal.
+	      ;; Let the process accept the signal, and wait for its
+	      ;; exit: a poll that finds no output pending says
+	      ;; nothing about whether the shell has exited yet.
 	      (with-timeout (10 (tramp--test-timeout-handler))
-		(while (accept-process-output proc 0 nil t)))
+		(while (process-live-p proc)
+		  (accept-process-output proc 0.1 nil t)))
               (should-not (process-live-p proc)))
 
           ;; Cleanup.
