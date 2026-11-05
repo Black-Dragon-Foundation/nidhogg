@@ -14,6 +14,100 @@ mod scale {
         move |e| matches!(e.event, ShellEvent::Scale(s) if e.window == id && s.scale120 == v)
     }
 
+    /// A window made on an output at 1.25, where `wl_output.scale` and `preferred_buffer_scale` round up to 2, takes the
+    /// fractional scale alone: no `SCALE` of the integer hint comes before it.  (A child frame given that hint first
+    /// opened its fonts at 2 and then at 1.25 again, and lost a size asked for in between.)
+    #[test]
+    fn new_window_on_a_fractional_output_never_takes_the_integer_hint() {
+        use nhshell::api::{NHSHELL_ACK_CONTENT, WindowDesc};
+        let rec = Recorder::start("sway");
+        let mut shell = rec.open();
+        assert!(
+            rec.control(r#"{"cmd":"scale","value120":150}"#)
+                .contains("\"ok\":true")
+        );
+        // every scale each window is given, from its making on, kept while waiting for something; a deadline bounds a
+        // failure only
+        type Seen = std::collections::BTreeMap<u64, Vec<u32>>;
+        fn pump(
+            shell: &mut nhshell::wayland::WaylandShell,
+            seen: &mut Seen,
+            done: &dyn Fn(&Seen, Option<&Record>) -> bool,
+        ) -> Option<Record> {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !done(seen, None) {
+                while let Some(e) = shell.next_event().unwrap() {
+                    if let ShellEvent::Scale(s) = e.event {
+                        seen.entry(e.window).or_default().push(s.scale120);
+                    }
+                    if done(seen, Some(&e)) {
+                        return Some(e);
+                    }
+                }
+                assert!(std::time::Instant::now() < deadline, "never came: {seen:?}");
+                readable_within(shell.wake_fd(), 50);
+            }
+            None
+        }
+        let mut seen = Seen::new();
+        let id = shell
+            .window_new(&WindowDesc {
+                w: 200,
+                h: 100,
+                title: "t".into(),
+                app_id: "nidhogg.test".into(),
+                flags: 0,
+            })
+            .unwrap();
+        let ev = pump(&mut shell, &mut seen, &|_, e| {
+            e.is_some_and(|e| e.kind() == Kind::Configure && e.window == id)
+        })
+        .unwrap();
+        shell
+            .ack_configure(id, configure_of(&ev).serial, NHSHELL_ACK_CONTENT)
+            .unwrap();
+        // the window maps with its first buffer; a child frame comes under it
+        let draw = |shell: &mut nhshell::wayland::WaylandShell, w: u64, (dw, dh): (i32, i32)| {
+            let b = shell.present_begin(w, dw, dh).unwrap();
+            unsafe { std::ptr::write_bytes(b.pixels, 0x80, (b.stride * b.h) as usize) };
+            shell
+                .present_commit(w, &[glitnir::geom::Rect::new(0, 0, dw, dh)])
+                .unwrap();
+            shell.flush().unwrap();
+        };
+        draw(&mut shell, id, (250, 125));
+        let kid = shell
+            .child_new(&nhshell::api::ChildDesc {
+                kind: nhshell::api::NHSHELL_KIND_CHILD,
+                parent: id,
+                x: 20,
+                y: 20,
+                w: 100,
+                h: 60,
+                anchor: nhshell::api::Anchor::default(),
+                flags: 0,
+            })
+            .unwrap();
+        draw(&mut shell, kid, (125, 75));
+        draw(&mut shell, id, (250, 125));
+        for w in [id, kid] {
+            pump(&mut shell, &mut seen, &|seen, _| {
+                seen.get(&w).is_some_and(|v| v.contains(&150))
+            });
+        }
+        assert_eq!(
+            seen.get(&id).map(Vec::as_slice),
+            Some(&[150][..]),
+            "the window's: {seen:?}"
+        );
+        assert_eq!(
+            seen.get(&kid).map(Vec::as_slice),
+            Some(&[150][..]),
+            "the child's: {seen:?}"
+        );
+        assert_eq!(shell.window_scale(kid).unwrap(), 150);
+    }
+
     #[test]
     fn fractional_event_reaches_window() {
         let rec = Recorder::start("sway");

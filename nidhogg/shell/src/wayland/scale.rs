@@ -3,8 +3,9 @@
 //! The frame's pixel is the device pixel: Emacs draws at the output's real resolution.  The protocol sees logical sizes only: the buffer is
 //! `round(logical x s)` device pixels, `wp_viewport`'s destination is the logical size the buffer maps onto exactly
 //! (`viewport_size`: a buffer no logical size fits is cut to the largest that does) and `buffer_scale` stays 1.
-//! A surface's scale comes from `wp_fractional_scale_v1` when the compositor has it, else from
-//! `wl_surface.preferred_buffer_scale`, else from the largest scale of the outputs the surface entered.  All of it
+//! A surface's scale comes from `wp_fractional_scale_v1` when the compositor has it (the integer hints are not used
+//! even before its first `preferred_scale`), else from `wl_surface.preferred_buffer_scale`, else from the largest
+//! scale of the outputs the surface entered.  All of it
 //! runs on the main queue.
 
 use crate::event::{OutputEv, Record, ScaleEv, ShellEvent};
@@ -171,6 +172,12 @@ impl MainState {
         let Some(s) = self.scales.get(&id) else {
             return;
         };
+        // with a fractional-scale object the compositor's fractional scale alone counts: the integer hints round it
+        // up (2 for 1.25), and taking one until it comes flipped the surface's scale twice (a frame's fonts opened at
+        // 2, then at 1.25 again, dropping a size asked for in between)
+        if s.fractional.is_some() && s.frac120.is_none() {
+            return;
+        }
         let new = s
             .frac120
             .or(s.buffer_scale.map(|b| b * 120))
