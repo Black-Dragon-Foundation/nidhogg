@@ -265,6 +265,12 @@ machine whose timing never shows it, not certain.
   (`FILE # reason`); a row whose file is gone fails the check. Every test file has a class, so a file with neither a
   class line nor an exempt row fails it.
 - `tree`: `tree-test.sh`, `ci-test.sh` and `check-rerun-test.sh` (full history and tags).
+- Pull requests land by fast-forwarding their base (`nidhogg-31`) to the head, so a pull request's run tests the head:
+  every job checks out `github.event.pull_request.head.sha`, not GitHub's merge commit (whose subject breaks the
+  series rules and whose tree is not what lands), and the path filter diffs the head. `fast-forward` (pull requests
+  only; other events skip it, which the gate allows) fails when the head does not descend from the base branch's tip:
+  rebase the branch onto it. With that guard the head's tree is the merge commit's, so the cache keys (tree and content
+  hashes, never a commit) mean what they meant.
 - `linux` (fedora-45, ubuntu-26.04): `build.sh --container D --stage build`, the cache saves, then `--stage check
   --check nidhogg/check-subset.txt`, then `--stage pack --out ...` (so a failing check keeps the build's caches), then
   `tarball-test.sh`. `macos`: Homebrew `deps/macos.build`, `build.sh --host` (`--stage build`, then `--stage pack`),
