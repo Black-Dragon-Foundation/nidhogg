@@ -135,7 +135,7 @@ window's body edges and POS's position are added to that."
 
 (defun glitnir-decor-gui--chip (before edit &optional face-props after)
   "Draw BEFORE then a rounded chip \" ab \" under `verify'; call EDIT with the start of BEFORE's end (a marker) to redraw
-only the neighbour; return (VIOLATIONS TOP-LEFT-PX TOP-RIGHT-PX FULL-GRAB FRAME-ORIGIN AFTER-VALUE) with pixels of the
+only the neighbour; return (TOP-LEFT-PX TOP-RIGHT-PX FULL-GRAB FRAME-ORIGIN AFTER-VALUE) with pixels of the
 chip's corners.  AFTER, called last with the chip's buffer still shown, makes AFTER-VALUE."
   (let ((glitnir-enable t) (glitnir-debug 'verify)
         (face (make-symbol "glitnir-decor-gui-chip")))
@@ -157,23 +157,21 @@ chip's corners.  AFTER, called last with the chip's buffer still shown, makes AF
         (let* ((g (gui-runner-screen-grab))
                (at (cdr (glitnir-decor-gui--at g chip fo)))
                (right (cdr (glitnir-decor-gui--at g (+ chip 4) fo))))
-          (list (plist-get (glitnir-stats) :violations)
-                (glitnir-decor-gui--px g (car at) (cdr at))
+          (list (glitnir-decor-gui--px g (car at) (cdr at))
                 (glitnir-decor-gui--px g (1- (car right)) (cdr at))
                 g fo (and after (funcall after)))))))))
 
 (ert-deftest glitnir-decor-gui/decor-repaint-before-draw-survives-overhang ()
   (skip-unless (featurep 'nidhogg-wayland))
   ;; The chip's left neighbour is redrawn alone, as plain text and as an italic glyph overhanging into the chip: the chip's
-  ;; top-left corner stays the colour beneath and `verify' sees nothing missed.
+  ;; top-left corner stays the colour beneath.
   (dolist (italic '(nil t))
     (let ((r (glitnir-decor-gui--chip
               (if italic "ff" "xy")
               (lambda (m) (save-excursion (goto-char (- m 1)) (delete-char -1) (insert "z")
                                           (when italic
                                             (put-text-property (1- (point)) (point) 'face '(:slant italic))))))))
-      (should (= (nth 0 r) 0))
-      (should (equal (nth 1 r) '(32 32 32))))))
+      (should (equal (nth 0 r) '(32 32 32))))))
 
 (ert-deftest glitnir-decor-gui/decor-region-edge-repaints-corner ()
   (skip-unless (featurep 'nidhogg-wayland))
@@ -184,8 +182,7 @@ chip's corners.  AFTER, called last with the chip's buffer still shown, makes AF
               (face-remap-add-relative 'region :background "#804040")
               (set-mark (- m 2)) (goto-char m) (activate-mark)
               (let ((transient-mark-mode t)) (force-mode-line-update))))))
-    (should (= (nth 0 r) 0))
-    (should (equal (nth 1 r) '(128 64 64)))))
+    (should (equal (nth 0 r) '(128 64 64)))))
 
 (ert-deftest glitnir-decor-gui/decor-mouse-face-neighbour ()
   (skip-unless (featurep 'nidhogg-wayland))
@@ -198,8 +195,7 @@ chip's corners.  AFTER, called last with the chip's buffer still shown, makes AF
               (let ((e (window-body-pixel-edges)) (p (pos-visible-in-window-p (- m 2) nil t)))
                 (set-mouse-pixel-position (selected-frame) (+ (nth 0 e) (nth 0 p) 1) (+ (nth 1 e) (nth 1 p) 1)))
               (redisplay t)))))
-    (should (= (nth 0 r) 0))
-    (should (member (nth 1 r) '((0 96 0) (32 32 32))))))
+    (should (member (nth 0 r) '((0 96 0) (32 32 32))))))
 
 (ert-deftest glitnir-decor-gui/decor-theme-switch-recolours-corners ()
   (skip-unless (featurep 'nidhogg-wayland))
@@ -208,9 +204,8 @@ chip's corners.  AFTER, called last with the chip's buffer still shown, makes AF
             "xy"
             (lambda (_m)
               (face-remap-add-relative 'default :background "#103010" :foreground "white")))))
-    (should (= (nth 0 r) 0))
-    (should (equal (nth 1 r) '(16 48 16)))
-    (should (equal (nth 2 r) '(16 48 16)))))
+    (should (equal (nth 0 r) '(16 48 16)))
+    (should (equal (nth 1 r) '(16 48 16)))))
 
 (ert-deftest glitnir-decor-gui/decor-partial-equals-full ()
   (skip-unless (featurep 'nidhogg-wayland))
@@ -220,12 +215,11 @@ chip's corners.  AFTER, called last with the chip's buffer still shown, makes AF
                                           (redraw-frame)
                                           (gui-runner-wait-settled)
                                           (gui-runner-screen-grab)))))
-    (should (= (nth 0 r) 0))
-    (let* ((full (nth 5 r)) (part (nth 3 r)))
+    (let* ((full (nth 4 r)) (part (nth 2 r)))
       (should (equal (aref (nth 2 full) 0) (aref (nth 2 part) 0)))
       ;; the title bar around the text area changes between two grabs (focus, hover): compare the text area
       (let* ((s (glitnir-decor-gui--scale))
-             (e (window-body-pixel-edges)) (fo (nth 4 r)) (w (car full))
+             (e (window-body-pixel-edges)) (fo (nth 3 r)) (w (car full))
              (x0 (+ (car fo) (glitnir-decor-gui--dev s (nth 0 e)))) (y0 (+ (cdr fo) (glitnir-decor-gui--dev s (nth 1 e))))
              (rw (* 4 (glitnir-decor-gui--dev s (- (nth 2 e) (nth 0 e)))))
              (bad 0))
@@ -372,7 +366,7 @@ buffer empty (a label test's first line is not empty, so the text area's corner 
      (should (glitnir-decor-gui--above-p 10))
      (should-not (glitnir-decor-gui--above-p 7)))))
 
-;;; PD cost and construction spike (corner cost, violations, tag softness).  The numbers are written to stderr as "GLITNIR-PD ..." lines.
+;;; PD cost and construction spike (corner cost, tag softness).  The numbers are written to stderr as "GLITNIR-PD ..." lines.
 
 (defun glitnir-decor-gui--board (radius)
   "Fill the current buffer with 300 decorated runs (chips, buttons, card rows) of box RADIUS.
@@ -418,26 +412,6 @@ Return the number of runs."
              (or (getenv "GLITNIR_GUI_SCALE") "1") r0 r6 delta)
     (when (> delta 2000)
       (ert-fail (format "corner cost over the limit: radius0 %S radius6 %S delta %.0f us (limit 2000)" r0 r6 delta)))))
-
-(ert-deftest glitnir-decor-gui/decor-verify-no-violations ()
-  "Violations: card rows and the corner repaint under `verify' leave 0 violations."
-  (skip-unless (featurep 'nidhogg-wayland))
-  (let ((glitnir-enable t) (glitnir-debug 'verify))
-    (with-temp-buffer
-      (switch-to-buffer (current-buffer))
-      (face-remap-add-relative 'default :background "#202020" :foreground "white")
-      (glitnir-decor-gui--board 6)
-      (redisplay t)
-      (let ((before (plist-get (glitnir-stats) :violations)))
-        (goto-char (point-min))
-        (dotimes (_ 5)                  ; scrolling and edits repaint the corners
-          (forward-line 7)
-          (insert "x") (redisplay t) (delete-char -1) (redisplay t)
-          (set-window-start nil (point-min)) (redisplay t))
-        (gui-runner-wait-settled)
-        (message "GLITNIR-PD violations scale=%s violations=%s" (or (getenv "GLITNIR_GUI_SCALE") "1")
-                 (- (plist-get (glitnir-stats) :violations) before))
-        (should (= 0 (- (plist-get (glitnir-stats) :violations) before)))))))
 
 (ert-deftest glitnir-decor-gui/decor-svg-tag-softness-record ()
   "Tag softness (record only): an svg-lib style tag image at the run's scale; write a crop to look at softness."

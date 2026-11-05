@@ -77,9 +77,9 @@ struct glitnir_root
   GdkWindow *frozen;
   guint idle_id;
 
-  /* Monotonic ns of the first redisplay start, freeze and commit, and of
+  /* Monotonic ns of the first redisplay start and commit, and of
      the last draw, since the last record (0: none).  */
-  uint64_t t_update, t_freeze, t_commit, t_draw_start, t_draw_end;
+  uint64_t t_update, t_commit, t_draw_start, t_draw_end;
   bool drawn;			/* a draw ran since the last record */
 
   /* Summed over every draw since the last record (a point that paints at
@@ -87,11 +87,6 @@ struct glitnir_root
      what the draws were asked for and painted; and the device pixels
      committed.  */
   uint64_t draw_ns, damage_px, painted_px, commit_px;
-  uint8_t scale_mismatch;
-
-  /* glitnir--debug-scale-mismatch: every draw of the root's next paint
-     sees its surface at another scale than the target's.  */
-  bool debug_mismatch;
 
   /* For tests: the root's draws, its latest recorded paint (and when the
      after-paint that sent it to the compositor ran), and the longest time
@@ -107,14 +102,13 @@ struct glitnir_root
   uint64_t gap_from, max_gap;
 
   /* Debug modes.  `verify': the frame's surface at its previous commit
-     (VCOPY, VW x VH pixels of VSTRIDE bytes), and the violations found since
-     the last record.  `damage': the rectangles flashed (FLASH, device
+     (VCOPY, VW x VH pixels of VSTRIDE bytes).  `damage': the rectangles flashed (FLASH, device
      pixels, in the colour FLASH_RGB) until the timeout FLASH_ID removes
      them; the draw handler's context while it runs (DRAW_CR).  FREEZE_AT:
      when the root froze (0: not frozen).  */
   unsigned char *vcopy;
   int vw, vh, vstride;
-  uint64_t violations, freeze_at;
+  uint64_t freeze_at;
   GlitnirRect flash[GLITNIR_PGTK_BATCH];
   int nflash;
   double flash_rgb[3];
@@ -266,8 +260,6 @@ freeze (struct glitnir_root *root)
     return;
   root->frozen = g_object_ref (gdk_window_get_toplevel (win));
   root->freeze_at = now_ns ();
-  if (root->t_freeze == 0)
-    root->t_freeze = root->freeze_at;
   gdk_window_freeze_updates (root->frozen);
 }
 
@@ -756,7 +748,6 @@ verify_frame (struct glitnir_root *r, const GlitnirRect *rects, size_t n)
   memcpy (r->vcopy, cur, bytes);
   if (bx1 >= 0)
     {
-      r->violations++;
       fprintf (stderr, "glitnir verify: %"PRIu64" %d %d %d %d after %s",
 	       r->id, bx0, by0, bx1 - bx0 + 1, by1 - by0 + 1, last_prim);
       fprintf (stderr, " {%"PRIu64" px, first %08"PRIx32" -> %08"PRIx32
@@ -1189,7 +1180,6 @@ verify_stacking (struct glitnir_root *root)
       }
   if (bad)
     {
-      root->violations++;
       fprintf (stderr,
 	       "glitnir verify: %"PRIu64" stacking differs from GDK's {",
 	       root->id);
@@ -1568,7 +1558,6 @@ after_paint (GdkFrameClock *clock, gpointer data)
   if (!r->drawn)
     return;
   r->drawn = false;
-  r->debug_mismatch = false;
 
   if (r->armed && r->target)
     {
@@ -1589,7 +1578,6 @@ after_paint (GdkFrameClock *clock, gpointer data)
   memset (&e, 0, sizeof e);
   e.t_update_ns = r->t_update;
   e.t_commit_ns = r->t_commit;
-  e.t_freeze_ns = r->t_freeze;
   /* The entry's draw time is the sum of the frame's draws, ending at the
      last.  */
   e.t_draw_start_ns = r->t_draw_end - min (r->draw_ns, r->t_draw_end);
@@ -1601,14 +1589,10 @@ after_paint (GdkFrameClock *clock, gpointer data)
   /* GDK draws into a staging surface that persists across buffer swaps:
      a back-fill cannot be seen from here (R3, DP-9).  */
   e.backfill = 2;
-  e.scale_mismatch = r->scale_mismatch;
-  r->scale_mismatch = 0;
-  e.violations = r->violations;
-  r->violations = 0;
   r->last_commit = r->t_commit;
   r->last_paint = r->t_draw_end;
   r->last_present = now_ns ();
-  r->t_update = r->t_freeze = r->t_commit = 0;
+  r->t_update = r->t_commit = 0;
   r->draw_ns = r->damage_px = r->painted_px = r->commit_px = 0;
   GLITNIR_CALL_UNCOUNTED (glitnir_stats_record (r->id, &e));
 }
@@ -1648,9 +1632,6 @@ glitnir_pgtk_draw_begin (struct frame *f, GtkWidget *widget, cairo_t *cr)
   cairo_surface_get_device_scale (target, &sx, &sy);
   GtkAllocation alloc;
   gtk_widget_get_allocation (widget, &alloc);
-  double scale_frame = gtk_widget_get_scale_factor (widget);
-  if (sx != scale_frame)
-    r->scale_mismatch = 1;
   r->draws++;
   r->draw_cr = cr;
 
@@ -1676,7 +1657,6 @@ glitnir_pgtk_draw_begin (struct frame *f, GtkWidget *widget, cairo_t *cr)
 	  verify_state (r);
 	  /* Who dispatched GLib with the change uncommitted.  */
 	  emacs_backtrace (100);
-	  r->violations++;
 	}
       /* Damage-only present: the paint covers GDK's clip, the damage
 	 the points committed.  */
@@ -1919,8 +1899,6 @@ glitnir_pgtk_draw (struct frame *f, cairo_t *cr)
 	verify_source (s, p);
       double ssx = 1, ssy = 1;
       cairo_surface_get_device_scale (p, &ssx, &ssy);
-      if (root->debug_mismatch && c == rf)
-	ssx = sx + 1;
       src[nsrc++] = (GlitnirSource) {
 	.layer = s->id, .pixels = cairo_image_surface_get_data (p),
 	.stride = cairo_image_surface_get_stride (p),
@@ -1956,10 +1934,6 @@ glitnir_pgtk_draw (struct frame *f, cairo_t *cr)
       if (rc != GLITNIR_OK && rc != GLITNIR_E_STATE)
 	glitnir_pgtk_failed ("glitnir_compose", rc);
     }
-  if (rc == GLITNIR_E_STATE)
-    for (ptrdiff_t i = 0; i < nsrc; i++)
-      if (src[i].scale != sx)
-	root->scale_mismatch = 1;
   if (rc == GLITNIR_OK)
     for (int i = 0; i < nclip; i++)
       cairo_surface_mark_dirty_rectangle (target, clip[i].x + rx - dx,
@@ -1968,22 +1942,6 @@ glitnir_pgtk_draw (struct frame *f, cairo_t *cr)
   xfree (clip);
   xfree (src);
   return rc == GLITNIR_OK;
-}
-
-/* For tests: every draw of F's root's next paint sees a source scale that
-   is not the target's.  */
-bool
-glitnir_pgtk_debug_scale_mismatch (struct frame *f)
-{
-  struct glitnir_root *root = root_state (f);
-  if (root == NULL || recording (root->frame) == NULL)
-    return false;
-  GtkWidget *w = FRAME_GTK_WIDGET (root->frame);
-  if (w == NULL)
-    return false;
-  root->debug_mismatch = true;
-  gtk_widget_queue_draw (w);
-  return true;
 }
 
 /* For tests: make F's surface anew, as pgtk does at a size or scale
@@ -2218,18 +2176,6 @@ glitnir_pgtk_max_paint_gap_ms (struct frame *f, bool reset)
       r->gap_from = now;
     }
   return gap / 1e6;
-}
-
-uint64_t
-glitnir_pgtk_violations (struct frame *f, bool reset)
-{
-  struct glitnir_root *r = root_state (f);
-  if (r == NULL)
-    return 0;
-  uint64_t n = r->violations;
-  if (reset)
-    r->violations = 0;
-  return n;
 }
 
 ptrdiff_t

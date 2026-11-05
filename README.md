@@ -129,7 +129,7 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   pgtk's whole-widget invalidation, and the root thaws and paints at once (`gdk_window_process_updates`; without it,
   GLib dispatch inside redisplay would find the root frozen and starve the display). With `glitnir-enable` nil the
   stock path runs: whole-widget paints, no call into Glitnir but the frame-time record, and a frozen root thaws at its
-  next point. `glitnir-stats` records the commit time on both paths (`:latency-ms`), the freeze (`:freeze-ms`), the
+  next point. `glitnir-stats` records the commit time on both paths (`:latency-ms`), the
   committed and the painted pixels; `:backfill-rate` is nil (GDK's staging surface hides back-fills). Test primitives:
   `glitnir--draw-count`, `glitnir--frozen-p`, `glitnir--last-paint`, `glitnir--now-ns`, `glitnir--max-paint-gap-ms`,
   `glitnir--motion` (a synthetic pointer motion, handled by GTK at once), `glitnir--draw-undamaged` and
@@ -140,10 +140,9 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   - `verify`: a copy of each frame's surface (a child frame's too) is kept as of the previous commit. At each commit,
     pixels that changed outside the committed damage are logged once to stderr, `glitnir verify: FRAME X Y W H after
     PRIMITIVE` (the bounding box in device pixels, the drawing primitive that recorded damage last), then in braces
-    the count of such pixels, the first one's old and new value and the committed rectangles, and counted in
-    `:violations` of `glitnir-stats`. A GTK paint of a root that still has uncommitted damage or an uncommitted scene
-    change logs `glitnir verify: compose with pending damage` and a backtrace (who dispatched GLib), and counts; a
-    freeze that lasts over a second logs when it ends. Each counted line ends with the frame's state in brackets (root
+    the count of such pixels, the first one's old and new value and the committed rectangles. A GTK paint of a root that still has uncommitted damage or an uncommitted scene
+    change logs `glitnir verify: compose with pending damage` and a backtrace (who dispatched GLib); a
+    freeze that lasts over a second logs when it ends. Each logged line ends with the frame's state in brackets (root
     or child, its name, size and place, its surface, visibility, whether redisplay runs, the root's dirty, pending and
     frozen state, a monotonic time in ms). It costs a full
     surface compare per commit: for tests and hunting, not daily use. `(glitnir--draw-undamaged)` paints a rectangle

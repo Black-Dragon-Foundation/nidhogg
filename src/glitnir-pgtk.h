@@ -101,8 +101,7 @@ extern void glitnir_pgtk_free_frame (struct frame *f);
    mapped child frames (paint-through, DP-1 (i)).  True when it did (the
    stock paint is then skipped); false for a stock draw of F: F painted
    inside a group (a child frame's `alpha' below 1), or the root's
-   surfaces at another device scale than the target's (counted in
-   `:scale-mismatch').  */
+   surfaces at another device scale than the target's.  */
 extern bool glitnir_pgtk_draw (struct frame *f, cairo_t *cr);
 
 /* Non-nil when Glitnir records F: `glitnir-enable', a pgtk frame that is
@@ -190,14 +189,11 @@ extern void glitnir_pgtk_last_paint (struct frame *f, uint64_t *commit,
 extern double glitnir_pgtk_max_paint_gap_ms (struct frame *f, bool reset);
 extern bool glitnir_pgtk_motion (struct frame *f, int x, int y);
 
-/* The debug modes `verify' (violations not yet in a frame-time entry, which
-   RESET zeroes), and the test primitives behind glitnir--draw-undamaged and
+/* The test primitives behind glitnir--draw-undamaged and
    glitnir--compose-with-pending.  */
-extern uint64_t glitnir_pgtk_violations (struct frame *f, bool reset);
 extern bool glitnir_pgtk_draw_undamaged (struct frame *f);
 extern bool glitnir_pgtk_compose_with_pending (struct frame *f);
 extern bool glitnir_pgtk_debug_freeze (struct frame *f);
-extern bool glitnir_pgtk_debug_scale_mismatch (struct frame *f);
 extern bool glitnir_pgtk_debug_reset_surface (struct frame *f);
 
 /* A new ARGB32 image surface with F's root frame as GTK last painted it
