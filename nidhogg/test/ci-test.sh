@@ -47,7 +47,15 @@ gneeds=$(sed -nE 's/^    needs: \[(.*)\]$/\1/p' <<<"$gate" | tr -d ' ' | tr , '\
 jobs_all=$(awk '/^jobs:/{p=1;next} p' "$wf" | sed -nE 's/^  ([a-z0-9-]+):$/\1/p' | grep -vxE 'gate|release|timing' | sort)
 [ "$gneeds" = "$jobs_all" ]                                       || fail "the gate does not need every job but release and timing"
 grep -qF 'GATE: Nidhogg gate' "$wf"                               || fail "the changes job does not check the base's Nidhogg gate"
-grep -qF 'nidhogg: artifact' "$wf"                                || fail "drgnx's tiers do not run on this run's tarballs"
+# a pull request tests its head, which a fast-forward lands, never GitHub's merge commit: every checkout and the path
+# filter name the head, and a job (allowed to skip off pull requests) fails a head that does not descend from the base
+[ "$(grep -cF 'uses: actions/checkout@' "$wf")" = "$(grep -cxF '          ref: ${{ github.event.pull_request.head.sha }}' "$wf")" ] ||
+  fail "a checkout does not take a pull request's head"
+grep -qF 'SHA: ${{ github.event.pull_request.head.sha || github.sha }}' "$wf" || fail "the path filter diffs a pull request's merge commit"
+job fast-forward | grep -qF "if: github.event_name == 'pull_request'" || fail "no fast-forward job for pull requests"
+job fast-forward | grep -qF 'git merge-base --is-ancestor "$tip" "$HEAD_SHA"' || fail "the fast-forward job does not check the base's tip"
+grep -qF '[ "$PR" = true ] || allow="$allow fast-forward "' <<<"$gate" || fail "the gate does not let fast-forward skip off pull requests"
+grep -qF 'nidhogg: artifact' "$wf"                               || fail "drgnx's tiers do not run on this run's tarballs"
 grep -qF "'unit no-lisp-writes ui macos'" "$wf"                   || fail "drgnx's tiers are not unit, gate mode, GUI and macOS"
 # a release only from a pushed v* tag, never from workflow_dispatch or a pull request
 awk '/^  release:/,0' "$wf" | grep -qF "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" || fail "release not restricted to a pushed v* tag"
