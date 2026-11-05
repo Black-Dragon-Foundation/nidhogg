@@ -360,16 +360,17 @@ machine whose timing never shows it, not certain.
     (`pkg-pins-<hash of pkg-pins.txt and pkg-test.sh>`, exact, without build output or compiled files).
   - Compiled Lisp and tarballs are never restored for a release tag; a release is built fresh, with only self-checking
     caches (ccache, packages).
-  - Who saves: `nidhogg-31` saves every cache; `ci/*` branches every one except the package downloads and Homebrew,
-    which hit by prefix anyway; pull requests from a branch of this repository the small ones (compiled Lisp, tarballs,
-    the pinned packages, ccache; about 0.6–0.9 GB per run), not the native crates (1.2 GB), the package downloads or
-    Homebrew, which they restore from `nidhogg-31` by prefix. A fork's pull request and a tag save nothing. GitHub scopes a pull request's entries to its merge ref (`refs/pull/N/merge`): its own later runs read
-    them, `nidhogg-31` and other branches never do, so no pull request writes a cache another ref's run reads. A
-    narrowed run (below) saves no tarball, since its checks were cut.
+  - Who saves (the budget: `nidhogg-31` plus one pull request within the repository's 10 GB): `nidhogg-31` saves every
+    cache; pull requests from a branch of this repository the small ones (compiled Lisp, tarballs, the pinned
+    packages, ccache; about 0.6–0.9 GB per run), not the native crates (1.2 GB), the package downloads or Homebrew,
+    which they restore from `nidhogg-31` by prefix, and the `pr-caches` job (not in the gate) then deletes the entries
+    of the pull request's earlier runs, so it holds one run's set. `ci/*` branches, a fork's pull request and a tag
+    save nothing: they restore only. GitHub scopes a pull request's entries to its merge ref (`refs/pull/N/merge`):
+    its own later runs read them, `nidhogg-31` and other branches never do, so no pull request writes a cache another
+    ref's run reads. A narrowed run (below) saves no tarball, since its checks were cut.
   - Scoping: a run restores caches of its own branch or the default branch (`nidhogg-31`), and a pull request those of its
     base; never those of sibling branches or other tags. Keys are identical on every branch, so a run on a `ci/*` branch
-    or a pull request reuses what `nidhogg-31` saved, and a second run on the same `ci/*` branch or pull request what
-    the first saved.
+    or a pull request reuses what `nidhogg-31` saved, and a pull request's second run what its first saved.
     Unused caches are evicted after 7 days and the least recently used go first above 10 GB per repository
     ([GitHub: dependency caching](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching));
     the per-ref package and test-binary copies are the largest entries and go first.
@@ -379,8 +380,8 @@ machine whose timing never shows it, not certain.
   a push to `nidhogg-31`, a tag, a manual run without `jobs` or `checks` (a `ci/*` round included), any error working
   out the diff, more than 300 changed files and any path no row names run every job.
   Workflows, `nidhogg/ci/`, `build.sh`, `deps/`, the version, the check subset, licenses and the test scripts run every
-  job; docs that no job reads run none. The `gate` job (`Nidhogg gate`) always runs, needs every job but `timing` and
-  `release`, and passes when each ran green or was skipped by the filter (or, on a tag, is a workers or `noglitnir`
+  job; docs that no job reads run none. The `gate` job (`Nidhogg gate`) always runs, needs every job but `timing`,
+  `pr-caches` and `release`, and passes when each ran green or was skipped by the filter (or, on a tag, is a workers or `noglitnir`
   job). `bash nidhogg/ci/changes.sh nidhogg/ci/paths.txt --self-test` checks the rules and every `test` row of the
   table; `ci-test.sh` runs it.
 - Narrowed runs: `gh workflow run build.yml --ref BRANCH -f jobs='linux' -f checks='src/emacs-tests'` runs only the

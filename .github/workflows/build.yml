@@ -34,15 +34,15 @@ on:
 permissions:
   contents: read
 
-# Which runs write caches (README.md, "Caches"): nidhogg-31 every one; a ci/* branch the self-checking and exact ones,
-# which its own later runs read (GitHub evicts the least recently used first, so old branches' entries go first); a
-# pull request from a branch of this repository the small ones: the exact-key families (compiled Lisp, tarballs, the
-# pinned packages) and ccache, not the large prefix-restored ones (the native crates' 1.2 GB, the package downloads,
-# Homebrew), which it reads from nidhogg-31 anyway; a fork's pull request or a tag none.  GitHub scopes a pull request's
-# entries to its merge ref (refs/pull/N/merge): only that pull request's later runs read them, never nidhogg-31 or
-# another branch.  Every run reads its own ref's and nidhogg-31's.
+# Which runs write caches (README.md, "Caches"), within the repository's 10 GB: nidhogg-31 every one; a pull request
+# from a branch of this repository the small ones, the exact-key families (compiled Lisp, tarballs, the pinned
+# packages) and ccache, not the large prefix-restored ones (the native crates' 1.2 GB, the package downloads,
+# Homebrew), which it reads from nidhogg-31 anyway, and the pr-caches job keeps only its newest run's set; ci/*
+# branches, a fork's pull request and a tag none (they restore only).  GitHub scopes a pull request's entries to its
+# merge ref (refs/pull/N/merge): only that pull request's later runs read them, never nidhogg-31 or another branch.
+# Every run reads its own ref's and nidhogg-31's.
 env:
-  CACHE_SAVE: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name != 'pull_request' && (github.ref == 'refs/heads/nidhogg-31' || startsWith(github.ref, 'refs/heads/ci/'))) }}
+  CACHE_SAVE: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name != 'pull_request' && github.ref == 'refs/heads/nidhogg-31') }}
   CACHE_SAVE_ALL: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/nidhogg-31' }}
 
 concurrency:
@@ -1073,6 +1073,33 @@ jobs:
           name: timing-${{ matrix.name }}
           path: ${{ runner.temp }}/out/timing.txt
           if-no-files-found: ignore
+
+  # A pull request's cache budget: once the saving jobs are done, the entries an earlier run of this pull request saved
+  # are deleted, so its scope holds one run's set (about 0.6-0.9 GB) beside nidhogg-31's.  Housekeeping: not in the
+  # gate, and a cancelled run (a newer push) leaves it to the newer run.
+  pr-caches:
+    name: The pull request keeps one run's caches
+    needs: [linux, compile-noglitnir, macos, workers-asan, workers-chaos, workers-pkg]
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Delete this pull request's entries from earlier runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref }}
+          RUN: ${{ github.run_id }}
+        run: |
+          start=$(gh api "repos/$REPO/actions/runs/$RUN" --jq .run_started_at)
+          gh api --paginate "repos/$REPO/actions/caches?ref=$REF&per_page=100" \
+            --jq ".actions_caches[] | select(.created_at < \"$start\") | \"\(.id) \(.size_in_bytes) \(.key)\"" > "$RUNNER_TEMP/old"
+          while read -r id size key; do
+            gh api -X DELETE "repos/$REPO/actions/caches/$id" >/dev/null && echo "deleted $key ($((size / 1048576)) MB)"
+          done < "$RUNNER_TEMP/old"
+          echo "kept: $(gh api --paginate "repos/$REPO/actions/caches?ref=$REF&per_page=100" --jq '[.actions_caches[].size_in_bytes] | add // 0' | awk '{s += $1} END {printf "%d MB", s / 1048576}')"
 
   # The run's verdict: every job but the report-only timing lane passed, or was rightly skipped (the changes job said
   # so, or a release tag leaves it to the tagged commit's round).  It always runs, so no check is left pending.  A

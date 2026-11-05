@@ -21,14 +21,17 @@ pin=$(grep -oE 'uses: Black-Dragon-Foundation/drgnx/\.github/workflows/drgnx-tie
 ! grep -qF "inputs.drgnx_ref || '" "$wf"                          || fail "a literal default drgnx_ref (the uses line is the one pin)"
 grep -qE '^  pin:' "$wf"                                          || fail "no pin job"
 grep -qF 'inputs.drgnx_ref || needs.pin.outputs.ref' "$wf"        || fail "the default drgnx_ref is not the pin job's output"
-# cache writes: every save step is CACHE_SAVE's (nidhogg-31, ci/* and this repository's pull requests) or
-# CACHE_SAVE_ALL's (nidhogg-31), and neither is ever true for a fork's pull request or a tag; a pull request's entries
-# are scoped to its merge ref, so no other ref's run reads them, and it saves no large prefix-restored entry
+# cache writes: every save step is CACHE_SAVE's (nidhogg-31 and this repository's pull requests) or CACHE_SAVE_ALL's
+# (nidhogg-31), and neither is ever true for a ci/* branch, a fork's pull request or a tag; a pull request's entries
+# are scoped to its merge ref, so no other ref's run reads them, it saves no large prefix-restored entry, and its
+# earlier runs' entries are deleted (pr-caches)
 for l in $(grep -n 'uses: actions/cache/save@' "$wf" | cut -d: -f1); do
   sed -n "$((l - 2)),$((l - 1))p" "$wf" | grep -qE "if: .*env\.CACHE_SAVE(_ALL)? == 'true'" || fail "the cache save at line $l is not under CACHE_SAVE or CACHE_SAVE_ALL"
 done
 own_pr="(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)"
-grep -qxF "  CACHE_SAVE: \${{ $own_pr || (github.event_name != 'pull_request' && (github.ref == 'refs/heads/nidhogg-31' || startsWith(github.ref, 'refs/heads/ci/'))) }}" "$wf" || fail "CACHE_SAVE is not nidhogg-31, ci/* pushes and this repository's pull requests"
+grep -qxF "  CACHE_SAVE: \${{ $own_pr || (github.event_name != 'pull_request' && github.ref == 'refs/heads/nidhogg-31') }}" "$wf" || fail "CACHE_SAVE is not nidhogg-31's and this repository's pull requests'"
+job pr-caches | grep -qF "if: \${{ !cancelled() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}" || fail "pr-caches does not run for this repository's pull requests only"
+job pr-caches | grep -qF 'select(.created_at < \"$start\")' || fail "pr-caches does not delete only the entries of earlier runs"
 grep -qxF "  CACHE_SAVE_ALL: \${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/nidhogg-31' }}" "$wf" || fail "CACHE_SAVE_ALL is not nidhogg-31's"
 [ "$(job native-crates | grep -cF "env.CACHE_SAVE == 'true' && github.event_name != 'pull_request'")" = 2 ] || fail "a pull request saves the native crates' entry"
 # a release tag's tarball has no restored compiled Lisp: the jobs that make tarballs skip the restore for a tag
@@ -47,8 +50,8 @@ gate=$(awk '/^  gate:/{p=1;print;next} p&&/^  [a-z]/{exit} p' "$wf")
 grep -qF "name: \${{ needs.changes.outputs.partial == 'true' && 'Nidhogg gate (partial)' || 'Nidhogg gate' }}" <<<"$gate" || fail "the gate is not named partial for a narrowed run"
 grep -qE '^    if: always\(\)$' <<<"$gate"                       || fail "the gate does not always run"
 gneeds=$(sed -nE 's/^    needs: \[(.*)\]$/\1/p' <<<"$gate" | tr -d ' ' | tr , '\n' | sort)
-jobs_all=$(awk '/^jobs:/{p=1;next} p' "$wf" | sed -nE 's/^  ([a-z0-9-]+):$/\1/p' | grep -vxE 'gate|release|timing' | sort)
-[ "$gneeds" = "$jobs_all" ]                                       || fail "the gate does not need every job but release and timing"
+jobs_all=$(awk '/^jobs:/{p=1;next} p' "$wf" | sed -nE 's/^  ([a-z0-9-]+):$/\1/p' | grep -vxE 'gate|release|timing|pr-caches' | sort)
+[ "$gneeds" = "$jobs_all" ]                                       || fail "the gate does not need every job but release, timing and pr-caches"
 grep -qF 'GATE: Nidhogg gate' "$wf"                               || fail "the changes job does not check the base's Nidhogg gate"
 # a pull request tests its head, which a fast-forward lands, never GitHub's merge commit: every checkout and the path
 # filter name the head, and a job (allowed to skip off pull requests) fails a head that does not descend from the base
