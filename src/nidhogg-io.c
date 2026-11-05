@@ -2319,7 +2319,8 @@ nh_io_read (struct Lisp_Process *p, int channel, char *buf, ptrdiff_t size,
   return n;
 }
 
-/* Pause the reader of the process whose real fd is INFD: nh-io stops
+/* (CI cache diagnostic: a comment-only change.)
+   Pause the reader of the process whose real fd is INFD: nh-io stops
    reading it after the read in progress.  Return the fd the select set
    holds for it (its wake fd, or inline its copy), or INFD when no
    reader owns it.  Async-signal-safe (the SIGCHLD handler's
