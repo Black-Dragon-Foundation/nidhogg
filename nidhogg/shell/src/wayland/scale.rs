@@ -32,23 +32,9 @@ pub fn buffer_size(logical_w: i32, logical_h: i32, scale120: u32) -> (i32, i32) 
     (one(logical_w, scale120), one(logical_h, scale120))
 }
 
-/// The viewport's logical extent for a buffer extent of `device` pixels at `scale120`, and the device extent it shows:
-/// the logical extent whose device extent (the compositor's stable rounding, `glitnir::snap::stable_extent`) is `device`
-/// exactly, else the largest whose device extent is smaller.  Then the viewport's source cuts the buffer to that: its
-/// last device rows or columns go unshown, where a destination rounded to the nearest logical pixel would have every
-/// pixel resampled (an odd buffer at scale 2 drawn 402 wide from 401).
-pub fn viewport_size(device: i32, scale120: u32) -> (i32, i32) {
-    let s = scale120.max(1);
-    let dev = |l: i32| glitnir::snap::stable_extent(0, l, s);
-    let mut l = (i64::from(device.max(0)) * 120 / i64::from(s)) as i32;
-    while dev(l + 1) <= device {
-        l += 1;
-    }
-    while l > 0 && dev(l) > device {
-        l -= 1;
-    }
-    (l, dev(l))
-}
+/// The viewport's logical extent for a buffer extent, and the device extent it shows: Glitnir's, which the glue's window
+/// geometry takes too, so the two never disagree by a pixel.
+pub use glitnir::snap::viewport_size;
 
 /// The scale state of one `wl_surface`.  The shell keeps it in `MainState::scales`, keyed by the window id (the
 /// surface's protocol id until a reconnect makes the surface again, `window_of`); a window attaches one with `WaylandShell::scale_attach` and detaches it on destroy.
@@ -305,30 +291,6 @@ impl Dispatch<WpFractionalScaleV1, u64> for MainState {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn viewport_size_maps_exactly_or_cuts() {
-        // sizes a logical size maps to: shown whole, as the rounded destination always did
-        assert_eq!(viewport_size(400, 240), (200, 400));
-        assert_eq!(viewport_size(400, 150), (320, 400));
-        assert_eq!(viewport_size(401, 150), (321, 401));
-        assert_eq!(viewport_size(1037, 180), (691, 1037));
-        // none does: the largest under it, the last device column cut
-        assert_eq!(viewport_size(401, 240), (200, 400));
-        assert_eq!(viewport_size(402, 150), (321, 401));
-        // every size and scale: exact or one short, never past the buffer
-        for s in [120, 150, 180, 210, 240, 300] {
-            for d in 1..600 {
-                let (l, shown) = viewport_size(d, s);
-                assert_eq!(glitnir::snap::stable_extent(0, l, s), shown);
-                assert!(
-                    shown <= d && glitnir::snap::stable_extent(0, l + 1, s) > d,
-                    "{d} at {s}"
-                );
-            }
-        }
-        assert_eq!(viewport_size(0, 240), (0, 0));
-    }
 
     #[test]
     fn buffer_size_examples() {
