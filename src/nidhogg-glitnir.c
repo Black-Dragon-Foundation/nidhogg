@@ -139,8 +139,9 @@ show a key only; :draw-ms runs from the start of the draw to the
 buffer's commit, and :painted-px is the area composed.  There
 :tick-interval-ms is the time between two commits of a transition,
 :blur-ms the time a recompute of the backdrop blur took, each over the
-paints that had one, and :leg-overrun-ms how far the worst transition
-since the last reset ran past its length.
+paints that had one, :leg-overrun-ms how far the worst transition
+since the last reset ran past its length, and :leg-overrun-p95-ms the
+95th percentile of that over the last 128 transitions.
 Non-nil RESET
 empties the record after reading it.  */)
   (Lisp_Object frame, Lisp_Object reset)
@@ -180,6 +181,8 @@ empties the record after reading it.  */)
   plist = nconc2 (plist, pctl (":freeze-ms", &s.freeze_ms));
   plist = nconc2 (plist, pctl (":tick-interval-ms", &s.tick_interval_ms));
   plist = nconc2 (plist, pctl (":blur-ms", &s.blur_ms));
+  plist = nconc2 (plist, list2 (intern_c_string (":leg-overrun-p95-ms"),
+				make_float (s.leg_overrun_p95_ms)));
   return nconc2 (plist,
 		 listn (18, intern_c_string (":damage-px"),
 			make_uint (s.damage_px_p50),
