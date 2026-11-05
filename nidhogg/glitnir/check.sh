@@ -46,7 +46,7 @@ if [ -n "$DISTRO" ] && [ "$INNER" = 0 ]; then
 fi
 
 # --- the checks (host, or inside the container) ---------------------------------------------------------------
-command -v cargo >/dev/null 2>&1 || { echo "check.sh: cargo not found (use --container fedora-44)" >&2; exit 1; }
+command -v cargo >/dev/null 2>&1 || { echo "check.sh: cargo not found (use --container fedora-45)" >&2; exit 1; }
 cd "$HERE" || exit 1
 : "${CARGO_TARGET_DIR:=$(mktemp -d)}"
 export CARGO_TARGET_DIR

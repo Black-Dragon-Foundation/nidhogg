@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # A release tarball runs at its recorded prefix and elsewhere.
-#   nidhogg/test/tarball-test.sh TARBALL DISTRO      (DISTRO: fedora-44 | fedora-45 | ubuntu-26.04 | macos)
+#   nidhogg/test/tarball-test.sh TARBALL DISTRO      (DISTRO: fedora-45 | ubuntu-26.04 | macos)
 # Linux: in a fresh --memory 2g podman container of DISTRO.  macOS: on the host, under $TMPDIR.
 # Exit 0 when all checks pass, 1 with "TARBALL FAIL: <why>".
 set -u
@@ -76,7 +76,6 @@ bash /checks.sh /tmp/elsewhere "$V" || exit 1'
 
 IMAGE=""
 case $DISTRO in
-  fedora-44) IMAGE=registry.fedoraproject.org/fedora:44 ;;
   fedora-45) IMAGE=registry.fedoraproject.org/fedora:45 ;;
   ubuntu-26.04) IMAGE=docker.io/library/ubuntu:26.04 ;;
   *) echo "TARBALL FAIL: unknown distro $DISTRO"; exit 1 ;;
