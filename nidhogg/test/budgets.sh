@@ -35,8 +35,9 @@
 #   fade-*, palette-* the motion and blurred-palette rows, from the child frame's glitnir-stats; judged at 2880x1800@2
 #                     only.  A row whose workload left its key empty (no tick, no recompute) is skipped, never a pass
 #   card-*            the window-card rows: five windows (an explorer, two editor groups, an agent panel, a terminal) with
-#                     card parameters, 200 keys with newlines in each editor group, then a paced scroll of one; the
-#                     compose deltas are cards on minus cards off in the same session.  Judged at drgnx:2880x1800@2
+#                     card parameters, 200 keys with newlines in each editor group (a copy of src/xdisp.c and the
+#                     10k-line file; a group that took fewer than half its keys skips the typing rows), then a paced
+#                     scroll of one; the compose deltas are cards on minus cards off in the same session.  Judged at drgnx:2880x1800@2
 #                     (--config drgnx --scale 2 --size 2880x1800), report elsewhere
 #   BUDGETS_MEMORY  the container's memory cap (default 6g); BUDGETS_CPUSET pins it (podman --cpuset-cpus)
 #
@@ -135,6 +136,13 @@ while [ $# -gt 0 ]; do
   esac
 done
 if [ "$selftest" = 1 ]; then runs=1 size=1280x720 window=3 steps=10 mframes=30 msize=1280x720 sscroll=2 fixed=100; fi
+
+# late_per1000 BEFORE AFTER: two "LATE FRAMES" readings of nhwl-presenter-stats; the late frames per 1000 of the frames
+# the presenter made between them (0 when it made none)
+late_per1000() {
+  awk -v a="$1" -v b="$2" 'BEGIN { split(a, x, " "); split(b, y, " ");
+    f = y[2] - x[2]; printf "%.2f", (f > 0) ? (y[1] - x[1]) * 1000 / f : 0 }'   # bare, `>' is printf's redirect
+}
 case $refresh in ''|*[!0-9]*) echo "budgets.sh: --refresh is a whole number of Hz" >&2; exit 2 ;; esac
 # --self-test with no build: the targets table alone (the effect rows, all budget, all at the effects' cell, the
 # workloads present); the timing runs are the gate's
@@ -158,6 +166,9 @@ if [ "$selftest" = 1 ] && [ -z "$pa" ]; then
   for w in fade_bench palette_bench card_bench; do
     grep -q "^$w()" "$self" || { echo "budgets self-test: no $w workload" >&2; bad=1; }
   done
+  # the presenter-late rows' arithmetic: 3 late of 1500 frames
+  v=$(late_per1000 "2 100" "5 1600" 2>&1)
+  [ "$v" = 2.00 ] || { echo "budgets self-test: late_per1000 '2 100' '5 1600' gave '$v', not 2.00" >&2; bad=1; }
   for k in tick-interval-ms leg-overrun-ms blur-ms; do
     grep -q "\":$k\"" "$checkout/src/nidhogg-glitnir.c" || { echo "budgets self-test: glitnir-stats has no :$k" >&2; bad=1; }
     grep -q "(budgets--stat :$k" "$self" || { echo "budgets self-test: no row reads :$k" >&2; bad=1; }
@@ -549,8 +560,7 @@ speed() {
     esac
     pt2=$(cl "$pt" | tr -d '"')
     if [[ "$pt1 $pt2" =~ ^[0-9]+\ [0-9]+\ [0-9]+\ [0-9]+$ ]]; then
-      rec scroll-120-presenter-late A "$(awk -v a="$pt1" -v b="$pt2" 'BEGIN { split(a, x, " "); split(b, y, " ");
-        f = y[2] - x[2]; printf "%.2f", f > 0 ? (y[1] - x[1]) * 1000 / f : 0 }')"
+      rec scroll-120-presenter-late A "$(late_per1000 "$pt1" "$pt2")"
     else
       pl=$(cl '(format "%s" (plist-get (plist-get (glitnir-stats) :publish-to-commit-ms) :max))' | tr -d '" ')
       case $pl in
@@ -618,14 +628,19 @@ palette_bench() {
   stop_all
 }
 
-# card_keys: 200 keys with a newline among every 20, into each editor card in turn; sets crc (wtype's worst exit)
+# card_keys: 200 keys with a newline among every 20, into each editor card in turn; sets crc (wtype's worst exit) and
+# appends to cmiss each group that took fewer than half the keys (a key that changes nothing commits nothing, so it
+# would pair with whatever commit comes next)
 card_keys() {
-  local g str
+  local g str n0 n1
   str=$(awk 'BEGIN { for (i = 1; i <= 200; i++) printf "%s", (i % 20 == 0) ? "\n" : sprintf("%c", 96 + i % 26); printf "z" }')
   crc=0
   for g in 1 2; do
     cl "(budgets--cards-focus $g)" > /dev/null
+    n0=$(cl "(budgets--cards-size $g)")
     wtype -d 100 -- "$str" 2> "$run/wtype.err" || crc=$?
+    n1=$(cl "(budgets--cards-size $g)")
+    [ $(( ${n1:-0} - ${n0:-0} )) -ge 100 ] || cmiss="${cmiss}editor group $g took $(( ${n1:-0} - ${n0:-0} )) of 201 keys; "
   done
 }
 
@@ -635,11 +650,13 @@ card_keys() {
 # then a paced scroll of the first editor group (late frames, the presenter's misses, whether the group stayed its own
 # output).
 card_bench() {
-  local r off_t on_t off_f on_f o1 o2 pt1 pt2 x
+  local r off_t on_t off_f on_f o1 o2 pt1 pt2 x cmiss=
   nh_env=(WAYLAND_DEBUG=client)
   start_sway "$size" "$scale" "$refresh" && start_nidhogg "$pa" || { nh_env=(); return 1; }
   nh_env=()
-  r=$(cl "(budgets--cards-open \"$checkout/src/xdisp.c\" \"$run/big.txt\")" | tr -d '"')
+  # a copy: the checkout is mounted read-only, and keys into a read-only buffer change nothing
+  cp "$checkout/src/xdisp.c" "$run/xdisp.c"
+  r=$(cl "(budgets--cards-open \"$run/xdisp.c\" \"$run/big.txt\")" | tr -d '"')
   case $r in
     "ok "*) ;;
     *) for x in $CARD_ROWS; do rec "${x%:*}" A "SKIP the card workload did not run: $(echo "$r" | head -c 100 | tr '"\n' "' ")"; done
@@ -656,8 +673,9 @@ card_bench() {
   card_keys
   o2=$(stat -c %s "$run/nh.err")
   on_t=$(cl '(budgets--root-p95)' | tr -d '" ')
-  if [ "$crc" != 0 ]; then
-    for x in card-latency-typing card-typing-stall-p99 card-typing-compose-delta; do rec "$x" A "SKIP wtype did not reach the frame (exit $crc)"; done
+  if [ "$crc" != 0 ] || [ -n "$cmiss" ]; then
+    for x in card-latency-typing card-typing-stall-p99 card-typing-compose-delta; do
+      rec "$x" A "SKIP wtype did not reach the frame (exit $crc): $cmiss"; done
   else
     rec card-typing-compose-delta A "$(awk -v a="$on_t" -v b="$off_t" 'BEGIN { if (a ~ /^[0-9.]+$/ && b ~ /^[0-9.]+$/) printf "%.4f", a - b }')"
     r=$(rep typing "$o1" "$o2" 5)
@@ -687,8 +705,7 @@ card_bench() {
   esac
   set -- $pt1 $pt2
   if [ $# = 4 ] && [[ "$*" =~ ^[0-9]+\ [0-9]+\ [0-9]+\ [0-9]+$ ]]; then
-    rec card-scroll-120-presenter-late A "$(awk -v a="$pt1" -v b="$pt2" 'BEGIN { split(a, x, " "); split(b, y, " ");
-      f = y[2] - x[2]; printf "%.2f", (f > 0) ? (y[1] - x[1]) * 1000 / f : 0 }')"
+    rec card-scroll-120-presenter-late A "$(late_per1000 "$pt1" "$pt2")"
   else
     rec card-scroll-120-presenter-late A "SKIP nhwl-presenter-stats has no :presenter-late ($pt1 / $pt2)"
   fi
@@ -739,10 +756,13 @@ cat > "$run/driver.el" <<'EOF'
   "A 640x400 logical child frame of the selected frame with PARAMS, kept in `budgets--c'."
   (let ((s (frame-scale-factor)))
     (setq budgets--c (make-frame `(,@params (parent-frame . ,(selected-frame)) (left . 40) (top . 30)
-                                   (width . (text-pixels . ,(* 640 s))) (height . (text-pixels . ,(* 400 s)))
+                                   (width . (text-pixels . ,(round (* 640 s))))
+                                   (height . (text-pixels . ,(round (* 400 s))))
                                    (undecorated . t) (minibuffer . nil))))))
 (defun budgets--stat (&rest path)
-  "The value at PATH in the child's glitnir-stats record, 0 when there is none."
+  "The value at PATH in the child's glitnir-stats record, 0 when there is none.
+With no live child it signals: nil would read the selected frame's record."
+  (unless (frame-live-p budgets--c) (error "No child frame of the workloads"))
   (let ((v (glitnir-stats budgets--c)))
     (dolist (k path) (setq v (plist-get v k)))
     (or v 0)))
@@ -761,6 +781,12 @@ cat > "$run/driver.el" <<'EOF'
       (delete-frame budgets--c t))))
 (defun budgets--palette-open ()
   "A translucent child with a backdrop blur over the buffer, selected so the keys go to it."
+  ;; the window beneath shows the 10k-line file, which `budgets--beneath' changes: drgnx's start page is read-only, and
+  ;; its layout may put another window under the child
+  (let ((w (or (window-at-x-y (round (* 100 (frame-scale-factor))) (round (* 100 (frame-scale-factor))))
+               (selected-window))))
+    (set-window-buffer w (find-file-noselect (getenv "BUDGETS_FILE")))
+    (select-window w))
   (budgets--child '((alpha-background . 0.82) (backdrop-blur . 10) (background-color . "#202830")))
   (set-window-buffer (frame-root-window budgets--c) (get-buffer-create " *budgets-palette*"))
   (select-frame-set-input-focus budgets--c)
@@ -773,7 +799,7 @@ cat > "$run/driver.el" <<'EOF'
 (defun budgets--beneath (n)
   "N changes to the parent's buffer, each shown, under the child; then the child goes.
 \"ok BLUR-P95\", or \"none\" when no change recomputed the blur."
-  (with-selected-window (frame-root-window (frame-parent budgets--c))
+  (with-selected-window (frame-selected-window (frame-parent budgets--c))   ; drgnx's root window may be split
     (goto-char (point-min))
     (dotimes (_ n) (insert "x") (redisplay t) (sit-for 0.05)))
   (prog1 (if (> (budgets--stat :blur-ms :max) 0)
@@ -811,6 +837,9 @@ cat > "$run/driver.el" <<'EOF'
   (select-window (nth n budgets--cw))
   (redisplay t)
   t)
+(defun budgets--cards-size (n)
+  "The size of editor group N's buffer."
+  (buffer-size (window-buffer (nth n budgets--cw))))
 (defun budgets--root-p95 ()
   "The root frame's compose p95 since the last reset, or \"nil\"."
   (format "%s" (plist-get (plist-get (glitnir-stats) :compose-ms) :p95)))
