@@ -3,9 +3,11 @@
 ;; budgets.sh measures the shell with the presenter thread (A) and without (C) alike: both clients run with
 ;; WAYLAND_DEBUG=client, and this file reads the same events on each side at the trace's microsecond resolution.
 ;;
-;;   key-to-commit  the dispatch of `wl_keyboard.key' (pressed) -> the next `wl_surface.commit' on the toplevel tree
-;;                  (an xdg_toplevel's surface and its subsurfaces) that carries damage
-;;   interval       the time between consecutive damaged commits of the tree
+;;   key-to-commit  the dispatch of `wl_keyboard.key' (pressed) -> the next frame of the toplevel tree (an
+;;                  xdg_toplevel's surface and its subsurfaces): a commit of the toplevel's surface that carries damage,
+;;                  its own or a subsurface's.  The shell's subsurfaces (child frames, promoted layers) are sync, so a
+;;                  subsurface's damaged commit is cached and shows at the toplevel's next commit
+;;   interval       the time between consecutive frames of the tree
 ;;
 ;;   nidhogg -Q --batch -l wl-latency.el -f wl-latency-batch TRACE KIND FROM TO DROP PERIOD-MS
 ;;
@@ -25,10 +27,10 @@
 (require 'wl-trace-check)
 
 (defun wl-latency--tree-p (surface toplevels parents)
-  "Non-nil when SURFACE is a toplevel's surface, or a subsurface (at any depth) of one."
+  "The toplevel's surface when SURFACE is it, or a subsurface (at any depth) of it; else nil."
   (let ((s surface) (n 0) found)
     (while (and s (not found) (< n 16))
-      (if (gethash s toplevels) (setq found t) (setq s (gethash s parents) n (1+ n))))
+      (if (gethash s toplevels) (setq found s) (setq s (gethash s parents) n (1+ n))))
     found))
 
 (defun wl-latency-analyze (file &optional from to)
@@ -36,7 +38,7 @@
 KEYS is the key-to-commit latencies in ms, in key order; COMMITS the times (ms of trace time) of the tree's damaged
 commits.  A key whose commit never came is not in KEYS."
   (let ((xdg-surface (make-hash-table)) (toplevels (make-hash-table)) (parents (make-hash-table))
-        (damage (make-hash-table)) pending keys commits)
+        (damage (make-hash-table)) (cached (make-hash-table)) pending keys commits)
     (with-temp-buffer
       (insert-file-contents-literally file)
       (goto-char (point-min))
@@ -58,11 +60,17 @@ commits.  A key whose commit never came is not in KEYS."
               (puthash (cdr (nth 1 refs)) (cdr (nth 2 refs)) parents)))
            ((and request (equal iface "wl_surface") (member msg '("damage" "damage_buffer")))
             (puthash id t damage))
+           ;; the shell's subsurfaces are sync: a subsurface's damaged commit is cached and shows at its
+           ;; toplevel's next commit, which is the tree's frame
            ((and request (equal iface "wl_surface") (equal msg "commit"))
-            (when (and (gethash id damage) (wl-latency--tree-p id toplevels parents))
-              (when in (push time commits))
-              (dolist (k pending) (push (- time k) keys))
-              (setq pending nil))
+            (let ((top (wl-latency--tree-p id toplevels parents)))
+              (cond
+               ((and top (/= top id)) (when (gethash id damage) (puthash top t cached)))
+               ((and top (or (gethash id damage) (gethash id cached)))
+                (when in (push time commits))
+                (dolist (k pending) (push (- time k) keys))
+                (setq pending nil)
+                (remhash id cached))))
             (remhash id damage))
            ((and (not request) (equal iface "wl_keyboard") (equal msg "key"))
             (when (and in (string-suffix-p ", 1" args)) (setq pending (append pending (list time)))))))))
@@ -116,9 +124,10 @@ An interval above 1.5 PERIOD (ms, default 8.333) is late."
              "[1101.000] {Default Queue}  -> wl_surface#12.commit()\n"
              "[1101.500] {Default Queue}  -> wl_surface#99.damage_buffer(0, 0, 4, 4)\n"
              "[1101.600] {Default Queue}  -> wl_surface#99.commit()\n"
-             ;; the subsurface's damaged commit does
+             ;; the subsurface's damaged commit does, at the toplevel's commit that applies it
              "[1104.250] {Default Queue}  -> wl_surface#13.damage_buffer(0, 0, 4, 4)\n"
-             "[1104.500] {Default Queue}  -> wl_surface#13.commit()\n"
+             "[1104.400] {Default Queue}  -> wl_surface#13.commit()\n"
+             "[1104.500] {Default Queue}  -> wl_surface#12.commit()\n"
              "garbage that is not a trace line\n"
              "[1200.000] {Default Queue} wl_keyboard#7.key(3, 1200, 31, 1)\n"
              "[1203.000] {Default Queue}  -> wl_surface#12.damage(0, 0, 4, 4)\n"
@@ -132,6 +141,36 @@ An interval above 1.5 PERIOD (ms, default 8.333) is late."
           (let* ((text (with-temp-buffer (insert-file-contents-literally file) (buffer-string)))
                  (r (wl-latency-analyze file (string-search "[1200.000]" text))))
             (should (= (length (car r)) 1))))
+      (delete-file file))))
+
+(ert-deftest wl-latency/sync-layer-shows-at-the-toplevel-commit ()
+  ;; pattern D (pure).  A promoted layer (a card's content, a scroll layer) is a sync subsurface: its commit is cached
+  ;; until the toplevel commits, so a key it answers shows at the toplevel's commit, and a frame that damages the layer
+  ;; and the toplevel is one frame, not two
+  (let ((file (make-temp-file "wl-latency")))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert
+             "[1000.000]  -> xdg_wm_base#6.get_xdg_surface(new id xdg_surface#14, wl_surface#12)\n"
+             "[1000.001]  -> xdg_surface#14.get_toplevel(new id xdg_toplevel#15)\n"
+             "[1000.002]  -> wl_subcompositor#5.get_subsurface(new id wl_subsurface#20, wl_surface#13, wl_surface#12)\n"
+             "[1100.000] wl_keyboard#7.key(1, 1100, 30, 1)\n"
+             ;; the layer's damage is cached; the toplevel's bare commit at 1103 shows it
+             "[1102.000]  -> wl_surface#13.damage_buffer(0, 0, 4, 4)\n"
+             "[1102.100]  -> wl_surface#13.commit()\n"
+             "[1103.000]  -> wl_surface#12.commit()\n")
+            ;; frames at 1111.333 and 1119.666 each damage the layer and the toplevel
+            (dolist (ms '(1111.333 1119.666))
+              (insert (format (concat "[%.3f]  -> wl_surface#13.damage_buffer(0, 0, 4, 4)\n[%.3f]  -> wl_surface#13.commit()\n"
+                                      "[%.3f]  -> wl_surface#12.damage_buffer(0, 0, 4, 4)\n[%.3f]  -> wl_surface#12.commit()\n")
+                              (- ms 0.3) (- ms 0.2) (- ms 0.1) ms))))
+          (let ((r (wl-latency-analyze file)))
+            (should (equal (mapcar (lambda (x) (/ (round (* x 1000)) 1000.0)) (car r)) '(3.0)))
+            (should (equal (mapcar (lambda (x) (/ (round (* x 1000)) 1000.0)) (cdr r)) '(1103.0 1111.333 1119.666))))
+          (let ((r (wl-latency-commit-intervals file nil nil 8.333)))
+            (should (= (plist-get r :frames) 2))
+            (should (= (plist-get r :late) 0))))
       (delete-file file))))
 
 (ert-deftest wl-latency/commit-intervals ()
