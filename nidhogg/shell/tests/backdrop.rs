@@ -12,6 +12,7 @@ use glitnir::ease::Curve;
 use glitnir::geom::Rect;
 use glitnir::motion::{Kind as Move, Leg, MotionSpec};
 use glitnir::scene::{Chrome, LayerDesc};
+use glitnir::stats::{Percentiles, summary};
 use nhshell::api::*;
 use nhshell::event::*;
 use nhshell::wayland::WaylandShell;
@@ -331,6 +332,28 @@ mod backdrop {
     #[test]
     fn backdrop_follows_parent_damage_inline() {
         follows_parent_damage(true);
+    }
+
+    /// The blur's time covers recomputes alone: a change beyond its reach and typing in the child add none, and a
+    /// change beneath adds one that lies inside its frame.
+    #[test]
+    fn blur_timer_counts_recomputes_only() {
+        let mut t = Tree::blurred(false);
+        let g = t.kb.g;
+        assert!(summary(g, true).blur_ms.max > 0.0, "the first picture's");
+        t.rb.fill(Rect::new(0, 0, 10, 10), WHITE);
+        t.frame();
+        t.kb.fill(Rect::new(2, 2, 2, 8), 0xff10_2030);
+        t.frame();
+        assert_eq!(summary(g, false).blur_ms, Percentiles::default());
+        let began = Instant::now();
+        t.rb.fill(Rect::new(84, 44, 12, 12), WHITE);
+        t.frame();
+        let span = began.elapsed().as_secs_f64() * 1e3;
+        let got = summary(g, false).blur_ms;
+        assert!(got.max > 0.0 && got.max <= span, "{got:?}, {span} ms");
+        assert_eq!((got.p50, got.p95), (got.max, got.max), "one recompute");
+        t.no_protocol_error();
     }
 
     #[test]
