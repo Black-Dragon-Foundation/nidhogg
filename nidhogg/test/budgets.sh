@@ -15,7 +15,8 @@
 #   --scale, --size   the output of the row sessions (defaults 1, 1920x1080)
 #   --runs N          sessions per side; a row's value is the median over them (default 5)
 #   --window SEC      the idle, typing and scroll windows (default 60)
-#   --resize-steps N  `swaymsg resize' steps (default 200)
+#   --resize-steps N  `swaymsg resize' steps (default 200), each asked once sway has used the frame's answer to the one
+#                     before (resize-stuck counts the steps whose size never reached the frame)
 #   --motion-frames N frames of the motion bench (default 600), on --motion-size (default 3840x2160) at scale 1.5 and
 #                     120 Hz
 #   --config C        q (default): both sides start with -Q.  drgnx: both sides start with drgnx's own configuration, the way
@@ -468,20 +469,23 @@ measure() {
   esac
   rec pss-scroll "$side" "$(pss)"
 
-  # resize: each step must change the frame's size (a step that leaves it alone is a stale frame)
+  # resize: each step must change the frame's size (a step that leaves it alone is a stale frame).  A step reads the
+  # size once sway has used the frame's answer (budgets--size): asked earlier, the next step is lost on sway's side
   if [ "$steps" -gt 0 ]; then
     cl "(set-frame-parameter nil 'fullscreen nil)" > /dev/null; sleep 1
-    last=$(cl '(format "%d %d" (frame-pixel-width) (frame-pixel-height))' | tr -d '"')
+    last=$(cl '(budgets--size)' | tr -d '"'); last=${last% }
     stuck=0
     for ((i = 0; i < steps; i++)); do
       w=$((500 + (i % 2) * 160 + (i / 2 % 5) * 12)); h=$((400 + (i % 2) * 100))
       swaymsg "resize set width $w px height $h px" > /dev/null 2>&1
       for _ in $(seq 20); do
-        cur=$(cl '(format "%d %d" (frame-pixel-width) (frame-pixel-height))' | tr -d '"')
-        [ "$cur" != "$last" ] && break
+        cur=$(cl '(budgets--size)' | tr -d '"'); cur=${cur% }
+        [ "$cur" != - ] && [ "$cur" != "$last" ] && break
         sleep 0.05
       done
-      [ "$cur" != "$last" ] || stuck=$((stuck + 1))
+      { [ "$cur" != - ] && [ "$cur" != "$last" ]; } || stuck=$((stuck + 1))
+      # an answer that never reached sway still leaves the frame's size for the next step to differ from
+      if [ "$cur" = - ]; then cur=$(cl '(format "%d %d" (frame-pixel-width) (frame-pixel-height))' | tr -d '"'); cur=${cur% }; fi
       last=$cur
     done
     rec resize-stuck "$side" "$stuck"
@@ -787,6 +791,15 @@ drgnx's start puts its Welcome or start page in that window, and they take lette
     (select-window w)
     (with-current-buffer (window-buffer w) (goto-char (point-min)) (setq budgets--n (buffer-size))))
   t)
+(defun budgets--size ()
+  "The frame's size as \"W H\" once the compositor has used every request of the display (the shell's `:shown' has
+reached `:published', which counts configure acks), else \"-\".  The resize row's next step waits for it: sway sizes a
+floating window by its commits, and one that comes after the next resize was asked overwrites that resize, which sway
+then never sends.  Emacs shows a configure's size to Lisp before the redisplay that draws it.  On pgtk, the size."
+  (let ((s (and (fboundp 'nhwl-presenter-stats) (ignore-errors (nhwl-presenter-stats)))))
+    (if (and s (< (plist-get s :shown) (plist-get s :published)))
+        "-"
+      (format "%d %d" (frame-pixel-width) (frame-pixel-height)))))
 
 ;; the workloads of the speed rows; emacsclient -e runs in the server buffer, so they act on the selected window's
 (defun budgets--scroll-fixed (n)
