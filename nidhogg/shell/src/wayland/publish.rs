@@ -381,29 +381,40 @@ pub(crate) struct Fed {
     pub(crate) period: u64,
     /// Feedback asked for so far; answers come in that order.
     pub(crate) asked: u64,
-    /// The number of the newest answer that reported a frame (0: none), and that frame's time.
+    /// The number of the newest answer that reported a frame (0: none), that frame's time (the compositor's clock),
+    /// and when the answer came (`now_ns`, ours).
     pub(crate) shown: u64,
     pub(crate) shown_ns: u64,
+    pub(crate) shown_at: u64,
     /// The newest answer said no frame was shown: the compositor is not showing the tree.
     pub(crate) discarded: bool,
+    /// The compositor reports on `CLOCK_MONOTONIC` (`wp_presentation.clock_id`).
+    pub(crate) monotonic: bool,
 }
 
-/// A tree's clock for its transitions, from the first frame of a leg until no leg is left.
+/// A tree's clock for its transitions, from the first frame of a leg until no leg is left.  Its times are ours
+/// (`now_ns`, `CLOCK_MONOTONIC`).
 ///
 /// A frame's time is when it will show.  Before anything was reported that is a period from now.  The first frame this
-/// clock reported is then tied to the time it was drawn for, and from there on the frame after a reported one shows a
-/// period after it: the presented times drive the clock, whichever clock the compositor reports them on, and only
-/// where they do not come (no `wp_presentation`, a discarded frame: sway discards the feedback of a root commit that
-/// only carried a child) does the real clock take over.
+/// clock reported is then tied to the time it was drawn for, or, when it showed over two periods after that time (the
+/// tree was hidden, and the leg's time passed meanwhile), to when it showed; from there on the frame after a reported
+/// one shows a period after it.  When it showed is told on our clock from the reported clock's intervals alone: the
+/// reported time's distance from the answer before this clock's first frame, added to when that answer came (else to
+/// when this one came).  So a compositor whose reported clock runs ahead of ours (the test recorder's manual clock)
+/// neither ends a leg early nor stretches it, and a slow machine whose answers come late, but report frames a period
+/// apart, runs every frame.  Where reported times do not come, or are on another clock (no `wp_presentation`, a
+/// discarded frame: sway discards the feedback of a root commit that only carried a child; a `clock_id` other than
+/// `CLOCK_MONOTONIC`), the real clock takes over.
 struct Clock {
     /// The feedback asked for before this clock's first frame.
     base: u64,
+    /// The newest answer before this clock's first frame: the frame's reported time, and when the answer came.
+    prev: Option<(u64, u64)>,
     /// The time the clock's first frame was drawn for.
     first: u64,
     /// The newest frame's time.
     last: u64,
-    /// Reported times plus this are the clock's (0 for a first frame that showed long after it was drawn: the tree
-    /// was hidden, and the leg's time passed meanwhile).
+    /// Reported times plus this are the clock's.
     offset: Option<i64>,
 }
 
@@ -411,6 +422,7 @@ impl Clock {
     fn new(f: &Fed) -> Clock {
         Clock {
             base: f.asked,
+            prev: (f.shown > 0).then_some((f.shown_ns, f.shown_at)),
             first: 0,
             last: 0,
             offset: None,
@@ -424,16 +436,21 @@ impl Clock {
             // none of this clock's frames asked yet: the coming one is its first
             self.first = real;
             real
-        } else if f.discarded {
+        } else if f.discarded || !f.monotonic {
             real
         } else if f.shown > self.base {
             let (ns, first) = (f.shown_ns, self.first);
+            let (pns, pat) = self.prev.unwrap_or((ns, f.shown_at));
             let offset = *self.offset.get_or_insert_with(|| {
-                if ns.saturating_sub(first) > 2 * f.period {
-                    0
+                // when it showed, on our clock: the reported interval since the anchor's frame, from the anchor's
+                // arrival
+                let showed = pat as i64 + (ns as i64 - pns as i64);
+                let at = if showed - first as i64 > 2 * f.period as i64 {
+                    showed
                 } else {
-                    first as i64 - ns as i64
-                }
+                    first as i64
+                };
+                at - ns as i64
             });
             (ns as i64 + offset) as u64 + f.period
         } else {
@@ -1634,5 +1651,61 @@ mod tests {
         shown.wanted = true;
         shown.hold = 5;
         assert_eq!(stage.next_hold(), None);
+    }
+
+    /// What a tree's feedback said: `asked` answers asked, the newest reporting frame `shown` at `shown_ns` (the
+    /// compositor's clock), answered at `shown_at` (ours), on `CLOCK_MONOTONIC`, at a period of 8 ms.
+    fn fed(asked: u64, shown: u64, shown_ns: u64, shown_at: u64) -> Fed {
+        Fed {
+            period: 8_000_000,
+            asked,
+            shown,
+            shown_ns,
+            shown_at,
+            discarded: false,
+            monotonic: true,
+        }
+    }
+
+    /// The reported clock measures intervals only: one running 10 s ahead of ours ends no leg early; a first frame
+    /// that showed late ties the clock to when it showed, but an answer that only came late (a slow machine) does
+    /// not; a clock other than `CLOCK_MONOTONIC` is not read.  Pattern D: the clock alone.
+    #[test]
+    fn clock_decides_lateness_on_its_own_clock() {
+        const P: u64 = 8_000_000;
+        let ahead = 10_000_000_000;
+        let none = fed(0, 0, 0, 0);
+        // on time: the first frame is drawn for 1000 + P, and its answer comes then, reported 10 s ahead
+        let mut c = Clock::new(&none);
+        assert_eq!(c.frame(&none, 1_000), 1_000 + P);
+        assert_eq!(c.frame(&fed(1, 1, ahead, 1_000 + P), 2_000), 1_000 + 2 * P);
+        // the next answer reports its frame a period on
+        let next = fed(2, 2, ahead + P, 1_000 + 2 * P);
+        assert_eq!(c.frame(&next, 3_000), 1_000 + 3 * P);
+        // late, with no answer before: the answer came five periods after the frame's time
+        let mut c = Clock::new(&none);
+        c.frame(&none, 1_000);
+        let late = 1_000 + 6 * P;
+        assert_eq!(c.frame(&fed(1, 1, ahead, late), late), late + P);
+        // an answer before the leg (its frame reported at `ahead`, the answer at 500): the leg's first frame is
+        // reported a period after it, so it was on time, however late its answer came
+        let before = fed(3, 3, ahead, 500);
+        let mut c = Clock::new(&before);
+        assert_eq!(c.frame(&before, 1_000), 1_000 + P);
+        assert_eq!(c.frame(&fed(4, 4, ahead + P, late), late), 1_000 + 2 * P);
+        // reported a hundred periods after it: the tree was hidden, and the leg's time passed
+        let mut c = Clock::new(&before);
+        c.frame(&before, 1_000);
+        let showed = 500 + 100 * P;
+        let hidden = fed(4, 4, ahead + 100 * P, showed);
+        assert_eq!(c.frame(&hidden, showed), showed + P);
+        // another clock: the real one
+        let mut c = Clock::new(&none);
+        c.frame(&none, 1_000);
+        let other = Fed {
+            monotonic: false,
+            ..fed(1, 1, ahead, 1_000 + P)
+        };
+        assert_eq!(c.frame(&other, 5_000), 5_000 + P);
     }
 }
