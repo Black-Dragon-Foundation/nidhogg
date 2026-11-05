@@ -15,7 +15,6 @@ pub const UNKNOWN_RATE: f64 = -1.0;
 pub struct StatsEntry {
     pub t_update_ns: u64,
     pub t_commit_ns: u64,
-    pub t_freeze_ns: u64,
     pub t_draw_start_ns: u64,
     pub t_draw_end_ns: u64,
     pub t_compose_start_ns: u64,
@@ -34,9 +33,7 @@ pub struct StatsEntry {
     pub layers: u32,
     pub ticks: u32,
     pub late_ticks: u32,
-    pub violations: u32,
     pub backfill: u8,
-    pub scale_mismatch: u8,
 }
 
 /// p50, p95 and max of one series, in milliseconds.  Mirrors `GlitnirPercentiles`.
@@ -56,14 +53,11 @@ pub struct Summary {
     pub compose_ms: Percentiles,
     pub draw_ms: Percentiles,
     pub latency_ms: Percentiles,
-    pub freeze_ms: Percentiles,
     pub damage_px_p50: u64,
     pub painted_px_p50: u64,
     pub backfill_rate: f64,
     pub ticks: u64,
     pub late_ticks: u64,
-    pub violations: u64,
-    pub scale_mismatch: u64,
     pub backdrop_px: u64,
     /// From the update to the end of the paint, over the entries with an update time only.
     pub update_ms: Percentiles,
@@ -83,8 +77,6 @@ pub struct Ring {
     count: u64,
     ticks: u64,
     late_ticks: u64,
-    violations: u64,
-    scale_mismatch: u64,
     backdrop_px: u64,
     overrun_ns: u64,
     /// The newest entry; a reset keeps it (the paint still happened).
@@ -99,8 +91,6 @@ impl Ring {
             count: 0,
             ticks: 0,
             late_ticks: 0,
-            violations: 0,
-            scale_mismatch: 0,
             backdrop_px: 0,
             overrun_ns: 0,
             newest: None,
@@ -118,8 +108,6 @@ impl Ring {
         self.count += 1;
         self.ticks += u64::from(e.ticks);
         self.late_ticks += u64::from(e.late_ticks);
-        self.violations += u64::from(e.violations);
-        self.scale_mismatch += u64::from(e.scale_mismatch != 0);
         self.backdrop_px += e.backdrop_px;
     }
 
@@ -129,8 +117,6 @@ impl Ring {
         self.count = 0;
         self.ticks = 0;
         self.late_ticks = 0;
-        self.violations = 0;
-        self.scale_mismatch = 0;
         self.backdrop_px = 0;
         self.overrun_ns = 0;
     }
@@ -184,7 +170,6 @@ fn summarise(r: &Ring) -> Summary {
         compose_ms: series(&|e| ms(e.t_compose_start_ns, e.t_compose_end_ns)),
         draw_ms: series(&|e| ms(e.t_draw_start_ns, e.t_draw_end_ns)),
         latency_ms: series(&|e| ms(e.t_commit_ns, e.t_draw_end_ns)),
-        freeze_ms: series(&|e| ms(e.t_freeze_ns, e.t_commit_ns)),
         damage_px_p50: rank(&damage, 50),
         painted_px_p50: rank(&painted, 50),
         backfill_rate: if known == 0 {
@@ -194,8 +179,6 @@ fn summarise(r: &Ring) -> Summary {
         },
         ticks: r.ticks,
         late_ticks: r.late_ticks,
-        violations: r.violations,
-        scale_mismatch: r.scale_mismatch,
         backdrop_px: r.backdrop_px,
         update_ms: percentiles(
             b.iter()

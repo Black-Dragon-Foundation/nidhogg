@@ -138,9 +138,7 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   (`NHWL_PRESENTER=0` runs it inline), composes and commits. Child frames are subsurfaces of their parent, so the Wayland
   compositor puts the tree together.
   `glitnir-stats` gives `:key-to-commit-ms` in place of `:latency-ms`, `:draw-ms` runs to the buffer's commit and
-  `:painted-px` is the area composed. Its `:violations`, `:scale-mismatch` and `:freeze-ms` stay 0 on the shell: they
-  counted the pgtk bridge's verify mode, a GDK buffer at another scale and GDK's freeze, none of which the shell has (a
-  compose takes the source at the target's own scale). `glitnir--last-paint` gives the newest paint of that record
+  `:painted-px` is the area composed. `glitnir--last-paint` gives the newest paint of that record
   (`:commit-ns` when Emacs published the drawing, `:paint-ns` and `:present-ns` when its buffer was committed, on the
   clock of `glitnir--now-ns`, `CLOCK_MONOTONIC`; a reset keeps it; nil before a frame's first paint and in batch): drgnx's
   perf lab reads its key-to-present time from it. `nhwl-presenter-stats` has the presenter's own counters. Among them is a fence:
