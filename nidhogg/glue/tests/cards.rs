@@ -309,6 +309,34 @@ mod cards {
         assert_eq!(k.keep_out[0], at(moved.1));
     }
 
+    /// The snapshot (`glitnir-snapshot`) is the picture the presenter shows: the backing with the frame's scene
+    /// composed over it, so a card's corner shows the colour beneath where the backing has the window's pixels.
+    #[test]
+    fn snapshot_shows_the_card_corners() {
+        let mut b = Backings::default();
+        let (key, v) = frame(&mut b, 240);
+        let n = (v.w * v.h) as usize;
+        // SAFETY: the backing's `w * h` pixels, borrowed until the next ensure.
+        unsafe { std::slice::from_raw_parts_mut(v.pixels.cast::<u32>(), n) }.fill(0xff40_8020);
+        // the corners alone: no shadow, no ring
+        let mut corners = card();
+        corners[SLOT_OPACITY] = 0.0;
+        corners[SLOT_RING_OPACITY] = 0.0;
+        sync_at(&mut b, key, &[window(95, left(), Some(corners))]).unwrap();
+        commit(key);
+        let mut dst = vec![0u8; n * 4];
+        b.snapshot_into(key, &mut dst, v.w as usize * 4, v.w, v.h)
+            .unwrap();
+        let px = |x: i32, y: i32| {
+            let o = 4 * (y * v.w + x) as usize;
+            u32::from_ne_bytes(dst[o..o + 4].try_into().unwrap())
+        };
+        let o = at(left().1);
+        // the corner shows what is beneath, the window its backing
+        assert_eq!(px(o.x, o.y), 0xff12_3456);
+        assert_eq!(px(o.x + 40, o.y + 40), 0xff40_8020);
+    }
+
     /// A card's shadow and ring stay inside the window area, the bounding box of the listed windows' outer
     /// rectangles: what lies around it (the title strip here; a frame's tab, tool and menu bars) is kept out too.
     #[test]

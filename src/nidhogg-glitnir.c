@@ -242,7 +242,9 @@ FORMAT is `png' (the default; the value is a unibyte string holding a PNG)
 or `raw' (the value is (WIDTH HEIGHT BYTES), BYTES a unibyte string of
 ARGB32 pixels in the machine's byte order, device pixels, rows tightly
 packed).  The picture is copied only when asked for: this call arms the
-copy, requests a repaint, and waits up to one second for it.  */)
+copy, requests a repaint, and waits up to one second for it.  On the
+native shell it is the frame's backing with its Glitnir scene (window
+cards' corners, shadows and rings) composed over it, as it is shown.  */)
   (Lisp_Object frame, Lisp_Object format)
 {
   struct frame *f = decode_live_frame (frame);
