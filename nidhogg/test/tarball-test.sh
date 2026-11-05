@@ -36,6 +36,26 @@ WANT=$want ROOT=$root "$bin" --batch -Q --eval '(progn
   (require (quote org))
   (unless (file-in-directory-p data-directory (getenv "ROOT")) (error "data-directory %s" data-directory))
   (princ "TARBALL OK\n"))' || { echo "TARBALL FAIL: checks failed for $root"; exit 1; }
+# no stale .eln ships (CI's compiled-Lisp cache restores .eln files keyed on Emacs's ABI inputs, nidhogg/eln-guard.el):
+# the installed native-lisp holds this Emacs's directory only, every .eln in it carries this Emacs's ABI hash (the
+# freloc_hash string native-elisp-load compares), and a sample of them loads
+"$bin" --batch -Q --eval '(let* ((sys (car (last native-comp-eln-load-path)))
+       (dir (file-name-as-directory (expand-file-name comp-native-version-dir sys)))
+       (tag (format "\"%s\"" comp-abi-hash)) (bad nil) (n 0) (i 0))
+  (dolist (d (directory-files sys t "\\`[^.]"))
+    (unless (equal (file-name-as-directory d) dir) (push (format "%s is another build'"'"'s" d) bad)))
+  (dolist (f (directory-files-recursively dir "\\.eln\\'"'"'"))
+    (setq n (1+ n))
+    (unless (with-temp-buffer (set-buffer-multibyte nil) (insert-file-contents-literally f) (search-forward tag nil t))
+      (push (format "%s lacks the ABI hash %s" f tag) bad))
+    (when (and (= 0 (% (setq i (1+ i)) 97)) (not (string-match-p "/preloaded/" f)))
+      (condition-case err (native-elisp-load f)
+        ((native-lisp-file-inconsistent native-lisp-load-failed) (push (format "%s: %S" f err) bad))
+        (error nil))))
+  (when (< n 100) (push (format "only %d .eln files in %s" n dir) bad))
+  (when bad (dolist (b (nreverse bad)) (message "stale .eln: %s" b)) (kill-emacs 1))
+  (princ (format "ELN OK: %d files, all with ABI hash %s\n" n comp-abi-hash)))' ||
+  { echo "TARBALL FAIL: a stale .eln in $root (one compiled for another Emacs)"; exit 1; }
 if [ "$(uname -s)" != Darwin ]; then "$root/bin/nidhoggclient" --version >/dev/null || { echo "TARBALL FAIL: nidhoggclient"; exit 1; }; fi
 CHECKS
 CHECKS_FILE="${TMPDIR:-/tmp}/nidhogg-tarball-checks.$$"

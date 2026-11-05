@@ -11,8 +11,9 @@
 #       For each group, the tests that failed with the workers on must also have failed with them off, or be listed in
 #       pkg-expected-failures.txt.  A failure only with the workers on is the gate failure (exit 1).
 # Groups: jsonrpc treesit process image files.  image needs the GUI runner (gui.sh): it runs only locally.
-# Third-party packages come from pkg-pins.txt into NIDHOGG_PKG_CACHE (default ~/.cache/nidhogg-pkg); servers and tools
-# are installed inside the container, never on the host.  Containers are memory-capped (--memory, default 8g).
+# Third-party packages come from pkg-pins.txt into NIDHOGG_PKG_CACHE (default OUT/pkg-cache, beside the outcomes, never
+# under the home directory); servers and tools are installed inside the container (or come with NIDHOGG_PKG_IMAGE),
+# never on the host.  Containers are memory-capped (--memory, default 8g).
 # Runs may go in parallel and share the cache and --out (on and off write different files); they fetch in turn.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -69,7 +70,9 @@ if [ -n "$CMP" ]; then compare "$CMP" "$EXPECTED"; exit $?; fi
 [ -n "$DISTRO" ] && [ -n "$PREFIX" ] || { echo "usage: pkg-test.sh --container DISTRO --prefix DIR --mode on|off|inline [--select GROUP] | --compare DIR" >&2; exit 2; }
 case $MODE in on|off|inline) ;; *) echo "pkg-test: --mode on|off|inline" >&2; exit 2 ;; esac
 case $DISTRO in
-  fedora-45) IMAGE=registry.fedoraproject.org/fedora:45 ;;
+  # NIDHOGG_PKG_IMAGE=REF: a Fedora 45 image with the packages below installed (CI's nidhogg-pkg-fedora-45,
+  # nidhogg/ci/image.sh); the container then installs nothing
+  fedora-45) IMAGE=${NIDHOGG_PKG_IMAGE:-registry.fedoraproject.org/fedora:45} ;;
   ubuntu-26.04) IMAGE=docker.io/library/ubuntu:26.04 ;;
   *) echo "pkg-test: unknown distro $DISTRO" >&2; exit 2 ;;
 esac
@@ -77,7 +80,7 @@ GROUPS_RUN=${SELECT:-jsonrpc treesit process files}
 for g in $GROUPS_RUN; do case " $GROUPS_ALL " in *" $g "*) ;; *) echo "pkg-test: unknown group $g" >&2; exit 2 ;; esac; done
 PREFIX=$(cd "$PREFIX" && pwd)
 OUT=${OUT:-$PWD/pkg-out}; mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd)
-CACHE=${NIDHOGG_PKG_CACHE:-$HOME/.cache/nidhogg-pkg}; mkdir -p "$CACHE"
+CACHE=${NIDHOGG_PKG_CACHE:-$OUT/pkg-cache}; mkdir -p "$CACHE"
 PODMAN=${NIDHOGG_BUILD_PODMAN:-podman}
 
 # the in-container script is single-quoted on purpose: it expands there, not here
@@ -88,8 +91,9 @@ case $DISTRO in
   ubuntu-*) export DEBIAN_FRONTEND=noninteractive; apt-get update -qq
     apt-get install -y -qq --no-install-recommends $(sed "s/#.*//" /src/nidhogg/deps/$DISTRO.runtime) git make gcc cmake libtool-bin \
       clangd python3-pylsp gnutls-bin openssh-server openssh-client procps >/dev/null ;;
-  *) dnf -y -q --setopt=install_weak_deps=False install $(sed "s/#.*//" /src/nidhogg/deps/$DISTRO.runtime) git make gcc cmake libtool \
-      clang-tools-extra python3-lsp-server gnutls-utils openssh-server openssh-clients findutils procps-ng >/dev/null ;;
+  *) want="$(sed "s/#.*//" /src/nidhogg/deps/$DISTRO.runtime) git make gcc cmake libtool \
+      clang-tools-extra python3-lsp-server gnutls-utils openssh-server openssh-clients findutils procps-ng"
+    rpm -q --quiet --whatprovides $want 2>/dev/null || dnf -y -q --setopt=install_weak_deps=False install $want >/dev/null ;;
 esac
 EMACS=$PREFIX/bin/nidhogg; [ -x "$EMACS" ] || EMACS=$PREFIX/bin/emacs
 export HOME=$(mktemp -d) NIDHOGG_WORKERS=$MODE EMACS

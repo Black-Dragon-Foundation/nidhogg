@@ -50,8 +50,8 @@ gate=$(awk '/^  gate:/{p=1;print;next} p&&/^  [a-z]/{exit} p' "$wf")
 grep -qF "name: \${{ needs.changes.outputs.partial == 'true' && 'Nidhogg gate (partial)' || 'Nidhogg gate' }}" <<<"$gate" || fail "the gate is not named partial for a narrowed run"
 grep -qE '^    if: always\(\)$' <<<"$gate"                       || fail "the gate does not always run"
 gneeds=$(sed -nE 's/^    needs: \[(.*)\]$/\1/p' <<<"$gate" | tr -d ' ' | tr , '\n' | sort)
-jobs_all=$(awk '/^jobs:/{p=1;next} p' "$wf" | sed -nE 's/^  ([a-z0-9-]+):$/\1/p' | grep -vxE 'gate|release|timing|pr-caches' | sort)
-[ "$gneeds" = "$jobs_all" ]                                       || fail "the gate does not need every job but release, timing and pr-caches"
+jobs_all=$(awk '/^jobs:/{p=1;next} p' "$wf" | sed -nE 's/^  ([a-z0-9-]+):$/\1/p' | grep -vxE 'gate|release|timing|pr-caches|images' | sort)
+[ "$gneeds" = "$jobs_all" ]                                       || fail "the gate does not need every job but release, timing, pr-caches and images"
 grep -qF 'GATE: Nidhogg gate' "$wf"                               || fail "the changes job does not check the base's Nidhogg gate"
 # a pull request tests its head, which a fast-forward lands, never GitHub's merge commit: every checkout and the path
 # filter name the head, and a job (allowed to skip off pull requests) fails a head that does not descend from the base
@@ -125,7 +125,7 @@ grep -qF 'bash nidhogg/glitnir/check.sh' <<<"$mj"                 || fail "macos
 [ "$(grep -cE '^ +name: tarball-\$\{\{ matrix\.distro \}\}$|^ +name: tarball-macos$' "$wf")" -eq 2 ] || fail "a tarball artifact release would publish by mistake"
 # the workers' jobs (engine C, PD-4): present, after linux, outside release's needs, never fail-fast, pkg suites on and off
 for j in workers-harness workers-asan workers-pkg; do
-  job "$j" | grep -qE '^    needs: \[changes, linux\]'             || fail "no job $j (or it does not need linux)"
+  job "$j" | grep -qE '^    needs: \[changes, images, linux\]'     || fail "no job $j (or it does not need linux)"
   ! job "$j" | grep -q 'fail-fast: true'                            || fail "a workers job has fail-fast: $j"
   ! awk '/^  release:/,0' "$wf" | grep -qE "needs:.*$j"             || fail "release needs $j"
 done
@@ -133,7 +133,7 @@ job workers-pkg | grep -q 'fail-fast: false'                       || fail "work
 { job workers-pkg | grep -qE 'mode: \["on", "off"\]' && grep -q 'pkg-test.sh --compare' "$wf"; } || fail "workers-pkg does not run on and off and compare"
 job workers-asan | grep -q 'NIDHOGG_BUILD_SANITIZE'                || fail "workers-asan does not build sanitized"
 # the workers files under chaos: a chaos build of its own beside the Linux builds, seeds 1 to 5, outside release's needs
-job workers-chaos | grep -qE '^    needs: changes$'                  || fail "no job workers-chaos (or it waits on more than the changes job)"
+job workers-chaos | grep -qE '^    needs: \[changes, images\]$'      || fail "no job workers-chaos (or it waits on more than the changes and images jobs)"
 job workers-chaos | grep -qF 'build.sh --container fedora-45 --dev --chaos --stage build' || fail "workers-chaos does not make a chaos build"
 job workers-chaos | grep -qF 'nidhogg/test/chaos-lane.sh --build-dir "$RUNNER_TEMP/build-chaos" --seeds "1 2 3 4 5" --' || fail "workers-chaos does not run chaos-lane.sh with seeds 1 to 5"
 ! awk '/^  release:/,0' "$wf" | grep -qE 'needs:.*workers-chaos'   || fail "release needs workers-chaos"
@@ -162,7 +162,7 @@ rm -r "$d"
 for s in 'recorder/check.sh --container fedora-45 --build' 'shell/check.sh --container fedora-45' 'glue/check.sh --container fedora-45'; do
   job native-crates | grep -qF "$s"                                || fail "native-crates does not run $s"
 done
-job native-gui | grep -qE '^    needs: \[changes, linux, native-crates\]' || fail "native-gui does not need linux and native-crates"
+job native-gui | grep -qE '^    needs: \[changes, images, linux, native-crates\]' || fail "native-gui does not need linux and native-crates"
 job native-gui | grep -q 'fail-fast: false'                        || fail "native-gui has no fail-fast: false"
 job native-gui | grep -qE 'timeout-minutes: 60'                    || fail "native-gui has no 60-minute limit"
 job native-gui | grep -qF 'tarball-fedora-45'                      || fail "native-gui does not use the fedora-45 tarball"
@@ -219,4 +219,47 @@ grep -qF "NIDHOGG_TEST_GRAMMARS: \${{ steps.grammars.outcome == 'success' && '/g
 grep -qF -- "-v {0}/grammars:/grammars:ro,z" <<<"$lj"                 || fail "the check container does not mount the grammars"
 # the fedora-45 leg's check installs gnutls-utils, so the TLS rows (gnutls-serv) run instead of skipping
 grep -qF "NIDHOGG_CHECK_PACKAGES: \${{ matrix.distro == 'fedora-45' && 'gnutls-utils' || '' }}" <<<"$lj" || fail "the linux check does not install gnutls-utils on fedora-45"
+# the prebuilt images (images.yml, nidhogg/ci/image.sh): published only for a push to nidhogg-31 or a run by hand, never
+# from a pull request; the Linux jobs run in them by digest, the package-download caches are gone with them
+iw=.github/workflows/images.yml
+grep -qxF "  PUBLISH: \${{ (github.event_name == 'push' && github.ref == 'refs/heads/nidhogg-31') || github.event_name == 'workflow_dispatch' }}" "$iw" || fail "images.yml publishes for more than nidhogg-31's pushes and runs by hand"
+awk '/^on:/,/^permissions:/' "$iw" | grep -qE '^  (push|pull_request|pull_request_target|schedule):' && fail "images.yml has a trigger of its own besides a run by hand"
+grep -qF 'if [ -z "$ref" ] && [ "${PUBLISH:-}" = true ]; then ref=$(bash "$SELF" publish' nidhogg/ci/image.sh || fail "image.sh publishes without PUBLISH"
+[ "$(cat "$wf" "$iw" | grep -c 'image.sh publish\|podman push')" = 0 ] || fail "a workflow pushes an image itself (only image.sh outputs does, under PUBLISH)"
+job images | grep -qF 'uses: ./.github/workflows/images.yml'      || fail "no images job calling images.yml"
+! grep -qE 'registry\.fedoraproject\.org|docker\.io/' "$wf"       || fail "a job runs a base image instead of its prebuilt one"
+! grep -qF 'key: pkgs-' "$wf"                                       || fail "a job still caches package downloads (the images have the packages)"
+[ "$(grep -cF 'uses: ./.github/actions/nh-image' "$wf")" -ge 9 ]   || fail "a Linux job does not take its prebuilt image"
+for n in $(bash nidhogg/ci/image.sh names); do bash nidhogg/ci/image.sh tag "$n" | grep -qxE '[0-9a-f]{16}' || fail "image.sh has no tag for $n"; done
+# an image's tag moves with every file its build reads: the Containerfile, an input, the script
+d=$(mktemp -d); t0=$(bash nidhogg/ci/image.sh tag build-fedora-45)
+[ "$t0" != "$(bash nidhogg/ci/image.sh tag build-fedora-45-norust)" ] || fail "the two targets of one Containerfile share a tag"
+cp -a nidhogg "$d/nidhogg"
+echo "# ci-test" >> "$d/nidhogg/deps/fedora-45.build"
+[ "$(bash "$d/nidhogg/ci/image.sh" tag build-fedora-45)" != "$t0" ] || fail "the build image's tag does not follow deps/fedora-45.build"
+rm -r "$d"
+# the release legs' and compile-noglitnir's compiled Lisp: keyed on Emacs's ABI inputs (lisp-key.sh --abi), never
+# restored for nidhogg-31 (or a tag), which saves its cold build's; build.sh's guard checks a restored set after make,
+# and the tarball test fails a stale .eln
+for j in linux macos compile-noglitnir; do
+  job "$j" | grep -qF 'abi=$(bash nidhogg/ci/lisp-key.sh --abi)'    || fail "$j does not key its compiled Lisp on the ABI inputs"
+  job "$j" | grep -A1 'id: lc$' | grep -qF "github.ref != 'refs/heads/nidhogg-31'" || fail "$j restores compiled Lisp for nidhogg-31"
+  [ "$(job "$j" | grep -cF -- '-${{ steps.tree.outputs.abi }}-')" = 2 ] || fail "$j's compiled-Lisp restore and save keys differ"
+  job "$j" | grep -qF "steps.lc.outcome == 'skipped' && github.ref == 'refs/heads/nidhogg-31'" || fail "nidhogg-31's $j does not save its cold Lisp"
+done
+job compile-noglitnir | grep -qF -- '--without-glitnir --dev' || fail "compile-noglitnir is not a dev build"
+grep -qF 'nidhogg-eln-guard-check' nidhogg/build.sh                || fail "build.sh does not guard restored .eln files"
+grep -qF 'if [ "$rc" = 75 ]; then' nidhogg/build.sh                || fail "build.sh does not build cold after the guard's verdict"
+grep -qF 'stale .eln' nidhogg/test/tarball-test.sh                 || fail "the tarball test does not fail a stale .eln"
+# the large prefix-restored entries are nidhogg-31's alone (a pull request restores them), and no cache holds a whole
+# cargo home (unpacked sources, tools, credentials)
+[ "$(grep -A1 "name: Save Glitnir's cargo target" "$wf" | grep -cF "env.CACHE_SAVE_ALL == 'true'")" = 2 ] || fail "a pull request saves a Glitnir cargo target"
+! grep -qE '^ +\$\{\{ runner\.temp \}\}/(nh-recorder-cargo|nhshell-cargo|nhglue-cargo)$' "$wf" || fail "a cache holds a whole cargo home"
+grep -qF 'NIDHOGG_BUILD_CONFIG_CACHE' "$wf" && grep -qF 'NIDHOGG_BUILD_CARGO_TARGET' "$wf" || fail "the builds keep no configure cache or cargo target"
+# the test images name every package gui.sh and pkg-test.sh install on Fedora (else the scripts install it, slowly)
+ti=nidhogg/ci/images/test-fedora-45.Containerfile
+gui_want=$(sed -n '/want="mutter sway/,/\$pkgs"$/p' nidhogg/test/gui.sh | grep -v -e 'kwin ' -e 'fcitx5 ' -e '\$pkgs' | grep -oE '\b[a-z][A-Za-z0-9.+-]+\b' | grep -vxE 'want|mutter|case|in|echo|esac|then|do')
+for p in mutter $gui_want; do grep -qE "(^| )$p( |$)" "$ti" || fail "the GUI image lacks gui.sh's $p"; done
+pkg_want=$(sed -n '/^  \*) want=/,/procps-ng"$/p' nidhogg/test/pkg-test.sh | sed 's/.*\.runtime)//' | grep -oE '\b[a-z][a-z0-9.+-]+\b' | grep -vxE 'want|sed|s|src|nidhogg|deps|DISTRO|runtime')
+for p in $pkg_want; do grep -qE "(^| )$p( |$)" "$ti" || fail "the package suites' image lacks pkg-test.sh's $p"; done
 exit $rc
