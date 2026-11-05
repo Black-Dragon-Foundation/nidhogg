@@ -27,6 +27,8 @@ src/nidhogg-tests/workers-image-tests
 src/nidhogg-tests/workers-blk-tests
 src/nidhogg-tests/workers-autosave-tests
 src/nidhogg-tests/quit-tty-tests
+src/nidhogg-tests/varwatch-tests
+src/data-tests
 src/emacs-tests
 src/fns-tests
 src/process-tests

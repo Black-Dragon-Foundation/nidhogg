@@ -1853,6 +1853,50 @@ harmonize_variable_watchers (Lisp_Object alias, Lisp_Object base_variable)
     set_symbol_trapped_write
       (alias, XSYMBOL (base_variable)->u.s.trapped_write);
 }
+#ifdef HAVE_NIDHOGG_WORKERS
+
+/* The variables a `defvaralias' has pointed an alias at, as the keys
+   of a weak table (nil until the first alias).  Every alias chain ends
+   in such a link, so a variable that is not a key has no alias, and
+   the walk below would find nothing: skip it.  Keys stay when an alias
+   is moved or deleted; a stale one costs a walk, no more.  */
+static Lisp_Object variable_alias_targets;
+
+/* How many obarray walks `add-variable-watcher' and
+   `remove-variable-watcher' have made.  */
+static EMACS_INT variable_watcher_walks;
+
+/* Record that defvaralias has pointed an alias at BASE_VARIABLE.  */
+void
+note_variable_alias_target (Lisp_Object base_variable)
+{
+  if (NILP (variable_alias_targets))
+    variable_alias_targets
+      = make_hash_table (&hashtest_eq, DEFAULT_HASH_SIZE, Weak_Key);
+  Fputhash (base_variable, Qt, variable_alias_targets);
+}
+
+/* Give every alias of BASE_VARIABLE BASE_VARIABLE's write trap.  */
+static void
+harmonize_aliases (Lisp_Object base_variable)
+{
+  if (NILP (variable_alias_targets)
+      || NILP (Fgethash (base_variable, variable_alias_targets, Qnil)))
+    return;
+  variable_watcher_walks++;
+  map_obarray (Vobarray, harmonize_variable_watchers, base_variable);
+}
+
+DEFUN ("nidhogg--variable-watcher-walks", Fnidhogg__variable_watcher_walks,
+       Snidhogg__variable_watcher_walks, 0, 0, 0,
+       doc: /* Return how many times a variable watcher walked the obarray.
+`add-variable-watcher' and `remove-variable-watcher' walk it to keep
+the aliases of a variable in step with it.  Internal, for tests.  */)
+  (void)
+{
+  return make_int (variable_watcher_walks);
+}
+#endif
 
 DEFUN ("add-variable-watcher", Fadd_variable_watcher, Sadd_variable_watcher,
        2, 2, 0,
@@ -1873,7 +1917,11 @@ All writes to aliases of SYMBOL will call WATCH-FUNCTION too.  */)
   symbol = Findirect_variable (symbol);
   CHECK_SYMBOL (symbol);
   set_symbol_trapped_write (symbol, SYMBOL_TRAPPED_WRITE);
+#ifdef HAVE_NIDHOGG_WORKERS
+  harmonize_aliases (symbol);
+#else
   map_obarray (Vobarray, harmonize_variable_watchers, symbol);
+#endif
 
   Lisp_Object watchers = Fget (symbol, Qwatchers);
   Lisp_Object member = Fmember (watch_function, watchers);
@@ -1895,7 +1943,11 @@ SYMBOL (or its aliases) are set.  */)
   if (NILP (watchers))
     {
       set_symbol_trapped_write (symbol, SYMBOL_UNTRAPPED_WRITE);
+#ifdef HAVE_NIDHOGG_WORKERS
+      harmonize_aliases (symbol);
+#else
       map_obarray (Vobarray, harmonize_variable_watchers, symbol);
+#endif
     }
   Fput (symbol, Qwatchers, watchers);
   return Qnil;
@@ -4397,4 +4449,9 @@ Bind this to non-nil in applications such as the byte compiler.  */);
   defsubr (&Sadd_variable_watcher);
   defsubr (&Sremove_variable_watcher);
   defsubr (&Sget_variable_watchers);
+#ifdef HAVE_NIDHOGG_WORKERS
+  defsubr (&Snidhogg__variable_watcher_walks);
+  variable_alias_targets = Qnil;
+  staticpro (&variable_alias_targets);
+#endif
 }
