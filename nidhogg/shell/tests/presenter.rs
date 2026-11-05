@@ -256,7 +256,7 @@ fn popups_map_parent_first(thread: bool) {
     if !thread {
         shell.present_tree(top).unwrap();
     }
-    rec.wait_node(top, |n| n.contains("\"buffer\":{"));
+    rec.wait_window(&shell, top, |n| n.contains("\"buffer\":{"));
 
     let (mut pb, mut cb) = (Backing::new(60, 30), Backing::new(60, 30));
     let p = popup(&mut shell, top, &pb);

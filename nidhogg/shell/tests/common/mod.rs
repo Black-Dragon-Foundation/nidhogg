@@ -113,7 +113,8 @@ impl Recorder {
         u32::from_le_bytes(snap.1[at..at + 4].try_into().unwrap())
     }
 
-    /// The recorder's surface `id`'s entry in the `tree` reply once `pred` holds for it, within 3 s.
+    /// The recorder's surface `id`'s entry in the `tree` reply once `pred` holds for it, within 3 s.  `id` is the
+    /// recorder's own name, a protocol id of a connection that reused none; a shell window goes through `wait_window`.
     pub fn wait_node(&self, id: u64, pred: impl Fn(&str) -> bool) -> String {
         self.wait_entry(&format!("surface {id}"), |n| n == id, pred)
     }

@@ -123,7 +123,9 @@ mod touch {
                 flags: NHSHELL_WIN_GRAB,
             })
             .unwrap();
-        rec.wait_node(p, |n| n.contains("\"grab\":{\"serial_kind\":\"touch\"}"));
+        rec.wait_window(&shell, p, |n| {
+            n.contains("\"grab\":{\"serial_kind\":\"touch\"}")
+        });
         assert!(shell.window_grabbed(p).unwrap());
     }
 

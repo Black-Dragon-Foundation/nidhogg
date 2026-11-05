@@ -366,4 +366,12 @@ File times are real: a test backdates from the file, not the clock."
       (when nidhogg-watchdog-mode (nidhogg-watchdog-mode -1))
       (ignore-errors (nidhogg-watchdog--stop)))))
 
+;; The stall watchdog runs on Linux only so far (`nidhogg-watchdog--start' signals elsewhere), so on another
+;; platform this file's tests skip instead of failing.
+(unless (eq system-type 'gnu/linux)
+  (dolist (test (ert-select-tests t t))
+    (when (equal (ert-test-file-name test) load-file-name)
+      (setf (ert-test-body test)
+            (lambda () (ert-skip "the stall watchdog runs on Linux only"))))))
+
 ;;; watchdog-lisp-tests.el ends here
