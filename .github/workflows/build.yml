@@ -154,7 +154,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        distro: [fedora-44, fedora-45, ubuntu-26.04]
+        distro: [fedora-45, ubuntu-26.04]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -293,7 +293,7 @@ jobs:
   # Rust installed (build.sh leaves cargo and rust out of the package list under --without-glitnir).  The shell needs
   # Glitnir, so this is a terminal-only build.
   compile-noglitnir:
-    name: Compile without Glitnir (fedora-44)
+    name: Compile without Glitnir (fedora-45)
     needs: changes
     if: ${{ !cancelled() && github.ref_type != 'tag' && needs.changes.outputs.compile-noglitnir != 'false' }}
     runs-on: ubuntu-24.04
@@ -308,26 +308,26 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ccache
-          key: ccache-fedora-44-noglitnir-${{ hashFiles('nidhogg/deps/fedora-44.build') }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: ccache-fedora-44-noglitnir-${{ hashFiles('nidhogg/deps/fedora-44.build') }}-
+          key: ccache-fedora-45-noglitnir-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-fedora-45-noglitnir-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-
       - name: Package download cache (dnf)
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/pkg-cache
-          key: pkgs-fedora-44-${{ hashFiles('nidhogg/deps/fedora-44.build') }}
-          restore-keys: pkgs-fedora-44-
+          key: pkgs-fedora-45-${{ hashFiles('nidhogg/deps/fedora-45.build') }}
+          restore-keys: pkgs-fedora-45-
       - name: Build
         id: build
         env:
           NIDHOGG_BUILD_PKG_CACHE: ${{ runner.temp }}/pkg-cache
           NIDHOGG_BUILD_CCACHE: ${{ runner.temp }}/ccache
-        run: bash nidhogg/build.sh --container fedora-44 --without-glitnir --stage build --memory 12g --jobs 4 --build-dir "$RUNNER_TEMP/build"
+        run: bash nidhogg/build.sh --container fedora-45 --without-glitnir --stage build --memory 12g --jobs 4 --build-dir "$RUNNER_TEMP/build"
       - name: Save ccache
         if: ${{ !cancelled() && env.CACHE_SAVE == 'true' && steps.cc.outcome == 'success' && (steps.build.outcome == 'success' || steps.build.outcome == 'failure') }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ccache
-          key: ccache-fedora-44-noglitnir-${{ hashFiles('nidhogg/deps/fedora-44.build') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: ccache-fedora-45-noglitnir-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   macos:
     name: macOS (NS app)

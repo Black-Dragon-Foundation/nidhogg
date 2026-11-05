@@ -69,7 +69,6 @@ if [ -n "$CMP" ]; then compare "$CMP" "$EXPECTED"; exit $?; fi
 [ -n "$DISTRO" ] && [ -n "$PREFIX" ] || { echo "usage: pkg-test.sh --container DISTRO --prefix DIR --mode on|off|inline [--select GROUP] | --compare DIR" >&2; exit 2; }
 case $MODE in on|off|inline) ;; *) echo "pkg-test: --mode on|off|inline" >&2; exit 2 ;; esac
 case $DISTRO in
-  fedora-44) IMAGE=registry.fedoraproject.org/fedora:44 ;;
   fedora-45) IMAGE=registry.fedoraproject.org/fedora:45 ;;
   ubuntu-26.04) IMAGE=docker.io/library/ubuntu:26.04 ;;
   *) echo "pkg-test: unknown distro $DISTRO" >&2; exit 2 ;;
