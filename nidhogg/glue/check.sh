@@ -110,11 +110,13 @@ if [ -n "$DISTRO" ] && [ "$INNER" = 0 ]; then
   # the Android target's std, where the distro packages it (Fedora does not: --android then exits 3)
   android_std=""
   [ "$ANDROID" = 1 ] && android_std="(dnf -y install rust-std-static-$ANDROID_TARGET >/dev/null 2>&1 || true) && "
-  inner="dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install cargo rust clippy rustfmt gcc binutils diffutils gawk pkgconf-pkg-config wayland-devel libxkbcommon-devel xkeyboard-config libX11-common pixman-devel >/dev/null && (dnf -y install cargo-deny >/dev/null 2>&1 || true) && ${android_std}bash /nh/glue/check.sh --inner$args"
+  # nothing to install in an image that has them (NIDHOGG_CRATES_IMAGE, CI's nidhogg-build-fedora-45)
+  pk="cargo rust clippy rustfmt gcc binutils diffutils gawk pkgconf-pkg-config wayland-devel libxkbcommon-devel xkeyboard-config libX11-common pixman-devel"
+  inner="{ rpm -q --quiet --whatprovides $pk 2>/dev/null || dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install $pk >/dev/null; } && { command -v cargo-deny >/dev/null || dnf -y install cargo-deny >/dev/null 2>&1 || true; } && ${android_std}bash /nh/glue/check.sh --inner$args"
   podman run --rm --name "$NAME" --memory 2g --memory-swap 2g \
     -v "$NH:/nh:ro,z" -v "$CARGO_DIR:/cargo:z" "${EXTRA[@]}" \
     -e CARGO_HOME=/cargo/home -e CARGO_TARGET_DIR=/cargo/target -e CARGO_BUILD_JOBS=2 \
-    "registry.fedoraproject.org/fedora:${DISTRO#fedora-}" bash -euo pipefail -c "$inner" &
+    "${NIDHOGG_CRATES_IMAGE:-registry.fedoraproject.org/fedora:${DISTRO#fedora-}}" bash -euo pipefail -c "$inner" &
   pid=$!
   wait "$pid"
   exit $?

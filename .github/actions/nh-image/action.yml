@@ -1,0 +1,45 @@
+# A job's prebuilt image (nidhogg/ci/image.sh): the digest the images job resolved, pulled; with none (a pull request
+# that changed an image's inputs, or no published image yet), the image built here for this run, never pushed.  Sets
+# the variable the job's script reads to it.  README.md, "CI and releases".
+name: Nidhogg CI image
+description: Pull a prebuilt CI image by digest, or build it for this run
+inputs:
+  name:
+    description: The image (image.sh names)
+    required: true
+  ref:
+    description: The images job's output for it, REF@sha256:DIGEST, or empty
+    default: ""
+  variable:
+    description: The variable the job's script reads (NIDHOGG_BUILD_IMAGE, GLITNIR_GUI_IMAGE, ...)
+    required: true
+  token:
+    description: Reads the published images
+    default: ${{ github.token }}
+outputs:
+  id:
+    description: What a cache key names the image by, its digest (sha256:...), or local-RUN for one built here (no entry matches it)
+    value: ${{ steps.i.outputs.id }}
+runs:
+  using: composite
+  steps:
+    - id: i
+      shell: bash
+      env:
+        NAME: ${{ inputs.name }}
+        REF: ${{ inputs.ref }}
+        VAR: ${{ inputs.variable }}
+        TOKEN: ${{ inputs.token }}
+        ACTOR: ${{ github.actor }}
+        RUN: ${{ github.run_id }}
+      run: |
+        if [ -n "$REF" ]; then
+          printf '%s' "$TOKEN" | podman login ghcr.io -u "$ACTOR" --password-stdin >/dev/null
+          echo "id=${REF##*@}" >> "$GITHUB_OUTPUT"
+        else
+          echo "id=local-$RUN" >> "$GITHUB_OUTPUT"
+        fi
+        s=$(date +%s)
+        image=$(bash nidhogg/ci/image.sh use "$NAME" $REF)
+        echo "$NAME: $image ($(( $(date +%s) - s )) s)"
+        echo "$VAR=$image" >> "$GITHUB_ENV"

@@ -105,9 +105,21 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
 - Output: one `== <phase>` line per phase (`autogen`, `configure`, `make -jN`, `check <target>`, `install`, `tarball`), a
   `... make still running, N min` line every 5 minutes (`NIDHOGG_BUILD_HEARTBEAT` seconds), and on failure the last 100
   lines of the failing log. The container is named `nidhogg-build-<pid>` and stopped and removed on exit, INT or TERM.
-  `NIDHOGG_BUILD_PKG_CACHE=DIR` keeps the container's downloaded packages (dnf, apt) in DIR between builds (CI caches it).
+  `NIDHOGG_BUILD_PKG_CACHE=DIR` keeps the container's downloaded packages (dnf, apt) in DIR between builds.
+  `NIDHOGG_BUILD_IMAGE=REF` runs the container in REF instead of the distro's base image: an image of the same distro
+  with the build packages installed (CI's `nidhogg-build-DISTRO`, below). Each install first checks whether its packages
+  are there (`rpm -q`, `dpkg -s`), so a build in such an image runs no package manager.
   `NIDHOGG_BUILD_CCACHE=DIR` (containers) compiles the C code through ccache (installed in the container, compiler checked
   by content) with its cache in DIR; the `.eln` files from native compilation do not go through ccache.
+  `NIDHOGG_BUILD_CONFIG_CACHE=DIR` keeps autoconf's cache of configure's checks in DIR (`DIR/config.cache`), handed to
+  configure through a site file (`CONFIG_SITE`), not `--cache-file`, which would join the configure line that
+  `system-configuration-options` and the `.eln` ABI hash record. A configure that fails with it runs again without it.
+  `NIDHOGG_BUILD_CARGO_TARGET=DIR` keeps Glitnir's cargo target directory (`src/glitnir-target`, a link to DIR); `make`
+  always runs cargo then (the libraries it links are dated 1970), which rebuilds what the sources' times make stale, and
+  after a `make` that passed DIR names the commit it was built from (`.nidhogg-source-commit`, for `set-mtimes.sh
+  --since`). With `NIDHOGG_BUILD_LISP_CACHE` (below), a build that restored `.eln` files checks them after `make`
+  (`nidhogg/eln-guard.el`) and, when they are not this binary's, removes the build tree and builds again with nothing
+  restored (once; ccache keeps the C side quick).
 - **Glitnir (the compositor)** is Nidhogg's Rust library (`nidhogg/glitnir/`). Source builds therefore need **Rust**:
   `cargo` and `rustc` 1.93 or newer (the build lists name the packages: `cargo` + `rust` on Fedora, `cargo` + `rustc` on
   Ubuntu, `rust` from Homebrew on macOS). Debian 13 carries 1.85, so on any Linux whose `rustc` is older `build.sh` fetches
@@ -271,12 +283,33 @@ machine whose timing never shows it, not certain.
   only; other events skip it, which the gate allows) fails when the head does not descend from the base branch's tip
   (the compare API's status is not `ahead` or `identical`; no checkout): rebase the branch onto it. With that guard the head's tree is the merge commit's, so the cache keys (tree and content
   hashes, never a commit) mean what they meant.
+- `images` (`.github/workflows/images.yml`, `nidhogg/ci/image.sh`, `nidhogg/ci/images/`): the Linux jobs run in
+  prebuilt images on ghcr instead of installing some 200 packages each: `nidhogg-build-fedora-45` (the build packages,
+  ccache, the sanitizer runtimes, gnutls-utils, Rust and the crate checks' packages: the Linux builds, `workers-asan`,
+  `workers-chaos`, `workers-harness`, `native-crates`), `nidhogg-build-fedora-45-norust` (the same without Rust:
+  `compile-noglitnir`), `nidhogg-build-ubuntu-26.04`, `nidhogg-gui-fedora-45` (`deps/fedora-45.runtime` and gui.sh's
+  packages: the GUI lanes and the timing lane; KWin's and the input methods' extras stay with gui.sh) and
+  `nidhogg-pkg-fedora-45` (`deps/fedora-45.runtime` and pkg-test.sh's servers and tools). Each base is pinned by digest.
+  A tag is the hash of the image's build context: its Containerfile, every file it copies (`deps/…`), its build target
+  and `image.sh`, so a change to any of them makes a new tag. The `images` job (first in every run, not in the gate)
+  resolves each tag to its digest, and the jobs pull that digest (`.github/actions/nh-image`). A missing tag is built
+  and pushed only for a push to `nidhogg-31` or a run by hand in this repository, never for a pull request: there the
+  output is empty and each job builds the image itself for that run, unpushed. The scripts take the image from
+  `NIDHOGG_BUILD_IMAGE` (build.sh), `NIDHOGG_CRATES_IMAGE` (the crates' `check.sh`), `GLITNIR_GUI_IMAGE` (gui.sh) and
+  `NIDHOGG_PKG_IMAGE` (pkg-test.sh), and each checks its packages (`rpm -q`) before it installs any, so a stale list
+  costs time, never a result; `ci-test.sh` checks that the test images name every package gui.sh and pkg-test.sh ask
+  for. `tarball-test.sh` keeps its fresh base image: it checks that `deps.runtime` is enough.
 - `linux` (fedora-45, ubuntu-26.04): `build.sh --container D --stage build`, the cache saves, then `--stage check
   --check nidhogg/check-subset.txt`, then `--stage pack --out ...` (so a failing check keeps the build's caches), then
-  `tarball-test.sh`. `macos`: Homebrew `deps/macos.build`, `build.sh --host` (`--stage build`, then `--stage pack`),
-  `tarball-test.sh macos`. Each uploads its tarball and `.sha256`.
-- `compile-noglitnir` (fedora-45): `build.sh --without-glitnir --stage build`, a terminal-only build with no Rust
-  installed (the tree still compiles without Glitnir). It is not part of the release gate.
+  `tarball-test.sh`. `macos`: Homebrew `deps/macos.build` (Rust from the runner image's rustup when it has one),
+  `build.sh --host` (`--stage build`, then `--stage pack`), `tarball-test.sh macos`. Each uploads its tarball and
+  `.sha256`. `tarball-test.sh` fails a stale `.eln`: the installed `native-lisp/` must hold this Emacs's directory only,
+  every `.eln` in it must carry this Emacs's ABI hash (the `freloc_hash` string `native-elisp-load` compares), and a
+  sample must load.
+- `compile-noglitnir` (fedora-45): `build.sh --without-glitnir --dev --stage build`, a terminal-only dev build with no
+  Rust installed. It shows that configure, the C side, the dump and the Lisp build without Glitnir and without Rust; the
+  AOT native compilation of every file, the same Lisp, is the Linux jobs'. A dev build takes minutes where the AOT one
+  took 20. It is not part of the release gate.
 - `workers-chaos` (fedora-45, beside the Linux builds: it needs no tarball): `build.sh --dev --chaos --stage build`,
   then `nidhogg/test/chaos-lane.sh`, which runs the files of `nidhogg/test/chaos-files.txt` (`workers-tests`,
   `workers-io-tests`, `workers-fatal-tests`) in one check container per seed, `NIDHOGG_TEST_SEED` 1 to 5. No rerun lets
@@ -315,18 +348,32 @@ machine whose timing never shows it, not certain.
 - Caches (`actions/cache/restore` before the build, `actions/cache/save` right after the step that produced them, so a
   later failing step, e.g. the tarball test, loses nothing; a save is skipped when its key was already found, and a build
   that failed saves nothing but ccache). A key is immutable: change its inputs and the key changes; to force a rebuild, edit
-  `build.sh` or delete the entry in the repository's Actions caches. Linux (`D` = distro, `G` = hash of `deps/D.build`):
+  `build.sh` or delete the entry in the repository's Actions caches. Linux (`D` = distro, `G` = hash of `deps/D.build`,
+  `I` = the digest of the job's build image, above):
   - built tarball: `tarball-D-<git tree hash of HEAD>-<hash of build.sh>`, exact. A hit skips the build and Emacs's
     checks; the tarball test, the upload and drgnx's suite still run. Never used or saved for a release tag: a release is
     built fresh.
-  - compiled Lisp: `lisp-D-G-<nidhogg/ci/lisp-key.sh>-<hash of build.sh>`, exact (no fallback: a partly stale set is not
-    rebuilt correctly). The AOT native compilation of the Lisp (`.elc`, `.eln`) is the dominant build cost and ccache does
-    not touch it. `lisp-key.sh` hashes the git trees of `lisp`, `leim`, `src` (the C side: `.eln` files embed the Emacs
-    build's ABI hash, which the primitives determine), `lib`, `lib-src`, `etc`, the generators and configure inputs; docs,
-    tests, `nidhogg/` and CI files are left out, so a change to those still hits. `build.sh` (`NIDHOGG_BUILD_LISP_CACHE`)
-    saves the generated files of `lisp/` and `leim/` plus `native-lisp/` after `make`, and restores them with one
-    timestamp newer than every source, so `make` sees them up to date; an entry made by another gcc is ignored. The
-    dev builds (`workers-asan`, `workers-chaos`) keep it as two entries: the byte-compiled part
+  - compiled Lisp (`linux`, `macos`, `compile-noglitnir`): `lisp-D-I-<nidhogg/ci/lisp-key.sh --abi>-<hash of build.sh>`,
+    exact (no fallback: a partly stale set is not rebuilt correctly). The AOT native compilation of the Lisp (`.elc`,
+    `.eln`, some 1,500 files) is the dominant build cost and ccache does not touch it. The key holds what Emacs's own
+    `.eln` check hashes (`src/comp.c`, `hash_native_abi`: `ABI_VERSION`, the version, the configuration and its options,
+    every primitive's name and arity) instead of the C bodies: the git trees of `lisp`, `leim`, `lib`, `etc`, the
+    generators and configure inputs, `nidhogg/version`, the DEFUN signatures, the names of the C side's functions,
+    variables and features (compile-time `fboundp`, `boundp` and `featurep`), and what decides the code the native
+    compiler emits and the layouts it inlines (`src/comp.c`, every `src/*.h`); the image (gcc, libgccjit, the
+    configuration) and `build.sh` (the configure flags) are the rest. A change to a C body therefore reuses the Lisp.
+    `build.sh` (`NIDHOGG_BUILD_LISP_CACHE`) saves the generated files of `lisp/` and `leim/`, `native-lisp/` and the
+    binary's ABI facts (`obj/.eln-abi`: the native-lisp directory, the ABI hash, libgccjit's version, the native-comp
+    speed and options, the configuration) after `make`, and restores them with one timestamp newer than every source, so
+    `make` sees them up to date; an entry made by another gcc or configure line is ignored. After `make` the guard
+    (`nidhogg/eln-guard.el`) checks a restored set against the new binary: the facts must be its own, character for
+    character, every `.eln` must sit in its native-lisp directory, and 16 of them must load (`native-elisp-load` refuses
+    an `.eln` whose embedded ABI hash is not the binary's). Any mismatch exits 75, and `build.sh` removes the build tree
+    and builds again with nothing restored (a `::warning::` says the key missed an input), and `tarball-test.sh` fails
+    a stale `.eln` that got through anyway. The trade-off is the dev lanes' (below): a C function's result folded into
+    byte code at compile time stays the old body's until the Lisp side changes, so `nidhogg-31` (and a tag) never
+    restores it: its Lisp is compiled cold, that build is what `nidhogg-31` saves, and what ships was never restored.
+    The dev builds (`workers-asan`, `workers-chaos`) keep it as two entries: the byte-compiled part
     (`lisp-fedora-45-asan-elc-G-<lisp-key.sh --elc>-…`: the Lisp side, plus the names of the C side's functions,
     variables and features, which compile-time `fboundp`, `boundp` and `featurep` tests read, but not its bodies, as
     `make` itself treats byte code) and the `.eln` files (`…-asan-eln-G-<lisp-key.sh>-…`), so a change in a C body
@@ -338,32 +385,43 @@ machine whose timing never shows it, not certain.
     stays shallow (depth 1); the script deepens it to the upstream tag the series sits on (`git fetch
     --shallow-exclude=emacs-31.1`, about as many commits as the series), and a file the series never changed gets the
     time of the oldest fetched commit, the same in every run. Untracked and generated files keep their own, newer,
-    times. `native-crates`' entry names the commit it was built from, and `--since` stamps every file changed since
-    then with the current time: a commit's time can be older than a cache built from its parent, and cargo would take
-    the older file for unchanged. The name is written only when all three checks passed; after a red one the entry
-    keeps the name it was restored with (or none, and every file is then stamped now), so a target a red check left
-    unbuilt never passes for HEAD's.
+    times. `native-crates`' entry and Glitnir's cargo target (below) name the commit they were built from, and `--since`
+    stamps every file changed since then with the current time: a commit's time can be older than a cache built from its
+    parent, and cargo would take the older file for unchanged. The name is written only when all three checks (the
+    build, for the cargo target) passed; after a red one the entry keeps the name it was restored with (or none, and
+    every file is then stamped now), so a target a red check left unbuilt never passes for HEAD's.
+  - configure's checks: `configure-D-I-<hash of configure.ac, m4/, build-aux/, autogen.sh, nidhogg/version,
+    build.sh>` (macOS: `configure-macos-<arch>-<hash of the Homebrew packages' versions and the runner image>-…`), exact,
+    saved like the compiled Lisp; `build.sh` (`NIDHOGG_BUILD_CONFIG_CACHE`) runs configure again cold when it fails with
+    them.
+  - Glitnir's cargo target (the glue, the shell, Glitnir and their vendored crates, built by `make`):
+    `glitnir-target-D-I-<hash of the three Cargo.lock files>-<run>` (macOS: `glitnir-target-macos-<arch>-<rustc -V>-<hash
+    of glitnir/Cargo.lock>-<run>`), restored from the newest entry of the same lock and image; saved by `nidhogg-31`
+    only (some 0.2 GB per OS), without cargo's incremental data. `build.sh` (`NIDHOGG_BUILD_CARGO_TARGET`) links it in and
+    has `make` run cargo every time, so cargo's own checks decide what is rebuilt.
   - ccache for the C objects: `ccache-D-gcc-G-<run id>-<attempt>`, restored from the newest entry with the same prefix
     (ccache hashes the preprocessed source and checks gcc by content, so any older entry is safe; a new key per run lets
     every run save its additions). It is saved after a failed build too, never after a cancelled one. One generated
     header (`globals.h`) changes with any new primitive or variable and every file including `lisp.h` misses then.
     `compile-noglitnir` (`ccache-fedora-45-noglitnir-...`), `workers-asan` (`ccache-fedora-45-asan-...`) and
     `workers-chaos` (`ccache-fedora-45-chaos-...`, and its compiled Lisp `lisp-fedora-45-chaos-...`) have their
-    own. Downloaded packages (dnf, apt): `pkgs-D-G`, restored by prefix (the package managers verify what they reuse),
-    also in `compile-noglitnir`, `native-crates`, `workers-harness`, `workers-asan` and `workers-chaos`.
-  - macOS: the tarball (`tarball-macos-<arch>-...`), Homebrew's downloads (`brew-macos-<arch>-<hash of deps/macos.build>`,
-    Homebrew verifies checksums), compiled Lisp (`lisp-macos-<arch>-<gcc and libgccjit versions>-<runner temp>-...`) and
-    ccache (`ccache-macos-<arch>-<runner image and version>-<hash of deps/macos.build>-...`, the compiler checked by
-    `cc -v`, since `/usr/bin/cc` is a shim; `build.sh --host` uses ccache when `NIDHOGG_BUILD_CCACHE` is set).
-  - `native-crates`: the recorder's, the shell's and the glue's cargo registry and target directories
-    (`crates-fedora-45-<hash of the four Cargo.lock files>-<run>`, restored by prefix: cargo rebuilds whatever is stale, by the file times above;
-    incremental data is dropped before the save). `workers-pkg`: the pinned packages
-    (`pkg-pins-<hash of pkg-pins.txt and pkg-test.sh>`, exact, without build output or compiled files).
+    own. No job caches downloaded packages any more: the images have them.
+  - macOS: the tarball (`tarball-macos-<arch>-...`), compiled Lisp (`lisp-macos-<arch>-<gcc and libgccjit
+    versions>-<runner temp>-<lisp-key.sh --abi>-...`, guarded as above), configure's checks and Glitnir's cargo target
+    (above), and ccache (`ccache-macos-<arch>-<runner image and version>-<hash of deps/macos.build>-...`, the compiler
+    checked by `cc -v`, since `/usr/bin/cc` is a shim; `build.sh --host` uses ccache when `NIDHOGG_BUILD_CCACHE` is
+    set). A new runner image restores the previous image's entry (`ccache-macos-<arch>-`): an unchanged clang still
+    hits, a changed one misses. Homebrew's downloads are not cached (775 MB for under a minute).
+  - `native-crates`: the crates' target directories and the recorder's downloaded crates (its registry's index and
+    `.crate` files; the shell and the glue vendor theirs), never whole cargo homes (no unpacked sources, tools or
+    credentials): `crates-fedora-45-<hash of the four Cargo.lock files>-<run>`, restored by prefix: cargo rebuilds
+    whatever is stale, by the file times above; incremental data is dropped before the save. `workers-pkg`: the pinned
+    packages (`pkg-pins-<hash of pkg-pins.txt and pkg-test.sh>`, exact, without build output or compiled files).
   - Compiled Lisp and tarballs are never restored for a release tag; a release is built fresh, with only self-checking
-    caches (ccache, packages).
+    caches (ccache, configure's checks, the cargo target).
   - Who saves (the budget: `nidhogg-31` plus one pull request within the repository's 10 GB): `nidhogg-31` saves every
-    cache; pull requests from a branch of this repository the small ones (compiled Lisp, tarballs, the pinned
-    packages, ccache; about 0.6–0.9 GB per run), not the native crates (1.2 GB), the package downloads or Homebrew,
+    cache; pull requests from a branch of this repository the small ones (compiled Lisp, tarballs, configure's checks,
+    the pinned packages, ccache; about 0.6–0.9 GB per run), not the native crates (1.2 GB) or Glitnir's cargo targets,
     which they restore from `nidhogg-31` by prefix, and the `pr-caches` job (not in the gate) then deletes the entries
     of the pull request's earlier runs, so it holds one run's set. `ci/*` branches, a fork's pull request and a tag
     save nothing: they restore only. GitHub scopes a pull request's entries to its merge ref (`refs/pull/N/merge`):

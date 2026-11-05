@@ -37,12 +37,14 @@ if [ -n "$DISTRO" ] && [ "$INNER" = 0 ]; then
   trap cleanup EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  inner="dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install cargo rust clippy rustfmt gcc pixman-devel libxkbcommon-devel wayland-devel diffutils >/dev/null && bash /crate/check.sh --inner${TEST:+ --test $(printf '%q' "$TEST")} --repeat $REPEAT${FILTER:+ --filter $(printf '%q' "$FILTER")}"
+  # nothing to install in an image that has them (NIDHOGG_CRATES_IMAGE, CI's nidhogg-build-fedora-45)
+  pk="cargo rust clippy rustfmt gcc pixman-devel libxkbcommon-devel wayland-devel diffutils"
+  inner="{ rpm -q --quiet --whatprovides $pk 2>/dev/null || dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install $pk >/dev/null; } && bash /crate/check.sh --inner${TEST:+ --test $(printf '%q' "$TEST")} --repeat $REPEAT${FILTER:+ --filter $(printf '%q' "$FILTER")}"
   [ "$BUILD" = 1 ] && inner="$inner --build"
   podman run --rm --name "$NAME" --memory 3g --memory-swap 3g \
     -v "$HERE:/crate:ro,z" -v "$HOME_DIR:/cargo-home:Z" -v "$TARGET_DIR:/cargo-target:Z" "${EXTRA[@]}" \
     -e CARGO_HOME=/cargo-home -e CARGO_TARGET_DIR=/cargo-target \
-    "registry.fedoraproject.org/fedora:${DISTRO#fedora-}" bash -euo pipefail -c "$inner" &
+    "${NIDHOGG_CRATES_IMAGE:-registry.fedoraproject.org/fedora:${DISTRO#fedora-}}" bash -euo pipefail -c "$inner" &
   pid=$!
   wait "$pid"
   exit $?

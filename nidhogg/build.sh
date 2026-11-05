@@ -87,7 +87,9 @@ if [ -n "$SANITIZE" ]; then
   case $SANITIZE in *[!a-z,]*) die "NIDHOGG_BUILD_SANITIZE takes a comma list such as address,undefined" ;; esac
   [ "$DEV" = 1 ] || die "NIDHOGG_BUILD_SANITIZE is for dev builds only: add --dev"
 fi
-LISP_CACHE=${NIDHOGG_BUILD_LISP_CACHE:-} LC=""
+LISP_CACHE=${NIDHOGG_BUILD_LISP_CACHE:-} LC="" LC_RESTORE=1
+CONFIG_CACHE=${NIDHOGG_BUILD_CONFIG_CACHE:-} CFC=""
+CARGO_TARGET=${NIDHOGG_BUILD_CARGO_TARGET:-} CT=""
 
 UNAME=${NIDHOGG_BUILD_UNAME:-$(uname -s)}
 PODMAN=${NIDHOGG_BUILD_PODMAN:-podman}
@@ -101,6 +103,9 @@ if [ "$MODE" = container ]; then
     debian-13) IMAGE=docker.io/library/debian:13 ;;
     arch) IMAGE=docker.io/library/archlinux:latest ;;
   esac
+  # NIDHOGG_BUILD_IMAGE=REF: run in REF instead, an image of the same distro with the packages installed (CI's
+  # nidhogg-build-DISTRO, nidhogg/ci/image.sh); the script below then finds them all and runs no package manager
+  IMAGE=${NIDHOGG_BUILD_IMAGE:-$IMAGE}
   [ "$UNAME" = Linux ] || [ "$DRY" = 1 ] || die "--container needs Linux (use --host on macOS)"
 else
   case $UNAME in
@@ -185,6 +190,14 @@ elif [ "$DRY" = 0 ]; then
 fi
 
 if [ "$MODE" = container ]; then S=/src B=/build; else S=$ROOT B=$BUILD_DIR; fi
+# the configure cache and the Glitnir cargo target, mounted in a container, as given on the host
+for v in CONFIG_CACHE:CFC:/configcache CARGO_TARGET:CT:/cargotarget; do
+  IFS=: read -r src dst mnt <<<"$v"
+  [ -n "${!src}" ] || continue
+  [ "$DRY" = 1 ] || { mkdir -p "${!src}"; printf -v "$src" '%s' "$(cd "${!src}" && pwd)"; }
+  if [ "$MODE" = container ]; then printf -v "$dst" '%s' "$mnt"; else printf -v "$dst" '%s' "${!src}"; fi
+done
+[ -z "$CARGO_TARGET" ] || [ -n "$GLITNIR" ] || CT=""
 if [ -n "$LISP_CACHE" ]; then
   if [ "$MODE" = container ]; then LC=/lispcache
   elif [ "$DRY" = 1 ]; then LC=$LISP_CACHE
@@ -235,7 +248,9 @@ BODY
 # --- the build script: the same steps in a container and on the host --------------------------------------
 script() {
   printf 'S=%q B=%q P=%q V=%q UPV=%q HB=%q\n' "$S" "$B" "$PREFIX" "$VERSION" "$UPSTREAM_VERSION" "${NIDHOGG_BUILD_HEARTBEAT:-300}"
-  [ -z "$LISP_CACHE" ] || printf 'LC=%q\n' "$LC"
+  [ -z "$LISP_CACHE" ] || printf 'LC=%q LC_RESTORE=%q\n' "$LC" "$LC_RESTORE"
+  [ -z "$CFC" ] || printf 'CFC=%q\n' "$CFC"
+  [ -z "$CT" ] || printf 'CT=%q COMMIT=%q\n' "$CT" "$COMMIT"
   printf 'MODE_ID=%q\n' "$NATIVE${SANITIZE:+-$SANITIZE}"
   printf 'CONF_ID=%q\n' "--prefix=$PREFIX $CONF"
   # leak reports from configure's and the dump's short-lived programs are noise.  detect_stack_use_after_return=0 as
@@ -250,20 +265,26 @@ script() {
   # a chaos build's seed (the pre-flight's P3 runs seeds 1..N): without it in the container every seed ran as seed 0
   [ -z "${NIDHOGG_TEST_SEED:-}" ] || printf 'export NIDHOGG_TEST_SEED=%q\n' "$NIDHOGG_TEST_SEED"
   if [ "$MODE" = container ]; then
+    # each install is skipped when its packages are all installed already (a prebuilt image: NIDHOGG_BUILD_IMAGE,
+    # NIDHOGG_BUILD_IMAGE_CACHE), so such a build runs no package manager and downloads nothing.  rpm answers for a
+    # name another package provides; dpkg does not (Ubuntu 26.04's libselinux1-dev), so an apt distro's image is known by
+    # the copy of this list it was built from (nidhogg/ci/images/build-*.Containerfile)
     case $DISTRO in
       ubuntu-*|debian-*)
+        echo "if ! { cmp -s /usr/share/nidhogg-image/$DISTRO.build \$S/nidhogg/deps/$DISTRO.build && dpkg -s ccache >/dev/null 2>&1; }; then"
         [ -z "${NIDHOGG_BUILD_PKG_CACHE:-}" ] || echo 'rm -f /etc/apt/apt.conf.d/docker-clean; echo "Binary::apt::APT::Keep-Downloaded-Packages \"true\";" > /etc/apt/apt.conf.d/keep'
         echo "apt-get update"
-        echo "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $PKGS${NIDHOGG_BUILD_CCACHE:+ ccache}" ;;
+        echo "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $PKGS${NIDHOGG_BUILD_CCACHE:+ ccache}"
+        echo "fi" ;;
       arch)
         echo "pacman -Syu --noconfirm --needed $PKGS${NIDHOGG_BUILD_CCACHE:+ ccache}" ;;
-      *) echo "dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install $PKGS${NIDHOGG_BUILD_CCACHE:+ ccache}" ;;
+      *) echo "rpm -q --quiet --whatprovides $PKGS${NIDHOGG_BUILD_CCACHE:+ ccache} 2>/dev/null || dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install $PKGS${NIDHOGG_BUILD_CCACHE:+ ccache}" ;;
     esac
     # Fedora ships the sanitizer runtimes apart from gcc
-    if [ -n "$SANITIZE" ]; then case $DISTRO in ubuntu-*|debian-*|arch) ;; *) echo "dnf -y --setopt=install_weak_deps=False install libasan libubsan libtsan" ;; esac; fi
+    if [ -n "$SANITIZE" ]; then case $DISTRO in ubuntu-*|debian-*|arch) ;; *) echo "rpm -q --quiet libasan libubsan libtsan || dnf -y --setopt=install_weak_deps=False install libasan libubsan libtsan" ;; esac; fi
     # the pre-flight, Fedora only: packages only its tests need (gnutls-serv), and rr for P5; NIDHOGG_CHECK_RR is the
     # recorder's command, the prefix of each test run.  Not in deps/: the builds' caches are keyed on that file
-    [ -z "${NIDHOGG_CHECK_PACKAGES:-}${NIDHOGG_CHECK_RR:-}" ] || echo "dnf -y --setopt=install_weak_deps=False install ${NIDHOGG_CHECK_PACKAGES:-} ${NIDHOGG_CHECK_RR:+rr}"
+    [ -z "${NIDHOGG_CHECK_PACKAGES:-}${NIDHOGG_CHECK_RR:-}" ] || echo "rpm -q --quiet --whatprovides ${NIDHOGG_CHECK_PACKAGES:-} ${NIDHOGG_CHECK_RR:+rr} 2>/dev/null || dnf -y --setopt=install_weak_deps=False install ${NIDHOGG_CHECK_PACKAGES:-} ${NIDHOGG_CHECK_RR:+rr}"
     [ -z "${NIDHOGG_BUILD_CCACHE:-}" ] || echo 'export CCACHE_DIR=/ccache CCACHE_COMPILERCHECK=content CCACHE_MAXSIZE=500M CC="ccache gcc"; ccache -z >/dev/null'
   elif [ -n "${NIDHOGG_BUILD_CCACHE:-}" ]; then
     printf 'export CCACHE_DIR=%q CCACHE_COMPILERCHECK=%q CCACHE_MAXSIZE=500M CC=%q; ccache -z >/dev/null\n' \
@@ -370,7 +391,8 @@ cc_id() { printf '%s %s %s %s\n' "$(gcc --version | head -n 1)" "$(uname -m)" "$
 lc_lock() { if command -v flock >/dev/null; then exec 9>"$LC/.lock"; flock "$1" 9; fi; }
 lc_unlock() { if command -v flock >/dev/null; then flock -u 9; exec 9>&-; fi; }
 lc_lock -s
-if [ -f "$LC/stamp" ] && [ "$(cat "$LC/stamp")" = "$(cc_id)" ]; then
+rm -f "$B/eln-restored.list"
+if [ "$LC_RESTORE" = 1 ] && [ -f "$LC/stamp" ] && [ "$(cat "$LC/stamp")" = "$(cc_id)" ]; then
   phase restore compiled Lisp
   # obj (the .eln files) may be missing: a caller that keys them apart restores only the byte-compiled part
   parts=src; [ ! -d "$LC/obj" ] || parts="src obj"
@@ -378,6 +400,8 @@ if [ -f "$LC/stamp" ] && [ "$(cat "$LC/stamp")" = "$(cc_id)" ]; then
   touch "$B/.restored"
   (cd "$LC/src" && find . -type f) | while IFS= read -r f; do touch -r "$B/.restored" "$B/src/$f"; done
   [ ! -d "$LC/obj" ] || (cd "$LC/obj" && find . -type f) | while IFS= read -r f; do touch -r "$B/.restored" "$B/obj/$f"; done
+  # the restored .eln files, which the guard checks against the new binary after make
+  [ ! -d "$LC/obj/native-lisp" ] || (cd "$LC/obj" && find native-lisp -name '*.eln') > "$B/eln-restored.list"
 fi
 lc_unlock
 BODY
@@ -392,20 +416,67 @@ BODY
     echo "printf '%s\\n' ';;; dev build (nidhogg/build.sh --dev): no background native compilation' '(setq native-comp-jit-compilation nil)' > \"\$B/src/lisp/site-init.el\""
   fi
   echo "phase configure"
-  echo "logged \"\$B/configure.log\" \"\$B/src/configure\" --prefix=\"\$P\" $CONF || { echo \"configure failed; the build packages are listed in nidhogg/deps/$DISTRO.build\" >&2; exit 1; }"
+  if [ -n "$CONFIG_CACHE" ]; then
+    # autoconf's cache of its checks, through a site file (a --cache-file option would join the configure line that
+    # system-configuration-options and so the .eln ABI hash record).  A configure that fails with it runs again cold.
+    cat <<'BODY'
+printf 'cache_file=%s\n' "$B/config.cache" > "$B/config.site"
+rm -f "$B/config.cache"
+if [ -f "$CFC/config.cache" ]; then cp "$CFC/config.cache" "$B/config.cache"; echo "configure: with the cached checks"; fi
+BODY
+    echo "if ! ( CONFIG_SITE=\"\$B/config.site\" logged \"\$B/configure.log\" \"\$B/src/configure\" --prefix=\"\$P\" $CONF ); then"
+    echo '  [ -f "$B/config.cache" ] || exit 1'
+    echo '  echo "configure failed with the cached checks: running it again without them" >&2; rm -f "$B/config.cache"; : > "$B/configure.log"'
+    echo "  CONFIG_SITE=\"\$B/config.site\" logged \"\$B/configure.log\" \"\$B/src/configure\" --prefix=\"\$P\" $CONF || { echo \"configure failed; the build packages are listed in nidhogg/deps/$DISTRO.build\" >&2; exit 1; }"
+    echo "fi"
+    echo 'cp "$B/config.cache" "$CFC/config.cache.new" && mv "$CFC/config.cache.new" "$CFC/config.cache"'
+  else
+    echo "logged \"\$B/configure.log\" \"\$B/src/configure\" --prefix=\"\$P\" $CONF || { echo \"configure failed; the build packages are listed in nidhogg/deps/$DISTRO.build\" >&2; exit 1; }"
+  fi
   cat <<'BODY'
 grep -Eq 'native lisp compiler\? +yes' "$B/configure.log" || { echo "configure found no native compilation (libgccjit); see $B/configure.log" >&2; exit 1; }
 BODY
+  if [ -n "$CT" ]; then cat <<'BODY'
+# Glitnir's cargo target directory from NIDHOGG_BUILD_CARGO_TARGET (a cache): src/glitnir-target is a link to it.  Cargo
+# judges each restored artifact by its sources' times (the caller gives the files their commits' times, and the files
+# changed since the commit the target names, .nidhogg-source-commit, the current time).  The libraries make links are
+# dated 1970, so make always runs cargo (its prerequisites list only two directory levels of sources), which then
+# rebuilds what is stale and nothing else.
+mkdir -p "$B/obj/src"
+[ -L "$B/obj/src/glitnir-target" ] || { rm -rf "$B/obj/src/glitnir-target"; ln -s "$CT" "$B/obj/src/glitnir-target"; }
+for a in "$CT"/release/lib*.a; do [ ! -f "$a" ] || touch -t 197001020000 "$a"; done
+BODY
+  fi
   echo "phase make -j$JOBS"
   echo "logged \"\$B/make.log\" make -j$JOBS"
+  # the commit the target was built from, only after a make that passed (a failed one may have left a crate unbuilt)
+  [ -z "$CT" ] || echo 'printf "%s\n" "$COMMIT" > "$CT/.nidhogg-source-commit"'
   if [ -n "$LISP_CACHE" ]; then cat <<'BODY'
+# the guard (nidhogg/eln-guard.el): restored .eln files must be this binary's (its ABI facts, its native-lisp
+# directory, a sample loads); otherwise exit 75, and build.sh discards the restored Lisp and builds again, cold
+if [ -s "$B/eln-restored.list" ]; then
+  phase check the restored .eln files
+  to=""; if command -v timeout >/dev/null; then to="timeout 900"; fi
+  if $to "$B/obj/src/emacs" -Q --batch -l "$S/nidhogg/eln-guard.el" -f nidhogg-eln-guard-check \
+       "$B/eln-restored.list" "$B/obj" "$LC/obj/.eln-abi" 16 > "$B/eln-guard.log" 2>&1; then
+    tail -n 1 "$B/eln-guard.log"
+  else
+    cat "$B/eln-guard.log" >&2
+    echo "build.sh: the restored compiled Lisp is not this build's: discarding it" >&2
+    exit 75
+  fi
+fi
 phase save compiled Lisp
 lc_lock -x
 rm -rf "$LC/stamp" "$LC/src" "$LC/obj"
 mkdir -p "$LC/src" "$LC/obj"
-# the files make generated under lisp/ and leim/ (those the sources do not have), and the .eln files
+# the files make generated under lisp/ and leim/ (those the sources do not have), and the .eln files with the facts
+# the guard compares (.eln-abi)
 (cd "$B/src" && find lisp leim -type f | while IFS= read -r f; do [ -e "$S/$f" ] || echo "$f"; done > "$B/lisp-cache.list" && tar -cf - -T "$B/lisp-cache.list") | tar -C "$LC/src" -xf -
-[ ! -d "$B/obj/native-lisp" ] || tar -C "$B/obj" -cf - native-lisp | tar -C "$LC/obj" -xf -
+if [ -d "$B/obj/native-lisp" ]; then
+  tar -C "$B/obj" -cf - native-lisp | tar -C "$LC/obj" -xf -
+  "$B/obj/src/emacs" -Q --batch -l "$S/nidhogg/eln-guard.el" -f nidhogg-eln-guard-facts > "$LC/obj/.eln-abi"
+fi
 cc_id > "$LC/stamp"
 lc_unlock
 BODY
@@ -476,6 +547,8 @@ if [ "$MODE" = container ]; then
   fi
   [ -z "${NIDHOGG_BUILD_CCACHE:-}" ] || CACHE_ARGS="$CACHE_ARGS -v $NIDHOGG_BUILD_CCACHE:/ccache:z"
   [ -z "$LISP_CACHE" ] || CACHE_ARGS="$CACHE_ARGS -v $LISP_CACHE:/lispcache:z"
+  [ -z "$CFC" ] || CACHE_ARGS="$CACHE_ARGS -v $CONFIG_CACHE:/configcache:z"
+  [ -z "$CT" ] || CACHE_ARGS="$CACHE_ARGS -v $CARGO_TARGET:/cargotarget:z"
   # extra podman options (words, no quoting): nidhogg/test/preflight.sh pins a check run with --cpuset-cpus=0 or --cpus=0.5
   [ -z "${NIDHOGG_BUILD_PODMAN_ARGS:-}" ] || CACHE_ARGS="$CACHE_ARGS $NIDHOGG_BUILD_PODMAN_ARGS"
   CMD_HEAD="$PODMAN run --rm --name $NAME --memory $MEMORY --memory-swap $MEMORY -v $ROOT:/src:ro,z -v $BUILD_DIR:/build:Z ${MOUNT:+-v $MOUNT} $CACHE_ARGS $IMAGE"
@@ -499,26 +572,34 @@ if [ "$MODE" = container ]; then
   trap cleanup EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  # in the background so that a signal reaches the trap at once
-  # shellcheck disable=SC2086
-  "$PODMAN" run --rm --name "$NAME" --memory "$MEMORY" --memory-swap "$MEMORY" \
-    -v "$ROOT:/src:ro,z" -v "$BUILD_DIR:/build:Z" ${MOUNT:+-v} ${MOUNT:+"$MOUNT"} $CACHE_ARGS "$IMAGE" \
-    bash -euo pipefail -c "$(script)" &
-  RUN_PID=$!
-  if wait "$RUN_PID"; then
+  run() {
+    # in the background so that a signal reaches the trap at once
+    # shellcheck disable=SC2086
+    "$PODMAN" run --rm --name "$NAME" --memory "$MEMORY" --memory-swap "$MEMORY" \
+      -v "$ROOT:/src:ro,z" -v "$BUILD_DIR:/build:Z" ${MOUNT:+-v} ${MOUNT:+"$MOUNT"} $CACHE_ARGS "$IMAGE" \
+      bash -euo pipefail -c "$(script)" &
+    RUN_PID=$!
+    rc=0; wait "$RUN_PID" || rc=$?
     RUN_PID=""
-    [ "$TEMP_BUILD" = 0 ] || rm -rf "$BUILD_DIR"
-  else
-    echo "build.sh: the build failed; logs are in $BUILD_DIR" >&2
-    exit 1
-  fi
+  }
 else
   if [ "$DRY" = 1 ]; then script; exit 0; fi
   echo "+ host build in $BUILD_DIR (make -j$JOBS)"
-  if bash -euo pipefail -c "$(script)"; then
-    [ "$TEMP_BUILD" = 0 ] || rm -rf "$BUILD_DIR"
-  else
-    echo "build.sh: the build failed; logs are in $BUILD_DIR" >&2
-    exit 1
-  fi
+  run() { rc=0; bash -euo pipefail -c "$(script)" || rc=$?; }
+fi
+run
+# 75: the guard found the restored compiled Lisp is not this build's (eln-guard.el).  Once, cold: the build tree goes
+# (ccache keeps the C side quick) and nothing is restored; the new Lisp is saved over the stale entry
+if [ "$rc" = 75 ]; then
+  echo "build.sh: building again without the restored compiled Lisp (the C side from ccache, the Lisp cold)" >&2
+  [ -z "${GITHUB_ACTIONS:-}" ] || echo "::warning::the restored compiled Lisp failed the .eln guard (eln-guard.log): built cold; its cache key misses an input"
+  rm -rf "$BUILD_DIR/src" "$BUILD_DIR/obj"
+  LC_RESTORE=0
+  run
+fi
+if [ "$rc" = 0 ]; then
+  [ "$TEMP_BUILD" = 0 ] || rm -rf "$BUILD_DIR"
+else
+  echo "build.sh: the build failed; logs are in $BUILD_DIR" >&2
+  exit 1
 fi

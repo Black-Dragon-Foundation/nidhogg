@@ -1,0 +1,109 @@
+# CI's prebuilt images (nidhogg/ci/image.sh, nidhogg/ci/images/), so the jobs pull their packages instead of
+# installing them.  build.yml calls this first in every run; by hand it publishes the images of the branch it runs on.
+# Each image's tag is the hash of what it is built from; a published tag is resolved to its digest and the jobs pull
+# that digest.  A missing tag is built and pushed only for a push to nidhogg-31 or a run started by hand in this
+# repository; a pull request never pushes: its jobs build the image themselves for that run (output empty).  No gate:
+# it makes a cache, not a verdict (a job without its image builds it), and a failure here leaves the outputs empty.
+# One job per Containerfile, each resolving that file's images (NAMES).  README.md, "CI and releases".
+name: Images
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      # each image's NAME with '_' for '-' and '.'
+      build_fedora_45:
+        description: "The Fedora 45 build image by digest (empty: the jobs build it)"
+        value: ${{ jobs.build-fedora.outputs.build_fedora_45 }}
+      build_fedora_45_norust:
+        description: The same without the Rust toolchain (compile-noglitnir)
+        value: ${{ jobs.build-fedora.outputs.build_fedora_45_norust }}
+      build_ubuntu_26_04:
+        description: The Ubuntu 26.04 build image by digest
+        value: ${{ jobs.build-ubuntu.outputs.build_ubuntu_26_04 }}
+      gui_fedora_45:
+        description: The GUI lanes' and the timing lane's image by digest
+        value: ${{ jobs.test-fedora.outputs.gui_fedora_45 }}
+      pkg_fedora_45:
+        description: The package suites' image by digest
+        value: ${{ jobs.test-fedora.outputs.pkg_fedora_45 }}
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  PUBLISH: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/nidhogg-31') || github.event_name == 'workflow_dispatch' }}
+
+jobs:
+  build-fedora:
+    name: Fedora 45 build images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      NAMES: build-fedora-45 build-fedora-45-norust
+    outputs:
+      build_fedora_45: ${{ steps.i.outputs.build_fedora_45 }}
+      build_fedora_45_norust: ${{ steps.i.outputs.build_fedora_45_norust }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            nidhogg/ci
+            nidhogg/deps
+      - id: i
+        name: Resolve the published images (build and push a missing one where allowed)
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          NIDHOGG_IMAGE_SOURCE: ${{ github.server_url }}/${{ github.repository }}
+        run: bash nidhogg/ci/image.sh outputs $NAMES >> "$GITHUB_OUTPUT"
+  build-ubuntu:
+    name: Ubuntu 26.04 build image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      NAMES: build-ubuntu-26.04
+    outputs:
+      build_ubuntu_26_04: ${{ steps.i.outputs.build_ubuntu_26_04 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            nidhogg/ci
+            nidhogg/deps
+      - id: i
+        name: Resolve the published image (build and push it where allowed)
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          NIDHOGG_IMAGE_SOURCE: ${{ github.server_url }}/${{ github.repository }}
+        run: bash nidhogg/ci/image.sh outputs $NAMES >> "$GITHUB_OUTPUT"
+  test-fedora:
+    name: Fedora 45 test images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      NAMES: gui-fedora-45 pkg-fedora-45
+    outputs:
+      gui_fedora_45: ${{ steps.i.outputs.gui_fedora_45 }}
+      pkg_fedora_45: ${{ steps.i.outputs.pkg_fedora_45 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            nidhogg/ci
+            nidhogg/deps
+      - id: i
+        name: Resolve the published images (build and push a missing one where allowed)
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          NIDHOGG_IMAGE_SOURCE: ${{ github.server_url }}/${{ github.repository }}
+        run: bash nidhogg/ci/image.sh outputs $NAMES >> "$GITHUB_OUTPUT"
