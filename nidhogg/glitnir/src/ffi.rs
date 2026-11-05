@@ -947,7 +947,8 @@ mod tests {
         // no freeze time, violations or scale mismatch: only the pgtk port produced them
         assert_eq!(std::mem::size_of::<StatsEntry>(), 128);
         assert_eq!(std::mem::offset_of!(StatsEntry, backfill), 124);
-        assert_eq!(std::mem::size_of::<Summary>(), 208);
+        // 208 without the pgtk fields, and 8 for the overrun's 95th percentile
+        assert_eq!(std::mem::size_of::<Summary>(), 216);
         let header = crate_file("include/glitnir.h");
         for gone in ["t_freeze_ns", "freeze_ms", "violations", "scale_mismatch"] {
             assert!(!header.contains(gone), "glitnir.h still names {gone}");
