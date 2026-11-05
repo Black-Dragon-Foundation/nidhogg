@@ -154,6 +154,8 @@ rcis 0; hasnt "ccache"
 run NIDHOGG_BUILD_LISP_CACHE=/var/tmp/lc -- --dry-run --container fedora-45
 rcis 0; has "-v /var/tmp/lc:/lispcache:z"; has "phase restore compiled Lisp"; has "phase save compiled Lisp"; has 'cc_id'
 has "lc_lock -s"; has "lc_lock -x"; hasnt "/lispcache:Z"
+# an entry without obj (the .eln files, cached apart by the dev CI builds) restores its byte-compiled part alone
+has '[ ! -d "$LC/obj" ] || parts="src obj"'; has 'tar -C "$LC" -cf - $parts'
 # ... and only for the same configure line: the prefix and the flags are part of the .eln files' ABI hash
 run NIDHOGG_BUILD_LISP_CACHE=/var/tmp/lc -- --dry-run --container fedora-45 --prefix /tmp/p1
 rcis 0; has "CONF_ID=--prefix=/tmp/p1\\ --with-native-compilation=aot"; has '"$MODE_ID" "$CONF_ID"'

@@ -26,7 +26,9 @@
 # and obj/native-lisp: the .eln files) in DIR: written after `make`, restored (made newer than every source) before it.  The
 # caller keys DIR on everything that determines the output (the Lisp and C sources, build.sh, the distro, the compiler): an
 # entry is only ever reused for the exact same inputs; build.sh itself restores only an entry made by the same compiler,
-# architecture and configure line (--prefix included: it is part of the .eln files' ABI hash).  Builds of one key may share DIR at once: a restore holds DIR/.lock
+# architecture and configure line (--prefix included: it is part of the .eln files' ABI hash).  DIR/obj may be missing:
+# a caller may cache it under a key of its own (the dev CI builds key the byte-compiled part on the Lisp side alone,
+# nidhogg/ci/lisp-key.sh --elc), and the .eln files are then compiled again.  Builds of one key may share DIR at once: a restore holds DIR/.lock
 # shared and a save holds it exclusive (with flock; without it, as before).
 # bash 3.2-safe (macOS): none of the bash 4 features.
 set -euo pipefail
@@ -370,10 +372,12 @@ lc_unlock() { if command -v flock >/dev/null; then flock -u 9; exec 9>&-; fi; }
 lc_lock -s
 if [ -f "$LC/stamp" ] && [ "$(cat "$LC/stamp")" = "$(cc_id)" ]; then
   phase restore compiled Lisp
-  tar -C "$LC" -cf - src obj | tar -C "$B" -xf -
+  # obj (the .eln files) may be missing: a caller that keys them apart restores only the byte-compiled part
+  parts=src; [ ! -d "$LC/obj" ] || parts="src obj"
+  tar -C "$LC" -cf - $parts | tar -C "$B" -xf -
   touch "$B/.restored"
   (cd "$LC/src" && find . -type f) | while IFS= read -r f; do touch -r "$B/.restored" "$B/src/$f"; done
-  (cd "$LC/obj" && find . -type f) | while IFS= read -r f; do touch -r "$B/.restored" "$B/obj/$f"; done
+  [ ! -d "$LC/obj" ] || (cd "$LC/obj" && find . -type f) | while IFS= read -r f; do touch -r "$B/.restored" "$B/obj/$f"; done
 fi
 lc_unlock
 BODY

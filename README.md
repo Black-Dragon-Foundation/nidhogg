@@ -324,7 +324,11 @@ machine whose timing never shows it, not certain.
     build's ABI hash, which the primitives determine), `lib`, `lib-src`, `etc`, the generators and configure inputs; docs,
     tests, `nidhogg/` and CI files are left out, so a change to those still hits. `build.sh` (`NIDHOGG_BUILD_LISP_CACHE`)
     saves the generated files of `lisp/` and `leim/` plus `native-lisp/` after `make`, and restores them with one
-    timestamp newer than every source, so `make` sees them up to date; an entry made by another gcc is ignored.
+    timestamp newer than every source, so `make` sees them up to date; an entry made by another gcc is ignored. The
+    dev builds (`workers-asan`, `workers-chaos`) keep it as two entries: the byte-compiled part
+    (`lisp-fedora-45-asan-elc-G-<lisp-key.sh --elc>-…`, the Lisp side alone: byte code does not depend on C, as `make`
+    itself treats it) and the `.eln` files (`…-asan-eln-G-<lisp-key.sh>-…`), so a change in C costs the sanitized
+    Emacs the preloaded files' native compilation, not byte-compiling all of `lisp/` again.
   - File times: a checkout stamps every file with the current time, so every job that restores a build cache first runs
     `nidhogg/ci/set-mtimes.sh`, which gives each tracked file the time of the last commit that changed it. The checkout
     stays shallow (depth 1); the script deepens it to the upstream tag the series sits on (`git fetch
