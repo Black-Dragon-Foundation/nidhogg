@@ -668,12 +668,13 @@ jobs:
           path: ${{ runner.temp }}/pkg-cache
           key: pkgs-fedora-45-${{ hashFiles('nidhogg/deps/fedora-45.build') }}
           restore-keys: pkgs-fedora-45-
+      # diffutils: the base image has no cmp, which the harness's selftest compares two runs with
       - name: ThreadSanitizer drivers and fuzz targets, in a fedora-45 container
         run: |
           mkdir -p "$RUNNER_TEMP/pkg-cache/dnf"
           podman run --rm --memory 8g --memory-swap 8g -v "$PWD:/src:ro,Z" -v "$RUNNER_TEMP/pkg-cache/dnf:/var/cache/libdnf5:Z" registry.fedoraproject.org/fedora:45 bash -euo pipefail -c '
             dnf -y -q --setopt=install_weak_deps=False --setopt=keepcache=1 install gcc libtsan libasan libubsan \
-              libpng-devel libjpeg-turbo-devel giflib-devel libwebp-devel >/dev/null
+              libpng-devel libjpeg-turbo-devel giflib-devel libwebp-devel diffutils >/dev/null
             cd /src
             bash nidhogg/test/workers-harness.sh
             bash nidhogg/test/workers-harness.sh --tsan $(cd test/src/nidhogg-tests/fuzz && ls tsan-*.c | sed "s/^tsan-//; s/[.]c$//")
