@@ -22,14 +22,15 @@ pin=$(grep -oE 'uses: Black-Dragon-Foundation/drgnx/\.github/workflows/drgnx-tie
 grep -qE '^  pin:' "$wf"                                          || fail "no pin job"
 grep -qF 'inputs.drgnx_ref || needs.pin.outputs.ref' "$wf"        || fail "the default drgnx_ref is not the pin job's output"
 # cache writes: every save step is CACHE_SAVE's (nidhogg-31, ci/* and this repository's pull requests) or
-# CACHE_SAVE_ALL's (nidhogg-31 and this repository's pull requests), and neither is ever true for a fork's pull request
-# or a tag; a pull request's entries are scoped to its merge ref, so no other ref's run reads them
+# CACHE_SAVE_ALL's (nidhogg-31), and neither is ever true for a fork's pull request or a tag; a pull request's entries
+# are scoped to its merge ref, so no other ref's run reads them, and it saves no large prefix-restored entry
 for l in $(grep -n 'uses: actions/cache/save@' "$wf" | cut -d: -f1); do
   sed -n "$((l - 2)),$((l - 1))p" "$wf" | grep -qE "if: .*env\.CACHE_SAVE(_ALL)? == 'true'" || fail "the cache save at line $l is not under CACHE_SAVE or CACHE_SAVE_ALL"
 done
 own_pr="(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)"
 grep -qxF "  CACHE_SAVE: \${{ $own_pr || (github.event_name != 'pull_request' && (github.ref == 'refs/heads/nidhogg-31' || startsWith(github.ref, 'refs/heads/ci/'))) }}" "$wf" || fail "CACHE_SAVE is not nidhogg-31, ci/* pushes and this repository's pull requests"
-grep -qxF "  CACHE_SAVE_ALL: \${{ $own_pr || (github.event_name != 'pull_request' && github.ref == 'refs/heads/nidhogg-31') }}" "$wf" || fail "CACHE_SAVE_ALL is not nidhogg-31's and this repository's pull requests'"
+grep -qxF "  CACHE_SAVE_ALL: \${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/nidhogg-31' }}" "$wf" || fail "CACHE_SAVE_ALL is not nidhogg-31's"
+[ "$(job native-crates | grep -cF "env.CACHE_SAVE == 'true' && github.event_name != 'pull_request'")" = 2 ] || fail "a pull request saves the native crates' entry"
 # a release tag's tarball has no restored compiled Lisp: the jobs that make tarballs skip the restore for a tag
 for j in linux macos; do
   job "$j" | grep -A1 'id: lc$' | grep -qF "!startsWith(github.ref, 'refs/tags/')" || fail "$j restores compiled Lisp for a tag"
@@ -55,7 +56,9 @@ grep -qF 'GATE: Nidhogg gate' "$wf"                               || fail "the c
   fail "a checkout does not take a pull request's head"
 grep -qF 'SHA: ${{ github.event.pull_request.head.sha || github.sha }}' "$wf" || fail "the path filter diffs a pull request's merge commit"
 job fast-forward | grep -qF "if: github.event_name == 'pull_request'" || fail "no fast-forward job for pull requests"
-job fast-forward | grep -qF 'git merge-base --is-ancestor "$tip" "$HEAD_SHA"' || fail "the fast-forward job does not check the base's tip"
+job fast-forward | grep -qF 'gh api "repos/$REPO/compare/$tip...$HEAD_SHA"' || fail "the fast-forward job does not compare the base's tip with the head"
+job fast-forward | grep -qF 'ahead|identical)' || fail "the fast-forward job does not require the head to be ahead of the base"
+! job fast-forward | grep -qF 'actions/checkout@' || fail "the fast-forward job checks out the history (the compare API needs none)"
 grep -qF '[ "$PR" = true ] || allow="$allow fast-forward "' <<<"$gate" || fail "the gate does not let fast-forward skip off pull requests"
 # every job that restores a build cache gives the files their last commit's time; the cargo targets' entry names the
 # commit it was built from, and what changed since then is stamped newer than it
@@ -63,7 +66,8 @@ for j in linux compile-noglitnir macos native-crates workers-asan workers-chaos;
   job "$j" | grep -qF 'bash nidhogg/ci/set-mtimes.sh' || fail "job $j does not set the file times"
 done
 job native-crates | grep -qF 'set-mtimes.sh --since "$RUNNER_TEMP/nh-recorder-target/.nidhogg-source-commit"' || fail "native-crates does not stamp what changed since its cache"
-job native-crates | grep -qF 'git rev-parse HEAD > "$RUNNER_TEMP/nh-recorder-target/.nidhogg-source-commit"' || fail "native-crates' cache does not name its commit"
+job native-crates | grep -qF 'if [ "$BUILT" = true ]; then git rev-parse HEAD > "$RUNNER_TEMP/nh-recorder-target/.nidhogg-source-commit"; fi' || fail "native-crates' cache does not name its commit, or names it after a red check"
+job native-crates | grep -qF "BUILT: \${{ steps.recorder.outcome == 'success' && steps.shell.outcome == 'success' && steps.glue.outcome == 'success' }}" || fail "native-crates names its commit without all three checks green"
 grep -qF 'nidhogg: artifact' "$wf"                              || fail "drgnx's tiers do not run on this run's tarballs"
 grep -qF "'unit no-lisp-writes ui macos'" "$wf"                   || fail "drgnx's tiers are not unit, gate mode, GUI and macOS"
 # a release only from a pushed v* tag, never from workflow_dispatch or a pull request
