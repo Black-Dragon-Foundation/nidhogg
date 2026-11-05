@@ -18,7 +18,9 @@
 //! columns a subsurface can be placed on ([`crate::snap::outward`]).  The commit routes the scene damage in that
 //! rectangle to the output, in the output's coordinates ([`crate::committed::OutputFrame`]); the frame keeps the rest,
 //! and the part of the snapped rectangle outside the window (the overlap with its neighbours) goes to both.  A
-//! full-window scroll of an own output is a scroll distance and its exposed rows, not damage over the window.
+//! full-window scroll of an own output is a scroll distance and its exposed rows, not damage over the window, plus
+//! the corner squares of any window card ([`Card`]) in it, where they are and where the scroll took them: the
+//! output's buffer keeps its rows, and the corners composed into them move with the content.
 
 use crate::committed::{Committed, OutputFrame};
 use crate::damage::{Damage, Frames};
@@ -129,6 +131,65 @@ impl Chrome {
     }
 }
 
+/// A window layer's card: outside its rounded rectangle (the chrome's radius), its four corner squares show what lies
+/// beneath the window instead of the window, premultiplied ARGB in Cairo's order.  Rust only: the glue sets it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Card {
+    pub beneath_argb: u32,
+}
+
+/// The corner radius (whole device px, the chrome's, clamped to half the shorter side) and the four r×r corner squares
+/// (top-left, top-right, bottom-left, bottom-right; root device px) of a window layer with a card.  `None` for any
+/// other layer, or a radius of 0.
+pub fn card_corners(p: &Placed) -> Option<(u32, [Rect; 4])> {
+    p.card?;
+    if p.kind != Kind::Window || p.rect.is_empty() {
+        return None;
+    }
+    let radius = crate::compose::whole(p.chrome.map_or(0.0, |c| c.radius_px));
+    let r = crate::kernels::clamp_radius(p.rect.w as usize, p.rect.h as usize, radius);
+    if r == 0 {
+        return None;
+    }
+    let Rect { x, y, w, h } = p.rect;
+    let ri = r as i32;
+    Some((
+        r,
+        [
+            Rect::new(x, y, ri, ri),
+            Rect::new(x + w - ri, y, ri, ri),
+            Rect::new(x, y + h - ri, ri, ri),
+            Rect::new(x + w - ri, y + h - ri, ri, ri),
+        ],
+    ))
+}
+
+/// The corner squares of ROOT's window cards in PLACED that meet the own output at RECT whose content moved by SCROLL,
+/// in the output's coordinates: where each is now, and where the scroll took the one composed before (the output's
+/// buffer keeps its rows, and with them the corners they were composed with).  Empty without a card.
+fn scrolled_corners(placed: &[Placed], root: u64, rect: Rect, scroll: i32) -> Vec<Rect> {
+    let view = Rect::new(0, 0, rect.w, rect.h);
+    let mut out = Vec::new();
+    for (_, squares) in placed
+        .iter()
+        .filter(|p| p.parent == root)
+        .filter_map(card_corners)
+    {
+        for sq in squares {
+            let here = sq.intersect(&rect).translate(-rect.x, -rect.y);
+            if here.is_empty() {
+                continue;
+            }
+            out.push(here);
+            let moved = here.translate(0, scroll).intersect(&view);
+            if !moved.is_empty() {
+                out.push(moved);
+            }
+        }
+    }
+    out
+}
+
 /// The pixels a layer at RECT with CHROME can touch: its rectangle and its shadow image.
 pub fn bounds(rect: Rect, chrome: Option<&Chrome>) -> Rect {
     match chrome {
@@ -144,6 +205,7 @@ struct Layer {
     scale: f64,
     visible: bool,
     chrome: Option<Chrome>,
+    card: Option<Card>,
     /// A window layer that is its own output.
     own: bool,
 }
@@ -157,6 +219,8 @@ pub struct Placed {
     pub rect: Rect,
     pub scale: f64,
     pub chrome: Option<Chrome>,
+    /// A window layer's card ([`Scene::set_card`]).
+    pub card: Option<Card>,
     /// [`bounds`] of the rectangle and chrome.
     pub bounds: Rect,
 }
@@ -167,6 +231,7 @@ impl Placed {
             && self.rect == o.rect
             && self.scale == o.scale
             && self.chrome == o.chrome
+            && self.card == o.card
     }
 }
 
@@ -200,10 +265,11 @@ impl Scene {
                 self.mark_restacked(d.id);
             }
         }
-        let (chrome, own) = self
+        let (chrome, card, own) = self
             .layers
             .get(&d.id)
-            .map_or((None, false), |l| (l.chrome, l.own));
+            .map_or((None, None, false), |l| (l.chrome, l.card, l.own));
+        let window = kind == Kind::Window;
         self.layers.insert(
             d.id,
             Layer {
@@ -212,7 +278,8 @@ impl Scene {
                 scale: d.scale,
                 visible: d.visible != 0,
                 chrome,
-                own: own && kind == Kind::Window,
+                card: card.filter(|_| window),
+                own: own && window,
             },
         );
         Ok(())
@@ -285,6 +352,18 @@ impl Scene {
     pub fn set_chrome(&mut self, id: u64, chrome: Option<Chrome>) -> Result<(), i32> {
         self.layers.get_mut(&id).ok_or(GLITNIR_E_ARG)?.chrome = chrome;
         Ok(())
+    }
+
+    /// Set (or, with `None`, clear) window layer ID's card.  `GLITNIR_E_ARG` for an unknown id or a layer that is not
+    /// a window.
+    pub fn set_card(&mut self, id: u64, card: Option<Card>) -> Result<(), i32> {
+        match self.layers.get_mut(&id) {
+            Some(l) if l.kind == Kind::Window => {
+                l.card = card;
+                Ok(())
+            }
+            _ => Err(GLITNIR_E_ARG),
+        }
     }
 
     /// Record anchor A on LAYER (`GLITNIR_E_ARG` for an unknown layer).
@@ -437,6 +516,7 @@ impl Scene {
                     rect: l.rect,
                     scale: l.scale,
                     chrome: l.chrome,
+                    card: l.card,
                     bounds: bounds(l.rect, l.chrome.as_ref()),
                 });
                 self.walk(id, out);
@@ -552,7 +632,7 @@ impl Scene {
                 let rect = snapped(p.rect, scale);
                 let before = self.snapshot.outputs.iter().find(|o| o.layer == p.id);
                 let full = rescaled || before.is_none_or(|o| o.rect != rect);
-                let damage = if full {
+                let mut damage: Vec<Rect> = if full {
                     vec![Rect::new(0, 0, rect.w, rect.h)]
                 } else {
                     out.iter()
@@ -566,6 +646,9 @@ impl Scene {
                 } else {
                     offsets.get(&p.id).copied().unwrap_or(0)
                 };
+                if scroll != 0 {
+                    damage.extend(scrolled_corners(&new, root, rect, scroll));
+                }
                 windows.push(p.rect);
                 outputs.push(OutputFrame {
                     layer: p.id,
@@ -618,6 +701,12 @@ impl Scene {
 pub fn with<R>(root: u64, f: impl FnOnce(&mut Scene) -> Result<R, i32>) -> Result<R, i32> {
     let mut st = crate::state();
     st.scenes.get_mut(&root).ok_or(GLITNIR_E_STATE).and_then(f)
+}
+
+/// Set (or clear) window layer LAYER's card in ROOT's scene ([`Scene::set_card`]); `GLITNIR_E_STATE` when ROOT has
+/// none.
+pub fn set_card(root: u64, layer: u64, card: Option<Card>) -> Result<(), i32> {
+    with(root, |s| s.set_card(layer, card))
 }
 
 /// ROOT's committed scene as its last commit left it; `None` when ROOT has no scene.
