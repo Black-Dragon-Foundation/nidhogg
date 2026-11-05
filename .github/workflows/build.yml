@@ -746,11 +746,15 @@ jobs:
           ls test/src/nidhogg-tests/workers-*-tests.el | sed 's|^test/||; s|[.]el$||' | grep -v -e -timing- -e -gui- > "$RUNNER_TEMP/asan-subset.txt"
           cat "$RUNNER_TEMP/asan-subset.txt"
       # the Linux jobs' caches in this build's own entries (another configuration: --dev, the sanitizers), keyed as
-      # there; build.sh stamps a compiled-Lisp entry with the mode, so a dev entry never meets a release build
+      # there; build.sh stamps a compiled-Lisp entry with the mode, so a dev entry never meets a release build.  The
+      # compiled Lisp is two entries: the byte-compiled part keyed on the Lisp side alone (lisp-key.sh --elc: byte code
+      # does not depend on the C side), the .eln files on everything, so a change in C no longer makes the sanitized
+      # Emacs byte-compile all of lisp/ again (some 1,500 files, most of the build's time)
       - name: Compiled-Lisp inputs, file times
         id: tree
         run: |
           echo "lisp=$(bash nidhogg/ci/lisp-key.sh)" >> "$GITHUB_OUTPUT"
+          echo "elc=$(bash nidhogg/ci/lisp-key.sh --elc)" >> "$GITHUB_OUTPUT"
           bash nidhogg/ci/set-mtimes.sh
       - name: ccache (C objects)
         id: cc
@@ -765,12 +769,20 @@ jobs:
           path: ${{ runner.temp }}/pkg-cache
           key: pkgs-fedora-45-${{ hashFiles('nidhogg/deps/fedora-45.build') }}
           restore-keys: pkgs-fedora-45-
-      - name: Compiled Lisp (same Lisp and C sources)
+      - name: Byte-compiled Lisp (same Lisp sources)
         id: lc
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/lisp-cache
-          key: lisp-fedora-45-asan-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ steps.tree.outputs.lisp }}-${{ hashFiles('nidhogg/build.sh') }}
+          path: |
+            ${{ runner.temp }}/lisp-cache/src
+            ${{ runner.temp }}/lisp-cache/stamp
+          key: lisp-fedora-45-asan-elc-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ steps.tree.outputs.elc }}-${{ hashFiles('nidhogg/build.sh') }}
+      - name: Native-compiled Lisp (same Lisp and C sources)
+        id: ln
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/lisp-cache/obj
+          key: lisp-fedora-45-asan-eln-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ steps.tree.outputs.lisp }}-${{ hashFiles('nidhogg/build.sh') }}
       - name: "Build and run (the 100 MB-class rows are sized down: nidhogg-workers--test-size-scale)"
         id: build
         env:
@@ -791,14 +803,22 @@ jobs:
           key: ccache-fedora-45-asan-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Did make write the compiled Lisp
         id: lcok
-        if: ${{ !cancelled() && steps.lc.outcome == 'success' && steps.lc.outputs.cache-hit != 'true' }}
+        if: ${{ !cancelled() && steps.lc.outcome == 'success' }}
         run: if [ -f "$RUNNER_TEMP/lisp-cache/stamp" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"; fi
-      - name: Save compiled Lisp
-        if: ${{ !cancelled() && env.CACHE_SAVE == 'true' && steps.lcok.outputs.ok == 'true' }}
+      - name: Save byte-compiled Lisp
+        if: ${{ !cancelled() && env.CACHE_SAVE == 'true' && steps.lcok.outputs.ok == 'true' && steps.lc.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/lisp-cache
-          key: lisp-fedora-45-asan-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ steps.tree.outputs.lisp }}-${{ hashFiles('nidhogg/build.sh') }}
+          path: |
+            ${{ runner.temp }}/lisp-cache/src
+            ${{ runner.temp }}/lisp-cache/stamp
+          key: lisp-fedora-45-asan-elc-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ steps.tree.outputs.elc }}-${{ hashFiles('nidhogg/build.sh') }}
+      - name: Save native-compiled Lisp
+        if: ${{ !cancelled() && env.CACHE_SAVE == 'true' && steps.lcok.outputs.ok == 'true' && steps.ln.outcome == 'success' && steps.ln.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/lisp-cache/obj
+          key: lisp-fedora-45-asan-eln-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ steps.tree.outputs.lisp }}-${{ hashFiles('nidhogg/build.sh') }}
       - name: Build logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -827,6 +847,7 @@ jobs:
         id: tree
         run: |
           echo "lisp=$(bash nidhogg/ci/lisp-key.sh)" >> "$GITHUB_OUTPUT"
+          echo "elc=$(bash nidhogg/ci/lisp-key.sh --elc)" >> "$GITHUB_OUTPUT"
           bash nidhogg/ci/set-mtimes.sh
       - name: ccache (C objects)
         id: cc
@@ -841,12 +862,21 @@ jobs:
           path: ${{ runner.temp }}/pkg-cache
           key: pkgs-fedora-45-${{ hashFiles('nidhogg/deps/fedora-45.build') }}
           restore-keys: pkgs-fedora-45-
-      - name: Compiled Lisp (same Lisp and C sources)
+      # the compiled Lisp as two entries, as in workers-asan
+      - name: Byte-compiled Lisp (same Lisp sources)
         id: lc
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/lisp-cache
-          key: lisp-fedora-45-chaos-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ steps.tree.outputs.lisp }}-${{ hashFiles('nidhogg/build.sh') }}
+          path: |
+            ${{ runner.temp }}/lisp-cache/src
+            ${{ runner.temp }}/lisp-cache/stamp
+          key: lisp-fedora-45-chaos-elc-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ steps.tree.outputs.elc }}-${{ hashFiles('nidhogg/build.sh') }}
+      - name: Native-compiled Lisp (same Lisp and C sources)
+        id: ln
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/lisp-cache/obj
+          key: lisp-fedora-45-chaos-eln-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ steps.tree.outputs.lisp }}-${{ hashFiles('nidhogg/build.sh') }}
       - name: The chaos build
         id: build
         env:
@@ -860,12 +890,20 @@ jobs:
         with:
           path: ${{ runner.temp }}/ccache
           key: ccache-fedora-45-chaos-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ github.run_id }}-${{ github.run_attempt }}
-      - name: Save compiled Lisp
+      - name: Save byte-compiled Lisp
         if: ${{ always() && env.CACHE_SAVE == 'true' && steps.build.outcome == 'success' && steps.lc.outcome == 'success' && steps.lc.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/lisp-cache
-          key: lisp-fedora-45-chaos-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ steps.tree.outputs.lisp }}-${{ hashFiles('nidhogg/build.sh') }}
+          path: |
+            ${{ runner.temp }}/lisp-cache/src
+            ${{ runner.temp }}/lisp-cache/stamp
+          key: lisp-fedora-45-chaos-elc-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ steps.tree.outputs.elc }}-${{ hashFiles('nidhogg/build.sh') }}
+      - name: Save native-compiled Lisp
+        if: ${{ always() && env.CACHE_SAVE == 'true' && steps.build.outcome == 'success' && steps.ln.outcome == 'success' && steps.ln.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/lisp-cache/obj
+          key: lisp-fedora-45-chaos-eln-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ steps.tree.outputs.lisp }}-${{ hashFiles('nidhogg/build.sh') }}
       - name: The workers files, seeds 1 to 5, no rerun (nidhogg/test/chaos-files.txt)
         if: ${{ steps.build.outcome == 'success' }}
         env:
