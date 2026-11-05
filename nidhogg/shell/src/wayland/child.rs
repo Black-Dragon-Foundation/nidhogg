@@ -9,8 +9,10 @@
 //! a move makes the child owe a commit too.
 
 use crate::api::*;
+use crate::wayland::publish::Mail;
 use crate::wayland::{MainState, WaylandShell};
 use glitnir::geom::Rect;
+use glitnir::motion::MotionSpec;
 use wayland_client::protocol::wl_subsurface::WlSubsurface;
 use wayland_client::protocol::wl_surface::WlSurface;
 
@@ -21,6 +23,12 @@ pub struct Child {
     /// The offset in the parent, logical pixels.
     pub x: i32,
     pub y: i32,
+    /// The host has it shown (`set_mapped`), and it has transitions (`set_motion`): whoever presents its tree then
+    /// decides when it maps and unmaps.
+    mapped: bool,
+    motion: bool,
+    /// It has a backdrop (`set_backdrop`): presenting follows its position.
+    backdrop: bool,
 }
 
 impl MainState {
@@ -108,6 +116,7 @@ impl WaylandShell {
         let subsurface = sub.get_subsurface(&surface, &parent, &qh, ());
         subsurface.set_position(d.x, d.y);
         m.attach_scale(&surface, &qh);
+        m.inherit_scale(id, d.parent);
         // a new subsurface goes on top of its parent's stack
         m.stacking
             .entry(d.parent)
@@ -122,6 +131,9 @@ impl WaylandShell {
                 parent: d.parent,
                 x: d.x,
                 y: d.y,
+                mapped: true,
+                motion: false,
+                backdrop: false,
             },
         );
         m.present_register(id, None, Some(subsurface));
@@ -130,8 +142,23 @@ impl WaylandShell {
     }
 
     pub(super) fn child_destroy(&mut self, id: WindowId) -> ShellResult {
-        if !self.main.children.contains_key(&id) {
+        let Some(c) = self.main.children.get(&id) else {
             return Err(ShellError::State);
+        };
+        let fading = c.motion
+            && self.main.present_hiding(id)
+            && self.published_front(id)
+            && self.live().is_ok();
+        if fading {
+            // its id and records go now; its surface, viewport and buffers go when the leg ends
+            self.present_ghost(id, |m| {
+                m.surfaces.remove(&id);
+                m.detach_scale_keeping_viewport(id);
+                if let Some(c) = m.children.remove(&id) {
+                    m.unstack(c.parent, id);
+                }
+            });
+            return self.flush();
         }
         self.present_retire(id, |m| {
             m.surfaces.remove(&id);
@@ -214,6 +241,9 @@ impl WaylandShell {
         if let Some(c) = self.main.children.get_mut(&id) {
             c.x = x;
             c.y = y;
+            if c.backdrop {
+                self.backdrop_placed(id, (x, y));
+            }
             self.main
                 .present_record(id, |p| p.rec.position = Some((x, y)));
             // The protocol applies the position with the parent's commit; Smithay with the child's own (cached until
@@ -292,6 +322,19 @@ impl WaylandShell {
         if !self.main.surfaces.contains_key(&id) {
             return Err(ShellError::State);
         }
+        if let Some(c) = self.main.children.get_mut(&id) {
+            c.mapped = on;
+            if c.motion {
+                // the surface stays as it is: the tree's commits start the leg, and the end of a hide unmaps
+                self.main.present_record(id, |p| {
+                    p.rec.unmap = false;
+                    p.hiding = !on;
+                });
+                let root = self.main.tree_root(id);
+                self.motion_post(root, Mail::Mapped(id, on));
+                return Ok(());
+            }
+        }
         if on {
             // an unmap not sent yet is taken back
             self.main.present_record(id, |p| p.rec.unmap = false);
@@ -307,6 +350,43 @@ impl WaylandShell {
         // a null buffer with the window's next commit (a child's applies once its ancestors have committed after it)
         self.main.present_record(id, |p| p.rec.unmap = true);
         self.main.present_owe(id, true, true);
+        Ok(())
+    }
+
+    /// Child `id`'s transitions.  `None` ends a leg that runs, on the stage, which unmaps a hide.
+    pub(super) fn window_set_motion(
+        &mut self,
+        id: WindowId,
+        spec: Option<MotionSpec>,
+    ) -> ShellResult {
+        let c = self.main.children.get_mut(&id).ok_or(ShellError::State)?;
+        if !c.motion && spec.is_none() {
+            return Ok(());
+        }
+        c.motion = spec.is_some();
+        let mapped = c.mapped;
+        if spec.is_none() {
+            self.main.present_record(id, |p| p.hiding = false);
+        }
+        let root = self.main.tree_root(id);
+        self.motion_post(root, Mail::Motion(id, spec, mapped));
+        Ok(())
+    }
+
+    /// Child `id`'s backdrop: σ `blur_px` logical pixels, 0 for none.
+    pub(super) fn window_set_backdrop(&mut self, id: WindowId, blur_px: f32) -> ShellResult {
+        if !blur_px.is_finite() || blur_px < 0.0 {
+            return Err(ShellError::Arg);
+        }
+        let c = self.main.children.get_mut(&id).ok_or(ShellError::State)?;
+        let on = blur_px > 0.0;
+        if !c.backdrop && !on {
+            return Ok(());
+        }
+        c.backdrop = on;
+        let (parent, at) = (c.parent, (c.x, c.y));
+        let root = self.main.tree_root(id);
+        self.motion_post(root, Mail::Backdrop(id, parent, blur_px, at));
         Ok(())
     }
 }

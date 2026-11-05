@@ -14,6 +14,7 @@ use glitnir::scene::LayerDesc;
 use nhshell::api::*;
 use nhshell::event::*;
 use nhshell::wayland::WaylandShell;
+use nhshell::wayland::scale::viewport_size;
 use std::time::{Duration, Instant};
 
 const BG: u32 = 0xff20_4060;
@@ -247,6 +248,93 @@ fn node(rec: &Recorder, id: u64) -> String {
         .unwrap_or_default()
 }
 
+/// A card's layer id: a window's card is a window layer of its own (another tag than the window's).
+const CARD: u64 = (1 << 62) | 7;
+const BENEATH: u32 = 0xff11_2233;
+/// The card's corner radius, device px.
+const RADIUS: i32 = 10;
+
+/// The host gives the window a card at `rect` (as the glue does for a window with card parameters).
+fn card(b: &Backing, rect: Rect) {
+    glitnir::scene::with(b.g, |s| {
+        s.upsert(&LayerDesc {
+            id: CARD,
+            parent: b.g,
+            kind: 2,
+            rect,
+            scale: 1.0,
+            visible: 1,
+        })?;
+        s.set_chrome(
+            CARD,
+            Some(glitnir::scene::Chrome {
+                radius_px: RADIUS as f32,
+                ..Default::default()
+            }),
+        )?;
+        s.set_card(
+            CARD,
+            Some(glitnir::scene::Card {
+                beneath_argb: BENEATH,
+                ..Default::default()
+            }),
+        )
+    })
+    .unwrap();
+}
+
+/// The frame as the last scene commit composes it whole from the backing: what the output must show, wherever the
+/// window's pixels come from.
+fn composed(b: &Backing) -> Vec<u32> {
+    use glitnir::compose::{Composer, SourceView, TargetView, compose_committed};
+    let c = glitnir::scene::committed(b.g).expect("a committed scene");
+    let px: Vec<u32> =
+        b.px.as_chunks::<4>()
+            .0
+            .iter()
+            .map(|p| u32::from_ne_bytes(*p))
+            .collect();
+    let mut out = px.clone();
+    let all = Rect::new(0, 0, b.w, b.h);
+    let src = SourceView {
+        layer: b.g,
+        data: &px,
+        stride: b.w as usize,
+        width: b.w,
+        height: b.h,
+        scale: 1.0,
+    };
+    let mut t = TargetView {
+        data: &mut out,
+        stride: b.w as usize,
+        rect: all,
+        scale: 1.0,
+    };
+    compose_committed(&c, &mut Composer::new(), &mut t, &[all], &[src]).unwrap();
+    out
+}
+
+/// The output shows the frame composed whole.
+fn shows_composed(rec: &Recorder, b: &Backing) -> bool {
+    let want = composed(b);
+    let snap = rec.snapshot();
+    (0..b.h).all(|y| {
+        (0..b.w).all(|x| {
+            Recorder::snapshot_pixel(&snap, x as usize, y as usize) == want[(y * b.w + x) as usize]
+        })
+    })
+}
+
+/// A promoted window given a card at `rect`, its picture shown: as `promoted`.
+fn carded(rec: &Recorder, rect: Rect) -> (WaylandShell, Backing, u64, u64, u32) {
+    let (mut shell, b, id, surface, n) = promoted(rec);
+    card(&b, rect);
+    assert!(publish(&mut shell, id, &[(&b, id)], 0));
+    until(&mut shell, "the card", |_| shows_composed(rec, &b));
+    assert_eq!(composed(&b)[0], BENEATH, "the card's top-left corner pixel");
+    (shell, b, id, surface, n)
+}
+
 /// Surface `id`'s subsurfaces, bottom to top.
 fn children(rec: &Recorder, id: u64) -> Vec<u64> {
     let n = node(rec, id);
@@ -468,5 +556,191 @@ mod layers {
         assert!(w.contains("\"writes\":[]"), "held buffers written: {w}");
         assert!(!buffer_commits(&rec, 0, surface).is_empty());
         assert!(shell.next_event().is_ok(), "no protocol error");
+    }
+
+    /// A card over a promoted window: after every scroll, both ways and across the ring's rebase, the screen shows
+    /// the frame composed whole (the corners in place, nothing of them left in the rows that moved).
+    #[test]
+    fn card_corners_follow_the_scroll() {
+        let rec = Recorder::start("sway");
+        let (mut shell, mut b, id, surface, mut n) = carded(&rec, VIEW);
+        for dy in [-16, 16] {
+            for _ in 0..10 {
+                scroll_step(&mut shell, &rec, &mut b, id, surface, dy, &mut n);
+                until(&mut shell, "the corners after the scroll", |_| {
+                    shows_composed(&rec, &b)
+                });
+            }
+        }
+        assert_eq!(shell.content_layers(id).len(), 1, "still its own output");
+    }
+
+    /// The card is taller than the layer (a mode line below the window, in the frame): its bottom corners are the
+    /// frame's, its top ones the layer's.
+    #[test]
+    fn card_taller_than_the_layer() {
+        let rec = Recorder::start("sway");
+        let outer = Rect::new(VIEW.x, VIEW.y, VIEW.w, VIEW.h + 20);
+        let (mut shell, mut b, id, surface, mut n) = carded(&rec, outer);
+        assert_eq!(
+            composed(&b)[(259 * 400) as usize],
+            BENEATH,
+            "the bottom-left corner pixel"
+        );
+        for dy in [-24, 24, -8, 8] {
+            for _ in 0..3 {
+                scroll_step(&mut shell, &rec, &mut b, id, surface, dy, &mut n);
+                until(&mut shell, "the corners after the scroll", |_| {
+                    shows_composed(&rec, &b)
+                });
+            }
+        }
+    }
+
+    /// A scroll commit of a card's layer damages the exposed rows and the corner squares (where they are and where
+    /// the scroll moved them), nothing else; the layer stays opaque whole.
+    #[test]
+    fn card_scroll_damage_is_rows_and_corners() {
+        let rec = Recorder::start("sway");
+        let (mut shell, mut b, id, surface, mut n) = carded(&rec, VIEW);
+        let seq = next_seq(&rec);
+        for _ in 0..3 {
+            let c = scroll_step(&mut shell, &rec, &mut b, id, surface, -16, &mut n);
+            let off = source(&c)[1] as i32;
+            let d = damage(&c);
+            let exposed = Rect::new(0, off + VIEW.h - 16, 400, 16);
+            let r2 = (RADIUS * RADIUS) as u64;
+            assert!(
+                (0..exposed.h).all(|y| d.iter().any(|r| r.contains(0, exposed.y + y))),
+                "the exposed rows {exposed:?}: {d:?}"
+            );
+            let corner = Rect::new(0, off, RADIUS, RADIUS);
+            assert!(
+                d.iter().any(|r| !r.intersect(&corner).is_empty()),
+                "the top-left corner: {d:?}"
+            );
+            assert!(area(&d) <= exposed.area() + 8 * r2, "{d:?}");
+        }
+        let all = commits(&rec, 0, surface);
+        assert!(
+            all.iter().any(|c| c.contains("\"opaque\":[[0,0,400,240]]")),
+            "{all:?}"
+        );
+        for c in commits(&rec, seq, surface) {
+            assert!(
+                !c.contains("\"opaque\":[[") || c.contains("\"opaque\":[[0,0,400,240]]"),
+                "the opaque region changed: {c}"
+            );
+        }
+        until(&mut shell, "the picture", |_| shows_composed(&rec, &b));
+    }
+
+    /// At scales 1, 1.25 and 2, on even and odd device sizes, a frame of single-pixel detail (any resampling shows)
+    /// is on the output exactly as its backing has it, and so is it with a window promoted to its own output: the
+    /// promoted picture equals the frame-composed one.
+    #[test]
+    fn promoted_window_matches_the_frame_at_1_1_25_and_2() {
+        for (s120, w, h) in [
+            (120, 400, 300),
+            (150, 400, 300),
+            (240, 400, 300),
+            (240, 401, 301),
+            (150, 401, 301),
+        ] {
+            let what = format!("scale {s120}, {w}x{h}");
+            let rec = Recorder::start("sway");
+            let mut shell = threaded(&rec);
+            let s = f64::from(s120) / 120.0;
+            let logical = |d: i32| (f64::from(d) / s).round() as i32;
+            let id = shell
+                .window_new(&WindowDesc {
+                    w: logical(w),
+                    h: logical(h),
+                    title: "t".into(),
+                    app_id: "nidhogg.test".into(),
+                    flags: 0,
+                })
+                .unwrap();
+            let ev = wait_for(&mut shell, |e| {
+                e.kind() == Kind::Configure && e.window == id
+            });
+            if s120 != 120 {
+                let cmd = format!(r#"{{"cmd":"scale","value120":{s120}}}"#);
+                assert!(rec.control(&cmd).contains("\"ok\":true"));
+                wait_for(
+                    &mut shell,
+                    |e| matches!(e.event, ShellEvent::Scale(x) if x.scale120 == s120),
+                );
+            }
+            shell
+                .ack_configure(id, configure_of(&ev).serial, NHSHELL_ACK_CONTENT)
+                .unwrap();
+            let mut b = Backing::new_scaled(w, h, s);
+            // a checker of two colours, one pixel a square
+            let checker = |b: &mut Backing, r: Rect, k: i32| {
+                for y in r.y..r.y + r.h {
+                    for x in r.x..r.x + r.w {
+                        let c: u32 = if (x + y + k) % 2 == 0 {
+                            0xff10_2030
+                        } else {
+                            0xffe0_d0c0
+                        };
+                        let at = ((y * b.w + x) * 4) as usize;
+                        b.px[at..at + 4].copy_from_slice(&c.to_ne_bytes());
+                    }
+                }
+                glitnir::damage::with(b.g, |d| d.add(r));
+            };
+            // what the output shows of the buffer: all of it, or (an odd size at scale 2) all but its last column and
+            // row, never a resampled picture
+            let (cw, ch) = (viewport_size(w, s120).1, viewport_size(h, s120).1);
+            assert!(w - cw <= 1 && h - ch <= 1, "{what}");
+            let shows = |rec: &Recorder, b: &Backing| {
+                let snap = rec.snapshot();
+                (0..ch).all(|y| {
+                    (0..cw).all(|x| {
+                        Recorder::snapshot_pixel(&snap, x as usize, y as usize) == b.pixel(x, y)
+                    })
+                })
+            };
+            checker(&mut b, Rect::new(0, 0, w, h), 0);
+            assert!(publish(&mut shell, id, &[(&b, id)], 0));
+            until(
+                &mut shell,
+                &format!("the frame as its backing, {what}"),
+                |_| shows(&rec, &b),
+            );
+            // a window on the device grid of every scale, promoted, its own pixels new
+            let view = Rect::new(0, 0, 200, 120);
+            glitnir::scene::with(b.g, |sc| {
+                sc.upsert(&LayerDesc {
+                    id: WIN,
+                    parent: b.g,
+                    kind: 2,
+                    rect: view,
+                    scale: s,
+                    visible: 1,
+                })?;
+                sc.set_output(WIN, true)
+            })
+            .unwrap();
+            checker(&mut b, view, 1);
+            let seq = next_seq(&rec);
+            assert!(publish(&mut shell, id, &[(&b, id)], 0));
+            until(
+                &mut shell,
+                &format!("the layer's first buffer, {what}"),
+                |s| {
+                    s.content_layers(id)
+                        .first()
+                        .is_some_and(|l| !buffer_commits(&rec, seq, l.0).is_empty())
+                },
+            );
+            until(
+                &mut shell,
+                &format!("the promoted window as its backing, {what}"),
+                |_| shows(&rec, &b),
+            );
+        }
     }
 }

@@ -171,4 +171,238 @@
       (insert (propertize "abc" 'face face))
       (should (equal (buffer-string) "abc")))))
 
+;; The chrome vector: Lisp resolves, C copies, the glue validates.
+
+(ert-deftest glitnir-chrome-vector-layout ()
+  (let ((child-frame-chrome '((corner-radius . 8) (shadow . (:blur 16 :offset (2 . 6) :spread -1 :opacity 0.5)))))
+    (should-not (glitnir--chrome-vector (selected-frame)))
+    (glitnir-test--as-child nil
+      (let* ((f (selected-frame))
+             (v (glitnir--chrome-vector f))
+             (r (glitnir--resolve f))
+             (s (plist-get r :shadow))
+             (c (plist-get s :color)))
+        (should (= (length v) 24))
+        (should (= (length v) (length glitnir--chrome-slots)))
+        (should (equal (list (aref v 0) (aref v 1) (aref v 2) (aref v 3) (aref v 4) (aref v 5) (aref v 6))
+                       (list 1 (plist-get r :radius) (plist-get s :blur) 2 6 -1 (plist-get s :opacity))))
+        (should (= (aref v 7) (+ (ash (nth 0 c) 16) (ash (nth 1 c) 8) (nth 2 c))))
+        (should (cl-every #'zerop (cl-subseq v 8 21)))
+        (should (= (aref v 21) -1))
+        ;; a child frame has no ring
+        (should (equal (list (aref v 22) (aref v 23)) '(-1 0)))))
+    ;; a child frame without chrome still has a vector, off
+    (let ((child-frame-chrome nil))
+      (glitnir-test--as-child nil
+        (let ((v (glitnir--chrome-vector (selected-frame))))
+          (should (= (length v) 24))
+          (should (= (aref v 0) 0)))))))
+
+(ert-deftest glitnir-chrome-vector-clamps ()
+  (let ((child-frame-chrome '((corner-radius . 4) (shadow . (:opacity 1.5 :blur -3)))))
+    (glitnir-test--as-child nil
+      (let ((v (glitnir--chrome-vector (selected-frame))))
+        (should (= (aref v 6) 1))
+        (should (= (aref v 2) 0))))))
+
+;; Task 3: transition, backdrop-blur and reduced motion fill slots 8-20.
+
+(defconst glitnir-test--ease-out '(0 0 0.58 1))
+(defconst glitnir-test--ease-in '(0.42 0 1 1))
+
+(defun glitnir-test--motion (v)
+  "Slots 8-19 of vector V as a list."
+  (cl-loop for i from 8 below 20 collect (aref v i)))
+
+(defmacro glitnir-test--with-reduced-motion (value &rest body)
+  "Run BODY with the desktop's reduced-motion setting VALUE."
+  (declare (indent 1))
+  `(cl-letf (((symbol-function 'nhwl-settings-get)
+              (lambda (key) (and (eq key 'reduced-motion) ,value))))
+     ,@body))
+
+(ert-deftest glitnir-transition-pop-default ()
+  (glitnir-test--as-child '((transition . pop))
+    (let ((v (glitnir--chrome-vector (selected-frame))))
+      (should (equal (glitnir-test--motion v)
+                     (append '(2 120) glitnir-test--ease-out '(1 80) glitnir-test--ease-in)))
+      (should (= (length v) 24)))))
+
+(ert-deftest glitnir-transition-plist-and-curves ()
+  (glitnir-test--as-child '((transition . (:show fade :duration 0.2 :curve ease-in-out
+                                           :hide pop :hide-duration 0.05
+                                           :hide-curve (cubic-bezier 0.1 2 0.9 -1))))
+    (should (equal (glitnir-test--motion (glitnir--chrome-vector (selected-frame)))
+                   '(1 200 0.42 0 0.58 1 2 50 0.1 2 0.9 -1))))
+  ;; the option may come from child-frame-chrome; the frame's parameter wins
+  (let ((child-frame-chrome '((transition . fade))))
+    (glitnir-test--as-child nil
+      (should (= (aref (glitnir--chrome-vector (selected-frame)) 8) 1)))
+    (glitnir-test--as-child '((transition . nil))
+      (should (= (aref (glitnir--chrome-vector (selected-frame)) 8) 0)))))
+
+(ert-deftest glitnir-transition-invalid-signals ()
+  (dolist (bad '(slide (:show spin) (:duration -1) (:curve bounce)
+                       (:show fade :curve (cubic-bezier 2 0 1 1)) (:show) 3))
+    (glitnir-test--as-child `((transition . ,bad))
+      (should-error (glitnir--chrome-vector (selected-frame)) :type 'wrong-type-argument))))
+
+(ert-deftest glitnir-backdrop-slot ()
+  (glitnir-test--as-child '((backdrop-blur . 10) (alpha-background . 0.8))
+    (should (= (aref (glitnir--chrome-vector (selected-frame)) 20) 10)))
+  (glitnir-test--as-child '((backdrop-blur . 2.5) (alpha-background . 50))
+    (should (= (aref (glitnir--chrome-vector (selected-frame)) 20) 2.5)))
+  (glitnir-test--as-child '((alpha-background . 0.8))
+    (should (= (aref (glitnir--chrome-vector (selected-frame)) 20) 0)))
+  (dolist (opaque '(nil 1.0 100))
+    (glitnir-test--as-child `((backdrop-blur . 10) (alpha-background . ,opaque))
+      (should (= (aref (glitnir--chrome-vector (selected-frame)) 20) 0))))
+  (dolist (bad '(-1 "10" t))
+    (glitnir-test--as-child `((backdrop-blur . ,bad))
+      (should-error (glitnir--chrome-vector (selected-frame)) :type 'wrong-type-argument))))
+
+(ert-deftest glitnir-transition-off-without-param ()
+  (glitnir-test--as-child nil
+    (let ((v (glitnir--chrome-vector (selected-frame))))
+      (should (cl-every #'zerop (glitnir-test--motion v)))
+      (should (zerop (aref v 20))))))
+
+(ert-deftest glitnir-reduced-motion-mid-transition ()
+  (let (refreshed)
+    (glitnir-test--as-child '((transition . pop))
+      (glitnir-test--with-reduced-motion 0
+        (should (= (aref (glitnir--chrome-vector (selected-frame)) 8) 2)))
+      (glitnir-test--with-reduced-motion 1
+        (let ((v (glitnir--chrome-vector (selected-frame))))
+          (should (= (aref v 8) 0))
+          (should (= (aref v 14) 0))))
+      ;; the setting changing runs a refresh
+      (cl-letf (((symbol-function 'glitnir-refresh) (lambda (&rest _) (setq refreshed t))))
+        (glitnir--settings-changed 'color-scheme 1)
+        (should-not refreshed)
+        (run-hook-with-args 'nhwl-settings-changed-functions 'reduced-motion 1)
+        (should refreshed)))))
+
+;; Window cards: the window parameters resolve into a vector C lists with the window.
+
+(defmacro glitnir-test--with-window-params (params &rest body)
+  "Run BODY with the selected window's parameters PARAMS set, then clear them and its card.
+Colours are \"#RRGGBB\" specs: the batch terminal may define no colour names."
+  (declare (indent 1))
+  `(let ((w (selected-window))
+         (divider (face-attribute 'window-divider :foreground (selected-frame))))
+     (cl-letf (((symbol-function 'color-values)
+                (lambda (c &optional _f) (and (stringp c) (color-values-from-color-spec c)))))
+       (unwind-protect
+           (progn
+             (set-face-foreground 'window-divider "#123456" (selected-frame))
+             (dolist (p ,params) (set-window-parameter w (car p) (cdr p)))
+             ,@body)
+         (set-face-attribute 'window-divider (selected-frame) :foreground divider)
+         (dolist (k '(corner-radius shadow ring glitnir--card glitnir--card-key))
+           (set-window-parameter w k nil))
+         (set-frame-parameter nil 'glitnir--cards nil)))))
+
+(ert-deftest glitnir-card-vector-from-window-params ()
+  (let ((w (selected-window)))
+    (should-not (glitnir--card-vector w))
+    (glitnir-test--with-window-params
+        '((corner-radius . 10) (shadow . (:blur 3 :offset (0 . 1) :opacity 0.45))
+          (ring . ("#ff0000" . 0.6)))
+      (set-face-foreground 'child-frame-shadow "#0a0b0c" (selected-frame))
+      (unwind-protect
+          (let ((v (glitnir--card-vector w)))
+            (should (= (length v) (length glitnir--chrome-slots)))
+            (should (equal (list (aref v 0) (aref v 1) (aref v 2) (aref v 3) (aref v 4) (aref v 6))
+                           '(1 10 3 0 1 0.45)))
+            (should (= (aref v 7) #x0a0b0c))
+            (should (cl-every #'zerop (cl-subseq v 8 21)))
+            ;; the corners show the colour dividers are drawn in
+            (should (= (aref v 21) #x123456))
+            (should (= (aref v 22) #xff0000))
+            (should (= (aref v 23) 0.6))
+            ;; the hook keeps it in the window parameter C reads
+            (glitnir--recheck-cards w)
+            (should (equal (window-parameter w 'glitnir--card) v)))
+        (set-face-attribute 'child-frame-shadow (selected-frame) :foreground 'unspecified)))
+    ;; a radius alone is a card without shadow; a face colours the ring
+    (glitnir-test--with-window-params '((corner-radius . 6) (ring . (window-divider . 2)))
+      (let ((v (glitnir--card-vector w)))
+        (should (equal (list (aref v 0) (aref v 1) (aref v 6)) '(1 6 0)))
+        (should (= (aref v 22) #x123456))
+        (should (= (aref v 23) 1))))
+    ;; without a divider colour, the frame's background
+    (glitnir-test--with-window-params '((corner-radius . 6))
+      (set-face-attribute 'window-divider (selected-frame) :foreground 'unspecified)
+      (cl-letf (((symbol-function 'frame-parameter)
+                 (lambda (_f p) (and (eq p 'background-color) "#202122"))))
+        (should (= (aref (glitnir--card-vector w) 21) #x202122))))
+    (glitnir-test--with-window-params '((corner-radius . 0))
+      (should-not (glitnir--card-vector w)))
+    (dolist (bad '(((corner-radius . -1)) ((corner-radius . "8"))
+                   ((ring . 3)) ((ring . ("#ff0000" . high)))
+                   ((shadow . (:blur)))))
+      (glitnir-test--with-window-params bad
+        (should-error (glitnir--card-vector w) :type 'wrong-type-argument)))))
+
+(ert-deftest glitnir-card-vector-follows-theme ()
+  (let ((w (selected-window)))
+    (custom-declare-theme 'glitnir-test-red nil)
+    (custom-declare-theme 'glitnir-test-blue nil)
+    (custom-theme-set-faces 'glitnir-test-red '(window-divider ((t :foreground "#ff0000"))))
+    (custom-theme-set-faces 'glitnir-test-blue '(window-divider ((t :foreground "#0000ff"))))
+    (glitnir-test--with-window-params '((corner-radius . 8))
+      ;; the theme's colour, not the frame's own
+      (set-face-attribute 'window-divider (selected-frame) :foreground 'unspecified)
+      (unwind-protect
+          (progn
+            (enable-theme 'glitnir-test-red)
+            (glitnir--recheck-cards w)
+            (should (= (aref (window-parameter w 'glitnir--card) 21) #xff0000))
+            (disable-theme 'glitnir-test-red)
+            (enable-theme 'glitnir-test-blue)
+            ;; enabling the theme resolved the card again, before any redisplay
+            (should (= (aref (window-parameter w 'glitnir--card) 21) #x0000ff)))
+        (disable-theme 'glitnir-test-red)
+        (disable-theme 'glitnir-test-blue)))))
+
+(ert-deftest glitnir-cards-frame-flag-set-only-on-change ()
+  (let ((sets 0)
+        (set-frame-parameter (symbol-function 'set-frame-parameter))
+        (w (selected-window))
+        w2)
+    (cl-letf (((symbol-function 'set-frame-parameter)
+               (lambda (f p v)
+                 (when (eq p 'glitnir--cards) (setq sets (1+ sets)))
+                 (funcall set-frame-parameter f p v))))
+      (unwind-protect
+          (progn
+            (set-window-parameter w 'corner-radius 8)
+            (glitnir--recheck-cards w)
+            (should (eq (frame-parameter nil 'glitnir--cards) t))
+            (should (= sets 1))
+            ;; nothing changed: nothing is set
+            (glitnir--recheck-cards w)
+            (glitnir--recheck-frame-cards w)
+            (should (= sets 1))
+            ;; a second card: the flag is t already
+            (setq w2 (split-window w))
+            (set-window-parameter w2 'shadow '(:blur 4))
+            (glitnir--recheck-cards w2)
+            (should (= sets 1))
+            ;; the first loses its card, the second keeps the flag
+            (set-window-parameter w 'corner-radius nil)
+            (glitnir--recheck-cards w)
+            (should-not (window-parameter w 'glitnir--card))
+            (should (= sets 1))
+            ;; the last one goes
+            (set-window-parameter w2 'shadow nil)
+            (glitnir--recheck-cards w2)
+            (should-not (frame-parameter nil 'glitnir--cards))
+            (should (= sets 2)))
+        (when (window-live-p w2) (delete-window w2))
+        (dolist (k '(corner-radius shadow glitnir--card glitnir--card-key))
+          (set-window-parameter w k nil))
+        (funcall set-frame-parameter nil 'glitnir--cards nil)))))
+
 ;;; glitnir-tests.el ends here

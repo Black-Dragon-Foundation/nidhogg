@@ -483,19 +483,20 @@ nhwl_set_undecorated (struct frame *f, Lisp_Object new_value,
    (child.rs; nhwlterm.c pushes its facts).  Here: its parameters, and the
    chrome `glitnir--resolve' gives it.  */
 
-static float
-nhwl_chrome_num (Lisp_Object v)
+/* Copy the numbers of `glitnir--chrome-vector's value V into OUT (also a
+   window card's, nhwlterm.c); the glue checks them.  A non-number or a
+   missing slot is 0.  */
+void
+nhwl_chrome_vector (Lisp_Object v, float *out)
 {
-  return NUMBERP (v) ? (float) max (XFLOATINT (v), 0.0) : 0;
+  memset (out, 0, NHG_CHROME_SLOTS * sizeof *out);
+  if (VECTORP (v))
+    for (ptrdiff_t i = 0; i < min (ASIZE (v), NHG_CHROME_SLOTS); i++)
+      if (NUMBERP (AREF (v, i)))
+	out[i] = XFLOATINT (AREF (v, i));
 }
 
-static Lisp_Object
-nhwl_chrome_key (Lisp_Object plist, const char *name)
-{
-  return Fplist_get (plist, intern_c_string (name), Qnil);
-}
-
-/* Take the chrome from `glitnir--resolve' (called after the frame's
+/* Take the chrome from `glitnir--chrome-vector' (called after the frame's
    parameters changed) and hand it to the glue; adapted from Nidhogg's
    glitnir_pgtk_params_changed.  A change lays the frame out again (the
    shadow's margin) and draws it again.  The chrome is kept for the
@@ -507,53 +508,22 @@ nhwl_child_params_changed (struct frame *f)
 {
   static bool busy;		/* the resolver changed parameters itself */
   struct nhwl_output *out;
-  NhgChrome n;
-  Lisp_Object frame, res;
+  Lisp_Object frame;
 
   nhwl_popup_params_changed (f);
   nhwl_idle_param_changed (f);
-  if (busy || !nhwl_child_p (f) || NILP (Ffboundp (Qglitnir__resolve)))
+  if (busy || !nhwl_child_p (f) || NILP (Ffboundp (Qglitnir__chrome_vector)))
     return;
   out = FRAME_NHWL_OUTPUT (f);
   XSETFRAME (frame, f);
   busy = true;
-  res = safe_calln (Qglitnir__resolve, frame);
+  nhwl_chrome_vector (safe_calln (Qglitnir__chrome_vector, frame),
+		      out->chrome);
   busy = false;
-
-  memset (&n, 0, sizeof n);
-  n.on = CONSP (res);
-  if (n.on)
-    {
-      Lisp_Object sh = nhwl_chrome_key (res, ":shadow");
-
-      n.radius = nhwl_chrome_num (nhwl_chrome_key (res, ":radius"));
-      if (CONSP (sh))
-	{
-	  Lisp_Object off = nhwl_chrome_key (sh, ":offset");
-	  Lisp_Object col = nhwl_chrome_key (sh, ":color");
-	  uint32_t rgb = 0;
-	  int i;
-
-	  n.blur = nhwl_chrome_num (nhwl_chrome_key (sh, ":blur"));
-	  if (CONSP (off))
-	    {
-	      n.ox = NUMBERP (XCAR (off)) ? XFLOATINT (XCAR (off)) : 0;
-	      n.oy = NUMBERP (XCDR (off)) ? XFLOATINT (XCDR (off)) : 0;
-	    }
-	  n.spread = NUMBERP (nhwl_chrome_key (sh, ":spread"))
-	    ? XFLOATINT (nhwl_chrome_key (sh, ":spread")) : 0;
-	  n.opacity = min (nhwl_chrome_num (nhwl_chrome_key (sh, ":opacity")),
-			   1);
-	  for (i = 0; i < 3; i++, col = CONSP (col) ? XCDR (col) : Qnil)
-	    rgb = rgb << 8 | (CONSP (col) && FIXNATP (XCAR (col))
-			      ? min (XFIXNAT (XCAR (col)), 255) : 0);
-	  n.rgb = rgb;
-	}
-    }
-  out->chrome = n;
   if (out->window
       && nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
-		       NHG (nhg_child_chrome (FRAME_NHG (f), out->window, &n)))
+		       NHG (nhg_child_chrome (FRAME_NHG (f), out->window,
+				  out->chrome, NHG_CHROME_SLOTS)))
 	 == 1)
     {
       nhwl_csd_layout (f);

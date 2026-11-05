@@ -8,7 +8,8 @@
 //!    without it, then take it again and, unless the tree was retired meanwhile, send and commit;
 //! 3. flush (a full socket is the reader's to retry), and with nothing waiting anywhere move `presented` to the
 //!    newest request (`note_presented`);
-//! 4. drop fronts idle for the pool's quiet period, at a timerfd armed for exactly that, then disarmed.
+//! 4. drop fronts idle for the pool's quiet period, at a timerfd armed for exactly that, then disarmed; the same timer
+//!    ends a child's hide that waits (`HIDE_HOLD_NS`).
 //!
 //! The thread blocks every asynchronous signal, runs its loop in `catch_unwind` (a panic stops presenting and posts
 //! `DISCONNECTED`), never calls into C or Lisp, never reads the socket and never dispatches a queue.  It owns the stage
@@ -24,7 +25,7 @@ use crate::api::*;
 use crate::wayland::MainState;
 use crate::wayland::conn::{Shared, Wake};
 use crate::wayland::present::{Present, note_presented, present_tree};
-use crate::wayland::publish::{Mailbox, Stage, now_ns};
+use crate::wayland::publish::{HIDE_HOLD_NS, Mailbox, Stage, now_ns};
 use crate::wayland::reader::ReaderState;
 use rustix::event::{PollFd, PollFlags, poll};
 use rustix::fd::{FromRawFd, OwnedFd};
@@ -155,6 +156,8 @@ pub struct Link {
     pub counters: Arc<Counters>,
     /// Test hook: composing takes at least this long (`NHSHELL_TEST_COMPOSE_DELAY_MS` at open).
     delay_ms: AtomicU64,
+    /// How long a hide waits for the host's next call.
+    hide_hold_ns: AtomicU64,
     /// The running thread's kernel id (0: none), for the tests that watch its wake-ups.
     tid: AtomicI32,
     /// Test hooks' state (`presenter_turned`, `set_compose_gate`); `hooks_cv` is signalled at each change.
@@ -188,6 +191,7 @@ impl Link {
             wire: Mutex::default(),
             counters: Arc::default(),
             delay_ms: AtomicU64::new(delay),
+            hide_hold_ns: AtomicU64::new(HIDE_HOLD_NS),
             tid: AtomicI32::new(0),
             hooks: Mutex::default(),
             hooks_cv: Condvar::new(),
@@ -469,6 +473,7 @@ fn run(link: &Link, mail: &Mailbox, mut stage: Stage) -> Stage {
         }
         // read before the drain: with nothing on its way after the turn, this turn covered every request up to it
         let seen = mail.seq();
+        stage.hide_hold_ns = link.hide_hold_ns.load(Ordering::Relaxed);
         stage.drain(mail);
         if let Some(wire) = wire {
             let roots = link.roots();
@@ -494,6 +499,9 @@ fn run(link: &Link, mail: &Mailbox, mut stage: Stage) -> Stage {
             } else {
                 Some(now + TRIM_RETRY_NS)
             };
+        }
+        if let Some(hold) = stage.next_hold() {
+            next = Some(next.map_or(hold, |t| t.min(hold)));
         }
         if next != armed {
             timer.set(next);
@@ -573,6 +581,14 @@ impl crate::wayland::WaylandShell {
     #[doc(hidden)]
     pub fn presenter_turned(&self, seq: u64, timeout: Duration) -> bool {
         self.link.wait_hooks(timeout, |h| h.turned >= seq)
+    }
+
+    /// Test hook: a hide waits `ms` for the host's next call, on the presenter thread.
+    #[doc(hidden)]
+    pub fn set_hide_hold(&self, ms: u64) {
+        self.link
+            .hide_hold_ns
+            .store(ms * 1_000_000, Ordering::Relaxed);
     }
 
     /// Test hook: the presenter thread's kernel id, once it runs.

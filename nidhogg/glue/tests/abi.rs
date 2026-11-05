@@ -747,20 +747,82 @@ PROTO (nhg_set_cursor_theme, int32_t (NhgDisplay *, const char *, uint32_t));";
         }
     }
 
+    /// The chrome slots are the same numbers in `lisp/glitnir.el`, `include/nhglue.h` and `chrome.rs`.
+    #[test]
+    fn chrome_slots_match_lisp_and_header() {
+        use nhglue::chrome::*;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let rust: &[(&str, usize)] = &[
+            ("on", SLOT_ON),
+            ("radius", SLOT_RADIUS),
+            ("blur", SLOT_BLUR),
+            ("ox", SLOT_OX),
+            ("oy", SLOT_OY),
+            ("spread", SLOT_SPREAD),
+            ("opacity", SLOT_OPACITY),
+            ("rgb", SLOT_RGB),
+            ("show-kind", SLOT_SHOW_KIND),
+            ("show-ms", SLOT_SHOW_MS),
+            ("show-x1", SLOT_SHOW_X1),
+            ("show-y1", SLOT_SHOW_Y1),
+            ("show-x2", SLOT_SHOW_X2),
+            ("show-y2", SLOT_SHOW_Y2),
+            ("hide-kind", SLOT_HIDE_KIND),
+            ("hide-ms", SLOT_HIDE_MS),
+            ("hide-x1", SLOT_HIDE_X1),
+            ("hide-y1", SLOT_HIDE_Y1),
+            ("hide-x2", SLOT_HIDE_X2),
+            ("hide-y2", SLOT_HIDE_Y2),
+            ("backdrop", SLOT_BACKDROP),
+            ("beneath-rgb", SLOT_BENEATH_RGB),
+            ("ring-rgb", SLOT_RING_RGB),
+            ("ring-opacity", SLOT_RING_OPACITY),
+        ];
+        assert_eq!(rust.len(), SLOTS);
+        // the container check mounts nidhogg/ alone, so the Lisp file is absent there; CI and the host have it
+        let lisp = std::fs::read_to_string(root.join("lisp/glitnir.el")).ok();
+        let table = lisp.as_deref().map(|l| {
+            let start = l.find("(defconst glitnir--chrome-slots").unwrap();
+            &l[start..start + l[start..].find("\n  \"").unwrap()]
+        });
+        if table.is_none() {
+            eprintln!("lisp/glitnir.el is not mounted: checking the header against Rust only");
+        }
+        let header = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("include/nhglue.h"),
+        )
+        .unwrap();
+        for (i, (name, slot)) in rust.iter().enumerate() {
+            assert_eq!(*slot, i, "{name}");
+            if let Some(t) = table {
+                assert!(t.contains(&format!("({name} . {i})")), "lisp: {name}");
+            }
+            let define = format!(
+                "#define NHG_CHROME_{} ",
+                name.to_uppercase().replace('-', "_")
+            );
+            let line = header.lines().find(|l| l.starts_with(&define)).unwrap();
+            assert_eq!(
+                line[define.len()..].trim().parse::<usize>(),
+                Ok(i),
+                "{name}"
+            );
+        }
+        let n = format!("#define NHG_CHROME_SLOTS      {SLOTS}");
+        assert!(header.contains(&n));
+        if let Some(t) = table {
+            assert_eq!(t.matches(" . ").count(), SLOTS);
+        }
+    }
+
     /// The child frames' part of the header (its own table, so the tasks' additions merge apart).
     #[test]
     fn child_header_matches() {
         use nhglue::child::*;
         use nhglue::ffi::{nhg_child_border, nhg_child_chrome, nhg_child_raise, nhg_child_set};
-        type C = NhgChrome;
         let rows: &[(&str, i64)] = &[
             ("NHG_CHILD_VISIBLE", NHG_CHILD_VISIBLE.into()),
             ("NHG_CHILD_NO_FOCUS", NHG_CHILD_NO_FOCUS.into()),
-            ("sizeof (C)", size_of::<C>() as i64),
-            ("offsetof (C, radius)", offset_of!(C, radius) as i64),
-            ("offsetof (C, oy)", offset_of!(C, oy) as i64),
-            ("offsetof (C, opacity)", offset_of!(C, opacity) as i64),
-            ("offsetof (C, rgb)", offset_of!(C, rgb) as i64),
             ("sizeof (NhgFrameGeom)", size_of::<NhgFrameGeom>() as i64),
             (
                 "offsetof (NhgFrameGeom, window)",
@@ -769,14 +831,14 @@ PROTO (nhg_set_cursor_theme, int32_t (NhgDisplay *, const char *, uint32_t));";
         ];
         let decls = "\
 #define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
-typedef NhgChrome C;
 PROTO (nhg_child_set, int32_t (NhgDisplay *, uint64_t, uint64_t, int32_t, int32_t, uint32_t));
-PROTO (nhg_child_chrome, int32_t (NhgDisplay *, uint64_t, const NhgChrome *));
+PROTO (nhg_child_chrome, int32_t (NhgDisplay *, uint64_t, const float *, size_t));
 PROTO (nhg_child_border, int32_t (NhgDisplay *, uint64_t, int32_t, uint32_t));
 PROTO (nhg_child_raise, int32_t (NhgDisplay *, uint64_t, int32_t, int32_t));";
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u64, i32, i32, u32) -> i32 =
             nhg_child_set;
-        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *const C) -> i32 = nhg_child_chrome;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *const f32, usize) -> i32 =
+            nhg_child_chrome;
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32, u32) -> i32 = nhg_child_border;
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32, i32) -> i32 = nhg_child_raise;
         let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
@@ -1153,6 +1215,32 @@ PROTO (nhg_layers_count, int32_t (NhgDisplay *, uint64_t));";
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_layers_count;
         let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
         let got = probe(decls, &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+    }
+
+    /// The window list's entry: the window box, the outer rectangle and the card's slots, laid out as C has them.
+    #[test]
+    fn layer_window_layout() {
+        use nhglue::chrome::SLOTS;
+        use nhglue::layers::NhgLayerWindow as L;
+        let rows: &[(&str, i64)] = &[
+            ("sizeof (L)", size_of::<L>() as i64),
+            ("_Alignof (L)", align_of::<L>() as i64),
+            ("offsetof (L, seq)", offset_of!(L, seq) as i64),
+            ("offsetof (L, rect)", offset_of!(L, rect) as i64),
+            ("offsetof (L, outer)", offset_of!(L, outer) as i64),
+            ("offsetof (L, card)", offset_of!(L, card) as i64),
+            (
+                "sizeof (((L *) 0)->card)",
+                (SLOTS * size_of::<f32>()) as i64,
+            ),
+            ("NHG_CHROME_SLOTS", SLOTS as i64),
+        ];
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe("typedef NhgLayerWindow L;", &exprs);
         assert_eq!(got.len(), rows.len());
         for ((expr, rust), c) in rows.iter().zip(got) {
             assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");

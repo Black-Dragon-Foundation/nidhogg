@@ -239,8 +239,9 @@ this call.  PLIST is then sent, and its reply goes to the process's buffer as on
 (defvar gui-runner--cast-session nil "The ScreenCast session's D-Bus path, held by Emacs's own connection.")
 
 (defun gui-runner--pw-client-p (name)
-  "Non-nil when pipewire lists a client whose description holds NAME."
-  (eq 0 (call-process "sh" nil nil nil "-c" (format "timeout 5 pw-cli ls Client | grep -q %s" name))))
+  "Non-nil when pipewire lists a client whose description holds NAME, in any case.
+WirePlumber 0.5 names its clients \"WirePlumber\" and lists no binary."
+  (eq 0 (call-process "sh" nil nil nil "-c" (format "timeout 5 pw-cli ls Client | grep -qi %s" name))))
 
 (defun gui-runner--cast-start ()
   "Start pipewire, wireplumber and a ScreenCast session on the headless monitor (once per run)."
