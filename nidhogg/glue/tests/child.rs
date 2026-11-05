@@ -610,6 +610,27 @@ mod child {
         close(d);
     }
 
+    /// A top-level the compositor decorates sends its own area as its window geometry with its first picture.  With
+    /// none, xdg-shell takes the bounds of the surface and its subsurfaces: a child's shadow past the root's corner made
+    /// the compositor suggest a larger size, the frame took it, and each configure grew it again.  Pattern B: the
+    /// manual clock gates the frames.
+    #[test]
+    fn toplevel_geometry_leaves_child_shadow_out() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let d = open(&rec);
+        let root = toplevel(d, 200, 100);
+        let mut r = surface(d, root, 200, 100);
+        // the shadow's margin (8 on the sides, 6 above) reaches past the root's top-left corner
+        let c = child(d, root, 4, 3, 60, 40);
+        assert_eq!(chrome(d, c, &SHADOW), 1);
+        assert_eq!(lay(d, c).0, 1);
+        let mut k = surface(d, c, 60, 40);
+        show(&rec, d, &mut [(&mut r, 0), (&mut k, root)]);
+        rec.wait_node(c, |n| n.contains("\"position\":[-4,-3]"));
+        rec.wait_node(root, |n| n.contains("\"geometry\":[0,0,200,100]"));
+        close(d);
+    }
+
     /// The input region is the native area inside the shadow margin, in logical pixels, sent at the publish step and
     /// applied with the root's commit; without a margin it is the whole surface again.
     #[test]
