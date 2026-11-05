@@ -34,7 +34,11 @@
 #                     and their workloads
 #   fade-*, palette-* the motion and blurred-palette rows, from the child frame's glitnir-stats; judged at 2880x1800@2
 #                     only.  A row whose workload left its key empty (no tick, no recompute) is skipped, never a pass
-#   BUDGETS_MEMORY   the container's memory cap (default 6g); BUDGETS_CPUSET pins it (podman --cpuset-cpus)
+#   card-*            the window-card rows: five windows (an explorer, two editor groups, an agent panel, a terminal) with
+#                     card parameters, 200 keys with newlines in each editor group, then a paced scroll of one; the
+#                     compose deltas are cards on minus cards off in the same session.  Judged at drgnx:2880x1800@2
+#                     (--config drgnx --scale 2 --size 2880x1800), report elsewhere
+#   BUDGETS_MEMORY  the container's memory cap (default 6g); BUDGETS_CPUSET pins it (podman --cpuset-cpus)
 #
 # The speed sessions (V2's three bars, C1, C4) run each side with WAYLAND_DEBUG=client and read the traces with
 # wl-latency.el: key-to-commit and frame intervals.  They also run the stall watchdog (threshold 100 ms) and count its
@@ -90,10 +94,20 @@ fade-idle-commits|0|budget|the budgets table: no commit from 1 period after the 
 palette-filter-compose-p95|3|budget|the budgets table: compose with the blur|2880x1800@2
 palette-filter-input-p95|16|budget|the budgets table: key to commit in the blurred palette|2880x1800@2
 palette-typing-backdrop-px|0|budget|the budgets table: typing recomputes no blur|2880x1800@2
-palette-beneath-blur-p95|1.5|budget|the budgets table: recomputing the blur after a change beneath|2880x1800@2"
+palette-beneath-blur-p95|1.5|budget|the budgets table: recomputing the blur after a change beneath|2880x1800@2
+card-scroll-120-dropped|0|gate|V2 section 1 line 25: no dropped frame at 120 Hz, the editor card scrolling on the look|drgnx:2880x1800@2
+card-scroll-120-presenter-late|0|gate|V2 section 1 line 25: presenter misses only, the editor card scrolling|drgnx:2880x1800@2
+card-scroll-own-output|1|budget|the scrolled editor card is its own output for the whole scroll (1 + the steps it was not)|drgnx:2880x1800@2
+card-latency-typing|16|gate|V2 section 1 line 26 (key to commit p95), typing in an editor card|drgnx:2880x1800@2
+card-typing-stall-p99|8.33|report|the budgets table; not a V2 bar|drgnx:2880x1800@2
+card-typing-compose-delta|0.1|budget|the budgets table: cards add at most 0.1 ms to a typing frame (compose p95, cards on minus off)|drgnx:2880x1800@2
+card-full-compose-delta|1.0|budget|the budgets table: cards add at most 1 ms to a whole-frame compose (p95, cards on minus off)|drgnx:2880x1800@2"
 # the motion and palette rows, for the static self-test
 EFFECT_ROWS="fade-interval-p95 fade-overrun-max fade-compose-p95 fade-idle-commits palette-filter-compose-p95 palette-filter-input-p95 palette-typing-backdrop-px palette-beneath-blur-p95"
 EFFECT_CELL=2880x1800@2
+# the window-card rows (ROW:KIND): they run with drgnx's configuration, so their cell is drgnx's
+CARD_ROWS="card-scroll-120-dropped:gate card-scroll-120-presenter-late:gate card-scroll-own-output:budget card-latency-typing:gate card-typing-stall-p99:report card-typing-compose-delta:budget card-full-compose-delta:budget"
+CARD_CELL=drgnx:2880x1800@2
 
 pa= scale=1 size=1920x1080 runs=5 out=budgets.eld window=60 steps=200 mframes=600 msize=3840x2160 selftest=0 mode=host refresh=120 sscroll=10 fixed=2000 nh_env=() HAS_W3=0 reference=0 config=q drgnx=
 while [ $# -gt 0 ]; do
@@ -133,7 +147,15 @@ if [ "$selftest" = 1 ] && [ -z "$pa" ]; then
     [ "$kd" = budget ] || { echo "budgets self-test: $rr is $kd, not budget" >&2; bad=1; }
     [ "$tc" = "$EFFECT_CELL" ] || { echo "budgets self-test: $rr is judged at '$tc', not $EFFECT_CELL" >&2; bad=1; }
   done
-  for w in fade_bench palette_bench; do
+  for rk in $CARD_ROWS; do
+    rr=${rk%:*}; want=${rk#*:}
+    line=$(printf '%s\n' "$TARGETS" | grep "^$rr|") || { echo "budgets self-test: no $rr row" >&2; bad=1; continue; }
+    IFS='|' read -r _ tg kd _ tc <<< "$line"
+    case $tg in ''|*[!0-9.]*) echo "budgets self-test: $rr has no numeric target" >&2; bad=1 ;; esac
+    [ "$kd" = "$want" ] || { echo "budgets self-test: $rr is $kd, not $want" >&2; bad=1; }
+    [ "$tc" = "$CARD_CELL" ] || { echo "budgets self-test: $rr is judged at '$tc', not $CARD_CELL" >&2; bad=1; }
+  done
+  for w in fade_bench palette_bench card_bench; do
     grep -q "^$w()" "$self" || { echo "budgets self-test: no $w workload" >&2; bad=1; }
   done
   for k in tick-interval-ms leg-overrun-ms blur-ms; do
@@ -224,7 +246,10 @@ if [ "$mode" = container ]; then
                               freeze-watchdog pss-compositor
                               fade-interval-p95 fade-overrun-max fade-compose-p95 fade-idle-commits
                               palette-filter-compose-p95 palette-filter-input-p95 palette-typing-backdrop-px
-                              palette-beneath-blur-p95)))
+                              palette-beneath-blur-p95
+                              card-scroll-120-dropped card-scroll-120-presenter-late card-scroll-own-output
+                              card-latency-typing card-typing-stall-p99 card-typing-compose-delta
+                              card-full-compose-delta)))
           (unless (memq want seen) (error "no %s row" want)))
         (when (< n 10) (error "only %d rows" n))
         (princ (format "budgets self-test: %d rows read back\n" n))))' "$out" || rc=1
@@ -593,6 +618,82 @@ palette_bench() {
   stop_all
 }
 
+# card_keys: 200 keys with a newline among every 20, into each editor card in turn; sets crc (wtype's worst exit)
+card_keys() {
+  local g str
+  str=$(awk 'BEGIN { for (i = 1; i <= 200; i++) printf "%s", (i % 20 == 0) ? "\n" : sprintf("%c", 96 + i % 26); printf "z" }')
+  crc=0
+  for g in 1 2; do
+    cl "(budgets--cards-focus $g)" > /dev/null
+    wtype -d 20 -- "$str" 2> "$run/wtype.err" || crc=$?
+  done
+}
+
+# card_bench: five windows (an explorer, two editor groups, an agent panel, a terminal) on the root frame, each a card.
+# Cards off, then on, in the one session: 200 keys in each editor group (the root's compose p95 over them) and a
+# whole-frame redraw bench; the deltas are on minus off.  With the cards on: key to commit and the stall from the trace,
+# then a paced scroll of the first editor group (late frames, the presenter's misses, whether the group stayed its own
+# output).
+card_bench() {
+  local r off_t on_t off_f on_f o1 o2 pt1 pt2 x
+  nh_env=(WAYLAND_DEBUG=client)
+  start_sway "$size" "$scale" "$refresh" && start_nidhogg "$pa" || { nh_env=(); return 1; }
+  nh_env=()
+  r=$(cl "(budgets--cards-open \"$checkout/src/xdisp.c\" \"$run/big.txt\")" | tr -d '"')
+  case $r in
+    "ok "*) ;;
+    *) for x in $CARD_ROWS; do rec "${x%:*}" A "SKIP the card workload did not run: $(echo "$r" | head -c 100 | tr '"\n' "' ")"; done
+       stop_all; return 0 ;;
+  esac
+  cl '(budgets--cards-set nil)' > /dev/null
+  cl '(glitnir-stats nil t)' > /dev/null
+  card_keys
+  off_t=$(cl '(budgets--root-p95)' | tr -d '" ')
+  off_f=$(cl '(format "%s" (plist-get (nhwl--bench-full-redraw 100) :compose-p95))' | tr -d '" ()')
+  cl '(budgets--cards-set t)' > /dev/null
+  cl '(glitnir-stats nil t)' > /dev/null
+  o1=$(stat -c %s "$run/nh.err")
+  card_keys
+  o2=$(stat -c %s "$run/nh.err")
+  on_t=$(cl '(budgets--root-p95)' | tr -d '" ')
+  if [ "$crc" != 0 ]; then
+    for x in card-latency-typing card-typing-stall-p99 card-typing-compose-delta; do rec "$x" A "SKIP wtype did not reach the frame (exit $crc)"; done
+  else
+    rec card-typing-compose-delta A "$(awk -v a="$on_t" -v b="$off_t" 'BEGIN { if (a ~ /^[0-9.]+$/ && b ~ /^[0-9.]+$/) printf "%.4f", a - b }')"
+    r=$(rep typing "$o1" "$o2" 5)
+    case $r in
+      "(:n "*) rec card-latency-typing A "$(plval :p95 <<< "$r")"; rec card-typing-stall-p99 A "$(plval :p99 <<< "$r")" ;;
+      *) for x in card-latency-typing card-typing-stall-p99; do rec "$x" A "SKIP no key-to-commit pair in the trace"; done ;;
+    esac
+  fi
+  on_f=$(cl '(format "%s" (plist-get (nhwl--bench-full-redraw 100) :compose-p95))' | tr -d '" ()')
+  rec card-full-compose-delta A "$(awk -v a="$on_f" -v b="$off_f" 'BEGIN { if (a ~ /^[0-9.]+$/ && b ~ /^[0-9.]+$/) printf "%.4f", a - b }')"
+  # the paced scroll of the first editor group
+  cl '(budgets--cards-focus 1)' > /dev/null
+  pt='(let ((s (nhwl-presenter-stats))) (format "%s %s" (plist-get s :presenter-late) (plist-get s :presenter-frames)))'
+  pt1=$(cl "$pt" | tr -d '"')
+  o1=$(stat -c %s "$run/nh.err")
+  r=$(cl "(budgets--cards-scroll $sscroll $refresh)" | tr -d '"')
+  o2=$(stat -c %s "$run/nh.err")
+  pt2=$(cl "$pt" | tr -d '"')
+  case $r in
+    "ok "*) set -- $r; rec card-scroll-own-output A "$((1 + $2))" ;;
+    *) rec card-scroll-own-output A "SKIP the scroll did not run: $(echo "$r" | head -c 100 | tr '"\n' "' ")" ;;
+  esac
+  r=$(rep scroll "$o1" "$o2" 0 "$(awk -v hz="$refresh" 'BEGIN { printf "%.4f", 1000 / hz }')")
+  case $r in
+    "(:frames "*) rec card-scroll-120-dropped A "$(plval :per1000 <<< "$r")" ;;
+    *) rec card-scroll-120-dropped A "SKIP fewer than two damaged commits in the trace" ;;
+  esac
+  if [[ "$pt1 $pt2" =~ ^[0-9]+\ [0-9]+\ [0-9]+\ [0-9]+$ ]]; then
+    rec card-scroll-120-presenter-late A "$(awk -v a="$pt1" -v b="$pt2" 'BEGIN { split(a, x, " "); split(b, y, " ");
+      f = y[2] - x[2]; printf "%.2f", f > 0 ? (y[1] - x[1]) * 1000 / f : 0 }')"
+  else
+    rec card-scroll-120-presenter-late A "SKIP nhwl-presenter-stats has no :presenter-late ($pt1 / $pt2)"
+  fi
+  stop_all
+}
+
 # ---- inputs: the driver, the 10k-line file
 cat > "$run/driver.el" <<'EOF'
 ;;; budgets driver: no timers, so idle really is idle.
@@ -678,6 +779,53 @@ cat > "$run/driver.el" <<'EOF'
              (format "ok %s" (budgets--stat :blur-ms :p95))
            "none")
     (delete-frame budgets--c t)))
+
+;; the card workload: the root frame in five windows, each a card when `budgets--cards-set' says so
+(defvar budgets--cw nil "The five windows: explorer, editor 1, editor 2, agent panel, terminal.")
+(defun budgets--cards-open (file-a file-b)
+  "Five windows on the selected frame; the editor groups show FILE-A (fontified) and FILE-B.  \"ok 5\"."
+  (delete-other-windows)
+  (let* ((e1 (selected-window)) (term (split-window e1 nil 'below))
+         (ex (split-window e1 nil 'left)) (e2 (split-window e1 nil 'right)) (ag (split-window e2 nil 'right)))
+    (set-window-buffer e1 (find-file-noselect file-a))
+    (set-window-buffer e2 (find-file-noselect file-b))
+    (with-current-buffer (window-buffer e1) (font-lock-mode 1) (font-lock-ensure) (goto-char (point-min)))
+    (with-current-buffer (window-buffer e2) (goto-char (point-min)))
+    (set-window-buffer ex (get-buffer-create " *budgets-explorer*"))
+    (set-window-buffer ag (get-buffer-create " *budgets-agent*"))
+    (set-window-buffer term (get-buffer-create " *budgets-terminal*"))
+    (setq budgets--cw (list ex e1 e2 ag term)))
+  (redisplay t)
+  (format "ok %d" (length budgets--cw)))
+(defun budgets--cards-set (on)
+  "Give the five windows a card (ON) or take it away."
+  (dolist (w budgets--cw)
+    (set-window-parameter w 'corner-radius (and on 10))
+    (set-window-parameter w 'shadow (and on '(:blur 16 :offset (0 . 4) :opacity 0.35)))
+    (set-window-parameter w 'ring (and on '("#808080" . 0.4))))
+  (redisplay t) (sit-for 0.3)
+  t)
+(defun budgets--cards-focus (n)
+  "Select editor group N (1 or 2)."
+  (select-window (nth n budgets--cw))
+  (redisplay t)
+  t)
+(defun budgets--root-p95 ()
+  "The root frame's compose p95 since the last reset, or \"nil\"."
+  (format "%s" (plist-get (plist-get (glitnir-stats) :compose-ms) :p95)))
+(defun budgets--cards-scroll (secs hz)
+  "One line a step, HZ steps a second for SECS seconds, in the selected card.
+\"ok MISSES\": the steps after the first two at which the frame had no layer of its own beyond its cards."
+  (let ((per (/ 1.0 hz)) (end (+ (float-time) secs)) (next (float-time)) (n 0) (misses 0) d)
+    (goto-char (point-min))
+    (while (< (float-time) end)
+      (condition-case nil (scroll-up 1) (end-of-buffer (goto-char (point-min))))
+      (redisplay t)
+      (setq n (1+ n))
+      (when (and (> n 2) (<= (nhwl--scroll-layers) (length budgets--cw))) (setq misses (1+ misses)))
+      (setq next (+ next per) d (- next (float-time)))
+      (if (> d 0) (sleep-for d) (setq next (float-time))))
+    (format "ok %d" misses)))
 EOF
 awk 'BEGIN { for (i = 1; i <= 10000; i++) printf "line %05d the quick brown fox jumps over the lazy dog, again and again\n", i }' > "$run/big.txt"
 
@@ -704,6 +852,7 @@ for ((ri = 1; ri <= runs; ri++)); do
   motion || { echo "budgets.sh: the motion session failed"; exit 1; }
   fade_bench || { echo "budgets.sh: the fade session failed"; exit 1; }
   palette_bench || { echo "budgets.sh: the palette session failed"; exit 1; }
+  card_bench || { echo "budgets.sh: the card session failed"; exit 1; }
 done
 
 # ---- aggregate: median and SD per row and side, then the verdict against the row's target
@@ -754,6 +903,10 @@ TBL=$TARGETS awk -F'|' -v cell="$cellid" -v ref="$reference" '
     unit["fade-interval-p95"] = "ms"; unit["fade-overrun-max"] = "ms"; unit["fade-compose-p95"] = "ms"; unit["fade-idle-commits"] = "commits"
     unit["palette-filter-compose-p95"] = "ms"; unit["palette-filter-input-p95"] = "ms"; unit["palette-typing-backdrop-px"] = "device px"
     unit["palette-beneath-blur-p95"] = "ms"
+    unit["card-scroll-120-dropped"] = "late frames per 1000"; unit["card-scroll-120-presenter-late"] = "late frames per 1000, presenter at fault"
+    unit["card-scroll-own-output"] = "1 + scroll steps without its own output"; unit["card-latency-typing"] = "ms p95 (WAYLAND_DEBUG trace)"
+    unit["card-typing-stall-p99"] = "ms (key to commit)"; unit["card-typing-compose-delta"] = "ms (compose p95, cards on minus off)"
+    unit["card-full-compose-delta"] = "ms (compose p95, cards on minus off)"
     for (k = 1; k <= nrows; k++) {
       row = order[k]; u = unit[row]
       if (u == "") u = (row ~ /^cpu-/) ? "% of one core" : (row ~ /^power-/) ? "W" : (row ~ /^pss-/) ? "kB" : "-"
@@ -775,7 +928,7 @@ TBL=$TARGETS awk -F'|' -v cell="$cellid" -v ref="$reference" '
         if (cnt[row, "C"]) line = line " :c " pair(row, "C")
         print line " :target " (target == "" ? "nil" : target) " :kind " kind " :source " quote(source) " :verdict skip)"; continue
       }
-      if (row ~ /^(typing-stall|latency-typing|scroll-120|main-wait|cpu-typing-inline|fade-|palette-)/) line = line " :cell " quote(cell)
+      if (row ~ /^(typing-stall|latency-typing|scroll-120|main-wait|cpu-typing-inline|fade-|palette-|card-)/) line = line " :cell " quote(cell)
       a = med(row, "A")
       line = line " :a " pair(row, "A")
       if (cnt[row, "C"]) line = line " :c " pair(row, "C")
