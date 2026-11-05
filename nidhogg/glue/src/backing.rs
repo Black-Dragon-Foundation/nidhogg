@@ -10,6 +10,7 @@
 //! **A frame's key** is its Glitnir root id, which [`Backings::ensure`] gives it (C keeps it in `glitnir_id`).  A shell
 //! window id is not stable for a frame: popup, tip and child frames get a new window each time they are shown.
 
+use glitnir::compose::{Composer, SourceView, TargetView, compose_committed};
 use glitnir::ffi::{
     glitnir_damage_add_n, glitnir_damage_all, glitnir_damage_forget, glitnir_layer_upsert,
     glitnir_root_drop, glitnir_root_new, glitnir_scroll, glitnir_stats_forget,
@@ -233,6 +234,38 @@ pub fn premultiply(rgb: u32, alpha: f64) -> u32 {
     let a = clamp(alpha);
     let channel = |s: u32| short(clamp(f64::from(((rgb >> s) & 0xff) * 257) / 65535.0) * a);
     (short(a) >> 8 << 24) | (channel(16) >> 8 << 16) | (channel(8) & 0xff00) | (channel(0) >> 8)
+}
+
+/// Frame `key`'s picture as the presenter composes it: its committed scene drawn from the backing.  `None` (the backing
+/// is the picture) for a frame whose layer is not all of its backing (a child frame's shadow margin) or that has no
+/// scene; it never takes the presenter's lock or its composer.
+fn composed(key: u64, f: &Frame) -> Option<Vec<u32>> {
+    if f.src != (0, 0) || (f.layer_w, f.layer_h) != (f.w, f.h) || f.layer_s120 == 0 {
+        return None;
+    }
+    let scene = glitnir::scene::with(key, |s| Ok(s.snapshot())).ok()?;
+    let (scale, stride, all) = (
+        f64::from(f.layer_s120) / 120.0,
+        f.w as usize,
+        Rect::new(0, 0, f.w, f.h),
+    );
+    let src = SourceView {
+        layer: key,
+        data: &f.pixels,
+        stride,
+        width: f.w,
+        height: f.h,
+        scale,
+    };
+    let mut out = f.pixels.clone();
+    let mut t = TargetView {
+        data: &mut out,
+        stride,
+        rect: all,
+        scale,
+    };
+    compose_committed(&scene, &mut Composer::new(), &mut t, &[all], &[src]).ok()?;
+    Some(out)
 }
 
 impl Frame {
@@ -480,8 +513,10 @@ impl Backings {
         Ok(f.view())
     }
 
-    /// Copy the frame's `w` x `h` backing into `dst`, rows `stride` bytes apart (`glitnir-snapshot`'s copy, moved
-    /// from `nhwl_snapshot`).  `NHG_E_STATE` without a backing of that size.
+    /// Copy the frame's `w` x `h` picture into `dst`, rows `stride` bytes apart (`glitnir-snapshot`'s copy, moved
+    /// from `nhwl_snapshot`): the backing with the frame's committed scene composed over it, as the presenter shows
+    /// it (a card's corners, shadow and ring are the scene's, not the backing's).  `NHG_E_STATE` without a backing of
+    /// that size.
     pub fn snapshot_into(
         &mut self,
         key: u64,
@@ -494,7 +529,10 @@ impl Backings {
         if f.pixels.is_empty() || (f.w, f.h) != (w, h) {
             return Err(NHG_E_STATE);
         }
-        copy_rows(&f.pixels, w as usize, h as usize, dst, stride)
+        match composed(key, f) {
+            Some(px) => copy_rows(&px, w as usize, h as usize, dst, stride),
+            None => copy_rows(&f.pixels, w as usize, h as usize, dst, stride),
+        }
     }
 
     /// The frame is gone: its scene, damage and statistics go, and its backing is freed.  From
