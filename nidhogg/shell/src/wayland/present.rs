@@ -1,8 +1,9 @@
 //! The presenter: `present_begin` hands out a buffer of the window's pool, `present_commit` shows it.
 //!
-//! A commit attaches the buffer, damages it (buffer coordinates), sets the viewport destination to the logical size and
-//! `buffer_scale` 1 (the integer scale without a viewporter), requests a frame callback (and presentation feedback
-//! for the statistics) and commits.
+//! A commit attaches the buffer, damages it (buffer coordinates), sets the viewport destination to the logical size the
+//! buffer maps onto exactly (cutting the buffer's last device row or column with the viewport's source when no logical
+//! size does, `scale::viewport_size`) and `buffer_scale` 1 (the integer scale without a viewporter), requests a frame
+//! callback (and presentation feedback for the statistics) and commits.
 //!
 //! One pacer per tree decides when the host may draw: a tree is a root (a top-level window or a popup) and its child
 //! windows, which are sync subsurfaces committed before their parents, the root last.  Children have buffers but no
@@ -50,12 +51,13 @@ use crate::wayland::layers::{ContentLayer, LayerJob};
 use crate::wayland::presenter::{Counters, DEFAULT_REFRESH_NS, Link, Wire};
 use crate::wayland::publish::{Fed, Stage};
 use crate::wayland::reader::ReaderState;
-use crate::wayland::scale::{SCALE_ONE, buffer_size};
+use crate::wayland::scale::{SCALE_ONE, buffer_size, viewport_size};
 use crate::wayland::shm::ShmBuf;
 use crate::wayland::{MainState, WaylandShell};
 use glitnir::geom::Rect;
 use glitnir::pool::{BufferSlot, GROWN_BUFFERS, Pool, merged};
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
 use std::time::{Duration, Instant};
 use wayland_client::protocol::wl_buffer::{self, WlBuffer};
@@ -86,6 +88,8 @@ pub(crate) struct Commit {
     pub(crate) alpha: Option<WpAlphaModifierSurfaceV1>,
     /// The surface's scale now, times 120 (the viewport destination and the buffer scale follow it).
     pub(crate) scale120: u32,
+    /// The viewport's source cuts the buffer (`scale::viewport_size`).
+    pub(crate) cut: std::sync::atomic::AtomicBool,
 }
 
 /// Double-buffered state the host asked for, waiting for the commit that carries it.
@@ -632,9 +636,18 @@ impl Present {
         self.send_recorded(true, wire.compositor.as_ref(), &wire.rqh);
         let (surface, scale) = (&self.commit.surface, self.commit.scale120);
         if let Some(viewport) = &self.commit.viewport {
-            let s = i64::from(scale.max(1));
-            let logical = |d: i32| ((i64::from(d) * 120 + s / 2) / s) as i32;
-            viewport.set_destination(logical(buf.w), logical(buf.h));
+            // a destination the buffer maps onto exactly, the buffer cut to it when no logical size does (an odd
+            // buffer at scale 2): never resampled; the source is set while it cuts, and unset once it no longer does
+            let (lw, cw) = viewport_size(buf.w, scale);
+            let (lh, ch) = viewport_size(buf.h, scale);
+            let cut = (cw, ch) != (buf.w, buf.h);
+            if cut {
+                viewport.set_source(0.0, 0.0, f64::from(cw), f64::from(ch));
+            } else if self.commit.cut.load(Ordering::Relaxed) {
+                viewport.set_source(-1.0, -1.0, -1.0, -1.0);
+            }
+            self.commit.cut.store(cut, Ordering::Relaxed);
+            viewport.set_destination(lw, lh);
             surface.set_buffer_scale(1);
         } else {
             surface.set_buffer_scale(((scale + 60) / 120).max(1) as i32);
@@ -1225,6 +1238,7 @@ impl MainState {
             viewport,
             alpha: None,
             scale120,
+            cut: Default::default(),
         };
         // a child (a sync subsurface) is paced by its tree's root, and posts nothing itself
         if let Some(parent) = self.children.get(&id).map(|c| c.parent) {
@@ -1288,6 +1302,8 @@ impl MainState {
             viewport,
             alpha,
             scale120: p.commit.scale120,
+            // a new viewport has no source
+            cut: Default::default(),
         };
         p.remade(commit);
     }
