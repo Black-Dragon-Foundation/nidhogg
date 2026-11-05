@@ -981,7 +981,7 @@ fn count_frame(stage: &Stage, root: u64, r: &Present) {
 
 /// Commit the child windows under `id`, deepest first (a sync child shows once every ancestor committed after it):
 /// each with its composed buffer, else bare when it owes a commit.  Each commit makes its ancestors owe one, and a
-/// buffer makes the root's commit paced.  `r` is the locked root.
+/// buffer makes the root's commit paced.  `r` is the locked root.  `true` when a child committed a buffer.
 fn send_kids(
     stage: &mut Stage,
     wire: &Wire,
@@ -989,9 +989,10 @@ fn send_kids(
     id: u64,
     r: &mut Present,
     jobs: &mut Vec<Job>,
-) {
+) -> bool {
+    let mut any = false;
     for k in kids_of(kids, id) {
-        send_kids(stage, wire, kids, k.id, r, jobs);
+        any |= send_kids(stage, wire, kids, k.id, r, jobs);
         let mut p = lock(&k.present);
         if p.retired {
             // its job, if any, drops with the others: the buffer goes with the window
@@ -1017,6 +1018,7 @@ fn send_kids(
         if !(buffer || bare) {
             continue;
         }
+        any |= buffer;
         r.tree_content |= buffer;
         // every ancestor up to the root owes a commit now
         let mut cur = k.parent;
@@ -1026,6 +1028,7 @@ fn send_kids(
         }
         r.owed = true;
     }
+    any
 }
 
 /// Present root `root`'s tree (`tree`, its `Present`) by the present path's rule; `true` when the root committed a
@@ -1147,7 +1150,7 @@ fn send(
         return false;
     }
     let kids = r.kids.clone();
-    send_kids(stage, wire, &kids, root, r, &mut jobs);
+    let kids_shown = send_kids(stage, wire, &kids, root, r, &mut jobs);
     let root_shows = r.configured
         && jobs
             .iter()
@@ -1178,6 +1181,9 @@ fn send(
     if !shown && r.owes() {
         r.commit_bare(tree, wire);
         Counters::add(&stage.stats.bare_commits, 1);
+    }
+    if kids_shown {
+        stage.kids_shown(root);
     }
     // a child's job left over (the child went meanwhile, or its buffer could not be committed) goes back or drops
     put_back_all(tree, r, jobs, Vec::new());
