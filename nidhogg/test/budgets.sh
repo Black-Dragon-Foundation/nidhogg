@@ -625,7 +625,7 @@ card_keys() {
   crc=0
   for g in 1 2; do
     cl "(budgets--cards-focus $g)" > /dev/null
-    wtype -d 20 -- "$str" 2> "$run/wtype.err" || crc=$?
+    wtype -d 100 -- "$str" 2> "$run/wtype.err" || crc=$?
   done
 }
 
@@ -685,9 +685,10 @@ card_bench() {
     "(:frames "*) rec card-scroll-120-dropped A "$(plval :per1000 <<< "$r")" ;;
     *) rec card-scroll-120-dropped A "SKIP fewer than two damaged commits in the trace" ;;
   esac
-  if [[ "$pt1 $pt2" =~ ^[0-9]+\ [0-9]+\ [0-9]+\ [0-9]+$ ]]; then
+  set -- $pt1 $pt2
+  if [ $# = 4 ] && [[ "$*" =~ ^[0-9]+\ [0-9]+\ [0-9]+\ [0-9]+$ ]]; then
     rec card-scroll-120-presenter-late A "$(awk -v a="$pt1" -v b="$pt2" 'BEGIN { split(a, x, " "); split(b, y, " ");
-      f = y[2] - x[2]; printf "%.2f", f > 0 ? (y[1] - x[1]) * 1000 / f : 0 }')"
+      f = y[2] - x[2]; printf "%.2f", (f > 0) ? (y[1] - x[1]) * 1000 / f : 0 }')"
   else
     rec card-scroll-120-presenter-late A "SKIP nhwl-presenter-stats has no :presenter-late ($pt1 / $pt2)"
   fi
