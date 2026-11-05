@@ -682,17 +682,22 @@ impl Scene {
                     continue;
                 }
                 match (o, n) {
-                    // a window card that only changed its card or chrome: where the card draws, not the window
+                    // a window card that only changed its card or chrome, or its place in the stack: where the card
+                    // draws, not the window, whose inside shows its frame's pixels in any order
                     (Some(o), Some(n))
                         if !rescaled
-                            && !self.restacked.contains(&id)
                             && o.kind == Kind::Window
                             && n.kind == Kind::Window
                             && o.rect == n.rect
                             && o.scale == n.scale
                             && (o.card.is_some() || n.card.is_some()) =>
                     {
-                        out.extend(card_change(o, n));
+                        if self.restacked.contains(&id) {
+                            out.extend(card_patches(o));
+                            out.extend(card_patches(n));
+                        } else {
+                            out.extend(card_change(o, n));
+                        }
                     }
                     _ => {
                         out.extend(o.map(|p| p.bounds));
