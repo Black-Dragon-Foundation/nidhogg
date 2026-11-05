@@ -49,7 +49,7 @@ use glitnir::kernels::kernels;
 use glitnir::motion::{Kind, Motion, MotionSpec, Sample};
 use glitnir::pool::IDLE_NS;
 use glitnir::stats::StatsEntry;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -632,6 +632,8 @@ pub struct Stage {
     pub hide_hold_ns: u64,
     /// Each root's earliest key time that no commit has shown yet.
     keys: HashMap<u64, u64>,
+    /// The roots whose tree commit being sent shows a child's buffer with a packet's drawing in it: the key is spent.
+    answered: HashSet<u64>,
     /// Each root's newest packet applied to the fronts (its sequence number): a content ack recorded before it may
     /// ride a buffer composed now.
     applied: HashMap<u64, u64>,
@@ -1214,10 +1216,13 @@ impl Stage {
         }
     }
 
-    /// A tree commit of root `root` showed a child's buffer: the key it answered is spent, whether or not the root
-    /// had a buffer of its own in it (a child's entry only reads the key, the root's takes it).
+    /// A tree commit of root `root` showed a child's buffer: the key is spent when a child showed what a packet drew
+    /// (a fade tick alone answers no key), whether or not the root had a buffer of its own in it (a child's entry only
+    /// reads the key, the root's takes it).
     pub fn kids_shown(&mut self, root: u64) {
-        self.keys.remove(&root);
+        if self.answered.remove(&root) {
+            self.keys.remove(&root);
+        }
     }
 
     /// Surface `id`'s stats entry for a commit that showed what waited, with the tree's key time (a child's commit
@@ -1268,6 +1273,10 @@ impl Stage {
         self.composer.fill_stats(s.glitnir_root, &mut e);
         if !ghost {
             glitnir::stats::record(s.glitnir_root, e);
+        }
+        // a child's drawing from a packet answers its tree's key; its tree commit spends it (`kids_shown`)
+        if s.root != id && s.draw_start_ns != 0 {
+            self.answered.insert(s.root);
         }
         s.draw_start_ns = 0;
         s.damage_px = 0;
@@ -1378,6 +1387,7 @@ impl Stage {
         self.clocks.remove(&id);
         self.unmaps.retain(|u| *u != id);
         self.keys.remove(&id);
+        self.answered.remove(&id);
         self.applied.remove(&id);
     }
 }
@@ -1655,6 +1665,57 @@ mod tests {
         shown.wanted = true;
         shown.hold = 5;
         assert_eq!(stage.next_hold(), None);
+    }
+
+    /// A tree commit that showed a child's fade tick alone leaves the root's key for the commit that shows what the
+    /// key's packet drew; a child's buffer with a packet's drawing in it spends the key.  Pattern D: the stage alone.
+    #[test]
+    fn only_a_childs_drawing_spends_the_key() {
+        let mut stage = Stage::new(Arc::default());
+        let (root, kid) = (0x7e57_0001, 0x7e57_0002);
+        let part = |window: u64, damage: Vec<Rect>| Part {
+            window,
+            glitnir_root: window,
+            scene: None,
+            damage,
+            w: 4,
+            h: 4,
+            src: (0, 0),
+            flags: NHSHELL_SF_DRAWABLE,
+            alpha_cut: 0,
+            scale: 1.0,
+            rects: vec![Rect::new(0, 0, 4, 4)],
+            patch: vec![0; 16],
+            full: true,
+        };
+        let pool = PatchPool::default();
+        let all = Rect::new(0, 0, 4, 4);
+        // the key's packet: the root drew, the child did not
+        let p = Packet {
+            root,
+            seq: 1,
+            t_key_ns: 7,
+            t_publish_ns: 9,
+            parts: vec![part(root, vec![all]), part(kid, Vec::new())],
+        };
+        stage.apply(p, &pool);
+        // a fade tick: the child's whole front is its damage, and the root's buffer waits
+        stage.surfaces.get_mut(&kid).unwrap().damage = vec![all];
+        stage.presented(kid);
+        stage.kids_shown(root);
+        assert_eq!(stage.keys.get(&root), Some(&7), "a tick answers no key");
+        // the child draws: the tree commit that shows it answers the key
+        let p = Packet {
+            root,
+            seq: 2,
+            t_key_ns: 8,
+            t_publish_ns: 10,
+            parts: vec![part(kid, vec![Rect::new(0, 0, 1, 1)])],
+        };
+        stage.apply(p, &pool);
+        stage.presented(kid);
+        stage.kids_shown(root);
+        assert_eq!(stage.keys.get(&root), None);
     }
 
     /// What a tree's feedback said: `asked` answers asked, the newest reporting frame `shown` at `shown_ns` (the
