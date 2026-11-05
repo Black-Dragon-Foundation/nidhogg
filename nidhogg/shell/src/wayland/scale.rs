@@ -141,6 +141,24 @@ impl MainState {
         }
     }
 
+    /// Child `id` starts at its parent's scale, as C makes the frame: a compositor tells a subsurface its scale once it
+    /// shows, and a first buffer at scale 1 would show at twice its size.  The compositor's own scale counts from then on.
+    pub(crate) fn inherit_scale(&mut self, id: u64, parent: u64) {
+        let Some(scale) = self.scales.get(&parent).map(SurfaceScale::scale120) else {
+            return;
+        };
+        if let Some(s) = self.scales.get_mut(&id) {
+            s.current = scale;
+        }
+        if let Some(shared) = &self.shared {
+            shared
+                .scale120
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(id, scale);
+        }
+    }
+
     pub(crate) fn detach_scale(&mut self, id: u64) {
         if let Some(s) = self.take_scale(id) {
             s.destroy();
