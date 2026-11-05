@@ -58,11 +58,13 @@ if [ -n "$DISTRO" ] && [ "$INNER" = 0 ]; then
   trap cleanup EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  inner="dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install cargo rust clippy rustfmt gcc binutils diffutils pkgconf-pkg-config openssl-devel cmake wayland-devel libxkbcommon-devel xkeyboard-config libX11-common pixman-devel${TSAN_PKGS:-} >/dev/null && (dnf -y install cargo-deny >/dev/null 2>&1 || true) && bash /nh/shell/check.sh --inner${TEST:+ --test $(printf %q "$TEST")}$([ "$REVENDOR" = 1 ] && echo ' --revendor')$([ "$FULL" = 1 ] && echo ' --full')$([ "$TSAN" = 1 ] && echo ' --tsan')"
+  # nothing to install in an image that has them (NIDHOGG_CRATES_IMAGE, CI's nidhogg-build-fedora-45)
+  pk="cargo rust clippy rustfmt gcc binutils diffutils pkgconf-pkg-config openssl-devel cmake wayland-devel libxkbcommon-devel xkeyboard-config libX11-common pixman-devel${TSAN_PKGS:-}"
+  inner="{ rpm -q --quiet --whatprovides $pk 2>/dev/null || dnf -y --setopt=install_weak_deps=False ${NIDHOGG_BUILD_PKG_CACHE:+--setopt=keepcache=1 }install $pk >/dev/null; } && { command -v cargo-deny >/dev/null || dnf -y install cargo-deny >/dev/null 2>&1 || true; } && bash /nh/shell/check.sh --inner${TEST:+ --test $(printf %q "$TEST")}$([ "$REVENDOR" = 1 ] && echo ' --revendor')$([ "$FULL" = 1 ] && echo ' --full')$([ "$TSAN" = 1 ] && echo ' --tsan')"
   podman run --rm --name "$NAME" --memory "$MEM" --memory-swap "$MEM" \
     -v "$NH:/nh:$MODE,Z" -v "$CARGO_DIR:/cargo:Z" "${EXTRA[@]}" \
     -e CARGO_HOME=/cargo/home -e CARGO_TARGET_DIR=/cargo/target -e CARGO_BUILD_JOBS=2 \
-    "registry.fedoraproject.org/fedora:${DISTRO#fedora-}" bash -euo pipefail -c "$inner" &
+    "${NIDHOGG_CRATES_IMAGE:-registry.fedoraproject.org/fedora:${DISTRO#fedora-}}" bash -euo pipefail -c "$inner" &
   pid=$!
   wait "$pid"
   exit $?

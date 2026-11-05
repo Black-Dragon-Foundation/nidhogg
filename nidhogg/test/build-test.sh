@@ -209,6 +209,32 @@ for st in build check pack; do
   case $(grep '^run ' "$T/pm.log") in *"  "*|*" ") fail "stage $st: empty podman argument: $(cat "$T/pm.log")";; esac
   grep -q -- "-v $T/c/lisp:/lispcache:z" "$T/pm.log" || fail "stage $st: lisp cache not mounted"
 done
+# the .eln guard's verdict (exit 75, nidhogg/eln-guard.el): the build tree goes and one more run builds cold (nothing
+# restored); a second 75 is a failure, not a third run
+cat > "$T/podman75" <<'PM'
+#!/bin/sh
+[ "$1" = run ] || exit 0
+for a; do last=$a; done
+case $last in
+  *"LC_RESTORE=1"*) echo restore >> "$FAKE_LOG"; exit 75 ;;
+  *"LC_RESTORE=0"*) echo cold >> "$FAKE_LOG"; exit "${FAKE_RC:-0}" ;;
+esac
+echo none >> "$FAKE_LOG"
+PM
+chmod +x "$T/podman75"
+mkdir -p "$T/b75/obj" "$T/b75/src"; : > "$T/b75/obj/stale"; : > "$T/pm.log"
+run NIDHOGG_BUILD_PODMAN="$T/podman75" FAKE_LOG="$T/pm.log" NIDHOGG_BUILD_LISP_CACHE="$T/c/lisp" -- --container fedora-45 --stage build --build-dir "$T/b75" --prefix "$T/prefix"
+rcis 0; has "building again without the restored compiled Lisp"
+[ "$(tr '\n' ' ' < "$T/pm.log")" = "restore cold " ] || fail "the guard's 75: runs $(tr '\n' ' ' < "$T/pm.log"), wanted a restoring one, then a cold one"
+[ ! -e "$T/b75/obj/stale" ] || fail "the guard's 75: the build tree was kept for the cold run"
+: > "$T/pm.log"
+run NIDHOGG_BUILD_PODMAN="$T/podman75" FAKE_LOG="$T/pm.log" FAKE_RC=75 NIDHOGG_BUILD_LISP_CACHE="$T/c/lisp" -- --container fedora-45 --stage build --build-dir "$T/b75" --prefix "$T/prefix"
+rcis 1; [ "$(wc -l < "$T/pm.log")" = 2 ] || fail "the guard's 75 twice: $(wc -l < "$T/pm.log") runs, wanted 2"
+# the image a caller names (CI's prebuilt one) replaces the distro's; its packages are checked before any install
+run NIDHOGG_BUILD_IMAGE=ghcr.io/x/nidhogg-build-fedora-45@sha256:abc -- --dry-run --container fedora-45 --prefix /opt/x
+rcis 0; has "ghcr.io/x/nidhogg-build-fedora-45@sha256:abc"; hasnt "registry.fedoraproject.org"; has "rpm -q --quiet --whatprovides"
+run -- --dry-run --container ubuntu-26.04 --prefix /opt/x
+rcis 0; has 'if ! { cmp -s /usr/share/nidhogg-image/ubuntu-26.04.build $S/nidhogg/deps/ubuntu-26.04.build'
 : > "$T/pm.log"
 NIDHOGG_BUILD_UNAME=Linux NIDHOGG_BUILD_PODMAN="$T/podman" FAKE_LOG="$T/pm.log" FAKE_HANG=1 NIDHOGG_BUILD_MEMORY_KB=$((16*1024*1024)) \
   bash nidhogg/build.sh --container fedora-45 --prefix "$T/prefix" >/dev/null 2>&1 &

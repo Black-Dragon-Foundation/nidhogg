@@ -449,6 +449,8 @@ if [ -n "$container" ]; then
   # a local image with the packages below already installed (built once from the same base) saves every run the
   # download; without it each run installs them into a fresh container
   podman image exists "localhost/glitnir-gui-deps:$container" 2>/dev/null && image=localhost/glitnir-gui-deps:$container
+  # GLITNIR_GUI_IMAGE=REF (fedora-45): such an image made elsewhere, CI's nidhogg-gui-fedora-45 (nidhogg/ci/image.sh)
+  if [ -n "${GLITNIR_GUI_IMAGE:-}" ] && [ "$container" = fedora-45 ]; then image=$GLITNIR_GUI_IMAGE; fi
   name=${GLITNIR_GUI_NAME:-glitnir-gui-$$}
   trap 'podman rm -f "$name" > /dev/null 2>&1' EXIT
   trap 'exit 1' INT TERM
