@@ -1362,15 +1362,16 @@ reading nothing from the display: a wait that reads (`sit-for', `redisplay') wou
     (gui-runner--presented-p)))
 
 (ert-deftest nhwl-gui/live-fresh-frame-keeps-its-new-size ()
-  "A size set on a frame just shown holds after the compositor's configure: the last size asked wins.  Mutter answers
-a window's first buffer with a configure of that buffer's size, sent before it has read the frame's next commit.  A
-frame resized meanwhile (persist restoring a job window: `make-frame', then `set-frame-size') read that configure after
-its new size was applied and went back to its creation size.  The row shows the frame at its creation size, spins
-until that buffer has gone out, then sets the size and redisplays at once: `redisplay' reads the display before it
-draws, microseconds after the flush, before mutter can have answered, so the answer is read after the new size is
-applied.  The shell knows the configure was sent before mutter read the new size, and leaves the size to the frame.
+  "A size set on a frame just shown holds after the compositor's configure: the last size asked wins.
 Mutter only: sway tiles a new window, whose size is the compositor's, and the recorder sends no configure of its own."
   :tags '(runs-last)
+  ;; Mutter answers a window's first buffer with a configure of that buffer's size, sent before it has read the frame's
+  ;; next commit.  A frame resized meanwhile (persist restoring a job window: `make-frame', then `set-frame-size') read
+  ;; that configure after its new size was applied and went back to its creation size.  The row shows the frame at its
+  ;; creation size, spins until that buffer has gone out, then sets the size and redisplays at once: `redisplay' reads
+  ;; the display before it draws, microseconds after the flush, before mutter can have answered, so the answer is read
+  ;; after the new size is applied.  The shell knows the configure was sent before mutter read the new size, and leaves
+  ;; the size to the frame.
   (skip-unless (and (nhwl-gui--live-p) (nhwl-gui--nhwl-frames) (equal (glitnir-gui--compositor) "mutter")))
   (let ((root (selected-frame)) (f nil)
         (text (lambda (f) (list (frame-text-width f) (frame-text-height f)))))
