@@ -9,11 +9,19 @@ use super::{Lru, lock};
 use std::sync::{Arc, Mutex};
 
 static CORNERS: Mutex<Lru<u32, Arc<[u8]>>> = Mutex::new(Lru::new(16));
+static OUTSIDE: Mutex<Lru<u32, Arc<[u8]>>> = Mutex::new(Lru::new(16));
 
 /// The coverage of a 2r×2r square by the disc of radius r at its centre (row-major, 2r bytes a row), cached per
 /// radius. Radius 0 is empty.
 pub fn corner_coverage(radius: u32) -> Arc<[u8]> {
     lock(&CORNERS).get_or_insert_with(radius, || band(radius, None, radius as f64).into())
+}
+
+/// What [`corner_coverage`] leaves of each pixel (255 minus it), cached per radius: a card's corners show what lies
+/// beneath the window through it.
+pub fn outside_coverage(radius: u32) -> Arc<[u8]> {
+    let inside = corner_coverage(radius);
+    lock(&OUTSIDE).get_or_insert_with(radius, || inside.iter().map(|c| 255 - c).collect())
 }
 
 /// The coverage of the 2r×2r square by the points whose distance d from its centre is in (lo, hi] (lo `None`: no

@@ -21,6 +21,7 @@
 //!   of the frame relies on it equalling the moved rows plus the damage.
 
 use crate::backing::{Backings, NhgRect, WINDOW_TAG};
+use crate::chrome::{Decoded, SLOT_ON, SLOTS, decode};
 use crate::display::Display;
 use crate::frame::NHG_FRAME_KINDS;
 use crate::guard::GlueError;
@@ -45,12 +46,26 @@ const LAYER_WINDOW: u32 = 2;
 
 /// One window of a frame as C lists it when it publishes.  Layout equals `NhgLayerWindow`.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct NhgLayerWindow {
     /// The window's `sequence_number`.
     pub seq: u64,
     /// `window_box (w, ANY_AREA)`: device pixels, with the native area's origin.
     pub rect: NhgRect,
+    /// The window's pixel edges without its dividers (the mode and header lines in), with the native area's origin.
+    pub outer: NhgRect,
+    /// Its card as `glitnir--card-vector` gave it (logical px, [`crate::chrome`]'s slots); slot 0 is 0 for none.
+    pub card: [f32; SLOTS],
+}
+
+impl NhgLayerWindow {
+    /// The window's card, checked: `Ok(None)` when it has none, `GlueError::Arg` for a slot out of range.
+    pub fn card(&self) -> Result<Option<Decoded>, GlueError> {
+        if self.card[SLOT_ON] == 0.0 {
+            return Ok(None);
+        }
+        decode(&self.card).map(Some)
+    }
 }
 
 /// A window that is its own output.
@@ -295,8 +310,8 @@ pub fn scroll(
     )?)
 }
 
-/// `nhg_layers_sync`: [`sync_at`] now, with the opaque-root check on `window`.  A frame without a backing yet has no
-/// layers (0).
+/// `nhg_layers_sync`: [`sync_at`] now, with the opaque-root check on `window`, then the window cards
+/// ([`crate::cards::sync`]).  A frame without a backing yet has no layers (0).
 pub fn sync(
     state: &mut Display,
     window: u64,
@@ -308,16 +323,15 @@ pub fn sync(
         return Ok(0);
     };
     let eligible = root(state, window).is_ok_and(|r| opaque_root(&r, flags, s120));
-    Ok(sync_at(
-        &mut state.backings,
-        key,
-        windows,
-        eligible,
-        Instant::now(),
-    )?)
+    let left = sync_at(&mut state.backings, key, windows, eligible, Instant::now())?;
+    crate::cards::sync(state, key, windows)?;
+    Ok(left)
 }
 
-/// How many windows of frame `key` are their own outputs (0 for a frame without a backing).
+/// How many of frame `key`'s windows are their own outputs, plus how many have a card layer (0 for a frame without a
+/// backing): while it is not 0, C lists the windows at each publish, so the publish after the last card went still
+/// removes its layer (C's `glitnir--cards` parameter is nil by then).  `nhwl--scroll-layers` reads it too.
 pub fn count(b: &mut Backings, key: u64) -> usize {
-    b.frame_mut(key).map_or(0, |f| f.layers.len())
+    b.frame_mut(key)
+        .map_or(0, |f| f.layers.len() + f.cards.len())
 }
