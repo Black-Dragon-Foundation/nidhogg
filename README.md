@@ -268,8 +268,8 @@ machine whose timing never shows it, not certain.
 - Pull requests land by fast-forwarding their base (`nidhogg-31`) to the head, so a pull request's run tests the head:
   every job checks out `github.event.pull_request.head.sha`, not GitHub's merge commit (whose subject breaks the
   series rules and whose tree is not what lands), and the path filter diffs the head. `fast-forward` (pull requests
-  only; other events skip it, which the gate allows) fails when the head does not descend from the base branch's tip:
-  rebase the branch onto it. With that guard the head's tree is the merge commit's, so the cache keys (tree and content
+  only; other events skip it, which the gate allows) fails when the head does not descend from the base branch's tip
+  (the compare API's status is not `ahead` or `identical`; no checkout): rebase the branch onto it. With that guard the head's tree is the merge commit's, so the cache keys (tree and content
   hashes, never a commit) mean what they meant.
 - `linux` (fedora-45, ubuntu-26.04): `build.sh --container D --stage build`, the cache saves, then `--stage check
   --check nidhogg/check-subset.txt`, then `--stage pack --out ...` (so a failing check keeps the build's caches), then
@@ -326,9 +326,12 @@ machine whose timing never shows it, not certain.
     saves the generated files of `lisp/` and `leim/` plus `native-lisp/` after `make`, and restores them with one
     timestamp newer than every source, so `make` sees them up to date; an entry made by another gcc is ignored. The
     dev builds (`workers-asan`, `workers-chaos`) keep it as two entries: the byte-compiled part
-    (`lisp-fedora-45-asan-elc-G-<lisp-key.sh --elc>-…`, the Lisp side alone: byte code does not depend on C, as `make`
-    itself treats it) and the `.eln` files (`…-asan-eln-G-<lisp-key.sh>-…`), so a change in C costs the sanitized
-    Emacs the preloaded files' native compilation, not byte-compiling all of `lisp/` again.
+    (`lisp-fedora-45-asan-elc-G-<lisp-key.sh --elc>-…`: the Lisp side, plus the names of the C side's functions,
+    variables and features, which compile-time `fboundp`, `boundp` and `featurep` tests read, but not its bodies, as
+    `make` itself treats byte code) and the `.eln` files (`…-asan-eln-G-<lisp-key.sh>-…`), so a change in a C body
+    costs the sanitized Emacs the preloaded files' native compilation, not byte-compiling all of `lisp/` again. A
+    trade-off for these test lanes, never a release build: a C function's result folded into byte code at compile
+    time stays the old body's until the Lisp side changes.
   - File times: a checkout stamps every file with the current time, so every job that restores a build cache first runs
     `nidhogg/ci/set-mtimes.sh`, which gives each tracked file the time of the last commit that changed it. The checkout
     stays shallow (depth 1); the script deepens it to the upstream tag the series sits on (`git fetch
@@ -336,7 +339,9 @@ machine whose timing never shows it, not certain.
     time of the oldest fetched commit, the same in every run. Untracked and generated files keep their own, newer,
     times. `native-crates`' entry names the commit it was built from, and `--since` stamps every file changed since
     then with the current time: a commit's time can be older than a cache built from its parent, and cargo would take
-    the older file for unchanged.
+    the older file for unchanged. The name is written only when all three checks passed; after a red one the entry
+    keeps the name it was restored with (or none, and every file is then stamped now), so a target a red check left
+    unbuilt never passes for HEAD's.
   - ccache for the C objects: `ccache-D-gcc-G-<run id>-<attempt>`, restored from the newest entry with the same prefix
     (ccache hashes the preprocessed source and checks gcc by content, so any older entry is safe; a new key per run lets
     every run save its additions). It is saved after a failed build too, never after a cancelled one. One generated
@@ -355,9 +360,10 @@ machine whose timing never shows it, not certain.
     (`pkg-pins-<hash of pkg-pins.txt and pkg-test.sh>`, exact, without build output or compiled files).
   - Compiled Lisp and tarballs are never restored for a release tag; a release is built fresh, with only self-checking
     caches (ccache, packages).
-  - Who saves: `nidhogg-31` and pull requests from a branch of this repository save every cache; `ci/*` branches every
-    one except the package downloads and Homebrew, which hit by prefix anyway. A fork's pull request and a tag save
-    nothing. GitHub scopes a pull request's entries to its merge ref (`refs/pull/N/merge`): its own later runs read
+  - Who saves: `nidhogg-31` saves every cache; `ci/*` branches every one except the package downloads and Homebrew,
+    which hit by prefix anyway; pull requests from a branch of this repository the small ones (compiled Lisp, tarballs,
+    the pinned packages, ccache; about 0.6–0.9 GB per run), not the native crates (1.2 GB), the package downloads or
+    Homebrew, which they restore from `nidhogg-31` by prefix. A fork's pull request and a tag save nothing. GitHub scopes a pull request's entries to its merge ref (`refs/pull/N/merge`): its own later runs read
     them, `nidhogg-31` and other branches never do, so no pull request writes a cache another ref's run reads. A
     narrowed run (below) saves no tarball, since its checks were cut.
   - Scoping: a run restores caches of its own branch or the default branch (`nidhogg-31`), and a pull request those of its
