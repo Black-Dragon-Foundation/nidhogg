@@ -17,6 +17,8 @@ pub struct Backing {
     pub flags: u32,
     pub alpha_cut: u32,
     scene: bool,
+    /// The frame layer's device scale.
+    pub scale: f64,
 }
 
 /// A Glitnir id no other test of this process uses.
@@ -28,8 +30,14 @@ pub fn glitnir_id() -> u64 {
 impl Backing {
     /// A `w` x `h` backing with a scene: one frame layer over all of it.
     pub fn new(w: i32, h: i32) -> Backing {
+        Backing::new_scaled(w, h, 1.0)
+    }
+
+    /// [`Backing::new`] of a frame at device scale `scale`.
+    pub fn new_scaled(w: i32, h: i32, scale: f64) -> Backing {
         let mut b = Backing::bare(w, h);
         b.scene = true;
+        b.scale = scale;
         glitnir::scene::root_new(b.g);
         b.layer();
         b
@@ -46,6 +54,7 @@ impl Backing {
             flags: NHSHELL_SF_DRAWABLE,
             alpha_cut: 0,
             scene: false,
+            scale: 1.0,
         }
     }
 
@@ -55,7 +64,7 @@ impl Backing {
             parent: 0,
             kind: 1,
             rect: Rect::new(0, 0, self.w, self.h),
-            scale: 1.0,
+            scale: self.scale,
             visible: 1,
         };
         glitnir::scene::with(self.g, |s| s.upsert(&d)).expect("the frame layer");

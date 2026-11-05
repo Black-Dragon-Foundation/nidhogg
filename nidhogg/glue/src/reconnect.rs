@@ -118,6 +118,7 @@ pub fn lost(state: &mut Display, ev: &Record) {
         ticks: 0,
     };
     crate::layers::drop_all(&mut state.backings);
+    crate::cards::forget_all(&mut state.backings);
     state.dnd.lost();
     state.touch.clear();
     state.acks_due.clear();
