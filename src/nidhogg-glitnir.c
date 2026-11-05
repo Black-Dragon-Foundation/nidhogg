@@ -375,21 +375,26 @@ to the selected frame.  */)
   struct frame *f = decode_live_frame (frame);
 #ifdef HAVE_NHWL
   /* The border is Emacs's own drawing, not chrome.  */
-  if (!FRAME_NHWL_P (f) || !FRAME_NHWL_OUTPUT (f)->chrome.on)
+  if (!FRAME_NHWL_P (f) || FRAME_NHWL_OUTPUT (f)->chrome[NHG_CHROME_ON] == 0)
     return Qnil;
-  const NhgChrome *c = &FRAME_NHWL_OUTPUT (f)->chrome;
+  /* The chrome vector C kept for the frame (`glitnir--chrome-vector').  */
+  const float *c = FRAME_NHWL_OUTPUT (f)->chrome;
   double s = XFLOATINT (Fframe_scale_factor (frame));
+  uint32_t rgb = (c[NHG_CHROME_RGB] > 0 && c[NHG_CHROME_RGB] <= 0xffffff
+		  ? (uint32_t) c[NHG_CHROME_RGB] : 0);
   Lisp_Object shadow
-    = (c->opacity <= 0 ? Qnil
-       : list (intern_c_string (":blur"), make_float (s * c->blur),
+    = (c[NHG_CHROME_OPACITY] <= 0 ? Qnil
+       : list (intern_c_string (":blur"), make_float (s * c[NHG_CHROME_BLUR]),
 	       intern_c_string (":offset"),
-	       Fcons (make_float (s * c->ox), make_float (s * c->oy)),
-	       intern_c_string (":spread"), make_float (s * c->spread),
-	       intern_c_string (":opacity"), make_float (c->opacity),
+	       Fcons (make_float (s * c[NHG_CHROME_OX]),
+		      make_float (s * c[NHG_CHROME_OY])),
+	       intern_c_string (":spread"),
+	       make_float (s * c[NHG_CHROME_SPREAD]),
+	       intern_c_string (":opacity"), make_float (c[NHG_CHROME_OPACITY]),
 	       intern_c_string (":color"),
-	       list3i ((c->rgb >> 16) & 0xff, (c->rgb >> 8) & 0xff,
-		       c->rgb & 0xff)));
-  return list4 (intern_c_string (":radius"), make_float (s * c->radius),
+	       list3i ((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff)));
+  return list4 (intern_c_string (":radius"),
+		make_float (s * c[NHG_CHROME_RADIUS]),
 		intern_c_string (":shadow"), shadow);
 #else
   (void) f;
