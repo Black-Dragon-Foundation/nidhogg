@@ -9,6 +9,7 @@ use common::*;
 use glitnir::ease::Curve;
 use glitnir::geom::Rect;
 use glitnir::motion::{Kind as Move, Leg, MotionSpec};
+use glitnir::stats::{Percentiles, summary};
 use nhshell::api::*;
 use nhshell::event::*;
 use nhshell::wayland::WaylandShell;
@@ -331,6 +332,74 @@ mod motion {
         let end = log.last().unwrap();
         assert!(!end.contains("\"buffer\":{"), "{end}");
         assert_eq!(t.buffers(seq, t.kid), presents, "{log:?}");
+        t.no_protocol_error();
+    }
+
+    /// A tick's interval is the time between two of a leg's commits, by the real clock: none for the leg's first, and a
+    /// pause between two frames lies in the next.
+    #[test]
+    fn tick_interval_is_the_time_between_commits() {
+        let mut t = Tree::open("kwin", false);
+        t.shown_with(pop());
+        let g = t.kb.g;
+        summary(g, true);
+        let began = Instant::now();
+        t.shell.set_mapped(t.kid, false).unwrap();
+        t.committed();
+        t.until("the first tick's entry", |_| summary(g, false).ticks == 1);
+        assert_eq!(summary(g, false).tick_interval_ms, Percentiles::default());
+        std::thread::sleep(Duration::from_millis(30));
+        t.step();
+        t.until("the second tick's entry", |_| summary(g, false).ticks == 2);
+        let span = began.elapsed().as_secs_f64() * 1e3;
+        let s = summary(g, false);
+        let got = s.tick_interval_ms;
+        assert!((30.0..=span).contains(&got.max), "{got:?}, {span} ms");
+        assert_eq!((got.p50, got.p95), (got.max, got.max), "one interval");
+        assert_eq!(s.late_ticks, 1, "the counter reads the same interval");
+        t.no_protocol_error();
+    }
+
+    /// A leg's overrun is the frame time of its end past its length: under a period when each frame goes on time, for
+    /// a show's last frame and a hide's unmap alike.
+    #[test]
+    fn leg_overrun_stays_within_a_period() {
+        let mut t = Tree::open("kwin", false);
+        t.kid_with(pop());
+        let g = t.kb.g;
+        t.draw_kid();
+        t.committed();
+        assert_eq!(summary(g, false).leg_overrun_ms, 0.0, "the leg runs");
+        t.finish();
+        let period = STEP as f64 / 1e6;
+        let show = summary(g, true).leg_overrun_ms;
+        assert!(show > 0.0 && show <= period, "show {show}");
+        t.step();
+        t.idle();
+        t.shell.set_mapped(t.kid, false).unwrap();
+        t.committed();
+        t.finish();
+        assert!(!t.mapped_now(t.kid));
+        let hide = summary(g, false).leg_overrun_ms;
+        assert!(hide > 0.0 && hide <= period, "hide {hide}");
+        t.no_protocol_error();
+    }
+
+    /// A tree the compositor holds back ends its leg late, by what the feedback reports.
+    #[test]
+    fn a_held_back_frame_shows_as_overrun() {
+        let mut t = Tree::open("kwin", false);
+        t.shown_with(pop());
+        let g = t.kb.g;
+        t.shell.set_mapped(t.kid, false).unwrap();
+        t.committed();
+        // the clock ties to the first frame reported: the jump comes after that
+        t.step();
+        t.step();
+        t.rec.present(30 * STEP);
+        t.finish();
+        let got = summary(g, false).leg_overrun_ms;
+        assert!(got > 100.0, "{got}");
         t.no_protocol_error();
     }
 

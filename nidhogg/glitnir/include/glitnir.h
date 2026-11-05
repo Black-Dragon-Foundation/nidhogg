@@ -33,6 +33,7 @@ typedef struct
   int64_t clock_frame_us;
   int64_t presented_us;		/* -1: not known (GTK3 binds no wp_presentation) */
   uint64_t damage_px, scroll_px, painted_px, backdrop_px;
+  uint64_t tick_interval_ns, blur_ns;	/* 0: not a tick after a leg's first; nothing recomputed */
   uint32_t layers, ticks, late_ticks, violations;
   uint8_t backfill;		/* 0, 1, or 2 unknown */
   uint8_t scale_mismatch;
@@ -50,6 +51,9 @@ typedef struct
   uint64_t ticks, late_ticks, violations, scale_mismatch, backdrop_px;
   /* From t_update_ns to the end of the paint, over the entries with an update time only.  */
   GlitnirPercentiles update_ms;
+  /* The same over the entries with a tick interval, and with a blur time.  */
+  GlitnirPercentiles tick_interval_ms, blur_ms;
+  double leg_overrun_ms;	/* the worst since the last reset */
 } GlitnirStatsSummary;
 
 /* Append ENTRY to ROOT's ring (allocated at the first record).  An entry whose t_compose_start_ns and
