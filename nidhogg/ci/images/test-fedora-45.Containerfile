@@ -22,3 +22,10 @@ RUN dnf -y --setopt=install_weak_deps=False install \
       python3-gobject-base dejavu-sans-mono-fonts procps-ng util-linux \
       pipewire wireplumber gstreamer1-plugins-base pipewire-gstreamer pipewire-utils && \
     dnf clean all
+
+# guiall: gui plus KWin's, labwc's and the input methods' packages, so gui.sh --container installs nothing on any lane;
+# built locally once per tag (image.sh local guiall-fedora-45), never published
+FROM gui AS guiall
+RUN dnf -y --setopt=install_weak_deps=False install \
+      kwin kscreen dbus-tools labwc wlr-randr fcitx5 fcitx5-chinese-addons wtype ibus ibus-libpinyin && \
+    dnf clean all

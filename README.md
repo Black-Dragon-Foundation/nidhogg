@@ -304,7 +304,9 @@ machine whose timing never shows it, not certain.
   (`deps/fedora-45.check`, `ci/images/check-fedora-45.Containerfile`): `image.sh local check-fedora-45` builds it
   once per tag on that machine (4 GiB cap) and prints `image: REF (local|built)`; the run installs no package. Only
   `--android` still installs the Android std (Fedora has none, so it is skipped). It is not published to ghcr: CI's
-  jobs run in `nidhogg-build-fedora-45`.
+  jobs run in `nidhogg-build-fedora-45`. `gui.sh --container fedora-45` likewise runs in `nidhogg-guiall:fedora-45-HASH`
+  (the `gui` image plus KWin's, labwc's and the input methods' packages) unless `GLITNIR_GUI_IMAGE` or a local
+  `glitnir-gui-deps` image is set.
 - `linux` (fedora-45, ubuntu-26.04): `build.sh --container D --stage build`, the cache saves, then `--stage check
   --check nidhogg/check-subset.txt`, then `--stage pack --out ...` (so a failing check keeps the build's caches), then
   `tarball-test.sh`. `macos`: Homebrew `deps/macos.build` (Rust from the runner image's rustup when it has one),
