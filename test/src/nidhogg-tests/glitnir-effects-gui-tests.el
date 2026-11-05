@@ -578,11 +578,22 @@ Inline: the leg's time passes unseen, and at most two commits jump to the end."
   (gui-runner-wait-settled))
 
 (defun glitnir-fx--card-box (w)
-  "Card window W in a grab, (X Y WIDTH HEIGHT): found from its colour, sized from its edges without dividers."
-  (let ((at (gui-runner-grab-find-block (gui-runner-screen-grab) glitnir-fx--card-bgr 20 20))
-        (r (if (window-parameter w 'corner-radius) (glitnir-fx--card-r) 0)))
+  "Card window W in a grab, (X Y WIDTH HEIGHT): found from its colour, sized from its edges without dividers.
+The first block of its colour lies somewhere on its top row's arc, so the edges are walked from a point two radii in,
+where the corners are behind: left along that row, up along that column."
+  (let* ((grab (gui-runner-screen-grab))
+         (at (gui-runner-grab-find-block grab glitnir-fx--card-bgr 20 20))
+         (d (* 2 (glitnir-fx--card-r)))
+         (in (lambda (x y) (and (>= x 0) (>= y 0)
+                                (glitnir-fx--near (glitnir-fx--pixel grab x y) glitnir-fx--card-bgr))))
+         x y)
     (should at)
-    (list (- (car at) r) (cdr at)
+    (setq x (car at) y (+ (cdr at) d))
+    (while (funcall in (1- x) y) (setq x (1- x)))
+    (setq y (+ (cdr at) d))
+    (let ((cx (+ x d)))
+      (while (funcall in cx (1- y)) (setq y (1- y))))
+    (list x y
           (- (window-pixel-width w) (window-right-divider-width w))
           (- (window-pixel-height w) (window-bottom-divider-width w)))))
 
@@ -658,8 +669,11 @@ Everything goes back after: one window on `*scratch*', the frame's divider width
      (should (window-parameter left 'glitnir--card))
      (let* ((box (glitnir-fx--card-box left))
             (grab (gui-runner-screen-grab)))
-       (dolist (sq (glitnir-fx--corners box (glitnir-fx--card-r)))
-         (should (glitnir-fx--near (glitnir-fx--pixel grab (nth 0 sq) (nth 1 sq)) glitnir-fx--gap-bgr)))
+       ;; each square's outermost pixel, the window's very corner
+       (pcase-dolist (`(,x ,y ,r ,_) (glitnir-fx--corners box (glitnir-fx--card-r)))
+         (let ((cx (if (= x (nth 0 box)) x (+ x r -1)))
+               (cy (if (= y (nth 1 box)) y (+ y r -1))))
+           (should (glitnir-fx--near (glitnir-fx--pixel grab cx cy) glitnir-fx--gap-bgr))))
        ;; a pixel on the top edge past the corner square is the window's
        (should (glitnir-fx--near (glitnir-fx--pixel grab (+ (nth 0 box) (glitnir-fx--card-r)) (nth 1 box))
                                  glitnir-fx--card-bgr))
@@ -689,7 +703,7 @@ Everything goes back after: one window on `*scratch*', the frame's divider width
          (should (> (cdr (gui-runner-pixel-diff with without gap)) 0)))))))
 
 (ert-deftest glitnir-card-typing-damage ()
-  "50 keys typed in a card window: no commit's damage reaches a corner square, the cursor being in the middle."
+  "50 characters typed in a card window: no commit's damage reaches a corner square, the cursor being in the middle."
   (skip-unless (glitnir-fx--recorder-p))
   (glitnir-fx--with-cards
    glitnir-fx--card
@@ -707,9 +721,10 @@ Everything goes back after: one window on `*scratch*', the frame's divider width
        (set-window-point left (with-current-buffer buf (point)))
        (glitnir-fx--redraw left)
        (let ((mark (nhwl-gui--mark)))
-         (dotimes (_ 50)
-           (should (glitnir-fx--next-key))
-           (with-current-buffer buf (insert "x"))
+         ;; the insertion stands for the key: what is drawn, and so damaged, is the same.  A newline every 20 keeps
+         ;; the line from wrapping, which redraws every line's first column, the top-left corner square's too
+         (dotimes (i 50)
+           (with-current-buffer buf (insert (if (= (% (1+ i) 20) 0) "\n" "x")))
            (redisplay t)
            (gui-runner-wait-settled))
          (let ((commits (seq-filter #'nhwl-gui--damage (nhwl-gui--toplevel-all-commits mark))))
@@ -758,14 +773,23 @@ Everything goes back after: one window on `*scratch*', the frame's divider width
       (setq most (max most (glitnir-fx--outputs)))
       (gui-runner-wait-settled)
       (let ((grab (gui-runner-screen-grab)))
-        (push (cons grab (glitnir-fx--corners box (glitnir-fx--card-r))) out)))
+        ;; the squares alone: a step's whole grab is 20 MB at scale 2
+        (push (mapcar (lambda (sq) (glitnir-fx--crop grab sq))
+                      (glitnir-fx--corners box (glitnir-fx--card-r)))
+              out)))
     (cons most (nreverse out))))
+
+(defun glitnir-fx--crop (grab rect)
+  "RECT (X Y W H) of GRAB as a grab of its own."
+  (pcase-let ((`(,x ,y ,w ,h) rect) (`(,gw ,_ ,bytes) grab))
+    (list w h (apply #'concat (mapcar (lambda (dy)
+                                        (let ((o (* 4 (+ x (* (+ y dy) gw)))))
+                                          (substring bytes o (+ o (* 4 w)))))
+                                      (number-sequence 0 (1- h)))))))
 
 (defun glitnir-fx--same-corners (a b)
   "Non-nil when every corner square of steps A equals B's, step by step."
-  (cl-every (lambda (x y)
-              (cl-every (lambda (sq) (eql 0 (cdr (gui-runner-pixel-diff (car x) (car y) sq)))) (cdr x)))
-            a b))
+  (cl-every (lambda (x y) (cl-every (lambda (p q) (eql 0 (cdr (gui-runner-pixel-diff p q)))) x y)) a b))
 
 (defmacro glitnir-fx--with-scroll-layers (value &rest body)
   "Run BODY with `nhwl-scroll-layers' VALUE, restored after."
@@ -784,10 +808,11 @@ Everything goes back after: one window on `*scratch*', the frame's divider width
      (let ((box (glitnir-fx--card-box left)) promoted plain)
        (glitnir-fx--fill left)
        (glitnir-fx--with-scroll-layers t
-         (setq promoted (glitnir-fx--scroll-corners left box 10)))
+         (setq promoted (glitnir-fx--scroll-corners left box 10))
+         ;; the content layer is a subsurface of the toplevel in the recorder's tree
+         (when (glitnir-fx--recorder-p)
+           (should (nhwl-gui--sub-ids))))
        (should (= (car promoted) 1))
-       (when (glitnir-fx--recorder-p)
-         (should (string-search "content" (format "%S" (gui-runner-recorder '(:cmd "tree"))))))
        (glitnir-fx--with-scroll-layers nil
          (glitnir-fx--redraw left)
          (should (= (glitnir-fx--outputs) 0))
@@ -843,8 +868,8 @@ Everything goes back after: one window on `*scratch*', the frame's divider width
                  (set-face-foreground 'window-divider glitnir-fx--gap (selected-frame))
                  (glitnir-fx--redraw left)
                  (should (glitnir-fx--near (funcall corner) glitnir-fx--gap-bgr))
+                 ;; enabling the theme sets the frame's face from it again
                  (enable-theme 'glitnir-fx-card)
-                 (set-face-attribute 'window-divider (selected-frame) :foreground 'unspecified)
                  (glitnir-fx--redraw left)
                  (should (glitnir-fx--near (funcall corner) '(96 32 160))))))
          (disable-theme 'glitnir-fx-card)
