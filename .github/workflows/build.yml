@@ -677,29 +677,17 @@ jobs:
           mkdir -p "$RUNNER_TEMP/nidhogg"
           tar -xJf dist/*.tar.xz -C "$RUNNER_TEMP/nidhogg" --strip-components=1
           chmod +x recorder/nh-recorder
-      - name: A render node for KWin, which composites on nothing else (vgem; Mesa draws in software)
+      # KWin 6.8 composites only on a render device.  It gets its software one, Mesa's llvmpipe over /dev/udmabuf, and no
+      # DRM device (gui.sh): the same renderer on every runner.  vgem's render node composited on Azure's runners and not
+      # on an AWS one (2026-11-05, kernel 7.0.0-1014-aws, whose first DRM device is a simpledrm framebuffer).  The
+      # runners' kernels build udmabuf in (CONFIG_UDMABUF=y in linux-modules-7.0.0-1014-aws and -1017-azure), so no
+      # module is loaded; the device is root's, and the container's root is the runner's user
+      - name: KWin's software render device (/dev/udmabuf; Mesa's llvmpipe draws)
         if: ${{ matrix.lane == 'kwin' }}
-        # vgem ships in linux-modules-extra-<kernel>; a runner image can boot a kernel whose package is not in the
-        # archive yet, so the flavour's metapackage is the fallback, and a kernel with no vgem fails here by name
         run: |
-          k=$(uname -r)
-          if ! sudo modprobe vgem 2>/dev/null; then
-            sudo apt-get update -q
-            if apt-cache show "linux-modules-extra-$k" >/dev/null 2>&1; then
-              sudo apt-get install -y -q "linux-modules-extra-$k"
-            elif apt-cache show "linux-modules-extra-${k##*-}" >/dev/null 2>&1; then
-              echo "no linux-modules-extra-$k in the archive; installing linux-modules-extra-${k##*-}"
-              sudo apt-get install -y -q "linux-modules-extra-${k##*-}"
-            fi
-            if ! sudo modprobe vgem; then
-              echo "::error::no vgem module for the runner's kernel $k (linux-modules-extra-$k is not in the archive, and the extra modules installed are for: $(ls /lib/modules | tr '\n' ' ')); KWin needs a render node, so the kwin lane cannot run on this runner image"
-              exit 1
-            fi
-          fi
-          sudo chmod 666 /dev/dri/renderD*
-          # what the lane runs on: KWin has composited on Azure's runners and not on an AWS one (2026-11-04), whose
-          # differences are not known yet; gui.sh says whether KWin composites
-          echo "kernel $k; render nodes: $(cd /sys/class/drm && for n in renderD*; do printf '%s=%s ' "$n" "$(basename "$(readlink -f "$n/device/driver")")"; done); cards: $(cd /sys/class/drm && for n in card?; do printf '%s=%s ' "$n" "$(basename "$(readlink -f "$n/device/driver")")"; done)"
+          [ -c /dev/udmabuf ] || { echo "::error::no /dev/udmabuf on kernel $(uname -r) (CONFIG_UDMABUF): KWin has no render device, so the kwin lane cannot run on this runner image"; exit 1; }
+          sudo chmod 666 /dev/udmabuf
+          echo "kernel $(uname -r); $(ls -l /dev/udmabuf)"
       - run: bash nidhogg/test/native-gui.sh "${{ matrix.lane }}" --prefix "$RUNNER_TEMP/nidhogg" --recorder "$PWD/recorder/nh-recorder" --container fedora-45
 
   # The off-main-thread work's CI (engine C, PD-4).  They run once the Linux builds are done, whatever the other distros
