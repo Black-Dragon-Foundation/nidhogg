@@ -4164,6 +4164,9 @@ modiff_to_integer (modiff_count a)
 extern AVOID wrong_choice (Lisp_Object, Lisp_Object);
 extern void notify_variable_watchers (Lisp_Object, Lisp_Object,
 				      Lisp_Object, Lisp_Object);
+#ifdef HAVE_NIDHOGG_WORKERS
+extern void note_variable_alias_target (Lisp_Object);
+#endif
 extern Lisp_Object indirect_function (Lisp_Object);
 extern Lisp_Object find_symbol_value (Lisp_Object);
 
