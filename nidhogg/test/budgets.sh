@@ -93,7 +93,8 @@ cpu-typing|8.59|budget|pgtk gate run 2026-10-27|1920x1080@1
 cpu-scroll|$REF_CPU_SCROLL|budget|pgtk reference run|1920x1080@1
 pss-scroll|$REF_PSS_SCROLL|budget|pgtk reference run|1920x1080@1
 fade-interval-p95|10.42|budget|the budgets table: 1.25 periods at 120 Hz|2880x1800@2
-fade-overrun-max|8.33|budget|the budgets table: a transition ends within its duration + 1 period at 120 Hz|2880x1800@2
+fade-overrun-p95|9.33|budget|the budgets table: a transition ends within its duration + 1 period + 1 ms at 120 Hz (p95)|2880x1800@2
+fade-overrun-max|9.33|report|the budgets table: the worst transition, beside the p95|2880x1800@2
 fade-compose-p95|2.5|budget|the budgets table: a 640x400 logical popup at scale 2|2880x1800@2
 fade-idle-commits|0|budget|the budgets table: no commit from 1 period after the end|2880x1800@2
 palette-filter-compose-p95|3|budget|the budgets table: compose with the blur|2880x1800@2
@@ -107,8 +108,8 @@ card-latency-typing|16|gate|V2 section 1 line 26 (key to commit p95), typing in 
 card-typing-stall-p99|8.33|report|the budgets table; not a V2 bar|drgnx:2880x1800@2
 card-typing-compose-delta|0.1|budget|the budgets table: cards add at most 0.1 ms to a typing frame (compose p95, cards on minus off)|drgnx:2880x1800@2
 card-full-compose-delta|1.0|budget|the budgets table: cards add at most 1 ms to a whole-frame compose (p95, cards on minus off)|drgnx:2880x1800@2"
-# the motion and palette rows, for the static self-test
-EFFECT_ROWS="fade-interval-p95 fade-overrun-max fade-compose-p95 fade-idle-commits palette-filter-compose-p95 palette-filter-input-p95 palette-typing-backdrop-px palette-beneath-blur-p95"
+# the motion and palette budget rows, for the static self-test (fade-overrun-max is reported beside them)
+EFFECT_ROWS="fade-interval-p95 fade-overrun-p95 fade-compose-p95 fade-idle-commits palette-filter-compose-p95 palette-filter-input-p95 palette-typing-backdrop-px palette-beneath-blur-p95"
 EFFECT_CELL=2880x1800@2
 # the window-card rows (ROW:KIND): they run with drgnx's configuration, so their cell is drgnx's
 CARD_ROWS="card-scroll-120-dropped:gate card-scroll-120-presenter-late:gate card-scroll-own-output:budget card-latency-typing:gate card-typing-stall-p99:report card-typing-compose-delta:budget card-full-compose-delta:budget"
@@ -181,7 +182,7 @@ if [ "$selftest" = 1 ] && [ -z "$pa" ]; then
   if v=$(late_per1000 "nil nil " "nil nil " 2>&1); then
     echo "budgets self-test: late_per1000 took readings with no numbers ('$v')" >&2; bad=1
   fi
-  for k in tick-interval-ms leg-overrun-ms blur-ms; do
+  for k in tick-interval-ms leg-overrun-ms leg-overrun-p95-ms blur-ms; do
     grep -q "\":$k\"" "$checkout/src/nidhogg-glitnir.c" || { echo "budgets self-test: glitnir-stats has no :$k" >&2; bad=1; }
     grep -q "(budgets--stat :$k" "$self" || { echo "budgets self-test: no row reads :$k" >&2; bad=1; }
   done
@@ -267,8 +268,8 @@ if [ "$mode" = container ]; then
         (dolist (want (quote (typing-stall-max typing-stall-p99 latency-typing scroll-120-dropped
                               scroll-120-presenter-late main-wait-max cpu-scroll latency-typing-inline
                               freeze-watchdog pss-compositor
-                              fade-interval-p95 fade-overrun-max fade-compose-p95 fade-idle-commits
-                              palette-filter-compose-p95 palette-filter-input-p95 palette-typing-backdrop-px
+                              fade-interval-p95 fade-overrun-p95 fade-overrun-max fade-compose-p95
+                              fade-idle-commits palette-filter-compose-p95 palette-filter-input-p95 palette-typing-backdrop-px
                               palette-beneath-blur-p95
                               card-scroll-120-dropped card-scroll-120-presenter-late card-scroll-own-output
                               card-latency-typing card-typing-stall-p99 card-typing-compose-delta
@@ -606,8 +607,11 @@ speed() {
 # fade_bench: a 640x400 logical child with (transition . pop), shown and hidden 50 times with Lisp idle.  Every number
 # comes from the child's glitnir-stats record: :compose-ms p95, the :ticks that still arrive after the last hide has
 # ended (fade-idle-commits), :tick-interval-ms p95 (the time between two commits, as motion-interval-p95 reads it, over
-# the record's last 1024 paints) and :leg-overrun-ms (the worst leg of the run, by the frame time its end shows at, from
-# the leg's start: a hide's up to 8 ms wait before its leg is not in it).
+# the record's last 1024 paints), :leg-overrun-ms (the worst leg of the run, by the frame time its end shows at, from
+# the leg's start: a hide's up to 8 ms wait before its leg is not in it) and :leg-overrun-p95-ms (the same over the
+# last 128 legs, which the budget judges: the first frame at or past a leg's end is up to a period late by
+# construction, plus a predicted frame time's jitter, so the bar is a period and 1 ms, and one stall decides the max
+# alone).
 fade_bench() {
   local r
   start_sway "$size" "$scale" "$refresh" && start_nidhogg "$pa" || return 1
@@ -618,12 +622,13 @@ fade_bench() {
       rec fade-compose-p95 A "$2"
       rec fade-idle-commits A "$3"
       if [ "$6" = 0 ]; then
-        for x in fade-interval-p95 fade-overrun-max; do rec "$x" A "SKIP the workload ran no tick"; done
+        for x in fade-interval-p95 fade-overrun-p95 fade-overrun-max; do rec "$x" A "SKIP the workload ran no tick"; done
       else
         rec fade-interval-p95 A "$4"
+        rec fade-overrun-p95 A "$7"
         rec fade-overrun-max A "$5"
       fi ;;
-    *) for x in fade-compose-p95 fade-idle-commits fade-interval-p95 fade-overrun-max; do rec "$x" A "SKIP the fade workload did not run: $(why "$r")"; done ;;
+    *) for x in fade-compose-p95 fade-idle-commits fade-interval-p95 fade-overrun-p95 fade-overrun-max; do rec "$x" A "SKIP the fade workload did not run: $(why "$r")"; done ;;
   esac
   stop_all
 }
@@ -811,7 +816,7 @@ With no live child it signals: nil would read the selected frame's record."
     (dolist (k path) (setq v (plist-get v k)))
     (or v 0)))
 (defun budgets--fade (n)
-  "Show and hide a pop child N times; \"ok COMPOSE-P95 TICKS-AFTER-THE-END INTERVAL-P95 OVERRUN TICKS\"."
+  "Show and hide a pop child N times; \"ok COMPOSE-P95 TICKS-AFTER-THE-END INTERVAL-P95 OVERRUN TICKS OVERRUN-P95\"."
   (budgets--child '((transition . pop) (background-color . "#336699")))
   (redisplay t) (sit-for 0.8)
   (glitnir-stats budgets--c t)
@@ -820,8 +825,9 @@ With no live child it signals: nil would read the selected frame's record."
     (make-frame-visible budgets--c) (sit-for 0.5))
   (let ((p95 (budgets--stat :compose-ms :p95)) (t0 (budgets--stat :ticks)))
     (sit-for 1.0)
-    (prog1 (format "ok %s %s %s %s %s" p95 (- (budgets--stat :ticks) t0)
-                   (budgets--stat :tick-interval-ms :p95) (budgets--stat :leg-overrun-ms) t0)
+    (prog1 (format "ok %s %s %s %s %s %s" p95 (- (budgets--stat :ticks) t0)
+                   (budgets--stat :tick-interval-ms :p95) (budgets--stat :leg-overrun-ms) t0
+                   (budgets--stat :leg-overrun-p95-ms))
       (delete-frame budgets--c t))))
 (defun budgets--palette-open ()
   "A translucent child with a backdrop blur over the buffer, selected so the keys go to it."
@@ -984,7 +990,7 @@ TBL=$TARGETS awk -F'|' -v cell="$cellid" -v ref="$reference" '
     unit["cpu-scroll"] = "CPU s, fixed work"; unit["power-scroll"] = "J, fixed work"; unit["freeze-watchdog"] = "stalls over 100 ms"
     unit["cpu-typing-inline"] = "% of one core (A thread, C inline)"
     unit["motion-compose-p95"] = "ms"; unit["motion-interval-p95"] = "ms"; unit["motion-cores"] = "cores"
-    unit["fade-interval-p95"] = "ms"; unit["fade-overrun-max"] = "ms"; unit["fade-compose-p95"] = "ms"; unit["fade-idle-commits"] = "commits"
+    unit["fade-interval-p95"] = "ms"; unit["fade-overrun-p95"] = "ms"; unit["fade-overrun-max"] = "ms"; unit["fade-compose-p95"] = "ms"; unit["fade-idle-commits"] = "commits"
     unit["palette-filter-compose-p95"] = "ms"; unit["palette-filter-input-p95"] = "ms"; unit["palette-typing-backdrop-px"] = "device px"
     unit["palette-beneath-blur-p95"] = "ms"
     unit["card-scroll-120-dropped"] = "late frames per 1000"; unit["card-scroll-120-presenter-late"] = "late frames per 1000, presenter at fault"

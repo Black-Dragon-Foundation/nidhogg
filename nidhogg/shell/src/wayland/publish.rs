@@ -911,6 +911,8 @@ impl Stage {
             m.period = fed.period;
             if !m.settled && (s.front.is_none() || m.motion.unmap_due(t)) {
                 m.ended(s.glitnir_root, t);
+                // the record has its overrun: the leg is done with
+                m.motion.settle(t);
                 m.last = false;
                 m.bare = true;
                 s.drawable = false;
@@ -928,6 +930,8 @@ impl Stage {
             m.last = m.motion.running(t);
             if !m.last {
                 m.ended(s.glitnir_root, t);
+                // the record has its overrun: the leg is done with
+                m.motion.settle(t);
             }
         }
         if !self.work(root) {
