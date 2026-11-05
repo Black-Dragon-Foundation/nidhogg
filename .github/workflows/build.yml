@@ -252,11 +252,19 @@ jobs:
           CHECKS: ${{ inputs.checks }}
         run: |
           if [ -n "$CHECKS" ]; then echo "$CHECKS" | tr ' ' '\n' > "$RUNNER_TEMP/check-subset.txt"; else cp nidhogg/check-subset.txt "$RUNNER_TEMP/check-subset.txt"; fi
+      # The tree-sitter grammars the workers' and treesit rows load (pinned commits, ABI checked), built on the runner
+      # and mounted into the fedora-45 check container: without them every grammar row skips.  One leg is enough.
+      - name: Test grammars (fedora-45)
+        id: grammars
+        if: ${{ matrix.distro == 'fedora-45' && steps.build.outcome == 'success' }}
+        run: bash test/src/nidhogg-tests/fixtures/grammars.sh "$RUNNER_TEMP/grammars"
       - name: Emacs's checks (nidhogg/check-subset.txt)
         id: check
         if: ${{ steps.build.outcome == 'success' }}
         env:
           NIDHOGG_BUILD_PKG_CACHE: ${{ runner.temp }}/pkg-cache
+          NIDHOGG_TEST_GRAMMARS: ${{ steps.grammars.outcome == 'success' && '/grammars' || '' }}
+          NIDHOGG_BUILD_PODMAN_ARGS: ${{ steps.grammars.outcome == 'success' && format('-v {0}/grammars:/grammars:ro,z', runner.temp) || '' }}
         run: bash nidhogg/build.sh --container "${{ matrix.distro }}" --stage check --memory 12g --jobs 4 --build-dir "$RUNNER_TEMP/build" --check "$RUNNER_TEMP/check-subset.txt"
       - name: Write the tarball
         id: pack
