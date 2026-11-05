@@ -32,6 +32,25 @@ pub fn stable_extent(pos: i32, size: i32, scale120: u32) -> i32 {
     ((pos + size) as f32 * s).round() as i32 - (pos as f32 * s).round() as i32
 }
 
+/// The logical size of a buffer extent of `device` pixels at `scale120`, and the device extent it shows: the logical
+/// extent whose device extent (`stable_extent`, the compositor's rounding) is `device` exactly, else the largest whose
+/// device extent is smaller.  A viewport's source then cuts the buffer to that: its last device rows or columns go
+/// unshown, where a destination rounded to the nearest logical pixel would have every pixel resampled (an odd buffer at
+/// scale 2 drawn 402 wide from 401).  The one answer to "the logical size of this buffer": the shell's viewport and the
+/// glue's window geometry both take it.
+pub fn viewport_size(device: i32, scale120: u32) -> (i32, i32) {
+    let s = scale120.max(1);
+    let dev = |l: i32| stable_extent(0, l, s);
+    let mut l = (i64::from(device.max(0)) * 120 / i64::from(s)) as i32;
+    while dev(l + 1) <= device {
+        l += 1;
+    }
+    while l > 0 && dev(l) > device {
+        l -= 1;
+    }
+    (l, dev(l))
+}
+
 /// The device rectangle of `logical`, relative to the device origin of a surface at logical (`ox`, `oy`).
 pub fn stable_rect(logical: Rect, ox: i32, oy: i32, scale120: u32) -> Rect {
     let (x, y) = (ox + logical.x, oy + logical.y);
@@ -189,6 +208,27 @@ pub fn mask_to_device(
 mod tests {
     use super::*;
     use crate::rng::XorShift;
+
+    #[test]
+    fn viewport_size_maps_exactly_or_cuts() {
+        // sizes a logical size maps to: shown whole, as the rounded destination always did
+        assert_eq!(viewport_size(400, 240), (200, 400));
+        assert_eq!(viewport_size(400, 150), (320, 400));
+        assert_eq!(viewport_size(401, 150), (321, 401));
+        assert_eq!(viewport_size(1037, 180), (691, 1037));
+        // none does: the largest under it, the last device column cut
+        assert_eq!(viewport_size(401, 240), (200, 400));
+        assert_eq!(viewport_size(402, 150), (321, 401));
+        // every size and scale: exact or one short, never past the buffer
+        for s in [120, 150, 180, 210, 240, 300] {
+            for d in 1..600 {
+                let (l, shown) = viewport_size(d, s);
+                assert_eq!(stable_extent(0, l, s), shown);
+                assert!(shown <= d && stable_extent(0, l + 1, s) > d, "{d} at {s}");
+            }
+        }
+        assert_eq!(viewport_size(0, 240), (0, 0));
+    }
 
     #[test]
     fn stable_extent_matches_mutter() {
