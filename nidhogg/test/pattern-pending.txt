@@ -1,0 +1,27 @@
+# cond files under test/src/nidhogg-tests/ that carry no `;; test-pattern:' line yet (checked by test-class-lint-tests.el).
+# One row per file: FILE # reason.  The list only shrinks: a row whose file has a line, or is gone, fails the check.
+# Handshake files park a job or child at a named point and go on from what is announced (see the lint's header).
+workers-ts-tests.el # handshake, but one test schedules a timer (run-at-time) as a marker
+workers-fatal-tests.el # handshake, but its tests poll process-live-p and schedule timers
+workers-framing-tests.el # handshake, but two tests poll process-live-p
+workers-tls-tests.el # handshake, but three tests poll process-live-p
+workers-io-tests.el # handshake, but five tests poll process-live-p
+fake-portal-tests.el # not yet audited against the handshake rules
+glitnir-decor-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
+nhwl-ime-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
+nhwl-gui-w3-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
+nhwl-menu-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
+glitnir-tests.el # not yet audited against the handshake rules
+glitnir-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
+watchdog-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
+callproc-env-tests.el # not yet audited against the handshake rules
+nhwl-session-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
+nhwl-portal-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
+wl-trace-check-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
+nhwl-settings-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
+recorder-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
+watchdog-modal-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
+nhwl-dnd-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
+nhwl-gui-rg-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
+nhwl-gui-w2-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
+nhwl-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
