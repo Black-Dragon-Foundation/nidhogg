@@ -34,14 +34,16 @@ on:
 permissions:
   contents: read
 
-# Which runs write caches (README.md, "Caches"): nidhogg-31 and a pull request from a branch of this repository every
-# one; a ci/* branch the self-checking and exact ones, which its own later runs read (GitHub evicts the least recently
-# used first, so old branches' entries go first); a fork's pull request or a tag none.  GitHub scopes a pull request's
+# Which runs write caches (README.md, "Caches"): nidhogg-31 every one; a ci/* branch the self-checking and exact ones,
+# which its own later runs read (GitHub evicts the least recently used first, so old branches' entries go first); a
+# pull request from a branch of this repository the small ones: the exact-key families (compiled Lisp, tarballs, the
+# pinned packages) and ccache, not the large prefix-restored ones (the native crates' 1.2 GB, the package downloads,
+# Homebrew), which it reads from nidhogg-31 anyway; a fork's pull request or a tag none.  GitHub scopes a pull request's
 # entries to its merge ref (refs/pull/N/merge): only that pull request's later runs read them, never nidhogg-31 or
 # another branch.  Every run reads its own ref's and nidhogg-31's.
 env:
   CACHE_SAVE: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name != 'pull_request' && (github.ref == 'refs/heads/nidhogg-31' || startsWith(github.ref, 'refs/heads/ci/'))) }}
-  CACHE_SAVE_ALL: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name != 'pull_request' && github.ref == 'refs/heads/nidhogg-31') }}
+  CACHE_SAVE_ALL: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/nidhogg-31' }}
 
 concurrency:
   group: nidhogg-${{ github.ref }}
@@ -151,30 +153,28 @@ jobs:
 
   # A pull request lands by fast-forwarding its base branch to its head, so every job checks out the head (not GitHub's
   # merge commit) and this one fails when the head does not descend from the base branch's tip: no fast-forward could
-  # land it, and what the jobs tested is not what the merge would be.  Other events skip it.
+  # land it, and what the jobs tested is not what the merge would be.  Other events skip it.  The compare API answers
+  # without a checkout (Emacs's history is large): its status is `ahead` or `identical` exactly when the base's tip is
+  # an ancestor of the head.
   fast-forward:
     name: Pull request head fast-forwards its base
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-          persist-credentials: false
       - name: The base branch's tip is an ancestor of the head
         env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
           BASE_REF: ${{ github.base_ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          git fetch -q origin "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF"
-          tip=$(git rev-parse "refs/remotes/origin/$BASE_REF")
-          if ! git merge-base --is-ancestor "$tip" "$HEAD_SHA"; then
-            echo "::error::the head ${HEAD_SHA:0:12} does not descend from $BASE_REF's tip ${tip:0:12}: rebase it onto $BASE_REF"
-            exit 1
-          fi
-          echo "$BASE_REF (${tip:0:12}) fast-forwards to ${HEAD_SHA:0:12}, $(git rev-list --count "$tip..$HEAD_SHA") commit(s)"
+          tip=$(gh api "repos/$REPO/branches/$BASE_REF" --jq .commit.sha)
+          read -r status ahead < <(gh api "repos/$REPO/compare/$tip...$HEAD_SHA" --jq '"\(.status) \(.ahead_by)"')
+          case $status in
+            ahead|identical) echo "$BASE_REF (${tip:0:12}) fast-forwards to ${HEAD_SHA:0:12}, $ahead commit(s)" ;;
+            *) echo "::error::the head ${HEAD_SHA:0:12} does not descend from $BASE_REF's tip ${tip:0:12} (compare: $status): rebase it onto $BASE_REF"; exit 1 ;;
+          esac
 
   linux:
     name: Linux (${{ matrix.distro }})
@@ -310,9 +310,10 @@ jobs:
           V=$(head -n 1 nidhogg/version)
           bash nidhogg/build.sh --container "${{ matrix.distro }}" --stage pack --memory 12g --jobs 4 --build-dir "$RUNNER_TEMP/build" \
             --out "dist/nidhogg-$V-${{ matrix.distro }}-$(uname -m).tar.xz"
-      # only a run with the whole check subset makes a tarball another run may take as checked
+      # only a run with the whole check subset makes a tarball another run may take as checked, and on fedora-45 only
+      # with the test grammars built (without them every grammar row skipped)
       - name: Save built tarball
-        if: ${{ always() && env.CACHE_SAVE == 'true' && inputs.checks == '' && steps.pack.outcome == 'success' }}
+        if: ${{ always() && env.CACHE_SAVE == 'true' && inputs.checks == '' && steps.pack.outcome == 'success' && (matrix.distro != 'fedora-45' || steps.grammars.outcome == 'success') }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: dist
@@ -611,14 +612,19 @@ jobs:
           NIDHOGG_BUILD_PKG_CACHE: ${{ runner.temp }}/pkg-cache
         run: T="$RUNNER_TEMP" NH_RECORDER="$RUNNER_TEMP/nh-recorder-target/release/nh-recorder" bash nidhogg/glue/check.sh --container fedora-45
       # saved after the checks whatever they said (a red run is the one that runs again); incremental data is left
-      # out: it only speeds up rebuilding the crates themselves, which a change to them does anyway; the entry names
-      # the commit it was built from (set-mtimes.sh --since)
+      # out: it only speeds up rebuilding the crates themselves, which a change to them does anyway.  The entry names
+      # the commit it was built from (set-mtimes.sh --since), and only when all three checks passed: a red check may
+      # have left a target unbuilt, which would then pass for HEAD's.  Otherwise the name it was restored with stays
+      # (or none), so the next run's diff also covers what this one did not build.  A pull request does not save this
+      # 1.2 GB entry: it restores nidhogg-31's by prefix.
       - name: Leave cargo's incremental data out of the cache
-        if: ${{ !cancelled() && env.CACHE_SAVE == 'true' && steps.recorder.outcome != 'skipped' }}
+        if: ${{ !cancelled() && env.CACHE_SAVE == 'true' && github.event_name != 'pull_request' && steps.recorder.outcome != 'skipped' }}
+        env:
+          BUILT: ${{ steps.recorder.outcome == 'success' && steps.shell.outcome == 'success' && steps.glue.outcome == 'success' }}
         run: |
           find "$RUNNER_TEMP"/nh-recorder-target "$RUNNER_TEMP"/nhshell-cargo "$RUNNER_TEMP"/nhglue-cargo -type d -name incremental -prune -exec rm -r {} + 2>/dev/null || true
-          git rev-parse HEAD > "$RUNNER_TEMP/nh-recorder-target/.nidhogg-source-commit"
-      - if: ${{ !cancelled() && env.CACHE_SAVE == 'true' && steps.recorder.outcome != 'skipped' }}
+          if [ "$BUILT" = true ]; then git rev-parse HEAD > "$RUNNER_TEMP/nh-recorder-target/.nidhogg-source-commit"; fi
+      - if: ${{ !cancelled() && env.CACHE_SAVE == 'true' && github.event_name != 'pull_request' && steps.recorder.outcome != 'skipped' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -747,9 +753,11 @@ jobs:
           cat "$RUNNER_TEMP/asan-subset.txt"
       # the Linux jobs' caches in this build's own entries (another configuration: --dev, the sanitizers), keyed as
       # there; build.sh stamps a compiled-Lisp entry with the mode, so a dev entry never meets a release build.  The
-      # compiled Lisp is two entries: the byte-compiled part keyed on the Lisp side alone (lisp-key.sh --elc: byte code
-      # does not depend on the C side), the .eln files on everything, so a change in C no longer makes the sanitized
-      # Emacs byte-compile all of lisp/ again (some 1,500 files, most of the build's time)
+      # compiled Lisp is two entries: the byte-compiled part keyed on the Lisp side and the C side's names (lisp-key.sh
+      # --elc), the .eln files on everything, so a change in a C body no longer makes the sanitized Emacs byte-compile
+      # all of lisp/ again (some 1,500 files, most of the build's time).  A trade-off for this test lane, never for a
+      # release build: byte code that folds a C function's result at compile time keeps the old body's result
+      # until the Lisp side changes
       - name: Compiled-Lisp inputs, file times
         id: tree
         run: |
