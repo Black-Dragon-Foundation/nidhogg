@@ -611,6 +611,12 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   `nidhogg-workers--test-crash`, `--test-crash-away-from-safe-points` (the crash while the main thread waits in C with
   every other signal blocked: it says whether the handler left the fatal path to a safe point),
   `--test-fatal-under-lock`, `--test-signal-under-locks`.
+- C-g in a synchronous wait on any tty (`src/eval.c`, `probably_quit`; a stock bug, kept in this group until the series
+  is rewritten): on a tty that is not the controlling one (an emacsclient frame) C-g is a plain byte, which SIGIO's
+  `process_pending_signals` reads into `quit-flag`; `probably_quit` now quits right then. In stock Emacs the wait
+  (`call-process`'s waitpid, a blocking read) slept on until another signal came, usually the busy cursor's SIGALRM
+  `hourglass-delay` after the command started, so only a C-g within that second worked. Test:
+  `test/src/nidhogg-tests/quit-tty-tests.el` (the controlling tty and another tty, C-g after the wait has started).
 - Waits and the redisplay budget: a main-thread wait on a worker pushes the watchdog's `worker-wait` (or `treesit-wait`)
   phase and counts its time in `:phase-ms`; it never enters `select`, so the watchdog's span runs through it. Every
   `redisplay_internal` call starts a wait budget of `nidhogg-redisplay-wait-budget` milliseconds (default 1), spent
