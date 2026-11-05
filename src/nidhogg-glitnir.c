@@ -279,6 +279,48 @@ FRAME defaults to the selected frame.  */)
 #endif
 }
 
+DEFUN ("glitnir--now-ns", Fglitnir__now_ns, Sglitnir__now_ns, 0, 0, 0,
+       doc: /* Return the monotonic clock in nanoseconds, the clock of `glitnir--last-paint'.  */)
+  (void)
+{
+#ifdef HAVE_NHWL
+  return make_uint (nhwl_now_ns ());
+#else
+  return make_fixnum (0);
+#endif
+}
+
+DEFUN ("glitnir--last-paint", Fglitnir__last_paint, Sglitnir__last_paint,
+       0, 1, 0,
+       doc: /* Return the times of the newest recorded paint of FRAME's root frame, or nil.
+The value is (:commit-ns N :paint-ns N :present-ns N): when Emacs
+published the drawing that paint shows, when the paint ended, and when
+its buffer was committed to the compositor (on the shell the paint ends
+with that commit, so the last two are equal), on the clock of
+`glitnir--now-ns'.  The paint is the newest in `glitnir-stats''s record,
+and a reset of the record keeps it.  FRAME defaults to the selected
+frame; the value is nil for a frame Glitnir does not record (batch,
+terminal, a frame before its first paint).  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+#ifdef HAVE_NHWL
+  uint64_t id = 0;
+  if (FRAME_NHWL_P (f))
+    id = FRAME_NHWL_OUTPUT (f)->glitnir_id;
+  GlitnirStatsEntry e;
+  if (!id || glitnir_stats_last (id, &e) != GLITNIR_OK)
+    return Qnil;
+  return listn (6, intern_c_string (":commit-ns"), make_uint (e.t_commit_ns),
+		intern_c_string (":paint-ns"), make_uint (e.t_draw_end_ns),
+		intern_c_string (":present-ns"),
+		make_uint (e.t_draw_end_ns));
+#else
+  (void) f;
+  return Qnil;
+#endif
+}
+
 DEFUN ("glitnir--stacking", Fglitnir__stacking, Sglitnir__stacking, 0, 1, 0,
        doc: /* Return the child frames of FRAME's root frame as they are stacked.
 The list runs bottom to top, hidden frames included; a child frame's own
@@ -504,6 +546,8 @@ syms_of_nidhogg_glitnir (void)
   defsubr (&Sglitnir_stats);
   defsubr (&Sglitnir_snapshot);
   defsubr (&Sglitnir__draw_count);
+  defsubr (&Sglitnir__now_ns);
+  defsubr (&Sglitnir__last_paint);
   defsubr (&Sglitnir__stacking);
   defsubr (&Sglitnir__chrome);
   defsubr (&Sglitnir__rechrome);
