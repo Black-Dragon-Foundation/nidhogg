@@ -378,6 +378,36 @@ mod backdrop {
         assert!((1..255).contains(&mid), "{mid}");
     }
 
+    /// A key typed into the child shows in a tree commit of the child's buffer alone (the palette's case): the
+    /// child's entry has its key to commit, and the key is spent there, so the root's next commit pairs with none.
+    /// Pattern B: the manual clock gates each frame.
+    #[test]
+    fn typing_in_child_measures_key_to_commit() {
+        let mut t = Tree::blurred(false);
+        summary(t.kb.g, true);
+        summary(t.rb.g, true);
+        let key = nhshell::wayland::publish::now_ns() - 5_000_000_000;
+        t.kb.fill(Rect::new(2, 2, 2, 8), 0xff10_2030);
+        assert!(publish(
+            &mut t.shell,
+            t.root,
+            &[(&t.rb, t.root), (&t.kb, t.kid)],
+            key
+        ));
+        t.committed();
+        t.step();
+        t.idle();
+        let kid = summary(t.kb.g, false).update_ms;
+        assert!(
+            (5_000.0..10_000.0).contains(&kid.max),
+            "the child's key to commit {kid:?}"
+        );
+        // the root changes later, with no key
+        t.rb.fill(Rect::new(0, 0, 10, 10), WHITE);
+        t.frame();
+        assert_eq!(summary(t.rb.g, false).update_ms, Percentiles::default());
+    }
+
     #[test]
     fn opaque_background_skips_blur() {
         let mut t = Tree::open(false);
