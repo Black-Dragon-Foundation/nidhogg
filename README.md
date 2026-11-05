@@ -117,7 +117,8 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   `NIDHOGG_BUILD_CARGO_TARGET=DIR` keeps Glitnir's cargo target directory (`src/glitnir-target`, a link to DIR); `make`
   always runs cargo then (the libraries it links are dated 1970), which rebuilds what the sources' times make stale, and
   after a `make` that passed DIR names the commit it was built from (`.nidhogg-source-commit`, for `set-mtimes.sh
-  --since`). With `NIDHOGG_BUILD_LISP_CACHE` (below), a build that restored `.eln` files checks them after `make`
+  --since`). The build dir remembers DIR (`.nidhogg-cargo-target`), so a later `--stage check` or `--stage pack` mounts
+  it without being given it again: their `make` goes through the same link. With `NIDHOGG_BUILD_LISP_CACHE` (below), a build that restored `.eln` files checks them after `make`
   (`nidhogg/eln-guard.el`) and, when they are not this binary's, removes the build tree and builds again with nothing
   restored (once; ccache keeps the C side quick).
 - **Glitnir (the compositor)** is Nidhogg's Rust library (`nidhogg/glitnir/`). Source builds therefore need **Rust**:
