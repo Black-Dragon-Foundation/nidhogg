@@ -138,8 +138,10 @@ done
 if [ "$selftest" = 1 ]; then runs=1 size=1280x720 window=3 steps=10 mframes=30 msize=1280x720 sscroll=2 fixed=100; fi
 
 # late_per1000 BEFORE AFTER: two "LATE FRAMES" readings of nhwl-presenter-stats; the late frames per 1000 of the frames
-# the presenter made between them (0 when it made none)
+# the presenter made between them (0 when it made none).  Fails, printing nothing, unless both readings are two whole
+# numbers (cl's replies carry a trailing space)
 late_per1000() {
+  [[ "$(echo $1 $2)" =~ ^[0-9]+\ [0-9]+\ [0-9]+\ [0-9]+$ ]] || return 1   # unquoted: one space between the four
   awk -v a="$1" -v b="$2" 'BEGIN { split(a, x, " "); split(b, y, " ");
     f = y[2] - x[2]; printf "%.2f", (f > 0) ? (y[1] - x[1]) * 1000 / f : 0 }'   # bare, `>' is printf's redirect
 }
@@ -169,6 +171,12 @@ if [ "$selftest" = 1 ] && [ -z "$pa" ]; then
   # the presenter-late rows' arithmetic: 3 late of 1500 frames
   v=$(late_per1000 "2 100" "5 1600" 2>&1)
   [ "$v" = 2.00 ] || { echo "budgets self-test: late_per1000 '2 100' '5 1600' gave '$v', not 2.00" >&2; bad=1; }
+  # readings as cl returns them (a trailing space), and a build without the keys
+  v=$(late_per1000 "2 100 " "5 1600 " 2>&1)
+  [ "$v" = 2.00 ] || { echo "budgets self-test: late_per1000 '2 100 ' '5 1600 ' gave '$v', not 2.00" >&2; bad=1; }
+  if v=$(late_per1000 "nil nil " "nil nil " 2>&1); then
+    echo "budgets self-test: late_per1000 took readings with no numbers ('$v')" >&2; bad=1
+  fi
   for k in tick-interval-ms leg-overrun-ms blur-ms; do
     grep -q "\":$k\"" "$checkout/src/nidhogg-glitnir.c" || { echo "budgets self-test: glitnir-stats has no :$k" >&2; bad=1; }
     grep -q "(budgets--stat :$k" "$self" || { echo "budgets self-test: no row reads :$k" >&2; bad=1; }
@@ -561,8 +569,8 @@ speed() {
       *) rec main-wait-max A "$(awk -v n="$mw" 'BEGIN { printf "%.4f", n / 1e6 }')" ;;
     esac
     pt2=$(cl "$pt" | tr -d '"')
-    if [[ "$pt1 $pt2" =~ ^[0-9]+\ [0-9]+\ [0-9]+\ [0-9]+$ ]]; then
-      rec scroll-120-presenter-late A "$(late_per1000 "$pt1" "$pt2")"
+    if v=$(late_per1000 "$pt1" "$pt2"); then
+      rec scroll-120-presenter-late A "$v"
     else
       pl=$(cl '(format "%s" (plist-get (plist-get (glitnir-stats) :publish-to-commit-ms) :max))' | tr -d '" ')
       case $pl in
@@ -652,7 +660,7 @@ card_keys() {
 # then a paced scroll of the first editor group (late frames, the presenter's misses, whether the group stayed its own
 # output).
 card_bench() {
-  local r off_t on_t off_f on_f o1 o2 pt1 pt2 x cmiss=
+  local r off_t on_t off_f on_f o1 o2 pt1 pt2 x v cmiss=
   nh_env=(WAYLAND_DEBUG=client)
   start_sway "$size" "$scale" "$refresh" && start_nidhogg "$pa" || { nh_env=(); return 1; }
   nh_env=()
@@ -705,9 +713,8 @@ card_bench() {
     "(:frames "*) rec card-scroll-120-dropped A "$(plval :per1000 <<< "$r")" ;;
     *) rec card-scroll-120-dropped A "SKIP fewer than two damaged commits in the trace" ;;
   esac
-  set -- $pt1 $pt2
-  if [ $# = 4 ] && [[ "$*" =~ ^[0-9]+\ [0-9]+\ [0-9]+\ [0-9]+$ ]]; then
-    rec card-scroll-120-presenter-late A "$(late_per1000 "$pt1" "$pt2")"
+  if v=$(late_per1000 "$pt1" "$pt2"); then
+    rec card-scroll-120-presenter-late A "$v"
   else
     rec card-scroll-120-presenter-late A "SKIP nhwl-presenter-stats has no :presenter-late ($pt1 / $pt2)"
   fi
