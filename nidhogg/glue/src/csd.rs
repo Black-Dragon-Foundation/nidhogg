@@ -327,8 +327,13 @@ fn record(style: &Style, c: &Csd, states: u32, w: i32) -> NhgCsdPaint {
 }
 
 /// The window geometry to send now, if it changed: where the window sits inside the surface (the native area and the
-/// strip, without the margins), in logical pixels.  Nothing for a frame that never had a border.
-fn geometry(c: &Csd) -> Option<[i32; 4]> {
+/// strip, without the margins), in logical pixels.  Without a border it is the whole surface: xdg-shell's default is
+/// the bounds of the surface and its subsurfaces, and a child frame's shadow past the edge would make the compositor
+/// size the window larger at each configure.  Nothing for a `child`: a subsurface has no window geometry.
+fn geometry(c: &Csd, child: bool) -> Option<[i32; 4]> {
+    if child {
+        return None;
+    }
     let s120 = c.s120();
     let sw = to_logical(c.width(c.native.0), s120);
     let sh = to_logical(c.native.1 + c.t + c.b, s120);
@@ -336,10 +341,10 @@ fn geometry(c: &Csd) -> Option<[i32; 4]> {
     let mr = if c.r != 0 { MARGIN } else { 0 };
     let mt = if c.t > c.strip { MARGIN } else { 0 };
     let mb = if c.b != 0 { MARGIN } else { 0 };
-    let g = match (c.on, c.geom) {
-        (false, None) => return None,
-        (false, Some(_)) => [0, 0, sw, sh],
-        (true, _) => [ml, mt, sw - ml - mr, sh - mt - mb],
+    let g = if c.on {
+        [ml, mt, sw - ml - mr, sh - mt - mb]
+    } else {
+        [0, 0, sw, sh]
     };
     (g[2] > 0 && g[3] > 0 && c.geom != Some(g)).then_some(g)
 }
@@ -569,9 +574,10 @@ pub fn paint(
     crate::child::sync(state, window, native_w, native_h);
     let (backend, style, f) = state.csd_parts(window)?;
     let states = f.cfg.states;
+    let child = f.flags & NHG_FRAME_CHILD != 0;
     let c = &mut f.csd;
     c.native = (native_w, native_h);
-    if let Some(g) = geometry(c) {
+    if let Some(g) = geometry(c, child) {
         // as C did, a failed request is tried again at the next publish
         if backend.set_geometry(window, g[0], g[1], g[2], g[3]).is_ok() {
             c.geom = Some(g);
