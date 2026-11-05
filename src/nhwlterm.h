@@ -549,6 +549,7 @@ extern void nhwl_child_created (struct frame *);
 extern void nhwl_child_set_visible (struct frame *, bool);
 extern void nhwl_child_reposition (struct frame *);
 extern void nhwl_child_params_changed (struct frame *);
+extern void nhwl_chrome_vector (Lisp_Object, float *);
 extern void nhwl_frame_raise_lower (struct frame *, bool);
 extern void nhwl_set_parent_frame (struct frame *, Lisp_Object, Lisp_Object);
 extern void nhwl_set_z_group (struct frame *, Lisp_Object, Lisp_Object);

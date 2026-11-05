@@ -202,9 +202,13 @@ compositor uploads only the exposed rows. The glue decides; C passes facts.
   shell's front relies on it.
 - **Opaque root:** a top-level window (not a child, tip or popup), alpha 1 applied by the compositor, `alpha-background`
   1, `wp_viewporter` and `wl_subcompositor`, and a scale `nhwl-scroll-layers` allows (`integer-scales`: whole ones).
-- **Demotion:** at a publish, `nhg_layers_sync` gets the root's windows and their boxes (only while it has layers,
-  `nhg_layers_count`) and demotes each layer whose window is gone or has another box, whose last full-window scroll is
-  2 s old, or every one at a scale or border change or when the frame is no longer an opaque root; a scroll with a new
+- **The window list:** at a publish, `nhg_layers_sync` gets the root's windows (only while it has layers,
+  `nhg_layers_count`, or a window with a card, the frame parameter `glitnir--cards`). Each `NhgLayerWindow` holds the
+  box, the window's edges without its dividers (`outer`) and its card: the window parameter `glitnir--card`, which
+  `glitnir--card-vector` resolves from the window parameters `corner-radius`, `shadow` and `ring`, as the same slot
+  vector a child frame's chrome is (`NHG_CHROME_*`; C copies it, `chrome::decode` checks it).
+- **Demotion:** at a publish, `nhg_layers_sync` demotes each layer whose window is gone or has another box, whose
+  last full-window scroll is 2 s old, or every one at a scale or border change or when the frame is no longer an opaque root; a scroll with a new
   box demotes first. Demotion is `set_output (…, 0)` and the layer's removal, in that publish: Glitnir damages the
   window on the frame and the shell unmaps the layer with the root's buffer. A quiet window with nothing published
   keeps its layer until the next publish (a redisplay), as no timer runs for it. `layers::drop_all` demotes every

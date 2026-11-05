@@ -668,7 +668,9 @@ int32_t nhg_tip_hide (NhgDisplay *d, uint64_t window);
 /* The chrome slot vector glitnir--chrome-vector gives a child frame (logical pixels; lisp/glitnir.el's
    glitnir--chrome-slots has the same numbers): ON 1 for chrome, 0 for none; the corner RADIUS; the shadow's BLUR, offset
    (OX, OY), SPREAD, OPACITY (0 to 1) and colour RGB (0xRRGGBB); the show and hide transitions (KIND 0 none, 1 fade, 2
-   pop; MS; the cubic-bezier X1 Y1 X2 Y2); the BACKDROP blur radius; BENEATH_RGB (-1 none).  */
+   pop; MS; the cubic-bezier X1 Y1 X2 Y2); the BACKDROP blur radius; BENEATH_RGB (-1 none); a window card's edge ring,
+   RING_RGB (-1 none) and RING_OPACITY (0 to 1).  A window card (glitnir--card-vector, NhgLayerWindow's card) uses the
+   same slots: ON to RGB, BENEATH_RGB (what its corners show) and the ring.  */
 #define NHG_CHROME_ON          0
 #define NHG_CHROME_RADIUS      1
 #define NHG_CHROME_BLUR        2
@@ -691,7 +693,9 @@ int32_t nhg_tip_hide (NhgDisplay *d, uint64_t window);
 #define NHG_CHROME_HIDE_Y2     19
 #define NHG_CHROME_BACKDROP    20
 #define NHG_CHROME_BENEATH_RGB 21
-#define NHG_CHROME_SLOTS      22
+#define NHG_CHROME_RING_RGB    22
+#define NHG_CHROME_RING_OPACITY 23
+#define NHG_CHROME_SLOTS      24
 
 /* Push: WINDOW is a child of PARENT's window, its native area at X, Y (device pixels of the parent's native area:
    the frame's left and top), with FLAGS NHG_CHILD_*.  The first push after the window is made records where the
@@ -760,11 +764,15 @@ int32_t nhg_popup_hide (NhgDisplay *d, uint64_t window, uint64_t owner);
 #define NHG_LAYERS_INTEGER_SCALES  2   /* it is `integer-scales': only at a whole scale */
 #define NHG_LAYERS_OPAQUE_BG       4   /* the frame's alpha-background is 1 */
 
-/* One Emacs window of a frame: its sequence_number and window_box (w, ANY_AREA), with the native area's origin.  */
+/* One Emacs window of a frame: its sequence_number; RECT its window_box (w, ANY_AREA) and OUTER its pixel edges
+   without the dividers, both with the native area's origin; CARD its card as glitnir--card-vector gave it (the window
+   parameter glitnir--card, NHG_CHROME_* slots, logical pixels), CARD[NHG_CHROME_ON] 0 for none.  */
 typedef struct
 {
   uint64_t seq;
   NhgRect rect;
+  NhgRect outer;
+  float card[NHG_CHROME_SLOTS];
 } NhgLayerWindow;
 
 /* Emacs window W_SEQ's rows RUN (native-area origin: its columns, the run's first row and height) move to TO_Y in
