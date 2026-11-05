@@ -34,12 +34,14 @@ on:
 permissions:
   contents: read
 
-# Which runs write caches (README.md, "Caches"): nidhogg-31 every one; a ci/* branch the self-checking and exact ones,
-# which its own later runs read (GitHub evicts the least recently used first, so old branches' entries go first); a
-# pull request or a tag none.  Every run reads its own branch's and nidhogg-31's.
+# Which runs write caches (README.md, "Caches"): nidhogg-31 and a pull request from a branch of this repository every
+# one; a ci/* branch the self-checking and exact ones, which its own later runs read (GitHub evicts the least recently
+# used first, so old branches' entries go first); a fork's pull request or a tag none.  GitHub scopes a pull request's
+# entries to its merge ref (refs/pull/N/merge): only that pull request's later runs read them, never nidhogg-31 or
+# another branch.  Every run reads its own ref's and nidhogg-31's.
 env:
-  CACHE_SAVE: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/nidhogg-31' || startsWith(github.ref, 'refs/heads/ci/')) }}
-  CACHE_SAVE_ALL: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/nidhogg-31' }}
+  CACHE_SAVE: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name != 'pull_request' && (github.ref == 'refs/heads/nidhogg-31' || startsWith(github.ref, 'refs/heads/ci/'))) }}
+  CACHE_SAVE_ALL: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name != 'pull_request' && github.ref == 'refs/heads/nidhogg-31') }}
 
 concurrency:
   group: nidhogg-${{ github.ref }}
