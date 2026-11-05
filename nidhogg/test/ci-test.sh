@@ -88,7 +88,12 @@ for l in $(grep -nE 'id: (tb|lc)$' "$wf" | cut -d: -f1); do
   ! step "$l" | grep -q 'restore-keys'                            || fail "the exact cache at line $l has restore-keys"
 done
 # a compiled-Lisp or tarball save comes after a build (or pack) that passed; a tarball from narrowed checks is never saved
-[ "$(grep -A1 -E 'name: Save (compiled Lisp|built tarball)$' "$wf" | grep -cE "steps\.(build|pack)\.outcome == 'success'|steps\.lcok\.outputs\.ok == 'true'")" -eq "$(grep -cE 'name: Save (compiled Lisp|built tarball)$' "$wf")" ] || fail "a compiled-Lisp or tarball save not gated on its build"
+[ "$(grep -A1 -E 'name: Save ((byte-|native-)?compiled Lisp|built tarball)$' "$wf" | grep -cE "steps\.(build|pack)\.outcome == 'success'|steps\.lcok\.outputs\.ok == 'true'")" -eq "$(grep -cE 'name: Save ((byte-|native-)?compiled Lisp|built tarball)$' "$wf")" ] || fail "a compiled-Lisp or tarball save not gated on its build"
+# the dev builds' byte-compiled Lisp is keyed on the Lisp side alone, their .eln files on everything
+for j in workers-asan workers-chaos; do
+  job "$j" | grep -qF 'elc=$(bash nidhogg/ci/lisp-key.sh --elc)' || fail "job $j does not key its byte-compiled Lisp apart"
+  [ "$(job "$j" | grep -cF -- "-eln-\${{ hashFiles('nidhogg/deps/fedora-45.build') }}-\${{ steps.tree.outputs.lisp }}-")" = 2 ] || fail "job $j's .eln entry is not keyed on all of lisp-key.sh"
+done
 [ "$(grep -A1 'name: Save built tarball$' "$wf" | grep -cF "inputs.checks == ''")" -eq "$(grep -c 'name: Save built tarball$' "$wf")" ] || fail "a narrowed run saves its tarball"
 # the tree job runs Glitnir's checks and cargo-deny's advisories, with pixman's headers installed
 tj=$(awk '/^  tree:/,/^  linux:/' "$wf")
