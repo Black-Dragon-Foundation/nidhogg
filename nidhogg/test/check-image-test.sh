@@ -63,5 +63,21 @@ for c in shell glue glitnir; do
   done
 done
 
+# gui.sh --container fedora-45 (no localhost/glitnir-gui-deps image and no GLITNIR_GUI_IMAGE): the same, with every
+# lane's packages in the image
+reset
+mkdir -p "$d/prefix/bin"
+: > "$d/prefix/bin/nidhogg"
+chmod +x "$d/prefix/bin/nidhogg"
+for run in 1 2; do
+  bash "$nh/test/gui.sh" --prefix "$d/prefix" --compositor recorder --recorder /bin/true --container fedora-45 >"$d/out" 2>&1
+  ref=$(sed -n 's/^image: \(.*\) (\(built\|local\))$/\1/p' "$d/out")
+  [[ $ref == localhost/nidhogg-guiall:fedora-45-* ]]  || fail "gui run $run: no image line: $(cat "$d/out")"
+  want=local; [ "$run" = 1 ] && want=built
+  grep -qxF "image: $ref ($want)" "$d/out"            || fail "gui run $run: not $want: $(cat "$d/out")"
+  [ "$(builds)" = 1 ]                                 || fail "gui run $run: $(builds) builds in all"
+  line=$(grep '^run ' "$STUB_DIR/log" | tail -n 1)
+  [[ $line == *" $ref "* ]]                           || fail "gui run $run: the container does not run $ref: $line"
+done
 [ $rc != 0 ] || echo "check-image-test: ok"
 exit $rc

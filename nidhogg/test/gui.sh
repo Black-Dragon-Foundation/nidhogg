@@ -44,7 +44,9 @@
 #   --tests DIR         where the *-gui-tests.el files are (default: test/src/nidhogg-tests of this checkout)
 #   --daemon            run in `nidhogg --fg-daemon' and open the frame with emacsclient -c
 #   --container DISTRO  the same, inside a memory-capped podman container: fedora-45, image pinned by digest, or
-#                       ubuntu-26.04 or debian-13 with --compositor recorder only
+#                       ubuntu-26.04 or debian-13 with --compositor recorder only.  fedora-45 runs in an image with
+#                       every lane's packages, built once per tag (ci/image.sh local guiall-fedora-45; prints
+#                       "image: REF (local|built)"); GLITNIR_GUI_IMAGE or a localhost/glitnir-gui-deps image wins
 #   --wayland-debug F   Emacs's stderr (WAYLAND_DEBUG=client protocol trace and the test output) goes to F
 #   --env K=V           an extra environment variable for Nidhogg (repeatable)
 #   --force-csd         client-side decorations: GTK_CSD=1 for pgtk, NIDHOGG_SHELL_FORCE_CSD=1 for the shell, and
@@ -451,6 +453,11 @@ if [ -n "$container" ]; then
   podman image exists "localhost/glitnir-gui-deps:$container" 2>/dev/null && image=localhost/glitnir-gui-deps:$container
   # GLITNIR_GUI_IMAGE=REF (fedora-45): such an image made elsewhere, CI's nidhogg-gui-fedora-45 (nidhogg/ci/image.sh)
   if [ -n "${GLITNIR_GUI_IMAGE:-}" ] && [ "$container" = fedora-45 ]; then image=$GLITNIR_GUI_IMAGE; fi
+  # neither: the all-lanes image (deps/fedora-45.runtime and every lane's packages), built here once per tag, so the
+  # run installs nothing
+  if [ "$image" = "${IMAGE_fedora_45:-}" ] && [ "$container" = fedora-45 ]; then
+    image=$(bash "$checkout/nidhogg/ci/image.sh" local guiall-fedora-45) || { echo "gui.sh: the GUI image failed" >&2; exit 1; }
+  fi
   name=${GLITNIR_GUI_NAME:-glitnir-gui-$$}
   trap 'podman rm -f "$name" > /dev/null 2>&1' EXIT
   trap 'exit 1' INT TERM

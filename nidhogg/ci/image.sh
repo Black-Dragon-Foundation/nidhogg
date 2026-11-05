@@ -16,7 +16,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 SELF="$ROOT/nidhogg/ci/image.sh"
 REG=${NIDHOGG_IMAGE_REGISTRY:-ghcr.io/black-dragon-foundation}
 PODMAN=${NIDHOGG_BUILD_PODMAN:-podman}
-NAMES="build-fedora-45 build-fedora-45-norust build-ubuntu-26.04 gui-fedora-45 pkg-fedora-45 check-fedora-45"
+NAMES="build-fedora-45 build-fedora-45-norust build-ubuntu-26.04 gui-fedora-45 pkg-fedora-45 guiall-fedora-45 check-fedora-45"
 
 usage() { echo "usage: image.sh (tag|resolve|publish|use|local) NAME [REF] | names" >&2; exit 2; }
 # NAME: its Containerfile, the stage it builds (empty: the last) and the repository files the Containerfile copies
@@ -27,6 +27,7 @@ spec() {
     build-ubuntu-26.04) FILE=build-ubuntu-26.04.Containerfile TARGET="" INPUTS="nidhogg/deps/ubuntu-26.04.build" ;;
     gui-fedora-45) FILE=test-fedora-45.Containerfile TARGET=gui INPUTS="nidhogg/deps/fedora-45.runtime" ;;
     pkg-fedora-45) FILE=test-fedora-45.Containerfile TARGET=pkg INPUTS="nidhogg/deps/fedora-45.runtime" ;;
+    guiall-fedora-45) FILE=test-fedora-45.Containerfile TARGET=guiall INPUTS="nidhogg/deps/fedora-45.runtime" ;;
     check-fedora-45) FILE=check-fedora-45.Containerfile TARGET="" INPUTS="nidhogg/deps/fedora-45.check" ;;
     *) echo "image.sh: no image '$1'; one of: $NAMES" >&2; exit 2 ;;
   esac
