@@ -1193,9 +1193,15 @@ impl Stage {
         }
     }
 
-    /// Surface `id`'s stats entry for a commit that showed what waited (with the tree's key time when it is the root),
-    /// with the tick it was, if any: late when it came over 1.25 periods after the one before.  A ghost's root is gone,
-    /// so its frames go unrecorded.
+    /// A tree commit of root `root` showed a child's buffer: the key it answered is spent, whether or not the root
+    /// had a buffer of its own in it (a child's entry only reads the key, the root's takes it).
+    pub fn kids_shown(&mut self, root: u64) {
+        self.keys.remove(&root);
+    }
+
+    /// Surface `id`'s stats entry for a commit that showed what waited, with the tree's key time (a child's commit
+    /// shows in its tree's), and with the tick it was, if any: late when it came over 1.25 periods after the one
+    /// before.  A ghost's root is gone, so its frames go unrecorded.
     fn record(&mut self, id: u64) {
         let now = now_ns();
         let (mut ticks, mut late_ticks, mut tick_interval_ns, mut ghost) = (0, 0, 0, false);
@@ -1220,7 +1226,7 @@ impl Stage {
         let key = if s.root == id {
             self.keys.insert(id, 0).unwrap_or(0)
         } else {
-            0
+            self.keys.get(&s.root).copied().unwrap_or(0)
         };
         let mut e = StatsEntry {
             t_update_ns: key,
