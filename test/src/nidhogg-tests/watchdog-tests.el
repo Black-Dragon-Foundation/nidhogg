@@ -207,6 +207,35 @@ deadline on the coarse clock, so it returns without a responsive select."
               (should (= (plist-get (car stalls) :wall-ms) 250.0))))
         (nidhogg-test-peer-close peer)))))
 
+(ert-deftest watchdog/idle-ends-a-span-after-a-slow-sentinel ()
+  :tags '(:cond)
+  ;; The premise of `watchdog-test--idle': one short responsive wait may
+  ;; end no span.  A child's exit not yet notified makes the wait's first
+  ;; pass a zero-timeout poll, which runs the sentinel; a sentinel that
+  ;; outlasts the wait's 1 ms makes the wait return there, before any
+  ;; responsive select.  The helper waits until a span has ended: one
+  ;; 150 ms stall.  (A child that exits just before the helper's wait is
+  ;; how the flag row once recorded no stall.)
+  (watchdog-test--running '(100 2000 nil :no-monitor)
+    (watchdog-test--align)
+    (let ((proc (make-process
+                 :name "watchdog-test-exit" :command '("true")
+                 :connection-type 'pipe :noquery t :buffer nil
+                 :sentinel (lambda (_p _e)
+                             ;; Past the wait's deadline on any clock tick.
+                             (let ((end (+ (float-time) 0.05)))
+                               (while (< (float-time) end)))))))
+      ;; Reaped by the SIGCHLD handler, which runs no sentinel: the
+      ;; status change waits for the next `wait_reading_process_output'.
+      (let ((bound (+ (float-time) 10)))
+        (while (and (process-live-p proc) (< (float-time) bound))))
+      (should-not (process-live-p proc))
+      (watchdog-test--clock-at 150)
+      (watchdog-test--idle)
+      (let ((stalls (car (nidhogg-watchdog--take))))
+        (should (= (length stalls) 1))
+        (should (= (plist-get (car stalls) :wall-ms) 150.0))))))
+
 (ert-deftest watchdog/inhibit-redisplay-wait-is-busy ()
   :tags '(:cond)
   ;; In a timer, a 300 ms wait under `inhibit-redisplay' does not end the
