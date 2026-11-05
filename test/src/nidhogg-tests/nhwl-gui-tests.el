@@ -932,6 +932,38 @@ and then placed by its size (posframe) is placed by the new one."
             (should (equal (car (nhwl-gui--commit-summary (nhwl-gui--toplevel-all-commits mark))) '(nil nil 0)))))
       (when (frame-live-p c) (delete-frame c t)))))
 
+(ert-deftest nhwl-gui/child-frame-move-and-resize-is-one-commit ()
+  "A child frame resized and moved in one call (a posframe shown again elsewhere at a new size) shows at its new
+place with its new picture: no commit of the parent applies the move before the child's new buffer.  The row lets the
+shell send what it owes before the redisplay (pattern C: the presenter's counters say every request has gone out)."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let* ((s (frame-scale-factor)) (before (nhwl-gui--sub-ids)) (c nil))
+    (unwind-protect
+        (progn
+          (setq c (nhwl-gui--child))
+          (let* ((n (nhwl-gui--child-node before))
+                 (id (plist-get n :id))
+                 (off (nhwl-gui--parent-offset n))
+                 (mark (progn (message nil) (redisplay t) (gui-runner-wait-settled) (nhwl-gui--mark))))
+            (let ((inhibit-redisplay t))
+              (set-frame-size-and-position-pixelwise c 220 90 80 60)
+              (should (nhwl-gui--wait #'gui-runner--presented-p 5)))
+            (redisplay t)
+            (gui-runner-wait-settled)
+            (should (equal (plist-get (nhwl-gui--node id) :position)
+                           (list (round (/ (+ (car off) 80) s)) (round (/ (+ (cadr off) 60) s)))))
+            (let* ((cs (plist-get (gui-runner-recorder (list :cmd "log" :since mark)) :commits))
+                   (top (seq-position cs "toplevel" (lambda (c r) (equal (plist-get c :role) r))))
+                   (pic (seq-position cs id (lambda (c i) (and (eql (plist-get c :surface) i)
+                                                               (nhwl-gui--get c :buffer))))))
+              (ert-info ((format "commits %S" (mapcar (lambda (c) (list (plist-get c :role) (plist-get c :surface)
+                                                                        (and (nhwl-gui--get c :buffer) t)))
+                                                      cs)))
+                (should pic)
+                (should top)
+                (should (< pic top))))))
+      (when (frame-live-p c) (delete-frame c t)))))
+
 (ert-deftest nhwl-gui/child-frame-corners-and-shadow ()
   (skip-unless (and (nhwl-gui--recorder-p) (boundp 'child-frame-chrome)))
   (let* ((s (frame-scale-factor)) (before (nhwl-gui--sub-ids)) (c nil)

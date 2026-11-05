@@ -678,6 +678,7 @@ int32_t nhg_tip_hide (NhgDisplay *d, uint64_t window);
 
 #define NHG_CHILD_VISIBLE    1   /* nhg_child_set flags: the child is shown (its surface is mapped) */
 #define NHG_CHILD_NO_FOCUS   2   /* the frame is no-accept-focus */
+#define NHG_CHILD_REDRAW     4   /* the frame waits to be drawn again: a move goes with its next picture */
 
 /* The chrome slot vector glitnir--chrome-vector gives a child frame (logical pixels; lisp/glitnir.el's
    glitnir--chrome-slots has the same numbers): ON 1 for chrome, 0 for none; the corner RADIUS; the shadow's BLUR, offset

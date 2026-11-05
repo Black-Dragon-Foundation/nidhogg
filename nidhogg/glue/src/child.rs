@@ -28,10 +28,12 @@ use glitnir::motion::MotionSpec;
 use glitnir::scene::Chrome;
 use std::ptr;
 
-/// `nhg_child_set` flags: the child is shown (its surface is mapped); the frame is `no-accept-focus`.
+/// `nhg_child_set` flags: the child is shown (its surface is mapped); the frame is `no-accept-focus`; the frame waits
+/// to be drawn again (it is garbaged), so its next publish brings a new picture.
 pub const NHG_CHILD_VISIBLE: u32 = 1;
 pub const NHG_CHILD_NO_FOCUS: u32 = 2;
-const FLAGS: u32 = NHG_CHILD_VISIBLE | NHG_CHILD_NO_FOCUS;
+pub const NHG_CHILD_REDRAW: u32 = 4;
+const FLAGS: u32 = NHG_CHILD_VISIBLE | NHG_CHILD_NO_FOCUS | NHG_CHILD_REDRAW;
 
 /// The corners and shadow of a child frame's chrome, in logical pixels, as `chrome::decode` takes them from the slot
 /// vector: `on` 0 for none, the corner radius, the shadow's blur, offset, spread, opacity (0 to 1) and colour
@@ -316,7 +318,7 @@ pub fn set(
     f.facts.parent = parent;
     let c = &mut f.child;
     let first = c.parent == 0;
-    (c.parent, c.x, c.y, c.flags) = (parent, x, y, flags);
+    (c.parent, c.x, c.y, c.flags) = (parent, x, y, flags & !NHG_CHILD_REDRAW);
     if first {
         c.mapped = true;
         // a window made goes above its siblings
