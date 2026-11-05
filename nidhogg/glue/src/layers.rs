@@ -310,8 +310,8 @@ pub fn scroll(
     )?)
 }
 
-/// `nhg_layers_sync`: [`sync_at`] now, with the opaque-root check on `window`.  A frame without a backing yet has no
-/// layers (0).
+/// `nhg_layers_sync`: [`sync_at`] now, with the opaque-root check on `window`, then the window cards
+/// ([`crate::cards::sync`]).  A frame without a backing yet has no layers (0).
 pub fn sync(
     state: &mut Display,
     window: u64,
@@ -323,16 +323,15 @@ pub fn sync(
         return Ok(0);
     };
     let eligible = root(state, window).is_ok_and(|r| opaque_root(&r, flags, s120));
-    Ok(sync_at(
-        &mut state.backings,
-        key,
-        windows,
-        eligible,
-        Instant::now(),
-    )?)
+    let left = sync_at(&mut state.backings, key, windows, eligible, Instant::now())?;
+    crate::cards::sync(state, key, windows)?;
+    Ok(left)
 }
 
-/// How many windows of frame `key` are their own outputs (0 for a frame without a backing).
+/// How many of frame `key`'s windows are their own outputs, plus how many have a card layer (0 for a frame without a
+/// backing): while it is not 0, C lists the windows at each publish, so the publish after the last card went still
+/// removes its layer (C's `glitnir--cards` parameter is nil by then).  `nhwl--scroll-layers` reads it too.
 pub fn count(b: &mut Backings, key: u64) -> usize {
-    b.frame_mut(key).map_or(0, |f| f.layers.len())
+    b.frame_mut(key)
+        .map_or(0, |f| f.layers.len() + f.cards.len())
 }

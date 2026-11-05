@@ -789,7 +789,8 @@ int32_t nhg_scroll_window (NhgDisplay *d, uint64_t window, uint64_t frame, uint6
 int32_t nhg_layers_sync (NhgDisplay *d, uint64_t window, uint64_t frame, const NhgLayerWindow *windows, size_t n,
                          uint32_t flags);
 
-/* How many of FRAME's windows are their own outputs.  */
+/* How many of FRAME's windows are their own outputs, plus how many have a card layer (while it is not 0, C lists the
+   windows at each publish).  */
 int32_t nhg_layers_count (NhgDisplay *d, uint64_t frame);
 
 /* ---- The visible bell, idle inhibition, export handles and activation tokens ------------------------------------ */
