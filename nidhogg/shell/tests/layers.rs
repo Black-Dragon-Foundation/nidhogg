@@ -275,6 +275,7 @@ fn card(b: &Backing, rect: Rect) {
             CARD,
             Some(glitnir::scene::Card {
                 beneath_argb: BENEATH,
+                ..Default::default()
             }),
         )
     })
