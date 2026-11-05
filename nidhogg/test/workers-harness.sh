@@ -15,7 +15,9 @@
 #                                         prints `schedule [C1,...]'; running the driver with x:K:C1,... replays it and
 #                                         prints its trace.  Over N schedules (default 200000) a module fails with its
 #                                         count: narrow the driver, never the bound.  Module selftest is the mode's own
-#                                         test: clean at K=0, red at each K from 1 on, the same failures on two runs.
+#                                         test: clean at K=0, red at each K from 1 on, the same failures on two runs,
+#                                         and a driver that takes a different path on a replay is a harness error.  A
+#                                         module that explored one schedule or none fails: it made no choice to test.
 # Modules: queue (two producers, one consumer, 10^6 jobs through the runtime), wake (the completion channel's
 # clear/re-check protocol, 10^6 races), io (the reader's hand-over, wake fds and synchronous hand-back over pipes
 # filled by writer threads: every byte once and in order).  Tasks 6, 10, 16, 18, 22, 24, 27-29 and 32 add drivers and fuzz targets.
@@ -94,14 +96,30 @@ if [ "${1:-}" = --sched ]; then
           summary+="; K=$j $(grep -o '[0-9]* schedules, [0-9]* failed' "$out/sa"), $(grep -m1 '^schedule' "$out/sa") twice"
         fi
       done
+      if [ -z "$bad" ]; then
+        # a driver that takes a different path on a replay is a harness error (exit 2), named as such
+        rc=0
+        NH_SCHED_SELFTEST_DIVERGE=1 "$out/$m" "x:1" "$max" > "$out/sd" 2>&1 || rc=$?
+        if [ $rc != 2 ] || ! grep -q 'differs from the run before when replayed' "$out/sd"; then
+          bad="a diverging replay: exit $rc (want 2, 'differs from the run before'): $(tail -1 "$out/sd")"
+        else
+          summary+="; a diverging replay found"
+        fi
+      fi
       if [ -z "$bad" ]; then echo "ok   $m ($summary)"; else echo "FAIL $m ($bad)"; fail=1; fi
       continue
     fi
     if [ $exhaustive = 1 ]; then
       rc=0
-      "$out/$m" "x:$k" "$max" || rc=$?
+      "$out/$m" "x:$k" "$max" > "$out/x" 2>&1 || rc=$?
+      cat "$out/x"
+      # a run that explored one schedule or none checked nothing: the driver has no choice to make
+      runs=$(sed -n 's/^exhaustive K=[0-9]*: \([0-9]*\) schedules.*/\1/p' "$out/x")
+      if [ $rc = 0 ] && [ "${runs:-0}" -le 1 ]; then
+        echo "FAIL $m (explored ${runs:-0} schedule(s) at K=$k: a vacuous run)"; fail=1; continue
+      fi
       case $rc in
-        0) echo "ok   $m" ;;
+        0) echo "ok   $m ($runs schedules)" ;;
         3) echo "FAIL $m (over $max schedules: narrow the driver)"; fail=1 ;;
         *) echo "FAIL $m"; fail=1 ;;
       esac
