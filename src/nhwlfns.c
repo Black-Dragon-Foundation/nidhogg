@@ -483,9 +483,10 @@ nhwl_set_undecorated (struct frame *f, Lisp_Object new_value,
    (child.rs; nhwlterm.c pushes its facts).  Here: its parameters, and the
    chrome `glitnir--resolve' gives it.  */
 
-/* Copy the numbers of `glitnir--chrome-vector's value V into OUT; the glue
-   checks them.  A non-number or a missing slot is 0.  */
-static void
+/* Copy the numbers of `glitnir--chrome-vector's value V into OUT (also a
+   window card's, nhwlterm.c); the glue checks them.  A non-number or a
+   missing slot is 0.  */
+void
 nhwl_chrome_vector (Lisp_Object v, float *out)
 {
   memset (out, 0, NHG_CHROME_SLOTS * sizeof *out);

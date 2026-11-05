@@ -834,6 +834,8 @@ Setting it to nil makes Glitnir hand every frame back to the stock drawing.  */)
   DEFSYM (Qdamage_hold, "damage-hold");
   DEFSYM (Qglitnir__resolve, "glitnir--resolve");
   DEFSYM (Qglitnir__chrome_vector, "glitnir--chrome-vector");
+  DEFSYM (Qglitnir__card, "glitnir--card");
+  DEFSYM (Qglitnir__cards, "glitnir--cards");
   DEFSYM (Qglitnir_debug_damage, "glitnir-debug-damage");
   DEFVAR_LISP ("glitnir-debug", Vglitnir_debug,
 	       doc: /* Glitnir's debug mode: nil (the default) or a symbol.

@@ -133,7 +133,7 @@ and `child-frame-chrome'.  Root frames and decorated (not
   '((on . 0) (radius . 1) (blur . 2) (ox . 3) (oy . 4) (spread . 5) (opacity . 6) (rgb . 7)
     (show-kind . 8) (show-ms . 9) (show-x1 . 10) (show-y1 . 11) (show-x2 . 12) (show-y2 . 13)
     (hide-kind . 14) (hide-ms . 15) (hide-x1 . 16) (hide-y1 . 17) (hide-x2 . 18) (hide-y2 . 19)
-    (backdrop . 20) (beneath-rgb . 21))
+    (backdrop . 20) (beneath-rgb . 21) (ring-rgb . 22) (ring-opacity . 23))
   "Slot names of `glitnir--chrome-vector' and their indices.
 The same numbers are `NHG_CHROME_*' in nhglue.h and `SLOT_*' in the glue's chrome.rs.")
 
@@ -207,18 +207,43 @@ Only undecorated child frames have one."
   (when-let* ((a (cdr (assq 'alpha-background (frame-parameters frame)))))
     (< a (if (floatp a) 1.0 100))))
 
+(defun glitnir--rgb (rgb)
+  "RGB, a list (R G B) of 0-255 values, as the number 0xRRGGBB."
+  (let ((n 0))
+    (dotimes (i 3)
+      (let ((c (nth i rgb)))
+        (setq n (logior (ash n 8) (if (natnump c) (min c 255) 0)))))
+    n))
+
+(defun glitnir--color-rgb (name frame)
+  "Colour NAME on FRAME as the number 0xRRGGBB, or nil when it names none."
+  (when-let* (((stringp name))
+              (v (color-values name frame)))
+    (glitnir--rgb (mapcar (lambda (c) (/ c 257)) v))))
+
+(defun glitnir--fill-shadow (v radius sh)
+  "Fill slots 0-7 of chrome vector V: on, RADIUS and shadow SH, clamped.
+SH is what `glitnir--shadow' gives, or nil."
+  (aset v 0 1)
+  (aset v 1 (max 0 radius))
+  (when sh
+    (let ((off (plist-get sh :offset)))
+      (aset v 2 (max 0 (plist-get sh :blur)))
+      (aset v 3 (car off))
+      (aset v 4 (cdr off))
+      (aset v 5 (plist-get sh :spread))
+      (aset v 6 (min 1 (max 0 (plist-get sh :opacity))))
+      (aset v 7 (glitnir--rgb (plist-get sh :color))))))
+
 (defun glitnir--chrome-vector (frame)
   "Return FRAME's chrome as a vector of numbers, or nil for a root frame.
 The slots are `glitnir--chrome-slots'.  Slots 0-7 come from `glitnir--resolve',
 clamped; 8-19 from the `transition' option, which the desktop's reduced-motion
 setting turns off; 20 from `backdrop-blur', 0 while the frame's
-`alpha-background' is opaque; `beneath-rgb' is -1.  A child frame with no chrome
-has a vector whose first slot is 0."
+`alpha-background' is opaque; `beneath-rgb' and `ring-rgb' are -1.  A child
+frame with no chrome has a vector whose first slot is 0."
   (when (frame-parent frame)
     (let* ((res (glitnir--resolve frame))
-           (sh (plist-get res :shadow))
-           (off (plist-get sh :offset))
-           (col (plist-get sh :color))
            (tr (glitnir--transition (glitnir--option frame 'transition)))
            (blur (glitnir--option frame 'backdrop-blur))
            (v (make-vector (length glitnir--chrome-slots) 0)))
@@ -231,21 +256,111 @@ has a vector whose first slot is 0."
       (aset v (alist-get 'backdrop glitnir--chrome-slots)
             (if (and blur (glitnir--translucent-p frame)) blur 0))
       (aset v (alist-get 'beneath-rgb glitnir--chrome-slots) -1)
+      (aset v (alist-get 'ring-rgb glitnir--chrome-slots) -1)
       (when res
-        (aset v 0 1)
-        (aset v 1 (max 0 (plist-get res :radius)))
-        (when sh
-          (aset v 2 (max 0 (plist-get sh :blur)))
-          (aset v 3 (car off))
-          (aset v 4 (cdr off))
-          (aset v 5 (plist-get sh :spread))
-          (aset v 6 (min 1 (max 0 (plist-get sh :opacity))))
-          (aset v 7 (let ((rgb 0))
-                      (dotimes (i 3)
-                        (let ((c (nth i col)))
-                          (setq rgb (logior (ash rgb 8) (if (natnump c) (min c 255) 0)))))
-                      rgb))))
+        (glitnir--fill-shadow v (plist-get res :radius) (plist-get res :shadow)))
       v)))
+
+;; Window cards: a window with the parameters `corner-radius', `shadow'
+;; or `ring' is drawn as a card.  Its corners show the colour beneath the
+;; window, its shadow and ring lie outside it, in the gap.
+
+(defun glitnir--ring (spec frame)
+  "Return ring SPEC, (COLOR . OPACITY), as (RGB . OPACITY) for FRAME, or nil.
+COLOR is a face, whose foreground is used, or a colour name; OPACITY is
+0 to 1.  A colour that names none is no ring.  Signal
+`wrong-type-argument' for another shape."
+  (unless (and (consp spec) (or (facep (car spec)) (stringp (car spec)))
+               (numberp (cdr spec)))
+    (signal 'wrong-type-argument (list 'glitnir-ring spec)))
+  (let ((rgb (glitnir--color-rgb (if (facep (car spec))
+                                     (face-foreground (car spec) frame t)
+                                   (car spec))
+                                 frame)))
+    (and rgb (cons rgb (min 1 (max 0 (cdr spec)))))))
+
+(defun glitnir--card-vector (window)
+  "Return WINDOW's card as a vector of numbers, or nil when it has none.
+The slots are `glitnir--chrome-slots'.  The window parameters
+`corner-radius' (pixels), `shadow' (a plist as in `child-frame-chrome',
+coloured by the `child-frame-shadow' face) and `ring' ((COLOR . OPACITY),
+COLOR a face or a colour name: a line just outside the card) give slots
+0-7 and 22-23.  `beneath-rgb', what the corners show, is the foreground of
+the `window-divider' face on WINDOW's frame (the colour dividers are drawn
+in), else the frame's background.  The motion and backdrop slots are 0."
+  (let* ((frame (window-frame window))
+         (radius (window-parameter window 'corner-radius))
+         (spec (window-parameter window 'shadow))
+         (sh (and spec (glitnir--shadow spec frame)))
+         (ring-spec (window-parameter window 'ring))
+         (ring (and ring-spec (glitnir--ring ring-spec frame))))
+    (when radius
+      (unless (and (numberp radius) (>= radius 0))
+        (signal 'wrong-type-argument (list 'natnump radius))))
+    (when (or sh ring (and radius (> radius 0)))
+      (let ((v (make-vector (length glitnir--chrome-slots) 0)))
+        (glitnir--fill-shadow v (or radius 0) sh)
+        (aset v (alist-get 'beneath-rgb glitnir--chrome-slots)
+              (or (glitnir--color-rgb (face-foreground 'window-divider frame t) frame)
+                  (glitnir--color-rgb (frame-parameter frame 'background-color) frame)
+                  0))
+        (aset v (alist-get 'ring-rgb glitnir--chrome-slots) (if ring (car ring) -1))
+        (aset v (alist-get 'ring-opacity glitnir--chrome-slots) (if ring (cdr ring) 0))
+        v))))
+
+(defvar glitnir--card-generation 0
+  "Bumped when every window's card is resolved again (a theme changed).")
+
+(defun glitnir--card-key (window)
+  "What WINDOW's card is resolved from, or nil when it asks for none."
+  (let ((radius (window-parameter window 'corner-radius))
+        (shadow (window-parameter window 'shadow))
+        (ring (window-parameter window 'ring)))
+    (when (or radius shadow ring)
+      (let ((f (window-frame window)))
+        (list radius shadow ring glitnir--card-generation
+              (face-foreground 'window-divider f t)
+              (frame-parameter f 'background-color)
+              (and shadow (face-foreground 'child-frame-shadow f t))
+              (and (consp ring) (facep (car ring)) (face-foreground (car ring) f t)))))))
+
+(defun glitnir--cards-flag (frame)
+  "Set FRAME's parameter `glitnir--cards' to whether a window has a card.
+Only when that changed."
+  (let (any)
+    (dolist (w (window-list frame t))
+      (when (window-parameter w 'glitnir--card) (setq any t)))
+    (unless (eq any (frame-parameter frame 'glitnir--cards))
+      (set-frame-parameter frame 'glitnir--cards any))))
+
+(defun glitnir--recheck-cards (window)
+  "Resolve WINDOW's card again when what it comes from changed.
+The vector goes into the window parameter `glitnir--card', which C lists
+with the window when the frame publishes."
+  (let ((key (glitnir--card-key window)))
+    (unless (equal key (window-parameter window 'glitnir--card-key))
+      ;; the key first: a parameter that signals does so once
+      (set-window-parameter window 'glitnir--card-key key)
+      (set-window-parameter window 'glitnir--card (and key (glitnir--card-vector window)))
+      (glitnir--cards-flag (window-frame window)))))
+
+(defun glitnir--recheck-all-cards ()
+  "Resolve every window's card again."
+  (setq glitnir--card-generation (1+ glitnir--card-generation))
+  (dolist (f (frame-list))
+    (dolist (w (window-list f t))
+      (glitnir--recheck-cards w))))
+
+(defun glitnir--recheck-frame-cards (window)
+  "Recheck the cards of every window on WINDOW's frame, before redisplay.
+Only for the frame's first window and the selected window, the windows
+redisplay passes, so a frame's windows are checked at most twice."
+  (let ((f (window-frame window)))
+    (when (or (eq window (frame-first-window f)) (eq window (selected-window)))
+      (dolist (w (window-list f t))
+        (glitnir--recheck-cards w)))))
+
+(add-hook 'pre-redisplay-functions #'glitnir--recheck-frame-cards)
 
 (defun glitnir-refresh (&optional frame)
   "Resolve the chrome of FRAME (default: every child frame) again."
@@ -271,7 +386,9 @@ its first window)."
   (when (eq key 'reduced-motion) (glitnir-refresh)))
 ;; nhwl-settings.el loads after this file; `add-hook' makes the hook variable here.
 (add-hook 'nhwl-settings-changed-functions #'glitnir--settings-changed)
-(defun glitnir--theme-refresh (&rest _) (glitnir-refresh))
+(defun glitnir--theme-refresh (&rest _)
+  (glitnir-refresh)
+  (glitnir--recheck-all-cards))
 (add-hook 'enable-theme-functions #'glitnir--theme-refresh)
 (add-hook 'disable-theme-functions #'glitnir--theme-refresh)
 (add-variable-watcher
