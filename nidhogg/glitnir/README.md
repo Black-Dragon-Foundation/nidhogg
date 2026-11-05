@@ -65,10 +65,12 @@ border ring when it has a border. Window layers are their frame's pixels (P1 com
 layer with a card (`scene::set_card`, Rust only: a `Card`'s beneath colour, edge ring and the rectangles it keeps out,
 with the radius and shadow from the layer's chrome) then draws over the frame's pixels and labels: in the gap around the
 window (inside the frame, never inside a rectangle it keeps out, the other windows), the shadow and then the ring, a
-band just outside the rounded rectangle; in its four corner squares, outside the rounded rectangle, the beneath colour
-with the shadow and the ring over it. The rest of the window stays a plain copy, so typing inside it composes nothing
-of the card. A card's change damages where it draws (its corners and its bounds outside the window), and a change of
-the rectangles it keeps out only those that came or went. Pixels no
+band just outside the rounded rectangle; in its four corner squares, outside the rounded rectangle, the gap as it is
+beside them: the beneath colour, then the chrome of the frame's other cards below it in paint order, its own shadow
+and ring, and the other cards' above it. The shadow's radius is the corners', clamped to half the shorter side. The
+rest of the window stays a plain copy, so typing inside it composes nothing of the card. A card's change damages where
+it draws (its corners and its bounds outside the window), and so does its raise or lower; a change of the rectangles
+it keeps out damages only those that came or went. Pixels no
 layer covers are left alone. A pixel's value never depends on how the rectangles cut it, so composing the damage
 equals composing everything. A source whose device scale is not the target's is refused (`GLITNIR_E_STATE`) and the
 host draws that root the stock way. The time taken and the layers drawn fill the root's next frame-time entry.
