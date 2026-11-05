@@ -721,6 +721,9 @@ signal a `cyclic-variable-indirection' error.  */)
   XSYMBOL (base_variable)->u.s.declared_special = true;
   sym->u.s.redirect = SYMBOL_VARALIAS;
   SET_SYMBOL_ALIAS (sym, XSYMBOL (base_variable));
+#ifdef HAVE_NIDHOGG_WORKERS
+  note_variable_alias_target (base_variable);
+#endif
   sym->u.s.trapped_write = XSYMBOL (base_variable)->u.s.trapped_write;
   LOADHIST_ATTACH (new_alias);
   /* Even if docstring is nil: remove old docstring.  */
