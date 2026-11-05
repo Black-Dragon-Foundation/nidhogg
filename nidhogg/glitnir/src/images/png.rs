@@ -247,6 +247,8 @@ pub fn decode(data: &[u8], p: &Params) -> Result<Image, Error> {
     let info = reader.info();
     let (w, h) = (info.width, info.height);
     super::size_ok(p, i64::from(w), i64::from(h))?;
+    // the pixels (4 bytes), the mask (1) and the crate's row buffers and inflate window, before any are allocated
+    super::reserve(5 * u64::from(w) * u64::from(h) + (64 << 20))?;
     let (color, depth, interlaced) = (info.color_type, info.bit_depth as u8, info.interlaced);
     let palette: Vec<u8> = info.palette.as_deref().unwrap_or(&[]).to_vec();
     // png_handle_PLTE: a palette image's PLTE is whole entries, at most 256, and libpng keeps only the entries the
@@ -386,6 +388,18 @@ mod tests {
 
     fn pixels(img: &Image) -> Vec<u32> {
         img.pixels.as_slice().to_vec()
+    }
+
+    /// Pattern D: a decode that does not fit the heap budget is an out-of-memory error before anything is
+    /// allocated, not an abort.
+    #[test]
+    fn a_decode_over_the_budget_is_out_of_memory() {
+        let f = encode(2, 2, ColorType::Rgb, BitDepth::Eight, &[7; 12], |_| {});
+        assert!(decode(&f, &params(None)).is_ok());
+        super::super::set_test_budget(Some(16));
+        let r = decode(&f, &params(None));
+        super::super::set_test_budget(None);
+        assert!(matches!(r, Err(Error::NoMem)), "{:?}", r.err());
     }
 
     #[test]

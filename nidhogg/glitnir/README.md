@@ -126,6 +126,12 @@ Every allocation is bounded: the header's width and height are checked against t
 `MAX_PIXELS` (2^27) before the result is allocated, rows are decoded one at a time (no whole raw image), and the
 `png` crate's own limit (64 MiB for its buffers and chunks) stays at its default.
 
+The crates allocate infallibly and Rust aborts the process when an allocation fails (a hook cannot catch it), so a
+decode asks first: from the header's size it estimates the most heap it needs at once (`images::reserve`: bytes a
+pixel times the buffers the format holds together), refuses an estimate over `MAX_DECODE_BYTES` (4 GiB), and probes
+that the allocator can give it (`try_reserve_exact`, given back at once). A refusal is `GLITNIR_IMG_E_NOMEM`, as the C
+decoders answered an allocation failure. An animation asks again before each frame it composes.
+
 PNG (`images/png.rs`) gives libpng's pixels for the host's transformations: 16-bit samples keep their high byte,
 palettes and low-depth gray expand (gray scaled ×255, ×85, ×17), gray becomes RGB; a `tRNS` key or a palette whose
 alphas are all 0 or 255 makes a mask, any other alpha is composited over the caller's background with
@@ -151,6 +157,19 @@ state (`out.anim`, an opaque pointer with its size in `anim_bytes`) and the next
 `params.anim` (the call then owns it, also when it fails; `data` may be NULL) to decode the next frame from the
 current one, as the C cores' caches do; `glitnir_img_anim_free` frees one the caller drops. An animation has at most
 `MAX_FRAMES` (2^18) frames; more fail as an allocation would.
+
+### Fuzzing the image decoders
+
+`nidhogg/glitnir-fuzz/` is a cargo-fuzz crate (its own workspace, a sibling of this crate because this crate's
+`.cargo/config.toml` points crates.io at `vendor/`, which holds no fuzzer; nightly only). Its target `image_decode` feeds
+arbitrary bytes as a PNG, GIF or WebP to `glitnir_img_decode` with random parameters, decodes animations again from
+the state handed back, and fails on a panic, a mismatch between the return value and `out.err`, an oversize result or a
+result left behind on error. From the repository root, with a nightly and `cargo-fuzz`:
+
+    cargo +nightly fuzz run --fuzz-dir nidhogg/glitnir-fuzz image_decode CORPUS_DIR -- \
+        -max_total_time=600 -rss_limit_mb=3072 -max_len=65536 -dict=nidhogg/glitnir-fuzz/image.dict
+
+A crash lands in `nidhogg/glitnir-fuzz/artifacts/`; turn the input into a unit test next to the format's code.
 
 ## Limits
 
