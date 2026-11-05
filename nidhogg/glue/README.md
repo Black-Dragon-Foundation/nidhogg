@@ -169,7 +169,10 @@ stacking, input region and mapping go out with its tree's commit.
   placed by the new one. A visible top-level's new size waits for the next redisplay; maximized or fullscreen, it
   keeps the compositor's size (xdg-shell binds the client to it), as a GTK window does.
 - **Publish:** `nhg_csd_paint` sends the child's position and its input region (the native area) when they changed;
-  a top-level whose border changed places its children again at once.
+  a top-level whose border changed places its children again at once.  A move pushed while the frame waits to be drawn
+  again (`NHG_CHILD_REDRAW`: C sets it when the frame is garbaged, as after `set-frame-size`) waits for that publish, so
+  a child resized and moved in one call (a posframe shown again elsewhere) shows at its new place with its new picture
+  in one commit; any other move goes at once, with a bare commit of the parent.
 - **Stacking:** C keeps the siblings' order (its tree walk lists children by it) and hands it to `nhg_child_stack` on
   raise and lower; the glue stacks the child against its neighbour. The keyboard focus redirect stays C.
 
