@@ -1380,7 +1380,8 @@ nhg_export! {
 }
 
 nhg_export! {
-    /// How many of the frame's Emacs windows are their own outputs (0 for a frame without a backing).
+    /// How many of the frame's Emacs windows are their own outputs, plus how many have a card layer (0 for a frame
+    /// without a backing).
     ///
     /// # Safety
     /// `d` is null or a live display.

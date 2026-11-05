@@ -341,7 +341,11 @@ with the window when the frame publishes."
     (unless (equal key (window-parameter window 'glitnir--card-key))
       ;; the key first: a parameter that signals does so once
       (set-window-parameter window 'glitnir--card-key key)
-      (set-window-parameter window 'glitnir--card (and key (glitnir--card-vector window)))
+      (let ((v (and key (glitnir--card-vector window))))
+        (unless (equal v (window-parameter window 'glitnir--card))
+          (set-window-parameter window 'glitnir--card v)
+          ;; the window draws, so the frame publishes and C lists the new card
+          (force-window-update window)))
       (glitnir--cards-flag (window-frame window)))))
 
 (defun glitnir--recheck-all-cards ()

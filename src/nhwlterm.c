@@ -4195,9 +4195,10 @@ running.  */)
 
 DEFUN ("nhwl--scroll-layers", Fnhwl__scroll_layers, Snhwl__scroll_layers,
        0, 1, 0,
-       doc: /* Return how many windows of FRAME have a layer of their own.
-FRAME defaults to the selected frame.  Such a window scrolls by moving
-its layer's view (`nhwl-scroll-layers').  For tests.  */)
+       doc: /* Return how many layers of their own FRAME's windows have.
+FRAME defaults to the selected frame.  A window that is its own output
+scrolls by moving its layer's view (`nhwl-scroll-layers'); a card is one
+more.  For tests.  */)
   (Lisp_Object frame)
 {
   struct frame *f = decode_live_frame (frame);

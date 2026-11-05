@@ -207,6 +207,13 @@ compositor uploads only the exposed rows. The glue decides; C passes facts.
   box, the window's edges without its dividers (`outer`) and its card: the window parameter `glitnir--card`, which
   `glitnir--card-vector` resolves from the window parameters `corner-radius`, `shadow` and `ring`, as the same slot
   vector a child frame's chrome is (`NHG_CHROME_*`; C copies it, `chrome::decode` checks it).
+- **Cards** (`src/cards.rs`): the same sync gives each window with a card a WINDOW layer of its own, id
+  `sequence_number | CARD_TAG`, at its outer rectangle, with the chrome in device px at the frame's scale and a Glitnir
+  `Card` (the beneath colour, the ring premultiplied and one logical px wide, the other windows' outer rectangles to
+  keep out of); it removes the layers of windows that lost their card or are gone, and keeps the cards above the
+  frame's outputs. A card window may be promoted: its output stays `seq | WINDOW_TAG` at the box, so promotion and
+  demotion never touch the card. A scale change and the first sync after a reconnect give the cards again.
+  `nhg_layers_count` counts outputs and cards, so the publish after the last card went still lists the windows.
 - **Demotion:** at a publish, `nhg_layers_sync` demotes each layer whose window is gone or has another box, whose
   last full-window scroll is 2 s old, or every one at a scale or border change or when the frame is no longer an opaque root; a scroll with a new
   box demotes first. Demotion is `set_output (…, 0)` and the layer's removal, in that publish: Glitnir damages the
