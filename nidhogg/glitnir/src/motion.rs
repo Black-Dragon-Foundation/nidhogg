@@ -176,6 +176,14 @@ impl Motion {
     pub fn unmap_due(&self, t_ns: u64) -> bool {
         !self.shown && !self.running(t_ns)
     }
+
+    /// Forget a leg that has ended at `t_ns` (its `overrun` read): the frame rests where it ended, and samples, the
+    /// next commit and `running` read the same as with the leg kept.
+    pub fn settle(&mut self, t_ns: u64) {
+        if !self.running(t_ns) {
+            self.leg = None;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -339,5 +347,27 @@ mod tests {
         m.set_spec(spec(Kind::Fade, Kind::None));
         assert!(m.running(79 * MS));
         assert!(!m.running(80 * MS));
+    }
+
+    /// Settling forgets a leg once it has ended, not before, and the frame reads the same: at rest where the leg ended,
+    /// and the next leg starts as it would have.
+    #[test]
+    fn settle_forgets_an_ended_leg_only() {
+        let mut m = Motion::new(spec(Kind::Fade, Kind::Fade));
+        m.request(false);
+        m.commit(0);
+        m.settle(40 * MS);
+        assert!(m.running(40 * MS), "a leg that runs stays");
+        let mut kept = m.clone();
+        m.settle(80 * MS);
+        assert_eq!(m.overrun(90 * MS), None, "forgotten");
+        assert_eq!(kept.overrun(90 * MS), Some(10 * MS));
+        assert_eq!(m.sample(90 * MS), kept.sample(90 * MS));
+        assert!(!m.running(90 * MS) && m.unmap_due(90 * MS));
+        for x in [&mut m, &mut kept] {
+            x.request(true);
+            x.commit(200 * MS);
+        }
+        assert_eq!(m.sample(260 * MS), kept.sample(260 * MS));
     }
 }

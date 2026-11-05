@@ -54,6 +54,7 @@ typedef struct
   /* The same over the entries with a tick interval, and with a blur time.  */
   GlitnirPercentiles tick_interval_ms, blur_ms;
   double leg_overrun_ms;	/* the worst since the last reset */
+  double leg_overrun_p95_ms;	/* the 95th percentile over the last 128 transitions */
 } GlitnirStatsSummary;
 
 /* Append ENTRY to ROOT's ring (allocated at the first record).  An entry whose t_compose_start_ns and
