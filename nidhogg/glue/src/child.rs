@@ -300,8 +300,10 @@ fn send_position(state: &mut Display, window: u64) {
 /// C pushed child `window`'s facts: its parent's window, its native area's place in the parent's (device pixels) and
 /// `NHG_CHILD_*` flags.  The first push after the window is made records where it was made (`new_offset` placed it
 /// at this position), that it is mapped, and its place above its siblings; a later one sends the position if it changed, and maps or
-/// unmaps the surface as `NHG_CHILD_VISIBLE` says.  `true` when the surface was mapped again: all of it is drawn
-/// again.
+/// unmaps the surface as `NHG_CHILD_VISIBLE` says.  With `NHG_CHILD_REDRAW` (the frame waits to be drawn again: resized,
+/// then moved) the position waits for the publish step (`sync`), which sends it with the new picture: sent now, it
+/// would wake the tree for a commit that shows the child at its new place with its old picture.  `true` when the
+/// surface was mapped again: all of it is drawn again.
 pub fn set(
     state: &mut Display,
     window: u64,
@@ -328,7 +330,9 @@ pub fn set(
         (c.z, c.pos) = (z, pos);
         return Ok(false);
     }
-    send_position(state, window);
+    if flags & NHG_CHILD_REDRAW == 0 {
+        send_position(state, window);
+    }
     let on = flags & NHG_CHILD_VISIBLE != 0;
     let (backend, _, f) = state.csd_parts(window)?;
     let c = &mut f.child;
