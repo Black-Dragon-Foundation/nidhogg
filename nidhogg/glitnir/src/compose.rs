@@ -10,22 +10,34 @@
 //!   ring along the rounded path when the layer has a border;
 //! - a window layer adds nothing of its own: its pixels are its frame's (P1 composes a scroll as damage, so a window
 //!   has no offset of its own), copied with the frame; but the label sprites ([`crate::decor`]) of the window go over
-//!   them, clipped to the label's clip, in the layer's place in the paint order.
+//!   them, clipped to the label's clip, in the layer's place in the paint order;
+//! - a window layer with a card ([`crate::scene::Card`]) then draws, OVER the frame's pixels and the labels: in the
+//!   gap around the window (outside its rectangle, inside the frame, never inside a rectangle the card keeps out: the
+//!   other windows), its chrome's shadow and then its edge ring, a band just outside the rounded rectangle; and in
+//!   its four corner squares, outside the rounded rectangle of the chrome's radius, what lies beneath the window (the
+//!   card's colour with the shadow and the ring over it) through what the disc leaves of each pixel.  The rest of the
+//!   window is the plain copy.  On an own output the corners are composed into its buffer with the rest; the scene
+//!   damages them when the output scrolls.
 //!
 //! A layer without a source is not drawn, so the target keeps its pixels there, as it does where no layer lies. The
 //! shadow beneath a layer's copied part is skipped. A pixel's value depends only on the scene and the sources, never
 //! on how the rectangles cut it, so composing the damage equals composing everything wherever the damage covers what
 //! changed.
 //!
+//! A layer with a backdrop ([`Extras`]) has the blurred picture of what lies beneath it under its pixels: the copy
+//! becomes the blur's row with the layer OVER it, in the same pass, and the corner squares take that through their mask.
+//!
 //! [`compose_committed`] composes a commit's snapshot with a caller-owned [`Composer`] and takes no lock, so the
 //! host's thread can go on drawing while another thread composes.
 
+use crate::blur::Backdrop;
 use crate::committed::Committed;
 use crate::decor::{Label, Sprites};
 use crate::ffi::{GLITNIR_E_ARG, GLITNIR_E_STATE};
 use crate::geom::Rect;
 use crate::kernels::{
-    Kernels, Mask, Pixels, PixelsMut, RingCoverage, clamp_radius, corner_coverage, ring_coverage,
+    Kernels, Mask, Pixels, PixelsMut, RingCoverage, clamp_radius, corner_coverage,
+    outside_coverage, ring_coverage,
 };
 use crate::scene::{Kind, Placed};
 use crate::shadow::{ShadowCache, ShadowSpec, ShadowTiles};
@@ -79,6 +91,46 @@ pub struct TargetView<'a> {
     pub stride: usize,
     pub rect: Rect,
     pub scale: f64,
+}
+
+/// What a compose draws beyond the scene.
+#[derive(Clone, Copy, Default)]
+pub struct Extras<'a> {
+    /// A blurred backdrop and the layer it lies under. The image's region is the layer's rectangle in the image's source.
+    pub backdrop: Option<(&'a Backdrop, u64)>,
+}
+
+impl Extras<'_> {
+    /// Nothing beyond the scene.
+    pub const NONE: Extras<'static> = Extras { backdrop: None };
+
+    /// The backdrop of layer `p`, and what takes a root px to its source's coordinates.
+    fn beneath(&self, p: &Placed) -> Option<Beneath<'_>> {
+        let (image, _) = self.backdrop.filter(|(_, l)| *l == p.id)?;
+        let r = image.region()?;
+        Some(Beneath {
+            image,
+            shift: (r.x - p.rect.x, r.y - p.rect.y),
+        })
+    }
+}
+
+/// A layer's backdrop, for drawing it.
+#[derive(Clone, Copy)]
+struct Beneath<'a> {
+    image: &'a Backdrop,
+    shift: (i32, i32),
+}
+
+impl Beneath<'_> {
+    /// Root row `y` across `q`, from the image into `out`.
+    fn row(&self, y: i32, q: Rect, out: &mut [u32]) {
+        self.image.sample_row(
+            y + self.shift.1,
+            q.x + self.shift.0,
+            &mut out[..q.w as usize],
+        );
+    }
 }
 
 /// The stride in pixels and the slice length (up to the last row's last pixel) of a strided buffer.
@@ -204,7 +256,7 @@ fn disjoint(clips: &[Rect], within: Rect) -> Vec<Rect> {
 }
 
 /// A length in whole device px (0 for a negative or non-finite one).
-fn whole(v: f32) -> u32 {
+pub(crate) fn whole(v: f32) -> u32 {
     if v.is_finite() && v > 0.0 {
         v.round() as u32
     } else {
@@ -312,8 +364,15 @@ impl Plan {
         }
     }
 
-    /// Draw the layer within CLIP (inside the target).
-    fn draw(&self, k: &Kernels, t: &mut TargetView, src: &SourceView, clip: Rect) {
+    /// Draw the layer within CLIP (inside the target), over BENEATH when it has a backdrop.
+    fn draw(
+        &self,
+        k: &Kernels,
+        t: &mut TargetView,
+        src: &SourceView,
+        clip: Rect,
+        beneath: Option<Beneath>,
+    ) {
         if let Some(s) = &self.shadow {
             let mut parts = vec![s.image.intersect(&clip)];
             for cut in &self.copied {
@@ -327,9 +386,19 @@ impl Plan {
         }
         for cut in &self.copied {
             let q = cut.intersect(&clip);
-            if !q.is_empty() {
-                let (w, h) = (q.w as usize, q.h as usize);
+            if q.is_empty() {
+                continue;
+            }
+            let (w, h) = (q.w as usize, q.h as usize);
+            let Some(b) = beneath else {
                 k.copy(&mut t.at(q), &src.at(q, self.origin), w, h);
+                continue;
+            };
+            // row by row, so that a row is in the cache when the layer goes over it
+            for y in q.y..q.y + q.h {
+                let row = Rect::new(q.x, y, q.w, 1);
+                b.row(y, q, t.at(row).data);
+                k.over(&mut t.at(row), &src.at(row, self.origin), w, 1);
             }
         }
         let (inside, ring, colour): (&[u8], Option<&[u8]>, u32) = match &self.corners {
@@ -350,7 +419,25 @@ impl Plan {
                 data: &inside[off..],
                 stride: n,
             };
-            k.mask_over(&mut dst, &src.at(q, self.origin), &mask, w, h, 255);
+            match beneath {
+                None => k.mask_over(&mut dst, &src.at(q, self.origin), &mask, w, h, 255),
+                Some(b) => {
+                    let mut px = vec![0u32; w * h];
+                    for (i, row) in px.chunks_exact_mut(w).enumerate() {
+                        b.row(q.y + i as i32, q, row);
+                    }
+                    let mut fused = PixelsMut {
+                        data: &mut px,
+                        stride: w,
+                    };
+                    k.over(&mut fused, &src.at(q, self.origin), w, h);
+                    let fused = Pixels {
+                        data: &px,
+                        stride: w,
+                    };
+                    k.mask_over(&mut dst, &fused, &mask, w, h, 255);
+                }
+            }
             if let Some(ring) = ring {
                 let mask = Mask {
                     data: &ring[off..],
@@ -412,6 +499,23 @@ pub fn compose_with(
     shadows: &mut ShadowCache,
     sprites: &Sprites,
 ) -> Result<u32, i32> {
+    let x = Extras::NONE;
+    compose_layers(k, scene, labels, t, clips, sources, shadows, sprites, &x)
+}
+
+/// [`compose_with`] with X drawn too.
+#[allow(clippy::too_many_arguments)]
+fn compose_layers(
+    k: &Kernels,
+    scene: &[Placed],
+    labels: &[Label],
+    t: &mut TargetView,
+    clips: &[Rect],
+    sources: &[SourceView],
+    shadows: &mut ShadowCache,
+    sprites: &Sprites,
+    x: &Extras,
+) -> Result<u32, i32> {
     if sources.iter().any(|s| s.scale != t.scale) {
         return Err(GLITNIR_E_STATE);
     }
@@ -423,8 +527,9 @@ pub fn compose_with(
             p.kind != Kind::Window && pieces.iter().any(|c| !c.intersect(&p.bounds).is_empty())
         }) {
             let plan = Plan::new(p, src, t.scale, shadows);
+            let beneath = x.beneath(p);
             for c in &pieces {
-                plan.draw(k, t, src, *c);
+                plan.draw(k, t, src, *c, beneath);
             }
             drawn = drawn.saturating_add(1);
         }
@@ -432,8 +537,258 @@ pub fn compose_with(
         for l in labels.iter().filter(|l| l.layer == p.id) {
             draw_label(k, t, &pieces, l, sprites);
         }
+        // a window card goes over its frame's pixels and the labels, when that frame is drawn here
+        if let Some(card) = &p.card
+            && p.kind == Kind::Window
+            && touches_card(p, &pieces)
+            && sources.iter().any(|s| s.layer == p.parent)
+            && let Some(frame) = scene.iter().find(|q| q.id == p.parent).map(|q| q.rect)
+        {
+            let plan = CardPlan::new(p, card, t.scale, shadows);
+            for c in &pieces {
+                plan.draw(k, t, card, c.intersect(&frame));
+            }
+        }
     }
     Ok(drawn)
+}
+
+/// Whether any of PIECES meets what window card P draws: its bounds outside its rectangle, or a corner square.  Typing
+/// inside a card window meets neither.
+fn touches_card(p: &Placed, pieces: &[Rect]) -> bool {
+    let corners = crate::scene::card_corners(p);
+    pieces.iter().any(|c| {
+        let q = c.intersect(&p.bounds);
+        !q.is_empty()
+            && (q.intersect(&p.rect) != q
+                || corners.is_some_and(|(_, sq)| sq.iter().any(|s| !s.intersect(&q).is_empty())))
+    })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The pixels window cards drew on this thread: the tests' way to see that typing composes no card pixel.
+    static CARD_PX: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Count `q`'s pixels as drawn by a card (tests only).
+fn card_drew(_q: Rect) {
+    #[cfg(test)]
+    CARD_PX.with(|n| n.set(n.get() + _q.area()));
+}
+
+/// The pixels of a mask quadrant: the square SQ's part Q, the quadrant at (MX, MY) of a mask N px a row.
+fn quadrant<'a>(m: &'a [u8], n: usize, (mx, my): (usize, usize), sq: Rect, q: Rect) -> Mask<'a> {
+    let off = (my + (q.y - sq.y) as usize) * n + mx + (q.x - sq.x) as usize;
+    Mask {
+        data: &m[off..],
+        stride: n,
+    }
+}
+
+/// A card's edge ring, ready to draw.
+struct CardRing {
+    colour: u32,
+    /// The ring's corners: the band between the radius r and r + w, 2(r + w) px a side.
+    cov: Arc<RingCoverage>,
+    /// r + w.
+    side: usize,
+    /// The (r + w)-squares at the four corners (top-left, top-right, bottom-left, bottom-right; root px), each holding a
+    /// quarter of the band: their inner r×r part lies in the window's corner square.
+    squares: [Rect; 4],
+    /// The straight parts just outside the window: top, bottom, left, right.
+    strips: [Rect; 4],
+}
+
+impl CardRing {
+    /// Draw the ring within Q into DST, whose first pixel is root px Q's top-left.
+    fn draw(&self, k: &Kernels, dst: &mut PixelsMut, q: Rect) {
+        for s in &self.strips {
+            let p = s.intersect(&q);
+            if p.is_empty() {
+                continue;
+            }
+            // the straight parts are covered whole: one row of 255, read for every row
+            let full = vec![255u8; p.w as usize];
+            let mask = Mask {
+                data: &full,
+                stride: 0,
+            };
+            let at = (p.y - q.y) as usize * dst.stride + (p.x - q.x) as usize;
+            let stride = dst.stride;
+            let mut d = PixelsMut {
+                data: &mut dst.data[at..],
+                stride,
+            };
+            k.solid_over(&mut d, self.colour, &mask, p.w as usize, p.h as usize);
+        }
+        let n = 2 * self.side;
+        for (i, sq) in self.squares.iter().enumerate() {
+            let p = sq.intersect(&q);
+            if p.is_empty() {
+                continue;
+            }
+            let quad = ((i % 2) * self.side, (i / 2) * self.side);
+            let mask = quadrant(&self.cov.ring, n, quad, *sq, p);
+            let at = (p.y - q.y) as usize * dst.stride + (p.x - q.x) as usize;
+            let stride = dst.stride;
+            let mut d = PixelsMut {
+                data: &mut dst.data[at..],
+                stride,
+            };
+            k.solid_over(&mut d, self.colour, &mask, p.w as usize, p.h as usize);
+        }
+    }
+}
+
+/// A window card, ready to draw within any rectangle.
+struct CardPlan {
+    rect: Rect,
+    /// The corner radius (clamped) and the four corner squares.
+    corners: Option<(u32, [Rect; 4])>,
+    /// The chrome's shadow, in the gap and in the corners outside the rounded rectangle.
+    shadow: Option<Shadow>,
+    ring: Option<CardRing>,
+}
+
+impl CardPlan {
+    fn new(
+        p: &Placed,
+        card: &crate::scene::Card,
+        scale: f64,
+        shadows: &mut ShadowCache,
+    ) -> CardPlan {
+        let rect = p.rect;
+        let c = p.chrome.unwrap_or_default();
+        let radius = whole(c.radius_px);
+        let corners = crate::scene::card_corners(p);
+        let r = corners.map_or(0, |(r, _)| r);
+        let shadow = (c.has_shadow() && !rect.is_empty()).then(|| {
+            let size = (rect.w as u32, rect.h as u32);
+            let spec = ShadowSpec {
+                radius: radius as f32,
+                blur: c.blur_px,
+                spread: c.spread_px,
+                colour: with_opacity(c.shadow_argb, c.shadow_opacity),
+                scale,
+            };
+            let tiles = shadows.get(size.0, size.1, &spec);
+            let (iw, ih) = tiles.image_size(size.0, size.1);
+            let image = Rect::new(
+                rect.x - tiles.pad() + c.offset_x.round() as i32,
+                rect.y - tiles.pad() + c.offset_y.round() as i32,
+                iw as i32,
+                ih as i32,
+            );
+            Shadow { tiles, size, image }
+        });
+        let w = card.ring().min(1 << 12);
+        let ring = (w > 0 && !rect.is_empty()).then(|| {
+            let (ri, wi) = (r as i32, w as i32);
+            let s = ri + wi;
+            let Rect { x, y, w: rw, h: rh } = rect;
+            CardRing {
+                colour: card.ring_argb,
+                cov: ring_coverage(r + w, w),
+                side: s as usize,
+                squares: [
+                    Rect::new(x - wi, y - wi, s, s),
+                    Rect::new(x + rw - ri, y - wi, s, s),
+                    Rect::new(x - wi, y + rh - ri, s, s),
+                    Rect::new(x + rw - ri, y + rh - ri, s, s),
+                ],
+                strips: [
+                    Rect::new(x + ri, y - wi, rw - 2 * ri, wi),
+                    Rect::new(x + ri, y + rh, rw - 2 * ri, wi),
+                    Rect::new(x - wi, y + ri, wi, rh - 2 * ri),
+                    Rect::new(x + rw, y + ri, wi, rh - 2 * ri),
+                ],
+            }
+        });
+        CardPlan {
+            rect,
+            corners,
+            shadow,
+            ring,
+        }
+    }
+
+    /// The shadow within Q into DST, whose first pixel is root px Q's top-left.
+    fn shadow(&self, k: &Kernels, dst: &mut PixelsMut, q: Rect) {
+        let Some(s) = &self.shadow else {
+            return;
+        };
+        let p = s.image.intersect(&q);
+        if p.is_empty() {
+            return;
+        }
+        let at = (p.y - q.y) as usize * dst.stride + (p.x - q.x) as usize;
+        let stride = dst.stride;
+        let mut d = PixelsMut {
+            data: &mut dst.data[at..],
+            stride,
+        };
+        let from = ((p.x - s.image.x) as u32, (p.y - s.image.y) as u32);
+        s.tiles
+            .composite(k, &mut d, s.size, from, (p.w as usize, p.h as usize));
+    }
+
+    /// Draw the card within CLIP (inside the target and the frame).
+    fn draw(&self, k: &Kernels, t: &mut TargetView, card: &crate::scene::Card, clip: Rect) {
+        if clip.is_empty() {
+            return;
+        }
+        // in the gap: the shadow, then the ring, OVER the frame, never inside another window
+        if self.shadow.is_some() || self.ring.is_some() {
+            let mut parts: Vec<Rect> = subtract(clip, self.rect).collect();
+            for keep in card.keep_out.iter() {
+                parts = parts.iter().flat_map(|a| subtract(*a, *keep)).collect();
+            }
+            for q in parts {
+                let mut dst = t.at(q);
+                self.shadow(k, &mut dst, q);
+                if let Some(ring) = &self.ring {
+                    ring.draw(k, &mut dst, q);
+                }
+                card_drew(q);
+            }
+        }
+        // the corners: what lies beneath the window (the gap with its shadow and ring), through what the disc leaves
+        // of each pixel, so a pixel is gap·(1 − c) + window·c
+        let Some((r, squares)) = self.corners else {
+            return;
+        };
+        let outside = outside_coverage(r);
+        let (n, ru) = (2 * r as usize, r as usize);
+        let rich = self.shadow.is_some() || self.ring.is_some();
+        for (i, sq) in squares.iter().enumerate() {
+            let q = sq.intersect(&clip);
+            if q.is_empty() {
+                continue;
+            }
+            let mask = quadrant(&outside, n, ((i % 2) * ru, (i / 2) * ru), *sq, q);
+            let (w, h) = (q.w as usize, q.h as usize);
+            if rich {
+                let mut px = vec![card.beneath_argb; w * h];
+                let mut gap = PixelsMut {
+                    data: &mut px,
+                    stride: w,
+                };
+                self.shadow(k, &mut gap, q);
+                if let Some(ring) = &self.ring {
+                    ring.draw(k, &mut gap, q);
+                }
+                let gap = Pixels {
+                    data: &px,
+                    stride: w,
+                };
+                k.mask_over(&mut t.at(q), &gap, &mask, w, h, 255);
+            } else {
+                k.solid_over(&mut t.at(q), card.beneath_argb, &mask, w, h);
+            }
+            card_drew(q);
+        }
+    }
 }
 
 /// A root's composes since its last frame-time record.
@@ -516,13 +871,25 @@ pub fn compose_committed(
     clips: &[Rect],
     sources: &[SourceView],
 ) -> Result<u32, i32> {
+    compose_committed_with(c, k, t, clips, sources, &Extras::NONE)
+}
+
+/// [`compose_committed`] with X drawn too.
+pub fn compose_committed_with(
+    c: &Committed,
+    k: &mut Composer,
+    t: &mut TargetView,
+    clips: &[Rect],
+    sources: &[SourceView],
+    x: &Extras,
+) -> Result<u32, i32> {
     let start = Instant::now();
     #[cfg(test)]
     if let Some(g) = &k.gate {
         let _ = g.recv_timeout(std::time::Duration::from_secs(5));
     }
     let shadows = k.shadows.get_or_insert_with(ShadowCache::new);
-    let layers = compose_with(
+    let layers = compose_layers(
         crate::kernels::kernels(),
         &c.layers,
         &c.labels,
@@ -531,6 +898,7 @@ pub fn compose_committed(
         sources,
         shadows,
         &c.sprites,
+        x,
     )?;
     let tally = k.tallies.entry(c.root).or_default();
     let ns = u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
@@ -1356,6 +1724,194 @@ mod tests {
         );
     }
 
+    /// A child frame's scene: its one layer at `rect`, with `chrome`.
+    fn kid_scene(rect: Rect, chrome: Option<Chrome>) -> Scene {
+        let (mut s, mut f) = (Scene::default(), Frames::new());
+        s.upsert(&desc(ROOT, 0, 1, rect, 1.0, true)).unwrap();
+        s.set_chrome(ROOT, chrome).unwrap();
+        s.commit(ROOT, &mut f);
+        s
+    }
+
+    fn with_extras(s: &Scene, x: &Extras, content: &Buf, out: &mut Buf, clips: &[Rect]) {
+        compose_committed_with(
+            &s.snapshot(),
+            &mut Composer::new(),
+            &mut out.target(1.0),
+            clips,
+            &[content.source(ROOT, 1.0)],
+            x,
+        )
+        .unwrap();
+    }
+
+    /// The blurred `parent` for a layer lying at `region` in it.
+    fn blurred(parent: &Buf, region: Rect, sigma: f32) -> Backdrop {
+        let mut b = Backdrop::new();
+        let size = (parent.w, parent.h);
+        assert_eq!(
+            b.update(&parent.px, parent.w as usize, size, region, sigma, 1.0, &[]),
+            Some(region)
+        );
+        b
+    }
+
+    #[test]
+    fn backdrop_under_content_inside_corners() {
+        const BENEATH: u32 = 0xff40_80c0;
+        let (surface, rect) = (Rect::new(0, 0, 48, 48), Rect::new(8, 8, 32, 32));
+        let chrome = Chrome {
+            radius_px: 8.0,
+            blur_px: 6.0,
+            shadow_opacity: 0.5,
+            shadow_argb: 0xff00_0000,
+            ..Chrome::default()
+        };
+        let s = kid_scene(rect, Some(chrome));
+        let parent = Buf::new(96, 96, BENEATH);
+        let b = blurred(&parent, Rect::new(20, 30, 32, 32), 8.0);
+        let x = Extras {
+            backdrop: Some((&b, ROOT)),
+        };
+        let content = Buf::new(32, 32, 0x8080_8080);
+        let mut out = Buf::new(48, 48, 0);
+        with_extras(&s, &x, &content, &mut out, &[surface]);
+        // the middle: half white OVER the flat backdrop
+        let over = |c: u32| 0x80 + (c * 0x7f + 127) / 255;
+        let middle = out.at(24, 24);
+        for (i, c) in [0xc0, 0x80, 0x40].into_iter().enumerate() {
+            let got = (middle >> (8 * i)) & 0xff;
+            assert!(got.abs_diff(over(c)) <= 1, "channel {i}: {middle:08x}");
+        }
+        assert_eq!(middle >> 24, 0xff);
+        // past the rounded corner the backdrop is not drawn: a compose without one gives the same pixel
+        let mut plain = Buf::new(48, 48, 0);
+        with_extras(&s, &Extras::NONE, &content, &mut plain, &[surface]);
+        assert_eq!(out.at(8, 8), plain.at(8, 8));
+        assert_ne!(out.at(8, 8) >> 24, 0xff);
+        assert_eq!(out.at(2, 24), plain.at(2, 24), "the shadow is the same");
+        // the edge of the disc takes some of each
+        let edge = (out.at(10, 10) >> 24, plain.at(10, 10) >> 24);
+        assert!(edge.0 > edge.1, "{edge:?}");
+    }
+
+    #[test]
+    fn extras_none_equals_compose_committed() {
+        const W: i32 = 64;
+        const H: i32 = 48;
+        let all = Rect::new(0, 0, W, H);
+        for seed in 1..=100 {
+            let mut g = XorShift::new(seed);
+            let rect = Rect::new(6, 5, 40, 30);
+            let s = kid_scene(rect, Some(rand_chrome(&mut g)));
+            let content = Buf::random(&mut g, rect.w, rect.h);
+            let parent = Buf::random(&mut g, 96, 96);
+            let garbage = Buf::random(&mut g, W, H);
+            let (mut a, mut b, mut c) = (garbage.clone(), garbage.clone(), garbage);
+            let mut shadows = ShadowCache::new();
+            let views = [content.source(ROOT, 1.0)];
+            let scene = s.committed();
+            compose(
+                kernels(),
+                scene,
+                &mut a.target(1.0),
+                &[all],
+                &views,
+                &mut shadows,
+            )
+            .unwrap();
+            with_extras(&s, &Extras::NONE, &content, &mut b, &[all]);
+            assert_eq!(first_difference(&a, &b), None, "seed {seed}");
+            // a backdrop for a layer that is not here draws nothing
+            let beneath = blurred(&parent, rect, 8.0);
+            let x = Extras {
+                backdrop: Some((&beneath, ROOT + 1)),
+            };
+            with_extras(&s, &x, &content, &mut c, &[all]);
+            assert_eq!(first_difference(&a, &c), None, "seed {seed}");
+        }
+    }
+
+    /// The key property with a backdrop: a change beneath, or in the layer, composed within what it damaged, equals
+    /// composing everything.  (A surface is cleared where it is composed: nothing lies under a child frame's layer.)
+    #[test]
+    fn damage_only_equals_full_with_backdrop() {
+        const W: i32 = 64;
+        const H: i32 = 48;
+        let all = Rect::new(0, 0, W, H);
+        let clear = |b: &mut Buf, clips: &[Rect]| {
+            for c in clips {
+                let c = c.intersect(&all);
+                for y in c.y..c.y + c.h {
+                    b.px[(y * W + c.x) as usize..][..c.w as usize].fill(0);
+                }
+            }
+        };
+        for seed in 1..=200 {
+            let mut g = XorShift::new(seed);
+            let rect = Rect::new(4 + g.below(8) as i32, 3 + g.below(6) as i32, 40, 30);
+            let chrome = (g.below(4) != 0).then(|| rand_chrome(&mut g));
+            let s = kid_scene(rect, chrome);
+            let mut content = Buf::random(&mut g, rect.w, rect.h);
+            let mut parent = Buf::random(&mut g, 96, 80);
+            // the region may hang over the parent's edge
+            let region = Rect::new(
+                g.below(96) as i32 - 20,
+                g.below(80) as i32 - 16,
+                rect.w,
+                rect.h,
+            );
+            let sigma = [4.0, 8.0, 10.5][g.below(3) as usize];
+            let mut b = Backdrop::new();
+            let size = (parent.w, parent.h);
+            b.update(&parent.px, 96, size, region, sigma, 1.0, &[]);
+            let mut out = Buf::new(W, H, 0);
+            with_extras(
+                &s,
+                &Extras {
+                    backdrop: Some((&b, ROOT)),
+                },
+                &content,
+                &mut out,
+                &[all],
+            );
+            for round in 0..6 {
+                let mut clips = Vec::new();
+                if g.below(2) == 0 {
+                    let r = Rect::new(
+                        g.below(96) as i32,
+                        g.below(80) as i32,
+                        1 + g.below(30) as i32,
+                        1 + g.below(30) as i32,
+                    );
+                    parent.paint(&mut g, r);
+                    let changed = b.update(&parent.px, 96, size, region, sigma, 1.0, &[r]);
+                    let to_layer = (rect.x - region.x, rect.y - region.y);
+                    clips.extend(changed.map(|c| c.translate(to_layer.0, to_layer.1)));
+                } else {
+                    let r = Rect::new(
+                        g.below(40) as i32,
+                        g.below(30) as i32,
+                        1 + g.below(12) as i32,
+                        1 + g.below(12) as i32,
+                    );
+                    content.paint(&mut g, r);
+                    clips.push(r.translate(rect.x, rect.y));
+                }
+                let x = Extras {
+                    backdrop: Some((&b, ROOT)),
+                };
+                clear(&mut out, &clips);
+                with_extras(&s, &x, &content, &mut out, &clips);
+                let mut want = Buf::new(W, H, 0);
+                with_extras(&s, &x, &content, &mut want, &[all]);
+                if let Some(d) = first_difference(&out, &want) {
+                    panic!("seed {seed} round {round}: {d:?}; clips {clips:?}");
+                }
+            }
+        }
+    }
+
     #[test]
     #[ignore = "a bench: it runs on the bench machine; never a CI gate"]
     fn compose_bench_fits_budget() {
@@ -1412,5 +1968,660 @@ mod tests {
             "compose bench (baseline): median {median:.3} ms, max {max:.3} ms over {damage:?}"
         );
         assert!(median <= 2.0, "median {median:.3} ms > 2 ms");
+    }
+
+    /// Window cards: the corners over what lies beneath the window, on the frame and on an own output that scrolls.
+    mod card {
+        use super::*;
+        use crate::committed::OutputFrame;
+        use crate::kernels::corner_coverage;
+        use crate::scene::{Card, card_corners};
+
+        const WIN: u64 = (1 << 63) | 7;
+        const CARD: u64 = (1 << 62) | 7;
+        const BENEATH: u32 = 0xff11_2233;
+        /// A ring at 60 %, premultiplied.
+        const RING: u32 = 0x9926_3039;
+
+        fn radius(r: f32) -> Chrome {
+            Chrome {
+                radius_px: r,
+                ..Chrome::default()
+            }
+        }
+
+        /// A W x H root at SCALE over FRONT's pixels, with window layer id at RECT, a card of radius R, committed.
+        fn carded(w: i32, h: i32, scale: f64, id: u64, rect: Rect, r: f32) -> (Scene, Frames) {
+            let (mut s, mut f) = (Scene::default(), Frames::new());
+            s.upsert(&desc(ROOT, 0, 1, Rect::new(0, 0, w, h), scale, true))
+                .unwrap();
+            s.upsert(&desc(id, ROOT, 2, rect, scale, true)).unwrap();
+            s.set_chrome(id, Some(radius(r))).unwrap();
+            s.set_card(
+                id,
+                Some(Card {
+                    beneath_argb: BENEATH,
+                    ..Card::default()
+                }),
+            )
+            .unwrap();
+            s.commit(ROOT, &mut f);
+            (s, f)
+        }
+
+        fn compose_all(s: &Scene, front: &Buf, scale: f64) -> Buf {
+            let mut out = Buf::new(front.w, front.h, 0x5a5a_5a5a);
+            let all = Rect::new(0, 0, front.w, front.h);
+            let mut src = BTreeMap::new();
+            src.insert(ROOT, front.clone());
+            run(s, &mut out, scale, &[all], &src, &mut ShadowCache::new());
+            out
+        }
+
+        /// Compose S's committed scene into OUT, a buffer whose first pixel is root px AT, within CLIPS (root px).
+        fn compose_at(
+            s: &Scene,
+            front: &Buf,
+            scale: f64,
+            out: &mut Buf,
+            at: (i32, i32),
+            clips: &[Rect],
+        ) {
+            let mut t = TargetView {
+                data: &mut out.px,
+                stride: out.w as usize,
+                rect: Rect::new(at.0, at.1, out.w, out.h),
+                scale,
+            };
+            let views = [front.source(ROOT, scale)];
+            compose_committed(&s.snapshot(), &mut Composer::new(), &mut t, clips, &views).unwrap();
+        }
+
+        fn area(rs: &[Rect]) -> u64 {
+            rs.iter().map(Rect::area).sum()
+        }
+
+        fn output(s: &Scene, id: u64) -> OutputFrame {
+            s.snapshot()
+                .outputs
+                .iter()
+                .find(|o| o.layer == id)
+                .cloned()
+                .expect("an own output")
+        }
+
+        #[test]
+        fn corner_shows_beneath() {
+            for scale in [1.0, 2.0, 1.25] {
+                let rect = Rect::new(10, 10, 40, 30);
+                let (s, _) = carded(64, 48, scale, WIN, rect, 8.0);
+                let front = Buf::new(64, 48, 0xffaa_bbcc);
+                let out = compose_all(&s, &front, scale);
+                // the very corner pixels lie outside the disc; the middle is the frame's
+                for (x, y) in [(10, 10), (49, 10), (10, 39), (49, 39)] {
+                    assert_eq!(out.at(x, y), BENEATH, "scale {scale}: corner {x},{y}");
+                }
+                assert_eq!(out.at(30, 25), 0xffaa_bbcc, "scale {scale}");
+                // an arc pixel mixes the two
+                let m = corner_coverage(8);
+                // the top-left quadrant: the first 8 columns of the first 8 rows
+                let i = (0..128)
+                    .find(|&i| i % 16 < 8 && m[i] > 0 && m[i] < 255)
+                    .unwrap();
+                let (x, y) = (10 + (i % 16) as i32, 10 + (i / 16) as i32);
+                let v = out.at(x, y);
+                assert!(
+                    v != BENEATH && v != 0xffaa_bbcc,
+                    "scale {scale}: arc {x},{y} {v:08x}"
+                );
+            }
+        }
+
+        #[test]
+        fn interior_is_copy() {
+            let mut g = XorShift::new(11);
+            let rect = Rect::new(6, 5, 50, 36);
+            let (s, _) = carded(64, 48, 1.0, WIN, rect, 9.0);
+            let front = Buf::random(&mut g, 64, 48);
+            let out = compose_all(&s, &front, 1.0);
+            let p = s.committed().iter().find(|p| p.id == WIN).cloned().unwrap();
+            let (r, squares) = card_corners(&p).unwrap();
+            assert_eq!(r, 9);
+            let inside = corner_coverage(r);
+            let n = 2 * r as i32;
+            for y in 0..48 {
+                for x in 0..64 {
+                    let full = squares.iter().enumerate().all(|(i, q)| {
+                        if !q.contains(x, y) {
+                            return true;
+                        }
+                        let (mx, my) = ((i as i32 % 2) * r as i32, (i as i32 / 2) * r as i32);
+                        inside[((my + y - q.y) * n + mx + x - q.x) as usize] == 255
+                    });
+                    if full {
+                        assert_eq!(out.at(x, y), front.at(x, y), "pixel {x},{y}");
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn removed_restores_backing_pixels() {
+            let mut g = XorShift::new(12);
+            let rect = Rect::new(6, 5, 50, 36);
+            let (mut s, mut f) = carded(64, 48, 2.0, WIN, rect, 10.0);
+            let front = Buf::random(&mut g, 64, 48);
+            let mut out = compose_all(&s, &front, 2.0);
+            assert_ne!(first_difference(&out, &front), None);
+            s.set_card(WIN, None).unwrap();
+            let damage = s.commit(ROOT, &mut f).to_vec();
+            compose_at(&s, &front, 2.0, &mut out, (0, 0), &damage);
+            assert_eq!(first_difference(&out, &front), None, "{damage:?}");
+        }
+
+        #[test]
+        fn chrome_without_card_draws_nothing() {
+            let mut g = XorShift::new(13);
+            let (mut s, mut f) = carded(64, 48, 1.0, WIN, Rect::new(6, 5, 50, 36), 10.0);
+            s.set_card(WIN, None).unwrap();
+            s.commit(ROOT, &mut f);
+            let front = Buf::random(&mut g, 64, 48);
+            assert_eq!(
+                first_difference(&compose_all(&s, &front, 1.0), &front),
+                None
+            );
+            // a card is for window layers only
+            assert_eq!(s.set_card(ROOT, Some(Card::default())), Err(GLITNIR_E_ARG));
+            assert_eq!(s.set_card(404, None), Err(GLITNIR_E_ARG));
+        }
+
+        /// WIN at R on an 800x600 root, its own output, with a card of radius 10 or none; committed.
+        fn own(r: Rect, card: bool) -> (Scene, Frames) {
+            let (mut s, mut f) = carded(800, 600, 1.0, WIN, r, 10.0);
+            if !card {
+                s.set_card(WIN, None).unwrap();
+            }
+            s.set_output(WIN, true).unwrap();
+            s.commit(ROOT, &mut f);
+            (s, f)
+        }
+
+        #[test]
+        fn output_scroll_damages_corners() {
+            let r = Rect::new(10, 20, 400, 300);
+            let (mut s, mut f) = own(r, true);
+            let exposed = Rect::new(10, 304, 400, 16);
+            s.scroll(ROOT, f.entry(ROOT).or_default(), WIN, r, -16, exposed);
+            s.commit(ROOT, &mut f);
+            let o = output(&s, WIN);
+            assert_eq!((o.scroll, o.full), (-16, false));
+            let want = [
+                Rect::new(0, 284, 400, 16),
+                // the corners where they are now
+                Rect::new(0, 0, 10, 10),
+                Rect::new(390, 0, 10, 10),
+                Rect::new(0, 290, 10, 10),
+                Rect::new(390, 290, 10, 10),
+                // and where the scroll took the old bottom ones (the top ones left the view)
+                Rect::new(0, 274, 10, 10),
+                Rect::new(390, 274, 10, 10),
+            ];
+            for w in want {
+                assert!(covers(&o.damage, w), "{w:?} not in {:?}", o.damage);
+            }
+            assert!(area(&o.damage) <= 400 * 16 + 8 * 100, "{:?}", o.damage);
+        }
+
+        #[test]
+        fn output_scroll_without_card_is_unchanged() {
+            let r = Rect::new(10, 20, 400, 300);
+            let (mut s, mut f) = own(r, false);
+            s.scroll(
+                ROOT,
+                f.entry(ROOT).or_default(),
+                WIN,
+                r,
+                -16,
+                Rect::new(10, 304, 400, 16),
+            );
+            s.commit(ROOT, &mut f);
+            let o = output(&s, WIN);
+            assert!(covers(&o.damage, Rect::new(0, 284, 400, 16)));
+            assert_eq!(area(&o.damage), 400 * 16, "{:?}", o.damage);
+        }
+
+        /// The look's card chrome at radius R: a soft shadow one px down.
+        fn shadowed(r: f32) -> Chrome {
+            Chrome {
+                blur_px: 6.0,
+                offset_y: 2.0,
+                shadow_opacity: 0.45,
+                shadow_argb: 0xff00_0000,
+                ..radius(r)
+            }
+        }
+
+        fn rich(ring_px: u32, keep_out: &[Rect]) -> Card {
+            Card {
+                beneath_argb: BENEATH,
+                ring_argb: RING,
+                ring_px,
+                keep_out: keep_out.into(),
+            }
+        }
+
+        /// A W x H root at SCALE with window layer WIN at RECT, chrome C and card K, committed.
+        fn with_card(
+            w: i32,
+            h: i32,
+            scale: f64,
+            rect: Rect,
+            c: Chrome,
+            k: Card,
+        ) -> (Scene, Frames) {
+            let (mut s, mut f) = carded(w, h, scale, WIN, rect, c.radius_px);
+            s.set_chrome(WIN, Some(c)).unwrap();
+            s.set_card(WIN, Some(k)).unwrap();
+            s.commit(ROOT, &mut f);
+            (s, f)
+        }
+
+        /// Whether every pixel of R in A equals B's.
+        fn same_in(a: &Buf, b: &Buf, r: Rect) -> bool {
+            (r.y..r.y + r.h).all(|y| (r.x..r.x + r.w).all(|x| a.at(x, y) == b.at(x, y)))
+        }
+
+        /// The pixels of RECT the corner masks leave whole: the window's own, where nothing of the card may go.
+        fn interior(rect: Rect, r: u32) -> Vec<(i32, i32)> {
+            let inside = corner_coverage(r);
+            let n = 2 * r as i32;
+            let ri = r as i32;
+            let mut out = Vec::new();
+            for y in rect.y..rect.y + rect.h {
+                for x in rect.x..rect.x + rect.w {
+                    // the pixel's place in the 2r×2r mask, when it lies in a corner square
+                    let mx = if x < rect.x + ri {
+                        Some(x - rect.x)
+                    } else if x >= rect.x + rect.w - ri {
+                        Some(x - (rect.x + rect.w - ri) + ri)
+                    } else {
+                        None
+                    };
+                    let my = if y < rect.y + ri {
+                        Some(y - rect.y)
+                    } else if y >= rect.y + rect.h - ri {
+                        Some(y - (rect.y + rect.h - ri) + ri)
+                    } else {
+                        None
+                    };
+                    let whole = match (mx, my) {
+                        (Some(mx), Some(my)) => inside[(my * n + mx) as usize] == 255,
+                        _ => true,
+                    };
+                    if whole {
+                        out.push((x, y));
+                    }
+                }
+            }
+            out
+        }
+
+        /// The shadow and the ring go in the gap but never inside a window the card keeps out, and the frame's own
+        /// pixels elsewhere stay.
+        #[test]
+        fn shadow_never_inside_keep_out() {
+            let mut g = XorShift::new(21);
+            let rect = Rect::new(10, 10, 40, 40);
+            // the neighbour 6 px to the right, well inside the shadow's reach
+            let next = Rect::new(56, 4, 40, 60);
+            let front = Buf::random(&mut g, 120, 80);
+            let (s, _) = with_card(120, 80, 1.0, rect, shadowed(8.0), rich(1, &[next]));
+            let out = compose_all(&s, &front, 1.0);
+            assert!(same_in(&out, &front, next), "the neighbour is untouched");
+            // the gap between them is not
+            let gap = Rect::new(50, 20, 6, 20);
+            assert!(
+                !same_in(&out, &front, gap),
+                "the gap has the shadow and the ring"
+            );
+            // what keeps it out is the list: without it the shadow reaches the neighbour
+            let (s, _) = with_card(120, 80, 1.0, rect, shadowed(8.0), rich(1, &[]));
+            assert!(!same_in(&compose_all(&s, &front, 1.0), &front, next));
+        }
+
+        /// The ring lies just outside the rounded rectangle, the window's interior is the frame's, and a ring needs
+        /// no shadow.
+        #[test]
+        fn ring_outside_never_touches_interior() {
+            let mut g = XorShift::new(22);
+            let rect = Rect::new(10, 10, 40, 30);
+            let front = Buf::random(&mut g, 64, 56);
+            let (s, _) = with_card(64, 56, 1.0, rect, radius(8.0), rich(2, &[]));
+            let out = compose_all(&s, &front, 1.0);
+            for (x, y) in interior(rect, 8) {
+                assert_eq!(out.at(x, y), front.at(x, y), "interior pixel {x},{y}");
+            }
+            // two rows above the top edge and two columns beside the left: the ring
+            for (x, y) in [(30, 9), (30, 8), (9, 25), (8, 25), (30, 40), (50, 25)] {
+                assert_ne!(out.at(x, y), front.at(x, y), "ring pixel {x},{y}");
+            }
+            // past it, the frame
+            for (x, y) in [(30, 7), (7, 25), (30, 42), (52, 25)] {
+                assert_eq!(out.at(x, y), front.at(x, y), "gap pixel {x},{y}");
+            }
+            // the very corner of the window shows the colour beneath, the ring passing over its arc's outside
+            assert_ne!(out.at(10, 10), front.at(10, 10));
+        }
+
+        /// A ring's change damages the ring and the corners, not the window.
+        #[test]
+        fn ring_change_damages_the_ring() {
+            let mut g = XorShift::new(23);
+            let rect = Rect::new(10, 10, 40, 30);
+            let front = Buf::random(&mut g, 64, 56);
+            let (mut s, mut f) = with_card(64, 56, 1.0, rect, radius(8.0), rich(2, &[]));
+            let mut out = compose_all(&s, &front, 1.0);
+            s.set_card(
+                WIN,
+                Some(Card {
+                    ring_argb: 0xff80_9010,
+                    ..rich(2, &[])
+                }),
+            )
+            .unwrap();
+            let damage = s.commit(ROOT, &mut f).to_vec();
+            for r in [
+                Rect::new(18, 8, 24, 2),
+                Rect::new(18, 40, 24, 2),
+                Rect::new(8, 18, 2, 14),
+                Rect::new(50, 18, 2, 14),
+                Rect::new(8, 8, 10, 10),
+            ] {
+                assert!(covers(&damage, r), "{r:?} not in {damage:?}");
+            }
+            assert!(!damage.iter().any(|d| d.contains(30, 25)), "{damage:?}");
+            compose_at(&s, &front, 1.0, &mut out, (0, 0), &damage);
+            assert_eq!(first_difference(&out, &compose_all(&s, &front, 1.0)), None);
+        }
+
+        /// Damage inside a card window away from its corners composes no pixel of the card; damage at a corner or in
+        /// the gap does.
+        #[test]
+        fn typing_damage_inside_skips_corners() {
+            let mut g = XorShift::new(24);
+            let rect = Rect::new(10, 10, 60, 40);
+            let front = Buf::random(&mut g, 96, 72);
+            let (s, _) = with_card(96, 72, 1.0, rect, shadowed(8.0), rich(1, &[]));
+            let mut out = compose_all(&s, &front, 1.0);
+            let drawn = |out: &mut Buf, clip: Rect| {
+                CARD_PX.with(|n| n.set(0));
+                compose_at(&s, &front, 1.0, out, (0, 0), &[clip]);
+                CARD_PX.with(|n| n.get())
+            };
+            // a line of text, and a cursor at the window's left edge, between the corners
+            assert_eq!(drawn(&mut out, Rect::new(20, 30, 40, 12)), 0);
+            assert_eq!(drawn(&mut out, Rect::new(10, 20, 2, 20)), 0);
+            assert!(drawn(&mut out, Rect::new(10, 10, 4, 4)) > 0, "a corner");
+            assert!(drawn(&mut out, Rect::new(30, 51, 4, 2)) > 0, "the gap");
+            assert_eq!(first_difference(&out, &compose_all(&s, &front, 1.0)), None);
+        }
+
+        /// The corners, the shadow and the ring at scales 1, 2 and 1.25: the corner shows the gap, the gap has the
+        /// chrome, the interior and the window kept out are the frame's.
+        #[test]
+        fn scales_1_2_and_1_25() {
+            for scale in [1.0, 2.0, 1.25] {
+                let rect = Rect::new(20, 20, 80, 60);
+                let next = Rect::new(20, 92, 80, 20);
+                let front = Buf::new(128, 120, 0xffaa_bbcc);
+                let (s, _) = with_card(128, 120, scale, rect, shadowed(10.0), rich(2, &[next]));
+                let out = compose_all(&s, &front, scale);
+                assert_ne!(out.at(20, 20), 0xffaa_bbcc, "scale {scale}: corner");
+                assert_ne!(out.at(60, 81), 0xffaa_bbcc, "scale {scale}: ring below");
+                assert_ne!(out.at(60, 86), 0xffaa_bbcc, "scale {scale}: shadow below");
+                assert!(
+                    same_in(&out, &front, next),
+                    "scale {scale}: the window kept out"
+                );
+                for (x, y) in interior(rect, 10) {
+                    assert_eq!(out.at(x, y), 0xffaa_bbcc, "scale {scale}: interior {x},{y}");
+                }
+            }
+        }
+
+        /// The key property with cards: composing each commit's damage into a kept buffer equals composing the whole
+        /// frame, for frames with several cards (corners, shadows, rings, each keeping the others out) as the frame
+        /// draws, cards change, move, come and go, and the rectangles they keep out change.
+        #[test]
+        fn damage_only_equals_full_with_cards() {
+            const W: i32 = 120;
+            const H: i32 = 96;
+            let all = Rect::new(0, 0, W, H);
+            let mut shadows = ShadowCache::new();
+            let rand_rect = |g: &mut XorShift| {
+                Rect::new(
+                    g.below(W as u32) as i32 - 8,
+                    g.below(H as u32) as i32 - 8,
+                    8 + g.below(56) as i32,
+                    8 + g.below(48) as i32,
+                )
+            };
+            let rand_card = |g: &mut XorShift, keep_out: Vec<Rect>| Card {
+                beneath_argb: 0xff00_0000 | g.below(1 << 24),
+                ring_argb: if g.below(3) == 0 { 0 } else { pixel(g) },
+                ring_px: 1 + g.below(3),
+                keep_out: keep_out.into(),
+            };
+            let rand_chrome = |g: &mut XorShift| Chrome {
+                border_px: 0.0,
+                ..rand_chrome(g)
+            };
+            for seed in 1..=300u64 {
+                let mut g = XorShift::new(seed);
+                let scale = [1.0, 2.0, 1.25][g.below(3) as usize];
+                let (mut s, mut f) = (Scene::default(), Frames::new());
+                let mut src: BTreeMap<u64, Buf> = BTreeMap::new();
+                s.upsert(&desc(ROOT, 0, 1, all, scale, true)).unwrap();
+                src.insert(ROOT, Buf::random(&mut g, W, H));
+                let mut rects: Vec<Rect> = (0..2 + g.below(3)).map(|_| rand_rect(&mut g)).collect();
+                let ids: Vec<u64> = (0..rects.len() as u64).map(|i| 200 + i).collect();
+                let others = |rects: &[Rect], i: usize| -> Vec<Rect> {
+                    rects
+                        .iter()
+                        .enumerate()
+                        .filter(|(j, _)| *j != i)
+                        .map(|(_, r)| *r)
+                        .collect()
+                };
+                for (i, id) in ids.iter().enumerate() {
+                    s.upsert(&desc(*id, ROOT, 2, rects[i], scale, true))
+                        .unwrap();
+                    s.set_chrome(*id, Some(rand_chrome(&mut g))).unwrap();
+                    let k = rand_card(&mut g, others(&rects, i));
+                    s.set_card(*id, Some(k)).unwrap();
+                }
+                s.commit(ROOT, &mut f);
+                let mut out = Buf::random(&mut g, W, H);
+                run(&s, &mut out, scale, &[all], &src, &mut shadows);
+                for round in 0..6 {
+                    for _ in 0..1 + g.below(3) {
+                        let i = g.below(ids.len() as u32) as usize;
+                        match g.below(6) {
+                            // the frame draws
+                            0 | 1 => {
+                                let r = rand_rect(&mut g);
+                                src.get_mut(&ROOT).unwrap().paint(&mut g, r);
+                                f.entry(ROOT).or_default().add(r);
+                            }
+                            // a card changes, goes or comes back
+                            2 => {
+                                let k =
+                                    (g.below(4) != 0).then(|| rand_card(&mut g, others(&rects, i)));
+                                s.set_card(ids[i], k).unwrap();
+                            }
+                            3 => {
+                                s.set_chrome(ids[i], Some(rand_chrome(&mut g))).unwrap();
+                            }
+                            // a window moves: it and every card keeping it out change
+                            4 => {
+                                rects[i] = rand_rect(&mut g);
+                                s.upsert(&desc(ids[i], ROOT, 2, rects[i], scale, true))
+                                    .unwrap();
+                                for (j, id) in ids.iter().enumerate() {
+                                    let keep: Arc<[Rect]> = others(&rects, j).into();
+                                    let k = s
+                                        .committed()
+                                        .iter()
+                                        .find(|p| p.id == *id)
+                                        .and_then(|p| p.card.clone())
+                                        .map(|k| Card {
+                                            keep_out: keep,
+                                            ..k
+                                        });
+                                    if k.is_some() {
+                                        s.set_card(*id, k).unwrap();
+                                    }
+                                }
+                            }
+                            _ => {
+                                if g.below(2) == 0 {
+                                    s.raise(ids[i]).unwrap();
+                                } else {
+                                    s.lower(ids[i]).unwrap();
+                                }
+                            }
+                        }
+                    }
+                    let damage = s.commit(ROOT, &mut f).to_vec();
+                    run(&s, &mut out, scale, &damage, &src, &mut shadows);
+                    let mut want = Buf::random(&mut g, W, H);
+                    run(&s, &mut want, scale, &[all], &src, &mut shadows);
+                    if let Some((x, y, got, all_px)) = first_difference(&out, &want) {
+                        panic!(
+                            "seed {seed} round {round}: pixel {x},{y} is {got:08x}, composing everything gives \
+                             {all_px:08x}; damage {damage:?}"
+                        );
+                    }
+                }
+            }
+        }
+
+        /// The key property: an own output's buffer, kept across commits as the ring keeps it (its rows move with
+        /// each scroll, and then only its damage is composed), equals the frame composed whole, with a card over the
+        /// output or over a taller rectangle (a mode line below it in the frame), as the card changes.
+        #[test]
+        fn scrolled_output_equals_frame_compose() {
+            const W: i32 = 160;
+            const H: i32 = 140;
+            let all = Rect::new(0, 0, W, H);
+            for seed in 1..=120u64 {
+                let mut g = XorShift::new(seed);
+                let scale = [1.0, 2.0, 1.25][g.below(3) as usize];
+                // on the device grid of every scale, so the output is the window's rectangle
+                let win = Rect::new(10 * (1 + g.below(3) as i32), 20, 100, 80);
+                let outer = if g.below(2) == 0 {
+                    win
+                } else {
+                    Rect::new(win.x, win.y, win.w, win.h + 20)
+                };
+                let (mut s, mut f) = (Scene::default(), Frames::new());
+                s.upsert(&desc(ROOT, 0, 1, all, scale, true)).unwrap();
+                s.upsert(&desc(WIN, ROOT, 2, win, scale, true)).unwrap();
+                s.set_output(WIN, true).unwrap();
+                s.upsert(&desc(CARD, ROOT, 2, outer, scale, true)).unwrap();
+                // the card's corners, with a shadow and a ring over the colour beneath now and then
+                let card = |g: &mut XorShift| Card {
+                    beneath_argb: 0xff00_0000 | g.below(1 << 24),
+                    ring_argb: if g.below(2) == 0 { 0 } else { RING },
+                    ring_px: 1 + g.below(3),
+                    keep_out: Arc::from([Rect::new(0, 0, W, 10)]),
+                };
+                let chrome = |g: &mut XorShift, r: u32| Chrome {
+                    shadow_opacity: if g.below(2) == 0 { 0.0 } else { 0.45 },
+                    blur_px: g.below(8) as f32,
+                    offset_y: g.below(3) as f32,
+                    shadow_argb: 0xff00_0000,
+                    ..radius(r as f32)
+                };
+                let r = 2 + g.below(14);
+                let c = chrome(&mut g, r);
+                s.set_chrome(CARD, Some(c)).unwrap();
+                s.set_card(CARD, Some(card(&mut g))).unwrap();
+                let mut front = Buf::random(&mut g, W, H);
+                s.commit(ROOT, &mut f);
+                let o = output(&s, WIN);
+                assert_eq!(o.rect, win, "seed {seed}");
+                let mut layer = Buf::random(&mut g, win.w, win.h);
+                compose_at(&s, &front, scale, &mut layer, (win.x, win.y), &[win]);
+                for round in 0..12 {
+                    for _ in 0..1 + g.below(3) {
+                        match g.below(6) {
+                            // a full-window scroll, either way
+                            0..=2 => {
+                                let dy =
+                                    (1 + g.below(30) as i32) * if g.below(2) == 0 { 1 } else { -1 };
+                                let exposed = front.scroll(&mut g, win, dy);
+                                s.scroll(ROOT, f.entry(ROOT).or_default(), WIN, win, dy, exposed);
+                            }
+                            // the frame draws somewhere
+                            3 => {
+                                let r = Rect::new(
+                                    g.below(W as u32) as i32 - 8,
+                                    g.below(H as u32) as i32 - 8,
+                                    1 + g.below(30) as i32,
+                                    1 + g.below(20) as i32,
+                                );
+                                front.paint(&mut g, r);
+                                f.entry(ROOT).or_default().add(r);
+                            }
+                            // the card changes colour or radius, goes, or comes back
+                            4 => {
+                                let c = (g.below(4) != 0).then(|| card(&mut g));
+                                s.set_card(CARD, c).unwrap();
+                            }
+                            _ => {
+                                let r = g.below(16);
+                                let c = chrome(&mut g, r);
+                                s.set_chrome(CARD, Some(c)).unwrap();
+                            }
+                        }
+                    }
+                    s.commit(ROOT, &mut f);
+                    let o = output(&s, WIN);
+                    if o.full {
+                        layer = Buf::random(&mut g, win.w, win.h);
+                    } else if o.scroll != 0 {
+                        // the rows keep their place in the ring: in the view they move by the scroll
+                        let old = layer.clone();
+                        for y in 0..win.h {
+                            for x in 0..win.w {
+                                let from = y - o.scroll;
+                                let v = if (0..win.h).contains(&from) {
+                                    old.at(x, from)
+                                } else {
+                                    pixel(&mut g)
+                                };
+                                layer.set(x, y, v);
+                            }
+                        }
+                    }
+                    let clips: Vec<Rect> =
+                        o.damage.iter().map(|r| r.translate(win.x, win.y)).collect();
+                    compose_at(&s, &front, scale, &mut layer, (win.x, win.y), &clips);
+                    let want = compose_all(&s, &front, scale);
+                    for y in 0..win.h {
+                        for x in 0..win.w {
+                            let (got, w) = (layer.at(x, y), want.at(win.x + x, win.y + y));
+                            assert_eq!(
+                                got, w,
+                                "seed {seed} round {round} scale {scale}: output pixel {x},{y}; damage {:?}, \
+                                 scroll {}",
+                                o.damage, o.scroll
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }

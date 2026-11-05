@@ -30,6 +30,9 @@ const LAYER_FRAME: u32 = 1;
 /// The scroll's window id goes to Glitnir with this bit set: an Emacs window's `sequence_number` and a frame's layer id
 /// are both small counters, and Glitnir damages the layer whose id equals a scrolled window's.
 pub const WINDOW_TAG: u64 = 1 << 63;
+/// A window card's layer id is the window's `sequence_number` with this bit set (`cards.rs`): a layer of its own beside
+/// the window's output (`WINDOW_TAG`), so promotion never touches the card.
+pub const CARD_TAG: u64 = 1 << 62;
 
 /// The last key given (C's `static last_id`: one counter for every display, as Glitnir's ids are global).
 static LAST_ID: AtomicU64 = AtomicU64::new(0);
@@ -139,6 +142,8 @@ pub struct Frame {
     generation: u64,
     /// The frame's windows that are their own outputs (`layers.rs`).
     pub(crate) layers: crate::layers::Layers,
+    /// The frame's window cards (`cards.rs`).
+    pub(crate) cards: crate::cards::Cards,
     /// The rows the visible bell inverted, until they are put back (`bell.rs`).
     flash: Vec<Saved>,
     /// What changed since the frame's last publish (backing coordinates).

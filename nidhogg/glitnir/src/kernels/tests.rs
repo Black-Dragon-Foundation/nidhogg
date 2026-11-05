@@ -3,6 +3,7 @@
 #![allow(clippy::needless_range_loop)]
 
 use super::*;
+use crate::geom::Rect;
 use crate::shadow::{ShadowCache, ShadowSpec, ShadowTiles, step_for};
 use std::sync::{Arc, OnceLock};
 
@@ -712,4 +713,219 @@ fn shadow_cache_is_bounded() {
         cache.get(40, 30, &spec(4.0, blur(ShadowCache::CAPACITY + i), 1.0));
     }
     assert_eq!(cache.len(), ShadowCache::CAPACITY);
+}
+
+// ---- scale ------------------------------------------------------------------------------------------------------
+
+fn random_image(r: &mut Rng, h: usize, stride: usize) -> Vec<u32> {
+    (0..stride * h).map(|_| r.premul()).collect()
+}
+
+fn full(w: usize, h: usize) -> Rect {
+    Rect::new(0, 0, w as i32, h as i32)
+}
+
+#[test]
+fn scale_identity_is_copy() {
+    let mut r = Rng(seed("scale-identity"));
+    for k in std::iter::once(baseline()).chain(avx2()) {
+        let (w, h, stride) = (37, 23, 40);
+        let src = random_image(&mut r, h, stride);
+        let mut dst = vec![0xdead_beef; stride * h];
+        k.scale(&mut dst, stride, &src, stride, w, h, 1.0, full(w, h));
+        for y in 0..h {
+            assert_eq!(
+                dst[y * stride..][..w],
+                src[y * stride..][..w],
+                "{} row {y}",
+                k.name
+            );
+            // outside the width the stride's padding is untouched
+            assert!(
+                dst[y * stride + w..(y + 1) * stride]
+                    .iter()
+                    .all(|&p| p == 0xdead_beef)
+            );
+        }
+    }
+}
+
+#[test]
+fn scale_half_matches_reference() {
+    let mut r = Rng(seed("scale-half"));
+    let (w, h) = (16usize, 16usize);
+    let src = random_image(&mut r, h, w);
+    for k in std::iter::once(baseline()).chain(avx2()) {
+        let mut dst = vec![0x1234_5678; w * h];
+        k.scale(&mut dst, w, &src, w, w, h, 0.5, full(w, h));
+        for y in 0..h {
+            for x in 0..w {
+                let got = dst[y * w + x];
+                // the scaled source covers [4, 12) on both axes; each pixel is the average of an aligned 2x2 block
+                if !(4..12).contains(&x) || !(4..12).contains(&y) {
+                    assert_eq!(got, 0, "{} ({x},{y}) is outside the source", k.name);
+                    continue;
+                }
+                let (sx, sy) = (2 * x - 8, 2 * y - 8);
+                for c in 0..4 {
+                    let sum: u32 = [(0, 0), (1, 0), (0, 1), (1, 1)]
+                        .iter()
+                        .map(|(dx, dy)| chan(src[(sy + dy) * w + sx + dx], c))
+                        .sum();
+                    let want = sum as f32 / 4.0;
+                    let g = chan(got, c) as f32;
+                    assert!(
+                        (g - want).abs() <= 1.0,
+                        "{} ({x},{y}) channel {c}: {g} vs {want}",
+                        k.name
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn scale_avx2_equals_baseline() {
+    let Some(avx) = avx2() else {
+        eprintln!("no AVX2 build on this machine");
+        return;
+    };
+    let mut r = Rng(seed("scale-avx2"));
+    for _ in 0..200 {
+        let (w, h) = (1 + r.below(70), 1 + r.below(40));
+        let (ss, ds) = (w + r.below(5), w + r.below(7));
+        let src = random_image(&mut r, h, ss);
+        let s = [0.5, 0.96, 1.0, 1.04, 1.7, 0.03][r.below(6)] + r.below(100) as f32 / 1000.0;
+        let clip = Rect::new(
+            r.below(5) as i32 - 2,
+            r.below(5) as i32 - 2,
+            1 + r.below(w + 3) as i32,
+            1 + r.below(h + 3) as i32,
+        );
+        let mut a = vec![0x5555_5555; ds * h];
+        let mut b = a.clone();
+        baseline().scale(&mut a, ds, &src, ss, w, h, s, clip);
+        avx.scale(&mut b, ds, &src, ss, w, h, s, clip);
+        assert!(
+            a == b,
+            "AVX2 differs from the baseline ({w}x{h}, scale {s}, clip {clip:?})"
+        );
+    }
+}
+
+// ---- the backdrop blur's passes -----------------------------------------------------------------------------------
+
+fn blur_tables() -> Vec<&'static Kernels> {
+    let mut tables = vec![baseline()];
+    tables.extend(avx2());
+    tables
+}
+
+fn px_row(r: &mut Rng, n: usize) -> Vec<Px> {
+    (0..n).map(|_| r.premul().to_ne_bytes()).collect()
+}
+
+/// The mean of a window, as the running sums compute it.
+fn mean(window: &[Px]) -> Px {
+    let (span, inv) = (window.len() as u32, blur::inverse(window.len()) as u32);
+    std::array::from_fn(|c| {
+        let sum: u32 = window.iter().map(|p| p[c] as u32).sum();
+        (((sum + span / 2) * inv) >> 16) as u8
+    })
+}
+
+#[test]
+fn blur_down4_averages_each_block() {
+    let mut r = Rng(0xd04a);
+    for k in blur_tables() {
+        for w in [1, 2, 7, 33] {
+            let rows: Vec<Vec<u32>> = (0..4)
+                .map(|_| (0..4 * w).map(|_| r.premul()).collect())
+                .collect();
+            let mut d = vec![[0; 4]; w];
+            k.down4(&mut d, [&rows[0], &rows[1], &rows[2], &rows[3]]);
+            for (i, o) in d.iter().enumerate() {
+                let want: Px = std::array::from_fn(|c| {
+                    let sum: u32 = rows
+                        .iter()
+                        .flat_map(|row| &row[i * 4..i * 4 + 4])
+                        .map(|p| p.to_ne_bytes()[c] as u32)
+                        .sum();
+                    ((sum + 8) >> 4) as u8
+                });
+                assert_eq!(*o, want, "{} block {i} of {w}", k.name);
+            }
+        }
+    }
+}
+
+#[test]
+fn blur_box_passes_match_a_window_mean() {
+    let mut r = Rng(0xb0c5);
+    for k in blur_tables() {
+        for (w, radius) in [(1, 1), (5, 2), (40, 1), (40, 3), (17, 9), (3, MAX_RADIUS)] {
+            let span = 2 * radius + 1;
+            let across = px_row(&mut r, w + 2 * radius);
+            let mut d = vec![[0; 4]; w];
+            k.box_h(&mut d, &across, radius);
+            for (i, o) in d.iter().enumerate() {
+                assert_eq!(*o, mean(&across[i..i + span]), "{} across", k.name);
+            }
+
+            let rows = 6;
+            let down = px_row(&mut r, w * (rows + 2 * radius));
+            let mut d = vec![[0; 4]; w * rows];
+            k.box_v(&mut d, &down, w, radius, &mut Vec::new());
+            for (i, o) in d.iter().enumerate() {
+                let column: Vec<Px> = (0..span).map(|j| down[i + j * w]).collect();
+                assert_eq!(*o, mean(&column), "{} down", k.name);
+            }
+        }
+        // radius 0 is the identity
+        let s = px_row(&mut r, 12);
+        let mut d = vec![[0; 4]; 12];
+        k.box_h(&mut d, &s, 0);
+        assert_eq!(d, s);
+        d.fill([0; 4]);
+        k.box_v(&mut d, &s, 4, 0, &mut Vec::new());
+        assert_eq!(d, s);
+    }
+}
+
+#[test]
+fn blur_box_passes_keep_a_flat_colour() {
+    for k in blur_tables() {
+        for radius in 1..=MAX_RADIUS {
+            for v in 0..=255_u8 {
+                let s = vec![[v; 4]; 4 * radius + 2];
+                let mut d = vec![[0; 4]; 2];
+                k.box_h(&mut d, &s, radius);
+                assert_eq!(d, [[v; 4]; 2], "{} radius {radius}", k.name);
+                let mut d = vec![[0; 4]; 2];
+                k.box_v(&mut d, &s, 1, radius, &mut Vec::new());
+                assert_eq!(d, [[v; 4]; 2], "{} radius {radius}", k.name);
+            }
+        }
+    }
+}
+
+#[test]
+fn blur_bilerp_equals_the_lookup_one_pixel_at_a_time() {
+    let mut r = Rng(0xb11e);
+    for k in blur_tables() {
+        // past one stack block, and across its end
+        for spans in [1, 3, 63, 64, 65, 130] {
+            let (t, b) = (px_row(&mut r, spans + 1), px_row(&mut r, spans + 1));
+            for fy in [1, 3, 5, 7] {
+                let mut o = vec![0; 4 * spans];
+                k.bilerp(&mut o, &t, &b, fy);
+                for (i, p) in o.iter().enumerate() {
+                    let (s, f) = (i / 4, 2 * (i % 4) as u16 + 1);
+                    let want = bilerp_px(&t[s], &t[s + 1], &b[s], &b[s + 1], f, fy);
+                    assert_eq!(*p, want, "{} pixel {i} of {spans} spans", k.name);
+                }
+            }
+        }
+    }
 }

@@ -1,9 +1,11 @@
 //! Scale: the buffer-size arithmetic and the per-surface scale state (`SurfaceScale`).
 //!
 //! The frame's pixel is the device pixel: Emacs draws at the output's real resolution.  The protocol sees logical sizes only: the buffer is
-//! `round(logical x s)` device pixels, `wp_viewport`'s destination is the logical size and `buffer_scale` stays 1.
-//! A surface's scale comes from `wp_fractional_scale_v1` when the compositor has it, else from
-//! `wl_surface.preferred_buffer_scale`, else from the largest scale of the outputs the surface entered.  All of it
+//! `round(logical x s)` device pixels, `wp_viewport`'s destination is the logical size the buffer maps onto exactly
+//! (`viewport_size`: a buffer no logical size fits is cut to the largest that does) and `buffer_scale` stays 1.
+//! A surface's scale comes from `wp_fractional_scale_v1` when the compositor has it (the integer hints are not used
+//! even before its first `preferred_scale`), else from `wl_surface.preferred_buffer_scale`, else from the largest
+//! scale of the outputs the surface entered.  All of it
 //! runs on the main queue.
 
 use crate::event::{OutputEv, Record, ScaleEv, ShellEvent};
@@ -28,6 +30,24 @@ pub fn buffer_size(logical_w: i32, logical_h: i32, scale120: u32) -> (i32, i32) 
         (n / 240) as i32
     }
     (one(logical_w, scale120), one(logical_h, scale120))
+}
+
+/// The viewport's logical extent for a buffer extent of `device` pixels at `scale120`, and the device extent it shows:
+/// the logical extent whose device extent (the compositor's stable rounding, `glitnir::snap::stable_extent`) is `device`
+/// exactly, else the largest whose device extent is smaller.  Then the viewport's source cuts the buffer to that: its
+/// last device rows or columns go unshown, where a destination rounded to the nearest logical pixel would have every
+/// pixel resampled (an odd buffer at scale 2 drawn 402 wide from 401).
+pub fn viewport_size(device: i32, scale120: u32) -> (i32, i32) {
+    let s = scale120.max(1);
+    let dev = |l: i32| glitnir::snap::stable_extent(0, l, s);
+    let mut l = (i64::from(device.max(0)) * 120 / i64::from(s)) as i32;
+    while dev(l + 1) <= device {
+        l += 1;
+    }
+    while l > 0 && dev(l) > device {
+        l -= 1;
+    }
+    (l, dev(l))
 }
 
 /// The scale state of one `wl_surface`.  The shell keeps it in `MainState::scales`, keyed by the window id (the
@@ -147,7 +167,40 @@ impl MainState {
         }
     }
 
+    /// Child `id` starts at its parent's scale, as C makes the frame: a compositor tells a subsurface its scale once it
+    /// shows, and a first buffer at scale 1 would show at twice its size.  The compositor's own scale counts from then on.
+    pub(crate) fn inherit_scale(&mut self, id: u64, parent: u64) {
+        let Some(scale) = self.scales.get(&parent).map(SurfaceScale::scale120) else {
+            return;
+        };
+        if let Some(s) = self.scales.get_mut(&id) {
+            s.current = scale;
+        }
+        if let Some(shared) = &self.shared {
+            shared
+                .scale120
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(id, scale);
+        }
+    }
+
     pub(crate) fn detach_scale(&mut self, id: u64) {
+        if let Some(s) = self.take_scale(id) {
+            s.destroy();
+        }
+    }
+
+    /// `detach_scale`, but the viewport lives on with whoever commits the surface (a ghost's fade): without it the
+    /// surface would change size.
+    pub(crate) fn detach_scale_keeping_viewport(&mut self, id: u64) {
+        if let Some(mut s) = self.take_scale(id) {
+            s.viewport = None;
+            s.destroy();
+        }
+    }
+
+    fn take_scale(&mut self, id: u64) -> Option<SurfaceScale> {
         if let Some(shared) = &self.shared {
             shared
                 .scale120
@@ -155,9 +208,7 @@ impl MainState {
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&id);
         }
-        if let Some(s) = self.scales.remove(&id) {
-            s.destroy();
-        }
+        self.scales.remove(&id)
     }
 
     /// Recompute surface `id`'s scale and post `SCALE` when it changed.  A surface with a fractional-scale object takes
@@ -279,6 +330,30 @@ impl Dispatch<WpFractionalScaleV1, u64> for MainState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn viewport_size_maps_exactly_or_cuts() {
+        // sizes a logical size maps to: shown whole, as the rounded destination always did
+        assert_eq!(viewport_size(400, 240), (200, 400));
+        assert_eq!(viewport_size(400, 150), (320, 400));
+        assert_eq!(viewport_size(401, 150), (321, 401));
+        assert_eq!(viewport_size(1037, 180), (691, 1037));
+        // none does: the largest under it, the last device column cut
+        assert_eq!(viewport_size(401, 240), (200, 400));
+        assert_eq!(viewport_size(402, 150), (321, 401));
+        // every size and scale: exact or one short, never past the buffer
+        for s in [120, 150, 180, 210, 240, 300] {
+            for d in 1..600 {
+                let (l, shown) = viewport_size(d, s);
+                assert_eq!(glitnir::snap::stable_extent(0, l, s), shown);
+                assert!(
+                    shown <= d && glitnir::snap::stable_extent(0, l + 1, s) > d,
+                    "{d} at {s}"
+                );
+            }
+        }
+        assert_eq!(viewport_size(0, 240), (0, 0));
+    }
 
     #[test]
     fn buffer_size_examples() {

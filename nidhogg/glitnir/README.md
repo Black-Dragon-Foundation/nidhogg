@@ -47,6 +47,13 @@ views (`kernels::{Pixels, PixelsMut, Mask}`).
   3σ past its box. Tiles hold one sample every 2 px from σ 8 and every 4 px from σ 16, sampled bilinearly: the
   coarsest that keeps the error within 2/255 of an 8×8-supersampled rounded rectangle convolved with an exact
   Gaussian.
+- `blur::Backdrop` keeps what lies beneath a translucent layer, blurred, at ¼ resolution, for the composite to sample
+  bilinearly: a 4×4 box average, then three running-sum box passes per axis (the kernels `down4`, `box_h`, `box_v`,
+  `bilerp`), at a cost that does not depend on σ. The image holds the layer's region plus `blur::margin(σ)` (3σ, a
+  multiple of 4). `update` recomputes only the rows the source's damage reaches, and a change of σ, scale, region or
+  source size recomputes it all; it returns the part of the region whose samples changed. Past the source, and past the
+  image, the edge repeats. Box radii are whole cells, so σ takes effect in steps, and below 2 device pixels it blurs only
+  as far as the averaging does.
 
 ## Compose
 
@@ -54,7 +61,14 @@ views (`kernels::{Pixels, PixelsMut, Mask}`).
 in the root's device pixels), within the given rectangles (the damage, or a draw's clip), from the frames' surfaces
 (sources, by layer id), bottom to top: layers without chrome are copied; a chromed layer's shadow tiles go over what
 lies below, then the layer is copied but for its four corner squares, which go through the corner mask, with the
-border ring when it has a border. Window layers are their frame's pixels (P1 composes a scroll as damage). Pixels no
+border ring when it has a border. Window layers are their frame's pixels (P1 composes a scroll as damage). A window
+layer with a card (`scene::set_card`, Rust only: a `Card`'s beneath colour, edge ring and the rectangles it keeps out,
+with the radius and shadow from the layer's chrome) then draws over the frame's pixels and labels: in the gap around the
+window (inside the frame, never inside a rectangle it keeps out, the other windows), the shadow and then the ring, a
+band just outside the rounded rectangle; in its four corner squares, outside the rounded rectangle, the beneath colour
+with the shadow and the ring over it. The rest of the window stays a plain copy, so typing inside it composes nothing
+of the card. A card's change damages where it draws (its corners and its bounds outside the window), and a change of
+the rectangles it keeps out only those that came or went. Pixels no
 layer covers are left alone. A pixel's value never depends on how the rectangles cut it, so composing the damage
 equals composing everything. A source whose device scale is not the target's is refused (`GLITNIR_E_STATE`) and the
 host draws that root the stock way. The time taken and the layers drawn fill the root's next frame-time entry.
@@ -75,7 +89,9 @@ rounding) and lists the output in the snapshot (`Committed::outputs`: rectangle,
 coordinates, `full` when nothing of its last picture can be kept). Scene damage inside the window goes to the output
 only; the snapped rectangle's overlap with the neighbours goes to both. A `glitnir_scroll` whose area holds the whole
 window becomes the output's scroll distance plus its exposed rows, and damage drawn before it moves with the pixels;
-any other scroll stays damage. An output that goes (demoted, hidden, removed) or moves damages its old rectangle on
+any other scroll stays damage. A card's corners are composed into the output's buffer like any scene pixel, and they
+move with its rows, so an output's scroll also damages each card corner square in it, where it is and where the
+scroll took it (at most eight r×r squares): a card window keeps its own output, with no mask surface. An output that goes (demoted, hidden, removed) or moves damages its old rectangle on
 the frame. `pool::Ring` is the output buffers' row arithmetic: buffers `min(2·view, 8192)` rows tall, a scroll moves
 the view's offset and rebases to the middle at the buffer's end, and `punch_rows` names the rows more than half a
 view away, whose pages the shell may release.

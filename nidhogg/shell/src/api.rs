@@ -6,6 +6,7 @@
 use crate::caps::NhShellCaps;
 use crate::event::Record;
 use glitnir::geom::Rect;
+use glitnir::motion::MotionSpec;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::Thread;
@@ -260,6 +261,8 @@ pub trait ShellBackend {
         desc: &WindowDesc,
         session_name: Option<&str>,
     ) -> ShellResult<WindowId>;
+    /// The window and its dependents go, and the id with them.  A child whose hide leg runs (`set_motion`) finishes its
+    /// fade first as a surface the host no longer sees, unless its parent goes or the connection does.
     fn window_destroy(&mut self, window: WindowId) -> ShellResult;
     /// The scale (times 120) the host made a new window's frame for: its buffers' viewport starts there, not at 1, until
     /// the compositor says what the scale is (a `SCALE` comes only when it says another).  A frame made a top-level
@@ -340,8 +343,23 @@ pub trait ShellBackend {
         pos: Option<(i32, i32)>,
         input: Option<&[Rect]>,
     ) -> ShellResult;
-    /// Off: show nothing (a null buffer); on: the next present shows the window again.
+    /// Off: show nothing (a null buffer); on: the next present shows the window again.  A child with a motion spec
+    /// (`set_motion`) stays mapped, showing its last picture, while its hide leg runs, and unmaps in the tree commit
+    /// after the leg's end; on, its show leg starts at the first tree commit that carries its new picture.  A hide and
+    /// a show in one command run no leg: on the presenter thread a hide waits a few milliseconds for the show.
     fn set_mapped(&mut self, window: WindowId, on: bool) -> ShellResult;
+    /// Child `window`'s show and hide transitions, run by whoever presents its tree (`None`: none, and a leg that
+    /// runs ends at once: a show jumps to its end, a hide unmaps in the next tree commit).  `State` for any other
+    /// window.
+    fn set_motion(&mut self, _window: WindowId, _spec: Option<MotionSpec>) -> ShellResult {
+        Err(ShellError::Unsupported)
+    }
+    /// Child `window` has what lies beneath it in its parent blurred under its pixels, with σ `blur_px` logical pixels
+    /// (0: none).  Whoever presents its tree recomputes it from the parent's damage alone, and shows it in the tree
+    /// commit that shows the change.  `State` for any other window, `Arg` for a negative or non-finite σ.
+    fn set_backdrop(&mut self, _window: WindowId, _blur_px: f32) -> ShellResult {
+        Err(ShellError::Unsupported)
+    }
     /// Whether popup `window` holds a grab (asked with `NHSHELL_WIN_GRAB`, granted, not dismissed); false for other
     /// windows.
     fn window_grabbed(&self, window: WindowId) -> ShellResult<bool>;
