@@ -138,7 +138,12 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   (`NHWL_PRESENTER=0` runs it inline), composes and commits. Child frames are subsurfaces of their parent, so the Wayland
   compositor puts the tree together.
   `glitnir-stats` gives `:key-to-commit-ms` in place of `:latency-ms`, `:draw-ms` runs to the buffer's commit and
-  `:painted-px` is the area composed; `nhwl-presenter-stats` has the presenter's own counters. Among them is a fence:
+  `:painted-px` is the area composed. Its `:violations`, `:scale-mismatch` and `:freeze-ms` stay 0 on the shell: they
+  counted the pgtk bridge's verify mode, a GDK buffer at another scale and GDK's freeze, none of which the shell has (a
+  compose takes the source at the target's own scale). `glitnir--last-paint` gives the newest paint of that record
+  (`:commit-ns` when Emacs published the drawing, `:paint-ns` and `:present-ns` when its buffer was committed, on the
+  clock of `glitnir--now-ns`, `CLOCK_MONOTONIC`; a reset keeps it; nil before a frame's first paint and in batch): drgnx's
+  perf lab reads its key-to-present time from it. `nhwl-presenter-stats` has the presenter's own counters. Among them is a fence:
   each request Emacs gives the presenter (a picture, a configure's ack, surface state for a commit) takes the next
   number, `:published` the newest; `:presented` reaches a number once that request and every older one has gone out in
   a flushed commit (or no longer needs one), so `:presented` equal to `:published` means the compositor has
@@ -711,6 +716,17 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   (`call-process`'s waitpid, a blocking read) slept on until another signal came, usually the busy cursor's SIGALRM
   `hourglass-delay` after the command started, so only a C-g within that second worked. Test:
   `test/src/nidhogg-tests/quit-tty-tests.el` (the controlling tty and another tty, C-g after the wait has started).
+- Line numbers deep in a large buffer (`src/xdisp.c`, `maybe_produce_line_number`; a stock cost, kept in this group
+  until the series is rewritten): `display-line-numbers` counts a line's number from the window's base line, a cache
+  that only `line-number-mode`'s `%l` in the window's mode line filled. A window that shows no `%l` (drgnx's windows
+  show no mode line) had none, so every display iterator of every redisplay counted the lines from the buffer's start,
+  and point's line again for the current-line face: a few ms each, 4.3 MB into drgnx's perf fixture, 4 per redisplay
+  when a window split and hundreds while compile-flood's log streamed. A count from the start now keeps its result as
+  that base, under the cache's own rules (inside redisplay, which flushes it once an edit reaches it; the accessible
+  portion's numbers only, so never `display-line-numbers-widen`'s numbers of a narrowed buffer; never over the mode
+  line's "lines too long" mark), and point's number counts from it too. Test:
+  `test/src/nidhogg-tests/workers-redisplay-gui-tests.el` (`nidhogg-workers--test-line-number-counts` counts the
+  counts from the start; `%l`, which reads the same base, checks the kept numbers, narrowed and widened too).
 - Waits and the redisplay budget: a main-thread wait on a worker pushes the watchdog's `worker-wait` (or `treesit-wait`)
   phase and counts its time in `:phase-ms`; it never enters `select`, so the watchdog's span runs through it. Every
   `redisplay_internal` call starts a wait budget of `nidhogg-redisplay-wait-budget` milliseconds (default 1), spent
