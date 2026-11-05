@@ -351,12 +351,15 @@ machine whose timing never shows it, not certain.
     (`pkg-pins-<hash of pkg-pins.txt and pkg-test.sh>`, exact, without build output or compiled files).
   - Compiled Lisp and tarballs are never restored for a release tag; a release is built fresh, with only self-checking
     caches (ccache, packages).
-  - Who saves: `nidhogg-31` and `ci/*` branches save every cache except the package downloads and Homebrew, which only
-    `nidhogg-31` saves (they hit by prefix anyway); pull requests and tags save nothing, so an untrusted pull request
-    never writes a cache a trusted run reads. A narrowed run (below) saves no tarball, since its checks were cut.
+  - Who saves: `nidhogg-31` and pull requests from a branch of this repository save every cache; `ci/*` branches every
+    one except the package downloads and Homebrew, which hit by prefix anyway. A fork's pull request and a tag save
+    nothing. GitHub scopes a pull request's entries to its merge ref (`refs/pull/N/merge`): its own later runs read
+    them, `nidhogg-31` and other branches never do, so no pull request writes a cache another ref's run reads. A
+    narrowed run (below) saves no tarball, since its checks were cut.
   - Scoping: a run restores caches of its own branch or the default branch (`nidhogg-31`), and a pull request those of its
     base; never those of sibling branches or other tags. Keys are identical on every branch, so a run on a `ci/*` branch
-    or a pull request reuses what `nidhogg-31` saved, and a second run on the same `ci/*` branch what the first saved.
+    or a pull request reuses what `nidhogg-31` saved, and a second run on the same `ci/*` branch or pull request what
+    the first saved.
     Unused caches are evicted after 7 days and the least recently used go first above 10 GB per repository
     ([GitHub: dependency caching](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching));
     the per-ref package and test-binary copies are the largest entries and go first.
