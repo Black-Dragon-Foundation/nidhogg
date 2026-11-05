@@ -72,6 +72,8 @@ pub struct Ring {
     late_ticks: u64,
     violations: u64,
     scale_mismatch: u64,
+    /// The newest entry; a reset keeps it (the paint still happened).
+    newest: Option<StatsEntry>,
 }
 
 impl Ring {
@@ -84,6 +86,7 @@ impl Ring {
             late_ticks: 0,
             violations: 0,
             scale_mismatch: 0,
+            newest: None,
         }
     }
 
@@ -93,6 +96,7 @@ impl Ring {
         } else {
             self.buf[self.next] = e;
         }
+        self.newest = Some(e);
         self.next = (self.next + 1) % RING;
         self.count += 1;
         self.ticks += u64::from(e.ticks);
@@ -199,6 +203,11 @@ pub fn summary(root: u64, reset: bool) -> Summary {
         r.clear();
     }
     s
+}
+
+/// ROOT's newest entry (kept across resets), or `None` before its first record.  The perf lab's present time.
+pub fn last(root: u64) -> Option<StatsEntry> {
+    rings().get(&root).and_then(|r| r.newest)
 }
 
 /// Drop ROOT's ring (the root is gone).
@@ -368,6 +377,28 @@ mod tests {
         );
         assert_eq!(summary(root, false).backfill_rate, 1.0);
         forget(root);
+    }
+
+    #[test]
+    fn last_is_the_newest_entry() {
+        let root = 9009;
+        assert_eq!(last(root), None, "no ring yet");
+        let mut rng = Rng(seed());
+        // past the ring's size, so the newest sits wherever the ring wrapped to
+        let n = RING + 1 + (rng.next() % RING as u64) as usize;
+        let all: Vec<StatsEntry> = (0..n).map(|_| random_entry(&mut rng)).collect();
+        for (i, e) in all.iter().enumerate() {
+            record(root, *e);
+            if i == 0 {
+                assert_eq!(last(root), Some(all[0]));
+            }
+        }
+        assert_eq!(last(root), Some(all[n - 1]));
+        // a reset empties the ring, not the newest paint: it still happened
+        summary(root, true);
+        assert_eq!(last(root), Some(all[n - 1]));
+        forget(root);
+        assert_eq!(last(root), None, "the root is gone");
     }
 
     #[test]
