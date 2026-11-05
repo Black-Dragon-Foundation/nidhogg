@@ -30,7 +30,8 @@
 #   --refresh N       the speed sessions' sway output runs at N Hz (default 120; the scroll bar is a 120 Hz bar)
 #   --container fedora-45  accepted and ignored: the script always runs in its own container, and the caller's
 #                     container wrapper only starts the command on the host, not inside a dev container, when it sees this
-#   --out FILE        the plists, one per line (default budgets.eld in the current directory)
+#   --out FILE        the plists, one per line (default budgets.eld in the current directory); the stall watchdog's logs
+#                     (its stacks) are kept beside it in FILE.wd/
 #   --self-test       --runs 1, 1280x720, 3 s windows, 10 resize steps, 30 motion frames; then every line must read
 #                     back as a plist with :target, :kind and :verdict, none may be nil, and freeze-watchdog may not be
 #                     skipped
@@ -149,6 +150,12 @@ late_per1000() {
   awk -v a="$1" -v b="$2" 'BEGIN { split(a, x, " "); split(b, y, " ");
     f = y[2] - x[2]; printf "%.2f", (f > 0) ? (y[1] - x[1]) * 1000 / f : 0 }'   # bare, `>' is printf's redirect
 }
+# keep_watchdog_logs RUN OUT: the stall watchdog writes its stacks into RUN/wd/, which the run deletes; keep them
+# in OUT.wd/ (made even when empty, so a run with no stall is told from one that lost its logs)
+keep_watchdog_logs() {
+  mkdir -p "$2.wd" || return 1
+  [ ! -d "$1/wd" ] || cp -a "$1/wd/." "$2.wd/"
+}
 case $refresh in ''|*[!0-9]*) echo "budgets.sh: --refresh is a whole number of Hz" >&2; exit 2 ;; esac
 # --self-test with no build: the targets table alone (the effect rows, all budget, all at the effects' cell, the
 # workloads present); the timing runs are the gate's
@@ -185,6 +192,15 @@ if [ "$selftest" = 1 ] && [ -z "$pa" ]; then
     grep -q "\":$k\"" "$checkout/src/nidhogg-glitnir.c" || { echo "budgets self-test: glitnir-stats has no :$k" >&2; bad=1; }
     grep -q "(budgets--stat :$k" "$self" || { echo "budgets self-test: no row reads :$k" >&2; bad=1; }
   done
+  # the watchdog's logs outlive the run directory: copied beside --out as OUT.wd/
+  t=$(mktemp -d)
+  mkdir -p "$t/run/wd" && printf 'stack\n' > "$t/run/wd/stall-1.log"
+  keep_watchdog_logs "$t/run" "$t/out.eld" 2>&1 || { echo "budgets self-test: keep_watchdog_logs failed" >&2; bad=1; }
+  [ "$(cat "$t/out.eld.wd/stall-1.log" 2>/dev/null)" = stack ] || { echo "budgets self-test: the watchdog log was not kept beside --out" >&2; bad=1; }
+  mkdir -p "$t/run2"
+  keep_watchdog_logs "$t/run2" "$t/out2.eld" 2>&1 || { echo "budgets self-test: keep_watchdog_logs failed with no log" >&2; bad=1; }
+  [ -d "$t/out2.eld.wd" ] || { echo "budgets self-test: no OUT.wd/ when the run wrote no log" >&2; bad=1; }
+  rm -r "$t"
   [ "$bad" = 0 ] || exit 1
   echo "budgets self-test: the effect rows and workloads are known"
   exit 0
@@ -246,6 +262,7 @@ if [ "$mode" = container ]; then
     XDG_SESSION_TYPE=wayland GIO_USE_VFS=local GSETTINGS_BACKEND=memory BUDGETS_RUN="$run" \
     dbus-run-session -- bash "$self" --session "${sargs[@]}" --out "$out" $([ "$selftest" = 0 ] || echo --self-test)
   rc=$?
+  keep_watchdog_logs "$run" "$out" || echo "budgets.sh: the watchdog logs were not kept" >&2
   if [ "$rc" = 0 ] && [ "$selftest" = 1 ]; then
     # every line reads back as a plist with :target, :kind and :verdict, none is nil, and the freeze row is measured
     HOME="$run/home" "$pa/bin/nidhogg" -Q --batch --eval '(with-temp-buffer

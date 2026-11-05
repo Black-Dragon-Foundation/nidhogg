@@ -942,6 +942,19 @@ mod tests {
     }
 
     #[test]
+    fn stats_records_have_the_c_layout_without_the_pgtk_only_fields() {
+        use crate::stats::{StatsEntry, Summary};
+        // no freeze time, violations or scale mismatch: only the pgtk port produced them
+        assert_eq!(std::mem::size_of::<StatsEntry>(), 128);
+        assert_eq!(std::mem::offset_of!(StatsEntry, backfill), 124);
+        assert_eq!(std::mem::size_of::<Summary>(), 208);
+        let header = crate_file("include/glitnir.h");
+        for gone in ["t_freeze_ns", "freeze_ms", "violations", "scale_mismatch"] {
+            assert!(!header.contains(gone), "glitnir.h still names {gone}");
+        }
+    }
+
+    #[test]
     fn source_and_target_have_the_c_layout() {
         assert_eq!(std::mem::size_of::<Source>(), 40);
         assert_eq!(std::mem::offset_of!(Source, pixels), 8);
