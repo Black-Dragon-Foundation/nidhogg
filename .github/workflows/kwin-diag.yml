@@ -1,0 +1,31 @@
+# Diagnostic on wip/kwin-diag only (never merged): KWin's virtual backend on GitHub's runners, Azure and AWS alike.
+name: KWin probe
+on:
+  push:
+    branches: [wip/kwin-diag]
+permissions:
+  contents: read
+jobs:
+  probe:
+    name: KWin probe ${{ matrix.n }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        n: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The runner's DRM devices
+        run: |
+          k=$(uname -r); echo "kernel $k"
+          sudo modprobe vgem && echo "vgem loaded" || echo "no vgem"
+          sudo chmod 666 /dev/dri/renderD* || true
+          ls -l /dev/dri
+          for n in /sys/class/drm/card? /sys/class/drm/renderD*; do echo "$n: $(basename "$(readlink -f "$n/device/driver")") $(cat "$n/device/uevent" 2>/dev/null | tr '\n' ' ')"; done
+          lsmod | grep -E 'vgem|drm|simpledrm|hyperv|faux' || true
+          sudo dmesg | grep -i -E 'vgem|simpledrm|faux|drm' | tail -15 || true
+      - run: bash nidhogg/test/kwin-probe.sh all-of-dri --device /dev/dri
+      - run: bash nidhogg/test/kwin-probe.sh render-node-only --device /dev/dri/renderD128
