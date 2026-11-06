@@ -410,6 +410,16 @@ margins sit around it (margins M on every side, the strip on top), 0 without the
   "Non-nil when the damage rectangle R (X Y W H) lies within rows Y0 to Y1."
   (and (>= (nth 1 r) y0) (<= (+ (nth 1 r) (nth 3 r)) y1)))
 
+(defun nhwl-gui--shown-rect (snap &optional x y)
+  "The part of SNAP, a raw snapshot of the selected frame at X, Y (default 0, 0) in its toplevel's buffer, that the
+compositor shows, as (0 0 W H) in SNAP: all of it, less the rows and columns the last commit's viewport source cuts
+off (a buffer no logical size fits, an odd one at scale 2, is cut to one that does, not resampled)."
+  (let* ((src (nhwl-gui--get (plist-get (nhwl-gui--last-commit) :viewport) :src))
+         (x (or x 0)) (y (or y 0)))
+    (list 0 0
+          (if src (min (nth 0 snap) (- (round (nth 2 src)) x)) (nth 0 snap))
+          (if src (min (nth 1 snap) (- (round (nth 3 src)) y)) (nth 1 snap)))))
+
 (defun nhwl-gui--shown (mark)
   "Wait until the recorder commits something since MARK, let it settle, and return its screen grab."
   (nhwl-gui--wait (lambda () (nhwl-gui--new mark)) 5)
@@ -544,7 +554,8 @@ user displays takes this path, and a build without the image libraries would not
        (redisplay t)
        (let ((after (nhwl-gui--shown mark)))
          (should (> (cdr (gui-runner-pixel-diff before after cells)) (frame-char-width)))
-         (should (= (car (gui-runner-pixel-diff (glitnir-snapshot nil 'raw) after)) 0)))))))
+         (let ((snap (glitnir-snapshot nil 'raw)))
+           (should (= (car (gui-runner-pixel-diff snap after (nhwl-gui--shown-rect snap))) 0))))))))
 
 (ert-deftest nhwl-gui/scale-150-buffer-exact ()
   (skip-unless (nhwl-gui--recorder-p))
@@ -643,7 +654,7 @@ user displays takes this path, and a build without the image libraries would not
         (while (< y (nth 3 (window-pixel-edges)))
           (should (seq-find (lambda (r) (and (<= (nth 1 r) y) (< y (+ (nth 1 r) (nth 3 r))))) rects))
           (setq y (1+ y))))
-      (should (= (car (gui-runner-pixel-diff mine theirs)) 0)))))
+      (should (= (car (gui-runner-pixel-diff mine theirs (nhwl-gui--shown-rect mine))) 0)))))
 
 (defun nhwl-gui--scroll-events (record &optional regexp)
   "Send the recorder's axis RECORD(s) (one plist or a list of them); return the events whose symbol matches REGEXP."
