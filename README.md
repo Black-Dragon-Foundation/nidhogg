@@ -154,6 +154,15 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   for a frame, in device pixels), `nhwl--frame-states` (the fullscreen and maximized states of the compositor's last
   configure, its answer to the frame's `fullscreen` parameter). A panic in the glue drops the display it happened on and
   Emacs keeps running (`nhwl-glue-panics`).
+  On macOS (`src/nsglitnir.m`) `glitnir-active-p` is non-nil for a frame of the NS display (not a tooltip) while
+  `glitnir-enable` is non-nil and macOS is 10.15 or newer; with `glitnir-enable` nil nothing is made and nothing changed.
+  The NS build keeps a child frame's chrome vector with the frame (`glitnir--rechrome` and every change of the frame's
+  parameters take it again), `glitnir--chrome` gives it back in device pixels, and the library is linked directly
+  (`libglitnir.a`; the glue is not), so `glitnir--probe` works. `glitnir-snapshot` is the window server's picture of the
+  root's content rectangle with the windows above it (its child frames), in device pixels, taken with
+  `CGWindowListCreateImage`. It needs the Screen Recording permission and never asks for it: without it the
+  snapshot signals `glitnir-no-capture`. `glitnir--ns-pairs` lists the visible child frames as the window server has them
+  (bounds and alpha, no permission needed).
 - **Dev build** (`--dev` or `NIDHOGG_BUILD_DEV=1`, for agents' task builds): configures `--with-native-compilation=yes`
   instead of `aot`, so only the preloaded Lisp is native-compiled and the other ~1,400 files stay bytecode (minutes instead
   of the better part of an hour). A `lisp/site-init.el` written into the build copy sets `native-comp-jit-compilation` to
@@ -214,6 +223,19 @@ on a Nidhogg frame of the native shell, under a headless sway, or the compositor
   passed, 1 on a failure or a timeout (default 300 s).
 - CI job `native-gui` (below) runs the fedora-45 tarball, every file at scales 1 and 2 and the native shell's rows on each
   compositor.
+
+### macOS
+
+`bash nidhogg/test/ns-gui.sh --tarball FILE | --prefix DIR [--scale 1|2]... [--select REGEXP] [--files GLOB]
+[--timeout SEC] [--out DIR]` runs `glitnir-ns-gui-tests.el` (ERT tests named `glitnir-ns/…`) on the built `Nidhogg.app`,
+at scale 1 and then 2 unless `--scale` says otherwise. It runs the app directly from the shell, never through `open`: the
+Screen Recording permission the pixel rows need is the runner's grant to `/bin/bash`, and an app started by `open` is its
+own responsible process, without it. Without the grant the pixel rows skip with `glitnir-no-capture` and the state rows
+still run. `nidhogg/test/ns-display.m` (test-only, built with clang by the script) makes a virtual display through
+CoreGraphics' private `CGVirtualDisplay` class, 1440x900 at scale 1 or 1280x800 points HiDPI at scale 2, and keeps it
+while the rows run; `gui-runner.el` then moves the frame onto it (`GLITNIR_GUI_FRAME`). CI's `macos` job runs the lane
+after the workers checks; a dispatch's `checks` input names rows (`glitnir-ns/NAME`) or the file, and with other checks
+only the lane has nothing to run. The logs are the artifact `ns-gui-logs`.
 
 ## The test clock
 

@@ -32,6 +32,10 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "keyboard.h"
 #include "nhwlterm.h"
 #endif
+#ifdef HAVE_NS
+#include <glitnir.h>
+#include "nsterm.h"
+#endif
 
 /* True when the :box plist entry KEY VALUE is one of Glitnir's decoration keys
    (:corner-radius, :open, :label) with a valid value.  Built on every Glitnir
@@ -65,13 +69,16 @@ extern void syms_of_glitnir_images (void);
 DEFUN ("glitnir-active-p", Fglitnir_active_p, Sglitnir_active_p, 0, 1, 0,
        doc: /* Return non-nil if Glitnir (the compositor) draws FRAME.
 FRAME defaults to the selected frame.  Frames of the native Wayland
-shell can be drawn by Glitnir, and only while `glitnir-enable' is
-non-nil; batch, terminal and tooltip frames never are.  */)
+shell and of the macOS build can be drawn by Glitnir, and only while
+`glitnir-enable' is non-nil; batch, terminal and tooltip frames never
+are.  */)
   (Lisp_Object frame)
 {
   struct frame *f = decode_live_frame (frame);
 #ifdef HAVE_NHWL
   return nhwl_glitnir_active_p (f) ? Qt : Qnil;
+#elif defined HAVE_NS
+  return ns_glitnir_active_p (f) ? Qt : Qnil;
 #else
   (void) f;
   return Qnil;
@@ -224,7 +231,10 @@ the frames' own pixels: no chrome, no shadows, no scene.
 FORMAT is `png' (the default; the value is a unibyte string holding a PNG)
 or `raw' (the value is (WIDTH HEIGHT BYTES), BYTES a unibyte string of
 ARGB32 pixels in the machine's byte order, device pixels, rows tightly
-packed).  */)
+packed).  On the macOS build the picture is the window server's, taken
+for the root's content rectangle with the windows above it, and the
+call signals `glitnir-no-capture' when the process may not capture the
+screen (it never asks for the permission).  */)
   (Lisp_Object frame, Lisp_Object format)
 {
   struct frame *f = decode_live_frame (frame);
@@ -263,6 +273,10 @@ packed).  */)
       xfree (sink.data);
     }
   return result;
+#elif defined HAVE_NS
+  /* The window server's picture of the root's content rectangle, with
+     the windows above it: the root, its child frames and their shadows.  */
+  return ns_glitnir_snapshot (f, !EQ (format, intern_c_string ("raw")));
 #else
   (void) f;
   error ("glitnir-snapshot: no image surface");
@@ -396,6 +410,24 @@ to the selected frame.  */)
   return list4 (intern_c_string (":radius"),
 		make_float (s * c[NHG_CHROME_RADIUS]),
 		intern_c_string (":shadow"), shadow);
+#elif defined HAVE_NS
+  /* The window holds what the last intake stored, while Glitnir is on.  */
+  float c[24];
+  if (!FRAME_NS_P (f) || !ns_glitnir_chrome (f, c))
+    return Qnil;
+  double s = XFLOATINT (Fframe_scale_factor (frame));
+  uint32_t rgb = (c[7] > 0 && c[7] <= 0xffffff ? (uint32_t) c[7] : 0);
+  Lisp_Object shadow
+    = (c[6] <= 0 ? Qnil
+       : list (intern_c_string (":blur"), make_float (s * c[2]),
+	       intern_c_string (":offset"),
+	       Fcons (make_float (s * c[3]), make_float (s * c[4])),
+	       intern_c_string (":spread"), make_float (s * c[5]),
+	       intern_c_string (":opacity"), make_float (c[6]),
+	       intern_c_string (":color"),
+	       list3i ((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff)));
+  return list4 (intern_c_string (":radius"), make_float (s * c[1]),
+		intern_c_string (":shadow"), shadow);
 #else
   (void) f;
   return Qnil;
@@ -410,10 +442,34 @@ Return nil.  */)
   struct frame *f = decode_live_frame (frame);
 #ifdef HAVE_NHWL
   nhwl_child_params_changed (f);
+#elif defined HAVE_NS
+  ns_glitnir_params_changed (f);
 #else
   (void) f;
 #endif
   return Qnil;
+}
+
+DEFUN ("glitnir--ns-pairs", Fglitnir__ns_pairs, Sglitnir__ns_pairs, 0, 1, 0,
+       doc: /* Return the window server's view of FRAME's root's child frames.
+The value is a list with one plist per visible child frame of the root,
+bottom to top:
+\(:frame F :child (X Y W H) :alpha A :shadow (X Y W H) :shadow-alpha A
+:below BOOL).  :child and :shadow are the window bounds in points, from
+the root's content top-left, as the window server lists them (no screen
+recording permission needed); :alpha is the window's alpha.  :shadow
+is nil when the child frame has no shadow window, and :below is non-nil
+when that window is directly below the child's in the window server's
+order.  FRAME defaults to the selected frame; the value is nil off NS.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+#ifdef HAVE_NS
+  return ns_glitnir_pairs (f);
+#else
+  (void) f;
+  return Qnil;
+#endif
 }
 
 DEFUN ("glitnir--probe", Fglitnir__probe, Sglitnir__probe, 3, 4, 0,
@@ -457,8 +513,8 @@ the region's edges out.  Return a plist: (:spread :contrast :runs) for
   if (rv[2] <= 0 || rv[3] <= 0 || rv[0] < 0 || rv[1] < 0
       || rv[0] + rv[2] > w || rv[1] + rv[3] > h)
     args_out_of_range (region, raw);
-#ifdef HAVE_NHWL
-  /* The shell links the crate: the probes are plain calls.  */
+#if defined HAVE_NHWL || defined HAVE_NS
+  /* The shell and the NS build link the crate: the probes are plain calls.  */
   GlitnirRect r = { rv[0], rv[1], rv[2], rv[3] };
   const uint8_t *px = (const uint8_t *) SDATA (bytes);
   int32_t rc;
@@ -567,6 +623,13 @@ syms_of_nidhogg_glitnir (void)
   defsubr (&Sglitnir__stacking);
   defsubr (&Sglitnir__chrome);
   defsubr (&Sglitnir__rechrome);
+  defsubr (&Sglitnir__ns_pairs);
+
+  DEFSYM (Qglitnir_no_capture, "glitnir-no-capture");
+  Fput (Qglitnir_no_capture, Qerror_conditions,
+	pure_list (Qglitnir_no_capture, Qerror));
+  Fput (Qglitnir_no_capture, Qerror_message,
+	build_pure_c_string ("Screen capture is not allowed"));
 
   DEFVAR_BOOL ("glitnir-enable", glitnir_enable,
 	       doc: /* Non-nil means Glitnir (the compositor) decorates graphical frames.

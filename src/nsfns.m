@@ -1608,6 +1608,10 @@ DEFUN ("x-create-frame", Fx_create_frame, Sx_create_frame,
      and similar functions.  */
   Vwindow_list = Qnil;
 
+#ifdef HAVE_GLITNIR
+  ns_glitnir_params_changed (f);
+#endif
+
   return unbind_to (count, frame);
 }
 

@@ -4271,6 +4271,11 @@ list, but are otherwise ignored.  */)
       gui_set_frame_parameters (f, alist);
       nhwl_child_params_changed (f);
     }
+#elif defined HAVE_GLITNIR && defined HAVE_NS
+    {
+      gui_set_frame_parameters (f, alist);
+      ns_glitnir_params_changed (f);
+    }
 #else
     gui_set_frame_parameters (f, alist);
 #endif

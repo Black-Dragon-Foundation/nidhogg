@@ -4051,6 +4051,12 @@ if test "${with_glitnir}" = yes; then
     AC_MSG_ERROR([cannot build $GLITNIR_SRCDIR with cargo (see $glitnir_target)])
   fi
   AC_MSG_RESULT([$glitnir_native])
+  dnl The NS build: nsglitnir.m (Objective C, the macOS side of Glitnir) joins the app, and takes the chrome slot numbers
+  dnl from the glue's header (header-only; no glue code is linked, the library is libglitnir.a).
+  if test "$HAVE_NS" = yes; then
+    NS_OBJC_OBJ="$NS_OBJC_OBJ nsglitnir.o"
+    GLITNIR_CRATE_INCLUDE="-I`cd "$srcdir/nidhogg/glue" && pwd`/include"
+  fi
   HAVE_GLITNIR=yes
   GLITNIR_OBJ="nidhogg-glitnir.o glitnir-images.o"
   GLITNIR_LIBS="glitnir-target/release/$glitnir_lib $glitnir_native"
