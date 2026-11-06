@@ -153,8 +153,20 @@ jobs:
       - run: bash nidhogg/test/check-image-test.sh
       - run: bash nidhogg/test/preflight-test.sh
       - run: bash nidhogg/test/timing-lane.sh --self-test
-      # Glitnir (the compositor): the crate's checks (fmt, clippy, tests, licences, vendor drift) and the advisories.
+      # the crates Glitnir's lock pins, as cargo downloaded them (the registry's index and .crate files only, never the
+      # cargo home: no unpacked sources, no tools, no credentials), keyed on the lock
+      - name: Glitnir's crates (same Cargo.lock)
+        id: gcrates
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/glitnir-cargo/registry/index
+            ${{ runner.temp }}/glitnir-cargo/registry/cache
+          key: glitnir-crates-${{ hashFiles('nidhogg/glitnir/Cargo.lock') }}
+      # Glitnir (the compositor): the crate's checks (fmt, clippy, tests, licences; the crates are fetched, locked) and the advisories.
       - name: Glitnir's checks
+        env:
+          CARGO_HOME: ${{ runner.temp }}/glitnir-cargo
         run: |
           sudo apt-get update && sudo apt-get install -y libpixman-1-dev
           d="cargo-deny-0.20.2-x86_64-unknown-linux-musl"
@@ -164,6 +176,14 @@ jobs:
           export PATH="$RUNNER_TEMP/bin:$PATH"
           bash nidhogg/glitnir/check.sh
           cd nidhogg/glitnir && cargo deny check advisories
+      - name: Save Glitnir's crates
+        if: ${{ !cancelled() && env.CACHE_SAVE == 'true' && steps.gcrates.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/glitnir-cargo/registry/index
+            ${{ runner.temp }}/glitnir-cargo/registry/cache
+          key: glitnir-crates-${{ hashFiles('nidhogg/glitnir/Cargo.lock') }}
 
   # A pull request lands by fast-forwarding its base branch to its head, so every job checks out the head (not GitHub's
   # merge commit) and this one fails when the head does not descend from the base branch's tip: no fast-forward could
@@ -273,7 +293,8 @@ jobs:
         with:
           path: ${{ runner.temp }}/config-cache
           key: configure-${{ matrix.distro }}-${{ steps.img.outputs.id }}-${{ hashFiles('configure.ac', 'm4/**', 'build-aux/**', 'autogen.sh', 'nidhogg/version', 'nidhogg/build.sh') }}
-      # Glitnir's cargo target directory (the glue, the shell, Glitnir and their vendored crates; build.sh,
+      # Glitnir's cargo target directory (the glue, the shell, Glitnir and their locked crates, with the registry's index
+      # and downloaded .crate files; build.sh,
       # NIDHOGG_BUILD_CARGO_TARGET): keyed on the Cargo.lock files and the image (rustc), restored from the newest entry
       # of the same lock, as the native crates' are; cargo rebuilds what the file times below make stale
       - name: Glitnir's cargo target (same Cargo.lock files, same image)
@@ -496,11 +517,29 @@ jobs:
       # Glitnir (the compositor): the crate's tests with the host's Rust (cargo, clippy, rustfmt; no pixman, the oracle is
       # Linux only; no cargo-deny, check.sh skips the licence check without it), so the aarch64 NEON baseline kernels are
       # tested somewhere.  Skipped with the build when the tarball for this tree is cached (it was built after these passed).
+      # the locked crates it fetches: the registry's index and .crate files only, keyed on the lock
+      - name: Glitnir's crates (same Cargo.lock)
+        id: gcrates
+        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/cargo-home/registry/index
+            ${{ runner.temp }}/cargo-home/registry/cache
+          key: glitnir-crates-macos-${{ hashFiles('nidhogg/glitnir/Cargo.lock') }}
       - name: Glitnir's checks
         if: ${{ steps.tb.outputs.cache-hit != 'true' }}
         env:
           CARGO_HOME: ${{ runner.temp }}/cargo-home
         run: bash nidhogg/glitnir/check.sh
+      - name: Save Glitnir's crates
+        if: ${{ !cancelled() && env.CACHE_SAVE == 'true' && steps.tb.outputs.cache-hit != 'true' && steps.gcrates.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/cargo-home/registry/index
+            ${{ runner.temp }}/cargo-home/registry/cache
+          key: glitnir-crates-macos-${{ hashFiles('nidhogg/glitnir/Cargo.lock') }}
       # compiled Lisp: also keyed by the installed gcc and libgccjit versions and the build path (.eln names embed it)
       # (the image's version too: the C compiler is Xcode's clang, which ccache checks by its -v output)
       - name: Toolchain versions
@@ -692,8 +731,8 @@ jobs:
           name: build-fedora-45
           ref: ${{ needs.images.outputs.build_fedora_45 }}
           variable: NIDHOGG_CRATES_IMAGE
-      # the crates' target directories and the recorder's downloaded crates (the registry's index and .crate files; the
-      # shell and the glue vendor theirs), never whole cargo homes: no unpacked sources, no tools, no credentials.  Cargo
+      # the crates' target directories and their downloaded crates (the registry's index and .crate files, locked by the
+      # Cargo.lock files this entry is keyed on), never whole cargo homes: no unpacked sources, no tools, no credentials.  Cargo
       # checks every restored artifact against its inputs' mtimes, which set-mtimes.sh below makes right, so an entry
       # from any earlier run is safe: restore-keys
       - name: Cargo (recorder, shell, glue)
@@ -703,6 +742,10 @@ jobs:
           path: |
             ${{ runner.temp }}/nh-recorder-cargo/registry/index
             ${{ runner.temp }}/nh-recorder-cargo/registry/cache
+            ${{ runner.temp }}/nhshell-cargo/home/registry/index
+            ${{ runner.temp }}/nhshell-cargo/home/registry/cache
+            ${{ runner.temp }}/nhglue-cargo/home/registry/index
+            ${{ runner.temp }}/nhglue-cargo/home/registry/cache
             ${{ runner.temp }}/nh-recorder-target
             ${{ runner.temp }}/nhshell-cargo/target
             ${{ runner.temp }}/nhglue-cargo/target
@@ -738,6 +781,10 @@ jobs:
           path: |
             ${{ runner.temp }}/nh-recorder-cargo/registry/index
             ${{ runner.temp }}/nh-recorder-cargo/registry/cache
+            ${{ runner.temp }}/nhshell-cargo/home/registry/index
+            ${{ runner.temp }}/nhshell-cargo/home/registry/cache
+            ${{ runner.temp }}/nhglue-cargo/home/registry/index
+            ${{ runner.temp }}/nhglue-cargo/home/registry/cache
             ${{ runner.temp }}/nh-recorder-target
             ${{ runner.temp }}/nhshell-cargo/target
             ${{ runner.temp }}/nhglue-cargo/target
@@ -1223,7 +1270,7 @@ jobs:
   gate:
     name: ${{ needs.changes.outputs.partial == 'true' && 'Nidhogg gate (partial)' || 'Nidhogg gate' }}
     if: always()
-    needs: [changes, tree, fast-forward, linux, compile-noglitnir, macos, pin, drgnx, native-crates, native-gui, workers-harness, workers-asan, workers-chaos, workers-pkg, workers-pkg-compare]
+    needs: [changes, tree, vendor, fast-forward, linux, compile-noglitnir, macos, pin, drgnx, native-crates, native-gui, workers-harness, workers-asan, workers-chaos, workers-pkg, workers-pkg-compare]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -1244,10 +1291,56 @@ jobs:
             'to_entries | all(.value.result == "success" or (.value.result == "skipped" and (.key as $k | $allow | contains(" " + $k + " "))))' \
             <<<"$NEEDS" >/dev/null
 
+  # The vendored crates are not in git: Cargo.lock is the pin, and a release publishes nidhogg-vendor-<version>.tar.zst
+  # (shell/vendor, glitnir/vendor and the .cargo/config.toml files that point cargo at them, to unpack in nidhogg/), for
+  # offline builds and for distro packagers.  Every run builds it from the locks (the build fails when a lock would
+  # change) and checks it against them (ci/vendor.sh), so a lock that cannot be vendored is caught before a release.
+  # It reads the public registry only: no token, no credentials, read-only permissions.
+  vendor:
+    name: Vendored crates (the tarball matches the locks)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: The crates the locks pin (registry index and .crate files only)
+        id: vcrates
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/vendor-cargo/registry/index
+            ${{ runner.temp }}/vendor-cargo/registry/cache
+          key: vendor-crates-${{ hashFiles('nidhogg/shell/Cargo.lock', 'nidhogg/glitnir/Cargo.lock') }}
+      - name: Build the tarball and check it against the locks
+        env:
+          CARGO_HOME: ${{ runner.temp }}/vendor-cargo
+        run: |
+          cargo install cargo-vendor-filterer --locked
+          export PATH="$CARGO_HOME/bin:$PATH"
+          V=$(head -n 1 nidhogg/version)
+          bash nidhogg/ci/vendor.sh make "dist/nidhogg-vendor-$V.tar.zst"
+          bash nidhogg/ci/vendor.sh check "dist/nidhogg-vendor-$V.tar.zst"
+      - name: Save the crates
+        if: ${{ !cancelled() && env.CACHE_SAVE == 'true' && steps.vcrates.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/vendor-cargo/registry/index
+            ${{ runner.temp }}/vendor-cargo/registry/cache
+          key: vendor-crates-${{ hashFiles('nidhogg/shell/Cargo.lock', 'nidhogg/glitnir/Cargo.lock') }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: vendor-crates
+          path: dist/nidhogg-vendor-*.tar.zst
+
   release:
     name: Release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [tree, linux, macos, drgnx, native-crates, native-gui]
+    needs: [tree, vendor, linux, macos, drgnx, native-crates, native-gui]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -1262,6 +1355,10 @@ jobs:
           pattern: tarball-*
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: vendor-crates
+          path: dist
       - name: The tag is v<nidhogg/version>
         run: test "$GITHUB_REF_NAME" = "v$(head -n 1 nidhogg/version)"
       - name: Create the release
@@ -1271,7 +1368,7 @@ jobs:
         run: |
           V=$(head -n 1 nidhogg/version)
           cd dist
-          sha256sum -- *.tar.xz > SHA256SUMS
+          sha256sum -- *.tar.xz *.tar.zst > SHA256SUMS
           commit=$(tar -xJOf "$(ls -- *fedora-45*.tar.xz)" "nidhogg-$V/share/nidhogg/BUILDINFO" | sed -n 's/^commit=//p')
           printf 'Nidhogg %s, built from commit %s.\n\nThe native shell'"'"'s crate checks and GUI rows passed on this build.  drgnx tiers passed on it against drgnx commit %s: the unit suite and gate mode, the GUI tier (Linux), the unit suite (macOS).\n' \
             "$V" "$commit" "$DRGNX_COMMIT" > ../notes.md
