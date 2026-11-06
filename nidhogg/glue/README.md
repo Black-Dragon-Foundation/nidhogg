@@ -13,8 +13,9 @@ the hook tables, `DEFUN`s) and all Cairo drawing, and calls in here through `inc
   struct, and C passes it no function pointers.
 - **Threads.** The glue runs on the Lisp thread that holds Emacs's global lock, never on the shell's reader or the
   presenter thread.
-- **Dependencies:** `nhshell`, `glitnir` and `libc`, built offline and locked from the shell's `vendor/`
-  (`.cargo/config.toml`). `Cargo.lock` is the shell's plus the `nhglue` package; after the shell revendors, copy its
+- **Dependencies:** `nhshell`, `glitnir` and `libc`, built locked, from crates.io or offline
+  from the shell's `vendor/` when the release's vendor tarball is unpacked (`.cargo/config.toml`). `Cargo.lock` is the
+  shell's plus the `nhglue` package; after the shell relocks, copy its
   lock here and add the package back (`check.sh` fails until they agree).
 - **Features:** `wayland` (default) turns on the shell's Wayland backend; `test-hooks` adds entry points that exist
   only for tests. Configure passes `--features test-hooks` (through `GLITNIR_CARGO_FLAGS`) and turns on Rust's debug

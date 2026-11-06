@@ -6,15 +6,17 @@ no C ABI of its own. Under `--with-nidhogg-wayland` the Makefile links the glue'
 `glitnir_*` symbol too. The Wayland backend (`src/wayland/` and its dependencies) sits behind the default feature
 `wayland`. New shell calls go into `trait ShellBackend`; C reaches them through the glue's `nhg_*` entry points.
 
-- Dependencies are vendored in `vendor/` (`cargo vendor-filterer`, Linux and macOS, x86_64 and aarch64) and the build
-  runs offline and locked (`.cargo/config.toml`). Third-party crates are limited to wayland-client, wayland-backend,
+- Dependencies are locked (`Cargo.lock`, with each crate's SHA-256) and the build runs `--locked`: cargo fetches them
+  from crates.io, or builds offline from `vendor/` when the release's `nidhogg-vendor-<version>.tar.zst` is unpacked
+  in `nidhogg/` (it holds `vendor/`, made by `cargo vendor-filterer` for Linux and macOS, x86_64 and aarch64, and the
+  `.cargo/config.toml` that points cargo at it; `nidhogg/ci/vendor.sh`). Nothing is vendored in git. Third-party crates are limited to wayland-client, wayland-backend,
   wayland-protocols, xkbcommon, rustix and their dependencies, plus the image decoders Glitnir depends on (png, gif,
-  image-webp and theirs, the same versions as `../glitnir/vendor/`).
+  image-webp and theirs, the same versions as `../glitnir/Cargo.lock`).
 - `check.sh [--container DISTRO] [--test NAME]` runs fmt, clippy `-D warnings`, tests and cargo-deny; `--full` adds
-  the vendor-drift check and the release build. The archive's exports are checked by `nidhogg/glue/check.sh --full`.
-  The glue builds from this `vendor/`; after a revendor, its `Cargo.lock` takes this one's packages (its check says
+  the vendor-drift check (when a `vendor/` is unpacked) and the release build. The archive's exports are checked by `nidhogg/glue/check.sh --full`.
+  The glue builds from the same crates; after a relock, its `Cargo.lock` takes this one's packages (its check says
   so).
-  `check.sh --container DISTRO --revendor` regenerates `Cargo.lock` and `vendor/` (needs the network).
+  `check.sh --container DISTRO --relock` regenerates `Cargo.lock` (needs the network).
 
 ## The shell API
 
