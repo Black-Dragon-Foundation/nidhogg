@@ -1,0 +1,84 @@
+# One-off: the Glitnir P5 macOS spike's probes (.github/glitnir-p5/: corner-radius, the two shadow options, alpha and
+# transitions, backdrop blur, window cards, window capture without Screen Recording).  Push-triggered on its own
+# branch only; it builds small AppKit test programs on the runner, not Nidhogg, and uploads screenshots and
+# results.tsv.  The repository's CI has one macOS runner (xcode-27, arm64); there is no Intel lane to add.
+name: Glitnir P5 spike (macOS)
+
+on:
+  push:
+    branches: [spike/glitnir-p5]
+
+permissions:
+  contents: read
+
+jobs:
+  probes:
+    name: P5 probes (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [xcode-27]
+    env:
+      OUT: ${{ github.workspace }}/out
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The runner (OS, display, TCC, SIP)
+        run: |
+          mkdir -p "$OUT/logs"
+          {
+            sw_vers; uname -m; sysctl -n machdep.cpu.brand_string hw.ncpu hw.memsize
+            xcodebuild -version; clang --version | head -1
+            system_profiler SPDisplaysDataType
+            csrutil status || true
+            echo "== system TCC (Screen Recording, Accessibility, PostEvent grants)"
+            sudo sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" \
+              "select service, client, auth_value from access where service in ('kTCCServiceScreenCapture', 'kTCCServiceAccessibility', 'kTCCServicePostEvent')" || true
+            echo "== user TCC"
+            sqlite3 "$HOME/Library/Application Support/com.apple.TCC/TCC.db" \
+              "select service, client, auth_value from access" || true
+            echo "== reduce motion"; defaults read com.apple.universalaccess reduceMotion || true
+            echo "== who draws the desktop"; launchctl managername || true; pgrep -lx WindowServer || true
+          } 2>&1 | tee "$OUT/logs/runner.txt"
+      - name: Build the probes
+        run: bash .github/glitnir-p5/build.sh
+      # Q6 first: whether and how this runner can take screenshots at all (the others use what works)
+      - name: Q6 window capture without Screen Recording
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        run: |
+          mkdir -p "$OUT/shots"
+          bash .github/glitnir-p5/run.sh p6-capture 240
+          screencapture -x "$OUT/shots/p6-whole-screen-cli.png" || echo "screencapture of the whole screen failed: $?"
+      - name: Q1 corner-radius (1x, 2x; text sharpness)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 6
+        run: bash .github/glitnir-p5/run.sh p1-corners 300
+      - name: Q2 shadow, system vs shadow window (looks, sync, cost)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 12
+        run: bash .github/glitnir-p5/run.sh p2-shadow 660
+      - name: Q3 alpha and transitions
+        if: ${{ !cancelled() }}
+        timeout-minutes: 8
+        run: bash .github/glitnir-p5/run.sh p3-motion 420
+      - name: Q4 backdrop-blur
+        if: ${{ !cancelled() }}
+        timeout-minutes: 8
+        run: bash .github/glitnir-p5/run.sh p4-blur 420
+      - name: Q5 window cards
+        if: ${{ !cancelled() }}
+        timeout-minutes: 6
+        run: bash .github/glitnir-p5/run.sh p5-cards 300
+      - name: Results
+        if: ${{ always() }}
+        run: bash .github/glitnir-p5/summary.sh >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: glitnir-p5-${{ matrix.runner }}
+          path: out/
+          if-no-files-found: warn
