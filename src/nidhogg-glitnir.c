@@ -627,9 +627,9 @@ syms_of_nidhogg_glitnir (void)
 
   DEFSYM (Qglitnir_no_capture, "glitnir-no-capture");
   Fput (Qglitnir_no_capture, Qerror_conditions,
-	pure_list (Qglitnir_no_capture, Qerror));
+	list2 (Qglitnir_no_capture, Qerror));
   Fput (Qglitnir_no_capture, Qerror_message,
-	build_pure_c_string ("Screen capture is not allowed"));
+	build_string ("Screen capture is not allowed"));
 
   DEFVAR_BOOL ("glitnir-enable", glitnir_enable,
 	       doc: /* Non-nil means Glitnir (the compositor) decorates graphical frames.
