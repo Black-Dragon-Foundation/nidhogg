@@ -464,6 +464,158 @@ ns_glitnir_cards_update (struct frame *f)
 }
 
 
+/***********************************************************************
+		  Translucent background and backdrop blur
+ ***********************************************************************/
+
+/* Stock NS draws no `alpha-background'.  A chromed child frame whose
+   `alpha-background' is translucent gets it here: its window is clear, as
+   for corners, and Emacs's background fills (nsterm.m, the fills
+   nhwldraw.c draws with the alpha) take their colour at that alpha, so
+   what lies behind shows through.  The text and every other foreground
+   stay opaque: a text pixel the glyph covers is the stock pixel.  With
+   `backdrop-blur' too (slot BACKDROP, which glitnir.el sets only with a
+   translucent background), an NSVisualEffectView in behindWindow mode
+   below the EmacsView blurs what lies behind; the blur is the system's
+   Popover material, so the slot's radius only turns it on.  When the
+   platform asks for less transparency (Reduce transparency), such a
+   frame is opaque: no effect view and the stock fills.  */
+
+/* The colour of a background fill of F: COLOR, or COLOR at F's
+   `alpha-background' while F's background is see-through.  RESPECT false
+   (an internal border without `borders-respect-alpha-background') keeps
+   COLOR.  */
+unsigned long
+ns_glitnir_bg (struct frame *f, unsigned long color, bool respect)
+{
+  if (!respect || !ns_glitnir_see_through_p (f))
+    return color;
+  double alpha = ((color >> 24) & 0xff) * f->alpha_background;
+  return (color & 0xffffff) | ((unsigned long) lround (alpha) << 24);
+}
+
+/* True while F's background fills are see-through.  */
+bool
+ns_glitnir_see_through_p (struct frame *f)
+{
+  return (glitnir_enable && f->output_data.ns
+	  && f->output_data.ns->glitnir_see_through);
+}
+
+#ifdef NS_IMPL_COCOA
+
+/* True when the platform asks for less transparency, or
+   `glitnir--ns-reduce-transparency' (for tests) is `on'; `off' is
+   false.  */
+static bool
+ns_glitnir_reduce_transparency_p (void)
+{
+  Lisp_Object v = Vglitnir__ns_reduce_transparency;
+
+  if (EQ (v, intern_c_string ("on")))
+    return true;
+  if (EQ (v, intern_c_string ("off")))
+    return false;
+  return [[NSWorkspace sharedWorkspace]
+	   accessibilityDisplayShouldReduceTransparency];
+}
+
+/* The blur's effect view in CONTENT (a frame's window's content view),
+   or nil.  It is the content view's, so it goes with the window.  */
+static NSVisualEffectView *
+ns_glitnir_effect_view (NSView *content)
+{
+  for (NSView *v in [content subviews])
+    if ([v isKindOfClass: [NSVisualEffectView class]]
+	&& [[v identifier] isEqualToString: @"glitnir-blur"])
+      return (NSVisualEffectView *) v;
+  return nil;
+}
+
+/* The effect view's mask: a rounded square of radius R (points) that
+   stretches between its corners, so a resize needs no new image.  Its
+   pixels are drawn at twice its size, for a 2x screen.  */
+static NSImage *
+ns_glitnir_blur_mask (CGFloat r)
+{
+  CGFloat side = 2 * r + 1;
+  size_t px = (size_t) ceil (2 * side);
+  CGColorSpaceRef cs = CGColorSpaceCreateWithName (kCGColorSpaceSRGB);
+  CGContextRef ctx = CGBitmapContextCreate (NULL, px, px, 8, 0, cs,
+					    kCGImageAlphaPremultipliedLast);
+  NSImage *m = nil;
+
+  CGColorSpaceRelease (cs);
+  if (!ctx)
+    return nil;
+  CGContextScaleCTM (ctx, px / side, px / side);
+  CGPathRef p = CGPathCreateWithRoundedRect (CGRectMake (0, 0, side, side),
+					     r, r, NULL);
+  CGContextAddPath (ctx, p);
+  CGContextSetRGBFillColor (ctx, 0, 0, 0, 1);
+  CGContextFillPath (ctx);
+  CGPathRelease (p);
+  CGImageRef img = CGBitmapContextCreateImage (ctx);
+  CGContextRelease (ctx);
+  if (img)
+    {
+      m = [[[NSImage alloc] initWithCGImage: img
+				       size: NSMakeSize (side, side)]
+	    autorelease];
+      CGImageRelease (img);
+      [m setCapInsets: NSEdgeInsetsMake (r, r, r, r)];
+      [m setResizingMode: NSImageResizingModeStretch];
+    }
+  return m;
+}
+
+/* Apply F's translucent background and blur to its window W: ON when
+   F's chrome is on, R its corner radius (points).  Return whether F's
+   background is see-through; the window must then be clear.  F is drawn
+   again when that changed.  */
+static bool
+ns_glitnir_backdrop (struct frame *f, NSWindow *w, bool on, CGFloat r)
+{
+  struct ns_output *o = f->output_data.ns;
+  NSView *content = [w contentView];
+  NSVisualEffectView *v = ns_glitnir_effect_view (content);
+  bool see = on && f->alpha_background < 1;
+  bool blur = see && o->glitnir_chrome[NHG_CHROME_BACKDROP] > 0;
+
+  if (blur && ns_glitnir_reduce_transparency_p ())
+    see = blur = false;
+  if (!blur)
+    [v removeFromSuperview];
+  else
+    {
+      NSRect bounds = [content bounds];
+      CGFloat k = fmax (0, fmin (r, fmin (NSWidth (bounds),
+					  NSHeight (bounds)) / 2));
+      if (!v)
+	{
+	  v = [[[NSVisualEffectView alloc] initWithFrame: bounds]
+		autorelease];
+	  [v setIdentifier: @"glitnir-blur"];
+	  [v setBlendingMode: NSVisualEffectBlendingModeBehindWindow];
+	  [v setMaterial: NSVisualEffectMaterialPopover];
+	  [v setState: NSVisualEffectStateActive];
+	  [v setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable];
+	  [content addSubview: v positioned: NSWindowBelow relativeTo: nil];
+	}
+      [v setFrame: bounds];
+      [v setMaskImage: k > 0 ? ns_glitnir_blur_mask (k) : nil];
+    }
+  if (see != o->glitnir_see_through)
+    {
+      o->glitnir_see_through = see;
+      SET_FRAME_GARBAGED (f);
+    }
+  return see;
+}
+
+#endif /* NS_IMPL_COCOA */
+
+
 #ifdef NS_IMPL_COCOA
 
 /***********************************************************************
@@ -925,7 +1077,9 @@ ns_glitnir_apply (struct frame *f)
     {
       [CATransaction begin];
       [CATransaction setDisableActions: YES];
-      if (r > 0)
+      /* A see-through background needs the clear window too.  */
+      bool see = ns_glitnir_backdrop (f, w, on, r);
+      if (r > 0 || see)
 	{
 	  ns_glitnir_round (w, r);
 	  o->glitnir_rounded = w;

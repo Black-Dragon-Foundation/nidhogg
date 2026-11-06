@@ -982,6 +982,11 @@ struct ns_output
   /* Lord knows why Emacs needs to know about our Window ids..  */
   Window window_desc, parent_desc;
   char explicit_parent;
+#ifdef HAVE_GLITNIR
+  /* True while Glitnir draws this chromed child frame's background fills
+     at its `alpha-background' (nsglitnir.m, ns_glitnir_bg).  */
+  bool glitnir_see_through;
+#endif
 
   struct font *font;
   int baseline_offset;
@@ -1175,6 +1180,12 @@ extern Lisp_Object ns_get_local_selection (Lisp_Object selection_name,
                                            Lisp_Object target_type);
 extern void nxatoms_of_nsselect (void);
 extern void ns_set_doc_edited (void);
+#ifdef HAVE_GLITNIR
+/* Glitnir's translucent background on NS, in nsglitnir.m.  */
+extern unsigned long ns_glitnir_bg (struct frame *f, unsigned long color,
+                                    bool respect);
+extern bool ns_glitnir_see_through_p (struct frame *f);
+#endif
 
 extern bool
 ns_defined_color (struct frame *f,

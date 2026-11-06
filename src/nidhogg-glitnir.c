@@ -670,6 +670,17 @@ Setting it to nil turns its decorations off.  */);
   DEFSYM (Qglitnir__card, "glitnir--card");
   DEFSYM (Qglitnir__cards, "glitnir--cards");
 
+#ifdef HAVE_NS
+  DEFVAR_LISP ("glitnir--ns-reduce-transparency",
+	       Vglitnir__ns_reduce_transparency,
+	       doc: /* Internal: the platform's Reduce transparency setting for Glitnir.
+nil asks the system; `on' or `off' says it for tests.  When it is on, a
+chromed child frame with `backdrop-blur' is opaque: no blur, and its
+background ignores `alpha-background'.  `glitnir-refresh' applies a
+change.  */);
+  Vglitnir__ns_reduce_transparency = Qnil;
+#endif
+
 #ifdef HAVE_NIDHOGG_WORKERS
   syms_of_glitnir_images ();
 #endif
