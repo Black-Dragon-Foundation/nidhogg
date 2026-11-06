@@ -678,6 +678,7 @@ int32_t nhg_tip_hide (NhgDisplay *d, uint64_t window);
 
 #define NHG_CHILD_VISIBLE    1   /* nhg_child_set flags: the child is shown (its surface is mapped) */
 #define NHG_CHILD_NO_FOCUS   2   /* the frame is no-accept-focus */
+#define NHG_CHILD_REDRAW     4   /* the frame waits to be drawn again: a move goes with its next picture */
 
 /* The chrome slot vector glitnir--chrome-vector gives a child frame (logical pixels; lisp/glitnir.el's
    glitnir--chrome-slots has the same numbers): ON 1 for chrome, 0 for none; the corner RADIUS; the shadow's BLUR, offset
@@ -713,8 +714,8 @@ int32_t nhg_tip_hide (NhgDisplay *d, uint64_t window);
 
 /* Push: WINDOW is a child of PARENT's window, its native area at X, Y (device pixels of the parent's native area:
    the frame's left and top), with FLAGS NHG_CHILD_*.  The first push after the window is made records where the
-   window was made; a later one sends the position if it changed, and maps or unmaps the surface as
-   NHG_CHILD_VISIBLE says.  1 when the surface was mapped again (C damages the frame whole), else 0.  NHG_E_STATE for a
+   window was made; a later one sends the position if it changed (with NHG_CHILD_REDRAW, at the publish step, with the
+   new picture), and maps or unmaps the surface as NHG_CHILD_VISIBLE says.  1 when the surface was mapped again (C damages the frame whole), else 0.  NHG_E_STATE for a
    window that is not a registered child, or an unknown parent.  */
 int32_t nhg_child_set (NhgDisplay *d, uint64_t window, uint64_t parent, int32_t x, int32_t y, uint32_t flags);
 
