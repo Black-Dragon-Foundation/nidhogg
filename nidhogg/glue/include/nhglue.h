@@ -816,6 +816,17 @@ int32_t nhg_layers_sync (NhgDisplay *d, uint64_t window, uint64_t frame, const N
    windows at each publish).  */
 int32_t nhg_layers_count (NhgDisplay *d, uint64_t frame);
 
+/* Layout legs.  Emacs window W_SEQ of FRAME (WINDOW its shell window, a top-level's) has the layout leg vector V, N
+   floats as glitnir--leg-vector gave them (lisp/glitnir.el's glitnir--leg-slots; N 0 for none).  A new capture number
+   asks the presenter for a picture of the window's text area before the packets published after this call, and makes
+   the window part of its frame again if it is its own output; a new motion asks for the leg from that picture to the
+   next one; none, or a text area that moved, ends the leg.  The window's next full-window scroll ends its leg.  The
+   number of the newest capture the presenter took of the window goes to *CAPTURED (0: none).  NHG_E_ARG for a vector
+   out of range, NHG_E_STATE for a frame that is not a top-level's, a shell error (NHG_E_UNSUPPORTED) when the shell
+   has no layout legs.  Neither reads nor writes pixels.  */
+int32_t nhg_layout_leg (NhgDisplay *d, uint64_t window, uint64_t frame, uint64_t w_seq, const float *v, size_t n,
+                        uint64_t *captured);
+
 /* ---- The visible bell, idle inhibition, export handles and activation tokens ------------------------------------ */
 
 /* The frame facts the visible bell's rows come from (pgtk_flash's): the native area, the line height, the internal

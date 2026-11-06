@@ -29,6 +29,7 @@ use crate::wayland::publish::{HIDE_HOLD_NS, Mailbox, Stage, now_ns};
 use crate::wayland::reader::ReaderState;
 use rustix::event::{PollFd, PollFlags, poll};
 use rustix::fd::{FromRawFd, OwnedFd};
+use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -88,6 +89,9 @@ pub struct Counters {
     pub presented: AtomicU64,
     /// `NhShellPresenterStats::shown`, stored with `presented`.
     pub shown: AtomicU64,
+    /// What the stage did with each window's layout legs, by root and key (`ShellBackend::layout_captured`): the
+    /// stage stores it, the host's thread reads it.
+    pub layouts: Mutex<HashMap<(u64, u64), LayoutAck>>,
 }
 
 impl Counters {
@@ -97,6 +101,24 @@ impl Counters {
 
     pub fn max(c: &AtomicU64, v: u64) {
         c.fetch_max(v, Ordering::Relaxed);
+    }
+
+    /// Change what window `key` of root `root` has of its layout legs.
+    pub fn layout(&self, root: u64, key: u64, f: impl FnOnce(&mut LayoutAck)) {
+        let mut l = self.layouts.lock().unwrap_or_else(|e| e.into_inner());
+        f(l.entry((root, key)).or_default());
+    }
+
+    /// What window `key` of root `root` has of its layout legs.
+    pub fn layout_ack(&self, root: u64, key: u64) -> LayoutAck {
+        let l = self.layouts.lock().unwrap_or_else(|e| e.into_inner());
+        l.get(&(root, key)).copied().unwrap_or_default()
+    }
+
+    /// Root `root` is gone: so are its windows' layout legs.
+    pub fn layout_forget(&self, root: u64) {
+        let mut l = self.layouts.lock().unwrap_or_else(|e| e.into_inner());
+        l.retain(|(r, _), _| *r != root);
     }
 
     /// The counters, with `published` the newest request's number (`Mailbox::seq`).

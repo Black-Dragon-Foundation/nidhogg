@@ -6,6 +6,7 @@
 use crate::caps::NhShellCaps;
 use crate::event::Record;
 use glitnir::geom::Rect;
+use glitnir::layout::LayoutLeg;
 use glitnir::motion::MotionSpec;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -360,6 +361,32 @@ pub trait ShellBackend {
     fn set_backdrop(&mut self, _window: WindowId, _blur_px: f32) -> ShellResult {
         Err(ShellError::Unsupported)
     }
+    /// Capture `serial` of the window the host calls `key` in root `root`: its rectangle `rect` (root device px) of
+    /// the picture as the presenter has it before the packets published after this call, the old layout a layout leg
+    /// moves from (`layout_leg`).  Without a picture yet (none published, or dropped idle), it is taken after the
+    /// tree's next packet.  A new capture of `key` replaces the one before; `layout_captured` says when it is taken.
+    /// `State` for a window that is not a top-level.
+    fn layout_capture(
+        &mut self,
+        _root: WindowId,
+        _key: u64,
+        _serial: u64,
+        _rect: Rect,
+    ) -> ShellResult {
+        Err(ShellError::Unsupported)
+    }
+    /// Window `key`'s layout leg in root `root`'s picture, from its capture `leg.capture` to the picture of the next
+    /// packet: it starts at the first tree commit after that packet, and every frame of the tree draws it until it ends
+    /// at the new picture.  A leg whose capture is not the newest taken, or whose damage per frame is over the budget,
+    /// is skipped (the new picture shows plain).  A leg while one runs starts each move from where the running one
+    /// shows it.  `None`: none, and a leg that runs ends at once, its new picture shown plain.
+    fn layout_leg(&mut self, _root: WindowId, _key: u64, _leg: Option<LayoutLeg>) -> ShellResult {
+        Err(ShellError::Unsupported)
+    }
+    /// What the presenter did with window `key`'s captures and legs in root `root`.
+    fn layout_captured(&self, _root: WindowId, _key: u64) -> ShellResult<LayoutAck> {
+        Err(ShellError::Unsupported)
+    }
     /// Whether popup `window` holds a grab (asked with `NHSHELL_WIN_GRAB`, granted, not dismissed); false for other
     /// windows.
     fn window_grabbed(&self, window: WindowId) -> ShellResult<bool>;
@@ -539,6 +566,16 @@ pub struct PresenterTiming {
     pub frames: u64,
     pub late: u64,
     pub ready_to_commit_max_ns: u64,
+}
+
+/// What the presenter did with a window's layout legs (`ShellBackend::layout_captured`): the number of the newest
+/// capture it took (0: none), how many legs it skipped (no capture to move from, over the budget), and whether a leg
+/// runs or waits for its first frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LayoutAck {
+    pub captured: u64,
+    pub skipped: u64,
+    pub running: bool,
 }
 
 /// `SurfaceFrame` flags: the surface may show a buffer (without it, its damage waits); the presenter multiplies the

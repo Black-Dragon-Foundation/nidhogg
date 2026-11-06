@@ -1441,6 +1441,30 @@ nhg_export! {
     }
 }
 
+nhg_export! {
+    /// Emacs window `w_seq` of the frame (shell window `window`, a top-level; key `frame`) has the layout leg vector
+    /// `v` (`n` floats, `glitnir--leg-vector`; 0 for none): the glue asks the shell for its capture and its leg
+    /// (`legs.rs`), and writes the number of the newest capture the presenter took of the window to `*captured`.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `v` holds `n` readable floats, or is null when `n` is 0; `captured` is null or
+    /// writable.
+    fn nhg_layout_leg(d: *mut NhgDisplay, window: u64, frame: u64, w_seq: u64, v: *const f32, n: usize, captured: *mut u64) -> i32 |state| {
+        let v = match (n, v.is_null()) {
+            (0, _) => &[][..],
+            (_, true) => return Err(GlueError::Arg),
+            // SAFETY: non-null, with `n` readable floats (the caller's promise).
+            _ => unsafe { std::slice::from_raw_parts(v, n) },
+        };
+        let took = crate::legs::apply(state, window, frame, w_seq, v)?;
+        if !captured.is_null() {
+            // SAFETY: non-null and writable (the caller's promise).
+            unsafe { *captured = took };
+        }
+        Ok(0)
+    }
+}
+
 // ---- The visible bell, idle inhibition, export handles and activation tokens (`bell.rs`) ---------------------------
 
 nhg_export! {
