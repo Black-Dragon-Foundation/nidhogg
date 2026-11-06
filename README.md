@@ -134,7 +134,8 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   are the pin, each crate with its SHA-256, and every build runs `cargo --locked`, so nothing unlocked builds. The
   switch between fetching and building offline is a directory: cargo reads `.cargo/config.toml` from the crate's
   directory, and the tree has none, so it fetches the locked crates from crates.io into the build's cargo home (the
-  network is needed once; configure stops with a message naming the missing `vendor/` when it cannot). To build offline
+  network is needed once, over HTTPS, with the CA certificates, which the apt lists name; configure stops with a message naming
+  the missing `vendor/` when it cannot). To build offline
   unpack the release's `nidhogg-vendor-<version>.tar.zst` in `nidhogg/` (`tar --zstd -xf nidhogg-vendor-VERSION.tar.zst
   -C nidhogg`): it holds `shell/vendor/`, `glitnir/vendor/` and the `.cargo/config.toml` of the shell, the glue and
   Glitnir, which point cargo at them. A distro packager can make the same with `cargo vendor` in each crate (the glue
