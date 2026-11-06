@@ -163,7 +163,10 @@ stacking, input region and mapping go out with its tree's commit.
   layer takes them with the chrome, so the rounded corners keep the border as a ring, as Glitnir's pgtk path did.
 - **Margin:** the shadow needs room around the native area (spread, three sigma of blur, the offset). It is the frame's
   border, laid out by `nhg_csd_layout` like a title bar, so `nhg_frame_offsets`, the backing, the damage and the
-  pointer use it. `nhg_layer_ensure` puts a child's Glitnir layer inside it and hands the layer the chrome.
+  pointer use it. `nhg_layer_ensure` puts a child's Glitnir layer inside it and hands the layer the chrome. The
+  frame's own pixels stop at the native area: C clears the margin each time the backing is made or resized
+  (`nhwl_backing_resize`), so with Glitnir off (`glitnir-snapshot` with `glitnir-enable` nil) the margin shows what
+  lies beneath, as around a child without chrome, not the frame's background.
 - **Size:** a child frame's size is its own (`nhwl_set_window_size`): Lisp reads the new size as soon as
   `set-frame-size` returns, shown or hidden, as under GTK, so a popup sized and then placed by its size (posframe) is
   placed by the new one. A visible top-level's new size waits for the next redisplay; maximized or fullscreen, it
