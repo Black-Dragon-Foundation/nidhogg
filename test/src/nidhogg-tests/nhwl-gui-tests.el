@@ -886,22 +886,28 @@ user displays takes this path, and a build without the image libraries would not
 
 (ert-deftest nhwl-gui/child-frame-size-is-read-back-at-once ()
   "A child frame's new size is its size when `set-frame-size' returns, shown or hidden, as under GTK: a popup sized
-and then placed by its size (posframe) is placed by the new one."
+and then placed by its size (posframe) is placed by the new one.  The child has a tool bar, whose items wrap at the
+frame's width: its height at the new width is part of the size returned, so the redisplay after it changes neither the
+text area nor the native one, whatever tool bar the frames made before it had (pattern D: the frame's own sizes, read
+back with no wait)."
   (skip-unless (nhwl-gui--recorder-p))
   (let ((c nil) (frame-resize-pixelwise t))
     (cl-flet ((size-at-once (w h)
-                ;; `set-frame-size' sets the text area: the native size is read right away and again after a redisplay
+                ;; `set-frame-size' sets the text area: the sizes are read right away and again after a redisplay
                 (let ((before (list (frame-native-width c) (frame-native-height c))) now)
                   (set-frame-size c w h t)
                   (setq now (list (frame-native-width c) (frame-native-height c)))
                   (should-not (equal now before))
                   (should (equal (list (frame-text-width c) (frame-text-height c)) (list w h)))
                   (redisplay t)
-                  (should (equal (list (frame-native-width c) (frame-native-height c)) now)))))
+                  (ert-info ((format "%d x %d, tool bar %d px" w h (tool-bar-height c t)))
+                    (should (equal (list (frame-text-width c) (frame-text-height c)) (list w h)))
+                    (should (equal (list (frame-native-width c) (frame-native-height c)) now))))))
       (unwind-protect
           (progn
-            (setq c (nhwl-gui--child))
+            (setq c (nhwl-gui--child '(tool-bar-lines . 1)))
             (redisplay t)
+            (should (> (tool-bar-height c t) 0))
             (dolist (size '((300 120) (180 100) (420 2000) (220 140)))
               (size-at-once (car size) (cadr size)))
             (make-frame-invisible c)
