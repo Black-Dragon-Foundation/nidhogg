@@ -30,6 +30,11 @@ on:
       lanes:
         description: "Narrowed: the GUI lanes to run, space-separated (empty: every lane)"
         default: ""
+      # The macOS job's fast rerun of the NS GUI rows (README.md, "Narrowed runs"): no build, the tarball of an earlier
+      # run (its tarball-macos artifact), and this checkout's test files on it.  A change to the app is not in it.
+      ns_app_run:
+        description: "macOS: the run id whose tarball-macos the NS GUI rows run on, instead of a build (empty: build)"
+        default: ""
 
 # packages: the prebuilt CI images (the images job)
 permissions:
@@ -98,7 +103,7 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
           GATE: Nidhogg gate
           REQUEST: ${{ inputs.jobs || (inputs.scope == 'macos' && 'macos drgnx' || '') }}
-          SELECTOR: ${{ inputs.checks }}${{ inputs.lanes && ' lanes:' || '' }}${{ inputs.lanes }}
+          SELECTOR: ${{ inputs.checks }}${{ inputs.lanes && ' lanes:' || '' }}${{ inputs.lanes }}${{ inputs.ns_app_run && ' macOS app of run ' || '' }}${{ inputs.ns_app_run }}
         run: bash nidhogg/ci/changes.sh nidhogg/ci/paths.txt | tee -a "$GITHUB_OUTPUT"
       # drgnx's tiers on the tarballs this run builds, and the GUI lanes (every lane of native-gui.sh with a floor, or
       # the narrowed run's)
@@ -457,6 +462,12 @@ jobs:
     if: ${{ !cancelled() && needs.changes.outputs.macos != 'false' }}
     runs-on: xcode-27
     timeout-minutes: 180
+    # actions: read for an earlier run's artifact (ns_app_run)
+    permissions:
+      contents: read
+      actions: read
+    env:
+      BUILD_APP: ${{ inputs.ns_app_run == '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -468,21 +479,32 @@ jobs:
         run: |
           echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
           echo "abi=$(bash nidhogg/ci/lisp-key.sh --abi)" >> "$GITHUB_OUTPUT"
+      # ns_app_run: that run's tarball, and no build (BUILD_APP false skips every step of the build)
+      - name: The tarball of run ns_app_run
+        if: ${{ env.BUILD_APP != 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          # a pattern, not a name: the workflow names the tarball artifacts only where they are uploaded
+          pattern: tarball-macos
+          merge-multiple: true
+          path: dist
+          run-id: ${{ inputs.ns_app_run }}
+          github-token: ${{ github.token }}
       - name: Built tarball (same tree, same build.sh)
         id: tb
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        if: ${{ !startsWith(github.ref, 'refs/tags/') && env.BUILD_APP == 'true' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: dist
           key: tarball-macos-${{ runner.arch }}-${{ steps.tree.outputs.tree }}-${{ hashFiles('nidhogg/build.sh') }}
       - name: The cached tarball is intact
-        if: ${{ steps.tb.outputs.cache-hit == 'true' }}
-        run: shasum -a 256 -c dist/*.sha256
+        if: ${{ steps.tb.outputs.cache-hit == 'true' || env.BUILD_APP != 'true' }}
+        run: cd dist && shasum -a 256 -c -- *.sha256
       # Homebrew's packages, downloaded each run (a 775 MB cache of the bottles saved under a minute); Rust from the
       # image's rustup instead of Homebrew's when the image has it (Homebrew's otherwise)
       - name: Build dependencies (Homebrew; Rust by rustup)
         id: brew
-        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        if: ${{ steps.tb.outputs.cache-hit != 'true' && env.BUILD_APP == 'true' }}
         run: |
           if command -v rustup >/dev/null; then
             sed 's/#.*//' nidhogg/deps/macos.build | grep -vx 'rust' | xargs brew install
@@ -496,7 +518,7 @@ jobs:
       # Linux only; no cargo-deny, check.sh skips the licence check without it), so the aarch64 NEON baseline kernels are
       # tested somewhere.  Skipped with the build when the tarball for this tree is cached (it was built after these passed).
       - name: Glitnir's checks
-        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        if: ${{ steps.tb.outputs.cache-hit != 'true' && env.BUILD_APP == 'true' }}
         env:
           CARGO_HOME: ${{ runner.temp }}/cargo-home
         run: bash nidhogg/glitnir/check.sh
@@ -504,7 +526,7 @@ jobs:
       # (the image's version too: the C compiler is Xcode's clang, which ccache checks by its -v output)
       - name: Toolchain versions
         id: tc
-        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        if: ${{ steps.tb.outputs.cache-hit != 'true' && env.BUILD_APP == 'true' }}
         run: |
           echo "v=$(brew list --versions gcc libgccjit | tr ' \n' '--')" >> "$GITHUB_OUTPUT"
           echo "image=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
@@ -514,14 +536,14 @@ jobs:
       # keyed as the Linux jobs' (--abi; the guard after make), never restored for nidhogg-31 or a tag
       - name: Compiled Lisp (same Lisp side and ABI)
         id: lc
-        if: ${{ steps.tb.outputs.cache-hit != 'true' && !startsWith(github.ref, 'refs/tags/') && github.ref != 'refs/heads/nidhogg-31' }}
+        if: ${{ steps.tb.outputs.cache-hit != 'true' && !startsWith(github.ref, 'refs/tags/') && github.ref != 'refs/heads/nidhogg-31' && env.BUILD_APP == 'true' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/lisp-cache
           key: lisp-macos-${{ runner.arch }}-${{ steps.tc.outputs.v }}-${{ runner.temp }}-${{ steps.tree.outputs.abi }}-${{ hashFiles('nidhogg/build.sh') }}
       - name: ccache (Homebrew)
         id: ccb
-        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        if: ${{ steps.tb.outputs.cache-hit != 'true' && env.BUILD_APP == 'true' }}
         run: brew install ccache
       - name: ccache (C objects)
         id: cc
@@ -539,25 +561,25 @@ jobs:
       # and on the Cargo.lock files and rustc)
       - name: Configure's checks (same configure inputs, same packages)
         id: cf
-        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        if: ${{ steps.tb.outputs.cache-hit != 'true' && env.BUILD_APP == 'true' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/config-cache
           key: configure-macos-${{ runner.arch }}-${{ steps.tc.outputs.deps }}-${{ hashFiles('configure.ac', 'm4/**', 'build-aux/**', 'autogen.sh', 'nidhogg/version', 'nidhogg/build.sh') }}
       - name: Glitnir's cargo target (same Cargo.lock, same rustc)
         id: ct
-        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        if: ${{ steps.tb.outputs.cache-hit != 'true' && env.BUILD_APP == 'true' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/glitnir-target
           key: glitnir-target-macos-${{ runner.arch }}-${{ steps.tc.outputs.rust }}-${{ hashFiles('nidhogg/glitnir/Cargo.lock') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: glitnir-target-macos-${{ runner.arch }}-${{ steps.tc.outputs.rust }}-${{ hashFiles('nidhogg/glitnir/Cargo.lock') }}-
       - name: File times (each file's last commit; what changed since the cargo target, now)
-        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        if: ${{ steps.tb.outputs.cache-hit != 'true' && env.BUILD_APP == 'true' }}
         run: bash nidhogg/ci/set-mtimes.sh --since "$RUNNER_TEMP/glitnir-target/.nidhogg-source-commit"
       - name: Build
         id: build
-        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        if: ${{ steps.tb.outputs.cache-hit != 'true' && env.BUILD_APP == 'true' }}
         env:
           NIDHOGG_BUILD_CONFIG_CACHE: ${{ runner.temp }}/config-cache
           NIDHOGG_BUILD_CARGO_TARGET: ${{ runner.temp }}/glitnir-target
@@ -640,9 +662,11 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ns-gui-logs
-          path: ${{ runner.temp }}/ns-gui/*.log
+          path: ${{ runner.temp }}/ns-gui/
           if-no-files-found: ignore
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      # also after red NS GUI rows: a later run's ns_app_run reruns them on this tarball
+      - if: ${{ !cancelled() && hashFiles('dist/*.tar.xz') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tarball-macos
           path: dist/

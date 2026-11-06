@@ -243,7 +243,9 @@ still run. `nidhogg/test/ns-display.m` (test-only, built with clang by the scrip
 CoreGraphics' private `CGVirtualDisplay` class, 1440x900 at scale 1 or 1280x800 points HiDPI at scale 2, and keeps it
 while the rows run; `gui-runner.el` then moves the frame onto it (`GLITNIR_GUI_FRAME`). CI's `macos` job runs the lane
 after the workers checks; a dispatch's `checks` input names rows (`glitnir-ns/NAME`) or the file, and with other checks
-only the lane has nothing to run. The logs are the artifact `ns-gui-logs`.
+only the lane has nothing to run. The logs are the artifact `ns-gui-logs`, with, for a pixel row whose captures differ,
+the differing pixels (`ROW-xSCALE.txt`) and both captures (`-a.bgra`, `-b.bgra`, raw BGRA). `ns_app_run` reruns the lane
+on an earlier run's app (CI and releases, "Narrowed runs").
 
 ## The test clock
 
@@ -489,6 +491,10 @@ machine whose timing never shows it, not certain.
   as in `check-subset.txt`) instead of
   `check-subset.txt`; `-f lanes='gui-1 gui-2'` picks `native-gui` lanes (`scope=macos` is narrowed the same way). Such
   a run's gate is named `Nidhogg gate (partial)`, so it never reads as the full gate.
+- A test-only rerun of the NS GUI rows: `-f scope=macos -f ns_app_run=RUN_ID` (with `checks` to pick rows) builds
+  nothing; the `macos` job takes that run's `tarball-macos` artifact (uploaded also when its NS GUI rows were red) and
+  runs this checkout's `ns-gui.sh` and test files on it, in minutes. The app is that run's, so a change to the C or to
+  the app's Lisp (`lisp/glitnir.el`) needs a full run. The run is partial.
 - `timing` (fedora-45 and macOS, after `linux` and `macos`; `continue-on-error: true`; not in `release`'s needs, so it can
   never fail a run or a release): the timing test files in a lane of their own, report-only
   (`nidhogg/test/timing-lane.sh`, rows and budget ratios in `nidhogg/test/timing-rows.txt`). It runs nothing else. A fixed
