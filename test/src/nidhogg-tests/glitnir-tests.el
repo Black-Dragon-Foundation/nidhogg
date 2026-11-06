@@ -336,6 +336,15 @@
       (glitnir-test--with-reduced-motion 0
         (should (= (aref (glitnir--chrome-vector (selected-frame)) 8) 2))))))
 
+;; test-pattern: D (pure)
+(ert-deftest glitnir-reduced-motion-p-public ()
+  "The public predicate answers what the option and the desktop say."
+  (dolist (case '((auto 0 nil) (auto 1 t) (t 0 t) (nil 1 nil)))
+    (let ((glitnir-reduced-motion (nth 0 case)))
+      (glitnir-test--with-reduced-motion (nth 1 case)
+        (should (eq (and (glitnir-reduced-motion-p) t) (nth 2 case)))
+        (should (eq (and (glitnir--reduced-motion-p) t) (nth 2 case)))))))
+
 ;; Window cards: the window parameters resolve into a vector C lists with the window.
 
 (defmacro glitnir-test--with-window-params (params &rest body)
