@@ -500,6 +500,10 @@ jobs:
       - name: The cached tarball is intact
         if: ${{ steps.tb.outputs.cache-hit == 'true' || env.BUILD_APP != 'true' }}
         run: cd dist && shasum -a 256 -c -- *.sha256
+      # a tarball not built here links Homebrew's libraries, which only the build's step below would install
+      - name: Run-time dependencies (Homebrew)
+        if: ${{ steps.tb.outputs.cache-hit == 'true' || env.BUILD_APP != 'true' }}
+        run: sed 's/#.*//' nidhogg/deps/macos.runtime | xargs brew install
       # Homebrew's packages, downloaded each run (a 775 MB cache of the bottles saved under a minute); Rust from the
       # image's rustup instead of Homebrew's when the image has it (Homebrew's otherwise)
       - name: Build dependencies (Homebrew; Rust by rustup)
