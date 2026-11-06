@@ -427,6 +427,15 @@ BODY
     # loadup.el loads lisp/site-init.el when present, and the dump keeps what it sets (the build copy only, never the source tree)
     echo "printf '%s\\n' ';;; dev build (nidhogg/build.sh --dev): no background native compilation' '(setq native-comp-jit-compilation nil)' > \"\$B/src/lisp/site-init.el\""
   fi
+  if [ -n "$CT" ]; then cat <<'BODY'
+# The crates cargo fetches (no vendor/ unpacked; Cargo.lock pins them) are kept with the cargo target: the registry's
+# index and downloaded .crate files only, linked into the build's cargo home, never the home itself (no unpacked
+# sources, tools or credentials).
+mkdir -p "$CT/registry/index" "$CT/registry/cache" "$B/obj/src/glitnir-cargo-home/registry"
+ln -sfn "$CT/registry/index" "$B/obj/src/glitnir-cargo-home/registry/index"
+ln -sfn "$CT/registry/cache" "$B/obj/src/glitnir-cargo-home/registry/cache"
+BODY
+  fi
   echo "phase configure"
   if [ -n "$CONFIG_CACHE" ]; then
     # autoconf's cache of its checks, through a site file (a --cache-file option would join the configure line that
