@@ -302,8 +302,8 @@ nhg_export! {
 nhg_export! {
     /// Make the frame's Glitnir layer match `g`; a frame without a key (`*frame` 0) gets one.  1 when the layer was
     /// made or changed (the frame is damaged whole and its pending damage dropped), 0 when it already matched.  A
-    /// child frame's layer (`g.window`) sits inside its shadow margin and takes its chrome (`child.rs`).  Neither
-    /// reads nor writes pixels.
+    /// child frame's layer (`g.window`), or a framed undecorated top-level's, sits inside its margin and takes its
+    /// chrome (`child.rs`).  Neither reads nor writes pixels.
     ///
     /// # Safety
     /// `d` is null or a live display; `frame` and `g` are null or valid for the call.
@@ -770,7 +770,8 @@ nhg_export! {
     /// Lay `window`'s border out again (C calls it when it applies a configure or a scale, and when `undecorated`
     /// changes): from the compositor's decoration answer, the toplevel's states, `scale120` (0: 120) and `flags`
     /// (`NHG_CSD_UNDECORATED`).  1 when the offsets or the strip changed (C garbages the frame), 0 when not; the
-    /// layout in `*out`.  Sets the frame's CSD fact.  A child frame's border is its shadow margin (`child.rs`).
+    /// layout in `*out`.  Sets the frame's CSD fact.  An undecorated top-level where the compositor offers no server
+    /// decorations keeps its margins without the strip.  A child frame's border is its shadow margin (`child.rs`).
     /// Neither reads nor writes pixels.
     ///
     /// # Safety
@@ -1290,7 +1291,8 @@ nhg_export! {
 nhg_export! {
     /// `window`'s chrome slot vector as `glitnir--chrome-vector` gave it now: `NHG_E_ARG` for a wrong length or a slot
     /// out of range; 1 when the corners or shadow changed (C lays the frame out again and garbages it), 0 when not.
-    /// New transitions go to the shell at once.  Neither reads nor writes pixels.
+    /// New transitions go to the shell at once.  A top-level's vector (`toplevel-chrome`) is kept for its margins and
+    /// layer (1 only while it is framed); a tip's or a popup's is ignored.  Neither reads nor writes pixels.
     ///
     /// # Safety
     /// `d` is null or a live display; `v` is null or points to `n` readable floats.

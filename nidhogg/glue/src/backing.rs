@@ -21,7 +21,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::abi::{NHG_E_ARG, NHG_E_NOMEM, NHG_E_STATE};
 
-/// [`NhgFrameGeom::flags`]: the layer's rectangle or chrome changed (a child frame's, as `child::layer` says).
+/// [`NhgFrameGeom::flags`]: the layer's rectangle or chrome changed (a child frame's or a framed top-level's, as
+/// `child::layer` says).
 pub const NHG_GEOM_LAYER_CHANGED: u32 = 1;
 /// [`NhgFrameGeom::flags`]: the backing starts over, in the background colour, keeping nothing (C has no surface).
 pub const NHG_GEOM_FRESH: u32 = 2;
