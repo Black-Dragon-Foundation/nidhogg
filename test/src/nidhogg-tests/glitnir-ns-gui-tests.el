@@ -1159,9 +1159,10 @@ Everything goes back after: one window on `*scratch*', the frame's divider width
                                           5))
                  (should-not (glitnir-ns--orphans))
                  (should-not (glitnir--chrome c))
-                 ;; the opaque, square frame (alpha-background is ignored): the stock frame's pixels, tolerance 0
+                 ;; the opaque, square frame (alpha-background is ignored): the stock frame's pixels, to
+                 ;; one level of a channel (the window server's rounding of a frame it drew twice)
                  (setq off (glitnir-ns--grab)))
-               (should (equal (glitnir-ns--diff stock off (glitnir-ns--root-rect stock)) '(0 0))))
+               (should (<= (cadr (glitnir-ns--diff stock off (glitnir-ns--root-rect stock))) 1)))
            (delete-frame c t)))))))
 
 (defun glitnir-ns--fixture-run ()
@@ -1178,8 +1179,8 @@ Everything goes back after: one window on `*scratch*', the frame's divider width
     (push (glitnir-ns--grab) shots)
     (let ((c (glitnir-ns--blank-child nil)))
       (unwind-protect (push (glitnir-ns--grab) shots)
-        (delete-frame c t)))
-    (should (glitnir-ns--gone-p c))
+        (delete-frame c t))
+      (should (glitnir-ns--gone-p c)))
     (push (glitnir-ns--grab) shots)
     (nreverse shots)))
 
@@ -1195,7 +1196,7 @@ Everything goes back after: one window on `*scratch*', the frame's divider width
        (set-window-start (selected-window) 1)
        (let ((glitnir-enable nil)) (setq off (glitnir-ns--fixture-run)))))
     (should (= (length on) (length off) 4))
-    (cl-mapc (lambda (a b) (should (equal (glitnir-ns--diff a b (glitnir-ns--root-rect a)) '(0 0)))) on off)))
+    (cl-mapc (lambda (a b) (should (<= (cadr (glitnir-ns--diff a b (glitnir-ns--root-rect a))) 1))) on off)))
 
 ;;; The clean cost row: no sampler thread, the redisplay of a corfu-like step timed with and without the shadow
 
@@ -1235,7 +1236,8 @@ Everything goes back after: one window on `*scratch*', the frame's divider width
    (lambda ()
      (let ((c (glitnir-ns--blank-child '((corner-radius . 8)))) (cpu0 (glitnir-ns--windowserver-cpu)))
        (unwind-protect
-           (let* ((buf (window-buffer (selected-window)))
+           (handler-bind ((error (lambda (e) (message "glitnir-ns cost row: %S\n%s" e (with-output-to-string (backtrace))))))
+            (let* ((buf (window-buffer (selected-window)))
                   (move (glitnir-ns--cost
                          c 200 (lambda (f i)
                                  (with-current-buffer buf (goto-char (point-min)) (insert "x"))
@@ -1249,7 +1251,7 @@ Everything goes back after: one window on `*scratch*', the frame's divider width
              (modify-frame-parameters c `((shadow . ,glitnir-ns--shadow)))
              (should-not (glitnir-ns--settled-problem c))
              (should (<= (- (car move) (cdr move)) glitnir-ns--cost-move-ms))
-             (should (<= (- (car resize) (cdr resize)) glitnir-ns--cost-resize-ms)))
+             (should (<= (- (car resize) (cdr resize)) glitnir-ns--cost-resize-ms))))
          (delete-frame c t))))))
 
 ;;; The layout leg: a capture before a new layout, the old picture moving over it
@@ -1263,7 +1265,9 @@ Everything goes back after: one window on `*scratch*', the frame's divider width
 (defun glitnir-ns--leg-state () (glitnir--ns-layout (selected-window)))
 
 (defun glitnir-ns--leg-capture ()
-  "Ask for a capture of the selected window and wait until the presenter holds it."
+  "Ask for a capture of the selected window and wait until the presenter holds it.
+A leg left by an earlier row ends first: the same value would not be a new request."
+  (glitnir-ns--leg-end)
   (set-window-parameter nil 'glitnir-layout-capture t)
   (redisplay t)
   (should (gui-runner-wait #'glitnir-layout-captured-p 5))
@@ -1318,12 +1322,14 @@ Everything goes back after: one window on `*scratch*', the frame's divider width
          (glitnir-ns--leg-capture)
          (set-window-parameter nil 'glitnir-layout-motion
                                `(:moves ((page ,pts ,(list (nth 0 pts) (+ 12 (nth 1 pts)) (nth 2 pts) (nth 3 pts))))
-                                 :duration 0.3 :background "#000000"))
+                                 :duration 1.0 :background "#000000"))
          (glitnir-ns--leg-scroll)
-         ;; the leg starts in the redraw above: it runs or has ended
+         ;; the leg starts in the redraw above
+         (should (plist-get (glitnir-ns--leg-state) :running))
          (should (gui-runner-wait (lambda () (not (plist-get (glitnir-ns--leg-state) :running))) 5))
          (setq moved (glitnir-ns--grab))
-         (should (equal (glitnir-ns--diff plain moved dev) '(0 0))))))))
+         (glitnir-ns--leg-end)
+         (should (<= (cadr (glitnir-ns--diff plain moved dev)) 1)))))))
 
 (ert-deftest glitnir-ns/layout-leg-jumps-under-reduced-motion ()
   ;; reduced motion asks for no capture: the new layout shows at once
