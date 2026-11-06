@@ -269,6 +269,9 @@ done
 # the Rust toolchain for Glitnir is in every build list (Homebrew: rust)
 for d in fedora-45; do grep -qx cargo nidhogg/deps/$d.build && grep -qx rust nidhogg/deps/$d.build || fail "$d.build lacks cargo/rust"; done
 grep -qx cargo nidhogg/deps/ubuntu-26.04.build && grep -qx rustc nidhogg/deps/ubuntu-26.04.build || fail "ubuntu-26.04.build lacks cargo/rustc"
+# without vendor/ cargo fetches the locked crates over HTTPS: the apt lists, installed without recommends, name the CA
+# certificates (Fedora's and Arch's bases have them)
+for d in ubuntu-26.04 debian-13; do grep -qx ca-certificates nidhogg/deps/$d.build || fail "$d.build lacks ca-certificates"; done
 # Debian's Rust is below the floor: the build fetches the pinned one, for which it needs curl and nothing of Debian's
 grep -qx curl nidhogg/deps/debian-13.build && ! grep -qxE 'cargo|rustc' nidhogg/deps/debian-13.build || fail "debian-13.build: curl, and no distro Rust"
 run -- --dry-run --container debian-13 --jobs 4

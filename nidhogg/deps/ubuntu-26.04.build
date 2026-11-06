@@ -33,5 +33,7 @@ libacl1-dev
 zlib1g-dev
 cargo
 rustc
+# without vendor/, cargo fetches the locked crates from crates.io over HTTPS (no recommends: name the CA certificates)
+ca-certificates
 libwayland-dev
 libxkbcommon-dev
