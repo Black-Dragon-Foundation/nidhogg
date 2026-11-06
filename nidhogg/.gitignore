@@ -1,3 +1,6 @@
 # upstream ignores deps/
 !/deps/
 /dist/
+# the Rust crates are locked (Cargo.lock), not committed; the release's nidhogg-vendor-<version>.tar.zst unpacks here
+/shell/vendor/
+/glitnir/vendor/
