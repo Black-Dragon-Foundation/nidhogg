@@ -1249,6 +1249,13 @@ top-level with its child again, mapped each way, with the buffer, the size and t
   (let ((s (nhwl-presenter-stats)))
     (>= (plist-get s :shown) (plist-get s :published))))
 
+(defun nhwl-gui--sized-p (value)
+  "Non-nil unless VALUE is `fullboth' and the selected frame is not yet as wide as the output (GLITNIR_GUI_SIZE, device
+pixels).  The frame's width, not a change of it: a floating frame may have the output's size already, and then the
+first answer is the whole one."
+  (or (not (eq value 'fullboth))
+      (= (frame-pixel-width) (string-to-number (getenv "GLITNIR_GUI_SIZE")))))
+
 (defun nhwl-gui--set-fullscreen (value)
   "Set the selected frame's `fullscreen' to VALUE and wait until the compositor has answered and has the frame's answer
 to that: the compositor's last configure has VALUE's state (`nhwl-gui--answered-p'), the frame's ack of it and its
@@ -1257,12 +1264,14 @@ The row's next step then meets the frame as the compositor left it, however late
 1.25 answers after a settle, and a size set by hand before its answer met the fullscreen state, whose size binds.  And
 the compositor has acted on the frame's answer before the next request, which otherwise meets the old state: sway's
 two configures coalesce (its transaction waits for the answer to each configure by its serial, waits out its
-timeout, and loses the floating size).  A person cannot toggle that fast.  The recorder answers when the row tells
-it to: there nothing is waited for.  A VALUE the frame already has asks nothing, and nothing is waited for."
+timeout, and loses the floating size).  A person cannot toggle that fast.  For `fullboth' the answer also has the
+output's size (`nhwl-gui--sized-p'): sway may answer `set_fullscreen' at the old size first and send the output's
+~120 ms later, and a request made before that one is acked loses the floating size.  The recorder answers when the
+row tells it to: there nothing is waited for.  A VALUE the frame already has asks nothing, and nothing is waited for."
   (let ((asks (not (eq value (frame-parameter nil 'fullscreen)))))
     (set-frame-parameter nil 'fullscreen value)
     (when (and asks (not (equal (glitnir-gui--compositor) "recorder")))
-      (should (nhwl-gui--wait (lambda () (redisplay t) (nhwl-gui--answered-p value)) 8))
+      (should (nhwl-gui--wait (lambda () (redisplay t) (and (nhwl-gui--answered-p value) (nhwl-gui--sized-p value))) 8))
       (nhwl-gui--live-settle)
       (should (nhwl-gui--wait (lambda () (gui-runner-read-all) (nhwl-gui--shown-p)) 8)))))
 
@@ -1368,8 +1377,11 @@ The recorder keeps no state of its own: it answers here as a compositor does, th
           (setq size (funcall now))
           (let ((since (funcall mark))
                 (s (frame-scale-factor))
-                (out (and rec (mapcar #'string-to-number (split-string (getenv "GLITNIR_GUI_SIZE") "x")))))
+                (out (mapcar #'string-to-number (split-string (getenv "GLITNIR_GUI_SIZE") "x"))))
             (nhwl-gui--set-fullscreen 'fullboth)
+            ;; a compositor's answer holds the output's size by the time the helper returns: sway answers at the old
+            ;; size first and sends the output's size later, and a request before that one is acked loses the size
+            (unless rec (should (equal (frame-pixel-width) (car out))))
             (funcall answer since "xdg_toplevel.set_fullscreen"
                      :size (and rec (vector (round (/ (car out) s)) (round (/ (cadr out) s))))
                      :states ["fullscreen" "activated"]))
