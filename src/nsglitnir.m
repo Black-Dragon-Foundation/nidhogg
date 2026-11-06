@@ -1156,6 +1156,8 @@ enum { NS_GLITNIR_LEG_SHOW = 1, NS_GLITNIR_LEG_HIDE = 2 };
   /* A show or a hide waits for its commit; a hide's window is still on
      screen; ignoresMouseEvents was set by the hide.  */
   bool show_pending, hide_pending, hiding, unignore;
+  /* The show that waits brings the window back from hidden.  */
+  bool from_hidden;
   /* The last leg started (NS_GLITNIR_LEG_*), its start and length.  */
   int leg;
   CFTimeInterval start, duration;
@@ -1289,6 +1291,9 @@ ns_glitnir_motion_rest (NSWindow *w, bool make, CGFloat opacity, CGFloat scale)
       [l[i] setTransform: ns_glitnir_scaled (l[i], scale)];
     }
   [CATransaction commit];
+  /* On the window server now: before the window is ordered in, and for
+     what the presentation layers read.  */
+  [CATransaction flush];
 }
 
 /* Start leg WHICH on W's layers: from opacity FROM_O and scale FROM_S to
@@ -1369,8 +1374,14 @@ ns_glitnir_show_start (NSWindow *w, uint64_t gen)
   struct ns_glitnir_leg leg = ns_glitnir_leg_of (f, NHG_CHROME_SHOW_KIND);
   CALayer *c = ns_glitnir_content_layer (w, false);
   CGFloat o = 1, s = 1;
-  if (c)
+  /* A window that comes back from hidden starts at the leg's own start,
+     not at what its content layer holds: AppKit puts a layer-backed
+     view's transform back when the window is ordered in.  */
+  if (c && m->from_hidden)
+    o = 0, s = leg.kind == 2 ? NS_GLITNIR_POP_SCALE : 1;
+  else if (c)
     ns_glitnir_shown (c, &o, &s);
+  m->from_hidden = false;
   CFTimeInterval secs = leg.secs * (1 - o);
   /* Shown already (a hide and a show before Core Animation committed
      anything): no motion.  */
@@ -1473,13 +1484,10 @@ ns_glitnir_show_requested (struct frame *f)
     ns_glitnir_motion_rest (w, false, 1, 1);
   else
     {
-      if (![w isVisible])
-	{
-	  ns_glitnir_motion_rest (w, true, 0,
-				  leg.kind == 2 ? NS_GLITNIR_POP_SCALE : 1);
-	  /* On the window server before the window is.  */
-	  [CATransaction flush];
-	}
+      m->from_hidden = ![w isVisible];
+      if (m->from_hidden)
+	ns_glitnir_motion_rest (w, true, 0,
+				leg.kind == 2 ? NS_GLITNIR_POP_SCALE : 1);
       uint64_t gen = m->gen;
       m->show_pending = true;
       dispatch_async (dispatch_get_main_queue (), ^{
