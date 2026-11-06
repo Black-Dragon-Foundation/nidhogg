@@ -21,6 +21,7 @@ pub mod history;
 #[cfg(feature = "images")]
 pub mod images;
 pub mod kernels;
+pub mod layout;
 pub mod motion;
 #[cfg(all(test, feature = "pixman-oracle"))]
 mod oracle;

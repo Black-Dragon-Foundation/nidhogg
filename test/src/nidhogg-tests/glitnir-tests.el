@@ -518,4 +518,63 @@ the frame's `glitnir--cards' flag (C lists every window at every publish while i
       (glitnir--recheck-frame-cards (frame-first-window))
       (should-not (frame-parameter nil 'glitnir--cards)))))
 
+(defmacro glitnir-test--with-leg-params (params &rest body)
+  "Run BODY with the selected window's layout leg parameters PARAMS set, then clear them.
+Colours are \"#RRGGBB\" specs: the batch terminal may define no colour names."
+  (declare (indent 1))
+  `(let ((w (selected-window)))
+     (cl-letf (((symbol-function 'color-values)
+                (lambda (c &optional _f) (and (stringp c) (color-values-from-color-spec c)))))
+       (unwind-protect
+           (progn
+             (dolist (p ,params) (set-window-parameter w (car p) (cdr p)))
+             ,@body)
+         (dolist (k '(glitnir-layout-capture glitnir-layout-motion glitnir--leg-sent))
+           (set-window-parameter w k nil))))))
+
+(ert-deftest glitnir-leg-vector-from-params ()
+  "The leg vector carries the capture, the text area and the motion's items."
+  ;; pattern D: pure
+  (glitnir-test--with-leg-params
+      '((glitnir-layout-capture . t)
+        (glitnir-layout-motion . (:moves ((a (1 2 3 4) (5 6 3 4))) :enters ((b (0 0 2 2)))
+                                  :exits ((c (9 9 1 1))) :background "#102030"
+                                  :duration 0.2 :curve linear :step t)))
+    (let* ((w (selected-window))
+           (edges (window-body-pixel-edges w))
+           (v (glitnir--leg-vector w 3 t)))
+      (should (= (length v) (+ 14 (* 3 10))))
+      (should (equal (append (cl-subseq v 0 5) nil)
+                     (list 3 (nth 0 edges) (nth 1 edges)
+                           (- (nth 2 edges) (nth 0 edges)) (- (nth 3 edges) (nth 1 edges)))))
+      (should (equal (append (cl-subseq v 5 14) nil) (list 3 #x102030 200 0 0 1 1 1 3)))
+      (should (equal (append (cl-subseq v 14 24) nil)
+                     (list 1 (glitnir--leg-id 'a) 1 2 3 4 5 6 3 4)))
+      (should (equal (append (cl-subseq v 24 34) nil) (list 2 (glitnir--leg-id 'b) 0 0 0 0 0 0 2 2)))
+      (should (equal (append (cl-subseq v 34 44) nil) (list 3 (glitnir--leg-id 'c) 9 9 1 1 0 0 0 0)))
+      ;; a capture alone: no motion, no items
+      (let ((c (glitnir--leg-vector w 4 nil)))
+        (should (= (length c) 14))
+        (should (equal (list (aref c 0) (aref c 5) (aref c 13)) '(4 0 0))))
+      ;; the defaults: 0.16 s, ease-out, the default face's background
+      (set-window-parameter w 'glitnir-layout-motion '(:moves ((a (1 2 3 4) (5 6 3 4)))))
+      (let ((d (glitnir--leg-vector w 5 t)))
+        (should (equal (append (cl-subseq d 7 13) nil) '(160 0 0 0.58 1 0))))
+      (set-window-parameter w 'glitnir-layout-motion '(:moves ((a (1 2) (3 4)))))
+      (should-error (glitnir--leg-vector w 6 t) :type 'wrong-type-argument))))
+
+(ert-deftest glitnir-leg-vector-nil-under-reduced-motion ()
+  "Under reduced motion no capture goes out, so the layout jumps."
+  ;; pattern D: pure
+  (glitnir-test--with-leg-params '((glitnir-layout-capture . t))
+    (let ((w (selected-window)))
+      (let ((glitnir-reduced-motion nil))
+        (should (glitnir--leg-to-send w)))
+      (let ((glitnir-reduced-motion t))
+        (should-not (glitnir--leg-to-send w))
+        (should-not (glitnir-layout-captured-p w)))
+      ;; the batch frame has no presenter: never acknowledged
+      (let ((glitnir-reduced-motion nil))
+        (should-not (glitnir-layout-captured-p w))))))
+
 ;;; glitnir-tests.el ends here

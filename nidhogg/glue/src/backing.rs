@@ -145,6 +145,8 @@ pub struct Frame {
     pub(crate) layers: crate::layers::Layers,
     /// The frame's window cards (`cards.rs`).
     pub(crate) cards: crate::cards::Cards,
+    /// The frame's windows with a capture or a layout leg (`legs.rs`).
+    pub(crate) legs: crate::legs::Legs,
     /// The rows the visible bell inverted, until they are put back (`bell.rs`).
     flash: Vec<Saved>,
     /// What changed since the frame's last publish (backing coordinates).

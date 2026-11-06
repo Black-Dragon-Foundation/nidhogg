@@ -45,6 +45,9 @@ pub mod layers;
 // window cards
 pub mod cards;
 
+// layout legs
+pub mod legs;
+
 // the drop target
 pub mod dnd;
 

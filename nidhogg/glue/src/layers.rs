@@ -143,7 +143,7 @@ pub fn full_window(rect: NhgRect, run: NhgRect, to_y: i32) -> bool {
 }
 
 /// The frame's facts for `window` (its shell window), and the display's compositor.
-fn root(state: &mut Display, window: u64) -> Result<Root, GlueError> {
+pub(crate) fn root(state: &mut Display, window: u64) -> Result<Root, GlueError> {
     let caps = state.backend().caps();
     let f = state.frame(window)?;
     Ok(Root {
@@ -155,7 +155,7 @@ fn root(state: &mut Display, window: u64) -> Result<Root, GlueError> {
 }
 
 /// Window `seq`'s layer is part of the frame `key`'s again, and leaves its scene.
-fn demote(key: u64, layers: &mut Layers, seq: u64) {
+pub(crate) fn demote(key: u64, layers: &mut Layers, seq: u64) {
     if layers.windows.remove(&seq).is_some() {
         let id = seq | WINDOW_TAG;
         glitnir_layer_set_output(key, id, 0);
@@ -230,6 +230,10 @@ pub fn scroll_at(
         demote(key, &mut f.layers, seq);
     }
     let mut own = f.layers.contains(seq);
+    if full_window(rect, run, to_y) {
+        // a scroll ends a layout leg, and the window may be its own output again
+        f.legs.end(seq);
+    }
     if eligible && full_window(rect, run, to_y) {
         if let Some(p) = f.layers.windows.get_mut(&seq) {
             p.last = now;
@@ -298,7 +302,7 @@ pub fn scroll(
     let s120 = state.backings.frame_mut(key)?.scale120();
     // a frame without a registered window still scrolls; it has no layers
     let eligible = root(state, window).is_ok_and(|r| opaque_root(&r, flags, s120));
-    Ok(scroll_at(
+    let own = scroll_at(
         &mut state.backings,
         key,
         seq,
@@ -307,7 +311,9 @@ pub fn scroll(
         to_y,
         eligible,
         Instant::now(),
-    )?)
+    )?;
+    crate::legs::send_ended(state, window, key);
+    Ok(own)
 }
 
 /// `nhg_layers_sync`: [`sync_at`] now, with the opaque-root check on `window`, then the window cards

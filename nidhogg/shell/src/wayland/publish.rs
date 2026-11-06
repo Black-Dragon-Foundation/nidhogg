@@ -48,6 +48,7 @@ use glitnir::compose::{
 };
 use glitnir::geom::Rect;
 use glitnir::kernels::kernels;
+use glitnir::layout::{LayoutLeg, active_tiles, compose_leg, subtract, tick_px};
 use glitnir::motion::{Kind, Motion, MotionSpec, Sample};
 use glitnir::pool::IDLE_NS;
 use glitnir::stats::StatsEntry;
@@ -148,6 +149,12 @@ pub enum Mail {
     Backdrop(u64, u64, f32, (i32, i32)),
     /// Child `.0`, which has a backdrop, moved to the offset `.1` in its parent.
     Placed(u64, (i32, i32)),
+    /// Root `.0`'s window `.1` (the host's key) asks for capture `.2` of the rectangle `.3`.
+    Capture(u64, u64, u64, Rect),
+    /// Root `.0`'s window `.1` has the layout leg `.2` (`None`: none).
+    Leg(u64, u64, Option<LayoutLeg>),
+    /// Test hook: a layout leg whose frames compose more pixels than this is skipped.
+    LegBudget(u64),
 }
 
 #[derive(Default)]
@@ -686,10 +693,71 @@ impl Blur {
     }
 }
 
+/// A window's capture: its number, its rectangle in the root and its pixels, row by row.
+struct Capture {
+    serial: u64,
+    rect: Rect,
+    px: Vec<u32>,
+}
+
+/// A window's layout leg as it runs.
+struct Run {
+    leg: LayoutLeg,
+    capture: Capture,
+    /// It waits for its tree's next packet: the new picture.
+    waits: bool,
+    /// It was ended: its tree's next frame composes the new picture plain, and the tree ticks until that is shown.
+    ends: bool,
+    /// The leg's start (0: its first frame has not come), and the newest frame's time.
+    t0: u64,
+    t: u64,
+    /// What its frames damage (`active_tiles`), and what the leg it replaced drew, which its first frame adds.
+    active: Vec<Rect>,
+    inherit: Vec<Rect>,
+    /// The leg's source pixels: the root front's size, written within the leg's rectangle at each frame, where the
+    /// scene is composed over them.
+    src: Option<Front>,
+    /// The next commit is a tick; when the one before it went, by the real clock (0: none); the period then.
+    ticked: bool,
+    tick_ns: u64,
+    period: u64,
+}
+
+/// A window's captures and layout leg (`ShellBackend::layout_*`).
+#[derive(Default)]
+struct Layout {
+    /// A capture asked for while the root had no front: taken after the tree's next packet.
+    asked: Option<(u64, Rect)>,
+    /// The newest capture no leg has taken.
+    capture: Option<Capture>,
+    run: Option<Run>,
+}
+
+/// The pixels a layout leg's frame may compose (its damage) before it is skipped: the leg's 3 ms per tick at about
+/// 0.5 ns a pixel.
+pub const LEG_BUDGET_PX: u64 = 6_000_000;
+
+/// `rect`'s pixels of `f`, row by row; `None` unless `rect` lies inside it.
+fn copy_out(f: &Front, rect: Rect) -> Option<Vec<u32>> {
+    if rect.is_empty() || rect.intersect(&Rect::new(0, 0, f.w, f.h)) != rect {
+        return None;
+    }
+    let mut px = Vec::with_capacity(rect.area() as usize);
+    for y in rect.y..rect.y + rect.h {
+        let at = y as usize * f.w as usize + rect.x as usize;
+        px.extend_from_slice(&f.data[at..at + rect.w as usize]);
+    }
+    Some(px)
+}
+
 /// The presenter's side: fronts, merged packets, the display's composer and the counters.
 #[derive(Default)]
 pub struct Stage {
     surfaces: HashMap<u64, Surface>,
+    /// The layout legs of root windows, by root and the host's key; empty, none of this costs anything.
+    layouts: HashMap<(u64, u64), Layout>,
+    /// The layout legs' budget (`LEG_BUDGET_PX` unless a test sets it).
+    leg_budget_px: Option<u64>,
     /// The transitions of the children that have them; empty, none of this costs anything.
     moves: HashMap<u64, Moving>,
     /// The backdrops of the children that have one; empty, none of this costs anything.
@@ -753,6 +821,9 @@ impl Stage {
                         b.at = at;
                     }
                 }
+                Mail::Capture(root, key, n, rect) => self.capture(root, key, n, rect),
+                Mail::Leg(root, key, leg) => self.set_leg(root, key, leg),
+                Mail::LegBudget(px) => self.leg_budget_px = Some(px),
             }
         }
     }
@@ -923,18 +994,201 @@ impl Stage {
         }
     }
 
-    /// Some child has transitions, or an unmap to go: `present_tree` looks at its tree's.
-    pub(crate) fn moving(&self) -> bool {
-        !self.moves.is_empty() || !self.unmaps.is_empty()
+    /// Root `root`'s window `key` asks for capture `n` of `rect`: from the root's front now, which holds what was
+    /// published before, or after the tree's next packet when there is none.
+    fn capture(&mut self, root: u64, key: u64, n: u64, rect: Rect) {
+        let front = self.surfaces.get(&root).and_then(|s| s.front.as_ref());
+        let px = front.and_then(|f| copy_out(f, rect));
+        let l = self.layouts.entry((root, key)).or_default();
+        l.asked = None;
+        match px {
+            Some(px) => {
+                l.capture = Some(Capture {
+                    serial: n,
+                    rect,
+                    px,
+                });
+                self.stats.layout(root, key, |a| a.captured = n);
+            }
+            None => l.asked = Some((n, rect)),
+        }
     }
 
-    /// The next frame of root `root`'s tree has a transition to serve.
+    /// Root `root`'s window `key` has the layout leg `leg` now.  A leg that runs ends: replaced by `leg`, which starts
+    /// each move from where it is, else composed plain.  `leg` takes its capture, if that is the newest taken; without
+    /// it there is no leg.
+    fn set_leg(&mut self, root: u64, key: u64, leg: Option<LayoutLeg>) {
+        let Stage {
+            surfaces,
+            layouts,
+            stats,
+            ..
+        } = self;
+        let l = layouts.entry((root, key)).or_default();
+        let old = l.run.take();
+        let mut drawn: Vec<Rect> = old.iter().flat_map(|o| o.active.clone()).collect();
+        let capture = l.capture.take();
+        let next = leg.and_then(|mut leg| {
+            let fits = |c: &Capture| c.serial == leg.capture && c.rect == leg.rect;
+            let c = capture.filter(fits);
+            if c.is_none() {
+                stats.layout(root, key, |a| a.skipped += 1);
+            }
+            if let Some(o) = old.as_ref().filter(|o| o.t0 != 0) {
+                leg.retarget(&o.leg, o.t.saturating_sub(o.t0));
+            }
+            Some(Run {
+                leg,
+                capture: c?,
+                waits: true,
+                ends: false,
+                t0: 0,
+                t: 0,
+                active: Vec::new(),
+                inherit: std::mem::take(&mut drawn),
+                src: None,
+                ticked: false,
+                tick_ns: 0,
+                period: 0,
+            })
+        });
+        // a leg that ran and has no successor ends at the next frame, as at its end
+        let next = match next {
+            None => old.filter(|o| o.t0 != 0).map(|o| Run { ends: true, ..o }),
+            n => n,
+        };
+        if next.as_ref().is_some_and(|n| n.ends) {
+            drawn.clear();
+        }
+        let running = next.as_ref().is_some_and(|n| !n.ends);
+        stats.layout(root, key, |a| a.running = running);
+        l.run = next;
+        if let Some(s) = surfaces.get_mut(&root) {
+            // what the leg drew that no leg draws now is the new picture's
+            s.damage.extend(drawn);
+        }
+    }
+
+    /// Root `root`'s packet is in its front: a capture asked for meanwhile is taken, and a leg waiting for it may start.
+    fn layout_packet(&mut self, root: u64) {
+        let Stage {
+            surfaces,
+            layouts,
+            stats,
+            ..
+        } = self;
+        let front = surfaces.get(&root).and_then(|s| s.front.as_ref());
+        for (&(r, key), l) in layouts.iter_mut().filter(|((r, _), _)| *r == root) {
+            if let Some((n, rect)) = l.asked.take()
+                && let Some(px) = front.and_then(|f| copy_out(f, rect))
+            {
+                l.capture = Some(Capture {
+                    serial: n,
+                    rect,
+                    px,
+                });
+                stats.layout(r, key, |a| a.captured = n);
+            }
+            if let Some(run) = &mut l.run {
+                run.waits = false;
+            }
+        }
+    }
+
+    /// The roots with a layout leg that runs (or waits for its picture), or a capture waiting for a front: their fronts
+    /// stay through the quiet period.
+    fn leg_roots(&self) -> Vec<u64> {
+        let busy = |l: &Layout| l.run.is_some() || l.asked.is_some();
+        self.layouts
+            .iter()
+            .filter(|(_, l)| busy(l))
+            .map(|((r, _), _)| *r)
+            .collect()
+    }
+
+    /// A frame of root `root`'s tree at time `t` (`start`, a period before it: the time a leg that starts now starts
+    /// at): its layout legs start or go on.  A leg's first frame diffs the capture against the new front, and skips the
+    /// leg when its frames would compose more than the budget; each frame damages what the leg changes; the frame at
+    /// or past its end composes plain, the new picture.
+    fn tick_layouts(&mut self, root: u64, t: u64, start: u64, period: u64) {
+        let budget = self.leg_budget_px.unwrap_or(LEG_BUDGET_PX);
+        let Stage {
+            surfaces,
+            layouts,
+            stats,
+            ..
+        } = self;
+        let mut done = Vec::new();
+        for (&(r, key), l) in layouts.iter_mut() {
+            let (Some(run), Some(s)) = (&mut l.run, surfaces.get_mut(&root)) else {
+                continue;
+            };
+            if r != root || run.waits {
+                continue;
+            }
+            // a front that went or changed size ends the leg: its picture is the new one
+            let fits = |f: &&Front| {
+                let all = Rect::new(0, 0, f.w, f.h);
+                let same = run.src.as_ref().is_none_or(|r| (r.w, r.h) == (f.w, f.h));
+                same && run.leg.rect.intersect(&all) == run.leg.rect
+            };
+            let Some(front) = s.front.as_ref().filter(fits) else {
+                s.damage.extend(run.active.iter().copied());
+                done.push((key, false));
+                continue;
+            };
+            if run.ends {
+                s.damage.extend(run.active.iter().copied());
+                done.push((key, false));
+                continue;
+            }
+            if run.t0 == 0 {
+                run.t0 = start.max(1);
+                let (old, stride) = (&run.capture.px, front.w as usize);
+                let mut active = active_tiles(&run.leg, old, &front.data, stride);
+                active.append(&mut run.inherit);
+                if tick_px(&active) > budget {
+                    s.damage.extend(active);
+                    done.push((key, true));
+                    continue;
+                }
+                run.active = active;
+                run.src = Some(Front::new(front.w, front.h));
+            }
+            (run.t, run.period, run.ticked) = (t, period, true);
+            s.damage.extend(run.active.iter().copied());
+            if t.saturating_sub(run.t0) >= run.leg.duration_ns {
+                // this frame is the end: composed plain, it shows the new picture
+                done.push((key, false));
+            }
+        }
+        for (key, skipped) in done {
+            if let Some(l) = layouts.get_mut(&(root, key)) {
+                l.run = None;
+            }
+            stats.layout(root, key, |a| {
+                a.running = false;
+                a.skipped += u64::from(skipped);
+            });
+        }
+    }
+
+    /// Some child has transitions, an unmap to go, or a window a layout leg: `present_tree` looks at its tree's.
+    pub(crate) fn moving(&self) -> bool {
+        !self.moves.is_empty()
+            || !self.unmaps.is_empty()
+            || self.layouts.values().any(|l| l.run.is_some())
+    }
+
+    /// The next frame of root `root`'s tree has a transition or a layout leg to serve.
     pub(crate) fn work(&self, root: u64) -> bool {
-        self.moves.iter().any(|(id, m)| {
+        let moves = self.moves.iter().any(|(id, m)| {
             self.surfaces
                 .get(id)
                 .is_some_and(|s| s.root == root && m.due(s))
-        })
+        });
+        let go = |l: &Layout| l.run.as_ref().is_some_and(|run| !run.waits);
+        moves || self.layouts.iter().any(|(k, l)| k.0 == root && go(l))
     }
 
     /// When the next hide stops waiting: the presenter wakes for it, at once for a wait that ended after the tick looked.
@@ -1037,6 +1291,9 @@ impl Stage {
                 m.motion.settle(t);
             }
         }
+        if !self.layouts.is_empty() {
+            self.tick_layouts(root, t, start, fed.period);
+        }
         if !self.work(root) {
             self.clocks.remove(&root);
             self.scratch = Vec::new();
@@ -1056,7 +1313,8 @@ impl Stage {
 
     /// When the next front may be dropped idle: the earliest quiet period's end among fronts with nothing waiting.
     pub fn next_trim(&self) -> Option<u64> {
-        let kept = self.blur_parents();
+        let mut kept = self.blur_parents();
+        kept.extend(self.leg_roots());
         self.surfaces
             .iter()
             .filter(|(id, s)| {
@@ -1164,6 +1422,9 @@ impl Stage {
         if p.whole {
             self.damage_all_if_clean(p.root);
         }
+        if !self.layouts.is_empty() {
+            self.layout_packet(p.root);
+        }
     }
 
     /// Surface `id` has damage that waits for a commit.
@@ -1202,6 +1463,11 @@ impl Stage {
         }
         self.clocks.clear();
         self.unmaps.clear();
+        // a layout leg ends where it was heading, as a child's does
+        for (&(root, key), l) in &mut self.layouts {
+            l.run = None;
+            self.stats.layout(root, key, |a| a.running = false);
+        }
         for (id, m) in &mut self.moves {
             let shown = m.wanted && m.settled;
             m.motion = at_rest(m.spec, shown);
@@ -1239,6 +1505,7 @@ impl Stage {
             moves,
             blurs,
             scratch,
+            layouts,
             ..
         } = self;
         let sample = moves
@@ -1282,7 +1549,35 @@ impl Stage {
         };
         let src = front.view(s.glitnir_root, s.src, s.scale);
         let scene = s.scene.as_deref();
-        if sample.scale == 1.0 {
+        let mut runs: Vec<&mut Run> = layouts
+            .iter_mut()
+            .filter(|((r, _), _)| *r == id)
+            .filter_map(|(_, l)| l.run.as_mut().filter(|r| r.t0 != 0))
+            .collect();
+        if !runs.is_empty() {
+            // a layout leg's rectangle is composed from its source, the scene over it as over the front
+            let mut rest = clips.clone();
+            for run in &mut runs {
+                let r = run.leg.rect;
+                rest = rest.iter().flat_map(|c| subtract(*c, r)).collect();
+                let inside: Vec<Rect> = clips
+                    .iter()
+                    .map(|c| c.intersect(&r))
+                    .filter(|c| !c.is_empty())
+                    .collect();
+                let (t_ns, old) = (run.t.saturating_sub(run.t0), &run.capture.px);
+                let Some(leg_src) = run.src.as_mut() else {
+                    continue;
+                };
+                for c in &inside {
+                    let (new, out) = (&front.data, &mut leg_src.data);
+                    compose_leg(&run.leg, t_ns, old, new, out, front.w as usize, *c);
+                }
+                let view = leg_src.view(s.glitnir_root, s.src, s.scale);
+                draw(scene, composer, leg_src, &view, &mut t, &inside, &extras);
+            }
+            draw(scene, composer, front, &src, &mut t, &rest, &extras);
+        } else if sample.scale == 1.0 {
             draw(scene, composer, front, &src, &mut t, &clips, &extras);
         } else {
             // a pop: the picture as it will rest, then scaled about its centre, so the shadow's tiles stretch with it
@@ -1366,6 +1661,18 @@ impl Stage {
                 }
                 m.tick_ns = now;
             }
+        }
+        for (_, l) in self.layouts.iter_mut().filter(|((r, _), _)| *r == id) {
+            let Some(run) = l.run.as_mut().filter(|r| r.ticked) else {
+                continue;
+            };
+            run.ticked = false;
+            ticks = 1;
+            if run.tick_ns != 0 {
+                tick_interval_ns = now - run.tick_ns;
+                late_ticks = u32::from(tick_interval_ns > run.period * 5 / 4);
+            }
+            run.tick_ns = now;
         }
         let (backdrop_px, blur_ns) = self.blurs.get_mut(&id).map_or((0, 0), |b| {
             let took = std::mem::take(&mut b.took_ns);
@@ -1484,7 +1791,8 @@ impl Stage {
 
     /// Drop the fronts of surfaces with no publish for the pool's quiet period and nothing waiting; their windows.
     pub fn trim(&mut self, now: u64) -> Vec<u64> {
-        let kept = self.blur_parents();
+        let mut kept = self.blur_parents();
+        kept.extend(self.leg_roots());
         let mut out = Vec::new();
         for (id, s) in &mut self.surfaces {
             if s.front.is_some()
@@ -1518,6 +1826,10 @@ impl Stage {
         }
         self.moves.remove(&id);
         self.blurs.remove(&id);
+        if !self.layouts.is_empty() {
+            self.layouts.retain(|(r, _), _| *r != id);
+            self.stats.layout_forget(id);
+        }
         self.clocks.remove(&id);
         self.unmaps.retain(|u| *u != id);
         self.keys.remove(&id);
@@ -1827,6 +2139,52 @@ impl WaylandShell {
     pub(super) fn publish_ghost(&mut self, root: u64, id: u64, key: u64) {
         self.presenting.fronts.remove(&id);
         self.motion_post(root, Mail::Ghost(id, key));
+    }
+
+    /// `root` is a top-level: the windows layout legs are for.
+    fn layout_root(&self, root: u64) -> ShellResult {
+        let m = &self.main;
+        if !m.is_window(root) || m.children.contains_key(&root) {
+            return Err(ShellError::State);
+        }
+        Ok(())
+    }
+
+    /// `ShellBackend::layout_capture`.
+    pub(super) fn publish_capture(
+        &mut self,
+        root: u64,
+        key: u64,
+        n: u64,
+        rect: Rect,
+    ) -> ShellResult {
+        self.layout_root(root)?;
+        self.post(Mail::Capture(root, key, n, rect));
+        Ok(())
+    }
+
+    /// `ShellBackend::layout_leg`.
+    pub(super) fn publish_leg(
+        &mut self,
+        root: u64,
+        key: u64,
+        leg: Option<LayoutLeg>,
+    ) -> ShellResult {
+        self.layout_root(root)?;
+        self.motion_post(root, Mail::Leg(root, key, leg));
+        Ok(())
+    }
+
+    /// `ShellBackend::layout_captured`.
+    pub(super) fn publish_ack(&self, root: u64, key: u64) -> ShellResult<LayoutAck> {
+        self.layout_root(root)?;
+        Ok(self.presenting.stats.layout_ack(root, key))
+    }
+
+    /// Test hook: a layout leg whose frames would compose more than `px` pixels is skipped.
+    #[doc(hidden)]
+    pub fn layout_budget(&mut self, px: u64) {
+        self.post(Mail::LegBudget(px));
     }
 }
 

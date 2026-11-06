@@ -301,6 +301,41 @@ DEFUN ("glitnir--now-ns", Fglitnir__now_ns, Sglitnir__now_ns, 0, 0, 0,
 #endif
 }
 
+DEFUN ("glitnir--layout-leg", Fglitnir__layout_leg, Sglitnir__layout_leg,
+       2, 2, 0,
+       doc: /* Hand WINDOW's layout leg VECTOR to the shell.
+VECTOR is what `glitnir--leg-vector' gives, or nil for none.  Return the
+number of the newest capture the presenter took of WINDOW, 0 for none,
+or nil when its frame has no layout legs (another display, a frame that
+is not a top-level, a shell without them).  */)
+  (Lisp_Object window, Lisp_Object vector)
+{
+  struct window *w = decode_live_window (window);
+#ifdef HAVE_NHWL
+  struct frame *f = XFRAME (w->frame);
+  if (!FRAME_NHWL_P (f) || !FRAME_NHWL_OUTPUT (f)->glitnir_id)
+    return Qnil;
+  ptrdiff_t n = VECTORP (vector) ? ASIZE (vector) : 0;
+  float *v;
+  USE_SAFE_ALLOCA;
+  SAFE_NALLOCA (v, 1, n);
+  for (ptrdiff_t i = 0; i < n; i++)
+    v[i] = NUMBERP (AREF (vector, i)) ? XFLOATINT (AREF (vector, i)) : 0;
+  uint64_t captured = 0;
+  block_input ();
+  int32_t rc = NHG (nhg_layout_leg (FRAME_NHG (f), nhwl_frame_window (f),
+				    FRAME_NHWL_OUTPUT (f)->glitnir_id,
+				    w->sequence_number, v, n, &captured));
+  unblock_input ();
+  SAFE_FREE ();
+  return rc < 0 ? Qnil : make_uint (captured);
+#else
+  (void) w;
+  (void) vector;
+  return Qnil;
+#endif
+}
+
 DEFUN ("glitnir--last-paint", Fglitnir__last_paint, Sglitnir__last_paint,
        0, 1, 0,
        doc: /* Return the times of the newest recorded paint of FRAME's root frame, or nil.
@@ -564,6 +599,7 @@ syms_of_nidhogg_glitnir (void)
   defsubr (&Sglitnir__draw_count);
   defsubr (&Sglitnir__now_ns);
   defsubr (&Sglitnir__last_paint);
+  defsubr (&Sglitnir__layout_leg);
   defsubr (&Sglitnir__stacking);
   defsubr (&Sglitnir__chrome);
   defsubr (&Sglitnir__rechrome);

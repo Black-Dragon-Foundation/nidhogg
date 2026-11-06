@@ -15,6 +15,7 @@ use crate::wayland::MainState;
 use crate::wayland::WaylandShell;
 use crate::wayland::serial::SerialKind;
 use glitnir::geom::Rect;
+use glitnir::layout::LayoutLeg;
 use glitnir::motion::MotionSpec;
 use std::sync::atomic::Ordering;
 use wayland_client::protocol::wl_surface::WlSurface;
@@ -373,6 +374,21 @@ impl ShellBackend for WaylandShell {
     fn set_backdrop(&mut self, id: WindowId, blur_px: f32) -> ShellResult {
         self.live()?;
         self.window_set_backdrop(id, blur_px)
+    }
+
+    fn layout_capture(&mut self, root: WindowId, key: u64, n: u64, rect: Rect) -> ShellResult {
+        self.live()?;
+        self.publish_capture(root, key, n, rect)
+    }
+
+    fn layout_leg(&mut self, root: WindowId, key: u64, leg: Option<LayoutLeg>) -> ShellResult {
+        self.live()?;
+        self.publish_leg(root, key, leg)
+    }
+
+    fn layout_captured(&self, root: WindowId, key: u64) -> ShellResult<LayoutAck> {
+        self.live()?;
+        self.publish_ack(root, key)
     }
 
     fn window_grabbed(&self, id: WindowId) -> ShellResult<bool> {
