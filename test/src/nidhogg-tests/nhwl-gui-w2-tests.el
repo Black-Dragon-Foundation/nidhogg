@@ -1495,6 +1495,68 @@ returns `copy'."
                                                       :false-object nil :null-object nil)))))
       (cons (alist-get 'width r) (alist-get 'height r)))))
 
+(ert-deftest nhwl-gui/live-sway-resize-reaches-the-frame ()
+  "Every `swaymsg resize' of the floating frame gives it the size asked, at every scale: twenty steps between a narrow
+and a wide size, as budgets.sh's `resize-stuck' row takes them, each one asked once the one before has reached the
+frame and sway has used the frame's answer (pattern C: the frame's size and the presenter's counters are the answer
+waited for).  Sway sizes a floating window by its commits: one that comes after the next resize was asked overwrites
+that resize, which sway then never sends, so a step asked before the answer to the one before is lost on sway's side.
+A person cannot resize that fast."
+  :tags '(runs-last)
+  (skip-unless (and (nhwl-gui--live-p) (equal (glitnir-gui--compositor) "sway") (executable-find "swaymsg")))
+  (let ((old (frame-parameter nil 'fullscreen)) (s (frame-scale-factor))
+        (now (lambda () (list (frame-pixel-width) (frame-pixel-height)))))
+    (unwind-protect
+        (progn
+          (nhwl-gui--set-fullscreen nil)
+          (dotimes (i 20)
+            (let* ((w (+ 500 (* (% i 2) 160) (* (% (/ i 2) 5) 12))) (h (+ 400 (* (% i 2) 100)))
+                   (want (list (round (* w s)) (round (* h s)))))
+              (call-process "swaymsg" nil nil nil
+                            (format "[pid=%d] resize set width %d px height %d px" (emacs-pid) w h))
+              (nhwl-gui--wait (lambda () (gui-runner-read-all) (and (equal (funcall now) want) (nhwl-gui--shown-p))) 5)
+              ;; sway's own record of the window says which side lost the step: a rectangle of the asked size is a
+              ;; configure the frame did not take, another one a resize sway dropped
+              (ert-info ((format "step %d: %d x %d logical; sway's size %S" i w h (nhwl-gui--sway-size)))
+                (should (equal (funcall now) want))))))
+      (nhwl-gui--set-fullscreen old)
+      (nhwl-gui--live-settle))))
+
+(defun nhwl-gui--sway-size ()
+  "The (W H) of this Nidhogg's window in sway's tree, layout (logical) pixels, or nil."
+  (with-temp-buffer
+    (when (eq 0 (call-process "swaymsg" nil t nil "-t" "get_tree"))
+      (let ((r (alist-get 'rect (nhwl-gui--sway-node
+                                 (json-parse-string (buffer-string) :object-type 'alist :array-type 'list
+                                                    :false-object nil :null-object nil)
+                                 (emacs-pid)))))
+        (and r (list (alist-get 'width r) (alist-get 'height r)))))))
+
+(ert-deftest nhwl-gui/live-sway-resize-burst-ends-at-the-last-size ()
+  "A burst of `swaymsg resize' steps with no wait between them (a script, a relayout, an edge dragged fast) leaves the
+frame at the last size asked, and sway's rectangle and the frame agree once the frame's answer is used: no step's late
+commit may stand for the size.  Pattern C: the frame's size and the presenter's counters are the answer waited for."
+  :tags '(runs-last)
+  (skip-unless (and (nhwl-gui--live-p) (equal (glitnir-gui--compositor) "sway") (executable-find "swaymsg")))
+  (let* ((old (frame-parameter nil 'fullscreen)) (s (frame-scale-factor))
+         (now (lambda () (list (frame-pixel-width) (frame-pixel-height))))
+         (steps '((500 400) (660 500) (512 400) (672 500) (524 400) (684 500) (536 400) (640 480)))
+         (last (car (last steps)))
+         (want (list (round (* (car last) s)) (round (* (cadr last) s)))))
+    (unwind-protect
+        (progn
+          (nhwl-gui--set-fullscreen nil)
+          (dolist (st steps)
+            (call-process "swaymsg" nil nil nil
+                          (format "[pid=%d] resize set width %d px height %d px" (emacs-pid) (car st) (cadr st))))
+          (nhwl-gui--wait (lambda () (gui-runner-read-all) (and (equal (funcall now) want) (nhwl-gui--shown-p))) 5)
+          (ert-info ((format "asked %S last; frame %S device px; sway's size %S" last (funcall now)
+                             (nhwl-gui--sway-size)))
+            (should (equal (funcall now) want))
+            (should (equal (nhwl-gui--sway-size) last))))
+      (nhwl-gui--set-fullscreen old)
+      (nhwl-gui--live-settle))))
+
 (ert-deftest nhwl-gui/live-drag-between-two-nidhoggs ()
   "On sway, text dragged out of this Nidhogg onto a second `nidhogg -Q' is inserted there, and the call returns
 `copy'; the trace rules (errors, dnd) judge what was sent.  The session's frame is fullscreen and gui.sh's sway floats

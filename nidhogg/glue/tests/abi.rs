@@ -823,6 +823,7 @@ PROTO (nhg_set_cursor_theme, int32_t (NhgDisplay *, const char *, uint32_t));";
         let rows: &[(&str, i64)] = &[
             ("NHG_CHILD_VISIBLE", NHG_CHILD_VISIBLE.into()),
             ("NHG_CHILD_NO_FOCUS", NHG_CHILD_NO_FOCUS.into()),
+            ("NHG_CHILD_REDRAW", NHG_CHILD_REDRAW.into()),
             ("sizeof (NhgFrameGeom)", size_of::<NhgFrameGeom>() as i64),
             (
                 "offsetof (NhgFrameGeom, window)",
