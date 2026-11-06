@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Glitnir's checks: fmt, clippy, tests, licence policy, vendor drift.  The crate directory is never written.
+# Glitnir's checks: fmt, clippy, tests, licence policy, vendor drift (when a vendor/ is unpacked).  The crate directory
+# is never written.  Cargo runs --locked: with a vendor/ and its .cargo/config.toml (nidhogg-vendor-VERSION.tar.zst
+# unpacked in nidhogg/) it needs no network, without them it fetches the locked crates into CARGO_HOME.
 # Usage: check.sh [--container DISTRO] [--test NAME] [--android]   Exit 0 ok, 1 "check.sh: FAIL <check>", 2 usage.
 # --android checks only that the crate with its image decoders builds for aarch64-linux-android (the Android door,
 # gate 53): it needs that target's std (rustup target add aarch64-linux-android), which Fedora's packages lack.
@@ -37,7 +39,7 @@ if [ -n "$DISTRO" ] && [ "$INNER" = 0 ]; then
   trap cleanup EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  inner="bash /crate/check.sh --inner${TEST:+ --test $TEST}$( [ "$ANDROID" = 0 ] || echo " --android")"
+  inner="bash /nh/glitnir/check.sh --inner${TEST:+ --test $TEST}$( [ "$ANDROID" = 0 ] || echo " --android")"
   IMAGE=""
   if [ "$DISTRO" = fedora-45 ]; then
     # the check image (deps/fedora-45.check), built here once: no package manager runs
@@ -47,7 +49,7 @@ if [ -n "$DISTRO" ] && [ "$INNER" = 0 ]; then
     IMAGE=registry.fedoraproject.org/fedora:${DISTRO#fedora-}
   fi
   podman run --rm --name "$NAME" --memory 2g --memory-swap 2g \
-    -v "$HERE:/crate:ro,z" -v "$CARGO_DIR:/cargo:Z" "${EXTRA[@]}" \
+    -v "$(cd "$HERE/.." && pwd):/nh:ro,z" -v "$CARGO_DIR:/cargo:Z" "${EXTRA[@]}" \
     -e CARGO_HOME=/cargo/home -e CARGO_TARGET_DIR=/cargo/target \
     "$IMAGE" bash -euo pipefail -c "$inner" &
   pid=$!
@@ -66,41 +68,29 @@ if [ "$ANDROID" = 1 ]; then
   sysroot=$(rustc --print sysroot)
   [ -d "$sysroot/lib/rustlib/aarch64-linux-android" ] ||
     fail "android (no std for aarch64-linux-android: rustup target add aarch64-linux-android)"
-  cargo check --offline --locked --target aarch64-linux-android --features images || fail android
+  cargo check --locked --target aarch64-linux-android --features images || fail android
   echo "check.sh: android ok"
   exit 0
 fi
 
 cargo fmt --check                                                   || fail fmt
-cargo clippy --all-targets --offline --locked -- -D warnings        || fail clippy
-cargo test --offline --locked ${TEST:+"$TEST"}                      || fail test
+cargo clippy --all-targets --locked -- -D warnings                  || fail clippy
+cargo test --locked ${TEST:+"$TEST"}                                || fail test
 # the pixman oracle: the kernels' OVER against pixman_image_composite32, bit for bit (Linux, where pixman is)
 if [ "$(uname -s)" = Linux ]; then
-  cargo test --offline --locked --features pixman-oracle ${TEST:+"$TEST"} || fail test-pixman-oracle
+  cargo test --locked --features pixman-oracle ${TEST:+"$TEST"} || fail test-pixman-oracle
 fi
 if command -v cargo-deny >/dev/null 2>&1; then
   cargo deny check licenses bans sources                            || fail deny
 else
   echo "check.sh: cargo-deny not on PATH, skipping the licence check"
 fi
-# vendor drift: every vendored file is the one its .cargo-checksum.json lists, and no file is unlisted; then a copy
-# vendored offline from vendor/ itself is compared with it, which shows a locked crate missing or a directory no
-# lock entry needs.  Re-vendoring a directory source drops the dot files and Cargo.toml.orig and rewrites the
-# checksum lists (it does not check them), so those are not compared.
-SHA256="sha256sum"
-command -v sha256sum >/dev/null 2>&1 || SHA256="shasum -a 256"
-for d in vendor/*/; do
-  sums=$(grep -o '"[^"]*":"[0-9a-f]\{64\}"' "$d.cargo-checksum.json" | grep -v '^"package":' |
-           sed 's/^"\(.*\)":"\(.*\)"$/\2  \1/')
-  ( cd "$d" && printf '%s\n' "$sums" | $SHA256 -c - >/dev/null )   || fail "vendor-checksum $d"
-  [ "$(printf '%s\n' "$sums" | cut -c67- | sort)" = \
-    "$(cd "$d" && find . -type f ! -name .cargo-checksum.json | sed 's|^\./||' | sort)" ] || fail "vendor-files $d"
-done
-copy="$CARGO_TARGET_DIR/vendor-check"
-rm -rf "$copy" && mkdir -p "$copy"
-for f in Cargo.toml Cargo.lock build.rs src include; do cp -r "$f" "$copy/" || fail vendor; done
-( cd "$copy" && cargo vendor --locked --offline --respect-source-config \
-    --config "source.crates-io.replace-with='vendored-sources'" \
-    --config "source.vendored-sources.directory='$HERE/vendor'" vendor >/dev/null ) || fail vendor
-diff -r -x '.*' -x Cargo.toml.orig "$copy/vendor" vendor              || fail vendor-drift
+# vendor drift: when a vendor/ is unpacked here (the release's nidhogg-vendor-VERSION.tar.zst), it must be the lock's
+# packages and nothing else, every file as its .cargo-checksum.json lists it (ci/vendor.sh check).  Without one the
+# checks above fetched the locked crates, and there is nothing to compare.
+if [ -d vendor ]; then
+  bash ../ci/vendor.sh check .. glitnir                              || fail vendor-drift
+else
+  echo "check.sh: no vendor/ here, the crates came from crates.io: vendor drift not checked"
+fi
 echo "check.sh: ok"
