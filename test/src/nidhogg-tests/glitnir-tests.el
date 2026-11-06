@@ -283,6 +283,28 @@
         (run-hook-with-args 'nhwl-settings-changed-functions 'reduced-motion 1)
         (should refreshed)))))
 
+;; test-pattern: D (pure)
+(ert-deftest glitnir-reduced-motion-override ()
+  (glitnir-test--as-child '((transition . pop))
+    ;; t forces zero legs with the portal at 0
+    (let ((glitnir-reduced-motion t))
+      (glitnir-test--with-reduced-motion 0
+        (let ((v (glitnir--chrome-vector (selected-frame))))
+          (should (= (aref v 8) 0))
+          (should (= (aref v 14) 0)))))
+    ;; nil forces motion with the portal at 1
+    (let ((glitnir-reduced-motion nil))
+      (glitnir-test--with-reduced-motion 1
+        (let ((v (glitnir--chrome-vector (selected-frame))))
+          (should (= (aref v 8) 2))
+          (should (= (aref v 14) 1)))))
+    ;; auto follows the portal
+    (let ((glitnir-reduced-motion 'auto))
+      (glitnir-test--with-reduced-motion 1
+        (should (= (aref (glitnir--chrome-vector (selected-frame)) 8) 0)))
+      (glitnir-test--with-reduced-motion 0
+        (should (= (aref (glitnir--chrome-vector (selected-frame)) 8) 2))))))
+
 ;; Window cards: the window parameters resolve into a vector C lists with the window.
 
 (defmacro glitnir-test--with-window-params (params &rest body)

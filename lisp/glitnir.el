@@ -235,6 +235,23 @@ SH is what `glitnir--shadow' gives, or nil."
       (aset v 6 (min 1 (max 0 (plist-get sh :opacity))))
       (aset v 7 (glitnir--rgb (plist-get sh :color))))))
 
+(defcustom glitnir-reduced-motion 'auto
+  "Whether child-frame transitions are turned off.
+`auto' follows the desktop's reduced-motion setting; t always turns
+them off, nil never does."
+  :type '(choice (const :tag "Follow the desktop" auto)
+                 (const :tag "Always reduce" t)
+                 (const :tag "Never reduce" nil))
+  :version "31.1"
+  :group 'glitnir)
+
+(defun glitnir--reduced-motion-p ()
+  "Non-nil when transitions are off, by `glitnir-reduced-motion'."
+  (if (eq glitnir-reduced-motion 'auto)
+      (and (fboundp 'nhwl-settings-get)
+           (eql (nhwl-settings-get 'reduced-motion) 1))
+    glitnir-reduced-motion))
+
 (defun glitnir--chrome-vector (frame)
   "Return FRAME's chrome as a vector of numbers, or nil for a root frame.
 The slots are `glitnir--chrome-slots'.  Slots 0-7 come from `glitnir--resolve',
@@ -249,7 +266,7 @@ frame with no chrome has a vector whose first slot is 0."
            (v (make-vector (length glitnir--chrome-slots) 0)))
       (unless (or (null blur) (and (numberp blur) (>= blur 0)))
         (signal 'wrong-type-argument (list 'glitnir-backdrop-blur blur)))
-      (when (and (fboundp 'nhwl-settings-get) (eql (nhwl-settings-get 'reduced-motion) 1))
+      (when (glitnir--reduced-motion-p)
         (setcar tr 0)
         (setcar (nthcdr 6 tr) 0))
       (dotimes (i 12) (aset v (+ 8 i) (nth i tr)))
@@ -421,6 +438,9 @@ its first window)."
   (glitnir-refresh))
 (add-hook 'enable-theme-functions #'glitnir--theme-refresh)
 (add-hook 'disable-theme-functions #'glitnir--theme-refresh)
+(add-variable-watcher
+ 'glitnir-reduced-motion
+ (lambda (&rest _) (run-at-time 0 nil #'glitnir-refresh)))
 (add-variable-watcher
  'child-frame-chrome
  (lambda (&rest _) (run-at-time 0 nil #'glitnir-refresh)))
