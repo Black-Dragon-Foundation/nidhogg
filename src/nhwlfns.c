@@ -481,7 +481,7 @@ nhwl_set_undecorated (struct frame *f, Lisp_Object new_value,
 
 /* A child frame's layout, margin, position and stacking are the glue's
    (child.rs; nhwlterm.c pushes its facts).  Here: its parameters, and the
-   chrome `glitnir--resolve' gives it.  */
+   chrome `glitnir--chrome-vector' gives it, or a top-level.  */
 
 /* Copy the numbers of `glitnir--chrome-vector's value V into OUT (also a
    window card's, nhwlterm.c); the glue checks them.  A non-number or a
@@ -497,10 +497,10 @@ nhwl_chrome_vector (Lisp_Object v, float *out)
 }
 
 /* Take the chrome from `glitnir--chrome-vector' (called after the frame's
-   parameters changed) and hand it to the glue; adapted from Nidhogg's
-   glitnir_pgtk_params_changed.  A change lays the frame out again (the
-   shadow's margin) and draws it again.  The chrome is kept for the
-   window's next making (nhwl_child_created).  */
+   parameters changed; a top-level's is its `toplevel-chrome') and hand it
+   to the glue; adapted from glitnir_pgtk_params_changed.  A change lays the
+   frame out again (the shadow's margin) and draws it again.  The chrome is
+   kept for the window's next making (nhwl_child_created).  */
 static void nhwl_idle_param_changed (struct frame *);
 
 void
@@ -512,7 +512,8 @@ nhwl_child_params_changed (struct frame *f)
 
   nhwl_popup_params_changed (f);
   nhwl_idle_param_changed (f);
-  if (busy || !nhwl_child_p (f) || NILP (Ffboundp (Qglitnir__chrome_vector)))
+  if (busy || !FRAME_NHWL_P (f) || !f->output_data.nhwl
+      || nhwl_popup_frame_p (f) || NILP (Ffboundp (Qglitnir__chrome_vector)))
     return;
   out = FRAME_NHWL_OUTPUT (f);
   XSETFRAME (frame, f);
@@ -1273,7 +1274,7 @@ DEFUN ("x-create-frame", Fx_create_frame, Sx_create_frame, 1, 1, 0,
      and similar functions.  */
   Vwindow_list = Qnil;
 
-  /* A child frame's chrome, now that all its parameters are in the alist.  */
+  /* The frame's chrome, now that all its parameters are in the alist.  */
   nhwl_child_params_changed (f);
 
   return unbind_to (count, frame);
@@ -2641,23 +2642,24 @@ FRAME defaults to the selected frame.  */)
   return rc >= 0 ? make_string (buf, len) : Qnil;
 }
 
-DEFUN ("nhwl-system-bell-p", Fnhwl_system_bell_p, Snhwl_system_bell_p, 0, 1, 0,
-       doc: /* Return non-nil if the compositor offers a system bell.
-That is the xdg_system_bell_v1 protocol on DISPLAY (a display name or a
-frame; the selected frame's by default).  Without it `ding' does not sound
-on a shell frame, whatever `visible-bell' says.  */)
-  (Lisp_Object display)
+DEFUN ("nhwl--offers-p", Fnhwl__offers_p, Snhwl__offers_p, 1, 2, 0,
+       doc: /* Return non-nil if the compositor offers WHAT on DISPLAY now.
+WHAT is `system-bell' (xdg_system_bell_v1) or `server-decorations'
+\(xdg-decoration, unless client-side decorations are forced).  DISPLAY is
+a display name or a frame; the selected frame's by default.  */)
+  (Lisp_Object what, Lisp_Object display)
 {
   struct nhwl_display_info *dpyinfo = check_nhwl_display_info (display);
   NhgCaps caps;
   int32_t rc;
 
-  if (!dpyinfo->glue)
-    return Qnil;
   block_input ();
-  rc = nhwl_glue_rc (dpyinfo, NHG (nhg_caps (dpyinfo->glue, &caps)));
+  rc = (dpyinfo->glue
+	? nhwl_glue_rc (dpyinfo, NHG (nhg_caps (dpyinfo->glue, &caps))) : -1);
   unblock_input ();
-  return rc >= 0 && caps.system_bell ? Qt : Qnil;
+  return (rc >= 0
+	  && (EQ (what, intern_c_string ("system-bell")) ? caps.system_bell
+	      : caps.xdg_decoration && !caps.force_csd) ? Qt : Qnil);
 }
 
 /***********************************************************************
@@ -3439,7 +3441,7 @@ syms_of_nhwlfns (void)
   DEFSYM (Qinhibit_idle, "inhibit-idle");
   defsubr (&Snhwl_frame_export_handle);
   defsubr (&Snhwl_activation_token);
-  defsubr (&Snhwl_system_bell_p);
+  defsubr (&Snhwl__offers_p);
   DEFSYM (Qsession_name, "session-name");
   DEFSYM (Qnhwl_session_start, "nhwl-session-start");
   DEFSYM (Qnhwl_session_name, "nhwl-session-name");

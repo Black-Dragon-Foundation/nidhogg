@@ -155,12 +155,13 @@ enum
 /* A rectangle in device pixels; empty when w <= 0 or h <= 0.  Layout equals GlitnirRect.  */
 typedef struct { int32_t x, y, w, h; } NhgRect;
 
-#define NHG_GEOM_LAYER_CHANGED  1   /* the layer's rectangle or chrome changed (the glue sets it for a child frame) */
+#define NHG_GEOM_LAYER_CHANGED  1   /* the layer's rectangle or chrome changed (the glue sets it for a chromed frame) */
 #define NHG_GEOM_FRESH          2   /* the backing starts over in BG_ARGB, keeping nothing */
 
 /* A frame's geometry as C reads it before a call.  The backing is the native area plus the border L, T, R, B (the
-   title strip and the margins), at least 1 x 1.  WINDOW is the frame's shell window (0: none): for a child frame,
-   nhg_layer_ensure puts the layer inside the shadow margin and hands the layer the child's chrome (child.rs).  */
+   title strip and the margins), at least 1 x 1.  WINDOW is the frame's shell window (0: none): for a child frame, or
+   an undecorated top-level that keeps its margins, nhg_layer_ensure puts the layer inside the margin and hands the
+   layer the frame's chrome (child.rs).  */
 typedef struct
 {
   int32_t native_w, native_h;   /* the frame's pixel size */
@@ -423,8 +424,10 @@ typedef struct
 int32_t nhg_csd_style (NhgDisplay *d, const uint32_t *left, size_t nleft, const uint32_t *right, size_t nright);
 /* Lay WINDOW's border out again from the compositor's decoration answer, the toplevel's states, SCALE120 (0: 120)
    and FLAGS: 1 when it changed (C garbages the frame), 0 when not, the layout in *OUT (OUT may be NULL).  Sets the
-   frame's CSD fact.  A child frame's border is its shadow margin instead, from its chrome and SCALE120 (no strip).
-   When a top-level's border changes, its child frames are placed again.  */
+   frame's CSD fact.  An undecorated top-level where the compositor offers no server-side decorations keeps the resize
+   margins without the strip (ON 0), wider while it floats where its chrome's shadow needs room.  A child frame's border
+   is its shadow margin instead, from its chrome and SCALE120 (no strip).  When a top-level's border changes, its
+   child frames are placed again.  */
 int32_t nhg_csd_layout (NhgDisplay *d, uint64_t window, uint32_t scale120, uint32_t flags, NhgCsdLayout *out);
 /* WINDOW's offsets around its native area: OUT gets L, T, R, B (a child frame's: its shadow margin).  */
 int32_t nhg_frame_offsets (NhgDisplay *d, uint64_t window, int32_t out[4]);
@@ -722,7 +725,8 @@ int32_t nhg_child_set (NhgDisplay *d, uint64_t window, uint64_t parent, int32_t 
 /* WINDOW's chrome as glitnir--chrome-vector gave it now: V holds N floats, N == NHG_CHROME_SLOTS.  NHG_E_ARG when N is
    wrong or a slot is out of range.  1 when the shadow or corners (slots ON to RGB) changed (C lays the frame out again,
    nhg_csd_layout, and garbages it), 0 when not (a change of motion or backdrop alone is 0).  The layer takes it at the
-   next nhg_layer_ensure.  */
+   next nhg_layer_ensure.  A top-level's (its toplevel-chrome) gives corners and a shadow only, and 1 only while it
+   keeps its margins undecorated; a tip's or a popup's is ignored (0).  */
 int32_t nhg_child_chrome (NhgDisplay *d, uint64_t window, const float *v, size_t n);
 
 /* WINDOW's border as C painted it now: WIDTH device pixels (0: none) in premultiplied ARGB.  1 when it changed (the

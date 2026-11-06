@@ -9,6 +9,13 @@
 //! frame has no border, a maximized one only the strip, and a tiled side no margin.  Everything is device pixels
 //! except the protocol (the strip's 32 and the margin's 8 are logical).
 //!
+//! An undecorated top-level where the compositor offers no server-side decorations at all (GNOME's mutter has no
+//! `xdg-decoration`) is "framed": no strip, the same resize margins, and, while it floats, room in them for the
+//! shadow of its chrome (`toplevel-chrome`, which `child.rs` keeps): its Glitnir layer is the native area, with the
+//! corners and the shadow, so the margins show the shadow over nothing.  The input region is then the window and the
+//! resize margins around it.  Where the compositor offers server-side decorations (sway, KWin) an undecorated frame
+//! draws none of this.
+//!
 //! The facts it reads: the scale and `undecorated` are pulled (arguments of `nhg_csd_layout`), the title
 //! and what else C paints from is pulled as one hash (`nhg_csd_paint`), the native size is pulled at each paint, and
 //! the toplevel's states are the glue's own configure state.  Hit tests use the native size of the last paint, the
@@ -121,6 +128,12 @@ struct Look {
 pub struct Csd {
     /// The compositor offers no server decorations, and the frame is decorated.
     pub on: bool,
+    /// An undecorated top-level where the compositor offers no server decorations: margins without a strip.
+    framed: bool,
+    /// The margins in logical pixels (L, T without the strip, R, B): the window geometry's and the input region's.
+    logical: [i32; 4],
+    /// The input region last sent (logical; `[0; 4]`: none, the whole surface), if any.
+    region: Option<[i32; 4]>,
     /// The scale times 120 of the last layout (0: none yet, as 120).
     s120: u32,
     /// M: the resize margin of a side that has one (none when maximized, and none on a tiled side); L, R, B the
@@ -173,7 +186,7 @@ impl Csd {
         if self.s120 == 0 { 120 } else { self.s120 }
     }
 
-    fn offsets(&self) -> [i32; 4] {
+    pub(crate) fn offsets(&self) -> [i32; 4] {
         [self.l, self.t, self.r, self.b]
     }
 
@@ -219,7 +232,7 @@ fn buttons(style: &Style, c: &Csd, w: i32) -> ([(u32, i32); NHG_CSD_MAX_BUTTONS]
 
 /// Where the surface point (`dx`, `dy`) lies, for the native size of the last paint.
 fn hit(style: &Style, c: &Csd, dx: f64, dy: f64) -> Region {
-    if !c.on {
+    if !c.on && !c.framed {
         return Region::None;
     }
     let (w, h) = (c.width(c.native.0), c.native.1 + c.t + c.b);
@@ -332,19 +345,41 @@ fn geometry(c: &Csd, child: bool) -> Option<[i32; 4]> {
     if child {
         return None;
     }
+    let g = window_rect(c);
+    (g[2] > 0 && g[3] > 0 && c.geom != Some(g)).then_some(g)
+}
+
+/// The window geometry for the native size of the last paint (`geometry`).
+fn window_rect(c: &Csd) -> [i32; 4] {
     let s120 = c.s120();
     let sw = glitnir::snap::viewport_size(c.width(c.native.0), s120).0;
     let sh = glitnir::snap::viewport_size(c.native.1 + c.t + c.b, s120).0;
-    let ml = if c.l != 0 { MARGIN } else { 0 };
-    let mr = if c.r != 0 { MARGIN } else { 0 };
-    let mt = if c.t > c.strip { MARGIN } else { 0 };
-    let mb = if c.b != 0 { MARGIN } else { 0 };
-    let g = if c.on {
+    let [ml, mt, mr, mb] = c.logical;
+    if c.on || c.framed {
         [ml, mt, sw - ml - mr, sh - mt - mb]
     } else {
         [0, 0, sw, sh]
+    }
+}
+
+/// The input region to send now, if it changed (logical): a framed window's margins hold room for its shadow, so it
+/// is the window geometry and the resize margins around it; otherwise none (`[0; 4]`: the whole surface, the
+/// default, which is not sent before a region was).
+fn region(c: &Csd) -> Option<[i32; 4]> {
+    let band = |m: i32| m.min(MARGIN);
+    let [ml, mt, mr, mb] = c.logical;
+    let r = if c.framed && c.logical.iter().any(|&m| m > MARGIN) {
+        let g = window_rect(c);
+        [
+            g[0] - band(ml),
+            g[1] - band(mt),
+            g[2] + band(ml) + band(mr),
+            g[3] + band(mt) + band(mb),
+        ]
+    } else {
+        [0; 4]
     };
-    (g[2] > 0 && g[3] > 0 && c.geom != Some(g)).then_some(g)
+    (c.region.unwrap_or([0; 4]) != r).then_some(r)
 }
 
 fn check_size(w: i32, h: i32) -> Result<(), GlueError> {
@@ -397,13 +432,20 @@ pub fn layout(
     if state.frame(window)?.flags & NHG_FRAME_CHILD != 0 {
         return crate::child::layout(state, window, s120);
     }
-    // the window's own answer: the compositor may grant one window server decorations and refuse another
+    // the window's own answer: the compositor may grant one window server decorations and refuse another; an
+    // undecorated window asks for none, so whether the compositor offers them at all is its caps'
     let ssd = state.backend().window_ssd(window);
+    let caps = state.backend().caps();
+    let offered = caps.xdg_decoration != 0 && !caps.force_csd;
+    let undecorated = flags & NHG_CSD_UNDECORATED != 0;
     let f = state.frame_mut(window)?;
     let states = f.cfg.states;
+    // the room the chrome's shadow needs, logical (`child::margins` at scale 1)
+    let room = crate::child::margins(&f.child.chrome, 120);
     let c = &mut f.csd;
     c.s120 = s120;
-    c.on = matches!(ssd, Ok(false)) && flags & NHG_CSD_UNDECORATED == 0;
+    c.on = matches!(ssd, Ok(false)) && !undecorated;
+    c.framed = matches!(ssd, Ok(false)) && undecorated && !offered;
     if c.on {
         f.facts.flags |= NHG_FACT_CSD;
     } else {
@@ -411,20 +453,41 @@ pub fn layout(
     }
     let s120 = c.s120();
     let (mut m, mut strip) = (0, 0);
-    if c.on && states & NHSHELL_STATE_FULLSCREEN == 0 {
-        strip = to_device(STRIP, s120);
+    if (c.on || c.framed) && states & NHSHELL_STATE_FULLSCREEN == 0 {
+        if c.on {
+            strip = to_device(STRIP, s120);
+        }
         if states & NHSHELL_STATE_MAXIMIZED == 0 {
-            m = to_device(MARGIN, s120);
+            m = MARGIN;
         }
     }
-    let side = |tiled: u32| if states & tiled != 0 { 0 } else { m };
+    // a framed window's margins also hold its shadow while it floats; maximized, fullscreen or tiled it has none
+    let room = if c.framed && states & KEEP == 0 {
+        room
+    } else {
+        [0; 4]
+    };
+    let side = |tiled: u32, k: usize| {
+        if states & tiled != 0 || m == 0 {
+            0
+        } else {
+            m.max(room[k])
+        }
+    };
+    c.logical = [
+        side(NHSHELL_STATE_TILED_L, 0),
+        side(NHSHELL_STATE_TILED_T, 1),
+        side(NHSHELL_STATE_TILED_R, 2),
+        side(NHSHELL_STATE_TILED_B, 3),
+    ];
+    let d = |v: i32| to_device(v, s120);
     let new = (
-        m,
+        d(m),
         strip,
-        side(NHSHELL_STATE_TILED_L),
-        side(NHSHELL_STATE_TILED_T) + strip,
-        side(NHSHELL_STATE_TILED_R),
-        side(NHSHELL_STATE_TILED_B),
+        d(c.logical[0]),
+        d(c.logical[1]) + strip,
+        d(c.logical[2]),
+        d(c.logical[3]),
     );
     let changed = new != (c.m, c.strip, c.l, c.t, c.r, c.b);
     if changed {
@@ -509,8 +572,8 @@ pub fn fit_size(
     None
 }
 
-/// The states in which the compositor sets the window's size.
-const KEEP: u32 = NHSHELL_STATE_MAXIMIZED
+/// The states in which the compositor sets the window's size (and a framed window shows no chrome).
+pub(crate) const KEEP: u32 = NHSHELL_STATE_MAXIMIZED
     | NHSHELL_STATE_FULLSCREEN
     | NHSHELL_STATE_TILED_L
     | NHSHELL_STATE_TILED_R
@@ -603,6 +666,14 @@ pub fn paint(
         // as C did, a failed request is tried again at the next publish
         if backend.set_geometry(window, g[0], g[1], g[2], g[3]).is_ok() {
             c.geom = Some(g);
+        }
+    }
+    // a framed window's input region, for the commit of this publish (a child's is `child::sync`'s)
+    if let Some(r) = region(c).filter(|_| !child) {
+        let rect = [glitnir::geom::Rect::new(r[0], r[1], r[2], r[3])];
+        let rects = if r[2] != 0 { &rect[..] } else { &[][..] };
+        if backend.set_input_region(window, rects).is_ok() {
+            c.region = Some(r);
         }
     }
     if !c.on || c.t + c.b == 0 {
@@ -838,6 +909,12 @@ impl Csd {
     pub fn buttons_state(&self) -> (u32, u32) {
         (self.hover, self.down)
     }
+
+    /// Whether the frame is an undecorated top-level that keeps its margins (no server decorations offered), as of
+    /// its last layout.
+    pub fn framed(&self) -> bool {
+        self.framed
+    }
 }
 
 impl Csd {
@@ -850,7 +927,7 @@ impl Csd {
     /// it changed.
     pub(crate) fn set_margins(&mut self, s120: u32, m: [i32; 4]) -> bool {
         self.s120 = s120;
-        self.on = false;
+        (self.on, self.framed, self.logical) = (false, false, [0; 4]);
         let changed = m != self.offsets() || self.strip != 0 || self.m != 0;
         if changed {
             (self.m, self.strip) = (0, 0);

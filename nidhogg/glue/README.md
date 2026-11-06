@@ -116,9 +116,19 @@ The client-side title bar (`src/csd.rs`, from `nhwlcsd.c`) is laid out, hit-test
   toplevel's states from its own configure state, and sets the frame's CSD fact itself (C no longer pushes it). C keeps
   a copy of the offsets for its drawing (`struct nhwl_csd`). A child frame's border is its shadow margin
   (`src/child.rs`).
+- **Undecorated:** where the compositor offers no server-side decorations at all (its caps: no `xdg-decoration`, or
+  forced client-side; GNOME's mutter), an undecorated top-level is *framed*: no strip, the 8 px resize margins
+  (none maximized or fullscreen, none on a tiled side), and while it floats each margin wide enough for the shadow
+  of its `toplevel-chrome` (`nhg_child_chrome` on a top-level, `glitnir--toplevel-vector`). Its Glitnir layer is the
+  native area with that chrome (rounded corners, a shadow; a chrome of nothing while maximized or tiled, so the
+  margins stay clear), the window geometry excludes the margins, and the input region is the window plus the resize
+  band, so a click on the shadow goes to the window below. The pointer resizes from the band as under a title bar.
+  Where the compositor offers server-side decorations (sway, KWin) an undecorated frame has no border at all.
+  Lisp asks `nhwl-toplevel-chrome-p`.
 - **Painting:** at each publish C calls `nhg_csd_paint` with the native size and a hash of what it paints from that
   the glue does not see (the title, the colours, the font, the backing's generation). The glue sends the window
-  geometry if it changed, and answers 1 with the draw list (`NhgCsdPaint`: the strip, the title's box, the buttons
+  geometry (and a framed window's input region) if it changed, and answers 1 with the draw list (`NhgCsdPaint`: the
+  strip, the title's box, the buttons
   with their state) only when the strip shows something new; C paints it with Cairo and damages the border.
 - **Pointer:** the event step routes pointer events through the title bar first. Over the border it consumes them and
   gives an `NHG_ACT_TITLE_BAR` (the pointer shape, a repaint); a press moves, resizes, maximizes (a double click on the

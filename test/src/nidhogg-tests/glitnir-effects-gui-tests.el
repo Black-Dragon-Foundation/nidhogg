@@ -1,4 +1,4 @@
-;;; glitnir-effects-gui-tests.el --- GUI rows for child-frame motion, blur and window cards  -*- lexical-binding: t -*-
+;;; glitnir-effects-gui-tests.el --- GUI rows for motion, blur, window cards, undecorated toplevels  -*- lexical-binding: t -*-
 
 ;; test-class: cond
 
@@ -925,5 +925,114 @@ the card as without."
        (should-not (window-parameter left 'glitnir--card))
        (should-not (frame-parameter nil 'glitnir--cards))
        (should (eql 0 (cdr (gui-runner-pixel-diff base (gui-runner-screen-grab)))))))))
+
+;; Task: undecorated toplevel.  The selected frame goes windowed, then undecorated with a `toplevel-chrome', and back
+;; after.  On the recorder the surface sits at the output's top-left, so a grab's pixel is the surface's.  Where the
+;; compositor offers no server-side decorations (the mutter profile) the frame keeps resize margins of 8 logical px,
+;; more where the shadow needs room (blur 16, offset (0, 6): 25 at the sides, 19 above, 31 below), and the window
+;; geometry starts past them; where it offers them (sway, kwin) the frame draws none of it.  [C]: each row waits on the
+;; geometry the recorder applied, then on the frame settled, before it grabs.
+
+(defconst glitnir-fx--window-chrome
+  '((corner-radius . 12) (shadow . (:blur 16 :offset (0 . 6) :opacity 0.35)))
+  "The look's window chrome, as drgnx passes it in `toplevel-chrome'.")
+
+(defconst glitnir-fx--window-corners '((corner-radius . 12))
+  "Window corners without a shadow.")
+
+(defun glitnir-fx--dev (v)
+  "Logical V in device px at the frame's scale, as the glue rounds it (half away from zero)."
+  (floor (+ 0.5 (* v (frame-scale-factor)))))
+
+(defun glitnir-fx--alpha (grab x y)
+  "The alpha of pixel (X . Y) of GRAB."
+  (aref (nth 2 grab) (+ 3 (* 4 (+ x (* y (nth 0 grab)))))))
+
+(defun glitnir-fx--toplevel ()
+  "The recorder's node of the selected frame's surface: the toplevel that shows a buffer."
+  (seq-find (lambda (n) (and (equal (plist-get n :role) "toplevel") (nhwl-gui--get n :buffer)))
+            (nhwl-gui--tree)))
+
+(defun glitnir-fx--with-undecorated (chrome origin fn)
+  "Call FN with the selected frame windowed and undecorated with `toplevel-chrome' CHROME, drawn and settled.
+ORIGIN is where its window geometry must start, (X Y) logical; FN gets the recorder's node of its surface once it
+does.  The frame is decorated again after."
+  (let ((f (selected-frame)))
+    (nhwl-gui--windowed)
+    (unwind-protect
+        (progn
+          (modify-frame-parameters f `((undecorated . t) (toplevel-chrome . ,chrome)))
+          (should (nhwl-gui--wait
+                   (lambda ()
+                     (redisplay t)
+                     (equal (seq-take (nhwl-gui--get (glitnir-fx--toplevel) :geometry) 2) origin))
+                   5))
+          (gui-runner-wait-settled)
+          (funcall fn (glitnir-fx--toplevel)))
+      (modify-frame-parameters f '((undecorated . nil) (toplevel-chrome . nil)))
+      (redisplay t)
+      (gui-runner-wait-settled))))
+
+(defun glitnir-fx--log-size (what &optional g)
+  "Write WHAT, the frame's pixel size and scale, and geometry G to stderr: the run shows what the probes read."
+  (princ (format "glitnir-fx: %s: frame-pixel %dx%d scale %s geometry %S\n" what (frame-pixel-width)
+                 (frame-pixel-height) (frame-scale-factor) g)
+         #'external-debugging-output))
+
+(defun glitnir-fx--undecorated-rows ()
+  "The undecorated toplevel's checks at the frame's scale.
+With the look's chrome: the shadow band below the window is darker than the desktop behind (transparent there), and
+the input region is the window with its resize margins.  With corners alone: the corner's cut is transparent, the
+window's own pixel past it opaque, the margin transparent.  Where the compositor decorates: a square, opaque corner.
+The probes are placed from the window geometry the recorder applied (logical), not from the frame's size before the
+switch: going windowed and undecorated may change it."
+  (let* ((framed (not (equal (nhwl-gui--decoration) "server"))))
+    (glitnir-fx--log-size "before")
+    (should (eq (and (nhwl-toplevel-chrome-p) t) framed))
+    (glitnir-fx--with-undecorated
+     glitnir-fx--window-chrome (if framed '(25 19) '(0 0))
+     (lambda (node)
+       (let ((grab (gui-runner-screen-grab)))
+         (glitnir-fx--log-size "chrome" (nhwl-gui--get node :geometry))
+         (if (not framed)
+             (should (= (glitnir-fx--alpha grab 0 0) 255))
+           (let* ((g (nhwl-gui--get node :geometry))
+                  (x (glitnir-fx--dev (+ (nth 0 g) (/ (nth 2 g) 2))))
+                  (y (glitnir-fx--dev (+ (nth 1 g) (nth 3 g) 4)))
+                  (a (glitnir-fx--alpha grab x y)))
+             (should (> a 0))
+             (should (cl-every (lambda (c) (<= c (/ a 2))) (glitnir-fx--pixel grab x y)))
+             (should (equal (nhwl-gui--get node :input_region)
+                            (list (list 17 11 (+ (nth 2 g) 16) (+ (nth 3 g) 16))))))))))
+    (glitnir-fx--with-undecorated
+     glitnir-fx--window-corners (if framed '(8 8) '(0 0))
+     (lambda (node)
+       (let* ((grab (gui-runner-screen-grab)) (m (glitnir-fx--dev 8))
+              (g (nhwl-gui--get node :geometry)))
+         (glitnir-fx--log-size "corners" g)
+         (if (not framed)
+             (should (= (glitnir-fx--alpha grab 0 0) 255))
+           (should (= (glitnir-fx--alpha grab m m) 0))
+           (should (= (glitnir-fx--alpha grab (+ m (glitnir-fx--dev 12)) m) 255))
+           (should (= (glitnir-fx--alpha grab (/ m 2) (glitnir-fx--dev (+ (nth 1 g) (/ (nth 3 g) 2)))) 0))))))))
+
+(ert-deftest glitnir-undecorated-corners-and-shadow ()
+  "An undecorated toplevel's corners are cut and its shadow lies in the margins, where the compositor decorates not."
+  (skip-unless (glitnir-fx--recorder-p))
+  (nhwl-gui--with-blink nil #'glitnir-fx--undecorated-rows))
+
+(ert-deftest glitnir-undecorated-scale-2 ()
+  "The undecorated toplevel's rows at scale 2."
+  (skip-unless (glitnir-fx--recorder-p))
+  (let ((old (round (* 120 (frame-scale-factor)))))
+    (unwind-protect
+        (progn
+          (gui-runner-recorder '(:cmd "scale" :value120 240))
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-scale-factor) 2.0)) 5))
+          (gui-runner-wait-settled)
+          (nhwl-gui--with-blink nil #'glitnir-fx--undecorated-rows))
+      (gui-runner-recorder `(:cmd "scale" :value120 ,old))
+      (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (round (* 120 (frame-scale-factor))) old)) 5)
+      (gui-runner-wait-settled))))
 
 ;;; glitnir-effects-gui-tests.el ends here
