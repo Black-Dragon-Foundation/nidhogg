@@ -2826,8 +2826,14 @@ ns_clear_frame (struct frame *f)
 
   block_input ();
   ns_focus (f, &r, 1);
+#ifdef HAVE_GLITNIR
+  [[NSColor colorWithUnsignedLong:
+	      ns_glitnir_bg (f, NS_FACE_BACKGROUND
+			     (FACE_FROM_ID (f, DEFAULT_FACE_ID)), true)] set];
+#else
   [[NSColor colorWithUnsignedLong:NS_FACE_BACKGROUND
 			    (FACE_FROM_ID (f, DEFAULT_FACE_ID))] set];
+#endif
   NSRectFill (r);
   ns_unfocus (f);
 
@@ -2855,7 +2861,12 @@ ns_clear_frame_area (struct frame *f, int x, int y, int width, int height)
 
   r = NSIntersectionRect (r, [view frame]);
   ns_focus (f, &r, 1);
+#ifdef HAVE_GLITNIR
+  [[NSColor colorWithUnsignedLong:
+	      ns_glitnir_bg (f, NS_FACE_BACKGROUND (face), true)] set];
+#else
   [[NSColor colorWithUnsignedLong:NS_FACE_BACKGROUND (face)] set];
+#endif
 
   NSRectFill (r);
 
@@ -2959,7 +2970,13 @@ ns_clear_under_internal_border (struct frame *f)
         return;
 
       ns_focus (f, NULL, 1);
+#ifdef HAVE_GLITNIR
+      [[NSColor colorWithUnsignedLong:
+		  ns_glitnir_bg (f, NS_FACE_BACKGROUND (face),
+				 f->borders_respect_alpha_background)] set];
+#else
       [[NSColor colorWithUnsignedLong:NS_FACE_BACKGROUND (face)] set];
+#endif
       NSRectFill (NSMakeRect (0, margin, width, border));
       NSRectFill (NSMakeRect (0, 0, border, height));
       NSRectFill (NSMakeRect (0, margin, width, border));
@@ -3011,7 +3028,14 @@ ns_after_update_window_line (struct window *w, struct glyph_row *desired_row)
           NSRect r = NSMakeRect (0, y, FRAME_PIXEL_WIDTH (f), height);
           ns_focus (f, &r, 1);
 
+#ifdef HAVE_GLITNIR
+          [[NSColor colorWithUnsignedLong:
+                      ns_glitnir_bg (f, NS_FACE_BACKGROUND (face),
+                                     f->borders_respect_alpha_background)]
+            set];
+#else
           [[NSColor colorWithUnsignedLong:NS_FACE_BACKGROUND (face)] set];
+#endif
           NSRectFill (NSMakeRect (0, y, width, height));
           NSRectFill (NSMakeRect (FRAME_PIXEL_WIDTH (f) - width,
                                   y, width, height));
@@ -3262,7 +3286,12 @@ ns_draw_fringe_bitmap (struct window *w, struct glyph_row *row,
     {
       NSTRACE_RECT ("clearRect", bmpRect);
 
+#ifdef HAVE_GLITNIR
+      [[NSColor colorWithUnsignedLong:
+		  ns_glitnir_bg (f, face->background, true)] set];
+#else
       [[NSColor colorWithUnsignedLong:face->background] set];
+#endif
       NSRectFill (bmpRect);
     }
 
@@ -4111,6 +4140,12 @@ ns_maybe_dumpglyphs_background (struct glyph_string *s, char force_p)
 
   NSTRACE ("ns_maybe_dumpglyphs_background");
 
+#ifdef HAVE_GLITNIR
+  /* A see-through background is filled here, at its alpha, never by the
+     font driver: macfont.m's fill would blend over what is there.  */
+  if (ns_glitnir_see_through_p (s->f))
+    force_p = 1;
+#endif
   if (!s->background_filled_p)
     {
       int box_line_width = max (s->face->box_horizontal_line_width, 0);
@@ -4164,10 +4199,18 @@ ns_maybe_dumpglyphs_background (struct glyph_string *s, char force_p)
 	       || s->extends_to_end_of_line_p
 	       || force_p)
 	{
+#ifdef HAVE_GLITNIR
+	  if (s->hl != DRAW_CURSOR)
+	    [(NS_FACE_BACKGROUND (face) != 0
+	      ? [NSColor colorWithUnsignedLong:
+			   ns_glitnir_bg (s->f, NS_FACE_BACKGROUND (face), true)]
+	      : FRAME_BACKGROUND_COLOR (s->f)) set];
+#else
 	  if (s->hl != DRAW_CURSOR)
 	    [(NS_FACE_BACKGROUND (face) != 0
 	      ? [NSColor colorWithUnsignedLong:NS_FACE_BACKGROUND (face)]
 	      : FRAME_BACKGROUND_COLOR (s->f)) set];
+#endif
 	  else if (face && (NS_FACE_BACKGROUND (face)
 			    == [(NSColor *) FRAME_CURSOR_COLOR (s->f)
 					    unsignedLong]))
@@ -4307,7 +4350,12 @@ ns_dumpglyphs_image (struct glyph_string *s, NSRect r)
      otherwise, since we composite the image under NS (instead of mucking
      with its background color), we must clear just the image area.  */
 
+#ifdef HAVE_GLITNIR
+  [[NSColor colorWithUnsignedLong:
+	      ns_glitnir_bg (s->f, NS_FACE_BACKGROUND (face), true)] set];
+#else
   [[NSColor colorWithUnsignedLong:NS_FACE_BACKGROUND (face)] set];
+#endif
 
   if (bg_height > s->slice.height || s->img->hmargin || s->img->vmargin
       || s->img->mask || s->img->pixmap == 0 || s->width != s->background_width)
@@ -4470,10 +4518,19 @@ ns_draw_stretch_glyph_string (struct glyph_string *s)
 		face = FACE_FROM_ID (s->f, MOUSE_FACE_ID);
 	      prepare_face_for_display (s->f, face);
 
+#ifdef HAVE_GLITNIR
+	      [[NSColor colorWithUnsignedLong:
+			  ns_glitnir_bg (s->f, face->background, true)] set];
+	    }
+	  else
+	    [[NSColor colorWithUnsignedLong:
+			ns_glitnir_bg (s->f, s->face->background, true)] set];
+#else
 	      [[NSColor colorWithUnsignedLong: face->background] set];
 	    }
 	  else
 	    [[NSColor colorWithUnsignedLong: s->face->background] set];
+#endif
 	  NSRectFill (NSMakeRect (x, y, w, h));
 	}
     }
@@ -4535,7 +4592,12 @@ ns_draw_stretch_glyph_string (struct glyph_string *s)
 #endif /* NS_IMPL_COCOA */
 	    }
 	  else
+#ifdef HAVE_GLITNIR
+	    [[NSColor colorWithUnsignedLong:
+			ns_glitnir_bg (s->f, s->face->background, true)] set];
+#else
 	    [[NSColor colorWithUnsignedLong: s->face->background] set];
+#endif
 
 	  NSRectFill (NSMakeRect (x, s->y, background_width, s->height));
 	}
