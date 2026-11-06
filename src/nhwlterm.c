@@ -2036,15 +2036,18 @@ nhwl_child_shown (struct frame *f)
 }
 
 /* Push child frame F's facts to the glue: its parent, where its native
-   area sits in the parent's, whether it is SHOWN (its surface mapped) and
-   whether it is no-accept-focus.  A surface mapped again is drawn again
-   whole.  */
+   area sits in the parent's, whether it is SHOWN (its surface mapped),
+   whether it is no-accept-focus and whether it waits to be drawn again
+   (garbaged: a frame resized and then moved, as posframe shows one), in
+   which case the glue sends a new position with that picture rather
+   than at once.  A surface mapped again is drawn again whole.  */
 void
 nhwl_child_push (struct frame *f, bool shown)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
   uint32_t flags = ((shown ? NHG_CHILD_VISIBLE : 0)
-		    | (FRAME_NO_ACCEPT_FOCUS (f) ? NHG_CHILD_NO_FOCUS : 0));
+		    | (FRAME_NO_ACCEPT_FOCUS (f) ? NHG_CHILD_NO_FOCUS : 0)
+		    | (FRAME_GARBAGED_P (f) ? NHG_CHILD_REDRAW : 0));
 
   if (!nhwl_child_p (f) || !out->window)
     return;
