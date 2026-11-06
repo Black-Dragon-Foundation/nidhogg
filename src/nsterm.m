@@ -1232,6 +1232,10 @@ ns_update_end (struct frame *f)
 #ifdef NS_IMPL_COCOA
   ns_UAZoomChangeFocus (view, false);
 #endif
+#ifdef HAVE_GLITNIR
+  /* A root frame's window cards follow its windows.  */
+  ns_glitnir_cards_update (f);
+#endif
 
   unblock_input ();
   ns_updating_frame = NULL;

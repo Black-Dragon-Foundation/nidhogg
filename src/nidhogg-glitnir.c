@@ -619,6 +619,21 @@ microseconds.  For the decoration cost bench (PD R-D1).  */)
 #endif
 }
 
+DEFUN ("glitnir--ns-card-updates", Fglitnir__ns_card_updates,
+       Sglitnir__ns_card_updates, 0, 0, 0,
+       doc: /* Return how often the macOS build changed window card layers.
+A root frame's card layers are made again when a card, a window's edges,
+the frame's size or its scale changed, and removed with its last card;
+the count is of both, for every frame.  0 off NS.  */)
+  (void)
+{
+#ifdef HAVE_NS
+  return make_int (ns_glitnir_card_updates ());
+#else
+  return make_fixnum (0);
+#endif
+}
+
 void
 syms_of_nidhogg_glitnir (void)
 {
@@ -627,6 +642,7 @@ syms_of_nidhogg_glitnir (void)
 
   defsubr (&Sglitnir__probe);
   defsubr (&Sglitnir__decor_bench);
+  defsubr (&Sglitnir__ns_card_updates);
   defsubr (&Sglitnir_active_p);
   defsubr (&Sglitnir_stats);
   defsubr (&Sglitnir_snapshot);

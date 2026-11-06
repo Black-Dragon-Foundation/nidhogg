@@ -1135,6 +1135,11 @@ void ns_dump_glyphstring (struct glyph_string *s) EXTERNALLY_VISIBLE;
 extern Lisp_Object ns_list_fonts (struct frame *f, Lisp_Object pattern,
                                   int size, int maxnames);
 extern void ns_clear_frame (struct frame *f);
+#ifdef HAVE_GLITNIR
+/* Glitnir's window cards on NS, in nsglitnir.m.  */
+extern void ns_glitnir_cards_update (struct frame *f);
+extern intmax_t ns_glitnir_card_updates (void);
+#endif
 
 extern void ns_set_offset (struct frame *f, int xoff, int yoff,
                            int change_grav);
