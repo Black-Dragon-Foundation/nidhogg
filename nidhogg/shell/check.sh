@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # nhshell's checks: fmt, clippy, tests, licence policy, vendor drift, and the release build.
-# Usage: check.sh [--container DISTRO] [--test NAME] [--full] [--revendor] [--tsan]   Exit 0 ok, 1 "check.sh: FAIL <check>",
+# Usage: check.sh [--container DISTRO] [--test NAME] [--full] [--relock] [--tsan]   Exit 0 ok, 1 "check.sh: FAIL <check>",
 # 2 usage, 3 the TSan lane is unavailable.
-# --full adds the slow checks (vendor drift, which needs the network, and the LTO release build with its exports); a
+# Cargo runs --locked: from crates.io (network), or offline from vendor/ when the release's vendor tarball is unpacked.
+# --full adds the slow checks (vendor drift, when a vendor/ is there, and the LTO release build with its exports); a
 # task's author check runs without it, integration builds and gates with it.
 # Without --container the host's cargo runs (CI, macOS).  With it, podman runs a memory-capped container (2 GiB) from the
 # check image (fedora-45: nidhogg-check:fedora-45-HASH, built once from deps/fedora-45.check by ci/image.sh local; the
 # run prints "image: REF (local|built)" and installs nothing; NIDHOGG_CRATES_IMAGE names another).  Another distro
 # installs cargo, clippy, rustfmt and the -devel packages per run (the package cache under $NIDHOGG_BUILD_PKG_CACHE
 # when set).  CARGO_HOME and CARGO_TARGET_DIR live under $NHSHELL_CARGO_DIR (default $T/nhshell-cargo).  The
-# crate directory is only written by --revendor, which regenerates Cargo.lock and vendor/ (needs the network).
-# The vendor-drift check and --revendor use cargo-vendor-filterer, installed into $CARGO_HOME/bin on first use.
+# crate directory is only written by --relock, which regenerates Cargo.lock (needs the network).
 # --tsan runs only the named tests (all without --test) under ThreadSanitizer: a nightly toolchain (rustup, installed
 # once into $NHSHELL_CARGO_DIR/rustup and tsan-home, so the stable lanes keep their cargo) with -Zbuild-std, whose std
 # dependencies are vendored together with the crate's (network).  Where that cannot be had it exits 3 and says why;
@@ -19,22 +19,18 @@
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 DISTRO="" TEST="" INNER=0 REVENDOR=0 FULL=0 TSAN=0
-usage() { echo "usage: check.sh [--container DISTRO] [--test NAME] [--full] [--revendor] [--tsan]" >&2; exit 2; }
+usage() { echo "usage: check.sh [--container DISTRO] [--test NAME] [--full] [--relock] [--tsan]" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case $1 in
     --container) [ $# -ge 2 ] || usage; DISTRO=$2; shift 2 ;;
     --test) [ $# -ge 2 ] || usage; TEST=$2; shift 2 ;;
-    --revendor) REVENDOR=1; shift ;;
+    --relock) REVENDOR=1; shift ;;
     --full) FULL=1; shift ;;
     --tsan) TSAN=1; shift ;;
     --inner) INNER=1; shift ;;
     *) usage ;;
   esac
 done
-# The platforms the vendored tree covers: Linux and macOS, x86_64 and aarch64.
-PLATFORMS=(--platform x86_64-unknown-linux-gnu --platform aarch64-unknown-linux-gnu
-           --platform aarch64-apple-darwin --platform x86_64-apple-darwin)
-
 if [ -n "$DISTRO" ] && [ "$INNER" = 0 ]; then
   command -v podman >/dev/null 2>&1 || { echo "check.sh: podman not found (podman only; no docker)" >&2; exit 1; }
   CARGO_DIR=${NHSHELL_CARGO_DIR:-${T:+$T/nhshell-cargo}}
@@ -50,7 +46,7 @@ if [ -n "$DISTRO" ] && [ "$INNER" = 0 ]; then
     [ -x "$NH_RECORDER" ] || { echo "check.sh: NH_RECORDER is not an executable: $NH_RECORDER" >&2; exit 2; }
     EXTRA+=(-v "$NH_RECORDER:/nh-recorder:ro,z" -e NH_RECORDER=/nh-recorder)
   fi
-  # nidhogg/ is mounted whole: the crate depends on ../glitnir.  Read-only, except for --revendor.
+  # nidhogg/ is mounted whole: the crate depends on ../glitnir.  Read-only, except for --relock.
   NH=$(cd "$HERE/.." && pwd)
   MODE=ro; [ "$REVENDOR" = 1 ] && MODE=rw
   TSAN_PKGS="" MEM=2g
@@ -60,7 +56,7 @@ if [ -n "$DISTRO" ] && [ "$INNER" = 0 ]; then
   trap cleanup EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  inner="bash /nh/shell/check.sh --inner${TEST:+ --test $(printf %q "$TEST")}$([ "$REVENDOR" = 1 ] && echo ' --revendor')$([ "$FULL" = 1 ] && echo ' --full')$([ "$TSAN" = 1 ] && echo ' --tsan')"
+  inner="bash /nh/shell/check.sh --inner${TEST:+ --test $(printf %q "$TEST")}$([ "$REVENDOR" = 1 ] && echo ' --relock')$([ "$FULL" = 1 ] && echo ' --full')$([ "$TSAN" = 1 ] && echo ' --tsan')"
   IMAGE=${NIDHOGG_CRATES_IMAGE:-}
   if [ -z "$IMAGE" ] && [ "$DISTRO" = fedora-45 ]; then
     # the check image (deps/fedora-45.check), built here once: no package manager runs
@@ -87,11 +83,6 @@ cd "$HERE" || exit 1
 export CARGO_TARGET_DIR
 [ -n "${CARGO_HOME:-}" ] && PATH="$CARGO_HOME/bin:$PATH"
 fail() { echo "check.sh: FAIL $1" >&2; exit 1; }
-
-ensure_filterer() {
-  command -v cargo-vendor-filterer >/dev/null 2>&1 && return 0
-  cargo install cargo-vendor-filterer --locked || fail vendor-filterer-install
-}
 
 # The TSan lane (see the header).  Everything it needs besides the Fedora packages is cached under /cargo.
 tsan_lane() {
@@ -138,45 +129,43 @@ tsan_lane() {
 [ "$TSAN" = 0 ] || tsan_lane
 
 if [ "$REVENDOR" = 1 ]; then
-  # Regenerate Cargo.lock and vendor/ from crates.io (the source replacement is off for this run).
-  ensure_filterer
-  work=$CARGO_TARGET_DIR/revendor
+  # Regenerate Cargo.lock from crates.io (the one pin; the glue's lock is then the shell's plus nhglue, and the vendor
+  # tarball is built from the locks at release).
+  work=$CARGO_TARGET_DIR/relock
   rm -rf "$work" && mkdir -p "$work/shell" "$work/glitnir"
   for f in Cargo.toml src include; do [ -e "$f" ] && cp -r "$f" "$work/shell/"; done
-  [ -e Cargo.lock ] && cp Cargo.lock "$work/shell/"
   cp -r ../glitnir/Cargo.toml ../glitnir/Cargo.lock ../glitnir/build.rs ../glitnir/src ../glitnir/include "$work/glitnir/"
-  ( cd "$work/shell" && cargo generate-lockfile && cargo vendor-filterer "${PLATFORMS[@]}" vendor ) || fail revendor
-  rm -rf vendor && cp -r "$work/shell/vendor" vendor && cp "$work/shell/Cargo.lock" Cargo.lock
-  echo "check.sh: revendored"
+  ( cd "$work/shell" && cargo generate-lockfile ) || fail relock
+  cp "$work/shell/Cargo.lock" Cargo.lock
+  echo "check.sh: relocked"
   exit 0
 fi
 
 cargo fmt --check                                                   || fail fmt
-cargo clippy --all-targets --offline --locked -- -D warnings        || fail clippy
+cargo clippy --all-targets --locked -- -D warnings                  || fail clippy
 # NAME may list several filters separated by '|' or '\|' (cargo's filter is a substring, not a regexp)
 filters=()
 if [ -n "$TEST" ]; then
   IFS='|' read -ra parts <<< "${TEST//\\/}"
   for p in "${parts[@]}"; do [ -n "$p" ] && filters+=("$p"); done
 fi
-cargo test --offline --locked -- "${filters[@]}"                     || fail test
+cargo test --locked -- "${filters[@]}"                               || fail test
 # the filters also select glitnir's own tests (pool policy and the like) when a task names them
-if [ -n "$TEST" ]; then (cd ../glitnir && cargo test --offline --locked -- "${filters[@]}") || fail test-glitnir; fi
+if [ -n "$TEST" ]; then (cd ../glitnir && cargo test --locked -- "${filters[@]}") || fail test-glitnir; fi
 if command -v cargo-deny >/dev/null 2>&1; then
   cargo deny check licenses bans sources                            || fail deny
 else
   echo "check.sh: cargo-deny not on PATH, skipping the licence check"
 fi
 [ "$FULL" = 1 ] || { echo "check.sh: ok (without --full: no vendor drift, no release build)"; exit 0; }
-# vendor drift: vendor a copy from crates.io (network), compare with vendor/
-ensure_filterer
-copy=$CARGO_TARGET_DIR/vendor-check
-rm -rf "$copy" && mkdir -p "$copy/shell" "$copy/glitnir"
-for f in Cargo.toml Cargo.lock src include; do [ -e "$f" ] && cp -r "$f" "$copy/shell/"; done
-cp -r ../glitnir/Cargo.toml ../glitnir/Cargo.lock ../glitnir/build.rs ../glitnir/src ../glitnir/include "$copy/glitnir/"
-( cd "$copy/shell" && cargo vendor-filterer "${PLATFORMS[@]}" vendor >/dev/null ) || fail vendor
-diff Cargo.lock "$copy/shell/Cargo.lock" || fail lock-drift  # the filterer has no --locked: an unchanged lock is the same
-diff -r -x .keep "$copy/shell/vendor" vendor                        || fail vendor-drift
+# vendor drift, when the release's vendor tarball is unpacked (vendor/): it is the lock's packages and nothing else
+# (ci/vendor.sh check, offline).  Without one the crates came from crates.io and there is nothing to compare; the
+# release builds the tarball from the locks (ci/vendor.sh make), which fails on a lock that would change.
+if [ -d vendor ]; then
+  bash ../ci/vendor.sh check .. shell                               || fail vendor-drift
+else
+  echo "check.sh: no vendor/ here, the crates came from crates.io: vendor drift not checked"
+fi
 # the release build (an rlib; the archive Emacs links, with this crate's exports, is nidhogg/glue's: its check.sh --full)
-cargo build --release --offline --locked                            || fail build
+cargo build --release --locked                                      || fail build
 echo "check.sh: ok"

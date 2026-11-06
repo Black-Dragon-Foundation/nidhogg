@@ -10,8 +10,8 @@
 # run prints "image: REF (local|built)" and installs nothing, except --android's std; NIDHOGG_CRATES_IMAGE names
 # another).  Another distro installs the packages per run (the cache under $NIDHOGG_BUILD_PKG_CACHE when set).
 # CARGO_HOME and CARGO_TARGET_DIR live under $NHGLUE_CARGO_DIR (default $T/nhglue-cargo).  nidhogg/ is
-# mounted read-only: the crate builds from the shell's vendor/ (.cargo/config.toml) and depends on ../shell and
-# ../glitnir.  NH_RECORDER (a built nidhogg/test/recorder) is passed to the T1 tests (tests/*.rs), mounted.
+# mounted read-only: the crate builds locked from the shell's vendor/ when the release's vendor tarball is unpacked
+# (.cargo/config.toml), else from crates.io (network), and depends on ../shell and ../glitnir.  NH_RECORDER (a built nidhogg/test/recorder) is passed to the T1 tests (tests/*.rs), mounted.
 # The link check against a built Emacs is nm-check.sh (it needs the build tree).
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -148,7 +148,7 @@ if [ "$ANDROID" = 1 ]; then
     echo "check.sh: android skipped: no std for $ANDROID_TARGET in this toolchain (rustup is not available offline)"
     exit 3
   fi
-  cargo check --offline --locked --no-default-features --target "$ANDROID_TARGET" || fail android
+  cargo check --locked --no-default-features --target "$ANDROID_TARGET" || fail android
   echo "check.sh: android ok"
   exit 0
 fi
@@ -159,8 +159,8 @@ diff <(drop_self Cargo.lock) <(drop_self ../shell/Cargo.lock) >/dev/null ||
   fail "lock (Cargo.lock must be ../shell/Cargo.lock plus the nhglue package)"
 cargo fmt --check                                                   || fail fmt
 # the tests drive the test hooks (tests/ffi.rs and tests/display.rs require them), so they build with the feature
-cargo clippy --all-targets --offline --locked --features test-hooks -- -D warnings || fail clippy-test-hooks
-cargo clippy --lib --offline --locked -- -D warnings                || fail clippy
+cargo clippy --all-targets --locked --features test-hooks -- -D warnings || fail clippy-test-hooks
+cargo clippy --lib --locked -- -D warnings                          || fail clippy
 # NAME may list several filters separated by '|' or '\|' (cargo's filter is a substring, not a regexp)
 filters=()
 if [ -n "$TEST" ]; then
@@ -168,11 +168,11 @@ if [ -n "$TEST" ]; then
   for p in "${parts[@]}"; do [ -n "$p" ] && filters+=("$p"); done
 fi
 if [ "$NORUN" = 1 ]; then
-  cargo test --offline --locked --features test-hooks --no-run       || fail test-build
+  cargo test --locked --features test-hooks --no-run                 || fail test-build
 else
   # --repeat N: the same run N times (a flake hunt), the first red one fails the check
   for ((i = 1; i <= REPEAT; i++)); do
-    cargo test --offline --locked --no-fail-fast --features test-hooks -- ${filters[@]+"${filters[@]}"} || fail "test (run $i of $REPEAT)"
+    cargo test --locked --no-fail-fast --features test-hooks -- ${filters[@]+"${filters[@]}"} || fail "test (run $i of $REPEAT)"
   done
 fi
 if command -v cargo-deny >/dev/null 2>&1; then
@@ -183,7 +183,7 @@ fi
 [ "$FULL" = 1 ] || { echo "check.sh: ok (without --full: no release archive)"; exit 0; }
 # the archive Emacs links: every nhg_* and glitnir_* function of the two headers is exported (built with
 # the test hooks, as an --enable-checking Emacs links it, so that the hooks' exports are checked too)
-cargo build --release --offline --locked --features test-hooks      || fail build
+cargo build --release --locked --features test-hooks               || fail build
 lib=$CARGO_TARGET_DIR/release/libnhglue.a
 [ -f "$lib" ] || fail "build (no libnhglue.a)"
 exports=$(nm -g --defined-only "$lib" 2>/dev/null | awk '$2 ~ /^[TDBR]$/ {print $3}')
