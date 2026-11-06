@@ -51,6 +51,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #ifdef HAVE_TREE_SITTER
 #include "treesit.h"
 #endif
+#ifdef HAVE_NIDHOGG_HISTORY
+#include "nidhogg-history.h"
+#endif
 #ifdef HAVE_NIDHOGG_WORKERS
 
 #include "nidhogg-workers.h"
@@ -2680,6 +2683,11 @@ results, see Info node `(elisp)Swapping Text'.  */)
   current_buffer->text->end_unchanged = current_buffer->text->gpt;
   other_buffer->text->beg_unchanged = other_buffer->text->gpt;
   other_buffer->text->end_unchanged = other_buffer->text->gpt;
+#ifdef HAVE_NIDHOGG_HISTORY
+  /* Each buffer keeps its own text struct, now holding the other's text.  */
+  NH_HISTORY_RESYNC (current_buffer);
+  NH_HISTORY_RESYNC (other_buffer);
+#endif
   swap_buffer_overlays (current_buffer, other_buffer);
   {
     struct Lisp_Marker *m;
@@ -3017,6 +3025,10 @@ current buffer is cleared.  */)
 	  o->prevent_redisplay_optimizations_p = true;
 	}
     }
+#ifdef HAVE_NIDHOGG_HISTORY
+  /* Every byte may have moved: the history reads the text again.  */
+  NH_HISTORY_RESYNC (current_buffer);
+#endif
 
   /* Restore the modifiedness of the buffer.  */
   if (!modified_p && !NILP (Fbuffer_modified_p (Qnil)))
@@ -4686,6 +4698,10 @@ enlarge_buffer_text (struct buffer *b, ptrdiff_t delta)
 static void
 free_buffer_text (struct buffer *b)
 {
+#ifdef HAVE_NIDHOGG_HISTORY
+  /* A later buffer's text may get this address.  */
+  NH_HISTORY_FORGET (b);
+#endif
   block_input ();
 
   if (!pdumper_object_p (b->text->beg))

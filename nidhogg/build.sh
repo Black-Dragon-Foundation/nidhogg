@@ -40,7 +40,7 @@ DISTROS="fedora-45 ubuntu-26.04 debian-13 arch"
 usage() {
   cat >&2 <<USAGE
 usage: nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memory SIZE]
-                        [--build-dir DIR] [--check FILE] [--out FILE] [--stage build|check|pack] [--without-glitnir] [--nidhogg-wayland] [--dev] [--chaos] [--without-nidhogg-watchdog] [--without-nidhogg-workers] [--dry-run]
+                        [--build-dir DIR] [--check FILE] [--out FILE] [--stage build|check|pack] [--without-glitnir] [--nidhogg-wayland] [--dev] [--chaos] [--without-nidhogg-watchdog] [--without-nidhogg-workers] [--without-nidhogg-history] [--dry-run]
   DISTRO: $DISTROS
 USAGE
   exit 2
@@ -52,6 +52,7 @@ DEV=0; [ "${NIDHOGG_BUILD_DEV:-}" != 1 ] || DEV=1
 NHWL=0       # --nidhogg-wayland was asked for by name
 WATCHDOG=1  # the stall watchdog is built in unless --without-nidhogg-watchdog
 WORKERS=1    # the worker threads are built in unless --without-nidhogg-workers
+HISTORY=1    # the edit history's change hook is built in with Glitnir (it holds the rings) unless --without-nidhogg-history
 CHAOS=0      # --chaos: seeded delays at the workers' sync points (src/nidhogg-chaos.h); dev builds only, so never in a release
 while [ $# -gt 0 ]; do
   case $1 in
@@ -70,6 +71,7 @@ while [ $# -gt 0 ]; do
     --chaos) CHAOS=1; shift ;;
     --without-nidhogg-watchdog) WATCHDOG=0; shift ;;
     --without-nidhogg-workers) WORKERS=0; shift ;;
+    --without-nidhogg-history) HISTORY=0; shift ;;
     --dry-run) DRY=1; shift ;;
     *) echo "unknown option: $1" >&2; usage ;;
   esac
@@ -176,6 +178,7 @@ PKGS="\$(sed \"s/#.*//\" \$S/nidhogg/deps/$DISTRO.build"
 if [ -n "$GLITNIR" ]; then PKGS="$PKGS)"; else PKGS="$PKGS | grep -vxE 'cargo|rust|rustc')"; fi
 [ "$WATCHDOG" = 0 ] || CONF="$CONF --with-nidhogg-watchdog"
 [ "$WORKERS" = 0 ] || CONF="$CONF --with-nidhogg-workers"
+[ "$HISTORY" = 0 ] || [ -z "$GLITNIR" ] || CONF="$CONF --with-nidhogg-history"
 [ "$CHAOS" = 0 ] || CONF="$CONF --with-nidhogg-chaos"
 # the quotes are parsed by the build script, not here
 [ -z "$SANITIZE" ] || CONF="$CONF CFLAGS='-g -O1 -fno-omit-frame-pointer -fsanitize=$SANITIZE' LDFLAGS='-fsanitize=$SANITIZE'"

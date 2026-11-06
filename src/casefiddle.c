@@ -33,6 +33,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #ifdef HAVE_TREE_SITTER
 #include "treesit.h"
 #endif
+#ifdef HAVE_NIDHOGG_HISTORY
+#include "nidhogg-history.h"
+#endif
 
 enum case_action {CASE_UP, CASE_DOWN, CASE_CAPITALIZE, CASE_CAPITALIZE_UP};
 
@@ -552,6 +555,15 @@ casify_region (enum case_action flag, Lisp_Object b, Lisp_Object e)
 #endif
 
   ptrdiff_t orig_end = end;
+#ifdef HAVE_NIDHOGG_HISTORY
+  ptrdiff_t nh_start = start, nh_start_byte = 0, nh_old_end_byte = 0;
+  ptrdiff_t nh_z_byte = Z_BYTE;
+  if (nh_history_ntracked)
+    {
+      nh_start_byte = CHAR_TO_BYTE (start);
+      nh_old_end_byte = CHAR_TO_BYTE (end);
+    }
+#endif
   record_delete (start, make_buffer_string (start, end, true), false);
   if (NILP (BVAR (current_buffer, enable_multibyte_characters)))
     {
@@ -564,6 +576,12 @@ casify_region (enum case_action flag, Lisp_Object b, Lisp_Object e)
       added = do_casify_multibyte_region (&ctx, &start, &end);
       record_insert (ostart, len + added);
     }
+#ifdef HAVE_NIDHOGG_HISTORY
+  /* Before the after-change functions, which may change the text again.  */
+  NH_HISTORY_CHANGE (current_buffer, nh_start, nh_start_byte,
+		     orig_end, nh_old_end_byte, orig_end + added,
+		     nh_old_end_byte + (Z_BYTE - nh_z_byte));
+#endif
 
   if (start >= 0)
     {

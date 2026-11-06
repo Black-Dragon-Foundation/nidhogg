@@ -35,6 +35,10 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "treesit.h"
 #endif
 
+#ifdef HAVE_NIDHOGG_HISTORY
+#include "nidhogg-history.h"
+#endif
+
 static void insert_from_string_1 (Lisp_Object, ptrdiff_t, ptrdiff_t, ptrdiff_t,
 				  ptrdiff_t, bool, bool);
 static void insert_from_buffer_1 (struct buffer *, ptrdiff_t, ptrdiff_t, bool);
@@ -962,6 +966,10 @@ insert_1_both (const char *string,
   treesit_record_change (PT_BYTE, PT_BYTE, PT_BYTE + nbytes,
 			 start_linecol, start_linecol, PT + nchars);
 #endif
+#ifdef HAVE_NIDHOGG_HISTORY
+  NH_HISTORY_CHANGE (current_buffer, PT, PT_BYTE, PT, PT_BYTE,
+		     PT + nchars, PT_BYTE + nbytes);
+#endif
 
   adjust_point (nchars, nbytes);
 
@@ -1106,6 +1114,10 @@ insert_from_string_1 (Lisp_Object string, ptrdiff_t pos, ptrdiff_t pos_byte,
   treesit_record_change (PT_BYTE, PT_BYTE, PT_BYTE + nbytes,
 			 start_linecol, start_linecol, PT + nchars);
 #endif
+#ifdef HAVE_NIDHOGG_HISTORY
+  NH_HISTORY_CHANGE (current_buffer, PT, PT_BYTE, PT, PT_BYTE,
+		     PT + nchars, PT_BYTE + outgoing_nbytes);
+#endif
 
   adjust_point (nchars, outgoing_nbytes);
 
@@ -1125,6 +1137,9 @@ insert_from_gap_1 (ptrdiff_t nchars, ptrdiff_t nbytes, bool text_at_gap_tail)
   eassert (NILP (BVAR (current_buffer, enable_multibyte_characters))
            ? nchars == nbytes : nchars <= nbytes);
 
+#ifdef HAVE_NIDHOGG_HISTORY
+  ptrdiff_t nh_ins = GPT, nh_ins_byte = GPT_BYTE;
+#endif
 #ifdef HAVE_TREE_SITTER
   ptrdiff_t ins_bytepos = GPT_BYTE;
   struct ts_linecol start_linecol
@@ -1153,6 +1168,10 @@ insert_from_gap_1 (ptrdiff_t nchars, ptrdiff_t nbytes, bool text_at_gap_tail)
 
   treesit_record_change (ins_bytepos, ins_bytepos, ins_bytepos + nbytes,
 			 start_linecol, start_linecol, ins_bytepos + nbytes);
+#endif
+#ifdef HAVE_NIDHOGG_HISTORY
+  NH_HISTORY_CHANGE (current_buffer, nh_ins, nh_ins_byte, nh_ins, nh_ins_byte,
+		     nh_ins + nchars, nh_ins_byte + nbytes);
 #endif
 }
 
@@ -1220,7 +1239,15 @@ insert_from_buffer (struct buffer *buf,
 			     BUF_TS_LINECOL_POINT (current_buffer));
 #endif
 
+#ifdef HAVE_NIDHOGG_HISTORY
+  ptrdiff_t nh_obyte = PT_BYTE;
+#endif
   insert_from_buffer_1 (buf, charpos, nchars, inherit);
+#ifdef HAVE_NIDHOGG_HISTORY
+  /* Before the after-change functions, which may change the text again.  */
+  NH_HISTORY_CHANGE (current_buffer, opoint, nh_obyte, opoint, nh_obyte,
+		     PT, PT_BYTE);
+#endif
   signal_after_change (opoint, 0, PT - opoint);
   update_compositions (opoint, PT, CHECK_BORDER);
 
@@ -1674,6 +1701,10 @@ replace_range (ptrdiff_t from, ptrdiff_t to, Lisp_Object new,
   treesit_record_change (from_byte, to_byte, from_byte + outgoing_insbytes,
 			 start_linecol, old_end_linecol, from + inschars);
 #endif
+#ifdef HAVE_NIDHOGG_HISTORY
+  NH_HISTORY_CHANGE (current_buffer, from, from_byte, to, to_byte,
+		     from + inschars, from_byte + outgoing_insbytes);
+#endif
 
   /* Relocate point as if it were a marker.  */
   if (from < PT
@@ -2069,6 +2100,10 @@ del_range_2 (ptrdiff_t from, ptrdiff_t from_byte,
   eassert (from_byte >= 0);
   treesit_record_change (from_byte, to_byte, from_byte,
 			 start_linecol, old_end_linecol, from);
+#endif
+#ifdef HAVE_NIDHOGG_HISTORY
+  NH_HISTORY_CHANGE (current_buffer, from, from_byte, to, to_byte,
+		     from, from_byte);
 #endif
 
   return deletion;
