@@ -13,6 +13,7 @@ nhwl-gui-w3-tests.el # GUI rows wait on the compositor through the gui-runner wa
 nhwl-menu-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
 glitnir-tests.el # not yet audited against the handshake rules
 glitnir-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
+glitnir-effects-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
 watchdog-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
 callproc-env-tests.el # not yet audited against the handshake rules
 nhwl-session-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules

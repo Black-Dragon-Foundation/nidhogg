@@ -169,7 +169,10 @@ stacking, input region and mapping go out with its tree's commit.
   placed by the new one. A visible top-level's new size waits for the next redisplay; maximized or fullscreen, it
   keeps the compositor's size (xdg-shell binds the client to it), as a GTK window does.
 - **Publish:** `nhg_csd_paint` sends the child's position and its input region (the native area) when they changed;
-  a top-level whose border changed places its children again at once.
+  a top-level whose border changed places its children again at once.  A move pushed while the frame waits to be drawn
+  again (`NHG_CHILD_REDRAW`: C sets it when the frame is garbaged, as after `set-frame-size`) waits for that publish, so
+  a child resized and moved in one call (a posframe shown again elsewhere) shows at its new place with its new picture
+  in one commit; any other move goes at once, with a bare commit of the parent.
 - **Stacking:** C keeps the siblings' order (its tree walk lists children by it) and hands it to `nhg_child_stack` on
   raise and lower; the glue stacks the child against its neighbour. The keyboard focus redirect stays C.
 
@@ -208,9 +211,21 @@ compositor uploads only the exposed rows. The glue decides; C passes facts.
   shell's front relies on it.
 - **Opaque root:** a top-level window (not a child, tip or popup), alpha 1 applied by the compositor, `alpha-background`
   1, `wp_viewporter` and `wl_subcompositor`, and a scale `nhwl-scroll-layers` allows (`integer-scales`: whole ones).
-- **Demotion:** at a publish, `nhg_layers_sync` gets the root's windows and their boxes (only while it has layers,
-  `nhg_layers_count`) and demotes each layer whose window is gone or has another box, whose last full-window scroll is
-  2 s old, or every one at a scale or border change or when the frame is no longer an opaque root; a scroll with a new
+- **The window list:** at a publish, `nhg_layers_sync` gets the root's windows (only while it has layers,
+  `nhg_layers_count`, or a window with a card, the frame parameter `glitnir--cards`). Each `NhgLayerWindow` holds the
+  box, the window's edges without its dividers (`outer`) and its card: the window parameter `glitnir--card`, which
+  `glitnir--card-vector` resolves from the window parameters `corner-radius`, `shadow` and `ring`, as the same slot
+  vector a child frame's chrome is (`NHG_CHROME_*`; C copies it, `chrome::decode` checks it).
+- **Cards** (`src/cards.rs`): the same sync gives each window with a card a WINDOW layer of its own, id
+  `sequence_number | CARD_TAG`, at its outer rectangle, with the chrome in device px at the frame's scale and a Glitnir
+  `Card` (the beneath colour, the ring premultiplied and one logical px wide, and what to keep out of: the other
+  windows' outer rectangles, and the bands around the window area, the bounding box of the listed windows' outer
+  rectangles, so the shadow and the ring never reach the tab, tool or menu bar); it removes the layers of windows that lost their card or are gone, and keeps the cards above the
+  frame's outputs. A card window may be promoted: its output stays `seq | WINDOW_TAG` at the box, so promotion and
+  demotion never touch the card. A scale change and the first sync after a reconnect give the cards again.
+  `nhg_layers_count` counts outputs and cards, so the publish after the last card went still lists the windows.
+- **Demotion:** at a publish, `nhg_layers_sync` demotes each layer whose window is gone or has another box, whose
+  last full-window scroll is 2 s old, or every one at a scale or border change or when the frame is no longer an opaque root; a scroll with a new
   box demotes first. Demotion is `set_output (…, 0)` and the layer's removal, in that publish: Glitnir damages the
   window on the frame and the shell unmaps the layer with the root's buffer. A quiet window with nothing published
   keeps its layer until the next publish (a redisplay), as no timer runs for it. `layers::drop_all` demotes every

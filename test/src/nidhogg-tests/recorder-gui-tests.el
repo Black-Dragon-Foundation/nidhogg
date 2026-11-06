@@ -138,16 +138,12 @@ acks it and return that commit (nil when none came)."
         (progn
           ;; a blink between the two snapshots would commit another picture
           (blink-cursor-mode -1)
-          (redisplay t)
-          ;; Glitnir presents what redisplay drew only at its next paint: `glitnir-snapshot' makes that paint and
-          ;; returns its picture, and the recorder's snapshot follows once the paint's commit has arrived
-          (pcase-let* ((since (plist-get (gui-runner-recorder '(:cmd "log" :since 0)) :next))
-                       (`(,gw ,gh ,gbytes) (glitnir-snapshot nil 'raw))
-                       (_arrived (should (recorder-gui--wait
-                                          (lambda ()
-                                            (seq-find (lambda (c) (equal (plist-get c :role) "toplevel"))
-                                                      (plist-get (gui-runner-recorder (list :cmd "log" :since since))
-                                                                 :commits))))))
+          ;; Pattern C (handshake): the settle waits until every request the frame made has gone out in a flushed
+          ;; commit, every frame callback is answered and the recorder's log stands still; `glitnir-snapshot' then
+          ;; composes the tree as the compositor was given it (it makes no paint of its own), and the recorder's
+          ;; snapshot shows the same commits
+          (gui-runner-wait-settled)
+          (pcase-let* ((`(,gw ,gh ,gbytes) (glitnir-snapshot nil 'raw))
                        (reply (gui-runner-recorder (list :cmd "snapshot" :path path :format "bgra")))
                        (w (plist-get reply :w)) (h (plist-get reply :h))
                        (rbytes (with-temp-buffer

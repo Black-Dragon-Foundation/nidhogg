@@ -585,7 +585,8 @@ static ptrdiff_t nhwl_nlayer_windows, nhwl_layer_windows_cap;
 
 /* List WINDOW's leaf windows and its next siblings' (the root window's
    next sibling is the minibuffer window), each with the box the scroll
-   passes (nhwl_scroll_run).  */
+   passes (nhwl_scroll_run), its edges without the dividers and its card
+   (the window parameter glitnir--card).  */
 static void
 nhwl_layer_windows_add (Lisp_Object window)
 {
@@ -604,15 +605,20 @@ nhwl_layer_windows_add (Lisp_Object window)
 	nhwl_layer_windows = xpalloc (nhwl_layer_windows,
 				      &nhwl_layer_windows_cap, 1, -1,
 				      sizeof *nhwl_layer_windows);
-      nhwl_layer_windows[nhwl_nlayer_windows++]
-	= (NhgLayerWindow) { w->sequence_number, { x, y, width, height } };
+      NhgLayerWindow *l = &nhwl_layer_windows[nhwl_nlayer_windows++];
+      *l = (NhgLayerWindow) { w->sequence_number, { x, y, width, height },
+	{ WINDOW_LEFT_EDGE_X (w), WINDOW_TOP_EDGE_Y (w),
+	  WINDOW_PIXEL_WIDTH (w) - WINDOW_RIGHT_DIVIDER_WIDTH (w),
+	  WINDOW_PIXEL_HEIGHT (w) - WINDOW_BOTTOM_DIVIDER_WIDTH (w) } };
+      nhwl_chrome_vector (Fwindow_parameter (window, Qglitnir__card), l->card);
     }
 }
 
 /* Before root R is published: the glue makes the windows of R with a
    layer of their own that are gone, resized or quiet part of the frame
    again, or all of them when R is no longer an opaque root, in this
-   publish.  Nothing to do while R has none.  */
+   publish, and gives the windows with a card theirs.  Nothing to do while
+   R has neither (its parameter glitnir--cards is nil).  */
 static void
 nhwl_layers_sync (struct frame *r)
 {
@@ -620,8 +626,9 @@ nhwl_layers_sync (struct frame *r)
   struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (r);
 
   if (!out->glitnir_id
-      || nhwl_glue_rc (dpyinfo, NHG (nhg_layers_count (dpyinfo->glue,
-							 out->glitnir_id))) <= 0)
+      || (NILP (get_frame_param (r, Qglitnir__cards))
+	  && nhwl_glue_rc (dpyinfo, NHG (nhg_layers_count (dpyinfo->glue,
+							   out->glitnir_id))) <= 0))
     return;
   nhwl_nlayer_windows = 0;
   nhwl_layer_windows_add (FRAME_ROOT_WINDOW (r));
@@ -2029,15 +2036,18 @@ nhwl_child_shown (struct frame *f)
 }
 
 /* Push child frame F's facts to the glue: its parent, where its native
-   area sits in the parent's, whether it is SHOWN (its surface mapped) and
-   whether it is no-accept-focus.  A surface mapped again is drawn again
-   whole.  */
+   area sits in the parent's, whether it is SHOWN (its surface mapped),
+   whether it is no-accept-focus and whether it waits to be drawn again
+   (garbaged: a frame resized and then moved, as posframe shows one), in
+   which case the glue sends a new position with that picture rather
+   than at once.  A surface mapped again is drawn again whole.  */
 void
 nhwl_child_push (struct frame *f, bool shown)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
   uint32_t flags = ((shown ? NHG_CHILD_VISIBLE : 0)
-		    | (FRAME_NO_ACCEPT_FOCUS (f) ? NHG_CHILD_NO_FOCUS : 0));
+		    | (FRAME_NO_ACCEPT_FOCUS (f) ? NHG_CHILD_NO_FOCUS : 0)
+		    | (FRAME_GARBAGED_P (f) ? NHG_CHILD_REDRAW : 0));
 
   if (!nhwl_child_p (f) || !out->window)
     return;
@@ -2065,7 +2075,7 @@ nhwl_child_created (struct frame *f)
     return;
   nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
 		NHG (nhg_child_chrome (FRAME_NHG (f), out->window,
-				       &out->chrome)));
+				       out->chrome, NHG_CHROME_SLOTS)));
   nhwl_csd_layout (f);
   nhwl_child_push (f, nhwl_child_shown (f));
 }
@@ -4271,9 +4281,10 @@ running.  */)
 
 DEFUN ("nhwl--scroll-layers", Fnhwl__scroll_layers, Snhwl__scroll_layers,
        0, 1, 0,
-       doc: /* Return how many windows of FRAME have a layer of their own.
-FRAME defaults to the selected frame.  Such a window scrolls by moving
-its layer's view (`nhwl-scroll-layers').  For tests.  */)
+       doc: /* Return how many layers of their own FRAME's windows have.
+FRAME defaults to the selected frame.  A window that is its own output
+scrolls by moving its layer's view (`nhwl-scroll-layers'); a card is one
+more.  For tests.  */)
   (Lisp_Object frame)
 {
   struct frame *f = decode_live_frame (frame);

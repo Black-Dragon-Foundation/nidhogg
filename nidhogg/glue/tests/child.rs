@@ -13,7 +13,8 @@ mod common;
 use common::{Recorder, number, readable_within};
 use nhglue::abi::*;
 use nhglue::backing::{NhgBacking, NhgFrameGeom, NhgRect};
-use nhglue::child::{NHG_CHILD_VISIBLE, NhgChrome};
+use nhglue::child::{NHG_CHILD_REDRAW, NHG_CHILD_VISIBLE, NhgChrome};
+use nhglue::chrome;
 use nhglue::csd::{NhgCsdLayout, NhgCsdPaint};
 use nhglue::ffi::*;
 use nhglue::frame::NHG_FRAME_CHILD;
@@ -108,6 +109,12 @@ fn toplevel(d: *mut NhgDisplay, w: i32, h: i32) -> u64 {
 /// A child frame of `parent`'s window with its native area at (`x`, `y`), `w` x `h` (scale 1, no margin yet), made
 /// and pushed as `nhwl_create_frame_window` and `nhwl_child_created` do.
 fn child(d: *mut NhgDisplay, parent: u64, x: i32, y: i32, w: i32, h: i32) -> u64 {
+    let none = chrome::encode(&NhgChrome::default());
+    child_with(d, parent, x, y, w, h, &none)
+}
+
+/// `child` with the chrome vector C kept for the frame.
+fn child_with(d: *mut NhgDisplay, parent: u64, x: i32, y: i32, w: i32, h: i32, v: &[f32]) -> u64 {
     let id = shell(d)
         .child_new(&ChildDesc {
             kind: NHSHELL_KIND_CHILD,
@@ -124,8 +131,8 @@ fn child(d: *mut NhgDisplay, parent: u64, x: i32, y: i32, w: i32, h: i32) -> u64
     unsafe {
         assert_eq!(nhg_frame_register(d, id, NHG_FRAME_CHILD), NHG_OK);
         assert_eq!(nhg_frame_scale(d, id, 120), NHG_OK);
-        assert_eq!(nhg_child_chrome(d, id, &NhgChrome::default()), 0);
     }
+    assert_eq!(vector(d, id, v), 0);
     assert_eq!(lay(d, id).0, 0, "no chrome, no margin");
     assert_eq!(set(d, id, parent, x, y, NHG_CHILD_VISIBLE), 0);
     id
@@ -137,8 +144,12 @@ fn set(d: *mut NhgDisplay, id: u64, parent: u64, x: i32, y: i32, flags: u32) -> 
 }
 
 fn chrome(d: *mut NhgDisplay, id: u64, c: &NhgChrome) -> i32 {
-    // SAFETY: a live display; `c` is readable.
-    unsafe { nhg_child_chrome(d, id, c) }
+    vector(d, id, &chrome::encode(c))
+}
+
+fn vector(d: *mut NhgDisplay, id: u64, v: &[f32]) -> i32 {
+    // SAFETY: a live display; `v` is readable.
+    unsafe { nhg_child_chrome(d, id, v.as_ptr(), v.len()) }
 }
 
 fn border(d: *mut NhgDisplay, id: u64, width: i32, argb: u32) -> i32 {
@@ -166,13 +177,14 @@ fn raise(d: *mut NhgDisplay, id: u64, raise: i32, z_group: i32) -> i32 {
     unsafe { nhg_child_raise(d, id, raise, z_group) }
 }
 
-/// A frame's backing in the glue, as C keeps it: its window, its key, its native size and its border.
+/// A frame's backing in the glue, as C keeps it: its window, its key, its native size, its border and its scale.
 struct Surf {
     window: u64,
     key: u64,
     w: i32,
     h: i32,
     border: [i32; 4],
+    s120: u32,
     back: NhgBacking,
 }
 
@@ -188,7 +200,7 @@ fn geom(s: &Surf) -> NhgFrameGeom {
         r,
         b,
         bg_argb: BG,
-        scale120: 120,
+        scale120: s.s120,
         layer: NhgRect {
             x: 0,
             y: 0,
@@ -219,6 +231,7 @@ fn surface(d: *mut NhgDisplay, window: u64, w: i32, h: i32) -> Surf {
         w,
         h,
         border: offsets(d, window),
+        s120: 120,
         back: NhgBacking {
             pixels: ptr::null_mut(),
             stride: 0,
@@ -316,6 +329,48 @@ fn still(d: *mut NhgDisplay, rec: &Recorder, id: u64, pred: impl Fn(&str) -> boo
 /// A shown tree: `frames` (the root first, each parent before its children, as `(surface, parent)`), each drawn whole,
 /// prepared and published, the first picture committed and its callbacks answered.
 fn show(rec: &Recorder, d: *mut NhgDisplay, frames: &mut [(&mut Surf, u64)]) {
+    draw(d, frames);
+    tick(rec, d);
+}
+
+/// One frame of a running leg: the clock moves on, and the root's `FRAME_READY` gets the inline present it asks for.
+/// `false` when none came: the leg is over.
+fn leg_frame(rec: &Recorder, d: *mut NhgDisplay, root: u64) -> bool {
+    // the recorder serves its sockets in turns: this reads what the last present sent
+    rec.control(r#"{"cmd":"outstanding"}"#);
+    rec.control(r#"{"cmd":"outstanding"}"#);
+    let r = rec.control(r#"{"cmd":"present","advance_ns":16000000}"#);
+    assert!(r.contains("\"ok\":true"), "{r}");
+    let more = collect(d, 100)
+        .iter()
+        .any(|e| e.kind() == Kind::FrameReady && e.window == root);
+    if more {
+        present(d, root, &[], NHG_PRESENT_READY);
+    }
+    more
+}
+
+/// The frames a leg has left.
+fn run_leg(rec: &Recorder, d: *mut NhgDisplay, root: u64) -> usize {
+    let mut n = 0;
+    while leg_frame(rec, d, root) {
+        n += 1;
+        assert!(n < 40, "a leg that does not end");
+    }
+    n
+}
+
+/// The vector of a frame with no chrome that fades in over 120 ms and out over 80 ms.
+fn fades() -> [f32; chrome::SLOTS] {
+    let mut v = chrome::encode(&NhgChrome::default());
+    v[chrome::SLOT_SHOW_KIND..=chrome::SLOT_HIDE_Y2].copy_from_slice(&[
+        1.0, 120.0, 0.0, 0.0, 0.58, 1.0, 1.0, 80.0, 0.42, 0.0, 1.0, 1.0,
+    ]);
+    v
+}
+
+/// `show` up to the first picture's commit: its callbacks are still to come.
+fn draw(d: *mut NhgDisplay, frames: &mut [(&mut Surf, u64)]) {
     for (s, _) in frames.iter_mut() {
         prepare(d, s);
         fill(d, s, BG);
@@ -330,7 +385,6 @@ fn show(rec: &Recorder, d: *mut NhgDisplay, frames: &mut [(&mut Surf, u64)]) {
         0
     );
     assert_ne!(ready(d, root) & NHG_PRESENTED_COMMITTED, 0);
-    tick(rec, d);
 }
 
 /// The tests are named `child::…`, like the other crates' T1 tests.
@@ -388,6 +442,148 @@ mod child {
         assert_eq!(unsafe { nhg_csd_layout(d, c, 240, 0, &mut l) }, 1);
         // 15, 11, 15, 19 device pixels of reach, each grown to an even count
         assert_eq!((l.l, l.t, l.r, l.b), (16, 12, 16, 20));
+        close(d);
+    }
+
+    /// A wrong length or a slot out of range is `NHG_E_ARG` and changes nothing; motion and backdrop slots alone
+    /// are no change for the layout (0), however often they change.
+    #[test]
+    fn chrome_vector_checks_and_motion_slots_alone_return_0() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let d = open(&rec);
+        let root = toplevel(d, 200, 100);
+        let c = child(d, root, 30, 20, 60, 40);
+        let mut v = chrome::encode(&SHADOW);
+        assert_eq!(vector(d, c, &v[..chrome::SLOTS - 1]), NHG_E_ARG);
+        v[chrome::SLOT_OPACITY] = 1.5;
+        assert_eq!(vector(d, c, &v), NHG_E_ARG);
+        v[chrome::SLOT_OPACITY] = 0.5;
+        assert_eq!(vector(d, c, &v), 1);
+        v[chrome::SLOT_SHOW_KIND] = 2.0;
+        v[chrome::SLOT_SHOW_MS] = 120.0;
+        v[chrome::SLOT_BACKDROP] = 10.0;
+        assert_eq!(vector(d, c, &v), 0, "motion and backdrop alone");
+        close(d);
+    }
+
+    /// The backdrop's slot reaches the shell, and 0 takes it away.  A clear child shows the blur of what lies beneath,
+    /// then the root's own pixels again.
+    #[test]
+    fn vector_backdrop_reaches_shell() {
+        let rec = Recorder::start_clock("kwin", "manual");
+        let d = open(&rec);
+        let root = toplevel(d, 200, 100);
+        let mut r = surface(d, root, 200, 100);
+        let c = child(d, root, 30, 20, 60, 40);
+        let mut v = chrome::encode(&NhgChrome::default());
+        v[chrome::SLOT_BACKDROP] = 4.0;
+        assert_eq!(vector(d, c, &v), 0, "nothing to lay out");
+        let mut k = surface(d, c, 60, 40);
+        prepare(d, &mut r);
+        prepare(d, &mut k);
+        fill(d, &r, 0xff00_0000);
+        fill(d, &k, 0);
+        // the root is white from x = 60 on: a sharp edge, under the child's middle
+        for y in 0..r.back.h as usize {
+            for x in 60..r.back.w as usize {
+                // SAFETY: (x, y) lies inside the borrowed backing.
+                let at = y * r.back.w as usize + x;
+                unsafe { *r.back.pixels.cast::<u32>().add(at) = 0xffff_ffff };
+            }
+        }
+        let list = [
+            entry(&r, 0, NHG_SURF_DRAWABLE),
+            entry(&k, root, NHG_SURF_DRAWABLE),
+        ];
+        assert_ne!(
+            present(d, root, &list, NHG_PRESENT_BACKSTOP) & NHG_PRESENTED_PUBLISHED,
+            0
+        );
+        assert_ne!(ready(d, root) & NHG_PRESENTED_COMMITTED, 0);
+        tick(&rec, d);
+        // the pixels neither black nor white: where the edge is blurred
+        let grey = |rec: &Recorder| {
+            let snap = rec.snapshot();
+            let (px, _) = snap.1.as_chunks::<4>();
+            px.iter().filter(|p| (1..255).contains(&p[0])).count()
+        };
+        let blurred = grey(&rec);
+
+        v[chrome::SLOT_BACKDROP] = 0.0;
+        assert_eq!(vector(d, c, &v), 0);
+        ready(d, root);
+        tick(&rec, d);
+        assert!(grey(&rec) < blurred, "{} of {blurred}", grey(&rec));
+        close(d);
+    }
+
+    /// The slots reach the shell before the first picture: the first show runs its leg, and a hide keeps the surface
+    /// through its own, for about the slots' durations.
+    #[test]
+    fn vector_motion_reaches_shell() {
+        let rec = Recorder::start_clock("kwin", "manual");
+        let d = open(&rec);
+        let root = toplevel(d, 200, 100);
+        let mut r = surface(d, root, 200, 100);
+        let c = child(d, root, 30, 20, 60, 40);
+        assert_eq!(vector(d, c, &fades()), 0, "nothing to lay out");
+        let mut k = surface(d, c, 60, 40);
+        draw(d, &mut [(&mut r, 0), (&mut k, root)]);
+        assert_eq!(frames_of(&rec, c), 1);
+        let n = run_leg(&rec, d, root);
+        assert!((3..=12).contains(&n), "{n} frames of a 120 ms show");
+        assert_eq!(frames_of(&rec, c), n + 1, "each frame a buffer");
+
+        assert_eq!(set(d, c, root, 30, 20, 0), 0);
+        ready(d, root);
+        assert_eq!(frames_of(&rec, c), n + 2, "the hide's first frame");
+        rec.wait_node(c, |n| n.contains("\"mapped\":true"));
+        let m = run_leg(&rec, d, root);
+        assert!((2..=8).contains(&m), "{m} frames of an 80 ms hide");
+        rec.wait_node(c, |n| n.contains("\"mapped\":false"));
+        close(d);
+    }
+
+    /// A vector with no kinds takes the transitions back: a hide unmaps at once, with no frame.
+    #[test]
+    fn chrome_without_motion_clears_spec() {
+        let rec = Recorder::start_clock("kwin", "manual");
+        let d = open(&rec);
+        let root = toplevel(d, 200, 100);
+        let mut r = surface(d, root, 200, 100);
+        let c = child(d, root, 30, 20, 60, 40);
+        assert_eq!(vector(d, c, &fades()), 0);
+        let mut k = surface(d, c, 60, 40);
+        draw(d, &mut [(&mut r, 0), (&mut k, root)]);
+        run_leg(&rec, d, root);
+        let frames = frames_of(&rec, c);
+
+        let none = chrome::encode(&NhgChrome::default());
+        assert_eq!(vector(d, c, &none), 0, "nothing to lay out");
+        assert_eq!(set(d, c, root, 30, 20, 0), 0);
+        assert_eq!(ready(d, root) & NHG_PRESENTED_COMMITTED, 0);
+        let n = rec.wait_node(c, |n| n.contains("\"mapped\":false"));
+        assert!(n.contains("\"buffer\":null"), "{n}");
+        assert_eq!(frames_of(&rec, c), frames, "no leg");
+        close(d);
+    }
+
+    /// A window made anew (a reparent) has no transitions in the shell, and takes them from the vector C kept.
+    #[test]
+    fn remade_window_gets_motion_again() {
+        let rec = Recorder::start_clock("kwin", "manual");
+        let d = open(&rec);
+        let root = toplevel(d, 200, 100);
+        let mut r = surface(d, root, 200, 100);
+        let v = fades();
+        let old = child_with(d, root, 30, 20, 60, 40, &v);
+        // SAFETY: a live display.
+        assert_eq!(unsafe { nhg_window_destroy(d, old) }, NHG_OK);
+        let c = child_with(d, root, 30, 20, 60, 40, &v);
+        let mut k = surface(d, c, 60, 40);
+        draw(d, &mut [(&mut r, 0), (&mut k, root)]);
+        let n = run_leg(&rec, d, root);
+        assert!((3..=12).contains(&n), "{n} frames of a 120 ms show");
         close(d);
     }
 
@@ -464,6 +660,60 @@ mod child {
         assert_eq!(border(d, c, 0, 0xff6b_6b6b), 1);
         assert_eq!(border(d, c, 0, 0), 0, "no border has no colour");
         assert_eq!(ensure(d, &mut k), 1);
+        close(d);
+    }
+
+    /// A top-level the compositor decorates sends its own area as its window geometry with its first picture.  With
+    /// none, xdg-shell takes the bounds of the surface and its subsurfaces: a child's shadow past the root's corner made
+    /// the compositor suggest a larger size, the frame took it, and each configure grew it again.  Pattern B: the
+    /// manual clock gates the frames.
+    #[test]
+    fn toplevel_geometry_leaves_child_shadow_out() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let d = open(&rec);
+        let root = toplevel(d, 200, 100);
+        let mut r = surface(d, root, 200, 100);
+        // the shadow's margin (8 on the sides, 6 above) reaches past the root's top-left corner
+        let c = child(d, root, 4, 3, 60, 40);
+        assert_eq!(chrome(d, c, &SHADOW), 1);
+        assert_eq!(lay(d, c).0, 1);
+        let mut k = surface(d, c, 60, 40);
+        show(&rec, d, &mut [(&mut r, 0), (&mut k, root)]);
+        rec.wait_node(c, |n| n.contains("\"position\":[-4,-3]"));
+        rec.wait_node(root, |n| n.contains("\"geometry\":[0,0,200,100]"));
+        close(d);
+    }
+
+    /// Without a border the window geometry is the surface's logical size as its viewport gives it.  A device size no
+    /// logical size maps onto (401 x 301 at scale 2) is cut to the largest that fits, 200 x 150; a geometry rounded
+    /// up to 201 x 151 would be a pixel past the surface, which xdg-shell clamps to the surface and its subsurfaces
+    /// (a child's shadow past the edge).  Pattern B: the manual clock gates the frames.
+    #[test]
+    fn toplevel_geometry_matches_the_viewport_on_odd_sizes() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let d = open(&rec);
+        let root = toplevel(d, 200, 150);
+        rec.control_ok(r#"{"cmd":"scale","value120":240}"#);
+        wait_for(d, |e| {
+            e.window == root && matches!(e.event, ShellEvent::Scale(s) if s.scale120 == 240)
+        });
+        let mut l = NhgCsdLayout::default();
+        // SAFETY: a live display; `l` is writable.
+        assert!(unsafe { nhg_csd_layout(d, root, 240, 0, &mut l) } >= 0);
+        let mut r = surface(d, root, 401, 301);
+        r.s120 = 240;
+        let seq = next_seq(&rec);
+        show(&rec, d, &mut [(&mut r, 0)]);
+        let c = log(&rec, seq)
+            .into_iter()
+            .rev()
+            .find(|c| of(c, root) && c.contains("\"buffer\":{"))
+            .expect("a buffer of the root");
+        assert!(c.contains("\"dst\":[200,150]"), "the viewport: {c}");
+        assert!(
+            c.contains("\"geometry\":[0,0,200,150]"),
+            "the geometry: {c}"
+        );
         close(d);
     }
 
@@ -579,6 +829,52 @@ mod child {
         ready(d, root);
         rec.wait_node(c, |n| {
             n.contains("\"position\":[22,14]") && n.contains("\"input_region\":[[8,6,60,40]]")
+        });
+        let commits = log(&rec, seq);
+        let roots = commits.iter().filter(|x| of(x, root)).count();
+        assert_eq!(roots, 1, "{commits:?}");
+        close(d);
+    }
+
+    /// A child moved while its frame waits to be drawn again (`NHG_CHILD_REDRAW`: a posframe resized and moved in one
+    /// call) keeps its place until the publish step, which sends it with the new picture: the move wakes nothing by
+    /// itself, and one root commit shows the child at its new place with its new size.  Without it the child showed
+    /// at the new place with its old picture first.  Pattern D: the recorder's manual clock.
+    #[test]
+    fn a_move_with_a_redraw_goes_with_the_picture() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let d = open(&rec);
+        let root = toplevel(d, 200, 100);
+        let mut r = surface(d, root, 200, 100);
+        let c = child(d, root, 30, 20, 60, 40);
+        let mut k = surface(d, c, 60, 40);
+        show(&rec, d, &mut [(&mut r, 0), (&mut k, root)]);
+        rec.wait_node(c, |n| n.contains("\"position\":[30,20]"));
+
+        let seq = next_seq(&rec);
+        assert_eq!(
+            set(d, c, root, 50, 25, NHG_CHILD_VISIBLE | NHG_CHILD_REDRAW),
+            0
+        );
+        assert!(
+            quiet(&collect(d, 200), root),
+            "the move woke the pacer before the picture"
+        );
+        still(d, &rec, c, |n| n.contains("\"position\":[30,20]"));
+        (k.w, k.h) = (80, 50);
+        prepare(d, &mut k);
+        fill(d, &k, BG);
+        let list = [
+            entry(&r, 0, NHG_SURF_DRAWABLE),
+            entry(&k, root, NHG_SURF_DRAWABLE),
+        ];
+        assert_ne!(
+            present(d, root, &list, NHG_PRESENT_BACKSTOP) & NHG_PRESENTED_PUBLISHED,
+            0
+        );
+        ready(d, root);
+        rec.wait_node(c, |n| {
+            n.contains("\"position\":[50,25]") && n.contains("\"w\":80")
         });
         let commits = log(&rec, seq);
         let roots = commits.iter().filter(|x| of(x, root)).count();

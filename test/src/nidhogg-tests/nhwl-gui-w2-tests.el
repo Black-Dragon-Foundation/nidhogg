@@ -826,19 +826,38 @@ nothing."
   "How many connections the recorder has accepted since it started."
   (plist-get (gui-runner-recorder '(:cmd "connections")) :accepted))
 
-(defun nhwl-gui--fd-kinds ()
-  "This process's descriptors as a sorted list of what each is (a socket, a pipe, an eventfd, a file's name), without
-the shell's buffer memfds.  A window's buffer pool holds one memfd a buffer and grows and trims by time (a pool idle for
-2 s keeps one buffer), so their number at a given moment says nothing of a leak: VmRSS judges the buffers.  An
-inode number changes with each connection, so a kind leaves it out."
-  (sort (delq nil (mapcar (lambda (fd)
-                            (let ((l (ignore-errors (file-symlink-p (concat "/proc/self/fd/" fd)))))
-                              (cond ((null l) nil)
-                                    ((string-prefix-p "/memfd:nhshell-buffer" l) nil)
-                                    ((string-match "\\`\\([a-z_]+\\):\\[[0-9]+\\]\\'" l) (match-string 1 l))
-                                    (t l))))
-                          (directory-files "/proc/self/fd" nil "\\`[0-9]")))
+(defun nhwl-gui--fd-kinds-of (links)
+  "LINKS, what descriptors' /proc links read (nil for one closed meanwhile), as a sorted list of what each is (a
+socket, a pipe, an eventfd, a file's name), without the shell's buffer memfds.  A window's buffer pool holds one memfd
+a buffer and grows and trims by time (a pool idle for 2 s keeps one buffer), so their number at a given moment says
+nothing of a leak: VmRSS judges the buffers.  An inode number changes with each connection, so a kind leaves it out."
+  (sort (delq nil (mapcar (lambda (l)
+                            (cond ((null l) nil)
+                                  ((string-prefix-p "/memfd:nhshell-buffer" l) nil)
+                                  ((string-match "\\`\\([a-z_]+\\):\\[[0-9]+\\]\\'" l) (match-string 1 l))
+                                  (t l)))
+                          links))
         #'string<))
+
+(defun nhwl-gui--fd-kinds ()
+  "This process's descriptors as `nhwl-gui--fd-kinds-of' lists them."
+  (nhwl-gui--fd-kinds-of
+   (mapcar (lambda (fd) (ignore-errors (file-symlink-p (concat "/proc/self/fd/" fd))))
+           (directory-files "/proc/self/fd" nil "\\`[0-9]"))))
+
+(ert-deftest nhwl-gui/fd-kinds-leave-out-the-buffer-pool ()
+  "Pattern D (pure).  Two descriptor sets as a twenty-restart row reads them at cycles 5 and 20, a window's pool
+holding one buffer more at the second (it grows while the compositor holds its buffers and trims after 2 s idle,
+glitnir's `idle_trims_to_one_after_2s'): their counts differ, as the rows' old count did once (22 against 21), and
+their kinds are equal.  A socket left open still differs, by its kind."
+  (let* ((at5 '("/dev/null" "socket:[101]" "pipe:[7]" "anon_inode:[eventfd]" "/memfd:nhshell-buffer (deleted)"))
+         (at20 '("/dev/null" "socket:[202]" "pipe:[9]" "anon_inode:[eventfd]" "/memfd:nhshell-buffer (deleted)"
+                 "/memfd:nhshell-buffer (deleted)" nil))
+         (leak (cons "socket:[303]" at5)))
+    (should-not (= (length (delq nil (copy-sequence at20))) (length at5)))
+    (should (equal (nhwl-gui--fd-kinds-of at20) (nhwl-gui--fd-kinds-of at5)))
+    (should (equal (nhwl-gui--fd-kinds-of at5) '("/dev/null" "anon_inode:[eventfd]" "pipe" "socket")))
+    (should-not (equal (nhwl-gui--fd-kinds-of leak) (nhwl-gui--fd-kinds-of at5)))))
 
 (defun nhwl-gui--proc-counts ()
   "This process's (FDS TASKS RSS-KB), FDS as `nhwl-gui--fd-kinds' lists them."
@@ -1494,6 +1513,68 @@ returns `copy'."
     (let ((r (alist-get 'rect (car (json-parse-string (buffer-string) :object-type 'alist :array-type 'list
                                                       :false-object nil :null-object nil)))))
       (cons (alist-get 'width r) (alist-get 'height r)))))
+
+(ert-deftest nhwl-gui/live-sway-resize-reaches-the-frame ()
+  "Every `swaymsg resize' of the floating frame gives it the size asked, at every scale: twenty steps between a narrow
+and a wide size, as budgets.sh's `resize-stuck' row takes them, each one asked once the one before has reached the
+frame and sway has used the frame's answer (pattern C: the frame's size and the presenter's counters are the answer
+waited for).  Sway sizes a floating window by its commits: one that comes after the next resize was asked overwrites
+that resize, which sway then never sends, so a step asked before the answer to the one before is lost on sway's side.
+A person cannot resize that fast."
+  :tags '(runs-last)
+  (skip-unless (and (nhwl-gui--live-p) (equal (glitnir-gui--compositor) "sway") (executable-find "swaymsg")))
+  (let ((old (frame-parameter nil 'fullscreen)) (s (frame-scale-factor))
+        (now (lambda () (list (frame-pixel-width) (frame-pixel-height)))))
+    (unwind-protect
+        (progn
+          (nhwl-gui--set-fullscreen nil)
+          (dotimes (i 20)
+            (let* ((w (+ 500 (* (% i 2) 160) (* (% (/ i 2) 5) 12))) (h (+ 400 (* (% i 2) 100)))
+                   (want (list (round (* w s)) (round (* h s)))))
+              (call-process "swaymsg" nil nil nil
+                            (format "[pid=%d] resize set width %d px height %d px" (emacs-pid) w h))
+              (nhwl-gui--wait (lambda () (gui-runner-read-all) (and (equal (funcall now) want) (nhwl-gui--shown-p))) 5)
+              ;; sway's own record of the window says which side lost the step: a rectangle of the asked size is a
+              ;; configure the frame did not take, another one a resize sway dropped
+              (ert-info ((format "step %d: %d x %d logical; sway's size %S" i w h (nhwl-gui--sway-size)))
+                (should (equal (funcall now) want))))))
+      (nhwl-gui--set-fullscreen old)
+      (nhwl-gui--live-settle))))
+
+(defun nhwl-gui--sway-size ()
+  "The (W H) of this Nidhogg's window in sway's tree, layout (logical) pixels, or nil."
+  (with-temp-buffer
+    (when (eq 0 (call-process "swaymsg" nil t nil "-t" "get_tree"))
+      (let ((r (alist-get 'rect (nhwl-gui--sway-node
+                                 (json-parse-string (buffer-string) :object-type 'alist :array-type 'list
+                                                    :false-object nil :null-object nil)
+                                 (emacs-pid)))))
+        (and r (list (alist-get 'width r) (alist-get 'height r)))))))
+
+(ert-deftest nhwl-gui/live-sway-resize-burst-ends-at-the-last-size ()
+  "A burst of `swaymsg resize' steps with no wait between them (a script, a relayout, an edge dragged fast) leaves the
+frame at the last size asked, and sway's rectangle and the frame agree once the frame's answer is used: no step's late
+commit may stand for the size.  Pattern C: the frame's size and the presenter's counters are the answer waited for."
+  :tags '(runs-last)
+  (skip-unless (and (nhwl-gui--live-p) (equal (glitnir-gui--compositor) "sway") (executable-find "swaymsg")))
+  (let* ((old (frame-parameter nil 'fullscreen)) (s (frame-scale-factor))
+         (now (lambda () (list (frame-pixel-width) (frame-pixel-height))))
+         (steps '((500 400) (660 500) (512 400) (672 500) (524 400) (684 500) (536 400) (640 480)))
+         (last (car (last steps)))
+         (want (list (round (* (car last) s)) (round (* (cadr last) s)))))
+    (unwind-protect
+        (progn
+          (nhwl-gui--set-fullscreen nil)
+          (dolist (st steps)
+            (call-process "swaymsg" nil nil nil
+                          (format "[pid=%d] resize set width %d px height %d px" (emacs-pid) (car st) (cadr st))))
+          (nhwl-gui--wait (lambda () (gui-runner-read-all) (and (equal (funcall now) want) (nhwl-gui--shown-p))) 5)
+          (ert-info ((format "asked %S last; frame %S device px; sway's size %S" last (funcall now)
+                             (nhwl-gui--sway-size)))
+            (should (equal (funcall now) want))
+            (should (equal (nhwl-gui--sway-size) last))))
+      (nhwl-gui--set-fullscreen old)
+      (nhwl-gui--live-settle))))
 
 (ert-deftest nhwl-gui/live-drag-between-two-nidhoggs ()
   "On sway, text dragged out of this Nidhogg onto a second `nidhogg -Q' is inserted there, and the call returns

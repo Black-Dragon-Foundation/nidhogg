@@ -14,7 +14,7 @@
 //! file, the two canvases and the position, so frame N continues from frame N-1.
 
 use super::anim::{Anim, blend_row};
-use super::{CBuf, Error, Image, MAX_FRAMES, Params, size_ok, try_vec};
+use super::{CBuf, Error, Image, MAX_FRAMES, Params, reserve, size_ok, try_vec};
 use image_webp::WebPDecoder;
 use std::io::Cursor;
 use std::ops::Range;
@@ -424,6 +424,8 @@ pub fn decode(data: &[u8], p: &Params, state: Option<Box<Anim>>) -> Result<Image
         if vp8x && data[20] & 0x02 != 0 {
             let (cw, ch) = (le24(&data[24..]) + 1, le24(&data[27..]) + 1);
             size_ok(p, i64::from(cw), i64::from(ch))?;
+            // the two canvases (4 bytes a pixel each)
+            reserve(8 * u64::from(cw) * u64::from(ch))?;
             let frames = demux(data, cw, ch)?;
             let n = cw as usize * ch as usize;
             let mut copy = Vec::new();
@@ -450,6 +452,8 @@ pub fn decode(data: &[u8], p: &Params, state: Option<Box<Anim>>) -> Result<Image
             // is decoded from its own chunks under the alpha libwebp gives it
             let (f, has_alpha) = still_extended(data).ok_or(Error::NotImage)?;
             size_ok(p, i64::from(f.width), i64::from(f.height))?;
+            // the crate's output, our RGBA copy and the result (4 bytes a pixel each)
+            reserve(12 * u64::from(f.width) * u64::from(f.height))?;
             // libwebp's decode wants the whole RIFF
             if (le32(&data[4..]) as usize).saturating_add(8) > data.len() {
                 return Err(Error::Decode("truncated RIFF".into()));
@@ -460,6 +464,8 @@ pub fn decode(data: &[u8], p: &Params, state: Option<Box<Anim>>) -> Result<Image
             let mut dec = WebPDecoder::new(Cursor::new(data)).map_err(|_| Error::NotImage)?;
             let (w, h) = dec.dimensions();
             size_ok(p, i64::from(w), i64::from(h))?;
+            // the crate's output and the result (4 bytes a pixel at most each)
+            reserve(8 * u64::from(w) * u64::from(h))?;
             let size = dec.output_buffer_size().ok_or(Error::Size)?;
             let mut buf = try_vec(size, 0u8)?;
             dec.read_image(&mut buf)
@@ -491,6 +497,8 @@ pub fn decode(data: &[u8], p: &Params, state: Option<Box<Anim>>) -> Result<Image
             }
             while e.pos < idx && e.next < e.frames.len() {
                 // the host's own timestamp runs with the decoder's (both restart at 0)
+                // a frame's crate output and RGBA copy, and the result (4 bytes a pixel each)
+                reserve(12 * u64::from(e.width) * u64::from(e.height))?;
                 let before = e.prev_timestamp;
                 let ts = e.get_next().map_err(|m| Error::Frame(e.pos + 1, m))?;
                 dur = ts.wrapping_sub(before);
@@ -737,6 +745,24 @@ mod tests {
         let c = decode(&[], &params(0, None), b.anim).unwrap();
         assert_eq!(c.pixels.as_slice()[0], 0x010203);
         assert_eq!(c.pixels.as_slice()[3], 0);
+    }
+
+    /// Pattern D: a decode that does not fit the heap budget is an out-of-memory error before anything is
+    /// allocated, not an abort (a plain still, an extended still and an animation).
+    #[test]
+    fn a_decode_over_the_budget_is_out_of_memory() {
+        let px = [[1, 2, 3, 255]; 16];
+        let plain = still(4, 4, &px);
+        let anim = animation(4, 4, &[(0, 0, 4, 4, 10, false, true, &px)]);
+        let ext = extended(0x10, 4, 4, &[(b"VP8L", &vp8l(4, 4, &px))]);
+        for (what, f) in [("plain", plain), ("animation", anim), ("extended", ext)] {
+            let ok = decode(&f, &params(0, None), None);
+            super::super::set_test_budget(Some(16));
+            let r = decode(&f, &params(0, None), None);
+            super::super::set_test_budget(None);
+            assert!(ok.is_ok(), "{what}: {:?}", ok.err());
+            assert!(matches!(r, Err(Error::NoMem)), "{what}: {:?}", r.err());
+        }
     }
 
     #[test]

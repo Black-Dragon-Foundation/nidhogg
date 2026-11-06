@@ -49,6 +49,12 @@ flag_rule() {
                  <(git show "${gbase[i]}:$f" | unifdef "${flags[@]}" 2>/dev/null) ||
             fail "$f changes code outside ${gdef[i]}" ;;
         lisp/*)
+          # A Lisp file a flag group created is the groups' own file: it passes while only flag-group commits touch it.
+          # (Upstream files, and files whose history has any other commit, still go through the loadup-line rule.)
+          if [ -z "$(git log --diff-filter=A --format=%s HEAD -- "$f" | tail -n 1 | grep -vE "^nidhogg: ($(IFS='|'; echo "${gname[*]}")):")" ] &&
+             [ -z "$(git log --format=%s "${gbase[i]}..HEAD" -- "$f" | grep -vE "^nidhogg: ($(IFS='|'; echo "${gname[*]}")):")" ]; then
+            continue
+          fi
           body=$(git diff -U0 "${gbase[i]}" HEAD -- "$f" | grep -E '^[+-][^+-]')
           n=$(printf '%s\n' "$body" | wc -l); matched=0
           for feat in "${feats[@]}"; do
@@ -146,7 +152,13 @@ if [ "${TREE_TEST_SELF:-}" = 1 ]; then
   expect "a glitnir commit editing a file a workers commit created" ""
   fixture; putf "upstream jsonrpc" lisp/jsonrpc.el '(a)\n'; putf "nidhogg: workers: k" lisp/jsonrpc.el '(a)\n(b)\n'
   expect "a changed upstream jsonrpc.el in a workers commit" "lisp/jsonrpc.el changed outside the groups' own files"
-  echo "tree self-test: 19 cases ok"
+  fixture; putf "nidhogg: glitnir: g" lisp/g.el '(a)\n'; putf "nidhogg: shell: s" src/s.c '#ifdef HAVE_NHWL\nint s;\n#endif\n'
+  putf "nidhogg: glitnir: g2" lisp/g.el '(a)\n(b)\n'
+  expect "a glitnir commit editing a Lisp file a group created" ""
+  fixture; putf "nidhogg: glitnir: g" lisp/g.el '(a)\n'; putf "nidhogg: shell: s" src/s.c '#ifdef HAVE_NHWL\nint s;\n#endif\n'
+  putf "nidhogg: pgtk: p" lisp/g.el '(a)\n(b)\n'
+  expect "another commit editing a Lisp file a group created" "lisp/g.el changed outside the groups' own files"
+  echo "tree self-test: 23 cases ok"
   exit 0
 fi
 

@@ -47,6 +47,13 @@ views (`kernels::{Pixels, PixelsMut, Mask}`).
   3σ past its box. Tiles hold one sample every 2 px from σ 8 and every 4 px from σ 16, sampled bilinearly: the
   coarsest that keeps the error within 2/255 of an 8×8-supersampled rounded rectangle convolved with an exact
   Gaussian.
+- `blur::Backdrop` keeps what lies beneath a translucent layer, blurred, at ¼ resolution, for the composite to sample
+  bilinearly: a 4×4 box average, then three running-sum box passes per axis (the kernels `down4`, `box_h`, `box_v`,
+  `bilerp`), at a cost that does not depend on σ. The image holds the layer's region plus `blur::margin(σ)` (3σ, a
+  multiple of 4). `update` recomputes only the rows the source's damage reaches, and a change of σ, scale, region or
+  source size recomputes it all; it returns the part of the region whose samples changed. Past the source, and past the
+  image, the edge repeats. Box radii are whole cells, so σ takes effect in steps, and below 2 device pixels it blurs only
+  as far as the averaging does.
 
 ## Compose
 
@@ -54,7 +61,16 @@ views (`kernels::{Pixels, PixelsMut, Mask}`).
 in the root's device pixels), within the given rectangles (the damage, or a draw's clip), from the frames' surfaces
 (sources, by layer id), bottom to top: layers without chrome are copied; a chromed layer's shadow tiles go over what
 lies below, then the layer is copied but for its four corner squares, which go through the corner mask, with the
-border ring when it has a border. Window layers are their frame's pixels (P1 composes a scroll as damage). Pixels no
+border ring when it has a border. Window layers are their frame's pixels (P1 composes a scroll as damage). A window
+layer with a card (`scene::set_card`, Rust only: a `Card`'s beneath colour, edge ring and the rectangles it keeps out,
+with the radius and shadow from the layer's chrome) then draws over the frame's pixels and labels: in the gap around the
+window (inside the frame, never inside a rectangle it keeps out, the other windows), the shadow and then the ring, a
+band just outside the rounded rectangle; in its four corner squares, outside the rounded rectangle, the gap as it is
+beside them: the beneath colour, then the chrome of the frame's other cards below it in paint order, its own shadow
+and ring, and the other cards' above it. The shadow's radius is the corners', clamped to half the shorter side. The
+rest of the window stays a plain copy, so typing inside it composes nothing of the card. A card's change damages where
+it draws (its corners and its bounds outside the window), and so does its raise or lower; a change of the rectangles
+it keeps out damages only those that came or went. Pixels no
 layer covers are left alone. A pixel's value never depends on how the rectangles cut it, so composing the damage
 equals composing everything. A source whose device scale is not the target's is refused (`GLITNIR_E_STATE`) and the
 host draws that root the stock way. The time taken and the layers drawn fill the root's next frame-time entry.
@@ -75,7 +91,9 @@ rounding) and lists the output in the snapshot (`Committed::outputs`: rectangle,
 coordinates, `full` when nothing of its last picture can be kept). Scene damage inside the window goes to the output
 only; the snapped rectangle's overlap with the neighbours goes to both. A `glitnir_scroll` whose area holds the whole
 window becomes the output's scroll distance plus its exposed rows, and damage drawn before it moves with the pixels;
-any other scroll stays damage. An output that goes (demoted, hidden, removed) or moves damages its old rectangle on
+any other scroll stays damage. A card's corners are composed into the output's buffer like any scene pixel, and they
+move with its rows, so an output's scroll also damages each card corner square in it, where it is and where the
+scroll took it (at most eight r×r squares): a card window keeps its own output, with no mask surface. An output that goes (demoted, hidden, removed) or moves damages its old rectangle on
 the frame. `pool::Ring` is the output buffers' row arithmetic: buffers `min(2·view, 8192)` rows tall, a scroll moves
 the view's offset and rebases to the middle at the buffer's end, and `punch_rows` names the rows more than half a
 view away, whose pages the shell may release.
@@ -126,6 +144,12 @@ Every allocation is bounded: the header's width and height are checked against t
 `MAX_PIXELS` (2^27) before the result is allocated, rows are decoded one at a time (no whole raw image), and the
 `png` crate's own limit (64 MiB for its buffers and chunks) stays at its default.
 
+The crates allocate infallibly and Rust aborts the process when an allocation fails (a hook cannot catch it), so a
+decode asks first: from the header's size it estimates the most heap it needs at once (`images::reserve`: bytes a
+pixel times the buffers the format holds together), refuses an estimate over `MAX_DECODE_BYTES` (4 GiB), and probes
+that the allocator can give it (`try_reserve_exact`, given back at once). A refusal is `GLITNIR_IMG_E_NOMEM`, as the C
+decoders answered an allocation failure. An animation asks again before each frame it composes.
+
 PNG (`images/png.rs`) gives libpng's pixels for the host's transformations: 16-bit samples keep their high byte,
 palettes and low-depth gray expand (gray scaled ×255, ×85, ×17), gray becomes RGB; a `tRNS` key or a palette whose
 alphas are all 0 or 255 makes a mask, any other alpha is composited over the caller's background with
@@ -151,6 +175,19 @@ state (`out.anim`, an opaque pointer with its size in `anim_bytes`) and the next
 `params.anim` (the call then owns it, also when it fails; `data` may be NULL) to decode the next frame from the
 current one, as the C cores' caches do; `glitnir_img_anim_free` frees one the caller drops. An animation has at most
 `MAX_FRAMES` (2^18) frames; more fail as an allocation would.
+
+### Fuzzing the image decoders
+
+`nidhogg/glitnir-fuzz/` is a cargo-fuzz crate (its own workspace, a sibling of this crate because this crate's
+`.cargo/config.toml` points crates.io at `vendor/`, which holds no fuzzer; nightly only). Its target `image_decode` feeds
+arbitrary bytes as a PNG, GIF or WebP to `glitnir_img_decode` with random parameters, decodes animations again from
+the state handed back, and fails on a panic, a mismatch between the return value and `out.err`, an oversize result or a
+result left behind on error. From the repository root, with a nightly and `cargo-fuzz`:
+
+    cargo +nightly fuzz run --fuzz-dir nidhogg/glitnir-fuzz image_decode CORPUS_DIR -- \
+        -max_total_time=600 -rss_limit_mb=3072 -max_len=65536 -dict=nidhogg/glitnir-fuzz/image.dict
+
+A crash lands in `nidhogg/glitnir-fuzz/artifacts/`; turn the input into a unit test next to the format's code.
 
 ## Limits
 

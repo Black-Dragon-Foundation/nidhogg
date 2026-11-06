@@ -138,7 +138,10 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   (`NHWL_PRESENTER=0` runs it inline), composes and commits. Child frames are subsurfaces of their parent, so the Wayland
   compositor puts the tree together.
   `glitnir-stats` gives `:key-to-commit-ms` in place of `:latency-ms`, `:draw-ms` runs to the buffer's commit and
-  `:painted-px` is the area composed; `nhwl-presenter-stats` has the presenter's own counters. Among them is a fence:
+  `:painted-px` is the area composed. `glitnir--last-paint` gives the newest paint of that record
+  (`:commit-ns` when Emacs published the drawing, `:paint-ns` and `:present-ns` when its buffer was committed, on the
+  clock of `glitnir--now-ns`, `CLOCK_MONOTONIC`; a reset keeps it; nil before a frame's first paint and in batch): drgnx's
+  perf lab reads its key-to-present time from it. `nhwl-presenter-stats` has the presenter's own counters. Among them is a fence:
   each request Emacs gives the presenter (a picture, a configure's ack, surface state for a commit) takes the next
   number, `:published` the newest; `:presented` reaches a number once that request and every older one has gone out in
   a flushed commit (or no longer needs one), so `:presented` equal to `:published` means the compositor has
@@ -300,6 +303,13 @@ machine whose timing never shows it, not certain.
   `NIDHOGG_PKG_IMAGE` (pkg-test.sh), and each checks its packages (`rpm -q`) before it installs any, so a stale list
   costs time, never a result; `ci-test.sh` checks that the test images name every package gui.sh and pkg-test.sh ask
   for. `tarball-test.sh` keeps its fresh base image: it checks that `deps.runtime` is enough.
+  The shell's, glue's and Glitnir's `check.sh --container fedora-45` (a developer's run) use `nidhogg-check:fedora-45-HASH`
+  (`deps/fedora-45.check`, `ci/images/check-fedora-45.Containerfile`): `image.sh local check-fedora-45` builds it
+  once per tag on that machine (4 GiB cap) and prints `image: REF (local|built)`; the run installs no package. Only
+  `--android` still installs the Android std (Fedora has none, so it is skipped). It is not published to ghcr: CI's
+  jobs run in `nidhogg-build-fedora-45`. `gui.sh --container fedora-45` likewise runs in `nidhogg-guiall:fedora-45-HASH`
+  (the `gui` image plus KWin's, labwc's and the input methods' packages) unless `GLITNIR_GUI_IMAGE` or a local
+  `glitnir-gui-deps` image is set.
 - `linux` (fedora-45, ubuntu-26.04): `build.sh --container D --stage build`, the cache saves, then `--stage check
   --check nidhogg/check-subset.txt`, then `--stage pack --out ...` (so a failing check keeps the build's caches), then
   `tarball-test.sh`. `macos`: Homebrew `deps/macos.build` (Rust from the runner image's rustup when it has one),
@@ -704,6 +714,25 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   (`call-process`'s waitpid, a blocking read) slept on until another signal came, usually the busy cursor's SIGALRM
   `hourglass-delay` after the command started, so only a C-g within that second worked. Test:
   `test/src/nidhogg-tests/quit-tty-tests.el` (the controlling tty and another tty, C-g after the wait has started).
+- Line numbers deep in a large buffer (`src/xdisp.c`, `maybe_produce_line_number`; a stock cost, kept in this group
+  until the series is rewritten): `display-line-numbers` counts a line's number from the window's base line, a cache
+  that only `line-number-mode`'s `%l` in the window's mode line filled. A window that shows no `%l` (drgnx's windows
+  show no mode line) had none, so every display iterator of every redisplay counted the lines from the buffer's start,
+  and point's line again for the current-line face: a few ms each, 4.3 MB into drgnx's perf fixture, 4 per redisplay
+  when a window split and hundreds while compile-flood's log streamed. A count from the start now keeps its result as
+  that base, under the cache's own rules (inside redisplay, which flushes it once an edit reaches it; the accessible
+  portion's numbers only, so never `display-line-numbers-widen`'s numbers of a narrowed buffer; never over the mode
+  line's "lines too long" mark), and point's number counts from it too. Test:
+  `test/src/nidhogg-tests/workers-redisplay-gui-tests.el` (`nidhogg-workers--test-line-number-counts` counts the
+  counts from the start; `%l`, which reads the same base, checks the kept numbers, narrowed and widened too).
+- Variable watchers without the obarray walk (`src/data.c`, `src/eval.c`; a stock cost, kept in this group until the
+  series is rewritten): `add-variable-watcher` and `remove-variable-watcher` walk every interned symbol to give a
+  variable's aliases its write trap, which cost over 100 µs a call in a loaded session. `defvaralias` now records the
+  variable it points an alias at (a weak table; every alias chain ends in such a link), and the walk runs only for a
+  recorded variable, so a variable with no alias pays nothing and the aliases still share their base's watchers.
+  `(nidhogg--variable-watcher-walks)` counts the walks. Test: `test/src/nidhogg-tests/varwatch-tests.el` (no walk for
+  unaliased variables; a watcher added to or removed from a base or an alias, aliases made before and after, chains,
+  `defvaralias` of a watched variable).
 - Waits and the redisplay budget: a main-thread wait on a worker pushes the watchdog's `worker-wait` (or `treesit-wait`)
   phase and counts its time in `:phase-ms`; it never enters `select`, so the watchdog's span runs through it. Every
   `redisplay_internal` call starts a wait budget of `nidhogg-redisplay-wait-budget` milliseconds (default 1), spent
@@ -874,7 +903,8 @@ every Lisp object; a worker only reads bytes and files and hands a result back f
   with no Lisp, so a worker can run it; the main thread materializes the tape into the objects `json-parse-string`
   and `json-parse-buffer` build. Test primitive: `(nidhogg-workers--test-tokenize STRING MODE &rest OPTIONS)`.
 - JSON materializer slices: the main thread builds a message in slices (it looks at the clock every 4,096 entries and
-  yields once the slice's budget is spent), in the watchdog phase `json`. Between slices the partial result, every open
+  yields once the slice's budget is spent), in the watchdog phase `json` (the slices' time counts in
+  `nidhogg-workers-stats`'s `:phase-ms`). Between slices the partial result, every open
   container's collected elements and the key cache live in a Lisp vector on a `staticpro`'d list, so GC may run;
   nothing is visible to Lisp until the message is complete. A slice left by a signal (`memory-full`) drops its state
   and the message becomes an error (`json-out-of-memory`). Each distinct key is interned once per message. Test

@@ -9,8 +9,9 @@
 //! offsets they already have.  The surface is the native area plus the margin; its input region is the native area.
 //!
 //! The facts it reads: the parent, the position (the frame's left and top), visibility and
-//! `no-accept-focus` are pushed (`nhg_child_set`, when the window is made, moved, shown or hidden); the chrome is
-//! pulled from C's `glitnir--resolve` call (`nhg_child_chrome`); the native size at each publish (`nhg_csd_paint`);
+//! `no-accept-focus` are pushed (`nhg_child_set`, when the window is made, moved, shown or hidden); the chrome and
+//! the transitions and the backdrop are pulled from C's `glitnir--resolve` call (`nhg_child_chrome`), and the shell runs
+//! them (a hide's and a show's calls are `nhg_child_set`'s); the native size at each publish (`nhg_csd_paint`);
 //! a raise or lower (`nhg_child_raise`).  The stacking order among siblings is the glue's (`Stacking`, moved from C's
 //! `child_z`): the surface list C passes to `nhg_present` is put in it.  The scale is the one of the frame's last
 //! layout.  The keyboard focus redirect stays C.
@@ -23,18 +24,20 @@ use crate::guard::GlueError;
 use crate::present::NhgSurface;
 use glitnir::ffi::glitnir_layer_set_chrome;
 use glitnir::geom::Rect;
+use glitnir::motion::MotionSpec;
 use glitnir::scene::Chrome;
 use std::ptr;
 
-/// `nhg_child_set` flags: the child is shown (its surface is mapped); the frame is `no-accept-focus`.
+/// `nhg_child_set` flags: the child is shown (its surface is mapped); the frame is `no-accept-focus`; the frame waits
+/// to be drawn again (it is garbaged), so its next publish brings a new picture.
 pub const NHG_CHILD_VISIBLE: u32 = 1;
 pub const NHG_CHILD_NO_FOCUS: u32 = 2;
-const FLAGS: u32 = NHG_CHILD_VISIBLE | NHG_CHILD_NO_FOCUS;
+pub const NHG_CHILD_REDRAW: u32 = 4;
+const FLAGS: u32 = NHG_CHILD_VISIBLE | NHG_CHILD_NO_FOCUS | NHG_CHILD_REDRAW;
 
-/// The chrome `glitnir--resolve` gives a child frame, in logical pixels (C decodes the Lisp plist): `on` 0 for none,
-/// the corner radius, the shadow's blur, offset, spread, opacity (0 to 1) and colour (`0xRRGGBB`).  Layout equals
-/// `NhgChrome`.
-#[repr(C)]
+/// The corners and shadow of a child frame's chrome, in logical pixels, as `chrome::decode` takes them from the slot
+/// vector: `on` 0 for none, the corner radius, the shadow's blur, offset, spread, opacity (0 to 1) and colour
+/// (`0xRRGGBB`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct NhgChrome {
     pub on: u32,
@@ -73,6 +76,9 @@ pub struct Child {
     /// The chrome changed since the layer last took it, and the scale it took it at.
     chrome_dirty: bool,
     chrome_s120: u32,
+    /// The transitions the shell has for the window, and its backdrop's σ in logical pixels (0: none).
+    motion: Option<MotionSpec>,
+    backdrop: f32,
     /// The Glitnir layer's rectangle as last handed over (None: not yet).
     layer: Option<NhgRect>,
     /// The surface's offset in the parent's surface (logical) and its input region (logical; all 0 for none), as
@@ -294,8 +300,10 @@ fn send_position(state: &mut Display, window: u64) {
 /// C pushed child `window`'s facts: its parent's window, its native area's place in the parent's (device pixels) and
 /// `NHG_CHILD_*` flags.  The first push after the window is made records where it was made (`new_offset` placed it
 /// at this position), that it is mapped, and its place above its siblings; a later one sends the position if it changed, and maps or
-/// unmaps the surface as `NHG_CHILD_VISIBLE` says.  `true` when the surface was mapped again: all of it is drawn
-/// again.
+/// unmaps the surface as `NHG_CHILD_VISIBLE` says.  With `NHG_CHILD_REDRAW` (the frame waits to be drawn again: resized,
+/// then moved) the position waits for the publish step (`sync`), which sends it with the new picture: sent now, it
+/// would wake the tree for a commit that shows the child at its new place with its old picture.  `true` when the
+/// surface was mapped again: all of it is drawn again.
 pub fn set(
     state: &mut Display,
     window: u64,
@@ -312,7 +320,7 @@ pub fn set(
     f.facts.parent = parent;
     let c = &mut f.child;
     let first = c.parent == 0;
-    (c.parent, c.x, c.y, c.flags) = (parent, x, y, flags);
+    (c.parent, c.x, c.y, c.flags) = (parent, x, y, flags & !NHG_CHILD_REDRAW);
     if first {
         c.mapped = true;
         // a window made goes above its siblings
@@ -322,7 +330,9 @@ pub fn set(
         (c.z, c.pos) = (z, pos);
         return Ok(false);
     }
-    send_position(state, window);
+    if flags & NHG_CHILD_REDRAW == 0 {
+        send_position(state, window);
+    }
     let on = flags & NHG_CHILD_VISIBLE != 0;
     let (backend, _, f) = state.csd_parts(window)?;
     let c = &mut f.child;
@@ -342,11 +352,24 @@ pub fn set(
     Ok(false)
 }
 
-/// Child `window`'s chrome as `glitnir--resolve` gave it now: whether it changed (C then lays the frame out again,
-/// which gives the margin, and draws it again).  The layer takes it at the next `nhg_layer_ensure`.
-pub fn chrome(state: &mut Display, window: u64, c: &NhgChrome) -> Result<bool, GlueError> {
-    let f = child_mut(state, window)?;
-    let n = if c.on == 0 { NhgChrome::default() } else { *c };
+/// Child `window`'s chrome slot vector as `glitnir--chrome-vector` gave it now (`chrome::decode` checks it): whether
+/// the corners or the shadow changed (C then lays the frame out again, which gives the margin, and draws it again).
+/// A change of the other slots alone is `false`.  The layer takes it at the next `nhg_layer_ensure`.  A change of the
+/// transitions or the backdrop (Lisp's slot is 0 for an opaque `alpha-background`) goes to the shell now: C calls this
+/// before the window's first picture, so its first show has its leg.  A window made anew starts with none, so it gets
+/// them again.  A failed request is tried again at the next call.
+pub fn chrome(state: &mut Display, window: u64, v: &[f32]) -> Result<bool, GlueError> {
+    let d = crate::chrome::decode(v)?;
+    let motion = crate::chrome::motion(&d);
+    child_mut(state, window)?;
+    let (backend, _, f) = state.csd_parts(window)?;
+    if f.child.motion != motion && backend.set_motion(window, motion).is_ok() {
+        f.child.motion = motion;
+    }
+    if f.child.backdrop != d.backdrop_px && backend.set_backdrop(window, d.backdrop_px).is_ok() {
+        f.child.backdrop = d.backdrop_px;
+    }
+    let n = d.chrome.unwrap_or_default();
     if f.child.chrome == n {
         return Ok(false);
     }

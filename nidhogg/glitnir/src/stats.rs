@@ -15,7 +15,6 @@ pub const UNKNOWN_RATE: f64 = -1.0;
 pub struct StatsEntry {
     pub t_update_ns: u64,
     pub t_commit_ns: u64,
-    pub t_freeze_ns: u64,
     pub t_draw_start_ns: u64,
     pub t_draw_end_ns: u64,
     pub t_compose_start_ns: u64,
@@ -25,12 +24,16 @@ pub struct StatsEntry {
     pub damage_px: u64,
     pub scroll_px: u64,
     pub painted_px: u64,
+    /// Device pixels of backdrop blur recomputed for this paint.
+    pub backdrop_px: u64,
+    /// This commit is a transition's tick: the nanoseconds since the leg's tick before it (0: none).
+    pub tick_interval_ns: u64,
+    /// Nanoseconds spent on `backdrop_px` (0: nothing recomputed).
+    pub blur_ns: u64,
     pub layers: u32,
     pub ticks: u32,
     pub late_ticks: u32,
-    pub violations: u32,
     pub backfill: u8,
-    pub scale_mismatch: u8,
 }
 
 /// p50, p95 and max of one series, in milliseconds.  Mirrors `GlitnirPercentiles`.
@@ -50,17 +53,26 @@ pub struct Summary {
     pub compose_ms: Percentiles,
     pub draw_ms: Percentiles,
     pub latency_ms: Percentiles,
-    pub freeze_ms: Percentiles,
     pub damage_px_p50: u64,
     pub painted_px_p50: u64,
     pub backfill_rate: f64,
     pub ticks: u64,
     pub late_ticks: u64,
-    pub violations: u64,
-    pub scale_mismatch: u64,
+    pub backdrop_px: u64,
     /// From the update to the end of the paint, over the entries with an update time only.
     pub update_ms: Percentiles,
+    /// Between a transition's ticks, over the entries with an interval only.
+    pub tick_interval_ms: Percentiles,
+    /// Recomputing a backdrop blur, over the entries that did only.
+    pub blur_ms: Percentiles,
+    /// How far the worst transition since the last reset ran past its length.
+    pub leg_overrun_ms: f64,
+    /// The 95th percentile of that over the last `LEGS` transitions: one late frame does not decide it.
+    pub leg_overrun_p95_ms: f64,
 }
+
+/// Transitions whose overruns are kept per root, for their percentile.
+pub const LEGS: usize = 128;
 
 /// The last `RING` entries of one root, and the totals since the last reset.
 #[derive(Debug)]
@@ -70,8 +82,13 @@ pub struct Ring {
     count: u64,
     ticks: u64,
     late_ticks: u64,
-    violations: u64,
-    scale_mismatch: u64,
+    backdrop_px: u64,
+    overrun_ns: u64,
+    /// The last `LEGS` overruns, and how many ended since the reset.
+    legs: [u64; LEGS],
+    nlegs: usize,
+    /// The newest entry; a reset keeps it (the paint still happened).
+    newest: Option<StatsEntry>,
 }
 
 impl Ring {
@@ -82,8 +99,11 @@ impl Ring {
             count: 0,
             ticks: 0,
             late_ticks: 0,
-            violations: 0,
-            scale_mismatch: 0,
+            backdrop_px: 0,
+            overrun_ns: 0,
+            legs: [0; LEGS],
+            nlegs: 0,
+            newest: None,
         }
     }
 
@@ -93,12 +113,12 @@ impl Ring {
         } else {
             self.buf[self.next] = e;
         }
+        self.newest = Some(e);
         self.next = (self.next + 1) % RING;
         self.count += 1;
         self.ticks += u64::from(e.ticks);
         self.late_ticks += u64::from(e.late_ticks);
-        self.violations += u64::from(e.violations);
-        self.scale_mismatch += u64::from(e.scale_mismatch != 0);
+        self.backdrop_px += e.backdrop_px;
     }
 
     fn clear(&mut self) {
@@ -107,8 +127,9 @@ impl Ring {
         self.count = 0;
         self.ticks = 0;
         self.late_ticks = 0;
-        self.violations = 0;
-        self.scale_mismatch = 0;
+        self.backdrop_px = 0;
+        self.overrun_ns = 0;
+        self.nlegs = 0;
     }
 }
 
@@ -140,6 +161,15 @@ fn ms(from: u64, to: u64) -> f64 {
 fn summarise(r: &Ring) -> Summary {
     let b = &r.buf;
     let series = |f: &dyn Fn(&StatsEntry) -> f64| percentiles(b.iter().map(f).collect());
+    let some = |f: fn(&StatsEntry) -> u64| {
+        percentiles(
+            b.iter()
+                .map(f)
+                .filter(|ns| *ns != 0)
+                .map(|ns| ns as f64 / 1e6)
+                .collect(),
+        )
+    };
     let mut damage: Vec<u64> = b.iter().map(|e| e.damage_px).collect();
     let mut painted: Vec<u64> = b.iter().map(|e| e.painted_px).collect();
     damage.sort_unstable();
@@ -151,7 +181,6 @@ fn summarise(r: &Ring) -> Summary {
         compose_ms: series(&|e| ms(e.t_compose_start_ns, e.t_compose_end_ns)),
         draw_ms: series(&|e| ms(e.t_draw_start_ns, e.t_draw_end_ns)),
         latency_ms: series(&|e| ms(e.t_commit_ns, e.t_draw_end_ns)),
-        freeze_ms: series(&|e| ms(e.t_freeze_ns, e.t_commit_ns)),
         damage_px_p50: rank(&damage, 50),
         painted_px_p50: rank(&painted, 50),
         backfill_rate: if known == 0 {
@@ -161,14 +190,21 @@ fn summarise(r: &Ring) -> Summary {
         },
         ticks: r.ticks,
         late_ticks: r.late_ticks,
-        violations: r.violations,
-        scale_mismatch: r.scale_mismatch,
+        backdrop_px: r.backdrop_px,
         update_ms: percentiles(
             b.iter()
                 .filter(|e| e.t_update_ns != 0)
                 .map(|e| ms(e.t_update_ns, e.t_draw_end_ns))
                 .collect(),
         ),
+        tick_interval_ms: some(|e| e.tick_interval_ns),
+        blur_ms: some(|e| e.blur_ns),
+        leg_overrun_ms: r.overrun_ns as f64 / 1e6,
+        leg_overrun_p95_ms: {
+            let mut legs = r.legs[..r.nlegs.min(LEGS)].to_vec();
+            legs.sort_unstable();
+            rank(&legs, 95) as f64 / 1e6
+        },
     }
 }
 
@@ -187,6 +223,16 @@ pub fn record(root: u64, e: StatsEntry) {
     rings().entry(root).or_insert_with(Ring::new).push(e);
 }
 
+/// A transition of ROOT ended `overrun_ns` past its length.  A hide ends in a commit with no picture, so this is not an
+/// entry.  A root with no ring yet has nothing to add it to: this never allocates.
+pub fn leg_ended(root: u64, overrun_ns: u64) {
+    if let Some(r) = rings().get_mut(&root) {
+        r.overrun_ns = r.overrun_ns.max(overrun_ns);
+        r.legs[r.nlegs % LEGS] = overrun_ns;
+        r.nlegs += 1;
+    }
+}
+
 /// ROOT's summary, then empty its ring when `reset`.  A root with no record yet summarises as an empty ring (zeros,
 /// no back-fill rate).
 pub fn summary(root: u64, reset: bool) -> Summary {
@@ -199,6 +245,11 @@ pub fn summary(root: u64, reset: bool) -> Summary {
         r.clear();
     }
     s
+}
+
+/// ROOT's newest entry (kept across resets), or `None` before its first record.  The perf lab's present time.
+pub fn last(root: u64) -> Option<StatsEntry> {
+    rings().get(&root).and_then(|r| r.newest)
 }
 
 /// Drop ROOT's ring (the root is gone).
@@ -242,6 +293,7 @@ mod tests {
             painted_px: r.next() % 1000,
             backfill: (r.next() % 3) as u8,
             ticks: (r.next() % 3) as u32,
+            backdrop_px: r.next() % 1000,
             ..StatsEntry::default()
         }
     }
@@ -314,6 +366,10 @@ mod tests {
         let filled = all.iter().filter(|e| e.backfill == 1).count();
         assert_eq!(s.backfill_rate, filled as f64 / known as f64);
         assert_eq!(s.ticks, all.iter().map(|e| u64::from(e.ticks)).sum::<u64>());
+        assert_eq!(
+            s.backdrop_px,
+            all.iter().map(|e| e.backdrop_px).sum::<u64>()
+        );
         forget(root);
     }
 
@@ -346,6 +402,73 @@ mod tests {
     }
 
     #[test]
+    fn tick_and_blur_series_skip_entries_without_one() {
+        let root = 9007;
+        let mut rng = Rng(seed());
+        for i in 0..40u64 {
+            let (tick_interval_ns, blur_ns) = match i % 4 {
+                0 => (8_000_000, 0),
+                1 => (0, 1_000_000),
+                _ => (0, 0),
+            };
+            record(
+                root,
+                StatsEntry {
+                    tick_interval_ns,
+                    blur_ns,
+                    ..random_entry(&mut rng)
+                },
+            );
+        }
+        let s = summary(root, false);
+        assert_eq!(s.tick_interval_ms.p50, 8.0);
+        assert_eq!(s.tick_interval_ms.max, 8.0);
+        assert_eq!(s.blur_ms.p50, 1.0);
+        assert_eq!(s.blur_ms.max, 1.0);
+        forget(root);
+    }
+
+    #[test]
+    fn leg_overrun_is_the_largest_since_the_reset() {
+        let root = 9008;
+        leg_ended(root, 1_000_000);
+        assert!(!rings().contains_key(&root), "no ring is made for it");
+        let mut rng = Rng(seed());
+        record(root, random_entry(&mut rng));
+        leg_ended(root, 3_000_000);
+        leg_ended(root, 2_000_000);
+        // it outlives the ring's entries
+        for _ in 0..RING + 1 {
+            record(root, random_entry(&mut rng));
+        }
+        assert_eq!(summary(root, true).leg_overrun_ms, 3.0);
+        assert_eq!(summary(root, false).leg_overrun_ms, 0.0);
+        forget(root);
+    }
+
+    /// The overrun's 95th percentile is over the last `LEGS` legs: one late leg in a hundred moves the max, not it.
+    #[test]
+    fn leg_overrun_p95_is_over_the_last_legs() {
+        let root = 9010;
+        let mut rng = Rng(seed());
+        record(root, random_entry(&mut rng));
+        for i in 0..100u64 {
+            let ns = if i == 50 { 40_000_000 } else { 8_000_000 };
+            leg_ended(root, ns + i * 10_000);
+        }
+        let s = summary(root, false);
+        assert_eq!(s.leg_overrun_ms, 40.5);
+        assert!(s.leg_overrun_p95_ms < 9.0, "{}", s.leg_overrun_p95_ms);
+        // past `LEGS` legs the oldest go
+        for _ in 0..LEGS {
+            leg_ended(root, 1_000_000);
+        }
+        assert_eq!(summary(root, true).leg_overrun_p95_ms, 1.0);
+        assert_eq!(summary(root, false).leg_overrun_p95_ms, 0.0);
+        forget(root);
+    }
+
+    #[test]
     fn backfill_rate_is_unknown_without_a_known_entry() {
         let root = 9004;
         let mut rng = Rng(seed());
@@ -368,6 +491,28 @@ mod tests {
         );
         assert_eq!(summary(root, false).backfill_rate, 1.0);
         forget(root);
+    }
+
+    #[test]
+    fn last_is_the_newest_entry() {
+        let root = 9009;
+        assert_eq!(last(root), None, "no ring yet");
+        let mut rng = Rng(seed());
+        // past the ring's size, so the newest sits wherever the ring wrapped to
+        let n = RING + 1 + (rng.next() % RING as u64) as usize;
+        let all: Vec<StatsEntry> = (0..n).map(|_| random_entry(&mut rng)).collect();
+        for (i, e) in all.iter().enumerate() {
+            record(root, *e);
+            if i == 0 {
+                assert_eq!(last(root), Some(all[0]));
+            }
+        }
+        assert_eq!(last(root), Some(all[n - 1]));
+        // a reset empties the ring, not the newest paint: it still happened
+        summary(root, true);
+        assert_eq!(last(root), Some(all[n - 1]));
+        forget(root);
+        assert_eq!(last(root), None, "the root is gone");
     }
 
     #[test]

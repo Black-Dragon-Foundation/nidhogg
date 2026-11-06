@@ -28,14 +28,14 @@ int32_t glitnir_debug_panic (void);
 /* One paint, as the glue measures it (monotonic nanoseconds; 0 = not measured).  */
 typedef struct
 {
-  uint64_t t_update_ns, t_commit_ns, t_freeze_ns, t_draw_start_ns, t_draw_end_ns;
+  uint64_t t_update_ns, t_commit_ns, t_draw_start_ns, t_draw_end_ns;
   uint64_t t_compose_start_ns, t_compose_end_ns;
   int64_t clock_frame_us;
   int64_t presented_us;		/* -1: not known (GTK3 binds no wp_presentation) */
-  uint64_t damage_px, scroll_px, painted_px;
-  uint32_t layers, ticks, late_ticks, violations;
+  uint64_t damage_px, scroll_px, painted_px, backdrop_px;
+  uint64_t tick_interval_ns, blur_ns;	/* 0: not a tick after a leg's first; nothing recomputed */
+  uint32_t layers, ticks, late_ticks;
   uint8_t backfill;		/* 0, 1, or 2 unknown */
-  uint8_t scale_mismatch;
 } GlitnirStatsEntry;
 
 typedef struct { double p50, p95, max; } GlitnirPercentiles;
@@ -44,12 +44,16 @@ typedef struct { double p50, p95, max; } GlitnirPercentiles;
 typedef struct
 {
   uint64_t count;
-  GlitnirPercentiles compose_ms, draw_ms, latency_ms, freeze_ms;
+  GlitnirPercentiles compose_ms, draw_ms, latency_ms;
   uint64_t damage_px_p50, painted_px_p50;
   double backfill_rate;		/* -1: no entry knows (backfill 2 everywhere) */
-  uint64_t ticks, late_ticks, violations, scale_mismatch;
+  uint64_t ticks, late_ticks, backdrop_px;
   /* From t_update_ns to the end of the paint, over the entries with an update time only.  */
   GlitnirPercentiles update_ms;
+  /* The same over the entries with a tick interval, and with a blur time.  */
+  GlitnirPercentiles tick_interval_ms, blur_ms;
+  double leg_overrun_ms;	/* the worst since the last reset */
+  double leg_overrun_p95_ms;	/* the 95th percentile over the last 128 transitions */
 } GlitnirStatsSummary;
 
 /* Append ENTRY to ROOT's ring (allocated at the first record).  An entry whose t_compose_start_ns and
@@ -59,6 +63,10 @@ int32_t glitnir_stats_record (uint64_t root, const GlitnirStatsEntry *entry);
 
 /* Write ROOT's summary to OUT (zeros for an unknown root); empty the ring when RESET is non-zero.  */
 int32_t glitnir_stats_summary (uint64_t root, int32_t reset, GlitnirStatsSummary *out);
+
+/* Write ROOT's newest entry to OUT; a reset keeps it.  GLITNIR_E_STATE before ROOT's first record, GLITNIR_E_ARG if
+   OUT is NULL.  */
+int32_t glitnir_stats_last (uint64_t root, GlitnirStatsEntry *out);
 
 /* Drop ROOT's ring.  */
 int32_t glitnir_stats_forget (uint64_t root);

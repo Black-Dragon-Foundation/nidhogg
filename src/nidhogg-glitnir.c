@@ -95,15 +95,23 @@ DEFUN ("glitnir-stats", Fglitnir_stats, Sglitnir_stats, 0, 2, 0,
        doc: /* Return the frame-time record of FRAME's root frame, or nil.
 The record covers the last 1024 paints (counts are since the last reset).
 It is a plist (:count N :compose-ms (:p50 :p95 :max) :draw-ms (...)
-:key-to-commit-ms (...) :freeze-ms (...) :damage-px N :painted-px N
-:backfill-rate F :ticks N :late-ticks N :violations N :scale-mismatch N);
+:key-to-commit-ms (...) :damage-px N :painted-px N
+:tick-interval-ms (...) :blur-ms (...) :leg-overrun-p95-ms F
+:backfill-rate F :ticks N :late-ticks N :backdrop-px N
+:leg-overrun-ms F);
 :damage-px and :painted-px are medians in device pixels.  Times are in
 milliseconds; :key-to-commit-ms is the time from a key event to the commit
 of the buffer that shows it, over the paints that show a key only;
 :draw-ms runs from the start of the draw to the buffer's commit, and
-:painted-px is the area composed.  :backfill-rate is nil.  FRAME defaults
-to the selected frame; it returns nil for a frame that is not a graphical
-nhwl frame.  Non-nil RESET empties the record after reading it.  */)
+:painted-px is the area composed.  :tick-interval-ms is the time between
+two commits of a transition, :blur-ms the time a recompute of the
+backdrop blur took, each over the paints that had one,
+:leg-overrun-ms how far the worst transition since the last reset ran
+past its length, and :leg-overrun-p95-ms the 95th percentile of that
+over the last 128 transitions.  :backfill-rate is nil.  FRAME defaults
+to the selected frame; it returns nil for a frame that is not a
+graphical nhwl frame.  Non-nil RESET empties the record after reading
+it.  */)
   (Lisp_Object frame, Lisp_Object reset)
 {
   struct frame *f = decode_live_frame (frame);
@@ -122,7 +130,10 @@ nhwl frame.  Non-nil RESET empties the record after reading it.  */)
   plist = nconc2 (plist, pctl (":compose-ms", &s.compose_ms));
   plist = nconc2 (plist, pctl (":draw-ms", &s.draw_ms));
   plist = nconc2 (plist, pctl (":key-to-commit-ms", &s.update_ms));
-  plist = nconc2 (plist, pctl (":freeze-ms", &s.freeze_ms));
+  plist = nconc2 (plist, pctl (":tick-interval-ms", &s.tick_interval_ms));
+  plist = nconc2 (plist, pctl (":blur-ms", &s.blur_ms));
+  plist = nconc2 (plist, list2 (intern_c_string (":leg-overrun-p95-ms"),
+				make_float (s.leg_overrun_p95_ms)));
   return nconc2 (plist,
 		 listn (14, intern_c_string (":damage-px"),
 			make_uint (s.damage_px_p50),
@@ -134,10 +145,10 @@ nhwl frame.  Non-nil RESET empties the record after reading it.  */)
 			intern_c_string (":ticks"), make_uint (s.ticks),
 			intern_c_string (":late-ticks"),
 			make_uint (s.late_ticks),
-			intern_c_string (":violations"),
-			make_uint (s.violations),
-			intern_c_string (":scale-mismatch"),
-			make_uint (s.scale_mismatch)));
+			intern_c_string (":backdrop-px"),
+			make_uint (s.backdrop_px),
+			intern_c_string (":leg-overrun-ms"),
+			make_float (s.leg_overrun_ms)));
 #else
   (void) f;
   (void) reset;
@@ -279,6 +290,48 @@ FRAME defaults to the selected frame.  */)
 #endif
 }
 
+DEFUN ("glitnir--now-ns", Fglitnir__now_ns, Sglitnir__now_ns, 0, 0, 0,
+       doc: /* Return the monotonic clock in nanoseconds, the clock of `glitnir--last-paint'.  */)
+  (void)
+{
+#ifdef HAVE_NHWL
+  return make_uint (nhwl_now_ns ());
+#else
+  return make_fixnum (0);
+#endif
+}
+
+DEFUN ("glitnir--last-paint", Fglitnir__last_paint, Sglitnir__last_paint,
+       0, 1, 0,
+       doc: /* Return the times of the newest recorded paint of FRAME's root frame, or nil.
+The value is (:commit-ns N :paint-ns N :present-ns N): when Emacs
+published the drawing that paint shows, when the paint ended, and when
+its buffer was committed to the compositor (on the shell the paint ends
+with that commit, so the last two are equal), on the clock of
+`glitnir--now-ns'.  The paint is the newest in `glitnir-stats''s record,
+and a reset of the record keeps it.  FRAME defaults to the selected
+frame; the value is nil for a frame Glitnir does not record (batch,
+terminal, a frame before its first paint).  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+#ifdef HAVE_NHWL
+  uint64_t id = 0;
+  if (FRAME_NHWL_P (f))
+    id = FRAME_NHWL_OUTPUT (f)->glitnir_id;
+  GlitnirStatsEntry e;
+  if (!id || glitnir_stats_last (id, &e) != GLITNIR_OK)
+    return Qnil;
+  return listn (6, intern_c_string (":commit-ns"), make_uint (e.t_commit_ns),
+		intern_c_string (":paint-ns"), make_uint (e.t_draw_end_ns),
+		intern_c_string (":present-ns"),
+		make_uint (e.t_draw_end_ns));
+#else
+  (void) f;
+  return Qnil;
+#endif
+}
+
 DEFUN ("glitnir--stacking", Fglitnir__stacking, Sglitnir__stacking, 0, 1, 0,
        doc: /* Return the child frames of FRAME's root frame as they are stacked.
 The list runs bottom to top, hidden frames included; a child frame's own
@@ -322,21 +375,26 @@ to the selected frame.  */)
   struct frame *f = decode_live_frame (frame);
 #ifdef HAVE_NHWL
   /* The border is Emacs's own drawing, not chrome.  */
-  if (!FRAME_NHWL_P (f) || !FRAME_NHWL_OUTPUT (f)->chrome.on)
+  if (!FRAME_NHWL_P (f) || FRAME_NHWL_OUTPUT (f)->chrome[NHG_CHROME_ON] == 0)
     return Qnil;
-  const NhgChrome *c = &FRAME_NHWL_OUTPUT (f)->chrome;
+  /* The chrome vector C kept for the frame (`glitnir--chrome-vector').  */
+  const float *c = FRAME_NHWL_OUTPUT (f)->chrome;
   double s = XFLOATINT (Fframe_scale_factor (frame));
+  uint32_t rgb = (c[NHG_CHROME_RGB] > 0 && c[NHG_CHROME_RGB] <= 0xffffff
+		  ? (uint32_t) c[NHG_CHROME_RGB] : 0);
   Lisp_Object shadow
-    = (c->opacity <= 0 ? Qnil
-       : list (intern_c_string (":blur"), make_float (s * c->blur),
+    = (c[NHG_CHROME_OPACITY] <= 0 ? Qnil
+       : list (intern_c_string (":blur"), make_float (s * c[NHG_CHROME_BLUR]),
 	       intern_c_string (":offset"),
-	       Fcons (make_float (s * c->ox), make_float (s * c->oy)),
-	       intern_c_string (":spread"), make_float (s * c->spread),
-	       intern_c_string (":opacity"), make_float (c->opacity),
+	       Fcons (make_float (s * c[NHG_CHROME_OX]),
+		      make_float (s * c[NHG_CHROME_OY])),
+	       intern_c_string (":spread"),
+	       make_float (s * c[NHG_CHROME_SPREAD]),
+	       intern_c_string (":opacity"), make_float (c[NHG_CHROME_OPACITY]),
 	       intern_c_string (":color"),
-	       list3i ((c->rgb >> 16) & 0xff, (c->rgb >> 8) & 0xff,
-		       c->rgb & 0xff)));
-  return list4 (intern_c_string (":radius"), make_float (s * c->radius),
+	       list3i ((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff)));
+  return list4 (intern_c_string (":radius"),
+		make_float (s * c[NHG_CHROME_RADIUS]),
 		intern_c_string (":shadow"), shadow);
 #else
   (void) f;
@@ -504,6 +562,8 @@ syms_of_nidhogg_glitnir (void)
   defsubr (&Sglitnir_stats);
   defsubr (&Sglitnir_snapshot);
   defsubr (&Sglitnir__draw_count);
+  defsubr (&Sglitnir__now_ns);
+  defsubr (&Sglitnir__last_paint);
   defsubr (&Sglitnir__stacking);
   defsubr (&Sglitnir__chrome);
   defsubr (&Sglitnir__rechrome);
@@ -514,6 +574,9 @@ Setting it to nil turns its decorations off.  */);
   glitnir_enable = true;
 
   DEFSYM (Qglitnir__resolve, "glitnir--resolve");
+  DEFSYM (Qglitnir__chrome_vector, "glitnir--chrome-vector");
+  DEFSYM (Qglitnir__card, "glitnir--card");
+  DEFSYM (Qglitnir__cards, "glitnir--cards");
 
 #ifdef HAVE_NIDHOGG_WORKERS
   syms_of_glitnir_images ();

@@ -383,4 +383,14 @@ delivered before the last slice.  Return (VALUE SLICES)."
     (should (memq 'nidhogg-workers--test-tokenize (append (plist-get s :frames) nil))))
   (should (eq (funcall 'nidhogg-watchdog--test-phase) 'lisp)))
 
+(ert-deftest workers/json-phase-ms ()
+  "The slices' time counts in `nidhogg-workers-stats''s `:phase-ms' `json'.
+The perf lab's A/B compares it on and off (the OT4 gate)."
+  (let ((doc (concat "[" (mapconcat (lambda (i) (format "{\"k\":%d,\"s\":\"v%d\"}" i i))
+                                    (number-sequence 1 50000) ",")
+                     "]")))
+    (nidhogg-workers-stats t)
+    (should (eql (length (nidhogg-workers--test-tokenize doc 'string)) 50000))
+    (should (> (plist-get (plist-get (nidhogg-workers-stats) :phase-ms) 'json) 0))))
+
 ;;; workers-json-tests.el ends here
