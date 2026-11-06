@@ -1514,6 +1514,15 @@ returns `copy'."
                                                       :false-object nil :null-object nil)))))
       (cons (alist-get 'width r) (alist-get 'height r)))))
 
+(declare-function nhwl--title-bar "nhwlfns.c")
+
+(defun nhwl-gui--sway-frame-size (w h)
+  "The selected frame's (WIDTH HEIGHT), device pixels, once sway has sized its window W x H logical pixels.  Sway
+sizes the window geometry, which holds the client-side title strip when the frame draws one (`nhwl--title-bar'), so
+the frame's native area is the rest of it."
+  (let ((s (frame-scale-factor)) (strip (plist-get (nhwl--title-bar) :strip)))
+    (list (round (* w s)) (- (round (* h s)) (if strip (nth 3 strip) 0)))))
+
 (ert-deftest nhwl-gui/live-sway-resize-reaches-the-frame ()
   "Every `swaymsg resize' of the floating frame gives it the size asked, at every scale: twenty steps between a narrow
 and a wide size, as budgets.sh's `resize-stuck' row takes them, each one asked once the one before has reached the
@@ -1523,14 +1532,14 @@ that resize, which sway then never sends, so a step asked before the answer to t
 A person cannot resize that fast."
   :tags '(runs-last)
   (skip-unless (and (nhwl-gui--live-p) (equal (glitnir-gui--compositor) "sway") (executable-find "swaymsg")))
-  (let ((old (frame-parameter nil 'fullscreen)) (s (frame-scale-factor))
+  (let ((old (frame-parameter nil 'fullscreen))
         (now (lambda () (list (frame-pixel-width) (frame-pixel-height)))))
     (unwind-protect
         (progn
           (nhwl-gui--set-fullscreen nil)
           (dotimes (i 20)
             (let* ((w (+ 500 (* (% i 2) 160) (* (% (/ i 2) 5) 12))) (h (+ 400 (* (% i 2) 100)))
-                   (want (list (round (* w s)) (round (* h s)))))
+                   (want (nhwl-gui--sway-frame-size w h)))
               (call-process "swaymsg" nil nil nil
                             (format "[pid=%d] resize set width %d px height %d px" (emacs-pid) w h))
               (nhwl-gui--wait (lambda () (gui-runner-read-all) (and (equal (funcall now) want) (nhwl-gui--shown-p))) 5)
@@ -1557,14 +1566,16 @@ frame at the last size asked, and sway's rectangle and the frame agree once the 
 commit may stand for the size.  Pattern C: the frame's size and the presenter's counters are the answer waited for."
   :tags '(runs-last)
   (skip-unless (and (nhwl-gui--live-p) (equal (glitnir-gui--compositor) "sway") (executable-find "swaymsg")))
-  (let* ((old (frame-parameter nil 'fullscreen)) (s (frame-scale-factor))
+  (let* ((old (frame-parameter nil 'fullscreen))
          (now (lambda () (list (frame-pixel-width) (frame-pixel-height))))
          (steps '((500 400) (660 500) (512 400) (672 500) (524 400) (684 500) (536 400) (640 480)))
          (last (car (last steps)))
-         (want (list (round (* (car last) s)) (round (* (cadr last) s)))))
+         (want nil))
     (unwind-protect
         (progn
           (nhwl-gui--set-fullscreen nil)
+          ;; windowed: a client-side title strip is drawn now
+          (setq want (apply #'nhwl-gui--sway-frame-size last))
           (dolist (st steps)
             (call-process "swaymsg" nil nil nil
                           (format "[pid=%d] resize set width %d px height %d px" (emacs-pid) (car st) (cadr st))))
