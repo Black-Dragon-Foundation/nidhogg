@@ -318,6 +318,33 @@ mod geometry {
         assert_eq!(big, Some((16_368, 70)));
     }
 
+    /// A configure that echoes the window geometry the window sent (its viewport's logical size, cut, less the
+    /// margins) leaves the native size alone at a fractional scale, where the native size rounded on its own is one
+    /// more: mutter at 1.25 answers a new window's first buffer with its geometry, and the frame took that echo for a
+    /// new size, one device pixel shorter, over the size it was asked for meanwhile.
+    #[test]
+    fn configure_echo_of_the_sent_geometry_keeps_the_size() {
+        // client-side title bar at 1.25: margins 10, strip 40, top border 50; 636 x 537 device is 509 x 429 logical
+        let csd = |l: (i32, i32)| {
+            fit_size(
+                150,
+                l,
+                0,
+                (616, 477),
+                [10, 50, 10, 10],
+                40,
+                false,
+                NHG_FIT_CONFIGURE,
+            )
+        };
+        assert_eq!(csd((493, 413)), None);
+        assert_eq!(csd((493, 414)), Some((616, 478)));
+        // server-side decorations: 477 device rows at 1.25 show as 381 logical (381.6, cut)
+        assert_eq!(configure(150, (493, 381), (616, 477), 0), None);
+        // an odd buffer at scale 2: 401 x 301 is 200 x 150 logical
+        assert_eq!(configure(240, (200, 150), (401, 301), 0), None);
+    }
+
     /// `nhwl_set_undecorated_hint`'s size branch: a top-level that is maximized, fullscreen or tiled fits its native
     /// area to the compositor's size again when that differs; a floating one or a child keeps its size.
     #[test]
