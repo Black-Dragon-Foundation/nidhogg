@@ -524,8 +524,11 @@ The model follows a step asynchronously: a pair checked before it caught up is t
       (funcall at y1 y2 (/ (+ lo hi) 2)))))
 
 (defun glitnir-ns--at-rest-p (m)
-  "Non-nil when motion sample M shows no leg running or waiting to start."
-  (and m (eql (plist-get m :animations) 0) (not (plist-get m :hiding)) (not (plist-get m :pending))))
+  "Non-nil when motion sample M shows no leg running or waiting to start, and shows the model's values.
+The presentation layer shows a change once Core Animation committed it."
+  (and m (eql (plist-get m :animations) 0) (not (plist-get m :hiding)) (not (plist-get m :pending))
+       (eql (plist-get m :opacity) (plist-get m :model-opacity))
+       (eql (plist-get m :scale) (plist-get m :model-scale))))
 
 (defun glitnir-ns--samples (frame done &optional seconds)
   "Sample FRAME's motion until DONE, a function of a sample, returns non-nil (SECONDS, default 5, at most).
