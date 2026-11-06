@@ -1006,8 +1006,11 @@ Everything goes back after: one window on `*scratch*', the frame's divider width
                (bg (cons (+ (nth 0 rect) (/ (nth 2 rect) 2)) (+ (nth 1 rect) (nth 3 rect) (round (* -4 s)))))
                (in (ceiling (* 9 s)))
                (inner (list (+ (nth 0 rect) in) (+ (nth 1 rect) in) (- (nth 2 rect) in in) (- (nth 3 rect) in in))))
-          ;; large text: its stems hold pixels of the foreground alone
-          (with-current-buffer buf (face-remap-add-relative 'default :height 2.0))
+          ;; one line of large text: its stems hold pixels of the foreground alone
+          (with-current-buffer buf
+            (narrow-to-region (point-min) (line-end-position))
+            (setq truncate-lines t)
+            (face-remap-add-relative 'default :height 3.0))
           (set-window-buffer (frame-root-window c) buf)
           (redisplay t)
           (should (gui-runner-wait (lambda () (glitnir-ns--cyan-p (glitnir-ns--snap-px bg))) 5))
@@ -1028,14 +1031,17 @@ Everything goes back after: one window on `*scratch*', the frame's divider width
               (should (equal (list bg got (cl-every (lambda (g w) (<= (abs (- g w)) 8))
                                                     (cl-subseq got 0 3) (cl-subseq want 0 3)))
                              (list bg got t))))
-            ;; the text is opaque: every pixel of the stock text that is the foreground alone is the stock pixel
+            ;; the text is opaque: every pixel of the foreground alone is the stock pixel.  That is a stem's inside,
+            ;; black with its four neighbours: a black edge pixel can be two partial draws (a glyph's overhang drawn
+            ;; again, the cursor's box), which blend with what is beneath.
             (pcase-let ((`(,x ,y ,w ,h) inner) (n 0) (off 0))
-              (dotimes (j h)
-                (dotimes (i w)
-                  (let ((p (glitnir-ns--px stock (+ x i) (+ y j))))
-                    (when (equal (cl-subseq p 0 3) '(0 0 0))
-                      (setq n (1+ n))
-                      (unless (equal (glitnir-ns--px on (+ x i) (+ y j)) p) (setq off (1+ off)))))))
+              (cl-flet ((black (i j) (equal (cl-subseq (glitnir-ns--px stock i j) 0 3) '(0 0 0))))
+                (dotimes (j (- h 2))
+                  (dotimes (i (- w 2))
+                    (let ((u (+ x i 1)) (v (+ y j 1)))
+                      (when (and (black u v) (black (1- u) v) (black (1+ u) v) (black u (1- v)) (black u (1+ v)))
+                        (setq n (1+ n))
+                        (unless (equal (glitnir-ns--px on u v) (glitnir-ns--px stock u v)) (setq off (1+ off))))))))
               (should (> n 20))
               (should (equal (list :text-pixels n :changed off) (list :text-pixels n :changed 0))))))
       (delete-frame c t)
