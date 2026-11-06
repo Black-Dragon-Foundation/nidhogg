@@ -133,7 +133,9 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   (default `t`) and `glitnir-active-p` exist; without it none of them do. Release tarballs need no Rust.
   On Linux the library is linked through the native shell's glue (`nidhogg/glue`, `libnhglue.a`; `nidhogg/shell/README.md`).
   `glitnir-active-p` is non-nil for a frame of the shell (not a tooltip) while `glitnir-enable` is non-nil; nil turns
-  Glitnir's decorations off and nothing else. Emacs draws each frame into its own backing and publishes the damage, the
+  Glitnir's decorations off and nothing else. With the flag, an empty echo area whose minibuffer remaps `default`
+  (drgnx's look puts the echo area on the gap between cards) draws in that face; stock Emacs blanks it in the frame's
+  background. Emacs draws each frame into its own backing and publishes the damage, the
   copied pixels and the scene per tree (a root and its child frames); the presenter, one thread per display
   (`NHWL_PRESENTER=0` runs it inline), composes and commits. Child frames are subsurfaces of their parent, so the Wayland
   compositor puts the tree together.

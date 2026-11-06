@@ -926,6 +926,47 @@ the card as without."
        (should-not (frame-parameter nil 'glitnir--cards))
        (should (eql 0 (cdr (gui-runner-pixel-diff base (gui-runner-screen-grab)))))))))
 
+;; The echo area on the gap: drgnx's look remaps `default' in the echo area's buffers and the minibuffer, so the
+;; echo area draws on the surface between the cards.  With no message the mini window shows the empty minibuffer.
+;; Each step draws every window again (as any later redisplay may) and waits until it reached the compositor.
+
+(defconst glitnir-fx--echo-bg "#a03070" "The echo area's remapped background.")
+(defconst glitnir-fx--echo-bgr '(112 48 160) "`glitnir-fx--echo-bg' as a grab holds it.")
+
+(defun glitnir-fx--echo-remapped-p ()
+  "Non-nil when, every window drawn again, a grab holds a block of `glitnir-fx--echo-bg' a third of the mini window
+wide and half its height (no other surface has that colour)."
+  (force-window-update)
+  (redisplay t)
+  (gui-runner-wait-settled)
+  (let ((w (minibuffer-window)))
+    (and (gui-runner-grab-find-block (gui-runner-screen-grab) glitnir-fx--echo-bgr
+                                     (/ (window-pixel-width w) 3) (/ (window-pixel-height w) 2))
+         t)))
+
+(ert-deftest glitnir-echo-area-empty-remapped ()
+  "With `default' remapped in the echo area's buffers and the minibuffer, the mini window shows the remap's
+background with no message, while a message shows, and once it is cleared: never the frame's."
+  (skip-unless (glitnir-fx--live-p))
+  (message "glitnir-fx")                ; the echo area's buffers exist
+  (let* ((bufs (delete-dups (cons (window-buffer (minibuffer-window))
+                                  (delq nil (mapcar #'get-buffer '(" *Echo Area 0*" " *Echo Area 1*"))))))
+         (cookies (mapcar (lambda (b)
+                            (with-current-buffer b
+                              (cons b (face-remap-add-relative 'default :background glitnir-fx--echo-bg))))
+                          bufs)))
+    (unwind-protect
+        (nhwl-gui--with-blink
+         nil
+         (lambda ()
+           (should (equal (list (cons 'empty (progn (message nil) (glitnir-fx--echo-remapped-p)))
+                                (cons 'message (progn (message "a message") (glitnir-fx--echo-remapped-p)))
+                                (cons 'cleared (progn (message nil) (glitnir-fx--echo-remapped-p))))
+                          '((empty . t) (message . t) (cleared . t))))))
+      (pcase-dolist (`(,b . ,c) cookies) (with-current-buffer b (face-remap-remove-relative c)))
+      (message nil)
+      (redisplay t))))
+
 ;; Task: undecorated toplevel.  The selected frame goes windowed, then undecorated with a `toplevel-chrome', and back
 ;; after.  On the recorder the surface sits at the output's top-left, so a grab's pixel is the surface's.  Where the
 ;; compositor offers no server-side decorations (the mutter profile) the frame keeps resize margins of 8 logical px,
