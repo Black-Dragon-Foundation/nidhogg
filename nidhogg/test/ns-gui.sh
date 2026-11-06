@@ -12,7 +12,8 @@
 #   --select REGEXP  ERT selector, an Emacs regexp (alternation is \|); default every test of the files
 #   --files GLOB     the test files, in test/src/nidhogg-tests (default glitnir-ns-gui-tests.el)
 #   --timeout SEC    kill a run after SEC seconds (default 900)
-#   --out DIR        where the logs go (default $TMPDIR/ns-gui); one ns-gui-scaleS.log per scale
+#   --out DIR        where the logs go (default $TMPDIR/ns-gui); one ns-gui-scaleS.log per scale, and the pixels of a
+#                    pixel row whose captures differ (GLITNIR_GUI_OUT, glitnir-ns-gui-tests.el)
 #
 # The Screen Recording permission the pixel rows need is the runner's grant to /bin/bash, which the app inherits as a
 # child of this script; `open' would make the app its own responsible process, without it.  Without the grant the pixel
@@ -89,6 +90,7 @@ for scale in "${scales[@]}"; do
   HOME="$work/home-$scale" \
   GLITNIR_GUI_SCALE=$scale GLITNIR_GUI_COMPOSITOR=windowserver \
   GLITNIR_GUI_TESTS=$checkout/test/src/nidhogg-tests GLITNIR_GUI_FILES=$files GLITNIR_GUI_SELECT=$select \
+  GLITNIR_GUI_OUT=$out \
   GLITNIR_GUI_FRAME="$((dx + 20)) $((dy + 40)) 100 35" \
     limited "$timeout" "$emacs" -Q -l "$checkout/test/src/nidhogg-tests/gui-runner.el" >"$log" 2>&1 || rc=$?
   cat "$log"

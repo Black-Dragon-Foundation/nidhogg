@@ -7,6 +7,8 @@
 ;; NS build).  GLITNIR_GUI_SCALE is the display scale the run asked for.  Frame sizes on NS are logical pixels (points);
 ;; `glitnir-snapshot' and `glitnir--chrome' give device pixels, as on the native shell.  The pixel rows skip with the
 ;; reason when the process may not capture the screen (`glitnir-no-capture'); the state rows run either way.
+;; GLITNIR_GUI_OUT is the directory the lane uploads: a pixel row whose captures differ writes the evidence there
+;; (`glitnir-ns--diff-logged').
 
 (require 'ert)
 (require 'cl-lib)
@@ -50,18 +52,20 @@
   (glitnir-ns--child (append params `((corner-radius . 8) (shadow . ,glitnir-ns--shadow)))))
 
 (defun glitnir-ns--margin (frame)
-  "The margin (points) FRAME's shadow window has around the child window: 1.5 blur + |x| + |y| + spread, up."
+  "The margin (points) FRAME's shadow window has around the child window: 1.5 blur + |x| + |y| + spread, up.
+Nil when FRAME's chrome has no shadow."
   (let* ((sh (plist-get (glitnir--resolve frame) :shadow)) (off (plist-get sh :offset)))
-    (ceiling (+ (* 1.5 (plist-get sh :blur)) (abs (car off)) (abs (cdr off)) (plist-get sh :spread)))))
+    (and sh (ceiling (+ (* 1.5 (plist-get sh :blur)) (abs (car off)) (abs (cdr off)) (plist-get sh :spread))))))
 
 (defun glitnir-ns--pair-problem (frame)
   "Nil when FRAME's shadow window is where it belongs, else what is wrong with the pair.
-It belongs at the child window's bounds grown by the margin, directly below the child window, with its alpha."
-  (let* ((e (glitnir-ns--pair frame)) (c (plist-get e :child)) (s (plist-get e :shadow))
-         (m (and e (glitnir-ns--margin frame))))
+It belongs at the child window's bounds grown by the margin, directly below the child window, with its alpha.
+A frame whose chrome has no shadow has no margin, so its margin is read only once the pair has a shadow window."
+  (let* ((e (glitnir-ns--pair frame)) (c (plist-get e :child)) (s (plist-get e :shadow)) m)
     (cond ((null e) "no entry")
           ((null c) (list "the child is not on screen" e))
           ((null s) (list "no shadow window" e))
+          ((null (setq m (glitnir-ns--margin frame))) (list "a shadow window, and no shadow in the chrome" e))
           ((not (plist-get e :below)) (list "the shadow window is not directly below" e))
           ((cl-notevery (lambda (a b) (< (abs (- a b)) 0.01))
                         s (list (- (nth 0 c) m) (- (nth 1 c) m) (+ (nth 2 c) m m) (+ (nth 3 c) m m)))
@@ -138,6 +142,36 @@ The model follows a step asynchronously: a pair checked before it caught up is t
                 (setq d (max d (abs (- (aref ab (+ ia (* 4 i) k)) (aref bb (+ ib (* 4 i) k)))))))
               (when (> d 0) (setq n (1+ n) mx (max mx d))))))))
     (list n mx)))
+
+(defun glitnir-ns--diff-logged (name a b rect &optional context)
+  "`glitnir-ns--diff' of A and B over RECT; when a pixel differs, the evidence goes to GLITNIR_GUI_OUT.
+That is NAME-xSCALE.txt, the differing pixels (X Y and both B G R A, the first 4000) after CONTEXT, and the two
+captures as NAME-xSCALE-a.bgra and -b.bgra (W*H*4 bytes, W and H on the list's first line)."
+  (let ((d (glitnir-ns--diff a b rect)) (dir (getenv "GLITNIR_GUI_OUT")))
+    (when (and (> (car d) 0) dir (file-directory-p dir))
+      (pcase-let ((`(,x ,y ,w ,h) rect) (`(,aw ,ah ,ab) a) (`(,bw ,_ ,bb) b) (n 0)
+                  (base (expand-file-name (format "%s-x%s" name (glitnir-ns--scale)) dir)))
+        (with-temp-buffer
+          (insert (format "%s: captures %dx%d, rect %S, %d pixels differ, by %d at most\ncontext: %S\nx y  a: B G R A  b: B G R A\n"
+                          name aw ah rect (car d) (cadr d) context))
+          (dotimes (j h)
+            (let ((ia (* 4 (+ (* (+ y j) aw) x))) (ib (* 4 (+ (* (+ y j) bw) x))))
+              (unless (string= (substring ab ia (+ ia (* 4 w))) (substring bb ib (+ ib (* 4 w))))
+                (dotimes (i w)
+                  (let ((pa (+ ia (* 4 i))) (pb (+ ib (* 4 i))))
+                    (unless (and (= (aref ab pa) (aref bb pb)) (= (aref ab (+ pa 1)) (aref bb (+ pb 1)))
+                                 (= (aref ab (+ pa 2)) (aref bb (+ pb 2))) (= (aref ab (+ pa 3)) (aref bb (+ pb 3))))
+                      (when (< n 4000)
+                        (insert (format "%d %d  %d %d %d %d  %d %d %d %d\n" (+ x i) (+ y j)
+                                        (aref ab pa) (aref ab (+ pa 1)) (aref ab (+ pa 2)) (aref ab (+ pa 3))
+                                        (aref bb pb) (aref bb (+ pb 1)) (aref bb (+ pb 2)) (aref bb (+ pb 3)))))
+                      (setq n (1+ n))))))))
+          (write-region nil nil (concat base ".txt") nil 'silent))
+        (let ((coding-system-for-write 'no-conversion))
+          (write-region ab nil (concat base "-a.bgra") nil 'silent)
+          (write-region bb nil (concat base "-b.bgra") nil 'silent))
+        (glitnir-gui--say "%s: %d pixels differ, by %d at most: %s.txt" name (car d) (cadr d) base)))
+    d))
 
 (defun glitnir-ns--text-buffer ()
   "A buffer of a few lines of text and no mode line."
@@ -1146,9 +1180,9 @@ Everything goes back after: one window on `*scratch*', the frame's divider width
        (setq stock (glitnir-ns--grab))
        (delete-frame stock-frame t)
        (should (glitnir-ns--gone-p stock-frame))
-       (let ((c (glitnir-ns--blank-child look)))
+       (let ((c (glitnir-ns--blank-child look)) off rect)
          (unwind-protect
-             (let (off)
+             (progn
                (should (gui-runner-wait (lambda () (plist-get (glitnir-ns--pair c) :shadow)) 5))
                (let ((glitnir-enable nil))
                  (glitnir-refresh c)
@@ -1159,11 +1193,20 @@ Everything goes back after: one window on `*scratch*', the frame's divider width
                                           5))
                  (should-not (glitnir-ns--orphans))
                  (should-not (glitnir--chrome c))
-                 ;; the opaque, square frame (alpha-background is ignored): the stock frame's pixels, to
-                 ;; one level of a channel (the window server's rounding of a frame it drew twice)
-                 (setq off (glitnir-ns--grab)))
-               (should (<= (cadr (glitnir-ns--diff stock off (glitnir-ns--root-rect stock))) 1)))
-           (delete-frame c t)))))))
+                 ;; the opaque, square frame (alpha-background is ignored)
+                 (setq off (glitnir-ns--grab) rect (glitnir-ns--rect c))))
+           (delete-frame c t))
+         (should (glitnir-ns--gone-p c))
+         ;; the stock frame's pixels, tolerance 0.  The control, a second frame that never had chrome against the
+         ;; first, is logged and not asserted: it tells a difference of ours from one of the window server's.
+         (let ((again-frame (glitnir-ns--blank-child nil)) again)
+           (unwind-protect (setq again (glitnir-ns--grab))
+             (delete-frame again-frame t))
+           (let* ((root (glitnir-ns--root-rect stock))
+                  (control (glitnir-ns--diff-logged "off-equals-stock-control" stock again root)))
+             (should (equal (list :off (glitnir-ns--diff-logged "off-equals-stock" stock off root (list :child rect))
+                                  :stock-again control)
+                            (list :off '(0 0) :stock-again control))))))))))
 
 (defun glitnir-ns--fixture-run ()
   "Type, scroll and show and hide a popup in the root's one window; the captures after each step."
@@ -1188,15 +1231,28 @@ Everything goes back after: one window on `*scratch*', the frame's divider width
   ;; guard: the NS twin of drgnx's on-equals-off, on a fixture without chrome
   (glitnir-ns--skip-unless-ns)
   (glitnir-ns--skip-unless-capture)
-  (let (on off)
-    (glitnir-ns--with-pattern
-     (lambda ()
-       (let ((glitnir-enable t)) (setq on (glitnir-ns--fixture-run)))
-       (with-current-buffer (window-buffer (selected-window)) (delete-region (point-min) (+ (point-min) 27)))
-       (set-window-start (selected-window) 1)
-       (let ((glitnir-enable nil)) (setq off (glitnir-ns--fixture-run)))))
-    (should (= (length on) (length off) 4))
-    (cl-mapc (lambda (a b) (should (<= (cadr (glitnir-ns--diff a b (glitnir-ns--root-rect a))) 1))) on off)))
+  (let (on off again)
+    (cl-flet ((rewind ()
+                (with-current-buffer (window-buffer (selected-window)) (delete-region (point-min) (+ (point-min) 27)))
+                (set-window-start (selected-window) 1)))
+      (glitnir-ns--with-pattern
+       (lambda ()
+         (let ((glitnir-enable t)) (setq on (glitnir-ns--fixture-run)))
+         (rewind)
+         (let ((glitnir-enable nil)) (setq off (glitnir-ns--fixture-run)))
+         (rewind)
+         (let ((glitnir-enable nil)) (setq again (glitnir-ns--fixture-run))))))
+    (should (= (length on) (length off) (length again) 4))
+    ;; tolerance 0; the four steps are all compared before the assertion, so a red run logs each one.  The control,
+    ;; off against off again, is logged and not asserted: it tells a difference of ours from one of the window server's.
+    (let ((control (cl-loop for a in off for b in again for i from 0
+                            collect (glitnir-ns--diff-logged (format "on-equals-off-control-%d" i) a b
+                                                             (glitnir-ns--root-rect a)))))
+      (should (equal (list :on-off (cl-loop for a in on for b in off for i from 0
+                                            collect (glitnir-ns--diff-logged (format "on-equals-off-%d" i) a b
+                                                                             (glitnir-ns--root-rect a)))
+                           :off-again control)
+                     (list :on-off '((0 0) (0 0) (0 0) (0 0)) :off-again control))))))
 
 ;;; The clean cost row: no sampler thread, the redisplay of a corfu-like step timed with and without the shadow
 
@@ -1236,22 +1292,26 @@ Everything goes back after: one window on `*scratch*', the frame's divider width
    (lambda ()
      (let ((c (glitnir-ns--blank-child '((corner-radius . 8)))) (cpu0 (glitnir-ns--windowserver-cpu)))
        (unwind-protect
-           (handler-bind ((error (lambda (e) (message "glitnir-ns cost row: %S\n%s" e (with-output-to-string (backtrace))))))
-            (let* ((buf (window-buffer (selected-window)))
+           (let* ((buf (window-buffer (selected-window)))
                   (move (glitnir-ns--cost
                          c 200 (lambda (f i)
                                  (with-current-buffer buf (goto-char (point-min)) (insert "x"))
                                  (set-frame-position f (+ 40 (mod (* 3 i) 200)) (+ 40 (mod i 60))))))
                   (resize (glitnir-ns--cost
                            c 100 (lambda (f i) (set-frame-size f (+ 200 (mod (* 4 i) 120)) (+ 80 (mod (* 3 i) 60)) t)))))
-             (message "glitnir-ns cost at x%s: move on p95 %.2f off p95 %.2f ms; resize on p95 %.2f off p95 %.2f ms; %S; WindowServer cpu %s -> %s"
-                      (glitnir-ns--scale) (car move) (cdr move) (car resize) (cdr resize) (glitnir-stats)
-                      cpu0 (glitnir-ns--windowserver-cpu))
-             (should-not (glitnir-ns--settled-problem c))
+             ;; the numbers go to the row's log, a pass's as a failure's
+             (glitnir-gui--say "glitnir-ns cost at x%s: move on p95 %.2f off p95 %.2f ms; resize on p95 %.2f off p95 %.2f ms; %S; WindowServer cpu %s -> %s"
+                               (glitnir-ns--scale) (car move) (cdr move) (car resize) (cdr resize) (glitnir-stats)
+                               cpu0 (glitnir-ns--windowserver-cpu))
+             ;; the last block was off: no shadow window; with the shadow back, the pair holds
+             (should (gui-runner-wait (lambda () (let ((e (glitnir-ns--pair c))) (and e (null (plist-get e :shadow))))) 5))
+             (should-not (glitnir-ns--orphans))
              (modify-frame-parameters c `((shadow . ,glitnir-ns--shadow)))
              (should-not (glitnir-ns--settled-problem c))
-             (should (<= (- (car move) (cdr move)) glitnir-ns--cost-move-ms))
-             (should (<= (- (car resize) (cdr resize)) glitnir-ns--cost-resize-ms))))
+             (should (equal (list :move-on-off-ms move (<= (- (car move) (cdr move)) glitnir-ns--cost-move-ms))
+                            (list :move-on-off-ms move t)))
+             (should (equal (list :resize-on-off-ms resize (<= (- (car resize) (cdr resize)) glitnir-ns--cost-resize-ms))
+                            (list :resize-on-off-ms resize t))))
          (delete-frame c t))))))
 
 ;;; The layout leg: a capture before a new layout, the old picture moving over it
@@ -1304,7 +1364,7 @@ A leg left by an earlier row ends first: the same value would not be a new reque
          (glitnir-ns--leg-end)
          (setq after (glitnir-ns--grab))
          ;; the old picture shows (up to the window server's rounding), the new layout is what stays
-         (should (<= (cadr (glitnir-ns--diff before during dev)) 2))
+         (should (<= (cadr (glitnir-ns--diff-logged "layout-leg-shows-old-picture" before during dev)) 2))
          (should (> (car (glitnir-ns--diff during after dev)) 100)))))))
 
 (ert-deftest glitnir-ns/layout-leg-ends-plain ()
@@ -1329,7 +1389,8 @@ A leg left by an earlier row ends first: the same value would not be a new reque
          (should (gui-runner-wait (lambda () (not (plist-get (glitnir-ns--leg-state) :running))) 5))
          (setq moved (glitnir-ns--grab))
          (glitnir-ns--leg-end)
-         (should (<= (cadr (glitnir-ns--diff plain moved dev)) 1)))))))
+         ;; tolerance 0: the layers are gone
+         (should (equal (glitnir-ns--diff-logged "layout-leg-ends-plain" plain moved dev) '(0 0))))))))
 
 (ert-deftest glitnir-ns/layout-leg-jumps-under-reduced-motion ()
   ;; reduced motion asks for no capture: the new layout shows at once
