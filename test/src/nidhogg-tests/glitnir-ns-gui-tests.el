@@ -1173,6 +1173,10 @@ Everything goes back after: one window on `*scratch*', the frame's divider width
   (glitnir-ns--skip-unless-capture)
   (glitnir-ns--with-pattern
    (lambda ()
+     ;; no scroll bar: AppKit redraws its scroller's knob with its round ends a level apart from one capture to a
+     ;; later one, a frame with chrome or not (the control below caught it, 60 pixels at x1, 200 at x2)
+     (set-window-scroll-bars (selected-window) nil nil nil nil)
+     (redisplay t)
      (let* ((look `((corner-radius . 12) (shadow . ,glitnir-ns--shadow) (backdrop-blur . 20)
                     (alpha-background . 0.5) (transition . pop)))
             (stock-frame (glitnir-ns--blank-child nil)) stock)
