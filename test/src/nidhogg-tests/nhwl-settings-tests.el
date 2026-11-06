@@ -164,6 +164,7 @@ ANSWERS maps (NAMESPACE . KEY) to a value; others get no answer.
             (accept-process-output nil 0.05))
           (cond ((equal key "color-scheme") 1)
                 ((equal key "contrast") 1)
+                ((equal key "marker") 1)
                 ((equal key "reduced-motion") 7)
                 ((equal key "cursor-size") 32)
                 ((equal key "font-name") "Adwaita Sans 11")
@@ -193,9 +194,11 @@ is fresh and `nhwl-settings--bus' names the private bus."
                                        "--print-pid")
                        (error err))))
          (unless (eql status 0)
-           (message "nhwl-settings: no private bus: %S %S" status
-                    (buffer-string)))
-         (skip-unless (eql status 0)))
+           ;; CI installs dbus-daemon: a skip there would hide the test
+           (if (getenv "CI")
+               (ert-fail (format "no private bus (dbus-daemon): %S %S" status
+                                 (buffer-string)))
+             (ert-skip "no dbus-daemon"))))
        (goto-char (point-min))
        (setq bus (buffer-substring (point) (line-end-position)))
        (forward-line)
@@ -235,13 +238,22 @@ is fresh and `nhwl-settings--bus' names the private bus."
               (while (not ready) (accept-process-output child 0.1))))
            (cl-flet ((release () (write-region "" nil release-file nil 'silent)))
              ,@body))
+       ;; a read that got an error keeps its timer; leave none behind
+       (mapc #'cancel-timer (nhwl-settings-test--read-timers))
        (when (file-exists-p release-file) (delete-file release-file))
        (when (process-live-p child) (delete-process child))
        (when pid (signal-process pid 'TERM)))))
 
+(defun nhwl-settings-test--read-timers ()
+  "The timers of the portal reads that have not run out yet."
+  (seq-filter (lambda (tm) (eq (timer--function tm) 'nhwl-settings--read-expire))
+              timer-list))
+
 (ert-deftest nhwl-settings/async-read-never-blocks ()
   (nhwl-settings-test--with-parked-portal
-    (let (calls)
+    ;; far from running out: the answers below come at once
+    (let ((nhwl-settings--read-timeout 600000)
+          calls)
       (add-hook 'nhwl-settings-changed-functions
                 (lambda (key value) (push (cons key value) calls)))
       ;; The portal is parked: init returns with the defaults at once.
@@ -261,6 +273,34 @@ is fresh and `nhwl-settings--bus' names the private bus."
       (should (eq (nhwl-settings-get 'contrast) 1))
       (should (equal (nhwl-settings-get 'font-name) "Adwaita Sans 11"))
       (should (eq (nhwl-settings-get 'reduced-motion) 0)))))
+
+(ert-deftest nhwl-settings/unanswered-read-times-out-and-late-answer-is-ignored ()
+  ;; The child owns the portal's name and parks on its first call, so no
+  ;; read is answered until `release'.
+  (nhwl-settings-test--with-parked-portal
+    (let (calls marker)
+      (add-hook 'nhwl-settings-changed-functions
+                (lambda (key value) (push (cons key value) calls)))
+      (nhwl-settings-init)
+      (with-timeout (60 (error "the reads never timed out"))
+        ;; timers run while Emacs waits for process output, not in `read-event'
+        (while (nhwl-settings-test--read-timers)
+          (accept-process-output nil 0.1)))
+      (should-not calls)
+      (should (eq (nhwl-settings-get 'color-scheme) 0))
+      (release)
+      ;; The child answers in order, so when this marker comes back every
+      ;; late answer before it has been delivered.
+      (dbus-call-method-asynchronously
+       nhwl-settings--bus "org.freedesktop.portal.Desktop"
+       "/org/freedesktop/portal/desktop" "org.freedesktop.portal.Settings"
+       "ReadOne" (lambda (&rest _) (setq marker t)) "x" "marker")
+      (with-timeout (60 (error "the late answers never came"))
+        (while (not marker) (read-event nil nil 0.1)))
+      (should-not calls)
+      (should (eq (nhwl-settings-get 'color-scheme) 0))
+      (should (eq (nhwl-settings-get 'contrast) 0))
+      (should-not (nhwl-settings-get 'font-name)))))
 
 (ert-deftest nhwl-settings/no-portal-on-the-bus-keeps-defaults ()
   (let ((nhwl-settings-test--no-portal t))

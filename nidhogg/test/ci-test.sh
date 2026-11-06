@@ -217,8 +217,9 @@ grep -qF 'bash test/src/nidhogg-tests/fixtures/grammars.sh "$RUNNER_TEMP/grammar
 grep -qF "matrix.distro == 'fedora-45' && steps.build.outcome == 'success'" <<<"$lj"       || fail "grammars.sh runs on more than the fedora-45 leg"
 grep -qF "NIDHOGG_TEST_GRAMMARS: \${{ steps.grammars.outcome == 'success' && '/grammars' || '' }}" <<<"$lj" || fail "the check does not see the grammars"
 grep -qF -- "-v {0}/grammars:/grammars:ro,z" <<<"$lj"                 || fail "the check container does not mount the grammars"
-# the fedora-45 leg's check installs gnutls-utils, so the TLS rows (gnutls-serv) run instead of skipping
-grep -qF "NIDHOGG_CHECK_PACKAGES: \${{ matrix.distro == 'fedora-45' && 'gnutls-utils' || '' }}" <<<"$lj" || fail "the linux check does not install gnutls-utils on fedora-45"
+# the fedora-45 leg's check installs gnutls-utils and dbus-daemon, so the TLS rows (gnutls-serv) and the settings
+# tests' bus run instead of skipping
+grep -qF "NIDHOGG_CHECK_PACKAGES: \${{ matrix.distro == 'fedora-45' && 'gnutls-utils dbus-daemon' || '' }}" <<<"$lj" || fail "the linux check does not install gnutls-utils and dbus-daemon on fedora-45"
 # the prebuilt images (images.yml, nidhogg/ci/image.sh): published only for a push to nidhogg-31 or a run by hand, never
 # from a pull request; the Linux jobs run in them by digest, the package-download caches are gone with them
 iw=.github/workflows/images.yml

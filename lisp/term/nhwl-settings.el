@@ -131,7 +131,7 @@ Each function is called with the key (a symbol) and the new value.")
                          nil))
   "Each setting: (KEY NAMESPACE PORTAL-KEY DEFAULT).")
 
-(defconst nhwl-settings--read-timeout 500
+(defvar nhwl-settings--read-timeout 500
   "Milliseconds a portal read may take before it is given up.")
 
 (defvar nhwl-settings--bus :session
@@ -180,19 +180,31 @@ Until the portal has answered, the default is returned."
     (when (and (consp value) (null (cdr value))) (setq value (car value)))
     (and (stringp value) value))))
 
+(defun nhwl-settings--read-expire (read)
+  "End the portal read READ (a cons whose car is non-nil once it is over).
+An answer that comes later is ignored."
+  (setcar read t))
+
 (defun nhwl-settings--read-async (key namespace name)
   "Ask the portal for NAME of NAMESPACE; store the answer as setting KEY.
-Returns at once.  An error or no answer within `nhwl-settings--read-timeout'
-leaves the default."
-  (condition-case nil
-      (dbus-call-method-asynchronously
-       nhwl-settings--bus "org.freedesktop.portal.Desktop"
-       "/org/freedesktop/portal/desktop" "org.freedesktop.portal.Settings"
-       "ReadOne"
-       (lambda (&optional value)
-         (nhwl-settings--set key (nhwl-settings--normalize key value)))
-       :timeout nhwl-settings--read-timeout namespace name)
-    (error nil)))
+Returns at once.  An error, or no answer within `nhwl-settings--read-timeout',
+leaves the default: Emacs's D-Bus binding does not enforce a call's
+timeout, so a timer ends the read and a late answer is ignored."
+  (let* ((read (list nil))
+         (timer (run-with-timer (/ nhwl-settings--read-timeout 1000.0) nil
+                                #'nhwl-settings--read-expire read)))
+    (condition-case nil
+        (dbus-call-method-asynchronously
+         nhwl-settings--bus "org.freedesktop.portal.Desktop"
+         "/org/freedesktop/portal/desktop" "org.freedesktop.portal.Settings"
+         "ReadOne"
+         (lambda (&optional value)
+           (unless (car read)
+             (setcar read t)
+             (cancel-timer timer)
+             (nhwl-settings--set key (nhwl-settings--normalize key value))))
+         :timeout nhwl-settings--read-timeout namespace name)
+      (error (cancel-timer timer)))))
 
 (defun nhwl-settings--title-bar-colors (scheme)
   "Apply the default title-bar colours for colour SCHEME (1 is dark)."

@@ -109,7 +109,7 @@ FAKE_SKIP=src/b-tests grp --out "$d/r7/report" > /dev/null; r=$?
 grep -q "^GROUP P2 cpu1 run=1 seed=- src/b-tests NOT RUN" "$d/r7/report" || fail "no NOT RUN line"
 grep -q "^P2 cpu1: 1 green, 1 red of 2$" "$d/r7/report" || fail "a file not run counted as green"
 # the treesit and TLS files get what they need; a file that skips whole is said so, and never counts as green
-[ "$(cat "$d/slot.env" 2>/dev/null)" = "/grammars|gnutls-utils|--cpus=0.5 -v $d/grammars-cache:/grammars:ro,z" ] \
+[ "$(cat "$d/slot.env" 2>/dev/null)" = "/grammars|gnutls-utils dbus-daemon|--cpus=0.5 -v $d/grammars-cache:/grammars:ro,z" ] \
   || fail "the check container's settings: $(cat "$d/slot.env" 2>/dev/null)"
 FAKE_ALLSKIP=src/b-tests grp --out "$d/r13/report" > /dev/null
 grep -q "^GROUP P2 cpu1 run=1 seed=- src/b-tests ALL SKIPPED: Ran 7 tests, 0 results as expected" "$d/r13/report" || fail "no ALL SKIPPED line"
