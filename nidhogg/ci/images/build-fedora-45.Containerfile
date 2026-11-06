@@ -7,10 +7,11 @@
 FROM registry.fedoraproject.org/fedora@sha256:f5afe36c8ddb2aa5333597e900f53c5ed0267d9ebb27be765dc8ec2633aa1648 AS norust
 COPY fedora-45.build /usr/share/nidhogg-image/fedora-45.build
 # ccache: NIDHOGG_BUILD_CCACHE; the sanitizer runtimes: workers-asan and workers-harness; gnutls-utils: the TLS rows'
-# gnutls-serv (NIDHOGG_CHECK_PACKAGES); diffutils: workers-harness's selftest
+# gnutls-serv (NIDHOGG_CHECK_PACKAGES); dbus-daemon: the private session bus of the settings tests (same list);
+# diffutils: workers-harness's selftest
 RUN dnf -y --setopt=install_weak_deps=False install \
       $(sed 's/#.*//' /usr/share/nidhogg-image/fedora-45.build | grep -vxE 'cargo|rust|rustc') \
-      ccache libasan libubsan libtsan gnutls-utils diffutils && \
+      ccache libasan libubsan libtsan gnutls-utils dbus-daemon diffutils && \
     dnf clean all
 
 FROM norust AS full
