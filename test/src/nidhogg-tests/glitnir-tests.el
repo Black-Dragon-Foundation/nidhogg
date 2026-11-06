@@ -108,6 +108,37 @@
   (glitnir-test--as-child '((corner-radius . "x"))
     (should-error (glitnir--resolve (selected-frame)) :type 'wrong-type-argument)))
 
+(defmacro glitnir-test--as-root (params &rest body)
+  "Run BODY with the selected frame a root frame with parameters PARAMS."
+  (declare (indent 1))
+  `(cl-letf (((symbol-function 'frame-parameters) (lambda (&optional _f) ,params)))
+     ,@body))
+
+(ert-deftest glitnir/toplevel-chrome-vector ()
+  ;; Pattern D (pure): an undecorated root frame takes its corners and shadow from `toplevel-chrome', in slots 0-7;
+  ;; it has no motion, no backdrop and no ring, and `child-frame-chrome' does not reach it.
+  (let ((child-frame-chrome '((corner-radius . 3) (transition . pop))))
+    (glitnir-test--as-root '((undecorated . t)
+                             (toplevel-chrome . ((corner-radius . 12)
+                                                 (shadow . (:blur 16 :offset (0 . 6) :opacity 0.35)))))
+      (let ((v (glitnir--chrome-vector (selected-frame))))
+        (should (= (length v) 24))
+        (should (equal (append (cl-subseq v 0 7) nil) '(1 12 16 0 6 0 0.35)))
+        (should (cl-every #'zerop (cl-subseq v 8 21)))
+        (should (equal (list (aref v 21) (aref v 22) (aref v 23)) '(-1 -1 0)))))))
+
+(ert-deftest glitnir/toplevel-chrome-needs-undecorated ()
+  ;; Pattern D (pure): a decorated root, one without `toplevel-chrome' or one that opts out has none; a bad shadow
+  ;; signals as a child frame's does.
+  (glitnir-test--as-root '((undecorated . t))
+    (should-not (glitnir--chrome-vector (selected-frame))))
+  (glitnir-test--as-root '((toplevel-chrome . ((corner-radius . 12))))
+    (should-not (glitnir--chrome-vector (selected-frame))))
+  (glitnir-test--as-root '((undecorated . t) (toplevel-chrome . ((corner-radius . 0))))
+    (should-not (glitnir--chrome-vector (selected-frame))))
+  (glitnir-test--as-root '((undecorated . t) (toplevel-chrome . ((shadow . (:blurr 1)))))
+    (should-error (glitnir--chrome-vector (selected-frame)) :type 'wrong-type-argument)))
+
 (ert-deftest glitnir/root-frames-get-none ()
   (let ((child-frame-chrome '((corner-radius . 8) (shadow . (:blur 16)))))
     (should-not (frame-parent))

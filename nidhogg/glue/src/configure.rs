@@ -3,8 +3,9 @@
 //! there (the `fullscreen` parameter, the title bar's layout, the frame's new size, the fonts).
 //!
 //! The ack (acks are recorded and go out with the commit that carries them).  It carries `NHSHELL_ACK_CONTENT` (only a buffer carries it) for the window's
-//! first configure, under a client-side title bar for a change of activated, maximized or tiled, and when the
-//! configure gives the frame a new size.  Whether it does is C's to say: the size the suggestion gives depends on the
+//! first configure, under a client-side title bar for a change of activated, maximized or tiled (on a framed
+//! undecorated window, of maximized or tiled: its margins and chrome), and when the configure gives the frame a new
+//! size.  Whether it does is C's to say: the size the suggestion gives depends on the
 //! title bar's layout, which C recomputes from the new states when it applies `RESIZE` (the rule: a decision
 //! that reads state an earlier action changed is made where that action is applied).  C says it by pushing the new
 //! size (`nhg_frame_resized`) while it applies `RESIZE`, and the ack is recorded then, as content; otherwise it is
@@ -35,8 +36,11 @@ pub fn configure(state: &mut Display, ev: &Record, c: &ConfigureEv) {
         return;
     };
     let old = f.cfg.states;
+    // a framed window (undecorated, margins without a strip) shows maximized and tiled in its margins and chrome
+    let shown = CSD_STATES & !NHSHELL_STATE_ACTIVATED;
     let content = !f.cfg.configured
-        || (f.facts.flags & NHG_FACT_CSD != 0 && (old ^ c.states) & CSD_STATES != 0);
+        || (f.facts.flags & NHG_FACT_CSD != 0 && (old ^ c.states) & CSD_STATES != 0)
+        || (f.csd.framed() && (old ^ c.states) & shown != 0);
     f.cfg = Configure {
         configured: true,
         logical_w: c.w,

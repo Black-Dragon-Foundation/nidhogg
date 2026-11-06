@@ -2394,7 +2394,7 @@ nhwl_frame_size (struct frame *f, NhgFrameGeom *g)
 }
 
 /* F's geometry for the glue: its size, and its Glitnir layer, all of the
-   backing (the glue puts a child frame's inside its shadow margin).  */
+   backing (the glue puts a chromed frame's inside its margin).  */
 static void
 nhwl_frame_geom (struct frame *f, NhgFrameGeom *g)
 {
@@ -2426,18 +2426,16 @@ nhwl_glitnir_active_p (struct frame *f)
 }
 
 /* Where F's Glitnir layer starts, in F's pixels (device pixels): the
-   backing's top-left, before the title bar or margins, or the native area
-   for a child frame (the glue puts a child's layer inside its shadow
-   margin; one without chrome has no margin, so both are the same).  */
+   backing's top-left, before the title bar and margins, for a frame that
+   draws its title bar; else the native area (the glue puts the layer of a
+   child, or of an undecorated top-level that keeps its margins, inside
+   them; any other frame has no border, so both are the same).  */
 void
 nhwl_layer_origin (struct frame *f, int *x, int *y)
 {
-  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  struct nhwl_csd *c = &FRAME_NHWL_OUTPUT (f)->csd;
 
-  if (nhwl_child_p (f))
-    *x = *y = 0;
-  else
-    *x = -out->csd.l, *y = -out->csd.t;
+  *x = c->on ? -c->l : 0, *y = c->on ? -c->t : 0;
 }
 
 /* The scene and layer window W's decorations go to (glitnir-decor.c):

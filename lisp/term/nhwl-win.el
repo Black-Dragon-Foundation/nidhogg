@@ -26,6 +26,11 @@
 ;; frame of the shell, with the primitives `nhwl-frame-begin-move',
 ;; `nhwl-frame-begin-resize' and `nhwl-frame-show-window-menu'.  Child
 ;; frames and other displays keep the stock behavior.
+;;
+;; What the compositor offers: `nhwl-system-bell-p', and
+;; `nhwl-toplevel-chrome-p', whether an undecorated top-level keeps its
+;; resize margins and draws its `toplevel-chrome' (rounded corners and a
+;; shadow) there.
 
 ;;; Code:
 
@@ -33,6 +38,29 @@
 
 (declare-function nhwl-frame-begin-move "nhwlfns.c")
 (declare-function nhwl-frame-begin-resize "nhwlfns.c")
+(declare-function nhwl--offers-p "nhwlfns.c")
+
+(defun nhwl-system-bell-p (&optional display)
+  "Return non-nil if the compositor offers a system bell.
+That is the xdg_system_bell_v1 protocol on DISPLAY (a display name or a
+frame; the selected frame's by default).  Without it `ding' does not sound
+on a shell frame, whatever `visible-bell' says."
+  (nhwl--offers-p 'system-bell display))
+
+(defun nhwl-toplevel-chrome-p (&optional frame)
+  "Return non-nil when an undecorated FRAME keeps its own window border.
+That holds for a top-level frame of Nidhogg's own shell, built with
+Glitnir, on a compositor that offers no server-side decorations (GNOME's
+mutter): there an `undecorated' frame has no title bar but keeps resize
+margins, and its `toplevel-chrome' parameter gives it rounded corners and
+a shadow in them (none while it is maximized, fullscreen or tiled).  Where
+the compositor offers server-side decorations (sway, KWin) an undecorated
+frame has none of this.  FRAME defaults to the selected frame."
+  (let ((frame (or frame (selected-frame))))
+    (and (featurep 'glitnir)
+         (eq (framep frame) 'pgtk)
+         (not (frame-parent frame))
+         (not (nhwl--offers-p 'server-decorations frame)))))
 
 (defun nhwl-win--frame (start-event)
   "The top-level shell frame START-EVENT started on, or nil."

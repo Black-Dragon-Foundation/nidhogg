@@ -6,6 +6,12 @@
 //!
 //! At scale 1, a 200 x 100 native area gets margins of 8 and a strip of 32: the backing is 216 x 148, the strip runs
 //! from (8, 8) to (208, 40), and the default buttons (minimize, maximize, close) sit at x 112, 144 and 176.
+//!
+//! An undecorated window where the compositor offers no server-side decorations keeps the margins of 8 without the
+//! strip; with the look's chrome (radius 12, blur 16, offset (0, 6)) the shadow needs ceil(1.5 x 16) + 1 = 25 on the
+//! sides, 19 above and 31 below, and the input region is the window and the 8 around it.  Those rows publish for real
+//! (the layer, the backing, a present) and read what the recorder applied and shows: the surface sits at the output's
+//! top-left.
 
 #[path = "../../shell/tests/common/mod.rs"]
 mod common;
@@ -13,13 +19,17 @@ mod common;
 use common::{Recorder, readable_within};
 use nhglue::abi::*;
 use nhglue::action::*;
-use nhglue::backing::NhgRect;
+use nhglue::backing::{NhgBacking, NhgFrameGeom, NhgRect};
+use nhglue::child::NhgChrome;
+use nhglue::chrome;
 use nhglue::csd::*;
 use nhglue::ffi::*;
 use nhglue::frame::NHG_FACT_CSD;
+use nhglue::present::{NHG_PRESENT_BACKSTOP, NHG_PRESENT_READY, NHG_SURF_DRAWABLE, NhgSurface};
 use nhshell::api::{
     NHSHELL_ACK_CONTENT, NHSHELL_CURSOR_DEFAULT, NHSHELL_CURSOR_RESIZE_EW,
-    NHSHELL_CURSOR_RESIZE_NS, NHSHELL_CURSOR_RESIZE_NWSE, ShellBackend, WindowDesc,
+    NHSHELL_CURSOR_RESIZE_NS, NHSHELL_CURSOR_RESIZE_NWSE, NHSHELL_WIN_UNDECORATED, ShellBackend,
+    WindowDesc,
 };
 use std::ptr;
 use std::time::{Duration, Instant};
@@ -99,13 +109,18 @@ fn settle(d: *mut NhgDisplay) -> Vec<Vec<NhgAction>> {
 
 /// A top-level window of 200 x 100, made and registered as `nhwl_window_new` makes it, at scale 1.
 fn window(d: *mut NhgDisplay) -> u64 {
+    window_with(d, 0)
+}
+
+/// `window` with the shell's window `flags` (`NHSHELL_WIN_*`).
+fn window_with(d: *mut NhgDisplay, flags: u32) -> u64 {
     let id = backend(d)
         .window_new(&WindowDesc {
             w: 200,
             h: 100,
             title: "t".into(),
             app_id: "nidhogg.test".into(),
-            flags: 0,
+            flags,
         })
         .unwrap();
     // SAFETY: a live display.
@@ -240,6 +255,124 @@ fn csd_window(rec: &Recorder) -> (*mut NhgDisplay, u64) {
     (d, id)
 }
 
+const BG: u32 = 0xff20_4060;
+
+/// The look's window chrome: radius 12, the popups' shadow (blur 16, offset (0, 6), 0.35), in logical pixels.
+const LOOK: NhgChrome = NhgChrome {
+    on: 1,
+    radius: 12.0,
+    blur: 16.0,
+    ox: 0.0,
+    oy: 6.0,
+    spread: 0.0,
+    opacity: 0.35,
+    rgb: 0,
+};
+
+/// Corners only: no shadow.
+const CORNERS: NhgChrome = NhgChrome {
+    opacity: 0.0,
+    blur: 0.0,
+    oy: 0.0,
+    ..LOOK
+};
+
+/// Push `c` as the chrome vector C keeps for `id` (`nhg_child_chrome`): its return.
+fn chrome_of(d: *mut NhgDisplay, id: u64, c: &NhgChrome) -> i32 {
+    let v = chrome::encode(c);
+    // SAFETY: a live display; `v` is readable.
+    unsafe { nhg_child_chrome(d, id, v.as_ptr(), v.len()) }
+}
+
+/// An undecorated window of 200 x 100 (it asks for client-side mode), its first configure applied with the border
+/// laid out undecorated, as C does.
+fn undecorated(d: *mut NhgDisplay) -> u64 {
+    let id = window_with(d, NHSHELL_WIN_UNDECORATED);
+    apply_undecorated(d, id);
+    settle(d);
+    id
+}
+
+/// The window's next configure taken and applied with the border laid out undecorated.
+fn apply_undecorated(d: *mut NhgDisplay, id: u64) {
+    until(d, |a| a.kind == NHG_ACT_RESIZE && a.window == id);
+    assert!(lay(d, id, 120, NHG_CSD_UNDECORATED).0 >= 0);
+    step(d);
+}
+
+/// The border as laid out: L, T, R, B.
+fn border(d: *mut NhgDisplay, id: u64) -> [i32; 4] {
+    let mut off = [0; 4];
+    // SAFETY: a live display; `off` holds 4 values.
+    assert_eq!(
+        unsafe { nhg_frame_offsets(d, id, off.as_mut_ptr()) },
+        NHG_OK
+    );
+    off
+}
+
+/// Publish `id` at 200 x 100 as `nhwl_surface_add` does: the title bar's step, the layer and the backing at the
+/// frame's border (all of it `BG`, the border too), a present, and the commit its `READY` asks for.  `key` is the
+/// frame's key, 0 the first time.
+fn show(d: *mut NhgDisplay, id: u64, key: &mut u64) {
+    assert!(paint(d, id, 200, 100, 1).0 >= 0);
+    let [l, t, r, b] = border(d, id);
+    let g = NhgFrameGeom {
+        native_w: 200,
+        native_h: 100,
+        l,
+        t,
+        r,
+        b,
+        bg_argb: BG,
+        scale120: 120,
+        layer: NhgRect {
+            x: 0,
+            y: 0,
+            w: 200 + l + r,
+            h: 100 + t + b,
+        },
+        window: id,
+        ..Default::default()
+    };
+    let mut back = NhgBacking {
+        pixels: ptr::null_mut(),
+        stride: 0,
+        w: 0,
+        h: 0,
+        generation: 0,
+    };
+    // SAFETY: a live display; `g`, the key and the backing are valid for the calls.
+    unsafe {
+        assert!(nhg_layer_ensure(d, key, &g) >= 0);
+        assert_eq!(nhg_backing(d, *key, &g, &mut back), 0);
+    }
+    for i in 0..(back.w * back.h) as usize {
+        // SAFETY: inside the borrowed backing.
+        unsafe { *back.pixels.cast::<u32>().add(i) = BG };
+    }
+    let s = [NhgSurface {
+        window: id,
+        parent: 0,
+        frame: *key,
+        flags: NHG_SURF_DRAWABLE,
+        alpha_cut: 0,
+    }];
+    // SAFETY: a live display; one readable surface.
+    unsafe {
+        assert_eq!(nhg_damage_all(d, *key), 0);
+        assert!(nhg_present(d, id, s.as_ptr(), 1, NHG_PRESENT_BACKSTOP, 0) >= 0);
+    }
+    until(d, |a| a.kind == NHG_ACT_READY && a.window == id);
+    // SAFETY: a live display; no surfaces.
+    assert!(unsafe { nhg_present(d, id, ptr::null(), 0, NHG_PRESENT_READY, 0) } >= 0);
+}
+
+/// The pixel at (`x`, `y`) of the output as the recorder shows it now (premultiplied ARGB).
+fn shown(rec: &Recorder, x: usize, y: usize) -> u32 {
+    Recorder::snapshot_pixel(&rec.snapshot(), x, y)
+}
+
 /// The recorder's log of requests contains `req`.
 fn logged(rec: &Recorder, req: &str) -> bool {
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -263,7 +396,7 @@ mod csd {
     use super::*;
 
     /// The border follows the compositor's answer and the scale; the buttons follow the style (the default set before Lisp
-    /// says), with the title box between them; an undecorated frame has none.
+    /// says), with the title box between them; an undecorated frame has no strip, only the margins.
     #[test]
     fn layout_follows_the_style() {
         let rec = Recorder::start("mutter");
@@ -343,21 +476,32 @@ mod csd {
         );
         // at 1.5, round(32 x 1.5) = 48 and round(8 x 1.5) = 12
         assert_eq!(lay(d, id, 180, 0).1.t, 60);
-        // undecorated: nothing
+        // undecorated: the margins, no strip
         assert_eq!(
             lay(d, id, 120, NHG_CSD_UNDECORATED),
-            (1, NhgCsdLayout::default())
+            (
+                1,
+                NhgCsdLayout {
+                    l: 8,
+                    t: 8,
+                    r: 8,
+                    b: 8,
+                    strip: 0,
+                    on: 0
+                }
+            )
         );
         assert_eq!(facts_flags(d, id) & NHG_FACT_CSD, 0);
         assert_eq!(title_bar(d, id, 200, 100).0, 0);
         close(d);
     }
 
-    /// A window made anew is laid out from nothing: an undecorated layout is "unchanged" (0), yet the whole layout is
-    /// written, which C copies over what it kept for the frame's previous window.
+    /// A window made anew is laid out from nothing: an undecorated layout where the compositor offers server-side
+    /// decorations is "unchanged" (0), yet the whole layout is written, which C copies over what it kept for the
+    /// frame's previous window.
     #[test]
     fn unchanged_layout_is_still_written() {
-        let rec = Recorder::start("mutter");
+        let rec = Recorder::start("sway");
         let d = open(&rec);
         let id = window(d);
         let mut l = NhgCsdLayout {
@@ -606,6 +750,165 @@ mod csd {
         let ev = button(&rec, d, true);
         assert!(any_pointer(&ev));
         assert!(last_title_bar(&ev).is_none());
+        close(d);
+    }
+
+    /// The layout of an undecorated window: margins `[l, t, r, b]`, no strip.
+    fn bare(m: [i32; 4]) -> NhgCsdLayout {
+        NhgCsdLayout {
+            l: m[0],
+            t: m[1],
+            r: m[2],
+            b: m[3],
+            strip: 0,
+            on: 0,
+        }
+    }
+
+    /// [C] Where the compositor offers no server-side decorations (mutter), an undecorated window keeps its resize
+    /// margins without the strip: nothing to paint, the window geometry excludes the margins, which are transparent
+    /// (the layer is the native area), and a press in the right margin starts a resize on the right edge.
+    #[test]
+    fn undecorated_keeps_resize_margins_without_a_strip() {
+        let rec = Recorder::start("mutter");
+        let d = open(&rec);
+        let id = undecorated(d);
+        assert_eq!(lay(d, id, 120, NHG_CSD_UNDECORATED).1, bare([8; 4]));
+        assert_eq!(facts_flags(d, id) & NHG_FACT_CSD, 0);
+        assert_eq!(paint(d, id, 200, 100, 1).0, 0, "no strip to paint");
+        assert_eq!(title_bar(d, id, 200, 100).0, 0);
+        let mut key = 0;
+        show(d, id, &mut key);
+        rec.wait_node(id, |n| {
+            n.contains("\"geometry\":[8,8,200,100]") && n.contains("\"input_region\":null")
+        });
+        assert_eq!(shown(&rec, 3, 50), 0, "the left margin");
+        assert_eq!(shown(&rec, 100, 50), BG);
+        rec.control_ok(r#"{"cmd":"focus","surface":"toplevel"}"#);
+        settle(d);
+        let ev = point(&rec, d, 212, 50);
+        let a = last_title_bar(&ev).expect("no title-bar action");
+        assert_ne!(a.flags & NHG_TB_POINTER, 0, "{a:?}");
+        assert_eq!(a.code as u32, NHSHELL_CURSOR_RESIZE_EW);
+        assert!(!any_pointer(&ev), "the margin passed a motion on");
+        button(&rec, d, true);
+        assert!(
+            logged(&rec, r#""edges":"right""#),
+            "no resize on the right edge"
+        );
+        button(&rec, d, false);
+        close(d);
+    }
+
+    /// [C] Maximized, an undecorated window has no margin and its chrome goes: the geometry is the whole surface and
+    /// the corner is the window's own pixel.
+    #[test]
+    fn undecorated_maximized_has_no_margin() {
+        let rec = Recorder::start("mutter");
+        let d = open(&rec);
+        let id = undecorated(d);
+        assert_eq!(chrome_of(d, id, &LOOK), 1);
+        configure(&rec, [200, 100], r#""activated","maximized""#);
+        apply_undecorated(d, id);
+        assert_eq!(lay(d, id, 120, NHG_CSD_UNDECORATED).1, bare([0; 4]));
+        let mut key = 0;
+        show(d, id, &mut key);
+        rec.wait_node(id, |n| n.contains("\"geometry\":[0,0,200,100]"));
+        assert_eq!(shown(&rec, 0, 0), BG, "a square corner");
+        close(d);
+    }
+
+    /// [C] Fullscreen, or tiled on all four sides: no margin.  Tiled on one side: none there, and only the resize
+    /// margins elsewhere, with no chrome (no room for the shadow, a square corner, nothing drawn below).
+    #[test]
+    fn undecorated_fullscreen_and_tiled_have_none() {
+        let rec = Recorder::start("mutter");
+        let d = open(&rec);
+        let id = undecorated(d);
+        assert_eq!(chrome_of(d, id, &LOOK), 1);
+        assert_eq!(
+            lay(d, id, 120, NHG_CSD_UNDECORATED).1,
+            bare([25, 19, 25, 31])
+        );
+        let cases: [(&str, [i32; 4]); 3] = [
+            (r#""activated","fullscreen""#, [0; 4]),
+            (
+                r#""activated","tiled_left","tiled_right","tiled_top","tiled_bottom""#,
+                [0; 4],
+            ),
+            (r#""activated","tiled_left""#, [0, 8, 8, 8]),
+        ];
+        for (states, want) in cases {
+            configure(&rec, [200, 100], states);
+            apply_undecorated(d, id);
+            assert_eq!(
+                lay(d, id, 120, NHG_CSD_UNDECORATED).1,
+                bare(want),
+                "{states}"
+            );
+            settle(d);
+        }
+        let mut key = 0;
+        show(d, id, &mut key);
+        rec.wait_node(id, |n| n.contains("\"geometry\":[0,8,200,100]"));
+        assert_eq!(shown(&rec, 0, 8), BG, "a square corner by the tiled side");
+        assert_eq!(shown(&rec, 100, 8 + 100 + 4), 0, "no shadow below");
+        close(d);
+    }
+
+    /// [C] Where the compositor offers server-side decorations (sway), an undecorated window draws none of its own:
+    /// no margins and no chrome, whatever chrome it holds; the geometry is the whole surface.
+    #[test]
+    fn undecorated_with_ssd_offered_draws_none() {
+        let rec = Recorder::start("sway");
+        let d = open(&rec);
+        let id = undecorated(d);
+        assert_eq!(chrome_of(d, id, &LOOK), 0, "nothing to lay out");
+        assert_eq!(lay(d, id, 120, NHG_CSD_UNDECORATED).1, bare([0; 4]));
+        let mut key = 0;
+        show(d, id, &mut key);
+        rec.wait_node(id, |n| {
+            n.contains("\"geometry\":[0,0,200,100]") && n.contains("\"input_region\":null")
+        });
+        assert_eq!(shown(&rec, 0, 0), BG, "a square corner");
+        close(d);
+    }
+
+    /// [C] With the look's chrome the margins make room for the shadow: the geometry excludes them, the input region
+    /// is the window and the resize margins around it, the shadow lies below the window.  Corners alone keep the
+    /// resize margins, and outside the arc the corner is transparent.
+    #[test]
+    fn undecorated_chrome_rounds_and_shadows() {
+        let rec = Recorder::start("mutter");
+        let d = open(&rec);
+        let id = undecorated(d);
+        assert_eq!(chrome_of(d, id, &LOOK), 1);
+        assert_eq!(
+            lay(d, id, 120, NHG_CSD_UNDECORATED),
+            (1, bare([25, 19, 25, 31]))
+        );
+        let mut key = 0;
+        show(d, id, &mut key);
+        rec.wait_node(id, |n| {
+            n.contains("\"geometry\":[25,19,200,100]")
+                && n.contains("\"input_region\":[[17,11,216,116]]")
+        });
+        let below = shown(&rec, 125, 19 + 100 + 4);
+        assert!(
+            below >> 24 > 0 && below & 0x00ff_ffff == 0,
+            "the shadow below: {below:#x}"
+        );
+        assert_eq!(shown(&rec, 125, 19 + 50), BG);
+
+        assert_eq!(chrome_of(d, id, &CORNERS), 1);
+        assert_eq!(lay(d, id, 120, NHG_CSD_UNDECORATED).1, bare([8; 4]));
+        show(d, id, &mut key);
+        rec.wait_node(id, |n| {
+            n.contains("\"geometry\":[8,8,200,100]") && n.contains("\"input_region\":null")
+        });
+        assert_eq!(shown(&rec, 8, 8), 0, "outside the arc");
+        assert_eq!(shown(&rec, 8 + 12, 8), BG, "past the corner square");
+        assert_eq!(shown(&rec, 3, 50), 0, "a margin");
         close(d);
     }
 }
