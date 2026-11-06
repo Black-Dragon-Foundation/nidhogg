@@ -229,7 +229,8 @@
 
 (defun nhwl-gui--grab-matches-snapshot ()
   "(MAX-CHANNEL-DIFF . PIXELS-OVER-2) between the recorder's composite and the selected frame's backing: the backing
-sits at the toplevel's top-left, or at its native area when the snapshot is the native area only."
+sits at the toplevel's top-left, or at its native area when the snapshot is the native area only.  The rows and
+columns the commit cuts off (`nhwl-gui--shown-rect') are not shown, so not compared."
   (pcase-let* ((`(,w ,h ,bytes) (glitnir-snapshot nil 'raw))
                (b (plist-get (nhwl-gui--last-commit) :buffer))
                (whole (= w (plist-get b :w)))
@@ -242,7 +243,7 @@ sits at the toplevel's top-left, or at its native area when the snapshot is the 
       (let ((from (* 4 (+ x (* (+ y row) gw)))))
         (when (<= (+ y row) (1- gh))
           (store-substring sub (* 4 row w) (substring gbytes from (+ from (* 4 (min w (- gw x)))))))))
-    (gui-runner-pixel-diff (list w h bytes) (list w h sub))))
+    (gui-runner-pixel-diff (list w h bytes) (list w h sub) (nhwl-gui--shown-rect (list w h) x y))))
 
 (ert-deftest nhwl-gui/presenter-final-picture-matches-backing ()
   "Review Focus 2: 300 typed characters and 40 scrolls, each at a random point of the frame clock (a random wait of
