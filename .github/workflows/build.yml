@@ -350,9 +350,10 @@ jobs:
         id: check
         if: ${{ steps.build.outcome == 'success' }}
         env:
-          # gnutls-serv for the TLS rows (workers-tls-tests skip without it); in the build image (else build.sh
-          # installs it with dnf), so the fedora-45 leg only, as with the grammars
-          NIDHOGG_CHECK_PACKAGES: ${{ matrix.distro == 'fedora-45' && 'gnutls-utils' || '' }}
+          # gnutls-serv for the TLS rows (workers-tls-tests skip without it) and dbus-daemon for the settings tests'
+          # private bus (they fail without it when CI is set); in the build image (else build.sh installs them with
+          # dnf), so the fedora-45 leg only, as with the grammars
+          NIDHOGG_CHECK_PACKAGES: ${{ matrix.distro == 'fedora-45' && 'gnutls-utils dbus-daemon' || '' }}
           NIDHOGG_TEST_GRAMMARS: ${{ steps.grammars.outcome == 'success' && '/grammars' || '' }}
           NIDHOGG_BUILD_PODMAN_ARGS: ${{ steps.grammars.outcome == 'success' && format('-v {0}/grammars:/grammars:ro,z', runner.temp) || '' }}
         run: bash nidhogg/build.sh --container "${{ matrix.distro }}" --stage check --memory 12g --jobs 4 --build-dir "$RUNNER_TEMP/build" --check "$RUNNER_TEMP/check-subset.txt"
