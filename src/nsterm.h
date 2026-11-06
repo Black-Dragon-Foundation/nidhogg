@@ -1019,7 +1019,6 @@ struct ns_output
      frame.  */
   int tool_bar_adjusted;
 #endif
-
 #ifdef HAVE_GLITNIR
   /* The chrome vector `glitnir--chrome-vector' gave this child frame at
      its last intake (nsglitnir.m): NS_GLITNIR_SLOTS numbers in logical
@@ -1134,7 +1133,6 @@ extern void ns_set_offset (struct frame *f, int xoff, int yoff,
                            int change_grav);
 
 extern const char *ns_xlfd_to_fontname (const char *xlfd);
-
 #ifdef HAVE_GLITNIR
 /* Implemented in nsglitnir.m (Glitnir on NS).  */
 extern void ns_glitnir_params_changed (struct frame *f);

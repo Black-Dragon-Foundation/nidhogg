@@ -1607,7 +1607,6 @@ DEFUN ("x-create-frame", Fx_create_frame, Sx_create_frame,
   /* Make sure windows on this frame appear in calls to next-window
      and similar functions.  */
   Vwindow_list = Qnil;
-
 #ifdef HAVE_GLITNIR
   ns_glitnir_params_changed (f);
 #endif
