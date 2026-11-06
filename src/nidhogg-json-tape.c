@@ -1291,7 +1291,11 @@ nh_json_materialize (struct nh_mat *m, int64_t budget_ns)
   record_unwind_protect_ptr (nh_mat_slice_unwind, m);
   m->phase_depth = NH_WK_PHASE_PUSH (NH_WK_PH_JSON, 0);
   m->in_slice = true;
+  uint64_t t0 = nh_json_now ();
   m->done = nh_mat_slice (m, budget_ns);
+  /* The slice's time, in `:phase-ms' (a slice left by a signal is not
+     counted).  */
+  nh_wk_phase_ns_add (NH_WK_PH_JSON, 0, nh_json_now () - t0);
   m->in_slice = false;
   NH_WK_PHASE_POP (m->phase_depth);
   unbind_to (count, Qnil);
