@@ -926,4 +926,199 @@ Everything goes back after: one window on `*scratch*', the frame's divider width
        (should (eql 0 (cdr (gui-runner-pixel-diff base (glitnir-ns--grab)))))
        (should-not (frame-parameter nil 'glitnir--cards))))))
 
+;;; Translucent background and backdrop blur.  The root's window shows a pattern of hard edges (lines of `#@') under
+;;; the child, whose own buffer is blank; "detail" is the mean |Laplacian| of the luminance over a strip inside the
+;;; child, high on the pattern and low on a blur (the spike's measure: blurred below 35 % of the detail before).  The
+;;; blur rows bind `glitnir--ns-reduce-transparency' to `off', so that the system's setting on the runner does not
+;;; decide them.
+
+(defvar glitnir--ns-reduce-transparency)
+
+(defun glitnir-ns--detail (raw rect)
+  "The mean absolute Laplacian of the luminance over RECT (X Y W H, device pixels) of RAW (`glitnir-snapshot' raw)."
+  (pcase-let ((`(,x ,y ,w ,h) rect) (`(,rw ,_ ,b) raw) (sum 0.0) (n 0))
+    (cl-flet ((luma (i j) (let ((o (* 4 (+ (* j rw) i))))
+                            (+ (* 0.0722 (aref b o)) (* 0.7152 (aref b (+ o 1))) (* 0.2126 (aref b (+ o 2)))))))
+      (let ((j (1+ y)))
+        (while (< j (+ y h -1))
+          (let ((i (1+ x)))
+            (while (< i (+ x w -1))
+              (setq sum (+ sum (abs (- (* 4 (luma i j)) (luma (1- i) j) (luma (1+ i) j)
+                                       (luma i (1- j)) (luma i (1+ j)))))
+                    n (1+ n)
+                    i (1+ i))))
+          (setq j (1+ j)))))
+    (/ sum (max n 1))))
+(byte-compile 'glitnir-ns--detail)
+
+(defun glitnir-ns--blank-buffer ()
+  "An empty buffer with no mode line and no cursor."
+  (with-current-buffer (get-buffer-create " *glitnir-ns-blank*")
+    (erase-buffer)
+    (setq mode-line-format nil cursor-type nil)
+    (current-buffer)))
+
+(defun glitnir-ns--with-pattern (fn)
+  "Call FN with the root's window showing the pattern; the root's window gets its buffer back after."
+  (let* ((w (frame-root-window (selected-frame))) (old (window-buffer w))
+         (buf (get-buffer-create " *glitnir-ns-pattern*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer buf
+            (erase-buffer)
+            (setq mode-line-format nil cursor-type nil)
+            (dotimes (_ 60) (insert (make-string 120 ?#) "\n" (make-string 120 ?@) "\n"))
+            (goto-char (point-min)))
+          (set-window-buffer w buf)
+          (set-window-start w 1)
+          (redisplay t)
+          (funcall fn))
+      (set-window-buffer w old)
+      (kill-buffer buf)
+      (redisplay t))))
+
+(defun glitnir-ns--strip (rect)
+  "A strip inside child RECT (device pixels), away from its corners and edges: 12 points in, 40 points high."
+  (let* ((s (frame-scale-factor)) (in (ceiling (* 12 s))))
+    (list (+ (nth 0 rect) in) (+ (nth 1 rect) in) (- (nth 2 rect) in in) (min (round (* 40 s)) (- (nth 3 rect) in in)))))
+
+(defun glitnir-ns--cyan-p (px)
+  "Non-nil when PX (R G B A) is the child's opaque cyan background."
+  (and (< (nth 0 px) 60) (> (nth 1 px) 200) (> (nth 2 px) 200)))
+
+(defun glitnir-ns--blank-child (params)
+  "A shown child frame with PARAMS on the blank buffer; it waits (5 s at most) until its middle is its cyan."
+  (let* ((c (glitnir-ns--child params)))
+    (set-window-buffer (frame-root-window c) (glitnir-ns--blank-buffer))
+    (redisplay t)
+    (let* ((rect (glitnir-ns--rect c))
+           (mid (cons (+ (nth 0 rect) (/ (nth 2 rect) 2)) (+ (nth 1 rect) (/ (nth 3 rect) 2)))))
+      (gui-runner-wait (lambda () (glitnir-ns--cyan-p (glitnir-ns--snap-px mid))) 5))
+    c))
+
+(ert-deftest glitnir-ns/alpha-background-shows-beneath ()
+  ;; handshake: each capture is the window server's settled picture of the step
+  (glitnir-ns--skip-unless-ns)
+  (glitnir-ns--skip-unless-capture)
+  (let* ((buf (glitnir-ns--text-buffer)) (c (glitnir-ns--child '((corner-radius . 8) (shadow . nil)))))
+    (unwind-protect
+        (let* ((s (frame-scale-factor)) (rect (glitnir-ns--rect c))
+               (bg (cons (+ (nth 0 rect) (/ (nth 2 rect) 2)) (+ (nth 1 rect) (nth 3 rect) (round (* -4 s)))))
+               (in (ceiling (* 9 s)))
+               (inner (list (+ (nth 0 rect) in) (+ (nth 1 rect) in) (- (nth 2 rect) in in) (- (nth 3 rect) in in))))
+          ;; large text: its stems hold pixels of the foreground alone
+          (with-current-buffer buf (face-remap-add-relative 'default :height 2.0))
+          (set-window-buffer (frame-root-window c) buf)
+          (redisplay t)
+          (should (gui-runner-wait (lambda () (glitnir-ns--cyan-p (glitnir-ns--snap-px bg))) 5))
+          (let ((stock (glitnir-ns--grab)) beneath on)
+            (make-frame-invisible c)
+            (should (glitnir-ns--gone-p c))
+            (setq beneath (glitnir-ns--grab))
+            (make-frame-visible c)
+            (set-frame-parameter c 'alpha-background 0.5)
+            (redisplay t)
+            (gui-runner-wait (lambda () (let ((p (glitnir-ns--snap-px bg))) (and p (not (glitnir-ns--cyan-p p))))) 5)
+            (setq on (glitnir-ns--grab))
+            ;; the background is half the child's colour, half what lies beneath
+            (let ((want (cl-mapcar (lambda (a b) (/ (+ a b) 2.0))
+                                   (glitnir-ns--px stock (car bg) (cdr bg))
+                                   (glitnir-ns--px beneath (car bg) (cdr bg))))
+                  (got (glitnir-ns--px on (car bg) (cdr bg))))
+              (should (equal (list bg got (cl-every (lambda (g w) (<= (abs (- g w)) 8))
+                                                    (cl-subseq got 0 3) (cl-subseq want 0 3)))
+                             (list bg got t))))
+            ;; the text is opaque: every pixel of the stock text that is the foreground alone is the stock pixel
+            (pcase-let ((`(,x ,y ,w ,h) inner) (n 0) (off 0))
+              (dotimes (j h)
+                (dotimes (i w)
+                  (let ((p (glitnir-ns--px stock (+ x i) (+ y j))))
+                    (when (equal (cl-subseq p 0 3) '(0 0 0))
+                      (setq n (1+ n))
+                      (unless (equal (glitnir-ns--px on (+ x i) (+ y j)) p) (setq off (1+ off)))))))
+              (should (> n 20))
+              (should (equal (list :text-pixels n :changed off) (list :text-pixels n :changed 0))))))
+      (delete-frame c t)
+      (kill-buffer buf))))
+
+(ert-deftest glitnir-ns/blur-behind-child ()
+  ;; handshake: each capture is the window server's settled picture of the step
+  (glitnir-ns--skip-unless-ns)
+  (glitnir-ns--skip-unless-capture)
+  (let ((glitnir--ns-reduce-transparency 'off))
+    (glitnir-ns--with-pattern
+     (lambda ()
+       (let ((c (glitnir-ns--blank-child '((corner-radius . 8) (shadow . nil)))))
+         (unwind-protect
+             (let* ((strip (glitnir-ns--strip (glitnir-ns--rect c))) d0 d1)
+               (make-frame-invisible c)
+               (should (glitnir-ns--gone-p c))
+               (setq d0 (glitnir-ns--detail (glitnir-ns--grab) strip))
+               (message "glitnir-ns/blur-behind-child: detail beneath %.2f" d0)
+               (should (> d0 5))
+               ;; translucent: the pattern shows through, sharp
+               (make-frame-visible c)
+               (set-frame-parameter c 'alpha-background 0.3)
+               (redisplay t)
+               (gui-runner-wait (lambda () (> (glitnir-ns--detail (glitnir-snapshot nil 'raw) strip) (* 0.5 d0))) 5)
+               (setq d1 (glitnir-ns--detail (glitnir-ns--grab) strip))
+               (should (equal (list :translucent d1 (> d1 (* 0.5 d0))) (list :translucent d1 t)))
+               ;; and blurred
+               (set-frame-parameter c 'backdrop-blur 20)
+               (redisplay t)
+               (gui-runner-wait (lambda () (< (glitnir-ns--detail (glitnir-snapshot nil 'raw) strip) (* 0.35 d0))) 5)
+               (let ((d2 (glitnir-ns--detail (glitnir-ns--grab) strip)))
+                 (message "glitnir-ns/blur-behind-child: translucent %.2f, blurred %.2f" d1 d2)
+                 (should (equal (list :blurred d2 (< d2 (* 0.35 d0))) (list :blurred d2 t)))))
+           (delete-frame c t)))))))
+
+(ert-deftest glitnir-ns/blur-off-identical ()
+  ;; guard: a blur without a translucent background, or with Glitnir off, is the stock frame
+  (glitnir-ns--skip-unless-ns)
+  (glitnir-ns--skip-unless-capture)
+  (let ((glitnir--ns-reduce-transparency 'off))
+    (glitnir-ns--with-pattern
+     (lambda ()
+       (let ((c (glitnir-ns--blank-child '((corner-radius . 8) (shadow . nil) (backdrop-blur . 20)))))
+         (unwind-protect
+             (let ((rect (glitnir-ns--rect c)) with without off stock)
+               ;; opaque: `backdrop-blur' makes no difference
+               (setq with (glitnir-ns--grab))
+               (set-frame-parameter c 'backdrop-blur nil)
+               (setq without (glitnir-ns--grab))
+               (should (equal (glitnir-ns--diff with without rect) '(0 0)))
+               ;; Glitnir off: translucent and blurred is the stock (opaque, square) frame
+               (modify-frame-parameters c '((backdrop-blur . 20) (alpha-background . 0.3)))
+               (let ((glitnir-enable nil))
+                 (glitnir-refresh c)
+                 (setq off (glitnir-ns--grab)))
+               (modify-frame-parameters c '((corner-radius . 0) (backdrop-blur . nil)))
+               (setq stock (glitnir-ns--grab))
+               (should (equal (glitnir-ns--diff off stock rect) '(0 0)))
+               (should (glitnir-ns--cyan-p (glitnir-ns--px stock (+ (nth 0 rect) (/ (nth 2 rect) 2))
+                                                           (+ (nth 1 rect) (/ (nth 3 rect) 2))))))
+           (delete-frame c t)))))))
+
+(ert-deftest glitnir-ns/blur-follows-reduce-transparency ()
+  ;; handshake: each capture is the window server's settled picture of the step
+  (glitnir-ns--skip-unless-ns)
+  (glitnir-ns--skip-unless-capture)
+  (glitnir-ns--with-pattern
+   (lambda ()
+     (let ((c (glitnir-ns--blank-child '((corner-radius . 8) (shadow . nil)))))
+       (unwind-protect
+           (let* ((strip (glitnir-ns--strip (glitnir-ns--rect c))) (opaque (glitnir-ns--grab))
+                  (mid (cons (+ (nth 0 strip) (/ (nth 2 strip) 2)) (+ (nth 1 strip) (/ (nth 3 strip) 2)))))
+             ;; reduce transparency on: the blurred, translucent frame is opaque, its pixels the opaque frame's
+             (let ((glitnir--ns-reduce-transparency 'on))
+               (modify-frame-parameters c '((alpha-background . 0.3) (backdrop-blur . 20)))
+               (should (equal (glitnir-ns--diff opaque (glitnir-ns--grab) strip) '(0 0))))
+             ;; off: the same frame shows what lies beneath, blurred
+             (let ((glitnir--ns-reduce-transparency 'off))
+               (glitnir-refresh c)
+               (redisplay t)
+               (gui-runner-wait (lambda () (not (glitnir-ns--cyan-p (glitnir-ns--snap-px mid)))) 5)
+               (should-not (glitnir-ns--cyan-p (glitnir-ns--px (glitnir-ns--grab) (car mid) (cdr mid))))))
+         (delete-frame c t))))))
+
 ;;; glitnir-ns-gui-tests.el ends here
