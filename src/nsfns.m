@@ -4203,6 +4203,43 @@ ns_move_tooltip_to_mouse_location (NSPoint screen_point)
 	     display: YES];
 }
 
+#ifdef HAVE_GLITNIR
+DEFUN ("ns-reduced-motion-p", Fns_reduced_motion_p, Sns_reduced_motion_p,
+       0, 0, 0,
+       doc: /* Return non-nil when macOS asks applications for reduced motion.
+That is the Reduce motion setting (System Settings, Accessibility,
+Display).  Once this was called, a change of the setting resolves every
+child frame's chrome again (`glitnir-refresh'), so Glitnir's transitions
+follow it.  */)
+  (void)
+{
+#ifdef NS_IMPL_COCOA
+  static bool watching;
+  if (!watching)
+    {
+      watching = true;
+      [[[NSWorkspace sharedWorkspace] notificationCenter]
+	addObserverForName:
+	  NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification
+		    object: nil
+		     queue: nil
+		usingBlock: ^(NSNotification *note) {
+	  /* Run at the next timer check, not inside the run loop.  */
+	  pending_funcalls = Fcons (list1 (intern_c_string ("glitnir-refresh")),
+				    pending_funcalls);
+	}];
+    }
+  if (@available (macOS 10.12, *))
+    return ([[NSWorkspace sharedWorkspace]
+	      accessibilityDisplayShouldReduceMotion]
+	    ? Qt : Qnil);
+  return Qnil;
+#else
+  return Qnil;
+#endif
+}
+
+#endif
 /* ==========================================================================
 
     Lisp interface declaration
@@ -4311,6 +4348,9 @@ The default value is t.  */);
   defsubr (&Sns_perform_service);
   defsubr (&Sx_select_font);
   defsubr (&Sns_popup_color_panel);
+#ifdef HAVE_GLITNIR
+  defsubr (&Sns_reduced_motion_p);
+#endif
 
   defsubr (&Sx_show_tip);
   defsubr (&Sx_hide_tip);

@@ -58,7 +58,7 @@ frame parameters too, and the parameter wins.  `transition' is nil,
 `ease-in-out' or (cubic-bezier X1 Y1 X2 Y2).  The shorthands and the
 plist's defaults show over 0.12 s with `ease-out' and hide over 0.08 s
 with `ease-in'.  When the desktop asks for reduced motion there is no
-transition."
+transition (on macOS: Reduce motion, in the Accessibility settings)."
   :type '(choice (const :tag "None" nil)
                  (alist :key-type (choice (const corner-radius) (const shadow)
                                           (const transition) (const backdrop-blur))
@@ -192,6 +192,21 @@ or :hide is no motion for that leg."
     (append (glitnir--leg show (or dur 0.12) (or curve 'ease-out))
             (glitnir--leg hide (or hdur 0.08) (or hcurve 'ease-in)))))
 
+(defvar glitnir--reduced-motion nil
+  "Whether transitions follow the desktop's reduced-motion setting, for tests.
+Nil asks the desktop; `on' means reduced motion (no transition); `off'
+means full motion whatever the desktop says.")
+
+(defun glitnir--reduced-motion-p ()
+  "Non-nil when transitions are off for reduced motion.
+`glitnir--reduced-motion' decides when it is `on' or `off'; else the
+native shell's desktop setting, then macOS's (`ns-reduced-motion-p')."
+  (pcase glitnir--reduced-motion
+    ('on t)
+    ('off nil)
+    (_ (or (and (fboundp 'nhwl-settings-get) (eql (nhwl-settings-get 'reduced-motion) 1))
+           (and (fboundp 'ns-reduced-motion-p) (ns-reduced-motion-p))))))
+
 (defun glitnir--option (frame key)
   "Return child frame FRAME's option KEY: its parameter, else `child-frame-chrome''s.
 Only undecorated child frames have one."
@@ -238,8 +253,8 @@ SH is what `glitnir--shadow' gives, or nil."
 (defun glitnir--chrome-vector (frame)
   "Return FRAME's chrome as a vector of numbers, or nil for a root frame.
 The slots are `glitnir--chrome-slots'.  Slots 0-7 come from `glitnir--resolve',
-clamped; 8-19 from the `transition' option, which the desktop's reduced-motion
-setting turns off; 20 from `backdrop-blur', 0 while the frame's
+clamped; 8-19 from the `transition' option, which reduced motion
+\(`glitnir--reduced-motion-p') turns off; 20 from `backdrop-blur', 0 while the frame's
 `alpha-background' is opaque; `beneath-rgb' and `ring-rgb' are -1.  A child
 frame with no chrome has a vector whose first slot is 0."
   (when (frame-parent frame)
@@ -249,7 +264,7 @@ frame with no chrome has a vector whose first slot is 0."
            (v (make-vector (length glitnir--chrome-slots) 0)))
       (unless (or (null blur) (and (numberp blur) (>= blur 0)))
         (signal 'wrong-type-argument (list 'glitnir-backdrop-blur blur)))
-      (when (and (fboundp 'nhwl-settings-get) (eql (nhwl-settings-get 'reduced-motion) 1))
+      (when (glitnir--reduced-motion-p)
         (setcar tr 0)
         (setcar (nthcdr 6 tr) 0))
       (dotimes (i 12) (aset v (+ 8 i) (nth i tr)))

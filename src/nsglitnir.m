@@ -848,6 +848,7 @@ ns_glitnir_frame_destroyed (struct frame *f)
 {
   if (!FRAME_NS_P (f) || !f->output_data.ns)
     return;
+  ns_glitnir_motion_drop (f);
   block_input ();
   ns_glitnir_drop_shadow (f);
   f->output_data.ns->glitnir_rounded = NULL;
@@ -1114,6 +1115,518 @@ ns_glitnir_snapshot (struct frame *f, bool png)
 
 
 /***********************************************************************
+				Motion
+ ***********************************************************************/
+
+/* A child frame's show and hide legs (the chrome slots SHOW_* and
+   HIDE_*: a fade, or a pop, a fade with a scale from 0.96 about the
+   centre) run on Core Animation: the content layer of the frame's window
+   and the shadow layer of its shadow window take the same animations in
+   one transaction, so the pair moves as one and the window server
+   composes every step.  The windows never change place or size for it.
+   A leg sets the layers' model values to its end before it starts, so
+   nothing snaps back after it.
+
+   As on the native shell (nidhogg/glitnir/src/motion.rs), a request
+   starts a leg only at a commit: a show at the frame's next drawing, or
+   the run loop's next turn when it draws nothing; a hide at the run
+   loop's next turn.  So a hide and a show in one command start nothing.
+   A leg that starts while one runs goes on from what is shown and takes
+   the share of its duration that is left.  A hiding window stays on
+   screen, click-through, until its leg ends, and is ordered out then.
+   Every request (and the frame's deletion) gives the window a new
+   generation: an older leg's end, or a request that waits, finds it and
+   does nothing.
+
+   The state is kept with the window (an associated object), not with the
+   frame: a leg's end may come after the frame is gone, and then reads
+   nothing of it.  */
+
+#import <objc/runtime.h>
+
+#define NS_GLITNIR_POP_SCALE 0.96
+
+enum { NS_GLITNIR_LEG_SHOW = 1, NS_GLITNIR_LEG_HIDE = 2 };
+
+@interface GlitnirMotion : NSObject
+{
+@public
+  /* The latest request's generation.  */
+  uint64_t gen;
+  /* A show or a hide waits for its commit; a hide's window is still on
+     screen; ignoresMouseEvents was set by the hide.  */
+  bool show_pending, hide_pending, hiding, unignore;
+  /* The last leg started (NS_GLITNIR_LEG_*), its start and length.  */
+  int leg;
+  CFTimeInterval start, duration;
+}
+@end
+
+@implementation GlitnirMotion
+@end
+
+static char ns_glitnir_motion_key;
+static uint64_t ns_glitnir_motion_serial;
+/* Hide legs started whose end has not run yet.  */
+static intmax_t ns_glitnir_hides_pending;
+
+static GlitnirMotion *
+ns_glitnir_motion_of (NSWindow *w, bool make)
+{
+  GlitnirMotion *m = objc_getAssociatedObject (w, &ns_glitnir_motion_key);
+
+  if (!m && make)
+    {
+      m = [[GlitnirMotion alloc] init];
+      objc_setAssociatedObject (w, &ns_glitnir_motion_key, m,
+				OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+      [m release];
+    }
+  return m;
+}
+
+/* One leg of F's chrome vector, from slot BASE (SHOW_KIND or HIDE_KIND):
+   KIND 0 is no motion (Glitnir off for F, no leg, or no duration).  */
+struct ns_glitnir_leg
+{
+  int kind;
+  CFTimeInterval secs;
+  float curve[4];
+};
+
+static struct ns_glitnir_leg
+ns_glitnir_leg_of (struct frame *f, int base)
+{
+  const float *c = f->output_data.ns->glitnir_chrome;
+  struct ns_glitnir_leg l = { 0 };
+
+  if (ns_glitnir_active_p (f) && FRAME_PARENT_FRAME (f)
+      && c[base] > 0 && c[base + 1] > 0)
+    {
+      l.kind = c[base] >= 2 ? 2 : 1;
+      l.secs = c[base + 1] / 1000.0;
+      memcpy (l.curve, c + base + 2, sizeof l.curve);
+    }
+  return l;
+}
+
+/* The content layer of window W; made when MAKE.  */
+static CALayer *
+ns_glitnir_content_layer (NSWindow *w, bool make)
+{
+  NSView *v = [w contentView];
+
+  if (make && ![v layer])
+    [v setWantsLayer: YES];
+  return [v layer];
+}
+
+/* W's content layer and, while its frame has one, its shadow window's
+   shadow layer, in OUT; their number.  */
+static int
+ns_glitnir_motion_layers (NSWindow *w, bool make, CALayer **out)
+{
+  int n = 0;
+  CALayer *c = ns_glitnir_content_layer (w, make);
+  GlitnirShadowWindow *s = ns_glitnir_shadow_of (w);
+
+  if (c)
+    out[n++] = c;
+  if (s)
+    out[n++] = s->shadow;
+  return n;
+}
+
+/* Scale S about the centre of layer L's bounds.  */
+static CATransform3D
+ns_glitnir_scaled (CALayer *l, CGFloat s)
+{
+  CGRect b = [l bounds];
+  CGPoint a = [l anchorPoint];
+  /* The centre, from the anchor the transform applies about.  */
+  CGFloat dx = (0.5 - a.x) * CGRectGetWidth (b);
+  CGFloat dy = (0.5 - a.y) * CGRectGetHeight (b);
+
+  if (s == 1)
+    return CATransform3DIdentity;
+  return CATransform3DConcat (CATransform3DMakeScale (s, s, 1),
+			      CATransform3DMakeTranslation ((1 - s) * dx,
+							    (1 - s) * dy, 0));
+}
+
+/* What layer L shows now: its opacity and scale.  */
+static void
+ns_glitnir_shown (CALayer *l, CGFloat *opacity, CGFloat *scale)
+{
+  CALayer *p = [l presentationLayer];
+
+  if (!p)
+    p = l;
+  *opacity = [p opacity];
+  *scale = [p transform].m11;
+}
+
+static void
+ns_glitnir_motion_stop_layer (CALayer *l)
+{
+  [l removeAnimationForKey: @"glitnir-opacity"];
+  [l removeAnimationForKey: @"glitnir-transform"];
+}
+
+/* Put W's layers at OPACITY and SCALE, with no leg running.  */
+static void
+ns_glitnir_motion_rest (NSWindow *w, bool make, CGFloat opacity, CGFloat scale)
+{
+  CALayer *l[2];
+  int n = ns_glitnir_motion_layers (w, make, l);
+
+  [CATransaction begin];
+  [CATransaction setDisableActions: YES];
+  for (int i = 0; i < n; i++)
+    {
+      ns_glitnir_motion_stop_layer (l[i]);
+      [l[i] setOpacity: opacity];
+      [l[i] setTransform: ns_glitnir_scaled (l[i], scale)];
+    }
+  [CATransaction commit];
+}
+
+/* Start leg WHICH on W's layers: from opacity FROM_O and scale FROM_S to
+   TO_O and TO_S over SECS along the cubic Bézier CURVE (X1 Y1 X2 Y2 as
+   the slots hold them), in one transaction; DONE (or nil) runs when it
+   ended or was removed.  */
+static void
+ns_glitnir_motion_run (NSWindow *w, GlitnirMotion *m, int which,
+		       CGFloat from_o, CGFloat from_s, CGFloat to_o,
+		       CGFloat to_s, CFTimeInterval secs, const float *curve,
+		       void (^done) (void))
+{
+  CALayer *l[2];
+  int n = ns_glitnir_motion_layers (w, true, l);
+  CAMediaTimingFunction *fn
+    = [CAMediaTimingFunction functionWithControlPoints: curve[0]
+						       : curve[1]
+						       : curve[2]
+						       : curve[3]];
+  CFTimeInterval now = CACurrentMediaTime ();
+
+  [CATransaction begin];
+  [CATransaction setDisableActions: YES];
+  [CATransaction setCompletionBlock: done];
+  for (int i = 0; i < n; i++)
+    {
+      CALayer *layer = l[i];
+      CFTimeInterval begin = [layer convertTime: now fromLayer: nil];
+
+      ns_glitnir_motion_stop_layer (layer);
+      [layer setOpacity: to_o];
+      [layer setTransform: ns_glitnir_scaled (layer, to_s)];
+
+      CABasicAnimation *o = [CABasicAnimation animationWithKeyPath: @"opacity"];
+      [o setFromValue: [NSNumber numberWithDouble: from_o]];
+      [o setToValue: [NSNumber numberWithDouble: to_o]];
+      [o setDuration: secs];
+      [o setBeginTime: begin];
+      [o setFillMode: kCAFillModeBackwards];
+      [o setTimingFunction: fn];
+      [layer addAnimation: o forKey: @"glitnir-opacity"];
+      if (from_s != to_s)
+	{
+	  CABasicAnimation *t
+	    = [CABasicAnimation animationWithKeyPath: @"transform"];
+	  [t setFromValue: [NSValue valueWithCATransform3D:
+				      ns_glitnir_scaled (layer, from_s)]];
+	  [t setToValue: [NSValue valueWithCATransform3D:
+				    ns_glitnir_scaled (layer, to_s)]];
+	  [t setDuration: secs];
+	  [t setBeginTime: begin];
+	  [t setFillMode: kCAFillModeBackwards];
+	  [t setTimingFunction: fn];
+	  [layer addAnimation: t forKey: @"glitnir-transform"];
+	}
+    }
+  [CATransaction commit];
+  m->leg = which;
+  m->start = now;
+  m->duration = secs;
+}
+
+/* A show's commit: the show leg starts from what W shows now, unless a
+   newer request came (GEN is no longer W's).  */
+static void
+ns_glitnir_show_start (NSWindow *w, uint64_t gen)
+{
+  GlitnirMotion *m = ns_glitnir_motion_of (w, false);
+  struct frame *f;
+
+  if (!m || m->gen != gen || !m->show_pending)
+    return;
+  m->show_pending = false;
+  f = ns_glitnir_window_frame (w);
+  if (!f)
+    return;
+
+  struct ns_glitnir_leg leg = ns_glitnir_leg_of (f, NHG_CHROME_SHOW_KIND);
+  CALayer *c = ns_glitnir_content_layer (w, false);
+  CGFloat o = 1, s = 1;
+  if (c)
+    ns_glitnir_shown (c, &o, &s);
+  CFTimeInterval secs = leg.secs * (1 - o);
+  /* Shown already (a hide and a show before Core Animation committed
+     anything): no motion.  */
+  if (!leg.kind || !c || o >= 0.999 || secs < 0.001)
+    ns_glitnir_motion_rest (w, false, 1, 1);
+  else
+    ns_glitnir_motion_run (w, m, NS_GLITNIR_LEG_SHOW, o, s, 1, 1, secs,
+			   leg.curve, nil);
+}
+
+/* A hide's leg ended: W goes, its shadow window with it (EmacsWindow's
+   -orderOut:).  The layers stay at the leg's end until a show.  */
+static void
+ns_glitnir_hide_end (NSWindow *w, GlitnirMotion *m)
+{
+  m->hiding = false;
+  if (m->unignore)
+    {
+      [w setIgnoresMouseEvents: NO];
+      m->unignore = false;
+    }
+  [w orderOut: nil];
+}
+
+/* A hide's commit: the hide leg starts from what W shows now, unless a
+   newer request came; with nothing to animate, W goes now.  */
+static void
+ns_glitnir_hide_start (NSWindow *w, uint64_t gen)
+{
+  GlitnirMotion *m = ns_glitnir_motion_of (w, false);
+
+  if (!m || m->gen != gen || !m->hide_pending)
+    return;
+  m->hide_pending = false;
+
+  struct frame *f = ns_glitnir_window_frame (w);
+  struct ns_glitnir_leg leg = { 0 };
+  if (f)
+    leg = ns_glitnir_leg_of (f, NHG_CHROME_HIDE_KIND);
+  CALayer *c = ns_glitnir_content_layer (w, false);
+  CGFloat o = 1, s = 1;
+  if (c)
+    ns_glitnir_shown (c, &o, &s);
+  CFTimeInterval secs = leg.secs * o;
+  if (!leg.kind || !c || secs < 0.001)
+    {
+      ns_glitnir_hide_end (w, m);
+      return;
+    }
+
+  /* The end runs once: when Core Animation reports the leg done, or a
+     second after it should have ended, should a layer that went away
+     never report it.  */
+  __block bool ended = false;
+  void (^end) (void) = [[^{
+      if (ended)
+	return;
+      ended = true;
+      ns_glitnir_hides_pending--;
+      GlitnirMotion *now = ns_glitnir_motion_of (w, false);
+      if (now && now->gen == gen)
+	ns_glitnir_hide_end (w, now);
+    } copy] autorelease];
+  ns_glitnir_hides_pending++;
+  ns_glitnir_motion_run (w, m, NS_GLITNIR_LEG_HIDE, o, s, 0,
+			 leg.kind == 2 ? NS_GLITNIR_POP_SCALE : 1, secs,
+			 leg.curve, end);
+  dispatch_after (dispatch_time (DISPATCH_TIME_NOW,
+				 (int64_t) ((secs + 1) * NSEC_PER_SEC)),
+		  dispatch_get_main_queue (), end);
+}
+
+/* The show hook (ns_make_frame_visible, before the window is ordered
+   in): a hide that waits or runs is cancelled.  With a show leg, the
+   layers of a window that is not on screen are put where the leg starts,
+   and the leg waits for its commit; without one, the layers rest shown.
+   A frame that never had motion is not touched.  */
+void
+ns_glitnir_show_requested (struct frame *f)
+{
+  NSWindow *w = FRAME_NS_VIEW (f) ? [FRAME_NS_VIEW (f) window] : nil;
+
+  if (!w || !FRAME_PARENT_FRAME (f))
+    return;
+  GlitnirMotion *m = ns_glitnir_motion_of (w, false);
+  struct ns_glitnir_leg leg = ns_glitnir_leg_of (f, NHG_CHROME_SHOW_KIND);
+  if (!m && !leg.kind)
+    return;
+
+  block_input ();
+  m = ns_glitnir_motion_of (w, true);
+  m->gen = ++ns_glitnir_motion_serial;
+  m->hide_pending = m->hiding = m->show_pending = false;
+  if (m->unignore)
+    {
+      [w setIgnoresMouseEvents: NO];
+      m->unignore = false;
+    }
+  if (!leg.kind)
+    ns_glitnir_motion_rest (w, false, 1, 1);
+  else
+    {
+      if (![w isVisible])
+	{
+	  ns_glitnir_motion_rest (w, true, 0,
+				  leg.kind == 2 ? NS_GLITNIR_POP_SCALE : 1);
+	  /* On the window server before the window is.  */
+	  [CATransaction flush];
+	}
+      uint64_t gen = m->gen;
+      m->show_pending = true;
+      dispatch_async (dispatch_get_main_queue (), ^{
+	  ns_glitnir_show_start (w, gen);
+	});
+    }
+  unblock_input ();
+}
+
+/* The hide hook (ns_make_frame_invisible): true when F's window has a
+   hide leg, which orders it out when it ends; the window lets clicks
+   through meanwhile.  False when the caller orders it out now.  */
+bool
+ns_glitnir_hide_requested (struct frame *f)
+{
+  NSWindow *w = FRAME_NS_VIEW (f) ? [FRAME_NS_VIEW (f) window] : nil;
+
+  if (!w || !FRAME_PARENT_FRAME (f) || ![w isVisible])
+    return false;
+  GlitnirMotion *m = ns_glitnir_motion_of (w, false);
+  struct ns_glitnir_leg leg = ns_glitnir_leg_of (f, NHG_CHROME_HIDE_KIND);
+  if (!leg.kind)
+    {
+      if (m)
+	{
+	  block_input ();
+	  m->gen = ++ns_glitnir_motion_serial;
+	  m->show_pending = m->hide_pending = m->hiding = false;
+	  if (m->unignore)
+	    {
+	      [w setIgnoresMouseEvents: NO];
+	      m->unignore = false;
+	    }
+	  ns_glitnir_motion_rest (w, false, 1, 1);
+	  unblock_input ();
+	}
+      return false;
+    }
+
+  block_input ();
+  m = ns_glitnir_motion_of (w, true);
+  m->gen = ++ns_glitnir_motion_serial;
+  m->show_pending = false;
+  m->hide_pending = m->hiding = true;
+  if (![w ignoresMouseEvents])
+    {
+      [w setIgnoresMouseEvents: YES];
+      m->unignore = true;
+    }
+  uint64_t gen = m->gen;
+  dispatch_async (dispatch_get_main_queue (), ^{
+      ns_glitnir_hide_start (w, gen);
+    });
+  unblock_input ();
+  return true;
+}
+
+/* After F was drawn (ns_update_end): a show that waits starts.  */
+void
+ns_glitnir_frame_drawn (struct frame *f)
+{
+  if (!FRAME_PARENT_FRAME (f) || !FRAME_NS_VIEW (f))
+    return;
+  NSWindow *w = [FRAME_NS_VIEW (f) window];
+  GlitnirMotion *m = w ? ns_glitnir_motion_of (w, false) : nil;
+  if (m && m->show_pending)
+    ns_glitnir_show_start (w, m->gen);
+}
+
+/* F is deleted: its window's legs and requests end, and do nothing.  */
+void
+ns_glitnir_motion_drop (struct frame *f)
+{
+  NSWindow *w = FRAME_NS_VIEW (f) ? [FRAME_NS_VIEW (f) window] : nil;
+  GlitnirMotion *m = w ? ns_glitnir_motion_of (w, false) : nil;
+  CALayer *l[2];
+
+  if (!m)
+    return;
+  m->gen = ++ns_glitnir_motion_serial;
+  m->show_pending = m->hide_pending = m->hiding = false;
+  for (int i = 0, n = ns_glitnir_motion_layers (w, false, l); i < n; i++)
+    ns_glitnir_motion_stop_layer (l[i]);
+}
+
+/* `glitnir--ns-motion': what F's window and shadow window show of their
+   motion now.  */
+Lisp_Object
+ns_glitnir_motion (struct frame *f)
+{
+  if (!f->output_data.ns || !FRAME_NS_VIEW (f))
+    return Qnil;
+  NSWindow *w = [FRAME_NS_VIEW (f) window];
+  if (!w)
+    return Qnil;
+
+  block_input ();
+  GlitnirMotion *m = ns_glitnir_motion_of (w, false);
+  CALayer *c = ns_glitnir_content_layer (w, false);
+  GlitnirShadowWindow *s = f->output_data.ns->glitnir_shadow;
+  CGFloat o = 1, sc = 1, mo = 1, ms = 1, so = 1, ss = 1;
+  intmax_t animations = 0;
+  Lisp_Object leg = Qnil, elapsed = Qnil, duration = Qnil;
+
+  if (c)
+    {
+      ns_glitnir_shown (c, &o, &sc);
+      mo = [c opacity];
+      ms = [c transform].m11;
+      animations += [[c animationKeys] count];
+      if (m && m->leg && [c animationForKey: @"glitnir-opacity"])
+	{
+	  leg = intern_c_string (m->leg == NS_GLITNIR_LEG_SHOW
+				 ? "show" : "hide");
+	  elapsed = make_float ((CACurrentMediaTime () - m->start) * 1000);
+	  duration = make_float (m->duration * 1000);
+	}
+    }
+  if (s)
+    {
+      ns_glitnir_shown (s->shadow, &so, &ss);
+      animations += [[s->shadow animationKeys] count];
+    }
+  Lisp_Object result
+    = list (intern_c_string (":opacity"), make_float (o),
+	    intern_c_string (":scale"), make_float (sc),
+	    intern_c_string (":model-opacity"), make_float (mo),
+	    intern_c_string (":model-scale"), make_float (ms),
+	    intern_c_string (":shadow-opacity"), s ? make_float (so) : Qnil,
+	    intern_c_string (":shadow-scale"), s ? make_float (ss) : Qnil,
+	    intern_c_string (":animations"), make_int (animations),
+	    intern_c_string (":leg"), leg,
+	    intern_c_string (":elapsed"), elapsed,
+	    intern_c_string (":duration"), duration,
+	    intern_c_string (":hiding"), m && m->hiding ? Qt : Qnil,
+	    intern_c_string (":pending"),
+	    m && (m->show_pending || m->hide_pending) ? Qt : Qnil,
+	    intern_c_string (":ignores-mouse"),
+	    [w ignoresMouseEvents] ? Qt : Qnil,
+	    intern_c_string (":hides-pending"),
+	    make_int (ns_glitnir_hides_pending));
+  unblock_input ();
+  return result;
+}
+
+
+/***********************************************************************
 		   The window server's view of the children
  ***********************************************************************/
 
@@ -1257,6 +1770,35 @@ Lisp_Object
 ns_glitnir_snapshot (struct frame *f, bool png)
 {
   error ("glitnir-snapshot: no image surface");
+}
+
+/* No motion on GNUstep.  */
+
+void
+ns_glitnir_show_requested (struct frame *f)
+{
+}
+
+bool
+ns_glitnir_hide_requested (struct frame *f)
+{
+  return false;
+}
+
+void
+ns_glitnir_frame_drawn (struct frame *f)
+{
+}
+
+void
+ns_glitnir_motion_drop (struct frame *f)
+{
+}
+
+Lisp_Object
+ns_glitnir_motion (struct frame *f)
+{
+  return Qnil;
 }
 
 Lisp_Object
