@@ -63,6 +63,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #ifdef HAVE_TREE_SITTER
 #include "treesit.h"
 #endif
+#ifdef HAVE_NIDHOGG_HISTORY
+#include "nidhogg-history.h"
+#endif
 
 static void update_buffer_properties (ptrdiff_t, ptrdiff_t);
 static Lisp_Object styled_format (ptrdiff_t, Lisp_Object *, bool);
@@ -2426,6 +2429,11 @@ Both characters must have the same length of multi-byte form.  */)
       treesit_record_change (start_byte, old_end_byte, old_end_byte,
 			     start_linecol, old_end_linecol, old_end_char);
 #endif
+#ifdef HAVE_NIDHOGG_HISTORY
+      NH_HISTORY_CHANGE (current_buffer, changed, CHAR_TO_BYTE (changed),
+			 last_changed, CHAR_TO_BYTE (last_changed),
+			 last_changed, CHAR_TO_BYTE (last_changed));
+#endif
       signal_after_change (changed,
 			   last_changed - changed, last_changed - changed);
       update_compositions (changed, last_changed, CHECK_ALL);
@@ -2623,6 +2631,11 @@ It returns the number of characters changed.  */)
 		  record_change (pos, 1);
 		  while (str_len-- > 0)
 		    *p++ = *str++;
+#ifdef HAVE_NIDHOGG_HISTORY
+		  NH_HISTORY_CHANGE (current_buffer, pos, pos_byte,
+				     pos + 1, pos_byte + len,
+				     pos + 1, pos_byte + len);
+#endif
 		  signal_after_change (pos, 1, 1);
 		  update_compositions (pos, pos + 1, CHECK_BORDER);
 
@@ -4799,6 +4812,10 @@ ring.  */)
 #ifdef HAVE_TREE_SITTER
   treesit_record_change (start1_byte, end2_byte, end2_byte,
 			 start_linecol, old_end_linecol, end2);
+#endif
+#ifdef HAVE_NIDHOGG_HISTORY
+  NH_HISTORY_CHANGE (current_buffer, start1, start1_byte, end2, end2_byte,
+		     end2, end2_byte);
 #endif
 
   signal_after_change (start1, end2 - start1, end2 - start1);

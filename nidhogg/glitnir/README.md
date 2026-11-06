@@ -189,6 +189,16 @@ result left behind on error. From the repository root, with a nightly and `cargo
 
 A crash lands in `nidhogg/glitnir-fuzz/artifacts/`; turn the input into a unit test next to the format's code.
 
+## Change rings
+
+`history` holds an edit history's change rings for the host (`glitnir_history_*`; Nidhogg's `--with-nidhogg-history`,
+whose description is the top README's "Edit history hook"): one ring per tracked text buffer, keyed by an opaque id. A
+push copies the change's text (in two parts when the host's gap splits it) with its start, old and new lengths, time and
+origin index; `peek` and `pop` take them oldest first, the text copied into the caller's buffer, so no pointer into the
+library's memory crosses. Past `MAX_CHANGES` (65536) or `MAX_BYTES` (64 MiB) a ring drops what it holds and answers
+`GLITNIR_HISTORY_RESYNC` until `glitnir_history_clear`: the host then reads the whole text again. Tests:
+`history::tests` (pattern D).
+
 ## Limits
 
 A panic inside the library is caught at the boundary (`GLITNIR_E_PANIC`), and so is any other error a call returns. A

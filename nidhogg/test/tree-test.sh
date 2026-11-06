@@ -13,7 +13,7 @@ command -v unifdef >/dev/null || { echo "TREE FAIL: unifdef is not installed (th
 # FLAG_GROUPS (overridable) = name:define:feature, space separated.  ${NAME}_BASE (upper case; GLITNIR_BASE keeps
 # working, overridable) defaults to the parent of the oldest commit on HEAD whose subject starts 'nidhogg: <name>:'.
 # Order-independent: either group may be on top.
-FLAG_GROUPS_DEFAULT='glitnir:HAVE_GLITNIR:glitnir watchdog:HAVE_NIDHOGG_WATCHDOG:nidhogg-watchdog workers:HAVE_NIDHOGG_WORKERS:nidhogg-workers shell:HAVE_NHWL:nidhogg-wayland'
+FLAG_GROUPS_DEFAULT='glitnir:HAVE_GLITNIR:glitnir watchdog:HAVE_NIDHOGG_WATCHDOG:nidhogg-watchdog workers:HAVE_NIDHOGG_WORKERS:nidhogg-workers shell:HAVE_NHWL:nidhogg-wayland history:HAVE_NIDHOGG_HISTORY:nidhogg-history'
 flag_rule() {
   local g name def ft b var first f sha body i j c n matched feat lowest
   local -a gname=() gdef=() gfeat=() gbase=() flags=() feats=()

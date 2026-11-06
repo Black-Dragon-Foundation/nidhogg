@@ -424,6 +424,46 @@ int32_t glitnir_tc_unregister (uint64_t id);
    in *CV and its mutex in *M.  Returns 1, or 0 if there is none.  */
 int32_t glitnir_tc_take_due (void **cv, void **m);
 
+/* An edit history's change rings: one per tracked text buffer of the host, keyed by an opaque KEY, used from the
+   host's main thread.  A ring past 65536 changes or 64 MiB of text drops what it holds and is marked for a resync
+   (the host reads the whole text again); pushes are dropped until glitnir_history_clear.  */
+#define GLITNIR_HISTORY_EMPTY   1
+#define GLITNIR_HISTORY_RESYNC  2
+
+/* One change: the text from character START, OLD_LEN characters long, became NCHARS characters (NBYTES bytes, the
+   host's own encoding) at TIME, under the host's ORIGIN index.  */
+typedef struct
+{
+  int64_t start, old_len, nchars;
+  uint64_t nbytes;
+  double time;
+  uint32_t origin;
+} GlitnirHistoryHead;
+
+/* Start (ON non-zero) or stop tracking KEY; starting a tracked key keeps its ring, stopping drops it.  */
+int32_t glitnir_history_track (uint64_t key, uint32_t on);
+
+/* Record a change of KEY: *HEAD (its nbytes is ignored), its text the N1 bytes at P1 then the N2 bytes at P2 (NULL
+   when the length is 0).  GLITNIR_OK, GLITNIR_HISTORY_RESYNC (the ring is marked: dropped), GLITNIR_E_STATE (not
+   tracked).  */
+int32_t glitnir_history_push (uint64_t key, const GlitnirHistoryHead *head, const uint8_t *p1, size_t n1,
+			      const uint8_t *p2, size_t n2);
+
+/* Mark KEY's ring for a resync.  */
+int32_t glitnir_history_resync (uint64_t key);
+
+/* KEY's oldest change into *OUT: GLITNIR_OK, GLITNIR_HISTORY_EMPTY, GLITNIR_HISTORY_RESYNC or GLITNIR_E_STATE.  */
+int32_t glitnir_history_peek (uint64_t key, GlitnirHistoryHead *out);
+
+/* Remove KEY's oldest change, its text copied to BUF, LEN its nbytes (GLITNIR_E_ARG for another LEN).  */
+int32_t glitnir_history_pop (uint64_t key, uint8_t *buf, size_t len);
+
+/* Clear KEY's ring and its resync mark.  */
+int32_t glitnir_history_clear (uint64_t key);
+
+/* How many rings hold a change or a resync mark, into *OUT.  */
+int32_t glitnir_history_pending (uint64_t *out);
+
 #ifdef __cplusplus
 }
 #endif

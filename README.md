@@ -40,11 +40,11 @@ for upstreaming.
 - Every commit on `emacs-31.1..nidhogg-31` has a subject starting `nidhogg: `.
 - Files only Nidhogg owns live under `nidhogg/`, `.github/` and `README.md`, so rebases do not conflict.
 - C patches sit behind `--with-nidhogg-<feature>` configure flags. The identity patch is unconditional.
-- Each flag group has commits with subjects starting `nidhogg: <group>:` (groups: `glitnir`, `watchdog`, `workers`; the stack order is watchdog, then workers, then glitnir, and the check is
+- Each flag group has commits with subjects starting `nidhogg: <group>:` (groups: `glitnir`, `watchdog`, `workers`, `shell`, `history`; the stack order is watchdog, then workers, then glitnir, and the check is
   order-independent; `FLAG_GROUPS`,
   overridable: name:define:feature) and its own base: `<GROUP>_BASE` (overridable, e.g. `GLITNIR_BASE`) is the parent of
   the oldest such commit on HEAD; a group with none is skipped. The groups may stack in either order. With the defines
-  of every group that has commits in `base..HEAD` undefined (`HAVE_GLITNIR`, `HAVE_NIDHOGG_WATCHDOG`, `HAVE_NIDHOGG_WORKERS`), every C file under
+  of every group that has commits in `base..HEAD` undefined (`HAVE_GLITNIR`, `HAVE_NIDHOGG_WATCHDOG`, `HAVE_NIDHOGG_WORKERS`, `HAVE_NIDHOGG_HISTORY`, …), every C file under
   `src/` the group touched must equal its base version (`unifdef -U…`); a changed `lisp/` file is new or `lisp/loadup.el`
   with one `(featurep 'FEATURE)` line per group; a commit in the range touching `src/` that belongs to no group goes
   below the groups. Needs `unifdef`.
@@ -1055,6 +1055,43 @@ a spec makes the decoder read `:data` as base64 text (on `nh-img` and in the syn
   that arrives with the UI event queue empty is seen by the poll thread's `pselect`, which posts the select semaphore.
   Not checked: the watchdog's files (they need Emacs's headers) and any run on a device.
 <!-- wk: Task 38 -->
+
+## Edit history hook
+
+drgnx's edit history records every change to a project's text, the user's keystrokes included. The editor side of it
+needs each change to a buffer's text, wherever it comes from: `after-change-functions` misses changes made with
+`inhibit-modification-hooks` bound and runs Lisp per change, so Nidhogg records them in C.
+
+- Build flag: `--with-nidhogg-history` (defines `HAVE_NIDHOGG_HISTORY`; needs `--with-glitnir`, and configure refuses
+  without it). `build.sh` passes it wherever Glitnir is on, unless given `--without-nidhogg-history`.
+- Files: `src/nidhogg-history.h` (the guard the sites call), `src/nidhogg-history.c` (the table of tracked texts and the
+  Lisp interface); the rings are Glitnir's, `nidhogg/glitnir/src/history.rs` (`glitnir_history_*` in `glitnir.h`;
+  `libnhglue.a` carries them too).
+- **The sites.** Every place a buffer's text changes calls `NH_HISTORY_CHANGE (b, start, start_byte, old_end,
+  old_end_byte, new_end, new_end_byte)`, each position as a character and a byte (some sites call it before point and
+  the markers move, when converting one to the other would read them): the ten places tree-sitter is told of a change (`insdel.c`: `insert_1_both`, `insert_from_string_1`,
+  `insert_from_gap_1`, `insert_from_buffer`, `replace_range`, `del_range_2`; `casefiddle.c`: `casify_region`;
+  `editfns.c`: `subst-char-in-region`, `translate-region`'s in-place branch, `transpose-regions`). The call comes right
+  after the text changed and before any after-change function runs (tree-sitter's comes after them in
+  `insert_from_buffer`, `casify_region` and `translate-region`), and `inhibit-modification-hooks` does not skip it.
+  `buffer-swap-text` and `set-buffer-multibyte` mark the buffers' rings for a resync; freeing a buffer's text forgets it.
+- **The cost.** While no text is tracked a site costs one test of a global count. With texts tracked, an untracked
+  buffer's change costs a look-up in a small table and no call into Rust. A tracked one's change is a copy of the new text
+  into its ring and three clock reads (`:hook-ns` sums the time).
+- **What is recorded.** (START OLD-LEN INSERTED TIME ORIGIN) in characters, 1-based, ignoring narrowing; INSERTED is the
+  new text without properties; ORIGIN is `nidhogg-history-origin` at the time (nil: the user). The table keeps Z and
+  Z_BYTE after the last change: a change whose sizes do not add up to the text's growth (a change the hook did not see)
+  marks the ring for a resync instead of recording a wrong change. An indirect buffer shares its base's text; the table
+  is keyed by the text, so its change is recorded once.
+- **The rings.** One per tracked text; past 65536 changes or 64 MiB of text the ring drops what it holds and answers
+  `resync` until drained, so a huge batch costs a resend of the text rather than unbounded memory. The origin table
+  (index 0 is nil) starts again whenever every ring is empty.
+- Lisp: `(nidhogg-history-track BUFFER ON)`; `(nidhogg-history-drain BUFFER)` → the changes oldest first, or `resync`;
+  `nidhogg-history-origin`; `(nidhogg-history-pending-p)`; `(nidhogg-history-stats)` → `(:tracked :lookups :changes
+  :dropped :hook-ns :pending)`. The feature is `nidhogg-history`.
+- Tests: `test/src/nidhogg-tests/history-tests.el` (det; in `check-subset.txt`), one row per site: each replays the
+  drained changes onto the text the buffer had when it was tracked and compares with the buffer; they skip on a build
+  without the flag. The rings' own tests are Glitnir's (`history::tests`, `nidhogg/glitnir/check.sh`).
 
 ## Reporting issues
 
