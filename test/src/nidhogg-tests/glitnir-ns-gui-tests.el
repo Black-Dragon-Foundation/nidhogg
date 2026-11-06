@@ -87,6 +87,19 @@ It belongs at the child window's bounds grown by the margin, directly below the 
   "FRAMES in the window server's order, bottom to top."
   (cl-remove-if-not (lambda (f) (memq f frames)) (mapcar (lambda (e) (plist-get e :frame)) (glitnir--ns-pairs))))
 
+(defun glitnir-ns--stacked (order)
+  "Wait (5 s at most) until the window server stacks the frames of ORDER so, bottom to top; return their order."
+  (redisplay t)
+  (gui-runner-wait (lambda () (equal (apply #'glitnir-ns--stack order) order)) 5)
+  (apply #'glitnir-ns--stack order))
+
+(defun glitnir-ns--child-bounds (frame pred)
+  "Wait (5 s at most) until FRAME's window bounds in the window server's model satisfy PRED; return them.
+The model follows a step asynchronously: a pair checked before it caught up is the old, consistent pair."
+  (redisplay t)
+  (gui-runner-wait (lambda () (let ((b (plist-get (glitnir-ns--pair frame) :child))) (and b (funcall pred b)))) 5)
+  (plist-get (glitnir-ns--pair frame) :child))
+
 ;;; Pixels
 
 (defun glitnir-ns--px (raw x y)
@@ -320,10 +333,11 @@ It belongs at the child window's bounds grown by the margin, directly below the 
           (should-not (glitnir-ns--settled-problem c))
           (let ((x0 (car (plist-get (glitnir-ns--pair c) :child))))
             (set-frame-position c 120 80)
+            (should (> (car (glitnir-ns--child-bounds c (lambda (b) (> (car b) x0)))) x0))
             (should-not (glitnir-ns--settled-problem c))
-            (should (> (car (plist-get (glitnir-ns--pair c) :child)) x0)))
-          (modify-frame-parameters c '((left . 60) (top . 50)))
-          (should-not (glitnir-ns--settled-problem c)))
+            (modify-frame-parameters c '((left . 60) (top . 50)))
+            (should (< (car (glitnir-ns--child-bounds c (lambda (b) (< (car b) (+ x0 40))))) (+ x0 40)))
+            (should-not (glitnir-ns--settled-problem c))))
       (delete-frame c t))))
 
 (ert-deftest glitnir-ns/pair-follows-resize ()
@@ -335,10 +349,11 @@ It belongs at the child window's bounds grown by the margin, directly below the 
           (should-not (glitnir-ns--settled-problem c))
           (let ((w0 (nth 2 (plist-get (glitnir-ns--pair c) :child))))
             (set-frame-size c 50 12)
+            (should (> (nth 2 (glitnir-ns--child-bounds c (lambda (b) (> (nth 2 b) w0)))) w0))
             (should-not (glitnir-ns--settled-problem c))
-            (should (> (nth 2 (plist-get (glitnir-ns--pair c) :child)) w0)))
-          (set-frame-size c 200 90 t)
-          (should-not (glitnir-ns--settled-problem c)))
+            (set-frame-size c 200 90 t)
+            (should (< (nth 2 (glitnir-ns--child-bounds c (lambda (b) (< (nth 2 b) w0)))) w0))
+            (should-not (glitnir-ns--settled-problem c))))
       (delete-frame c t))))
 
 (ert-deftest glitnir-ns/pair-follows-raise ()
@@ -349,15 +364,15 @@ It belongs at the child window's bounds grown by the margin, directly below the 
         (progn
           (should-not (glitnir-ns--settled-problem a))
           (should-not (glitnir-ns--settled-problem b))
-          (should (equal (glitnir-ns--stack a b) (list a b)))
+          (should (equal (glitnir-ns--stacked (list a b)) (list a b)))
           (raise-frame a)
+          (should (equal (glitnir-ns--stacked (list b a)) (list b a)))
           (should-not (glitnir-ns--settled-problem a))
           (should-not (glitnir-ns--settled-problem b))
-          (should (equal (glitnir-ns--stack a b) (list b a)))
           (raise-frame b)
+          (should (equal (glitnir-ns--stacked (list a b)) (list a b)))
           (should-not (glitnir-ns--settled-problem a))
-          (should-not (glitnir-ns--settled-problem b))
-          (should (equal (glitnir-ns--stack a b) (list a b))))
+          (should-not (glitnir-ns--settled-problem b)))
       (delete-frame b t)
       (delete-frame a t))))
 
@@ -369,9 +384,9 @@ It belongs at the child window's bounds grown by the margin, directly below the 
         (progn
           (should-not (glitnir-ns--settled-problem b))
           (lower-frame b)
+          (should (equal (glitnir-ns--stacked (list b a)) (list b a)))
           (should-not (glitnir-ns--settled-problem a))
-          (should-not (glitnir-ns--settled-problem b))
-          (should (equal (glitnir-ns--stack a b) (list b a))))
+          (should-not (glitnir-ns--settled-problem b)))
       (delete-frame b t)
       (delete-frame a t))))
 
@@ -384,11 +399,11 @@ It belongs at the child window's bounds grown by the margin, directly below the 
         (progn
           (should-not (glitnir-ns--settled-problem c))
           (frame-restack c a)             ; c below a
+          (should (equal (glitnir-ns--stacked (list c a b)) (list c a b)))
           (dolist (f (list a b c)) (should-not (glitnir-ns--settled-problem f)))
-          (should (equal (glitnir-ns--stack a b c) (list c a b)))
           (frame-restack c a t)           ; c above a
-          (dolist (f (list a b c)) (should-not (glitnir-ns--settled-problem f)))
-          (should (equal (glitnir-ns--stack a b c) (list a c b))))
+          (should (equal (glitnir-ns--stacked (list a c b)) (list a c b)))
+          (dolist (f (list a b c)) (should-not (glitnir-ns--settled-problem f))))
       (delete-frame c t)
       (delete-frame b t)
       (delete-frame a t))))
@@ -429,9 +444,9 @@ It belongs at the child window's bounds grown by the margin, directly below the 
           (should-not (glitnir-ns--settled-problem c))
           (let ((at (plist-get (glitnir-ns--pair c) :child)))
             (set-frame-position root (+ (car pos) 30) (+ (cdr pos) 20))
-            (should-not (glitnir-ns--settled-problem c))
-            ;; the bounds are the root content's: the child kept its place in it
-            (should (equal (plist-get (glitnir-ns--pair c) :child) at))))
+            ;; the bounds are the root content's: the child keeps its place in it, once the model has both moves
+            (should (equal (glitnir-ns--child-bounds c (lambda (b) (equal b at))) at))
+            (should-not (glitnir-ns--settled-problem c))))
       (set-frame-position root (car pos) (cdr pos))
       (delete-frame c t))))
 
@@ -446,8 +461,8 @@ It belongs at the child window's bounds grown by the margin, directly below the 
           (should-not (glitnir-ns--settled-problem c))
           (set-frame-parameter c 'parent-frame p)
           (should (eq (frame-parent c) p))
+          (should (equal (glitnir-ns--stacked (list p c)) (list p c)))
           (should-not (glitnir-ns--settled-problem c))
-          (should (equal (glitnir-ns--stack p c) (list p c)))
           (set-frame-parameter c 'parent-frame root)
           (should-not (glitnir-ns--settled-problem c))
           (should-not (glitnir-ns--orphans)))
