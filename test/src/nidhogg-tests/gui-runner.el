@@ -46,9 +46,18 @@
                         (glitnir-gui--scale) (frame-scale-factor) (display-monitor-attributes-list))
       (kill-emacs 1))))
 
+(defun glitnir-gui--place-frame ()
+  "On NS, move the selected frame onto the display ns-gui.sh made (GLITNIR_GUI_FRAME is \"LEFT TOP COLS LINES\")."
+  (let ((spec (getenv "GLITNIR_GUI_FRAME")))
+    (when (and spec (not (string-empty-p spec)))
+      (pcase-let ((`(,left ,top ,cols ,lines) (mapcar #'string-to-number (split-string spec))))
+        (set-frame-size nil cols lines)
+        (set-frame-position nil left top)))))
+
 (defun glitnir-gui--wait-for-first-paint ()
-  "Wait (10 s at most) until Glitnir's frame-time record holds a paint of the selected frame."
-  (when (fboundp 'glitnir-stats)
+  "Wait (10 s at most) until Glitnir's frame-time record holds a paint of the selected frame.
+Only the native shell records paints."
+  (when (and (fboundp 'glitnir-stats) (featurep 'nidhogg-wayland))
     (let ((deadline (+ (float-time) 10)))
       (while (and (< (or (plist-get (glitnir-stats) :count) 0) 1) (< (float-time) deadline))
         (redisplay t)
@@ -96,7 +105,7 @@ between a row's steps, the quiet the code under test measures.  Never a wait for
 ;;; Grabs from the compositor: (gui-runner-screen-grab) is (W H BYTES), BYTES W*H BGRA pixels, on every compositor
 
 (require 'cl-lib)
-(require 'dbus)
+(require 'dbus nil t)                   ; not in the macOS build
 (require 'json)
 (require 'seq)
 (require 'cl-lib)
@@ -441,7 +450,7 @@ recorder: the frame callbacks are answered and the commit log stands still (a de
                      (while (and (not (setq v (funcall pred))) (< (float-time) deadline))
                        (if read (gui-runner-read-all) (sit-for 0.01)))
                      (unless v (setq ok nil))))))
-    (when (and graphic (not native) (fboundp 'glitnir-snapshot))
+    (when (and graphic (not native) (not (featurep 'ns)) (fboundp 'glitnir-snapshot))
       (ignore-errors (glitnir-snapshot nil 'raw)))
     (pcase compositor
       ("sway" (funcall settle (lambda () (and (gui-runner--sway-window-shown-p) (gui-runner--presented-p)))))
@@ -528,7 +537,9 @@ The recorder keeps its session store.  Signals an error when the script fails or
     (dolist (f (let ((glob (getenv "GLITNIR_GUI_FILES")))
                  (if (and glob (not (string-empty-p glob)))
                      (file-expand-wildcards (expand-file-name glob dir) t)
-                   (directory-files dir t "-gui\\(-[a-z0-9]+\\)?-tests\\.el\\'"))))
+                   (seq-remove (lambda (f)
+                                 (and (not (featurep 'ns)) (string-match-p "-ns-gui-tests\\.el\\'" f)))
+                               (directory-files dir t "-gui\\(-[a-z0-9]+\\)?-tests\\.el\\'")))))
       (load f nil t))))
 
 ;; The known-differences file holds entries (TEST-NAME COMPOSITOR REASON . OPTIONS): the test is expected to fail on that
@@ -585,6 +596,7 @@ The recorder keeps its session store.  Signals an error when the script fails or
           (t (or re t)))))
 
 (defun glitnir-gui--run ()
+  (glitnir-gui--place-frame)
   (glitnir-gui--wait-for-scale)
   (glitnir-gui--wait-for-first-paint)
   (glitnir-gui--load-tests)

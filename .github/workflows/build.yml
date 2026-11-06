@@ -615,6 +615,33 @@ jobs:
           if [ -n "$CHECKS" ]; then echo "$CHECKS" | tr ' ' '\n'; else cat nidhogg/check-subset.txt; fi | grep 'nidhogg-tests/workers-' > "$RUNNER_TEMP/macos-subset.txt" || true
           [ -s "$RUNNER_TEMP/macos-subset.txt" ] || { echo "no workers files among the checks"; exit 0; }
           /bin/bash nidhogg/build.sh --host --stage check --jobs 3 --build-dir "$RUNNER_TEMP/build" --check "$RUNNER_TEMP/macos-subset.txt"
+      # Glitnir's NS rows (test/src/nidhogg-tests/glitnir-ns-gui-tests.el) on the app of the tarball, on a virtual display at
+      # scale 1 and at scale 2 (nidhogg/test/ns-gui.sh).  The checks name rows (glitnir-ns/NAME) or the file; with other
+      # checks only, the step has nothing to run.  A cached tarball is run as it is.
+      - name: NS GUI rows (glitnir-ns-gui-tests.el, scales 1 and 2)
+        if: ${{ !cancelled() && hashFiles('dist/*.tar.xz') != '' }}
+        env:
+          CHECKS: ${{ inputs.checks }}
+        run: |
+          sel="" all=0
+          if [ -z "$CHECKS" ]; then all=1; else
+            for c in $CHECKS; do
+              case $c in
+                *glitnir-ns-gui-tests*) all=1 ;;
+                glitnir-ns/*) sel="${sel:+$sel\\|}$c" ;;
+              esac
+            done
+            [ "$all" = 1 ] || [ -n "$sel" ] || { echo "no NS GUI rows among the checks"; exit 0; }
+          fi
+          [ "$all" = 0 ] || sel=""
+          bash nidhogg/test/ns-gui.sh --tarball "$(ls dist/*.tar.xz | head -n 1)" --out "$RUNNER_TEMP/ns-gui" ${sel:+--select "$sel"}
+      - name: NS GUI logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ns-gui-logs
+          path: ${{ runner.temp }}/ns-gui/*.log
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tarball-macos
