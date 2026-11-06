@@ -1608,6 +1608,10 @@ default_line_pixel_height (struct window *w)
 	{
 	  if (RANGED_FIXNUMP (0, val, INT_MAX))
 	    height += XFIXNAT (val);
+	  else if (CONSP (val)
+		   && RANGED_FIXNUMP (0, XCAR (val), INT_MAX / 2)
+		   && RANGED_FIXNUMP (0, XCDR (val), INT_MAX / 2))
+	    height += XFIXNAT (XCAR (val)) + XFIXNAT (XCDR (val));
 	  else if (FLOATP (val))
 	    {
 	      int addon = XFLOAT_DATA (val) * height + 0.5;
