@@ -39,7 +39,7 @@ for d in fedora-45 ubuntu-26.04 debian-13 arch; do
 done
 # low-memory-shrinks-or-refuses
 run NIDHOGG_BUILD_NPROC=16 NIDHOGG_BUILD_MEMORY_KB=$((5*1024*1024)) -- --dry-run --container fedora-45
-rcis 0; has "--memory 4g --memory-swap 4g"; has "make -j2"; has "/opt/nidhogg/31.1-nidhogg.5"
+rcis 0; has "--memory 4g --memory-swap 4g"; has "make -j2"; has "/opt/nidhogg/31.1-nidhogg.6"
 # the floor is 3 GiB available (MiB precision); cap and jobs are max(2, min(6, available - 1)) GiB
 run NIDHOGG_BUILD_NPROC=16 NIDHOGG_BUILD_MEMORY_KB=$((2969*1024)) -- --dry-run --container fedora-45   # 2.9 GiB
 rcis 1; has "needs 3072 MiB"; has "only 2969 MiB are available"
