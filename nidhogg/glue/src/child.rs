@@ -15,11 +15,14 @@
 //! a raise or lower (`nhg_child_raise`).  The stacking order among siblings is the glue's (`Stacking`, moved from C's
 //! `child_z`): the surface list C passes to `nhg_present` is put in it.  The scale is the one of the frame's last
 //! layout.  The keyboard focus redirect stays C.
+//!
+//! An undecorated top-level's chrome (its `toplevel-chrome`: corners and a shadow) is kept and handed to its layer here
+//! too, with the same calls: `csd.rs` decides when the frame is framed and lays its margins out.
 
 use crate::backing::{NHG_GEOM_LAYER_CHANGED, NhgFrameGeom, NhgRect};
 use crate::csd::NhgCsdLayout;
 use crate::display::Display;
-use crate::frame::{Frame, NHG_FRAME_CHILD};
+use crate::frame::{Frame, NHG_FRAME_CHILD, NHG_FRAME_KINDS};
 use crate::guard::GlueError;
 use crate::present::NhgSurface;
 use glitnir::ffi::glitnir_layer_set_chrome;
@@ -69,7 +72,8 @@ pub struct Child {
     z: i32,
     /// The surface is shown (not unmapped).
     mapped: bool,
-    chrome: NhgChrome,
+    /// The corners and shadow (a top-level's: its `toplevel-chrome`, laid out by `csd::layout`).
+    pub(crate) chrome: NhgChrome,
     /// The frame's border (its child-frame border, the internal border C paints), device pixels, and its colour,
     /// premultiplied ARGB: the chrome's rounded corners keep it as a ring.  0 wide: none.
     border: (i32, u32),
@@ -209,8 +213,9 @@ fn scale120(f: &Frame) -> u32 {
 /// The room the shadow needs on each side (L, T, R, B), device pixels at `s120`: the layer grown by the spread and
 /// the blur's reach (3 sigma, sigma = blur / 2; one pixel more for rounding), moved by the offset.  At a whole scale
 /// each is grown to a whole number of logical pixels: the surface's place in its parent is logical, so at scale 2 an
-/// odd margin would put the native area a device pixel off where the frame is.
-fn margins(c: &NhgChrome, s120: u32) -> [i32; 4] {
+/// odd margin would put the native area a device pixel off where the frame is.  At scale 1 (`s120` 120) it is the
+/// logical room a framed top-level's margins hold (`csd::layout`).
+pub(crate) fn margins(c: &NhgChrome, s120: u32) -> [i32; 4] {
     // as C's `opacity > 0`: none at 0 or below, or NaN
     if c.on == 0 || c.opacity.is_nan() || c.opacity <= 0.0 {
         return [0; 4];
@@ -358,10 +363,21 @@ pub fn set(
 /// transitions or the backdrop (Lisp's slot is 0 for an opaque `alpha-background`) goes to the shell now: C calls this
 /// before the window's first picture, so its first show has its leg.  A window made anew starts with none, so it gets
 /// them again.  A failed request is tried again at the next call.
+///
+/// A top-level's vector (its `toplevel-chrome`) gives the corners and the shadow alone: kept here, laid out by
+/// `csd::layout` and drawn only while the frame is framed (`true` then).  A tip's or a popup's is not the glue's.
 pub fn chrome(state: &mut Display, window: u64, v: &[f32]) -> Result<bool, GlueError> {
     let d = crate::chrome::decode(v)?;
+    let f = state.frame_mut(window)?;
+    if f.flags & NHG_FRAME_KINDS != NHG_FRAME_CHILD {
+        let n = d.chrome.unwrap_or_default();
+        if f.flags & NHG_FRAME_KINDS != 0 || f.child.chrome == n {
+            return Ok(false);
+        }
+        (f.child.chrome, f.child.chrome_dirty) = (n, true);
+        return Ok(f.csd.framed());
+    }
     let motion = crate::chrome::motion(&d);
-    child_mut(state, window)?;
     let (backend, _, f) = state.csd_parts(window)?;
     if f.child.motion != motion && backend.set_motion(window, motion).is_ok() {
         f.child.motion = motion;
@@ -487,14 +503,25 @@ pub fn sync(state: &mut Display, window: u64, native_w: i32, native_h: i32) {
 /// shadow margin when it has chrome (else all of the backing, which then is the native area), and
 /// `NHG_GEOM_LAYER_CHANGED` is set when the layer, the chrome or the scale differ from what Glitnir holds, so the layer
 /// is upserted and takes the chrome (`apply_chrome`).  The child's window, or `None` for any other frame.
+///
+/// A framed top-level's layer is its native area inside its margins too, with or without chrome (its window then);
+/// one that stops being framed is upserted once more, all of the backing again, and loses the chrome.
 pub fn layer(state: &mut Display, g: &mut NhgFrameGeom) -> Option<u64> {
-    let f = state
-        .frame_mut(g.window)
-        .ok()
-        .filter(|f| f.flags & NHG_FRAME_CHILD != 0)?;
+    let f = state.frame_mut(g.window).ok()?;
+    let top = match f.flags & NHG_FRAME_KINDS {
+        NHG_FRAME_CHILD => false,
+        0 => true,
+        _ => return None,
+    };
+    let framed = f.csd.framed();
     let c = &mut f.child;
+    if top && !framed {
+        c.layer.take()?;
+        g.flags |= NHG_GEOM_LAYER_CHANGED;
+        return Some(g.window);
+    }
     let s120 = if g.scale120 == 0 { 120 } else { g.scale120 };
-    if c.chrome.on != 0 {
+    if top || c.chrome.on != 0 {
         g.layer = NhgRect {
             x: g.l,
             y: g.t,
@@ -511,16 +538,33 @@ pub fn layer(state: &mut Display, g: &mut NhgFrameGeom) -> Option<u64> {
 
 /// Hand child `window`'s chrome, in device pixels at `s120` (0: 120), to the one layer of Glitnir root `key`, right
 /// after the layer was upserted.
+///
+/// A top-level's shows while it is framed and floats.  Framed with margins but maximized or tiled it gets a chrome of
+/// nothing (square, no shadow) rather than none: the shell clears what a chromed layer composes over, so its margins
+/// stay transparent instead of keeping an older picture.  Not framed, or without margins: none.
 pub fn apply_chrome(state: &mut Display, window: u64, key: u64, s120: u32) {
     let Ok(f) = state.frame_mut(window) else {
         return;
     };
+    let top = f.flags & NHG_FRAME_CHILD == 0;
+    let (framed, floating) = (f.csd.framed(), f.cfg.states & crate::csd::KEEP == 0);
+    let margins = f.csd.offsets() != [0; 4];
     let c = &mut f.child;
     let s120 = if s120 == 0 { 120 } else { s120 };
     let s = f64::from(s120) / 120.0;
     c.chrome_dirty = false;
     c.chrome_s120 = s120;
-    let (ch, (border, border_argb)) = (c.chrome, c.border);
+    let (mut ch, (border, border_argb)) = (c.chrome, c.border);
+    if top {
+        ch = match (framed && margins, floating && ch.on != 0) {
+            (false, _) => NhgChrome::default(),
+            (true, true) => ch,
+            (true, false) => NhgChrome {
+                on: 1,
+                ..NhgChrome::default()
+            },
+        };
+    }
     let px = |v: f32| (f64::from(v) * s) as f32;
     let g = (ch.on != 0).then(|| Chrome {
         radius_px: px(ch.radius),

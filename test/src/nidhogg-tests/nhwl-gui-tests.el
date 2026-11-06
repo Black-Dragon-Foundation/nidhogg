@@ -2114,14 +2114,23 @@ characters go, the mark stays."
       (gui-runner-recorder '(:cmd "button" :button 272 :state "release"))
       (delete-frame f))))
 
+(defun nhwl-gui--undecorated-origin ()
+  "Where the newest toplevel's native area starts in its surface when it is undecorated, (X Y) logical: its window
+geometry's origin, past the resize margins it keeps where the compositor offers no server-side decorations."
+  (let ((g (nhwl-gui--get (car (last (nhwl-gui--toplevel-commits))) :geometry)))
+    (if g (list (nth 0 g) (nth 1 g)) (list 0 0))))
+
 (ert-deftest nhwl-gui/undecorated-edge-resizes ()
+  ;; a press on the frame's own right internal border (its native area's last columns, past any margins)
   (skip-unless (nhwl-gui--recorder-p))
   (let* ((f (nhwl-gui--undecorated))
          (s (frame-scale-factor f))
+         (o (nhwl-gui--undecorated-origin))
          (mark (plist-get (gui-runner-recorder '(:cmd "input_log" :since 0)) :next)))
     (unwind-protect
         (progn
-          (nhwl-gui--press-at 'right-edge (/ (- (frame-pixel-width f) 3) s) (/ (frame-pixel-height f) 2 s))
+          (nhwl-gui--press-at 'right-edge (+ (nth 0 o) (/ (- (frame-pixel-width f) 3) s))
+                              (+ (nth 1 o) (/ (frame-pixel-height f) 2 s)))
           (let ((e (nhwl-gui--input-wait mark "xdg_toplevel.resize")))
             (should e)
             (should (equal (plist-get e :edges) "right"))))
@@ -2733,22 +2742,22 @@ while the top-level has the keyboard.  Delete the child and focus the parent aft
       (redisplay t))))
 
 (ert-deftest nhwl-gui/undecorated-toggles-the-title-bar ()
-  ;; mutter profile (no server decorations): t takes our title bar and margins away (the window geometry is the
-  ;; whole surface); nil brings them back.
+  ;; mutter profile (no server decorations): t takes our title bar away and keeps the resize margins (the window
+  ;; geometry starts past them, the native area right below the top one); nil brings the title bar back.
   (skip-unless (and (nhwl-gui--recorder-p) (not (equal (nhwl-gui--decoration) "server"))))
   (nhwl-gui--windowed)
   (unwind-protect
       (progn
-        (should (> (nhwl-gui--native-top) 0))
+        (should (> (nhwl-gui--native-top) (* 8 (frame-scale-factor))))
         (let ((mark (nhwl-gui--mark)))
           (set-frame-parameter nil 'undecorated t)
           (should (nhwl-gui--wait
                    (lambda ()
                      (redisplay t)
                      (let ((c (car (last (nhwl-gui--new mark)))))
-                       (and c (= (nhwl-gui--native-top) 0)
+                       (and c (= (nhwl-gui--native-top) (floor (+ 0.5 (* 8 (frame-scale-factor)))))
                             (let ((g (nhwl-gui--get c :geometry)))
-                              (or (null g) (and (= (nth 0 g) 0) (= (nth 1 g) 0)))))))
+                              (and g (= (nth 0 g) 8) (= (nth 1 g) 8))))))
                    5)))
         (let ((mark (nhwl-gui--mark)))
           (set-frame-parameter nil 'undecorated nil)

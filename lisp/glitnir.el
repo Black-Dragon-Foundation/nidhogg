@@ -44,8 +44,12 @@ alist may hold `corner-radius' (a number of pixels) and `shadow' (a
 plist of :blur, :offset (X . Y), :spread and :opacity, or nil for no
 shadow).  A frame's own `corner-radius' and `shadow' parameters win
 over it; `(corner-radius . 0)' and `(shadow . nil)' opt a frame out.
-Root frames and decorated (not `undecorated') child frames get no
-chrome.  The shadow colour is the foreground of the
+Decorated (not `undecorated') child frames get no chrome, and root
+frames none from this option: an undecorated root frame takes its
+corners and shadow from its own `toplevel-chrome' parameter, an alist
+of the same `corner-radius' and `shadow', drawn in the margins it keeps
+where the compositor offers no server-side decorations
+\(`nhwl-toplevel-chrome-p').  The shadow colour is the foreground of the
 `child-frame-shadow' face.
 
 It may also hold `transition', how the frame appears and disappears,
@@ -252,14 +256,35 @@ them off, nil never does."
            (eql (nhwl-settings-get 'reduced-motion) 1))
     glitnir-reduced-motion))
 
+(defun glitnir--toplevel-vector (frame)
+  "Return root frame FRAME's chrome as a vector of numbers, or nil.
+Only an `undecorated' frame whose `toplevel-chrome' asks for corners or a
+shadow has one: slots 0-7 from it, clamped, as `glitnir--resolve' takes
+a child frame's; no motion, no backdrop, `beneath-rgb' and `ring-rgb' -1."
+  (let* ((params (frame-parameters frame))
+         (opt (and (cdr (assq 'undecorated params)) (cdr (assq 'toplevel-chrome params))))
+         (radius (cdr (assq 'corner-radius opt)))
+         (sh (and (cdr (assq 'shadow opt)) (glitnir--shadow (cdr (assq 'shadow opt)) frame))))
+    (when radius
+      (unless (and (numberp radius) (>= radius 0))
+        (signal 'wrong-type-argument (list 'natnump radius))))
+    (when (or sh (and radius (> radius 0)))
+      (let ((v (make-vector (length glitnir--chrome-slots) 0)))
+        (aset v (alist-get 'beneath-rgb glitnir--chrome-slots) -1)
+        (aset v (alist-get 'ring-rgb glitnir--chrome-slots) -1)
+        (glitnir--fill-shadow v (or radius 0) sh)
+        v))))
+
 (defun glitnir--chrome-vector (frame)
-  "Return FRAME's chrome as a vector of numbers, or nil for a root frame.
+  "Return FRAME's chrome as a vector of numbers, or nil.
 The slots are `glitnir--chrome-slots'.  Slots 0-7 come from `glitnir--resolve',
 clamped; 8-19 from the `transition' option, which the desktop's reduced-motion
 setting turns off; 20 from `backdrop-blur', 0 while the frame's
 `alpha-background' is opaque; `beneath-rgb' and `ring-rgb' are -1.  A child
-frame with no chrome has a vector whose first slot is 0."
-  (when (frame-parent frame)
+frame with no chrome has a vector whose first slot is 0.  A root frame's is
+`glitnir--toplevel-vector'."
+  (if (not (frame-parent frame))
+      (glitnir--toplevel-vector frame)
     (let* ((res (glitnir--resolve frame))
            (tr (glitnir--transition (glitnir--option frame 'transition)))
            (blur (glitnir--option frame 'backdrop-blur))
@@ -407,12 +432,12 @@ deleted."
 (add-hook 'pre-redisplay-functions #'glitnir--recheck-frame-cards)
 
 (defun glitnir-refresh (&optional frame)
-  "Resolve the chrome of FRAME (default: every child frame) again.
+  "Resolve the chrome of FRAME (default: every child and toplevel-chromed frame).
 Without FRAME the cards of every window are resolved again too: a card's
 colours are read when it is resolved, so a face changed outside a theme (a
 theme change does this itself) shows after this call."
   (dolist (f (if frame (list frame) (frame-list)))
-    (when (and (frame-live-p f) (frame-parent f))
+    (when (and (frame-live-p f) (or (frame-parent f) (frame-parameter f 'toplevel-chrome)))
       (glitnir--rechrome f)))
   (unless frame (glitnir--recheck-all-cards)))
 
