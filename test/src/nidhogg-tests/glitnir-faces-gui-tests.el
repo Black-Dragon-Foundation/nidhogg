@@ -42,6 +42,28 @@
                     (file-name-directory (or load-file-name buffer-file-name)))
   "The matrix's results on the stock merge: (CASE HASH) per case, HASH the SHA-256 of the printed result.")
 
+(defconst glitnir-faces-gui--steps-fixture
+  (expand-file-name "fixtures/face-remap-steps.eld"
+                    (file-name-directory (or load-file-name buffer-file-name)))
+  "The remap steps' results on the stock merge: (STEP HASH) per step, HASH the SHA-256 of the printed result.")
+
+(defun glitnir-faces-gui--check (results fixture tag)
+  "RESULTS, a list of (KEY . RESULT), are the ones recorded in FIXTURE, a list of (KEY HASH).
+Without FIXTURE, print each result after TAG and fail."
+  (let ((expected (and (file-readable-p fixture)
+                       (with-temp-buffer
+                         (insert-file-contents fixture)
+                         (read (current-buffer))))))
+    (unless expected
+      (dolist (r results) (glitnir-gui--say "%s: %S" tag r))
+      (ert-fail (list "no recorded results" fixture)))
+    (should (= (length results) (length expected)))
+    ;; A result that differs shows whole.
+    (should-not (seq-remove (lambda (r)
+                              (equal (cadr (assq (car r) expected))
+                                     (secure-hash 'sha256 (prin1-to-string r))))
+                            results))))
+
 (defun glitnir-faces-gui--cells (fn)
   "The vector cells FN allocates."
   (let ((before (nth 2 (memory-use-counts))))
@@ -55,7 +77,7 @@
   name)
 
 (defun glitnir-faces-gui--redisplay-cells (face remap)
-  "Vector cells one forced redisplay allocates for 40 lines in FACE, `default' remapped to REMAP."
+  "Vector cells one forced redisplay allocates for 40 lines in FACE, `default' remapped to REMAP (nil: not)."
   (let ((buf (generate-new-buffer " *glitnir-faces*")))
     (unwind-protect
         (save-window-excursion
@@ -67,7 +89,7 @@
             (insert (propertize (format "run %d " i) 'face face) "plain "
                     (propertize "tail" 'face face) "\n"))
           (goto-char (point-min))
-          (face-remap-add-relative 'default remap)
+          (when remap (face-remap-add-relative 'default remap))
           (let ((forced (lambda () (force-window-update (selected-window)) (redisplay t))))
             (funcall forced)            ; the faces are realized here
             (funcall forced)
@@ -142,10 +164,6 @@ spec merged into stays as it was."
   (let* ((spec (font-spec :name "Monospace-14" :family "Monospace" :size 14 :weight 'normal
                           :slant 'normal :width 'normal :registry 'iso10646-1 :spacing 100))
          (pristine (prin1-to-string spec))
-         (expected (and (file-readable-p glitnir-faces-gui--fixture)
-                        (with-temp-buffer
-                          (insert-file-contents glitnir-faces-gui--fixture)
-                          (read (current-buffer)))))
          (n 0) results)
     (pcase-dolist (`(,height ,family ,weight ,inherit ,remap) (glitnir-faces-gui--cases))
       (let ((face (intern (format "glitnir-faces-gui--case-%d" n))))
@@ -155,16 +173,61 @@ spec merged into stays as it was."
                        (and inherit (list :inherit inherit))))
         (push (cons n (glitnir-faces-gui--observe face remap spec)) results)
         (setq n (1+ n))))
-    (setq results (nreverse results))
     (should (equal (prin1-to-string spec) pristine))
-    (unless expected
-      (dolist (r results) (glitnir-gui--say "face-merge-matrix: %S" r))
-      (ert-fail (list "no recorded results" glitnir-faces-gui--fixture)))
-    (should (= (length results) (length expected)))
-    ;; A case that differs shows with its whole result.
-    (should-not (seq-remove (lambda (r)
-                              (equal (cadr (assq (car r) expected))
-                                     (secure-hash 'sha256 (prin1-to-string r))))
-                            results))))
+    (glitnir-faces-gui--check (nreverse results) glitnir-faces-gui--fixture "face-merge-matrix")))
+
+(ert-deftest glitnir-faces-gui/a-remapped-default-costs-what-the-default-does ()
+  "Pattern D (pure): a buffer whose `default' is remapped to a face with font attributes redisplays for what it does
+without the remap.  Every face lookup in a remapped buffer merged the remap into the default face again, copying the
+font spec each time.  The remap face has the default's family, a synonym of its weight and :height 1.0, so the two
+buffers lay out alike."
+  (let* ((family (copy-sequence (face-attribute 'default :family)))
+         (weight (if (eq (face-attribute 'default :weight) 'normal) 'regular 'normal))
+         (remap (glitnir-faces-gui--face 'glitnir-faces-gui--remap-same
+                                         :height 1.0 :family family :weight weight))
+         (spec (glitnir-faces-gui--cells #'font-spec))
+         (plain (glitnir-faces-gui--redisplay-cells nil nil))
+         (remapped (glitnir-faces-gui--redisplay-cells nil remap)))
+    (glitnir-gui--say "face-remap cells: plain %d, remapped %d, a font spec %d" plain remapped spec)
+    (should (<= (- remapped plain) (* 2 spec)))))
+
+(defun glitnir-faces-gui--fonts ()
+  "Redisplay; the fonts of the plain text at 1 and of the face run at 3, printed."
+  (redisplay t)
+  (list (prin1-to-string (font-at 1)) (prin1-to-string (font-at 3))))
+
+(ert-deftest glitnir-faces-gui/remap-changes-give-the-stock-fonts ()
+  "Pattern D (pure): the fonts after each change of a `default' remap are the stock merge's.
+The remap is added, redisplayed twice, its face's weight and height change, `text-scale-set' scales it and back, it
+is removed, and a property-list remap comes and goes."
+  (glitnir-faces-gui--face 'glitnir-faces-gui--step-remap :family "Monospace" :height 0.963 :weight 'light)
+  (glitnir-faces-gui--face 'glitnir-faces-gui--step-run :height 0.889 :weight 'bold)
+  (let ((buf (generate-new-buffer " *glitnir-faces-steps*"))
+        steps)
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer buf)
+          (insert "ab" (propertize "cd" 'face 'glitnir-faces-gui--step-run) "\n")
+          (push (cons 'none (glitnir-faces-gui--fonts)) steps)
+          (let ((cookie (face-remap-add-relative 'default 'glitnir-faces-gui--step-remap)))
+            (push (cons 'added (glitnir-faces-gui--fonts)) steps)
+            (push (cons 'again (glitnir-faces-gui--fonts)) steps)
+            (set-face-attribute 'glitnir-faces-gui--step-remap nil :weight 'bold)
+            (push (cons 'weight (glitnir-faces-gui--fonts)) steps)
+            (set-face-attribute 'glitnir-faces-gui--step-remap nil :height 1.2)
+            (push (cons 'height (glitnir-faces-gui--fonts)) steps)
+            (text-scale-set 2)
+            (push (cons 'scaled (glitnir-faces-gui--fonts)) steps)
+            (text-scale-set 0)
+            (push (cons 'unscaled (glitnir-faces-gui--fonts)) steps)
+            (face-remap-remove-relative cookie))
+          (push (cons 'removed (glitnir-faces-gui--fonts)) steps)
+          (let ((cookie (face-remap-add-relative 'default :family "Monospace" :height 1.2 :weight 'semibold)))
+            (push (cons 'plist (glitnir-faces-gui--fonts)) steps)
+            (face-remap-remove-relative cookie))
+          (push (cons 'removed-again (glitnir-faces-gui--fonts)) steps))
+      (kill-buffer buf))
+    (glitnir-faces-gui--check (nreverse steps) glitnir-faces-gui--steps-fixture "face-remap-steps")))
 
 ;;; glitnir-faces-gui-tests.el ends here
