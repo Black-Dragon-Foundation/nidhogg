@@ -1789,6 +1789,9 @@ ns_destroy_window (struct frame *f)
   NSTRACE ("ns_destroy_window");
 
   check_window_system (f);
+#ifdef HAVE_GLITNIR
+  ns_glitnir_frame_destroyed (f);
+#endif
 
   /* If this frame has a parent window, detach it as not doing so can
      cause a crash in GNUStep.  */
@@ -9303,6 +9306,9 @@ static void cancel_ns_deferred_UAZoomChangeFocus_timer ()
 
   ns_clear_frame (emacsframe);
   expose_frame (emacsframe, 0, 0, NSWidth (frame), NSHeight (frame));
+#ifdef HAVE_GLITNIR
+  ns_glitnir_follow ([notification object]);
+#endif
 }
 #endif
 
@@ -10114,6 +10120,43 @@ nswindow_orderedIndex_sort (id w1, id w2, void *c)
   return YES;
 }
 
+#ifdef HAVE_GLITNIR
+/* Glitnir's shadow windows (nsglitnir.m) are child windows too, each one
+   directly below its child frame's window.  Every path that attaches or
+   detaches a child window (-orderFront:, -orderBack:, restacking,
+   setParentChildRelationships, showing a frame) goes through these two, so
+   the pair is kept here: a child window is attached right after its shadow
+   window and detached with it.  A shadow window passed in on its own, as
+   the loops over -childWindows above do, is left to its child.  */
+
+- (void)addChildWindow:(NSWindow *)child ordered:(NSWindowOrderingMode)place
+{
+  NSWindow *shadow;
+
+  if (ns_glitnir_shadow_p (child))
+    return;
+  shadow = ns_glitnir_shadow_to_attach (child);
+  if (shadow)
+    [super addChildWindow:shadow ordered:place];
+  [super addChildWindow:child ordered:place];
+}
+
+- (void)removeChildWindow:(NSWindow *)child
+{
+  if (ns_glitnir_shadow_p (child))
+    return;
+  ns_glitnir_child_removed (child);
+  [super removeChildWindow:child];
+}
+
+/* Detach SHADOW, for nsglitnir.m: the override above ignores it.  */
+- (void)glitnirDetach:(NSWindow *)shadow
+{
+  [super removeChildWindow:shadow];
+}
+
+#endif
+
 #ifdef NS_IMPL_COCOA
 - (id)accessibilityAttributeValue:(NSString *)attribute
 {
@@ -10388,6 +10431,9 @@ nswindow_orderedIndex_sort (id w1, id w2, void *c)
            NSTRACE_ARG_RECT (windowFrame), displayViews);
 
   [super setFrame:windowFrame display:displayViews];
+#ifdef HAVE_GLITNIR
+  ns_glitnir_follow (self);
+#endif
 }
 
 - (void)setFrame:(NSRect)windowFrame
@@ -10407,7 +10453,42 @@ nswindow_orderedIndex_sort (id w1, id w2, void *c)
            NSTRACE_ARG_POINT (point));
 
   [super setFrameTopLeftPoint:point];
+#ifdef HAVE_GLITNIR
+  ns_glitnir_follow (self);
+#endif
 }
+
+#ifdef HAVE_GLITNIR
+/* Glitnir's shadow window (nsglitnir.m) stays with its child window: the
+   setters below bring it along.  */
+
+- (void)setFrameOrigin:(NSPoint)point
+{
+  [super setFrameOrigin:point];
+  ns_glitnir_follow (self);
+}
+
+- (void)setAlphaValue:(CGFloat)alpha
+{
+  [super setAlphaValue:alpha];
+  ns_glitnir_follow (self);
+}
+
+- (void)setLevel:(NSWindowLevel)level
+{
+  ns_glitnir_level (self, level);
+  [super setLevel:level];
+}
+
+- (void)orderOut:(id)sender
+{
+  /* The shadow window goes first, detached, so that nothing shows it
+     again without its child.  */
+  ns_glitnir_child_hidden (self);
+  [super orderOut:sender];
+}
+
+#endif
 
 - (BOOL)canBecomeKeyWindow
 {

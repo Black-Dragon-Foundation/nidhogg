@@ -118,10 +118,20 @@ past its length, and :leg-overrun-p95-ms the 95th percentile of that
 over the last 128 transitions.  :backfill-rate is nil.  FRAME defaults
 to the selected frame; it returns nil for a frame that is not a
 graphical nhwl frame.  Non-nil RESET empties the record after reading
-it.  */)
+it.
+
+On the macOS build, where the window server composes, the record is
+\(:count N :sync-ms (:p50 :p95 :max)): the main-thread time Glitnir's
+shadow windows took to follow their child frames' windows (attach,
+detach, hide, move, resize, alpha), N the times since the last reset and
+the percentiles over the last 1024, for every frame of the process.  */)
   (Lisp_Object frame, Lisp_Object reset)
 {
   struct frame *f = decode_live_frame (frame);
+#ifdef HAVE_NS
+  if (FRAME_NS_P (f))
+    return ns_glitnir_stats (!NILP (reset));
+#endif
 #ifdef HAVE_NHWL
   uint64_t id = 0;
   if (FRAME_NHWL_P (f))
@@ -411,7 +421,8 @@ to the selected frame.  */)
 		make_float (s * c[NHG_CHROME_RADIUS]),
 		intern_c_string (":shadow"), shadow);
 #elif defined HAVE_NS
-  /* The window holds what the last intake stored, while Glitnir is on.  */
+  /* What the window's layers show (the corner radius, the shadow window's
+     shadow), read back from them, while Glitnir is on.  */
   float c[24];
   if (!FRAME_NS_P (f) || !ns_glitnir_chrome (f, c))
     return Qnil;
@@ -452,15 +463,17 @@ Return nil.  */)
 
 DEFUN ("glitnir--ns-pairs", Fglitnir__ns_pairs, Sglitnir__ns_pairs, 0, 1, 0,
        doc: /* Return the window server's view of FRAME's root's child frames.
-The value is a list with one plist per visible child frame of the root,
-bottom to top:
+The value is a list with one plist per child frame of the root whose
+window or shadow window is on screen, bottom to top:
 \(:frame F :child (X Y W H) :alpha A :shadow (X Y W H) :shadow-alpha A
 :below BOOL).  :child and :shadow are the window bounds in points, from
 the root's content top-left, as the window server lists them (no screen
-recording permission needed); :alpha is the window's alpha.  :shadow
-is nil when the child frame has no shadow window, and :below is non-nil
-when that window is directly below the child's in the window server's
-order.  FRAME defaults to the selected frame; the value is nil off NS.  */)
+recording permission needed); :alpha is the window's alpha.  :child or
+:shadow and its alpha are nil when that window is not on screen, and
+:below is non-nil when the shadow window is directly below the child's
+in the window server's order.  A shadow window on screen whose child
+frame let it go is listed with :frame nil.  FRAME defaults to the
+selected frame; the value is nil off NS.  */)
   (Lisp_Object frame)
 {
   struct frame *f = decode_live_frame (frame);

@@ -32,7 +32,10 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #ifdef HAVE_GLITNIR
 
 #include <dlfcn.h>
+#include <math.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "lisp.h"
 #include "blockinput.h"
@@ -79,24 +82,29 @@ ns_glitnir_active_p (struct frame *f)
 			   The vector intake
  ***********************************************************************/
 
+static void ns_glitnir_apply (struct frame *f);
+
 /* Take the chrome from `glitnir--chrome-vector' (called after the frame's
-   parameters changed, and once a frame is made) and keep it with the frame's
-   output data.  A frame that is not a child frame keeps nothing: root frames
-   ignore chrome.  The resolver may change parameters itself; the second
-   entry is ignored.  */
+   parameters changed, and once a frame is made), keep it with the frame's
+   output data and apply it to the frame's window.  A frame that is not a
+   child frame keeps no chrome (root frames ignore it), so one that stopped
+   being a child frame loses its own.  The resolver may change parameters
+   itself; the second entry is ignored.  */
 void
 ns_glitnir_params_changed (struct frame *f)
 {
   static bool busy;
-  Lisp_Object frame, v;
+  Lisp_Object frame, v = Qnil;
 
-  if (busy || !FRAME_NS_P (f) || !f->output_data.ns || FRAME_TOOLTIP_P (f)
-      || !FRAME_PARENT_FRAME (f) || NILP (Ffboundp (Qglitnir__chrome_vector)))
+  if (busy || !FRAME_NS_P (f) || !f->output_data.ns || FRAME_TOOLTIP_P (f))
     return;
-  XSETFRAME (frame, f);
-  busy = true;
-  v = safe_calln (Qglitnir__chrome_vector, frame);
-  busy = false;
+  if (FRAME_PARENT_FRAME (f) && !NILP (Ffboundp (Qglitnir__chrome_vector)))
+    {
+      XSETFRAME (frame, f);
+      busy = true;
+      v = safe_calln (Qglitnir__chrome_vector, frame);
+      busy = false;
+    }
 
   float *out = f->output_data.ns->glitnir_chrome;
   memset (out, 0, NHG_CHROME_SLOTS * sizeof *out);
@@ -104,19 +112,69 @@ ns_glitnir_params_changed (struct frame *f)
     for (ptrdiff_t i = 0; i < min (ASIZE (v), NHG_CHROME_SLOTS); i++)
       if (NUMBERP (AREF (v, i)))
 	out[i] = XFLOATINT (AREF (v, i));
+  ns_glitnir_apply (f);
 }
 
-/* Copy F's chrome vector (NHG_CHROME_SLOTS floats, logical pixels) to OUT and
-   return true, or return false when Glitnir is off for F or F has no chrome.  */
-bool
-ns_glitnir_chrome (struct frame *f, float *out)
+
+/***********************************************************************
+		     The pair hooks' main-thread time
+ ***********************************************************************/
+
+/* The time each pair hook spent on the main thread, the last
+   NS_GLITNIR_SYNC_SAMPLES of them, in milliseconds (`glitnir-stats').  */
+enum { NS_GLITNIR_SYNC_SAMPLES = 1024 };
+static double ns_glitnir_sync_ms[NS_GLITNIR_SYNC_SAMPLES];
+static uint64_t ns_glitnir_sync_count;
+
+static uint64_t
+ns_glitnir_now_ns (void)
 {
-  if (!ns_glitnir_active_p (f)
-      || f->output_data.ns->glitnir_chrome[NHG_CHROME_ON] == 0)
-    return false;
-  memcpy (out, f->output_data.ns->glitnir_chrome,
-	  NHG_CHROME_SLOTS * sizeof *out);
-  return true;
+  struct timespec ts;
+  clock_gettime (CLOCK_MONOTONIC, &ts);
+  return (uint64_t) ts.tv_sec * 1000000000 + ts.tv_nsec;
+}
+
+static void
+ns_glitnir_note (uint64_t start_ns)
+{
+  ns_glitnir_sync_ms[ns_glitnir_sync_count++ % NS_GLITNIR_SYNC_SAMPLES]
+    = (ns_glitnir_now_ns () - start_ns) / 1e6;
+}
+
+static int
+ns_glitnir_cmp (const void *a, const void *b)
+{
+  double x = *(const double *) a, y = *(const double *) b;
+  return (x > y) - (x < y);
+}
+
+/* (:count N :sync-ms (:p50 P :p95 P :max M)): the pair hooks counted since
+   the last reset, and their times over the last samples.  RESET empties the
+   record after reading it.  */
+Lisp_Object
+ns_glitnir_stats (bool reset)
+{
+  double v[NS_GLITNIR_SYNC_SAMPLES];
+  size_t n = min (ns_glitnir_sync_count, NS_GLITNIR_SYNC_SAMPLES);
+  double p50 = 0, p95 = 0, mx = 0;
+
+  memcpy (v, ns_glitnir_sync_ms, n * sizeof *v);
+  if (n > 0)
+    {
+      qsort (v, n, sizeof *v, ns_glitnir_cmp);
+      p50 = v[(size_t) ceil (0.50 * n) - 1];
+      p95 = v[(size_t) ceil (0.95 * n) - 1];
+      mx = v[n - 1];
+    }
+  Lisp_Object result
+    = list4 (intern_c_string (":count"), make_uint (ns_glitnir_sync_count),
+	     intern_c_string (":sync-ms"),
+	     listn (6, intern_c_string (":p50"), make_float (p50),
+		    intern_c_string (":p95"), make_float (p95),
+		    intern_c_string (":max"), make_float (mx)));
+  if (reset)
+    ns_glitnir_sync_count = 0;
+  return result;
 }
 
 
@@ -144,6 +202,524 @@ ns_glitnir_content_rect (struct frame *f)
   NSView *view = (NSView *) FRAME_NS_VIEW (f);
   NSRect r = [view convertRect: [view bounds] toView: nil];
   return [[view window] convertRectToScreen: r];
+}
+
+
+/***********************************************************************
+		       The shadow window and the pair
+ ***********************************************************************/
+
+/* A child frame's shadow window: a clear, click-through window that only
+   draws the shadow of the frame's child window.  It is a sibling, a child
+   window of the same parent, ordered directly below its child window.  The
+   pair is kept by EmacsWindow (nsterm.m): the parent's -addChildWindow:
+   attaches the shadow window first, its -removeChildWindow: detaches it,
+   and the child's -orderOut:, frame, alpha and level setters bring it
+   along.  Those overrides ignore a shadow window passed to them, so the
+   re-stacking loops that walk -childWindows leave it to its child.  */
+@interface GlitnirShadowWindow : NSWindow
+{
+@public
+  /* The child frame, or NULL once it let the shadow go.  */
+  struct frame *owner;
+  /* Draws the shadow from shadowPath, masked to the ring outside the
+     child window (so a translucent child does not show its own shadow).  */
+  CALayer *shadow;
+  CAShapeLayer *mask;
+  /* In points: the room around the child window, the corner radius and
+     the shadow's spread.  */
+  CGFloat margin, radius, spread;
+}
+@end
+
+@implementation GlitnirShadowWindow
+
+- (instancetype) initForFrame: (struct frame *) f
+{
+  self = [super initWithContentRect: NSMakeRect (0, 0, 1, 1)
+			  styleMask: NSWindowStyleMaskBorderless
+			    backing: NSBackingStoreBuffered
+			      defer: NO];
+  if (!self)
+    return nil;
+  owner = f;
+  [self setReleasedWhenClosed: NO];
+  [self setOpaque: NO];
+  [self setBackgroundColor: [NSColor clearColor]];
+  [self setHasShadow: NO];
+  [self setIgnoresMouseEvents: YES];
+  [self setExcludedFromWindowsMenu: YES];
+  [self setCollectionBehavior: (NSWindowCollectionBehaviorTransient
+				| NSWindowCollectionBehaviorIgnoresCycle)];
+  [self setAnimationBehavior: NSWindowAnimationBehaviorNone];
+  [self setAccessibilityElement: NO];
+  [self setTitle: @"glitnir-shadow"];
+
+  /* Layer-hosting: the content view's layer is ours.  */
+  NSView *view = [self contentView];
+  [view setLayer: [CALayer layer]];
+  [view setWantsLayer: YES];
+  shadow = [[CALayer alloc] init];
+  mask = [[CAShapeLayer alloc] init];
+  [mask setFillRule: kCAFillRuleEvenOdd];
+  [shadow setMask: mask];
+  [[view layer] addSublayer: shadow];
+  return self;
+}
+
+- (void) dealloc
+{
+  [shadow release];
+  [mask release];
+  [super dealloc];
+}
+
+- (BOOL) canBecomeKeyWindow
+{
+  return NO;
+}
+
+- (BOOL) canBecomeMainWindow
+{
+  return NO;
+}
+
+/* Where the shadow window belongs: its child window's frame grown by the
+   margin; or R when it has no child window.  */
+- (NSRect) placeFor: (NSRect) r
+{
+  NSWindow *child = (owner && FRAME_NS_VIEW (owner)
+		     ? [(NSView *) FRAME_NS_VIEW (owner) window] : nil);
+  return child ? NSInsetRect ([child frame], -margin, -margin) : r;
+}
+
+/* Every move goes where the child window is, whoever asks: when AppKit
+   carries both windows of the pair with their parent, the shadow window
+   ends up at its child's place in whichever order they move.  */
+- (void) setFrame: (NSRect) r display: (BOOL) display
+{
+  [super setFrame: [self placeFor: r] display: display];
+}
+
+- (void) setFrameOrigin: (NSPoint) p
+{
+  NSRect r = { p, [self frame].size };
+  [super setFrameOrigin: [self placeFor: r].origin];
+}
+
+@end
+
+/* The live frame whose window W is now, or NULL.  A window that a frame
+   replaced (`ns_set_undecorated') still has the frame's view as its
+   delegate, but the view is in the new window.  */
+static struct frame *
+ns_glitnir_window_frame (NSWindow *w)
+{
+  id view = [w delegate];
+  struct frame *f;
+
+  if (![view isKindOfClass: [EmacsView class]])
+    return NULL;
+  f = ((EmacsView *) view)->emacsframe;
+  if (!f || !FRAME_LIVE_P (f) || !FRAME_NS_P (f) || !f->output_data.ns
+      || FRAME_NS_VIEW (f) != view || [view window] != w)
+    return NULL;
+  return f;
+}
+
+static GlitnirShadowWindow *
+ns_glitnir_shadow_of (NSWindow *child)
+{
+  struct frame *f = ns_glitnir_window_frame (child);
+  return f ? (GlitnirShadowWindow *) f->output_data.ns->glitnir_shadow : nil;
+}
+
+bool
+ns_glitnir_shadow_p (NSWindow *w)
+{
+  return [w isKindOfClass: [GlitnirShadowWindow class]];
+}
+
+/* The corner radius CG accepts for a rectangle of SIZE.  */
+static CGFloat
+ns_glitnir_clamp_radius (CGFloat r, CGSize size)
+{
+  return max (0, min (r, min (size.width, size.height) / 2));
+}
+
+/* Take the shadow's look from the chrome vector C.  */
+static void
+ns_glitnir_shadow_spec (GlitnirShadowWindow *s, const float *c)
+{
+  CGFloat blur = max (0, c[NHG_CHROME_BLUR]);
+  CGFloat ox = c[NHG_CHROME_OX], oy = c[NHG_CHROME_OY];
+  uint32_t rgb = (c[NHG_CHROME_RGB] > 0 && c[NHG_CHROME_RGB] <= 0xffffff
+		  ? (uint32_t) c[NHG_CHROME_RGB] : 0);
+
+  s->radius = max (0, c[NHG_CHROME_RADIUS]);
+  s->spread = c[NHG_CHROME_SPREAD];
+  s->margin = max (0, ceil (1.5 * blur + fabs (ox) + fabs (oy) + s->spread));
+
+  NSColor *color = [NSColor colorWithSRGBRed: ((rgb >> 16) & 0xff) / 255.0
+				       green: ((rgb >> 8) & 0xff) / 255.0
+					blue: (rgb & 0xff) / 255.0
+				       alpha: 1];
+  [s->shadow setShadowColor: [color CGColor]];
+  [s->shadow setShadowOpacity: c[NHG_CHROME_OPACITY]];
+  /* CSS's blur is twice the Gaussian's deviation; CA's y is up.  */
+  [s->shadow setShadowRadius: blur / 2];
+  [s->shadow setShadowOffset: CGSizeMake (ox, -oy)];
+}
+
+/* Put shadow window S at CHILD's frame grown by the margin, with CHILD's
+   alpha and level, and its shadow and mask paths at CHILD's size.  */
+static void
+ns_glitnir_fit (GlitnirShadowWindow *s, NSWindow *child)
+{
+  NSRect cf = [child frame];
+  CGFloat m = s->margin;
+  NSRect sf = NSInsetRect (cf, -m, -m);
+  CGRect bounds = CGRectMake (0, 0, NSWidth (sf), NSHeight (sf));
+  CGRect inner = CGRectMake (m, m, NSWidth (cf), NSHeight (cf));
+  CGRect grown = CGRectInset (inner, -s->spread, -s->spread);
+  CGFloat r = ns_glitnir_clamp_radius (s->radius, inner.size);
+  CGFloat gr = (s->radius > 0
+		? ns_glitnir_clamp_radius (s->radius + s->spread, grown.size)
+		: 0);
+  CGFloat scale = [s backingScaleFactor];
+
+  [CATransaction begin];
+  [CATransaction setDisableActions: YES];
+  [s setFrame: sf display: NO];
+  [s->shadow setFrame: bounds];
+  [s->shadow setContentsScale: scale];
+  if (grown.size.width > 0 && grown.size.height > 0)
+    {
+      CGPathRef path = CGPathCreateWithRoundedRect (grown, gr, gr, NULL);
+      [s->shadow setShadowPath: path];
+      CGPathRelease (path);
+    }
+  else
+    [s->shadow setShadowPath: NULL];
+  [s->mask setFrame: bounds];
+  [s->mask setContentsScale: scale];
+  CGMutablePathRef ring = CGPathCreateMutable ();
+  CGPathAddRect (ring, NULL, bounds);
+  CGPathAddRoundedRect (ring, NULL, inner, r, r);
+  [s->mask setPath: ring];
+  CGPathRelease (ring);
+  if ([s alphaValue] != [child alphaValue])
+    [s setAlphaValue: [child alphaValue]];
+  [CATransaction commit];
+}
+
+static NSInteger
+ns_glitnir_back_to_front (id w1, id w2, void *context)
+{
+  NSInteger i1 = [w1 orderedIndex], i2 = [w2 orderedIndex];
+  return i1 > i2 ? NSOrderedAscending : i1 < i2 ? NSOrderedDescending
+    : NSOrderedSame;
+}
+
+/* Attach CHILD's shadow window directly below CHILD again: re-attach CHILD
+   and each sibling above it, bottom to top.  The parent's -addChildWindow:
+   brings each one's shadow window, and the siblings keep their order.  */
+static void
+ns_glitnir_reattach (NSWindow *child)
+{
+  NSWindow *parent = [child parentWindow];
+  bool from = false;
+
+  if (!parent)
+    return;
+  for (NSWindow *w in [[parent childWindows]
+			sortedArrayUsingFunction: ns_glitnir_back_to_front
+					 context: nil])
+    {
+      if (w == child)
+	from = true;
+      if (from && !ns_glitnir_shadow_p (w))
+	{
+	  [parent removeChildWindow: w];
+	  [parent addChildWindow: w ordered: NSWindowAbove];
+	}
+    }
+}
+
+/* Detach shadow window S from the window it is a child of.  */
+static void
+ns_glitnir_detach (GlitnirShadowWindow *s)
+{
+  NSWindow *parent = [s parentWindow];
+
+  if ([parent isKindOfClass: [EmacsWindow class]])
+    [(EmacsWindow *) parent glitnirDetach: s];
+  else if (parent)
+    [parent removeChildWindow: s];
+}
+
+/* F's shadow window goes: detached, ordered out and closed.  */
+static void
+ns_glitnir_drop_shadow (struct frame *f)
+{
+  GlitnirShadowWindow *s = f->output_data.ns->glitnir_shadow;
+
+  if (!s)
+    return;
+  f->output_data.ns->glitnir_shadow = NULL;
+  s->owner = NULL;
+  ns_glitnir_detach (s);
+  [s orderOut: nil];
+  [s close];
+  [s release];
+}
+
+/* The parent's -addChildWindow: hook: CHILD's shadow window, detached
+   from any parent and fitted to CHILD, for the parent to attach right
+   before CHILD; or nil.  */
+NSWindow *
+ns_glitnir_shadow_to_attach (NSWindow *child)
+{
+  GlitnirShadowWindow *s = ns_glitnir_shadow_of (child);
+  uint64_t t0;
+
+  if (!s)
+    return nil;
+  t0 = ns_glitnir_now_ns ();
+  ns_glitnir_detach (s);
+  [s setLevel: [child level]];
+  ns_glitnir_fit (s, child);
+  ns_glitnir_note (t0);
+  return s;
+}
+
+/* The parent's -removeChildWindow: hook: CHILD's shadow window is
+   detached with it.  */
+void
+ns_glitnir_child_removed (NSWindow *child)
+{
+  GlitnirShadowWindow *s = ns_glitnir_shadow_of (child);
+  uint64_t t0;
+
+  if (!s)
+    return;
+  t0 = ns_glitnir_now_ns ();
+  ns_glitnir_detach (s);
+  ns_glitnir_note (t0);
+}
+
+/* The child's -orderOut: hook: its shadow window is detached and ordered
+   out first, so that nothing shows it again without its child.  */
+void
+ns_glitnir_child_hidden (NSWindow *child)
+{
+  GlitnirShadowWindow *s = ns_glitnir_shadow_of (child);
+  uint64_t t0;
+
+  if (!s)
+    return;
+  t0 = ns_glitnir_now_ns ();
+  ns_glitnir_detach (s);
+  [s orderOut: nil];
+  ns_glitnir_note (t0);
+}
+
+/* The child's frame and alpha setters' hook (and the scale's): the shadow
+   window follows CHILD.  */
+void
+ns_glitnir_follow (NSWindow *child)
+{
+  GlitnirShadowWindow *s = ns_glitnir_shadow_of (child);
+  uint64_t t0;
+
+  if (!s)
+    return;
+  t0 = ns_glitnir_now_ns ();
+  ns_glitnir_fit (s, child);
+  ns_glitnir_note (t0);
+}
+
+/* The child's level setter's hook, before CHILD takes LEVEL: the shadow
+   window takes it first, so that CHILD, going to its new level after it,
+   is above it there.  */
+void
+ns_glitnir_level (NSWindow *child, NSInteger level)
+{
+  GlitnirShadowWindow *s = ns_glitnir_shadow_of (child);
+  uint64_t t0;
+
+  if (!s || [s level] == level)
+    return;
+  t0 = ns_glitnir_now_ns ();
+  [s setLevel: level];
+  ns_glitnir_note (t0);
+}
+
+/* The destroy hook (ns_destroy_window, before the window closes): F's
+   shadow window goes.  */
+void
+ns_glitnir_frame_destroyed (struct frame *f)
+{
+  if (!FRAME_NS_P (f) || !f->output_data.ns)
+    return;
+  block_input ();
+  ns_glitnir_drop_shadow (f);
+  f->output_data.ns->glitnir_rounded = NULL;
+  unblock_input ();
+}
+
+/* Round window W's content to radius R (points): a clear window whose
+   content layer masks to the rounded rectangle, with a circular curve as
+   on Linux.  */
+static void
+ns_glitnir_round (NSWindow *w, CGFloat r)
+{
+  NSView *content = [w contentView];
+  CALayer *layer;
+
+  [w setOpaque: NO];
+  [w setBackgroundColor: [NSColor clearColor]];
+  [content setWantsLayer: YES];
+  /* AppKit drives masksToBounds from clipsToBounds on macOS 14 and later.  */
+  if (@available (macOS 14, *))
+    [content setClipsToBounds: YES];
+  layer = [content layer];
+  [layer setCornerRadius: r];
+  [layer setMasksToBounds: YES];
+  if (@available (macOS 10.15, *))
+    [layer setCornerCurve: kCACornerCurveCircular];
+  [w invalidateShadow];
+}
+
+/* Give F's window W back the stock values ns_glitnir_round changed.  */
+static void
+ns_glitnir_unround (struct frame *f, NSWindow *w)
+{
+  NSView *content = [w contentView];
+  NSColor *bg = f->output_data.ns->background_color;
+  CALayer *layer = [content layer];
+
+  [layer setCornerRadius: 0];
+  [layer setMasksToBounds: NO];
+  if (@available (macOS 14, *))
+    [content setClipsToBounds: NO];
+  if (bg)
+    {
+      [w setBackgroundColor: bg];
+      [w setOpaque: [bg alphaComponent] == (EmacsCGFloat) 1.0];
+    }
+  [w invalidateShadow];
+}
+
+/* Apply F's chrome vector to its window: the corners, and the shadow
+   window, made, changed or dropped.  With Glitnir off for F, or no chrome,
+   the window gets back what was changed and nothing new is made.  */
+static void
+ns_glitnir_apply (struct frame *f)
+{
+  struct ns_output *o = f->output_data.ns;
+  NSWindow *w = [(NSView *) FRAME_NS_VIEW (f) window];
+  const float *c = o->glitnir_chrome;
+
+  if (!w)
+    return;
+
+  bool on = (ns_glitnir_active_p (f) && FRAME_PARENT_FRAME (f)
+	     && c[NHG_CHROME_ON] != 0);
+  CGFloat r = on ? max (0, c[NHG_CHROME_RADIUS]) : 0;
+  bool shadow = on && c[NHG_CHROME_OPACITY] > 0;
+
+  /* Off, and nothing to undo: a root frame, or a child frame without
+     chrome, is not touched at all.  */
+  if (!on && !o->glitnir_shadow && !o->glitnir_rounded)
+    return;
+
+  block_input ();
+  @autoreleasepool
+    {
+      [CATransaction begin];
+      [CATransaction setDisableActions: YES];
+      if (r > 0)
+	{
+	  ns_glitnir_round (w, r);
+	  o->glitnir_rounded = w;
+	}
+      else
+	{
+	  /* A window the frame replaced is closed; the new one is stock.  */
+	  if (o->glitnir_rounded == w)
+	    ns_glitnir_unround (f, w);
+	  o->glitnir_rounded = NULL;
+	}
+
+      GlitnirShadowWindow *s = o->glitnir_shadow;
+      if (!shadow)
+	ns_glitnir_drop_shadow (f);
+      else
+	{
+	  if (!s)
+	    {
+	      s = [[GlitnirShadowWindow alloc] initForFrame: f];
+	      o->glitnir_shadow = s;
+	    }
+	  ns_glitnir_shadow_spec (s, c);
+	  [s setLevel: [w level]];
+	  ns_glitnir_fit (s, w);
+	  /* A shown child window gets its shadow window below it now; a
+	     hidden one when it is shown (the parent's -addChildWindow:).  */
+	  if ([w parentWindow] && [w isVisible]
+	      && [s parentWindow] != [w parentWindow])
+	    ns_glitnir_reattach (w);
+	}
+      [CATransaction commit];
+    }
+  unblock_input ();
+}
+
+/* Copy what F's window shows of its chrome to OUT, a chrome vector
+   (NHG_CHROME_SLOTS floats, logical pixels), read back from its layers,
+   and return true; or return false when Glitnir is off for F or the
+   window shows no chrome.  */
+bool
+ns_glitnir_chrome (struct frame *f, float *out)
+{
+  if (!ns_glitnir_active_p (f))
+    return false;
+
+  struct ns_output *o = f->output_data.ns;
+  NSWindow *w = [(NSView *) FRAME_NS_VIEW (f) window];
+  GlitnirShadowWindow *s = o->glitnir_shadow;
+  bool rounded = w && o->glitnir_rounded == w;
+
+  if (!rounded && !s)
+    return false;
+  memset (out, 0, NHG_CHROME_SLOTS * sizeof *out);
+  out[NHG_CHROME_ON] = 1;
+  if (rounded)
+    out[NHG_CHROME_RADIUS] = [[[w contentView] layer] cornerRadius];
+  if (s)
+    {
+      CALayer *l = s->shadow;
+      CGFloat inner = NSWidth ([s frame]) - 2 * s->margin;
+      CGPathRef path = [l shadowPath];
+      CGColorRef color = [l shadowColor];
+
+      out[NHG_CHROME_BLUR] = 2 * [l shadowRadius];
+      out[NHG_CHROME_OX] = [l shadowOffset].width;
+      out[NHG_CHROME_OY] = -[l shadowOffset].height;
+      if (path)
+	out[NHG_CHROME_SPREAD]
+	  = (CGRectGetWidth (CGPathGetPathBoundingBox (path)) - inner) / 2;
+      out[NHG_CHROME_OPACITY] = [l shadowOpacity];
+      if (color && CGColorGetNumberOfComponents (color) >= 3)
+	{
+	  const CGFloat *k = CGColorGetComponents (color);
+	  out[NHG_CHROME_RGB] = (((uint32_t) lround (k[0] * 255) << 16)
+				 | ((uint32_t) lround (k[1] * 255) << 8)
+				 | (uint32_t) lround (k[2] * 255));
+	}
+    }
+  return true;
 }
 
 
@@ -255,16 +831,57 @@ ns_glitnir_snapshot (struct frame *f, bool png)
 		   The window server's view of the children
  ***********************************************************************/
 
-/* The visible child frames of F's root as the window server lists them,
-   bottom to top: (:frame F :child (X Y W H) :alpha A :shadow (X Y W H)
-   :shadow-alpha A :below BOOL), bounds in points from the root content's
-   top left.  No shadow window is made yet, so :shadow is nil.  Needs no
-   permission: only the window list, not pictures.  */
+/* One child frame of the root in the window server's list: its window's
+   and its shadow window's place in the list (front to back, -1 when not on
+   screen), bounds and alpha.  */
+struct ns_glitnir_pair_entry
+{
+  struct frame *frame;		/* NULL: a shadow window without a frame */
+  CFIndex child_at, shadow_at;
+  CGRect child, shadow;
+  double child_alpha, shadow_alpha;
+};
+
+static Lisp_Object
+ns_glitnir_bounds (CGRect b, CGRect origin)
+{
+  return list4 (make_float (b.origin.x - origin.origin.x),
+		make_float (b.origin.y - origin.origin.y),
+		make_float (b.size.width), make_float (b.size.height));
+}
+
+/* The entry of E (N entries) for frame C, made when there is none and room
+   is left; NULL else.  A shadow window without a frame (C NULL) gets an
+   entry of its own.  */
+static struct ns_glitnir_pair_entry *
+ns_glitnir_pair_entry (struct ns_glitnir_pair_entry *e, int *n, int size,
+		       struct frame *c)
+{
+  for (int i = 0; c && i < *n; i++)
+    if (e[i].frame == c)
+      return &e[i];
+  if (*n == size)
+    return NULL;
+  e[*n] = (struct ns_glitnir_pair_entry) { c, -1, -1 };
+  return &e[(*n)++];
+}
+
+/* The child frames of F's root as the window server lists them, bottom to
+   top: (:frame F :child (X Y W H) :alpha A :shadow (X Y W H) :shadow-alpha
+   A :below BOOL), bounds in points from the root content's top left.  A
+   child frame is listed while its window or its shadow window is on
+   screen; the one not on screen has nil bounds and alpha.  :below is
+   non-nil when the shadow window is directly below the child's in the
+   window server's order.  A shadow window on screen whose frame let it go
+   is listed with :frame nil.  Needs no permission: only the window list,
+   not pictures.  */
 Lisp_Object
 ns_glitnir_pairs (struct frame *f)
 {
   struct frame *r = root_frame (f);
   Lisp_Object result = Qnil;
+  struct ns_glitnir_pair_entry e[64];
+  int n = 0;
 
   if (!FRAME_NS_P (r) || !r->output_data.ns || !FRAME_NS_VIEW (r))
     return Qnil;
@@ -281,42 +898,68 @@ ns_glitnir_pairs (struct frame *f)
 	  NSDictionary *info = (NSDictionary *) CFArrayGetValueAtIndex (list, i);
 	  CGWindowID number
 	    = [[info objectForKey: (NSString *) kCGWindowNumber] unsignedIntValue];
-	  Lisp_Object tail, frame_obj;
+	  NSWindow *w = [NSApp windowWithWindowNumber: number];
+	  struct ns_glitnir_pair_entry *p = NULL;
+	  bool is_shadow = w && ns_glitnir_shadow_p (w);
+	  struct frame *c = (is_shadow ? ((GlitnirShadowWindow *) w)->owner
+			     : w ? ns_glitnir_window_frame (w) : NULL);
+	  CGRect b;
 
-	  FOR_EACH_FRAME (tail, frame_obj)
-	    {
-	      struct frame *c = XFRAME (frame_obj);
-	      CGRect b;
-
-	      if (!FRAME_NS_P (c) || !c->output_data.ns || !FRAME_NS_VIEW (c)
-		  || !FRAME_PARENT_FRAME (c) || root_frame (c) != r
-		  || (CGWindowID) [[(NSView *) FRAME_NS_VIEW (c) window]
-				    windowNumber] != number)
-		continue;
-	      if (!CGRectMakeWithDictionaryRepresentation
-		  ((CFDictionaryRef) [info objectForKey:
-					     (NSString *) kCGWindowBounds], &b))
-		continue;
-	      double alpha
-		= [[info objectForKey: (NSString *) kCGWindowAlpha] doubleValue];
-	      /* The list runs front to back: consing each entry on the front
-		 leaves the bottom one first.  */
-	      result
-		= Fcons (list (intern_c_string (":frame"), frame_obj,
-			       intern_c_string (":child"),
-			       list4 (make_float (b.origin.x - origin.origin.x),
-				      make_float (b.origin.y - origin.origin.y),
-				      make_float (b.size.width),
-				      make_float (b.size.height)),
-			       intern_c_string (":alpha"), make_float (alpha),
-			       intern_c_string (":shadow"), Qnil,
-			       intern_c_string (":shadow-alpha"), Qnil,
-			       intern_c_string (":below"), Qnil),
-			 result);
-	      break;
-	    }
+	  if (c && (!FRAME_PARENT_FRAME (c) || root_frame (c) != r))
+	    continue;
+	  if (!c && !is_shadow)
+	    continue;
+	  if (!CGRectMakeWithDictionaryRepresentation
+	      ((CFDictionaryRef) [info objectForKey:
+					 (NSString *) kCGWindowBounds], &b))
+	    continue;
+	  p = ns_glitnir_pair_entry (e, &n, ARRAYELTS (e), c);
+	  if (!p)
+	    break;
+	  double alpha
+	    = [[info objectForKey: (NSString *) kCGWindowAlpha] doubleValue];
+	  if (is_shadow)
+	    p->shadow_at = i, p->shadow = b, p->shadow_alpha = alpha;
+	  else
+	    p->child_at = i, p->child = b, p->child_alpha = alpha;
 	}
       CFRelease (list);
+    }
+
+  /* The list runs front to back: consing each entry, in that order, on the
+     front leaves the bottom one first.  */
+  for (int i = n - 1; i >= 0; i--)
+    for (int j = 0; j < i; j++)
+      {
+	CFIndex a = e[j].child_at >= 0 ? e[j].child_at : e[j].shadow_at;
+	CFIndex b = e[j + 1].child_at >= 0 ? e[j + 1].child_at : e[j + 1].shadow_at;
+	if (a > b)
+	  {
+	    struct ns_glitnir_pair_entry t = e[j];
+	    e[j] = e[j + 1], e[j + 1] = t;
+	  }
+      }
+  for (int i = 0; i < n; i++)
+    {
+      Lisp_Object frame = Qnil;
+      bool child = e[i].child_at >= 0, shadow = e[i].shadow_at >= 0;
+
+      if (e[i].frame)
+	XSETFRAME (frame, e[i].frame);
+      result
+	= Fcons (list (intern_c_string (":frame"), frame,
+		       intern_c_string (":child"),
+		       child ? ns_glitnir_bounds (e[i].child, origin) : Qnil,
+		       intern_c_string (":alpha"),
+		       child ? make_float (e[i].child_alpha) : Qnil,
+		       intern_c_string (":shadow"),
+		       shadow ? ns_glitnir_bounds (e[i].shadow, origin) : Qnil,
+		       intern_c_string (":shadow-alpha"),
+		       shadow ? make_float (e[i].shadow_alpha) : Qnil,
+		       intern_c_string (":below"),
+		       (child && shadow && e[i].shadow_at == e[i].child_at + 1
+			? Qt : Qnil)),
+		 result);
     }
   unblock_input ();
   return result;
@@ -334,6 +977,56 @@ Lisp_Object
 ns_glitnir_pairs (struct frame *f)
 {
   return Qnil;
+}
+
+/* GNUstep builds are stock: no chrome, no shadow windows.  */
+
+static void
+ns_glitnir_apply (struct frame *f)
+{
+}
+
+bool
+ns_glitnir_chrome (struct frame *f, float *out)
+{
+  return false;
+}
+
+bool
+ns_glitnir_shadow_p (NSWindow *w)
+{
+  return false;
+}
+
+NSWindow *
+ns_glitnir_shadow_to_attach (NSWindow *child)
+{
+  return nil;
+}
+
+void
+ns_glitnir_child_removed (NSWindow *child)
+{
+}
+
+void
+ns_glitnir_child_hidden (NSWindow *child)
+{
+}
+
+void
+ns_glitnir_follow (NSWindow *child)
+{
+}
+
+void
+ns_glitnir_level (NSWindow *child, NSInteger level)
+{
+}
+
+void
+ns_glitnir_frame_destroyed (struct frame *f)
+{
 }
 
 #endif /* ! NS_IMPL_COCOA */

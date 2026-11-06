@@ -441,6 +441,9 @@ enum ns_return_frame_mode
 - (void) setParentChildRelationships;
 - (NSInteger) borderWidth;
 - (BOOL) restackWindow: (NSWindow *) win above: (BOOL) above;
+#ifdef HAVE_GLITNIR
+- (void) glitnirDetach: (NSWindow *) shadow;
+#endif
 - (void) setAppearance;
 - (void) setLastDragEvent: (NSEvent *) event;
 - (NSDragOperation) beginDrag: (NSDragOperation) op
@@ -1024,6 +1027,10 @@ struct ns_output
      its last intake (nsglitnir.m): NS_GLITNIR_SLOTS numbers in logical
      pixels, slot ON (0) first; zero until the first intake.  */
   float glitnir_chrome[24];
+  /* The child frame's shadow window (a retained GlitnirShadowWindow), or
+     NULL; and the window whose corners Glitnir rounded, or NULL.  */
+  void *glitnir_shadow;
+  void *glitnir_rounded;
 #endif
 };
 
@@ -1140,6 +1147,18 @@ extern bool ns_glitnir_active_p (struct frame *f);
 extern bool ns_glitnir_chrome (struct frame *f, float *out);
 extern Lisp_Object ns_glitnir_snapshot (struct frame *f, bool png);
 extern Lisp_Object ns_glitnir_pairs (struct frame *f);
+extern Lisp_Object ns_glitnir_stats (bool reset);
+extern void ns_glitnir_frame_destroyed (struct frame *f);
+#ifdef __OBJC__
+/* The pair hooks of EmacsWindow (nsterm.m): a child window's shadow
+   window is attached, detached, hidden and moved with it.  */
+extern bool ns_glitnir_shadow_p (NSWindow *w);
+extern NSWindow *ns_glitnir_shadow_to_attach (NSWindow *child);
+extern void ns_glitnir_child_removed (NSWindow *child);
+extern void ns_glitnir_child_hidden (NSWindow *child);
+extern void ns_glitnir_follow (NSWindow *child);
+extern void ns_glitnir_level (NSWindow *child, NSInteger level);
+#endif
 #endif
 
 extern Lisp_Object ns_map_event_to_object (void);
