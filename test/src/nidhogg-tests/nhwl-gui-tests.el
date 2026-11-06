@@ -889,9 +889,10 @@ user displays takes this path, and a build without the image libraries would not
 and then placed by its size (posframe) is placed by the new one.  The child has a tool bar, whose items wrap at the
 frame's width: its height at the new width is part of the size returned, so the redisplay after it changes neither the
 text area nor the native one, whatever tool bar the frames made before it had (pattern D: the frame's own sizes, read
-back with no wait)."
+back with no wait).  The sizes are in pixels at every scale: one window line is the root window's least height, so a
+120-pixel text area is one the frame can take at scale 2 too (the default four lines are 132 there)."
   (skip-unless (nhwl-gui--recorder-p))
-  (let ((c nil) (frame-resize-pixelwise t))
+  (let ((c nil) (frame-resize-pixelwise t) (window-min-height 1))
     (cl-flet ((size-at-once (w h)
                 ;; `set-frame-size' sets the text area: the sizes are read right away and again after a redisplay
                 (let ((before (list (frame-native-width c) (frame-native-height c))) now)
