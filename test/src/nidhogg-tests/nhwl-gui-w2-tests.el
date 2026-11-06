@@ -826,19 +826,38 @@ nothing."
   "How many connections the recorder has accepted since it started."
   (plist-get (gui-runner-recorder '(:cmd "connections")) :accepted))
 
-(defun nhwl-gui--fd-kinds ()
-  "This process's descriptors as a sorted list of what each is (a socket, a pipe, an eventfd, a file's name), without
-the shell's buffer memfds.  A window's buffer pool holds one memfd a buffer and grows and trims by time (a pool idle for
-2 s keeps one buffer), so their number at a given moment says nothing of a leak: VmRSS judges the buffers.  An
-inode number changes with each connection, so a kind leaves it out."
-  (sort (delq nil (mapcar (lambda (fd)
-                            (let ((l (ignore-errors (file-symlink-p (concat "/proc/self/fd/" fd)))))
-                              (cond ((null l) nil)
-                                    ((string-prefix-p "/memfd:nhshell-buffer" l) nil)
-                                    ((string-match "\\`\\([a-z_]+\\):\\[[0-9]+\\]\\'" l) (match-string 1 l))
-                                    (t l))))
-                          (directory-files "/proc/self/fd" nil "\\`[0-9]")))
+(defun nhwl-gui--fd-kinds-of (links)
+  "LINKS, what descriptors' /proc links read (nil for one closed meanwhile), as a sorted list of what each is (a
+socket, a pipe, an eventfd, a file's name), without the shell's buffer memfds.  A window's buffer pool holds one memfd
+a buffer and grows and trims by time (a pool idle for 2 s keeps one buffer), so their number at a given moment says
+nothing of a leak: VmRSS judges the buffers.  An inode number changes with each connection, so a kind leaves it out."
+  (sort (delq nil (mapcar (lambda (l)
+                            (cond ((null l) nil)
+                                  ((string-prefix-p "/memfd:nhshell-buffer" l) nil)
+                                  ((string-match "\\`\\([a-z_]+\\):\\[[0-9]+\\]\\'" l) (match-string 1 l))
+                                  (t l)))
+                          links))
         #'string<))
+
+(defun nhwl-gui--fd-kinds ()
+  "This process's descriptors as `nhwl-gui--fd-kinds-of' lists them."
+  (nhwl-gui--fd-kinds-of
+   (mapcar (lambda (fd) (ignore-errors (file-symlink-p (concat "/proc/self/fd/" fd))))
+           (directory-files "/proc/self/fd" nil "\\`[0-9]"))))
+
+(ert-deftest nhwl-gui/fd-kinds-leave-out-the-buffer-pool ()
+  "Pattern D (pure).  Two descriptor sets as a twenty-restart row reads them at cycles 5 and 20, a window's pool
+holding one buffer more at the second (it grows while the compositor holds its buffers and trims after 2 s idle,
+glitnir's `idle_trims_to_one_after_2s'): their counts differ, as the rows' old count did once (22 against 21), and
+their kinds are equal.  A socket left open still differs, by its kind."
+  (let* ((at5 '("/dev/null" "socket:[101]" "pipe:[7]" "anon_inode:[eventfd]" "/memfd:nhshell-buffer (deleted)"))
+         (at20 '("/dev/null" "socket:[202]" "pipe:[9]" "anon_inode:[eventfd]" "/memfd:nhshell-buffer (deleted)"
+                 "/memfd:nhshell-buffer (deleted)" nil))
+         (leak (cons "socket:[303]" at5)))
+    (should-not (= (length (delq nil (copy-sequence at20))) (length at5)))
+    (should (equal (nhwl-gui--fd-kinds-of at20) (nhwl-gui--fd-kinds-of at5)))
+    (should (equal (nhwl-gui--fd-kinds-of at5) '("/dev/null" "anon_inode:[eventfd]" "pipe" "socket")))
+    (should-not (equal (nhwl-gui--fd-kinds-of leak) (nhwl-gui--fd-kinds-of at5)))))
 
 (defun nhwl-gui--proc-counts ()
   "This process's (FDS TASKS RSS-KB), FDS as `nhwl-gui--fd-kinds' lists them."
