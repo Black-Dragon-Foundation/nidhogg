@@ -99,7 +99,7 @@ case $cmd in
         > "$work/stage/$c/.cargo/config.toml"
     done
     # the checks pass on what is about to be published
-    "$0" check "$work/stage" shell glitnir || exit 1
+    bash "$0" check "$work/stage" shell glitnir || exit 1
     mkdir -p "$(dirname "$out")"
     ( cd "$work/stage" && tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - shell glitnir glue ) |
       zstd -19 -q -o "$out" -f || fail pack
