@@ -1376,6 +1376,42 @@ nhwl_set_frame_alpha (struct frame *f)
   out->alpha_host = rc & NHG_ALPHA_HOST;
 }
 
+/* Frame F was just sized: give its internal tool bar the height its
+   items need at F's new width now, rather than at the next redisplay.
+   The tool bar wraps its items at the frame's width (GTK's tool bar is
+   a widget outside the native area, one row at any width), and
+   redisplay_tool_bar would change its height, and with it F's text or
+   native height, after the size was read back.  *HEIGHT, F's native
+   height, grows or shrinks with the tool bar, so the text area keeps the
+   height asked for.  True when the tool bar's height changed (F is then
+   to be sized again at *HEIGHT).  */
+static bool
+nhwl_tool_bar_fit (struct frame *f, int *height)
+{
+  int old = FRAME_TOOL_BAR_HEIGHT (f), new;
+  Lisp_Object frame;
+
+  if (old == 0 || NILP (Vauto_resize_tool_bars)
+      || !WINDOWP (f->tool_bar_window))
+    return false;
+  XSETFRAME (frame, f);
+  /* Measured at the tool bar window's width, which change_frame_size
+     has just set.  */
+  new = XFIXNUM (Ftool_bar_height (frame, Qt));
+  if (new == 0 || new == old
+      || (EQ (Vauto_resize_tool_bars, Qgrow_only) && new < old))
+    return false;
+  FRAME_TOOL_BAR_HEIGHT (f) = new;
+  FRAME_TOOL_BAR_LINES (f)
+    = (new + FRAME_LINE_HEIGHT (f) - 1) / FRAME_LINE_HEIGHT (f);
+  store_frame_param (f, Qtool_bar_lines,
+		     make_fixnum (FRAME_TOOL_BAR_LINES (f)));
+  /* Redisplay counts the rows again, and finds the height they need.  */
+  f->n_tool_bar_rows = 0;
+  *height += new - old;
+  return true;
+}
+
 /* Adapted from pgtk_set_window_size.  The window's size is the size of
    the buffer we present, so the frame takes the size it asks for at
    once (the compositor only suggests), within what a surface may be
@@ -1387,7 +1423,9 @@ nhwl_set_frame_alpha (struct frame *f)
    configure's does.  A visible top-level that is maximized or
    fullscreen keeps the compositor's size, as a GTK window does:
    xdg-shell binds the client to that size (fullscreen: at most it), and
-   leaving the state gives the floating size back.  */
+   leaving the state gives the floating size back.  The tool bar of a
+   frame sized at once takes its new height at once too
+   (nhwl_tool_bar_fit).  */
 void
 nhwl_set_window_size (struct frame *f, bool change_gravity, int pixelwidth,
 		      int pixelheight)
@@ -1399,10 +1437,17 @@ nhwl_set_window_size (struct frame *f, bool change_gravity, int pixelwidth,
 	  & (NHG_STATE_MAXIMIZED | NHG_STATE_FULLSCREEN)))
     return;
 
+  bool delay = FRAME_VISIBLE_P (f) && !FRAME_PARENT_FRAME (f);
+
   NHG (nhg_frame_clamp (FRAME_NHG (f), window, &pixelwidth, &pixelheight));
   nhwl_popup_set_size (f, pixelwidth, pixelheight);
-  change_frame_size (f, pixelwidth, pixelheight, false,
-		     FRAME_VISIBLE_P (f) && !FRAME_PARENT_FRAME (f), false);
+  change_frame_size (f, pixelwidth, pixelheight, false, delay, false);
+  if (!delay && nhwl_tool_bar_fit (f, &pixelheight))
+    {
+      NHG (nhg_frame_clamp (FRAME_NHG (f), window, &pixelwidth, &pixelheight));
+      nhwl_popup_set_size (f, pixelwidth, pixelheight);
+      change_frame_size (f, pixelwidth, pixelheight, false, false, false);
+    }
   SET_FRAME_GARBAGED (f);
   if (window)
     nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
