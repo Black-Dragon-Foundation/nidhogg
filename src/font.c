@@ -3112,10 +3112,19 @@ font_spec_from_name (Lisp_Object font_name)
 }
 
 
+#ifdef HAVE_GLITNIR
+/* True when the next font_clear_prop may clear the spec in place.  */
+static bool font_clear_in_place;
+#endif
+
 void
 font_clear_prop (Lisp_Object *attrs, enum font_property_index prop)
 {
   Lisp_Object font = attrs[LFACE_FONT_INDEX];
+#ifdef HAVE_GLITNIR
+  bool in_place = font_clear_in_place;
+  font_clear_in_place = false;
+#endif
 
   if (! FONTP (font))
     return;
@@ -3132,6 +3141,11 @@ font_clear_prop (Lisp_Object *attrs, enum font_property_index prop)
       && prop != FONT_WIDTH_INDEX
       && prop != FONT_SIZE_INDEX)
     return;
+#ifdef HAVE_GLITNIR
+  if (in_place)
+    ;
+  else
+#endif
   if (EQ (font, attrs[LFACE_FONT_INDEX]))
     font = copy_font_spec (font);
   ASET (font, prop, Qnil);
@@ -3162,6 +3176,26 @@ font_clear_prop (Lisp_Object *attrs, enum font_property_index prop)
     ASET (font, FONT_AVGWIDTH_INDEX, Qnil);
   attrs[LFACE_FONT_INDEX] = font;
 }
+
+#ifdef HAVE_GLITNIR
+/* font_clear_prop for one of a merge's clears.  FRESH is nil or the
+   spec an earlier clear of the same merge made, which only ATTRS
+   holds; while ATTRS still holds it, it is cleared in place rather
+   than copied once more (a copy of a copy has the same contents, so
+   ATTRS ends as font_clear_prop would leave it).  Value is FRESH for
+   the merge's next clear.  */
+
+Lisp_Object
+font_merge_clear_prop (Lisp_Object *attrs, enum font_property_index prop,
+		       Lisp_Object fresh)
+{
+  Lisp_Object font = attrs[LFACE_FONT_INDEX];
+
+  font_clear_in_place = FONTP (font) && EQ (font, fresh);
+  font_clear_prop (attrs, prop);
+  return EQ (attrs[LFACE_FONT_INDEX], font) ? fresh : attrs[LFACE_FONT_INDEX];
+}
+#endif
 
 /* Select a font from ENTITIES (list of one or more font-entity
    vectors) that supports the character C (if non-negative) and is the

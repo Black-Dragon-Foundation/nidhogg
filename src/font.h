@@ -868,6 +868,11 @@ extern int font_has_char (struct frame *, Lisp_Object, int);
 
 extern void font_clear_prop (Lisp_Object *attrs,
                              enum font_property_index prop);
+#ifdef HAVE_GLITNIR
+extern Lisp_Object font_merge_clear_prop (Lisp_Object *,
+					  enum font_property_index,
+					  Lisp_Object);
+#endif
 extern Lisp_Object font_find_for_lface (struct frame *f, Lisp_Object *lface,
                                         Lisp_Object spec, int c);
 extern Lisp_Object font_open_for_lface (struct frame *f, Lisp_Object entity,
