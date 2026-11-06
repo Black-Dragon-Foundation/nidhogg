@@ -887,12 +887,16 @@ the hook runs `reconnecting', then `reconnected'."
     (should (nhwl-gui--connected-p))))
 
 (ert-deftest nhwl-gui/compositor-restart-keeps-buffer-text-and-point ()
-  "Buffer text, point and `window-start' are unchanged, and the picture after `reconnected' is the one before."
+  "Buffer text, point and `window-start' are unchanged, and the picture after `reconnected' is the one before.
+The cursor does not blink meanwhile: a frame with the keyboard (as the context-menu rows before this one leave it)
+blinks its cursor from a timer, and two pictures taken a restart apart would differ by the blink's phase, not by the
+restart (pattern D: the two pictures, with no timer between them that draws)."
   :tags '(runs-last)
   (skip-unless (nhwl-gui--recorder-p))
-  (let ((buf (generate-new-buffer " *nhwl-reconnect*")) (before nil))
+  (let ((buf (generate-new-buffer " *nhwl-reconnect*")) (before nil) (blink blink-cursor-mode))
     (unwind-protect
         (progn
+          (blink-cursor-mode -1)
           (switch-to-buffer buf)
           (dotimes (i 200) (insert (format "line %d of the text that stays\n" i)))
           (goto-char (point-min))
@@ -909,6 +913,7 @@ the hook runs `reconnecting', then `reconnected'."
             (should (= (window-start) start)))
           (gui-runner-wait-settled)
           (should (<= (car (gui-runner-pixel-diff before (gui-runner-screen-grab))) 2)))
+      (when blink (blink-cursor-mode 1))
       (kill-buffer buf))))
 
 (ert-deftest nhwl-gui/compositor-restart-falls-back-after-timeout ()
