@@ -24,10 +24,15 @@
 ;; Settings portal (org.freedesktop.portal.Settings) over D-Bus and
 ;; follows its `SettingChanged' signal.  The values are the colour
 ;; scheme, the accent colour, the title-bar button layout and the
-;; cursor theme and size.  Without a portal the defaults apply.
+;; cursor theme and size, the high-contrast request and the desktop's
+;; interface and monospace font names.  Without a portal the defaults
+;; apply.
 ;;
 ;; The settings are read once, when the first graphical frame is made,
-;; never when this file is loaded.
+;; never when this file is loaded.  The reads are asynchronous, each with
+;; a 500 ms timeout: the first frame never waits for the portal, the
+;; defaults hold until an answer comes, and an answer that differs from
+;; the default runs `nhwl-settings-changed-functions' once.
 ;;
 ;; The shell's client-side title bar takes its button layout, its
 ;; colours (the two `nidhogg-title-bar' faces) and its font from here:
@@ -37,7 +42,7 @@
 
 ;;; Code:
 
-(declare-function dbus-call-method "dbus")
+(declare-function dbus-call-method-asynchronously "dbus")
 (declare-function dbus-register-signal "dbus")
 
 (defgroup nhwl-settings nil
@@ -116,11 +121,21 @@ Each function is called with the key (a symbol) and the new value.")
   '((color-scheme "org.freedesktop.appearance" "color-scheme" 0)
     (accent-color "org.freedesktop.appearance" "accent-color" nil)
     (reduced-motion "org.freedesktop.appearance" "reduced-motion" 0)
+    (contrast "org.freedesktop.appearance" "contrast" 0)
     (button-layout "org.gnome.desktop.wm.preferences" "button-layout"
                    "appmenu:close")
     (cursor-theme "org.gnome.desktop.interface" "cursor-theme" "default")
-    (cursor-size "org.gnome.desktop.interface" "cursor-size" 24))
+    (cursor-size "org.gnome.desktop.interface" "cursor-size" 24)
+    (font-name "org.gnome.desktop.interface" "font-name" nil)
+    (monospace-font-name "org.gnome.desktop.interface" "monospace-font-name"
+                         nil))
   "Each setting: (KEY NAMESPACE PORTAL-KEY DEFAULT).")
+
+(defconst nhwl-settings--read-timeout 500
+  "Milliseconds a portal read may take before it is given up.")
+
+(defvar nhwl-settings--bus :session
+  "The D-Bus bus the portal is on.")
 
 (defvar nhwl-settings--values (make-hash-table :test 'eq)
   "KEY -> the value read from the portal.  A missing key has its default.")
@@ -132,8 +147,10 @@ Each function is called with the key (a symbol) and the new value.")
   "Return the desktop setting KEY, or its default.
 KEY is `color-scheme' (0 none, 1 dark, 2 light), `accent-color' (a
 list (R G B) of floats, or nil), `reduced-motion' (1 when the desktop
-asks for less motion, else 0), `button-layout' (a string),
-`cursor-theme' or `cursor-size'."
+asks for less motion, else 0), `contrast' (1 when it asks for more,
+else 0), `button-layout' (a string), `cursor-theme', `cursor-size',
+`font-name' or `monospace-font-name' (strings, nil when unknown).
+Until the portal has answered, the default is returned."
   (let ((entry (assq key nhwl-settings--keys)))
     (unless entry (error "Unknown desktop setting: %S" key))
     (gethash key nhwl-settings--values (nth 3 entry))))
@@ -156,27 +173,26 @@ asks for less motion, else 0), `button-layout' (a string),
    ((eq key 'color-scheme)
     (when (and (consp value) (null (cdr value))) (setq value (car value)))
     (and (memq value '(0 1 2)) value))
-   ((eq key 'reduced-motion)
+   ((memq key '(reduced-motion contrast))
     (when (and (consp value) (null (cdr value))) (setq value (car value)))
     (and (memq value '(0 1)) value))
    (t
     (when (and (consp value) (null (cdr value))) (setq value (car value)))
     (and (stringp value) value))))
 
-(defun nhwl-settings--read (namespace name)
-  "Read NAME of NAMESPACE from the portal, or return nil."
-  (let ((args (list :session "org.freedesktop.portal.Desktop"
-                    "/org/freedesktop/portal/desktop"
-                    "org.freedesktop.portal.Settings")))
-    (condition-case nil
-        (apply #'dbus-call-method
-               (append args (list "ReadOne" namespace name)))
-      (dbus-error
-       ;; Portals older than version 2 only have `Read'.
-       (condition-case nil
-           (apply #'dbus-call-method
-                  (append args (list "Read" namespace name)))
-         (dbus-error nil))))))
+(defun nhwl-settings--read-async (key namespace name)
+  "Ask the portal for NAME of NAMESPACE; store the answer as setting KEY.
+Returns at once.  An error or no answer within `nhwl-settings--read-timeout'
+leaves the default."
+  (condition-case nil
+      (dbus-call-method-asynchronously
+       nhwl-settings--bus "org.freedesktop.portal.Desktop"
+       "/org/freedesktop/portal/desktop" "org.freedesktop.portal.Settings"
+       "ReadOne"
+       (lambda (&optional value)
+         (nhwl-settings--set key (nhwl-settings--normalize key value)))
+       :timeout nhwl-settings--read-timeout namespace name)
+    (error nil)))
 
 (defun nhwl-settings--title-bar-colors (scheme)
   "Apply the default title-bar colours for colour SCHEME (1 is dark)."
@@ -291,15 +307,11 @@ Without a portal the defaults stay.  Does nothing the second time."
     (setq nhwl-settings--initialized t)
     (when (require 'dbus nil t)
       (dolist (entry nhwl-settings--keys)
-        (let ((value (condition-case nil
-                         (nhwl-settings--read (nth 1 entry) (nth 2 entry))
-                       (error nil))))
-          (nhwl-settings--set (car entry)
-                              (nhwl-settings--normalize (car entry) value))))
+        (nhwl-settings--read-async (car entry) (nth 1 entry) (nth 2 entry)))
       (nhwl-settings--apply-cursor)
       (condition-case nil
           (dbus-register-signal
-           :session "org.freedesktop.portal.Desktop"
+           nhwl-settings--bus "org.freedesktop.portal.Desktop"
            "/org/freedesktop/portal/desktop"
            "org.freedesktop.portal.Settings" "SettingChanged"
            #'nhwl-settings--signal)
