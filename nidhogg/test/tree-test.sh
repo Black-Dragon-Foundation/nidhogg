@@ -206,9 +206,13 @@ bad=$(git ls-files | grep -E '^(\.claude/|\.superpowers/|docs/plans/)' |
   done)
 [ -z "$bad" ] || fail "local artifacts are tracked or changed: $(echo "$bad" | tr '\n' ' ')"
 
+# the Rust crates are locked, not vendored in git: the release publishes them (nidhogg/ci/vendor.sh)
+vendored=$(git ls-files nidhogg | grep -E '^nidhogg/[^/]+/(vendor/|\.cargo/)' || true)
+[ -z "$vendored" ] || fail "vendored crates are tracked: $(echo "$vendored" | head -n 3 | tr '\n' ' ')"
+
 # the pattern is built from two halves so this file does not match itself
 pat='/ho''me/|/Us''ers/'
-hits=$(git ls-files nidhogg .github README.md ':!nidhogg/*/vendor/*' | while IFS= read -r f; do
+hits=$(git ls-files nidhogg .github README.md | while IFS= read -r f; do
   [ -f "$f" ] && grep -IEl "$pat" "$f"; done)
 [ -z "$hits" ] || fail "absolute home path in: $(echo "$hits" | tr '\n' ' ')"
 

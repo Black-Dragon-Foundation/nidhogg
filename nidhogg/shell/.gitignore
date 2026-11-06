@@ -1,3 +1,0 @@
-# the root .gitignore ignores dot-files, `_*`, `*.orig`, `*.dll` and more; the vendored crates must be tracked whole,
-# or cargo's checksum check fails in a fresh checkout
-!vendor/**
