@@ -90,6 +90,31 @@ ANSWERS maps (NAMESPACE . KEY) to a value; others get no answer.
     (should (equal (face-attribute 'nidhogg-title-bar :background nil t)
                    "#303030"))))
 
+(ert-deftest nhwl-settings/title-bar-reads-the-faces-of-the-first-frame ()
+  ;; [D] pure.  The first graphical frame starts the settings from
+  ;; `after-make-frame-functions', while the initial frame is still the
+  ;; selected one, and the initial frame has no `nidhogg-title-bar' face of
+  ;; its own (reading it there was "Invalid face" and ended the start): the
+  ;; title bar takes the faces of the frame that started the settings.
+  (nhwl-settings-test--with-portal nil
+    (let ((frame (selected-frame))
+          (after-make-frame-functions (list #'nhwl-settings--first-frame))
+          (read-on nil)
+          (styled 0))
+      (cl-letf (((symbol-function 'display-graphic-p)
+                 (lambda (&optional display) (eq display frame)))
+                ((symbol-function 'face-attribute)
+                 (lambda (face _attribute &optional on _inherit)
+                   (when (memq face '(nidhogg-title-bar nidhogg-title-bar-inactive))
+                     (push on read-on))
+                   'unspecified))
+                ((symbol-function 'nhwl--set-title-bar-style)
+                 (lambda (&rest _) (setq styled (1+ styled)))))
+        (nhwl-settings--first-frame frame))
+      (should (= styled 1))
+      (should read-on)
+      (should (seq-every-p (lambda (on) (eq on frame)) read-on)))))
+
 (ert-deftest nhwl-settings/changed-signal-updates-and-runs-hook ()
   (nhwl-settings-test--with-portal nil
     (let (calls)

@@ -257,17 +257,17 @@ timeout, so a timer ends the read and a late answer is ignored."
 
 (declare-function nhwl--set-title-bar-style "nhwlfns.c")
 
-(defun nhwl-settings--face-colour (face attribute)
-  "FACE's colour ATTRIBUTE as a string, or nil when it has none."
-  (let ((v (face-attribute face attribute nil t)))
+(defun nhwl-settings--face-colour (face attribute frame)
+  "FACE's colour ATTRIBUTE on FRAME as a string, or nil when it has none."
+  (let ((v (face-attribute face attribute frame t)))
     (and (stringp v) v)))
 
-(defun nhwl-settings--title-bar-font ()
-  "The title bar's font as (FAMILY . PIXELS), from the `nidhogg-title-bar' face.
+(defun nhwl-settings--title-bar-font (frame)
+  "The title bar's font as (FAMILY . PIXELS), from `nidhogg-title-bar' on FRAME.
 FAMILY is nil when the face has none, PIXELS (logical pixels, 96 per
 inch) nil when the face has no absolute height."
-  (let ((family (face-attribute 'nidhogg-title-bar :family nil t))
-        (height (face-attribute 'nidhogg-title-bar :height nil t)))
+  (let ((family (face-attribute 'nidhogg-title-bar :family frame t))
+        (height (face-attribute 'nidhogg-title-bar :height frame t)))
     (cons (and (stringp family) family)
           ;; :height is in 1/10 pt; a point is 4/3 logical pixels.
           (and (integerp height) (> height 0) (/ (* height 4) 30.0)))))
@@ -285,18 +285,27 @@ inch) nil when the face has no absolute height."
         (when kind (push kind kinds))))
     (nreverse kinds)))
 
-(defun nhwl-settings-apply-title-bar ()
-  "Give the shell's title bars the desktop's layout and the faces' colours and font."
-  (when (fboundp 'nhwl--set-title-bar-style)
-    (let ((layout (nhwl-settings-button-layout)))
-      (nhwl--set-title-bar-style
-       (nhwl-settings--button-kinds (car layout))
-       (nhwl-settings--button-kinds (cdr layout))
-       (nhwl-settings--face-colour 'nidhogg-title-bar :foreground)
-       (nhwl-settings--face-colour 'nidhogg-title-bar :background)
-       (nhwl-settings--face-colour 'nidhogg-title-bar-inactive :foreground)
-       (nhwl-settings--face-colour 'nidhogg-title-bar-inactive :background)
-       (nhwl-settings--title-bar-font)))))
+(defun nhwl-settings-apply-title-bar (&optional frame)
+  "Give the shell's title bars the desktop's layout and the faces' colours and font.
+The faces are read on a graphical frame: FRAME, else the selected frame,
+else the first graphical frame.  The initial frame, selected while the
+first graphical frame is made and in a daemon, has no title-bar faces of
+its own.  Without a graphical frame nothing is done."
+  (let ((frame (seq-find #'display-graphic-p
+                         (append (and frame (list frame))
+                                 (list (selected-frame)) (frame-list)))))
+    (when (and frame (fboundp 'nhwl--set-title-bar-style))
+      (let ((layout (nhwl-settings-button-layout))
+            (active 'nidhogg-title-bar)
+            (inactive 'nidhogg-title-bar-inactive))
+        (nhwl--set-title-bar-style
+         (nhwl-settings--button-kinds (car layout))
+         (nhwl-settings--button-kinds (cdr layout))
+         (nhwl-settings--face-colour active :foreground frame)
+         (nhwl-settings--face-colour active :background frame)
+         (nhwl-settings--face-colour inactive :foreground frame)
+         (nhwl-settings--face-colour inactive :background frame)
+         (nhwl-settings--title-bar-font frame))))))
 
 (defun nhwl-settings--title-bar-changed (key _value)
   "Restyle the title bars when the setting KEY is the layout or the scheme."
@@ -312,9 +321,11 @@ inch) nil when the face has no absolute height."
 (add-hook 'enable-theme-functions #'nhwl-settings--theme-changed)
 (add-hook 'disable-theme-functions #'nhwl-settings--theme-changed)
 
-(defun nhwl-settings-init ()
+(defun nhwl-settings-init (&optional frame)
   "Read the desktop settings from the portal and follow their changes.
-Without a portal the defaults stay.  Does nothing the second time."
+FRAME is the graphical frame whose faces style the title bars at once
+\(see `nhwl-settings-apply-title-bar').  Without a portal the defaults
+stay.  Does nothing the second time."
   (unless nhwl-settings--initialized
     (setq nhwl-settings--initialized t)
     (when (require 'dbus nil t)
@@ -328,13 +339,13 @@ Without a portal the defaults stay.  Does nothing the second time."
            "org.freedesktop.portal.Settings" "SettingChanged"
            #'nhwl-settings--signal)
         (error nil)))
-    (nhwl-settings-apply-title-bar)))
+    (nhwl-settings-apply-title-bar frame)))
 
 (defun nhwl-settings--first-frame (frame)
   "Read the settings at the first graphical FRAME, then stop listening."
   (when (display-graphic-p frame)
     (remove-hook 'after-make-frame-functions #'nhwl-settings--first-frame)
-    (nhwl-settings-init)))
+    (nhwl-settings-init frame)))
 
 (defun nhwl-settings--parse-side (string)
   "Return the known button names in STRING (comma separated) as symbols."
