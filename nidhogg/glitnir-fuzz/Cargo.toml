@@ -1,5 +1,5 @@
 # cargo-fuzz target for Glitnir's image C ABI (PNG, GIF and WebP through `glitnir_img_decode`).  Its own workspace, and a
-# sibling of the crate rather than a subdirectory: the crate's `.cargo/config.toml` points crates.io at its vendored
+# sibling of the crate rather than a subdirectory: the crate's `.cargo/config.toml` (from the vendor tarball) points crates.io at its vendored
 # directory, which holds no fuzzer.  Builds on nightly only (README.md, "Fuzzing the image decoders").
 [package]
 name = "glitnir-fuzz"

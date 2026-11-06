@@ -128,8 +128,19 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   no root). `build.sh` passes `--with-glitnir` on Linux and NS; `--without-glitnir` builds
   without it and without installing Rust. The configure flag is `--with-glitnir` (default no; `HAVE_GLITNIR`): configure
   checks `cargo` and `rustc` only under the flag and otherwise stops with `--with-glitnir needs cargo and rustc 1.93 or
-  newer`. `make` builds the crate offline and locked, with its cargo home and target directory under `src/` of the build
-  tree (never `~/.cargo`), and links it into `temacs`. With the flag the feature `glitnir` is provided, `glitnir-enable`
+  newer`. `make` builds the crate locked, with its cargo home and target directory under `src/` of the build
+  tree (never `~/.cargo`), and links it into `temacs`.
+  **Crates, online and offline.** The crates are not in git: the `Cargo.lock` files (`nidhogg/glitnir`, `shell`, `glue`)
+  are the pin, each crate with its SHA-256, and every build runs `cargo --locked`, so nothing unlocked builds. The
+  switch between fetching and building offline is a directory: cargo reads `.cargo/config.toml` from the crate's
+  directory, and the tree has none, so it fetches the locked crates from crates.io into the build's cargo home (the
+  network is needed once; configure stops with a message naming the missing `vendor/` when it cannot). To build offline
+  unpack the release's `nidhogg-vendor-<version>.tar.zst` in `nidhogg/` (`tar --zstd -xf nidhogg-vendor-VERSION.tar.zst
+  -C nidhogg`): it holds `shell/vendor/`, `glitnir/vendor/` and the `.cargo/config.toml` of the shell, the glue and
+  Glitnir, which point cargo at them. A distro packager can make the same with `cargo vendor` in each crate (the glue
+  uses the shell's) and write the same three config files. `nidhogg/ci/vendor.sh check` verifies an unpacked
+  `vendor/` (every file as its checksum list says, the packages exactly the lock's) offline; `vendor.sh make` builds
+  the tarball from the locks (CI's `vendor` job, which every run passes and the release publishes). With the flag the feature `glitnir` is provided, `glitnir-enable`
   (default `t`) and `glitnir-active-p` exist; without it none of them do. Release tarballs need no Rust.
   On Linux the library is linked through the native shell's glue (`nidhogg/glue`, `libnhglue.a`; `nidhogg/shell/README.md`).
   `glitnir-active-p` is non-nil for a frame of the shell (not a tooltip) while `glitnir-enable` is non-nil; nil turns
@@ -188,6 +199,9 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
 - At the `prefix` in `BUILDINFO` the tree runs as is. Anywhere else, source `env.sh` first:
   `NIDHOGG_ROOT=DIR . DIR/share/nidhogg/env.sh`.
 - Limit: a relocated tree natively compiles non-preloaded libraries into the user's cache.
+- The release also carries `nidhogg-vendor-<version>.tar.zst`, the Rust crates the `Cargo.lock` files pin, for offline
+  builds and distro packagers (Building, "Crates, online and offline"); it is in `SHA256SUMS`. No full source tarball
+  is published: a source build is a checkout of the tag plus, offline, that file.
 - `bash nidhogg/test/tarball-test.sh TARBALL DISTRO` unpacks at the prefix and elsewhere (a `--memory 2g` container on
   Linux) and runs the checks on each. On Linux they start with `ldd` on every program in `bin/` and `libexec/`: a
   library not found fails the test, all of them named at once (their packages belong in `deps/<distro>.runtime`).
@@ -407,7 +421,8 @@ machine whose timing never shows it, not certain.
     build.sh>` (macOS: `configure-macos-<arch>-<hash of the Homebrew packages' versions and the runner image>-…`), exact,
     saved like the compiled Lisp; `build.sh` (`NIDHOGG_BUILD_CONFIG_CACHE`) runs configure again cold when it fails with
     them.
-  - Glitnir's cargo target (the glue, the shell, Glitnir and their vendored crates, built by `make`):
+  - Glitnir's cargo target (the glue, the shell, Glitnir and their locked crates, built by `make`; the target directory
+    also holds the registry's `index` and downloaded `.crate` files, linked into the build's cargo home by `build.sh`):
     `glitnir-target-D-I-<hash of the three Cargo.lock files>-<run>` (macOS: `glitnir-target-macos-<arch>-<rustc -V>-<hash
     of glitnir/Cargo.lock>-<run>`), restored from the newest entry of the same lock and image; saved by `nidhogg-31`
     only (some 0.2 GB per OS), without cargo's incremental data. `build.sh` (`NIDHOGG_BUILD_CARGO_TARGET`) links it in and
@@ -425,8 +440,11 @@ machine whose timing never shows it, not certain.
     checked by `cc -v`, since `/usr/bin/cc` is a shim; `build.sh --host` uses ccache when `NIDHOGG_BUILD_CCACHE` is
     set). A new runner image restores the previous image's entry (`ccache-macos-<arch>-`): an unchanged clang still
     hits, a changed one misses. Homebrew's downloads are not cached (775 MB for under a minute).
-  - `native-crates`: the crates' target directories and the recorder's downloaded crates (its registry's index and
-    `.crate` files; the shell and the glue vendor theirs), never whole cargo homes (no unpacked sources, tools or
+  - Downloaded crates (the registry's `index` and `.crate` files, keyed on the lockfiles): `glitnir-crates-<hash of
+    glitnir/Cargo.lock>` (the `tree` job, and `glitnir-crates-macos-...`), `vendor-crates-<hash of the shell's and
+    Glitnir's locks>` (the `vendor` job); a fetch sees no token, and the checkouts keep no credentials.
+  - `native-crates`: the crates' target directories and their downloaded crates (the registry's index and `.crate`
+    files of the recorder, the shell and the glue), never whole cargo homes (no unpacked sources, tools or
     credentials): `crates-fedora-45-<hash of the four Cargo.lock files>-<run>`, restored by prefix: cargo rebuilds
     whatever is stale, by the file times above; incremental data is dropped before the save. `workers-pkg`: the pinned
     packages (`pkg-pins-<hash of pkg-pins.txt and pkg-test.sh>`, exact, without build output or compiled files).

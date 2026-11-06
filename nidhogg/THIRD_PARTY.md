@@ -49,7 +49,7 @@ Entries:
 - Files: `nidhogg/shell/src/wayland/cursor_theme.rs` (loading an Xcursor theme through `wayland-cursor` and showing
   one cursor image on a pointer surface; sizes, names and the reload rules are Nidhogg's, noted in its header)
 
-Crates vendored for the cursor theme (in `nidhogg/shell/vendor/`, unmodified, MIT, accepted by `deny.toml`): `wayland-cursor` 0.31.14 and `xcursor` 0.3.11, from crates.io.
+Crates locked for the cursor theme (`nidhogg/shell/Cargo.lock`; fetched from crates.io, vendored unmodified in the release's vendor tarball; MIT, accepted by `deny.toml`): `wayland-cursor` 0.31.14 and `xcursor` 0.3.11, from crates.io.
 
 ## https://github.com/WebKit/WebKit@029da7d3d074a75a24c2413e98b183a8bbfcfb62 Source/WebCore/platform/graphics/UnitBezier.h
 

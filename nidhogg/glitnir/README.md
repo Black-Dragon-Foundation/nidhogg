@@ -6,18 +6,21 @@ parameters only, so it knows nothing of the program that embeds it.
 
 ## Crate rules
 
-- Standard library only. A third-party crate needs a reason, and every one is vendored (`vendor/`), locked
-  (`Cargo.lock`), licence-checked (`deny.toml`) and listed here with that reason:
+- Standard library only. A third-party crate needs a reason, and every one is locked
+  (`Cargo.lock`, which carries each crate's SHA-256; builds run `--locked`) and vendored at release (the release's
+  `nidhogg-vendor-<version>.tar.zst`; nothing is vendored in git), licence-checked (`deny.toml`) and listed here with that reason:
   - `png =0.18.1` (feature `images`, no default features): PNG decoding in safe Rust, so untrusted PNGs never reach
     libpng. It brings `fdeflate`, `flate2` (with `miniz_oxide`), `crc32fast`, `bitflags`, `adler2`, `simd-adler32`
-    and `cfg-if`; none starts a thread. `zlib-rs` is locked and vendored as an optional dependency of `flate2` but
+    and `cfg-if`; none starts a thread. `zlib-rs` is locked (and in the vendor tarball) as an optional dependency of `flate2` but
     not built.
   - `gif =0.14.2` (feature `images`, no default features but `std`, without which it is empty): GIF's LZW rasters
     in safe Rust, instead of giflib. It brings `weezl`; no thread.
   - `image-webp =0.2.4` (feature `images`, no default features): VP8, VP8L and ALPH decoding in safe Rust, instead
     of libwebp. It brings `byteorder-lite` and `quick-error`; no thread.
-- Builds are offline and locked: `cargo build --release --offline --locked`, with `CARGO_HOME` inside the build
-  directory, never `~/.cargo`.
+- Builds are locked: `cargo build --release --locked`, with `CARGO_HOME` inside the build directory, never `~/.cargo`.
+  Cargo fetches the locked crates from crates.io, unless the release's vendor tarball is unpacked in `nidhogg/`
+  (`shell/vendor/`, `glitnir/vendor/` and their `.cargo/config.toml`): then the build is offline. `check.sh` compares an
+  unpacked `vendor/` with the lock (`nidhogg/ci/vendor.sh check`); without one it says so.
 - `panic = "unwind"`: every `extern "C"` body runs inside `ffi_guard` and returns `GLITNIR_E_PANIC` (-1) on a panic.
 - Every exported symbol is listed in `ffi::EXPORTS` and declared in `include/glitnir.h`; a test checks that the two
   agree.
