@@ -742,10 +742,10 @@ jobs:
           path: |
             ${{ runner.temp }}/nh-recorder-cargo/registry/index
             ${{ runner.temp }}/nh-recorder-cargo/registry/cache
-            ${{ runner.temp }}/nhshell-cargo/home/registry/index
-            ${{ runner.temp }}/nhshell-cargo/home/registry/cache
-            ${{ runner.temp }}/nhglue-cargo/home/registry/index
-            ${{ runner.temp }}/nhglue-cargo/home/registry/cache
+            ${{ runner.temp }}/nhshell-cargo/crates/registry/index
+            ${{ runner.temp }}/nhshell-cargo/crates/registry/cache
+            ${{ runner.temp }}/nhglue-cargo/crates/registry/index
+            ${{ runner.temp }}/nhglue-cargo/crates/registry/cache
             ${{ runner.temp }}/nh-recorder-target
             ${{ runner.temp }}/nhshell-cargo/target
             ${{ runner.temp }}/nhglue-cargo/target
@@ -781,10 +781,10 @@ jobs:
           path: |
             ${{ runner.temp }}/nh-recorder-cargo/registry/index
             ${{ runner.temp }}/nh-recorder-cargo/registry/cache
-            ${{ runner.temp }}/nhshell-cargo/home/registry/index
-            ${{ runner.temp }}/nhshell-cargo/home/registry/cache
-            ${{ runner.temp }}/nhglue-cargo/home/registry/index
-            ${{ runner.temp }}/nhglue-cargo/home/registry/cache
+            ${{ runner.temp }}/nhshell-cargo/crates/registry/index
+            ${{ runner.temp }}/nhshell-cargo/crates/registry/cache
+            ${{ runner.temp }}/nhglue-cargo/crates/registry/index
+            ${{ runner.temp }}/nhglue-cargo/crates/registry/cache
             ${{ runner.temp }}/nh-recorder-target
             ${{ runner.temp }}/nhshell-cargo/target
             ${{ runner.temp }}/nhglue-cargo/target

@@ -69,7 +69,7 @@ if [ -n "$DISTRO" ] && [ "$INNER" = 0 ]; then
   fi
   podman run --rm --name "$NAME" --memory "$MEM" --memory-swap "$MEM" \
     -v "$NH:/nh:$MODE,Z" -v "$CARGO_DIR:/cargo:Z" "${EXTRA[@]}" \
-    -e CARGO_HOME=/cargo/home -e CARGO_TARGET_DIR=/cargo/target -e CARGO_BUILD_JOBS=2 \
+    -e CARGO_HOME=/cargo/crates-e CARGO_TARGET_DIR=/cargo/target -e CARGO_BUILD_JOBS=2 \
     "$IMAGE" bash -euo pipefail -c "$inner" &
   pid=$!
   wait "$pid"
