@@ -463,6 +463,23 @@ PARAMS come first, so they win over the defaults here."
       (setq child-frame-chrome old)
       (when (frame-live-p c) (delete-frame c t)))))
 
+(ert-deftest glitnir-gui/shadowed-child-off-shows-what-is-beneath ()
+  ;; With Glitnir off a child frame is its own pixels: the room its shadow takes around it shows what lies beneath, as
+  ;; around a child without chrome, never the child's background (pattern D: one picture, read back).
+  (glitnir-gui--under)
+  (let ((c nil))
+    (unwind-protect
+        (progn
+          (setq c (glitnir-gui--popup glitnir-gui--chrome))
+          (should (glitnir--chrome c))
+          (pcase-let* ((off (glitnir-gui--off (list c)))
+                       (`(,x ,y ,w ,h) (glitnir-gui--rect c)) (d (round (* 4 (frame-scale-factor)))))
+            (should (equal (glitnir-gui--pixel off (glitnir-gui--mid (list x y w h))) '(0 255 255)))
+            (dolist (p (list (list (+ x (/ w 2)) (+ y h d)) (list (+ x (/ w 2)) (- y d))
+                             (list (- x d) (+ y (/ h 2))) (list (+ x w d) (+ y (/ h 2)))))
+              (should (equal (list p (glitnir-gui--pixel off p)) (list p '(255 0 255)))))))
+      (when (frame-live-p c) (delete-frame c t)))))
+
 (ert-deftest glitnir-gui/decorated-child-identical ()
   ;; A decorated (not `undecorated') child frame gets no chrome, from the option or its own
   ;; parameters: its pixels are Glitnir off's.
