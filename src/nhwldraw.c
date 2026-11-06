@@ -2479,10 +2479,34 @@ nhwl_background_argb (struct frame *f)
   return argb;
 }
 
+/* Clear the margins around OUT's native area in its backing.  A child
+   frame's margins are the room its shadow takes, which the compositor
+   fills (child.rs): the frame's own pixels stop at its native area.  */
+static void
+nhwl_clear_margins (struct nhwl_output *out)
+{
+  cairo_t *cr = out->cr_context;
+
+  if (!(out->csd.l || out->csd.t || out->csd.r || out->csd.b))
+    return;
+  cairo_save (cr);
+  cairo_set_operator (cr, CAIRO_OPERATOR_CLEAR);
+  cairo_set_fill_rule (cr, CAIRO_FILL_RULE_EVEN_ODD);
+  cairo_rectangle (cr, 0, 0, out->cr_width, out->cr_height);
+  cairo_rectangle (cr, out->csd.l, out->csd.t,
+		   out->cr_width - out->csd.l - out->csd.r,
+		   out->cr_height - out->csd.t - out->csd.b);
+  cairo_fill (cr);
+  cairo_restore (cr);
+}
+
 /* Make the backing F's size (the frame's pixel size, which is device
    pixels), keeping what it shows; a new one starts in the frame's
-   background.  Adapted in role from pgtk_cr_update_surface_desired_size
-   (emacs-31.1).  */
+   background.  A child frame's margins start clear: neither a new
+   backing's background nor the picture a resize kept is the frame's
+   there, and with Glitnir off (the frames' own pixels) they show what
+   lies beneath, as around a child without chrome.  Adapted in role from
+   pgtk_cr_update_surface_desired_size (emacs-31.1).  */
 void
 nhwl_backing_resize (struct frame *f)
 {
@@ -2520,6 +2544,8 @@ nhwl_backing_resize (struct frame *f)
   out->cr_width = b.w;
   out->cr_height = b.h;
   out->cr_gen = b.gen;
+  if (b.w && nhwl_child_p (f))
+    nhwl_clear_margins (out);
   nhwl_glitnir_ensure (f);
 }
 
