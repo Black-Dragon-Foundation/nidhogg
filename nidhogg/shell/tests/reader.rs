@@ -289,6 +289,11 @@ mod reader {
         ("set_mapped", |s, w| s.set_mapped(w, false)),
         ("set_motion", |s, w| s.set_motion(w, None)),
         ("set_backdrop", |s, w| s.set_backdrop(w, 0.0)),
+        ("layout_capture", |s, w| {
+            s.layout_capture(w, 1, 1, Rect::new(0, 0, 1, 1))
+        }),
+        ("layout_leg", |s, w| s.layout_leg(w, 1, None)),
+        ("layout_captured", |s, w| s.layout_captured(w, 1).map(drop)),
         ("window_grabbed", |s, w| s.window_grabbed(w).map(drop)),
         ("set_size", |s, w| s.set_size(w, 10, 10).map(drop)),
         ("present_begin", |s, w| s.present_begin(w, 64, 48).map(drop)),
