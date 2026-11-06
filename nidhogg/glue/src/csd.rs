@@ -333,18 +333,40 @@ fn geometry(c: &Csd, child: bool) -> Option<[i32; 4]> {
         return None;
     }
     let s120 = c.s120();
-    let sw = glitnir::snap::viewport_size(c.width(c.native.0), s120).0;
-    let sh = glitnir::snap::viewport_size(c.native.1 + c.t + c.b, s120).0;
-    let ml = if c.l != 0 { MARGIN } else { 0 };
-    let mr = if c.r != 0 { MARGIN } else { 0 };
-    let mt = if c.t > c.strip { MARGIN } else { 0 };
-    let mb = if c.b != 0 { MARGIN } else { 0 };
+    let (ml, mt) = (
+        if c.l != 0 { MARGIN } else { 0 },
+        if c.t > c.strip { MARGIN } else { 0 },
+    );
+    let (w, h) = window_size(c.native, c.offsets(), c.strip, s120);
     let g = if c.on {
-        [ml, mt, sw - ml - mr, sh - mt - mb]
+        [ml, mt, w, h]
     } else {
+        let sw = glitnir::snap::viewport_size(c.width(c.native.0), s120).0;
+        let sh = glitnir::snap::viewport_size(c.native.1 + c.t + c.b, s120).0;
         [0, 0, sw, sh]
     };
     (g[2] > 0 && g[3] > 0 && c.geom != Some(g)).then_some(g)
+}
+
+/// The logical size of the window geometry `geometry` sends for the native size `native` with the border `[l, t, r,
+/// b]` and the title strip `strip` (device pixels) at `s120`: the surface's viewport size (`viewport_size`), less the
+/// resize margins.  The size a configure echoes back for the window's own geometry, so the one to compare it with: a
+/// native size rounded on its own (`window::to_logical`) can differ from it by one at a fractional scale.
+pub fn window_size(
+    native: (i32, i32),
+    [l, t, r, b]: [i32; 4],
+    strip: i32,
+    s120: u32,
+) -> (i32, i32) {
+    // the top border holds the strip
+    let t = t.max(strip);
+    let sw = glitnir::snap::viewport_size(native.0 + l + r, s120).0;
+    let sh = glitnir::snap::viewport_size(native.1 + t + b, s120).0;
+    let margin = |on: bool| if on { MARGIN } else { 0 };
+    (
+        sw - margin(l != 0) - margin(r != 0),
+        sh - margin(t > strip) - margin(b != 0),
+    )
 }
 
 fn check_size(w: i32, h: i32) -> Result<(), GlueError> {
@@ -498,9 +520,7 @@ pub fn fit_size(
         clamp(dw, dh, border)
     };
     if flags & NHG_FIT_CONFIGURE != 0 {
-        let gw = crate::window::to_logical(native.0, s);
-        let gh = crate::window::to_logical(native.1 + strip, s);
-        return (lw != gw || lh != gh).then(fitted);
+        return ((lw, lh) != window_size(native, border, strip, s)).then(fitted);
     }
     if flags & NHG_FIT_UNDECORATED != 0 && !child && states & KEEP != 0 {
         let d = fitted();
@@ -548,13 +568,12 @@ pub fn fit(
     }
     // the size is the remembered one's window geometry too when the compositor gives the floating size back itself: a
     // native size that rounds to it (an odd one at scale 2) is the frame's own, not the rounded one
-    let (s, strip) = (if s120 == 0 { 120 } else { s120 }, f.csd.strip);
-    let geometry = |(w, h): (i32, i32)| {
-        (
-            crate::window::to_logical(w, s),
-            crate::window::to_logical(h + strip, s),
-        )
-    };
+    let (s, strip, border) = (
+        if s120 == 0 { 120 } else { s120 },
+        f.csd.strip,
+        f.csd.offsets(),
+    );
+    let geometry = |native: (i32, i32)| window_size(native, border, strip, s);
     let size = match back {
         Some(b) if b != native && (lw <= 0 || lh <= 0 || geometry(b) == (lw, lh)) => Some(b),
         _ => fit_size(
