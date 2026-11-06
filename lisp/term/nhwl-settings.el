@@ -31,8 +31,10 @@
 ;; The settings are read once, when the first graphical frame is made,
 ;; never when this file is loaded.  The reads are asynchronous, each with
 ;; a 500 ms timeout: the first frame never waits for the portal, the
-;; defaults hold until an answer comes, and an answer that differs from
-;; the default runs `nhwl-settings-changed-functions' once.
+;; defaults hold until an answer comes.  A key's first usable answer runs
+;; `nhwl-settings-changed-functions' even when it equals the default, and
+;; so does every later change; `nhwl-settings-answered-p' says whether a
+;; key has been answered.
 ;;
 ;; The shell's client-side title bar takes its button layout, its
 ;; colours (the two `nidhogg-title-bar' faces) and its font from here:
@@ -115,7 +117,9 @@ Its default follows the desktop's colour scheme; a theme overrides it."
 
 (defvar nhwl-settings-changed-functions nil
   "Abnormal hook run when a desktop setting changes.
-Each function is called with the key (a symbol) and the new value.")
+Each function is called with the key (a symbol) and the new value.
+The portal's first usable answer for a key counts as a change even
+when it equals the default (see `nhwl-settings-answered-p').")
 
 (defconst nhwl-settings--keys
   '((color-scheme "org.freedesktop.appearance" "color-scheme" 0)
@@ -220,16 +224,27 @@ timeout, so a timer ends the read and a late answer is ignored."
           :foreground "#919191"))
      'face-defface-spec)))
 
+(defun nhwl-settings-answered-p (key)
+  "Return non-nil once the portal has given a usable value for KEY.
+Until then, and after an unusable value, `nhwl-settings-get' returns
+KEY's default.  A listener on `nhwl-settings-changed-functions' tells
+with it a desktop that asked for the default (GNOME's light scheme is
+`color-scheme' 0) from one that never answered."
+  (and (gethash key nhwl-settings--values) t))
+
 (defun nhwl-settings--set (key value)
-  "Store VALUE (nil means unusable) for KEY; run the hook if it changed."
-  (let ((old (nhwl-settings-get key)))
+  "Store VALUE (nil means unusable) for KEY; run the hook if it changed.
+The first usable value for KEY runs the hook even when it equals the
+default: the portal has answered."
+  (let ((old (nhwl-settings-get key))
+        (first (and value (not (nhwl-settings-answered-p key)))))
     (if value
         (puthash key value nhwl-settings--values)
       (remhash key nhwl-settings--values))
     (let ((new (nhwl-settings-get key)))
       (when (eq key 'color-scheme)
         (nhwl-settings--title-bar-colors new))
-      (unless (equal old new)
+      (when (or first (not (equal old new)))
         (run-hook-with-args 'nhwl-settings-changed-functions key new)))))
 
 (defun nhwl-settings--signal (namespace name value &rest _)

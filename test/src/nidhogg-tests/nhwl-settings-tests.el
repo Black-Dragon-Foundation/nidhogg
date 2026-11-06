@@ -172,6 +172,27 @@ ANSWERS maps (NAMESPACE . KEY) to a value; others get no answer.
     (should-not (nhwl-settings-get 'font-name))
     (should-not (nhwl-settings-get 'monospace-font-name))))
 
+;; test-pattern: D (pure)
+(ert-deftest nhwl-settings/first-answer-runs-the-hook-even-at-the-default ()
+  ;; GNOME's Light is color-scheme 0, the default: a listener must still
+  ;; hear that the portal answered, once, and be able to ask whether it did.
+  (nhwl-settings-test--with-portal
+      '((("org.freedesktop.appearance" . "color-scheme") . 0))
+    (let (calls)
+      (add-hook 'nhwl-settings-changed-functions
+                (lambda (key value) (push (cons key value) calls)))
+      (nhwl-settings-init)
+      (should (equal calls '((color-scheme . 0))))
+      (should (nhwl-settings-answered-p 'color-scheme))
+      (should-not (nhwl-settings-answered-p 'contrast))
+      ;; the same value again is no change
+      (funcall handler "org.freedesktop.appearance" "color-scheme" 0)
+      (should (equal calls '((color-scheme . 0))))
+      ;; an unusable value is no answer: the default is back, said once
+      (funcall handler "org.freedesktop.appearance" "color-scheme" 7)
+      (should-not (nhwl-settings-answered-p 'color-scheme))
+      (should (equal calls '((color-scheme . 0)))))))
+
 ;; test-pattern: C (handshake): a real child that announces and parks
 
 (defconst nhwl-settings-test--portal-child
@@ -290,7 +311,7 @@ is fresh and `nhwl-settings--bus' names the private bus."
       (with-timeout (60 (error "the answers never came: %S" calls))
         ;; D-Bus events are special events: only `read-event' runs them
         (while (< (length calls) 5) (read-event nil nil 0.1)))
-      ;; One call per changed key; reduced-motion's 7 is the default.
+      ;; One call per answered key; reduced-motion's 7 is unusable, so no answer.
       (should (equal (sort (mapcar #'car calls) #'string<)
                      '(color-scheme contrast cursor-size font-name
                        monospace-font-name)))
