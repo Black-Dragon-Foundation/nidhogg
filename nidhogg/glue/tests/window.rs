@@ -449,7 +449,8 @@ mod window {
     }
 
     /// At scale 2 an odd native size has no logical size of its own: when the compositor gives the floating size back
-    /// itself, its geometry (rounded), the frame goes back to its own size, not to the rounded one.
+    /// itself, the window geometry the frame sent (its viewport's logical size, cut: 777 rows are 388), the frame goes
+    /// back to its own size, not to the one that size rounds to.
     #[test]
     fn leaving_fullscreen_at_scale_2_gives_an_odd_size_back() {
         use nhglue::csd::NHG_FIT_CONFIGURE;
@@ -478,7 +479,7 @@ mod window {
             (rc, w, h)
         };
         assert_eq!(fit(1440, 900, FULL, (1008, 777)), (1, 2880, 1800));
-        assert_eq!(fit(504, 389, 0, (2880, 1800)), (1, 1008, 777));
+        assert_eq!(fit(504, 388, 0, (2880, 1800)), (1, 1008, 777));
         assert_eq!(fit(1440, 900, FULL, (1008, 777)), (1, 2880, 1800));
         assert_eq!(
             fit(600, 400, 0, (2880, 1800)),
