@@ -88,6 +88,40 @@ process to complete."
          nil '(t t) t)
         (should (string= (buffer-string) "arg1=\"x &y\", arg2=\n"))))))
 
+(defun process-test--wait-stderr-eof (errp)
+  "Wait until the stderr pipe process ERRP has read its end of file.
+The main process's sentinel can run before its stderr pipe has been
+read (bug#80166): the pipe's own end of file is the event to wait for.
+The test's `with-timeout' bounds the wait, not a deadline here."
+  (while (and errp (process-live-p errp))
+    (accept-process-output errp 0.1)))
+
+(ert-deftest process-test-stderr-buffer-read-after-sentinel ()
+  ;; Pattern A (every order): the order behind the flake, forced.  The
+  ;; stderr pipe is stopped until the main sentinel has run, so the
+  ;; sentinel comes first, before a byte of stderr is read; the wait
+  ;; for the pipe's end of file still finds the whole text.
+  (skip-unless (executable-find "bash"))
+  (with-timeout (60 (ert-fail "Test timed out"))
+    (let* ((stdout-buffer (generate-new-buffer "*stdout*"))
+           (stderr-buffer (generate-new-buffer "*stderr*"))
+           (proc (make-process :name "test"
+                               :command (list "bash" "-c"
+                                              (concat "echo hello stdout!; "
+                                                      "echo hello stderr! >&2; "
+                                                      "exit 20"))
+                               :buffer stdout-buffer
+                               :stderr stderr-buffer))
+           (errp (get-buffer-process stderr-buffer)))
+      (stop-process errp)
+      (process-test-wait-for-sentinel proc 20)
+      (should (= (buffer-size stderr-buffer) 0))
+      (continue-process errp)
+      (process-test--wait-stderr-eof errp)
+      (should (with-current-buffer stderr-buffer
+                (goto-char (point-min))
+                (looking-at "hello stderr!"))))))
+
 (ert-deftest process-test-stderr-buffer ()
   :tags (if (getenv "EMACS_EMBA_CI") '(:unstable))
   (skip-unless (executable-find "bash"))
@@ -102,13 +136,7 @@ process to complete."
 			     :buffer stdout-buffer
 			     :stderr stderr-buffer)))
     (process-test-wait-for-sentinel proc 20)
-    ;; The sentinel can run before the stderr pipe has been read: the
-    ;; pipe's own end of file is the event to wait for (bug#80166).
-    (let ((errp (get-buffer-process stderr-buffer))
-          (start (float-time)))
-      (while (and errp (process-live-p errp)
-                  (< (- (float-time) start) process-test-sentinel-wait-timeout))
-        (accept-process-output errp 0.1)))
+    (process-test--wait-stderr-eof (get-buffer-process stderr-buffer))
     (should (with-current-buffer stdout-buffer
 	      (goto-char (point-min))
 	      (looking-at "hello stdout!")))
@@ -144,11 +172,10 @@ process to complete."
 					(setq stderr-sentinel-called t)))
     (process-test-wait-for-sentinel proc 20)
     ;; The stderr pipe's end of file, not the main sentinel, says its
-    ;; output has been read (bug#80166).
-    (let ((start (float-time)))
-      (while (and (not stderr-sentinel-called)
-                  (< (- (float-time) start) process-test-sentinel-wait-timeout))
-        (accept-process-output stderr-proc 0.1)))
+    ;; output has been read (bug#80166).  The test's `with-timeout'
+    ;; bounds the wait.
+    (while (not stderr-sentinel-called)
+      (accept-process-output stderr-proc 0.1))
     (should (equal 1 (with-current-buffer stdout-buffer
 		       (point-max))))
     (should (equal "hello stdout!\n"

@@ -581,7 +581,9 @@ mod presenter {
 
     /// A configure's bare ack is a request: the presenter moves `presented` past it only once the commit that carries
     /// it is flushed, so a settle that sees `presented` reach `published` has the answer on the wire before its next
-    /// request.
+    /// request.  Pattern C (handshake): the first picture's callback is answered and the pacer seen idle before the
+    /// configure, so the configure re-arms nothing (`a_configure_while_waiting_rearms_bare`) and the ack's is the one
+    /// bare commit.
     #[test]
     fn presented_passes_a_bare_ack_after_its_commit() {
         let rec = Recorder::start_clock("sway", "manual");
@@ -593,6 +595,8 @@ mod presenter {
             st.presented == st.published
         };
         until(&mut shell, "the first picture presented", presented);
+        present(&rec);
+        until(&mut shell, "the first callback", |s| !waiting(s, id));
         let r =
             rec.control(r#"{"cmd":"configure","surface":"focused","size":[200,100],"states":[]}"#);
         let serial = number(&r, "serial").expect("a serial") as u32;
@@ -604,6 +608,37 @@ mod presenter {
         until(&mut shell, "the ack presented", presented);
         let st = shell.presenter_stats().unwrap();
         assert_eq!(st.bare_commits - before.bare_commits, 1, "{st:?}");
+    }
+
+    /// Pattern C (handshake), the order the bare-ack row once raced on: a configure while the pacer waits for a frame
+    /// callback re-arms it, a bare commit of its own that the presenter flushes after the host has read the configure.
+    /// Counted from before the configure, the ack's commit makes two.
+    #[test]
+    fn a_configure_while_waiting_rearms_bare() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let mut shell = threaded(&rec);
+        let mut b = Backing::new(200, 100);
+        let id = window(&mut shell, &rec, &mut b);
+        let presented = |s: &mut WaylandShell| {
+            let st = s.presenter_stats().unwrap();
+            st.presented == st.published
+        };
+        until(&mut shell, "the first picture presented", presented);
+        assert!(waiting(&shell, id), "the first callback is not answered");
+        let before = shell.presenter_stats().unwrap();
+        let r =
+            rec.control(r#"{"cmd":"configure","surface":"focused","size":[200,100],"states":[]}"#);
+        let serial = number(&r, "serial").expect("a serial") as u32;
+        wait_for(&mut shell, |e| {
+            e.kind() == Kind::Configure && e.window == id
+        });
+        until(&mut shell, "the configure's re-arm flushed", |s| {
+            s.presenter_stats().unwrap().bare_commits > before.bare_commits
+        });
+        shell.ack_configure(id, serial, 0).unwrap();
+        until(&mut shell, "the ack presented", presented);
+        let st = shell.presenter_stats().unwrap();
+        assert_eq!(st.bare_commits - before.bare_commits, 2, "{st:?}");
     }
 
     /// Review Focus 1: the compositor holds every buffer it replaced; 200 packets.  No buffer is written while
