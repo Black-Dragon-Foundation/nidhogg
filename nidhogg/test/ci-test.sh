@@ -9,7 +9,14 @@ test -f "$wf"                                                     || { fail "no 
 job() { awk -v j="  $1:" '$0==j{p=1;print;next} p&&/^  [a-z]/{exit} p' "$wf"; }   # the text of job $1
 for j in tree linux macos drgnx release; do grep -qE "^  $j:" "$wf" || fail "no job $j"; done
 # drgnx's tests gate a release
-awk '/^  release:/,0' "$wf" | grep -qE 'needs: \[tree, linux, macos, drgnx, native-crates, native-gui\]' || fail "release not gated"
+awk '/^  release:/,0' "$wf" | grep -qE 'needs: \[tree, vendor, linux, macos, drgnx, native-crates, native-gui\]' || fail "release not gated"
+# the vendored crates are not in git (Cargo.lock is the pin): a job builds nidhogg-vendor-<version>.tar.zst from the
+# locks, never sees a token, and the release publishes it
+grep -qE "^  vendor:" "$wf"                                       || fail "no job vendor"
+job vendor | grep -qF 'ci/vendor.sh make'                         || fail "the vendor job does not build the tarball"
+job vendor | grep -qF 'ci/vendor.sh check'                        || fail "the vendor job does not check the tarball against the locks"
+! job vendor | grep -qE 'GH_TOKEN|github\.token|secrets\.'        || fail "the vendor job sees a token"
+awk '/^  release:/,0' "$wf" | grep -qF 'name: vendor-crates'      || fail "the release does not publish the vendor tarball"
 # the timing lane is report-only: its own job that never fails the run, and no release needs it
 grep -qE "^  timing:" "$wf"                                       || fail "no job timing"
 awk '/^  timing:/,/^  release:/' "$wf" | grep -qE '^    continue-on-error: true$' || fail "the timing job is not continue-on-error: true"
