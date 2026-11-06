@@ -3062,8 +3062,8 @@ merge_face_ref (struct window *w,
 
   return ok;
 }
-
 #ifdef HAVE_GLITNIR
+
 # undef font_clear_prop
 #endif
 

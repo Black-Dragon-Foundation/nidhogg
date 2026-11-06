@@ -3115,8 +3115,8 @@ font_spec_from_name (Lisp_Object font_name)
 #ifdef HAVE_GLITNIR
 /* True when the next font_clear_prop may clear the spec in place.  */
 static bool font_clear_in_place;
-#endif
 
+#endif
 void
 font_clear_prop (Lisp_Object *attrs, enum font_property_index prop)
 {
@@ -3176,8 +3176,8 @@ font_clear_prop (Lisp_Object *attrs, enum font_property_index prop)
     ASET (font, FONT_AVGWIDTH_INDEX, Qnil);
   attrs[LFACE_FONT_INDEX] = font;
 }
-
 #ifdef HAVE_GLITNIR
+
 /* font_clear_prop for one of a merge's clears.  FRESH is nil or the
    spec an earlier clear of the same merge made, which only ATTRS
    holds; while ATTRS still holds it, it is cleared in place rather
