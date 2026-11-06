@@ -2316,6 +2316,16 @@ merge_face_heights (Lisp_Object from, Lisp_Object to, Lisp_Object invalid)
    to detect loops in face inheritance/remapping; it should be 0 when
    called from other places.  If window W is non-NULL, use W to
    interpret face specifications. */
+#ifdef HAVE_GLITNIR
+/* From here to the end of merge_face_ref, each merge copies TO's font
+   spec once: the first attribute it clears copies the spec, and the
+   others clear that copy in place (font_merge_clear_prop).  Every
+   attribute copied the spec again, up to three times for a face with a
+   float :height, a family and a weight of its own, at each face run
+   and at each face lookup in a buffer with `default' remapped.  */
+# define font_clear_prop(attrs, prop) \
+  (fresh = font_merge_clear_prop (attrs, prop, fresh))
+#endif
 static void
 merge_face_vectors (struct window *w,
 		    struct frame *f, const Lisp_Object *from, Lisp_Object *to,
@@ -2323,6 +2333,9 @@ merge_face_vectors (struct window *w,
 {
   int i;
   Lisp_Object font = Qnil, tospec, adstyle;
+#ifdef HAVE_GLITNIR
+  Lisp_Object fresh = Qnil;
+#endif
 
   /* If FROM inherits from some other faces, merge their attributes into
      TO before merging FROM's direct attributes.  Note that an :inherit
@@ -2727,6 +2740,9 @@ merge_face_ref (struct window *w,
   bool ok = true;		/* Succeed without an error? */
   Lisp_Object filtered_face_ref;
   bool attr_filter_passed = false;
+#ifdef HAVE_GLITNIR
+  Lisp_Object fresh = Qnil;
+#endif
 
   filtered_face_ref = face_ref;
   do
@@ -3046,6 +3062,10 @@ merge_face_ref (struct window *w,
 
   return ok;
 }
+
+#ifdef HAVE_GLITNIR
+# undef font_clear_prop
+#endif
 
 
 DEFUN ("internal-make-lisp-face", Finternal_make_lisp_face,
