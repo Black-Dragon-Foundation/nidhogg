@@ -14,4 +14,6 @@
 window's answer to the first, and that answer (a floating window's commit of the first size) resizes the container to
 it and overwrites them (view_update_size, transaction_commit_dirty_client), so no configure of the last size is ever
 sent.  Any client that answers after the burst's later requests came loses them; the trace shows the first size's
-configure answered in 9 ms and none after it"))
+configure answered in 9 ms and none after it.  A race, so either side: with client-side decorations (gui.sh
+--force-csd) the row passes, the frame and sway's rectangle at the last size"
+  :either t))
