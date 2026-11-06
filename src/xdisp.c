@@ -20566,7 +20566,16 @@ redisplay_window (Lisp_Object window, bool just_this_one_p)
 	       && BUF_Z (XBUFFER (w->contents)) == BUF_BEG (XBUFFER (w->contents))
 	       /* Quail displays non-mini buffers in minibuffer window.
 		  In that case, redisplay the window normally.  */
-	       && !NILP (Fmemq (w->contents, Vminibuffer_list)))
+	       && !NILP (Fmemq (w->contents, Vminibuffer_list))
+#ifdef HAVE_GLITNIR
+	       /* With `default' remapped in the minibuffer (the look's echo
+		  area on the gap), display it normally: blank rows are
+		  cleared in the frame's background.  */
+	       && NILP (assq_no_quit (Qdefault,
+				      buffer_local_value (Qface_remapping_alist,
+							  w->contents)))
+#endif
+	       )
 	{
 	  /* W is a mini-buffer window, but it's not active, so clear
 	     it.  */
