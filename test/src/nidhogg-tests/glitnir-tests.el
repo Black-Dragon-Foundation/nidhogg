@@ -283,6 +283,26 @@
         (run-hook-with-args 'nhwl-settings-changed-functions 'reduced-motion 1)
         (should refreshed)))))
 
+(defvar glitnir--reduced-motion)
+
+(ert-deftest glitnir-reduced-motion-override ()
+  "`glitnir--reduced-motion' overrides the desktop: `on' drops the legs, `off' keeps them, nil asks."
+  (should (null glitnir--reduced-motion))
+  (glitnir-test--as-child '((transition . pop))
+    ;; (OVERRIDE DESKTOP SHOW-KIND HIDE-KIND)
+    (dolist (case '((on 0 0 0) (on 1 0 0) (off 0 2 1) (off 1 2 1) (nil 0 2 1) (nil 1 0 0)))
+      (let ((glitnir--reduced-motion (nth 0 case)))
+        (glitnir-test--with-reduced-motion (nth 1 case)
+          (let ((v (glitnir--chrome-vector (selected-frame))))
+            (should (equal (list case (aref v 8) (aref v 14)) (list case (nth 2 case) (nth 3 case))))))))
+    ;; without the shell's settings, nil asks macOS (`ns-reduced-motion-p')
+    (dolist (macos '(t nil))
+      (let ((glitnir--reduced-motion nil))
+        (cl-letf (((symbol-function 'nhwl-settings-get) nil)
+                  ((symbol-function 'ns-reduced-motion-p) (lambda () macos)))
+          (should (eq (glitnir--reduced-motion-p) macos))
+          (should (= (aref (glitnir--chrome-vector (selected-frame)) 8) (if macos 0 2))))))))
+
 ;; Window cards: the window parameters resolve into a vector C lists with the window.
 
 (defmacro glitnir-test--with-window-params (params &rest body)

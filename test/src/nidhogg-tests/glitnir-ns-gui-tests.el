@@ -502,6 +502,258 @@ The model follows a step asynchronously: a pair checked before it caught up is t
           (should-not (glitnir-ns--orphans)))
       (when (frame-live-p c) (delete-frame c t)))))
 
+;;; Motion: the content layer's and the shadow layer's opacity and scale over time, as `glitnir--ns-motion' reads them
+;;; from Core Animation's presentation layers, for the leg a show or a hide started.  The runner asks for reduced
+;;; motion, so the rows bind `glitnir--reduced-motion' to `off' (and one row to `on').  The legs run 0.6 s, long enough
+;;; for the samples to see them on the runner's VM; each sampling ends on the state (no leg left), not on a time.
+
+(defvar glitnir--reduced-motion)
+
+(defconst glitnir-ns--pop '(:show pop :duration 0.6 :curve ease-out) "A pop in over 0.6 s; no hide leg.")
+(defconst glitnir-ns--fade-out '(:hide fade :hide-duration 0.6 :hide-curve linear) "A fade out over 0.6 s; no show leg.")
+(defconst glitnir-ns--fade-both '(:show fade :duration 0.6 :curve linear :hide fade :hide-duration 0.6 :hide-curve linear)
+  "A fade in and a fade out, 0.6 s each.")
+
+(defun glitnir-ns--bezier (curve p)
+  "The progress at time fraction P along CSS cubic-bezier CURVE, (X1 Y1 X2 Y2)."
+  (pcase-let ((`(,x1 ,y1 ,x2 ,y2) curve) (lo 0.0) (hi 1.0))
+    (let ((at (lambda (a b u) (+ (* 3 a u (- 1 u) (- 1 u)) (* 3 b u u (- 1 u)) (* u u u)))))
+      (dotimes (_ 40)
+        (let ((mid (/ (+ lo hi) 2)))
+          (if (< (funcall at x1 x2 mid) p) (setq lo mid) (setq hi mid))))
+      (funcall at y1 y2 (/ (+ lo hi) 2)))))
+
+(defun glitnir-ns--at-rest-p (m)
+  "Non-nil when motion sample M shows no leg running or waiting to start."
+  (and m (eql (plist-get m :animations) 0) (not (plist-get m :hiding)) (not (plist-get m :pending))))
+
+(defun glitnir-ns--samples (frame done &optional seconds)
+  "Sample FRAME's motion until DONE, a function of a sample, returns non-nil (SECONDS, default 5, at most).
+A sample is `glitnir--ns-motion''s plist with :bounds added, the child window's bounds in the window server's model.
+Return the samples, oldest first."
+  (let (samples)
+    (gui-runner-wait (lambda ()
+                       (let ((m (append (glitnir--ns-motion frame)
+                                        (list :bounds (plist-get (glitnir-ns--pair frame) :child)))))
+                         (push m samples)
+                         (funcall done m)))
+                     (or seconds 5))
+    (nreverse samples)))
+
+(defun glitnir-ns--mid (samples)
+  "The samples of SAMPLES taken while a leg ran, strictly between its ends."
+  (cl-remove-if-not (lambda (m) (let ((e (plist-get m :elapsed)) (d (plist-get m :duration)))
+                                  (and e d (< 0 e d) (< 0 (plist-get m :opacity) 1))))
+                    samples))
+
+(defun glitnir-ns--off-curve (samples from to curve)
+  "The samples of SAMPLES whose opacity is over 0.1 off the leg from FROM to TO along CURVE at their time."
+  (cl-remove-if (lambda (m) (let ((want (+ from (* (- to from) (glitnir-ns--bezier
+                                                                  curve (/ (plist-get m :elapsed)
+                                                                           (plist-get m :duration)))))))
+                              (<= (abs (- (plist-get m :opacity) want)) 0.1)))
+                samples))
+
+(defun glitnir-ns--rest (m)
+  "Motion sample M's end state: (OPACITY SCALE MODEL-OPACITY MODEL-SCALE SHADOW-OPACITY SHADOW-SCALE ANIMATIONS)."
+  (mapcar (lambda (k) (plist-get m k))
+          '(:opacity :scale :model-opacity :model-scale :shadow-opacity :shadow-scale :animations)))
+
+(defconst glitnir-ns--opaque '(1.0 1.0 1.0 1.0 1.0 1.0 0) "`glitnir-ns--rest' of a shown pair at rest.")
+
+(defun glitnir-ns--monotone (xs pred)
+  "Non-nil when each of XS is PRED of the next one, within 0.01."
+  (cl-loop for (a b) on xs while b always (or (funcall pred a b) (< (abs (- a b)) 0.01))))
+
+(defun glitnir-ns--bounds-seen (samples)
+  "The child window's bounds SAMPLES saw while it was listed, each one once."
+  (delete-dups (delq nil (mapcar (lambda (m) (plist-get m :bounds)) samples))))
+
+(ert-deftest glitnir-ns/pop-in-ends-opaque ()
+  ;; handshake: the samples follow Core Animation's presentation layers until no leg is left
+  (glitnir-ns--skip-unless-ns)
+  (let* ((glitnir--reduced-motion 'off)
+         (curve (cdr (assq 'ease-out glitnir--curves)))
+         (c (glitnir-ns--chromed `((transition . ,glitnir-ns--pop)))))
+    (unwind-protect
+        (let* ((samples (glitnir-ns--samples c #'glitnir-ns--at-rest-p))
+               (mid (glitnir-ns--mid samples)) (last (car (last samples))))
+          ;; the leg ran: opacity along the curve, the scale on the same curve from 0.96, the shadow in step
+          (should (>= (length mid) 3))
+          (should-not (glitnir-ns--off-curve mid 0 1 curve))
+          (dolist (m mid)
+            (should (< (plist-get m :scale) 1))
+            (should (< (abs (- (plist-get m :opacity) (/ (- (plist-get m :scale) 0.96) 0.04))) 0.02))
+            (should (< (abs (- (plist-get m :shadow-opacity) (plist-get m :opacity))) 0.02))
+            (should (< (abs (- (plist-get m :shadow-scale) (plist-get m :scale))) 0.002)))
+          ;; it ended opaque at full size, nothing left animating
+          (should (glitnir-ns--at-rest-p last))
+          (should (equal (glitnir-ns--rest last) glitnir-ns--opaque))
+          (should-not (glitnir-ns--settled-problem c))
+          ;; hidden (no hide leg) and shown again: the window keeps its bounds through the leg and lands on them
+          (let ((at (plist-get (glitnir-ns--pair c) :child)))
+            (make-frame-invisible c)
+            (should (glitnir-ns--gone-p c))
+            (make-frame-visible c)
+            (redisplay t)
+            (let ((again (glitnir-ns--samples c #'glitnir-ns--at-rest-p)))
+              (should (glitnir-ns--mid again))
+              (should (equal (glitnir-ns--bounds-seen again) (list at)))
+              (should (equal (glitnir-ns--rest (car (last again))) glitnir-ns--opaque))))
+          (should-not (glitnir-ns--settled-problem c)))
+      (delete-frame c t))))
+
+(ert-deftest glitnir-ns/fade-out-ends-hidden ()
+  ;; handshake: the samples follow the presentation layers; the end waits for the window server's model
+  (glitnir-ns--skip-unless-ns)
+  (let* ((glitnir--reduced-motion 'off)
+         (c (glitnir-ns--chromed `((transition . ,glitnir-ns--fade-out)))))
+    (unwind-protect
+        (progn
+          ;; no show leg: shown at once
+          (should (glitnir-ns--at-rest-p (car (last (glitnir-ns--samples c #'glitnir-ns--at-rest-p)))))
+          (should-not (glitnir-ns--settled-problem c))
+          (let ((at (plist-get (glitnir-ns--pair c) :child)))
+            (make-frame-invisible c)
+            ;; Emacs sees the frame hidden at once; its window stays, click-through, while the leg runs
+            (should-not (frame-visible-p c))
+            (let* ((samples (glitnir-ns--samples c #'glitnir-ns--at-rest-p))
+                   (mid (glitnir-ns--mid samples)))
+              (should (>= (length mid) 3))
+              (should-not (glitnir-ns--off-curve mid 1 0 '(0 0 1 1)))
+              (should (glitnir-ns--monotone (mapcar (lambda (m) (plist-get m :opacity)) mid) #'>=))
+              (dolist (m mid)
+                (should (plist-get m :hiding))
+                (should (plist-get m :ignores-mouse))
+                (should (= (plist-get m :scale) 1))
+                (should (< (abs (- (plist-get m :shadow-opacity) (plist-get m :opacity))) 0.02)))
+              ;; the window kept its place while it faded
+              (should (equal (glitnir-ns--bounds-seen samples) (list at))))
+            ;; at the end the pair is gone and nothing animates
+            (should (glitnir-ns--gone-p c))
+            (should (eql (plist-get (glitnir--ns-motion c) :animations) 0))
+            (should-not (plist-get (glitnir--ns-motion c) :ignores-mouse)))
+          ;; shown again (no show leg): opaque at once, in its place
+          (make-frame-visible c)
+          (redisplay t)
+          (let ((samples (glitnir-ns--samples c #'glitnir-ns--at-rest-p)))
+            (should-not (glitnir-ns--mid samples))
+            (should (equal (glitnir-ns--rest (car (last samples))) glitnir-ns--opaque)))
+          (should-not (glitnir-ns--settled-problem c)))
+      (delete-frame c t))))
+
+(ert-deftest glitnir-ns/hide-show-one-command-no-motion ()
+  ;; handshake: the samples run until no leg is left or waits to start
+  (glitnir-ns--skip-unless-ns)
+  (let* ((glitnir--reduced-motion 'off)
+         (c (glitnir-ns--chromed `((transition . ,glitnir-ns--fade-both)))))
+    (unwind-protect
+        (progn
+          (should (glitnir-ns--at-rest-p (car (last (glitnir-ns--samples c #'glitnir-ns--at-rest-p)))))
+          (should-not (glitnir-ns--settled-problem c))
+          ;; a hide and a show in one command: nothing moves, the window stays
+          (make-frame-invisible c)
+          (make-frame-visible c)
+          (redisplay t)
+          (let ((samples (glitnir-ns--samples c #'glitnir-ns--at-rest-p)))
+            (should (glitnir-ns--at-rest-p (car (last samples))))
+            (should-not (glitnir-ns--mid samples))
+            (dolist (m samples)
+              (should (= (plist-get m :opacity) 1))
+              (should (plist-get m :bounds)))
+            (should (equal (glitnir-ns--rest (car (last samples))) glitnir-ns--opaque)))
+          (should (frame-visible-p c))
+          (should-not (glitnir-ns--settled-problem c)))
+      (delete-frame c t))))
+
+(ert-deftest glitnir-ns/show-during-hide-no-jump ()
+  ;; handshake: the samples follow the presentation layers until the state each step waits for
+  (glitnir-ns--skip-unless-ns)
+  (let* ((glitnir--reduced-motion 'off)
+         (c (glitnir-ns--chromed `((transition . ,glitnir-ns--fade-both)))))
+    (unwind-protect
+        (progn
+          (glitnir-ns--samples c #'glitnir-ns--at-rest-p)
+          (should-not (glitnir-ns--settled-problem c))
+          (make-frame-invisible c)
+          (let* ((hide (glitnir-ns--samples c (lambda (m) (< (plist-get m :opacity) 0.7))))
+                 (before (plist-get (car (last hide)) :opacity)))
+            (should (< before 0.7))
+            ;; shown again mid-hide
+            (make-frame-visible c)
+            (redisplay t)
+            (let* ((show (glitnir-ns--samples c #'glitnir-ns--at-rest-p))
+                   (legs (cl-remove-if-not (lambda (m) (eq (plist-get m :leg) 'show)) show)))
+              ;; it goes on from where the hide was, then up: no jump down or up
+              (should legs)
+              (should (> (apply #'min (mapcar (lambda (m) (plist-get m :opacity)) show)) (- before 0.15)))
+              (should (< (plist-get (car legs) :opacity) (+ before 0.15)))
+              (should (glitnir-ns--monotone (mapcar (lambda (m) (plist-get m :opacity)) legs) #'<=))
+              ;; for the rest of the way, the share of the leg that is left
+              (should (< 0 (plist-get (car legs) :duration) 500))
+              ;; the window never left the screen: the hide's end did not order it out
+              (should (cl-every (lambda (m) (plist-get m :bounds)) show))
+              (should (equal (glitnir-ns--rest (car (last show))) glitnir-ns--opaque))))
+          (should (frame-visible-p c))
+          (should-not (glitnir-ns--settled-problem c))
+          (should-not (plist-get (glitnir--ns-motion c) :ignores-mouse)))
+      (delete-frame c t))))
+
+(ert-deftest glitnir-ns/delete-during-fade ()
+  ;; handshake: each step waits for the motion state or the window server's model
+  (glitnir-ns--skip-unless-ns)
+  (let* ((glitnir--reduced-motion 'off)
+         (c (glitnir-ns--chromed `((transition . ,glitnir-ns--fade-out)))))
+    (unwind-protect
+        (progn
+          (should-not (glitnir-ns--settled-problem c))
+          (make-frame-invisible c)
+          (glitnir-ns--samples c (lambda (m) (< (plist-get m :opacity) 0.9)))
+          (should (plist-get (glitnir--ns-motion c) :hiding))
+          (delete-frame c t)
+          ;; the leg's end finds the frame gone: no hide waits, no shadow window is left
+          (should (gui-runner-wait (lambda () (eql (plist-get (glitnir--ns-motion) :hides-pending) 0)) 5))
+          (should (gui-runner-wait (lambda () (null (glitnir-ns--orphans))) 5))
+          (should-not (glitnir-ns--orphans))
+          ;; and the next frame's hide works
+          (let ((d (glitnir-ns--chromed `((transition . ,glitnir-ns--fade-out)))))
+            (unwind-protect
+                (progn
+                  (should-not (glitnir-ns--settled-problem d))
+                  (make-frame-invisible d)
+                  (should (gui-runner-wait (lambda () (glitnir-ns--at-rest-p (glitnir--ns-motion d))) 5))
+                  (should (glitnir-ns--gone-p d)))
+              (delete-frame d t))))
+      (when (frame-live-p c) (delete-frame c t)))))
+
+(ert-deftest glitnir-ns/reduced-motion ()
+  ;; handshake: the samples run until no leg is left; the hide waits for the window server's model
+  (glitnir-ns--skip-unless-ns)
+  ;; nil asks macOS
+  (let ((glitnir--reduced-motion nil))
+    (should (memq (ns-reduced-motion-p) '(t nil)))
+    (should (eq (glitnir--reduced-motion-p) (ns-reduced-motion-p))))
+  (let* ((glitnir--reduced-motion 'on)
+         (c (glitnir-ns--chromed `((transition . ,glitnir-ns--fade-both)))))
+    (unwind-protect
+        (progn
+          (should (glitnir--reduced-motion-p))
+          ;; the show had no motion
+          (let ((samples (glitnir-ns--samples c #'glitnir-ns--at-rest-p)))
+            (should-not (glitnir-ns--mid samples))
+            (should (cl-every (lambda (m) (= (plist-get m :opacity) 1)) samples)))
+          (should-not (glitnir-ns--settled-problem c))
+          ;; nor the hide: the window goes at once
+          (make-frame-invisible c)
+          (should-not (plist-get (glitnir--ns-motion c) :hiding))
+          (should (glitnir-ns--gone-p c))
+          (make-frame-visible c)
+          (redisplay t)
+          (should-not (glitnir-ns--mid (glitnir-ns--samples c #'glitnir-ns--at-rest-p)))
+          (should (equal (glitnir-ns--rest (glitnir--ns-motion c)) glitnir-ns--opaque))
+          (should-not (glitnir-ns--settled-problem c)))
+      (delete-frame c t))))
+
 ;;; Window cards.  Two windows side by side, the left a card, a gap of 6 points between them in the divider colour.
 ;;; Each buffer has a colour of its own, no mode line, no cursor, no fringes and no scroll bars.  A window's place in a
 ;;; snapshot is its edges (points) times the scale; the colours a row compares come from the same snapshot (the middle
