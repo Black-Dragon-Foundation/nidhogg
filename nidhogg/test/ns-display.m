@@ -35,7 +35,16 @@
 
 static void spin(double secs)
 {
-  [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:secs]];
+  // AppKit learns of a new display only when the application's event loop runs (a bare run loop does not)
+  NSDate *end = [NSDate dateWithTimeIntervalSinceNow:secs];
+  do
+    {
+      NSEvent *e = [NSApp nextEventMatchingMask:NSEventMaskAny untilDate:end inMode:NSDefaultRunLoopMode
+                                        dequeue:YES];
+      if (e)
+        [NSApp sendEvent:e];
+    }
+  while ([end timeIntervalSinceNow] > 0);
 }
 
 static NSScreen *screen_of(CGDirectDisplayID did)
