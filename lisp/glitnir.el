@@ -256,6 +256,13 @@ them off, nil never does."
            (eql (nhwl-settings-get 'reduced-motion) 1))
     glitnir-reduced-motion))
 
+(defun glitnir-reduced-motion-p ()
+  "Non-nil when Glitnir turns motion off.
+That is when `glitnir-reduced-motion' is t, or `auto' while the
+desktop asks for reduced motion.  Code that animates its own frames
+can follow it."
+  (glitnir--reduced-motion-p))
+
 (defun glitnir--toplevel-vector (frame)
   "Return root frame FRAME's chrome as a vector of numbers, or nil.
 Only an `undecorated' frame whose `toplevel-chrome' asks for corners or a
