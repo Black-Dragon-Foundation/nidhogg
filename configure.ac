@@ -4050,11 +4050,17 @@ if test "${with_glitnir}" = yes; then
   dnl builds offline; without one it fetches them from crates.io into the build tree's cargo home.
   glitnir_log=`pwd`/src/glitnir-cargo.log
   mkdir -p src
+  glitnir_vendor="$GLITNIR_SRCDIR/vendor"
+  test "$HAVE_NHWL" = yes && glitnir_vendor="$nhwl_shell_dir/vendor"
+  dnl No vendor/ means cargo fetches: stop at once, with the way out, when the network is plainly not there (a name that
+  dnl does not resolve, and no proxy), instead of after cargo's retries.
+  if test ! -d "$glitnir_vendor" && command -v getent >/dev/null 2>&1 &&
+     test -z "$https_proxy$HTTPS_PROXY$all_proxy$ALL_PROXY" && ! getent hosts index.crates.io >/dev/null 2>&1; then
+    AC_MSG_ERROR([there is no $glitnir_vendor and crates.io cannot be reached (no network): cargo would fetch the locked crates from it; for an offline build unpack nidhogg-vendor-VERSION.tar.zst, a release asset, in nidhogg/])
+  fi
   glitnir_native=`cd "$GLITNIR_SRCDIR" && env CARGO_HOME="$glitnir_home" $GLITNIR_ENV "$GLITNIR_CARGO" rustc --release --locked $GLITNIR_CARGO_FLAGS --target-dir "$glitnir_target" -- --print native-static-libs 2>&1 | tee "$glitnir_log" | sed -n 's/.*native-static-libs: *//p' | tail -n 1`
   if test ! -f "$glitnir_target/release/$glitnir_lib" || test -z "$glitnir_native"; then
     AC_MSG_RESULT([failed])
-    glitnir_vendor="$GLITNIR_SRCDIR/vendor"
-    test "$HAVE_NHWL" = yes && glitnir_vendor="$nhwl_shell_dir/vendor"
     glitnir_hint=
     test -d "$glitnir_vendor" ||
       glitnir_hint="; there is no $glitnir_vendor, so cargo fetched the locked crates from crates.io, which needs the network (for an offline build, unpack nidhogg-vendor-VERSION.tar.zst, a release asset, in nidhogg/)"
