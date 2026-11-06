@@ -973,23 +973,32 @@ does.  The frame is decorated again after."
       (redisplay t)
       (gui-runner-wait-settled))))
 
+(defun glitnir-fx--log-size (what &optional g)
+  "Write WHAT, the frame's pixel size and scale, and geometry G to stderr: the run shows what the probes read."
+  (princ (format "glitnir-fx: %s: frame-pixel %dx%d scale %s geometry %S\n" what (frame-pixel-width)
+                 (frame-pixel-height) (frame-scale-factor) g)
+         #'external-debugging-output))
+
 (defun glitnir-fx--undecorated-rows ()
   "The undecorated toplevel's checks at the frame's scale.
 With the look's chrome: the shadow band below the window is darker than the desktop behind (transparent there), and
 the input region is the window with its resize margins.  With corners alone: the corner's cut is transparent, the
-window's own pixel past it opaque, the margin transparent.  Where the compositor decorates: a square, opaque corner."
-  (let* ((framed (not (equal (nhwl-gui--decoration) "server")))
-         (fw (frame-pixel-width)) (fh (frame-pixel-height)))
+window's own pixel past it opaque, the margin transparent.  Where the compositor decorates: a square, opaque corner.
+The probes are placed from the window geometry the recorder applied (logical), not from the frame's size before the
+switch: going windowed and undecorated may change it."
+  (let* ((framed (not (equal (nhwl-gui--decoration) "server"))))
+    (glitnir-fx--log-size "before")
     (should (eq (and (nhwl-toplevel-chrome-p) t) framed))
     (glitnir-fx--with-undecorated
      glitnir-fx--window-chrome (if framed '(25 19) '(0 0))
      (lambda (node)
        (let ((grab (gui-runner-screen-grab)))
+         (glitnir-fx--log-size "chrome" (nhwl-gui--get node :geometry))
          (if (not framed)
              (should (= (glitnir-fx--alpha grab 0 0) 255))
            (let* ((g (nhwl-gui--get node :geometry))
-                  (x (+ (glitnir-fx--dev 25) (/ fw 2)))
-                  (y (+ (glitnir-fx--dev 19) fh (glitnir-fx--dev 4)))
+                  (x (glitnir-fx--dev (+ (nth 0 g) (/ (nth 2 g) 2))))
+                  (y (glitnir-fx--dev (+ (nth 1 g) (nth 3 g) 4)))
                   (a (glitnir-fx--alpha grab x y)))
              (should (> a 0))
              (should (cl-every (lambda (c) (<= c (/ a 2))) (glitnir-fx--pixel grab x y)))
@@ -997,13 +1006,15 @@ window's own pixel past it opaque, the margin transparent.  Where the compositor
                             (list (list 17 11 (+ (nth 2 g) 16) (+ (nth 3 g) 16))))))))))
     (glitnir-fx--with-undecorated
      glitnir-fx--window-corners (if framed '(8 8) '(0 0))
-     (lambda (_node)
-       (let ((grab (gui-runner-screen-grab)) (m (glitnir-fx--dev 8)))
+     (lambda (node)
+       (let* ((grab (gui-runner-screen-grab)) (m (glitnir-fx--dev 8))
+              (g (nhwl-gui--get node :geometry)))
+         (glitnir-fx--log-size "corners" g)
          (if (not framed)
              (should (= (glitnir-fx--alpha grab 0 0) 255))
            (should (= (glitnir-fx--alpha grab m m) 0))
            (should (= (glitnir-fx--alpha grab (+ m (glitnir-fx--dev 12)) m) 255))
-           (should (= (glitnir-fx--alpha grab (/ m 2) (+ m (/ fh 2))) 0))))))))
+           (should (= (glitnir-fx--alpha grab (/ m 2) (glitnir-fx--dev (+ (nth 1 g) (/ (nth 3 g) 2)))) 0))))))))
 
 (ert-deftest glitnir-undecorated-corners-and-shadow ()
   "An undecorated toplevel's corners are cut and its shadow lies in the margins, where the compositor decorates not."
