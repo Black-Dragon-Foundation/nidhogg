@@ -704,9 +704,8 @@ Everything goes back after: one window on `*scratch*', the frame's divider width
     (current-buffer)))
 
 (defun glitnir-ns--with-pattern (fn)
-  "Call FN with the root's window showing the pattern; the root's window gets its buffer back after."
-  (let* ((w (frame-root-window (selected-frame))) (old (window-buffer w))
-         (buf (get-buffer-create " *glitnir-ns-pattern*")))
+  "Call FN with the root's one window showing the pattern; the root's windows come back after."
+  (let ((config (current-window-configuration)) (buf (get-buffer-create " *glitnir-ns-pattern*")))
     (unwind-protect
         (progn
           (with-current-buffer buf
@@ -714,11 +713,12 @@ Everything goes back after: one window on `*scratch*', the frame's divider width
             (setq mode-line-format nil cursor-type nil)
             (dotimes (_ 60) (insert (make-string 120 ?#) "\n" (make-string 120 ?@) "\n"))
             (goto-char (point-min)))
-          (set-window-buffer w buf)
-          (set-window-start w 1)
+          (delete-other-windows)
+          (set-window-buffer (selected-window) buf)
+          (set-window-start (selected-window) 1)
           (redisplay t)
           (funcall fn))
-      (set-window-buffer w old)
+      (set-window-configuration config)
       (kill-buffer buf)
       (redisplay t))))
 
