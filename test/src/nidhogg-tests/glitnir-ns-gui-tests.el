@@ -1127,4 +1127,129 @@ Everything goes back after: one window on `*scratch*', the frame's divider width
                (should-not (glitnir-ns--cyan-p (glitnir-ns--px (glitnir-ns--grab) (car mid) (cdr mid))))))
          (delete-frame c t))))))
 
+;;; Parity: off is stock, on changes nothing it should not
+
+(defun glitnir-ns--root-rect (raw)
+  "The whole of RAW (`glitnir-snapshot' raw) as (0 0 W H)."
+  (list 0 0 (nth 0 raw) (nth 1 raw)))
+
+(ert-deftest glitnir-ns/off-equals-stock ()
+  ;; guard: green by construction, red only when a change breaks "off is stock"
+  (glitnir-ns--skip-unless-ns)
+  (glitnir-ns--skip-unless-capture)
+  (glitnir-ns--with-pattern
+   (lambda ()
+     (let* ((look `((corner-radius . 12) (shadow . ,glitnir-ns--shadow) (backdrop-blur . 20)
+                    (alpha-background . 0.5) (transition . pop)))
+            (stock-frame (glitnir-ns--blank-child nil)) stock)
+       ;; the frame that never had chrome
+       (setq stock (glitnir-ns--grab))
+       (delete-frame stock-frame t)
+       (should (glitnir-ns--gone-p stock-frame))
+       (let ((c (glitnir-ns--blank-child look)))
+         (unwind-protect
+             (let (off)
+               (should (gui-runner-wait (lambda () (plist-get (glitnir-ns--pair c) :shadow)) 5))
+               (let ((glitnir-enable nil))
+                 (glitnir-refresh c)
+                 (redisplay t)
+                 ;; no shadow window, nothing held by the window
+                 (should (gui-runner-wait (lambda () (let ((e (glitnir-ns--pair c)))
+                                                       (and e (null (plist-get e :shadow)))))
+                                          5))
+                 (should-not (glitnir-ns--orphans))
+                 (should-not (glitnir--chrome c))
+                 ;; the opaque, square frame (alpha-background is ignored): the stock frame's pixels, tolerance 0
+                 (setq off (glitnir-ns--grab)))
+               (should (equal (glitnir-ns--diff stock off (glitnir-ns--root-rect stock)) '(0 0))))
+           (delete-frame c t)))))))
+
+(defun glitnir-ns--fixture-run ()
+  "Type, scroll and show and hide a popup in the root's one window; the captures after each step."
+  (let* ((w (selected-window)) (buf (window-buffer w)) shots)
+    (with-current-buffer buf
+      (goto-char (point-min))
+      (insert "typed: the quick brown fox\n")
+      (set-window-point w (point)))
+    (redisplay t)
+    (push (glitnir-ns--grab) shots)
+    (set-window-start w (with-current-buffer buf (goto-char (point-min)) (forward-line 20) (point)))
+    (redisplay t)
+    (push (glitnir-ns--grab) shots)
+    (let ((c (glitnir-ns--blank-child nil)))
+      (unwind-protect (push (glitnir-ns--grab) shots)
+        (delete-frame c t)))
+    (should (glitnir-ns--gone-p c))
+    (push (glitnir-ns--grab) shots)
+    (nreverse shots)))
+
+(ert-deftest glitnir-ns/on-equals-off ()
+  ;; guard: the NS twin of drgnx's on-equals-off, on a fixture without chrome
+  (glitnir-ns--skip-unless-ns)
+  (glitnir-ns--skip-unless-capture)
+  (let (on off)
+    (glitnir-ns--with-pattern
+     (lambda ()
+       (let ((glitnir-enable t)) (setq on (glitnir-ns--fixture-run)))
+       (with-current-buffer (window-buffer (selected-window)) (delete-region (point-min) (+ (point-min) 27)))
+       (set-window-start (selected-window) 1)
+       (let ((glitnir-enable nil)) (setq off (glitnir-ns--fixture-run)))))
+    (should (= (length on) (length off) 4))
+    (cl-mapc (lambda (a b) (should (equal (glitnir-ns--diff a b (glitnir-ns--root-rect a)) '(0 0)))) on off)))
+
+;;; The clean cost row: no sampler thread, the redisplay of a corfu-like step timed with and without the shadow
+
+(defconst glitnir-ns--cost-move-ms 1.0 "On - off p95 budget per move step, milliseconds.")
+(defconst glitnir-ns--cost-resize-ms 2.0 "On - off p95 budget per resize step, milliseconds.")
+
+(defun glitnir-ns--p95 (xs)
+  (let ((v (sort (copy-sequence xs) #'<))) (nth (min (1- (length v)) (floor (* 0.95 (length v)))) v)))
+
+(defun glitnir-ns--cost-block (c n step)
+  "Run N timed STEPs (a function of C and the index) with redisplay; the milliseconds of each."
+  (let (ms)
+    (dotimes (i n)
+      (let ((t0 (float-time)))
+        (funcall step c i)
+        (redisplay t)
+        (push (* 1000 (- (float-time) t0)) ms)))
+    ms))
+
+(defun glitnir-ns--windowserver-cpu ()
+  (string-trim (shell-command-to-string "ps -axo time=,comm= | grep -w WindowServer | head -1")))
+
+(defun glitnir-ns--cost (c n step)
+  "The p95 of the on blocks and of the off blocks (on, off, on, off) of N STEPs: (ON . OFF)."
+  (let (on off)
+    (dolist (shadow (list glitnir-ns--shadow nil glitnir-ns--shadow nil))
+      (modify-frame-parameters c `((shadow . ,shadow)))
+      (redisplay t)
+      (let ((ms (glitnir-ns--cost-block c n step)))
+        (if shadow (setq on (nconc ms on)) (setq off (nconc ms off)))))
+    (cons (glitnir-ns--p95 on) (glitnir-ns--p95 off))))
+
+(ert-deftest glitnir-ns/shadow-cost-under-redisplay ()
+  ;; budget: on - off p95 <= 1.0 ms per move step, 2.0 ms per resize step; sync-ms and WindowServer's CPU recorded
+  (glitnir-ns--skip-unless-ns)
+  (glitnir-ns--with-pattern
+   (lambda ()
+     (let ((c (glitnir-ns--blank-child '((corner-radius . 8)))) (cpu0 (glitnir-ns--windowserver-cpu)))
+       (unwind-protect
+           (let* ((buf (window-buffer (selected-window)))
+                  (move (glitnir-ns--cost
+                         c 200 (lambda (f i)
+                                 (with-current-buffer buf (goto-char (point-min)) (insert "x"))
+                                 (set-frame-position f (+ 40 (mod (* 3 i) 200)) (+ 40 (mod i 60))))))
+                  (resize (glitnir-ns--cost
+                           c 100 (lambda (f i) (set-frame-size f (+ 200 (mod (* 4 i) 120)) (+ 80 (mod (* 3 i) 60)) t)))))
+             (message "glitnir-ns cost at x%s: move on p95 %.2f off p95 %.2f ms; resize on p95 %.2f off p95 %.2f ms; %S; WindowServer cpu %s -> %s"
+                      (glitnir-ns--scale) (car move) (cdr move) (car resize) (cdr resize) (glitnir-stats)
+                      cpu0 (glitnir-ns--windowserver-cpu))
+             (should-not (glitnir-ns--settled-problem c))
+             (modify-frame-parameters c `((shadow . ,glitnir-ns--shadow)))
+             (should-not (glitnir-ns--settled-problem c))
+             (should (<= (- (car move) (cdr move)) glitnir-ns--cost-move-ms))
+             (should (<= (- (car resize) (cdr resize)) glitnir-ns--cost-resize-ms)))
+         (delete-frame c t))))))
+
 ;;; glitnir-ns-gui-tests.el ends here

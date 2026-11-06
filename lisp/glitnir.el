@@ -58,7 +58,9 @@ frame parameters too, and the parameter wins.  `transition' is nil,
 `ease-in-out' or (cubic-bezier X1 Y1 X2 Y2).  The shorthands and the
 plist's defaults show over 0.12 s with `ease-out' and hide over 0.08 s
 with `ease-in'.  When the desktop asks for reduced motion there is no
-transition (on macOS: Reduce motion, in the Accessibility settings)."
+transition (on macOS: Reduce motion, in the Accessibility settings).
+On macOS the blur is the system's material: `backdrop-blur' turns it on
+or off, its size is not used, and Reduce transparency draws it opaque."
   :type '(choice (const :tag "None" nil)
                  (alist :key-type (choice (const corner-radius) (const shadow)
                                           (const transition) (const backdrop-blur))

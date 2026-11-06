@@ -163,6 +163,14 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   `CGWindowListCreateImage`. It needs the Screen Recording permission and never asks for it: without it the
   snapshot signals `glitnir-no-capture`. `glitnir--ns-pairs` lists the visible child frames as the window server has them
   (bounds and alpha, no permission needed).
+  On macOS a child frame gets rounded corners, a shadow (in a click-through sibling window, ordered directly below it),
+  fade and pop, and a backdrop blur; a root frame's windows get the card look. Four things differ from Linux:
+  the blur is the system's Popover material, so `backdrop-blur` turns blur on or off and its size is not used, and
+  Reduce transparency (System Settings, Accessibility, Display) draws it opaque; the corner curve is circular, as on
+  Linux, while macOS's own windows use the continuous curve, so a popup's corners differ slightly from theirs; the
+  shadow is Core Animation's Gaussian with radius = blur / 2, close to Glitnir's and not identical; and Reduce motion
+  (the same pane) turns every transition off at once. `alpha-background`, which NS otherwise ignores, applies to a
+  child frame with chrome and nothing else.
 - **Dev build** (`--dev` or `NIDHOGG_BUILD_DEV=1`, for agents' task builds): configures `--with-native-compilation=yes`
   instead of `aot`, so only the preloaded Lisp is native-compiled and the other ~1,400 files stay bytecode (minutes instead
   of the better part of an hour). A `lisp/site-init.el` written into the build copy sets `native-comp-jit-compilation` to
