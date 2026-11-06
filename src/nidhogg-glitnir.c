@@ -26,6 +26,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include "lisp.h"
 #include "frame.h"
+#include "window.h"
 #ifdef HAVE_NHWL
 #include "blockinput.h"
 #include "dispextern.h"
@@ -659,6 +660,39 @@ the count is of both, for every frame.  0 off NS.  */)
 #endif
 }
 
+DEFUN ("glitnir--layout-leg", Fglitnir__layout_leg, Sglitnir__layout_leg,
+       2, 2, 0,
+       doc: /* Hand WINDOW's layout leg VECTOR to the presenter.
+VECTOR is what `glitnir--leg-vector' gives, or nil for none.  Return the
+number of the newest capture the presenter took of WINDOW, 0 for none,
+or nil when its frame has no layout legs.  */)
+  (Lisp_Object window, Lisp_Object vector)
+{
+  struct window *w = decode_live_window (window);
+#ifdef HAVE_NS
+  return ns_glitnir_layout_leg (XFRAME (w->frame), w, vector);
+#else
+  (void) w;
+  (void) vector;
+  return Qnil;
+#endif
+}
+
+DEFUN ("glitnir--ns-layout", Fglitnir__ns_layout, Sglitnir__ns_layout,
+       1, 1, 0,
+       doc: /* Return what the macOS build shows of WINDOW's layout leg, for tests.
+A plist (:captured SERIAL :running BOOL :pieces N); nil off NS.  */)
+  (Lisp_Object window)
+{
+  struct window *w = decode_live_window (window);
+#ifdef HAVE_NS
+  return ns_glitnir_layout_state (XFRAME (w->frame), w);
+#else
+  (void) w;
+  return Qnil;
+#endif
+}
+
 void
 syms_of_nidhogg_glitnir (void)
 {
@@ -668,6 +702,8 @@ syms_of_nidhogg_glitnir (void)
   defsubr (&Sglitnir__probe);
   defsubr (&Sglitnir__decor_bench);
   defsubr (&Sglitnir__ns_card_updates);
+  defsubr (&Sglitnir__layout_leg);
+  defsubr (&Sglitnir__ns_layout);
   defsubr (&Sglitnir_active_p);
   defsubr (&Sglitnir_stats);
   defsubr (&Sglitnir_snapshot);

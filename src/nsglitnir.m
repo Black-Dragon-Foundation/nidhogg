@@ -46,6 +46,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #ifdef NS_IMPL_COCOA
 #import <QuartzCore/QuartzCore.h>
+#include <IOSurface/IOSurface.h>
 #endif
 
 verify (NHG_CHROME_SLOTS == 24);	/* the size of ns_output.glitnir_chrome */
@@ -1700,9 +1701,13 @@ ns_glitnir_hide_requested (struct frame *f)
 }
 
 /* After F was drawn (ns_update_end): a show that waits starts.  */
+static void ns_glitnir_layout_drawn (struct frame *f);
+
 void
 ns_glitnir_frame_drawn (struct frame *f)
 {
+  if (FRAME_NS_VIEW (f) && f->output_data.ns)
+    ns_glitnir_layout_drawn (f);
   if (!FRAME_PARENT_FRAME (f) || !FRAME_NS_VIEW (f))
     return;
   NSWindow *w = [FRAME_NS_VIEW (f) window];
@@ -1785,6 +1790,381 @@ ns_glitnir_motion (struct frame *f)
 	    make_int (ns_glitnir_hides_pending));
   unblock_input ();
   return result;
+}
+
+
+/***********************************************************************
+			      Layout legs
+ ***********************************************************************/
+
+/* A window's layout leg (`glitnir--layout-leg'): Lisp asks for a picture
+   of the window's text area before it draws a new layout; the picture is
+   copied from the pixels the frame's layer shows (no permission needed)
+   at once, so the answer is the capture's number.  The leg starts with
+   the first frame drawn after Lisp described the motion: a cover layer
+   in the background colour and, over it, the old pictures of what moved
+   and exited and the new pictures of what entered, animated on their
+   layers to their places.  The cover goes when the leg ended.  */
+
+@interface GlitnirLayout : NSObject
+{
+@public
+  /* The number of the capture held, 0 for none, and the picture.  */
+  uint64_t serial;
+  CGImageRef old;
+  /* The motion's vector (floats) waits for the next frame; the leg started.  */
+  NSData *vector;
+  bool started, running;
+  CALayer *overlay;
+  intmax_t pieces;
+}
+@end
+
+@implementation GlitnirLayout
+- (void) dealloc
+{
+  if (old)
+    CGImageRelease (old);
+  [vector release];
+  [super dealloc];
+}
+@end
+
+static char ns_glitnir_layout_key;
+
+/* F's window's layout legs, a dictionary by window number; made when MAKE.  */
+static NSMutableDictionary *
+ns_glitnir_layouts (struct frame *f, bool make)
+{
+  NSWindow *nw = [(NSView *) FRAME_NS_VIEW (f) window];
+  NSMutableDictionary *d = nw
+    ? objc_getAssociatedObject (nw, &ns_glitnir_layout_key) : nil;
+
+  if (!d && make && nw)
+    {
+      d = [NSMutableDictionary dictionary];
+      objc_setAssociatedObject (nw, &ns_glitnir_layout_key, d,
+				OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+  return d;
+}
+
+/* The picture of what F's layer shows now, or NULL.  */
+static CGImageRef
+ns_glitnir_layer_image (struct frame *f)
+{
+  CALayer *layer = [(NSView *) FRAME_NS_VIEW (f) layer];
+  CGImageRef img = NULL;
+
+  /* The drawing may not be the layer's contents yet.  */
+  [layer displayIfNeeded];
+  id c = [layer contents];
+  if (!c || CFGetTypeID ((CFTypeRef) c) != IOSurfaceGetTypeID ())
+    return NULL;
+  IOSurfaceRef s = (IOSurfaceRef) c;
+  if (IOSurfaceLock (s, kIOSurfaceLockReadOnly, NULL) != kIOReturnSuccess)
+    return NULL;
+  CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB ();
+  CGContextRef cx
+    = CGBitmapContextCreate (IOSurfaceGetBaseAddress (s),
+			     IOSurfaceGetWidth (s), IOSurfaceGetHeight (s), 8,
+			     IOSurfaceGetBytesPerRow (s), cs,
+			     (kCGImageAlphaPremultipliedFirst
+			      | kCGBitmapByteOrder32Host));
+  CGColorSpaceRelease (cs);
+  if (cx)
+    {
+      /* A copy: the surface is drawn into again.  */
+      img = CGBitmapContextCreateImage (cx);
+      CGContextRelease (cx);
+    }
+  IOSurfaceUnlock (s, kIOSurfaceLockReadOnly, NULL);
+  return img;
+}
+
+/* The text-area rectangle (X Y W H in the view's points) in the layer's
+   coordinates.  */
+static CGRect
+ns_glitnir_view_rect (struct frame *f, const float *r)
+{
+  NSView *view = (NSView *) FRAME_NS_VIEW (f);
+  NSRect hb = [[view layer] bounds];
+  NSRect q = [view convertRectToLayer: NSMakeRect (r[0], r[1], r[2], r[3])];
+
+  return CGRectOffset (NSRectToCGRect (q), -NSMinX (hb), -NSMinY (hb));
+}
+
+/* Rectangle R (X Y W H, view points) of IMG, a copy, or NULL.  */
+static CGImageRef
+ns_glitnir_crop (struct frame *f, CGImageRef img, const float *r)
+{
+  CGFloat sx = CGImageGetWidth (img) / NSWidth ([(NSView *) FRAME_NS_VIEW (f) bounds]);
+  CGRect c = CGRectIntegral (CGRectMake (r[0] * sx, r[1] * sx, r[2] * sx,
+					 r[3] * sx));
+
+  c = CGRectIntersection (c, CGRectMake (0, 0, CGImageGetWidth (img),
+					 CGImageGetHeight (img)));
+  return CGRectIsEmpty (c) ? NULL : CGImageCreateWithImageInRect (img, c);
+}
+
+/* End the leg of S: its layers go, and the capture too when DROP.  */
+static void
+ns_glitnir_layout_end (GlitnirLayout *s, bool drop)
+{
+  CALayer *o = s->overlay;
+
+  s->overlay = nil;
+  s->running = false;
+  s->pieces = 0;
+  if (o)
+    {
+      [CATransaction begin];
+      [CATransaction setDisableActions: YES];
+      [o removeFromSuperlayer];
+      [CATransaction commit];
+    }
+  if (drop)
+    {
+      if (s->old)
+	CGImageRelease (s->old);
+      s->old = NULL;
+      s->serial = 0;
+      [s->vector release];
+      s->vector = nil;
+      s->started = false;
+    }
+}
+
+/* One piece of the leg: a layer showing IMG cropped to R (X Y W H, view
+   points), in OVERLAY, at the place TO, animating from the place FROM
+   (NULL: stays) and its opacity from FROM_O to TO_O.  */
+static void
+ns_glitnir_layout_piece (struct frame *f, CALayer *overlay, CGImageRef img,
+			 const float *r, const float *from, const float *to,
+			 CGFloat from_o, CGFloat to_o, CFTimeInterval secs,
+			 CAMediaTimingFunction *fn)
+{
+  CGImageRef crop = ns_glitnir_crop (f, img, r);
+
+  if (!crop)
+    return;
+  CALayer *l = [CALayer layer];
+  CGRect rt = ns_glitnir_view_rect (f, to);
+  CGFloat scale = CGImageGetWidth (img)
+    / NSWidth ([(NSView *) FRAME_NS_VIEW (f) bounds]);
+
+  [l setContents: (id) crop];
+  [l setContentsScale: scale];
+  [l setContentsGravity: kCAGravityResize];
+  [l setFrame: rt];
+  [l setOpacity: to_o];
+  [overlay addSublayer: l];
+  CGImageRelease (crop);
+
+  CFTimeInterval begin = [l convertTime: CACurrentMediaTime () fromLayer: nil];
+  NSMutableArray *anims = [NSMutableArray array];
+  if (from)
+    {
+      CGRect rf = ns_glitnir_view_rect (f, from);
+      CABasicAnimation *p = [CABasicAnimation animationWithKeyPath: @"position"];
+      [p setFromValue: [NSValue valueWithPoint:
+				  NSMakePoint (CGRectGetMidX (rf), CGRectGetMidY (rf))]];
+      [p setToValue: [NSValue valueWithPoint:
+				NSMakePoint (CGRectGetMidX (rt), CGRectGetMidY (rt))]];
+      [anims addObject: p];
+      CABasicAnimation *b = [CABasicAnimation animationWithKeyPath: @"bounds.size"];
+      [b setFromValue: [NSValue valueWithSize: NSMakeSize (CGRectGetWidth (rf),
+							   CGRectGetHeight (rf))]];
+      [b setToValue: [NSValue valueWithSize: NSMakeSize (CGRectGetWidth (rt),
+							 CGRectGetHeight (rt))]];
+      [anims addObject: b];
+    }
+  if (from_o != to_o)
+    {
+      CABasicAnimation *o = [CABasicAnimation animationWithKeyPath: @"opacity"];
+      [o setFromValue: [NSNumber numberWithDouble: from_o]];
+      [o setToValue: [NSNumber numberWithDouble: to_o]];
+      [anims addObject: o];
+    }
+  for (CABasicAnimation *a in anims)
+    {
+      [a setDuration: secs];
+      [a setBeginTime: begin];
+      [a setFillMode: kCAFillModeBackwards];
+      [a setTimingFunction: fn];
+      [l addAnimation: a forKey: [a keyPath]];
+    }
+}
+
+/* Start S's leg from its motion vector V (`glitnir--leg-vector').  */
+static void
+ns_glitnir_layout_start (struct frame *f, GlitnirLayout *s, const float *v,
+			 ptrdiff_t n)
+{
+  enum { HEAD = 14, ITEM = 10 };
+  ptrdiff_t count = n > HEAD ? (n - HEAD) / ITEM : 0;
+  CFTimeInterval secs = v[7] / 1000.0;
+  CALayer *host = [(NSView *) FRAME_NS_VIEW (f) layer];
+
+  s->started = true;
+  if (secs <= 0 || !s->old || !host || (ptrdiff_t) v[13] > count)
+    return;
+  count = v[13];
+  CGImageRef new = ns_glitnir_layer_image (f);
+  if (!new)
+    return;
+
+  CAMediaTimingFunction *fn
+    = [CAMediaTimingFunction functionWithControlPoints: v[8] : v[9]
+						       : v[10] : v[11]];
+  CALayer *overlay = [CALayer layer];
+  CALayer *cover = [CALayer layer];
+  uint64_t serial = s->serial;
+
+  [CATransaction begin];
+  [CATransaction setDisableActions: YES];
+  [overlay setName: @"glitnir-layout"];
+  [overlay setZPosition: 0.5];
+  [overlay setFrame: [host bounds]];
+  [overlay setMasksToBounds: YES];
+  [cover setFrame: ns_glitnir_view_rect (f, v + 1)];
+  [cover setBackgroundColor: ns_glitnir_cg_color (v[6], 1)];
+  [overlay addSublayer: cover];
+  [host addSublayer: overlay];
+
+  [CATransaction setCompletionBlock: ^{
+    if (s->overlay == overlay && s->serial == serial)
+      ns_glitnir_layout_end (s, false);
+  }];
+  s->overlay = overlay;
+  s->running = true;
+  s->pieces = 0;
+  for (ptrdiff_t i = 0; i < count; i++)
+    {
+      const float *it = v + HEAD + i * ITEM;
+      const float *o = it + 2, *nw = it + 6;
+      int kind = (int) it[0];
+
+      if (kind == 1)
+	ns_glitnir_layout_piece (f, overlay, s->old, o, o, nw, 1, 1, secs, fn);
+      else if (kind == 2)
+	ns_glitnir_layout_piece (f, overlay, new, nw, NULL, nw, 0, 1, secs, fn);
+      else if (kind == 3)
+	ns_glitnir_layout_piece (f, overlay, s->old, o, NULL, o, 1, 0, secs, fn);
+      else
+	continue;
+      s->pieces++;
+    }
+  CGImageRelease (new);
+  [CATransaction commit];
+}
+
+/* The hook of ns_update_end: the legs of F's windows waiting for a frame.  */
+static void
+ns_glitnir_layout_drawn (struct frame *f)
+{
+  NSMutableDictionary *d = ns_glitnir_layouts (f, false);
+
+  if (!d)
+    return;
+  for (GlitnirLayout *s in [d allValues])
+    if (s->vector && !s->started && s->old)
+      {
+	NSData *data = [[s->vector retain] autorelease];
+	ns_glitnir_layout_start (f, s, [data bytes],
+				 [data length] / sizeof (float));
+      }
+}
+
+/* `glitnir--layout-leg': see the DEFUN.  */
+Lisp_Object
+ns_glitnir_layout_leg (struct frame *f, struct window *w, Lisp_Object vector)
+{
+  if (!FRAME_NS_P (f) || !ns_glitnir_active_p (f) || !f->output_data.ns
+      || !FRAME_NS_VIEW (f) || ![(NSView *) FRAME_NS_VIEW (f) layer])
+    return Qnil;
+
+  Lisp_Object result = make_fixnum (0);
+
+  block_input ();
+  @autoreleasepool
+    {
+      NSNumber *key = [NSNumber numberWithLongLong: w->sequence_number];
+      NSMutableDictionary *d = ns_glitnir_layouts (f, true);
+      GlitnirLayout *s = [d objectForKey: key];
+
+      if (!VECTORP (vector))
+	{
+	  if (s)
+	    {
+	      ns_glitnir_layout_end (s, true);
+	      [d removeObjectForKey: key];
+	    }
+	}
+      else if (ASIZE (vector) >= 14)
+	{
+	  ptrdiff_t n = ASIZE (vector);
+	  float *v = xmalloc (n * sizeof *v);
+	  for (ptrdiff_t i = 0; i < n; i++)
+	    v[i] = NUMBERP (AREF (vector, i)) ? XFLOATINT (AREF (vector, i)) : 0;
+	  uint64_t serial = v[0];
+	  if (!s)
+	    {
+	      s = [[[GlitnirLayout alloc] init] autorelease];
+	      [d setObject: s forKey: key];
+	    }
+	  if (serial != s->serial)
+	    {
+	      ns_glitnir_layout_end (s, true);
+	      CGImageRef img = ns_glitnir_layer_image (f);
+	      CGImageRef crop = img ? ns_glitnir_crop (f, img, v + 1) : NULL;
+	      /* The held picture is the whole layer: pieces are cut from it.  */
+	      if (crop)
+		{
+		  CGImageRelease (crop);
+		  s->old = img;
+		  s->serial = serial;
+		}
+	      else if (img)
+		CGImageRelease (img);
+	    }
+	  if (s->serial == serial && serial > 0)
+	    {
+	      result = make_int (serial);
+	      if ((uint64_t) v[5] == serial && !s->started && !s->vector)
+		s->vector = [[NSData alloc] initWithBytes: v
+						   length: n * sizeof *v];
+	    }
+	  xfree (v);
+	}
+    }
+  unblock_input ();
+  return result;
+}
+
+/* `glitnir--ns-layout': see the DEFUN.  */
+Lisp_Object
+ns_glitnir_layout_state (struct frame *f, struct window *w)
+{
+  if (!FRAME_NS_P (f) || !f->output_data.ns || !FRAME_NS_VIEW (f))
+    return Qnil;
+
+  Lisp_Object serial = make_fixnum (0), running = Qnil, pieces = make_fixnum (0);
+
+  block_input ();
+  NSMutableDictionary *d = ns_glitnir_layouts (f, false);
+  GlitnirLayout *s = [d objectForKey:
+			   [NSNumber numberWithLongLong: w->sequence_number]];
+  if (s)
+    {
+      serial = make_int (s->serial);
+      running = s->running ? Qt : Qnil;
+      pieces = make_int (s->pieces);
+    }
+  unblock_input ();
+  return list (intern_c_string (":captured"), serial,
+	       intern_c_string (":running"), running,
+	       intern_c_string (":pieces"), pieces);
 }
 
 
@@ -1950,6 +2330,20 @@ ns_glitnir_hide_requested (struct frame *f)
 void
 ns_glitnir_frame_drawn (struct frame *f)
 {
+}
+
+/* No layout legs on GNUstep.  */
+
+Lisp_Object
+ns_glitnir_layout_leg (struct frame *f, struct window *w, Lisp_Object vector)
+{
+  return Qnil;
+}
+
+Lisp_Object
+ns_glitnir_layout_state (struct frame *f, struct window *w)
+{
+  return Qnil;
 }
 
 void

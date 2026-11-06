@@ -414,7 +414,10 @@ theme change does this itself) shows after this call."
   (dolist (f (if frame (list frame) (frame-list)))
     (when (and (frame-live-p f) (frame-parent f))
       (glitnir--rechrome f)))
-  (unless frame (glitnir--recheck-all-cards)))
+  (unless frame
+    (glitnir--recheck-all-cards)
+    ;; a theme or reduced motion changed: a layout leg jumps to its end
+    (glitnir--end-legs)))
 
 (defun glitnir--recheck-shadow (window)
   "Refresh WINDOW's frame when its `child-frame-shadow' colour changed.
@@ -441,6 +444,154 @@ its first window)."
 (add-variable-watcher
  'child-frame-chrome
  (lambda (&rest _) (run-at-time 0 nil #'glitnir-refresh)))
+
+;; Layout legs: a window's layout moves in the presenter.  Lisp asks
+;; for a picture of the window's text area before it draws a new layout
+;; (the window parameter `glitnir-layout-capture'), waits for
+;; `glitnir-layout-captured-p', then draws the new layout and says what
+;; moved (`glitnir-layout-motion').  The presenter moves the old
+;; pictures to their new places over the next frames.
+
+(defconst glitnir--leg-slots
+  '((capture . 0) (x . 1) (y . 2) (w . 3) (h . 4) (motion . 5) (background-rgb . 6)
+    (ms . 7) (x1 . 8) (y1 . 9) (x2 . 10) (y2 . 11) (step . 12) (count . 13))
+  "Slot names of `glitnir--leg-vector' and their indices; the items follow.
+Each item is 10 slots: its kind (1 move, 2 enter, 3 exit), its id, its old
+rectangle X Y W H and its new one, zeros for the one it lacks.  The same
+numbers are `SLOT_*' in the glue's legs.rs.")
+
+(defvar glitnir--leg-serial 0
+  "The newest capture number given to a window.")
+
+(defun glitnir--leg-id (id)
+  "ID, any object, as an item's number (ids that are `equal' have the same)."
+  (logand (sxhash-equal id) #xffffff))
+
+(defun glitnir--leg-rect (r)
+  "R, a list (X Y W H) of integers with W and H not negative, as a list.
+Signal `wrong-type-argument' otherwise."
+  (unless (and (proper-list-p r) (= (length r) 4) (not (memq nil (mapcar #'integerp r)))
+               (>= (nth 2 r) 0) (>= (nth 3 r) 0))
+    (signal 'wrong-type-argument (list 'glitnir-layout-rect r)))
+  r)
+
+(defun glitnir--leg-items (motion)
+  "The item slots of plist MOTION's :moves, :enters and :exits, as a list."
+  (let ((none '(0 0 0 0)) out)
+    (dolist (m (plist-get motion :moves))
+      (push (append (list 1 (glitnir--leg-id (car m)))
+                    (glitnir--leg-rect (nth 1 m)) (glitnir--leg-rect (nth 2 m)))
+            out))
+    (dolist (e (plist-get motion :enters))
+      (push (append (list 2 (glitnir--leg-id (car e))) none (glitnir--leg-rect (nth 1 e))) out))
+    (dolist (x (plist-get motion :exits))
+      (push (append (list 3 (glitnir--leg-id (car x))) (glitnir--leg-rect (nth 1 x)) none) out))
+    (nreverse out)))
+
+(defun glitnir--leg-background (spec frame)
+  "Background SPEC (a colour name or a face, default `default') as 0xRRGGBB on FRAME."
+  (let ((spec (or spec 'default)))
+    (or (glitnir--color-rgb (if (facep spec) (face-background spec frame t) spec) frame)
+        (glitnir--color-rgb (frame-parameter frame 'background-color) frame)
+        0)))
+
+(defun glitnir--leg-vector (window serial motion-p)
+  "Return WINDOW's layout leg as a vector of numbers: capture SERIAL of its text area.
+With MOTION-P, also the leg from that capture that the window parameter
+`glitnir-layout-motion' describes.  The slots are `glitnir--leg-slots'."
+  (let* ((edges (window-body-pixel-edges window))
+         (motion (and motion-p (window-parameter window 'glitnir-layout-motion)))
+         (items (and motion (glitnir--leg-items motion)))
+         (v (make-vector (+ 14 (* 10 (length items))) 0)))
+    (aset v 0 serial)
+    (aset v 1 (nth 0 edges))
+    (aset v 2 (nth 1 edges))
+    (aset v 3 (- (nth 2 edges) (nth 0 edges)))
+    (aset v 4 (- (nth 3 edges) (nth 1 edges)))
+    (when motion
+      (let ((secs (or (plist-get motion :duration) 0.16))
+            (points (glitnir--curve (or (plist-get motion :curve) 'ease-out))))
+        (unless (and (numberp secs) (>= secs 0))
+          (signal 'wrong-type-argument (list 'glitnir-layout-duration secs)))
+        (aset v 5 serial)
+        (aset v 6 (glitnir--leg-background (plist-get motion :background) (window-frame window)))
+        (aset v 7 (round (* 1000 secs)))
+        (dotimes (i 4) (aset v (+ 8 i) (nth i points)))
+        (aset v 12 (if (plist-get motion :step) 1 0))
+        (aset v 13 (length items))
+        (let ((i 14))
+          (dolist (it items)
+            (dolist (n it) (aset v i n) (setq i (1+ i)))))))
+    v))
+
+(defun glitnir--leg-to-send (window)
+  "WINDOW's `glitnir-layout-capture', or nil under reduced motion (the layout jumps)."
+  ;; the parameter first: most windows have none, and redisplay asks for each
+  (when-let* ((cap (window-parameter window 'glitnir-layout-capture)))
+    (and (not (glitnir--reduced-motion-p)) cap)))
+
+(defun glitnir--leg-send (window sent)
+  "Hand WINDOW's leg vector to the shell and remember SENT, (CAPTURE MOTION SERIAL EDGES MOVED VECTOR).
+SERIAL 0 ends the leg: the vector is nil."
+  (glitnir--layout-leg window (nth 5 sent))
+  (set-window-parameter window 'glitnir--leg-sent sent))
+
+(defun glitnir--recheck-leg (window)
+  "Hand WINDOW's capture and leg to the shell when its parameters changed.
+A new `glitnir-layout-capture' value gets the next capture number; a new
+`glitnir-layout-motion' value goes with that capture, or with a new one
+when a leg already went with it.  Either parameter nil, or a text area
+that moved, ends the leg.  Runs before each window's redisplay."
+  (let ((sent (window-parameter window 'glitnir--leg-sent))
+        (cap (glitnir--leg-to-send window)))
+    (when (or cap sent)
+      (let ((mot (window-parameter window 'glitnir-layout-motion))
+            (edges (window-body-pixel-edges window)))
+        (pcase-let ((`(,scap ,smot ,serial ,sedges ,moved ,_) sent))
+          (let ((new (lambda (motion-p)
+                       (let ((n (setq glitnir--leg-serial (1+ glitnir--leg-serial))))
+                         (glitnir--leg-send
+                          window (list cap mot n edges motion-p
+                                       (glitnir--leg-vector window n motion-p))))))
+                (end (lambda ()
+                       (if (and (null cap) (null mot))
+                           (set-window-parameter window 'glitnir--leg-sent nil)
+                         (set-window-parameter window 'glitnir--leg-sent
+                                               (list cap mot 0 edges nil nil)))
+                       (when (and serial (> serial 0))
+                         (glitnir--layout-leg window nil)))))
+            (cond
+             ((null cap) (unless (and (eql serial 0) (eq mot smot)) (funcall end)))
+             ((not (and sent (eq cap scap))) (funcall new (and mot (not (eq mot smot)))))
+             ((not (equal edges sedges)) (when (> serial 0) (funcall end)))
+             ((eq mot smot))
+             ((null mot) (if moved (funcall end) (setcar (cdr sent) nil)))
+             ((and (> serial 0) (not moved))
+              (glitnir--leg-send window (list cap mot serial edges t
+                                              (glitnir--leg-vector window serial t))))
+             (t (funcall new t)))))))))
+
+(add-hook 'pre-redisplay-functions #'glitnir--recheck-leg)
+
+(defun glitnir-layout-captured-p (&optional window)
+  "Non-nil when the presenter holds the capture WINDOW's `glitnir-layout-capture' asked for.
+WINDOW defaults to the selected window.  Always nil under reduced motion,
+off the native shell and in batch: the layout then jumps."
+  (let ((window (window-normalize-window window t)))
+    (glitnir--recheck-leg window)
+    (pcase-let ((`(,_ ,_ ,serial ,_ ,_ ,vector) (window-parameter window 'glitnir--leg-sent)))
+      (and (glitnir--leg-to-send window) serial (> serial 0)
+           (eql (glitnir--layout-leg window vector) serial)))))
+
+(defun glitnir--end-legs ()
+  "End every window's layout leg at once: each jumps to its new layout."
+  (dolist (f (frame-list))
+    (dolist (w (window-list f t))
+      (let ((sent (window-parameter w 'glitnir--leg-sent)))
+        (when (and sent (> (nth 2 sent) 0))
+          (set-window-parameter w 'glitnir--leg-sent
+                                (list (nth 0 sent) (nth 1 sent) 0 (nth 3 sent) nil nil))
+          (glitnir--layout-leg w nil))))))
 
 (provide 'glitnir-lisp)
 

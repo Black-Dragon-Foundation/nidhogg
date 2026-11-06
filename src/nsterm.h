@@ -1144,6 +1144,11 @@ extern void ns_clear_frame (struct frame *f);
 /* Glitnir's window cards on NS, in nsglitnir.m.  */
 extern void ns_glitnir_cards_update (struct frame *f);
 extern intmax_t ns_glitnir_card_updates (void);
+/* Glitnir's layout leg on NS, in nsglitnir.m.  */
+struct window;
+extern Lisp_Object ns_glitnir_layout_leg (struct frame *f, struct window *w,
+					  Lisp_Object vector);
+extern Lisp_Object ns_glitnir_layout_state (struct frame *f, struct window *w);
 #endif
 
 extern void ns_set_offset (struct frame *f, int xoff, int yoff,

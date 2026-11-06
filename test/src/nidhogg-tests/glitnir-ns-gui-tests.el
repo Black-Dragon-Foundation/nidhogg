@@ -1252,4 +1252,89 @@ Everything goes back after: one window on `*scratch*', the frame's divider width
              (should (<= (- (car resize) (cdr resize)) glitnir-ns--cost-resize-ms)))
          (delete-frame c t))))))
 
+;;; The layout leg: a capture before a new layout, the old picture moving over it
+
+(defun glitnir-ns--leg-area ()
+  "The selected window's text area: (X Y W H) in points, and in device pixels."
+  (pcase-let* ((`(,l ,tp ,r ,b) (window-body-pixel-edges)) (s (frame-scale-factor))
+               (pts (list l tp (- r l) (- b tp))))
+    (cons pts (mapcar (lambda (n) (round (* s n))) pts))))
+
+(defun glitnir-ns--leg-state () (glitnir--ns-layout (selected-window)))
+
+(defun glitnir-ns--leg-capture ()
+  "Ask for a capture of the selected window and wait until the presenter holds it."
+  (set-window-parameter nil 'glitnir-layout-capture t)
+  (redisplay t)
+  (should (gui-runner-wait #'glitnir-layout-captured-p 5))
+  (should (> (plist-get (glitnir-ns--leg-state) :captured) 0)))
+
+(defun glitnir-ns--leg-end ()
+  "End the selected window's leg and wait until its layers are gone."
+  (dolist (k '(glitnir-layout-capture glitnir-layout-motion)) (set-window-parameter nil k nil))
+  (redisplay t)
+  (should (gui-runner-wait (lambda () (not (plist-get (glitnir-ns--leg-state) :running))) 5)))
+
+(defun glitnir-ns--leg-scroll ()
+  "Show the next line first: the pattern's two kinds of line trade places."
+  (set-window-start nil (with-current-buffer (window-buffer) (goto-char (point-min)) (forward-line 1) (point)))
+  (redisplay t))
+
+(ert-deftest glitnir-ns/layout-leg-shows-old-picture ()
+  ;; the capture is the picture from before the redraw: a leg that moves it nowhere shows it all along
+  (glitnir-ns--skip-unless-ns)
+  (glitnir-ns--skip-unless-capture)
+  (let ((glitnir--reduced-motion 'off) before during after)
+    (glitnir-ns--with-pattern
+     (lambda ()
+       (pcase-let ((`(,pts . ,dev) (glitnir-ns--leg-area)))
+         (setq before (glitnir-ns--grab))
+         (glitnir-ns--leg-capture)
+         ;; the motion goes out with the redraw that draws the new layout
+         (set-window-parameter nil 'glitnir-layout-motion
+                               `(:moves ((page ,pts ,pts)) :duration 30 :background "#000000"))
+         (glitnir-ns--leg-scroll)
+         (should (gui-runner-wait (lambda () (plist-get (glitnir-ns--leg-state) :running)) 5))
+         (should (= (plist-get (glitnir-ns--leg-state) :pieces) 1))
+         (setq during (glitnir-ns--grab))
+         (glitnir-ns--leg-end)
+         (setq after (glitnir-ns--grab))
+         ;; the old picture shows (up to the window server's rounding), the new layout is what stays
+         (should (<= (cadr (glitnir-ns--diff before during dev)) 2))
+         (should (> (car (glitnir-ns--diff during after dev)) 100)))))))
+
+(ert-deftest glitnir-ns/layout-leg-ends-plain ()
+  ;; after its duration the leg's layers are gone and the new layout shows as drawn
+  (glitnir-ns--skip-unless-ns)
+  (glitnir-ns--skip-unless-capture)
+  (let ((glitnir--reduced-motion 'off) plain moved)
+    (glitnir-ns--with-pattern
+     (lambda ()
+       (pcase-let ((`(,pts . ,dev) (glitnir-ns--leg-area)))
+         (glitnir-ns--leg-scroll)
+         (setq plain (glitnir-ns--grab))
+         (set-window-start nil 1)
+         (redisplay t)
+         (glitnir-ns--leg-capture)
+         (set-window-parameter nil 'glitnir-layout-motion
+                               `(:moves ((page ,pts ,(list (nth 0 pts) (+ 12 (nth 1 pts)) (nth 2 pts) (nth 3 pts))))
+                                 :duration 0.3 :background "#000000"))
+         (glitnir-ns--leg-scroll)
+         ;; the leg starts in the redraw above: it runs or has ended
+         (should (gui-runner-wait (lambda () (not (plist-get (glitnir-ns--leg-state) :running))) 5))
+         (setq moved (glitnir-ns--grab))
+         (should (equal (glitnir-ns--diff plain moved dev) '(0 0))))))))
+
+(ert-deftest glitnir-ns/layout-leg-jumps-under-reduced-motion ()
+  ;; reduced motion asks for no capture: the new layout shows at once
+  (glitnir-ns--skip-unless-ns)
+  (let ((glitnir--reduced-motion 'on))
+    (glitnir-ns--with-pattern
+     (lambda ()
+       (set-window-parameter nil 'glitnir-layout-capture t)
+       (redisplay t)
+       (should-not (glitnir-layout-captured-p))
+       (should (= (plist-get (glitnir-ns--leg-state) :captured) 0))
+       (set-window-parameter nil 'glitnir-layout-capture nil)))))
+
 ;;; glitnir-ns-gui-tests.el ends here
