@@ -4045,10 +4045,20 @@ if test "${with_glitnir}" = yes; then
   fi
   AC_MSG_CHECKING([the native libraries Glitnir links])
   rm -rf "$glitnir_target"
-  glitnir_native=`cd "$GLITNIR_SRCDIR" && env CARGO_HOME="$glitnir_home" $GLITNIR_ENV "$GLITNIR_CARGO" rustc --release --offline --locked $GLITNIR_CARGO_FLAGS --target-dir "$glitnir_target" -- --print native-static-libs 2>&1 | sed -n 's/.*native-static-libs: *//p' | tail -n 1`
+  dnl The crates are the ones the Cargo.lock files pin (--locked).  With a vendor/ directory (the unpacked
+  dnl nidhogg-vendor-VERSION.tar.zst, or one `cargo vendor' made) and the .cargo/config.toml that comes with it, cargo
+  dnl builds offline; without one it fetches them from crates.io into the build tree's cargo home.
+  glitnir_log=`pwd`/src/glitnir-cargo.log
+  mkdir -p src
+  glitnir_native=`cd "$GLITNIR_SRCDIR" && env CARGO_HOME="$glitnir_home" $GLITNIR_ENV "$GLITNIR_CARGO" rustc --release --locked $GLITNIR_CARGO_FLAGS --target-dir "$glitnir_target" -- --print native-static-libs 2>&1 | tee "$glitnir_log" | sed -n 's/.*native-static-libs: *//p' | tail -n 1`
   if test ! -f "$glitnir_target/release/$glitnir_lib" || test -z "$glitnir_native"; then
     AC_MSG_RESULT([failed])
-    AC_MSG_ERROR([cannot build $GLITNIR_SRCDIR with cargo (see $glitnir_target)])
+    glitnir_vendor="$GLITNIR_SRCDIR/vendor"
+    test "$HAVE_NHWL" = yes && glitnir_vendor="$nhwl_shell_dir/vendor"
+    glitnir_hint=
+    test -d "$glitnir_vendor" ||
+      glitnir_hint="; there is no $glitnir_vendor, so cargo fetched the locked crates from crates.io, which needs the network (for an offline build, unpack nidhogg-vendor-VERSION.tar.zst, a release asset, in nidhogg/)"
+    AC_MSG_ERROR([cannot build $GLITNIR_SRCDIR with cargo$glitnir_hint (cargo's output: $glitnir_log)])
   fi
   AC_MSG_RESULT([$glitnir_native])
   HAVE_GLITNIR=yes
