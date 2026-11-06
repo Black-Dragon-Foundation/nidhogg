@@ -34,7 +34,6 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #ifdef HAVE_TREE_SITTER
 #include "treesit.h"
 #endif
-
 #ifdef HAVE_NIDHOGG_HISTORY
 #include "nidhogg-history.h"
 #endif
