@@ -5182,6 +5182,120 @@ face_for_font (struct frame *f, Lisp_Object font_object,
   return face->id;
 }
 #endif	/* HAVE_WINDOW_SYSTEM */
+#ifdef HAVE_GLITNIR
+
+/* The last lookups of named faces by lookup_named_face, one entry per
+   face and frame: [SYMBOL FRAME FACE-ID FROM... BASE... INHERITED...
+   LFACE...], each of the four LFACE_VECTOR_SIZE long: the attributes
+   it merged (the face's, through its remap), those of the default face
+   they were merged into, those of `default' (through its remap) when
+   the face inherits it, and those of the face it found, which is
+   default_lookup_face at the entry's index.  A buffer whose `default' is remapped
+   merges the remap into the default face at every face lookup, and at
+   every row for `margin', which inherits `default'; each merge copies
+   the font spec.  A lookup that would merge the same attributes (eql)
+   finds the same face, as long as that face is still realized with the
+   same attributes (EQ: a face cache freed and realized again does not
+   match).  A change of a remap, of a face it names or of the default
+   face changes what is merged, so that lookup merges again.  A :height
+   function, or an :inherit other than `default', reads more than the
+   snapshot: never cached.  */
+enum { LOOKUP_ENTRIES = 4, LOOKUP_ENTRY = 3 + 4 * LFACE_VECTOR_SIZE };
+static Lisp_Object default_lookup_cache;
+static struct face *default_lookup_face[LOOKUP_ENTRIES];
+static int default_lookup_next;
+
+/* Whether a lookup that merges FROM can be cached; set INHERITED to
+   what its :inherit merges (unspecified for none).  */
+static bool
+default_lookup_cacheable (struct window *w, struct frame *f,
+			  const Lisp_Object *from, Lisp_Object *inherited)
+{
+  Lisp_Object inherit = from[LFACE_INHERIT_INDEX];
+  int i;
+
+  if (FUNCTIONP (from[LFACE_HEIGHT_INDEX]))
+    return false;
+  if (NILP (inherit) || UNSPECIFIEDP (inherit))
+    {
+      for (i = 1; i < LFACE_VECTOR_SIZE; i++)
+	inherited[i] = Qunspecified;
+      return true;
+    }
+  return (EQ (inherit, Qdefault)
+	  && get_lface_attributes (w, f, Qdefault, inherited, false, 0)
+	  && !FUNCTIONP (inherited[LFACE_HEIGHT_INDEX])
+	  && (NILP (inherited[LFACE_INHERIT_INDEX])
+	      || UNSPECIFIEDP (inherited[LFACE_INHERIT_INDEX])));
+}
+
+/* The face a lookup of SYMBOL on F merging FROM, INHERITED into BASE
+   found before, or -1; *ENTRY is SYMBOL's entry on F, if any.  */
+static int
+default_lookup_cached (Lisp_Object symbol, struct frame *f,
+		       const Lisp_Object *from, const Lisp_Object *base,
+		       const Lisp_Object *inherited, int *entry)
+{
+  Lisp_Object frame, *e;
+  struct face *face;
+  int i, k;
+
+  if (NILP (default_lookup_cache))
+    return -1;
+  XSETFRAME (frame, f);
+  for (k = 0; k < LOOKUP_ENTRIES; k++)
+    {
+      e = XVECTOR (default_lookup_cache)->contents + k * LOOKUP_ENTRY;
+      if (!EQ (e[0], symbol) || !EQ (e[1], frame) || !FIXNUMP (e[2]))
+	continue;
+      *entry = k;
+      face = FACE_FROM_ID_OR_NULL (f, XFIXNUM (e[2]));
+      if (face == NULL || face != default_lookup_face[k])
+	return -1;
+      for (i = 1; i < LFACE_VECTOR_SIZE; i++)
+	if (NILP (Feql (e[3 + i], from[i]))
+	    || NILP (Feql (e[3 + LFACE_VECTOR_SIZE + i], base[i]))
+	    || NILP (Feql (e[3 + 2 * LFACE_VECTOR_SIZE + i], inherited[i]))
+	    || !EQ (e[3 + 3 * LFACE_VECTOR_SIZE + i], face->lface[i]))
+	  return -1;
+      return face->id;
+    }
+  return -1;
+}
+
+/* Remember that the lookup of SYMBOL on F merging FROM, INHERITED
+   into BASE found face ID, in ENTRY (-1: the next one).  */
+static void
+default_lookup_store (int entry, Lisp_Object symbol, struct frame *f,
+		      const Lisp_Object *from, const Lisp_Object *base,
+		      const Lisp_Object *inherited, int id)
+{
+  struct face *face = FACE_FROM_ID (f, id);
+  Lisp_Object *e;
+  int i;
+
+  if (NILP (default_lookup_cache))
+    default_lookup_cache = make_nil_vector (LOOKUP_ENTRIES * LOOKUP_ENTRY);
+  if (entry < 0)
+    {
+      entry = default_lookup_next;
+      default_lookup_next = (entry + 1) % LOOKUP_ENTRIES;
+    }
+  e = XVECTOR (default_lookup_cache)->contents + entry * LOOKUP_ENTRY;
+  e[0] = symbol;
+  XSETFRAME (e[1], f);
+  e[2] = make_fixnum (id);
+  /* Slot 0 is not an attribute (and FROM's may be unset).  */
+  for (i = 1; i < LFACE_VECTOR_SIZE; i++)
+    {
+      e[3 + i] = from[i];
+      e[3 + LFACE_VECTOR_SIZE + i] = base[i];
+      e[3 + 2 * LFACE_VECTOR_SIZE + i] = inherited[i];
+      e[3 + 3 * LFACE_VECTOR_SIZE + i] = face->lface[i];
+    }
+  default_lookup_face[entry] = face;
+}
+#endif
 
 /* Return the face id of the realized face for named face SYMBOL on
    frame F suitable for displaying ASCII characters.  Value is -1 if
@@ -5214,8 +5328,27 @@ lookup_named_face (struct window *w, struct frame *f,
   for (i = 1; i < LFACE_VECTOR_SIZE; i++)
     if (EQ (symbol_attrs[i], Qreset))
       symbol_attrs[i] = attrs[i];
+#ifdef HAVE_GLITNIR
+  Lisp_Object inherited[LFACE_VECTOR_SIZE];
+  int entry = -1, id = -1;
+  bool cacheable = default_lookup_cacheable (w, f, symbol_attrs, inherited);
+  if (cacheable)
+    id = default_lookup_cached (symbol, f, symbol_attrs, default_face->lface,
+				inherited, &entry);
+  if (id >= 0)
+    return id;
+#endif
 
   merge_face_vectors (w, f, symbol_attrs, attrs, 0);
+#ifdef HAVE_GLITNIR
+  if (cacheable)
+    {
+      id = lookup_face (f, attrs);
+      default_lookup_store (entry, symbol, f, symbol_attrs,
+			    default_face->lface, inherited, id);
+      return id;
+    }
+#endif
 
   return lookup_face (f, attrs);
 }
@@ -7618,6 +7751,10 @@ syms_of_xfaces (void)
   staticpro (&Vface_alternative_font_family_alist);
   Vface_alternative_font_registry_alist = Qnil;
   staticpro (&Vface_alternative_font_registry_alist);
+#ifdef HAVE_GLITNIR
+  default_lookup_cache = Qnil;
+  staticpro (&default_lookup_cache);
+#endif
 
   defsubr (&Sinternal_make_lisp_face);
   defsubr (&Sinternal_lisp_face_p);
