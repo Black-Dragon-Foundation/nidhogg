@@ -1235,6 +1235,8 @@ ns_update_end (struct frame *f)
 #ifdef HAVE_GLITNIR
   /* A root frame's window cards follow its windows.  */
   ns_glitnir_cards_update (f);
+  /* A child frame's show leg starts once the frame is drawn.  */
+  ns_glitnir_frame_drawn (f);
 #endif
 
   unblock_input ();
@@ -1640,6 +1642,11 @@ ns_make_frame_visible (struct frame *f)
       EmacsWindow *window = (EmacsWindow *)[view window];
 
       SET_FRAME_VISIBLE (f, true);
+#ifdef HAVE_GLITNIR
+      /* Glitnir's show leg: a pending hide is cancelled, and the layers
+	 are where the leg starts before the window is ordered in.  */
+      ns_glitnir_show_requested (f);
+#endif
       ns_raise_frame (f, ! FRAME_NO_FOCUS_ON_MAP (f));
 
       /* Making a new frame from a fullscreen frame will make the new frame
@@ -1688,6 +1695,10 @@ ns_make_frame_invisible (struct frame *f)
   NSTRACE ("ns_make_frame_invisible");
   check_window_system (f);
   view = FRAME_NS_VIEW (f);
+#ifdef HAVE_GLITNIR
+  /* With a hide leg, Glitnir orders the window out when the leg ends.  */
+  if (!ns_glitnir_hide_requested (f))
+#endif
   [[view window] orderOut: NSApp];
   SET_FRAME_VISIBLE (f, false);
   SET_FRAME_ICONIFIED (f, 0);

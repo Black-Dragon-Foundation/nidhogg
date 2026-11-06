@@ -485,6 +485,31 @@ selected frame; the value is nil off NS.  */)
 #endif
 }
 
+DEFUN ("glitnir--ns-motion", Fglitnir__ns_motion, Sglitnir__ns_motion, 0, 1, 0,
+       doc: /* Return the state of FRAME's show and hide motion on the macOS build.
+The value is a plist.  :opacity and :scale are the content layer's as
+shown now (Core Animation's presentation layer), :model-opacity and
+:model-scale its own values; :shadow-opacity and :shadow-scale the
+shadow window's shadow layer's as shown now, nil without a shadow
+window.  :animations counts the animations on both layers.  :leg is
+`show' or `hide' while a leg's animation runs, with :elapsed and
+:duration its time so far and its length in milliseconds, else nil.
+:hiding is non-nil from a hide with a leg until its window is ordered
+out; :pending while a show or a hide waits to start its leg;
+:ignores-mouse whether the window lets clicks through.  :hides-pending
+counts the hide legs of every frame whose end has not run.  FRAME
+defaults to the selected frame; the value is nil off NS.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+#ifdef HAVE_NS
+  if (FRAME_NS_P (f))
+    return ns_glitnir_motion (f);
+#endif
+  (void) f;
+  return Qnil;
+}
+
 DEFUN ("glitnir--probe", Fglitnir__probe, Sglitnir__probe, 3, 4, 0,
        doc: /* Measure a picture; KIND is `edges', `rule' or `seams'.
 RAW is (WIDTH HEIGHT BYTES) as (glitnir-snapshot FRAME 'raw) returns it;
@@ -653,6 +678,7 @@ syms_of_nidhogg_glitnir (void)
   defsubr (&Sglitnir__chrome);
   defsubr (&Sglitnir__rechrome);
   defsubr (&Sglitnir__ns_pairs);
+  defsubr (&Sglitnir__ns_motion);
 
   DEFSYM (Qglitnir_no_capture, "glitnir-no-capture");
   Fput (Qglitnir_no_capture, Qerror_conditions,

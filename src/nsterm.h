@@ -1175,6 +1175,14 @@ extern Lisp_Object ns_get_local_selection (Lisp_Object selection_name,
                                            Lisp_Object target_type);
 extern void nxatoms_of_nsselect (void);
 extern void ns_set_doc_edited (void);
+#ifdef HAVE_GLITNIR
+/* Glitnir's show and hide motion on NS, in nsglitnir.m.  */
+extern void ns_glitnir_show_requested (struct frame *f);
+extern bool ns_glitnir_hide_requested (struct frame *f);
+extern void ns_glitnir_frame_drawn (struct frame *f);
+extern void ns_glitnir_motion_drop (struct frame *f);
+extern Lisp_Object ns_glitnir_motion (struct frame *f);
+#endif
 
 extern bool
 ns_defined_color (struct frame *f,
