@@ -91,6 +91,15 @@ run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n
 rcis 0; has "--with-nidhogg-workers"
 run -- --dry-run --container fedora-45 --without-nidhogg-workers
 rcis 0; hasnt "--with-nidhogg-workers"; has "--with-nidhogg-watchdog"
+# the edit history's hook likewise, wherever Glitnir is (it holds the rings), unless --without-nidhogg-history
+run -- --dry-run --container fedora-45
+rcis 0; has "--with-nidhogg-history"
+run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n
+rcis 0; has "--with-nidhogg-history"
+run -- --dry-run --container fedora-45 --without-nidhogg-history
+rcis 0; hasnt "--with-nidhogg-history"; has "--with-nidhogg-workers"
+run -- --dry-run --container fedora-45 --without-glitnir
+rcis 0; hasnt "--with-nidhogg-history"
 # --chaos: seeded delays in a dev build, never a release
 run -- --dry-run --container fedora-45
 rcis 0; hasnt "--with-nidhogg-chaos"

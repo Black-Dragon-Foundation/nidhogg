@@ -161,6 +161,9 @@ extern char etext;
 #ifdef HAVE_NIDHOGG_WORKERS
 #include "nidhogg-workers.h"
 #endif
+#ifdef HAVE_NIDHOGG_HISTORY
+#include "nidhogg-history.h"
+#endif
 
 static const char emacs_version[] = PACKAGE_VERSION;
 static const char emacs_copyright[] = COPYRIGHT;
@@ -2516,6 +2519,9 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
 #endif
 #ifdef HAVE_NIDHOGG_WORKERS
       syms_of_nidhogg_workers ();
+#endif
+#ifdef HAVE_NIDHOGG_HISTORY
+      syms_of_nidhogg_history ();
 #endif
       syms_of_pdumper ();
       syms_of_json ();

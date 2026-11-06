@@ -118,6 +118,11 @@ AC_ARG_WITH([nidhogg-workers],
   [AS_HELP_STRING([--with-nidhogg-workers],
     [build the worker threads (process reader, tree-sitter, images, file blocks)])],
   [], [with_nidhogg_workers=no])
+dnl Nidhogg: the edit history's change hook (see README.md, "Edit history hook"); needs Glitnir, which holds the rings.
+AC_ARG_WITH([nidhogg-history],
+  [AS_HELP_STRING([--with-nidhogg-history],
+    [build the edit history's change hook at every buffer-text change site (needs --with-glitnir)])],
+  [], [with_nidhogg_history=no])
 dnl Nidhogg: seeded delays at the workers' sync points; test runs only, never a release.
 AC_ARG_WITH([nidhogg-chaos],
   [AS_HELP_STRING([--with-nidhogg-chaos],
@@ -7859,6 +7864,19 @@ case $with_nidhogg_workers in
   *) AC_MSG_ERROR([--with-nidhogg-workers takes yes or no]) ;;
 esac
 AC_SUBST([NIDHOGG_WORKERS_OBJ])
+dnl Nidhogg: the edit history's change hook.  Its rings are Glitnir's (libglitnir.a, or libnhglue.a, which carries it).
+NIDHOGG_HISTORY_OBJ=
+case $with_nidhogg_history in
+  yes)
+    test "$HAVE_GLITNIR" = yes ||
+      AC_MSG_ERROR([--with-nidhogg-history needs Glitnir (--with-glitnir), which holds its change rings])
+    NIDHOGG_HISTORY_OBJ="nidhogg-history.o"
+    AC_DEFINE([HAVE_NIDHOGG_HISTORY], [1], [Define to 1 to build the edit history's change hook.])
+    ;;
+  no) ;;
+  *) AC_MSG_ERROR([--with-nidhogg-history takes yes or no]) ;;
+esac
+AC_SUBST([NIDHOGG_HISTORY_OBJ])
 case $with_nidhogg_chaos in
   yes) AC_DEFINE([NH_CHAOS], [1], [Define to 1 for seeded delays at the workers' sync points.]) ;;
   no) ;;
