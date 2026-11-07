@@ -29,6 +29,7 @@ pub mod present;
 pub mod query;
 pub mod scroll;
 pub mod select;
+pub mod wait;
 // window operations and tips
 pub mod tip;
 pub mod window;

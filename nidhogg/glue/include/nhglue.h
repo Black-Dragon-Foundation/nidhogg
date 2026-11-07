@@ -24,6 +24,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/select.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -1165,6 +1166,15 @@ int32_t nhg_font_close (uint64_t handle);
 int32_t nhg_font_glyph (uint64_t handle, uint32_t c, uint32_t *glyph);
 int32_t nhg_font_glyph_metrics (uint64_t handle, uint32_t glyph, uint32_t mono, int32_t space_width,
                                 NhgGlyphMetrics *out);
+
+/* ---- The main wait (glue/src/wait.rs, nhshell's wait.rs; macOS) ------------------------------------------------
+   nhg_wait registers the fds RFDS and WFDS ask for below NFDS, runs the backend's event loop until one is ready, a
+   wake or TIMEOUT_NS (negative: none), and leaves the ready ones in the sets as select does; the count, as select
+   returns it, 0 after a wake or the timeout.  Main thread, global lock held.  NHG_E_UNSUPPORTED: the backend has no
+   wait of its own.  nhg_wake, from any thread and without the display's lock, ends a parked wait, or makes the next
+   one return before it sleeps.  */
+int32_t nhg_wait (NhgDisplay *d, int32_t nfds, fd_set *rfds, fd_set *wfds, int64_t timeout_ns);
+int32_t nhg_wake (void);
 
 #ifdef __cplusplus
 }

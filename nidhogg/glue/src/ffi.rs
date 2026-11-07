@@ -2107,3 +2107,39 @@ fn font_query(
         Err(GlueError::Shell(crate::abi::NHG_E_UNSUPPORTED))
     }
 }
+
+nhg_export! {
+    /// The main wait (Naglfar): register the fds `rfds` and `wfds` ask for below `nfds`, run the backend's event loop
+    /// until one is ready, a wake (`nhg_wake`), or `timeout_ns` (negative: none), and leave the ready ones in the sets
+    /// as `select` does.  The count, as `select` returns it (0 after a wake or the timeout); `NHG_E_UNSUPPORTED` for a
+    /// backend whose host waits in its own select.  The caller holds Emacs's global lock and is the main thread.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; each set is null or a valid, writable `fd_set`.
+    fn nhg_wait(
+        d: *mut NhgDisplay,
+        nfds: i32,
+        rfds: *mut libc::fd_set,
+        wfds: *mut libc::fd_set,
+        timeout_ns: i64,
+    ) -> i32 |state| {
+        // SAFETY: valid sets or null (the caller's promise).
+        let want = unsafe { crate::wait::want(nfds, rfds, wfds) };
+        let timeout = u64::try_from(timeout_ns).ok().map(std::time::Duration::from_nanos);
+        let mut ready = Vec::new();
+        state.backend().wait(&want, timeout, &mut ready)?;
+        // SAFETY: as above.
+        Ok(unsafe { crate::wait::fill(&ready, rfds, wfds) })
+    }
+}
+
+nhg_export! {
+    /// Any thread, no lock: end the main wait if it is parked, or make the next one return before it sleeps.
+    ///
+    /// # Safety
+    /// None beyond the C ABI: it takes no pointers.
+    unlocked fn nhg_wake() -> i32 {
+        nhshell::wait::wake();
+        Ok(NHG_OK)
+    }
+}
