@@ -1446,6 +1446,33 @@ nhg_export! {
 }
 
 nhg_export! {
+    /// Paint the glyph run `rec` (`NHG_DRAW_GLYPHS`; its `bits` holds `n` glyphs) of the open font `font` into frame
+    /// `frame`'s backing, each glyph placed as the font lays it out.  `NHG_E_ARG` for a record the glue refuses,
+    /// `NHG_E_STATE` for a font that is not open, `NHG_E_UNSUPPORTED` where the shell has no painter.  Writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `rec` is readable and its `bits` holds `n` readable glyphs (null when `n` is 0).
+    fn nhg_draw_glyphs(d: *mut NhgDisplay, frame: u64, font: u64, rec: *const crate::draw::NhgDrawRec, n: usize) -> i32 |state| {
+        if rec.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: non-null and readable (the caller's promise).
+        let rec = unsafe { &*rec };
+        let glyphs: &[u16] = match (n, rec.bits.is_null()) {
+            (0, _) => &[],
+            (_, true) => return Err(GlueError::Arg),
+            // SAFETY: `n` readable glyphs (the caller's promise).
+            _ => unsafe { std::slice::from_raw_parts(rec.bits, n) },
+        };
+        let padding = rec.flags & crate::draw::NHG_DRAW_PADDING != 0;
+        let (xs, integral) = crate::font::run(font, glyphs, padding).ok_or(GlueError::State)?;
+        let mut p = crate::draw::decode_glyphs(rec, font, glyphs, xs, integral).map_err(|_| GlueError::Arg)?;
+        state.backings.frame_mut(frame)?.paint(&mut p)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
     /// The frame is about to be published and its Emacs windows are the `n` at `windows`: own outputs that are gone,
     /// resized or idle, or all of them when the frame is no longer an opaque root, become part of the frame again.
     /// Returns how many stay own outputs.  Neither reads nor writes pixels.

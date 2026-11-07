@@ -25,9 +25,14 @@ pub const NHG_DRAW_BITMAP: u32 = 6;
 /// `r` filled with `fg` outside quarter circles of radius `a` set `b` pixels outside the corners named by the flags'
 /// low four bits (bit 0 bottom right, 1 bottom left, 2 top left, 3 top right): `nhwl_erase_corners_for_relief`.
 pub const NHG_DRAW_CORNERS: u32 = 7;
+/// A glyph run (`nhg_draw_glyphs`): `bits` holds the glyphs, drawn in `fg` from x `a` on the baseline `b`; with
+/// `NHG_DRAW_BACKGROUND`, `r` is filled with `bg` first.  `NHG_DRAW_PADDING`: each glyph is one pixel wide.
+pub const NHG_DRAW_GLYPHS: u32 = 8;
 
 pub const NHG_DRAW_COPY: u32 = 1 << 0;
 pub const NHG_DRAW_TOP: u32 = 1 << 3;
+pub const NHG_DRAW_BACKGROUND: u32 = 1 << 4;
+pub const NHG_DRAW_PADDING: u32 = 1 << 5;
 pub const NHG_DRAW_OVERLAY: u32 = 1 << 7;
 
 /// One record (`NhgDrawRec`).  Rectangles have the native area's origin, as damage has.
@@ -61,17 +66,23 @@ fn rect(r: NhgRect) -> Rect {
     Rect::new(r.x, r.y, r.w, r.h)
 }
 
-/// `rec` as shapes.  `bits` are the bitmap's rows (read by the caller from `rec.bits`).
-pub fn decode(rec: &NhgDrawRec, bits: &[u16]) -> Result<Paint, Bad> {
+/// `rec`'s rectangle and clip, checked.
+fn frame(rec: &NhgDrawRec) -> Result<(Rect, Vec<Rect>), Bad> {
     let r = rect(rec.r);
     if r.w < 0 || r.h < 0 || r.w > 1 << 15 || r.h > 1 << 15 {
         return Err(Bad::Size);
     }
-    let mut clip: Vec<Rect> = match rec.nclip {
+    let clip = match rec.nclip {
         0 => Vec::new(),
         n @ 1..=2 => rec.clip[..n as usize].iter().map(|c| rect(*c)).collect(),
         _ => return Err(Bad::Clip),
     };
+    Ok((r, clip))
+}
+
+/// `rec` as shapes.  `bits` are the bitmap's rows (read by the caller from `rec.bits`).
+pub fn decode(rec: &NhgDrawRec, bits: &[u16]) -> Result<Paint, Bad> {
+    let (r, mut clip) = frame(rec)?;
     // a wave is also clipped to its own rectangle
     if rec.kind == NHG_DRAW_WAVE {
         clip = if clip.is_empty() {
@@ -127,6 +138,42 @@ pub fn decode(rec: &NhgDrawRec, bits: &[u16]) -> Result<Paint, Bad> {
         }
         _ => return Err(Bad::Kind),
     };
+    Ok(Paint { clip, shapes })
+}
+
+/// A glyph run's record as shapes: its background, then `glyphs` of the open font `font` at the offsets `xs` (the
+/// font's, `font::run`).
+pub fn decode_glyphs(
+    rec: &NhgDrawRec,
+    font: u64,
+    glyphs: &[u16],
+    xs: Vec<f64>,
+    integral: bool,
+) -> Result<Paint, Bad> {
+    if rec.kind != NHG_DRAW_GLYPHS {
+        return Err(Bad::Kind);
+    }
+    if xs.len() != glyphs.len() {
+        return Err(Bad::Bits);
+    }
+    let (r, clip) = frame(rec)?;
+    let mut shapes = Vec::with_capacity(2);
+    if rec.flags & NHG_DRAW_BACKGROUND != 0 {
+        shapes.push(Shape::Fill {
+            r,
+            argb: rec.bg,
+            copy: false,
+        });
+    }
+    shapes.push(Shape::Glyphs {
+        font,
+        x: f64::from(rec.a),
+        y: f64::from(rec.b),
+        glyphs: glyphs.to_vec(),
+        xs,
+        argb: rec.fg,
+        integral,
+    });
     Ok(Paint { clip, shapes })
 }
 
@@ -353,5 +400,48 @@ mod tests {
         p.translate(10, 20);
         assert_eq!(p.clip, vec![Rect::new(10, 20, 4, 4)]);
         assert!(matches!(p.shapes[0], Shape::Fill { r, .. } if r == Rect::new(11, 21, 2, 2)));
+    }
+
+    #[test]
+    fn a_glyph_run_fills_its_background_then_draws_at_the_baseline() {
+        let mut c = rec(NHG_DRAW_GLYPHS, NHG_DRAW_BACKGROUND, (10, 2, 21, 14));
+        (c.a, c.b) = (10, 13);
+        let p = decode_glyphs(&c, 7, &[36, 37, 38], vec![0.0, 7.0, 14.0], false).unwrap();
+        assert_eq!(
+            p.shapes[0],
+            Shape::Fill {
+                r: Rect::new(10, 2, 21, 14),
+                argb: 0xffff_ffff,
+                copy: false
+            }
+        );
+        assert_eq!(
+            p.shapes[1],
+            Shape::Glyphs {
+                font: 7,
+                x: 10.0,
+                y: 13.0,
+                glyphs: vec![36, 37, 38],
+                xs: vec![0.0, 7.0, 14.0],
+                argb: 0xff20_4060,
+                integral: false
+            }
+        );
+        // no background without the flag; the offsets must cover every glyph
+        let c = rec(NHG_DRAW_GLYPHS, 0, (0, 0, 7, 14));
+        let p = decode_glyphs(&c, 7, &[36], vec![0.0], true).unwrap();
+        assert_eq!(p.shapes.len(), 1);
+        assert_eq!(
+            decode_glyphs(&c, 7, &[36, 37], vec![0.0], true),
+            Err(Bad::Bits)
+        );
+        assert_eq!(
+            decode_glyphs(&rec(NHG_DRAW_FILL, 0, (0, 0, 1, 1)), 7, &[], vec![], true),
+            Err(Bad::Kind)
+        );
+        // translated with the rest, from x 1 on the baseline 1
+        let mut p = decode_glyphs(&c, 7, &[36], vec![0.0], true).unwrap();
+        p.translate(5, 6);
+        assert!(matches!(p.shapes[0], Shape::Glyphs { x: 6.0, y: 7.0, .. }));
     }
 }

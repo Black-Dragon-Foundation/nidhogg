@@ -41,6 +41,17 @@ pub enum Shape {
         fg: u32,
         bg: Option<u32>,
     },
+    /// Glyphs of the open font `font` (`macos::fonts`) in `argb`, glyph `i` with its origin at (`x + xs[i]`, `y`), `y`
+    /// the baseline; `integral` draws them without antialiasing.
+    Glyphs {
+        font: u64,
+        x: f64,
+        y: f64,
+        glyphs: Vec<u16>,
+        xs: Vec<f64>,
+        argb: u32,
+        integral: bool,
+    },
 }
 
 /// What one record paints: its shapes, inside the union of `clip` (no clip when empty).
@@ -73,6 +84,10 @@ impl Paint {
                 Shape::Bitmap { x, y, .. } => {
                     *x += dx;
                     *y += dy;
+                }
+                Shape::Glyphs { x, y, .. } => {
+                    *x += fx;
+                    *y += fy;
                 }
             }
         }

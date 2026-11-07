@@ -16,6 +16,10 @@ pub static SRGB: AtomicBool = AtomicBool::new(true);
 /// Records painted since start (`(nhmac-stats)`'s `:draws`).
 pub static DRAWS: AtomicU64 = AtomicU64::new(0);
 
+/// `ns-antialias-text` and `ns-use-thin-smoothing` as the shell was last told.
+pub static ANTIALIAS: AtomicBool = AtomicBool::new(true);
+pub static THIN_SMOOTHING: AtomicBool = AtomicBool::new(false);
+
 type CFRef = *const c_void;
 type Ctx = *mut c_void;
 
@@ -81,6 +85,32 @@ unsafe extern "C" {
     fn CGContextClosePath(c: Ctx);
     fn CGContextFillPath(c: Ctx);
     fn CGContextStrokePath(c: Ctx);
+    fn CGContextSetTextMatrix(c: Ctx, m: CGAffineTransform);
+    fn CGContextSetShouldAntialias(c: Ctx, on: bool);
+    fn CGContextSetShouldSmoothFonts(c: Ctx, on: bool);
+    /// Private, as `macfont_draw` uses it for `ns-use-thin-smoothing`.
+    fn CGContextSetFontSmoothingStyle(c: Ctx, style: i32);
+}
+
+#[repr(C)]
+struct CGAffineTransform {
+    a: f64,
+    b: f64,
+    c: f64,
+    d: f64,
+    tx: f64,
+    ty: f64,
+}
+
+#[repr(C)]
+struct CGPoint {
+    x: f64,
+    y: f64,
+}
+
+#[link(name = "CoreText", kind = "framework")]
+unsafe extern "C" {
+    fn CTFontDrawGlyphs(font: CFRef, glyphs: *const u16, pos: *const CGPoint, n: usize, c: Ctx);
 }
 
 /// A bitmap context over one backing: made for its pixels, size and colour space, released on drop.
@@ -290,6 +320,44 @@ impl Canvas {
                     self.fill_colour(*argb);
                     CGContextFillRect(c, cg(r));
                     CGContextRestoreGState(c);
+                }
+                Shape::Glyphs {
+                    font,
+                    x,
+                    y,
+                    glyphs,
+                    xs,
+                    argb,
+                    integral,
+                } => {
+                    // macfont_draw: y up from the baseline, the text matrix the identity
+                    let pos: Vec<CGPoint> = xs.iter().map(|&x| CGPoint { x, y: 0.0 }).collect();
+                    self.fill_colour(*argb);
+                    super::fonts::with_font(*font, |ct| {
+                        CGContextSaveGState(c);
+                        CGContextTranslateCTM(c, *x, *y);
+                        CGContextScaleCTM(c, 1.0, -1.0);
+                        if *integral {
+                            CGContextSetShouldAntialias(c, false);
+                        }
+                        if THIN_SMOOTHING.load(Ordering::Relaxed) {
+                            CGContextSetShouldSmoothFonts(c, true);
+                            CGContextSetFontSmoothingStyle(c, 16);
+                        }
+                        CGContextSetTextMatrix(
+                            c,
+                            CGAffineTransform {
+                                a: 1.0,
+                                b: 0.0,
+                                c: 0.0,
+                                d: 1.0,
+                                tx: 0.0,
+                                ty: 0.0,
+                            },
+                        );
+                        CTFontDrawGlyphs(ct, glyphs.as_ptr(), pos.as_ptr(), glyphs.len(), c);
+                        CGContextRestoreGState(c);
+                    });
                 }
                 Shape::Bitmap {
                     x,
