@@ -196,6 +196,13 @@ fixture; putf "nidhogg: shell: s" src/nhwl.c 'int s;\n'; put "nidhogg: history: 
   expect "an upstream C file changed outside its flag, beside a group-created file" "src/a.c changes code outside HAVE_GLITNIR"
   fixture; put "nidhogg: glitnir: g" "$in"; put "nidhogg: naglfar: n" "${in}#ifdef HAVE_NHMAC\nint n;\n#endif\n"
   expect "a naglfar HAVE_NHMAC hunk" ""
+  wg='#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR\nvoid f (void)\n{\n'
+  fixture; put "nidhogg: glitnir: g" "int a;\n${wg}  if (!x)\n    return;\n  y ();\n}\n#endif\n"
+  put "nidhogg: naglfar: n" "int a;\n${wg}#ifndef HAVE_NHMAC\n  if (!x)\n    return;\n#endif\n  y ();\n#ifdef HAVE_NHMAC\n  z ();\n#endif\n}\n#endif\n"
+  expect "HAVE_NHMAC blocks inside a workers-and-glitnir function" ""
+  fixture; put "nidhogg: glitnir: g" "int a;\n${wg}  y ();\n}\n#endif\n"
+  put "nidhogg: naglfar: n" "int a;\n${wg}  y ();\n  z ();\n}\n#endif\n"
+  expect "an unguarded line inside a workers-and-glitnir function" "src/a.c changes code outside HAVE_NHMAC"
   fixture; put "nidhogg: shell: s" 'int a;\n#ifdef HAVE_NHWL\nint s;\n#endif\n'; put "nidhogg: shell: s2" 'int a;\n#ifdef NHWL_WAYLAND\nint s;\n#endif\n'
   expect "an upstream HAVE_NHWL turned into NHWL_WAYLAND" ""
   fixture; putf "upstream ns" src/nsterm.m 'a\n'; ns=$(git rev-parse HEAD)
@@ -210,7 +217,7 @@ fixture; putf "nidhogg: shell: s" src/nhwl.c 'int s;\n'; put "nidhogg: history: 
   fixture; put "pgtk change without the prefix" "int a;\n/* p */\n"
   RULE=subj expect "a non-merge commit with a non-nidhogg subject" "commit subject does not start with 'nidhogg: '"
   unset RULE
-  echo "tree self-test: 32 cases ok"
+  echo "tree self-test: 34 cases ok"
   exit 0
 fi
 

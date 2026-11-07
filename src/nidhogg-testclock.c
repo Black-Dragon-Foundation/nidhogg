@@ -197,8 +197,11 @@ static int nh_tc_cond_woken;
 void
 nh_tc_cond_woke (const void *cv, bool all)
 {
+  /* Naglfar marks always: a marked waiter counts as a lock waiter.  */
+#ifndef HAVE_NHMAC
   if (!nh_tc_auto)
     return;
+#endif
   /* A marked waiter has a wake on its way already, so a signal's goes
      to an unmarked one, if any is left.  */
   for (struct thread_state *t = all_threads; t; t = t->next_thread)
@@ -206,6 +209,9 @@ nh_tc_cond_woke (const void *cv, bool all)
       {
 	t->nh_tc_woken = true;
 	nh_tc_cond_woken++;
+#ifdef HAVE_NHMAC
+	atomic_fetch_add (&nhmac_lock_waiters, 1);
+#endif
 	if (!all)
 	  return;
       }
@@ -229,6 +235,9 @@ nh_tc_cond_back (struct thread_state *self)
     }
   t->nh_tc_woken = false;
   nh_tc_cond_woken--;
+#ifdef HAVE_NHMAC
+  atomic_fetch_sub (&nhmac_lock_waiters, 1);
+#endif
   /* SELF may wait again, or that waiter waits on: neither can run.  */
   nh_tc_kick ();
 }

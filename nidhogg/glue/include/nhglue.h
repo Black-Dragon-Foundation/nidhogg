@@ -1178,6 +1178,9 @@ int32_t nhg_font_glyph_metrics (uint64_t handle, uint32_t glyph, uint32_t mono, 
    one return before it sleeps.  */
 int32_t nhg_wait (NhgDisplay *d, int32_t nfds, fd_set *rfds, fd_set *wfds, int64_t timeout_ns);
 int32_t nhg_wake (void);
+/* The host's count of non-main threads that want its global lock (an _Atomic int, never freed), handed over once:
+   while it is above 0 the main wait does not park, and nhg_wake follows the count's rise.  */
+int32_t nhg_set_lock_waiters (const void *count);
 
 #ifdef __cplusplus
 }
