@@ -1,7 +1,10 @@
 //! A top-level window: an `NSWindow` whose content view is layer-hosting (`view::layer_hosting`).
 
+use super::runloop::WinDelegate;
 use super::view;
+use crate::api::WindowId;
 use objc2::rc::Retained;
+use objc2::runtime::ProtocolObject;
 use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{NSBackingStoreType, NSView, NSWindow, NSWindowStyleMask};
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
@@ -11,6 +14,8 @@ pub struct Win {
     pub window: Retained<NSWindow>,
     pub view: Retained<NSView>,
     pub layer: Retained<CALayer>,
+    /// The window holds its delegate weakly.
+    pub _delegate: Retained<WinDelegate>,
     /// The content size (points) and scale (times 120) last reported to the host.
     pub size: (i32, i32),
     pub scale120: u32,
@@ -19,8 +24,16 @@ pub struct Win {
 }
 
 impl Win {
-    /// A `w` x `h` point window titled `title`, decorated unless `undecorated`, shown at once.
-    pub fn open(mtm: MainThreadMarker, w: i32, h: i32, undecorated: bool, title: &str) -> Win {
+    /// A `w` x `h` point window titled `title`, decorated unless `undecorated`, shown at once; its delegate reports
+    /// as window `id`.
+    pub fn open(
+        mtm: MainThreadMarker,
+        id: WindowId,
+        w: i32,
+        h: i32,
+        undecorated: bool,
+        title: &str,
+    ) -> Win {
         let size = NSSize::new(f64::from(w.max(1)), f64::from(h.max(1)));
         let style = if undecorated {
             NSWindowStyleMask::Borderless
@@ -45,12 +58,15 @@ impl Win {
         let (view, layer) = view::layer_hosting(mtm, size);
         window.setContentView(Some(&view));
         window.setTitle(&NSString::from_str(title));
+        let delegate = WinDelegate::new(mtm, id);
+        window.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
         window.makeKeyAndOrderFront(None);
         let scale120 = (window.backingScaleFactor() * 120.0).round() as u32;
         Win {
             window,
             view,
             layer,
+            _delegate: delegate,
             size: (w, h),
             scale120,
             mapped: true,
@@ -70,6 +86,7 @@ impl Win {
 
 impl Drop for Win {
     fn drop(&mut self) {
+        self.window.setDelegate(None);
         self.window.orderOut(None);
         self.window.close();
     }

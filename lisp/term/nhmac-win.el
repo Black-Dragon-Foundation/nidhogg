@@ -383,7 +383,7 @@ needed."
 
 (defun nhmac-stats ()
   "Return the shell's counters, a plist.
-The pumps' scope (`:overlapping-takes', `:queued', `:applied'), the lock
+The pumps' scope (`:takes', `:overlapping-takes', `:queued', `:applied'), the lock
 hand-off (`:lock-waiters', `:parks-with-waiters') and the surfaces
 (`:ring-acquires', `:ring-reuses', `:commits', `:deferred-commits'); a
 counter of work not built yet stays 0."
@@ -405,6 +405,17 @@ tests."
   "Run a modal alert for MS milliseconds, then end it; return its rounds.
 A query that runs a modal session, for the pumps' tests."
   (nhmac--query 'modal-alert ms))
+
+(defun nhmac--modal-resize (ms)
+  "Like `nhmac--modal-alert', resizing a test window inside the modal.
+Return its rounds and the scope's counters' change.  For tests."
+  (nhmac--query 'modal-resize ms))
+
+(defun nhmac--test-reentry ()
+  "Make AppKit call the shell's delegates back from inside its own calls.
+Return the scope's counters' change and the queued counts at each step,
+a plist.  For tests."
+  (nhmac--query 'test-reentry))
 
 
 ;; Variables
