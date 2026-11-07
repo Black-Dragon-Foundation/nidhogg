@@ -31,6 +31,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "frame.h"
 #include "window.h"
 #include "keyboard.h"
+#include "font.h"
 
 /* The clip in force: the intersection of every clip set since the
    outermost nhwl_begin_cr_clip, as up to two rectangles (N 0: none).  One
@@ -298,11 +299,52 @@ nhmac_set_clipping_exactly (struct glyph_string *src,
   nhmac_clip_to (&r, 1);
 }
 
-/* Glyph runs, compositions, glyphless glyphs and images: not drawn
-   yet.  */
+/* Images: not drawn yet.  */
 void
 nhmac_text_run (struct glyph_string *s)
 {
+}
+
+/* Glyphs FROM to TO of S, in the open font FONT, from X on the baseline
+   Y, over their background when WITH_BACKGROUND, in macfont_draw's
+   colours.  */
+void
+nhmac_glyph_run (struct glyph_string *s, uint64_t font, int from, int to,
+		 int x, int y, bool with_background)
+{
+  struct frame *f = s->f;
+  struct face *face = s->face;
+  unsigned long cursor = FRAME_X_OUTPUT (f)->cursor_color;
+  unsigned long fg = face->foreground, bg = face->background;
+  uint16_t *glyphs;
+  USE_SAFE_ALLOCA;
+
+  if (to <= from)
+    return;
+  if (s->hl == DRAW_CURSOR)
+    {
+      fg = bg == cursor ? bg : FRAME_BACKGROUND_PIXEL (f);
+      bg = bg == cursor ? face->foreground : cursor;
+    }
+  SAFE_NALLOCA (glyphs, 1, to - from);
+  for (int i = from; i < to; i++)
+    glyphs[i - from] = s->char2b[i];
+  NhgDrawRec r = { NHG_DRAW_GLYPHS,
+		   ((with_background ? NHG_DRAW_BACKGROUND : 0)
+		    | (s->padding_p ? NHG_DRAW_PADDING : 0)),
+		   { x, y - FONT_BASE (s->font), s->width,
+		     FONT_HEIGHT (s->font) },
+		   nhmac_argb (f, fg, false), nhmac_argb (f, bg, true), x, y };
+  r.bits = glyphs;
+  nhwl_begin_cr_clip (f);
+  r.nclip = nhmac_top ()->n;
+  memcpy (r.clip, nhmac_top ()->r, sizeof r.clip);
+  nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		NHG (nhg_draw_glyphs (FRAME_NHG (f),
+				      FRAME_NHWL_OUTPUT (f)->glitnir_id,
+				      font, &r, to - from)));
+  nhwl_end_cr_clip (f);
+  SAFE_FREE ();
 }
 
 /* The redisplay interface's drawing.  */

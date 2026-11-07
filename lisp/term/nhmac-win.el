@@ -802,7 +802,7 @@ Not available yet in Naglfar."
     ns-command-modifier ns-right-command-modifier
     ns-control-modifier ns-right-control-modifier ns-function-modifier
     ns-use-srgb-colorspace ns-confirm-quit ns-auto-hide-menu-bar
-    ns-use-native-fullscreen)
+    ns-use-native-fullscreen ns-antialias-text ns-use-thin-smoothing)
   "The variables whose changes `nhmac--variable-changed' passes to the shell.")
 
 (defun nhmac--variable-changed (symbol newval operation where)
