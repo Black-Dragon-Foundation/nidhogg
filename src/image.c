@@ -8216,8 +8216,8 @@ nhmac_load_image (struct frame *f, struct image *img, Lisp_Object file,
 					   img->lisp_data));
   return true;
 }
-#endif
 
+#endif
 static bool
 native_image_load (struct frame *f, struct image *img)
 {
