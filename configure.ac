@@ -3273,7 +3273,8 @@ dnl use the toolkit if we have gtk, or X11R5 or newer.
     term_header=nhwlterm.h
     USE_X_TOOLKIT=none
     HAVE_NHWL=yes
-    AC_DEFINE([HAVE_NHWL], [1], [Define to 1 if you have Nidhogg's own Wayland shell.])
+    AC_DEFINE([HAVE_NHWL], [1], [Define to 1 if you have one of Nidhogg's own shells (their shared C).])
+    AC_DEFINE([NHWL_WAYLAND], [1], [Define to 1 if Nidhogg's own shell is the Wayland one.])
   ;;
   haiku )
     term_header=haikuterm.h

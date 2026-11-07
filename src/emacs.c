@@ -2098,7 +2098,7 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
   {
     int count_before = skip_args;
 
-#ifdef HAVE_NHWL
+#ifdef NHWL_WAYLAND
 /* Nidhogg's Wayland shell takes -d/--display like pgtk does (scoped to this block).  */
 # define HAVE_PGTK 1
 #endif
@@ -2135,7 +2135,7 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
 	argv[count_before + 1] = (char *) "-d";
       }
 #endif	/* HAVE_X_WINDOWS */
-#ifdef HAVE_NHWL
+#ifdef NHWL_WAYLAND
 # undef HAVE_PGTK
 #endif
 

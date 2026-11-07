@@ -630,7 +630,7 @@ decode_options (int argc, char **argv)
       alt_display = "be";
 #endif /* NS_IMPL_COCOA */
 
-#ifdef HAVE_NHWL
+#ifdef NHWL_WAYLAND
 /* Under Nidhogg's Wayland shell the display is the Wayland one, as under pgtk (scoped to this block).  */
 # define HAVE_PGTK 1
 #endif
@@ -640,7 +640,7 @@ decode_options (int argc, char **argv)
 #else /* !HAVE_PGTK */
       display = egetenv ("DISPLAY");
 #endif /* HAVE_PGTK */
-#ifdef HAVE_NHWL
+#ifdef NHWL_WAYLAND
 # undef HAVE_PGTK
 #endif
 #else /* HAVE_ANDROID */
