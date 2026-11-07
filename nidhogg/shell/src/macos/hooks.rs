@@ -9,7 +9,9 @@ use super::{MacShell, drain_events, scope_stats, screens};
 use crate::api::{ShellError, ShellResult, WindowId};
 use crate::scope::ScopeStats;
 use objc2::rc::Retained;
-use objc2_app_kit::{NSAlert, NSModalResponseContinue, NSWindowOcclusionState};
+use objc2_app_kit::{
+    NSAlert, NSAppearanceCustomization, NSModalResponseContinue, NSWindowOcclusionState,
+};
 use objc2_foundation::{NSException, NSRect, NSSize, NSString};
 use std::time::{Duration, Instant};
 
@@ -230,6 +232,18 @@ impl MacShell {
             "pump-trace" => Ok(crate::trace::pumps_text()),
             "test-entries" => first_number(arg).map(|on| crate::trace::entries_text(on != 0)),
             "shell-view" => Ok(self.shell_view()),
+            "test-window-state" => first_number(arg).and_then(|w| {
+                let w = self.win(w)?;
+                Ok(format!(
+                    "(:fullscreen {} :zoomed {} :miniaturized {} :tabbing-disallowed {} :titlebar-transparent {} :dark {})",
+                    if super::super::windowing::is_fullscreen(w) { "t" } else { "nil" },
+                    if w.window.isZoomed() { "t" } else { "nil" },
+                    if w.window.isMiniaturized() { "t" } else { "nil" },
+                    if w.window.tabbingMode() == objc2_app_kit::NSWindowTabbingMode::Disallowed { "t" } else { "nil" },
+                    if w.window.titlebarAppearsTransparent() { "t" } else { "nil" },
+                    if w.window.effectiveAppearance().name().to_string().contains("Dark") { "t" } else { "nil" },
+                ))
+            }),
             "test-menu-dump" => Ok(format!("{:?}", super::super::menus::test_dump(&self.app))),
             "test-kq-probe" => Ok(kq_probe(arg)),
             "test-kq-layers" => kq_layers(arg),

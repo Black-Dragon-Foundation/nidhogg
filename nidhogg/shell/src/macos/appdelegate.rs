@@ -16,6 +16,7 @@ use std::cell::RefCell;
 pub const APP_OPEN_FILES: u32 = 1;
 pub const APP_QUIT: u32 = 2;
 pub const APP_REOPEN: u32 = 3;
+pub const APP_APPEARANCE: u32 = 4;
 
 thread_local! {
     /// The files `application:openFiles:` queued, until Lisp takes them.
