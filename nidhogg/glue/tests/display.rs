@@ -23,9 +23,14 @@ fn open(rec: &Recorder) -> *mut NhgDisplay {
     d
 }
 
-/// The entries of a /proc/self directory.
-fn count(dir: &str) -> usize {
-    std::fs::read_dir(dir).unwrap().count()
+/// The process's threads, less libtest's: it names each test's thread after the test (`display::…`) and, running
+/// fewer threads than there are tests, starts the next one when one ends, whatever `SERIAL` holds.
+fn threads() -> usize {
+    std::fs::read_dir("/proc/self/task")
+        .unwrap()
+        .filter_map(|e| std::fs::read_to_string(e.ok()?.path().join("comm")).ok())
+        .filter(|comm| !comm.starts_with("display::"))
+        .count()
 }
 
 /// What each open descriptor is (`socket:[…]`, `anon_inode:[eventfd]`, `/memfd:…`), sorted.
@@ -97,7 +102,7 @@ mod display {
         let rec = Recorder::start("mutter");
         // SAFETY: a live display, not used again.
         assert_eq!(unsafe { nhg_close(open(&rec)) }, NHG_OK);
-        let (fds, threads) = (fd_kinds(), count("/proc/self/task"));
+        let (fds, tasks) = (fd_kinds(), threads());
         for i in 0..50 {
             let d = open(&rec);
             // SAFETY: a live display.
@@ -108,8 +113,7 @@ mod display {
             }
         }
         assert_eq!(fd_kinds(), fds, "descriptors left behind");
-        // other tests' threads may end meanwhile, never start (they wait for SERIAL)
-        assert!(count("/proc/self/task") <= threads, "threads left behind");
+        assert_eq!(threads(), tasks, "threads left behind");
     }
 
     /// A poisoned display closes without touching its state: the connection is shut down, so the compositor sees the
