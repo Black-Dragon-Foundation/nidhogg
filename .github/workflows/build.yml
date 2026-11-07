@@ -727,6 +727,12 @@ jobs:
       - name: Naglfar's boundary check (nm-check)
         if: ${{ !cancelled() && steps.nbuild.outcome == 'success' }}
         run: bash nidhogg/glue/nm-check.sh "$RUNNER_TEMP/nbuild"
+      # The bundle (nextstep/Emacs.app, self-contained like NS's): make install fills it with Lisp, etc and the helpers; the
+      # rows of nhmac-app-gui-tests.el start it (open -a, --daemon, the locale).
+      - name: Naglfar bundle (make install)
+        id: nbundle
+        if: ${{ !cancelled() && steps.nbuild.outcome == 'success' && inputs.checks != 'none' && inputs.checks != 'build-only' }}
+        run: make -C "$RUNNER_TEMP/nbuild/obj" install -j3
       - name: Naglfar GUI rows (nhmac-gui-tests.el, scales 1 and 2)
         if: ${{ !cancelled() && steps.nbuild.outcome == 'success' && inputs.checks != 'none' && inputs.checks != 'build-only' }}
         env:
@@ -734,7 +740,7 @@ jobs:
           FILES: ${{ inputs.files }}
         run: |
           sel=${CHECKS//|/\\|}
-          bash nidhogg/test/nhmac-gui.sh --emacs "$RUNNER_TEMP/nbuild/obj/src/emacs" --out "$RUNNER_TEMP/nhmac-gui/naglfar" ${sel:+--select "$sel"} ${FILES:+--files "$FILES"}
+          bash nidhogg/test/nhmac-gui.sh --emacs "$RUNNER_TEMP/nbuild/obj/src/emacs" ${{ steps.nbundle.outcome == 'success' && format('--app {0}/nbuild/obj/nextstep/Emacs.app', runner.temp) || '' }} --out "$RUNNER_TEMP/nhmac-gui/naglfar" ${sel:+--select "$sel"} ${FILES:+--files "$FILES"}
       - name: macOS GUI logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

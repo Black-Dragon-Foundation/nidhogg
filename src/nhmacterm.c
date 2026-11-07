@@ -162,6 +162,37 @@ nhmac_select (int nfds, fd_set *rfds, fd_set *wfds, fd_set *efds,
   return rc;
 }
 
+/* Startup and shutdown: the shell's pool and locale, before Lisp exists
+   (main calls these first).  */
+void
+nhmac_startup (void)
+{
+  NHG (nhg_startup ());
+}
+
+void
+nhmac_shutdown (void)
+{
+  NHG (nhg_shutdown ());
+}
+
+/* A configured path placed in the app bundle (NS_SELF_CONTAINED builds
+   keep them relative).  The answer is read at once or kept by the
+   caller, and there are few calls, so a small ring holds them.  */
+const char *
+ns_relocate (const char *epath)
+{
+  static char ring[4][4096];
+  static int next;
+  char *out = ring[next++ % 4];
+  size_t len = 0;
+
+  if (NHG (nhg_relocate (epath, out, sizeof ring[0], &len)) != NHG_OK
+      || len == 0)
+    return epath;
+  return out;
+}
+
 /* The menu bar: built at idle by the native menu task; until then the
    frame shows none.  */
 void

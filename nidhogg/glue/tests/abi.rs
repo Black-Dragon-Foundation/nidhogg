@@ -1115,6 +1115,41 @@ PROTO (nhg_font_match, int32_t (const NhgFontSpec *, NhgFontEntity *, size_t, si
         }
     }
 
+    /// Startup: the prototypes, and the answers where there is no app bundle (every platform but macOS here).
+    #[test]
+    fn startup_header_matches() {
+        use nhglue::ffi::{nhg_relocate, nhg_shutdown, nhg_startup};
+        let rows: &[(&str, i64)] = &[
+            ("NHG_E_UNSUPPORTED", nhglue::abi::NHG_E_UNSUPPORTED.into()),
+            ("NHG_E_TOO_SMALL", nhglue::abi::NHG_E_TOO_SMALL.into()),
+        ];
+        let decls = "\
+#define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
+PROTO (nhg_startup, int32_t (void));
+PROTO (nhg_shutdown, int32_t (void));
+PROTO (nhg_relocate, int32_t (const char *, char *, size_t, size_t *));";
+        let _: unsafe extern "C" fn() -> i32 = nhg_startup;
+        let _: unsafe extern "C" fn() -> i32 = nhg_shutdown;
+        let _: unsafe extern "C" fn(*const c_char, *mut c_char, usize, *mut usize) -> i32 =
+            nhg_relocate;
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe(decls, &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+        if cfg!(not(target_os = "macos")) {
+            // no bundle here: nothing starts, and no path moves
+            assert_eq!(unsafe { nhg_startup() }, nhglue::abi::NHG_E_UNSUPPORTED);
+            let mut out = [0 as c_char; 16];
+            let mut len = 99usize;
+            let path = c"Contents/Resources/lisp";
+            let rc = unsafe { nhg_relocate(path.as_ptr(), out.as_mut_ptr(), out.len(), &mut len) };
+            assert_eq!(rc, 0);
+            assert_eq!(len, 0);
+        }
+    }
+
     /// The native font driver's fonts (its own table).
     #[test]
     fn font_header_matches() {

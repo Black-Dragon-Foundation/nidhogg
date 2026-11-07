@@ -1167,6 +1167,17 @@ int32_t nhg_font_glyph (uint64_t handle, uint32_t c, uint32_t *glyph);
 int32_t nhg_font_glyph_metrics (uint64_t handle, uint32_t glyph, uint32_t mono, int32_t space_width,
                                 NhgGlyphMetrics *out);
 
+/* ---- Startup (glue/src/ffi.rs, nhshell's startup; macOS) ---------------------------------------------------------
+   nhg_startup runs first in main, before Lisp is initialised, and calls nothing in Emacs: it makes the outer
+   autorelease pool and sets LANG from the system's locale when the environment has none.  nhg_shutdown releases the
+   pool.  nhg_relocate is ns_relocate: when EPATH is relative and exists inside the app bundle the executable is in,
+   the path in the bundle goes to OUT (CAP bytes, NUL-terminated) and its length to *LEN; otherwise *LEN is 0.
+   NHG_E_UNSUPPORTED elsewhere (nhg_relocate then reports *LEN 0).  NHG_E_TOO_SMALL: CAP does not fit the path.  */
+
+int32_t nhg_startup (void);
+int32_t nhg_shutdown (void);
+int32_t nhg_relocate (const char *epath, char *out, size_t cap, size_t *len);
+
 /* ---- The main wait (glue/src/wait.rs, nhshell's wait.rs; macOS) ------------------------------------------------
    nhg_wait registers the fds RFDS and WFDS ask for below NFDS, runs the backend's event loop until one is ready, a
    wake or TIMEOUT_NS (negative: none), and leaves the ready ones in the sets as select does; the count, as select

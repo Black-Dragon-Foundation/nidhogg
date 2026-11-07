@@ -12,6 +12,7 @@ mod inject;
 mod kq;
 mod runloop;
 mod screens;
+pub mod startup;
 mod view;
 mod window;
 
