@@ -5,6 +5,7 @@
 ;; Run by nidhogg/test/nhmac-gui.sh on the macOS runner.  Rows are appended under ";; Task N:" headings.
 
 (require 'ert)
+(require 'cl-lib)
 (load (expand-file-name "../../../nidhogg/test/mac-counts.el" (file-name-directory (or load-file-name buffer-file-name))) nil t)
 
 (defun nhmac-gui--ns-build-p ()
@@ -202,6 +203,88 @@ and `mouse-pixel-position' follows motion."
     (let ((ev (car (seq-remove (lambda (e) (eq (car-safe e) 'mouse-movement))
                                (nhmac-gui--events 3 1)))))
       (should (eq (event-basic-type ev) 'wheel-down)))))
+
+;; Task 12: the wait: kqueue in the run loop, the helper, keys before process output
+(defun nhmac-gui--delta (before key)
+  "How much the counter KEY of `nhmac-stats' grew since BEFORE."
+  (- (plist-get (nhmac-stats) key) (plist-get before key)))
+
+(defun nhmac-gui--feed (name type gaps)
+  "Start NAME, writing 100 lines 10 ms apart through TYPE (`pipe' or `pty').
+Its filter keeps NAME's line count and longest gap between outputs in
+the hash table GAPS, as (LINES . GAP)."
+  (let ((last (float-time)))
+    (puthash name (cons 0 0.0) gaps)
+    (make-process
+     :name name :connection-type type :noquery t
+     :command '("sh" "-c" "i=0; while [ $i -lt 100 ]; do echo $i; i=$((i+1)); sleep 0.01; done")
+     :filter (lambda (_p s)
+               (let ((now (float-time)) (r (gethash name gaps)))
+                 (puthash name (cons (+ (car r) (cl-count ?\n s))
+                                     (max (cdr r) (- now last)))
+                          gaps)
+                 (setq last now))))))
+
+(ert-deftest nhmac-kq-fds ()
+  "A pipe, a pty and a pipe served by the helper, under load: every line arrives with no gap near the wait's 5 s
+timeout (0 missed), the kqueue's source never ends a sleep with nothing ready (0 empty wake-ups), and the helper
+serves its fd.  /dev/null, /dev/tty and every /dev/cu.* are probed and logged: which kqueue refuses (EINVAL)."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (dolist (p (append '("/dev/null" "/dev/tty") (file-expand-wildcards "/dev/cu.*")))
+    (message "nhmac-kq-probe: %s %S" p (nhmac--test-kq-probe p)))
+  (let* ((gaps (make-hash-table :test #'equal))
+         (before (nhmac-stats))
+         (procs (list (nhmac-gui--feed "kq-pipe" 'pipe gaps)
+                      (nhmac-gui--feed "kq-pty" 'pty gaps)))
+         (helper-fds 0)
+         (start (float-time)))
+    ;; one wait registers the two, so the helper takes the third's fd
+    (accept-process-output nil 0.05)
+    (nhmac--test-helper-next)
+    (push (nhmac-gui--feed "kq-helper" 'pipe gaps) procs)
+    (unwind-protect
+        (while (and (seq-some #'process-live-p procs) (< (- (float-time) start) 30))
+          (accept-process-output nil 5)
+          (setq helper-fds (max helper-fds (plist-get (nhmac-stats) :helper-fds))))
+      (mapc #'delete-process procs))
+    (maphash (lambda (k v) (message "nhmac-kq-fds: %s %d lines, longest gap %.3f s" k (car v) (cdr v))) gaps)
+    (message "nhmac-kq-fds: stats %S" (nhmac-stats))
+    (maphash (lambda (_k v)
+               (should (= (car v) 100))
+               (should (< (cdr v) 1.0)))
+             gaps)
+    (should (>= helper-fds 1))
+    (should (> (nhmac-gui--delta before :kq-wakes) 0))
+    (should (= (nhmac-gui--delta before :empty-wakes) 0))))
+
+(ert-deftest nhmac-keys-before-output ()
+  "Under a `yes' flood, 50 keys posted one at a time each reach Lisp at once and in order: the pump that begins
+every wait stores a key before the wait reads the flood, so keys never wait behind output, and none takes the
+helper's hop (`:helper-hops-keys' 0)."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--flush)
+  (let* ((bytes 0)
+         (before (nhmac-stats))
+         (keys (append "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWX" nil))
+         (proc (make-process :name "nhmac-flood" :command '("yes") :connection-type 'pipe :noquery t
+                             :filter (lambda (_p s) (setq bytes (+ bytes (length s))))))
+         (worst 0.0)
+         got)
+    (unwind-protect
+        (progn
+          (accept-process-output proc 0.2)
+          (should (> bytes 0))
+          (dolist (c keys)
+            (nhmac--test-post-key c)
+            (let ((t0 (float-time)))
+              (push (read-event nil nil 2) got)
+              (setq worst (max worst (- (float-time) t0))))))
+      (delete-process proc))
+    (message "nhmac-keys-before-output: worst %.3f s, %d bytes of output" worst bytes)
+    (should (equal (nreverse got) keys))
+    (should (< worst 0.5))
+    (should (= (nhmac-gui--delta before :helper-hops-keys) 0))
+    (should (> (nhmac-gui--delta before :waits) 0))))
 
 ;; The guard: an Objective-C exception in a pump poisons the display, as a panic does, and Emacs goes on
 (ert-deftest nhmac-objc-exception-poisons ()

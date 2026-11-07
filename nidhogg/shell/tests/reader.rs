@@ -353,7 +353,8 @@ mod reader {
 
     /// Calls that cannot fail: the wake descriptor (the host may still be waiting on it), the capabilities, and the
     /// error text itself.  `abandon` is the glue's teardown handle.  The macOS platform calls (`app_call`,
-    /// `app_query`) are not this backend's: they answer `Unsupported` whatever the connection's state.
+    /// `app_query`) and the main wait (`wait`) are not this backend's: they answer `Unsupported` whatever the
+    /// connection's state.
     const NO_ERROR: &[&str] = &[
         "wake_fd",
         "caps",
@@ -362,6 +363,7 @@ mod reader {
         "connection_state",
         "app_call",
         "app_query",
+        "wait",
     ];
 
     /// The names of `ShellBackend`'s methods, read from its source.

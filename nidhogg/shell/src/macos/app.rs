@@ -5,6 +5,8 @@
 //! do nothing; the features later work brings (children, selections, drag and drop, text input, the presenter) answer
 //! `Unsupported` until then.
 
+use super::defaults;
+use super::kq::{self, Kq};
 use super::runloop::{MacEv, SCOPE};
 use super::screens;
 use super::window::Win;
@@ -15,12 +17,14 @@ use crate::api::{
 use crate::caps::NhShellCaps;
 use crate::event::{ConfigureEv, FocusEv, NHSHELL_STATE_ACTIVATED, Record, ScaleEv, ShellEvent};
 use crate::scope::{Scope, ScopeStats};
+use crate::wait::{self, Change, Reg, WaitOps, Woke};
 use glitnir::geom::Rect;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSEventMask};
 use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSString};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::time::Duration;
 
 /// The test hooks: `nhmac--call` and `nhmac--query` kinds that exist only in a checking build.
 #[cfg(feature = "test-hooks")]
@@ -36,9 +40,15 @@ pub struct MacShell {
     queue: VecDeque<Record>,
     /// The wake pipe: [read, write].
     wake: [i32; 2],
+    /// The main wait's kqueue (`None`: kqueue refused, so `nhg_wait` is unsupported) and its registrations.
+    kq: Option<Kq>,
+    regs: wait::Regs,
     /// Test hook: the next pump raises an `NSException` inside the catch.
     #[cfg(feature = "test-hooks")]
     raise_in_pump: bool,
+    /// Test hook: how many of the next new registrations go to the helper.
+    #[cfg(feature = "test-hooks")]
+    force_helper: u32,
 }
 
 /// The counters `(nhmac-stats)` returns: the scope's, then the ones that stay zero until the work that counts them is
@@ -46,8 +56,12 @@ pub struct MacShell {
 fn stats_text(s: ScopeStats) -> String {
     format!(
         "(:takes {} :overlapping-takes {} :queued {} :applied {} :lock-waiters 0 :parks-with-waiters 0 \
-         :ring-acquires 0 :ring-reuses 0 :commits 0 :deferred-commits 0)",
-        s.takes, s.overlapping_takes, s.queued, s.applied
+         :ring-acquires 0 :ring-reuses 0 :commits 0 :deferred-commits 0 {})",
+        s.takes,
+        s.overlapping_takes,
+        s.queued,
+        s.applied,
+        wait::STATS.text()
     )
 }
 
@@ -56,7 +70,7 @@ fn scope_stats() -> ScopeStats {
     SCOPE.with(Scope::stats)
 }
 
-/// Every event AppKit has queued, through `sendEvent:`.
+/// Every event AppKit has queued, through `sendEvent:`; the wait's markers are dropped.
 fn drain_events(app: &NSApplication) {
     // SAFETY: an immutable string constant of AppKit's.
     let mode = unsafe { NSDefaultRunLoopMode };
@@ -67,7 +81,9 @@ fn drain_events(app: &NSApplication) {
         mode,
         true,
     ) {
-        app.sendEvent(&ev);
+        if !kq::is_marker(&ev) {
+            app.sendEvent(&ev);
+        }
     }
 }
 
@@ -108,8 +124,12 @@ impl MacShell {
             serial: 0,
             queue: VecDeque::new(),
             wake,
+            kq: Kq::open(mtm),
+            regs: wait::Regs::default(),
             #[cfg(feature = "test-hooks")]
             raise_in_pump: false,
+            #[cfg(feature = "test-hooks")]
+            force_helper: 0,
         };
         for o in screens::outputs(mtm) {
             shell.push(ShellEvent::OutputAdd(o), 0);
@@ -201,6 +221,46 @@ impl MacShell {
     }
 }
 
+impl WaitOps for MacShell {
+    fn kq_apply(&mut self, changes: &[Change], errs: &mut Vec<i32>) {
+        match self.kq.as_mut() {
+            Some(k) => k.apply(changes, errs),
+            None => errs.resize(changes.len(), libc::EINVAL),
+        }
+    }
+
+    fn kq_poll(&mut self, out: &mut Vec<Reg>) {
+        if let Some(k) = self.kq.as_mut() {
+            k.poll(out);
+        }
+    }
+
+    /// The run loop with the backend lent, then a pump for whatever the sleep's event left queued.
+    fn sleep(&mut self, helper: &[Reg], timeout: Option<Duration>) -> Woke {
+        let Some(mut k) = self.kq.take() else {
+            return Woke::Timeout;
+        };
+        let app = self.app.clone();
+        let woke = self.lent(|_| k.sleep(&app, helper, timeout));
+        self.kq = Some(k);
+        if woke == Woke::Event {
+            self.pump();
+        }
+        woke
+    }
+
+    fn key_fd(&self) -> i32 {
+        self.wake[0]
+    }
+
+    #[cfg(feature = "test-hooks")]
+    fn take_forced(&mut self) -> bool {
+        let f = self.force_helper > 0;
+        self.force_helper = self.force_helper.saturating_sub(1);
+        f
+    }
+}
+
 impl Drop for MacShell {
     fn drop(&mut self) {
         self.windows.clear();
@@ -232,6 +292,29 @@ impl ShellBackend for MacShell {
             while unsafe { libc::read(self.wake[0], buf.as_mut_ptr().cast(), buf.len()) } > 0 {}
         }
         Ok(r)
+    }
+
+    fn wait(
+        &mut self,
+        want: &BTreeSet<Reg>,
+        timeout: Option<Duration>,
+        out: &mut Vec<Reg>,
+    ) -> ShellResult {
+        if self.kq.is_none() {
+            return Err(ShellError::Unsupported);
+        }
+        let mut regs = std::mem::take(&mut self.regs);
+        wait::run(
+            self,
+            &mut regs,
+            &wait::PARK,
+            &wait::STATS,
+            want,
+            timeout,
+            out,
+        );
+        self.regs = regs;
+        Ok(())
     }
 
     fn dispatch_main(&mut self) -> ShellResult {
@@ -570,8 +653,13 @@ impl ShellBackend for MacShell {
         if let Some(r) = self.test_call(kind, arg) {
             return r;
         }
-        let _ = (kind, arg);
-        Err(ShellError::Arg)
+        match kind {
+            "set-resource" | "unset-resource" => {
+                defaults::set(arg, kind == "unset-resource");
+                Ok(())
+            }
+            _ => Err(ShellError::Arg),
+        }
     }
 
     fn app_query(&mut self, kind: &str, arg: &str) -> ShellResult<String> {
@@ -579,9 +667,9 @@ impl ShellBackend for MacShell {
         if let Some(r) = self.test_query(kind, arg) {
             return r;
         }
-        let _ = arg;
         match kind {
             "stats" => Ok(stats_text(scope_stats())),
+            "get-resource" => Ok(defaults::get(arg)),
             _ => Err(ShellError::Arg),
         }
     }
