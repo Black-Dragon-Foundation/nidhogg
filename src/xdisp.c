@@ -27877,7 +27877,7 @@ display_menu_bar (struct window *w)
   if (NILP (FRAME_MENU_BAR_ITEMS (f)))
     return;
 
-#ifdef HAVE_NHWL
+#ifdef NHWL_WAYLAND
 /* Nidhogg's Wayland shell draws the menu bar itself, as a build without a
    toolkit does (the branch below; scoped to this function's setup).  */
 # define HAVE_ANDROID 1
@@ -27902,7 +27902,7 @@ display_menu_bar (struct window *w)
     }
   else
 #endif /* not USE_X_TOOLKIT and not USE_GTK */
-#ifdef HAVE_NHWL
+#ifdef NHWL_WAYLAND
 # undef HAVE_ANDROID
 #endif
     {

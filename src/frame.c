@@ -315,7 +315,7 @@ See also `frame-live-p'.  */)
       return Qpc;
     case output_ns:
       return Qns;
-#ifdef HAVE_NHWL
+#ifdef NHWL_WAYLAND
     case output_nhwl:
 #endif
     case output_pgtk:

@@ -3054,4 +3054,36 @@ see the `default' they started with."
           (should-not (frame-parameter f 'fullscreen)))
       (when (frame-live-p f) (delete-frame f t)))))
 
+;; The Wayland display reaches emacsclient and subprocesses the Wayland way
+
+(ert-deftest nhwl-gui/subprocess-display-is-never-the-wayland-one ()
+  "A subprocess's DISPLAY is never the frame's `display' (a Wayland display name): it is the initial environment's."
+  (skip-unless (nhwl-gui--live-p))
+  (let ((shown (with-temp-buffer
+                 (call-process "sh" nil t nil "-c" "printf %s \"${DISPLAY-unset}\"")
+                 (buffer-string))))
+    (should-not (equal shown (frame-parameter nil 'display)))
+    (should (equal shown (or (getenv-internal "DISPLAY" initial-environment) "unset")))))
+
+(ert-deftest nhwl-gui/emacsclient-opens-a-frame-on-the-wayland-display ()
+  "emacsclient -c with WAYLAND_DISPLAY set and no DISPLAY opens a frame of this shell on the same display."
+  (skip-unless (nhwl-gui--live-p))
+  (require 'server)
+  (let* ((server-name (format "nhwl-gui-%d" (emacs-pid)))
+         (client (expand-file-name "emacsclient" invocation-directory))
+         (before (frame-list))
+         (process-environment (cons "DISPLAY" process-environment))
+         new)
+    (server-start)
+    (unwind-protect
+        (progn
+          (make-process :name "nhwl-client" :command (list client "-s" server-name "-c" "-n")
+                        :buffer nil :noquery t)
+          (setq new (gui-runner-wait (lambda () (seq-find (lambda (f) (not (memq f before))) (frame-list))) 20))
+          (should new)
+          (should (eq (framep new) 'pgtk))
+          (should (eq (frame-terminal new) (frame-terminal (selected-frame)))))
+      (when (frame-live-p new) (delete-frame new t))
+      (server-force-delete))))
+
 (provide 'nhwl-gui-tests)
