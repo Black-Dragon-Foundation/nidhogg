@@ -273,10 +273,19 @@ for a deadlock.
 ## CI and releases
 
 `.github/workflows/build.yml` runs on pushes to `nidhogg-31`, `v*-nidhogg.*` tags, pull requests and by hand
-(`drgnx_ref` input: the drgnx branch, tag or commit under test). Without the input the drgnx commit is the one pinned
-in the `drgnx` job, never drgnx's moving `main`: a drgnx push cannot turn Nidhogg red. The pin is written once, as
-the commit of drgnx's tiers workflow (`uses: …/drgnx-tiers.yml@COMMIT`, which takes no expression); a `pin` job reads
-it from that line and it becomes the default `drgnx_ref`. Bump that line by hand to a drgnx commit whose own CI is green.
+(`drgnx_ref` input: the drgnx branch, tag or commit under test). The definition of drgnx's tiers comes from the commit
+pinned in the `drgnx` job (`uses: …/drgnx-tiers.yml@COMMIT`, which takes no expression; bump it by hand to a drgnx
+commit whose own CI is green). The suite it checks out, without the input, is chosen by the `pin` job:
+
+- a release tag (`v*-nidhogg.*`): that pinned commit, so a release is tested against a fixed drgnx;
+- every other build (pull requests, by-hand and scratch runs, `nidhogg-31`): the head of drgnx's integration branch,
+  named on one line of `nidhogg/ci/drgnx-line` (`rel7-next` while drgnx's next release is unreleased), so Nidhogg is
+  tested against drgnx's current line, never an old release. That branch must be pushed: a missing one fails the `pin`
+  job, never the pin instead. Move the file to the next line when a release round starts.
+
+drgnx's own CI does the same in the other direction (drgnx's `docs/develop/ci.md`, "Nidhogg's integration line"): its
+tiers install the tarballs of this workflow's green run of Nidhogg's integration branch's head, so that head needs a
+green run of this workflow (a pull request, a by-hand run or a scratch run of that commit) before drgnx's CI can pass.
 
 A joint round (drgnx and Nidhogg change together, drgnx's `docs/develop/ci.md`, "Joint rounds"): drgnx goes to
 `ci/joint/<name>`, where its own CI runs only what needs no Emacs, and this workflow runs by hand with

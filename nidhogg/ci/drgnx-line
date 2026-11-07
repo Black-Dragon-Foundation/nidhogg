@@ -1,0 +1,4 @@
+# drgnx's integration branch: Nidhogg's CI runs drgnx's tiers at its head on every build but a release tag's
+# (.github/workflows/build.yml, the pin job; a tag keeps the uses line's pinned commit). One branch name on the first
+# other line.
+rel7-next
