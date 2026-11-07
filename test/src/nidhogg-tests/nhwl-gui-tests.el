@@ -10,6 +10,7 @@
 (require 'ert)
 (require 'json)
 (require 'seq)
+(require 'cl-lib)
 
 (defun nhwl-gui--live-p ()
   "Non-nil on Nidhogg's own Wayland shell."
@@ -2981,5 +2982,76 @@ see the `default' they started with."
       (should (equal (seq-remove #'stringp (nthcdr 1 back)) (seq-remove #'stringp (nthcdr 1 before))))
       (should (equal (nth 0 back) (nth 0 before)))
       (should (equal (nhwl-gui--default-font-state) before)))))
+
+;; The frame rows that came over from the pgtk runner: what any shell must do on any compositor.
+
+(defun nhwl-gui--socket-owner (path)
+  "The process name (`/proc/PID/comm') of the process listening on the Unix socket PATH, or nil."
+  (let (inode)
+    (with-temp-buffer
+      (insert-file-contents "/proc/net/unix")
+      (goto-char (point-min))
+      (when (re-search-forward (concat " \\([0-9]+\\) " (regexp-quote path) "$") nil t)
+        (setq inode (match-string 1))))
+    (when inode
+      (cl-loop for pid in (directory-files "/proc" nil "\\`[0-9]+\\'")
+               for found = (ignore-errors
+                             (cl-loop for fd in (directory-files (format "/proc/%s/fd" pid) t "[0-9]")
+                                      thereis (equal (file-symlink-p fd) (format "socket:[%s]" inode))))
+               when found
+               return (string-trim (with-temp-buffer
+                                     (insert-file-contents (format "/proc/%s/comm" pid))
+                                     (buffer-string)))))))
+
+(ert-deftest nhwl-gui/compositor-is-the-asked-one ()
+  "The process listening on WAYLAND_DISPLAY's socket is the compositor gui.sh was asked for."
+  :tags '(gnome-smoke)
+  (let* ((asked (getenv "GLITNIR_GUI_COMPOSITOR"))
+         (sock (expand-file-name (getenv "WAYLAND_DISPLAY") (getenv "XDG_RUNTIME_DIR"))))
+    (skip-unless (and (nhwl-gui--live-p) asked))
+    (should (equal (nhwl-gui--socket-owner sock)
+                   (pcase asked ("sway" "sway") ("mutter" "mutter") ("kwin" "kwin_wayland") ("labwc" "labwc") ("recorder" "nh-recorder"))))))
+
+(ert-deftest nhwl-gui/show-then-hide-stays-hidden ()
+  "A child shown and at once hidden stays hidden once the compositor has answered."
+  :tags '(gnome-smoke)
+  (skip-unless (nhwl-gui--live-p))
+  (let ((child (make-frame `((parent-frame . ,(selected-frame)) (width . 20) (height . 5)
+                             (visibility . nil)))))
+    (unwind-protect
+        (progn
+          (make-frame-visible child)
+          (make-frame-invisible child)
+          (gui-runner-wait-settled)
+          (should-not (frame-visible-p child)))
+      (delete-frame child))))
+
+(ert-deftest nhwl-gui/hiding-a-root-frame-still-works ()
+  (skip-unless (nhwl-gui--live-p))
+  (let ((root (make-frame '((width . 40) (height . 10) (visibility . t)))))
+    (unwind-protect
+        (progn
+          (redisplay t)
+          (gui-runner-wait-settled)
+          (make-frame-invisible root)
+          (gui-runner-wait-settled)
+          (should-not (frame-visible-p root)))
+      (delete-frame root))))
+
+(ert-deftest nhwl-gui/windowed-frame-maps-on-gnome ()
+  "A 600x400 frame that is not fullscreen maps and is visible on mutter (it checks no decoration)."
+  :tags '(gnome-smoke)
+  (skip-unless (and (nhwl-gui--live-p) (equal (getenv "GLITNIR_GUI_COMPOSITOR") "mutter")))
+  (let ((f (make-frame '((width . 75) (height . 25) (visibility . t) (fullscreen . nil)))))
+    (unwind-protect
+        (progn
+          (redisplay t)
+          (gui-runner-wait-settled)
+          (should (frame-live-p f))
+          (should (frame-visible-p f))
+          (should (> (frame-pixel-width f) 0))
+          (should (> (frame-pixel-height f) 0))
+          (should-not (frame-parameter f 'fullscreen)))
+      (when (frame-live-p f) (delete-frame f t)))))
 
 (provide 'nhwl-gui-tests)
