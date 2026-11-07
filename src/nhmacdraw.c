@@ -299,10 +299,31 @@ nhmac_set_clipping_exactly (struct glyph_string *src,
   nhmac_clip_to (&r, 1);
 }
 
-/* Images: not drawn yet.  */
+/* The part of IMAGE from SRC_X, SRC_Y, WIDTH by HEIGHT, at DEST_X,
+   DEST_Y, over GC's background unless OVERLAY_P (nhwldraw.c's Cairo
+   twin).  */
 void
-nhmac_text_run (struct glyph_string *s)
+nhwl_cr_draw_image (struct frame *f, Emacs_GC *gc, nhwl_image image,
+		    int src_x, int src_y, int width, int height,
+		    int dest_x, int dest_y, bool overlay_p)
 {
+  Emacs_Pixmap p = image->pixmap, m = image->mask;
+  NhgPix pix = { (uint8_t *) p->data, m ? (uint8_t *) m->data : NULL,
+		 p->width, p->height, p->bytes_per_line,
+		 m ? m->bytes_per_line : 0, p->bits_per_pixel };
+  NhgDrawRec r = { NHG_DRAW_IMAGE, overlay_p ? NHG_DRAW_OVERLAY : 0,
+		   { dest_x, dest_y, width, height },
+		   nhmac_argb (f, gc->foreground, false),
+		   nhmac_argb (f, gc->background, true), src_x, src_y };
+
+  nhwl_begin_cr_clip (f);
+  r.nclip = nhmac_top ()->n;
+  memcpy (r.clip, nhmac_top ()->r, sizeof r.clip);
+  nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		NHG (nhg_draw_image (FRAME_NHG (f),
+				     FRAME_NHWL_OUTPUT (f)->glitnir_id,
+				     &r, &pix)));
+  nhwl_end_cr_clip (f);
 }
 
 /* Glyphs FROM to TO of S, in the open font FONT, from X on the baseline

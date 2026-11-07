@@ -42,8 +42,14 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
    here, a Core Graphics one under Naglfar (nhmacdraw.c).  */
 typedef cairo_t nhwl_cr;
 #define NHWL_DPI 96.0
+typedef cairo_pattern_t *nhwl_image;
+#define NHWL_IMAGE(img) ((img)->cr_data)
 #else
 typedef struct CGContext nhwl_cr;
+/* An image as the image foreground draws it (nhwl_cr_draw_image): its
+   pixmap and mask, which the glue wraps once.  */
+typedef struct image *nhwl_image;
+#define NHWL_IMAGE(img) ((img)->pixmap ? (img) : NULL)
 /* NS's resolution: a point is 1/72 inch, so a 12-point font is 12
    pixels at scale 1, as on NS.  */
 #define NHWL_DPI 72.0
@@ -669,7 +675,8 @@ extern void nhmac_restore (nhwl_cr *);
 extern void nhmac_set_clipping (struct glyph_string *, nhwl_cr *);
 extern void nhmac_set_clipping_exactly (struct glyph_string *,
 					struct glyph_string *, nhwl_cr *);
-extern void nhmac_text_run (struct glyph_string *);
+extern void nhwl_cr_draw_image (struct frame *, Emacs_GC *, nhwl_image, int,
+				int, int, int, int, int, bool);
 extern void nhmac_glyph_run (struct glyph_string *, uint64_t, int, int,
 			     int, int, bool);
 #endif

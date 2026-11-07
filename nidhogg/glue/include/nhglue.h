@@ -1183,7 +1183,11 @@ int32_t nhg_font_glyph_metrics (uint64_t handle, uint32_t glyph, uint32_t mono, 
    apply.  A refused record is skipped and the call returns NHG_E_ARG; NHG_E_UNSUPPORTED where the shell has no
    painter.  nhg_draw_glyphs paints one NHG_DRAW_GLYPHS record of the open font FONT (nhg_font_open): N glyphs at
    BITS in FG from x A on the baseline B, placed as macfont_draw places them (NHG_DRAW_PADDING: one pixel each); with
-   NHG_DRAW_BACKGROUND, R is filled with BG first.  NHG_E_STATE for a font that is not open.  */
+   NHG_DRAW_BACKGROUND, R is filled with BG first.  NHG_E_STATE for a font that is not open.  nhg_draw_image
+   paints one NHG_DRAW_IMAGE record: the part of the container PIX from (A, B) into R, over BG unless
+   NHG_DRAW_OVERLAY; with a mask its pixels are its colour times the mask's alpha, without one opaque, and an 8-bit
+   container is FG through it (Cairo's conversion).  The container is wrapped once and kept until nhg_image_forget
+   names its data or its mask.  */
 
 #define NHG_DRAW_FILL 1
 #define NHG_DRAW_OUTLINE 2
@@ -1193,6 +1197,7 @@ int32_t nhg_font_glyph_metrics (uint64_t handle, uint32_t glyph, uint32_t mono, 
 #define NHG_DRAW_BITMAP 6
 #define NHG_DRAW_CORNERS 7
 #define NHG_DRAW_GLYPHS 8
+#define NHG_DRAW_IMAGE 9
 
 #define NHG_DRAW_COPY (1u << 0)
 #define NHG_DRAW_TOP (1u << 3)
@@ -1213,6 +1218,40 @@ typedef struct
 
 int32_t nhg_draw (NhgDisplay *d, uint64_t frame, const NhgDrawRec *recs, size_t n);
 int32_t nhg_draw_glyphs (NhgDisplay *d, uint64_t frame, uint64_t font, const NhgDrawRec *rec, size_t n);
+
+/* An image container as drawing reads it: DATA rows STRIDE bytes apart, BPP 32 or 8; MASK (NULL: none) 8-bit rows
+   MASK_STRIDE bytes apart.  */
+typedef struct
+{
+  const uint8_t *data, *mask;
+  int32_t width, height, stride, mask_stride, bpp;
+} NhgPix;
+
+int32_t nhg_draw_image (NhgDisplay *d, uint64_t frame, const NhgDrawRec *rec, const NhgPix *pix);
+
+/* ---- Images (glue/src/image.rs, nhshell's macos/images.rs; macOS) -----------------------------------------------
+   image.c's native route.  nhg_image_type: NHG_OK when the route takes the type named by NAME (LEN bytes), else
+   NHG_E_UNSUPPORTED.  nhg_image_decode decodes frame INDEX of the image in SRC (LEN bytes; a file name when IS_FILE)
+   through ImageIO into *OUT: colours not premultiplied, the alpha in each word's top byte, HAS_ALPHA when some pixel
+   is not opaque, FRAMES in the file and this frame's DELAY in seconds (0: still); NHG_E_STATE when it cannot.
+   nhg_image_take copies the pixels into a 32-bit container's DATA (WIDTH * 4 bytes a row) and, with HAS_ALPHA, the
+   alpha into an 8-bit MASK (WIDTH a row), then frees them; nhg_image_free frees them untaken.  nhg_image_forget: the
+   container bytes at ADDR are being freed.  */
+
+typedef struct
+{
+  int32_t width, height;
+  uint32_t frames, has_alpha;
+  double delay;
+  uint32_t *argb_;
+  size_t len_;
+} NhgImage;
+
+int32_t nhg_image_type (const char *name, size_t len);
+int32_t nhg_image_decode (const uint8_t *src, size_t len, uint32_t is_file, uint32_t index, NhgImage *out);
+int32_t nhg_image_take (NhgImage *img, uint8_t *data, uint8_t *mask);
+int32_t nhg_image_free (NhgImage *img);
+int32_t nhg_image_forget (const uint8_t *addr);
 
 /* ---- The main wait (glue/src/wait.rs, nhshell's wait.rs; macOS) ------------------------------------------------
    nhg_wait registers the fds RFDS and WFDS ask for below NFDS, runs the backend's event loop until one is ready, a
