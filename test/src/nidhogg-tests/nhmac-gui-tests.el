@@ -70,6 +70,39 @@ pixels; the display's width is the main screen's."
           (should (= (display-pixel-width) (plist-get info :screen-device-width))))
       (delete-frame f))))
 
+;; Task 11: the pumps and the take-out scope
+(ert-deftest nhmac-reentry-sync-delegates ()
+  "AppKit's delegates, called back from inside the shell's own calls, reach its state only through the scope.
+`setFrame:' and `makeKeyAndOrderFront:' with the scope free are applied at once; inside a borrow (with a modal session
+and a nested event loop) they queue, and each queued event is applied once when the lend ends; a deferred effect runs
+with the borrow put back.  No two borrows are ever live."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((before (nhmac-stats))
+         (r (nhmac--test-reentry))
+         (after (nhmac-stats)))
+    (message "nhmac-reentry: %S" r)
+    (should (= (plist-get r :overlapping-takes) 0))
+    (should (= (plist-get r :sync-queued) 0))
+    (should (>= (plist-get r :inner-queued) 2))
+    (should (= (plist-get r :after-effect-queued) (plist-get r :inner-queued)))
+    (should (= (plist-get r :queued) (plist-get r :applied)))
+    (should (>= (plist-get r :takes) 3))
+    (should (= (plist-get after :overlapping-takes) (plist-get before :overlapping-takes)))))
+
+(ert-deftest nhmac-pump-modal-resize ()
+  "A query that runs a modal session, with a window resized inside it: the delegate takes the lent state, nothing
+is left queued, and the display is not poisoned."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((panics (length (nhwl-glue-panics)))
+         (r (nhmac--modal-resize 300)))
+    (message "nhmac-modal-resize: %S" r)
+    (should (>= (plist-get r :rounds) 2))
+    (should (>= (plist-get r :takes) 1))
+    (should (= (plist-get r :overlapping-takes) 0))
+    (should (= (plist-get r :queued) (plist-get r :applied)))
+    (should (= (length (nhwl-glue-panics)) panics))
+    (should (equal (eval '(+ 1 1) t) 2))))
+
 ;; The guard: an Objective-C exception in a pump poisons the display, as a panic does, and Emacs goes on
 (ert-deftest nhmac-objc-exception-poisons ()
   "An NSException raised inside the AppKit pump is caught; the display is poisoned and Emacs does not abort."
