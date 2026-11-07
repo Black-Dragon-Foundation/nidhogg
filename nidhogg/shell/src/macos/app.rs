@@ -14,6 +14,7 @@ use super::runloop::{MacEv, SCOPE};
 use super::screens;
 use super::surface;
 use super::window::Win;
+use super::{dialogs, pasteboard};
 use crate::api::{
     Abandon, ChildDesc, NHSHELL_WIN_UNDECORATED, NhShellPresenterStats, Place, PresenterTiming,
     ShellBackend, ShellError, ShellResult, SurfaceFrame, WindowDesc, WindowId,
@@ -286,6 +287,26 @@ impl MacShell {
         } else {
             self.pacer.disarm();
         }
+    }
+
+    /// `ns-perform-service` "(NAME TEXT)": the service's answer as a Lisp string, or `nil`.
+    fn service_perform(&mut self, arg: &str) -> String {
+        let inner = arg.strip_prefix('(').unwrap_or(arg);
+        let inner = inner.strip_suffix(')').unwrap_or(inner);
+        let Some((name, text)) = inner.split_once(crate::pasteboard::US) else {
+            return "nil".into();
+        };
+        let (name, text) = (name.to_string(), text.to_string());
+        self.lent(|_| crate::catch_objc(|| super::services::perform(&name, &text)))
+            .map_or_else(|| "nil".to_string(), |t| crate::pasteboard::lisp_string(&t))
+    }
+
+    /// `x-file-dialog`: the panel modally, with the backend lent; the chosen path as a Lisp string, or `nil`.
+    fn file_dialog(&mut self, arg: &str) -> ShellResult<String> {
+        let req = crate::pasteboard::dialog_req(arg).ok_or(ShellError::Arg)?;
+        let mtm = self.mtm;
+        let path = self.lent(|_| crate::catch_objc(|| dialogs::run(mtm, &req)));
+        Ok(path.map_or_else(|| "nil".to_string(), |p| crate::pasteboard::lisp_string(&p)))
     }
 
     /// `x-popup-menu`: the menu at (X, Y) device pixels of the frame's window, shown by AppKit's tracking loop with
@@ -1096,6 +1117,8 @@ impl ShellBackend for MacShell {
                 self.variable(arg);
                 Ok(())
             }
+            "pasteboard-own" => pasteboard::own(arg),
+            "pasteboard-disown" => pasteboard::disown(arg),
             "menu-bar" => menus::bar(self.mtm, &self.app, arg),
             "menu-dock" => menus::dock(self.mtm, arg),
             _ => Err(ShellError::Arg),
@@ -1111,6 +1134,11 @@ impl ShellBackend for MacShell {
             "stats" => Ok(stats_text(scope_stats())),
             "get-resource" => Ok(defaults::get(arg)),
             "reduced-motion" => Ok(if motion::reduced() { "t" } else { "nil" }.into()),
+            "pasteboard-read" => Ok(pasteboard::read(arg)),
+            "pasteboard-exists" => Ok(pasteboard::exists(arg)),
+            "pasteboard-owned" => Ok(pasteboard::owned_text(arg)),
+            "file-dialog" => self.file_dialog(arg),
+            "service-perform" => Ok(self.service_perform(arg)),
             "menu-popup" => self.menu_popup(arg),
             _ => Err(ShellError::Arg),
         }
