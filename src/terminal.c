@@ -466,6 +466,9 @@ return values.  */)
       return Qw32;
     case output_msdos_raw:
       return Qpc;
+#ifdef HAVE_NHMAC
+    case output_nhwl:
+#endif
     case output_ns:
       return Qns;
 #ifdef NHWL_WAYLAND
