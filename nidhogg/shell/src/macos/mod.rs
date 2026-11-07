@@ -5,9 +5,11 @@
 //! poisoned display, as it does any panic.
 
 mod app;
+mod defaults;
 pub mod fonts;
 #[cfg(feature = "test-hooks")]
 mod inject;
+mod kq;
 mod runloop;
 mod screens;
 mod view;

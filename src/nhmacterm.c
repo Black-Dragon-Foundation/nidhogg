@@ -26,6 +26,12 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "nhwlterm.h"
 #include "frame.h"
 #include "keyboard.h"
+#include "sysselect.h"
+#include "thread.h"
+#include "nidhogg-testclock.h"
+#ifdef HAVE_NIDHOGG_WATCHDOG
+#include "nidhogg-watchdog.h"
+#endif
 
 /* The display a platform request goes to: the selected frame's, else
    the first.  */
@@ -100,6 +106,60 @@ usage: (nhmac--query WHAT &rest ARGS)  */)
   if (len >= sizeof buf)
     error ("nhmac--query %s: the answer is too long", SSDATA (SYMBOL_NAME (args[0])));
   return Fcar (Fread_from_string (make_string (buf, len), Qnil, Qnil));
+}
+
+/* The main wait (process.c), NS's ns_select in the glue's terms.  On
+   the main thread with a non-zero timeout: pump AppKit's queued events
+   first, so keys reach kbd_buffer before process output; yield once, as
+   NS does, so another Lisp thread can take the lock; then wait in
+   nhg_wait with the global lock held, its run loop serving AppKit and
+   one kqueue holding the fds.  waiting_for_input is cleared around the
+   wait and restored by assignment: set_waiting_for_input could throw a
+   C-g from here, and a C-g during the wait is a key event, or quit-flag,
+   which the caller reads after the select.  The wait makes the
+   watchdog's calls really_call_select would have made.  Anything else
+   (another thread, a zero timeout, no display, an auto-advancing test
+   clock, whose rounds only really_call_select runs) is a plain
+   thread_select.  */
+int
+nhmac_select (int nfds, fd_set *rfds, fd_set *wfds, fd_set *efds,
+	      struct timespec *timeout, sigset_t *sigmask)
+{
+  struct nhwl_display_info *dpyinfo = x_display_list;
+  bool zero = timeout && timeout->tv_sec == 0 && timeout->tv_nsec == 0;
+
+  if (zero || nh_tc_auto || !dpyinfo || !dpyinfo->glue
+      || dpyinfo->glue_broken || !main_thread_p (current_thread))
+    return thread_select (pselect, nfds, rfds, wfds, efds, timeout,
+			  sigmask);
+
+  nhwl_glue_rc (dpyinfo, NHG (nhg_dispatch_main (dpyinfo->glue)));
+  struct timespec tick = { 0, 1 };
+  thread_select (pselect, 0, NULL, NULL, NULL, &tick, sigmask);
+
+  int64_t ns = -1;
+  if (timeout && timeout->tv_sec < INT64_MAX / 1000000000 - 1)
+    ns = timeout->tv_sec * (int64_t) 1000000000 + timeout->tv_nsec;
+  bool waiting = waiting_for_input;
+  waiting_for_input = false;
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  nh_wd_wait_enter (current_thread, timeout);
+#endif
+  int rc = NHG (nhg_wait (dpyinfo->glue, nfds, rfds, wfds, ns));
+#ifdef HAVE_NIDHOGG_WATCHDOG
+  nh_wd_wait_leave (current_thread);
+#endif
+  waiting_for_input = waiting;
+  if (rc < 0)
+    {
+      /* The sets are untouched: the glue writes them only on success.  */
+      nhwl_glue_rc (dpyinfo, rc);
+      return thread_select (pselect, nfds, rfds, wfds, efds, timeout,
+			    sigmask);
+    }
+  if (efds)
+    FD_ZERO (efds);
+  return rc;
 }
 
 /* The menu bar: built at idle by the native menu task; until then the
