@@ -4,11 +4,12 @@
 # test/src/nidhogg-tests/gui-runner.el runs nhmac-gui-tests.el in it.  Copied from the Glitnir P5 lane (ns-gui.sh,
 # ns-display.m), renamed, with a row floor added.
 #
-#   nidhogg/test/nhmac-gui.sh --tarball FILE | --prefix DIR [--scale 1|2]... [--select REGEXP] [--files GLOB]
+#   nidhogg/test/nhmac-gui.sh --tarball FILE | --prefix DIR | --emacs FILE [--scale 1|2]... [--select REGEXP] [--files GLOB]
 #                          [--timeout SEC] [--out DIR] [--floor N] [--interpose]
 #
 #   --tarball FILE   the macOS release tarball (nidhogg-VERSION-macos-ARCH.tar.xz); unpacked under $TMPDIR
 #   --prefix DIR     an unpacked tarball (DIR/Nidhogg.app/Contents/MacOS/Emacs)
+#   --emacs FILE     an Emacs binary run as it is: a Naglfar build tree's src/emacs (no bundle yet)
 #   --scale S        the display scale, 1 or 2; repeatable (default: 1, then 2)
 #   --select REGEXP  ERT selector, an Emacs regexp (alternation is \|); default every test of the files
 #   --files GLOB     the test files, in test/src/nidhogg-tests (default nhmac-gui-tests.el)
@@ -28,11 +29,12 @@ set -u
 self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 checkout=$(cd "$self/../.." && pwd)
 
-tarball= prefix= scales=() select= files=nhmac-gui-tests.el timeout=900 out= floor=1 interpose=0
+tarball= prefix= emacs= scales=() select= files=nhmac-gui-tests.el timeout=900 out= floor=1 interpose=0
 while [ $# -gt 0 ]; do
   case $1 in
     --tarball) tarball=${2:-}; shift 2 ;;
     --prefix) prefix=${2:-}; shift 2 ;;
+    --emacs) emacs=${2:-}; shift 2 ;;
     --scale) scales+=("${2:-}"); shift 2 ;;
     --select) select=${2:-}; shift 2 ;;
     --files) files=${2:-}; shift 2 ;;
@@ -62,8 +64,10 @@ if [ -n "$tarball" ]; then
   mkdir "$work/app" && tar -C "$work/app" -xJf "$tarball" || { echo "nhmac-gui.sh: cannot unpack $tarball" >&2; exit 1; }
   prefix=$(echo "$work"/app/nidhogg-*)
 fi
-[ -n "$prefix" ] || { echo "nhmac-gui.sh: --tarball or --prefix is required" >&2; exit 2; }
-emacs=$prefix/Nidhogg.app/Contents/MacOS/Emacs
+if [ -z "$emacs" ]; then
+  [ -n "$prefix" ] || { echo "nhmac-gui.sh: --tarball, --prefix or --emacs is required" >&2; exit 2; }
+  emacs=$prefix/Nidhogg.app/Contents/MacOS/Emacs
+fi
 [ -x "$emacs" ] || { echo "nhmac-gui.sh: $emacs not found" >&2; exit 2; }
 [ -n "$out" ] || out=${TMPDIR:-/tmp}/nhmac-gui
 mkdir -p "$out" || exit 1

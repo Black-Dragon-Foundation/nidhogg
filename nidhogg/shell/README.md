@@ -96,8 +96,9 @@ scale: `scale120` = 120 x (Xft DPI / 96), and server-side decorations always (`s
 | drag source (Rust only): `drag_start` (with the press still held), `drag_cancel`; events `DRAG_ACTION`, `DRAG_DROPPED`, `DRAG_DONE` (36–38; `DRAG_DONE` comes before `DISCONNECTED`) | `beginDraggingSessionWithItems:event:source:` with the held mouse-down event; `draggingSession:endedAtPoint:operation:` is `DRAG_DROPPED` and `DRAG_DONE` together (operation none: cancelled) | XDND source: own `XdndSelection` and grab the pointer from the held press; `XdndStatus` gives the action, `XdndDrop` sent is dropped, `XdndFinished` is done | fits |
 | `abandon` (the connection's socket and every thread's stop and done report, for a host that drops a backend whose state is in doubt: shut down, bounded join, leak) | a pipe the host can close, and the display-link thread's stop | the connection's fd, and the event thread's stop | fits |
 | `text_input_enable`, `text_input_cursor`, `text_input_surrounding`, `take_text`; events `PREEDIT`, `COMMIT_TEXT`, `DELETE_SURROUNDING` | `NSTextInputClient` (`setMarkedText:`, `insertText:`, `firstRectForCharacterRange:`); no delete record (macOS replaces ranges in `insertText:`) | XIM or ibus over D-Bus (preedit callbacks, `XIM_SET_IC_VALUES` for the spot) | fits |
+| `app_call`, `app_query` (a request by kind, its arguments and answer as Lisp text; Naglfar's `nhmac--call` and `nhmac--query`) | the AppKit backend (`src/macos/app.rs`, behind the feature `macos`): the requests no other call carries; a query may run a modal session | not used: `Unsupported` (the trait's default, as on Wayland) | fits |
 
-Result: every row fits; the API needed no change.
+Result: every row fits; the API needed no change beyond the two platform calls.
 
 ## Frame parameters
 
