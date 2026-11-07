@@ -4411,6 +4411,18 @@ image_create_x_image_and_pixmap_1 (struct frame *f, int width, int height, int d
   *pimg = *pixmap;
   return 1;
 #endif
+#ifdef HAVE_NHMAC
+  /* Naglfar: the plain container (dispextern.h) is both the image and
+     its pixmap, as Cairo's is; nhwl_free_pixmap frees it.  */
+  Emacs_Pix_Container c = xmalloc (sizeof *c);
+  c->width = width;
+  c->height = height;
+  c->bits_per_pixel = depth == 1 ? 8 : 32;
+  c->bytes_per_line = width * (c->bits_per_pixel / 8);
+  c->data = xzalloc ((ptrdiff_t) c->bytes_per_line * height);
+  *pimg = *pixmap = c;
+  return true;
+#endif
 }
 
 
@@ -4590,6 +4602,9 @@ image_get_x_image (struct frame *f, struct image *img, bool mask_p)
 
   ns_retain_object (pixmap);
   return pixmap;
+#endif
+#ifdef HAVE_NHMAC
+  return !mask_p ? img->pixmap : img->mask;
 #endif
 }
 
