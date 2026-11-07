@@ -260,6 +260,41 @@ ns_relocate (const char *epath)
   return out;
 }
 
+/* A choice from the native menu bar.  Lisp keeps the key paths of the
+   tree it last sent (`nhmac-menu-paths', by the item's place in the tree)
+   and the tree's generation (`nhmac-menu-generation'); the choice becomes
+   the menu-bar events of the item's path, as find_and_call_menu_selection
+   makes them, and one from an older tree is dropped.  Returns how many
+   events it stored.  */
+int
+nhmac_menu_choice (const NhgAction *a, struct input_event *hold_quit)
+{
+  Lisp_Object gen = find_symbol_value (intern_c_string ("nhmac-menu-generation"));
+  Lisp_Object paths = find_symbol_value (intern_c_string ("nhmac-menu-paths"));
+  Lisp_Object path, frame;
+  struct input_event buf;
+  int stored = 0;
+
+  if (!FIXNUMP (gen) || XFIXNUM (gen) != a->flags || !CONSP (paths))
+    return 0;
+  path = Fcdr (Fassq (make_fixnum (a->code), paths));
+  if (!CONSP (path))
+    return 0;
+  XSETFRAME (frame, SELECTED_FRAME ());
+  EVENT_INIT (buf);
+  buf.kind = MENU_BAR_EVENT;
+  buf.frame_or_window = frame;
+  buf.arg = frame;
+  kbd_buffer_store_event_hold (&buf, hold_quit);
+  stored++;
+  for (; CONSP (path); path = XCDR (path), stored++)
+    {
+      buf.arg = XCAR (path);
+      kbd_buffer_store_event_hold (&buf, hold_quit);
+    }
+  return stored;
+}
+
 /* The menu bar: built at idle by the native menu task; until then the
    frame shows none.  */
 void

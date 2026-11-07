@@ -25,6 +25,8 @@ pub enum MacEv {
     Key(WindowId, bool),
     /// A key, modifier or mouse record from the window's view, for the host as it is.
     Input(WindowId, ShellEvent),
+    /// An item of the menu bar was chosen: the tree's generation and the item's place.
+    Menu(u32, u32),
 }
 
 thread_local! {

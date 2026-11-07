@@ -3292,6 +3292,11 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
 	return 1;
       }
 
+#ifdef HAVE_NHMAC
+    case NHG_ACT_MENU:
+      return nhmac_menu_choice (a, hold_quit);
+#endif
+
     case NHG_ACT_SELECTION_CLEAR:
       /* Another client took a selection we owned.  */
       EVENT_INIT (ie);

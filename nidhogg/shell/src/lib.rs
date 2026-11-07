@@ -10,6 +10,7 @@ pub mod event;
 pub mod mac_input;
 #[cfg(all(feature = "macos", target_os = "macos"))]
 pub mod macos;
+pub mod menu;
 pub mod scope;
 pub mod startup;
 pub mod wait;

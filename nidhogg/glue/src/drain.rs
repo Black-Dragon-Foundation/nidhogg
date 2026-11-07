@@ -7,8 +7,8 @@
 //! which C sends to the focus frame as before; every other kind did nothing in C without a frame.
 
 use crate::action::{
-    NHG_ACT_DELETE, NHG_ACT_LOST, NHG_ACT_READY, NHG_ACT_SELECTION_CLEAR, NHG_IN_ACKS_ONLY,
-    NhgAction, NhgNextIn,
+    NHG_ACT_DELETE, NHG_ACT_LOST, NHG_ACT_MENU, NHG_ACT_READY, NHG_ACT_SELECTION_CLEAR,
+    NHG_IN_ACKS_ONLY, NhgAction, NhgNextIn,
 };
 use crate::configure;
 use crate::csd;
@@ -86,6 +86,13 @@ pub fn next(state: &mut Display, input: NhgNextIn) -> Result<i32, GlueError> {
             popup::popup_done(state, &ev);
         }
         ShellEvent::Session(s) => session::event(state, &ev, &s),
+        // a choice from the native menu bar: C turns it into the menu-bar events of the item's key path
+        ShellEvent::Menu(m) => {
+            let mut a = NhgAction::new(NHG_ACT_MENU, 0, ev.time_ns);
+            a.code = m.index as i32;
+            a.flags = m.generation;
+            state.actions.push(a);
+        }
         ShellEvent::Touch(t) => touch::touch(state, &ev, &t),
         ShellEvent::Pinch(p) => touch::pinch(state, &ev, &p),
         // a popup closed by the reconnect came as an ordinary dismissal above

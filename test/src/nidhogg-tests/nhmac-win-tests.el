@@ -369,5 +369,89 @@ Shell events (`make-non-key-event' codes) are the shell's to produce.")
   (should (equal (cadr (should-error (nhmac--not-yet)))
                  "Naglfar: not available yet")))
 
+;; Task 27: menus built at idle
+
+(defun nhmac-win-test--bar-with-sub ()
+  (nhmac-win-test--bar
+   `(file "File"
+          (a menu-item "A" nhmac-win-test--cmd)
+          (sub "Sub" . ,(let ((s (make-sparse-keymap "Sub")))
+                          (define-key s [z] '("Z" . nhmac-win-test--cmd))
+                          s)))
+   `(edit "Edit" (q "Q" . nhmac-win-test--cmd))))
+
+(ert-deftest nhmac-win-menu-paths-follow-the-places ()
+  "Each item's place in the tree maps to the keys that lead to it (what the menu-bar events carry)."
+  (let* ((r (let ((nhmac-menu--used 0))
+              (cl-letf (((symbol-function 'nhmac-menu-bar-maps)
+                         (lambda () (list (nhmac-win-test--bar-with-sub)))))
+                (nhmac-menu-flatten-bar-with-paths))))
+         (paths (cdr r)))
+    (should (equal (cdr (assq 3 paths)) '(file a)))
+    (should (equal (cdr (assq 11 paths)) '(file sub)))
+    (should (equal (cdr (assq 23 paths)) '(file sub z)))
+    (should (equal (cdr (assq 35 paths)) '(edit q)))))
+
+(ert-deftest nhmac-win-menu-encode-has-seven-fields-a-record ()
+  (let* ((vec (vector 0 nhmac-menu-kind-submenu "Fi\nle" "" 1 0 -1
+                      1 nhmac-menu-kind-item "A" "C-x A" 1 0 3))
+         (text (nhmac-menu-encode vec))
+         (recs (split-string text "\C-^")))
+    (should (= (length recs) 2))
+    (should (equal (split-string (car recs) "\C-_" nil) '("0" "1" "Fi le" "" "1" "0" "-1")))
+    (should (equal (split-string (cadr recs) "\C-_" nil) '("1" "0" "A" "C-x A" "1" "0" "3")))))
+
+(ert-deftest nhmac-win-menu-one-pending-build ()
+  "Triggers while a build is pending change nothing: one idle timer."
+  (let ((nhmac-menu--timer nil))
+    (unwind-protect
+        (progn
+          (nhmac-menu-invalidate)
+          (let ((first nhmac-menu--timer))
+            (should (timerp first))
+            (nhmac-menu-invalidate)
+            (nhmac-menu-invalidate)
+            (should (eq nhmac-menu--timer first))))
+      (when (timerp nhmac-menu--timer) (cancel-timer nhmac-menu--timer)))))
+
+(ert-deftest nhmac-win-menu-build-sends-only-changes ()
+  "A build whose tree equals the last one sends nothing; a changed tree is the next generation."
+  (let ((calls nil) (bar (nhmac-win-test--bar-with-sub))
+        (nhmac-menu--last nil) (nhmac-menu--timer nil) (nhmac-menu-generation 0) (nhmac-menu-builds 0))
+    (cl-letf (((symbol-function 'nhmac--call) (lambda (&rest a) (push a calls)))
+              ((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+              ((symbol-function 'nhmac-menu-bar-maps) (lambda () (list bar))))
+      (nhmac-menu-build)
+      (nhmac-menu-build)
+      (should (= nhmac-menu-builds 2))
+      (should (= (length calls) 1))
+      (should (equal (list (car (car calls)) (cadr (car calls))) '(menu-bar 1)))
+      (should (stringp (nth 2 (car calls))))
+      (define-key bar [extra] '("Extra" . nhmac-win-test--cmd))
+      (nhmac-menu-build)
+      (should (= (length calls) 2))
+      (should (= (cadr (car calls)) 2)))))
+
+(ert-deftest nhmac-win-menu-popup-vector ()
+  "A list menu: the records and what each chosen place returns; a nil value is disabled."
+  (let* ((r (nhmac-menu--popup-vector '("T" ("P" ("a" . 1) ("--") ("c") ("b" . 2)))))
+         (rows (nhmac-win-test--ref (car r))))
+    (should (equal (mapcar #'cadr rows)
+                   (list nhmac-menu-kind-item nhmac-menu-kind-separator
+                         nhmac-menu-kind-item nhmac-menu-kind-item)))
+    (should (equal (mapcar (lambda (x) (nth 4 x)) rows) '(1 0 0 1)))
+    (should (equal (cdr r) '((0 . 1) (3 . 2))))))
+
+(ert-deftest nhmac-win-menu-popup-vector-of-a-keymap ()
+  "A keymap menu: a choice returns the keys that lead to the item."
+  (let* ((map (make-sparse-keymap "M"))
+         (sub (make-sparse-keymap "S")))
+    (define-key sub [z] '("Z" . nhmac-win-test--cmd))
+    (define-key map [s] (cons "Sub" sub))
+    (define-key map [a] '("A" . nhmac-win-test--cmd))
+    (let ((r (nhmac-menu--popup-vector map)))
+      (should (member '(a) (mapcar #'cdr (cdr r))))
+      (should (member '(s z) (mapcar #'cdr (cdr r)))))))
+
 (provide 'nhmac-win-tests)
 ;;; nhmac-win-tests.el ends here

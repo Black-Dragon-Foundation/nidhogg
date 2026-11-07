@@ -82,6 +82,8 @@ pub enum ShellEvent {
     Reconnecting,
     /// `reconnect` succeeded: the shell is connected again.
     Reconnected,
+    /// An item of the menu bar was chosen: the generation of the tree it came from and the item's place in it.
+    Menu(MenuEv),
 }
 
 /// A record's kind without its payload, for filters (`ShellEvent::kind`).
@@ -123,6 +125,7 @@ pub enum Kind {
     Session,
     Reconnecting,
     Reconnected,
+    Menu,
 }
 
 impl ShellEvent {
@@ -164,8 +167,16 @@ impl ShellEvent {
             ShellEvent::Session(_) => Kind::Session,
             ShellEvent::Reconnecting => Kind::Reconnecting,
             ShellEvent::Reconnected => Kind::Reconnected,
+            ShellEvent::Menu(_) => Kind::Menu,
         }
     }
+}
+
+/// A menu bar choice (`ShellEvent::Menu`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MenuEv {
+    pub generation: u32,
+    pub index: u32,
 }
 
 /// `session.state`.

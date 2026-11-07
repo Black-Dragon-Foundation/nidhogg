@@ -7,6 +7,7 @@
 
 use super::defaults;
 use super::kq::{self, Kq};
+use super::menus;
 use super::runloop::{MacEv, SCOPE};
 use super::screens;
 use super::window::Win;
@@ -15,7 +16,9 @@ use crate::api::{
     ShellBackend, ShellError, ShellResult, SurfaceFrame, WindowDesc, WindowId,
 };
 use crate::caps::NhShellCaps;
-use crate::event::{ConfigureEv, FocusEv, NHSHELL_STATE_ACTIVATED, Record, ScaleEv, ShellEvent};
+use crate::event::{
+    ConfigureEv, FocusEv, MenuEv, NHSHELL_STATE_ACTIVATED, Record, ScaleEv, ShellEvent,
+};
 use crate::scope::{Scope, ScopeStats};
 use crate::wait::{self, Change, Reg, WaitOps, Woke};
 use glitnir::geom::Rect;
@@ -169,7 +172,25 @@ impl MacShell {
                     self.push(ev, id);
                 }
             }
+            MacEv::Menu(generation, index) => {
+                self.push(ShellEvent::Menu(MenuEv { generation, index }), 0);
+            }
         }
+    }
+
+    /// `x-popup-menu`: the menu at (X, Y) device pixels of the frame's window, shown by AppKit's tracking loop with
+    /// the backend lent; the chosen item's place as a Lisp form (`nil` for none).  The arguments are
+    /// "(WINDOW X Y RECORDS)".
+    fn menu_popup(&mut self, arg: &str) -> ShellResult<String> {
+        let (n, text) = crate::menu::split_numbers(arg, 3).ok_or(ShellError::Arg)?;
+        let nodes = crate::menu::decode(text.trim_end_matches(')')).ok_or(ShellError::Arg)?;
+        let window = u64::try_from(n[0]).map_err(|_| ShellError::Arg)?;
+        let (mtm, win) = (
+            self.mtm,
+            self.windows.get(&window).map(|w| w.window.clone()),
+        );
+        let chosen = self.lent(|_| menus::popup(mtm, win.as_deref(), n[1], n[2], &nodes));
+        Ok(chosen.map_or_else(|| "nil".to_string(), |i| i.to_string()))
     }
 
     /// Compare window `id`'s size and scale with what the host was told, and tell it what changed.
@@ -658,6 +679,8 @@ impl ShellBackend for MacShell {
                 defaults::set(arg, kind == "unset-resource");
                 Ok(())
             }
+            "menu-bar" => menus::bar(self.mtm, &self.app, arg),
+            "menu-dock" => menus::dock(self.mtm, arg),
             _ => Err(ShellError::Arg),
         }
     }
@@ -670,6 +693,7 @@ impl ShellBackend for MacShell {
         match kind {
             "stats" => Ok(stats_text(scope_stats())),
             "get-resource" => Ok(defaults::get(arg)),
+            "menu-popup" => self.menu_popup(arg),
             _ => Err(ShellError::Arg),
         }
     }

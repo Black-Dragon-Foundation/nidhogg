@@ -86,6 +86,13 @@
 ;; entries produced, newest first.
 (defvar nhmac-menu--used 0)
 
+;; The keys from the menu bar's own key down to the item being walked, newest
+;; first, and (while flattening for the shell) a hash from the item's place in
+;; `menu_items' to its key path.  A choice comes back as the place; the path
+;; is what the command loop is fed (`find_and_call_menu_selection').
+(defvar nhmac-menu--path nil)
+(defvar nhmac-menu--paths nil)
+
 (defun nhmac-menu--eval (form)
   "Value of FORM, or nil when it signals (`menu_item_eval_property')."
   (let ((inhibit-redisplay t))
@@ -214,7 +221,7 @@ of its `@' items.  NAME is the main pane's."
     (let ((pane (list name)) (pending nil) (nodes nil))
       (nhmac-menu--push-pane)
       (map-keymap-internal
-       (lambda (_key item)
+       (lambda (key item)
          (let ((p (nhmac-menu--parse-item item nil)))
            (when p
              (let ((label (aref p 0)) (enable (aref p 1)) (map (aref p 3)))
@@ -222,12 +229,13 @@ of its `@' items.  NAME is the main pane's."
                    (when enable (push (list map label) pending))
                  (let ((node (vector label enable (aref p 4) (aref p 5)
                                      (aref p 6) (nhmac-menu--push-item)
-                                     nil nil)))
+                                     nil nil (reverse (cons key nhmac-menu--path)))))
                    (when (and map enable)
                      (cl-incf nhmac-menu--used)
                      (aset node 6 (nhmac-menu--nodes
-                                   (nhmac-menu--keymap-panes
-                                    map nil (1- maxdepth))))
+                                   (let ((nhmac-menu--path (cons key nhmac-menu--path)))
+                                     (nhmac-menu--keymap-panes
+                                      map nil (1- maxdepth)))))
                      (aset node 7 (and (aref node 6) t))
                      (cl-incf nhmac-menu--used))
                    (push node nodes)))))))
@@ -254,6 +262,9 @@ of its `@' items.  NAME is the main pane's."
                      ((eq type :toggle) nhmac-menu-kind-toggle)
                      ((eq type :radio) nhmac-menu-kind-radio)
                      (t nhmac-menu-kind-item))))
+    (when (and nhmac-menu--paths (> (length node) 8) (aref node 8)
+               (>= (aref node 5) 0))
+      (puthash (aref node 5) (aref node 8) nhmac-menu--paths))
     (cons (vector depth kind (if sep "" label)
                   (if sep "" (nhmac-menu--prettify-key (aref node 2)))
                   (if (and (aref node 1) (not sep)) 1 0)
@@ -321,10 +332,12 @@ MAPS are keymaps in priority order, each already the `menu-bar' prefix map."
           (progn
             (setq top t)
             (nhmac-menu--push-pane)
-            (push (list nil (vector name t nil nil nil (nhmac-menu--push-item) nil nil))
+            (push (list nil (vector name t nil nil nil (nhmac-menu--push-item) nil nil
+                                    (list (car item))))
                   panes))
         (let ((prompt (keymap-prompt def)))
-          (dolist (p (nhmac-menu--keymap-panes def (or prompt name) 10))
+          (dolist (p (let ((nhmac-menu--path (list (car item))))
+                       (nhmac-menu--keymap-panes def (or prompt name) 10)))
             (push p panes)))))
     (setq panes (nreverse panes))
     (let* ((top-level-panes (length panes))
@@ -365,6 +378,149 @@ needed."
   (let ((inhibit-quit t))
     (run-hooks 'activate-menubar-hook 'menu-bar-update-hook)
     (nhmac-menu--flatten (nhmac-menu-bar-maps))))
+
+;;; The menu bar, built at idle
+
+;; The shell shows a native menu bar from the last tree Lisp sent it.  The
+;; shallow part (the titles) is in the tree; the deep part is built here, from
+;; an idle timer, never when a menu opens (the menu answers from the last tree:
+;; no Lisp runs).  Triggers while a build is pending are dropped.
+
+(defvar nhmac-menu-generation 0
+  "The generation of the tree the shell holds; a choice carries it.")
+(defvar nhmac-menu-paths nil
+  "An alist from an item's place in the tree to its key path, for generation
+`nhmac-menu-generation'.  C turns a choice into the menu-bar events of the path.")
+(defvar nhmac-menu-builds 0 "How many deep builds ran (a test reads it).")
+(defvar nhmac-menu--last nil "The flat vector the shell has.")
+(defvar nhmac-menu--timer nil "The one pending idle build, or nil.")
+(defvar nhmac-menu-delay 0.3 "Seconds of idleness before the deep build.")
+
+(defun nhmac-menu-encode (vec)
+  "VEC, a flat menu vector, as the text the shell reads: records of
+`nhmac-menu-width' fields, the fields joined by US (31) and the records by RS (30).
+A string field has its line breaks and those two characters turned into blanks.
+(Arguments of `nhmac--call' are passed as printed, without quotes.)"
+  (let ((w nhmac-menu-width) (i 0) (recs nil))
+    (while (< i (length vec))
+      (push (mapconcat (lambda (f)
+                         (if (stringp f)
+                             (replace-regexp-in-string "[\n\C-^\C-_]" " " f)
+                           (number-to-string f)))
+                       (substring vec i (+ i w)) "\C-_")
+            recs)
+      (setq i (+ i w)))
+    (mapconcat #'identity (nreverse recs) "\C-^")))
+
+(defun nhmac-menu-flatten-bar-with-paths ()
+  "The flat vector of the menu bar and the alist of its items' key paths: (VECTOR . PATHS)."
+  (let* ((nhmac-menu--paths (make-hash-table))
+         (vec (nhmac-menu-flatten-bar))
+         (paths nil))
+    (maphash (lambda (k p) (push (cons k p) paths)) nhmac-menu--paths)
+    (cons vec paths)))
+
+(defun nhmac-menu-build ()
+  "Build the deep tree now and send it when it changed.  Quits at input."
+  (setq nhmac-menu--timer nil)
+  (when (and (fboundp 'nhmac--call) (display-graphic-p))
+    (let ((r (while-no-input (nhmac-menu-flatten-bar-with-paths))))
+      (when (consp r)
+        (cl-incf nhmac-menu-builds)
+        (unless (equal (car r) nhmac-menu--last)
+          (setq nhmac-menu--last (car r)
+                nhmac-menu-paths (cdr r)
+                nhmac-menu-generation (1+ nhmac-menu-generation))
+          (funcall 'nhmac--call 'menu-bar nhmac-menu-generation (nhmac-menu-encode (car r))))))))
+
+(defun nhmac-menu-invalidate (&rest _)
+  "Schedule one deep rebuild `nhmac-menu-delay' after the idle time so far.
+More calls while one is pending change nothing."
+  (unless nhmac-menu--timer
+    (setq nhmac-menu--timer
+          (run-with-idle-timer (time-add (or (current-idle-time) 0) nhmac-menu-delay)
+                               nil #'nhmac-menu-build))))
+
+(defun nhmac-menu--focus-changed ()
+  "A frame gained or lost focus: build at once when one has it."
+  (when (and (not nhmac-menu--timer) (display-graphic-p) (frame-focus-state))
+    (nhmac-menu-build)))
+
+(add-hook 'post-command-hook #'nhmac-menu-invalidate)
+(add-hook 'buffer-list-update-hook #'nhmac-menu-invalidate)
+(add-function :after after-focus-change-function #'nhmac-menu--focus-changed)
+
+;; Popup menus: the same records, shown by the shell's tracking loop.  The
+;; shell answers the chosen item's place; the value is looked up here.
+
+(defun nhmac-menu--popup-pane-entries (pane depth)
+  "Records for PANE's lines at DEPTH: (ENTRIES . VALUES), the places counted in `nhmac-menu--used'."
+  (let ((entries nil) (values nil))
+    (dolist (line (cdr pane))
+      (let* ((label (if (consp line) (car line) line))
+             (value (and (consp line) (cdr line)))
+             (label (if (stringp label) label ""))
+             (sep (nhmac-menu--separator-p label))
+             (place (prog1 nhmac-menu--used (cl-incf nhmac-menu--used))))
+        (push (vector depth (if sep nhmac-menu-kind-separator nhmac-menu-kind-item)
+                      (if sep "" label) "" (if (and value (not sep)) 1 0) 0 place)
+              entries)
+        (when (and value (not sep)) (push (cons place value) values))))
+    (cons (nreverse entries) (nreverse values))))
+
+(defun nhmac-menu--popup-vector (menu)
+  "The flat vector of MENU, as `x-popup-menu' takes it, and its values: (VECTOR . ALIST).
+ALIST maps an item's place to what choosing it returns."
+  (let ((nhmac-menu--used 0) (entries nil) (values nil))
+    (cond
+     ((or (keymapp menu) (and (consp menu) (keymapp (car menu))))
+      ;; keymaps: a choice returns the keys that lead to it
+      (let ((nhmac-menu--paths (make-hash-table)) (nhmac-menu--path nil))
+        (dolist (map (if (keymapp menu) (list menu) menu))
+          (dolist (node (nhmac-menu--nodes (nhmac-menu--keymap-panes map nil 10)))
+            (setq entries (nconc entries (nhmac-menu--entry 0 node)))))
+        (maphash (lambda (k p) (push (cons k p) values)) nhmac-menu--paths)))
+     (t
+      (let ((panes (cdr menu)))
+        (dolist (pane panes)
+          (let* ((single (null (cdr panes)))
+                 (r (nhmac-menu--popup-pane-entries pane (if single 0 1))))
+            (unless single
+              (setq entries (nconc entries
+                                   (list (vector 0 nhmac-menu-kind-submenu (or (car pane) "") ""
+                                                 1 0 -1)))))
+            (setq entries (nconc entries (car r))
+                  values (nconc values (cdr r))))))))
+    (cons (apply #'vconcat entries) values)))
+
+(defun nhmac-menu--popup-xy (position)
+  "POSITION, as `x-popup-menu' takes it, as (X . Y) in the frame's pixels."
+  (let ((xy (cond
+             ((and (consp position) (consp (car position)) (numberp (caar position)))
+              (let ((win (cadr position)) (off (car position)))
+                (if (window-live-p win)
+                    (let ((e (window-pixel-edges win)))
+                      (cons (+ (nth 0 e) (car off)) (+ (nth 1 e) (cadr off))))
+                  (cons (car off) (cadr off)))))
+             ((and (consp position) (ignore-errors (event-start position)))
+              (let* ((p (event-start position)) (pxy (posn-x-y p)) (win (posn-window p)))
+                (if (and (windowp win) (window-live-p win) (consp pxy))
+                    (let ((e (window-pixel-edges win)))
+                      (cons (+ (nth 0 e) (car pxy)) (+ (nth 1 e) (cdr pxy))))
+                  (cons 0 0))))
+             (t (cons 0 0)))))
+    xy))
+
+(defun nhmac-menu-popup (position menu)
+  "Show MENU (as `x-popup-menu' takes it) at POSITION in the shell's menu; return the choice.
+Nil when nothing is chosen."
+  (let* ((vec (nhmac-menu--popup-vector menu))
+         (xy (nhmac-menu--popup-xy position))
+         (choice (nhmac--query 'menu-popup (selected-frame) (car xy) (cdr xy)
+                               (nhmac-menu-encode (car vec)))))
+    (and (integerp choice) (cdr (assq choice (cdr vec))))))
+
+(defalias 'nhwl-menu-popup #'nhmac-menu-popup)
 
 ;;; The ns compatibility layer
 
