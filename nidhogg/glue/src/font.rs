@@ -1,7 +1,7 @@
 //! The native font driver's Rust half on macOS (`src/nhmacfont.c` is the C half): the Core Text font source the
 //! matching in `fontspec.rs` lists from, and a font's metrics and glyphs, rounded as `macfont_open` and
-//! `macfont_glyph_extents` round them.  One family's worth for now: ASCII, no shaping, no drawing; glyph metrics are
-//! asked for one glyph at a time (glyph tables come later).
+//! `macfont_glyph_extents` round them.  One family's worth for now: ASCII, no shaping; glyph metrics are asked for one
+//! glyph at a time (glyph tables come later), and a run's glyphs are placed as `macfont_draw` places them.
 //!
 //! The rounding is platform-neutral and tested on Linux; the Core Text calls are the shell's (`nhshell::macos::fonts`).
 
@@ -48,16 +48,49 @@ pub struct RawFont {
     pub tall_family: bool,
 }
 
-/// A glyph's advance width, rounded: a monospaced font's is a whole multiple of the space's (wide ligatures stay on
-/// the grid), another's the nearest integer.
+/// A glyph's advance width, rounded as `macfont_glyph_extents` rounds it: a monospaced font's glyph that is a whole
+/// multiple (two or more) of the space's stays on the grid (wide ligatures), any other the nearest integer.
 pub fn glyph_width(advance: f64, mono: bool, space_width: i32) -> i32 {
     if mono && space_width > 0 {
         let multiplier = (advance / f64::from(space_width)).round() as i32;
-        if multiplier > 0 {
+        if multiplier > 1 && (advance / f64::from(multiplier)).round() as i32 == space_width {
             return space_width * multiplier;
         }
     }
     advance.round() as i32
+}
+
+/// `WIDTH_FRAC_SCALE`: `macfont.m` keeps a glyph's rounding in fourteenths.
+const FRAC_SCALE: f64 = 14.0;
+
+/// Where each glyph of a run is drawn, from the run's x (`macfont_draw`): the sum of the rounded widths before it (one
+/// pixel each for a padding run), moved left by half a proportional glyph's rounding, in fourteenths, unless the text
+/// is drawn without antialiasing (`integral`).  A monospaced glyph is not moved (macfont's delta for one is 0).
+pub fn run_offsets(
+    advances: &[f64],
+    mono: bool,
+    space_width: i32,
+    padding: bool,
+    integral: bool,
+) -> Vec<f64> {
+    let mut total = 0;
+    advances
+        .iter()
+        .map(|&adv| {
+            if padding {
+                total += 1;
+                return f64::from(total - 1);
+            }
+            let delta = if mono || integral {
+                0.0
+            } else {
+                -((adv - adv.round()) * FRAC_SCALE).round() / (FRAC_SCALE * 2.0)
+            };
+            let x = f64::from(total) + delta;
+            total += glyph_width(adv, mono, space_width);
+            x
+        })
+        .collect()
 }
 
 /// A glyph's metrics from its rounded `width` and its bounds (left, right, top, bottom; y up).
@@ -149,6 +182,8 @@ mod coretext {
     use super::*;
     use crate::fontspec::{FontFace, FontSource};
     use nhshell::macos::fonts as ct;
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
 
     /// The faces AppKit lists, as the matching wants them.
     pub struct CoreText;
@@ -214,7 +249,33 @@ mod coretext {
         let printable: Vec<Option<f64>> = (0x21..0x7f).map(advance).collect();
         let mut out = font_metrics(&raw, size, advance(0x20), &printable);
         out.handle = handle;
+        grids()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(handle, (raw.mono, out.space_width));
         Some(out)
+    }
+
+    /// Each open font's spacing and space width, which its runs are laid out on.
+    fn grids() -> &'static Mutex<HashMap<u64, (bool, i32)>> {
+        static GRIDS: OnceLock<Mutex<HashMap<u64, (bool, i32)>>> = OnceLock::new();
+        GRIDS.get_or_init(Mutex::default)
+    }
+
+    pub fn run(handle: u64, glyphs: &[u16], padding: bool) -> Option<(Vec<f64>, bool)> {
+        let (mono, space_width) = *grids()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&handle)?;
+        let integral = ct::integral(handle)?;
+        let advances: Vec<f64> = glyphs
+            .iter()
+            .map(|g| ct::glyph_bounds(handle, u32::from(*g)).map_or(0.0, |b| b.0))
+            .collect();
+        Some((
+            run_offsets(&advances, mono, space_width, padding, integral),
+            integral,
+        ))
     }
 
     pub fn glyph(handle: u64, c: u32) -> Option<u32> {
@@ -235,6 +296,10 @@ mod coretext {
     }
 
     pub fn close(handle: u64) {
+        grids()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&handle);
         ct::close(handle);
     }
 }
@@ -290,6 +355,18 @@ pub fn glyph_extents(handle: u64, g: u32, mono: bool, space_width: i32) -> Optio
     }
 }
 
+/// A run of `glyphs` in the font `handle`: each glyph's offset from the run's x (`run_offsets`), and whether it is drawn
+/// without antialiasing.  `None` without Core Text or for a font that is not open.
+pub fn run(handle: u64, glyphs: &[u16], padding: bool) -> Option<(Vec<f64>, bool)> {
+    #[cfg(all(feature = "macos", target_os = "macos"))]
+    return coretext::run(handle, glyphs, padding);
+    #[cfg(not(all(feature = "macos", target_os = "macos")))]
+    {
+        let _ = (handle, glyphs, padding);
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,6 +392,34 @@ mod tests {
         assert_eq!(glyph_width(7.22, true, 7), 7);
         // no space width: the nearest integer
         assert_eq!(glyph_width(7.6, true, 0), 8);
+    }
+
+    #[test]
+    fn a_single_cell_glyph_rounds_its_own_advance() {
+        // macfont_monospace_width_multiplier: 1 is no multiple, and the advance must divide back to the space
+        assert_eq!(glyph_width(7.6, true, 7), 8);
+        assert_eq!(glyph_width(16.0, true, 7), 16);
+    }
+
+    #[test]
+    fn runs_sit_on_rounded_widths_moved_by_half_the_rounding() {
+        // proportional: 6.6 rounds to 7 (0.4 short: 6/14, half of it left), 7.2 to 7 (0.2 over: 3/14)
+        let xs = run_offsets(&[6.6, 7.2, 7.0], false, 7, false, false);
+        assert_eq!(xs, vec![6.0 / 28.0, 7.0 - 3.0 / 28.0, 14.0]);
+        // without antialiasing, or monospaced, on the whole pixels
+        assert_eq!(
+            run_offsets(&[6.6, 7.2], false, 7, false, true),
+            vec![0.0, 7.0]
+        );
+        assert_eq!(
+            run_offsets(&[7.22, 14.45, 7.22], true, 7, false, false),
+            vec![0.0, 7.0, 21.0]
+        );
+        // a padding run is one pixel per glyph
+        assert_eq!(
+            run_offsets(&[6.6, 7.2, 7.0], false, 7, true, false),
+            vec![0.0, 1.0, 2.0]
+        );
     }
 
     #[test]
