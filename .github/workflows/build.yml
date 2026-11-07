@@ -927,6 +927,12 @@ jobs:
       - name: Naglfar's boundary check (nm-check)
         if: ${{ !cancelled() && steps.nbuild.outcome == 'success' }}
         run: bash nidhogg/glue/nm-check.sh "$RUNNER_TEMP/nbuild"
+      # The bundle (nextstep/Emacs.app, self-contained like NS's): make install fills it with Lisp, etc and the helpers; the
+      # rows of nhmac-app-gui-tests.el start it (open -a, --daemon, the locale).  It goes to the rows job in the build tree.
+      - name: Naglfar bundle (make install)
+        id: nbundle
+        if: ${{ !cancelled() && steps.nbuild.outcome == 'success' && inputs.checks != 'none' && inputs.checks != 'build-only' }}
+        run: make -C "$RUNNER_TEMP/nbuild/obj" install -j3
       # What the rows job runs on (nhmac-gui.sh --emacs reads the build tree's obj/src/emacs; the tree is tarred so the
       # file modes survive the artifact, and extracted at the same path on the other runner): without the object files
       # and the Rust targets
@@ -1001,7 +1007,10 @@ jobs:
           sel=${CHECKS//|/\\|}
           # the display on and awake for the whole run (-u wakes it, -d keeps it from idle sleep): the window is
           # composited, not occluded, as the ring and timing rows need
-          caffeinate -d -i -u bash nidhogg/test/nhmac-gui.sh --emacs "$RUNNER_TEMP/nbuild/obj/src/emacs" --out "$RUNNER_TEMP/nhmac-gui/naglfar" ${sel:+--select "$sel"} ${FILES:+--files "$FILES"}
+          # the bundle when the build job made it (nhmac-app-gui-tests.el's rows skip without it)
+          app=$RUNNER_TEMP/nbuild/obj/nextstep/Emacs.app
+          [ -d "$app" ] || app=
+          caffeinate -d -i -u bash nidhogg/test/nhmac-gui.sh --emacs "$RUNNER_TEMP/nbuild/obj/src/emacs" ${app:+--app "$app"} --out "$RUNNER_TEMP/nhmac-gui/naglfar" ${sel:+--select "$sel"} ${FILES:+--files "$FILES"}
       # drgnx's fit-check row (its test/ui/rows-fit-gui-test.el) on Naglfar at scale 2, drgnx at the commit the pin job
       # names (nhmac-gui.sh --drgnx builds its hub here, with the image's rustup): the hub's fit against Core Text's
       # advances.  It runs when `checks` is empty or names it (`fit`).  Until the pinned commit has the row it is
