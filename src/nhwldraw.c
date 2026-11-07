@@ -2343,9 +2343,13 @@ nhwl_damage_glyphs (struct glyph_string *s)
   if (s->extends_to_end_of_line_p)
     x1 = max (x1, clip.x + (int) clip.width);
   nhwl_damage (s->f, x0, clip.y, x1 - x0, clip.height);
-  /* PD: rounded neighbours' corners, and the label anchors S covers.  */
+#ifdef NHWL_WAYLAND
+  /* PD: rounded neighbours' corners, and the label anchors S covers
+     (glitnir-decor.c draws with Cairo; Naglfar's decorations come with
+     its chrome).  */
   glitnir_decor_after_glyphs (s);
   glitnir_decor_record (s);
+#endif
 }
 
 /* Adapted from glitnir_pgtk_damage_cursor: a hollow, bar or hbar cursor

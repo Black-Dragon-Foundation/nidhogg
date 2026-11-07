@@ -102,6 +102,13 @@ usage: (nhmac--query WHAT &rest ARGS)  */)
   return Fcar (Fread_from_string (make_string (buf, len), Qnil, Qnil));
 }
 
+/* The menu bar: built at idle by the native menu task; until then the
+   frame shows none.  */
+void
+set_frame_menubar (struct frame *f, bool deep_p)
+{
+}
+
 void
 syms_of_nhmacterm (void)
 {
