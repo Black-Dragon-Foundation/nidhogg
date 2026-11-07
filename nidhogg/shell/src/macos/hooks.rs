@@ -65,6 +65,10 @@ impl MacShell {
                 self.raise_in_pump = true;
                 Some(Ok(()))
             }
+            "test-helper-next" => {
+                self.force_helper += 1;
+                Some(Ok(()))
+            }
             _ => None,
         }
     }
@@ -103,6 +107,7 @@ impl MacShell {
                 Ok(self.modal_alert(deadline, kind == "modal-resize"))
             }),
             "test-reentry" => Ok(self.reentry()),
+            "test-kq-probe" => Ok(kq_probe(arg)),
             _ => return None,
         })
     }
@@ -230,5 +235,36 @@ impl MacShell {
             (f64::from(cw) * scale).round() as i64,
             (f64::from(ch) * scale).round() as i64,
         ))
+    }
+}
+
+/// `test-kq-probe` (PATH): open PATH read-only and non-blocking, and ask a fresh kqueue for its readability:
+/// `(:open ERRNO :kq ERRNO)`, 0 for success; `:kq` is -1 when the open failed.
+fn kq_probe(arg: &str) -> String {
+    // the argument list, printed without quotes: "(/dev/null)"
+    let path = arg.trim().trim_start_matches('(').trim_end_matches(')');
+    let Ok(c) = std::ffi::CString::new(path) else {
+        return "(:open 22 :kq -1)".into();
+    };
+    let err = || std::io::Error::last_os_error().raw_os_error().unwrap_or(-1);
+    // SAFETY: plain syscalls on descriptors made and closed here; the kevent is plain data.
+    unsafe {
+        let fd = libc::open(
+            c.as_ptr(),
+            libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOCTTY,
+        );
+        if fd < 0 {
+            return format!("(:open {} :kq -1)", err());
+        }
+        let kq = libc::kqueue();
+        let mut ev: libc::kevent = std::mem::zeroed();
+        ev.ident = fd as usize;
+        ev.filter = libc::EVFILT_READ;
+        ev.flags = libc::EV_ADD;
+        let rc = libc::kevent(kq, &ev, 1, std::ptr::null_mut(), 0, std::ptr::null());
+        let e = if rc < 0 { err() } else { 0 };
+        libc::close(kq);
+        libc::close(fd);
+        format!("(:open 0 :kq {e})")
     }
 }
