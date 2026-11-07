@@ -18,12 +18,14 @@ use crate::scope::{Scope, ScopeStats};
 use glitnir::geom::Rect;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
-use objc2_app_kit::{
-    NSAlert, NSApplication, NSApplicationActivationPolicy, NSEventMask, NSModalResponseContinue,
-};
-use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSException, NSRect, NSSize, NSString};
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSEventMask};
+use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSString};
 use std::collections::{HashMap, VecDeque};
-use std::time::{Duration, Instant};
+
+/// The test hooks: `nhmac--call` and `nhmac--query` kinds that exist only in a checking build.
+#[cfg(feature = "test-hooks")]
+#[path = "hooks.rs"]
+mod hooks;
 
 pub struct MacShell {
     mtm: MainThreadMarker,
@@ -35,6 +37,7 @@ pub struct MacShell {
     /// The wake pipe: [read, write].
     wake: [i32; 2],
     /// Test hook: the next pump raises an `NSException` inside the catch.
+    #[cfg(feature = "test-hooks")]
     raise_in_pump: bool,
 }
 
@@ -48,32 +51,9 @@ fn stats_text(s: ScopeStats) -> String {
     )
 }
 
-/// The id the test windows' delegates report as: no host window has it, so their events change nothing.
-const TEST_WINDOW: WindowId = WindowId::MAX;
-
 /// The scope's counters now.
 fn scope_stats() -> ScopeStats {
     SCOPE.with(Scope::stats)
-}
-
-/// `after - before`, as the test queries return it.
-fn stats_delta(before: ScopeStats, after: ScopeStats) -> String {
-    format!(
-        ":takes {} :overlapping-takes {} :queued {} :applied {}",
-        after.takes - before.takes,
-        after.overlapping_takes - before.overlapping_takes,
-        after.queued - before.queued,
-        after.applied - before.applied
-    )
-}
-
-/// Move `window`'s frame `by` points wider, through `setFrame:display:` (AppKit calls `windowDidResize:` inside).
-fn grow(window: &objc2_app_kit::NSWindow, by: f64) {
-    let f = window.frame();
-    window.setFrame_display(
-        NSRect::new(f.origin, NSSize::new(f.size.width + by, f.size.height)),
-        false,
-    );
 }
 
 /// Every event AppKit has queued, through `sendEvent:`.
@@ -89,16 +69,6 @@ fn drain_events(app: &NSApplication) {
     ) {
         app.sendEvent(&ev);
     }
-}
-
-/// The first element of a printed argument list such as `(5)`, as a number (`Arg` otherwise).
-fn first_number(arg: &str) -> ShellResult<u64> {
-    let inner = arg.trim().trim_start_matches('(').trim_end_matches(')');
-    inner
-        .split_whitespace()
-        .next()
-        .and_then(|n| n.parse().ok())
-        .ok_or(ShellError::Arg)
 }
 
 fn now_ns() -> u64 {
@@ -138,6 +108,7 @@ impl MacShell {
             serial: 0,
             queue: VecDeque::new(),
             wake,
+            #[cfg(feature = "test-hooks")]
             raise_in_pump: false,
         };
         for o in screens::outputs(mtm) {
@@ -171,6 +142,11 @@ impl MacShell {
             MacEv::Key(id, on) => {
                 if self.windows.contains_key(&id) {
                     self.push(ShellEvent::Focus(FocusEv { r#in: u8::from(on) }), id);
+                }
+            }
+            MacEv::Input(id, ev) => {
+                if self.windows.contains_key(&id) {
+                    self.push(ev, id);
                 }
             }
         }
@@ -211,13 +187,8 @@ impl MacShell {
     /// One pump: every queued AppKit event goes through `sendEvent:` with the backend lent to the scope, then the
     /// windows' sizes and scales are compared with what the host was told (a change no delegate reported).
     fn pump(&mut self) {
-        if std::mem::take(&mut self.raise_in_pump) {
-            let name = NSString::from_str("NhmacTestException");
-            let reason = NSString::from_str("a test exception raised inside the pump");
-            if let Some(e) = NSException::new(&name, Some(&reason), None) {
-                e.raise();
-            }
-        }
+        #[cfg(feature = "test-hooks")]
+        self.maybe_raise();
         let app = self.app.clone();
         self.lent(|_| {
             drain_events(&app);
@@ -227,120 +198,6 @@ impl MacShell {
         for id in ids {
             self.compare(id);
         }
-    }
-
-    /// A modal alert until `deadline`, run as a modal session with the backend lent and ended by the deadline: the
-    /// pumps' test of a call that runs a modal.  With `resize`, a test window is resized from inside the session after
-    /// its first round, so its delegate is called inside the modal.  An exception inside it skips the session's end,
-    /// on a display the guard then poisons anyway.
-    fn modal_alert(&mut self, deadline: Instant, resize: bool) -> String {
-        let (mtm, app) = (self.mtm, self.app.clone());
-        let before = scope_stats();
-        let test =
-            resize.then(|| Win::open(mtm, TEST_WINDOW, 200, 100, false, "Nidhogg test window"));
-        let rounds = self.lent(|_| {
-            let alert = NSAlert::new(mtm);
-            alert.setMessageText(&NSString::from_str("Nidhogg test alert"));
-            let panel = alert.window();
-            let session = app.beginModalSessionForWindow(&panel);
-            let mut rounds = 0u64;
-            while Instant::now() < deadline {
-                // SAFETY: the session is the one begun above, and not ended yet.
-                let r = unsafe { app.runModalSession(session) };
-                rounds += 1;
-                if let (1, Some(t)) = (rounds, &test) {
-                    grow(&t.window, 40.0);
-                }
-                if r != NSModalResponseContinue {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            // SAFETY: the session begun above, ended once.
-            unsafe { app.endModalSession(session) };
-            panel.orderOut(None);
-            rounds
-        });
-        // counted before the test window goes: its closing events wait for the next pump
-        let r = format!("(:rounds {rounds} {})", stats_delta(before, scope_stats()));
-        drop(test);
-        r
-    }
-
-    /// The re-entry test: AppKit calls that call a delegate back, made with the backend lent (the delegate takes it at
-    /// once), while a callback holds the borrow (the event is queued, and applied when the lend ends), and as a
-    /// borrow's deferred effect (made after the borrow is put back, so taken at once again).  Inside the borrow it
-    /// also runs a modal session and a nested `nextEventMatchingMask:` loop.  Returns the scope's counters' change
-    /// and how many events had queued after each step of the lend.
-    fn reentry(&mut self) -> String {
-        let (mtm, app) = (self.mtm, self.app.clone());
-        let before = scope_stats();
-        let a = Win::open(mtm, TEST_WINDOW, 200, 100, false, "Nidhogg test window A");
-        let b = Win::open(mtm, TEST_WINDOW, 200, 100, false, "Nidhogg test window B");
-        let (wa, wb) = (a.window.clone(), b.window.clone());
-        let mut steps = Vec::new();
-        self.lent(|scope| {
-            // the windows' opening events, if any, queued before the lend
-            let start = scope.stats().queued;
-            // with the backend lent and no borrow live: the delegate takes it
-            grow(&wa, 10.0);
-            steps.push(format!(":sync-queued {}", scope.stats().queued - start));
-            let mut t = scope.take().expect("the pump's scope is lent");
-            // inside the borrow: each callback finds the scope empty and queues
-            grow(&wa, 10.0);
-            wb.makeKeyAndOrderFront(None);
-            let alert = NSAlert::new(mtm);
-            let panel = alert.window();
-            let session = app.beginModalSessionForWindow(&panel);
-            // SAFETY: the session begun above, run once and ended once.
-            unsafe {
-                app.runModalSession(session);
-                app.endModalSession(session);
-            }
-            panel.orderOut(None);
-            grow(&wb, 10.0);
-            drain_events(&app);
-            steps.push(format!(":inner-queued {}", scope.stats().queued - start));
-            // a deferred effect: made after the borrow is put back
-            let wa2 = wa.clone();
-            t.defer(move || grow(&wa2, 10.0));
-            drop(t);
-            steps.push(format!(
-                ":after-effect-queued {}",
-                scope.stats().queued - start
-            ));
-        });
-        // counted before the test windows go: their closing events wait for the next pump
-        let r = format!(
-            "({} {})",
-            stats_delta(before, scope_stats()),
-            steps.join(" ")
-        );
-        drop((a, b));
-        r
-    }
-
-    /// The window's layer facts, as a Lisp plist: whether the root view has our layer, wants it, and has no subviews;
-    /// the window's visibility and its content size in device pixels.
-    fn window_info(&self, window: WindowId) -> ShellResult<String> {
-        let w = self.win(window)?;
-        let layer_ours = w
-            .view
-            .layer()
-            .is_some_and(|l| std::ptr::eq(Retained::as_ptr(&l), Retained::as_ptr(&w.layer)));
-        let scale = w.window.backingScaleFactor();
-        let (cw, ch) = w.content_size();
-        let screen = screens::outputs(self.mtm).first().map_or(0, |o| o.w);
-        Ok(format!(
-            "(:visible {} :layer {} :wants-layer {} :subviews {} :device-width {} :device-height {} \
-             :screen-device-width {screen})",
-            if w.window.isVisible() { "t" } else { "nil" },
-            if layer_ours { "t" } else { "nil" },
-            if w.view.wantsLayer() { "t" } else { "nil" },
-            w.view.subviews().len(),
-            (f64::from(cw) * scale).round() as i64,
-            (f64::from(ch) * scale).round() as i64,
-        ))
     }
 }
 
@@ -708,28 +565,23 @@ impl ShellBackend for MacShell {
         Ok(PresenterTiming::default())
     }
 
-    fn app_call(&mut self, kind: &str, _arg: &str) -> ShellResult {
-        match kind {
-            "test-raise-in-pump" => {
-                self.raise_in_pump = true;
-                Ok(())
-            }
-            _ => Err(ShellError::Arg),
+    fn app_call(&mut self, kind: &str, arg: &str) -> ShellResult {
+        #[cfg(feature = "test-hooks")]
+        if let Some(r) = self.test_call(kind, arg) {
+            return r;
         }
+        let _ = (kind, arg);
+        Err(ShellError::Arg)
     }
 
     fn app_query(&mut self, kind: &str, arg: &str) -> ShellResult<String> {
+        #[cfg(feature = "test-hooks")]
+        if let Some(r) = self.test_query(kind, arg) {
+            return r;
+        }
+        let _ = arg;
         match kind {
-            "window-info" => self.window_info(first_number(arg)?),
             "stats" => Ok(stats_text(scope_stats())),
-            "modal-alert" | "modal-resize" => {
-                let ms = first_number(arg)?;
-                let deadline = Instant::now()
-                    .checked_add(Duration::from_millis(ms))
-                    .ok_or(ShellError::Arg)?;
-                Ok(self.modal_alert(deadline, kind == "modal-resize"))
-            }
-            "test-reentry" => Ok(self.reentry()),
             _ => Err(ShellError::Arg),
         }
     }

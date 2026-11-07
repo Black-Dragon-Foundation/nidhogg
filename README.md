@@ -298,6 +298,10 @@ seed is `NIDHOGG_TEST_SEED` (decimal, default 0); `build.sh` passes it into its 
 inherit it, and with `NIDHOGG_TEST_CHAOS_BANNER` set the first point prints `chaos seed N` to stderr. It makes an ordering bug likely on a
 machine whose timing never shows it, not certain.
 
+A checking build (`build.sh --dev --checking`; it refuses without `--dev`) configures `--enable-checking`: Emacs's
+assertions, and the glue's and the shell's `test-hooks` feature. The macOS lane builds Naglfar this way, since its rows
+post AppKit events and read the shell's counters through those hooks.
+
 - Test classes: a test file in `test/src/nidhogg-tests/` states its class in one header line within its first 15 lines,
   exactly `;; test-class: det` (deterministic: no real time), `;; test-class: cond` (waits on conditions, no fixed
   pause) or `;; test-class: timing` (may assert the clock). A test's own tag (`:det`, `:cond`, `:timing`) overrides the
