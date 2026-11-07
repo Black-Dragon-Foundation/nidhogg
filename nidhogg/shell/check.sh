@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # nhshell's checks: fmt, clippy, tests, licence policy, vendor drift, and the release build.
-# Usage: check.sh [--container DISTRO] [--test NAME] [--full] [--relock] [--tsan]   Exit 0 ok, 1 "check.sh: FAIL <check>",
-# 2 usage, 3 the TSan lane is unavailable.
+# Usage: check.sh [--container DISTRO] [--test NAME] [--full] [--relock] [--tsan] [--target TRIPLE]   Exit 0 ok,
+# 1 "check.sh: FAIL <check>", 2 usage, 3 the TSan lane or the --target toolchain is unavailable.
 # Cargo runs --locked: from crates.io (network), or offline from vendor/ when the release's vendor tarball is unpacked.
 # --full adds the slow checks (vendor drift, when a vendor/ is there, and the LTO release build with its exports); a
 # task's author check runs without it, integration builds and gates with it.
@@ -18,8 +18,8 @@
 # NH_RECORDER (a built nidhogg/test/recorder) is passed to the T1 tests (tests/*.rs); in a container it is mounted.
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-DISTRO="" TEST="" INNER=0 REVENDOR=0 FULL=0 TSAN=0
-usage() { echo "usage: check.sh [--container DISTRO] [--test NAME] [--full] [--relock] [--tsan]" >&2; exit 2; }
+DISTRO="" TEST="" INNER=0 REVENDOR=0 FULL=0 TSAN=0 TARGET=""
+usage() { echo "usage: check.sh [--container DISTRO] [--test NAME] [--full] [--relock] [--tsan] [--target TRIPLE]" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case $1 in
     --container) [ $# -ge 2 ] || usage; DISTRO=$2; shift 2 ;;
@@ -27,6 +27,7 @@ while [ $# -gt 0 ]; do
     --relock) REVENDOR=1; shift ;;
     --full) FULL=1; shift ;;
     --tsan) TSAN=1; shift ;;
+    --target) [ $# -ge 2 ] || usage; TARGET=$2; shift 2 ;;
     --inner) INNER=1; shift ;;
     *) usage ;;
   esac
@@ -56,7 +57,7 @@ if [ -n "$DISTRO" ] && [ "$INNER" = 0 ]; then
   trap cleanup EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  inner="bash /nh/shell/check.sh --inner${TEST:+ --test $(printf %q "$TEST")}$([ "$REVENDOR" = 1 ] && echo ' --relock')$([ "$FULL" = 1 ] && echo ' --full')$([ "$TSAN" = 1 ] && echo ' --tsan')"
+  inner="bash /nh/shell/check.sh --inner${TEST:+ --test $(printf %q "$TEST")}$([ "$REVENDOR" = 1 ] && echo ' --relock')$([ "$FULL" = 1 ] && echo ' --full')$([ "$TSAN" = 1 ] && echo ' --tsan')${TARGET:+ --target $TARGET}"
   IMAGE=${NIDHOGG_CRATES_IMAGE:-}
   if [ -z "$IMAGE" ] && [ "$DISTRO" = fedora-45 ]; then
     # the check image (deps/fedora-45.check), built here once: no package manager runs
@@ -127,6 +128,23 @@ tsan_lane() {
   exit 0
 }
 [ "$TSAN" = 0 ] || tsan_lane
+
+# --target TRIPLE: clippy for another platform's backend (aarch64-apple-darwin: --no-default-features --features
+# macos), the library and its unit tests (the integration tests drive the Wayland recorder), with ci/target-std.sh's
+# toolchain; nothing links or runs, so objc2-exception-helper's build script is told to skip its clang step (DOCS_RS).
+# The unit tests run on the target (CI's macOS lane).
+if [ -n "$TARGET" ]; then
+  . ../ci/target-std.sh
+  target_std "$TARGET" || exit 3
+  feats=(--no-default-features)
+  case $TARGET in *-apple-darwin) feats+=(--features macos) ;; esac
+  for prof in dev test; do
+    DOCS_RS=1 cargo clippy --lib --profile "$prof" --locked --target "$TARGET" "${feats[@]}" -- -D warnings ||
+      fail "clippy ($TARGET, $prof)"
+  done
+  echo "check.sh: $TARGET ok (clippy; its tests run on the target)"
+  exit 0
+fi
 
 if [ "$REVENDOR" = 1 ]; then
   # Regenerate Cargo.lock from crates.io (the one pin; the glue's lock is then the shell's plus nhglue, and the vendor

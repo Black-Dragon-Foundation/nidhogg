@@ -37,6 +37,8 @@ pub struct NhShellCaps {
     pub ssd: bool,
     /// The host forces client-side decorations (a test switch; the recorder's `--force-csd`).
     pub force_csd: bool,
+    /// Panels may overhang their parent window (macOS child windows); a subsurface is clipped to nothing.
+    pub overhang_panels: bool,
 }
 
 type Field = fn(&mut NhShellCaps) -> &mut u32;

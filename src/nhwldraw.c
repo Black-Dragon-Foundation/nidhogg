@@ -28,7 +28,6 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include <config.h>
 
-#include <cairo.h>
 #include <math.h>
 #include <string.h>
 #include <time.h>
@@ -47,10 +46,12 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "termhooks.h"
 #include "window.h"
 
+#ifdef NHWL_WAYLAND
 static void nhwl_fill_rectangle (struct frame *, unsigned long, int, int, int,
 				 int, bool);
 static void nhwl_clip_to_row (struct window *, struct glyph_row *,
 			      enum glyph_row_area, cairo_t *);
+#endif
 
 /* Set S->gc to a suitable GC for drawing glyph string S in cursor
    face.  */
@@ -171,6 +172,7 @@ nhwl_set_glyph_string_gc (struct glyph_string *s)
 }
 
 
+#ifdef NHWL_WAYLAND
 /* Set clipping for output of glyph string S.  S may be part of a mode
    line or menu if we don't have X toolkit support.  */
 
@@ -1369,6 +1371,7 @@ nhwl_fill_underline (struct frame *f, struct glyph_string *s,
       emacs_abort ();
     }
 }
+#endif /* NHWL_WAYLAND */
 
 void
 nhwl_draw_glyph_string (struct glyph_string *s)
@@ -1389,7 +1392,7 @@ nhwl_draw_glyph_string (struct glyph_string *s)
 	   width += next->width, next = next->next)
 	if (next->first_glyph->type != IMAGE_GLYPH)
 	  {
-	    cairo_t *cr = nhwl_draw_ops->begin_clip (next->f);
+	    nhwl_cr *cr = nhwl_draw_ops->begin_clip (next->f);
 	    nhwl_set_glyph_string_gc (next);
 	    nhwl_draw_ops->set_clipping (next, cr);
 	    if (next->first_glyph->type == STRETCH_GLYPH)
@@ -1404,7 +1407,7 @@ nhwl_draw_glyph_string (struct glyph_string *s)
   /* Set up S->gc, set clipping and draw S.  */
   nhwl_set_glyph_string_gc (s);
 
-  cairo_t *cr = nhwl_draw_ops->begin_clip (s->f);
+  nhwl_cr *cr = nhwl_draw_ops->begin_clip (s->f);
 
   /* Draw relief (if any) in advance for char/composition so that the
      glyph string can be drawn over it.  */
@@ -1670,6 +1673,7 @@ nhwl_draw_glyph_string (struct glyph_string *s)
   s->num_clips = 0;
 }
 
+#ifdef NHWL_WAYLAND
 /* RIF: Define cursor CURSOR on frame F.  */
 
 static void
@@ -1808,6 +1812,7 @@ nhwl_draw_bar_cursor (struct window *w, struct glyph_row *row, int width,
       nhwl_end_cr_clip (f);
     }
 }
+#endif /* NHWL_WAYLAND */
 
 /* RIF: Draw cursor on window W.  */
 
@@ -1836,7 +1841,7 @@ nhwl_draw_window_cursor (struct window *w, struct glyph_row *glyph_row, int x,
 	  switch (cursor_type)
 	    {
 	    case HOLLOW_BOX_CURSOR:
-	      nhwl_draw_hollow_cursor (w, glyph_row);
+	      nhwl_draw_ops->hollow_cursor (w, glyph_row);
 	      break;
 
 	    case FILLED_BOX_CURSOR:
@@ -1844,11 +1849,11 @@ nhwl_draw_window_cursor (struct window *w, struct glyph_row *glyph_row, int x,
 	      break;
 
 	    case BAR_CURSOR:
-	      nhwl_draw_bar_cursor (w, glyph_row, cursor_width, BAR_CURSOR);
+	      nhwl_draw_ops->bar_cursor (w, glyph_row, cursor_width, BAR_CURSOR);
 	      break;
 
 	    case HBAR_CURSOR:
-	      nhwl_draw_bar_cursor (w, glyph_row, cursor_width, HBAR_CURSOR);
+	      nhwl_draw_ops->bar_cursor (w, glyph_row, cursor_width, HBAR_CURSOR);
 	      break;
 
 	    case NO_CURSOR:
@@ -1865,6 +1870,7 @@ nhwl_draw_window_cursor (struct window *w, struct glyph_row *glyph_row, int x,
   nhwl_damage_cursor (w, glyph_row, on_p);
 }
 
+#ifdef NHWL_WAYLAND
 /* Draw a vertical window border from (x,y0) to (x,y1)  */
 
 void
@@ -2215,7 +2221,8 @@ static const struct nhwl_draw_ops nhwl_cairo_draw_ops = {
   nhwl_draw_composite_glyph_string_foreground,
   nhwl_draw_glyphless_glyph_string_foreground, nhwl_draw_image_glyph_string,
   nhwl_draw_stretch_glyph_string, nhwl_draw_glyph_string_box,
-  nhwl_draw_underwave, nhwl_fill_underline,
+  nhwl_draw_underwave, nhwl_fill_underline, nhwl_draw_hollow_cursor,
+  nhwl_draw_bar_cursor,
 };
 const struct nhwl_draw_ops *nhwl_draw_ops = &nhwl_cairo_draw_ops;
 
@@ -2282,6 +2289,7 @@ nhwl_scroll_run (struct window *w, struct run *run)
 
   unblock_input ();
 }
+#endif /* NHWL_WAYLAND */
 
 /* Damage the rectangle X, Y, W, H (device pixels) of F, clipped to F's
    native area.  */
@@ -2493,6 +2501,7 @@ nhwl_background_argb (struct frame *f)
   return argb;
 }
 
+#ifdef NHWL_WAYLAND
 /* Clear the margins around OUT's native area in its backing.  A child
    frame's margins are the room its shadow takes, which the compositor
    fills (child.rs): the frame's own pixels stop at its native area.  */
@@ -2562,6 +2571,7 @@ nhwl_backing_resize (struct frame *f)
     nhwl_clear_margins (out);
   nhwl_glitnir_ensure (f);
 }
+#endif /* NHWL_WAYLAND */
 
 /* Monotonic nanoseconds.  */
 uint64_t
@@ -2574,6 +2584,7 @@ nhwl_now_ns (void)
 }
 
 
+#ifdef NHWL_WAYLAND
 /***********************************************************************
 			   The title strip
  ***********************************************************************/
@@ -2773,3 +2784,4 @@ nhwl_csd_draw (struct frame *f)
   nhwl_glitnir_ensure (f);
   glitnir_damage_add_n (out->glitnir_id, r, n);
 }
+#endif /* NHWL_WAYLAND */

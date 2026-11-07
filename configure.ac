@@ -4067,10 +4067,11 @@ if test "${with_glitnir}" = yes; then
     GLITNIR_CRATE_DEPS="$GLITNIR_SRCDIR $nhwl_shell_dir `cd "$srcdir/nidhogg/glitnir" && pwd`"
     GLITNIR_CRATE_INCLUDE="-I`cd "$srcdir/nidhogg/glitnir" && pwd`/include"
     NHWL_OBJ="nhwlterm.o nhwlfns.o nhwldraw.o glitnir-decor.o"
-    dnl macOS: the glue without the Wayland backend; Glitnir's chrome is Core Animation layers, not Cairo tiles
+    dnl macOS: the glue with the AppKit backend instead of the Wayland one (its frameworks come back in
+    dnl native-static-libs); Glitnir's chrome is Core Animation layers, not Cairo tiles
     if test "$HAVE_NHMAC" = yes; then
-      GLITNIR_CARGO_FLAGS="--no-default-features"
-      NHWL_OBJ="nhwlterm.o nhwlfns.o nhwldraw.o"
+      GLITNIR_CARGO_FLAGS="--no-default-features --features macos"
+      NHWL_OBJ="nhwlterm.o nhwlfns.o nhwldraw.o nhmacterm.o nhmacdraw.o"
     fi
   fi
   GLITNIR_LIBNAME=$glitnir_lib

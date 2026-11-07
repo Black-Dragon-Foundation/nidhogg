@@ -4,8 +4,13 @@
 #    (references across its members), must not include any symbol that Emacs's own objects (src/*.o) define.  That
 #    denylist is built from the build tree each time.  Calls through function pointers are invisible here; there are
 #    none, because C passes no callbacks to the glue (a header rule).
-# 2. Every glue call in src/nhwl*.c goes through the NHG (…) macro (it clears waiting_for_input, so no longjmp crosses a
-#    Rust frame): a line with an `nhg_name (` call and no `NHG (` is reported.  A warning until the macro exists.
+# 2. Every glue call in src/nhwl*.c and src/nhmac*.c goes through the NHG (…) macro (it clears waiting_for_input, so no
+#    longjmp crosses a Rust frame): a line with an `nhg_name (` call and no `NHG (` is reported.  A warning until the
+#    macro exists.
+# 3. The one function pointer C hands the glue, Naglfar's text source, is registered from one place: once
+#    nhg_set_text_source is in nhglue.h, src/*.c must call it on exactly one line, in src/nhmacterm.c.  A source rule
+#    beside the symbol rule, since function pointers are invisible to nm.
+# ELF (Linux) and Mach-O (macOS) alike: nm -P on both, with Mach-O's leading underscore stripped.
 # Usage: nm-check.sh BUILD_DIR   (build.sh's --build-dir, which holds obj/src, or a configured tree's top, which holds
 # src).  Prints "nm-check: ok", or the offending names and exits 1; 2 on usage or a missing build.
 set -u
@@ -24,10 +29,12 @@ command -v nm >/dev/null 2>&1 || { echo "nm-check: nm not found (binutils)" >&2;
 bad=0
 
 # POSIX output: "NAME TYPE [VALUE SIZE]"; the archive's member headers ("lib.a[x.o]:") have no type field
-undef=$(nm -P -g "$lib" 2>/dev/null | awk 'NF >= 2 && ($2 == "U" || $2 == "w" || $2 == "v") {print $1}' | sort -u)
-def=$(nm -P -g --defined-only "$lib" 2>/dev/null | awk 'NF >= 2 {print $1}' | sort -u)
+strip=cat
+[ "$(uname -s)" = Darwin ] && strip="sed s/^_//"
+undef=$(nm -P -g "$lib" 2>/dev/null | awk 'NF >= 2 && ($2 == "U" || $2 == "w" || $2 == "v") {print $1}' | $strip | sort -u)
+def=$(nm -P -g --defined-only "$lib" 2>/dev/null | awk 'NF >= 2 {print $1}' | $strip | sort -u)
 external=$(comm -23 <(printf '%s\n' "$undef") <(printf '%s\n' "$def"))
-emacs=$(nm -P -g --defined-only "$obj"/*.o 2>/dev/null | awk 'NF >= 2 && $1 !~ /:$/ {print $1}' | sort -u)
+emacs=$(nm -P -g --defined-only "$obj"/*.o 2>/dev/null | awk 'NF >= 2 && $1 !~ /:$/ {print $1}' | $strip | sort -u)
 [ -n "$emacs" ] || { echo "nm-check: no symbols defined by $obj/*.o" >&2; exit 2; }
 calls=$(comm -12 <(printf '%s\n' "$external") <(printf '%s\n' "$emacs"))
 if [ -n "$calls" ]; then
@@ -37,13 +44,22 @@ if [ -n "$calls" ]; then
 fi
 
 # the NHG grep (comments are not exempt: write the name without the parenthesis there)
-unwrapped=$(cd "$SRC/.." && grep -n 'nhg_[a-z_]* (' src/nhwl*.c | grep -v 'NHG (')
+unwrapped=$(cd "$SRC/.." && grep -n 'nhg_[a-z_]* (' src/nhwl*.c src/nhmac*.c 2>/dev/null | grep -v 'NHG (')
 if [ -n "$unwrapped" ]; then
   if [ "$NHG_RULE" = fail ]; then
     echo "nm-check: glue calls outside NHG (…):"; printf '%s\n' "$unwrapped" | sed 's/^/  /'; bad=1
   else
     echo "nm-check: warning: glue calls outside NHG (…) (the macro is not there yet):"
     printf '%s\n' "$unwrapped" | sed 's/^/  /'
+  fi
+fi
+
+# the text source's one registration
+if grep -q 'nhg_set_text_source' "$SRC/../nidhogg/glue/include/nhglue.h"; then
+  sites=$(cd "$SRC/.." && grep -n 'nhg_set_text_source (' src/*.c)
+  if [ "$(printf '%s\n' "$sites" | grep -c .)" != 1 ] || [ "${sites%%:*}" != src/nhmacterm.c ]; then
+    echo "nm-check: nhg_set_text_source must be called on exactly one line, in src/nhmacterm.c; found:"
+    printf '%s\n' "${sites:-  (none)}" | sed 's/^/  /'; bad=1
   fi
 fi
 

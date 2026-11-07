@@ -156,7 +156,7 @@ it.  */)
 #endif
 }
 
-#ifdef HAVE_NHWL
+#ifdef NHWL_WAYLAND
 
 struct png_sink
 {
@@ -213,7 +213,7 @@ tree_picture (struct frame *r)
   unblock_input ();
   return s;
 }
-#endif
+#endif /* NHWL_WAYLAND */
 
 DEFUN ("glitnir-snapshot", Fglitnir_snapshot, Sglitnir_snapshot, 1, 2, 0,
        doc: /* Return the picture of FRAME's root frame.
@@ -231,7 +231,7 @@ packed).  */)
   if (!NILP (format) && !EQ (format, intern_c_string ("png"))
       && !EQ (format, intern_c_string ("raw")))
     error ("glitnir-snapshot: unknown format");
-#ifdef HAVE_NHWL
+#ifdef NHWL_WAYLAND
   cairo_surface_t *s;
   if (!FRAME_NHWL_P (f))
     error ("glitnir-snapshot: no image surface");

@@ -707,9 +707,34 @@ jobs:
           ip=""
           if [ -z "$CHECKS" ] || echo "$CHECKS" | grep -Eq 'nhmac-(interposer|ns-)'; then ip=--interpose; fi
           bash nidhogg/test/nhmac-gui.sh --tarball "$(ls dist/*.tar.xz | head -n 1)" --out "$RUNNER_TEMP/nhmac-gui" $ip ${sel:+--select "$sel"} ${FILES:+--files "$FILES"}
-      # the Naglfar lane: listed, skipped until the Rust shell links (it has no build to run yet)
-      - name: Naglfar lane (skipped until the shell links)
-        run: echo "naglfar lane skipped, the Rust shell does not link yet" | tee -a "$GITHUB_STEP_SUMMARY"
+      # The Naglfar lane: the same tree built again as Nidhogg's own macOS shell (build.sh --naglfar, a dev build in its
+      # own build directory; no bundle yet, so the build tree's src/emacs runs), the glue's and the shell's unit tests
+      # with the AppKit backend (the integration tests drive the Wayland recorder), the glue's boundary check on the
+      # Mach-O objects, then the rows.  It runs when this job built (the build dependencies are installed).
+      - name: Naglfar build
+        id: nbuild
+        if: ${{ !cancelled() && steps.brew.outcome == 'success' }}
+        env:
+          NIDHOGG_BUILD_CCACHE: ${{ steps.ccb.outcome == 'success' && format('{0}/ccache', runner.temp) || '' }}
+        run: /bin/bash nidhogg/build.sh --host --naglfar --dev --stage build --jobs 3 --build-dir "$RUNNER_TEMP/nbuild"
+      - name: Naglfar's Rust unit tests (glue and shell, --features macos)
+        if: ${{ !cancelled() && steps.brew.outcome == 'success' }}
+        env:
+          CARGO_HOME: ${{ runner.temp }}/cargo-home
+        run: |
+          (cd nidhogg/shell && cargo test --locked --lib --no-default-features --features macos)
+          (cd nidhogg/glue && cargo test --locked --lib --no-default-features --features macos,test-hooks)
+      - name: Naglfar's boundary check (nm-check)
+        if: ${{ !cancelled() && steps.nbuild.outcome == 'success' }}
+        run: bash nidhogg/glue/nm-check.sh "$RUNNER_TEMP/nbuild"
+      - name: Naglfar GUI rows (nhmac-gui-tests.el, scales 1 and 2)
+        if: ${{ !cancelled() && steps.nbuild.outcome == 'success' && inputs.checks != 'none' && inputs.checks != 'build-only' }}
+        env:
+          CHECKS: ${{ inputs.checks }}
+          FILES: ${{ inputs.files }}
+        run: |
+          sel=${CHECKS//|/\\|}
+          bash nidhogg/test/nhmac-gui.sh --emacs "$RUNNER_TEMP/nbuild/obj/src/emacs" --out "$RUNNER_TEMP/nhmac-gui/naglfar" ${sel:+--select "$sel"} ${FILES:+--files "$FILES"}
       - name: macOS GUI logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
