@@ -636,6 +636,8 @@ extern void syms_of_nhwlterm (void);
 extern void syms_of_nhwlfns (void);
 #ifdef HAVE_NHMAC
 extern void syms_of_nhmacterm (void);
+extern int nhmac_select (int, fd_set *, fd_set *, fd_set *,
+			 struct timespec *, sigset_t *);
 /* nhmacfont.c */
 extern void syms_of_nhmacfont (void);
 extern struct font_driver const nhmacfont_driver;

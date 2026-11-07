@@ -385,8 +385,10 @@ needed."
   "Return the shell's counters, a plist.
 The pumps' scope (`:takes', `:overlapping-takes', `:queued', `:applied'), the lock
 hand-off (`:lock-waiters', `:parks-with-waiters') and the surfaces
-(`:ring-acquires', `:ring-reuses', `:commits', `:deferred-commits'); a
-counter of work not built yet stays 0."
+(`:ring-acquires', `:ring-reuses', `:commits', `:deferred-commits') and
+the main wait (`:waits', `:sleeps', `:kq-wakes', `:empty-wakes',
+`:kicks', `:helper-fds', `:helper-wakes', `:helper-hops-keys',
+`:kq-changes'); a counter of work not built yet stays 0."
   (nhmac--query 'stats))
 
 (defun nhmac--test-raise-in-pump ()
@@ -436,6 +438,17 @@ down).  FLAGS is the `NSEventModifierFlags' (default 0).  For tests."
 Return the scope's counters' change and the queued counts at each step,
 a plist.  For tests."
   (nhmac--query 'test-reentry))
+
+(defun nhmac--test-helper-next ()
+  "Make the main wait's next new fd registration go to its helper thread.
+As if kqueue had refused it (`EINVAL').  For tests."
+  (nhmac--call 'test-helper-next))
+
+(defun nhmac--test-kq-probe (path)
+  "Open PATH and ask a fresh kqueue for its readability.
+Return (:open ERRNO :kq ERRNO), 0 meaning success; :kq is -1 when
+the open failed.  For tests."
+  (nhmac--query 'test-kq-probe path))
 
 
 ;; Variables
@@ -624,10 +637,10 @@ Not available yet in Naglfar."
 
 (defun ns-get-resource (owner name)
   "Return the value of the property NAME of OWNER from the defaults.
-
-Not available yet in Naglfar."
-  (ignore owner name)
-  (nhmac--not-yet))
+The user default NAME (`NSUserDefaults'), a string, or nil; OWNER is
+ignored."
+  (ignore owner)
+  (nhmac--query 'get-resource name))
 
 (defun ns-get-selection (selection-name target-type)
   "Return text selected from some X window.
@@ -659,8 +672,8 @@ reads this while Emacs is dumped, for `x-colors')."
 (defun ns-list-services ()
   "List available Nextstep services by querying NSApp.
 
-Not available yet in Naglfar."
-  (nhmac--not-yet))
+Naglfar offers no services yet: the list is empty."
+  nil)
 
 (defun ns-mouse-absolute-pixel-position ()
   "Return absolute position of mouse cursor in pixels.
@@ -752,10 +765,12 @@ Not available yet in Naglfar."
 
 (defun ns-set-resource (owner name value)
   "Set property NAME of OWNER to VALUE, from the defaults database.
-
-Not available yet in Naglfar."
-  (ignore owner name value)
-  (nhmac--not-yet))
+The user default NAME (`NSUserDefaults'); a nil VALUE removes it.
+OWNER is ignored."
+  (ignore owner)
+  (if value
+      (nhmac--call 'set-resource name value)
+    (nhmac--call 'unset-resource name)))
 
 (defun ns-show-character-palette ()
   "Show the macOS character palette.

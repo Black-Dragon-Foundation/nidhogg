@@ -514,6 +514,19 @@ pub trait ShellBackend {
         let _ = (kind, arg);
         Err(ShellError::Unsupported)
     }
+
+    /// The main wait (`nhg_wait`, `crate::wait::run`): register `want`, then put the ready registrations in `out`,
+    /// running the backend's event loop meanwhile; empty after a wake or `timeout`.  `Unsupported` for a backend whose
+    /// host waits in its own select.
+    fn wait(
+        &mut self,
+        want: &std::collections::BTreeSet<crate::wait::Reg>,
+        timeout: Option<std::time::Duration>,
+        out: &mut Vec<crate::wait::Reg>,
+    ) -> ShellResult {
+        let _ = (want, timeout, out);
+        Err(ShellError::Unsupported)
+    }
 }
 
 /// A backend's connection and threads, as a host that abandons the backend sees them (`ShellBackend::abandon`).  The
