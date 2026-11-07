@@ -212,7 +212,7 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
 
 `bash nidhogg/test/gui.sh --prefix DIR [--scale S] [--size WxH] [--monitors N] [--select REGEXP] [--tests DIR]
 [--daemon] [--container DISTRO] [--wayland-debug FILE] [--env K=V]... [--timeout SEC]` runs the `*-gui-tests.el` and
-`*-gui-NAME-tests.el` files of `test/src/nidhogg-tests/` (ERT tests named `glitnir-gui/…`, `nidhogg-gui/…`, `nhwl-gui/…`)
+`*-gui-NAME-tests.el` files of `test/src/nidhogg-tests/` (ERT tests named `glitnir-gui/…`, `nhwl-gui/…`)
 on a Nidhogg frame of the native shell, under a headless sway, or the compositor
 `--compositor` names (mutter, for one). `DIR` is a Nidhogg prefix (an unpacked tarball or an install).
 

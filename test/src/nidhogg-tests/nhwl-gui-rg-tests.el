@@ -616,6 +616,27 @@ strip again), and goes again when the pointer leaves the button."
         (ignore-errors (gui-runner-recorder '(:cmd "output" :op "remove" :name "nh-rg5")))
         (remove-hook 'display-monitors-changed-functions fn)))))
 
+(ert-deftest nhwl-gui/grab-matches-snapshot ()
+  "A still frame of solid blocks and text: the recorder's composite equals the backing (`glitnir-snapshot') where
+the backing is shown, at its place in the toplevel (the windowed frame's grab is the whole output, not the frame)."
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui--with-blink
+   nil
+   (lambda ()
+     (let ((buf (generate-new-buffer " *nhwl-grab*")))
+       (unwind-protect
+           (progn
+             (switch-to-buffer buf)
+             (insert (propertize (make-string 400 ?\s) 'face '(:background "#c03030"))
+                     "\n"
+                     (propertize (make-string 400 ?\s) 'face '(:background "#3050c0"))
+                     "\nsome text\n")
+             (goto-char (point-min))
+             (redisplay t)
+             (gui-runner-wait-settled)
+             (should (equal (nhwl-gui--grab-matches-snapshot) '(0 . 0))))
+         (kill-buffer buf))))))
+
 (provide 'nhwl-gui-rg-tests)
 
 ;;; nhwl-gui-rg-tests.el ends here
