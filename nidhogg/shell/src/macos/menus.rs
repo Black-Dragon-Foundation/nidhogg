@@ -202,7 +202,6 @@ pub fn dock(mtm: MainThreadMarker, arg: &str) -> ShellResult {
 }
 
 /// The Dock's menu, for `applicationDockMenu:`.
-#[allow(dead_code)] // read by the application delegate (the app lifecycle work)
 pub fn dock_menu() -> Option<Retained<NSMenu>> {
     DOCK.with(|d| d.borrow().as_ref().map(|(m, _)| m.clone()))
 }

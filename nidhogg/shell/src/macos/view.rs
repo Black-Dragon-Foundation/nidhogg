@@ -5,17 +5,28 @@
 use super::dnd;
 use super::runloop::{MacEv, deliver};
 use crate::api::WindowId;
-use crate::event::{NHSHELL_BUTTON_PRESSED, NHSHELL_BUTTON_RELEASED, PointerEv, ShellEvent};
+use crate::event::{
+    NHSHELL_BUTTON_PRESSED, NHSHELL_BUTTON_RELEASED, NHSHELL_PINCH_BEGIN, NHSHELL_PINCH_END,
+    NHSHELL_PINCH_UPDATE, PinchEv, PointerEv, ShellEvent,
+};
 use crate::mac_input;
+use crate::outputs::Magnify;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSDragOperation, NSDraggingDestination, NSDraggingInfo, NSEvent, NSResponder, NSView,
+    NSDragOperation, NSDraggingDestination, NSDraggingInfo, NSEvent, NSEventPhase, NSResponder,
+    NSView,
 };
 use objc2_foundation::NSObjectProtocol;
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 use objc2_quartz_core::CALayer;
+use std::cell::RefCell;
+
+thread_local! {
+    /// The scale of the magnify gesture now running.
+    static MAGNIFY: RefCell<Magnify> = RefCell::new(Magnify::default());
+}
 
 define_class!(
     /// The root view of window `ivars`.
@@ -129,6 +140,33 @@ define_class!(
         #[unsafe(method(otherMouseDragged:))]
         fn other_mouse_dragged(&self, e: &NSEvent) {
             self.motion(e);
+        }
+
+        #[unsafe(method(magnifyWithEvent:))]
+        fn magnify(&self, e: &NSEvent) {
+            let phase = e.phase();
+            let (x, y) = self.position(e);
+            let (kind, scale) = MAGNIFY.with(|m| {
+                let mut m = m.borrow_mut();
+                if phase.contains(NSEventPhase::Began) {
+                    m.begin();
+                    (NHSHELL_PINCH_BEGIN, 1.0)
+                } else if phase.contains(NSEventPhase::Ended)
+                    || phase.contains(NSEventPhase::Cancelled)
+                {
+                    (NHSHELL_PINCH_END, 1.0)
+                } else {
+                    (NHSHELL_PINCH_UPDATE, m.update(e.magnification()))
+                }
+            });
+            self.send(ShellEvent::Pinch(PinchEv {
+                phase: kind,
+                fingers: 2,
+                scale,
+                x,
+                y,
+                ..PinchEv::default()
+            }));
         }
 
         #[unsafe(method(scrollWheel:))]

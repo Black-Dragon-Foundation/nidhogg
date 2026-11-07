@@ -5,6 +5,7 @@
 //! poisoned display, as it does any panic.
 
 mod app;
+mod appdelegate;
 mod defaults;
 pub mod draw;
 mod dialogs;
@@ -19,6 +20,7 @@ mod overhang;
 mod pacer;
 mod menus;
 mod pasteboard;
+mod power;
 mod runloop;
 mod screens;
 mod services;

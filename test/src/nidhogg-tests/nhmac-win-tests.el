@@ -453,5 +453,33 @@ Shell events (`make-non-key-event' codes) are the shell's to produce.")
       (should (member '(a) (mapcar #'cdr (cdr r))))
       (should (member '(s z) (mapcar #'cdr (cdr r)))))))
 
+;; Task 31: application events
+
+(ert-deftest nhmac-win-app-events-are-bound ()
+  "Each application event's key path leads to its command, and the numbers match the shell's."
+  (should (equal (mapcar #'car nhmac-app-paths) '(1 2 3)))
+  (dolist (e nhmac-app-paths)
+    (let ((cmd (car (cdr e))))
+      (should (eq (lookup-key global-map (vector 'menu-bar cmd)) cmd))
+      (should (commandp cmd)))))
+
+(ert-deftest nhmac-win-quit-asks-when-confirming ()
+  (let ((asked nil) (killed nil) (ns-confirm-quit t))
+    (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) (setq asked t) nil))
+              ((symbol-function 'save-buffers-kill-emacs) (lambda (&rest _) (setq killed t))))
+      (nhmac-quit))
+    (should asked)
+    (should-not killed)
+    (setq asked nil)
+    (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) (setq asked t) t))
+              ((symbol-function 'save-buffers-kill-emacs) (lambda (&rest _) (setq killed t))))
+      (nhmac-quit))
+    (should killed)
+    (setq killed nil ns-confirm-quit nil asked nil)
+    (cl-letf (((symbol-function 'save-buffers-kill-emacs) (lambda (&rest _) (setq killed t))))
+      (nhmac-quit))
+    (should killed)
+    (should-not asked)))
+
 (provide 'nhmac-win-tests)
 ;;; nhmac-win-tests.el ends here
