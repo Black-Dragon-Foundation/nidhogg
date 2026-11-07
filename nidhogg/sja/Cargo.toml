@@ -1,0 +1,25 @@
+[package]
+name = "sja"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+license = "GPL-3.0-or-later"
+description = "Sjá, a native view model: views' models, selection and navigation in-process, with a C ABI"
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+# The wire is JSON (the hub writes it); decoded through `serde_json::Value` by hand, so no serde_derive and no syn
+# (README, "Crate rules").  Exact pins; std only.
+serde_json = { version = "=1.0.154", default-features = false, features = ["std"] }
+# the guard's headroom check reads the thread's stack bounds (pthread_getattr_np)
+libc = "0.2"
+
+[features]
+# an op that panics inside a view's guard, for the breaker's tests (the glue turns it on under --enable-checking)
+test-hooks = []
+
+[profile.test]
+opt-level = 1
