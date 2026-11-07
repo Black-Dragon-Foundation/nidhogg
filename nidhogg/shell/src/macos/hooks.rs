@@ -90,6 +90,19 @@ impl MacShell {
                 }
                 _ => Err(ShellError::Arg),
             })),
+            // "(SECS PATH)": answer the next file dialog with PATH after SECS
+            "test-dialog-ok" => Some(
+                crate::menu::split_numbers(arg, 1)
+                    .ok_or(ShellError::Arg)
+                    .map(|(n, path)| {
+                        let path = path.strip_suffix(')').unwrap_or(path);
+                        super::super::dialogs::schedule_ok(self.mtm, n[0] as f64, path);
+                    }),
+            ),
+            // "(PATH)": put the file on the clipboard as a file URL
+            "test-pasteboard-file" => Some(super::super::pasteboard::test_own_file(
+                arg.trim().trim_start_matches('(').trim_end_matches(')'),
+            )),
             "test-menu-update" => {
                 super::super::menus::test_update(&self.app);
                 Some(Ok(()))

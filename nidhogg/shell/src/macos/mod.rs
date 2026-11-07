@@ -6,13 +6,16 @@
 
 mod app;
 mod defaults;
+mod dialogs;
 pub mod fonts;
 #[cfg(feature = "test-hooks")]
 mod inject;
 mod kq;
 mod menus;
+mod pasteboard;
 mod runloop;
 mod screens;
+mod services;
 pub mod startup;
 mod view;
 mod window;
