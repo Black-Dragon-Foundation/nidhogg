@@ -641,6 +641,31 @@ extern int nhmac_select (int, fd_set *, fd_set *, fd_set *,
 /* nhmacfont.c */
 extern void syms_of_nhmacfont (void);
 extern struct font_driver const nhmacfont_driver;
+/* nhmacdraw.c: the primitives under nhwldraw.c's shared geometry,
+   emitting draw records (their Cairo twins are nhwldraw.c's own).  */
+extern void nhwl_fill_rectangle (struct frame *, unsigned long, int, int,
+				 int, int, bool);
+extern void nhwl_draw_rectangle (struct frame *, unsigned long, int, int,
+				 int, int, bool);
+extern void nhwl_fill_trapezoid_for_relief (struct frame *, unsigned long,
+					    int, int, int, int, int);
+extern void nhwl_erase_corners_for_relief (struct frame *, unsigned long,
+					   int, int, int, int, double,
+					   double, int);
+extern void nhwl_set_clip_rectangles (struct frame *, nhwl_cr *,
+				      XRectangle *, int);
+extern void nhwl_clip_to_row (struct window *, struct glyph_row *,
+			      enum glyph_row_area, nhwl_cr *);
+extern void nhwl_draw_horizontal_wave (struct frame *, unsigned long, int,
+				       int, int, int, int);
+extern void nhwl_draw_dash (struct frame *, struct glyph_string *,
+			    unsigned long, int, char, int, int);
+extern void nhmac_save (nhwl_cr *);
+extern void nhmac_restore (nhwl_cr *);
+extern void nhmac_set_clipping (struct glyph_string *, nhwl_cr *);
+extern void nhmac_set_clipping_exactly (struct glyph_string *,
+					struct glyph_string *, nhwl_cr *);
+extern void nhmac_text_run (struct glyph_string *);
 #endif
 extern void syms_of_nhwlcsd (void);
 extern void nhwl_selection_clear_event (uint32_t, struct input_event *);
