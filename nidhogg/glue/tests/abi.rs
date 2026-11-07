@@ -1115,6 +1115,55 @@ PROTO (nhg_font_match, int32_t (const NhgFontSpec *, NhgFontEntity *, size_t, si
         }
     }
 
+    /// Naglfar's draw records (their own table).
+    #[test]
+    fn draw_header_matches() {
+        use nhglue::draw::*;
+        use nhglue::ffi::nhg_draw;
+        let rows: &[(&str, i64)] = &[
+            ("NHG_DRAW_FILL", NHG_DRAW_FILL.into()),
+            ("NHG_DRAW_OUTLINE", NHG_DRAW_OUTLINE.into()),
+            ("NHG_DRAW_TRAPEZOID", NHG_DRAW_TRAPEZOID.into()),
+            ("NHG_DRAW_WAVE", NHG_DRAW_WAVE.into()),
+            ("NHG_DRAW_DASH", NHG_DRAW_DASH.into()),
+            ("NHG_DRAW_BITMAP", NHG_DRAW_BITMAP.into()),
+            ("NHG_DRAW_CORNERS", NHG_DRAW_CORNERS.into()),
+            ("NHG_DRAW_COPY", NHG_DRAW_COPY.into()),
+            ("NHG_DRAW_TOP", NHG_DRAW_TOP.into()),
+            ("NHG_DRAW_OVERLAY", NHG_DRAW_OVERLAY.into()),
+            ("sizeof (NhgDrawRec)", size_of::<NhgDrawRec>() as i64),
+            ("offsetof (NhgDrawRec, r)", offset_of!(NhgDrawRec, r) as i64),
+            (
+                "offsetof (NhgDrawRec, fg)",
+                offset_of!(NhgDrawRec, fg) as i64,
+            ),
+            ("offsetof (NhgDrawRec, a)", offset_of!(NhgDrawRec, a) as i64),
+            (
+                "offsetof (NhgDrawRec, nclip)",
+                offset_of!(NhgDrawRec, nclip) as i64,
+            ),
+            (
+                "offsetof (NhgDrawRec, clip)",
+                offset_of!(NhgDrawRec, clip) as i64,
+            ),
+            (
+                "offsetof (NhgDrawRec, bits)",
+                offset_of!(NhgDrawRec, bits) as i64,
+            ),
+        ];
+        let decls = "\
+#define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
+PROTO (nhg_draw, int32_t (NhgDisplay *, uint64_t, const NhgDrawRec *, size_t));";
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *const NhgDrawRec, usize) -> i32 =
+            nhg_draw;
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe(decls, &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+    }
+
     /// The native font driver's fonts (its own table).
     #[test]
     fn font_header_matches() {

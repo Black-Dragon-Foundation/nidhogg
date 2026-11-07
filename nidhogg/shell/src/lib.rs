@@ -12,6 +12,7 @@ pub mod mac_input;
 pub mod macos;
 pub mod ring;
 pub mod scope;
+pub mod shapes;
 pub mod wait;
 #[cfg(feature = "wayland")]
 pub mod wayland;

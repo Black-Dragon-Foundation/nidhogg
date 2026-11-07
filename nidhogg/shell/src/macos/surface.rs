@@ -107,6 +107,7 @@ pub struct Stats {
     pub implicit_open: AtomicU64,
     pub spins_in_redisplay: AtomicU64,
     pub pumps: AtomicU64,
+    pub deferred_commits: AtomicU64,
 }
 
 pub static STATS: Stats = Stats {
@@ -119,6 +120,7 @@ pub static STATS: Stats = Stats {
     implicit_open: AtomicU64::new(0),
     spins_in_redisplay: AtomicU64::new(0),
     pumps: AtomicU64::new(0),
+    deferred_commits: AtomicU64::new(0),
 };
 
 impl Stats {
@@ -127,7 +129,7 @@ impl Stats {
         let g = |c: &AtomicU64| c.load(Ordering::Relaxed);
         format!(
             ":bytes-copied {} :damage-bytes {} :full-copies {} :commits {} :surface-busy {} :ring-acquires {} \
-             :implicit-open-at-update-end {} :spins-in-redisplay {} :pumps {}",
+             :implicit-open-at-update-end {} :spins-in-redisplay {} :pumps {} :deferred-commits {} :draws {}",
             g(&self.bytes_copied),
             g(&self.damage_bytes),
             g(&self.full_copies),
@@ -137,6 +139,8 @@ impl Stats {
             g(&self.implicit_open),
             g(&self.spins_in_redisplay),
             g(&self.pumps),
+            g(&self.deferred_commits),
+            super::draw::DRAWS.load(Ordering::Relaxed),
         )
     }
 }
