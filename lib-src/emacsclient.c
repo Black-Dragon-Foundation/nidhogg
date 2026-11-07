@@ -622,6 +622,9 @@ decode_options (int argc, char **argv)
 #ifndef HAVE_ANDROID
       /* Set these here so we use a default_display only when the user
          didn't give us an explicit display.  */
+#ifdef HAVE_NHMAC
+      alt_display = "ns";
+#endif
 #if defined (NS_IMPL_COCOA)
       alt_display = "ns";
 #elif defined (HAVE_NTGUI)

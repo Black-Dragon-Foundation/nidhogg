@@ -15,6 +15,8 @@
 # tests.  Needs the AOT build: performance runs (Gate A, budgets, A/B) and releases.  A dev build can never be mistaken for a
 # release: --dev refuses --out and --stage pack (no tarball is made), and its compiled-Lisp cache stamp says "dev", so dev and
 # AOT entries never mix (use a fresh --build-dir when switching modes).
+# --naglfar builds Nidhogg's own macOS shell (--with-nidhogg-macos) instead of the NS app; on macOS only, except with
+# --dry-config, which stops after configure (src/config.h in the build dir) and on Linux configures for a darwin host.
 # Exit: 0 ok, 1 build/check failed or not enough memory, 2 usage.
 # Test overrides: NIDHOGG_BUILD_UNAME, NIDHOGG_BUILD_NPROC, NIDHOGG_BUILD_MEMORY_KB, NIDHOGG_BUILD_PODMAN,
 # NIDHOGG_BUILD_VMSTAT (a vm_stat stand-in), NIDHOGG_BUILD_HEARTBEAT (seconds between "still running" lines, default 300).
@@ -40,7 +42,7 @@ DISTROS="fedora-45 ubuntu-26.04 debian-13 arch"
 usage() {
   cat >&2 <<USAGE
 usage: nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memory SIZE]
-                        [--build-dir DIR] [--check FILE] [--out FILE] [--stage build|check|pack] [--without-glitnir] [--nidhogg-wayland] [--dev] [--chaos] [--without-nidhogg-watchdog] [--without-nidhogg-workers] [--without-nidhogg-history] [--dry-run]
+                        [--build-dir DIR] [--check FILE] [--out FILE] [--stage build|check|pack] [--without-glitnir] [--nidhogg-wayland] [--dev] [--chaos] [--without-nidhogg-watchdog] [--without-nidhogg-workers] [--without-nidhogg-history] [--naglfar] [--dry-config] [--dry-run]
   DISTRO: $DISTROS
 USAGE
   exit 2
@@ -53,6 +55,8 @@ NHWL=0       # --nidhogg-wayland was asked for by name
 WATCHDOG=1  # the stall watchdog is built in unless --without-nidhogg-watchdog
 WORKERS=1    # the worker threads are built in unless --without-nidhogg-workers
 HISTORY=1    # the edit history's change hook is built in with Glitnir (it holds the rings) unless --without-nidhogg-history
+NAGLFAR=0    # --naglfar: the macOS shell (--with-nidhogg-macos), not the NS app
+DRYCONF=0    # --dry-config: configure only
 CHAOS=0      # --chaos: seeded delays at the workers' sync points (src/nidhogg-chaos.h); dev builds only, so never in a release
 while [ $# -gt 0 ]; do
   case $1 in
@@ -73,6 +77,8 @@ while [ $# -gt 0 ]; do
     --without-nidhogg-workers) WORKERS=0; shift ;;
     --without-nidhogg-history) HISTORY=0; shift ;;
     --dry-run) DRY=1; shift ;;
+    --naglfar) NAGLFAR=1; shift ;;
+    --dry-config) DRYCONF=1; shift ;;
     *) echo "unknown option: $1" >&2; usage ;;
   esac
 done
@@ -165,7 +171,14 @@ if [ -z "$JOBS" ]; then
   [ "$JOBS" -ge 1 ] || JOBS=1
 fi
 
-if [ "$MODE" = host ] && [ "$UNAME" = Darwin ]; then
+if [ "$NAGLFAR" = 1 ]; then
+  [ -n "$GLITNIR" ] || die "--naglfar needs Glitnir: leave out --without-glitnir"
+  { [ "$MODE" = host ] && [ "$UNAME" = Darwin ]; } || [ "$DRYCONF" = 1 ] ||
+    die "--naglfar builds on macOS (--host); elsewhere only --dry-config"
+  CONF="--with-native-compilation=$NATIVE --with-tree-sitter --with-nidhogg-macos"
+  # configure on Linux as for a darwin host (the result is config.h, never a binary)
+  [ "$UNAME" = Darwin ] || CONF="$CONF --build=aarch64-apple-darwin24.6.0"
+elif [ "$MODE" = host ] && [ "$UNAME" = Darwin ]; then
   CONF="--with-ns --with-native-compilation=$NATIVE --with-tree-sitter"
 elif [ -n "$GLITNIR" ]; then
   CONF="--with-native-compilation=$NATIVE --with-tree-sitter --with-nidhogg-wayland"
@@ -457,6 +470,7 @@ BODY
   cat <<'BODY'
 grep -Eq 'native lisp compiler\? +yes' "$B/configure.log" || { echo "configure found no native compilation (libgccjit); see $B/configure.log" >&2; exit 1; }
 BODY
+  if [ "$DRYCONF" = 1 ]; then echo 'echo "dry config: $B/obj/src/config.h"; exit 0'; fi
   if [ -n "$CT" ]; then cat <<'BODY'
 # Glitnir's cargo target directory from NIDHOGG_BUILD_CARGO_TARGET (a cache): src/glitnir-target is a link to it.  Cargo
 # judges each restored artifact by its sources' times (the caller gives the files their commits' times, and the files
