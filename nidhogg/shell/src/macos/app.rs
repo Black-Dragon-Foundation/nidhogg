@@ -51,17 +51,17 @@ pub struct MacShell {
     force_helper: u32,
 }
 
-/// The counters `(nhmac-stats)` returns: the scope's, then the ones that stay zero until the work that counts them is
-/// built.
+/// The counters `(nhmac-stats)` returns: the scope's, the main wait's (with the lock hand-off's), then the ones that
+/// stay zero until the work that counts them is built.
 fn stats_text(s: ScopeStats) -> String {
     format!(
-        "(:takes {} :overlapping-takes {} :queued {} :applied {} :lock-waiters 0 :parks-with-waiters 0 \
-         :ring-acquires 0 :ring-reuses 0 :commits 0 :deferred-commits 0 {})",
+        "(:takes {} :overlapping-takes {} :queued {} :applied {} {} \
+         :ring-acquires 0 :ring-reuses 0 :commits 0 :deferred-commits 0)",
         s.takes,
         s.overlapping_takes,
         s.queued,
         s.applied,
-        wait::STATS.text()
+        wait::STATS.text(&wait::PARK)
     )
 }
 
