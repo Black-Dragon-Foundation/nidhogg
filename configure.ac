@@ -4012,8 +4012,11 @@ if test "${with_glitnir}" = yes; then
   GLITNIR_SRCDIR=`cd "$srcdir/nidhogg/glitnir" && pwd` ||
     AC_MSG_ERROR([nidhogg/glitnir is missing])
   glitnir_lib=libglitnir.a
-  GLITNIR_CRATE_DEPS=
-  GLITNIR_CRATE_INCLUDE=
+  dnl Sjá (the native view model) is a crate Glitnir carries: its sources rebuild the library, its header is sja.h.
+  sja_dir=`cd "$srcdir/nidhogg/sja" && pwd` ||
+    AC_MSG_ERROR([nidhogg/sja is missing])
+  GLITNIR_CRATE_DEPS="$sja_dir"
+  GLITNIR_CRATE_INCLUDE="-I$sja_dir/include"
   dnl Nidhogg's own Wayland shell: the glue's libnhglue.a replaces libglitnir.a (it carries the shell and every
   dnl glitnir_* symbol; two Rust static libraries in one binary would collide on std's symbols).  GLITNIR_CRATE_DEPS
   dnl lists the crates whose sources rebuild it.
@@ -4029,8 +4032,8 @@ if test "${with_glitnir}" = yes; then
       AC_MSG_ERROR([nidhogg/shell is missing])
     GLITNIR_SRCDIR=`cd "$srcdir/nidhogg/glue" && pwd` ||
       AC_MSG_ERROR([nidhogg/glue is missing])
-    GLITNIR_CRATE_DEPS="$GLITNIR_SRCDIR $nhwl_shell_dir `cd "$srcdir/nidhogg/glitnir" && pwd`"
-    GLITNIR_CRATE_INCLUDE="-I`cd "$srcdir/nidhogg/glitnir" && pwd`/include"
+    GLITNIR_CRATE_DEPS="$GLITNIR_SRCDIR $nhwl_shell_dir `cd "$srcdir/nidhogg/glitnir" && pwd` $sja_dir"
+    GLITNIR_CRATE_INCLUDE="-I`cd "$srcdir/nidhogg/glitnir" && pwd`/include -I$sja_dir/include"
     NHWL_OBJ="nhwlterm.o nhwlfns.o nhwldraw.o glitnir-decor.o"
   fi
   GLITNIR_LIBNAME=$glitnir_lib
@@ -4068,7 +4071,7 @@ if test "${with_glitnir}" = yes; then
   fi
   AC_MSG_RESULT([$glitnir_native])
   HAVE_GLITNIR=yes
-  GLITNIR_OBJ="nidhogg-glitnir.o glitnir-images.o"
+  GLITNIR_OBJ="nidhogg-glitnir.o glitnir-images.o nidhogg-views.o"
   GLITNIR_LIBS="glitnir-target/release/$glitnir_lib $glitnir_native"
   AC_DEFINE([HAVE_GLITNIR], [1], [Define to 1 to build Glitnir (the compositor, Rust).])
 fi
