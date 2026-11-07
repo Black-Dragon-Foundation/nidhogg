@@ -2225,6 +2225,7 @@ static const struct nhwl_draw_ops nhwl_cairo_draw_ops = {
   nhwl_draw_bar_cursor,
 };
 const struct nhwl_draw_ops *nhwl_draw_ops = &nhwl_cairo_draw_ops;
+#endif /* NHWL_WAYLAND */
 
 /***********************************************************************
 		      Scrolling and Glitnir's damage
@@ -2238,7 +2239,8 @@ const struct nhwl_draw_ops *nhwl_draw_ops = &nhwl_cairo_draw_ops;
    inside the backing (no temporary surface), and Glitnir learns the move
    and the rows it exposed; the decorations' anchors move with them.  A
    run that moves the whole window may give it a layer of its own (the
-   glue decides from the window's box, nhwl_layer_flags).  */
+   glue decides from the window's box, nhwl_layer_flags).  Naglfar's
+   backing has no Cairo surface to flush, and no decorations yet.  */
 void
 nhwl_scroll_run (struct window *w, struct run *run)
 {
@@ -2275,21 +2277,26 @@ nhwl_scroll_run (struct window *w, struct run *run)
   gui_clear_cursor (w);
 
   nhwl_backing_resize (f);
+#ifdef NHWL_WAYLAND
   cairo_surface_flush (out->cr_surface);
+#endif
   nhwl_glitnir_ensure (f);
+#ifdef NHWL_WAYLAND
   glitnir_decor_scrolled (f, w, x, min (from_y, to_y), width,
 			  max (from_y, to_y) + height - min (from_y, to_y),
 			  to_y - from_y);
+#endif
   band = (NhgRect) { x, from_y, width, height };
   nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
 		NHG (nhg_scroll_window (FRAME_NHG (f), out->window,
 					out->glitnir_id, w->sequence_number,
 					box, band, to_y, nhwl_layer_flags (f))));
+#ifdef NHWL_WAYLAND
   cairo_surface_mark_dirty (out->cr_surface);
+#endif
 
   unblock_input ();
 }
-#endif /* NHWL_WAYLAND */
 
 /* Damage the rectangle X, Y, W, H (device pixels) of F, clipped to F's
    native area.  */
@@ -2526,6 +2533,7 @@ nhwl_clear_margins (struct nhwl_output *out)
   cairo_fill (cr);
   cairo_restore (cr);
 }
+#endif /* NHWL_WAYLAND */
 
 /* Make the backing F's size (the frame's pixel size, which is device
    pixels), keeping what it shows; a new one starts in the frame's
@@ -2533,7 +2541,9 @@ nhwl_clear_margins (struct nhwl_output *out)
    backing's background nor the picture a resize kept is the frame's
    there, and with Glitnir off (the frames' own pixels) they show what
    lies beneath, as around a child without chrome.  Adapted in role from
-   pgtk_cr_update_surface_desired_size (emacs-31.1).  */
+   pgtk_cr_update_surface_desired_size (emacs-31.1).  Naglfar keeps no
+   Cairo surface: the backing is only the glue's, which the shell copies
+   into its IOSurfaces.  */
 void
 nhwl_backing_resize (struct frame *f)
 {
@@ -2543,39 +2553,53 @@ nhwl_backing_resize (struct frame *f)
   NhgFrameGeom g;
   NhgBacking b;
 
+#ifdef NHWL_WAYLAND
   if (out->cr_context && out->cr_width == w && out->cr_height == h)
     return;
+#else
+  if (out->cr_width == w && out->cr_height == h)
+    return;
+#endif
 
   if (!out->glitnir_id)
     nhwl_glitnir_ensure (f);
   nhwl_frame_size (f, &g);
   /* No surface (or the empty one a failed try left): a new backing.  */
+#ifdef NHWL_WAYLAND
   if (!out->cr_context || !out->cr_width)
+#else
+  if (!out->cr_width)
+#endif
     {
       g.flags = NHG_GEOM_FRESH;
       g.bg_argb = nhwl_background_argb (f);
     }
+#ifdef NHWL_WAYLAND
   if (out->cr_context)
     {
       cairo_surface_flush (out->cr_surface);
       cairo_destroy (out->cr_context);
       cairo_surface_destroy (out->cr_surface);
     }
+#endif
   if (NHG (nhg_backing (FRAME_NHG (f), out->glitnir_id, &g, &b)) < 0)
     /* No backing: drawing does nothing until the next try.  */
     b = (NhgBacking) { NULL, 0, 0, 0, out->cr_gen };
+#ifdef NHWL_WAYLAND
   out->cr_surface
     = cairo_image_surface_create_for_data (b.pixels, CAIRO_FORMAT_ARGB32,
 					   b.w, b.h, b.stride);
   out->cr_context = cairo_create (out->cr_surface);
+#endif
   out->cr_width = b.w;
   out->cr_height = b.h;
   out->cr_gen = b.gen;
+#ifdef NHWL_WAYLAND
   if (b.w && nhwl_child_p (f))
     nhwl_clear_margins (out);
+#endif
   nhwl_glitnir_ensure (f);
 }
-#endif /* NHWL_WAYLAND */
 
 /* Monotonic nanoseconds.  */
 uint64_t
