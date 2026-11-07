@@ -1900,3 +1900,85 @@ nhg_export! {
         Ok(NHG_OK)
     }
 }
+
+nhg_export! {
+    /// The id of the name at `s` (`len` bytes, not NUL-terminated) into `*id`, made on the first call and kept for the
+    /// life of the process, for the font records.  0 for an empty name or bytes that are not UTF-8.
+    ///
+    /// # Safety
+    /// `s` is null or holds `len` readable bytes; `id` is null or writable.
+    unlocked fn nhg_font_id(s: *const c_char, len: usize, id: *mut u32) -> i32 {
+        if s.is_null() || id.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe { id.write(crate::fontspec::intern_raw(s, len)) };
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// The name of font record id `id` into `buf` (`cap` bytes, NUL-terminated); its length into `*len` (may be NULL).
+    /// `NHG_E_TOO_SMALL` when `cap` is not above the length.
+    ///
+    /// # Safety
+    /// `buf` is null or holds `cap` writable bytes; `len` is null or writable.
+    unlocked fn nhg_font_name(id: u32, buf: *mut c_char, cap: usize, len: *mut usize) -> i32 {
+        if crate::fontspec::name_raw(id, buf, cap, len) { Ok(NHG_OK) } else { Err(GlueError::Code(crate::abi::NHG_E_TOO_SMALL)) }
+    }
+}
+
+nhg_export! {
+    /// Every font that fits `spec` into `out` (`cap` records), the number written into `*n` (`macfont_list`'s
+    /// matching, `fontspec.rs`).  `NHG_E_UNSUPPORTED` when no font source is installed (the Linux shell has none: it
+    /// lists fonts with fontconfig).  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `spec` is null or valid; `out` is null or holds `cap` writable records; `n` is null or writable.
+    unlocked fn nhg_font_list(spec: *const crate::fontspec::NhgFontSpec, out: *mut crate::fontspec::NhgFontEntity, cap: usize, n: *mut usize) -> i32 {
+        font_query(spec, out, cap, n, true)
+    }
+}
+
+nhg_export! {
+    /// The font nearest to `spec` into `out[0]`, 1 or 0 into `*n` (`macfont_match`).  Same errors as `nhg_font_list`.
+    ///
+    /// # Safety
+    /// As `nhg_font_list`, with `cap` at least 1.
+    unlocked fn nhg_font_match(spec: *const crate::fontspec::NhgFontSpec, out: *mut crate::fontspec::NhgFontEntity, cap: usize, n: *mut usize) -> i32 {
+        font_query(spec, out, cap, n, false)
+    }
+}
+
+/// The body of `nhg_font_list` and `nhg_font_match`.
+fn font_query(
+    spec: *const crate::fontspec::NhgFontSpec,
+    out: *mut crate::fontspec::NhgFontEntity,
+    cap: usize,
+    n: *mut usize,
+    all: bool,
+) -> Result<i32, GlueError> {
+    if spec.is_null() || n.is_null() || (out.is_null() && cap > 0) {
+        return Err(GlueError::Arg);
+    }
+    // SAFETY: non-null and valid, and `out` holds `cap` records (the caller's promise).
+    let (spec, out) = unsafe {
+        (
+            &*spec,
+            if cap == 0 {
+                &mut [][..]
+            } else {
+                std::slice::from_raw_parts_mut(out, cap)
+            },
+        )
+    };
+    let mut found = 0;
+    let have = crate::fontspec::run(spec, all, out, &mut found);
+    // SAFETY: non-null and writable (the caller's promise).
+    unsafe { n.write(found) };
+    if have {
+        Ok(NHG_OK)
+    } else {
+        Err(GlueError::Shell(crate::abi::NHG_E_UNSUPPORTED))
+    }
+}
