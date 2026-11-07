@@ -53,4 +53,34 @@ NS coalesces: a run measured 16 locks per 20 keys at scale 1 and 10 at scale 2, 
   (should (eq initial-window-system 'ns))
   (should (eq (terminal-live-p nil) 'ns)))
 
+;; Frames: an NSWindow per frame, its root view hosting the shell's layer
+(ert-deftest nhmac-frame-opens ()
+  "`make-frame' gives a visible NSWindow whose root view hosts the shell's layer (no subviews), sized in device
+pixels; the display's width is the main screen's."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((f (make-frame '((width . 60) (height . 20)))))
+    (unwind-protect
+        (let ((info (progn (redisplay t) (sit-for 0.2) (nhmac--window-info f))))
+          (should (frame-visible-p f))
+          (should (eq (plist-get info :visible) t))
+          (should (eq (plist-get info :layer) t))
+          (should (eq (plist-get info :wants-layer) t))
+          (should (= (plist-get info :subviews) 0))
+          (should (= (frame-native-width f) (plist-get info :device-width)))
+          (should (= (display-pixel-width) (plist-get info :screen-device-width))))
+      (delete-frame f))))
+
+;; The guard: an Objective-C exception in a pump poisons the display, as a panic does, and Emacs goes on
+(ert-deftest nhmac-objc-exception-poisons ()
+  "An NSException raised inside the AppKit pump is caught; the display is poisoned and Emacs does not abort."
+  :tags '(runs-last)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((before (length (nhwl-glue-panics))))
+    (nhmac--test-raise-in-pump)
+    (sit-for 0.5)
+    (should (> (length (nhwl-glue-panics)) before))
+    (should (string-match-p "Objective-C exception" (car (nhwl-glue-panics))))
+    ;; Emacs is still here and still evaluates
+    (should (equal (eval '(+ 1 1) t) 2))))
+
 ;;; nhmac-gui-tests.el ends here

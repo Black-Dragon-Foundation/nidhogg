@@ -501,6 +501,19 @@ pub trait ShellBackend {
     fn abandon(&self) -> Abandon;
     /// The presenter's own timing since open (Rust only): which frames it committed late.
     fn presenter_timing(&self) -> ShellResult<PresenterTiming>;
+
+    /// A platform call by name with one text argument (`nhmac--call`): what Lisp asks of a platform that has no
+    /// shared call for it.  `Arg` for a name the backend does not know; `Unsupported` for a backend with none.
+    fn app_call(&mut self, kind: &str, arg: &str) -> ShellResult {
+        let _ = (kind, arg);
+        Err(ShellError::Unsupported)
+    }
+    /// A platform query by name (`nhmac--query`); the answer is text (a Lisp reader's form, by the kind's contract).
+    /// It may run a modal session.
+    fn app_query(&mut self, kind: &str, arg: &str) -> ShellResult<String> {
+        let _ = (kind, arg);
+        Err(ShellError::Unsupported)
+    }
 }
 
 /// A backend's connection and threads, as a host that abandons the backend sees them (`ShellBackend::abandon`).  The

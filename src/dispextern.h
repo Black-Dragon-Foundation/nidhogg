@@ -133,6 +133,20 @@ typedef Emacs_Pix_Container Emacs_Pixmap;
 typedef Emacs_Pix_Container Emacs_Pix_Context;
 #endif
 
+#ifdef HAVE_NHMAC
+/* Naglfar: the same minimal image, plain ARGB32 memory that Core
+   Graphics wraps when it draws.  */
+typedef struct
+{
+  int width, height;		/* size of image */
+  char *data;			/* pointer to image data */
+  int bytes_per_line;		/* accelerator to next line */
+  int bits_per_pixel;		/* bits per pixel (ZPixmap) */
+} *Emacs_Pix_Container;
+typedef Emacs_Pix_Container Emacs_Pixmap;
+typedef Emacs_Pix_Container Emacs_Pix_Context;
+#endif
+
 #ifdef HAVE_NTGUI
 #include "w32gui.h"
 typedef struct w32_display_info Display_Info;
@@ -3753,6 +3767,9 @@ Lisp_Object image_spec_value (Lisp_Object, Lisp_Object, bool *);
 
 #ifdef HAVE_NTGUI
 #define RGB_PIXEL_COLOR COLORREF
+#endif
+#ifdef HAVE_NHMAC
+#define RGB_PIXEL_COLOR unsigned long
 #endif
 
 RGB_PIXEL_COLOR image_background (struct image *, struct frame *,

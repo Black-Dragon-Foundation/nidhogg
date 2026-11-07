@@ -75,6 +75,7 @@ typedef struct
     single_pixel_buffer, dmabuf, xdg_foreign;
   bool ssd;        /* server-side decorations were granted, after negotiation */
   bool force_csd;  /* client-side decorations are forced (a test switch) */
+  bool overhang_panels;  /* panels may overhang their parent window (macOS child windows) */
 } NhgCaps;
 
 /* Copy the capabilities to *OUT.  NHG_E_ARG if OUT is NULL.  */
@@ -1002,6 +1003,14 @@ int32_t nhg_give_up (NhgDisplay *d);
 /* Why the connection ended: a protocol error's text (INTERFACE@ID: error CODE: MESSAGE), up to CAP - 1 bytes and a
    NUL into BUF, its full length into *LEN (0: the connection lives, or ended with a plain hangup).  */
 int32_t nhg_last_error (NhgDisplay *d, char *buf, size_t cap, size_t *len);
+
+/* ---- Platform calls (macOS) ---------------------------------------------------------------------------------------
+   What Lisp asks of the platform by name, with one text argument (nhmac--call, nhmac--query in nhmacterm.c).  KIND
+   and ARG are NUL-terminated UTF-8.  NHG_E_ARG for a name the shell does not know; NHG_E_UNSUPPORTED for a shell with
+   none.  A query writes its answer (a Lisp form) up to CAP - 1 bytes and a NUL into BUF, its full length into *LEN;
+   it may run a modal session.  */
+int32_t nhg_app_call (NhgDisplay *d, const char *kind, const char *arg);
+int32_t nhg_app_query (NhgDisplay *d, const char *kind, const char *arg, char *buf, size_t cap, size_t *len);
 
 /* ---- Small pure functions: colours, a monitor's place, the tree's picture -----------------------------------------
    Only nhg_tree_snapshot reads pixels.  */

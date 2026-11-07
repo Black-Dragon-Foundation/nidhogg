@@ -11,6 +11,10 @@
 //!    `NHG_E_PANIC`.  The backtrace is resolved when the report is read; C writes the whole report to stderr when it
 //!    drops the display.
 //!
+//! On macOS the body runs in an autorelease pool (`nhshell::with_pool`, outside `catch_unwind`), and an
+//! Objective-C exception it raises becomes a panic (`nhshell::catch_objc`, inside `catch_unwind`, which would abort
+//! on the foreign exception itself), so it poisons the display the same way.
+//!
 //! A poisoned display answers every later call with `NHG_E_PANIC` without touching its state.  Nothing here aborts.
 
 use crate::abi::{NHG_E_NOMEM, NHG_E_PANIC};
@@ -110,7 +114,21 @@ fn read_stack_low() -> Option<usize> {
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+/// The lowest address of the calling thread's stack: macOS gives its top and size (`pthread_get_stackaddr_np`).
+#[cfg(target_os = "macos")]
+fn read_stack_low() -> Option<usize> {
+    // SAFETY: both read the calling thread's own attributes.
+    let (top, size) = unsafe {
+        let me = libc::pthread_self();
+        (
+            libc::pthread_get_stackaddr_np(me) as usize,
+            libc::pthread_get_stacksize_np(me),
+        )
+    };
+    (top != 0 && size != 0).then(|| top.saturating_sub(size))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
 fn read_stack_low() -> Option<usize> {
     None
 }
@@ -191,7 +209,8 @@ fn install_hook() {
 pub(crate) fn catching<R>(body: impl FnOnce() -> R) -> Result<R, PanicReport> {
     install_hook();
     IN_GUARD.set(IN_GUARD.get() + 1);
-    let caught = catch_unwind(AssertUnwindSafe(body));
+    let caught =
+        nhshell::with_pool(|| catch_unwind(AssertUnwindSafe(|| nhshell::catch_objc(body))));
     IN_GUARD.set(IN_GUARD.get() - 1);
     caught.map_err(|payload| {
         let report = REPORT.take().unwrap_or_else(|| {
@@ -316,6 +335,16 @@ macro_rules! nhg_export {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// macOS reads the stack's bounds, so the headroom check is real there: the low end lies below this frame.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn headroom_reads_on_macos() {
+        let low = read_stack_low().expect("the stack's bounds");
+        let here = 0u8;
+        assert!(low < std::hint::black_box(&here) as *const u8 as usize);
+        assert!(headroom_ok());
+    }
 
     /// A panic caught by `catching` (as `nhg_open`'s backend open is) gives its report to the caller, which prints
     /// it, and leaves none behind for the next panic's.
