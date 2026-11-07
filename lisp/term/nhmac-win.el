@@ -411,6 +411,26 @@ A query that runs a modal session, for the pumps' tests."
 Return its rounds and the scope's counters' change.  For tests."
   (nhmac--query 'modal-resize ms))
 
+(defun nhmac--test-post-key (char &optional ignoring flags frame)
+  "Post a press and a release of a key to FRAME's window, as AppKit events.
+CHAR is the event's `characters', IGNORING its
+`charactersIgnoringModifiers' (default CHAR), both characters; FLAGS
+its `NSEventModifierFlags' (default 0).  The next pump sends them
+through `sendEvent:'.  For tests."
+  (nhmac--call 'test-post-key (or frame (selected-frame)) char
+               (or ignoring char) (or flags 0)))
+
+(defun nhmac--test-post-mouse (kind x y &optional button flags frame)
+  "Post a mouse event of KIND at X, Y to FRAME's window, as an AppKit event.
+KIND is `down', `up', `drag', `move' or `wheel'; X and Y are device
+pixels from the frame's top left.  BUTTON is 0 (left, the default), 1
+(right) or 2 (middle), or for `wheel' the lines to scroll (positive
+down).  FLAGS is the `NSEventModifierFlags' (default 0).  For tests."
+  (nhmac--call 'test-post-mouse (or frame (selected-frame))
+               (pcase kind ('down 0) ('up 1) ('drag 2) ('move 3) ('wheel 4)
+                      (_ (error "Unknown mouse kind %s" kind)))
+               x y (or button 0) (or flags 0)))
+
 (defun nhmac--test-reentry ()
   "Make AppKit call the shell's delegates back from inside its own calls.
 Return the scope's counters' change and the queued counts at each step,

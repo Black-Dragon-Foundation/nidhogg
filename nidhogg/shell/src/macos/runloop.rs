@@ -8,6 +8,7 @@
 
 use super::app::MacShell;
 use crate::api::WindowId;
+use crate::event::ShellEvent;
 use crate::scope::Scope;
 use objc2::rc::Retained;
 use objc2::runtime::NSObject;
@@ -16,12 +17,14 @@ use objc2_app_kit::NSWindowDelegate;
 use objc2_foundation::{NSNotification, NSObjectProtocol};
 
 /// What a callback reports.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub enum MacEv {
     /// The window's frame or backing scale may have changed (`windowDidResize:`, `windowDidChangeBackingProperties:`).
     Resized(WindowId),
     /// The window became (`true`) or stopped being key.
     Key(WindowId, bool),
+    /// A key, modifier or mouse record from the window's view, for the host as it is.
+    Input(WindowId, ShellEvent),
 }
 
 thread_local! {
