@@ -661,6 +661,59 @@ mod tree_snapshot {
         );
     }
 
+    /// A window card on the root (the glue's card layer: a window layer with a rounded chrome and a card) is in the
+    /// composed snapshot as the presenter shows it: its corner shows the colour beneath the window, its middle the
+    /// window's pixels. Without the scene the corner is the backing's.
+    #[test]
+    fn a_window_cards_corner_shows_the_colour_beneath() {
+        const BENEATH: u32 = 0xff12_3456;
+        let rec = Recorder::start_clock("sway", "manual");
+        let mut shell = rec.open();
+        let mut root = Backing::new(200, 100);
+        let id = window(&mut shell, &mut root);
+        let card = Rect::new(20, 20, 80, 60);
+        root.fill(card, GREEN);
+        let layer = 7;
+        glitnir::scene::with(root.g, |s| {
+            s.upsert(&glitnir::scene::LayerDesc {
+                id: layer,
+                parent: root.g,
+                kind: 2, // GLITNIR_LAYER_WINDOW
+                rect: card,
+                scale: 1.0,
+                visible: 1,
+            })?;
+            s.set_chrome(
+                layer,
+                Some(glitnir::scene::Chrome {
+                    radius_px: 10.0,
+                    ..Default::default()
+                }),
+            )?;
+            s.set_card(
+                layer,
+                Some(glitnir::scene::Card {
+                    beneath_argb: BENEATH,
+                    ..Default::default()
+                }),
+            )
+        })
+        .expect("the card");
+        assert!(publish(&mut shell, id, &[(&root, id)], 0));
+        let frames = [root.frame(id)];
+        let p = shell.tree_snapshot(id, &frames, true).unwrap();
+        assert_eq!(at(&p, 20, 20), BENEATH, "the corner shows what is beneath");
+        assert_eq!(at(&p, 99, 79), BENEATH, "and the one across");
+        assert_eq!(at(&p, 60, 50), GREEN, "the middle is the window's");
+        assert_eq!(at(&p, 10, 10), BG, "outside the card, the root");
+        let square = shell.tree_snapshot(id, &frames, false).unwrap();
+        assert_eq!(
+            at(&square, 20, 20),
+            GREEN,
+            "without the scene the corner is square"
+        );
+    }
+
     /// A popup goes where the compositor put it, over the tree it hangs from; another tree's is left out.
     #[test]
     fn popups_show_over_their_tree() {
