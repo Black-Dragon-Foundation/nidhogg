@@ -136,6 +136,35 @@
       (should (<= strings 200))
       (should (< conses 50)))))
 
+(defconst sja-tests--tree
+  (concat
+   "{\"ops\": [{\"reset\": {\"descriptor\": {\"scheme\": \"tree\", \"lists\": [\"order\"],"
+   " \"classes\": [\"selected\"], \"flags\": [\"expanded\"], \"start\": \"order\"},"
+   " \"nodes\": ["
+   "{\"id\": \"a\", \"kind\": \"dir\", \"flags\": 1, \"fields\": [[\"label\", \"alpha\"]]},"
+   "{\"id\": \"a/x\", \"kind\": \"file\", \"parent\": \"a\", \"fields\": [[\"label\", \"xray\"]]},"
+   "{\"id\": \"b\", \"kind\": \"dir\", \"fields\": [[\"label\", \"bravo\"]]},"
+   "{\"id\": \"b/z\", \"kind\": \"file\", \"parent\": \"b\", \"fields\": [[\"label\", \"zulu\"]]}],"
+   " \"edges\": [],"
+   " \"lists\": [{\"name\": \"order\", \"ids\": [\"a\", \"a/x\", \"b\", \"b/z\"]}]}}]}")
+  "A small tree: a/ open over x, b/ closed over z.")
+
+(ert-deftest sja/tree-through-the-door ()
+  "The tree scheme's verbs through the door: the visible list, a fold, `open', `prefix' and a move."
+  (let ((h (nidhogg-view-open "t-tree")))
+    (unwind-protect
+        (progn
+          (should (eq (nidhogg-view-apply "t-tree" "h1" 1 sja-tests--tree) 'applied))
+          (should (equal (nidhogg-view-get h 'list "visible") '("a" "a/x" "b")))
+          (should (eql (nidhogg-view-get h 'open "a") 1))
+          (nidhogg-view-set h 'fold "b")
+          (should (eql (nidhogg-view-get h 'open "b") 1))
+          (should (equal (nidhogg-view-get h 'list "visible") '("a" "a/x" "b" "b/z")))
+          (should (equal (nidhogg-view-set h 'prefix "B") "b"))
+          (should (equal (nidhogg-view-follow h "right") "b/z"))
+          (should (equal (nidhogg-view-follow h "up") "b")))
+      (nidhogg-view-close h))))
+
 (provide 'sja-tests)
 
 ;;; sja-tests.el ends here

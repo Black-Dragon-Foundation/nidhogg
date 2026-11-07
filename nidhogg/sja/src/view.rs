@@ -10,6 +10,9 @@ use crate::model::Model;
 use crate::names::Id;
 use crate::wire::Scheme;
 
+/// The name of a tree's visible list, which each instance computes (`View::visible`).
+pub const VISIBLE: &str = "visible";
+
 /// What an apply answers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -200,6 +203,9 @@ impl View {
             let step = if link == "up" { -1 } else { 1 };
             return self.walk_inner(h, &list, step, false).id;
         }
+        if m.desc.scheme == Scheme::Tree {
+            return self.tree_follow(h, &cur, link);
+        }
         let target = m
             .names
             .get(link)
@@ -226,14 +232,27 @@ impl View {
                 more: None,
             };
         };
-        let Some(l) = m.lists.get(list).filter(|l| !l.ids.is_empty()) else {
+        // a tree's `visible` is the instance's own (never a window); every other list is the model's
+        let shown;
+        let (ids, from, total): (&[Id], usize, Option<usize>) =
+            if list == VISIBLE && m.desc.scheme == Scheme::Tree {
+                shown = self.visible(h);
+                (&shown[..], 0, None)
+            } else {
+                match m.lists.get(list) {
+                    Some(l) => (&l.ids[..], l.from, l.total),
+                    None => (&[], 0, None),
+                }
+            };
+        if ids.is_empty() {
             return Step {
                 id: cur,
                 more: None,
             };
-        };
-        let len = l.ids.len() as i64;
-        let pos = cur.as_ref().and_then(|c| l.ids.iter().position(|x| x == c));
+        }
+        let len = ids.len() as i64;
+        let windowed = total.is_some_and(|t| from > 0 || from + ids.len() < t);
+        let pos = cur.as_ref().and_then(|c| ids.iter().position(|x| x == c));
         let mut more = None;
         let at = match pos {
             None => {
@@ -245,10 +264,10 @@ impl View {
             }
             Some(p) => {
                 let n = p as i64 + step;
-                if l.windowed() {
-                    if n < 0 && l.from > 0 {
+                if windowed {
+                    if n < 0 && from > 0 {
                         more = Some(-1);
-                    } else if n >= len && l.from + l.ids.len() < l.total.unwrap_or(0) {
+                    } else if n >= len && from + ids.len() < total.unwrap_or(0) {
                         more = Some(1);
                     }
                     n.clamp(0, len - 1)
@@ -259,7 +278,7 @@ impl View {
                 }
             }
         };
-        let target = l.ids[at as usize].clone();
+        let target = ids[at as usize].clone();
         let id = if m.nodes.contains_key(&target) {
             self.put(h, Some(target))
         } else {
@@ -308,6 +327,152 @@ impl View {
             cur
         };
         Step { id, more: None }
+    }
+
+    // ---- the tree scheme ----
+
+    /// Whether `id` is open for `h`: the model's flag `expanded` (when the descriptor names one), flipped by the
+    /// instance's expanded set (`toggle`).
+    pub fn is_open(&self, h: u32, id: &str) -> bool {
+        let Some(m) = self.model.as_ref() else {
+            return false;
+        };
+        let flag = m
+            .desc
+            .flags
+            .iter()
+            .position(|f| f == "expanded")
+            .filter(|b| *b < 32)
+            .is_some_and(|b| m.nodes.get(id).is_some_and(|n| n.flags & (1 << b) != 0));
+        let toggled = self.insts.get(&h).is_some_and(|i| i.expanded.contains(id));
+        flag != toggled
+    }
+
+    /// A tree's visible list for `h`: the entries of the primary list (the whole tree, parents before their
+    /// children) whose ancestors are all open.  Empty for another scheme.
+    pub fn visible(&self, h: u32) -> Vec<Id> {
+        let Some(m) = self
+            .model
+            .as_ref()
+            .filter(|m| m.desc.scheme == Scheme::Tree)
+        else {
+            return Vec::new();
+        };
+        let Some(l) = Self::primary_list(m).and_then(|l| m.lists.get(l)) else {
+            return Vec::new();
+        };
+        let shown = |id: &Id| {
+            let mut p = m.nodes.get(id).and_then(|n| n.parent.clone());
+            // a model's depth is small; the bound only guards a cycle the hub sent by mistake
+            for _ in 0..256 {
+                match p {
+                    None => return true,
+                    Some(q) if !self.is_open(h, &q) => return false,
+                    Some(q) => p = m.nodes.get(&q).and_then(|n| n.parent.clone()),
+                }
+            }
+            false
+        };
+        l.ids
+            .iter()
+            .filter(|id| m.nodes.contains_key(*id) && shown(id))
+            .cloned()
+            .collect()
+    }
+
+    /// List `name` as `h` sees it: a tree's `visible` is the instance's, any other the model's (its window).
+    pub fn list_of(&self, h: u32, name: &str) -> Vec<Id> {
+        if name == VISIBLE
+            && self
+                .model
+                .as_ref()
+                .is_some_and(|m| m.desc.scheme == Scheme::Tree)
+        {
+            self.visible(h)
+        } else {
+            self.list(name)
+        }
+    }
+
+    /// A tree's moves from `cur`: `up`/`down` the visible list (no wrap); `up:KIND`/`down:KIND` to the nearest visible
+    /// node of that kind; `left` the parent; `right` the first child, when open.  Anything else stays.
+    fn tree_follow(&mut self, h: u32, cur: &Id, link: &str) -> Option<Id> {
+        let (dir, kind) = link
+            .split_once(':')
+            .map_or((link, None), |(d, k)| (d, Some(k)));
+        let m = self.model.as_ref()?;
+        let vis = self.visible(h);
+        let pos = vis.iter().position(|x| x == cur);
+        let target = match (dir, kind, pos) {
+            ("up" | "down", None, _) => {
+                return self
+                    .walk_inner(h, VISIBLE, if dir == "up" { -1 } else { 1 }, false)
+                    .id;
+            }
+            ("up" | "down", Some(k), Some(p)) => {
+                let of_kind =
+                    |id: &&Id| m.nodes.get(*id).is_some_and(|n| m.names.word(n.kind) == k);
+                if dir == "up" {
+                    vis[..p].iter().rev().find(of_kind).cloned()
+                } else {
+                    vis[p + 1..].iter().find(of_kind).cloned()
+                }
+            }
+            ("left", None, _) => m
+                .nodes
+                .get(cur)
+                .and_then(|n| n.parent.clone())
+                .filter(|p| m.nodes.contains_key(p)),
+            ("right", None, Some(p)) => vis
+                .get(p + 1)
+                .filter(|c| m.nodes.get(*c).and_then(|n| n.parent.as_ref()) == Some(cur))
+                .cloned(),
+            _ => None,
+        };
+        match target {
+            Some(t) => self.put(h, Some(t)),
+            None => Some(cur.clone()),
+        }
+    }
+
+    /// Type-to-navigate: the visible sibling of `h`'s selection (none: the top level) whose label starts with `text`
+    /// (case folded), searching from the one after the selection, wrapping; a longer `text` (the user typed on) from
+    /// the selection itself.  No match leaves the selection.  The answer is the selection.
+    pub fn prefix(&mut self, h: u32, text: &str) -> Option<Id> {
+        let m = self.model.as_ref()?;
+        let cur = self.selection(h);
+        let parent = cur
+            .as_ref()
+            .and_then(|c| m.nodes.get(c))
+            .and_then(|n| n.parent.clone());
+        let vis = self.visible(h);
+        let sibs: Vec<&Id> = vis
+            .iter()
+            .filter(|id| m.nodes.get(*id).is_some_and(|n| n.parent == parent))
+            .collect();
+        let want = text.to_lowercase();
+        let label = m.names.get("label");
+        let matches = |id: &Id| {
+            label
+                .and_then(|l| m.nodes.get(id)?.field(l))
+                .is_some_and(|v| match v {
+                    crate::wire::Val::Str(s) => s.to_lowercase().starts_with(&want),
+                    crate::wire::Val::Int(i) => i.to_string().starts_with(&want),
+                })
+        };
+        let n = sibs.len();
+        let at = cur
+            .as_ref()
+            .and_then(|c| sibs.iter().position(|s| *s == c))
+            .map_or(0, |p| p + usize::from(text.chars().count() <= 1));
+        let hit = (0..n)
+            .map(|k| sibs[(at + k) % n])
+            .find(|id| matches(id))
+            .cloned();
+        match hit {
+            Some(id) => self.put(h, Some(id)),
+            None => cur,
+        }
     }
 
     /// Select `id` (nil clears); an id the model doesn't hold leaves the selection.  The answer is the selection.

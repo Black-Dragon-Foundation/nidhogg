@@ -88,7 +88,8 @@ selection, or (ID . more) when LIST is a window that must move first."
   "Set WHAT of instance H to VALUE.
 WHAT is `select' (an id or nil; returns the selection), `search', `form'
 or `lit' (a string or nil), `fold' or `tick' (an id to toggle; returns
-non-nil when it is now in the set)."
+non-nil when it is now in the set), or `prefix' (a tree: select the
+visible sibling whose label starts with VALUE; returns the selection)."
   (let ((r (nidhogg-view--call (nidhogg-view--op set) h (symbol-name what) value)))
     (if (memq what '(fold tick)) (eql r 1) r)))
 
@@ -99,7 +100,7 @@ WHAT is `selection', `kind' (of ARG, an id, or the selection), `field'
 `rows', `list' (ARG a list name), `finished' (the id that went from under
 the selection, once), `class' (of ARG), `classes' (a vector [ID CLASS
 ...] of the nodes whose class changed since the last read), `reclass',
-`class-names', `expanded', `ticked', `version', `stats' or `health' (0 ok,
+`class-names', `expanded', `open' (of ARG: a tree node is open), `ticked', `version', `stats' or `health' (0 ok,
 1 no model, 2 broken, 3 stale)."
   (nidhogg-view--call (nidhogg-view--op get) h (symbol-name what) arg arg2))
 
