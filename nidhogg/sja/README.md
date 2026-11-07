@@ -59,6 +59,13 @@ fallback), a form, a search, a lit list, expanded and ticked sets, and the class
   with a direction.
 - `select`, `search`, `form`, `lit`, `fold`, `tick`; reads of the selection, a node's kind, fields, flags, parent and
   rows, a list, the descriptor's class names.
+- **The tree scheme:** the primary list holds the whole tree, parents before their children; a node is open when the
+  model's flag `expanded` is set, flipped by the instance's expanded set (`fold` toggles it; `open` reads it). The
+  list `visible` is the instance's own: the primary list's entries whose ancestors are all open. `follow` `up`/`down`
+  steps along it (no wrap), `up:KIND`/`down:KIND` goes to the nearest visible node of that kind, `left` to the parent,
+  `right` to the first child when open. `prefix TEXT` (type-to-navigate) selects the visible sibling of the
+  selection (none: the top level) whose `label` starts with TEXT, case folded, from the one after the selection,
+  wrapping (a longer TEXT from the selection itself); no match leaves it.
 - **Removal:** when the selected node goes, the selection moves to the removed node's `then` if the model holds it,
   else (list scheme) to the primary list's entry at its old index, else to none; `finished` records the id that went.
   A reset re-resolves selections by id, with the `then` of the model before it.
@@ -84,8 +91,8 @@ C (`src/nidhogg-views.c`) builds the Lisp value; Sjá never sees a Lisp object, 
 | `SJA_CLOSE` | handle | nil |
 | `SJA_FOLLOW` | handle, link | the selection or nil |
 | `SJA_WALK`, `SJA_WALK_TO` | handle, list, step or position | the selection or nil; `(ID . DIRECTION)` when a window must move |
-| `SJA_SET` | handle, `select`/`search`/`form`/`lit`/`fold`/`tick`, value | the selection (select), 0 or 1 (fold, tick), else nil |
-| `SJA_GET` | handle, what, arg, arg | `selection`, `kind`, `field`, `flag`, `parent`, `rows`, `list`, `finished`, `class`, `classes` (a vector `[ID CLASS …]` of changes), `reclass`, `class-names`, `expanded`, `ticked`, `version`, `stats`, `health` (0 ok, 1 no model, 2 broken, 3 stale) |
+| `SJA_SET` | handle, `select`/`search`/`form`/`lit`/`fold`/`tick`/`prefix`, value | the selection (select, prefix), 0 or 1 (fold, tick), else nil |
+| `SJA_GET` | handle, what, arg, arg | `selection`, `kind`, `field`, `flag`, `parent`, `rows`, `list` (a tree's `visible` is the instance's), `finished`, `class`, `classes` (a vector `[ID CLASS …]` of changes), `reclass`, `class-names`, `expanded`, `open`, `ticked`, `version`, `stats`, `health` (0 ok, 1 no model, 2 broken, 3 stale) |
 | `SJA_HUB_LOST` | | nil |
 | `SJA_STATS` | | views, instances, bytes, panics, broken views |
 

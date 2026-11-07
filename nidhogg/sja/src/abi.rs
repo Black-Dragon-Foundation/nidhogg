@@ -258,7 +258,7 @@ fn get(h: u32, what: &str, a: &Arg, b: &Arg) -> Result<Ans, Refused> {
                 .collect(),
         ),
         "list" => Ans::List(
-            a.map(|l| v.list(l))
+            a.map(|l| v.list_of(h, l))
                 .unwrap_or_default()
                 .into_iter()
                 .map(|i| Ans::Str(i.to_string()))
@@ -289,6 +289,7 @@ fn get(h: u32, what: &str, a: &Arg, b: &Arg) -> Result<Ans, Refused> {
                 v.inst(h).is_some_and(|i| i.expanded.contains(id))
             })))
         }
+        "open" => Ans::Int(i64::from(a.is_some_and(|id| v.is_open(h, id)))),
         "ticked" => {
             let mut t: Vec<String> = v
                 .inst(h)
@@ -317,7 +318,7 @@ fn get(h: u32, what: &str, a: &Arg, b: &Arg) -> Result<Ans, Refused> {
 fn set(h: u32, what: &str, value: &Arg) -> Result<Ans, Refused> {
     let value = value.opt_str()?.map(str::to_string);
     let what = what.to_string();
-    let known = ["select", "search", "form", "lit", "fold", "tick"];
+    let known = ["select", "search", "form", "lit", "fold", "tick", "prefix"];
     if !known.contains(&what.as_str()) {
         return Err(Refused::Arg);
     }
@@ -337,6 +338,7 @@ fn set(h: u32, what: &str, value: &Arg) -> Result<Ans, Refused> {
                 v.set_lit(h, value);
                 Ans::Nil
             }
+            "prefix" => Ans::id(v.prefix(h, value.unwrap_or_default())),
             _ => Ans::Int(i64::from(
                 value.is_some_and(|id| v.toggle(h, id, what == "tick")),
             )),
