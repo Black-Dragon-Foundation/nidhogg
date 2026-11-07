@@ -28,8 +28,9 @@
 ;; vector cells a forced redisplay allocates for such faces; the second
 ;; compares the merged attributes and the realized fonts over a matrix
 ;; of faces with what the stock merge gave, recorded in
-;; fixtures/face-merge-matrix.eld.  Each row drives redisplay in order,
-;; so nothing in it depends on timing.
+;; fixtures/face-merge-matrix.eld at each scale the rows run at (the
+;; realized fonts' pixel sizes follow the scale).  Each row drives
+;; redisplay in order, so nothing in it depends on timing.
 
 ;;; Code:
 
@@ -40,23 +41,25 @@
 (defconst glitnir-faces-gui--fixture
   (expand-file-name "fixtures/face-merge-matrix.eld"
                     (file-name-directory (or load-file-name buffer-file-name)))
-  "The matrix's results on the stock merge: (CASE HASH) per case, HASH the SHA-256 of the printed result.")
+  "The matrix's results on the stock merge: (SCALE (CASE HASH)...) per scale, HASH the SHA-256 of the printed result.")
 
 (defconst glitnir-faces-gui--steps-fixture
   (expand-file-name "fixtures/face-remap-steps.eld"
                     (file-name-directory (or load-file-name buffer-file-name)))
-  "The remap steps' results on the stock merge: (STEP HASH) per step, HASH the SHA-256 of the printed result.")
+  "The remap steps' results on the stock merge: (SCALE (STEP HASH)...) per scale, HASH the SHA-256 of the printed result.")
 
 (defun glitnir-faces-gui--check (results fixture tag)
-  "RESULTS, a list of (KEY . RESULT), are the ones recorded in FIXTURE, a list of (KEY HASH).
-Without FIXTURE, print each result after TAG and fail."
-  (let ((expected (and (file-readable-p fixture)
-                       (with-temp-buffer
-                         (insert-file-contents fixture)
-                         (read (current-buffer))))))
+  "RESULTS, a list of (KEY . RESULT), are the ones recorded in FIXTURE for the run's scale.
+FIXTURE is a list of (SCALE (KEY HASH)...).  Without results recorded
+for the scale, print each result after TAG and the scale, and fail."
+  (let* ((scale (glitnir-gui--scale))
+         (expected (and (file-readable-p fixture)
+                        (cdr (assoc scale (with-temp-buffer
+                                            (insert-file-contents fixture)
+                                            (read (current-buffer))))))))
     (unless expected
-      (dolist (r results) (glitnir-gui--say "%s: %S" tag r))
-      (ert-fail (list "no recorded results" fixture)))
+      (dolist (r results) (glitnir-gui--say "%s at scale %s: %S" tag scale r))
+      (ert-fail (list "no recorded results at this scale" scale fixture)))
     (should (= (length results) (length expected)))
     ;; A result that differs shows whole.
     (should-not (seq-remove (lambda (r)
