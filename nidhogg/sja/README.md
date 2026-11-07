@@ -70,6 +70,42 @@ else, while there is a selection, `chain` or `dim`; else none. A class is its po
 which is the index into the face vector Lisp keeps. `classes` answers only the nodes whose class changed since the
 last call.
 
+## The C door
+
+One entry point, `sja_call(op, args, n, out, nout)` (`include/sja.h`), written with `sja_export!` (`src/abi.rs`), the
+only way to write one. Arguments are nil, integers or UTF-8 strings; the answer is a flat token list (nil, integer,
+string, and list, dotted list or vector headers with their counts) that Sjá owns until the next call on the thread.
+C (`src/nidhogg-views.c`) builds the Lisp value; Sjá never sees a Lisp object, never calls Emacs and interns nothing.
+
+| Op | Arguments | Answer |
+|---|---|---|
+| `SJA_APPLY` | view, hub, version, patch | status: 0 applied, 1 dropped, 2 resync, 3 too-large, 4 broken |
+| `SJA_OPEN` | view, group or nil | a handle |
+| `SJA_CLOSE` | handle | nil |
+| `SJA_FOLLOW` | handle, link | the selection or nil |
+| `SJA_WALK`, `SJA_WALK_TO` | handle, list, step or position | the selection or nil; `(ID . DIRECTION)` when a window must move |
+| `SJA_SET` | handle, `select`/`search`/`form`/`lit`/`fold`/`tick`, value | the selection (select), 0 or 1 (fold, tick), else nil |
+| `SJA_GET` | handle, what, arg, arg | `selection`, `kind`, `field`, `flag`, `parent`, `rows`, `list`, `finished`, `class`, `classes` (a vector `[ID CLASS …]` of changes), `reclass`, `class-names`, `expanded`, `ticked`, `version`, `stats`, `health` (0 ok, 1 no model, 2 broken, 3 stale) |
+| `SJA_HUB_LOST` | | nil |
+| `SJA_STATS` | | views, instances, bytes, panics, broken views |
+
+Codes: `SJA_E_ARG` (an unknown op, handle, tag or type, bad UTF-8), `SJA_E_NOMEM` (too little stack), `SJA_E_STATE`
+(the table was held), `SJA_E_PANIC`.
+
+## The guard and the breaker
+
+Every call checks the stack headroom (256 KiB, the glue's figure), takes the process-wide table (view name → view,
+handle → view) with `try_lock`, then the one view it touches with `try_lock`, and runs in `catch_unwind`. A held view
+lock (a call a `longjmp` abandoned) answers as a resync; nothing blocks. A panic drops only that view's model, clears
+the poison, keeps its instances with their handles and selection ids (the next reset re-resolves them) and answers
+`resync`. Two panics on one view within 60 s trip its **breaker**: every call on it answers `broken` until its last
+instance closes. `SJA_STATS` counts panics and broken views; drgnx's doctor fails while a view is broken.
+
+Feature `test-hooks` adds `SJA_TEST_PANIC` (a panic inside a view's guard) and the breaker's test clock.
+
+`../sja-fuzz` is a `cargo-fuzz` target (`apply_bytes`: arbitrary bytes as a patch, then the verbs), nightly only:
+`cargo +nightly fuzz run apply_bytes` there. It is not part of `check.sh`.
+
 ## Checks
 
 `check.sh [--container fedora-45] [--test NAME] [--android]`: fmt, clippy `-D warnings` (with and without

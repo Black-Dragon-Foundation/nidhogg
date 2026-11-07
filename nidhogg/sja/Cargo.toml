@@ -21,5 +21,10 @@ libc = "0.2"
 # an op that panics inside a view's guard, for the breaker's tests (the glue turns it on under --enable-checking)
 test-hooks = []
 
+# the C entry point's tests drive the test panic and the breaker's clock (check.sh runs the tests with test-hooks)
+[[test]]
+name = "abi"
+required-features = ["test-hooks"]
+
 [profile.test]
 opt-level = 1
