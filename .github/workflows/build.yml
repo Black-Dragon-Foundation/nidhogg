@@ -703,7 +703,10 @@ jobs:
         run: |
           [ -z "$PAIR" ] || { echo "::error::pair needs the Naglfar build, which does not link yet"; exit 1; }
           sel=${CHECKS//|/\\|}
-          bash nidhogg/test/nhmac-gui.sh --tarball "$(ls dist/*.tar.xz | head -n 1)" --out "$RUNNER_TEMP/nhmac-gui" ${sel:+--select "$sel"} ${FILES:+--files "$FILES"}
+          # the NS baseline rows (nhmac-interposer-*, nhmac-ns-*) run with the counting interposer inserted
+          ip=""
+          if [ -z "$CHECKS" ] || echo "$CHECKS" | grep -Eq 'nhmac-(interposer|ns-)'; then ip=--interpose; fi
+          bash nidhogg/test/nhmac-gui.sh --tarball "$(ls dist/*.tar.xz | head -n 1)" --out "$RUNNER_TEMP/nhmac-gui" $ip ${sel:+--select "$sel"} ${FILES:+--files "$FILES"}
       # the Naglfar lane: listed, skipped until the Rust shell links (it has no build to run yet)
       - name: Naglfar lane (skipped until the shell links)
         run: echo "naglfar lane skipped, the Rust shell does not link yet" | tee -a "$GITHUB_STEP_SUMMARY"
