@@ -35,7 +35,6 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 extern _Atomic int nhmac_lock_waiters;
 extern int32_t nhg_wake (void);
 #endif
-
 #if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
 
 # define HAVE_NH_TEST_CLOCK 1
