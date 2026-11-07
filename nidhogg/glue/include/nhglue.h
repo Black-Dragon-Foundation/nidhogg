@@ -959,6 +959,9 @@ typedef struct { int32_t x, y, id; } NhgTouchPoint;
    nhg_reconnect_settle at each read until it says nothing is pending.  Window ids do not change.  */
 #define NHG_ACT_RECONNECTING  42
 #define NHG_ACT_RECONNECTED   43
+/* A choice from the native menu bar (Naglfar): CODE the item's place in the tree, FLAGS the tree's generation; no
+   window.  C looks the place up in the paths of that generation and drops a choice from an older one.  */
+#define NHG_ACT_MENU          60
 #define NHG_SETTLE_REPORT     1   /* every shown frame presented again, or 2 s passed: run `reconnected' */
 #define NHG_SETTLE_MONITORS   2   /* the monitor list differs from before the loss (ids aside) */
 #define NHG_SETTLE_FOCUS_OUT  4   /* no keyboard enter 1 s after the report: *WINDOW loses the focus */
