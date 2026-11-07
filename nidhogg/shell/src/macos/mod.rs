@@ -8,6 +8,7 @@ mod app;
 mod defaults;
 pub mod draw;
 mod dialogs;
+mod dnd;
 pub mod fonts;
 pub mod images;
 #[cfg(feature = "test-hooks")]
