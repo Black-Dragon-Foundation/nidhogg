@@ -21,6 +21,7 @@ pub mod frame;
 pub mod ime;
 pub mod keys;
 pub mod monitors;
+pub mod params;
 pub mod pointer;
 pub mod present;
 pub mod query;

@@ -1029,6 +1029,68 @@ int32_t nhg_frame_monitors (NhgDisplay *d, uint64_t window, uint32_t *out);
    it.  */
 int32_t nhg_monitor_origin (int32_t x, int32_t y, uint32_t scale120, int32_t *dx, int32_t *dy);
 
+/* ---- Frame parameters -------------------------------------------------------------------------------------------
+   The decisions of the shell's frame-parameter handlers (nhwlfns.c): validation, defaults, clamps and what a change
+   touches.  C reads a Lisp value into an NhgParamValue, states the frame facts in an NhgParamFrame and applies the
+   NhgParamAction it gets back.  Nothing is sent to the compositor.  */
+
+/* NhgParamValue.kind.  A bignum has INT the sign; a symbol has SYM one of NHG_PS_*.  */
+enum { NHG_PV_NIL, NHG_PV_FIXNUM, NHG_PV_FLOAT, NHG_PV_SYMBOL, NHG_PV_OTHER, NHG_PV_BIGNUM };
+enum { NHG_PS_OTHER, NHG_PS_ABOVE, NHG_PS_ABOVE_SUSPENDED, NHG_PS_BELOW };
+
+/* The parameters (KEY).  CURSOR_COLOR takes two values, the pixel and the foreground pixel; ALPHA one or two (the car
+   and the next item of a cons); the others one.  */
+enum { NHG_PK_ALPHA = 1, NHG_PK_MENU_BAR_LINES, NHG_PK_TAB_BAR_LINES, NHG_PK_TOOL_BAR_LINES,
+       NHG_PK_CHILD_FRAME_BORDER_WIDTH, NHG_PK_INTERNAL_BORDER_WIDTH, NHG_PK_UNDECORATED, NHG_PK_Z_GROUP,
+       NHG_PK_NO_ACCEPT_FOCUS, NHG_PK_CURSOR_COLOR };
+
+typedef struct
+{
+  uint32_t kind, sym;
+  int64_t int_value;
+  double flt;
+} NhgParamValue;
+
+/* The frame facts (flags are 0 or 1): FRAME_MINIBUF_ONLY_P, a parent frame, a window, visible, a child frame of this
+   shell, the new value `eq' the old, a menu bar window; CURRENT the parameter's current lines or width; the line
+   height, internal border and pixel width; the background and mouse pixels.  */
+typedef struct
+{
+  int32_t minibuf_only, has_parent, has_window, visible, child, same, has_menu_window, current, line_height, border,
+    pixel_width;
+  uint64_t bg_pixel, mouse_pixel;
+} NhgParamFrame;
+
+/* NhgParamAction.status: 0, or the signal C raises (the header of glue/src/params.rs says which).  */
+enum { NHG_PE_OK, NHG_PE_ALPHA_FLOAT_RANGE, NHG_PE_ALPHA_PERCENT_RANGE, NHG_PE_ALPHA_TYPE, NHG_PE_CHILD_BORDER,
+       NHG_PE_INTERNAL_BORDER, NHG_PE_Z_GROUP, NHG_PE_CALL };
+
+/* NhgParamAction.flags, in the order C does them (see glue/src/params.rs).  */
+enum { NHG_PA_REDISPLAY = 1 << 0, NHG_PA_STORE = 1 << 1, NHG_PA_CLEAR_BORDER_FIRST = 1 << 2,
+       NHG_PA_ADJUST_SIZE = 1 << 3, NHG_PA_CLEAR_BORDER = 1 << 4, NHG_PA_CLEAR_AREA = 1 << 5,
+       NHG_PA_CLEAR_AREA2 = 1 << 6, NHG_PA_CLEAR_MENU_MATRIX = 1 << 7, NHG_PA_ADJUST_GLYPHS = 1 << 8,
+       NHG_PA_TAB_BAR_HOOK = 1 << 9, NHG_PA_TOOL_BAR_HOOK = 1 << 10, NHG_PA_APPLY_ALPHA = 1 << 11,
+       NHG_PA_STORE_CURSOR = 1 << 12, NHG_PA_REDRAW_CURSOR = 1 << 13, NHG_PA_UNDECORATED_HINT = 1 << 14,
+       NHG_PA_RAISE_LOWER = 1 << 15, NHG_PA_REPOSITION = 1 << 16 };
+
+/* N: what to store (the lines, the width, the z-group in `enum z_group' order, or a flag), or the item of an alpha
+   error.  Y, H: an area to clear across the frame's width, Y below the top margin; Y2, H2: a second one, Y2 from the
+   frame's top.  H is also the height for a bar hook.  ALPHA: active and inactive (-1: opaque).  PIXEL: the cursor
+   colour and its foreground.  */
+typedef struct
+{
+  int32_t status;
+  uint32_t flags;
+  int32_t n, y, h, y2, h2;
+  double alpha[2];
+  uint64_t pixel[2];
+} NhgParamAction;
+
+/* Decide what changing parameter KEY (NHG_PK_*) to the N values V does on a frame with the facts F; the action goes
+   to *OUT.  NHG_E_ARG for a null F or OUT.  An unknown key or a missing value is NHG_PE_CALL in *OUT.  */
+int32_t nhg_frame_param (uint32_t key, const NhgParamFrame *f, const NhgParamValue *v, size_t n,
+                         NhgParamAction *out);
+
 #ifdef __cplusplus
 }
 #endif
