@@ -108,6 +108,11 @@ usage: (nhmac--query WHAT &rest ARGS)  */)
   return Fcar (Fread_from_string (make_string (buf, len), Qnil, Qnil));
 }
 
+/* The non-main threads that want the global lock (thread.c), and the
+   waiters a condition's wake is on its way to (nidhogg-testclock.c's
+   marks): while it is above 0 the main wait does not park.  */
+_Atomic int nhmac_lock_waiters;
+
 /* The main wait (process.c), NS's ns_select in the glue's terms.  On
    the main thread with a non-zero timeout: pump AppKit's queued events
    first, so keys reach kbd_buffer before process output; yield once, as
@@ -133,13 +138,66 @@ nhmac_select (int nfds, fd_set *rfds, fd_set *wfds, fd_set *efds,
     return thread_select (pselect, nfds, rfds, wfds, efds, timeout,
 			  sigmask);
 
+  static bool told;
+  if (!told)
+    {
+      NHG (nhg_set_lock_waiters (&nhmac_lock_waiters));
+      told = true;
+    }
+  struct timespec end
+    = timeout ? timespec_add (current_timespec (), *timeout) : invalid_timespec ();
   nhwl_glue_rc (dpyinfo, NHG (nhg_dispatch_main (dpyinfo->glue)));
   struct timespec tick = { 0, 1 };
   thread_select (pselect, 0, NULL, NULL, NULL, &tick, sigmask);
 
+  /* While Lisp threads want the lock, never park: pump, then yield the
+     lock in a select on the caller's own fds, backing off from 1 ns
+     through 1 us, doubling to 1 ms, and return for anything the caller
+     must see.  */
+  long backoff = 1;
+  while (atomic_load (&nhmac_lock_waiters) > 0)
+    {
+      nhwl_glue_rc (dpyinfo, NHG (nhg_dispatch_main (dpyinfo->glue)));
+      struct timespec t = make_timespec (0, backoff);
+      if (timespec_valid_p (end))
+	{
+	  struct timespec left = timespec_sub (end, current_timespec ());
+	  if (timespec_sign (left) <= 0)
+	    goto nothing;
+	  if (timespec_cmp (left, t) < 0)
+	    t = left;
+	}
+      fd_set r, w;
+      if (rfds)
+	r = *rfds;
+      if (wfds)
+	w = *wfds;
+      int n = thread_select (pselect, nfds, rfds ? &r : NULL,
+			     wfds ? &w : NULL, NULL, &t, sigmask);
+      if (n != 0)
+	{
+	  if (rfds)
+	    *rfds = r;
+	  if (wfds)
+	    *wfds = w;
+	  if (efds)
+	    FD_ZERO (efds);
+	  return n;
+	}
+      if (detect_input_pending () || !NILP (Vquit_flag) || pending_signals)
+	goto nothing;
+      backoff = backoff == 1 ? 1000 : min (backoff * 2, 1000000);
+    }
+
   int64_t ns = -1;
-  if (timeout && timeout->tv_sec < INT64_MAX / 1000000000 - 1)
-    ns = timeout->tv_sec * (int64_t) 1000000000 + timeout->tv_nsec;
+  if (timespec_valid_p (end))
+    {
+      struct timespec left = timespec_sub (end, current_timespec ());
+      if (timespec_sign (left) <= 0)
+	goto nothing;
+      if (left.tv_sec < INT64_MAX / 1000000000 - 1)
+	ns = left.tv_sec * (int64_t) 1000000000 + left.tv_nsec;
+    }
   bool waiting = waiting_for_input;
   waiting_for_input = false;
 #ifdef HAVE_NIDHOGG_WATCHDOG
@@ -160,6 +218,15 @@ nhmac_select (int nfds, fd_set *rfds, fd_set *wfds, fd_set *efds,
   if (efds)
     FD_ZERO (efds);
   return rc;
+
+ nothing:
+  if (rfds)
+    FD_ZERO (rfds);
+  if (wfds)
+    FD_ZERO (wfds);
+  if (efds)
+    FD_ZERO (efds);
+  return 0;
 }
 
 /* The menu bar: built at idle by the native menu task; until then the

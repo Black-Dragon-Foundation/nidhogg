@@ -2143,3 +2143,19 @@ nhg_export! {
         Ok(NHG_OK)
     }
 }
+
+nhg_export! {
+    /// Hand the wait the host's lock-waiter count, an `_Atomic int` that lives as long as the process: while it is
+    /// above 0 the main wait does not park.  Once, at the first wait.
+    ///
+    /// # Safety
+    /// `count` is null or points at a 4-byte-aligned `_Atomic int` (an `AtomicI32`) that is never freed.
+    unlocked fn nhg_set_lock_waiters(count: *const std::ffi::c_void) -> i32 {
+        if count.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: a live, never-freed atomic int (the caller's promise), which has AtomicI32's layout.
+        nhshell::wait::PARK.set_waiters(unsafe { &*count.cast::<std::sync::atomic::AtomicI32>() });
+        Ok(NHG_OK)
+    }
+}
