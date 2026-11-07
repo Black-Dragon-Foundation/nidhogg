@@ -1181,7 +1181,9 @@ int32_t nhg_font_glyph_metrics (uint64_t handle, uint32_t glyph, uint32_t mono, 
    NHG_DRAW_OVERLAY.  NHG_DRAW_CORNERS: R in FG outside quarter circles of radius A set B pixels outside the corners
    the flags' low four bits name (bottom right, bottom left, top left, top right).  NCLIP (0-2) clip rectangles
    apply.  A refused record is skipped and the call returns NHG_E_ARG; NHG_E_UNSUPPORTED where the shell has no
-   painter.  */
+   painter.  nhg_draw_glyphs paints one NHG_DRAW_GLYPHS record of the open font FONT (nhg_font_open): N glyphs at
+   BITS in FG from x A on the baseline B, placed as macfont_draw places them (NHG_DRAW_PADDING: one pixel each); with
+   NHG_DRAW_BACKGROUND, R is filled with BG first.  NHG_E_STATE for a font that is not open.  */
 
 #define NHG_DRAW_FILL 1
 #define NHG_DRAW_OUTLINE 2
@@ -1190,9 +1192,12 @@ int32_t nhg_font_glyph_metrics (uint64_t handle, uint32_t glyph, uint32_t mono, 
 #define NHG_DRAW_DASH 5
 #define NHG_DRAW_BITMAP 6
 #define NHG_DRAW_CORNERS 7
+#define NHG_DRAW_GLYPHS 8
 
 #define NHG_DRAW_COPY (1u << 0)
 #define NHG_DRAW_TOP (1u << 3)
+#define NHG_DRAW_BACKGROUND (1u << 4)
+#define NHG_DRAW_PADDING (1u << 5)
 #define NHG_DRAW_OVERLAY (1u << 7)
 
 typedef struct
@@ -1207,6 +1212,7 @@ typedef struct
 } NhgDrawRec;
 
 int32_t nhg_draw (NhgDisplay *d, uint64_t frame, const NhgDrawRec *recs, size_t n);
+int32_t nhg_draw_glyphs (NhgDisplay *d, uint64_t frame, uint64_t font, const NhgDrawRec *rec, size_t n);
 
 /* ---- The main wait (glue/src/wait.rs, nhshell's wait.rs; macOS) ------------------------------------------------
    nhg_wait registers the fds RFDS and WFDS ask for below NFDS, runs the backend's event loop until one is ready, a

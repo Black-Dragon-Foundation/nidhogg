@@ -1121,7 +1121,7 @@ PROTO (nhg_font_match, int32_t (const NhgFontSpec *, NhgFontEntity *, size_t, si
     #[test]
     fn draw_header_matches() {
         use nhglue::draw::*;
-        use nhglue::ffi::nhg_draw;
+        use nhglue::ffi::{nhg_draw, nhg_draw_glyphs};
         let rows: &[(&str, i64)] = &[
             ("NHG_DRAW_FILL", NHG_DRAW_FILL.into()),
             ("NHG_DRAW_OUTLINE", NHG_DRAW_OUTLINE.into()),
@@ -1130,6 +1130,9 @@ PROTO (nhg_font_match, int32_t (const NhgFontSpec *, NhgFontEntity *, size_t, si
             ("NHG_DRAW_DASH", NHG_DRAW_DASH.into()),
             ("NHG_DRAW_BITMAP", NHG_DRAW_BITMAP.into()),
             ("NHG_DRAW_CORNERS", NHG_DRAW_CORNERS.into()),
+            ("NHG_DRAW_GLYPHS", NHG_DRAW_GLYPHS.into()),
+            ("NHG_DRAW_BACKGROUND", NHG_DRAW_BACKGROUND.into()),
+            ("NHG_DRAW_PADDING", NHG_DRAW_PADDING.into()),
             ("NHG_DRAW_COPY", NHG_DRAW_COPY.into()),
             ("NHG_DRAW_TOP", NHG_DRAW_TOP.into()),
             ("NHG_DRAW_OVERLAY", NHG_DRAW_OVERLAY.into()),
@@ -1155,9 +1158,12 @@ PROTO (nhg_font_match, int32_t (const NhgFontSpec *, NhgFontEntity *, size_t, si
         ];
         let decls = "\
 #define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
-PROTO (nhg_draw, int32_t (NhgDisplay *, uint64_t, const NhgDrawRec *, size_t));";
+PROTO (nhg_draw, int32_t (NhgDisplay *, uint64_t, const NhgDrawRec *, size_t));
+PROTO (nhg_draw_glyphs, int32_t (NhgDisplay *, uint64_t, uint64_t, const NhgDrawRec *, size_t));";
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *const NhgDrawRec, usize) -> i32 =
             nhg_draw;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u64, *const NhgDrawRec, usize) -> i32 =
+            nhg_draw_glyphs;
         let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
         let got = probe(decls, &exprs);
         assert_eq!(got.len(), rows.len());

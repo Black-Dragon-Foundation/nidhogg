@@ -75,6 +75,45 @@ unsafe extern "C" {
         rects: *mut CGRect,
         count: isize,
     ) -> CGRect;
+    fn CTFontGetSize(font: *const c_void) -> f64;
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    static kCFPreferencesCurrentApplication: *const c_void;
+    fn CFPreferencesGetAppIntegerValue(
+        key: *const c_void,
+        app: *const c_void,
+        valid: *mut u8,
+    ) -> isize;
+}
+
+/// `AppleAntiAliasingThreshold` (`macfont_update_antialias_threshold`): text this size or smaller is drawn without
+/// antialiasing; 0 when unset.  Read once.
+fn antialias_threshold() -> f64 {
+    static T: OnceLock<f64> = OnceLock::new();
+    *T.get_or_init(|| {
+        let key = NSString::from_str("AppleAntiAliasingThreshold");
+        let mut valid = 0u8;
+        // SAFETY: a live CFString (toll-free bridged) and the current-application constant.
+        let v = unsafe {
+            CFPreferencesGetAppIntegerValue(
+                Retained::as_ptr(&key).cast(),
+                kCFPreferencesCurrentApplication,
+                &mut valid,
+            )
+        };
+        if valid != 0 { v as f64 } else { 0.0 }
+    })
+}
+
+/// Whether the font `handle`'s text is drawn without antialiasing (`macfont_draw`'s `no_antialias_p`):
+/// `ns-antialias-text` is nil, or the size is at most the threshold.  `None`: not open.
+pub fn integral(handle: u64) -> Option<bool> {
+    let off = !super::draw::ANTIALIAS.load(std::sync::atomic::Ordering::Relaxed);
+    // SAFETY: a live font.
+    let size = with_font(handle, |ct| unsafe { CTFontGetSize(ct) })?;
+    Some(off || size <= antialias_threshold())
 }
 
 /// `kCTFontOrientationDefault`.
@@ -189,7 +228,8 @@ pub fn close(handle: u64) {
         .remove(&handle);
 }
 
-fn with_font<R>(handle: u64, f: impl FnOnce(*const c_void) -> R) -> Option<R> {
+/// `f` on the open font `handle`'s `CTFont` (`None`: not open); the font stays open for the call.
+pub fn with_font<R>(handle: u64, f: impl FnOnce(*const c_void) -> R) -> Option<R> {
     let open = open_fonts().lock().unwrap_or_else(|p| p.into_inner());
     open.1
         .get(&handle)
