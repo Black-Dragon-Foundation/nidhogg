@@ -381,6 +381,31 @@ needed."
   "Signal that the shell does not serve this function yet."
   (error "Naglfar: not available yet"))
 
+(defun nhmac-stats ()
+  "Return the shell's counters, a plist.
+The pumps' scope (`:overlapping-takes', `:queued', `:applied'), the lock
+hand-off (`:lock-waiters', `:parks-with-waiters') and the surfaces
+(`:ring-acquires', `:ring-reuses', `:commits', `:deferred-commits'); a
+counter of work not built yet stays 0."
+  (nhmac--query 'stats))
+
+(defun nhmac--test-raise-in-pump ()
+  "Make the shell's next pump raise an Objective-C exception.
+The pump catches it and the display is poisoned, as by a panic.  For tests."
+  (nhmac--call 'test-raise-in-pump))
+
+(defun nhmac--window-info (&optional frame)
+  "Return the facts of FRAME's window as the shell has them, a plist.
+`:visible', `:layer' (the root view hosts the shell's layer),
+`:wants-layer', `:subviews', `:device-width' and `:device-height'.  For
+tests."
+  (nhmac--query 'window-info (or frame (selected-frame))))
+
+(defun nhmac--modal-alert (ms)
+  "Run a modal alert for MS milliseconds, then end it; return its rounds.
+A query that runs a modal session, for the pumps' tests."
+  (nhmac--query 'modal-alert ms))
+
 
 ;; Variables
 

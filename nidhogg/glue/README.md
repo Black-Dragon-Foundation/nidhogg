@@ -16,11 +16,12 @@ the hook tables, `DEFUN`s) and all Cairo drawing, and calls in here through `inc
 - **Dependencies:** `nhshell`, `glitnir` and `libc`, built locked, from crates.io or offline
   from the shell's `vendor/` when the release's vendor tarball is unpacked (`.cargo/config.toml`). `Cargo.lock` is the
   shell's plus the `nhglue` package; after the shell relocks, copy its
-  lock here and add the package back (`check.sh` fails until they agree). Glitnir carries Sjá (`../sja`, the native
+lock here and add the package back (`check.sh` fails until they agree). Glitnir carries Sjá (`../sja`, the native
   view model) and its crates, so all three locks list them; a change to Sjá's dependencies relocks Glitnir, the shell
   and the glue. The archive exports Sjá's `sja_call` through `pub use glitnir::*`; `tests/ffi.rs`
   (`sja_entry_points_come_from_sja_export`) checks that Sjá writes it with `sja_export!`.
-- **Features:** `wayland` (default) turns on the shell's Wayland backend; `test-hooks` adds entry points that exist
+- **Features:** `wayland` (default) turns on the shell's Wayland backend; `macos` the AppKit one (Naglfar; configure
+  builds `--no-default-features --features macos` there); `test-hooks` adds entry points that exist
   only for tests (and Sjá's test panic and breaker clock, through Glitnir's `sja-test-hooks`). Configure passes `--features test-hooks` (through `GLITNIR_CARGO_FLAGS`) and turns on Rust's debug
   assertions (`CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS`) under `--enable-checking`.
 
@@ -29,16 +30,20 @@ the hook tables, `DEFUN`s) and all Cairo drawing, and calls in here through `inc
 - `check.sh [--container DISTRO] [--test NAME]`: the lock against the shell's, fmt, clippy `-D warnings` (also with
   `test-hooks`), tests and cargo-deny. `--no-run` builds the tests without running them. `--full` adds the release archive and checks that it exports every function of
   `nhglue.h` and `glitnir.h`. `--android` runs `cargo check --no-default-features --target
-  aarch64-linux-android` (no NDK, no link) and exits 3 when the toolchain has no std for that target.
+  aarch64-linux-android` (no NDK, no link) and exits 3 when the toolchain has no std for that target. `--target
+  TRIPLE` runs clippy for another platform's backend (`aarch64-apple-darwin`: `--features macos`) with a rustup
+  toolchain of the container's rustc version (`ci/target-std.sh`); the tests run on that platform (CI's macOS lane).
 - `check.sh --c-fields BUILD_DIR`: the members of `struct nhwl_output` (`src/nhwlterm.h`) are exactly the ones the
   comment above it lists (`@fields` for the shared set, `@extra NAME: reason` for each other member). `check.sh
   --provenance`: every file with an "adapted from" note names the upstream commit (`Upstream commit:` line, or a
   40-digit hash on the note). Both are text checks that need neither cargo nor a container.
 - `tests/abi.rs` (`abi::header_matches_records`) compiles `nhglue.h` with `cc` and compares its constants and
   prototypes with the Rust side.
-- `nm-check.sh BUILD_DIR`, on a `--nidhogg-wayland` build: the archive's undefined symbols minus the ones it defines
-  itself must not include any symbol Emacs's own `src/*.o` define (Rust never calls Emacs), and every `nhg_*` call in
-  `src/nhwl*.c` goes through the `NHG (…)` macro. Calls through function pointers are invisible to it; there are none.
+- `nm-check.sh BUILD_DIR`, on a `--nidhogg-wayland` or `--naglfar` build (ELF or Mach-O): the archive's undefined
+  symbols minus the ones it defines itself must not include any symbol Emacs's own `src/*.o` define (Rust never calls
+  Emacs), and every `nhg_*` call in `src/nhwl*.c` and `src/nhmac*.c` goes through the `NHG (…)` macro. Calls through
+  function pointers are invisible to it; the one C hands over, Naglfar's text source, must be registered on exactly
+  one line, in `src/nhmacterm.c`, once `nhg_set_text_source` is in the header.
 
 ## Debugging
 
@@ -65,13 +70,17 @@ Every entry point is written with `nhg_export!` (`src/guard.rs`), which runs its
 the calls that take no display lock); `tests/ffi.rs` (`ffi::every_extern_comes_from_nhg_export`) fails on any
 `extern "C"` function written by hand. The guard, in order:
 
-1. **Stack headroom.** With less than 256 KiB of stack left (`pthread_getattr_np`, read once per thread) the call
+1. **Stack headroom.** With less than 256 KiB of stack left (`pthread_getattr_np` on Linux,
+   `pthread_get_stackaddr_np` on macOS, read once per thread) the call
    returns `NHG_E_NOMEM` and nothing is poisoned: a stack probe near the end of the stack would land in Emacs's
    SIGSEGV handler, which `siglongjmp`s.
 2. **`try_lock`** on the display's state. A held lock means a call re-entered, or a `longjmp` abandoned one: the
    display is poisoned instead of hanging Emacs.
 3. **`catch_unwind`.** A panic poisons the display and keeps its first report; the backtrace is captured at once and
    resolved when the report is read, so the call returns at once.
+4. **On macOS,** the call runs in an autorelease pool (outside `catch_unwind`), and an Objective-C exception it
+   raises becomes a panic inside `catch_unwind` (`nhshell::catch_objc`; the foreign exception itself would abort),
+   so an AppKit exception poisons the display like any panic.
 
 A poisoned display answers `NHG_E_PANIC` to everything but `nhg_panic_message` and `nhg_close`. C sets
 `glue_broken`, and the next `read_socket_hook` drops the display as if the compositor had gone. `nhg_close` then
@@ -274,6 +283,7 @@ accepted and does nothing, as for a missing Wayland protocol.
 | `nhg_frame_resized` / `nhg_frame_scale` / `nhg_frame_units` / `nhg_frame_csd` | - | push the facts a frame's decisions read | same |
 | `nhg_next` | - | take one shell event as actions | same |
 | `nhg_panic_message` / `nhg_test_panic` / `nhg_last_error` / `nhg_give_up` / `nhg_debug_check_frame` | - | panic, error and checking-build helpers | same |
+| `nhg_app_call` / `nhg_app_query` | - | a platform request by kind, its arguments and answer as Lisp text (`nhmac--call`, `nhmac--query`) | the AppKit requests (`app.rs`); a query may run a modal session; on Wayland every kind is `NHG_E_UNSUPPORTED` |
 | `nhg_layer_ensure` | - | make the frame's Glitnir layer match a geometry | same (Glitnir is the compositor-independent scene) |
 | `nhg_backing` | R W | size the frame's backing and describe it | same; CoreAnimation layers could use an IOSurface instead |
 | `nhg_damage` / `nhg_damage_all` | - | damage rectangles of the frame | same |

@@ -1765,6 +1765,56 @@ nhg_export! {
     }
 }
 
+/// A NUL-terminated UTF-8 argument (`Arg` for null or invalid UTF-8).
+///
+/// # Safety
+/// `p` is null or NUL-terminated.
+unsafe fn str_arg<'a>(p: *const c_char) -> Result<&'a str, GlueError> {
+    if p.is_null() {
+        return Err(GlueError::Arg);
+    }
+    // SAFETY: non-null and NUL-terminated (the caller's promise).
+    unsafe { std::ffi::CStr::from_ptr(p) }
+        .to_str()
+        .map_err(|_| GlueError::Arg)
+}
+
+nhg_export! {
+    /// A platform call by name (`nhmac--call`): `kind` and `arg` are NUL-terminated UTF-8.  `NHG_E_ARG` for a name the
+    /// shell does not know, `NHG_E_UNSUPPORTED` for a shell with no platform calls.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `kind` and `arg` are null or NUL-terminated.
+    fn nhg_app_call(d: *mut NhgDisplay, kind: *const c_char, arg: *const c_char) -> i32 |state| {
+        // SAFETY: null or NUL-terminated (the caller's promise).
+        let (kind, arg) = unsafe { (str_arg(kind)?, str_arg(arg)?) };
+        state.backend().app_call(kind, arg)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// A platform query by name (`nhmac--query`): its answer, up to `cap` - 1 bytes and a NUL, into `buf`, its full
+    /// length into `*len`.  It may run a modal session.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `kind` and `arg` are null or NUL-terminated; `buf` is null or holds `cap` writable
+    /// bytes; `len` is null or writable.
+    fn nhg_app_query(d: *mut NhgDisplay, kind: *const c_char, arg: *const c_char, buf: *mut c_char, cap: usize,
+                     len: *mut usize) -> i32 |state| {
+        // SAFETY: null or NUL-terminated (the caller's promise).
+        let (kind, arg) = unsafe { (str_arg(kind)?, str_arg(arg)?) };
+        let text = state.backend().app_query(kind, arg)?;
+        // SAFETY: `buf` is null or holds `cap` writable bytes.
+        unsafe { put_text(buf, cap, &text) };
+        if !len.is_null() {
+            // SAFETY: non-null and writable (the caller's promise).
+            unsafe { len.write(text.len()) };
+        }
+        Ok(NHG_OK)
+    }
+}
+
 // ---- Small pure functions moved from C: colours, a monitor's place, the snapshot's copy ----------------------------
 
 nhg_export! {
