@@ -5,5 +5,40 @@
 ;; Run by nidhogg/test/nhmac-gui.sh on the macOS runner.  Rows are appended under ";; Task N:" headings.
 
 (require 'ert)
+(load (expand-file-name "../../../nidhogg/test/mac-counts.el" (file-name-directory (or load-file-name buffer-file-name))) nil t)
+
+(defun nhmac-gui--ns-build-p ()
+  "The stock NS port (not Naglfar): the baselines are measured here."
+  (and (eq window-system 'ns) (not (featurep 'nidhogg-macos))))
+
+;; Task 2: the interposer and the counters harness
+(ert-deftest nhmac-interposer-counts-ns ()
+  "20 keys into a buffer lock a surface and spin the run loop in a redisplay at least once each (NS baseline)."
+  (skip-unless (nhmac-gui--ns-build-p))
+  (switch-to-buffer (generate-new-buffer " *mac-counts*"))
+  (mac-counts-install)
+  (mac-counts-redisplay t)
+  (let ((before (mac-counts-read)))
+    (dotimes (_ 20)
+      (execute-kbd-macro "x")
+      (mac-counts-redisplay t))
+    (let* ((after (mac-counts-read))
+           (d (lambda (k) (- (plist-get after k) (plist-get before k)))))
+      (message "nhmac-counts: 20 keys: locks %d bytes %d spins %d spins-in-redisplay %d"
+               (funcall d :surface-locks) (funcall d :surface-bytes) (funcall d :spins) (funcall d :spins-in-redisplay))
+      (should (>= (funcall d :surface-locks) 20))
+      (should (>= (funcall d :spins-in-redisplay) 20)))))
+
+(ert-deftest nhmac-ns-menu-dump ()
+  "NS's real menu bar, built through menu.c, is dumped to a file: the fixture Naglfar's flattener is checked against."
+  (skip-unless (nhmac-gui--ns-build-p))
+  (let ((file (expand-file-name "nhmac-ns-menu.tsv" (or (getenv "GLITNIR_GUI_OUT") temporary-file-directory))))
+    (when (file-exists-p file) (delete-file file))
+    (mac-counts-menu-dump file)
+    (should (file-exists-p file))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (should (> (count-lines (point-min) (point-max)) 20))
+      (should (re-search-forward "^1\t[^\t]*\t" nil t)))))
 
 ;;; nhmac-gui-tests.el ends here
