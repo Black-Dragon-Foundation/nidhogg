@@ -678,6 +678,16 @@ jobs:
         with:
           path: dist
           key: tarball-macos-${{ runner.arch }}-${{ steps.tree.outputs.tree }}-${{ hashFiles('nidhogg/build.sh') }}
+      - name: S6 probe (spike)
+        if: ${{ inputs.checks == 's6' && steps.build.outcome == 'success' }}
+        run: bash nidhogg/test/s6/probe.sh "$RUNNER_TEMP/build" "$RUNNER_TEMP/s6-findings"
+      - name: S6 findings
+        if: ${{ always() && inputs.checks == 's6' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: s6-findings
+          path: ${{ runner.temp }}/s6-findings/
+          if-no-files-found: ignore
       - name: The tarball runs unpacked
         if: ${{ inputs.checks != 'build-only' }}
         run: bash nidhogg/test/tarball-test.sh dist/*.tar.xz macos
@@ -695,7 +705,7 @@ jobs:
       # scale 2: the rows of test/src/nidhogg-tests/nhmac-gui-tests.el that `checks` selects (empty: every row; `none` and
       # `build-only`: no rows).  A cached tarball is run as it is.
       - name: macOS GUI rows (nhmac-gui-tests.el, scales 1 and 2)
-        if: ${{ !cancelled() && hashFiles('dist/*.tar.xz') != '' && inputs.checks != 'none' && inputs.checks != 'build-only' }}
+        if: ${{ !cancelled() && hashFiles('dist/*.tar.xz') != '' && inputs.checks != 'none' && inputs.checks != 'build-only' && inputs.checks != 's6' }}
         env:
           CHECKS: ${{ inputs.checks }}
           FILES: ${{ inputs.files }}
