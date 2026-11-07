@@ -282,6 +282,7 @@ nhwl_draw_rectangle (struct frame *f, unsigned long color, int x, int y,
   cairo_stroke (cr);
   nhwl_end_cr_clip (f);
 }
+#endif /* NHWL_WAYLAND */
 
 /* Draw the foreground of glyph string S.  */
 static void
@@ -508,7 +509,6 @@ nhwl_draw_glyphless_glyph_string_foreground (struct glyph_string *s)
   s->char2b = NULL;
 }
 
-#endif /* NHWL_WAYLAND */
 /* Brightness beyond which a color won't have its highlight brightness
    boosted.
 
@@ -2243,13 +2243,15 @@ static const struct nhwl_draw_ops nhwl_cairo_draw_ops = {
 const struct nhwl_draw_ops *nhwl_draw_ops = &nhwl_cairo_draw_ops;
 #else
 /* Naglfar: the same walk and geometry, its primitives emitting draw
-   records (nhmacdraw.c); text and images come with the font driver and
-   the image path.  */
+   records (nhmacdraw.c) and its text drawn by the font driver
+   (nhmacfont.c); images come with the image path.  */
 static const struct nhwl_draw_ops nhwl_mac_draw_ops = {
   nhwl_begin_cr_clip, nhwl_end_cr_clip, nhmac_save, nhmac_restore,
   nhmac_set_clipping, nhmac_set_clipping_exactly, nhwl_fill_rectangle,
-  nhwl_draw_glyph_string_background, nhmac_text_run, nhmac_text_run,
-  nhmac_text_run, nhmac_text_run, nhwl_draw_stretch_glyph_string,
+  nhwl_draw_glyph_string_background, nhwl_draw_glyph_string_foreground,
+  nhwl_draw_composite_glyph_string_foreground,
+  nhwl_draw_glyphless_glyph_string_foreground, nhmac_text_run,
+  nhwl_draw_stretch_glyph_string,
   nhwl_draw_glyph_string_box, nhwl_draw_underwave, nhwl_fill_underline,
   nhwl_draw_hollow_cursor, nhwl_draw_bar_cursor,
 };

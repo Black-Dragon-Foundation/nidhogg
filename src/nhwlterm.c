@@ -1032,14 +1032,14 @@ nhwl_frame_scale (struct frame *f)
   return (s120 ? s120 : nhwl_start_scale (f)) / 120.0;
 }
 
-/* FRAME_RES of F: 96 dpi times its scale times its root frame's
+/* FRAME_RES of F: NHWL_DPI times its scale times its root frame's
    `nidhogg-text-zoom' parameter (nidhogg-scale.el sets it).  */
 double
 nhwl_frame_res (struct frame *f)
 {
   Lisp_Object zoom = get_frame_param (nhwl_tree_root (f), Qnidhogg_text_zoom);
 
-  return 96.0 * nhwl_frame_scale (f) * (NUMBERP (zoom) ? XFLOATINT (zoom) : 1);
+  return NHWL_DPI * nhwl_frame_scale (f) * (NUMBERP (zoom) ? XFLOATINT (zoom) : 1);
 }
 
 double
@@ -2398,7 +2398,7 @@ nhwl_scale_changed (struct frame *f, uint32_t scale120)
   ev.arg = Fcons (Qnidhogg_scale, make_float (nhwl_frame_res (f)));
   XSETFRAME (ev.frame_or_window, f);
   FRAME_NHWL_OUTPUT (f)->scale120 = FRAME_DISPLAY_INFO (f)->scale120 = scale120;
-  FRAME_DISPLAY_INFO (f)->resx = FRAME_DISPLAY_INFO (f)->resy = 96.0 * scale120 / 120.0;
+  FRAME_DISPLAY_INFO (f)->resx = FRAME_DISPLAY_INFO (f)->resy = NHWL_DPI * scale120 / 120.0;
   kbd_buffer_store_event (&ev);
   /* Images were made for the old device size: they are made again at
      the new one, from the drain, not inside redisplay.  */
@@ -4160,7 +4160,7 @@ nhwl_term_init (Lisp_Object display_name)
   nhwl_drain_events (dpyinfo, NULL);
   if (dpyinfo->scale120 == 0)
     dpyinfo->scale120 = 120;
-  dpyinfo->resx = dpyinfo->resy = 96.0 * dpyinfo->scale120 / 120.0;
+  dpyinfo->resx = dpyinfo->resy = NHWL_DPI * dpyinfo->scale120 / 120.0;
 
   if (dpyinfo->connection >= 0)
     add_keyboard_wait_descriptor (dpyinfo->connection);
