@@ -5,7 +5,7 @@
 # ns-display.m), renamed, with a row floor added.
 #
 #   nidhogg/test/nhmac-gui.sh --tarball FILE | --prefix DIR [--scale 1|2]... [--select REGEXP] [--files GLOB]
-#                          [--timeout SEC] [--out DIR] [--floor N]
+#                          [--timeout SEC] [--out DIR] [--floor N] [--interpose]
 #
 #   --tarball FILE   the macOS release tarball (nidhogg-VERSION-macos-ARCH.tar.xz); unpacked under $TMPDIR
 #   --prefix DIR     an unpacked tarball (DIR/Nidhogg.app/Contents/MacOS/Emacs)
@@ -14,6 +14,8 @@
 #   --files GLOB     the test files, in test/src/nidhogg-tests (default nhmac-gui-tests.el)
 #   --timeout SEC    kill a run after SEC seconds (default 900)
 #   --floor N        the fewest rows a run may report (default 1): a run that reports 0 rows, or fewer than N, is red
+#   --interpose      build nidhogg/test/mac-interpose (cargo, on the runner) and run Emacs with it inserted: the
+#                    counters nidhogg/test/mac-counts.el reads (NHMAC_INTERPOSE_LIB names the dylib)
 #   --out DIR        where the logs go (default $TMPDIR/nhmac-gui); one nhmac-gui-scaleS.log per scale, and the pixels of a
 #                    pixel row whose captures differ (GLITNIR_GUI_OUT, nhmac-gui-tests.el)
 #
@@ -26,7 +28,7 @@ set -u
 self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 checkout=$(cd "$self/../.." && pwd)
 
-tarball= prefix= scales=() select= files=nhmac-gui-tests.el timeout=900 out= floor=1
+tarball= prefix= scales=() select= files=nhmac-gui-tests.el timeout=900 out= floor=1 interpose=0
 while [ $# -gt 0 ]; do
   case $1 in
     --tarball) tarball=${2:-}; shift 2 ;;
@@ -37,6 +39,7 @@ while [ $# -gt 0 ]; do
     --timeout) timeout=${2:-}; shift 2 ;;
     --out) out=${2:-}; shift 2 ;;
     --floor) floor=${2:-}; shift 2 ;;
+    --interpose) interpose=1; shift ;;
     -h|--help) sed -n '2,/^# Exit 0/s/^# \{0,1\}//p' "${BASH_SOURCE[0]}" >&2; exit 2 ;;
     *) echo "nhmac-gui.sh: unknown argument $1" >&2; exit 2 ;;
   esac
@@ -69,7 +72,18 @@ clang -fobjc-arc -framework AppKit -framework CoreGraphics -o "$work/mac-display
   { echo "nhmac-gui.sh: cannot build mac-display.m" >&2; exit 1; }
 
 # a run's time limit: macOS has no timeout(1); perl's alarm ends the run like a kill
-limited() { local secs=$1; shift; perl -e 'alarm shift; exec @ARGV or die "exec: $!"' "$secs" "$@"; }
+# (perl is a system binary: dyld strips DYLD_* from its environment, so DYLD_INSERT_LIBRARIES is set here, after it started)
+limited() {
+  local secs=$1; shift
+  perl -e '$ENV{DYLD_INSERT_LIBRARIES} = $ENV{NHMAC_INTERPOSE_LIB} if $ENV{NHMAC_INTERPOSE_LIB}; alarm shift; exec @ARGV or die "exec: $!"' "$secs" "$@"
+}
+
+if [ "$interpose" = 1 ]; then
+  cargo build --release --manifest-path "$checkout/nidhogg/test/mac-interpose/Cargo.toml" --target-dir "$work/interpose" ||
+    { echo "nhmac-gui.sh: cannot build the interposer" >&2; exit 1; }
+  export NHMAC_INTERPOSE_LIB=$work/interpose/release/libmac_interpose.dylib
+  [ -f "$NHMAC_INTERPOSE_LIB" ] || { echo "nhmac-gui.sh: no $NHMAC_INTERPOSE_LIB" >&2; exit 1; }
+fi
 
 status=0
 for scale in "${scales[@]}"; do
