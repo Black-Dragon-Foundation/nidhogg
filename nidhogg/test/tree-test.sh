@@ -10,12 +10,12 @@ command -v unifdef >/dev/null || { echo "TREE FAIL: unifdef is not installed (th
 
 # Flag-group rule: for each group G with commits on HEAD (subject 'nidhogg: G:'), with the defines of every group that
 # has commits in G's range undefined, the files G touched equal G's base.  Runs in the current repo.
-# FLAG_GROUPS (overridable) = name:define:feature, space separated.  ${NAME}_BASE (upper case; GLITNIR_BASE keeps
+# FLAG_GROUPS (overridable) = name:define:feature, space separated; define is a comma list (a group's own defines).  ${NAME}_BASE (upper case; GLITNIR_BASE keeps
 # working, overridable) defaults to the parent of the oldest commit on HEAD whose subject starts 'nidhogg: <name>:'.
 # Order-independent: either group may be on top.
-FLAG_GROUPS_DEFAULT='glitnir:HAVE_GLITNIR:glitnir watchdog:HAVE_NIDHOGG_WATCHDOG:nidhogg-watchdog workers:HAVE_NIDHOGG_WORKERS:nidhogg-workers shell:HAVE_NHWL:nidhogg-wayland history:HAVE_NIDHOGG_HISTORY:nidhogg-history'
+FLAG_GROUPS_DEFAULT='glitnir:HAVE_GLITNIR:glitnir watchdog:HAVE_NIDHOGG_WATCHDOG:nidhogg-watchdog workers:HAVE_NIDHOGG_WORKERS:nidhogg-workers shell:HAVE_NHWL,NHWL_WAYLAND:nidhogg-wayland history:HAVE_NIDHOGG_HISTORY:nidhogg-history naglfar:HAVE_NHMAC:naglfar'
 flag_rule() {
-  local g name def ft b var first f sha body i j c n matched feat lowest
+  local g name def ft b var first f sha body i j c n matched feat lowest d
   local -a gname=() gdef=() gfeat=() gbase=() flags=() feats=()
   for g in ${FLAG_GROUPS:-$FLAG_GROUPS_DEFAULT}; do
     IFS=: read -r name def ft <<<"$g"
@@ -32,7 +32,7 @@ flag_rule() {
     flags=(); feats=()
     for j in "${!gname[@]}"; do   # U: the defines of every group with commits in this group's range
       if [ "$i" = "$j" ] || [ -n "$(git rev-list -n 1 --grep="^nidhogg: ${gname[j]}:" "${gbase[i]}..HEAD")" ]; then
-        flags+=("-U${gdef[j]}"); feats+=("${gfeat[j]}")
+        for d in ${gdef[j]//,/ }; do flags+=("-U$d"); done; feats+=("${gfeat[j]}")
       fi
     done
     while IFS= read -r f; do
@@ -76,7 +76,16 @@ flag_rule() {
   done < <(git log --format=%H "$lowest..HEAD")
 }
 
-# TREE_TEST_SELF=1: the rule on temp repo fixtures.
+# Upstream NS files stay as they were at the Naglfar base (NAGLFAR_BASE, default refs/naglfar/base; no base, no check).
+ns_untouched() {
+  local b=${1:-${NAGLFAR_BASE:-refs/naglfar/base}} d
+  git rev-parse --verify --quiet "$b^{commit}" >/dev/null || return 0
+  d=$(git diff --name-only "$b" HEAD -- 'src/ns*' nextstep/ lisp/term/ns-win.el)
+  [ -z "$d" ] || fail "an upstream NS file changed: $(echo "$d" | tr '\n' ' ')"
+}
+
+# TREE_TEST_SELF=1 (or --self-test): the rule on temp repo fixtures.
+[ "${1:-}" = --self-test ] && { TREE_TEST_SELF=1; shift; }
 if [ "${TREE_TEST_SELF:-}" = 1 ]; then
   command -v unifdef >/dev/null || { echo "tree self-test: unifdef is not installed"; exit 1; }
   self=$(mktemp -d) || exit 1
@@ -158,7 +167,16 @@ if [ "${TREE_TEST_SELF:-}" = 1 ]; then
   fixture; putf "nidhogg: glitnir: g" lisp/g.el '(a)\n'; putf "nidhogg: shell: s" src/s.c '#ifdef HAVE_NHWL\nint s;\n#endif\n'
   putf "nidhogg: pgtk: p" lisp/g.el '(a)\n(b)\n'
   expect "another commit editing a Lisp file a group created" "lisp/g.el changed outside the groups' own files"
-  echo "tree self-test: 23 cases ok"
+  fixture; put "nidhogg: glitnir: g" "$in"; put "nidhogg: naglfar: n" "${in}#ifdef HAVE_NHMAC\nint n;\n#endif\n"
+  expect "a naglfar HAVE_NHMAC hunk" ""
+  fixture; put "nidhogg: shell: s" 'int a;\n#ifdef HAVE_NHWL\nint s;\n#endif\n'; put "nidhogg: shell: s2" 'int a;\n#ifdef NHWL_WAYLAND\nint s;\n#endif\n'
+  expect "an upstream HAVE_NHWL turned into NHWL_WAYLAND" ""
+  fixture; putf "upstream ns" src/nsterm.m 'a\n'; ns=$(git rev-parse HEAD)
+  putf "nidhogg: naglfar: n" src/nsterm.m 'a\nb\n'
+  fails=0; ns_untouched "$ns" >/dev/null; [ "$fails" = 1 ] || { echo "tree self-test: case 'an NS file changed' failed"; exit 1; }
+  putf "nidhogg: naglfar: n2" src/nsterm.m 'a\n'; fails=0; ns_untouched "$ns"; [ "$fails" = 0 ] ||
+    { echo "tree self-test: case 'an NS file restored' failed"; exit 1; }
+  echo "tree self-test: 26 cases ok"
   exit 0
 fi
 
@@ -217,6 +235,7 @@ hits=$(git ls-files nidhogg .github README.md | while IFS= read -r f; do
 [ -z "$hits" ] || fail "absolute home path in: $(echo "$hits" | tr '\n' ' ')"
 
 flag_rule
+ns_untouched
 
 # the shell API and the glue name no backend: no 'wayland_' identifier in nhshell's source outside src/wayland/, nor
 # in the glue's source
