@@ -7,7 +7,7 @@
 //! here and tested with a fake sleeper.
 
 use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// A registration's filter: readable, writable.
@@ -125,14 +125,17 @@ impl Regs {
     }
 }
 
-/// The wake flag and the parked flag, in the order that loses no wake: the waker publishes its reason, then reads
-/// "parked" and kicks only a parked waiter; the waiter sets "parked", then re-reads every reason before it sleeps.
-/// One of the two always sees the other (both `SeqCst`), and a kick that lands before the sleep is kept by the
-/// sleeper (a signalled run-loop source stays signalled), so the sleep returns at once.
+/// The wake flag, the parked flag and the host's lock-waiter count, in the order that loses no wake (Dekker): a waker
+/// publishes its reason (the wake, or a count it raised), then reads "parked" and kicks only a parked waiter (W1, W2);
+/// the waiter sets "parked" (M1), then re-reads every reason before it sleeps (M2).  One of the two always sees the
+/// other (all `SeqCst`), and a kick that lands before the sleep is kept by the sleeper (a signalled run-loop source
+/// stays signalled), so the sleep returns at once.
 #[derive(Debug, Default)]
 pub struct Park {
     pending: AtomicBool,
     parked: AtomicBool,
+    /// The host's count of threads that want its lock (Naglfar: `nhmac_lock_waiters`), null until it is handed over.
+    waiters: AtomicPtr<AtomicI32>,
 }
 
 impl Park {
@@ -140,7 +143,36 @@ impl Park {
         Park {
             pending: AtomicBool::new(false),
             parked: AtomicBool::new(false),
+            waiters: AtomicPtr::new(std::ptr::null_mut()),
         }
+    }
+
+    /// Read the lock waiters from `count` from now on.
+    pub fn set_waiters(&self, count: &'static AtomicI32) {
+        self.waiters
+            .store(std::ptr::from_ref(count).cast_mut(), Ordering::SeqCst);
+    }
+
+    /// The host's lock waiters now (0 before the count is handed over).
+    pub fn waiters(&self) -> i32 {
+        let p = self.waiters.load(Ordering::SeqCst);
+        // SAFETY: null, or the `'static` count `set_waiters` was given.
+        unsafe { p.as_ref() }.map_or(0, |c| c.load(Ordering::SeqCst))
+    }
+
+    /// M1: the waiter is parked from here on.
+    pub fn begin(&self) {
+        self.parked.store(true, Ordering::SeqCst);
+    }
+
+    /// M2: whether a reason holds (a wake, a lock waiter, or `ready`), so the waiter must not sleep.
+    pub fn check(&self, ready: impl FnOnce() -> bool) -> bool {
+        self.pending.load(Ordering::SeqCst) || self.waiters() > 0 || ready()
+    }
+
+    /// The waiter is no longer parked.
+    pub fn end(&self) {
+        self.parked.store(false, Ordering::SeqCst);
     }
 
     /// Any thread: publish a wake, then kick a parked waiter.  Whether it kicked.
@@ -157,12 +189,12 @@ impl Park {
     /// The waiter: park, re-read the reasons (`ready`, and a wake), and `sleep` only when none holds.  Whether it
     /// slept.  A wake stays published for [`Park::take`], whether it ended the sleep or kept it from starting.
     pub fn park(&self, ready: impl FnOnce() -> bool, sleep: impl FnOnce()) -> bool {
-        self.parked.store(true, Ordering::SeqCst);
-        let skip = self.pending.load(Ordering::SeqCst) || ready();
+        self.begin();
+        let skip = self.check(ready);
         if !skip {
             sleep();
         }
-        self.parked.store(false, Ordering::SeqCst);
+        self.end();
         !skip
     }
 
@@ -189,6 +221,8 @@ pub struct WaitStats {
     pub helper_hops_keys: AtomicU64,
     /// Registration changes made (deletes and first adds).
     pub kq_changes: AtomicU64,
+    /// Sleeps that began with lock waiters and lasted over 100 ms: a lost hand-off, always 0.
+    pub parks_with_waiters: AtomicU64,
 }
 
 impl WaitStats {
@@ -203,15 +237,18 @@ impl WaitStats {
             helper_wakes: AtomicU64::new(0),
             helper_hops_keys: AtomicU64::new(0),
             kq_changes: AtomicU64::new(0),
+            parks_with_waiters: AtomicU64::new(0),
         }
     }
 
-    /// The counters as a plist's body, for the stats text.
-    pub fn text(&self) -> String {
+    /// The counters as a plist's body, for the stats text, with `park`'s lock waiters now.
+    pub fn text(&self, park: &Park) -> String {
         let g = |c: &AtomicU64| c.load(Ordering::Relaxed);
         format!(
-            ":waits {} :sleeps {} :kq-wakes {} :empty-wakes {} :kicks {} :helper-fds {} :helper-wakes {} \
-             :helper-hops-keys {} :kq-changes {}",
+            ":lock-waiters {} :parks-with-waiters {} :waits {} :sleeps {} :kq-wakes {} :empty-wakes {} :kicks {} \
+             :helper-fds {} :helper-wakes {} :helper-hops-keys {} :kq-changes {}",
+            park.waiters(),
+            g(&self.parks_with_waiters),
             g(&self.waits),
             g(&self.sleeps),
             g(&self.kq_wakes),
@@ -335,7 +372,7 @@ pub fn run(
         }
         drop(ops_now);
         // any return answers a pending wake: the caller comes back through its yield
-        if park.take() || !out.is_empty() || last == Some(Woke::Timeout) {
+        if park.take() || !out.is_empty() || park.waiters() > 0 || last == Some(Woke::Timeout) {
             return;
         }
         let left = match deadline {
@@ -359,7 +396,13 @@ pub fn run(
                 }
                 !probe.is_empty()
             },
-            || woke.set(ops.borrow_mut().sleep(&helper, left)),
+            || {
+                let (at, waiters) = (Instant::now(), park.waiters());
+                woke.set(ops.borrow_mut().sleep(&helper, left));
+                if waiters > 0 && at.elapsed() > Duration::from_millis(100) {
+                    add(&stats.parks_with_waiters, 1);
+                }
+            },
         );
         last = slept.then(|| woke.get());
         if slept {
@@ -753,6 +796,193 @@ mod tests {
             &mut out,
         );
         assert!(out.is_empty());
+    }
+
+    /// The count's steps, M1 M2 (main) and W1 W2 (a thread that wants the lock), in every interleaving: main never
+    /// sleeps while the count is above 0 unless a kick it keeps ends the sleep at once (review I1).
+    #[test]
+    fn no_lost_wake() {
+        #[derive(Clone, Copy, PartialEq)]
+        enum Step {
+            M1,
+            M2,
+            W1,
+            W2,
+        }
+        use Step::*;
+        // the orders that keep M1 before M2 and W1 before W2
+        let orders = [
+            [M1, M2, W1, W2],
+            [M1, W1, M2, W2],
+            [M1, W1, W2, M2],
+            [W1, M1, M2, W2],
+            [W1, M1, W2, M2],
+            [W1, W2, M1, M2],
+        ];
+        for order in orders {
+            let count: &'static AtomicI32 = Box::leak(Box::new(AtomicI32::new(0)));
+            let (p, s) = (Park::new(), Sleeper::new());
+            p.set_waiters(count);
+            let mut skip = None;
+            for step in order {
+                match step {
+                    M1 => p.begin(),
+                    M2 => skip = Some(p.check(|| false)),
+                    W1 => {
+                        count.fetch_add(1, Ordering::SeqCst);
+                    }
+                    W2 => {
+                        p.wake(|| s.kick());
+                    }
+                }
+            }
+            if skip == Some(false) {
+                s.sleep();
+            }
+            p.end();
+            assert_eq!(
+                s.slept_full.get(),
+                0,
+                "a full sleep with the count at {} after {:?}",
+                count.load(Ordering::SeqCst),
+                order.map(|s| match s {
+                    M1 => "M1",
+                    M2 => "M2",
+                    W1 => "W1",
+                    W2 => "W2",
+                })
+            );
+        }
+    }
+
+    /// 10^6 rounds on real threads: a waiter raises the count and wakes, main parks with a fake sleeper that keeps
+    /// kicks; no sleep that began with the count above 0 lasts over 100 ms.  Each round hands off through a condvar
+    /// both ways (main has seen the count; the waiter lowered it), so neither thread spins on the other: a spin on a
+    /// one-CPU container waits a whole timeslice per round.  The test fails at its 120 s deadline instead of hanging.
+    #[test]
+    fn no_lost_wake_under_stress() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::{Arc, Condvar, Mutex};
+        const ROUNDS: u32 = 1_000_000;
+        const DEADLINE: Duration = Duration::from_secs(120);
+        let count: &'static AtomicI32 = Box::leak(Box::new(AtomicI32::new(0)));
+        let park: &'static Park = Box::leak(Box::new(Park::new()));
+        park.set_waiters(count);
+        let end = Instant::now() + DEADLINE;
+        let stop: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+        // the fake run loop: kicks are tokens; a sleep takes one or times out after 100 ms
+        let tokens = Arc::new((Mutex::new(0u32), Condvar::new()));
+        // the round's hand-off: (the round main has seen, the round whose count the waiter lowered)
+        let hand = Arc::new((Mutex::new((0u32, 0u32)), Condvar::new()));
+        // wait on `cv` until `done` holds, or the deadline (which stops both threads)
+        fn wait_for<T>(
+            m: &Mutex<T>,
+            cv: &Condvar,
+            end: Instant,
+            stop: &AtomicBool,
+            done: impl Fn(&T) -> bool,
+        ) -> bool {
+            let mut g = m.lock().unwrap();
+            while !done(&g) {
+                let now = Instant::now();
+                if now >= end || stop.load(Ordering::SeqCst) {
+                    stop.store(true, Ordering::SeqCst);
+                    cv.notify_all();
+                    return false;
+                }
+                g = cv
+                    .wait_timeout(g, (end - now).min(Duration::from_millis(100)))
+                    .unwrap()
+                    .0;
+            }
+            true
+        }
+        let (t2, h2) = (tokens.clone(), hand.clone());
+        let waiter = std::thread::spawn(move || {
+            for round in 1..=ROUNDS {
+                count.fetch_add(1, Ordering::SeqCst);
+                park.wake(|| {
+                    *t2.0.lock().unwrap() += 1;
+                    t2.1.notify_one();
+                });
+                if !wait_for(&h2.0, &h2.1, end, stop, |h| h.0 >= round) {
+                    return;
+                }
+                count.fetch_sub(1, Ordering::SeqCst);
+                h2.0.lock().unwrap().1 = round;
+                h2.1.notify_all();
+            }
+        });
+        let mut lost = 0u32;
+        let mut round = 0;
+        while round < ROUNDS && !stop.load(Ordering::SeqCst) {
+            if Instant::now() >= end {
+                stop.store(true, Ordering::SeqCst);
+                hand.1.notify_all();
+                break;
+            }
+            park.park(
+                || false,
+                || {
+                    let start = count.load(Ordering::SeqCst);
+                    let at = Instant::now();
+                    let mut g = tokens.0.lock().unwrap();
+                    while *g == 0 && at.elapsed() < Duration::from_millis(100) {
+                        g = tokens
+                            .1
+                            .wait_timeout(g, Duration::from_millis(100))
+                            .unwrap()
+                            .0;
+                    }
+                    if *g > 0 {
+                        *g -= 1;
+                    } else if start > 0 {
+                        lost += 1;
+                    }
+                },
+            );
+            park.take();
+            if count.load(Ordering::SeqCst) > 0 {
+                round += 1;
+                hand.0.lock().unwrap().0 = round;
+                hand.1.notify_all();
+                // the waiter lowers the count before its next round
+                if !wait_for(&hand.0, &hand.1, end, stop, |h| h.1 >= round) {
+                    break;
+                }
+            }
+        }
+        waiter.join().unwrap();
+        assert!(
+            !stop.load(Ordering::SeqCst),
+            "the stress test passed its {DEADLINE:?} deadline at round {round} of {ROUNDS}"
+        );
+        assert_eq!(lost, 0, "sleeps that began with a waiter and timed out");
+    }
+
+    #[test]
+    fn a_count_above_zero_returns_the_wait_at_once() {
+        let count: &'static AtomicI32 = Box::leak(Box::new(AtomicI32::new(1)));
+        let (mut regs, park, stats) = (Regs::default(), Park::new(), WaitStats::new());
+        park.set_waiters(count);
+        let mut f = Fake::default();
+        let mut out = Vec::new();
+        run(
+            &mut f,
+            &mut regs,
+            &park,
+            &stats,
+            &set(&[(3, R)]),
+            None,
+            &mut out,
+        );
+        assert!(out.is_empty());
+        assert_eq!(f.slept, 0);
+        assert!(
+            stats
+                .text(&park)
+                .contains(":lock-waiters 1 :parks-with-waiters 0")
+        );
     }
 
     #[test]
