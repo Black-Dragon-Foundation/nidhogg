@@ -36,7 +36,14 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #ifdef HAVE_NHWL
 
+#ifdef NHWL_WAYLAND
 #include <cairo.h>
+/* The context the drawing seam passes (struct nhwl_draw_ops): Cairo's
+   here, a Core Graphics one under Naglfar (nhmacdraw.c).  */
+typedef cairo_t nhwl_cr;
+#else
+typedef struct CGContext nhwl_cr;
+#endif
 
 #include "glitnir.h"
 #include "nhglue.h"
@@ -48,7 +55,9 @@ struct nhwl_bitmap_record
   char *file;
   int refcount;
   int height, width, depth;
+#ifdef NHWL_WAYLAND
   cairo_pattern_t *pattern;
+#endif
 };
 
 #define RGB_TO_ULONG(r, g, b) (((r) << 16) | ((g) << 8) | (b))
@@ -268,8 +277,10 @@ struct nhwl_output
 
   /* The retained backing: the frame's pixels, device size.  The glue owns
      the pixels (nhg_backing); this surface draws on them.  */
+#ifdef NHWL_WAYLAND
   cairo_surface_t *cr_surface;
   cairo_t *cr_context;
+#endif
   int cr_width, cr_height;
   uint64_t cr_gen;		/* counts the backing's creations */
   struct nhwl_csd csd;
@@ -473,7 +484,20 @@ extern int nhwl_drag_run (struct nhwl_display_info *, double,
 			  struct frame **);
 
 /* The backing (nhwlterm.c; nhwldraw.c draws on it).  */
-extern cairo_t *nhwl_begin_cr_clip (struct frame *);
+extern nhwl_cr *nhwl_begin_cr_clip (struct frame *);
+/* Whether OUT has a backing yet; finish drawing on it before the glue
+   reads its pixels (flush), and take back what the glue wrote (dirty).
+   A Core Graphics bitmap context draws straight into the memory, so
+   under Naglfar only the first means anything.  */
+#ifdef NHWL_WAYLAND
+#define nhwl_backing_p(out) ((out)->cr_surface != NULL)
+#define nhwl_backing_flush(out) cairo_surface_flush ((out)->cr_surface)
+#define nhwl_backing_dirty(out) cairo_surface_mark_dirty ((out)->cr_surface)
+#else
+#define nhwl_backing_p(out) ((out)->cr_width > 0)
+#define nhwl_backing_flush(out) ((void) 0)
+#define nhwl_backing_dirty(out) ((void) 0)
+#endif
 extern void nhwl_end_cr_clip (struct frame *);
 
 /* The drawing primitives under nhwl_draw_glyph_string's walk of a glyph
@@ -482,13 +506,13 @@ extern void nhwl_end_cr_clip (struct frame *);
    bitmaps and the cursors are in the redisplay interface.  */
 struct nhwl_draw_ops
 {
-  cairo_t *(*begin_clip) (struct frame *);
+  nhwl_cr *(*begin_clip) (struct frame *);
   void (*end_clip) (struct frame *);
-  void (*save) (cairo_t *);
-  void (*restore) (cairo_t *);
-  void (*set_clipping) (struct glyph_string *, cairo_t *);
+  void (*save) (nhwl_cr *);
+  void (*restore) (nhwl_cr *);
+  void (*set_clipping) (struct glyph_string *, nhwl_cr *);
   void (*set_clipping_exactly) (struct glyph_string *, struct glyph_string *,
-				cairo_t *);
+				nhwl_cr *);
   void (*fill) (struct frame *, unsigned long, int, int, int, int, bool);
   void (*background) (struct glyph_string *, bool);
   void (*glyph_run) (struct glyph_string *);
@@ -500,6 +524,9 @@ struct nhwl_draw_ops
   void (*underwave) (struct glyph_string *, unsigned long);
   void (*underline) (struct frame *, struct glyph_string *, unsigned long,
 		     enum face_underline_type, int, int, int);
+  void (*hollow_cursor) (struct window *, struct glyph_row *);
+  void (*bar_cursor) (struct window *, struct glyph_row *, int,
+		      enum text_cursor_kinds);
 };
 extern const struct nhwl_draw_ops *nhwl_draw_ops;
 extern void nhwl_set_cr_source_with_gc_foreground (struct frame *, Emacs_GC *,
@@ -607,6 +634,9 @@ extern void nhwl_focus_lost (struct frame *);
 /* nhwlfns.c */
 extern void syms_of_nhwlterm (void);
 extern void syms_of_nhwlfns (void);
+#ifdef HAVE_NHMAC
+extern void syms_of_nhmacterm (void);
+#endif
 extern void syms_of_nhwlcsd (void);
 extern void nhwl_selection_clear_event (uint32_t, struct input_event *);
 extern void nhwl_handle_selection_clear (struct input_event *);

@@ -31,7 +31,6 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include <config.h>
 
-#include <cairo.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
@@ -402,6 +401,9 @@ nhwl_query_frame_background_color (struct frame *f, Emacs_Color *bgcolor)
 		    The backing and the present path
  ***********************************************************************/
 
+#ifdef NHWL_WAYLAND
+/* Naglfar's backing primitives are in nhmacdraw.c.  */
+
 /* Adapted from pgtk_begin_cr_clip: the frame's retained backing, device
    size, made or resized on use.  NHWL_CR_DEPTH counts the open calls.  */
 static int nhwl_cr_depth;
@@ -481,6 +483,7 @@ nhwl_set_cr_source_with_color (struct frame *f, unsigned long color,
       cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
     }
 }
+#endif /* NHWL_WAYLAND */
 
 /* Whether C is a child frame of F with a window.  */
 static bool
@@ -525,10 +528,12 @@ nhwl_surface_add (struct frame *f, uint64_t parent, bool prepare)
       nhwl_backing_resize (f);
       /* The title strip; the window geometry, and a child frame's position
 	 and input region (the glue sends them).  */
+#ifdef NHWL_WAYLAND
       nhwl_csd_draw (f);
+#endif
       nhwl_glitnir_ensure (f);
-      if (out->cr_surface)
-	cairo_surface_flush (out->cr_surface);
+      if (nhwl_backing_p (out))
+	nhwl_backing_flush (out);
     }
 #ifdef ENABLE_CHECKING
   {
@@ -713,6 +718,7 @@ nhwl_present_ready (struct nhwl_display_info *dpyinfo, uint64_t root)
   return rc > 0 && (rc & NHG_PRESENTED_COMMITTED);
 }
 
+#ifdef NHWL_WAYLAND
 /* Adapted from pgtk_clear_area.  */
 void
 nhwl_clear_area (struct frame *f, int x, int y, int width, int height)
@@ -731,6 +737,7 @@ nhwl_clear_area (struct frame *f, int x, int y, int width, int height)
   cairo_fill (cr);
   nhwl_end_cr_clip (f);
 }
+#endif /* NHWL_WAYLAND */
 
 static void
 nhwl_clear_frame_area (struct frame *f, int x, int y, int width, int height)
@@ -752,6 +759,7 @@ nhwl_clear_frame (struct frame *f)
   unblock_input ();
 }
 
+#ifdef NHWL_WAYLAND
 /* Adapted from fill_background_by_face (pgtkterm.c).  */
 void
 nhwl_fill_background_by_face (struct frame *f, struct face *face, int x,
@@ -785,6 +793,7 @@ nhwl_fill_background_by_face (struct frame *f, struct face *face, int x,
 
   nhwl_end_cr_clip (f);
 }
+#endif /* NHWL_WAYLAND */
 
 /* Child frame F's border, WIDTH device pixels (0: none) in face
    colour RGB at alpha ALPHA, for its chrome: the rounded corners keep it
@@ -1833,7 +1842,9 @@ nhwl_free_frame_resources (struct frame *f)
   if (out->bell_timer)
     cancel_atimer (out->bell_timer);
   out->bell_timer = NULL;
+#ifdef NHWL_WAYLAND
   nhwl_cr_destroy_frame_context (f);
+#endif
   nhwl_glitnir_forget (f);
 
   xfree (f->output_data.nhwl);
@@ -3721,13 +3732,13 @@ nhwl_bell_restore (struct atimer *timer)
   int32_t rc = 0;
 
   out->bell_timer = NULL;
-  if (!out->glitnir_id || !out->cr_surface)
+  if (!out->glitnir_id || !nhwl_backing_p (out))
     return;
   block_input ();
-  cairo_surface_flush (out->cr_surface);
+  nhwl_backing_flush (out);
   rc = nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
 		     NHG (nhg_bell_restore (FRAME_NHG (f), out->glitnir_id)));
-  cairo_surface_mark_dirty (out->cr_surface);
+  nhwl_backing_dirty (out);
   unblock_input ();
   if (rc > 0)
     nhwl_publish (f);
@@ -3749,10 +3760,10 @@ nhwl_flash (struct frame *f)
   block_input ();
   nhwl_backing_resize (f);
   nhwl_glitnir_ensure (f);
-  cairo_surface_flush (out->cr_surface);
+  nhwl_backing_flush (out);
   rc = nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
 		     NHG (nhg_bell_flash (FRAME_NHG (f), out->glitnir_id, &g)));
-  cairo_surface_mark_dirty (out->cr_surface);
+  nhwl_backing_dirty (out);
   if (rc > 0)
     {
       if (out->bell_timer)
@@ -4086,7 +4097,11 @@ nhwl_term_init (Lisp_Object display_name)
       terminal->kboard = share->terminal->kboard;
     else
       {
+#ifdef HAVE_NHMAC
+	terminal->kboard = allocate_kboard (Qns);
+#else
 	terminal->kboard = allocate_kboard (Qpgtk);
+#endif
 
 	/* Don't let the initial kboard remain current longer than necessary.
 	   That would cause problems if a file loaded on startup tries to
@@ -4536,8 +4551,12 @@ If it is not a float there is no wait.  */);
     doc: /* SKIP: real doc in xterm.c.  */);
   Vx_toolkit_scroll_bars = Qnil;
 
+#ifdef NHWL_WAYLAND
   /* Tell Emacs about this window system: `pgtk' at the Lisp level, so
      term/pgtk-win.el loads unchanged, and `nidhogg-wayland'.  */
   Fprovide (Qpgtk, Qnil);
   Fprovide (intern_c_string ("nidhogg-wayland"), Qnil);
+#else
+  syms_of_nhmacterm ();
+#endif
 }

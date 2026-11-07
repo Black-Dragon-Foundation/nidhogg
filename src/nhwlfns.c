@@ -44,6 +44,14 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "font.h"
 #include "atimer.h"
 
+/* Whether F has a menu bar window: never under an external menu bar
+   (Naglfar's is the system's, HAVE_EXT_MENU_BAR).  */
+#ifdef HAVE_EXT_MENU_BAR
+# define NHWL_MENU_BAR_WINDOW_P(f) false
+#else
+# define NHWL_MENU_BAR_WINDOW_P(f) WINDOWP ((f)->menu_bar_window)
+#endif
+
 static int x_decode_color (struct frame *f, Lisp_Object color_name,
 			   int mono_color);
 
@@ -149,8 +157,10 @@ nhwl_apply_param (struct frame *f, uint32_t key, Lisp_Object prop,
       nhwl_set_frame_alpha (f);
     }
   unblock_input ();
+#ifndef HAVE_EXT_MENU_BAR
   if (fl & NHG_PA_CLEAR_MENU_MATRIX)
     clear_glyph_matrix (XWINDOW (f->menu_bar_window)->current_matrix);
+#endif
   if (fl & NHG_PA_ADJUST_GLYPHS)
     adjust_frame_glyphs (f);
   if (fl & NHG_PA_TAB_BAR_HOOK)
@@ -186,7 +196,7 @@ nhwl_param (struct frame *f, uint32_t key, Lisp_Object prop, int current,
   NhgParamFrame facts = {
     FRAME_MINIBUF_ONLY_P (f), FRAME_PARENT_FRAME (f) != NULL,
     FRAME_X_WINDOW (f) != 0, FRAME_VISIBLE_P (f), nhwl_child_p (f),
-    EQ (arg, old), WINDOWP (f->menu_bar_window), current,
+    EQ (arg, old), NHWL_MENU_BAR_WINDOW_P (f), current,
     FRAME_LINE_HEIGHT (f), FRAME_INTERNAL_BORDER_WIDTH (f),
     FRAME_PIXEL_WIDTH (f),
     FRAME_BACKGROUND_PIXEL (f), f->output_data.nhwl->mouse_color,
@@ -901,10 +911,12 @@ DEFUN ("x-create-frame", Fx_create_frame, Sx_create_frame, 1, 1, 0,
       specbind (Qx_resource_name, name);
     }
 
+#ifdef NHWL_WAYLAND
   register_font_driver (&ftcrfont_driver, f);
 #ifdef HAVE_HARFBUZZ
   register_font_driver (&ftcrhbfont_driver, f);
 #endif	/* HAVE_HARFBUZZ */
+#endif	/* NHWL_WAYLAND */
 
   gui_default_parameter (f, parms, Qfont_backend, Qnil,
 			 "fontBackend", "FontBackend", RES_TYPE_STRING);
@@ -1726,10 +1738,12 @@ nhwl_create_tip_frame (struct nhwl_display_info *dpyinfo, Lisp_Object parms)
       specbind (Qx_resource_name, name);
     }
 
+#ifdef NHWL_WAYLAND
   register_font_driver (&ftcrfont_driver, f);
 #ifdef HAVE_HARFBUZZ
   register_font_driver (&ftcrhbfont_driver, f);
 #endif	/* HAVE_HARFBUZZ */
+#endif	/* NHWL_WAYLAND */
 
   gui_default_parameter (f, parms, Qfont_backend, Qnil,
 			 "fontBackend", "FontBackend", RES_TYPE_STRING);
