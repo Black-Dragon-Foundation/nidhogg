@@ -152,6 +152,86 @@ mod ffi {
         assert!(n >= 10, "only {n} functions found in nhglue.h");
     }
 
+    /// Sjá (nidhogg/sja), which this archive carries through Glitnir, writes every `extern "C"` function with
+    /// `sja_export!` (so each runs in its guard) with a `# Safety` section, every function of `sja.h` is one, and the
+    /// archive exports it (pattern D: the sources and the linked symbol).
+    #[test]
+    fn sja_entry_points_come_from_sja_export() {
+        let sja = format!("{}/../sja", env!("CARGO_MANIFEST_DIR"));
+        let abi = std::fs::read_to_string(format!("{sja}/src/abi.rs")).unwrap();
+        let mut spans = Vec::new();
+        for (at, _) in abi.match_indices("sja_export! {") {
+            let open = at + "sja_export! ".len();
+            let mut depth = 0usize;
+            let end = abi[open..]
+                .char_indices()
+                .find_map(|(i, c)| {
+                    match c {
+                        '{' => depth += 1,
+                        '}' => depth -= 1,
+                        _ => {}
+                    }
+                    (depth == 0).then_some(open + i)
+                })
+                .expect("an unclosed sja_export! invocation");
+            assert!(
+                abi[open..end].contains("/// # Safety"),
+                "no # Safety in:\n{}",
+                &abi[open..end]
+            );
+            spans.push((open, end));
+        }
+        assert!(
+            !spans.is_empty(),
+            "no sja_export! invocation in sja/src/abi.rs"
+        );
+        let inside = |at: usize| spans.iter().any(|&(a, b)| a < at && at < b);
+        for entry in std::fs::read_dir(format!("{sja}/src")).unwrap() {
+            let path = entry.unwrap().path();
+            let text = std::fs::read_to_string(&path).unwrap();
+            let mut in_macro = false;
+            for line in text.lines().filter(|l| !l.trim_start().starts_with("//")) {
+                in_macro |= path.ends_with("abi.rs") && line.starts_with("macro_rules! sja_export");
+                in_macro &= !(path.ends_with("abi.rs") && line.starts_with("sja_export! {"));
+                for needle in ["no_mangle", "extern \"C\""] {
+                    assert!(
+                        in_macro || !line.contains(needle),
+                        "{needle} outside sja_export! in {}: {line}",
+                        path.display()
+                    );
+                }
+            }
+        }
+        let header = std::fs::read_to_string(format!("{sja}/include/sja.h")).unwrap();
+        let mut n = 0;
+        for line in header.lines() {
+            let Some(at) = line.find(" sja_") else {
+                continue;
+            };
+            let name: String = line[at + 1..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if !line[at + 1 + name.len()..].starts_with(" (") {
+                continue;
+            }
+            let def = abi
+                .find(&format!("fn {name}("))
+                .unwrap_or_else(|| panic!("{name} has no entry point"));
+            assert!(inside(def), "{name} is not written with sja_export!");
+            n += 1;
+        }
+        assert_eq!(n, 1, "sja.h declares one function");
+        // the archive carries it (through glitnir's re-export and this crate's `pub use glitnir::*`)
+        let _: unsafe extern "C" fn(
+            i32,
+            *const nhglue::sja::abi::SjaArg,
+            usize,
+            *mut *const nhglue::sja::abi::SjaTok,
+            *mut usize,
+        ) -> i32 = nhglue::sja_call;
+    }
+
     /// Two threads call in turn under an outer lock (Emacs's global lock stands in): the guard's `try_lock` never sees
     /// the other's call, nothing is poisoned and the registry adds up.
     #[test]

@@ -16,10 +16,15 @@ crate-type = ["staticlib", "rlib"]
 png = { version = "=0.18.1", default-features = false, optional = true }
 gif = { version = "=0.14.2", default-features = false, features = ["std"], optional = true }
 image-webp = { version = "=0.2.4", default-features = false, optional = true }
+# Sjá, the native view model (README "Sjá"): carried here so every Rust-carrying build (NS's libglitnir.a, the glue's
+# libnhglue.a) has its entry point
+sja = { path = "../sja", version = "0.1.0" }
 
 [features]
 default = ["images"]
 images = ["dep:png", "dep:gif", "dep:image-webp"]
+# Sjá's test panic and breaker clock (the glue's test-hooks turn it on)
+sja-test-hooks = ["sja/test-hooks"]
 pixman-oracle = []
 
 # The shadow tests convolve their reference images with an exact Gaussian (~10⁹ multiply-adds): optimised, they

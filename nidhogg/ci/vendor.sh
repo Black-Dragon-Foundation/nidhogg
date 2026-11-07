@@ -85,9 +85,11 @@ case $cmd in
     done
     work=$(mktemp -d) || exit 1
     trap 'rm -rf "$work"' EXIT
-    mkdir -p "$work/src/shell" "$work/src/glitnir" "$work/stage/shell" "$work/stage/glitnir" "$work/stage/glue"
+    mkdir -p "$work/src/shell" "$work/src/glitnir" "$work/src/sja" "$work/stage/shell" "$work/stage/glitnir" "$work/stage/glue"
     for f in Cargo.toml Cargo.lock src include; do [ -e "$NH/shell/$f" ] && cp -r "$NH/shell/$f" "$work/src/shell/"; done
     for f in Cargo.toml Cargo.lock build.rs src include; do cp -r "$NH/glitnir/$f" "$work/src/glitnir/"; done
+    # Sjá, Glitnir's path dependency: its crates are in Glitnir's and the shell's locks, so their vendor/ trees hold them
+    for f in Cargo.toml Cargo.lock src include; do cp -r "$NH/sja/$f" "$work/src/sja/"; done
     # --locked everywhere it can be; the filterer has no such flag, so an unchanged lock is the same file
     ( cd "$work/src/shell" && cargo vendor-filterer "${PLATFORMS[@]}" "$work/stage/shell/vendor" >/dev/null ) || fail vendor-shell
     cmp -s "$NH/shell/Cargo.lock" "$work/src/shell/Cargo.lock" || fail "lock-drift shell (cargo would change shell/Cargo.lock)"

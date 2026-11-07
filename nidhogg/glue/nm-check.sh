@@ -4,6 +4,8 @@
 #    (references across its members), must not include any symbol that Emacs's own objects (src/*.o) define.  That
 #    denylist is built from the build tree each time.  Calls through function pointers are invisible here; there are
 #    none, because C passes no callbacks to the glue (a header rule).
+# (1b. Sjá's sja_call is defined in the archive; src/nidhogg-views.c calls it directly, outside NHG: it runs inside a
+#  DEFUN, never while waiting for input, so no signal handler's longjmp can cross it, and Sjá's guard checks headroom.)
 # 2. Every glue call in src/nhwl*.c goes through the NHG (…) macro (it clears waiting_for_input, so no longjmp crosses a
 #    Rust frame): a line with an `nhg_name (` call and no `NHG (` is reported.  A warning until the macro exists.
 # Usage: nm-check.sh BUILD_DIR   (build.sh's --build-dir, which holds obj/src, or a configured tree's top, which holds
@@ -33,6 +35,13 @@ calls=$(comm -12 <(printf '%s\n' "$external") <(printf '%s\n' "$emacs"))
 if [ -n "$calls" ]; then
   echo "nm-check: libnhglue.a references symbols Emacs defines (Rust must never call Emacs):"
   printf '  %s\n' $calls
+  bad=1
+fi
+
+# Sjá's entry point is in the archive (Glitnir re-exports it; src/nidhogg-views.c calls it), and it too calls nothing
+# of Emacs (the check above covers its members, which are the archive's)
+if ! printf '%s\n' "$def" | grep -qx sja_call; then
+  echo "nm-check: libnhglue.a does not define sja_call (Sjá's entry point; glitnir's pub use sja::abi::sja_call)"
   bad=1
 fi
 
