@@ -529,16 +529,17 @@ Inline: the leg's time passes unseen, and at most two commits jump to the end."
    nil
    (lambda (c _id _base)
      (glitnir-fx--rest c)
-     (unwind-protect
-         (progn
-           (gui-runner-recorder '(:cmd "scale" :value120 150))
-           (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-scale-factor) 1.25)) 5))
-           (should (glitnir-fx--wait (lambda () (redisplay t) (> (glitnir-fx--backdrop-px c) 0))))
-           (gui-runner-wait-settled t)
-           (should (glitnir-fx--connected-p)))
-       (gui-runner-recorder '(:cmd "scale" :value120 120))
-       (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-scale-factor) 1.0)) 5)
-       (gui-runner-wait-settled t)))
+     (gui-runner-keeping-frame-font
+       (unwind-protect
+           (progn
+             (gui-runner-recorder '(:cmd "scale" :value120 150))
+             (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-scale-factor) 1.25)) 5))
+             (should (glitnir-fx--wait (lambda () (redisplay t) (> (glitnir-fx--backdrop-px c) 0))))
+             (gui-runner-wait-settled t)
+             (should (glitnir-fx--connected-p)))
+         (gui-runner-recorder '(:cmd "scale" :value120 120))
+         (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-scale-factor) 1.0)) 5)
+         (gui-runner-wait-settled t))))
    glitnir-fx--blur))
 
 (ert-deftest glitnir-fade-with-blur ()
@@ -1066,14 +1067,15 @@ switch: going windowed and undecorated may change it."
   "The undecorated toplevel's rows at scale 2."
   (skip-unless (glitnir-fx--recorder-p))
   (let ((old (round (* 120 (frame-scale-factor)))))
-    (unwind-protect
-        (progn
-          (gui-runner-recorder '(:cmd "scale" :value120 240))
-          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-scale-factor) 2.0)) 5))
-          (gui-runner-wait-settled)
-          (nhwl-gui--with-blink nil #'glitnir-fx--undecorated-rows))
-      (gui-runner-recorder `(:cmd "scale" :value120 ,old))
-      (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (round (* 120 (frame-scale-factor))) old)) 5)
-      (gui-runner-wait-settled))))
+    (gui-runner-keeping-frame-font
+      (unwind-protect
+          (progn
+            (gui-runner-recorder '(:cmd "scale" :value120 240))
+            (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-scale-factor) 2.0)) 5))
+            (gui-runner-wait-settled)
+            (nhwl-gui--with-blink nil #'glitnir-fx--undecorated-rows))
+        (gui-runner-recorder `(:cmd "scale" :value120 ,old))
+        (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (round (* 120 (frame-scale-factor))) old)) 5)
+        (gui-runner-wait-settled)))))
 
 ;;; glitnir-effects-gui-tests.el ends here
