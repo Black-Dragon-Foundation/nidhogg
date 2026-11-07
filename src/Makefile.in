@@ -337,6 +337,8 @@ PGTK_LIBS=@PGTK_LIBS@
 ## Nidhogg: Glitnir (the compositor), a Rust static library built by cargo from nidhogg/glitnir.
 ## GLITNIR_LIBS is the library plus the native libraries rustc says it needs (empty without --with-glitnir).
 HAVE_GLITNIR=@HAVE_GLITNIR@
+## Nidhogg: yes when Naglfar (the Rust macOS shell) is the window system.
+HAVE_NHMAC=@HAVE_NHMAC@
 GLITNIR_OBJ=@GLITNIR_OBJ@
 GLITNIR_LIBS=@GLITNIR_LIBS@
 GLITNIR_SRCDIR=@GLITNIR_SRCDIR@
@@ -599,6 +601,11 @@ endif
 ## native-compiled with the preloaded Lisp.
 ifneq (${NIDHOGG_WATCHDOG_OBJ},)
 shortlisp += $(patsubst ${lispsource}/%.el,%.elc,$(wildcard ${lispsource}/nidhogg-watchdog*.el))
+endif
+## Nidhogg: Naglfar's lisp/term/nhmac-win.el is loaded by a featurep-guarded line too; compiled before the dump like
+## ns-win, since it uses cl-lib's macros, which a dump-time source load cannot require.
+ifeq ($(HAVE_NHMAC),yes)
+shortlisp += term/nhmac-win.elc
 endif
 ## Nidhogg: the same for the workers' lisp/nidhogg-workers.el (its jsonrpc and treesit parts load later, with those).
 ifneq (${NIDHOGG_WORKERS_OBJ},)
