@@ -5,6 +5,8 @@
 //! poisoned display, as it does any panic.
 
 mod app;
+#[cfg(feature = "test-hooks")]
+mod inject;
 mod runloop;
 mod screens;
 mod view;
