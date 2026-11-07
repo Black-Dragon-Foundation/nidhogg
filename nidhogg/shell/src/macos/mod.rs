@@ -19,6 +19,7 @@ mod runloop;
 mod screens;
 mod surface;
 pub mod text;
+pub mod startup;
 mod view;
 mod window;
 

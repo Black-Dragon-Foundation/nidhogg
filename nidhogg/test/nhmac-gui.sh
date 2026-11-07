@@ -5,14 +5,17 @@
 # ns-display.m), renamed, with a row floor added.
 #
 #   nidhogg/test/nhmac-gui.sh --tarball FILE | --prefix DIR | --emacs FILE [--scale 1|2]... [--select REGEXP] [--files GLOB]
-#                          [--timeout SEC] [--out DIR] [--floor N] [--interpose] [--drgnx DIR [--drgnx-strict]]
+#                          [--timeout SEC] [--out DIR] [--floor N] [--interpose] [--app DIR]
+#                          [--drgnx DIR [--drgnx-strict]]
 #
 #   --tarball FILE   the macOS release tarball (nidhogg-VERSION-macos-ARCH.tar.xz); unpacked under $TMPDIR
 #   --prefix DIR     an unpacked tarball (DIR/Nidhogg.app/Contents/MacOS/Emacs)
 #   --emacs FILE     an Emacs binary run as it is: a Naglfar build tree's src/emacs (no bundle yet)
+#   --app DIR        the installed Naglfar bundle (nextstep/Emacs.app after `make install'): the rows of nhmac-app-gui-tests.el
+#                    start it (NHMAC_APP); without it they skip
 #   --scale S        the display scale, 1 or 2; repeatable (default: 1, then 2)
 #   --select REGEXP  ERT selector, an Emacs regexp (alternation is \|); default every test of the files
-#   --files GLOB     the test files, in test/src/nidhogg-tests (default nhmac-gui-tests.el)
+#   --files GLOB     the test files, in test/src/nidhogg-tests (default nhmac-*gui-tests.el)
 #   --timeout SEC    kill a run after SEC seconds (default 900)
 #   --floor N        the fewest rows a run may report (default 1): a run that reports 0 rows, or fewer than N, is red
 #   --interpose      build nidhogg/test/mac-interpose (cargo, on the runner) and run Emacs with it inserted: the
@@ -35,7 +38,7 @@ set -u
 self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 checkout=$(cd "$self/../.." && pwd)
 
-tarball= prefix= emacs= scales=() select= files=nhmac-gui-tests.el timeout=900 out= floor=1 interpose=0 drgnx= dstrict=0
+tarball= prefix= emacs= scales=() select= files='nhmac-*gui-tests.el' timeout=900 out= floor=1 interpose=0 app= drgnx= dstrict=0
 while [ $# -gt 0 ]; do
   case $1 in
     --tarball) tarball=${2:-}; shift 2 ;;
@@ -50,6 +53,7 @@ while [ $# -gt 0 ]; do
     --interpose) interpose=1; shift ;;
     --drgnx) drgnx=${2:-}; shift 2 ;;
     --drgnx-strict) dstrict=1; shift ;;
+    --app) app=${2:-}; shift 2 ;;
     -h|--help) sed -n '2,/^# Exit 0/s/^# \{0,1\}//p' "${BASH_SOURCE[0]}" >&2; exit 2 ;;
     *) echo "nhmac-gui.sh: unknown argument $1" >&2; exit 2 ;;
   esac
@@ -141,6 +145,7 @@ for scale in "${scales[@]}"; do
   GLITNIR_GUI_KNOWN=$checkout/test/src/nidhogg-tests/gui-known-differences.eld \
   GLITNIR_GUI_TESTS=$tests GLITNIR_GUI_FILES=$files GLITNIR_GUI_SELECT=$select \
   GLITNIR_GUI_OUT=$out \
+  NHMAC_APP=$app \
   GLITNIR_GUI_FRAME="$((dx + 20)) $((dy + 40)) 100 35" \
     limited "$timeout" "$emacs" -Q -l "$checkout/test/src/nidhogg-tests/gui-runner.el" >"$log" 2>&1 || rc=$?
   cat "$log"

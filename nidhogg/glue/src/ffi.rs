@@ -2554,6 +2554,87 @@ nhg_export! {
 }
 
 nhg_export! {
+    /// Startup, before Lisp is initialised and without a display: the outer autorelease pool and `LANG` from the
+    /// system's locale when the environment has none (macOS; `NHG_E_UNSUPPORTED` elsewhere).  Calls nothing in Emacs.
+    ///
+    /// # Safety
+    /// None beyond the C ABI: it takes no pointers.  Call it once, from Emacs's main thread, before any other thread.
+    unlocked fn nhg_startup() -> i32 {
+        if platform_startup(true) { Ok(NHG_OK) } else { Err(GlueError::Shell(crate::abi::NHG_E_UNSUPPORTED)) }
+    }
+}
+
+nhg_export! {
+    /// Shutdown: release the pool `nhg_startup` made (macOS; `NHG_E_UNSUPPORTED` elsewhere).
+    ///
+    /// # Safety
+    /// None beyond the C ABI: it takes no pointers.  Call it from the thread that called `nhg_startup`.
+    unlocked fn nhg_shutdown() -> i32 {
+        if platform_startup(false) { Ok(NHG_OK) } else { Err(GlueError::Shell(crate::abi::NHG_E_UNSUPPORTED)) }
+    }
+}
+
+nhg_export! {
+    /// The configured path `epath` placed in the app bundle this executable is in (`ns_relocate`): when it is
+    /// relative and exists there, the new path into `out` (`cap` bytes, NUL-terminated) and its length into `*len`;
+    /// otherwise `*len` is 0 and `out` is untouched.  `NHG_E_TOO_SMALL` when `cap` is not above the length.
+    ///
+    /// # Safety
+    /// `epath` is null or NUL-terminated; `out` is null or holds `cap` writable bytes; `len` is writable.
+    unlocked fn nhg_relocate(epath: *const c_char, out: *mut c_char, cap: usize, len: *mut usize) -> i32 {
+        if epath.is_null() || out.is_null() || len.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: non-null and NUL-terminated (the caller's promise).
+        let path = unsafe { std::ffi::CStr::from_ptr(epath) }.to_str().map_err(|_| GlueError::Arg)?;
+        let Some(moved) = relocate_path(path) else {
+            // SAFETY: non-null and writable (the caller's promise).
+            unsafe { len.write(0) };
+            return Ok(NHG_OK);
+        };
+        if moved.len() >= cap {
+            return Err(GlueError::Code(crate::abi::NHG_E_TOO_SMALL));
+        }
+        // SAFETY: `cap` bytes are writable, and `moved` plus its NUL fits.
+        unsafe {
+            ptr::copy_nonoverlapping(moved.as_ptr(), out.cast::<u8>(), moved.len());
+            out.add(moved.len()).write(0);
+            len.write(moved.len());
+        }
+        Ok(NHG_OK)
+    }
+}
+
+/// The platform's startup (`up`) or shutdown; false where there is none.
+fn platform_startup(up: bool) -> bool {
+    #[cfg(all(feature = "macos", target_os = "macos"))]
+    {
+        if up {
+            nhshell::macos::startup::init();
+        } else {
+            nhshell::macos::startup::shutdown();
+        }
+        true
+    }
+    #[cfg(not(all(feature = "macos", target_os = "macos")))]
+    {
+        let _ = up;
+        false
+    }
+}
+
+/// `epath` in the app bundle (macOS), `None` when it stays.
+fn relocate_path(epath: &str) -> Option<String> {
+    #[cfg(all(feature = "macos", target_os = "macos"))]
+    return nhshell::macos::startup::relocate(epath);
+    #[cfg(not(all(feature = "macos", target_os = "macos")))]
+    {
+        let _ = epath;
+        None
+    }
+}
+
+nhg_export! {
     /// Open the face `font_id` (an entity's) at `size` device pixels with `flags` (`NHG_FONT_SYNTH_*`, the entity's
     /// synthesised traits, and `NHG_FONT_MINSPACE`): its handle and metrics into `*out`, rounded as `macfont_open`
     /// rounds them.  `NHG_E_STATE` when the face does not open, `NHG_E_UNSUPPORTED` without Core Text.

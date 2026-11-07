@@ -1067,6 +1067,9 @@ load_pdump (int argc, char **argv, char *dump_file)
 #elif defined (HAVE_NS)
   path_exec = ns_relocate (path_exec);
 #endif
+#ifdef HAVE_NHMAC
+  path_exec = ns_relocate (path_exec);
+#endif
 
   /* Look for "emacs-FINGERPRINT.pdmp" in PATH_EXEC.  We hardcode
      "emacs" in "emacs-FINGERPRINT.pdmp" so that the Emacs binary
@@ -1440,6 +1443,9 @@ android_emacs_init (int argc, char **argv, char *dump_file)
 #ifdef HAVE_NS
   /* Initialize the Obj C autorelease pool.  */
   ns_init_pool ();
+#endif
+#ifdef HAVE_NHMAC
+  nhmac_startup ();
 #endif
 
 #ifdef HAVE_PDUMPER
@@ -2090,6 +2096,17 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
 #endif  /* COCOA */
     }
 #endif /* HAVE_NS */
+#ifdef HAVE_NHMAC
+  /* Started from Finder or `open': no terminal, so work from the home
+     directory, as NS does.  */
+  if (!noninteractive && !ch_to_dir && !inhibit_window_system
+      && !isatty (STDIN_FILENO))
+    {
+      char const *home = get_homedir ();
+      if (*home && chdir (home) == 0)
+	emacs_wd = emacs_get_current_dir_name ();
+    }
+#endif /* HAVE_NHMAC */
 
   /* Stupid kludge to catch command-line display spec.  We can't
      handle this argument entirely in window system dependent code
@@ -2779,6 +2796,14 @@ static const struct standard_args standard_args[] =
   { "-macosx", 0, 85, 0 },
   { "-NSHost", 0, 85, 1 },
 #endif
+#ifdef HAVE_NHMAC
+  { "-NSAutoLaunch", 0, 5, 1 },
+  { "-NXAutoLaunch", 0, 5, 1 },
+  { "-_NSMachLaunch", 0, 85, 1 },
+  { "-MachLaunch", 0, 85, 1 },
+  { "-macosx", 0, 85, 0 },
+  { "-NSHost", 0, 85, 1 },
+#endif
   /* These have the same priority as ordinary file name args,
      so they are not reordered with respect to those.  */
   { "-L", "--directory", 0, 1 },
@@ -2799,6 +2824,13 @@ static const struct standard_args standard_args[] =
   { "-file", "--file", 0, 1 },
   { "-insert", "--insert", 0, 1 },
 #ifdef HAVE_NS
+  { "-NXOpen", 0, 0, 1 },
+  { "-NXOpenTemp", 0, 0, 1 },
+  { "-NSOpen", 0, 0, 1 },
+  { "-NSOpenTemp", 0, 0, 1 },
+  { "-GSFilePath", 0, 0, 1 },
+#endif
+#ifdef HAVE_NHMAC
   { "-NXOpen", 0, 0, 1 },
   { "-NXOpenTemp", 0, 0, 1 },
   { "-NSOpen", 0, 0, 1 },
@@ -3219,6 +3251,9 @@ shut_down_emacs (int sig, Lisp_Object stuff)
 
 #ifdef HAVE_NS
   ns_term_shutdown (sig);
+#endif
+#ifdef HAVE_NHMAC
+  nhmac_shutdown ();
 #endif
 
 #ifdef HAVE_LIBXML2

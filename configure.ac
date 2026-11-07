@@ -3013,6 +3013,35 @@ if test "${HAVE_NS}" = yes; then
 
   NS_OBJC_OBJ="nsterm.o nsfns.o nsmenu.o nsselect.o nsimage.o $ns_fontfile"
 fi
+
+dnl Naglfar (Nidhogg's own macOS shell) builds the same self-contained app bundle as the NS port, from
+dnl nidhogg/macos instead of nextstep/Cocoa; nextstep/Makefile assembles it and 'make install' fills it.
+if test "${with_nidhogg_macos}" = yes; then
+  ns_appdir=`pwd`/nextstep/Emacs.app
+  ns_appbindir=${ns_appdir}/Contents/MacOS
+  ns_applibexecdir=${ns_appdir}/Contents/MacOS/libexec
+  ns_applibdir=${ns_appdir}/Contents/Frameworks
+  ns_appresdir=${ns_appdir}/Contents/Resources
+  dnl relative to nextstep/, in the source tree and in the build tree
+  ns_appsrc=../nidhogg/macos/Emacs.base
+  OTHER_FILES=ns-app
+  if test "${EN_NS_SELF_CONTAINED}" = yes; then
+     AC_DEFINE([NS_SELF_CONTAINED], [1], [Build an NS bundled app])
+     ns_self_contained=yes
+     prefix=${ns_appresdir}
+     exec_prefix=${ns_appbindir}
+     libexecdir="\${ns_applibexecdir}"
+     archlibdir="\${ns_applibexecdir}"
+     etcdocdir="\${ns_appresdir}/etc"
+     etcdir="\${ns_appresdir}/etc"
+     infodir="\${ns_appresdir}/info"
+     mandir="\${ns_appresdir}/man"
+     lispdir="\${ns_appresdir}/lisp"
+     lispdirrel="\${ns_appresdir}/lisp"
+     test "$locallisppathset" = no && locallisppath="\${ns_appresdir}/site-lisp"
+     INSTALL_ARCH_INDEP_EXTRA=
+  fi
+fi
 CFLAGS="$tmp_CFLAGS"
 CPPFLAGS="$tmp_CPPFLAGS"
 AC_SUBST([INSTALL_ARCH_INDEP_EXTRA])
@@ -8048,6 +8077,12 @@ if test "$HAVE_NS" = "yes"; then
   fi
   AC_SUBST([ns_check_file])
 fi
+if test "$HAVE_NHMAC" = "yes"; then
+  AC_CONFIG_FILES([nidhogg/macos/Emacs.base/Contents/Info.plist:nidhogg/macos/Info.plist.in \
+    nidhogg/macos/Emacs.base/Contents/Resources/English.lproj/InfoPlist.strings:nidhogg/macos/InfoPlist.strings.in])
+  ns_check_file=Contents/Info.plist
+  AC_SUBST([ns_check_file])
+fi
 
 AC_CONFIG_FILES([Makefile lib/gnulib.mk])
 
@@ -8115,12 +8150,12 @@ if test "$XCONFIGURE" != "android"; then
   AC_CONFIG_COMMANDS([src/epaths.h], [
   if test "${opsys}" = "mingw32"; then
     ${MAKE-make} MAKEFILE_NAME=do-not-make-Makefile epaths-force-w32
-  elif test "$HAVE_NS" = "yes" && test "$EN_NS_SELF_CONTAINED" = "yes"; then
+  elif { test "$HAVE_NS" = "yes" || test "$HAVE_NHMAC" = "yes"; } && test "$EN_NS_SELF_CONTAINED" = "yes"; then
     ${MAKE-make} MAKEFILE_NAME=do-not-make-Makefile epaths-force-ns-self-contained
   else
     ${MAKE-make} MAKEFILE_NAME=do-not-make-Makefile epaths-force
   fi || AC_MSG_ERROR(['src/epaths.h' could not be made.])
-  ], [GCC="$GCC" CPPFLAGS="$CPPFLAGS" opsys="$opsys" HAVE_NS="$HAVE_NS"
+  ], [GCC="$GCC" CPPFLAGS="$CPPFLAGS" opsys="$opsys" HAVE_NS="$HAVE_NS" HAVE_NHMAC="$HAVE_NHMAC"
       EN_NS_SELF_CONTAINED="$EN_NS_SELF_CONTAINED"])
 
   dnl NB we have to cheat and use the ac_... version because abs_top_srcdir

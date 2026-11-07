@@ -1370,6 +1370,17 @@ int32_t nhg_svg_render (const uint8_t *src, size_t len, uint32_t is_file, const 
 int32_t nhg_image_transform (int32_t w, int32_t h, int32_t width, int32_t height, double rotation, bool flip,
                              double *out, int32_t *out_w, int32_t *out_h);
 
+/* ---- Startup (glue/src/ffi.rs, nhshell's startup; macOS) ---------------------------------------------------------
+   nhg_startup runs first in main, before Lisp is initialised, and calls nothing in Emacs: it makes the outer
+   autorelease pool and sets LANG from the system's locale when the environment has none.  nhg_shutdown releases the
+   pool.  nhg_relocate is ns_relocate: when EPATH is relative and exists inside the app bundle the executable is in,
+   the path in the bundle goes to OUT (CAP bytes, NUL-terminated) and its length to *LEN; otherwise *LEN is 0.
+   NHG_E_UNSUPPORTED elsewhere (nhg_relocate then reports *LEN 0).  NHG_E_TOO_SMALL: CAP does not fit the path.  */
+
+int32_t nhg_startup (void);
+int32_t nhg_shutdown (void);
+int32_t nhg_relocate (const char *epath, char *out, size_t cap, size_t *len);
+
 /* ---- The main wait (glue/src/wait.rs, nhshell's wait.rs; macOS) ------------------------------------------------
    nhg_wait registers the fds RFDS and WFDS ask for below NFDS, runs the backend's event loop until one is ready, a
    wake or TIMEOUT_NS (negative: none), and leaves the ready ones in the sets as select does; the count, as select
