@@ -137,6 +137,31 @@ impl MacShell {
                 }
                 _ => Err(ShellError::Arg),
             })),
+            // "(SECS)" or "(SECS INDEX)": end the popup being tracked after SECS, choosing item INDEX first
+            "test-popup-end" => Some(numbers(arg).and_then(|n| {
+                let secs = *n.first().ok_or(ShellError::Arg)?;
+                super::super::menus::test_end_popup_after(
+                    self.mtm,
+                    secs,
+                    n.get(1).map(|i| *i as isize),
+                );
+                Ok(())
+            })),
+            // "(GENERATION INDEX)": a choice from the menu bar, as AppKit's action reports it
+            "test-menu-choose" => Some(numbers(arg).and_then(|n| match n[..] {
+                [generation, index] => {
+                    self.apply(super::super::runloop::MacEv::Menu(
+                        generation as u32,
+                        index as u32,
+                    ));
+                    Ok(())
+                }
+                _ => Err(ShellError::Arg),
+            })),
+            "test-menu-update" => {
+                super::super::menus::test_update(&self.app);
+                Some(Ok(()))
+            }
             _ => None,
         }
     }
@@ -176,6 +201,7 @@ impl MacShell {
             "pump-trace" => Ok(crate::trace::pumps_text()),
             "test-entries" => first_number(arg).map(|on| crate::trace::entries_text(on != 0)),
             "shell-view" => Ok(self.shell_view()),
+            "test-menu-dump" => Ok(format!("{:?}", super::super::menus::test_dump(&self.app))),
             "test-kq-probe" => Ok(kq_probe(arg)),
             "test-kq-layers" => kq_layers(arg),
             "test-child" => first_number(arg).and_then(|w| self.child_info(w)),

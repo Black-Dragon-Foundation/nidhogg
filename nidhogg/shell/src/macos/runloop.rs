@@ -29,6 +29,8 @@ pub enum MacEv {
     Input(WindowId, ShellEvent),
     /// The commit pacer's timer fired: a held commit may be due.
     Pace,
+    /// An item of the menu bar was chosen: the tree's generation and the item's place.
+    Menu(u32, u32),
 }
 
 thread_local! {

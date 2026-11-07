@@ -15,6 +15,7 @@ mod kq;
 mod layers;
 mod overhang;
 mod pacer;
+mod menus;
 mod runloop;
 mod screens;
 mod surface;

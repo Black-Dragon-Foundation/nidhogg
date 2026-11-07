@@ -56,6 +56,9 @@ pub const NHG_ACT_DRAG_ACTION: u32 = 36;
 pub const NHG_ACT_DRAG_DROPPED: u32 = 37;
 pub const NHG_ACT_DRAG_DONE: u32 = 38;
 
+/// A native menu bar choice: `code` the item's place in the tree, `flags` the tree's generation (no window).
+pub const NHG_ACT_MENU: u32 = 60;
+
 /// `RESIZE` flags: fullscreen or maximized changed (C stores the frame's `fullscreen` parameter).
 pub const NHG_RESIZE_FULLSCREEN: u32 = 1;
 
