@@ -1117,6 +1117,60 @@ PROTO (nhg_font_match, int32_t (const NhgFontSpec *, NhgFontEntity *, size_t, si
         }
     }
 
+    /// The native font driver's fonts (its own table).
+    #[test]
+    fn font_header_matches() {
+        use nhglue::ffi::{
+            nhg_font_close, nhg_font_glyph, nhg_font_glyph_metrics, nhg_font_open, nhg_font_start,
+        };
+        use nhglue::font::*;
+        let rows: &[(&str, i64)] = &[
+            (
+                "sizeof (NhgFontMetrics)",
+                size_of::<NhgFontMetrics>() as i64,
+            ),
+            (
+                "offsetof (NhgFontMetrics, pixel_size)",
+                offset_of!(NhgFontMetrics, pixel_size) as i64,
+            ),
+            (
+                "offsetof (NhgFontMetrics, underline_thickness)",
+                offset_of!(NhgFontMetrics, underline_thickness) as i64,
+            ),
+            (
+                "offsetof (NhgFontMetrics, mono)",
+                offset_of!(NhgFontMetrics, mono) as i64,
+            ),
+            (
+                "sizeof (NhgGlyphMetrics)",
+                size_of::<NhgGlyphMetrics>() as i64,
+            ),
+            (
+                "offsetof (NhgGlyphMetrics, descent)",
+                offset_of!(NhgGlyphMetrics, descent) as i64,
+            ),
+        ];
+        let decls = "\
+#define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
+PROTO (nhg_font_start, int32_t (void));
+PROTO (nhg_font_open, int32_t (uint64_t, int32_t, NhgFontMetrics *));
+PROTO (nhg_font_close, int32_t (uint64_t));
+PROTO (nhg_font_glyph, int32_t (uint64_t, uint32_t, uint32_t *));
+PROTO (nhg_font_glyph_metrics, int32_t (uint64_t, uint32_t, uint32_t, int32_t, NhgGlyphMetrics *));";
+        let _: unsafe extern "C" fn() -> i32 = nhg_font_start;
+        let _: unsafe extern "C" fn(u64, i32, *mut NhgFontMetrics) -> i32 = nhg_font_open;
+        let _: unsafe extern "C" fn(u64) -> i32 = nhg_font_close;
+        let _: unsafe extern "C" fn(u64, u32, *mut u32) -> i32 = nhg_font_glyph;
+        let _: unsafe extern "C" fn(u64, u32, u32, i32, *mut NhgGlyphMetrics) -> i32 =
+            nhg_font_glyph_metrics;
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe(decls, &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+    }
+
     /// The drop target's part of the header (its own table).
     #[test]
     fn dnd_header_matches() {

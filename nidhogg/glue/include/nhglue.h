@@ -1143,6 +1143,32 @@ int32_t nhg_font_name (uint32_t id, char *buf, size_t cap, size_t *len);
 int32_t nhg_font_list (const NhgFontSpec *spec, NhgFontEntity *out, size_t cap, size_t *n);
 int32_t nhg_font_match (const NhgFontSpec *spec, NhgFontEntity *out, size_t cap, size_t *n);
 
+/* ---- The native font driver's fonts (glue/src/font.rs; macOS) ---------------------------------------------------
+   nhg_font_start installs Core Text as the source nhg_font_list and nhg_font_match list from (NHG_E_UNSUPPORTED
+   elsewhere).  nhg_font_open opens an entity's face at SIZE device pixels; its metrics are rounded as macfont_open
+   rounds them.  Glyph metrics come one glyph at a time, their width rounded as macfont_glyph_extents rounds it (MONO
+   and SPACE_WIDTH are the font's).  NHG_E_STATE: no such face, font or glyph.  */
+
+typedef struct
+{
+  uint64_t handle;
+  int32_t pixel_size, ascent, descent, height, space_width, average_width;
+  int32_t underline_position, underline_thickness;
+  uint32_t mono;
+} NhgFontMetrics;
+
+typedef struct
+{
+  int32_t lbearing, rbearing, width, ascent, descent;
+} NhgGlyphMetrics;
+
+int32_t nhg_font_start (void);
+int32_t nhg_font_open (uint64_t font_id, int32_t size, NhgFontMetrics *out);
+int32_t nhg_font_close (uint64_t handle);
+int32_t nhg_font_glyph (uint64_t handle, uint32_t c, uint32_t *glyph);
+int32_t nhg_font_glyph_metrics (uint64_t handle, uint32_t glyph, uint32_t mono, int32_t space_width,
+                                NhgGlyphMetrics *out);
+
 #ifdef __cplusplus
 }
 #endif

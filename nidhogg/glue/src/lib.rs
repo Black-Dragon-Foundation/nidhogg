@@ -17,6 +17,7 @@ pub mod display;
 pub mod drain;
 pub mod ffi;
 pub mod focus;
+pub mod font;
 pub mod fontspec;
 pub mod frame;
 pub mod ime;
