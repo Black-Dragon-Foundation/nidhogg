@@ -248,5 +248,126 @@ A submenu item is a binding as in a keymap."
                      (0 ,nhmac-menu-kind-submenu "Edit" "" 1 0 -1)
                      (1 ,nhmac-menu-kind-item "Q" "" 1 0 59))))))
 
+;; Task 7: the ns compatibility layer
+
+(defun nhmac-win-test--compat ()
+  "The fixture of the ns-* names NS defines, as a plist."
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "nhmac-win-resources/ns-compat.eld" nhmac-win-test--dir))
+    (goto-char (point-min))
+    (read (current-buffer))))
+
+(ert-deftest nhmac-win-compat-complete ()
+  "Every ns-* function and variable NS defines in C exists, with NS's arity and default."
+  (let ((compat (nhmac-win-test--compat)) (missing nil))
+    (should (= (length (plist-get compat :functions)) 34))
+    (should (= (length (plist-get compat :variables)) 32))
+    (dolist (f (plist-get compat :functions))
+      (let ((arity (and (fboundp (car f)) (func-arity (car f)))))
+        (unless (equal arity (cons (nth 1 f) (nth 2 f)))
+          (push (list (car f) arity) missing))))
+    (dolist (v (plist-get compat :variables))
+      (unless (and (boundp (car v))
+                   (if (eq (cdr v) :string)
+                       (stringp (symbol-value (car v)))
+                     (equal (default-value (car v)) (cdr v))))
+        (push (list (car v) 'variable) missing)))
+    (should (equal (nreverse missing) nil))))
+
+(ert-deftest nhmac-win-ns-win-compiles-against-it ()
+  "`ns-win.el' byte-compiles with no undefined ns-* function or free ns-* variable.
+A child Emacs compiles it after loading `nhmac-win.el', as the shell's build does."
+  (let* ((dir (make-temp-file "nhmac-win" t))
+         (src (expand-file-name "ns-win.el" dir))
+         (compat (nhmac-win-test--compat))
+         (unknown nil))
+    (unwind-protect
+        (progn
+          ;; the installed copy may be compressed; compile a plain one
+          (with-temp-file src
+            (insert-file-contents (locate-library "term/ns-win.el")))
+          (with-temp-buffer
+            (call-process "sh" nil t nil "-c" "exec \"$@\" 2>&1" "sh"
+                          (expand-file-name invocation-name invocation-directory)
+                          "-Q" "--batch"
+                          "-L" (file-name-directory (locate-library "nhmac-win"))
+                          "-l" "nhmac-win" "-f" "batch-byte-compile" src)
+            (should (file-exists-p (expand-file-name "ns-win.elc" dir)))
+            (goto-char (point-min))
+            (while (re-search-forward
+                    "\\(?:function\\|variable\\) [`‘]\\(ns-[^'’]*\\)['’]" nil t)
+              (let ((name (intern (match-string 1))))
+                (when (or (assq name (plist-get compat :functions))
+                          (assq name (plist-get compat :variables)))
+                  (push name unknown)))))
+          (should (equal (nreverse unknown) nil)))
+      (delete-directory dir t))))
+
+(defconst nhmac-win-test--ns-win-events
+  '(ns-power-off ns-open-file ns-open-temp-file ns-open-file-line ns-new-frame
+    ns-toggle-toolbar ns-show-prefs ns-spi-service-call ns-drag-file ns-drag-color
+    ns-drag-text ns-drag-operation-copy ns-drag-operation-generic ns-output-file ns-win
+    ns-option-modifier ns-right-option-modifier)
+  "The ns-* symbols `ns-win.el' uses that name events, drag operations, a local variable, the feature,
+or an alias it makes inside a `when'.
+Shell events (`make-non-key-event' codes) are the shell's to produce.")
+
+(ert-deftest nhmac-win-ns-win-names-resolve ()
+  "Every ns-* name `ns-win.el' uses is defined by it, by `nhmac-win.el', or named above."
+  (let ((used nil) (defined nil))
+    (with-temp-buffer
+      (insert-file-contents (locate-library "term/ns-win.el"))
+      (goto-char (point-min))
+      (condition-case nil
+          (while t
+            (let ((form (read (current-buffer))))
+              (when (and (memq (car-safe form)
+                               '(defun defvar defvar-local defcustom defmacro defconst
+                                  defface define-minor-mode cl-defmethod))
+                         (symbolp (cadr form)))
+                (push (cadr form) defined))
+              (when (and (eq (car-safe form) 'defvaralias) (eq (car-safe (cadr form)) 'quote))
+                (push (cadr (cadr form)) defined))
+              (cl-labels ((walk (x)
+                            (cond ((vectorp x) nil)
+                                  ((consp x)
+                                   (while (consp x) (walk (car x)) (setq x (cdr x)))
+                                   (when x (walk x)))
+                                  ((and (symbolp x) (string-prefix-p "ns-" (symbol-name x)))
+                                   (cl-pushnew x used)))))
+                (walk form))))
+        (end-of-file nil)))
+    (should (> (length used) 40))
+    (should (equal (sort (cl-remove-if
+                          (lambda (s) (or (memq s defined)
+                                          (memq s nhmac-win-test--ns-win-events)
+                                          (fboundp s) (boundp s)))
+                          used)
+                         #'string<)
+                   nil))))
+
+(ert-deftest nhmac-win-watchers-push-changes ()
+  "A `set' of a variable the shell needs reaches `nhmac--call'; others do not."
+  (let ((pushed nil)
+        (old (list ns-confirm-quit ns-command-modifier ns-click-through)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'nhmac--call)
+                   (lambda (what &rest args) (push (cons what args) pushed))))
+          (setq ns-confirm-quit t)
+          (setq ns-command-modifier 'meta)
+          (setq ns-click-through nil)
+          (should (equal (reverse pushed)
+                         '((variable ns-confirm-quit t)
+                           (variable ns-command-modifier meta)))))
+      (setq ns-confirm-quit (nth 0 old)
+            ns-command-modifier (nth 1 old)
+            ns-click-through (nth 2 old)))))
+
+(ert-deftest nhmac-win-not-yet-signals ()
+  (should-error (nhmac--not-yet) :type 'error)
+  (should (equal (cadr (should-error (nhmac--not-yet)))
+                 "Naglfar: not available yet")))
+
 (provide 'nhmac-win-tests)
 ;;; nhmac-win-tests.el ends here
