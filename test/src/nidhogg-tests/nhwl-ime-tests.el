@@ -142,4 +142,49 @@ one after a first key; on the others wtype's virtual keyboard lasts as long as w
     (end-of-line)
     (should (nhwl-ime--wait (lambda () (let ((r (nhwl-ime--last-rect))) (and r (> (car r) (car before))))) 5))))
 
+(defmacro nhwl-ime--in-child (child &rest body)
+  "BODY with CHILD bound to a child frame of the selected frame at (200, 120), its window showing a fresh buffer and
+holding the keyboard focus; the child is deleted after."
+  (declare (indent 1))
+  `(let* ((root (selected-frame))
+          (buf (get-buffer-create "*ime-child*"))
+          (,child (make-frame `((parent-frame . ,root) (left . 200) (top . 120) (width . 40) (height . 6)
+                                (minibuffer . nil) (visibility . t)))))
+     (unwind-protect
+         (progn
+           (with-current-buffer buf (erase-buffer))
+           (set-window-buffer (frame-root-window ,child) buf)
+           (select-frame-set-input-focus ,child)
+           (select-window (frame-root-window ,child))
+           (set-buffer buf)
+           (nhwl-ime--pump 0.5)
+           ,@body)
+       (delete-frame ,child)
+       (select-frame-set-input-focus root))))
+
+(ert-deftest nhwl-ime/preedit-and-commit-in-a-child-frame ()
+  ;; a child frame is a subsurface of its root, which holds the text input: preedit and commit reach the child's buffer
+  (nhwl-ime--ready)
+  (nhwl-ime--in-child child
+    (nhwl-ime--type "ni")
+    (should (nhwl-ime--wait (lambda ()
+                              (and (bound-and-true-p pgtk-preedit-overlay)
+                                   (eq (overlay-buffer pgtk-preedit-overlay) (get-buffer "*ime-child*"))
+                                   (not (string-empty-p (or (overlay-get pgtk-preedit-overlay 'before-string) "")))))
+                            5))
+    (nhwl-ime--wtype "-k" "space")
+    (should (nhwl-ime--wait (lambda () (with-current-buffer "*ime-child*" (string-match-p "\\cc" (buffer-string))))
+                            5))))
+
+(ert-deftest nhwl-ime/cursor-rectangle-in-a-child-frame ()
+  ;; the rectangle is in the root's surface, so it carries the child's offset within the root
+  (nhwl-ime--ready)
+  (unless (getenv "NHWL_IME_TRACE") (nhwl-ime--skip "no protocol trace (gui.sh --wayland-debug)"))
+  (nhwl-ime--in-child child
+    (insert "abcdefgh")
+    (let ((pos (frame-position child)))
+      (should (nhwl-ime--wait (lambda () (let ((r (nhwl-ime--last-rect)))
+                                           (and r (>= (nth 0 r) (car pos)) (>= (nth 1 r) (cdr pos)))))
+                              5)))))
+
 ;;; nhwl-ime-tests.el ends here

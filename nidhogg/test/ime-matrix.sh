@@ -20,7 +20,8 @@ set -u
 
 self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")
 gui=$(dirname "$self")/gui.sh
-rows=(pinyin-commits-cjk preedit-overlay-shown cursor-rectangle-follows-point)
+rows=(pinyin-commits-cjk preedit-overlay-shown cursor-rectangle-follows-point preedit-and-commit-in-a-child-frame
+      cursor-rectangle-in-a-child-frame)
 usage() { sed -n '2,/^# cannot be driven/s/^# \{0,1\}//p' "$self" >&2; exit 2; }
 
 combo_compositor() { case $1 in sway-fcitx5) echo sway ;; kwin-fcitx5) echo kwin ;; gnome-ibus) echo mutter ;; esac; }
