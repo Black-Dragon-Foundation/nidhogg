@@ -917,6 +917,9 @@ DEFUN ("x-create-frame", Fx_create_frame, Sx_create_frame, 1, 1, 0,
   register_font_driver (&ftcrhbfont_driver, f);
 #endif	/* HAVE_HARFBUZZ */
 #endif	/* NHWL_WAYLAND */
+#ifdef HAVE_NHMAC
+  register_font_driver (&nhmacfont_driver, f);
+#endif
 
   gui_default_parameter (f, parms, Qfont_backend, Qnil,
 			 "fontBackend", "FontBackend", RES_TYPE_STRING);
@@ -1744,6 +1747,9 @@ nhwl_create_tip_frame (struct nhwl_display_info *dpyinfo, Lisp_Object parms)
   register_font_driver (&ftcrhbfont_driver, f);
 #endif	/* HAVE_HARFBUZZ */
 #endif	/* NHWL_WAYLAND */
+#ifdef HAVE_NHMAC
+  register_font_driver (&nhmacfont_driver, f);
+#endif
 
   gui_default_parameter (f, parms, Qfont_backend, Qnil,
 			 "fontBackend", "FontBackend", RES_TYPE_STRING);

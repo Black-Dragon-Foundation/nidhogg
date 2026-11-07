@@ -114,6 +114,7 @@ syms_of_nhmacterm (void)
 {
   defsubr (&Snhmac__call);
   defsubr (&Snhmac__query);
+  syms_of_nhmacfont ();
 
   /* `window-system' reads `ns', so ns-win.el and packages take their
      macOS branches; `nidhogg-macos' and `naglfar' name this shell.  */
