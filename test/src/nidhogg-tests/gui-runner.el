@@ -20,8 +20,14 @@
 (defconst glitnir-gui--dir (file-name-directory (or load-file-name buffer-file-name)))
 
 (defun glitnir-gui--say (fmt &rest args)
-  (let ((s (apply #'format fmt args)))
-    (princ (concat s "\n") #'external-debugging-output)))
+  "Print FMT with ARGS as one line on stderr, in one write.
+The protocol trace (WAYLAND_DEBUG) shares stderr, and `external-debugging-output' writes a character at a time, so a
+trace line could land inside a verdict and hide it from the rigs that grep for it."
+  (let ((s (concat (apply #'format fmt args) "\n")))
+    (condition-case nil
+        (let ((coding-system-for-write 'utf-8-unix))
+          (write-region s nil "/dev/stderr" t 'silent))
+      (file-error (princ s #'external-debugging-output)))))
 
 (defun glitnir-gui--scale ()
   (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1")))
