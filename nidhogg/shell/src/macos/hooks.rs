@@ -108,6 +108,10 @@ impl MacShell {
             }),
             "test-reentry" => Ok(self.reentry()),
             "test-kq-probe" => Ok(kq_probe(arg)),
+            "test-surface" => numbers(arg).and_then(|n| match n[..] {
+                [w, x, y] => self.surface_info(w as WindowId, x as i32, y as i32),
+                _ => Err(ShellError::Arg),
+            }),
             _ => return None,
         })
     }
@@ -234,6 +238,41 @@ impl MacShell {
             w.view.subviews().len(),
             (f64::from(cw) * scale).round() as i64,
             (f64::from(ch) * scale).round() as i64,
+        ))
+    }
+}
+
+impl MacShell {
+    /// `test-surface` (WINDOW X Y): the window's newest surface as a Lisp plist: its size in device pixels, the
+    /// content size in points, the layer's `contentsScale` and gravity, whether the layer shows that surface, its
+    /// colour space (`srgb`, `generic` or nil) and its pixel at X, Y (premultiplied ARGB; nil outside).
+    fn surface_info(&self, window: WindowId, x: i32, y: i32) -> ShellResult<String> {
+        let w = self.win(window)?;
+        let s = &w.surfaces;
+        let (sw, sh) = s.size();
+        let (cw, ch) = w.content_size();
+        // SAFETY: `contents` is an object or nil; we only compare its address.
+        let contents = unsafe { w.layer.contents() };
+        let shown = match (contents, s.newest()) {
+            (Some(c), Some(n)) => {
+                std::ptr::eq(Retained::as_ptr(&c).cast::<std::ffi::c_void>(), n.as_ptr())
+            }
+            _ => false,
+        };
+        let srgb = match s.tagged_srgb() {
+            Some(true) => "srgb",
+            Some(false) => "generic",
+            None => "nil",
+        };
+        let pixel = s
+            .pixel(x, y)
+            .map_or_else(|| "nil".to_string(), |p| p.to_string());
+        Ok(format!(
+            "(:w {sw} :h {sh} :points ({cw} {ch}) :scale {} :gravity \"{}\" :contents-is-newest {} :srgb {srgb} \
+             :pixel {pixel})",
+            w.layer.contentsScale(),
+            w.layer.contentsGravity(),
+            if shown { "t" } else { "nil" },
         ))
     }
 }

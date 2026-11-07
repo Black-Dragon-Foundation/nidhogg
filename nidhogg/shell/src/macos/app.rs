@@ -7,8 +7,10 @@
 
 use super::defaults;
 use super::kq::{self, Kq};
+use super::layers;
 use super::runloop::{MacEv, SCOPE};
 use super::screens;
+use super::surface;
 use super::window::Win;
 use crate::api::{
     Abandon, ChildDesc, NHSHELL_WIN_UNDECORATED, NhShellPresenterStats, PresenterTiming,
@@ -43,6 +45,8 @@ pub struct MacShell {
     /// The main wait's kqueue (`None`: kqueue refused, so `nhg_wait` is unsupported) and its registrations.
     kq: Option<Kq>,
     regs: wait::Regs,
+    /// `ns-use-srgb-colorspace`: the colour space new surfaces are tagged with.
+    srgb: bool,
     /// Test hook: the next pump raises an `NSException` inside the catch.
     #[cfg(feature = "test-hooks")]
     raise_in_pump: bool,
@@ -51,17 +55,16 @@ pub struct MacShell {
     force_helper: u32,
 }
 
-/// The counters `(nhmac-stats)` returns: the scope's, the main wait's (with the lock hand-off's), then the ones that
-/// stay zero until the work that counts them is built.
+/// The counters `(nhmac-stats)` returns: the scope's, the main wait's (with the lock hand-off's), the surfaces'.
 fn stats_text(s: ScopeStats) -> String {
     format!(
-        "(:takes {} :overlapping-takes {} :queued {} :applied {} {} \
-         :ring-acquires 0 :ring-reuses 0 :commits 0 :deferred-commits 0)",
+        "(:takes {} :overlapping-takes {} :queued {} :applied {} {} {})",
         s.takes,
         s.overlapping_takes,
         s.queued,
         s.applied,
-        wait::STATS.text(&wait::PARK)
+        wait::STATS.text(&wait::PARK),
+        surface::STATS.text()
     )
 }
 
@@ -126,6 +129,7 @@ impl MacShell {
             wake,
             kq: Kq::open(mtm),
             regs: wait::Regs::default(),
+            srgb: true,
             #[cfg(feature = "test-hooks")]
             raise_in_pump: false,
             #[cfg(feature = "test-hooks")]
@@ -134,6 +138,7 @@ impl MacShell {
         for o in screens::outputs(mtm) {
             shell.push(ShellEvent::OutputAdd(o), 0);
         }
+        layers::watch_spins();
         Ok(shell)
     }
 
@@ -152,6 +157,7 @@ impl MacShell {
     /// Lend the backend to the scope while `f` makes AppKit calls that may call back; the events queued meanwhile
     /// are applied after.  `f` reaches the backend only through the scope.
     fn lent<R>(&mut self, f: impl FnOnce(&Scope<MacShell, MacEv>) -> R) -> R {
+        let _pumping = layers::Pumping::enter();
         SCOPE.with(|s| s.lend(self, || f(s), |shell, e| shell.apply(e)))
     }
 
@@ -217,6 +223,35 @@ impl MacShell {
         let ids: Vec<WindowId> = self.windows.keys().copied().collect();
         for id in ids {
             self.compare(id);
+        }
+    }
+}
+
+/// Glitnir's damage of layer `g` since its last commit, committed, clipped to its `w` x `h` (device pixels).
+fn layer_damage(g: u64, w: i32, h: i32) -> Vec<Rect> {
+    let rects = match glitnir::damage::commit_snapshot(g) {
+        Some((rects, _)) => rects,
+        None => glitnir::damage::with(g, |d| d.commit().to_vec()),
+    };
+    let all = Rect::new(0, 0, w, h);
+    rects
+        .iter()
+        .map(|r| r.intersect(&all))
+        .filter(|r| !r.is_empty())
+        .collect()
+}
+
+impl MacShell {
+    /// A watched variable's new value (`nhmac--variable-changed`): ARG is `(SYMBOL VALUE)` as Lisp prints it.  Only
+    /// `ns-use-srgb-colorspace` is read yet: every ring starts over, tagged the new way.  The rest are accepted.
+    fn variable(&mut self, arg: &str) {
+        let inner = arg.trim().trim_start_matches('(').trim_end_matches(')');
+        let mut it = inner.split_whitespace();
+        if it.next() == Some("ns-use-srgb-colorspace") {
+            self.srgb = it.next() != Some("nil");
+            for w in self.windows.values_mut() {
+                w.surfaces.reset(self.srgb);
+            }
         }
     }
 }
@@ -319,6 +354,9 @@ impl ShellBackend for MacShell {
 
     fn dispatch_main(&mut self) -> ShellResult {
         // an exception raised here is turned into a panic by the glue's guard (nhshell::catch_objc)
+        surface::STATS
+            .pumps
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.pump();
         Ok(())
     }
@@ -339,6 +377,9 @@ impl ShellBackend for MacShell {
             &desc.title,
         );
         let (w, h, scale) = (win.size.0, win.size.1, win.scale120);
+        let mut win = win;
+        win.surfaces.reset(self.srgb);
+        layers::changed_outside();
         self.windows.insert(id, win);
         self.push(ShellEvent::Scale(ScaleEv { scale120: scale }), id);
         self.configure(id, w, h);
@@ -360,6 +401,7 @@ impl ShellBackend for MacShell {
         self.win(window)?
             .window
             .setTitle(&NSString::from_str(title));
+        layers::changed_outside();
         Ok(())
     }
 
@@ -504,6 +546,7 @@ impl ShellBackend for MacShell {
             } else {
                 w.window.orderOut(None);
             }
+            layers::changed_outside();
         }
         Ok(())
     }
@@ -595,13 +638,45 @@ impl ShellBackend for MacShell {
         Err(ShellError::State)
     }
 
+    /// The commit (design §5.4): each frame's surface takes what it lacks from the backing, then the tree's layers
+    /// show them in one flushed transaction.  A frame of a window the shell does not have (a child, until child
+    /// layers) is left out; one with no damage on a surface of its size commits nothing.
     fn publish(
         &mut self,
         root: WindowId,
-        _frames: &[SurfaceFrame],
+        frames: &[SurfaceFrame],
         _t_key_ns: u64,
     ) -> ShellResult<bool> {
-        self.win(root).map(|_| false)
+        self.win(root)?;
+        let mut ids: Vec<WindowId> = Vec::new();
+        for f in frames {
+            let Some(w) = self.windows.get_mut(&f.window) else {
+                continue;
+            };
+            let (lw, lh) = (f.w - f.src_x, f.h - f.src_y);
+            let damage = layer_damage(f.glitnir_root, lw, lh);
+            if damage.is_empty() && w.surfaces.newest().is_some() && w.surfaces.size() == (lw, lh) {
+                continue;
+            }
+            if w.surfaces.draw(f, &damage).is_some() {
+                ids.push(f.window);
+            }
+        }
+        let mut items = Vec::with_capacity(ids.len());
+        for id in &ids {
+            let w = &self.windows[id];
+            if let Some(s) = w.surfaces.newest() {
+                items.push((
+                    &*w.layer,
+                    s,
+                    w.surfaces.was_same(),
+                    w.window.backingScaleFactor(),
+                ));
+            }
+        }
+        layers::commit(&items);
+        layers::publish_end();
+        Ok(!items.is_empty())
     }
 
     fn present_tree(&mut self, root: WindowId) -> ShellResult<bool> {
@@ -656,6 +731,10 @@ impl ShellBackend for MacShell {
         match kind {
             "set-resource" | "unset-resource" => {
                 defaults::set(arg, kind == "unset-resource");
+                Ok(())
+            }
+            "variable" => {
+                self.variable(arg);
                 Ok(())
             }
             _ => Err(ShellError::Arg),
