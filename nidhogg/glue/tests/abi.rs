@@ -1040,6 +1040,79 @@ PROTO (nhg_frame_param, int32_t (uint32_t, const NhgParamFrame *, const NhgParam
         }
     }
 
+    /// The font records' part of the header (its own table).
+    #[test]
+    fn fontspec_header_matches() {
+        use nhglue::ffi::{nhg_font_id, nhg_font_list, nhg_font_match, nhg_font_name};
+        use nhglue::fontspec::*;
+        let rows: &[(&str, i64)] = &[
+            ("sizeof (NhgFontSpec)", size_of::<NhgFontSpec>() as i64),
+            (
+                "offsetof (NhgFontSpec, language)",
+                offset_of!(NhgFontSpec, language) as i64,
+            ),
+            (
+                "offsetof (NhgFontSpec, weight)",
+                offset_of!(NhgFontSpec, weight) as i64,
+            ),
+            (
+                "offsetof (NhgFontSpec, spacing)",
+                offset_of!(NhgFontSpec, spacing) as i64,
+            ),
+            (
+                "offsetof (NhgFontSpec, size)",
+                offset_of!(NhgFontSpec, size) as i64,
+            ),
+            (
+                "offsetof (NhgFontSpec, otf_n)",
+                offset_of!(NhgFontSpec, otf_n) as i64,
+            ),
+            (
+                "offsetof (NhgFontSpec, otf)",
+                offset_of!(NhgFontSpec, otf) as i64,
+            ),
+            ("sizeof (NhgFontEntity)", size_of::<NhgFontEntity>() as i64),
+            (
+                "offsetof (NhgFontEntity, font_id)",
+                offset_of!(NhgFontEntity, font_id) as i64,
+            ),
+            (
+                "offsetof (NhgFontEntity, synth)",
+                offset_of!(NhgFontEntity, synth) as i64,
+            ),
+            ("NHG_FS_OTF_MAX", NHG_FS_OTF_MAX as i64),
+            ("NHG_FS_SYNTH_ITALIC", NHG_FS_SYNTH_ITALIC.into()),
+            ("NHG_FS_SYNTH_BOLD", NHG_FS_SYNTH_BOLD.into()),
+            ("NHG_FS_SYNTH_MONO", NHG_FS_SYNTH_MONO.into()),
+        ];
+        let decls = "\
+#define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
+PROTO (nhg_font_id, int32_t (const char *, size_t, uint32_t *));
+PROTO (nhg_font_name, int32_t (uint32_t, char *, size_t, size_t *));
+PROTO (nhg_font_list, int32_t (const NhgFontSpec *, NhgFontEntity *, size_t, size_t *));
+PROTO (nhg_font_match, int32_t (const NhgFontSpec *, NhgFontEntity *, size_t, size_t *));";
+        let _: unsafe extern "C" fn(*const c_char, usize, *mut u32) -> i32 = nhg_font_id;
+        let _: unsafe extern "C" fn(u32, *mut c_char, usize, *mut usize) -> i32 = nhg_font_name;
+        let _: unsafe extern "C" fn(
+            *const NhgFontSpec,
+            *mut NhgFontEntity,
+            usize,
+            *mut usize,
+        ) -> i32 = nhg_font_list;
+        let _: unsafe extern "C" fn(
+            *const NhgFontSpec,
+            *mut NhgFontEntity,
+            usize,
+            *mut usize,
+        ) -> i32 = nhg_font_match;
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe(decls, &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+    }
+
     /// The drop target's part of the header (its own table).
     #[test]
     fn dnd_header_matches() {
