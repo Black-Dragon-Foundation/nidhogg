@@ -714,4 +714,170 @@ checked against the faces, tolerance 0 for fills and box lines."
     (should (= (nhmac-gui--pixel-at (+ x 6) (+ y (/ h 2))) #xff00ff00)))
   (kill-buffer))
 
+;; Task 16: Core Text text, compared with NS's in the same run
+(defconst nhmac-gui--font-bg "#f0e0d0" "The text rows' background: no window chrome or desktop has it.")
+
+(defun nhmac-gui--font-file (ext &optional ns)
+  "The NS text row's output, nhmac-ns-font-scaleS.EXT: in this lane's GLITNIR_GUI_OUT, or with NS, in the NS lane's
+(Naglfar's lane writes to its naglfar/ subdirectory)."
+  (let ((out (or (getenv "GLITNIR_GUI_OUT") temporary-file-directory)))
+    (expand-file-name (format "nhmac-ns-font-scale%s.%s" (or (getenv "GLITNIR_GUI_SCALE") "1") ext)
+                      (if ns (expand-file-name ".." out) out))))
+
+(defmacro nhmac-gui--with-font-scene (&rest body)
+  "Run BODY with the frame in Menlo 12, black on `nhmac-gui--font-bg', no cursor, mode line or fringes, showing a
+blank line and then a line of ASCII; the frame's font and colours are put back after."
+  (declare (indent 0))
+  `(let ((font (frame-parameter nil 'font))
+         (fg (frame-parameter nil 'foreground-color))
+         (bg (frame-parameter nil 'background-color)))
+     (unwind-protect
+         (progn
+           (set-frame-font "Menlo-12" nil (list (selected-frame)))
+           (set-foreground-color "#000000")
+           (set-background-color nhmac-gui--font-bg)
+           (switch-to-buffer (generate-new-buffer " *nhmac-font*"))
+           (setq-local cursor-type nil mode-line-format nil)
+           (set-window-fringes nil 0 0)
+           (insert "\n    Hello, world! 0123456789 {}[]()<>;:'\",./?\n")
+           (redraw-frame)
+           (redisplay t)
+           (sit-for 0.5)
+           ,@body)
+       (kill-buffer)
+       (set-window-fringes nil nil nil)
+       (set-frame-font font nil (list (selected-frame)))
+       (set-foreground-color fg)
+       (set-background-color bg))))
+
+(defun nhmac-gui--font-metrics ()
+  "The default face's font's (ascent descent average-width space-width), from `font-info'."
+  (let ((i (font-info (face-font 'default))))
+    (list (aref i 8) (aref i 9) (aref i 11) (aref i 10))))
+
+(defun nhmac-gui--capture (file)
+  "The screen around the selected frame (GLITNIR_GUI_FRAME's corner, 900 by 700 points) as a BMP in FILE.
+Device pixels, as the window server composited them; FILE."
+  (let* ((g (mapcar #'string-to-number (split-string (or (getenv "GLITNIR_GUI_FRAME") "0 0"))))
+         (r (format "%d,%d,900,700" (- (nth 0 g) 20) (- (nth 1 g) 60))))
+    (when (file-exists-p file) (delete-file file))
+    (call-process "screencapture" nil nil nil "-x" "-t" "bmp" "-R" r file)
+    file))
+
+(defun nhmac-gui--bmp-read (file)
+  "FILE, a BMP of 24 or 32 bits per pixel, as (WIDTH HEIGHT PIXELS): PIXELS a vector of #xRRGGBB, rows top down."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally file)
+    (let* ((s (buffer-string))
+           (u (lambda (o n) (let ((v 0)) (dotimes (i n v) (setq v (logior v (ash (aref s (+ o i)) (* 8 i))))))))
+           (off (funcall u 10 4)) (w (funcall u 18 4)) (h (funcall u 22 4))
+           (bytes (/ (funcall u 28 2) 8))
+           (down (> h #x7fffffff)) (h (if down (- #x100000000 h) h))
+           (stride (* 4 (/ (+ (* w bytes) 3) 4)))
+           (px (make-vector (* w h) 0)))
+      (dotimes (y h)
+        (let ((row (+ off (* stride (if down y (- h 1 y))))))
+          (dotimes (x w)
+            (let ((o (+ row (* x bytes))))
+              (aset px (+ (* y w) x)
+                    (logior (ash (aref s (+ o 2)) 16) (ash (aref s (+ o 1)) 8) (aref s o)))))))
+      (list w h px))))
+
+(defun nhmac-gui--far (a b tol)
+  "Whether #xRRGGBB colours A and B differ by more than TOL in a channel."
+  (cl-some (lambda (sh) (> (abs (- (logand (ash a (- sh)) 255) (logand (ash b (- sh)) 255))) tol)) '(16 8 0)))
+
+(defun nhmac-gui--text-crop (img)
+  "The text in IMG (from `nhmac-gui--bmp-read'): the commonest colour is the frame's background; inside the box of
+the pixels near it (16 pixels in, past the window's rounded corners), the box of the pixels away from it.
+Returns (W H PIXELS) of that box."
+  (pcase-let* ((`(,w ,h ,px) img)
+               (counts (make-hash-table))
+               (bg (progn (mapc (lambda (p) (puthash p (1+ (gethash p counts 0)) counts)) px)
+                          (let ((best nil) (n 0))
+                            (maphash (lambda (k v) (when (> v n) (setq best k n v))) counts)
+                            best)))
+               (x0 w) (y0 h) (x1 -1) (y1 -1))
+    (dotimes (y h)
+      (dotimes (x w)
+        (unless (nhmac-gui--far (aref px (+ (* y w) x)) bg 2)
+          (setq x0 (min x0 x) y0 (min y0 y) x1 (max x1 x) y1 (max y1 y)))))
+    (let ((tx0 w) (ty0 h) (tx1 -1) (ty1 -1))
+      (cl-loop for y from (+ y0 16) to (- y1 16) do
+               (cl-loop for x from (+ x0 16) to (- x1 16) do
+                        (when (nhmac-gui--far (aref px (+ (* y w) x)) bg 2)
+                          (setq tx0 (min tx0 x) ty0 (min ty0 y) tx1 (max tx1 x) ty1 (max ty1 y)))))
+      (if (< tx1 0)
+          (list 0 0 [])
+        (let* ((cw (1+ (- tx1 tx0))) (ch (1+ (- ty1 ty0))) (out (make-vector (* cw ch) 0)))
+          (dotimes (y ch)
+            (dotimes (x cw)
+              (aset out (+ (* y cw) x) (aref px (+ (* (+ ty0 y) w) tx0 x)))))
+          (list cw ch out))))))
+
+(ert-deftest nhmac-ns-font-dump ()
+  "NS's Menlo 12: its metrics and a capture of its text, for nhmac-font-ascii in the Naglfar lane."
+  (skip-unless (nhmac-gui--ns-build-p))
+  (nhmac-gui--with-font-scene
+    (with-temp-file (nhmac-gui--font-file "eld")
+      (prin1 (nhmac-gui--font-metrics) (current-buffer)))
+    (nhmac-gui--capture (nhmac-gui--font-file "bmp"))
+    (should (file-exists-p (nhmac-gui--font-file "bmp")))
+    (should (> (car (nhmac-gui--text-crop (nhmac-gui--bmp-read (nhmac-gui--font-file "bmp")))) 0))))
+
+(ert-deftest nhmac-font-ascii ()
+  "Menlo 12: `font-info''s ascent, descent, average width and space width are NS's times the scale (NS counts in
+points, Naglfar in device pixels), and the text's pixels are within 1/255 of NS's, both captured from the screen."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((scale (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1"))))
+    (should (file-exists-p (nhmac-gui--font-file "eld" t)))
+    (nhmac-gui--with-font-scene
+      (let ((ns (with-temp-buffer
+                  (insert-file-contents (nhmac-gui--font-file "eld" t))
+                  (read (current-buffer))))
+            (mine (nhmac-gui--font-metrics)))
+        (message "nhmac-font-ascii: scale %d: NS %S, Naglfar %S, stats %S" scale ns mine (nhmac-stats))
+        (should (equal mine (mapcar (lambda (v) (* v scale)) ns))))
+      (pcase-let* ((`(,nw ,nh ,npx) (nhmac-gui--text-crop (nhmac-gui--bmp-read (nhmac-gui--font-file "bmp" t))))
+                   (`(,mw ,mh ,mpx) (nhmac-gui--text-crop
+                                     (nhmac-gui--bmp-read (nhmac-gui--capture (nhmac-gui--font-file "bmp")))))
+                   (worst 0) (off 0))
+        (message "nhmac-font-ascii: text NS %dx%d, Naglfar %dx%d" nw nh mw mh)
+        (should (> nw 0))
+        (should (equal (list mw mh) (list nw nh)))
+        (dotimes (i (length npx))
+          (let ((a (aref npx i)) (b (aref mpx i)))
+            (dolist (sh '(16 8 0))
+              (let ((d (abs (- (logand (ash a (- sh)) 255) (logand (ash b (- sh)) 255)))))
+                (setq worst (max worst d))
+                (when (> d 1) (cl-incf off))))))
+        (message "nhmac-font-ascii: worst channel difference %d, %d channels over 1" worst off)
+        (should (<= worst 1))))))
+
+(ert-deftest nhmac-font-open-close ()
+  "Fonts open at many sizes and close when the font cache is cleared, again and again; each opens at its size and the
+frame's text still reaches the surface."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((scale (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1"))))
+    (dotimes (i 30)
+      (let* ((pt (+ 9 (% i 7)))
+             (info (font-info (format "Menlo-%d" pt))))
+        (should info)
+        (should (= (aref info 2) (* pt scale))))
+      (when (= (% i 7) 6)
+        (clear-font-cache)))
+    (nhmac-gui--with-font-scene
+      ;; some pixel of the text line is dark
+      (let* ((edges (window-inside-pixel-edges))
+             (y0 (+ (nth 1 edges) (frame-char-height)))
+             (dark nil))
+        (cl-loop for y from y0 below (+ y0 (frame-char-height)) until dark do
+                 (cl-loop for x from (nth 0 edges) below (+ (nth 0 edges) (* 20 (frame-char-width))) until dark do
+                          (let ((p (nhmac-gui--pixel-at x y)))
+                            (when (and p (< (logand (ash p -8) 255) 64))
+                              (setq dark (list x y p))))))
+        (message "nhmac-font-open-close: a text pixel %S, stats %S" dark (nhmac-stats))
+        (should dark)))))
+
 ;;; nhmac-gui-tests.el ends here

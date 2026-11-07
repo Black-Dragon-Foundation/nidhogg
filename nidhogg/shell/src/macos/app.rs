@@ -274,12 +274,19 @@ impl MacShell {
     fn variable(&mut self, arg: &str) {
         let inner = arg.trim().trim_start_matches('(').trim_end_matches(')');
         let mut it = inner.split_whitespace();
-        if it.next() == Some("ns-use-srgb-colorspace") {
-            self.srgb = it.next() != Some("nil");
-            super::draw::SRGB.store(self.srgb, std::sync::atomic::Ordering::Relaxed);
-            for w in self.windows.values_mut() {
-                w.surfaces.reset(self.srgb);
+        let (name, on) = (it.next(), it.next() != Some("nil"));
+        let relaxed = std::sync::atomic::Ordering::Relaxed;
+        match name {
+            Some("ns-use-srgb-colorspace") => {
+                self.srgb = on;
+                super::draw::SRGB.store(self.srgb, relaxed);
+                for w in self.windows.values_mut() {
+                    w.surfaces.reset(self.srgb);
+                }
             }
+            Some("ns-antialias-text") => super::draw::ANTIALIAS.store(on, relaxed),
+            Some("ns-use-thin-smoothing") => super::draw::THIN_SMOOTHING.store(on, relaxed),
+            _ => {}
         }
     }
 }
