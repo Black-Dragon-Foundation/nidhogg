@@ -136,7 +136,6 @@ nhmac_put_pixel (Emacs_Pix_Container image, int x, int y,
 #define PIX_MASK_RETAIN	0
 #define PIX_MASK_DRAW	255
 #endif
-
 #ifdef NHWL_WAYLAND
 /* Nidhogg's Wayland shell takes pgtk's branches of this file: they are
    free of GTK (bitmaps are Cairo patterns), and the bitmap record is the
