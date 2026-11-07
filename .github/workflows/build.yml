@@ -716,7 +716,7 @@ jobs:
         if: ${{ !cancelled() && steps.brew.outcome == 'success' }}
         env:
           NIDHOGG_BUILD_CCACHE: ${{ steps.ccb.outcome == 'success' && format('{0}/ccache', runner.temp) || '' }}
-        run: /bin/bash nidhogg/build.sh --host --naglfar --dev --stage build --jobs 3 --build-dir "$RUNNER_TEMP/nbuild"
+        run: /bin/bash nidhogg/build.sh --host --naglfar --dev --checking --stage build --jobs 3 --build-dir "$RUNNER_TEMP/nbuild"
       - name: Naglfar's Rust unit tests (glue and shell, --features macos)
         if: ${{ !cancelled() && steps.brew.outcome == 'success' }}
         env:
