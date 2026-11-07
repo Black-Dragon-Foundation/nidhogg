@@ -31,6 +31,8 @@ pub enum MacEv {
     Pace,
     /// An item of the menu bar was chosen: the tree's generation and the item's place.
     Menu(u32, u32),
+    /// The screens changed (`applicationDidChangeScreenParameters:`).
+    Screens,
 }
 
 thread_local! {
