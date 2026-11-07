@@ -13,8 +13,8 @@ use super::screens;
 use super::window::Win;
 use super::{dialogs, pasteboard};
 use crate::api::{
-    Abandon, ChildDesc, NHSHELL_WIN_UNDECORATED, NhShellPresenterStats, PresenterTiming,
-    ShellBackend, ShellError, ShellResult, SurfaceFrame, WindowDesc, WindowId,
+    Abandon, ChildDesc, NHSHELL_SEL_DND, NHSHELL_WIN_UNDECORATED, NhShellPresenterStats,
+    PresenterTiming, ShellBackend, ShellError, ShellResult, SurfaceFrame, WindowDesc, WindowId,
 };
 use crate::caps::NhShellCaps;
 use crate::event::{
@@ -570,37 +570,42 @@ impl ShellBackend for MacShell {
         Ok(false)
     }
 
-    fn selection_types(&self, _kind: u32) -> ShellResult<Vec<String>> {
-        Ok(Vec::new())
+    fn selection_types(&self, kind: u32) -> ShellResult<Vec<String>> {
+        Ok(if kind == NHSHELL_SEL_DND {
+            super::dnd::types()
+        } else {
+            Vec::new()
+        })
     }
 
-    fn selection_read(
-        &mut self,
-        _kind: u32,
-        _mime: &str,
-        _timeout_ms: u32,
-    ) -> ShellResult<Vec<u8>> {
-        Err(ShellError::State)
+    fn selection_read(&mut self, kind: u32, mime: &str, _timeout_ms: u32) -> ShellResult<Vec<u8>> {
+        if kind == NHSHELL_SEL_DND {
+            super::dnd::read(mime)
+        } else {
+            Err(ShellError::State)
+        }
     }
 
-    fn dnd_status(&mut self, _mime: Option<&str>, _actions: u32, _preferred: u32) -> ShellResult {
-        Err(ShellError::State)
+    fn dnd_status(&mut self, mime: Option<&str>, actions: u32, preferred: u32) -> ShellResult {
+        super::dnd::status(mime, actions, preferred)
     }
 
-    fn dnd_finish(&mut self, _success: bool) -> ShellResult {
-        Err(ShellError::State)
+    fn dnd_finish(&mut self, success: bool) -> ShellResult {
+        super::dnd::finish(success)
     }
 
     fn drag_start(
         &mut self,
-        _window: WindowId,
-        _items: &[(&str, &[u8])],
-        _actions: u32,
+        window: WindowId,
+        items: &[(&str, &[u8])],
+        actions: u32,
     ) -> ShellResult {
-        Err(ShellError::Unsupported)
+        let (mtm, view) = (self.mtm, self.win(window)?.view.clone());
+        super::dnd::start(mtm, window, &view, items, actions)
     }
 
     fn drag_cancel(&mut self) -> ShellResult {
+        super::dnd::cancel();
         Ok(())
     }
 

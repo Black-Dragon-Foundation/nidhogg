@@ -2,13 +2,18 @@
 //! the window's first responder, so its keys and mouse arrive here.  Each becomes the shared event record
 //! (`crate::mac_input`) and reaches the backend through the scope (`runloop::deliver`).
 
+use super::dnd;
 use super::runloop::{MacEv, deliver};
 use crate::api::WindowId;
 use crate::event::{NHSHELL_BUTTON_PRESSED, NHSHELL_BUTTON_RELEASED, PointerEv, ShellEvent};
 use crate::mac_input;
 use objc2::rc::Retained;
+use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_app_kit::{NSEvent, NSResponder, NSView};
+use objc2_app_kit::{
+    NSDragOperation, NSDraggingDestination, NSDraggingInfo, NSEvent, NSResponder, NSView,
+};
+use objc2_foundation::NSObjectProtocol;
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 use objc2_quartz_core::CALayer;
 
@@ -19,6 +24,30 @@ define_class!(
     #[name = "NhmacView"]
     #[ivars = WindowId]
     pub struct NhView;
+
+    unsafe impl NSObjectProtocol for NhView {}
+
+    unsafe impl NSDraggingDestination for NhView {
+        #[unsafe(method(draggingEntered:))]
+        fn dragging_entered(&self, info: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
+            NSDragOperation(dnd::entered(*self.ivars(), self, info))
+        }
+
+        #[unsafe(method(draggingUpdated:))]
+        fn dragging_updated(&self, info: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
+            NSDragOperation(dnd::updated(*self.ivars(), self, info))
+        }
+
+        #[unsafe(method(draggingExited:))]
+        fn dragging_exited(&self, info: Option<&ProtocolObject<dyn NSDraggingInfo>>) {
+            dnd::exited(*self.ivars(), self, info);
+        }
+
+        #[unsafe(method(performDragOperation:))]
+        fn perform_drag(&self, info: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
+            dnd::dropped(*self.ivars(), self, info)
+        }
+    }
 
     impl NhView {
         #[unsafe(method(acceptsFirstResponder))]
@@ -53,6 +82,7 @@ define_class!(
 
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, e: &NSEvent) {
+            dnd::note_press(e);
             self.button(e, NHSHELL_BUTTON_PRESSED);
         }
 
@@ -163,5 +193,6 @@ pub fn layer_hosting(
     let layer = CALayer::new();
     view.setLayer(Some(&layer));
     view.setWantsLayer(true);
+    dnd::register(&view);
     (view, layer)
 }

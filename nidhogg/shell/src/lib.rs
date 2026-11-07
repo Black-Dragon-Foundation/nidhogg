@@ -6,6 +6,7 @@
 
 pub mod api;
 pub mod caps;
+pub mod dnd_map;
 pub mod event;
 pub mod mac_input;
 #[cfg(all(feature = "macos", target_os = "macos"))]
