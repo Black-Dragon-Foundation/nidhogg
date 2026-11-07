@@ -696,6 +696,10 @@ PROTO (nhg_tip_hide, int32_t (NhgDisplay *, uint64_t));";
             ("COFF (xdg_foreign)", offset_of!(C, xdg_foreign) as i64),
             ("COFF (ssd)", offset_of!(C, ssd) as i64),
             ("COFF (force_csd)", offset_of!(C, force_csd) as i64),
+            (
+                "COFF (overhang_panels)",
+                offset_of!(C, overhang_panels) as i64,
+            ),
             // NhgPresenterCounters
             ("sizeof (P)", size_of::<P>() as i64),
             ("_Alignof (P)", align_of::<P>() as i64),

@@ -106,6 +106,37 @@ static unsigned long image_alloc_image_color (struct frame *, struct image *,
 					      Lisp_Object, unsigned long);
 #endif	/* USE_CAIRO */
 
+#ifdef HAVE_NHMAC
+/* Naglfar: images are the Cairo container's memory without Cairo
+   (dispextern.h), and the bitmap record is the shell's.  */
+typedef struct nhwl_bitmap_record Bitmap_Record;
+
+static unsigned long
+nhmac_get_pixel (Emacs_Pix_Context image, int x, int y)
+{
+  char *row = image->data + y * image->bytes_per_line;
+  return (image->bits_per_pixel == 32 ? ((uint32_t *) row)[x]
+	  : ((uint8_t *) row)[x]);
+}
+
+static void
+nhmac_put_pixel (Emacs_Pix_Container image, int x, int y,
+		 unsigned long pixel)
+{
+  char *row = image->data + y * image->bytes_per_line;
+  if (image->bits_per_pixel == 32)
+    ((uint32_t *) row)[x] = pixel;
+  else
+    ((uint8_t *) row)[x] = pixel;
+}
+
+#define GET_PIXEL nhmac_get_pixel
+#define PUT_PIXEL nhmac_put_pixel
+#define NO_PIXMAP 0
+#define PIX_MASK_RETAIN	0
+#define PIX_MASK_DRAW	255
+#endif
+
 #ifdef NHWL_WAYLAND
 /* Nidhogg's Wayland shell takes pgtk's branches of this file: they are
    free of GTK (bitmaps are Cairo patterns), and the bitmap record is the
@@ -7489,6 +7520,7 @@ image_disable_image (struct frame *f, struct image *img)
     {
 #ifndef HAVE_NTGUI
 #ifndef HAVE_NS  /* TODO: NS support, however this not needed for toolbars */
+#ifndef HAVE_NHMAC
 
 #if !defined USE_CAIRO && !defined HAVE_HAIKU && !defined HAVE_ANDROID
 #define CrossForeground(f) BLACK_PIX_DEFAULT (f)
@@ -7506,6 +7538,7 @@ image_disable_image (struct frame *f, struct image *img)
       if (img->mask)
 	image_pixmap_draw_cross (f, img->mask, 0, 0, img->width, img->height,
 				 MaskForeground (f));
+#endif /* !HAVE_NHMAC */
 #endif /* !HAVE_NS */
 #else
       HDC hdc, bmpdc;
