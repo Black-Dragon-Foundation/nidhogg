@@ -286,6 +286,156 @@ helper's hop (`:helper-hops-keys' 0)."
     (should (= (nhmac-gui--delta before :helper-hops-keys) 0))
     (should (> (nhmac-gui--delta before :waits) 0))))
 
+;; Task 13: the lock hand-off
+(defun nhmac-gui--idle-until (pred secs)
+  "Idle the main thread in its wait until PRED holds or SECS pass; PRED's last value."
+  (let ((end (+ (float-time) secs)) v)
+    (while (and (not (setq v (funcall pred))) (< (float-time) end))
+      (accept-process-output nil 0.05))
+    v))
+
+(defun nhmac-gui--contenders (n stop)
+  "N Lisp threads contending for the lock and a Lisp mutex until (car STOP) is set.
+Each round takes the mutex, notifies a condition (ALL t and nil in turn) and yields.  Return
+(THREADS . STATE), STATE a vector [ROUNDS SLOW]: rounds done, and lock waits over 2 ms."
+  (let* ((m (make-mutex)) (c (make-condition-variable m)) (state (vector 0 0))
+         (work (lambda ()
+                 (while (not (car stop))
+                   (let ((t0 (float-time)))
+                     (with-mutex m
+                       (aset state 0 (1+ (aref state 0)))
+                       (condition-notify c (zerop (% (aref state 0) 2))))
+                     (when (> (- (float-time) t0) 0.002)
+                       (aset state 1 (1+ (aref state 1)))))
+                   (thread-yield)))))
+    (cons (cl-loop for i below n collect (make-thread work (format "nhmac-c%d" i))) state)))
+
+(ert-deftest nhmac-lock-handoff ()
+  "4 Lisp threads contend for the global lock and a Lisp mutex while the main thread idles in its wait, 10,000
+rounds, through `acquire_global_lock', the condition's return, `condition-notify' with ALL nil and t, and
+`thread-join': every round completes, no park outlives a waiter (`:parks-with-waiters' 0), and the count is 0 at the
+end.  The lock waits over 2 ms are logged, not gated."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((before (nhmac-stats))
+         (stop (list nil))
+         (c (nhmac-gui--contenders 4 stop))
+         (state (cdr c)))
+    (should (nhmac-gui--idle-until (lambda () (>= (aref state 0) 10000)) 60))
+    (setcar stop t)
+    (mapc #'thread-join (car c))
+    (message "nhmac-lock-handoff: %d rounds, %d lock waits over 2 ms; stats %S"
+             (aref state 0) (aref state 1) (nhmac-stats))
+    (should (>= (aref state 0) 10000))
+    (should (= (nhmac-gui--delta before :parks-with-waiters) 0))
+    (should (= (plist-get (nhmac-stats) :lock-waiters) 0))))
+
+(ert-deftest nhmac-lock-handoff-signal ()
+  "3 waiters on one condition, one `condition-notify' with ALL nil per round: exactly one proceeds each round, and the
+lock-waiter count is back to 0 after each (a signal marks one waiter, not all)."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((m (make-mutex)) (c (make-condition-variable m))
+         (tickets 0) (taken 0) (stop nil)
+         (waiters (cl-loop for i below 3 collect
+                           (make-thread
+                            (lambda ()
+                              (with-mutex m
+                                (while (not stop)
+                                  (if (> tickets 0)
+                                      (setq tickets (1- tickets) taken (1+ taken))
+                                    (condition-wait c)))))
+                            (format "nhmac-w%d" i)))))
+    ;; the waiters are waiting
+    (nhmac-gui--idle-until (lambda () (cl-every (lambda (th) (eq (thread--blocker th) c)) waiters)) 5)
+    (dotimes (round 50)
+      (with-mutex m
+        (setq tickets (1+ tickets))
+        (condition-notify c nil))
+      (should (nhmac-gui--idle-until (lambda () (= taken (1+ round))) 5))
+      (should (nhmac-gui--idle-until (lambda () (= (plist-get (nhmac-stats) :lock-waiters) 0)) 5))
+      (should (= taken (1+ round))))
+    (with-mutex m
+      (setq stop t)
+      (condition-notify c t))
+    (mapc #'thread-join waiters)
+    (should (= (plist-get (nhmac-stats) :lock-waiters) 0))))
+
+(defun nhmac-gui--live-under-load ()
+  "Keys, process output, a timer and C-g, all while Lisp threads hold the main thread in its yield loop."
+  (nhmac-gui--flush)
+  ;; 50 keys, each read and inserted
+  (with-temp-buffer
+    (let ((keys (append "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWX" nil)))
+      (dolist (k keys)
+        (nhmac--test-post-key k)
+        (let ((ev (read-event nil nil 2)))
+          (when (characterp ev) (insert ev))))
+      (should (equal (buffer-string) (concat keys)))))
+  ;; a cat echoes 20 lines
+  (let* ((lines 0)
+         (p (make-process :name "nhmac-cat" :command '("cat") :connection-type 'pipe :noquery t
+                          :filter (lambda (_p s) (setq lines (+ lines (cl-count ?\n s)))))))
+    (unwind-protect
+        (progn
+          (dotimes (i 20) (process-send-string p (format "%d\n" i)))
+          (should (nhmac-gui--idle-until (lambda () (= lines 20)) 5)))
+      (delete-process p)))
+  ;; a 0.1 s timer fires once before 1 s
+  (let ((n 0))
+    (run-at-time 0.1 nil (lambda () (setq n (1+ n))))
+    (should (nhmac-gui--idle-until (lambda () (> n 0)) 1))
+    (nhmac-gui--idle-until (lambda () nil) 0.3)
+    (should (= n 1)))
+  ;; C-g ends a (sit-for 5) early
+  (let ((start (float-time)) quit)
+    (nhmac--test-post-key ?\C-g ?g nhmac-gui--ns-control)
+    (condition-case nil
+        (let ((inhibit-quit nil))
+          (sit-for 5)
+          (setq quit (eq (read-event nil nil 1) ?\C-g)))
+      (quit (setq quit t)))
+    (should quit)
+    (should (< (- (float-time) start) 5))))
+
+(ert-deftest nhmac-keys-under-yield-loop ()
+  "While a Lisp thread spins on `thread-yield', and again under 4-thread contention, keys, a process's output, a
+timer and C-g all reach Lisp: the main thread's yield loop pumps and polls, it never parks with waiters."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((stop (list nil))
+         (spinner (make-thread (lambda () (while (not (car stop)) (thread-yield))) "nhmac-spin")))
+    (unwind-protect (nhmac-gui--live-under-load)
+      (setcar stop t)
+      (thread-join spinner)))
+  (let* ((stop (list nil))
+         (c (nhmac-gui--contenders 4 stop)))
+    (unwind-protect (nhmac-gui--live-under-load)
+      (setcar stop t)
+      (mapc #'thread-join (car c))))
+  (should (= (plist-get (nhmac-stats) :lock-waiters) 0)))
+
+(ert-deftest nhmac-thread-wakes-idle-main ()
+  "A thread waiting on a condition is woken by another Lisp thread's notify while the main thread idles in its
+wait, with no AppKit event: the notifier's want of the lock ends the main thread's park."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--flush)
+  (let* ((m (make-mutex)) (c (make-condition-variable m))
+         (go nil) (woken nil) (notified nil)
+         (waiter (make-thread (lambda ()
+                                (with-mutex m
+                                  (while (not go) (condition-wait c))
+                                  (setq woken (float-time))))
+                              "nhmac-cw"))
+         (notifier (make-thread (lambda ()
+                                  (sleep-for 0.2)
+                                  (with-mutex m
+                                    (setq go t notified (float-time))
+                                    (condition-notify c)))
+                                "nhmac-cn")))
+    (should (nhmac-gui--idle-until (lambda () woken) 5))
+    (thread-join notifier)
+    (thread-join waiter)
+    (message "nhmac-thread-wakes-idle-main: woken %.3f s after the notify" (- woken notified))
+    (should (< (- woken notified) 0.5))))
+
 ;; The guard: an Objective-C exception in a pump poisons the display, as a panic does, and Emacs goes on
 (ert-deftest nhmac-objc-exception-poisons ()
   "An NSException raised inside the AppKit pump is caught; the display is poisoned and Emacs does not abort."
