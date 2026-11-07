@@ -17,6 +17,11 @@ parameters only, so it knows nothing of the program that embeds it.
     in safe Rust, instead of giflib. It brings `weezl`; no thread.
   - `image-webp =0.2.4` (feature `images`, no default features): VP8, VP8L and ALPH decoding in safe Rust, instead
     of libwebp. It brings `byteorder-lite` and `quick-error`; no thread.
+  - `sja` (path `../sja`, always): Sjá, the native view model (its own README). Glitnir carries it so that every
+    Rust-carrying build has its entry point: `libglitnir.a` on NS, and the glue's `libnhglue.a` through its
+    `pub use glitnir::*`. It brings `serde_json` (with `serde_core`, `itoa`, `memchr`, `zmij`) and `libc`; `serde`,
+    `serde_derive`, `syn`, `proc-macro2`, `quote` and `unicode-ident` are locked as optional dependencies but not
+    built. Feature `sja-test-hooks` turns on its test hooks.
 - Builds are locked: `cargo build --release --locked`, with `CARGO_HOME` inside the build directory, never `~/.cargo`.
   Cargo fetches the locked crates from crates.io, unless the release's vendor tarball is unpacked in `nidhogg/`
   (`shell/vendor/`, `glitnir/vendor/` and their `.cargo/config.toml`): then the build is offline. `check.sh` compares an

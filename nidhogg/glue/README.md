@@ -16,9 +16,12 @@ the hook tables, `DEFUN`s) and all Cairo drawing, and calls in here through `inc
 - **Dependencies:** `nhshell`, `glitnir` and `libc`, built locked, from crates.io or offline
   from the shell's `vendor/` when the release's vendor tarball is unpacked (`.cargo/config.toml`). `Cargo.lock` is the
   shell's plus the `nhglue` package; after the shell relocks, copy its
-  lock here and add the package back (`check.sh` fails until they agree).
+  lock here and add the package back (`check.sh` fails until they agree). Glitnir carries Sjá (`../sja`, the native
+  view model) and its crates, so all three locks list them; a change to Sjá's dependencies relocks Glitnir, the shell
+  and the glue. The archive exports Sjá's `sja_call` through `pub use glitnir::*`; `tests/ffi.rs`
+  (`sja_entry_points_come_from_sja_export`) checks that Sjá writes it with `sja_export!`.
 - **Features:** `wayland` (default) turns on the shell's Wayland backend; `test-hooks` adds entry points that exist
-  only for tests. Configure passes `--features test-hooks` (through `GLITNIR_CARGO_FLAGS`) and turns on Rust's debug
+  only for tests (and Sjá's test panic and breaker clock, through Glitnir's `sja-test-hooks`). Configure passes `--features test-hooks` (through `GLITNIR_CARGO_FLAGS`) and turns on Rust's debug
   assertions (`CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS`) under `--enable-checking`.
 
 ## Checks
