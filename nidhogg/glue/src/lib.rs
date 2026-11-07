@@ -15,6 +15,7 @@ pub mod bench;
 pub mod configure;
 pub mod display;
 pub mod drain;
+pub mod draw;
 pub mod ffi;
 pub mod focus;
 pub mod font;

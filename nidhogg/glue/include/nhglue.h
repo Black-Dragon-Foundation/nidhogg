@@ -1170,6 +1170,44 @@ int32_t nhg_font_glyph (uint64_t handle, uint32_t c, uint32_t *glyph);
 int32_t nhg_font_glyph_metrics (uint64_t handle, uint32_t glyph, uint32_t mono, int32_t space_width,
                                 NhgGlyphMetrics *out);
 
+/* ---- Draw records (glue/src/draw.rs, nhshell's macos/draw.rs; macOS) -------------------------------------------
+   The primitives nhmacdraw.c emits under nhwldraw.c's shared geometry, painted at once into FRAME's backing with Core
+   Graphics (device pixels with the native area's origin, as damage takes them).  Each kind is its Cairo twin in
+   nhwldraw.c.  Colours are ARGB words, not premultiplied.  NHG_DRAW_FILL: R in FG (NHG_DRAW_COPY replaces the
+   pixels, alpha included).  NHG_DRAW_OUTLINE: one-pixel lines through the pixel centres of R's edges.
+   NHG_DRAW_TRAPEZOID: a relief's top (NHG_DRAW_TOP) or bottom edge over R.  NHG_DRAW_WAVE: a wave in R, A pixels per
+   half wave.  NHG_DRAW_DASH: a line R.h thick along R's top, dashes A long from phase B.  NHG_DRAW_BITMAP: R.h rows at
+   BITS, R.w (at most 16) pixels wide, the leftmost in bit R.w - 1; set pixels in FG, the rest in BG unless
+   NHG_DRAW_OVERLAY.  NHG_DRAW_CORNERS: R in FG outside quarter circles of radius A set B pixels outside the corners
+   the flags' low four bits name (bottom right, bottom left, top left, top right).  NCLIP (0-2) clip rectangles
+   apply.  A refused record is skipped and the call returns NHG_E_ARG; NHG_E_UNSUPPORTED where the shell has no
+   painter.  */
+
+#define NHG_DRAW_FILL 1
+#define NHG_DRAW_OUTLINE 2
+#define NHG_DRAW_TRAPEZOID 3
+#define NHG_DRAW_WAVE 4
+#define NHG_DRAW_DASH 5
+#define NHG_DRAW_BITMAP 6
+#define NHG_DRAW_CORNERS 7
+
+#define NHG_DRAW_COPY (1u << 0)
+#define NHG_DRAW_TOP (1u << 3)
+#define NHG_DRAW_OVERLAY (1u << 7)
+
+typedef struct
+{
+  uint32_t kind, flags;
+  NhgRect r;
+  uint32_t fg, bg;
+  int32_t a, b;
+  int32_t nclip;
+  NhgRect clip[2];
+  const uint16_t *bits;
+} NhgDrawRec;
+
+int32_t nhg_draw (NhgDisplay *d, uint64_t frame, const NhgDrawRec *recs, size_t n);
+
 /* ---- The main wait (glue/src/wait.rs, nhshell's wait.rs; macOS) ------------------------------------------------
    nhg_wait registers the fds RFDS and WFDS ask for below NFDS, runs the backend's event loop until one is ready, a
    wake or TIMEOUT_NS (negative: none), and leaves the ready ones in the sets as select does; the count, as select

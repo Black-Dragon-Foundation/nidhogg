@@ -1411,6 +1411,41 @@ nhg_export! {
 }
 
 nhg_export! {
+    /// Paint the `n` draw records at `recs` (Naglfar's `nhmacdraw.c`) into frame `frame`'s backing, each as it comes
+    /// (device pixels with the native area's origin).  A record the glue refuses is skipped and the call returns
+    /// `NHG_E_ARG` after the rest are painted.  `NHG_E_UNSUPPORTED` where the shell has no painter.  Writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `recs` holds `n` readable records, each `NHG_DRAW_BITMAP` one's `bits` its
+    /// `r.h` readable rows.
+    fn nhg_draw(d: *mut NhgDisplay, frame: u64, recs: *const crate::draw::NhgDrawRec, n: usize) -> i32 |state| {
+        if n == 0 {
+            return Ok(NHG_OK);
+        }
+        if recs.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: non-null, with `n` readable records (the caller's promise).
+        let recs = unsafe { std::slice::from_raw_parts(recs, n) };
+        let f = state.backings.frame_mut(frame)?;
+        let mut bad = false;
+        for r in recs {
+            let bits: &[u16] = if r.kind == crate::draw::NHG_DRAW_BITMAP && !r.bits.is_null() && r.r.h > 0 {
+                // SAFETY: `r.h` readable rows (the caller's promise).
+                unsafe { std::slice::from_raw_parts(r.bits, r.r.h as usize) }
+            } else {
+                &[]
+            };
+            match crate::draw::decode(r, bits) {
+                Ok(mut p) => f.paint(&mut p)?,
+                Err(_) => bad = true,
+            }
+        }
+        if bad { Err(GlueError::Arg) } else { Ok(NHG_OK) }
+    }
+}
+
+nhg_export! {
     /// The frame is about to be published and its Emacs windows are the `n` at `windows`: own outputs that are gone,
     /// resized or idle, or all of them when the frame is no longer an opaque root, become part of the frame again.
     /// Returns how many stay own outputs.  Neither reads nor writes pixels.
