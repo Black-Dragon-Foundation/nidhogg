@@ -44,6 +44,9 @@
 ;;               title, a named pane)
 ;;
 ;; The same numbers are in `nidhogg/glue/src/menu.rs'.
+;;
+;; The ns compatibility layer (last section): the `ns-*' variables and
+;; functions that NS defines in C and that `ns-win.el' and packages use.
 
 ;;; Code:
 
@@ -362,6 +365,375 @@ needed."
   (let ((inhibit-quit t))
     (run-hooks 'activate-menubar-hook 'menu-bar-update-hook)
     (nhmac-menu--flatten (nhmac-menu-bar-maps))))
+
+;;; The ns compatibility layer
+
+;; Packages and `ns-win.el' read and call what NS defines in C.  Here the
+;; variables are `defvar's with NS's defaults, and the functions are Lisp
+;; over `nhmac--call' and `nhmac--query' (the two primitives that pass
+;; records to the shell).  A function the shell does not serve yet signals
+;; `nhmac--not-yet'.
+
+(declare-function nhmac--call "nhmacterm.c" (what &rest args))
+(declare-function nhmac--query "nhmacterm.c" (what &rest args))
+
+(defun nhmac--not-yet ()
+  "Signal that the shell does not serve this function yet."
+  (error "Naglfar: not available yet"))
+
+
+;; Variables
+
+(defvar ns-alternate-modifier 'meta
+  "This variable describes the behavior of the alternate or option key.")
+
+(defvar ns-antialias-text t
+  "Non-nil (the default) means to render text antialiased.")
+
+(defvar ns-auto-hide-menu-bar nil
+  "Non-nil means that the menu bar is hidden.")
+
+(defvar ns-click-through t
+  "Whether to pass activation clicks through to Emacs.")
+
+(defvar ns-command-modifier 'super
+  "This variable describes the behavior of the command key.")
+
+(defvar ns-confirm-quit nil
+  "Whether to confirm application quit using dialog.")
+
+(defvar ns-control-modifier 'control
+  "This variable describes the behavior of the control key.")
+
+(defvar ns-drag-motion-function 'ns-handle-drag-motion
+  "Function called when another program drags items over Emacs.")
+
+(defvar ns-function-modifier 'none
+  "This variable describes the behavior of the function (fn) key.")
+
+(defvar ns-icon-type-alist '(t)
+  "Alist of elements (REGEXP .")
+
+(defvar ns-input-file nil
+  "The file specified in the last NS event.")
+
+(defvar ns-input-font nil
+  "The font specified in the last NS event.")
+
+(defvar ns-input-fontsize nil
+  "The fontsize specified in the last NS event.")
+
+(defvar ns-input-line nil
+  "The line specified in the last NS event.")
+
+(defvar ns-input-spi-arg nil
+  "The service argument specified in the last NS event.")
+
+(defvar ns-input-spi-name nil
+  "The service name specified in the last NS event.")
+
+(defvar ns-mwheel-line-height nil
+  "The number of pixels touchpad scrolling considers one line.")
+
+(defvar ns-reg-to-script nil
+  "Internal map of font registry to Unicode script.")
+
+(defvar ns-right-alternate-modifier 'left
+  "This variable describes the behavior of the right alternate or option.")
+
+(defvar ns-right-command-modifier 'left
+  "This variable describes the behavior of the right command key.")
+
+(defvar ns-right-control-modifier 'left
+  "This variable describes the behavior of the right control key.")
+
+(defvar ns-scroll-event-delta-factor 1.0
+  "A factor to apply to pixel deltas reported in scroll events.")
+
+(defvar ns-sent-selection-hooks nil
+  "A list of functions to be called when Emacs answers a selection request.")
+
+(defvar ns-use-fullscreen-animation nil
+  "Non-nil means use animation on non-native fullscreen.")
+
+(defvar ns-use-mwheel-acceleration t
+  "Non-nil means use macOS's standard mouse wheel acceleration.")
+
+(defvar ns-use-mwheel-momentum t
+  "Non-nil means mouse wheel scrolling uses momentum.")
+
+(defvar ns-use-native-fullscreen t
+  "Non-nil means to use native fullscreen on Mac OS X 10.7 and later.")
+
+(defvar ns-use-proxy-icon t
+  "When non-nil display a proxy icon in the titlebar.")
+
+(defvar ns-use-srgb-colorspace t
+  "Non-nil means to use sRGB colorspace on Mac OS X 10.7 and later.")
+
+(defvar ns-use-thin-smoothing nil
+  "Non-nil turns on a font smoothing method that produces thinner strokes.")
+
+(defvar ns-version-string "Naglfar"
+  "Toolkit version for NS Windowing.")
+
+(defvar ns-working-text nil
+  "String for visualizing working composition sequence.")
+
+
+;; Functions
+
+(defun ns-badge (badge)
+  "Set the app icon badge to BADGE.
+
+Not available yet in Naglfar."
+  (ignore badge)
+  (nhmac--not-yet))
+
+(defun ns-begin-drag (frame pboard action &optional return-frame allow-same-frame follow-tooltip)
+  "Begin a drag-and-drop operation on FRAME.
+
+Not available yet in Naglfar."
+  (ignore frame pboard action return-frame allow-same-frame follow-tooltip)
+  (nhmac--not-yet))
+
+(defun ns-block-system-sleep (why allow-display-sleep)
+  "Block system idle sleep.
+
+Not available yet in Naglfar."
+  (ignore why allow-display-sleep)
+  (nhmac--not-yet))
+
+(defun ns-disown-selection-internal (selection)
+  "If we own the selection SELECTION, disown it.
+
+Not available yet in Naglfar."
+  (ignore selection)
+  (nhmac--not-yet))
+
+(defun ns-display-monitor-attributes-list (&optional terminal)
+  "Return a list of physical monitor attributes on the X display TERMINAL.
+
+Not available yet in Naglfar."
+  (ignore terminal)
+  (nhmac--not-yet))
+
+(defun ns-do-applescript (script)
+  "Execute AppleScript SCRIPT and return the result.
+
+Not available yet in Naglfar."
+  (ignore script)
+  (nhmac--not-yet))
+
+(defun ns-emacs-info-panel ()
+  "Shows the `Info' or `About' panel for Emacs.
+
+Not available yet in Naglfar."
+  (nhmac--not-yet))
+
+(defun ns-font-name (name)
+  "Determine font PostScript or family name for font NAME.
+
+Not available yet in Naglfar."
+  (ignore name)
+  (nhmac--not-yet))
+
+(defun ns-frame-edges (&optional frame type)
+  "Return edge coordinates of FRAME.
+
+Not available yet in Naglfar."
+  (ignore frame type)
+  (nhmac--not-yet))
+
+(defun ns-frame-geometry (&optional frame)
+  "Return geometric attributes of FRAME.
+
+Not available yet in Naglfar."
+  (ignore frame)
+  (nhmac--not-yet))
+
+(defun ns-frame-list-z-order (&optional terminal)
+  "Return list of Emacs's frames, in Z (stacking) order.
+
+Not available yet in Naglfar."
+  (ignore terminal)
+  (nhmac--not-yet))
+
+(defun ns-frame-restack (frame1 frame2 &optional above)
+  "Restack FRAME1 below FRAME2.
+
+Not available yet in Naglfar."
+  (ignore frame1 frame2 above)
+  (nhmac--not-yet))
+
+(defun ns-get-resource (owner name)
+  "Return the value of the property NAME of OWNER from the defaults.
+
+Not available yet in Naglfar."
+  (ignore owner name)
+  (nhmac--not-yet))
+
+(defun ns-get-selection (selection-name target-type)
+  "Return text selected from some X window.
+
+Not available yet in Naglfar."
+  (ignore selection-name target-type)
+  (nhmac--not-yet))
+
+(defun ns-hide-emacs (on)
+  "If ON is non-nil, the entire Emacs application is hidden.
+
+Not available yet in Naglfar."
+  (ignore on)
+  (nhmac--not-yet))
+
+(defun ns-hide-others ()
+  "Hides all applications other than Emacs.
+
+Not available yet in Naglfar."
+  (nhmac--not-yet))
+
+(defun ns-list-colors (&optional frame)
+  "Return a list of all available colors.
+
+Not available yet in Naglfar."
+  (ignore frame)
+  (nhmac--not-yet))
+
+(defun ns-list-services ()
+  "List available Nextstep services by querying NSApp.
+
+Not available yet in Naglfar."
+  (nhmac--not-yet))
+
+(defun ns-mouse-absolute-pixel-position ()
+  "Return absolute position of mouse cursor in pixels.
+
+Not available yet in Naglfar."
+  (nhmac--not-yet))
+
+(defun ns-own-selection-internal (selection value)
+  "Assert an X selection of type SELECTION and value VALUE.
+
+Not available yet in Naglfar."
+  (ignore selection value)
+  (nhmac--not-yet))
+
+(defun ns-perform-service (service send)
+  "Perform Nextstep SERVICE on SEND.
+
+Not available yet in Naglfar."
+  (ignore service send)
+  (nhmac--not-yet))
+
+(defun ns-popup-color-panel (&optional frame)
+  "Pop up the color panel.
+
+Not available yet in Naglfar."
+  (ignore frame)
+  (nhmac--not-yet))
+
+(defun ns-process-is-accessibility-trusted ()
+  "Return non-nil if Emacs is trusted by macOS Accessibility.
+
+Not available yet in Naglfar."
+  (nhmac--not-yet))
+
+(defun ns-progress-indicator (progress)
+  "Bounce the app dock icon to request user attention.
+
+Not available yet in Naglfar."
+  (ignore progress)
+  (nhmac--not-yet))
+
+(defun ns-read-file-name (prompt &optional dir mustmatch init dir-only-p)
+  "Use a graphical panel to read a file name, using prompt PROMPT.
+
+Not available yet in Naglfar."
+  (ignore prompt dir mustmatch init dir-only-p)
+  (nhmac--not-yet))
+
+(defun ns-request-user-attention (urgency)
+  "Bounce the app dock icon to request user attention.
+
+Not available yet in Naglfar."
+  (ignore urgency)
+  (nhmac--not-yet))
+
+(defun ns-reset-menu ()
+  "Cause the NS menu to be re-calculated.
+
+Not available yet in Naglfar."
+  (nhmac--not-yet))
+
+(defun ns-selection-exists-p (&optional selection)
+  "Whether there is an owner for the given X selection.
+
+Not available yet in Naglfar."
+  (ignore selection)
+  (nhmac--not-yet))
+
+(defun ns-selection-owner-p (&optional selection)
+  "Whether the current Emacs process owns the given X Selection.
+
+Not available yet in Naglfar."
+  (ignore selection)
+  (nhmac--not-yet))
+
+(defun ns-send-items (items)
+  "Send a list of items to macOS applications or services.
+
+Not available yet in Naglfar."
+  (ignore items)
+  (nhmac--not-yet))
+
+(defun ns-set-mouse-absolute-pixel-position (x y)
+  "Move mouse pointer to absolute pixel position (X, Y).
+
+Not available yet in Naglfar."
+  (ignore x y)
+  (nhmac--not-yet))
+
+(defun ns-set-resource (owner name value)
+  "Set property NAME of OWNER to VALUE, from the defaults database.
+
+Not available yet in Naglfar."
+  (ignore owner name value)
+  (nhmac--not-yet))
+
+(defun ns-show-character-palette ()
+  "Show the macOS character palette.
+
+Not available yet in Naglfar."
+  (nhmac--not-yet))
+
+(defun ns-unblock-system-sleep (token)
+  "Unblock system idle sleep.
+
+Not available yet in Naglfar."
+  (ignore token)
+  (nhmac--not-yet))
+
+;; Variables the shell reads.  Rust gets the new value when one is set; a
+;; `let' binding does not reach it.
+
+(defconst nhmac--watched-variables
+  '(ns-alternate-modifier ns-right-alternate-modifier
+    ns-command-modifier ns-right-command-modifier
+    ns-control-modifier ns-right-control-modifier ns-function-modifier
+    ns-use-srgb-colorspace ns-confirm-quit ns-auto-hide-menu-bar
+    ns-use-native-fullscreen)
+  "The variables whose changes `nhmac--variable-changed' passes to the shell.")
+
+(defun nhmac--variable-changed (symbol newval operation where)
+  "Pass NEWVAL of SYMBOL to the shell when it is set (a variable watcher).
+OPERATION and WHERE are as `add-variable-watcher' gives them; only a global
+`set' counts.  Nothing is passed before the shell is up."
+  (when (and (eq operation 'set) (null where) (fboundp 'nhmac--call))
+    (funcall 'nhmac--call 'variable symbol newval)))
+
+(dolist (variable nhmac--watched-variables)
+  (add-variable-watcher variable #'nhmac--variable-changed))
 
 (provide 'nhmac-win)
 
