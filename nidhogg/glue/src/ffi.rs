@@ -1876,3 +1876,27 @@ nhg_export! {
         Ok(NHG_OK)
     }
 }
+
+nhg_export! {
+    /// What changing frame parameter `key` (`NHG_PK_*`) to the `n` values `v` does on a frame with the facts `f`
+    /// (`params::decide`), into `*out`.  A status in `out` is a signal for C to raise.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `f` and `out` are null or valid; `v` is null or holds `n` values.
+    unlocked fn nhg_frame_param(
+        key: u32,
+        f: *const crate::params::NhgParamFrame,
+        v: *const crate::params::NhgParamValue,
+        n: usize,
+        out: *mut crate::params::NhgParamAction,
+    ) -> i32 {
+        if f.is_null() || out.is_null() || (v.is_null() && n > 0) {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: non-null, and `v` holds `n` values (the caller's promise); `n` is 0 only when `v` may be null.
+        let (f, v) = unsafe { (&*f, if n == 0 { &[][..] } else { std::slice::from_raw_parts(v, n) }) };
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe { out.write(crate::params::decide(key, f, v)) };
+        Ok(NHG_OK)
+    }
+}
