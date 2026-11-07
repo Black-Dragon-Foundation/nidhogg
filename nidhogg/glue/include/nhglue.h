@@ -1094,6 +1094,46 @@ typedef struct
 int32_t nhg_frame_param (uint32_t key, const NhgParamFrame *f, const NhgParamValue *v, size_t n,
                          NhgParamAction *out);
 
+/* ---- Font specs and matching ----------------------------------------------------------------------------------
+   A native font driver's records (glue/src/fontspec.rs).  Names (family, foundry, registry, script, language, `:otf`
+   features) are ids from nhg_font_id, 0 for unset; the numbers are FONT_*_NUMERIC (-1: unset); the size is in device
+   pixels (0: unset).  The matching is macfont_list and macfont_match's, over the faces the driver's font source lists.
+   Neither reads nor writes pixels.  */
+
+#define NHG_FS_OTF_MAX 8
+
+typedef struct
+{
+  uint32_t family, foundry, registry, script, language;
+  int32_t weight, slant, width, spacing;
+  float size;
+  uint32_t otf_n;
+  uint32_t otf[NHG_FS_OTF_MAX];
+} NhgFontSpec;
+
+/* A listed font: the spec's fields as the face has them, the id the driver opens the face by, and what is synthesised
+   (NHG_FS_SYNTH_*: bits).  */
+enum { NHG_FS_SYNTH_ITALIC = 1, NHG_FS_SYNTH_BOLD = 2, NHG_FS_SYNTH_MONO = 4 };
+
+typedef struct
+{
+  NhgFontSpec spec;
+  uint64_t font_id;
+  uint32_t synth;
+} NhgFontEntity;
+
+/* The id of the name at S (LEN bytes, not NUL-terminated) into *ID; made at the first call and kept.  0 for an empty
+   or non-UTF-8 name.  */
+int32_t nhg_font_id (const char *s, size_t len, uint32_t *id);
+
+/* The name of ID into BUF (CAP bytes, NUL-terminated), its length into *LEN (may be NULL).  NHG_E_TOO_SMALL.  */
+int32_t nhg_font_name (uint32_t id, char *buf, size_t cap, size_t *len);
+
+/* Every font that fits *SPEC into OUT (CAP records), how many into *N; the nearest one for nhg_font_match.
+   NHG_E_UNSUPPORTED without a font source (the Linux shell has none: fontconfig lists its fonts).  */
+int32_t nhg_font_list (const NhgFontSpec *spec, NhgFontEntity *out, size_t cap, size_t *n);
+int32_t nhg_font_match (const NhgFontSpec *spec, NhgFontEntity *out, size_t cap, size_t *n);
+
 #ifdef __cplusplus
 }
 #endif
