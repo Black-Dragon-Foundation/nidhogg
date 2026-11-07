@@ -291,6 +291,7 @@ accepted and does nothing, as for a missing Wayland protocol.
 | `nhg_scroll_window` | W | scroll a window's rows; promote or demote its layer | same; a layer is a `CALayer` |
 | `nhg_layers_sync` / `nhg_layers_count` | - | demote layers that are gone, resized or idle; count them | same |
 | `nhg_bell_flash` / `nhg_bell_restore` | W | the visible bell's rows inverted and put back | same |
+| `nhg_frame_param` | - | what changing a frame parameter does (validation, clamps, defaults, what to redo): `params.rs` | same |
 | `nhg_inhibit_idle` | - | hold or release an idle inhibitor | `IOPMAssertion` |
 | `nhg_window_export` / `nhg_activation_token` | - | xdg-foreign handle; activation token | no counterpart (nothing, error) |
 | `nhg_session_open` / `nhg_session_id` / `nhg_session_remove` | - | the compositor's session for frame restore | state restoration, or nothing |

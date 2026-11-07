@@ -73,6 +73,169 @@ x_decode_color (struct frame *f, Lisp_Object color_name, int mono_color)
   signal_error ("Undefined color", color_name);
 }
 
+/* The frame-parameter decisions are the glue's (nhg_frame_param; glue/src/params.rs).  A setter reads the
+   Lisp value into a record, states the frame's facts, signals the glue's errors and applies the action.  */
+
+static NhgParamValue
+nhwl_param_value (Lisp_Object v)
+{
+  NhgParamValue r = { NHG_PV_OTHER, NHG_PS_OTHER, 0, 0 };
+
+  if (NILP (v))
+    r.kind = NHG_PV_NIL;
+  else if (FIXNUMP (v))
+    r = (NhgParamValue) { NHG_PV_FIXNUM, 0, XFIXNUM (v), 0 };
+  else if (FLOATP (v))
+    r = (NhgParamValue) { NHG_PV_FLOAT, 0, 0, XFLOAT_DATA (v) };
+  else if (BIGNUMP (v))
+    r = (NhgParamValue) { NHG_PV_BIGNUM, 0, NILP (Fnatnump (v)) ? -1 : 1, 0 };
+  else if (SYMBOLP (v))
+    r = (NhgParamValue) { NHG_PV_SYMBOL,
+			  EQ (v, Qabove) ? NHG_PS_ABOVE
+			  : EQ (v, Qabove_suspended) ? NHG_PS_ABOVE_SUSPENDED
+			  : EQ (v, Qbelow) ? NHG_PS_BELOW : NHG_PS_OTHER, 0, 0 };
+  return r;
+}
+
+/* Do what A says about parameter KEY (PROP its symbol) on F.  */
+static void
+nhwl_apply_param (struct frame *f, uint32_t key, Lisp_Object prop,
+		  const NhgParamAction *a)
+{
+  uint32_t fl = a->flags;
+  struct nhwl_output *x = f->output_data.nhwl;
+
+  if (fl & NHG_PA_REDISPLAY)
+    fset_redisplay (f);
+  if (fl & NHG_PA_STORE)
+    switch (key)
+      {
+      case NHG_PK_MENU_BAR_LINES:
+	FRAME_MENU_BAR_LINES (f) = a->n;
+	FRAME_MENU_BAR_HEIGHT (f) = a->n * FRAME_LINE_HEIGHT (f);
+	break;
+      case NHG_PK_CHILD_FRAME_BORDER_WIDTH:
+	f->child_frame_border_width = a->n;
+	break;
+      case NHG_PK_INTERNAL_BORDER_WIDTH:
+	f->internal_border_width = a->n;
+	break;
+      case NHG_PK_UNDECORATED:
+	FRAME_UNDECORATED (f) = a->n;
+	break;
+      case NHG_PK_Z_GROUP:
+	FRAME_Z_GROUP (f) = a->n;	/* the glue counts in the enum's order */
+	break;
+      case NHG_PK_NO_ACCEPT_FOCUS:
+	FRAME_NO_ACCEPT_FOCUS (f) = a->n;
+	break;
+      }
+  if (fl & NHG_PA_CLEAR_BORDER_FIRST)
+    nhwl_clear_under_internal_border (f);
+  if (fl & NHG_PA_ADJUST_SIZE)
+    adjust_frame_size (f, -1, -1, 3, key == NHG_PK_MENU_BAR_LINES, prop);
+  if (fl & NHG_PA_CLEAR_BORDER)
+    nhwl_clear_under_internal_border (f);
+  block_input ();
+  if (fl & NHG_PA_CLEAR_AREA)
+    nhwl_clear_area (f, 0, FRAME_TOP_MARGIN_HEIGHT (f) + a->y,
+		   FRAME_PIXEL_WIDTH (f), a->h);
+  if (fl & NHG_PA_CLEAR_AREA2)
+    nhwl_clear_area (f, 0, a->y2, FRAME_PIXEL_WIDTH (f), a->h2);
+  if (fl & NHG_PA_APPLY_ALPHA)
+    {
+      f->alpha[0] = a->alpha[0];
+      f->alpha[1] = a->alpha[1];
+      nhwl_set_frame_alpha (f);
+    }
+  unblock_input ();
+  if (fl & NHG_PA_CLEAR_MENU_MATRIX)
+    clear_glyph_matrix (XWINDOW (f->menu_bar_window)->current_matrix);
+  if (fl & NHG_PA_ADJUST_GLYPHS)
+    adjust_frame_glyphs (f);
+  if (fl & NHG_PA_TAB_BAR_HOOK)
+    FRAME_TERMINAL (f)->change_tab_bar_height_hook (f, a->h);
+  if (fl & NHG_PA_TOOL_BAR_HOOK)
+    FRAME_TERMINAL (f)->change_tool_bar_height_hook (f, a->h);
+  if (fl & NHG_PA_STORE_CURSOR)
+    {
+      x->cursor_color = x->cursor_xgcv.background = a->pixel[0];
+      x->cursor_foreground_color = x->cursor_xgcv.foreground = a->pixel[1];
+    }
+  if (fl & NHG_PA_REDRAW_CURSOR)
+    {
+      gui_update_cursor (f, false);
+      gui_update_cursor (f, true);
+    }
+  if (fl & NHG_PA_UNDECORATED_HINT)
+    nhwl_set_undecorated_hint (f, a->n);
+  if (fl & NHG_PA_RAISE_LOWER)
+    nhwl_frame_raise_lower (f, a->n == z_group_above);
+  if (fl & NHG_PA_REPOSITION)
+    nhwl_child_reposition (f);
+}
+
+/* Set parameter KEY of F to ARG (OLD was its value, CURRENT its lines or
+   width), or for NHG_PK_CURSOR_COLOR to the pixels ARG and ARG2; a cons
+   ALPHA is its car and the item after.  */
+static void
+nhwl_param (struct frame *f, uint32_t key, Lisp_Object prop, int current,
+	    Lisp_Object old, Lisp_Object arg, Lisp_Object arg2)
+{
+  NhgParamValue v[2] = { nhwl_param_value (arg), nhwl_param_value (arg2) };
+  NhgParamFrame facts = {
+    FRAME_MINIBUF_ONLY_P (f), FRAME_PARENT_FRAME (f) != NULL,
+    FRAME_X_WINDOW (f) != 0, FRAME_VISIBLE_P (f), nhwl_child_p (f),
+    EQ (arg, old), WINDOWP (f->menu_bar_window), current,
+    FRAME_LINE_HEIGHT (f), FRAME_INTERNAL_BORDER_WIDTH (f),
+    FRAME_PIXEL_WIDTH (f),
+    FRAME_BACKGROUND_PIXEL (f), f->output_data.nhwl->mouse_color,
+  };
+  NhgParamAction a;
+  int n = (key == NHG_PK_CURSOR_COLOR) + 1;
+
+  if (key == NHG_PK_ALPHA && CONSP (arg))
+    {
+      v[0] = nhwl_param_value (XCAR (arg));
+      v[1] = nhwl_param_value (CONSP (XCDR (arg)) ? XCAR (XCDR (arg))
+			       : XCDR (arg));
+      n = 2;
+    }
+  if (NHG (nhg_frame_param (key, &facts, v, n, &a)) != NHG_OK)
+    emacs_abort ();
+  switch (a.status)
+    {
+    case NHG_PE_OK:
+      break;
+    case NHG_PE_ALPHA_FLOAT_RANGE:
+      args_out_of_range (make_float (0.0), make_float (1.0));
+    case NHG_PE_ALPHA_PERCENT_RANGE:
+      args_out_of_range (make_fixnum (0), make_fixnum (100));
+    case NHG_PE_ALPHA_TYPE:
+      wrong_type_argument (Qnumberp, !CONSP (arg) ? arg
+			   : a.n == 0 ? XCAR (arg)
+			   : CONSP (XCDR (arg)) ? XCAR (XCDR (arg))
+			   : XCDR (arg));
+    case NHG_PE_CHILD_BORDER:
+      signal_error ("Invalid child frame border width", arg);
+    case NHG_PE_Z_GROUP:
+      error ("Invalid z-group specification");
+    default:
+      check_int_nonnegative (arg);	/* NHG_PE_INTERNAL_BORDER */
+      emacs_abort ();
+    }
+  nhwl_apply_param (f, key, prop, &a);
+}
+
+/* A setter that passes the parameter on: STORAGE void NAME of the
+   frame-parameter handler type.  */
+#define NHWL_PARAM_SETTER(storage, name, key, prop, current)	\
+  storage void							\
+  name (struct frame *f, Lisp_Object arg, Lisp_Object old)	\
+  {								\
+    nhwl_param (f, key, prop, current, old, arg, Qnil);		\
+  }
+
 /* Adapted from pgtk_set_foreground_color.  */
 static void
 nhwl_set_foreground_color (struct frame *f, Lisp_Object arg,
@@ -140,48 +303,7 @@ nhwl_set_alpha_background (struct frame *f, Lisp_Object arg,
    float from 0 to 1, an integer percentage, or nil (opaque).  Adapted
    from frame.c's gui_set_alpha, which is not built for this window
    system; nhwl_set_frame_alpha applies the values.  */
-static void
-nhwl_set_alpha (struct frame *f, Lisp_Object arg, Lisp_Object oldval)
-{
-  double newval[2];
-  int i;
-  Lisp_Object item;
-
-  for (i = 0; i < 2; i++)
-    {
-      if (CONSP (arg))
-	{
-	  item = XCAR (arg);
-	  arg = XCDR (arg);
-	}
-      else
-	item = arg;
-
-      if (NILP (item))
-	newval[i] = -1.0;
-      else if (FLOATP (item))
-	{
-	  newval[i] = XFLOAT_DATA (item);
-	  if (! (0 <= newval[i] && newval[i] <= 1.0))
-	    args_out_of_range (make_float (0.0), make_float (1.0));
-	}
-      else if (FIXNUMP (item))
-	{
-	  EMACS_INT ialpha = XFIXNUM (item);
-	  if (! (0 <= ialpha && ialpha <= 100))
-	    args_out_of_range (make_fixnum (0), make_fixnum (100));
-	  newval[i] = ialpha / 100.0;
-	}
-      else
-	wrong_type_argument (Qnumberp, item);
-    }
-
-  for (i = 0; i < 2; i++)
-    f->alpha[i] = newval[i];
-  block_input ();
-  nhwl_set_frame_alpha (f);
-  unblock_input ();
-}
+NHWL_PARAM_SETTER (static, nhwl_set_alpha, NHG_PK_ALPHA, Qnil, 0)
 
 /* Adapted from pgtk_set_border_color.  */
 static void
@@ -199,40 +321,14 @@ nhwl_set_border_color (struct frame *f, Lisp_Object arg, Lisp_Object oldval)
 static void
 nhwl_set_cursor_color (struct frame *f, Lisp_Object arg, Lisp_Object oldval)
 {
-  unsigned long fore_pixel, pixel;
-  struct nhwl_output *x = f->output_data.nhwl;
+  Lisp_Object fore
+    = make_fixnum (NILP (Vx_cursor_fore_pixel) ? FRAME_BACKGROUND_PIXEL (f)
+		   : x_decode_color (f, Vx_cursor_fore_pixel,
+				     WHITE_PIX_DEFAULT (f)));
 
-  if (!NILP (Vx_cursor_fore_pixel))
-    fore_pixel = x_decode_color (f, Vx_cursor_fore_pixel,
-				 WHITE_PIX_DEFAULT (f));
-  else
-    fore_pixel = FRAME_BACKGROUND_PIXEL (f);
-
-  pixel = x_decode_color (f, arg, BLACK_PIX_DEFAULT (f));
-
-  /* Make sure that the cursor color differs from the background color.  */
-  if (pixel == FRAME_BACKGROUND_PIXEL (f))
-    {
-      pixel = x->mouse_color;
-      if (pixel == fore_pixel)
-	fore_pixel = FRAME_BACKGROUND_PIXEL (f);
-    }
-
-  x->cursor_foreground_color = fore_pixel;
-  x->cursor_color = pixel;
-
-  if (FRAME_X_WINDOW (f) != 0)
-    {
-      x->cursor_xgcv.background = x->cursor_color;
-      x->cursor_xgcv.foreground = fore_pixel;
-
-      if (FRAME_VISIBLE_P (f))
-	{
-	  gui_update_cursor (f, false);
-	  gui_update_cursor (f, true);
-	}
-    }
-
+  nhwl_param (f, NHG_PK_CURSOR_COLOR, Qnil, 0, Qnil,
+	      make_fixnum (x_decode_color (f, arg, BLACK_PIX_DEFAULT (f))),
+	      fore);
   update_face_from_frame_parameter (f, Qcursor_color, arg);
 }
 
@@ -305,174 +401,29 @@ nhwl_set_title (struct frame *f, Lisp_Object name, Lisp_Object old_name)
   nhwl_set_title_hint (f);
 }
 
-/* Adapted from x_set_menu_bar_lines (xfns.c, the branch without a
-   toolkit): the menu bar is drawn by Emacs.  */
-static void
-nhwl_set_menu_bar_lines (struct frame *f, Lisp_Object value,
-			 Lisp_Object oldval)
-{
-  int nlines;
-  int olines = FRAME_MENU_BAR_LINES (f);
+/* Adapted from x_set_menu_bar_lines, x_set_tab_bar_lines and
+   x_set_tool_bar_lines (xfns.c, the branch without a toolkit): the bars are
+   drawn by Emacs.  */
+NHWL_PARAM_SETTER (static, nhwl_set_menu_bar_lines, NHG_PK_MENU_BAR_LINES,
+		   Qmenu_bar_lines, FRAME_MENU_BAR_LINES (f))
+NHWL_PARAM_SETTER (static, nhwl_set_tab_bar_lines, NHG_PK_TAB_BAR_LINES,
+		   Qtab_bar_lines, FRAME_TAB_BAR_LINES (f))
+NHWL_PARAM_SETTER (static, nhwl_set_tool_bar_lines, NHG_PK_TOOL_BAR_LINES,
+		   Qtool_bar_lines, 0)
 
-  /* Right now, menu bars don't work properly in minibuf-only frames;
-     most of the commands try to apply themselves to the minibuffer
-     frame itself, and get an error because you can't switch buffers
-     in or split the minibuffer window.  */
-  if (FRAME_MINIBUF_ONLY_P (f) || FRAME_PARENT_FRAME (f))
-    return;
-
-  if (TYPE_RANGED_FIXNUMP (int, value))
-    nlines = XFIXNUM (value);
-  else
-    nlines = 0;
-
-  /* Make sure we redisplay all windows in this frame.  */
-  fset_redisplay (f);
-
-  FRAME_MENU_BAR_LINES (f) = nlines;
-  FRAME_MENU_BAR_HEIGHT (f) = nlines * FRAME_LINE_HEIGHT (f);
-  if (FRAME_X_WINDOW (f))
-    nhwl_clear_under_internal_border (f);
-
-  /* If the menu bar height gets changed, the internal border below
-     the top margin has to be cleared.  Also, if the menu bar gets
-     larger, the area for the added lines has to be cleared except for
-     the first menu bar line that is to be drawn later.  */
-  if (nlines != olines)
-    {
-      int height = FRAME_INTERNAL_BORDER_WIDTH (f);
-      int width = FRAME_PIXEL_WIDTH (f);
-      int y;
-
-      adjust_frame_size (f, -1, -1, 3, true, Qmenu_bar_lines);
-
-      /* height can be zero here. */
-      if (FRAME_X_WINDOW (f) && height > 0 && width > 0)
-	{
-	  y = FRAME_TOP_MARGIN_HEIGHT (f);
-
-	  block_input ();
-	  nhwl_clear_area (f, 0, y, width, height);
-	  unblock_input ();
-	}
-
-      if (nlines > 1 && nlines > olines)
-	{
-	  y = (olines == 0 ? 1 : olines) * FRAME_LINE_HEIGHT (f);
-	  height = nlines * FRAME_LINE_HEIGHT (f) - y;
-
-	  block_input ();
-	  nhwl_clear_area (f, 0, y, width, height);
-	  unblock_input ();
-	}
-
-      if (nlines == 0 && WINDOWP (f->menu_bar_window))
-	clear_glyph_matrix (XWINDOW (f->menu_bar_window)->current_matrix);
-    }
-  adjust_frame_glyphs (f);
-}
-
-/* Adapted from x_set_tab_bar_lines (xfns.c).  */
-static void
-nhwl_set_tab_bar_lines (struct frame *f, Lisp_Object value,
-			Lisp_Object oldval)
-{
-  int olines = FRAME_TAB_BAR_LINES (f);
-  int nlines;
-
-  /* Treat tab bars like menu bars.  */
-  if (FRAME_MINIBUF_ONLY_P (f))
-    return;
-
-  /* Use VALUE only if an int >= 0.  */
-  if (RANGED_FIXNUMP (0, value, INT_MAX))
-    nlines = XFIXNAT (value);
-  else
-    nlines = 0;
-
-  if (nlines != olines && (olines == 0 || nlines == 0))
-    FRAME_TERMINAL (f)->change_tab_bar_height_hook
-      (f, nlines * FRAME_LINE_HEIGHT (f));
-}
-
-/* Adapted from x_set_tool_bar_lines (xfns.c).  */
-static void
-nhwl_set_tool_bar_lines (struct frame *f, Lisp_Object value,
-			 Lisp_Object oldval)
-{
-  int nlines;
-
-  /* Treat tool bars like menu bars.  */
-  if (FRAME_MINIBUF_ONLY_P (f))
-    return;
-
-  /* Use VALUE only if an int >= 0.  */
-  if (RANGED_FIXNUMP (0, value, INT_MAX))
-    nlines = XFIXNAT (value);
-  else
-    nlines = 0;
-
-  FRAME_TERMINAL (f)->change_tool_bar_height_hook
-    (f, nlines * FRAME_LINE_HEIGHT (f));
-}
-
-/* Adapted from pgtk_set_child_frame_border_width.  */
-static void
-nhwl_set_child_frame_border_width (struct frame *f, Lisp_Object arg,
-				   Lisp_Object oldval)
-{
-  int border;
-
-  if (NILP (arg))
-    border = -1;
-  else if (RANGED_FIXNUMP (0, arg, INT_MAX))
-    border = XFIXNAT (arg);
-  else
-    signal_error ("Invalid child frame border width", arg);
-
-  if (border != FRAME_CHILD_FRAME_BORDER_WIDTH (f))
-    {
-      f->child_frame_border_width = border;
-
-      if (FRAME_X_WINDOW (f))
-	{
-	  adjust_frame_size (f, -1, -1, 3, false, Qchild_frame_border_width);
-	  nhwl_clear_under_internal_border (f);
-	}
-    }
-}
-
-/* Adapted from pgtk_set_internal_border_width.  */
-static void
-nhwl_set_internal_border_width (struct frame *f, Lisp_Object arg,
-				Lisp_Object oldval)
-{
-  int border = check_int_nonnegative (arg);
-
-  if (border != FRAME_INTERNAL_BORDER_WIDTH (f))
-    {
-      f->internal_border_width = border;
-
-      if (FRAME_X_WINDOW (f))
-	{
-	  adjust_frame_size (f, -1, -1, 3, false, Qinternal_border_width);
-	  nhwl_clear_under_internal_border (f);
-	}
-    }
-}
+/* Adapted from pgtk_set_child_frame_border_width and
+   pgtk_set_internal_border_width.  */
+NHWL_PARAM_SETTER (static, nhwl_set_child_frame_border_width,
+		   NHG_PK_CHILD_FRAME_BORDER_WIDTH,
+		   Qchild_frame_border_width,
+		   FRAME_CHILD_FRAME_BORDER_WIDTH (f))
+NHWL_PARAM_SETTER (static, nhwl_set_internal_border_width,
+		   NHG_PK_INTERNAL_BORDER_WIDTH, Qinternal_border_width,
+		   FRAME_INTERNAL_BORDER_WIDTH (f))
 
 /* The shell takes the flag when the window is made, and
    nhwl_set_undecorated_hint changes it later.  */
-static void
-nhwl_set_undecorated (struct frame *f, Lisp_Object new_value,
-		      Lisp_Object old_value)
-{
-  if (!EQ (new_value, old_value))
-    {
-      FRAME_UNDECORATED (f) = !NILP (new_value);
-      nhwl_set_undecorated_hint (f, FRAME_UNDECORATED (f));
-    }
-}
+NHWL_PARAM_SETTER (static, nhwl_set_undecorated, NHG_PK_UNDECORATED, Qnil, 0)
 
 
 /***********************************************************************
@@ -534,39 +485,11 @@ nhwl_child_params_changed (struct frame *f)
 
 /* Adapted from pgtk_set_z_group (emacs-31.1): stored, and for a child
    frame acted on among its siblings.  */
-void
-nhwl_set_z_group (struct frame *f, Lisp_Object new_value,
-		  Lisp_Object old_value)
-{
-  if (NILP (new_value))
-    FRAME_Z_GROUP (f) = z_group_none;
-  else if (EQ (new_value, Qabove))
-    FRAME_Z_GROUP (f) = z_group_above;
-  else if (EQ (new_value, Qabove_suspended))
-    FRAME_Z_GROUP (f) = z_group_above_suspended;
-  else if (EQ (new_value, Qbelow))
-    FRAME_Z_GROUP (f) = z_group_below;
-  else
-    error ("Invalid z-group specification");
-
-  if (nhwl_child_p (f) && !EQ (new_value, old_value))
-    {
-      if (EQ (new_value, Qabove))
-	nhwl_frame_raise_lower (f, true);
-      else if (EQ (new_value, Qbelow))
-	nhwl_frame_raise_lower (f, false);
-    }
-}
+NHWL_PARAM_SETTER (, nhwl_set_z_group, NHG_PK_Z_GROUP, Qnil, 0)
 
 /* A `no-accept-focus' child never takes its tree's keys
    (nhwl_child_focus); the glue gets the fact.  */
-void
-nhwl_set_no_accept_focus (struct frame *f, Lisp_Object new_value,
-			  Lisp_Object old_value)
-{
-  FRAME_NO_ACCEPT_FOCUS (f) = !NILP (new_value);
-  nhwl_child_reposition (f);
-}
+NHWL_PARAM_SETTER (, nhwl_set_no_accept_focus, NHG_PK_NO_ACCEPT_FOCUS, Qnil, 0)
 
 /* Make F's window (and those of the child frames under it) again, under
    F's current parent.  The old window of F is gone (its dependents with
