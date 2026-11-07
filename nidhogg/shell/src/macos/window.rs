@@ -1,18 +1,22 @@
-//! A top-level window: an `NSWindow` whose content view is layer-hosting (`view::layer_hosting`).
+//! A top-level window: an `NSWindow` whose content view is layer-hosting and its first responder
+//! (`view::layer_hosting`).
 
 use super::runloop::WinDelegate;
-use super::view;
+use super::view::{self, NhView};
 use crate::api::WindowId;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{NSBackingStoreType, NSView, NSWindow, NSWindowStyleMask};
+use objc2_app_kit::{NSBackingStoreType, NSWindow, NSWindowStyleMask};
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 use objc2_quartz_core::CALayer;
 
 pub struct Win {
     pub window: Retained<NSWindow>,
-    pub view: Retained<NSView>,
+    // read by the test hooks now, and by the surfaces' commit later
+    #[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
+    pub view: Retained<NhView>,
+    #[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
     pub layer: Retained<CALayer>,
     /// The window holds its delegate weakly.
     pub _delegate: Retained<WinDelegate>,
@@ -55,8 +59,10 @@ impl Win {
         };
         // SAFETY: we hold the window in a `Retained`; AppKit must not release it again when it closes.
         unsafe { window.setReleasedWhenClosed(false) };
-        let (view, layer) = view::layer_hosting(mtm, size);
+        let (view, layer) = view::layer_hosting(mtm, id, size);
         window.setContentView(Some(&view));
+        window.makeFirstResponder(Some(&view));
+        window.setAcceptsMouseMovedEvents(true);
         window.setTitle(&NSString::from_str(title));
         let delegate = WinDelegate::new(mtm, id);
         window.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));

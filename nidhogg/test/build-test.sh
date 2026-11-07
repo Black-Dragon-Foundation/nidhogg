@@ -107,6 +107,13 @@ run -- --dry-run --container fedora-45 --dev --chaos
 rcis 0; has "--with-nidhogg-chaos"
 run -- --dry-run --container fedora-45 --chaos
 rcis 1; has "dev builds only"
+# --checking: --enable-checking (the test hooks) in a dev build, never a release
+run -- --dry-run --container fedora-45
+rcis 0; hasnt "--enable-checking"
+run -- --dry-run --container fedora-45 --dev --checking
+rcis 0; has "--enable-checking"
+run -- --dry-run --container fedora-45 --checking
+rcis 1; has "dev builds only"
 # --dev: native-compilation=yes, no JIT in the image, never packed, cache stamp carries the mode
 run -- --dry-run --container fedora-45 --dev
 rcis 0; has "--with-native-compilation=yes"; hasnt "--with-native-compilation=aot"; has "site-init.el"; has "MODE_ID=yes"; has "--with-tree-sitter"
