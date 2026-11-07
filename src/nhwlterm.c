@@ -1010,7 +1010,7 @@ static struct redisplay_interface nhwl_redisplay_interface = {
  ***********************************************************************/
 
 /* The scale of frame F's window as a factor (1.0 until the compositor
-   says); the display's resolution is 96 times the display's scale.  */
+   says); the display's resolution is NHWL_DPI times the display's scale.  */
 static double
 nhwl_frame_scale (struct frame *f)
 {
@@ -2368,7 +2368,7 @@ nhwl_note_mouse_movement (struct frame *frame, int x, int y, Time time)
 
 /* Apply a SCALE action: the shell reported a new preferred scale for
    frame F (the glue decided it is new).  The display's resolution follows
-   (96 dpi times the scale), and the fonts are re-opened at the device
+   (NHWL_DPI times the scale), and the fonts are re-opened at the device
    size as on a move between monitors.  */
 static void
 nhwl_scale_changed (struct frame *f, uint32_t scale120)
@@ -2380,7 +2380,7 @@ nhwl_scale_changed (struct frame *f, uint32_t scale120)
 
   out->scale120 = scale120;
   dpyinfo->scale120 = scale120;
-  dpyinfo->resx = dpyinfo->resy = 96.0 * scale120 / 120.0;
+  dpyinfo->resx = dpyinfo->resy = NHWL_DPI * scale120 / 120.0;
 
   /* The fonts are re-opened at the new device size: the pixel size of
      the frame's font times the ratio of the scales, through the frame's
@@ -3258,7 +3258,7 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
       if (a->code > 0 && dpyinfo->scale120 == 0)
 	{
 	  dpyinfo->scale120 = a->code;
-	  dpyinfo->resx = dpyinfo->resy = 96.0 * dpyinfo->scale120 / 120.0;
+	  dpyinfo->resx = dpyinfo->resy = NHWL_DPI * dpyinfo->scale120 / 120.0;
 	}
       /* One event per change: Lisp runs display-monitors-changed-functions
 	 for it.  */
@@ -4143,11 +4143,11 @@ nhwl_term_init (Lisp_Object display_name)
   /* The outputs the shell announced while connecting give the scale.  */
   NHG (nhg_dispatch_main (glue));
   dpyinfo->scale120 = 0;
-  dpyinfo->resx = dpyinfo->resy = 96.0;
+  dpyinfo->resx = dpyinfo->resy = NHWL_DPI;
   nhwl_drain_events (dpyinfo, NULL);
   if (dpyinfo->scale120 == 0)
     dpyinfo->scale120 = 120;
-  dpyinfo->resx = dpyinfo->resy = 96.0 * dpyinfo->scale120 / 120.0;
+  dpyinfo->resx = dpyinfo->resy = NHWL_DPI * dpyinfo->scale120 / 120.0;
 
   if (dpyinfo->connection >= 0)
     add_keyboard_wait_descriptor (dpyinfo->connection);
