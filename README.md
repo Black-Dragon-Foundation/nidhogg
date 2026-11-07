@@ -1125,6 +1125,24 @@ needs each change to a buffer's text, wherever it comes from: `after-change-func
   drained changes onto the text the buffer had when it was tracked and compares with the buffer; they skip on a build
   without the flag. The rings' own tests are Glitnir's (`history::tests`, `nidhogg/glitnir/check.sh`).
 
+## Sjá, the native view model
+
+drgnx's hub-fed views (the Work map, Board, Detail and the lists) are drawn from models the hub sends. Sjá keeps a
+replica of each view's model in-process, with each instance's selection and user state, so a key that moves the
+selection follows a link or walks a list the hub sent, with no round trip and no Lisp walk over the view.
+
+- Build flag: none of its own; it comes with Glitnir (`HAVE_GLITNIR`). The crate is `nidhogg/sja` (its own `check.sh`,
+  fuzz target in `nidhogg/sja-fuzz`); Glitnir depends on it and re-exports `sja_call`, so `libglitnir.a` and
+  `libnhglue.a` both carry it (`nidhogg/glue/nm-check.sh` checks).
+- Files: `src/nidhogg-views.c`, one DEFUN, `nidhogg-view--call (OP &rest ARGS)`: up to 16 arguments, each nil, a fixnum
+  or a string; the answer is built from Sjá's tokens (ints, multibyte strings, lists, vectors). A bad argument signals
+  `args-out-of-range`; a panic inside Sjá answers `resync` for that view (its model is dropped), and two within a minute
+  mark it broken until it is reopened. `lisp/nidhogg-views.el` holds the thin functions: `nidhogg-view-apply`, `-open`,
+  `-close`, `-follow`, `-walk`, `-walk-to`, `-set`, `-get`, `-hub-lost`, `-stats`. The feature is `nidhogg-views`.
+- Caps: 200,000 nodes, 400,000 edges, 64 lists, 4 KiB per value, 32 MiB in all; a patch past them answers `too-large`.
+- Tests: `test/src/nidhogg-tests/sja-tests.el` (pure; in `check-subset.txt`); the panic row needs a build with Sjá's
+  test hooks and skips without them. The model's own tests are Sjá's (`nidhogg/sja/check.sh`).
+
 ## Reporting issues
 
 - Problems specific to Nidhogg (its patches, build, or `nidhogg-version`) go to this repository's issue tracker.
