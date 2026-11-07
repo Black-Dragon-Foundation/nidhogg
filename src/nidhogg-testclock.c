@@ -197,8 +197,9 @@ static int nh_tc_cond_woken;
 void
 nh_tc_cond_woke (const void *cv, bool all)
 {
+#ifdef HAVE_NHMAC
   /* Naglfar marks always: a marked waiter counts as a lock waiter.  */
-#ifndef HAVE_NHMAC
+#else
   if (!nh_tc_auto)
     return;
 #endif
