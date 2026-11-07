@@ -7,9 +7,12 @@
 //! to their keysyms.  Option is meta and Command super, NS's defaults (the `ns-*-modifier` variables come later); a key
 //! with Control, Option or Command gives no text, so the keysym (the key's character without them) is what Emacs sees.
 
+use std::cell::Cell;
+
 use crate::event::{
-    KeyEv, NHSHELL_MOD_CAPS, NHSHELL_MOD_CTRL, NHSHELL_MOD_META, NHSHELL_MOD_SHIFT,
-    NHSHELL_MOD_SUPER, NHSHELL_SCROLL_FINGER, NHSHELL_SCROLL_WHEEL, ScrollEv,
+    KeyEv, NHSHELL_MOD_ALT, NHSHELL_MOD_CAPS, NHSHELL_MOD_CTRL, NHSHELL_MOD_HYPER,
+    NHSHELL_MOD_META, NHSHELL_MOD_SHIFT, NHSHELL_MOD_SUPER, NHSHELL_SCROLL_FINGER,
+    NHSHELL_SCROLL_WHEEL, ScrollEv,
 };
 
 /// `NSEventModifierFlags` bits.
@@ -18,6 +21,87 @@ pub const NS_SHIFT: usize = 1 << 17;
 pub const NS_CONTROL: usize = 1 << 18;
 pub const NS_OPTION: usize = 1 << 19;
 pub const NS_COMMAND: usize = 1 << 20;
+pub const NS_NUMERIC_PAD: usize = 1 << 21;
+pub const NS_FUNCTION: usize = 1 << 23;
+/// The device-dependent bits of the right-hand keys.
+pub const NS_RIGHT_CONTROL: usize = 0x2000;
+pub const NS_RIGHT_OPTION: usize = 0x40;
+pub const NS_RIGHT_COMMAND: usize = 0x10;
+
+/// What a physical modifier key is: the values of `ns-alternate-modifier` and its kin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Choice {
+    Meta,
+    Super,
+    Control,
+    Alt,
+    Hyper,
+    /// The key is no modifier (and an Option key gives its composed characters).
+    None,
+}
+
+impl Choice {
+    /// The symbol's name as Lisp prints it; `None` for a name that is no choice.
+    pub fn parse(name: &str) -> Option<Choice> {
+        Some(match name {
+            "meta" => Choice::Meta,
+            "super" => Choice::Super,
+            "control" => Choice::Control,
+            "alt" => Choice::Alt,
+            "hyper" => Choice::Hyper,
+            "none" => Choice::None,
+            _ => return Option::None,
+        })
+    }
+
+    fn bit(self) -> u32 {
+        match self {
+            Choice::Meta => NHSHELL_MOD_META,
+            Choice::Super => NHSHELL_MOD_SUPER,
+            Choice::Control => NHSHELL_MOD_CTRL,
+            Choice::Alt => NHSHELL_MOD_ALT,
+            Choice::Hyper => NHSHELL_MOD_HYPER,
+            Choice::None => 0,
+        }
+    }
+}
+
+/// The `ns-*-modifier` choices.  A right-hand key with no choice of its own (`None`) follows the left one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModMap {
+    pub alternate: Choice,
+    pub right_alternate: Option<Choice>,
+    pub command: Choice,
+    pub right_command: Option<Choice>,
+    pub control: Choice,
+    pub right_control: Option<Choice>,
+    pub function: Choice,
+}
+
+impl Default for ModMap {
+    /// NS's defaults: Option is meta, Command is super, Control is control, Fn is nothing.
+    fn default() -> Self {
+        ModMap {
+            alternate: Choice::Meta,
+            right_alternate: Option::None,
+            command: Choice::Super,
+            right_command: Option::None,
+            control: Choice::Control,
+            right_control: Option::None,
+            function: Choice::None,
+        }
+    }
+}
+
+thread_local! {
+    /// The map the main thread's keys use (set when `ns-*-modifier` changes).
+    static MODMAP: Cell<ModMap> = Cell::new(ModMap::default());
+}
+
+/// Use `map` from now on.
+pub fn set_modmap(map: ModMap) {
+    MODMAP.with(|m| m.set(map));
+}
 
 /// NS's function-key characters (`NSUpArrowFunctionKey` …) and the X keysyms NS gives them.
 const FUNCTION_KEYS: &[(u32, u32)] = &[
@@ -64,28 +148,70 @@ pub fn keysym(c: char) -> u32 {
     }
 }
 
-/// The `NHSHELL_MOD_*` mask of `NSEventModifierFlags` `flags`.
+/// The `NHSHELL_MOD_*` mask of `NSEventModifierFlags` `flags`, under the current `ns-*-modifier` choices.
 pub fn mods(flags: usize) -> u32 {
+    mods_with(flags, &MODMAP.with(Cell::get))
+}
+
+/// The same under `map`: each physical key counts as what its variable says, the right-hand ones by their device bit.
+pub fn mods_with(flags: usize, map: &ModMap) -> u32 {
     let mut m = 0;
-    for (ns, ours) in [
-        (NS_SHIFT, NHSHELL_MOD_SHIFT),
-        (NS_CONTROL, NHSHELL_MOD_CTRL),
-        (NS_OPTION, NHSHELL_MOD_META),
-        (NS_COMMAND, NHSHELL_MOD_SUPER),
-        (NS_CAPS_LOCK, NHSHELL_MOD_CAPS),
+    if flags & NS_SHIFT != 0 {
+        m |= NHSHELL_MOD_SHIFT;
+    }
+    if flags & NS_CAPS_LOCK != 0 {
+        m |= NHSHELL_MOD_CAPS;
+    }
+    for (ns, right, left_choice, right_choice) in [
+        (NS_CONTROL, NS_RIGHT_CONTROL, map.control, map.right_control),
+        (
+            NS_OPTION,
+            NS_RIGHT_OPTION,
+            map.alternate,
+            map.right_alternate,
+        ),
+        (NS_COMMAND, NS_RIGHT_COMMAND, map.command, map.right_command),
     ] {
         if flags & ns != 0 {
-            m |= ours;
+            let c = if flags & right != 0 {
+                right_choice.unwrap_or(left_choice)
+            } else {
+                left_choice
+            };
+            m |= c.bit();
         }
     }
+    if flags & NS_FUNCTION != 0 {
+        m |= map.function.bit();
+    }
     m
+}
+
+/// The keypad's keysym for AppKit character `c`, when it is a keypad key.
+fn keypad(c: char) -> Option<u32> {
+    Some(match c {
+        '0'..='9' => 0xffb0 + (c as u32 - '0' as u32),
+        '*' => 0xffaa,
+        '+' => 0xffab,
+        ',' => 0xffac,
+        '-' => 0xffad,
+        '.' => 0xffae,
+        '/' => 0xffaf,
+        '=' => 0xffbd,
+        _ => return Option::None,
+    })
 }
 
 /// A key press: `ignoring` is `charactersIgnoringModifiers`, `chars` is `characters`, `flags` the modifier flags.
 /// `None` for a key with no character (a dead key's first press).
 pub fn key(ignoring: &str, chars: &str, flags: usize, repeat: bool) -> Option<KeyEv> {
     let c = ignoring.chars().next().or_else(|| chars.chars().next())?;
-    let ks = keysym(c);
+    let ks = if flags & NS_NUMERIC_PAD != 0 {
+        keypad(c).unwrap_or_else(|| keysym(c))
+    } else {
+        keysym(c)
+    };
+    let map = MODMAP.with(Cell::get);
     let mut k = KeyEv {
         keycode: 0,
         keysym: ks,
@@ -96,7 +222,12 @@ pub fn key(ignoring: &str, chars: &str, flags: usize, repeat: bool) -> Option<Ke
     };
     // text only from a plain (or shifted) printable key: chords and named keys go by their keysym
     let printable = !(0xfe00..0x0100_0000).contains(&ks);
-    if printable && flags & (NS_CONTROL | NS_OPTION | NS_COMMAND) == 0 {
+    // an Option key that is no modifier gives its composed character (option-e dead keys aside)
+    let mut chord = NS_CONTROL | NS_COMMAND;
+    if map.alternate != Choice::None {
+        chord |= NS_OPTION;
+    }
+    if printable && flags & chord == 0 {
         let text = chars.as_bytes();
         if text.len() < k.utf8.len() && !text.is_empty() {
             k.utf8[..text.len()].copy_from_slice(text);
@@ -240,5 +371,56 @@ mod tests {
         let w = wheel(0.0, 3.5, true);
         assert_eq!((w.dy, w.v120y, w.source), (-3.5, 0, NHSHELL_SCROLL_FINGER));
         assert_eq!(device_point(10.0, 30.0, 100.0, 2.0), (20.0, 140.0));
+    }
+
+    #[test]
+    fn modifier_choices_follow_the_variables() {
+        let mut map = ModMap::default();
+        assert_eq!(mods_with(NS_OPTION, &map), NHSHELL_MOD_META);
+        assert_eq!(mods_with(NS_COMMAND, &map), NHSHELL_MOD_SUPER);
+        // ns-alternate-modifier super, ns-command-modifier meta
+        map.alternate = Choice::Super;
+        map.command = Choice::Meta;
+        assert_eq!(
+            mods_with(NS_OPTION | NS_COMMAND, &map),
+            NHSHELL_MOD_SUPER | NHSHELL_MOD_META
+        );
+        // the right Option key on its own choice, the left following the variable
+        map.right_alternate = Some(Choice::Hyper);
+        assert_eq!(mods_with(NS_OPTION, &map), NHSHELL_MOD_SUPER);
+        assert_eq!(
+            mods_with(NS_OPTION | NS_RIGHT_OPTION, &map),
+            NHSHELL_MOD_HYPER
+        );
+        // none: no modifier at all
+        map.alternate = Choice::None;
+        assert_eq!(mods_with(NS_OPTION, &map), 0);
+        // the function key counts only when asked to
+        assert_eq!(mods_with(NS_FUNCTION, &map), 0);
+        map.function = Choice::Alt;
+        assert_eq!(mods_with(NS_FUNCTION, &map), NHSHELL_MOD_ALT);
+    }
+
+    #[test]
+    fn keypad_keys_have_keypad_keysyms() {
+        let k = key("5", "5", NS_NUMERIC_PAD, false).unwrap();
+        assert_eq!(k.keysym, 0xffb5);
+        let k = key("+", "+", NS_NUMERIC_PAD, false).unwrap();
+        assert_eq!(k.keysym, 0xffab);
+        let k = key("5", "5", 0, false).unwrap();
+        assert_eq!(k.keysym, u32::from(b'5'));
+    }
+
+    #[test]
+    fn option_that_is_no_modifier_keeps_its_text() {
+        set_modmap(ModMap {
+            alternate: Choice::None,
+            ..ModMap::default()
+        });
+        let k = key("e", "\u{e9}", NS_OPTION, false).unwrap();
+        assert_eq!(&k.utf8[..2], "\u{e9}".as_bytes());
+        set_modmap(ModMap::default());
+        let k = key("e", "\u{e9}", NS_OPTION, false).unwrap();
+        assert_eq!(k.utf8[0], 0);
     }
 }
