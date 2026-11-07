@@ -9,6 +9,7 @@ pub mod caps;
 pub mod event;
 #[cfg(all(feature = "macos", target_os = "macos"))]
 pub mod macos;
+pub mod scope;
 #[cfg(feature = "wayland")]
 pub mod wayland;
 
