@@ -384,11 +384,12 @@ needed."
 (defun nhmac-stats ()
   "Return the shell's counters, a plist.
 The pumps' scope (`:takes', `:overlapping-takes', `:queued', `:applied'), the lock
-hand-off (`:lock-waiters', `:parks-with-waiters') and the surfaces
-(`:ring-acquires', `:ring-reuses', `:commits', `:deferred-commits') and
-the main wait (`:waits', `:sleeps', `:kq-wakes', `:empty-wakes',
-`:kicks', `:helper-fds', `:helper-wakes', `:helper-hops-keys',
-`:kq-changes'); a counter of work not built yet stays 0."
+hand-off (`:lock-waiters', `:parks-with-waiters'), the main wait (`:waits',
+`:sleeps', `:kq-wakes', `:empty-wakes', `:kicks', `:helper-fds',
+`:helper-wakes', `:helper-hops-keys', `:kq-changes') and the surfaces
+(`:bytes-copied', `:damage-bytes', `:full-copies', `:commits',
+`:surface-busy', `:ring-acquires', `:implicit-open-at-update-end',
+`:spins-in-redisplay' (run-loop passes outside the pumps), `:pumps')."
   (nhmac--query 'stats))
 
 (defun nhmac--test-raise-in-pump ()
@@ -443,6 +444,14 @@ a plist.  For tests."
   "Make the main wait's next new fd registration go to its helper thread.
 As if kqueue had refused it (`EINVAL').  For tests."
   (nhmac--call 'test-helper-next))
+
+(defun nhmac--test-surface (x y &optional frame)
+  "Return the newest surface of FRAME's window, a plist.
+`:w', `:h' (device pixels), `:points' (the content size), the layer's
+`:scale' and `:gravity', `:contents-is-newest', `:srgb' (`srgb',
+`generic' or nil) and `:pixel', the premultiplied ARGB at X, Y.  For
+tests."
+  (nhmac--query 'test-surface (or frame (selected-frame)) x y))
 
 (defun nhmac--test-kq-probe (path)
   "Open PATH and ask a fresh kqueue for its readability.

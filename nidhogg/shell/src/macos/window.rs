@@ -2,6 +2,7 @@
 //! (`view::layer_hosting`).
 
 use super::runloop::WinDelegate;
+use super::surface::Surfaces;
 use super::view::{self, NhView};
 use crate::api::WindowId;
 use objc2::rc::Retained;
@@ -13,11 +14,13 @@ use objc2_quartz_core::CALayer;
 
 pub struct Win {
     pub window: Retained<NSWindow>,
-    // read by the test hooks now, and by the surfaces' commit later
+    // read by the test hooks
     #[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
     pub view: Retained<NhView>,
-    #[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
+    /// The root layer: the surfaces' commit sets its contents.
     pub layer: Retained<CALayer>,
+    /// The ring of surfaces the layer shows.
+    pub surfaces: Surfaces,
     /// The window holds its delegate weakly.
     pub _delegate: Retained<WinDelegate>,
     /// The content size (points) and scale (times 120) last reported to the host.
@@ -72,6 +75,7 @@ impl Win {
             window,
             view,
             layer,
+            surfaces: Surfaces::default(),
             _delegate: delegate,
             size: (w, h),
             scale120,
