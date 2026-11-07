@@ -42,4 +42,15 @@ NS coalesces: a run measured 16 locks per 20 keys at scale 1 and 10 at scale 2, 
       (should (> (count-lines (point-min) (point-max)) 20))
       (should (re-search-forward "^1\t[^\t]*\t" nil t)))))
 
+;; The window system's names: Naglfar reports NS's, so ns-win.el and packages take their macOS branches
+(ert-deftest nhmac-window-system-is-ns ()
+  "`window-system', `initial-window-system' and the terminal's type read `ns', and the shell provides
+`nidhogg-macos' and `ns'."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (should (featurep 'nidhogg-macos))
+  (should (featurep 'ns))
+  (should (eq window-system 'ns))
+  (should (eq initial-window-system 'ns))
+  (should (eq (terminal-live-p nil) 'ns)))
+
 ;;; nhmac-gui-tests.el ends here
