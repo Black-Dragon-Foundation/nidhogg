@@ -956,6 +956,88 @@ PROTO (nhg_activation_token, int32_t (NhgDisplay *, uint64_t, uint32_t, char *, 
         }
     }
 
+    /// The frame-parameter table's part of the header (its own table).
+    #[test]
+    fn params_header_matches() {
+        use nhglue::ffi::nhg_frame_param;
+        use nhglue::params::*;
+        let rows: &[(&str, i64)] = &[
+            ("sizeof (NhgParamValue)", size_of::<NhgParamValue>() as i64),
+            (
+                "offsetof (NhgParamValue, sym)",
+                offset_of!(NhgParamValue, sym) as i64,
+            ),
+            (
+                "offsetof (NhgParamValue, int_value)",
+                offset_of!(NhgParamValue, int) as i64,
+            ),
+            (
+                "offsetof (NhgParamValue, flt)",
+                offset_of!(NhgParamValue, flt) as i64,
+            ),
+            ("sizeof (NhgParamFrame)", size_of::<NhgParamFrame>() as i64),
+            (
+                "offsetof (NhgParamFrame, current)",
+                offset_of!(NhgParamFrame, current) as i64,
+            ),
+            (
+                "offsetof (NhgParamFrame, bg_pixel)",
+                offset_of!(NhgParamFrame, bg_pixel) as i64,
+            ),
+            (
+                "offsetof (NhgParamFrame, mouse_pixel)",
+                offset_of!(NhgParamFrame, mouse_pixel) as i64,
+            ),
+            (
+                "sizeof (NhgParamAction)",
+                size_of::<NhgParamAction>() as i64,
+            ),
+            (
+                "offsetof (NhgParamAction, flags)",
+                offset_of!(NhgParamAction, flags) as i64,
+            ),
+            (
+                "offsetof (NhgParamAction, y2)",
+                offset_of!(NhgParamAction, y2) as i64,
+            ),
+            (
+                "offsetof (NhgParamAction, alpha)",
+                offset_of!(NhgParamAction, alpha) as i64,
+            ),
+            (
+                "offsetof (NhgParamAction, pixel)",
+                offset_of!(NhgParamAction, pixel) as i64,
+            ),
+            ("NHG_PV_BIGNUM", NHG_PV_BIGNUM.into()),
+            ("NHG_PS_BELOW", NHG_PS_BELOW.into()),
+            ("NHG_PK_CURSOR_COLOR", NHG_PK_CURSOR_COLOR.into()),
+            ("NHG_PE_CALL", NHG_PE_CALL.into()),
+            ("NHG_PA_REDRAW_CURSOR", NHG_PA_REDRAW_CURSOR.into()),
+            ("NHG_PA_REPOSITION", NHG_PA_REPOSITION.into()),
+            (
+                "NHG_PA_CLEAR_BORDER_FIRST",
+                NHG_PA_CLEAR_BORDER_FIRST.into(),
+            ),
+            ("NHG_PA_CLEAR_AREA2", NHG_PA_CLEAR_AREA2.into()),
+        ];
+        let decls = "\
+#define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
+PROTO (nhg_frame_param, int32_t (uint32_t, const NhgParamFrame *, const NhgParamValue *, size_t, NhgParamAction *));";
+        let _: unsafe extern "C" fn(
+            u32,
+            *const NhgParamFrame,
+            *const NhgParamValue,
+            usize,
+            *mut NhgParamAction,
+        ) -> i32 = nhg_frame_param;
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe(decls, &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+    }
+
     /// The drop target's part of the header (its own table).
     #[test]
     fn dnd_header_matches() {
