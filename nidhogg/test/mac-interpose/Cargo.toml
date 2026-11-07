@@ -1,0 +1,14 @@
+[package]
+name = "mac-interpose"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Test-only: counts IOSurface locks and run-loop iterations in a macOS Emacs (DYLD_INSERT_LIBRARIES + Emacs module)"
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+panic = "abort"
+
+[workspace]
