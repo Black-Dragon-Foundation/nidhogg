@@ -1,0 +1,27 @@
+# cargo-fuzz target for Sjá's C entry point (apply on arbitrary bytes, then the verbs).  Its own workspace, a sibling of
+# the crate as glitnir-fuzz is.  Builds on nightly only: `cargo +nightly fuzz run apply_bytes` (sja/README.md).
+[package]
+name = "sja-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+sja = { path = "../sja" }
+
+[workspace]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "apply_bytes"
+path = "fuzz_targets/apply_bytes.rs"
+test = false
+doc = false
+bench = false
