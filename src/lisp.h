@@ -3932,6 +3932,9 @@ struct frame;
   || defined (HAVE_NS) || defined (USE_GTK) || defined (HAVE_HAIKU)
 #define HAVE_EXT_MENU_BAR true
 #endif
+#ifdef HAVE_NHMAC
+#define HAVE_EXT_MENU_BAR true
+#endif
 
 /* Define if the windowing system provides a tool-bar.  */
 #if defined (USE_GTK) || defined (HAVE_NS)
