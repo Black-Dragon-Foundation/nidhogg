@@ -7311,7 +7311,7 @@ init_display_interactive (void)
     }
 #endif
 
-#ifdef HAVE_NHWL
+#ifdef NHWL_WAYLAND
   if (!inhibit_window_system && !will_dump_p ())
     {
       Vinitial_window_system = Qpgtk;

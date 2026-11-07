@@ -106,7 +106,7 @@ static unsigned long image_alloc_image_color (struct frame *, struct image *,
 					      Lisp_Object, unsigned long);
 #endif	/* USE_CAIRO */
 
-#ifdef HAVE_NHWL
+#ifdef NHWL_WAYLAND
 /* Nidhogg's Wayland shell takes pgtk's branches of this file: they are
    free of GTK (bitmaps are Cairo patterns), and the bitmap record is the
    shell's own.  */
