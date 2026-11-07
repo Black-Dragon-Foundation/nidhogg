@@ -122,6 +122,20 @@ position is the block's top-left corner when the colour forms one rectangle.  (F
             (setq start (1+ start))))))
     found))
 
+(defmacro gui-runner-keeping-frame-font (&rest body)
+  "Run BODY, which changes the selected frame's scale and puts it back; then give the frame its fontset back.
+A scale change re-opens the frame's font at the new device size through a new fontset (fontset-auto1, auto2, ...),
+as `set-frame-font' does, and the scale going back does not bring the old one back: every later row's `default'
+would name the new one."
+  (declare (indent 0) (debug t))
+  (let ((fontset (make-symbol "fontset")))
+    `(let ((,fontset (face-attribute 'default :fontset (selected-frame))))
+       (unwind-protect
+           (progn ,@body)
+         (unless (equal (face-attribute 'default :fontset (selected-frame)) ,fontset)
+           (set-frame-parameter nil 'font ,fontset)
+           (redisplay t))))))
+
 (defun gui-runner-recorder (plist)
   "Send PLIST as one JSON line to the recorder at $GLITNIR_GUI_RECORDER; return the parsed reply (a plist).
 Signals `error' when the reply's :ok is false."
