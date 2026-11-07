@@ -880,4 +880,128 @@ frame's text still reaches the surface."
         (message "nhmac-font-open-close: a text pixel %S, stats %S" dark (nhmac-stats))
         (should dark)))))
 
+;; Task 17: images through ImageIO
+(defconst nhmac-gui--gif2
+  (unibyte-string #x47 #x49 #x46 #x38 #x39 #x61 #x04 #x00 #x04 #x00 #x81 #x00 #x00 #xff #x00 #x00 #x00 #x00 #x00 #x00
+                  #x00 #x00 #x00 #x00 #x00 #x21 #xff #x0b #x4e #x45 #x54 #x53 #x43 #x41 #x50 #x45 #x32 #x2e #x30 #x03
+                  #x01 #x00 #x00 #x00 #x21 #xf9 #x04 #x00 #x0a #x00 #x00 #x00 #x2c #x00 #x00 #x00 #x00 #x04 #x00 #x04
+                  #x00 #x00 #x08 #x09 #x00 #x01 #x08 #x1c #x48 #xb0 #x20 #x80 #x80 #x00 #x21 #xf9 #x04 #x01 #x0a #x00
+                  #x01 #x00 #x2c #x00 #x00 #x00 #x00 #x04 #x00 #x04 #x00 #x81 #x00 #x00 #xff #x00 #x00 #x00 #x00 #x00
+                  #x00 #x00 #x00 #x00 #x08 #x09 #x00 #x01 #x08 #x1c #x48 #xb0 #x20 #x80 #x80 #x00 #x3b)
+  "A 4x4 GIF of two frames, red then blue, 0.1 s apart (made with Pillow).")
+
+(defun nhmac-gui--image-files ()
+  "The images both lanes show: test/data/image's, and a TIFF and a HEIC that sips makes from its JPEG."
+  (let* ((dir (expand-file-name "../../data/image" (getenv "GLITNIR_GUI_TESTS")))
+         (tmp (make-temp-file "nhmac-img" t))
+         (files (directory-files dir t "\\.\\(png\\|jpg\\|gif\\|webp\\)\\'")))
+    (dolist (fmt '("tiff" "heic"))
+      (let ((out (expand-file-name (concat "black." fmt) tmp)))
+        (call-process "sips" nil nil nil "-s" "format" fmt (expand-file-name "black.jpg" dir) "--out" out)
+        (push out files)))
+    (sort files #'string<)))
+
+(defmacro nhmac-gui--with-image-scene (file &rest body)
+  "Run BODY with FILE's image alone at the top left of a buffer on `nhmac-gui--font-bg', no cursor, mode line or
+fringes; the frame's colours are put back after."
+  (declare (indent 1))
+  `(let ((bg (frame-parameter nil 'background-color)))
+     (unwind-protect
+         (progn
+           (set-background-color nhmac-gui--font-bg)
+           (switch-to-buffer (generate-new-buffer " *nhmac-img*"))
+           (setq-local cursor-type nil mode-line-format nil)
+           (set-window-fringes nil 0 0)
+           (insert "\n    ")
+           (insert-image (create-image ,file nil nil :scale 1))
+           (redraw-frame)
+           (redisplay t)
+           (sit-for 0.5)
+           ,@body)
+       (kill-buffer)
+       (set-window-fringes nil nil nil)
+       (set-background-color bg))))
+
+(ert-deftest nhmac-ns-images-dump ()
+  "NS's sizes of the shared images, and at scale 1 a capture of each, for nhmac-images-native in the Naglfar lane."
+  (skip-unless (nhmac-gui--ns-build-p))
+  (let (sizes)
+    (dolist (f (nhmac-gui--image-files))
+      (push (cons (file-name-nondirectory f) (image-size (create-image f nil nil :scale 1) t)) sizes)
+      (when (equal (getenv "GLITNIR_GUI_SCALE") "1")
+        (nhmac-gui--with-image-scene f
+          (nhmac-gui--capture (nhmac-gui--font-file (concat (file-name-nondirectory f) ".bmp"))))))
+    (with-temp-file (nhmac-gui--font-file "images.eld")
+      (prin1 sizes (current-buffer)))
+    (should (= (length sizes) 8))))
+
+(ert-deftest nhmac-images-native ()
+  "PNG, JPEG, GIF (animated), TIFF, WebP and HEIC decode through ImageIO at NS's sizes; at scale 1 their pixels on
+screen are within 2/255 of NS's in the same run (NS points are pixels there)."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (dolist (type '(png jpeg gif tiff webp heic))
+    (should (image-type-available-p type)))
+  (let ((ns (with-temp-buffer
+              (insert-file-contents (nhmac-gui--font-file "images.eld" t))
+              (read (current-buffer)))))
+    (dolist (f (nhmac-gui--image-files))
+      (let* ((name (file-name-nondirectory f))
+             (size (image-size (create-image f nil nil :scale 1) t)))
+        (message "nhmac-images-native: %s NS %S Naglfar %S" name (cdr (assoc name ns)) size)
+        (should (equal size (cdr (assoc name ns))))
+        (when (equal (getenv "GLITNIR_GUI_SCALE") "1")
+          (nhmac-gui--with-image-scene f
+            (pcase-let* ((`(,nw ,nh ,npx) (nhmac-gui--text-crop
+                                          (nhmac-gui--bmp-read (nhmac-gui--font-file (concat name ".bmp") t))))
+                         (`(,mw ,mh ,mpx) (nhmac-gui--text-crop
+                                          (nhmac-gui--bmp-read
+                                           (nhmac-gui--capture (nhmac-gui--font-file (concat name ".bmp"))))))
+                         (worst 0))
+              (should (equal (list mw mh) (list nw nh)))
+              (dotimes (i (length npx))
+                (let ((a (aref npx i)) (b (aref mpx i)))
+                  (dolist (sh '(16 8 0))
+                    (setq worst (max worst (abs (- (logand (ash a (- sh)) 255) (logand (ash b (- sh)) 255))))))))
+              (message "nhmac-images-native: %s %dx%d, worst channel difference %d" name mw mh worst)
+              (should (<= worst 2))))))))
+  ;; an animated GIF's frames, count and delay
+  (let ((img (create-image nhmac-gui--gif2 'gif t :index 1 :scale 1)))
+    (should (equal (image-metadata img) '(:count 2 :delay 0.1)))
+    (switch-to-buffer (generate-new-buffer " *nhmac-gif*"))
+    (setq-local cursor-type nil)
+    (insert-image img)
+    (redisplay t)
+    (let ((xy (posn-x-y (posn-at-point (point-min))))
+          (edges (window-inside-pixel-edges)))
+      (should (= (nhmac-gui--pixel-at (+ (nth 0 edges) (car xy) 1) (+ (nth 1 edges) (cdr xy) 1)) #xff0000ff)))
+    (kill-buffer)))
+
+(ert-deftest nhmac-images-builtin ()
+  "Emacs's own decoders still draw: an XBM and a PBM reach the surface in the face's colours."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (switch-to-buffer (generate-new-buffer " *nhmac-xbm*"))
+  (setq-local cursor-type nil)
+  (face-remap-add-relative 'default :foreground "#ff0000" :background "#0000ff")
+  (insert-image (create-image (make-bool-vector 64 t) 'xbm t :width 8 :height 8 :scale 1))
+  (insert-image (create-image "P1\n4 4\n0 0 0 0\n0 0 0 0\n0 0 0 0\n0 0 0 0\n" 'pbm t :scale 1))
+  (redisplay t)
+  (let ((xy (posn-x-y (posn-at-point (point-min))))
+        (edges (window-inside-pixel-edges)))
+    (let ((x (+ (nth 0 edges) (car xy))) (y (+ (nth 1 edges) (cdr xy))))
+      (message "nhmac-images-builtin: xbm %x pbm %x" (nhmac-gui--pixel-at (+ x 2) (+ y 2))
+               (nhmac-gui--pixel-at (+ x 10) (+ y 2)))
+      ;; every XBM bit set: the foreground; every PBM pixel 0 (white in PBM's sense): the background
+      (should (= (nhmac-gui--pixel-at (+ x 2) (+ y 2)) #xffff0000))
+      (should (= (nhmac-gui--pixel-at (+ x 10) (+ y 2)) #xff0000ff))))
+  (kill-buffer))
+
+(ert-deftest nhmac-images-no-homebrew ()
+  "The binary links no image library outside the system: otool -L lists only /System and /usr/lib."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((bin (expand-file-name invocation-name invocation-directory))
+         (libs (cdr (process-lines "otool" "-L" bin)))
+         (outside (seq-remove (lambda (l) (string-match-p "\\`[ \t]*/\\(System\\|usr/lib\\)/" l)) libs)))
+    (message "nhmac-images-no-homebrew: %s links %S" bin libs)
+    (should-not outside)))
+
 ;;; nhmac-gui-tests.el ends here
