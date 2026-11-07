@@ -190,6 +190,14 @@ stacking, input region and mapping go out with its tree's commit.
 - **Stacking:** C keeps the siblings' order (its tree walk lists children by it) and hands it to `nhg_child_stack` on
   raise and lower; the glue stacks the child against its neighbour. The keyboard focus redirect stays C.
 
+## Flat menu records
+
+`src/menu.rs` is the glue's side of Naglfar's menus (no C caller yet). Lisp walks a menu-bar keymap or a popup's
+`menu_items` into one vector of seven slots per entry (`nhmac-menu--flatten`, `lisp/term/nhmac-win.el`: depth, kind,
+label, key description, enabled, state, `menu_items` index); C copies it into records, and `menu::decode` checks it
+(depths step down by one under a submenu only, a submenu has children, separators carry no text, indexes rise) and builds
+the tree the native menu builder reads. The slot numbers and kinds are the same in both files.
+
 ## Menu popups
 
 A popup frame (`src/popup.rs`, from `nhwlmenu.c`) is a frame whose `nhwl-popup` parameter, given at creation with

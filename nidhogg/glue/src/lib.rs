@@ -32,6 +32,9 @@ pub mod window;
 // menu popups
 pub mod popup;
 
+// the flat menu records (menu bar and popups)
+pub mod menu;
+
 pub mod csd;
 
 pub mod child;
