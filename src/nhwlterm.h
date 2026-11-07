@@ -475,6 +475,33 @@ extern int nhwl_drag_run (struct nhwl_display_info *, double,
 /* The backing (nhwlterm.c; nhwldraw.c draws on it).  */
 extern cairo_t *nhwl_begin_cr_clip (struct frame *);
 extern void nhwl_end_cr_clip (struct frame *);
+
+/* The drawing primitives under nhwl_draw_glyph_string's walk of a glyph
+   string (nhwldraw.c).  Linux's table is the Cairo code; Naglfar's is
+   nhmacdraw.c's.  The context CR is what begin_clip returns.  The fringe
+   bitmaps and the cursors are in the redisplay interface.  */
+struct nhwl_draw_ops
+{
+  cairo_t *(*begin_clip) (struct frame *);
+  void (*end_clip) (struct frame *);
+  void (*save) (cairo_t *);
+  void (*restore) (cairo_t *);
+  void (*set_clipping) (struct glyph_string *, cairo_t *);
+  void (*set_clipping_exactly) (struct glyph_string *, struct glyph_string *,
+				cairo_t *);
+  void (*fill) (struct frame *, unsigned long, int, int, int, int, bool);
+  void (*background) (struct glyph_string *, bool);
+  void (*glyph_run) (struct glyph_string *);
+  void (*composite_run) (struct glyph_string *);
+  void (*glyphless_run) (struct glyph_string *);
+  void (*image) (struct glyph_string *);
+  void (*stretch) (struct glyph_string *);
+  void (*box) (struct glyph_string *);
+  void (*underwave) (struct glyph_string *, unsigned long);
+  void (*underline) (struct frame *, struct glyph_string *, unsigned long,
+		     enum face_underline_type, int, int, int);
+};
+extern const struct nhwl_draw_ops *nhwl_draw_ops;
 extern void nhwl_set_cr_source_with_gc_foreground (struct frame *, Emacs_GC *,
 						   bool);
 extern void nhwl_set_cr_source_with_gc_background (struct frame *, Emacs_GC *,
