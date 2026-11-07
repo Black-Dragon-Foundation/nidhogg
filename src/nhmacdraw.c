@@ -1,8 +1,10 @@
 /* Naglfar's side of the drawing seam (HAVE_NHMAC): the table of
    primitives under nhwldraw.c's glyph-string walk (struct nhwl_draw_ops)
    and the drawing entries of the redisplay interface that are Cairo code
-   on Wayland.  The shell skeleton draws nothing yet: every entry accepts
-   its call and leaves the frame's pixels as they are.
+   on Wayland.  The backing is the glue's, as on Wayland; the shell copies
+   what changed into the window's IOSurfaces at each publish.  Nothing
+   draws into it yet: every drawing entry accepts its call and leaves the
+   frame's pixels as they are.
 
    Copyright (C) 2026 Black Dragon Foundation contributors.
 
@@ -42,11 +44,6 @@ nhwl_end_cr_clip (struct frame *f)
 }
 
 void
-nhwl_backing_resize (struct frame *f)
-{
-}
-
-void
 nhwl_set_cr_source_with_color (struct frame *f, unsigned long color,
 			       bool respects_alpha_background)
 {
@@ -77,11 +74,6 @@ nhwl_fill_background_by_face (struct frame *f, struct face *face, int x,
 }
 
 /* The redisplay interface's drawing.  */
-
-void
-nhwl_scroll_run (struct window *w, struct run *run)
-{
-}
 
 void
 nhwl_draw_fringe_bitmap (struct window *w, struct glyph_row *row,
