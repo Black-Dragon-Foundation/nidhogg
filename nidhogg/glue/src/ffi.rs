@@ -2000,6 +2000,81 @@ nhg_export! {
     }
 }
 
+nhg_export! {
+    /// Install the platform's font source for `nhg_font_list` and `nhg_font_match` (Core Text on macOS).
+    /// `NHG_E_UNSUPPORTED` where there is none (Linux lists its fonts with fontconfig).
+    ///
+    /// # Safety
+    /// None beyond the C ABI: it takes no pointers.
+    unlocked fn nhg_font_start() -> i32 {
+        if crate::font::start() { Ok(NHG_OK) } else { Err(GlueError::Shell(crate::abi::NHG_E_UNSUPPORTED)) }
+    }
+}
+
+nhg_export! {
+    /// Open the face `font_id` (an entity's) at `size` device pixels: its handle and metrics into `*out`, rounded as
+    /// `macfont_open` rounds them.  `NHG_E_STATE` when the face does not open, `NHG_E_UNSUPPORTED` without Core Text.
+    ///
+    /// # Safety
+    /// `out` is null or writable.
+    unlocked fn nhg_font_open(font_id: u64, size: i32, out: *mut crate::font::NhgFontMetrics) -> i32 {
+        if out.is_null() || size <= 0 {
+            return Err(GlueError::Arg);
+        }
+        if !cfg!(all(feature = "macos", target_os = "macos")) {
+            return Err(GlueError::Shell(crate::abi::NHG_E_UNSUPPORTED));
+        }
+        let m = crate::font::open(font_id, size).ok_or(GlueError::State)?;
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe { out.write(m) };
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Close a font `nhg_font_open` opened.
+    ///
+    /// # Safety
+    /// None beyond the C ABI: it takes no pointers.
+    unlocked fn nhg_font_close(handle: u64) -> i32 {
+        crate::font::close(handle);
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Character `c`'s glyph in font `handle` into `*glyph`; `NHG_E_STATE` when the font has none.
+    ///
+    /// # Safety
+    /// `glyph` is null or writable.
+    unlocked fn nhg_font_glyph(handle: u64, c: u32, glyph: *mut u32) -> i32 {
+        if glyph.is_null() {
+            return Err(GlueError::Arg);
+        }
+        let g = crate::font::glyph(handle, c).ok_or(GlueError::State)?;
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe { glyph.write(g) };
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Glyph `glyph`'s metrics in font `handle` into `*out`, its width rounded as `macfont_glyph_extents` rounds it:
+    /// `mono` and `space_width` are the font's, from `nhg_font_open`.  `NHG_E_STATE` for an unknown font or glyph.
+    ///
+    /// # Safety
+    /// `out` is null or writable.
+    unlocked fn nhg_font_glyph_metrics(handle: u64, glyph: u32, mono: u32, space_width: i32, out: *mut crate::font::NhgGlyphMetrics) -> i32 {
+        if out.is_null() {
+            return Err(GlueError::Arg);
+        }
+        let m = crate::font::glyph_extents(handle, glyph, mono != 0, space_width).ok_or(GlueError::State)?;
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe { out.write(m) };
+        Ok(NHG_OK)
+    }
+}
+
 /// The body of `nhg_font_list` and `nhg_font_match`.
 fn font_query(
     spec: *const crate::fontspec::NhgFontSpec,
