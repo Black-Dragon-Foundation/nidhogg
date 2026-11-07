@@ -28,6 +28,13 @@ pin=$(grep -oE 'uses: Black-Dragon-Foundation/drgnx/\.github/workflows/drgnx-tie
 ! grep -qF "inputs.drgnx_ref || '" "$wf"                          || fail "a literal default drgnx_ref (the uses line is the one pin)"
 grep -qE '^  pin:' "$wf"                                          || fail "no pin job"
 grep -qF 'inputs.drgnx_ref || needs.pin.outputs.ref' "$wf"        || fail "the default drgnx_ref is not the pin job's output"
+# …which is the pinned commit only for a release tag; every other build tests drgnx's integration line's head, the
+# branch nidhogg/ci/drgnx-line names, and a missing branch fails (never the pin instead)
+grep -qvE '^[[:space:]]*(#|$)' nidhogg/ci/drgnx-line 2>/dev/null   || fail "nidhogg/ci/drgnx-line names no drgnx branch"
+job pin | grep -qF "TAG: \${{ startsWith(github.ref, 'refs/tags/') }}" || fail "the pin job does not tell a release tag"
+job pin | grep -qF 'nidhogg/ci/drgnx-line'                        || fail "the pin job does not read drgnx's line"
+job pin | grep -qF 'git ls-remote https://github.com/Black-Dragon-Foundation/drgnx.git "refs/heads/$branch"' || fail "the pin job does not resolve drgnx's line head"
+job pin | grep -qF 'never the pin instead"; exit 1; }'            || fail "a missing drgnx line does not fail the pin job"
 # cache writes: every save step is CACHE_SAVE's (nidhogg-31 and this repository's pull requests) or CACHE_SAVE_ALL's
 # (nidhogg-31), and neither is ever true for a ci/* branch, a fork's pull request or a tag; a pull request's entries
 # are scoped to its merge ref, so no other ref's run reads them, it saves no large prefix-restored entry, and its

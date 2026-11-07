@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       drgnx_ref:
-        description: "drgnx branch, tag or commit whose unit suite runs against the build (empty: the pinned commit)"
+        description: "drgnx branch, tag or commit whose unit suite runs against the build (empty: the head of drgnx's integration branch, nidhogg/ci/drgnx-line)"
         default: ""
       scope:
         description: "full: every job; macos: the series rules and the macOS jobs only (between gates, Linux is tested locally)"
@@ -669,10 +669,12 @@ jobs:
           if-no-files-found: ignore
 
   # drgnx's Emacs-side tiers on the tarballs this run built, through drgnx's own definition of them
-  # (.github/workflows/drgnx-tiers.yml in drgnx), called at a pinned drgnx commit, so a drgnx push never turns Nidhogg
-  # red.  The uses line below is the one place the pin lives: GitHub allows no expression there, so the pin job reads
-  # the SHA from it and the default drgnx_ref is that output.  Bump the uses line by hand to a drgnx commit whose CI is
-  # green, and pass drgnx_ref by hand for a joint round (README.md, "CI and releases").  The
+  # (.github/workflows/drgnx-tiers.yml in drgnx).  The workflow's definition comes from the uses line's pinned drgnx
+  # commit (GitHub allows no expression there); the suite it checks out is drgnx_ref.  A release tag tests the pinned
+  # commit (the pin job reads the SHA from the uses line); every other build tests the head of drgnx's integration
+  # branch, named in nidhogg/ci/drgnx-line, so each repository is tested against the other's current line, never an old
+  # release.  A missing branch fails the pin job, never the pin instead.  drgnx_ref by hand overrides both (a joint
+  # round; README.md, "CI and releases").  Bump the uses line by hand to a drgnx commit whose CI is green.  The
   # unit suite and gate mode on the fedora-45 tarball, the GUI tier on it under headless mutter, the unit suite on the
   # macOS tarball (only that one in scope=macos).  It runs once the builds are done, whatever they did: a job whose
   # tarball is missing fails by itself.
@@ -687,12 +689,23 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-          sparse-checkout: .github/workflows
-      - name: The drgnx commit the uses line pins
+          sparse-checkout: |
+            .github/workflows
+            nidhogg/ci
+      - name: The drgnx commit to test (a release tag the uses line's pin, else drgnx's integration line's head)
         id: pin
+        env:
+          TAG: ${{ startsWith(github.ref, 'refs/tags/') }}
         run: |
           ref=$(grep -oE '^ {4}uses:[ ]Black-Dragon-Foundation/drgnx/\.github/workflows/drgnx-tiers\.yml@[0-9a-f]{40}' .github/workflows/build.yml | sed 's/.*@//')
           [ -n "$ref" ] || { echo "no pinned drgnx-tiers.yml in build.yml" >&2; exit 1; }
+          if [ "$TAG" != true ]; then
+            branch=$(grep -v '^[[:space:]]*\(#\|$\)' nidhogg/ci/drgnx-line | head -n 1 | tr -d '[:space:]')
+            [ -n "$branch" ] || { echo "::error::nidhogg/ci/drgnx-line names no branch"; exit 1; }
+            ref=$(git ls-remote https://github.com/Black-Dragon-Foundation/drgnx.git "refs/heads/$branch" | cut -f1)
+            [ -n "$ref" ] || { echo "::error::drgnx has no branch $branch (nidhogg/ci/drgnx-line): push it, or name the line there; never the pin instead"; exit 1; }
+            echo "drgnx's integration line $branch at $ref" >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
 
   # The tiers are those whose tarball this run builds (the changes job's tiers: a run that builds only on macOS runs
