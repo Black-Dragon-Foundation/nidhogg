@@ -8,6 +8,7 @@ mod app;
 mod defaults;
 pub mod draw;
 pub mod fonts;
+pub mod images;
 #[cfg(feature = "test-hooks")]
 mod inject;
 mod kq;

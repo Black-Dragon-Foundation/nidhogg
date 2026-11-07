@@ -52,6 +52,16 @@ pub enum Shape {
         argb: u32,
         integral: bool,
     },
+    /// The part of picture `key` (`macos::images`: the pixels' address and size, made with `mask`) from (`sx`, `sy`)
+    /// drawn into `r`, over `bg` when it is given.
+    Image {
+        key: (usize, i32, i32),
+        mask: usize,
+        r: Rect,
+        sx: i32,
+        sy: i32,
+        bg: Option<u32>,
+    },
 }
 
 /// What one record paints: its shapes, inside the union of `clip` (no clip when empty).
@@ -72,9 +82,10 @@ impl Paint {
         self.clip.iter_mut().for_each(mv);
         for s in &mut self.shapes {
             match s {
-                Shape::Fill { r, .. } | Shape::Outline { r, .. } | Shape::Corners { r, .. } => {
-                    mv(r)
-                }
+                Shape::Fill { r, .. }
+                | Shape::Outline { r, .. }
+                | Shape::Corners { r, .. }
+                | Shape::Image { r, .. } => mv(r),
                 Shape::Polygon { pts, .. } | Shape::Path { pts, .. } => {
                     for p in pts.iter_mut() {
                         p.0 += fx;

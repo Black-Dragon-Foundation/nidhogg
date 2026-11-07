@@ -1473,6 +1473,156 @@ nhg_export! {
 }
 
 nhg_export! {
+    /// Paint the image record `rec` (`NHG_DRAW_IMAGE`) of the container `pix` into frame `frame`'s backing.  The
+    /// container is wrapped as a `CGImage` the first time it is drawn and kept until `nhg_image_forget` names its pixels
+    /// or its mask.  `NHG_E_ARG` for a record or container the glue refuses, `NHG_E_UNSUPPORTED` where the shell has no
+    /// painter.  Writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `rec` and `pix` are readable, and `pix`'s `data` (and `mask` when not null) hold
+    /// its rows.
+    fn nhg_draw_image(d: *mut NhgDisplay, frame: u64, rec: *const crate::draw::NhgDrawRec, pix: *const crate::image::NhgPix) -> i32 |state| {
+        if rec.is_null() || pix.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: non-null and readable (the caller's promise).
+        let (rec, pix) = unsafe { (&*rec, *pix) };
+        let bytes = if pix.bpp == 8 { 1 } else { 4 };
+        if pix.data.is_null() || pix.width <= 0 || pix.height <= 0 || pix.stride < pix.width * bytes {
+            return Err(GlueError::Arg);
+        }
+        let (w, h) = (pix.width as usize, pix.height as usize);
+        // SAFETY: the container's rows (the caller's promise).
+        let data = unsafe { std::slice::from_raw_parts(pix.data, pix.stride as usize * (h - 1) + w * bytes as usize) };
+        let mask = (bytes == 4 && !pix.mask.is_null() && pix.mask_stride >= pix.width)
+            // SAFETY: the mask's rows (the caller's promise).
+            .then(|| unsafe { std::slice::from_raw_parts(pix.mask, pix.mask_stride as usize * (h - 1) + w) });
+        let key = (pix.data as usize, pix.width, pix.height);
+        // what the picture is made with: the mask, or an 8-bit container's colour
+        let made_with = if bytes == 1 { !(rec.fg as usize) } else { mask.map_or(0, |m| m.as_ptr() as usize) };
+        #[cfg(all(feature = "macos", target_os = "macos"))]
+        nhshell::macos::images::with_picture(
+            key,
+            made_with,
+            || crate::image::combine(&pix, data, mask, rec.fg).unwrap_or_default(),
+            |_| (),
+        )
+        .ok_or(GlueError::Arg)?;
+        #[cfg(not(all(feature = "macos", target_os = "macos")))]
+        let _ = (data, mask);
+        let mut p = crate::draw::decode_image(rec, key, made_with).map_err(|_| GlueError::Arg)?;
+        state.backings.frame_mut(frame)?.paint(&mut p)?;
+        Ok(NHG_OK)
+    }
+}
+
+// ---- Images (`image.rs`; macOS) ---------------------------------------------------------------------------------
+
+nhg_export! {
+    /// `NHG_OK` when `image.c`'s native route takes the image type named by the `len` bytes at `name`, else
+    /// `NHG_E_UNSUPPORTED`.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `name` is null or holds `len` readable bytes.
+    unlocked fn nhg_image_type(name: *const c_char, len: usize) -> i32 {
+        if name.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: `len` readable bytes (the caller's promise).
+        let name = unsafe { std::slice::from_raw_parts(name.cast::<u8>(), len) };
+        match std::str::from_utf8(name) {
+            Ok(n) if cfg!(all(feature = "macos", target_os = "macos")) && crate::image::supported(n) => Ok(NHG_OK),
+            _ => Err(GlueError::Code(crate::abi::NHG_E_UNSUPPORTED)),
+        }
+    }
+}
+
+nhg_export! {
+    /// Decode frame `index` of the image in the `len` bytes at `src` (a file name when `is_file`) into `*out`, whose
+    /// pixels `nhg_image_take` or `nhg_image_free` frees.  `NHG_E_STATE` when the file cannot be read or decoded or has
+    /// no such frame.
+    ///
+    /// # Safety
+    /// `src` holds `len` readable bytes; `out` is writable.
+    unlocked fn nhg_image_decode(src: *const u8, len: usize, is_file: u32, index: u32, out: *mut crate::image::NhgImage) -> i32 {
+        if src.is_null() || out.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: `len` readable bytes (the caller's promise).
+        let src = unsafe { std::slice::from_raw_parts(src, len) };
+        let read;
+        let bytes = if is_file != 0 {
+            use std::os::unix::ffi::OsStrExt;
+            read = std::fs::read(std::ffi::OsStr::from_bytes(src)).map_err(|_| GlueError::State)?;
+            &read[..]
+        } else {
+            src
+        };
+        let img = crate::image::decode(bytes, index).ok_or(GlueError::State)?;
+        // SAFETY: writable (the caller's promise).
+        unsafe { out.write(img) };
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Copy `img`'s pixels into the container bytes at `data` (`width * 4` a row) and, when it has alpha, its alpha
+    /// into `mask` (`width` a row; may be null otherwise), then free them.
+    ///
+    /// # Safety
+    /// `img` came from `nhg_image_decode` and is not used after; `data` (and `mask`) hold the rows.
+    unlocked fn nhg_image_take(img: *mut crate::image::NhgImage, data: *mut u8, mask: *mut u8) -> i32 {
+        if img.is_null() || data.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: a live decode (the caller's promise).
+        let img = unsafe { &mut *img };
+        if !img.argb.is_null() {
+            // SAFETY: the decode's pixels, and containers of its size (the caller's promise).
+            let (argb, out, m) = unsafe {
+                (
+                    std::slice::from_raw_parts(img.argb, img.len),
+                    std::slice::from_raw_parts_mut(data, img.len * 4),
+                    (img.has_alpha != 0 && !mask.is_null()).then(|| std::slice::from_raw_parts_mut(mask, img.len)),
+                )
+            };
+            crate::image::store(argb, out, m);
+        }
+        // SAFETY: freed once, here.
+        unsafe { crate::image::free(img) };
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Free a decode's pixels without taking them.
+    ///
+    /// # Safety
+    /// `img` is null or came from `nhg_image_decode` and is not used after.
+    unlocked fn nhg_image_free(img: *mut crate::image::NhgImage) -> i32 {
+        if !img.is_null() {
+            // SAFETY: a live decode, freed once (the caller's promise).
+            unsafe { crate::image::free(&mut *img) };
+        }
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// The container bytes at `addr` are being freed: forget the pictures made from them (as pixels or as a mask).
+    ///
+    /// # Safety
+    /// None beyond the C ABI: the address is only compared.
+    unlocked fn nhg_image_forget(addr: *const u8) -> i32 {
+        #[cfg(all(feature = "macos", target_os = "macos"))]
+        nhshell::macos::images::forget(addr as usize);
+        #[cfg(not(all(feature = "macos", target_os = "macos")))]
+        let _ = addr;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
     /// The frame is about to be published and its Emacs windows are the `n` at `windows`: own outputs that are gone,
     /// resized or idle, or all of them when the frame is no longer an opaque root, become part of the frame again.
     /// Returns how many stay own outputs.  Neither reads nor writes pixels.
