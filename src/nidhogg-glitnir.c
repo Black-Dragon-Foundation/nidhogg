@@ -61,6 +61,8 @@ glitnir_box_key_ok (Lisp_Object key, Lisp_Object value)
 /* glitnir-images.c: the image decoders on the image worker.  */
 extern void syms_of_glitnir_images (void);
 #endif
+/* Sjá's Lisp door (nidhogg-views.c).  */
+extern void syms_of_nidhogg_views (void);
 
 DEFUN ("glitnir-active-p", Fglitnir_active_p, Sglitnir_active_p, 0, 1, 0,
        doc: /* Return non-nil if Glitnir (the compositor) draws FRAME.
@@ -617,6 +619,7 @@ Setting it to nil turns its decorations off.  */);
 #ifdef HAVE_NIDHOGG_WORKERS
   syms_of_glitnir_images ();
 #endif
+  syms_of_nidhogg_views ();
   Fprovide (intern_c_string ("glitnir"), Qnil);
 }
 
