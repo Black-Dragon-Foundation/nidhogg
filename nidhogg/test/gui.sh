@@ -356,6 +356,9 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
   [ -z "$wdebug" ] || export WAYLAND_DEBUG=client
   runner=$checkout/test/src/nidhogg-tests/gui-runner.el
   err=/dev/stderr; [ -z "$wdebug" ] || err=$wdebug
+  # Emacs's stderr is opened to append (emptied first): the runner writes each verdict line in one write through
+  # /dev/stderr, which only lands after the trace already written when every writer appends
+  [ -z "$wdebug" ] || : > "$err"
 
   if [ "$portal" = fake ]; then
     # the portal is a daemon Nidhogg on this session bus; the rows (in the frame's Nidhogg) share its script and log
@@ -375,7 +378,7 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
 
   if [ "$daemon" = 1 ]; then
     sock=$XDG_RUNTIME_DIR/emacs/glitnir-gui
-    timeout --kill-after=10 "$timeout" "$prefix/bin/nidhogg" -Q --fg-daemon="$sock" -l "$runner" 2> "$err" &
+    timeout --kill-after=10 "$timeout" "$prefix/bin/nidhogg" -Q --fg-daemon="$sock" -l "$runner" 2>> "$err" &
     epid=$!
     for _ in $(seq 100); do
       [ -S "$sock" ] && break
@@ -391,7 +394,7 @@ if [ "${GLITNIR_GUI_INNER:-}" = 1 ]; then
     kill "$cpid" 2>/dev/null; wait "$cpid" 2>/dev/null
     epid=
   else
-    timeout --kill-after=10 "$timeout" "$prefix/bin/nidhogg" -Q --fullscreen -l "$runner" 2> "$err" &
+    timeout --kill-after=10 "$timeout" "$prefix/bin/nidhogg" -Q --fullscreen -l "$runner" 2>> "$err" &
     epid=$!
     wait "$epid"; rc=$?
     epid=
