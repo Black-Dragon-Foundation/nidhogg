@@ -631,10 +631,10 @@ Not available yet in Naglfar."
 
 (defun ns-list-colors (&optional frame)
   "Return a list of all available colors.
-
-Not available yet in Naglfar."
+In Naglfar, for now, the names of `color-name-rgb-alist' (common-win.el
+reads this while Emacs is dumped, for `x-colors')."
   (ignore frame)
-  (nhmac--not-yet))
+  (mapcar #'car color-name-rgb-alist))
 
 (defun ns-list-services ()
   "List available Nextstep services by querying NSApp.
