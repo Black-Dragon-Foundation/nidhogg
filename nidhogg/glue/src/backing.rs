@@ -153,6 +153,9 @@ pub struct Frame {
     since: Since,
     /// The backing as of the frame's last publish (empty: not known).
     shown: Vec<u32>,
+    /// The shell's drawing context over `pixels` (Naglfar's draw records), made again with the backing.
+    #[cfg(all(feature = "macos", target_os = "macos"))]
+    canvas: Option<nhshell::macos::draw::Canvas>,
 }
 
 /// What a frame's damage has been since its last publish: the plain damage (drawing), and the rows any damage
@@ -239,6 +242,28 @@ pub fn premultiply(rgb: u32, alpha: f64) -> u32 {
 }
 
 impl Frame {
+    /// Paint `p` (device pixels with the native area's origin) into the backing now (`nhg_draw`).  A frame with no
+    /// backing yet paints nothing.  `NHG_E_UNSUPPORTED` where the shell has no painter (only Naglfar has one).
+    pub fn paint(&mut self, p: &mut nhshell::shapes::Paint) -> Result<(), i32> {
+        if self.pixels.is_empty() {
+            return Ok(());
+        }
+        p.translate(self.l, self.t);
+        #[cfg(all(feature = "macos", target_os = "macos"))]
+        {
+            let (w, h) = (self.w, self.h);
+            match nhshell::macos::draw::Canvas::over(&mut self.canvas, &mut self.pixels, w, h) {
+                Some(c) => {
+                    c.paint(p);
+                    Ok(())
+                }
+                None => Err(NHG_E_NOMEM),
+            }
+        }
+        #[cfg(not(all(feature = "macos", target_os = "macos")))]
+        Err(crate::abi::NHG_E_UNSUPPORTED)
+    }
+
     fn view(&mut self) -> NhgBacking {
         NhgBacking {
             pixels: self.pixels.as_mut_ptr().cast(),

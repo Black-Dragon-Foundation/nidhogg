@@ -6,6 +6,7 @@
 
 mod app;
 mod defaults;
+pub mod draw;
 pub mod fonts;
 #[cfg(feature = "test-hooks")]
 mod inject;
