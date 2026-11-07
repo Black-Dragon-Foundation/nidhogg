@@ -528,7 +528,8 @@ Nil when nothing is chosen."
 ;; reopen as menu-bar events of fixed keys (generation 0 in C): the commands
 ;; below run in the command loop.
 
-(defvar nhmac-app-paths '((1 . (nhmac-open-files)) (2 . (nhmac-quit)) (3 . (nhmac-reopen)))
+(defvar nhmac-app-paths '((1 . (nhmac-open-files)) (2 . (nhmac-quit)) (3 . (nhmac-reopen))
+                          (4 . (nhmac-appearance-changed)))
   "The key path of each application event, by the shell's number.")
 
 (defvar ns-confirm-quit)
@@ -554,7 +555,28 @@ Nil when nothing is chosen."
       (make-frame-visible (selected-frame))
     (make-frame)))
 
-(dolist (cmd '(nhmac-open-files nhmac-quit nhmac-reopen))
+(defvar ns-system-appearance nil
+  "The system's appearance, `dark' or `light' (nil before the shell reports it).")
+(defvar ns-system-appearance-change-functions nil
+  "Functions called with the new system appearance when it changes.")
+
+(defun nhmac-appearance-changed ()
+  "The system switched between light and dark: record it and run the hook."
+  (interactive)
+  (setq ns-system-appearance (nhmac--query 'system-appearance))
+  (run-hook-with-args 'ns-system-appearance-change-functions ns-system-appearance))
+
+(defun nhmac-apply-frame-look (&optional frame)
+  "Give FRAME's window its `ns-appearance' and `ns-transparent-titlebar' parameters."
+  (let ((frame (or frame (selected-frame))))
+    (when (eq (framep frame) 'ns)
+      (nhmac--call 'frame-look frame
+                   (or (frame-parameter frame 'ns-appearance) 'nil)
+                   (if (frame-parameter frame 'ns-transparent-titlebar) 't 'nil)))))
+
+(add-hook 'after-make-frame-functions #'nhmac-apply-frame-look)
+
+(dolist (cmd '(nhmac-open-files nhmac-quit nhmac-reopen nhmac-appearance-changed))
   (define-key global-map (vector 'menu-bar cmd) cmd))
 
 ;;; The ns compatibility layer

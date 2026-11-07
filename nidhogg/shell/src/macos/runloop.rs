@@ -67,6 +67,16 @@ define_class!(
             deliver(MacEv::Key(*self.ivars(), true));
         }
 
+        #[unsafe(method(windowDidMiniaturize:))]
+        fn did_miniaturize(&self, _n: &NSNotification) {
+            deliver(MacEv::Key(*self.ivars(), false));
+        }
+
+        #[unsafe(method(windowDidDeminiaturize:))]
+        fn did_deminiaturize(&self, _n: &NSNotification) {
+            deliver(MacEv::Key(*self.ivars(), true));
+        }
+
         #[unsafe(method(windowDidResignKey:))]
         fn did_resign_key(&self, _n: &NSNotification) {
             deliver(MacEv::Key(*self.ivars(), false));

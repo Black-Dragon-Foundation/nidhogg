@@ -22,5 +22,6 @@ mod services;
 pub mod startup;
 mod view;
 mod window;
+mod windowing;
 
 pub use app::MacShell;

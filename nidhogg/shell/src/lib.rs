@@ -16,6 +16,7 @@ pub mod outputs;
 pub mod pasteboard;
 pub mod scope;
 pub mod startup;
+pub mod vars;
 pub mod wait;
 #[cfg(feature = "wayland")]
 pub mod wayland;

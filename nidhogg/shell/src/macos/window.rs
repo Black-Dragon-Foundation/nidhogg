@@ -25,6 +25,8 @@ pub struct Win {
     pub scale120: u32,
     /// Whether the host wants it shown.
     pub mapped: bool,
+    /// Non-native full screen: the frame and style to go back to.
+    pub saved: Option<(NSRect, NSWindowStyleMask)>,
 }
 
 impl Win {
@@ -63,6 +65,7 @@ impl Win {
         window.setContentView(Some(&view));
         window.makeFirstResponder(Some(&view));
         window.setAcceptsMouseMovedEvents(true);
+        super::windowing::setup(&window);
         window.setTitle(&NSString::from_str(title));
         let delegate = WinDelegate::new(mtm, id);
         window.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
@@ -76,6 +79,7 @@ impl Win {
             size: (w, h),
             scale120,
             mapped: true,
+            saved: None,
         }
     }
 
