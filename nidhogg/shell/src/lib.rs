@@ -12,6 +12,7 @@ pub mod mac_input;
 #[cfg(all(feature = "macos", target_os = "macos"))]
 pub mod macos;
 pub mod menu;
+pub mod outputs;
 pub mod pasteboard;
 pub mod scope;
 pub mod startup;

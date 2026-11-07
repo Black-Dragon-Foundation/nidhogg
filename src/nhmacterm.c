@@ -270,12 +270,17 @@ int
 nhmac_menu_choice (const NhgAction *a, struct input_event *hold_quit)
 {
   Lisp_Object gen = find_symbol_value (intern_c_string ("nhmac-menu-generation"));
-  Lisp_Object paths = find_symbol_value (intern_c_string ("nhmac-menu-paths"));
+  /* Generation 0 is the application's own events (quit, open files,
+     reopen): their paths are fixed.  */
+  Lisp_Object paths
+    = find_symbol_value (intern_c_string (a->flags == 0 ? "nhmac-app-paths"
+					  : "nhmac-menu-paths"));
   Lisp_Object path, frame;
   struct input_event buf;
   int stored = 0;
 
-  if (!FIXNUMP (gen) || XFIXNUM (gen) != a->flags || !CONSP (paths))
+  if ((a->flags != 0 && (!FIXNUMP (gen) || XFIXNUM (gen) != a->flags))
+      || !CONSP (paths))
     return 0;
   path = Fcdr (Fassq (make_fixnum (a->code), paths));
   if (!CONSP (path))

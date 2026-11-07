@@ -284,7 +284,7 @@ pub struct FrameDoneEv {
     pub refresh_ns: u32,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OutputEv {
     pub id: u64,
     pub x: i32,

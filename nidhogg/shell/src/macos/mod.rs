@@ -5,6 +5,7 @@
 //! poisoned display, as it does any panic.
 
 mod app;
+mod appdelegate;
 mod defaults;
 mod dialogs;
 mod dnd;
@@ -14,6 +15,7 @@ mod inject;
 mod kq;
 mod menus;
 mod pasteboard;
+mod power;
 mod runloop;
 mod screens;
 mod services;

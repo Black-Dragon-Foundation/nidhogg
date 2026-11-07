@@ -5,9 +5,11 @@
 //! do nothing; the features later work brings (children, selections, drag and drop, text input, the presenter) answer
 //! `Unsupported` until then.
 
+use super::appdelegate::{self, AppDelegate};
 use super::defaults;
 use super::kq::{self, Kq};
 use super::menus;
+use super::power;
 use super::runloop::{MacEv, SCOPE};
 use super::screens;
 use super::window::Win;
@@ -18,13 +20,14 @@ use crate::api::{
 };
 use crate::caps::NhShellCaps;
 use crate::event::{
-    ConfigureEv, FocusEv, MenuEv, NHSHELL_STATE_ACTIVATED, Record, ScaleEv, ShellEvent,
+    ConfigureEv, FocusEv, MenuEv, NHSHELL_STATE_ACTIVATED, OutputEv, Record, ScaleEv, ShellEvent,
 };
 use crate::scope::{Scope, ScopeStats};
 use crate::wait::{self, Change, Reg, WaitOps, Woke};
 use glitnir::geom::Rect;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
+use objc2::runtime::ProtocolObject;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSEventMask};
 use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSString};
 use std::collections::{BTreeSet, HashMap, VecDeque};
@@ -46,6 +49,10 @@ pub struct MacShell {
     wake: [i32; 2],
     /// The main wait's kqueue (`None`: kqueue refused, so `nhg_wait` is unsupported) and its registrations.
     kq: Option<Kq>,
+    /// The application delegate (AppKit holds it weakly), the screens the host knows and the idle assertion.
+    _delegate: Retained<AppDelegate>,
+    known_outputs: Vec<OutputEv>,
+    idle_assertion: Option<u32>,
     regs: wait::Regs,
     /// Test hook: the next pump raises an `NSException` inside the catch.
     #[cfg(feature = "test-hooks")]
@@ -107,6 +114,8 @@ impl MacShell {
         let mtm = MainThreadMarker::new().ok_or(ShellError::State)?;
         let app = NSApplication::sharedApplication(mtm);
         app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+        let delegate = AppDelegate::new(mtm);
+        app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
         app.finishLaunching();
         let mut wake = [-1; 2];
         // SAFETY: `wake` holds two writable descriptors' room.
@@ -129,13 +138,16 @@ impl MacShell {
             queue: VecDeque::new(),
             wake,
             kq: Kq::open(mtm),
+            _delegate: delegate,
+            known_outputs: screens::outputs(mtm),
+            idle_assertion: None,
             regs: wait::Regs::default(),
             #[cfg(feature = "test-hooks")]
             raise_in_pump: false,
             #[cfg(feature = "test-hooks")]
             force_helper: 0,
         };
-        for o in screens::outputs(mtm) {
+        for o in shell.known_outputs.clone() {
             shell.push(ShellEvent::OutputAdd(o), 0);
         }
         Ok(shell)
@@ -172,6 +184,18 @@ impl MacShell {
                 if self.windows.contains_key(&id) {
                     self.push(ev, id);
                 }
+            }
+            MacEv::Screens => {
+                let new = screens::outputs(self.mtm);
+                for (change, o) in crate::outputs::diff(&self.known_outputs, &new) {
+                    let ev = match change {
+                        crate::outputs::Change::Added => ShellEvent::OutputAdd(o),
+                        crate::outputs::Change::Removed => ShellEvent::OutputRemove(o),
+                        crate::outputs::Change::Changed => ShellEvent::OutputChange(o),
+                    };
+                    self.push(ev, 0);
+                }
+                self.known_outputs = new;
             }
             MacEv::Menu(generation, index) => {
                 self.push(ShellEvent::Menu(MenuEv { generation, index }), 0);
@@ -476,8 +500,19 @@ impl ShellBackend for MacShell {
         Err(ShellError::Unsupported)
     }
 
-    fn inhibit_idle(&mut self, _window: WindowId, _on: bool) -> ShellResult {
-        Err(ShellError::Unsupported)
+    fn inhibit_idle(&mut self, _window: WindowId, on: bool) -> ShellResult {
+        match (on, self.idle_assertion) {
+            (true, None) => {
+                self.idle_assertion =
+                    Some(power::hold("Emacs asked to stay awake").ok_or(ShellError::State)?);
+            }
+            (false, Some(id)) => {
+                power::release(id);
+                self.idle_assertion = None;
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn window_export(&mut self, _window: WindowId, _timeout_ms: u32) -> ShellResult<String> {
@@ -721,6 +756,7 @@ impl ShellBackend for MacShell {
         match kind {
             "stats" => Ok(stats_text(scope_stats())),
             "get-resource" => Ok(defaults::get(arg)),
+            "take-open-files" => Ok(take_open_files_text()),
             "pasteboard-read" => Ok(pasteboard::read(arg)),
             "pasteboard-exists" => Ok(pasteboard::exists(arg)),
             "pasteboard-owned" => Ok(pasteboard::owned_text(arg)),
@@ -730,4 +766,17 @@ impl ShellBackend for MacShell {
             _ => Err(ShellError::Arg),
         }
     }
+}
+
+/// The files queued by `application:openFiles:`, as a Lisp list of strings.
+fn take_open_files_text() -> String {
+    let files = appdelegate::take_open_files();
+    format!(
+        "({})",
+        files
+            .iter()
+            .map(|f| crate::pasteboard::lisp_string(f))
+            .collect::<Vec<_>>()
+            .join(" ")
+    )
 }

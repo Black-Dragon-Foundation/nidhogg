@@ -522,6 +522,41 @@ Nil when nothing is chosen."
 
 (defalias 'nhwl-menu-popup #'nhmac-menu-popup)
 
+;;; Application events
+
+;; The shell reports quitting, files opened from Finder or the Dock, and a
+;; reopen as menu-bar events of fixed keys (generation 0 in C): the commands
+;; below run in the command loop.
+
+(defvar nhmac-app-paths '((1 . (nhmac-open-files)) (2 . (nhmac-quit)) (3 . (nhmac-reopen)))
+  "The key path of each application event, by the shell's number.")
+
+(defvar ns-confirm-quit)
+(defvar ns-input-file)
+
+(defun nhmac-open-files ()
+  "Visit the files the Finder or the Dock opened with Emacs, each as NS's `ns-find-file' does."
+  (interactive)
+  (dolist (file (nhmac--query 'take-open-files))
+    (let ((ns-input-file (list file)))
+      (ns-find-file))))
+
+(defun nhmac-quit ()
+  "Quit Emacs as the application menu asks: after a question when `ns-confirm-quit' is set."
+  (interactive)
+  (when (or (not ns-confirm-quit) (y-or-n-p "Are you sure you want to quit Emacs? "))
+    (save-buffers-kill-emacs)))
+
+(defun nhmac-reopen ()
+  "The Dock icon was clicked with no frame showing: show one."
+  (interactive)
+  (if (frame-list)
+      (make-frame-visible (selected-frame))
+    (make-frame)))
+
+(dolist (cmd '(nhmac-open-files nhmac-quit nhmac-reopen))
+  (define-key global-map (vector 'menu-bar cmd) cmd))
+
 ;;; The ns compatibility layer
 
 ;; Packages and `ns-win.el' read and call what NS defines in C.  Here the

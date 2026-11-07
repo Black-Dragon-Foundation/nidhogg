@@ -103,6 +103,22 @@ impl MacShell {
             "test-pasteboard-file" => Some(super::super::pasteboard::test_own_file(
                 arg.trim().trim_start_matches('(').trim_end_matches(')'),
             )),
+            // "(KIND)": an application event, as the delegate reports it (1 open files, 2 quit, 3 reopen)
+            "test-app-event" => Some(numbers(arg).and_then(|n| match n[..] {
+                [kind] => {
+                    self.apply(super::super::runloop::MacEv::Menu(0, kind as u32));
+                    Ok(())
+                }
+                _ => Err(ShellError::Arg),
+            })),
+            // "(PATH...)": files as `application:openFiles:` delivers them
+            "test-open-files" => {
+                let inner = arg.trim().trim_start_matches('(').trim_end_matches(')');
+                super::super::appdelegate::open_files(
+                    inner.split_whitespace().map(String::from).collect(),
+                );
+                Some(Ok(()))
+            }
             "test-menu-update" => {
                 super::super::menus::test_update(&self.app);
                 Some(Ok(()))
