@@ -45,11 +45,11 @@ flag_rule() {
         # C sources only (src/Makefile.in is not preprocessed).  Both sides go through unifdef: it also folds unrelated
         # always-false conditions such as '#if defined X && 0', which would show as a diff against the raw base.
         src/*.[chm])
-          # A C file a flag group created is the groups' own file, as for Lisp below: a later group may edit it.
-          if [ -z "$(git log --diff-filter=A --format=%s HEAD -- "$f" | tail -n 1 | grep -vE "^nidhogg: ($(IFS='|'; echo "${gname[*]}")):")" ] &&
-             [ -z "$(git log --format=%s "${gbase[i]}..HEAD" -- "$f" | grep -vE "^nidhogg: ($(IFS='|'; echo "${gname[*]}")):")" ]; then
-            continue
-          fi
+# A C file a flag group created is that group's own file (unguarded): the other groups' checks skip it.
+          sub=$(git log --diff-filter=A --format=%s HEAD -- "$f" | tail -n 1)
+          for j in "${!gname[@]}"; do
+            case $sub in "nidhogg: ${gname[j]}:"*) [ "$i" != "$j" ] && [ -n "$(git rev-list -n 1 --grep="^nidhogg: ${gname[j]}:" "${gbase[i]}..HEAD")" ] && continue 2 ;; esac
+          done
           cmp -s <(git show "HEAD:$f" | unifdef "${flags[@]}" 2>/dev/null) \
                  <(git show "${gbase[i]}:$f" | unifdef "${flags[@]}" 2>/dev/null) ||
             fail "$f changes code outside ${gdef[i]}" ;;
@@ -178,6 +178,10 @@ fixture; putf "nidhogg: shell: s" src/nhwl.c 'int s;\n'; put "nidhogg: history: 
   fixture; putf "nidhogg: shell: s" src/nhwl.c 'int s;\n'; put "nidhogg: history: h" 'int a;\n#ifdef HAVE_NIDHOGG_HISTORY\nint h;\n#endif\n'
   putf "nidhogg: pgtk: p" src/nhwl.c 'int s;\nint t;\n'
   expect "another commit editing a C file a group created" "belongs to no flag group; it goes below the groups"
+  fixture; putf "nidhogg: shell: s" src/x.c 'int x;\n'; put "nidhogg: glitnir: g" "$in"; putf "nidhogg: shell: s2" src/x.c 'int x;\nint y;\n'
+  expect "a shell commit editing an unguarded C file the shell group created" ""
+  fixture; putf "nidhogg: shell: s" src/x.c 'int x;\n'; put "nidhogg: glitnir: g" "${in}int out;\n"
+  expect "an upstream C file changed outside its flag, beside a group-created file" "src/a.c changes code outside HAVE_GLITNIR"
   fixture; put "nidhogg: glitnir: g" "$in"; put "nidhogg: naglfar: n" "${in}#ifdef HAVE_NHMAC\nint n;\n#endif\n"
   expect "a naglfar HAVE_NHMAC hunk" ""
   fixture; put "nidhogg: shell: s" 'int a;\n#ifdef HAVE_NHWL\nint s;\n#endif\n'; put "nidhogg: shell: s2" 'int a;\n#ifdef NHWL_WAYLAND\nint s;\n#endif\n'
