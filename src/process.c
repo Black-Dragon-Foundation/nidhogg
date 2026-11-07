@@ -6240,13 +6240,15 @@ wait_reading_process_output (intmax_t time_limit, int nsecs, int read_kbd,
 #else
 
 	  /* Non-macOS HAVE_GLIB builds call thread_select in
-	     xgselect.c.  Naglfar's main wait comes first: Homebrew's glib
-	     may be there too.  */
-#if defined HAVE_NHMAC
+	     xgselect.c.  */
+#ifdef HAVE_NHMAC
+	  /* Naglfar's main wait, before the glib test: Homebrew's glib may
+	     be there too.  */
 	  nfds = nhmac_select (max_desc + 1,
 			       &Available, (check_write ? &Writeok : 0),
 			       NULL, &timeout, NULL);
-#elif defined HAVE_GLIB && !defined HAVE_NS
+#else
+#if defined HAVE_GLIB && !defined HAVE_NS
 	  nfds = xg_select (max_desc + 1,
 			    &Available, (check_write ? &Writeok : 0),
 			    NULL, &timeout, NULL);
@@ -6261,6 +6263,7 @@ wait_reading_process_output (intmax_t time_limit, int nsecs, int read_kbd,
 				(check_write ? &Writeok : 0),
 				NULL, &timeout, NULL);
 #endif	/* !HAVE_GLIB */
+#endif	/* HAVE_NHMAC */
 #endif /* HAVE_ANDROID && !ANDROID_STUBIFY */
 
 #if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR
