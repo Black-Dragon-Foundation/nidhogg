@@ -30,6 +30,8 @@ macos = [
     "dep:objc2-app-kit",
     "dep:objc2-quartz-core",
 ]
+# entry points that exist only for tests (the macOS rows' event injection and counters); the glue's test-hooks turns it on
+test-hooks = []
 
 [dependencies]
 glitnir = { path = "../glitnir", version = "0.1.0" }
