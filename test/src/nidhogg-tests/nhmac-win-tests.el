@@ -457,7 +457,7 @@ Shell events (`make-non-key-event' codes) are the shell's to produce.")
 
 (ert-deftest nhmac-win-app-events-are-bound ()
   "Each application event's key path leads to its command, and the numbers match the shell's."
-  (should (equal (mapcar #'car nhmac-app-paths) '(1 2 3)))
+  (should (equal (mapcar #'car nhmac-app-paths) '(1 2 3 4)))
   (dolist (e nhmac-app-paths)
     (let ((cmd (car (cdr e))))
       (should (eq (lookup-key global-map (vector 'menu-bar cmd)) cmd))

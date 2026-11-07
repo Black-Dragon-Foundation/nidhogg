@@ -23,6 +23,7 @@ pub mod shapes;
 pub mod svg;
 pub mod trace;
 pub mod startup;
+pub mod vars;
 pub mod wait;
 #[cfg(feature = "wayland")]
 pub mod wayland;

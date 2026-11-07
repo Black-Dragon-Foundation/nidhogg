@@ -29,5 +29,6 @@ pub mod text;
 pub mod startup;
 mod view;
 mod window;
+mod windowing;
 
 pub use app::MacShell;

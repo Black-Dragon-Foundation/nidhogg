@@ -33,6 +33,8 @@ pub struct Win {
     /// The serial of the configure sent last, until the host acks it: till then the host may still draw at the old
     /// size, and the window does not take its surfaces' size.
     pub configuring: Option<u32>,
+    /// Non-native full screen: the frame and style to go back to.
+    pub saved: Option<(NSRect, NSWindowStyleMask)>,
 }
 
 impl Win {
@@ -87,6 +89,7 @@ impl Win {
         window.setContentView(Some(&view));
         window.makeFirstResponder(Some(&view));
         window.setAcceptsMouseMovedEvents(true);
+        super::windowing::setup(&window);
         window.setTitle(&NSString::from_str(title));
         let delegate = WinDelegate::new(mtm, id);
         window.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
@@ -102,6 +105,7 @@ impl Win {
             output: 0,
             mapped: true,
             configuring: None,
+            saved: None,
         }
     }
 

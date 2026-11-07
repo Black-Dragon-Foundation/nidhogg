@@ -16,6 +16,7 @@ use super::runloop::{MacEv, SCOPE};
 use super::screens;
 use super::surface;
 use super::window::Win;
+use super::windowing;
 use super::{dialogs, pasteboard};
 use crate::api::{
     Abandon, ChildDesc, NHSHELL_SEL_DND, NHSHELL_WIN_UNDECORATED, NhShellPresenterStats, Place, PresenterTiming,
@@ -26,14 +27,13 @@ use crate::event::{
     ConfigureEv, FocusEv, MenuEv, NHSHELL_STATE_ACTIVATED, OutputEv, Record, ScaleEv, ShellEvent,
 };
 use crate::scope::{Scope, ScopeStats};
+use crate::vars::Settings;
 use crate::wait::{self, Change, Reg, WaitOps, Woke};
 use glitnir::geom::Rect;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
+use objc2::runtime::ProtocolObject;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSEventMask, NSScreen};
-use objc2::runtime::ProtocolObject;
-use objc2::runtime::ProtocolObject;
-use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSEventMask};
 use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSString};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::time::Duration;
@@ -72,6 +72,8 @@ pub struct MacShell {
     _delegate: Retained<AppDelegate>,
     known_outputs: Vec<OutputEv>,
     idle_assertion: Option<u32>,
+    settings: Settings,
+    dark: bool,
     regs: wait::Regs,
     /// `ns-use-srgb-colorspace`: the colour space new surfaces are tagged with.
     srgb: bool,
@@ -184,6 +186,8 @@ impl MacShell {
             _delegate: delegate,
             known_outputs: screens::outputs(mtm),
             idle_assertion: None,
+            settings: Settings::default(),
+            dark: false,
             regs: wait::Regs::default(),
             srgb: true,
             deferred: Vec::new(),
@@ -315,6 +319,20 @@ impl MacShell {
         }
     }
 
+    /// `frame-look` "(WINDOW APPEARANCE TITLEBAR)": `ns-appearance` (dark, light or nil) and `ns-transparent-titlebar`.
+    fn frame_look(&mut self, arg: &str) -> ShellResult {
+        let (n, rest) = crate::menu::split_numbers(arg, 1).ok_or(ShellError::Arg)?;
+        let window = u64::try_from(n[0]).map_err(|_| ShellError::Arg)?;
+        let rest = rest.trim_end_matches(')');
+        let (appearance, titlebar) = rest.split_once(' ').unwrap_or((rest, "nil"));
+        windowing::look(
+            &self.win(window)?.window,
+            appearance,
+            titlebar.trim() != "nil",
+        );
+        Ok(())
+    }
+
     /// `ns-perform-service` "(NAME TEXT)": the service's answer as a Lisp string, or `nil`.
     fn service_perform(&mut self, arg: &str) -> String {
         let inner = arg.strip_prefix('(').unwrap_or(arg);
@@ -432,6 +450,11 @@ impl MacShell {
         for id in ids {
             self.compare(id);
         }
+        let dark = windowing::system_dark(&self.app);
+        if dark != self.dark {
+            self.dark = dark;
+            self.apply(MacEv::Menu(0, appdelegate::APP_APPEARANCE));
+        }
         self.release_held();
     }
 }
@@ -462,9 +485,15 @@ impl MacShell {
         layers::publish_end();
     }
 
-    /// A watched variable's new value (`nhmac--variable-changed`): ARG is `(SYMBOL VALUE)` as Lisp prints it.  Only
-    /// `ns-use-srgb-colorspace` is read yet: every ring starts over, tagged the new way.  The rest are accepted.
+    /// A watched variable's new value (`nhmac--variable-changed`): ARG is `(SYMBOL VALUE)` as Lisp prints it.  The
+    /// window settings (`vars.rs`: full screen, the menu bar's auto-hide) go to the presentation options;
+    /// `ns-use-srgb-colorspace` starts every ring over, tagged the new way; the text smoothing ones reach the drawing.
+    /// The rest are accepted.
     fn variable(&mut self, arg: &str) {
+        if crate::vars::set_variable(&mut self.settings, arg) {
+            windowing::presentation(&self.app, &self.settings);
+            return;
+        }
         let inner = arg.trim().trim_start_matches('(').trim_end_matches(')');
         let mut it = inner.split_whitespace();
         let (name, on) = (it.next(), it.next() != Some("nil"));
@@ -714,12 +743,16 @@ impl ShellBackend for MacShell {
         Ok(())
     }
 
-    fn set_fullscreen(&mut self, window: WindowId, _on: bool) -> ShellResult {
-        self.win(window).map(drop).and(Err(ShellError::Unsupported))
+    fn set_fullscreen(&mut self, window: WindowId, on: bool) -> ShellResult {
+        let native = self.settings.native_fullscreen;
+        let w = self.windows.get_mut(&window).ok_or(ShellError::State)?;
+        windowing::fullscreen(w, on, native);
+        Ok(())
     }
 
-    fn set_maximized(&mut self, window: WindowId, _on: bool) -> ShellResult {
-        self.win(window).map(drop).and(Err(ShellError::Unsupported))
+    fn set_maximized(&mut self, window: WindowId, on: bool) -> ShellResult {
+        windowing::maximize(self.win(window)?, on);
+        Ok(())
     }
 
     fn minimize(&mut self, window: WindowId) -> ShellResult {
@@ -1161,6 +1194,7 @@ impl ShellBackend for MacShell {
             }
             "pasteboard-own" => pasteboard::own(arg),
             "pasteboard-disown" => pasteboard::disown(arg),
+            "frame-look" => self.frame_look(arg),
             "menu-bar" => menus::bar(self.mtm, &self.app, arg),
             "menu-dock" => menus::dock(self.mtm, arg),
             _ => Err(ShellError::Arg),
@@ -1176,6 +1210,7 @@ impl ShellBackend for MacShell {
             "stats" => Ok(stats_text(scope_stats())),
             "get-resource" => Ok(defaults::get(arg)),
             "reduced-motion" => Ok(if motion::reduced() { "t" } else { "nil" }.into()),
+            "system-appearance" => Ok(if self.dark { "dark" } else { "light" }.to_string()),
             "take-open-files" => Ok(take_open_files_text()),
             "pasteboard-read" => Ok(pasteboard::read(arg)),
             "pasteboard-exists" => Ok(pasteboard::exists(arg)),
