@@ -2925,21 +2925,57 @@ while the top-level has the keyboard.  Delete the child and focus the parent aft
   ;; At 1.5 the strip is round(32 x 1.5) = 48 device rows and the top margin round(8 x 1.5) = 12; the strip's last row
   ;; is drawn and the margin above it is transparent.
   (skip-unless (and (nhwl-gui--recorder-p) (nhwl-gui--csd-p)))
-  (unwind-protect
-      (progn
-        (gui-runner-recorder '(:cmd "scale" :value120 180))
-        (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-scale-factor) 1.5)) 5))
-        (nhwl-gui--windowed)
-        (should (nhwl-gui--wait (lambda () (redisplay t) (eql (nth 3 (plist-get (nhwl--title-bar) :strip)) 48))))
-        (let* ((tb (nhwl--title-bar)) (strip (plist-get tb :strip))
-               (snap (glitnir-snapshot nil 'raw)) (w (nth 0 snap)) (bytes (nth 2 snap))
-               (alpha (lambda (y) (aref bytes (+ 3 (* 4 (+ (* y w) (/ w 2))))))))
-          (should (= (nth 1 strip) 12))
-          (should (= (nth 1 (plist-get tb :margins)) 12))
-          (should (= (funcall alpha (+ (nth 1 strip) 47)) 255))
-          (should (= (funcall alpha (1- (nth 1 strip))) 0))))
-    (gui-runner-recorder '(:cmd "scale" :value120 120))
-    (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-scale-factor) 1.0)) 5)
-    (nhwl-gui--windowed)))
+  (gui-runner-keeping-frame-font
+    (unwind-protect
+        (progn
+          (gui-runner-recorder '(:cmd "scale" :value120 180))
+          (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-scale-factor) 1.5)) 5))
+          (nhwl-gui--windowed)
+          (should (nhwl-gui--wait (lambda () (redisplay t) (eql (nth 3 (plist-get (nhwl--title-bar) :strip)) 48))))
+          (let* ((tb (nhwl--title-bar)) (strip (plist-get tb :strip))
+                 (snap (glitnir-snapshot nil 'raw)) (w (nth 0 snap)) (bytes (nth 2 snap))
+                 (alpha (lambda (y) (aref bytes (+ 3 (* 4 (+ (* y w) (/ w 2))))))))
+            (should (= (nth 1 strip) 12))
+            (should (= (nth 1 (plist-get tb :margins)) 12))
+            (should (= (funcall alpha (+ (nth 1 strip) 47)) 255))
+            (should (= (funcall alpha (1- (nth 1 strip))) 0))))
+      (gui-runner-recorder '(:cmd "scale" :value120 120))
+      (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-scale-factor) 1.0)) 5)
+      (nhwl-gui--windowed))))
+
+(defun nhwl-gui--default-font-state ()
+  "The frame's font, the `default' face's height and fontset, and the font its text realizes, printed."
+  (redisplay t)
+  (list (frame-parameter nil 'font) (face-attribute 'default :height) (face-attribute 'default :fontset)
+        (prin1-to-string (face-attribute 'default :font)) (prin1-to-string (font-at (point-min)))))
+
+(ert-deftest nhwl-gui/scale-round-trip-keeps-the-default-font ()
+  "Scale 1 to 1.25 and back: the frame's font and the `default' face are what they were before.
+The font is re-opened at each scale's device size and comes back to the same size; its fontset is a new one
+\(`set-frame-font' makes one too), which `gui-runner-keeping-frame-font' gives back, so the rows after this one
+see the `default' they started with."
+  (skip-unless (nhwl-gui--recorder-p))
+  (with-temp-buffer
+    (switch-to-buffer (current-buffer))
+    (insert "x\n")
+    (goto-char (point-min))
+    (let ((before (nhwl-gui--default-font-state)) mid back)
+      (gui-runner-keeping-frame-font
+        (unwind-protect
+            (progn
+              (gui-runner-recorder '(:cmd "scale" :value120 150))
+              (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-scale-factor) 1.25)) 5))
+              (setq mid (nhwl-gui--default-font-state)))
+          (gui-runner-recorder '(:cmd "scale" :value120 120))
+          (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-scale-factor) 1.0)) 5)
+          (nhwl-gui--windowed)
+          (setq back (nhwl-gui--default-font-state))))
+      (glitnir-gui--say "scale-round-trip: before %S\n  at 1.25 %S\n  back at 1 %S\n  kept %S"
+                        before mid back (nhwl-gui--default-font-state))
+      (should (= (frame-scale-factor) 1.0))
+      ;; the scale's own font comes back; only the fontset is new
+      (should (equal (seq-remove #'stringp (nthcdr 1 back)) (seq-remove #'stringp (nthcdr 1 before))))
+      (should (equal (nth 0 back) (nth 0 before)))
+      (should (equal (nhwl-gui--default-font-state) before)))))
 
 (provide 'nhwl-gui-tests)
