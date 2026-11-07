@@ -21,6 +21,7 @@ pub mod focus;
 pub mod font;
 pub mod fontspec;
 pub mod frame;
+pub mod image;
 pub mod ime;
 pub mod keys;
 pub mod monitors;

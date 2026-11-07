@@ -113,6 +113,11 @@ unsafe extern "C" {
     fn CTFontDrawGlyphs(font: CFRef, glyphs: *const u16, pos: *const CGPoint, n: usize, c: Ctx);
 }
 
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGContextDrawImage(c: Ctx, r: CGRect, img: CFRef);
+}
+
 /// A bitmap context over one backing: made for its pixels, size and colour space, released on drop.
 #[derive(Debug)]
 pub struct Canvas {
@@ -356,6 +361,35 @@ impl Canvas {
                             },
                         );
                         CTFontDrawGlyphs(ct, glyphs.as_ptr(), pos.as_ptr(), glyphs.len(), c);
+                        CGContextRestoreGState(c);
+                    });
+                }
+                Shape::Image {
+                    key,
+                    mask,
+                    r,
+                    sx,
+                    sy,
+                    bg,
+                } => {
+                    if let Some(bg) = bg {
+                        self.fill_colour(*bg);
+                        CGContextFillRect(c, cg(r));
+                    }
+                    // made by the glue before the paint; nothing is drawn for a picture that is not there
+                    super::images::with_picture(*key, *mask, Vec::new, |img| {
+                        CGContextSaveGState(c);
+                        CGContextClipToRects(c, &cg(r), 1);
+                        // the picture upright in the y-down canvas: its top row at r.y - sy
+                        CGContextTranslateCTM(c, f64::from(r.x - sx), f64::from(r.y - sy + key.2));
+                        CGContextScaleCTM(c, 1.0, -1.0);
+                        let whole = CGRect {
+                            x: 0.0,
+                            y: 0.0,
+                            w: f64::from(key.1),
+                            h: f64::from(key.2),
+                        };
+                        CGContextDrawImage(c, whole, img);
                         CGContextRestoreGState(c);
                     });
                 }

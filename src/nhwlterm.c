@@ -3862,6 +3862,10 @@ nhwl_free_pixmap (struct frame *f, Emacs_Pixmap pixmap)
 {
   if (pixmap)
     {
+#ifdef HAVE_NHMAC
+      /* The glue's picture of it goes too.  */
+      NHG (nhg_image_forget ((uint8_t *) pixmap->data));
+#endif
       xfree (pixmap->data);
       xfree (pixmap);
     }

@@ -28,6 +28,9 @@ pub const NHG_DRAW_CORNERS: u32 = 7;
 /// A glyph run (`nhg_draw_glyphs`): `bits` holds the glyphs, drawn in `fg` from x `a` on the baseline `b`; with
 /// `NHG_DRAW_BACKGROUND`, `r` is filled with `bg` first.  `NHG_DRAW_PADDING`: each glyph is one pixel wide.
 pub const NHG_DRAW_GLYPHS: u32 = 8;
+/// An image (`nhg_draw_image`): the part of the container from (`a`, `b`) drawn into `r`, over `bg` unless
+/// `NHG_DRAW_OVERLAY`; an 8-bit container is `fg` through it.
+pub const NHG_DRAW_IMAGE: u32 = 9;
 
 pub const NHG_DRAW_COPY: u32 = 1 << 0;
 pub const NHG_DRAW_TOP: u32 = 1 << 3;
@@ -175,6 +178,25 @@ pub fn decode_glyphs(
         integral,
     });
     Ok(Paint { clip, shapes })
+}
+
+/// An image record as a shape: the part of picture `key` (made with `mask`) from (`a`, `b`) into `r`.
+pub fn decode_image(rec: &NhgDrawRec, key: (usize, i32, i32), mask: usize) -> Result<Paint, Bad> {
+    if rec.kind != NHG_DRAW_IMAGE {
+        return Err(Bad::Kind);
+    }
+    let (r, clip) = frame(rec)?;
+    Ok(Paint {
+        clip,
+        shapes: vec![Shape::Image {
+            key,
+            mask,
+            r,
+            sx: rec.a,
+            sy: rec.b,
+            bg: (rec.flags & NHG_DRAW_OVERLAY == 0).then_some(rec.bg),
+        }],
+    })
 }
 
 /// `nhwl_fill_trapezoid_for_relief`.
@@ -443,5 +465,35 @@ mod tests {
         let mut p = decode_glyphs(&c, 7, &[36], vec![0.0], true).unwrap();
         p.translate(5, 6);
         assert!(matches!(p.shapes[0], Shape::Glyphs { x: 6.0, y: 7.0, .. }));
+    }
+
+    #[test]
+    fn an_image_draws_its_part_over_the_background_unless_overlaid() {
+        let mut c = rec(NHG_DRAW_IMAGE, 0, (10, 20, 16, 8));
+        (c.a, c.b) = (4, 2);
+        let p = decode_image(&c, (0x1000, 32, 32), 0).unwrap();
+        assert_eq!(
+            p.shapes,
+            vec![Shape::Image {
+                key: (0x1000, 32, 32),
+                mask: 0,
+                r: Rect::new(10, 20, 16, 8),
+                sx: 4,
+                sy: 2,
+                bg: Some(0xffff_ffff)
+            }]
+        );
+        let c = rec(NHG_DRAW_IMAGE, NHG_DRAW_OVERLAY, (0, 0, 1, 1));
+        assert!(matches!(
+            decode_image(&c, (1, 1, 1), 0).unwrap().shapes[0],
+            Shape::Image { bg: None, .. }
+        ));
+        assert_eq!(
+            decode_image(&rec(NHG_DRAW_FILL, 0, (0, 0, 1, 1)), (1, 1, 1), 0),
+            Err(Bad::Kind)
+        );
+        let mut p = decode_image(&c, (1, 1, 1), 0).unwrap();
+        p.translate(3, 4);
+        assert!(matches!(p.shapes[0], Shape::Image { r, .. } if r == Rect::new(3, 4, 1, 1)));
     }
 }

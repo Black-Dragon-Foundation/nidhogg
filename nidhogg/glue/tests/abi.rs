@@ -1119,7 +1119,7 @@ PROTO (nhg_font_match, int32_t (const NhgFontSpec *, NhgFontEntity *, size_t, si
     #[test]
     fn draw_header_matches() {
         use nhglue::draw::*;
-        use nhglue::ffi::{nhg_draw, nhg_draw_glyphs};
+        use nhglue::ffi::{nhg_draw, nhg_draw_glyphs, nhg_draw_image};
         let rows: &[(&str, i64)] = &[
             ("NHG_DRAW_FILL", NHG_DRAW_FILL.into()),
             ("NHG_DRAW_OUTLINE", NHG_DRAW_OUTLINE.into()),
@@ -1129,6 +1129,7 @@ PROTO (nhg_font_match, int32_t (const NhgFontSpec *, NhgFontEntity *, size_t, si
             ("NHG_DRAW_BITMAP", NHG_DRAW_BITMAP.into()),
             ("NHG_DRAW_CORNERS", NHG_DRAW_CORNERS.into()),
             ("NHG_DRAW_GLYPHS", NHG_DRAW_GLYPHS.into()),
+            ("NHG_DRAW_IMAGE", NHG_DRAW_IMAGE.into()),
             ("NHG_DRAW_BACKGROUND", NHG_DRAW_BACKGROUND.into()),
             ("NHG_DRAW_PADDING", NHG_DRAW_PADDING.into()),
             ("NHG_DRAW_COPY", NHG_DRAW_COPY.into()),
@@ -1157,11 +1158,69 @@ PROTO (nhg_font_match, int32_t (const NhgFontSpec *, NhgFontEntity *, size_t, si
         let decls = "\
 #define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
 PROTO (nhg_draw, int32_t (NhgDisplay *, uint64_t, const NhgDrawRec *, size_t));
-PROTO (nhg_draw_glyphs, int32_t (NhgDisplay *, uint64_t, uint64_t, const NhgDrawRec *, size_t));";
+PROTO (nhg_draw_glyphs, int32_t (NhgDisplay *, uint64_t, uint64_t, const NhgDrawRec *, size_t));
+PROTO (nhg_draw_image, int32_t (NhgDisplay *, uint64_t, const NhgDrawRec *, const NhgPix *));";
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *const NhgDrawRec, usize) -> i32 =
             nhg_draw;
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u64, *const NhgDrawRec, usize) -> i32 =
             nhg_draw_glyphs;
+        let _: unsafe extern "C" fn(
+            *mut NhgDisplay,
+            u64,
+            *const NhgDrawRec,
+            *const nhglue::image::NhgPix,
+        ) -> i32 = nhg_draw_image;
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe(decls, &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+    }
+
+    /// The image route's records (its own table).
+    #[test]
+    fn image_header_matches() {
+        use nhglue::ffi::{
+            nhg_image_decode, nhg_image_forget, nhg_image_free, nhg_image_take, nhg_image_type,
+        };
+        use nhglue::image::{NhgImage, NhgPix};
+        let rows: &[(&str, i64)] = &[
+            ("sizeof (NhgPix)", size_of::<NhgPix>() as i64),
+            ("offsetof (NhgPix, mask)", offset_of!(NhgPix, mask) as i64),
+            ("offsetof (NhgPix, width)", offset_of!(NhgPix, width) as i64),
+            ("offsetof (NhgPix, bpp)", offset_of!(NhgPix, bpp) as i64),
+            ("sizeof (NhgImage)", size_of::<NhgImage>() as i64),
+            (
+                "offsetof (NhgImage, has_alpha)",
+                offset_of!(NhgImage, has_alpha) as i64,
+            ),
+            (
+                "offsetof (NhgImage, delay)",
+                offset_of!(NhgImage, delay) as i64,
+            ),
+            (
+                "offsetof (NhgImage, argb_)",
+                offset_of!(NhgImage, argb) as i64,
+            ),
+            (
+                "offsetof (NhgImage, len_)",
+                offset_of!(NhgImage, len) as i64,
+            ),
+        ];
+        let decls = "\
+#define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
+PROTO (nhg_image_type, int32_t (const char *, size_t));
+PROTO (nhg_image_decode, int32_t (const uint8_t *, size_t, uint32_t, uint32_t, NhgImage *));
+PROTO (nhg_image_take, int32_t (NhgImage *, uint8_t *, uint8_t *));
+PROTO (nhg_image_free, int32_t (NhgImage *));
+PROTO (nhg_image_forget, int32_t (const uint8_t *));";
+        let _: unsafe extern "C" fn(*const std::ffi::c_char, usize) -> i32 = nhg_image_type;
+        let _: unsafe extern "C" fn(*const u8, usize, u32, u32, *mut NhgImage) -> i32 =
+            nhg_image_decode;
+        let _: unsafe extern "C" fn(*mut NhgImage, *mut u8, *mut u8) -> i32 = nhg_image_take;
+        let _: unsafe extern "C" fn(*mut NhgImage) -> i32 = nhg_image_free;
+        let _: unsafe extern "C" fn(*const u8) -> i32 = nhg_image_forget;
         let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
         let got = probe(decls, &exprs);
         assert_eq!(got.len(), rows.len());
