@@ -26,7 +26,7 @@ set -u
 self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 checkout=$(cd "$self/../.." && pwd)
 
-tarball= prefix= scales=() select= files=nhmac-gui-tests.el timeout=900 out=
+tarball= prefix= scales=() select= files=nhmac-gui-tests.el timeout=900 out= floor=1
 while [ $# -gt 0 ]; do
   case $1 in
     --tarball) tarball=${2:-}; shift 2 ;;
