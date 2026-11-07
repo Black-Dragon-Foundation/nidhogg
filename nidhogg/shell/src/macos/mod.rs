@@ -5,6 +5,7 @@
 //! poisoned display, as it does any panic.
 
 mod app;
+mod runloop;
 mod screens;
 mod view;
 mod window;
