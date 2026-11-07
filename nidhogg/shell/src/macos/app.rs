@@ -47,6 +47,8 @@ pub struct MacShell {
     regs: wait::Regs,
     /// `ns-use-srgb-colorspace`: the colour space new surfaces are tagged with.
     srgb: bool,
+    /// Windows a Lisp thread's redisplay filled whose commit waits for the main thread's next pump.
+    deferred: Vec<WindowId>,
     /// Test hook: the next pump raises an `NSException` inside the catch.
     #[cfg(feature = "test-hooks")]
     raise_in_pump: bool,
@@ -130,6 +132,7 @@ impl MacShell {
             kq: Kq::open(mtm),
             regs: wait::Regs::default(),
             srgb: true,
+            deferred: Vec::new(),
             #[cfg(feature = "test-hooks")]
             raise_in_pump: false,
             #[cfg(feature = "test-hooks")]
@@ -215,6 +218,10 @@ impl MacShell {
     fn pump(&mut self) {
         #[cfg(feature = "test-hooks")]
         self.maybe_raise();
+        if !self.deferred.is_empty() {
+            let ids = std::mem::take(&mut self.deferred);
+            self.commit(&ids);
+        }
         let app = self.app.clone();
         self.lent(|_| {
             drain_events(&app);
@@ -242,6 +249,26 @@ fn layer_damage(g: u64, w: i32, h: i32) -> Vec<Rect> {
 }
 
 impl MacShell {
+    /// Set the newest surfaces of `ids` as their layers' contents in one flushed transaction (main thread).
+    fn commit(&mut self, ids: &[WindowId]) {
+        let mut items = Vec::with_capacity(ids.len());
+        for id in ids {
+            let Some(w) = self.windows.get(id) else {
+                continue;
+            };
+            if let Some(s) = w.surfaces.newest() {
+                items.push((
+                    &*w.layer,
+                    s,
+                    w.surfaces.was_same(),
+                    w.window.backingScaleFactor(),
+                ));
+            }
+        }
+        layers::commit(&items);
+        layers::publish_end();
+    }
+
     /// A watched variable's new value (`nhmac--variable-changed`): ARG is `(SYMBOL VALUE)` as Lisp prints it.  Only
     /// `ns-use-srgb-colorspace` is read yet: every ring starts over, tagged the new way.  The rest are accepted.
     fn variable(&mut self, arg: &str) {
@@ -249,6 +276,7 @@ impl MacShell {
         let mut it = inner.split_whitespace();
         if it.next() == Some("ns-use-srgb-colorspace") {
             self.srgb = it.next() != Some("nil");
+            super::draw::SRGB.store(self.srgb, std::sync::atomic::Ordering::Relaxed);
             for w in self.windows.values_mut() {
                 w.surfaces.reset(self.srgb);
             }
@@ -662,21 +690,25 @@ impl ShellBackend for MacShell {
                 ids.push(f.window);
             }
         }
-        let mut items = Vec::with_capacity(ids.len());
-        for id in &ids {
-            let w = &self.windows[id];
-            if let Some(s) = w.surfaces.newest() {
-                items.push((
-                    &*w.layer,
-                    s,
-                    w.surfaces.was_same(),
-                    w.window.backingScaleFactor(),
-                ));
-            }
+        if ids.is_empty() {
+            return Ok(false);
         }
-        layers::commit(&items);
-        layers::publish_end();
-        Ok(!items.is_empty())
+        if MainThreadMarker::new().is_none() {
+            // a Lisp thread's redisplay (design §5.3): its surfaces are filled, and the layers take them at the main
+            // thread's next pump; no layer or transaction is touched off the main thread
+            for id in ids {
+                if !self.deferred.contains(&id) {
+                    self.deferred.push(id);
+                }
+            }
+            surface::STATS
+                .deferred_commits
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            wait::wake();
+            return Ok(true);
+        }
+        self.commit(&ids);
+        Ok(true)
     }
 
     fn present_tree(&mut self, root: WindowId) -> ShellResult<bool> {

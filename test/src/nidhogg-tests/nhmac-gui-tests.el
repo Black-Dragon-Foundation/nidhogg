@@ -642,4 +642,76 @@ with a sign test."
     (should (file-exists-p file))
     (kill-buffer)))
 
+;; Task 15: draw records painted with Core Graphics
+(defun nhmac-gui--pixel-at (x y)
+  "The committed surface's premultiplied ARGB at device pixel X, Y of the selected frame."
+  (plist-get (nhmac--test-surface x y) :pixel))
+
+(defun nhmac-gui--draw-scene ()
+  "A buffer of three 12-pixel stretches: plain #336699, boxed in #ff0000 (3 pixels), then #ffffff; drawn.
+Returns the frame position of the first stretch's top left."
+  (switch-to-buffer (generate-new-buffer " *nhmac-draw*"))
+  (setq-local cursor-type nil)
+  (insert (propertize " " 'display '(space :width (12)) 'face '(:background "#336699"))
+          (propertize " " 'display '(space :width (12))
+                      'face '(:background "#336699" :box (:line-width 3 :color "#ff0000")))
+          (propertize " " 'display '(space :width (12)) 'face '(:background "#ffffff"))
+          "\n")
+  (redraw-frame)
+  (redisplay t)
+  (let ((xy (posn-x-y (posn-at-point (point-min))))
+        (edges (window-inside-pixel-edges)))
+    (cons (+ (nth 0 edges) (car xy)) (+ (nth 1 edges) (cdr xy)))))
+
+(ert-deftest nhmac-draw-fills-boxes-cursors ()
+  "Fills, a box and a bar cursor reach the committed surface with their exact colours (sRGB, opaque).
+A same-run comparison with NS's pixels needs a capture of the stock build; until then the colours are
+checked against the faces, tolerance 0 for fills and box lines."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((o (nhmac-gui--draw-scene))
+         (x (car o)) (y (cdr o)) (h (frame-char-height)))
+    (message "nhmac-draw-fills-boxes-cursors: origin %S, stats %S" o (nhmac-stats))
+    (should (> (plist-get (nhmac-stats) :draws) 0))
+    ;; the plain stretch's middle
+    (should (= (nhmac-gui--pixel-at (+ x 6) (+ y (/ h 2))) #xff336699))
+    ;; the boxed stretch: its top line, then its inside
+    (should (= (nhmac-gui--pixel-at (+ x 18) (+ y 1)) #xffff0000))
+    (should (= (nhmac-gui--pixel-at (+ x 18) (+ y (/ h 2))) #xff336699))
+    ;; the white stretch
+    (should (= (nhmac-gui--pixel-at (+ x 30) (+ y (/ h 2))) #xffffffff))
+    ;; a bar cursor 4 pixels wide in the cursor colour, at the white stretch
+    (set-face-background 'cursor "#00ff00")
+    (setq-local cursor-type '(bar . 4))
+    (goto-char (+ (point-min) 2))
+    (redisplay t)
+    (should (= (nhmac-gui--pixel-at (+ x 25) (+ y (/ h 2))) #xff00ff00))
+    ;; and gone again: the stretch's own colour where it was
+    (setq-local cursor-type nil)
+    (redisplay t)
+    (should (= (nhmac-gui--pixel-at (+ x 25) (+ y (/ h 2))) #xffffffff)))
+  (kill-buffer))
+
+(ert-deftest nhmac-draw-other-thread ()
+  "A Lisp thread's redisplay paints, but its commit waits for the main thread's next pump."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((o (nhmac-gui--draw-scene))
+         (x (car o)) (y (cdr o)) (h (frame-char-height))
+         (before (nhmac-stats))
+         (th (make-thread
+              (lambda ()
+                (put-text-property (point-min) (1+ (point-min)) 'face '(:background "#00ff00"))
+                (redisplay t))
+              "nhmac-draw")))
+    (let ((deadline (+ (float-time) 10)))
+      (while (and (thread-live-p th) (< (float-time) deadline))
+        (thread-yield)))
+    (should-not (thread-live-p th))
+    (message "nhmac-draw-other-thread: %S" (nhmac-stats))
+    (should (>= (nhmac-gui--delta before :deferred-commits) 1))
+    ;; the main thread's pump commits it
+    (sit-for 0.1)
+    (should (eq (plist-get (nhmac-gui--surface) :contents-is-newest) t))
+    (should (= (nhmac-gui--pixel-at (+ x 6) (+ y (/ h 2))) #xff00ff00)))
+  (kill-buffer))
+
 ;;; nhmac-gui-tests.el ends here
