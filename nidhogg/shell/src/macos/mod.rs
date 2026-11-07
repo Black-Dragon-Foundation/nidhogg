@@ -10,8 +10,10 @@ pub mod fonts;
 #[cfg(feature = "test-hooks")]
 mod inject;
 mod kq;
+mod layers;
 mod runloop;
 mod screens;
+mod surface;
 mod view;
 mod window;
 

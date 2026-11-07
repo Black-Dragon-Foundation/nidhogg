@@ -449,4 +449,197 @@ wait, with no AppKit event: the notifier's want of the lock ends the main thread
     ;; Emacs is still here and still evaluates
     (should (equal (eval '(+ 1 1) t) 2))))
 
+;; Task 14: the IOSurface ring, damaged rectangles, the commit
+(defconst nhmac-gui--ring 3 "The ring's size (surface.rs `RING'): the oldest age a slot copies for.")
+
+(defun nhmac-gui--surface (&optional frame)
+  "The surface facts of FRAME's window, a plist (`nhmac--test-surface')."
+  (nhmac--test-surface 0 0 frame))
+
+(defun nhmac-gui--row-bytes ()
+  "Bytes of one full-width text line of the selected frame."
+  (* 4 (frame-pixel-width) (frame-char-height)))
+
+(defun nhmac-gui--typing-buffer (text)
+  "A fresh buffer showing TEXT in the selected window, point at its end, drawn."
+  (switch-to-buffer (generate-new-buffer " *nhmac-typing*"))
+  (insert text)
+  (redisplay t)
+  ;; the first commits make the ring's slots (whole copies); typing is measured after them
+  (dotimes (_ (1+ nhmac-gui--ring))
+    (insert "w")
+    (redisplay)))
+
+(defun nhmac-gui--type (n &optional before)
+  "Type N characters as commands, each followed by a redisplay; the stats' changes since BEFORE (now if nil)."
+  (let ((before (or before (nhmac-stats))))
+    (dotimes (_ n)
+      (execute-kbd-macro "x")
+      (redisplay))
+    (let ((after (nhmac-stats)))
+      (cl-loop for (k v) on after by #'cddr
+               when (numberp v) append (list k (- v (or (plist-get before k) 0)))))))
+
+(ert-deftest nhmac-typing-bytes ()
+  "Typing copies only damage into the surfaces: per key at most the damage times the ring's age, a few lines at
+most, in the three §5.4 cases (end of line, mid-line, the worst plain key); never a whole surface."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((row (nhmac-gui--row-bytes))
+        (keys 10))
+    (pcase-dolist (`(,case ,text ,goto)
+                   `((end-of-line "short line" ,#'end-of-buffer)
+                     (mid-line ,(make-string 70 ?m) ,(lambda () (goto-char (+ (point-min) 35))))
+                     (worst ,(make-string (- (window-body-width) 2) ?w) ,#'end-of-buffer)))
+      (nhmac-gui--typing-buffer text)
+      (funcall goto)
+      (redisplay)
+      (let* ((d (nhmac-gui--type keys))
+             (bytes (plist-get d :bytes-copied))
+             (damage (plist-get d :damage-bytes)))
+        (message "nhmac-typing-bytes: %s: %d keys: copied %d (%d per key), damage %d, full %d, row %d"
+                 case keys bytes (/ bytes keys) damage (plist-get d :full-copies) row)
+        (should (= (plist-get d :full-copies) 0))
+        (should (> bytes 0))
+        (should (<= bytes (* nhmac-gui--ring damage)))
+        ;; the text line and the mode line, over the ring's ages
+        (should (<= (/ bytes keys) (* nhmac-gui--ring 2 row))))
+      (kill-buffer))))
+
+(ert-deftest nhmac-commits-per-redisplay ()
+  "A redisplay after a key commits the frame's tree at most once."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--typing-buffer "commits")
+  (let ((d (nhmac-gui--type 20)))
+    (message "nhmac-commits-per-redisplay: 20 keys: %d commits" (plist-get d :commits))
+    (should (<= (plist-get d :commits) 20))
+    (should (>= (plist-get d :commits) 1)))
+  (kill-buffer))
+
+(ert-deftest nhmac-no-spins-in-redisplay ()
+  "Redisplay turns no run loop: 0 passes of the main run loop outside the pumps while typing (NS's figure, from the
+interposer in the NS lane of the same run, is logged by `nhmac-interposer-counts-ns')."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--typing-buffer "spins")
+  (let ((d (nhmac-gui--type 20)))
+    (message "nhmac-no-spins-in-redisplay: 20 keys: %d spins outside the pumps" (plist-get d :spins-in-redisplay))
+    (should (= (plist-get d :spins-in-redisplay) 0)))
+  (kill-buffer))
+
+(ert-deftest nhmac-no-implicit-transaction ()
+  "No implicit Core Animation transaction is left open when a publish ends, while typing."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--typing-buffer "implicit")
+  (should (= (plist-get (nhmac-gui--type 20) :implicit-open-at-update-end) 0))
+  (kill-buffer))
+
+(ert-deftest nhmac-key-to-commit-counts ()
+  "A key posted to the window reaches Lisp through one pump, with no fd wait, and its redisplay commits once."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--typing-buffer "key")
+  (nhmac-gui--flush)
+  (dotimes (_ 5)
+    (let ((before (nhmac-stats)))
+      (nhmac--test-post-key ?k)
+      (let ((ev (read-event nil nil 2)))
+        (should (eq ev ?k))
+        (insert ev))
+      (redisplay)
+      ;; the release's event, if any, is left for the next pump
+      (let ((pumps (nhmac-gui--delta before :pumps))
+            (commits (nhmac-gui--delta before :commits))
+            (sleeps (nhmac-gui--delta before :sleeps)))
+        (message "nhmac-key-to-commit-counts: pumps %d commits %d fd waits %d" pumps commits sleeps)
+        (should (= pumps 1))
+        (should (= commits 1))
+        (should (= sleeps 0)))))
+  (nhmac-gui--flush)
+  (kill-buffer))
+
+(ert-deftest nhmac-surface-busy-typing ()
+  "While typing the ring always has a surface the window server does not hold."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--typing-buffer "busy")
+  (let ((d (nhmac-gui--type 30)))
+    (message "nhmac-surface-busy-typing: 30 keys: %d busy, %d acquires" (plist-get d :surface-busy)
+             (plist-get d :ring-acquires))
+    (should (= (plist-get d :surface-busy) 0)))
+  (kill-buffer))
+
+(ert-deftest nhmac-scroll-bytes ()
+  "Scrolling a window by a line copies the scrolled rows, not the surface."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--typing-buffer (mapconcat #'number-to-string (number-sequence 1 300) "\n"))
+  (goto-char (point-min))
+  (redisplay t)
+  (dotimes (_ nhmac-gui--ring) (scroll-up 1) (redisplay))
+  (let* ((before (nhmac-stats))
+         (_ (progn (scroll-up 1) (redisplay)))
+         (bytes (nhmac-gui--delta before :bytes-copied))
+         (rows (* 4 (frame-pixel-width) (window-body-height nil t))))
+    (message "nhmac-scroll-bytes: one line: copied %d, the window's rows %d" bytes rows)
+    (should (= (nhmac-gui--delta before :full-copies) 0))
+    (should (> bytes 0))
+    (should (<= bytes (* nhmac-gui--ring rows))))
+  (kill-buffer))
+
+(ert-deftest nhmac-commit-shows-without-spin ()
+  "After `redisplay' the layer shows the newest surface, read back in the process, with no run-loop turn."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--typing-buffer "shows")
+  (let ((before (nhmac-stats)))
+    (insert "y")
+    (redisplay)
+    (let ((s (nhmac-gui--surface)))
+      (message "nhmac-commit-shows-without-spin: %S" s)
+      (should (eq (plist-get s :contents-is-newest) t))
+      (should (equal (plist-get s :gravity) "topLeft"))
+      (should (= (plist-get s :scale) (/ (plist-get (nhmac--window-info) :device-width)
+                                         (float (car (plist-get s :points))))))
+      (should (equal (list (plist-get s :w) (plist-get s :h))
+                     (list (frame-pixel-width) (frame-pixel-height))))
+      ;; a fresh backing is the frame's background (drawing comes with the record emitter)
+      (should (= (logand (plist-get s :pixel) #xff000000) #xff000000)))
+    (should (= (nhmac-gui--delta before :spins-in-redisplay) 0))
+    (should (>= (nhmac-gui--delta before :commits) 1)))
+  (kill-buffer))
+
+(ert-deftest nhmac-colour-tagged ()
+  "The surfaces' colour space follows `ns-use-srgb-colorspace': sRGB, else Generic RGB."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (unwind-protect
+      (progn
+        (setq ns-use-srgb-colorspace nil)
+        (redraw-frame)
+        (redisplay t)
+        (should (eq (plist-get (nhmac-gui--surface) :srgb) 'generic))
+        (setq ns-use-srgb-colorspace t)
+        (redraw-frame)
+        (redisplay t)
+        (should (eq (plist-get (nhmac-gui--surface) :srgb) 'srgb)))
+    (setq ns-use-srgb-colorspace t)))
+
+(ert-deftest nhmac-paired-key-to-commit ()
+  "Key to commit, timed in the process: 50 typed keys, each a command and a redisplay, written to
+GLITNIR_GUI_OUT/pair-BUILD.txt (microseconds, one per line).  Both builds run it in turn (--pair, ABAB);
+nidhogg/test/nhmac-pair.sh compares the pairs: not slower than NS on the median and p95 of the differences,
+with a sign test."
+  (let* ((build (if (nhmac-gui--ns-build-p) "ns" "naglfar"))
+         (file (expand-file-name (format "pair-%s.txt" build)
+                                 (or (getenv "GLITNIR_GUI_OUT") temporary-file-directory)))
+         times)
+    (switch-to-buffer (generate-new-buffer " *nhmac-pair*"))
+    (insert "paired timing")
+    (redisplay t)
+    (dotimes (_ 10) (execute-kbd-macro "w") (redisplay))
+    (dotimes (_ 50)
+      (let ((t0 (float-time)))
+        (execute-kbd-macro "x")
+        (redisplay)
+        (push (round (* 1e6 (- (float-time) t0))) times)))
+    (with-temp-buffer
+      (dolist (us (nreverse times)) (insert (format "%d\n" us)))
+      (write-region (point-min) (point-max) file t 'silent))
+    (should (file-exists-p file))
+    (kill-buffer)))
+
 ;;; nhmac-gui-tests.el ends here
