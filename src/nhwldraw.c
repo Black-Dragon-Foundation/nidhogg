@@ -961,7 +961,6 @@ nhwl_draw_underwave (struct glyph_string *s, unsigned long color)
 			     s->width, wave_height, wave_length);
 }
 
-#ifdef NHWL_WAYLAND
 /* Draw a relief around the image glyph string S.  */
 
 static void
@@ -1054,7 +1053,6 @@ nhwl_draw_image_relief (struct glyph_string *s)
 			 top_p, bot_p, left_p, right_p, &r);
 }
 
-#endif /* NHWL_WAYLAND */
 /* Draw part of the background of glyph string S.  X, Y, W, and H
    give the rectangle to draw.  */
 
@@ -1070,7 +1068,7 @@ nhwl_draw_glyph_string_bg_rect (struct glyph_string *s, int x, int y, int w,
 
 #ifdef NHWL_WAYLAND
 static void
-nhwl_cr_draw_image (struct frame *f, Emacs_GC *gc, cairo_pattern_t *image,
+nhwl_cr_draw_image (struct frame *f, Emacs_GC *gc, nhwl_image image,
 		    int src_x, int src_y, int width, int height,
 		    int dest_x, int dest_y, bool overlay_p)
 {
@@ -1104,6 +1102,7 @@ nhwl_cr_draw_image (struct frame *f, Emacs_GC *gc, cairo_pattern_t *image,
 
   nhwl_end_cr_clip (f);
 }
+#endif /* NHWL_WAYLAND */
 
 /* Draw foreground of image glyph string S.  */
 
@@ -1127,11 +1126,11 @@ nhwl_draw_image_foreground (struct glyph_string *s)
   if (s->slice.y == 0)
     y += s->img->vmargin;
 
-  if (s->img->cr_data)
+  if (NHWL_IMAGE (s->img))
     {
-      cairo_t *cr = nhwl_begin_cr_clip (s->f);
-      nhwl_set_glyph_string_clipping (s, cr);
-      nhwl_cr_draw_image (s->f, &s->xgcv, s->img->cr_data,
+      nhwl_cr *cr = nhwl_begin_cr_clip (s->f);
+      nhwl_draw_ops->set_clipping (s, cr);
+      nhwl_cr_draw_image (s->f, &s->xgcv, NHWL_IMAGE (s->img),
 			  s->slice.x, s->slice.y, s->slice.width, s->slice.height,
 			  x, y, true);
       if (!s->img->mask)
@@ -1225,7 +1224,6 @@ nhwl_draw_image_glyph_string (struct glyph_string *s)
     nhwl_draw_image_relief (s);
 }
 
-#endif /* NHWL_WAYLAND */
 /* Draw stretch glyph string S.  */
 
 static void
@@ -2244,13 +2242,13 @@ const struct nhwl_draw_ops *nhwl_draw_ops = &nhwl_cairo_draw_ops;
 #else
 /* Naglfar: the same walk and geometry, its primitives emitting draw
    records (nhmacdraw.c) and its text drawn by the font driver
-   (nhmacfont.c); images come with the image path.  */
+   (nhmacfont.c).  */
 static const struct nhwl_draw_ops nhwl_mac_draw_ops = {
   nhwl_begin_cr_clip, nhwl_end_cr_clip, nhmac_save, nhmac_restore,
   nhmac_set_clipping, nhmac_set_clipping_exactly, nhwl_fill_rectangle,
   nhwl_draw_glyph_string_background, nhwl_draw_glyph_string_foreground,
   nhwl_draw_composite_glyph_string_foreground,
-  nhwl_draw_glyphless_glyph_string_foreground, nhmac_text_run,
+  nhwl_draw_glyphless_glyph_string_foreground, nhwl_draw_image_glyph_string,
   nhwl_draw_stretch_glyph_string,
   nhwl_draw_glyph_string_box, nhwl_draw_underwave, nhwl_fill_underline,
   nhwl_draw_hollow_cursor, nhwl_draw_bar_cursor,

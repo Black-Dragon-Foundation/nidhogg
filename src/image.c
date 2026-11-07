@@ -68,6 +68,10 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #ifdef HAVE_WINDOW_SYSTEM
 #include TERM_HEADER
 #endif /* HAVE_WINDOW_SYSTEM */
+#ifdef HAVE_NHMAC
+/* The NHG macro's waiting_for_input.  */
+# include "keyboard.h"
+#endif
 
 #ifdef HAVE_X_WINDOWS
 typedef struct x_bitmap_record Bitmap_Record;
@@ -7117,6 +7121,8 @@ lookup_rgb_color (struct frame *f, int r, int g, int b)
 #elif defined USE_CAIRO || defined HAVE_NS || defined HAVE_HAIKU	\
   || defined HAVE_ANDROID
   return RGB_TO_ULONG (r >> 8, g >> 8, b >> 8);
+#elif defined HAVE_NHMAC
+  return RGB_TO_ULONG (r >> 8, g >> 8, b >> 8);
 #else
   xsignal1 (Qfile_error,
 	    build_string ("This Emacs mishandles this image file type"));
@@ -8101,6 +8107,10 @@ image_can_use_native_api (Lisp_Object type)
   return ns_can_use_native_image_api (type);
 # elif defined HAVE_HAIKU
   return haiku_can_use_native_image_api (type);
+# elif defined HAVE_NHMAC
+  return (SYMBOLP (type)
+	  && NHG (nhg_image_type (SSDATA (SYMBOL_NAME (type)),
+				  SBYTES (SYMBOL_NAME (type)))) == NHG_OK);
 # else
   return false;
 # endif
@@ -8160,6 +8170,54 @@ native_image_p (Lisp_Object object)
   return fmt[NATIVE_IMAGE_FILE].count + fmt[NATIVE_IMAGE_DATA].count == 1;
 }
 
+#ifdef HAVE_NHMAC
+/* Naglfar: the glue decodes through ImageIO; the colours go into the
+   plain container and the alpha, if any, into a mask, as Cairo's
+   loaders leave them.  */
+static bool
+nhmac_load_image (struct frame *f, struct image *img, Lisp_Object file,
+		  Lisp_Object data)
+{
+  Lisp_Object index = image_spec_value (img->spec, QCindex, NULL);
+  Lisp_Object src = STRINGP (file) ? ENCODE_FILE (file) : data;
+  Emacs_Pix_Container ximg, mask = NULL;
+  NhgImage im;
+
+  if (!STRINGP (src)
+      || NHG (nhg_image_decode (SDATA (src), SBYTES (src), STRINGP (file),
+				FIXNATP (index) ? XFIXNAT (index) : 0,
+				&im)) != NHG_OK)
+    {
+      image_error ("Cannot load image `%s'", img->spec);
+      return false;
+    }
+  if (!check_image_size (f, im.width, im.height)
+      || !image_create_x_image_and_pixmap (f, img, im.width, im.height, 0,
+					   &ximg, false)
+      || (im.has_alpha
+	  && !image_create_x_image_and_pixmap (f, img, im.width, im.height, 1,
+					       &mask, true)))
+    {
+      NHG (nhg_image_free (&im));
+      image_error ("Invalid image size (see `max-image-size')");
+      return false;
+    }
+  NHG (nhg_image_take (&im, (uint8_t *) ximg->data,
+		       mask ? (uint8_t *) mask->data : NULL));
+  img->width = im.width;
+  img->height = im.height;
+  image_put_x_image (f, img, ximg, false);
+  if (mask)
+    image_put_x_image (f, img, mask, true);
+  if (im.delay > 0)
+    img->lisp_data = list2 (Qdelay, make_float (im.delay));
+  if (im.frames > 1)
+    img->lisp_data = Fcons (Qcount, Fcons (make_fixnum (im.frames),
+					   img->lisp_data));
+  return true;
+}
+#endif
+
 static bool
 native_image_load (struct frame *f, struct image *img)
 {
@@ -8176,6 +8234,9 @@ native_image_load (struct frame *f, struct image *img)
                         image_spec_value (img->spec, QCdata, NULL));
 # elif defined HAVE_HAIKU
   return haiku_load_image (f, img, image_file,
+			   image_spec_value (img->spec, QCdata, NULL));
+# elif defined HAVE_NHMAC
+  return nhmac_load_image (f, img, image_file,
 			   image_spec_value (img->spec, QCdata, NULL));
 # else
   return 0;
@@ -14146,6 +14207,13 @@ non-numeric, there is no explicit limit on the size of images.  */);
   if (image_can_use_native_api (Qheic))
     add_image_type (Qheic);
 #endif /* NS_IMPL_GNUSTEP */
+#endif
+#ifdef HAVE_NHMAC
+  /* Naglfar: ImageIO decodes these as well.  */
+  DEFSYM (Qwebp, "webp");
+  add_image_type (Qwebp);
+  DEFSYM (Qheic, "heic");
+  add_image_type (Qheic);
 #endif
 
 #if HAVE_NATIVE_IMAGE_API
