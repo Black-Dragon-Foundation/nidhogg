@@ -866,10 +866,8 @@ Not available yet in Naglfar."
 
 (defun ns-disown-selection-internal (selection)
   "If we own the selection SELECTION, disown it.
-
-Not available yet in Naglfar."
-  (ignore selection)
-  (nhmac--not-yet))
+Only the clipboard exists on macOS."
+  (nhmac--call 'pasteboard-disown selection))
 
 (declare-function pgtk-display-monitor-attributes-list "nhwlfns.c" (&optional terminal))
 
@@ -938,10 +936,8 @@ ignored."
 
 (defun ns-get-selection (selection-name target-type)
   "Return text selected from some X window.
-
-Not available yet in Naglfar."
-  (ignore selection-name target-type)
-  (nhmac--not-yet))
+The clipboard's text for TARGET-TYPE (a file's URL for the file types), or nil."
+  (nhmac--query 'pasteboard-read selection-name target-type))
 
 (defun ns-hide-emacs (on)
   "If ON is non-nil, the entire Emacs application is hidden.
@@ -977,17 +973,14 @@ Not available yet in Naglfar."
 
 (defun ns-own-selection-internal (selection value)
   "Assert an X selection of type SELECTION and value VALUE.
-
-Not available yet in Naglfar."
-  (ignore selection value)
-  (nhmac--not-yet))
+The clipboard takes the text of VALUE; the other selections do not exist on macOS."
+  (when (stringp value)
+    (nhmac--call 'pasteboard-own selection (substring-no-properties value))))
 
 (defun ns-perform-service (service send)
-  "Perform Nextstep SERVICE on SEND.
-
-Not available yet in Naglfar."
-  (ignore service send)
-  (nhmac--not-yet))
+  "Perform Nextstep SERVICE on SEND, a string.
+Return the text the service answers, or nil."
+  (nhmac--query 'service-perform (concat service "\C-_" send)))
 
 (defun ns-popup-color-panel (&optional frame)
   "Pop up the color panel.
@@ -1011,10 +1004,13 @@ Not available yet in Naglfar."
 
 (defun ns-read-file-name (prompt &optional dir mustmatch init dir-only-p)
   "Use a graphical panel to read a file name, using prompt PROMPT.
-
-Not available yet in Naglfar."
-  (ignore prompt dir mustmatch init dir-only-p)
-  (nhmac--not-yet))
+An open panel when MUSTMATCH, else a save panel; DIR-ONLY-P chooses a directory.
+The answer is the path, or nil when the panel is cancelled."
+  (nhmac--query 'file-dialog
+                (mapconcat #'identity
+                           (list (or prompt "") (if dir (expand-file-name dir) "") (or init "")
+                                 (if mustmatch "1" "0") (if dir-only-p "1" "0"))
+                           "\C-_")))
 
 (defun ns-request-user-attention (urgency)
   "Bounce the app dock icon to request user attention.
@@ -1030,18 +1026,12 @@ Not available yet in Naglfar."
   (nhmac--not-yet))
 
 (defun ns-selection-exists-p (&optional selection)
-  "Whether there is an owner for the given X selection.
-
-Not available yet in Naglfar."
-  (ignore selection)
-  (nhmac--not-yet))
+  "Whether there is an owner for the given X selection."
+  (nhmac--query 'pasteboard-exists (or selection 'PRIMARY)))
 
 (defun ns-selection-owner-p (&optional selection)
-  "Whether the current Emacs process owns the given X Selection.
-
-Not available yet in Naglfar."
-  (ignore selection)
-  (nhmac--not-yet))
+  "Whether the current Emacs process owns the given X Selection."
+  (nhmac--query 'pasteboard-owned (or selection 'PRIMARY)))
 
 (defun ns-send-items (items)
   "Send a list of items to macOS applications or services.

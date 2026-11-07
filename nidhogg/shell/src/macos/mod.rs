@@ -7,6 +7,7 @@
 mod app;
 mod defaults;
 pub mod draw;
+mod dialogs;
 pub mod fonts;
 pub mod images;
 #[cfg(feature = "test-hooks")]
@@ -16,8 +17,10 @@ mod layers;
 mod overhang;
 mod pacer;
 mod menus;
+mod pasteboard;
 mod runloop;
 mod screens;
+mod services;
 mod surface;
 pub mod text;
 pub mod startup;

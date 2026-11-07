@@ -14,6 +14,7 @@ pub mod mac_input;
 pub mod macos;
 pub mod ring;
 pub mod menu;
+pub mod pasteboard;
 pub mod scope;
 pub mod shapes;
 #[cfg(feature = "svg")]
