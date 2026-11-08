@@ -670,7 +670,8 @@ hand-off (`:lock-waiters', `:parks-with-waiters'), the main wait (`:waits',
 `:helper-wakes', `:helper-hops-keys', `:kq-changes') and the surfaces
 (`:bytes-copied', `:damage-bytes', `:full-copies', `:commits',
 `:surface-busy', `:ring-acquires', `:implicit-open-at-update-end',
-`:spins-in-redisplay' (run-loop passes outside the pumps), `:pumps')."
+`:spins-in-redisplay' (run-loop passes outside the pumps), `:pumps',
+`:handed-pumps' (a Lisp thread's pumps, handed to the main thread))."
   (nhmac--query 'stats))
 
 (defun nhmac--test-raise-in-pump ()
@@ -868,12 +869,15 @@ Not available yet in Naglfar."
 Only the clipboard exists on macOS."
   (nhmac--call 'pasteboard-disown selection))
 
-(defun ns-display-monitor-attributes-list (&optional terminal)
-  "Return a list of physical monitor attributes on the X display TERMINAL.
+(declare-function pgtk-display-monitor-attributes-list "nhwlfns.c" (&optional terminal))
 
-Not available yet in Naglfar."
-  (ignore terminal)
-  (nhmac--not-yet))
+(defun ns-display-monitor-attributes-list (&optional terminal)
+  "Return a list of physical monitor attributes on the display TERMINAL.
+The screens the shell announced, as the shared C lists them (geometry
+in device pixels), with `source' \"NS\"."
+  (mapcar (lambda (m)
+            (mapcar (lambda (kv) (if (eq (car kv) 'source) (cons 'source "NS") kv)) m))
+          (pgtk-display-monitor-attributes-list terminal)))
 
 (defun ns-do-applescript (script)
   "Execute AppleScript SCRIPT and return the result.

@@ -32,7 +32,7 @@ use glitnir::geom::Rect;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSEventMask};
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSEventMask, NSScreen};
 use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSRect, NSString};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::time::Duration;
@@ -564,6 +564,15 @@ impl ShellBackend for MacShell {
     }
 
     fn dispatch_main(&mut self) -> ShellResult {
+        // AppKit's events are the main thread's alone: a Lisp thread's call (its `read_socket`, from `maybe_quit`)
+        // hands the pump to the main thread, whose wait wakes and pumps; the records already queued are its own
+        if MainThreadMarker::new().is_none() {
+            surface::STATS
+                .handed_pumps
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            wait::wake();
+            return Ok(());
+        }
         // an exception raised here is turned into a panic by the glue's guard (nhshell::catch_objc)
         surface::STATS
             .pumps
@@ -624,6 +633,18 @@ impl ShellBackend for MacShell {
     fn set_min_size(&mut self, window: WindowId, w: i32, h: i32) -> ShellResult {
         let size = objc2_foundation::NSSize::new(f64::from(w.max(1)), f64::from(h.max(1)));
         self.win(window)?.window.setContentMinSize(size);
+        Ok(())
+    }
+
+    fn move_to(&mut self, window: WindowId, x: i32, y: i32) -> ShellResult {
+        // NS's compute_offset: the frame's top-left, y up from the main screen's bottom
+        let top = NSScreen::screens(self.mtm)
+            .iter()
+            .next()
+            .map_or(0.0, |s| s.frame().origin.y + s.frame().size.height);
+        let point = objc2_foundation::NSPoint::new(f64::from(x), top - f64::from(y));
+        self.win(window)?.window.setFrameTopLeftPoint(point);
+        layers::changed_outside();
         Ok(())
     }
 

@@ -1494,6 +1494,18 @@ nhwl_set_offset (struct frame *f, int xoff, int yoff, int change_gravity)
 	f->top_pos += FRAME_PIXEL_HEIGHT (p) - FRAME_PIXEL_HEIGHT (f);
       f->size_hint_flags &= ~ (XNegative | YNegative);
     }
+#ifdef HAVE_NHMAC
+  /* Naglfar's top-level has a position on the screen, as NS's has.  */
+  if (!nhwl_child_p (f) && FRAME_NHWL_OUTPUT (f)->window)
+    {
+      block_input ();
+      nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		    NHG (nhg_window_place (FRAME_NHG (f),
+					   FRAME_NHWL_OUTPUT (f)->window,
+					   xoff, yoff)));
+      unblock_input ();
+    }
+#endif
   nhwl_child_reposition (f);
 }
 

@@ -1201,6 +1201,18 @@ nhg_export! {
 }
 
 nhg_export! {
+    /// Place the top-level frame with its top-left at (`x`, `y`) device pixels from the main screen's top-left, as NS
+    /// places a frame.  `NHG_E_ARG` for a child frame, `NHG_E_UNSUPPORTED` where clients have no position (Wayland).
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_window_place(d: *mut NhgDisplay, window: u64, x: i32, y: i32) -> i32 |state| {
+        window::place(state, window, x, y)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
     /// Push: Emacs made the frame visible (`on` non-zero) or invisible, not iconified.  Checked in checking builds.
     ///
     /// # Safety
@@ -1845,6 +1857,35 @@ nhg_export! {
     /// None beyond the C ABI: `img` is only a key.
     unlocked fn nhg_image_stand_drop(img: *const std::ffi::c_void) -> i32 {
         stand_gone(crate::stand::take(img as usize));
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// A bitmap's `bits` (`width` x `height`, least significant bit first, rows padded to bytes) into a 32-bit
+    /// container's `out` (`stride` bytes a row): `fg` for a set bit, `bg` for a clear one.  `NHG_E_ARG` for a size
+    /// under 1 or a short stride.  Writes pixels.
+    ///
+    /// # Safety
+    /// `bits` holds `height` padded rows; `out` holds `height` rows of `stride` bytes.
+    unlocked fn nhg_bitmap_to_container(
+        bits: *const u8,
+        width: i32,
+        height: i32,
+        fg: u32,
+        bg: u32,
+        out: *mut u8,
+        stride: i32,
+    ) -> i32 {
+        if bits.is_null() || out.is_null() || width < 1 || height < 1 || stride < 1 {
+            return Err(GlueError::Arg);
+        }
+        let (w, h, s) = (width as usize, height as usize, stride as usize);
+        // SAFETY: non-null, and the caller promises these many bytes of each
+        let src = unsafe { std::slice::from_raw_parts(bits, w.div_ceil(8) * h) };
+        // SAFETY: as above; `out` does not overlap `bits`
+        let dst = unsafe { std::slice::from_raw_parts_mut(out, s * h) };
+        crate::image::bitmap(src, w, h, fg, bg, dst, s).ok_or(GlueError::Arg)?;
         Ok(NHG_OK)
     }
 }

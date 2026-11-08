@@ -586,6 +586,7 @@ PROTO (nhg_window_undecorated, int32_t (NhgDisplay *, uint64_t, int32_t));
 PROTO (nhg_window_alpha, int32_t (NhgDisplay *, uint64_t, double, double, uint32_t *));
 PROTO (nhg_window_size, int32_t (NhgDisplay *, uint64_t, int32_t, int32_t));
 PROTO (nhg_window_min_size, int32_t (NhgDisplay *, uint64_t, int32_t, int32_t));
+PROTO (nhg_window_place, int32_t (NhgDisplay *, uint64_t, int32_t, int32_t));
 PROTO (nhg_window_visible, int32_t (NhgDisplay *, uint64_t, int32_t));
 PROTO (nhg_window_iconify, int32_t (NhgDisplay *, uint64_t));
 PROTO (nhg_window_fullscreen, int32_t (NhgDisplay *, uint64_t, uint32_t));
@@ -605,6 +606,7 @@ PROTO (nhg_tip_hide, int32_t (NhgDisplay *, uint64_t));";
             let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32, i32) -> i32 = nhg_window_size;
             let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32, i32) -> i32 =
                 nhg_window_min_size;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32, i32) -> i32 = nhg_window_place;
             let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32) -> i32 = nhg_window_visible;
             let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_window_iconify;
             let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u32) -> i32 = nhg_window_fullscreen;
@@ -1185,9 +1187,9 @@ PROTO (nhg_draw_image, int32_t (NhgDisplay *, uint64_t, const NhgDrawRec *, cons
     #[test]
     fn image_header_matches() {
         use nhglue::ffi::{
-            nhg_draw_stand_in, nhg_image_decode, nhg_image_forget, nhg_image_free,
-            nhg_image_stand_drop, nhg_image_stand_in, nhg_image_take, nhg_image_transform,
-            nhg_image_type, nhg_svg_render, nhg_svg_size, nhg_xpm_names,
+            nhg_bitmap_to_container, nhg_draw_stand_in, nhg_image_decode, nhg_image_forget,
+            nhg_image_free, nhg_image_stand_drop, nhg_image_stand_in, nhg_image_take,
+            nhg_image_transform, nhg_image_type, nhg_svg_render, nhg_svg_size, nhg_xpm_names,
         };
         use nhglue::image::{NhgImage, NhgPix, NhgSvgStyle};
         let rows: &[(&str, i64)] = &[
@@ -1240,6 +1242,7 @@ PROTO (nhg_image_free, int32_t (NhgImage *));
 PROTO (nhg_image_forget, int32_t (const uint8_t *));
 PROTO (nhg_image_stand_in, int32_t (const void *, const NhgPix *, uint32_t, int32_t, int32_t, int32_t, int32_t));
 PROTO (nhg_image_stand_drop, int32_t (const void *));
+PROTO (nhg_bitmap_to_container, int32_t (const uint8_t *, int32_t, int32_t, uint32_t, uint32_t, uint8_t *, int32_t));
 PROTO (nhg_draw_stand_in, int32_t (NhgDisplay *, uint64_t, const NhgDrawRec *, const void *));
 PROTO (nhg_image_transform, int32_t (int32_t, int32_t, int32_t, int32_t, double, bool, double *, int32_t *, int32_t *));
 PROTO (nhg_svg_size, int32_t (const uint8_t *, size_t, uint32_t, const NhgSvgStyle *, double *, double *));
@@ -1276,6 +1279,8 @@ PROTO (nhg_svg_render, int32_t (const uint8_t *, size_t, uint32_t, const NhgSvgS
             i32,
         ) -> i32 = nhg_image_stand_in;
         let _: unsafe extern "C" fn(*const std::ffi::c_void) -> i32 = nhg_image_stand_drop;
+        let _: unsafe extern "C" fn(*const u8, i32, i32, u32, u32, *mut u8, i32) -> i32 =
+            nhg_bitmap_to_container;
         let _: unsafe extern "C" fn(
             *mut nhglue::ffi::NhgDisplay,
             u64,

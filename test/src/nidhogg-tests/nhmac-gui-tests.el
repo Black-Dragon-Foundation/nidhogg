@@ -396,6 +396,22 @@ lock-waiter count is back to 0 after each (a signal marks one waiter, not all)."
     (should quit)
     (should (< (- (float-time) start) 5))))
 
+(ert-deftest nhmac-quit-reaches-busy-loop ()
+  "A C-g queued in AppKit while Lisp runs a busy loop (no input read, no redisplay, no wait) quits it: the loop's
+input polls pump AppKit.  The loop ends itself after 5 s, failing the row."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--flush)
+  (let ((start (float-time)) quit)
+    (nhmac--test-post-key ?\C-g ?g nhmac-gui--ns-control)
+    (condition-case nil
+        (let ((inhibit-quit nil)
+              (deadline (+ start 5)))
+          (while (< (float-time) deadline)))
+      (quit (setq quit t)))
+    (message "nhmac-quit-reaches-busy-loop: quit %S after %.2f s" quit (- (float-time) start))
+    (should quit)
+    (should (< (- (float-time) start) 4))))
+
 (ert-deftest nhmac-keys-under-yield-loop ()
   "While a Lisp thread spins on `thread-yield', and again under 4-thread contention, keys, a process's output, a
 timer and C-g all reach Lisp: the main thread's yield loop pumps and polls, it never parks with waiters."
@@ -411,6 +427,18 @@ timer and C-g all reach Lisp: the main thread's yield loop pumps and polls, it n
       (setcar stop t)
       (mapc #'thread-join (car c))))
   (should (= (plist-get (nhmac-stats) :lock-waiters) 0)))
+
+(ert-deftest nhmac-thread-input-hands-the-pump ()
+  "A Lisp thread that reads input (its `read_socket' asks for a pump) never pumps AppKit itself: the pump is handed
+to the main thread, the display lives and keys still arrive."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--flush)
+  (let* ((before (nhmac-stats))
+         (th (make-thread (lambda () (dotimes (_ 20) (input-pending-p) (thread-yield))) "nhmac-input")))
+    (thread-join th)
+    (should (> (nhmac-gui--delta before :handed-pumps) 0))
+    (nhmac--test-post-key ?a)
+    (should (equal (nhmac-gui--events 1) '(?a)))))
 
 (ert-deftest nhmac-thread-wakes-idle-main ()
   "A thread waiting on a condition is woken by another Lisp thread's notify while the main thread idles in its
@@ -844,7 +872,9 @@ points, Naglfar in device pixels), and the text's pixels are within 1/255 of NS'
                                      (nhmac-gui--bmp-read (nhmac-gui--capture (nhmac-gui--font-file "bmp")))))
                    (worst 0) (off 0))
         (message "nhmac-font-ascii: text NS %dx%d, Naglfar %dx%d" nw nh mw mh)
+        ;; an empty crop is a capture that missed the frame, never a size to compare
         (should (> nw 0))
+        (should (> mw 0))
         (should (equal (list mw mh) (list nw nh)))
         (dotimes (i (length npx))
           (let ((a (aref npx i)) (b (aref mpx i)))
@@ -957,6 +987,9 @@ screen are within 2/255 of NS's in the same run (NS points are pixels there)."
                                           (nhmac-gui--bmp-read
                                            (nhmac-gui--capture (nhmac-gui--font-file (concat name ".bmp"))))))
                          (worst 0))
+              ;; an empty crop is a capture that missed the frame, never a size to compare
+              (should (> nw 0))
+              (should (> mw 0))
               (should (equal (list mw mh) (list nw nh)))
               (dotimes (i (length npx))
                 (let ((a (aref npx i)) (b (aref mpx i)))
@@ -1182,13 +1215,31 @@ the background beside a named colour."
     (should (> (ert-stats-completed stats) 0))
     (should (zerop (ert-stats-completed-unexpected stats)))))
 
+(defconst nhmac-gui--image-lib-re
+  (concat "/lib\\(?:" (regexp-opt '("png" "jpeg" "turbojpeg" "gif" "tiff" "webp" "sharpyuv" "rsvg" "cairo" "pango"
+                                    "heif" "Magick" "pixman" "Xpm"))
+          "\\)[^/]*\\.dylib")
+  "An image library's file in an `otool -L' line (the image tests' libraries, never gnutls or tree-sitter).")
+
+(defun nhmac-gui--outside-image-libs (lines)
+  "LINES of `otool -L' that name an image library outside /System and /usr/lib."
+  (seq-filter (lambda (l) (and (string-match-p nhmac-gui--image-lib-re l)
+                               (not (string-match-p "\\`[ \t]*/\\(System\\|usr/lib\\)/" l))))
+              lines))
+
 (ert-deftest nhmac-images-no-homebrew ()
-  "The binary links no image library outside the system: otool -L lists only /System and /usr/lib."
+  "The binary links no image library outside the system: otool -L names none outside /System and /usr/lib.
+The filter checks itself first on a Homebrew libpng line (caught), the system ImageIO and a Homebrew gnutls (not)."
   (skip-unless (not (nhmac-gui--ns-build-p)))
+  (should (equal (nhmac-gui--outside-image-libs
+                  '("\t/opt/homebrew/opt/libpng/lib/libpng16.16.dylib (compatibility version 61.0.0)"
+                    "\t/System/Library/Frameworks/ImageIO.framework/Versions/A/ImageIO (compatibility version 1.0.0)"
+                    "\t/opt/homebrew/opt/gnutls/lib/libgnutls.30.dylib (compatibility version 73.0.0)"))
+                 '("\t/opt/homebrew/opt/libpng/lib/libpng16.16.dylib (compatibility version 61.0.0)")))
   (let* ((bin (expand-file-name invocation-name invocation-directory))
-         (libs (cdr (process-lines "otool" "-L" bin)))
-         (outside (seq-remove (lambda (l) (string-match-p "\\`[ \t]*/\\(System\\|usr/lib\\)/" l)) libs)))
+         (libs (cdr (process-lines "otool" "-L" bin))))
     (message "nhmac-images-no-homebrew: %s links %S" bin libs)
-    (should-not outside)))
+    (should libs)
+    (should-not (nhmac-gui--outside-image-libs libs))))
 
 ;;; nhmac-gui-tests.el ends here
