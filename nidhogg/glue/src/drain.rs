@@ -38,13 +38,21 @@ pub struct Facts {
 }
 
 /// Whether the end of drain `d` asks the platform for new events (`dispatch_main`) or only does the host-thread work
-/// (`flush_main`), `last_took` saying whether the drain before took events.  It asks only after a drain that found
-/// nothing, following one that found nothing, outside redisplay: a drain that took events is called again (gobble
+/// (`flush_main`), `last_took` being [`carried_take`]'s.  It asks only after a drain that found nothing, outside
+/// redisplay, with no take since the last such drain: a drain that took events is called again (gobble
 /// input calls read_socket while it stores events), the empty drain right after it closes that read, and redisplay's
 /// input checks would only bring an event redisplay does not read.  So a key comes in through one pump, and C-g in a
 /// busy loop still reaches the queue through the poll's next empty drain.
 pub fn closing_pump(d: Facts, last_took: bool) -> bool {
     !d.redisplay && !d.took && !last_took
+}
+
+/// The `last_took` the drain after `d` sees, `last_took` being the one `d` saw: whether a drain took events since
+/// the last drain outside redisplay.  Redisplay's drains never pump, so a take in one (read_char redisplays before it
+/// waits, and its input check finds the key) still closes at the next drain outside redisplay, past its own empty
+/// checks.
+pub fn carried_take(d: Facts, last_took: bool) -> bool {
+    d.took || (d.redisplay && last_took)
 }
 
 /// The end of the drain in progress (`nhg_dispatch_main`): the backend's pump when [`closing_pump`] says, its flush
@@ -59,7 +67,7 @@ pub fn dispatch_main(state: &mut Display) -> Result<(), GlueError> {
                     state.last_drain_took
                 )
             });
-            state.last_drain_took = d.took;
+            state.last_drain_took = carried_take(d, state.last_drain_took);
             pump
         }
         None => {
@@ -176,8 +184,9 @@ mod tests {
         drains
             .iter()
             .map(|&(redisplay, took)| {
-                let pump = closing_pump(Facts { redisplay, took }, last);
-                last = took;
+                let d = Facts { redisplay, took };
+                let pump = closing_pump(d, last);
+                last = carried_take(d, last);
                 pump
             })
             .collect()
@@ -189,6 +198,20 @@ mod tests {
     fn a_key_comes_in_through_one_pump() {
         let cycle = pumps(&[(false, false), (false, true), (false, false), (true, false)]);
         assert_eq!(cycle, [true, false, false, false]);
+    }
+
+    /// The key read_char's redisplay takes (read-event redisplays before it waits): its input checks find the key
+    /// and then nothing, and the empty read after them, `redisplay''s own, closes that read.  One pump.
+    #[test]
+    fn a_key_taken_in_redisplay_comes_in_through_one_pump() {
+        let cycle = pumps(&[
+            (false, false),
+            (true, true),
+            (true, false),
+            (false, false),
+            (true, false),
+        ]);
+        assert_eq!(cycle, [true, false, false, false, false]);
     }
 
     /// A busy loop's polls find nothing each time: each one pumps, so C-g reaches the queue; after it is taken the
