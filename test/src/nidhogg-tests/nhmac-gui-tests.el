@@ -1227,11 +1227,25 @@ blank line and then a line of ASCII; the frame's font and colours are put back a
 
 (defun nhmac-gui--capture (file)
   "The screen around the selected frame (GLITNIR_GUI_FRAME's corner, 900 by 700 points) as a BMP in FILE.
-Device pixels, as the window server composited them; FILE."
+Device pixels, as the window server composited them; FILE.  The command line, its exit code and output, and the file
+afterwards are logged; a non-zero exit or no file fails the row with them."
   (let* ((g (mapcar #'string-to-number (split-string (or (getenv "GLITNIR_GUI_FRAME") "0 0"))))
-         (r (format "%d,%d,900,700" (- (nth 0 g) 20) (- (nth 1 g) 60))))
+         (r (format "%d,%d,900,700" (- (nth 0 g) 20) (- (nth 1 g) 60)))
+         (args (list "-x" "-t" "bmp" "-R" r file))
+         (rc nil) (output nil))
     (when (file-exists-p file) (delete-file file))
-    (call-process "screencapture" nil nil nil "-x" "-t" "bmp" "-R" r file)
+    (with-temp-buffer
+      (setq rc (apply #'call-process "screencapture" nil t nil args)
+            output (string-trim (buffer-string))))
+    (let* ((size (and (file-exists-p file) (file-attribute-size (file-attributes file))))
+           (report (format "screencapture %s: exit %S, output %S, file %s; frame at %S, %dx%d, GLITNIR_GUI_FRAME %S"
+                           (mapconcat #'identity args " ") rc output
+                           (if size (format "%d bytes" size) "missing")
+                           (condition-case e (frame-position) (error e))
+                           (frame-pixel-width) (frame-pixel-height) (getenv "GLITNIR_GUI_FRAME"))))
+      (message "nhmac-gui--capture: %s" report)
+      (unless (and (eql rc 0) size)
+        (ert-fail (list "nhmac-gui--capture failed" report))))
     file))
 
 (defun nhmac-gui--bmp-read (file)
