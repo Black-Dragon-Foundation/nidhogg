@@ -56,6 +56,16 @@
         (set-frame-size nil cols lines)
         (set-frame-position nil left top)))))
 
+(defun glitnir-gui--say-frame (when)
+  "On Naglfar, log WHEN: the selected frame as Emacs has it (visible, position, size) and as the shell has it
+\(`nhmac--window-info': AppKit's frame, its screen, occlusion), with `nhmac-stats'.  Each fact's error is logged."
+  (when (fboundp 'nhmac--window-info)
+    (let ((fact (lambda (f) (condition-case err (funcall f) (error (list 'error err))))))
+      (glitnir-gui--say "gui-runner: %s: visible %S position %S size %dx%d; window %S; stats %S"
+                        when (frame-visible-p (selected-frame)) (frame-position)
+                        (frame-pixel-width) (frame-pixel-height)
+                        (funcall fact #'nhmac--window-info) (funcall fact #'nhmac-stats)))))
+
 (defun glitnir-gui--wait-for-first-paint ()
   "Wait (10 s at most) until Glitnir's frame-time record holds a paint of the selected frame.
 Only the native shell records paints."
@@ -575,6 +585,9 @@ The recorder keeps its session store.  Signals an error when the script fails or
 
 (defun glitnir-gui--report (event-type &rest args)
   (pcase event-type
+    ;; a row's start, so a row that ends Emacs is named by the lane (nhmac-gui.sh) as its one red row
+    ('test-started
+     (glitnir-gui--say "started %s" (ert-test-name (nth 1 args))))
     ('test-ended
      (let* ((test (nth 1 args)) (result (nth 2 args))
             (expected (ert-test-result-expected-p test result)))
@@ -599,8 +612,10 @@ The recorder keeps its session store.  Signals an error when the script fails or
 
 (defun glitnir-gui--run ()
   (glitnir-gui--place-frame)
+  (glitnir-gui--say-frame "placed")
   (glitnir-gui--wait-for-scale)
   (glitnir-gui--wait-for-first-paint)
+  (glitnir-gui--say-frame "first paint")
   (glitnir-gui--load-tests)
   (glitnir-gui--apply-known-differences)
   (let* ((tests (ert-select-tests (glitnir-gui--selector) t))
