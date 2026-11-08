@@ -428,4 +428,33 @@ impl Surfaces {
         }
         Some(u32::from_ne_bytes(px))
     }
+
+    /// The newest surface's `w` x `h` pixels from `x`, `y`, row by row, as premultiplied ARGB (`None` when the
+    /// rectangle is not inside it).  Reads pixels.
+    #[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
+    pub fn region(&self, x: i32, y: i32, w: i32, h: i32) -> Option<Vec<u32>> {
+        let s = self.newest()?;
+        if x < 0 || y < 0 || w < 0 || h < 0 || x + w > self.w || y + h > self.h {
+            return None;
+        }
+        let mut out = Vec::with_capacity(w as usize * h as usize);
+        // SAFETY: a surface we made, locked read-only for the reads, all inside it (checked above).
+        unsafe {
+            if IOSurfaceLock(s.as_ptr(), LOCK_READ_ONLY, std::ptr::null_mut()) != 0 {
+                return None;
+            }
+            let stride = IOSurfaceGetBytesPerRow(s.as_ptr());
+            let base = IOSurfaceGetBaseAddress(s.as_ptr()).cast::<u8>();
+            for row in y..y + h {
+                for col in x..x + w {
+                    let mut px = [0u8; 4];
+                    let at = row as usize * stride + col as usize * 4;
+                    std::ptr::copy_nonoverlapping(base.add(at), px.as_mut_ptr(), 4);
+                    out.push(u32::from_ne_bytes(px));
+                }
+            }
+            IOSurfaceUnlock(s.as_ptr(), LOCK_READ_ONLY, std::ptr::null_mut());
+        }
+        Some(out)
+    }
 }
