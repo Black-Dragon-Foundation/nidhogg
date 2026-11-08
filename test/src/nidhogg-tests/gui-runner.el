@@ -72,6 +72,13 @@ trace line could land inside a verdict and hide it from the rigs that grep for i
                         (frame-pixel-width) (frame-pixel-height)
                         (funcall fact #'nhmac--window-info) (funcall fact #'nhmac-stats)))))
 
+(defun glitnir-gui--say-startup ()
+  "On Naglfar, log the shell's startup trace (`nhmac--startup-log'), one event a line, before the rows start."
+  (when (fboundp 'nhmac--startup-log)
+    (let ((log (condition-case err (funcall 'nhmac--startup-log) (error (list (format "error %S" err))))))
+      (dolist (e log)
+        (glitnir-gui--say "gui-runner: startup: %s" (if (stringp e) e (format "%S" e)))))))
+
 (defun glitnir-gui--wait-for-first-paint ()
   "Wait (10 s at most) until Glitnir's frame-time record holds a paint of the selected frame.
 Only the native shell records paints."
@@ -603,6 +610,25 @@ The recorder keeps its session store.  Signals an error when the script fails or
                   '(or :passed :skipped (satisfies glitnir-gui--assertion-failure-p))
                 '(or :skipped (satisfies glitnir-gui--assertion-failure-p))))))))
 
+(defun glitnir-gui--frame-drew-p ()
+  "Non-nil when the selected frame is visible and has drawn (Naglfar's `:draws' at least 1); t off Naglfar."
+  (or (not (fboundp 'nhmac-stats))
+      (progn (redisplay t)
+             (and (frame-visible-p (selected-frame))
+                  (>= (or (plist-get (funcall 'nhmac-stats) :draws) 0) 1)))))
+
+(defun glitnir-gui--fail-drawing-rows (tests)
+  "When the frame never drew, make TESTS tagged `draws' fail at once with the reason, not wait out their timeouts.
+The rows without the tag (locks, fds, threads) still run."
+  (unless (glitnir-gui--frame-drew-p)
+    (let ((why (format "no frame drew at scale %s" (glitnir-gui--scale))))
+      (glitnir-gui--say "gui-runner: %s: the rows tagged `draws' fail without running" why)
+      (glitnir-gui--say "gui-runner: the shell's view: %S"
+                        (condition-case err (funcall 'nhmac--shell-view) (error (list 'error err))))
+      (dolist (test tests)
+        (when (memq 'draws (ert-test-tags test))
+          (setf (ert-test-body test) (lambda () (ert-fail (list why)))))))))
+
 (defun glitnir-gui--report (event-type &rest args)
   (pcase event-type
     ;; a row's start, so a row that ends Emacs is named by the lane (nhmac-gui.sh) as its one red row
@@ -636,9 +662,11 @@ The recorder keeps its session store.  Signals an error when the script fails or
   (glitnir-gui--wait-for-scale)
   (glitnir-gui--wait-for-first-paint)
   (glitnir-gui--say-frame "first paint")
+  (glitnir-gui--say-startup)
   (glitnir-gui--load-tests)
   (glitnir-gui--apply-known-differences)
   (let* ((tests (ert-select-tests (glitnir-gui--selector) t))
+         (_ (glitnir-gui--fail-drawing-rows tests))
          ;; rows tagged `runs-last' (one that ends the compositor, say) run after every other row
          (last (seq-filter (lambda (test) (memq 'runs-last (ert-test-tags test))) tests))
          (stats (ert-run-tests `(member ,@(seq-difference tests last) ,@last) #'glitnir-gui--report))
