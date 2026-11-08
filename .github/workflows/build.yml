@@ -603,6 +603,23 @@ jobs:
           # what configure's checks find: every installed build package's version, and the image (Xcode)
           echo "deps=$(sed 's/#.*//' nidhogg/deps/macos.build | { xargs brew list --versions 2>/dev/null || true; } | { cat; echo "$ImageOS-$ImageVersion"; } | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
           echo "rust=$(rustc -V | tr ' ()' '-__')" >> "$GITHUB_OUTPUT"
+      # Native compilation: nidhogg-31, tags, pull requests and by-hand runs on other branches build the release way
+      # (every Lisp file compiled ahead of time, 1,600 .eln files, the better part of 20 minutes); a scratch/* dispatch,
+      # which exists to run the rows, compiles only the preloaded Lisp natively and leaves the rest byte-compiled
+      # (build.sh --native-preloaded: no JIT in the image either, so no compile starts under a timing row).  The .eln
+      # entry is neither restored nor saved there, and the byte-compiled entry below is taken from a full build's.
+      - name: Native-compilation mode
+        id: mode
+        if: ${{ steps.tb.outputs.cache-hit != 'true' && env.BUILD_APP == 'true' }}
+        env:
+          PRELOADED: ${{ startsWith(github.ref, 'refs/heads/scratch/') }}
+        run: |
+          echo "preloaded=$PRELOADED" >> "$GITHUB_OUTPUT"
+          if [ "$PRELOADED" = true ]; then
+            echo "::notice::native compilation: preloaded Lisp only (scratch run, build.sh --native-preloaded); the rest is byte code and JIT is off"
+          else
+            echo "::notice::native compilation: all Lisp ahead of time (full AOT)"
+          fi
       # Two entries, as the workers lanes': the byte-compiled part keyed on the Lisp side and the C side's names
       # (lisp-key.sh --elc), so a change in a C body still finds it, and the .eln files keyed as the Linux jobs' (--abi;
       # the guard after make).  build.sh takes either only with its own stamp (compiler, architecture, mode, configure
@@ -619,7 +636,7 @@ jobs:
           key: lisp-macos-${{ runner.arch }}-${{ steps.tc.outputs.v }}-${{ runner.temp }}-elc-${{ steps.tree.outputs.elc }}-${{ hashFiles('nidhogg/build.sh') }}
       - name: Native-compiled Lisp (same Lisp side and ABI)
         id: ln
-        if: ${{ steps.lc.outcome == 'success' }}
+        if: ${{ steps.lc.outcome == 'success' && steps.mode.outputs.preloaded != 'true' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/lisp-cache/obj
@@ -668,6 +685,8 @@ jobs:
           NIDHOGG_BUILD_CARGO_TARGET: ${{ runner.temp }}/glitnir-target
           NIDHOGG_BUILD_LISP_CACHE: ${{ runner.temp }}/lisp-cache
           NIDHOGG_BUILD_CCACHE: ${{ steps.ccb.outcome == 'success' && format('{0}/ccache', runner.temp) || '' }}
+          NIDHOGG_BUILD_NATIVE_PRELOADED: ${{ steps.mode.outputs.preloaded == 'true' && '1' || '' }}
+          NIDHOGG_BUILD_LISP_CACHE_ELC: ${{ steps.mode.outputs.preloaded == 'true' && '1' || '' }}
         run: /bin/bash nidhogg/build.sh --host --stage build --jobs 3 --build-dir "$RUNNER_TEMP/build"
       - name: Save ccache
         if: ${{ !cancelled() && env.CACHE_SAVE == 'true' && steps.cc.outcome == 'success' && (steps.build.outcome == 'success' || steps.build.outcome == 'failure') }}
@@ -707,6 +726,8 @@ jobs:
       - name: Write the tarball
         id: pack
         if: ${{ steps.build.outcome == 'success' }}
+        env:
+          NIDHOGG_BUILD_NATIVE_PRELOADED: ${{ steps.mode.outputs.preloaded == 'true' && '1' || '' }}
         run: |
           V=$(head -n 1 nidhogg/version)
           /bin/bash nidhogg/build.sh --host --stage pack --jobs 3 --build-dir "$RUNNER_TEMP/build" --out "dist/nidhogg-$V-macos-$(uname -m).tar.xz"
@@ -728,7 +749,7 @@ jobs:
         run: |
           if [ -n "$CHECKS" ]; then echo "$CHECKS" | tr ' ' '\n'; else cat nidhogg/check-subset.txt; fi | grep 'nidhogg-tests/workers-' > "$RUNNER_TEMP/macos-subset.txt" || true
           [ -s "$RUNNER_TEMP/macos-subset.txt" ] || { echo "no workers files among the checks"; exit 0; }
-          /bin/bash nidhogg/build.sh --host --stage check --jobs 3 --build-dir "$RUNNER_TEMP/build" --check "$RUNNER_TEMP/macos-subset.txt"
+          NIDHOGG_BUILD_NATIVE_PRELOADED=${{ steps.mode.outputs.preloaded == 'true' && '1' || '' }} /bin/bash nidhogg/build.sh --host --stage check --jobs 3 --build-dir "$RUNNER_TEMP/build" --check "$RUNNER_TEMP/macos-subset.txt"
       # The macOS GUI lane (nidhogg/test/nhmac-gui.sh) on the app of the tarball, on a virtual display at scale 1 and at
       # scale 2: the rows of test/src/nidhogg-tests/nhmac-gui-tests.el that `checks` selects (empty: every row; `none` and
       # `build-only`: no rows).  A cached tarball is run as it is.
