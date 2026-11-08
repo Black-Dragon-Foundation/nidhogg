@@ -233,6 +233,7 @@ mod reader {
     const CALLS: &[(&str, Call)] = &[
         ("next_event", |s, _| s.next_event().map(drop)),
         ("dispatch_main", |s, _| s.dispatch_main()),
+        ("flush_main", |s, _| s.flush_main()),
         ("window_new", |s, _| s.window_new(&desc()).map(drop)),
         ("window_new_named", |s, _| {
             s.window_new_named(&desc(), Some("n")).map(drop)
