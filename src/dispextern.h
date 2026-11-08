@@ -3216,6 +3216,10 @@ struct redisplay_interface
       || defined HAVE_ANDROID)
 #  define HAVE_NATIVE_TRANSFORMS
 # endif
+# ifdef HAVE_NHMAC
+/* Naglfar draws images through a matrix, as Cairo does.  */
+#  define HAVE_NATIVE_TRANSFORMS
+# endif
 
 /* Structure describing an image.  Specific image formats like XBM are
    converted into this form, so that display only has to deal with
@@ -3270,6 +3274,13 @@ struct image
   /* Whether or not bilinear filtering should be used to "smooth" the
      image.  */
   bool use_bilinear_filtering;
+#endif
+#ifdef HAVE_NHMAC
+  /* Naglfar: the matrix from the drawn image's pixels to the
+     container's, as Cairo's pattern matrix (xx, yx, xy, yy, x0, y0),
+     and whether drawing smooths.  */
+  double nhmac_transform[6];
+  bool nhmac_smoothing;
 #endif
 
   /* Colors allocated for this image, if any.  Allocated via xmalloc.  */

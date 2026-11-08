@@ -120,6 +120,8 @@ mod ffi {
             for line in code {
                 in_macro |=
                     path.ends_with("guard.rs") && line.starts_with("macro_rules! nhg_export");
+                // a function pointer's type (a callback C passes in, `extern "C" fn(`) exports nothing
+                let line = line.replace("extern \"C\" fn(", "");
                 for needle in ["no_mangle", "extern \"C\""] {
                     assert!(
                         in_macro || !line.contains(needle),

@@ -1220,11 +1220,13 @@ int32_t nhg_draw (NhgDisplay *d, uint64_t frame, const NhgDrawRec *recs, size_t 
 int32_t nhg_draw_glyphs (NhgDisplay *d, uint64_t frame, uint64_t font, const NhgDrawRec *rec, size_t n);
 
 /* An image container as drawing reads it: DATA rows STRIDE bytes apart, BPP 32 or 8; MASK (NULL: none) 8-bit rows
-   MASK_STRIDE bytes apart.  */
+   MASK_STRIDE bytes apart; MATRIX the image's transform (Cairo's pattern matrix xx, yx, xy, yy, x0, y0, from a drawn
+   pixel to the container's, as nhg_image_transform makes it; all zero: none) and SMOOTH whether drawing smooths.  */
 typedef struct
 {
   const uint8_t *data, *mask;
-  int32_t width, height, stride, mask_stride, bpp;
+  int32_t width, height, stride, mask_stride, bpp, smooth;
+  double matrix[6];
 } NhgPix;
 
 int32_t nhg_draw_image (NhgDisplay *d, uint64_t frame, const NhgDrawRec *rec, const NhgPix *pix);
@@ -1232,7 +1234,7 @@ int32_t nhg_draw_image (NhgDisplay *d, uint64_t frame, const NhgDrawRec *rec, co
 /* ---- Images (glue/src/image.rs, nhshell's macos/images.rs; macOS) -----------------------------------------------
    image.c's native route.  nhg_image_type: NHG_OK when the route takes the type named by NAME (LEN bytes), else
    NHG_E_UNSUPPORTED.  nhg_image_decode decodes frame INDEX of the image in SRC (LEN bytes; a file name when IS_FILE)
-   through ImageIO into *OUT: colours not premultiplied, the alpha in each word's top byte, HAS_ALPHA when some pixel
+   through ImageIO (an XPM through the glue's own reader) into *OUT: colours not premultiplied, the alpha in each word's top byte, HAS_ALPHA when some pixel
    is not opaque, FRAMES in the file and this frame's DELAY in seconds (0: still); NHG_E_STATE when it cannot.
    nhg_image_take copies the pixels into a 32-bit container's DATA (WIDTH * 4 bytes a row) and, with HAS_ALPHA, the
    alpha into an 8-bit MASK (WIDTH a row), then frees them; nhg_image_free frees them untaken.  nhg_image_forget: the
@@ -1248,10 +1250,40 @@ typedef struct
 } NhgImage;
 
 int32_t nhg_image_type (const char *name, size_t len);
-int32_t nhg_image_decode (const uint8_t *src, size_t len, uint32_t is_file, uint32_t index, NhgImage *out);
+/* An XPM's colour names go to COLOR with CTX, which gives 0xRRGGBB (the frame's foreground for an unknown one).  */
+typedef uint32_t (*NhgColorFn) (void *ctx, const char *name);
+int32_t nhg_image_decode (const uint8_t *src, size_t len, uint32_t is_file, uint32_t index, NhgColorFn color,
+                          void *ctx, NhgImage *out);
 int32_t nhg_image_take (NhgImage *img, uint8_t *data, uint8_t *mask);
 int32_t nhg_image_free (NhgImage *img);
 int32_t nhg_image_forget (const uint8_t *addr);
+/* SVG through the shell's resvg route (image.c's svg type on Naglfar).  STYLE: the image's :css, the face's font
+   FAMILY and :base-uri (each LEN bytes; NULL or empty: none; without a base, references resolve against the file's
+   directory), the face's FONT_SIZE in pixels, the display's DPI, and the FOREGROUND (currentColor) and BACKGROUND as
+   0xRRGGBB.  nhg_svg_size: the image's own size in pixels (its width and height, or its view box) into *W, *H.
+   nhg_svg_render: the image stretched to WIDTH x HEIGHT over the background into *OUT, opaque (nhg_image_take or
+   nhg_image_free frees it).  NHG_E_STATE when the image cannot be read or parsed, NHG_E_UNSUPPORTED without SVG.  */
+typedef struct
+{
+  const uint8_t *css;
+  size_t css_len;
+  const uint8_t *family;
+  size_t family_len;
+  const uint8_t *base;
+  size_t base_len;
+  double font_size, dpi;
+  uint32_t foreground, background;
+} NhgSvgStyle;
+
+int32_t nhg_svg_size (const uint8_t *src, size_t len, uint32_t is_file, const NhgSvgStyle *style, double *w,
+                      double *h);
+int32_t nhg_svg_render (const uint8_t *src, size_t len, uint32_t is_file, const NhgSvgStyle *style, int32_t width,
+                        int32_t height, NhgImage *out);
+/* image_set_transform's matrix for an image W x H shown at WIDTH x HEIGHT, turned by ROTATION degrees and FLIPped:
+   six numbers into OUT (NhgPix's MATRIX) and the drawn size into *OUT_W, *OUT_H; NHG_E_UNSUPPORTED for a rotation
+   that is not a multiple of 90 degrees (OUT holds the scale alone, the size is left).  */
+int32_t nhg_image_transform (int32_t w, int32_t h, int32_t width, int32_t height, double rotation, bool flip,
+                             double *out, int32_t *out_w, int32_t *out_h);
 
 /* ---- The main wait (glue/src/wait.rs, nhshell's wait.rs; macOS) ------------------------------------------------
    nhg_wait registers the fds RFDS and WFDS ask for below NFDS, runs the backend's event loop until one is ready, a
