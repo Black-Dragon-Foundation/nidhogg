@@ -109,6 +109,7 @@ impl MacShell {
             "test-reentry" => Ok(self.reentry()),
             "startup-log" => Ok(crate::trace::startup_text()),
             "image-draws" => Ok(crate::trace::images_text()),
+            "pump-trace" => Ok(crate::trace::pumps_text()),
             "shell-view" => Ok(self.shell_view()),
             "test-kq-probe" => Ok(kq_probe(arg)),
             "test-surface" => numbers(arg).and_then(|n| match n[..] {
