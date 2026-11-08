@@ -319,6 +319,12 @@ impl Surfaces {
         (self.w, self.h)
     }
 
+    /// The surfaces the ring has made so far (at most `RING`).
+    #[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
+    pub fn slots(&self) -> usize {
+        self.slots.len()
+    }
+
     /// The newest surface's colour space: `Some(true)` sRGB, `Some(false)` Generic RGB, `None` untagged or none.
     #[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
     pub fn tagged_srgb(&self) -> Option<bool> {
