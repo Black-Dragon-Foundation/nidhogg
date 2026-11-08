@@ -19,6 +19,7 @@
   "20 keys into a buffer lock a surface and spin the run loop inside a redisplay (NS baseline: the counts are logged).
 NS coalesces: a run measured 16 locks per 20 keys at scale 1 and 10 at scale 2, so the bound is only that both happen."
   (skip-unless (nhmac-gui--ns-build-p))
+  (mac-counts-require)
   (switch-to-buffer (generate-new-buffer " *mac-counts*"))
   (mac-counts-install)
   (mac-counts-redisplay t)
@@ -36,6 +37,7 @@ NS coalesces: a run measured 16 locks per 20 keys at scale 1 and 10 at scale 2, 
 (ert-deftest nhmac-ns-menu-dump ()
   "NS's real menu bar, built through menu.c, is dumped to a file: the fixture Naglfar's flattener is checked against."
   (skip-unless (nhmac-gui--ns-build-p))
+  (mac-counts-require)
   (let ((file (expand-file-name "nhmac-ns-menu.tsv" (or (getenv "GLITNIR_GUI_OUT") temporary-file-directory))))
     (when (file-exists-p file) (delete-file file))
     (mac-counts-menu-dump file)
