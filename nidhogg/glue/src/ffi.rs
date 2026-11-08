@@ -1836,6 +1836,35 @@ nhg_export! {
 }
 
 nhg_export! {
+    /// A bitmap's `bits` (`width` x `height`, least significant bit first, rows padded to bytes) into a 32-bit
+    /// container's `out` (`stride` bytes a row): `fg` for a set bit, `bg` for a clear one.  `NHG_E_ARG` for a size
+    /// under 1 or a short stride.  Writes pixels.
+    ///
+    /// # Safety
+    /// `bits` holds `height` padded rows; `out` holds `height` rows of `stride` bytes.
+    unlocked fn nhg_bitmap_to_container(
+        bits: *const u8,
+        width: i32,
+        height: i32,
+        fg: u32,
+        bg: u32,
+        out: *mut u8,
+        stride: i32,
+    ) -> i32 {
+        if bits.is_null() || out.is_null() || width < 1 || height < 1 || stride < 1 {
+            return Err(GlueError::Arg);
+        }
+        let (w, h, s) = (width as usize, height as usize, stride as usize);
+        // SAFETY: non-null, and the caller promises these many bytes of each
+        let src = unsafe { std::slice::from_raw_parts(bits, w.div_ceil(8) * h) };
+        // SAFETY: as above; `out` does not overlap `bits`
+        let dst = unsafe { std::slice::from_raw_parts_mut(out, s * h) };
+        crate::image::bitmap(src, w, h, fg, bg, dst, s).ok_or(GlueError::Arg)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
     /// Paint the image record `rec` (`NHG_DRAW_IMAGE`) with the stand-in of the pending image `img` into frame
     /// `frame`'s backing, as `nhg_draw_image` paints a container.  `NHG_E_STATE` when `img` has none, `NHG_E_ARG` for
     /// a record the glue refuses.  Writes pixels.
