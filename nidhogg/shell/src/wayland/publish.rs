@@ -476,14 +476,14 @@ pub(crate) struct Fed {
 ///
 /// A frame's time is when it will show.  Before anything was reported that is a period from now.  The first frame this
 /// clock reported is then tied to the time it was drawn for, or, when it showed over two periods after that time (the
-/// tree was hidden, and the leg's time passed meanwhile), to when it showed; from there on the frame after a reported
-/// one shows a period after it.  When it showed is told on our clock from the reported clock's intervals alone: the
-/// reported time's distance from the answer before this clock's first frame, added to when that answer came (else to
-/// when this one came).  So a compositor whose reported clock runs ahead of ours (the test recorder's manual clock)
-/// neither ends a leg early nor stretches it, and a slow machine whose answers come late, but report frames a period
-/// apart, runs every frame.  Where reported times do not come, or are on another clock (no `wp_presentation`, a
-/// discarded frame: sway discards the feedback of a root commit that only carried a child; a `clock_id` other than
-/// `CLOCK_MONOTONIC`), the real clock takes over.
+/// tree was hidden, and the leg's time passed meanwhile), to when it showed; from there on each frame asked after a
+/// reported one shows a period after the one before it, answered yet or not.  When it showed is told on our clock from
+/// the reported clock's intervals alone: the reported time's distance from the answer before this clock's first frame,
+/// added to when that answer came (else to when this one came).  So a compositor whose reported clock runs ahead of
+/// ours (the test recorder's manual clock) neither ends a leg early nor stretches it, and a slow machine whose answers
+/// come late, but report frames a period apart, runs every frame.  Where reported times do not come, or are on another
+/// clock (no `wp_presentation`, a discarded frame: sway discards the feedback of a root commit that only carried a
+/// child; a `clock_id` other than `CLOCK_MONOTONIC`), the real clock takes over.
 struct Clock {
     /// The feedback asked for before this clock's first frame.
     base: u64,
@@ -531,7 +531,9 @@ impl Clock {
                 };
                 at - ns as i64
             });
-            (ns as i64 + offset) as u64 + f.period
+            // the coming frame follows the reported one by the frames asked since, each a period: an answer still on
+            // its way (read after the frame callback that let this frame go) moves no frame back onto its predecessor
+            (ns as i64 + offset) as u64 + f.period * (f.asked + 1 - f.shown)
         } else {
             // the answer is on its way
             self.last + f.period
