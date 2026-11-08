@@ -593,6 +593,10 @@ typedef struct
 /* Make the window W describes and register it (it replaces nhg_frame_register for new windows), seeded with W's facts;
    its id into *OUT.  A shell error is its code.  */
 int32_t nhg_window_new (NhgDisplay *d, const NhgWindowDesc *w, uint64_t *out);
+/* `parent-frame' changed: WINDOW takes the place W describes (kind, parent, x, y; a top-level's title and flags),
+   keeping its id and its picture, and its frame takes W's role and facts.  NHG_E_UNSUPPORTED where the shell cannot
+   (a Wayland surface keeps its role): C makes the window again.  */
+int32_t nhg_window_reparent (NhgDisplay *d, uint64_t window, const NhgWindowDesc *w);
 /* The title, LEN bytes (up to a NUL).  */
 int32_t nhg_window_title (NhgDisplay *d, uint64_t window, const char *title, size_t len);
 /* `undecorated' changed at run time (ON non-zero): a top-level asks the compositor again; a child has nothing to ask.  */

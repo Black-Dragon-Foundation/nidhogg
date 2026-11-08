@@ -17,9 +17,13 @@
 use super::super::layers::{self, PROPS, count};
 use super::super::overhang::Panel;
 use super::super::surface::Surfaces;
+use super::super::window::Win;
 use super::MacShell;
-use crate::api::{ChildDesc, NHSHELL_KIND_CHILD, ShellError, ShellResult, WindowId};
-use crate::event::{PointerEv, ShellEvent};
+use crate::api::{
+    ChildDesc, NHSHELL_KIND_CHILD, NHSHELL_KIND_TOPLEVEL, NHSHELL_WIN_UNDECORATED, ShellError,
+    ShellResult, WindowId,
+};
+use crate::event::{PointerEv, ScaleEv, ShellEvent};
 use crate::mac_child::{self, Node};
 use glitnir::geom::Rect;
 use objc2::rc::Retained;
@@ -144,7 +148,7 @@ impl Kid {
 }
 
 /// A rectangle of root `w`'s content (points from its top left) on the screen (AppKit's points, from the bottom left).
-fn on_screen(w: &super::super::window::Win, x: i32, y: i32, cw: i32, ch: i32) -> NSRect {
+fn on_screen(w: &Win, x: i32, y: i32, cw: i32, ch: i32) -> NSRect {
     let c = w.window.contentRectForFrameRect(w.window.frame());
     NSRect::new(
         NSPoint::new(
@@ -231,6 +235,125 @@ impl MacShell {
         }
         self.owe(root);
         Ok(())
+    }
+
+    /// Window `id` takes another place among the trees (`parent-frame` changed), keeping its id, its surfaces and the
+    /// picture they hold, so nothing is drawn again: as a top-level (`d.kind` `NHSHELL_KIND_TOPLEVEL`) it becomes a
+    /// window titled `title` where it showed on the screen, its container leaving its old root in the same
+    /// transaction that sets the window's picture; as a child of `d.parent` at (`d.x`, `d.y`) its container goes into
+    /// the new parent's layer with that root's next commit (a top-level's window closes).  Its children come along.
+    pub(super) fn kid_reparent(&mut self, id: WindowId, d: &ChildDesc, title: &str) -> ShellResult {
+        let old_root = self.root_of(id).ok_or(ShellError::State)?;
+        match d.kind {
+            NHSHELL_KIND_TOPLEVEL => {
+                let Some(mut k) = self.kids.remove(&id) else {
+                    return Ok(());
+                };
+                if let Some(o) = self.order.get_mut(&k.parent) {
+                    o.retain(|&c| c != id);
+                }
+                let frame = on_screen(&self.windows[&old_root], k.x, k.y, k.w, k.h);
+                let undecorated = d.flags & NHSHELL_WIN_UNDECORATED != 0;
+                let mut win = Win::make(self.mtm, id, k.w, k.h, undecorated, title);
+                let at = win.window.frameRectForContentRect(frame);
+                win.window.setFrame_display(at, false);
+                win.size = win.content_size();
+                win.surfaces = std::mem::take(&mut k.surfaces);
+                win.mapped = k.mapped;
+                let scale = win.window.backingScaleFactor();
+                layers::transaction(|| {
+                    if let Some(l) = &k.layers {
+                        l.container.removeFromSuperlayer();
+                    }
+                    if let Some(s) = win.surfaces.newest() {
+                        layers::show(&win.layer, s, false, scale);
+                    }
+                });
+                // shown, not key: the keys stay where they were
+                if win.mapped {
+                    win.window.orderFront(None);
+                }
+                layers::changed_outside();
+                let scale120 = win.scale120;
+                self.windows.insert(id, win);
+                // its panel, if it overhung, goes with `k`
+                drop(k);
+                self.push(ShellEvent::Scale(ScaleEv { scale120 }), id);
+            }
+            NHSHELL_KIND_CHILD => {
+                // not under itself, and under a window the shell has
+                if self.root_of(d.parent).is_none() || self.under(d.parent, id) {
+                    return Err(ShellError::State);
+                }
+                let mut k = match self.windows.remove(&id) {
+                    Some(mut w) => {
+                        let mut k = Kid::new(d.parent, d, self.srgb);
+                        k.surfaces = std::mem::take(&mut w.surfaces);
+                        k.mapped = w.mapped;
+                        // its retired children's containers go with its window
+                        self.retired.retain(|(r, _)| *r != id);
+                        self.owed.remove(&id);
+                        k
+                    }
+                    None => {
+                        let mut k = self.kids.remove(&id).ok_or(ShellError::State)?;
+                        if let Some(o) = self.order.get_mut(&k.parent) {
+                            o.retain(|&c| c != id);
+                        }
+                        (k.parent, k.x, k.y) = (d.parent, d.x, d.y);
+                        (k.panel, k.out) = (None, false);
+                        k
+                    }
+                };
+                let root = self.root_of(d.parent).ok_or(ShellError::State)?;
+                let scale = self.windows[&root].window.backingScaleFactor();
+                if let Some(s) = k.surfaces.newest() {
+                    let l = k.layers.get_or_insert_with(Layers::new);
+                    layers::transaction(|| layers::show(&l.content, s, false, scale));
+                    let (sw, sh) = k.surfaces.size();
+                    (k.w, k.h) = (
+                        (f64::from(sw) / scale).round() as i32,
+                        (f64::from(sh) / scale).round() as i32,
+                    );
+                }
+                k.shown = Shown::default();
+                self.kids.insert(id, k);
+                self.order.entry(d.parent).or_default().push(id);
+                self.order_dirty.insert(d.parent);
+            }
+            _ => return Err(ShellError::Unsupported),
+        }
+        // its children's containers go into its layer in its new place
+        for c in self.order.get(&id).cloned().unwrap_or_default() {
+            if let Some(k) = self.kids.get_mut(&c) {
+                k.shown = Shown::default();
+            }
+        }
+        self.order_dirty.insert(id);
+        self.hover.retain(|r, t| *r != id && *t != id);
+        if self.grab.is_some_and(|(r, t)| r == id || t == id) {
+            self.grab = None;
+        }
+        if self.windows.contains_key(&old_root) {
+            self.owe(old_root);
+        }
+        self.owe_for(id);
+        Ok(())
+    }
+
+    /// Whether `id` is `top` or under it.
+    fn under(&self, id: WindowId, top: WindowId) -> bool {
+        let mut at = id;
+        for _ in 0..=self.kids.len() {
+            if at == top {
+                return true;
+            }
+            match self.kids.get(&at) {
+                Some(k) => at = k.parent,
+                None => return false,
+            }
+        }
+        false
     }
 
     /// A top-level goes: its children with it.
