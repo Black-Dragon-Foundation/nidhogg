@@ -147,7 +147,7 @@ From F's newest buffer (its size is F's plus less than 100 logical pixels), as `
 (defun nhwl-gui--drag-map ()
   "The transient map of the `mouse-drag-line' drag under way (it has the dividers as prefixes of itself), or nil."
   (and (consp overriding-terminal-local-map)
-       (seq-find (lambda (m) (and (keymapp m) (eq (lookup-key m [right-divider]) m)))
+       (seq-find (lambda (m) (and (keymapp m) (eq (indirect-function (lookup-key m [right-divider])) m)))
                  (cdr overriding-terminal-local-map))))
 
 (defun nhwl-gui--split-frame ()
