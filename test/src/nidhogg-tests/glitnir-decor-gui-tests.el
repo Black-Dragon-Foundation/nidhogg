@@ -211,21 +211,19 @@ chip's corners.  AFTER, called last with the chip's buffer still shown, makes AF
   (skip-unless (featurep 'nidhogg-wayland))
   ;; A rounded run that is its row's first glyph has nothing to its left, one that is its row's last nothing to its
   ;; right: their corners there are what the row shows past its glyphs (the window's background), not the far
-  ;; neighbour's colour (the run's own fill when the run is split into several glyph strings, as a button's pads are).
+  ;; neighbour's colour (the run's own fill when the run is split into several glyph strings: a button's pads are
+  ;; stretches, its label characters).
   (let ((glitnir-enable t)
-        (face (make-symbol "glitnir-decor-gui-edge"))
-        (pad (make-symbol "glitnir-decor-gui-edge-pad")))
+        (face (make-symbol "glitnir-decor-gui-edge")))
     (custom-declare-face face nil "Test face.")
-    (custom-declare-face pad nil "Test face.")
     (set-face-attribute face nil :background "#303060" :foreground "white" :box glitnir-decor-gui--box)
-    ;; the pads: the same face's look in a face of its own, so the run is three glyph strings
-    (set-face-attribute pad nil :inherit face)
     (with-temp-buffer
       (switch-to-buffer (current-buffer))
       (face-remap-add-relative 'default :background "#202020" :foreground "white")
       (setq-local cursor-type nil)
-      (let ((fo (glitnir-decor-gui--calibrate)))
-        (insert "\n\n" (propertize " " 'face pad) (propertize "ab" 'face face) (propertize " " 'face pad) "\n\n")
+      (let ((fo (glitnir-decor-gui--calibrate))
+            (pad (propertize " " 'face face 'display '(space :width (12)))))
+        (insert "\n\n" pad (propertize "ab" 'face face) pad "\n\n")
         (goto-char 1)
         (gui-runner-wait-settled)
         (let* ((g (gui-runner-screen-grab))
