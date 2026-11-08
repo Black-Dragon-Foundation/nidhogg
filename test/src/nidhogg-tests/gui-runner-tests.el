@@ -160,6 +160,21 @@ It read them on every run, and a shell that does not serve the monitors yet (Nag
     (should (ert-test-passed-p (ert-run-test other)))
     (should (eq ran 'other))))
 
+(ert-deftest gui-runner-waits-for-naglfar-first-draw ()
+  "On Naglfar the runner turns the event loop until the frame has drawn, and gives up at its deadline."
+  (let ((checks 0) (now 0.0))
+    ;; no Glitnir frame-time record (the Wayland build's wait)
+    (cl-letf (((symbol-function 'glitnir-stats) nil)
+              ((symbol-function 'nhmac-stats) #'ignore)
+              ((symbol-function 'sit-for) #'ignore)
+              ((symbol-function 'float-time) (lambda (&rest _) (setq now (+ now 1.0))))
+              ((symbol-function 'glitnir-gui--frame-drew-p) (lambda () (> (cl-incf checks) 3))))
+      (glitnir-gui--wait-for-first-paint)
+      (should (= checks 4))
+      (setq checks -1000)
+      (glitnir-gui--wait-for-first-paint)
+      (should (< checks -980)))))
+
 (ert-deftest gui-runner-drawn-frame-keeps-drawing-rows ()
   "A frame that drew leaves the rows tagged `draws' as they are."
   (let* ((ran nil)

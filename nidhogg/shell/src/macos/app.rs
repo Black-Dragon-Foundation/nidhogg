@@ -821,10 +821,10 @@ impl ShellBackend for MacShell {
             };
             let (lw, lh) = (f.w - f.src_x, f.h - f.src_y);
             let damage = layer_damage(f.glitnir_root, lw, lh);
+            crate::trace::pump(|| format!("publish: window {} damage {damage:?}", f.window));
             if damage.is_empty() && !s.owes() && s.newest().is_some() && s.size() == (lw, lh) {
                 continue;
             }
-            crate::trace::pump(|| format!("publish: window {} damage {damage:?}", f.window));
             match s.draw(f, &damage, now_ns()) {
                 Some(surface::Drew::Drawn) => ids.push(f.window),
                 Some(surface::Drew::Held) => {

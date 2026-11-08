@@ -75,12 +75,18 @@
 
 (defun glitnir-gui--wait-for-first-paint ()
   "Wait (10 s at most) until Glitnir's frame-time record holds a paint of the selected frame.
-Only the native shell records paints."
-  (when (and (fboundp 'glitnir-stats) (featurep 'nidhogg-wayland))
+Only the native shell records paints.  On Naglfar, wait (10 s at most) until the frame has drawn: nothing else turns
+the event loop before the rows, so its window's size would otherwise reach Emacs only inside the first row."
+  (cond
+   ((and (fboundp 'glitnir-stats) (featurep 'nidhogg-wayland))
     (let ((deadline (+ (float-time) 10)))
       (while (and (< (or (plist-get (glitnir-stats) :count) 0) 1) (< (float-time) deadline))
         (redisplay t)
-        (sit-for 0.1)))))
+        (sit-for 0.1))))
+   ((fboundp 'nhmac-stats)
+    (let ((deadline (+ (float-time) 10)))
+      (while (and (not (glitnir-gui--frame-drew-p)) (< (float-time) deadline))
+        (sit-for 0.1))))))
 
 ;;; Waiting.  A row waits on what the frame, the presenter or the compositor reports: a deadline bounds a failure and
 ;;; never decides a pass.
