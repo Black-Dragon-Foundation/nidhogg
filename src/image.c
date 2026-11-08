@@ -5279,6 +5279,17 @@ Create_Pixmap_From_Bitmap_Data (struct frame *f, struct image *img, char *data,
 	  data += bytes_per_line;
 	}
     }
+#elif defined HAVE_NHMAC
+  /* Naglfar: the plain container, a pixel per bit filled by the glue
+     (the container is the pixmap too).  */
+  Emacs_Pix_Container ximg;
+  if (image_create_x_image_and_pixmap (f, img, img->width, img->height, 0,
+				       &ximg, 0)
+      && NHG (nhg_bitmap_to_container ((const uint8_t *) data, img->width,
+				       img->height, fg, bg,
+				       (uint8_t *) ximg->data,
+				       ximg->bytes_per_line)) == NHG_OK)
+    image_put_x_image (f, img, ximg, 0);
 #endif
 }
 
