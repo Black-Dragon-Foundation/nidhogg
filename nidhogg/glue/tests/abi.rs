@@ -1331,7 +1331,8 @@ PROTO (nhg_svg_render, int32_t (const uint8_t *, size_t, uint32_t, const NhgSvgS
     #[test]
     fn font_header_matches() {
         use nhglue::ffi::{
-            nhg_font_close, nhg_font_fill, nhg_font_open, nhg_font_start, nhg_font_table,
+            nhg_font_close, nhg_font_fill, nhg_font_open, nhg_font_shape, nhg_font_start,
+            nhg_font_table,
         };
         use nhglue::font::*;
         use nhglue::glyphs::*;
@@ -1372,16 +1373,44 @@ PROTO (nhg_svg_render, int32_t (const uint8_t *, size_t, uint32_t, const NhgSvgS
                 "offsetof (NhgFontTable, glyphs)",
                 offset_of!(NhgFontTable, glyphs) as i64,
             ),
+            ("NHG_FONT_ANY_CHAR", i64::from(NHG_FONT_ANY_CHAR)),
+            ("NHG_FONT_SYNTH_ITALIC", i64::from(NHG_FONT_SYNTH_ITALIC)),
+            ("NHG_FONT_SYNTH_BOLD", i64::from(NHG_FONT_SYNTH_BOLD)),
+            ("NHG_FONT_SYNTH_MONO", i64::from(NHG_FONT_SYNTH_MONO)),
+            ("NHG_FONT_MINSPACE", i64::from(NHG_FONT_MINSPACE)),
+            ("sizeof (NhgShaped)", size_of::<NhgShaped>() as i64),
+            (
+                "offsetof (NhgShaped, code)",
+                offset_of!(NhgShaped, code) as i64,
+            ),
+            ("offsetof (NhgShaped, m)", offset_of!(NhgShaped, m) as i64),
+            (
+                "offsetof (NhgShaped, xoff)",
+                offset_of!(NhgShaped, xoff) as i64,
+            ),
+            (
+                "offsetof (NhgShaped, adjust)",
+                offset_of!(NhgShaped, adjust) as i64,
+            ),
         ];
         let decls = "\
 #define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
-PROTO (nhg_font_start, int32_t (void));
-PROTO (nhg_font_open, int32_t (uint64_t, int32_t, NhgFontMetrics *));
+PROTO (nhg_font_start, int32_t (const uint32_t *, size_t));
+PROTO (nhg_font_open, int32_t (uint64_t, int32_t, uint32_t, NhgFontMetrics *));
+PROTO (nhg_font_shape, int32_t (uint64_t, const uint32_t *, size_t, NhgShaped *, size_t, size_t *));
 PROTO (nhg_font_close, int32_t (uint64_t));
 PROTO (nhg_font_table, int32_t (uint64_t, const NhgFontTable **));
 PROTO (nhg_font_fill, int32_t (uint64_t, uint32_t));";
-        let _: unsafe extern "C" fn() -> i32 = nhg_font_start;
-        let _: unsafe extern "C" fn(u64, i32, *mut NhgFontMetrics) -> i32 = nhg_font_open;
+        let _: unsafe extern "C" fn(*const u32, usize) -> i32 = nhg_font_start;
+        let _: unsafe extern "C" fn(u64, i32, u32, *mut NhgFontMetrics) -> i32 = nhg_font_open;
+        let _: unsafe extern "C" fn(
+            u64,
+            *const u32,
+            usize,
+            *mut NhgShaped,
+            usize,
+            *mut usize,
+        ) -> i32 = nhg_font_shape;
         let _: unsafe extern "C" fn(u64) -> i32 = nhg_font_close;
         let _: unsafe extern "C" fn(u64, *mut *const NhgFontTable) -> i32 = nhg_font_table;
         let _: unsafe extern "C" fn(u64, u32) -> i32 = nhg_font_fill;

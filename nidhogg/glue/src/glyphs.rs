@@ -18,7 +18,7 @@
 //!
 //! Platform-neutral and tested on Linux; the source on macOS is `font.rs`'s Core Text one.
 
-use crate::font::{NhgGlyphMetrics, glyph_metrics, glyph_width};
+use crate::font::{Grid, NhgGlyphMetrics, extents};
 use std::ptr::NonNull;
 
 /// Code points or glyph ids per page.
@@ -83,8 +83,8 @@ pub struct Table {
     dir: NonNull<NhgFontTable>,
     /// Each glyph page's unrounded advances, for laying out runs (Rust only).
     advances: Vec<Option<Box<[f64; NHG_FONT_PAGE]>>>,
-    mono: bool,
-    space_width: i32,
+    /// What the glyphs' metrics are rounded on.
+    grid: Grid,
 }
 
 // SAFETY: the table owns its directory and pages; they are reached only through `&self`/`&mut self` (and by C under
@@ -92,30 +92,25 @@ pub struct Table {
 unsafe impl Send for Table {}
 
 impl Table {
-    /// An empty table of a font with this spacing and space width (its glyph widths are rounded on that grid).
-    pub fn new(mono: bool, space_width: i32) -> Table {
+    /// An empty table of a font whose glyphs are rounded on `grid`.
+    pub fn new(grid: Grid) -> Table {
         // SAFETY: all-zero is a valid `NhgFontTable`: every entry a null pointer.
         let dir: Box<NhgFontTable> = unsafe { Box::<NhgFontTable>::new_zeroed().assume_init() };
         Table {
             dir: NonNull::from(Box::leak(dir)),
             advances: (0..NHG_FONT_GLYPH_PAGES).map(|_| None).collect(),
-            mono,
-            space_width,
+            grid,
         }
     }
 
-    /// Set the space width, known only once the space's glyph is read; before any glyph page is filled.
-    pub fn set_space_width(&mut self, space_width: i32) {
+    /// Set the grid, whose space width is known only once the space's glyph is read; before any glyph page is filled.
+    pub fn set_grid(&mut self, grid: Grid) {
         debug_assert!(self.advances.iter().all(Option::is_none));
-        self.space_width = space_width;
+        self.grid = grid;
     }
 
-    pub fn mono(&self) -> bool {
-        self.mono
-    }
-
-    pub fn space_width(&self) -> i32 {
-        self.space_width
+    pub fn grid(&self) -> Grid {
+        self.grid
     }
 
     /// The directory's address, fixed while the table lives.
@@ -180,8 +175,7 @@ impl Table {
         });
         let mut adv = Box::new([0.0f64; NHG_FONT_PAGE]);
         for (i, [a, l, r, t, bot]) in b.into_iter().enumerate() {
-            page.metrics[i] =
-                glyph_metrics(glyph_width(a, self.mono, self.space_width), (l, r, t, bot));
+            page.metrics[i] = extents(&self.grid, a, (l, r, t, bot));
             adv[i] = a;
         }
         self.advances[p] = Some(adv);
@@ -240,7 +234,18 @@ impl Drop for Table {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::font::Spacing;
     use std::cell::RefCell;
+
+    fn grid(spacing: Spacing, space_width: i32) -> Grid {
+        Grid {
+            spacing,
+            space_width,
+            pixel_size: 12,
+            size: 12.0,
+            ..Grid::default()
+        }
+    }
 
     /// A font with a glyph for every character but U+0000 and U+0378 (unassigned): glyph `c % 60000 + 1`.  Glyph `g`'s
     /// advance is 7.2 for an odd `g`, 14.9 for an even one.  It records every call.
@@ -288,7 +293,7 @@ mod tests {
     #[test]
     fn a_page_fill_answers_the_whole_page_in_one_call() {
         let src = Fake::default();
-        let mut t = Table::new(false, 7);
+        let mut t = Table::new(grid(Spacing::Proportional, 7));
         assert!(t.fill(0, &src));
         assert_eq!(t.char_glyph(u32::from('A')), Some(Some(66)));
         assert_eq!(t.char_glyph(0xff), Some(Some(256)));
@@ -303,7 +308,7 @@ mod tests {
     #[test]
     fn a_miss_is_a_page_not_filled() {
         let src = Fake::default();
-        let mut t = Table::new(false, 7);
+        let mut t = Table::new(grid(Spacing::Proportional, 7));
         assert_eq!(t.char_glyph(0x3b1), None);
         assert_eq!(t.metrics(66), None);
         t.fill(3, &src);
@@ -329,7 +334,7 @@ mod tests {
     #[test]
     fn the_directory_and_its_pages_never_move() {
         let src = Fake::default();
-        let mut t = Table::new(false, 7);
+        let mut t = Table::new(grid(Spacing::Proportional, 7));
         let dir = t.as_ptr();
         t.fill(0, &src);
         t.fill(NHG_FONT_FILL_GLYPHS, &src);
@@ -353,7 +358,7 @@ mod tests {
     #[test]
     fn surrogate_and_plane_boundary_pages() {
         let src = Fake::default();
-        let mut t = Table::new(false, 7);
+        let mut t = Table::new(grid(Spacing::Proportional, 7));
         // surrogates have no characters: answered without asking the font
         assert!(t.fill(0xD8, &src));
         assert!(t.fill(0xDF, &src));
@@ -389,8 +394,8 @@ mod tests {
     fn glyph_pages_round_on_the_fonts_grid() {
         let src = Fake::default();
         // monospaced, 7 wide: a 14.9 advance is two cells (14), 7.2 one (7)
-        let mut t = Table::new(true, 0);
-        t.set_space_width(7);
+        let mut t = Table::new(grid(Spacing::Mono, 0));
+        t.set_grid(grid(Spacing::Mono, 7));
         t.fill(NHG_FONT_FILL_GLYPHS, &src);
         assert_eq!(t.metrics(2).map(|m| m.width), Some(14));
         assert_eq!(t.metrics(3).map(|m| m.width), Some(7));
