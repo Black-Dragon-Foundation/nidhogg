@@ -113,8 +113,9 @@ pub struct Stats {
     /// Publishes held by the pacer (every other slot held), and holds that outlasted its bound.
     pub held: AtomicU64,
     pub held_timeouts: AtomicU64,
-    /// The pacer timer's fires.
+    /// The pacer timer's fires, and how often it was armed.
     pub pacer_fires: AtomicU64,
+    pub pacer_arms: AtomicU64,
 }
 
 pub static STATS: Stats = Stats {
@@ -132,6 +133,7 @@ pub static STATS: Stats = Stats {
     held: AtomicU64::new(0),
     held_timeouts: AtomicU64::new(0),
     pacer_fires: AtomicU64::new(0),
+    pacer_arms: AtomicU64::new(0),
 };
 
 impl Stats {
@@ -141,7 +143,7 @@ impl Stats {
         format!(
             ":bytes-copied {} :damage-bytes {} :full-copies {} :commits {} :surface-busy {} :ring-acquires {} \
              :implicit-open-at-update-end {} :spins-in-redisplay {} :pumps {} :deferred-commits {} :handed-pumps {} :draws {} \
-             :held {} :held-timeouts {} :pacer-fires {}",
+             :held {} :held-timeouts {} :pacer-fires {} :pacer-arms {}",
             g(&self.bytes_copied),
             g(&self.damage_bytes),
             g(&self.full_copies),
@@ -157,6 +159,7 @@ impl Stats {
             g(&self.held),
             g(&self.held_timeouts),
             g(&self.pacer_fires),
+            g(&self.pacer_arms),
         )
     }
 }
