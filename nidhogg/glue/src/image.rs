@@ -350,9 +350,79 @@ pub fn store(argb: &[u32], data: &mut [u8], mask: Option<&mut [u8]>) {
     }
 }
 
+/// A bitmap's bits (`bits`: `width` x `height`, least significant bit first, each row padded to whole bytes) into a
+/// 32-bit container's bytes (`out`, `stride` bytes a row): `fg` for a set bit, `bg` for a clear one, each word stored
+/// as given.  `None` when a size is under 1, the stride is short or a slice is too small for the sizes.
+pub fn bitmap(
+    bits: &[u8],
+    width: usize,
+    height: usize,
+    fg: u32,
+    bg: u32,
+    out: &mut [u8],
+    stride: usize,
+) -> Option<()> {
+    let row_bytes = width.div_ceil(8);
+    if width == 0
+        || height == 0
+        || stride < width * 4
+        || bits.len() < row_bytes * height
+        || out.len() < stride * (height - 1) + width * 4
+    {
+        return None;
+    }
+    for (y, row) in bits.chunks(row_bytes).take(height).enumerate() {
+        let line = &mut out[y * stride..y * stride + width * 4];
+        for (x, px) in line.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let word = if (row[x / 8] >> (x % 8)) & 1 != 0 {
+                fg
+            } else {
+                bg
+            };
+            *px = word.to_ne_bytes();
+        }
+    }
+    Some(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Bits are read least significant first, rows padded to bytes, into rows `stride` apart.
+    #[test]
+    fn bitmap_fills_a_pixel_per_bit() {
+        // 10 x 2: row 0 sets x 0 and x 9, row 1 sets x 1 and x 8
+        let bits = [0b0000_0001, 0b0000_0010, 0b0000_0010, 0b0000_0001];
+        let (fg, bg) = (0xff11_2233u32, 0xff00_0000u32);
+        let stride = 48;
+        let mut out = vec![0xaa; stride * 2];
+        assert_eq!(bitmap(&bits, 10, 2, fg, bg, &mut out, stride), Some(()));
+        let word = |x: usize, y: usize| {
+            u32::from_ne_bytes(
+                out[y * stride + x * 4..y * stride + x * 4 + 4]
+                    .try_into()
+                    .unwrap(),
+            )
+        };
+        let set: Vec<(usize, usize)> = (0..2)
+            .flat_map(|y| (0..10).map(move |x| (x, y)))
+            .filter(|&(x, y)| word(x, y) == fg)
+            .collect();
+        assert_eq!(set, vec![(0, 0), (9, 0), (1, 1), (8, 1)]);
+        assert_eq!(word(5, 1), bg);
+        // the row padding is left alone
+        assert!(out[40..48].iter().all(|&b| b == 0xaa));
+    }
+
+    #[test]
+    fn bitmap_refuses_bad_sizes() {
+        let mut out = vec![0; 64];
+        assert_eq!(bitmap(&[0; 2], 0, 2, 1, 0, &mut out, 16), None);
+        assert_eq!(bitmap(&[0; 2], 4, 2, 1, 0, &mut out, 12), None);
+        assert_eq!(bitmap(&[0; 1], 4, 2, 1, 0, &mut out, 16), None);
+        assert_eq!(bitmap(&[0; 2], 4, 2, 1, 0, &mut out[..20], 16), None);
+    }
 
     fn pix(w: i32, h: i32, bpp: i32, mask: bool) -> NhgPix {
         NhgPix {
