@@ -412,6 +412,18 @@ timer and C-g all reach Lisp: the main thread's yield loop pumps and polls, it n
       (mapc #'thread-join (car c))))
   (should (= (plist-get (nhmac-stats) :lock-waiters) 0)))
 
+(ert-deftest nhmac-thread-input-hands-the-pump ()
+  "A Lisp thread that reads input (its `read_socket' asks for a pump) never pumps AppKit itself: the pump is handed
+to the main thread, the display lives and keys still arrive."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--flush)
+  (let* ((before (nhmac-stats))
+         (th (make-thread (lambda () (dotimes (_ 20) (input-pending-p) (thread-yield))) "nhmac-input")))
+    (thread-join th)
+    (should (> (nhmac-gui--delta before :handed-pumps) 0))
+    (nhmac--test-post-key ?a)
+    (should (equal (nhmac-gui--events 1) '(?a)))))
+
 (ert-deftest nhmac-thread-wakes-idle-main ()
   "A thread waiting on a condition is woken by another Lisp thread's notify while the main thread idles in its
 wait, with no AppKit event: the notifier's want of the lock ends the main thread's park."
