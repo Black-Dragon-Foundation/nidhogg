@@ -388,6 +388,15 @@ impl ShellBackend for MacShell {
     }
 
     fn dispatch_main(&mut self) -> ShellResult {
+        // AppKit's events are the main thread's alone: a Lisp thread's call (its `read_socket`, from `maybe_quit`)
+        // hands the pump to the main thread, whose wait wakes and pumps; the records already queued are its own
+        if MainThreadMarker::new().is_none() {
+            surface::STATS
+                .handed_pumps
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            wait::wake();
+            return Ok(());
+        }
         // an exception raised here is turned into a panic by the glue's guard (nhshell::catch_objc)
         surface::STATS
             .pumps

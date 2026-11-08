@@ -108,6 +108,8 @@ pub struct Stats {
     pub spins_in_redisplay: AtomicU64,
     pub pumps: AtomicU64,
     pub deferred_commits: AtomicU64,
+    /// `nhg_dispatch_main` calls from a Lisp thread, handed to the main thread's wait.
+    pub handed_pumps: AtomicU64,
 }
 
 pub static STATS: Stats = Stats {
@@ -121,6 +123,7 @@ pub static STATS: Stats = Stats {
     spins_in_redisplay: AtomicU64::new(0),
     pumps: AtomicU64::new(0),
     deferred_commits: AtomicU64::new(0),
+    handed_pumps: AtomicU64::new(0),
 };
 
 impl Stats {
@@ -129,7 +132,7 @@ impl Stats {
         let g = |c: &AtomicU64| c.load(Ordering::Relaxed);
         format!(
             ":bytes-copied {} :damage-bytes {} :full-copies {} :commits {} :surface-busy {} :ring-acquires {} \
-             :implicit-open-at-update-end {} :spins-in-redisplay {} :pumps {} :deferred-commits {} :draws {}",
+             :implicit-open-at-update-end {} :spins-in-redisplay {} :pumps {} :deferred-commits {} :handed-pumps {} :draws {}",
             g(&self.bytes_copied),
             g(&self.damage_bytes),
             g(&self.full_copies),
@@ -140,6 +143,7 @@ impl Stats {
             g(&self.spins_in_redisplay),
             g(&self.pumps),
             g(&self.deferred_commits),
+            g(&self.handed_pumps),
             super::draw::DRAWS.load(Ordering::Relaxed),
         )
     }
