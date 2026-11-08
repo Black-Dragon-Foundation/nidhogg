@@ -144,4 +144,29 @@ It read them on every run, and a shell that does not serve the monitors yet (Nag
                (lambda (&rest _) '(((geometry 0 0 1024 768))))))
       (should-not (glitnir-gui--scale-ready-p)))))
 
+(ert-deftest gui-runner-undrawn-frame-fails-drawing-rows ()
+  "A frame that never drew fails the rows tagged `draws' at once, with the scale in the reason; the others run."
+  (let* ((ran nil)
+         (draws (make-ert-test :name 'gui-runner-t-draws :tags '(draws) :body (lambda () (setq ran 'draws))))
+         (other (make-ert-test :name 'gui-runner-t-other :body (lambda () (setq ran 'other)))))
+    (cl-letf (((symbol-function 'glitnir-gui--frame-drew-p) #'ignore)
+              ((symbol-function 'glitnir-gui--say) #'ignore)
+              ((symbol-function 'glitnir-gui--scale) (lambda () 2)))
+      (glitnir-gui--fail-drawing-rows (list draws other)))
+    (let ((r (ert-run-test draws)))
+      (should (ert-test-failed-p r))
+      (should (equal (cadr (ert-test-result-with-condition-condition r)) '("no frame drew at scale 2")))
+      (should-not ran))
+    (should (ert-test-passed-p (ert-run-test other)))
+    (should (eq ran 'other))))
+
+(ert-deftest gui-runner-drawn-frame-keeps-drawing-rows ()
+  "A frame that drew leaves the rows tagged `draws' as they are."
+  (let* ((ran nil)
+         (draws (make-ert-test :name 'gui-runner-t-draws :tags '(draws) :body (lambda () (setq ran t)))))
+    (cl-letf (((symbol-function 'glitnir-gui--frame-drew-p) (lambda () t)))
+      (glitnir-gui--fail-drawing-rows (list draws)))
+    (should (ert-test-passed-p (ert-run-test draws)))
+    (should ran)))
+
 ;;; gui-runner-tests.el ends here

@@ -15,6 +15,7 @@ pub mod scope;
 pub mod shapes;
 #[cfg(feature = "svg")]
 pub mod svg;
+pub mod trace;
 pub mod wait;
 #[cfg(feature = "wayland")]
 pub mod wayland;

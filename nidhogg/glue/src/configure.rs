@@ -33,8 +33,14 @@ const FULLSCREEN_STATES: u32 = NHSHELL_STATE_FULLSCREEN | NHSHELL_STATE_MAXIMIZE
 /// glue does not know.
 pub fn configure(state: &mut Display, ev: &Record, c: &ConfigureEv) {
     let Ok(f) = state.frame_mut(ev.window) else {
+        nhshell::trace::note(|| {
+            format!("configure dropped: window {} is not registered", ev.window)
+        });
         return;
     };
+    if !f.cfg.configured {
+        nhshell::trace::note(|| format!("configure applied: window {} {}x{}", ev.window, c.w, c.h));
+    }
     let old = f.cfg.states;
     // a framed window (undecorated, margins without a strip) shows maximized and tiled in its margins and chrome
     let shown = CSD_STATES & !NHSHELL_STATE_ACTIVATED;
