@@ -2101,7 +2101,7 @@ metrics from the font's glyph table.  A character on a page not read yet makes c
           ;; 25 lines of 40: ASCII and Latin-1
           (dotimes (i 25)
             (dotimes (j 40)
-              (insert (let ((k (+ (* i 40) j))) (if (= (% k 7) 0) (+ #xc0 (% k 60)) (+ ?! (% k 94)))))))
+              (insert (let ((k (+ (* i 40) j))) (if (= (% k 7) 0) (+ #xc0 (% k 60)) (+ ?! (% k 94))))))
             (insert "\n"))
           (goto-char (point-min))
           (dotimes (_ 2) (redraw-frame) (redisplay t))
