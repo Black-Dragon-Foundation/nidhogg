@@ -260,6 +260,28 @@ done
 job macos | grep -qF 'elc=$(bash nidhogg/ci/lisp-key.sh --elc)'  || fail "macos does not key its byte-compiled Lisp apart"
 [ "$(job macos | grep -cF -- '-elc-${{ steps.tree.outputs.elc }}-')" = 2 ] || fail "macos's byte-compiled Lisp restore and save keys differ"
 [ "$(job macos | grep -cF -- '-eln-${{ steps.tree.outputs.abi }}-')" = 2 ] || fail "macos's .eln entry is not keyed on the ABI inputs"
+# the macOS job is two jobs that run at once, the NS app and Naglfar: each its own build, neither waiting for the other
+# (the paired timing alone fetches the NS job's tarball), the rows, inputs and artifacts as before
+job macos-naglfar | grep -qF 'build.sh --host --naglfar --dev --checking' || fail "no Naglfar build in the macos-naglfar job"
+! job macos | grep -qF -- '--host --naglfar'                             || fail "the NS job also builds Naglfar"
+for st in "Naglfar's Rust unit tests" "Naglfar's boundary check (nm-check)" "Naglfar GUI rows" "Naglfar paired timing (pair)"; do
+  job macos-naglfar | grep -qF "name: $st" || fail "macos-naglfar lacks the step $st"
+  ! job macos | grep -qF "name: $st"       || fail "macos still has the step $st"
+done
+for j in macos macos-naglfar; do
+  [ "$(job "$j" | grep -cE '^    needs: changes$')" = 1 ]        || fail "$j needs more than the changes job (the two macOS jobs run at once)"
+done
+job macos | grep -qF 'name: macOS GUI rows (nhmac-gui-tests.el, scales 1 and 2)' || fail "macos lost the NS GUI rows"
+job macos | grep -qF 'ip=--interpose'                              || fail "macos lost the --interpose rule"
+job macos | grep -qF 'name: nhmac-gui-logs'                        || fail "macos lost its nhmac-gui-logs artifact"
+job macos | grep -qF 'name: tarball-macos'                         || fail "macos lost its tarball-macos artifact"
+job macos | grep -qF 'inputs.ns_app_run'                           || fail "macos lost ns_app_run"
+job macos-naglfar | grep -qF 'inputs.pair'                         || fail "macos-naglfar lost pair"
+job macos-naglfar | grep -qF 'inputs.files'                        || fail "macos-naglfar lost files"
+job macos-naglfar | grep -qF 'inputs.checks'                       || fail "macos-naglfar lost checks"
+job macos-naglfar | grep -qF 'select(.name == "tarball-macos")'    || fail "the paired timing does not take the NS job's tarball"
+job macos-naglfar | grep -qF "needs.changes.outputs.macos != 'false'" || fail "macos-naglfar does not follow the macOS path filter"
+job gate | grep -qF 'macos-naglfar " ;; esac'                      || fail "the gate lets a filtered macOS run skip macos but not macos-naglfar"
 # a row-only run leaves out drgnx's macOS suite and says so; a full run keeps every tier, and the gate accepts the
 # skipped drgnx job only when no tier is left
 job changes | grep -qF 'drgnx macOS suite: skipped, row-only run' || fail "a row-only run does not say it skipped drgnx's macOS suite"
