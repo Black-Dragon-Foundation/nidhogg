@@ -396,6 +396,22 @@ lock-waiter count is back to 0 after each (a signal marks one waiter, not all)."
     (should quit)
     (should (< (- (float-time) start) 5))))
 
+(ert-deftest nhmac-quit-reaches-busy-loop ()
+  "A C-g queued in AppKit while Lisp runs a busy loop (no input read, no redisplay, no wait) quits it: the loop's
+input polls pump AppKit.  The loop ends itself after 5 s, failing the row."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--flush)
+  (let ((start (float-time)) quit)
+    (nhmac--test-post-key ?\C-g ?g nhmac-gui--ns-control)
+    (condition-case nil
+        (let ((inhibit-quit nil)
+              (deadline (+ start 5)))
+          (while (< (float-time) deadline)))
+      (quit (setq quit t)))
+    (message "nhmac-quit-reaches-busy-loop: quit %S after %.2f s" quit (- (float-time) start))
+    (should quit)
+    (should (< (- (float-time) start) 4))))
+
 (ert-deftest nhmac-keys-under-yield-loop ()
   "While a Lisp thread spins on `thread-yield', and again under 4-thread contention, keys, a process's output, a
 timer and C-g all reach Lisp: the main thread's yield loop pumps and polls, it never parks with waiters."
