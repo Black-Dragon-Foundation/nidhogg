@@ -6,6 +6,7 @@
 
 mod app;
 mod appdelegate;
+mod ax;
 mod defaults;
 pub mod draw;
 mod dialogs;

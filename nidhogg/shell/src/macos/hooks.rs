@@ -232,6 +232,10 @@ impl MacShell {
                         super::super::ime::test_send(&view, n[1], text)
                     }),
             ),
+            // "(ON)": count Zoom as on (1) or ask the system again (0)
+            "test-zoom-force" => {
+                Some(first_number(arg).map(|on| super::super::ax::test_force_zoom(on == 1)))
+            }
             "test-menu-update" => {
                 super::super::menus::test_update(&self.app);
                 Some(Ok(()))
@@ -355,7 +359,11 @@ impl MacShell {
                 }
                 _ => Err(ShellError::Arg),
             }),
-            "test-presentation" => Ok(self.app.presentationOptions().0.to_string()),
+            "test-ax" => first_number(arg).and_then(|w| {
+                let w = self.win(w)?;
+                Ok(super::super::ax::test_state(&w.view, &w.window))
+            }),
+            "test-presentation" =>Ok(self.app.presentationOptions().0.to_string()),
             "test-resize" => first_number(arg).and_then(|w| self.resize_state(w)),
             // "(WINDOW EDGES)": whether the current cursor is the resize cursor for EDGES
             "test-resize-cursor" => numbers(arg).and_then(|n| match n[..] {

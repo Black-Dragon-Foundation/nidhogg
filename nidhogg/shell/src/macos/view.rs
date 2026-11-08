@@ -2,6 +2,7 @@
 //! the window's first responder, so its keys and mouse arrive here.  Each becomes the shared event record
 //! (`crate::mac_input`) and reaches the backend through the scope (`runloop::deliver`).
 
+use super::ax;
 use super::dnd;
 use super::ime;
 use super::runloop::{MacEv, deliver};
@@ -15,11 +16,11 @@ use crate::outputs::Magnify;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{
-    ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel,
+    ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel,
 };
 use objc2_app_kit::{
-    NSDragOperation, NSDraggingDestination, NSDraggingInfo, NSEvent, NSEventModifierFlags,
-    NSEventPhase, NSResponder, NSTextInputClient, NSView,
+    NSAccessibilityTextAreaRole, NSDragOperation, NSDraggingDestination, NSDraggingInfo, NSEvent,
+    NSEventModifierFlags, NSEventPhase, NSResponder, NSTextInputClient, NSView,
 };
 use objc2_foundation::{
     NSArray, NSAttributedString, NSNotFound, NSObjectProtocol, NSRange, NSString,
@@ -254,20 +255,46 @@ define_class!(
                 // SAFETY: AppKit passes null or a range to write.
                 unsafe { actual.write(range) };
             }
-            let [x, y, w, h] = ime::with(*self.ivars(), |p| p.cursor);
-            let height = self.bounds().size.height;
-            let r = NSRect::new(
-                NSPoint::new(f64::from(x), height - f64::from(y) - f64::from(h)),
-                NSSize::new(f64::from(w) * range.length as f64, f64::from(h)),
-            );
-            let r = self.convertRect_toView(r, None);
-            self.window().map_or(r, |win| win.convertRectToScreen(r))
+            ax::cursor_on_screen(self, *self.ivars(), range.length as f64)
         }
 
         /// NS answers 0 too.
         #[unsafe(method(characterIndexForPoint:))]
         fn character_index(&self, _p: NSPoint) -> usize {
             0
+        }
+    }
+
+    /// The accessibility element (NSView's informal accessibility methods, overridden): a text area whose value and
+    /// selection are the pushed line and region, framed by the cursor, as NS's view answers.
+    impl NhView {
+        #[unsafe(method(isAccessibilityElement))]
+        fn ax_element(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method_id(accessibilityRole))]
+        fn ax_role(&self) -> Option<Retained<NSString>> {
+            // SAFETY: an immutable string constant of AppKit's.
+            Some(unsafe { NSAccessibilityTextAreaRole }.retain())
+        }
+
+        /// The line around point, as pushed (within the push's cap).
+        #[unsafe(method_id(accessibilityValue))]
+        fn ax_value(&self) -> Option<Retained<NSString>> {
+            Some(NSString::from_str(&ime::with(*self.ivars(), |p| p.text.text.clone())))
+        }
+
+        /// The region's text within the pushed line.
+        #[unsafe(method_id(accessibilitySelectedText))]
+        fn ax_selected_text(&self) -> Option<Retained<NSString>> {
+            Some(NSString::from_str(&ime::with(*self.ivars(), |p| p.text.selected_text())))
+        }
+
+        /// NS's: the cursor's rectangle on the screen.
+        #[unsafe(method(accessibilityFrame))]
+        fn ax_frame(&self) -> NSRect {
+            ax::cursor_on_screen(self, *self.ivars(), 1.0)
         }
     }
 );
