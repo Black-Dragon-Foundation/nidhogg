@@ -1159,8 +1159,15 @@ int32_t nhg_font_match (const NhgFontSpec *spec, NhgFontEntity *out, size_t cap,
 
 /* ---- The native font driver's fonts (glue/src/font.rs; macOS) ---------------------------------------------------
    nhg_font_start installs Core Text as the source nhg_font_list and nhg_font_match list from (NHG_E_UNSUPPORTED
-   elsewhere).  nhg_font_open opens an entity's face at SIZE device pixels; its metrics are rounded as macfont_open
-   rounds them.  NHG_E_STATE: no such face or font.
+   elsewhere), with script-representative-chars flattened into SCRIPTS (LEN words): per script its name id, a count
+   (NHG_FONT_ANY_CHAR set: a vector, any one of its characters will do; else a list, all of them), then the
+   characters.  nhg_font_open opens an entity's face at SIZE device pixels with FLAGS (the entity's NHG_FONT_SYNTH_*
+   and NHG_FONT_MINSPACE); its metrics are rounded as macfont_open rounds them.  NHG_E_STATE: no such face or font.
+
+   nhg_font_shape shapes N characters in FONT as macfont_shape does (one Core Text line, kerning off): *USED records
+   into OUT (CAP of them) in LGSTRING order, 0 when Core Text needs another font or CAP is too small.  FROM and TO
+   are the glyph's first and last character; C its character, 0 when the glyph is not that character's own; M its
+   metrics; ADJUST 1 when XOFF, YOFF and WADJUST are its adjustment.
 
    Each open font has a glyph table (glue/src/glyphs.rs) C reads without a call: nhg_font_table gives its address,
    fixed until nhg_font_close.  chars[C / NHG_FONT_PAGE] is character C's page, its glyph at C % NHG_FONT_PAGE
@@ -1183,9 +1190,26 @@ typedef struct
   int32_t lbearing, rbearing, width, ascent, descent;
 } NhgGlyphMetrics;
 
-int32_t nhg_font_start (void);
-int32_t nhg_font_open (uint64_t font_id, int32_t size, NhgFontMetrics *out);
+#define NHG_FONT_ANY_CHAR (1u << 31)
+#define NHG_FONT_SYNTH_ITALIC 1u
+#define NHG_FONT_SYNTH_BOLD 2u
+#define NHG_FONT_SYNTH_MONO 4u
+#define NHG_FONT_MINSPACE 8u
+
+typedef struct
+{
+  int32_t from, to;
+  uint32_t c, code;
+  NhgGlyphMetrics m;
+  int32_t xoff, yoff, wadjust;
+  uint32_t adjust;
+} NhgShaped;
+
+int32_t nhg_font_start (const uint32_t *scripts, size_t len);
+int32_t nhg_font_open (uint64_t font_id, int32_t size, uint32_t flags, NhgFontMetrics *out);
 int32_t nhg_font_close (uint64_t handle);
+int32_t nhg_font_shape (uint64_t handle, const uint32_t *chars, size_t n, NhgShaped *out, size_t cap,
+			size_t *used);
 
 #define NHG_FONT_PAGE 256
 #define NHG_FONT_CHAR_PAGES (0x110000 / NHG_FONT_PAGE)

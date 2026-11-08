@@ -18,6 +18,7 @@ mod pacer;
 mod runloop;
 mod screens;
 mod surface;
+pub mod text;
 mod view;
 mod window;
 

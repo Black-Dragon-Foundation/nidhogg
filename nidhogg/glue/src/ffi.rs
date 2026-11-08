@@ -2534,24 +2534,33 @@ nhg_export! {
 }
 
 nhg_export! {
-    /// Install the platform's font source for `nhg_font_list` and `nhg_font_match` (Core Text on macOS).
+    /// Install the platform's font source for `nhg_font_list` and `nhg_font_match` (Core Text on macOS), with the
+    /// scripts' representative characters (`script-representative-chars`) as `scripts` (`len` words): per script its
+    /// name id, a count (`NHG_FONT_ANY_CHAR` set: any one of them will do), then that many characters.
     /// `NHG_E_UNSUPPORTED` where there is none (Linux lists its fonts with fontconfig).
     ///
     /// # Safety
-    /// None beyond the C ABI: it takes no pointers.
-    unlocked fn nhg_font_start() -> i32 {
+    /// `scripts` is null (no scripts) or holds `len` readable words.
+    unlocked fn nhg_font_start(scripts: *const u32, len: usize) -> i32 {
         crate::font::note_call();
-        if crate::font::start() { Ok(NHG_OK) } else { Err(GlueError::Shell(crate::abi::NHG_E_UNSUPPORTED)) }
+        let flat = if scripts.is_null() || len == 0 {
+            &[][..]
+        } else {
+            // SAFETY: `len` readable words (the caller's promise).
+            unsafe { std::slice::from_raw_parts(scripts, len) }
+        };
+        if crate::font::start(flat) { Ok(NHG_OK) } else { Err(GlueError::Shell(crate::abi::NHG_E_UNSUPPORTED)) }
     }
 }
 
 nhg_export! {
-    /// Open the face `font_id` (an entity's) at `size` device pixels: its handle and metrics into `*out`, rounded as
-    /// `macfont_open` rounds them.  `NHG_E_STATE` when the face does not open, `NHG_E_UNSUPPORTED` without Core Text.
+    /// Open the face `font_id` (an entity's) at `size` device pixels with `flags` (`NHG_FONT_SYNTH_*`, the entity's
+    /// synthesised traits, and `NHG_FONT_MINSPACE`): its handle and metrics into `*out`, rounded as `macfont_open`
+    /// rounds them.  `NHG_E_STATE` when the face does not open, `NHG_E_UNSUPPORTED` without Core Text.
     ///
     /// # Safety
     /// `out` is null or writable.
-    unlocked fn nhg_font_open(font_id: u64, size: i32, out: *mut crate::font::NhgFontMetrics) -> i32 {
+    unlocked fn nhg_font_open(font_id: u64, size: i32, flags: u32, out: *mut crate::font::NhgFontMetrics) -> i32 {
         crate::font::note_call();
         if out.is_null() || size <= 0 {
             return Err(GlueError::Arg);
@@ -2559,7 +2568,7 @@ nhg_export! {
         if !cfg!(all(feature = "macos", target_os = "macos")) {
             return Err(GlueError::Shell(crate::abi::NHG_E_UNSUPPORTED));
         }
-        let m = crate::font::open(font_id, size).ok_or(GlueError::State)?;
+        let m = crate::font::open(font_id, size, flags).ok_or(GlueError::State)?;
         // SAFETY: non-null and writable (the caller's promise).
         unsafe { out.write(m) };
         Ok(NHG_OK)
@@ -2606,6 +2615,41 @@ nhg_export! {
     unlocked fn nhg_font_fill(handle: u64, page: u32) -> i32 {
         crate::font::note_call();
         if crate::font::fill(handle, page).ok_or(GlueError::State)? { Ok(NHG_OK) } else { Err(GlueError::Arg) }
+    }
+}
+
+nhg_export! {
+    /// Shape the `n` characters `chars` in font `handle` (`macfont_shape`, one Core Text line): the glyphs into `out`
+    /// (`cap` records) in the order Emacs's LGSTRING takes them, their count into `*used`.  0 glyphs when Core Text
+    /// lays some of the text out in another font, or when they would not fit in `cap` (macfont gives up on both).
+    /// `NHG_E_STATE` for a font that is not open, `NHG_E_UNSUPPORTED` without Core Text.
+    ///
+    /// # Safety
+    /// `chars` is null or holds `n` readable characters; `out` is null or holds `cap` writable records; `used` is null
+    /// or writable.
+    unlocked fn nhg_font_shape(handle: u64, chars: *const u32, n: usize, out: *mut crate::font::NhgShaped, cap: usize, used: *mut usize) -> i32 {
+        crate::font::note_call();
+        if used.is_null() || (n > 0 && chars.is_null()) || (cap > 0 && out.is_null()) {
+            return Err(GlueError::Arg);
+        }
+        if !cfg!(all(feature = "macos", target_os = "macos")) {
+            return Err(GlueError::Shell(crate::abi::NHG_E_UNSUPPORTED));
+        }
+        let chars = if n == 0 {
+            &[][..]
+        } else {
+            // SAFETY: `n` readable characters (the caller's promise).
+            unsafe { std::slice::from_raw_parts(chars, n) }
+        };
+        let got = crate::font::shape(handle, chars).ok_or(GlueError::State)?;
+        let k = if got.len() <= cap { got.len() } else { 0 };
+        for (i, g) in got.iter().take(k).enumerate() {
+            // SAFETY: `i < k <= cap` writable records.
+            unsafe { out.add(i).write(*g) };
+        }
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe { used.write(k) };
+        Ok(NHG_OK)
     }
 }
 

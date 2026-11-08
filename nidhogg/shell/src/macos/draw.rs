@@ -46,6 +46,11 @@ const BITMAP_INFO: u32 = 2 | (2 << 12);
 /// `kCGBlendModeNormal`, `kCGBlendModeCopy`.
 const BLEND_NORMAL: i32 = 0;
 const BLEND_COPY: i32 = 17;
+/// `kCGTextFillStroke`.
+const TEXT_FILL_STROKE: i32 = 2;
+/// macfont's `synthetic_bold_factor` and `synthetic_italic_atfm`'s c.
+const SYNTHETIC_BOLD_FACTOR: f64 = 0.024;
+const SYNTHETIC_ITALIC_SKEW: f64 = 0.25;
 
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
@@ -86,6 +91,7 @@ unsafe extern "C" {
     fn CGContextFillPath(c: Ctx);
     fn CGContextStrokePath(c: Ctx);
     fn CGContextSetTextMatrix(c: Ctx, m: CGAffineTransform);
+    fn CGContextSetTextDrawingMode(c: Ctx, mode: i32);
     fn CGContextSetShouldAntialias(c: Ctx, on: bool);
     fn CGContextSetShouldSmoothFonts(c: Ctx, on: bool);
     /// Private, as `macfont_draw` uses it for `ns-use-thin-smoothing`.
@@ -349,9 +355,14 @@ impl Canvas {
                     argb,
                     integral,
                 } => {
-                    // macfont_draw: y up from the baseline, the text matrix the identity
+                    // macfont_draw: y up from the baseline; a synthetic italic leans the text matrix, a synthetic
+                    // bold strokes the glyphs too, a line of synthetic_bold_factor times the size (with antialiasing)
                     let pos: Vec<CGPoint> = xs.iter().map(|&x| CGPoint { x, y: 0.0 }).collect();
+                    let (italic, bold, size) = super::fonts::synthetic(*font).unwrap_or_default();
                     self.fill_colour(*argb);
+                    if bold && !*integral {
+                        self.stroke_colour(*argb);
+                    }
                     super::fonts::with_font(*font, |ct| {
                         CGContextSaveGState(c);
                         CGContextTranslateCTM(c, *x, *y);
@@ -363,12 +374,16 @@ impl Canvas {
                             CGContextSetShouldSmoothFonts(c, true);
                             CGContextSetFontSmoothingStyle(c, 16);
                         }
+                        if bold && !*integral {
+                            CGContextSetTextDrawingMode(c, TEXT_FILL_STROKE);
+                            CGContextSetLineWidth(c, SYNTHETIC_BOLD_FACTOR * size);
+                        }
                         CGContextSetTextMatrix(
                             c,
                             CGAffineTransform {
                                 a: 1.0,
                                 b: 0.0,
-                                c: 0.0,
+                                c: if italic { SYNTHETIC_ITALIC_SKEW } else { 0.0 },
                                 d: 1.0,
                                 tx: 0.0,
                                 ty: 0.0,

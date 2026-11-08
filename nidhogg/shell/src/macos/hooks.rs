@@ -56,6 +56,31 @@ fn numbers(arg: &str) -> ShellResult<Vec<f64>> {
         .collect()
 }
 
+/// `("FAMILY" SIZE GLYPH...)`: Core Text's own advances of the glyphs in the open font of FAMILY at SIZE pixels
+/// (`CTFontGetAdvancesForGlyphs`, unrounded), a list; nil when no such font is open.
+fn ct_advances(arg: &str) -> ShellResult<String> {
+    let arg = arg
+        .trim()
+        .trim_start_matches('(')
+        .trim_end_matches(')')
+        .trim_start();
+    let rest = arg.strip_prefix('"').ok_or(ShellError::Arg)?;
+    let end = rest.find('"').ok_or(ShellError::Arg)?;
+    let family = &rest[..end];
+    let n = numbers(&rest[end + 1..])?;
+    let (&size, glyphs) = n.split_first().ok_or(ShellError::Arg)?;
+    let Some(handle) = super::super::fonts::find(family, size) else {
+        return Ok("nil".into());
+    };
+    let glyphs: Vec<u16> = glyphs.iter().map(|&g| g as u16).collect();
+    let mut b = vec![[0.0f64; 5]; glyphs.len()];
+    if !super::super::fonts::bounds_for(handle, &glyphs, &mut b) {
+        return Ok("nil".into());
+    }
+    let xs: Vec<String> = b.iter().map(|x| format!("{:?}", x[0])).collect();
+    Ok(format!("({})", xs.join(" ")))
+}
+
 impl MacShell {
     /// A test `nhmac--call` kind: `None` when `kind` is not one.
     pub(super) fn test_call(&mut self, kind: &str, arg: &str) -> Option<ShellResult> {
@@ -188,6 +213,7 @@ impl MacShell {
                 }
                 _ => Err(ShellError::Arg),
             }),
+            "test-ct-advances" => ct_advances(arg),
             _ => return None,
         })
     }
