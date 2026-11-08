@@ -1537,6 +1537,8 @@ nhg_export! {
             made: made.get(),
             rect: (rec.r.x, rec.r.y, rec.r.w, rec.r.h),
             clip: (rec.nclip > 0).then(|| (rec.clip[0].x, rec.clip[0].y, rec.clip[0].w, rec.clip[0].h)),
+            src: (rec.a, rec.b),
+            matrix: pix.matrix,
         });
         #[cfg(not(all(feature = "macos", target_os = "macos")))]
         let _ = (data, mask);
