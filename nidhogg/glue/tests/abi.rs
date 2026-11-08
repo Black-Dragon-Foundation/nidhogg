@@ -579,6 +579,7 @@ PROTO (nhg_csd_title_bar, int32_t (NhgDisplay *, uint64_t, int32_t, int32_t, Nhg
 typedef NhgWindowDesc W;
 #define WOFF(m) offsetof (W, m)
 PROTO (nhg_window_new, int32_t (NhgDisplay *, const NhgWindowDesc *, uint64_t *));
+PROTO (nhg_window_reparent, int32_t (NhgDisplay *, uint64_t, const NhgWindowDesc *));
 PROTO (nhg_window_title, int32_t (NhgDisplay *, uint64_t, const char *, size_t));
 PROTO (nhg_window_undecorated, int32_t (NhgDisplay *, uint64_t, int32_t));
 PROTO (nhg_window_alpha, int32_t (NhgDisplay *, uint64_t, double, double, uint32_t *));
@@ -596,6 +597,8 @@ PROTO (nhg_tip_hide, int32_t (NhgDisplay *, uint64_t));";
             use nhglue::ffi::*;
             let _: unsafe extern "C" fn(*mut NhgDisplay, *const W, *mut u64) -> i32 =
                 nhg_window_new;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *const W) -> i32 =
+                nhg_window_reparent;
             let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *const c_char, usize) -> i32 =
                 nhg_window_title;
             let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32) -> i32 = nhg_window_undecorated;

@@ -687,6 +687,10 @@ impl ShellBackend for MacShell {
         self.child_create(desc)
     }
 
+    fn reparent(&mut self, window: WindowId, desc: &ChildDesc, title: &str) -> ShellResult {
+        self.kid_reparent(window, desc, title)
+    }
+
     fn set_position(&mut self, window: WindowId, x: i32, y: i32) -> ShellResult<bool> {
         self.kid_position(window, x, y)
     }

@@ -202,6 +202,52 @@ pub fn new(
     Ok(id)
 }
 
+/// `parent-frame` changed: `window` takes the place `d` describes (a top-level, or a child of `d.parent`) in the
+/// shell, keeping its id and its picture, where the shell can (`NHG_E_UNSUPPORTED` where a window keeps its role: C
+/// makes it again).  The frame takes `d`'s kind and facts; its child state starts over but for the chrome, which
+/// the frame keeps, so C's pushes after it send the new place and an unchanged chrome changes nothing.
+pub fn reparent(
+    state: &mut Display,
+    window: u64,
+    d: &NhgWindowDesc,
+    title: &str,
+) -> Result<(), GlueError> {
+    if d.native_w <= 0
+        || d.native_h <= 0
+        || d.facts & !NHG_WINDOW_FACTS != 0
+        || d.role & !crate::frame::NHG_FRAME_KINDS != 0
+    {
+        return Err(GlueError::Arg);
+    }
+    state.frame(window)?;
+    let (x, y) = if d.kind == NHSHELL_KIND_CHILD {
+        crate::child::new_window_offset(state, d)
+    } else {
+        (d.x, d.y)
+    };
+    let desc = ChildDesc {
+        kind: d.kind,
+        parent: d.parent,
+        x,
+        y,
+        w: d.w,
+        h: d.h,
+        anchor: d.anchor,
+        flags: d.flags,
+    };
+    state.backend().reparent(window, &desc, title)?;
+    let f = state.frame_mut(window)?;
+    f.flags = d.role;
+    f.scale120 = d.scale120;
+    f.facts.native_w = d.native_w;
+    f.facts.native_h = d.native_h;
+    f.facts.flags = d.facts;
+    f.child.reparented();
+    f.floating = None;
+    nhshell::trace::note(|| format!("window reparented: window {window} kind {}", d.kind));
+    Ok(())
+}
+
 pub fn title(state: &mut Display, window: u64, title: &str) -> Result<(), GlueError> {
     state.frame(window)?;
     Ok(state.backend().set_title(window, title)?)
