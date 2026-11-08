@@ -480,8 +480,8 @@ As if kqueue had refused it (`EINVAL').  For tests."
   "Return the newest surface of FRAME's window, a plist.
 `:w', `:h' (device pixels), `:points' (the content size), the layer's
 `:scale' and `:gravity', `:contents-is-newest', `:srgb' (`srgb',
-`generic' or nil) and `:pixel', the premultiplied ARGB at X, Y.  For
-tests."
+`generic' or nil), `:pixel', the premultiplied ARGB at X, Y, and
+`:slots', the surfaces the window's ring has made.  For tests."
   (nhmac--query 'test-surface (or frame (selected-frame)) x y))
 
 (defun nhmac--test-kq-probe (path)
