@@ -351,9 +351,8 @@ pub fn store(argb: &[u32], data: &mut [u8], mask: Option<&mut [u8]>) {
 }
 
 /// A bitmap's bits (`bits`: `width` x `height`, least significant bit first, each row padded to whole bytes) into a
-/// 32-bit container's bytes (`out`, `stride` bytes a row): `fg` for a set bit, `bg` for a clear one.  Both are Emacs's
-/// pixels (0xRRGGBB, no alpha), stored opaque: the drawn container is premultiplied ARGB, where a 0 alpha is clear.
-/// `None` when a size is under 1, the stride is short or a slice is too small for the sizes.
+/// 32-bit container's bytes (`out`, `stride` bytes a row): `fg` for a set bit, `bg` for a clear one, each word stored
+/// as given.  `None` when a size is under 1, the stride is short or a slice is too small for the sizes.
 pub fn bitmap(
     bits: &[u8],
     width: usize,
@@ -372,10 +371,6 @@ pub fn bitmap(
     {
         return None;
     }
-    let (fg, bg) = (
-        0xff00_0000 | (fg & 0xff_ffff),
-        0xff00_0000 | (bg & 0xff_ffff),
-    );
     for (y, row) in bits.chunks(row_bytes).take(height).enumerate() {
         let line = &mut out[y * stride..y * stride + width * 4];
         for (x, px) in line.as_chunks_mut::<4>().0.iter_mut().enumerate() {
@@ -397,15 +392,12 @@ mod tests {
     /// Bits are read least significant first, rows padded to bytes, into rows `stride` apart.
     #[test]
     fn bitmap_fills_a_pixel_per_bit() {
-        // 10 x 2: row 0 sets x 0 and x 9, row 1 sets x 1 and x 8; Emacs's pixels (0xRRGGBB) land opaque
+        // 10 x 2: row 0 sets x 0 and x 9, row 1 sets x 1 and x 8
         let bits = [0b0000_0001, 0b0000_0010, 0b0000_0010, 0b0000_0001];
-        let (fg, bg) = (0xff11_2233u32, 0xff00_00ffu32);
+        let (fg, bg) = (0xff11_2233u32, 0xff00_0000u32);
         let stride = 48;
         let mut out = vec![0xaa; stride * 2];
-        assert_eq!(
-            bitmap(&bits, 10, 2, 0x11_2233, 0x00_00ff, &mut out, stride),
-            Some(())
-        );
+        assert_eq!(bitmap(&bits, 10, 2, fg, bg, &mut out, stride), Some(()));
         let word = |x: usize, y: usize| {
             u32::from_ne_bytes(
                 out[y * stride + x * 4..y * stride + x * 4 + 4]

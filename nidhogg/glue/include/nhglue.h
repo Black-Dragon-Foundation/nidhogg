@@ -1277,7 +1277,7 @@ int32_t nhg_image_stand_in (const void *img, const NhgPix *pix, uint32_t fg, int
 int32_t nhg_image_stand_drop (const void *img);
 int32_t nhg_draw_stand_in (NhgDisplay *d, uint64_t frame, const NhgDrawRec *rec, const void *img);
 /* A bitmap's BITS (WIDTH x HEIGHT, least significant bit first, rows padded to bytes) into a 32-bit container's OUT
-   (STRIDE bytes a row): FG for a set bit, BG for a clear one, Emacs pixels (0xRRGGBB) stored opaque.  NHG_E_ARG for a size under 1 or a short stride.  */
+   (STRIDE bytes a row): FG for a set bit, BG for a clear one.  NHG_E_ARG for a size under 1 or a short stride.  */
 int32_t nhg_bitmap_to_container (const uint8_t *bits, int32_t width, int32_t height, uint32_t fg, uint32_t bg,
                                  uint8_t *out, int32_t stride);
 /* SVG through the shell's resvg route (image.c's svg type on Naglfar).  STYLE: the image's :css, the face's font
