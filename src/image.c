@@ -1830,6 +1830,9 @@ free_image (struct frame *f, struct image *img)
       struct image_cache *c = FRAME_IMAGE_CACHE (f);
 #ifdef HAVE_NIDHOGG_WORKERS
       nh_img_freed (f, img);
+#ifdef HAVE_NHMAC
+      nhmac_image_stand_drop (img);
+#endif
 
 #endif
 
@@ -8422,6 +8425,14 @@ native_image_load (struct frame *f, struct image *img)
    compares the two).  The code between the markers is the only part of
    image.c that knows the cores.  */
 
+# if defined HAVE_NHMAC && !defined USE_CAIRO
+/* Naglfar's containers are Cairo's (32-bit words and an 8-bit mask), so
+   the code below serves it as it is; its four uses of Cairo patterns
+   have Naglfar's hooks.  USE_CAIRO is defined for this block alone, as
+   the gate line under it is kept as it is.  */
+#  define USE_CAIRO
+#  define NHMAC_CAIRO_BLOCK
+# endif
 # ifdef USE_CAIRO
 
 /* Log the error OUT describes, with the text the loader logs.  */
@@ -8868,11 +8879,15 @@ nh_img_land (struct frame *f, struct image *img, int fmt,
 	     struct nh_img_out *out, int rc)
 {
   block_input ();
+#  ifdef HAVE_NHMAC
+  nhmac_image_stand_drop (img);
+#  else
   if (img->cr_data)
     {
       cairo_pattern_destroy (img->cr_data);
       img->cr_data = NULL;
     }
+#  endif
   img->width = img->height = 0;
   img->hmargin = img->vmargin = 0;
   img->relief = 0;
@@ -8901,6 +8916,9 @@ nh_img_prepare (struct frame *f, struct image *img)
   if (img->pixmap != NO_PIXMAP || img->load_failed_p
       || !nh_img_pending_p (f, img))
     return false;
+#  ifdef HAVE_NHMAC
+  nhmac_image_stand_drop (img);
+#  else
   if (img->cr_data)
     {
       block_input ();
@@ -8908,6 +8926,7 @@ nh_img_prepare (struct frame *f, struct image *img)
       img->cr_data = NULL;
       unblock_input ();
     }
+#  endif
   nh_img_stand_in_for (f, img);
   return true;
 }
@@ -8919,6 +8938,9 @@ nh_img_prepare (struct frame *f, struct image *img)
 bool
 nh_img_stand_in (struct frame *f, struct image *img, struct image *ready)
 {
+#  ifdef HAVE_NHMAC
+  return nhmac_image_stand_in (f, img, ready);
+#  else
   cairo_surface_t *surface;
   if (!ready->cr_data || ready->width <= 0 || ready->height <= 0
       || img->width <= 0 || img->height <= 0
@@ -8946,6 +8968,7 @@ nh_img_stand_in (struct frame *f, struct image *img, struct image *ready)
   img->cr_data = pat;
   unblock_input ();
   return true;
+#  endif
 }
 
 DEFUN ("nidhogg-workers--test-image-pixels", Fnidhogg_workers__test_image_pixels,
@@ -8978,6 +9001,7 @@ with a mask reads :pixels and :mask nil (Cairo holds them premultiplied).  */)
       data = (unsigned char *) img->pixmap->data;
       stride = img->pixmap->bytes_per_line;
     }
+#  ifndef HAVE_NHMAC
   else if (img->pixmap && !img->mask && img->cr_data
 	   && cairo_pattern_get_type (img->cr_data) == CAIRO_PATTERN_TYPE_SURFACE)
     {
@@ -8992,6 +9016,7 @@ with a mask reads :pixels and :mask nil (Cairo holds them premultiplied).  */)
 	  stride = cairo_image_surface_get_stride (s);
 	}
     }
+#  endif
   if (data && w > 0 && h > 0)
     {
       pixels = make_uninit_string ((ptrdiff_t) w * h * 4);
@@ -9081,6 +9106,10 @@ nh_img_image_syms (void)
 }
 
 # endif /* not USE_CAIRO */
+# if defined HAVE_NHMAC && defined NHMAC_CAIRO_BLOCK
+#  undef USE_CAIRO
+#  undef NHMAC_CAIRO_BLOCK
+# endif
 
 #endif /* HAVE_NIDHOGG_WORKERS */
 
