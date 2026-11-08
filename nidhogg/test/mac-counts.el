@@ -3,7 +3,8 @@
 ;; Test-only.  Reads the counters of nidhogg/test/mac-interpose (a DYLD_INSERT_LIBRARIES dylib that also is an Emacs
 ;; module): IOSurfaceLock calls, the bytes locked for writing, and run-loop iterations, split into those inside and
 ;; outside a redisplay.  nhmac-gui.sh --interpose loads the dylib and sets NHMAC_INTERPOSE_LIB.  Without the dylib
-;; every counter reads 0, so a row that expects counts fails on its assertion instead of on a missing function.
+;; every counter reads 0 and no dump is written, so a row that needs the interposer calls `mac-counts-require' first
+;; and fails saying so, not on a count of 0 or a missing file.
 ;;
 ;; The inside/outside split: NS emits no signposts, so `pre-redisplay-functions' marks the start of a redisplay and
 ;; `post-command-hook' its end; `mac-counts-redisplay' marks both around a (redisplay) the row calls itself.
@@ -22,6 +23,11 @@
         (module-load lib)
         (setq mac-counts--loaded t))))
   mac-counts--loaded)
+
+(defun mac-counts-require ()
+  "Signal an error unless the counting interposer is loaded: the row cannot measure without it."
+  (unless (mac-counts--load)
+    (error "No interposer inserted (run with --interpose)")))
 
 (defun mac-counts-read ()
   "The counters as a plist (:surface-locks :surface-bytes :spins :spins-in-redisplay)."
