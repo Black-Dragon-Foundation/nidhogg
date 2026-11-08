@@ -734,7 +734,9 @@ mod presenter {
     }
 
     /// 10k packets over three trees while the compositor holds and releases buffers at random: the host's thread
-    /// never waits a millisecond for the presenter.
+    /// never waits for the presenter's work.  Its waits are for the presenter's decisions and sends, under a tree's
+    /// mutex, and no compose or flush began with one held.  How long a wait took is wall-clock time, which load on the
+    /// machine stretches (a thread woken late, the holder preempted), so it is not what the row reads.
     #[test]
     fn main_waits_are_bounded() {
         let rec = Recorder::start("kwin");
@@ -754,13 +756,12 @@ mod presenter {
         }
         let st = shell.presenter_stats().unwrap();
         assert_eq!(st.packets, 10_000 + 3);
-        if !sanitized() {
-            assert!(
-                st.main_wait_max_ns < 1_000_000,
-                "the host waited {} ns",
-                st.main_wait_max_ns
-            );
-        }
+        assert!(st.commits > 3, "presenting composed: {st:?}");
+        assert_eq!(
+            shell.presenter_locked_work(),
+            0,
+            "work under a tree's mutex"
+        );
         assert!(shell.next_event().is_ok(), "no protocol error");
     }
 
