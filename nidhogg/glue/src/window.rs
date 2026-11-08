@@ -273,6 +273,20 @@ pub fn min_size(state: &mut Display, window: u64, w: i32, h: i32) -> Result<(), 
         .set_min_size(window, to_logical(w, s), to_logical(h, s))?)
 }
 
+/// Place the top-level frame with its top-left at (`x`, `y`) device pixels from the main screen's top-left, in the
+/// window's logical pixels.  A child frame is placed by its parent (`NHG_E_ARG`); `NHG_E_UNSUPPORTED` where clients
+/// have no position.
+pub fn place(state: &mut Display, window: u64, x: i32, y: i32) -> Result<(), GlueError> {
+    let f = state.frame(window)?;
+    if f.flags & NHG_FRAME_CHILD != 0 {
+        return Err(GlueError::Arg);
+    }
+    let s = scale(f);
+    Ok(state
+        .backend()
+        .move_to(window, to_logical(x, s), to_logical(y, s))?)
+}
+
 /// Push: Emacs made the frame visible (`on`) or invisible, not iconified.
 pub fn visible(state: &mut Display, window: u64, on: bool) -> Result<(), GlueError> {
     let f = state.frame_mut(window)?;

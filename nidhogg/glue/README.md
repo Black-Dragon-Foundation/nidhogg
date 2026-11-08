@@ -303,6 +303,7 @@ accepted and does nothing, as for a missing Wayland protocol.
 | `nhg_monitors` / `nhg_frame_outputs` / `nhg_frame_monitors` / `nhg_monitor_origin` | - | outputs, the ones a frame is on, a monitor's device origin | `NSScreen` list |
 | `nhg_window_new` / `nhg_window_destroy` | - | make or destroy a frame's shell window | `NSWindow` |
 | `nhg_window_title` / `nhg_window_undecorated` / `nhg_window_alpha` / `nhg_window_min_size` / `nhg_window_size` | - | title, decoration, alpha, smallest size, pushed size | the matching `NSWindow` properties |
+| `nhg_window_place` | - | `NHG_E_UNSUPPORTED` (Wayland clients have no position) | `setFrameTopLeftPoint`, from the main screen's top-left as NS's `set_offset` places a frame |
 | `nhg_window_move` / `nhg_window_resize` / `nhg_window_show_menu` / `nhg_window_activate` | - | interactive move and resize, window menu, activation | `performWindowDrag`, `NSWindow` resize, no window menu, `makeKeyAndOrderFront` |
 | `nhg_window_visible` / `nhg_window_iconify` / `nhg_window_fullscreen` | - | visibility, minimize, fullscreen | `orderFront`/`orderOut`, `miniaturize`, `toggleFullScreen` |
 | `nhg_window_wait_configured` | - | one round of the wait for the first configure | returns configured at once |

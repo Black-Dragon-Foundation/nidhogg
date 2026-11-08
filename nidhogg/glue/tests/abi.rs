@@ -583,6 +583,7 @@ PROTO (nhg_window_undecorated, int32_t (NhgDisplay *, uint64_t, int32_t));
 PROTO (nhg_window_alpha, int32_t (NhgDisplay *, uint64_t, double, double, uint32_t *));
 PROTO (nhg_window_size, int32_t (NhgDisplay *, uint64_t, int32_t, int32_t));
 PROTO (nhg_window_min_size, int32_t (NhgDisplay *, uint64_t, int32_t, int32_t));
+PROTO (nhg_window_place, int32_t (NhgDisplay *, uint64_t, int32_t, int32_t));
 PROTO (nhg_window_visible, int32_t (NhgDisplay *, uint64_t, int32_t));
 PROTO (nhg_window_iconify, int32_t (NhgDisplay *, uint64_t));
 PROTO (nhg_window_fullscreen, int32_t (NhgDisplay *, uint64_t, uint32_t));
@@ -602,6 +603,7 @@ PROTO (nhg_tip_hide, int32_t (NhgDisplay *, uint64_t));";
             let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32, i32) -> i32 = nhg_window_size;
             let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32, i32) -> i32 =
                 nhg_window_min_size;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32, i32) -> i32 = nhg_window_place;
             let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32) -> i32 = nhg_window_visible;
             let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_window_iconify;
             let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u32) -> i32 = nhg_window_fullscreen;
