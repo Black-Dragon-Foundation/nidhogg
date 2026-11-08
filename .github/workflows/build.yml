@@ -743,10 +743,80 @@ jobs:
           ip=""
           if [ -z "$CHECKS" ] || echo "$CHECKS" | grep -Eq 'nhmac-(interposer|ns-)'; then ip=--interpose; fi
           bash nidhogg/test/nhmac-gui.sh --tarball "$(ls dist/*.tar.xz | head -n 1)" --out "$RUNNER_TEMP/nhmac-gui" $ip ${sel:+--select "$sel"} ${FILES:+--files "$FILES"}
-      # The Naglfar lane: the same tree built again as Nidhogg's own macOS shell (build.sh --naglfar, a dev build in its
-      # own build directory; no bundle yet, so the build tree's src/emacs runs), the glue's and the shell's unit tests
-      # with the AppKit backend (the integration tests drive the Wayland recorder), the glue's boundary check on the
-      # Mach-O objects, then the rows.  It runs when this job built (the build dependencies are installed).
+      - name: macOS GUI logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nhmac-gui-logs
+          path: ${{ runner.temp }}/nhmac-gui/
+          if-no-files-found: ignore
+      # also after red GUI rows: a later run's ns_app_run reruns them on this tarball
+      - if: ${{ !cancelled() && hashFiles('dist/*.tar.xz') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tarball-macos
+          path: dist/
+          if-no-files-found: error
+      - name: Build logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-logs-macos
+          path: ${{ runner.temp }}/build/*.log
+          if-no-files-found: ignore
+
+  # The Naglfar lane, a job of its own beside "macOS (NS app)": the two share nothing but the tree, so they run at the
+  # same time on two runners (the org's free plan has five macOS slots, README.md "CI and releases").  The tree built
+  # as Nidhogg's own macOS shell (build.sh --naglfar, a dev build in its own build directory; no bundle yet, so the
+  # build tree's src/emacs runs), the glue's and the shell's unit tests with the AppKit backend (the integration tests
+  # drive the Wayland recorder), the glue's boundary check on the Mach-O objects, then the rows.  It builds, so it does
+  # not run for ns_app_run (a rerun of the NS rows on an earlier run's tarball).  Only the paired timing needs the NS
+  # job's tarball, which it waits for.
+  macos-naglfar:
+    name: macOS (Naglfar)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.macos != 'false' && inputs.ns_app_run == '' }}
+    runs-on: xcode-27
+    timeout-minutes: 180
+    # actions: read for the NS job's tarball artifact (pair)
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      # Homebrew's packages, downloaded each run (a 775 MB cache of the bottles saved under a minute); Rust from the
+      # image's rustup instead of Homebrew's when the image has it (Homebrew's otherwise)
+      - name: Build dependencies (Homebrew; Rust by rustup)
+        id: brew
+        run: |
+          if command -v rustup >/dev/null; then
+            sed 's/#.*//' nidhogg/deps/macos.build | grep -vx 'rust' | xargs brew install
+            rustup toolchain install stable --profile minimal --component clippy,rustfmt --no-self-update
+            rustup default stable
+          else
+            sed 's/#.*//' nidhogg/deps/macos.build | xargs brew install
+          fi
+          rustc -V
+      - name: Toolchain versions
+        id: tc
+        run: echo "image=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+      - name: ccache (Homebrew)
+        id: ccb
+        run: brew install ccache
+      # its own entry: the NS job's objects are compiled with other flags, and the entry is saved after this build
+      - name: ccache (C objects)
+        id: cc
+        if: ${{ steps.ccb.outcome == 'success' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-macos-naglfar-${{ runner.arch }}-${{ steps.tc.outputs.image }}-${{ hashFiles('nidhogg/deps/macos.build') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ccache-macos-naglfar-${{ runner.arch }}-${{ steps.tc.outputs.image }}-${{ hashFiles('nidhogg/deps/macos.build') }}-
+            ccache-macos-naglfar-${{ runner.arch }}-
       - name: Naglfar build
         id: nbuild
         if: ${{ !cancelled() && steps.brew.outcome == 'success' }}
@@ -771,33 +841,46 @@ jobs:
         run: |
           sel=${CHECKS//|/\\|}
           bash nidhogg/test/nhmac-gui.sh --emacs "$RUNNER_TEMP/nbuild/obj/src/emacs" --out "$RUNNER_TEMP/nhmac-gui/naglfar" ${sel:+--select "$sel"} ${FILES:+--files "$FILES"}
+      - name: Save ccache
+        if: ${{ !cancelled() && env.CACHE_SAVE == 'true' && steps.cc.outcome == 'success' && (steps.nbuild.outcome == 'success' || steps.nbuild.outcome == 'failure') }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-macos-naglfar-${{ runner.arch }}-${{ steps.tc.outputs.image }}-${{ hashFiles('nidhogg/deps/macos.build') }}-${{ github.run_id }}-${{ github.run_attempt }}
       # Paired timing (`pair`): the NS build of the tarball and Naglfar run the timed row in turn, ABAB
-      # (nidhogg/test/nhmac-pair.sh); red when Naglfar is slower.
+      # (nidhogg/test/nhmac-pair.sh); red when Naglfar is slower.  The tarball is the NS job's (it uploads tarball-macos
+      # once its rows are done, red or green); this job waits for it, and fails if that job ended without one.
       - name: Naglfar paired timing (pair)
-        if: ${{ !cancelled() && steps.nbuild.outcome == 'success' && inputs.pair != '' && hashFiles('dist/*.tar.xz') != '' }}
+        if: ${{ !cancelled() && steps.nbuild.outcome == 'success' && inputs.pair != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN: ${{ github.run_id }}
         run: |
+          mkdir -p dist
+          i=0
+          until [ -n "$(gh api "repos/$REPO/actions/runs/$RUN/artifacts" --jq '.artifacts[] | select(.name == "tarball-macos") | .id')" ]; do
+            ns=$(gh api "repos/$REPO/actions/runs/$RUN/jobs" --jq '.jobs[] | select(.name == "macOS (NS app)") | .status')
+            if [ "$ns" = completed ]; then echo "the NS job ended without a tarball-macos artifact" >&2; exit 1; fi
+            i=$((i + 1)); [ "$i" -le 180 ] || { echo "no tarball-macos artifact after 90 minutes" >&2; exit 1; }
+            sleep 30
+          done
+          gh run download "$RUN" --repo "$REPO" --name tarball-macos --dir dist
           mkdir -p "$RUNNER_TEMP/ns-app" && tar -C "$RUNNER_TEMP/ns-app" -xJf "$(ls dist/*.tar.xz | head -n 1)"
           bash nidhogg/test/nhmac-pair.sh --ns "$(echo "$RUNNER_TEMP"/ns-app/nidhogg-*)/Nidhogg.app/Contents/MacOS/Emacs" --naglfar "$RUNNER_TEMP/nbuild/obj/src/emacs" --out "$RUNNER_TEMP/nhmac-gui/pair"
       - name: macOS GUI logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: nhmac-gui-logs
+          name: nhmac-gui-logs-naglfar
           path: ${{ runner.temp }}/nhmac-gui/
           if-no-files-found: ignore
-      # also after red GUI rows: a later run's ns_app_run reruns them on this tarball
-      - if: ${{ !cancelled() && hashFiles('dist/*.tar.xz') != '' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: tarball-macos
-          path: dist/
-          if-no-files-found: error
       - name: Build logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: build-logs-macos
-          path: ${{ runner.temp }}/build/*.log
+          name: build-logs-macos-naglfar
+          path: ${{ runner.temp }}/nbuild/*.log
           if-no-files-found: ignore
 
   # drgnx's Emacs-side tiers on the tarballs this run built, through drgnx's own definition of them
@@ -1415,7 +1498,7 @@ jobs:
   gate:
     name: ${{ needs.changes.outputs.partial == 'true' && 'Nidhogg gate (partial)' || 'Nidhogg gate' }}
     if: always()
-    needs: [changes, tree, vendor, fast-forward, linux, compile-noglitnir, macos, pin, drgnx, native-crates, native-gui, workers-harness, workers-asan, workers-chaos, workers-pkg, workers-pkg-compare]
+    needs: [changes, tree, vendor, fast-forward, linux, compile-noglitnir, macos, macos-naglfar, pin, drgnx, native-crates, native-gui, workers-harness, workers-asan, workers-chaos, workers-pkg, workers-pkg-compare]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -1427,12 +1510,16 @@ jobs:
           PR: ${{ github.event_name == 'pull_request' }}
           PARTIAL: ${{ needs.changes.outputs.partial }}
           TIERS: ${{ needs.changes.outputs.tiers }}
+          NS_APP_RUN: ${{ inputs.ns_app_run }}
         run: |
           allow=" $SKIP "
           # a row-only run with no drgnx tier left (the changes job said so)
           [ "$TIERS" != none ] || allow="$allow drgnx "
           [ "$TAG" != true ] || allow="$allow compile-noglitnir workers-harness workers-asan workers-chaos workers-pkg workers-pkg-compare "
           [ "$PR" = true ] || allow="$allow fast-forward "
+          # the Naglfar job follows the macOS job's filter, and does not run for a rerun of the NS rows (ns_app_run)
+          case "$allow" in *" macos "*) allow="$allow macos-naglfar " ;; esac
+          [ -z "$NS_APP_RUN" ] || allow="$allow macos-naglfar "
           jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
           [ "$PARTIAL" != true ] || echo "::notice::a narrowed run: its gate stands only for the jobs it ran"
           jq -e --arg allow "$allow" \
