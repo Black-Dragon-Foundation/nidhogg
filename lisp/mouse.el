@@ -1065,6 +1065,9 @@ must be one of the symbols `header', `mode', `tab' or `vertical'."
 	       (define-key map [bottom-divider] map)
 	       (define-key map [left-margin] map)
 	       (define-key map [right-margin] map)
+	       ;; ... or a fringe, where a release must end the drag too.
+	       (define-key map [left-fringe] map)
+	       (define-key map [right-fringe] map)
 	       map)
 	     t (lambda () (setq track-mouse old-track-mouse)))))))
 
