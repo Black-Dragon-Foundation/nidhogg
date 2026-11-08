@@ -275,6 +275,32 @@ must not ask the frame for a face it does not have (\"Invalid face\", logged per
           (should (equal (glitnir--shadow-color c) (glitnir--shadow-color (selected-frame)))))
       (delete-frame c))))
 
+;;; `browse-url' on a shell frame: its window system is `pgtk', so browse-url asks for `x-gtk-launch-uri'
+
+(ert-deftest nhwl-gui/browse-url-reaches-the-launcher ()
+  "`browse-url' on a shell frame opens the URL with the desktop's launcher (xdg-open, here a script on PATH that
+writes what it was given)."
+  (skip-unless (and (nhwl-gui--live-p) (eq (framep (selected-frame)) 'pgtk)))
+  (require 'browse-url)
+  (let* ((dir (make-temp-file "nhwl-xdg" t))
+         (out (expand-file-name "url" dir))
+         (script (expand-file-name "xdg-open" dir))
+         (url "https://example.org/nidhogg?q=1")
+         (exec-path (cons dir exec-path))
+         (process-environment (cons (concat "PATH=" dir ":" (getenv "PATH")) process-environment))
+         (browse-url-browser-function #'browse-url-default-browser)
+         (browse-url-handlers nil))
+    (unwind-protect
+        (progn
+          (with-temp-file script
+            (insert "#!/bin/sh\nprintf '%s' \"$1\" > " (shell-quote-argument out) "\n"))
+          (set-file-modes script #o755)
+          (should-not (condition-case err (progn (browse-url url) nil) (error err)))
+          (should (gui-runner-wait (lambda () (file-exists-p out)) 5))
+          (gui-runner-wait (lambda () (> (file-attribute-size (file-attributes out)) 0)) 2)
+          (should (equal (with-temp-buffer (insert-file-contents out) (buffer-string)) url)))
+      (delete-directory dir t))))
+
 ;;; A real pointer on real mutter: its RemoteDesktop session's virtual pointer goes through the compositor and the shell
 ;;; as a mouse's motion and buttons do (the `mutter' lane; gui.sh runs mutter under its own session bus)
 
