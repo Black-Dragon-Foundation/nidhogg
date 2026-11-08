@@ -1054,20 +1054,20 @@ must be one of the symbols `header', `mode', `tab' or `vertical'."
 		   `(menu-item "" ,(lambda () (interactive) (funcall exitfun))
 			       :filter ,(lambda (cmd) (if dragged cmd)))))
 	       ;; Some of the events will of course end up looked up
-	       ;; with a mode-line, header-line or vertical-line prefix ...
-	       (define-key map [mode-line] map)
-	       (define-key map [header-line] map)
-	       (define-key map [tab-line] map)
-	       (define-key map [vertical-line] map)
-	       ;; ... and some maybe even with a right- or bottom-divider
-	       ;; or left- or right-margin prefix ...
-	       (define-key map [right-divider] map)
-	       (define-key map [bottom-divider] map)
-	       (define-key map [left-margin] map)
-	       (define-key map [right-margin] map)
-	       ;; ... or a fringe, where a release must end the drag too.
-	       (define-key map [left-fringe] map)
-	       (define-key map [right-fringe] map)
+	       ;; with a mode-line, header-line or vertical-line prefix,
+	       ;; some maybe even with a right- or bottom-divider or
+	       ;; left- or right-margin prefix, or a fringe one, where
+	       ;; a release must end the drag too.  These prefixes reach
+	       ;; MAP through a symbol: each one written into MAP itself
+	       ;; multiplies the printed size of a command holding MAP
+	       ;; about tenfold.
+	       (let ((prefix (make-symbol "mouse-drag-line-map")))
+		 (fset prefix map)
+		 (dolist (area '(mode-line header-line tab-line vertical-line
+				 right-divider bottom-divider
+				 left-margin right-margin
+				 left-fringe right-fringe))
+		   (define-key map (vector area) prefix)))
 	       map)
 	     t (lambda () (setq track-mouse old-track-mouse)))))))
 
