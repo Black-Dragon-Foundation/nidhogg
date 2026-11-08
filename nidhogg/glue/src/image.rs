@@ -37,10 +37,6 @@ pub struct NhgPix {
     pub matrix: Matrix,
 }
 
-/// The colour a name gives (`0xRRGGBB`), `image.c`'s: called with its context and a NUL-terminated name.
-pub type NhgColorFn =
-    Option<unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_char) -> u32>;
-
 /// How `image.c` asks for an SVG (`NhgSvgStyle`): its `:css`, the face's font family, `:base-uri` (each `len` bytes;
 /// null or empty: none), the face's font size and the display's resolution, and the colours (`0xRRGGBB`).
 #[repr(C)]
@@ -296,10 +292,15 @@ fn boxed(
 }
 
 /// Frame `index` of the image in `bytes` (`None`: the route cannot read it, or there is no such frame).  An XPM's
-/// colour names go through `resolve` (`0xRRGGBB`).
-pub fn decode(bytes: &[u8], index: u32, resolve: &mut dyn FnMut(&str) -> u32) -> Option<NhgImage> {
+/// colours are `colors` (`0xRRGGBB`), one for each of [`crate::xpm::names`], in its order.
+pub fn decode(bytes: &[u8], index: u32, colors: &[u32]) -> Option<NhgImage> {
     if crate::xpm::is_xpm(bytes) {
-        let (w, h, argb, alpha) = crate::xpm::decode(bytes, resolve)?;
+        let names = crate::xpm::names(bytes)?;
+        if names.len() != colors.len() {
+            return None;
+        }
+        let mut resolve = |n: &str| names.iter().position(|m| m == n).map_or(0, |i| colors[i]);
+        let (w, h, argb, alpha) = crate::xpm::decode(bytes, &mut resolve)?;
         return (index == 0).then(|| boxed(w as i32, h as i32, 1, alpha, 0.0, argb));
     }
     #[cfg(all(feature = "macos", target_os = "macos"))]
@@ -444,14 +445,13 @@ mod tests {
     }
 
     #[test]
-    fn an_xpm_decodes_on_every_platform_through_the_resolver() {
+    fn an_xpm_decodes_on_every_platform_with_the_colours_given() {
         let xpm = br#"/* XPM */ static char *x[] = { "2 1 2 1", "a c None", "b c red", "ab" };"#;
-        let mut asked = Vec::new();
-        let mut img = decode(xpm, 0, &mut |n| {
-            asked.push(n.to_string());
-            0x00ff_0000
-        })
-        .unwrap();
+        assert_eq!(crate::xpm::names(xpm).unwrap(), vec!["red".to_string()]);
+        // one colour for each name, or none decodes
+        assert!(decode(xpm, 0, &[]).is_none());
+        assert!(decode(xpm, 0, &[1, 2]).is_none());
+        let mut img = decode(xpm, 0, &[0x00ff_0000]).unwrap();
         assert_eq!(
             (img.width, img.height, img.frames, img.has_alpha),
             (2, 1, 1, 1)
@@ -465,13 +465,12 @@ mod tests {
         );
         // SAFETY: freed once.
         unsafe { free(&mut img) };
-        assert_eq!(asked, vec!["red"]);
         assert_eq!(mask, [0, 255]);
         assert_eq!(
             u32::from_ne_bytes(data[4..].try_into().unwrap()),
             0xffff_0000
         );
-        assert!(decode(xpm, 1, &mut |_| 0).is_none());
+        assert!(decode(xpm, 1, &[0]).is_none());
     }
 
     /// Where the matrix takes a drawn pixel in the container.

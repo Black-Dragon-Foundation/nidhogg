@@ -8193,15 +8193,40 @@ native_image_p (Lisp_Object object)
 }
 
 #ifdef HAVE_NHMAC
-/* Naglfar: an XPM colour name's 0xRRGGBB, as xpm_load_image resolves
-   it, or frame F's foreground for one it does not know.  */
-static uint32_t
-nhmac_xpm_color (void *f, const char *name)
+/* Naglfar: the 0xRRGGBB of the colour names an XPM in SRC needs, as
+   xpm_load_image resolves them (F's foreground for one it does not
+   know), into *COLORS (xmalloc'd; NULL for none), their number into *N.
+   False when the glue cannot read it.  */
+static bool
+nhmac_xpm_colors (struct frame *f, Lisp_Object src, bool is_file,
+		  uint32_t **colors, uint32_t *n)
 {
-  Emacs_Color c;
-  return (FRAME_TERMINAL ((struct frame *) f)->defined_color_hook (f, name, &c,
-								  false, false)
-	  ? c.pixel : FRAME_FOREGROUND_PIXEL ((struct frame *) f)) & 0xffffff;
+  size_t need;
+  *colors = NULL;
+  int32_t rc = NHG (nhg_xpm_names (SDATA (src), SBYTES (src), is_file,
+				   NULL, 0, &need, n));
+  if (rc == NHG_OK)
+    return true;
+  if (rc != NHG_E_TOO_SMALL)
+    return false;
+  uint8_t *names = xmalloc (need);
+  if (NHG (nhg_xpm_names (SDATA (src), SBYTES (src), is_file, names, need,
+			  &need, n)) != NHG_OK)
+    {
+      xfree (names);
+      return false;
+    }
+  *colors = xnmalloc (*n, sizeof **colors);
+  char *name = (char *) names;
+  for (uint32_t i = 0; i < *n; i++, name += strlen (name) + 1)
+    {
+      Emacs_Color c;
+      (*colors)[i] = (FRAME_TERMINAL (f)->defined_color_hook (f, name, &c,
+							      false, false)
+		      ? c.pixel : FRAME_FOREGROUND_PIXEL (f)) & 0xffffff;
+    }
+  xfree (names);
+  return true;
 }
 
 /* The glue decodes through ImageIO (an XPM itself); the colours go into
@@ -8215,11 +8240,16 @@ nhmac_load_image (struct frame *f, struct image *img, Lisp_Object file,
   Lisp_Object src = STRINGP (file) ? ENCODE_FILE (file) : data;
   Emacs_Pix_Container ximg, mask = NULL;
   NhgImage im;
+  uint32_t *colors = NULL, ncolors = 0;
+  bool ok = (STRINGP (src)
+	     && nhmac_xpm_colors (f, src, STRINGP (file), &colors, &ncolors)
+	     && NHG (nhg_image_decode (SDATA (src), SBYTES (src),
+				       STRINGP (file),
+				       FIXNATP (index) ? XFIXNAT (index) : 0,
+				       colors, ncolors, &im)) == NHG_OK);
 
-  if (!STRINGP (src)
-      || NHG (nhg_image_decode (SDATA (src), SBYTES (src), STRINGP (file),
-				FIXNATP (index) ? XFIXNAT (index) : 0,
-				nhmac_xpm_color, f, &im)) != NHG_OK)
+  xfree (colors);
+  if (!ok)
     {
       image_error ("Cannot load image `%s'", img->spec);
       return false;
