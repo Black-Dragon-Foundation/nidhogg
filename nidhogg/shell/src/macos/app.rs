@@ -11,6 +11,7 @@ use super::kq::{self, Kq};
 use super::layers;
 use super::pacer;
 use super::menus;
+use super::nsapp;
 use super::power;
 use super::runloop::{MacEv, SCOPE};
 use super::screens;
@@ -1316,6 +1317,63 @@ impl ShellBackend for MacShell {
                 }
                 Ok(())
             }
+            "hide-others" => {
+                self.app.hideOtherApplications(None);
+                Ok(())
+            }
+            "about-panel" => {
+                self.app.orderFrontStandardAboutPanel(None);
+                Ok(())
+            }
+            "color-panel" => {
+                // SAFETY: AppKit's standard action, on the main thread, with no sender.
+                unsafe { self.app.orderFrontColorPanel(None) };
+                Ok(())
+            }
+            "character-palette" => {
+                self.app.orderFrontCharacterPalette(None);
+                Ok(())
+            }
+            "badge" => {
+                nsapp::badge(&self.app, nsapp::text_arg(arg));
+                Ok(())
+            }
+            // "(URGENCY)": 0 cancel, 1 informational, 2 critical
+            "attention" => {
+                let (n, _) = crate::menu::split_numbers(arg, 1).ok_or(ShellError::Arg)?;
+                nsapp::attention(&self.app, n[0]);
+                Ok(())
+            }
+            // "(PROGRESS)", a float; outside 0 to 1 the indicator is hidden
+            "dock-progress" => {
+                let p: f64 = nsapp::text_arg(arg)
+                    .trim()
+                    .parse()
+                    .map_err(|_| ShellError::Arg)?;
+                nsapp::progress(self.mtm, &self.app, p);
+                Ok(())
+            }
+            "warp-mouse" => {
+                let (n, _) = crate::menu::split_numbers(arg, 2).ok_or(ShellError::Arg)?;
+                nsapp::warp(n[0] as f64, n[1] as f64);
+                Ok(())
+            }
+            // "(WINDOW OTHER ABOVE)"
+            "restack" => {
+                let (n, _) = crate::menu::split_numbers(arg, 3).ok_or(ShellError::Arg)?;
+                let other = self.win(n[1] as WindowId)?.window.clone();
+                nsapp::restack(&self.win(n[0] as WindowId)?.window, &other, n[2] == 1);
+                Ok(())
+            }
+            // "(WINDOW ITEMS)", the items separated by US
+            "send-items" => {
+                let (n, rest) = crate::menu::split_numbers(arg, 1).ok_or(ShellError::Arg)?;
+                let id = n[0] as WindowId;
+                let view = self.win(id)?.view.clone();
+                let items: Vec<&str> = nsapp::text_arg(rest).split('\u{1f}').collect();
+                nsapp::send_items(&view, id, &items);
+                Ok(())
+            }
             _ => Err(ShellError::Arg),
         }
     }
@@ -1339,6 +1397,31 @@ impl ShellBackend for MacShell {
             "file-dialog" => self.file_dialog(arg),
             "service-perform" => Ok(self.service_perform(arg)),
             "menu-popup" => self.menu_popup(arg),
+            "mouse-position" => Ok(nsapp::mouse_position(self.mtm)),
+            "ax-trusted" => Ok(if nsapp::ax_trusted() { "t" } else { "nil" }.to_string()),
+            "applescript" => Ok(nsapp::applescript(nsapp::text_arg(arg))),
+            // "(ALLOW-DISPLAY-SLEEP WHY)"
+            "sleep-block" => {
+                let (n, why) = crate::menu::split_numbers(arg, 1).ok_or(ShellError::Arg)?;
+                Ok(nsapp::sleep_block(nsapp::text_arg(why), n[0] == 1))
+            }
+            "sleep-unblock" => {
+                let (n, _) = crate::menu::split_numbers(arg, 1).ok_or(ShellError::Arg)?;
+                Ok(nsapp::sleep_unblock(u32::try_from(n[0]).unwrap_or(0)))
+            }
+            // "(WINDOW…)": their places, front to back
+            "z-order" => {
+                let ids: Vec<WindowId> = nsapp::text_arg(arg)
+                    .split_whitespace()
+                    .map(|w| w.parse().map_err(|_| ShellError::Arg))
+                    .collect::<ShellResult<_>>()?;
+                let windows: Vec<Retained<objc2_app_kit::NSWindow>> = ids
+                    .iter()
+                    .map(|id| self.win(*id).map(|w| w.window.clone()))
+                    .collect::<ShellResult<_>>()?;
+                let refs: Vec<&objc2_app_kit::NSWindow> = windows.iter().map(|w| &**w).collect();
+                Ok(nsapp::z_order(&self.app, &refs))
+            }
             _ => Err(ShellError::Arg),
         }
     }

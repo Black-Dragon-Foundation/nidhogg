@@ -658,15 +658,11 @@ through `ns-spi-service-call'."
 ;; Packages and `ns-win.el' read and call what NS defines in C.  Here the
 ;; variables are `defvar's with NS's defaults, and the functions are Lisp
 ;; over `nhmac--call' and `nhmac--query' (the two primitives that pass
-;; records to the shell).  A function the shell does not serve yet signals
-;; `nhmac--not-yet'.
+;; records to the shell), or the shared C's where the Wayland code serves
+;; the same (geometry, monitors, drags).
 
 (declare-function nhmac--call "nhmacterm.c" (what &rest args))
 (declare-function nhmac--query "nhmacterm.c" (what &rest args))
-
-(defun nhmac--not-yet ()
-  "Signal that the shell does not serve this function yet."
-  (error "Naglfar: not available yet"))
 
 (defun nhmac-stats ()
   "Return the shell's counters, a plist.
@@ -971,24 +967,55 @@ readable.  For tests."
 
 (defun ns-badge (badge)
   "Set the app icon badge to BADGE.
+BADGE should be a string short enough to display nicely in the short
+space intended for badges.  If BADGE is nil, clear the app badge."
+  (unless (null badge) (cl-check-type badge string))
+  (nhmac--call 'badge (or badge "")))
 
-Not available yet in Naglfar."
-  (ignore badge)
-  (nhmac--not-yet))
+(declare-function nhwl--drag-start "nhwlfns.c"
+                  (frame items-fn offered preferred allow-current return-frame))
+
+(defun nhmac--drag-items (pboard)
+  "The (MIME . BYTES) items of PBOARD, `ns-begin-drag''s pasteboard alist."
+  (let (items)
+    (pcase-dolist (`(,type . ,value) pboard)
+      (pcase type
+        ('string
+         (push (cons "text/plain;charset=utf-8" (encode-coding-string value 'utf-8)) items))
+        ('file
+         (push (cons "text/uri-list"
+                     (encode-coding-string
+                      (mapconcat (lambda (f)
+                                   (if (string-prefix-p "file://" f) f
+                                     (url-encode-url (concat "file://" (expand-file-name f)))))
+                                 (if (listp value) value (list value))
+                                 "\r\n")
+                      'utf-8))
+               items))))
+    (nreverse items)))
 
 (defun ns-begin-drag (frame pboard action &optional return-frame allow-same-frame follow-tooltip)
   "Begin a drag-and-drop operation on FRAME.
-
-Not available yet in Naglfar."
-  (ignore frame pboard action return-frame allow-same-frame follow-tooltip)
-  (nhmac--not-yet))
+PBOARD is an alist of (TYPE . VALUE): TYPE `string' with a string, or
+`file' with a file URL or a list of file names.  ACTION is one of
+`XdndActionCopy' or `XdndActionMove'.  Return the action the target
+performed, as `x-begin-drag'; RETURN-FRAME and ALLOW-SAME-FRAME are as
+there, and FOLLOW-TOOLTIP is ignored."
+  (ignore follow-tooltip)
+  (let* ((move (eq action 'XdndActionMove))
+         (r (nhwl--drag-start (or frame (selected-frame))
+                              (lambda () (nhmac--drag-items pboard))
+                              (if move 3 1) (if move 2 1)
+                              allow-same-frame return-frame)))
+    (pcase r (1 'XdndActionCopy) (2 'XdndActionMove) (4 'XdndActionPrivate) (_ r))))
 
 (defun ns-block-system-sleep (why allow-display-sleep)
   "Block system idle sleep.
-
-Not available yet in Naglfar."
-  (ignore why allow-display-sleep)
-  (nhmac--not-yet))
+WHY is a string reason for the block.  If ALLOW-DISPLAY-SLEEP is nil,
+block the screen from sleeping too.  Return a token to unblock this
+block using `ns-unblock-system-sleep', or nil if the block fails."
+  (unless (null why) (cl-check-type why string))
+  (nhmac--query 'sleep-block (if allow-display-sleep 1 0) (or why "")))
 
 (defun ns-disown-selection-internal (selection)
   "If we own the selection SELECTION, disown it.
@@ -1007,51 +1034,60 @@ in device pixels), with `source' \"NS\"."
 
 (defun ns-do-applescript (script)
   "Execute AppleScript SCRIPT and return the result.
-
-Not available yet in Naglfar."
-  (ignore script)
-  (nhmac--not-yet))
+If compilation and execution are successful, the resulting script value
+is returned as a string, a number or, in the case of other constructs,
+nil."
+  (cl-check-type script string)
+  (let ((r (nhmac--query 'applescript script)))
+    (if (and (consp r) (eq (car r) 'error))
+        (error "%s" (cadr r))
+      r)))
 
 (defun ns-emacs-info-panel ()
-  "Shows the `Info' or `About' panel for Emacs.
-
-Not available yet in Naglfar."
-  (nhmac--not-yet))
+  "Shows the `Info' or `About' panel for Emacs."
+  (nhmac--call 'about-panel))
 
 (defun ns-font-name (name)
   "Determine font PostScript or family name for font NAME.
+NAME should be a string containing either the font name or an XLFD
+font descriptor.  If string contains `fontset' and not
+`fontset-startup', it is left alone."
+  (if (and (string-match-p "fontset" name) (not (string-match-p "fontset-startup" name)))
+      name
+    (let ((font (find-font (font-spec :name name))))
+      (if font (symbol-name (font-get font :family)) name))))
 
-Not available yet in Naglfar."
-  (ignore name)
-  (nhmac--not-yet))
+(declare-function pgtk-frame-edges "nhwlfns.c" (&optional frame type))
+(declare-function pgtk-frame-geometry "nhwlfns.c" (&optional frame))
 
 (defun ns-frame-edges (&optional frame type)
   "Return edge coordinates of FRAME.
-
-Not available yet in Naglfar."
-  (ignore frame type)
-  (nhmac--not-yet))
+See `frame-edges'."
+  (pgtk-frame-edges frame type))
 
 (defun ns-frame-geometry (&optional frame)
   "Return geometric attributes of FRAME.
-
-Not available yet in Naglfar."
-  (ignore frame)
-  (nhmac--not-yet))
+See `frame-geometry'."
+  (pgtk-frame-geometry frame))
 
 (defun ns-frame-list-z-order (&optional terminal)
   "Return list of Emacs's frames, in Z (stacking) order.
-
-Not available yet in Naglfar."
+The topmost frame comes first.  TERMINAL is ignored: macOS has one
+display.  Child frames and frames that are not shown are left out."
   (ignore terminal)
-  (nhmac--not-yet))
+  (let (frames)
+    (dolist (f (frame-list))
+      (when (and (eq (framep f) 'ns) (not (frame-parameter f 'parent-frame)))
+        (push f frames)))
+    (setq frames (nreverse frames))
+    (and frames
+         (mapcar (lambda (i) (nth i frames)) (apply #'nhmac--query 'z-order frames)))))
 
 (defun ns-frame-restack (frame1 frame2 &optional above)
   "Restack FRAME1 below FRAME2.
-
-Not available yet in Naglfar."
-  (ignore frame1 frame2 above)
-  (nhmac--not-yet))
+With ABOVE non-nil, restack FRAME1 above FRAME2."
+  (nhmac--call 'restack (window-normalize-frame frame1) (window-normalize-frame frame2)
+               (if above 1 0)))
 
 (defun ns-get-resource (owner name)
   "Return the value of the property NAME of OWNER from the defaults.
@@ -1072,10 +1108,8 @@ Otherwise if Emacs is hidden, it is unhidden.  If ON is equal to
   (nhmac--call 'hide (cond ((eq on 'activate) 2) (on 1) (t 0))))
 
 (defun ns-hide-others ()
-  "Hides all applications other than Emacs.
-
-Not available yet in Naglfar."
-  (nhmac--not-yet))
+  "Hides all applications other than Emacs."
+  (nhmac--call 'hide-others))
 
 (defun ns-list-colors (&optional frame)
   "Return a list of all available colors.
@@ -1092,9 +1126,10 @@ Naglfar offers no services yet: the list is empty."
 
 (defun ns-mouse-absolute-pixel-position ()
   "Return absolute position of mouse cursor in pixels.
-
-Not available yet in Naglfar."
-  (nhmac--not-yet))
+The position is returned as a cons cell (X . Y) of the coordinates of
+the mouse cursor position in pixels relative to a position (0, 0) of the
+selected frame's terminal."
+  (nhmac--query 'mouse-position))
 
 (defun ns-own-selection-internal (selection value)
   "Assert an X selection of type SELECTION and value VALUE.
@@ -1108,24 +1143,20 @@ Return the text the service answers, or nil."
   (nhmac--query 'service-perform (concat service "\C-_" send)))
 
 (defun ns-popup-color-panel (&optional frame)
-  "Pop up the color panel.
-
-Not available yet in Naglfar."
+  "Pop up the color panel."
   (ignore frame)
-  (nhmac--not-yet))
+  (nhmac--call 'color-panel))
 
 (defun ns-process-is-accessibility-trusted ()
   "Return non-nil if Emacs is trusted by macOS Accessibility.
-
-Not available yet in Naglfar."
-  (nhmac--not-yet))
+This is necessary for Emacs to support Zoom and related accessibility
+features."
+  (nhmac--query 'ax-trusted))
 
 (defun ns-progress-indicator (progress)
-  "Bounce the app dock icon to request user attention.
-
-Not available yet in Naglfar."
-  (ignore progress)
-  (nhmac--not-yet))
+  "Show PROGRESS, a float between 0.0 and 1.0, on the app's dock icon.
+If PROGRESS is nil, remove the progress indicator."
+  (nhmac--call 'dock-progress (if (floatp progress) progress -1.0)))
 
 (defun ns-read-file-name (prompt &optional dir mustmatch init dir-only-p)
   "Use a graphical panel to read a file name, using prompt PROMPT.
@@ -1139,16 +1170,15 @@ The answer is the path, or nil when the panel is cancelled."
 
 (defun ns-request-user-attention (urgency)
   "Bounce the app dock icon to request user attention.
-
-Not available yet in Naglfar."
-  (ignore urgency)
-  (nhmac--not-yet))
+If URGENCY nil, cancel the outstanding request, if any.  If URGENCY is
+the symbol `informational', bouncing lasts a few seconds.  If URGENCY is
+the symbol `critical', bouncing lasts until Emacs is focused."
+  (nhmac--call 'attention (pcase urgency ('informational 1) ('critical 2) (_ 0))))
 
 (defun ns-reset-menu ()
-  "Cause the NS menu to be re-calculated.
-
-Not available yet in Naglfar."
-  (nhmac--not-yet))
+  "Cause the NS menu to be re-calculated."
+  (setq nhmac-menu--last nil)
+  (nhmac-menu-build))
 
 (defun ns-selection-exists-p (&optional selection)
   "Whether there is an owner for the given X selection."
@@ -1160,17 +1190,17 @@ Not available yet in Naglfar."
 
 (defun ns-send-items (items)
   "Send a list of items to macOS applications or services.
-
-Not available yet in Naglfar."
-  (ignore items)
-  (nhmac--not-yet))
+ITEMS is a list of strings: file names of existing files are sent as
+files, any other string as text."
+  (cl-check-type items list)
+  (dolist (i items) (unless (stringp i) (signal 'error (list "Element not a string" i))))
+  (nhmac--call 'send-items (selected-frame) (mapconcat #'identity items "\C-_")))
 
 (defun ns-set-mouse-absolute-pixel-position (x y)
   "Move mouse pointer to absolute pixel position (X, Y).
-
-Not available yet in Naglfar."
-  (ignore x y)
-  (nhmac--not-yet))
+The coordinates X and Y are interpreted in pixels relative to a position
+\(0, 0) of the selected frame's terminal."
+  (nhmac--call 'warp-mouse x y))
 
 (defun ns-set-resource (owner name value)
   "Set property NAME of OWNER to VALUE, from the defaults database.
@@ -1182,17 +1212,15 @@ OWNER is ignored."
     (nhmac--call 'unset-resource name)))
 
 (defun ns-show-character-palette ()
-  "Show the macOS character palette.
-
-Not available yet in Naglfar."
-  (nhmac--not-yet))
+  "Show the macOS character palette."
+  (nhmac--call 'character-palette))
 
 (defun ns-unblock-system-sleep (token)
   "Unblock system idle sleep.
-
-Not available yet in Naglfar."
-  (ignore token)
-  (nhmac--not-yet))
+TOKEN is an object returned by `ns-block-system-sleep'.  Return non-nil
+if the TOKEN block was unblocked."
+  (cl-check-type token natnum)
+  (nhmac--query 'sleep-unblock token))
 
 ;; Variables the shell reads.  Rust gets the new value when one is set; a
 ;; `let' binding does not reach it.
