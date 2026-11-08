@@ -647,6 +647,7 @@ at the fastest key repeat, on a ring that has made all its slots."
         (nhmac-gui--say "nhmac-typing-bytes: %s: %d keys: copied %d (%d per key), damage %d, full %d, row %d"
                  case keys bytes (/ bytes keys) damage (plist-get d :full-copies) row)
         (should (= (plist-get d :full-copies) 0))
+        (should (= (plist-get d :held-timeouts) 0))
         (should (> bytes 0))
         (should (<= bytes (* nhmac-gui--ring damage)))
         ;; the text line and the mode line, over the ring's ages
@@ -723,20 +724,102 @@ interposer in the NS lane of the same run, is logged by `nhmac-interposer-counts
   (let ((d (nhmac-gui--type 30 nil t)))
     (nhmac-gui--say "nhmac-surface-busy-typing: 30 keys: %d busy, %d acquires" (plist-get d :surface-busy)
                     (plist-get d :ring-acquires))
-    (should (= (plist-get d :surface-busy) 0)))
+    (should (= (plist-get d :surface-busy) 0))
+    (should (= (plist-get d :held-timeouts) 0)))
   (kill-buffer))
 
+(defun nhmac-gui--wait-unheld (secs)
+  "Wait in Emacs's wait until the commit pacer holds no commit of the selected frame, at most SECS; whether it does not."
+  (let ((end (+ (float-time) secs)))
+    (while (and (plist-get (nhmac-gui--surface) :held) (< (float-time) end))
+      (accept-process-output nil 0.01))
+    (not (plist-get (nhmac-gui--surface) :held))))
+
 (ert-deftest nhmac-surface-busy-burst ()
-  "Redisplays back to back, faster than the window server composites (a keyboard macro, edits streaming in): how often
-every other surface is still held and the oldest is drawn into anyway.  Reported, not judged: the ring reuses the
-oldest, as NS does, until a commit pacer holds such commits back."
+  "Redisplays back to back, faster than the window server composites (a keyboard macro, edits streaming in): the
+commit pacer holds a commit while every other surface is held, so no held surface is drawn into (0 busy), and no hold
+reaches its bound on a composited window (0 held timeouts)."
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--require-composited)
   (nhmac-gui--typing-buffer "burst")
   (let ((d (nhmac-gui--type 30)))
-    (nhmac-gui--say "nhmac-surface-busy-burst: 30 keys back to back: %d busy, %d acquires, %d full copies"
-                    (plist-get d :surface-busy) (plist-get d :ring-acquires) (plist-get d :full-copies))
-    (should (> (plist-get d :ring-acquires) 0)))
+    (nhmac-gui--say "nhmac-surface-busy-burst: 30 keys back to back: %d busy, %d held, %d held timeouts, %d acquires, %d full copies"
+                    (plist-get d :surface-busy) (plist-get d :held) (plist-get d :held-timeouts)
+                    (plist-get d :ring-acquires) (plist-get d :full-copies))
+    (should (> (plist-get d :ring-acquires) 0))
+    (should (= (plist-get d :surface-busy) 0))
+    (should (= (plist-get d :held-timeouts) 0)))
+  (should (nhmac-gui--wait-unheld 1))
+  (kill-buffer))
+
+(defun nhmac-gui--hold-one ()
+  "Make the commit pacer hold a commit of the selected frame: every surface reads as held while a character is drawn.
+The surfaces read as free again when it returns; the held commit is owed."
+  (nhmac--test-force-in-use t)
+  (unwind-protect
+      (progn
+        (insert "x")
+        (redisplay))
+    (nhmac--test-force-in-use nil))
+  (should (plist-get (nhmac-gui--surface) :held)))
+
+(ert-deftest nhmac-burst-last-frame-shows ()
+  "A burst's last commit, held while the window server held the other surfaces, is published once one frees, while
+Emacs sits in its wait (the pacer's timer asks for it): the layer then shows the newest surface, and the hold ended
+without reaching its bound."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--typing-buffer "last")
+  (let ((before (nhmac-stats)))
+    (nhmac-gui--hold-one)
+    (let ((shown (nhmac-gui--wait-unheld 1)) (s (nhmac-gui--surface)))
+      (nhmac-gui--say "nhmac-burst-last-frame-shows: unheld %S, %d held, %d held timeouts, %d fires, surface %S"
+                      shown (nhmac-gui--delta before :held) (nhmac-gui--delta before :held-timeouts)
+                      (nhmac-gui--delta before :pacer-fires) s)
+      (should shown)
+      (should (plist-get s :contents-is-newest))
+      (should (= (nhmac-gui--delta before :held) 1))
+      (should (= (nhmac-gui--delta before :held-timeouts) 0))
+      (should (= (nhmac-gui--delta before :surface-busy) 0))))
+  (kill-buffer))
+
+(ert-deftest nhmac-pacer-idle-disarmed ()
+  "After a held commit shows, the pacer's timer is disarmed: it fired while the commit was held, and does not fire
+over 2 s of idle after."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--typing-buffer "idle")
+  (let ((before (nhmac-stats)))
+    (nhmac-gui--hold-one)
+    (should (nhmac-gui--wait-unheld 1))
+    ;; the check that finds nothing held disarms it: one look after the commit shows
+    (accept-process-output nil 0.05)
+    (should (> (nhmac-gui--delta before :pacer-fires) 0)))
+  (let ((before (nhmac-stats)))
+    (accept-process-output nil 2)
+    (nhmac-gui--say "nhmac-pacer-idle-disarmed: %d fires over 2 s idle" (nhmac-gui--delta before :pacer-fires))
+    (should (= (nhmac-gui--delta before :pacer-fires) 0)))
+  (kill-buffer))
+
+(ert-deftest nhmac-held-commit-bound ()
+  "A commit held past the pacer's bound (every surface forced to read as held throughout) is drawn into the oldest
+anyway, counted as a held timeout and a busy surface, so a stuck window server never freezes the frame."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--typing-buffer "bound")
+  (let ((before (nhmac-stats)) (t0 (float-time)) shown)
+    (nhmac--test-force-in-use t)
+    (unwind-protect
+        (progn
+          (insert "x")
+          (redisplay)
+          (should (plist-get (nhmac-gui--surface) :held))
+          (setq shown (nhmac-gui--wait-unheld 1)))
+      (nhmac--test-force-in-use nil))
+    (nhmac-gui--say "nhmac-held-commit-bound: unheld %S after %.3f s, %d held, %d held timeouts, %d busy" shown
+                    (- (float-time) t0) (nhmac-gui--delta before :held) (nhmac-gui--delta before :held-timeouts)
+                    (nhmac-gui--delta before :surface-busy))
+    (should shown)
+    (should (>= (- (float-time) t0) 0.05))
+    (should (= (nhmac-gui--delta before :held-timeouts) 1))
+    (should (= (nhmac-gui--delta before :surface-busy) 1)))
   (kill-buffer))
 
 (ert-deftest nhmac-typing-fills-the-ring ()
