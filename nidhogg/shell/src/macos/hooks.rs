@@ -119,6 +119,36 @@ impl MacShell {
                 );
                 Some(Ok(()))
             }
+            // "(WINDOW FILE PAYLOAD)": a drop on WINDOW's view, of the file at PAYLOAD (FILE 1) or the text PAYLOAD
+            "test-drop" => Some(
+                crate::menu::split_numbers(arg, 2)
+                    .ok_or(ShellError::Arg)
+                    .and_then(|(n, payload)| {
+                        let payload = payload.strip_suffix(')').unwrap_or(payload);
+                        let view = self.win(n[0] as WindowId)?.view.clone();
+                        super::super::dnd::test_drop(self.mtm, &view, n[1] == 1, payload).and_then(
+                            |taken| {
+                                if taken {
+                                    Ok(())
+                                } else {
+                                    Err(ShellError::State)
+                                }
+                            },
+                        )
+                    }),
+            ),
+            // "(NAME TEXT)": another application's Services request, as AppKit hands it to the provider
+            "test-service-request" => Some(
+                crate::pasteboard::word_and_text(arg)
+                    .ok_or(ShellError::Arg)
+                    .map(|(name, text)| {
+                        super::super::services::test_request(&self.app, name, text)
+                    }),
+            ),
+            // "(DARK)": the application's appearance, dark (1) or the system's (0), as a system switch shows it
+            "test-app-appearance" => Some(numbers(arg).map(|n| {
+                super::super::windowing::test_appearance(&self.app, n.first() == Some(&1.0))
+            })),
             "test-menu-update" => {
                 super::super::menus::test_update(&self.app);
                 Some(Ok(()))
@@ -174,7 +204,13 @@ impl MacShell {
                 ))
             }),
             "test-menu-dump" => Ok(format!("{:?}", super::super::menus::test_dump(&self.app))),
+            // "(INDEX)": the Dock's menu as the delegate serves it, choosing item INDEX first (-1: none)
+            "test-dock-menu" => numbers(arg).map(|n| {
+                let choose = n.first().map(|i| *i as isize).filter(|i| *i >= 0);
+                format!("{:?}", super::super::menus::test_dock(&self.app, choose))
+            }),
             "test-kq-probe" => Ok(kq_probe(arg)),
+            "test-presentation" => Ok(self.app.presentationOptions().0.to_string()),
             "test-surface" => numbers(arg).and_then(|n| match n[..] {
                 [w, x, y] => self.surface_info(w as WindowId, x as i32, y as i32),
                 _ => Err(ShellError::Arg),

@@ -68,8 +68,8 @@ pub fn answer(accepted: bool, source_ops: usize, target_actions: u32, preferred:
     op_of(first_action(common))
 }
 
-const TEXT_UTI: &str = "public.utf8-plain-text";
-const FILE_UTI: &str = "public.file-url";
+pub const TEXT_UTI: &str = "public.utf8-plain-text";
+pub const FILE_UTI: &str = "public.file-url";
 
 /// The MIME type of a pasteboard type.
 pub fn mime_of(uti: &str) -> String {

@@ -431,7 +431,8 @@ A string field has its line breaks and those two characters turned into blanks.
           (setq nhmac-menu--last (car r)
                 nhmac-menu-paths (cdr r)
                 nhmac-menu-generation (1+ nhmac-menu-generation))
-          (funcall 'nhmac--call 'menu-bar nhmac-menu-generation (nhmac-menu-encode (car r))))))))
+          (funcall 'nhmac--call 'menu-bar nhmac-menu-generation (nhmac-menu-encode (car r)))))
+      (nhmac-dock-menu-send))))
 
 (defun nhmac-menu-invalidate (&rest _)
   "Schedule one deep rebuild `nhmac-menu-delay' after the idle time so far.
@@ -529,8 +530,52 @@ Nil when nothing is chosen."
 ;; below run in the command loop.
 
 (defvar nhmac-app-paths '((1 . (nhmac-open-files)) (2 . (nhmac-quit)) (3 . (nhmac-reopen))
-                          (4 . (nhmac-appearance-changed)))
-  "The key path of each application event, by the shell's number.")
+                          (4 . (nhmac-appearance-changed)) (5 . (nhmac-dock-new-frame))
+                          (6 . (nhmac-service)))
+  "The key path of each application event, by the shell's number.
+The Dock's items are application events too: their places in the Dock's
+records are these numbers.")
+
+(defvar nhmac-dock--sent nil "Whether the shell has the Dock's menu.")
+
+(defun nhmac-dock-menu-send ()
+  "Send the Dock's menu once: NS's one item, New Frame, as a menu record whose
+place is its application event number."
+  (unless nhmac-dock--sent
+    (funcall 'nhmac--call 'menu-dock
+             (nhmac-menu-encode (vector 0 nhmac-menu-kind-item "New Frame" "" 1 0 5)))
+    (setq nhmac-dock--sent t)))
+
+(defun nhmac-dock-new-frame ()
+  "The Dock menu's New Frame: make a frame, as NS's does."
+  (interactive)
+  (make-frame))
+
+(declare-function ns-spi-service-call "term/ns-win" ())
+
+(defun nhmac-service ()
+  "Answer the Services requests other applications made, each as NS does,
+through `ns-spi-service-call'."
+  (interactive)
+  (dolist (r (nhmac--query 'take-service-requests))
+    (let ((ns-input-spi-name (car r)) (ns-input-spi-arg (cdr r)))
+      (ns-spi-service-call))))
+
+;; Drops: the shell reports them as the Wayland shell does (C's
+;; DRAG_N_DROP_EVENT with `(quote XdndSelection TIME)'), and the offer is
+;; read from the shell in NS's form, so `ns-drag-n-drop' handles it.
+
+(defun nhmac--drag-n-drop (orig event)
+  "Call ORIG, `ns-drag-n-drop', with EVENT's drop in NS's form, then finish the drop."
+  (if (not (eq (car-safe (nth 2 event)) 'quote))
+      (funcall orig event)
+    (let ((offer (nhmac--query 'dnd-offer)))
+      (unwind-protect
+          (when offer
+            (funcall orig (list (car event) (nth 1 event) offer)))
+        (nhmac--call 'dnd-finish)))))
+
+(advice-add 'ns-drag-n-drop :around #'nhmac--drag-n-drop)
 
 (defvar ns-confirm-quit)
 (defvar ns-input-file)
@@ -576,7 +621,8 @@ Nil when nothing is chosen."
 
 (add-hook 'after-make-frame-functions #'nhmac-apply-frame-look)
 
-(dolist (cmd '(nhmac-open-files nhmac-quit nhmac-reopen nhmac-appearance-changed))
+(dolist (cmd '(nhmac-open-files nhmac-quit nhmac-reopen nhmac-appearance-changed
+               nhmac-dock-new-frame nhmac-service))
   (define-key global-map (vector 'menu-bar cmd) cmd))
 
 ;;; The ns compatibility layer

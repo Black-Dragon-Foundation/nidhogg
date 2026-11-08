@@ -125,6 +125,8 @@ impl MacShell {
         app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
         let delegate = AppDelegate::new(mtm);
         app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+        // SAFETY: the delegate answers `requestService:userData:error:`; the application keeps the provider.
+        let _: () = unsafe { objc2::msg_send![&app, setServicesProvider: &*delegate] };
         app.finishLaunching();
         let mut wake = [-1; 2];
         // SAFETY: `wake` holds two writable descriptors' room.
@@ -680,6 +682,11 @@ impl ShellBackend for MacShell {
 
     fn set_mapped(&mut self, window: WindowId, on: bool) -> ShellResult {
         let w = self.windows.get_mut(&window).ok_or(ShellError::State)?;
+        // an iconified window stays mapped; showing it is the Dock's deminiaturize
+        if on && w.window.isMiniaturized() {
+            w.window.deminiaturize(None);
+            return Ok(());
+        }
         if on != w.mapped {
             w.mapped = on;
             if on {
@@ -895,6 +902,7 @@ impl ShellBackend for MacShell {
             "frame-look" => self.frame_look(arg),
             "menu-bar" => menus::bar(self.mtm, &self.app, arg),
             "menu-dock" => menus::dock(self.mtm, arg),
+            "dnd-finish" => super::dnd::finish(true),
             _ => Err(ShellError::Arg),
         }
     }
@@ -909,6 +917,8 @@ impl ShellBackend for MacShell {
             "get-resource" => Ok(defaults::get(arg)),
             "system-appearance" => Ok(if self.dark { "dark" } else { "light" }.to_string()),
             "take-open-files" => Ok(take_open_files_text()),
+            "take-service-requests" => Ok(super::services::take_requests_lisp()),
+            "dnd-offer" => Ok(super::dnd::offer_lisp()),
             "pasteboard-read" => Ok(pasteboard::read(arg)),
             "pasteboard-exists" => Ok(pasteboard::exists(arg)),
             "pasteboard-owned" => Ok(pasteboard::owned_text(arg)),
