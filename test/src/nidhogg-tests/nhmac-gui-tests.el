@@ -869,16 +869,18 @@ checked against the faces, tolerance 0 for fills and box lines."
     (should (= (nhmac-gui--pixel-at (+ x 18) (+ y (/ h 2))) #xff336699))
     ;; the white stretch
     (should (= (nhmac-gui--pixel-at (+ x 30) (+ y (/ h 2))) #xffffffff))
-    ;; a bar cursor 4 pixels wide in the cursor colour, at the white stretch
+    ;; a bar cursor 4 pixels wide in the cursor colour, at the white stretch (the trace from here)
+    (nhmac--pump-trace)
     (set-face-background 'cursor "#00ff00")
     (setq-local cursor-type '(bar . 4))
     (goto-char (+ (point-min) 2))
     (redisplay t)
     (should (= (nhmac-gui--pixel-at (+ x 25) (+ y (/ h 2))) #xff00ff00))
-    ;; and gone again: the stretch's own colour where it was
+    ;; and gone again: the stretch's own colour where it was; the trace names both publishes and their damage
     (setq-local cursor-type nil)
     (redisplay t)
-    (should (= (nhmac-gui--pixel-at (+ x 25) (+ y (/ h 2))) #xffffffff)))
+    (ert-info ((format "pump decisions %S, surface %S" (nhmac--pump-trace) (nhmac-gui--surface)))
+      (should (= (nhmac-gui--pixel-at (+ x 25) (+ y (/ h 2))) #xffffffff))))
   (kill-buffer))
 
 (ert-deftest nhmac-draw-other-thread ()
@@ -1326,9 +1328,11 @@ top row lands where the turn puts it, its pixels doubled (not smoothed) when sca
       ;; scaled 2: rows 0 and 1 lit, row 2 not;
       ;; turned 90 degrees clockwise (from x 16): the top row is the right column;
       ;; turned 270 (the top row to the left column), then flipped (from x 24): the right column again
-      (should (equal (mapcar (lambda (p) (format "%x" (funcall px (car p) (cdr p))))
-                             '((3 . 1) (3 . 2) (23 . 3) (16 . 3) (31 . 3) (24 . 3)))
-                     '("ffff0000" "ff0000ff" "ffff0000" "ff0000ff" "ffff0000" "ff0000ff")))))
+      ;; the draws name each image's rectangle, source origin and matrix
+      (ert-info ((format "image draws %S at (%d %d)" (nhmac--image-draws) x y))
+        (should (equal (mapcar (lambda (p) (format "%x" (funcall px (car p) (cdr p))))
+                               '((3 . 1) (3 . 2) (23 . 3) (16 . 3) (31 . 3) (24 . 3)))
+                       '("ffff0000" "ff0000ff" "ffff0000" "ff0000ff" "ffff0000" "ff0000ff"))))))
   (kill-buffer))
 
 (defun nhmac-gui--image-pixels (img &rest at)
