@@ -2037,6 +2037,15 @@ impl WaylandShell {
         Some((p.bufs.len(), p.freed, p.bufs.values().map(|b| b.len).max()?))
     }
 
+    /// Test hook: `f` of the buffers window `id` and its content layers hold, called with its tree's mutex held, so that
+    /// presenting makes or drops none of them meanwhile.
+    #[doc(hidden)]
+    pub fn present_buffers_with<R>(&self, id: WindowId, f: impl FnOnce(usize) -> R) -> Option<R> {
+        let p = lock(self.main.presents.get(&id)?);
+        let layers: usize = p.layers.iter().map(|l| l.info().3.len()).sum();
+        Some(f(p.bufs.len() + layers))
+    }
+
     /// Test hook: root `id`'s content layers, each as (surface id, view offset, ring height, each buffer's resident
     /// 512-byte blocks).
     #[doc(hidden)]
