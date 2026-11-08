@@ -289,7 +289,10 @@ helper's hop (`:helper-hops-keys' 0)."
       (unwind-protect
           (progn
             (setq t0 (float-time))
-            (accept-process-output proc 0.2)
+            ;; not (accept-process-output proc ...): waiting on the flood itself reads on, without a deadline, until
+            ;; its pipe is empty, which a `yes' outrunning the filter leaves it only by chance
+            (while (and (= bytes 0) (< (- (float-time) t0) 2))
+              (accept-process-output nil 0.05))
             (push (cons 'first-output (- (float-time) t0)) phases)
             (should (> bytes 0))
             (setq t0 (float-time))
@@ -580,9 +583,11 @@ its frame, each become visible and draw.  Guards the start that once drew nothin
 (defun nhmac-gui--fill-ring ()
   "Commit back to back until the ring has made all its slots, at most 500 commits; the slots it has.
 A slot is made only while the window server holds the others, which commits faster than it composites make it do.
-The text is left as it was."
+At least the ring's size and one more small commits are made, so no slot's age reaches back to the drawing before
+\(a new buffer's whole window).  The text is left as it was."
   (let ((n 0))
-    (while (and (< (nhmac-gui--slots) nhmac-gui--ring) (< n 500))
+    (while (and (< n 500)
+                (or (< n (* 2 (1+ nhmac-gui--ring))) (< (nhmac-gui--slots) nhmac-gui--ring)))
       (insert "w")
       (redisplay)
       (delete-char -1)
@@ -681,26 +686,34 @@ interposer in the NS lane of the same run, is logged by `nhmac-interposer-counts
   :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "key")
-  (nhmac-gui--flush)
-  (dotimes (_ 5)
-    (let ((before (progn (nhmac--pump-trace) (nhmac-stats))))
-      (nhmac--test-post-key ?k)
-      (let ((ev (read-event nil nil 2)))
-        (should (eq ev ?k))
-        (insert ev))
-      (redisplay)
-      ;; the release's event, if any, is left for the next pump
-      (let ((pumps (nhmac-gui--delta before :pumps))
-            (commits (nhmac-gui--delta before :commits))
-            (sleeps (nhmac-gui--delta before :sleeps)))
-        (nhmac-gui--say "nhmac-key-to-commit-counts: pumps %d commits %d fd waits %d" pumps commits sleeps)
-        ;; who asked for each pump
-        (ert-info ((format "pump decisions %S" (nhmac--pump-trace)))
-          (should (= pumps 1))
-          (should (= commits 1))
-          (should (= sleeps 0))))))
-  (nhmac-gui--flush)
-  (kill-buffer))
+  ;; the blinking cursor's timer redraws the cursor on its own (one commit of the cursor's cell); the row counts the
+  ;; key's commits
+  (let ((blink blink-cursor-mode))
+    (blink-cursor-mode -1)
+    (unwind-protect
+        (progn
+          (redisplay t)
+          (nhmac-gui--flush)
+          (dotimes (_ 5)
+            (let ((before (progn (nhmac--pump-trace) (nhmac-stats))))
+              (nhmac--test-post-key ?k)
+              (let ((ev (read-event nil nil 2)))
+                (should (eq ev ?k))
+                (insert ev))
+              (redisplay)
+              ;; the release's event, if any, is left for the next pump
+              (let ((pumps (nhmac-gui--delta before :pumps))
+                    (commits (nhmac-gui--delta before :commits))
+                    (sleeps (nhmac-gui--delta before :sleeps)))
+                (nhmac-gui--say "nhmac-key-to-commit-counts: pumps %d commits %d fd waits %d" pumps commits sleeps)
+                ;; who asked for each pump, and each commit's damage
+                (ert-info ((format "pump decisions %S" (nhmac--pump-trace)))
+                  (should (= pumps 1))
+                  (should (= commits 1))
+                  (should (= sleeps 0))))))
+          (nhmac-gui--flush))
+      (blink-cursor-mode (if blink 1 -1))
+      (kill-buffer))))
 
 (ert-deftest nhmac-surface-busy-typing ()
   "While typing (keys at the fastest key repeat) the ring always has a surface the window server does not hold."
@@ -1008,6 +1021,10 @@ Returns (W H PIXELS) of that box."
             (dotimes (x cw)
               (aset out (+ (* y cw) x) (aref px (+ (* (+ ty0 y) w) tx0 x)))))
           (list cw ch out))))))
+
+;; These loop over every pixel of a 900 by 700 point capture: interpreted in a checking build, a capture's read and
+;; crop took minutes (nhmac-images-worker: about 300 s a file); compiled, they take seconds.
+(mapc #'byte-compile '(nhmac-gui--bmp-read nhmac-gui--far nhmac-gui--text-crop))
 
 (ert-deftest nhmac-ns-font-dump ()
   "NS's Menlo 12: its metrics and a capture of its text, for nhmac-font-ascii in the Naglfar lane."
