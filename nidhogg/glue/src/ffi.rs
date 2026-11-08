@@ -911,6 +911,20 @@ nhg_export! {
 }
 
 nhg_export! {
+    /// Where the line `nhg_im_surrounding` pushed starts, point and the selection's other end (the mark when it is
+    /// active, else point), in characters from the buffer's accessible start, for `window`'s input method
+    /// (`ime::offsets`; macOS, as NS counts its ranges).  `NHG_E_ARG` for an offset under 0.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_im_offsets(d: *mut NhgDisplay, window: u64, line_start: i64, point: i64, mark: i64) -> i32 |state| {
+        let off = |v: i64| usize::try_from(v).map_err(|_| GlueError::Arg);
+        crate::ime::offsets(state, window, off(line_start)?, off(point)?, off(mark)?)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
     /// Copy up to `cap` outputs into `out`; their number goes to `*n` (when `n` is not null) and is returned.
     ///
     /// # Safety

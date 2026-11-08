@@ -515,6 +515,7 @@ impl ShellBackend for MacShell {
     }
 
     fn window_destroy(&mut self, window: WindowId) -> ShellResult {
+        super::ime::forget(window);
         self.windows
             .remove(&window)
             .map(drop)
@@ -765,30 +766,52 @@ impl ShellBackend for MacShell {
     fn text_input_cursor(
         &mut self,
         window: WindowId,
-        _x: i32,
-        _y: i32,
-        _w: i32,
-        _h: i32,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
     ) -> ShellResult {
-        self.win(window).map(drop)
+        self.win(window)?;
+        super::ime::with(window, |p| p.cursor = [x, y, w, h]);
+        Ok(())
     }
 
     fn text_input_surrounding(
         &mut self,
         window: WindowId,
-        _text: &str,
+        text: &str,
         _cursor: usize,
         _anchor: usize,
     ) -> ShellResult {
-        self.win(window).map(drop)
+        self.win(window)?;
+        super::ime::with(window, |p| {
+            if p.text.text != text {
+                p.text.text = text.to_string();
+            }
+        });
+        Ok(())
     }
 
-    fn text_len(&self, _id: u32) -> ShellResult<usize> {
-        Err(ShellError::State)
+    fn text_input_offsets(
+        &mut self,
+        window: WindowId,
+        line_start: usize,
+        point: usize,
+        mark: usize,
+    ) -> ShellResult {
+        self.win(window)?;
+        super::ime::with(window, |p| {
+            (p.text.line_start, p.text.point, p.text.mark) = (line_start, point, mark);
+        });
+        Ok(())
     }
 
-    fn take_text(&mut self, _id: u32) -> ShellResult<Vec<u8>> {
-        Err(ShellError::State)
+    fn text_len(&self, id: u32) -> ShellResult<usize> {
+        super::ime::text_len(id)
+    }
+
+    fn take_text(&mut self, id: u32) -> ShellResult<Vec<u8>> {
+        super::ime::take_text(id)
     }
 
     /// The commit (design §5.4): each frame's surface takes what it lacks from the backing, then the tree's layers

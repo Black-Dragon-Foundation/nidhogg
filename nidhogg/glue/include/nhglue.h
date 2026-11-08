@@ -550,6 +550,9 @@ int32_t nhg_im_enable (NhgDisplay *d, uint64_t window, int32_t on);
 int32_t nhg_im_cursor (NhgDisplay *d, uint64_t window, uint32_t scale120, NhgRect r);
 int32_t nhg_im_surrounding (NhgDisplay *d, uint64_t window, const char *text, size_t len, int32_t cursor,
                             int32_t anchor);
+/* macOS: where that line starts, point and the selection's other end (the mark when it is active, else point), in
+   characters from BEGV, the ranges NSTextInputClient answers with as NS counts them (NHG_E_UNSUPPORTED elsewhere).  */
+int32_t nhg_im_offsets (NhgDisplay *d, uint64_t window, int64_t line_start, int64_t point, int64_t mark);
 
 /* Copy up to CAP outputs into OUT; their number goes to *N (may be NULL) and is returned.  At most 16 are known.  */
 int32_t nhg_monitors (NhgDisplay *d, NhgMonitor *out, size_t cap, size_t *n);

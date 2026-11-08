@@ -295,7 +295,8 @@ accepted and does nothing, as for a missing Wayland protocol.
 | `nhg_pointer_visible` / `nhg_window_set_cursor` / `nhg_set_cursor_theme` | - | pointer shape, visibility, theme | `NSCursor`; the theme call does nothing |
 | `nhg_csd_style` / `nhg_csd_layout` / `nhg_csd_paint` / `nhg_csd_title_bar` / `nhg_csd_mix` | - | the client-side title bar: style, layout, paint record, strip, colours | not used (native title bar); `nhg_csd_mix` same |
 | `nhg_frame_offsets` | - | the backing's border around the native area | same (zero border without a title bar) |
-| `nhg_im_enable` / `nhg_im_cursor` / `nhg_im_surrounding` | - | the input method's requests | `NSTextInputClient` |
+| `nhg_im_enable` / `nhg_im_cursor` / `nhg_im_surrounding` | - | the input method's requests | `NSTextInputClient`, answered from what they pushed |
+| `nhg_im_offsets` | - | unsupported | NS's ranges: the line's start, point and the region in characters from `BEGV` |
 | `nhg_monitors` / `nhg_frame_outputs` / `nhg_frame_monitors` / `nhg_monitor_origin` | - | outputs, the ones a frame is on, a monitor's device origin | `NSScreen` list |
 | `nhg_window_new` / `nhg_window_destroy` | - | make or destroy a frame's shell window | `NSWindow` |
 | `nhg_window_title` / `nhg_window_undecorated` / `nhg_window_alpha` / `nhg_window_min_size` / `nhg_window_size` | - | title, decoration, alpha, smallest size, pushed size | the matching `NSWindow` properties |

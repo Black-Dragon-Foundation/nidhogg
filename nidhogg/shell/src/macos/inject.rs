@@ -58,6 +58,10 @@ pub const MOUSE_MOVE: i64 = 3;
 pub const MOUSE_WHEEL: i64 = 4;
 
 fn one_char(c: i64) -> ShellResult<Retained<NSString>> {
+    if c == 0 {
+        // a dead key's characters
+        return Ok(NSString::new());
+    }
     let c = u32::try_from(c)
         .ok()
         .and_then(char::from_u32)
@@ -72,9 +76,17 @@ fn focus(app: &NSApplication, w: &Win) {
     w.window.makeKeyAndOrderFront(None);
 }
 
-/// Post a press and a release of the key whose `characters` is `c` and `charactersIgnoringModifiers` `ignoring`, with
-/// `NSEventModifierFlags` `flags`.
-pub fn key(app: &NSApplication, w: &Win, c: i64, ignoring: i64, flags: i64) -> ShellResult {
+/// Post a press and a release of the key whose `characters` is `c` (0: none, as a dead key's) and
+/// `charactersIgnoringModifiers` `ignoring`, with `NSEventModifierFlags` `flags` and the virtual key code `code` (the
+/// input system reads it for dead keys).
+pub fn key(
+    app: &NSApplication,
+    w: &Win,
+    c: i64,
+    ignoring: i64,
+    flags: i64,
+    code: u16,
+) -> ShellResult {
     focus(app, w);
     let (chars, ignoring) = (one_char(c)?, one_char(ignoring)?);
     let flags = NSEventModifierFlags(usize::try_from(flags).map_err(|_| ShellError::Arg)?);
@@ -89,7 +101,7 @@ pub fn key(app: &NSApplication, w: &Win, c: i64, ignoring: i64, flags: i64) -> S
             &chars,
             &ignoring,
             false,
-            0,
+            code,
         )
         .ok_or(ShellError::State)?;
         app.postEvent_atStart(&ev, false);

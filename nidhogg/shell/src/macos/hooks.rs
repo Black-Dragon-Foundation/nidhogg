@@ -149,6 +149,17 @@ impl MacShell {
             "test-app-appearance" => Some(numbers(arg).map(|n| {
                 super::super::windowing::test_appearance(&self.app, n.first() == Some(&1.0))
             })),
+            // "(WINDOW OP TEXT)": what an input method sends WINDOW's view: OP 0 marked text, 1 inserted text, 2 the
+            // end of the composition, 3 the command TEXT (a selector)
+            "test-ime" => Some(
+                crate::menu::split_numbers(arg, 2)
+                    .ok_or(ShellError::Arg)
+                    .and_then(|(n, text)| {
+                        let text = text.strip_suffix(')').unwrap_or(text);
+                        let view = self.win(n[0] as WindowId)?.view.clone();
+                        super::super::ime::test_send(&view, n[1], text)
+                    }),
+            ),
             "test-menu-update" => {
                 super::super::menus::test_update(&self.app);
                 Some(Ok(()))
@@ -166,6 +177,15 @@ impl MacShell {
                 c as i64,
                 ignoring as i64,
                 flags as i64,
+                0,
+            ),
+            ("test-post-key", &[win, c, ignoring, flags, code]) => inject::key(
+                &self.app,
+                self.win(win as WindowId)?,
+                c as i64,
+                ignoring as i64,
+                flags as i64,
+                code as u16,
             ),
             ("test-post-mouse", &[win, what, x, y, button, flags]) => inject::mouse(
                 self.mtm,
@@ -210,6 +230,13 @@ impl MacShell {
                 format!("{:?}", super::super::menus::test_dock(&self.app, choose))
             }),
             "test-kq-probe" => Ok(kq_probe(arg)),
+            "test-ime-state" => numbers(arg).and_then(|n| match n[..] {
+                [w, loc, len] => {
+                    let w = self.win(w as WindowId)?;
+                    Ok(super::super::ime::test_state(&w.view, &w.window, loc as usize, len as usize))
+                }
+                _ => Err(ShellError::Arg),
+            }),
             "test-presentation" => Ok(self.app.presentationOptions().0.to_string()),
             "test-surface" => numbers(arg).and_then(|n| match n[..] {
                 [w, x, y] => self.surface_info(w as WindowId, x as i32, y as i32),

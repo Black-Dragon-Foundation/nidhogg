@@ -341,6 +341,7 @@ PROTO (nhg_frame_units, int32_t (NhgDisplay *, uint64_t, int32_t, int32_t));
 PROTO (nhg_im_enable, int32_t (NhgDisplay *, uint64_t, int32_t));
 PROTO (nhg_im_cursor, int32_t (NhgDisplay *, uint64_t, uint32_t, NhgRect));
 PROTO (nhg_im_surrounding, int32_t (NhgDisplay *, uint64_t, const char *, size_t, int32_t, int32_t));
+PROTO (nhg_im_offsets, int32_t (NhgDisplay *, uint64_t, int64_t, int64_t, int64_t));
 PROTO (nhg_monitors, int32_t (NhgDisplay *, NhgMonitor *, size_t, size_t *));
 PROTO (nhg_frame_outputs, int32_t (NhgDisplay *, uint64_t, uint64_t *, size_t, size_t *));";
         // the same table, Rust side
@@ -429,9 +430,11 @@ PROTO (nhg_frame_outputs, int32_t (NhgDisplay *, uint64_t, uint64_t *, size_t, s
         // wheel units, the input method and outputs
         {
             use nhglue::ffi::{
-                nhg_frame_outputs, nhg_frame_units, nhg_im_cursor, nhg_im_enable,
+                nhg_frame_outputs, nhg_frame_units, nhg_im_cursor, nhg_im_enable, nhg_im_offsets,
                 nhg_im_surrounding, nhg_monitors,
             };
+            let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i64, i64, i64) -> i32 =
+                nhg_im_offsets;
             let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32, i32) -> i32 = nhg_frame_units;
             let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32) -> i32 = nhg_im_enable;
             let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u32, NhgRect) -> i32 = nhg_im_cursor;

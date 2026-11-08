@@ -625,6 +625,28 @@ through `ns-spi-service-call'."
                nhmac-dock-new-frame nhmac-service))
   (define-key global-map (vector 'menu-bar cmd) cmd))
 
+;;; The input method
+
+;; The shell reports marked text as the Wayland shell does (C's
+;; PREEDIT_TEXT_EVENT, a `preedit-text' event of (TEXT PROPS) parts), and
+;; it is shown as NS shows it: `ns-working-text', put and taken out by
+;; `ns-win.el''s own functions.  A commit comes as keystrokes.
+
+(declare-function ns-put-working-text "term/ns-win" ())
+(declare-function ns-unput-working-text "term/ns-win" ())
+(defvar ns-working-text)
+
+(defun nhmac-preedit-text (event)
+  "Show the marked text of EVENT, a `preedit-text' event, as NS's working text."
+  (interactive "e")
+  (let ((text (mapconcat #'car (nth 1 event) "")))
+    (if (string-empty-p text)
+        (ns-unput-working-text)
+      (setq ns-working-text text)
+      (ns-put-working-text))))
+
+(define-key special-event-map [preedit-text] #'nhmac-preedit-text)
+
 ;;; The ns compatibility layer
 
 ;; Packages and `ns-win.el' read and call what NS defines in C.  Here the
