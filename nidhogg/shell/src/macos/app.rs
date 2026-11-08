@@ -8,6 +8,7 @@
 use super::defaults;
 use super::kq::{self, Kq};
 use super::layers;
+use super::pacer;
 use super::runloop::{MacEv, SCOPE};
 use super::screens;
 use super::surface;
@@ -49,6 +50,8 @@ pub struct MacShell {
     srgb: bool,
     /// Windows a Lisp thread's redisplay filled whose commit waits for the main thread's next pump.
     deferred: Vec<WindowId>,
+    /// The commit pacer's timer: armed while a window holds a commit.
+    pacer: pacer::Timer,
     /// Test hook: the next pump raises an `NSException` inside the catch.
     #[cfg(feature = "test-hooks")]
     raise_in_pump: bool,
@@ -133,6 +136,7 @@ impl MacShell {
             regs: wait::Regs::default(),
             srgb: true,
             deferred: Vec::new(),
+            pacer: pacer::Timer::default(),
             #[cfg(feature = "test-hooks")]
             raise_in_pump: false,
             #[cfg(feature = "test-hooks")]
@@ -178,6 +182,38 @@ impl MacShell {
                     self.push(ev, id);
                 }
             }
+            MacEv::Pace => self.release_held(),
+        }
+    }
+
+    /// The commit pacer's check (main thread): every window whose held commit is due (a slot freed, or the hold's
+    /// bound) asks the host for a publish, which redraws nothing and reads the backing under the lock; the timer stays
+    /// armed while a window still holds one, and is disarmed when none does.
+    fn release_held(&mut self) {
+        let now = now_ns();
+        let mut holding = false;
+        let due: Vec<WindowId> = self
+            .windows
+            .iter()
+            .filter(|(_, w)| w.surfaces.owes())
+            .inspect(|_| holding = true)
+            .filter(|(_, w)| w.surfaces.due(now))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in due {
+            // one request at a time: a publish that is not made yet (inside redisplay) is asked for again
+            if !self
+                .queue
+                .iter()
+                .any(|r| r.window == id && matches!(r.event, ShellEvent::FrameReady))
+            {
+                self.push(ShellEvent::FrameReady, id);
+            }
+        }
+        if holding {
+            self.pacer.arm();
+        } else {
+            self.pacer.disarm();
         }
     }
 
@@ -237,6 +273,7 @@ impl MacShell {
         for id in ids {
             self.compare(id);
         }
+        self.release_held();
     }
 }
 
@@ -427,6 +464,7 @@ impl ShellBackend for MacShell {
             let ids = std::mem::take(&mut self.deferred);
             self.commit(&ids);
         }
+        self.release_held();
         Ok(())
     }
 
@@ -731,18 +769,37 @@ impl ShellBackend for MacShell {
     ) -> ShellResult<bool> {
         self.win(root)?;
         let mut ids: Vec<WindowId> = Vec::new();
+        let mut held = false;
         for f in frames {
             let Some(w) = self.windows.get_mut(&f.window) else {
                 continue;
             };
             let (lw, lh) = (f.w - f.src_x, f.h - f.src_y);
             let damage = layer_damage(f.glitnir_root, lw, lh);
-            if damage.is_empty() && w.surfaces.newest().is_some() && w.surfaces.size() == (lw, lh) {
+            if damage.is_empty()
+                && !w.surfaces.owes()
+                && w.surfaces.newest().is_some()
+                && w.surfaces.size() == (lw, lh)
+            {
                 continue;
             }
             crate::trace::pump(|| format!("publish: window {} damage {damage:?}", f.window));
-            if w.surfaces.draw(f, &damage).is_some() {
-                ids.push(f.window);
+            match w.surfaces.draw(f, &damage, now_ns()) {
+                Some(surface::Drew::Drawn) => ids.push(f.window),
+                Some(surface::Drew::Held) => {
+                    crate::trace::pump(|| format!("publish: window {} held", f.window));
+                    held = true;
+                }
+                None => {}
+            }
+        }
+        // a held commit: the pacer's timer looks for a freed slot (a Lisp thread's publish leaves that to the main
+        // thread, which its wake makes pump)
+        if held {
+            if MainThreadMarker::new().is_some() {
+                self.pacer.arm();
+            } else {
+                wait::wake();
             }
         }
         if ids.is_empty() {
