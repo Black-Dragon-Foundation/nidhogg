@@ -179,17 +179,20 @@ and `mouse-pixel-position' follows motion."
   (switch-to-buffer " *nhmac-mouse*")
   (redisplay t)
   (nhmac-gui--flush)
-  (let* ((p1 (save-excursion (goto-char (point-min)) (forward-line 2) (+ (point) 5)))
+  (let* ((p0 (save-excursion (goto-char (point-min)) (forward-line 7) (+ (point) 3)))
+         (p1 (save-excursion (goto-char (point-min)) (forward-line 2) (+ (point) 5)))
          (p2 (save-excursion (goto-char (point-min)) (forward-line 4) (+ (point) 9)))
+         (c (nhmac-gui--pos-xy p0))
          (a (nhmac-gui--pos-xy p1))
          (b (nhmac-gui--pos-xy p2)))
-    ;; a click
-    (nhmac--test-post-mouse 'down (car a) (cdr a))
-    (nhmac--test-post-mouse 'up (car a) (cdr a))
+    ;; a click, away from where the drag starts: a press within `double-click-time' and `double-click-fuzz' of the
+    ;; last one is a double one (keyboard.c counts them, on every port), and the drag below follows at once
+    (nhmac--test-post-mouse 'down (car c) (cdr c))
+    (nhmac--test-post-mouse 'up (car c) (cdr c))
     (let ((evs (nhmac-gui--events 2)))
       (should (equal (mapcar #'event-basic-type evs) '(mouse-1 mouse-1)))
       (should (eq (car (nth 0 evs)) 'down-mouse-1))
-      (should (= (posn-point (event-start (nth 1 evs))) p1)))
+      (should (= (posn-point (event-start (nth 1 evs))) p0)))
     ;; a drag
     (nhmac--test-post-mouse 'down (car a) (cdr a))
     (nhmac--test-post-mouse 'drag (car b) (cdr b))
