@@ -1225,17 +1225,33 @@ blank line and then a line of ASCII; the frame's font and colours are put back a
   (let ((i (font-info (face-font 'default))))
     (list (aref i 8) (aref i 9) (aref i 11) (aref i 10))))
 
+(defun nhmac-gui--capture-env ()
+  "`process-environment' without the counting interposer: no DYLD_* and no NHMAC_INTERPOSE_LIB.
+A capture child must never load the interposer the app runs with."
+  (seq-remove (lambda (v) (string-match-p "\\`\\(DYLD_\\|NHMAC_INTERPOSE_LIB=\\)" v)) process-environment))
+
+(ert-deftest nhmac-gui-capture-env-clean ()
+  "A child started with the capture's environment sees no DYLD_INSERT_LIBRARIES, even while the app has it."
+  (let ((process-environment (cons "DYLD_INSERT_LIBRARIES=/nonexistent/libmac_interpose.dylib" process-environment)))
+    (let ((process-environment (nhmac-gui--capture-env)))
+      (with-temp-buffer
+        (should (eql 0 (call-process "env" nil t nil)))
+        (should-not (string-match-p "^DYLD_" (buffer-string)))
+        (should (string-match-p "^PATH=" (buffer-string)))))))
+
 (defun nhmac-gui--capture (file)
   "The screen around the selected frame (GLITNIR_GUI_FRAME's corner, 900 by 700 points) as a BMP in FILE.
 Device pixels, as the window server composited them; FILE.  The command line, its exit code and output, and the file
-afterwards are logged; a non-zero exit or no file fails the row with them."
+afterwards are logged; a non-zero exit or no file fails the row with them.  It runs without the interposer's
+environment (`nhmac-gui--capture-env')."
   (let* ((g (mapcar #'string-to-number (split-string (or (getenv "GLITNIR_GUI_FRAME") "0 0"))))
          (r (format "%d,%d,900,700" (- (nth 0 g) 20) (- (nth 1 g) 60)))
          (args (list "-x" "-t" "bmp" "-R" r file))
          (rc nil) (output nil))
     (when (file-exists-p file) (delete-file file))
     (with-temp-buffer
-      (setq rc (apply #'call-process "screencapture" nil t nil args)
+      (setq rc (let ((process-environment (nhmac-gui--capture-env)))
+                 (apply #'call-process "screencapture" nil t nil args))
             output (string-trim (buffer-string))))
     (let* ((size (and (file-exists-p file) (file-attribute-size (file-attributes file))))
            (report (format "screencapture %s: exit %S, output %S, file %s; frame at %S, %dx%d, GLITNIR_GUI_FRAME %S"
