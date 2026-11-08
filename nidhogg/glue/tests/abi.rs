@@ -1331,9 +1331,10 @@ PROTO (nhg_svg_render, int32_t (const uint8_t *, size_t, uint32_t, const NhgSvgS
     #[test]
     fn font_header_matches() {
         use nhglue::ffi::{
-            nhg_font_close, nhg_font_glyph, nhg_font_glyph_metrics, nhg_font_open, nhg_font_start,
+            nhg_font_close, nhg_font_fill, nhg_font_open, nhg_font_start, nhg_font_table,
         };
         use nhglue::font::*;
+        use nhglue::glyphs::*;
         let rows: &[(&str, i64)] = &[
             (
                 "sizeof (NhgFontMetrics)",
@@ -1359,20 +1360,31 @@ PROTO (nhg_svg_render, int32_t (const uint8_t *, size_t, uint32_t, const NhgSvgS
                 "offsetof (NhgGlyphMetrics, descent)",
                 offset_of!(NhgGlyphMetrics, descent) as i64,
             ),
+            ("NHG_FONT_PAGE", NHG_FONT_PAGE as i64),
+            ("NHG_FONT_CHAR_PAGES", NHG_FONT_CHAR_PAGES as i64),
+            ("NHG_FONT_GLYPH_PAGES", NHG_FONT_GLYPH_PAGES as i64),
+            ("NHG_FONT_FILL_GLYPHS", i64::from(NHG_FONT_FILL_GLYPHS)),
+            ("NHG_GLYPH_NONE", i64::from(NHG_GLYPH_NONE)),
+            ("sizeof (NhgCharPage)", size_of::<NhgCharPage>() as i64),
+            ("sizeof (NhgGlyphPage)", size_of::<NhgGlyphPage>() as i64),
+            ("sizeof (NhgFontTable)", size_of::<NhgFontTable>() as i64),
+            (
+                "offsetof (NhgFontTable, glyphs)",
+                offset_of!(NhgFontTable, glyphs) as i64,
+            ),
         ];
         let decls = "\
 #define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
 PROTO (nhg_font_start, int32_t (void));
 PROTO (nhg_font_open, int32_t (uint64_t, int32_t, NhgFontMetrics *));
 PROTO (nhg_font_close, int32_t (uint64_t));
-PROTO (nhg_font_glyph, int32_t (uint64_t, uint32_t, uint32_t *));
-PROTO (nhg_font_glyph_metrics, int32_t (uint64_t, uint32_t, uint32_t, int32_t, NhgGlyphMetrics *));";
+PROTO (nhg_font_table, int32_t (uint64_t, const NhgFontTable **));
+PROTO (nhg_font_fill, int32_t (uint64_t, uint32_t));";
         let _: unsafe extern "C" fn() -> i32 = nhg_font_start;
         let _: unsafe extern "C" fn(u64, i32, *mut NhgFontMetrics) -> i32 = nhg_font_open;
         let _: unsafe extern "C" fn(u64) -> i32 = nhg_font_close;
-        let _: unsafe extern "C" fn(u64, u32, *mut u32) -> i32 = nhg_font_glyph;
-        let _: unsafe extern "C" fn(u64, u32, u32, i32, *mut NhgGlyphMetrics) -> i32 =
-            nhg_font_glyph_metrics;
+        let _: unsafe extern "C" fn(u64, *mut *const NhgFontTable) -> i32 = nhg_font_table;
+        let _: unsafe extern "C" fn(u64, u32) -> i32 = nhg_font_fill;
         let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
         let got = probe(decls, &exprs);
         assert_eq!(got.len(), rows.len());

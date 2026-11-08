@@ -92,17 +92,19 @@ pub struct MacShell {
     capture: hooks::Capture,
 }
 
-/// The counters `(nhmac-stats)` returns: the scope's, the main wait's (with the lock hand-off's), the surfaces'.
+/// The counters `(nhmac-stats)` returns: the scope's, the main wait's (with the lock hand-off's), the surfaces', the
+/// layers' property writes, the font driver's.
 fn stats_text(s: ScopeStats) -> String {
     format!(
-        "(:takes {} :overlapping-takes {} :queued {} :applied {} {} {} {})",
+        "(:takes {} :overlapping-takes {} :queued {} :applied {} {} {} {} {})",
         s.takes,
         s.overlapping_takes,
         s.queued,
         s.applied,
         wait::STATS.text(&wait::PARK),
         surface::STATS.text(),
-        layers::PROPS.text()
+        layers::PROPS.text(),
+        super::fonts::STATS.text()
     )
 }
 

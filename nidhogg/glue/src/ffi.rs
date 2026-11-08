@@ -2487,6 +2487,7 @@ nhg_export! {
     /// # Safety
     /// `s` is null or holds `len` readable bytes; `id` is null or writable.
     unlocked fn nhg_font_id(s: *const c_char, len: usize, id: *mut u32) -> i32 {
+        crate::font::note_call();
         if s.is_null() || id.is_null() {
             return Err(GlueError::Arg);
         }
@@ -2503,6 +2504,7 @@ nhg_export! {
     /// # Safety
     /// `buf` is null or holds `cap` writable bytes; `len` is null or writable.
     unlocked fn nhg_font_name(id: u32, buf: *mut c_char, cap: usize, len: *mut usize) -> i32 {
+        crate::font::note_call();
         if crate::fontspec::name_raw(id, buf, cap, len) { Ok(NHG_OK) } else { Err(GlueError::Code(crate::abi::NHG_E_TOO_SMALL)) }
     }
 }
@@ -2515,6 +2517,7 @@ nhg_export! {
     /// # Safety
     /// `spec` is null or valid; `out` is null or holds `cap` writable records; `n` is null or writable.
     unlocked fn nhg_font_list(spec: *const crate::fontspec::NhgFontSpec, out: *mut crate::fontspec::NhgFontEntity, cap: usize, n: *mut usize) -> i32 {
+        crate::font::note_call();
         font_query(spec, out, cap, n, true)
     }
 }
@@ -2525,6 +2528,7 @@ nhg_export! {
     /// # Safety
     /// As `nhg_font_list`, with `cap` at least 1.
     unlocked fn nhg_font_match(spec: *const crate::fontspec::NhgFontSpec, out: *mut crate::fontspec::NhgFontEntity, cap: usize, n: *mut usize) -> i32 {
+        crate::font::note_call();
         font_query(spec, out, cap, n, false)
     }
 }
@@ -2536,6 +2540,7 @@ nhg_export! {
     /// # Safety
     /// None beyond the C ABI: it takes no pointers.
     unlocked fn nhg_font_start() -> i32 {
+        crate::font::note_call();
         if crate::font::start() { Ok(NHG_OK) } else { Err(GlueError::Shell(crate::abi::NHG_E_UNSUPPORTED)) }
     }
 }
@@ -2547,6 +2552,7 @@ nhg_export! {
     /// # Safety
     /// `out` is null or writable.
     unlocked fn nhg_font_open(font_id: u64, size: i32, out: *mut crate::font::NhgFontMetrics) -> i32 {
+        crate::font::note_call();
         if out.is_null() || size <= 0 {
             return Err(GlueError::Arg);
         }
@@ -2566,41 +2572,40 @@ nhg_export! {
     /// # Safety
     /// None beyond the C ABI: it takes no pointers.
     unlocked fn nhg_font_close(handle: u64) -> i32 {
+        crate::font::note_call();
         crate::font::close(handle);
         Ok(NHG_OK)
     }
 }
 
 nhg_export! {
-    /// Character `c`'s glyph in font `handle` into `*glyph`; `NHG_E_STATE` when the font has none.
+    /// The glyph table of font `handle` (`glyphs.rs`) into `*out`: its address is fixed until `nhg_font_close`, and C
+    /// reads characters' glyphs and glyphs' metrics from it without a call.  `NHG_E_STATE` for a font that is not open.
     ///
     /// # Safety
-    /// `glyph` is null or writable.
-    unlocked fn nhg_font_glyph(handle: u64, c: u32, glyph: *mut u32) -> i32 {
-        if glyph.is_null() {
+    /// `out` is null or writable.
+    unlocked fn nhg_font_table(handle: u64, out: *mut *const crate::glyphs::NhgFontTable) -> i32 {
+        crate::font::note_call();
+        if out.is_null() {
             return Err(GlueError::Arg);
         }
-        let g = crate::font::glyph(handle, c).ok_or(GlueError::State)?;
+        let t = crate::font::table(handle).ok_or(GlueError::State)?;
         // SAFETY: non-null and writable (the caller's promise).
-        unsafe { glyph.write(g) };
+        unsafe { out.write(t) };
         Ok(NHG_OK)
     }
 }
 
 nhg_export! {
-    /// Glyph `glyph`'s metrics in font `handle` into `*out`, its width rounded as `macfont_glyph_extents` rounds it:
-    /// `mono` and `space_width` are the font's, from `nhg_font_open`.  `NHG_E_STATE` for an unknown font or glyph.
+    /// Fill page `page` of font `handle`'s glyph table: a character page, or a glyph page with `NHG_FONT_FILL_GLYPHS`
+    /// set; a page filled already is left alone.  C calls it holding Emacs's global lock, on a miss.  `NHG_E_STATE`
+    /// for a font that is not open, `NHG_E_ARG` for a page past the table.
     ///
     /// # Safety
-    /// `out` is null or writable.
-    unlocked fn nhg_font_glyph_metrics(handle: u64, glyph: u32, mono: u32, space_width: i32, out: *mut crate::font::NhgGlyphMetrics) -> i32 {
-        if out.is_null() {
-            return Err(GlueError::Arg);
-        }
-        let m = crate::font::glyph_extents(handle, glyph, mono != 0, space_width).ok_or(GlueError::State)?;
-        // SAFETY: non-null and writable (the caller's promise).
-        unsafe { out.write(m) };
-        Ok(NHG_OK)
+    /// None beyond the C ABI: it takes no pointers.
+    unlocked fn nhg_font_fill(handle: u64, page: u32) -> i32 {
+        crate::font::note_call();
+        if crate::font::fill(handle, page).ok_or(GlueError::State)? { Ok(NHG_OK) } else { Err(GlueError::Arg) }
     }
 }
 
