@@ -23,7 +23,7 @@ use crate::wait::{self, Change, Reg, WaitOps, Woke};
 use glitnir::geom::Rect;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
-use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSEventMask};
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSEventMask, NSScreen};
 use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSString};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::time::Duration;
@@ -456,6 +456,18 @@ impl ShellBackend for MacShell {
     fn set_min_size(&mut self, window: WindowId, w: i32, h: i32) -> ShellResult {
         let size = objc2_foundation::NSSize::new(f64::from(w.max(1)), f64::from(h.max(1)));
         self.win(window)?.window.setContentMinSize(size);
+        Ok(())
+    }
+
+    fn move_to(&mut self, window: WindowId, x: i32, y: i32) -> ShellResult {
+        // NS's compute_offset: the frame's top-left, y up from the main screen's bottom
+        let top = NSScreen::screens(self.mtm)
+            .iter()
+            .next()
+            .map_or(0.0, |s| s.frame().origin.y + s.frame().size.height);
+        let point = objc2_foundation::NSPoint::new(f64::from(x), top - f64::from(y));
+        self.win(window)?.window.setFrameTopLeftPoint(point);
+        layers::changed_outside();
         Ok(())
     }
 
