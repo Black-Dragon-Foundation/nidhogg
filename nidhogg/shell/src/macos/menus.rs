@@ -248,26 +248,49 @@ pub fn test_end_popup_after(mtm: MainThreadMarker, secs: f64, choose: Option<isi
     }
 }
 
-/// Test hook: the main menu as lines "DEPTH<TAB>TITLE<TAB>TAG<TAB>ENABLED", for the rows to read what the user sees.
+/// `m`'s items as lines "DEPTH<TAB>TITLE<TAB>TAG<TAB>ENABLED", submenus after their item.
 #[cfg(feature = "test-hooks")]
-pub fn test_dump(app: &NSApplication) -> String {
-    fn walk(m: &NSMenu, depth: usize, out: &mut String) {
-        for it in m.itemArray() {
-            out.push_str(&format!(
-                "{depth}\t{}\t{}\t{}\n",
-                it.title(),
-                it.tag(),
-                u8::from(it.isEnabled())
-            ));
-            if let Some(sub) = it.submenu() {
-                walk(&sub, depth + 1, out);
-            }
+fn walk(m: &NSMenu, depth: usize, out: &mut String) {
+    for it in m.itemArray() {
+        out.push_str(&format!(
+            "{depth}\t{}\t{}\t{}\n",
+            it.title(),
+            it.tag(),
+            u8::from(it.isEnabled())
+        ));
+        if let Some(sub) = it.submenu() {
+            walk(&sub, depth + 1, out);
         }
     }
+}
+
+/// Test hook: the main menu as `walk`'s lines, for the rows to read what the user sees.
+#[cfg(feature = "test-hooks")]
+pub fn test_dump(app: &NSApplication) -> String {
     let mut out = String::new();
     if let Some(m) = app.mainMenu() {
         walk(&m, 0, &mut out);
     }
+    out
+}
+
+/// Test hook: the menu the application delegate gives the Dock (`applicationDockMenu:`), as `walk`'s lines; with
+/// `choose`, that item's action is performed first, as a click in the Dock's menu does.
+#[cfg(feature = "test-hooks")]
+pub fn test_dock(app: &NSApplication, choose: Option<isize>) -> String {
+    let Some(d) = app.delegate() else {
+        return String::new();
+    };
+    // SAFETY: the delegate is the AppDelegate, which answers `applicationDockMenu:` with an NSMenu or nil.
+    let m: Option<Retained<NSMenu>> = unsafe { msg_send![&*d, applicationDockMenu: app] };
+    let Some(m) = m else {
+        return String::new();
+    };
+    if let Some(i) = choose {
+        m.performActionForItemAtIndex(i);
+    }
+    let mut out = String::new();
+    walk(&m, 0, &mut out);
     out
 }
 
