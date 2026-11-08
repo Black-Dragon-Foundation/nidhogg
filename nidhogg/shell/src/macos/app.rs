@@ -75,13 +75,14 @@ pub struct MacShell {
 /// The counters `(nhmac-stats)` returns: the scope's, the main wait's (with the lock hand-off's), the surfaces'.
 fn stats_text(s: ScopeStats) -> String {
     format!(
-        "(:takes {} :overlapping-takes {} :queued {} :applied {} {} {})",
+        "(:takes {} :overlapping-takes {} :queued {} :applied {} {} {} :zoom-calls {})",
         s.takes,
         s.overlapping_takes,
         s.queued,
         s.applied,
         wait::STATS.text(&wait::PARK),
-        surface::STATS.text()
+        surface::STATS.text(),
+        super::ax::ZOOM_CALLS.load(std::sync::atomic::Ordering::Relaxed)
     )
 }
 
@@ -875,8 +876,9 @@ impl ShellBackend for MacShell {
         w: i32,
         h: i32,
     ) -> ShellResult {
-        self.win(window)?;
+        let view = self.win(window)?.view.clone();
         super::ime::with(window, |p| p.cursor = [x, y, w, h]);
+        super::ax::cursor_pushed(&view, window);
         Ok(())
     }
 

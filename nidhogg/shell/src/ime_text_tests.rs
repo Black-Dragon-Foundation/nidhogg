@@ -39,3 +39,11 @@ fn substring_is_clipped_to_the_line() {
     assert_eq!(s.substring(3, 4), None);
     assert_eq!(s.substring(12, 0), None);
 }
+
+/// The selected text is the region's text within the line: clipped to it, empty without a region.
+#[test]
+fn selected_text_is_the_region_in_the_line() {
+    assert_eq!(at("hello brave world", 20, 31, 26).selected_text(), "brave");
+    assert_eq!(at("hello brave world", 20, 26, 26).selected_text(), "");
+    assert_eq!(at("héllo", 10, 12, 4).selected_text(), "hé");
+}

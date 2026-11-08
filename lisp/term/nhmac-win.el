@@ -671,7 +671,8 @@ hand-off (`:lock-waiters', `:parks-with-waiters'), the main wait (`:waits',
 (`:bytes-copied', `:damage-bytes', `:full-copies', `:commits',
 `:surface-busy', `:ring-acquires', `:implicit-open-at-update-end',
 `:spins-in-redisplay' (run-loop passes outside the pumps), `:pumps',
-`:handed-pumps' (a Lisp thread's pumps, handed to the main thread))."
+`:handed-pumps' (a Lisp thread's pumps, handed to the main thread)), and
+Zoom's cursor moves (`:zoom-calls')."
   (nhmac--query 'stats))
 
 (defun nhmac--test-raise-in-pump ()

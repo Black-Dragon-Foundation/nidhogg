@@ -26,6 +26,12 @@ impl Surrounding {
         (self.marked > 0).then_some((self.point, self.marked))
     }
 
+    /// `accessibilitySelectedText`: the region's text within the line, empty without a region.
+    pub fn selected_text(&self) -> String {
+        let (l, n) = self.selected();
+        self.substring(l, n).map(|(s, _)| s).unwrap_or_default()
+    }
+
     /// `attributedSubstringForProposedRange:actualRange:`: the part of (`location`, `length`) inside the line and the
     /// range it covers; `None` when nothing of it is.
     pub fn substring(&self, location: usize, length: usize) -> Option<(String, (usize, usize))> {
