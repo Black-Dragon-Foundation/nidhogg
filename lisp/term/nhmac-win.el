@@ -680,7 +680,8 @@ hand-off (`:lock-waiters', `:parks-with-waiters'), the main wait (`:waits',
 `:handed-pumps' (a Lisp thread's pumps, handed to the main thread)) and
 the commit pacer (`:held', `:held-timeouts', `:pacer-fires',
 `:pacer-arms') and the font driver (`:font-calls', the glue's
-`nhg_font_*' calls, and `:font-fills', glyph-table pages filled)."
+`nhg_font_*' calls, and `:font-fills', glyph-table pages filled), and
+Zoom's cursor moves (`:zoom-calls')."
   (nhmac--query 'stats))
 
 (defun nhmac--test-raise-in-pump ()
