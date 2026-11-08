@@ -985,7 +985,7 @@ mod reconnect {
     }
 
     fn tasks() -> usize {
-        std::fs::read_dir("/proc/self/task").unwrap().count()
+        live_threads()
     }
 
     /// VmRSS in KiB.
