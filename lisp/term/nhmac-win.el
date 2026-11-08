@@ -590,12 +590,15 @@ Not available yet in Naglfar."
   (ignore selection)
   (nhmac--not-yet))
 
-(defun ns-display-monitor-attributes-list (&optional terminal)
-  "Return a list of physical monitor attributes on the X display TERMINAL.
+(declare-function pgtk-display-monitor-attributes-list "nhwlfns.c" (&optional terminal))
 
-Not available yet in Naglfar."
-  (ignore terminal)
-  (nhmac--not-yet))
+(defun ns-display-monitor-attributes-list (&optional terminal)
+  "Return a list of physical monitor attributes on the display TERMINAL.
+The screens the shell announced, as the shared C lists them (geometry
+in device pixels), with `source' \"NS\"."
+  (mapcar (lambda (m)
+            (mapcar (lambda (kv) (if (eq (car kv) 'source) (cons 'source "NS") kv)) m))
+          (pgtk-display-monitor-attributes-list terminal)))
 
 (defun ns-do-applescript (script)
   "Execute AppleScript SCRIPT and return the result.

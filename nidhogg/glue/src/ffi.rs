@@ -1187,6 +1187,18 @@ nhg_export! {
 }
 
 nhg_export! {
+    /// Place the top-level frame with its top-left at (`x`, `y`) device pixels from the main screen's top-left, as NS
+    /// places a frame.  `NHG_E_ARG` for a child frame, `NHG_E_UNSUPPORTED` where clients have no position (Wayland).
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_window_place(d: *mut NhgDisplay, window: u64, x: i32, y: i32) -> i32 |state| {
+        window::place(state, window, x, y)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
     /// Push: Emacs made the frame visible (`on` non-zero) or invisible, not iconified.  Checked in checking builds.
     ///
     /// # Safety

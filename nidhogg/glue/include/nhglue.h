@@ -641,6 +641,9 @@ int32_t nhg_frame_fit (NhgDisplay *d, uint64_t window, uint32_t scale120, int32_
                        int32_t native_w, int32_t native_h, uint32_t flags, int32_t *w, int32_t *h);
 /* The frame's smallest size, W x H device pixels (a child's window has none).  */
 int32_t nhg_window_min_size (NhgDisplay *d, uint64_t window, int32_t w, int32_t h);
+/* Place the top-level frame with its top-left at (X, Y) device pixels from the main screen's top-left, as NS places a
+   frame.  NHG_E_ARG for a child frame; NHG_E_UNSUPPORTED where clients have no position (Wayland).  */
+int32_t nhg_window_place (NhgDisplay *d, uint64_t window, int32_t x, int32_t y);
 /* Push: Emacs made the frame visible (ON non-zero) or invisible, not iconified.  Checked (nhg_debug_check_frame).  */
 int32_t nhg_window_visible (NhgDisplay *d, uint64_t window, int32_t on);
 /* Iconify: the compositor minimizes the window; a push too (iconified, not visible).  */

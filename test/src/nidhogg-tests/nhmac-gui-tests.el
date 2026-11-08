@@ -856,7 +856,9 @@ points, Naglfar in device pixels), and the text's pixels are within 1/255 of NS'
                                      (nhmac-gui--bmp-read (nhmac-gui--capture (nhmac-gui--font-file "bmp")))))
                    (worst 0) (off 0))
         (message "nhmac-font-ascii: text NS %dx%d, Naglfar %dx%d" nw nh mw mh)
+        ;; an empty crop is a capture that missed the frame, never a size to compare
         (should (> nw 0))
+        (should (> mw 0))
         (should (equal (list mw mh) (list nw nh)))
         (dotimes (i (length npx))
           (let ((a (aref npx i)) (b (aref mpx i)))
@@ -969,6 +971,9 @@ screen are within 2/255 of NS's in the same run (NS points are pixels there)."
                                           (nhmac-gui--bmp-read
                                            (nhmac-gui--capture (nhmac-gui--font-file (concat name ".bmp"))))))
                          (worst 0))
+              ;; an empty crop is a capture that missed the frame, never a size to compare
+              (should (> nw 0))
+              (should (> mw 0))
               (should (equal (list mw mh) (list nw nh)))
               (dotimes (i (length npx))
                 (let ((a (aref npx i)) (b (aref mpx i)))
