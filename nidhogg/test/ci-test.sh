@@ -304,6 +304,10 @@ for a in naglfar-build nhmac-ns-refs tarball-macos; do
 done
 grep -qF 'path: ${{ runner.temp }}/nhmac-gui' <<<"$rj"              || fail "the NS dumps are not downloaded where the Naglfar rows read them"
 ! grep -qE 'continue-on-error|nhmac-ns-refs.*(skip|ignore)' <<<"$rj" || fail "macos-naglfar-rows may skip a missing artifact"
+# the ring and timing rows need a composited window: the Naglfar rows and the paired timing run with the display awake
+for s in nhmac-gui.sh nhmac-pair.sh; do
+  grep -qE "^          caffeinate -d -i -u bash nidhogg/test/$s " <<<"$rj" || fail "macos-naglfar-rows runs $s with the display free to sleep"
+done
 job macos-naglfar | grep -qF -- "--exclude=glitnir-target"           || fail "the Naglfar build tree artifact carries the Rust target"
 job macos-naglfar | grep -qF "needs.changes.outputs.macos != 'false'" || fail "macos-naglfar does not follow the macOS path filter"
 job gate | grep -qF 'macos-naglfar macos-naglfar-rows " ;; esac'     || fail "the gate lets a filtered macOS run skip macos but not the Naglfar jobs"
