@@ -569,7 +569,11 @@ through `ns-spi-service-call'."
 
 ;; Drops: the shell reports them as the Wayland shell does (C's
 ;; DRAG_N_DROP_EVENT with `(quote XdndSelection TIME)'), and the offer is
-;; read from the shell in NS's form, so `ns-drag-n-drop' handles it.
+;; read from the shell in NS's form, so `ns-drag-n-drop' handles it.  The
+;; drop is finished through the glue, as on Wayland, so the glue's drop
+;; ends with it.
+
+(declare-function pgtk-drop-finish "nhwlfns.c" (success timestamp delete))
 
 (defun nhmac--drag-n-drop (orig event)
   "Call ORIG, `ns-drag-n-drop', with EVENT's drop in NS's form, then finish the drop."
@@ -579,7 +583,7 @@ through `ns-spi-service-call'."
       (unwind-protect
           (when offer
             (funcall orig (list (car event) (nth 1 event) offer)))
-        (nhmac--call 'dnd-finish)))))
+        (pgtk-drop-finish t (nth 2 (nth 2 event)) nil)))))
 
 (advice-add 'ns-drag-n-drop :around #'nhmac--drag-n-drop)
 

@@ -1302,7 +1302,6 @@ impl ShellBackend for MacShell {
             "frame-look" => self.frame_look(arg),
             "menu-bar" => menus::bar(self.mtm, &self.app, arg),
             "menu-dock" => menus::dock(self.mtm, arg),
-            "dnd-finish" => super::dnd::finish(true),
             // `ns-hide-emacs`: "(HOW)", 0 unhide, 1 hide, 2 unhide and activate
             "hide" => {
                 let (n, _) = crate::menu::split_numbers(arg, 1).ok_or(ShellError::Arg)?;
