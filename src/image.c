@@ -3619,8 +3619,9 @@ int
 nh_img_spec_format (Lisp_Object spec)
 {
 #ifdef HAVE_NHMAC
-  /* Naglfar's worker cores (Glitnir's, then ImageIO) take all four.  */
-  Lisp_Object t = image_spec_value (spec, QCtype, NULL);
+  /* Naglfar's worker cores (Glitnir's, then ImageIO) take all four.
+     SPEC may name only its type.  */
+  Lisp_Object t = plist_get (XCDR (spec), QCtype);
   return (EQ (t, Qpng) ? NH_IMG_F_PNG : EQ (t, Qjpeg) ? NH_IMG_F_JPEG
 	  : EQ (t, Qgif) ? NH_IMG_F_GIF : EQ (t, Qwebp) ? NH_IMG_F_WEBP
 	  : NH_IMG_F_NONE);
