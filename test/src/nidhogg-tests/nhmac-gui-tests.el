@@ -628,6 +628,7 @@ without, back to back."
   "Typing copies only damage into the surfaces: per key at most the damage times the ring's age, a few lines at
 most, in the three §5.4 cases (end of line, mid-line, the worst plain key); never a whole surface.  The keys come
 at the fastest key repeat, on a ring that has made all its slots."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--require-composited)
   (let ((row (nhmac-gui--row-bytes))
@@ -693,9 +694,13 @@ interposer in the NS lane of the same run, is logged by `nhmac-interposer-counts
     (blink-cursor-mode -1)
     (unwind-protect
         (progn
+          ;; one key first, not counted: a window that is not key yet becomes key at it, and its cursor's redraw
+          ;; (hollow to filled) is a commit of its own
+          (nhmac--test-post-key ?k)
+          (should (eq (read-event nil nil 2) ?k))
           (redisplay t)
           (nhmac-gui--flush)
-          (dotimes (_ 5)
+          (dotimes (i 5)
             (let ((before (progn (nhmac--pump-trace) (nhmac-stats))))
               (nhmac--test-post-key ?k)
               (let ((ev (read-event nil nil 2)))
@@ -706,7 +711,8 @@ interposer in the NS lane of the same run, is logged by `nhmac-interposer-counts
               (let ((pumps (nhmac-gui--delta before :pumps))
                     (commits (nhmac-gui--delta before :commits))
                     (sleeps (nhmac-gui--delta before :sleeps)))
-                (nhmac-gui--say "nhmac-key-to-commit-counts: pumps %d commits %d fd waits %d" pumps commits sleeps)
+                (nhmac-gui--say "nhmac-key-to-commit-counts: key %d: pumps %d commits %d fd waits %d"
+                                i pumps commits sleeps)
                 ;; who asked for each pump, and each commit's damage
                 (ert-info ((format "pump decisions %S" (nhmac--pump-trace)))
                   (should (= pumps 1))
@@ -718,6 +724,7 @@ interposer in the NS lane of the same run, is logged by `nhmac-interposer-counts
 
 (ert-deftest nhmac-surface-busy-typing ()
   "While typing (keys at the fastest key repeat) the ring always has a surface the window server does not hold."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--require-composited)
   (nhmac-gui--typing-buffer "busy")
@@ -729,9 +736,12 @@ interposer in the NS lane of the same run, is logged by `nhmac-interposer-counts
   (kill-buffer))
 
 (defun nhmac-gui--wait-unheld (secs)
-  "Wait in Emacs's wait until the commit pacer holds no commit of the selected frame, at most SECS; whether it does not."
+  "Wait as Emacs waits for input until the commit pacer holds no commit of the selected frame, at most SECS; whether
+it does not.  The pacer's request for the publish comes as a shell event, which Emacs reads where it reads keys (here
+`input-pending-p', without a redisplay that would publish anyway)."
   (let ((end (+ (float-time) secs)))
     (while (and (plist-get (nhmac-gui--surface) :held) (< (float-time) end))
+      (input-pending-p)
       (accept-process-output nil 0.01))
     (not (plist-get (nhmac-gui--surface) :held))))
 
@@ -739,6 +749,7 @@ interposer in the NS lane of the same run, is logged by `nhmac-interposer-counts
   "Redisplays back to back, faster than the window server composites (a keyboard macro, edits streaming in): the
 commit pacer holds a commit while every other surface is held, so no held surface is drawn into (0 busy), and no hold
 reaches its bound on a composited window (0 held timeouts)."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--require-composited)
   (nhmac-gui--typing-buffer "burst")
@@ -767,6 +778,7 @@ The surfaces read as free again when it returns; the held commit is owed."
   "A burst's last commit, held while the window server held the other surfaces, is published once one frees, while
 Emacs sits in its wait (the pacer's timer asks for it): the layer then shows the newest surface, and the hold ended
 without reaching its bound."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "last")
   (let ((before (nhmac-stats)))
@@ -785,6 +797,7 @@ without reaching its bound."
 (ert-deftest nhmac-pacer-idle-disarmed ()
   "After a held commit shows, the pacer's timer is disarmed: it fired while the commit was held, and does not fire
 over 2 s of idle after."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "idle")
   (let ((before (nhmac-stats)))
@@ -802,6 +815,7 @@ over 2 s of idle after."
 (ert-deftest nhmac-held-commit-bound ()
   "A commit held past the pacer's bound (every surface forced to read as held throughout) is drawn into the oldest
 anyway, counted as a held timeout and a busy surface, so a stuck window server never freezes the frame."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "bound")
   (let ((before (nhmac-stats)) (t0 (float-time)) shown)
@@ -825,6 +839,7 @@ anyway, counted as a held timeout and a busy surface, so a stuck window server n
 (ert-deftest nhmac-typing-fills-the-ring ()
   "The typing rows measure on a ring that has made all its slots: right after the ring starts over (the colour space
 changed) it has fewer, which their check sees, and the warm-up fills it."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--require-composited)
   (let ((srgb ns-use-srgb-colorspace))
@@ -973,10 +988,12 @@ checked against the faces, tolerance 0 for fills and box lines."
     (redisplay t)
     (should (= (nhmac-gui--pixel-at (+ x 25) (+ y (/ h 2))) #xff00ff00))
     ;; and gone again: the stretch's own colour where it was; the trace names both publishes and their damage
-    (setq-local cursor-type nil)
-    (redisplay t)
-    (ert-info ((format "pump decisions %S, surface %S" (nhmac--pump-trace) (nhmac-gui--surface)))
-      (should (= (nhmac-gui--pixel-at (+ x 25) (+ y (/ h 2))) #xffffffff))))
+    (let ((draws (plist-get (nhmac-stats) :draws)))
+      (setq-local cursor-type nil)
+      (redisplay t)
+      (setq draws (- (plist-get (nhmac-stats) :draws) draws))
+      (ert-info ((format "pump decisions %S, %d draws, surface %S" (nhmac--pump-trace) draws (nhmac-gui--surface)))
+        (should (= (nhmac-gui--pixel-at (+ x 25) (+ y (/ h 2))) #xffffffff)))))
   (kill-buffer))
 
 (ert-deftest nhmac-draw-other-thread ()
@@ -1293,6 +1310,7 @@ decoded on nh-img and landed first."
 (ert-deftest nhmac-images-worker ()
   "PNG, JPEG, GIF and WebP decoded off the main thread by the image worker (Glitnir's decoders, ImageIO behind them
 and for JPEG) land and draw the pixels the inline load draws, within 2/255."
+  :tags '(draws)
   (skip-unless (and (not (nhmac-gui--ns-build-p)) (equal (getenv "GLITNIR_GUI_SCALE") "1")))
   (should (fboundp 'nidhogg-workers--test-decide))
   (dolist (type '(png jpeg gif webp))
@@ -1324,6 +1342,7 @@ and for JPEG) land and draw the pixels the inline load draws, within 2/255."
 (ert-deftest nhmac-images-stand-in ()
   "While a zoomed image's decode is parked on the worker, the picture it replaces draws scaled into the new box (the
 glue's stand-in), and the stand-in goes when the decode lands."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((file (expand-file-name "../../data/image/black.jpg" (getenv "GLITNIR_GUI_TESTS")))
          (old `(image :type jpeg :file ,file :scale 1))
@@ -1427,11 +1446,12 @@ top row lands where the turn puts it, its pixels doubled (not smoothed) when sca
       ;; one comparison, so a failure shows every pixel:
       ;; scaled 2: rows 0 and 1 lit, row 2 not;
       ;; turned 90 degrees clockwise (from x 16): the top row is the right column;
-      ;; turned 270 (the top row to the left column), then flipped (from x 24): the right column again
+      ;; turned 270 (the top row to the left column), then flipped (from x 24): the right column again;
+      ;; the 8-pixel turned images sit centred on the 16-pixel line (ascent 50%), from y 4, so their row 7
       ;; the draws name each image's rectangle, source origin and matrix
       (ert-info ((format "image draws %S at (%d %d)" (nhmac--image-draws) x y))
         (should (equal (mapcar (lambda (p) (format "%x" (funcall px (car p) (cdr p))))
-                               '((3 . 1) (3 . 2) (23 . 3) (16 . 3) (31 . 3) (24 . 3)))
+                               '((3 . 1) (3 . 2) (23 . 7) (16 . 7) (31 . 7) (24 . 7)))
                        '("ffff0000" "ff0000ff" "ffff0000" "ff0000ff" "ffff0000" "ff0000ff"))))))
   (kill-buffer))
 
@@ -1560,6 +1580,7 @@ The filter checks itself first on a Homebrew libpng line (caught), the system Im
 (ert-deftest nhmac-child-move ()
   "A child frame is a container layer in its parent's root; a move changes the container's position and nothing
 else (no contents, so no shadow render either), in one commit, with no picture drawn."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((c (nhmac-gui--child)))
     (unwind-protect
@@ -1586,6 +1607,7 @@ else (no contents, so no shadow render either), in one commit, with no picture d
 (ert-deftest nhmac-child-click-through-shadow ()
   "A child with a shadow takes clicks on its native area only: a click on its shadow margin reaches the frame
 beneath, its parent."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((root (selected-frame))
          (c (nhmac-gui--child '((shadow . (:blur 16 :offset (0 . 6) :opacity 0.35))) 100 100)))
@@ -1614,6 +1636,7 @@ beneath, its parent."
 (ert-deftest nhmac-overhang-switch ()
   "A child moved across its root's right edge goes into an overhang panel once per crossing and comes back once,
 with no picture drawn; captures across the switch show exactly one copy of it."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((root (selected-frame))
          (rw (frame-pixel-width root))
@@ -1651,6 +1674,7 @@ with no picture drawn; captures across the switch show exactly one copy of it."
 (ert-deftest nhmac-parent-frame-changes ()
   "`parent-frame' changed all three ways with no picture drawn: a child becomes a top-level window, the top-level
 a child again, and the child moves to another root."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((root (selected-frame))
          (other (make-frame '((width . 40) (height . 10))))
@@ -1687,6 +1711,7 @@ a child again, and the child moves to another root."
 
 (ert-deftest nhmac-one-window-per-root ()
   "The window server lists one window per root frame: child frames add none, an overhanging one adds its panel."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((root (selected-frame))
          (windows (length (nhmac--test-windows)))
