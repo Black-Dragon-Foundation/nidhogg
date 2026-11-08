@@ -19,6 +19,7 @@ mod inject;
 mod kq;
 mod layers;
 mod menus;
+mod nsapp;
 mod pasteboard;
 mod power;
 mod resize;

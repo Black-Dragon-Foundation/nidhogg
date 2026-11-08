@@ -373,11 +373,6 @@ Shell events (`make-non-key-event' codes) are the shell's to produce.")
       (ns-hide-emacs 'activate))
     (should (equal (nreverse calls) '((hide 1) (hide 0) (hide 2))))))
 
-(ert-deftest nhmac-win-not-yet-signals ()
-  (should-error (nhmac--not-yet) :type 'error)
-  (should (equal (cadr (should-error (nhmac--not-yet)))
-                 "Naglfar: not available yet")))
-
 ;; Task 27: menus built at idle
 
 (defun nhmac-win-test--bar-with-sub ()
@@ -505,6 +500,95 @@ Shell events (`make-non-key-event' codes) are the shell's to produce.")
       (nhmac-quit))
     (should killed)
     (should-not asked)))
+
+;; Task 34: every ns function answered
+
+(ert-deftest nhmac-win-no-stubs-left ()
+  "No ns function signals that it is not there yet: the stub signal is gone and nothing in the layer names it."
+  (should-not (fboundp 'nhmac--not-yet))
+  (let ((src (with-temp-buffer
+               (insert-file-contents
+                (expand-file-name "../../../lisp/term/nhmac-win.el" nhmac-win-test--dir))
+               (buffer-string))))
+    (should-not (string-match-p "nhmac--not-yet\\|Not available yet" src))))
+
+(defun nhmac-win-test--records (thunk)
+  "The `nhmac--call' and `nhmac--query' records THUNK makes, oldest first, as (call|query WHAT ARGS...).
+A query answers 7."
+  (let ((records nil))
+    (cl-letf (((symbol-function 'nhmac--call)
+               (lambda (&rest a) (push (cons 'call a) records) nil))
+              ((symbol-function 'nhmac--query)
+               (lambda (&rest a) (push (cons 'query a) records) 7)))
+      (funcall thunk))
+    (nreverse records)))
+
+(ert-deftest nhmac-win-ns-functions-reach-the-shell ()
+  "Each ns function that NS serves in C passes its arguments to the shell, in the shell's terms."
+  (should (equal (nhmac-win-test--records
+                  (lambda ()
+                    (ns-badge "3") (ns-badge nil)
+                    (ns-request-user-attention 'informational) (ns-request-user-attention 'critical)
+                    (ns-request-user-attention nil)
+                    (ns-progress-indicator 0.5) (ns-progress-indicator nil)
+                    (ns-hide-others) (ns-emacs-info-panel) (ns-popup-color-panel)
+                    (ns-show-character-palette)
+                    (ns-set-mouse-absolute-pixel-position 10 20)
+                    (ns-mouse-absolute-pixel-position)
+                    (ns-block-system-sleep "build" t) (ns-block-system-sleep nil nil)
+                    (ns-unblock-system-sleep 4)
+                    (ns-process-is-accessibility-trusted)
+                    (ns-do-applescript "return 3")))
+                 '((call badge "3") (call badge "")
+                   (call attention 1) (call attention 2) (call attention 0)
+                   (call dock-progress 0.5) (call dock-progress -1.0)
+                   (call hide-others) (call about-panel) (call color-panel) (call character-palette)
+                   (call warp-mouse 10 20)
+                   (query mouse-position)
+                   (query sleep-block 1 "build") (query sleep-block 0 "")
+                   (query sleep-unblock 4)
+                   (query ax-trusted)
+                   (query applescript "return 3"))))
+  (should-error (ns-badge 3) :type 'wrong-type-argument)
+  (should-error (ns-unblock-system-sleep "x") :type 'wrong-type-argument)
+  (should-error (ns-send-items '("a" 2))))
+
+(ert-deftest nhmac-win-ns-applescript-error ()
+  "A failed script signals the shell's message."
+  (cl-letf (((symbol-function 'nhmac--query) (lambda (&rest _) '(error "AppleScript error -2741"))))
+    (should (equal (cadr (should-error (ns-do-applescript "x"))) "AppleScript error -2741"))))
+
+(ert-deftest nhmac-win-ns-geometry-is-the-shared-code ()
+  "The frame geometry and edges are the shared C's (the shell's frames are the Wayland code's)."
+  (cl-letf (((symbol-function 'pgtk-frame-geometry) (lambda (f) (list 'geometry f)))
+            ((symbol-function 'pgtk-frame-edges) (lambda (f type) (list 'edges f type))))
+    (should (equal (ns-frame-geometry 'f) '(geometry f)))
+    (should (equal (ns-frame-edges 'f 'inner-edges) '(edges f inner-edges)))))
+
+(ert-deftest nhmac-win-ns-reset-menu-rebuilds ()
+  "`ns-reset-menu' drops the shell's tree and builds it again."
+  (let ((built 0) (nhmac-menu--last [x]))
+    (cl-letf (((symbol-function 'nhmac-menu-build) (lambda () (cl-incf built))))
+      (ns-reset-menu))
+    (should (null nhmac-menu--last))
+    (should (= built 1))))
+
+(ert-deftest nhmac-win-ns-send-items ()
+  "`ns-send-items' sends the strings for the selected frame, separated as the shell splits them."
+  (let ((records (nhmac-win-test--records (lambda () (ns-send-items '("/tmp" "some text"))))))
+    (should (equal (car records) `(call send-items ,(selected-frame) "/tmp\C-_some text")))))
+
+(ert-deftest nhmac-win-ns-z-order-and-restack ()
+  "`ns-frame-list-z-order' asks the shell for the order of the shown top-level frames; restack passes both frames."
+  (let* ((a (selected-frame))
+         (records nil))
+    (cl-letf (((symbol-function 'framep) (lambda (_) 'ns))
+              ((symbol-function 'frame-list) (lambda () (list a)))
+              ((symbol-function 'nhmac--query) (lambda (&rest r) (push r records) '(0)))
+              ((symbol-function 'nhmac--call) (lambda (&rest r) (push r records) nil)))
+      (should (equal (ns-frame-list-z-order) (list a)))
+      (ns-frame-restack a a t))
+    (should (equal (nreverse records) `((z-order ,a) (restack ,a ,a 1))))))
 
 ;; Task 26: the input method
 
