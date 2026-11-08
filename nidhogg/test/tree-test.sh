@@ -45,6 +45,11 @@ flag_rule() {
         # C sources only (src/Makefile.in is not preprocessed).  Both sides go through unifdef: it also folds unrelated
         # always-false conditions such as '#if defined X && 0', which would show as a diff against the raw base.
         src/*.[chm])
+          # A C file a flag group created is the groups' own file, as for Lisp below: a later group may edit it.
+          if [ -z "$(git log --diff-filter=A --format=%s HEAD -- "$f" | tail -n 1 | grep -vE "^nidhogg: ($(IFS='|'; echo "${gname[*]}")):")" ] &&
+             [ -z "$(git log --format=%s "${gbase[i]}..HEAD" -- "$f" | grep -vE "^nidhogg: ($(IFS='|'; echo "${gname[*]}")):")" ]; then
+            continue
+          fi
           cmp -s <(git show "HEAD:$f" | unifdef "${flags[@]}" 2>/dev/null) \
                  <(git show "${gbase[i]}:$f" | unifdef "${flags[@]}" 2>/dev/null) ||
             fail "$f changes code outside ${gdef[i]}" ;;
@@ -158,7 +163,13 @@ if [ "${TREE_TEST_SELF:-}" = 1 ]; then
   fixture; putf "nidhogg: glitnir: g" lisp/g.el '(a)\n'; putf "nidhogg: shell: s" src/s.c '#ifdef HAVE_NHWL\nint s;\n#endif\n'
   putf "nidhogg: pgtk: p" lisp/g.el '(a)\n(b)\n'
   expect "another commit editing a Lisp file a group created" "lisp/g.el changed outside the groups' own files"
-  echo "tree self-test: 23 cases ok"
+  fixture; putf "nidhogg: shell: s" src/nhwl.c 'int s;\n'; put "nidhogg: history: h" 'int a;\n#ifdef HAVE_NIDHOGG_HISTORY\nint h;\n#endif\n'
+  putf "nidhogg: shell: s2" src/nhwl.c 'int s;\nint t;\n'
+  expect "a shell commit above history editing a C file the shell created" ""
+  fixture; putf "nidhogg: shell: s" src/nhwl.c 'int s;\n'; put "nidhogg: history: h" 'int a;\n#ifdef HAVE_NIDHOGG_HISTORY\nint h;\n#endif\n'
+  putf "nidhogg: pgtk: p" src/nhwl.c 'int s;\nint t;\n'
+  expect "another commit editing a C file a group created" "belongs to no flag group; it goes below the groups"
+  echo "tree self-test: 25 cases ok"
   exit 0
 fi
 
