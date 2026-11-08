@@ -137,7 +137,7 @@ grep -qF 'bash nidhogg/glitnir/check.sh' <<<"$mj"                 || fail "macos
 [ "$(grep -n 'glitnir/check.sh' <<<"$mj" | head -1 | cut -d: -f1)" -lt "$(grep -n 'id: build' <<<"$mj" | head -1 | cut -d: -f1)" ] 2>/dev/null || fail "macos runs the glitnir checks after the build"
 # one Linux path: the shell is build.sh's default, so no job names a toolkit, and nothing else is packed as a tarball
 ! grep -qiE 'pgtk|--nidhogg-wayland' "$wf"                        || fail "a job names pgtk or a window system of its own"
-[ "$(grep -cE '^ +name: tarball-\$\{\{ matrix\.distro \}\}$|^ +name: tarball-macos$' "$wf")" -eq 2 ] || fail "a tarball artifact release would publish by mistake"
+[ "$(awk '/^  macos-naglfar-rows:/{skip=1;next} skip&&/^  [a-z]/{skip=0} !skip' "$wf" | grep -cE '^ +name: tarball-\$\{\{ matrix\.distro \}\}$|^ +name: tarball-macos$')" -eq 2 ] || fail "a tarball artifact release would publish by mistake"
 # the workers' jobs (engine C, PD-4): present, after linux, outside release's needs, never fail-fast, pkg suites on and off
 for j in workers-harness workers-asan workers-pkg; do
   job "$j" | grep -qE '^    needs: \[changes, images, linux\]'     || fail "no job $j (or it does not need linux)"
@@ -272,9 +272,13 @@ job macos | grep -qF 'elc=$(bash nidhogg/ci/lisp-key.sh --elc)'  || fail "macos 
 # (the paired timing alone fetches the NS job's tarball), the rows, inputs and artifacts as before
 job macos-naglfar | grep -qF 'build.sh --host --naglfar --dev --checking' || fail "no Naglfar build in the macos-naglfar job"
 ! job macos | grep -qF -- '--host --naglfar'                             || fail "the NS job also builds Naglfar"
-for st in "Naglfar's Rust unit tests" "Naglfar's boundary check (nm-check)" "Naglfar GUI rows" "Naglfar paired timing (pair)"; do
+for st in "Naglfar's Rust unit tests" "Naglfar's boundary check (nm-check)"; do
   job macos-naglfar | grep -qF "name: $st" || fail "macos-naglfar lacks the step $st"
   ! job macos | grep -qF "name: $st"       || fail "macos still has the step $st"
+done
+for st in "Naglfar GUI rows" "Naglfar paired timing (pair)"; do
+  job macos-naglfar-rows | grep -qF "name: $st" || fail "macos-naglfar-rows lacks the step $st"
+  ! job macos-naglfar | grep -qF "name: $st"    || fail "macos-naglfar still has the step $st (it runs where the NS rows' dumps are)"
 done
 for j in macos macos-naglfar; do
   [ "$(job "$j" | grep -cE '^    needs: changes$')" = 1 ]        || fail "$j needs more than the changes job (the two macOS jobs run at once)"
@@ -284,12 +288,26 @@ job macos | grep -qF 'ip=--interpose'                              || fail "maco
 job macos | grep -qF 'name: nhmac-gui-logs'                        || fail "macos lost its nhmac-gui-logs artifact"
 job macos | grep -qF 'name: tarball-macos'                         || fail "macos lost its tarball-macos artifact"
 job macos | grep -qF 'inputs.ns_app_run'                           || fail "macos lost ns_app_run"
-job macos-naglfar | grep -qF 'inputs.pair'                         || fail "macos-naglfar lost pair"
-job macos-naglfar | grep -qF 'inputs.files'                        || fail "macos-naglfar lost files"
-job macos-naglfar | grep -qF 'inputs.checks'                       || fail "macos-naglfar lost checks"
-job macos-naglfar | grep -qF 'select(.name == "tarball-macos")'    || fail "the paired timing does not take the NS job's tarball"
+job macos-naglfar-rows | grep -qF 'inputs.pair'                    || fail "macos-naglfar-rows lost pair"
+job macos-naglfar-rows | grep -qF 'inputs.files'                   || fail "macos-naglfar-rows lost files"
+job macos-naglfar-rows | grep -qF 'inputs.checks'                  || fail "macos-naglfar-rows lost checks"
+# the Naglfar rows compare with the NS rows' dumps, which live on the NS runner: the NS job uploads every nhmac-ns-* file,
+# the rows job downloads them into the directory the rows read (nhmac-gui/..), and takes the Naglfar build tree and the
+# tarball as artifacts; a missing artifact fails the download, which names it
+job macos | grep -qF 'name: nhmac-ns-refs'                          || fail "the NS job does not upload the NS reference dumps"
+job macos | grep -qF 'path: ${{ runner.temp }}/nhmac-gui/nhmac-ns-*' || fail "the NS reference dumps are not every nhmac-ns-* file"
+job macos-naglfar | grep -qF 'name: naglfar-build'                  || fail "macos-naglfar does not upload its build tree"
+rj=$(job macos-naglfar-rows)
+grep -qE '^    needs: \[changes, macos, macos-naglfar\]$' <<<"$rj"     || fail "macos-naglfar-rows does not wait for both builds"
+for a in naglfar-build nhmac-ns-refs tarball-macos; do
+  grep -qE "^          name: $a$" <<<"$rj"                          || fail "macos-naglfar-rows does not download $a"
+done
+grep -qF 'path: ${{ runner.temp }}/nhmac-gui' <<<"$rj"              || fail "the NS dumps are not downloaded where the Naglfar rows read them"
+! grep -qE 'continue-on-error|nhmac-ns-refs.*(skip|ignore)' <<<"$rj" || fail "macos-naglfar-rows may skip a missing artifact"
+job macos-naglfar | grep -qF -- "--exclude=glitnir-target"           || fail "the Naglfar build tree artifact carries the Rust target"
 job macos-naglfar | grep -qF "needs.changes.outputs.macos != 'false'" || fail "macos-naglfar does not follow the macOS path filter"
-job gate | grep -qF 'macos-naglfar " ;; esac'                      || fail "the gate lets a filtered macOS run skip macos but not macos-naglfar"
+job gate | grep -qF 'macos-naglfar macos-naglfar-rows " ;; esac'     || fail "the gate lets a filtered macOS run skip macos but not the Naglfar jobs"
+job gate | grep -qF 'macos-naglfar-rows " ;; esac' && job gate | grep -qE '^    needs: .*macos-naglfar-rows' || fail "the gate does not need macos-naglfar-rows"
 # a scratch/* run builds the NS app with only the preloaded Lisp native-compiled (no JIT in the image) and says so; every
 # other run (nidhogg-31, tags, pull requests) keeps full AOT, and the tarball test checks the mode it was built in
 job macos | grep -qF "PRELOADED: \${{ startsWith(github.ref, 'refs/heads/scratch/') }}" || fail "macos does not pick the preloaded-only mode for scratch/* alone"
