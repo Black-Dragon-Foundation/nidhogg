@@ -21,6 +21,7 @@ mod layers;
 mod overhang;
 mod pacer;
 mod menus;
+mod nsapp;
 mod pasteboard;
 mod power;
 mod resize;
