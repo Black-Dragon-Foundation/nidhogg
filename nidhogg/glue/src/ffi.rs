@@ -1512,14 +1512,30 @@ nhg_export! {
         let key = (pix.data as usize, pix.width, pix.height);
         // what the picture is made with: the mask, or an 8-bit container's colour
         let made_with = if bytes == 1 { !(rec.fg as usize) } else { mask.map_or(0, |m| m.as_ptr() as usize) };
+        // the picture's first word when this draw makes it (the test hooks' image trace)
+        let made = std::cell::Cell::new(None);
         #[cfg(all(feature = "macos", target_os = "macos"))]
         nhshell::macos::images::with_picture(
             key,
             made_with,
-            || crate::image::combine(&pix, data, mask, rec.fg).unwrap_or_default(),
+            || {
+                let words = crate::image::combine(&pix, data, mask, rec.fg).unwrap_or_default();
+                made.set(words.first().copied());
+                words
+            },
             |_| (),
         )
         .ok_or(GlueError::Arg)?;
+        nhshell::trace::image(nhshell::trace::ImageDraw {
+            w: pix.width,
+            h: pix.height,
+            bpp: pix.bpp,
+            mask: mask.is_some(),
+            word: if bytes == 1 { u32::from(data[0]) } else { u32::from_ne_bytes([data[0], data[1], data[2], data[3]]) },
+            made: made.get(),
+            rect: (rec.r.x, rec.r.y, rec.r.w, rec.r.h),
+            clip: (rec.nclip > 0).then(|| (rec.clip[0].x, rec.clip[0].y, rec.clip[0].w, rec.clip[0].h)),
+        });
         #[cfg(not(all(feature = "macos", target_os = "macos")))]
         let _ = (data, mask);
         let mut p = crate::draw::decode_image(rec, key, made_with, &pix.matrix, pix.smooth != 0).map_err(|_| GlueError::Arg)?;

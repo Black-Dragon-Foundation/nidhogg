@@ -107,6 +107,9 @@ impl MacShell {
                 Ok(self.modal_alert(deadline, kind == "modal-resize"))
             }),
             "test-reentry" => Ok(self.reentry()),
+            "startup-log" => Ok(crate::trace::startup_text()),
+            "image-draws" => Ok(crate::trace::images_text()),
+            "shell-view" => Ok(self.shell_view()),
             "test-kq-probe" => Ok(kq_probe(arg)),
             "test-surface" => numbers(arg).and_then(|n| match n[..] {
                 [w, x, y] => self.surface_info(w as WindowId, x as i32, y as i32),
@@ -216,6 +219,51 @@ impl MacShell {
         );
         drop((a, b));
         r
+    }
+
+    /// The shell's own view, as a Lisp plist: its windows (id, content size in points, scale, AppKit's visibility and
+    /// occlusion, and whether it is the key window), the records queued for the glue (window and event), oldest first,
+    /// and whether the wake pipe holds its byte.
+    fn shell_view(&self) -> String {
+        let mut ids: Vec<_> = self.windows.keys().copied().collect();
+        ids.sort_unstable();
+        let windows: Vec<String> = ids
+            .iter()
+            .map(|id| {
+                let w = &self.windows[id];
+                let (cw, ch) = w.content_size();
+                let occluded = !w
+                    .window
+                    .occlusionState()
+                    .contains(NSWindowOcclusionState::Visible);
+                let t = |b: bool| if b { "t" } else { "nil" };
+                format!(
+                    "(:id {id} :points ({cw} {ch}) :scale {} :visible {} :occluded {} :key {})",
+                    w.window.backingScaleFactor(),
+                    t(w.window.isVisible()),
+                    t(occluded),
+                    t(w.window.isKeyWindow())
+                )
+            })
+            .collect();
+        let queued: Vec<String> = self
+            .queue
+            .iter()
+            .map(|r| format!("({} {:?})", r.window, format!("{:?}", r.event)))
+            .collect();
+        let mut p = libc::pollfd {
+            fd: self.wake[0],
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one valid pollfd, for the call; no wait.
+        let woken = unsafe { libc::poll(&mut p, 1, 0) } > 0;
+        format!(
+            "(:windows ({}) :queued ({}) :wake-readable {})",
+            windows.join(" "),
+            queued.join(" "),
+            if woken { "t" } else { "nil" }
+        )
     }
 
     /// The window's layer facts, as a Lisp plist: whether the root view has our layer, wants it, and has no subviews;

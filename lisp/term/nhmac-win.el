@@ -407,6 +407,28 @@ the main screen's bottom), `:on-screen' (the screen it is on: its frame
 and scale, or nil) and `:occluded'.  For tests."
   (nhmac--query 'window-info (or frame (selected-frame))))
 
+(defun nhmac--startup-log ()
+  "Return the shell's startup trace, a list.
+Its first events (a window made, its configure queued and applied, the
+visibility pushes, the first draw and commit) as strings, each with its
+milliseconds since the first, then each window's waits for its first
+configure as (wait WINDOW :rounds R :timeouts T).  For tests."
+  (nhmac--query 'startup-log))
+
+(defun nhmac--shell-view ()
+  "Return the shell's own view, a plist.
+`:windows' (each one's id, size in points, scale, visibility, occlusion
+and whether it is key), `:queued' (the records waiting for Emacs: window
+and event) and `:wake-readable'.  For tests."
+  (nhmac--query 'shell-view))
+
+(defun nhmac--image-draws ()
+  "Return the last image draws, oldest first, a list of plists.
+Each has the container's `:size', `:bpp', `:mask' and first pixel
+`:word', the picture's first word when that draw made it (`:made'),
+the drawn `:rect' and its first `:clip'.  For tests."
+  (nhmac--query 'image-draws))
+
 (defun nhmac--modal-alert (ms)
   "Run a modal alert for MS milliseconds, then end it; return its rounds.
 A query that runs a modal session, for the pumps' tests."

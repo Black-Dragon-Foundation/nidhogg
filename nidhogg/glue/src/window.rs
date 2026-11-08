@@ -193,6 +193,7 @@ pub fn new(
         let _ = state.backend().window_destroy(id);
         return Err(e);
     }
+    nhshell::trace::note(|| format!("window registered: window {id} kind {}", d.kind));
     // the frame was made for this scale (a reparented one shows at it already): its buffers start there, not at 1;
     // a refusal leaves them at 1 until the compositor says, as before
     if d.scale120 > 0 {
@@ -290,6 +291,12 @@ pub fn place(state: &mut Display, window: u64, x: i32, y: i32) -> Result<(), Glu
 /// Push: Emacs made the frame visible (`on`) or invisible, not iconified.
 pub fn visible(state: &mut Display, window: u64, on: bool) -> Result<(), GlueError> {
     let f = state.frame_mut(window)?;
+    nhshell::trace::note(|| {
+        format!(
+            "visible pushed: window {window} {on}, configured {}",
+            f.cfg.configured
+        )
+    });
     f.facts.flags &= !(NHG_FACT_VISIBLE | NHG_FACT_ICONIFIED);
     if on {
         f.facts.flags |= NHG_FACT_VISIBLE;
@@ -359,7 +366,9 @@ pub fn wait_configured(
     };
     let ms = i32::try_from(timeout_ms).unwrap_or(i32::MAX);
     // SAFETY: one valid pollfd, for the call.
-    match unsafe { libc::poll(&mut p, 1, ms) } {
+    let woke = unsafe { libc::poll(&mut p, 1, ms) };
+    nhshell::trace::wait_round(window, woke == 0);
+    match woke {
         0 => Err(GlueError::Code(NHG_E_TIMEOUT)),
         // something queued, or an interrupted wait: C drains and asks again
         _ => Ok(0),
