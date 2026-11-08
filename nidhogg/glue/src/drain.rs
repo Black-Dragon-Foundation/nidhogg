@@ -53,10 +53,19 @@ pub fn dispatch_main(state: &mut Display) -> Result<(), GlueError> {
     let pump = match state.drain.take() {
         Some(d) => {
             let pump = closing_pump(d, state.last_drain_took);
+            nhshell::trace::pump(|| {
+                format!(
+                    "drain end {d:?} last_took {}: pump {pump}",
+                    state.last_drain_took
+                )
+            });
             state.last_drain_took = d.took;
             pump
         }
-        None => true,
+        None => {
+            nhshell::trace::pump(|| "outside a drain: pump".into());
+            true
+        }
     };
     if pump {
         state.backend().dispatch_main()?;

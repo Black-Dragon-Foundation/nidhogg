@@ -609,17 +609,21 @@ The rows without the tag (locks, fds, threads) still run."
         (when (memq 'draws (ert-test-tags test))
           (setf (ert-test-body test) (lambda () (ert-fail (list why)))))))))
 
+(defvar glitnir-gui--row-start 0 "When the running row started (`float-time').")
+
 (defun glitnir-gui--report (event-type &rest args)
   (pcase event-type
     ;; a row's start, so a row that ends Emacs is named by the lane (nhmac-gui.sh) as its one red row
     ('test-started
+     (setq glitnir-gui--row-start (float-time))
      (glitnir-gui--say "started %s" (ert-test-name (nth 1 args))))
     ('test-ended
      (let* ((test (nth 1 args)) (result (nth 2 args))
             (expected (ert-test-result-expected-p test result)))
-       (glitnir-gui--say "%s %s"
+       ;; with the row's seconds, so a slow lane names its slow rows
+       (glitnir-gui--say "%s %s (%.1f s)"
                          (cond ((not expected) "FAILED") ((ert-test-skipped-p result) "skipped") (t "passed"))
-                         (ert-test-name test))
+                         (ert-test-name test) (- (float-time) glitnir-gui--row-start))
        (unless expected
          (when (ert-test-result-with-condition-p result)
            (glitnir-gui--say "  %S" (ert-test-result-with-condition-condition result))
