@@ -40,6 +40,7 @@ unsafe extern "C" {
         wheel3: i32,
     ) -> *mut CGEventOpaque;
     fn CGEventSetLocation(event: *mut CGEventOpaque, location: CGPoint);
+    fn CGEventSetIntegerValueField(event: *mut CGEventOpaque, field: u32, value: i64);
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -49,6 +50,9 @@ unsafe extern "C" {
 
 /// `kCGScrollEventUnitLine`.
 const CG_SCROLL_LINE: u32 = 1;
+/// `kCGMouseEventWindowUnderMousePointer` and `kCGMouseEventWindowUnderMousePointerThatCanHandleThisEvent`: the
+/// window an `NSEvent` made from the event names, which `sendEvent:` sends it to.
+const CG_WINDOW_FIELDS: [u32; 2] = [91, 92];
 
 /// The mouse kinds `nhmac--test-post-mouse` takes.
 pub const MOUSE_DOWN: i64 = 0;
@@ -116,6 +120,7 @@ pub fn mouse(
     let flags = NSEventModifierFlags(usize::try_from(flags).map_err(|_| ShellError::Arg)?);
     if kind == MOUSE_WHEEL {
         let lines = i32::try_from(button).map_err(|_| ShellError::Arg)?;
+        let number = i64::try_from(w.window.windowNumber()).map_err(|_| ShellError::State)?;
         let screen = w.window.convertPointToScreen(at);
         let top = NSScreen::screens(mtm)
             .firstObject()
@@ -134,6 +139,10 @@ pub fn mouse(
                     y: top - screen.y,
                 },
             );
+            // a wheel event the window server did not route has no window: name ours, or AppKit drops it
+            for field in CG_WINDOW_FIELDS {
+                CGEventSetIntegerValueField(cg, field, number);
+            }
             let ev: Option<Retained<NSEvent>> = msg_send![NSEvent::class(), eventWithCGEvent: cg];
             CFRelease(cg.cast());
             let ev = ev.ok_or(ShellError::State)?;
