@@ -998,7 +998,9 @@ jobs:
           FILES: ${{ inputs.files }}
         run: |
           sel=${CHECKS//|/\\|}
-          bash nidhogg/test/nhmac-gui.sh --emacs "$RUNNER_TEMP/nbuild/obj/src/emacs" --out "$RUNNER_TEMP/nhmac-gui/naglfar" ${sel:+--select "$sel"} ${FILES:+--files "$FILES"}
+          # the display on and awake for the whole run (-u wakes it, -d keeps it from idle sleep): the window is
+          # composited, not occluded, as the ring and timing rows need
+          caffeinate -d -i -u bash nidhogg/test/nhmac-gui.sh --emacs "$RUNNER_TEMP/nbuild/obj/src/emacs" --out "$RUNNER_TEMP/nhmac-gui/naglfar" ${sel:+--select "$sel"} ${FILES:+--files "$FILES"}
       - name: The NS tarball for the paired timing (artifact tarball-macos)
         if: ${{ inputs.pair != '' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -1011,7 +1013,7 @@ jobs:
         if: ${{ !cancelled() && inputs.pair != '' }}
         run: |
           mkdir -p "$RUNNER_TEMP/ns-app" && tar -C "$RUNNER_TEMP/ns-app" -xJf "$(ls dist/*.tar.xz | head -n 1)"
-          bash nidhogg/test/nhmac-pair.sh --ns "$(echo "$RUNNER_TEMP"/ns-app/nidhogg-*)/Nidhogg.app/Contents/MacOS/Emacs" --naglfar "$RUNNER_TEMP/nbuild/obj/src/emacs" --out "$RUNNER_TEMP/nhmac-gui/pair"
+          caffeinate -d -i -u bash nidhogg/test/nhmac-pair.sh --ns "$(echo "$RUNNER_TEMP"/ns-app/nidhogg-*)/Nidhogg.app/Contents/MacOS/Emacs" --naglfar "$RUNNER_TEMP/nbuild/obj/src/emacs" --out "$RUNNER_TEMP/nhmac-gui/pair"
       - name: macOS GUI logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
