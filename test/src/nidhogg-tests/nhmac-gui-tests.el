@@ -995,6 +995,103 @@ screen are within 2/255 of NS's in the same run (NS points are pixels there)."
       (should (= (nhmac-gui--pixel-at (+ x 10) (+ y 2)) #xff0000ff))))
   (kill-buffer))
 
+(ert-deftest nhmac-images-transform ()
+  "Scales, quarter turns and flips draw through the image's matrix: the sizes follow the spec, and an 8x8 XBM's lit
+top row lands where the turn puts it, its pixels doubled (not smoothed) when scaled up."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (should (equal (image-transforms-p) '(scale rotate90)))
+  (let ((png (expand-file-name "../../data/image/blank-100x200.png" (getenv "GLITNIR_GUI_TESTS"))))
+    (should (equal (image-size (create-image png nil nil :scale 2) t) '(200 . 400)))
+    (should (equal (image-size (create-image png nil nil :scale 1 :rotation 90) t) '(200 . 100)))
+    (should (equal (image-size (create-image png nil nil :scale 1 :max-width 50) t) '(50 . 100))))
+  (let ((bits (make-bool-vector 64 nil)))
+    (dotimes (i 8) (aset bits i t))
+    (switch-to-buffer (generate-new-buffer " *nhmac-xform*"))
+    (setq-local cursor-type nil)
+    (face-remap-add-relative 'default :foreground "#ff0000" :background "#0000ff")
+    (insert-image (create-image bits 'xbm t :width 8 :height 8 :scale 2))
+    (insert-image (create-image bits 'xbm t :width 8 :height 8 :scale 1 :rotation 90))
+    (insert-image (create-image bits 'xbm t :width 8 :height 8 :scale 1 :rotation 270 :flip t))
+    (redisplay t)
+    (let* ((xy (posn-x-y (posn-at-point (point-min))))
+           (edges (window-inside-pixel-edges))
+           (x (+ (nth 0 edges) (car xy)))
+           (y (+ (nth 1 edges) (cdr xy)))
+           (px (lambda (dx dy) (nhmac-gui--pixel-at (+ x dx) (+ y dy)))))
+      (message "nhmac-images-transform: scaled %x %x, 90 %x %x, 270 flipped %x %x"
+               (funcall px 3 1) (funcall px 3 2) (funcall px 23 3) (funcall px 16 3)
+               (funcall px 31 3) (funcall px 24 3))
+      ;; scaled 2: rows 0 and 1 lit, row 2 not
+      (should (= (funcall px 3 1) #xffff0000))
+      (should (= (funcall px 3 2) #xff0000ff))
+      ;; turned 90 degrees clockwise (from x 16): the top row is the right column
+      (should (= (funcall px 23 3) #xffff0000))
+      (should (= (funcall px 16 3) #xff0000ff))
+      ;; turned 270 (the top row to the left column), then flipped (from x 24): the right column again
+      (should (= (funcall px 31 3) #xffff0000))
+      (should (= (funcall px 24 3) #xff0000ff))))
+  (kill-buffer))
+
+(defun nhmac-gui--image-pixels (img &rest at)
+  "Insert IMG alone in a buffer on blue, no cursor, and the pixels at each (DX . DY) from its top left."
+  (switch-to-buffer (generate-new-buffer " *nhmac-px*"))
+  (setq-local cursor-type nil)
+  (face-remap-add-relative 'default :foreground "#ffffff" :background "#0000ff")
+  (insert-image img)
+  (redisplay t)
+  (prog1 (let* ((xy (posn-x-y (posn-at-point (point-min))))
+                (edges (window-inside-pixel-edges))
+                (x (+ (nth 0 edges) (car xy)))
+                (y (+ (nth 1 edges) (cdr xy))))
+           (mapcar (lambda (d) (nhmac-gui--pixel-at (+ x (car d)) (+ y (cdr d)))) at))
+    (kill-buffer)))
+
+(ert-deftest nhmac-images-svg ()
+  "SVG through resvg with svg_load_image's keywords: the size from the image and :scale, currentColor the
+:foreground over the :background, the image's :css after Emacs's, and the splash screen's SVG."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (should (image-type-available-p 'svg))
+  (let ((svg "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"4\">\
+<rect width=\"4\" height=\"4\" fill=\"currentColor\"/></svg>"))
+    (should (equal (image-size (create-image svg 'svg t :scale 1) t) '(8 . 4)))
+    (should (equal (image-size (create-image svg 'svg t :scale 2) t) '(16 . 8)))
+    (let ((px (nhmac-gui--image-pixels
+               (create-image svg 'svg t :scale 1 :foreground "#ff0000" :background "#00ff00")
+               '(1 . 1) '(6 . 1))))
+      (message "nhmac-images-svg: currentColor %x background %x" (nth 0 px) (nth 1 px))
+      (should (equal px '(#xffff0000 #xff00ff00))))
+    (let ((px (nhmac-gui--image-pixels (create-image svg 'svg t :scale 1 :css "rect{fill:#ffff00}") '(1 . 1))))
+      (should (equal px '(#xffffff00)))))
+  (let ((splash (find-image '((:file "splash.svg" :type svg)))))
+    (should splash)
+    (should (> (car (image-size splash t)) 0))))
+
+(ert-deftest nhmac-images-xpm ()
+  "XPM through the glue's reader: the splash screen's XPM at the size its header gives, and None transparent over
+the background beside a named colour."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (should (image-type-available-p 'xpm))
+  (let* ((file (image-search-load-path "splash.xpm"))
+         (head (with-temp-buffer
+                 (insert-file-contents file)
+                 (re-search-forward "\"\\([0-9]+\\) \\([0-9]+\\) ")
+                 (cons (string-to-number (match-string 1)) (string-to-number (match-string 2))))))
+    (should (equal (image-size (create-image file 'xpm nil :scale 1) t) head)))
+  (let* ((xpm "/* XPM */\nstatic char *t[] = {\n\"4 2 2 1\",\n\"  c None\",\n\". c red\",\n\"..  \",\n\"..  \"};")
+         (px (nhmac-gui--image-pixels (create-image xpm 'xpm t :scale 1) '(0 . 0) '(3 . 1))))
+    (message "nhmac-images-xpm: red %x None %x" (nth 0 px) (nth 1 px))
+    (should (equal px '(#xffff0000 #xff0000ff)))))
+
+(ert-deftest nhmac-images-image-tests ()
+  "test/src/image-tests.el passes on Naglfar."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (load (expand-file-name "../image-tests" (getenv "GLITNIR_GUI_TESTS")) nil t)
+  (let ((stats (ert-run-tests "\\`image-tests-" #'ignore)))
+    (message "nhmac-images-image-tests: %d run, %d unexpected, %d skipped"
+             (ert-stats-completed stats) (ert-stats-completed-unexpected stats) (ert-stats-skipped stats))
+    (should (> (ert-stats-completed stats) 0))
+    (should (zerop (ert-stats-completed-unexpected stats)))))
+
 (ert-deftest nhmac-images-no-homebrew ()
   "The binary links no image library outside the system: otool -L lists only /System and /usr/lib."
   (skip-unless (not (nhmac-gui--ns-build-p)))

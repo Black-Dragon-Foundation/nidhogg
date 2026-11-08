@@ -160,14 +160,15 @@ if [ "$REVENDOR" = 1 ]; then
 fi
 
 cargo fmt --check                                                   || fail fmt
-cargo clippy --all-targets --locked -- -D warnings                  || fail clippy
+# the SVG route (feature svg) is pure Rust: its code and tests run here too, though only Naglfar links it
+cargo clippy --all-targets --locked --features svg -- -D warnings   || fail clippy
 # NAME may list several filters separated by '|' or '\|' (cargo's filter is a substring, not a regexp)
 filters=()
 if [ -n "$TEST" ]; then
   IFS='|' read -ra parts <<< "${TEST//\\/}"
   for p in "${parts[@]}"; do [ -n "$p" ] && filters+=("$p"); done
 fi
-cargo test --locked -- "${filters[@]}"                               || fail test
+cargo test --locked --features svg -- "${filters[@]}"                || fail test
 # the filters also select glitnir's own tests (pool policy and the like) when a task names them
 if [ -n "$TEST" ]; then (cd ../glitnir && cargo test --locked -- "${filters[@]}") || fail test-glitnir; fi
 if command -v cargo-deny >/dev/null 2>&1; then

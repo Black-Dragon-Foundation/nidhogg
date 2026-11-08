@@ -1182,14 +1182,32 @@ PROTO (nhg_draw_image, int32_t (NhgDisplay *, uint64_t, const NhgDrawRec *, cons
     #[test]
     fn image_header_matches() {
         use nhglue::ffi::{
-            nhg_image_decode, nhg_image_forget, nhg_image_free, nhg_image_take, nhg_image_type,
+            nhg_image_decode, nhg_image_forget, nhg_image_free, nhg_image_take,
+            nhg_image_transform, nhg_image_type, nhg_svg_render, nhg_svg_size,
         };
-        use nhglue::image::{NhgImage, NhgPix};
+        use nhglue::image::{NhgImage, NhgPix, NhgSvgStyle};
         let rows: &[(&str, i64)] = &[
             ("sizeof (NhgPix)", size_of::<NhgPix>() as i64),
             ("offsetof (NhgPix, mask)", offset_of!(NhgPix, mask) as i64),
             ("offsetof (NhgPix, width)", offset_of!(NhgPix, width) as i64),
             ("offsetof (NhgPix, bpp)", offset_of!(NhgPix, bpp) as i64),
+            (
+                "offsetof (NhgPix, smooth)",
+                offset_of!(NhgPix, smooth) as i64,
+            ),
+            (
+                "offsetof (NhgPix, matrix)",
+                offset_of!(NhgPix, matrix) as i64,
+            ),
+            ("sizeof (NhgSvgStyle)", size_of::<NhgSvgStyle>() as i64),
+            (
+                "offsetof (NhgSvgStyle, font_size)",
+                offset_of!(NhgSvgStyle, font_size) as i64,
+            ),
+            (
+                "offsetof (NhgSvgStyle, background)",
+                offset_of!(NhgSvgStyle, background) as i64,
+            ),
             ("sizeof (NhgImage)", size_of::<NhgImage>() as i64),
             (
                 "offsetof (NhgImage, has_alpha)",
@@ -1211,16 +1229,54 @@ PROTO (nhg_draw_image, int32_t (NhgDisplay *, uint64_t, const NhgDrawRec *, cons
         let decls = "\
 #define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
 PROTO (nhg_image_type, int32_t (const char *, size_t));
-PROTO (nhg_image_decode, int32_t (const uint8_t *, size_t, uint32_t, uint32_t, NhgImage *));
+PROTO (nhg_image_decode, int32_t (const uint8_t *, size_t, uint32_t, uint32_t, NhgColorFn, void *, NhgImage *));
 PROTO (nhg_image_take, int32_t (NhgImage *, uint8_t *, uint8_t *));
 PROTO (nhg_image_free, int32_t (NhgImage *));
-PROTO (nhg_image_forget, int32_t (const uint8_t *));";
+PROTO (nhg_image_forget, int32_t (const uint8_t *));
+PROTO (nhg_image_transform, int32_t (int32_t, int32_t, int32_t, int32_t, double, bool, double *, int32_t *, int32_t *));
+PROTO (nhg_svg_size, int32_t (const uint8_t *, size_t, uint32_t, const NhgSvgStyle *, double *, double *));
+PROTO (nhg_svg_render, int32_t (const uint8_t *, size_t, uint32_t, const NhgSvgStyle *, int32_t, int32_t, NhgImage *));";
         let _: unsafe extern "C" fn(*const std::ffi::c_char, usize) -> i32 = nhg_image_type;
-        let _: unsafe extern "C" fn(*const u8, usize, u32, u32, *mut NhgImage) -> i32 =
-            nhg_image_decode;
+        let _: unsafe extern "C" fn(
+            *const u8,
+            usize,
+            u32,
+            u32,
+            nhglue::image::NhgColorFn,
+            *mut std::ffi::c_void,
+            *mut NhgImage,
+        ) -> i32 = nhg_image_decode;
         let _: unsafe extern "C" fn(*mut NhgImage, *mut u8, *mut u8) -> i32 = nhg_image_take;
         let _: unsafe extern "C" fn(*mut NhgImage) -> i32 = nhg_image_free;
         let _: unsafe extern "C" fn(*const u8) -> i32 = nhg_image_forget;
+        let _: unsafe extern "C" fn(
+            i32,
+            i32,
+            i32,
+            i32,
+            f64,
+            bool,
+            *mut f64,
+            *mut i32,
+            *mut i32,
+        ) -> i32 = nhg_image_transform;
+        let _: unsafe extern "C" fn(
+            *const u8,
+            usize,
+            u32,
+            *const NhgSvgStyle,
+            *mut f64,
+            *mut f64,
+        ) -> i32 = nhg_svg_size;
+        let _: unsafe extern "C" fn(
+            *const u8,
+            usize,
+            u32,
+            *const NhgSvgStyle,
+            i32,
+            i32,
+            *mut NhgImage,
+        ) -> i32 = nhg_svg_render;
         let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
         let got = probe(decls, &exprs);
         assert_eq!(got.len(), rows.len());

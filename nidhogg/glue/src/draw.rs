@@ -180,8 +180,15 @@ pub fn decode_glyphs(
     Ok(Paint { clip, shapes })
 }
 
-/// An image record as a shape: the part of picture `key` (made with `mask`) from (`a`, `b`) into `r`.
-pub fn decode_image(rec: &NhgDrawRec, key: (usize, i32, i32), mask: usize) -> Result<Paint, Bad> {
+/// An image record as a shape: the part of picture `key` (made with `mask`) from (`a`, `b`) into `r`, through the
+/// image's `matrix` (`NhgPix`'s), smoothed when `smooth`.
+pub fn decode_image(
+    rec: &NhgDrawRec,
+    key: (usize, i32, i32),
+    mask: usize,
+    matrix: &crate::image::Matrix,
+    smooth: bool,
+) -> Result<Paint, Bad> {
     if rec.kind != NHG_DRAW_IMAGE {
         return Err(Bad::Kind);
     }
@@ -195,6 +202,8 @@ pub fn decode_image(rec: &NhgDrawRec, key: (usize, i32, i32), mask: usize) -> Re
             sx: rec.a,
             sy: rec.b,
             bg: (rec.flags & NHG_DRAW_OVERLAY == 0).then_some(rec.bg),
+            to: crate::image::drawn(matrix),
+            smooth,
         }],
     })
 }
@@ -471,7 +480,14 @@ mod tests {
     fn an_image_draws_its_part_over_the_background_unless_overlaid() {
         let mut c = rec(NHG_DRAW_IMAGE, 0, (10, 20, 16, 8));
         (c.a, c.b) = (4, 2);
-        let p = decode_image(&c, (0x1000, 32, 32), 0).unwrap();
+        let p = decode_image(
+            &c,
+            (0x1000, 32, 32),
+            0,
+            &[2.0, 0.0, 0.0, 2.0, 0.0, 0.0],
+            true,
+        )
+        .unwrap();
         assert_eq!(
             p.shapes,
             vec![Shape::Image {
@@ -480,19 +496,29 @@ mod tests {
                 r: Rect::new(10, 20, 16, 8),
                 sx: 4,
                 sy: 2,
-                bg: Some(0xffff_ffff)
+                bg: Some(0xffff_ffff),
+                to: [0.5, 0.0, 0.0, 0.5, 0.0, 0.0],
+                smooth: true
             }]
         );
         let c = rec(NHG_DRAW_IMAGE, NHG_DRAW_OVERLAY, (0, 0, 1, 1));
         assert!(matches!(
-            decode_image(&c, (1, 1, 1), 0).unwrap().shapes[0],
+            decode_image(&c, (1, 1, 1), 0, &[0.0; 6], false)
+                .unwrap()
+                .shapes[0],
             Shape::Image { bg: None, .. }
         ));
         assert_eq!(
-            decode_image(&rec(NHG_DRAW_FILL, 0, (0, 0, 1, 1)), (1, 1, 1), 0),
+            decode_image(
+                &rec(NHG_DRAW_FILL, 0, (0, 0, 1, 1)),
+                (1, 1, 1),
+                0,
+                &[0.0; 6],
+                false
+            ),
             Err(Bad::Kind)
         );
-        let mut p = decode_image(&c, (1, 1, 1), 0).unwrap();
+        let mut p = decode_image(&c, (1, 1, 1), 0, &[0.0; 6], false).unwrap();
         p.translate(3, 4);
         assert!(matches!(p.shapes[0], Shape::Image { r, .. } if r == Rect::new(3, 4, 1, 1)));
     }
