@@ -225,6 +225,12 @@ pub trait ShellBackend {
     fn next_event(&mut self) -> ShellResult<Option<Record>>;
     /// Run the work that must happen on the host's thread (configure and surface events).
     fn dispatch_main(&mut self) -> ShellResult;
+    /// The end of a drain that needs no new events (it took some, or the one before did, or it runs inside
+    /// redisplay): the host-thread work without asking the platform for more.  A backend whose `dispatch_main` only
+    /// flushes does that.
+    fn flush_main(&mut self) -> ShellResult {
+        self.dispatch_main()
+    }
     /// Why the connection ended: a protocol error's text, `INTERFACE@ID: error CODE: MESSAGE`; empty while it lives
     /// or after a plain hangup.
     fn last_error(&self) -> String {

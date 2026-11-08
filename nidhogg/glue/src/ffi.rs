@@ -130,12 +130,14 @@ nhg_export! {
 }
 
 nhg_export! {
-    /// Run the shell's work that must happen on the host's thread (configure and surface events) and flush.
+    /// Run the shell's work that must happen on the host's thread (configure and surface events) and flush.  At a
+    /// drain's end (after `nhg_next`) it asks the platform for new events only when the drain needs them
+    /// (`drain::closing_pump`).
     ///
     /// # Safety
     /// `d` is null or a live display.
     fn nhg_dispatch_main(d: *mut NhgDisplay) -> i32 |state| {
-        state.backend().dispatch_main()?;
+        crate::drain::dispatch_main(state)?;
         Ok(NHG_OK)
     }
 }
