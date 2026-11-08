@@ -56,7 +56,6 @@
 (ert-deftest nhmac-bundle-open-file ()
   "A file opened through an Apple event (`open -a APP FILE') arrives as a visited buffer."
   (skip-unless (nhmac-app--dir))
-  (ert-skip "pending: open-file events come with the application delegate (app lifecycle task)")
   (let* ((app (file-truename (nhmac-app--dir)))
          (file (make-temp-file "nhmac-open-file" nil ".txt" "hello\n"))
          (out (make-temp-file "nhmac-open-file-out"))

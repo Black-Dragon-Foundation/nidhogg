@@ -51,14 +51,24 @@
   (iconify-frame)
   (should (eq (plist-get (nhmac-win-gui--wait :miniaturized t) :miniaturized) t))
   (make-frame-visible)
-  (ert-skip "pending: deminiaturize is the window system's `make-frame-visible' (frame visibility, Task 14)"))
+  (should (null (plist-get (nhmac-win-gui--wait :miniaturized nil) :miniaturized))))
 
 (ert-deftest nhmac-appearance-dark ()
   "A change of the system appearance records it in `ns-system-appearance' and runs the hook with `dark'."
   (skip-unless (nhmac-win-gui--naglfar-p))
-  (let (got)
-    (add-hook 'ns-system-appearance-change-functions (lambda (a) (setq got a)))
-    (ert-skip "pending: switching the runner's system appearance (the hook is `nhmac-appearance-changed')")))
+  (let* ((got nil) (fn (lambda (a) (setq got a))))
+    (add-hook 'ns-system-appearance-change-functions fn)
+    (unwind-protect
+        (progn
+          (nhmac--call 'test-app-appearance (if (eq ns-system-appearance 'dark) 0 1))
+          (let ((want (if (eq ns-system-appearance 'dark) 'light 'dark))
+                (cmd (key-binding (vector (read-event nil nil 2) (read-event nil nil 2)))))
+            (should (eq cmd 'nhmac-appearance-changed))
+            (call-interactively cmd)
+            (should (eq got want))
+            (should (eq ns-system-appearance want))))
+      (remove-hook 'ns-system-appearance-change-functions fn)
+      (nhmac--call 'test-app-appearance 0))))
 
 (ert-deftest nhmac-transparent-titlebar ()
   "`ns-transparent-titlebar' makes the title bar transparent."
@@ -78,8 +88,12 @@
 (ert-deftest nhmac-auto-hide-menu-bar ()
   "`ns-auto-hide-menu-bar' sets the application's presentation options."
   (skip-unless (nhmac-win-gui--naglfar-p))
-  (nhmac--call 'variable 'ns-auto-hide-menu-bar t)
-  (nhmac--call 'variable 'ns-auto-hide-menu-bar nil)
-  (ert-skip "pending: reading the presentation options back"))
+  (unwind-protect
+      (progn
+        (nhmac--call 'variable 'ns-auto-hide-menu-bar t)
+        ;; AutoHideDock (1) and AutoHideMenuBar (4), as NS sets them
+        (should (= (logand (nhmac--query 'test-presentation) 5) 5)))
+    (nhmac--call 'variable 'ns-auto-hide-menu-bar nil))
+  (should (= (logand (nhmac--query 'test-presentation) 5) 0)))
 
 ;;; nhmac-window-gui-tests.el ends here

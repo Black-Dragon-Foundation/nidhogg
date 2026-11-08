@@ -8,7 +8,9 @@ use super::runloop::{MacEv, deliver};
 use objc2::rc::Retained;
 use objc2::runtime::NSObject;
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_app_kit::{NSApplication, NSApplicationDelegate, NSApplicationTerminateReply, NSMenu};
+use objc2_app_kit::{
+    NSApplication, NSApplicationDelegate, NSApplicationTerminateReply, NSMenu, NSPasteboard,
+};
 use objc2_foundation::{NSArray, NSNotification, NSObjectProtocol, NSString};
 use std::cell::RefCell;
 
@@ -17,6 +19,8 @@ pub const APP_OPEN_FILES: u32 = 1;
 pub const APP_QUIT: u32 = 2;
 pub const APP_REOPEN: u32 = 3;
 pub const APP_APPEARANCE: u32 = 4;
+/// 5 is the Dock menu's New Frame, whose number only Lisp's records carry.
+pub const APP_SERVICE: u32 = 6;
 
 thread_local! {
     /// The files `application:openFiles:` queued, until Lisp takes them.
@@ -72,6 +76,14 @@ define_class!(
         #[unsafe(method(applicationDidChangeScreenParameters:))]
         fn screens_changed(&self, _n: &NSNotification) {
             deliver(MacEv::Screens);
+        }
+    }
+
+    impl AppDelegate {
+        /// The services provider's one message (the delegate is the provider, as NSApp is on NS).
+        #[unsafe(method(requestService:userData:error:))]
+        fn request_service(&self, pb: &NSPasteboard, name: &NSString, _error: *mut *mut NSString) {
+            super::services::request(pb, &name.to_string());
         }
     }
 );

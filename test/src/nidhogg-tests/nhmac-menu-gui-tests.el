@@ -116,8 +116,19 @@ and neither overlaps a take."
   (should (eq (x-popup-dialog t '("Sure?" ("Yes" . yes) ("No" . no))) 'yes)))
 
 (ert-deftest nhmac-dock-menu ()
-  "The Dock's menu is built from the same records."
+  "The Dock's menu is built from the same records: the delegate serves NS's New Frame, and choosing it makes a frame."
   (skip-unless (nhmac-menu-gui--naglfar-p))
-  (ert-skip "pending: the Dock asks the application delegate (app lifecycle task)"))
+  (nhmac-menu-build)
+  (let ((dump (nhmac--query 'test-dock-menu -1)))
+    (message "nhmac-dock-menu: %S" dump)
+    (should (string-match-p "\\`0\tNew Frame\t5\t1\n" dump)))
+  (let ((before (length (frame-list))))
+    (nhmac--query 'test-dock-menu 0)
+    (let ((cmd (key-binding (vector (read-event nil nil 2) (read-event nil nil 2)))))
+      (should (eq cmd 'nhmac-dock-new-frame))
+      (let ((f (call-interactively cmd)))
+        (unwind-protect
+            (should (= (length (frame-list)) (1+ before)))
+          (when (frame-live-p f) (delete-frame f t)))))))
 
 ;;; nhmac-menu-gui-tests.el ends here

@@ -293,3 +293,105 @@ pub fn start(
 pub fn cancel() {
     SOURCE.with(|s| *s.borrow_mut() = None);
 }
+
+/// `dnd-offer`: the dropped offer as NS's `drag-n-drop` event carries it, for `ns-drag-n-drop`: `(url
+/// (ns-drag-operation-copy) URL...)` for files, `(string nil TEXT)` for text, `nil` without an offer.
+pub fn offer_lisp() -> String {
+    use crate::pasteboard::lisp_string;
+    if let Ok(list) = read("text/uri-list") {
+        let urls: Vec<String> = String::from_utf8_lossy(&list)
+            .split("\r\n")
+            .filter(|u| !u.is_empty())
+            .map(lisp_string)
+            .collect();
+        if !urls.is_empty() {
+            return format!("(url (ns-drag-operation-copy) {})", urls.join(" "));
+        }
+    }
+    match read("text/plain;charset=utf-8") {
+        Ok(text) => format!(
+            "(string nil {})",
+            lisp_string(&String::from_utf8_lossy(&text))
+        ),
+        Err(_) => "nil".into(),
+    }
+}
+
+#[cfg(feature = "test-hooks")]
+define_class!(
+    /// Test hook: the dragging info AppKit hands a drop target, for a drag no window server runs: a private
+    /// pasteboard, a place in the view's window, copy or link from a source in another application.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NhmacTestDraggingInfo"]
+    #[ivars = (Retained<objc2_app_kit::NSPasteboard>, NSPoint)]
+    struct TestInfo;
+
+    unsafe impl NSObjectProtocol for TestInfo {}
+
+    unsafe impl NSDraggingInfo for TestInfo {
+        #[unsafe(method_id(draggingPasteboard))]
+        fn pasteboard(&self) -> Retained<objc2_app_kit::NSPasteboard> {
+            self.ivars().0.clone()
+        }
+
+        #[unsafe(method(draggingLocation))]
+        fn location(&self) -> NSPoint {
+            self.ivars().1
+        }
+
+        #[unsafe(method(draggingSourceOperationMask))]
+        fn mask(&self) -> NSDragOperation {
+            NSDragOperation::Copy | NSDragOperation::Link | NSDragOperation::Generic
+        }
+
+        #[unsafe(method(draggingSource))]
+        fn source(&self) -> *mut objc2::runtime::AnyObject {
+            std::ptr::null_mut()
+        }
+
+        #[unsafe(method(draggingSequenceNumber))]
+        fn sequence(&self) -> isize {
+            1
+        }
+    }
+);
+
+/// Test hook: drop `payload` (a file's path when `file`, else text) on the middle of `view` as AppKit does: the
+/// view's `draggingEntered:`, `draggingUpdated:` and `performDragOperation:`.  Whether the drop was taken.
+#[cfg(feature = "test-hooks")]
+pub fn test_drop(
+    mtm: MainThreadMarker,
+    view: &NSView,
+    file: bool,
+    payload: &str,
+) -> ShellResult<bool> {
+    let pb = objc2_app_kit::NSPasteboard::pasteboardWithUniqueName();
+    pb.clearContents();
+    let (text, ty) = if file {
+        let url = objc2_foundation::NSURL::fileURLWithPath(&NSString::from_str(payload));
+        (
+            url.absoluteString().ok_or(ShellError::State)?,
+            dnd_map::FILE_UTI,
+        )
+    } else {
+        (NSString::from_str(payload), dnd_map::TEXT_UTI)
+    };
+    if !pb.setString_forType(&text, &NSString::from_str(ty)) {
+        return Err(ShellError::State);
+    }
+    let b = view.bounds();
+    let mid = NSPoint::new(b.size.width / 2.0, b.size.height / 2.0);
+    let at = view.convertPoint_toView(mid, None);
+    let info: Retained<TestInfo> = {
+        let t = TestInfo::alloc(mtm).set_ivars((pb, at));
+        // SAFETY: NSObject's designated initialiser, on a fresh allocation with its ivars set.
+        unsafe { msg_send![super(t), init] }
+    };
+    // SAFETY: the view is the NhView, a dragging destination; the info answers what its methods read.
+    unsafe {
+        let _: NSDragOperation = msg_send![view, draggingEntered: &*info];
+        let _: NSDragOperation = msg_send![view, draggingUpdated: &*info];
+        Ok(msg_send![view, performDragOperation: &*info])
+    }
+}

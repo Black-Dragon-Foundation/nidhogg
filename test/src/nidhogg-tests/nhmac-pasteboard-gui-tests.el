@@ -49,8 +49,16 @@
   (ert-skip "pending: no service is guaranteed on the runner; the requestor is `ns-perform-service'"))
 
 (ert-deftest nhmac-services-provide ()
-  "Emacs answers another application's Services request."
+  "Emacs answers another application's Services request: New Buffer Containing Selection makes a buffer of the text."
   (skip-unless (nhmac-pb--naglfar-p))
-  (ert-skip "pending: the provider comes with the application delegate (app lifecycle task)"))
+  (let ((before (buffer-list)) (text "nhmac services text"))
+    (nhmac--call 'test-service-request "open-selection" text)
+    (let ((cmd (key-binding (vector (read-event nil nil 2) (read-event nil nil 2)))))
+      (should (eq cmd 'nhmac-service))
+      (save-window-excursion (call-interactively cmd)))
+    (let ((made (seq-filter (lambda (b) (not (memq b before))) (buffer-list))))
+      (unwind-protect
+          (should (seq-some (lambda (b) (with-current-buffer b (equal (buffer-string) text))) made))
+        (mapc #'kill-buffer made)))))
 
 ;;; nhmac-pasteboard-gui-tests.el ends here

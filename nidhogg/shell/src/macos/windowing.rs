@@ -18,8 +18,10 @@ pub fn setup(window: &NSWindow) {
 
 /// The application's presentation options for `auto_hide`.
 pub fn presentation(app: &NSApplication, s: &Settings) {
+    // AppKit refuses a menu bar that hides without the Dock hiding too (NS sets both)
     let o = if s.auto_hide_menu_bar {
         NSApplicationPresentationOptions::AutoHideMenuBar
+            | NSApplicationPresentationOptions::AutoHideDock
     } else {
         NSApplicationPresentationOptions::Default
     };
@@ -71,6 +73,18 @@ pub fn look(window: &NSWindow, appearance: &str, transparent_titlebar: bool) {
 }
 
 /// Whether the system is in dark mode now.
+/// Test hook: the application's appearance dark, or the system's again: what a switch of the system's appearance
+/// changes in `effectiveAppearance`.
+#[cfg(feature = "test-hooks")]
+pub fn test_appearance(app: &NSApplication, dark: bool) {
+    use objc2_app_kit::{NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua};
+    // SAFETY: a named system appearance; the statics are AppKit's.
+    let a = dark
+        .then(|| unsafe { NSAppearance::appearanceNamed(NSAppearanceNameDarkAqua) })
+        .flatten();
+    app.setAppearance(a.as_deref());
+}
+
 pub fn system_dark(app: &NSApplication) -> bool {
     app.effectiveAppearance()
         .name()
