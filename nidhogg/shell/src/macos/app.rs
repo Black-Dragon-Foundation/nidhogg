@@ -277,6 +277,9 @@ impl MacShell {
     fn configure(&mut self, id: WindowId, w: i32, h: i32) {
         self.serial = self.serial.wrapping_add(1);
         let serial = self.serial;
+        if let Some(win) = self.windows.get_mut(&id) {
+            win.configuring = Some(serial);
+        }
         let queued = self.queue.len();
         crate::trace::note(|| {
             format!(
@@ -605,7 +608,16 @@ impl ShellBackend for MacShell {
         self.win(window).map(drop)
     }
 
-    fn ack_configure(&mut self, window: WindowId, _serial: u32, _flags: u32) -> ShellResult {
+    fn ack_configure(&mut self, window: WindowId, serial: u32, _flags: u32) -> ShellResult {
+        if let Some(w) = self.windows.get_mut(&window) {
+            // serials wrap: an ack at or past the one sent last ends it
+            if w.configuring
+                .is_some_and(|s| serial.wrapping_sub(s) < u32::MAX / 2)
+            {
+                w.configuring = None;
+            }
+            return Ok(());
+        }
         self.known(window)
     }
 
