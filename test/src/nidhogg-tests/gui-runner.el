@@ -33,9 +33,11 @@
 (defun glitnir-gui--scale-ready-p ()
   "Non-nil once the selected frame sits at the asked scale and the monitor's device size, which the native shell reports."
   (and (< (abs (- (frame-scale-factor) (glitnir-gui--scale))) 0.001)
-       (let ((size (getenv "GLITNIR_GUI_SIZE"))
-             (geo (alist-get 'geometry (car (display-monitor-attributes-list)))))
-         (or (not size) (equal (format "%dx%d" (nth 2 geo) (nth 3 geo)) size)))))
+       ;; the monitors are read only when a size is asked: a shell may not serve them yet
+       (let ((size (getenv "GLITNIR_GUI_SIZE")))
+         (or (not size)
+             (let ((geo (alist-get 'geometry (car (display-monitor-attributes-list)))))
+               (equal (format "%dx%d" (nth 2 geo) (nth 3 geo)) size))))))
 
 (defun glitnir-gui--wait-for-scale ()
   (let ((deadline (+ (float-time) 10)))
