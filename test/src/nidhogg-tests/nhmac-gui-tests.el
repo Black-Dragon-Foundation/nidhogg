@@ -1194,13 +1194,31 @@ the background beside a named colour."
     (should (> (ert-stats-completed stats) 0))
     (should (zerop (ert-stats-completed-unexpected stats)))))
 
+(defconst nhmac-gui--image-lib-re
+  (concat "/lib\\(?:" (regexp-opt '("png" "jpeg" "turbojpeg" "gif" "tiff" "webp" "sharpyuv" "rsvg" "cairo" "pango"
+                                    "heif" "Magick" "pixman" "Xpm"))
+          "\\)[^/]*\\.dylib")
+  "An image library's file in an `otool -L' line (the image tests' libraries, never gnutls or tree-sitter).")
+
+(defun nhmac-gui--outside-image-libs (lines)
+  "LINES of `otool -L' that name an image library outside /System and /usr/lib."
+  (seq-filter (lambda (l) (and (string-match-p nhmac-gui--image-lib-re l)
+                               (not (string-match-p "\\`[ \t]*/\\(System\\|usr/lib\\)/" l))))
+              lines))
+
 (ert-deftest nhmac-images-no-homebrew ()
-  "The binary links no image library outside the system: otool -L lists only /System and /usr/lib."
+  "The binary links no image library outside the system: otool -L names none outside /System and /usr/lib.
+The filter checks itself first on a Homebrew libpng line (caught), the system ImageIO and a Homebrew gnutls (not)."
   (skip-unless (not (nhmac-gui--ns-build-p)))
+  (should (equal (nhmac-gui--outside-image-libs
+                  '("\t/opt/homebrew/opt/libpng/lib/libpng16.16.dylib (compatibility version 61.0.0)"
+                    "\t/System/Library/Frameworks/ImageIO.framework/Versions/A/ImageIO (compatibility version 1.0.0)"
+                    "\t/opt/homebrew/opt/gnutls/lib/libgnutls.30.dylib (compatibility version 73.0.0)"))
+                 '("\t/opt/homebrew/opt/libpng/lib/libpng16.16.dylib (compatibility version 61.0.0)")))
   (let* ((bin (expand-file-name invocation-name invocation-directory))
-         (libs (cdr (process-lines "otool" "-L" bin)))
-         (outside (seq-remove (lambda (l) (string-match-p "\\`[ \t]*/\\(System\\|usr/lib\\)/" l)) libs)))
+         (libs (cdr (process-lines "otool" "-L" bin))))
     (message "nhmac-images-no-homebrew: %s links %S" bin libs)
-    (should-not outside)))
+    (should libs)
+    (should-not (nhmac-gui--outside-image-libs libs))))
 
 ;;; nhmac-gui-tests.el ends here
