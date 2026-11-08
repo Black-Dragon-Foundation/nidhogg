@@ -222,10 +222,9 @@ mod publish {
         let s = shell.presenter_stats().unwrap();
         assert_eq!(s.presented, s.published, "{s:?}");
         assert!(s.shown < s.published, "its callback is held: {s:?}");
-        present(&rec);
-        until(&mut shell, "the held picture's callback", |s| {
-            !waiting(s, id)
-        });
+        // the held picture's callback, and every event the recorder sent with it (`shown`): its first callback can be
+        // read before the newest one, which is what `shown` counts
+        shown(&mut shell, &rec, id);
         let s = shell.presenter_stats().unwrap();
         assert_eq!(s.shown, s.published, "used: {s:?}");
     }
