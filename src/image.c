@@ -1830,6 +1830,9 @@ free_image (struct frame *f, struct image *img)
       struct image_cache *c = FRAME_IMAGE_CACHE (f);
 #ifdef HAVE_NIDHOGG_WORKERS
       nh_img_freed (f, img);
+#ifdef HAVE_NHMAC
+      nhmac_image_stand_drop (img);
+#endif
 
 #endif
 
@@ -8193,15 +8196,40 @@ native_image_p (Lisp_Object object)
 }
 
 #ifdef HAVE_NHMAC
-/* Naglfar: an XPM colour name's 0xRRGGBB, as xpm_load_image resolves
-   it, or frame F's foreground for one it does not know.  */
-static uint32_t
-nhmac_xpm_color (void *f, const char *name)
+/* Naglfar: the 0xRRGGBB of the colour names an XPM in SRC needs, as
+   xpm_load_image resolves them (F's foreground for one it does not
+   know), into *COLORS (xmalloc'd; NULL for none), their number into *N.
+   False when the glue cannot read it.  */
+static bool
+nhmac_xpm_colors (struct frame *f, Lisp_Object src, bool is_file,
+		  uint32_t **colors, uint32_t *n)
 {
-  Emacs_Color c;
-  return (FRAME_TERMINAL ((struct frame *) f)->defined_color_hook (f, name, &c,
-								  false, false)
-	  ? c.pixel : FRAME_FOREGROUND_PIXEL ((struct frame *) f)) & 0xffffff;
+  size_t need;
+  *colors = NULL;
+  int32_t rc = NHG (nhg_xpm_names (SDATA (src), SBYTES (src), is_file,
+				   NULL, 0, &need, n));
+  if (rc == NHG_OK)
+    return true;
+  if (rc != NHG_E_TOO_SMALL)
+    return false;
+  uint8_t *names = xmalloc (need);
+  if (NHG (nhg_xpm_names (SDATA (src), SBYTES (src), is_file, names, need,
+			  &need, n)) != NHG_OK)
+    {
+      xfree (names);
+      return false;
+    }
+  *colors = xnmalloc (*n, sizeof **colors);
+  char *name = (char *) names;
+  for (uint32_t i = 0; i < *n; i++, name += strlen (name) + 1)
+    {
+      Emacs_Color c;
+      (*colors)[i] = (FRAME_TERMINAL (f)->defined_color_hook (f, name, &c,
+							      false, false)
+		      ? c.pixel : FRAME_FOREGROUND_PIXEL (f)) & 0xffffff;
+    }
+  xfree (names);
+  return true;
 }
 
 /* The glue decodes through ImageIO (an XPM itself); the colours go into
@@ -8215,11 +8243,16 @@ nhmac_load_image (struct frame *f, struct image *img, Lisp_Object file,
   Lisp_Object src = STRINGP (file) ? ENCODE_FILE (file) : data;
   Emacs_Pix_Container ximg, mask = NULL;
   NhgImage im;
+  uint32_t *colors = NULL, ncolors = 0;
+  bool ok = (STRINGP (src)
+	     && nhmac_xpm_colors (f, src, STRINGP (file), &colors, &ncolors)
+	     && NHG (nhg_image_decode (SDATA (src), SBYTES (src),
+				       STRINGP (file),
+				       FIXNATP (index) ? XFIXNAT (index) : 0,
+				       colors, ncolors, &im)) == NHG_OK);
 
-  if (!STRINGP (src)
-      || NHG (nhg_image_decode (SDATA (src), SBYTES (src), STRINGP (file),
-				FIXNATP (index) ? XFIXNAT (index) : 0,
-				nhmac_xpm_color, f, &im)) != NHG_OK)
+  xfree (colors);
+  if (!ok)
     {
       image_error ("Cannot load image `%s'", img->spec);
       return false;
@@ -8392,6 +8425,14 @@ native_image_load (struct frame *f, struct image *img)
    compares the two).  The code between the markers is the only part of
    image.c that knows the cores.  */
 
+# if defined HAVE_NHMAC && !defined USE_CAIRO
+/* Naglfar's containers are Cairo's (32-bit words and an 8-bit mask), so
+   the code below serves it as it is; its four uses of Cairo patterns
+   have Naglfar's hooks.  USE_CAIRO is defined for this block alone, as
+   the gate line under it is kept as it is.  */
+#  define USE_CAIRO
+#  define NHMAC_CAIRO_BLOCK
+# endif
 # ifdef USE_CAIRO
 
 /* Log the error OUT describes, with the text the loader logs.  */
@@ -8838,11 +8879,15 @@ nh_img_land (struct frame *f, struct image *img, int fmt,
 	     struct nh_img_out *out, int rc)
 {
   block_input ();
+#  ifdef HAVE_NHMAC
+  nhmac_image_stand_drop (img);
+#  else
   if (img->cr_data)
     {
       cairo_pattern_destroy (img->cr_data);
       img->cr_data = NULL;
     }
+#  endif
   img->width = img->height = 0;
   img->hmargin = img->vmargin = 0;
   img->relief = 0;
@@ -8871,6 +8916,9 @@ nh_img_prepare (struct frame *f, struct image *img)
   if (img->pixmap != NO_PIXMAP || img->load_failed_p
       || !nh_img_pending_p (f, img))
     return false;
+#  ifdef HAVE_NHMAC
+  nhmac_image_stand_drop (img);
+#  else
   if (img->cr_data)
     {
       block_input ();
@@ -8878,6 +8926,7 @@ nh_img_prepare (struct frame *f, struct image *img)
       img->cr_data = NULL;
       unblock_input ();
     }
+#  endif
   nh_img_stand_in_for (f, img);
   return true;
 }
@@ -8889,6 +8938,9 @@ nh_img_prepare (struct frame *f, struct image *img)
 bool
 nh_img_stand_in (struct frame *f, struct image *img, struct image *ready)
 {
+#  ifdef HAVE_NHMAC
+  return nhmac_image_stand_in (f, img, ready);
+#  else
   cairo_surface_t *surface;
   if (!ready->cr_data || ready->width <= 0 || ready->height <= 0
       || img->width <= 0 || img->height <= 0
@@ -8916,6 +8968,7 @@ nh_img_stand_in (struct frame *f, struct image *img, struct image *ready)
   img->cr_data = pat;
   unblock_input ();
   return true;
+#  endif
 }
 
 DEFUN ("nidhogg-workers--test-image-pixels", Fnidhogg_workers__test_image_pixels,
@@ -8948,6 +9001,7 @@ with a mask reads :pixels and :mask nil (Cairo holds them premultiplied).  */)
       data = (unsigned char *) img->pixmap->data;
       stride = img->pixmap->bytes_per_line;
     }
+#  ifndef HAVE_NHMAC
   else if (img->pixmap && !img->mask && img->cr_data
 	   && cairo_pattern_get_type (img->cr_data) == CAIRO_PATTERN_TYPE_SURFACE)
     {
@@ -8962,6 +9016,7 @@ with a mask reads :pixels and :mask nil (Cairo holds them premultiplied).  */)
 	  stride = cairo_image_surface_get_stride (s);
 	}
     }
+#  endif
   if (data && w > 0 && h > 0)
     {
       pixels = make_uninit_string ((ptrdiff_t) w * h * 4);
@@ -9051,6 +9106,10 @@ nh_img_image_syms (void)
 }
 
 # endif /* not USE_CAIRO */
+# if defined HAVE_NHMAC && defined NHMAC_CAIRO_BLOCK
+#  undef USE_CAIRO
+#  undef NHMAC_CAIRO_BLOCK
+# endif
 
 #endif /* HAVE_NIDHOGG_WORKERS */
 

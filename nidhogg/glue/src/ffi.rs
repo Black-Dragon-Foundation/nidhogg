@@ -1647,26 +1647,67 @@ nhg_export! {
 
 nhg_export! {
     /// Decode frame `index` of the image in the `len` bytes at `src` (a file name when `is_file`) into `*out`, whose
-    /// pixels `nhg_image_take` or `nhg_image_free` frees.  An XPM's colour names go to `color` (with `ctx`), which
-    /// gives `0xRRGGBB`.  `NHG_E_STATE` when the file cannot be read or decoded or has no such frame.
+    /// pixels `nhg_image_take` or `nhg_image_free` frees.  An XPM's colours are the `ncolors` words at `colors`
+    /// (`0xRRGGBB`), one for each name `nhg_xpm_names` gives, in its order; anything else takes none.  `NHG_E_STATE`
+    /// when the file cannot be read or decoded or has no such frame, or the colours do not match the names.
     ///
     /// # Safety
-    /// `src` holds `len` readable bytes; `out` is writable; `color` is safe to call with `ctx` and a NUL-terminated
-    /// name, on this thread.
-    unlocked fn nhg_image_decode(src: *const u8, len: usize, is_file: u32, index: u32, color: crate::image::NhgColorFn, ctx: *mut std::ffi::c_void, out: *mut crate::image::NhgImage) -> i32 {
-        if src.is_null() || out.is_null() {
+    /// `src` holds `len` readable bytes; `colors` is null or holds `ncolors` words; `out` is writable.
+    unlocked fn nhg_image_decode(src: *const u8, len: usize, is_file: u32, index: u32, colors: *const u32, ncolors: usize, out: *mut crate::image::NhgImage) -> i32 {
+        if src.is_null() || out.is_null() || (colors.is_null() && ncolors > 0) {
             return Err(GlueError::Arg);
         }
         // SAFETY: `len` readable bytes (the caller's promise).
         let bytes = unsafe { image_source(src, len, is_file) }?;
-        let mut resolve = |name: &str| {
-            let name = std::ffi::CString::new(name).unwrap_or_default();
-            // SAFETY: the caller's promise; the name lives across the call.
-            color.map_or(0, |f| unsafe { f(ctx, name.as_ptr()) })
+        let colors = if ncolors == 0 {
+            &[][..]
+        } else {
+            // SAFETY: `ncolors` readable words (the caller's promise).
+            unsafe { std::slice::from_raw_parts(colors, ncolors) }
         };
-        let img = crate::image::decode(&bytes, index, &mut resolve).ok_or(GlueError::State)?;
+        let img = crate::image::decode(&bytes, index, colors).ok_or(GlueError::State)?;
         // SAFETY: writable (the caller's promise).
         unsafe { out.write(img) };
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// The colour names an XPM in the `len` bytes at `src` (a file name when `is_file`) needs resolved, each once and
+    /// NUL-terminated, one after another, into `out` (`cap` bytes; may be null when `cap` is 0); `*need` gets their
+    /// bytes and `*count` their number (0 and 0 for anything that is not an XPM).  `NHG_E_TOO_SMALL` when `cap` is
+    /// below `*need`, `out` untouched; `NHG_E_STATE` when the file cannot be read or the XPM does not parse.
+    ///
+    /// # Safety
+    /// `src` holds `len` readable bytes; `out` is null or holds `cap` writable bytes; `need` and `count` are writable.
+    unlocked fn nhg_xpm_names(src: *const u8, len: usize, is_file: u32, out: *mut u8, cap: usize, need: *mut usize, count: *mut u32) -> i32 {
+        if src.is_null() || need.is_null() || count.is_null() || (out.is_null() && cap > 0) {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: `len` readable bytes (the caller's promise).
+        let bytes = unsafe { image_source(src, len, is_file) }?;
+        let names = if crate::xpm::is_xpm(&bytes) {
+            crate::xpm::names(&bytes).ok_or(GlueError::State)?
+        } else {
+            Vec::new()
+        };
+        let mut joined = Vec::new();
+        for n in &names {
+            joined.extend_from_slice(n.as_bytes());
+            joined.push(0);
+        }
+        // SAFETY: writable (the caller's promise).
+        unsafe {
+            need.write(joined.len());
+            count.write(u32::try_from(names.len()).map_err(|_| GlueError::State)?);
+        }
+        if cap < joined.len() {
+            return Err(GlueError::Code(crate::abi::NHG_E_TOO_SMALL));
+        }
+        if !joined.is_empty() {
+            // SAFETY: `cap` writable bytes, at least `joined.len()`.
+            unsafe { std::ptr::copy_nonoverlapping(joined.as_ptr(), out, joined.len()) };
+        }
         Ok(NHG_OK)
     }
 }
@@ -1752,6 +1793,84 @@ nhg_export! {
         nhshell::macos::images::forget(addr as usize);
         #[cfg(not(all(feature = "macos", target_os = "macos")))]
         let _ = addr;
+        Ok(NHG_OK)
+    }
+}
+
+/// The shell forgets the picture it made from a stand-in that goes.
+fn stand_gone(old: Option<crate::stand::Stand>) {
+    #[cfg(all(feature = "macos", target_os = "macos"))]
+    if let Some(s) = old {
+        nhshell::macos::images::forget(s.words.as_ptr() as usize);
+    }
+    #[cfg(not(all(feature = "macos", target_os = "macos")))]
+    let _ = old;
+}
+
+nhg_export! {
+    /// Give the pending image `img` (`image.c`'s entry, by address) the picture of the ready container `pix` (`fg` an
+    /// 8-bit container's colour), drawn `ready_w` x `ready_h`, scaled into its own `img_w` x `img_h` box: a copy kept
+    /// until `nhg_image_stand_drop` names `img` or another stand-in replaces it.  `NHG_E_ARG` for a container or box
+    /// the glue refuses (then `img` keeps none).  Neither reads nor writes the backing.
+    ///
+    /// # Safety
+    /// `pix` is readable, and its `data` (and `mask` when not null) hold its rows.
+    unlocked fn nhg_image_stand_in(img: *const std::ffi::c_void, pix: *const crate::image::NhgPix, fg: u32, ready_w: i32, ready_h: i32, img_w: i32, img_h: i32) -> i32 {
+        if img.is_null() || pix.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: non-null and readable (the caller's promise).
+        let pix = unsafe { *pix };
+        let bytes = if pix.bpp == 8 { 1 } else { 4 };
+        if pix.data.is_null() || pix.width <= 0 || pix.height <= 0 || pix.stride < pix.width * bytes {
+            stand_gone(crate::stand::take(img as usize));
+            return Err(GlueError::Arg);
+        }
+        let (w, h) = (pix.width as usize, pix.height as usize);
+        // SAFETY: the container's rows (the caller's promise).
+        let data = unsafe { std::slice::from_raw_parts(pix.data, pix.stride as usize * (h - 1) + w * bytes as usize) };
+        let mask = (bytes == 4 && !pix.mask.is_null() && pix.mask_stride >= pix.width)
+            // SAFETY: the mask's rows (the caller's promise).
+            .then(|| unsafe { std::slice::from_raw_parts(pix.mask, pix.mask_stride as usize * (h - 1) + w) });
+        let (made, old) = crate::stand::set(img as usize, &pix, data, mask, fg, (ready_w, ready_h), (img_w, img_h));
+        stand_gone(old);
+        made.map(|()| NHG_OK).ok_or(GlueError::Arg)
+    }
+}
+
+nhg_export! {
+    /// The pending image `img` landed, is prepared again or is freed: its stand-in, if any, goes.
+    ///
+    /// # Safety
+    /// None beyond the C ABI: `img` is only a key.
+    unlocked fn nhg_image_stand_drop(img: *const std::ffi::c_void) -> i32 {
+        stand_gone(crate::stand::take(img as usize));
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Paint the image record `rec` (`NHG_DRAW_IMAGE`) with the stand-in of the pending image `img` into frame
+    /// `frame`'s backing, as `nhg_draw_image` paints a container.  `NHG_E_STATE` when `img` has none, `NHG_E_ARG` for
+    /// a record the glue refuses.  Writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `rec` is readable.
+    fn nhg_draw_stand_in(d: *mut NhgDisplay, frame: u64, rec: *const crate::draw::NhgDrawRec, img: *const std::ffi::c_void) -> i32 |state| {
+        if rec.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: non-null and readable (the caller's promise).
+        let rec = unsafe { &*rec };
+        let mut p = crate::stand::with(img as usize, |s| {
+            let key = (s.words.as_ptr() as usize, s.width, s.height);
+            #[cfg(all(feature = "macos", target_os = "macos"))]
+            nhshell::macos::images::with_picture(key, 0, || s.words.clone(), |_| ())?;
+            crate::draw::decode_image(rec, key, 0, &s.matrix, s.smooth).ok()
+        })
+        .ok_or(GlueError::State)?
+        .ok_or(GlueError::Arg)?;
+        state.backings.frame_mut(frame)?.paint(&mut p)?;
         Ok(NHG_OK)
     }
 }

@@ -1262,13 +1262,28 @@ typedef struct
 } NhgImage;
 
 int32_t nhg_image_type (const char *name, size_t len);
-/* An XPM's colour names go to COLOR with CTX, which gives 0xRRGGBB (the frame's foreground for an unknown one).  */
-typedef uint32_t (*NhgColorFn) (void *ctx, const char *name);
-int32_t nhg_image_decode (const uint8_t *src, size_t len, uint32_t is_file, uint32_t index, NhgColorFn color,
-                          void *ctx, NhgImage *out);
+/* An XPM's colours: nhg_xpm_names puts the names it needs resolved, each once and NUL-terminated, one after another,
+   into OUT (CAP bytes; null when CAP is 0), their bytes into *NEED and their number into *COUNT (0 for anything
+   that is not an XPM); NHG_E_TOO_SMALL, OUT untouched, when CAP is below *NEED.  nhg_image_decode takes their
+   0xRRGGBB in COLORS (NCOLORS words, in the same order; null and 0 for anything else).  */
+int32_t nhg_xpm_names (const uint8_t *src, size_t len, uint32_t is_file, uint8_t *out, size_t cap, size_t *need,
+                       uint32_t *count);
+int32_t nhg_image_decode (const uint8_t *src, size_t len, uint32_t is_file, uint32_t index, const uint32_t *colors,
+                          size_t ncolors, NhgImage *out);
 int32_t nhg_image_take (NhgImage *img, uint8_t *data, uint8_t *mask);
 int32_t nhg_image_free (NhgImage *img);
 int32_t nhg_image_forget (const uint8_t *addr);
+
+/* The image worker's stand-ins (glue/src/stand.rs): a pending image IMG (image.c's entry, as a key) drawn with a
+   ready entry's picture scaled into its own box until it lands.  nhg_image_stand_in copies the ready container PIX
+   (FG an 8-bit container's colour), drawn READY_W x READY_H, for IMG's IMG_W x IMG_H box, replacing the one IMG had;
+   NHG_E_ARG, keeping none, when it refuses the container or a box.  nhg_image_stand_drop: IMG landed, is prepared
+   again or is freed.  nhg_draw_stand_in paints REC with IMG's stand-in as nhg_draw_image paints a container;
+   NHG_E_STATE when IMG has none.  */
+int32_t nhg_image_stand_in (const void *img, const NhgPix *pix, uint32_t fg, int32_t ready_w, int32_t ready_h,
+                            int32_t img_w, int32_t img_h);
+int32_t nhg_image_stand_drop (const void *img);
+int32_t nhg_draw_stand_in (NhgDisplay *d, uint64_t frame, const NhgDrawRec *rec, const void *img);
 /* SVG through the shell's resvg route (image.c's svg type on Naglfar).  STYLE: the image's :css, the face's font
    FAMILY and :base-uri (each LEN bytes; NULL or empty: none; without a base, references resolve against the file's
    directory), the face's FONT_SIZE in pixels, the display's DPI, and the FOREGROUND (currentColor) and BACKGROUND as

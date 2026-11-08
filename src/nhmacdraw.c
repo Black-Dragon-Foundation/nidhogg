@@ -299,33 +299,73 @@ nhmac_set_clipping_exactly (struct glyph_string *src,
   nhmac_clip_to (&r, 1);
 }
 
-/* The part of IMAGE from SRC_X, SRC_Y, WIDTH by HEIGHT, at DEST_X,
-   DEST_Y, over GC's background unless OVERLAY_P (nhwldraw.c's Cairo
-   twin).  */
-void
-nhwl_cr_draw_image (struct frame *f, Emacs_GC *gc, nhwl_image image,
-		    int src_x, int src_y, int width, int height,
-		    int dest_x, int dest_y, bool overlay_p)
+/* IMAGE's container (it has a pixmap) as the glue reads it.  */
+static NhgPix
+nhmac_pix (struct image *image)
 {
   Emacs_Pixmap p = image->pixmap, m = image->mask;
   NhgPix pix = { (uint8_t *) p->data, m ? (uint8_t *) m->data : NULL,
 		 p->width, p->height, p->bytes_per_line,
 		 m ? m->bytes_per_line : 0, p->bits_per_pixel,
 		 image->nhmac_smoothing };
+
+  memcpy (pix.matrix, image->nhmac_transform, sizeof pix.matrix);
+  return pix;
+}
+
+/* The part of IMAGE from SRC_X, SRC_Y, WIDTH by HEIGHT, at DEST_X,
+   DEST_Y, over GC's background unless OVERLAY_P (nhwldraw.c's Cairo
+   twin); a pending IMAGE draws its stand-in.  */
+void
+nhwl_cr_draw_image (struct frame *f, Emacs_GC *gc, nhwl_image image,
+		    int src_x, int src_y, int width, int height,
+		    int dest_x, int dest_y, bool overlay_p)
+{
   NhgDrawRec r = { NHG_DRAW_IMAGE, overlay_p ? NHG_DRAW_OVERLAY : 0,
 		   { dest_x, dest_y, width, height },
 		   nhmac_argb (f, gc->foreground, false),
 		   nhmac_argb (f, gc->background, true), src_x, src_y };
+  uint64_t id = FRAME_NHWL_OUTPUT (f)->glitnir_id;
 
-  memcpy (pix.matrix, image->nhmac_transform, sizeof pix.matrix);
   nhwl_begin_cr_clip (f);
   r.nclip = nhmac_top ()->n;
   memcpy (r.clip, nhmac_top ()->r, sizeof r.clip);
-  nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
-		NHG (nhg_draw_image (FRAME_NHG (f),
-				     FRAME_NHWL_OUTPUT (f)->glitnir_id,
-				     &r, &pix)));
+  if (image->pixmap)
+    {
+      NhgPix pix = nhmac_pix (image);
+      nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		    NHG (nhg_draw_image (FRAME_NHG (f), id, &r, &pix)));
+    }
+  else
+    nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		  NHG (nhg_draw_stand_in (FRAME_NHG (f), id, &r, image)));
   nhwl_end_cr_clip (f);
+}
+
+/* The image worker's stand-in (image.c's nh_img_stand_in): pending IMG
+   draws READY's picture, scaled into its own box, until it lands.  The
+   glue keeps a copy, so READY may go first.  */
+bool
+nhmac_image_stand_in (struct frame *f, struct image *img,
+		      struct image *ready)
+{
+  if (!ready->pixmap)
+    return false;
+  NhgPix pix = nhmac_pix (ready);
+  img->nhmac_stand
+    = NHG (nhg_image_stand_in (img, &pix, ready->face_foreground & 0xffffff,
+			       ready->width, ready->height,
+			       img->width, img->height)) == NHG_OK;
+  return img->nhmac_stand;
+}
+
+/* IMG landed, is prepared again or is freed: its stand-in goes.  */
+void
+nhmac_image_stand_drop (struct image *img)
+{
+  if (img->nhmac_stand)
+    NHG (nhg_image_stand_drop (img));
+  img->nhmac_stand = false;
 }
 
 /* Glyphs FROM to TO of S, in the open font FONT, from X on the baseline

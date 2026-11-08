@@ -1185,8 +1185,9 @@ PROTO (nhg_draw_image, int32_t (NhgDisplay *, uint64_t, const NhgDrawRec *, cons
     #[test]
     fn image_header_matches() {
         use nhglue::ffi::{
-            nhg_image_decode, nhg_image_forget, nhg_image_free, nhg_image_take,
-            nhg_image_transform, nhg_image_type, nhg_svg_render, nhg_svg_size,
+            nhg_draw_stand_in, nhg_image_decode, nhg_image_forget, nhg_image_free,
+            nhg_image_stand_drop, nhg_image_stand_in, nhg_image_take, nhg_image_transform,
+            nhg_image_type, nhg_svg_render, nhg_svg_size, nhg_xpm_names,
         };
         use nhglue::image::{NhgImage, NhgPix, NhgSvgStyle};
         let rows: &[(&str, i64)] = &[
@@ -1232,10 +1233,14 @@ PROTO (nhg_draw_image, int32_t (NhgDisplay *, uint64_t, const NhgDrawRec *, cons
         let decls = "\
 #define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
 PROTO (nhg_image_type, int32_t (const char *, size_t));
-PROTO (nhg_image_decode, int32_t (const uint8_t *, size_t, uint32_t, uint32_t, NhgColorFn, void *, NhgImage *));
+PROTO (nhg_xpm_names, int32_t (const uint8_t *, size_t, uint32_t, uint8_t *, size_t, size_t *, uint32_t *));
+PROTO (nhg_image_decode, int32_t (const uint8_t *, size_t, uint32_t, uint32_t, const uint32_t *, size_t, NhgImage *));
 PROTO (nhg_image_take, int32_t (NhgImage *, uint8_t *, uint8_t *));
 PROTO (nhg_image_free, int32_t (NhgImage *));
 PROTO (nhg_image_forget, int32_t (const uint8_t *));
+PROTO (nhg_image_stand_in, int32_t (const void *, const NhgPix *, uint32_t, int32_t, int32_t, int32_t, int32_t));
+PROTO (nhg_image_stand_drop, int32_t (const void *));
+PROTO (nhg_draw_stand_in, int32_t (NhgDisplay *, uint64_t, const NhgDrawRec *, const void *));
 PROTO (nhg_image_transform, int32_t (int32_t, int32_t, int32_t, int32_t, double, bool, double *, int32_t *, int32_t *));
 PROTO (nhg_svg_size, int32_t (const uint8_t *, size_t, uint32_t, const NhgSvgStyle *, double *, double *));
 PROTO (nhg_svg_render, int32_t (const uint8_t *, size_t, uint32_t, const NhgSvgStyle *, int32_t, int32_t, NhgImage *));";
@@ -1245,13 +1250,38 @@ PROTO (nhg_svg_render, int32_t (const uint8_t *, size_t, uint32_t, const NhgSvgS
             usize,
             u32,
             u32,
-            nhglue::image::NhgColorFn,
-            *mut std::ffi::c_void,
+            *const u32,
+            usize,
             *mut NhgImage,
         ) -> i32 = nhg_image_decode;
+        let _: unsafe extern "C" fn(
+            *const u8,
+            usize,
+            u32,
+            *mut u8,
+            usize,
+            *mut usize,
+            *mut u32,
+        ) -> i32 = nhg_xpm_names;
         let _: unsafe extern "C" fn(*mut NhgImage, *mut u8, *mut u8) -> i32 = nhg_image_take;
         let _: unsafe extern "C" fn(*mut NhgImage) -> i32 = nhg_image_free;
         let _: unsafe extern "C" fn(*const u8) -> i32 = nhg_image_forget;
+        let _: unsafe extern "C" fn(
+            *const std::ffi::c_void,
+            *const NhgPix,
+            u32,
+            i32,
+            i32,
+            i32,
+            i32,
+        ) -> i32 = nhg_image_stand_in;
+        let _: unsafe extern "C" fn(*const std::ffi::c_void) -> i32 = nhg_image_stand_drop;
+        let _: unsafe extern "C" fn(
+            *mut nhglue::ffi::NhgDisplay,
+            u64,
+            *const nhglue::draw::NhgDrawRec,
+            *const std::ffi::c_void,
+        ) -> i32 = nhg_draw_stand_in;
         let _: unsafe extern "C" fn(
             i32,
             i32,
