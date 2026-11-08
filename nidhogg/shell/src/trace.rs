@@ -14,6 +14,8 @@ use std::time::Instant;
 const NOTES: usize = 64;
 /// The image draws kept: the newest.
 const IMAGES: usize = 32;
+/// The pump decisions and paints kept: the newest.
+const PUMPS: usize = 128;
 
 /// One image draw: the container (`w` x `h`, `bpp`, with a mask or not) and its first word, the drawn rectangle, and
 /// its first clip (`None`: unclipped), the first word of the picture when it was made by this draw (`None`: a cached
@@ -53,7 +55,7 @@ static TRACE: Mutex<Trace> = Mutex::new(Trace {
 /// One pump decision: who asked and what was done.
 pub fn pump(what: impl FnOnce() -> String) {
     with(|t| {
-        if t.pumps.len() == IMAGES {
+        if t.pumps.len() == PUMPS {
             t.pumps.pop_front();
         }
         t.pumps.push_back(what());
