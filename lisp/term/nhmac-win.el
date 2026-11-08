@@ -429,6 +429,12 @@ Each has the container's `:size', `:bpp', `:mask' and first pixel
 the drawn `:rect' and its first `:clip'.  For tests."
   (nhmac--query 'image-draws))
 
+(defun nhmac--pump-trace ()
+  "Return the pump decisions since the last call, oldest first, and forget them.
+Each says who asked (a drain's end with its facts, or a call outside a
+drain) and whether AppKit was pumped.  For tests."
+  (nhmac--query 'pump-trace))
+
 (defun nhmac--modal-alert (ms)
   "Run a modal alert for MS milliseconds, then end it; return its rounds.
 A query that runs a modal session, for the pumps' tests."

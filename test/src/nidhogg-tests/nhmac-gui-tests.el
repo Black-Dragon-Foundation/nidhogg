@@ -10,6 +10,10 @@
 (require 'cl-lib)
 (load (expand-file-name "../../../nidhogg/test/mac-counts.el" (file-name-directory (or load-file-name buffer-file-name))) nil t)
 
+(defun nhmac-gui--say (fmt &rest args)
+  "Print FMT with ARGS as a line of the lane's log (stderr), not to *Messages*."
+  (princ (concat (apply #'format fmt args) "\n") #'external-debugging-output))
+
 (defun nhmac-gui--ns-build-p ()
   "The stock NS port (not Naglfar): the baselines are measured here."
   (and (eq window-system 'ns) (not (featurep 'nidhogg-macos))))
@@ -526,6 +530,7 @@ its frame, each become visible and draw.  Guards the start that once drew nothin
         (bad nil))
     (dotimes (i 20)
       (let* ((buf (generate-new-buffer " *nhmac-start*"))
+             (t0 (float-time))
              (proc (make-process :name "nhmac-start" :buffer buf :connection-type 'pipe
                                  :command (list emacs "-Q" "--eval" nhmac-gui--start-report))))
         (unwind-protect
@@ -533,7 +538,8 @@ its frame, each become visible and draw.  Guards the start that once drew nothin
                    (out (with-current-buffer buf (buffer-string)))
                    (facts (and (string-match "^NHMAC-START \\(.*\\)$" out)
                                (car (read-from-string (match-string 1 out))))))
-              (message "nhmac-frame-shows-at-every-start: start %d: %S" i facts)
+              (nhmac-gui--say "nhmac-frame-shows-at-every-start: start %d: %.1f s, %s: %S" i (- (float-time) t0)
+                              (process-status proc) facts)
               (unless (and ended facts (plist-get facts :visible) (> (or (plist-get facts :draws) 0) 0))
                 (push (list :start i :ended ended :status (process-status proc) :facts facts :output out) bad)))
           (when (process-live-p proc) (delete-process proc))
@@ -631,7 +637,7 @@ interposer in the NS lane of the same run, is logged by `nhmac-interposer-counts
   (nhmac-gui--typing-buffer "key")
   (nhmac-gui--flush)
   (dotimes (_ 5)
-    (let ((before (nhmac-stats)))
+    (let ((before (progn (nhmac--pump-trace) (nhmac-stats))))
       (nhmac--test-post-key ?k)
       (let ((ev (read-event nil nil 2)))
         (should (eq ev ?k))
@@ -642,9 +648,11 @@ interposer in the NS lane of the same run, is logged by `nhmac-interposer-counts
             (commits (nhmac-gui--delta before :commits))
             (sleeps (nhmac-gui--delta before :sleeps)))
         (message "nhmac-key-to-commit-counts: pumps %d commits %d fd waits %d" pumps commits sleeps)
-        (should (= pumps 1))
-        (should (= commits 1))
-        (should (= sleeps 0)))))
+        ;; who asked for each pump
+        (ert-info ((format "pump decisions %S" (nhmac--pump-trace)))
+          (should (= pumps 1))
+          (should (= commits 1))
+          (should (= sleeps 0))))))
   (nhmac-gui--flush)
   (kill-buffer))
 
@@ -1175,13 +1183,22 @@ glue's stand-in), and the stand-in goes when the decode lands."
 (ert-deftest nhmac-images-builtin ()
   "Emacs's own decoders still draw: an XBM and a PBM reach the surface in the face's colours."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (switch-to-buffer (generate-new-buffer " *nhmac-xbm*"))
   (setq-local cursor-type nil)
   (face-remap-add-relative 'default :foreground "#ff0000" :background "#0000ff")
-  (insert-image (create-image (make-bool-vector 64 t) 'xbm t :width 8 :height 8 :scale 1))
-  (insert-image (create-image "P1\n4 4\n0 0 0 0\n0 0 0 0\n0 0 0 0\n0 0 0 0\n" 'pbm t :scale 1))
-  (redisplay t)
+  (let ((xbm (create-image (make-bool-vector 64 t) 'xbm t :width 8 :height 8 :scale 1))
+        (pbm (create-image "P1\n4 4\n0 0 0 0\n0 0 0 0\n0 0 0 0\n0 0 0 0\n" 'pbm t :scale 1)))
+    (insert-image xbm)
+    (insert-image pbm)
+    (redisplay t)
+    ;; where each image sits, on NS (the reference) and on Naglfar alike, in the lane's log
+    (nhmac-gui--say "nhmac-images-builtin: %s: edges %S line height %S; xbm size %S posn %S; pbm size %S posn %S"
+                    (if (nhmac-gui--ns-build-p) "NS" "Naglfar") (window-inside-pixel-edges) (line-pixel-height)
+                    (image-size xbm t) (posn-at-point (point-min)) (image-size pbm t) (posn-at-point (1+ (point-min))))
+    (nhmac-gui--say "nhmac-images-builtin: messages: %S"
+                    (with-current-buffer (messages-buffer)
+                      (buffer-substring-no-properties (max (point-min) (- (point-max) 600)) (point-max)))))
+  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((xy (posn-x-y (posn-at-point (point-min))))
         (edges (window-inside-pixel-edges)))
     (let ((x (+ (nth 0 edges) (car xy))) (y (+ (nth 1 edges) (cdr xy))))
