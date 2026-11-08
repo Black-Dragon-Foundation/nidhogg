@@ -16,9 +16,9 @@ const NOTES: usize = 64;
 const IMAGES: usize = 32;
 
 /// One image draw: the container (`w` x `h`, `bpp`, with a mask or not) and its first word, the drawn rectangle, and
-/// its first clip (`None`: unclipped), and the first word of the picture when it was made by this draw (`None`: a
-/// cached picture).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// its first clip (`None`: unclipped), the first word of the picture when it was made by this draw (`None`: a cached
+/// picture), the part's origin in the drawn image and the image's matrix (`NhgPix`'s, all zero for none).
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ImageDraw {
     pub w: i32,
     pub h: i32,
@@ -28,6 +28,8 @@ pub struct ImageDraw {
     pub made: Option<u32>,
     pub rect: (i32, i32, i32, i32),
     pub clip: Option<(i32, i32, i32, i32)>,
+    pub src: (i32, i32),
+    pub matrix: [f64; 6],
 }
 
 struct Trace {
@@ -130,8 +132,9 @@ pub fn images_text() -> String {
             .iter()
             .map(|d| {
                 let r = |(x, y, w, h): (i32, i32, i32, i32)| format!("({x} {y} {w} {h})");
+                let m = d.matrix.map(|v| format!("{v}")).join(" ");
                 format!(
-                    "(:size ({} {}) :bpp {} :mask {} :word {} :made {} :rect {} :clip {})",
+                    "(:size ({} {}) :bpp {} :mask {} :word {} :made {} :rect {} :clip {} :src ({} {}) :matrix ({m}))",
                     d.w,
                     d.h,
                     d.bpp,
@@ -139,7 +142,9 @@ pub fn images_text() -> String {
                     d.word,
                     d.made.map_or("nil".into(), |m| m.to_string()),
                     r(d.rect),
-                    d.clip.map_or("nil".into(), r)
+                    d.clip.map_or("nil".into(), r),
+                    d.src.0,
+                    d.src.1
                 )
             })
             .collect();
@@ -179,16 +184,21 @@ mod tests {
                 made: Some(1),
                 rect: (0, 0, 8, 8),
                 clip,
+                src: (0, 0),
+                matrix: [0.0; 6],
             });
         }
         let s = images_text();
         assert_eq!(s.matches("(:size").count(), IMAGES, "{s}");
         assert!(
             s.starts_with(
-                "((:size (2 8) :bpp 32 :mask nil :word 4294901760 :made 1 :rect (0 0 8 8) :clip (1 2 3 4)) (:size (3 8)"
+                "((:size (2 8) :bpp 32 :mask nil :word 4294901760 :made 1 :rect (0 0 8 8) :clip (1 2 3 4) :src (0 0) :matrix (0 0 0 0 0 0)) (:size (3 8)"
             ),
             "{s}"
         );
-        assert!(s.ends_with(":made 1 :rect (0 0 8 8) :clip nil))"), "{s}");
+        assert!(
+            s.ends_with(":made 1 :rect (0 0 8 8) :clip nil :src (0 0) :matrix (0 0 0 0 0 0)))"),
+            "{s}"
+        );
     }
 }
