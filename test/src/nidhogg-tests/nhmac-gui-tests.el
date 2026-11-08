@@ -976,6 +976,96 @@ screen are within 2/255 of NS's in the same run (NS points are pixels there)."
       (should (= (nhmac-gui--pixel-at (+ (nth 0 edges) (car xy) 1) (+ (nth 1 edges) (cdr xy) 1)) #xff0000ff)))
     (kill-buffer)))
 
+(defun nhmac-gui--image-screen (file name &optional worker)
+  "FILE's image on screen (`nhmac-gui--text-crop' of a capture saved as NAME): loaded inline, or with WORKER
+decoded on nh-img and landed first."
+  (let ((nidhogg-workers-images (and worker t))
+        (nidhogg-image-defer (and worker t)))
+    (clear-image-cache t)
+    (nhmac-gui--with-image-scene file
+      (when worker
+        (should (nidhogg-workers--test-await-landed 'nh-img 5000))
+        (redisplay t)
+        (should (= 0 (plist-get (nidhogg-workers--test-image-info) :pending))))
+      (nhmac-gui--text-crop (nhmac-gui--bmp-read (nhmac-gui--capture (nhmac-gui--font-file name)))))))
+
+(ert-deftest nhmac-images-worker ()
+  "PNG, JPEG, GIF and WebP decoded off the main thread by the image worker (Glitnir's decoders, ImageIO behind them
+and for JPEG) land and draw the pixels the inline load draws, within 2/255."
+  (skip-unless (and (not (nhmac-gui--ns-build-p)) (equal (getenv "GLITNIR_GUI_SCALE") "1")))
+  (should (fboundp 'nidhogg-workers--test-decide))
+  (dolist (type '(png jpeg gif webp))
+    (should (nidhogg-workers--deferrable-p type)))
+  (let ((nidhogg-workers--mode 'threads))
+    (dolist (f (nhmac-gui--image-files))
+      (when (string-match-p "\\.\\(png\\|jpg\\|gif\\|webp\\)\\'" f)
+        (let* ((name (file-name-nondirectory f))
+               (inline (nhmac-gui--image-screen f (concat name ".inline.bmp")))
+               (landed (plist-get (nidhogg-workers--test-image-info) :landed))
+               (off (unwind-protect
+                        (progn (nidhogg-workers--test-decide 'offload)
+                               (nhmac-gui--image-screen f (concat name ".worker.bmp") t))
+                      (nidhogg-workers--test-decide nil)))
+               (worst 0))
+          ;; the worker took it: one more landing
+          (should (> (plist-get (nidhogg-workers--test-image-info) :landed) landed))
+          (should (equal (take 2 off) (take 2 inline)))
+          (dotimes (i (length (nth 2 inline)))
+            (let ((a (aref (nth 2 inline) i)) (b (aref (nth 2 off) i)))
+              (dolist (sh '(16 8 0))
+                (setq worst (max worst (abs (- (logand (ash a (- sh)) 255) (logand (ash b (- sh)) 255))))))))
+          (message "nhmac-images-worker: %s %dx%d, worst channel difference %d" name (car inline) (nth 1 inline)
+                   worst)
+          (should (<= worst 2)))))))
+
+(ert-deftest nhmac-images-stand-in ()
+  "While a zoomed image's decode is parked on the worker, the picture it replaces draws scaled into the new box (the
+glue's stand-in), and the stand-in goes when the decode lands."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((file (expand-file-name "../../data/image/black.jpg" (getenv "GLITNIR_GUI_TESTS")))
+         (old `(image :type jpeg :file ,file :scale 1))
+         (new `(image :type jpeg :file ,file :scale 2))
+         (nidhogg-workers-images t)
+         (nidhogg-image-defer t)
+         (nidhogg-workers--mode 'threads)
+         (buf (generate-new-buffer " *nhmac-stand*"))
+         (info (lambda (k) (plist-get (nidhogg-workers--test-image-info) k))))
+    (unwind-protect
+        (progn
+          (nidhogg-workers--test-decide 'offload)
+          (clear-image-cache t)
+          (switch-to-buffer buf)
+          (setq-local cursor-type nil)
+          (face-remap-add-relative 'default :background "#0000ff")
+          (insert (propertize "x" 'display old))
+          (redisplay t)
+          (while (> (funcall info :pending) 0)
+            (should (nidhogg-workers--test-await-landed 'nh-img 5000))
+            (redisplay t))
+          (nidhogg-workers--pause-at 'after-header)
+          (put-text-property 1 2 'display new)
+          (redisplay t)
+          (should (nidhogg-workers--test-await-paused 'after-header 5000 1))
+          (should (= 1 (funcall info :pending)))
+          (should (= 1 (funcall info :standing)))
+          ;; a pixel past the old picture's size, inside the new box: the stand-in's black, not the blue background
+          (let* ((size (image-size old t))
+                 (xy (posn-x-y (posn-at-point (point-min))))
+                 (edges (window-inside-pixel-edges))
+                 (px (nhmac-gui--pixel-at (+ (nth 0 edges) (car xy) (round (* 1.5 (car size))))
+                                          (+ (nth 1 edges) (cdr xy) (round (* 1.5 (cdr size)))))))
+            (message "nhmac-images-stand-in: old %S, pixel %x" size px)
+            (dolist (sh '(16 8 0))
+              (should (< (logand (ash px (- sh)) 255) 16))))
+          (nidhogg-workers--release 'after-header)
+          (should (nidhogg-workers--test-await-landed 'nh-img 5000))
+          (redisplay t)
+          (should (= 0 (funcall info :pending)))
+          (should (= 0 (funcall info :standing))))
+      (nidhogg-workers--test-decide nil)
+      (nidhogg-workers--release)
+      (kill-buffer buf))))
+
 (ert-deftest nhmac-images-builtin ()
   "Emacs's own decoders still draw: an XBM and a PBM reach the surface in the face's colours."
   (skip-unless (not (nhmac-gui--ns-build-p)))

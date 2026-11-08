@@ -3383,6 +3383,11 @@ FORMAT is an image type symbol such as `png'.  */)
   int fmt = nh_img_core_format (nh_img_spec_format (list3 (Qimage, QCtype,
 							   format)));
   return fmt >= 0 && nh_img_decoders[fmt] ? Qt : Qnil;
+#elif defined HAVE_NHMAC
+  /* Naglfar takes the pending entries as Cairo does (image.c).  */
+  int fmt = nh_img_core_format (nh_img_spec_format (list3 (Qimage, QCtype,
+							   format)));
+  return fmt >= 0 && nh_img_decoders[fmt] ? Qt : Qnil;
 #else
   return Qnil;
 #endif
