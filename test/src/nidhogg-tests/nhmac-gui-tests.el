@@ -18,7 +18,7 @@
   "The stock NS port (not Naglfar): the baselines are measured here."
   (and (eq window-system 'ns) (not (featurep 'nidhogg-macos))))
 
-;; Task 2: the interposer and the counters harness
+;; The interposer and the counters harness
 (ert-deftest nhmac-interposer-counts-ns ()
   "20 keys into a buffer lock a surface and spin the run loop inside a redisplay (NS baseline: the counts are logged).
 NS coalesces: a run measured 16 locks per 20 keys at scale 1 and 10 at scale 2, so the bound is only that both happen."
@@ -80,7 +80,7 @@ pixels; the display's width is the main screen's."
           (should (= (display-pixel-width) (plist-get info :screen-device-width))))
       (delete-frame f))))
 
-;; Task 11: the pumps and the take-out scope
+;; The pumps and the take-out scope
 (ert-deftest nhmac-reentry-sync-delegates ()
   "AppKit's delegates, called back from inside the shell's own calls, reach its state only through the scope.
 `setFrame:' and `makeKeyAndOrderFront:' with the scope free are applied at once; inside a borrow (with a modal session
@@ -114,7 +114,7 @@ is left queued, and the display is not poisoned."
     (should (= (length (nhwl-glue-panics)) panics))
     (should (equal (eval '(+ 1 1) t) 2))))
 
-;; Task 11a: keys and mouse intake
+;; Keys and mouse intake
 (defconst nhmac-gui--ns-control #x40000 "`NSEventModifierFlagControl'.")
 
 (defun nhmac-gui--events (n &optional secs)
@@ -217,7 +217,7 @@ and `mouse-pixel-position' follows motion."
                                (nhmac-gui--events 3 1)))))
       (should (eq (event-basic-type ev) 'wheel-down)))))
 
-;; Task 12: the wait: kqueue in the run loop, the helper, keys before process output
+;; The wait: kqueue in the run loop, the helper, keys before process output
 (defun nhmac-gui--delta (before key)
   "How much the counter KEY of `nhmac-stats' grew since BEFORE."
   (- (plist-get (nhmac-stats) key) (plist-get before key)))
@@ -312,7 +312,7 @@ helper's hop (`:helper-hops-keys' 0)."
       (should (= (nhmac-gui--delta before :helper-hops-keys) 0))
       (should (> (nhmac-gui--delta before :waits) 0)))))
 
-;; Task 13: the lock hand-off
+;; The lock hand-off
 (defun nhmac-gui--idle-until (pred secs)
   "Idle the main thread in its wait until PRED holds or SECS pass; PRED's last value."
   (let ((end (+ (float-time) secs)) v)
@@ -562,7 +562,7 @@ its frame, each become visible and draw.  Guards the start that once drew nothin
           (kill-buffer buf))))
     (should-not (nreverse bad))))
 
-;; Task 14: the IOSurface ring, damaged rectangles, the commit
+;; The IOSurface ring, damaged rectangles, the commit
 (defconst nhmac-gui--ring 3 "The ring's size (surface.rs `RING'): the oldest age a slot copies for.")
 
 (defun nhmac-gui--surface (&optional frame)
@@ -942,7 +942,7 @@ with a sign test."
     (should (file-exists-p file))
     (kill-buffer)))
 
-;; Task 15: draw records painted with Core Graphics
+;; Draw records painted with Core Graphics
 (defun nhmac-gui--pixel-at (x y)
   "The committed surface's premultiplied ARGB at device pixel X, Y of the selected frame."
   (plist-get (nhmac--test-surface x y) :pixel))
@@ -1020,7 +1020,7 @@ checked against the faces, tolerance 0 for fills and box lines."
     (should (= (nhmac-gui--pixel-at (+ x 6) (+ y (/ h 2))) #xff00ff00)))
   (kill-buffer))
 
-;; Task 16: Core Text text, compared with NS's in the same run
+;; Core Text text, compared with NS's in the same run
 (defconst nhmac-gui--font-bg "#f0e0d0" "The text rows' background: no window chrome or desktop has it.")
 
 (defun nhmac-gui--font-file (ext &optional ns)
@@ -1194,7 +1194,7 @@ frame's text still reaches the surface."
         (nhmac-gui--say "nhmac-font-open-close: a text pixel %S, stats %S" dark (nhmac-stats))
         (should dark)))))
 
-;; Task 17: images through ImageIO
+;; Images through ImageIO
 (defconst nhmac-gui--gif2
   (unibyte-string #x47 #x49 #x46 #x38 #x39 #x61 #x04 #x00 #x04 #x00 #x81 #x00 #x00 #xff #x00 #x00 #x00 #x00 #x00 #x00
                   #x00 #x00 #x00 #x00 #x00 #x21 #xff #x0b #x4e #x45 #x54 #x53 #x43 #x41 #x50 #x45 #x32 #x2e #x30 #x03
