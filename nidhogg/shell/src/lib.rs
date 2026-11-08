@@ -13,6 +13,8 @@ pub mod macos;
 pub mod ring;
 pub mod scope;
 pub mod shapes;
+#[cfg(feature = "svg")]
+pub mod svg;
 pub mod wait;
 #[cfg(feature = "wayland")]
 pub mod wayland;

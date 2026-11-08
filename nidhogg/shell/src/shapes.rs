@@ -53,7 +53,9 @@ pub enum Shape {
         integral: bool,
     },
     /// The part of picture `key` (`macos::images`: the pixels' address and size, made with `mask`) from (`sx`, `sy`)
-    /// drawn into `r`, over `bg` when it is given.
+    /// drawn into `r`, over `bg` when it is given.  `to` takes a picture pixel to the drawn image's (an affine map
+    /// `(a, b, c, d, tx, ty)`: x' = a x + c y + tx, y' = b x + d y + ty; the identity for a picture drawn as it is),
+    /// smoothed when `smooth`.
     Image {
         key: (usize, i32, i32),
         mask: usize,
@@ -61,6 +63,8 @@ pub enum Shape {
         sx: i32,
         sy: i32,
         bg: Option<u32>,
+        to: [f64; 6],
+        smooth: bool,
     },
 }
 

@@ -3094,6 +3094,9 @@ static void
 image_set_transform (struct frame *f, struct image *img)
 {
   bool flip;
+#ifdef HAVE_NHMAC
+  int nhmac_width = img->width, nhmac_height = img->height;
+#endif
 
 #if defined HAVE_HAIKU
   matrix3x3 identity = {
@@ -3143,6 +3146,12 @@ image_set_transform (struct frame *f, struct image *img)
       width = img->width / FRAME_SCALE_FACTOR (f);
       height = img->height / FRAME_SCALE_FACTOR (f);
     }
+  else
+#endif
+#ifdef HAVE_NHMAC
+  /* Naglfar's SVGs are rendered at their size too.  */
+  if (EQ (image_spec_value (img->spec, QCtype, NULL), Qsvg))
+    width = img->width, height = img->height;
   else
 #endif
     compute_image_size (f, img->width, img->height, img, &width,
@@ -3419,6 +3428,19 @@ image_set_transform (struct frame *f, struct image *img)
 #endif
     }
 
+#ifdef HAVE_NHMAC
+  /* Naglfar: the glue makes the matrix the Cairo branch makes.  */
+  Lisp_Object nhmac_s = image_spec_value (img->spec, QCtransform_smoothing,
+					  NULL);
+  img->nhmac_smoothing = (NILP (nhmac_s)
+			  ? width < nhmac_width || height < nhmac_height
+			  : true);
+  if (NHG (nhg_image_transform (nhmac_width, nhmac_height, width, height,
+				rotation, flip, img->nhmac_transform,
+				&img->width, &img->height)) == NHG_OK
+      && rotate_flag < 0)
+    rotate_flag = 1;
+#endif
   if (rotate_flag < 0)
     image_error ("No native support for rotation by %g degrees",
 		 make_float (rotation));
@@ -8171,8 +8193,19 @@ native_image_p (Lisp_Object object)
 }
 
 #ifdef HAVE_NHMAC
-/* Naglfar: the glue decodes through ImageIO; the colours go into the
-   plain container and the alpha, if any, into a mask, as Cairo's
+/* Naglfar: an XPM colour name's 0xRRGGBB, as xpm_load_image resolves
+   it, or frame F's foreground for one it does not know.  */
+static uint32_t
+nhmac_xpm_color (void *f, const char *name)
+{
+  Emacs_Color c;
+  return (FRAME_TERMINAL ((struct frame *) f)->defined_color_hook (f, name, &c,
+								  false, false)
+	  ? c.pixel : FRAME_FOREGROUND_PIXEL ((struct frame *) f)) & 0xffffff;
+}
+
+/* The glue decodes through ImageIO (an XPM itself); the colours go into
+   the plain container and the alpha, if any, into a mask, as Cairo's
    loaders leave them.  */
 static bool
 nhmac_load_image (struct frame *f, struct image *img, Lisp_Object file,
@@ -8186,7 +8219,7 @@ nhmac_load_image (struct frame *f, struct image *img, Lisp_Object file,
   if (!STRINGP (src)
       || NHG (nhg_image_decode (SDATA (src), SBYTES (src), STRINGP (file),
 				FIXNATP (index) ? XFIXNAT (index) : 0,
-				&im)) != NHG_OK)
+				nhmac_xpm_color, f, &im)) != NHG_OK)
     {
       image_error ("Cannot load image `%s'", img->spec);
       return false;
@@ -8214,6 +8247,105 @@ nhmac_load_image (struct frame *f, struct image *img, Lisp_Object file,
   if (im.frames > 1)
     img->lisp_data = Fcons (Qcount, Fcons (make_fixnum (im.frames),
 					   img->lisp_data));
+  return true;
+}
+
+/* Naglfar's svg type: svg_load_image's keywords, size and colours,
+   drawn by the shell's resvg route.  */
+enum { NHMAC_SVG_DATA = 1, NHMAC_SVG_FILE, NHMAC_SVG_LAST = 13 };
+static const struct image_keyword nhmac_svg_format[NHMAC_SVG_LAST] =
+{
+  {":type",		IMAGE_SYMBOL_VALUE,			1},
+  {":data",		IMAGE_STRING_VALUE,			0},
+  {":file",		IMAGE_STRING_VALUE,			0},
+  {":base-uri",		IMAGE_STRING_VALUE,			0},
+  {":css",		IMAGE_STRING_VALUE,			0},
+  {":ascent",		IMAGE_ASCENT_VALUE,			0},
+  {":margin",		IMAGE_NON_NEGATIVE_INTEGER_VALUE_OR_PAIR, 0},
+  {":relief",		IMAGE_INTEGER_VALUE,			0},
+  {":conversion",	IMAGE_DONT_CHECK_VALUE_TYPE,		0},
+  {":heuristic-mask",	IMAGE_DONT_CHECK_VALUE_TYPE,		0},
+  {":mask",		IMAGE_DONT_CHECK_VALUE_TYPE,		0},
+  {":foreground",	IMAGE_STRING_OR_NIL_VALUE,		0},
+  {":background",	IMAGE_STRING_OR_NIL_VALUE,		0}
+};
+
+static bool
+nhmac_svg_image_p (Lisp_Object object)
+{
+  struct image_keyword fmt[NHMAC_SVG_LAST];
+  memcpy (fmt, nhmac_svg_format, sizeof fmt);
+  return (parse_image_spec (object, fmt, NHMAC_SVG_LAST, Qsvg)
+	  && fmt[NHMAC_SVG_FILE].count + fmt[NHMAC_SVG_DATA].count == 1);
+}
+
+static bool
+nhmac_svg_load (struct frame *f, struct image *img)
+{
+  Lisp_Object file = image_spec_value (img->spec, QCfile, NULL);
+  Lisp_Object src = image_spec_value (img->spec, QCdata, NULL);
+  Lisp_Object css = image_spec_value (img->spec, QCcss, NULL);
+  Lisp_Object base = image_spec_value (img->spec, QCbase_uri, NULL);
+  Lisp_Object fg = image_spec_value (img->spec, QCforeground, NULL);
+  Lisp_Object bg = image_spec_value (img->spec, QCbackground, NULL);
+  const char *family = img->face_font_family;
+  double vw, vh;
+  int w, h;
+  NhgImage im;
+  Emacs_Pix_Container ximg;
+
+  if (STRINGP (file))
+    src = image_find_image_file (file);
+  else if (!STRINGP (base))
+    base = BVAR (current_buffer, filename);
+  if (!STRINGP (src))
+    {
+      image_error ("Cannot find image file `%s'", file);
+      return false;
+    }
+  src = STRINGP (file) ? ENCODE_FILE (src) : ENCODE_UTF_8 (src);
+  unsigned long fpx = (STRINGP (fg) ? image_alloc_image_color (f, img, fg,
+							       img->face_foreground)
+		       : img->face_foreground);
+  if (STRINGP (bg))
+    {
+      img->background = image_alloc_image_color (f, img, bg,
+						 img->face_background);
+      img->background_valid = 1;
+    }
+  NhgSvgStyle st
+    = { STRINGP (css) ? SDATA (css) : NULL, STRINGP (css) ? SBYTES (css) : 0,
+	(const uint8_t *) family, family ? strlen (family) : 0,
+	STRINGP (base) ? SDATA (base) : NULL, STRINGP (base) ? SBYTES (base) : 0,
+	img->face_font_size, FRAME_DISPLAY_INFO (f)->resx, fpx & 0xffffff,
+	(STRINGP (bg) ? img->background : img->face_background) & 0xffffff };
+  if (NHG (nhg_svg_size (SDATA (src), SBYTES (src), STRINGP (file), &st, &vw,
+			 &vh)) != NHG_OK)
+    {
+      image_error ("Error parsing SVG image: %s", img->spec);
+      return false;
+    }
+  compute_image_size (f, vw, vh, img, &w, &h);
+  if (!check_image_size (f, w, h))
+    {
+      image_size_error ();
+      return false;
+    }
+  if (NHG (nhg_svg_render (SDATA (src), SBYTES (src), STRINGP (file), &st, w,
+			   h, &im)) != NHG_OK)
+    {
+      image_error ("Error drawing SVG image: %s", img->spec);
+      return false;
+    }
+  if (!image_create_x_image_and_pixmap (f, img, w, h, 0, &ximg, false))
+    {
+      NHG (nhg_image_free (&im));
+      return false;
+    }
+  NHG (nhg_image_take (&im, (uint8_t *) ximg->data, NULL));
+  img->width = w;
+  img->height = h;
+  image_put_x_image (f, img, ximg, false);
   return true;
 }
 
@@ -13854,6 +13986,8 @@ The list of capabilities can include one or more of the following:
       return (w32_image_rotations_p ()
 	      ? list2 (Qscale, Qrotate90)
 	      : list1 (Qscale));
+# elif defined HAVE_NHMAC
+      return list2 (Qscale, Qrotate90);
 # endif
 #endif
     }
@@ -13939,6 +14073,9 @@ static struct image_type const image_types[] =
 #ifdef HAVE_RSVG
  { SYMBOL_INDEX (Qsvg), svg_image_p, svg_load, image_clear_image,
    IMAGE_TYPE_INIT (init_svg_functions) },
+#endif
+#ifdef HAVE_NHMAC
+ { SYMBOL_INDEX (Qsvg), nhmac_svg_image_p, nhmac_svg_load, image_clear_image },
 #endif
 #if defined HAVE_PNG
  { SYMBOL_INDEX (Qpng), png_image_p, png_load, image_clear_image,
@@ -14209,11 +14346,17 @@ non-numeric, there is no explicit limit on the size of images.  */);
 #endif /* NS_IMPL_GNUSTEP */
 #endif
 #ifdef HAVE_NHMAC
-  /* Naglfar: ImageIO decodes these as well.  */
+  /* Naglfar: ImageIO decodes these as well, the glue XPM, resvg SVG.  */
+  DEFSYM (Qxpm, "xpm");
+  add_image_type (Qxpm);
   DEFSYM (Qwebp, "webp");
   add_image_type (Qwebp);
   DEFSYM (Qheic, "heic");
   add_image_type (Qheic);
+  DEFSYM (Qsvg, "svg");
+  DEFSYM (QCbase_uri, ":base-uri");
+  DEFSYM (QCcss, ":css");
+  add_image_type (Qsvg);
 #endif
 
 #if HAVE_NATIVE_IMAGE_API
