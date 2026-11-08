@@ -198,7 +198,9 @@ impl Canvas {
     /// Paint `p` now.
     pub fn paint(&mut self, p: &Paint) {
         let c = self.ctx;
-        DRAWS.fetch_add(1, Ordering::Relaxed);
+        if DRAWS.fetch_add(1, Ordering::Relaxed) == 0 {
+            crate::trace::note(|| "first draw".into());
+        }
         // SAFETY: CG calls on our context; every pointer passed lives for the call.
         unsafe {
             CGContextSaveGState(c);

@@ -2,7 +2,9 @@
 
 ;; test-class: cond
 
-;; Run by nidhogg/test/nhmac-gui.sh on the macOS runner.  Rows are appended under ";; Task N:" headings.
+;; Run by nidhogg/test/nhmac-gui.sh on the macOS runner.  Rows are appended under ";; Task N:" headings.  A row tagged
+;; `draws' needs the frame to have drawn: when it has not at a scale, gui-runner fails those rows at once ("no frame
+;; drew at scale N") and runs the rest.
 
 (require 'ert)
 (require 'cl-lib)
@@ -58,6 +60,7 @@ NS coalesces: a run measured 16 locks per 20 keys at scale 1 and 10 at scale 2, 
 (ert-deftest nhmac-frame-opens ()
   "`make-frame' gives a visible NSWindow whose root view hosts the shell's layer (no subviews), sized in device
 pixels; the display's width is the main screen's."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((f (make-frame '((width . 60) (height . 20)))))
     (unwind-protect
@@ -93,6 +96,7 @@ with the borrow put back.  No two borrows are ever live."
 (ert-deftest nhmac-pump-modal-resize ()
   "A query that runs a modal session, with a window resized inside it: the delegate takes the lent state, nothing
 is left queued, and the display is not poisoned."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((panics (length (nhwl-glue-panics)))
          (r (nhmac--modal-resize 300)))
@@ -490,6 +494,50 @@ is raised in a child Emacs on the same window server, never in the runner; the c
       (when (process-live-p proc) (delete-process proc))
       (kill-buffer buf))))
 
+(defconst nhmac-gui--start-report
+  "(progn
+     (let ((spec (getenv \"GLITNIR_GUI_FRAME\")))
+       (when (and spec (not (string-empty-p spec)))
+         (pcase-let ((`(,left ,top ,cols ,lines) (mapcar #'string-to-number (split-string spec))))
+           (set-frame-size nil cols lines)
+           (set-frame-position nil left top))))
+     (run-at-time 1 nil
+       (lambda ()
+         (princ (format \"NHMAC-START %S\\n\"
+                        (list :visible (frame-visible-p (selected-frame))
+                              :draws (plist-get (nhmac-stats) :draws)
+                              :startup (nhmac--startup-log)
+                              :view (nhmac--shell-view)))
+                #'external-debugging-output)
+         (kill-emacs 0))))"
+  "What a child Emacs in `nhmac-frame-shows-at-every-start' runs: it places its frame as gui-runner does, and a
+second later prints whether the frame is visible, its draws, the shell's startup trace and view, and ends.")
+
+(ert-deftest nhmac-frame-shows-at-every-start ()
+  "A frame shows at every start: 20 child Emacsen at scale 1, on the runner's display and placed as the runner places
+its frame, each become visible and draw.  Guards the start that once drew nothing at scale 1; a failing start's facts
+(its configure waits, the startup trace, the shell's view) are the message.  Each child has 30 s."
+  :tags '(runs-last)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (skip-unless (= (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1")) 1))
+  (let ((emacs (expand-file-name invocation-name invocation-directory))
+        (bad nil))
+    (dotimes (i 20)
+      (let* ((buf (generate-new-buffer " *nhmac-start*"))
+             (proc (make-process :name "nhmac-start" :buffer buf :connection-type 'pipe
+                                 :command (list emacs "-Q" "--eval" nhmac-gui--start-report))))
+        (unwind-protect
+            (let* ((ended (gui-runner-wait (lambda () (not (process-live-p proc))) 30))
+                   (out (with-current-buffer buf (buffer-string)))
+                   (facts (and (string-match "^NHMAC-START \\(.*\\)$" out)
+                               (car (read-from-string (match-string 1 out))))))
+              (message "nhmac-frame-shows-at-every-start: start %d: %S" i facts)
+              (unless (and ended facts (plist-get facts :visible) (> (or (plist-get facts :draws) 0) 0))
+                (push (list :start i :ended ended :status (process-status proc) :facts facts :output out) bad)))
+          (when (process-live-p proc) (delete-process proc))
+          (kill-buffer buf))))
+    (should-not (nreverse bad))))
+
 ;; Task 14: the IOSurface ring, damaged rectangles, the commit
 (defconst nhmac-gui--ring 3 "The ring's size (surface.rs `RING'): the oldest age a slot copies for.")
 
@@ -548,6 +596,7 @@ most, in the three §5.4 cases (end of line, mid-line, the worst plain key); nev
 
 (ert-deftest nhmac-commits-per-redisplay ()
   "A redisplay after a key commits the frame's tree at most once."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "commits")
   (let ((d (nhmac-gui--type 20)))
@@ -575,6 +624,7 @@ interposer in the NS lane of the same run, is logged by `nhmac-interposer-counts
 
 (ert-deftest nhmac-key-to-commit-counts ()
   "A key posted to the window reaches Lisp through one pump, with no fd wait, and its redisplay commits once."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "key")
   (nhmac-gui--flush)
@@ -608,6 +658,7 @@ interposer in the NS lane of the same run, is logged by `nhmac-interposer-counts
 
 (ert-deftest nhmac-scroll-bytes ()
   "Scrolling a window by a line copies the scrolled rows, not the surface."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer (mapconcat #'number-to-string (number-sequence 1 300) "\n"))
   (goto-char (point-min))
@@ -625,6 +676,7 @@ interposer in the NS lane of the same run, is logged by `nhmac-interposer-counts
 
 (ert-deftest nhmac-commit-shows-without-spin ()
   "After `redisplay' the layer shows the newest surface, read back in the process, with no run-loop turn."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "shows")
   (let ((before (nhmac-stats)))
@@ -646,6 +698,7 @@ interposer in the NS lane of the same run, is logged by `nhmac-interposer-counts
 
 (ert-deftest nhmac-colour-tagged ()
   "The surfaces' colour space follows `ns-use-srgb-colorspace': sRGB, else Generic RGB."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (unwind-protect
       (progn
@@ -708,6 +761,7 @@ Returns the frame position of the first stretch's top left."
   "Fills, a box and a bar cursor reach the committed surface with their exact colours (sRGB, opaque).
 A same-run comparison with NS's pixels needs a capture of the stock build; until then the colours are
 checked against the faces, tolerance 0 for fills and box lines."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((o (nhmac-gui--draw-scene))
          (x (car o)) (y (cdr o)) (h (frame-char-height)))
@@ -734,6 +788,7 @@ checked against the faces, tolerance 0 for fills and box lines."
 
 (ert-deftest nhmac-draw-other-thread ()
   "A Lisp thread's redisplay paints, but its commit waits for the main thread's next pump."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((o (nhmac-gui--draw-scene))
          (x (car o)) (y (cdr o)) (h (frame-char-height))
@@ -870,6 +925,7 @@ Returns (W H PIXELS) of that box."
 (ert-deftest nhmac-font-ascii ()
   "Menlo 12: `font-info''s ascent, descent, average width and space width are NS's times the scale (NS counts in
 points, Naglfar in device pixels), and the text's pixels are within 1/255 of NS's, both captured from the screen."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((scale (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1"))))
     (should (file-exists-p (nhmac-gui--font-file "eld" t)))
@@ -901,6 +957,7 @@ points, Naglfar in device pixels), and the text's pixels are within 1/255 of NS'
 (ert-deftest nhmac-font-open-close ()
   "Fonts open at many sizes and close when the font cache is cleared, again and again; each opens at its size and the
 frame's text still reaches the surface."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((scale (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1"))))
     (dotimes (i 30)
@@ -981,6 +1038,7 @@ fringes; the frame's colours are put back after."
 (ert-deftest nhmac-images-native ()
   "PNG, JPEG, GIF (animated), TIFF, WebP and HEIC decode through ImageIO at NS's sizes; at scale 1 their pixels on
 screen are within 2/255 of NS's in the same run (NS points are pixels there)."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (dolist (type '(png jpeg gif tiff webp heic))
     (should (image-type-available-p type)))
@@ -1114,6 +1172,7 @@ glue's stand-in), and the stand-in goes when the decode lands."
 
 (ert-deftest nhmac-images-builtin ()
   "Emacs's own decoders still draw: an XBM and a PBM reach the surface in the face's colours."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (switch-to-buffer (generate-new-buffer " *nhmac-xbm*"))
   (setq-local cursor-type nil)
@@ -1126,14 +1185,17 @@ glue's stand-in), and the stand-in goes when the decode lands."
     (let ((x (+ (nth 0 edges) (car xy))) (y (+ (nth 1 edges) (cdr xy))))
       (message "nhmac-images-builtin: xbm %x pbm %x" (nhmac-gui--pixel-at (+ x 2) (+ y 2))
                (nhmac-gui--pixel-at (+ x 10) (+ y 2)))
-      ;; every XBM bit set: the foreground; every PBM pixel 0 (white in PBM's sense): the background
-      (should (= (nhmac-gui--pixel-at (+ x 2) (+ y 2)) #xffff0000))
-      (should (= (nhmac-gui--pixel-at (+ x 10) (+ y 2)) #xff0000ff))))
+      ;; every XBM bit set: the foreground; every PBM pixel 0 (white in PBM's sense): the background.  The draws name
+      ;; whether a wrong pixel is the container's (`:word') or the drawing's.
+      (ert-info ((format "image draws %S at (%d %d)" (nhmac--image-draws) x y))
+        (should (= (nhmac-gui--pixel-at (+ x 2) (+ y 2)) #xffff0000))
+        (should (= (nhmac-gui--pixel-at (+ x 10) (+ y 2)) #xff0000ff)))))
   (kill-buffer))
 
 (ert-deftest nhmac-images-transform ()
   "Scales, quarter turns and flips draw through the image's matrix: the sizes follow the spec, and an 8x8 XBM's lit
 top row lands where the turn puts it, its pixels doubled (not smoothed) when scaled up."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (should (equal (image-transforms-p) '(scale rotate90)))
   (let ((png (expand-file-name "../../data/image/blank-100x200.png" (getenv "GLITNIR_GUI_TESTS"))))
@@ -1185,6 +1247,7 @@ top row lands where the turn puts it, its pixels doubled (not smoothed) when sca
 (ert-deftest nhmac-images-svg ()
   "SVG through resvg with svg_load_image's keywords: the size from the image and :scale, currentColor the
 :foreground over the :background, the image's :css after Emacs's, and the splash screen's SVG."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (should (image-type-available-p 'svg))
   (let ((svg "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"4\">\
@@ -1205,6 +1268,7 @@ top row lands where the turn puts it, its pixels doubled (not smoothed) when sca
 (ert-deftest nhmac-images-xpm ()
   "XPM through the glue's reader: the splash screen's XPM at the size its header gives, and None transparent over
 the background beside a named colour."
+  :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (should (image-type-available-p 'xpm))
   (let* ((file (image-search-load-path "splash.xpm"))

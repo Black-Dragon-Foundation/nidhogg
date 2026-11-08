@@ -202,6 +202,12 @@ impl MacShell {
     fn configure(&mut self, id: WindowId, w: i32, h: i32) {
         self.serial = self.serial.wrapping_add(1);
         let serial = self.serial;
+        let queued = self.queue.len();
+        crate::trace::note(|| {
+            format!(
+                "configure queued: window {id} {w}x{h} serial {serial}, {queued} records before it"
+            )
+        });
         self.push(
             ShellEvent::Configure(ConfigureEv {
                 w,
@@ -421,6 +427,7 @@ impl ShellBackend for MacShell {
             &desc.title,
         );
         let (w, h, scale) = (win.size.0, win.size.1, win.scale120);
+        crate::trace::note(|| format!("window made: window {id} {w}x{h} points, scale120 {scale}"));
         let mut win = win;
         win.surfaces.reset(self.srgb);
         layers::changed_outside();

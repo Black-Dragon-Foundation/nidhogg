@@ -69,7 +69,9 @@ pub fn commit(items: &[(&CALayer, &Cf, bool, f64)]) {
     CATransaction::commit();
     CATransaction::flush();
     IMPLICIT.with(|i| i.set(false));
-    STATS.commits.fetch_add(1, Ordering::Relaxed);
+    if STATS.commits.fetch_add(1, Ordering::Relaxed) == 0 {
+        crate::trace::note(|| "first commit".into());
+    }
 }
 
 /// A publish ended: count an implicit transaction the shell left open.
