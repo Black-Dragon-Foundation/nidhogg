@@ -352,6 +352,12 @@ impl MacShell {
         for id in ids {
             self.compare(id);
         }
+        self.check_appearance();
+    }
+
+    /// Tell Lisp when the system's appearance changed.  A switch arrives as a notification on the run loop, with no
+    /// event: so this runs after every sleep, whatever woke it, as well as in each pump.
+    pub(super) fn check_appearance(&mut self) {
         let dark = windowing::system_dark(&self.app);
         if dark != self.dark {
             self.dark = dark;
@@ -483,6 +489,8 @@ impl WaitOps for MacShell {
         self.kq = Some(k);
         if woke == Woke::Event {
             self.pump();
+        } else {
+            self.check_appearance();
         }
         woke
     }
@@ -1001,6 +1009,20 @@ impl ShellBackend for MacShell {
             "menu-bar" => menus::bar(self.mtm, &self.app, arg),
             "menu-dock" => menus::dock(self.mtm, arg),
             "dnd-finish" => super::dnd::finish(true),
+            // `ns-hide-emacs`: "(HOW)", 0 unhide, 1 hide, 2 unhide and activate
+            "hide" => {
+                let (n, _) = crate::menu::split_numbers(arg, 1).ok_or(ShellError::Arg)?;
+                match n[0] {
+                    1 => self.app.hide(None),
+                    2 => {
+                        self.app.unhide(None);
+                        #[allow(deprecated)]
+                        self.app.activateIgnoringOtherApps(true);
+                    }
+                    _ => self.app.unhide(None),
+                }
+                Ok(())
+            }
             _ => Err(ShellError::Arg),
         }
     }

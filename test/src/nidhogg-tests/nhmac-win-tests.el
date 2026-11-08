@@ -364,6 +364,15 @@ Shell events (`make-non-key-event' codes) are the shell's to produce.")
             ns-command-modifier (nth 1 old)
             ns-click-through (nth 2 old)))))
 
+(ert-deftest nhmac-win-hide-emacs ()
+  "`ns-hide-emacs' (which `ns-find-file' calls for each opened file) hides, unhides and activates."
+  (let ((calls nil))
+    (cl-letf (((symbol-function 'nhmac--call) (lambda (&rest a) (push a calls))))
+      (ns-hide-emacs t)
+      (ns-hide-emacs nil)
+      (ns-hide-emacs 'activate))
+    (should (equal (nreverse calls) '((hide 1) (hide 0) (hide 2))))))
+
 (ert-deftest nhmac-win-not-yet-signals ()
   (should-error (nhmac--not-yet) :type 'error)
   (should (equal (cadr (should-error (nhmac--not-yet)))

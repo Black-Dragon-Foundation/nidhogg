@@ -937,10 +937,9 @@ The clipboard's text for TARGET-TYPE (a file's URL for the file types), or nil."
 
 (defun ns-hide-emacs (on)
   "If ON is non-nil, the entire Emacs application is hidden.
-
-Not available yet in Naglfar."
-  (ignore on)
-  (nhmac--not-yet))
+Otherwise if Emacs is hidden, it is unhidden.  If ON is equal to
+`activate', Emacs is unhidden and becomes the active application."
+  (nhmac--call 'hide (cond ((eq on 'activate) 2) (on 1) (t 0))))
 
 (defun ns-hide-others ()
   "Hides all applications other than Emacs.
