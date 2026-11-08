@@ -590,6 +590,18 @@ A query answers 7."
       (ns-frame-restack a a t))
     (should (equal (nreverse records) `((z-order ,a) (restack ,a ,a 1))))))
 
+;; Task 29: drops
+
+(ert-deftest nhmac-win-drop-finishes-through-the-glue ()
+  "A drop is finished through `pgtk-drop-finish' with the drop's time, so the glue's drop state ends with it (a
+finish behind the glue's back left it holding a dropped offer, which the next drag's enter then finished)."
+  (let (calls)
+    (cl-letf (((symbol-function 'nhmac--query) (lambda (&rest _) '(string nil "x")))
+              ((symbol-function 'nhmac--call) (lambda (&rest a) (push (cons 'call a) calls)))
+              ((symbol-function 'pgtk-drop-finish) (lambda (&rest a) (push (cons 'finish a) calls))))
+      (nhmac--drag-n-drop #'ignore '(drag-n-drop nil (quote XdndSelection 1234))))
+    (should (equal calls '((finish t 1234 nil))))))
+
 ;; Task 26: the input method
 
 (ert-deftest nhmac-win-preedit-is-ns-working-text ()
