@@ -1,0 +1,33 @@
+{
+  "list": "order",
+  "ids": [
+    "f:/r/a.txt",
+    "m:/r/a.txt:1:2",
+    "m:/r/a.txt:5:0",
+    "f:/r/b.txt",
+    "m:/r/b.txt:2:0",
+    "f:/r/c.txt",
+    "m:/r/c.txt:9:2",
+    "m:/r/c.txt:10:0"
+  ],
+  "steps": [
+    {
+      "base": 0,
+      "version": 1,
+      "reset": true,
+      "model": "{\"ops\":[{\"reset\":{\"descriptor\":{\"scheme\":\"tree\",\"chain_kinds\":[],\"match_fields\":[\"label\"],\"lists\":[\"order\"],\"classes\":[\"selected\",\"match\",\"dim\"],\"flags\":[\"expanded\"],\"forms\":[],\"start\":\"order\"},\"nodes\":[{\"id\":\"f:/r/a.txt\",\"kind\":\"file\",\"flags\":1,\"fields\":[[\"label\",\"a.txt\"],[\"path\",\"/r/a.txt\"]]},{\"id\":\"m:/r/a.txt:1:2\",\"kind\":\"match\",\"flags\":0,\"parent\":\"f:/r/a.txt\",\"fields\":[[\"label\",\"x needle y\"],[\"file\",\"/r/a.txt\"],[\"line\",1],[\"col\",2],[\"end\",8],[\"text\",\"needle\"]]},{\"id\":\"m:/r/a.txt:5:0\",\"kind\":\"match\",\"flags\":0,\"parent\":\"f:/r/a.txt\",\"fields\":[[\"label\",\"needle\"],[\"file\",\"/r/a.txt\"],[\"line\",5],[\"col\",0],[\"end\",6],[\"text\",\"needle\"]]}],\"edges\":[],\"lists\":[{\"name\":\"order\",\"ids\":[\"f:/r/a.txt\",\"m:/r/a.txt:1:2\",\"m:/r/a.txt:5:0\"]}]}}]}"
+    },
+    {
+      "base": 1,
+      "version": 2,
+      "reset": false,
+      "model": "{\"ops\":[{\"nodes\":[{\"id\":\"f:/r/b.txt\",\"kind\":\"file\",\"flags\":1,\"fields\":[[\"label\",\"b.txt\"],[\"path\",\"/r/b.txt\"]]},{\"id\":\"m:/r/b.txt:2:0\",\"kind\":\"match\",\"flags\":0,\"parent\":\"f:/r/b.txt\",\"fields\":[[\"label\",\"needle z\"],[\"file\",\"/r/b.txt\"],[\"line\",2],[\"col\",0],[\"end\",6],[\"text\",\"needle\"]]}]},{\"splice\":{\"name\":\"order\",\"at\":3,\"remove\":0,\"ids\":[\"f:/r/b.txt\",\"m:/r/b.txt:2:0\"]}}]}"
+    },
+    {
+      "base": 2,
+      "version": 3,
+      "reset": false,
+      "model": "{\"ops\":[{\"nodes\":[{\"id\":\"f:/r/c.txt\",\"kind\":\"file\",\"flags\":1,\"fields\":[[\"label\",\"c.txt\"],[\"path\",\"/r/c.txt\"]]},{\"id\":\"m:/r/c.txt:10:0\",\"kind\":\"match\",\"flags\":0,\"parent\":\"f:/r/c.txt\",\"fields\":[[\"label\",\"needleq\"],[\"file\",\"/r/c.txt\"],[\"line\",10],[\"col\",0],[\"end\",6],[\"text\",\"needle\"]]},{\"id\":\"m:/r/c.txt:9:2\",\"kind\":\"match\",\"flags\":0,\"parent\":\"f:/r/c.txt\",\"fields\":[[\"label\",\"p needle\"],[\"file\",\"/r/c.txt\"],[\"line\",9],[\"col\",2],[\"end\",8],[\"text\",\"needle\"]]}]},{\"splice\":{\"name\":\"order\",\"at\":5,\"remove\":0,\"ids\":[\"f:/r/c.txt\",\"m:/r/c.txt:9:2\",\"m:/r/c.txt:10:0\"]}}]}"
+    }
+  ]
+}
