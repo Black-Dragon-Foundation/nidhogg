@@ -10,7 +10,7 @@
 //! declares its own, so the shell takes no further crates.
 
 use crate::api::SurfaceFrame;
-use crate::ring::{Fill, Pick, Ring};
+use crate::ring::{Fill, Paced, Pacer, Pick, Ring};
 use glitnir::geom::Rect;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -110,6 +110,11 @@ pub struct Stats {
     pub deferred_commits: AtomicU64,
     /// `nhg_dispatch_main` calls from a Lisp thread, handed to the main thread's wait.
     pub handed_pumps: AtomicU64,
+    /// Publishes held by the pacer (every other slot held), and holds that outlasted its bound.
+    pub held: AtomicU64,
+    pub held_timeouts: AtomicU64,
+    /// The pacer timer's fires.
+    pub pacer_fires: AtomicU64,
 }
 
 pub static STATS: Stats = Stats {
@@ -124,6 +129,9 @@ pub static STATS: Stats = Stats {
     pumps: AtomicU64::new(0),
     deferred_commits: AtomicU64::new(0),
     handed_pumps: AtomicU64::new(0),
+    held: AtomicU64::new(0),
+    held_timeouts: AtomicU64::new(0),
+    pacer_fires: AtomicU64::new(0),
 };
 
 impl Stats {
@@ -132,7 +140,8 @@ impl Stats {
         let g = |c: &AtomicU64| c.load(Ordering::Relaxed);
         format!(
             ":bytes-copied {} :damage-bytes {} :full-copies {} :commits {} :surface-busy {} :ring-acquires {} \
-             :implicit-open-at-update-end {} :spins-in-redisplay {} :pumps {} :deferred-commits {} :handed-pumps {} :draws {}",
+             :implicit-open-at-update-end {} :spins-in-redisplay {} :pumps {} :deferred-commits {} :handed-pumps {} :draws {} \
+             :held {} :held-timeouts {} :pacer-fires {}",
             g(&self.bytes_copied),
             g(&self.damage_bytes),
             g(&self.full_copies),
@@ -145,6 +154,9 @@ impl Stats {
             g(&self.deferred_commits),
             g(&self.handed_pumps),
             super::draw::DRAWS.load(Ordering::Relaxed),
+            g(&self.held),
+            g(&self.held_timeouts),
+            g(&self.pacer_fires),
         )
     }
 }
@@ -245,6 +257,11 @@ pub struct Surfaces {
     srgb: bool,
     /// The last commit drew into the surface the layer already showed.
     same: bool,
+    /// Commits held while the window server holds every other slot.
+    pacer: Pacer,
+    /// Test hook: every slot reads as held by the window server.
+    #[cfg(feature = "test-hooks")]
+    pub force_in_use: bool,
 }
 
 impl Default for Surfaces {
@@ -256,8 +273,20 @@ impl Default for Surfaces {
             h: 0,
             srgb: true,
             same: false,
+            pacer: Pacer::default(),
+            #[cfg(feature = "test-hooks")]
+            force_in_use: false,
         }
     }
+}
+
+/// What [`Surfaces::draw`] did with a commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Drew {
+    /// Drawn into a slot, which the layer is to show.
+    Drawn,
+    /// Held: every other slot is held by the window server; the publish is owed (`Surfaces::due`).
+    Held,
 }
 
 impl Surfaces {
@@ -265,25 +294,57 @@ impl Surfaces {
     pub fn reset(&mut self, srgb: bool) {
         self.ring.clear();
         self.slots.clear();
+        self.pacer.clear();
         self.srgb = srgb;
     }
 
-    /// The surface `f` is drawn into for this commit, with what it lacks copied from the backing (`damage` is the
-    /// commit's own, in the layer's pixels): the surface, and whether it is already the layer's contents.  `None` when
-    /// IOSurface refuses one.
-    pub fn draw(&mut self, f: &SurfaceFrame, damage: &[Rect]) -> Option<(&Cf, bool)> {
+    /// Whether the window server holds slot `i`.
+    fn in_use(&self, i: usize) -> bool {
+        #[cfg(feature = "test-hooks")]
+        if self.force_in_use {
+            return true;
+        }
+        // SAFETY: a surface we made.
+        unsafe { IOSurfaceIsInUse(self.slots[i].as_ptr()) != 0 }
+    }
+
+    /// Whether a commit is held.
+    pub fn owes(&self) -> bool {
+        self.pacer.owes()
+    }
+
+    /// Whether the held commit should be published now (`now` in ns): a slot has freed, or the hold reached its bound.
+    pub fn due(&self, now: u64) -> bool {
+        self.pacer.owes() && self.pacer.due(self.ring.pick(|i| self.in_use(i)).busy, now)
+    }
+
+    /// Draw commit `f` (its own `damage`, in the layer's pixels; `now` in ns) into a slot the window server does not
+    /// hold, with what the slot lacks copied from the backing; or hold it, its damage kept, while every other slot is
+    /// held (the pacer), past whose bound the oldest is drawn into anyway.  `None` when IOSurface refuses a surface.
+    pub fn draw(&mut self, f: &SurfaceFrame, damage: &[Rect], now: u64) -> Option<Drew> {
         let (w, h) = (f.w - f.src_x, f.h - f.src_y);
         if (w, h) != (self.w, self.h) {
             self.ring.clear();
             self.slots.clear();
+            self.pacer.clear();
             self.w = w;
             self.h = h;
         }
         let damage = crate::ring::disjoint(damage, w, h);
-        // SAFETY: surfaces we made.
-        let Pick { slot, busy } = self
-            .ring
-            .pick(|i| unsafe { IOSurfaceIsInUse(self.slots[i].as_ptr()) } != 0);
+        let pick = self.ring.pick(|i| self.in_use(i));
+        let st = &STATS;
+        let damage = match self.pacer.pace(pick, &damage, now) {
+            Paced::Hold => {
+                st.held.fetch_add(1, Ordering::Relaxed);
+                return Some(Drew::Held);
+            }
+            Paced::Draw(d) => crate::ring::disjoint(&d, w, h),
+            Paced::Reuse(d) => {
+                st.held_timeouts.fetch_add(1, Ordering::Relaxed);
+                crate::ring::disjoint(&d, w, h)
+            }
+        };
+        let Pick { slot, busy } = pick;
         let fill = self.ring.fill(slot, &damage, w, h);
         if slot == self.slots.len() {
             self.slots.push(make(w, h, self.srgb)?);
@@ -302,7 +363,7 @@ impl Surfaces {
         }
         copy(&self.slots[slot], &fill, f, w, h);
         self.same = self.ring.commit(slot, &damage);
-        Some((&self.slots[slot], self.same))
+        Some(Drew::Drawn)
     }
 
     /// The surface committed last.

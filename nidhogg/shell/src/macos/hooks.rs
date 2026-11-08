@@ -69,6 +69,17 @@ impl MacShell {
                 self.force_helper += 1;
                 Some(Ok(()))
             }
+            "test-force-in-use" => Some(numbers(arg).and_then(|n| match n[..] {
+                [w, on] => {
+                    let w = self
+                        .windows
+                        .get_mut(&(w as WindowId))
+                        .ok_or(ShellError::State)?;
+                    w.surfaces.force_in_use = on != 0.0;
+                    Ok(())
+                }
+                _ => Err(ShellError::Arg),
+            })),
             _ => None,
         }
     }
@@ -318,8 +329,8 @@ impl MacShell {
 impl MacShell {
     /// `test-surface` (WINDOW X Y): the window's newest surface as a Lisp plist: its size in device pixels, the
     /// content size in points, the layer's `contentsScale` and gravity, whether the layer shows that surface, its
-    /// colour space (`srgb`, `generic` or nil), its pixel at X, Y (premultiplied ARGB; nil outside) and how many
-    /// surfaces the ring has made.
+    /// colour space (`srgb`, `generic` or nil), its pixel at X, Y (premultiplied ARGB; nil outside), how many
+    /// surfaces the ring has made and whether the pacer holds a commit.
     fn surface_info(&self, window: WindowId, x: i32, y: i32) -> ShellResult<String> {
         let w = self.win(window)?;
         let s = &w.surfaces;
@@ -343,11 +354,12 @@ impl MacShell {
             .map_or_else(|| "nil".to_string(), |p| p.to_string());
         Ok(format!(
             "(:w {sw} :h {sh} :points ({cw} {ch}) :scale {} :gravity \"{}\" :contents-is-newest {} :srgb {srgb} \
-             :pixel {pixel} :slots {})",
+             :pixel {pixel} :slots {} :held {})",
             w.layer.contentsScale(),
             w.layer.contentsGravity(),
             if shown { "t" } else { "nil" },
             s.slots(),
+            if s.owes() { "t" } else { "nil" },
         ))
     }
 }

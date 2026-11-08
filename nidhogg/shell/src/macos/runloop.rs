@@ -25,6 +25,8 @@ pub enum MacEv {
     Key(WindowId, bool),
     /// A key, modifier or mouse record from the window's view, for the host as it is.
     Input(WindowId, ShellEvent),
+    /// The commit pacer's timer fired: a held commit may be due.
+    Pace,
 }
 
 thread_local! {
