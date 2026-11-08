@@ -3278,9 +3278,10 @@ struct image
 #ifdef HAVE_NHMAC
   /* Naglfar: the matrix from the drawn image's pixels to the
      container's, as Cairo's pattern matrix (xx, yx, xy, yy, x0, y0),
-     and whether drawing smooths.  */
+     and whether drawing smooths; and whether the glue holds a stand-in
+     for it while its decode is pending.  */
   double nhmac_transform[6];
-  bool nhmac_smoothing;
+  bool nhmac_smoothing, nhmac_stand;
 #endif
 
   /* Colors allocated for this image, if any.  Allocated via xmalloc.  */

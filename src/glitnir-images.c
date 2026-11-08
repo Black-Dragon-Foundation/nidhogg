@@ -57,6 +57,9 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "lisp.h"
 #include "nidhogg-image-bg.h"
 #include "glitnir.h"
+#ifdef HAVE_NHMAC
+# include "nhglue.h"
+#endif
 
 /* The formats decoded in Rust when nothing says otherwise: a bit per
    `enum nh_img_fmt'.  The variable's default is built from it, so the
@@ -427,12 +430,77 @@ static const struct nh_img_decoder glitnir_img_entries[NH_IMG_FMT_N] = {
   [NH_IMG_WEBP] = { glitnir_img_webp },
 };
 
+#ifdef HAVE_NHMAC
+/* Naglfar builds no C cores: ImageIO, through the glue, is the core
+   behind the Rust entries and JPEG's decoder.  Like the crate it is
+   stateless and Lisp-free, so it is called directly on any thread, not
+   through NHG (whose flag is the main thread's).  */
+static int
+glitnir_img_imageio (bool gif, const uint8_t *data, size_t len,
+		     const struct nh_img_params *p, struct nh_img_out *out)
+{
+  NhgImage im;
+  const uint8_t *src = data ? data : (const uint8_t *) p->file;
+  if (nhg_image_decode (src, data ? len : strlen (p->file), !data,
+			p->frame_index > 0 ? p->frame_index : 0, NULL, 0,
+			&im) != NHG_OK)
+    {
+      snprintf (out->errmsg, sizeof out->errmsg, "ImageIO cannot read it");
+      return out->err = NH_IMG_E_LIB;
+    }
+  if ((p->limit_w >= 0 && im.width > p->limit_w)
+      || (p->limit_h >= 0 && im.height > p->limit_h))
+    {
+      nhg_image_free (&im);
+      return out->err = NH_IMG_E_SIZE;
+    }
+  out->width = im.width;
+  out->height = im.height;
+  out->pixels = malloc ((size_t) im.width * im.height * 4);
+  out->mask = im.has_alpha ? malloc ((size_t) im.width * im.height) : NULL;
+  if (!out->pixels || (im.has_alpha && !out->mask))
+    {
+      nhg_image_free (&im);
+      return out->err = NH_IMG_E_NOMEM;
+    }
+  nhg_image_take (&im, (uint8_t *) out->pixels, out->mask);
+  out->frame_count = im.frames > 1 ? im.frames : 0;
+  out->animated = im.frames > 1;
+  out->has_delay = im.delay > 0;
+  /* GIF's in hundredths of a second, WebP's in milliseconds */
+  out->delay = im.delay * (gif ? 100 : 1000);
+  return out->err = NH_IMG_OK;
+}
+
+static int
+glitnir_img_imageio_gif (const uint8_t *data, size_t len,
+			 const struct nh_img_params *p, struct nh_img_out *out)
+{
+  return glitnir_img_imageio (true, data, len, p, out);
+}
+
+static int
+glitnir_img_imageio_other (const uint8_t *data, size_t len,
+			   const struct nh_img_params *p,
+			   struct nh_img_out *out)
+{
+  return glitnir_img_imageio (false, data, len, p, out);
+}
+
+static const struct nh_img_decoder glitnir_img_imageio_cores[2]
+  = { { glitnir_img_imageio_other }, { glitnir_img_imageio_gif } };
+#endif
+
 /* Put the entries in front of the cores, at load time: the table is
    static data that the dump does not carry, so this runs in every
    session (and in temacs).  */
 static void __attribute__ ((constructor))
 glitnir_img_install (void)
 {
+#ifdef HAVE_NHMAC
+  for (int fmt = 0; fmt < NH_IMG_FMT_N; fmt++)
+    nh_img_decoders[fmt] = &glitnir_img_imageio_cores[fmt == NH_IMG_GIF];
+#endif
   for (int fmt = 0; fmt < NH_IMG_FMT_N; fmt++)
     if (glitnir_img_format[fmt] >= 0 && nh_img_decoders[fmt])
       {
