@@ -1339,6 +1339,9 @@ and for JPEG) land and draw the pixels the inline load draws, within 2/255."
                                (nhmac-gui--image-screen f (concat name ".worker.bmp") t))
                       (nidhogg-workers--test-decide nil)))
                (t1 (float-time))
+               ;; a control: the inline load again, so a difference between two inline loads (ImageIO, the capture)
+               ;; is told apart from one the worker makes
+               (again (and (string-suffix-p ".jpg" name) (nhmac-gui--image-screen f (concat name ".inline2.bmp"))))
                (worst 0))
           ;; the worker took it: one more landing
           (should (> (plist-get (nidhogg-workers--test-image-info) :landed) landed))
@@ -1347,8 +1350,19 @@ and for JPEG) land and draw the pixels the inline load draws, within 2/255."
             (let ((a (aref (nth 2 inline) i)) (b (aref (nth 2 off) i)))
               (dolist (sh '(16 8 0))
                 (setq worst (max worst (abs (- (logand (ash a (- sh)) 255) (logand (ash b (- sh)) 255))))))))
-          (nhmac-gui--say "nhmac-images-worker: %s %dx%d, worst channel difference %d; captures %.1f s, compare %.1f s"
-                          name (car inline) (nth 1 inline) worst (- t1 t0) (- (float-time) t1))
+          (nhmac-gui--say "nhmac-images-worker: %s %dx%d, worst channel difference %d%s; captures %.1f s, compare %.1f s"
+                          name (car inline) (nth 1 inline) worst
+                          (if again
+                              (format " (inline against inline: %d)"
+                                      (let ((m 0))
+                                        (dotimes (i (min (length (nth 2 inline)) (length (nth 2 again))))
+                                          (let ((a (aref (nth 2 inline) i)) (b (aref (nth 2 again) i)))
+                                            (dolist (sh '(16 8 0))
+                                              (setq m (max m (abs (- (logand (ash a (- sh)) 255)
+                                                                     (logand (ash b (- sh)) 255))))))))
+                                        m))
+                            "")
+                          (- t1 t0) (- (float-time) t1))
           (should (<= worst 2)))))))
 
 (ert-deftest nhmac-images-stand-in ()
@@ -1617,14 +1631,16 @@ else (no contents, so no shadow render either), in one commit, with no picture d
           (nhmac-gui--without-blink
            (lambda ()
              (nhmac-gui--settle)
-             (let ((before (nhmac-stats))
+             (let ((before (progn (nhmac--pump-trace) (nhmac-stats)))
                    (keys '(:props-position :props-contents :props-bounds :props-hidden :props-opacity :props-order
                            :props-host :overhang-switches :draws :commits)))
                (set-frame-position c 80 60)
                (nhmac-gui--settle)
                (let ((after (nhmac--test-child c)))
-                 (nhmac-gui--say "nhmac-child-move: %S -> %S, %S" info after
-                                 (mapcan (lambda (k) (list k (nhmac-gui--delta before k))) keys))
+                 ;; the trace names each publish: which window drew, and where
+                 (nhmac-gui--say "nhmac-child-move: %S -> %S, %S, child window %S, trace %S" info after
+                                 (mapcan (lambda (k) (list k (nhmac-gui--delta before k))) keys)
+                                 (frame-parameter c 'window-id) (nhmac--pump-trace))
                  (should (equal (plist-get after :place) (list (round (/ 80 s)) (round (/ 60 s)))))
                  (should (= (plist-get after :x) (round (/ 80 s)))))
                (should (= (nhmac-gui--delta before :props-position) 1))
@@ -1662,6 +1678,41 @@ beneath, its parent."
             (should on-shadow)
             (should (eq (funcall frame-of on-shadow) root))))
       (delete-frame c t))))
+
+(defun nhmac-gui--window-follows (what)
+  "Whether the selected frame's window shows its newest surface at the surface's size, after WHAT (a string).
+The content size times the scale is the surface's size, to a device pixel; the frame keeps the size it asked for (no
+configure took it back)."
+  (let* ((f (selected-frame))
+         (asked (cons (frame-pixel-width f) (frame-pixel-height f)))
+         (s (progn (nhmac-gui--settle) (nhmac-gui--settle)
+                   (nhmac--test-surface 0 0)))
+         (scale (plist-get s :scale))
+         (points (plist-get s :points)))
+    (nhmac-gui--say "nhmac-set-frame-size: %s: asked %S, now %dx%d, %S" what asked
+                    (frame-pixel-width f) (frame-pixel-height f) s)
+    (and (equal asked (cons (frame-pixel-width f) (frame-pixel-height f)))
+         (<= (abs (- (* scale (nth 0 points)) (plist-get s :w))) 1)
+         (<= (abs (- (* scale (nth 1 points)) (plist-get s :h))) 1))))
+
+(ert-deftest nhmac-set-frame-size ()
+  "`set-frame-size', `set-frame-width' and `set-frame-height' on a top-level frame: its window takes the size of
+the surface the frame draws at its new size, and no configure takes the frame back to the old one."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((f (selected-frame))
+         (w (frame-pixel-width f))
+         (h (frame-pixel-height f)))
+    (unwind-protect
+        (progn
+          (set-frame-size f (+ w 64) (+ h 48) t)
+          (should (nhmac-gui--window-follows "set-frame-size"))
+          (set-frame-width f (- (frame-width f) 4))
+          (should (nhmac-gui--window-follows "set-frame-width"))
+          (set-frame-height f (- (frame-height f) 3))
+          (should (nhmac-gui--window-follows "set-frame-height")))
+      (set-frame-size f w h t)
+      (nhmac-gui--settle))))
 
 (ert-deftest nhmac-overhang-switch ()
   "A child moved across its root's right edge goes into an overhang panel once per crossing and comes back once,
