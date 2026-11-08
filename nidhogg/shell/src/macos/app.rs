@@ -57,16 +57,18 @@ pub struct MacShell {
     force_helper: u32,
 }
 
-/// The counters `(nhmac-stats)` returns: the scope's, the main wait's (with the lock hand-off's), the surfaces'.
+/// The counters `(nhmac-stats)` returns: the scope's, the main wait's (with the lock hand-off's), the surfaces', the
+/// font driver's.
 fn stats_text(s: ScopeStats) -> String {
     format!(
-        "(:takes {} :overlapping-takes {} :queued {} :applied {} {} {})",
+        "(:takes {} :overlapping-takes {} :queued {} :applied {} {} {} {})",
         s.takes,
         s.overlapping_takes,
         s.queued,
         s.applied,
         wait::STATS.text(&wait::PARK),
-        surface::STATS.text()
+        surface::STATS.text(),
+        super::fonts::STATS.text()
     )
 }
 

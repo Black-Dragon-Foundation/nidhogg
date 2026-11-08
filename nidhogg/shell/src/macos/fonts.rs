@@ -2,7 +2,7 @@
 //!
 //! The faces come from `NSFontManager` once, on the main thread, and are kept: a face's id is its index plus one.  An
 //! open font is an `NSFont` (toll-free bridged to `CTFont`) at the pixel size Emacs asks for, so its metrics are already
-//! device pixels; glyphs and their bounds come from Core Text.
+//! device pixels; glyphs and their bounds come from Core Text a page at a time, for the glue's glyph tables.
 
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
@@ -11,6 +11,7 @@ use objc2_app_kit::{NSFont, NSFontManager};
 use objc2_foundation::{NSArray, NSNumber, NSString};
 use std::collections::HashMap;
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 /// One face: its PostScript name, family and traits as AppKit gives them.
@@ -236,35 +237,75 @@ pub fn with_font<R>(handle: u64, f: impl FnOnce(*const c_void) -> R) -> Option<R
         .map(|o| f(Retained::as_ptr(&o.font).cast()))
 }
 
-/// The glyph of character `c` (`None`: the font has none; only the BMP for now).
-pub fn glyph(handle: u64, c: u32) -> Option<u32> {
-    let unit = u16::try_from(c).ok()?;
+/// The glyph of each UTF-16 unit of `units` into `out` (0: none; a surrogate pair's glyph at its first unit), one
+/// Core Text call.  False: the font is not open.
+pub fn glyphs_for(handle: u64, units: &[u16], out: &mut [u16]) -> bool {
+    let n = units.len().min(out.len());
     with_font(handle, |ct| {
-        let mut g = 0u16;
-        // SAFETY: one character and one glyph slot, on a live font.
-        let ok = unsafe { CTFontGetGlyphsForCharacters(ct, &unit, &mut g, 1) };
-        (ok && g != 0).then_some(u32::from(g))
+        // SAFETY: `n` characters and `n` glyph slots, on a live font.
+        unsafe { CTFontGetGlyphsForCharacters(ct, units.as_ptr(), out.as_mut_ptr(), n as isize) };
     })
-    .flatten()
+    .is_some()
 }
 
-/// Glyph `g`'s advance and bounds: (advance, left, right, top, bottom), in pixels, y up.
-pub fn glyph_bounds(handle: u64, g: u32) -> Option<(f64, f64, f64, f64, f64)> {
-    let g = u16::try_from(g).ok()?;
+/// Each glyph's advance and bounds into `out`: (advance, left, right, top, bottom), in pixels, y up; one Core Text call
+/// for each.  False: the font is not open.
+pub fn bounds_for(handle: u64, glyphs: &[u16], out: &mut [[f64; 5]]) -> bool {
+    let n = glyphs.len().min(out.len());
+    let mut adv = vec![CGSize::default(); n];
+    let mut r = vec![CGRect::default(); n];
     with_font(handle, |ct| {
-        let mut adv = CGSize::default();
-        let mut r = CGRect::default();
-        // SAFETY: one glyph and one output slot each, on a live font.
+        // SAFETY: `n` glyphs and `n` output slots each, on a live font.
         unsafe {
-            CTFontGetAdvancesForGlyphs(ct, CT_DEFAULT, &g, &mut adv, 1);
-            CTFontGetBoundingRectsForGlyphs(ct, CT_DEFAULT, &g, &mut r, 1);
+            CTFontGetAdvancesForGlyphs(
+                ct,
+                CT_DEFAULT,
+                glyphs.as_ptr(),
+                adv.as_mut_ptr(),
+                n as isize,
+            );
+            CTFontGetBoundingRectsForGlyphs(
+                ct,
+                CT_DEFAULT,
+                glyphs.as_ptr(),
+                r.as_mut_ptr(),
+                n as isize,
+            );
         }
-        (
-            adv.width,
-            r.origin.x,
-            r.origin.x + r.size.width,
-            r.origin.y + r.size.height,
-            r.origin.y,
-        )
     })
+    .map(|()| {
+        for ((o, a), r) in out.iter_mut().zip(&adv).zip(&r) {
+            *o = [
+                a.width,
+                r.origin.x,
+                r.origin.x + r.size.width,
+                r.origin.y + r.size.height,
+                r.origin.y,
+            ];
+        }
+    })
+    .is_some()
+}
+
+/// The font driver's counters, in `(nhmac-stats)`: the glue's `nhg_font_*` calls, and the glyph-table pages C asked
+/// to have filled.
+pub struct FontStats {
+    pub calls: AtomicU64,
+    pub fills: AtomicU64,
+}
+
+pub static STATS: FontStats = FontStats {
+    calls: AtomicU64::new(0),
+    fills: AtomicU64::new(0),
+};
+
+impl FontStats {
+    /// The counters as `(nhmac-stats)` lists them.
+    pub fn text(&self) -> String {
+        format!(
+            ":font-calls {} :font-fills {}",
+            self.calls.load(Ordering::Relaxed),
+            self.fills.load(Ordering::Relaxed)
+        )
+    }
 }

@@ -1144,8 +1144,15 @@ int32_t nhg_font_match (const NhgFontSpec *spec, NhgFontEntity *out, size_t cap,
 /* ---- The native font driver's fonts (glue/src/font.rs; macOS) ---------------------------------------------------
    nhg_font_start installs Core Text as the source nhg_font_list and nhg_font_match list from (NHG_E_UNSUPPORTED
    elsewhere).  nhg_font_open opens an entity's face at SIZE device pixels; its metrics are rounded as macfont_open
-   rounds them.  Glyph metrics come one glyph at a time, their width rounded as macfont_glyph_extents rounds it (MONO
-   and SPACE_WIDTH are the font's).  NHG_E_STATE: no such face, font or glyph.  */
+   rounds them.  NHG_E_STATE: no such face or font.
+
+   Each open font has a glyph table (glue/src/glyphs.rs) C reads without a call: nhg_font_table gives its address,
+   fixed until nhg_font_close.  chars[C / NHG_FONT_PAGE] is character C's page, its glyph at C % NHG_FONT_PAGE
+   (NHG_GLYPH_NONE: none); glyphs[G / NHG_FONT_PAGE] is glyph G's page, its metrics' width rounded as
+   macfont_glyph_extents rounds it.  A null page is a miss: nhg_font_fill (FONT, PAGE) fills character page PAGE, or
+   glyph page PAGE with NHG_FONT_FILL_GLYPHS set (NHG_E_ARG past the table).  Pages are written only inside nhg_*
+   calls, which C makes holding Emacs's global lock, and read by C holding it, so a reader never sees a page being
+   written; a filled page never moves or changes while the font is open.  */
 
 typedef struct
 {
@@ -1163,9 +1170,31 @@ typedef struct
 int32_t nhg_font_start (void);
 int32_t nhg_font_open (uint64_t font_id, int32_t size, NhgFontMetrics *out);
 int32_t nhg_font_close (uint64_t handle);
-int32_t nhg_font_glyph (uint64_t handle, uint32_t c, uint32_t *glyph);
-int32_t nhg_font_glyph_metrics (uint64_t handle, uint32_t glyph, uint32_t mono, int32_t space_width,
-                                NhgGlyphMetrics *out);
+
+#define NHG_FONT_PAGE 256
+#define NHG_FONT_CHAR_PAGES (0x110000 / NHG_FONT_PAGE)
+#define NHG_FONT_GLYPH_PAGES (0x10000 / NHG_FONT_PAGE)
+#define NHG_FONT_FILL_GLYPHS (1u << 31)
+#define NHG_GLYPH_NONE 0xffffffffu
+
+typedef struct
+{
+  uint32_t glyph[NHG_FONT_PAGE];
+} NhgCharPage;
+
+typedef struct
+{
+  NhgGlyphMetrics metrics[NHG_FONT_PAGE];
+} NhgGlyphPage;
+
+typedef struct
+{
+  const NhgCharPage *chars[NHG_FONT_CHAR_PAGES];
+  const NhgGlyphPage *glyphs[NHG_FONT_GLYPH_PAGES];
+} NhgFontTable;
+
+int32_t nhg_font_table (uint64_t handle, const NhgFontTable **out);
+int32_t nhg_font_fill (uint64_t handle, uint32_t page);
 
 /* ---- Draw records (glue/src/draw.rs, nhshell's macos/draw.rs; macOS) -------------------------------------------
    The primitives nhmacdraw.c emits under nhwldraw.c's shared geometry, painted at once into FRAME's backing with Core

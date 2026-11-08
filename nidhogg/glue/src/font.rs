@@ -1,7 +1,7 @@
 //! The native font driver's Rust half on macOS (`src/nhmacfont.c` is the C half): the Core Text font source the
 //! matching in `fontspec.rs` lists from, and a font's metrics and glyphs, rounded as `macfont_open` and
-//! `macfont_glyph_extents` round them.  One family's worth for now: ASCII, no shaping; glyph metrics are asked for one
-//! glyph at a time (glyph tables come later), and a run's glyphs are placed as `macfont_draw` places them.
+//! `macfont_glyph_extents` round them.  One family's worth for now: no shaping; C reads glyphs and their metrics from
+//! each font's glyph table (`glyphs.rs`), and a run's glyphs are placed as `macfont_draw` places them.
 //!
 //! The rounding is platform-neutral and tested on Linux; the Core Text calls are the shell's (`nhshell::macos::fonts`).
 
@@ -181,8 +181,10 @@ pub fn spacing(fixed_pitch: bool) -> i32 {
 mod coretext {
     use super::*;
     use crate::fontspec::{FontFace, FontSource};
+    use crate::glyphs::{GlyphSource, NhgFontTable, Table};
     use nhshell::macos::fonts as ct;
     use std::collections::HashMap;
+    use std::sync::atomic::Ordering::Relaxed;
     use std::sync::{Mutex, OnceLock};
 
     /// The faces AppKit lists, as the matching wants them.
@@ -230,6 +232,25 @@ mod coretext {
         }
     }
 
+    /// A font's glyphs and bounds from Core Text, one batched call per table page.
+    struct Source(u64);
+
+    impl GlyphSource for Source {
+        fn glyphs(&self, units: &[u16], out: &mut [u16]) {
+            ct::glyphs_for(self.0, units, out);
+        }
+
+        fn bounds(&self, glyphs: &[u16], out: &mut [[f64; 5]]) {
+            ct::bounds_for(self.0, glyphs, out);
+        }
+    }
+
+    /// Each open font's glyph table.
+    fn tables() -> &'static Mutex<HashMap<u64, Table>> {
+        static TABLES: OnceLock<Mutex<HashMap<u64, Table>>> = OnceLock::new();
+        TABLES.get_or_init(Mutex::default)
+    }
+
     pub fn open(id: u64, size: i32) -> Option<NhgFontMetrics> {
         let (handle, m) = ct::open(id, f64::from(size))?;
         let raw = RawFont {
@@ -241,62 +262,57 @@ mod coretext {
             mono: m.mono,
             tall_family: m.tall_family,
         };
-        let advance = |c: u32| {
-            ct::glyph(handle, c)
-                .and_then(|g| ct::glyph_bounds(handle, g))
-                .map(|b| b.0)
-        };
-        let printable: Vec<Option<f64>> = (0x21..0x7f).map(advance).collect();
-        let mut out = font_metrics(&raw, size, advance(0x20), &printable);
+        let src = Source(handle);
+        // the first page answers the space and the printable ASCII macfont_open measures, in one call each
+        let mut table = Table::new(raw.mono, 0);
+        table.fill(0, &src);
+        let gl: Vec<Option<u32>> = (0x20..0x7f)
+            .map(|c| table.char_glyph(c).flatten())
+            .collect();
+        let ids: Vec<u16> = gl.iter().map(|g| g.unwrap_or(0) as u16).collect();
+        let mut b = vec![[0.0f64; 5]; ids.len()];
+        ct::bounds_for(handle, &ids, &mut b);
+        let advance = |i: usize| gl[i].map(|_| b[i][0]);
+        let printable: Vec<Option<f64>> = (1..gl.len()).map(advance).collect();
+        let mut out = font_metrics(&raw, size, advance(0), &printable);
         out.handle = handle;
-        grids()
+        table.set_space_width(out.space_width);
+        tables()
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert(handle, (raw.mono, out.space_width));
+            .insert(handle, table);
         Some(out)
     }
 
-    /// Each open font's spacing and space width, which its runs are laid out on.
-    fn grids() -> &'static Mutex<HashMap<u64, (bool, i32)>> {
-        static GRIDS: OnceLock<Mutex<HashMap<u64, (bool, i32)>>> = OnceLock::new();
-        GRIDS.get_or_init(Mutex::default)
+    pub fn table(handle: u64) -> Option<*const NhgFontTable> {
+        let tables = tables().lock().unwrap_or_else(|p| p.into_inner());
+        tables.get(&handle).map(Table::as_ptr)
+    }
+
+    pub fn fill(handle: u64, page: u32) -> Option<bool> {
+        let mut tables = tables().lock().unwrap_or_else(|p| p.into_inner());
+        let t = tables.get_mut(&handle)?;
+        ct::STATS.fills.fetch_add(1, Relaxed);
+        Some(t.fill(page, &Source(handle)))
     }
 
     pub fn run(handle: u64, glyphs: &[u16], padding: bool) -> Option<(Vec<f64>, bool)> {
-        let (mono, space_width) = *grids()
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(&handle)?;
         let integral = ct::integral(handle)?;
-        let advances: Vec<f64> = glyphs
-            .iter()
-            .map(|g| ct::glyph_bounds(handle, u32::from(*g)).map_or(0.0, |b| b.0))
-            .collect();
+        let mut tables = tables().lock().unwrap_or_else(|p| p.into_inner());
+        let t = tables.get_mut(&handle)?;
+        let advances = t.advances(glyphs, &Source(handle));
         Some((
-            run_offsets(&advances, mono, space_width, padding, integral),
+            run_offsets(&advances, t.mono(), t.space_width(), padding, integral),
             integral,
         ))
     }
 
-    pub fn glyph(handle: u64, c: u32) -> Option<u32> {
-        ct::glyph(handle, c)
-    }
-
-    pub fn glyph_metrics(
-        handle: u64,
-        g: u32,
-        mono: bool,
-        space_width: i32,
-    ) -> Option<NhgGlyphMetrics> {
-        let (adv, l, r, t, b) = ct::glyph_bounds(handle, g)?;
-        Some(super::glyph_metrics(
-            glyph_width(adv, mono, space_width),
-            (l, r, t, b),
-        ))
+    pub fn note_call() {
+        ct::STATS.calls.fetch_add(1, Relaxed);
     }
 
     pub fn close(handle: u64) {
-        grids()
+        tables()
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(&handle);
@@ -333,26 +349,33 @@ pub fn close(handle: u64) {
     let _ = handle;
 }
 
-/// Character `c`'s glyph in the font `handle`.
-pub fn glyph(handle: u64, c: u32) -> Option<u32> {
+/// The glyph table of the open font `handle` (`glyphs.rs`), whose address C keeps while the font is open.
+pub fn table(handle: u64) -> Option<*const crate::glyphs::NhgFontTable> {
     #[cfg(all(feature = "macos", target_os = "macos"))]
-    return coretext::glyph(handle, c);
+    return coretext::table(handle);
     #[cfg(not(all(feature = "macos", target_os = "macos")))]
     {
-        let _ = (handle, c);
+        let _ = handle;
         None
     }
 }
 
-/// Glyph `g`'s metrics in the font `handle`, whose spacing and space width C passes back.
-pub fn glyph_extents(handle: u64, g: u32, mono: bool, space_width: i32) -> Option<NhgGlyphMetrics> {
+/// Fill page `page` of the open font `handle`'s table (`Table::fill`): `None` for a font that is not open, false for
+/// a page past the table.
+pub fn fill(handle: u64, page: u32) -> Option<bool> {
     #[cfg(all(feature = "macos", target_os = "macos"))]
-    return coretext::glyph_metrics(handle, g, mono, space_width);
+    return coretext::fill(handle, page);
     #[cfg(not(all(feature = "macos", target_os = "macos")))]
     {
-        let _ = (handle, g, mono, space_width);
+        let _ = (handle, page);
         None
     }
+}
+
+/// Count one `nhg_font_*` call (`(nhmac-stats)`'s `:font-calls`; macOS).
+pub fn note_call() {
+    #[cfg(all(feature = "macos", target_os = "macos"))]
+    coretext::note_call();
 }
 
 /// A run of `glyphs` in the font `handle`: each glyph's offset from the run's x (`run_offsets`), and whether it is drawn
