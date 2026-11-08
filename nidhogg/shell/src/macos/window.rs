@@ -28,6 +28,9 @@ pub struct Win {
     pub scale120: u32,
     /// Whether the host wants it shown.
     pub mapped: bool,
+    /// The serial of the configure sent last, until the host acks it: till then the host may still draw at the old
+    /// size, and the window does not take its surfaces' size.
+    pub configuring: Option<u32>,
 }
 
 impl Win {
@@ -80,6 +83,7 @@ impl Win {
             size: (w, h),
             scale120,
             mapped: true,
+            configuring: None,
         }
     }
 
@@ -87,6 +91,35 @@ impl Win {
     pub fn content_size(&self) -> (i32, i32) {
         let r = self.window.contentLayoutRect();
         (r.size.width.round() as i32, r.size.height.round() as i32)
+    }
+
+    /// Take the size of the surface shown last (`sw` x `sh` device pixels), as a Wayland window takes its buffer's:
+    /// the host sized its frame itself (`set-frame-size`).  Not while a configure is unacked or the user drags a
+    /// resize: then the window's size is the one the host is told, and the surface follows it.  The size taken is
+    /// the one the host knows, so no configure goes back.  Whether it changed.
+    pub fn follow_surface(&mut self, sw: i32, sh: i32) -> bool {
+        let scale = self.window.backingScaleFactor();
+        let want = (
+            (f64::from(sw) / scale).round() as i32,
+            (f64::from(sh) / scale).round() as i32,
+        );
+        if want == self.size {
+            // drawn at the size it was told: whatever configure it had, it applied (the ack may never come for a
+            // configure the host dropped)
+            self.configuring = None;
+            return false;
+        }
+        if self.configuring.is_some() || self.window.inLiveResize() || want.0 < 1 || want.1 < 1 {
+            return false;
+        }
+        // AppKit keeps the bottom-left; a frame keeps its top-left, as NS's does
+        let f = self.window.frame();
+        let top_left = NSPoint::new(f.origin.x, f.origin.y + f.size.height);
+        self.window
+            .setContentSize(NSSize::new(f64::from(want.0), f64::from(want.1)));
+        self.window.setFrameTopLeftPoint(top_left);
+        self.size = self.content_size();
+        true
     }
 
     pub fn scale_now(&self) -> u32 {
