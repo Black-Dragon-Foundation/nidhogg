@@ -466,16 +466,29 @@ wait, with no AppKit event: the notifier's want of the lock ends the main thread
 
 ;; The guard: an Objective-C exception in a pump poisons the display, as a panic does, and Emacs goes on
 (ert-deftest nhmac-objc-exception-poisons ()
-  "An NSException raised inside the AppKit pump is caught; the display is poisoned and Emacs does not abort."
+  "An NSException raised inside the AppKit pump is caught: the display is poisoned and says so, and Emacs does not
+abort.  With its only display gone Emacs ends with status 70 (nhwl_connection_lost, as xterm does), so the exception
+is raised in a child Emacs on the same window server, never in the runner; the child has 30 s."
   :tags '(runs-last)
   (skip-unless (not (nhmac-gui--ns-build-p)))
-  (let ((before (length (nhwl-glue-panics))))
-    (nhmac--test-raise-in-pump)
-    (sit-for 0.5)
-    (should (> (length (nhwl-glue-panics)) before))
-    (should (string-match-p "Objective-C exception" (car (nhwl-glue-panics))))
-    ;; Emacs is still here and still evaluates
-    (should (equal (eval '(+ 1 1) t) 2))))
+  (let* ((buf (generate-new-buffer " *nhmac-poison*"))
+         (proc (make-process
+                :name "nhmac-poison" :buffer buf :connection-type 'pipe
+                :command (list (expand-file-name invocation-name invocation-directory) "-Q" "--eval"
+                               "(run-at-time 1 nil (lambda () (nhmac--test-raise-in-pump) (sit-for 5) (kill-emacs 0)))"))))
+    (unwind-protect
+        (progn
+          (should (gui-runner-wait (lambda () (not (process-live-p proc))) 30))
+          (message "nhmac-objc-exception-poisons: child %S %S: %s" (process-status proc) (process-exit-status proc)
+                   (with-current-buffer buf (buffer-string)))
+          ;; ended by itself, with the lost display's status, not by a signal (an abort)
+          (should (eq (process-status proc) 'exit))
+          (should (= (process-exit-status proc) 70))
+          (with-current-buffer buf
+            (should (string-match-p "internal error in the shell glue" (buffer-string)))
+            (should (string-match-p "Objective-C exception" (buffer-string)))))
+      (when (process-live-p proc) (delete-process proc))
+      (kill-buffer buf))))
 
 ;; Task 14: the IOSurface ring, damaged rectangles, the commit
 (defconst nhmac-gui--ring 3 "The ring's size (surface.rs `RING'): the oldest age a slot copies for.")
