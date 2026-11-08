@@ -339,6 +339,15 @@ pub trait ShellBackend {
 
     /// Create a child (`NHSHELL_KIND_CHILD`) or popup (`NHSHELL_KIND_POPUP`) window.
     fn child_new(&mut self, desc: &ChildDesc) -> ShellResult<WindowId>;
+    /// `window`, a top-level or a child, takes another place among the trees, keeping its id and its surfaces with
+    /// their picture (`parent-frame` changed): `desc.kind` `NHSHELL_KIND_TOPLEVEL` makes it a top-level titled
+    /// `title` (`desc.flags` as a new one's), `NHSHELL_KIND_CHILD` a child of `desc.parent` at (`desc.x`, `desc.y`).
+    /// Its children come along.  `Unsupported` where a window keeps its role (a Wayland surface): the host makes the
+    /// window again.
+    fn reparent(&mut self, window: WindowId, desc: &ChildDesc, title: &str) -> ShellResult {
+        let _ = (window, desc, title);
+        Err(ShellError::Unsupported)
+    }
     /// Move a child (applied with its parent's next commit) or a popup (its anchor rectangle's origin).
     /// `true` when the whole window must be redrawn (a popup that was made again).
     fn set_position(&mut self, window: WindowId, x: i32, y: i32) -> ShellResult<bool>;
