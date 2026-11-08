@@ -219,6 +219,11 @@ mod publish {
         until(&mut shell, "the frame callback", |s| !waiting(s, id));
         assert!(shell.present_tree(id).unwrap(), "the held picture");
         shell.flush().unwrap();
+        // every event the recorder sent is read, the re-arm's callback among them: an older callback says nothing of
+        // the held picture's commit, so the pacer waits for that commit's own
+        sync(&shell);
+        while shell.next_event().unwrap().is_some() {}
+        assert!(waiting(&shell, id), "the held picture's callback is not in");
         let s = shell.presenter_stats().unwrap();
         assert_eq!(s.presented, s.published, "{s:?}");
         assert!(s.shown < s.published, "its callback is held: {s:?}");
