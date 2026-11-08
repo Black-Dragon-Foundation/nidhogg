@@ -201,6 +201,15 @@ impl Canvas {
         if DRAWS.fetch_add(1, Ordering::Relaxed) == 0 {
             crate::trace::note(|| "first draw".into());
         }
+        // the pump trace names what was painted (tests read it beside the publishes)
+        crate::trace::pump(|| {
+            let shapes: Vec<String> = p
+                .shapes
+                .iter()
+                .map(|s| format!("{s:?}").chars().take(80).collect())
+                .collect();
+            format!("paint: clip {:?}, {shapes:?}", p.clip)
+        });
         // SAFETY: CG calls on our context; every pointer passed lives for the call.
         unsafe {
             CGContextSaveGState(c);
