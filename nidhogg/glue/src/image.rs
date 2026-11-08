@@ -21,7 +21,8 @@ pub struct NhgImage {
 }
 
 /// A container as drawing reads it (`NhgPix`): `data` rows `stride` bytes apart, `bpp` 32 or 8; `mask` (null: none)
-/// 8-bit rows `mask_stride` bytes apart.
+/// 8-bit rows `mask_stride` bytes apart; the image's `matrix` (`image_set_transform`'s, from a drawn pixel to the
+/// container's; all zero: none) and whether drawing it `smooth`s.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct NhgPix {
@@ -32,13 +33,92 @@ pub struct NhgPix {
     pub stride: i32,
     pub mask_stride: i32,
     pub bpp: i32,
+    pub smooth: i32,
+    pub matrix: Matrix,
+}
+
+/// The colour a name gives (`0xRRGGBB`), `image.c`'s: called with its context and a NUL-terminated name.
+pub type NhgColorFn =
+    Option<unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_char) -> u32>;
+
+/// How `image.c` asks for an SVG (`NhgSvgStyle`): its `:css`, the face's font family, `:base-uri` (each `len` bytes;
+/// null or empty: none), the face's font size and the display's resolution, and the colours (`0xRRGGBB`).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct NhgSvgStyle {
+    pub css: *const u8,
+    pub css_len: usize,
+    pub family: *const u8,
+    pub family_len: usize,
+    pub base: *const u8,
+    pub base_len: usize,
+    pub font_size: f64,
+    pub dpi: f64,
+    pub foreground: u32,
+    pub background: u32,
+}
+
+/// The `len` bytes at `p` as text (lossy), empty for null.
+///
+/// # Safety
+/// `p` is null or holds `len` readable bytes.
+#[cfg(feature = "svg")]
+unsafe fn text(p: *const u8, len: usize) -> String {
+    if p.is_null() {
+        return String::new();
+    }
+    // SAFETY: the caller's promise.
+    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(p, len) }).into_owned()
+}
+
+/// The shell's style for `s`; references resolve against `:base-uri`, else the directory of `file`.
+///
+/// # Safety
+/// `s`'s strings hold their lengths.
+#[cfg(feature = "svg")]
+pub unsafe fn svg_style(s: &NhgSvgStyle, file: Option<&std::path::Path>) -> nhshell::svg::Style {
+    // SAFETY: the caller's promise.
+    let (css, font_family, base) = unsafe {
+        (
+            text(s.css, s.css_len),
+            text(s.family, s.family_len),
+            text(s.base, s.base_len),
+        )
+    };
+    let base = if base.is_empty() {
+        file.and_then(|f| f.parent())
+            .map(std::path::Path::to_path_buf)
+    } else {
+        // a file: URI or a path; the directory of what it names
+        let p = std::path::PathBuf::from(base.strip_prefix("file://").unwrap_or(&base));
+        Some(if p.is_dir() {
+            p
+        } else {
+            p.parent()
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_default()
+        })
+    };
+    nhshell::svg::Style {
+        css,
+        font_family,
+        font_size: s.font_size as f32,
+        dpi: s.dpi as f32,
+        foreground: s.foreground,
+        base,
+    }
+}
+
+/// An opaque rendered image as C takes it (no alpha, one frame).
+pub fn opaque(width: u32, height: u32, argb: Vec<u32>) -> NhgImage {
+    boxed(width as i32, height as i32, 1, false, 0.0, argb)
 }
 
 /// The image types the native route takes.
 pub fn supported(name: &str) -> bool {
     matches!(
         name,
-        "native-image" | "png" | "jpeg" | "gif" | "tiff" | "webp" | "heic"
+        "native-image" | "png" | "jpeg" | "gif" | "tiff" | "webp" | "heic" | "xpm"
     )
 }
 
@@ -115,27 +195,130 @@ pub fn combine(pix: &NhgPix, data: &[u8], mask: Option<&[u8]>, fg: u32) -> Optio
     Some(out)
 }
 
-/// Frame `index` of the image in `bytes` (`None`: the route cannot read it, or there is no such frame).
-pub fn decode(bytes: &[u8], index: u32) -> Option<NhgImage> {
+/// Cairo's pattern matrix `(xx, yx, xy, yy, x0, y0)`.
+pub type Matrix = [f64; 6];
+/// A matrix and the drawn width and height.
+pub type Transformed = (Matrix, f64, f64);
+
+/// `a` times `b`, Emacs's `matrix3x3_mult` (row vectors: a point is `[x y 1]`, translations in row 2).
+fn mult(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    let mut r = [[0.0; 3]; 3];
+    for (i, row) in r.iter_mut().enumerate() {
+        for (j, v) in row.iter_mut().enumerate() {
+            *v = (0..3).map(|k| a[i][k] * b[k][j]).sum();
+        }
+    }
+    r
+}
+
+/// The matrix `image_set_transform` makes on Cairo, as Cairo's pattern matrix `(xx, yx, xy, yy, x0, y0)` from a drawn
+/// pixel to the container's: an image `w` x `h` shown at `width` x `height`, turned by `rotation` degrees and flipped;
+/// and the drawn size.  `Err` holds the scale alone when the rotation is not a multiple of 90 degrees (Emacs reports
+/// it).
+pub fn transform(
+    w: f64,
+    h: f64,
+    width: f64,
+    height: f64,
+    rotation: f64,
+    flip: bool,
+) -> Result<Transformed, Matrix> {
+    let mut m = [
+        [w / width, 0.0, 0.0],
+        [0.0, h / height, 0.0],
+        [0.0, 0.0, 1.0],
+    ];
+    let six = |m: &[[f64; 3]; 3]| [m[0][0], m[0][1], m[1][0], m[1][1], m[2][0], m[2][1]];
+    if rotation == 0.0 && !flip {
+        return Ok((six(&m), width, height));
+    }
+    let (cos, sin, dw, dh) = if rotation == 0.0 {
+        (1.0, 0.0, width, height)
+    } else if rotation == 90.0 {
+        (0.0, 1.0, height, width)
+    } else if rotation == 180.0 {
+        (-1.0, 0.0, width, height)
+    } else if rotation == 270.0 {
+        (0.0, -1.0, height, width)
+    } else {
+        return Err(six(&m));
+    };
+    // 1. (0, 0) to the centre of the image; 2. the turn; 3. back, flipped horizontally if asked
+    let mut t = [
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [width * 0.5, height * 0.5, 1.0],
+    ];
+    let u = mult(&t, &m);
+    let rot = [[cos, -sin, 0.0], [sin, cos, 0.0], [0.0, 0.0, 1.0]];
+    let v = mult(&rot, &u);
+    t[2] = [dw * -0.5, dh * -0.5, 1.0];
+    if flip {
+        t[0][0] = -t[0][0];
+        t[2][0] = -t[2][0];
+    }
+    m = mult(&t, &v);
+    Ok((six(&m), dw, dh))
+}
+
+/// The map from a container pixel to the drawn image's, `matrix` inverted (`Shape::Image`'s `to`); the identity for an
+/// image with none (all zero) or one that does not invert.
+pub fn drawn(matrix: &Matrix) -> Matrix {
+    let [xx, yx, xy, yy, x0, y0] = *matrix;
+    let det = xx * yy - xy * yx;
+    if det == 0.0 || !det.is_finite() {
+        return [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    }
+    let (a, b, c, d) = (yy / det, -yx / det, -xy / det, xx / det);
+    [a, b, c, d, -(a * x0 + c * y0), -(b * x0 + d * y0)]
+}
+
+/// Straight ARGB words handed to C.
+fn boxed(
+    width: i32,
+    height: i32,
+    frames: u32,
+    has_alpha: bool,
+    delay: f64,
+    argb: Vec<u32>,
+) -> NhgImage {
+    let argb = argb.into_boxed_slice();
+    let len = argb.len();
+    NhgImage {
+        width,
+        height,
+        frames,
+        has_alpha: u32::from(has_alpha),
+        delay,
+        argb: Box::into_raw(argb).cast(),
+        len,
+    }
+}
+
+/// Frame `index` of the image in `bytes` (`None`: the route cannot read it, or there is no such frame).  An XPM's
+/// colour names go through `resolve` (`0xRRGGBB`).
+pub fn decode(bytes: &[u8], index: u32, resolve: &mut dyn FnMut(&str) -> u32) -> Option<NhgImage> {
+    if crate::xpm::is_xpm(bytes) {
+        let (w, h, argb, alpha) = crate::xpm::decode(bytes, resolve)?;
+        return (index == 0).then(|| boxed(w as i32, h as i32, 1, alpha, 0.0, argb));
+    }
     #[cfg(all(feature = "macos", target_os = "macos"))]
     {
         let d = nhshell::macos::images::decode(bytes, index)?;
-        let mut argb = d.argb.into_boxed_slice();
+        let mut argb = d.argb;
         let has_alpha = unpremultiply(&mut argb);
-        let len = argb.len();
-        Some(NhgImage {
-            width: d.width,
-            height: d.height,
-            frames: d.frames,
-            has_alpha: u32::from(has_alpha),
-            delay: d.delay.unwrap_or(0.0),
-            argb: Box::into_raw(argb).cast(),
-            len,
-        })
+        Some(boxed(
+            d.width,
+            d.height,
+            d.frames,
+            has_alpha,
+            d.delay.unwrap_or(0.0),
+            argb,
+        ))
     }
     #[cfg(not(all(feature = "macos", target_os = "macos")))]
     {
-        let _ = (bytes, index);
+        let _ = index;
         None
     }
 }
@@ -179,6 +362,8 @@ mod tests {
             stride: w * bpp / 8,
             mask_stride: if mask { w } else { 0 },
             bpp,
+            smooth: 0,
+            matrix: [0.0; 6],
         }
     }
 
@@ -240,10 +425,107 @@ mod tests {
 
     #[test]
     fn the_route_takes_imageios_types() {
-        for t in ["png", "jpeg", "gif", "tiff", "webp", "heic", "native-image"] {
+        for t in [
+            "png",
+            "jpeg",
+            "gif",
+            "tiff",
+            "webp",
+            "heic",
+            "xpm",
+            "native-image",
+        ] {
             assert!(supported(t), "{t}");
         }
-        assert!(!supported("xpm"));
-        assert!(!supported("svg"));
+        // SVG has a type of its own (image.c's keywords); XBM and PBM are Emacs's
+        for t in ["svg", "xbm", "pbm"] {
+            assert!(!supported(t), "{t}");
+        }
+    }
+
+    #[test]
+    fn an_xpm_decodes_on_every_platform_through_the_resolver() {
+        let xpm = br#"/* XPM */ static char *x[] = { "2 1 2 1", "a c None", "b c red", "ab" };"#;
+        let mut asked = Vec::new();
+        let mut img = decode(xpm, 0, &mut |n| {
+            asked.push(n.to_string());
+            0x00ff_0000
+        })
+        .unwrap();
+        assert_eq!(
+            (img.width, img.height, img.frames, img.has_alpha),
+            (2, 1, 1, 1)
+        );
+        let (mut data, mut mask) = ([0u8; 8], [0u8; 2]);
+        // SAFETY: the decode's pixels, read once.
+        store(
+            unsafe { std::slice::from_raw_parts(img.argb, img.len) },
+            &mut data,
+            Some(&mut mask),
+        );
+        // SAFETY: freed once.
+        unsafe { free(&mut img) };
+        assert_eq!(asked, vec!["red"]);
+        assert_eq!(mask, [0, 255]);
+        assert_eq!(
+            u32::from_ne_bytes(data[4..].try_into().unwrap()),
+            0xffff_0000
+        );
+        assert!(decode(xpm, 1, &mut |_| 0).is_none());
+    }
+
+    /// Where the matrix takes a drawn pixel in the container.
+    fn at(m: &Matrix, x: f64, y: f64) -> (f64, f64) {
+        (m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5])
+    }
+
+    #[test]
+    fn a_scale_maps_the_drawn_size_onto_the_container() {
+        let (m, w, h) = transform(10.0, 20.0, 20.0, 40.0, 0.0, false).unwrap();
+        assert_eq!((w, h), (20.0, 40.0));
+        assert_eq!(at(&m, 20.0, 40.0), (10.0, 20.0));
+        assert_eq!(at(&m, 0.0, 0.0), (0.0, 0.0));
+    }
+
+    #[test]
+    fn quarter_turns_and_flips_turn_the_corners_as_cairo_does() {
+        // 90 degrees clockwise: the drawn top left is the container's bottom left, and the size swaps
+        let (m, w, h) = transform(10.0, 20.0, 10.0, 20.0, 90.0, false).unwrap();
+        assert_eq!((w, h), (20.0, 10.0));
+        assert_eq!(at(&m, 0.0, 0.0), (0.0, 20.0));
+        assert_eq!(at(&m, 20.0, 10.0), (10.0, 0.0));
+        // 180: corners swap diagonally
+        let (m, _, _) = transform(10.0, 20.0, 10.0, 20.0, 180.0, false).unwrap();
+        assert_eq!(at(&m, 0.0, 0.0), (10.0, 20.0));
+        // a flip alone mirrors x
+        let (m, w, h) = transform(10.0, 20.0, 10.0, 20.0, 0.0, true).unwrap();
+        assert_eq!((w, h), (10.0, 20.0));
+        assert_eq!(at(&m, 0.0, 0.0), (10.0, 0.0));
+        assert_eq!(at(&m, 10.0, 20.0), (0.0, 20.0));
+        // scaled and turned 270: the drawn top left is the container's top right
+        let (m, w, h) = transform(10.0, 20.0, 5.0, 10.0, 270.0, false).unwrap();
+        assert_eq!((w, h), (10.0, 5.0));
+        assert_eq!(at(&m, 0.0, 0.0), (10.0, 0.0));
+    }
+
+    #[test]
+    fn drawing_inverts_the_matrix_and_draws_an_untransformed_image_as_it_is() {
+        assert_eq!(drawn(&[0.0; 6]), [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+        let (m, _, _) = transform(10.0, 20.0, 10.0, 20.0, 90.0, false).unwrap();
+        let to = drawn(&m);
+        // the container's bottom left is the drawn top left, and its top right the drawn bottom right
+        let p = |x: f64, y: f64| (to[0] * x + to[2] * y + to[4], to[1] * x + to[3] * y + to[5]);
+        assert_eq!(p(0.0, 20.0), (0.0, 0.0));
+        assert_eq!(p(10.0, 0.0), (20.0, 10.0));
+        let (m, _, _) = transform(10.0, 20.0, 20.0, 40.0, 0.0, false).unwrap();
+        assert_eq!(drawn(&m), [2.0, 0.0, 0.0, 2.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn another_angle_keeps_the_scale_and_is_refused() {
+        assert_eq!(
+            transform(10.0, 10.0, 5.0, 5.0, 45.0, false),
+            Err([2.0, 0.0, 0.0, 2.0, 0.0, 0.0])
+        );
     }
 }
