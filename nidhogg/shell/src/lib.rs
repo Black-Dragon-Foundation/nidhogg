@@ -7,6 +7,7 @@
 pub mod api;
 pub mod caps;
 pub mod event;
+pub mod mac_child;
 pub mod mac_input;
 #[cfg(all(feature = "macos", target_os = "macos"))]
 pub mod macos;

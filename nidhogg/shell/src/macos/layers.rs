@@ -16,7 +16,7 @@ use objc2::runtime::AnyObject;
 use objc2_quartz_core::{CALayer, CATransaction, kCAGravityTopLeft};
 use std::cell::Cell;
 use std::ffi::c_void;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 thread_local! {
     /// How deep the main thread is in the pumps.
@@ -46,32 +46,85 @@ pub fn changed_outside() {
     IMPLICIT.with(|i| i.set(true));
 }
 
-/// One root tree's commit: each `(layer, surface, same, scale)` in one flushed transaction.
-pub fn commit(items: &[(&CALayer, &Cf, bool, f64)]) {
-    if items.is_empty() {
-        return;
-    }
+/// One root tree's commit: what `f` sets, in one flushed transaction with actions disabled.
+pub fn transaction<R>(f: impl FnOnce() -> R) -> R {
     CATransaction::begin();
     CATransaction::setDisableActions(true);
-    for (layer, surface, same, scale) in items {
-        // SAFETY: an IOSurfaceRef is toll-free bridged to IOSurface, an object `contents` takes.
-        let obj = unsafe { &*surface.as_ptr().cast::<AnyObject>() };
-        // SAFETY: `contents` takes nil or an IOSurface.
-        unsafe {
-            if *same {
-                layer.setContents(None);
-            }
-            layer.setContents(Some(obj));
-            layer.setContentsGravity(kCAGravityTopLeft);
-        }
-        layer.setContentsScale(*scale);
-    }
+    let r = f();
     CATransaction::commit();
     CATransaction::flush();
     IMPLICIT.with(|i| i.set(false));
     if STATS.commits.fetch_add(1, Ordering::Relaxed) == 0 {
         crate::trace::note(|| "first commit".into());
     }
+    r
+}
+
+/// Show `surface` on `layer` at `scale`, inside a [`transaction`]: nil first when the layer already shows it (`same`).
+pub fn show(layer: &CALayer, surface: &Cf, same: bool, scale: f64) {
+    // SAFETY: an IOSurfaceRef is toll-free bridged to IOSurface, an object `contents` takes.
+    let obj = unsafe { &*surface.as_ptr().cast::<AnyObject>() };
+    // SAFETY: `contents` takes nil or an IOSurface.
+    unsafe {
+        if same {
+            layer.setContents(None);
+        }
+        layer.setContents(Some(obj));
+        layer.setContentsGravity(kCAGravityTopLeft);
+    }
+    layer.setContentsScale(scale);
+    PROPS.contents.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The layers' property changes since start, by kind (`(nhmac-stats)`'s `:props-*`): a move must change the
+/// position alone.
+pub struct Props {
+    pub contents: AtomicU64,
+    pub position: AtomicU64,
+    pub bounds: AtomicU64,
+    pub hidden: AtomicU64,
+    pub opacity: AtomicU64,
+    pub order: AtomicU64,
+    pub host: AtomicU64,
+    /// Children moved into a panel or back, and the panels ordered in or out.
+    pub switches: AtomicU64,
+    pub panel_orders: AtomicU64,
+}
+
+pub static PROPS: Props = Props {
+    contents: AtomicU64::new(0),
+    position: AtomicU64::new(0),
+    bounds: AtomicU64::new(0),
+    hidden: AtomicU64::new(0),
+    opacity: AtomicU64::new(0),
+    order: AtomicU64::new(0),
+    host: AtomicU64::new(0),
+    switches: AtomicU64::new(0),
+    panel_orders: AtomicU64::new(0),
+};
+
+impl Props {
+    pub fn text(&self) -> String {
+        let g = |c: &AtomicU64| c.load(Ordering::Relaxed);
+        format!(
+            ":props-contents {} :props-position {} :props-bounds {} :props-hidden {} :props-opacity {} :props-order {} \
+             :props-host {} :overhang-switches {} :panel-orders {}",
+            g(&self.contents),
+            g(&self.position),
+            g(&self.bounds),
+            g(&self.hidden),
+            g(&self.opacity),
+            g(&self.order),
+            g(&self.host),
+            g(&self.switches),
+            g(&self.panel_orders),
+        )
+    }
+}
+
+/// Count one change of kind `c`.
+pub fn count(c: &AtomicU64) {
+    c.fetch_add(1, Ordering::Relaxed);
 }
 
 /// A publish ended: count an implicit transaction the shell left open.
