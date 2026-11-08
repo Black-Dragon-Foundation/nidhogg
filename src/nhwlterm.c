@@ -3438,6 +3438,7 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 
       /* The facts the step reads, sampled again for each event.  */
       in.flags = ((kbd_buffer_events_waiting () ? NHG_IN_INPUT_WAITING : 0)
+		  | (redisplaying_p ? NHG_IN_REDISPLAY : 0)
 		  | (mwheel_coalesce_scroll_events
 		     ? NHG_IN_COALESCE_WHEEL : 0));
       list.v = NULL;
