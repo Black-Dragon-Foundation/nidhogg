@@ -120,6 +120,17 @@ for scale in "${scales[@]}"; do
   if [ "$rc" != 0 ]; then echo "nhmac-gui.sh: scale $scale: exit $rc"; status=1; fi
   # every row run is counted: 0 rows, or fewer than the floor, is red even when the runner exited 0
   ran=$(sed -n 's/^.*Ran \([0-9][0-9]*\) tests.*$/\1/p' "$log" | tail -n 1)
+  # Emacs ended inside a row (no summary): the rows that reported count, and the row it ended in is one red row
+  if [ -z "$ran" ]; then
+    ran=$(grep -cE '^(passed|FAILED|skipped) ' "$log")
+    open=$(sed -n 's/^started //p' "$log" | tail -n 1)
+    if [ -n "$open" ] && ! grep -qE "^(passed|FAILED|skipped) $open\$" "$log"; then
+      echo "FAILED $open" | tee -a "$log"
+      echo "  (Emacs ended inside the row: exit $rc)" | tee -a "$log"
+      ran=$((ran + 1))
+    fi
+    echo "nhmac-gui.sh: scale $scale: no summary; $ran rows reported"
+  fi
   if [ "${ran:-0}" -lt "$floor" ]; then echo "nhmac-gui.sh: scale $scale: ${ran:-0} rows ran, the floor is $floor"; status=1; fi
 done
 exit $status
