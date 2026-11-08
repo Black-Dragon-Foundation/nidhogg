@@ -3252,9 +3252,6 @@ shut_down_emacs (int sig, Lisp_Object stuff)
 #ifdef HAVE_NS
   ns_term_shutdown (sig);
 #endif
-#ifdef HAVE_NHMAC
-  nhmac_shutdown ();
-#endif
 
 #ifdef HAVE_LIBXML2
   xml_cleanup_parser ();
