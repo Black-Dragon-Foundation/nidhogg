@@ -87,13 +87,14 @@ awk '/^  release:/,0' "$wf" | grep -qF "if: github.event_name == 'push' && start
 ! grep -qw docker "$wf"                                           || fail "docker in $wf"
 ! grep -qE '\./configure|make -j' "$wf"                           || fail "a build outside build.sh"
 grep -qE '^permissions:' "$wf"                                    || fail "no top-level permissions"
-# every cache step keys on its inputs; the tarball cache is exact (no restore-keys) and never for a release tag
+# every cache step keys on its inputs (a hash of them, or a pinned download's own sha256); the tarball cache is exact
+# (no restore-keys) and never for a release tag
 n=$(grep -c 'uses: actions/cache/restore@' "$wf")
 [ "$n" -ge 7 ]                                                    || fail "expected the cache restore steps, found $n"
 # caches are saved right after the build, not by the job's post step: no plain actions/cache, a save step for each restore
 ! grep -q 'uses: actions/cache@' "$wf"                            || fail "a plain actions/cache step (saves only at the end of a successful job)"
 [ "$(grep -c 'uses: actions/cache/save@' "$wf")" -ge 7 ]          || fail "expected the cache save steps"
-bad=$(grep -A6 'uses: actions/cache/' "$wf" | grep -E '^[ -]*key: ' | grep -vE 'hashFiles|tree\.outputs|lisp\.outputs' || true)
+bad=$(grep -A6 'uses: actions/cache/' "$wf" | grep -E '^[ -]*key: ' | grep -vE 'hashFiles|tree\.outputs|lisp\.outputs|-[0-9a-f]{64}$' || true)
 [ -z "$bad" ]                                                     || fail "a cache key without a hash of its inputs: $bad"
 grep -A8 'id: tb' "$wf" | grep -q "startsWith(github.ref, 'refs/tags/')" || fail "the tarball cache is used for a release tag"
 step() { awk -v l="$1" 'NR>l && /^      - /{exit} NR>=l' "$wf"; }   # the step from line $1 to the next one
@@ -305,6 +306,12 @@ ln_of() { grep -n "$1" <<<"$nj2" | head -1 | cut -d: -f1; }
 [ "$(ln_of 'id: lc$')" -lt "$(ln_of 'bash nidhogg/ci/set-mtimes.sh')" ] && [ "$(ln_of 'bash nidhogg/ci/set-mtimes.sh')" -lt "$(ln_of 'id: nbuild')" ] || fail "macos-naglfar does not restore the Lisp, set the file times, then build"
 [ "$(job macos-naglfar | grep -cF -- 'key: configure-macos-naglfar-')" = 2 ] || fail "macos-naglfar's configure checks are not restored and saved under one key"
 job macos-naglfar | grep -qF 'NIDHOGG_BUILD_CONFIG_CACHE: ${{ runner.temp }}/config-cache' || fail "macos-naglfar's build keeps no configure cache"
+# the series job keeps the pinned cargo-deny tarball in a cache keyed on its version and sha256, downloads it only when
+# missing, checks the sha256 either way, and saves only after the checks passed
+[ "$(job tree | grep -cF 'key: cargo-deny-0.20.2-9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f')" = 2 ] || fail "the cargo-deny tarball is not restored and saved under its version and sha256"
+job tree | grep -qF '[ -s "$RUNNER_TEMP/cd.tgz" ] ||'             || fail "cargo-deny is downloaded even when restored"
+job tree | grep -qF 'cd.tgz" | sha256sum -c -'                     || fail "the cargo-deny tarball's sha256 is not checked"
+job tree | grep -A1 "name: Save cargo-deny's release" | grep -qF 'success() &&' || fail "a cargo-deny tarball can be saved after failed checks"
 # the NS step inserts the counting interposer exactly when the selector selects a baseline row (nhmac-interposer-*,
 # nhmac-ns-*) or is empty: its decision, run for each selector
 ipd=$(job macos | sed -n '/^ *ip=""$/,/ip=--interpose; fi$/p' | sed 's/^ *//')

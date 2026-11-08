@@ -193,6 +193,14 @@ jobs:
             ${{ runner.temp }}/glitnir-cargo/registry/index
             ${{ runner.temp }}/glitnir-cargo/registry/cache
           key: glitnir-crates-${{ hashFiles('nidhogg/glitnir/Cargo.lock') }}
+      # the pinned cargo-deny release tarball, keyed on its version and sha256 (checked after the restore as after a
+      # download), so a release download hiccup does not turn this job red once an entry is saved
+      - name: cargo-deny's release (pinned)
+        id: cdeny
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/cd.tgz
+          key: cargo-deny-0.20.2-9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
       # Glitnir (the compositor): the crate's checks (fmt, clippy, tests, licences; the crates are fetched, locked) and the advisories.
       - name: Glitnir's checks
         env:
@@ -200,12 +208,20 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y libpixman-1-dev
           d="cargo-deny-0.20.2-x86_64-unknown-linux-musl"
-          curl -sSfL -o "$RUNNER_TEMP/cd.tgz" "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/$d.tar.gz"
+          [ -s "$RUNNER_TEMP/cd.tgz" ] ||
+            curl -sSfL -o "$RUNNER_TEMP/cd.tgz" "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/$d.tar.gz"
           echo "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f  $RUNNER_TEMP/cd.tgz" | sha256sum -c -
           mkdir -p "$RUNNER_TEMP/bin" && tar -xzf "$RUNNER_TEMP/cd.tgz" -C "$RUNNER_TEMP/bin" --strip-components=1 "$d/cargo-deny"
           export PATH="$RUNNER_TEMP/bin:$PATH"
           bash nidhogg/glitnir/check.sh
           cd nidhogg/glitnir && cargo deny check advisories
+      # only after the checks passed: the tarball's sha256 was checked, so no bad download is kept
+      - name: Save cargo-deny's release
+        if: ${{ success() && env.CACHE_SAVE == 'true' && steps.cdeny.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/cd.tgz
+          key: cargo-deny-0.20.2-9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
       - name: Save Glitnir's crates
         if: ${{ !cancelled() && env.CACHE_SAVE == 'true' && steps.gcrates.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
