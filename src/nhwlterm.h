@@ -648,10 +648,9 @@ extern void syms_of_nhwlfns (void);
 extern void syms_of_nhmacterm (void);
 extern int nhmac_select (int, fd_set *, fd_set *, fd_set *,
 			 struct timespec *, sigset_t *);
-/* nhmacterm.c: emacs.c's startup, shutdown and relocation (ns_relocate
-   is the name decode_env_path and load_pdump already call).  */
+/* nhmacterm.c: emacs.c's startup and relocation (ns_relocate is the
+   name decode_env_path and load_pdump already call).  */
 extern void nhmac_startup (void);
-extern void nhmac_shutdown (void);
 extern const char *ns_relocate (const char *);
 extern int nhmac_menu_choice (const NhgAction *, struct input_event *);
 /* nhmacfont.c */

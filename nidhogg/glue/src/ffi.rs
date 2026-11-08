@@ -2344,23 +2344,14 @@ nhg_export! {
 }
 
 nhg_export! {
-    /// Startup, before Lisp is initialised and without a display: the outer autorelease pool and `LANG` from the
-    /// system's locale when the environment has none (macOS; `NHG_E_UNSUPPORTED` elsewhere).  Calls nothing in Emacs.
+    /// Startup, before Lisp is initialised and without a display: `LANG` from the system's locale when the
+    /// environment has none (macOS; `NHG_E_UNSUPPORTED` elsewhere).  Calls nothing in Emacs.  It keeps no pool: every
+    /// entry point drains its own (`guard`), so a pool made here would be gone when this call returns.
     ///
     /// # Safety
     /// None beyond the C ABI: it takes no pointers.  Call it once, from Emacs's main thread, before any other thread.
     unlocked fn nhg_startup() -> i32 {
-        if platform_startup(true) { Ok(NHG_OK) } else { Err(GlueError::Shell(crate::abi::NHG_E_UNSUPPORTED)) }
-    }
-}
-
-nhg_export! {
-    /// Shutdown: release the pool `nhg_startup` made (macOS; `NHG_E_UNSUPPORTED` elsewhere).
-    ///
-    /// # Safety
-    /// None beyond the C ABI: it takes no pointers.  Call it from the thread that called `nhg_startup`.
-    unlocked fn nhg_shutdown() -> i32 {
-        if platform_startup(false) { Ok(NHG_OK) } else { Err(GlueError::Shell(crate::abi::NHG_E_UNSUPPORTED)) }
+        if platform_startup() { Ok(NHG_OK) } else { Err(GlueError::Shell(crate::abi::NHG_E_UNSUPPORTED)) }
     }
 }
 
@@ -2395,20 +2386,15 @@ nhg_export! {
     }
 }
 
-/// The platform's startup (`up`) or shutdown; false where there is none.
-fn platform_startup(up: bool) -> bool {
+/// The platform's startup; false where there is none.
+fn platform_startup() -> bool {
     #[cfg(all(feature = "macos", target_os = "macos"))]
     {
-        if up {
-            nhshell::macos::startup::init();
-        } else {
-            nhshell::macos::startup::shutdown();
-        }
+        nhshell::macos::startup::init();
         true
     }
     #[cfg(not(all(feature = "macos", target_os = "macos")))]
     {
-        let _ = up;
         false
     }
 }

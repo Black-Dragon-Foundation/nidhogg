@@ -1288,7 +1288,7 @@ PROTO (nhg_svg_render, int32_t (const uint8_t *, size_t, uint32_t, const NhgSvgS
     /// Startup: the prototypes, and the answers where there is no app bundle (every platform but macOS here).
     #[test]
     fn startup_header_matches() {
-        use nhglue::ffi::{nhg_relocate, nhg_shutdown, nhg_startup};
+        use nhglue::ffi::{nhg_relocate, nhg_startup};
         let rows: &[(&str, i64)] = &[
             ("NHG_E_UNSUPPORTED", nhglue::abi::NHG_E_UNSUPPORTED.into()),
             ("NHG_E_TOO_SMALL", nhglue::abi::NHG_E_TOO_SMALL.into()),
@@ -1296,10 +1296,8 @@ PROTO (nhg_svg_render, int32_t (const uint8_t *, size_t, uint32_t, const NhgSvgS
         let decls = "\
 #define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
 PROTO (nhg_startup, int32_t (void));
-PROTO (nhg_shutdown, int32_t (void));
 PROTO (nhg_relocate, int32_t (const char *, char *, size_t, size_t *));";
         let _: unsafe extern "C" fn() -> i32 = nhg_startup;
-        let _: unsafe extern "C" fn() -> i32 = nhg_shutdown;
         let _: unsafe extern "C" fn(*const c_char, *mut c_char, usize, *mut usize) -> i32 =
             nhg_relocate;
         let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
