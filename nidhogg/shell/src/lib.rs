@@ -14,8 +14,12 @@ pub mod macos;
 pub mod menu;
 pub mod outputs;
 pub mod pasteboard;
+pub mod ring;
 pub mod scope;
+pub mod shapes;
 pub mod startup;
+#[cfg(feature = "svg")]
+pub mod svg;
 pub mod vars;
 pub mod wait;
 #[cfg(feature = "wayland")]

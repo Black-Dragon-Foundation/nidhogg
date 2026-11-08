@@ -607,8 +607,8 @@ nhwl_set_parent_frame (struct frame *f, Lisp_Object new_value,
 }
 
 /* Adapted from pgtk_default_font_parameter: the font is opened at the
-   display's resolution, which is 96 times the scale, so that its size is
-   in device pixels.  */
+   display's resolution, which is NHWL_DPI times the scale, so its size
+   is in device pixels.  */
 void
 nhwl_default_font_parameter (struct frame *f, Lisp_Object parms)
 {

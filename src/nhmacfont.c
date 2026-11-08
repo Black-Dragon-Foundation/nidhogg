@@ -23,8 +23,8 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
    and macfont_glyph_extents round them (glue/src/font.rs).  C turns
    specs, entities and font objects, which are Lisp objects, into the
    glue's records and back.  For now one family's worth: ASCII, no
-   shaping, glyph metrics one glyph at a time, and no drawing (the
-   draw records come with the surfaces).  */
+   shaping, glyph metrics one glyph at a time; runs are drawn as
+   records (nhmac_glyph_run).  */
 
 #include <config.h>
 
@@ -278,12 +278,13 @@ nhmacfont_text_extents (struct font *font, const unsigned int *code,
     metrics->width = total;
 }
 
-/* No drawing yet: the glyph-run records come with the surfaces.  */
 static int
 nhmacfont_draw (struct glyph_string *s, int from, int to, int x, int y,
 		bool with_background)
 {
-  return 0;
+  nhmac_glyph_run (s, ((struct nhmac_font_info *) s->font)->handle, from, to,
+		   x, y, with_background);
+  return to - from;
 }
 
 struct font_driver const nhmacfont_driver =

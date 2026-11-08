@@ -11,7 +11,9 @@ no C ABI of its own. Under `--with-nidhogg-wayland` the Makefile links the glue'
   in `nidhogg/` (it holds `vendor/`, made by `cargo vendor-filterer` for Linux and macOS, x86_64 and aarch64, and the
   `.cargo/config.toml` that points cargo at it; `nidhogg/ci/vendor.sh`). Nothing is vendored in git. Third-party crates are limited to wayland-client, wayland-backend,
   wayland-protocols, xkbcommon, rustix and their dependencies, plus the image decoders Glitnir depends on (png, gif,
-  image-webp and theirs, the same versions as `../glitnir/Cargo.lock`).
+  image-webp and theirs, the same versions as `../glitnir/Cargo.lock`), the macOS backend's objc2 crates, and resvg
+  (feature `svg`, on with `macos`; with text and the system's fonts, no raster images) and its dependencies.
+  `check.sh` builds and tests `svg` on Linux too: it is pure Rust.
 - `check.sh [--container DISTRO] [--test NAME]` runs fmt, clippy `-D warnings`, tests and cargo-deny; `--full` adds
   the vendor-drift check (when a `vendor/` is unpacked) and the release build. The archive's exports are checked by `nidhogg/glue/check.sh --full`.
   The glue builds from the same crates; after a relock, its `Cargo.lock` takes this one's packages (its check says

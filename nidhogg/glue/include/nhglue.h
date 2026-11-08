@@ -1181,6 +1181,121 @@ int32_t nhg_startup (void);
 int32_t nhg_shutdown (void);
 int32_t nhg_relocate (const char *epath, char *out, size_t cap, size_t *len);
 
+/* ---- Draw records (glue/src/draw.rs, nhshell's macos/draw.rs; macOS) -------------------------------------------
+   The primitives nhmacdraw.c emits under nhwldraw.c's shared geometry, painted at once into FRAME's backing with Core
+   Graphics (device pixels with the native area's origin, as damage takes them).  Each kind is its Cairo twin in
+   nhwldraw.c.  Colours are ARGB words, not premultiplied.  NHG_DRAW_FILL: R in FG (NHG_DRAW_COPY replaces the
+   pixels, alpha included).  NHG_DRAW_OUTLINE: one-pixel lines through the pixel centres of R's edges.
+   NHG_DRAW_TRAPEZOID: a relief's top (NHG_DRAW_TOP) or bottom edge over R.  NHG_DRAW_WAVE: a wave in R, A pixels per
+   half wave.  NHG_DRAW_DASH: a line R.h thick along R's top, dashes A long from phase B.  NHG_DRAW_BITMAP: R.h rows at
+   BITS, R.w (at most 16) pixels wide, the leftmost in bit R.w - 1; set pixels in FG, the rest in BG unless
+   NHG_DRAW_OVERLAY.  NHG_DRAW_CORNERS: R in FG outside quarter circles of radius A set B pixels outside the corners
+   the flags' low four bits name (bottom right, bottom left, top left, top right).  NCLIP (0-2) clip rectangles
+   apply.  A refused record is skipped and the call returns NHG_E_ARG; NHG_E_UNSUPPORTED where the shell has no
+   painter.  nhg_draw_glyphs paints one NHG_DRAW_GLYPHS record of the open font FONT (nhg_font_open): N glyphs at
+   BITS in FG from x A on the baseline B, placed as macfont_draw places them (NHG_DRAW_PADDING: one pixel each); with
+   NHG_DRAW_BACKGROUND, R is filled with BG first.  NHG_E_STATE for a font that is not open.  nhg_draw_image
+   paints one NHG_DRAW_IMAGE record: the part of the container PIX from (A, B) into R, over BG unless
+   NHG_DRAW_OVERLAY; with a mask its pixels are its colour times the mask's alpha, without one opaque, and an 8-bit
+   container is FG through it (Cairo's conversion).  The container is wrapped once and kept until nhg_image_forget
+   names its data or its mask.  */
+
+#define NHG_DRAW_FILL 1
+#define NHG_DRAW_OUTLINE 2
+#define NHG_DRAW_TRAPEZOID 3
+#define NHG_DRAW_WAVE 4
+#define NHG_DRAW_DASH 5
+#define NHG_DRAW_BITMAP 6
+#define NHG_DRAW_CORNERS 7
+#define NHG_DRAW_GLYPHS 8
+#define NHG_DRAW_IMAGE 9
+
+#define NHG_DRAW_COPY (1u << 0)
+#define NHG_DRAW_TOP (1u << 3)
+#define NHG_DRAW_BACKGROUND (1u << 4)
+#define NHG_DRAW_PADDING (1u << 5)
+#define NHG_DRAW_OVERLAY (1u << 7)
+
+typedef struct
+{
+  uint32_t kind, flags;
+  NhgRect r;
+  uint32_t fg, bg;
+  int32_t a, b;
+  int32_t nclip;
+  NhgRect clip[2];
+  const uint16_t *bits;
+} NhgDrawRec;
+
+int32_t nhg_draw (NhgDisplay *d, uint64_t frame, const NhgDrawRec *recs, size_t n);
+int32_t nhg_draw_glyphs (NhgDisplay *d, uint64_t frame, uint64_t font, const NhgDrawRec *rec, size_t n);
+
+/* An image container as drawing reads it: DATA rows STRIDE bytes apart, BPP 32 or 8; MASK (NULL: none) 8-bit rows
+   MASK_STRIDE bytes apart; MATRIX the image's transform (Cairo's pattern matrix xx, yx, xy, yy, x0, y0, from a drawn
+   pixel to the container's, as nhg_image_transform makes it; all zero: none) and SMOOTH whether drawing smooths.  */
+typedef struct
+{
+  const uint8_t *data, *mask;
+  int32_t width, height, stride, mask_stride, bpp, smooth;
+  double matrix[6];
+} NhgPix;
+
+int32_t nhg_draw_image (NhgDisplay *d, uint64_t frame, const NhgDrawRec *rec, const NhgPix *pix);
+
+/* ---- Images (glue/src/image.rs, nhshell's macos/images.rs; macOS) -----------------------------------------------
+   image.c's native route.  nhg_image_type: NHG_OK when the route takes the type named by NAME (LEN bytes), else
+   NHG_E_UNSUPPORTED.  nhg_image_decode decodes frame INDEX of the image in SRC (LEN bytes; a file name when IS_FILE)
+   through ImageIO (an XPM through the glue's own reader) into *OUT: colours not premultiplied, the alpha in each word's top byte, HAS_ALPHA when some pixel
+   is not opaque, FRAMES in the file and this frame's DELAY in seconds (0: still); NHG_E_STATE when it cannot.
+   nhg_image_take copies the pixels into a 32-bit container's DATA (WIDTH * 4 bytes a row) and, with HAS_ALPHA, the
+   alpha into an 8-bit MASK (WIDTH a row), then frees them; nhg_image_free frees them untaken.  nhg_image_forget: the
+   container bytes at ADDR are being freed.  */
+
+typedef struct
+{
+  int32_t width, height;
+  uint32_t frames, has_alpha;
+  double delay;
+  uint32_t *argb_;
+  size_t len_;
+} NhgImage;
+
+int32_t nhg_image_type (const char *name, size_t len);
+/* An XPM's colour names go to COLOR with CTX, which gives 0xRRGGBB (the frame's foreground for an unknown one).  */
+typedef uint32_t (*NhgColorFn) (void *ctx, const char *name);
+int32_t nhg_image_decode (const uint8_t *src, size_t len, uint32_t is_file, uint32_t index, NhgColorFn color,
+                          void *ctx, NhgImage *out);
+int32_t nhg_image_take (NhgImage *img, uint8_t *data, uint8_t *mask);
+int32_t nhg_image_free (NhgImage *img);
+int32_t nhg_image_forget (const uint8_t *addr);
+/* SVG through the shell's resvg route (image.c's svg type on Naglfar).  STYLE: the image's :css, the face's font
+   FAMILY and :base-uri (each LEN bytes; NULL or empty: none; without a base, references resolve against the file's
+   directory), the face's FONT_SIZE in pixels, the display's DPI, and the FOREGROUND (currentColor) and BACKGROUND as
+   0xRRGGBB.  nhg_svg_size: the image's own size in pixels (its width and height, or its view box) into *W, *H.
+   nhg_svg_render: the image stretched to WIDTH x HEIGHT over the background into *OUT, opaque (nhg_image_take or
+   nhg_image_free frees it).  NHG_E_STATE when the image cannot be read or parsed, NHG_E_UNSUPPORTED without SVG.  */
+typedef struct
+{
+  const uint8_t *css;
+  size_t css_len;
+  const uint8_t *family;
+  size_t family_len;
+  const uint8_t *base;
+  size_t base_len;
+  double font_size, dpi;
+  uint32_t foreground, background;
+} NhgSvgStyle;
+
+int32_t nhg_svg_size (const uint8_t *src, size_t len, uint32_t is_file, const NhgSvgStyle *style, double *w,
+                      double *h);
+int32_t nhg_svg_render (const uint8_t *src, size_t len, uint32_t is_file, const NhgSvgStyle *style, int32_t width,
+                        int32_t height, NhgImage *out);
+/* image_set_transform's matrix for an image W x H shown at WIDTH x HEIGHT, turned by ROTATION degrees and FLIPped:
+   six numbers into OUT (NhgPix's MATRIX) and the drawn size into *OUT_W, *OUT_H; NHG_E_UNSUPPORTED for a rotation
+   that is not a multiple of 90 degrees (OUT holds the scale alone, the size is left).  */
+int32_t nhg_image_transform (int32_t w, int32_t h, int32_t width, int32_t height, double rotation, bool flip,
+                             double *out, int32_t *out_w, int32_t *out_h);
+
 /* ---- The main wait (glue/src/wait.rs, nhshell's wait.rs; macOS) ------------------------------------------------
    nhg_wait registers the fds RFDS and WFDS ask for below NFDS, runs the backend's event loop until one is ready, a
    wake or TIMEOUT_NS (negative: none), and leaves the ready ones in the sets as select does; the count, as select

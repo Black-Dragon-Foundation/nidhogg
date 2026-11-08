@@ -699,9 +699,7 @@ jobs:
         env:
           CHECKS: ${{ inputs.checks }}
           FILES: ${{ inputs.files }}
-          PAIR: ${{ inputs.pair }}
         run: |
-          [ -z "$PAIR" ] || { echo "::error::pair needs the Naglfar build, which does not link yet"; exit 1; }
           sel=${CHECKS//|/\\|}
           # the NS baseline rows (nhmac-interposer-*, nhmac-ns-*) run with the counting interposer inserted
           ip=""
@@ -741,6 +739,13 @@ jobs:
         run: |
           sel=${CHECKS//|/\\|}
           bash nidhogg/test/nhmac-gui.sh --emacs "$RUNNER_TEMP/nbuild/obj/src/emacs" ${{ steps.nbundle.outcome == 'success' && format('--app {0}/nbuild/obj/nextstep/Emacs.app', runner.temp) || '' }} --out "$RUNNER_TEMP/nhmac-gui/naglfar" ${sel:+--select "$sel"} ${FILES:+--files "$FILES"}
+      # Paired timing (`pair`): the NS build of the tarball and Naglfar run the timed row in turn, ABAB
+      # (nidhogg/test/nhmac-pair.sh); red when Naglfar is slower.
+      - name: Naglfar paired timing (pair)
+        if: ${{ !cancelled() && steps.nbuild.outcome == 'success' && inputs.pair != '' && hashFiles('dist/*.tar.xz') != '' }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/ns-app" && tar -C "$RUNNER_TEMP/ns-app" -xJf "$(ls dist/*.tar.xz | head -n 1)"
+          bash nidhogg/test/nhmac-pair.sh --ns "$(echo "$RUNNER_TEMP"/ns-app/nidhogg-*)/Nidhogg.app/Contents/MacOS/Emacs" --naglfar "$RUNNER_TEMP/nbuild/obj/src/emacs" --out "$RUNNER_TEMP/nhmac-gui/pair"
       - name: macOS GUI logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

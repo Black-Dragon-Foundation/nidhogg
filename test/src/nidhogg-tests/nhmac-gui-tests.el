@@ -449,4 +449,656 @@ wait, with no AppKit event: the notifier's want of the lock ends the main thread
     ;; Emacs is still here and still evaluates
     (should (equal (eval '(+ 1 1) t) 2))))
 
+;; Task 14: the IOSurface ring, damaged rectangles, the commit
+(defconst nhmac-gui--ring 3 "The ring's size (surface.rs `RING'): the oldest age a slot copies for.")
+
+(defun nhmac-gui--surface (&optional frame)
+  "The surface facts of FRAME's window, a plist (`nhmac--test-surface')."
+  (nhmac--test-surface 0 0 frame))
+
+(defun nhmac-gui--row-bytes ()
+  "Bytes of one full-width text line of the selected frame."
+  (* 4 (frame-pixel-width) (frame-char-height)))
+
+(defun nhmac-gui--typing-buffer (text)
+  "A fresh buffer showing TEXT in the selected window, point at its end, drawn."
+  (switch-to-buffer (generate-new-buffer " *nhmac-typing*"))
+  (insert text)
+  (redisplay t)
+  ;; the first commits make the ring's slots (whole copies); typing is measured after them
+  (dotimes (_ (1+ nhmac-gui--ring))
+    (insert "w")
+    (redisplay)))
+
+(defun nhmac-gui--type (n &optional before)
+  "Type N characters as commands, each followed by a redisplay; the stats' changes since BEFORE (now if nil)."
+  (let ((before (or before (nhmac-stats))))
+    (dotimes (_ n)
+      (execute-kbd-macro "x")
+      (redisplay))
+    (let ((after (nhmac-stats)))
+      (cl-loop for (k v) on after by #'cddr
+               when (numberp v) append (list k (- v (or (plist-get before k) 0)))))))
+
+(ert-deftest nhmac-typing-bytes ()
+  "Typing copies only damage into the surfaces: per key at most the damage times the ring's age, a few lines at
+most, in the three §5.4 cases (end of line, mid-line, the worst plain key); never a whole surface."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((row (nhmac-gui--row-bytes))
+        (keys 10))
+    (pcase-dolist (`(,case ,text ,goto)
+                   `((end-of-line "short line" ,#'end-of-buffer)
+                     (mid-line ,(make-string 70 ?m) ,(lambda () (goto-char (+ (point-min) 35))))
+                     (worst ,(make-string (- (window-body-width) 2) ?w) ,#'end-of-buffer)))
+      (nhmac-gui--typing-buffer text)
+      (funcall goto)
+      (redisplay)
+      (let* ((d (nhmac-gui--type keys))
+             (bytes (plist-get d :bytes-copied))
+             (damage (plist-get d :damage-bytes)))
+        (message "nhmac-typing-bytes: %s: %d keys: copied %d (%d per key), damage %d, full %d, row %d"
+                 case keys bytes (/ bytes keys) damage (plist-get d :full-copies) row)
+        (should (= (plist-get d :full-copies) 0))
+        (should (> bytes 0))
+        (should (<= bytes (* nhmac-gui--ring damage)))
+        ;; the text line and the mode line, over the ring's ages
+        (should (<= (/ bytes keys) (* nhmac-gui--ring 2 row))))
+      (kill-buffer))))
+
+(ert-deftest nhmac-commits-per-redisplay ()
+  "A redisplay after a key commits the frame's tree at most once."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--typing-buffer "commits")
+  (let ((d (nhmac-gui--type 20)))
+    (message "nhmac-commits-per-redisplay: 20 keys: %d commits" (plist-get d :commits))
+    (should (<= (plist-get d :commits) 20))
+    (should (>= (plist-get d :commits) 1)))
+  (kill-buffer))
+
+(ert-deftest nhmac-no-spins-in-redisplay ()
+  "Redisplay turns no run loop: 0 passes of the main run loop outside the pumps while typing (NS's figure, from the
+interposer in the NS lane of the same run, is logged by `nhmac-interposer-counts-ns')."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--typing-buffer "spins")
+  (let ((d (nhmac-gui--type 20)))
+    (message "nhmac-no-spins-in-redisplay: 20 keys: %d spins outside the pumps" (plist-get d :spins-in-redisplay))
+    (should (= (plist-get d :spins-in-redisplay) 0)))
+  (kill-buffer))
+
+(ert-deftest nhmac-no-implicit-transaction ()
+  "No implicit Core Animation transaction is left open when a publish ends, while typing."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--typing-buffer "implicit")
+  (should (= (plist-get (nhmac-gui--type 20) :implicit-open-at-update-end) 0))
+  (kill-buffer))
+
+(ert-deftest nhmac-key-to-commit-counts ()
+  "A key posted to the window reaches Lisp through one pump, with no fd wait, and its redisplay commits once."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--typing-buffer "key")
+  (nhmac-gui--flush)
+  (dotimes (_ 5)
+    (let ((before (nhmac-stats)))
+      (nhmac--test-post-key ?k)
+      (let ((ev (read-event nil nil 2)))
+        (should (eq ev ?k))
+        (insert ev))
+      (redisplay)
+      ;; the release's event, if any, is left for the next pump
+      (let ((pumps (nhmac-gui--delta before :pumps))
+            (commits (nhmac-gui--delta before :commits))
+            (sleeps (nhmac-gui--delta before :sleeps)))
+        (message "nhmac-key-to-commit-counts: pumps %d commits %d fd waits %d" pumps commits sleeps)
+        (should (= pumps 1))
+        (should (= commits 1))
+        (should (= sleeps 0)))))
+  (nhmac-gui--flush)
+  (kill-buffer))
+
+(ert-deftest nhmac-surface-busy-typing ()
+  "While typing the ring always has a surface the window server does not hold."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--typing-buffer "busy")
+  (let ((d (nhmac-gui--type 30)))
+    (message "nhmac-surface-busy-typing: 30 keys: %d busy, %d acquires" (plist-get d :surface-busy)
+             (plist-get d :ring-acquires))
+    (should (= (plist-get d :surface-busy) 0)))
+  (kill-buffer))
+
+(ert-deftest nhmac-scroll-bytes ()
+  "Scrolling a window by a line copies the scrolled rows, not the surface."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--typing-buffer (mapconcat #'number-to-string (number-sequence 1 300) "\n"))
+  (goto-char (point-min))
+  (redisplay t)
+  (dotimes (_ nhmac-gui--ring) (scroll-up 1) (redisplay))
+  (let* ((before (nhmac-stats))
+         (_ (progn (scroll-up 1) (redisplay)))
+         (bytes (nhmac-gui--delta before :bytes-copied))
+         (rows (* 4 (frame-pixel-width) (window-body-height nil t))))
+    (message "nhmac-scroll-bytes: one line: copied %d, the window's rows %d" bytes rows)
+    (should (= (nhmac-gui--delta before :full-copies) 0))
+    (should (> bytes 0))
+    (should (<= bytes (* nhmac-gui--ring rows))))
+  (kill-buffer))
+
+(ert-deftest nhmac-commit-shows-without-spin ()
+  "After `redisplay' the layer shows the newest surface, read back in the process, with no run-loop turn."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--typing-buffer "shows")
+  (let ((before (nhmac-stats)))
+    (insert "y")
+    (redisplay)
+    (let ((s (nhmac-gui--surface)))
+      (message "nhmac-commit-shows-without-spin: %S" s)
+      (should (eq (plist-get s :contents-is-newest) t))
+      (should (equal (plist-get s :gravity) "topLeft"))
+      (should (= (plist-get s :scale) (/ (plist-get (nhmac--window-info) :device-width)
+                                         (float (car (plist-get s :points))))))
+      (should (equal (list (plist-get s :w) (plist-get s :h))
+                     (list (frame-pixel-width) (frame-pixel-height))))
+      ;; a fresh backing is the frame's background (drawing comes with the record emitter)
+      (should (= (logand (plist-get s :pixel) #xff000000) #xff000000)))
+    (should (= (nhmac-gui--delta before :spins-in-redisplay) 0))
+    (should (>= (nhmac-gui--delta before :commits) 1)))
+  (kill-buffer))
+
+(ert-deftest nhmac-colour-tagged ()
+  "The surfaces' colour space follows `ns-use-srgb-colorspace': sRGB, else Generic RGB."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (unwind-protect
+      (progn
+        (setq ns-use-srgb-colorspace nil)
+        (redraw-frame)
+        (redisplay t)
+        (should (eq (plist-get (nhmac-gui--surface) :srgb) 'generic))
+        (setq ns-use-srgb-colorspace t)
+        (redraw-frame)
+        (redisplay t)
+        (should (eq (plist-get (nhmac-gui--surface) :srgb) 'srgb)))
+    (setq ns-use-srgb-colorspace t)))
+
+(ert-deftest nhmac-paired-key-to-commit ()
+  "Key to commit, timed in the process: 50 typed keys, each a command and a redisplay, written to
+GLITNIR_GUI_OUT/pair-BUILD.txt (microseconds, one per line).  Both builds run it in turn (--pair, ABAB);
+nidhogg/test/nhmac-pair.sh compares the pairs: not slower than NS on the median and p95 of the differences,
+with a sign test."
+  (let* ((build (if (nhmac-gui--ns-build-p) "ns" "naglfar"))
+         (file (expand-file-name (format "pair-%s.txt" build)
+                                 (or (getenv "GLITNIR_GUI_OUT") temporary-file-directory)))
+         times)
+    (switch-to-buffer (generate-new-buffer " *nhmac-pair*"))
+    (insert "paired timing")
+    (redisplay t)
+    (dotimes (_ 10) (execute-kbd-macro "w") (redisplay))
+    (dotimes (_ 50)
+      (let ((t0 (float-time)))
+        (execute-kbd-macro "x")
+        (redisplay)
+        (push (round (* 1e6 (- (float-time) t0))) times)))
+    (with-temp-buffer
+      (dolist (us (nreverse times)) (insert (format "%d\n" us)))
+      (write-region (point-min) (point-max) file t 'silent))
+    (should (file-exists-p file))
+    (kill-buffer)))
+
+;; Task 15: draw records painted with Core Graphics
+(defun nhmac-gui--pixel-at (x y)
+  "The committed surface's premultiplied ARGB at device pixel X, Y of the selected frame."
+  (plist-get (nhmac--test-surface x y) :pixel))
+
+(defun nhmac-gui--draw-scene ()
+  "A buffer of three 12-pixel stretches: plain #336699, boxed in #ff0000 (3 pixels), then #ffffff; drawn.
+Returns the frame position of the first stretch's top left."
+  (switch-to-buffer (generate-new-buffer " *nhmac-draw*"))
+  (setq-local cursor-type nil)
+  (insert (propertize " " 'display '(space :width (12)) 'face '(:background "#336699"))
+          (propertize " " 'display '(space :width (12))
+                      'face '(:background "#336699" :box (:line-width 3 :color "#ff0000")))
+          (propertize " " 'display '(space :width (12)) 'face '(:background "#ffffff"))
+          "\n")
+  (redraw-frame)
+  (redisplay t)
+  (let ((xy (posn-x-y (posn-at-point (point-min))))
+        (edges (window-inside-pixel-edges)))
+    (cons (+ (nth 0 edges) (car xy)) (+ (nth 1 edges) (cdr xy)))))
+
+(ert-deftest nhmac-draw-fills-boxes-cursors ()
+  "Fills, a box and a bar cursor reach the committed surface with their exact colours (sRGB, opaque).
+A same-run comparison with NS's pixels needs a capture of the stock build; until then the colours are
+checked against the faces, tolerance 0 for fills and box lines."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((o (nhmac-gui--draw-scene))
+         (x (car o)) (y (cdr o)) (h (frame-char-height)))
+    (message "nhmac-draw-fills-boxes-cursors: origin %S, stats %S" o (nhmac-stats))
+    (should (> (plist-get (nhmac-stats) :draws) 0))
+    ;; the plain stretch's middle
+    (should (= (nhmac-gui--pixel-at (+ x 6) (+ y (/ h 2))) #xff336699))
+    ;; the boxed stretch: its top line, then its inside
+    (should (= (nhmac-gui--pixel-at (+ x 18) (+ y 1)) #xffff0000))
+    (should (= (nhmac-gui--pixel-at (+ x 18) (+ y (/ h 2))) #xff336699))
+    ;; the white stretch
+    (should (= (nhmac-gui--pixel-at (+ x 30) (+ y (/ h 2))) #xffffffff))
+    ;; a bar cursor 4 pixels wide in the cursor colour, at the white stretch
+    (set-face-background 'cursor "#00ff00")
+    (setq-local cursor-type '(bar . 4))
+    (goto-char (+ (point-min) 2))
+    (redisplay t)
+    (should (= (nhmac-gui--pixel-at (+ x 25) (+ y (/ h 2))) #xff00ff00))
+    ;; and gone again: the stretch's own colour where it was
+    (setq-local cursor-type nil)
+    (redisplay t)
+    (should (= (nhmac-gui--pixel-at (+ x 25) (+ y (/ h 2))) #xffffffff)))
+  (kill-buffer))
+
+(ert-deftest nhmac-draw-other-thread ()
+  "A Lisp thread's redisplay paints, but its commit waits for the main thread's next pump."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((o (nhmac-gui--draw-scene))
+         (x (car o)) (y (cdr o)) (h (frame-char-height))
+         (before (nhmac-stats))
+         (th (make-thread
+              (lambda ()
+                (put-text-property (point-min) (1+ (point-min)) 'face '(:background "#00ff00"))
+                (redisplay t))
+              "nhmac-draw")))
+    (let ((deadline (+ (float-time) 10)))
+      (while (and (thread-live-p th) (< (float-time) deadline))
+        (thread-yield)))
+    (should-not (thread-live-p th))
+    (message "nhmac-draw-other-thread: %S" (nhmac-stats))
+    (should (>= (nhmac-gui--delta before :deferred-commits) 1))
+    ;; the main thread's pump commits it
+    (sit-for 0.1)
+    (should (eq (plist-get (nhmac-gui--surface) :contents-is-newest) t))
+    (should (= (nhmac-gui--pixel-at (+ x 6) (+ y (/ h 2))) #xff00ff00)))
+  (kill-buffer))
+
+;; Task 16: Core Text text, compared with NS's in the same run
+(defconst nhmac-gui--font-bg "#f0e0d0" "The text rows' background: no window chrome or desktop has it.")
+
+(defun nhmac-gui--font-file (ext &optional ns)
+  "The NS text row's output, nhmac-ns-font-scaleS.EXT: in this lane's GLITNIR_GUI_OUT, or with NS, in the NS lane's
+(Naglfar's lane writes to its naglfar/ subdirectory)."
+  (let ((out (or (getenv "GLITNIR_GUI_OUT") temporary-file-directory)))
+    (expand-file-name (format "nhmac-ns-font-scale%s.%s" (or (getenv "GLITNIR_GUI_SCALE") "1") ext)
+                      (if ns (expand-file-name ".." out) out))))
+
+(defmacro nhmac-gui--with-font-scene (&rest body)
+  "Run BODY with the frame in Menlo 12, black on `nhmac-gui--font-bg', no cursor, mode line or fringes, showing a
+blank line and then a line of ASCII; the frame's font and colours are put back after."
+  (declare (indent 0))
+  `(let ((font (frame-parameter nil 'font))
+         (fg (frame-parameter nil 'foreground-color))
+         (bg (frame-parameter nil 'background-color)))
+     (unwind-protect
+         (progn
+           (set-frame-font "Menlo-12" nil (list (selected-frame)))
+           (set-foreground-color "#000000")
+           (set-background-color nhmac-gui--font-bg)
+           (switch-to-buffer (generate-new-buffer " *nhmac-font*"))
+           (setq-local cursor-type nil mode-line-format nil)
+           (set-window-fringes nil 0 0)
+           (insert "\n    Hello, world! 0123456789 {}[]()<>;:'\",./?\n")
+           (redraw-frame)
+           (redisplay t)
+           (sit-for 0.5)
+           ,@body)
+       (kill-buffer)
+       (set-window-fringes nil nil nil)
+       (set-frame-font font nil (list (selected-frame)))
+       (set-foreground-color fg)
+       (set-background-color bg))))
+
+(defun nhmac-gui--font-metrics ()
+  "The default face's font's (ascent descent average-width space-width), from `font-info'."
+  (let ((i (font-info (face-font 'default))))
+    (list (aref i 8) (aref i 9) (aref i 11) (aref i 10))))
+
+(defun nhmac-gui--capture (file)
+  "The screen around the selected frame (GLITNIR_GUI_FRAME's corner, 900 by 700 points) as a BMP in FILE.
+Device pixels, as the window server composited them; FILE."
+  (let* ((g (mapcar #'string-to-number (split-string (or (getenv "GLITNIR_GUI_FRAME") "0 0"))))
+         (r (format "%d,%d,900,700" (- (nth 0 g) 20) (- (nth 1 g) 60))))
+    (when (file-exists-p file) (delete-file file))
+    (call-process "screencapture" nil nil nil "-x" "-t" "bmp" "-R" r file)
+    file))
+
+(defun nhmac-gui--bmp-read (file)
+  "FILE, a BMP of 24 or 32 bits per pixel, as (WIDTH HEIGHT PIXELS): PIXELS a vector of #xRRGGBB, rows top down."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally file)
+    (let* ((s (buffer-string))
+           (u (lambda (o n) (let ((v 0)) (dotimes (i n v) (setq v (logior v (ash (aref s (+ o i)) (* 8 i))))))))
+           (off (funcall u 10 4)) (w (funcall u 18 4)) (h (funcall u 22 4))
+           (bytes (/ (funcall u 28 2) 8))
+           (down (> h #x7fffffff)) (h (if down (- #x100000000 h) h))
+           (stride (* 4 (/ (+ (* w bytes) 3) 4)))
+           (px (make-vector (* w h) 0)))
+      (dotimes (y h)
+        (let ((row (+ off (* stride (if down y (- h 1 y))))))
+          (dotimes (x w)
+            (let ((o (+ row (* x bytes))))
+              (aset px (+ (* y w) x)
+                    (logior (ash (aref s (+ o 2)) 16) (ash (aref s (+ o 1)) 8) (aref s o)))))))
+      (list w h px))))
+
+(defun nhmac-gui--far (a b tol)
+  "Whether #xRRGGBB colours A and B differ by more than TOL in a channel."
+  (cl-some (lambda (sh) (> (abs (- (logand (ash a (- sh)) 255) (logand (ash b (- sh)) 255))) tol)) '(16 8 0)))
+
+(defun nhmac-gui--text-crop (img)
+  "The text in IMG (from `nhmac-gui--bmp-read'): the commonest colour is the frame's background; inside the box of
+the pixels near it (16 pixels in, past the window's rounded corners), the box of the pixels away from it.
+Returns (W H PIXELS) of that box."
+  (pcase-let* ((`(,w ,h ,px) img)
+               (counts (make-hash-table))
+               (bg (progn (mapc (lambda (p) (puthash p (1+ (gethash p counts 0)) counts)) px)
+                          (let ((best nil) (n 0))
+                            (maphash (lambda (k v) (when (> v n) (setq best k n v))) counts)
+                            best)))
+               (x0 w) (y0 h) (x1 -1) (y1 -1))
+    (dotimes (y h)
+      (dotimes (x w)
+        (unless (nhmac-gui--far (aref px (+ (* y w) x)) bg 2)
+          (setq x0 (min x0 x) y0 (min y0 y) x1 (max x1 x) y1 (max y1 y)))))
+    (let ((tx0 w) (ty0 h) (tx1 -1) (ty1 -1))
+      (cl-loop for y from (+ y0 16) to (- y1 16) do
+               (cl-loop for x from (+ x0 16) to (- x1 16) do
+                        (when (nhmac-gui--far (aref px (+ (* y w) x)) bg 2)
+                          (setq tx0 (min tx0 x) ty0 (min ty0 y) tx1 (max tx1 x) ty1 (max ty1 y)))))
+      (if (< tx1 0)
+          (list 0 0 [])
+        (let* ((cw (1+ (- tx1 tx0))) (ch (1+ (- ty1 ty0))) (out (make-vector (* cw ch) 0)))
+          (dotimes (y ch)
+            (dotimes (x cw)
+              (aset out (+ (* y cw) x) (aref px (+ (* (+ ty0 y) w) tx0 x)))))
+          (list cw ch out))))))
+
+(ert-deftest nhmac-ns-font-dump ()
+  "NS's Menlo 12: its metrics and a capture of its text, for nhmac-font-ascii in the Naglfar lane."
+  (skip-unless (nhmac-gui--ns-build-p))
+  (nhmac-gui--with-font-scene
+    (with-temp-file (nhmac-gui--font-file "eld")
+      (prin1 (nhmac-gui--font-metrics) (current-buffer)))
+    (nhmac-gui--capture (nhmac-gui--font-file "bmp"))
+    (should (file-exists-p (nhmac-gui--font-file "bmp")))
+    (should (> (car (nhmac-gui--text-crop (nhmac-gui--bmp-read (nhmac-gui--font-file "bmp")))) 0))))
+
+(ert-deftest nhmac-font-ascii ()
+  "Menlo 12: `font-info''s ascent, descent, average width and space width are NS's times the scale (NS counts in
+points, Naglfar in device pixels), and the text's pixels are within 1/255 of NS's, both captured from the screen."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((scale (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1"))))
+    (should (file-exists-p (nhmac-gui--font-file "eld" t)))
+    (nhmac-gui--with-font-scene
+      (let ((ns (with-temp-buffer
+                  (insert-file-contents (nhmac-gui--font-file "eld" t))
+                  (read (current-buffer))))
+            (mine (nhmac-gui--font-metrics)))
+        (message "nhmac-font-ascii: scale %d: NS %S, Naglfar %S, stats %S" scale ns mine (nhmac-stats))
+        (should (equal mine (mapcar (lambda (v) (* v scale)) ns))))
+      (pcase-let* ((`(,nw ,nh ,npx) (nhmac-gui--text-crop (nhmac-gui--bmp-read (nhmac-gui--font-file "bmp" t))))
+                   (`(,mw ,mh ,mpx) (nhmac-gui--text-crop
+                                     (nhmac-gui--bmp-read (nhmac-gui--capture (nhmac-gui--font-file "bmp")))))
+                   (worst 0) (off 0))
+        (message "nhmac-font-ascii: text NS %dx%d, Naglfar %dx%d" nw nh mw mh)
+        (should (> nw 0))
+        (should (equal (list mw mh) (list nw nh)))
+        (dotimes (i (length npx))
+          (let ((a (aref npx i)) (b (aref mpx i)))
+            (dolist (sh '(16 8 0))
+              (let ((d (abs (- (logand (ash a (- sh)) 255) (logand (ash b (- sh)) 255)))))
+                (setq worst (max worst d))
+                (when (> d 1) (cl-incf off))))))
+        (message "nhmac-font-ascii: worst channel difference %d, %d channels over 1" worst off)
+        (should (<= worst 1))))))
+
+(ert-deftest nhmac-font-open-close ()
+  "Fonts open at many sizes and close when the font cache is cleared, again and again; each opens at its size and the
+frame's text still reaches the surface."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((scale (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1"))))
+    (dotimes (i 30)
+      (let* ((pt (+ 9 (% i 7)))
+             (info (font-info (format "Menlo-%d" pt))))
+        (should info)
+        (should (= (aref info 2) (* pt scale))))
+      (when (= (% i 7) 6)
+        (clear-font-cache)))
+    (nhmac-gui--with-font-scene
+      ;; some pixel of the text line is dark
+      (let* ((edges (window-inside-pixel-edges))
+             (y0 (+ (nth 1 edges) (frame-char-height)))
+             (dark nil))
+        (cl-loop for y from y0 below (+ y0 (frame-char-height)) until dark do
+                 (cl-loop for x from (nth 0 edges) below (+ (nth 0 edges) (* 20 (frame-char-width))) until dark do
+                          (let ((p (nhmac-gui--pixel-at x y)))
+                            (when (and p (< (logand (ash p -8) 255) 64))
+                              (setq dark (list x y p))))))
+        (message "nhmac-font-open-close: a text pixel %S, stats %S" dark (nhmac-stats))
+        (should dark)))))
+
+;; Task 17: images through ImageIO
+(defconst nhmac-gui--gif2
+  (unibyte-string #x47 #x49 #x46 #x38 #x39 #x61 #x04 #x00 #x04 #x00 #x81 #x00 #x00 #xff #x00 #x00 #x00 #x00 #x00 #x00
+                  #x00 #x00 #x00 #x00 #x00 #x21 #xff #x0b #x4e #x45 #x54 #x53 #x43 #x41 #x50 #x45 #x32 #x2e #x30 #x03
+                  #x01 #x00 #x00 #x00 #x21 #xf9 #x04 #x00 #x0a #x00 #x00 #x00 #x2c #x00 #x00 #x00 #x00 #x04 #x00 #x04
+                  #x00 #x00 #x08 #x09 #x00 #x01 #x08 #x1c #x48 #xb0 #x20 #x80 #x80 #x00 #x21 #xf9 #x04 #x01 #x0a #x00
+                  #x01 #x00 #x2c #x00 #x00 #x00 #x00 #x04 #x00 #x04 #x00 #x81 #x00 #x00 #xff #x00 #x00 #x00 #x00 #x00
+                  #x00 #x00 #x00 #x00 #x08 #x09 #x00 #x01 #x08 #x1c #x48 #xb0 #x20 #x80 #x80 #x00 #x3b)
+  "A 4x4 GIF of two frames, red then blue, 0.1 s apart (made with Pillow).")
+
+(defun nhmac-gui--image-files ()
+  "The images both lanes show: test/data/image's, and a TIFF and a HEIC that sips makes from its JPEG."
+  (let* ((dir (expand-file-name "../../data/image" (getenv "GLITNIR_GUI_TESTS")))
+         (tmp (make-temp-file "nhmac-img" t))
+         (files (directory-files dir t "\\.\\(png\\|jpg\\|gif\\|webp\\)\\'")))
+    (dolist (fmt '("tiff" "heic"))
+      (let ((out (expand-file-name (concat "black." fmt) tmp)))
+        (call-process "sips" nil nil nil "-s" "format" fmt (expand-file-name "black.jpg" dir) "--out" out)
+        (push out files)))
+    (sort files #'string<)))
+
+(defmacro nhmac-gui--with-image-scene (file &rest body)
+  "Run BODY with FILE's image alone at the top left of a buffer on `nhmac-gui--font-bg', no cursor, mode line or
+fringes; the frame's colours are put back after."
+  (declare (indent 1))
+  `(let ((bg (frame-parameter nil 'background-color)))
+     (unwind-protect
+         (progn
+           (set-background-color nhmac-gui--font-bg)
+           (switch-to-buffer (generate-new-buffer " *nhmac-img*"))
+           (setq-local cursor-type nil mode-line-format nil)
+           (set-window-fringes nil 0 0)
+           (insert "\n    ")
+           (insert-image (create-image ,file nil nil :scale 1))
+           (redraw-frame)
+           (redisplay t)
+           (sit-for 0.5)
+           ,@body)
+       (kill-buffer)
+       (set-window-fringes nil nil nil)
+       (set-background-color bg))))
+
+(ert-deftest nhmac-ns-images-dump ()
+  "NS's sizes of the shared images, and at scale 1 a capture of each, for nhmac-images-native in the Naglfar lane."
+  (skip-unless (nhmac-gui--ns-build-p))
+  (let (sizes)
+    (dolist (f (nhmac-gui--image-files))
+      (push (cons (file-name-nondirectory f) (image-size (create-image f nil nil :scale 1) t)) sizes)
+      (when (equal (getenv "GLITNIR_GUI_SCALE") "1")
+        (nhmac-gui--with-image-scene f
+          (nhmac-gui--capture (nhmac-gui--font-file (concat (file-name-nondirectory f) ".bmp"))))))
+    (with-temp-file (nhmac-gui--font-file "images.eld")
+      (prin1 sizes (current-buffer)))
+    (should (= (length sizes) 8))))
+
+(ert-deftest nhmac-images-native ()
+  "PNG, JPEG, GIF (animated), TIFF, WebP and HEIC decode through ImageIO at NS's sizes; at scale 1 their pixels on
+screen are within 2/255 of NS's in the same run (NS points are pixels there)."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (dolist (type '(png jpeg gif tiff webp heic))
+    (should (image-type-available-p type)))
+  (let ((ns (with-temp-buffer
+              (insert-file-contents (nhmac-gui--font-file "images.eld" t))
+              (read (current-buffer)))))
+    (dolist (f (nhmac-gui--image-files))
+      (let* ((name (file-name-nondirectory f))
+             (size (image-size (create-image f nil nil :scale 1) t)))
+        (message "nhmac-images-native: %s NS %S Naglfar %S" name (cdr (assoc name ns)) size)
+        (should (equal size (cdr (assoc name ns))))
+        (when (equal (getenv "GLITNIR_GUI_SCALE") "1")
+          (nhmac-gui--with-image-scene f
+            (pcase-let* ((`(,nw ,nh ,npx) (nhmac-gui--text-crop
+                                          (nhmac-gui--bmp-read (nhmac-gui--font-file (concat name ".bmp") t))))
+                         (`(,mw ,mh ,mpx) (nhmac-gui--text-crop
+                                          (nhmac-gui--bmp-read
+                                           (nhmac-gui--capture (nhmac-gui--font-file (concat name ".bmp"))))))
+                         (worst 0))
+              (should (equal (list mw mh) (list nw nh)))
+              (dotimes (i (length npx))
+                (let ((a (aref npx i)) (b (aref mpx i)))
+                  (dolist (sh '(16 8 0))
+                    (setq worst (max worst (abs (- (logand (ash a (- sh)) 255) (logand (ash b (- sh)) 255))))))))
+              (message "nhmac-images-native: %s %dx%d, worst channel difference %d" name mw mh worst)
+              (should (<= worst 2))))))))
+  ;; an animated GIF's frames, count and delay
+  (let ((img (create-image nhmac-gui--gif2 'gif t :index 1 :scale 1)))
+    (should (equal (image-metadata img) '(:count 2 :delay 0.1)))
+    (switch-to-buffer (generate-new-buffer " *nhmac-gif*"))
+    (setq-local cursor-type nil)
+    (insert-image img)
+    (redisplay t)
+    (let ((xy (posn-x-y (posn-at-point (point-min))))
+          (edges (window-inside-pixel-edges)))
+      (should (= (nhmac-gui--pixel-at (+ (nth 0 edges) (car xy) 1) (+ (nth 1 edges) (cdr xy) 1)) #xff0000ff)))
+    (kill-buffer)))
+
+(ert-deftest nhmac-images-builtin ()
+  "Emacs's own decoders still draw: an XBM and a PBM reach the surface in the face's colours."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (switch-to-buffer (generate-new-buffer " *nhmac-xbm*"))
+  (setq-local cursor-type nil)
+  (face-remap-add-relative 'default :foreground "#ff0000" :background "#0000ff")
+  (insert-image (create-image (make-bool-vector 64 t) 'xbm t :width 8 :height 8 :scale 1))
+  (insert-image (create-image "P1\n4 4\n0 0 0 0\n0 0 0 0\n0 0 0 0\n0 0 0 0\n" 'pbm t :scale 1))
+  (redisplay t)
+  (let ((xy (posn-x-y (posn-at-point (point-min))))
+        (edges (window-inside-pixel-edges)))
+    (let ((x (+ (nth 0 edges) (car xy))) (y (+ (nth 1 edges) (cdr xy))))
+      (message "nhmac-images-builtin: xbm %x pbm %x" (nhmac-gui--pixel-at (+ x 2) (+ y 2))
+               (nhmac-gui--pixel-at (+ x 10) (+ y 2)))
+      ;; every XBM bit set: the foreground; every PBM pixel 0 (white in PBM's sense): the background
+      (should (= (nhmac-gui--pixel-at (+ x 2) (+ y 2)) #xffff0000))
+      (should (= (nhmac-gui--pixel-at (+ x 10) (+ y 2)) #xff0000ff))))
+  (kill-buffer))
+
+(ert-deftest nhmac-images-transform ()
+  "Scales, quarter turns and flips draw through the image's matrix: the sizes follow the spec, and an 8x8 XBM's lit
+top row lands where the turn puts it, its pixels doubled (not smoothed) when scaled up."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (should (equal (image-transforms-p) '(scale rotate90)))
+  (let ((png (expand-file-name "../../data/image/blank-100x200.png" (getenv "GLITNIR_GUI_TESTS"))))
+    (should (equal (image-size (create-image png nil nil :scale 2) t) '(200 . 400)))
+    (should (equal (image-size (create-image png nil nil :scale 1 :rotation 90) t) '(200 . 100)))
+    (should (equal (image-size (create-image png nil nil :scale 1 :max-width 50) t) '(50 . 100))))
+  (let ((bits (make-bool-vector 64 nil)))
+    (dotimes (i 8) (aset bits i t))
+    (switch-to-buffer (generate-new-buffer " *nhmac-xform*"))
+    (setq-local cursor-type nil)
+    (face-remap-add-relative 'default :foreground "#ff0000" :background "#0000ff")
+    (insert-image (create-image bits 'xbm t :width 8 :height 8 :scale 2))
+    (insert-image (create-image bits 'xbm t :width 8 :height 8 :scale 1 :rotation 90))
+    (insert-image (create-image bits 'xbm t :width 8 :height 8 :scale 1 :rotation 270 :flip t))
+    (redisplay t)
+    (let* ((xy (posn-x-y (posn-at-point (point-min))))
+           (edges (window-inside-pixel-edges))
+           (x (+ (nth 0 edges) (car xy)))
+           (y (+ (nth 1 edges) (cdr xy)))
+           (px (lambda (dx dy) (nhmac-gui--pixel-at (+ x dx) (+ y dy)))))
+      (message "nhmac-images-transform: scaled %x %x, 90 %x %x, 270 flipped %x %x"
+               (funcall px 3 1) (funcall px 3 2) (funcall px 23 3) (funcall px 16 3)
+               (funcall px 31 3) (funcall px 24 3))
+      ;; scaled 2: rows 0 and 1 lit, row 2 not
+      (should (= (funcall px 3 1) #xffff0000))
+      (should (= (funcall px 3 2) #xff0000ff))
+      ;; turned 90 degrees clockwise (from x 16): the top row is the right column
+      (should (= (funcall px 23 3) #xffff0000))
+      (should (= (funcall px 16 3) #xff0000ff))
+      ;; turned 270 (the top row to the left column), then flipped (from x 24): the right column again
+      (should (= (funcall px 31 3) #xffff0000))
+      (should (= (funcall px 24 3) #xff0000ff))))
+  (kill-buffer))
+
+(defun nhmac-gui--image-pixels (img &rest at)
+  "Insert IMG alone in a buffer on blue, no cursor, and the pixels at each (DX . DY) from its top left."
+  (switch-to-buffer (generate-new-buffer " *nhmac-px*"))
+  (setq-local cursor-type nil)
+  (face-remap-add-relative 'default :foreground "#ffffff" :background "#0000ff")
+  (insert-image img)
+  (redisplay t)
+  (prog1 (let* ((xy (posn-x-y (posn-at-point (point-min))))
+                (edges (window-inside-pixel-edges))
+                (x (+ (nth 0 edges) (car xy)))
+                (y (+ (nth 1 edges) (cdr xy))))
+           (mapcar (lambda (d) (nhmac-gui--pixel-at (+ x (car d)) (+ y (cdr d)))) at))
+    (kill-buffer)))
+
+(ert-deftest nhmac-images-svg ()
+  "SVG through resvg with svg_load_image's keywords: the size from the image and :scale, currentColor the
+:foreground over the :background, the image's :css after Emacs's, and the splash screen's SVG."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (should (image-type-available-p 'svg))
+  (let ((svg "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"4\">\
+<rect width=\"4\" height=\"4\" fill=\"currentColor\"/></svg>"))
+    (should (equal (image-size (create-image svg 'svg t :scale 1) t) '(8 . 4)))
+    (should (equal (image-size (create-image svg 'svg t :scale 2) t) '(16 . 8)))
+    (let ((px (nhmac-gui--image-pixels
+               (create-image svg 'svg t :scale 1 :foreground "#ff0000" :background "#00ff00")
+               '(1 . 1) '(6 . 1))))
+      (message "nhmac-images-svg: currentColor %x background %x" (nth 0 px) (nth 1 px))
+      (should (equal px '(#xffff0000 #xff00ff00))))
+    (let ((px (nhmac-gui--image-pixels (create-image svg 'svg t :scale 1 :css "rect{fill:#ffff00}") '(1 . 1))))
+      (should (equal px '(#xffffff00)))))
+  (let ((splash (find-image '((:file "splash.svg" :type svg)))))
+    (should splash)
+    (should (> (car (image-size splash t)) 0))))
+
+(ert-deftest nhmac-images-xpm ()
+  "XPM through the glue's reader: the splash screen's XPM at the size its header gives, and None transparent over
+the background beside a named colour."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (should (image-type-available-p 'xpm))
+  (let* ((file (image-search-load-path "splash.xpm"))
+         (head (with-temp-buffer
+                 (insert-file-contents file)
+                 (re-search-forward "\"\\([0-9]+\\) \\([0-9]+\\) ")
+                 (cons (string-to-number (match-string 1)) (string-to-number (match-string 2))))))
+    (should (equal (image-size (create-image file 'xpm nil :scale 1) t) head)))
+  (let* ((xpm "/* XPM */\nstatic char *t[] = {\n\"4 2 2 1\",\n\"  c None\",\n\". c red\",\n\"..  \",\n\"..  \"};")
+         (px (nhmac-gui--image-pixels (create-image xpm 'xpm t :scale 1) '(0 . 0) '(3 . 1))))
+    (message "nhmac-images-xpm: red %x None %x" (nth 0 px) (nth 1 px))
+    (should (equal px '(#xffff0000 #xff0000ff)))))
+
+(ert-deftest nhmac-images-image-tests ()
+  "test/src/image-tests.el passes on Naglfar."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (load (expand-file-name "../image-tests" (getenv "GLITNIR_GUI_TESTS")) nil t)
+  (let ((stats (ert-run-tests "\\`image-tests-" #'ignore)))
+    (message "nhmac-images-image-tests: %d run, %d unexpected, %d skipped"
+             (ert-stats-completed stats) (ert-stats-completed-unexpected stats) (ert-stats-skipped stats))
+    (should (> (ert-stats-completed stats) 0))
+    (should (zerop (ert-stats-completed-unexpected stats)))))
+
+(ert-deftest nhmac-images-no-homebrew ()
+  "The binary links no image library outside the system: otool -L lists only /System and /usr/lib."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((bin (expand-file-name invocation-name invocation-directory))
+         (libs (cdr (process-lines "otool" "-L" bin)))
+         (outside (seq-remove (lambda (l) (string-match-p "\\`[ \t]*/\\(System\\|usr/lib\\)/" l)) libs)))
+    (message "nhmac-images-no-homebrew: %s links %S" bin libs)
+    (should-not outside)))
+
 ;;; nhmac-gui-tests.el ends here
