@@ -33,7 +33,7 @@ NS coalesces: a run measured 16 locks per 20 keys at scale 1 and 10 at scale 2, 
       (mac-counts-redisplay t))
     (let* ((after (mac-counts-read))
            (d (lambda (k) (- (plist-get after k) (plist-get before k)))))
-      (message "nhmac-counts: 20 keys: locks %d bytes %d spins %d spins-in-redisplay %d"
+      (nhmac-gui--say "nhmac-counts: 20 keys: locks %d bytes %d spins %d spins-in-redisplay %d"
                (funcall d :surface-locks) (funcall d :surface-bytes) (funcall d :spins) (funcall d :spins-in-redisplay))
       (should (>= (funcall d :surface-locks) 1))
       (should (>= (funcall d :spins-in-redisplay) 1)))))
@@ -90,7 +90,7 @@ with the borrow put back.  No two borrows are ever live."
   (let* ((before (nhmac-stats))
          (r (nhmac--test-reentry))
          (after (nhmac-stats)))
-    (message "nhmac-reentry: %S" r)
+    (nhmac-gui--say "nhmac-reentry: %S" r)
     (should (= (plist-get r :overlapping-takes) 0))
     (should (= (plist-get r :sync-queued) 0))
     (should (>= (plist-get r :inner-queued) 2))
@@ -106,7 +106,7 @@ is left queued, and the display is not poisoned."
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((panics (length (nhwl-glue-panics)))
          (r (nhmac--modal-resize 300)))
-    (message "nhmac-modal-resize: %S" r)
+    (nhmac-gui--say "nhmac-modal-resize: %S" r)
     (should (>= (plist-get r :rounds) 2))
     (should (>= (plist-get r :takes) 1))
     (should (= (plist-get r :overlapping-takes) 0))
@@ -244,7 +244,7 @@ timeout (0 missed), the kqueue's source never ends a sleep with nothing ready (0
 serves its fd.  /dev/null, /dev/tty and every /dev/cu.* are probed and logged: which kqueue refuses (EINVAL)."
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (dolist (p (append '("/dev/null" "/dev/tty") (file-expand-wildcards "/dev/cu.*")))
-    (message "nhmac-kq-probe: %s %S" p (nhmac--test-kq-probe p)))
+    (nhmac-gui--say "nhmac-kq-probe: %s %S" p (nhmac--test-kq-probe p)))
   (let* ((gaps (make-hash-table :test #'equal))
          (before (nhmac-stats))
          (procs (list (nhmac-gui--feed "kq-pipe" 'pipe gaps)
@@ -260,8 +260,8 @@ serves its fd.  /dev/null, /dev/tty and every /dev/cu.* are probed and logged: w
           (accept-process-output nil 5)
           (setq helper-fds (max helper-fds (plist-get (nhmac-stats) :helper-fds))))
       (mapc #'delete-process procs))
-    (maphash (lambda (k v) (message "nhmac-kq-fds: %s %d lines, longest gap %.3f s" k (car v) (cdr v))) gaps)
-    (message "nhmac-kq-fds: stats %S" (nhmac-stats))
+    (maphash (lambda (k v) (nhmac-gui--say "nhmac-kq-fds: %s %d lines, longest gap %.3f s" k (car v) (cdr v))) gaps)
+    (nhmac-gui--say "nhmac-kq-fds: stats %S" (nhmac-stats))
     (maphash (lambda (_k v)
                (should (= (car v) 100))
                (should (< (cdr v) 1.0)))
@@ -275,29 +275,39 @@ serves its fd.  /dev/null, /dev/tty and every /dev/cu.* are probed and logged: w
 every wait stores a key before the wait reads the flood, so keys never wait behind output, and none takes the
 helper's hop (`:helper-hops-keys' 0)."
   (skip-unless (not (nhmac-gui--ns-build-p)))
-  (nhmac-gui--flush)
-  (let* ((bytes 0)
-         (before (nhmac-stats))
-         (keys (append "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWX" nil))
-         (proc (make-process :name "nhmac-flood" :command '("yes") :connection-type 'pipe :noquery t
-                             :filter (lambda (_p s) (setq bytes (+ bytes (length s))))))
-         (worst 0.0)
-         got)
-    (unwind-protect
-        (progn
-          (accept-process-output proc 0.2)
-          (should (> bytes 0))
-          (dolist (c keys)
-            (nhmac--test-post-key c)
-            (let ((t0 (float-time)))
-              (push (read-event nil nil 2) got)
-              (setq worst (max worst (- (float-time) t0))))))
-      (delete-process proc))
-    (message "nhmac-keys-before-output: worst %.3f s, %d bytes of output" worst bytes)
-    (should (equal (nreverse got) keys))
-    (should (< worst 0.5))
-    (should (= (nhmac-gui--delta before :helper-hops-keys) 0))
-    (should (> (nhmac-gui--delta before :waits) 0))))
+  ;; each phase's seconds, so a slow row names the phase it spent them in
+  (let ((phases nil) (t0 (float-time)))
+    (nhmac-gui--flush)
+    (push (cons 'flush (- (float-time) t0)) phases)
+    (let* ((bytes 0)
+           (before (nhmac-stats))
+           (keys (append "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWX" nil))
+           (proc (make-process :name "nhmac-flood" :command '("yes") :connection-type 'pipe :noquery t
+                               :filter (lambda (_p s) (setq bytes (+ bytes (length s))))))
+           (worst 0.0)
+           got)
+      (unwind-protect
+          (progn
+            (setq t0 (float-time))
+            (accept-process-output proc 0.2)
+            (push (cons 'first-output (- (float-time) t0)) phases)
+            (should (> bytes 0))
+            (setq t0 (float-time))
+            (dolist (c keys)
+              (nhmac--test-post-key c)
+              (let ((t1 (float-time)))
+                (push (read-event nil nil 2) got)
+                (setq worst (max worst (- (float-time) t1)))))
+            (push (cons 'keys (- (float-time) t0)) phases))
+        (setq t0 (float-time))
+        (delete-process proc)
+        (push (cons 'delete (- (float-time) t0)) phases))
+      (nhmac-gui--say "nhmac-keys-before-output: worst %.3f s, %d bytes of output, phases %S" worst bytes
+                      (nreverse phases))
+      (should (equal (nreverse got) keys))
+      (should (< worst 0.5))
+      (should (= (nhmac-gui--delta before :helper-hops-keys) 0))
+      (should (> (nhmac-gui--delta before :waits) 0)))))
 
 ;; Task 13: the lock hand-off
 (defun nhmac-gui--idle-until (pred secs)
@@ -336,7 +346,7 @@ end.  The lock waits over 2 ms are logged, not gated."
     (should (nhmac-gui--idle-until (lambda () (>= (aref state 0) 10000)) 60))
     (setcar stop t)
     (mapc #'thread-join (car c))
-    (message "nhmac-lock-handoff: %d rounds, %d lock waits over 2 ms; stats %S"
+    (nhmac-gui--say "nhmac-lock-handoff: %d rounds, %d lock waits over 2 ms; stats %S"
              (aref state 0) (aref state 1) (nhmac-stats))
     (should (>= (aref state 0) 10000))
     (should (= (nhmac-gui--delta before :parks-with-waiters) 0))
@@ -421,7 +431,7 @@ input polls pump AppKit.  The loop ends itself after 5 s, failing the row."
               (deadline (+ start 5)))
           (while (< (float-time) deadline)))
       (quit (setq quit t)))
-    (message "nhmac-quit-reaches-busy-loop: quit %S after %.2f s" quit (- (float-time) start))
+    (nhmac-gui--say "nhmac-quit-reaches-busy-loop: quit %S after %.2f s" quit (- (float-time) start))
     (should quit)
     (should (< (- (float-time) start) 4))))
 
@@ -474,7 +484,7 @@ wait, with no AppKit event: the notifier's want of the lock ends the main thread
     (should (nhmac-gui--idle-until (lambda () woken) 5))
     (thread-join notifier)
     (thread-join waiter)
-    (message "nhmac-thread-wakes-idle-main: woken %.3f s after the notify" (- woken notified))
+    (nhmac-gui--say "nhmac-thread-wakes-idle-main: woken %.3f s after the notify" (- woken notified))
     (should (< (- woken notified) 0.5))))
 
 ;; The guard: an Objective-C exception in a pump poisons the display, as a panic does, and Emacs goes on
@@ -492,7 +502,7 @@ is raised in a child Emacs on the same window server, never in the runner; the c
     (unwind-protect
         (progn
           (should (gui-runner-wait (lambda () (not (process-live-p proc))) 30))
-          (message "nhmac-objc-exception-poisons: child %S %S: %s" (process-status proc) (process-exit-status proc)
+          (nhmac-gui--say "nhmac-objc-exception-poisons: child %S %S: %s" (process-status proc) (process-exit-status proc)
                    (with-current-buffer buf (buffer-string)))
           ;; ended by itself, with the lost display's status, not by a signal (an abort)
           (should (eq (process-status proc) 'exit))
@@ -611,7 +621,8 @@ without, back to back."
 
 (ert-deftest nhmac-typing-bytes ()
   "Typing copies only damage into the surfaces: per key at most the damage times the ring's age, a few lines at
-most, in the three §5.4 cases (end of line, mid-line, the worst plain key); never a whole surface."
+most, in the three §5.4 cases (end of line, mid-line, the worst plain key); never a whole surface.  The keys come
+at the fastest key repeat, on a ring that has made all its slots."
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--require-composited)
   (let ((row (nhmac-gui--row-bytes))
@@ -643,7 +654,7 @@ most, in the three §5.4 cases (end of line, mid-line, the worst plain key); nev
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "commits")
   (let ((d (nhmac-gui--type 20)))
-    (message "nhmac-commits-per-redisplay: 20 keys: %d commits" (plist-get d :commits))
+    (nhmac-gui--say "nhmac-commits-per-redisplay: 20 keys: %d commits" (plist-get d :commits))
     (should (<= (plist-get d :commits) 20))
     (should (>= (plist-get d :commits) 1)))
   (kill-buffer))
@@ -654,7 +665,7 @@ interposer in the NS lane of the same run, is logged by `nhmac-interposer-counts
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "spins")
   (let ((d (nhmac-gui--type 20)))
-    (message "nhmac-no-spins-in-redisplay: 20 keys: %d spins outside the pumps" (plist-get d :spins-in-redisplay))
+    (nhmac-gui--say "nhmac-no-spins-in-redisplay: 20 keys: %d spins outside the pumps" (plist-get d :spins-in-redisplay))
     (should (= (plist-get d :spins-in-redisplay) 0)))
   (kill-buffer))
 
@@ -682,7 +693,7 @@ interposer in the NS lane of the same run, is logged by `nhmac-interposer-counts
       (let ((pumps (nhmac-gui--delta before :pumps))
             (commits (nhmac-gui--delta before :commits))
             (sleeps (nhmac-gui--delta before :sleeps)))
-        (message "nhmac-key-to-commit-counts: pumps %d commits %d fd waits %d" pumps commits sleeps)
+        (nhmac-gui--say "nhmac-key-to-commit-counts: pumps %d commits %d fd waits %d" pumps commits sleeps)
         ;; who asked for each pump
         (ert-info ((format "pump decisions %S" (nhmac--pump-trace)))
           (should (= pumps 1))
@@ -752,7 +763,7 @@ changed) it has fewer, which their check sees, and the warm-up fills it."
          (_ (progn (scroll-up 1) (redisplay)))
          (bytes (nhmac-gui--delta before :bytes-copied))
          (rows (* 4 (frame-pixel-width) (window-body-height nil t))))
-    (message "nhmac-scroll-bytes: one line: copied %d, the window's rows %d" bytes rows)
+    (nhmac-gui--say "nhmac-scroll-bytes: one line: copied %d, the window's rows %d" bytes rows)
     (should (= (nhmac-gui--delta before :full-copies) 0))
     (should (> bytes 0))
     (should (<= bytes (* nhmac-gui--ring rows))))
@@ -767,7 +778,7 @@ changed) it has fewer, which their check sees, and the warm-up fills it."
     (insert "y")
     (redisplay)
     (let ((s (nhmac-gui--surface)))
-      (message "nhmac-commit-shows-without-spin: %S" s)
+      (nhmac-gui--say "nhmac-commit-shows-without-spin: %S" s)
       (should (eq (plist-get s :contents-is-newest) t))
       (should (equal (plist-get s :gravity) "topLeft"))
       (should (= (plist-get s :scale) (/ (plist-get (nhmac--window-info) :device-width)
@@ -849,7 +860,7 @@ checked against the faces, tolerance 0 for fills and box lines."
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((o (nhmac-gui--draw-scene))
          (x (car o)) (y (cdr o)) (h (frame-char-height)))
-    (message "nhmac-draw-fills-boxes-cursors: origin %S, stats %S" o (nhmac-stats))
+    (nhmac-gui--say "nhmac-draw-fills-boxes-cursors: origin %S, stats %S" o (nhmac-stats))
     (should (> (plist-get (nhmac-stats) :draws) 0))
     ;; the plain stretch's middle
     (should (= (nhmac-gui--pixel-at (+ x 6) (+ y (/ h 2))) #xff336699))
@@ -886,7 +897,7 @@ checked against the faces, tolerance 0 for fills and box lines."
       (while (and (thread-live-p th) (< (float-time) deadline))
         (thread-yield)))
     (should-not (thread-live-p th))
-    (message "nhmac-draw-other-thread: %S" (nhmac-stats))
+    (nhmac-gui--say "nhmac-draw-other-thread: %S" (nhmac-stats))
     (should (>= (nhmac-gui--delta before :deferred-commits) 1))
     ;; the main thread's pump commits it
     (sit-for 0.1)
@@ -1018,13 +1029,13 @@ points, Naglfar in device pixels), and the text's pixels are within 1/255 of NS'
                   (insert-file-contents (nhmac-gui--font-file "eld" t))
                   (read (current-buffer))))
             (mine (nhmac-gui--font-metrics)))
-        (message "nhmac-font-ascii: scale %d: NS %S, Naglfar %S, stats %S" scale ns mine (nhmac-stats))
+        (nhmac-gui--say "nhmac-font-ascii: scale %d: NS %S, Naglfar %S, stats %S" scale ns mine (nhmac-stats))
         (should (equal mine (mapcar (lambda (v) (* v scale)) ns))))
       (pcase-let* ((`(,nw ,nh ,npx) (nhmac-gui--text-crop (nhmac-gui--bmp-read (nhmac-gui--font-file "bmp" t))))
                    (`(,mw ,mh ,mpx) (nhmac-gui--text-crop
                                      (nhmac-gui--bmp-read (nhmac-gui--capture (nhmac-gui--font-file "bmp")))))
                    (worst 0) (off 0))
-        (message "nhmac-font-ascii: text NS %dx%d, Naglfar %dx%d" nw nh mw mh)
+        (nhmac-gui--say "nhmac-font-ascii: text NS %dx%d, Naglfar %dx%d" nw nh mw mh)
         ;; an empty crop is a capture that missed the frame, never a size to compare
         (should (> nw 0))
         (should (> mw 0))
@@ -1035,7 +1046,7 @@ points, Naglfar in device pixels), and the text's pixels are within 1/255 of NS'
               (let ((d (abs (- (logand (ash a (- sh)) 255) (logand (ash b (- sh)) 255)))))
                 (setq worst (max worst d))
                 (when (> d 1) (cl-incf off))))))
-        (message "nhmac-font-ascii: worst channel difference %d, %d channels over 1" worst off)
+        (nhmac-gui--say "nhmac-font-ascii: worst channel difference %d, %d channels over 1" worst off)
         (should (<= worst 1))))))
 
 (ert-deftest nhmac-font-open-close ()
@@ -1061,7 +1072,7 @@ frame's text still reaches the surface."
                           (let ((p (nhmac-gui--pixel-at x y)))
                             (when (and p (< (logand (ash p -8) 255) 64))
                               (setq dark (list x y p))))))
-        (message "nhmac-font-open-close: a text pixel %S, stats %S" dark (nhmac-stats))
+        (nhmac-gui--say "nhmac-font-open-close: a text pixel %S, stats %S" dark (nhmac-stats))
         (should dark)))))
 
 ;; Task 17: images through ImageIO
@@ -1132,7 +1143,7 @@ screen are within 2/255 of NS's in the same run (NS points are pixels there)."
     (dolist (f (nhmac-gui--image-files))
       (let* ((name (file-name-nondirectory f))
              (size (image-size (create-image f nil nil :scale 1) t)))
-        (message "nhmac-images-native: %s NS %S Naglfar %S" name (cdr (assoc name ns)) size)
+        (nhmac-gui--say "nhmac-images-native: %s NS %S Naglfar %S" name (cdr (assoc name ns)) size)
         (should (equal size (cdr (assoc name ns))))
         (when (equal (getenv "GLITNIR_GUI_SCALE") "1")
           (nhmac-gui--with-image-scene f
@@ -1150,7 +1161,7 @@ screen are within 2/255 of NS's in the same run (NS points are pixels there)."
                 (let ((a (aref npx i)) (b (aref mpx i)))
                   (dolist (sh '(16 8 0))
                     (setq worst (max worst (abs (- (logand (ash a (- sh)) 255) (logand (ash b (- sh)) 255))))))))
-              (message "nhmac-images-native: %s %dx%d, worst channel difference %d" name mw mh worst)
+              (nhmac-gui--say "nhmac-images-native: %s %dx%d, worst channel difference %d" name mw mh worst)
               (should (<= worst 2))))))))
   ;; an animated GIF's frames, count and delay
   (let ((img (create-image nhmac-gui--gif2 'gif t :index 1 :scale 1)))
@@ -1188,12 +1199,14 @@ and for JPEG) land and draw the pixels the inline load draws, within 2/255."
     (dolist (f (nhmac-gui--image-files))
       (when (string-match-p "\\.\\(png\\|jpg\\|gif\\|webp\\)\\'" f)
         (let* ((name (file-name-nondirectory f))
+               (t0 (float-time))
                (inline (nhmac-gui--image-screen f (concat name ".inline.bmp")))
                (landed (plist-get (nidhogg-workers--test-image-info) :landed))
                (off (unwind-protect
                         (progn (nidhogg-workers--test-decide 'offload)
                                (nhmac-gui--image-screen f (concat name ".worker.bmp") t))
                       (nidhogg-workers--test-decide nil)))
+               (t1 (float-time))
                (worst 0))
           ;; the worker took it: one more landing
           (should (> (plist-get (nidhogg-workers--test-image-info) :landed) landed))
@@ -1202,8 +1215,8 @@ and for JPEG) land and draw the pixels the inline load draws, within 2/255."
             (let ((a (aref (nth 2 inline) i)) (b (aref (nth 2 off) i)))
               (dolist (sh '(16 8 0))
                 (setq worst (max worst (abs (- (logand (ash a (- sh)) 255) (logand (ash b (- sh)) 255))))))))
-          (message "nhmac-images-worker: %s %dx%d, worst channel difference %d" name (car inline) (nth 1 inline)
-                   worst)
+          (nhmac-gui--say "nhmac-images-worker: %s %dx%d, worst channel difference %d; captures %.1f s, compare %.1f s"
+                          name (car inline) (nth 1 inline) worst (- t1 t0) (- (float-time) t1))
           (should (<= worst 2)))))))
 
 (ert-deftest nhmac-images-stand-in ()
@@ -1242,7 +1255,7 @@ glue's stand-in), and the stand-in goes when the decode lands."
                  (edges (window-inside-pixel-edges))
                  (px (nhmac-gui--pixel-at (+ (nth 0 edges) (car xy) (round (* 1.5 (car size))))
                                           (+ (nth 1 edges) (cdr xy) (round (* 1.5 (cdr size)))))))
-            (message "nhmac-images-stand-in: old %S, pixel %x" size px)
+            (nhmac-gui--say "nhmac-images-stand-in: old %S, pixel %x" size px)
             (dolist (sh '(16 8 0))
               (should (< (logand (ash px (- sh)) 255) 16))))
           (nidhogg-workers--release 'after-header)
@@ -1276,7 +1289,7 @@ glue's stand-in), and the stand-in goes when the decode lands."
   (let ((xy (posn-x-y (posn-at-point (point-min))))
         (edges (window-inside-pixel-edges)))
     (let ((x (+ (nth 0 edges) (car xy))) (y (+ (nth 1 edges) (cdr xy))))
-      (message "nhmac-images-builtin: xbm %x pbm %x" (nhmac-gui--pixel-at (+ x 2) (+ y 2))
+      (nhmac-gui--say "nhmac-images-builtin: xbm %x pbm %x" (nhmac-gui--pixel-at (+ x 2) (+ y 2))
                (nhmac-gui--pixel-at (+ x 10) (+ y 2)))
       ;; every XBM bit set: the foreground; every PBM pixel 0 (white in PBM's sense): the background.  The draws name
       ;; whether a wrong pixel is the container's (`:word') or the drawing's.
@@ -1309,18 +1322,13 @@ top row lands where the turn puts it, its pixels doubled (not smoothed) when sca
            (x (+ (nth 0 edges) (car xy)))
            (y (+ (nth 1 edges) (cdr xy)))
            (px (lambda (dx dy) (nhmac-gui--pixel-at (+ x dx) (+ y dy)))))
-      (message "nhmac-images-transform: scaled %x %x, 90 %x %x, 270 flipped %x %x"
-               (funcall px 3 1) (funcall px 3 2) (funcall px 23 3) (funcall px 16 3)
-               (funcall px 31 3) (funcall px 24 3))
-      ;; scaled 2: rows 0 and 1 lit, row 2 not
-      (should (= (funcall px 3 1) #xffff0000))
-      (should (= (funcall px 3 2) #xff0000ff))
-      ;; turned 90 degrees clockwise (from x 16): the top row is the right column
-      (should (= (funcall px 23 3) #xffff0000))
-      (should (= (funcall px 16 3) #xff0000ff))
+      ;; one comparison, so a failure shows every pixel:
+      ;; scaled 2: rows 0 and 1 lit, row 2 not;
+      ;; turned 90 degrees clockwise (from x 16): the top row is the right column;
       ;; turned 270 (the top row to the left column), then flipped (from x 24): the right column again
-      (should (= (funcall px 31 3) #xffff0000))
-      (should (= (funcall px 24 3) #xff0000ff))))
+      (should (equal (mapcar (lambda (p) (format "%x" (funcall px (car p) (cdr p))))
+                             '((3 . 1) (3 . 2) (23 . 3) (16 . 3) (31 . 3) (24 . 3)))
+                     '("ffff0000" "ff0000ff" "ffff0000" "ff0000ff" "ffff0000" "ff0000ff")))))
   (kill-buffer))
 
 (defun nhmac-gui--image-pixels (img &rest at)
@@ -1350,7 +1358,7 @@ top row lands where the turn puts it, its pixels doubled (not smoothed) when sca
     (let ((px (nhmac-gui--image-pixels
                (create-image svg 'svg t :scale 1 :foreground "#ff0000" :background "#00ff00")
                '(1 . 1) '(6 . 1))))
-      (message "nhmac-images-svg: currentColor %x background %x" (nth 0 px) (nth 1 px))
+      (nhmac-gui--say "nhmac-images-svg: currentColor %x background %x" (nth 0 px) (nth 1 px))
       (should (equal px '(#xffff0000 #xff00ff00))))
     (let ((px (nhmac-gui--image-pixels (create-image svg 'svg t :scale 1 :css "rect{fill:#ffff00}") '(1 . 1))))
       (should (equal px '(#xffffff00)))))
@@ -1372,7 +1380,7 @@ the background beside a named colour."
     (should (equal (image-size (create-image file 'xpm nil :scale 1) t) head)))
   (let* ((xpm "/* XPM */\nstatic char *t[] = {\n\"4 2 2 1\",\n\"  c None\",\n\". c red\",\n\"..  \",\n\"..  \"};")
          (px (nhmac-gui--image-pixels (create-image xpm 'xpm t :scale 1) '(0 . 0) '(3 . 1))))
-    (message "nhmac-images-xpm: red %x None %x" (nth 0 px) (nth 1 px))
+    (nhmac-gui--say "nhmac-images-xpm: red %x None %x" (nth 0 px) (nth 1 px))
     (should (equal px '(#xffff0000 #xff0000ff)))))
 
 (ert-deftest nhmac-images-image-tests ()
@@ -1380,7 +1388,7 @@ the background beside a named colour."
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (load (expand-file-name "../image-tests" (getenv "GLITNIR_GUI_TESTS")) nil t)
   (let ((stats (ert-run-tests "\\`image-tests-" #'ignore)))
-    (message "nhmac-images-image-tests: %d run, %d unexpected, %d skipped"
+    (nhmac-gui--say "nhmac-images-image-tests: %d run, %d unexpected, %d skipped"
              (ert-stats-completed stats) (ert-stats-completed-unexpected stats) (ert-stats-skipped stats))
     (should (> (ert-stats-completed stats) 0))
     (should (zerop (ert-stats-completed-unexpected stats)))))
@@ -1408,7 +1416,7 @@ The filter checks itself first on a Homebrew libpng line (caught), the system Im
                  '("\t/opt/homebrew/opt/libpng/lib/libpng16.16.dylib (compatibility version 61.0.0)")))
   (let* ((bin (expand-file-name invocation-name invocation-directory))
          (libs (cdr (process-lines "otool" "-L" bin))))
-    (message "nhmac-images-no-homebrew: %s links %S" bin libs)
+    (nhmac-gui--say "nhmac-images-no-homebrew: %s links %S" bin libs)
     (should libs)
     (should-not (nhmac-gui--outside-image-libs libs))))
 
