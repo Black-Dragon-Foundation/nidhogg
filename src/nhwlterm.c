@@ -2844,7 +2844,7 @@ nhwl_click_apply (struct nhwl_display_info *dpyinfo, struct frame *f,
 		  const NhgAction *a, struct input_event *hold_quit)
 {
   union buffered_input_event inev;
-  int code = a->code;
+  int code = a->code, x, y;
   bool down = a->flags == NHG_BUTTON_PRESSED;
 
   EVENT_INIT (inev.ie);
@@ -2863,12 +2863,23 @@ nhwl_click_apply (struct nhwl_display_info *dpyinfo, struct frame *f,
     }
   if (code < 0)
     return 0;
+  x = FRAME_DISPLAY_INFO (f)->last_mouse_motion_x;
+  y = FRAME_DISPLAY_INFO (f)->last_mouse_motion_y;
+  /* A button in the tab bar carries the item it is on (pgtk's
+     button_event, emacs-31.1); one on a disabled item is dropped.  */
+  if (WINDOWP (f->tab_bar_window)
+      && WINDOW_TOTAL_LINES (XWINDOW (f->tab_bar_window))
+      && EQ (window_from_coordinates (f, x, y, 0, true, true, true),
+	     f->tab_bar_window)
+      && NILP (inev.ie.arg = handle_tab_bar_click
+	       (f, x, y, down, nhwl_emacs_modifiers (a->mods))))
+    return 0;
   inev.ie.kind = MOUSE_CLICK_EVENT;
   inev.ie.code = code;
   inev.ie.modifiers = (nhwl_emacs_modifiers (a->mods)
 		       | (down ? down_modifier : up_modifier));
-  XSETINT (inev.ie.x, FRAME_DISPLAY_INFO (f)->last_mouse_motion_x);
-  XSETINT (inev.ie.y, FRAME_DISPLAY_INFO (f)->last_mouse_motion_y);
+  XSETINT (inev.ie.x, x);
+  XSETINT (inev.ie.y, y);
   XSETFRAME (inev.ie.frame_or_window, f);
   inev.ie.timestamp = a->time_ms;
   FRAME_DISPLAY_INFO (f)->last_mouse_frame = f;
