@@ -740,6 +740,7 @@ impl ShellBackend for MacShell {
             if damage.is_empty() && w.surfaces.newest().is_some() && w.surfaces.size() == (lw, lh) {
                 continue;
             }
+            crate::trace::pump(|| format!("publish: window {} damage {damage:?}", f.window));
             if w.surfaces.draw(f, &damage).is_some() {
                 ids.push(f.window);
             }
