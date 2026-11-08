@@ -509,7 +509,7 @@ nhwl_create_tree (struct frame *f)
 {
   Lisp_Object tail, frame;
 
-  nhwl_create_frame_window (f);
+  nhwl_create_frame_window (f, 0);
   nhwl_child_created (f);
   if (FRAME_VISIBLE_P (f))
     {
@@ -550,8 +550,10 @@ nhwl_parent_refused (struct frame *f, Lisp_Object old_value, const char *why)
 
 /* The `parent-frame' parameter changed at run time.  A surface keeps its
    role, so F and the child frames under it get new windows, its popups
-   hide, and the backing keeps the picture.  The keys stay with F: routed
-   in its new tree, or asked for as a top-level.  */
+   hide, and the backing keeps the picture.  Naglfar moves F's window
+   between the trees in place instead: it keeps its picture, and the
+   windows under it come along, so nothing is drawn again.  The keys stay
+   with F: routed in its new tree, or asked for as a top-level.  */
 void
 nhwl_set_parent_frame (struct frame *f, Lisp_Object new_value,
 		       Lisp_Object old_value)
@@ -582,17 +584,32 @@ nhwl_set_parent_frame (struct frame *f, Lisp_Object new_value,
     if (o->popup_frame && o->window && frame_ancestor_p (f, o->frame))
       nhwl_popup_hide (o->frame);
   nhwl_child_focus_gone (f, false);
+#ifdef HAVE_NHMAC
+  uint64_t in_place = out->window;
+#else
+  uint64_t in_place = 0;
+#endif
   block_input ();
   NHG (nhg_session_remove (FRAME_NHG (f), out->window));
-  if (out->window)
-    nhwl_window_destroy (dpyinfo, out->window);
-  out->window = out->focus_window = 0;
-  nhwl_forget_windows_under (f);
+  out->focus_window = 0;
+  if (!in_place)
+    {
+      if (out->window)
+	nhwl_window_destroy (dpyinfo, out->window);
+      out->window = 0;
+      nhwl_forget_windows_under (f);
+      out->configured = false;
+    }
   fset_parent_frame (f, new_value);
-  out->configured = false;
   out->states = 0;
   unblock_input ();
-  nhwl_create_tree (f);
+  if (in_place)
+    {
+      nhwl_create_frame_window (f, in_place);
+      nhwl_child_created (f);
+    }
+  else
+    nhwl_create_tree (f);
   if (!p)
     {
       nhwl_csd_layout (f);
@@ -1062,7 +1079,7 @@ DEFUN ("x-create-frame", Fx_create_frame, Sx_create_frame, 1, 1, 0,
 
   /* The shell's window, at the size the frame will have.  */
   if (!nhwl_popup_frame_p (f))
-    nhwl_create_frame_window (f);
+    nhwl_create_frame_window (f, 0);
   nhwl_child_created (f);
   out->next_output = dpyinfo->outputs;
   dpyinfo->outputs = out;

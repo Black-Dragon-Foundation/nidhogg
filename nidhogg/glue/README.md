@@ -158,7 +158,9 @@ Every shell window C makes goes through `nhg_window_new` (`src/window.rs`), whos
 frame starts from (native size, scale, visible, iconified, our own title bar): the glue registers the window seeded
 with them. Tip, popup and child frames get a new window each time they are shown, so each new window starts from
 Emacs's values, and its alpha starts over. `nhg_window_destroy` destroys and forgets (the frame is forgotten even when
-a lost connection makes the shell refuse).
+a lost connection makes the shell refuse). A `parent-frame` change goes through `nhg_window_reparent` where the shell
+can move a window between the trees in place (macOS): the window keeps its id and its picture, its children come
+along, and nothing is drawn again; elsewhere C makes the windows again.
 
 - **Operations:** title, `undecorated` (a child's window has nothing to ask), alpha, the size C sets itself (a push,
   as `nhg_frame_resized`), the smallest size (none for a child), visibility and iconify (checked pushes), fullscreen
@@ -305,6 +307,7 @@ accepted and does nothing, as for a missing Wayland protocol.
 | `nhg_im_enable` / `nhg_im_cursor` / `nhg_im_surrounding` | - | the input method's requests | `NSTextInputClient` |
 | `nhg_monitors` / `nhg_frame_outputs` / `nhg_frame_monitors` / `nhg_monitor_origin` | - | outputs, the ones a frame is on, a monitor's device origin | `NSScreen` list |
 | `nhg_window_new` / `nhg_window_destroy` | - | make or destroy a frame's shell window | `NSWindow` |
+| `nhg_window_reparent` | - | `NHG_E_UNSUPPORTED` (a surface keeps its role: C makes the window again) | the window keeps its id and picture: a child's container becomes an `NSWindow`, a top-level's window closes and its surfaces become a container, a child's container moves to its new parent |
 | `nhg_window_title` / `nhg_window_undecorated` / `nhg_window_alpha` / `nhg_window_min_size` / `nhg_window_size` | - | title, decoration, alpha, smallest size, pushed size | the matching `NSWindow` properties |
 | `nhg_window_place` | - | `NHG_E_UNSUPPORTED` (Wayland clients have no position) | `setFrameTopLeftPoint`, from the main screen's top-left as NS's `set_offset` places a frame |
 | `nhg_window_move` / `nhg_window_resize` / `nhg_window_show_menu` / `nhg_window_activate` | - | interactive move and resize, window menu, activation | `performWindowDrag`, `NSWindow` resize, no window menu, `makeKeyAndOrderFront` |

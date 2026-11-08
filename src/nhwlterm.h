@@ -480,7 +480,7 @@ extern double nhwl_frame_scale_factor (struct frame *);
 extern double nhwl_frame_res (struct frame *);
 extern const char *nhwl_get_string_resource (XrmDatabase, const char *,
 					     const char *);
-extern void nhwl_create_frame_window (struct frame *);
+extern void nhwl_create_frame_window (struct frame *, uint64_t);
 extern void nhwl_set_title_hint (struct frame *);
 extern void nhwl_set_undecorated_hint (struct frame *, bool);
 extern void nhwl_set_frame_alpha (struct frame *);

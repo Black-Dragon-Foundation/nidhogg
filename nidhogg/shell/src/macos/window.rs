@@ -34,9 +34,23 @@ pub struct Win {
 }
 
 impl Win {
-    /// A `w` x `h` point window titled `title`, decorated unless `undecorated`, shown at once; its delegate reports
-    /// as window `id`.
+    /// A `w` x `h` point window titled `title`, decorated unless `undecorated`, shown at once and key; its delegate
+    /// reports as window `id`.
     pub fn open(
+        mtm: MainThreadMarker,
+        id: WindowId,
+        w: i32,
+        h: i32,
+        undecorated: bool,
+        title: &str,
+    ) -> Win {
+        let win = Win::make(mtm, id, w, h, undecorated, title);
+        win.window.makeKeyAndOrderFront(None);
+        win
+    }
+
+    /// As [`Win::open`], not shown yet.
+    pub fn make(
         mtm: MainThreadMarker,
         id: WindowId,
         w: i32,
@@ -72,7 +86,6 @@ impl Win {
         window.setTitle(&NSString::from_str(title));
         let delegate = WinDelegate::new(mtm, id);
         window.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-        window.makeKeyAndOrderFront(None);
         let scale120 = (window.backingScaleFactor() * 120.0).round() as u32;
         Win {
             window,
