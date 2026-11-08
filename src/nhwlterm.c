@@ -1072,9 +1072,7 @@ nhwl_window_facts (struct frame *f)
    rest up to ANCHOR) through the glue, which registers it as a frame of
    kind FLAGS (NHG_FRAME_*) with the facts it starts from (the scale F's
    window starts at, F's native size, its visibility and title bar),
-   filled in here; its id goes to *ID.  With *ID a window already
-   (Naglfar), that window takes the place DESC describes instead, keeping
-   its id and its picture.  The glue's code, or 0.  */
+   filled in here; its id goes to *ID.  The glue's code, or 0.  */
 int
 nhwl_window_new (struct frame *f, NhgWindowDesc *desc, uint32_t flags,
 		 uint64_t *id)
@@ -1094,10 +1092,17 @@ nhwl_window_new (struct frame *f, NhgWindowDesc *desc, uint32_t flags,
   desc->native_h = max (1, h);
   desc->scale120 = out->scale120;
 
-  int rc = nhwl_glue_rc (dpyinfo,
-			NHG (*id
-			     ? nhg_window_reparent (dpyinfo->glue, *id, desc)
-			     : nhg_window_new (dpyinfo->glue, desc, id)));
+  int rc;
+#ifdef HAVE_NHMAC
+  /* *ID a window already: it takes the place DESC describes instead,
+     keeping its id and its picture (nhwl_set_parent_frame).  */
+  if (*id)
+    rc = nhwl_glue_rc (dpyinfo, NHG (nhg_window_reparent (dpyinfo->glue,
+							   *id, desc)));
+  else
+#endif
+    rc = nhwl_glue_rc (dpyinfo, NHG (nhg_window_new (dpyinfo->glue, desc,
+						       id)));
   if (rc >= 0 && FRAME_COLUMN_WIDTH (f) > 0 && FRAME_LINE_HEIGHT (f) > 0)
     nhwl_glue_rc (dpyinfo, NHG (nhg_frame_units (dpyinfo->glue, *id,
 						 FRAME_COLUMN_WIDTH (f),
@@ -1160,8 +1165,7 @@ nhwl_session_name (struct frame *f)
 }
 
 /* Create frame F's shell window at its current pixel size.  Adapted from
-   xg_create_frame_widgets' role in pgtk.  With IN_PLACE, F's window
-   (Naglfar's) takes the place F's parent gives it now instead.  */
+   xg_create_frame_widgets' role in pgtk.  IN_PLACE: see nhwl_window_new.  */
 void
 nhwl_create_frame_window (struct frame *f, uint64_t in_place)
 {
