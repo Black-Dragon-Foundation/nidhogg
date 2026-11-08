@@ -491,8 +491,11 @@ post AppKit events and read the shell's counters through those hooks.
   skipped, row-only run` (and a notice), and with no drgnx tier left the drgnx job is skipped. A full run and a tag run it.
 - The macOS lanes are two jobs that run at once (the org has five macOS slots): `macOS (NS app)` (build, tarball, tarball
   test, NS rows, the `tarball-macos` artifact) and `macOS (Naglfar)` (its dev build, Rust tests, boundary check, rows,
-  logs in `nhmac-gui-logs-naglfar`). `pair` is the one thing Naglfar takes from the NS job: it waits for its tarball.
-  Naglfar does not run for `ns_app_run`.
+  logs in `nhmac-gui-logs-naglfar`).
+  Naglfar does not run for `ns_app_run`. The Naglfar rows compare with the NS rows' dumps (`nhmac-ns-*`, written on the NS
+  runner), so they run in a third job, `macOS (Naglfar rows)`, after both: the NS job uploads `nhmac-ns-refs`, the Naglfar
+  job its build tree as `naglfar-build` (object files and Rust targets left out), and the rows job (and the `pair` timing,
+  which also takes `tarball-macos`) fails naming the artifact if one is missing.
 - Native compilation in the macOS NS job: a `scratch/*` dispatch builds with `build.sh --native-preloaded` (only the
   preloaded Lisp native-compiled, the rest byte code, JIT off in the image, so no compile starts under a timing row;
   the byte-compiled cache entry is taken from a full build's through `NIDHOGG_BUILD_LISP_CACHE_ELC=1`, the `.eln` entry
