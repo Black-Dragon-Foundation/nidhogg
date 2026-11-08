@@ -217,7 +217,9 @@ impl MacShell {
             ),
             // "(DARK)": the application's appearance, dark (1) or the system's (0), as a system switch shows it
             "test-app-appearance" => Some(numbers(arg).map(|n| {
-                super::super::windowing::test_appearance(&self.app, n.first() == Some(&1.0))
+                super::super::windowing::test_appearance(&self.app, n.first() == Some(&1.0));
+                // what the switch's notification waking the run loop leads to
+                self.check_appearance();
             })),
             // "(WINDOW OP TEXT)": what an input method sends WINDOW's view: OP 0 marked text, 1 inserted text, 2 the
             // end of the composition, 3 the command TEXT (a selector)

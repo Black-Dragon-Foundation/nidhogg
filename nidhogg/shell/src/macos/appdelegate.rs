@@ -27,8 +27,14 @@ thread_local! {
     static OPEN_FILES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Queue `files` and tell Lisp.
+/// Queue `files` and tell Lisp.  A file that is one of the command line's arguments is dropped, as NS drops it:
+/// AppKit takes arguments it does not know (`--eval FORM`'s FORM) for files to open.
 pub fn open_files(files: Vec<String>) {
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let files: Vec<String> = files.into_iter().filter(|f| !argv.contains(f)).collect();
+    if files.is_empty() {
+        return;
+    }
     OPEN_FILES.with(|f| f.borrow_mut().extend(files));
     deliver(MacEv::Menu(0, APP_OPEN_FILES));
 }
