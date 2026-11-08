@@ -108,6 +108,19 @@ pub fn decode(
     Some((w as u32, h as u32, argb, alpha))
 }
 
+/// The colour names an XPM in `bytes` asks to be resolved, each once, in the order [`decode`] first asks for them
+/// (`None` is not one).  `None` when it does not parse.
+pub fn names(bytes: &[u8]) -> Option<Vec<String>> {
+    let mut names: Vec<String> = Vec::new();
+    decode(bytes, &mut |n| {
+        if !names.iter().any(|m| m == n) {
+            names.push(n.to_string());
+        }
+        0
+    })?;
+    Some(names)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,6 +162,17 @@ static char *test[] = {
         let (_, _, px, alpha) = decode(xpm, &mut names).unwrap();
         assert!(!alpha);
         assert_eq!(px, vec![0xffff_0000, 0xff12_3456]);
+    }
+
+    #[test]
+    fn the_names_to_resolve_each_once_in_order() {
+        let twice = br#"/* XPM */ { "3 1 3 1", "a c red", "b c None", "c c red", "abc" }"#;
+        assert_eq!(super::names(twice).unwrap(), vec!["red".to_string()]);
+        assert_eq!(
+            super::names(XPM).unwrap(),
+            vec!["#ff0000".to_string(), "light gray".to_string()]
+        );
+        assert!(super::names(b"not an xpm").is_none());
     }
 
     #[test]
