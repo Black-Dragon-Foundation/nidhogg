@@ -318,6 +318,7 @@ int32_t nhg_frame_csd (NhgDisplay *d, uint64_t window, int32_t on);
 #define NHG_IN_INPUT_WAITING   1   /* kbd_buffer_events_waiting () */
 #define NHG_IN_COALESCE_WHEEL  2   /* mwheel-coalesce-scroll-events */
 #define NHG_IN_ACKS_ONLY       4   /* record the acks due, take no event */
+#define NHG_IN_REDISPLAY       8   /* redisplaying_p: the drain's end asks the platform for no new events */
 typedef struct { uint32_t flags; } NhgNextIn;
 
 /* Kinds 1-31 are the original set, 32-63 the later ones.  */
