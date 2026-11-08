@@ -47,9 +47,10 @@ typedef cairo_pattern_t *nhwl_image;
 #else
 typedef struct CGContext nhwl_cr;
 /* An image as the image foreground draws it (nhwl_cr_draw_image): its
-   pixmap and mask, which the glue wraps once.  */
+   pixmap and mask, which the glue wraps once, or while its decode is
+   pending the stand-in the glue holds for it.  */
 typedef struct image *nhwl_image;
-#define NHWL_IMAGE(img) ((img)->pixmap ? (img) : NULL)
+#define NHWL_IMAGE(img) ((img)->pixmap || (img)->nhmac_stand ? (img) : NULL)
 /* NS's resolution: a point is 1/72 inch, so a 12-point font is 12
    pixels at scale 1, as on NS.  */
 #define NHWL_DPI 72.0
@@ -679,6 +680,9 @@ extern void nhwl_cr_draw_image (struct frame *, Emacs_GC *, nhwl_image, int,
 				int, int, int, int, int, bool);
 extern void nhmac_glyph_run (struct glyph_string *, uint64_t, int, int,
 			     int, int, bool);
+extern bool nhmac_image_stand_in (struct frame *, struct image *,
+				  struct image *);
+extern void nhmac_image_stand_drop (struct image *);
 #endif
 extern void syms_of_nhwlcsd (void);
 extern void nhwl_selection_clear_event (uint32_t, struct input_event *);
