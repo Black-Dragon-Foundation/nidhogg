@@ -240,7 +240,18 @@ impl Drop for Table {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::font::Spacing;
     use std::cell::RefCell;
+
+    fn grid(spacing: Spacing, space_width: i32) -> Grid {
+        Grid {
+            spacing,
+            space_width,
+            pixel_size: 12,
+            size: 12.0,
+            ..Grid::default()
+        }
+    }
 
     /// A font with a glyph for every character but U+0000 and U+0378 (unassigned): glyph `c % 60000 + 1`.  Glyph `g`'s
     /// advance is 7.2 for an odd `g`, 14.9 for an even one.  It records every call.
@@ -288,7 +299,7 @@ mod tests {
     #[test]
     fn a_page_fill_answers_the_whole_page_in_one_call() {
         let src = Fake::default();
-        let mut t = Table::new(false, 7);
+        let mut t = Table::new(grid(Spacing::Proportional, 7));
         assert!(t.fill(0, &src));
         assert_eq!(t.char_glyph(u32::from('A')), Some(Some(66)));
         assert_eq!(t.char_glyph(0xff), Some(Some(256)));
@@ -303,7 +314,7 @@ mod tests {
     #[test]
     fn a_miss_is_a_page_not_filled() {
         let src = Fake::default();
-        let mut t = Table::new(false, 7);
+        let mut t = Table::new(grid(Spacing::Proportional, 7));
         assert_eq!(t.char_glyph(0x3b1), None);
         assert_eq!(t.metrics(66), None);
         t.fill(3, &src);
@@ -329,7 +340,7 @@ mod tests {
     #[test]
     fn the_directory_and_its_pages_never_move() {
         let src = Fake::default();
-        let mut t = Table::new(false, 7);
+        let mut t = Table::new(grid(Spacing::Proportional, 7));
         let dir = t.as_ptr();
         t.fill(0, &src);
         t.fill(NHG_FONT_FILL_GLYPHS, &src);
@@ -353,7 +364,7 @@ mod tests {
     #[test]
     fn surrogate_and_plane_boundary_pages() {
         let src = Fake::default();
-        let mut t = Table::new(false, 7);
+        let mut t = Table::new(grid(Spacing::Proportional, 7));
         // surrogates have no characters: answered without asking the font
         assert!(t.fill(0xD8, &src));
         assert!(t.fill(0xDF, &src));
@@ -389,8 +400,8 @@ mod tests {
     fn glyph_pages_round_on_the_fonts_grid() {
         let src = Fake::default();
         // monospaced, 7 wide: a 14.9 advance is two cells (14), 7.2 one (7)
-        let mut t = Table::new(true, 0);
-        t.set_space_width(7);
+        let mut t = Table::new(grid(Spacing::Mono, 0));
+        t.set_grid(grid(Spacing::Mono, 7));
         t.fill(NHG_FONT_FILL_GLYPHS, &src);
         assert_eq!(t.metrics(2).map(|m| m.width), Some(14));
         assert_eq!(t.metrics(3).map(|m| m.width), Some(7));

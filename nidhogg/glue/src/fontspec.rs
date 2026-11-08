@@ -817,6 +817,57 @@ mod tests {
         assert_eq!(ids(&ja), [(9, 0), (9, NHG_FS_SYNTH_MONO)]);
     }
 
+    /// A source with a preferred family per script and coverage it answers itself.
+    struct Preferring(Fixture);
+    impl FontSource for Preferring {
+        fn faces(&self) -> Vec<FontFace> {
+            self.0.faces()
+        }
+        fn preferred(&self, script: &str) -> Option<String> {
+            (script == "latin").then(|| "Times".into())
+        }
+        fn fits(&self, face: &FontFace, script: &str, _language: &str) -> bool {
+            // "greek" is had by Times and Helvetica only, though their lists don't say so
+            if script == "greek" {
+                return face.family == "Times" || face.family == "Helvetica";
+            }
+            covers(&face.scripts, script)
+        }
+    }
+
+    #[test]
+    fn the_preferred_family_comes_first_and_sources_answer_coverage() {
+        let px = Preferring(fixture());
+        let got = |s: &str| {
+            list(
+                &px,
+                &FontSpec {
+                    script: s.into(),
+                    ..spec()
+                },
+            )
+        };
+        let latin: Vec<u64> = got("latin").iter().map(|e| e.face.id).collect();
+        assert_eq!(latin.first(), Some(&7));
+        assert_eq!(latin.iter().filter(|&&i| i == 7).count(), 1);
+        // the others keep their order
+        assert_eq!(&latin[1..4], &[1, 2, 3]);
+        assert_eq!(
+            got("greek").iter().map(|e| e.face.id).collect::<Vec<_>>(),
+            [4, 5, 7]
+        );
+        // a named family is not reordered
+        let named = list(
+            &px,
+            &FontSpec {
+                family: "Menlo".into(),
+                script: "latin".into(),
+                ..spec()
+            },
+        );
+        assert_eq!(named[0].face.id, 1);
+    }
+
     #[test]
     fn registry_iso10646_and_others() {
         let fx = fixture();

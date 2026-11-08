@@ -1136,6 +1136,262 @@ metrics from the font's glyph table.  A character on a page not read yet makes c
       (kill-buffer buf)
       (set-frame-font font nil (list (selected-frame))))))
 
+;; Task 23: listing, fallback and Core Text shaping, compared with NS's in the same run
+(require 'composite)
+
+(defconst nhmac-gui--parity-fonts
+  '(("Menlo" . "Hg.W") ("SF Mono" . "Hg.W") ("Helvetica" . "Hg.W") ("PingFang SC" . "中文字")
+    ("Apple Color Emoji" . "😀🐉"))
+  "The fonts the parity rows compare, each with the text whose glyphs are compared.")
+
+(defconst nhmac-gui--parity-heights '(100 120 160) "The `:height's the parity rows compare at.")
+
+(defun nhmac-gui--lane-file (name ext &optional ns)
+  "The NS row NAME's output nhmac-ns-NAME-scaleS.EXT, in this lane's GLITNIR_GUI_OUT, or with NS, the NS lane's."
+  (let ((out (or (getenv "GLITNIR_GUI_OUT") temporary-file-directory)))
+    (expand-file-name (format "nhmac-ns-%s-scale%s.%s" name (or (getenv "GLITNIR_GUI_SCALE") "1") ext)
+                      (if ns (expand-file-name ".." out) out))))
+
+(defun nhmac-gui--lane-read (name)
+  "The NS lane's NAME output, read."
+  (with-temp-buffer
+    (insert-file-contents (nhmac-gui--lane-file name "eld" t))
+    (read (current-buffer))))
+
+(defun nhmac-gui--lane-write (name value)
+  "Write VALUE as the NS row NAME's output."
+  (with-temp-file (nhmac-gui--lane-file name "eld")
+    (let ((print-length nil) (print-level nil)) (prin1 value (current-buffer)))))
+
+(defmacro nhmac-gui--with-text (face text &rest body)
+  "Run BODY in a buffer showing TEXT in FACE (a face spec), black on `nhmac-gui--font-bg', the window's only text,
+point at its start, after a full redisplay; the frame's colours are put back after."
+  (declare (indent 2))
+  `(let ((fg (frame-parameter nil 'foreground-color))
+         (bg (frame-parameter nil 'background-color))
+         (buf (generate-new-buffer " *nhmac-text*")))
+     (unwind-protect
+         (progn
+           (set-foreground-color "#000000")
+           (set-background-color nhmac-gui--font-bg)
+           (switch-to-buffer buf)
+           (setq-local cursor-type nil mode-line-format nil)
+           (set-window-fringes nil 0 0)
+           (insert "\n    ")
+           (insert (propertize ,text 'face ,face))
+           (goto-char (+ (point-min) 5))
+           (redraw-frame)
+           (redisplay t)
+           (sit-for 0.3)
+           ,@body)
+       (kill-buffer buf)
+       (set-window-fringes nil nil nil)
+       (set-foreground-color fg)
+       (set-background-color bg))))
+
+(defun nhmac-gui--glyph-facts (font text)
+  "TEXT's glyphs in FONT (a font object): each (code width lbearing rbearing ascent descent), `font-get-glyphs'."
+  (mapcar (lambda (g) (and g (list (aref g 3) (aref g 4) (aref g 5) (aref g 6) (aref g 7) (aref g 8))))
+          (font-get-glyphs font 0 (length text) text)))
+
+(defun nhmac-gui--font-facts (family height text)
+  "FAMILY at HEIGHT, nil when it is not the font shown: (:info (PIXEL-SIZE ASCENT DESCENT SPACE-WIDTH AVERAGE-WIDTH
+LINE-HEIGHT) :glyphs GLYPHS) for TEXT, and at :height 120 :underline (THICKNESS DROP): the underline's rows, and how
+far below the text's bottom it ends, both from captures."
+  (nhmac-gui--with-text (list :family family :height height) text
+    (let ((font (font-at (point))))
+      (when (and font (string-equal-ignore-case (symbol-name (font-get font :family)) family))
+        (let* ((q (query-font font))
+               (facts (list :info (list (aref q 2) (aref q 4) (aref q 5) (aref q 6) (aref q 7) (line-pixel-height))
+                            :glyphs (nhmac-gui--glyph-facts font text))))
+          (when (= height 120)
+            (let* ((plain (nth 1 (nhmac-gui--text-crop (nhmac-gui--bmp-read
+                                                         (nhmac-gui--capture (nhmac-gui--lane-file "tmp" "bmp")))))))
+              (let ((inhibit-read-only t))
+                (goto-char (point-max))
+                (insert (propertize "    " 'face (list :family family :height height :underline t))))
+              (redisplay t)
+              (sit-for 0.3)
+              (let ((both (nth 1 (nhmac-gui--text-crop (nhmac-gui--bmp-read
+                                                         (nhmac-gui--capture (nhmac-gui--lane-file "tmp" "bmp")))))))
+                (erase-buffer)
+                (insert "\n    " (propertize "    " 'face (list :family family :height height :underline t)))
+                (redisplay t)
+                (sit-for 0.3)
+                (let ((line (nth 1 (nhmac-gui--text-crop (nhmac-gui--bmp-read
+                                                           (nhmac-gui--capture (nhmac-gui--lane-file "tmp" "bmp")))))))
+                  (setq facts (append facts (list :underline (list line (- both plain)))))))))
+          facts)))))
+
+(defun nhmac-gui--parity-facts ()
+  "Every parity font's facts at every parity height: ((FAMILY HEIGHT FACTS) ...)."
+  (let (out)
+    (dolist (f nhmac-gui--parity-fonts (nreverse out))
+      (dolist (h nhmac-gui--parity-heights)
+        (push (list (car f) h (nhmac-gui--font-facts (car f) h (cdr f))) out)))))
+
+(defun nhmac-gui--near (ns mine scale)
+  "Whether MINE equals NS times SCALE, numbers within 1 at scale 2 (NS rounds in points, Naglfar in device pixels);
+lists element by element."
+  (cond ((and (numberp ns) (numberp mine)) (<= (abs (- mine (* ns scale))) (if (= scale 1) 0 1)))
+        ((and (consp ns) (consp mine)) (and (= (length ns) (length mine)) (cl-every (lambda (a b) (nhmac-gui--near a b scale)) ns mine)))
+        (t (equal ns mine))))
+
+(ert-deftest nhmac-ns-font-parity-dump ()
+  "NS's metrics, glyph extents and underlines of the parity fonts, for nhmac-font-metrics-parity in the Naglfar lane;
+its fallback fonts for nhmac-font-fallback-same; its shaping for nhmac-font-shaping."
+  (skip-unless (nhmac-gui--ns-build-p))
+  (let ((facts (nhmac-gui--parity-facts)))
+    (message "nhmac-ns-font-parity-dump: %S" facts)
+    (nhmac-gui--lane-write "font-parity" facts)
+    (should (cl-some (lambda (r) (nth 2 r)) facts)))
+  (nhmac-gui--lane-write "font-fallback" (nhmac-gui--fallback-facts))
+  (nhmac-gui--lane-write "font-shaping" (nhmac-gui--shaping-facts))
+  (should (file-exists-p (nhmac-gui--lane-file "font-shaping" "eld"))))
+
+(ert-deftest nhmac-font-metrics-parity ()
+  "For Menlo, SF Mono, Helvetica, PingFang SC and Apple Color Emoji at :height 100, 120 and 160: the pixel size,
+ascent, descent, space and average widths, line height, each glyph's code and extents, and the underline's thickness
+and drop equal NS's in the same run (times the scale; within a device pixel at scale 2).  A font NS does not have is
+reported and skipped; one NS has and Naglfar does not is a failure."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((scale (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1")))
+        (ns (nhmac-gui--lane-read "font-parity"))
+        (bad nil) (compared 0))
+    (dolist (row ns)
+      (pcase-let ((`(,family ,height ,want) row))
+        (if (not want)
+            (message "nhmac-font-metrics-parity: %s is not on this machine (NS), skipped" family)
+          (let ((got (nhmac-gui--font-facts family height (cdr (assoc family nhmac-gui--parity-fonts)))))
+            (cl-incf compared)
+            (message "nhmac-font-metrics-parity: %s %d: NS %S, Naglfar %S" family height want got)
+            (unless (and got
+                         (nhmac-gui--near (plist-get want :info) (plist-get got :info) scale)
+                         (equal (mapcar #'car (plist-get want :glyphs)) (mapcar #'car (plist-get got :glyphs)))
+                         (nhmac-gui--near (mapcar #'cdr (plist-get want :glyphs)) (mapcar #'cdr (plist-get got :glyphs))
+                                          scale)
+                         ;; the underline is captured in device pixels on both
+                         (or (= scale 2) (equal (plist-get want :underline) (plist-get got :underline))))
+              (push (list family height) bad))))))
+    (message "nhmac-font-metrics-parity: %d compared, differ: %S" compared bad)
+    (should (> compared 0))
+    (should-not bad)))
+
+(defconst nhmac-gui--fallback-text "中あ한😀αא€ก"
+  "Characters Menlo lacks, or has: each one's font is compared.")
+
+(defun nhmac-gui--fallback-facts ()
+  "Each of `nhmac-gui--fallback-text''s characters with the family of the font it is shown in, the frame's font
+Menlo 12."
+  (let ((font (frame-parameter nil 'font)))
+    (unwind-protect
+        (progn
+          (set-frame-font "Menlo-12" nil (list (selected-frame)))
+          (nhmac-gui--with-text 'default nhmac-gui--fallback-text
+            (cl-loop for i from 0 below (length nhmac-gui--fallback-text)
+                     collect (let ((f (font-at (+ (point) i))))
+                               (list (aref nhmac-gui--fallback-text i)
+                                     (and f (symbol-name (font-get f :family))))))))
+      (set-frame-font font nil (list (selected-frame))))))
+
+(ert-deftest nhmac-font-fallback-same ()
+  "With Menlo 12 as the frame's font, CJK, emoji, Greek, Hebrew, Thai and the euro sign are shown in the same
+families as on NS."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((ns (nhmac-gui--lane-read "font-fallback"))
+        (mine (nhmac-gui--fallback-facts)))
+    (message "nhmac-font-fallback-same: NS %S, Naglfar %S" ns mine)
+    (should (cl-every #'cadr mine))
+    (should (equal mine ns))))
+
+(defconst nhmac-gui--shaping-texts '(("مرحبا بالعالم" . R2L) ("नमस्ते दुनिया" . L2R))
+  "Arabic and Devanagari text, and the direction each is shaped in.")
+
+(defun nhmac-gui--shaping-facts ()
+  "Each shaping text's font family and its glyphs as Core Text shapes them (`font-shape-gstring'): each glyph's
+(FROM TO CODE WIDTH XOFF YOFF WADJUST)."
+  (mapcar
+   (lambda (td)
+     (let ((text (car td)))
+       (nhmac-gui--with-text 'default text
+         (let* ((font (font-at (point)))
+                (g (font-shape-gstring (composition-get-gstring 0 (length text) font text) (cdr td))))
+           (list (symbol-name (font-get font :family))
+                 (and g
+                      (cl-loop for i from 0 below (lgstring-glyph-len g)
+                               for gl = (lgstring-glyph g i)
+                               while gl
+                               collect (let ((adj (lglyph-adjustment gl)))
+                                         (list (lglyph-from gl) (lglyph-to gl) (lglyph-code gl) (lglyph-width gl)
+                                               (if adj (aref adj 0) 0) (if adj (aref adj 1) 0)
+                                               (if adj (aref adj 2) (lglyph-width gl)))))))))))
+   nhmac-gui--shaping-texts))
+
+(ert-deftest nhmac-font-shaping ()
+  "Arabic and Devanagari runs give the same fonts, clusters and glyph ids as on NS, and the same widths and offsets
+(times the scale; within a device pixel at scale 2)."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((scale (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1")))
+        (ns (nhmac-gui--lane-read "font-shaping"))
+        (mine (nhmac-gui--shaping-facts)))
+    (message "nhmac-font-shaping: NS %S, Naglfar %S" ns mine)
+    (should (cl-every #'cadr mine))
+    (cl-loop for (nf nglyphs) in ns
+             for (mf mglyphs) in mine
+             do (should (equal mf nf))
+                (should (equal (mapcar (lambda (g) (seq-take g 3)) mglyphs)
+                               (mapcar (lambda (g) (seq-take g 3)) nglyphs)))
+                (should (nhmac-gui--near (mapcar (lambda (g) (nthcdr 3 g)) nglyphs)
+                                         (mapcar (lambda (g) (nthcdr 3 g)) mglyphs) scale)))))
+
+(ert-deftest nhmac-paired-cjk-emoji-scroll ()
+  "Scrolling CJK and emoji text by a line, timed in the process: 50 scrolls, each a redisplay, written to
+GLITNIR_GUI_OUT/pair-BUILD.txt (microseconds, one per line), as nhmac-paired-key-to-commit's times are; both builds
+run it in turn (--pair, nidhogg/test/nhmac-pair.sh --row), which judges Naglfar not slower."
+  (let* ((build (if (nhmac-gui--ns-build-p) "ns" "naglfar"))
+         (file (expand-file-name (format "pair-%s.txt" build)
+                                 (or (getenv "GLITNIR_GUI_OUT") temporary-file-directory)))
+         times)
+    (switch-to-buffer (generate-new-buffer " *nhmac-pair-cjk*"))
+    (dotimes (i 400)
+      (insert (format "%3d 中文字体的回退和表情 😀🐉🌸 日本語のテキスト 한국어 %s\n" i (make-string (% i 7) ?字))))
+    (goto-char (point-min))
+    (redisplay t)
+    (dotimes (_ 10) (scroll-up 1) (redisplay))
+    (dotimes (_ 50)
+      (let ((t0 (float-time)))
+        (scroll-up 1)
+        (redisplay)
+        (push (round (* 1e6 (- (float-time) t0))) times)))
+    (with-temp-buffer
+      (dolist (us (nreverse times)) (insert (format "%d\n" us)))
+      (write-region (point-min) (point-max) file t 'silent))
+    (should (file-exists-p file))
+    (kill-buffer)))
+
+(ert-deftest nhmac-advances-for-fit ()
+  "For the parity fonts at :height 120, each glyph's `font-get-glyphs' width is Core Text's own advance
+(CTFontGetAdvancesForGlyphs, test-ct-advances) rounded, at the frame's device scale: a skrifa-vs-Core Text
+difference in drgnx's fit row is then the fitter's, not the driver's."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((bad nil) (compared 0))
+    (dolist (f nhmac-gui--parity-fonts)
+      (nhmac-gui--with-text (list :family (car f) :height 120) (cdr f)
+        (let ((font (font-at (point))))
+          (if (not (string-equal-ignore-case (symbol-name (font-get font :family)) (car f)))
+              (message "nhmac-advances-for-fit: %s is not on this machine, skipped" (car f))
+            (let* ((glyphs (font-get-glyphs font 0 (length (cdr f)) (cdr f)))
+                   (codes (mapcar (lambda (g) (aref g 3)) glyphs))
+                   (widths (mapcar (lambda (g) (aref g 4)) glyphs))
+                   (ct (apply #'nhmac--query 'test-ct-advances (symbol-name (font-get font :family))
+                              (font-get font :size) codes)))
+              (cl-incf compared)
+              (message "nhmac-advances-for-fit: %s: widths %S, Core Text %S" (car f) widths ct)
+              (unless (and ct (equal widths (mapcar (lambda (a) (floor (+ a 0.5))) ct)))
+                (push (car f) bad)))))))
+    (should (> compared 0))
+    (should-not bad)))
+
 ;; Task 24: every draw record, compared with NS's in the same run
 (defun nhmac-gui--draw-k ()
   "Device pixels per NS point for the scene's pixel sizes: the lane's scale on Naglfar, 1 on NS (which counts points)."

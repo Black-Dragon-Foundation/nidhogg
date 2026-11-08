@@ -403,52 +403,75 @@ mod tests {
             underline_thickness: 0.72,
             mono: true,
             tall_family: false,
+            hiragino: false,
+        }
+    }
+
+    fn grid(spacing: Spacing, space_width: i32) -> Grid {
+        Grid {
+            spacing,
+            space_width,
+            pixel_size: 12,
+            size: 12.0,
+            synthetic_italic: false,
+            synthetic_bold: false,
         }
     }
 
     #[test]
     fn widths_round_and_stay_on_the_grid() {
-        assert_eq!(glyph_width(7.22, false, 7), 7);
-        assert_eq!(glyph_width(7.6, false, 7), 8);
+        let p = grid(Spacing::Proportional, 7);
+        let m = grid(Spacing::Mono, 7);
+        assert_eq!(width(&p, 7.22), 7);
+        assert_eq!(width(&p, 7.6), 8);
         // a monospaced ligature of two cells stays two cells
-        assert_eq!(glyph_width(14.9, true, 7), 14);
-        assert_eq!(glyph_width(7.22, true, 7), 7);
+        assert_eq!(width(&m, 14.9), 14);
+        assert_eq!(width(&m, 7.22), 7);
         // no space width: the nearest integer
-        assert_eq!(glyph_width(7.6, true, 0), 8);
-    }
-
-    #[test]
-    fn a_single_cell_glyph_rounds_its_own_advance() {
-        // macfont_monospace_width_multiplier: 1 is no multiple, and the advance must divide back to the space
-        assert_eq!(glyph_width(7.6, true, 7), 8);
-        assert_eq!(glyph_width(16.0, true, 7), 16);
+        assert_eq!(width(&grid(Spacing::Mono, 0), 7.6), 8);
+        // a single cell is no multiple, and the advance must divide back to the space
+        assert_eq!(width(&m, 7.6), 8);
+        assert_eq!(width(&m, 16.0), 16);
+        // a synthetic monospaced glyph is pixel_size wide
+        assert_eq!(width(&grid(Spacing::SyntheticMono, 7), 7.6), 12);
     }
 
     #[test]
     fn runs_sit_on_rounded_widths_moved_by_half_the_rounding() {
+        let p = grid(Spacing::Proportional, 7);
         // proportional: 6.6 rounds to 7 (0.4 short: 6/14, half of it left), 7.2 to 7 (0.2 over: 3/14)
-        let xs = run_offsets(&[6.6, 7.2, 7.0], false, 7, false, false);
+        let xs = run_offsets(&[6.6, 7.2, 7.0], &p, false, false);
         assert_eq!(xs, vec![6.0 / 28.0, 7.0 - 3.0 / 28.0, 14.0]);
         // without antialiasing, or monospaced, on the whole pixels
+        assert_eq!(run_offsets(&[6.6, 7.2], &p, false, true), vec![0.0, 7.0]);
         assert_eq!(
-            run_offsets(&[6.6, 7.2], false, 7, false, true),
-            vec![0.0, 7.0]
-        );
-        assert_eq!(
-            run_offsets(&[7.22, 14.45, 7.22], true, 7, false, false),
+            run_offsets(&[7.22, 14.45, 7.22], &grid(Spacing::Mono, 7), false, false),
             vec![0.0, 7.0, 21.0]
         );
         // a padding run is one pixel per glyph
         assert_eq!(
-            run_offsets(&[6.6, 7.2, 7.0], false, 7, true, false),
+            run_offsets(&[6.6, 7.2, 7.0], &p, true, false),
             vec![0.0, 1.0, 2.0]
         );
+        // synthetic mono: centred in its pixel_size cell, (12 - 7.6) / 2 = 2.2: 2 and 3/14
+        let s = grid(Spacing::SyntheticMono, 7);
+        assert_eq!(
+            run_offsets(&[7.6, 7.6], &s, false, false),
+            vec![2.0 + 3.0 / 14.0, 12.0 + (2.0 + 3.0 / 14.0)]
+        );
+        assert_eq!(run_offsets(&[7.6], &s, false, true), vec![2.0]);
     }
 
     #[test]
     fn metrics_round_as_macfont() {
         let printable = vec![Some(7.22); 94];
-        let m = font_metrics(&menlo_like(), 12, Some(7.22), &printable);
+        let m = font_metrics(
+            &menlo_like(),
+            &grid(Spacing::Mono, 0),
+            Some(7.22),
+            &printable,
+            false,
+        );
         assert_eq!((m.ascent, m.descent, m.height), (11, 3, 14));
         assert_eq!((m.space_width, m.average_width), (7, 7));
         assert_eq!((m.underline_position, m.underline_thickness), (2, 1));
@@ -459,29 +482,47 @@ mod tests {
     fn missing_glyphs_fall_back_to_the_space() {
         let mut printable = vec![Some(9.0); 94];
         printable[10] = None;
-        let m = font_metrics(&menlo_like(), 12, Some(7.22), &printable);
+        let g = grid(Spacing::Mono, 0);
+        let m = font_metrics(&menlo_like(), &g, Some(7.22), &printable, false);
         assert_eq!(m.average_width, 7);
-        let m = font_metrics(&menlo_like(), 12, None, &[]);
+        let m = font_metrics(&menlo_like(), &g, None, &[], false);
         assert_eq!((m.space_width, m.average_width), (12, 12));
     }
 
     #[test]
-    fn tall_families_get_appkits_ascent() {
-        let raw = RawFont {
+    fn tall_families_hiragino_and_minspace() {
+        let g = grid(Spacing::Proportional, 0);
+        let tall = RawFont {
             tall_family: true,
             mono: false,
             ..menlo_like()
         };
-        let m = font_metrics(&raw, 12, Some(7.0), &[]);
         // 11.138 + (11.138 + 2.830) * 0.15 = 13.23
-        assert_eq!(m.ascent, 13);
+        assert_eq!(font_metrics(&tall, &g, Some(7.0), &[], false).ascent, 13);
+        // Hiragino: a quarter of the leading, moved into the ascent: 11.138 + 1 = 12.138, descent 2.830 + 1
+        let hira = RawFont {
+            hiragino: true,
+            leading: 4.0,
+            ..menlo_like()
+        };
+        let m = font_metrics(&hira, &g, Some(7.0), &[], false);
+        assert_eq!((m.ascent, m.descent), (12, 4));
+        // :minspace leaves the leading out of the descent
+        let lead = RawFont {
+            leading: 2.0,
+            ..menlo_like()
+        };
+        assert_eq!(font_metrics(&lead, &g, Some(7.0), &[], false).descent, 5);
+        assert_eq!(font_metrics(&lead, &g, Some(7.0), &[], true).descent, 3);
     }
 
     #[test]
-    fn glyph_bounds_round_outwards() {
-        let g = glyph_metrics(7, (0.4, 6.2, 8.1, -2.2));
+    fn extents_round_as_macfont() {
+        // proportional, advance 7 exactly: no shift; the smoothing margins pad 0.396 each side
+        let p = grid(Spacing::Proportional, 7);
+        let e = extents(&p, 7.0, (0.4, 6.2, 8.1, -2.2));
         assert_eq!(
-            g,
+            e,
             NhgGlyphMetrics {
                 lbearing: 0,
                 rbearing: 7,
@@ -490,13 +531,248 @@ mod tests {
                 descent: 3
             }
         );
+        // advance 6.6: frac -6/14 moves the bounds right by 6/28 (0.214): 0.6 - 0.396 + 0.214 floors to 0, 0.6 + 0.214
+        // + 0.396 = 1.21 ceils to 2
+        let e = extents(&p, 6.6, (0.6, 0.6 + 0.0, 1.0, 0.0));
+        assert_eq!((e.lbearing, e.rbearing, e.width), (0, 1, 7));
+        let e = extents(&p, 6.6, (0.6, 1.0, 1.0, 0.0));
+        assert_eq!((e.lbearing, e.rbearing), (0, 2));
+        // an empty glyph (a space) gets no margins
+        let e = extents(&p, 7.0, (0.0, 0.0, 0.0, 0.0));
+        assert_eq!((e.lbearing, e.rbearing, e.ascent, e.descent), (0, 0, 0, 0));
+        // synthetic italic leans the box right by a quarter of its height; synthetic bold grows it by 0.024 * size / 2
+        let it = Grid {
+            synthetic_italic: true,
+            ..p
+        };
+        let e = extents(&it, 7.0, (1.0, 5.0, 8.0, 0.0));
+        assert_eq!((e.lbearing, e.rbearing), (0, 8));
+        let bold = Grid {
+            synthetic_bold: true,
+            size: 100.0,
+            ..p
+        };
+        let e = extents(&bold, 7.0, (1.0, 5.0, 8.0, 0.0));
+        assert_eq!(
+            (e.lbearing, e.rbearing, e.ascent, e.descent),
+            (-1, 7, 10, 2)
+        );
+        // synthetic mono: the box moves right by the centring delta (12 - 7.6) / 2 = 2.2
+        let s = grid(Spacing::SyntheticMono, 7);
+        let e = extents(&s, 7.6, (1.0, 5.0, 8.0, 0.0));
+        assert_eq!((e.lbearing, e.rbearing, e.width), (2, 8, 12));
+    }
+
+    /// A run over UTF-16 units `start..start + len`.
+    fn run(
+        rtl: bool,
+        (start, len): (usize, usize),
+        glyphs: &[u16],
+        indices: &[usize],
+        xs: &[f64],
+        ws: &[f64],
+    ) -> ShapeRun {
+        ShapeRun {
+            rtl,
+            range: (start, len),
+            indices: indices.to_vec(),
+            glyphs: glyphs.to_vec(),
+            positions: xs.iter().map(|&x| (x, 0.0)).collect(),
+            widths: ws.to_vec(),
+        }
     }
 
     #[test]
-    fn appkit_weights() {
-        assert_eq!(weight_from_appkit(5), 80);
-        assert_eq!(weight_from_appkit(9), 200);
-        assert_eq!(weight_from_appkit(3), 50);
-        assert_eq!(spacing(true), NHG_FS_SPACING_MONO);
+    fn a_left_to_right_run_lays_out_glyph_by_glyph() {
+        let r = run(
+            false,
+            (0, 3),
+            &[10, 11, 12],
+            &[0, 1, 2],
+            &[0.0, 7.2, 14.4],
+            &[7.2, 7.2, 7.2],
+        );
+        let l = layouts(&[r], &|i| (i, 1));
+        assert_eq!(
+            l.iter().map(|g| g.comp).collect::<Vec<_>>(),
+            vec![(0, 1), (1, 1), (2, 1)]
+        );
+        assert_eq!(
+            l.iter().map(|g| g.glyph).collect::<Vec<_>>(),
+            vec![10, 11, 12]
+        );
+        assert!(
+            l.iter()
+                .all(|g| g.advance_delta.abs() < 1e-9 && (g.advance - 7.2).abs() < 1e-9)
+        );
+    }
+
+    #[test]
+    fn a_combining_mark_joins_its_base() {
+        // "e" + U+0301: two glyphs, the mark at the base's x, one composed range (0, 2)
+        let r = run(false, (0, 2), &[20, 21], &[0, 1], &[0.0, 0.5], &[7.0, 0.0]);
+        let l = layouts(&[r], &|_| (0, 2));
+        assert_eq!(l[0].comp, (0, 2));
+        assert_eq!(l[1].comp, (0, 2));
+        // the mark: 7 back from the pen, no advance of its own
+        assert!((l[1].advance_delta - (0.5 - 7.0)).abs() < 1e-9);
+        assert!(l[1].advance.abs() < 1e-9);
+        let mut glyph_of = |c: u32| Some(if c == u32::from('e') { 20 } else { 21 });
+        let mut metrics_of = |_g: u32| NhgGlyphMetrics {
+            width: 7,
+            ..Default::default()
+        };
+        let s = shaped(
+            &l,
+            &[u16::from(b'e'), 0x301],
+            &grid(Spacing::Proportional, 7),
+            &mut glyph_of,
+            &mut metrics_of,
+        );
+        assert_eq!((s[0].from, s[0].to, s[0].c), (0, 1, u32::from('e')));
+        assert_eq!(
+            (
+                s[1].from,
+                s[1].to,
+                s[1].c,
+                s[1].xoff,
+                s[1].wadjust,
+                s[1].adjust
+            ),
+            (0, 1, 0x301, -7, 0, 1)
+        );
+        assert_eq!(s[0].adjust, 0);
+    }
+
+    #[test]
+    fn a_right_to_left_run_keeps_logical_clusters() {
+        // three Arabic letters, Core Text's glyphs in visual order (the last character's first), one cluster each:
+        // macfont puts them back in logical order, each with its own advance
+        let r = run(
+            true,
+            (0, 3),
+            &[32, 31, 30],
+            &[2, 1, 0],
+            &[0.0, 5.0, 11.0],
+            &[5.0, 6.0, 4.0],
+        );
+        let l = layouts(&[r], &|i| (i, 1));
+        assert_eq!(
+            l.iter().map(|g| g.glyph).collect::<Vec<_>>(),
+            vec![30, 31, 32]
+        );
+        assert_eq!(
+            l.iter().map(|g| g.comp).collect::<Vec<_>>(),
+            vec![(0, 1), (1, 1), (2, 1)]
+        );
+        assert_eq!(
+            l.iter().map(|g| g.string_index).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert_eq!(
+            l.iter().map(|g| g.advance).collect::<Vec<_>>(),
+            vec![4.0, 6.0, 5.0]
+        );
+        // a two-glyph cluster in a right-to-left run: its glyphs keep their visual order, swapped back into place
+        let r = run(true, (0, 2), &[41, 40], &[1, 0], &[0.0, 3.0], &[3.0, 4.0]);
+        let l = layouts(&[r], &|_| (0, 2));
+        assert_eq!(
+            l.iter().map(|g| g.comp).collect::<Vec<_>>(),
+            vec![(0, 2), (0, 2)]
+        );
+        assert_eq!(l.iter().map(|g| g.glyph).collect::<Vec<_>>(), vec![41, 40]);
+    }
+
+    #[test]
+    fn characters_beyond_the_bmp_count_once() {
+        // U+1F600 then "a": three UTF-16 units, two characters
+        let units = utf16(&[0x1F600, u32::from('a')]);
+        assert_eq!(units.len(), 3);
+        let r = run(
+            false,
+            (0, 3),
+            &[40, 41],
+            &[0, 2],
+            &[0.0, 16.0],
+            &[16.0, 7.0],
+        );
+        let l = layouts(&[r], &|i| if i < 2 { (0, 2) } else { (2, 1) });
+        let mut glyph_of = |c: u32| Some(if c == 0x1F600 { 40 } else { 41 });
+        let mut metrics_of = |g: u32| NhgGlyphMetrics {
+            width: if g == 40 { 16 } else { 7 },
+            ..Default::default()
+        };
+        let s = shaped(
+            &l,
+            &units,
+            &grid(Spacing::Proportional, 7),
+            &mut glyph_of,
+            &mut metrics_of,
+        );
+        assert_eq!((s[0].from, s[0].to, s[0].c), (0, 0, 0x1F600));
+        assert_eq!((s[1].from, s[1].to, s[1].c), (1, 1, u32::from('a')));
+        assert!(s.iter().all(|g| g.adjust == 0));
+    }
+
+    #[test]
+    fn a_monospaced_ligature_adjusts_to_whole_cells() {
+        let r = run(false, (0, 2), &[50], &[0], &[0.0], &[14.9]);
+        let l = layouts(&[r], &|_| (0, 2));
+        let mut glyph_of = |_c: u32| None;
+        let mut metrics_of = |_g: u32| NhgGlyphMetrics {
+            width: 14,
+            ..Default::default()
+        };
+        let s = shaped(
+            &l,
+            &utf16(&[u32::from('-'), u32::from('>')]),
+            &grid(Spacing::Mono, 7),
+            &mut glyph_of,
+            &mut metrics_of,
+        );
+        assert_eq!(
+            (s[0].from, s[0].to, s[0].c, s[0].wadjust, s[0].adjust),
+            (0, 1, 0, 14, 0)
+        );
+    }
+
+    #[test]
+    fn scripts_parse_lists_and_vectors() {
+        let flat = [
+            7,
+            2,
+            0x4E2D,
+            0x6587,
+            9,
+            NHG_FONT_ANY_CHAR | 2,
+            0x3B1,
+            0x3B2,
+            11,
+            0,
+        ];
+        let got = parse_scripts(&flat);
+        let list = ScriptChars {
+            chars: vec![0x4E2D, 0x6587],
+            any: false,
+        };
+        let vector = ScriptChars {
+            chars: vec![0x3B1, 0x3B2],
+            any: true,
+        };
+        assert_eq!(
+            got,
+            vec![
+                (7, list.clone()),
+                (9, vector.clone()),
+                (11, ScriptChars::default())
+            ]
+        );
+        // a list needs every character, a vector any one, no characters nothing
+        let has = |c: u32| c == 0x4E2D || c == 0x3B2;
+        assert!(!list.covered(&has));
+        assert!(vector.covered(&has));
+        assert!(ScriptChars::default().covered(&has));
+        // a count past the end stops the table
+        assert_eq!(parse_scripts(&[7, 5, 1]), vec![]);
     }
 }
