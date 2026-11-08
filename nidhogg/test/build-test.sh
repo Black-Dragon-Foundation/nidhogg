@@ -121,20 +121,26 @@ run NIDHOGG_BUILD_DEV=1 -- --dry-run --container fedora-45
 rcis 0; has "--with-native-compilation=yes"
 run -- --dry-run --container fedora-45 --dev --out dist/x.tar.xz
 rcis 1; has "never packed"
-# --native-preloaded: the same native-compilation mode and no JIT, but a build that is packed; its compiled-Lisp stamp
-# names the mode, and a second stamp (without the mode and the window system) lets NIDHOGG_BUILD_LISP_CACHE_ELC take the .elc
+# --native-preloaded: the same native-compilation mode and no JIT, but a build that is packed
 run -- --dry-run --container fedora-45 --native-preloaded --out dist/x.tar.xz
 rcis 0; has "--with-native-compilation=yes"; has "site-init.el"; has "MODE_ID=yes"; has "phase tarball"
 run NIDHOGG_BUILD_NATIVE_PRELOADED=1 -- --dry-run --container fedora-45
 rcis 0; has "--with-native-compilation=yes"; has "site-init.el"
-run NIDHOGG_BUILD_LISP_CACHE=/var/tmp/lc NIDHOGG_BUILD_LISP_CACHE_ELC=1 -- --dry-run --container fedora-45
-rcis 0; has "LC_ELC=1"; has "ELC_CONF_ID=--prefix"; case $(sed -n 's/^ELC_CONF_ID=//p' <<<"$out") in *native-compilation*) fail "the byte-compiled stamp names the native-compilation mode";; esac; has 'cc_elc_id > "$LC/stamp-elc"'; has "phase restore byte-compiled Lisp"
-run NIDHOGG_BUILD_UNAME=Darwin NIDHOGG_BUILD_LISP_CACHE=/var/tmp/lc -- --dry-run --host --prefix /tmp/n
-a1=$(sed -n 's/^ELC_CONF_ID=//p' <<<"$out")
-run NIDHOGG_BUILD_UNAME=Darwin NIDHOGG_BUILD_LISP_CACHE=/var/tmp/lc -- --dry-run --host --prefix /tmp/n --native-preloaded
-[ "$(sed -n 's/^ELC_CONF_ID=//p' <<<"$out")" = "$a1" ] || fail "the byte-compiled stamp changes with the native-compilation mode"
 run -- --dry-run --container fedora-45 --dev --stage pack
 rcis 1; has "never packed"
+# NIDHOGG_BUILD_LISP_CACHE_ELC=1: the byte-compiled part of an entry made in another native-compilation mode or for another
+# window system is taken (elc_norm, lifted out of the generated script), nothing else is
+run NIDHOGG_BUILD_LISP_CACHE=/var/tmp/lc NIDHOGG_BUILD_LISP_CACHE_ELC=1 -- --dry-run --container fedora-45
+rcis 0; has "LC_ELC=1"; has "phase restore byte-compiled Lisp"; has "elc_norm"
+sed -n '/^elc_norm()/,/^}/p' <<<"$out" > "${TMPDIR:-/tmp}/nidhogg-elc-norm.$$.sh"
+ns_aot="clang 17 arm64 aot --prefix=/p --with-ns --with-native-compilation=aot --with-tree-sitter --with-glitnir"
+nag_dev="clang 17 arm64 yes --prefix=/p --with-native-compilation=yes --with-tree-sitter --with-nidhogg-macos --with-glitnir --enable-checking"
+ns_yes="clang 17 arm64 yes --prefix=/p --with-ns --with-native-compilation=yes --with-tree-sitter --with-glitnir"
+other="clang 17 arm64 aot --prefix=/p --with-ns --with-native-compilation=aot --with-tree-sitter"
+n() { bash -c '. "$1"; elc_norm "$2"' _ "${TMPDIR:-/tmp}/nidhogg-elc-norm.$$.sh" "$1"; }
+[ "$(n "$ns_aot")" = "$(n "$nag_dev")" ] && [ "$(n "$ns_aot")" = "$(n "$ns_yes")" ] || fail "elc_norm tells the NS and Naglfar stamps apart"
+[ "$(n "$ns_aot")" != "$(n "$other")" ] || fail "elc_norm takes another configure line's stamp"
+rm -f "${TMPDIR:-/tmp}/nidhogg-elc-norm.$$.sh"
 run -- --dry-run --container fedora-45
 rcis 0; hasnt "site-init.el"; has "MODE_ID=aot"; hasnt "fsanitize"
 # NIDHOGG_BUILD_SANITIZE reaches CFLAGS and LDFLAGS; dev builds only
