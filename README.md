@@ -516,6 +516,12 @@ post AppKit events and read the shell's counters through those hooks.
   test, NS rows, the `tarball-macos` artifact) and `macOS (Naglfar)` (its dev build, Rust tests, boundary check, rows,
   logs in `nhmac-gui-logs-naglfar`). `pair` is the one thing Naglfar takes from the NS job: it waits for its tarball.
   Naglfar does not run for `ns_app_run`.
+- Native compilation in the macOS NS job: a `scratch/*` dispatch builds with `build.sh --native-preloaded` (only the
+  preloaded Lisp native-compiled, the rest byte code, JIT off in the image, so no compile starts under a timing row;
+  the byte-compiled cache entry is taken from a full build's through `NIDHOGG_BUILD_LISP_CACHE_ELC=1`, the `.eln` entry
+  is not used) and logs `native compilation: preloaded Lisp only`. `nidhogg-31`, tags and pull requests keep full AOT.
+  `tarball-test.sh` reads the mode from BUILDINFO: AOT needs the full `.eln` set, the preloaded-only mode the preloaded
+  ones and `native-comp-jit-compilation` nil.
 - `timing` (fedora-45 and macOS, after `linux` and `macos`; `continue-on-error: true`; not in `release`'s needs, so it can
   never fail a run or a release): the timing test files in a lane of their own, report-only
   (`nidhogg/test/timing-lane.sh`, rows and budget ratios in `nidhogg/test/timing-rows.txt`). It runs nothing else. A fixed
