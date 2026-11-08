@@ -9,7 +9,7 @@ use super::{MacShell, drain_events, scope_stats, screens};
 use crate::api::{ShellError, ShellResult, WindowId};
 use crate::scope::ScopeStats;
 use objc2::rc::Retained;
-use objc2_app_kit::{NSAlert, NSModalResponseContinue};
+use objc2_app_kit::{NSAlert, NSModalResponseContinue, NSWindowOcclusionState};
 use objc2_foundation::{NSException, NSRect, NSSize, NSString};
 use std::time::{Duration, Instant};
 
@@ -229,15 +229,38 @@ impl MacShell {
         let scale = w.window.backingScaleFactor();
         let (cw, ch) = w.content_size();
         let screen = screens::outputs(self.mtm).first().map_or(0, |o| o.w);
+        // where AppKit has the window: its frame (points, y up from the main screen's bottom), the screen it is on
+        // (its frame and scale), and whether any of it is visible
+        let fr = w.window.frame();
+        let on = w.window.screen().map_or("nil".to_string(), |sc| {
+            let f = sc.frame();
+            format!(
+                "({} {} {} {} {})",
+                f.origin.x,
+                f.origin.y,
+                f.size.width,
+                f.size.height,
+                sc.backingScaleFactor()
+            )
+        });
+        let occluded = !w
+            .window
+            .occlusionState()
+            .contains(NSWindowOcclusionState::Visible);
         Ok(format!(
             "(:visible {} :layer {} :wants-layer {} :subviews {} :device-width {} :device-height {} \
-             :screen-device-width {screen})",
+             :screen-device-width {screen} :frame ({} {} {} {}) :on-screen {on} :occluded {})",
             if w.window.isVisible() { "t" } else { "nil" },
             if layer_ours { "t" } else { "nil" },
             if w.view.wantsLayer() { "t" } else { "nil" },
             w.view.subviews().len(),
             (f64::from(cw) * scale).round() as i64,
             (f64::from(ch) * scale).round() as i64,
+            fr.origin.x,
+            fr.origin.y,
+            fr.size.width,
+            fr.size.height,
+            if occluded { "t" } else { "nil" },
         ))
     }
 }
