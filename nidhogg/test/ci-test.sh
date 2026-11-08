@@ -289,6 +289,15 @@ job macos-naglfar | grep -qF 'inputs.checks'                       || fail "maco
 job macos-naglfar | grep -qF 'select(.name == "tarball-macos")'    || fail "the paired timing does not take the NS job's tarball"
 job macos-naglfar | grep -qF "needs.changes.outputs.macos != 'false'" || fail "macos-naglfar does not follow the macOS path filter"
 job gate | grep -qF 'macos-naglfar " ;; esac'                      || fail "the gate lets a filtered macOS run skip macos but not macos-naglfar"
+# a scratch/* run builds the NS app with only the preloaded Lisp native-compiled (no JIT in the image) and says so; every
+# other run (nidhogg-31, tags, pull requests) keeps full AOT, and the tarball test checks the mode it was built in
+job macos | grep -qF "PRELOADED: \${{ startsWith(github.ref, 'refs/heads/scratch/') }}" || fail "macos does not pick the preloaded-only mode for scratch/* alone"
+[ "$(job macos | grep -cF 'NIDHOGG_BUILD_NATIVE_PRELOADED:')" = 2 ]  || fail "macos's build and pack steps do not both take the native-compilation mode"
+job macos | grep -qF 'NIDHOGG_BUILD_NATIVE_PRELOADED=${{ steps.mode.outputs.preloaded' || fail "macos's check stage does not take the native-compilation mode"
+job macos | grep -qF 'native compilation: preloaded Lisp only' && job macos | grep -qF 'native compilation: all Lisp ahead of time' || fail "macos does not log its native-compilation mode"
+job macos | grep -A1 'id: ln$' | grep -qF "steps.mode.outputs.preloaded != 'true'" || fail "macos restores .eln files into a preloaded-only build"
+grep -qF -- '--native-preloaded' nidhogg/build.sh && grep -qF 'NIDHOGG_BUILD_LISP_CACHE_ELC' nidhogg/build.sh || fail "build.sh has no preloaded-only mode"
+grep -qF 'native-comp-jit-compilation is on' nidhogg/test/tarball-test.sh && grep -qF 'an AOT build with only' nidhogg/test/tarball-test.sh || fail "the tarball test does not check what each native-compilation mode promises"
 # a row-only run leaves out drgnx's macOS suite and says so; a full run keeps every tier, and the gate accepts the
 # skipped drgnx job only when no tier is left
 job changes | grep -qF 'drgnx macOS suite: skipped, row-only run' || fail "a row-only run does not say it skipped drgnx's macOS suite"

@@ -121,6 +121,18 @@ run NIDHOGG_BUILD_DEV=1 -- --dry-run --container fedora-45
 rcis 0; has "--with-native-compilation=yes"
 run -- --dry-run --container fedora-45 --dev --out dist/x.tar.xz
 rcis 1; has "never packed"
+# --native-preloaded: the same native-compilation mode and no JIT, but a build that is packed; its compiled-Lisp stamp
+# names the mode, and a second stamp (without the mode and the window system) lets NIDHOGG_BUILD_LISP_CACHE_ELC take the .elc
+run -- --dry-run --container fedora-45 --native-preloaded --out dist/x.tar.xz
+rcis 0; has "--with-native-compilation=yes"; has "site-init.el"; has "MODE_ID=yes"; has "phase tarball"
+run NIDHOGG_BUILD_NATIVE_PRELOADED=1 -- --dry-run --container fedora-45
+rcis 0; has "--with-native-compilation=yes"; has "site-init.el"
+run NIDHOGG_BUILD_LISP_CACHE=/var/tmp/lc NIDHOGG_BUILD_LISP_CACHE_ELC=1 -- --dry-run --container fedora-45
+rcis 0; has "LC_ELC=1"; has "ELC_CONF_ID=--prefix"; case $(sed -n 's/^ELC_CONF_ID=//p' <<<"$out") in *native-compilation*) fail "the byte-compiled stamp names the native-compilation mode";; esac; has 'cc_elc_id > "$LC/stamp-elc"'; has "phase restore byte-compiled Lisp"
+run NIDHOGG_BUILD_UNAME=Darwin NIDHOGG_BUILD_LISP_CACHE=/var/tmp/lc -- --dry-run --host --prefix /tmp/n
+a1=$(sed -n 's/^ELC_CONF_ID=//p' <<<"$out")
+run NIDHOGG_BUILD_UNAME=Darwin NIDHOGG_BUILD_LISP_CACHE=/var/tmp/lc -- --dry-run --host --prefix /tmp/n --native-preloaded
+[ "$(sed -n 's/^ELC_CONF_ID=//p' <<<"$out")" = "$a1" ] || fail "the byte-compiled stamp changes with the native-compilation mode"
 run -- --dry-run --container fedora-45 --dev --stage pack
 rcis 1; has "never packed"
 run -- --dry-run --container fedora-45
