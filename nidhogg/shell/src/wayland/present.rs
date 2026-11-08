@@ -2033,10 +2033,13 @@ impl Dispatch<WlCallback, Arc<Mutex<Present>>> for ReaderState {
     ) {
         if let wl_callback::Event::Done { .. } = event {
             let mut p = lock(present);
-            p.waiting = false;
-            if p.newest_frame.as_ref() == Some(cb) {
-                p.newest_frame = None;
+            // only the newest commit's callback releases the pacer: an older one (a re-arm's, or the commit's before
+            // it) says nothing of the commit that waits now
+            if p.newest_frame.as_ref() != Some(cb) {
+                return;
             }
+            p.waiting = false;
+            p.newest_frame = None;
             // nothing waits any more: a re-arm not sent yet has no callback to replace
             p.rec.rearm = false;
             // starved while waiting: the pacer is idle now, and an idle pacer grows the pool
