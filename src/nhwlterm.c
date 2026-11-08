@@ -3377,6 +3377,10 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
 	 here.  */
       nhwl_present_ready (dpyinfo,
 			  FRAME_NHWL_OUTPUT (nhwl_tree_root (f))->window);
+#ifdef HAVE_NHMAC
+      /* A held commit's slot freed: its pixels are read under the lock.  */
+      nhwl_publish (f);
+#endif
       break;
 
     case NHG_ACT_TITLE_BAR:

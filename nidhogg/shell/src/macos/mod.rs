@@ -13,6 +13,7 @@ pub mod images;
 mod inject;
 mod kq;
 mod layers;
+mod pacer;
 mod runloop;
 mod screens;
 mod surface;
