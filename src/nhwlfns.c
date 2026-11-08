@@ -1667,10 +1667,29 @@ TYPE is as for `frame-edges'.  */)
 DEFUN ("pgtk-mouse-absolute-pixel-position",
        Fpgtk_mouse_absolute_pixel_position,
        Spgtk_mouse_absolute_pixel_position, 0, 0, 0,
-       doc: /* Return the absolute position of the mouse: nil under Wayland.  */)
+       doc: /* Return the position of the mouse as (X . Y), in device pixels.
+A Wayland client sees no screen position.  The value is where the pointer
+last was in a frame, moved into its root frame's native area (a child
+frame's position added), so differences are right across a top-level frame
+and its child frames.  (0 . 0) before the pointer was over any frame.  */)
   (void)
 {
-  return Qnil;
+  struct frame *f = SELECTED_FRAME ();
+  struct nhwl_display_info *d;
+  int x, y;
+
+  if (!FRAME_NHWL_P (f))
+    return Fcons (make_fixnum (0), make_fixnum (0));
+  d = FRAME_DISPLAY_INFO (f);
+  f = d->last_mouse_motion_frame;
+  x = f ? d->last_mouse_motion_x : 0;
+  y = f ? d->last_mouse_motion_y : 0;
+  for (; f && FRAME_PARENT_FRAME (f); f = FRAME_PARENT_FRAME (f))
+    {
+      x += f->left_pos;
+      y += f->top_pos;
+    }
+  return Fcons (make_fixnum (x), make_fixnum (y));
 }
 
 DEFUN ("pgtk-set-mouse-absolute-pixel-position",
