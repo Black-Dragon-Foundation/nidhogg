@@ -216,7 +216,7 @@ impl FontFace {
     }
 }
 
-/// Where the faces come from: Core Text (Task 16), or a fixture in the tests.
+/// Where the faces come from: Core Text on macOS, or a fixture in the tests.
 pub trait FontSource {
     /// Every face, grouped by family in the order the platform prefers.
     fn faces(&self) -> Vec<FontFace>;
