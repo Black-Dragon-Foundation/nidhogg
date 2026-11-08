@@ -3,6 +3,7 @@
 //! (`crate::mac_input`) and reaches the backend through the scope (`runloop::deliver`).
 
 use super::dnd;
+use super::ime;
 use super::runloop::{MacEv, deliver};
 use crate::api::WindowId;
 use crate::event::{
@@ -12,13 +13,17 @@ use crate::event::{
 use crate::mac_input;
 use crate::outputs::Magnify;
 use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_app_kit::{
-    NSDragOperation, NSDraggingDestination, NSDraggingInfo, NSEvent, NSEventPhase, NSResponder,
-    NSView,
+use objc2::runtime::{AnyObject, ProtocolObject, Sel};
+use objc2::{
+    ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel,
 };
-use objc2_foundation::NSObjectProtocol;
+use objc2_app_kit::{
+    NSDragOperation, NSDraggingDestination, NSDraggingInfo, NSEvent, NSEventModifierFlags,
+    NSEventPhase, NSResponder, NSTextInputClient, NSView,
+};
+use objc2_foundation::{
+    NSArray, NSAttributedString, NSNotFound, NSObjectProtocol, NSRange, NSString,
+};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 use objc2_quartz_core::CALayer;
 use std::cell::RefCell;
@@ -71,12 +76,21 @@ define_class!(
             true
         }
 
+        /// A key that makes text, a dead key, or any key while text is marked goes through the input system
+        /// (`crate::macos::ime`); a chord or a named key is sent as it is.
         #[unsafe(method(keyDown:))]
         fn key_down(&self, e: &NSEvent) {
             let ignoring = e.charactersIgnoringModifiers().map(|s| s.to_string()).unwrap_or_default();
             let chars = e.characters().map(|s| s.to_string()).unwrap_or_default();
-            let flags = e.modifierFlags().0;
-            if let Some(k) = mac_input::key(&ignoring, &chars, flags, e.isARepeat()) {
+            let flags = e.modifierFlags();
+            let k = mac_input::key(&ignoring, &chars, flags.0, e.isARepeat());
+            let chord = NSEventModifierFlags::Control | NSEventModifierFlags::Command;
+            let dead = chars.is_empty() && !ignoring.is_empty() && !flags.intersects(chord);
+            let id = *self.ivars();
+            if ime::wants(id, k.as_ref(), dead) {
+                let events = NSArray::from_slice(&[e]);
+                ime::interpret(k, chars, || self.interpretKeyEvents(&events));
+            } else if let Some(k) = k {
                 self.send(ShellEvent::Key(k));
             }
         }
@@ -178,7 +192,115 @@ define_class!(
             }
         }
     }
+
+    unsafe impl NSTextInputClient for NhView {
+        #[unsafe(method(insertText:replacementRange:))]
+        fn insert_text(&self, s: &AnyObject, _replacement: NSRange) {
+            ime::insert(*self.ivars(), &text_of(s));
+        }
+
+        #[unsafe(method(doCommandBySelector:))]
+        fn do_command(&self, selector: Sel) {
+            ime::command(*self.ivars(), selector == sel!(deleteBackward:));
+        }
+
+        #[unsafe(method(setMarkedText:selectedRange:replacementRange:))]
+        fn set_marked_text(&self, s: &AnyObject, _selected: NSRange, _replacement: NSRange) {
+            ime::mark(*self.ivars(), &text_of(s));
+        }
+
+        #[unsafe(method(unmarkText))]
+        fn unmark_text(&self) {
+            ime::unmark(*self.ivars());
+        }
+
+        #[unsafe(method(selectedRange))]
+        fn selected_range(&self) -> NSRange {
+            let (l, n) = ime::with(*self.ivars(), |p| p.text.selected());
+            NSRange::new(l, n)
+        }
+
+        #[unsafe(method(markedRange))]
+        fn marked_range(&self) -> NSRange {
+            match ime::with(*self.ivars(), |p| p.text.marked_range()) {
+                Some((l, n)) => NSRange::new(l, n),
+                None => NSRange::new(NSNotFound as usize, 0),
+            }
+        }
+
+        #[unsafe(method(hasMarkedText))]
+        fn has_marked_text(&self) -> bool {
+            ime::with(*self.ivars(), |p| p.text.marked > 0)
+        }
+
+        #[unsafe(method_id(attributedSubstringForProposedRange:actualRange:))]
+        fn attributed_substring(
+            &self,
+            range: NSRange,
+            actual: *mut NSRange,
+        ) -> Option<Retained<NSAttributedString>> {
+            substring(*self.ivars(), range, actual)
+        }
+
+        #[unsafe(method_id(validAttributesForMarkedText))]
+        fn valid_attributes(&self) -> Retained<NSArray<NSString>> {
+            NSArray::new()
+        }
+
+        /// Below the cursor, as wide as the range in cursor widths (NS's columns), on the screen.
+        #[unsafe(method(firstRectForCharacterRange:actualRange:))]
+        fn first_rect(&self, range: NSRange, actual: *mut NSRange) -> NSRect {
+            if !actual.is_null() {
+                // SAFETY: AppKit passes null or a range to write.
+                unsafe { actual.write(range) };
+            }
+            let [x, y, w, h] = ime::with(*self.ivars(), |p| p.cursor);
+            let height = self.bounds().size.height;
+            let r = NSRect::new(
+                NSPoint::new(f64::from(x), height - f64::from(y) - f64::from(h)),
+                NSSize::new(f64::from(w) * range.length as f64, f64::from(h)),
+            );
+            let r = self.convertRect_toView(r, None);
+            self.window().map_or(r, |win| win.convertRectToScreen(r))
+        }
+
+        /// NS answers 0 too.
+        #[unsafe(method(characterIndexForPoint:))]
+        fn character_index(&self, _p: NSPoint) -> usize {
+            0
+        }
+    }
 );
+
+/// `attributedSubstringForProposedRange:actualRange:` of window `id`'s pushed line: `nil` outside it.
+fn substring(
+    id: WindowId,
+    range: NSRange,
+    actual: *mut NSRange,
+) -> Option<Retained<NSAttributedString>> {
+    let (text, (l, n)) = ime::with(id, |p| p.text.substring(range.location, range.length))?;
+    if !actual.is_null() {
+        // SAFETY: AppKit passes null or a range to write.
+        unsafe { actual.write(NSRange::new(l, n)) };
+    }
+    Some(NSAttributedString::from_nsstring(&NSString::from_str(
+        &text,
+    )))
+}
+
+/// The text of `s`, an NSString or an NSAttributedString, as AppKit passes it.
+fn text_of(s: &AnyObject) -> String {
+    // SAFETY: AppKit passes one of the two; both answer the messages sent.
+    unsafe {
+        let attributed: bool = msg_send![s, isKindOfClass: NSAttributedString::class()];
+        let string: Retained<NSString> = if attributed {
+            msg_send![s, string]
+        } else {
+            msg_send![s, copy]
+        };
+        string.to_string()
+    }
+}
 
 impl NhView {
     fn send(&self, ev: ShellEvent) {

@@ -69,6 +69,21 @@ pub fn cursor_rect(r: [i32; 4], ox: i32, oy: i32, s120: u32) -> [i32; 4] {
     ]
 }
 
+/// Where the pushed line starts, point and the selection's other end in `window`'s buffer (characters from its
+/// accessible start), for an input method that counts NS's ranges.
+pub fn offsets(
+    state: &mut Display,
+    window: u64,
+    line_start: usize,
+    point: usize,
+    mark: usize,
+) -> Result<(), GlueError> {
+    state
+        .backend()
+        .text_input_offsets(window, line_start, point, mark)?;
+    Ok(())
+}
+
 /// The text around point in `window`, and where point and the mark are in it (byte offsets).
 pub fn surrounding(
     state: &mut Display,

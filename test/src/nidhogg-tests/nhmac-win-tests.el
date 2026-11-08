@@ -497,5 +497,17 @@ Shell events (`make-non-key-event' codes) are the shell's to produce.")
     (should killed)
     (should-not asked)))
 
+;; Task 26: the input method
+
+(ert-deftest nhmac-win-preedit-is-ns-working-text ()
+  "A `preedit-text' event becomes NS's working text: put with its text, taken out when it is empty."
+  (let ((ns-working-text nil) (calls nil))
+    (cl-letf (((symbol-function 'ns-put-working-text) (lambda () (push (list 'put ns-working-text) calls)))
+              ((symbol-function 'ns-unput-working-text) (lambda () (push '(unput) calls))))
+      (nhmac-preedit-text '(preedit-text (("か" (ul . t)) ("な" (ul . t)))))
+      (nhmac-preedit-text '(preedit-text nil))
+      (should (equal (nreverse calls) '((put "かな") (unput))))
+      (should (eq (lookup-key special-event-map [preedit-text]) 'nhmac-preedit-text)))))
+
 (provide 'nhmac-win-tests)
 ;;; nhmac-win-tests.el ends here

@@ -12,6 +12,7 @@ mod dialogs;
 mod dnd;
 pub mod fonts;
 pub mod images;
+mod ime;
 #[cfg(feature = "test-hooks")]
 mod inject;
 mod kq;
