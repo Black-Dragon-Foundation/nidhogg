@@ -361,9 +361,19 @@ impl MacShell {
     /// Commit root `root`'s tree (main thread): the pictures of `drawn` (its windows that drew), and every change its
     /// children owe, in one flushed transaction; the overhang panels ordered in before it and out after it.
     pub(super) fn commit_tree(&mut self, root: WindowId, drawn: &[WindowId]) {
-        let Some(w) = self.windows.get(&root) else {
+        let Some(w) = self.windows.get_mut(&root) else {
             return;
         };
+        if drawn.contains(&root) && w.surfaces.newest().is_some() {
+            let (sw, sh) = w.surfaces.size();
+            if w.follow_surface(sw, sh) {
+                layers::changed_outside();
+                let size = w.size;
+                crate::trace::note(|| {
+                    format!("window {root} takes its surface's size: {size:?} points")
+                });
+            }
+        }
         let scale = w.window.backingScaleFactor();
         let (rw, rh) = w.size;
         let tree = self.tree(root);
