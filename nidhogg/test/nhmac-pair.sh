@@ -1,26 +1,29 @@
 #!/usr/bin/env bash
-# Naglfar's paired timing (design §7): the stock NS build (A) and Naglfar (B) run the row nhmac-paired-key-to-commit
-# in turn, ABAB, on the same virtual display, each round writing its key-to-commit times (µs, one per line); then the
+# Naglfar's paired timing (design §7): the stock NS build (A) and Naglfar (B) run a timed row (nhmac-paired-*; by
+# default nhmac-paired-key-to-commit) in turn, ABAB, on the same virtual display, each round writing its times (µs, one
+# per line); then the
 # i-th time of each B round is paired with the i-th of the A round before it.  Naglfar passes when it is not slower:
 # the median of the differences B - A is at most 0, B's p95 is at most A's, and a one-sided sign test does not find
 # B slower (fewer than the 5% critical count of pairs with B > A, normal approximation).
 #
-#   nidhogg/test/nhmac-pair.sh --ns FILE --naglfar FILE [--rounds N] [--out DIR]
+#   nidhogg/test/nhmac-pair.sh --ns FILE --naglfar FILE [--row NAME]... [--rounds N] [--out DIR]
 #
 #   --ns FILE        the NS build's Emacs (Nidhogg.app/Contents/MacOS/Emacs of the release tarball)
 #   --naglfar FILE   Naglfar's Emacs (a build tree's src/emacs)
+#   --row NAME       a timed row, judged on its own; repeatable (default nhmac-paired-key-to-commit)
 #   --rounds N       A/B rounds (default 3)
 #   --out DIR        where the logs and times go (default $TMPDIR/nhmac-pair)
 #
-# Exit 0 not slower, 1 slower or a round that wrote no times, 2 usage.
+# Exit 0 not slower (every row), 1 slower or a round that wrote no times, 2 usage.
 set -u
 
 self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-ns= naglfar= rounds=3 out=
+ns= naglfar= rounds=3 out= rows=()
 while [ $# -gt 0 ]; do
   case $1 in
     --ns) ns=${2:-}; shift 2 ;;
     --naglfar) naglfar=${2:-}; shift 2 ;;
+    --row) rows+=("${2:-}"); shift 2 ;;
     --rounds) rounds=${2:-}; shift 2 ;;
     --out) out=${2:-}; shift 2 ;;
     -h|--help) sed -n '2,/^# Exit 0/s/^# \{0,1\}//p' "${BASH_SOURCE[0]}" >&2; exit 2 ;;
@@ -31,18 +34,25 @@ done
 case $rounds in ''|*[!0-9]*|0) echo "nhmac-pair.sh: --rounds is a positive number" >&2; exit 2 ;; esac
 [ -n "$out" ] || out=${TMPDIR:-/tmp}/nhmac-pair
 mkdir -p "$out" || exit 1
+[ ${#rows[@]} -gt 0 ] || rows=(nhmac-paired-key-to-commit)
 
+status=0
+for row in "${rows[@]}"; do
+case $row in nhmac-paired-*) ;; *) echo "nhmac-pair.sh: --row $row is not a timed row (nhmac-paired-*)" >&2; exit 2 ;; esac
+o=$out/$row
+mkdir -p "$o" || exit 1
 for i in $(seq 1 "$rounds"); do
   for b in ns naglfar; do
     if [ "$b" = ns ]; then emacs=$ns; else emacs=$naglfar; fi
-    d=$out/round$i-$b
+    d=$o/round$i-$b
     mkdir -p "$d"
-    bash "$self/nhmac-gui.sh" --emacs "$emacs" --scale 2 --select nhmac-paired-key-to-commit --out "$d" ||
-      { echo "nhmac-pair.sh: round $i, $b: the row failed"; exit 1; }
-    [ -s "$d/pair-$b.txt" ] || { echo "nhmac-pair.sh: round $i, $b wrote no times"; exit 1; }
+    bash "$self/nhmac-gui.sh" --emacs "$emacs" --scale 2 --select "$row" --out "$d" ||
+      { echo "nhmac-pair.sh: $row: round $i, $b: the row failed"; exit 1; }
+    [ -s "$d/pair-$b.txt" ] || { echo "nhmac-pair.sh: $row: round $i, $b wrote no times"; exit 1; }
   done
-  paste "$out/round$i-ns/pair-ns.txt" "$out/round$i-naglfar/pair-naglfar.txt" >>"$out/pairs.tsv"
+  paste "$o/round$i-ns/pair-ns.txt" "$o/round$i-naglfar/pair-naglfar.txt" >>"$o/pairs.tsv"
 done
+echo "nhmac-pair.sh: $row"
 
 # median and p95 (nearest rank) of B - A, p95 of each side, and the sign test
 awk -F'\t' '
@@ -61,4 +71,6 @@ awk -F'\t' '
     if (pb > pa) { print "nhmac-pair.sh: Naglfar p95 is above NS p95"; bad = 1 }
     if (m > 0 && slower > crit) { print "nhmac-pair.sh: the sign test finds Naglfar slower"; bad = 1 }
     exit bad
-  }' "$out/pairs.tsv"
+  }' "$o/pairs.tsv" || status=1
+done
+exit $status

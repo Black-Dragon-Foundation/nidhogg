@@ -224,6 +224,16 @@ pub trait FontSource {
     fn aliases(&self, _family: &str) -> Vec<String> {
         Vec::new()
     }
+    /// The family the platform draws `script`'s characters in when no font is named (`macfont_list`'s preferred
+    /// family, moved to the front of an unnamed list); none by default.
+    fn preferred(&self, _script: &str) -> Option<String> {
+        None
+    }
+    /// Whether `face` has `script` and `language` (either empty: any); by default from the face's own lists.  A source
+    /// that reads coverage lazily (Core Text's character sets) answers here instead.
+    fn fits(&self, face: &FontFace, script: &str, language: &str) -> bool {
+        covers(&face.scripts, script) && covers(&face.languages, language)
+    }
 }
 
 /// A listed font: the spec's fields as the face has them.
@@ -287,13 +297,23 @@ fn candidates(src: &dyn FontSource, spec: &FontSpec) -> Vec<(usize, FontFace)> {
             );
         }
     }
+    if spec.family.is_empty()
+        && !spec.script.is_empty()
+        && let Some(p) = src.preferred(&spec.script)
+    {
+        // a stable move: the preferred family's faces first, in their order
+        let (mut front, rest): (Vec<_>, Vec<_>) = order
+            .into_iter()
+            .partition(|(_, f)| f.family.eq_ignore_ascii_case(&p));
+        front.extend(rest);
+        order = front;
+    }
     let synth_mono = !spec.language.is_empty()
         && cjk(&spec.language)
         && (spec.spacing < 0 || spec.spacing == NHG_FS_SPACING_MONO);
     order.retain(|(_, f)| {
         (unicode_registry(&spec.registry) || covers(&f.registries, &spec.registry))
-            && covers(&f.scripts, &spec.script)
-            && covers(&f.languages, &spec.language)
+            && src.fits(f, &spec.script, &spec.language)
             && !(spec.spacing >= 0
                 && !synth_mono
                 && f.mono() != (spec.spacing >= NHG_FS_SPACING_MONO))
@@ -481,6 +501,11 @@ fn source() -> MutexGuard<'static, Option<Source>> {
 /// Install the font source `nhg_font_list` and `nhg_font_match` use (the driver does it once at start).
 pub fn set_source(s: Source) {
     *source() = Some(s);
+}
+
+/// The name of id `id` (`""`: unset or unknown).
+pub fn name_of(id: u32) -> String {
+    names().name(id).to_owned()
 }
 
 /// The id of the name at `s` (`len` bytes, not NUL-terminated), made on the first call; 0 for an empty name or bad UTF-8.
@@ -815,6 +840,57 @@ mod tests {
         );
         // (a CJK language with the spacing open also offers the face made monospace)
         assert_eq!(ids(&ja), [(9, 0), (9, NHG_FS_SYNTH_MONO)]);
+    }
+
+    /// A source with a preferred family per script and coverage it answers itself.
+    struct Preferring(Fixture);
+    impl FontSource for Preferring {
+        fn faces(&self) -> Vec<FontFace> {
+            self.0.faces()
+        }
+        fn preferred(&self, script: &str) -> Option<String> {
+            (script == "latin").then(|| "Times".into())
+        }
+        fn fits(&self, face: &FontFace, script: &str, _language: &str) -> bool {
+            // "greek" is had by Times and Helvetica only, though their lists don't say so
+            if script == "greek" {
+                return face.family == "Times" || face.family == "Helvetica";
+            }
+            covers(&face.scripts, script)
+        }
+    }
+
+    #[test]
+    fn the_preferred_family_comes_first_and_sources_answer_coverage() {
+        let px = Preferring(fixture());
+        let got = |s: &str| {
+            list(
+                &px,
+                &FontSpec {
+                    script: s.into(),
+                    ..spec()
+                },
+            )
+        };
+        let latin: Vec<u64> = got("latin").iter().map(|e| e.face.id).collect();
+        assert_eq!(latin.first(), Some(&7));
+        assert_eq!(latin.iter().filter(|&&i| i == 7).count(), 1);
+        // the others keep their order
+        assert_eq!(&latin[1..4], &[1, 2, 3]);
+        assert_eq!(
+            got("greek").iter().map(|e| e.face.id).collect::<Vec<_>>(),
+            [4, 5, 7]
+        );
+        // a named family is not reordered
+        let named = list(
+            &px,
+            &FontSpec {
+                family: "Menlo".into(),
+                script: "latin".into(),
+                ..spec()
+            },
+        );
+        assert_eq!(named[0].face.id, 1);
     }
 
     #[test]

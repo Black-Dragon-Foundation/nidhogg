@@ -489,7 +489,7 @@ jobs:
 
   macos:
     name: macOS (NS app)
-    needs: changes
+    needs: [changes, pin]
     if: ${{ !cancelled() && needs.changes.outputs.macos != 'false' }}
     runs-on: xcode-27
     timeout-minutes: 180
@@ -733,13 +733,32 @@ jobs:
         run: |
           sel=${CHECKS//|/\\|}
           bash nidhogg/test/nhmac-gui.sh --emacs "$RUNNER_TEMP/nbuild/obj/src/emacs" --out "$RUNNER_TEMP/nhmac-gui/naglfar" ${sel:+--select "$sel"} ${FILES:+--files "$FILES"}
-      # Paired timing (`pair`): the NS build of the tarball and Naglfar run the timed row in turn, ABAB
-      # (nidhogg/test/nhmac-pair.sh); red when Naglfar is slower.
+      # drgnx's fit-check row (its test/ui/rows-fit-gui-test.el) on Naglfar at scale 2, drgnx at the commit this file
+      # pins (nhmac-gui.sh --drgnx builds its hub here): the hub's fit against Core Text's advances.  It runs when
+      # `checks` is empty or names it (`fit`).  Until the pinned commit has the row it is reported skipped, with that
+      # reason; a push or pull request (the gate) is red then (--drgnx-strict), a dispatch is not.
+      - name: drgnx at the pinned commit (the fit-check row)
+        id: dfit
+        if: ${{ !cancelled() && steps.nbuild.outcome == 'success' && (inputs.checks == '' || contains(inputs.checks, 'fit')) }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Black-Dragon-Foundation/drgnx
+          ref: ${{ inputs.drgnx_ref || needs.pin.outputs.ref }}
+          path: drgnx-pin
+          persist-credentials: false
+      - name: drgnx's fit-check row on Naglfar (scale 2)
+        if: ${{ !cancelled() && steps.dfit.outcome == 'success' }}
+        env:
+          CARGO_HOME: ${{ runner.temp }}/cargo-home
+          STRICT: ${{ github.event_name != 'workflow_dispatch' && '--drgnx-strict' || '' }}
+        run: bash nidhogg/test/nhmac-gui.sh --emacs "$RUNNER_TEMP/nbuild/obj/src/emacs" --drgnx "$GITHUB_WORKSPACE/drgnx-pin" $STRICT --out "$RUNNER_TEMP/nhmac-gui/drgnx-fit"
+      # Paired timing (`pair`): the NS build of the tarball and Naglfar run the timed rows in turn, ABAB
+      # (nidhogg/test/nhmac-pair.sh, each row judged on its own); red when Naglfar is slower.
       - name: Naglfar paired timing (pair)
         if: ${{ !cancelled() && steps.nbuild.outcome == 'success' && inputs.pair != '' && hashFiles('dist/*.tar.xz') != '' }}
         run: |
           mkdir -p "$RUNNER_TEMP/ns-app" && tar -C "$RUNNER_TEMP/ns-app" -xJf "$(ls dist/*.tar.xz | head -n 1)"
-          bash nidhogg/test/nhmac-pair.sh --ns "$(echo "$RUNNER_TEMP"/ns-app/nidhogg-*)/Nidhogg.app/Contents/MacOS/Emacs" --naglfar "$RUNNER_TEMP/nbuild/obj/src/emacs" --out "$RUNNER_TEMP/nhmac-gui/pair"
+          bash nidhogg/test/nhmac-pair.sh --ns "$(echo "$RUNNER_TEMP"/ns-app/nidhogg-*)/Nidhogg.app/Contents/MacOS/Emacs" --naglfar "$RUNNER_TEMP/nbuild/obj/src/emacs" --row nhmac-paired-key-to-commit --row nhmac-paired-cjk-emoji-scroll --out "$RUNNER_TEMP/nhmac-gui/pair"
       - name: macOS GUI logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

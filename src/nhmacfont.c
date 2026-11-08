@@ -24,8 +24,9 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
    specs, entities and font objects, which are Lisp objects, into the
    glue's records and back.  A character's glyph and a glyph's metrics
    are read from the font's glyph table (glue/src/glyphs.rs) without a
-   call; a miss fills a page.  For now one family's worth, no shaping;
-   runs are drawn as records (nhmac_glyph_run).  */
+   call; a miss fills a page.  Text is shaped by Core Text in the glue
+   (nhg_font_shape, macfont_shape's rules), and runs are drawn as
+   records (nhmac_glyph_run).  */
 
 #include <config.h>
 
@@ -35,6 +36,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "frame.h"
 #include "keyboard.h"
 #include "character.h"
+#include "composite.h"
 #include "font.h"
 
 struct nhmac_font_info
@@ -126,6 +128,47 @@ nhmac_entity (const NhgFontEntity *e)
   return entity;
 }
 
+/* Install the glue's font source with script-representative-chars,
+   flattened: per script its name id, a count (NHG_FONT_ANY_CHAR set
+   for a vector: any one character will do), then the characters.  */
+static void
+nhmac_font_start (void)
+{
+  ptrdiff_t n = 0, i = 0;
+  Lisp_Object t;
+  uint32_t *flat;
+
+  for (t = Vscript_representative_chars; CONSP (t); t = XCDR (t))
+    if (CONSP (XCAR (t)))
+      n += 2 + (VECTORP (XCDR (XCAR (t))) ? ASIZE (XCDR (XCAR (t)))
+		: XFIXNUM (Fsafe_length (XCDR (XCAR (t)))));
+  flat = xmalloc (max (n, 1) * sizeof *flat);
+  for (t = Vscript_representative_chars; CONSP (t); t = XCDR (t))
+    if (CONSP (XCAR (t)) && SYMBOLP (XCAR (XCAR (t))))
+      {
+	Lisp_Object chars = XCDR (XCAR (t));
+	ptrdiff_t at = i;
+	uint32_t k = 0;
+
+	flat[i++] = nhmac_name_id (XCAR (XCAR (t)));
+	i++;
+	if (VECTORP (chars))
+	  {
+	    for (ptrdiff_t j = 0; j < ASIZE (chars); j++)
+	      if (RANGED_FIXNUMP (0, AREF (chars, j), MAX_UNICODE_CHAR))
+		flat[i++] = XFIXNAT (AREF (chars, j)), k++;
+	    k |= NHG_FONT_ANY_CHAR;
+	  }
+	else
+	  for (; CONSP (chars); chars = XCDR (chars))
+	    if (CHARACTERP (XCAR (chars)))
+	      flat[i++] = XFIXNAT (XCAR (chars)), k++;
+	flat[at + 1] = k;
+      }
+  NHG (nhg_font_start (flat, i));
+  xfree (flat);
+}
+
 /* The fonts of SPEC: every one (ALL) or the nearest.  */
 static Lisp_Object
 nhmac_query (Lisp_Object spec, bool all)
@@ -139,7 +182,7 @@ nhmac_query (Lisp_Object spec, bool all)
 
   if (!started)
     {
-      NHG (nhg_font_start ());
+      nhmac_font_start ();
       started = true;
     }
   nhmac_spec_record (spec, &r);
@@ -180,6 +223,7 @@ nhmacfont_open (struct frame *f, Lisp_Object entity, int pixel_size)
   struct nhmac_font_info *info;
   struct font *font;
   NhgFontMetrics m;
+  uint32_t flags = 0;
   int size;
 
   val = assq_no_quit (QCfont_entity, AREF (entity, FONT_EXTRA_INDEX));
@@ -190,9 +234,18 @@ nhmacfont_open (struct frame *f, Lisp_Object entity, int pixel_size)
     size = pixel_size;
   if (size == 0)
     size = FRAME_FONT (f) ? FRAME_FONT (f)->pixel_size : 12;
+  /* What the entity synthesises, and :minspace (macfont_open).  */
+  if (FIXNUMP (XCDR (XCDR (val))))
+    flags = XFIXNUM (XCDR (XCDR (val))) & (NHG_FONT_SYNTH_ITALIC
+					    | NHG_FONT_SYNTH_BOLD
+					    | NHG_FONT_SYNTH_MONO);
+  if (!NILP (Fcdr (assq_no_quit (QCminspace,
+				 AREF (entity, FONT_EXTRA_INDEX)))))
+    flags |= NHG_FONT_MINSPACE;
 
   block_input ();
-  if (NHG (nhg_font_open (XFIXNUM (XCAR (XCDR (val))), size, &m)) != NHG_OK)
+  if (NHG (nhg_font_open (XFIXNUM (XCAR (XCDR (val))), size, flags, &m))
+      != NHG_OK)
     {
       unblock_input ();
       return Qnil;
@@ -316,6 +369,59 @@ nhmacfont_draw (struct glyph_string *s, int from, int to, int x, int y,
   return to - from;
 }
 
+/* LGSTRING shaped by Core Text (macfont_shape): each glyph's cluster,
+   character, code, metrics and adjustment from the glue's records.  */
+static Lisp_Object
+nhmacfont_shape (Lisp_Object lgstring, Lisp_Object direction)
+{
+  struct font *font = CHECK_FONT_GET_OBJECT (LGSTRING_FONT (lgstring));
+  struct nhmac_font_info *info = (struct nhmac_font_info *) font;
+  ptrdiff_t glyph_len = LGSTRING_GLYPH_LEN (lgstring), len;
+  uint32_t *chars;
+  NhgShaped *out;
+  size_t used = 0;
+  USE_SAFE_ALLOCA;
+
+  for (len = 0; len < glyph_len; len++)
+    if (NILP (LGSTRING_GLYPH (lgstring, len)))
+      break;
+  SAFE_NALLOCA (chars, 1, len);
+  SAFE_NALLOCA (out, 1, glyph_len);
+  for (ptrdiff_t i = 0; i < len; i++)
+    chars[i] = LGLYPH_CHAR (LGSTRING_GLYPH (lgstring, i));
+  block_input ();
+  if (NHG (nhg_font_shape (info->handle, chars, len, out, glyph_len, &used))
+      != NHG_OK)
+    used = 0;
+  unblock_input ();
+  for (size_t i = 0; i < used; i++)
+    {
+      Lisp_Object lglyph = LGSTRING_GLYPH (lgstring, i);
+      const NhgShaped *g = &out[i];
+
+      if (NILP (lglyph))
+	{
+	  lglyph = LGLYPH_NEW ();
+	  LGSTRING_SET_GLYPH (lgstring, i, lglyph);
+	}
+      LGLYPH_SET_FROM (lglyph, g->from);
+      LGLYPH_SET_TO (lglyph, g->to);
+      LGLYPH_SET_CHAR (lglyph, g->c);
+      LGLYPH_SET_CODE (lglyph, g->code);
+      LGLYPH_SET_WIDTH (lglyph, g->m.width);
+      LGLYPH_SET_LBEARING (lglyph, g->m.lbearing);
+      LGLYPH_SET_RBEARING (lglyph, g->m.rbearing);
+      LGLYPH_SET_ASCENT (lglyph, g->m.ascent);
+      LGLYPH_SET_DESCENT (lglyph, g->m.descent);
+      if (g->adjust)
+	LGLYPH_SET_ADJUSTMENT (lglyph, CALLN (Fvector, make_fixnum (g->xoff),
+					      make_fixnum (g->yoff),
+					      make_fixnum (g->wadjust)));
+    }
+  SAFE_FREE ();
+  return used ? make_fixnum (used) : Qnil;
+}
+
 struct font_driver const nhmacfont_driver =
   {
     .type = LISPSYM_INITIALLY (Qnaglfar),
@@ -328,12 +434,14 @@ struct font_driver const nhmacfont_driver =
     .encode_char = nhmacfont_encode_char,
     .text_extents = nhmacfont_text_extents,
     .draw = nhmacfont_draw,
+    .shape = nhmacfont_shape,
   };
 
 void
 syms_of_nhmacfont (void)
 {
   DEFSYM (Qnaglfar, "naglfar");
+  DEFSYM (QCminspace, ":minspace");
   nhmac_font_cache = list1 (Qnil);
   staticpro (&nhmac_font_cache);
 }

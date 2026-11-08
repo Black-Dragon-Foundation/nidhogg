@@ -1,37 +1,16 @@
-//! The faces AppKit lists and the fonts Core Text opens, for the glue's font driver (`glue/src/font.rs`).
+//! The fonts Core Text opens, for the glue's font driver (`glue/src/font.rs`); the faces are `text.rs`'s.
 //!
-//! The faces come from `NSFontManager` once, on the main thread, and are kept: a face's id is its index plus one.  An
-//! open font is an `NSFont` (toll-free bridged to `CTFont`) at the pixel size Emacs asks for, so its metrics are already
-//! device pixels; glyphs and their bounds come from Core Text a page at a time, for the glue's glyph tables.
+//! An open font is a `CTFont` made from a face's PostScript name at the pixel size Emacs asks for
+//! (`macfont_open`), so its metrics are already device pixels; glyphs and their bounds come from Core Text a page at a
+//! time, for the glue's glyph tables.
 
-use objc2::MainThreadMarker;
+use super::text::{Cf, string};
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
-use objc2_app_kit::{NSFont, NSFontManager};
-use objc2_foundation::{NSArray, NSNumber, NSString};
+use objc2_foundation::NSString;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
-
-/// One face: its PostScript name, family and traits as AppKit gives them.
-#[derive(Clone, Debug)]
-pub struct MacFace {
-    pub id: u64,
-    pub postscript: String,
-    pub family: String,
-    /// `NSFontManager`'s weight, 0–15 (5 normal, 9 bold).
-    pub weight: i64,
-    /// `NSFontTraitMask` bits.
-    pub traits: u64,
-}
-
-/// `NSFontTraitMask` bits.
-pub const NS_ITALIC: u64 = 0x1;
-pub const NS_BOLD: u64 = 0x2;
-pub const NS_EXPANDED: u64 = 0x20;
-pub const NS_CONDENSED: u64 = 0x40;
-pub const NS_FIXED_PITCH: u64 = 0x400;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -77,6 +56,15 @@ unsafe extern "C" {
         count: isize,
     ) -> CGRect;
     fn CTFontGetSize(font: *const c_void) -> f64;
+    fn CTFontCreateWithName(name: *const c_void, size: f64, matrix: *const c_void)
+    -> *const c_void;
+    fn CTFontGetAscent(font: *const c_void) -> f64;
+    fn CTFontGetDescent(font: *const c_void) -> f64;
+    fn CTFontGetLeading(font: *const c_void) -> f64;
+    fn CTFontGetUnderlinePosition(font: *const c_void) -> f64;
+    fn CTFontGetUnderlineThickness(font: *const c_void) -> f64;
+    fn CTFontGetSymbolicTraits(font: *const c_void) -> u32;
+    fn CTFontCopyFamilyName(font: *const c_void) -> *const c_void;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -120,105 +108,95 @@ pub fn integral(handle: u64) -> Option<bool> {
 /// `kCTFontOrientationDefault`.
 const CT_DEFAULT: u32 = 0;
 
-fn faces_cell() -> &'static Mutex<Option<Vec<MacFace>>> {
-    static FACES: OnceLock<Mutex<Option<Vec<MacFace>>>> = OnceLock::new();
-    FACES.get_or_init(Mutex::default)
-}
-
-fn number(o: &AnyObject) -> Option<i64> {
-    o.downcast_ref::<NSNumber>()
-        .map(|n| n.integerValue() as i64)
-}
-
-/// Every face, in AppKit's family order; listed on the main thread's first call and kept (another thread before that
-/// gets none).
-pub fn faces() -> Vec<MacFace> {
-    let mut cell = faces_cell().lock().unwrap_or_else(|p| p.into_inner());
-    if let Some(f) = cell.as_ref() {
-        return f.clone();
-    }
-    let Some(mtm) = MainThreadMarker::new() else {
-        return Vec::new();
-    };
-    let fm = NSFontManager::sharedFontManager(mtm);
-    let mut out = Vec::new();
-    for family in fm.availableFontFamilies().iter() {
-        let Some(members) = fm.availableMembersOfFontFamily(&family) else {
-            continue;
-        };
-        for m in members.iter() {
-            // [PostScript name, style name, weight, traits]
-            let Some(m) = m.downcast_ref::<NSArray>() else {
-                continue;
-            };
-            if m.count() < 4 {
-                continue;
-            }
-            let Some(ps) = m
-                .objectAtIndex(0)
-                .downcast_ref::<NSString>()
-                .map(|s| s.to_string())
-            else {
-                continue;
-            };
-            out.push(MacFace {
-                id: out.len() as u64 + 1,
-                postscript: ps,
-                family: family.to_string(),
-                weight: number(&m.objectAtIndex(2)).unwrap_or(5),
-                traits: number(&m.objectAtIndex(3)).unwrap_or(0) as u64,
-            });
-        }
-    }
-    *cell = Some(out.clone());
-    out
-}
-
-/// An open font.
+/// An open font, and what macfont draws synthesised for it.
 struct OpenFont {
-    font: Retained<NSFont>,
+    font: Cf,
+    synthetic_italic: bool,
+    synthetic_bold: bool,
+    /// The family and size, for the test hooks.
+    family: String,
+    size: f64,
 }
-
-// SAFETY: Core Text fonts are immutable and documented thread-safe; the `NSFont` is only used as a `CTFont` here.
-unsafe impl Send for OpenFont {}
 
 fn open_fonts() -> &'static Mutex<(u64, HashMap<u64, OpenFont>)> {
     static OPEN: OnceLock<Mutex<(u64, HashMap<u64, OpenFont>)>> = OnceLock::new();
     OPEN.get_or_init(Mutex::default)
 }
 
-/// A font's raw metrics, in device pixels (unrounded).
-#[derive(Clone, Copy, Debug, Default)]
+/// A font's raw metrics, in device pixels (unrounded), as `macfont_open` reads them.
+#[derive(Clone, Debug, Default)]
 pub struct RawMetrics {
     pub ascent: f64,
     pub descent: f64,
     pub leading: f64,
     pub underline_position: f64,
     pub underline_thickness: f64,
-    pub mono: bool,
-    /// Courier, Helvetica or Times: AppKit's taller ascent (`macfont_open`).
-    pub tall_family: bool,
+    /// `CTFontGetSize`.
+    pub size: f64,
+    /// `CTFontGetSymbolicTraits`.
+    pub symbolic: u32,
+    pub family: String,
 }
 
-/// Open face `id` at `size` pixels: a handle and its metrics.
-pub fn open(id: u64, size: f64) -> Option<(u64, RawMetrics)> {
-    let face = faces().into_iter().find(|f| f.id == id)?;
-    let font = NSFont::fontWithName_size(&NSString::from_str(&face.postscript), size)?;
-    let family = font.familyName().map(|s| s.to_string()).unwrap_or_default();
-    let m = RawMetrics {
-        ascent: font.ascender(),
-        descent: -font.descender(),
-        leading: font.leading(),
-        underline_position: font.underlinePosition(),
-        underline_thickness: font.underlineThickness(),
-        mono: face.traits & NS_FIXED_PITCH != 0 || font.isFixedPitch(),
-        tall_family: matches!(family.as_str(), "Courier" | "Helvetica" | "Times"),
+/// Open the face named `postscript` at `size` pixels (`CTFontCreateWithName`), drawn with the synthesised traits
+/// given: a handle and its metrics.
+pub fn open(
+    postscript: &str,
+    size: f64,
+    synthetic_italic: bool,
+    synthetic_bold: bool,
+) -> Option<(u64, RawMetrics)> {
+    let name = NSString::from_str(postscript);
+    // SAFETY: a live CFString (toll-free bridged); the font is +1, owned by `Cf`.
+    let font = Cf::new(unsafe {
+        CTFontCreateWithName(Retained::as_ptr(&name).cast(), size, std::ptr::null())
+    })?;
+    let f = font.get();
+    // SAFETY: a live font; the family name's copy is +1.
+    let m = unsafe {
+        RawMetrics {
+            ascent: CTFontGetAscent(f),
+            descent: CTFontGetDescent(f),
+            leading: CTFontGetLeading(f),
+            underline_position: CTFontGetUnderlinePosition(f),
+            underline_thickness: CTFontGetUnderlineThickness(f),
+            size: CTFontGetSize(f),
+            symbolic: CTFontGetSymbolicTraits(f),
+            family: Cf::new(CTFontCopyFamilyName(f)).map_or_else(String::new, |s| string(s.get())),
+        }
     };
     let mut open = open_fonts().lock().unwrap_or_else(|p| p.into_inner());
     open.0 += 1;
     let handle = open.0;
-    open.1.insert(handle, OpenFont { font });
+    open.1.insert(
+        handle,
+        OpenFont {
+            font,
+            synthetic_italic,
+            synthetic_bold,
+            family: m.family.clone(),
+            size: m.size,
+        },
+    );
     Some((handle, m))
+}
+
+/// The open font `handle`'s synthesised italic and bold, and its size (`None`: not open).
+pub fn synthetic(handle: u64) -> Option<(bool, bool, f64)> {
+    let open = open_fonts().lock().unwrap_or_else(|p| p.into_inner());
+    open.1
+        .get(&handle)
+        .map(|o| (o.synthetic_italic, o.synthetic_bold, o.size))
+}
+
+/// The newest open font of `family` at `size` pixels (the test hooks' way to name the font a frame uses).
+pub fn find(family: &str, size: f64) -> Option<u64> {
+    let open = open_fonts().lock().unwrap_or_else(|p| p.into_inner());
+    open.1
+        .iter()
+        .filter(|(_, o)| o.family.eq_ignore_ascii_case(family) && o.size == size)
+        .map(|(h, _)| *h)
+        .max()
 }
 
 pub fn close(handle: u64) {
@@ -232,9 +210,7 @@ pub fn close(handle: u64) {
 /// `f` on the open font `handle`'s `CTFont` (`None`: not open); the font stays open for the call.
 pub fn with_font<R>(handle: u64, f: impl FnOnce(*const c_void) -> R) -> Option<R> {
     let open = open_fonts().lock().unwrap_or_else(|p| p.into_inner());
-    open.1
-        .get(&handle)
-        .map(|o| f(Retained::as_ptr(&o.font).cast()))
+    open.1.get(&handle).map(|o| f(o.font.get()))
 }
 
 /// The glyph of each UTF-16 unit of `units` into `out` (0: none; a surrogate pair's glyph at its first unit), one
