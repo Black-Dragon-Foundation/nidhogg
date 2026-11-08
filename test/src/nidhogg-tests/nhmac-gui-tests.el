@@ -1524,4 +1524,185 @@ The filter checks itself first on a Homebrew libpng line (caught), the system Im
     (should libs)
     (should-not (nhmac-gui--outside-image-libs libs))))
 
+;; Task 18: child frames as layers, overhanging ones as panels
+(defun nhmac-gui--settle ()
+  "Redisplay, let the pumps run, redisplay again."
+  (redisplay t)
+  (sit-for 0.2)
+  (redisplay t))
+
+(defun nhmac-gui--child (&optional params left top parent)
+  "A shown child frame of PARENT (default the selected frame) at LEFT, TOP (device pixels, default 40, 40).
+16x3 characters, all #ff00ff: an empty buffer with no mode line or cursor.  PARAMS come first, so they win."
+  (let* ((root (selected-frame))
+         (buf (get-buffer-create " *nhmac-child*"))
+         (f (make-frame `(,@params (parent-frame . ,(or parent root)) (minibuffer . nil)
+                          (left . ,(or left 40)) (top . ,(or top 40)) (width . 16) (height . 3)
+                          (background-color . "#ff00ff") (left-fringe . 0) (right-fringe . 0)
+                          (visibility . nil) (no-accept-focus . t) (no-other-frame . t)
+                          (undecorated . t) (internal-border-width . 0)))))
+    (with-current-buffer buf
+      (setq-local mode-line-format nil cursor-type nil cursor-in-non-selected-windows nil))
+    (select-frame root)
+    (set-window-buffer (frame-root-window f) buf)
+    (make-frame-visible f)
+    (nhmac-gui--settle)
+    f))
+
+(defun nhmac-gui--copies (count area)
+  "How many copies of a child of AREA device pixels a capture that counted COUNT of its colour shows.
+0 when almost none, 2 when clearly more than one copy's worth, else 1."
+  (cond ((null count) nil)
+        ((< count (* 0.05 area)) 0)
+        ((> count (* 1.2 area)) 2)
+        (t 1)))
+
+(ert-deftest nhmac-child-move ()
+  "A child frame is a container layer in its parent's root; a move changes the container's position and nothing
+else (no contents, so no shadow render either), in one commit, with no picture drawn."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((c (nhmac-gui--child)))
+    (unwind-protect
+        (let ((info (nhmac--test-child c))
+              (s (/ (frame-pixel-width c) (float (plist-get (nhmac--test-child c) :w)))))
+          (should (eq (plist-get info :host) 'parent))
+          (should (eq (plist-get info :hidden) nil))
+          (should (eq (plist-get info :contents-is-newest) t))
+          (should (equal (plist-get info :place) (list (round (/ 40 s)) (round (/ 40 s)))))
+          (let ((before (nhmac-stats)))
+            (set-frame-position c 80 60)
+            (nhmac-gui--settle)
+            (let ((after (nhmac--test-child c)))
+              (message "nhmac-child-move: %S -> %S" info after)
+              (should (equal (plist-get after :place) (list (round (/ 80 s)) (round (/ 60 s)))))
+              (should (= (plist-get after :x) (round (/ 80 s)))))
+            (should (= (nhmac-gui--delta before :props-position) 1))
+            (dolist (k '(:props-contents :props-bounds :props-hidden :props-opacity :props-order :props-host
+                         :overhang-switches :draws))
+              (should (= (nhmac-gui--delta before k) 0)))
+            (should (= (nhmac-gui--delta before :commits) 1))))
+      (delete-frame c t))))
+
+(ert-deftest nhmac-child-click-through-shadow ()
+  "A child with a shadow takes clicks on its native area only: a click on its shadow margin reaches the frame
+beneath, its parent."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((root (selected-frame))
+         (c (nhmac-gui--child '((shadow . (:blur 16 :offset (0 . 6) :opacity 0.35))) 100 100)))
+    (unwind-protect
+        (let* ((info (nhmac--test-child c))
+               (h (frame-pixel-height c))
+               (frame-of (lambda (ev) (window-frame (posn-window (event-start ev)))))
+               (click (lambda (x y)
+                        (nhmac-gui--flush)
+                        (nhmac--test-post-mouse 'down x y nil nil root)
+                        (nhmac--test-post-mouse 'up x y nil nil root)
+                        (seq-find (lambda (ev) (and (consp ev) (memq 'click (event-modifiers ev))))
+                                  (nhmac-gui--events 4)))))
+          (message "nhmac-child-click-through-shadow: %S" info)
+          ;; the margin is laid out: the input region starts inside the surface
+          (should (plist-get info :input))
+          (should (> (nth 0 (plist-get info :input)) 0))
+          (let ((on-child (funcall click (+ 100 10) (+ 100 (/ h 2))))
+                (on-shadow (funcall click (- 100 6) (+ 100 (/ h 2)))))
+            (should on-child)
+            (should (eq (funcall frame-of on-child) c))
+            (should on-shadow)
+            (should (eq (funcall frame-of on-shadow) root))))
+      (delete-frame c t))))
+
+(ert-deftest nhmac-overhang-switch ()
+  "A child moved across its root's right edge goes into an overhang panel once per crossing and comes back once,
+with no picture drawn; captures across the switch show exactly one copy of it."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((root (selected-frame))
+         (rw (frame-pixel-width root))
+         (c (nhmac-gui--child nil 40 40))
+         (cw (frame-pixel-width c))
+         (area (* cw (frame-pixel-height c)))
+         (windows (length (nhmac--test-windows))))
+    (unwind-protect
+        (let ((before (nhmac-stats)))
+          ;; step across the edge and back, 8 device pixels at a time, settling after each
+          (nhmac--test-capture-switch 255 0 255)
+          (let ((x (- rw cw 24)) hosts)
+            (while (< x (- rw (/ cw 2)))
+              (set-frame-position c x 40) (nhmac-gui--settle)
+              (push (plist-get (nhmac--test-child c) :host) hosts)
+              (setq x (+ x 8)))
+            (should (eq (car hosts) 'panel))
+            (should (= (length (nhmac--test-windows)) (1+ windows)))
+            (should (plist-get (nhmac--test-child c) :panel))
+            (while (> x (- rw cw 24))
+              (setq x (- x 8))
+              (set-frame-position c x 40) (nhmac-gui--settle))
+            (should (eq (plist-get (nhmac--test-child c) :host) 'parent))
+            (should-not (plist-get (nhmac--test-child c) :panel))
+            (should (= (length (nhmac--test-windows)) windows)))
+          (let ((caps (nhmac--test-captures)))
+            (message "nhmac-overhang-switch: captures %S of %d, %S" caps area (nhmac-stats))
+            (should (= (length caps) 2))
+            (should (equal (mapcar (lambda (n) (nhmac-gui--copies n area)) caps) '(1 1))))
+          (should (= (nhmac-gui--delta before :overhang-switches) 2))
+          (should (= (nhmac-gui--delta before :panel-orders) 2))
+          (should (= (nhmac-gui--delta before :draws) 0)))
+      (delete-frame c t))))
+
+(ert-deftest nhmac-parent-frame-changes ()
+  "`parent-frame' changed all three ways with no picture drawn: a child becomes a top-level window, the top-level
+a child again, and the child moves to another root."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((root (selected-frame))
+         (other (make-frame '((width . 40) (height . 10))))
+         (c nil)
+         (windows nil))
+    (unwind-protect
+        (progn
+          (select-frame root)
+          (nhmac-gui--settle)
+          (setq c (nhmac-gui--child))
+          (setq windows (length (nhmac--test-windows)))
+          (let ((before (nhmac-stats)))
+            (set-frame-parameter c 'parent-frame nil)
+            (nhmac-gui--settle)
+            (should-not (frame-parent c))
+            (should (= (length (nhmac--test-windows)) (1+ windows)))
+            (should (eq (plist-get (nhmac--window-info c) :visible) t))
+            (set-frame-parameter c 'parent-frame root)
+            (nhmac-gui--settle)
+            (should (eq (frame-parent c) root))
+            (should (= (length (nhmac--test-windows)) windows))
+            (should (eq (plist-get (nhmac--test-child c) :host) 'parent))
+            (should (eq (plist-get (nhmac--test-child c) :contents-is-newest) t))
+            (set-frame-parameter c 'parent-frame other)
+            (nhmac-gui--settle)
+            (should (eq (frame-parent c) other))
+            (should (eq (plist-get (nhmac--test-child c) :host) 'parent))
+            (should (eq (plist-get (nhmac--test-child c) :contents-is-newest) t))
+            (message "nhmac-parent-frame-changes: %S" (nhmac-stats))
+            (should (= (nhmac-gui--delta before :draws) 0))))
+      (when (and c (frame-live-p c)) (delete-frame c t))
+      (delete-frame other t)
+      (select-frame root))))
+
+(ert-deftest nhmac-one-window-per-root ()
+  "The window server lists one window per root frame: child frames add none, an overhanging one adds its panel."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((root (selected-frame))
+         (windows (length (nhmac--test-windows)))
+         (a (nhmac-gui--child nil 20 20))
+         (b (nhmac-gui--child nil 60 60)))
+    (unwind-protect
+        (progn
+          (should (= (length (nhmac--test-windows)) windows))
+          (set-frame-position b (- (frame-pixel-width root) (/ (frame-pixel-width b) 2)) 60)
+          (nhmac-gui--settle)
+          (should (eq (plist-get (nhmac--test-child b) :host) 'panel))
+          (should (= (length (nhmac--test-windows)) (1+ windows)))
+          (set-frame-position b 60 60)
+          (nhmac-gui--settle)
+          (should (= (length (nhmac--test-windows)) windows)))
+      (delete-frame a t)
+      (delete-frame b t))))
+
 ;;; nhmac-gui-tests.el ends here
