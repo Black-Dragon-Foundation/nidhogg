@@ -229,18 +229,11 @@ nhmac_select (int nfds, fd_set *rfds, fd_set *wfds, fd_set *efds,
   return 0;
 }
 
-/* Startup and shutdown: the shell's pool and locale, before Lisp exists
-   (main calls these first).  */
+/* Startup: the locale, before Lisp exists (main calls this first).  */
 void
 nhmac_startup (void)
 {
   NHG (nhg_startup ());
-}
-
-void
-nhmac_shutdown (void)
-{
-  NHG (nhg_shutdown ());
 }
 
 /* A configured path placed in the app bundle (NS_SELF_CONTAINED builds
