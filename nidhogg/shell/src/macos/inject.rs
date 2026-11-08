@@ -40,7 +40,6 @@ unsafe extern "C" {
         wheel3: i32,
     ) -> *mut CGEventOpaque;
     fn CGEventSetLocation(event: *mut CGEventOpaque, location: CGPoint);
-    fn CGEventSetIntegerValueField(event: *mut CGEventOpaque, field: u32, value: i64);
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -50,9 +49,6 @@ unsafe extern "C" {
 
 /// `kCGScrollEventUnitLine`.
 const CG_SCROLL_LINE: u32 = 1;
-/// `kCGMouseEventWindowUnderMousePointer` and `kCGMouseEventWindowUnderMousePointerThatCanHandleThisEvent`: the
-/// window an `NSEvent` made from the event names, which `sendEvent:` sends it to.
-const CG_WINDOW_FIELDS: [u32; 2] = [91, 92];
 
 /// The mouse kinds `nhmac--test-post-mouse` takes.
 pub const MOUSE_DOWN: i64 = 0;
@@ -120,11 +116,13 @@ pub fn mouse(
     let flags = NSEventModifierFlags(usize::try_from(flags).map_err(|_| ShellError::Arg)?);
     if kind == MOUSE_WHEEL {
         let lines = i32::try_from(button).map_err(|_| ShellError::Arg)?;
-        let number = i64::try_from(w.window.windowNumber()).map_err(|_| ShellError::State)?;
-        let screen = w.window.convertPointToScreen(at);
         let top = NSScreen::screens(mtm)
             .firstObject()
             .map_or(0.0, |s| s.frame().size.height);
+        // A scroll event made here has no window: AppKit routes a wheel to the window the window server named, and
+        // drops one it did not route.  So it goes to the view itself, as `sendEvent:` would hand it, at a location
+        // that reads as the window point `at` (an event with no window reports its screen location, which is the
+        // Core Graphics one flipped against the main screen).
         // SAFETY: Core Graphics' constructor; the event is released once, after AppKit made its own copy.
         unsafe {
             let cg =
@@ -135,18 +133,14 @@ pub fn mouse(
             CGEventSetLocation(
                 cg,
                 CGPoint {
-                    x: screen.x,
-                    y: top - screen.y,
+                    x: at.x,
+                    y: top - at.y,
                 },
             );
-            // a wheel event the window server did not route has no window: name ours, or AppKit drops it
-            for field in CG_WINDOW_FIELDS {
-                CGEventSetIntegerValueField(cg, field, number);
-            }
             let ev: Option<Retained<NSEvent>> = msg_send![NSEvent::class(), eventWithCGEvent: cg];
             CFRelease(cg.cast());
             let ev = ev.ok_or(ShellError::State)?;
-            app.postEvent_atStart(&ev, false);
+            let () = msg_send![&*w.view, scrollWheel: &*ev];
         }
         return Ok(());
     }
