@@ -272,6 +272,12 @@ pub trait ShellBackend {
     fn set_title(&mut self, window: WindowId, title: &str) -> ShellResult;
     fn set_app_id(&mut self, window: WindowId, app_id: &str) -> ShellResult;
     fn set_min_size(&mut self, window: WindowId, w: i32, h: i32) -> ShellResult;
+    /// Place the top-level `window` with its frame's top-left at (`x`, `y`) logical pixels from the main screen's
+    /// top-left, as NS places a frame (`set-frame-position`).  `Unsupported` where clients have no position (Wayland).
+    fn move_to(&mut self, window: WindowId, x: i32, y: i32) -> ShellResult {
+        let _ = (window, x, y);
+        Err(ShellError::Unsupported)
+    }
     fn set_fullscreen(&mut self, window: WindowId, on: bool) -> ShellResult;
     fn set_maximized(&mut self, window: WindowId, on: bool) -> ShellResult;
     fn minimize(&mut self, window: WindowId) -> ShellResult;
