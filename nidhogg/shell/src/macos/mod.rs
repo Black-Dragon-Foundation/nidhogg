@@ -22,6 +22,7 @@ mod pacer;
 mod menus;
 mod pasteboard;
 mod power;
+mod resize;
 mod runloop;
 mod screens;
 mod services;
