@@ -1849,8 +1849,8 @@ nhg_export! {
 
 nhg_export! {
     /// A bitmap's `bits` (`width` x `height`, least significant bit first, rows padded to bytes) into a 32-bit
-    /// container's `out` (`stride` bytes a row): `fg` for a set bit, `bg` for a clear one.  `NHG_E_ARG` for a size
-    /// under 1 or a short stride.  Writes pixels.
+    /// container's `out` (`stride` bytes a row): `fg` for a set bit, `bg` for a clear one, Emacs's pixels (0xRRGGBB)
+    /// stored opaque.  `NHG_E_ARG` for a size under 1 or a short stride.  Writes pixels.
     ///
     /// # Safety
     /// `bits` holds `height` padded rows; `out` holds `height` rows of `stride` bytes.
