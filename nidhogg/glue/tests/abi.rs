@@ -201,6 +201,7 @@ mod abi {
             ("NHG_IN_INPUT_WAITING", NHG_IN_INPUT_WAITING.into()),
             ("NHG_IN_COALESCE_WHEEL", NHG_IN_COALESCE_WHEEL.into()),
             ("NHG_IN_ACKS_ONLY", NHG_IN_ACKS_ONLY.into()),
+            ("NHG_IN_REDISPLAY", NHG_IN_REDISPLAY.into()),
             ("NHG_ACT_KEY", NHG_ACT_KEY.into()),
             ("NHG_ACT_CLICK", NHG_ACT_CLICK.into()),
             ("NHG_ACT_WHEEL", NHG_ACT_WHEEL.into()),
