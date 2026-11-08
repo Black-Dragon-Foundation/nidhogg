@@ -116,6 +116,13 @@ impl Child {
     pub fn z(&self) -> i32 {
         self.z
     }
+
+    /// The window took another place (`window::reparent`): its parent, place and stacking start over, as a new
+    /// window's, so C's next push sends them; the chrome and the layer stay.
+    pub(crate) fn reparented(&mut self) {
+        (self.parent, self.x, self.y, self.flags, self.z) = (0, 0, 0, 0, 0);
+        (self.pos, self.region) = (None, None);
+    }
 }
 
 /// The display's stacking counters (moved from `nhwl_z_top` and `nhwl_z_bottom`): a child made or raised takes a
