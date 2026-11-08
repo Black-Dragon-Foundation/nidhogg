@@ -19,8 +19,8 @@ pub const NHG_DRAW_TRAPEZOID: u32 = 3;
 pub const NHG_DRAW_WAVE: u32 = 4;
 /// A dashed line `r.h` thick along `r`'s top (`r.y` is the line's top), dashes and gaps `a` long from phase `b`.
 pub const NHG_DRAW_DASH: u32 = 5;
-/// A fringe bitmap: `r.h` rows at `bits`, `r.w` pixels wide, set pixels in `fg`, the rest in `bg` unless
-/// `NHG_DRAW_OVERLAY`.
+/// A fringe bitmap: `r.h` rows at `bits`, `r.w` bits wide, each bit `a` pixels square (0 or 1: one pixel; at most
+/// 8), set bits in `fg`, the rest in `bg` unless `NHG_DRAW_OVERLAY`.
 pub const NHG_DRAW_BITMAP: u32 = 6;
 /// `r` filled with `fg` outside quarter circles of radius `a` set `b` pixels outside the corners named by the flags'
 /// low four bits (bit 0 bottom right, 1 bottom left, 2 top left, 3 top right): `nhwl_erase_corners_for_relief`.
@@ -130,11 +130,16 @@ pub fn decode(rec: &NhgDrawRec, bits: &[u16]) -> Result<Paint, Bad> {
             if r.w > 16 || bits.len() != r.h as usize {
                 return Err(Bad::Bits);
             }
+            // `a`: each bit's size in pixels (a fringe bitmap scaled to its fringe), 0 or 1 unscaled
+            if !(0..=8).contains(&rec.a) {
+                return Err(Bad::Size);
+            }
             vec![Shape::Bitmap {
                 x: r.x,
                 y: r.y,
                 w: r.w,
                 rows: bits.to_vec(),
+                scale: rec.a.max(1),
                 fg: rec.fg,
                 bg: (rec.flags & NHG_DRAW_OVERLAY == 0).then_some(rec.bg),
             }]
@@ -415,6 +420,19 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn a_bitmap_keeps_its_scale() {
+        let mut r = rec(NHG_DRAW_BITMAP, 0, (0, 0, 8, 1));
+        r.a = 2;
+        let p = decode(&r, &[0x81]).unwrap();
+        assert!(matches!(&p.shapes[0], Shape::Bitmap { scale: 2, .. }));
+        r.a = 0;
+        let p = decode(&r, &[0x81]).unwrap();
+        assert!(matches!(&p.shapes[0], Shape::Bitmap { scale: 1, .. }));
+        r.a = 9;
+        assert_eq!(decode(&r, &[0x81]).err(), Some(Bad::Size));
     }
 
     #[test]

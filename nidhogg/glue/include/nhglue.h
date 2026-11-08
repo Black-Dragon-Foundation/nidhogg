@@ -1203,8 +1203,8 @@ int32_t nhg_font_fill (uint64_t handle, uint32_t page);
    pixels, alpha included).  NHG_DRAW_OUTLINE: one-pixel lines through the pixel centres of R's edges.
    NHG_DRAW_TRAPEZOID: a relief's top (NHG_DRAW_TOP) or bottom edge over R.  NHG_DRAW_WAVE: a wave in R, A pixels per
    half wave.  NHG_DRAW_DASH: a line R.h thick along R's top, dashes A long from phase B.  NHG_DRAW_BITMAP: R.h rows at
-   BITS, R.w (at most 16) pixels wide, the leftmost in bit R.w - 1; set pixels in FG, the rest in BG unless
-   NHG_DRAW_OVERLAY.  NHG_DRAW_CORNERS: R in FG outside quarter circles of radius A set B pixels outside the corners
+   BITS, R.w (at most 16) bits wide, the leftmost in bit R.w - 1, each bit A (0 or 1: one; at most 8) pixels square;
+   set bits in FG, the rest in BG unless NHG_DRAW_OVERLAY.  NHG_DRAW_CORNERS: R in FG outside quarter circles of radius A set B pixels outside the corners
    the flags' low four bits name (bottom right, bottom left, top left, top right).  NCLIP (0-2) clip rectangles
    apply.  A refused record is skipped and the call returns NHG_E_ARG; NHG_E_UNSUPPORTED where the shell has no
    painter.  nhg_draw_glyphs paints one NHG_DRAW_GLYPHS record of the open font FONT (nhg_font_open): N glyphs at

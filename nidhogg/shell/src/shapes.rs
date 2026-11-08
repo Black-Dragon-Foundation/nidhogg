@@ -31,13 +31,15 @@ pub enum Shape {
         corners: u32,
         argb: u32,
     },
-    /// A 1-bit bitmap at (`x`, `y`), `w` pixels wide: pixel `j` of row `i` is set when bit `w - 1 - j` of `rows[i]`
-    /// is.  Set pixels take `fg`; unset ones take `bg`, or are left alone when it is `None`.
+    /// A 1-bit bitmap at (`x`, `y`), `w` bits wide: bit `j` of row `i` is set when bit `w - 1 - j` of `rows[i]` is,
+    /// and each bit covers `scale` by `scale` pixels.  Set bits take `fg`; unset ones take `bg`, or are left alone when
+    /// it is `None`.
     Bitmap {
         x: i32,
         y: i32,
         w: i32,
         rows: Vec<u16>,
+        scale: i32,
         fg: u32,
         bg: Option<u32>,
     },
@@ -106,5 +108,63 @@ impl Paint {
                 }
             }
         }
+    }
+}
+
+/// The rectangles a bitmap's set bits cover (`Shape::Bitmap`): one per run of set bits in a row, the leftmost bit in
+/// bit `w - 1`, each bit `scale` pixels square.
+pub fn bitmap_runs(x: i32, y: i32, w: i32, rows: &[u16], scale: i32) -> Vec<Rect> {
+    let mut out = Vec::new();
+    for (i, bits) in rows.iter().enumerate() {
+        let mut j = 0;
+        while j < w {
+            if bits >> (w - 1 - j) & 1 == 0 {
+                j += 1;
+                continue;
+            }
+            let start = j;
+            while j < w && bits >> (w - 1 - j) & 1 != 0 {
+                j += 1;
+            }
+            out.push(Rect::new(
+                x + start * scale,
+                y + i as i32 * scale,
+                (j - start) * scale,
+                scale,
+            ));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bitmap_runs_cover_the_set_bits() {
+        // 1001 / 0110, 4 wide
+        let r = bitmap_runs(10, 20, 4, &[0b1001, 0b0110], 1);
+        assert_eq!(
+            r,
+            vec![
+                Rect::new(10, 20, 1, 1),
+                Rect::new(13, 20, 1, 1),
+                Rect::new(11, 21, 2, 1)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_scaled_bitmap_covers_scale_squares() {
+        let r = bitmap_runs(10, 20, 4, &[0b1001, 0b0110], 2);
+        assert_eq!(
+            r,
+            vec![
+                Rect::new(10, 20, 2, 2),
+                Rect::new(16, 20, 2, 2),
+                Rect::new(12, 22, 4, 2)
+            ]
+        );
     }
 }
