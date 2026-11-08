@@ -808,6 +808,9 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
+      - name: Source tree hash, compiled-Lisp inputs
+        id: tree
+        run: echo "elc=$(bash nidhogg/ci/lisp-key.sh --elc)" >> "$GITHUB_OUTPUT"
       # Homebrew's packages, downloaded each run (a 775 MB cache of the bottles saved under a minute); Rust from the
       # image's rustup instead of Homebrew's when the image has it (Homebrew's otherwise)
       - name: Build dependencies (Homebrew; Rust by rustup)
@@ -823,7 +826,24 @@ jobs:
           rustc -V
       - name: Toolchain versions
         id: tc
-        run: echo "image=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "v=$(brew list --versions gcc libgccjit | tr ' \n' '--')" >> "$GITHUB_OUTPUT"
+          echo "image=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+          echo "deps=$(sed 's/#.*//' nidhogg/deps/macos.build | { xargs brew list --versions 2>/dev/null || true; } | { cat; echo "$ImageOS-$ImageVersion"; } | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      # The byte-compiled Lisp is the NS job's entry (the same key, saved by nidhogg-31's NS build): the dumped Lisp is
+      # the same whichever window system it is built for.  build.sh takes it for this build's different stamp
+      # (NIDHOGG_BUILD_LISP_CACHE_ELC: the compiler and architecture must agree, the .eln files are not taken), and
+      # make then finds the .elc current (the restored files are newer than every source).  Not restored for
+      # nidhogg-31 or a tag, as the NS job's.  The .eln files are this build's own: the preloaded ones.
+      - name: Byte-compiled Lisp (the NS job's entry)
+        id: lc
+        if: ${{ !startsWith(github.ref, 'refs/tags/') && github.ref != 'refs/heads/nidhogg-31' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/lisp-cache/src
+            ${{ runner.temp }}/lisp-cache/stamp
+          key: lisp-macos-${{ runner.arch }}-${{ steps.tc.outputs.v }}-${{ runner.temp }}-elc-${{ steps.tree.outputs.elc }}-${{ hashFiles('nidhogg/build.sh') }}
       - name: ccache (Homebrew)
         id: ccb
         run: brew install ccache
@@ -838,12 +858,30 @@ jobs:
           restore-keys: |
             ccache-macos-naglfar-${{ runner.arch }}-${{ steps.tc.outputs.image }}-${{ hashFiles('nidhogg/deps/macos.build') }}-
             ccache-macos-naglfar-${{ runner.arch }}-
+      # configure's checks, as the NS job's, under a key of their own (this configure line and this shell's checks)
+      - name: Configure's checks (same configure inputs, same packages)
+        id: cf
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/config-cache
+          key: configure-macos-naglfar-${{ runner.arch }}-${{ steps.tc.outputs.deps }}-${{ hashFiles('configure.ac', 'm4/**', 'build-aux/**', 'autogen.sh', 'nidhogg/version', 'nidhogg/build.sh') }}
+      - name: File times (each file's last commit, so the restored Lisp is newer than every source)
+        run: bash nidhogg/ci/set-mtimes.sh
       - name: Naglfar build
         id: nbuild
         if: ${{ !cancelled() && steps.brew.outcome == 'success' }}
         env:
           NIDHOGG_BUILD_CCACHE: ${{ steps.ccb.outcome == 'success' && format('{0}/ccache', runner.temp) || '' }}
+          NIDHOGG_BUILD_CONFIG_CACHE: ${{ runner.temp }}/config-cache
+          NIDHOGG_BUILD_LISP_CACHE: ${{ runner.temp }}/lisp-cache
+          NIDHOGG_BUILD_LISP_CACHE_ELC: '1'
         run: /bin/bash nidhogg/build.sh --host --naglfar --dev --checking --stage build --jobs 3 --build-dir "$RUNNER_TEMP/nbuild"
+      - name: Save configure's checks
+        if: ${{ always() && env.CACHE_SAVE == 'true' && steps.nbuild.outcome == 'success' && steps.cf.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/config-cache
+          key: configure-macos-naglfar-${{ runner.arch }}-${{ steps.tc.outputs.deps }}-${{ hashFiles('configure.ac', 'm4/**', 'build-aux/**', 'autogen.sh', 'nidhogg/version', 'nidhogg/build.sh') }}
       - name: Naglfar's Rust unit tests (glue and shell, --features macos)
         if: ${{ !cancelled() && steps.brew.outcome == 'success' }}
         env:

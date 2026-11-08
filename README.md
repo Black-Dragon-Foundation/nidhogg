@@ -499,6 +499,11 @@ post AppKit events and read the shell's counters through those hooks.
   is not used) and logs `native compilation: preloaded Lisp only`. `nidhogg-31`, tags and pull requests keep full AOT.
   `tarball-test.sh` reads the mode from BUILDINFO: AOT needs the full `.eln` set, the preloaded-only mode the preloaded
   ones and `native-comp-jit-compilation` nil.
+- The Naglfar job does not compile the Lisp again either: it restores the NS job's byte-compiled entry (the same key,
+  saved by `nidhogg-31`'s NS build; not for `nidhogg-31` or a tag), `build.sh` takes it for its different stamp
+  (`NIDHOGG_BUILD_LISP_CACHE_ELC=1`, same compiler, architecture and configure line apart from the native-compilation
+  mode, the window system and `--enable-checking`) and make finds the `.elc` files current. Its configure checks are an
+  entry of their own (`configure-macos-naglfar-…`).
 - `timing` (fedora-45 and macOS, after `linux` and `macos`; `continue-on-error: true`; not in `release`'s needs, so it can
   never fail a run or a release): the timing test files in a lane of their own, report-only
   (`nidhogg/test/timing-lane.sh`, rows and budget ratios in `nidhogg/test/timing-rows.txt`). It runs nothing else. A fixed
