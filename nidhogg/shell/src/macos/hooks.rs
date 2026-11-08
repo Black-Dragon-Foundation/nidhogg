@@ -56,20 +56,24 @@ fn numbers(arg: &str) -> ShellResult<Vec<f64>> {
         .collect()
 }
 
-/// `("FAMILY" SIZE GLYPH...)`: Core Text's own advances of the glyphs in the open font of FAMILY at SIZE pixels
+/// `(FAMILY SIZE GLYPH...)`, as `nhmac--call` prints its arguments (strings unquoted, so FAMILY is the words before
+/// the first number): Core Text's own advances of the glyphs in the open font of FAMILY at SIZE pixels
 /// (`CTFontGetAdvancesForGlyphs`, unrounded), a list; nil when no such font is open.
 fn ct_advances(arg: &str) -> ShellResult<String> {
-    let arg = arg
+    let words: Vec<&str> = arg
         .trim()
         .trim_start_matches('(')
         .trim_end_matches(')')
-        .trim_start();
-    let rest = arg.strip_prefix('"').ok_or(ShellError::Arg)?;
-    let end = rest.find('"').ok_or(ShellError::Arg)?;
-    let family = &rest[..end];
-    let n = numbers(&rest[end + 1..])?;
+        .split_whitespace()
+        .collect();
+    let at = words
+        .iter()
+        .position(|w| w.parse::<f64>().is_ok())
+        .ok_or(ShellError::Arg)?;
+    let family = words[..at].join(" ");
+    let n = numbers(&words[at..].join(" "))?;
     let (&size, glyphs) = n.split_first().ok_or(ShellError::Arg)?;
-    let Some(handle) = super::super::fonts::find(family, size) else {
+    let Some(handle) = super::super::fonts::find(&family, size) else {
         return Ok("nil".into());
     };
     let glyphs: Vec<u16> = glyphs.iter().map(|&g| g as u16).collect();

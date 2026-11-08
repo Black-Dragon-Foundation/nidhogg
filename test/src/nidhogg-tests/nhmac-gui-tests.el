@@ -2225,13 +2225,13 @@ lists element by element."
   "NS's metrics, glyph extents and underlines of the parity fonts, for nhmac-font-metrics-parity in the Naglfar lane;
 its fallback fonts for nhmac-font-fallback-same; its shaping for nhmac-font-shaping."
   (skip-unless (nhmac-gui--ns-build-p))
+  ;; the fallback and shaping dumps first: they need no capture, so a capture failure below does not take them along
+  (nhmac-gui--lane-write "font-fallback" (nhmac-gui--fallback-facts))
+  (nhmac-gui--lane-write "font-shaping" (nhmac-gui--shaping-facts))
   (let ((facts (nhmac-gui--parity-facts)))
     (message "nhmac-ns-font-parity-dump: %S" facts)
     (nhmac-gui--lane-write "font-parity" facts)
-    (should (cl-some (lambda (r) (nth 2 r)) facts)))
-  (nhmac-gui--lane-write "font-fallback" (nhmac-gui--fallback-facts))
-  (nhmac-gui--lane-write "font-shaping" (nhmac-gui--shaping-facts))
-  (should (file-exists-p (nhmac-gui--lane-file "font-shaping" "eld"))))
+    (should (cl-some (lambda (r) (nth 2 r)) facts))))
 
 (ert-deftest nhmac-font-metrics-parity ()
   "For Menlo, SF Mono, Helvetica, PingFang SC and Apple Color Emoji at :height 100, 120 and 160: the pixel size,
@@ -2524,8 +2524,11 @@ fringe in black on `nhmac-gui--font-bg', fringes 8 NS points wide."
 nhmac-draw-all-records in the Naglfar lane; and the fringe scene's capture, for nhmac-draw-fringe-bitmaps."
   (skip-unless (nhmac-gui--ns-build-p))
   (nhmac-gui--with-draw-scene
-    (with-temp-file (nhmac-gui--font-file "draw.eld")
-      (prin1 (nhmac-gui--draw-geometry) (current-buffer)))
+    ;; measured in the scene's buffer, before `with-temp-file' makes its own current
+    (let ((g (nhmac-gui--draw-geometry)))
+      (should g)
+      (with-temp-file (nhmac-gui--font-file "draw.eld")
+        (prin1 g (current-buffer))))
     (dolist (c (nhmac-gui--draw-captures))
       (should (> (car (nhmac-gui--text-crop (nhmac-gui--bmp-read (cdr c)))) 0))))
   (nhmac-gui--with-fringe-scene
