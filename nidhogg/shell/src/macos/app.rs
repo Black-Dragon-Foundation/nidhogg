@@ -403,11 +403,27 @@ impl ShellBackend for MacShell {
             wait::wake();
             return Ok(());
         }
+        // records already wait for the host: it drains them first, and the drain's end pumps when it needs more
+        if !self.queue.is_empty() {
+            return self.flush_main();
+        }
         // an exception raised here is turned into a panic by the glue's guard (nhshell::catch_objc)
         surface::STATS
             .pumps
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.pump();
+        Ok(())
+    }
+
+    fn flush_main(&mut self) -> ShellResult {
+        // a Lisp thread's drain hands the pump over, as `dispatch_main` does
+        if MainThreadMarker::new().is_none() {
+            return self.dispatch_main();
+        }
+        if !self.deferred.is_empty() {
+            let ids = std::mem::take(&mut self.deferred);
+            self.commit(&ids);
+        }
         Ok(())
     }
 
