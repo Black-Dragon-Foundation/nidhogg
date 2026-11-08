@@ -298,6 +298,20 @@ job macos | grep -qF 'native compilation: preloaded Lisp only' && job macos | gr
 job macos | grep -A1 'id: ln$' | grep -qF "steps.mode.outputs.preloaded != 'true'" || fail "macos restores .eln files into a preloaded-only build"
 grep -qF -- '--native-preloaded' nidhogg/build.sh && grep -qF 'NIDHOGG_BUILD_LISP_CACHE_ELC' nidhogg/build.sh || fail "build.sh has no preloaded-only mode"
 grep -qF 'native-comp-jit-compilation is on' nidhogg/test/tarball-test.sh && grep -qF 'an AOT build with only' nidhogg/test/tarball-test.sh || fail "the tarball test does not check what each native-compilation mode promises"
+# the Naglfar build does not compile the Lisp again: it takes the NS job's byte-compiled entry (the same key) before make,
+# with the file times set, and keeps its configure checks in an entry of its own
+nk="lisp-macos-\${{ runner.arch }}-\${{ steps.tc.outputs.v }}-\${{ runner.temp }}-elc-\${{ steps.tree.outputs.elc }}-\${{ hashFiles('nidhogg/build.sh') }}"
+job macos-naglfar | grep -qF "key: $nk"                            || fail "macos-naglfar does not restore the NS job's byte-compiled Lisp entry"
+job macos | grep -qF "key: $nk"                                    || fail "the byte-compiled Lisp key moved in macos"
+job macos-naglfar | grep -A1 'id: lc$' | grep -qF "github.ref != 'refs/heads/nidhogg-31'" || fail "macos-naglfar restores compiled Lisp for nidhogg-31"
+job macos-naglfar | grep -A1 'id: lc$' | grep -qF "!startsWith(github.ref, 'refs/tags/')" || fail "macos-naglfar restores compiled Lisp for a tag"
+job macos-naglfar | grep -qF "NIDHOGG_BUILD_LISP_CACHE_ELC: '1'"   || fail "macos-naglfar's build does not take the byte-compiled part of the NS entry"
+job macos-naglfar | grep -qF 'NIDHOGG_BUILD_LISP_CACHE: ${{ runner.temp }}/lisp-cache' || fail "macos-naglfar's build has no compiled-Lisp cache directory"
+nj2=$(job macos-naglfar)
+ln_of() { grep -n "$1" <<<"$nj2" | head -1 | cut -d: -f1; }
+[ "$(ln_of 'id: lc$')" -lt "$(ln_of 'bash nidhogg/ci/set-mtimes.sh')" ] && [ "$(ln_of 'bash nidhogg/ci/set-mtimes.sh')" -lt "$(ln_of 'id: nbuild')" ] || fail "macos-naglfar does not restore the Lisp, set the file times, then build"
+[ "$(job macos-naglfar | grep -cF -- 'key: configure-macos-naglfar-')" = 2 ] || fail "macos-naglfar's configure checks are not restored and saved under one key"
+job macos-naglfar | grep -qF 'NIDHOGG_BUILD_CONFIG_CACHE: ${{ runner.temp }}/config-cache' || fail "macos-naglfar's build keeps no configure cache"
 # a row-only run leaves out drgnx's macOS suite and says so; a full run keeps every tier, and the gate accepts the
 # skipped drgnx job only when no tier is left
 job changes | grep -qF 'drgnx macOS suite: skipped, row-only run' || fail "a row-only run does not say it skipped drgnx's macOS suite"

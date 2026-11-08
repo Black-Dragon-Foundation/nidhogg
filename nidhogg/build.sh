@@ -293,12 +293,6 @@ script() {
   [ -z "$CT" ] || printf 'CT=%q COMMIT=%q\n' "$CT" "$COMMIT"
   printf 'MODE_ID=%q\n' "$NATIVE${SANITIZE:+-$SANITIZE}"
   printf 'CONF_ID=%q\n' "--prefix=$PREFIX $CONF"
-  # CONF_ID without what the byte-compiled Lisp does not depend on: the native-compilation mode and the window system
-  elc_conf=""
-  for w in --prefix=$PREFIX $CONF; do
-    case $w in --with-native-compilation=*|--with-ns|--with-nidhogg-macos|--enable-checking) ;; *) elc_conf="$elc_conf $w" ;; esac
-  done
-  printf 'ELC_CONF_ID=%q\n' "${elc_conf# }"
   # leak reports from configure's and the dump's short-lived programs are noise.  detect_stack_use_after_return=0 as
   # etc/DEBUG says: the runtime defaults it on (GCC 16's does), which moves main's locals to a heap "fake stack",
   # so stack_bottom (&stack_bottom_variable) is not on the stack and the GC's mark_c_stack scans from the real stack
@@ -436,8 +430,15 @@ cc_id() { printf '%s %s %s %s\n' "$(gcc --version | head -n 1)" "$(uname -m)" "$
 # builds of the same key share DIR: a restore holds DIR/.lock shared, a save exclusive (where flock exists)
 lc_lock() { if command -v flock >/dev/null; then exec 9>"$LC/.lock"; flock "$1" 9; fi; }
 lc_unlock() { if command -v flock >/dev/null; then flock -u 9; exec 9>&-; fi; }
-# the same without the native-compilation mode and the window system: what the byte-compiled part alone depends on
-cc_elc_id() { printf '%s %s %s\n' "$(gcc --version | head -n 1)" "$(uname -m)" "$ELC_CONF_ID"; }
+# a stamp without the native-compilation mode and the window system: what the byte-compiled part alone depends on (a
+# full stamp's words, so that entries saved before this existed qualify too)
+elc_norm() {
+  local w o=""
+  for w in $1; do
+    case $w in aot|aot-*|yes|yes-*|--with-native-compilation=*|--with-ns|--with-nidhogg-macos|--enable-checking) ;; *) o="$o $w" ;; esac
+  done
+  printf '%s\n' "$o"
+}
 lc_lock -s
 rm -f "$B/eln-restored.list"
 if [ "$LC_RESTORE" = 1 ] && [ -f "$LC/stamp" ] && [ "$(cat "$LC/stamp")" = "$(cc_id)" ]; then
@@ -450,7 +451,7 @@ if [ "$LC_RESTORE" = 1 ] && [ -f "$LC/stamp" ] && [ "$(cat "$LC/stamp")" = "$(cc
   [ ! -d "$LC/obj" ] || (cd "$LC/obj" && find . -type f) | while IFS= read -r f; do touch -r "$B/.restored" "$B/obj/$f"; done
   # the restored .eln files, which the guard checks against the new binary after make
   [ ! -d "$LC/obj/native-lisp" ] || (cd "$LC/obj" && find native-lisp -name '*.eln') > "$B/eln-restored.list"
-elif [ "$LC_RESTORE" = 1 ] && [ "$LC_ELC" = 1 ] && [ -f "$LC/stamp-elc" ] && [ "$(cat "$LC/stamp-elc")" = "$(cc_elc_id)" ]; then
+elif [ "$LC_RESTORE" = 1 ] && [ "$LC_ELC" = 1 ] && [ -f "$LC/stamp" ] && [ "$(elc_norm "$(cat "$LC/stamp")")" = "$(elc_norm "$(cc_id)")" ]; then
   # NIDHOGG_BUILD_LISP_CACHE_ELC=1: the byte-compiled part of an entry another mode or window system made (the .eln files,
   # which depend on both, are not taken)
   phase restore byte-compiled Lisp
@@ -533,7 +534,7 @@ if [ -s "$B/eln-restored.list" ]; then
 fi
 phase save compiled Lisp
 lc_lock -x
-rm -rf "$LC/stamp" "$LC/stamp-elc" "$LC/src" "$LC/obj"
+rm -rf "$LC/stamp" "$LC/src" "$LC/obj"
 mkdir -p "$LC/src" "$LC/obj"
 # the files make generated under lisp/ and leim/ (those the sources do not have), and the .eln files with the facts
 # the guard compares (.eln-abi)
@@ -543,7 +544,6 @@ if [ -d "$B/obj/native-lisp" ]; then
   "$B/obj/src/emacs" -Q --batch -l "$S/nidhogg/eln-guard.el" -f nidhogg-eln-guard-facts > "$LC/obj/.eln-abi"
 fi
 cc_id > "$LC/stamp"
-cc_elc_id > "$LC/stamp-elc"
 lc_unlock
 BODY
   fi
