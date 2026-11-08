@@ -342,3 +342,24 @@ pub fn collect(shell: &mut WaylandShell, ms: i64) -> Vec<Record> {
         }
     }
 }
+
+/// The kernel's mark on a task that has begun to exit (`PF_EXITING`, include/linux/sched.h).
+const PF_EXITING: u64 = 0x4;
+
+/// The process's threads that still run.  A joined thread is not among them, though its entry in `/proc/self/task`
+/// outlives the join for a moment: the kernel wakes the joiner from the thread's exit (clearing its tid) before it
+/// reaps it, and marks it exiting before that.
+pub fn live_threads() -> usize {
+    std::fs::read_dir("/proc/self/task")
+        .unwrap()
+        .filter_map(|e| std::fs::read_to_string(e.ok()?.path().join("stat")).ok())
+        .filter(|stat| {
+            // after the name's ")": state, ppid, pgrp, session, tty_nr, tpgid, flags
+            let flags = stat
+                .rsplit_once(") ")
+                .and_then(|(_, rest)| rest.split(' ').nth(6))
+                .and_then(|f| f.parse::<u64>().ok());
+            flags.is_some_and(|f| f & PF_EXITING == 0)
+        })
+        .count()
+}
