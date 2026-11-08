@@ -79,7 +79,7 @@ job native-crates | grep -qF 'set-mtimes.sh --since "$RUNNER_TEMP/nh-recorder-ta
 job native-crates | grep -qF 'if [ "$BUILT" = true ]; then git rev-parse HEAD > "$RUNNER_TEMP/nh-recorder-target/.nidhogg-source-commit"; fi' || fail "native-crates' cache does not name its commit, or names it after a red check"
 job native-crates | grep -qF "BUILT: \${{ steps.recorder.outcome == 'success' && steps.shell.outcome == 'success' && steps.glue.outcome == 'success' }}" || fail "native-crates names its commit without all three checks green"
 grep -qF 'nidhogg: artifact' "$wf"                              || fail "drgnx's tiers do not run on this run's tarballs"
-grep -qF "'unit no-lisp-writes ui macos'" "$wf"                   || fail "drgnx's tiers are not unit, gate mode, GUI and macOS"
+job changes | grep -qF '[ -n "$t" ] || t="unit no-lisp-writes ui macos"' || fail "drgnx's tiers are not unit, gate mode, GUI and macOS"
 # a release only from a pushed v* tag, never from workflow_dispatch or a pull request
 awk '/^  release:/,0' "$wf" | grep -qF "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" || fail "release not restricted to a pushed v* tag"
 # pinned actions, podman only, builds only through build.sh
@@ -97,7 +97,7 @@ bad=$(grep -A6 'uses: actions/cache/' "$wf" | grep -E '^[ -]*key: ' | grep -vE '
 [ -z "$bad" ]                                                     || fail "a cache key without a hash of its inputs: $bad"
 grep -A8 'id: tb' "$wf" | grep -q "startsWith(github.ref, 'refs/tags/')" || fail "the tarball cache is used for a release tag"
 step() { awk -v l="$1" 'NR>l && /^      - /{exit} NR>=l' "$wf"; }   # the step from line $1 to the next one
-for l in $(grep -nE 'id: (tb|lc)$' "$wf" | cut -d: -f1); do
+for l in $(grep -nE 'id: (tb|lc|ln)$' "$wf" | cut -d: -f1); do
   # the tarball and compiled-Lisp caches are exact-key (no restore-keys: a partly stale set is not rebuilt correctly)
   ! step "$l" | grep -q 'restore-keys'                            || fail "the exact cache at line $l has restore-keys"
 done
@@ -255,6 +255,17 @@ for j in linux macos compile-noglitnir; do
   [ "$(job "$j" | grep -cF -- '-${{ steps.tree.outputs.abi }}-')" = 2 ] || fail "$j's compiled-Lisp restore and save keys differ"
   job "$j" | grep -qF "steps.lc.outcome == 'skipped' && github.ref == 'refs/heads/nidhogg-31'" || fail "nidhogg-31's $j does not save its cold Lisp"
 done
+# the macOS job's byte-compiled Lisp is an entry of its own, keyed on the Lisp side alone (a C body or header change
+# still finds it), restored and saved under one key; its .eln files keep the ABI key above
+job macos | grep -qF 'elc=$(bash nidhogg/ci/lisp-key.sh --elc)'  || fail "macos does not key its byte-compiled Lisp apart"
+[ "$(job macos | grep -cF -- '-elc-${{ steps.tree.outputs.elc }}-')" = 2 ] || fail "macos's byte-compiled Lisp restore and save keys differ"
+[ "$(job macos | grep -cF -- '-eln-${{ steps.tree.outputs.abi }}-')" = 2 ] || fail "macos's .eln entry is not keyed on the ABI inputs"
+# a row-only run leaves out drgnx's macOS suite and says so; a full run keeps every tier, and the gate accepts the
+# skipped drgnx job only when no tier is left
+job changes | grep -qF 'drgnx macOS suite: skipped, row-only run' || fail "a row-only run does not say it skipped drgnx's macOS suite"
+job changes | grep -qF "''|none|build-only) ;;"                   || fail "the drgnx suite skip is not limited to row selectors"
+job drgnx | grep -qF "needs.changes.outputs.tiers != 'none'"      || fail "the drgnx job runs with no tier"
+job gate | grep -qF '[ "$TIERS" != none ] || allow="$allow drgnx "' || fail "the gate does not accept the drgnx job a row-only run skipped"
 job compile-noglitnir | grep -qF -- '--without-glitnir --dev' || fail "compile-noglitnir is not a dev build"
 grep -qF 'nidhogg-eln-guard-check' nidhogg/build.sh                || fail "build.sh does not guard restored .eln files"
 grep -qF 'if [ "$rc" = 75 ]; then' nidhogg/build.sh                || fail "build.sh does not build cold after the guard's verdict"

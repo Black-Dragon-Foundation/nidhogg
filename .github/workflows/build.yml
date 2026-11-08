@@ -114,17 +114,33 @@ jobs:
           REQUEST: ${{ inputs.jobs || (inputs.scope == 'macos' && 'macos drgnx' || '') }}
           SELECTOR: ${{ inputs.checks }}${{ inputs.lanes && ' lanes:' || '' }}${{ inputs.lanes }}${{ inputs.ns_app_run && ' macOS app of run ' || '' }}${{ inputs.ns_app_run }}
         run: bash nidhogg/ci/changes.sh nidhogg/ci/paths.txt | tee -a "$GITHUB_OUTPUT"
-      # drgnx's tiers on the tarballs this run builds, and the GUI lanes (every lane of native-gui.sh with a floor, or
-      # the narrowed run's)
+      # drgnx's tiers on the tarballs this run builds (scope macos: the macOS tier; none built: every tier), and the GUI
+      # lanes (every lane of native-gui.sh with a floor, or the narrowed run's).  A row-only run (a `checks` selector of
+      # Nidhogg rows) leaves out drgnx's macOS suite, which tests drgnx, not the rows, and holds one of the plan's five
+      # macOS runners: it says so here, and `none` (no tier left) skips the drgnx job.  A full run and a tag run it.
       - id: t
         env:
           LINUX: ${{ steps.c.outputs.run_linux }}
           MACOS: ${{ steps.c.outputs.run_macos }}
+          SCOPE: ${{ inputs.scope }}
+          CHECKS: ${{ inputs.checks }}
           LANES: ${{ inputs.lanes }}
         run: |
           t=""
           [ "$LINUX" = false ] || t="unit no-lisp-writes ui"
           [ "$MACOS" = false ] || t="${t:+$t }macos"
+          [ "$SCOPE" != macos ] || t=macos
+          [ -n "$t" ] || t="unit no-lisp-writes ui macos"
+          case $CHECKS in
+            ''|none|build-only) ;;
+            *) case " $t " in
+                 *" macos "*)
+                   t=$(printf ' %s ' "$t" | sed 's/ macos / /; s/^ *//; s/ *$//')
+                   echo "drgnx macOS suite: skipped, row-only run (checks: $CHECKS)"
+                   echo "::notice title=drgnx macOS suite::skipped, row-only run (checks: $CHECKS)" ;;
+               esac
+               [ -n "$t" ] || t=none ;;
+          esac
           echo "tiers=$t" | tee -a "$GITHUB_OUTPUT"
           all=$(sed -nE 's/^  ([a-z0-9-]+)\) +min=[1-9][0-9]*;.*/\1/p' nidhogg/test/native-gui.sh)
           want=$all
@@ -510,6 +526,7 @@ jobs:
         run: |
           echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
           echo "abi=$(bash nidhogg/ci/lisp-key.sh --abi)" >> "$GITHUB_OUTPUT"
+          echo "elc=$(bash nidhogg/ci/lisp-key.sh --elc)" >> "$GITHUB_OUTPUT"
       # ns_app_run: that run's tarball, and no build (BUILD_APP false skips every step of the build)
       - name: The tarball of run ns_app_run
         if: ${{ env.BUILD_APP != 'true' }}
@@ -586,14 +603,27 @@ jobs:
           # what configure's checks find: every installed build package's version, and the image (Xcode)
           echo "deps=$(sed 's/#.*//' nidhogg/deps/macos.build | { xargs brew list --versions 2>/dev/null || true; } | { cat; echo "$ImageOS-$ImageVersion"; } | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
           echo "rust=$(rustc -V | tr ' ()' '-__')" >> "$GITHUB_OUTPUT"
-      # keyed as the Linux jobs' (--abi; the guard after make), never restored for nidhogg-31 or a tag
-      - name: Compiled Lisp (same Lisp side and ABI)
+      # Two entries, as the workers lanes': the byte-compiled part keyed on the Lisp side and the C side's names
+      # (lisp-key.sh --elc), so a change in a C body still finds it, and the .eln files keyed as the Linux jobs' (--abi;
+      # the guard after make).  build.sh takes either only with its own stamp (compiler, architecture, mode, configure
+      # line) and discards .eln files the guard refuses.  Never restored for nidhogg-31 or a tag: a release builds its
+      # Lisp cold (byte code that folds a C function's result keeps the old body's result until the Lisp side changes)
+      - name: Byte-compiled Lisp (same Lisp sources)
         id: lc
         if: ${{ steps.tb.outputs.cache-hit != 'true' && !startsWith(github.ref, 'refs/tags/') && github.ref != 'refs/heads/nidhogg-31' && env.BUILD_APP == 'true' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/lisp-cache
-          key: lisp-macos-${{ runner.arch }}-${{ steps.tc.outputs.v }}-${{ runner.temp }}-${{ steps.tree.outputs.abi }}-${{ hashFiles('nidhogg/build.sh') }}
+          path: |
+            ${{ runner.temp }}/lisp-cache/src
+            ${{ runner.temp }}/lisp-cache/stamp
+          key: lisp-macos-${{ runner.arch }}-${{ steps.tc.outputs.v }}-${{ runner.temp }}-elc-${{ steps.tree.outputs.elc }}-${{ hashFiles('nidhogg/build.sh') }}
+      - name: Native-compiled Lisp (same Lisp side and ABI)
+        id: ln
+        if: ${{ steps.lc.outcome == 'success' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/lisp-cache/obj
+          key: lisp-macos-${{ runner.arch }}-${{ steps.tc.outputs.v }}-${{ runner.temp }}-eln-${{ steps.tree.outputs.abi }}-${{ hashFiles('nidhogg/build.sh') }}
       - name: ccache (Homebrew)
         id: ccb
         if: ${{ steps.tb.outputs.cache-hit != 'true' && env.BUILD_APP == 'true' }}
@@ -645,12 +675,20 @@ jobs:
         with:
           path: ${{ runner.temp }}/ccache
           key: ccache-macos-${{ runner.arch }}-${{ steps.tc.outputs.image }}-${{ hashFiles('nidhogg/deps/macos.build') }}-${{ github.run_id }}-${{ github.run_attempt }}
-      - name: Save compiled Lisp
+      - name: Save byte-compiled Lisp
         if: ${{ always() && env.CACHE_SAVE == 'true' && steps.build.outcome == 'success' && ((steps.lc.outcome == 'success' && steps.lc.outputs.cache-hit != 'true') || (steps.lc.outcome == 'skipped' && github.ref == 'refs/heads/nidhogg-31')) }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/lisp-cache
-          key: lisp-macos-${{ runner.arch }}-${{ steps.tc.outputs.v }}-${{ runner.temp }}-${{ steps.tree.outputs.abi }}-${{ hashFiles('nidhogg/build.sh') }}
+          path: |
+            ${{ runner.temp }}/lisp-cache/src
+            ${{ runner.temp }}/lisp-cache/stamp
+          key: lisp-macos-${{ runner.arch }}-${{ steps.tc.outputs.v }}-${{ runner.temp }}-elc-${{ steps.tree.outputs.elc }}-${{ hashFiles('nidhogg/build.sh') }}
+      - name: Save native-compiled Lisp
+        if: ${{ always() && env.CACHE_SAVE == 'true' && steps.build.outcome == 'success' && ((steps.ln.outcome == 'success' && steps.ln.outputs.cache-hit != 'true') || (steps.lc.outcome == 'skipped' && github.ref == 'refs/heads/nidhogg-31')) }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/lisp-cache/obj
+          key: lisp-macos-${{ runner.arch }}-${{ steps.tc.outputs.v }}-${{ runner.temp }}-eln-${{ steps.tree.outputs.abi }}-${{ hashFiles('nidhogg/build.sh') }}
       - name: Save configure's checks
         if: ${{ always() && env.CACHE_SAVE == 'true' && steps.build.outcome == 'success' && steps.cf.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -790,11 +828,11 @@ jobs:
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
 
   # The tiers are those whose tarball this run builds (the changes job's tiers: a run that builds only on macOS runs
-  # only the macOS tier).
+  # only the macOS tier, a row-only run none of drgnx's macOS suite).
   drgnx:
     name: drgnx tiers
     needs: [changes, pin, linux, macos]
-    if: ${{ !cancelled() && needs.changes.outputs.drgnx != 'false' }}
+    if: ${{ !cancelled() && needs.changes.outputs.drgnx != 'false' && needs.changes.outputs.tiers != 'none' }}
     permissions:
       contents: read
       packages: read
@@ -802,7 +840,7 @@ jobs:
     with:
       drgnx_ref: ${{ inputs.drgnx_ref || needs.pin.outputs.ref }}
       nidhogg: artifact
-      tiers: ${{ inputs.scope == 'macos' && 'macos' || needs.changes.outputs.tiers || 'unit no-lisp-writes ui macos' }}
+      tiers: ${{ needs.changes.outputs.tiers }}
 
   # The native Wayland shell's own checks, both in release's needs and both run for a tag.  native-crates: the recorder,
   # then the crates' checks, which need it: their T1 tests run against it, and nothing else in this workflow runs them
@@ -1375,8 +1413,11 @@ jobs:
           TAG: ${{ github.ref_type == 'tag' }}
           PR: ${{ github.event_name == 'pull_request' }}
           PARTIAL: ${{ needs.changes.outputs.partial }}
+          TIERS: ${{ needs.changes.outputs.tiers }}
         run: |
           allow=" $SKIP "
+          # a row-only run with no drgnx tier left (the changes job said so)
+          [ "$TIERS" != none ] || allow="$allow drgnx "
           [ "$TAG" != true ] || allow="$allow compile-noglitnir workers-harness workers-asan workers-chaos workers-pkg workers-pkg-compare "
           [ "$PR" = true ] || allow="$allow fast-forward "
           jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"

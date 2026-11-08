@@ -440,8 +440,10 @@ post AppKit events and read the shell's counters through those hooks.
     `compile-noglitnir` (`ccache-fedora-45-noglitnir-...`), `workers-asan` (`ccache-fedora-45-asan-...`) and
     `workers-chaos` (`ccache-fedora-45-chaos-...`, and its compiled Lisp `lisp-fedora-45-chaos-...`) have their
     own. No job caches downloaded packages any more: the images have them.
-  - macOS: the tarball (`tarball-macos-<arch>-...`), compiled Lisp (`lisp-macos-<arch>-<gcc and libgccjit
-    versions>-<runner temp>-<lisp-key.sh --abi>-...`, guarded as above), configure's checks and Glitnir's cargo target
+  - macOS: the tarball (`tarball-macos-<arch>-...`), compiled Lisp in two entries as the workers lanes' (the
+    byte-compiled part `lisp-macos-<arch>-<gcc and libgccjit versions>-<runner temp>-elc-<lisp-key.sh --elc>-...`,
+    which a change in a C body or header still finds, and the `.eln` files `...-eln-<lisp-key.sh --abi>-...`, guarded
+    as above; `build.sh` takes either only with its own stamp; never restored for `nidhogg-31` or a tag), configure's checks and Glitnir's cargo target
     (above), and ccache (`ccache-macos-<arch>-<runner image and version>-<hash of deps/macos.build>-...`, the compiler
     checked by `cc -v`, since `/usr/bin/cc` is a shim; `build.sh --host` uses ccache when `NIDHOGG_BUILD_CCACHE` is
     set). A new runner image restores the previous image's entry (`ccache-macos-<arch>-`): an unchanged clang still
@@ -484,7 +486,9 @@ post AppKit events and read the shell's counters through those hooks.
   named jobs (plus what they need) and, in `linux` and the workers jobs, only the named check targets (space-separated,
   as in `check-subset.txt`) instead of
   `check-subset.txt`; `-f lanes='gui-1 gui-2'` picks `native-gui` lanes (`scope=macos` is narrowed the same way). Such
-  a run's gate is named `Nidhogg gate (partial)`, so it never reads as the full gate.
+  a run's gate is named `Nidhogg gate (partial)`, so it never reads as the full gate. A row-only run (`checks` names
+  Nidhogg rows, not `none` or `build-only`) leaves out drgnx's macOS suite: the changes job logs `drgnx macOS suite:
+  skipped, row-only run` (and a notice), and with no drgnx tier left the drgnx job is skipped. A full run and a tag run it.
 - `timing` (fedora-45 and macOS, after `linux` and `macos`; `continue-on-error: true`; not in `release`'s needs, so it can
   never fail a run or a release): the timing test files in a lane of their own, report-only
   (`nidhogg/test/timing-lane.sh`, rows and budget ratios in `nidhogg/test/timing-rows.txt`). It runs nothing else. A fixed
