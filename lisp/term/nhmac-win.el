@@ -490,6 +490,33 @@ The commit pacer then holds each commit, until its bound.  For tests."
 whether the commit pacer holds a commit.  For tests."
   (nhmac--query 'test-surface (or frame (selected-frame)) x y))
 
+(defun nhmac--test-child (frame)
+  "Return the layers of child frame FRAME's window, a plist.
+`:x', `:y' (its container's position, points from the parent's bottom
+left), `:w', `:h', `:host' (`parent', `panel' or nil), `:hidden',
+`:opacity', `:index' (among its layer's sublayers),
+`:contents-is-newest', `:panel' (the overhang panel's screen frame, or
+nil), `:input' (the input region, points, or nil for all) and `:place'
+(the surface's place in its parent's, points).  For tests."
+  (nhmac--query 'test-child frame))
+
+(defun nhmac--test-windows ()
+  "Return the window server's numbers for this application's visible windows.
+For tests."
+  (nhmac--query 'test-windows))
+
+(defun nhmac--test-capture-switch (r g b)
+  "Make the next overhang switch capture the screen around its root.
+Once right after the panel is ordered in, once after the child's
+layer moved into it; each counts the pixels of colour R G B (0 to
+255).  `nhmac--test-captures' returns the counts.  For tests."
+  (nhmac--call 'test-capture-switch r g b))
+
+(defun nhmac--test-captures ()
+  "Return the counts of the captures `nhmac--test-capture-switch' armed.
+A list, nil for a capture the window server refused.  For tests."
+  (nhmac--query 'test-captures))
+
 (defun nhmac--test-kq-probe (path)
   "Open PATH and ask a fresh kqueue for its readability.
 Return (:open ERRNO :kq ERRNO), 0 meaning success; :kq is -1 when

@@ -71,11 +71,18 @@ impl MacShell {
             }
             "test-force-in-use" => Some(numbers(arg).and_then(|n| match n[..] {
                 [w, on] => {
-                    let w = self
-                        .windows
-                        .get_mut(&(w as WindowId))
-                        .ok_or(ShellError::State)?;
-                    w.surfaces.force_in_use = on != 0.0;
+                    let s = self.surfaces_mut(w as WindowId).ok_or(ShellError::State)?;
+                    s.force_in_use = on != 0.0;
+                    Ok(())
+                }
+                _ => Err(ShellError::Arg),
+            })),
+            "test-capture-switch" => Some(numbers(arg).and_then(|n| match n[..] {
+                [r, g, b] => {
+                    self.capture = Capture {
+                        armed: Some([r as u8, g as u8, b as u8]),
+                        counts: Vec::new(),
+                    };
                     Ok(())
                 }
                 _ => Err(ShellError::Arg),
@@ -119,6 +126,17 @@ impl MacShell {
             "pump-trace" => Ok(crate::trace::pumps_text()),
             "shell-view" => Ok(self.shell_view()),
             "test-kq-probe" => Ok(kq_probe(arg)),
+            "test-child" => first_number(arg).and_then(|w| self.child_info(w)),
+            "test-windows" => Ok(self.window_numbers()),
+            "test-captures" => Ok(format!(
+                "({})",
+                self.capture
+                    .counts
+                    .iter()
+                    .map(|c| c.map_or_else(|| "nil".to_string(), |n| n.to_string()))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )),
             "test-surface" => numbers(arg).and_then(|n| match n[..] {
                 [w, x, y] => self.surface_info(w as WindowId, x as i32, y as i32),
                 _ => Err(ShellError::Arg),
@@ -392,5 +410,126 @@ fn kq_probe(arg: &str) -> String {
         libc::close(kq);
         libc::close(fd);
         format!("(:open 0 :kq {e})")
+    }
+}
+
+/// The overhang switch's captures (`test-capture-switch` R G B): armed with a colour, the next switch captures the
+/// screen around its root right after the panel is ordered in and after the transaction that moves the container, and
+/// counts the pixels of that colour (`None`: no capture).
+#[derive(Debug, Default)]
+pub struct Capture {
+    pub armed: Option<[u8; 3]>,
+    pub counts: Vec<Option<u64>>,
+}
+
+type CFRef = *const std::ffi::c_void;
+
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGImageGetWidth(i: CFRef) -> usize;
+    fn CGImageGetHeight(i: CFRef) -> usize;
+    fn CGImageGetBytesPerRow(i: CFRef) -> usize;
+    fn CGImageGetBitsPerPixel(i: CFRef) -> usize;
+    fn CGImageGetDataProvider(i: CFRef) -> CFRef;
+    fn CGDataProviderCopyData(p: CFRef) -> CFRef;
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFDataGetBytePtr(d: CFRef) -> *const u8;
+    fn CFDataGetLength(d: CFRef) -> isize;
+    fn CFRelease(r: CFRef);
+}
+
+/// `CGWindowListCreateImage`, unavailable in the macOS 15 SDK but still in the library: looked up at run time.
+type CreateImage = unsafe extern "C" fn(NSRect, u32, u32, u32) -> CFRef;
+
+/// The pixels of `rgb` (each channel within 60) in a capture of `rect` (Core Graphics' global points, from the main
+/// display's top left), counted in device pixels; `None` when the capture is refused.
+fn count_colour(rect: NSRect, rgb: [u8; 3]) -> Option<u64> {
+    // SAFETY: a symbol lookup in the loaded images; the name is a C string.
+    let f = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"CGWindowListCreateImage".as_ptr()) };
+    if f.is_null() {
+        return None;
+    }
+    // SAFETY: the symbol is CGWindowListCreateImage, of this signature.
+    let create: CreateImage = unsafe { std::mem::transmute(f) };
+    // on-screen windows (kCGWindowListOptionOnScreenOnly), no window id, the default image
+    // SAFETY: a +1 image or null; released below.
+    let img = unsafe { create(rect, 1, 0, 0) };
+    if img.is_null() {
+        return None;
+    }
+    // SAFETY: a live image and its provider's data copy, released once each; the reads stay inside the data.
+    unsafe {
+        let (w, h, row) = (
+            CGImageGetWidth(img),
+            CGImageGetHeight(img),
+            CGImageGetBytesPerRow(img),
+        );
+        let ok = CGImageGetBitsPerPixel(img) == 32;
+        let data = CGDataProviderCopyData(CGImageGetDataProvider(img));
+        let mut n = 0u64;
+        if ok && !data.is_null() {
+            let len = CFDataGetLength(data) as usize;
+            let bytes = std::slice::from_raw_parts(CFDataGetBytePtr(data), len);
+            let near = |a: u8, b: u8| a.abs_diff(b) <= 60;
+            for y in 0..h {
+                for x in 0..w {
+                    let i = y * row + x * 4;
+                    // BGRA, the window server's order
+                    if i + 3 < len
+                        && near(bytes[i + 2], rgb[0])
+                        && near(bytes[i + 1], rgb[1])
+                        && near(bytes[i], rgb[2])
+                    {
+                        n += 1;
+                    }
+                }
+            }
+        }
+        if !data.is_null() {
+            CFRelease(data);
+        }
+        CFRelease(img);
+        ok.then_some(n)
+    }
+}
+
+impl MacShell {
+    /// A capture point of an armed `test-capture-switch` (`step` 0: the panel is in, 1: the container moved): the
+    /// screen around root `root`'s window, grown by its own size on each side.  The second disarms it.
+    pub(super) fn capture_point(&mut self, root: WindowId, step: u32) {
+        let Some(rgb) = self.capture.armed else {
+            return;
+        };
+        let Some(w) = self.windows.get(&root) else {
+            return;
+        };
+        let c = w.window.contentRectForFrameRect(w.window.frame());
+        let main_h = objc2_app_kit::NSScreen::screens(self.mtm)
+            .firstObject()
+            .map_or(0.0, |s| s.frame().size.height);
+        let (gw, gh) = (c.size.width, c.size.height);
+        let rect = NSRect::new(
+            objc2_foundation::NSPoint::new(c.origin.x - gw, main_h - (c.origin.y + gh) - gh),
+            NSSize::new(gw * 3.0, gh * 3.0),
+        );
+        self.capture.counts.push(count_colour(rect, rgb));
+        if step == 1 {
+            self.capture.armed = None;
+        }
+    }
+
+    /// `test-windows`: the window numbers the window server lists for this application's visible windows.
+    fn window_numbers(&self) -> String {
+        let n = objc2_app_kit::NSWindow::windowNumbersWithOptions(
+            objc2_app_kit::NSWindowNumberListOptions(0),
+            self.mtm,
+        );
+        let list: Vec<String> = n
+            .map(|a| a.iter().map(|x| x.integerValue().to_string()).collect())
+            .unwrap_or_default();
+        format!("({})", list.join(" "))
     }
 }

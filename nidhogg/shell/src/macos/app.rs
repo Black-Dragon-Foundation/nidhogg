@@ -34,6 +34,10 @@ use std::time::Duration;
 #[path = "hooks.rs"]
 mod hooks;
 
+/// Child windows as container layers, and the pointer's hit-test.
+#[path = "child.rs"]
+mod child;
+
 pub struct MacShell {
     mtm: MainThreadMarker,
     app: Retained<NSApplication>,
@@ -52,24 +56,39 @@ pub struct MacShell {
     deferred: Vec<WindowId>,
     /// The commit pacer's timer: armed while a window holds a commit.
     pacer: pacer::Timer,
+    /// Child windows, each parent's children bottom to top, the parents whose children changed places, and children
+    /// gone whose containers leave at their root's next commit.
+    kids: HashMap<WindowId, child::Kid>,
+    order: HashMap<WindowId, Vec<WindowId>>,
+    order_dirty: BTreeSet<WindowId>,
+    retired: Vec<(WindowId, child::Kid)>,
+    /// Roots whose children changed since their last commit.
+    owed: BTreeSet<WindowId>,
+    /// The window under the pointer in each root's tree, and the press that holds it (root, window).
+    hover: HashMap<WindowId, WindowId>,
+    grab: Option<(WindowId, WindowId)>,
     /// Test hook: the next pump raises an `NSException` inside the catch.
     #[cfg(feature = "test-hooks")]
     raise_in_pump: bool,
     /// Test hook: how many of the next new registrations go to the helper.
     #[cfg(feature = "test-hooks")]
     force_helper: u32,
+    /// Test hook: the next overhang switch's captures, armed with the colour to count, and what they counted.
+    #[cfg(feature = "test-hooks")]
+    capture: hooks::Capture,
 }
 
 /// The counters `(nhmac-stats)` returns: the scope's, the main wait's (with the lock hand-off's), the surfaces'.
 fn stats_text(s: ScopeStats) -> String {
     format!(
-        "(:takes {} :overlapping-takes {} :queued {} :applied {} {} {})",
+        "(:takes {} :overlapping-takes {} :queued {} :applied {} {} {} {})",
         s.takes,
         s.overlapping_takes,
         s.queued,
         s.applied,
         wait::STATS.text(&wait::PARK),
-        surface::STATS.text()
+        surface::STATS.text(),
+        layers::PROPS.text()
     )
 }
 
@@ -137,10 +156,19 @@ impl MacShell {
             srgb: true,
             deferred: Vec::new(),
             pacer: pacer::Timer::default(),
+            kids: HashMap::new(),
+            order: HashMap::new(),
+            order_dirty: BTreeSet::new(),
+            retired: Vec::new(),
+            owed: BTreeSet::new(),
+            hover: HashMap::new(),
+            grab: None,
             #[cfg(feature = "test-hooks")]
             raise_in_pump: false,
             #[cfg(feature = "test-hooks")]
             force_helper: 0,
+            #[cfg(feature = "test-hooks")]
+            capture: hooks::Capture::default(),
         };
         for o in screens::outputs(mtm) {
             shell.push(ShellEvent::OutputAdd(o), 0);
@@ -177,30 +205,41 @@ impl MacShell {
                     self.push(ShellEvent::Focus(FocusEv { r#in: u8::from(on) }), id);
                 }
             }
-            MacEv::Input(id, ev) => {
-                if self.windows.contains_key(&id) {
-                    self.push(ev, id);
+            MacEv::Input(id, ev) => match ev {
+                ShellEvent::PointerMotion(_) | ShellEvent::Button(_) | ShellEvent::Scroll(_) => {
+                    self.pointer(id, ev)
                 }
-            }
+                // keys go to the root's window (an overhang panel never becomes key)
+                _ => {
+                    if let Some(root) = self.root_of(id) {
+                        self.push(ev, root);
+                    }
+                }
+            },
             MacEv::Pace => self.release_held(),
         }
     }
 
-    /// The commit pacer's check (main thread): every window whose held commit is due (a slot freed, or the hold's
-    /// bound) asks the host for a publish, which redraws nothing and reads the backing under the lock; the timer stays
-    /// armed while a window still holds one, and is disarmed when none does.
+    /// The commit pacer's check (main thread): every window, top-level or child, whose held commit is due (a slot
+    /// freed, or the hold's bound) has its root ask the host for a publish, which redraws nothing and reads the
+    /// backing under the lock; the timer stays armed while a window still holds one, and is disarmed when none does.
     fn release_held(&mut self) {
         let now = now_ns();
-        let mut holding = false;
-        let due: Vec<WindowId> = self
+        let owing: Vec<(WindowId, bool)> = self
             .windows
             .iter()
-            .filter(|(_, w)| w.surfaces.owes())
-            .inspect(|_| holding = true)
-            .filter(|(_, w)| w.surfaces.due(now))
-            .map(|(id, _)| *id)
+            .map(|(id, w)| (*id, &w.surfaces))
+            .chain(self.kids.iter().map(|(id, k)| (*id, &k.surfaces)))
+            .filter(|(_, s)| s.owes())
+            .map(|(id, s)| (id, s.due(now)))
             .collect();
-        for id in due {
+        let holding = !owing.is_empty();
+        let roots: BTreeSet<WindowId> = owing
+            .into_iter()
+            .filter(|&(_, due)| due)
+            .filter_map(|(id, _)| self.root_of(id))
+            .collect();
+        for id in roots {
             // one request at a time: a publish that is not made yet (inside redisplay) is asked for again
             if !self
                 .queue
@@ -260,7 +299,7 @@ impl MacShell {
     fn pump(&mut self) {
         #[cfg(feature = "test-hooks")]
         self.maybe_raise();
-        if !self.deferred.is_empty() {
+        if !self.deferred.is_empty() || !self.owed.is_empty() {
             let ids = std::mem::take(&mut self.deferred);
             self.commit(&ids);
         }
@@ -292,23 +331,14 @@ fn layer_damage(g: u64, w: i32, h: i32) -> Vec<Rect> {
 }
 
 impl MacShell {
-    /// Set the newest surfaces of `ids` as their layers' contents in one flushed transaction (main thread).
+    /// Commit the trees of `ids` (windows that drew) and of every root that owes one, each in one flushed transaction
+    /// with its children's changes (main thread).
     fn commit(&mut self, ids: &[WindowId]) {
-        let mut items = Vec::with_capacity(ids.len());
-        for id in ids {
-            let Some(w) = self.windows.get(id) else {
-                continue;
-            };
-            if let Some(s) = w.surfaces.newest() {
-                items.push((
-                    &*w.layer,
-                    s,
-                    w.surfaces.was_same(),
-                    w.window.backingScaleFactor(),
-                ));
-            }
+        let mut roots: BTreeSet<WindowId> = std::mem::take(&mut self.owed);
+        roots.extend(ids.iter().filter_map(|&id| self.root_of(id)));
+        for root in roots {
+            self.commit_tree(root, ids);
         }
-        layers::commit(&items);
         layers::publish_end();
     }
 
@@ -495,6 +525,10 @@ impl ShellBackend for MacShell {
     }
 
     fn window_destroy(&mut self, window: WindowId) -> ShellResult {
+        if self.kids.contains_key(&window) {
+            return self.child_destroy(window);
+        }
+        self.children_gone(window);
         self.windows
             .remove(&window)
             .map(drop)
@@ -502,7 +536,7 @@ impl ShellBackend for MacShell {
     }
 
     fn scale_start(&mut self, window: WindowId, _scale120: u32) -> ShellResult {
-        self.win(window).map(drop)
+        self.known(window)
     }
 
     fn set_title(&mut self, window: WindowId, title: &str) -> ShellResult {
@@ -572,11 +606,11 @@ impl ShellBackend for MacShell {
     }
 
     fn ack_configure(&mut self, window: WindowId, _serial: u32, _flags: u32) -> ShellResult {
-        self.win(window).map(drop)
+        self.known(window)
     }
 
     fn set_cursor(&mut self, window: WindowId, _shape: u32) -> ShellResult {
-        self.win(window).map(drop)
+        self.known(window)
     }
 
     fn set_cursor_theme(&mut self, _name: &str, _size: u32) -> ShellResult {
@@ -617,7 +651,9 @@ impl ShellBackend for MacShell {
     }
 
     fn window_scale(&self, window: WindowId) -> ShellResult<u32> {
-        Ok(self.win(window)?.scale120)
+        // a child is at its root's scale
+        let root = self.root_of(window).ok_or(ShellError::State)?;
+        Ok(self.win(root)?.scale120)
     }
 
     fn window_ssd(&self, window: WindowId) -> ShellResult<bool> {
@@ -628,36 +664,45 @@ impl ShellBackend for MacShell {
         self.win(window).map(drop)
     }
 
-    fn set_alpha(&mut self, window: WindowId, _factor: u32) -> ShellResult {
+    fn set_alpha(&mut self, window: WindowId, factor: u32) -> ShellResult {
+        if self.kids.contains_key(&window) {
+            return self.kid_alpha(window, factor);
+        }
         self.win(window).map(drop).and(Err(ShellError::Unsupported))
     }
 
-    fn child_new(&mut self, _desc: &ChildDesc) -> ShellResult<WindowId> {
-        Err(ShellError::Unsupported)
+    fn child_new(&mut self, desc: &ChildDesc) -> ShellResult<WindowId> {
+        self.child_create(desc)
     }
 
-    fn set_position(&mut self, _window: WindowId, _x: i32, _y: i32) -> ShellResult<bool> {
-        Err(ShellError::Unsupported)
+    fn set_position(&mut self, window: WindowId, x: i32, y: i32) -> ShellResult<bool> {
+        self.kid_position(window, x, y)
     }
 
-    fn stack(&mut self, _window: WindowId, _sibling: WindowId, _above: bool) -> ShellResult {
-        Err(ShellError::Unsupported)
+    fn stack(&mut self, window: WindowId, sibling: WindowId, above: bool) -> ShellResult {
+        self.kid_stack(window, sibling, above)
     }
 
-    fn set_input_region(&mut self, window: WindowId, _rects: &[Rect]) -> ShellResult {
+    fn set_input_region(&mut self, window: WindowId, rects: &[Rect]) -> ShellResult {
+        if self.kids.contains_key(&window) {
+            return self.kid_input(window, rects);
+        }
         self.win(window).map(drop)
     }
 
     fn set_child_place(
         &mut self,
-        _window: WindowId,
-        _pos: Option<(i32, i32)>,
-        _input: Option<&[Rect]>,
+        window: WindowId,
+        pos: Option<(i32, i32)>,
+        input: Option<&[Rect]>,
     ) -> ShellResult {
-        Err(ShellError::State)
+        self.kid_place(window, pos, input)
     }
 
     fn set_mapped(&mut self, window: WindowId, on: bool) -> ShellResult {
+        if self.kids.contains_key(&window) {
+            return self.kid_mapped(window, on);
+        }
         let w = self.windows.get_mut(&window).ok_or(ShellError::State)?;
         if on != w.mapped {
             w.mapped = on;
@@ -771,20 +816,16 @@ impl ShellBackend for MacShell {
         let mut ids: Vec<WindowId> = Vec::new();
         let mut held = false;
         for f in frames {
-            let Some(w) = self.windows.get_mut(&f.window) else {
+            let Some(s) = self.surfaces_mut(f.window) else {
                 continue;
             };
             let (lw, lh) = (f.w - f.src_x, f.h - f.src_y);
             let damage = layer_damage(f.glitnir_root, lw, lh);
-            if damage.is_empty()
-                && !w.surfaces.owes()
-                && w.surfaces.newest().is_some()
-                && w.surfaces.size() == (lw, lh)
-            {
+            if damage.is_empty() && !s.owes() && s.newest().is_some() && s.size() == (lw, lh) {
                 continue;
             }
             crate::trace::pump(|| format!("publish: window {} damage {damage:?}", f.window));
-            match w.surfaces.draw(f, &damage, now_ns()) {
+            match s.draw(f, &damage, now_ns()) {
                 Some(surface::Drew::Drawn) => ids.push(f.window),
                 Some(surface::Drew::Held) => {
                     crate::trace::pump(|| format!("publish: window {} held", f.window));
@@ -802,7 +843,7 @@ impl ShellBackend for MacShell {
                 wait::wake();
             }
         }
-        if ids.is_empty() {
+        if ids.is_empty() && !self.owed.contains(&root) {
             return Ok(false);
         }
         if MainThreadMarker::new().is_none() {
@@ -840,7 +881,8 @@ impl ShellBackend for MacShell {
     }
 
     fn window_stacking(&self, root: WindowId) -> ShellResult<Vec<WindowId>> {
-        self.win(root).map(|_| Vec::new())
+        self.win(root)?;
+        Ok(self.stacking(root))
     }
 
     fn draw_count(&self, root: WindowId) -> ShellResult<u64> {
