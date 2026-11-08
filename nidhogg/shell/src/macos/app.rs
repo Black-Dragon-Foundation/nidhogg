@@ -882,6 +882,9 @@ impl ShellBackend for MacShell {
     }
 
     fn window_activate(&mut self, window: WindowId, _token: Option<&str>) -> ShellResult {
+        // NS's ns_focus_frame: the application first, or the window cannot become key while another app is active
+        #[allow(deprecated)]
+        self.app.activateIgnoringOtherApps(true);
         self.win(window)?.window.makeKeyAndOrderFront(None);
         Ok(())
     }

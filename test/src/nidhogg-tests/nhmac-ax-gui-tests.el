@@ -14,14 +14,24 @@
 (defun nhmac-ax--state ()
   (nhmac--query 'test-ax (selected-frame)))
 
+(defun nhmac-ax--focus ()
+  "Give the selected frame the focus and wait (2 s at most) until Emacs has it: C pushes the cursor and the line
+only for the focused frame."
+  (select-frame-set-input-focus (selected-frame))
+  (let ((deadline (+ (float-time) 2)))
+    (while (and (not (eq (frame-focus-state) t)) (< (float-time) deadline))
+      (sit-for 0.05)))
+  (should (eq (frame-focus-state) t)))
+
 (defmacro nhmac-ax--with-text (text &rest body)
-  "Run BODY in a buffer showing TEXT in the selected window, after a redisplay."
+  "Run BODY in a buffer showing TEXT in the selected window, the frame focused, after a redisplay."
   (declare (indent 1))
   `(let ((buf (generate-new-buffer " *nhmac-ax*")))
      (unwind-protect
          (save-window-excursion
            (switch-to-buffer buf)
            (insert ,text)
+           (nhmac-ax--focus)
            (redisplay t)
            ,@body)
        (kill-buffer buf))))
