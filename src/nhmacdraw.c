@@ -310,12 +310,14 @@ nhwl_cr_draw_image (struct frame *f, Emacs_GC *gc, nhwl_image image,
   Emacs_Pixmap p = image->pixmap, m = image->mask;
   NhgPix pix = { (uint8_t *) p->data, m ? (uint8_t *) m->data : NULL,
 		 p->width, p->height, p->bytes_per_line,
-		 m ? m->bytes_per_line : 0, p->bits_per_pixel };
+		 m ? m->bytes_per_line : 0, p->bits_per_pixel,
+		 image->nhmac_smoothing };
   NhgDrawRec r = { NHG_DRAW_IMAGE, overlay_p ? NHG_DRAW_OVERLAY : 0,
 		   { dest_x, dest_y, width, height },
 		   nhmac_argb (f, gc->foreground, false),
 		   nhmac_argb (f, gc->background, true), src_x, src_y };
 
+  memcpy (pix.matrix, image->nhmac_transform, sizeof pix.matrix);
   nhwl_begin_cr_clip (f);
   r.nclip = nhmac_top ()->n;
   memcpy (r.clip, nhmac_top ()->r, sizeof r.clip);

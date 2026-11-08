@@ -116,6 +116,8 @@ unsafe extern "C" {
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGContextDrawImage(c: Ctx, r: CGRect, img: CFRef);
+    fn CGContextConcatCTM(c: Ctx, t: CGAffineTransform);
+    fn CGContextSetInterpolationQuality(c: Ctx, q: i32);
 }
 
 /// A bitmap context over one backing: made for its pixels, size and colour space, released on drop.
@@ -371,6 +373,8 @@ impl Canvas {
                     sx,
                     sy,
                     bg,
+                    to,
+                    smooth,
                 } => {
                     if let Some(bg) = bg {
                         self.fill_colour(*bg);
@@ -380,9 +384,25 @@ impl Canvas {
                     super::images::with_picture(*key, *mask, Vec::new, |img| {
                         CGContextSaveGState(c);
                         CGContextClipToRects(c, &cg(r), 1);
-                        // the picture upright in the y-down canvas: its top row at r.y - sy
-                        CGContextTranslateCTM(c, f64::from(r.x - sx), f64::from(r.y - sy + key.2));
+                        // the drawn image's origin at (r.x - sx, r.y - sy), the picture through `to` into it, upright
+                        // in the y-down canvas
+                        CGContextTranslateCTM(c, f64::from(r.x - sx), f64::from(r.y - sy));
+                        let [a, b, cc, d, tx, ty] = *to;
+                        CGContextConcatCTM(
+                            c,
+                            CGAffineTransform {
+                                a,
+                                b,
+                                c: cc,
+                                d,
+                                tx,
+                                ty,
+                            },
+                        );
+                        CGContextTranslateCTM(c, 0.0, f64::from(key.2));
                         CGContextScaleCTM(c, 1.0, -1.0);
+                        // kCGInterpolationHigh, or kCGInterpolationNone: real pixels when scaling up
+                        CGContextSetInterpolationQuality(c, if *smooth { 3 } else { 1 });
                         let whole = CGRect {
                             x: 0.0,
                             y: 0.0,
