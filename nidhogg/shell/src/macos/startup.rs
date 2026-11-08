@@ -68,3 +68,7 @@ pub fn relocate(epath: &str) -> Option<String> {
     let moved = startup::relocate(&root, epath, |p| p.exists());
     (moved != epath).then_some(moved)
 }
+
+#[cfg(test)]
+#[path = "startup_tests.rs"]
+mod tests;
