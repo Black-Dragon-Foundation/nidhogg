@@ -1,6 +1,7 @@
 //! Test injection: keys and mouse events built as `NSEvent`s and posted to the application's queue, so the next pump
 //! sends them through `sendEvent:` to the view, as the window server's would be.  For `nhmac--test-post-key` and
-//! `nhmac--test-post-mouse`.
+//! `nhmac--test-post-mouse`.  `real_mouse` posts through the window server itself, for the rows that must show a
+//! real click reaching the window.
 
 use super::window::Win;
 use crate::api::{ShellError, ShellResult};
@@ -40,6 +41,14 @@ unsafe extern "C" {
         wheel3: i32,
     ) -> *mut CGEventOpaque;
     fn CGEventSetLocation(event: *mut CGEventOpaque, location: CGPoint);
+    fn CGEventCreateMouseEvent(
+        source: *const c_void,
+        kind: u32,
+        location: CGPoint,
+        button: u32,
+    ) -> *mut CGEventOpaque;
+    fn CGEventPost(tap: u32, event: *mut CGEventOpaque);
+    fn CGPreflightPostEventAccess() -> bool;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -49,6 +58,12 @@ unsafe extern "C" {
 
 /// `kCGScrollEventUnitLine`.
 const CG_SCROLL_LINE: u32 = 1;
+/// `kCGHIDEventTap`: where the window server takes events as if from the hardware.
+const CG_HID_TAP: u32 = 0;
+/// `kCGEventLeftMouseDown`, `kCGEventLeftMouseUp`, `kCGEventLeftMouseDragged`.
+const CG_LEFT_DOWN: u32 = 1;
+const CG_LEFT_UP: u32 = 2;
+const CG_LEFT_DRAGGED: u32 = 6;
 
 /// The mouse kinds `nhmac--test-post-mouse` takes.
 pub const MOUSE_DOWN: i64 = 0;
@@ -182,5 +197,39 @@ pub fn mouse(
     )
     .ok_or(ShellError::State)?;
     app.postEvent_atStart(&ev, false);
+    Ok(())
+}
+
+/// Whether this process may post events through the window server.
+pub fn post_access() -> bool {
+    // SAFETY: a query with no arguments.
+    unsafe { CGPreflightPostEventAccess() }
+}
+
+/// Post a real left press (`MOUSE_DOWN`), release or drag at `at` (screen points, origin bottom left) through the
+/// window server's HID tap: it reaches whichever window the window server finds there, as a click would.
+pub fn real_mouse(mtm: MainThreadMarker, kind: i64, at: (f64, f64)) -> ShellResult {
+    let kind = match kind {
+        MOUSE_DOWN => CG_LEFT_DOWN,
+        MOUSE_UP => CG_LEFT_UP,
+        MOUSE_DRAG => CG_LEFT_DRAGGED,
+        _ => return Err(ShellError::Arg),
+    };
+    let top = NSScreen::screens(mtm)
+        .firstObject()
+        .map_or(0.0, |s| s.frame().size.height);
+    let at = CGPoint {
+        x: at.0,
+        y: top - at.1,
+    };
+    // SAFETY: Core Graphics' constructor; the event is posted, then released once.
+    unsafe {
+        let cg = CGEventCreateMouseEvent(std::ptr::null(), kind, at, 0);
+        if cg.is_null() {
+            return Err(ShellError::NoMem);
+        }
+        CGEventPost(CG_HID_TAP, cg);
+        CFRelease(cg.cast());
+    }
     Ok(())
 }

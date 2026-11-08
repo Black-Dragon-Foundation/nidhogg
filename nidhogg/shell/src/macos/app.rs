@@ -34,7 +34,7 @@ use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSEventMask, NSScreen};
-use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSString};
+use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSRect, NSString};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::time::Duration;
 
@@ -313,12 +313,41 @@ impl MacShell {
             MacEv::Menu(generation, index) => {
                 self.push(ShellEvent::Menu(MenuEv { generation, index }), 0);
             }
+            MacEv::Resize(id, frame) => self.resize_step(id, frame),
         }
         if holding {
             self.pacer.arm();
         } else {
             self.pacer.disarm();
         }
+    }
+
+    /// A drag step of our own resize (`resize::NhWindow`): the host is configured for `frame` now, or, while it is
+    /// still drawing for the last step, `frame` waits (the newest replaces an older one).  The window takes the frame
+    /// in `commit`, once the host has drawn a surface of its size.
+    fn resize_step(&mut self, id: WindowId, frame: NSRect) {
+        let Some(w) = self.windows.get_mut(&id) else {
+            return;
+        };
+        if w.resize.inflight.is_some() {
+            w.resize.waiting.push(frame);
+            return;
+        }
+        let r = w.window.contentRectForFrameRect(frame);
+        let size = (r.size.width.round() as i32, r.size.height.round() as i32);
+        if size == w.size {
+            // the size held (at its minimum): only the origin can move, and there is nothing to draw
+            w.window.setFrame_display(frame, false);
+            return;
+        }
+        let scale = w.window.backingScaleFactor();
+        let px = (
+            (f64::from(size.0) * scale).round() as i32,
+            (f64::from(size.1) * scale).round() as i32,
+        );
+        w.size = size;
+        w.resize.inflight = Some((frame, px));
+        self.configure(id, size.0, size.1);
     }
 
     /// `frame-look` "(WINDOW APPEARANCE TITLEBAR)": `ns-appearance` (dark, light or nil) and `ns-transparent-titlebar`.
@@ -375,6 +404,10 @@ impl MacShell {
         let Some(w) = self.windows.get_mut(&id) else {
             return;
         };
+        if w.resize.inflight.is_some() {
+            // our own resize: the host was told the new size, which the window takes when it is drawn
+            return;
+        }
         let (size, scale) = (w.content_size(), w.scale_now());
         let rescaled = scale != w.scale120;
         let resized = size != w.size;
@@ -479,12 +512,43 @@ impl MacShell {
     /// Commit the trees of `ids` (windows that drew) and of every root that owes one, each in one flushed transaction
     /// with its children's changes (main thread).
     fn commit(&mut self, ids: &[WindowId]) {
+        // our own resize: a window whose host has drawn the size asked for takes that frame first, with the backend
+        // lent so the `windowDidResize:` it causes is applied in the same drain
+        let mut moves = Vec::new();
+        for id in ids {
+            if let Some(w) = self.windows.get_mut(id)
+                && let Some((frame, px)) = w.resize.inflight
+                && w.surfaces.newest().is_some()
+                && w.surfaces.size() == px
+            {
+                w.resize.inflight = None;
+                moves.push((w.window.clone(), frame));
+            }
+        }
+        if !moves.is_empty() {
+            self.lent(|_| {
+                for (window, frame) in &moves {
+                    window.setFrame_display(*frame, false);
+                }
+            });
+        }
         let mut roots: BTreeSet<WindowId> = std::mem::take(&mut self.owed);
         roots.extend(ids.iter().filter_map(|&id| self.root_of(id)));
         for root in roots {
             self.commit_tree(root, ids);
         }
         layers::publish_end();
+        // the steps that waited for these commits
+        for id in ids {
+            let next = self
+                .windows
+                .get_mut(id)
+                .filter(|w| w.resize.inflight.is_none())
+                .and_then(|w| w.resize.waiting.take());
+            if let Some(frame) = next {
+                self.resize_step(*id, frame);
+            }
+        }
     }
 
     /// A watched variable's new value (`nhmac--variable-changed`): ARG is `(SYMBOL VALUE)` as Lisp prints it.  The

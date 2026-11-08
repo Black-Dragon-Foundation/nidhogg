@@ -14,10 +14,11 @@ pub mod mac_chrome;
 pub mod mac_input;
 #[cfg(all(feature = "macos", target_os = "macos"))]
 pub mod macos;
-pub mod ring;
 pub mod menu;
 pub mod outputs;
 pub mod pasteboard;
+pub mod resize;
+pub mod ring;
 pub mod scope;
 pub mod shapes;
 #[cfg(feature = "svg")]

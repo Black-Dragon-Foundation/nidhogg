@@ -121,6 +121,9 @@ pub struct Stats {
     pub paint_ns: AtomicU64,
     pub fill_ns: AtomicU64,
     pub commit_ns: AtomicU64,
+    /// Commits whose surface's size was not the window's content size in device pixels (a stretched or cropped
+    /// picture).
+    pub stretched_frames: AtomicU64,
 }
 
 /// Adds the time from its making to its drop to a counter of nanoseconds.
@@ -158,6 +161,7 @@ pub static STATS: Stats = Stats {
     paint_ns: AtomicU64::new(0),
     fill_ns: AtomicU64::new(0),
     commit_ns: AtomicU64::new(0),
+    stretched_frames: AtomicU64::new(0),
 };
 
 impl Stats {
@@ -166,8 +170,8 @@ impl Stats {
         let g = |c: &AtomicU64| c.load(Ordering::Relaxed);
         format!(
             ":bytes-copied {} :damage-bytes {} :full-copies {} :commits {} :surface-busy {} :ring-acquires {} \
-             :implicit-open-at-update-end {} :spins-in-redisplay {} :pumps {} :deferred-commits {} :handed-pumps {} :draws {} \
-             :held {} :held-timeouts {} :pacer-fires {} :pacer-arms {} :paint-ns {} :fill-ns {} :commit-ns {}",
+             :implicit-open-at-update-end {} :spins-in-redisplay {} :pumps {} :deferred-commits {} :handed-pumps {} \
+             :stretched-frames {} :draws {} :held {} :held-timeouts {} :pacer-fires {} :pacer-arms {} :paint-ns {} :fill-ns {} :commit-ns {}",
             g(&self.bytes_copied),
             g(&self.damage_bytes),
             g(&self.full_copies),
@@ -179,6 +183,7 @@ impl Stats {
             g(&self.pumps),
             g(&self.deferred_commits),
             g(&self.handed_pumps),
+            g(&self.stretched_frames),
             super::draw::DRAWS.load(Ordering::Relaxed),
             g(&self.held),
             g(&self.held_timeouts),

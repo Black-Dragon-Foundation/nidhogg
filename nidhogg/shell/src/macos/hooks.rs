@@ -234,6 +234,27 @@ impl MacShell {
                 super::super::menus::test_update(&self.app);
                 Some(Ok(()))
             }
+            // "(WINDOW)": the green button's zoom, as AppKit's `zoom:` runs it
+            "test-zoom" => Some(first_number(arg).and_then(|w| {
+                self.win(w)?.window.zoom(None);
+                Ok(())
+            })),
+            // "(WINDOW KIND BOTTOM OUT DX DY)": a real left press (KIND 0), release (1) or drag (2) through the window
+            // server, OUT points outside WINDOW's right edge (and its bottom edge with BOTTOM 1), moved by DX, DY
+            // points (y up)
+            "test-post-real" => Some(numbers(arg).and_then(|n| match n[..] {
+                [w, kind, bottom, out, dx, dy] => {
+                    let f = self.win(w as WindowId)?.window.frame();
+                    let x = f.origin.x + f.size.width + out + dx;
+                    let y = if bottom == 1.0 {
+                        f.origin.y - out
+                    } else {
+                        f.origin.y + f.size.height / 2.0
+                    } + dy;
+                    inject::real_mouse(self.mtm, kind as i64, (x, y))
+                }
+                _ => Err(ShellError::Arg),
+            })),
             _ => None,
         }
     }
@@ -333,6 +354,14 @@ impl MacShell {
                 _ => Err(ShellError::Arg),
             }),
             "test-presentation" => Ok(self.app.presentationOptions().0.to_string()),
+            "test-resize" => first_number(arg).and_then(|w| self.resize_state(w)),
+            // "(WINDOW EDGES)": whether the current cursor is the resize cursor for EDGES
+            "test-resize-cursor" => numbers(arg).and_then(|n| match n[..] {
+                [_, edges] => Ok(lisp_bool(super::super::resize::test_cursor_is(edges as u8))),
+                _ => Err(ShellError::Arg),
+            }),
+            // whether this process may post events through the window server (`CGPreflightPostEventAccess`)
+            "test-post-access" => Ok(lisp_bool(inject::post_access())),
             "test-surface" => numbers(arg).and_then(|n| match n[..] {
                 [w, x, y] => self.surface_info(w as WindowId, x as i32, y as i32),
                 _ => Err(ShellError::Arg),
@@ -560,7 +589,35 @@ impl MacShell {
     }
 }
 
+fn lisp_bool(b: bool) -> String {
+    (if b { "t" } else { "nil" }).to_string()
+}
+
 impl MacShell {
+    /// `test-resize` (WINDOW): our own resize's facts as a Lisp plist: the frame (screen points, origin bottom left),
+    /// the content size and its minimum (points), the scale times 120, `inLiveResize`, whether a resize waits for the
+    /// host, and the band presses `sendEvent:` took.
+    fn resize_state(&self, window: WindowId) -> ShellResult<String> {
+        let w = self.win(window)?;
+        let f = w.window.frame();
+        let (cw, ch) = w.content_size();
+        let min = w.window.contentMinSize();
+        Ok(format!(
+            "(:frame ({} {} {} {}) :content ({cw} {ch}) :min ({} {}) :scale120 {} :live {} :pending {} \
+             :band-presses {})",
+            f.origin.x.round(),
+            f.origin.y.round(),
+            f.size.width.round(),
+            f.size.height.round(),
+            min.width.round(),
+            min.height.round(),
+            w.scale_now(),
+            lisp_bool(w.window.inLiveResize()),
+            lisp_bool(w.resize.inflight.is_some()),
+            super::super::resize::BAND_PRESSES.load(std::sync::atomic::Ordering::Relaxed),
+        ))
+    }
+
     /// `test-surface` (WINDOW X Y): the window's newest surface as a Lisp plist: its size in device pixels, the
     /// content size in points, the layer's `contentsScale` and gravity, whether the layer shows that surface, its
     /// colour space (`srgb`, `generic` or nil), its pixel at X, Y (premultiplied ARGB; nil outside), how many

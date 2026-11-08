@@ -649,6 +649,19 @@ impl MacShell {
         } = self;
         let w = &windows[&root];
         let cards = cards.get_mut(&root);
+        // a stretched or cropped picture: the surface shown is not the window's content size in device pixels
+        if drawn.contains(&root) && w.surfaces.newest().is_some() {
+            let (cw, ch) = w.content_size();
+            let content = (
+                (f64::from(cw) * scale).round() as i32,
+                (f64::from(ch) * scale).round() as i32,
+            );
+            if w.surfaces.size() != content {
+                super::surface::STATS
+                    .stretched_frames
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
         layers::transaction(|| {
             if drawn.contains(&root)
                 && let Some(s) = w.surfaces.newest()

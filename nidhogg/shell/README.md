@@ -56,7 +56,7 @@ scale: `scale120` = 120 x (Xft DPI / 96), and server-side decorations always (`s
 | `set_maximized` | `zoom:` | `_NET_WM_STATE_MAXIMIZED_*` | fits |
 | `minimize` | `miniaturize:` | `WM_CHANGE_STATE` iconic | fits |
 | `move` | `performWindowDragWithEvent:` with the last mouse event | `_NET_WM_MOVERESIZE` | fits |
-| `resize` | no client-started edge resize: no-op (the system border resizes) | `_NET_WM_MOVERESIZE` with the edge | fits |
+| `resize` | no client-started edge resize: `Unsupported`. The edges are our own (`macos/resize.rs`, `resize.rs`): the window class's `sendEvent:` takes a left press in the band (a few points outside the frame, a few inside, the corners) before AppKit, so its live-resize loop never starts; each drag step (Option about the centre, Shift keeping the aspect ratio) is a configure, and the window takes the frame once the host has committed a surface of that size, the steps in between coalescing to the newest. `(nhmac-stats)`'s `:stretched-frames` counts commits whose surface is not the content's size | `_NET_WM_MOVERESIZE` with the edge | fits |
 | `show_menu` | no window menu: no-op | `_GTK_SHOW_WINDOW_MENU`, or no-op | fits |
 | `ack_configure` (serial, flags: `ACK_CONTENT` for an ack that changes what the window shows; sent with the tree's next commit) | no configure handshake: no-op (`CONFIGURE` events come from `windowDidResize:`) | answers `_NET_WM_SYNC_REQUEST` with that serial, or no-op | fits |
 | `set_cursor` | `NSCursor` set | cursor font via `ChangeWindowAttributes` | fits |
