@@ -48,7 +48,7 @@ use crate::api::*;
 use crate::event::*;
 use crate::wayland::conn::Shared;
 use crate::wayland::layers::{ContentLayer, LayerJob};
-use crate::wayland::presenter::{DEFAULT_REFRESH_NS, Link, Wire};
+use crate::wayland::presenter::{Counters, DEFAULT_REFRESH_NS, Link, Wire};
 use crate::wayland::publish::{Fed, Mailbox, Stage};
 use crate::wayland::reader::ReaderState;
 use crate::wayland::scale::{SCALE_ONE, buffer_size, viewport_size};
@@ -259,8 +259,8 @@ const COMPOSITOR_SIZED: u32 = NHSHELL_STATE_MAXIMIZED
 pub type BufData = (Arc<Mutex<Present>>, usize);
 
 /// Lock a presenter state.  A host thread's wait for it counts towards `main_wait_max_ns`.
-pub(crate) fn lock(p: &Mutex<Present>) -> MutexGuard<'_, Present> {
-    match p.try_lock() {
+pub(crate) fn lock(p: &Mutex<Present>) -> Locked<'_> {
+    Locked::new(match p.try_lock() {
         Ok(g) => g,
         Err(TryLockError::Poisoned(e)) => e.into_inner(),
         Err(TryLockError::WouldBlock) => {
@@ -271,6 +271,48 @@ pub(crate) fn lock(p: &Mutex<Present>) -> MutexGuard<'_, Present> {
             }
             g
         }
+    })
+}
+
+thread_local! {
+    /// The presenter states this thread holds locked.
+    static HELD: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// A presenter state locked (`lock`, `peek`): this thread holds one while it lives.
+pub(crate) struct Locked<'a>(MutexGuard<'a, Present>);
+
+impl<'a> Locked<'a> {
+    fn new(g: MutexGuard<'a, Present>) -> Locked<'a> {
+        HELD.with(|h| h.set(h.get() + 1));
+        Locked(g)
+    }
+}
+
+impl Drop for Locked<'_> {
+    fn drop(&mut self) {
+        HELD.with(|h| h.set(h.get() - 1));
+    }
+}
+
+impl std::ops::Deref for Locked<'_> {
+    type Target = Present;
+    fn deref(&self) -> &Present {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Locked<'_> {
+    fn deref_mut(&mut self) -> &mut Present {
+        &mut self.0
+    }
+}
+
+/// Presenting begins a compose or a flush, which no presenter state's lock may span (the host's thread would wait for
+/// it): one that does counts in `locked_work`.
+pub(crate) fn note_unlocked_work(stats: &Counters) {
+    if HELD.with(|h| h.get() > 0) {
+        Counters::add(&stats.locked_work, 1);
     }
 }
 
@@ -1158,6 +1200,7 @@ pub(crate) fn present_tree(
             !r.retired && r.ready_published(applied) & NHSHELL_READY_CONTENT != 0
         };
         if open {
+            note_unlocked_work(&stage.stats);
             stage.blur(root);
         }
     }
@@ -1210,6 +1253,7 @@ pub(crate) fn present_tree(
             return send(stage, wire, root, tree, &mut r, applied, jobs, layer_jobs);
         }
     }
+    note_unlocked_work(&stage.stats);
     for j in &jobs {
         let buf = NhShellBuffer {
             pixels: j.buf.pixels(),
@@ -1254,10 +1298,10 @@ fn tree_waits(stage: &Stage, root: u64, tree: &Arc<Mutex<Present>>) -> (bool, bo
 }
 
 /// `p` locked if no one holds it, else `None`.
-fn peek(p: &Mutex<Present>) -> Option<MutexGuard<'_, Present>> {
+fn peek(p: &Mutex<Present>) -> Option<Locked<'_>> {
     match p.try_lock() {
-        Ok(g) => Some(g),
-        Err(TryLockError::Poisoned(e)) => Some(e.into_inner()),
+        Ok(g) => Some(Locked::new(g)),
+        Err(TryLockError::Poisoned(e)) => Some(Locked::new(e.into_inner())),
         Err(TryLockError::WouldBlock) => None,
     }
 }
