@@ -100,12 +100,8 @@ impl MacShell {
     pub(super) fn test_query(&mut self, kind: &str, arg: &str) -> Option<ShellResult<String>> {
         Some(match kind {
             "window-info" => first_number(arg).and_then(|w| self.window_info(w)),
-            "modal-alert" | "modal-resize" => first_number(arg).and_then(|ms| {
-                let deadline = Instant::now()
-                    .checked_add(Duration::from_millis(ms))
-                    .ok_or(ShellError::Arg)?;
-                Ok(self.modal_alert(deadline, kind == "modal-resize"))
-            }),
+            "modal-alert" | "modal-resize" => first_number(arg)
+                .map(|ms| self.modal_alert(Duration::from_millis(ms), kind == "modal-resize")),
             "test-reentry" => Ok(self.reentry()),
             "startup-log" => Ok(crate::trace::startup_text()),
             "image-draws" => Ok(crate::trace::images_text()),
@@ -131,11 +127,12 @@ impl MacShell {
         }
     }
 
-    /// A modal alert until `deadline`, run as a modal session with the backend lent and ended by the deadline: the
-    /// pumps' test of a call that runs a modal.  With `resize`, a test window is resized from inside the session after
+    /// A modal alert for `length` from the session's start (making the alert and the test window, slow on a cold
+    /// runner, does not use it up), run as a modal session with the backend lent and ended then: the pumps' test of a
+    /// call that runs a modal.  With `resize`, a test window is resized from inside the session after
     /// its first round, so its delegate is called inside the modal.  An exception inside it skips the session's end,
     /// on a display the guard then poisons anyway.
-    fn modal_alert(&mut self, deadline: Instant, resize: bool) -> String {
+    fn modal_alert(&mut self, length: Duration, resize: bool) -> String {
         let (mtm, app) = (self.mtm, self.app.clone());
         let before = scope_stats();
         let test =
@@ -145,6 +142,10 @@ impl MacShell {
             alert.setMessageText(&NSString::from_str("Nidhogg test alert"));
             let panel = alert.window();
             let session = app.beginModalSessionForWindow(&panel);
+            // a length past the clock's range ends the session at once
+            let deadline = Instant::now()
+                .checked_add(length)
+                .unwrap_or_else(Instant::now);
             let mut rounds = 0u64;
             while Instant::now() < deadline {
                 // SAFETY: the session is the one begun above, and not ended yet.
