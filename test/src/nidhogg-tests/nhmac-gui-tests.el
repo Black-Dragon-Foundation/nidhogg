@@ -1083,7 +1083,7 @@ screen are within 2/255 of NS's in the same run (NS points are pixels there)."
               (should (<= worst 2))))))))
   ;; an animated GIF's frames, count and delay
   (let ((img (create-image nhmac-gui--gif2 'gif t :index 1 :scale 1)))
-    (should (equal (image-metadata img) '(:count 2 :delay 0.1)))
+    (should (equal (image-metadata img) '(count 2 delay 0.1)))
     (switch-to-buffer (generate-new-buffer " *nhmac-gif*"))
     (setq-local cursor-type nil)
     (insert-image img)
