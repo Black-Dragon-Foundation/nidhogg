@@ -15,6 +15,7 @@ pub mod macos;
 pub mod menu;
 pub mod outputs;
 pub mod pasteboard;
+pub mod resize;
 pub mod ring;
 pub mod scope;
 pub mod shapes;

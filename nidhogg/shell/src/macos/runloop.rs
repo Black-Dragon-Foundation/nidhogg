@@ -14,7 +14,7 @@ use objc2::rc::Retained;
 use objc2::runtime::NSObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::NSWindowDelegate;
-use objc2_foundation::{NSNotification, NSObjectProtocol};
+use objc2_foundation::{NSNotification, NSObjectProtocol, NSRect};
 
 /// What a callback reports.
 #[derive(Clone, Copy, Debug)]
@@ -29,6 +29,8 @@ pub enum MacEv {
     Menu(u32, u32),
     /// The screens changed (`applicationDidChangeScreenParameters:`).
     Screens,
+    /// A drag in the window's resize band asks for this frame (`resize::NhWindow`).
+    Resize(WindowId, NSRect),
 }
 
 thread_local! {

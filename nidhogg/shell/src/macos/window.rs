@@ -1,14 +1,15 @@
-//! A top-level window: an `NSWindow` whose content view is layer-hosting and its first responder
-//! (`view::layer_hosting`).
+//! A top-level window: our `NSWindow` subclass (`resize::NhWindow`, which takes the resize band's drags), whose content
+//! view is layer-hosting and its first responder (`view::layer_hosting`).
 
+use super::resize::{NhWindow, Pending};
 use super::runloop::WinDelegate;
 use super::surface::Surfaces;
 use super::view::{self, NhView};
 use crate::api::WindowId;
+use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2::{MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{NSBackingStoreType, NSWindow, NSWindowStyleMask};
+use objc2_app_kit::{NSWindow, NSWindowStyleMask};
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 use objc2_quartz_core::CALayer;
 
@@ -30,6 +31,8 @@ pub struct Win {
     pub mapped: bool,
     /// Non-native full screen: the frame and style to go back to.
     pub saved: Option<(NSRect, NSWindowStyleMask)>,
+    /// Our own edge-drag resize: the frame the host is drawing for, and the newest one asked for since.
+    pub resize: Pending,
 }
 
 impl Win {
@@ -52,16 +55,12 @@ impl Win {
                 | NSWindowStyleMask::Miniaturizable
                 | NSWindowStyleMask::Resizable
         };
-        // SAFETY: a fresh allocation with AppKit's designated initialiser; `Buffered` is the only backing AppKit has.
-        let window = unsafe {
-            NSWindow::initWithContentRect_styleMask_backing_defer(
-                NSWindow::alloc(mtm),
-                NSRect::new(NSPoint::new(100.0, 100.0), size),
-                style,
-                NSBackingStoreType::Buffered,
-                false,
-            )
-        };
+        let window = Retained::into_super(NhWindow::new(
+            mtm,
+            id,
+            NSRect::new(NSPoint::new(100.0, 100.0), size),
+            style,
+        ));
         // SAFETY: we hold the window in a `Retained`; AppKit must not release it again when it closes.
         unsafe { window.setReleasedWhenClosed(false) };
         let (view, layer) = view::layer_hosting(mtm, id, size);
@@ -84,6 +83,7 @@ impl Win {
             scale120,
             mapped: true,
             saved: None,
+            resize: Pending::default(),
         }
     }
 

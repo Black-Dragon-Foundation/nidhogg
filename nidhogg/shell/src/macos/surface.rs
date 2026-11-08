@@ -108,6 +108,9 @@ pub struct Stats {
     pub spins_in_redisplay: AtomicU64,
     pub pumps: AtomicU64,
     pub deferred_commits: AtomicU64,
+    /// Commits whose surface's size was not the window's content size in device pixels (a stretched or cropped
+    /// picture).
+    pub stretched_frames: AtomicU64,
 }
 
 pub static STATS: Stats = Stats {
@@ -121,6 +124,7 @@ pub static STATS: Stats = Stats {
     spins_in_redisplay: AtomicU64::new(0),
     pumps: AtomicU64::new(0),
     deferred_commits: AtomicU64::new(0),
+    stretched_frames: AtomicU64::new(0),
 };
 
 impl Stats {
@@ -129,7 +133,8 @@ impl Stats {
         let g = |c: &AtomicU64| c.load(Ordering::Relaxed);
         format!(
             ":bytes-copied {} :damage-bytes {} :full-copies {} :commits {} :surface-busy {} :ring-acquires {} \
-             :implicit-open-at-update-end {} :spins-in-redisplay {} :pumps {} :deferred-commits {} :draws {}",
+             :implicit-open-at-update-end {} :spins-in-redisplay {} :pumps {} :deferred-commits {} \
+             :stretched-frames {} :draws {}",
             g(&self.bytes_copied),
             g(&self.damage_bytes),
             g(&self.full_copies),
@@ -140,6 +145,7 @@ impl Stats {
             g(&self.spins_in_redisplay),
             g(&self.pumps),
             g(&self.deferred_commits),
+            g(&self.stretched_frames),
             super::draw::DRAWS.load(Ordering::Relaxed),
         )
     }
