@@ -489,8 +489,8 @@ glitnir_img_imageio_other (const uint8_t *data, size_t len,
 
 static const struct nh_img_decoder glitnir_img_imageio_cores[2]
   = { { glitnir_img_imageio_other }, { glitnir_img_imageio_gif } };
-#endif
 
+#endif
 /* Put the entries in front of the cores, at load time: the table is
    static data that the dump does not carry, so this runs in every
    session (and in temacs).  */
