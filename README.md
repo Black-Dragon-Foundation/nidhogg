@@ -512,6 +512,10 @@ post AppKit events and read the shell's counters through those hooks.
   a run's gate is named `Nidhogg gate (partial)`, so it never reads as the full gate. A row-only run (`checks` names
   Nidhogg rows, not `none` or `build-only`) leaves out drgnx's macOS suite: the changes job logs `drgnx macOS suite:
   skipped, row-only run` (and a notice), and with no drgnx tier left the drgnx job is skipped. A full run and a tag run it.
+- The macOS lanes are two jobs that run at once (the org has five macOS slots): `macOS (NS app)` (build, tarball, tarball
+  test, NS rows, the `tarball-macos` artifact) and `macOS (Naglfar)` (its dev build, Rust tests, boundary check, rows,
+  logs in `nhmac-gui-logs-naglfar`). `pair` is the one thing Naglfar takes from the NS job: it waits for its tarball.
+  Naglfar does not run for `ns_app_run`.
 - `timing` (fedora-45 and macOS, after `linux` and `macos`; `continue-on-error: true`; not in `release`'s needs, so it can
   never fail a run or a release): the timing test files in a lane of their own, report-only
   (`nidhogg/test/timing-lane.sh`, rows and budget ratios in `nidhogg/test/timing-rows.txt`). It runs nothing else. A fixed
