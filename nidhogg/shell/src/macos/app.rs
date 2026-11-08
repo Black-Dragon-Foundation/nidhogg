@@ -405,8 +405,11 @@ impl ShellBackend for MacShell {
         }
         // records already wait for the host: it drains them first, and the drain's end pumps when it needs more
         if !self.queue.is_empty() {
+            let n = self.queue.len();
+            crate::trace::pump(|| format!("shell: {n} records queued, no AppKit pump"));
             return self.flush_main();
         }
+        crate::trace::pump(|| "shell: AppKit pump".into());
         // an exception raised here is turned into a panic by the glue's guard (nhshell::catch_objc)
         surface::STATS
             .pumps

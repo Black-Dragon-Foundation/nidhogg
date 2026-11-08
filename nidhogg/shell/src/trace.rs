@@ -13,7 +13,7 @@ use std::time::Instant;
 /// The startup trace keeps this many events: the first ones, a window's life up to its first draws.
 const NOTES: usize = 64;
 /// The image draws kept: the newest.
-const IMAGES: usize = 8;
+const IMAGES: usize = 32;
 
 /// One image draw: the container (`w` x `h`, `bpp`, with a mask or not) and its first word, the drawn rectangle, and
 /// its first clip (`None`: unclipped), and the first word of the picture when it was made by this draw (`None`: a
@@ -36,6 +36,8 @@ struct Trace {
     /// Each window's waits for its first configure: rounds, and those that timed out.
     waits: BTreeMap<u64, (u32, u32)>,
     images: VecDeque<ImageDraw>,
+    /// The newest pump decisions (a drain's end, a wait's pump), read and cleared by `pumps_text`.
+    pumps: VecDeque<String>,
 }
 
 static TRACE: Mutex<Trace> = Mutex::new(Trace {
@@ -43,7 +45,27 @@ static TRACE: Mutex<Trace> = Mutex::new(Trace {
     notes: Vec::new(),
     waits: BTreeMap::new(),
     images: VecDeque::new(),
+    pumps: VecDeque::new(),
 });
+
+/// One pump decision: who asked and what was done.
+pub fn pump(what: impl FnOnce() -> String) {
+    with(|t| {
+        if t.pumps.len() == IMAGES {
+            t.pumps.pop_front();
+        }
+        t.pumps.push_back(what());
+    });
+}
+
+/// The pump decisions since the last read, oldest first, as a Lisp list of strings; the list is cleared.
+pub fn pumps_text() -> String {
+    with(|t| {
+        let items: Vec<String> = t.pumps.drain(..).map(|p| format!("{p:?}")).collect();
+        format!("({})", items.join(" "))
+    })
+    .unwrap_or_else(|| "nil".into())
+}
 
 fn with<R>(f: impl FnOnce(&mut Trace) -> R) -> Option<R> {
     cfg!(feature = "test-hooks").then(|| f(&mut TRACE.lock().unwrap_or_else(|p| p.into_inner())))
