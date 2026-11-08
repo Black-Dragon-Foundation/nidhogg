@@ -8,6 +8,7 @@ pub mod api;
 pub mod caps;
 pub mod dnd_map;
 pub mod event;
+pub mod ime_text;
 pub mod mac_child;
 pub mod mac_chrome;
 pub mod mac_input;

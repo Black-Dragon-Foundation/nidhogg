@@ -2721,6 +2721,18 @@ nhwl_im_update (struct frame *f)
 		  NHG (nhg_im_surrounding (dpyinfo->glue, out->window, text, n,
 					   n ? pt_b - s : 0,
 					   n ? pt_b - s : 0)));
+#ifdef HAVE_NHMAC
+    /* NS's ranges for NSTextInputClient: characters from BEGV, the
+       region when the mark is active.  */
+    ptrdiff_t m = (!NILP (BVAR (b, mark_active))
+		   && XMARKER (BVAR (b, mark))->buffer == b
+		   ? marker_position (BVAR (b, mark)) : pt);
+    nhwl_glue_rc (dpyinfo,
+		  NHG (nhg_im_offsets (dpyinfo->glue, out->window,
+				       buf_bytepos_to_charpos (b, s)
+				       - BUF_BEGV (b),
+				       pt - BUF_BEGV (b), m - BUF_BEGV (b))));
+#endif
   }
 }
 

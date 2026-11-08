@@ -519,6 +519,18 @@ pub trait ShellBackend {
         cursor: usize,
         anchor: usize,
     ) -> ShellResult;
+    /// Where the line pushed by `text_input_surrounding` starts, point and the selection's other end (the mark when it
+    /// is active, else point), in characters from the buffer's accessible start: the ranges an input method gets on
+    /// macOS, as NS counts them.
+    fn text_input_offsets(
+        &mut self,
+        _window: WindowId,
+        _line_start: usize,
+        _point: usize,
+        _mark: usize,
+    ) -> ShellResult {
+        Err(ShellError::Unsupported)
+    }
     /// The size of text `id` from a `PREEDIT` or `COMMIT_TEXT` record.
     fn text_len(&self, id: u32) -> ShellResult<usize>;
     /// Take text `id` (single-use).

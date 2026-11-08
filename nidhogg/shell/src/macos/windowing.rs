@@ -72,12 +72,11 @@ pub fn look(window: &NSWindow, appearance: &str, transparent_titlebar: bool) {
     window.setTitlebarAppearsTransparent(transparent_titlebar);
 }
 
-/// Whether the system is in dark mode now.
 /// Test hook: the application's appearance dark, or the system's again: what a switch of the system's appearance
 /// changes in `effectiveAppearance`.
 #[cfg(feature = "test-hooks")]
 pub fn test_appearance(app: &NSApplication, dark: bool) {
-    use objc2_app_kit::{NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua};
+    use objc2_app_kit::{NSAppearance, NSAppearanceNameDarkAqua};
     // SAFETY: a named system appearance; the statics are AppKit's.
     let a = dark
         .then(|| unsafe { NSAppearance::appearanceNamed(NSAppearanceNameDarkAqua) })
@@ -85,6 +84,7 @@ pub fn test_appearance(app: &NSApplication, dark: bool) {
     app.setAppearance(a.as_deref());
 }
 
+/// Whether the system is in dark mode now.
 pub fn system_dark(app: &NSApplication) -> bool {
     app.effectiveAppearance()
         .name()
