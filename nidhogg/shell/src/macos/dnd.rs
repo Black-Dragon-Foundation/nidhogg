@@ -319,7 +319,8 @@ pub fn offer_lisp() -> String {
 
 #[cfg(feature = "test-hooks")]
 define_class!(
-    /// Test hook: the dragging info AppKit hands a drop target, for a drag no window server runs: a private
+    /// Test hook: the dragging info AppKit hands a drop target (answering as `NSDraggingInfo` does), for a drag no
+    /// window server runs: a private
     /// pasteboard, a place in the view's window, copy or link from a source in another application.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
@@ -329,7 +330,9 @@ define_class!(
 
     unsafe impl NSObjectProtocol for TestInfo {}
 
-    unsafe impl NSDraggingInfo for TestInfo {
+    // Only what the view reads, not the protocol: declaring NSDraggingInfo would make objc2 require all of its
+    // methods when the class is registered (and panic without them); the view's methods take any object.
+    impl TestInfo {
         #[unsafe(method_id(draggingPasteboard))]
         fn pasteboard(&self) -> Retained<objc2_app_kit::NSPasteboard> {
             self.ivars().0.clone()
