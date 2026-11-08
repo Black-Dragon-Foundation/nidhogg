@@ -1154,11 +1154,15 @@ mod reconnect {
         })
     }
 
-    /// The buffers window `w` and its content layers hold, each with its memfd.
-    fn buffers(shell: &WaylandShell, w: u64) -> usize {
-        let own = shell.present_stats(w).map_or(0, |s| s.0);
-        let layers: usize = shell.content_layers(w).iter().map(|l| l.3.len()).sum();
-        own + layers
+    /// (The buffers window `w` and its content layers hold, the memfds among the descriptors, the other descriptors),
+    /// read while presenting can make or drop none of those buffers: a layer's draws come when presenting decides.
+    fn buffers(shell: &WaylandShell, w: u64) -> (usize, usize, usize) {
+        shell
+            .present_buffers_with(w, |n| {
+                let mem = memfds();
+                (n, mem, fds() - mem)
+            })
+            .unwrap()
     }
 
     /// The memfds among the descriptors.
@@ -1360,13 +1364,14 @@ mod reconnect {
                 shows(&rec, &b)
             });
             assert!(shell.presenter_tid().is_some(), "the presenter runs");
-            assert_eq!(memfds(), buffers(&shell, w), "memfds, cycle {cycle}");
+            let (held, mem, others) = buffers(&shell, w);
+            assert_eq!(mem, held, "memfds, cycle {cycle}");
             if cycle == 5 {
-                at5 = Some((fds() - memfds(), tasks()));
+                at5 = Some((others, tasks()));
             }
         }
         let (fd5, task5) = at5.unwrap();
-        assert_eq!(fds() - memfds(), fd5, "descriptors");
+        assert_eq!(buffers(&shell, w).2, fd5, "descriptors");
         assert_eq!(tasks(), task5, "threads");
     }
 }
