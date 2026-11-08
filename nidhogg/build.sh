@@ -15,6 +15,12 @@
 # tests.  Needs the AOT build: performance runs (Gate A, budgets, A/B) and releases.  A dev build can never be mistaken for a
 # release: --dev refuses --out and --stage pack (no tarball is made), and its compiled-Lisp cache stamp says "dev", so dev and
 # AOT entries never mix (use a fresh --build-dir when switching modes).
+# --native-preloaded (or NIDHOGG_BUILD_NATIVE_PRELOADED=1) is that native-compilation mode alone, for a build that is
+# still packed (CI's scratch runs of the macOS app): the preloaded Lisp is native-compiled, the other files stay byte code,
+# and JIT compilation is off in the image.  It is a tarball for tests, not a release: BUILDINFO's configure line says
+# --with-native-compilation=yes, which tarball-test.sh reads to check what this mode promises.
+# NIDHOGG_BUILD_LISP_CACHE_ELC=1 lets the compiled-Lisp cache give the byte-compiled part (not the .eln files) to a build
+# of another native-compilation mode or window system (the NS app, Naglfar), which the entry's full stamp refuses.
 # --naglfar builds Nidhogg's own macOS shell (--with-nidhogg-macos) instead of the NS app; on macOS only, except with
 # --dry-config, which stops after configure (src/config.h in the build dir) and on Linux configures for a darwin host.
 # --checking configures --enable-checking (dev builds only): Emacs's assertions, and the shell's and glue's test hooks
@@ -53,6 +59,7 @@ die() { echo "build.sh: $*" >&2; exit 1; }
 
 MODE="" DISTRO="" PREFIX="" JOBS="" MEMORY="" BUILD_DIR="" CHECK="" OUT="" DRY=0 STAGE=all GLITNIR=--with-glitnir
 DEV=0; [ "${NIDHOGG_BUILD_DEV:-}" != 1 ] || DEV=1
+PRELOADED=0; [ "${NIDHOGG_BUILD_NATIVE_PRELOADED:-}" != 1 ] || PRELOADED=1
 NHWL=0       # --nidhogg-wayland was asked for by name
 WATCHDOG=1  # the stall watchdog is built in unless --without-nidhogg-watchdog
 WORKERS=1    # the worker threads are built in unless --without-nidhogg-workers
@@ -75,6 +82,7 @@ while [ $# -gt 0 ]; do
     --without-glitnir) GLITNIR=""; shift ;;
     --nidhogg-wayland) NHWL=1; shift ;;
     --dev) DEV=1; shift ;;
+    --native-preloaded) PRELOADED=1; shift ;;
     --chaos) CHAOS=1; shift ;;
     --checking) CHECKING=1; shift ;;
     --without-nidhogg-watchdog) WATCHDOG=0; shift ;;
@@ -93,7 +101,7 @@ fi
 [ "$CHAOS" = 0 ] || [ "$DEV" = 1 ] || die "--chaos is for dev builds only: add --dev"
 [ "$CHECKING" = 0 ] || [ "$DEV" = 1 ] || die "--checking is for dev builds only: add --dev"
 [ "$NHWL" = 0 ] || [ -n "$GLITNIR" ] || die "--nidhogg-wayland needs Glitnir: leave out --without-glitnir"
-NATIVE=aot; [ "$DEV" = 0 ] || NATIVE=yes
+NATIVE=aot; { [ "$DEV" = 0 ] && [ "$PRELOADED" = 0 ]; } || NATIVE=yes
 # NIDHOGG_BUILD_SANITIZE=address,undefined adds -fsanitize=... to CFLAGS and LDFLAGS: dev builds only (the workers-asan CI job)
 SANITIZE=${NIDHOGG_BUILD_SANITIZE:-}
 if [ -n "$SANITIZE" ]; then
@@ -101,6 +109,7 @@ if [ -n "$SANITIZE" ]; then
   [ "$DEV" = 1 ] || die "NIDHOGG_BUILD_SANITIZE is for dev builds only: add --dev"
 fi
 LISP_CACHE=${NIDHOGG_BUILD_LISP_CACHE:-} LC="" LC_RESTORE=1
+LC_ELC=0; [ "${NIDHOGG_BUILD_LISP_CACHE_ELC:-}" != 1 ] || LC_ELC=1
 CONFIG_CACHE=${NIDHOGG_BUILD_CONFIG_CACHE:-} CFC=""
 CARGO_TARGET=${NIDHOGG_BUILD_CARGO_TARGET:-} CT=""
 
@@ -279,11 +288,17 @@ BODY
 # --- the build script: the same steps in a container and on the host --------------------------------------
 script() {
   printf 'S=%q B=%q P=%q V=%q UPV=%q HB=%q\n' "$S" "$B" "$PREFIX" "$VERSION" "$UPSTREAM_VERSION" "${NIDHOGG_BUILD_HEARTBEAT:-300}"
-  [ -z "$LISP_CACHE" ] || printf 'LC=%q LC_RESTORE=%q\n' "$LC" "$LC_RESTORE"
+  [ -z "$LISP_CACHE" ] || printf 'LC=%q LC_RESTORE=%q LC_ELC=%q\n' "$LC" "$LC_RESTORE" "$LC_ELC"
   [ -z "$CFC" ] || printf 'CFC=%q\n' "$CFC"
   [ -z "$CT" ] || printf 'CT=%q COMMIT=%q\n' "$CT" "$COMMIT"
   printf 'MODE_ID=%q\n' "$NATIVE${SANITIZE:+-$SANITIZE}"
   printf 'CONF_ID=%q\n' "--prefix=$PREFIX $CONF"
+  # CONF_ID without what the byte-compiled Lisp does not depend on: the native-compilation mode and the window system
+  elc_conf=""
+  for w in --prefix=$PREFIX $CONF; do
+    case $w in --with-native-compilation=*|--with-ns|--with-nidhogg-macos|--enable-checking) ;; *) elc_conf="$elc_conf $w" ;; esac
+  done
+  printf 'ELC_CONF_ID=%q\n' "${elc_conf# }"
   # leak reports from configure's and the dump's short-lived programs are noise.  detect_stack_use_after_return=0 as
   # etc/DEBUG says: the runtime defaults it on (GCC 16's does), which moves main's locals to a heap "fake stack",
   # so stack_bottom (&stack_bottom_variable) is not on the stack and the GC's mark_c_stack scans from the real stack
@@ -421,6 +436,8 @@ cc_id() { printf '%s %s %s %s\n' "$(gcc --version | head -n 1)" "$(uname -m)" "$
 # builds of the same key share DIR: a restore holds DIR/.lock shared, a save exclusive (where flock exists)
 lc_lock() { if command -v flock >/dev/null; then exec 9>"$LC/.lock"; flock "$1" 9; fi; }
 lc_unlock() { if command -v flock >/dev/null; then flock -u 9; exec 9>&-; fi; }
+# the same without the native-compilation mode and the window system: what the byte-compiled part alone depends on
+cc_elc_id() { printf '%s %s %s\n' "$(gcc --version | head -n 1)" "$(uname -m)" "$ELC_CONF_ID"; }
 lc_lock -s
 rm -f "$B/eln-restored.list"
 if [ "$LC_RESTORE" = 1 ] && [ -f "$LC/stamp" ] && [ "$(cat "$LC/stamp")" = "$(cc_id)" ]; then
@@ -433,6 +450,13 @@ if [ "$LC_RESTORE" = 1 ] && [ -f "$LC/stamp" ] && [ "$(cat "$LC/stamp")" = "$(cc
   [ ! -d "$LC/obj" ] || (cd "$LC/obj" && find . -type f) | while IFS= read -r f; do touch -r "$B/.restored" "$B/obj/$f"; done
   # the restored .eln files, which the guard checks against the new binary after make
   [ ! -d "$LC/obj/native-lisp" ] || (cd "$LC/obj" && find native-lisp -name '*.eln') > "$B/eln-restored.list"
+elif [ "$LC_RESTORE" = 1 ] && [ "$LC_ELC" = 1 ] && [ -f "$LC/stamp-elc" ] && [ "$(cat "$LC/stamp-elc")" = "$(cc_elc_id)" ]; then
+  # NIDHOGG_BUILD_LISP_CACHE_ELC=1: the byte-compiled part of an entry another mode or window system made (the .eln files,
+  # which depend on both, are not taken)
+  phase restore byte-compiled Lisp
+  tar -C "$LC" -cf - src | tar -C "$B" -xf -
+  touch "$B/.restored"
+  (cd "$LC/src" && find . -type f) | while IFS= read -r f; do touch -r "$B/.restored" "$B/src/$f"; done
 fi
 lc_unlock
 BODY
@@ -442,7 +466,7 @@ phase autogen
 logged "$B/autogen.log" ./autogen.sh
 cd "$B/obj"
 BODY
-  if [ "$DEV" = 1 ]; then
+  if [ "$DEV" = 1 ] || [ "$PRELOADED" = 1 ]; then
     # loadup.el loads lisp/site-init.el when present, and the dump keeps what it sets (the build copy only, never the source tree)
     echo "printf '%s\\n' ';;; dev build (nidhogg/build.sh --dev): no background native compilation' '(setq native-comp-jit-compilation nil)' > \"\$B/src/lisp/site-init.el\""
   fi
@@ -509,7 +533,7 @@ if [ -s "$B/eln-restored.list" ]; then
 fi
 phase save compiled Lisp
 lc_lock -x
-rm -rf "$LC/stamp" "$LC/src" "$LC/obj"
+rm -rf "$LC/stamp" "$LC/stamp-elc" "$LC/src" "$LC/obj"
 mkdir -p "$LC/src" "$LC/obj"
 # the files make generated under lisp/ and leim/ (those the sources do not have), and the .eln files with the facts
 # the guard compares (.eln-abi)
@@ -519,6 +543,7 @@ if [ -d "$B/obj/native-lisp" ]; then
   "$B/obj/src/emacs" -Q --batch -l "$S/nidhogg/eln-guard.el" -f nidhogg-eln-guard-facts > "$LC/obj/.eln-abi"
 fi
 cc_id > "$LC/stamp"
+cc_elc_id > "$LC/stamp-elc"
 lc_unlock
 BODY
   fi
