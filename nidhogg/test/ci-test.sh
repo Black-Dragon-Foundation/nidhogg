@@ -312,6 +312,15 @@ ln_of() { grep -n "$1" <<<"$nj2" | head -1 | cut -d: -f1; }
 [ "$(ln_of 'id: lc$')" -lt "$(ln_of 'bash nidhogg/ci/set-mtimes.sh')" ] && [ "$(ln_of 'bash nidhogg/ci/set-mtimes.sh')" -lt "$(ln_of 'id: nbuild')" ] || fail "macos-naglfar does not restore the Lisp, set the file times, then build"
 [ "$(job macos-naglfar | grep -cF -- 'key: configure-macos-naglfar-')" = 2 ] || fail "macos-naglfar's configure checks are not restored and saved under one key"
 job macos-naglfar | grep -qF 'NIDHOGG_BUILD_CONFIG_CACHE: ${{ runner.temp }}/config-cache' || fail "macos-naglfar's build keeps no configure cache"
+# the NS step inserts the counting interposer exactly when the selector selects a baseline row (nhmac-interposer-*,
+# nhmac-ns-*) or is empty: its decision, run for each selector
+ipd=$(job macos | sed -n '/^ *ip=""$/,/ip=--interpose; fi$/p' | sed 's/^ *//')
+ipfor() { (CHECKS=$1; ip=; eval "$ipd"; echo "${ip:-none}"); }
+[ -n "$ipd" ] || fail "the NS step decides no interposer"
+[ "$(ipfor '')" = --interpose ]                                     || fail "a run with no selector gets no interposer"
+[ "$(ipfor 'nhmac-')" = --interpose ]                               || fail "nhmac- selects a baseline row but gets no interposer"
+[ "$(ipfor 'nhmac-frame-opens|nhmac-ns-menu-dump')" = --interpose ] || fail "a selector naming a baseline row gets no interposer"
+[ "$(ipfor 'nhmac-frame-opens')" = none ]                           || fail "nhmac-frame-opens selects no baseline row but gets the interposer"
 # a row-only run leaves out drgnx's macOS suite and says so; a full run keeps every tier, and the gate accepts the
 # skipped drgnx job only when no tier is left
 job changes | grep -qF 'drgnx macOS suite: skipped, row-only run' || fail "a row-only run does not say it skipped drgnx's macOS suite"
