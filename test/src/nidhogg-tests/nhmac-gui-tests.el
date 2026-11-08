@@ -580,18 +580,25 @@ its frame, each become visible and draw.  Guards the start that once drew nothin
   "The surfaces the selected frame's ring has made."
   (plist-get (nhmac-gui--surface) :slots))
 
+(defun nhmac-gui--redisplay ()
+  "Redisplay, then wait (bounded) until the commit pacer holds none of the selected frame's commits: what the
+redisplay drew is on the layer, and counted."
+  (redisplay)
+  (nhmac-gui--wait-unheld 1))
+
 (defun nhmac-gui--fill-ring ()
   "Commit back to back until the ring has made all its slots, at most 500 commits; the slots it has.
 A slot is made only while the window server holds the others, which commits faster than it composites make it do.
+Each commit is waited for when the pacer held it, so each is drawn on its own.
 At least the ring's size and one more small commits are made, so no slot's age reaches back to the drawing before
 \(a new buffer's whole window).  The text is left as it was."
   (let ((n 0))
     (while (and (< n 500)
                 (or (< n (* 2 (1+ nhmac-gui--ring))) (< (nhmac-gui--slots) nhmac-gui--ring)))
       (insert "w")
-      (redisplay)
+      (nhmac-gui--redisplay)
       (delete-char -1)
-      (redisplay)
+      (nhmac-gui--redisplay)
       (setq n (+ n 2)))
     (nhmac-gui--slots)))
 
@@ -612,7 +619,8 @@ without, back to back."
       (when pace
         (accept-process-output nil nhmac-gui--key-repeat))
       (execute-kbd-macro "x")
-      (redisplay))
+      ;; paced, as typing is: a held commit lands before the next key; back to back, the pacer may merge them
+      (if pace (nhmac-gui--redisplay) (redisplay)))
     (let ((after (nhmac-stats)))
       (cl-loop for (k v) on after by #'cddr
                when (numberp v) append (list k (- v (or (plist-get before k) 0)))))))
@@ -706,8 +714,8 @@ interposer in the NS lane of the same run, is logged by `nhmac-interposer-counts
               (let ((ev (read-event nil nil 2)))
                 (should (eq ev ?k))
                 (insert ev))
-              (redisplay)
-              ;; the release's event, if any, is left for the next pump
+              ;; a commit the pacer held is published by its release, without a pump
+              (nhmac-gui--redisplay)
               (let ((pumps (nhmac-gui--delta before :pumps))
                     (commits (nhmac-gui--delta before :commits))
                     (sleeps (nhmac-gui--delta before :sleeps)))
@@ -795,8 +803,8 @@ without reaching its bound."
   (kill-buffer))
 
 (ert-deftest nhmac-pacer-idle-disarmed ()
-  "After a held commit shows, the pacer's timer is disarmed: it fired while the commit was held, and does not fire
-over 2 s of idle after."
+  "After a held commit shows, the pacer's timer is disarmed: it was armed for the hold (its release may come from a
+pump's check before the timer fires), and does not fire over 2 s of idle after."
   :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "idle")
@@ -805,7 +813,7 @@ over 2 s of idle after."
     (should (nhmac-gui--wait-unheld 1))
     ;; the check that finds nothing held disarms it: one look after the commit shows
     (accept-process-output nil 0.05)
-    (should (> (nhmac-gui--delta before :pacer-fires) 0)))
+    (should (> (nhmac-gui--delta before :pacer-arms) 0)))
   (let ((before (nhmac-stats)))
     (accept-process-output nil 2)
     (nhmac-gui--say "nhmac-pacer-idle-disarmed: %d fires over 2 s idle" (nhmac-gui--delta before :pacer-fires))
@@ -869,9 +877,9 @@ changed) it has fewer, which their check sees, and the warm-up fills it."
   (nhmac-gui--typing-buffer (mapconcat #'number-to-string (number-sequence 1 300) "\n"))
   (goto-char (point-min))
   (redisplay t)
-  (dotimes (_ nhmac-gui--ring) (scroll-up 1) (redisplay))
+  (dotimes (_ nhmac-gui--ring) (scroll-up 1) (nhmac-gui--redisplay))
   (let* ((before (nhmac-stats))
-         (_ (progn (scroll-up 1) (redisplay)))
+         (_ (progn (scroll-up 1) (nhmac-gui--redisplay)))
          (bytes (nhmac-gui--delta before :bytes-copied))
          (rows (* 4 (frame-pixel-width) (window-body-height nil t))))
     (nhmac-gui--say "nhmac-scroll-bytes: one line: copied %d, the window's rows %d" bytes rows)
@@ -944,7 +952,9 @@ with a sign test."
 
 ;; Draw records painted with Core Graphics
 (defun nhmac-gui--pixel-at (x y)
-  "The committed surface's premultiplied ARGB at device pixel X, Y of the selected frame."
+  "The committed surface's premultiplied ARGB at device pixel X, Y of the selected frame, once the commit pacer holds
+none of its commits (bounded)."
+  (nhmac-gui--wait-unheld 1)
   (plist-get (nhmac--test-surface x y) :pixel))
 
 (defun nhmac-gui--draw-scene ()
@@ -990,6 +1000,8 @@ checked against the faces, tolerance 0 for fills and box lines."
     ;; and gone again: the stretch's own colour where it was; the trace names both publishes and their damage
     (let ((draws (plist-get (nhmac-stats) :draws)))
       (setq-local cursor-type nil)
+      ;; a new cursor type alone does not mark the window for redisplay (the blink timer's redraw would erase it later)
+      (force-window-update (selected-window))
       (redisplay t)
       (setq draws (- (plist-get (nhmac-stats) :draws) draws))
       (ert-info ((format "pump decisions %S, %d draws, surface %S" (nhmac--pump-trace) draws (nhmac-gui--surface)))
@@ -1550,6 +1562,13 @@ The filter checks itself first on a Homebrew libpng line (caught), the system Im
 Its list follows AppKit's ordering a little later, so a row waits for it, bounded."
   (gui-runner-wait (lambda () (= (length (nhmac--test-windows)) n)) 2))
 
+(defun nhmac-gui--without-blink (fn)
+  "Call FN with the blinking cursor off, so no frame redraws its cursor on its own meanwhile; then as before."
+  (let ((blink blink-cursor-mode))
+    (blink-cursor-mode -1)
+    (unwind-protect (funcall fn)
+      (blink-cursor-mode (if blink 1 -1)))))
+
 (defun nhmac-gui--settle ()
   "Redisplay, let the pumps run, redisplay again."
   (redisplay t)
@@ -1595,18 +1614,24 @@ else (no contents, so no shadow render either), in one commit, with no picture d
           (should (eq (plist-get info :hidden) nil))
           (should (eq (plist-get info :contents-is-newest) t))
           (should (equal (plist-get info :place) (list (round (/ 40 s)) (round (/ 40 s)))))
-          (let ((before (nhmac-stats)))
-            (set-frame-position c 80 60)
-            (nhmac-gui--settle)
-            (let ((after (nhmac--test-child c)))
-              (nhmac-gui--say "nhmac-child-move: %S -> %S" info after)
-              (should (equal (plist-get after :place) (list (round (/ 80 s)) (round (/ 60 s)))))
-              (should (= (plist-get after :x) (round (/ 80 s)))))
-            (should (= (nhmac-gui--delta before :props-position) 1))
-            (dolist (k '(:props-contents :props-bounds :props-hidden :props-opacity :props-order :props-host
-                         :overhang-switches :draws))
-              (should (= (nhmac-gui--delta before k) 0)))
-            (should (= (nhmac-gui--delta before :commits) 1))))
+          (nhmac-gui--without-blink
+           (lambda ()
+             (nhmac-gui--settle)
+             (let ((before (nhmac-stats))
+                   (keys '(:props-position :props-contents :props-bounds :props-hidden :props-opacity :props-order
+                           :props-host :overhang-switches :draws :commits)))
+               (set-frame-position c 80 60)
+               (nhmac-gui--settle)
+               (let ((after (nhmac--test-child c)))
+                 (nhmac-gui--say "nhmac-child-move: %S -> %S, %S" info after
+                                 (mapcan (lambda (k) (list k (nhmac-gui--delta before k))) keys))
+                 (should (equal (plist-get after :place) (list (round (/ 80 s)) (round (/ 60 s)))))
+                 (should (= (plist-get after :x) (round (/ 80 s)))))
+               (should (= (nhmac-gui--delta before :props-position) 1))
+               (dolist (k '(:props-contents :props-bounds :props-hidden :props-opacity :props-order :props-host
+                            :overhang-switches :draws))
+                 (should (= (nhmac-gui--delta before k) 0)))
+               (should (= (nhmac-gui--delta before :commits) 1))))))
       (delete-frame c t))))
 
 (ert-deftest nhmac-child-click-through-shadow ()
@@ -1657,13 +1682,15 @@ with no picture drawn; captures across the switch show exactly one copy of it."
             (while (< x (- rw (/ cw 2)))
               (set-frame-position c x 40) (nhmac-gui--settle)
               (push (plist-get (nhmac--test-child c) :host) hosts)
+              (nhmac-gui--say "nhmac-overhang-switch: out x %d: %S" x (nhmac--test-child c))
               (setq x (+ x 8)))
             (should (eq (car hosts) 'panel))
             (should (nhmac-gui--windows-become (1+ windows)))
             (should (plist-get (nhmac--test-child c) :panel))
             (while (> x (- rw cw 24))
               (setq x (- x 8))
-              (set-frame-position c x 40) (nhmac-gui--settle))
+              (set-frame-position c x 40) (nhmac-gui--settle)
+              (nhmac-gui--say "nhmac-overhang-switch: back x %d: %S" x (nhmac--test-child c)))
             (should (eq (plist-get (nhmac--test-child c) :host) 'parent))
             (should-not (plist-get (nhmac--test-child c) :panel))
             (should (nhmac-gui--windows-become windows)))
@@ -1694,11 +1721,13 @@ a child again, and the child moves to another root."
           (let ((before (nhmac-stats)))
             (set-frame-parameter c 'parent-frame nil)
             (nhmac-gui--settle)
+            (nhmac-gui--say "nhmac-parent-frame-changes: to a top-level: %d draws" (nhmac-gui--delta before :draws))
             (should-not (frame-parent c))
             (should (nhmac-gui--windows-become (1+ windows)))
             (should (eq (plist-get (nhmac--window-info c) :visible) t))
             (set-frame-parameter c 'parent-frame root)
             (nhmac-gui--settle)
+            (nhmac-gui--say "nhmac-parent-frame-changes: a child again: %d draws" (nhmac-gui--delta before :draws))
             (should (eq (frame-parent c) root))
             (should (nhmac-gui--windows-become windows))
             (should (eq (plist-get (nhmac--test-child c) :host) 'parent))
