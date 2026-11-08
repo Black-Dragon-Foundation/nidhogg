@@ -2119,10 +2119,12 @@ impl WaylandShell {
     }
 
     /// Hand `m` about a child of root `root`'s tree to the presenter, and let the tree's next frame see it: a hide on
-    /// an idle tree has no other wake.
+    /// an idle tree has no other wake.  The tree is marked first: the post wakes the presenter, whose turn may apply
+    /// `m` and end the tree's transitions at once (a hide's unmap), and a mark after that would say a transition runs
+    /// that no turn ends.  A turn between the two finds `m` at its next one (`Stage::moving`).
     pub(super) fn motion_post(&mut self, root: u64, m: Mail) {
-        self.post(m);
         self.main.present_tick(root);
+        self.post(m);
     }
 
     /// Child `id`, which has a backdrop, moved: what the move owes wakes the presenter, which reads this first.
