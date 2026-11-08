@@ -973,6 +973,31 @@ Returns the frame position of the first stretch's top left."
         (edges (window-inside-pixel-edges)))
     (cons (+ (nth 0 edges) (car xy)) (+ (nth 1 edges) (cdr xy)))))
 
+(ert-deftest nhmac-rounded-box-draws-rounded ()
+  "A face's box with `:corner-radius' 8 draws rounded: the run's outermost corner pixel is neither the box's colour
+nor its background (it shows what is beneath), while the middle of its top edge is the box's colour.  A square box,
+the shell drawing no rounded path, fails here."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (switch-to-buffer (generate-new-buffer " *nhmac-rounded*"))
+  (setq-local cursor-type nil)
+  (insert (propertize " " 'display '(space :width (40))
+                      'face '(:background "#336699"
+                              :box (:line-width 2 :color "#ff8000" :corner-radius 8)))
+          "\n")
+  (redraw-frame)
+  (redisplay t)
+  (let* ((xy (posn-x-y (posn-at-point (point-min))))
+         (edges (window-inside-pixel-edges))
+         (x (+ (nth 0 edges) (car xy)))
+         (y (+ (nth 1 edges) (cdr xy)))
+         (corner (nhmac-gui--pixel-at x y))
+         (edge (nhmac-gui--pixel-at (+ x 20) y)))
+    (nhmac-gui--say "nhmac-rounded-box-draws-rounded: at %d,%d corner %08x edge %08x" x y corner edge)
+    (should (= edge #xffff8000))
+    (should-not (memql corner '(#xffff8000 #xff336699))))
+  (kill-buffer))
+
 (ert-deftest nhmac-draw-fills-boxes-cursors ()
   "Fills, a box and a bar cursor reach the committed surface with their exact colours (sRGB, opaque).
 A same-run comparison with NS's pixels needs a capture of the stock build; until then the colours are
@@ -1306,9 +1331,10 @@ screen are within 2/255 of NS's in the same run (NS points are pixels there)."
       (should (= (nhmac-gui--pixel-at (+ (nth 0 edges) (car xy) 1) (+ (nth 1 edges) (cdr xy) 1)) #xff0000ff)))
     (kill-buffer)))
 
-(defun nhmac-gui--image-screen (file name &optional worker)
-  "FILE's image on screen (`nhmac-gui--text-crop' of a capture saved as NAME): loaded inline, or with WORKER
-decoded on nh-img and landed first."
+(defun nhmac-gui--image-screen (file &optional worker)
+  "FILE's image as the committed surface holds it, (W H PIXELS) in device pixels: loaded inline, or with WORKER
+decoded on nh-img and landed first.  Read from the surface in process, so the window server's compositing and the
+screen capture are not in the comparison."
   (let ((nidhogg-workers-images (and worker t))
         (nidhogg-image-defer (and worker t)))
     (clear-image-cache t)
@@ -1317,7 +1343,17 @@ decoded on nh-img and landed first."
         (should (nidhogg-workers--test-await-landed 'nh-img 5000))
         (redisplay t)
         (should (= 0 (plist-get (nidhogg-workers--test-image-info) :pending))))
-      (nhmac-gui--text-crop (nhmac-gui--bmp-read (nhmac-gui--capture (nhmac-gui--font-file name)))))))
+      (nhmac-gui--wait-unheld 1)
+      (let* ((at (1- (point-max)))
+             (xy (posn-x-y (posn-at-point at)))
+             (edges (window-inside-pixel-edges))
+             (size (image-size (get-char-property at 'display) t))
+             (x (+ (nth 0 edges) (car xy)))
+             (y (+ (nth 1 edges) (cdr xy)))
+             (w (car size))
+             (h (cdr size)))
+        (list w h (apply #'vconcat (mapcar (lambda (row) (nhmac--test-surface-region x (+ y row) w 1))
+                                           (number-sequence 0 (1- h)))))))))
 
 (ert-deftest nhmac-images-worker ()
   "PNG, JPEG, GIF and WebP decoded off the main thread by the image worker (Glitnir's decoders, ImageIO behind them
@@ -1332,16 +1368,16 @@ and for JPEG) land and draw the pixels the inline load draws, within 2/255."
       (when (string-match-p "\\.\\(png\\|jpg\\|gif\\|webp\\)\\'" f)
         (let* ((name (file-name-nondirectory f))
                (t0 (float-time))
-               (inline (nhmac-gui--image-screen f (concat name ".inline.bmp")))
+               (inline (nhmac-gui--image-screen f))
                (landed (plist-get (nidhogg-workers--test-image-info) :landed))
                (off (unwind-protect
                         (progn (nidhogg-workers--test-decide 'offload)
-                               (nhmac-gui--image-screen f (concat name ".worker.bmp") t))
+                               (nhmac-gui--image-screen f t))
                       (nidhogg-workers--test-decide nil)))
                (t1 (float-time))
-               ;; a control: the inline load again, so a difference between two inline loads (ImageIO, the capture)
+               ;; a control: the inline load again, so a difference between two inline loads (ImageIO)
                ;; is told apart from one the worker makes
-               (again (and (string-suffix-p ".jpg" name) (nhmac-gui--image-screen f (concat name ".inline2.bmp"))))
+               (again (and (string-suffix-p ".jpg" name) (nhmac-gui--image-screen f)))
                (worst 0))
           ;; the worker took it: one more landing
           (should (> (plist-get (nidhogg-workers--test-image-info) :landed) landed))
@@ -1350,7 +1386,7 @@ and for JPEG) land and draw the pixels the inline load draws, within 2/255."
             (let ((a (aref (nth 2 inline) i)) (b (aref (nth 2 off) i)))
               (dolist (sh '(16 8 0))
                 (setq worst (max worst (abs (- (logand (ash a (- sh)) 255) (logand (ash b (- sh)) 255))))))))
-          (nhmac-gui--say "nhmac-images-worker: %s %dx%d, worst channel difference %d%s; captures %.1f s, compare %.1f s"
+          (nhmac-gui--say "nhmac-images-worker: %s %dx%d, worst channel difference %d%s; reads %.1f s, compare %.1f s"
                           name (car inline) (nth 1 inline) worst
                           (if again
                               (format " (inline against inline: %d)"
@@ -1679,19 +1715,20 @@ beneath, its parent."
             (should (eq (funcall frame-of on-shadow) root))))
       (delete-frame c t))))
 
-(defun nhmac-gui--window-follows (what)
+(defun nhmac-gui--window-follows (what before)
   "Whether the selected frame's window shows its newest surface at the surface's size, after WHAT (a string).
-The content size times the scale is the surface's size, to a device pixel; the frame keeps the size it asked for (no
-configure took it back)."
+BEFORE is the frame's native size (width . height) before WHAT: the frame has another now, keeps it over a second
+settle (no configure took it back), and the content size times the scale is the surface's size, to a device pixel."
   (let* ((f (selected-frame))
-         (asked (cons (frame-pixel-width f) (frame-pixel-height f)))
-         (s (progn (nhmac-gui--settle) (nhmac-gui--settle)
-                   (nhmac--test-surface 0 0)))
+         (size (lambda () (cons (frame-pixel-width f) (frame-pixel-height f))))
+         (now (progn (nhmac-gui--settle) (funcall size)))
+         (kept (progn (nhmac-gui--settle) (funcall size)))
+         (s (nhmac--test-surface 0 0))
          (scale (plist-get s :scale))
          (points (plist-get s :points)))
-    (nhmac-gui--say "nhmac-set-frame-size: %s: asked %S, now %dx%d, %S" what asked
-                    (frame-pixel-width f) (frame-pixel-height f) s)
-    (and (equal asked (cons (frame-pixel-width f) (frame-pixel-height f)))
+    (nhmac-gui--say "nhmac-set-frame-size: %s: %S -> %S, then %S, %S" what before now kept s)
+    (and (not (equal now before))
+         (equal now kept)
          (<= (abs (- (* scale (nth 0 points)) (plist-get s :w))) 1)
          (<= (abs (- (* scale (nth 1 points)) (plist-get s :h))) 1))))
 
@@ -1701,16 +1738,19 @@ the surface the frame draws at its new size, and no configure takes the frame ba
   :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((f (selected-frame))
-         (w (frame-pixel-width f))
-         (h (frame-pixel-height f)))
+         (size (lambda () (cons (frame-pixel-width f) (frame-pixel-height f))))
+         (w (frame-text-width f))
+         (h (frame-text-height f)))
     (unwind-protect
-        (progn
+        (let ((before (funcall size)))
           (set-frame-size f (+ w 64) (+ h 48) t)
-          (should (nhmac-gui--window-follows "set-frame-size"))
+          (should (nhmac-gui--window-follows "set-frame-size" before))
+          (setq before (funcall size))
           (set-frame-width f (- (frame-width f) 4))
-          (should (nhmac-gui--window-follows "set-frame-width"))
+          (should (nhmac-gui--window-follows "set-frame-width" before))
+          (setq before (funcall size))
           (set-frame-height f (- (frame-height f) 3))
-          (should (nhmac-gui--window-follows "set-frame-height")))
+          (should (nhmac-gui--window-follows "set-frame-height" before)))
       (set-frame-size f w h t)
       (nhmac-gui--settle))))
 
