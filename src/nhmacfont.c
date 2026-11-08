@@ -22,9 +22,10 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
    faces, and a font's metrics and glyphs come rounded as macfont_open
    and macfont_glyph_extents round them (glue/src/font.rs).  C turns
    specs, entities and font objects, which are Lisp objects, into the
-   glue's records and back.  For now one family's worth: ASCII, no
-   shaping, glyph metrics one glyph at a time; runs are drawn as
-   records (nhmac_glyph_run).  */
+   glue's records and back.  A character's glyph and a glyph's metrics
+   are read from the font's glyph table (glue/src/glyphs.rs) without a
+   call; a miss fills a page.  For now one family's worth, no shaping;
+   runs are drawn as records (nhmac_glyph_run).  */
 
 #include <config.h>
 
@@ -40,7 +41,8 @@ struct nhmac_font_info
 {
   struct font font;
   uint64_t handle;
-  bool mono;
+  /* The glue's glyph table, read without a call; fixed while open.  */
+  const NhgFontTable *table;
 };
 
 static Lisp_Object nhmac_font_cache;
@@ -201,7 +203,12 @@ nhmacfont_open (struct frame *f, Lisp_Object entity, int pixel_size)
   info = (struct nhmac_font_info *) XFONT_OBJECT (font_object);
   font = &info->font;
   info->handle = m.handle;
-  info->mono = m.mono != 0;
+  if (NHG (nhg_font_table (m.handle, &info->table)) != NHG_OK)
+    {
+      NHG (nhg_font_close (m.handle));
+      unblock_input ();
+      return Qnil;
+    }
   font->driver = &nhmacfont_driver;
   font->pixel_size = m.pixel_size;
   font->encoding_charset = font->repertory_charset = -1;
@@ -233,15 +240,38 @@ nhmacfont_close (struct font *font)
   info->handle = 0;
 }
 
+/* Character C's glyph, from the font's table; a page not read yet is
+   filled first.  */
 static unsigned
 nhmacfont_encode_char (struct font *font, int c)
 {
   struct nhmac_font_info *info = (struct nhmac_font_info *) font;
+  unsigned page = (unsigned) c / NHG_FONT_PAGE;
   uint32_t glyph;
 
-  if (NHG (nhg_font_glyph (info->handle, c, &glyph)) != NHG_OK)
+  if (c < 0 || page >= NHG_FONT_CHAR_PAGES)
     return FONT_INVALID_CODE;
-  return glyph;
+  if (!info->table->chars[page])
+    NHG (nhg_font_fill (info->handle, page));
+  if (!info->table->chars[page])
+    return FONT_INVALID_CODE;
+  glyph = info->table->chars[page]->glyph[c % NHG_FONT_PAGE];
+  return glyph == NHG_GLYPH_NONE ? FONT_INVALID_CODE : glyph;
+}
+
+/* Glyph G's metrics from the font's table (NULL: no such glyph).  */
+static const NhgGlyphMetrics *
+nhmac_glyph_metrics (struct nhmac_font_info *info, unsigned g)
+{
+  unsigned page = g / NHG_FONT_PAGE;
+
+  if (page >= NHG_FONT_GLYPH_PAGES)
+    return NULL;
+  if (!info->table->glyphs[page])
+    NHG (nhg_font_fill (info->handle, page | NHG_FONT_FILL_GLYPHS));
+  if (!info->table->glyphs[page])
+    return NULL;
+  return &info->table->glyphs[page]->metrics[g % NHG_FONT_PAGE];
 }
 
 static void
@@ -255,12 +285,11 @@ nhmacfont_text_extents (struct font *font, const unsigned int *code,
     memset (metrics, 0, sizeof *metrics);
   for (int i = 0; i < nglyphs; i++)
     {
-      NhgGlyphMetrics g;
+      const NhgGlyphMetrics *m = nhmac_glyph_metrics (info, code[i]);
+      NhgGlyphMetrics g = m ? *m
+	: (NhgGlyphMetrics) { 0, font->space_width, font->space_width,
+			      font->ascent, font->descent };
 
-      if (NHG (nhg_font_glyph_metrics (info->handle, code[i], info->mono,
-				       font->space_width, &g)) != NHG_OK)
-	g = (NhgGlyphMetrics) { 0, font->space_width, font->space_width,
-				font->ascent, font->descent };
       if (metrics)
 	{
 	  if (total + g.lbearing < metrics->lbearing)
