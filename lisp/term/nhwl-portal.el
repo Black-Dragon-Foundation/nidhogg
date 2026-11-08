@@ -30,7 +30,9 @@
 ;; minibuffer asks instead.
 ;;
 ;; `browse-url-xdg-open' on a shell frame gets an xdg-activation token
-;; in its environment, so the browser may raise itself.
+;; in its environment, so the browser may raise itself.  `browse-url'
+;; asks a `pgtk' frame for `x-gtk-launch-uri', defined here to take the
+;; same path.
 ;;
 ;; The handle and the token come from the compositor connection each
 ;; time and are never cached: a reconnect clears them.
@@ -214,6 +216,18 @@ On a shell frame it gets an activation token in its environment."
         (let ((process-environment (cons (concat "XDG_ACTIVATION_TOKEN=" token) process-environment)))
           (apply function args))
       (apply function args))))
+
+(defvar browse-url--inhibit-pgtk)
+(declare-function browse-url-default-browser "browse-url" (url &rest args))
+
+(defun x-gtk-launch-uri (_frame uri)
+  "Open URI with the desktop's handler.
+`browse-url' asks this of a frame whose window system is `pgtk', as a
+shell frame's is.  The shell has no GTK: this is
+`browse-url-default-browser' past its pgtk choice, so `xdg-open' (with an
+activation token, above) where it works."
+  (let ((browse-url--inhibit-pgtk t))
+    (browse-url-default-browser uri)))
 
 (defvar nhwl-display-connection-functions)
 (add-hook 'nhwl-display-connection-functions #'nhwl-portal--display-lost)
