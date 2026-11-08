@@ -82,6 +82,7 @@ impl Timer {
             }
             CFRunLoopAddTimer(CFRunLoopGetMain(), t, kCFRunLoopCommonModes);
             self.0 = Some(t);
+            STATS.pacer_arms.fetch_add(1, Ordering::Relaxed);
         }
     }
 
