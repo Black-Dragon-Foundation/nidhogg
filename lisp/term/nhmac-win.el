@@ -492,6 +492,12 @@ The commit pacer then holds each commit, until its bound.  For tests."
 whether the commit pacer holds a commit.  For tests."
   (nhmac--query 'test-surface (or frame (selected-frame)) x y))
 
+(defun nhmac--test-surface-region (x y w h &optional frame)
+  "Return the W x H pixels from X, Y of the newest surface of FRAME's window.
+A vector of premultiplied ARGB integers, row by row (an answer holds
+some 1400 pixels at most: read a row at a time).  For tests."
+  (nhmac--query 'test-surface-region (or frame (selected-frame)) x y w h))
+
 (defun nhmac--test-child (frame)
   "Return the layers of child frame FRAME's window, a plist.
 `:x', `:y' (its container's position, points from the parent's bottom
