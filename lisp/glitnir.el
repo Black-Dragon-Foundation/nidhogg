@@ -82,8 +82,13 @@ Set it for one frame with `set-face-foreground' to change that frame's."
   "Frame -> the shadow colour (R G B) last resolved for it.")
 
 (defun glitnir--shadow-color (frame)
-  "FRAME's shadow colour as (R G B), 0-255."
-  (let* ((name (face-foreground 'child-frame-shadow frame t))
+  "FRAME's shadow colour as (R G B), 0-255.
+A frame still being made has no faces yet: the colour for new frames
+then (`glitnir--recheck-shadow' catches a later difference)."
+  (let* ((name (face-foreground
+                'child-frame-shadow
+                (if (gethash 'child-frame-shadow (frame--face-hash-table frame)) frame t)
+                t))
          (v (and (stringp name) (color-values name frame))))
     (if v (mapcar (lambda (c) (/ c 257)) v) (list 0 0 0))))
 
