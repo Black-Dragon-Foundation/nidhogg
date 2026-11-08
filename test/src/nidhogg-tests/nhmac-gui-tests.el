@@ -1101,4 +1101,39 @@ the background beside a named colour."
     (message "nhmac-images-no-homebrew: %s links %S" bin libs)
     (should-not outside)))
 
+
+;; Task 22: glyph tables C reads without a call
+(ert-deftest nhmac-font-calls-per-glyph ()
+  "After warm-up, redisplaying a window of 1,000 glyphs in Menlo 12 makes no `nhg_font_*' call: C reads glyphs and
+metrics from the font's glyph table.  A character on a page not read yet makes calls (the fill), so the counter counts."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((font (frame-parameter nil 'font))
+        (buf (generate-new-buffer " *nhmac-glyphs*")))
+    (unwind-protect
+        (progn
+          (set-frame-font "Menlo-12" nil (list (selected-frame)))
+          (switch-to-buffer buf)
+          (setq-local mode-line-format nil truncate-lines t)
+          ;; 25 lines of 40: ASCII and Latin-1
+          (dotimes (i 25)
+            (dotimes (j 40)
+              (insert (let ((k (+ (* i 40) j))) (if (= (% k 7) 0) (+ #xc0 (% k 60)) (+ ?! (% k 94)))))))
+            (insert "\n"))
+          (goto-char (point-min))
+          (dotimes (_ 2) (redraw-frame) (redisplay t))
+          (let ((before (nhmac-stats)))
+            (dotimes (_ 5) (redraw-frame) (redisplay t))
+            (message "nhmac-font-calls-per-glyph: warm %S" (nhmac-stats))
+            (should (= (nhmac-gui--delta before :font-calls) 0)))
+          ;; Greek: a page no glyph above is on
+          (let ((before (nhmac-stats)))
+            (goto-char (point-min))
+            (insert "αβγ\n")
+            (redisplay t)
+            (message "nhmac-font-calls-per-glyph: a miss %S" (nhmac-stats))
+            (should (> (nhmac-gui--delta before :font-calls) 0))
+            (should (> (nhmac-gui--delta before :font-fills) 0))))
+      (kill-buffer buf)
+      (set-frame-font font nil (list (selected-frame))))))
+
 ;;; nhmac-gui-tests.el ends here
