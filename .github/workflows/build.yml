@@ -760,9 +760,11 @@ jobs:
           FILES: ${{ inputs.files }}
         run: |
           sel=${CHECKS//|/\\|}
-          # the NS baseline rows (nhmac-interposer-*, nhmac-ns-*) run with the counting interposer inserted
+          # the NS baseline rows (nhmac-interposer-*, nhmac-ns-*) run with the counting interposer inserted: whenever the
+          # selector (a flat a|b regexp) selects one of them, as `nhmac-' does, or is empty
           ip=""
-          if [ -z "$CHECKS" ] || echo "$CHECKS" | grep -Eq 'nhmac-(interposer|ns-)'; then ip=--interpose; fi
+          rows=$(sed -nE 's/^\(ert-deftest (nhmac-(interposer|ns)-[^ ]+).*/\1/p' test/src/nidhogg-tests/nhmac-gui-tests.el)
+          if [ -z "$CHECKS" ] || grep -Eq -- "$CHECKS" <<<"$rows"; then ip=--interpose; fi
           bash nidhogg/test/nhmac-gui.sh --tarball "$(ls dist/*.tar.xz | head -n 1)" --out "$RUNNER_TEMP/nhmac-gui" $ip ${sel:+--select "$sel"} ${FILES:+--files "$FILES"}
       - name: macOS GUI logs
         if: always()
