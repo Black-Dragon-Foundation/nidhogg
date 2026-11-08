@@ -441,11 +441,31 @@ nhwl_draw_fringe_bitmap (struct window *w, struct glyph_row *row,
 			  ? (p->overlay_p ? face->background
 			     : FRAME_X_OUTPUT (f)->cursor_color)
 			  : face->foreground);
+      bool left = p->x < window_box_left (w, TEXT_AREA);
+      int fw = (left ? WINDOW_LEFT_FRINGE_WIDTH (w)
+		: WINDOW_RIGHT_FRINGE_WIDTH (w));
+      int k = clip_to_bounds (1, min (FRAME_NHWL_OUTPUT (f)->scale120 / 120,
+				      fw / max (p->wd, 1)), 8);
+      int bh = p->h + p->dh;
       NhgDrawRec r = { NHG_DRAW_BITMAP, p->overlay_p ? NHG_DRAW_OVERLAY : 0,
 		       { p->x, p->y, p->wd, p->h },
 		       nhmac_argb (f, fg, false),
-		       nhmac_argb (f, face->background, false) };
+		       nhmac_argb (f, face->background, false), k };
       r.bits = p->bits + p->dh;
+      if (k > 1)
+	{
+	  /* NS draws a bitmap in points: at a scale, K pixels a bit while
+	     it fits its fringe, the whole bitmap centred on where it sits
+	     unscaled, cut to the fringe's column (the Wayland shell's
+	     nhwl_draw_fringe_scaled rule).  */
+	  XRectangle col = { left ? p->x - (fw - p->wd) / 2
+			     : p->x - (fw - p->wd + 1) / 2,
+			     p->y - p->dh - bh * k, fw, 3 * bh * k };
+	  r.r = (NhgRect) { p->x + (p->wd - k * p->wd) / 2,
+			    p->y - p->dh + (bh - k * bh) / 2, p->wd, bh };
+	  r.bits = p->bits;
+	  nhmac_clip_to (&col, 1);
+	}
       nhmac_emit (f, &r);
     }
   nhwl_end_cr_clip (f);

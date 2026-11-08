@@ -2120,6 +2120,202 @@ metrics from the font's glyph table.  A character on a page not read yet makes c
       (kill-buffer buf)
       (set-frame-font font nil (list (selected-frame))))))
 
+;; Task 24: every draw record, compared with NS's in the same run
+(defun nhmac-gui--draw-k ()
+  "Device pixels per NS point for the scene's pixel sizes: the lane's scale on Naglfar, 1 on NS (which counts points)."
+  (if (nhmac-gui--ns-build-p) 1 (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1"))))
+
+(defconst nhmac-gui--draw-cursors '(box hollow bar hbar)
+  "The cursor kinds the draw rows show over an image.")
+
+(defun nhmac-gui--draw-cursor (kind k)
+  "`cursor-type' for KIND with K device pixels per point."
+  (pcase kind ('bar (cons 'bar (* 2 k))) ('hbar (cons 'hbar (* 2 k))) (_ kind)))
+
+(defmacro nhmac-gui--with-draw-scene (&rest body)
+  "Run BODY showing a buffer that uses every face attribute and glyph kind the draw records carry (decorations, boxes
+and reliefs, stretches, glyphless and composed characters, images, fringe bitmaps), in Menlo 12 on
+`nhmac-gui--font-bg', with pixel sizes in NS points (times `nhmac-gui--draw-k').  Point is on the first image."
+  (declare (indent 0))
+  `(let* ((k (nhmac-gui--draw-k))
+          (font (frame-parameter nil 'font))
+          (fg (frame-parameter nil 'foreground-color))
+          (bg (frame-parameter nil 'background-color))
+          (glyphless (copy-sequence glyphless-char-display))
+          (img (create-image "P1\n6 6\n1 0 1 0 1 0\n0 1 0 1 0 1\n1 0 1 0 1 0\n0 1 0 1 0 1\n1 0 1 0 1 0\n0 1 0 1 0 1\n"
+                             'pbm t :scale (* 2 k) :foreground "#003399" :background "#ffffff")))
+     (unwind-protect
+         (progn
+           (set-frame-font "Menlo-12" nil (list (selected-frame)))
+           (set-foreground-color "#000000")
+           (set-background-color nhmac-gui--font-bg)
+           (aset glyphless-char-display #xE000 'hex-code)
+           (aset glyphless-char-display #xE001 "ABC")
+           (switch-to-buffer (generate-new-buffer " *nhmac-draw*"))
+           (setq-local cursor-type nil mode-line-format nil indicate-empty-lines t truncate-lines t)
+           (set-window-fringes nil (* 8 k) (* 8 k))
+           (set-window-scroll-bars nil 0 nil 0 nil)
+           (let ((b (lambda (s &rest face) (insert (propertize s 'face face)))))
+             (insert (propertize " " 'display '(left-fringe right-triangle)))
+             (funcall b "under" :underline t) (insert " ")
+             (funcall b "wave" :underline '(:style wave :color "red")) (insert " ")
+             (funcall b "dash" :underline '(:style dashes :color "blue"))
+             (insert (propertize " " 'display '(right-fringe left-arrow)) "\n")
+             (funcall b "over" :overline t) (insert " ")
+             (funcall b "strike" :strike-through "red") (insert " ")
+             (funcall b "both" :overline "blue" :strike-through t) (insert "\n\n")
+             (funcall b "box" :box (list :line-width k :color "blue")) (insert " ")
+             (funcall b "raised" :box (list :line-width (* 2 k) :style 'released-button)) (insert " ")
+             (funcall b "pressed" :box (list :line-width (* 2 k) :style 'pressed-button)) (insert " ")
+             (funcall b "inner" :box (list :line-width (cons (- k) (- k)) :color "dark green")) (insert "\n\n")
+             (funcall b "inverse" :inverse-video t) (insert " ")
+             (funcall b "bold" :weight 'bold) (insert " ")
+             (funcall b "italic" :slant 'italic) (insert " ")
+             (funcall b "tall" :height 1.5 :background "light blue") (insert "\n")
+             (insert "a" (propertize " " 'display '(space :width 4) 'face '(:background "orange"))
+                     "b" (propertize " " 'display '(space :align-to 30) 'face '(:background "pink")) "c\n")
+             (insert "glyphless " (string #xE000) " " (string #xE001) " composed ")
+             (insert (compose-string (string ?e #x301)) "\n")
+             (insert "image ")
+             (let ((at (point)))
+               (insert-image img)
+               (insert " ")
+               (insert-image (append img (list :relief (* 2 k) :margin (* 2 k))))
+               (insert "\n\n\n")
+               (goto-char at)))
+           (redraw-frame)
+           (redisplay t)
+           (sit-for 0.5)
+           ,@body)
+       (setq glyphless-char-display glyphless)
+       (kill-buffer)
+       (set-window-fringes nil nil nil)
+       (set-window-scroll-bars nil nil nil nil nil)
+       (set-frame-font font nil (list (selected-frame)))
+       (set-foreground-color fg)
+       (set-background-color bg))))
+
+(defun nhmac-gui--draw-geometry ()
+  "Where each line of the draw scene starts and ends, and where the images are: (X . Y) of `posn-at-point' at every
+line's start and end and at each image."
+  (save-excursion
+    (let (out)
+      (goto-char (point-min))
+      (while (not (eobp))
+        (push (posn-x-y (posn-at-point (point))) out)
+        (end-of-line)
+        (push (posn-x-y (posn-at-point (point))) out)
+        (forward-line 1))
+      (nreverse out))))
+
+(defun nhmac-gui--crop-diff (a b)
+  "Crops A and B (`nhmac-gui--text-crop'): (SAME-SIZE WORST OFF), WORST the largest channel difference and OFF how
+many pixels differ by more than 24 in a channel."
+  (pcase-let ((`(,aw ,ah ,apx) a) (`(,bw ,bh ,bpx) b) (worst 0) (off 0))
+    (if (not (and (= aw bw) (= ah bh)))
+        (list nil 255 (* aw ah))
+      (dotimes (i (length apx))
+        (let ((d (cl-loop for sh in '(16 8 0)
+                          maximize (abs (- (logand (ash (aref apx i) (- sh)) 255)
+                                           (logand (ash (aref bpx i) (- sh)) 255))))))
+          (setq worst (max worst d))
+          (when (> d 24) (cl-incf off))))
+      (list t worst off))))
+
+(defun nhmac-gui--draw-captures ()
+  "The draw scene's captures: the scene without a cursor, then each of `nhmac-gui--draw-cursors' over the image.
+An alist of (NAME . FILE) in this lane's output directory."
+  (let ((out (list (cons "draw" (nhmac-gui--capture (nhmac-gui--font-file "draw.bmp"))))))
+    (dolist (c nhmac-gui--draw-cursors)
+      (setq-local cursor-type (nhmac-gui--draw-cursor c (nhmac-gui--draw-k)))
+      (redisplay t)
+      (sit-for 0.3)
+      (push (cons (format "draw-%s" c) (nhmac-gui--capture (nhmac-gui--font-file (format "draw-%s.bmp" c)))) out))
+    (nreverse out)))
+
+(defmacro nhmac-gui--with-fringe-scene (&rest body)
+  "Run BODY showing only fringe bitmaps: empty lines with an arrow in each fringe, then the empty-line indicator, the
+fringe in black on `nhmac-gui--font-bg', fringes 8 NS points wide."
+  (declare (indent 0))
+  `(let ((k (nhmac-gui--draw-k))
+         (bg (frame-parameter nil 'background-color))
+         (ffg (face-foreground 'fringe)) (fbg (face-background 'fringe)))
+     (unwind-protect
+         (progn
+           (set-background-color nhmac-gui--font-bg)
+           (set-face-attribute 'fringe nil :foreground "#000000" :background nhmac-gui--font-bg)
+           (switch-to-buffer (generate-new-buffer " *nhmac-fringe*"))
+           (setq-local cursor-type nil mode-line-format nil indicate-empty-lines t)
+           (set-window-fringes nil (* 8 k) (* 8 k))
+           (set-window-scroll-bars nil 0 nil 0 nil)
+           (insert (propertize " " 'display '(left-fringe right-triangle))
+                   (propertize " " 'display '(right-fringe left-arrow)) "\n"
+                   (propertize " " 'display '(left-fringe up-arrow))
+                   (propertize " " 'display '(right-fringe filled-rectangle)) "\n")
+           (goto-char (point-min))
+           (redraw-frame)
+           (redisplay t)
+           (sit-for 0.5)
+           ,@body)
+       (kill-buffer)
+       (set-face-attribute 'fringe nil :foreground (or ffg 'unspecified) :background (or fbg 'unspecified))
+       (set-window-fringes nil nil nil)
+       (set-window-scroll-bars nil nil nil nil nil)
+       (set-background-color bg))))
+
+(ert-deftest nhmac-ns-draw-dump ()
+  "NS's draw scene: its geometry and a capture of it without a cursor and with each cursor kind over the image, for
+nhmac-draw-all-records in the Naglfar lane; and the fringe scene's capture, for nhmac-draw-fringe-bitmaps."
+  (skip-unless (nhmac-gui--ns-build-p))
+  (nhmac-gui--with-draw-scene
+    (with-temp-file (nhmac-gui--font-file "draw.eld")
+      (prin1 (nhmac-gui--draw-geometry) (current-buffer)))
+    (dolist (c (nhmac-gui--draw-captures))
+      (should (> (car (nhmac-gui--text-crop (nhmac-gui--bmp-read (cdr c)))) 0))))
+  (nhmac-gui--with-fringe-scene
+    (nhmac-gui--capture (nhmac-gui--font-file "fringe.bmp"))
+    (should (> (car (nhmac-gui--text-crop (nhmac-gui--bmp-read (nhmac-gui--font-file "fringe.bmp")))) 0))))
+
+(ert-deftest nhmac-draw-all-records ()
+  "The draw scene on Naglfar against NS's in the same run: its geometry is NS's times the scale; at scale 1 (NS points
+are pixels) each capture, without a cursor and with each cursor kind over the image, is NS's size, and at most 0.1%
+of its pixels differ by more than 24/255 in a channel.  At scale 2 the pixel differences are reported: Naglfar's
+one-pixel lines (waves, reliefs, cursor bars) are device pixels there, NS's are points."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (should (file-exists-p (nhmac-gui--font-file "draw.eld" t)))
+  (nhmac-gui--with-draw-scene
+    (let ((ns (with-temp-buffer (insert-file-contents (nhmac-gui--font-file "draw.eld" t)) (read (current-buffer))))
+          (mine (nhmac-gui--draw-geometry)))
+      (message "nhmac-draw-all-records: scale %d geometry NS %S Naglfar %S" k ns mine)
+      (should (equal mine (mapcar (lambda (p) (cons (* k (car p)) (* k (cdr p)))) ns))))
+    (dolist (c (nhmac-gui--draw-captures))
+      (let* ((name (car c))
+             (d (nhmac-gui--crop-diff
+                 (nhmac-gui--text-crop (nhmac-gui--bmp-read (nhmac-gui--font-file (concat name ".bmp") t)))
+                 (nhmac-gui--text-crop (nhmac-gui--bmp-read (cdr c)))))
+             (n (let ((cr (nhmac-gui--text-crop (nhmac-gui--bmp-read (cdr c))))) (* (nth 0 cr) (nth 1 cr)))))
+        (message "nhmac-draw-all-records: scale %d %s: same size %S, worst %d, %d of %d pixels off; stats %S"
+                 k name (nth 0 d) (nth 1 d) (nth 2 d) n (nhmac-stats))
+        (when (= k 1)
+          (should (nth 0 d))
+          (should (<= (* 1000 (nth 2 d)) n)))))))
+
+(ert-deftest nhmac-draw-fringe-bitmaps ()
+  "Fringe bitmaps against NS's in the same run: at a scale NS draws each bit as a point, so Naglfar's fringes, as
+wide as NS's, draw it as scale by scale pixels.  The bitmaps' crop is NS's size and has as many dark pixels."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (should (file-exists-p (nhmac-gui--font-file "fringe.bmp" t)))
+  (nhmac-gui--with-fringe-scene
+    (let* ((dark (lambda (c) (cl-count-if (lambda (p) (< (logand (ash p -8) 255) 128)) (nth 2 c))))
+           (ns (nhmac-gui--text-crop (nhmac-gui--bmp-read (nhmac-gui--font-file "fringe.bmp" t))))
+           (mine (nhmac-gui--text-crop (nhmac-gui--bmp-read (nhmac-gui--capture (nhmac-gui--font-file "fringe.bmp")))))
+           (d (nhmac-gui--crop-diff ns mine)))
+      (message "nhmac-draw-fringe-bitmaps: scale %d: NS %dx%d %d dark, Naglfar %dx%d %d dark; diff %S"
+               k (nth 0 ns) (nth 1 ns) (funcall dark ns) (nth 0 mine) (nth 1 mine) (funcall dark mine) d)
+      (should (> (nth 0 ns) 0))
+      (should (equal (list (nth 0 mine) (nth 1 mine)) (list (nth 0 ns) (nth 1 ns))))
+      (should (= (funcall dark mine) (funcall dark ns))))))
+
 ;;; nhmac-gui-tests.el ends here
 
 (ert-deftest nhmac-kq-helper-signals ()

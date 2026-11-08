@@ -430,31 +430,20 @@ impl Canvas {
                     y,
                     w,
                     rows,
+                    scale,
                     fg,
                     bg,
                 } => {
                     if let Some(bg) = bg {
                         self.fill_colour(*bg);
-                        CGContextFillRect(c, cg(&Rect::new(*x, *y, *w, rows.len() as i32)));
+                        CGContextFillRect(
+                            c,
+                            cg(&Rect::new(*x, *y, w * scale, rows.len() as i32 * scale)),
+                        );
                     }
                     self.fill_colour(*fg);
-                    for (i, bits) in rows.iter().enumerate() {
-                        // runs of set pixels, leftmost pixel in bit w - 1
-                        let mut j = 0;
-                        while j < *w {
-                            if bits >> (w - 1 - j) & 1 == 0 {
-                                j += 1;
-                                continue;
-                            }
-                            let start = j;
-                            while j < *w && bits >> (w - 1 - j) & 1 != 0 {
-                                j += 1;
-                            }
-                            CGContextFillRect(
-                                c,
-                                cg(&Rect::new(x + start, y + i as i32, j - start, 1)),
-                            );
-                        }
+                    for r in crate::shapes::bitmap_runs(*x, *y, *w, rows, *scale) {
+                        CGContextFillRect(c, cg(&r));
                     }
                 }
             }
