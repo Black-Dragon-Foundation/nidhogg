@@ -37,6 +37,9 @@ fn waiting(shell: &WaylandShell, id: u64) -> bool {
 
 /// The frame is shown: its callback came and the buffer before it went back.
 fn shown(shell: &mut WaylandShell, rec: &Recorder, id: u64) {
+    // the recorder reads the Wayland socket and the control socket in turns: the commit must be in before the
+    // present that answers it
+    sync(shell);
     present(rec);
     until(shell, "the frame callback", |s| !waiting(s, id));
     // the release sent with the callback is handled
@@ -215,6 +218,7 @@ mod publish {
         assert_eq!(s.bare_commits - before.bare_commits, 1, "{s:?}");
         assert!(s.presented < s.published, "the picture waits: {s:?}");
         // (the first configure's content ack posted a FRAME_READY still queued: wait for the callback itself)
+        sync(&shell);
         present(&rec);
         until(&mut shell, "the frame callback", |s| !waiting(s, id));
         assert!(shell.present_tree(id).unwrap(), "the held picture");
@@ -379,6 +383,7 @@ mod publish {
             assert!(!shell.present_tree(id).unwrap(), "the pacer waits");
         }
         assert_eq!(shell.presenter_stats().unwrap().superseded, 2);
+        sync(&shell);
         present(&rec);
         wait_for(&mut shell, |e| {
             e.kind() == Kind::FrameReady && e.window == id
@@ -410,6 +415,7 @@ mod publish {
         b.fill(Rect::new(20, 0, 10, 10), 0xff00_00ff);
         assert!(publish(&mut shell, id, &[(&b, id)], now));
         // (the first configure's content ack posted a FRAME_READY still queued: wait for the callback itself)
+        sync(&shell);
         present(&rec);
         until(&mut shell, "the frame callback", |s| !waiting(s, id));
         assert!(shell.present_tree(id).unwrap());
