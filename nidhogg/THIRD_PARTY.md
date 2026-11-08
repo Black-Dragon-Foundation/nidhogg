@@ -58,3 +58,14 @@ Crates locked for the cursor theme (`nidhogg/shell/Cargo.lock`; fetched from cra
 - Licence: BSD-2-Clause (`nidhogg/licenses/LICENSE-BSD2-webkit`); the adapted file is `GPL-3.0-or-later AND BSD-2-Clause`
 - Files: `nidhogg/glitnir/src/ease.rs` (the cubic-Bézier solver for CSS easing curves: sample table, Newton steps,
   bisection; rewritten in Rust)
+
+Crates locked for SVG on macOS (the shell's feature `svg`; `nidhogg/shell/Cargo.lock` and `nidhogg/glue/Cargo.lock`;
+fetched from crates.io, vendored unmodified in the release's vendor tarball; each under a licence `deny.toml` accepts,
+which `cargo deny` checks): `resvg` 0.45.1 and `usvg` 0.45.1, with `arrayref` 0.3.9, `arrayvec`
+0.7.8, `autocfg` 1.5.1, `base64` 0.22.1, `bitflags` 1.3.2, `bytemuck` 1.25.2, `core_maths` 0.1.1, `data-url` 0.3.2,
+`euclid` 0.22.14, `float-cmp` 0.9.0, `fontconfig-parser` 0.5.8, `fontdb` 0.23.0, `imagesize` 0.13.0, `kurbo` 0.11.3,
+`libm` 0.2.16, `memmap2` 0.9.12, `num-traits` 0.2.19, `pico-args` 0.5.0, `png` 0.17.16, `rgb` 0.8.53, `roxmltree`
+0.20.0, `rustybuzz` 0.20.1, `simplecss` 0.2.2, `siphasher` 1.0.4, `slotmap` 1.1.1, `strict-num` 0.1.1, `svgtypes`
+0.15.3, `tiny-skia` 0.11.4, `tiny-skia-path` 0.11.4, `tinyvec` 1.13.3, `ttf-parser` 0.25.1, `unicode-bidi` 0.3.18,
+`unicode-bidi-mirroring` 0.4.0, `unicode-ccc` 0.4.0, `unicode-properties` 0.1.5, `unicode-script` 0.5.9, `unicode-vo`
+0.1.0, `version_check` 0.9.5 and `xmlwriter` 0.1.0.

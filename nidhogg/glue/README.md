@@ -321,3 +321,17 @@ accepted and does nothing, as for a missing Wayland protocol.
 | `nhg_drag_start` / `nhg_drag_cancel` / `nhg_drag_state` | - | drag source | `NSDraggingSource` |
 | `nhg_set_reconnect` / `nhg_reconnect_step` / `nhg_reconnect_settle` | - | reconnect in place after the compositor goes | not used (no compositor to lose) |
 | `nhg_premultiply` | - | a colour as a backing stores it | same |
+| `nhg_stacking` / `nhg_draw_count` | - | tests: a root's child windows as stacked; its commits that showed something | same |
+| `nhg_layout_leg` | - | a window's layout leg vector to the shell, the newest capture's number back | same |
+| `nhg_wait` / `nhg_wake` / `nhg_set_lock_waiters` | - | not used (Emacs's own select) | the main wait on the run loop, its wake from any thread, and the lock waiters' count it watches |
+| `nhg_draw` / `nhg_draw_glyphs` / `nhg_draw_image` | W | not used (Cairo draws) | `image.c`'s and the glyph strings' drawing records painted with Core Graphics (`draw.rs`); an image through its matrix, wrapped once as a `CGImage` |
+| `nhg_font_start` / `nhg_font_open` / `nhg_font_close` / `nhg_font_glyph` / `nhg_font_glyph_metrics` | - | `NHG_E_UNSUPPORTED` (fontconfig and Cairo) | the Core Text font driver: faces opened at a size, glyphs and their metrics rounded as `macfont` rounds them |
+| `nhg_image_type` / `nhg_image_decode` / `nhg_image_take` / `nhg_image_free` / `nhg_image_forget` | - | `NHG_E_UNSUPPORTED` (image.c's own libraries); an XPM decodes on any platform | `image.c`'s native route: ImageIO, an XPM through `xpm.rs`, into the plain containers; a freed container's picture forgotten |
+| `nhg_image_transform` | - | the matrix `image_set_transform` makes for Cairo (platform-free) | the image's matrix, stored for drawing |
+| `nhg_svg_size` / `nhg_svg_render` | - | `NHG_E_UNSUPPORTED` (librsvg) | SVG through the shell's resvg route (`svg.rs`), with `svg_load_image`'s CSS, colours and size |
+| `nhg_wait` / `nhg_wake` / `nhg_set_lock_waiters` | - | not used (Emacs's `pselect`) | the main wait: the run loop and the fds through kqueue, holding the global lock; a wake from any thread; parked only while no Lisp thread wants the lock |
+| `nhg_draw` / `nhg_draw_glyphs` / `nhg_draw_image` | W | not used (Cairo draws) | draw records (`draw.rs`) painted with Core Graphics: fills, reliefs, lines, glyph runs, images through their matrix |
+| `nhg_font_start` / `nhg_font_open` / `nhg_font_close` / `nhg_font_glyph` / `nhg_font_glyph_metrics` | - | `NHG_E_UNSUPPORTED` (fontconfig and Cairo) | the Core Text font driver's source, faces and glyph metrics, rounded as `macfont.m` rounds them (`font.rs`) |
+| `nhg_image_type` / `nhg_image_decode` / `nhg_image_take` / `nhg_image_free` / `nhg_image_forget` | - | not used (`image.c`'s own decoders) | `image.c`'s native route: ImageIO for PNG, JPEG, GIF, TIFF, WebP and HEIC, the glue's reader for XPM (`image.rs`, `xpm.rs`); the drawn `CGImage` forgotten with its pixels |
+| `nhg_image_transform` | - | not used (Cairo's pattern matrix) | `image_set_transform`'s matrix as the Cairo branch makes it, kept in the image and drawn through |
+| `nhg_svg_size` / `nhg_svg_render` | - | not used (librsvg) | SVG through resvg with `svg_load_image`'s CSS, colours and size (the shell's `svg.rs`) |

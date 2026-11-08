@@ -1510,13 +1510,107 @@ nhg_export! {
         .ok_or(GlueError::Arg)?;
         #[cfg(not(all(feature = "macos", target_os = "macos")))]
         let _ = (data, mask);
-        let mut p = crate::draw::decode_image(rec, key, made_with).map_err(|_| GlueError::Arg)?;
+        let mut p = crate::draw::decode_image(rec, key, made_with, &pix.matrix, pix.smooth != 0).map_err(|_| GlueError::Arg)?;
         state.backings.frame_mut(frame)?.paint(&mut p)?;
         Ok(NHG_OK)
     }
 }
 
 // ---- Images (`image.rs`; macOS) ---------------------------------------------------------------------------------
+
+/// An image's bytes: the `len` bytes at `src`, or the file they name when `is_file`.  `State` when it cannot be read.
+///
+/// # Safety
+/// `src` holds `len` readable bytes for `'a`.
+unsafe fn image_source<'a>(
+    src: *const u8,
+    len: usize,
+    is_file: u32,
+) -> Result<std::borrow::Cow<'a, [u8]>, GlueError> {
+    // SAFETY: the caller's promise.
+    let src = unsafe { std::slice::from_raw_parts(src, len) };
+    if is_file == 0 {
+        return Ok(std::borrow::Cow::Borrowed(src));
+    }
+    use std::os::unix::ffi::OsStrExt;
+    std::fs::read(std::ffi::OsStr::from_bytes(src))
+        .map(std::borrow::Cow::Owned)
+        .map_err(|_| GlueError::State)
+}
+
+/// The file an SVG was read from (for its relative references), when `is_file`.
+///
+/// # Safety
+/// `src` holds `len` readable bytes.
+#[cfg(feature = "svg")]
+unsafe fn image_file(src: *const u8, len: usize, is_file: u32) -> Option<std::path::PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    // SAFETY: the caller's promise.
+    (is_file != 0).then(|| {
+        std::ffi::OsStr::from_bytes(unsafe { std::slice::from_raw_parts(src, len) }).into()
+    })
+}
+
+nhg_export! {
+    /// The SVG in the `len` bytes at `src` (a file name when `is_file`), read with `style`: its own size in pixels into
+    /// `*w`, `*h`.  `NHG_E_STATE` when it cannot be read or parsed, `NHG_E_UNSUPPORTED` in a build without SVG.
+    ///
+    /// # Safety
+    /// `src` holds `len` readable bytes; `style` is readable and its strings hold their lengths; `w` and `h` are
+    /// writable.
+    unlocked fn nhg_svg_size(src: *const u8, len: usize, is_file: u32, style: *const crate::image::NhgSvgStyle, w: *mut f64, h: *mut f64) -> i32 {
+        if src.is_null() || style.is_null() || w.is_null() || h.is_null() {
+            return Err(GlueError::Arg);
+        }
+        #[cfg(feature = "svg")]
+        {
+            // SAFETY: the caller's promises.
+            let (bytes, file) = unsafe { (image_source(src, len, is_file)?, image_file(src, len, is_file)) };
+            // SAFETY: as above.
+            let style = unsafe { crate::image::svg_style(&*style, file.as_deref()) };
+            let (sw, sh) = nhshell::svg::size(&bytes, &style).ok_or(GlueError::State)?;
+            // SAFETY: writable (the caller's promise).
+            unsafe { (w.write(sw), h.write(sh)) };
+            Ok(NHG_OK)
+        }
+        #[cfg(not(feature = "svg"))]
+        {
+            let _ = (len, is_file);
+            Err(GlueError::Code(crate::abi::NHG_E_UNSUPPORTED))
+        }
+    }
+}
+
+nhg_export! {
+    /// The SVG in the `len` bytes at `src` (a file name when `is_file`) drawn with `style` at `width` x `height` over
+    /// its background into `*out` (opaque; `nhg_image_take` or `nhg_image_free` frees it).  `NHG_E_STATE` when it
+    /// cannot be read, parsed or drawn, `NHG_E_UNSUPPORTED` in a build without SVG.
+    ///
+    /// # Safety
+    /// As `nhg_svg_size`; `out` is writable.
+    unlocked fn nhg_svg_render(src: *const u8, len: usize, is_file: u32, style: *const crate::image::NhgSvgStyle, width: i32, height: i32, out: *mut crate::image::NhgImage) -> i32 {
+        if src.is_null() || style.is_null() || out.is_null() || width <= 0 || height <= 0 {
+            return Err(GlueError::Arg);
+        }
+        #[cfg(feature = "svg")]
+        {
+            // SAFETY: the caller's promises.
+            let (bytes, file) = unsafe { (image_source(src, len, is_file)?, image_file(src, len, is_file)) };
+            // SAFETY: as above.
+            let (s, bg) = unsafe { (crate::image::svg_style(&*style, file.as_deref()), (*style).background) };
+            let (w, h) = (width as u32, height as u32);
+            let argb = nhshell::svg::render(&bytes, &s, bg, w, h).ok_or(GlueError::State)?;
+            // SAFETY: writable (the caller's promise).
+            unsafe { out.write(crate::image::opaque(w, h, argb)) };
+            Ok(NHG_OK)
+        }
+        #[cfg(not(feature = "svg"))]
+        {
+            let _ = (len, is_file);
+            Err(GlueError::Code(crate::abi::NHG_E_UNSUPPORTED))
+        }
+    }
+}
 
 nhg_export! {
     /// `NHG_OK` when `image.c`'s native route takes the image type named by the `len` bytes at `name`, else
@@ -1539,26 +1633,24 @@ nhg_export! {
 
 nhg_export! {
     /// Decode frame `index` of the image in the `len` bytes at `src` (a file name when `is_file`) into `*out`, whose
-    /// pixels `nhg_image_take` or `nhg_image_free` frees.  `NHG_E_STATE` when the file cannot be read or decoded or has
-    /// no such frame.
+    /// pixels `nhg_image_take` or `nhg_image_free` frees.  An XPM's colour names go to `color` (with `ctx`), which
+    /// gives `0xRRGGBB`.  `NHG_E_STATE` when the file cannot be read or decoded or has no such frame.
     ///
     /// # Safety
-    /// `src` holds `len` readable bytes; `out` is writable.
-    unlocked fn nhg_image_decode(src: *const u8, len: usize, is_file: u32, index: u32, out: *mut crate::image::NhgImage) -> i32 {
+    /// `src` holds `len` readable bytes; `out` is writable; `color` is safe to call with `ctx` and a NUL-terminated
+    /// name, on this thread.
+    unlocked fn nhg_image_decode(src: *const u8, len: usize, is_file: u32, index: u32, color: crate::image::NhgColorFn, ctx: *mut std::ffi::c_void, out: *mut crate::image::NhgImage) -> i32 {
         if src.is_null() || out.is_null() {
             return Err(GlueError::Arg);
         }
         // SAFETY: `len` readable bytes (the caller's promise).
-        let src = unsafe { std::slice::from_raw_parts(src, len) };
-        let read;
-        let bytes = if is_file != 0 {
-            use std::os::unix::ffi::OsStrExt;
-            read = std::fs::read(std::ffi::OsStr::from_bytes(src)).map_err(|_| GlueError::State)?;
-            &read[..]
-        } else {
-            src
+        let bytes = unsafe { image_source(src, len, is_file) }?;
+        let mut resolve = |name: &str| {
+            let name = std::ffi::CString::new(name).unwrap_or_default();
+            // SAFETY: the caller's promise; the name lives across the call.
+            color.map_or(0, |f| unsafe { f(ctx, name.as_ptr()) })
         };
-        let img = crate::image::decode(bytes, index).ok_or(GlueError::State)?;
+        let img = crate::image::decode(&bytes, index, &mut resolve).ok_or(GlueError::State)?;
         // SAFETY: writable (the caller's promise).
         unsafe { out.write(img) };
         Ok(NHG_OK)
@@ -1605,6 +1697,34 @@ nhg_export! {
             unsafe { crate::image::free(&mut *img) };
         }
         Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// `image_set_transform`'s matrix for an image `w` x `h` shown at `width` x `height`, turned by `rotation`
+    /// degrees and flipped: the six numbers into `out` (Cairo's pattern matrix, from a drawn pixel to the container's)
+    /// and the drawn size into `*out_w`, `*out_h`.  `NHG_E_UNSUPPORTED` for a rotation that is not a multiple of 90
+    /// degrees: `out` then holds the scale alone and the size is left as it was.
+    ///
+    /// # Safety
+    /// `out` holds six writable doubles; `out_w` and `out_h` are writable.
+    unlocked fn nhg_image_transform(w: i32, h: i32, width: i32, height: i32, rotation: f64, flip: bool, out: *mut f64, out_w: *mut i32, out_h: *mut i32) -> i32 {
+        if out.is_null() || out_w.is_null() || out_h.is_null() || width <= 0 || height <= 0 {
+            return Err(GlueError::Arg);
+        }
+        let t = crate::image::transform(f64::from(w), f64::from(h), f64::from(width), f64::from(height), rotation, flip);
+        let m = match t {
+            Ok((m, ..)) | Err(m) => m,
+        };
+        // SAFETY: six writable doubles and two ints (the caller's promise).
+        unsafe {
+            std::ptr::copy_nonoverlapping(m.as_ptr(), out, 6);
+            if let Ok((_, dw, dh)) = t {
+                *out_w = dw.round() as i32;
+                *out_h = dh.round() as i32;
+            }
+        }
+        t.map(|_| NHG_OK).map_err(|_| GlueError::Code(crate::abi::NHG_E_UNSUPPORTED))
     }
 }
 

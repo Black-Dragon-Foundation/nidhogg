@@ -29,7 +29,10 @@ macos = [
     "dep:objc2-foundation",
     "dep:objc2-app-kit",
     "dep:objc2-quartz-core",
+    "svg",
 ]
+# SVG through resvg (`mod svg`): pure Rust, so its tests also run on Linux (check.sh turns it on there)
+svg = ["dep:resvg"]
 # entry points that exist only for tests (the macOS rows' event injection and counters); the glue's test-hooks turns it on
 test-hooks = []
 
@@ -43,6 +46,8 @@ wayland-scanner = { version = "0.31", optional = true }
 xkbcommon = { version = "0.9", default-features = false, optional = true }
 rustix = { version = "1", features = ["fs", "mm", "event", "pipe", "net", "process"], optional = true }
 libc = "0.2"
+# text and the system's fonts, as librsvg has them; no raster images inside SVG (their decoders would duplicate Glitnir's)
+resvg = { version = "0.45.1", default-features = false, features = ["text", "system-fonts", "memmap-fonts"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", features = ["exception"], optional = true }
