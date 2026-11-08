@@ -141,6 +141,18 @@ impl MacShell {
                 [w, x, y] => self.surface_info(w as WindowId, x as i32, y as i32),
                 _ => Err(ShellError::Arg),
             }),
+            "test-surface-region" => numbers(arg).and_then(|n| match n[..] {
+                [w, x, y, rw, rh] => {
+                    let px = self
+                        .win(w as WindowId)?
+                        .surfaces
+                        .region(x as i32, y as i32, rw as i32, rh as i32)
+                        .ok_or(ShellError::Arg)?;
+                    let items: Vec<String> = px.iter().map(u32::to_string).collect();
+                    Ok(format!("[{}]", items.join(" ")))
+                }
+                _ => Err(ShellError::Arg),
+            }),
             _ => return None,
         })
     }
