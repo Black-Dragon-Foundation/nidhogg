@@ -1154,6 +1154,13 @@ mod reconnect {
         })
     }
 
+    /// The buffers window `w` and its content layers hold, each with its memfd.
+    fn buffers(shell: &WaylandShell, w: u64) -> usize {
+        let own = shell.present_stats(w).map_or(0, |s| s.0);
+        let layers: usize = shell.content_layers(w).iter().map(|l| l.3.len()).sum();
+        own + layers
+    }
+
     /// The memfds among the descriptors.
     fn memfds() -> usize {
         std::fs::read_dir("/proc/self/fd")
@@ -1322,7 +1329,10 @@ mod reconnect {
     }
 
     /// Review Focus 5: twenty restarts while presenting on the thread, a window its own output, and a packet queued at
-    /// each loss: the picture comes back each time, and descriptors, memfds and threads equal cycle 5's.
+    /// each loss: the picture comes back each time, the descriptors besides the buffers' memfds and the threads equal
+    /// cycle 5's, and the memfds are the buffers the window and its layer hold.  How many buffers those are is the
+    /// pool's to decide (a third one when both were busy at a draw: when the compositor releases them is its own), so
+    /// they are not cycle 5's.
     #[test]
     fn twenty_cycles_with_the_presenter_free_everything() {
         let _g = SERIAL.write().unwrap_or_else(|e| e.into_inner());
@@ -1350,13 +1360,13 @@ mod reconnect {
                 shows(&rec, &b)
             });
             assert!(shell.presenter_tid().is_some(), "the presenter runs");
+            assert_eq!(memfds(), buffers(&shell, w), "memfds, cycle {cycle}");
             if cycle == 5 {
-                at5 = Some((fds(), memfds(), tasks()));
+                at5 = Some((fds() - memfds(), tasks()));
             }
         }
-        let (fd5, mem5, task5) = at5.unwrap();
-        assert_eq!(fds(), fd5, "descriptors");
-        assert_eq!(memfds(), mem5, "memfds");
+        let (fd5, task5) = at5.unwrap();
+        assert_eq!(fds() - memfds(), fd5, "descriptors");
         assert_eq!(tasks(), task5, "threads");
     }
 }
