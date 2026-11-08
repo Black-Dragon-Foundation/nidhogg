@@ -560,20 +560,42 @@ its frame, each become visible and draw.  Guards the start that once drew nothin
   "Bytes of one full-width text line of the selected frame."
   (* 4 (frame-pixel-width) (frame-char-height)))
 
+(defconst nhmac-gui--key-repeat 0.03
+  "Seconds between typed keys at macOS's fastest key repeat: longer than a display frame.")
+
+(defun nhmac-gui--slots ()
+  "The surfaces the selected frame's ring has made."
+  (plist-get (nhmac-gui--surface) :slots))
+
+(defun nhmac-gui--fill-ring ()
+  "Commit back to back until the ring has made all its slots, at most 500 commits; the slots it has.
+A slot is made only while the window server holds the others, which commits faster than it composites make it do.
+The text is left as it was."
+  (let ((n 0))
+    (while (and (< (nhmac-gui--slots) nhmac-gui--ring) (< n 500))
+      (insert "w")
+      (redisplay)
+      (delete-char -1)
+      (redisplay)
+      (setq n (+ n 2)))
+    (nhmac-gui--slots)))
+
 (defun nhmac-gui--typing-buffer (text)
   "A fresh buffer showing TEXT in the selected window, point at its end, drawn."
   (switch-to-buffer (generate-new-buffer " *nhmac-typing*"))
   (insert text)
   (redisplay t)
-  ;; the first commits make the ring's slots (whole copies); typing is measured after them
-  (dotimes (_ (1+ nhmac-gui--ring))
-    (insert "w")
-    (redisplay)))
+  ;; the ring's slots are made first (whole copies); typing is measured after them
+  (nhmac-gui--fill-ring))
 
-(defun nhmac-gui--type (n &optional before)
-  "Type N characters as commands, each followed by a redisplay; the stats' changes since BEFORE (now if nil)."
+(defun nhmac-gui--type (n &optional before pace)
+  "Type N characters as commands, each followed by a redisplay; the stats' changes since BEFORE (now if nil).
+With PACE, keys come at the fastest key repeat, the wait before each one turning the run loop, as typing does;
+without, back to back."
   (let ((before (or before (nhmac-stats))))
     (dotimes (_ n)
+      (when pace
+        (accept-process-output nil nhmac-gui--key-repeat))
       (execute-kbd-macro "x")
       (redisplay))
     (let ((after (nhmac-stats)))
@@ -599,12 +621,14 @@ most, in the three §5.4 cases (end of line, mid-line, the worst plain key); nev
                      (mid-line ,(make-string 70 ?m) ,(lambda () (goto-char (+ (point-min) 35))))
                      (worst ,(make-string (- (window-body-width) 2) ?w) ,#'end-of-buffer)))
       (nhmac-gui--typing-buffer text)
+      ;; a slot made while the keys are measured would be a whole copy
+      (should (= (nhmac-gui--slots) nhmac-gui--ring))
       (funcall goto)
       (redisplay)
-      (let* ((d (nhmac-gui--type keys))
+      (let* ((d (nhmac-gui--type keys nil t))
              (bytes (plist-get d :bytes-copied))
              (damage (plist-get d :damage-bytes)))
-        (message "nhmac-typing-bytes: %s: %d keys: copied %d (%d per key), damage %d, full %d, row %d"
+        (nhmac-gui--say "nhmac-typing-bytes: %s: %d keys: copied %d (%d per key), damage %d, full %d, row %d"
                  case keys bytes (/ bytes keys) damage (plist-get d :full-copies) row)
         (should (= (plist-get d :full-copies) 0))
         (should (> bytes 0))
@@ -668,15 +692,52 @@ interposer in the NS lane of the same run, is logged by `nhmac-interposer-counts
   (kill-buffer))
 
 (ert-deftest nhmac-surface-busy-typing ()
-  "While typing the ring always has a surface the window server does not hold."
+  "While typing (keys at the fastest key repeat) the ring always has a surface the window server does not hold."
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--require-composited)
   (nhmac-gui--typing-buffer "busy")
-  (let ((d (nhmac-gui--type 30)))
-    (message "nhmac-surface-busy-typing: 30 keys: %d busy, %d acquires" (plist-get d :surface-busy)
-             (plist-get d :ring-acquires))
+  (let ((d (nhmac-gui--type 30 nil t)))
+    (nhmac-gui--say "nhmac-surface-busy-typing: 30 keys: %d busy, %d acquires" (plist-get d :surface-busy)
+                    (plist-get d :ring-acquires))
     (should (= (plist-get d :surface-busy) 0)))
   (kill-buffer))
+
+(ert-deftest nhmac-surface-busy-burst ()
+  "Redisplays back to back, faster than the window server composites (a keyboard macro, edits streaming in): how often
+every other surface is still held and the oldest is drawn into anyway.  Reported, not judged: the ring reuses the
+oldest, as NS does, until a commit pacer holds such commits back."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--require-composited)
+  (nhmac-gui--typing-buffer "burst")
+  (let ((d (nhmac-gui--type 30)))
+    (nhmac-gui--say "nhmac-surface-busy-burst: 30 keys back to back: %d busy, %d acquires, %d full copies"
+                    (plist-get d :surface-busy) (plist-get d :ring-acquires) (plist-get d :full-copies))
+    (should (> (plist-get d :ring-acquires) 0)))
+  (kill-buffer))
+
+(ert-deftest nhmac-typing-fills-the-ring ()
+  "The typing rows measure on a ring that has made all its slots: right after the ring starts over (the colour space
+changed) it has fewer, which their check sees, and the warm-up fills it."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--require-composited)
+  (let ((srgb ns-use-srgb-colorspace))
+    (switch-to-buffer (generate-new-buffer " *nhmac-fill*"))
+    (insert "fill")
+    (unwind-protect
+        (progn
+          (setq ns-use-srgb-colorspace (not srgb))
+          (redraw-frame)
+          (redisplay t)
+          (let ((short (nhmac-gui--slots)))
+            (nhmac-gui--say "nhmac-typing-fills-the-ring: %d slots after the ring started over" short)
+            (should (< short nhmac-gui--ring)))
+          (let ((filled (nhmac-gui--fill-ring)))
+            (nhmac-gui--say "nhmac-typing-fills-the-ring: %d slots after the warm-up" filled)
+            (should (= filled nhmac-gui--ring))))
+      (setq ns-use-srgb-colorspace srgb)
+      (redraw-frame)
+      (redisplay t)
+      (kill-buffer))))
 
 (ert-deftest nhmac-scroll-bytes ()
   "Scrolling a window by a line copies the scrolled rows, not the surface."
