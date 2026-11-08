@@ -124,4 +124,24 @@ asked mutter for fullscreen before the size it had set reached mutter."
   ;; a bare commit went out since, and packet 6 waits for its commit, which goes out before the third read
   (should (equal (gui-runner-tests--plain-settle 6 5 1 '(3)) '(6 . 6))))
 
+(ert-deftest gui-runner/scale-ready-reads-monitors-only-for-a-size ()
+  "The scale check reads the monitors only when GLITNIR_GUI_SIZE asks for a size.
+It read them on every run, and a shell that does not serve the monitors yet (Naglfar) failed before any row."
+  (let ((process-environment (copy-sequence process-environment))
+        (monitors (lambda (&rest _) (error "Naglfar: not available yet"))))
+    (setenv "GLITNIR_GUI_SCALE" "1")
+    (setenv "GLITNIR_GUI_SIZE" nil)
+    (cl-letf (((symbol-function 'frame-scale-factor) (lambda (&rest _) 1.0))
+              ((symbol-function 'display-monitor-attributes-list) monitors))
+      (should (glitnir-gui--scale-ready-p)))
+    (setenv "GLITNIR_GUI_SIZE" "800x600")
+    (cl-letf (((symbol-function 'frame-scale-factor) (lambda (&rest _) 1.0))
+              ((symbol-function 'display-monitor-attributes-list)
+               (lambda (&rest _) '(((geometry 0 0 800 600))))))
+      (should (glitnir-gui--scale-ready-p)))
+    (cl-letf (((symbol-function 'frame-scale-factor) (lambda (&rest _) 1.0))
+              ((symbol-function 'display-monitor-attributes-list)
+               (lambda (&rest _) '(((geometry 0 0 1024 768))))))
+      (should-not (glitnir-gui--scale-ready-p)))))
+
 ;;; gui-runner-tests.el ends here
