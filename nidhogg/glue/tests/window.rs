@@ -291,6 +291,32 @@ mod window {
         close(d);
     }
 
+    /// A Wayland surface keeps its role: a reparent is `NHG_E_UNSUPPORTED` and leaves the frame as it was (C makes
+    /// the window again).  A bad descriptor is refused before the shell is asked, an unknown window too.
+    #[test]
+    fn reparent_unsupported_on_wayland() {
+        let rec = Recorder::start("sway");
+        let d = open(&rec);
+        let top = toplevel(d);
+        let mut c = desc();
+        c.kind = NHSHELL_KIND_CHILD;
+        c.role = NHG_FRAME_CHILD;
+        c.parent = top;
+        let (rc, child) = make(d, &c);
+        assert_eq!(rc, NHG_OK);
+        // SAFETY: a live display; the descriptor and its title are readable.
+        let reparent = |id: u64, w: &NhgWindowDesc| unsafe { nhg_window_reparent(d, id, w) };
+        assert_eq!(reparent(child, &desc()), NHG_E_UNSUPPORTED);
+        frame(d, child, |f| assert_eq!(f.flags, NHG_FRAME_CHILD));
+        let bad = NhgWindowDesc {
+            native_w: 0,
+            ..desc()
+        };
+        assert_eq!(reparent(child, &bad), NHG_E_ARG);
+        assert_eq!(reparent(child + 1000, &desc()), NHG_E_STATE);
+        close(d);
+    }
+
     /// Without `wp_alpha_modifier_v1` (mutter's profile) the shell multiplies: the first alpha damages the frame and
     /// asks for the host; the same alpha again changes nothing; opaque again damages once more and the host is done.
     /// With the protocol (sway's) the compositor multiplies, and nothing is damaged.

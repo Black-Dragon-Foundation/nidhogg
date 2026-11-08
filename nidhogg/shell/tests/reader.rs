@@ -354,8 +354,9 @@ mod reader {
 
     /// Calls that cannot fail: the wake descriptor (the host may still be waiting on it), the capabilities, and the
     /// error text itself.  `abandon` is the glue's teardown handle.  The macOS platform calls (`app_call`,
-    /// `app_query`), the main wait (`wait`) and placing a top-level (`move_to`: Wayland clients have no position) are
-    /// not this backend's: they answer `Unsupported` whatever the connection's state.
+    /// `app_query`), the main wait (`wait`), placing a top-level (`move_to`: Wayland clients have no position) and
+    /// moving a window between the trees (`reparent`: a surface keeps its role) are not this backend's: they answer
+    /// `Unsupported` whatever the connection's state.
     const NO_ERROR: &[&str] = &[
         "wake_fd",
         "caps",
@@ -366,6 +367,7 @@ mod reader {
         "app_query",
         "wait",
         "move_to",
+        "reparent",
     ];
 
     /// The names of `ShellBackend`'s methods, read from its source.

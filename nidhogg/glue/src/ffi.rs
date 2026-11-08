@@ -995,6 +995,23 @@ nhg_export! {
 }
 
 nhg_export! {
+    /// `parent-frame` changed: `window` takes the place `w` describes (`w->kind`, `w->parent`, `w->x`, `w->y`; a
+    /// top-level's title and flags), keeping its id and its picture, and its frame takes `w->role` and `w`'s facts.
+    /// `NHG_E_UNSUPPORTED` where the shell cannot (a Wayland surface keeps its role): C makes the window again.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `w` is null or readable, its title null or holding its length's bytes.
+    fn nhg_window_reparent(d: *mut NhgDisplay, window: u64, w: *const window::NhgWindowDesc) -> i32 |state| {
+        // SAFETY: null or readable (the caller's promise).
+        let desc = unsafe { w.as_ref() }.ok_or(GlueError::Arg)?;
+        // SAFETY: the title is null or holds its length's bytes, valid for the call (the caller's promise).
+        let title = unsafe { window::text(desc.title, desc.title_len)? };
+        window::reparent(state, window, desc, title)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
     /// The window's title, `len` bytes of UTF-8 at `title` (up to a NUL).
     ///
     /// # Safety
