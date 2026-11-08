@@ -476,12 +476,18 @@ a plist.  For tests."
 As if kqueue had refused it (`EINVAL').  For tests."
   (nhmac--call 'test-helper-next))
 
+(defun nhmac--test-force-in-use (on &optional frame)
+  "Make every surface of FRAME's window read as held by the window server, if ON.
+The commit pacer then holds each commit, until its bound.  For tests."
+  (nhmac--call 'test-force-in-use (or frame (selected-frame)) (if on 1 0)))
+
 (defun nhmac--test-surface (x y &optional frame)
   "Return the newest surface of FRAME's window, a plist.
 `:w', `:h' (device pixels), `:points' (the content size), the layer's
 `:scale' and `:gravity', `:contents-is-newest', `:srgb' (`srgb',
-`generic' or nil), `:pixel', the premultiplied ARGB at X, Y, and
-`:slots', the surfaces the window's ring has made.  For tests."
+`generic' or nil), `:pixel', the premultiplied ARGB at X, Y,
+`:slots', the surfaces the window's ring has made, and `:held',
+whether the commit pacer holds a commit.  For tests."
   (nhmac--query 'test-surface (or frame (selected-frame)) x y))
 
 (defun nhmac--test-kq-probe (path)

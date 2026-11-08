@@ -209,6 +209,68 @@ impl Ring {
     }
 }
 
+/// How long a commit may be held while the window server holds every other slot: three frames at 60 Hz.  Past it the
+/// oldest slot is reused, as before the pacer, so a window whose surfaces stay in use (occluded, or a stuck window
+/// server) still shows its frames.
+pub const HOLD_BOUND_NS: u64 = 50_000_000;
+
+/// [`Pacer::pace`]'s answer: what the publish does with its pick.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Paced {
+    /// Draw into the picked slot: the held damage and this commit's.
+    Draw(Vec<Rect>),
+    /// Draw nothing: every other slot is held; the damage waits with the pacer.
+    Hold,
+    /// The hold outlasted [`HOLD_BOUND_NS`]: draw into the picked (held) slot anyway, the held damage and this
+    /// commit's.
+    Reuse(Vec<Rect>),
+}
+
+/// A window's commit pacer: a held slot is never drawn into; a commit that finds every other slot held waits, its
+/// damage kept, until a publish finds one free.
+#[derive(Debug, Default)]
+pub struct Pacer {
+    /// When the first held commit of the current hold was (ns), `None` when nothing is held.
+    since: Option<u64>,
+    /// The held commits' damage.
+    held: Vec<Rect>,
+}
+
+impl Pacer {
+    /// The publish at `now` (ns) picked `pick` for a commit with `damage`.
+    pub fn pace(&mut self, pick: Pick, damage: &[Rect], now: u64) -> Paced {
+        self.held.extend_from_slice(damage);
+        if pick.busy {
+            let since = *self.since.get_or_insert(now);
+            if now.saturating_sub(since) < HOLD_BOUND_NS {
+                return Paced::Hold;
+            }
+            self.since = None;
+            return Paced::Reuse(std::mem::take(&mut self.held));
+        }
+        self.since = None;
+        Paced::Draw(std::mem::take(&mut self.held))
+    }
+
+    /// Whether a commit is held: a publish is owed once a slot frees.
+    pub fn owes(&self) -> bool {
+        self.since.is_some()
+    }
+
+    /// Whether the held commit should be published now, at `now` (ns): a slot is free (`busy` false: the pick would
+    /// not be busy), or the hold reached its bound.  False when nothing is held.
+    pub fn due(&self, busy: bool, now: u64) -> bool {
+        self.since
+            .is_some_and(|s| !busy || now.saturating_sub(s) >= HOLD_BOUND_NS)
+    }
+
+    /// Forget the held commit (the surfaces are made again, copied whole).
+    pub fn clear(&mut self) {
+        self.since = None;
+        self.held.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,5 +449,92 @@ mod tests {
         assert_eq!(ring.slots(), 0);
         assert_eq!(ring.newest(), None);
         assert_eq!(ring.pick(|_| false), pk(0, false));
+    }
+
+    const MS: u64 = 1_000_000;
+
+    #[test]
+    fn the_pacer_holds_while_every_other_slot_is_held() {
+        let mut p = Pacer::default();
+        assert!(!p.owes());
+        assert_eq!(p.pace(pk(0, true), &[r(0, 0, 1, 1)], 10 * MS), Paced::Hold);
+        assert!(p.owes());
+        // still held a frame later: the damage adds up
+        assert_eq!(p.pace(pk(0, true), &[r(5, 0, 1, 1)], 26 * MS), Paced::Hold);
+        assert!(p.owes());
+    }
+
+    #[test]
+    fn a_freed_slot_draws_the_held_damage_and_the_new() {
+        let mut p = Pacer::default();
+        p.pace(pk(0, true), &[r(0, 0, 1, 1)], 10 * MS);
+        p.pace(pk(0, true), &[r(5, 0, 1, 1)], 11 * MS);
+        assert_eq!(
+            p.pace(pk(1, false), &[r(9, 0, 1, 1)], 20 * MS),
+            Paced::Draw(vec![r(0, 0, 1, 1), r(5, 0, 1, 1), r(9, 0, 1, 1)])
+        );
+        assert!(!p.owes());
+        // the next commit draws its own damage alone
+        assert_eq!(
+            p.pace(pk(0, false), &[r(2, 2, 1, 1)], 21 * MS),
+            Paced::Draw(vec![r(2, 2, 1, 1)])
+        );
+    }
+
+    #[test]
+    fn a_hold_past_the_bound_reuses_the_held_slot() {
+        let mut p = Pacer::default();
+        p.pace(pk(0, true), &[r(0, 0, 1, 1)], 10 * MS);
+        // the bound counts from the first held commit, not the latest
+        assert_eq!(
+            p.pace(pk(0, true), &[r(1, 0, 1, 1)], 10 * MS + HOLD_BOUND_NS - 1),
+            Paced::Hold
+        );
+        assert_eq!(
+            p.pace(pk(0, true), &[r(2, 0, 1, 1)], 10 * MS + HOLD_BOUND_NS),
+            Paced::Reuse(vec![r(0, 0, 1, 1), r(1, 0, 1, 1), r(2, 0, 1, 1)])
+        );
+        assert!(!p.owes());
+        // a new hold starts its own bound
+        assert_eq!(
+            p.pace(pk(0, true), &[], 10 * MS + HOLD_BOUND_NS + 1),
+            Paced::Hold
+        );
+    }
+
+    #[test]
+    fn a_held_commit_is_due_when_a_slot_frees_or_at_the_bound() {
+        let mut p = Pacer::default();
+        assert!(!p.due(false, 0), "nothing held: nothing due");
+        p.pace(pk(0, true), &[r(0, 0, 1, 1)], 10 * MS);
+        assert!(!p.due(true, 11 * MS));
+        assert!(p.due(false, 11 * MS));
+        assert!(p.due(true, 10 * MS + HOLD_BOUND_NS));
+        p.pace(pk(1, false), &[], 12 * MS);
+        assert!(!p.due(false, 12 * MS));
+    }
+
+    #[test]
+    fn clearing_drops_the_held_damage() {
+        // the window's size changed: the new ring's slots are copied whole, the held damage means nothing
+        let mut p = Pacer::default();
+        p.pace(pk(0, true), &[r(0, 0, 1, 1)], 10 * MS);
+        p.clear();
+        assert!(!p.owes());
+        assert_eq!(
+            p.pace(pk(0, false), &[r(3, 3, 1, 1)], 11 * MS),
+            Paced::Draw(vec![r(3, 3, 1, 1)])
+        );
+    }
+
+    #[test]
+    fn a_stale_release_finds_nothing_to_draw() {
+        // a release asked for a publish, but a redisplay already drew the held damage: nothing is owed or drawn
+        let mut p = Pacer::default();
+        p.pace(pk(0, true), &[r(0, 0, 1, 1)], 10 * MS);
+        p.pace(pk(1, false), &[], 12 * MS);
+        assert!(!p.owes());
+        assert_eq!(p.pace(pk(0, false), &[], 13 * MS), Paced::Draw(vec![]));
+        assert!(!p.owes());
     }
 }
