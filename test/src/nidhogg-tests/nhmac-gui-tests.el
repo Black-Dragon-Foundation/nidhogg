@@ -580,10 +580,18 @@ its frame, each become visible and draw.  Guards the start that once drew nothin
       (cl-loop for (k v) on after by #'cddr
                when (numberp v) append (list k (- v (or (plist-get before k) 0)))))))
 
+;; The ring's figures follow when the window server lets go of a surface, which it does on schedule only for a window
+;; it composites: an occluded lane cannot judge them, and says so instead of giving a number.
+(defun nhmac-gui--require-composited ()
+  "Fail the running row when the selected frame's window is occluded."
+  (when (eq (plist-get (nhmac--window-info) :occluded) t)
+    (ert-fail (list "window occluded, can't judge" (nhmac--window-info)))))
+
 (ert-deftest nhmac-typing-bytes ()
   "Typing copies only damage into the surfaces: per key at most the damage times the ring's age, a few lines at
 most, in the three §5.4 cases (end of line, mid-line, the worst plain key); never a whole surface."
   (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--require-composited)
   (let ((row (nhmac-gui--row-bytes))
         (keys 10))
     (pcase-dolist (`(,case ,text ,goto)
@@ -662,6 +670,7 @@ interposer in the NS lane of the same run, is logged by `nhmac-interposer-counts
 (ert-deftest nhmac-surface-busy-typing ()
   "While typing the ring always has a surface the window server does not hold."
   (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--require-composited)
   (nhmac-gui--typing-buffer "busy")
   (let ((d (nhmac-gui--type 30)))
     (message "nhmac-surface-busy-typing: 30 keys: %d busy, %d acquires" (plist-get d :surface-busy)
@@ -673,6 +682,7 @@ interposer in the NS lane of the same run, is logged by `nhmac-interposer-counts
   "Scrolling a window by a line copies the scrolled rows, not the surface."
   :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--require-composited)
   (nhmac-gui--typing-buffer (mapconcat #'number-to-string (number-sequence 1 300) "\n"))
   (goto-char (point-min))
   (redisplay t)
