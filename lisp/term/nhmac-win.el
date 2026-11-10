@@ -531,6 +531,15 @@ Return (:open ERRNO :kq ERRNO), 0 meaning success; :kq is -1 when
 the open failed.  For tests."
   (nhmac--query 'test-kq-probe path))
 
+(defun nhmac--test-kq-layers (n)
+  "Count the readiness kqueue loses on a pipe and a pty, N bytes each.
+A writer thread writes the bytes while the caller's thread polls the
+kqueue and then blocks on it directly or through a second kqueue
+watching it.  Return (:pipe-direct M :pipe-nested M :pty-direct M
+:pty-nested M), M the blocks that timed out with the descriptor
+readable.  For tests."
+  (nhmac--query 'test-kq-layers n))
+
 
 ;; Variables
 
