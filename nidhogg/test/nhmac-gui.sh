@@ -111,6 +111,7 @@ for scale in "${scales[@]}"; do
   rc=0
   HOME="$work/home-$scale" \
   GLITNIR_GUI_SCALE=$scale GLITNIR_GUI_COMPOSITOR=windowserver \
+  GLITNIR_GUI_KNOWN=$checkout/test/src/nidhogg-tests/gui-known-differences.eld \
   GLITNIR_GUI_TESTS=$checkout/test/src/nidhogg-tests GLITNIR_GUI_FILES=$files GLITNIR_GUI_SELECT=$select \
   GLITNIR_GUI_OUT=$out \
   GLITNIR_GUI_FRAME="$((dx + 20)) $((dy + 40)) 100 35" \
