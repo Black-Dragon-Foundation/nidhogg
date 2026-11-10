@@ -10,6 +10,7 @@ fake-portal-tests.el # not yet audited against the handshake rules
 glitnir-decor-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
 nhwl-ime-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
 nhwl-gui-w3-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
+nhwl-gui-w4-tests.el # GUI rows run the command loop from a 0.02 s stepping timer (run-at-time) with a deadline, a poll rather than a handshake; not yet audited against the handshake rules
 nhwl-menu-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
 glitnir-tests.el # not yet audited against the handshake rules
 glitnir-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
