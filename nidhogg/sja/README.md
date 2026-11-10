@@ -11,12 +11,16 @@ Sjá names no view, no kind and no field: every word in a model is the hub's.
 
 ## Crate rules
 
-- Standard library, plus two locked dependencies (`Cargo.lock`; builds run `--locked`), vendored at release with
+- Standard library, plus three locked dependencies (`Cargo.lock`; builds run `--locked`), vendored at release with
   Glitnir's crates and licence-checked (`deny.toml`):
-  - `serde_json =1.0.154` (no default features but `std`): the wire is JSON, which the hub writes. It is decoded
-    through `serde_json::Value` by hand (`src/wire.rs`), so there is no `serde_derive` and no proc-macro build. It
-    brings `serde_core`, `itoa`, `memchr` and `zmij`; `serde`, `serde_derive`, `syn`, `proc-macro2`, `quote` and
+  - `serde_json =1.0.154` (no default features but `std`): the wire is JSON, which the hub writes. It brings
+    `serde_core`, `itoa`, `memchr` and `zmij`; `serde`, `serde_derive`, `syn`, `proc-macro2`, `quote` and
     `unicode-ident` are locked (and vendored) as optional dependencies but not built.
+  - `serde_core =1.0.229` (`std`), the one serde_json brings: its traits, for the typed decode's hand-written visitors
+    (`src/typed.rs`), so there is no `serde_derive` and no proc-macro build. A `view-model` line is read straight into
+    ops; what the typed read refuses (a malformed model, a duplicate key, a float where a count goes) is read again
+    through `serde_json::Value` (`src/wire.rs`, the reference), whose answer and error stand. The typed read takes
+    6.2 ms where the `Value` read takes 16.9 ms, on a 10k-node model of 3.9 MB (2.7×; `tests/decode_bench.rs`).
   - `libc 0.2`: the guard's stack headroom check (`pthread_getattr_np`).
 - No threads, no I/O, no clock of its own: it runs only on the Lisp thread that holds Emacs's global lock.
 - Builds on Rust 1.93 (the glue's floor), Linux, macOS and Android (`check.sh --android`).
@@ -132,7 +136,8 @@ instance closes. `SJA_STATS` counts panics and broken views; drgnx's doctor fail
 Feature `test-hooks` adds `SJA_TEST_PANIC` (a panic inside a view's guard) and the breaker's test clock.
 
 `../sja-fuzz` has `cargo-fuzz` targets (`apply_bytes`: arbitrary bytes as a patch, then the verbs; `push_bytes`: arbitrary
-bytes as a `view-model` line's model, pushed and drained), nightly only: `cargo +nightly fuzz run apply_bytes` there. It is not part of `check.sh`.
+bytes as a `view-model` line's model, pushed and drained; `typed_bytes`: whatever the typed read reads, the `Value`
+read reads the same), nightly only: `cargo +nightly fuzz run apply_bytes` there. It is not part of `check.sh`.
 
 ## Checks
 

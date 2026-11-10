@@ -170,8 +170,22 @@ fn count(v: Option<&Value>) -> Option<u64> {
     v.and_then(Value::as_u64)
 }
 
-/// Read a `view-model` line: its envelope and its model's ops.  `None` when it is not one.
+/// Read a `view-model` line: its envelope and its model's ops.  `None` when it is not one.  Typed, or, for what the
+/// typed read can't read, through `Value`.
 pub fn read_line(line: &str) -> Option<(Envelope, Result<Vec<Op>, Bad>)> {
+    if let Some((e, ops)) = read_line_typed(line) {
+        return Some((e, Ok(ops)));
+    }
+    read_line_value(line)
+}
+
+/// Read a `view-model` line straight into its envelope and ops (`typed.rs`); `None` for anything else.
+pub fn read_line_typed(line: &str) -> Option<(Envelope, Vec<Op>)> {
+    crate::typed::line(line)
+}
+
+/// Read a `view-model` line through `Value`: the reference the typed read matches.
+pub fn read_line_value(line: &str) -> Option<(Envelope, Result<Vec<Op>, Bad>)> {
     let v: Value = serde_json::from_str(line).ok()?;
     if v.get("event")?.as_str()? != "view-model" {
         return None;
