@@ -716,7 +716,10 @@ interposer in the NS lane of the same run, is logged by `nhmac-interposer-counts
   (kill-buffer))
 
 (ert-deftest nhmac-key-to-commit-counts ()
-  "A key posted to the window reaches Lisp through one pump, with no fd wait, and its redisplay commits once."
+  "A key posted to the window reaches Lisp through one pump, with no fd wait, and its redisplay commits once.
+Each key comes once the window server has handed back a surface, as a typed key does a frame or more after the last:
+a key posted while it still composites the last commits is held by the pacer, whose release is the run loop's
+\(`nhmac-surface-busy-burst' is that row)."
   :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "key")
@@ -733,7 +736,9 @@ interposer in the NS lane of the same run, is logged by `nhmac-interposer-counts
           (redisplay t)
           (nhmac-gui--flush)
           (dotimes (i 5)
-            (let ((before (progn (nhmac--pump-trace) (nhmac-stats))))
+            (let* ((free (nhmac-gui--wait-free 2))
+                   (before (progn (nhmac--pump-trace) (nhmac-stats))))
+              (should free)
               (nhmac--test-post-key ?k)
               (let ((ev (read-event nil nil 2)))
                 (should (eq ev ?k))
@@ -743,8 +748,9 @@ interposer in the NS lane of the same run, is logged by `nhmac-interposer-counts
               (let ((pumps (nhmac-gui--delta before :pumps))
                     (commits (nhmac-gui--delta before :commits))
                     (sleeps (nhmac-gui--delta before :sleeps)))
-                (nhmac-gui--say "nhmac-key-to-commit-counts: key %d: pumps %d commits %d fd waits %d"
-                                i pumps commits sleeps)
+                (nhmac-gui--say "nhmac-key-to-commit-counts: key %d: pumps %d commits %d fd waits %d (a surface \
+free after %.3f s)"
+                                i pumps commits sleeps free)
                 ;; who asked for each pump, and each commit's damage
                 (ert-info ((format "pump decisions %S" (nhmac--pump-trace)))
                   (should (= pumps 1))
@@ -776,6 +782,15 @@ it does not.  The pacer's request for the publish comes as a shell event, which 
       (input-pending-p)
       (accept-process-output nil 0.01))
     (not (plist-get (nhmac-gui--surface) :held))))
+
+(defun nhmac-gui--wait-free (secs)
+  "Wait as Emacs waits for input until the selected frame's next commit would find a surface the window server does
+not hold, at most SECS; how many seconds that took, or nil if it never did."
+  (let ((start (float-time)))
+    (while (and (not (plist-get (nhmac-gui--surface) :free)) (< (- (float-time) start) secs))
+      (input-pending-p)
+      (accept-process-output nil 0.01))
+    (and (plist-get (nhmac-gui--surface) :free) (- (float-time) start))))
 
 (ert-deftest nhmac-surface-busy-burst ()
   "Redisplays back to back, faster than the window server composites (a keyboard macro, edits streaming in): the
