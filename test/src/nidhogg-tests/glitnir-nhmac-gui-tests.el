@@ -594,8 +594,10 @@ not held, and the screen shows neither card row background (colours only the car
                         (seq-take (cdr-safe frame-size-history) 12))
         (redraw-frame)
         (nhmac-gui--settle)
-        (nhmac-gui--say "glitnir-nhmac/clean-root: %s: after redraw-frame (%d draws, %d commits): %s" row
-                        (nhmac-gui--delta before :draws) (nhmac-gui--delta before :commits) (funcall count))
+        (nhmac-gui--say "glitnir-nhmac/clean-root: %s: after redraw-frame (%d draws, %d commits, %d damage bytes, %d bytes copied, %d full copies, %d held): %s"
+                        row (nhmac-gui--delta before :draws) (nhmac-gui--delta before :commits)
+                        (nhmac-gui--delta before :damage-bytes) (nhmac-gui--delta before :bytes-copied)
+                        (nhmac-gui--delta before :full-copies) (nhmac-gui--delta before :held) (funcall count))
         ;; a new backing: one pixel wider, and back
         (let ((pw (frame-text-width)) (ph (frame-text-height)))
           (set-frame-size nil (1+ pw) ph t)
