@@ -39,6 +39,11 @@ impl Curve {
         ok.then_some(Curve::raw(x1, y1, x2, y2))
     }
 
+    /// The control points (x1, y1, x2, y2), as a platform's timing function takes them.
+    pub fn points(&self) -> [f32; 4] {
+        [self.x1, self.y1, self.x2, self.y2]
+    }
+
     /// The curve's y at `x`; `x` is clamped to 0 to 1.  The error is at most 1e-4 (1e-7 in x before the f32 result).
     pub fn y(&self, x: f32) -> f32 {
         let x = f64::from(x).clamp(0.0, 1.0);
