@@ -974,20 +974,27 @@ changed) it has fewer, which their check sees, and the warm-up fills it."
   "Key to commit, timed in the process: 50 typed keys, each a command and a redisplay, written to
 GLITNIR_GUI_OUT/pair-BUILD.txt (microseconds, one per line).  Both builds run it in turn (--pair, ABAB);
 nidhogg/test/nhmac-pair.sh compares the pairs: not slower than NS on the median and p95 of the differences,
-with a sign test."
-  (let* ((build (if (nhmac-gui--ns-build-p) "ns" "naglfar"))
+with a sign test.
+Both builds are timed to the same point: the change handed to the window server, the flush to the screen left out.
+NS's flush comes after its redisplay (Core Animation's commit at the end of the run-loop turn), so its time is the
+key's command and redisplay; Naglfar commits and flushes its layer transaction inside the redisplay, so that
+redisplay's commit time (`nhmac-stats' :commit-ns) is taken off."
+  (let* ((naglfar (not (nhmac-gui--ns-build-p)))
+         (build (if naglfar "naglfar" "ns"))
          (file (expand-file-name (format "pair-%s.txt" build)
                                  (or (getenv "GLITNIR_GUI_OUT") temporary-file-directory)))
+         (commit-ns (lambda () (if naglfar (plist-get (nhmac-stats) :commit-ns) 0)))
          times)
     (switch-to-buffer (generate-new-buffer " *nhmac-pair*"))
     (insert "paired timing")
     (redisplay t)
     (dotimes (_ 10) (execute-kbd-macro "w") (redisplay))
     (dotimes (_ 50)
-      (let ((t0 (float-time)))
+      (let* ((c0 (funcall commit-ns)) (t0 (float-time)))
         (execute-kbd-macro "x")
         (redisplay)
-        (push (round (* 1e6 (- (float-time) t0))) times)))
+        (let ((t1 (float-time)))
+          (push (round (- (* 1e6 (- t1 t0)) (/ (- (funcall commit-ns) c0) 1000.0))) times))))
     (with-temp-buffer
       (dolist (us (nreverse times)) (insert (format "%d\n" us)))
       (write-region (point-min) (point-max) file t 'silent))
