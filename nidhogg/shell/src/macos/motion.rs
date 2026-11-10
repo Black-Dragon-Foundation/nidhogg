@@ -89,6 +89,9 @@ impl State {
         let [x1, y1, x2, y2] = curve.points();
         let timing = CAMediaTimingFunction::functionWithControlPoints(x1, y1, x2, y2);
         let alpha = container.opacity();
+        // the leg starts now in the layer's time, so a reader can tell a running animation from one Core Animation has
+        // ended but not yet taken off (it does so at a later transaction)
+        let begin = container.convertTime_fromLayer(now, None);
         let anim = |key: &str, a: &AnyObject, b: &AnyObject| {
             let an = CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str(key)));
             // SAFETY: values of the key path's type (NSNumber for opacity and hidden, NSValue of CATransform3D).
@@ -96,6 +99,7 @@ impl State {
                 an.setFromValue(Some(a));
                 an.setToValue(Some(b));
             }
+            an.setBeginTime(begin);
             an.setDuration(seconds);
             an.setTimingFunction(Some(&timing));
             container.addAnimation_forKey(&an, Some(&NSString::from_str(key)));
@@ -159,4 +163,20 @@ fn scale_about_centre(s: f64, w: f64, h: f64) -> CATransform3D {
         m43: 0.0,
         m44: 1.0,
     }
+}
+
+#[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
+/// The keys of `container`'s animations still running (begun, not past their end, in the layer's time).
+pub fn running(container: &CALayer) -> Vec<String> {
+    let now = container.convertTime_fromLayer(CACurrentMediaTime(), None);
+    container.animationKeys().map_or_else(Vec::new, |keys| {
+        keys.iter()
+            .filter(|k| {
+                // SAFETY: a key the layer just listed; the animation is only read.
+                unsafe { container.animationForKey(k) }
+                    .is_some_and(|a| a.beginTime() + a.duration() > now)
+            })
+            .map(|k| k.to_string())
+            .collect()
+    })
 }
