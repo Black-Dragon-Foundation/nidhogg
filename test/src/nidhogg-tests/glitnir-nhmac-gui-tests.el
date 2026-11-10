@@ -21,7 +21,10 @@
 (defun glitnir-nhmac--chromed (&optional params left top)
   "A shown child frame (`nhmac-gui--child', #ff00ff) of 30x8 characters with corners of 12 and
 `glitnir-nhmac--shadow', then PARAMS, at LEFT, TOP (default 80, 200: below the root's tool bar)."
-  (nhmac-gui--child (append params `((corner-radius . 12) (shadow . ,glitnir-nhmac--shadow) (width . 30) (height . 8)))
+  (nhmac-gui--child (append params
+                            (seq-remove (lambda (d) (assq (car d) params))
+                                        `((corner-radius . 12) (shadow . ,glitnir-nhmac--shadow)
+                                          (width . 30) (height . 8))))
                     (or left 80) (or top 200)))
 
 (defun glitnir-nhmac--scale ()
@@ -32,13 +35,15 @@
   "Call FN with the selected frame's background `glitnir-nhmac--bg' and an empty buffer in its window, then as before.
 The probes then read the root's background wherever no child is."
   (let* ((f (selected-frame)) (bg (frame-parameter f 'background-color))
-         (win (frame-selected-window f)) (old (window-buffer win))
+         (conf (current-window-configuration f))
          (blank (get-buffer-create " *glitnir-nhmac-blank*")))
     (with-current-buffer blank (setq-local mode-line-format nil cursor-type nil))
     (set-frame-parameter f 'background-color glitnir-nhmac--bg)
-    (set-window-buffer win blank)
+    ;; one window: an earlier row's split leaves no mode line or text where a probe reads
+    (delete-other-windows (frame-selected-window f))
+    (set-window-buffer (frame-selected-window f) blank)
     (unwind-protect (progn (nhmac-gui--settle) (funcall fn))
-      (set-window-buffer win old)
+      (set-window-configuration conf)
       (set-frame-parameter f 'background-color bg))))
 
 (defun glitnir-nhmac--grab (name)
@@ -147,6 +152,8 @@ leaves the root white there."
      (let* ((s (glitnir-nhmac--scale))
             (probe (lambda (name params)
                      (let ((c (glitnir-nhmac--chromed params)))
+                       (nhmac-gui--say "glitnir-nhmac/shadow-darkens-below: %s shadow %S, chrome %S" name
+                                       (frame-parameter c 'shadow) (plist-get (nhmac--test-child c) :shadow))
                        (unwind-protect
                            (let* ((img (glitnir-nhmac--grab name))
                                   (b (glitnir-nhmac--box img #xff00ff))
@@ -190,14 +197,18 @@ root's white, and a pixel just inside the curve at 45° is not the child's colou
 
 (ert-deftest nhmac-resize-shadow-renders ()
   "A chromed child resized five times renders no shadow image (the nine-slice image stretches): `:shadow-renders' 0,
-while its shadow layer's frame follows each size."
+while its shadow layer's frame follows each size.  The child is first made large enough for the image to stretch at
+every scale (a smaller one renders its own image, by design), and counting starts there."
   :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
-  (let ((c (glitnir-nhmac--chromed)))
+  (let ((c (glitnir-nhmac--chromed '((width . 40) (height . 12)))))
     (unwind-protect
-        (let ((before (nhmac-stats)) (frames nil))
-          (dolist (w '(32 36 40 44 48))
-            (set-frame-size c w 10)
+        (let (before (frames nil))
+          (set-frame-size c 40 12)
+          (nhmac-gui--settle)
+          (setq before (nhmac-stats))
+          (dolist (w '(42 46 50 54 58))
+            (set-frame-size c w 12)
             (nhmac-gui--settle)
             (push (nth 2 (plist-get (plist-get (nhmac--test-child c) :shadow) :frame)) frames))
           (nhmac-gui--say "nhmac-resize-shadow-renders: renders %d, shadow widths %S"
@@ -486,7 +497,17 @@ screen is the same pixel for pixel (the corner mask and the shadow touch nothing
        (let* ((r (1+ (ceiling (* 12 (glitnir-nhmac--scale)))))
               (inner (list (+ (nth 0 box) r) (+ (nth 1 box) r) (- (nth 2 box) r) (- (nth 3 box) r)))
               (a (glitnir-nhmac--region on inner 0)) (b (glitnir-nhmac--region off inner 0)))
-         (nhmac-gui--say "glitnir-nhmac/text-identical-to-off: inner %S, %d of %d pixels differ" inner
-                         (cl-count nil (cl-mapcar #'eql a b)) (length a))
+         (nhmac-gui--say "glitnir-nhmac/text-identical-to-off: inner %S, %d of %d pixels differ%s" inner
+                         (cl-count nil (cl-mapcar #'eql a b)) (length a)
+                         ;; the first few, as (x y on off), to tell an edge from the text
+                         (let ((w (1+ (- (nth 2 inner) (nth 0 inner)))) (i 0) (out nil))
+                           (cl-mapc (lambda (p q)
+                                      (unless (or (eql p q) (>= (length out) 8))
+                                        (push (list (+ (nth 0 inner) (% i w)) (+ (nth 1 inner) (/ i w))
+                                                    (format "%06x" p) (format "%06x" q))
+                                              out))
+                                      (cl-incf i))
+                                    a b)
+                           (if out (format ": %S" (nreverse out)) "")))
          (should (> (length a) 0))
          (should (equal a b)))))))
