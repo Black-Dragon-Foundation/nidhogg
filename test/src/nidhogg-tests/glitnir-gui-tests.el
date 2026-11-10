@@ -307,7 +307,9 @@
     (unwind-protect
         (progn
           (should (equal (plist-get (plist-get (glitnir--chrome c) :shadow) :color) '(0 0 0)))
+          ;; a colour set outside a theme is pushed by `glitnir-refresh' (redisplay reads no colour)
           (set-face-foreground 'child-frame-shadow "red" c)
+          (glitnir-refresh c)
           (glitnir-gui--painted)
           (should (equal (plist-get (plist-get (glitnir--chrome c) :shadow) :color) '(255 0 0))))
       (glitnir-gui--delete (list c)))))

@@ -74,17 +74,17 @@ transition."
 (defface child-frame-shadow
   '((t :foreground "black"))
   "Face whose foreground is the colour of a child frame's shadow.
-Set it for one frame with `set-face-foreground' to change that frame's."
+Set it for one frame with `set-face-foreground' to change that frame's.
+A theme's colour shows at once; one set outside a theme (with
+`set-face-foreground', `set-face-attribute' or Customize) shows after
+`glitnir-refresh'."
   :version "31.1"
   :group 'frames)
-
-(defvar glitnir--shadow-colors (make-hash-table :test 'eq :weakness 'key)
-  "Frame -> the shadow colour (R G B) last resolved for it.")
 
 (defun glitnir--shadow-color (frame)
   "FRAME's shadow colour as (R G B), 0-255.
 A frame still being made has no faces yet: the colour for new frames
-then (`glitnir--recheck-shadow' catches a later difference)."
+then."
   (let* ((name (face-foreground
                 'child-frame-shadow
                 (if (gethash 'child-frame-shadow (frame--face-hash-table frame)) frame t)
@@ -132,9 +132,6 @@ and `child-frame-chrome'.  Root frames and decorated (not
       (when radius
         (unless (and (numberp radius) (>= radius 0))
           (signal 'wrong-type-argument (list 'natnump radius))))
-      (if shadow
-          (puthash frame (plist-get shadow :color) glitnir--shadow-colors)
-        (remhash frame glitnir--shadow-colors))
       (when (or shadow (and radius (> radius 0)))
         (list :radius (or radius 0) :shadow shadow)))))
 
@@ -493,19 +490,6 @@ theme change does this itself) shows after this call."
     ;; a theme or reduced motion changed: a layout leg jumps to its end
     (glitnir--end-legs)))
 
-(defun glitnir--recheck-shadow (window)
-  "Refresh WINDOW's frame when its `child-frame-shadow' colour changed.
-Only for visible chromed child frames, once per frame per redisplay (at
-its first window)."
-  (let ((f (window-frame window)))
-    (when (and (frame-parent f)
-               (eq window (frame-first-window f))
-               (frame-visible-p f))
-      (let ((cached (gethash f glitnir--shadow-colors)))
-        (when (and cached (not (equal cached (glitnir--shadow-color f))))
-          (glitnir-refresh f))))))
-
-(add-hook 'pre-redisplay-functions #'glitnir--recheck-shadow)
 (defun glitnir--settings-changed (key _value)
   "Resolve every child frame again when the desktop's reduced-motion KEY changed."
   (when (eq key 'reduced-motion) (glitnir-refresh)))
