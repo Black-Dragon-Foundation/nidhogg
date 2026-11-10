@@ -252,6 +252,9 @@ pub fn glyph(handle: u64, c: u32) -> Option<u32> {
 pub fn glyph_bounds(handle: u64, g: u32) -> Option<(f64, f64, f64, f64, f64)> {
     let g = u16::try_from(g).ok()?;
     with_font(handle, |ct| {
+        super::surface::STATS
+            .glyph_asks
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut adv = CGSize::default();
         let mut r = CGRect::default();
         // SAFETY: one glyph and one output slot each, on a live font.
