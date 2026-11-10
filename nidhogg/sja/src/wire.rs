@@ -173,7 +173,7 @@ fn links(v: Option<&Value>, what: &str) -> R<Vec<(String, String)>> {
 }
 
 /// Cut `s` to at most `MAX_VALUE` bytes at a character boundary.
-fn cut(mut s: String) -> String {
+pub(crate) fn cut(mut s: String) -> String {
     if s.len() > MAX_VALUE {
         let mut at = MAX_VALUE;
         while !s.is_char_boundary(at) {
@@ -341,13 +341,21 @@ fn op(v: &Value) -> R<Op> {
     })
 }
 
-/// Decode one model patch.
+/// Decode one model patch: typed, or, for what the typed decode can't read, through `Value`.
 pub fn decode(text: &str) -> R<Vec<Op>> {
+    if let Some(ops) = decode_typed(text) {
+        return Ok(ops);
+    }
     let v: Value = serde_json::from_str(text).map_err(|e| Bad(format!("json: {e}")))?;
     decode_value(&v)
 }
 
-/// Decode one model patch already parsed (a `view-model` line's model object).
+/// Decode one model patch straight into ops (`typed.rs`); `None` for what only the `Value` decode reads (or refuses).
+pub fn decode_typed(text: &str) -> Option<Vec<Op>> {
+    crate::typed::patch(text)
+}
+
+/// Decode one model patch already parsed: the reference the typed decode matches.
 pub fn decode_value(v: &Value) -> R<Vec<Op>> {
     let o = obj(v, "patch")?;
     let ops = o.get("ops").ok_or_else(|| Bad("patch: no ops".into()))?;
