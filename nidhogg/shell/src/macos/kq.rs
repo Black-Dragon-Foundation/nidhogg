@@ -348,7 +348,12 @@ impl Helper {
         let rd = ctl[0];
         let _ = std::thread::Builder::new()
             .name("nhmac-io".into())
-            .spawn(move || helper_loop(&s2, rd));
+            .spawn(move || {
+                #[cfg(feature = "test-hooks")]
+                // SAFETY: this thread's own handle.
+                HELPER_THREAD.store(unsafe { libc::pthread_self() } as usize, Ordering::Release);
+                helper_loop(&s2, rd)
+            });
         Helper { shared, ctl }
     }
 
@@ -372,6 +377,40 @@ impl Helper {
             s = cv.wait(s).unwrap_or_else(|e| e.into_inner());
         }
     }
+}
+
+/// Test hook: the helper thread's `pthread_t` (0 before it starts).
+#[cfg(feature = "test-hooks")]
+static HELPER_THREAD: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Test hook: interrupt the helper thread `n` times, 20 ms apart, from a thread of its own, with SIGURG caught by a
+/// handler that does nothing and does not restart calls (a stand-in for SIGCHLD landing on the helper).  `false` when
+/// the helper has not started.
+#[cfg(feature = "test-hooks")]
+pub fn signal_helper(n: u32) -> bool {
+    extern "C" fn nothing(_: i32) {}
+    let t = HELPER_THREAD.load(Ordering::Acquire);
+    if t == 0 {
+        return false;
+    }
+    // SAFETY: a handler that touches nothing, installed with no SA_RESTART; the thread handle stays valid (the helper
+    // never exits).
+    unsafe {
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = nothing as extern "C" fn(i32) as usize;
+        libc::sigemptyset(&mut sa.sa_mask);
+        libc::sigaction(libc::SIGURG, &sa, std::ptr::null_mut());
+    }
+    let _ = std::thread::Builder::new()
+        .name("nhmac-test-signals".into())
+        .spawn(move || {
+            for _ in 0..n {
+                std::thread::sleep(Duration::from_millis(20));
+                // SAFETY: as above.
+                unsafe { libc::pthread_kill(t as libc::pthread_t, libc::SIGURG) };
+            }
+        });
+    true
 }
 
 fn helper_loop(shared: &(Mutex<HState>, Condvar), ctl: i32) {

@@ -76,6 +76,16 @@ impl MacShell {
                 }
                 _ => Err(ShellError::Arg),
             })),
+            "test-signal-helper" => Some(numbers(arg).and_then(|n| match n[..] {
+                [k] if k >= 0.0 => {
+                    if super::kq::signal_helper(k as u32) {
+                        Ok(())
+                    } else {
+                        Err(ShellError::State)
+                    }
+                }
+                _ => Err(ShellError::Arg),
+            })),
             "test-helper-next" => {
                 self.force_helper += 1;
                 Some(Ok(()))
