@@ -2099,6 +2099,17 @@ fonts, and the move-frame event) have run when this returns; `accept-process-out
     (should (= px1 (floor (+ (* pt s1) 0.5))))
     (should (= px2 px0))))
 
+(ert-deftest nhmac-no-session-calls ()
+  "A Naglfar frame names no compositor session: making a frame calls none of the Wayland shell's session functions
+\(they are not loaded here, so each call would only log a void-function error)."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((f (make-frame '((width . 20) (height . 5)))))
+    (unwind-protect
+        (progn
+          (nhmac-gui--settle)
+          (should-not (string-match-p "nhwl-session" (with-current-buffer (messages-buffer) (buffer-string)))))
+      (delete-frame f t))))
+
 (defvar nidhogg-frame-scale-change-functions)
 
 (ert-deftest nhmac-new-frame-opens-its-font-once ()
