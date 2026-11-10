@@ -1,4 +1,6 @@
-//! Classes: what each node looks like for an instance.  In order: `selected` for the selection; while a search is set,
+//! Classes: what each node looks like for an instance.  In order: `selected` for the selection; `ticked` for the nodes of
+//! the instance's ticked set (the Explorer's marks; a descriptor that doesn't name it, Search's, leaves it); while a
+//! search is set,
 //! `match` or `dim`; else `lit` for the nodes of the lit list; else, while there is a selection, `chain` (reachable
 //! from it over the descriptor's `chain_kinds`, either way) or `dim`; else none.  A class the descriptor doesn't name is
 //! none.  A class is the face index Lisp gave at open, the class's position in the descriptor.
@@ -10,12 +12,12 @@ use crate::names::Id;
 use crate::view::{Inst, View};
 use crate::wire::Val;
 
-/// The descriptor's class indices: selected, match, dim, chain, lit.
-struct Idx([Option<u8>; 5]);
+/// The descriptor's class indices: selected, match, dim, chain, lit, ticked.
+struct Idx([Option<u8>; 6]);
 
 impl Idx {
     fn of(m: &Model) -> Idx {
-        Idx(["selected", "match", "dim", "chain", "lit"].map(|c| m.desc.class(c)))
+        Idx(["selected", "match", "dim", "chain", "lit", "ticked"].map(|c| m.desc.class(c)))
     }
 }
 
@@ -83,9 +85,12 @@ fn ctx(m: &Model, inst: &mut Inst, sel: Option<Id>) -> Ctx {
 }
 
 fn class(c: &Ctx, inst: &Inst, id: &Id) -> Option<u8> {
-    let [selected, matched, dim, chain, lit] = c.idx.0;
+    let [selected, matched, dim, chain, lit, ticked] = c.idx.0;
     if c.sel.as_ref() == Some(id) {
         return selected;
+    }
+    if ticked.is_some() && inst.ticked.contains(&**id) {
+        return ticked;
     }
     if c.searching {
         let hit = inst
