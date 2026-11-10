@@ -102,6 +102,19 @@ pub const NHSHELL_WIN_MAXIMIZED: u32 = 1 << 2;
 pub const NHSHELL_WIN_GRAB: u32 = 1 << 3;
 /// With a session name: ask the session to restore the window (before its first commit) instead of just adding it.
 pub const NHSHELL_WIN_RESTORE: u32 = 1 << 4;
+/// A top-level window opens with its top-left at the descriptor's `x`, `y` (`window_new_placed`'s `Place::At`).
+pub const NHSHELL_WIN_PLACED: u32 = 1 << 5;
+
+/// Where a new top-level window opens (`window_new_placed`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Place {
+    /// Where the shell puts new windows.
+    Shell,
+    /// Beside the window (on its screen): a new frame made from the selected one.
+    Near(WindowId),
+    /// With its top-left at (x, y) logical pixels from the main screen's top-left, as `move_to` takes it.
+    At(i32, i32),
+}
 
 /// Why a session is opened (`session_open`): a fresh launch, a recovery after the compositor restarted, a restore of
 /// a saved session.
@@ -268,6 +281,17 @@ pub trait ShellBackend {
         desc: &WindowDesc,
         session_name: Option<&str>,
     ) -> ShellResult<WindowId>;
+    /// `window_new_named` opening the window at `place` where the shell places windows itself (macOS), so it shows
+    /// first on the screen whose scale its frame was made for.  Elsewhere the compositor places it: `place` is ignored.
+    fn window_new_placed(
+        &mut self,
+        desc: &WindowDesc,
+        session_name: Option<&str>,
+        place: Place,
+    ) -> ShellResult<WindowId> {
+        let _ = place;
+        self.window_new_named(desc, session_name)
+    }
     /// The window and its dependents go, and the id with them.  A child whose hide leg runs (`set_motion`) finishes its
     /// fade first as a surface the host no longer sees, unless its parent goes or the connection does.
     fn window_destroy(&mut self, window: WindowId) -> ShellResult;

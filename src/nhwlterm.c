@@ -1009,8 +1009,20 @@ static struct redisplay_interface nhwl_redisplay_interface = {
 			    Frame windows
  ***********************************************************************/
 
+#ifdef HAVE_NHMAC
+/* Whether F was asked for at a position (its `left' and `top', from the
+   main screen's top-left), where the shell places windows itself.  */
+static bool
+nhwl_placed_p (struct frame *f)
+{
+  return ((f->size_hint_flags & (USPosition | PPosition))
+	  && !(f->size_hint_flags & (XNegative | YNegative)));
+}
+#endif
+
 /* The scale frame F starts at, times 120: its parent's, else the selected
-   frame's (where the user works), else the newest the display heard.  */
+   frame's (where the user works, and where a new top-level opens beside
+   it), else the newest the display heard.  */
 static uint32_t
 nhwl_start_scale (struct frame *f)
 {
@@ -1235,6 +1247,27 @@ nhwl_create_frame_window (struct frame *f, uint64_t in_place)
 	  encoded_name = ENCODE_UTF_8 (name);
 	  desc.session_name = SSDATA (encoded_name);
 	}
+#ifdef HAVE_NHMAC
+      /* It opens at its position, else beside the selected frame, whose
+	 scale it starts at (nhwl_start_scale): its first layout is at the
+	 scale it shows at, not at the main screen's.  */
+      if (nhwl_placed_p (f))
+	{
+	  desc.flags |= NHG_WIN_PLACED;
+	  desc.x = f->left_pos;
+	  desc.y = f->top_pos;
+	}
+      else
+	{
+	  struct frame *sf = SELECTED_FRAME ();
+
+	  while (FRAME_PARENT_FRAME (sf))
+	    sf = FRAME_PARENT_FRAME (sf);
+	  if (sf != f && FRAME_NHWL_P (sf)
+	      && FRAME_DISPLAY_INFO (sf) == FRAME_DISPLAY_INFO (f))
+	    desc.parent = FRAME_NHWL_OUTPUT (sf)->window;
+	}
+#endif
     }
 
   block_input ();

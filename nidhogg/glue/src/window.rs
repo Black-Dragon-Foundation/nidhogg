@@ -18,8 +18,8 @@ use crate::display::Display;
 use crate::frame::{Frame, NHG_FACT_CSD, NHG_FACT_ICONIFIED, NHG_FACT_VISIBLE, NHG_FRAME_CHILD};
 use crate::guard::GlueError;
 use nhshell::api::{
-    Anchor, ChildDesc, NHSHELL_KIND_CHILD, NHSHELL_KIND_TOPLEVEL, NHSHELL_WIN_RESTORE, ShellError,
-    WindowDesc,
+    Anchor, ChildDesc, NHSHELL_KIND_CHILD, NHSHELL_KIND_TOPLEVEL, NHSHELL_WIN_PLACED, NHSHELL_WIN_RESTORE, Place,
+    ShellError, WindowDesc,
 };
 use std::ffi::c_char;
 
@@ -61,11 +61,12 @@ pub struct NhgWindowDesc {
     pub flags: u32,
     /// `NHSHELL_KIND_*`.
     pub kind: u32,
-    /// Children and popups: the parent window.
+    /// Children and popups: the parent window.  A top-level: the window it opens beside (0: where the shell puts it).
     pub parent: u64,
     /// Children: where the surface starts in the parent's native area (device pixels: the frame's left and top less
     /// its own margin); the glue adds the parent's border and gives the shell logical pixels at `scale120`
-    /// (`child::new_offset`).
+    /// (`child::new_offset`).  A top-level with `NHSHELL_WIN_PLACED`: its top-left in device pixels at `scale120`
+    /// from the main screen's top-left.
     pub x: i32,
     pub y: i32,
     /// Popups: where to put it.
@@ -158,12 +159,21 @@ pub fn new(
             h: d.h,
             title: title.into(),
             app_id: app_id.into(),
-            flags: restore_flag(d.flags, state.session_saved, session_name),
+            flags: restore_flag(d.flags & !NHSHELL_WIN_PLACED, state.session_saved, session_name),
+        };
+        // where it opens: at its frame's position (device pixels at the scale C made it for), or beside the frame
+        // it was made from, so it shows first on the screen of that scale
+        let place = if d.flags & NHSHELL_WIN_PLACED != 0 {
+            Place::At(to_logical(d.x, d.scale120), to_logical(d.y, d.scale120))
+        } else if d.parent != 0 {
+            Place::Near(d.parent)
+        } else {
+            Place::Shell
         };
         // an empty name is none
         state
             .backend()
-            .window_new_named(&desc, Some(session_name))?
+            .window_new_placed(&desc, Some(session_name), place)?
     } else {
         let (x, y) = if d.kind == NHSHELL_KIND_CHILD {
             crate::child::new_window_offset(state, d)
