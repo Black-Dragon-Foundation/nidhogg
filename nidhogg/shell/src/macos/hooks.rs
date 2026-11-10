@@ -377,7 +377,8 @@ impl MacShell {
             .contains(NSWindowOcclusionState::Visible);
         Ok(format!(
             "(:visible {} :layer {} :wants-layer {} :subviews {} :device-width {} :device-height {} \
-             :screen-device-width {screen} :frame ({} {} {} {}) :on-screen {on} :occluded {})",
+             :screen-device-width {screen} :frame ({} {} {} {}) :on-screen {on} :occluded {} :has-shadow {} \
+             :sublayers {})",
             if w.window.isVisible() { "t" } else { "nil" },
             if layer_ours { "t" } else { "nil" },
             if w.view.wantsLayer() { "t" } else { "nil" },
@@ -389,6 +390,9 @@ impl MacShell {
             fr.size.width,
             fr.size.height,
             if occluded { "t" } else { "nil" },
+            if w.window.hasShadow() { "t" } else { "nil" },
+            // SAFETY: the sublayers array is read, not changed.
+            unsafe { w.layer.sublayers() }.map_or(0, |a| a.len()),
         ))
     }
 }
