@@ -265,6 +265,42 @@ chip's corners.  AFTER, called last with the chip's buffer still shown, makes AF
           (should (equal (list 'ring (glitnir-decor-gui--px g x y)) '(ring (255 128 0))))
           (should (equal (list 'fill (glitnir-decor-gui--px g (- x (* 2 s)) y)) '(fill (48 48 96)))))))))
 
+(defun glitnir-decor-gui--fit-column (fit)
+  "On a row 16 px taller than its text (`line-spacing'), the ring's left side boxing \" ab \" with FIT as its :fit:
+\(AT-TEXT . IN-SPACING), the pixels at the text's middle and 6 px above the row's bottom (in the line spacing, clear of the rounded
+corner)."
+  (let ((glitnir-enable t)
+        (face (make-symbol "glitnir-decor-gui-fit")))
+    (custom-declare-face face nil "Test face.")
+    (set-face-attribute face nil :foreground "white"
+                        :box `(:line-width (1 . 1) :color "#ff8000" :corner-radius 4 ,@(and fit `(:fit ,fit))))
+    (with-temp-buffer
+      (switch-to-buffer (current-buffer))
+      (face-remap-add-relative 'default :background "#202020" :foreground "white")
+      (setq-local cursor-type nil line-spacing 16)
+      (let ((fo (glitnir-decor-gui--calibrate)))
+        (insert "\n\n" (propertize " ab " 'face face) "\n\n")
+        (goto-char 1)
+        (gui-runner-wait-settled)
+        (let* ((s (glitnir-decor-gui--scale))
+               (g (gui-runner-screen-grab))
+               (row (cdr (glitnir-decor-gui--at g 3 fo)))
+               (x (car row))
+               (text (save-excursion (goto-char 3) (- (line-pixel-height) 16))))
+          (cons (glitnir-decor-gui--px g x (+ (cdr row) (glitnir-decor-gui--dev s (/ text 2))))
+                (glitnir-decor-gui--px g x (+ (cdr row) (glitnir-decor-gui--dev s (- (+ text 16) 6))))))))))
+
+(ert-deftest glitnir-decor-gui/a-box-fit-to-the-text-stays-off-the-line-spacing ()
+  (skip-unless (featurep 'nidhogg-wayland))
+  ;; A keycap on a list row made tall by `line-spacing' is a ring as tall as its text, not as the row: `:fit text'
+  ;; boxes the font's ascent and descent; without it the ring runs down through the line spacing (stock).
+  (pcase-let ((`(,at . ,below) (glitnir-decor-gui--fit-column 'text)))
+    (should (equal (list 'ring at) '(ring (255 128 0))))
+    (should (equal (list 'spacing below) '(spacing (32 32 32)))))
+  (pcase-let ((`(,at . ,below) (glitnir-decor-gui--fit-column nil)))
+    (should (equal (list 'ring at) '(ring (255 128 0))))
+    (should (equal (list 'stock below) '(stock (255 128 0))))))
+
 (ert-deftest glitnir-decor-gui/box-across-a-newline-is-stock ()
   (skip-unless (featurep 'nidhogg-wayland))
   ;; Buffer text in a boxed face that runs on over its newline (no string, no stretch) is drawn as stock Emacs draws
