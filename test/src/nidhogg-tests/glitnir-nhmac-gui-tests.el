@@ -511,3 +511,203 @@ screen is the same pixel for pixel (the corner mask and the shadow touch nothing
                            (if out (format ": %S" (nreverse out)) "")))
          (should (> (length a) 0))
          (should (equal a b)))))))
+
+;;; Window cards: each card is an image the glue drew alone, on a layer of its own over the root's content.  Two
+;;; windows side by side, a 6-pixel divider between them (the gap, whose colour is what a card's corners show).
+
+(defconst glitnir-nhmac--card-bg #xf0f0f0 "The card window's background.")
+(defconst glitnir-nhmac--other-bg #xc07030 "The other window's background.")
+(defconst glitnir-nhmac--gap #x20a040 "The divider colour: the gap, and what a card's corners show.")
+(defconst glitnir-nhmac--card '((corner-radius . 10)) "A card with corners only.")
+(defconst glitnir-nhmac--card-look
+  '((corner-radius . 10) (shadow . (:blur 3 :offset (0 . 1) :opacity 0.45)) (ring . ("#20a040" . 0.6)))
+  "The look's card: corners, a soft shadow one point down and the edge ring.")
+
+(defun glitnir-nhmac--hex (rgb) "RGB as \"#rrggbb\"." (format "#%06x" rgb))
+
+(defun glitnir-nhmac--with-cards (params fn)
+  "Call FN with the left and right windows of the cards' layout, the left with window PARAMS, drawn.
+Everything goes back after: the window layout, the frame's divider width and colour."
+  (let* ((f (selected-frame))
+         (conf (current-window-configuration f))
+         (gap (frame-parameter f 'right-divider-width))
+         (divider (face-attribute 'window-divider :foreground f))
+         (a (get-buffer-create " *glitnir-nhmac-card-a*"))
+         (b (get-buffer-create " *glitnir-nhmac-card-b*"))
+         left right)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (set-face-foreground 'window-divider (glitnir-nhmac--hex glitnir-nhmac--gap) f)
+          (set-frame-parameter f 'right-divider-width 6)
+          (dolist (x (list (cons a glitnir-nhmac--card-bg) (cons b glitnir-nhmac--other-bg)))
+            (with-current-buffer (car x)
+              (setq mode-line-format nil cursor-type nil)
+              (face-remap-add-relative 'default :background (glitnir-nhmac--hex (cdr x)))))
+          (setq left (selected-window) right (split-window-right))
+          (set-window-buffer left a)
+          (set-window-buffer right b)
+          (dolist (w (list left right))
+            (set-window-fringes w 0 0)
+            (set-window-scroll-bars w nil nil nil nil))
+          (dolist (p params) (set-window-parameter left (car p) (cdr p)))
+          (message nil)
+          (force-window-update)
+          (nhmac-gui--settle)
+          (funcall fn left right))
+      (when (window-live-p left)
+        (dolist (k '(corner-radius shadow ring)) (set-window-parameter left k nil)))
+      (set-window-configuration conf)
+      (set-frame-parameter f 'right-divider-width gap)
+      (set-face-attribute 'window-divider f :foreground divider)
+      (kill-buffer a)
+      (kill-buffer b)
+      (force-window-update)
+      (nhmac-gui--settle))))
+
+(defun glitnir-nhmac--wbox (w)
+  "Window W's edges without its dividers, (X0 Y0 X1 Y1) in device pixels of the root's surface (inclusive)."
+  (let* ((s (frame-scale-factor)) (e (window-pixel-edges w))
+         (x (round (* s (nth 0 e)))) (y (round (* s (nth 1 e)))))
+    (list x y
+          (1- (+ x (round (* s (- (window-pixel-width w) (window-right-divider-width w))))))
+          (1- (+ y (round (* s (- (window-pixel-height w) (window-bottom-divider-width w)))))))))
+
+(defun glitnir-nhmac--surface-px (x y)
+  "The root's newest surface's pixel at X, Y (device pixels) as 0xRRGGBB."
+  (logand (aref (nhmac--test-surface-region nil x y 1 1) 0) #xffffff))
+
+(defun glitnir-nhmac--cards (&optional settle)
+  "The root's cards (`nhmac--test-cards'), after a redisplay and, with SETTLE, the commits it makes."
+  (force-window-update)
+  (redisplay t)
+  (when settle (nhmac-gui--settle))
+  (nhmac--test-cards))
+
+(ert-deftest glitnir-nhmac/card-layer-follows-the-window ()
+  "A card window gets one card layer at its place, grown by its chrome; the root's own surface has no card pixels
+(its corner is the window's own colour there); the card's layer goes with the card."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (glitnir-nhmac--with-cards
+   glitnir-nhmac--card-look
+   (lambda (left _right)
+     (let* ((c (glitnir-nhmac--cards t)) (b (glitnir-nhmac--wbox left)) (cards (plist-get c :cards)))
+       (nhmac-gui--say "glitnir-nhmac/card-layer-follows-the-window: %S, window %S" c b)
+       (should (= (length cards) 1))
+       (pcase-let ((`(,_ ,x ,y ,w ,h) (car cards)))
+         (should (<= x (nth 0 b)))
+         (should (<= y (nth 1 b)))
+         (should (>= (+ x w -1) (nth 2 b)))
+         (should (>= (+ y h -1) (nth 3 b))))
+       ;; the host composes no card into the root's surface: the corner pixel is the window's own
+       (should-not (nhmac-gui--far (glitnir-nhmac--surface-px (nth 0 b) (nth 1 b)) glitnir-nhmac--card-bg 8))
+       (dolist (k '(corner-radius shadow ring)) (set-window-parameter left k nil))
+       (should (null (plist-get (glitnir-nhmac--cards t) :cards)))))))
+
+(ert-deftest glitnir-nhmac/card-corner-shows-gap ()
+  "A card window's four outermost corner pixels show the gap's colour on the screen; the top edge past the corner is
+the window's; without the card the corner is the window's."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (glitnir-nhmac--with-cards
+   glitnir-nhmac--card
+   (lambda (left _right)
+     (glitnir-nhmac--cards t)
+     (let* ((img (glitnir-nhmac--grab "card-corner"))
+            (b (glitnir-nhmac--box img glitnir-nhmac--card-bg))
+            (r (round (* 10 (frame-scale-factor)))))
+       (nhmac-gui--say "glitnir-nhmac/card-corner-shows-gap: box %S, corners %S" b
+                       (and b (mapcar (lambda (c) (format "%06x" (glitnir-nhmac--px img (car c) (cdr c))))
+                                      (list (cons (nth 0 b) (nth 1 b)) (cons (nth 2 b) (nth 1 b))))))
+       (should b)
+       ;; the card's bounding box is the window's: its corner pixels are outside the rounded shape, the gap's
+       (dolist (c (list (cons (nth 0 b) (nth 1 b)) (cons (nth 2 b) (nth 1 b))
+                        (cons (nth 0 b) (nth 3 b)) (cons (nth 2 b) (nth 3 b))))
+         (should (equal (list c (nhmac-gui--far (glitnir-nhmac--px img (car c) (cdr c)) glitnir-nhmac--gap 8))
+                        (list c nil))))
+       (should-not (nhmac-gui--far (glitnir-nhmac--px img (+ (nth 0 b) r) (nth 1 b)) glitnir-nhmac--card-bg 8))
+       (set-window-parameter left 'corner-radius nil)
+       (glitnir-nhmac--cards t)
+       (let ((img2 (glitnir-nhmac--grab "card-corner-off")))
+         (should-not (nhmac-gui--far (glitnir-nhmac--px img2 (nth 0 b) (nth 1 b)) glitnir-nhmac--card-bg 8)))))))
+
+(ert-deftest glitnir-nhmac/card-shadow-only-in-gap ()
+  "The look's card leaves the other window's pixels as they are without it; the gap beside the card is darker."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (glitnir-nhmac--with-cards
+   glitnir-nhmac--card-look
+   (lambda (left right)
+     (glitnir-nhmac--cards t)
+     (let* ((with (glitnir-nhmac--grab "card-shadow-on"))
+            (o (glitnir-nhmac--box with glitnir-nhmac--other-bg))
+            (l (glitnir-nhmac--box with glitnir-nhmac--card-bg)))
+       (should (and o l))
+       (dolist (k '(corner-radius shadow ring)) (set-window-parameter left k nil))
+       (glitnir-nhmac--cards t)
+       (let* ((without (glitnir-nhmac--grab "card-shadow-off"))
+              (inner (list (+ (nth 0 o) 2) (+ (nth 1 o) 2) (- (nth 2 o) 2) (- (nth 3 o) 2)))
+              (a (glitnir-nhmac--region with inner 0)) (b (glitnir-nhmac--region without inner 0))
+              (gx (/ (+ (nth 2 l) (nth 0 o)) 2)) (gy (/ (+ (nth 1 l) (nth 3 l)) 2)))
+         (nhmac-gui--say "glitnir-nhmac/card-shadow-only-in-gap: other %S, %d of %d differ; gap %06x with, %06x without"
+                         o (cl-count nil (cl-mapcar #'eql a b)) (length a)
+                         (glitnir-nhmac--px with gx gy) (glitnir-nhmac--px without gx gy))
+         (should (equal a b))
+         (should (< (glitnir-nhmac--luma (glitnir-nhmac--px with gx gy))
+                    (glitnir-nhmac--luma (glitnir-nhmac--px without gx gy)))))
+       (ignore right)))))
+
+(ert-deftest nhmac-cards-typing-no-change ()
+  "A card makes its image once: 50 characters typed in the card window change no card image and no card layer."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (glitnir-nhmac--with-cards
+   glitnir-nhmac--card-look
+   (lambda (left _right)
+     (let* ((c0 (glitnir-nhmac--cards t)) (buf (window-buffer left)))
+       (should (> (plist-get c0 :images) 0))
+       (with-current-buffer buf (dotimes (_ 12) (insert "\n")) (forward-line -6) (insert "  "))
+       (set-window-point left (with-current-buffer buf (point)))
+       (let ((c1 (glitnir-nhmac--cards t)))
+         (dotimes (i 50)
+           (with-current-buffer buf (insert (if (= (% (1+ i) 20) 0) "\n" "x")))
+           (redisplay t))
+         (let ((c2 (glitnir-nhmac--cards t)))
+           (nhmac-gui--say "nhmac-cards-typing-no-change: %S -> %S" c1 c2)
+           (should (equal c1 c2))))))))
+
+(ert-deftest glitnir-nhmac/card-removed-no-residue ()
+  "A card that goes leaves the screen as it was before it came, and the root has no card layers."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (glitnir-nhmac--with-cards
+   nil
+   (lambda (left _right)
+     (glitnir-nhmac--cards t)
+     (let ((base (glitnir-nhmac--grab "card-base")))
+       (dolist (p glitnir-nhmac--card-look) (set-window-parameter left (car p) (cdr p)))
+       (glitnir-nhmac--cards t)
+       (should-not (equal base (glitnir-nhmac--grab "card-on")))
+       (dolist (p glitnir-nhmac--card-look) (set-window-parameter left (car p) nil))
+       (should (null (plist-get (glitnir-nhmac--cards t) :cards)))
+       (should (equal base (glitnir-nhmac--grab "card-gone")))))))
+
+(ert-deftest nhmac-cards-theme-switch ()
+  "A new divider colour (what a theme switch changes) gives the card new images at once: its corners show the new
+gap colour."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (glitnir-nhmac--with-cards
+   glitnir-nhmac--card
+   (lambda (_left _right)
+     (let ((n (plist-get (glitnir-nhmac--cards t) :images)) (new #x4060e0))
+       (set-face-foreground 'window-divider (glitnir-nhmac--hex new) (selected-frame))
+       (let* ((c (glitnir-nhmac--cards t))
+              (img (glitnir-nhmac--grab "card-theme"))
+              (b (glitnir-nhmac--box img glitnir-nhmac--card-bg)))
+         (nhmac-gui--say "nhmac-cards-theme-switch: images %d -> %d, corner %06x" n (plist-get c :images)
+                         (if b (glitnir-nhmac--px img (nth 0 b) (nth 1 b)) 0))
+         (should (> (plist-get c :images) n))
+         (should b)
+         (should-not (nhmac-gui--far (glitnir-nhmac--px img (nth 0 b) (nth 1 b)) new 8)))))))
