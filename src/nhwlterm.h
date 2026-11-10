@@ -280,6 +280,9 @@ struct nhwl_output
   uint64_t window;
   Window parent_desc;		/* always the display's root (0) */
   uint32_t scale120;		/* the window's preferred scale times 120 */
+  uint32_t start120;		/* macOS: a new top-level asked for at `left',
+				   `top': the scale of the screen there (0:
+				   none), which it starts at */
   /* Copies of the glue's configure state that C still reads, set when C
      applies a RESIZE action.  */
   int logical_w, logical_h;	/* the compositor's last suggestion, logical px */
