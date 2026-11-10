@@ -391,6 +391,10 @@ impl Surfaces {
             .fetch_add(Fill::Rects(damage.clone()).bytes(w, h), Ordering::Relaxed);
         if fill == Fill::All {
             st.full_copies.fetch_add(1, Ordering::Relaxed);
+            let (slots, age) = (self.slots.len(), self.ring.age(slot));
+            crate::trace::note(|| {
+                format!("full copy: slot {slot} of {slots}, age {age}, busy {busy}, {w}x{h}")
+            });
         }
         if busy {
             st.surface_busy.fetch_add(1, Ordering::Relaxed);
