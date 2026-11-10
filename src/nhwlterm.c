@@ -1048,6 +1048,23 @@ nhwl_frame_scale_factor (struct frame *f)
   return nhwl_frame_scale (f);
 }
 
+/* F's resolution changed from WAS: a config-changed event (nidhogg-scale
+   . WAS) has nidhogg-scale.el re-open its fonts from their point sizes,
+   and its images, made for the old device size, are made again at the
+   new one (from the drain, not inside redisplay).  */
+static void
+nhwl_res_changed (struct frame *f, double was)
+{
+  struct input_event ev;
+
+  EVENT_INIT (ev);
+  ev.kind = CONFIG_CHANGED_EVENT;
+  ev.arg = Fcons (Qnidhogg_scale, make_float (was));
+  XSETFRAME (ev.frame_or_window, f);
+  kbd_buffer_store_event (&ev);
+  clear_image_cache (f, Qnil);
+}
+
 /* Logical size of DEV device pixels at scale S120/120, rounded the way
    the presenter rounds the viewport's destination.  */
 int
@@ -1183,6 +1200,9 @@ nhwl_create_frame_window (struct frame *f, uint64_t in_place)
   Lisp_Object encoded_name = Qnil;
   uint64_t id = in_place;
   int rc;
+  /* A frame that had a window (its `parent-frame' changed) starts at its
+     new parent's scale: its fonts were open at the old resolution.  */
+  double was = out->scale120 ? nhwl_frame_res (f) : 0;
 
   title = !NILP (f->title) ? f->title : f->name;
   if (STRINGP (title))
@@ -1190,6 +1210,8 @@ nhwl_create_frame_window (struct frame *f, uint64_t in_place)
 
   memset (&desc, 0, sizeof desc);
   out->scale120 = nhwl_start_scale (f);
+  if (was && was != nhwl_frame_res (f))
+    nhwl_res_changed (f, was);
   desc.w = max (1, nhwl_to_logical (FRAME_PIXEL_WIDTH (f), out->scale120));
   desc.h = max (1, nhwl_to_logical (FRAME_PIXEL_HEIGHT (f), out->scale120));
   desc.title = STRINGP (encoded) ? SSDATA (encoded) : "";
@@ -2413,23 +2435,15 @@ nhwl_note_mouse_movement (struct frame *frame, int x, int y, Time time)
 
 /* Apply a SCALE action: the shell reported a new preferred scale for
    frame F (the glue decided it is new).  The frame's resolution follows
-   (nhwl_frame_res); a config-changed event (nidhogg-scale . OLD-RES) has
-   nidhogg-scale.el re-open its fonts from their point sizes.  */
+   (nhwl_frame_res, nhwl_res_changed).  */
 static void
 nhwl_scale_changed (struct frame *f, uint32_t scale120)
 {
-  struct input_event ev;
+  double was = nhwl_frame_res (f);
 
-  EVENT_INIT (ev);
-  ev.kind = CONFIG_CHANGED_EVENT;
-  ev.arg = Fcons (Qnidhogg_scale, make_float (nhwl_frame_res (f)));
-  XSETFRAME (ev.frame_or_window, f);
   FRAME_NHWL_OUTPUT (f)->scale120 = FRAME_DISPLAY_INFO (f)->scale120 = scale120;
   FRAME_DISPLAY_INFO (f)->resx = FRAME_DISPLAY_INFO (f)->resy = NHWL_DPI * scale120 / 120.0;
-  kbd_buffer_store_event (&ev);
-  /* Images were made for the old device size: they are made again at
-     the new one, from the drain, not inside redisplay.  */
-  clear_image_cache (f, Qnil);
+  nhwl_res_changed (f, was);
   nhwl_csd_layout (f);
   SET_FRAME_GARBAGED (f);
 }
