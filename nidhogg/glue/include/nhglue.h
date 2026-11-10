@@ -713,7 +713,9 @@ int32_t nhg_tip_hide (NhgDisplay *d, uint64_t window);
 #define NHG_CHROME_BENEATH_RGB 21
 #define NHG_CHROME_RING_RGB    22
 #define NHG_CHROME_RING_OPACITY 23
-#define NHG_CHROME_SLOTS      24
+#define NHG_CHROME_GROUP       24
+#define NHG_CHROME_FILL_RGB    25
+#define NHG_CHROME_SLOTS      26
 
 /* Push: WINDOW is a child of PARENT's window, its native area at X, Y (device pixels of the parent's native area:
    the frame's left and top), with FLAGS NHG_CHILD_*.  The first push after the window is made records where the

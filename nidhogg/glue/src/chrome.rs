@@ -31,7 +31,9 @@ pub const SLOT_BACKDROP: usize = 20;
 pub const SLOT_BENEATH_RGB: usize = 21;
 pub const SLOT_RING_RGB: usize = 22;
 pub const SLOT_RING_OPACITY: usize = 23;
-pub const SLOTS: usize = 24;
+pub const SLOT_GROUP: usize = 24;
+pub const SLOT_FILL_RGB: usize = 25;
+pub const SLOTS: usize = 26;
 
 /// The vector, checked and split.  `chrome` is `None` when slot 0 is 0.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -43,6 +45,10 @@ pub struct Decoded {
     pub beneath_rgb: Option<u32>,
     /// A window card's edge ring: its colour (0xRRGGBB) and opacity; `None` for no ring or opacity 0.
     pub ring: Option<(u32, f32)>,
+    /// A window card's group (0: none): windows of one group that tile a rectangle are one card.
+    pub group: u32,
+    /// What a card group's dividers show (0xRRGGBB); `None` for -1.
+    pub fill_rgb: Option<u32>,
 }
 
 fn rgb_of(v: f32, none_ok: bool) -> Result<Option<u32>, GlueError> {
@@ -76,12 +82,15 @@ pub fn decode(v: &[f32]) -> Result<Decoded, GlueError> {
             .into_iter()
             .all(unit)
         && v[SLOT_BACKDROP] >= 0.0
-        && unit(SLOT_RING_OPACITY);
+        && unit(SLOT_RING_OPACITY)
+        && v[SLOT_GROUP].fract() == 0.0
+        && (0.0..=16_777_215.0).contains(&v[SLOT_GROUP]);
     if !ok {
         return Err(GlueError::Arg);
     }
     let rgb = rgb_of(v[SLOT_RGB], false)?.unwrap_or(0);
     let beneath_rgb = rgb_of(v[SLOT_BENEATH_RGB], true)?;
+    let fill_rgb = rgb_of(v[SLOT_FILL_RGB], true)?;
     let ring = rgb_of(v[SLOT_RING_RGB], true)?
         .filter(|_| v[SLOT_RING_OPACITY] > 0.0)
         .map(|c| (c, v[SLOT_RING_OPACITY]));
@@ -103,6 +112,8 @@ pub fn decode(v: &[f32]) -> Result<Decoded, GlueError> {
         backdrop_px: v[SLOT_BACKDROP],
         beneath_rgb,
         ring,
+        group: v[SLOT_GROUP] as u32,
+        fill_rgb,
     })
 }
 
@@ -141,6 +152,7 @@ pub fn encode(c: &NhgChrome) -> [f32; SLOTS] {
     v[SLOT_RGB] = c.rgb as f32;
     v[SLOT_BENEATH_RGB] = -1.0;
     v[SLOT_RING_RGB] = -1.0;
+    v[SLOT_FILL_RGB] = -1.0;
     v
 }
 
