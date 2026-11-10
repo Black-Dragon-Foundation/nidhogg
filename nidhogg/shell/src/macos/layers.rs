@@ -89,6 +89,9 @@ pub struct Props {
     /// Children moved into a panel or back, and the panels ordered in or out.
     pub switches: AtomicU64,
     pub panel_orders: AtomicU64,
+    /// Chrome: the corner and border properties set, and the shadow images rendered.
+    pub chrome: AtomicU64,
+    pub shadow_renders: AtomicU64,
 }
 
 pub static PROPS: Props = Props {
@@ -101,6 +104,8 @@ pub static PROPS: Props = Props {
     host: AtomicU64::new(0),
     switches: AtomicU64::new(0),
     panel_orders: AtomicU64::new(0),
+    chrome: AtomicU64::new(0),
+    shadow_renders: AtomicU64::new(0),
 };
 
 impl Props {
@@ -108,7 +113,7 @@ impl Props {
         let g = |c: &AtomicU64| c.load(Ordering::Relaxed);
         format!(
             ":props-contents {} :props-position {} :props-bounds {} :props-hidden {} :props-opacity {} :props-order {} \
-             :props-host {} :overhang-switches {} :panel-orders {}",
+             :props-host {} :overhang-switches {} :panel-orders {} :props-chrome {} :shadow-renders {}",
             g(&self.contents),
             g(&self.position),
             g(&self.bounds),
@@ -118,6 +123,8 @@ impl Props {
             g(&self.host),
             g(&self.switches),
             g(&self.panel_orders),
+            g(&self.chrome),
+            g(&self.shadow_renders),
         )
     }
 }
