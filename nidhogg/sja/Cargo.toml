@@ -11,9 +11,11 @@ publish = false
 crate-type = ["rlib"]
 
 [dependencies]
-# The wire is JSON (the hub writes it); decoded through `serde_json::Value` by hand, so no serde_derive and no syn
-# (README, "Crate rules").  Exact pins; std only.
+# The wire is JSON (the hub writes it); read by hand-written visitors (serde_core's traits, already serde_json's own
+# dependency), with `serde_json::Value` as the fallback, so no serde_derive and no syn (README, "Crate rules").  Exact
+# pins; std only.
 serde_json = { version = "=1.0.154", default-features = false, features = ["std"] }
+serde_core = { version = "=1.0.229", default-features = false, features = ["std"] }
 # the guard's headroom check reads the thread's stack bounds (pthread_getattr_np)
 libc = "0.2"
 

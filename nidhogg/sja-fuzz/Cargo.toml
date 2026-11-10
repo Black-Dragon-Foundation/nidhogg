@@ -25,3 +25,17 @@ path = "fuzz_targets/apply_bytes.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "push_bytes"
+path = "fuzz_targets/push_bytes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "typed_bytes"
+path = "fuzz_targets/typed_bytes.rs"
+test = false
+doc = false
+bench = false

@@ -40,6 +40,10 @@ extern "C" {
 #define SJA_GET 8
 #define SJA_HUB_LOST 9
 #define SJA_STATS 10
+#define SJA_PUSH 11
+#define SJA_DRAIN 12
+#define SJA_NAMED 13
+#define SJA_DUE 14
 #define SJA_TEST_PANIC 99
 
 typedef struct

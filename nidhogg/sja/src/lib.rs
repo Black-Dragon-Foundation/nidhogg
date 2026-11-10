@@ -14,6 +14,8 @@ pub mod class;
 pub mod guard;
 pub mod model;
 pub mod names;
+pub mod queue;
+mod typed;
 pub mod view;
 pub mod wire;
 
