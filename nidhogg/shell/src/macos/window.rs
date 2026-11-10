@@ -26,6 +26,8 @@ pub struct Win {
     /// The content size (points) and scale (times 120) last reported to the host.
     pub size: (i32, i32),
     pub scale120: u32,
+    /// The output (`screens::outputs`' id) the host was last told the window is on; 0: none yet.
+    pub output: u64,
     /// Whether the host wants it shown.
     pub mapped: bool,
     /// The serial of the configure sent last, until the host acks it: till then the host may still draw at the old
@@ -95,6 +97,7 @@ impl Win {
             _delegate: delegate,
             size: (w, h),
             scale120,
+            output: 0,
             mapped: true,
             configuring: None,
         }
