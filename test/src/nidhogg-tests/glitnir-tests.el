@@ -122,7 +122,7 @@
                              (toplevel-chrome . ((corner-radius . 12)
                                                  (shadow . (:blur 16 :offset (0 . 6) :opacity 0.35)))))
       (let ((v (glitnir--chrome-vector (selected-frame))))
-        (should (= (length v) 26))       ; slots 24 and 25: the card group and its fill
+        (should (= (length v) 26))
         (should (equal (append (cl-subseq v 0 7) nil) '(1 12 16 0 6 0 0.35)))
         (should (cl-every #'zerop (cl-subseq v 8 21)))
         (should (equal (list (aref v 21) (aref v 22) (aref v 23)) '(-1 -1 0)))))))
@@ -213,7 +213,7 @@
              (r (glitnir--resolve f))
              (s (plist-get r :shadow))
              (c (plist-get s :color)))
-        (should (= (length v) 26))       ; slots 24 and 25: the card group and its fill
+        (should (= (length v) 26))
         (should (= (length v) (length glitnir--chrome-slots)))
         (should (equal (list (aref v 0) (aref v 1) (aref v 2) (aref v 3) (aref v 4) (aref v 5) (aref v 6))
                        (list 1 (plist-get r :radius) (plist-get s :blur) 2 6 -1 (plist-get s :opacity))))
@@ -226,7 +226,7 @@
     (let ((child-frame-chrome nil))
       (glitnir-test--as-child nil
         (let ((v (glitnir--chrome-vector (selected-frame))))
-          (should (= (length v) 26))       ; slots 24 and 25: the card group and its fill
+          (should (= (length v) 26))
           (should (= (aref v 0) 0)))))))
 
 (ert-deftest glitnir-chrome-vector-clamps ()
@@ -257,7 +257,7 @@
     (let ((v (glitnir--chrome-vector (selected-frame))))
       (should (equal (glitnir-test--motion v)
                      (append '(2 120) glitnir-test--ease-out '(1 80) glitnir-test--ease-in)))
-      (should (= (length v) 26))       ; slots 24 and 25: the card group and its fill)))
+      (should (= (length v) 26)))))
 
 (ert-deftest glitnir-transition-plist-and-curves ()
   (glitnir-test--as-child '((transition . (:show fade :duration 0.2 :curve ease-in-out
