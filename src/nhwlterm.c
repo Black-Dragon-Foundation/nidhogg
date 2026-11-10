@@ -1000,14 +1000,37 @@ static struct redisplay_interface nhwl_redisplay_interface = {
 			    Frame windows
  ***********************************************************************/
 
-/* The scale of frame F's window as a factor (1.0 until the compositor
-   says); the display's resolution is 96 times the display's scale.  */
+/* The scale frame F starts at, times 120: its parent's, else the selected
+   frame's (where the user works), else the newest the display heard.  */
+static uint32_t
+nhwl_start_scale (struct frame *f)
+{
+  struct frame *s = FRAME_PARENT_FRAME (f) ? FRAME_PARENT_FRAME (f) : SELECTED_FRAME ();
+
+  if (s != f && FRAME_NHWL_P (s) && FRAME_DISPLAY_INFO (s) == FRAME_DISPLAY_INFO (f)
+      && FRAME_NHWL_OUTPUT (s)->scale120)
+    return FRAME_NHWL_OUTPUT (s)->scale120;
+  return FRAME_DISPLAY_INFO (f)->scale120 ? FRAME_DISPLAY_INFO (f)->scale120 : 120;
+}
+
+/* The scale of frame F's window as a factor (the one it starts at until
+   the compositor says).  */
 static double
 nhwl_frame_scale (struct frame *f)
 {
   uint32_t s120 = FRAME_NHWL_OUTPUT (f)->scale120;
 
-  return (s120 ? s120 : 120) / 120.0;
+  return (s120 ? s120 : nhwl_start_scale (f)) / 120.0;
+}
+
+/* FRAME_RES of F: 96 dpi times its scale times its root frame's
+   `nidhogg-text-zoom' parameter (nidhogg-scale.el sets it).  */
+double
+nhwl_frame_res (struct frame *f)
+{
+  Lisp_Object zoom = get_frame_param (nhwl_tree_root (f), Qnidhogg_text_zoom);
+
+  return 96.0 * nhwl_frame_scale (f) * (NUMBERP (zoom) ? XFLOATINT (zoom) : 1);
 }
 
 double
@@ -1142,7 +1165,7 @@ nhwl_create_frame_window (struct frame *f)
     encoded = ENCODE_UTF_8 (title);
 
   memset (&desc, 0, sizeof desc);
-  out->scale120 = dpyinfo->scale120 ? dpyinfo->scale120 : 120;
+  out->scale120 = nhwl_start_scale (f);
   desc.w = max (1, nhwl_to_logical (FRAME_PIXEL_WIDTH (f), out->scale120));
   desc.h = max (1, nhwl_to_logical (FRAME_PIXEL_HEIGHT (f), out->scale120));
   desc.title = STRINGP (encoded) ? SSDATA (encoded) : "";
@@ -1150,11 +1173,6 @@ nhwl_create_frame_window (struct frame *f)
   desc.flags = FRAME_UNDECORATED (f) ? NHG_WIN_UNDECORATED : 0;
   if (nhwl_child_p (f))
     {
-      /* A child frame starts at its parent's scale.  */
-      out->scale120 = FRAME_NHWL_OUTPUT (FRAME_PARENT_FRAME (f))->scale120
-	? FRAME_NHWL_OUTPUT (FRAME_PARENT_FRAME (f))->scale120 : out->scale120;
-      desc.w = max (1, nhwl_to_logical (FRAME_PIXEL_WIDTH (f), out->scale120));
-      desc.h = max (1, nhwl_to_logical (FRAME_PIXEL_HEIGHT (f), out->scale120));
       /* The surface starts its shadow margin before the native area; the
 	 glue places it in the parent's surface (logical pixels).  */
       desc.kind = NHG_KIND_CHILD;
@@ -2356,44 +2374,23 @@ nhwl_note_mouse_movement (struct frame *frame, int x, int y, Time time)
 }
 
 /* Apply a SCALE action: the shell reported a new preferred scale for
-   frame F (the glue decided it is new).  The display's resolution follows
-   (96 dpi times the scale), and the fonts are re-opened at the device
-   size as on a move between monitors.  */
+   frame F (the glue decided it is new).  The frame's resolution follows
+   (nhwl_frame_res); a config-changed event (nidhogg-scale . OLD-RES) has
+   nidhogg-scale.el re-open its fonts from their point sizes.  */
 static void
 nhwl_scale_changed (struct frame *f, uint32_t scale120)
 {
-  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
-  struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
+  struct input_event ev;
 
-  uint32_t old = out->scale120 ? out->scale120 : 120;
-
-  out->scale120 = scale120;
-  dpyinfo->scale120 = scale120;
-  dpyinfo->resx = dpyinfo->resy = 96.0 * scale120 / 120.0;
-
-  /* The fonts are re-opened at the new device size: the pixel size of
-     the frame's font times the ratio of the scales, through the frame's
-     font parameter.  */
-  if (FRAME_FONT (f) && FIXNUMP (FRAME_FONT (f)->props[FONT_SIZE_INDEX]))
-    {
-      struct font *font = FRAME_FONT (f);
-      Lisp_Object spec = font_spec_from_name (font->props[FONT_NAME_INDEX]);
-
-      if (!NILP (spec))
-	{
-	  double px = XFIXNUM (font->props[FONT_SIZE_INDEX]);
-	  Lisp_Object font_object;
-
-	  ASET (spec, FONT_SIZE_INDEX,
-		make_fixnum (max (1, lround (px * scale120 / old))));
-	  font_object = font_open_by_spec (f, spec);
-	  if (!NILP (font_object))
-	    gui_set_font (f, font_object, get_frame_param (f, Qfont));
-	}
-    }
-  /* Images were made for the old device size: they are
-     made again at the new one.  Like the fonts above, from the drain, not
-     inside redisplay.  */
+  EVENT_INIT (ev);
+  ev.kind = CONFIG_CHANGED_EVENT;
+  ev.arg = Fcons (Qnidhogg_scale, make_float (nhwl_frame_res (f)));
+  XSETFRAME (ev.frame_or_window, f);
+  FRAME_NHWL_OUTPUT (f)->scale120 = FRAME_DISPLAY_INFO (f)->scale120 = scale120;
+  FRAME_DISPLAY_INFO (f)->resx = FRAME_DISPLAY_INFO (f)->resy = 96.0 * scale120 / 120.0;
+  kbd_buffer_store_event (&ev);
+  /* Images were made for the old device size: they are made again at
+     the new one, from the drain, not inside redisplay.  */
   clear_image_cache (f, Qnil);
   nhwl_csd_layout (f);
   SET_FRAME_GARBAGED (f);
@@ -3253,13 +3250,19 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
       return 0;
 
     case NHG_ACT_MONITORS:
+      if (a->window && (f = nhwl_window_to_frame (dpyinfo, a->window)))
+	{
+	  /* F moved to another monitor: Lisp runs move-frame-functions.  */
+	  EVENT_INIT (ie);
+	  ie.kind = MOVE_FRAME_EVENT;
+	  XSETFRAME (ie.frame_or_window, f);
+	  kbd_buffer_store_event_hold (&ie, hold_quit);
+	  return 1;
+	}
       /* The output list changed (the glue keeps it).  The first scale an
 	 output reports is the display's, and its resolution's.  */
       if (a->code > 0 && dpyinfo->scale120 == 0)
-	{
-	  dpyinfo->scale120 = a->code;
-	  dpyinfo->resx = dpyinfo->resy = 96.0 * dpyinfo->scale120 / 120.0;
-	}
+	dpyinfo->scale120 = a->code;
       /* One event per change: Lisp runs display-monitors-changed-functions
 	 for it.  */
       EVENT_INIT (ie);
@@ -4139,7 +4142,6 @@ nhwl_term_init (Lisp_Object display_name)
   /* The outputs the shell announced while connecting give the scale.  */
   NHG (nhg_dispatch_main (glue));
   dpyinfo->scale120 = 0;
-  dpyinfo->resx = dpyinfo->resy = 96.0;
   nhwl_drain_events (dpyinfo, NULL);
   if (dpyinfo->scale120 == 0)
     dpyinfo->scale120 = 120;
@@ -4407,6 +4409,8 @@ syms_of_nhwlterm (void)
   defsubr (&Snhwl_glue_panics);
   defsubr (&Snhwl__scroll_layers);
   defsubr (&Snhwl__frame_states);
+  DEFSYM (Qnidhogg_scale, "nidhogg-scale");
+  DEFSYM (Qnidhogg_text_zoom, "nidhogg-text-zoom");
 #ifdef ENABLE_CHECKING
   defsubr (&Snhwl__test_glue_panic);
 #endif

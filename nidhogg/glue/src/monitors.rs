@@ -13,7 +13,8 @@ use std::ffi::c_char;
 
 /// An `OUTPUT_ADD` or `OUTPUT_CHANGE`: the output joins the list or replaces the one with its id, and a `MONITORS`
 /// action says so, with the output's scale times 120 in `code` (C takes the display's scale from the first nonzero
-/// one).  A new output past the sixteenth gives nothing.
+/// one).  A window alone on the output that was given a fraction of the new ceiling gives it back to the output (its
+/// scale may have come first).  A new output past the sixteenth gives nothing.
 pub fn output(state: &mut Display, ev: &Record, o: &OutputEv) {
     let mut m = NhgMonitor {
         id: o.id,
@@ -31,6 +32,13 @@ pub fn output(state: &mut Display, ev: &Record, o: &OutputEv) {
     }
     if !state.monitors.set(&m) {
         return;
+    }
+    let alone = state
+        .frames()
+        .find(|(_, f)| f.outputs == [o.id] && f.scale120 != 0)
+        .map(|(_, f)| f.scale120);
+    if let Some(s120) = alone {
+        state.monitors.learn(o.id, s120);
     }
     let mut a = NhgAction::new(NHG_ACT_MONITORS, 0, ev.time_ns);
     a.code = o.scale120 as i32;
@@ -55,19 +63,53 @@ pub fn removed(state: &mut Display, ev: &Record, o: &OutputEv) {
 /// An `ENTER_OUTPUT`: the window is on the output now (at most `MAX_OUTPUTS` are kept per window).
 pub fn entered(state: &mut Display, ev: &Record, o: &OutputEv) {
     let id = o.id;
-    if let Ok(f) = state.frame_mut(ev.window)
-        && f.outputs.len() < MAX_OUTPUTS
-        && !f.outputs.contains(&id)
-    {
+    let Ok(f) = state.frame_mut(ev.window) else {
+        return;
+    };
+    let first = f.outputs.first().copied();
+    if f.outputs.len() < MAX_OUTPUTS && !f.outputs.contains(&id) {
         f.outputs.push(id);
     }
+    moved(state, ev, first);
 }
 
 /// A `LEAVE_OUTPUT`: the window is off the output.
 pub fn left(state: &mut Display, ev: &Record, o: &OutputEv) {
     let id = o.id;
-    if let Ok(f) = state.frame_mut(ev.window) {
-        f.outputs.retain(|&o| o != id);
+    let Ok(f) = state.frame_mut(ev.window) else {
+        return;
+    };
+    let first = f.outputs.first().copied();
+    f.outputs.retain(|&o| o != id);
+    moved(state, ev, first);
+}
+
+/// After an enter or leave: a `MONITORS` action for the window when it is on an output and its first one is no longer
+/// `first` (it came to or moved to another monitor; C runs `move-frame-functions`), and the output's scale learnt.
+fn moved(state: &mut Display, ev: &Record, first: Option<u64>) {
+    if let Ok(f) = state.frame(ev.window)
+        && f.outputs.first().is_some_and(|&o| Some(o) != first)
+    {
+        state
+            .actions
+            .push(NhgAction::new(NHG_ACT_MONITORS, ev.window, ev.time_ns));
+    }
+    learn(state, ev);
+}
+
+/// When `ev.window` is on one output and has a scale, that scale is the output's (the compositor gives a window
+/// its monitor's fractional scale; `wl_output` only its ceiling); a `MONITORS` action says when that changed it.
+pub fn learn(state: &mut Display, ev: &Record) {
+    let Ok(f) = state.frame(ev.window) else {
+        return;
+    };
+    let (&[id], s120) = (f.outputs.as_slice(), f.scale120) else {
+        return;
+    };
+    if s120 != 0 && state.monitors.learn(id, s120) {
+        state
+            .actions
+            .push(NhgAction::new(NHG_ACT_MONITORS, 0, ev.time_ns));
     }
 }
 
