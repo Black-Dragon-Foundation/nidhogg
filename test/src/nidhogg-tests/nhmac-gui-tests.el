@@ -8,6 +8,7 @@
 
 (require 'ert)
 (require 'cl-lib)
+(defvar nhmac--damage-log)
 (load (expand-file-name "../../../nidhogg/test/mac-counts.el" (file-name-directory (or load-file-name buffer-file-name))) nil t)
 
 (defun nhmac-gui--say (fmt &rest args)
@@ -677,11 +678,14 @@ at the fastest key repeat, on a ring that has made all its slots."
       (should (= (nhmac-gui--slots) nhmac-gui--ring))
       (funcall goto)
       (redisplay)
-      (let* ((d (nhmac-gui--type keys nil t))
+      (let* ((_ (setq nhmac--damage-log (list 'start)))
+             (d (nhmac-gui--type keys nil t))
              (bytes (plist-get d :bytes-copied))
              (damage (plist-get d :damage-bytes)))
         (nhmac-gui--say "nhmac-typing-bytes: %s: %d keys: copied %d (%d per key), damage %d, full %d, row %d"
                  case keys bytes (/ bytes keys) damage (plist-get d :full-copies) row)
+        (nhmac-gui--say "nhmac-typing-bytes: %s: damage log %S" case (reverse nhmac--damage-log))
+        (setq nhmac--damage-log nil)
         (should (= (plist-get d :full-copies) 0))
         (should (= (plist-get d :held-timeouts) 0))
         (should (> bytes 0))

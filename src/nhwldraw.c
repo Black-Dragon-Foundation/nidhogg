@@ -2342,6 +2342,10 @@ nhwl_damage (struct frame *f, int x, int y, int w, int h)
   r.h = y1 - r.y;
   if (r.w <= 0 || r.h <= 0)
     return;
+#ifndef NHWL_WAYLAND
+  if (CONSP (Vnhmac__damage_log))
+    Vnhmac__damage_log = Fcons (list4i (r.x, r.y, r.w, r.h), Vnhmac__damage_log);
+#endif
   nhwl_glitnir_ensure (f);
   NHG (nhg_damage (FRAME_NHG (f), FRAME_NHWL_OUTPUT (f)->glitnir_id, &r, 1));
 }
@@ -2350,6 +2354,10 @@ nhwl_damage (struct frame *f, int x, int y, int w, int h)
 void
 nhwl_damage_all (struct frame *f)
 {
+#ifndef NHWL_WAYLAND
+  if (CONSP (Vnhmac__damage_log))
+    Vnhmac__damage_log = Fcons (Qt, Vnhmac__damage_log);
+#endif
   nhwl_glitnir_ensure (f);
   NHG (nhg_damage_all (FRAME_NHG (f), FRAME_NHWL_OUTPUT (f)->glitnir_id));
 }
