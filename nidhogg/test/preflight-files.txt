@@ -10,6 +10,7 @@ src/nidhogg-tests/workers-framing-tests
 src/nidhogg-tests/workers-json-tests
 src/nidhogg-tests/workers-autosave-tests
 src/nidhogg-tests/workers-blk-tests
+src/nidhogg-tests/workers-hash-tests
 src/nidhogg-tests/workers-ts-tests
 src/nidhogg-tests/workers-tls-tests
 src/process-tests
