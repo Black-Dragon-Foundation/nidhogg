@@ -53,4 +53,9 @@ parked as DEFERRED NAGLFAR-CARD-ROOT-FREEZE-1 until before the M1 gate; NS skips
  ("nhmac-glitnir-off" "windowserver"
   "Naglfar: after glitnir-nhmac/card-corner-shows-gap the root frame's picture freezes (its backing keeps the card
 layout through full redraws), so the row starts on a dirty root and its clean-root check fails.  Nidhogg's own bug,
-parked as DEFERRED NAGLFAR-CARD-ROOT-FREEZE-1 until before the M1 gate; NS skips the row"))
+parked as DEFERRED NAGLFAR-CARD-ROOT-FREEZE-1 until before the M1 gate; NS skips the row")
+ ("nhmac-new-frame-keeps-its-columns" "windowserver"
+  "Naglfar: a frame moved to a screen of another scale keeps its points and its font follows, but its fringes and
+other one-pixel constants are device pixels that do not scale, so it shows fewer columns (38 for 40 from 2x to 1x).
+Nidhogg's own gap, DEFERRED NG-SCALE2-PIXEL-1 (class A); a pass where the frame stays at its scale"
+  :either t))
