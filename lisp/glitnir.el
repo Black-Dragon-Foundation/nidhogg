@@ -662,6 +662,36 @@ off the native shell and in batch: the layout then jumps."
                                 (list (nth 0 sent) (nth 1 sent) 0 (nth 3 sent) nil nil))
           (glitnir--layout-leg w nil))))))
 
+;;;; mouse-drag-line's transient map
+;; A stock bug, fixed here so that mouse.el stays as upstream has it.  `mouse-drag-line''s transient map is a prefix of
+;; itself for each area a release may land on (stock: eight, none for a fringe, so a drag released over one is
+;; "<right-fringe> <drag-mouse-1> is undefined").  Each such prefix written into the map multiplies the printed size
+;; of a command that holds the map about tenfold: stock's eight print the release command at 150 MB, and adding the
+;; two fringes made it over 700 MB, which ran a session out of memory when a command recorder or `view-lossage'
+;; printed `this-command'.  While `mouse-drag-line' runs, the map `set-transient-map' is given gets all ten prefixes
+;; through one symbol instead.
+
+(defvar glitnir--drag-line-p nil
+  "Non-nil while `mouse-drag-line' runs (`glitnir--drag-line-map' reads it).")
+
+(defun glitnir--drag-line-around (orig &rest args)
+  "`mouse-drag-line' (ORIG with ARGS), noting that its transient map is on the way."
+  (let ((glitnir--drag-line-p t)) (apply orig args)))
+
+(defun glitnir--drag-line-map (args)
+  "`set-transient-map's :filter-args, from `mouse-drag-line': the map's area prefixes through a symbol."
+  (let ((map (car args)))
+    (when (and glitnir--drag-line-p (keymapp map))
+      (let ((prefix (make-symbol "mouse-drag-line-map")))
+        (fset prefix map)
+        (dolist (area '(mode-line header-line tab-line vertical-line right-divider bottom-divider
+                        left-margin right-margin left-fringe right-fringe))
+          (define-key map (vector area) prefix))))
+    args))
+
+(advice-add 'mouse-drag-line :around #'glitnir--drag-line-around)
+(advice-add 'set-transient-map :filter-args #'glitnir--drag-line-map)
+
 (provide 'glitnir-lisp)
 
 ;; The first frame born with a child-frame minibuffer when early-init.el asks for one (preloaded with this file: loadup
