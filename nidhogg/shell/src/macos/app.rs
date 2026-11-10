@@ -899,7 +899,10 @@ impl ShellBackend for MacShell {
             match drew {
                 Some(surface::Drew::Drawn) => {
                     // `glitnir-stats`: one entry per drawing a layer shows (Core Animation composes; no compose time)
-                    let px = damage.iter().map(|r| r.w.max(0) as u64 * r.h.max(0) as u64).sum();
+                    let px = damage
+                        .iter()
+                        .map(|r| r.w.max(0) as u64 * r.h.max(0) as u64)
+                        .sum();
                     glitnir::stats::record(
                         f.glitnir_root,
                         glitnir::stats::StatsEntry {
