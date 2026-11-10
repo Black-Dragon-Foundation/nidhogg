@@ -1,5 +1,5 @@
 ;;; sja-tests.el --- tests for Sjá's Lisp door  -*- lexical-binding: t -*-
-;; test-class: cond
+;; test-class: det
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
