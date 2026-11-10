@@ -26938,13 +26938,33 @@ display_line (struct it *it, int cursor_vpos)
   if (!NILP (Vshow_trailing_whitespace))
     highlight_trailing_whitespace (it);
 
-#ifdef HAVE_GLITNIR /* A boxed string stretch that ends its line closes its box.  */
-  struct glyph *g = row->glyphs[TEXT_AREA]; struct face *gf;
-  g += row->reversed_p || !row->used[TEXT_AREA] ? 0 : row->used[TEXT_AREA] - 1;
-  if (row->used[TEXT_AREA] && !row->continued_p && !row->truncated_on_right_p
-      && g->type == STRETCH_GLYPH && STRINGP (g->object)  /* Lisp may free faces mid-line.  */
-      && (gf = FACE_FROM_ID_OR_NULL (it->f, g->face_id)) && gf->box != FACE_NO_BOX)
-    g->left_box_line_p |= row->reversed_p, g->right_box_line_p |= !row->reversed_p;
+#ifdef HAVE_GLITNIR
+  /* A boxed stretch from a string that ends its line (a list row's
+     tail filling to the window's edge) closes its box there: the run
+     cannot go on to the next line, and the end-of-run check looks at
+     the buffer after the string, not at the line's end.  */
+  if (row->used[TEXT_AREA] && !row->continued_p && !row->truncated_on_right_p)
+    {
+      /* The row's last glyph in display order: the first one when the
+	 row is right-to-left.  */
+      struct glyph *last = row->glyphs[TEXT_AREA];
+      if (!row->reversed_p)
+	last += row->used[TEXT_AREA] - 1;
+
+      /* Lisp run during redisplay may have freed the glyph's face.  */
+      struct face *face = FACE_FROM_ID_OR_NULL (it->f, last->face_id);
+      bool boxed_string_stretch = (last->type == STRETCH_GLYPH
+				   && STRINGP (last->object)
+				   && face != NULL
+				   && face->box != FACE_NO_BOX);
+      if (boxed_string_stretch)
+	{
+	  if (row->reversed_p)
+	    last->left_box_line_p = true;
+	  else
+	    last->right_box_line_p = true;
+	}
+    }
 #endif
   /* Compute pixel dimensions of this line.  */
   compute_line_metrics (it);
