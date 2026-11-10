@@ -2151,6 +2151,25 @@ runs `nidhogg-frame-scale-change-functions'.)"
       (when (frame-live-p f) (delete-frame f t))
       (nhmac-gui--settle))))
 
+(ert-deftest nhmac-glyphs-measured-once ()
+  "A font asks Core Text for a glyph's advance and bounds once: redrawing text already shown asks it nothing."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (switch-to-buffer (generate-new-buffer " *nhmac-glyphs*"))
+  (unwind-protect
+      (progn
+        (dotimes (_ 20) (insert "The quick brown fox jumps over the lazy dog 0123456789 (){}[]<>;:.,!?\n"))
+        (redraw-frame)
+        (redisplay t)
+        (let ((before (nhmac-stats)))
+          (dotimes (_ 5)
+            (redraw-frame)
+            (redisplay t))
+          (nhmac-gui--say "nhmac-glyphs-measured-once: %d glyph asks over 5 full redraws"
+                          (nhmac-gui--delta before :glyph-asks))
+          (should (= (nhmac-gui--delta before :glyph-asks) 0))))
+    (kill-buffer)))
+
 (ert-deftest nhmac-monitor-change-runs-move-frame-functions ()
   "A root frame moved to another monitor runs `move-frame-functions' with it."
   :tags '(draws)
