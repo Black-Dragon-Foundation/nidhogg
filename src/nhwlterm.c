@@ -3250,6 +3250,15 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
       return 0;
 
     case NHG_ACT_MONITORS:
+      if (a->window && (f = nhwl_window_to_frame (dpyinfo, a->window)))
+	{
+	  /* F moved to another monitor: Lisp runs move-frame-functions.  */
+	  EVENT_INIT (ie);
+	  ie.kind = MOVE_FRAME_EVENT;
+	  XSETFRAME (ie.frame_or_window, f);
+	  kbd_buffer_store_event_hold (&ie, hold_quit);
+	  return 1;
+	}
       /* The output list changed (the glue keeps it).  The first scale an
 	 output reports is the display's, and its resolution's.  */
       if (a->code > 0 && dpyinfo->scale120 == 0)

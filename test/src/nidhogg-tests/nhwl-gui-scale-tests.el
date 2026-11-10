@@ -225,5 +225,31 @@ a scale change keeps the zoom."
             (should (= (nidhogg-frame-text-zoom child) 1.2)))
         (when (frame-live-p child) (delete-frame child))))))
 
+;;;; A frame's monitor change
+
+(ert-deftest nhwl-gui/monitor-change-runs-move-frame-functions ()
+  "A frame that goes from one monitor to another at the same scale runs `move-frame-functions' once, and its
+monitor is the new one."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let* ((moved nil) (f (selected-frame))
+         ;; not `fn': `nhwl-gui--with-second-output' binds that name for its own hook
+         (on-move (lambda (frame) (push frame moved))))
+    (nhwl-gui--with-second-output
+     (add-hook 'move-frame-functions on-move)
+     (unwind-protect
+         (progn
+           (gui-runner-recorder '(:cmd "output" :op "enter" :name "nh-1" :surface "toplevel"))
+           (gui-runner-recorder '(:cmd "output" :op "leave" :name "nh-0" :surface "toplevel"))
+           (nhwl-gui--wait-ev (lambda () moved))
+           (should moved)
+           ;; absence: a second run for the one move would come now
+           (nhwl-gui--observe 0.3)
+           (should (equal moved (list f)))
+           (should (equal (alist-get 'name (frame-monitor-attributes f)) "nh-1")))
+       (remove-hook 'move-frame-functions on-move)
+       (gui-runner-recorder '(:cmd "output" :op "enter" :name "nh-0" :surface "toplevel"))
+       (gui-runner-recorder '(:cmd "output" :op "leave" :name "nh-1" :surface "toplevel"))
+       (nhwl-gui--pump)))))
+
 (provide 'nhwl-gui-scale-tests)
 ;;; nhwl-gui-scale-tests.el ends here

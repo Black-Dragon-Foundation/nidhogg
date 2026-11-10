@@ -63,20 +63,36 @@ pub fn removed(state: &mut Display, ev: &Record, o: &OutputEv) {
 /// An `ENTER_OUTPUT`: the window is on the output now (at most `MAX_OUTPUTS` are kept per window).
 pub fn entered(state: &mut Display, ev: &Record, o: &OutputEv) {
     let id = o.id;
-    if let Ok(f) = state.frame_mut(ev.window)
-        && f.outputs.len() < MAX_OUTPUTS
-        && !f.outputs.contains(&id)
-    {
+    let Ok(f) = state.frame_mut(ev.window) else {
+        return;
+    };
+    let first = f.outputs.first().copied();
+    if f.outputs.len() < MAX_OUTPUTS && !f.outputs.contains(&id) {
         f.outputs.push(id);
     }
-    learn(state, ev);
+    moved(state, ev, first);
 }
 
 /// A `LEAVE_OUTPUT`: the window is off the output.
 pub fn left(state: &mut Display, ev: &Record, o: &OutputEv) {
     let id = o.id;
-    if let Ok(f) = state.frame_mut(ev.window) {
-        f.outputs.retain(|&o| o != id);
+    let Ok(f) = state.frame_mut(ev.window) else {
+        return;
+    };
+    let first = f.outputs.first().copied();
+    f.outputs.retain(|&o| o != id);
+    moved(state, ev, first);
+}
+
+/// After an enter or leave: a `MONITORS` action for the window when it is on an output and its first one is no longer
+/// `first` (it came to or moved to another monitor; C runs `move-frame-functions`), and the output's scale learnt.
+fn moved(state: &mut Display, ev: &Record, first: Option<u64>) {
+    if let Ok(f) = state.frame(ev.window)
+        && f.outputs.first().is_some_and(|&o| Some(o) != first)
+    {
+        state
+            .actions
+            .push(NhgAction::new(NHG_ACT_MONITORS, ev.window, ev.time_ns));
     }
     learn(state, ev);
 }

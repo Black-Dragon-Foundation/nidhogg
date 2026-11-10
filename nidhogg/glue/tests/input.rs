@@ -494,11 +494,37 @@ mod monitors {
             assert_eq!(rc as usize, n);
             ids[..n].to_vec()
         };
-        // the enter record carries no action: step until the window's outputs show it
+        // the window's first output: a `MONITORS` action for the window (C runs `move-frame-functions`)
+        pump_until(d, |a| a.kind == NHG_ACT_MONITORS && a.window == id);
+        assert_eq!(outputs(d), [first[0].id]);
+        // on two outputs, its first one unchanged: no action; off the first: it moved, one action
+        rec.control_ok(&format!(
+            r#"{{"cmd":"output","op":"enter","name":"nh-extra","surface":{id}}}"#
+        ));
+        let entered = settle(d);
+        assert!(
+            !entered
+                .iter()
+                .any(|a| a.kind == NHG_ACT_MONITORS && a.window == id),
+            "{entered:?}"
+        );
+        rec.control_ok(&format!(
+            r#"{{"cmd":"output","op":"leave","name":"{first_name}","surface":{id}}}"#
+        ));
+        pump_until(d, |a| a.kind == NHG_ACT_MONITORS && a.window == id);
+        assert_eq!(outputs(d), [extra.id]);
+        rec.control_ok(&format!(
+            r#"{{"cmd":"output","op":"enter","name":"{first_name}","surface":{id}}}"#
+        ));
+        rec.control_ok(&format!(
+            r#"{{"cmd":"output","op":"leave","name":"nh-extra","surface":{id}}}"#
+        ));
+        let mut ids = Vec::new();
         let end = Instant::now() + Duration::from_secs(5);
-        while outputs(d) != [first[0].id] && Instant::now() < end {
+        while ids != [first[0].id] && Instant::now() < end {
             backend(d).dispatch_main().unwrap();
             step(d, 0);
+            ids = outputs(d);
             // SAFETY: a live display.
             readable_within(unsafe { nhg_fd(d) }, 50);
         }
