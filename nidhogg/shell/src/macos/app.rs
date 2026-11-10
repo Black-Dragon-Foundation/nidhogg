@@ -38,6 +38,10 @@ mod hooks;
 #[path = "child.rs"]
 mod child;
 
+/// A child's chrome (Glitnir's corners, border and shadow) on its layers.
+#[path = "chrome.rs"]
+mod chrome;
+
 pub struct MacShell {
     mtm: MainThreadMarker,
     app: Retained<NSApplication>,
@@ -681,6 +685,18 @@ impl ShellBackend for MacShell {
             return self.kid_alpha(window, factor);
         }
         self.win(window).map(drop).and(Err(ShellError::Unsupported))
+    }
+
+    fn chrome_on_layers(&self) -> bool {
+        true
+    }
+
+    fn set_chrome(
+        &mut self,
+        window: WindowId,
+        chrome: Option<&glitnir::scene::Chrome>,
+    ) -> ShellResult {
+        self.kid_chrome(window, chrome.copied())
     }
 
     fn child_new(&mut self, desc: &ChildDesc) -> ShellResult<WindowId> {
