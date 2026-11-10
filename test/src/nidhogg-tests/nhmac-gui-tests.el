@@ -2030,6 +2030,38 @@ a child again, and the child moves to another root."
       (delete-frame other t)
       (select-frame root))))
 
+(ert-deftest nhmac-reparent-across-scales-reopens-the-font ()
+  "A child frame moved under a root of another scale takes that scale and re-opens its font at it once, as a frame
+the window server moves to such a screen does (`nidhogg-frame-scale-change-functions' run once)."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((root (selected-frame))
+         (other (make-frame '((width . 40) (height . 10))))
+         (c nil) (reopens 0)
+         (hook (lambda (frame) (when (eq frame c) (cl-incf reopens)))))
+    (unwind-protect
+        (progn
+          (dotimes (_ 3) (nhmac-gui--settle))
+          (skip-unless (/= (frame-scale-factor other) (frame-scale-factor root)))
+          (select-frame root)
+          (setq c (nhmac-gui--child))
+          (nhmac-gui--settle)
+          (add-hook 'nidhogg-frame-scale-change-functions hook)
+          (let ((pt (/ (face-attribute 'default :height c t) 10.0)))
+            (set-frame-parameter c 'parent-frame other)
+            (dotimes (_ 3) (nhmac-gui--settle))
+            (nhmac-gui--say "nhmac-reparent-across-scales-reopens-the-font: scale %s (root %s, other %s), font %d px, %d re-opens"
+                            (frame-scale-factor c) (frame-scale-factor root) (frame-scale-factor other)
+                            (nhmac-gui--font-px c) reopens)
+            (should (= (frame-scale-factor c) (frame-scale-factor other)))
+            (should (= (nhmac-gui--font-px c) (floor (+ (* pt (frame-scale-factor other)) 0.5))))
+            (should (= reopens 1))))
+      (remove-hook 'nidhogg-frame-scale-change-functions hook)
+      (when (and c (frame-live-p c)) (delete-frame c t))
+      (delete-frame other t)
+      (select-frame root)
+      (nhmac-gui--settle))))
+
 (ert-deftest nhmac-one-window-per-root ()
   "The window server lists one window per root frame: child frames add none, an overhanging one adds its panel."
   :tags '(draws)
