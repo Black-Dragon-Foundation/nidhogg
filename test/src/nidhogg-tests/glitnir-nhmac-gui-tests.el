@@ -565,14 +565,26 @@ not held, and the screen shows neither card row background (colours only the car
                     row cards surface left right)
     (when (or left right)
       ;; the screen shows a card row's picture: is it in the root's newest surface too (then Emacs did not redraw),
-      ;; or only on the screen (then the layer shows something else)?  Every 16th row of the surface, counted.
-      (let ((w (plist-get surface :w)) (h (plist-get surface :h)) (n 0) (seen 0))
-        (cl-loop for y from 0 below h by 16
-                 do (cl-loop for p across (nhmac--test-surface-region 0 y (min w 1400) 1)
-                             do (cl-incf seen)
-                             (unless (nhmac-gui--far (logand p #xffffff) glitnir-nhmac--card-bg 8) (cl-incf n))))
-        (nhmac-gui--say "glitnir-nhmac/clean-root: %s: %d of %d sampled surface pixels are the card background"
-                        row n seen)))
+      ;; or only on the screen (then the layer shows something else)?  Every 16th row of the surface, counted; then
+      ;; again after a full redraw (if that clears it, Emacs's matrices thought the surface already showed them).
+      (let ((count (lambda ()
+                     (let ((w (plist-get surface :w)) (h (plist-get surface :h)) (n 0) (seen 0))
+                       (cl-loop for y from 0 below h by 16
+                                do (cl-loop for p across (nhmac--test-surface-region 0 y (min w 1400) 1)
+                                            do (cl-incf seen)
+                                            (unless (nhmac-gui--far (logand p #xffffff) glitnir-nhmac--card-bg 8)
+                                              (cl-incf n))))
+                       (format "%d of %d" n seen))))
+            (before (nhmac-stats)))
+        (nhmac-gui--say "glitnir-nhmac/clean-root: %s: windows %S"
+                        row (mapcar (lambda (w) (list (buffer-name (window-buffer w)) (window-pixel-edges w)))
+                                    (window-list nil 'never)))
+        (nhmac-gui--say "glitnir-nhmac/clean-root: %s: %s sampled surface pixels are the card background"
+                        row (funcall count))
+        (redraw-frame)
+        (nhmac-gui--settle)
+        (nhmac-gui--say "glitnir-nhmac/clean-root: %s: after redraw-frame (%d draws, %d commits): %s" row
+                        (nhmac-gui--delta before :draws) (nhmac-gui--delta before :commits) (funcall count))))
     (should (equal (list row (plist-get cards :cards) (plist-get surface :held) left right)
                    (list row nil nil nil nil)))))
 
