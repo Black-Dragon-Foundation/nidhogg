@@ -628,6 +628,7 @@ user displays takes this path, and a build without the image libraries would not
                        (list rows)))))))
 
 (defvar nhwl-scroll-layers)
+(declare-function nhwl--scroll-layers "nhwlterm.c")
 
 ;; The frame's own scroll path: window layers off (with them, the window's scroll moves its layer's view instead).
 (ert-deftest nhwl-gui/scroll-run-damages-exposed-rows ()
@@ -2294,6 +2295,11 @@ geometry's origin, past the resize margins it keeps where the compositor offers 
      (switch-to-buffer "*scratch*")
      (message nil)
      (redisplay t)
+     ;; An earlier row's full-window scroll leaves the window its own layer, and the layer goes back to the frame two
+     ;; seconds after that scroll (nidhogg/glue/src/layers.rs `IDLE'), at the next publish: a commit the row would
+     ;; otherwise count as drawn while idle.  Let it land first.
+     (when (fboundp 'nhwl--scroll-layers)
+       (should (nhwl-gui--wait (lambda () (redisplay t) (zerop (nhwl--scroll-layers))) 5)))
      (gui-runner-wait-settled)
      (let ((mark (nhwl-gui--mark)) (end (+ (float-time) 2)))
        (while (< (float-time) end)
