@@ -1002,7 +1002,7 @@ jobs:
           # composited, not occluded, as the ring and timing rows need
           caffeinate -d -i -u bash nidhogg/test/nhmac-gui.sh --emacs "$RUNNER_TEMP/nbuild/obj/src/emacs" --out "$RUNNER_TEMP/nhmac-gui/naglfar" ${sel:+--select "$sel"} ${FILES:+--files "$FILES"}
       - name: The NS tarball for the paired timing (artifact tarball-macos)
-        if: ${{ inputs.pair != '' }}
+        if: ${{ !cancelled() && inputs.pair != '' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: tarball-macos
