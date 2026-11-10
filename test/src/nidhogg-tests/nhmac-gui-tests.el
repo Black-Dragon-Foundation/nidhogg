@@ -2185,6 +2185,7 @@ the size it was made with in characters.  (Each re-open runs `nidhogg-frame-scal
     (add-hook 'nidhogg-frame-scale-change-functions on-scale)
     (add-hook 'display-monitors-changed-functions on-monitors)
     (add-hook 'move-frame-functions on-move)
+    (unless (consp frame-size-history) (setq frame-size-history (list 200)))
     (unwind-protect
         (progn
           (setq f (make-frame '((width . 40) (height . 10))))
@@ -2197,8 +2198,10 @@ the size it was made with in characters.  (Each re-open runs `nidhogg-frame-scal
             (should (= reopens (if (= s (frame-scale-factor root)) 0 1)))
             (should (= (nhmac-gui--font-px f) (floor (+ (* pt s) 0.5))))
             ;; it keeps the size it was made with, in characters, at whichever scale it shows
-            (nhmac-gui--say "nhmac-new-frame-opens-its-font-once: %dx%d characters, %S px"
-                            (frame-width f) (frame-height f) (list (frame-pixel-width f) (frame-pixel-height f)))
+            (nhmac-gui--say "nhmac-new-frame-opens-its-font-once: %dx%d characters, %S px; its size changes, oldest first: %S"
+                            (frame-width f) (frame-height f) (list (frame-pixel-width f) (frame-pixel-height f))
+                            (reverse (seq-filter (lambda (e) (eq (car-safe (car-safe e)) f))
+                                                 (cdr-safe frame-size-history))))
             (should (equal (list (frame-width f) (frame-height f)) '(40 10)))))
       (remove-hook 'nidhogg-frame-scale-change-functions on-scale)
       (remove-hook 'display-monitors-changed-functions on-monitors)
