@@ -29,8 +29,8 @@ extern "C" {
 #define SJA_DOTTED 4 /* INT elements follow, the last one the tail */
 #define SJA_VECTOR 5 /* INT elements follow */
 
-/* Ops (the arguments each takes: README.md, "The C door").  */
-#define SJA_APPLY 1
+/* Ops (the arguments each takes: README.md, "The C door").  1 was the
+   string apply: a model comes only as the hub's line (SJA_PUSH).  */
 #define SJA_OPEN 2
 #define SJA_CLOSE 3
 #define SJA_FOLLOW 4

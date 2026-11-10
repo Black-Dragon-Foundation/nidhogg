@@ -80,7 +80,7 @@ fn every_op_reads_typed_as_the_value_decode_reads_it() {
 fn the_hub_fixture_reads_typed() {
     let fixture: Value = serde_json::from_str(include_str!("fixtures/grep-append.json")).unwrap();
     for step in fixture["steps"].as_array().unwrap() {
-        same_typed(step["model"].as_str().unwrap());
+        same_typed(&step["model"].to_string());
     }
 }
 

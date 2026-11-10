@@ -1,5 +1,6 @@
-# cargo-fuzz target for Sjá's C entry point (apply on arbitrary bytes, then the verbs).  Its own workspace, a sibling of
-# the crate as glitnir-fuzz is.  Builds on nightly only: `cargo +nightly fuzz run apply_bytes` (sja/README.md).
+# cargo-fuzz targets for Sjá's C entry point (a hub's line with an arbitrary model, pushed and drained, then the verbs).
+# Its own workspace, a sibling of the crate as glitnir-fuzz is.  Builds on nightly only: `cargo +nightly fuzz run
+# push_bytes` (sja/README.md).
 [package]
 name = "sja-fuzz"
 version = "0.0.0"
@@ -18,13 +19,6 @@ sja = { path = "../sja" }
 
 [profile.release]
 debug = 1
-
-[[bin]]
-name = "apply_bytes"
-path = "fuzz_targets/apply_bytes.rs"
-test = false
-doc = false
-bench = false
 
 [[bin]]
 name = "push_bytes"
