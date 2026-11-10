@@ -45,7 +45,7 @@ flag_rule() {
         # C sources only (src/Makefile.in is not preprocessed).  Both sides go through unifdef: it also folds unrelated
         # always-false conditions such as '#if defined X && 0', which would show as a diff against the raw base.
         src/*.[chm])
-# A C file a flag group created is that group's own file (unguarded): the other groups' checks skip it.
+          # A C file a flag group created is that group's own file (unguarded): the other groups' checks skip it.
           sub=$(git log --diff-filter=A --format=%s HEAD -- "$f" | tail -n 1)
           for j in "${!gname[@]}"; do
             case $sub in "nidhogg: ${gname[j]}:"*) [ "$i" != "$j" ] && [ -n "$(git rev-list -n 1 --grep="^nidhogg: ${gname[j]}:" "${gbase[i]}..HEAD")" ] && continue 2 ;; esac
@@ -184,7 +184,7 @@ if [ "${TREE_TEST_SELF:-}" = 1 ]; then
   fixture; putf "nidhogg: glitnir: g" lisp/g.el '(a)\n'; putf "nidhogg: shell: s" src/s.c '#ifdef HAVE_NHWL\nint s;\n#endif\n'
   putf "nidhogg: pgtk: p" lisp/g.el '(a)\n(b)\n'
   expect "another commit editing a Lisp file a group created" "lisp/g.el changed outside the groups' own files"
-fixture; putf "nidhogg: shell: s" src/nhwl.c 'int s;\n'; put "nidhogg: history: h" 'int a;\n#ifdef HAVE_NIDHOGG_HISTORY\nint h;\n#endif\n'
+  fixture; putf "nidhogg: shell: s" src/nhwl.c 'int s;\n'; put "nidhogg: history: h" 'int a;\n#ifdef HAVE_NIDHOGG_HISTORY\nint h;\n#endif\n'
   putf "nidhogg: shell: s2" src/nhwl.c 'int s;\nint t;\n'
   expect "a shell commit above history editing a C file the shell created" ""
   fixture; putf "nidhogg: shell: s" src/nhwl.c 'int s;\n'; put "nidhogg: history: h" 'int a;\n#ifdef HAVE_NIDHOGG_HISTORY\nint h;\n#endif\n'
