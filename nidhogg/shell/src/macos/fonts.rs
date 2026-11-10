@@ -173,9 +173,15 @@ pub fn faces() -> Vec<MacFace> {
     out
 }
 
-/// An open font.
+/// A glyph's advance and bounds: (advance, left, right, top, bottom), in pixels, y up.
+pub type Bounds = (f64, f64, f64, f64, f64);
+
+/// An open font, with the characters' glyphs it has looked up and the glyphs' bounds it has measured: a font's glyphs
+/// never change, and redisplay asks for the same few on every line it lays out, so Core Text is asked once each.
 struct OpenFont {
     font: Retained<NSFont>,
+    glyphs: HashMap<u16, Option<u32>>,
+    bounds: HashMap<u16, Bounds>,
 }
 
 // SAFETY: Core Text fonts are immutable and documented thread-safe; the `NSFont` is only used as a `CTFont` here.
@@ -216,7 +222,14 @@ pub fn open(id: u64, size: f64) -> Option<(u64, RawMetrics)> {
     let mut open = open_fonts().lock().unwrap_or_else(|p| p.into_inner());
     open.0 += 1;
     let handle = open.0;
-    open.1.insert(handle, OpenFont { font });
+    open.1.insert(
+        handle,
+        OpenFont {
+            font,
+            glyphs: HashMap::new(),
+            bounds: HashMap::new(),
+        },
+    );
     Some((handle, m))
 }
 
@@ -239,35 +252,49 @@ pub fn with_font<R>(handle: u64, f: impl FnOnce(*const c_void) -> R) -> Option<R
 /// The glyph of character `c` (`None`: the font has none; only the BMP for now).
 pub fn glyph(handle: u64, c: u32) -> Option<u32> {
     let unit = u16::try_from(c).ok()?;
-    with_font(handle, |ct| {
-        let mut g = 0u16;
-        // SAFETY: one character and one glyph slot, on a live font.
-        let ok = unsafe { CTFontGetGlyphsForCharacters(ct, &unit, &mut g, 1) };
-        (ok && g != 0).then_some(u32::from(g))
-    })
-    .flatten()
+    let mut open = open_fonts().lock().unwrap_or_else(|p| p.into_inner());
+    let o = open.1.get_mut(&handle)?;
+    if let Some(g) = o.glyphs.get(&unit) {
+        return *g;
+    }
+    super::surface::STATS
+        .glyph_asks
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let ct: *const c_void = Retained::as_ptr(&o.font).cast();
+    let mut g = 0u16;
+    // SAFETY: one character and one glyph slot, on a live font.
+    let ok = unsafe { CTFontGetGlyphsForCharacters(ct, &unit, &mut g, 1) };
+    let g = (ok && g != 0).then_some(u32::from(g));
+    o.glyphs.insert(unit, g);
+    g
 }
 
-/// Glyph `g`'s advance and bounds: (advance, left, right, top, bottom), in pixels, y up.
-pub fn glyph_bounds(handle: u64, g: u32) -> Option<(f64, f64, f64, f64, f64)> {
+/// Glyph `g`'s advance and bounds in the open font `handle`.
+pub fn glyph_bounds(handle: u64, g: u32) -> Option<Bounds> {
     let g = u16::try_from(g).ok()?;
-    with_font(handle, |ct| {
-        super::surface::STATS
-            .glyph_asks
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let mut adv = CGSize::default();
-        let mut r = CGRect::default();
-        // SAFETY: one glyph and one output slot each, on a live font.
-        unsafe {
-            CTFontGetAdvancesForGlyphs(ct, CT_DEFAULT, &g, &mut adv, 1);
-            CTFontGetBoundingRectsForGlyphs(ct, CT_DEFAULT, &g, &mut r, 1);
-        }
-        (
-            adv.width,
-            r.origin.x,
-            r.origin.x + r.size.width,
-            r.origin.y + r.size.height,
-            r.origin.y,
-        )
-    })
+    let mut open = open_fonts().lock().unwrap_or_else(|p| p.into_inner());
+    let o = open.1.get_mut(&handle)?;
+    if let Some(b) = o.bounds.get(&g) {
+        return Some(*b);
+    }
+    super::surface::STATS
+        .glyph_asks
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let ct: *const c_void = Retained::as_ptr(&o.font).cast();
+    let mut adv = CGSize::default();
+    let mut r = CGRect::default();
+    // SAFETY: one glyph and one output slot each, on a live font.
+    unsafe {
+        CTFontGetAdvancesForGlyphs(ct, CT_DEFAULT, &g, &mut adv, 1);
+        CTFontGetBoundingRectsForGlyphs(ct, CT_DEFAULT, &g, &mut r, 1);
+    }
+    let b = (
+        adv.width,
+        r.origin.x,
+        r.origin.x + r.size.width,
+        r.origin.y + r.size.height,
+        r.origin.y,
+    );
+    o.bounds.insert(g, b);
+    Some(b)
 }
