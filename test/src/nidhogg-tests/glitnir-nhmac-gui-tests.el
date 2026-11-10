@@ -475,7 +475,10 @@ children are opaque, so only the chrome could tell them apart."
 
 (ert-deftest glitnir-nhmac/text-identical-to-off ()
   "Text in a rounded, shadowed child is the text Glitnir off draws: inside the child, away from its corners, the
-screen is the same pixel for pixel (the corner mask and the shadow touch nothing else)."
+screen is the same pixel for pixel (the corner mask and the shadow touch nothing else).  As in the ledger's L3, an
+edge pixel of a glyph (one whose four neighbours are not all its colour) is left out: a glyph's overhang drawn again
+blends it twice, and how often that happens follows the redisplays, not the chrome (at 1x the frame with Glitnir off
+showed 5 such pixels darker, on descenders' lower edge)."
   :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (glitnir-nhmac--with-white
@@ -519,7 +522,21 @@ screen is the same pixel for pixel (the corner mask and the shadow touch nothing
                                     a b)
                            (if out (format ": %S" (nreverse out)) "")))
          (should (> (length a) 0))
-         (should (equal a b)))))))
+         ;; the flat pixels (all four neighbours the same colour in the picture with chrome) are the same
+         (let* ((w (1+ (- (nth 2 inner) (nth 0 inner)))) (va (vconcat a)) (vb (vconcat b)) (n (length va))
+                (flat (lambda (i)
+                        (let ((p (aref va i)))
+                          (and (>= i w) (< (+ i w) n) (> (% i w) 0) (< (% i w) (1- w))
+                               (eql (aref va (1- i)) p) (eql (aref va (1+ i)) p)
+                               (eql (aref va (- i w)) p) (eql (aref va (+ i w)) p)))))
+                (diff 0) (count 0))
+           (dotimes (i n)
+             (when (funcall flat i)
+               (cl-incf count)
+               (unless (eql (aref va i) (aref vb i)) (cl-incf diff))))
+           (nhmac-gui--say "glitnir-nhmac/text-identical-to-off: %d of %d flat pixels differ" diff count)
+           (should (> count 0))
+           (should (= diff 0))))))))
 
 ;;; Window cards: each card is an image the glue drew alone, on a layer of its own over the root's content.  Two
 ;;; windows side by side, a 6-pixel divider between them (the gap, whose colour is what a card's corners show).
