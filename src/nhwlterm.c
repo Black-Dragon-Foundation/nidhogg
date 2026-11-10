@@ -1020,14 +1020,18 @@ nhwl_placed_p (struct frame *f)
 }
 #endif
 
-/* The scale frame F starts at, times 120: its parent's, else the selected
-   frame's (where the user works, and where a new top-level opens beside
-   it), else the newest the display heard.  */
+/* The scale frame F starts at, times 120: for a top-level asked for at a
+   position, the scale of the screen there (START120, set before its fonts
+   open); else its parent's, else the selected frame's (where the user
+   works, and where a new top-level opens beside it), else the newest the
+   display heard.  */
 static uint32_t
 nhwl_start_scale (struct frame *f)
 {
   struct frame *s = FRAME_PARENT_FRAME (f) ? FRAME_PARENT_FRAME (f) : SELECTED_FRAME ();
 
+  if (!FRAME_PARENT_FRAME (f) && FRAME_NHWL_OUTPUT (f)->start120)
+    return FRAME_NHWL_OUTPUT (f)->start120;
   if (s != f && FRAME_NHWL_P (s) && FRAME_DISPLAY_INFO (s) == FRAME_DISPLAY_INFO (f)
       && FRAME_NHWL_OUTPUT (s)->scale120)
     return FRAME_NHWL_OUTPUT (s)->scale120;

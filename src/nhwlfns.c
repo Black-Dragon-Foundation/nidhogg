@@ -769,6 +769,37 @@ do_unwind_create_frame (Lisp_Object frame)
   unwind_create_frame (frame);
 }
 
+#ifdef HAVE_NHMAC
+/* The scale (times 120) of the screen under PARMS' `left' and `top' when
+   both are plain numbers not below 0 (device pixels from the main screen's
+   top-left, as `display-monitor-attributes-list' places its monitors); 0
+   otherwise.  The monitors are known before any window exists.  */
+static uint32_t
+nhwl_start_scale_at (struct nhwl_display_info *dpyinfo, Lisp_Object parms)
+{
+  Lisp_Object left = Fcdr (Fassq (Qleft, parms));
+  Lisp_Object top = Fcdr (Fassq (Qtop, parms));
+  NhgMonitor list[NHWL_MAX_OUTPUTS];
+  size_t n = 0;
+
+  if (!FIXNATP (left) || !FIXNATP (top) || !dpyinfo->glue
+      || nhwl_glue_rc (dpyinfo, NHG (nhg_monitors (dpyinfo->glue, list,
+						   NHWL_MAX_OUTPUTS, &n))) < 0)
+    return 0;
+  for (size_t i = 0; i < n && i < NHWL_MAX_OUTPUTS; i++)
+    {
+      int ox, oy;
+      EMACS_INT x = XFIXNAT (left), y = XFIXNAT (top);
+
+      NHG (nhg_monitor_origin (list[i].x, list[i].y, list[i].scale120,
+			       &ox, &oy));
+      if (x >= ox && x < ox + list[i].w && y >= oy && y < oy + list[i].h)
+	return list[i].scale120;
+    }
+  return 0;
+}
+#endif
+
 DEFUN ("x-create-frame", Fx_create_frame, Sx_create_frame, 1, 1, 0,
        doc: /* SKIP: real doc in xfns.c.  */ )
   (Lisp_Object parms)
@@ -938,6 +969,9 @@ DEFUN ("x-create-frame", Fx_create_frame, Sx_create_frame, 1, 1, 0,
 #endif	/* NHWL_WAYLAND */
 #ifdef HAVE_NHMAC
   register_font_driver (&nhmacfont_driver, f);
+  /* A top-level asked for at `left', `top' opens there
+     (nhwl_create_frame_window): its fonts open at that screen's scale.  */
+  out->start120 = NILP (parent_frame) ? nhwl_start_scale_at (dpyinfo, parms) : 0;
 #endif
 
   gui_default_parameter (f, parms, Qfont_backend, Qnil,
