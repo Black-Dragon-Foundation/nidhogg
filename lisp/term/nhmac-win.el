@@ -488,8 +488,9 @@ The commit pacer then holds each commit, until its bound.  For tests."
 `:w', `:h' (device pixels), `:points' (the content size), the layer's
 `:scale' and `:gravity', `:contents-is-newest', `:srgb' (`srgb',
 `generic' or nil), `:pixel', the premultiplied ARGB at X, Y,
-`:slots', the surfaces the window's ring has made, and `:held',
-whether the commit pacer holds a commit.  For tests."
+`:slots', the surfaces the window's ring has made, `:held', whether
+the commit pacer holds a commit, and `:free', whether the next commit
+would find a surface the window server does not hold.  For tests."
   (nhmac--query 'test-surface (or frame (selected-frame)) x y))
 
 (defun nhmac--test-surface-region (x y w h &optional frame)
