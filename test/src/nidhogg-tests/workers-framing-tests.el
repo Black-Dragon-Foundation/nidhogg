@@ -252,6 +252,35 @@ Batches go to `workers-fr-tests--collect', raw output to the property
                  (lambda () (= (length (process-get p 'got)) 3))))
         (should (equal (workers-fr-tests--got p) (car whole)))))))
 
+(ert-deftest workers/raw-to-sja ()
+  ;; With :raw-to-sja a :raw-prefix line goes to Sjá's push as its entry is
+  ;; made, never a Lisp string: its entry is (ANSWER sja nil), ANSWER what
+  ;; `nidhogg-view--call' answers for the push (VIEW VERSION DECISION).
+  ;; Other lines parse as before.  Through a process, in both modes, a
+  ;; batch ends before such a line: the lines before it are delivered
+  ;; first.
+  (skip-unless (and (fboundp 'nidhogg-view--call) (require 'nidhogg-views nil t)))
+  (let* ((pre "{\"event\":\"view-model\"")
+         (a (concat "{\"event\":\"view-model\",\"data\":{\"base\":0,\"hub\":7,"
+                    "\"model\":{\"ops\":[]},\"reset\":true,\"version\":1,\"view\":\"wfr-sja\"}}"))
+         (b "{\"event\":\"view-patch\",\"data\":{\"v\":2}}")
+         (c "{\"e\":1}")
+         (s (concat b "\n" a "\n" c "\n"))
+         (answer (list "wfr-sja" 1 (seq-position nidhogg-view--decisions 'none))))
+    (should (equal (car (workers-fr-tests--frame (list s) 'lines :raw-prefix pre :raw-to-sja t))
+                   (list (workers-fr-tests--oracle b) (list answer 'sja nil) (workers-fr-tests--oracle c))))
+    ;; off: the line stays raw, as before
+    (should (equal (car (workers-fr-tests--frame (list s) 'lines :raw-prefix pre :raw-to-sja nil))
+                   (list (workers-fr-tests--oracle b) (list a a nil) (workers-fr-tests--oracle c))))
+    (workers-fr-tests--modes
+      (let ((p (workers-fr-tests--cat "sja" 'lines :raw-prefix pre :raw-to-sja t)))
+        (process-send-string p s)
+        (should (workers-fr-tests--until (lambda () (= (length (process-get p 'got)) 3))))
+        (should (equal (workers-fr-tests--got p)
+                       (list (workers-fr-tests--oracle b) (list answer 'sja nil) (workers-fr-tests--oracle c))))
+        ;; the Sjá line starts a batch: b's batch held b alone
+        (should (eql (car (last (process-get p 'batches))) 1))))))
+
 (ert-deftest workers/sentinel-after-last-message ()
   ;; 50 messages, then the process exits, or exits leaving a grandchild
   ;; that holds its stdout open: the sentinel runs after message 50

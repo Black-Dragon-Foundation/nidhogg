@@ -7057,13 +7057,16 @@ read_and_dispose_of_process_output (struct Lisp_Process *p, char *chars,
      gets its string (Task 24).  */
   if (nh_io_batch_begin (p, &nh_call))
     {
-      if (!NILP (nh_call.fn))
-	internal_condition_case_1 (read_process_output_call,
-				   list3 (nh_call.fn, make_lisp_proc (p),
-					  nh_call.batch),
-				   !NILP (Vdebug_on_error) ? Qnil : Qerror,
-				   read_process_output_error_handler);
-      nh_io_batch_end (&nh_call);
+      /* Inline, a delivery may come as several batches in turn: one
+	 ends before a line for Sjá (nh_io_batch_end).  */
+      do
+	if (!NILP (nh_call.fn))
+	  internal_condition_case_1 (read_process_output_call,
+				     list3 (nh_call.fn, make_lisp_proc (p),
+					    nh_call.batch),
+				     !NILP (Vdebug_on_error) ? Qnil : Qerror,
+				     read_process_output_error_handler);
+      while (nh_io_batch_end (p, &nh_call));
     }
   else
 
