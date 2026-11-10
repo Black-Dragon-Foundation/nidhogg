@@ -935,7 +935,11 @@ impl MacShell {
                 f.size.width,
                 f.size.height,
                 if image { "t" } else { "nil" },
-                if k.chrome_shown.stretches() == Some(true) { "t" } else { "nil" }
+                if k.chrome_shown.stretches() == Some(true) {
+                    "t"
+                } else {
+                    "nil"
+                }
             )
         };
         let chrome = format!(
