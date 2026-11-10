@@ -582,7 +582,8 @@ impl ShellBackend for MacShell {
             Place::Near(near) => {
                 if let Some(n) = self.windows.get(&near) {
                     let f = n.window.frame();
-                    let from = objc2_foundation::NSPoint::new(f.origin.x, f.origin.y + f.size.height);
+                    let from =
+                        objc2_foundation::NSPoint::new(f.origin.x, f.origin.y + f.size.height);
                     let _ = win.window.cascadeTopLeftFromPoint(from);
                 }
             }
