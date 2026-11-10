@@ -113,6 +113,7 @@ fn project(m: &Model, ops: &[Op], budget: usize) -> Result<(), No> {
                 at,
                 remove,
                 ids,
+                ..
             } => {
                 let Some((len, win, b)) =
                     lists.get(name.as_str()).copied().or_else(|| had_list(name))
@@ -197,7 +198,8 @@ fn mutate(m: &mut Model, ops: &[Op]) -> HashMap<Id, Option<Id>> {
                 at,
                 remove,
                 ids,
-            } => m.splice(name, *at, *remove, ids),
+                from,
+            } => m.splice(name, *at, *remove, ids, *from),
         }
     }
     gone
