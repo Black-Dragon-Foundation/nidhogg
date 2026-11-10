@@ -1007,13 +1007,17 @@ jobs:
         with:
           name: tarball-macos
           path: dist
-      # Paired timing (`pair`): the NS build of the tarball and Naglfar run the timed row in turn, ABAB
-      # (nidhogg/test/nhmac-pair.sh); red when Naglfar is slower.
+      # Paired timing (`pair`): the NS build of the tarball and Naglfar run each timed row in turn, ABAB
+      # (nidhogg/test/nhmac-pair.sh): typing, and typing under a blurred child; red when Naglfar is slower in either.
       - name: Naglfar paired timing (pair)
         if: ${{ !cancelled() && inputs.pair != '' }}
         run: |
           mkdir -p "$RUNNER_TEMP/ns-app" && tar -C "$RUNNER_TEMP/ns-app" -xJf "$(ls dist/*.tar.xz | head -n 1)"
-          caffeinate -d -i -u bash nidhogg/test/nhmac-pair.sh --ns "$(echo "$RUNNER_TEMP"/ns-app/nidhogg-*)/Nidhogg.app/Contents/MacOS/Emacs" --naglfar "$RUNNER_TEMP/nbuild/obj/src/emacs" --out "$RUNNER_TEMP/nhmac-gui/pair"
+          ns="$(echo "$RUNNER_TEMP"/ns-app/nidhogg-*)/Nidhogg.app/Contents/MacOS/Emacs"
+          rc=0
+          caffeinate -d -i -u bash nidhogg/test/nhmac-pair.sh --ns "$ns" --naglfar "$RUNNER_TEMP/nbuild/obj/src/emacs" --out "$RUNNER_TEMP/nhmac-gui/pair" || rc=1
+          caffeinate -d -i -u bash nidhogg/test/nhmac-pair.sh --ns "$ns" --naglfar "$RUNNER_TEMP/nbuild/obj/src/emacs" --row nhmac-blur-pair --out "$RUNNER_TEMP/nhmac-gui/pair-blur" || rc=1
+          exit $rc
       - name: macOS GUI logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
