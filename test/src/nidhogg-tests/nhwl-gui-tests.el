@@ -2702,7 +2702,10 @@ while the top-level has the keyboard.  Delete the child and focus the parent aft
           (nhwl-gui--pump)
           (add-hook 'minibuffer-setup-hook setup)
           (add-hook 'post-command-hook post)
-          (setq result (with-timeout (5 'timeout) (with-selected-frame mf (read-string "nhwl: "))))
+          ;; `this-command' bound: a command an earlier row called outside the command loop (`yank' sets it) would
+          ;; count the hook's entry run as a command, with the parent's last event
+          (setq result (let ((this-command nil))
+                         (with-timeout (5 'timeout) (with-selected-frame mf (read-string "nhwl: ")))))
           (should (equal result "abc"))
           (should frames)
           (should (seq-every-p (lambda (f) (eq f mf)) frames)))
