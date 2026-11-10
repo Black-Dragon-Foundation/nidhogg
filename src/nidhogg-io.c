@@ -253,6 +253,8 @@ struct nh_io_fconf
   int sep;			/* records: 0 or '\n' */
   int sys;			/* records: a stateless system, or NH_DEC_NONE */
   size_t max;			/* :max-message */
+  unsigned char raw[32];	/* :raw-prefix: such lines stay raw */
+  size_t nraw;
 };
 
 /* A framer: the bytes after the last message are BUF[START, LEN).
@@ -751,7 +753,9 @@ nh_io_emit (struct nh_io_framer *f, size_t wire, size_t raw_off,
     return -2;
   *m = (struct nh_io_msg) { .len = wire, .raw_off = raw_off,
 			    .raw_len = raw_len };
-  if (f->c.kind != NH_IO_FR_RECORDS)
+  if (f->c.kind != NH_IO_FR_RECORDS
+      && !(f->c.nraw && raw_len >= f->c.nraw
+	   && !memcmp (s + raw_off, f->c.raw, f->c.nraw)))
     {
       /* A test stops nh-io here (S16: a detach during a large
 	 message).  */
@@ -3128,6 +3132,13 @@ nh_io_fr_args (Lisp_Object process, Lisp_Object framing, ptrdiff_t nargs,
 	  else
 	    wrong_choice (list2 (Qstring, Qbuffer), v);
 	}
+      else if (conf->kind != NH_IO_FR_RECORDS && EQ (key, QCraw_prefix))
+	{
+	  CHECK_STRING (v);
+	  if (SBYTES (v) == 0 || SBYTES (v) > sizeof conf->raw)
+	    args_out_of_range (key, v);
+	  memcpy (conf->raw, SDATA (v), conf->nraw = SBYTES (v));
+	}
       else if (conf->kind != NH_IO_FR_RECORDS)
 	json = Fcons (v, Fcons (key, json));
       else
@@ -3171,6 +3182,8 @@ ARGS are keywords and values:
   `json-parse-string'.
 `:max-message' BYTES: a longer message is a framing error (default
   256 MB).
+`:raw-prefix' BYTES (1 to 32): a message that starts with them is not
+  parsed; MESSAGE is RAW.
 For `records': `:separator' 0 (the default) or ?\n, and `:coding' a
   coding system without state, such as `utf-8-unix', that decodes each
   record (else MESSAGE is RAW).  MESSAGE is the record (without its
@@ -3445,6 +3458,7 @@ nh_io_syms (void)
   DEFSYM (Qrecords, "records");
   DEFSYM (QCbatch_function, ":batch-function");
   DEFSYM (QCparse, ":parse");
+  DEFSYM (QCraw_prefix, ":raw-prefix");
   DEFSYM (QCmax_message, ":max-message");
   DEFSYM (QCseparator, ":separator");
   nh_io_key = Fmake_symbol (build_string ("nidhogg-framing"));
